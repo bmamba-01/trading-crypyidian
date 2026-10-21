@@ -3,6 +3,13 @@ from typing import Literal
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 TradingMode = Literal["PAPER", "DEMO"]
+ProcessRole = Literal[
+    "admin-web",
+    "trading-runtime",
+    "execution-gateway",
+    "ingestion-worker",
+    "trainer-worker",
+]
 
 
 class AppSettings(BaseSettings):
@@ -17,3 +24,4 @@ class AppSettings(BaseSettings):
 
     app_env: Literal["local", "test", "production"] = "local"
     trading_mode: TradingMode = "PAPER"
+    process_role: ProcessRole = "admin-web"

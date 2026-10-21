@@ -10,4 +10,11 @@ def test_health_endpoint_reports_safe_paper_status() -> None:
     response = client.get("/health/live")
 
     assert response.status_code == 200
-    assert response.json() == {"status": "ok", "mode": "PAPER"}
+    assert response.json() == {"status": "ok", "mode": "PAPER", "role": "admin-web"}
+
+    readiness = client.get("/health/ready")
+    assert readiness.status_code == 503
+    assert readiness.json() == {
+        "status": "not_ready",
+        "pending": ["database", "exchange", "market_data"],
+    }

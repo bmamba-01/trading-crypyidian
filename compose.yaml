@@ -1,0 +1,204 @@
+name: crypidian
+
+services:
+  postgres:
+    image: postgres:18.1-bookworm@sha256:cc9f4143a8d2fa8cf3749d0cb4d26ecf2d53a77a2ac807e9ebd67ae22426221a
+    environment:
+      POSTGRES_DB: crypidian
+      POSTGRES_USER: crypidian_admin
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets:
+      - postgres_password
+    networks:
+      - backend
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  object-store:
+    image: dxflrs/garage:v2.4.1@sha256:9c96caa2612d3411acc5b0e6701fb238dbfba33e533a6d7d3d811a4b12d0d020
+    command: ["/garage", "server", "--single-node", "--default-bucket"]
+    environment:
+      GARAGE_CONFIG_FILE: /etc/garage.toml
+    env_file:
+      - ./.secrets/garage.env
+    secrets:
+      - garage_rpc_secret
+    networks:
+      - backend
+    volumes:
+      - garage_data:/var/lib/garage
+      - ./infra/garage/garage.toml:/etc/garage.toml:ro
+    healthcheck:
+      test: ["CMD", "/garage", "status"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  admin-web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      TRADING_BOT_APP_ENV: local
+      TRADING_BOT_TRADING_MODE: PAPER
+      TRADING_BOT_PROCESS_ROLE: admin-web
+    depends_on:
+      postgres:
+        condition: service_healthy
+      object-store:
+        condition: service_healthy
+    networks:
+      - backend
+      - web_ingress
+    ports:
+      - "127.0.0.1:${TRADING_BOT_WEB_PORT:-8000}:8000"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    user: "10001:10001"
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    healthcheck: &application_healthcheck
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/live', timeout=2).read()"
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
+
+  trading-runtime:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      TRADING_BOT_APP_ENV: local
+      TRADING_BOT_TRADING_MODE: PAPER
+      TRADING_BOT_PROCESS_ROLE: trading-runtime
+    profiles: ["paper"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - backend
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    user: "10001:10001"
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    healthcheck: *application_healthcheck
+    restart: unless-stopped
+
+  execution-gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      TRADING_BOT_APP_ENV: local
+      TRADING_BOT_TRADING_MODE: PAPER
+      TRADING_BOT_PROCESS_ROLE: execution-gateway
+    profiles: ["paper"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    secrets:
+      - source: binance_api_key
+        target: binance_api_key
+      - source: binance_api_secret
+        target: binance_api_secret
+    networks:
+      - backend
+      - exchange_egress
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    user: "10001:10001"
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    healthcheck: *application_healthcheck
+    restart: unless-stopped
+
+  ingestion-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      TRADING_BOT_APP_ENV: local
+      TRADING_BOT_TRADING_MODE: PAPER
+      TRADING_BOT_PROCESS_ROLE: ingestion-worker
+    profiles: ["paper"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      object-store:
+        condition: service_healthy
+    networks:
+      - backend
+      - source_egress
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    user: "10001:10001"
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    healthcheck: *application_healthcheck
+    restart: unless-stopped
+
+  trainer-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      TRADING_BOT_APP_ENV: local
+      TRADING_BOT_TRADING_MODE: PAPER
+      TRADING_BOT_PROCESS_ROLE: trainer-worker
+    profiles: ["paper"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      object-store:
+        condition: service_healthy
+    networks:
+      - backend
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    user: "10001:10001"
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    healthcheck: *application_healthcheck
+    restart: unless-stopped
+
+networks:
+  backend:
+    internal: true
+  web_ingress:
+  exchange_egress:
+  source_egress:
+
+volumes:
+  garage_data:
+  postgres_data:
+
+secrets:
+  binance_api_key:
+    file: ./.secrets/binance_api_key
+  binance_api_secret:
+    file: ./.secrets/binance_api_secret
+  garage_rpc_secret:
+    file: ./.secrets/garage_rpc_secret
+  postgres_password:
+    file: ./.secrets/postgres_password

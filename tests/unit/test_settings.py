@@ -24,6 +24,11 @@ def test_settings_reject_live_mode_until_readiness_gate_exists() -> None:
         AppSettings(trading_mode="LIVE")
 
 
+def test_settings_reject_unknown_process_role() -> None:
+    with pytest.raises(ValidationError):
+        AppSettings(process_role="unrestricted-worker")
+
+
 def test_settings_load_mode_from_local_environment_file(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

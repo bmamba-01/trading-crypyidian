@@ -65,7 +65,7 @@ flowchart LR
 | Binance | Adapter interface; SDK Python chính thức khi khớp semantics; HTTPX giới hạn cho endpoint SDK chưa mô hình hóa | Pin version và contract-test order/conditional order ở Demo. Strategy không import kiểu dữ liệu SDK. |
 | Telegram | Telegram Bot API qua adapter `httpx` async | Dùng webhook secret header, deduplicate `update_id`, map identity và RBAC phía server. Không cấp quyền từ dữ liệu client chưa xác thực. |
 | Phân tích dữ liệu | NumPy 2.5, pandas 3.0, scikit-learn 1.9; PyArrow/Parquet + DuckDB cho nghiên cứu offline | Bắt đầu từ baseline CPU; tách môi trường train khỏi image execution khi có thể; kiểm tra wheel/compatibility trước khi pin. |
-| Model artifact | Object store tương thích S3 (MinIO local, cloud sau này); metadata registry trong PostgreSQL | Lưu model, manifest, report, checksum và URI bất biến ngoài database nóng. |
+| Model artifact | Object store tương thích S3 (Garage local một node; cloud sau này); metadata registry trong PostgreSQL | Lưu model, manifest, report, checksum và URI bất biến ngoài database nóng. Garage dùng AGPL-3.0; cấu hình local chưa phù hợp HA, cần rà soát giấy phép trước phân phối. |
 | Secret | Interface tương thích KMS/Vault; local chỉ dùng secret mã hóa dành riêng dev | DB giữ `secret_ref`, status và fingerprint đã che; key Binance không có withdrawal và giới hạn IP nếu sàn/hạ tầng hỗ trợ. |
 | Xác thực | Session phía server, Argon2id cho mật khẩu local, TOTP MFA; để cổng tích hợp OIDC | Server kiểm tra mọi function/resource/workspace; ẩn nút trên UI không phải biện pháp authorization. |
 | Quan sát hệ thống | OpenTelemetry trace/metric + Prometheus endpoint + JSON log có cấu trúc; error sink tùy chọn | Nối decision tới intent/order/fill; loại secret và payload nhạy cảm khỏi trace. |
@@ -292,14 +292,16 @@ Reject nếu quantity/notional dưới minimum của sàn, snapshot tài khoản
 
 ## 9. Process có thể triển khai riêng
 
-Docker Compose ban đầu gồm các role restart riêng được:
+Docker Compose ban đầu gồm các role restart riêng được. Cấu hình local khóa digest image; network bridge được gán theo quyền truy cập nhưng không thực thi allowlist egress theo domain/IP:
 
-1. `admin-web`: FastAPI + Jinja2/HTMX; không có credential giao dịch Binance.
+1. `admin-web`: FastAPI + Jinja2/HTMX; không có credential giao dịch Binance. Nối `backend` nội bộ và `web_ingress` để cổng loopback của host truy cập được; đây cũng là đường egress chung, cần policy tường lửa khi triển khai.
 2. `trading-runtime`: lịch/watchlist/strategy/AI/risk/position monitor.
 3. `execution-gateway`: REST/user stream Binance, truy cập trading secret; outbound network giới hạn.
 4. `ingestion-worker`: market/news/source connectors; chỉ credential đọc cần thiết.
 5. `trainer-worker`: dataset và model artifact; không có exchange secret, có giới hạn tài nguyên riêng.
-6. `postgres`, `object-store`, và tùy chọn `otel-collector`/metrics.
+6. `postgres`, `object-store`, và tùy chọn `otel-collector`/metrics. Local object store dùng Garage với replication factor 1; chỉ dùng cho dev, không chịu lỗi node và license AGPL-3.0 cần được đánh giá.
+
+`backend` đặt `internal` để cô lập dịch vụ dữ liệu; riêng `admin-web` cần `web_ingress` để Docker Desktop publish cổng loopback. `exchange_egress` chỉ gắn vào gateway và `source_egress` chỉ gắn vào ingestion. Cấu hình Garage local đặt `allow_world_readable_secrets = true` vì Docker Desktop trên Windows trình bày file secret mount với mode `0777`; secret chỉ mount vào object-store và ACL gốc do host quản lý. Không dùng cài đặt này ở môi trường triển khai; nơi đó cần secret provider cùng quyền file chặt.
 
 Ban đầu có thể dùng cùng repository/image với entrypoint và DB role khác nhau. Chỉ tách deployable khi ranh giới bảo mật/tải đã được xác minh. Single-host local không tương đương HA production.
 

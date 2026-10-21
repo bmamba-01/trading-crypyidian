@@ -8,6 +8,7 @@
 | --- | --- | --- | --- | --- |
 | Runtime | `fastapi` | 0.156.4 | MIT | HTTP API; [PyPI metadata](https://pypi.org/project/fastapi/), [release notes](https://fastapi.tiangolo.com/release-notes/). |
 | Runtime | `pydantic-settings` | 2.16.0 | MIT | Đọc và kiểm tra cấu hình có kiểu; [release](https://github.com/pydantic/pydantic-settings/releases/tag/v2.16.0). |
+| Runtime | `uvicorn` | 0.54.0 | BSD-3-Clause | ASGI server cho FastAPI; [release notes](https://github.com/Kludex/uvicorn/blob/main/docs/release-notes.md). |
 | Build | `uv_build` | 0.13.4 | MIT | Build package Python; [uv build backend](https://docs.astral.sh/uv/concepts/build-backend/). |
 | Test | `pytest` | `>=9.1,<10` | MIT | Unit/E2E test; bản giải quyết cụ thể nằm trong lock. |
 | Test | `pytest-asyncio` | `>=1.4,<2` | Apache-2.0 | Hỗ trợ test bất đồng bộ cho repository/worker. |

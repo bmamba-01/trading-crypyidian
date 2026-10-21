@@ -22,15 +22,15 @@
 
 ## WP-01B — Docker Compose và process boundary
 
-**Đầu ra:** `compose.yaml`, image có build reproducible, health/readiness probes và role riêng.
+**Đầu ra:** `compose.yaml`, Dockerfile khóa base image/tool theo digest, Garage TOML local, health/readiness probes và role process riêng. Đây là khung bootstrap; worker chưa có vòng nghiệp vụ cho tới các plan tương ứng.
 
 1. Tạo service `admin-web`, `trading-runtime`, `execution-gateway`, `ingestion-worker`, `trainer-worker`, PostgreSQL và object store.
-2. Tách network/DB role: chỉ execution gateway có thể lấy secret Binance; trainer và admin web không mount secret đó.
+2. Tách network/process: chỉ execution gateway có thể lấy secret Binance; trainer và admin web không mount secret đó. `backend` nội bộ; admin web thêm `web_ingress` để publish cổng loopback host; gateway có `exchange_egress`, ingestion có `source_egress`. Docker bridge không thay thế firewall/egress allowlist. DB login riêng cho từng process được hoàn tất trong WP-01C cùng schema/repository.
 3. Chọn profile `local`/`paper`; mọi cấu hình khởi đầu là PAPER. Demo/live endpoint và account không dùng chung config.
 4. Thêm health/readiness để phân biệt process chạy với DB/feed/exchange readiness; secret không xuất ra health endpoint.
 5. Viết hướng dẫn tiếng Việt tại `README.md`: cài runtime, chạy migration, khởi động paper, dừng, xem log và backup local.
 
-**Nghiệm thu:** `docker compose config` hợp lệ; compose khởi động dependency local; dừng/khởi động lại không mất named volume; trainer/web không có biến secret trading.
+**Nghiệm thu:** `docker compose config` hợp lệ; Compose khởi động dependency local và healthcheck đạt; dừng/khởi động lại không mất named volume; trainer/web không có biến hoặc mount secret trading; chỉ gateway có network egress dành cho Binance. Không chuyển thành LIVE từ cấu hình local.
 
 ## WP-01C — Schema nền, migration và workspace isolation
 

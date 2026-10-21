@@ -34,6 +34,15 @@ wheels = [
 ]
 
 [[package]]
+name = "click"
+version = "8.5.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/c7/0e/7fa0ef50764b67090eca4114772a2abf8b6148198475e54c660b97caeee6/click-8.5.0.tar.gz", hash = "sha256:ba0d2089de75ea0310e2dde03160e6ca10009947fb95a182f9b54021bb272e34", size = 382235, upload-time = "2026-08-26T13:33:14.56Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/58/50/6c0d534c5f134586a8e1ba4e330569e32f057e33372ae556463212fb4cd3/click-8.5.0-py3-none-any.whl", hash = "sha256:255bc9599cf7748b4b1a446ccc735421bd08a2ae529a8b88597d3de5664ee360", size = 125251, upload-time = "2026-08-26T13:33:12.928Z" },
+]
+
+[[package]]
 name = "colorama"
 version = "0.4.6"
 source = { registry = "https://pypi.org/simple" }
@@ -402,6 +411,7 @@ source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
     { name = "pydantic-settings" },
+    { name = "uvicorn" },
 ]
 
 [package.dev-dependencies]
@@ -418,6 +428,7 @@ dev = [
 requires-dist = [
     { name = "fastapi", specifier = "==0.156.4" },
     { name = "pydantic-settings", specifier = "==2.16.0" },
+    { name = "uvicorn", specifier = "==0.54.0" },
 ]
 
 [package.metadata.requires-dev]
@@ -484,4 +495,17 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/2c/2d/c82e3f9aad55f01d58f20cc5f591da63ecb036c7a10e9f54605430bdfe59/uv_build-0.13.4-py3-none-win32.whl", hash = "sha256:36ae54dc1ab36ffc3f3adb05e6b4f85c93e2f3cd91bbde2bd9b001f334027de1", size = 1142243, upload-time = "2026-10-20T15:11:02.095Z" },
     { url = "https://files.pythonhosted.org/packages/b8/9e/8dff4f45efe74bc1df90cde734c29b2c47a182e35771c2d8d69b5105bada/uv_build-0.13.4-py3-none-win_amd64.whl", hash = "sha256:6b839e56d4eae73508895c375b37040e841a3773e19ac55673a8164c3ba41e79", size = 1192246, upload-time = "2026-10-20T15:11:03.478Z" },
     { url = "https://files.pythonhosted.org/packages/f8/d6/86b42a57e03c4213e2e7bbd7e517926fc30f4406b19ea1c5f40dc7688d85/uv_build-0.13.4-py3-none-win_arm64.whl", hash = "sha256:b4056dcb102230b9a6854a9cf95584fd768d17d139a16183c0e985acee88a181", size = 1125746, upload-time = "2026-10-20T15:11:04.953Z" },
+]
+
+[[package]]
+name = "uvicorn"
+version = "0.54.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "click" },
+    { name = "h11" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/da/34/30e9280707135d2cfc589dfff3cb796bd07a3aeb1a3e415ba09dd89d7bb4/uvicorn-0.54.0.tar.gz", hash = "sha256:a2e33cbfaa0306f8e6b0c13e0cb89d7d7a2da3e62b90c66e18c33d9807b28620", size = 112283, upload-time = "2026-09-25T06:52:37.601Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/38/0c/b54a4fdd7f90a3af8b02ebc9ce6712c2c208b7926a2f7bad95c33ebbe943/uvicorn-0.54.0-py3-none-any.whl", hash = "sha256:505bdb0f318731d45f1f712071fc781a8981f6847a31c902c9f5e652d4f67faf", size = 87427, upload-time = "2026-09-25T06:52:35.829Z" },
 ]
