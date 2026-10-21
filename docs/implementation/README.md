@@ -2,6 +2,8 @@
 
 Thư mục này là điểm vào ở gốc `docs/` cho kế hoạch xây dựng từng phần. [Kế hoạch tổng thể](../superpowers/plans/2026-10-21-independent-binance-futures-bot.md) giữ thứ tự phụ thuộc giữa các giai đoạn; các tài liệu dưới đây phân rã đầu việc theo module để giao việc và theo dõi nghiệm thu.
 
+Dependency trực tiếp, phiên bản khóa và giấy phép được theo dõi trong [dependency inventory](./dependency-inventory.md).
+
 ## Thứ tự và phụ thuộc
 
 | Thứ tự | Plan | Phạm vi | Phụ thuộc | Stories chính |

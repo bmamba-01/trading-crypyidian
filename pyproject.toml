@@ -1,0 +1,53 @@
+[build-system]
+requires = ["uv_build>=0.13.0,<0.14"]
+build-backend = "uv_build"
+
+[project]
+name = "trading-crypyidian"
+version = "0.1.0"
+description = "Bot giao dịch Binance Futures độc lập, ưu tiên an toàn và khả năng tái lập."
+readme = "README.md"
+requires-python = ">=3.14,<3.15"
+dependencies = [
+    "fastapi==0.156.4",
+    "pydantic-settings==2.16.0",
+]
+
+[dependency-groups]
+dev = [
+    "httpx2>=2,<3",
+    "mypy>=1.18,<2",
+    "pytest>=9.1,<10",
+    "pytest-asyncio>=1.4,<2",
+    "ruff>=0.14,<1",
+    "uv-build>=0.13.0,<0.14",
+]
+
+[tool.uv]
+required-version = ">=0.13.4,<0.14"
+
+[tool.uv.build-backend]
+module-name = "trading_bot"
+module-root = "src"
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "A", "C4", "DTZ", "PT"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.mypy]
+python_version = "3.14"
+strict = true
+mypy_path = "src"
+packages = ["trading_bot"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+asyncio_mode = "auto"

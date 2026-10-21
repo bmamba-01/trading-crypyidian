@@ -75,6 +75,8 @@ Nguồn chính thức đã rà soát ngày 21/10/2026: [Python 3.14.8](https://w
 
 Đây là mốc phiên bản tham khảo, không phải lock file. Khi code phải kiểm tra compatibility, pin dependency + hash, ghi SDK support cho từng order type. Nếu SDK thiếu semantics, cô lập phần HTTPX trong adapter và contract-test; không gọi HTTP trực tiếp từ strategy.
 
+Kiểm tra trước WP-01A ngày 21/10/2026 xác nhận CPython 3.14.8 có bản phát hành chính thức; FastAPI 0.156.4 là bản hiện hành trong release notes; SQLAlchemy 2.0.55 hỗ trợ Python 3.14; `pydantic-settings` 2.16.0 hỗ trợ Python 3.15 và khắc phục advisory đã công bố trong nhánh 2.14.2. `uv` 0.13.4 là bản phát hành ngày 20/10/2026; bản này cập nhật CA gốc và có thể quản lý Python 3.14.8. Đây là phiên bản đã tra ở nguồn chính thức, nhưng chỉ các dependency thực sự dùng được đưa vào lock. [uv releases](https://github.com/astral-sh/uv/releases), [Pydantic Settings releases](https://github.com/pydantic/pydantic-settings/releases), [SQLAlchemy 2.0 changelog](https://docs.sqlalchemy.org/en/20/changelog/changelog_20.html), [FastAPI release notes](https://fastapi.tiangolo.com/release-notes/).
+
 ## 4. Cấu trúc package Python
 
 ```text
