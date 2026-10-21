@@ -211,3 +211,12 @@
 - Ngưỡng phổ biến trong tài liệu chỉ là cách gọi/tham chiếu, không phải giá trị mặc định khuyến nghị. Ví dụ ADX 20/25 hay RSI 30/70 cần được coi là giả thuyết có version.
 - Tài liệu giáo dục của sàn/charting giúp xác định nghĩa và cách tính; không thay thế đánh giá độc lập về lợi nhuận.
 - Bằng chứng nghiên cứu 2026 có thể là preprint hoặc mô phỏng. Xem loại bằng chứng và giới hạn của từng nguồn trong [research register](./strategies-2026.md).
+
+## I. Cơ sở dữ liệu và ranh giới workspace
+
+| Thuật ngữ | Bản dịch ưu tiên | Giải thích ngắn trong dự án | Tài liệu tham khảo |
+| --- | --- | --- | --- |
+| Tenant / workspace | Không gian làm việc / phạm vi dữ liệu | Không gian dữ liệu thuộc một nhóm người dùng; mọi truy vấn tới tài khoản, chiến lược và cấu hình phải nhận `workspace_id`. Khóa ngoại ghép ngăn đối tượng workspace A liên kết nhầm sang workspace B. | [Schema nền](../architecture/technical-design.md#database-schema) |
+| Row-Level Security (RLS) | Bảo mật cấp hàng | Chính sách PostgreSQL lọc hàng được SELECT/INSERT/UPDATE/DELETE theo session context `app.workspace_id`; là lớp phòng vệ bổ sung, không thay thế điều kiện workspace trong repository. Chủ bảng, superuser và role `BYPASSRLS` có thể vượt qua RLS; role runtime vì thế không được có các quyền này. | [PostgreSQL 18 RLS](https://www.postgresql.org/docs/18/ddl-rowsecurity.html) · [WP-01C](../implementation/01-foundation-database.md#wp-01c-schema) |
+| Database migration | Bản nâng cấp cấu trúc cơ sở dữ liệu | Revision có thứ tự mô tả thay đổi schema; `upgrade` tiến về bản mới và `downgrade` hoàn nguyên thay đổi còn an toàn. Thay đổi phá hủy cần tách theo expand → deploy → backfill → contract. | [Alembic changelog](https://alembic.sqlalchemy.org/en/latest/changelog.html) · [kế hoạch DB](../implementation/01-foundation-database.md) |
+| Decimal / Numeric | Số thập phân chính xác | Dùng `Decimal` trong Python và `NUMERIC` trong PostgreSQL cho tiền, giá, lượng và phí; tránh sai số biểu diễn của binary float. | [SQLAlchemy Numeric](https://docs.sqlalchemy.org/en/21/core/type_basics.html) · [schema nền](../architecture/technical-design.md#database-schema) |

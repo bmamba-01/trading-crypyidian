@@ -32,7 +32,8 @@
 
 **Nghiệm thu:** `docker compose config` hợp lệ; Compose khởi động dependency local và healthcheck đạt; dừng/khởi động lại không mất named volume; trainer/web không có biến hoặc mount secret trading; chỉ gateway có network egress dành cho Binance. Không chuyển thành LIVE từ cấu hình local.
 
-## WP-01C — Schema nền, migration và workspace isolation
+<a id="wp-01c-schema"></a>
+## WP-01C — Schema nền, migration và tách biệt workspace
 
 **File dự kiến:** `migrations/`, `src/trading_bot/adapters/database/models/`, `repositories/`, `unit_of_work.py`.
 
@@ -42,10 +43,12 @@
 4. Cấu hình Alembic upgrade/downgrade có kiểm soát; seed owner/workspace PAPER chỉ ở local setup, không seed key thật.
 5. Repository/query bắt buộc nhận `workspace_id`; thêm kiểm thử ngăn truy vấn vượt tenant hoặc IDOR.
 6. Thiết kế migration tương thích rollout: expand → deploy → backfill → contract; không xóa/đổi cột đang được worker cũ dùng trong cùng bước.
+7. Dùng role PostgreSQL riêng cho từng process, secret password file local; bật Row-Level Security (RLS, chính sách lọc hàng theo workspace) bắt buộc trên bảng tenant. Query repository vẫn phải nhận workspace ID vì role/RLS là lớp phòng vệ thứ hai.
+8. Chạy `alembic upgrade head` trong migrator trước khi bật admin; migration phải có `downgrade` và E2E kiểm tra nâng/hạ/nâng lại trên PostgreSQL riêng.
 
 **Nghiệm thu:** schema mới có thể tạo từ DB rỗng và nâng cấp từ bản trước; truy vấn mọi bảng tenant có workspace scope; tiền không dùng float; migration được review và có rollback strategy.
 
-**Kiểm tra khi triển khai:** Alembic upgrade/downgrade trong DB dùng riêng; unit/integration kiểm tra tenant scope và precision.
+**Kiểm tra khi triển khai:** Alembic upgrade/downgrade trong DB dùng riêng; unit/integration kiểm tra tenant scope, role không có `BYPASSRLS`, dữ liệu không vượt workspace và precision `Decimal`.
 
 ## WP-01D — Authentication, RBAC, MFA và secret boundary
 

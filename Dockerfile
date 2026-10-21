@@ -17,6 +17,9 @@ COPY pyproject.toml uv.lock README.md ./
 RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-dev --no-install-project
 
 COPY src ./src
+COPY scripts/provision_database_roles.py ./scripts/provision_database_roles.py
+COPY alembic.ini ./alembic.ini
+COPY migrations ./migrations
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev \
     && groupadd --gid 10001 trading-bot \

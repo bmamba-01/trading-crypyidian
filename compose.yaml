@@ -51,9 +51,13 @@ services:
       TRADING_BOT_APP_ENV: local
       TRADING_BOT_TRADING_MODE: PAPER
       TRADING_BOT_PROCESS_ROLE: admin-web
+      TRADING_BOT_DATABASE_USER: crypidian_admin_web
+      TRADING_BOT_DATABASE_PASSWORD_FILE: /run/secrets/database_admin_web_password
     depends_on:
       postgres:
         condition: service_healthy
+      migrator:
+        condition: service_completed_successfully
       object-store:
         condition: service_healthy
     networks:
@@ -67,6 +71,8 @@ services:
     user: "10001:10001"
     cap_drop: ["ALL"]
     security_opt: ["no-new-privileges:true"]
+    secrets:
+      - database_admin_web_password
     healthcheck: &application_healthcheck
       test:
         - CMD
@@ -79,6 +85,57 @@ services:
       start_period: 15s
     restart: unless-stopped
 
+  migrator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      TRADING_BOT_DATABASE_USER: crypidian_admin
+      TRADING_BOT_DATABASE_PASSWORD_FILE: /run/secrets/postgres_password
+      TRADING_BOT_DATABASE_HOST: postgres
+      TRADING_BOT_DATABASE_NAME: crypidian
+    depends_on:
+      db-provisioner:
+        condition: service_completed_successfully
+    secrets:
+      - postgres_password
+    networks:
+      - backend
+    volumes:
+      - ./migrations:/app/migrations
+    read_only: true
+    user: "10001:10001"
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+
+  db-provisioner:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["python", "scripts/provision_database_roles.py"]
+    environment:
+      TRADING_BOT_DATABASE_USER: crypidian_admin
+      TRADING_BOT_DATABASE_PASSWORD_FILE: /run/secrets/postgres_password
+      TRADING_BOT_DATABASE_HOST: postgres
+      TRADING_BOT_DATABASE_NAME: crypidian
+    depends_on:
+      postgres:
+        condition: service_healthy
+    secrets:
+      - postgres_password
+      - database_admin_web_password
+      - database_trading_runtime_password
+      - database_execution_gateway_password
+      - database_ingestion_worker_password
+      - database_trainer_worker_password
+    networks:
+      - backend
+    read_only: true
+    user: "10001:10001"
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+
   trading-runtime:
     build:
       context: .
@@ -87,12 +144,16 @@ services:
       TRADING_BOT_APP_ENV: local
       TRADING_BOT_TRADING_MODE: PAPER
       TRADING_BOT_PROCESS_ROLE: trading-runtime
+      TRADING_BOT_DATABASE_USER: crypidian_trading_runtime
+      TRADING_BOT_DATABASE_PASSWORD_FILE: /run/secrets/database_trading_runtime_password
     profiles: ["paper"]
     depends_on:
       postgres:
         condition: service_healthy
     networks:
       - backend
+    secrets:
+      - database_trading_runtime_password
     read_only: true
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=16m
@@ -110,6 +171,8 @@ services:
       TRADING_BOT_APP_ENV: local
       TRADING_BOT_TRADING_MODE: PAPER
       TRADING_BOT_PROCESS_ROLE: execution-gateway
+      TRADING_BOT_DATABASE_USER: crypidian_execution_gateway
+      TRADING_BOT_DATABASE_PASSWORD_FILE: /run/secrets/database_execution_gateway_password
     profiles: ["paper"]
     depends_on:
       postgres:
@@ -119,6 +182,8 @@ services:
         target: binance_api_key
       - source: binance_api_secret
         target: binance_api_secret
+      - source: database_execution_gateway_password
+        target: /run/secrets/database_execution_gateway_password
     networks:
       - backend
       - exchange_egress
@@ -139,6 +204,8 @@ services:
       TRADING_BOT_APP_ENV: local
       TRADING_BOT_TRADING_MODE: PAPER
       TRADING_BOT_PROCESS_ROLE: ingestion-worker
+      TRADING_BOT_DATABASE_USER: crypidian_ingestion_worker
+      TRADING_BOT_DATABASE_PASSWORD_FILE: /run/secrets/database_ingestion_worker_password
     profiles: ["paper"]
     depends_on:
       postgres:
@@ -148,6 +215,8 @@ services:
     networks:
       - backend
       - source_egress
+    secrets:
+      - database_ingestion_worker_password
     read_only: true
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=16m
@@ -165,6 +234,8 @@ services:
       TRADING_BOT_APP_ENV: local
       TRADING_BOT_TRADING_MODE: PAPER
       TRADING_BOT_PROCESS_ROLE: trainer-worker
+      TRADING_BOT_DATABASE_USER: crypidian_trainer_worker
+      TRADING_BOT_DATABASE_PASSWORD_FILE: /run/secrets/database_trainer_worker_password
     profiles: ["paper"]
     depends_on:
       postgres:
@@ -173,6 +244,8 @@ services:
         condition: service_healthy
     networks:
       - backend
+    secrets:
+      - database_trainer_worker_password
     read_only: true
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=16m
@@ -202,3 +275,13 @@ secrets:
     file: ./.secrets/garage_rpc_secret
   postgres_password:
     file: ./.secrets/postgres_password
+  database_admin_web_password:
+    file: ./.secrets/database_admin_web_password
+  database_trading_runtime_password:
+    file: ./.secrets/database_trading_runtime_password
+  database_execution_gateway_password:
+    file: ./.secrets/database_execution_gateway_password
+  database_ingestion_worker_password:
+    file: ./.secrets/database_ingestion_worker_password
+  database_trainer_worker_password:
+    file: ./.secrets/database_trainer_worker_password

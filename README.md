@@ -38,6 +38,10 @@ docker compose exec -T postgres pg_dump -U crypidian_admin -d crypidian > .\cryp
 
 Process `admin-web`, `trading-runtime`, `execution-gateway`, `ingestion-worker` và `trainer-worker` hiện dùng chung app bootstrap để kiểm tra ranh giới process. Chưa có business loop, kết nối Binance, ingestion hay training. `/health/live` chỉ kiểm tra process; `/health/ready` trả `503` cho tới khi database, market data và exchange probe được cài đặt và báo sẵn sàng. Compose chỉ chờ health của PostgreSQL/object store trước khi khởi động các service phụ thuộc.
 
+`db-provisioner` đọc secret file local để tạo hoặc xoay mật khẩu login riêng cho từng process mỗi lần khởi động; `migrator` chạy `alembic upgrade head` trước `admin-web`. Cấu trúc ban đầu có workspace, user/membership/role/session/MFA/Telegram, trading account, secret reference, config/risk versions, approval, watchlist và strategy release. Từng app role là `NOSUPERUSER` và `NOBYPASSRLS`; `user_account` chỉ được cấp cho admin web. Tài khoản admin PostgreSQL chỉ dùng cho provisioner, migrator và backup local. Rollback schema local có thể chạy `docker compose --profile paper run --rm migrator alembic downgrade base`; lệnh này xóa các bảng WP-01C và dữ liệu trong đó.
+
+Các bảng chứa `workspace_id` được bảo vệ bằng PostgreSQL Row-Level Security (RLS, chính sách lọc hàng theo workspace). Repository còn truyền workspace rõ ràng; RLS không thay thế kiểm tra ở ứng dụng. Thay đổi schema mới cần Alembic revision riêng, có kế hoạch rollout expand → deploy → backfill → contract.
+
 Network `web_ingress` cho phép máy host truy cập cổng admin đã bind vào loopback; `backend` vẫn là network nội bộ. `exchange_egress` chỉ dành cho gateway trong topology Compose local; network bridge không phải allowlist domain/IP. Khi triển khai, dùng firewall/egress policy để giới hạn host Binance và web ingress; không chuyển cấu hình local này sang LIVE.
 
 Object store local là Garage, một dịch vụ S3-compatible (tương thích API lưu trữ S3) phát hành theo AGPL-3.0. Cấu hình replication 1 chỉ dùng cho môi trường local một node; cần rà soát giấy phép và topology trước khi triển khai phân phối.

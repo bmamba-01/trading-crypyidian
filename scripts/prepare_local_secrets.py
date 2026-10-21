@@ -12,6 +12,16 @@ def main() -> None:
         "garage_rpc_secret": secrets.token_hex(32),
         "garage_s3_access_key": f"GK{secrets.token_hex(16)}",
         "garage_s3_secret_key": secrets.token_hex(32),
+        **{
+            f"database_{role}_password": secrets.token_urlsafe(48)
+            for role in (
+                "admin_web",
+                "trading_runtime",
+                "execution_gateway",
+                "ingestion_worker",
+                "trainer_worker",
+            )
+        },
     }
     for name, value in generated_secrets.items():
         path = secret_directory / name
