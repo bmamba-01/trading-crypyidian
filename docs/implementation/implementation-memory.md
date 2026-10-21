@@ -62,7 +62,7 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **E2E test:** cùng lệnh chạy 3 E2E pass, gồm Compose config/secrets/process policy, health endpoint FastAPI, khởi tạo cả 7 service, truy cập `/health/live` từ host, tạo PostgreSQL table và kiểm tra Garage bucket còn tồn tại sau `down` rồi `up`. Tổng: **11 passed trong 52.14 giây**, không warning; test tự xóa volume của project E2E riêng.
 - **Regression/security/data checks:** `ruff check src tests scripts` pass; `ruff format --check src tests scripts` xác nhận 34 file; `mypy src` không lỗi ở 29 file; `uv lock --check` giải quyết 34 package; `uv build --no-build-isolation` tạo sdist/wheel; `docker compose --profile paper -f compose.yaml config --quiet` pass; `git diff --check` pass (chỉ cảnh báo quy tắc LF→CRLF của Git trên Windows). Diff không chứa `.secrets/`, không có Binance credential, không gọi API sàn hay tạo lệnh giao dịch.
 - **Việc còn mở/rủi ro:** rà soát giấy phép Garage AGPL trước phân phối; tạo DB login riêng theo process ở WP-01C; readiness probe hiện chưa kết nối DB/feed/exchange thật; egress/ingress production cần policy ngoài Compose; Garage local mode secret nới lỏng không dùng ngoài máy dev.
-- **Commit/nhánh:** chuẩn bị commit WP-01B trên `dev` sau khi memory được đọc kiểm chứng; WP-01A đã commit `7bbaa65`.
+- **Commit/nhánh:** WP-01B đã commit trên `dev` với SHA `b32f581`; WP-01A có SHA `7bbaa65`.
 - **Đã đọc lại mục ghi nhớ sau cập nhật:** có; đã đối chiếu 8 unit + 3 E2E = 11 passed không warning, Compose lifecycle 52.14 giây, lint/format/mypy/lock/build/config và diff; nội dung phản ánh các lỗi Garage/network đã sửa cùng rủi ro local mode.
 
 ## Mẫu ghi cho mỗi vòng
