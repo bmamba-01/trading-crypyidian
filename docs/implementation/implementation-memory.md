@@ -79,7 +79,7 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **E2E test:** cùng lệnh → 4 E2E pass; gồm health endpoint, Compose policy/process boundaries, quyền role, repository chạy bằng credential thật trong container và migration/PostgreSQL/RLS/restart. Toàn bộ suite: **19 passed trong 149.66 giây**, không skip.
 - **Regression/security/data checks:** `ruff check src tests scripts migrations`, `ruff format --check src tests scripts migrations`, `mypy src`, mypy riêng provisioner/migration, `uv lock --check`, build wheel + sdist, JSON parse SBOM, `docker compose --profile paper config --quiet`, `git diff --check` đều đạt. Cảnh báo duy nhất của Git là chuyển đổi LF→CRLF theo cấu hình Windows. Không có Binance key/secret được thêm hoặc gọi; PAPER/local.
 - **Việc còn mở/rủi ro:** WP-01D cần bootstrap owner/workspace sau khi hoàn thành auth, MFA và hashing; WP-01D/E cần thu hẹp quyền CRUD tenant theo ma trận capability thay quyền app group hiện tại; readiness probe chưa kết nối DB; test chỉ dùng DB/container riêng, chưa chạy tải/production migration. Cần backup trước khi triển khai migration ở môi trường có dữ liệu.
-- **Commit/nhánh:** chuẩn bị commit trên `dev` sau khi đọc lại mục memory này; chưa push.
+- **Commit/nhánh:** phần code, kiểm thử và memory nền đã commit trên `dev` với SHA `4ad24d2`; dòng ghi nhận SHA được bổ sung bằng commit docs-only theo sau; chưa push.
 - **Đã đọc lại mục ghi nhớ sau cập nhật:** có; đối chiếu 15 bảng, 13 policy RLS, 5 login riêng, 15 unit + 4 E2E = 19 passed trong 149.66 giây, các lệnh lint/format/mypy/lock/build/Compose/SBOM, nhánh `dev`, rủi ro seed owner và quyền app group. Diff không gồm `.secrets/`; không có Binance credential hay lệnh giao dịch.
 
 ## Mẫu ghi cho mỗi vòng
