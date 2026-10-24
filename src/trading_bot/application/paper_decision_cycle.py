@@ -51,19 +51,29 @@ def strategy_selection_from_published_settings(
     """Chuyển release và tham số root settings sang hợp đồng strategy runtime."""
     if not is_published:
         raise ValueError("Bản nháp WorkspaceSettings không thể tạo strategy selection runtime.")
-    configured_parameters = settings.strategy.parameters
-    if configured_parameters and settings.strategy.default_release != "h03-v1":
-        raise ValueError(
-            f"Strategy '{settings.strategy.default_release}' chưa hỗ trợ tham số trong runtime."
-        )
-    if not isinstance(configured_parameters, Mapping):
+    return strategy_selection_for_release(
+        release_id=settings.strategy.default_release,
+        parameters=settings.strategy.parameters,
+        settings_version_id=settings_version_id,
+    )
+
+
+def strategy_selection_for_release(
+    *,
+    release_id: str,
+    parameters: Mapping[str, int],
+    settings_version_id: str,
+) -> StrategySelection:
+    """Dựng selection đã publish cho một release; dùng chung cho root settings và bot config."""
+    if parameters and release_id != "h03-v1":
+        raise ValueError(f"Strategy '{release_id}' chưa hỗ trợ tham số trong runtime.")
+    if not isinstance(parameters, Mapping):
         raise ValueError("strategy.parameters phải là một object có khóa và giá trị hợp lệ.")
-    parameters = tuple(sorted(configured_parameters.items()))
     return StrategySelection(
         settings_version_id=settings_version_id,
-        active_release_ids=(settings.strategy.default_release,),
+        active_release_ids=(release_id,),
         published=True,
-        parameters=parameters,
+        parameters=tuple(sorted(parameters.items())),
     )
 
 

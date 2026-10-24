@@ -1,4 +1,4 @@
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Self
 from uuid import UUID, uuid4
@@ -179,17 +179,25 @@ class OutboxRepository:
         lease_duration: timedelta,
         max_attempts: int,
         limit: int = 20,
+        event_types: Sequence[str] | None = None,
     ) -> list[OutboxEvent]:
+        """Claim event sẵn sàng; `event_types` giới hạn consumer chỉ nhận loại của mình."""
         _validate_claim_options(now, lease_duration, max_attempts, limit, worker_id)
+        conditions = [
+            OutboxEvent.workspace_id == workspace_id,
+            OutboxEvent.status.in_(("PENDING", "PROCESSING")),
+            OutboxEvent.available_at <= now,
+            OutboxEvent.attempts < max_attempts,
+            (OutboxEvent.lease_expires_at.is_(None)) | (OutboxEvent.lease_expires_at <= now),
+        ]
+        if event_types is not None:
+            types = tuple(event_types)
+            if not types or any(not item.strip() for item in types):
+                raise ValueError("event_types phải không rỗng và không chứa loại trống")
+            conditions.append(OutboxEvent.event_type.in_(types))
         rows = await self._session.scalars(
             select(OutboxEvent)
-            .where(
-                OutboxEvent.workspace_id == workspace_id,
-                OutboxEvent.status.in_(("PENDING", "PROCESSING")),
-                OutboxEvent.available_at <= now,
-                OutboxEvent.attempts < max_attempts,
-                (OutboxEvent.lease_expires_at.is_(None)) | (OutboxEvent.lease_expires_at <= now),
-            )
+            .where(*conditions)
             .order_by(OutboxEvent.available_at, OutboxEvent.created_at)
             .limit(limit)
             .with_for_update(skip_locked=True)
