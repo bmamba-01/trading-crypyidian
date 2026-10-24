@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+from tests.unit.bot_scope_fakes import BotScopeSession
 
 from trading_bot.adapters.database.repositories.paper_ledger import (
     PaperLedgerConflict,
@@ -41,7 +42,7 @@ def _reservation(workspace_id, account_id, *, status="RESERVED", expires_at=None
     )
 
 
-class TransitionSession:
+class TransitionSession(BotScopeSession):
     def __init__(self, *, reservation, intent, trade=None, fill=None) -> None:
         self.rows = {
             "trading_account": SimpleNamespace(id=reservation.account_id),
@@ -53,6 +54,8 @@ class TransitionSession:
         self.statements: list[str] = []
 
     async def scalar(self, statement):
+        if self.is_bot_query(statement):
+            return self.bot_identity(statement)
         sql = str(statement.compile())
         self.statements.append(sql)
         match = re.search(r"\bFROM\s+([a-z_]+)", sql, re.IGNORECASE)
@@ -66,12 +69,14 @@ class TransitionSession:
         return None
 
 
-class OrderTransitionSession:
+class OrderTransitionSession(BotScopeSession):
     def __init__(self, intent, order) -> None:
         self.rows = {"order_intent": intent, "exchange_order": order}
         self.flushes = 0
 
     async def scalar(self, statement):
+        if self.is_bot_query(statement):
+            return self.bot_identity(statement)
         sql = str(statement.compile()).lower()
         from_table = re.search(r"\bfrom\s+([a-z_]+)", sql)
         assert from_table is not None

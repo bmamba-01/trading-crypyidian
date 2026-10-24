@@ -1,10 +1,11 @@
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
-from uuid import UUID, uuid4
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 import pytest
 from sqlalchemy.sql.elements import BinaryExpression
+from tests.unit.bot_scope_fakes import BotScopeSession
 
 from trading_bot.adapters.database.models import Base
 from trading_bot.adapters.database.models.entities import StrategyRelease, TradingAccount
@@ -145,7 +146,7 @@ class FakeUow:
         self.events.append(event)
 
 
-class FakeSession:
+class FakeSession(BotScopeSession):
     def __init__(
         self,
         *,
@@ -167,6 +168,8 @@ class FakeSession:
         self.added: list[object] = []
 
     async def scalar(self, statement: object) -> object | None:
+        if self.is_bot_query(statement):
+            return self.bot_identity(statement)
         entity = statement.column_descriptions[0]["entity"]
         if entity is TradingAccount:
             return self.account
@@ -323,6 +326,7 @@ async def test_intent_retry_rejects_changed_evidence_or_creation_time() -> None:
     original = _intent_args()
     existing = SimpleNamespace(
         id=uuid4(),
+        bot_id=uuid5(NAMESPACE_URL, str(ACCOUNT_ID)),
         workspace_id=WORKSPACE_ID,
         account_id=ACCOUNT_ID,
         idempotency_key=original["idempotency_key"],

@@ -54,6 +54,7 @@ class PaperAccountRuntimeState:
 @dataclass(frozen=True, slots=True)
 class PaperRuntimeAccount:
     account_id: UUID
+    bot_id: UUID
     gateway: PaperExecutionGateway
     coordinator: PaperLifecycleCoordinator
     execution_profile: ResolvedPaperExecutionProfile
@@ -150,6 +151,7 @@ class PaperRuntimeBootstrapService:
                 for account in accounts:
                     failing_account_id = account.id
                     self._validate_account_scope(account)
+                    bot_id = await uow.bind_account(account.id, allow_switch=True)
                     seed = await account_repository.load_seed(
                         workspace_id=self._workspace_id, account_id=account.id
                     )
@@ -168,6 +170,7 @@ class PaperRuntimeBootstrapService:
                         ) from error
                     active_accounts[account.id] = PaperRuntimeAccount(
                         account_id=account.id,
+                        bot_id=bot_id,
                         gateway=gateway,
                         coordinator=coordinator,
                         execution_profile=profile,

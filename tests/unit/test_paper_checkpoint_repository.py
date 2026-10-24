@@ -5,6 +5,7 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy.dialects import postgresql
+from tests.unit.bot_scope_fakes import BotScopeSession
 from tests.unit.test_paper_execution import _gateway
 
 from trading_bot.adapters.database.models.paper_entities import PaperExecutionCheckpointRecord
@@ -17,7 +18,7 @@ from trading_bot.domain.execution.paper_state import PaperExecutionSnapshot
 NOW = datetime(2026, 10, 23, 12, tzinfo=UTC)
 
 
-class FakeSession:
+class FakeSession(BotScopeSession):
     def __init__(self, results: list[object | None]) -> None:
         self.results = iter(results)
         self.statements: list[str] = []
@@ -29,6 +30,8 @@ class FakeSession:
             self.statements.append(str(params))
 
     async def scalar(self, statement: Any) -> object | None:
+        if self.is_bot_query(statement):
+            return self.bot_identity(statement)
         self.statements.append(str(statement.compile(dialect=postgresql.dialect())))
         return next(self.results)
 

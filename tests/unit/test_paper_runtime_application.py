@@ -125,7 +125,7 @@ class _FakeUnitOfWork:
     scalar_results: list[object | None] = []
     strategy_releases: list[object] = []
 
-    def __init__(self, _sessions: object, *, workspace_id) -> None:
+    def __init__(self, _sessions: object, *, workspace_id, bot_id=None) -> None:
         self.workspace_id = workspace_id
         self.session = _FakeSession()
         self.committed = False
@@ -318,6 +318,7 @@ def _application_with_fakes(*, fail_submission: bool):
 
     runtime_account = SimpleNamespace(
         account_id=account_id,
+        bot_id=uuid4(),
         gateway=_Gateway(),
         coordinator=_Coordinator(),
         execution_profile=profile,

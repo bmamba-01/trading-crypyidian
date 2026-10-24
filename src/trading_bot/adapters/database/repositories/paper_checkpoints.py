@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import select, text
 
+from trading_bot.adapters.database.bot_scope import bind_account_bot
 from trading_bot.adapters.database.models.entities import TradingAccount
 from trading_bot.adapters.database.models.paper_entities import (
     FillRecord,
@@ -55,6 +56,7 @@ class PaperCheckpointRepository:
         await self.lock_account(uow, account_id=account_id)
         existing = await uow.session.scalar(
             select(PaperExecutionCheckpointRecord).where(
+                PaperExecutionCheckpointRecord.bot_id == uow.session.info.get("bot_id"),
                 PaperExecutionCheckpointRecord.workspace_id == uow.workspace_id,
                 PaperExecutionCheckpointRecord.account_id == account_id,
                 PaperExecutionCheckpointRecord.event_key == event_key,
@@ -76,6 +78,7 @@ class PaperCheckpointRepository:
         latest = await uow.session.scalar(
             select(PaperExecutionCheckpointRecord)
             .where(
+                PaperExecutionCheckpointRecord.bot_id == uow.session.info.get("bot_id"),
                 PaperExecutionCheckpointRecord.workspace_id == uow.workspace_id,
                 PaperExecutionCheckpointRecord.account_id == account_id,
             )
@@ -86,6 +89,7 @@ class PaperCheckpointRepository:
             latest_scope = await uow.session.scalar(
                 select(PaperExecutionCheckpointRecord)
                 .where(
+                    PaperExecutionCheckpointRecord.bot_id == uow.session.info.get("bot_id"),
                     PaperExecutionCheckpointRecord.workspace_id == uow.workspace_id,
                     PaperExecutionCheckpointRecord.account_id == account_id,
                     PaperExecutionCheckpointRecord.event_scope == event_scope,
@@ -98,6 +102,7 @@ class PaperCheckpointRepository:
 
         revision = latest.revision + 1 if latest is not None else 1
         row = PaperExecutionCheckpointRecord(
+            bot_id=uow.session.info.get("bot_id"),
             id=uuid4(),
             workspace_id=uow.workspace_id,
             account_id=account_id,
@@ -133,6 +138,8 @@ class PaperCheckpointRepository:
         if account is None or account.mode != "PAPER" or account.status != "ENABLED":
             raise PaperCheckpointConflict("Checkpoint cần PAPER account ENABLED trong workspace.")
 
+        await bind_account_bot(uow.session, workspace_id=uow.workspace_id, account_id=account_id)
+
     async def load_latest(
         self, uow: UnitOfWork, *, account_id: UUID
     ) -> tuple[int, PaperExecutionSnapshot] | None:
@@ -140,6 +147,7 @@ class PaperCheckpointRepository:
         row = await uow.session.scalar(
             select(PaperExecutionCheckpointRecord)
             .where(
+                PaperExecutionCheckpointRecord.bot_id == uow.session.info.get("bot_id"),
                 PaperExecutionCheckpointRecord.workspace_id == uow.workspace_id,
                 PaperExecutionCheckpointRecord.account_id == account_id,
             )
@@ -168,6 +176,7 @@ class PaperCheckpointRepository:
             (
                 await uow.session.scalars(
                     select(OrderIntentRecord).where(
+                        OrderIntentRecord.bot_id == uow.session.info.get("bot_id"),
                         OrderIntentRecord.workspace_id == uow.workspace_id,
                         OrderIntentRecord.account_id == account_id,
                     )
@@ -178,6 +187,7 @@ class PaperCheckpointRepository:
             (
                 await uow.session.scalars(
                     select(TradePlanRecord).where(
+                        TradePlanRecord.bot_id == uow.session.info.get("bot_id"),
                         TradePlanRecord.workspace_id == uow.workspace_id,
                         TradePlanRecord.account_id == account_id,
                     )
@@ -188,6 +198,7 @@ class PaperCheckpointRepository:
             (
                 await uow.session.scalars(
                     select(FillRecord).where(
+                        FillRecord.bot_id == uow.session.info.get("bot_id"),
                         FillRecord.workspace_id == uow.workspace_id,
                         FillRecord.account_id == account_id,
                     )
@@ -198,6 +209,7 @@ class PaperCheckpointRepository:
             (
                 await uow.session.scalars(
                     select(PositionEventRecord).where(
+                        PositionEventRecord.bot_id == uow.session.info.get("bot_id"),
                         PositionEventRecord.workspace_id == uow.workspace_id,
                         PositionEventRecord.account_id == account_id,
                     )
@@ -208,6 +220,7 @@ class PaperCheckpointRepository:
             (
                 await uow.session.scalars(
                     select(TradeRecord).where(
+                        TradeRecord.bot_id == uow.session.info.get("bot_id"),
                         TradeRecord.workspace_id == uow.workspace_id,
                         TradeRecord.account_id == account_id,
                     )
@@ -218,6 +231,7 @@ class PaperCheckpointRepository:
             (
                 await uow.session.scalars(
                     select(TradeCostRecord).where(
+                        TradeCostRecord.bot_id == uow.session.info.get("bot_id"),
                         TradeCostRecord.workspace_id == uow.workspace_id,
                         TradeCostRecord.account_id == account_id,
                     )
@@ -228,6 +242,7 @@ class PaperCheckpointRepository:
             (
                 await uow.session.scalars(
                     select(RiskReservationRecord).where(
+                        RiskReservationRecord.bot_id == uow.session.info.get("bot_id"),
                         RiskReservationRecord.workspace_id == uow.workspace_id,
                         RiskReservationRecord.account_id == account_id,
                     )

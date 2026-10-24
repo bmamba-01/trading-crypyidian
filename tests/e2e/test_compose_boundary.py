@@ -1503,7 +1503,7 @@ def test_paper_stack_starts_and_keeps_database_and_object_store_data() -> None:
             f"CRYPIDIAN_E2E_SETTINGS_VERSION_ID={published_settings_id}",
             "--env",
             f"CRYPIDIAN_E2E_FEATURE_SNAPSHOT_ID={feature_snapshot_id}",
-            "admin-web",
+            "trading-runtime",
             "python",
             "-c",
             risk_reservation_probe_code,
@@ -1841,15 +1841,27 @@ def test_paper_stack_starts_and_keeps_database_and_object_store_data() -> None:
                         max_notional=Decimal('10000'),
                         evaluated_at=now,
                     )
-                    race_account_result = await PaperAccountInitializationService(
-                        account_name='paper-e2e-race-account',
-                    ).ensure_initialized(
-                        uow,
-                        published_settings=published,
-                        execution_profile=execution_profile,
-                        max_notional=Decimal('10000'),
-                        evaluated_at=now,
-                    )
+                    # Mỗi transaction chỉ mang một bot scope; account thứ hai dùng UoW riêng.
+                    async with UnitOfWork(sessions, workspace_id=workspace_id) as race_uow:
+                        race_account_result = await PaperAccountInitializationService(
+                            account_name='paper-e2e-race-account',
+                        ).ensure_initialized(
+                            race_uow,
+                            published_settings=published,
+                            execution_profile=execution_profile,
+                            max_notional=Decimal('10000'),
+                            evaluated_at=now,
+                        )
+                        race_genesis_gateway = PaperExecutionGateway(execution_profile.fill_policy)
+                        race_genesis_key = f'h03-genesis:{race_account_result.account.id}'
+                        await PaperCheckpointRepository().append(
+                            race_uow,
+                            account_id=race_account_result.account.id,
+                            event_key=race_genesis_key,
+                            event_hash=hashlib.sha256(race_genesis_key.encode()).hexdigest(),
+                            snapshot=race_genesis_gateway.export_state(),
+                            occurred_at=now,
+                        )
                     assert account_result.created
                     assert not account_retry.created
                     assert account_retry.seed.id == account_result.seed.id
@@ -1868,16 +1880,6 @@ def test_paper_stack_starts_and_keeps_database_and_object_store_data() -> None:
                             snapshot=genesis_snapshot,
                             occurred_at=now,
                         )
-                    race_genesis_gateway = PaperExecutionGateway(execution_profile.fill_policy)
-                    race_genesis_key = f'h03-genesis:{race_account_id}'
-                    await PaperCheckpointRepository().append(
-                        uow,
-                        account_id=race_account_id,
-                        event_key=race_genesis_key,
-                        event_hash=hashlib.sha256(race_genesis_key.encode()).hexdigest(),
-                        snapshot=race_genesis_gateway.export_state(),
-                        occurred_at=now,
-                    )
                     initial_account_state = await PaperAccountStateService(
                         PaperAccountStateRepository(uow.session),
                     ).get_state(workspace_id=workspace_id, account_id=account_id)
@@ -2267,6 +2269,7 @@ def test_paper_stack_starts_and_keeps_database_and_object_store_data() -> None:
                     )
                     assert duplicate_result.idempotency_key == application_result.idempotency_key
                     async with UnitOfWork(sessions, workspace_id=workspace_id) as uow:
+                        await uow.bind_account(account_id)
                         persisted_order_count = await uow.session.scalar(
                             select(func.count()).select_from(OrderIntentRecord).where(
                                 OrderIntentRecord.workspace_id == workspace_id,
@@ -2356,6 +2359,7 @@ def test_paper_stack_starts_and_keeps_database_and_object_store_data() -> None:
                     assert concurrent_retry_result.duplicate
                     assert publish_status == 200, publish_body
                     async with UnitOfWork(sessions, workspace_id=workspace_id) as uow:
+                        await uow.bind_account(account_id)
                         effective_after_race = await WorkspaceSettingsRepository(
                             uow.session
                         ).load_effective_config(workspace_id=workspace_id)
@@ -2462,6 +2466,7 @@ def test_paper_stack_starts_and_keeps_database_and_object_store_data() -> None:
                         next_settings_id
                     )
                     async with UnitOfWork(sessions, workspace_id=workspace_id) as uow:
+                        await uow.bind_account(race_account_id)
                         new_intent = await uow.session.scalar(
                             select(OrderIntentRecord).where(
                                 OrderIntentRecord.workspace_id == workspace_id,
@@ -2518,6 +2523,7 @@ def test_paper_stack_starts_and_keeps_database_and_object_store_data() -> None:
                     assert opened_position is not None
                     assert opened_position.quantity == plan.quantity
                     async with UnitOfWork(sessions, workspace_id=workspace_id) as uow:
+                        await uow.bind_account(account_id)
                         intent = await uow.session.scalar(select(OrderIntentRecord).where(
                             OrderIntentRecord.workspace_id == workspace_id,
                             OrderIntentRecord.id == intent_id,
@@ -2588,6 +2594,7 @@ def test_paper_stack_starts_and_keeps_database_and_object_store_data() -> None:
                 exit_fill = exit_result.exit_fill
                 assert exit_fill is not None
                 async with UnitOfWork(sessions, workspace_id=workspace_id) as uow:
+                    await uow.bind_account(account_id)
                     exit_record = await uow.session.scalar(select(FillRecord).where(
                         FillRecord.workspace_id == workspace_id,
                         FillRecord.account_id == account_id,
@@ -2707,6 +2714,7 @@ def test_paper_stack_starts_and_keeps_database_and_object_store_data() -> None:
                     )
                     assert isolated_checkpoint_count == 0
                 async with UnitOfWork(sessions, workspace_id=workspace_id) as uow:
+                    await uow.bind_account(account_id)
                     checkpoint_repository = PaperCheckpointRepository()
                     latest_revision, latest_snapshot = await checkpoint_repository.load_latest(
                         uow,

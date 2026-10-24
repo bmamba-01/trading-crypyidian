@@ -14,6 +14,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
@@ -27,6 +28,12 @@ class TradePlanRecord(UuidPrimaryKey, CreatedAt, Base):
 
     __tablename__ = "trade_plan"
     __table_args__ = (
+        ForeignKeyConstraint(
+            ["workspace_id", "bot_id", "account_id"],
+            ["bot_instance.workspace_id", "bot_instance.id", "bot_instance.trading_account_id"],
+            name="fk_trade_plan_bot_account",
+        ),
+        Index("ix_trade_plan_bot_scope", "workspace_id", "bot_id", "account_id"),
         UniqueConstraint("workspace_id", "id", name="uq_trade_plan_workspace_id"),
         UniqueConstraint("workspace_id", "account_id", "plan_hash", name="uq_trade_plan_hash"),
         ForeignKeyConstraint(["workspace_id"], ["workspace.id"]),
@@ -40,6 +47,11 @@ class TradePlanRecord(UuidPrimaryKey, CreatedAt, Base):
         ),
     )
 
+    bot_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        nullable=False,
+        server_default=text("NULLIF(current_setting('app.bot_id', true), '')::uuid"),
+    )
     workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     account_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     plan_hash: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -53,6 +65,12 @@ class RiskDecisionRecord(UuidPrimaryKey, CreatedAt, Base):
 
     __tablename__ = "risk_decision"
     __table_args__ = (
+        ForeignKeyConstraint(
+            ["workspace_id", "bot_id", "account_id"],
+            ["bot_instance.workspace_id", "bot_instance.id", "bot_instance.trading_account_id"],
+            name="fk_risk_decision_bot_account",
+        ),
+        Index("ix_risk_decision_bot_scope", "workspace_id", "bot_id", "account_id"),
         UniqueConstraint("workspace_id", "id", name="uq_risk_decision_workspace_id"),
         UniqueConstraint(
             "workspace_id", "account_id", "id", name="uq_risk_decision_workspace_account_id"
@@ -75,6 +93,11 @@ class RiskDecisionRecord(UuidPrimaryKey, CreatedAt, Base):
         ),
     )
 
+    bot_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        nullable=False,
+        server_default=text("NULLIF(current_setting('app.bot_id', true), '')::uuid"),
+    )
     workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     account_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     decision_key: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -91,6 +114,15 @@ class RiskReservationRecord(UuidPrimaryKey, CreatedAt, Base):
 
     __tablename__ = "risk_reservation"
     __table_args__ = (
+        UniqueConstraint(
+            "workspace_id", "bot_id", "account_id", "id", name="uq_risk_reservation_bot_account_id"
+        ),
+        ForeignKeyConstraint(
+            ["workspace_id", "bot_id", "account_id"],
+            ["bot_instance.workspace_id", "bot_instance.id", "bot_instance.trading_account_id"],
+            name="fk_risk_reservation_bot_account",
+        ),
+        Index("ix_risk_reservation_bot_scope", "workspace_id", "bot_id", "account_id"),
         UniqueConstraint("workspace_id", "id", name="uq_risk_reservation_workspace_id"),
         UniqueConstraint(
             "workspace_id",
@@ -140,6 +172,11 @@ class RiskReservationRecord(UuidPrimaryKey, CreatedAt, Base):
         Index("ix_risk_reservation_active", "workspace_id", "account_id", "status"),
     )
 
+    bot_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        nullable=False,
+        server_default=text("NULLIF(current_setting('app.bot_id', true), '')::uuid"),
+    )
     workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     account_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     risk_decision_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)

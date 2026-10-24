@@ -27,6 +27,7 @@ from trading_bot.application.runtime_risk_profile import (
     RiskProfileRuntimeError,
     risk_limits_from_profile,
 )
+from trading_bot.auth.bot_policy import WORKSPACE_BOT_ROLES
 from trading_bot.auth.policy import Permission, Principal, authorize
 from trading_bot.auth.service import RECENT_MFA_LIFETIME
 from trading_bot.config.workspace_settings import WorkspaceSettings
@@ -235,6 +236,7 @@ class SettingsAdminService:
                     WorkspaceSettings.model_validate(current.settings_json) if current else None
                 ),
                 next_settings=settings,
+                principal=principal,
             )
             risk_profile = await unit.session.scalar(
                 select(RiskProfileVersion).where(
@@ -292,6 +294,7 @@ class SettingsAdminService:
                     WorkspaceSettings.model_validate(current.settings_json) if current else None
                 ),
                 next_settings=settings,
+                principal=principal,
             )
             self._require_risk_change_access(
                 principal,
@@ -336,12 +339,18 @@ class SettingsAdminService:
         workspace_id: UUID,
         current_settings: WorkspaceSettings | None,
         next_settings: WorkspaceSettings,
+        principal: Principal,
     ) -> None:
         """Không đổi fill/recovery profile khi checkpoint còn phụ thuộc lineage cũ."""
         if current_settings is None or (
             current_settings.paper_execution == next_settings.paper_execution
         ):
             return
+        # RLS bot-scoped chỉ cho role workspace-wide thấy mọi bot; role khác sẽ đếm thiếu.
+        if not principal.roles & WORKSPACE_BOT_ROLES:
+            raise SettingsAdminError(
+                403, "Cần role có quyền xem toàn bộ bot để đổi PAPER execution profile."
+            )
         active_intents = await unit.session.scalar(
             select(func.count(OrderIntentRecord.id)).where(
                 OrderIntentRecord.workspace_id == workspace_id,

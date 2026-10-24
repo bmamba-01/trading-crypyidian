@@ -11,6 +11,7 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import select
 
+from trading_bot.adapters.database.bot_scope import bind_account_bot
 from trading_bot.adapters.database.models.entities import StrategyRelease, TradingAccount
 from trading_bot.adapters.database.models.paper_entities import (
     ExchangeOrderRecord,
@@ -88,9 +89,11 @@ class PaperLedgerRepository:
             raise PaperLedgerConflict("Trading account không thuộc workspace hiện tại.")
         if account.mode != "PAPER":
             raise PaperLedgerConflict("Ledger chỉ nhận tài khoản PAPER.")
+        await bind_account_bot(uow.session, workspace_id=uow.workspace_id, account_id=account_id)
 
         existing = await uow.session.scalar(
             select(OrderIntentRecord).where(
+                OrderIntentRecord.bot_id == uow.session.info.get("bot_id"),
                 OrderIntentRecord.workspace_id == uow.workspace_id,
                 OrderIntentRecord.account_id == account_id,
                 OrderIntentRecord.idempotency_key == idempotency_key,
@@ -119,6 +122,7 @@ class PaperLedgerRepository:
 
         decision = await uow.session.scalar(
             select(RiskDecisionRecord).where(
+                RiskDecisionRecord.bot_id == uow.session.info.get("bot_id"),
                 RiskDecisionRecord.workspace_id == uow.workspace_id,
                 RiskDecisionRecord.account_id == account_id,
                 RiskDecisionRecord.id == risk_decision_id,
@@ -129,6 +133,7 @@ class PaperLedgerRepository:
         reservation = await uow.session.scalar(
             select(RiskReservationRecord)
             .where(
+                RiskReservationRecord.bot_id == uow.session.info.get("bot_id"),
                 RiskReservationRecord.workspace_id == uow.workspace_id,
                 RiskReservationRecord.account_id == account_id,
                 RiskReservationRecord.id == risk_reservation_id,
@@ -170,6 +175,7 @@ class PaperLedgerRepository:
 
         plan = await uow.session.scalar(
             select(TradePlanRecord).where(
+                TradePlanRecord.bot_id == uow.session.info.get("bot_id"),
                 TradePlanRecord.workspace_id == uow.workspace_id,
                 TradePlanRecord.account_id == account_id,
                 TradePlanRecord.plan_hash == plan_hash,
@@ -219,6 +225,7 @@ class PaperLedgerRepository:
 
         intent_id = uuid4()
         row = OrderIntentRecord(
+            bot_id=uow.session.info.get("bot_id"),
             id=intent_id,
             workspace_id=uow.workspace_id,
             account_id=account_id,
@@ -234,6 +241,7 @@ class PaperLedgerRepository:
         await uow.session.flush()
         uow.session.add(
             ExchangeOrderRecord(
+                bot_id=row.bot_id,
                 workspace_id=uow.workspace_id,
                 account_id=account_id,
                 mode="PAPER",
@@ -273,6 +281,7 @@ class PaperLedgerRepository:
         order = await uow.session.scalar(
             select(ExchangeOrderRecord)
             .where(
+                ExchangeOrderRecord.bot_id == uow.session.info.get("bot_id"),
                 ExchangeOrderRecord.workspace_id == uow.workspace_id,
                 ExchangeOrderRecord.account_id == intent.account_id,
                 ExchangeOrderRecord.intent_id == intent_id,
@@ -312,6 +321,7 @@ class PaperLedgerRepository:
         order = await uow.session.scalar(
             select(ExchangeOrderRecord)
             .where(
+                ExchangeOrderRecord.bot_id == uow.session.info.get("bot_id"),
                 ExchangeOrderRecord.workspace_id == uow.workspace_id,
                 ExchangeOrderRecord.account_id == intent.account_id,
                 ExchangeOrderRecord.intent_id == intent_id,
@@ -420,6 +430,7 @@ class PaperLedgerRepository:
         _validate_aware(occurred_at)
         previous = await uow.session.scalar(
             select(FillRecord).where(
+                FillRecord.bot_id == uow.session.info.get("bot_id"),
                 FillRecord.workspace_id == uow.workspace_id,
                 FillRecord.account_id == intent.account_id,
                 FillRecord.fill_key == fill_key,
@@ -457,6 +468,7 @@ class PaperLedgerRepository:
         order = await uow.session.scalar(
             select(ExchangeOrderRecord)
             .where(
+                ExchangeOrderRecord.bot_id == uow.session.info.get("bot_id"),
                 ExchangeOrderRecord.workspace_id == uow.workspace_id,
                 ExchangeOrderRecord.account_id == intent.account_id,
                 ExchangeOrderRecord.intent_id == intent_id,
@@ -467,6 +479,7 @@ class PaperLedgerRepository:
             raise PaperLedgerConflict("Synthetic exchange order không ở trạng thái có thể fill.")
         uow.session.add(
             FillRecord(
+                bot_id=intent.bot_id,
                 workspace_id=uow.workspace_id,
                 account_id=intent.account_id,
                 mode="PAPER",
@@ -489,6 +502,7 @@ class PaperLedgerRepository:
         await uow.session.flush()
         existing_trade = await uow.session.scalar(
             select(TradeRecord).where(
+                TradeRecord.bot_id == uow.session.info.get("bot_id"),
                 TradeRecord.workspace_id == uow.workspace_id,
                 TradeRecord.account_id == intent.account_id,
                 TradeRecord.intent_id == intent_id,
@@ -557,6 +571,7 @@ class PaperLedgerRepository:
         _validate_aware(occurred_at)
         previous = await uow.session.scalar(
             select(FillRecord).where(
+                FillRecord.bot_id == uow.session.info.get("bot_id"),
                 FillRecord.workspace_id == uow.workspace_id,
                 FillRecord.account_id == intent.account_id,
                 FillRecord.fill_key == fill_key,
@@ -594,6 +609,7 @@ class PaperLedgerRepository:
         trade = await uow.session.scalar(
             select(TradeRecord)
             .where(
+                TradeRecord.bot_id == uow.session.info.get("bot_id"),
                 TradeRecord.workspace_id == uow.workspace_id,
                 TradeRecord.account_id == intent.account_id,
                 TradeRecord.intent_id == intent_id,
@@ -604,6 +620,7 @@ class PaperLedgerRepository:
             raise PaperLedgerConflict("Exit fill cần trade PAPER đang mở.")
         fills_result = await uow.session.scalars(
             select(FillRecord).where(
+                FillRecord.bot_id == uow.session.info.get("bot_id"),
                 FillRecord.workspace_id == uow.workspace_id,
                 FillRecord.account_id == intent.account_id,
                 FillRecord.intent_id == intent_id,
@@ -619,6 +636,7 @@ class PaperLedgerRepository:
         new_remaining = remaining_quantity - quantity
         uow.session.add(
             FillRecord(
+                bot_id=intent.bot_id,
                 workspace_id=uow.workspace_id,
                 account_id=intent.account_id,
                 mode="PAPER",
@@ -701,6 +719,7 @@ class PaperLedgerRepository:
         _validate_aware(occurred_at)
         existing = await uow.session.scalar(
             select(PositionEventRecord).where(
+                PositionEventRecord.bot_id == uow.session.info.get("bot_id"),
                 PositionEventRecord.workspace_id == uow.workspace_id,
                 PositionEventRecord.account_id == intent.account_id,
                 PositionEventRecord.event_key == event_key,
@@ -726,6 +745,7 @@ class PaperLedgerRepository:
             return False
         uow.session.add(
             PositionEventRecord(
+                bot_id=intent.bot_id,
                 workspace_id=uow.workspace_id,
                 account_id=intent.account_id,
                 mode="PAPER",
@@ -761,6 +781,7 @@ class PaperLedgerRepository:
             raise PaperLedgerConflict("Không mở trade khi intent chưa có fill.")
         existing = await uow.session.scalar(
             select(TradeRecord).where(
+                TradeRecord.bot_id == uow.session.info.get("bot_id"),
                 TradeRecord.workspace_id == uow.workspace_id,
                 TradeRecord.account_id == intent.account_id,
                 TradeRecord.intent_id == intent_id,
@@ -772,6 +793,7 @@ class PaperLedgerRepository:
             return TradeAppendResult(existing.id, duplicate=True)
         trade_id = uuid4()
         row = TradeRecord(
+            bot_id=intent.bot_id,
             id=trade_id,
             workspace_id=uow.workspace_id,
             account_id=intent.account_id,
@@ -818,6 +840,7 @@ class PaperLedgerRepository:
         trade = await uow.session.scalar(
             select(TradeRecord)
             .where(
+                TradeRecord.bot_id == uow.session.info.get("bot_id"),
                 TradeRecord.workspace_id == uow.workspace_id,
                 TradeRecord.id == trade_id,
             )
@@ -838,6 +861,7 @@ class PaperLedgerRepository:
         _validate_aware(occurred_at)
         existing = await uow.session.scalar(
             select(TradeCostRecord).where(
+                TradeCostRecord.bot_id == uow.session.info.get("bot_id"),
                 TradeCostRecord.workspace_id == uow.workspace_id,
                 TradeCostRecord.account_id == trade.account_id,
                 TradeCostRecord.cost_key == cost_key,
@@ -867,6 +891,7 @@ class PaperLedgerRepository:
             return False
         uow.session.add(
             TradeCostRecord(
+                bot_id=trade.bot_id,
                 workspace_id=uow.workspace_id,
                 account_id=trade.account_id,
                 mode="PAPER",
@@ -895,6 +920,7 @@ class PaperLedgerRepository:
         trade = await uow.session.scalar(
             select(TradeRecord)
             .where(
+                TradeRecord.bot_id == uow.session.info.get("bot_id"),
                 TradeRecord.workspace_id == uow.workspace_id,
                 TradeRecord.id == trade_id,
             )
@@ -907,6 +933,7 @@ class PaperLedgerRepository:
         _validate_aware(closed_at)
         costs_result = await uow.session.scalars(
             select(TradeCostRecord).where(
+                TradeCostRecord.bot_id == uow.session.info.get("bot_id"),
                 TradeCostRecord.workspace_id == uow.workspace_id,
                 TradeCostRecord.account_id == trade.account_id,
                 TradeCostRecord.trade_id == trade_id,
@@ -944,6 +971,7 @@ class PaperLedgerRepository:
         intent = await uow.session.scalar(
             select(OrderIntentRecord)
             .where(
+                OrderIntentRecord.bot_id == uow.session.info.get("bot_id"),
                 OrderIntentRecord.workspace_id == uow.workspace_id,
                 OrderIntentRecord.id == intent_id,
             )

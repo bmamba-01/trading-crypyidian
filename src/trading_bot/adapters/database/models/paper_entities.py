@@ -16,6 +16,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     Uuid,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
@@ -31,6 +32,22 @@ class OrderIntentRecord(UuidPrimaryKey, CreatedAt, Base):
 
     __tablename__ = "order_intent"
     __table_args__ = (
+        ForeignKeyConstraint(
+            ["workspace_id", "bot_id", "account_id", "risk_reservation_id"],
+            [
+                "risk_reservation.workspace_id",
+                "risk_reservation.bot_id",
+                "risk_reservation.account_id",
+                "risk_reservation.id",
+            ],
+            name="fk_order_intent_bot_reservation",
+        ),
+        ForeignKeyConstraint(
+            ["workspace_id", "bot_id", "account_id"],
+            ["bot_instance.workspace_id", "bot_instance.id", "bot_instance.trading_account_id"],
+            name="fk_order_intent_bot_account",
+        ),
+        Index("ix_order_intent_bot_scope", "workspace_id", "bot_id", "account_id"),
         UniqueConstraint("workspace_id", "id", name="uq_order_intent_workspace_id"),
         UniqueConstraint(
             "workspace_id", "account_id", "idempotency_key", name="uq_order_intent_idempotency"
@@ -89,6 +106,11 @@ class OrderIntentRecord(UuidPrimaryKey, CreatedAt, Base):
         Index("ix_order_intent_workspace_account_status", "workspace_id", "account_id", "status"),
     )
 
+    bot_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        nullable=False,
+        server_default=text("NULLIF(current_setting('app.bot_id', true), '')::uuid"),
+    )
     workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     account_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     mode: Mapped[str] = mapped_column(String(16), nullable=False, server_default="PAPER")
@@ -116,6 +138,12 @@ class ExchangeOrderRecord(UuidPrimaryKey, CreatedAt, Base):
 
     __tablename__ = "exchange_order"
     __table_args__ = (
+        ForeignKeyConstraint(
+            ["workspace_id", "bot_id", "account_id"],
+            ["bot_instance.workspace_id", "bot_instance.id", "bot_instance.trading_account_id"],
+            name="fk_exchange_order_bot_account",
+        ),
+        Index("ix_exchange_order_bot_scope", "workspace_id", "bot_id", "account_id"),
         UniqueConstraint("workspace_id", "id", name="uq_exchange_order_workspace_id"),
         UniqueConstraint(
             "workspace_id", "account_id", "client_order_id", name="uq_exchange_order_client_id"
@@ -131,6 +159,11 @@ class ExchangeOrderRecord(UuidPrimaryKey, CreatedAt, Base):
         ),
     )
 
+    bot_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        nullable=False,
+        server_default=text("NULLIF(current_setting('app.bot_id', true), '')::uuid"),
+    )
     workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     account_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     mode: Mapped[str] = mapped_column(String(16), nullable=False, server_default="PAPER")
@@ -146,6 +179,12 @@ class FillRecord(UuidPrimaryKey, CreatedAt, Base):
 
     __tablename__ = "fill"
     __table_args__ = (
+        ForeignKeyConstraint(
+            ["workspace_id", "bot_id", "account_id"],
+            ["bot_instance.workspace_id", "bot_instance.id", "bot_instance.trading_account_id"],
+            name="fk_fill_bot_account",
+        ),
+        Index("ix_fill_bot_scope", "workspace_id", "bot_id", "account_id"),
         UniqueConstraint("workspace_id", "account_id", "fill_key", name="uq_fill_idempotency"),
         ForeignKeyConstraint(
             ["workspace_id", "account_id", "intent_id"],
@@ -158,6 +197,11 @@ class FillRecord(UuidPrimaryKey, CreatedAt, Base):
         Index("ix_fill_workspace_account_time", "workspace_id", "account_id", "occurred_at"),
     )
 
+    bot_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        nullable=False,
+        server_default=text("NULLIF(current_setting('app.bot_id', true), '')::uuid"),
+    )
     workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     account_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     mode: Mapped[str] = mapped_column(String(16), nullable=False, server_default="PAPER")
@@ -179,6 +223,12 @@ class PositionEventRecord(UuidPrimaryKey, CreatedAt, Base):
 
     __tablename__ = "position_event"
     __table_args__ = (
+        ForeignKeyConstraint(
+            ["workspace_id", "bot_id", "account_id"],
+            ["bot_instance.workspace_id", "bot_instance.id", "bot_instance.trading_account_id"],
+            name="fk_position_event_bot_account",
+        ),
+        Index("ix_position_event_bot_scope", "workspace_id", "bot_id", "account_id"),
         UniqueConstraint("workspace_id", "account_id", "event_key", name="uq_position_event_key"),
         ForeignKeyConstraint(
             ["workspace_id", "account_id", "intent_id"],
@@ -192,6 +242,11 @@ class PositionEventRecord(UuidPrimaryKey, CreatedAt, Base):
         CheckConstraint("quantity >= 0", name="position_event_quantity_nonnegative"),
     )
 
+    bot_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        nullable=False,
+        server_default=text("NULLIF(current_setting('app.bot_id', true), '')::uuid"),
+    )
     workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     account_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     mode: Mapped[str] = mapped_column(String(16), nullable=False, server_default="PAPER")
@@ -209,6 +264,12 @@ class TradeRecord(UuidPrimaryKey, CreatedAt, Base):
 
     __tablename__ = "trade"
     __table_args__ = (
+        ForeignKeyConstraint(
+            ["workspace_id", "bot_id", "account_id"],
+            ["bot_instance.workspace_id", "bot_instance.id", "bot_instance.trading_account_id"],
+            name="fk_trade_bot_account",
+        ),
+        Index("ix_trade_bot_scope", "workspace_id", "bot_id", "account_id"),
         UniqueConstraint("workspace_id", "id", name="uq_trade_workspace_id"),
         UniqueConstraint("workspace_id", "account_id", "id", name="uq_trade_account_id"),
         UniqueConstraint("workspace_id", "account_id", "intent_id", name="uq_trade_intent"),
@@ -231,6 +292,11 @@ class TradeRecord(UuidPrimaryKey, CreatedAt, Base):
         CheckConstraint("fee_total >= 0 AND slippage_total >= 0", name="trade_cost_nonnegative"),
     )
 
+    bot_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        nullable=False,
+        server_default=text("NULLIF(current_setting('app.bot_id', true), '')::uuid"),
+    )
     workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     account_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     mode: Mapped[str] = mapped_column(String(16), nullable=False, server_default="PAPER")
@@ -262,6 +328,12 @@ class TradeCostRecord(UuidPrimaryKey, CreatedAt, Base):
 
     __tablename__ = "trade_cost"
     __table_args__ = (
+        ForeignKeyConstraint(
+            ["workspace_id", "bot_id", "account_id"],
+            ["bot_instance.workspace_id", "bot_instance.id", "bot_instance.trading_account_id"],
+            name="fk_trade_cost_bot_account",
+        ),
+        Index("ix_trade_cost_bot_scope", "workspace_id", "bot_id", "account_id"),
         UniqueConstraint("workspace_id", "account_id", "cost_key", name="uq_trade_cost_key"),
         ForeignKeyConstraint(
             ["workspace_id", "account_id", "trade_id"],
@@ -276,6 +348,11 @@ class TradeCostRecord(UuidPrimaryKey, CreatedAt, Base):
         ),
     )
 
+    bot_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        nullable=False,
+        server_default=text("NULLIF(current_setting('app.bot_id', true), '')::uuid"),
+    )
     workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     account_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     mode: Mapped[str] = mapped_column(String(16), nullable=False, server_default="PAPER")
@@ -294,6 +371,12 @@ class PaperExecutionCheckpointRecord(UuidPrimaryKey, CreatedAt, Base):
 
     __tablename__ = "paper_execution_checkpoint"
     __table_args__ = (
+        ForeignKeyConstraint(
+            ["workspace_id", "bot_id", "account_id"],
+            ["bot_instance.workspace_id", "bot_instance.id", "bot_instance.trading_account_id"],
+            name="fk_paper_execution_checkpoint_bot_account",
+        ),
+        Index("ix_paper_execution_checkpoint_bot_scope", "workspace_id", "bot_id", "account_id"),
         UniqueConstraint(
             "workspace_id", "account_id", "revision", name="uq_paper_checkpoint_revision"
         ),
@@ -332,6 +415,11 @@ class PaperExecutionCheckpointRecord(UuidPrimaryKey, CreatedAt, Base):
         ),
     )
 
+    bot_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        nullable=False,
+        server_default=text("NULLIF(current_setting('app.bot_id', true), '')::uuid"),
+    )
     workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     account_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     mode: Mapped[str] = mapped_column(String(16), nullable=False, server_default="PAPER")

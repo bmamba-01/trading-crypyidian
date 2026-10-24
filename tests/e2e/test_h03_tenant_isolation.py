@@ -118,6 +118,7 @@ def test_h03_decision_rejects_workspace_a_inputs_when_scoped_to_workspace_b() ->
             from decimal import Decimal
             from pathlib import Path
             from uuid import UUID, uuid4
+            from sqlalchemy import text
             from sqlalchemy.ext.asyncio import async_sessionmaker
             from trading_bot.adapters.database.engine import (
                 create_database_engine, database_url_from_secret,
@@ -257,6 +258,14 @@ def test_h03_decision_rejects_workspace_a_inputs_when_scoped_to_workspace_b() ->
                         FeatureSnapshotRecord(id=uuid4(), workspace_id=workspace_a, snapshot_id=feature.snapshot_id, content_hash=feature.content_hash, symbol=feature.symbol, timeframe=feature.timeframe, as_of=feature.as_of, computed_at=feature.computed_at, schema_hash=feature.schema_hash, formula_hash=feature.formula_hash, code_hash=feature.code_hash, input_bar_ids=list(feature.input_bar_ids), input_event_ids=list(feature.input_event_ids), features=dict(feature.features), warmup=dict(feature.warmup), quality_flags=list(feature.quality_flags), data_freshness=feature.data_freshness.value, data_coverage=feature.data_coverage, regime={'label': feature.regime.label.value, 'confidence': feature.regime.confidence, 'coverage': feature.regime.coverage, 'reason_code': feature.regime.reason_code, 'reason_vi': feature.regime.reason_vi}, is_usable=True, canonical_json=feature.canonical_json()),
                     ])
                     await session.flush()
+                    # Trigger đã tạo bot cho account A; fixture ghi lineage qua scope bot đó.
+                    bot_a = await session.scalar(
+                        text('SELECT id FROM bot_instance WHERE workspace_id = :w AND trading_account_id = :a'),
+                        {'w': workspace_a, 'a': account_a},
+                    )
+                    await session.execute(
+                        text("SELECT set_config('app.bot_id', :bot, true)"), {'bot': str(bot_a)}
+                    )
                     session.add(TradePlanRecord(
                         id=plan_id, workspace_id=workspace_a, account_id=account_a,
                         plan_hash=plan_hash, symbol='BTCUSDT', notional=Decimal('100'),
@@ -473,6 +482,7 @@ def test_h03_decision_rejects_workspace_a_inputs_when_scoped_to_workspace_b() ->
                         select(func.count()).select_from(RiskReservationRecord)
                     )
                 async with UnitOfWork(sessions, workspace_id=workspace_a) as uow:
+                    await uow.bind_account(account_a)
                     visible_settings = await WorkspaceSettingsRepository(
                         uow.session
                     ).load_effective_config(workspace_id=workspace_a)

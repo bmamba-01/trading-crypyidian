@@ -121,7 +121,6 @@ def test_exit_fills_are_idempotent_and_do_not_change_entry_order_fill() -> None:
             with psycopg.connect(
                 host='postgres', dbname='crypidian', user='crypidian_admin', password=password,
             ) as connection:
-                connection.execute('SET session_replication_role = replica')
                 connection.execute(
                     "INSERT INTO workspace (id, name, slug, mode, status) "
                     "VALUES (%s, 'Exit fill E2E', %s, 'PAPER', 'ACTIVE')",
@@ -132,6 +131,37 @@ def test_exit_fills_are_idempotent_and_do_not_change_entry_order_fill() -> None:
                     "(id, workspace_id, name, venue, mode, environment, status, max_notional) "
                     "VALUES (%s, %s, 'exit-fill-e2e', 'binance_usdm', 'PAPER', 'local', "
                     "'ENABLED', 1000)", (account, workspace),
+                )
+                connection.execute(
+                    "SELECT set_config('app.bot_id', (SELECT id::text FROM bot_instance "
+                    "WHERE trading_account_id=%s), true)", (account,),
+                )
+                connection.execute('SET session_replication_role = replica')
+                # Chuỗi plan→decision→reservation thật để FK ghép MB-01 hợp lệ khi re-upgrade.
+                connection.execute(
+                    "INSERT INTO trade_plan "
+                    "(id, workspace_id, account_id, plan_hash, symbol, notional, payload) "
+                    "VALUES (gen_random_uuid(), %s, %s, %s, 'BTCUSDT', 100, '{}'::jsonb)",
+                    (workspace, account, 'b' * 64),
+                )
+                connection.execute(
+                    "INSERT INTO risk_decision "
+                    "(id, workspace_id, account_id, decision_key, plan_hash, snapshot_id, "
+                    "approved, reason_code, detail_vi, payload) "
+                    "VALUES (%s, %s, %s, %s, %s, 'exit-fill-e2e', true, 'APPROVED', 'OK', "
+                    "'{}'::jsonb)",
+                    ('30000000-0000-0000-0000-000000000001', workspace, account, 'c' * 64,
+                     'b' * 64),
+                )
+                connection.execute(
+                    "INSERT INTO risk_reservation "
+                    "(id, workspace_id, account_id, risk_decision_id, idempotency_key, "
+                    "plan_hash, symbol, reserved_risk, reserved_notional, "
+                    "reserved_initial_margin, expires_at, status, resolution_reason) "
+                    "VALUES (%s, %s, %s, %s, 'exit-fill', %s, 'BTCUSDT', 10, 100, 20, "
+                    "now() + interval '1 hour', 'TRANSFERRED', 'OPEN_RISK_RECORDED')",
+                    ('40000000-0000-0000-0000-000000000001', workspace, account,
+                     '30000000-0000-0000-0000-000000000001', 'b' * 64),
                 )
                 connection.execute(
                     "INSERT INTO order_intent "
@@ -226,6 +256,7 @@ def test_exit_fills_are_idempotent_and_do_not_change_entry_order_fill() -> None:
             from trading_bot.application.outbox import UnitOfWork
 
             workspace = UUID(os.environ['E2E_WORKSPACE'])
+            account = UUID(os.environ['E2E_ACCOUNT'])
             intent_id = UUID(os.environ['E2E_INTENT'])
             trade_id = UUID(os.environ['E2E_TRADE'])
             url = database_url_from_secret(
@@ -240,6 +271,7 @@ def test_exit_fills_are_idempotent_and_do_not_change_entry_order_fill() -> None:
 
             async def main():
                 async with UnitOfWork(sessions, workspace_id=workspace) as uow:
+                    await uow.bind_account(account)
                     first = {
                         'intent_id': intent_id, 'fill_key': 'exit-one', 'bar_key': 'bar-exit-1',
                         'fill_policy_version': 'paper-v1', 'quantity': Decimal('0.4'),
@@ -307,6 +339,8 @@ def test_exit_fills_are_idempotent_and_do_not_change_entry_order_fill() -> None:
             "--no-deps",
             "-e",
             f"E2E_WORKSPACE={ids['workspace']}",
+            "-e",
+            f"E2E_ACCOUNT={ids['account']}",
             "-e",
             f"E2E_INTENT={ids['intent']}",
             "-e",

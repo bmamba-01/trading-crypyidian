@@ -15,6 +15,7 @@ from uuid import UUID, uuid4
 from sqlalchemy import case, exists, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from trading_bot.adapters.database.bot_scope import bind_account_bot
 from trading_bot.adapters.database.models import (
     FillRecord,
     OrderIntentRecord,
@@ -81,6 +82,7 @@ class RiskReservationRepository:
             raise ReservationConflict("TradePlan không thể chuyển thành payload chuẩn.")
         existing_plan = await self._session.scalar(
             select(TradePlanRecord).where(
+                TradePlanRecord.bot_id == self._session.info.get("bot_id"),
                 TradePlanRecord.workspace_id == workspace_id,
                 TradePlanRecord.account_id == account_id,
                 TradePlanRecord.plan_hash == plan.plan_hash,
@@ -88,6 +90,7 @@ class RiskReservationRepository:
         )
         if existing_plan is None:
             existing_plan = TradePlanRecord(
+                bot_id=self._session.info.get("bot_id"),
                 id=uuid4(),
                 workspace_id=workspace_id,
                 account_id=account_id,
@@ -109,6 +112,7 @@ class RiskReservationRepository:
         ).hexdigest()
         existing_decision = await self._session.scalar(
             select(RiskDecisionRecord).where(
+                RiskDecisionRecord.bot_id == self._session.info.get("bot_id"),
                 RiskDecisionRecord.workspace_id == workspace_id,
                 RiskDecisionRecord.account_id == account_id,
                 RiskDecisionRecord.decision_key == decision_key,
@@ -116,6 +120,7 @@ class RiskReservationRepository:
         )
         if existing_decision is None:
             existing_decision = RiskDecisionRecord(
+                bot_id=self._session.info.get("bot_id"),
                 id=uuid4(),
                 workspace_id=workspace_id,
                 account_id=account_id,
@@ -192,6 +197,7 @@ class RiskReservationRepository:
         await self._lock_account(workspace_id=workspace_id, account_id=account_id)
         persisted_decision = await self._session.scalar(
             select(RiskDecisionRecord).where(
+                RiskDecisionRecord.bot_id == self._session.info.get("bot_id"),
                 RiskDecisionRecord.workspace_id == workspace_id,
                 RiskDecisionRecord.account_id == account_id,
                 RiskDecisionRecord.id == risk_decision_id,
@@ -206,6 +212,7 @@ class RiskReservationRepository:
             raise ReservationConflict("Reservation cần decision đã lưu, đã duyệt và cùng nội dung.")
         existing = await self._session.scalar(
             select(RiskReservationRecord).where(
+                RiskReservationRecord.bot_id == self._session.info.get("bot_id"),
                 RiskReservationRecord.workspace_id == workspace_id,
                 RiskReservationRecord.account_id == account_id,
                 RiskReservationRecord.idempotency_key == idempotency_key,
@@ -276,6 +283,7 @@ class RiskReservationRepository:
             raise ReservationConflict("Số vị thế mở và reservation vượt giới hạn.")
 
         record = RiskReservationRecord(
+            bot_id=self._session.info.get("bot_id"),
             id=uuid4(),
             workspace_id=workspace_id,
             account_id=account_id,
@@ -303,6 +311,7 @@ class RiskReservationRepository:
         )
         intent_id = await self._session.scalar(
             select(OrderIntentRecord.id).where(
+                OrderIntentRecord.bot_id == self._session.info.get("bot_id"),
                 OrderIntentRecord.workspace_id == workspace_id,
                 OrderIntentRecord.account_id == account_id,
                 OrderIntentRecord.risk_reservation_id == reservation_id,
@@ -381,6 +390,7 @@ class RiskReservationRepository:
         )
         intent = await self._session.scalar(
             select(OrderIntentRecord).where(
+                OrderIntentRecord.bot_id == self._session.info.get("bot_id"),
                 OrderIntentRecord.workspace_id == workspace_id,
                 OrderIntentRecord.account_id == account_id,
                 OrderIntentRecord.id == intent_id,
@@ -388,6 +398,7 @@ class RiskReservationRepository:
         )
         trade = await self._session.scalar(
             select(TradeRecord).where(
+                TradeRecord.bot_id == self._session.info.get("bot_id"),
                 TradeRecord.workspace_id == workspace_id,
                 TradeRecord.account_id == account_id,
                 TradeRecord.id == trade_id,
@@ -396,6 +407,7 @@ class RiskReservationRepository:
         )
         entry_fill = await self._session.scalar(
             select(FillRecord.id).where(
+                FillRecord.bot_id == self._session.info.get("bot_id"),
                 FillRecord.workspace_id == workspace_id,
                 FillRecord.account_id == account_id,
                 FillRecord.intent_id == intent_id,
@@ -443,6 +455,7 @@ class RiskReservationRepository:
         )
         intent = await self._session.scalar(
             select(OrderIntentRecord).where(
+                OrderIntentRecord.bot_id == self._session.info.get("bot_id"),
                 OrderIntentRecord.workspace_id == workspace_id,
                 OrderIntentRecord.account_id == account_id,
                 OrderIntentRecord.id == intent_id,
@@ -464,6 +477,7 @@ class RiskReservationRepository:
             raise ReservationConflict("UNKNOWN/TRANSFERRED reservation không tự release.")
         trade = await self._session.scalar(
             select(TradeRecord.id).where(
+                TradeRecord.bot_id == self._session.info.get("bot_id"),
                 TradeRecord.workspace_id == workspace_id,
                 TradeRecord.account_id == account_id,
                 TradeRecord.intent_id == intent_id,
@@ -471,6 +485,7 @@ class RiskReservationRepository:
         )
         entry_fill = await self._session.scalar(
             select(FillRecord.id).where(
+                FillRecord.bot_id == self._session.info.get("bot_id"),
                 FillRecord.workspace_id == workspace_id,
                 FillRecord.account_id == account_id,
                 FillRecord.intent_id == intent_id,
@@ -538,6 +553,7 @@ class RiskReservationRepository:
         """Account lock serializes expiry with reservation creation and intent writes."""
         unsubmitted_intent = exists(
             select(OrderIntentRecord.id).where(
+                OrderIntentRecord.bot_id == self._session.info.get("bot_id"),
                 OrderIntentRecord.workspace_id == RiskReservationRecord.workspace_id,
                 OrderIntentRecord.account_id == RiskReservationRecord.account_id,
                 OrderIntentRecord.risk_reservation_id == RiskReservationRecord.id,
@@ -546,6 +562,7 @@ class RiskReservationRepository:
         result = await self._session.scalars(
             select(RiskReservationRecord)
             .where(
+                RiskReservationRecord.bot_id == self._session.info.get("bot_id"),
                 RiskReservationRecord.workspace_id == workspace_id,
                 RiskReservationRecord.account_id == account_id,
                 RiskReservationRecord.status == ReservationStatus.RESERVED.value,
@@ -573,12 +590,17 @@ class RiskReservationRepository:
         )
         if account is None:
             raise ReservationConflict("Không tìm thấy tài khoản trong workspace.")
+        try:
+            await bind_account_bot(self._session, workspace_id=workspace_id, account_id=account_id)
+        except ValueError as error:
+            raise ReservationConflict(str(error)) from error
 
     async def _get_reservation(
         self, *, workspace_id: UUID, account_id: UUID, reservation_id: UUID
     ) -> RiskReservationRecord:
         record = await self._session.scalar(
             select(RiskReservationRecord).where(
+                RiskReservationRecord.bot_id == self._session.info.get("bot_id"),
                 RiskReservationRecord.workspace_id == workspace_id,
                 RiskReservationRecord.account_id == account_id,
                 RiskReservationRecord.id == reservation_id,
@@ -612,6 +634,7 @@ class RiskReservationRepository:
                     func.sum(RiskReservationRecord.reserved_initial_margin), Decimal("0")
                 ),
             ).where(
+                RiskReservationRecord.bot_id == self._session.info.get("bot_id"),
                 RiskReservationRecord.workspace_id == workspace_id,
                 RiskReservationRecord.account_id == account_id,
                 RiskReservationRecord.status.in_(_HELD_STATUSES),

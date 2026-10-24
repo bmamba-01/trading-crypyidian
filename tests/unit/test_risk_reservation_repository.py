@@ -9,6 +9,7 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy.dialects import postgresql
+from tests.unit.bot_scope_fakes import BotScopeSession
 
 from trading_bot.adapters.database.repositories.risk_reservations import (
     RiskReservationRepository,
@@ -26,7 +27,7 @@ from trading_bot.domain.risk.reservations import (
 NOW = datetime(2026, 10, 22, 12, tzinfo=UTC)
 
 
-class ReservationSession:
+class ReservationSession(BotScopeSession):
     """Phiên giả ghi lại SQL và trả các kết quả đã xếp sẵn cho unit test."""
 
     def __init__(
@@ -44,10 +45,12 @@ class ReservationSession:
         self.flushes = 0
 
     async def scalar(self, statement: Any) -> object | None:
+        if self.is_bot_query(statement):
+            return self.bot_identity(statement)
         self.statements.append(str(statement.compile(dialect=postgresql.dialect())))
         return next(self.scalar_results)
 
-    async def execute(self, statement: Any) -> SimpleNamespace:
+    async def execute(self, statement: Any, params: object = None) -> SimpleNamespace:
         self.statements.append(str(statement.compile(dialect=postgresql.dialect())))
         return SimpleNamespace(one=lambda: self.aggregate)
 
@@ -268,7 +271,7 @@ async def test_reserve_returns_existing_reservation_for_same_key_and_plan() -> N
 
     assert result.reservation_id == reservation_id
     assert result.status is ReservationStatus.UNKNOWN
-    assert len(session.statements) == 3
+    assert len(session.statements) == 4
     assert not session.added
 
 

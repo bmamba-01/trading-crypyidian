@@ -96,7 +96,7 @@ Idempotency key được scope tối thiểu `(workspace_id, bot_id, account_id,
 
 Expand trước, backfill, validate, rồi mới enforce constraint:
 
-1. Tạo đúng một bot mặc định disabled/PAPER cho mỗi existing account, giữ nguyên workspace/account IDs.
+1. Tạo đúng một bot cho mỗi existing account PAPER, giữ nguyên workspace/account IDs và mirror trạng thái ENABLED/DISABLED của account để không đổi hành vi runtime. Mode chỉ lưu tại TradingAccount; account mode/status chưa hỗ trợ làm migration dừng fail-closed.
 2. Backfill bot IDs trên account-scoped records bằng `(workspace_id, account_id)`; shared market/research rows giữ workspace-only.
 3. Trước khi NOT NULL/FK/unique được enforce, đối chiếu count/hash, tìm orphan/duplicate, và chứng minh mỗi record resolve đúng một bot.
 4. Không reassign/xóa immutable trade/fill/decision payload; lịch sử giữ cùng IDs, payload và PnL. Nếu row không map duy nhất, migration dừng fail-closed và cần sửa mapping có audit.

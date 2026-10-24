@@ -228,7 +228,7 @@ class PaperRuntimeApplicationService:
 
         try:
             async with self._unit_of_work_factory(
-                self._sessions, workspace_id=self._workspace_id
+                self._sessions, workspace_id=self._workspace_id, bot_id=account.bot_id
             ) as uow:
                 await self._settings_repository_factory(uow.session).lock_workspace(
                     self._workspace_id
@@ -393,7 +393,7 @@ class PaperRuntimeApplicationService:
             raise PaperRuntimeApplicationError("DATABASE_UNAVAILABLE")
         try:
             async with self._unit_of_work_factory(
-                self._sessions, workspace_id=self._workspace_id
+                self._sessions, workspace_id=self._workspace_id, bot_id=account.bot_id
             ) as uow:
                 await self._settings_repository_factory(uow.session).lock_workspace(
                     self._workspace_id
@@ -433,7 +433,7 @@ class PaperRuntimeApplicationService:
             raise PaperRuntimeApplicationError("DATABASE_UNAVAILABLE")
         try:
             async with self._unit_of_work_factory(
-                self._sessions, workspace_id=self._workspace_id
+                self._sessions, workspace_id=self._workspace_id, bot_id=account.bot_id
             ) as uow:
                 await self._settings_repository_factory(uow.session).lock_workspace(
                     self._workspace_id

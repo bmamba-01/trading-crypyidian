@@ -168,6 +168,7 @@ async def test_strategy_only_publish_is_not_blocked_by_active_paper_state() -> N
         workspace_id=uuid4(),
         current_settings=before,
         next_settings=next_settings,
+        principal=principal_with(Role.OWNER),
     )
 
     assert session.scalar_calls == 0
@@ -192,7 +193,39 @@ async def test_execution_profile_change_is_blocked_while_paper_state_is_active()
             workspace_id=uuid4(),
             current_settings=before,
             next_settings=next_settings,
+            principal=principal_with(Role.STRATEGY_ADMIN),
         )
+
+
+@pytest.mark.asyncio
+async def test_execution_profile_guard_rejects_principal_without_workspace_bot_visibility() -> None:
+    """RLS sẽ đếm thiếu bot sibling; guard phải từ chối trước khi đếm."""
+    before = sample_settings()
+    payload = before.model_dump(mode="json")
+    payload["paper_execution"]["starting_equity"] = "10001"
+    next_settings = WorkspaceSettings.model_validate(payload)
+    session = MemorySession()
+    session.scalar_calls = 0
+
+    async def scalar(statement: object) -> int:
+        del statement
+        session.scalar_calls += 1
+        return 0
+
+    session.scalar = scalar  # type: ignore[method-assign]
+    with pytest.raises(SettingsAdminError, match="toàn bộ bot"):
+        await SettingsAdminService._guard_paper_policy_change(
+            SimpleNamespace(session=session),
+            workspace_id=uuid4(),
+            current_settings=before,
+            next_settings=next_settings,
+            principal=principal_with(Role.OPERATOR),
+        )
+    assert session.scalar_calls == 0
+
+
+def principal_with(role: Role) -> Principal:
+    return Principal(uuid4(), uuid4(), uuid4(), frozenset({role}), datetime.now(UTC))
 
 
 def make_version(

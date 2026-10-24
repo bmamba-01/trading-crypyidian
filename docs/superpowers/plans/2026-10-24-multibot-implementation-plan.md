@@ -96,19 +96,23 @@ WP-03 is a dependency for real Binance account activity detection and private or
 
 ### Task 2 — MB-01: Bot identity, account exclusivity, grants and schema migration
 
+**WBS chi tiết trước code:** [MB-01 identity/migration WBS](./2026-10-24-mb01-identity-migration-wbs.md). Mode canonical ở TradingAccount; backfill bot mirror trạng thái account hiện hữu, không vô tình disable runtime.
+
 **Files:** Create bot models/repositories and migration; modify `TradingAccount`, paper/risk/decision entities and RLS policies; tests `tests/unit/test_bot_repository.py`, `tests/unit/test_database_models.py`, `tests/e2e/test_multibot_migration.py`.
 
 **Interfaces:** `BotInstanceRepository.create_for_account(workspace_id, account_id, name) -> BotInstance`; `get_enabled_for_runtime(workspace_id) -> Sequence[BotInstance]`; `BotGrantRepository.require(membership_id, bot_id, permission) -> None`.
 
-- [ ] **Step 1: Add unit tests for one bot per account, same-workspace composite references, duplicate account binding and revoked/missing bot grants.** Assert cross-workspace IDs fail closed.
-- [ ] **Step 2: Run unit tests and confirm each new invariant fails for the missing bot identity/constraints.**
-- [ ] **Step 3: Add `BotInstance`, `BotGrant`, and bot status/config lineage models.** Database `UNIQUE(workspace_id, trading_account_id)` enforces one bot per account; composite FKs enforce workspace equality.
-- [ ] **Step 4: Add expand/backfill/contract Alembic migration.** Create one bot per existing account; add nullable `bot_id` to account-scoped decisions/reservations/order/fill/position/trade/report lineage; backfill by `(workspace_id, account_id)`; verify all rows resolve; then enforce NOT NULL/FK/indexes. Keep shared market/research rows workspace-scoped.
-- [ ] **Step 5: Add bot-scoped grants and RLS/repository filters.** Owner/admin may access all workspace bots; non-owner role requires explicit `bot_id + permission` grant. Runtime sessions set workspace and bot scope explicitly.
-- [ ] **Step 6: Run PostgreSQL E2E migration from WP-02 schema.** Assert row counts/hashes before and after backfill, account→bot 1:1, report/trade lineage unchanged, cross-tenant and cross-bot reads/writes denied, downgrade/upgrade on isolated DB.
-- [ ] **Step 7: Run unit, E2E, Alembic check, Ruff, format, mypy and diff checks.** Inspect migration SQL and locks before commit.
+- [x] **Step 1: Add unit tests for one bot per account, same-workspace composite references, duplicate account binding and revoked/missing bot grants.** Assert cross-workspace IDs fail closed.
+- [x] **Step 2: Run unit tests and confirm each new invariant fails for the missing bot identity/constraints.** _(Ghi chú: phiên Codex không lưu output RED ban đầu; các test bổ sung ngày 2026-10-24 — index, grant nhiều role, guard settings, scope cache, resolve-only — đã được chạy RED trước khi sửa.)_
+- [x] **Step 3: Add `BotInstance`, `BotGrant`, and bot status/config lineage models.** Database `UNIQUE(workspace_id, trading_account_id)` enforces one bot per account; composite FKs enforce workspace equality.
+- [x] **Step 4: Add expand/backfill/contract Alembic migration.** Create one bot per existing account; add nullable `bot_id` to account-scoped decisions/reservations/order/fill/position/trade/report lineage; backfill by `(workspace_id, account_id)`; verify all rows resolve; then enforce NOT NULL/FK/indexes. Keep shared market/research rows workspace-scoped.
+- [x] **Step 5: Add bot-scoped grants and RLS/repository filters.** Owner/admin may access all workspace bots; non-owner role requires explicit `bot_id + permission` grant. Runtime sessions set workspace and bot scope explicitly.
+- [x] **Step 6: Run PostgreSQL E2E migration from WP-02 schema.** Assert row counts/hashes before and after backfill, account→bot 1:1, report/trade lineage unchanged, cross-tenant and cross-bot reads/writes denied, downgrade/upgrade on isolated DB.
+- [x] **Step 7: Run unit, E2E, Alembic check, Ruff, format, mypy and diff checks.** Inspect migration SQL and locks before commit.
 
 **Acceptance:** no account has zero or multiple bot bindings; all existing records map to exactly one bot without changing immutable payloads or PnL; bot and workspace RLS deny unauthorized scope; migrations are reversible before contract finalization and upgrade cleanly.
+
+**Trạng thái 2026-10-24:** đã triển khai và kiểm chứng (unit 534, E2E 14/14 / 452.08s, review độc lập đã xử lý); chờ duyệt commit. Chi tiết: [MB-01 WBS](./2026-10-24-mb01-identity-migration-wbs.md#kết-quả-triển-khai-2026-10-24).
 
 ### Task 3 — MB-02: Versioned bot overlays and effective config Admin API
 

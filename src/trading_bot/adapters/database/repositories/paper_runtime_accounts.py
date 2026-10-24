@@ -7,6 +7,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from trading_bot.adapters.database.models.bot_entities import BotInstance
 from trading_bot.adapters.database.models.entities import PaperAccountSeed, TradingAccount
 
 
@@ -20,10 +21,16 @@ class PaperRuntimeAccountRepository:
         """Chỉ liệt kê PAPER ENABLED có workspace bằng deployment identity."""
         records = await self._session.scalars(
             select(TradingAccount)
+            .join(
+                BotInstance,
+                (BotInstance.workspace_id == TradingAccount.workspace_id)
+                & (BotInstance.trading_account_id == TradingAccount.id),
+            )
             .where(
                 TradingAccount.workspace_id == workspace_id,
                 TradingAccount.mode == "PAPER",
                 TradingAccount.status == "ENABLED",
+                BotInstance.status == "ENABLED",
             )
             .order_by(TradingAccount.id)
         )

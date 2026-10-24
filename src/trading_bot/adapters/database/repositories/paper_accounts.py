@@ -9,6 +9,7 @@ from uuid import UUID, uuid4
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from trading_bot.adapters.database.bot_scope import bind_account_bot
 from trading_bot.adapters.database.models.entities import (
     PaperAccountSeed,
     TradingAccount,
@@ -95,6 +96,9 @@ class PaperAccountSeedRepository:
         ):
             raise PaperAccountSeedConflict("Account cùng tên không phải PAPER local đang bật.")
 
+        bot_id = await bind_account_bot(
+            self._session, workspace_id=workspace_id, account_id=account.id
+        )
         idempotency_key = f"paper-seed:{account.id}"
         existing = await self._session.scalar(
             select(PaperAccountSeed).where(
@@ -114,6 +118,7 @@ class PaperAccountSeedRepository:
             return PaperAccountSeedResult(account, existing, False)
 
         seed = PaperAccountSeed(
+            bot_id=bot_id,
             id=uuid4(),
             workspace_id=workspace_id,
             trading_account_id=account.id,

@@ -8,6 +8,7 @@ from trading_bot.adapters.database.models.backtest_outcome_entities import (
     BacktestTradeOutcomeRecord,
 )
 from trading_bot.adapters.database.models.base import Base
+from trading_bot.adapters.database.models.bot_entities import BotGrant, BotInstance
 from trading_bot.adapters.database.models.entities import (
     ApprovalRequest,
     AuditEvent,
@@ -56,6 +57,8 @@ from trading_bot.adapters.database.models.risk_entities import (
 )
 
 __all__ = [
+    "BotGrant",
+    "BotInstance",
     "ApprovalRequest",
     "AuditEvent",
     "ConsumerReceipt",

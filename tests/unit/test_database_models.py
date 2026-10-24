@@ -21,6 +21,8 @@ def test_trading_account_uses_workspace_scoped_unique_key_and_decimal_columns() 
 
 def test_schema_contains_all_foundation_tables() -> None:
     assert set(Base.metadata.tables) == {
+        "bot_instance",
+        "bot_grant",
         "workspace",
         "user_account",
         "user_membership",

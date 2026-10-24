@@ -8,6 +8,7 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy.dialects import postgresql
+from tests.unit.bot_scope_fakes import BotScopeSession
 from tests.unit.test_workspace_settings import valid_payload
 
 from trading_bot.adapters.database.models import Base
@@ -28,7 +29,7 @@ from trading_bot.config.workspace_settings import PublishedWorkspaceSettings, Wo
 NOW = datetime(2026, 10, 23, 12, tzinfo=UTC)
 
 
-class SeedSession:
+class SeedSession(BotScopeSession):
     def __init__(self, rows: list[object | None]) -> None:
         self.rows = iter(rows)
         self.statements: list[str] = []
@@ -37,6 +38,8 @@ class SeedSession:
         self.flush_count = 0
 
     async def scalar(self, statement: Any) -> object | None:
+        if self.is_bot_query(statement):
+            return self.bot_identity(statement)
         self.statements.append(str(statement.compile(dialect=postgresql.dialect())))
         return next(self.rows)
 

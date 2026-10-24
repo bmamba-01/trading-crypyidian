@@ -6,6 +6,7 @@ from uuid import UUID, uuid4
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from trading_bot.adapters.database.bot_scope import bind_account_bot
 from trading_bot.adapters.database.models import AuditEvent, ConsumerReceipt, OutboxEvent
 from trading_bot.domain.events import EventEnvelope, state_hash
 
@@ -31,11 +32,13 @@ class UnitOfWork:
         sessions: async_sessionmaker[AsyncSession],
         *,
         workspace_id: UUID,
+        bot_id: UUID | None = None,
         actor_membership_id: UUID | None = None,
         request_id: UUID | None = None,
     ) -> None:
         self._sessions = sessions
         self.workspace_id = workspace_id
+        self.bot_id = bot_id
         self.actor_membership_id = actor_membership_id
         self.request_id = request_id or uuid4()
         self._session: AsyncSession | None = None
@@ -53,14 +56,36 @@ class UnitOfWork:
         try:
             await self._session.begin()
             await self._session.execute(
-                text("SELECT set_config('app.workspace_id', :workspace_id, true)"),
-                {"workspace_id": str(self.workspace_id)},
+                text(
+                    "SELECT set_config('app.workspace_id', :workspace_id, true), "
+                    "set_config('app.bot_id', :bot_id, true), "
+                    "set_config('app.membership_id', :membership_id, true)"
+                ),
+                {
+                    "workspace_id": str(self.workspace_id),
+                    "bot_id": str(self.bot_id) if self.bot_id else "",
+                    "membership_id": str(self.actor_membership_id)
+                    if self.actor_membership_id
+                    else "",
+                },
             )
+            self._session.info.pop("bot_account_id", None)
+            self._session.info.update(workspace_id=self.workspace_id, bot_id=self.bot_id)
         except BaseException:
             await self._session.close()
             self._session = None
             raise
         return self
+
+    async def bind_account(self, account_id: UUID, *, allow_switch: bool = False) -> UUID:
+        """Gắn account vào scope; chỉ bootstrap tin cậy mới chuyển giữa nhiều bot."""
+        self.bot_id = await bind_account_bot(
+            self.session,
+            workspace_id=self.workspace_id,
+            account_id=account_id,
+            allow_switch=allow_switch,
+        )
+        return self.bot_id
 
     async def __aexit__(self, exc_type: object, exc: object, traceback: object) -> None:
         session = self.session

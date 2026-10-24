@@ -1,11 +1,12 @@
 from uuid import uuid4
 
 import pytest
+from tests.unit.bot_scope_fakes import BotScopeSession
 
 from trading_bot.application.outbox import UnitOfWork
 
 
-class FakeSession:
+class FakeSession(BotScopeSession):
     def __init__(self, *, fail_commit: bool = False) -> None:
         self.fail_commit = fail_commit
         self.events: list[str] = []

@@ -47,6 +47,9 @@ class _FakeUnitOfWork:
             for callback in self.callbacks:
                 callback()
 
+    async def bind_account(self, account_id, *, allow_switch=False):
+        return account_id
+
     def after_commit(self, callback: Callable[[], None]) -> None:
         self.callbacks.append(callback)
 

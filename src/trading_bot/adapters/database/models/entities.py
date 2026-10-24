@@ -16,6 +16,7 @@ from sqlalchemy import (
     UniqueConstraint,
     Uuid,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
@@ -160,6 +161,12 @@ class PaperAccountSeed(UuidPrimaryKey, CreatedAt, Base):
 
     __tablename__ = "paper_account_seed"
     __table_args__ = (
+        ForeignKeyConstraint(
+            ["workspace_id", "bot_id", "trading_account_id"],
+            ["bot_instance.workspace_id", "bot_instance.id", "bot_instance.trading_account_id"],
+            name="fk_paper_account_seed_bot_account",
+        ),
+        Index("ix_paper_account_seed_bot_scope", "workspace_id", "bot_id", "trading_account_id"),
         UniqueConstraint(
             "workspace_id", "trading_account_id", name="uq_paper_account_seed_workspace_account"
         ),
@@ -189,6 +196,11 @@ class PaperAccountSeed(UuidPrimaryKey, CreatedAt, Base):
         ),
     )
 
+    bot_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        nullable=False,
+        server_default=text("NULLIF(current_setting('app.bot_id', true), '')::uuid"),
+    )
     workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     trading_account_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     quote_asset: Mapped[str] = mapped_column(String(16), nullable=False)
@@ -217,6 +229,12 @@ class SecretReference(UuidPrimaryKey, CreatedAt, Base):
 class ConfigVersion(UuidPrimaryKey, CreatedAt, Base):
     __tablename__ = "config_version"
     __table_args__ = (
+        ForeignKeyConstraint(
+            ["workspace_id", "bot_id", "trading_account_id"],
+            ["bot_instance.workspace_id", "bot_instance.id", "bot_instance.trading_account_id"],
+            name="fk_config_version_bot_account",
+        ),
+        Index("ix_config_version_bot_scope", "workspace_id", "bot_id", "trading_account_id"),
         UniqueConstraint("workspace_id", "id", name="uq_config_version_workspace_id"),
         ForeignKeyConstraint(["workspace_id"], ["workspace.id"], ondelete="CASCADE"),
         ForeignKeyConstraint(
@@ -233,6 +251,11 @@ class ConfigVersion(UuidPrimaryKey, CreatedAt, Base):
         ),
     )
 
+    bot_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        nullable=False,
+        server_default=text("NULLIF(current_setting('app.bot_id', true), '')::uuid"),
+    )
     workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     trading_account_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     version: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -307,6 +330,16 @@ class RiskProfileVersion(UuidPrimaryKey, CreatedAt, Base):
 class ApprovalRequest(UuidPrimaryKey, CreatedAt, Base):
     __tablename__ = "approval_request"
     __table_args__ = (
+        CheckConstraint(
+            "(bot_id IS NULL) = (trading_account_id IS NULL)",
+            name="approval_request_bot_scope_consistent",
+        ),
+        ForeignKeyConstraint(
+            ["workspace_id", "bot_id", "trading_account_id"],
+            ["bot_instance.workspace_id", "bot_instance.id", "bot_instance.trading_account_id"],
+            name="fk_approval_request_bot_account",
+        ),
+        Index("ix_approval_request_bot_scope", "workspace_id", "bot_id", "trading_account_id"),
         UniqueConstraint("workspace_id", "id", name="uq_approval_request_workspace_id"),
         ForeignKeyConstraint(["workspace_id"], ["workspace.id"], ondelete="CASCADE"),
         ForeignKeyConstraint(
@@ -326,6 +359,7 @@ class ApprovalRequest(UuidPrimaryKey, CreatedAt, Base):
         Index("ix_approval_request_workspace_status", "workspace_id", "status"),
     )
 
+    bot_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True)
     workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     trading_account_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True)
     subject_type: Mapped[str] = mapped_column(String(48), nullable=False)

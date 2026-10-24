@@ -117,6 +117,10 @@ def test_postgres_expiry_releases_only_due_reserved_risk() -> None:
                     "'ENABLED', 1000)", (account, workspace),
                 )
                 connection.execute(
+                    "SELECT set_config('app.bot_id', (SELECT id::text FROM bot_instance "
+                    "WHERE trading_account_id=%s), true)", (account,),
+                )
+                connection.execute(
                     "INSERT INTO trade_plan "
                     "(id, workspace_id, account_id, plan_hash, symbol, notional, payload) "
                     "VALUES (%s, %s, %s, %s, 'BTCUSDT', 100, '{}'::jsonb)",
@@ -239,7 +243,8 @@ def test_postgres_expiry_releases_only_due_reserved_risk() -> None:
             f"E2E_DUE={due_id}",
             "-e",
             f"E2E_UNKNOWN={unknown_id}",
-            "trainer-worker",
+            # MB-01: chỉ runtime có RLS/quyền trên reservation theo bot scope.
+            "trading-runtime",
             "python",
             "-c",
             probe,
