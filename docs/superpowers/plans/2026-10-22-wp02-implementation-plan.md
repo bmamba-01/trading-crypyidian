@@ -268,7 +268,9 @@ Expected: ghi chính xác pass/fail/skip và thời lượng; lỗi hiện hữu
 
 ## Post-WP-02 deliverable — Multi-bot architecture brainstorm (not part of WP-02)
 
-After Task 10 is accepted, write a separate reviewable brainstorm/spec that compares:
+Approved design: [Multi-bot architecture](../specs/2026-10-24-multi-bot-architecture-brainstorm.md). Approved detailed WBS: [Multi-Bot Implementation Plan](2026-10-24-multibot-implementation-plan.md). MB-00 contract freeze is recorded in [Multi-Bot architecture contracts](../../architecture/decisions/2026-10-24-multibot-contracts.md); dependent source/schema work follows its acceptance gates.
+
+The reviewable draft compares:
 
 - one workspace control plane and one root configuration with per-bot versioned overlays;
 - shared market-data/research/feature/knowledge pipelines with ACL and provenance;

@@ -56,6 +56,16 @@ Không cộng tỷ lệ phần trăm tổng dự án: các phase có khối lư�
 
 Plan chi tiết và đầu việc: [Plan 01](./01-foundation-database.md), [Plan 02](./02-trading-core-paper.md), [Plan 03](./03-binance-execution.md), [Plan 04](./04-admin-telegram.md), [Plan 05](./05-research-ingestion.md), [Plan 06](./06-ai-learning.md), [Plan 07](./07-operations-release.md).
 
+## Mở rộng Multi-Bot
+
+Thiết kế và WBS đã được người dùng duyệt ngày 2026-10-24. Các trạng thái dưới đây chỉ theo dõi phạm vi Multi-Bot; chưa có thay đổi source/schema cho các WP này.
+
+| WP | Trạng thái | Đã hoàn thành | Còn lại / điều kiện nghiệm thu | Kiểm chứng |
+| --- | --- | --- | --- | --- |
+| MB-00 | **Hoàn thành** | Contract về root config/overlay, ID/time/Decimal, shared evidence, equity/FX, risk serialization workspace→account, RLS/RBAC boundary, account exclusivity và rollout migration. Reviewer đóng các finding equity double-count, root-cap publish race và bot-scope policy. | Không còn blocker; các contract được đưa thành testable gates cho MB-01/02/04. | Unit `tests/unit -q`: 520 passed; E2E `tests/e2e -q`: 13 passed / 410.59s; `git diff --check` đạt; reviewer không còn high-risk finding. |
+| MB-01 | **Chưa bắt đầu** | WBS/acceptance đã duyệt. | Bot identity, exclusive account binding, grants, scoped RLS và expand/backfill migration; test row/hash preservation, permissions và rollback. | Chưa có test implementation. |
+| MB-02–MB-09 | **Chưa bắt đầu** | Scope, dependencies và acceptance được ghi trong [WBS Multi-Bot](../superpowers/plans/2026-10-24-multibot-implementation-plan.md). | Tiếp tục config API, decision/evidence, risk budget, runtime, reports, admin/Telegram, model references và final gates theo thứ tự plan. | Chưa có test implementation. |
+
 ## Trạng thái Product backlog
 
 | User Story | Phạm vi | Trạng thái | Ghi chú triển khai |
