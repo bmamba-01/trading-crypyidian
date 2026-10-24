@@ -1,0 +1,24 @@
+{
+  "timezone": "UTC",
+  "serverTime": 1792672230000,
+  "rateLimits": [
+    {"rateLimitType": "REQUEST_WEIGHT", "interval": "MINUTE", "intervalNum": 1, "limit": 2400}
+  ],
+  "symbols": [
+    {
+      "symbol": "BTCUSDT",
+      "pair": "BTCUSDT",
+      "contractType": "PERPETUAL",
+      "status": "TRADING",
+      "baseAsset": "BTC",
+      "quoteAsset": "USDT",
+      "marginAsset": "USDT",
+      "filters": [
+        {"filterType": "PRICE_FILTER", "tickSize": "0.10"},
+        {"filterType": "LOT_SIZE", "stepSize": "0.001", "minQty": "0.001"},
+        {"filterType": "MARKET_LOT_SIZE", "stepSize": "0.001", "minQty": "0.001"},
+        {"filterType": "MIN_NOTIONAL", "notional": "5.0"}
+      ]
+    }
+  ]
+}

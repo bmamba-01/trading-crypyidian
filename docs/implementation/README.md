@@ -4,6 +4,7 @@ Thư mục này là điểm vào ở gốc `docs/` cho kế hoạch xây dựng 
 
 Dependency trực tiếp, phiên bản khóa và giấy phép được theo dõi trong [dependency inventory](./dependency-inventory.md).
 Digest và giấy phép các image runtime được ghi trong [container image inventory](./container-images.md).
+Trạng thái triển khai, test evidence và thứ tự công việc tiếp theo được theo dõi trong [project status](./project-status.md).
 
 ## Thứ tự và phụ thuộc
 

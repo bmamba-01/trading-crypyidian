@@ -24,7 +24,17 @@ docker compose --profile paper ps
 docker compose --profile paper logs -f admin-web
 ```
 
+Các process Python dùng chung image `crypidian-app:local`; Compose chỉ build image tại `admin-web`, các role khác dùng lại cùng image. E2E tính tag từ nội dung đầu vào Dockerfile và chỉ gọi `docker build` khi tag đó chưa có trên máy; tên project E2E vẫn ngẫu nhiên để cô lập container, network và volume. Vì vậy chạy lại E2E trên cùng mã nguồn không tạo thêm image.
+
 `prepare_local_secrets.py` không tạo hoặc gọi Binance API key. Tệp `.secrets/` bị loại khỏi Git và build context; chỉ `execution-gateway` được mount hai tệp Binance. Script tạo env-file riêng cho Garage local từ access key ngẫu nhiên, chỉ gắn vào `object-store`. Cấu hình Garage local cho phép đọc secret file có mode rộng do Docker Desktop trên Windows trình bày file mount là `0777`; ACL của file nguồn vẫn được quản lý trên host. Môi trường triển khai khác phải dùng secret provider và quyền file chặt, không tái sử dụng cấu hình local này. Chỉ điền credential Demo sau khi adapter Demo được triển khai; chưa có lệnh giao dịch trong các process bootstrap hiện tại.
+
+### Khởi tạo tài khoản Owner local
+
+WP-01D hiện cung cấp API xác thực, chưa có giao diện HTML quản trị. Secret setup một lần nằm ở `.secrets/bootstrap_token`; chỉ người quản trị máy local được đọc file này. Gửi POST đến `/api/v1/auth/bootstrap` kèm header `X-Bootstrap-Token`, tên/slug workspace, email, mật khẩu dài tối thiểu 14 ký tự và mode PAPER hoặc DEMO. API trả URI `otpauth://` để nhập vào ứng dụng TOTP; giữ URI kín vì nó chứa seed khởi tạo. Gửi mã hiện tại tới `/api/v1/auth/bootstrap/verify` để kích hoạt Owner/workspace, sau đó đăng nhập qua `/api/v1/auth/login` bằng workspace slug, email, mật khẩu và mã TOTP.
+
+Login trả cookie session HttpOnly và token CSRF một lần trong JSON; lưu token CSRF trong bộ nhớ giao diện và gửi qua header `X-CSRF-Token` với mọi POST/PUT/PATCH/DELETE. Sau khi tải lại trang, gọi `GET /api/v1/auth/csrf` để cấp token mới. Cookie 12 giờ; thao tác nhạy cảm yêu cầu MFA trong 15 phút gần nhất. Chỉ có risk-profile draft API để kiểm tra authorization; invite, dashboard, member CRUD và khôi phục MFA chưa được triển khai.
+
+Seed TOTP được mã hóa vào volume Docker `mfa_secrets`; khóa mã hóa nằm trong `.secrets/mfa_encryption_key` và chỉ admin-web được mount. Khi backup workspace, bảo vệ riêng khóa này cùng bản backup PostgreSQL và volume MFA. Nếu mất khóa, factor TOTP không thể giải mã và cần quy trình khôi phục MFA.
 
 ```powershell
 docker compose --profile paper down
@@ -36,7 +46,7 @@ Lệnh `down` giữ named volume; `down --volumes` xóa database và object stor
 docker compose exec -T postgres pg_dump -U crypidian_admin -d crypidian > .\crypidian-backup.sql
 ```
 
-Process `admin-web`, `trading-runtime`, `execution-gateway`, `ingestion-worker` và `trainer-worker` hiện dùng chung app bootstrap để kiểm tra ranh giới process. Chưa có business loop, kết nối Binance, ingestion hay training. `/health/live` chỉ kiểm tra process; `/health/ready` trả `503` cho tới khi database, market data và exchange probe được cài đặt và báo sẵn sàng. Compose chỉ chờ health của PostgreSQL/object store trước khi khởi động các service phụ thuộc.
+Process `admin-web`, `trading-runtime`, `execution-gateway`, `ingestion-worker` và `trainer-worker` hiện dùng chung app bootstrap để kiểm tra ranh giới process; admin-web có thêm API auth bootstrap và risk-profile draft. Chưa có business trading loop, kết nối Binance, ingestion hay training. `/health/live` chỉ kiểm tra process; `/health/ready` trả `503` cho tới khi database, market data và exchange probe được cài đặt và báo sẵn sàng. Compose chỉ chờ health của PostgreSQL/object store trước khi khởi động các service phụ thuộc.
 
 `db-provisioner` đọc secret file local để tạo hoặc xoay mật khẩu login riêng cho từng process mỗi lần khởi động; `migrator` chạy `alembic upgrade head` trước `admin-web`. Cấu trúc ban đầu có workspace, user/membership/role/session/MFA/Telegram, trading account, secret reference, config/risk versions, approval, watchlist và strategy release. Từng app role là `NOSUPERUSER` và `NOBYPASSRLS`; `user_account` chỉ được cấp cho admin web. Tài khoản admin PostgreSQL chỉ dùng cho provisioner, migrator và backup local. Rollback schema local có thể chạy `docker compose --profile paper run --rm migrator alembic downgrade base`; lệnh này xóa các bảng WP-01C và dữ liệu trong đó.
 

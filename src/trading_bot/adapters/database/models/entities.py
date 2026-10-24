@@ -15,6 +15,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     Uuid,
+    func,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
@@ -93,6 +94,8 @@ class Session(UuidPrimaryKey, CreatedAt, Base):
     token_hash: Mapped[str] = mapped_column(String(128), nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    csrf_token_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    mfa_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class MfaFactor(UuidPrimaryKey, CreatedAt, Base):
@@ -111,6 +114,7 @@ class MfaFactor(UuidPrimaryKey, CreatedAt, Base):
     factor_type: Mapped[str] = mapped_column(String(24), nullable=False)
     secret_reference: Mapped[str] = mapped_column(String(240), nullable=False)
     verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_used_counter: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class TelegramBinding(UuidPrimaryKey, CreatedAt, Base):
@@ -149,6 +153,49 @@ class TradingAccount(UuidPrimaryKey, CreatedAt, UpdatedAt, Base):
     environment: Mapped[str] = mapped_column(String(16), nullable=False, default="local")
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="DISABLED")
     max_notional: Mapped[Decimal] = mapped_column(Numeric(38, 18, asdecimal=True), nullable=False)
+
+
+class PaperAccountSeed(UuidPrimaryKey, CreatedAt, Base):
+    """Số dư seed bất biến của một synthetic PAPER account."""
+
+    __tablename__ = "paper_account_seed"
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id", "trading_account_id", name="uq_paper_account_seed_workspace_account"
+        ),
+        UniqueConstraint(
+            "workspace_id", "idempotency_key", name="uq_paper_account_seed_idempotency"
+        ),
+        ForeignKeyConstraint(
+            ["workspace_id", "trading_account_id"],
+            ["trading_account.workspace_id", "trading_account.id"],
+            name="fk_paper_account_seed_account",
+        ),
+        ForeignKeyConstraint(
+            ["workspace_id", "source_settings_version_id"],
+            ["workspace_settings_version.workspace_id", "workspace_settings_version.id"],
+            name="fk_paper_account_seed_settings",
+        ),
+        CheckConstraint("initial_equity > 0", name="initial_equity_positive"),
+        CheckConstraint(
+            "length(source_settings_hash) = 64 "
+            "AND source_settings_hash = lower(source_settings_hash) "
+            "AND source_settings_hash !~ '[^0-9a-f]'",
+            name="source_settings_hash_sha256",
+        ),
+        CheckConstraint(
+            "quote_asset = upper(quote_asset) AND quote_asset ~ '^[A-Z0-9]{2,16}$'",
+            name="quote_asset_valid",
+        ),
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    trading_account_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    quote_asset: Mapped[str] = mapped_column(String(16), nullable=False)
+    initial_equity: Mapped[Decimal] = mapped_column(Numeric(38, 18, asdecimal=True), nullable=False)
+    source_settings_version_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    source_settings_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(240), nullable=False)
 
 
 class SecretReference(UuidPrimaryKey, CreatedAt, Base):
@@ -193,6 +240,47 @@ class ConfigVersion(UuidPrimaryKey, CreatedAt, Base):
     config: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     config_hash: Mapped[str] = mapped_column(String(128), nullable=False)
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class WorkspaceSettingsVersion(UuidPrimaryKey, CreatedAt, Base):
+    __tablename__ = "workspace_settings_version"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "id", name="uq_workspace_settings_version_id"),
+        UniqueConstraint("workspace_id", "version", name="uq_workspace_settings_version_number"),
+        ForeignKeyConstraint(["workspace_id"], ["workspace.id"], ondelete="CASCADE"),
+        ForeignKeyConstraint(
+            ["workspace_id", "parent_version_id"],
+            ["workspace_settings_version.workspace_id", "workspace_settings_version.id"],
+        ),
+        ForeignKeyConstraint(
+            ["workspace_id", "created_by"],
+            ["user_membership.workspace_id", "user_membership.id"],
+            name="fk_workspace_settings_created_by",
+        ),
+        ForeignKeyConstraint(
+            ["workspace_id", "approved_by"],
+            ["user_membership.workspace_id", "user_membership.id"],
+            name="fk_workspace_settings_approved_by",
+        ),
+        CheckConstraint("version >= 1", name="workspace_settings_version_positive"),
+        CheckConstraint("schema_version >= 1", name="workspace_settings_schema_positive"),
+        CheckConstraint("revision >= 1", name="workspace_settings_revision_positive"),
+        CheckConstraint("status IN ('DRAFT', 'PUBLISHED')", name="workspace_settings_status_valid"),
+        Index("ix_workspace_settings_effective", "workspace_id", "status", "effective_at"),
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    parent_version_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True)
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    settings_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    settings_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="DRAFT")
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_by: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    approved_by: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    effective_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class RiskProfileVersion(UuidPrimaryKey, CreatedAt, Base):
@@ -301,3 +389,87 @@ class StrategyRelease(UuidPrimaryKey, CreatedAt, Base):
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="DRAFT")
     recipe: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     content_hash: Mapped[str] = mapped_column(String(128), nullable=False)
+
+
+class OutboxEvent(UuidPrimaryKey, CreatedAt, Base):
+    __tablename__ = "outbox_event"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "id", name="uq_outbox_event_workspace_id"),
+        UniqueConstraint(
+            "workspace_id", "event_type", "idempotency_key", name="uq_outbox_event_idempotency"
+        ),
+        ForeignKeyConstraint(["workspace_id"], ["workspace.id"], ondelete="CASCADE"),
+        CheckConstraint("schema_version >= 1", name="outbox_schema_version_positive"),
+        CheckConstraint("attempts >= 0", name="outbox_attempts_nonnegative"),
+        CheckConstraint(
+            "status IN ('PENDING', 'PROCESSING', 'DELIVERED', 'DEAD')",
+            name="outbox_status_valid",
+        ),
+        Index("ix_outbox_event_ready", "workspace_id", "status", "available_at", "created_at"),
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(160), nullable=False)
+    aggregate_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    aggregate_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    correlation_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(240), nullable=False)
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="PENDING")
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    available_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    lease_owner: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(120), nullable=True)
+
+
+class ConsumerReceipt(UuidPrimaryKey, CreatedAt, Base):
+    __tablename__ = "consumer_receipt"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "id", name="uq_consumer_receipt_workspace_id"),
+        UniqueConstraint(
+            "workspace_id", "outbox_event_id", "consumer_name", name="uq_consumer_receipt_event"
+        ),
+        ForeignKeyConstraint(["workspace_id"], ["workspace.id"], ondelete="CASCADE"),
+        ForeignKeyConstraint(
+            ["workspace_id", "outbox_event_id"],
+            ["outbox_event.workspace_id", "outbox_event.id"],
+            ondelete="CASCADE",
+        ),
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    outbox_event_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    consumer_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    processed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class AuditEvent(UuidPrimaryKey, Base):
+    __tablename__ = "audit_event"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "id", name="uq_audit_event_workspace_id"),
+        ForeignKeyConstraint(["workspace_id"], ["workspace.id"], ondelete="CASCADE"),
+        ForeignKeyConstraint(
+            ["workspace_id", "actor_membership_id"],
+            ["user_membership.workspace_id", "user_membership.id"],
+        ),
+        Index("ix_audit_event_workspace_time", "workspace_id", "occurred_at"),
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    actor_membership_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True)
+    action: Mapped[str] = mapped_column(String(120), nullable=False)
+    target_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    target_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    before_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    after_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    request_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

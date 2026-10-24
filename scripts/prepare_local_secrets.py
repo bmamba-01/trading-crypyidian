@@ -1,3 +1,4 @@
+import base64
 import secrets
 import sys
 from pathlib import Path
@@ -12,6 +13,8 @@ def main() -> None:
         "garage_rpc_secret": secrets.token_hex(32),
         "garage_s3_access_key": f"GK{secrets.token_hex(16)}",
         "garage_s3_secret_key": secrets.token_hex(32),
+        "mfa_encryption_key": base64.urlsafe_b64encode(secrets.token_bytes(32)).decode("ascii"),
+        "bootstrap_token": secrets.token_urlsafe(48),
         **{
             f"database_{role}_password": secrets.token_urlsafe(48)
             for role in (
@@ -44,7 +47,9 @@ def main() -> None:
         ),
         encoding="utf-8",
     )
-    sys.stdout.reconfigure(encoding="utf-8")
+    reconfigure_stdout = getattr(sys.stdout, "reconfigure", None)
+    if reconfigure_stdout is not None:
+        reconfigure_stdout(encoding="utf-8")
     print("Đã chuẩn bị secret local; Binance API key/secret đang để trống.")
 
 

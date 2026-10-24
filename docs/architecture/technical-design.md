@@ -169,7 +169,9 @@ Mọi hàng thuộc tenant có `workspace_id`; khóa ngoại/unique nên chứa 
 | Quyết định | `decision_cycle`, `candidate`, `model_score`, `trade_plan`, `risk_decision`, `risk_reservation` | As-of/snapshot IDs; điều kiện/invalidations; score/calibration/OOD/abstain; entry/stop/target/cost/recipe; approve/reject reason và risk reserved. |
 | Execution ledger | `order_intent`, `exchange_order`, `exchange_event`, `fill`, `position`, `position_event`, `protective_order_link`, `trade`, `trade_cost`, `reconciliation_run`, `incident` | Client ID/idempotency key theo account; local/exchange status; external event dedup; fills bất biến; projection position; funding/fee; reconcile diff và mức stop coverage. |
 | Evaluation/learning | `trade_review`, `outcome_label`, `dataset_manifest`, `experiment_run`, `evaluation_report`, `model_artifact`, `strategy_promotion`, `drift_event` | Review append-only; label replay recipe; snapshot/query dataset; temporal splits/metrics/cost/seed; checksum/URI; promotion/rollback và approvals. |
-| Nền tảng | `outbox_event`, `consumer_receipt`, `audit_event`, `notification`, `metric_rollup` | Event pending; receipt duy nhất; actor/action/hash; delivery attempts; aggregate báo cáo có thể dựng lại. |
+| Nền tảng | `outbox_event`, `consumer_receipt`, `audit_event`, `notification`, `metric_rollup` | Outbox có lease/retry/dead-letter; receipt duy nhất theo workspace/event/consumer; audit ghi nối tiếp với actor/action/hash. |
+
+Trong schema nền, session giữ token_hash, thời hạn, thời điểm revoke, csrf_token_hash và mfa_verified_at; mfa_factor giữ secret_reference, verified_at và last_used_counter để chặn phát lại TOTP. Các hash được lưu SHA-256 vì token gốc có entropy ngẫu nhiên cao; password_hash dùng định dạng Argon2id. RLS vẫn áp dụng cho session/MFA/role theo workspace.
 
 ### 5.3 Ràng buộc, khóa và index
 
@@ -203,6 +205,20 @@ Trước production phải chốt retention cho exchange ledger/audit, raw sourc
 
 Mọi mutation phải có principal, workspace scope, authorization theo function/object, schema validation, idempotency khi retry và audit link. Cookie session cần CSRF. API không trả secret. Thao tác nhạy cảm mang `request_id`, `actor_id` và `reason` phù hợp.
 
+### Hợp đồng xác thực MVP
+
+API hiện có POST /auth/bootstrap, POST /auth/bootstrap/verify, POST /auth/login, GET /auth/me, GET /auth/csrf, POST /auth/reauthenticate, POST /auth/logout và POST /risk-profiles. Bootstrap cần header X-Bootstrap-Token. Role được đọc lại từ DB ở mỗi request; cookie chứa định danh workspace và token ngẫu nhiên, DB chỉ lưu SHA-256 của token. Mọi mutation dùng token CSRF theo session qua header X-CSRF-Token. Audit nền đã được ghi append-only từ Unit of Work; giao diện xem audit và invite/member CRUD thuộc Plan 04.
+
+| Role | Quyền nền tảng MVP |
+| --- | --- |
+| Owner | Mọi capability hiện có; thao tác risk yêu cầu MFA gần đây. |
+| Operator | Đọc workspace/trade; pause/resume runtime. |
+| Strategy Admin | Đọc workspace; sửa strategy/watchlist. |
+| Risk Admin | Đọc workspace/trade; tạo risk profile draft; pause/resume runtime. |
+| Analyst/Reviewer | Đọc workspace/trade; ghi nhận review. Không sửa risk, strategy, watchlist, member hoặc secret. |
+
+Vai trò chưa được gán cho endpoint nghiệp vụ thì mặc định bị từ chối. Mọi query tenant gắn workspace lấy từ session server, không lấy workspace ID do client tự khai báo.
+
 ### Domain ports
 
 ```python
@@ -213,14 +229,20 @@ class ExchangeGateway(Protocol):
     async def fetch_account_state(self, account_id: UUID) -> AccountSnapshot: ...
     async def reconcile(self, account_id: UUID, since: datetime) -> ReconciliationSnapshot: ...
 
+
 class ModelScorer(Protocol):
-    async def score(self, request: ScoreRequest) -> ScoreResult: ...  # Kết quả có schema; chỉ approve/veto/abstain
+    async def score(
+        self, request: ScoreRequest
+    ) -> ScoreResult: ...  # Kết quả có schema; chỉ approve/veto/abstain
+
 
 class SecretProvider(Protocol):
     async def resolve_for_gateway(self, secret_ref: SecretRef) -> SecretLease: ...
 ```
 
 Chỉ process identity của gateway được resolve secret lease. `SecretLease` có thời hạn ngắn, giá trị secret không được repr/log serialize và không đưa vào domain event.
+
+Adapter LocalMfaSecretProvider dùng AES-GCM để mã hóa seed TOTP thành file ciphertext trong named volume, gắn associated data với workspace/reference. Khóa mã hóa được mount riêng cho admin-web; adapter local chỉ nhận secret MFA và từ chối resolve secret giao dịch. Không dùng adapter này cho Binance key. Gateway sẽ nhận adapter/KMS riêng ở Plan 03 và chỉ có quyền resolve lease giao dịch.
 
 ### Envelope của outbox event
 
@@ -240,6 +262,24 @@ Chỉ process identity của gateway được resolve secret lease. `SecretLease
 ```
 
 Payload nên mang ID, không sao chép secret, raw body lớn hay cấu hình mutable. Consumer lấy version bất biến theo tham chiếu.
+
+### 6.1 Unit of Work, audit và outbox MVP
+
+`UnitOfWork` mở một `AsyncSession`, đặt workspace context trong transaction, rồi commit hoặc rollback khi thoát context. Caller dùng cùng session để ghi thay đổi nghiệp vụ, `AuditEvent` và `OutboxEvent`; không gọi network trong transaction. Audit chỉ lưu `before_hash`/`after_hash` của trạng thái JSON chuẩn hóa, không lưu snapshot. PostgreSQL RLS bắt buộc `app.workspace_id`; `crypidian_app` chỉ có SELECT/INSERT trên audit, các process có INSERT trực tiếp, còn SELECT audit chỉ được cấp cho `admin-web`. Trigger từ chối UPDATE/DELETE.
+
+Trạng thái `outbox_event`: `PENDING → PROCESSING → DELIVERED`; lỗi có thể chuyển `PROCESSING → PENDING` với exponential backoff hoặc `PROCESSING → DEAD` khi hết số lần thử. Lease lưu worker và thời hạn; worker claim bằng `FOR UPDATE SKIP LOCKED` trong transaction ngắn rồi commit trước side effect. `available_at`, `attempts`, `lease_expires_at` cho phép worker khác lấy lại event sau khi lease hết. Mã lỗi được lưu theo tên loại exception, không lưu message/traceback. MVP định tuyến một event type tới một consumer; fan-out nhiều consumer cần bảng delivery riêng.
+
+`ConsumerReceipt` có unique `(workspace_id, outbox_event_id, consumer_name)`. Receipt làm cho thao tác ghi nhận xử lý trong DB có thể deduplicate; nó không ngăn side effect ngoài DB lặp nếu worker chết sau side effect nhưng trước receipt. Consumer phải truyền event/idempotency key vào API đích và đối soát trạng thái mơ hồ. Không tuyên bố exactly-once xuyên PostgreSQL và hệ thống ngoài.
+
+```mermaid
+stateDiagram-v2
+    [*] --> PENDING
+    PENDING --> PROCESSING: claim + lease
+    PROCESSING --> DELIVERED: side effect xác nhận + receipt
+    PROCESSING --> PENDING: lỗi, còn lượt thử
+    PROCESSING --> DEAD: hết lượt thử
+    PROCESSING --> PROCESSING: worker khác claim sau khi lease hết hạn
+```
 
 <a id="decision-risk-formulas"></a>
 ## 7. Công thức quyết định và risk
@@ -270,10 +310,15 @@ loss_per_unit = abs(entry_reference - stop_price) * contract_multiplier
                + estimated_entry_fee_per_unit + estimated_exit_fee_per_unit
                + adverse_funding_per_unit + slippage_stress_per_unit
 raw_qty = equity_risk_budget / loss_per_unit
-qty = floor_to_step(min(raw_qty, max_notional / entry_reference, exchange_max_qty))
+unit_notional = entry_reference * contract_multiplier
+max_qty_by_margin = available_margin * selected_leverage / unit_notional
+qty = floor_to_step(min(raw_qty, max_notional / unit_notional,
+                        max_qty_by_margin, exchange_max_qty))
+notional = qty * unit_notional
+initial_margin = notional / selected_leverage
 ```
 
-Reject nếu quantity/notional dưới minimum của sàn, snapshot tài khoản stale, stop sai, leverage vượt cap, margin thiếu hoặc aggregate exposure quá giới hạn. Leverage không làm tăng ngân sách lỗ được phép.
+Reject nếu quantity/notional dưới minimum của sàn, snapshot tài khoản stale, stop sai hoặc `selected_leverage > leverage_cap`; áp dụng `available_margin` và aggregate exposure trước khi phát hành plan. Leverage không làm tăng ngân sách lỗ được phép.
 
 <a id="entry-exit-price-contract"></a>
 ### 7.3 Hợp đồng entry/exit price
@@ -289,6 +334,10 @@ Reject nếu quantity/notional dưới minimum của sàn, snapshot tài khoản
 - Khi control plane lỗi, runtime không mất bảo vệ. Runtime nạp ConfigVersion được duyệt gần nhất; từ chối config stale; hành vi emergency vẫn deterministic.
 - Readiness gồm migration tương thích, restore test, clock sync, source rights, secret rotation, demo order, UNKNOWN reconcile, partial fill protection, pause/resume RBAC và incident/alert test.
 - Log/trace có correlation từ decision→plan→intent→exchange order→fill→trade; loại credential, cookie, Telegram token, private message body và PII không cần thiết.
+
+- Local bootstrap cần token sinh trong .secrets/bootstrap_token; token hợp lệ chỉ có tác dụng khi DB chưa có workspace/user. Owner và workspace ở trạng thái SETUP cho tới khi mã TOTP đầu tiên được xác minh. Session hết hạn sau 12 giờ; cookie có HttpOnly/SameSite=Strict, Secure ở production; mutation cần CSRF token theo session. Thao tác risk kiểm tra MFA trong 15 phút gần nhất.
+- Argon2id dùng tham số mặc định đã công bố của argon2-cffi; cần benchmark trên tài nguyên production trước khi đặt concurrency. TOTP dùng cửa sổ một chu kỳ lệch và counter đã dùng để chặn replay. Rate limiter hiện nằm trong bộ nhớ một process; production nhiều replica cần kho dùng chung và ngưỡng vận hành được hiệu chỉnh.
+- Seed TOTP local được mã hóa AES-256-GCM trong volume riêng; backup cần giữ cả PostgreSQL, volume MFA và key file được bảo vệ. Mất key thì phải khôi phục qua quy trình MFA recovery; giao diện recovery chưa có ở MVP.
 
 ## 9. Process có thể triển khai riêng
 

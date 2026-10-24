@@ -71,7 +71,7 @@ Ký hiệu và công thức cố định:
 - `up=H_t-H_prev`, `down=L_prev-L_t`; `+DM=up` nếu `up>down,up>0`, còn lại 0; `-DM` đối xứng. `DIplus=100 RMA(+DM)/ATR`, `DIminus=100 RMA(-DM)/ATR`; `DX=100 abs(DIplus-DIminus)/(DIplus+DIminus)`; `ADX=RMA(DX)`, mẫu có mẫu số 0 quy ước 0.
 - Bollinger: `mid=SMA_20`, `sd=sqrt(mean((C-mid)^2))` dùng ddof=0; `upper/lower=mid±2sd`; `BW=(upper-lower)/mid`.
 - `RV_n=sqrt(sum(r^2)/n)` là volatility mỗi bar; nếu annualize dùng số bar/năm của timeframe, crypto 365 ngày. `ER_n=abs(C_t-C_{t-n})/sum(abs(ΔC))`; mẫu số 0 quy ước 0.
-- `z_t(x)=(x_t-mean(x[t-n:t-1]))/std(x[t-n:t-1],ddof=0)`; sd bằng 0: bỏ tín hiệu. Percentile dùng cùng cửa sổ quá khứ.
+- `z_t(x)=(x_t-mean(x[t-n:t]))/std(x[t-n:t],ddof=0)`; cửa sổ gồm đúng `n` mẫu trước `t`, không gồm mẫu hiện tại. sd bằng 0: bỏ tín hiệu. Percentile dùng cùng cửa sổ quá khứ.
 - `VWAP=Σ(P_i V_i)/ΣV_i`; dùng trade price nếu có, proxy nến `P=(H+L+C)/3` phải ghi rõ. Tất cả session VWAP reset lúc 00:00 UTC.
 
 Với hướng `s=+1` long, `s=-1` short, giá khớp vào `E`, `A=ATR_14` tại signal; stop ban đầu `E-s kA`, TP `E+s mA`. Distance `D=kA` cố định tại entry. Trailing long là max(stop trước, highest trade price kể từ entry - kA), short là min(stop trước, lowest trade price + kA); không nới stop. Time stop đếm từ fill. Bar chạm cả stop và TP mà thiếu tick: tính stop trước hoặc đánh dấu ambiguous rồi báo sensitivity. Stop dùng mark hoặc contract price phải khớp cấu hình thực tế; fill không đồng nhất với trigger.

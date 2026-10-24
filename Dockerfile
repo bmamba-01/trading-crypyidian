@@ -18,6 +18,7 @@ RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-dev --no-ins
 
 COPY src ./src
 COPY scripts/provision_database_roles.py ./scripts/provision_database_roles.py
+COPY scripts/provision_mfa_secret_volume.py ./scripts/provision_mfa_secret_volume.py
 COPY alembic.ini ./alembic.ini
 COPY migrations ./migrations
 RUN --mount=type=cache,target=/root/.cache/uv \

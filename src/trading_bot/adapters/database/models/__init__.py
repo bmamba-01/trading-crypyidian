@@ -1,8 +1,21 @@
+from trading_bot.adapters.database.models.backtest_entities import (
+    BacktestReportRecord,
+    BacktestRunRecord,
+    BacktestTrialRecord,
+)
+from trading_bot.adapters.database.models.backtest_outcome_entities import (
+    BacktestScenarioRecord,
+    BacktestTradeOutcomeRecord,
+)
 from trading_bot.adapters.database.models.base import Base
 from trading_bot.adapters.database.models.entities import (
     ApprovalRequest,
+    AuditEvent,
     ConfigVersion,
+    ConsumerReceipt,
     MfaFactor,
+    OutboxEvent,
+    PaperAccountSeed,
     RiskProfileVersion,
     RoleBinding,
     SecretReference,
@@ -15,23 +28,76 @@ from trading_bot.adapters.database.models.entities import (
     WatchlistItem,
     WatchlistVersion,
     Workspace,
+    WorkspaceSettingsVersion,
+)
+from trading_bot.adapters.database.models.feature_entities import FeatureSnapshotRecord
+from trading_bot.adapters.database.models.market_entities import (
+    IngestionCursor,
+    IngestionGap,
+    MarketBar,
+    MarketFunding,
+    MarketInstrument,
+    MarketOpenInterest,
+    MarketRawReference,
+)
+from trading_bot.adapters.database.models.paper_entities import (
+    ExchangeOrderRecord,
+    FillRecord,
+    OrderIntentRecord,
+    PaperExecutionCheckpointRecord,
+    PositionEventRecord,
+    TradeCostRecord,
+    TradeRecord,
+)
+from trading_bot.adapters.database.models.risk_entities import (
+    RiskDecisionRecord,
+    RiskReservationRecord,
+    TradePlanRecord,
 )
 
 __all__ = [
     "ApprovalRequest",
+    "AuditEvent",
+    "ConsumerReceipt",
     "Base",
+    "BacktestReportRecord",
+    "BacktestRunRecord",
+    "BacktestTrialRecord",
+    "BacktestScenarioRecord",
+    "BacktestTradeOutcomeRecord",
+    "FeatureSnapshotRecord",
+    "ExchangeOrderRecord",
+    "FillRecord",
+    "IngestionCursor",
+    "IngestionGap",
+    "MarketBar",
+    "MarketFunding",
+    "MarketInstrument",
+    "MarketOpenInterest",
+    "MarketRawReference",
     "ConfigVersion",
     "MfaFactor",
+    "OutboxEvent",
+    "PaperAccountSeed",
+    "OrderIntentRecord",
+    "PaperExecutionCheckpointRecord",
+    "PositionEventRecord",
     "RiskProfileVersion",
+    "RiskDecisionRecord",
+    "RiskReservationRecord",
     "RoleBinding",
     "SecretReference",
     "Session",
     "StrategyRelease",
     "TelegramBinding",
     "TradingAccount",
+    "TradePlanRecord",
+    "TradeCostRecord",
+    "TradeRecord",
     "UserAccount",
     "UserMembership",
     "WatchlistItem",
     "WatchlistVersion",
     "Workspace",
+    "WorkspaceSettingsVersion",
 ]

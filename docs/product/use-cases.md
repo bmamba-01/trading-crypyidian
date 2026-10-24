@@ -64,7 +64,7 @@ User là quản trị viên/nhà vận hành, analyst/reviewer hoặc engine/con
 
 **Mục tiêu:** tạo ranh giới quản trị/account trước khi nhận credential hoặc phát lệnh. **Actor:** Owner. **Trigger:** mở lần đầu. **Tiền điều kiện:** database và ứng dụng đang healthy.
 
-**Luồng chính:** tạo owner account → xác minh MFA → tạo workspace → chọn PAPER mặc định hoặc DEMO; LIVE hiển thị khóa readiness → tạo config version ban đầu → ghi audit. **Ngoại lệ:** không gửi credential/không chọn mode thì workspace vẫn là cấu hình trống; lỗi DB làm wizard dừng trước khi báo thành công. **Hậu điều kiện:** workspace có `workspace_id`, owner, config immutable và mode được lưu.
+**Luồng chính:** nhập bootstrap token → tạo owner/workspace trạng thái SETUP, mặc định PAPER hoặc chọn DEMO → thiết lập và xác minh MFA → kích hoạt user/workspace → tạo config version ban đầu và ghi audit. LIVE luôn bị khóa theo readiness. **Ngoại lệ:** token sai hoặc workspace đã tồn tại thì từ chối; lỗi DB rollback toàn transaction; nếu lỗi sau khi lưu seed MFA thì secret file được dọn. **Hậu điều kiện:** chỉ sau khi TOTP đúng, workspace/user chuyển ACTIVE và có `workspace_id`.
 
 ### UC-02 — Kết nối Binance USDⓈ-M
 

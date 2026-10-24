@@ -24,13 +24,15 @@
 
 **Đầu ra:** `compose.yaml`, Dockerfile khóa base image/tool theo digest, Garage TOML local, health/readiness probes và role process riêng. Đây là khung bootstrap; worker chưa có vòng nghiệp vụ cho tới các plan tương ứng.
 
-1. Tạo service `admin-web`, `trading-runtime`, `execution-gateway`, `ingestion-worker`, `trainer-worker`, PostgreSQL và object store.
+1. Tạo service `admin-web`, `trading-runtime`, `execution-gateway`, `ingestion-worker`, `trainer-worker`, PostgreSQL và object store. Các process Python dùng chung một image; chỉ một service khai báo cấu hình build để tránh build/tag lặp cho từng role.
 2. Tách network/process: chỉ execution gateway có thể lấy secret Binance; trainer và admin web không mount secret đó. `backend` nội bộ; admin web thêm `web_ingress` để publish cổng loopback host; gateway có `exchange_egress`, ingestion có `source_egress`. Docker bridge không thay thế firewall/egress allowlist. DB login riêng cho từng process được hoàn tất trong WP-01C cùng schema/repository.
 3. Chọn profile `local`/`paper`; mọi cấu hình khởi đầu là PAPER. Demo/live endpoint và account không dùng chung config.
 4. Thêm health/readiness để phân biệt process chạy với DB/feed/exchange readiness; secret không xuất ra health endpoint.
 5. Viết hướng dẫn tiếng Việt tại `README.md`: cài runtime, chạy migration, khởi động paper, dừng, xem log và backup local.
 
 **Nghiệm thu:** `docker compose config` hợp lệ; Compose khởi động dependency local và healthcheck đạt; dừng/khởi động lại không mất named volume; trainer/web không có biến hoặc mount secret trading; chỉ gateway có network egress dành cho Binance. Không chuyển thành LIVE từ cấu hình local.
+
+E2E dùng tag image theo hash các đầu vào thực sự được Dockerfile sao chép. Test chỉ build khi chưa có tag tương ứng; project name ngẫu nhiên vẫn cô lập tài nguyên runtime mà không sinh tag mới ở mỗi lần chạy.
 
 <a id="wp-01c-schema"></a>
 ## WP-01C — Schema nền, migration và tách biệt workspace
@@ -54,24 +56,31 @@
 
 **Đầu ra:** session auth, MFA, policy matrix, interface `SecretProvider`.
 
-1. Xác định role permission matrix cho Owner, Operator, Strategy Admin, Risk Admin, Analyst/Reviewer và service identity.
-2. Enforce permission tại service/API theo function + object + workspace; UI chỉ ẩn nút không được xem là kiểm soát bảo mật.
-3. Thêm session bảo mật, CSRF, throttling, Argon2id, TOTP cho thao tác nhạy cảm, revoke session và bootstrap owner một lần.
-4. Tạo `SecretProvider` interface; DB chỉ giữ `secret_ref`, trạng thái/fingerprint; secret lease ngắn hạn chỉ gateway được resolve.
-5. Redact token/key/cookie ở exception, trace, audit, Telegram, model prompt và fixture.
-6. Viết hướng dẫn tiếng Việt về tạo user, khôi phục MFA, rotate/revoke secret và kiểm tra quyền.
+1. Khóa matrix quyền tối thiểu cho Owner, Operator, Strategy Admin, Risk Admin, Analyst/Reviewer; mọi endpoint gọi policy phía server.
+2. Bootstrap đúng một lần bằng token riêng, tạo workspace trạng thái SETUP, Owner pending MFA, role Owner và tham chiếu MFA trong cùng transaction; xác minh TOTP mới kích hoạt workspace/user.
+3. Đăng nhập bằng workspace/email/password/TOTP; băm bằng Argon2id, lưu session token/CSRF chỉ dưới dạng SHA-256, session 12 giờ, MFA gần đây 15 phút, cookie HttpOnly/SameSite Strict/Secure khi production.
+4. Chặn phát lại mã TOTP bằng counter lưu trong DB; giới hạn thử đăng nhập theo IP + email trong process đơn; mọi handler sai thông tin trả thông điệp chung.
+5. Thêm endpoint đọc identity, cấp token CSRF, re-authenticate, logout và tạo risk profile draft; kiểm quyền Owner/Risk Admin và MFA gần đây ở server.
+6. Đặt interface `SecretProvider`; adapter local chỉ cất bí mật TOTP mã hóa AES-GCM ngoài DB. DB giữ tham chiếu; adapter này từ chối resolve credential giao dịch; adapter gateway-only sẽ được gắn khi thực hiện Plan 03.
+7. Cấp quyền INSERT/UPDATE workspace cho admin-web chỉ để bootstrap; DB giữ session/MFA/role dưới RLS. Không chuyển bí mật setup URI hoặc token vào log/trace.
+8. Thêm unit test cho hash/TOTP/replay/rate limit/policy/mã hóa; E2E đi qua bootstrap → verify → login → CSRF → risk profile → logout trên PostgreSQL/Compose.
+9. Hướng dẫn local bootstrap và lưu/backup key MFA. Quản lý invite/member, audit mutation và khôi phục MFA cần phối hợp mail, WP-01E (audit) và Plan 04 (admin UI); không xem role matrix đơn lẻ là giao diện quản lý user hoàn chỉnh.
 
-**Nghiệm thu:** kiểm thử trực tiếp endpoint chứng minh viewer/reviewer không đổi risk, secret hoặc live mode; secret fixture không xuất hiện trong DB/log; quyền bị revoke vô hiệu session theo policy.
+**Nghiệm thu:** bootstrap token sai bị từ chối và token đúng chỉ tạo một workspace; user chỉ ACTIVE sau khi xác minh TOTP; phiên bị revoke hết hạn ngay; thiếu/sai CSRF bị chặn; reviewer bị 403 khi gọi trực tiếp API thay đổi risk; giá trị TOTP không xuất hiện trong DB/file lưu trữ/log; policy đổi role được nạp lại từ DB trên mỗi request. Kiểm tra E2E phải chạy trên PostgreSQL thật, không skip khi Docker daemon không sẵn sàng.
 
 ## WP-01E — Unit of Work, audit và outbox
 
-1. Tạo `UnitOfWork` đảm bảo cập nhật domain, audit và outbox nằm trong một transaction.
-2. Thêm outbox claim bằng lease/`SKIP LOCKED`, retry với backoff, max attempts, dead-letter và receipt duy nhất theo consumer/event.
-3. Chuẩn hóa event envelope có `event_id`, `event_type`, `workspace_id`, `aggregate_id`, `occurred_at`, `correlation_id`, `idempotency_key`, `schema_version`.
-4. Không đưa secret, raw source body lớn, nội dung Telegram private hay mutable config vào payload; sự kiện tham chiếu ID/version.
-5. Ghi audit append-only với actor, action, target, reason, before/after hash và request correlation.
+**Đầu ra:** UnitOfWork gắn transaction với workspace, 3 bảng PostgreSQL có RLS, audit append-only, schema event có version, repository claim/ack/failure/dead-letter và E2E tích hợp trong PAPER Compose.
 
-**Nghiệm thu:** rollback DB không phát event; retry event không lặp side effect; audit không bị update/delete qua API ứng dụng; dead-letter có thông tin phục hồi tiếng Việt.
+1. Tạo `UnitOfWork` đảm bảo cập nhật domain, audit và outbox nằm trong một transaction; transaction-local context bắt buộc workspace, lỗi trong context phải rollback toàn bộ.
+2. Tạo `outbox_event`, `consumer_receipt`, `audit_event`; bật FORCE RLS và quyền DB tối thiểu. Role ứng dụng không có UPDATE/DELETE trên audit, trigger DB chặn thay đổi audit kể cả khi cấp nhầm quyền ghi.
+3. Thêm outbox claim theo workspace bằng lease/`FOR UPDATE SKIP LOCKED`; xử lý side effect sau khi commit claim, retry exponential backoff có trần, max attempts, dead-letter mã lỗi ngắn và receipt unique theo workspace/event/consumer.
+4. Chuẩn hóa event envelope có `event_id`, `event_type`, `workspace_id`, `aggregate_type`, `aggregate_id`, `occurred_at`, `correlation_id`, `idempotency_key`, `schema_version`, payload tham chiếu. Payload từ chối các khóa thường chứa secret.
+5. Không đưa secret, raw source body lớn, nội dung Telegram private hay mutable config vào payload; sự kiện tham chiếu ID/version. MVP định tuyến event type tới một consumer; fan-out cần bảng delivery riêng.
+6. Ghi audit append-only với actor, action, target, reason, before/after SHA-256 và request correlation; chỉ lưu hash trạng thái, không lưu snapshot.
+7. E2E PostgreSQL xác nhận rollback domain/audit/outbox, claim loại trừ worker thứ hai, retry/dead-letter, receipt, RLS và audit không thể sửa; migration upgrade/check/downgrade/upgrade lại.
+
+**Nghiệm thu:** rollback DB không giữ lại domain/audit/outbox; lease ngăn hai worker claim đồng thời và event có thể claim lại sau hết lease; lỗi retry đúng backoff/trần/max attempts; receipt không trùng; audit không bị update/delete qua role ứng dụng; payload không có trường secret; dead-letter có mã lỗi và cách phục hồi ghi bằng tiếng Việt. Không tuyên bố exactly-once cho side effect ngoài DB.
 
 ## Thứ tự bàn giao
 

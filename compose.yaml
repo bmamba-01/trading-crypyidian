@@ -44,6 +44,7 @@ services:
     restart: unless-stopped
 
   admin-web:
+    image: ${CRYPIDIAN_APP_IMAGE:-crypidian-app:local}
     build:
       context: .
       dockerfile: Dockerfile
@@ -53,7 +54,14 @@ services:
       TRADING_BOT_PROCESS_ROLE: admin-web
       TRADING_BOT_DATABASE_USER: crypidian_admin_web
       TRADING_BOT_DATABASE_PASSWORD_FILE: /run/secrets/database_admin_web_password
+      TRADING_BOT_DATABASE_HOST: postgres
+      TRADING_BOT_DATABASE_NAME: crypidian
+      TRADING_BOT_MFA_ENCRYPTION_KEY_FILE: /run/secrets/mfa_encryption_key
+      TRADING_BOT_MFA_SECRET_DIRECTORY: /var/lib/crypidian/mfa-secrets
+      TRADING_BOT_BOOTSTRAP_TOKEN_FILE: /run/secrets/bootstrap_token
     depends_on:
+      mfa-volume-provisioner:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       migrator:
@@ -73,6 +81,10 @@ services:
     security_opt: ["no-new-privileges:true"]
     secrets:
       - database_admin_web_password
+      - mfa_encryption_key
+      - bootstrap_token
+    volumes:
+      - mfa_secrets:/var/lib/crypidian/mfa-secrets
     healthcheck: &application_healthcheck
       test:
         - CMD
@@ -85,10 +97,19 @@ services:
       start_period: 15s
     restart: unless-stopped
 
+  mfa-volume-provisioner:
+    image: ${CRYPIDIAN_APP_IMAGE:-crypidian-app:local}
+    command: ["python", "scripts/provision_mfa_secret_volume.py"]
+    volumes:
+      - mfa_secrets:/var/lib/crypidian/mfa-secrets
+    user: "0:0"
+    cap_drop: ["ALL"]
+    cap_add: ["CHOWN"]
+    security_opt: ["no-new-privileges:true"]
+    restart: "no"
+
   migrator:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: ${CRYPIDIAN_APP_IMAGE:-crypidian-app:local}
     command: ["alembic", "upgrade", "head"]
     environment:
       TRADING_BOT_DATABASE_USER: crypidian_admin
@@ -110,9 +131,7 @@ services:
     security_opt: ["no-new-privileges:true"]
 
   db-provisioner:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: ${CRYPIDIAN_APP_IMAGE:-crypidian-app:local}
     command: ["python", "scripts/provision_database_roles.py"]
     environment:
       TRADING_BOT_DATABASE_USER: crypidian_admin
@@ -137,13 +156,13 @@ services:
     security_opt: ["no-new-privileges:true"]
 
   trading-runtime:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: ${CRYPIDIAN_APP_IMAGE:-crypidian-app:local}
     environment:
       TRADING_BOT_APP_ENV: local
       TRADING_BOT_TRADING_MODE: PAPER
       TRADING_BOT_PROCESS_ROLE: trading-runtime
+      # UUID deployment scope; thay bằng workspace đã được provision trước khi chạy runtime.
+      TRADING_BOT_RUNTIME_WORKSPACE_ID: ${TRADING_BOT_RUNTIME_WORKSPACE_ID:-00000000-0000-0000-0000-000000000000}
       TRADING_BOT_DATABASE_USER: crypidian_trading_runtime
       TRADING_BOT_DATABASE_PASSWORD_FILE: /run/secrets/database_trading_runtime_password
     profiles: ["paper"]
@@ -164,9 +183,7 @@ services:
     restart: unless-stopped
 
   execution-gateway:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: ${CRYPIDIAN_APP_IMAGE:-crypidian-app:local}
     environment:
       TRADING_BOT_APP_ENV: local
       TRADING_BOT_TRADING_MODE: PAPER
@@ -197,9 +214,7 @@ services:
     restart: unless-stopped
 
   ingestion-worker:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: ${CRYPIDIAN_APP_IMAGE:-crypidian-app:local}
     environment:
       TRADING_BOT_APP_ENV: local
       TRADING_BOT_TRADING_MODE: PAPER
@@ -227,9 +242,7 @@ services:
     restart: unless-stopped
 
   trainer-worker:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: ${CRYPIDIAN_APP_IMAGE:-crypidian-app:local}
     environment:
       TRADING_BOT_APP_ENV: local
       TRADING_BOT_TRADING_MODE: PAPER
@@ -265,6 +278,7 @@ networks:
 volumes:
   garage_data:
   postgres_data:
+  mfa_secrets:
 
 secrets:
   binance_api_key:
@@ -277,6 +291,10 @@ secrets:
     file: ./.secrets/postgres_password
   database_admin_web_password:
     file: ./.secrets/database_admin_web_password
+  mfa_encryption_key:
+    file: ./.secrets/mfa_encryption_key
+  bootstrap_token:
+    file: ./.secrets/bootstrap_token
   database_trading_runtime_password:
     file: ./.secrets/database_trading_runtime_password
   database_execution_gateway_password:

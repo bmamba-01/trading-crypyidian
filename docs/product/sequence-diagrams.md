@@ -5,6 +5,40 @@
 
 Các luồng dưới đây triển khai use case trong [use-cases.md](./use-cases.md). Strategy và AI không gọi Binance trực tiếp. Chỉ `RiskEngine` tạo `TradePlan` đủ điều kiện; `ExecutionGateway` mới được gửi intent ra sàn. Thuật ngữ giao dịch/AI có bản dịch và định nghĩa tại [glossary EN→VI](../research/glossary-vi.md); nhãn participant/code giữ English để khớp identifier.
 
+## SD-00 — Bootstrap Owner, xác thực MFA và session
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Owner
+    participant Client as Admin Client
+    participant API as FastAPI Auth API
+    participant Auth as AuthService
+    participant Vault as Local MFA Secret Provider
+    participant DB as PostgreSQL
+    Owner->>Client: Nhập bootstrap token, email, mật khẩu và mode PAPER/DEMO
+    Client->>API: POST /auth/bootstrap + X-Bootstrap-Token
+    API->>Auth: Kiểm tra token và giới hạn thử
+    Auth->>DB: Khóa bootstrap; tạo workspace SETUP, user PENDING_MFA, membership/Owner
+    Auth->>Vault: Sinh và lưu seed TOTP đã mã hóa
+    Auth->>DB: Lưu secret_reference, MFA factor chưa xác minh
+    API-->>Client: Trả workspace ID và otpauth URI, Cache-Control no-store
+    Owner->>Client: Đăng ký URI trong ứng dụng TOTP
+    Client->>API: POST /auth/bootstrap/verify + mã TOTP
+    API->>Auth: Xác minh mã và counter chưa dùng
+    Auth->>DB: Kích hoạt MFA, Owner và workspace
+    Client->>API: POST /auth/login với workspace, email, password, TOTP
+    API->>Auth: Xác minh mật khẩu Argon2id, MFA và trạng thái membership
+    Auth->>DB: Lưu hash session/CSRF; đặt thời hạn và MFA freshness
+    API-->>Client: Set-Cookie HttpOnly/SameSite + CSRF token trong JSON
+    Client->>API: POST mutation + cookie + X-CSRF-Token
+    API->>Auth: Nạp lại role/workspace, kiểm CSRF và permission
+    Auth-->>API: allow/deny
+    Client->>API: POST /auth/logout + X-CSRF-Token
+    Auth->>DB: Đánh dấu session revoked
+    API-->>Client: Xóa cookie session
+```
+
 ## SD-01 — Khởi tạo workspace, credential và cấu hình
 
 ```mermaid
@@ -387,6 +421,43 @@ sequenceDiagram
       Risk-->>Ops: retain pause with blocking reasons
     end
 ```
+
+## SD-14 — Unit of Work, audit và transactional outbox
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Caller as API hoặc domain service
+    participant UoW as UnitOfWork
+    participant DB as PostgreSQL
+    participant Worker as Outbox worker
+    participant Consumer as Consumer / API đích
+
+    Caller->>UoW: Mở transaction với workspace và actor
+    UoW->>DB: BEGIN + đặt app.workspace_id
+    Caller->>UoW: Ghi domain state + AuditEvent + EventEnvelope
+    UoW->>DB: INSERT audit/outbox cùng transaction
+    alt Lỗi trước commit
+        UoW->>DB: ROLLBACK toàn bộ
+        UoW-->>Caller: Trả lỗi
+    else Transaction hợp lệ
+        UoW->>DB: COMMIT
+        UoW-->>Caller: Xác nhận commit
+    end
+    Worker->>DB: Claim PENDING/lease hết bằng FOR UPDATE SKIP LOCKED
+    DB-->>Worker: Event + lease + attempt count
+    Worker->>DB: COMMIT claim
+    Worker->>Consumer: Gửi event ID/idempotency key ngoài transaction
+    alt Consumer xác nhận
+        Consumer-->>Worker: Ack / receipt result
+        Worker->>DB: Ghi ConsumerReceipt + DELIVERED
+    else Lỗi tạm thời
+        Consumer-->>Worker: Lỗi
+        Worker->>DB: PENDING + available_at backoff hoặc DEAD
+    end
+```
+
+**Giới hạn:** một event type được route tới một consumer trong MVP. Consumer ngoài DB phải tự dùng idempotency key và reconcile vì crash sau side effect nhưng trước receipt có thể làm event được gửi lại. Thuật ngữ: [Unit of Work, lease, retry và receipt](../research/glossary-vi.md#k-transaction-audit-và-hàng-đợi-sự-kiện).
 
 ## Quy tắc consistency dùng chung
 
