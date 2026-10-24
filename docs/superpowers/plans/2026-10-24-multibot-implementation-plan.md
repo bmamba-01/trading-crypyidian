@@ -112,7 +112,7 @@ WP-03 is a dependency for real Binance account activity detection and private or
 
 **Acceptance:** no account has zero or multiple bot bindings; all existing records map to exactly one bot without changing immutable payloads or PnL; bot and workspace RLS deny unauthorized scope; migrations are reversible before contract finalization and upgrade cleanly.
 
-**Trạng thái 2026-10-24:** đã triển khai và kiểm chứng (unit 534, E2E 14/14 / 452.08s, review độc lập đã xử lý); chờ duyệt commit. Chi tiết: [MB-01 WBS](./2026-10-24-mb01-identity-migration-wbs.md#kết-quả-triển-khai-2026-10-24).
+**Trạng thái 2026-10-24:** đã triển khai và kiểm chứng (unit 534, E2E 14/14 / 452.08s, review độc lập đã xử lý); commit `4871661` trên `dev`. Chi tiết: [MB-01 WBS](./2026-10-24-mb01-identity-migration-wbs.md#kết-quả-triển-khai-2026-10-24).
 
 ### Task 3 — MB-02: Versioned bot overlays and effective config Admin API
 

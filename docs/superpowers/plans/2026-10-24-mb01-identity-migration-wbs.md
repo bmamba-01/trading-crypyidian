@@ -1,6 +1,6 @@
 # MB-01 WBS — Bot identity, account binding, grants và migration
 
-**Trạng thái:** đã triển khai và kiểm chứng ngày 2026-10-24 (unit 534, E2E 14/14, review độc lập đã xử lý); chờ người dùng duyệt commit trên `dev`.  
+**Trạng thái:** đã triển khai và kiểm chứng ngày 2026-10-24 (unit 534, E2E 14/14, review độc lập đã xử lý); đã commit `4871661` trên `dev`.\
 **Ngày:** 2026-10-24  
 **Gói cha:** [WBS Multi-Bot](./2026-10-24-multibot-implementation-plan.md), Task 2.  
 **Contract:** [Hợp đồng kiến trúc Multi-Bot](../../architecture/decisions/2026-10-24-multibot-contracts.md).  
