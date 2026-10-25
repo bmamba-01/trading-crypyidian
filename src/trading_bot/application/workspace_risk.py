@@ -261,6 +261,15 @@ class WorkspaceRiskCoordinator:
         )
         active_reservations = [self.to_budget_reservation(r) for r in db_reservations]
 
+        workspace_aggregate = None
+        try:
+            workspace_aggregate = await self._reservations_repo.get_workspace_risk_aggregate(
+                workspace_id=request.workspace_id,
+                as_of=request.as_of,
+            )
+        except Exception:
+            pass
+
         # ---------------------------------------------------------------------
         # Bước 3: Đánh giá qua WorkspaceBudgetEngine.evaluate
         # ---------------------------------------------------------------------
@@ -269,6 +278,7 @@ class WorkspaceRiskCoordinator:
             accounts=accounts,
             positions=open_positions,
             reservations=active_reservations,
+            workspace_aggregate=workspace_aggregate,
             target_bot_id=str(request.bot_id),
             requested_risk_usdt=request.requested_risk_usdt,
             as_of=request.as_of,

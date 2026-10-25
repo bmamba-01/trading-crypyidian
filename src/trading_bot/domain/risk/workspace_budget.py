@@ -319,6 +319,7 @@ class WorkspaceBudgetEngine:
         target_bot_id: str,
         requested_risk_usdt: Decimal,
         as_of: datetime,
+        workspace_aggregate: WorkspaceRiskAggregate | None = None,
         operation: BudgetOperation = BudgetOperation.NEW_ENTRY,
         candidate_id: str = "",
         idempotency_key: str = "",
@@ -465,6 +466,10 @@ class WorkspaceBudgetEngine:
                 acc_pending_risk += res.reserved_risk_usdt
             if res.bot_id == target_bot_id:
                 bot_pending_risk += res.reserved_risk_usdt
+
+        if workspace_aggregate is not None:
+            ws_open_risk = max(ws_open_risk, workspace_aggregate.total_open_risk_usdt)
+            ws_pending_risk = max(ws_pending_risk, workspace_aggregate.total_pending_risk_usdt)
 
         # 5. Tính trần (Cap) từng scope
         workspace_cap = policy.root_workspace_max_open_risk_fraction * workspace_equity_usdt

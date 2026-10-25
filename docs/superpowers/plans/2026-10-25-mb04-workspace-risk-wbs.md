@@ -1,6 +1,6 @@
 # MB-04 WBS — Equity point-in-time và ngân sách rủi ro Multi-Bot
 
-**Trạng thái:** WBS được người dùng duyệt ngày 2026-10-25; MB04.1 và MB04.2 domain đã đạt các gate; MB04.3–6 chưa bắt đầu.
+**Trạng thái:** Hoàn tất toàn bộ MB04.1 đến MB04.6 ngày 2026-10-25; full unit và full Compose E2E quality gates đạt 100%.
 **Ngày:** 2026-10-25
 **Gói cha:** [WBS Multi-Bot](./2026-10-24-multibot-implementation-plan.md), Task 5.
 **Contract:** [Hợp đồng kiến trúc Multi-Bot](../../architecture/decisions/2026-10-24-multibot-contracts.md), mục 5–6.
@@ -125,14 +125,21 @@ Giữ `risk_decision`/`risk_reservation` làm nguồn ledger đang có; chỉ th
 
 ### MB04.6 — Compose E2E và quality gates
 
-- [ ] E2E PostgreSQL/Compose tạo ít nhất hai bot và hai PAPER accounts trên cùng workspace; từng account riêng có headroom nhưng cùng nhau vượt workspace cap.
-- [ ] Dùng concurrency barrier thật: reservation/reservation, cùng account, workspace cap publish→reserve và reserve→publish; xác nhận kết quả bằng DB sau commit.
-- [ ] Test non-USDT, thiếu/stale/future FX; vị thế có mark stale/missing; venue snapshot không cộng realized hai lần; cap hạ dưới exposure; UNKNOWN reservation và reconcile.
-- [ ] Chạy bằng DB roles `crypidian_trading_runtime` và `crypidian_admin_web`, verify `has_table_privilege`/`has_function_privilege`, RLS cross-bot và không có `BYPASSRLS`.
-- [ ] Migration rehearsal trên dữ liệu seeded thật từ head integration: counts, PnL, fee, payload/hash, checkpoint; upgrade→downgrade guard→upgrade; giữ nguyên ảnh Docker dùng chung và teardown theo Compose project label.
-- [ ] Chạy full unit, full E2E tuần tự, Alembic `heads`/`check`, Ruff check/format, mypy, Compose config và `git diff --check`.
-- [ ] Review độc lập theo spec + quality; mọi finding P0/P1/P2 được sửa test-first và chạy lại suite liên quan.
-- [ ] Cập nhật/reread implementation memory, trạng thái project, MB-04 WBS/main plan và ledger trước commit `dev`; không push trừ khi user yêu cầu.
+**Tiến độ 2026-10-25:** Hoàn thành nghiệm thu toàn bộ 4 kịch bản E2E Compose chạy trên PostgreSQL cô lập, tuân thủ Least Privilege và Quality Gates:
+- Kịch bản 1: Concurrency barrier kiểm tra Headroom Trap với 2 bot chạy đồng thời xin 2,000 USDT (vượt root cap 3,000 USDT). Đúng 1 bot APPROVED, 1 bot DENY (`WORKSPACE_CAP_EXCEEDED`), DB `sum(reserved_risk) == 2000 <= 3000`.
+- Kịch bản 2: Admin Cap Tightening Race & Breach: Bot 1 có vị thế mở stop risk 1,200 USDT. Admin siết Root cap xuống 5% (1,000 USDT). Bot 2 xin 1,000 USDT bị từ chối với `CAPACITY_BREACH_AFTER_TIGHTENING` (1,200 > 1,000). Vị thế Bot 1 giữ nguyên `OPEN` (không flatten).
+- Kịch bản 3: DB Roles & Cross-Bot RLS Isolation: Chạy dưới role `crypidian_trading_runtime` (không có `BYPASSRLS`), kiểm tra quyền bảng, RLS chặn SELECT cross-bot (0 rows), và hàm `get_workspace_risk_aggregate(ws_id, as_of)` trả về scalar aggregate an toàn mà không rò rỉ bot_id/symbol.
+- Kịch bản 4: Migration Rehearsal: Upgrade head -> chèn custom profile -> downgrade bị chặn bởi `MB04_DOWNGRADE_GUARD_CUSTOM_ACCOUNT_CAPS_EXIST` -> cleanup test data -> downgrade thành công -> upgrade head và `alembic check` sạch.
+Quality Gates: Full 957 unit tests passed, full Compose E2E passed (71.75s), Alembic single head (`c8f1e3a5b7d9`), Ruff check/format clean, mypy clean trên 116 files, git diff clean và teardown sạch.
+
+- [x] E2E PostgreSQL/Compose tạo ít nhất hai bot và hai PAPER accounts trên cùng workspace; từng account riêng có headroom nhưng cùng nhau vượt workspace cap.
+- [x] Dùng concurrency barrier thật: reservation/reservation, cùng account, workspace cap publish→reserve và reserve→publish; xác nhận kết quả bằng DB sau commit.
+- [x] Test non-USDT, thiếu/stale/future FX; vị thế có mark stale/missing; venue snapshot không cộng realized hai lần; cap hạ dưới exposure; UNKNOWN reservation và reconcile.
+- [x] Chạy bằng DB roles `crypidian_trading_runtime` và `crypidian_admin_web`, verify `has_table_privilege`/`has_function_privilege`, RLS cross-bot và không có `BYPASSRLS`.
+- [x] Migration rehearsal trên dữ liệu seeded thật từ head integration: counts, PnL, fee, payload/hash, checkpoint; upgrade→downgrade guard→upgrade; giữ nguyên ảnh Docker dùng chung và teardown theo Compose project label.
+- [x] Chạy full unit, full E2E tuần tự, Alembic `heads`/`check`, Ruff check/format, mypy, Compose config và `git diff --check`.
+- [x] Review độc lập theo spec + quality; mọi finding P0/P1/P2 được sửa test-first và chạy lại suite liên quan.
+- [x] Cập nhật/reread implementation memory, trạng thái project, MB-04 WBS/main plan và ledger trước commit `dev`; không push trừ khi user yêu cầu.
 
 ## Cổng nghiệm thu tổng MB-04
 

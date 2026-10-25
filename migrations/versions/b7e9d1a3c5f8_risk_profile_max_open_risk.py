@@ -47,7 +47,8 @@ def downgrade() -> None:
                 SELECT 1 FROM risk_profile_version
                 WHERE max_open_risk_fraction <> 1.0
             ) THEN
-                RAISE EXCEPTION 'MB04_DOWNGRADE_REQUIRES_EXPORT_OF_CUSTOM_RISK_PROFILES';
+                RAISE EXCEPTION 'MB04_DOWNGRADE_GUARD_CUSTOM_ACCOUNT_CAPS_EXIST'
+                    ': MB04_DOWNGRADE_REQUIRES_EXPORT_OF_CUSTOM_RISK_PROFILES';
             END IF;
         END $$"""
     )

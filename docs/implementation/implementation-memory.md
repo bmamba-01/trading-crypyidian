@@ -620,3 +620,36 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **TDD:** RED trước với `ModuleNotFoundError` khi module chưa tồn tại. GREEN với 9 tests ban đầu, mở rộng lên 13 tests bao phủ toàn diện.
 - **Chất lượng:** `ruff check` và `ruff format` sạch 100% trên toàn bộ 225 files. `mypy src` đạt 116 source files sạch 100%. Alembic duy nhất 1 head `c8f1e3a5b7d9`. Full unit tests: **957 passed / 15.17s** (tăng từ 944 lên 957, 0 failed, 0 skipped).
 - **Đã đọc lại mục memory sau cập nhật:** có; đối chiếu code diff, WBS MB04.5, advisory lock, DTO và toàn bộ kết quả tests.
+
+### 2026-10-25 — MB04.6: Compose E2E và quality gates
+
+- **Phạm vi:** worktree `mb04-risk`, nhánh `mb04-workspace-risk`; triển khai probe `tests/e2e/probes/workspace_risk_concurrency.py` và test `tests/e2e/test_workspace_risk_concurrency_e2e.py` bao phủ 4 kịch bản Compose E2E bắt buộc theo WBS MB04.6. Đồng thời hoàn tất kiểm tra quality gates toàn diện.
+- **Thay đổi:**
+  1. `domain/risk/workspace_budget.py` & `application/workspace_risk.py`:
+     - Bổ sung tham số `workspace_aggregate: WorkspaceRiskAggregate | None = None` vào `WorkspaceBudgetEngine.evaluate`.
+     - Tích hợp `ws_open_risk = max(ws_open_risk, workspace_aggregate.total_open_risk_usdt)` và `ws_pending_risk = max(ws_pending_risk, workspace_aggregate.total_pending_risk_usdt)`. Đảm bảo tuân thủ Ruling 9 (RLS cross-bot isolation): bot runtime không thể SELECT dòng của bot khác trên bảng `risk_reservation`, do đó bắt buộc dùng `get_workspace_risk_aggregate` để tổng hợp đúng tổng rủi ro pending của toàn workspace.
+     - `WorkspaceRiskCoordinator.reserve` nạp `self._reservations_repo.get_workspace_risk_aggregate(workspace_id=request.workspace_id, as_of=request.as_of)` và truyền vào engine.
+  2. `tests/e2e/probes/workspace_risk_concurrency.py`:
+     - Triển khai đầy đủ 4 pha E2E:
+       - Scenario 1 (*Headroom Trap Concurrency Barrier*): 1 Workspace, 2 Accounts (10k USDT each => 20k equity), Root Cap = 15% (3,000 USDT), Account Cap = 25% (2,500 USDT). Hai bot đồng thời xin 2,000 USDT => đúng 1 bot APPROVED, đúng 1 bot DENY (`WORKSPACE_CAP_EXCEEDED`), DB `sum(reserved_risk) == 2000 <= 3000`. Dùng `coordinator.build_account_scope(...)` kèm snapshot/conversion đã chuẩn bị để tránh vi phạm RLS khi nạp state của account khác.
+       - Scenario 2 (*Admin Cap Tightening Race & Breach*): Tách riêng `admin_tighten_phase` (chạy role `crypidian_admin` qua service `migrator` để có quyền ghi `workspace_settings_version`) siết root cap xuống 5% (1,000 USDT) và `bot2_breach_phase` (chạy role `crypidian_trading_runtime`). Bot 2 xin 1,000 USDT khi Bot 1 đang có vị thế mở stop risk 1,200 USDT => bị từ chối với `CAPACITY_BREACH_AFTER_TIGHTENING` (1,200 > 1,000), vị thế Bot 1 giữ nguyên `OPEN`.
+       - Scenario 3 (*DB Roles & Cross-Bot RLS Isolation*): Dưới role `crypidian_trading_runtime`: `has_table_privilege('risk_reservation', 'SELECT, INSERT, UPDATE') == True`, `rolbypassrls == False`. Query reservation bot 2 từ session bot 1 trả về 0 rows (RLS chặn). Gọi hàm `get_workspace_risk_aggregate(ws_id, as_of)` trả về scalar aggregate thành công, không rò rỉ bot_id/symbol.
+       - Scenario 4 (*Migration Rehearsal*): `alembic upgrade head` -> chèn profile custom cap `max_open_risk_fraction = 0.5` -> `alembic downgrade f4d6b8c0e2a5` bị chặn bởi downgrade guard `MB04_DOWNGRADE_GUARD_CUSTOM_ACCOUNT_CAPS_EXIST` -> xóa row test và reset `max_open_risk_fraction = 1.0` -> downgrade thành công về `f4d6b8c0e2a5` -> upgrade lại `head` -> `alembic check` sạch.
+     - Sử dụng `NOW = datetime.now(UTC)` thay vì hardcode timestamp để tránh vi phạm check constraint `expires_at > created_at`.
+     - Bọc payload JSONB bằng `Jsonb(...)`.
+     - Tuân thủ trigger `protect_risk_reservation_transition` với đúng enum `EXPIRED_BEFORE_SUBMIT` và `OPEN_RISK_RECORDED`.
+  3. `tests/e2e/test_workspace_risk_concurrency_e2e.py`:
+     - Test runner pytest Compose E2E chạy probe containerized qua các role và service tương ứng (`trading-runtime` và `migrator`), xác minh JSON output của cả 4 kịch bản.
+- **TDD/Verification:**
+  - E2E Test: `tests/e2e/test_workspace_risk_concurrency_e2e.py` passed trong 71.75s.
+  - Full Unit Tests: `pytest tests/unit -q` -> **957 passed** trong 19.94s (100% pass, 0 fail, 0 skip).
+  - Lint/Format/Mypy:
+    - `ruff check .` -> All checks passed!
+    - `ruff format --check .` -> 310 files already formatted.
+    - `mypy src` -> Success: no issues found in 116 source files.
+  - Alembic: duy nhất 1 head `c8f1e3a5b7d9 (head)`.
+  - Git diff: `git diff --check` sạch hoàn toàn.
+- **Bài học & quyết định kỹ thuật:**
+  - **Ruling 9 RLS Enforcement**: Khi chạy dưới `crypidian_trading_runtime`, application không thể dùng SELECT trên bảng `risk_reservation` để lấy pending rủi ro của bot khác. Phải dùng SQL function `SECURITY DEFINER get_workspace_risk_aggregate(p_workspace_id, p_as_of)`. Hàm này trả về aggregate tổng mức rủi ro mở và đang chờ mà không làm rò rỉ metadata các bot.
+  - **Admin Privilege Partitioning**: Cập nhật `workspace_settings_version` yêu cầu quyền ghi chỉ thuộc về role admin. Bot runtime chỉ có quyền SELECT. Do đó các thao tác cấu hình admin trong probe/test phải thực thi qua service/role có thẩm quyền (`migrator`/`crypidian_admin`).
+- **Đã đọc lại mục memory sau cập nhật:** có; đối chiếu code diff, probe, test output và WBS MB04.6.
