@@ -23,6 +23,8 @@ def test_schema_contains_all_foundation_tables() -> None:
     assert set(Base.metadata.tables) == {
         "bot_instance",
         "bot_grant",
+        "bot_config_version",
+        "bot_config_request",
         "workspace",
         "user_account",
         "user_membership",

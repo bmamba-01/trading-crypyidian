@@ -214,7 +214,12 @@ def _approved_context(workspace_id, account_id, published, evaluated_at):
     )
 
 
-def _application_with_fakes(*, fail_submission: bool):
+async def _no_bot_config(**_: object) -> None:
+    """Bot chưa có version publish: runtime giữ đường root như MB-01."""
+    return None
+
+
+def _application_with_fakes(*, fail_submission: bool, **service_overrides: object):
     workspace_id = uuid4()
     account_id = uuid4()
     evaluated_at = datetime.now(UTC)
@@ -243,8 +248,9 @@ def _application_with_fakes(*, fail_submission: bool):
             return published
 
     class _Cycle:
-        async def prepare_published_with_risk_profile(self, **_: object) -> SimpleNamespace:
+        async def prepare_published_with_risk_profile(self, **kwargs: object) -> SimpleNamespace:
             counters.cycles += 1
+            counters.cycle_kwargs = kwargs
             candidate_id = "candidate-123"
             plan_hash = "b" * 64
             return SimpleNamespace(
@@ -348,6 +354,7 @@ def _application_with_fakes(*, fail_submission: bool):
         account_invalidation_callback=lambda account, reason: callback_state.invalidations.append(
             (account, reason)
         ),
+        **{"bot_config_loader": _no_bot_config} | service_overrides,  # type: ignore[arg-type]
     )
     command = PaperDecisionCommand(
         account_id=account_id,
@@ -650,6 +657,7 @@ def test_open_trade_release_pin_is_resolved_from_immutable_ledger_lineage() -> N
         strategy_release_id=release_id,
         strategy_release_hash=release.content_hash,
         settings_version_id=published.settings_version_id,
+        evidence={},
     )
     settings_json = published.settings.model_dump(mode="json")
     settings_json["strategy"]["parameters"] = {"donchian_lookback": 56}

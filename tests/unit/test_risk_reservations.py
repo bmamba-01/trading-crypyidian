@@ -15,6 +15,13 @@ from trading_bot.domain.risk.reservations import (
     RiskReservationBook,
 )
 
+_DECIDED_AT = datetime(2026, 10, 24, 13, tzinfo=UTC)
+
+
+def _fixed_clock() -> datetime:
+    """Đồng hồ cố định trước hạn candidate; tránh test phụ thuộc giờ hệ thống."""
+    return _DECIDED_AT
+
 
 def _decision(
     *,
@@ -30,7 +37,7 @@ def _decision(
         reason_code="APPROVED" if approved else "RISK_REJECTED",
         detail_vi="Đã kiểm tra giới hạn rủi ro." if approved else "Bị từ chối.",
         plan_hash=plan_hash,
-        candidate_expires_at=datetime(2026, 10, 24, 13, tzinfo=UTC) + timedelta(minutes=5),
+        candidate_expires_at=_DECIDED_AT + timedelta(minutes=5),
         workspace_id="workspace-a",
         account_id=account,
         settings_version_id="settings-v1",
@@ -54,7 +61,7 @@ def _decision(
 
 
 def test_reservation_is_idempotent_and_rejects_key_reuse_for_another_plan() -> None:
-    book = RiskReservationBook()
+    book = RiskReservationBook(clock=_fixed_clock)
     first = book.reserve(_decision(), "intent-1")
     repeated = book.reserve(_decision(), "intent-1")
 
@@ -66,7 +73,7 @@ def test_reservation_is_idempotent_and_rejects_key_reuse_for_another_plan() -> N
 
 
 def test_unknown_order_keeps_reserved_risk_until_reconciliation() -> None:
-    book = RiskReservationBook()
+    book = RiskReservationBook(clock=_fixed_clock)
     first = book.reserve(_decision(), "intent-1")
     unknown = book.mark_unknown(first.reservation_id)
 
@@ -85,7 +92,7 @@ def test_unknown_order_keeps_reserved_risk_until_reconciliation() -> None:
 
 
 def test_reconciled_fill_transfers_reservation_after_open_risk_is_recorded() -> None:
-    book = RiskReservationBook()
+    book = RiskReservationBook(clock=_fixed_clock)
     reservation = book.reserve(_decision(), "intent-filled")
     book.mark_unknown(reservation.reservation_id)
 
@@ -100,7 +107,7 @@ def test_reconciled_fill_transfers_reservation_after_open_risk_is_recorded() -> 
 
 
 def test_rejected_decision_cannot_reserve_and_scope_isolated() -> None:
-    book = RiskReservationBook()
+    book = RiskReservationBook(clock=_fixed_clock)
     with pytest.raises(ReservationConflict, match="approved"):
         book.reserve(_decision(approved=False), "intent-rejected")
     book.reserve(_decision(account="account-a"), "a")
@@ -110,7 +117,7 @@ def test_rejected_decision_cannot_reserve_and_scope_isolated() -> None:
 
 
 def test_concurrent_reservations_never_exceed_remaining_aggregate_ceiling() -> None:
-    book = RiskReservationBook()
+    book = RiskReservationBook(clock=_fixed_clock)
     barrier = Barrier(2)
 
     def reserve(key: str) -> bool:
@@ -128,7 +135,7 @@ def test_concurrent_reservations_never_exceed_remaining_aggregate_ceiling() -> N
 
 
 def test_reservation_also_enforces_position_count_concurrently() -> None:
-    book = RiskReservationBook()
+    book = RiskReservationBook(clock=_fixed_clock)
     one_slot_left = replace(
         _decision(risk="10", baseline="0", ceiling="100"),
         open_position_count=1,
@@ -188,7 +195,7 @@ def test_unknown_reservation_does_not_expire_and_keeps_held_risk() -> None:
 
 
 def test_reservation_book_enforces_available_margin_including_held_reservations() -> None:
-    book = RiskReservationBook()
+    book = RiskReservationBook(clock=_fixed_clock)
     decision = replace(
         _decision(risk="1", baseline="0", ceiling="100"),
         available_margin=Decimal("100"),
@@ -200,7 +207,7 @@ def test_reservation_book_enforces_available_margin_including_held_reservations(
 
 
 def test_reconcile_is_idempotent_only_for_the_same_terminal_outcome() -> None:
-    book = RiskReservationBook()
+    book = RiskReservationBook(clock=_fixed_clock)
     reservation = book.reserve(_decision(), "intent-terminal")
     book.mark_unknown(reservation.reservation_id)
 
@@ -214,7 +221,7 @@ def test_reconcile_is_idempotent_only_for_the_same_terminal_outcome() -> None:
 
 
 def test_release_rejects_submitted_flag_even_after_prior_release() -> None:
-    book = RiskReservationBook()
+    book = RiskReservationBook(clock=_fixed_clock)
     reservation = book.reserve(_decision(), "intent-released")
     book.release_before_submit(
         reservation.reservation_id,
