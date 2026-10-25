@@ -452,6 +452,7 @@ class AuthService:
         name: str,
         max_risk_fraction: Decimal,
         settings: dict[str, object],
+        max_open_risk_fraction: Decimal = Decimal("1.0"),
     ) -> UUID:
         from trading_bot.adapters.database.models import RiskProfileVersion
 
@@ -468,6 +469,7 @@ class AuthService:
                 name=name.strip(),
                 version=(latest_version or 0) + 1,
                 max_risk_fraction=max_risk_fraction,
+                max_open_risk_fraction=max_open_risk_fraction,
                 settings=settings,
                 is_active=False,
             )

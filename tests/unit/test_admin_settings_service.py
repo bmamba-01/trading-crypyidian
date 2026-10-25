@@ -90,6 +90,9 @@ class MemorySettingsRepository:
     def __init__(self, session: object) -> None:
         del session
 
+    async def lock_workspace_risk(self, workspace_id: object) -> None:
+        del workspace_id
+
     async def lock_workspace(self, workspace_id: object) -> None:
         del workspace_id
 

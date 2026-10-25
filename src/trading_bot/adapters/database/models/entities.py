@@ -315,6 +315,10 @@ class RiskProfileVersion(UuidPrimaryKey, CreatedAt, Base):
         CheckConstraint(
             "max_risk_fraction >= 0 AND max_risk_fraction <= 1", name="risk_fraction_range"
         ),
+        CheckConstraint(
+            "max_open_risk_fraction > 0 AND max_open_risk_fraction <= 1",
+            name="open_risk_fraction_range",
+        ),
     )
 
     workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
@@ -322,6 +326,9 @@ class RiskProfileVersion(UuidPrimaryKey, CreatedAt, Base):
     version: Mapped[int] = mapped_column(Integer, nullable=False)
     max_risk_fraction: Mapped[Decimal] = mapped_column(
         Numeric(12, 10, asdecimal=True), nullable=False
+    )
+    max_open_risk_fraction: Mapped[Decimal] = mapped_column(
+        Numeric(12, 10, asdecimal=True), nullable=False, default=Decimal("1.0")
     )
     settings: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

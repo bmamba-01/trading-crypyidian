@@ -406,8 +406,7 @@ class WorkspaceBudgetEngine:
                 approved=False,
                 reason_code=data_error_code,
                 detail_vi=(
-                    "Từ chối entry mới do mẫu số vốn/FX không khả dụng: "
-                    f"{data_error_code.value}."
+                    f"Từ chối entry mới do mẫu số vốn/FX không khả dụng: {data_error_code.value}."
                 ),
                 as_of=as_of,
                 workspace_equity_usdt=ZERO,

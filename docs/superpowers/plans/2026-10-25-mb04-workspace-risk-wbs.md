@@ -94,12 +94,12 @@ Giữ `risk_decision`/`risk_reservation` làm nguồn ledger đang có; chỉ th
 
 ### MB04.3 — Config root/account/bot và migration
 
-- [ ] Thêm `workspace_max_open_risk_fraction`, `max_equity_age`, `max_conversion_age`, mark freshness/policy cần thiết vào nested root settings hiện hành; giữ schema/versioning/canonical hash/`extra=forbid`.
-- [ ] Thêm account `max_open_risk_fraction` độc lập trên risk-profile version; cập nhật create/validate/read API hiện có, migration và tests; giữ `max_risk_fraction` hiện tại cho ngữ nghĩa per-trade.
-- [ ] Thêm optional `bot_max_open_risk_fraction` vào overlay, canonical serialization và effective resolver; validate `0 < bot <= account <= root`, reject thay đổi ngoài allowlist.
-- [ ] Khi publish root change tác động risk, lấy workspace advisory lock trước lúc đọc exposure/reservation/equity; giữ audit/MFA/revision/parent checks hiện có.
-- [ ] Migration head sau nhánh integration đã được chốt; downgrade bảo toàn dữ liệu, từ chối khi snapshot/decision mới không thể tái dựng; không drop dữ liệu ngầm.
-- [ ] Kiểm JSON/version cũ: defaulting chỉ cho trường settings mới có giá trị an toàn đã được chốt; không hồi sinh/bịa snapshot historical.
+- [x] Thêm `workspace_max_open_risk_fraction`, `max_equity_age`, `max_conversion_age`, mark freshness/policy cần thiết vào nested root settings hiện hành; giữ schema/versioning/canonical hash/`extra=forbid`.
+- [x] Thêm account `max_open_risk_fraction` độc lập trên risk-profile version; cập nhật create/validate/read API hiện có, migration và tests; giữ `max_risk_fraction` hiện tại cho ngữ nghĩa per-trade.
+- [x] Thêm optional `bot_max_open_risk_fraction` vào overlay, canonical serialization và effective resolver; validate `0 < bot <= account <= root`, reject thay đổi ngoài allowlist.
+- [x] Khi publish root change tác động risk, lấy workspace advisory lock trước lúc đọc exposure/reservation/equity; giữ audit/MFA/revision/parent checks hiện có.
+- [x] Migration head sau nhánh integration đã được chốt; downgrade bảo toàn dữ liệu, từ chối khi snapshot/decision mới không thể tái dựng; không drop dữ liệu ngầm.
+- [x] Kiểm JSON/version cũ: defaulting chỉ cho trường settings mới có giá trị an toàn đã được chốt; không hồi sinh/bịa snapshot historical.
 
 **Nghiệm thu:** API/config model từ chối float, cap nới, giá trị ngoài [0,1], stale-policy vô hiệu; version cũ đọc ổn định; migration upgrade/downgrade/upgrade giữ immutable history và chỉ một Alembic head.
 

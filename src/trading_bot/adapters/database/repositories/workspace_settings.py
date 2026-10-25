@@ -234,6 +234,13 @@ class WorkspaceSettingsRepository:
             {"workspace_lock": f"workspace-settings:{workspace_id}"},
         )
 
+    async def lock_workspace_risk(self, workspace_id: UUID) -> None:
+        """Tuần tự hóa publish risk và reservation trên cùng workspace."""
+        await self._session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:risk_lock, 0))"),
+            {"risk_lock": f"workspace-risk:{workspace_id}"},
+        )
+
     async def _validate_risk_reference(self, workspace_id: UUID, profile_id: UUID) -> None:
         profile = await self._session.scalar(
             select(RiskProfileVersion).where(

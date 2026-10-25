@@ -413,11 +413,19 @@ async def apply_root_settings_layer(context: SeedContext) -> None:
                 "name": profile.name,
                 "version": profile.version,
                 "max_risk_fraction": profile.max_risk_fraction,
+                "max_open_risk_fraction": profile.max_open_risk_fraction,
                 "settings": profile.settings,
                 "is_active": profile.is_active,
                 "created_at": SEEDED_AT,
             },
-            identity=("workspace_id", "name", "version", "max_risk_fraction", "settings"),
+            identity=(
+                "workspace_id",
+                "name",
+                "version",
+                "max_risk_fraction",
+                "max_open_risk_fraction",
+                "settings",
+            ),
             mutable=("is_active",),
         )
     for version in dataset.settings_versions:
