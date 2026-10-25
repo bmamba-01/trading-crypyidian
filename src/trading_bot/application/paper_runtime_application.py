@@ -11,11 +11,15 @@ from decimal import Decimal
 from typing import Any, Protocol
 from uuid import UUID
 
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from trading_bot.adapters.database.models.entities import StrategyRelease, WorkspaceSettingsVersion
 from trading_bot.adapters.database.models.paper_entities import OrderIntentRecord, TradeRecord
+from trading_bot.adapters.database.repositories.bot_config_versions import (
+    BotConfigVersionRepository,
+)
 from trading_bot.adapters.database.repositories.risk_reservations import (
     RiskReservationRepository,
 )
@@ -23,6 +27,11 @@ from trading_bot.adapters.database.repositories.workspace_settings import (
     SettingsVersionConflict,
     WorkspaceSettingsRepository,
     settings_hash,
+)
+from trading_bot.application.bot_config_resolver import (
+    BotConfigResolutionError,
+    EffectiveBotConfig,
+    load_effective_bot_config,
 )
 from trading_bot.application.outbox import AfterCommitCallbackError, UnitOfWork
 from trading_bot.application.paper_decision_cycle import (
@@ -44,6 +53,7 @@ from trading_bot.application.paper_lifecycle import (
     PositionLifecycleResult,
 )
 from trading_bot.application.paper_runtime_bootstrap import PaperRuntimeAccount
+from trading_bot.config.bot_settings import BotConfigOverlay, overlay_hash
 from trading_bot.config.workspace_settings import PublishedWorkspaceSettings, WorkspaceSettings
 from trading_bot.domain.execution.paper import PaperBar
 from trading_bot.domain.risk.engine import RiskState
@@ -53,7 +63,7 @@ from trading_bot.domain.risk.planner import (
     PlannerSettings,
     PlanRejected,
 )
-from trading_bot.domain.strategy.contracts import DecisionSnapshot, NoTrade
+from trading_bot.domain.strategy.contracts import DecisionSnapshot, NoTrade, StrategySelection
 from trading_bot.domain.strategy.registry import StrategyRegistry
 
 
@@ -85,6 +95,19 @@ class PaperDecisionContext:
     account_quote_asset: str
     open_exposures: tuple[OpenExposure, ...]
     evidence: Mapping[str, object]
+
+
+class BotConfigLoader(Protocol):
+    """Nạp cấu hình hiệu lực của bot trong UoW decision; None khi bot chưa có version."""
+
+    async def __call__(
+        self,
+        *,
+        uow: UnitOfWork,
+        account: PaperRuntimeAccount,
+        published: PublishedWorkspaceSettings,
+        as_of: datetime,
+    ) -> EffectiveBotConfig | None: ...
 
 
 class PaperDecisionContextProvider(Protocol):
@@ -187,6 +210,7 @@ class PaperRuntimeApplicationService:
         risk_repository_factory: Any = RiskReservationRepository,
         decision_cycle_factory: Any | None = None,
         account_invalidation_callback: Callable[[UUID, str], None] | None = None,
+        bot_config_loader: BotConfigLoader | None = None,
     ) -> None:
         self._workspace_id = workspace_id
         self._sessions = sessions
@@ -198,6 +222,7 @@ class PaperRuntimeApplicationService:
         self._risk_repository_factory = risk_repository_factory
         self._decision_cycle_factory = decision_cycle_factory or self._make_decision_cycle
         self._account_invalidation_callback = account_invalidation_callback
+        self._bot_config_loader = bot_config_loader or load_runtime_bot_config
         self._invalid_accounts: set[UUID] = set()
 
     def is_available_for(self, account_id: UUID) -> bool:
@@ -236,6 +261,10 @@ class PaperRuntimeApplicationService:
                 published, profile = await self._load_published_profile(
                     uow, account=account, as_of=command.evaluated_at
                 )
+                bot_config = await self._load_bot_config(
+                    uow, account=account, published=published, as_of=command.evaluated_at
+                )
+                bot_lineage = _bot_lineage(bot_config)
                 strategy_release_id = await self._resolve_strategy_release_id(
                     uow, published=published
                 )
@@ -244,6 +273,9 @@ class PaperRuntimeApplicationService:
                     settings_version_id=published.settings_version_id,
                     strategy_release=published.settings.strategy.default_release,
                     feature_snapshot_id=command.feature_snapshot_id,
+                    bot_config_version_id=(
+                        bot_config.bot_config_version_id if bot_config is not None else None
+                    ),
                 )
                 existing = await uow.session.scalar(
                     select(OrderIntentRecord).where(
@@ -264,6 +296,10 @@ class PaperRuntimeApplicationService:
                         != StrategyRegistry()
                         .get_release(published.settings.strategy.default_release)
                         .content_hash
+                        or any(
+                            existing.evidence.get(key) != value
+                            for key, value in _bot_lineage_expectation(bot_lineage).items()
+                        )
                     ):
                         raise PaperRuntimeApplicationError("PAPER_IDEMPOTENCY_CONFLICT")
                     try:
@@ -305,6 +341,7 @@ class PaperRuntimeApplicationService:
                     risk_state=context.risk_state,
                     open_exposures=context.open_exposures,
                     cost_model=profile.cost_model,
+                    bot_config=bot_config,
                 )
                 if decision.outcome is not DecisionCycleOutcome.RISK_APPROVED:
                     if (
@@ -356,6 +393,7 @@ class PaperRuntimeApplicationService:
                         "risk_decision_id": str(evaluation.risk_decision_id),
                         "plan_hash": plan.plan_hash,
                     }
+                    | bot_lineage
                 )
                 submission = await account.coordinator.submit_approved(
                     uow,
@@ -544,6 +582,37 @@ class PaperRuntimeApplicationService:
             raise PaperRuntimeApplicationError("PAPER_PROFILE_DRIFT")
         return published, profile
 
+    async def _load_bot_config(
+        self,
+        uow: UnitOfWork,
+        *,
+        account: PaperRuntimeAccount,
+        published: PublishedWorkspaceSettings,
+        as_of: datetime,
+    ) -> EffectiveBotConfig | None:
+        """Resolve overlay bot cho entry mới; mọi sai lệch đều chặn entry (fail-closed)."""
+        try:
+            config = await self._bot_config_loader(
+                uow=uow, account=account, published=published, as_of=as_of
+            )
+        except BotConfigResolutionError:
+            raise PaperRuntimeApplicationError("PAPER_BOT_CONFIG_NOT_EFFECTIVE") from None
+        if config is None:
+            return None
+        if (
+            config.workspace_id != self._workspace_id
+            or config.account_id != account.account_id
+            or config.bot_id != account.bot_id
+            or config.settings_version_id != published.settings_version_id
+            or config.settings_hash != published.settings_hash
+            or not config.verify_hash()
+        ):
+            raise PaperRuntimeApplicationError("PAPER_BOT_CONFIG_SCOPE_MISMATCH")
+        if config.strategy.release_id != published.settings.strategy.default_release:
+            # Chạy release riêng của bot cần fan-out theo bot (MB-03); chưa hỗ trợ ở đây.
+            raise PaperRuntimeApplicationError("PAPER_BOT_STRATEGY_FANOUT_REQUIRED")
+        return config
+
     def _invalidate_account(self, account_id: UUID, reason_code: str) -> None:
         self._invalid_accounts.add(account_id)
         if self._account_invalidation_callback is not None:
@@ -573,8 +642,6 @@ class PaperRuntimeApplicationService:
         try:
             settings = WorkspaceSettings.model_validate(settings_version.settings_json)
             parameters = tuple(sorted(settings.strategy.parameters.items()))
-            from trading_bot.domain.strategy.contracts import StrategySelection
-
             StrategySelection(
                 settings_version_id=str(settings_version_id),
                 active_release_ids=(settings.strategy.default_release,),
@@ -609,9 +676,64 @@ class PaperRuntimeApplicationService:
             or settings.strategy.default_release != release.name
         ):
             return invalid_pin
-        return PinnedPositionStrategy(
-            release.name, release_hash, str(settings_version_id), parameters
+        pinned_parameters = await self._pinned_bot_parameters(
+            uow,
+            intent=intent,
+            root_release=settings.strategy.default_release,
+            root_parameters=parameters,
         )
+        if pinned_parameters is None:
+            return invalid_pin
+        return PinnedPositionStrategy(
+            release.name, release_hash, str(settings_version_id), pinned_parameters
+        )
+
+    async def _pinned_bot_parameters(
+        self,
+        uow: UnitOfWork,
+        *,
+        intent: OrderIntentRecord,
+        root_release: str,
+        root_parameters: tuple[tuple[str, int], ...],
+    ) -> tuple[tuple[str, int], ...] | None:
+        """Tham số strategy theo version bot ghi trong intent lúc mở; None nếu lineage hỏng."""
+        evidence = intent.evidence
+        raw_version_id = evidence.get("bot_config_version_id")
+        if raw_version_id is None:
+            return root_parameters
+        try:
+            version_id = UUID(str(raw_version_id))
+        except ValueError:
+            return None
+        record = await BotConfigVersionRepository(uow.session).get(
+            workspace_id=self._workspace_id, bot_id=intent.bot_id, version_id=version_id
+        )
+        if (
+            record is None
+            or record.status != "PUBLISHED"
+            or overlay_hash(record.overlay_json) != record.overlay_hash
+            or record.overlay_hash != evidence.get("bot_config_hash")
+        ):
+            return None
+        try:
+            overlay = BotConfigOverlay.model_validate(record.overlay_json)
+        except ValidationError:
+            return None
+        if overlay.strategy is None:
+            return root_parameters
+        if overlay.strategy.release_id != root_release:
+            return None
+        parameters = tuple(sorted(overlay.strategy.parameters.items()))
+        try:
+            StrategySelection(
+                settings_version_id=str(intent.settings_version_id),
+                active_release_ids=(root_release,),
+                published=True,
+                parameters=parameters,
+            )
+        except TypeError, ValueError:
+            return None
+        return parameters
 
     @staticmethod
     def _validate_monitor_evidence(
@@ -817,12 +939,49 @@ async def _load_scoped_intent(
     )
 
 
+async def load_runtime_bot_config(
+    *,
+    uow: UnitOfWork,
+    account: PaperRuntimeAccount,
+    published: PublishedWorkspaceSettings,
+    as_of: datetime,
+) -> EffectiveBotConfig | None:
+    """Loader mặc định: resolve cùng root đã nạp trong transaction decision hiện tại."""
+    return await load_effective_bot_config(
+        uow.session,
+        workspace_id=uow.workspace_id,
+        account_id=account.account_id,
+        as_of=as_of,
+        published=published,
+    )
+
+
+_BOT_LINEAGE_KEYS = ("bot_config_version_id", "bot_config_hash", "effective_config_hash")
+
+
+def _bot_lineage(config: EffectiveBotConfig | None) -> dict[str, str]:
+    """Lineage bot ghi vào evidence intent; rỗng khi bot dùng root như MB-01."""
+    if config is None:
+        return {}
+    return {
+        "bot_config_version_id": str(config.bot_config_version_id),
+        "bot_config_hash": config.bot_config_hash,
+        "effective_config_hash": config.effective_hash,
+    }
+
+
+def _bot_lineage_expectation(lineage: dict[str, str]) -> dict[str, str | None]:
+    """Intent trùng key phải mang đúng lineage bot hiện tại (hoặc không có nếu dùng root)."""
+    return {key: lineage.get(key) for key in _BOT_LINEAGE_KEYS}
+
+
 def _decision_idempotency_key(
     *,
     account_id: UUID,
     settings_version_id: UUID,
     strategy_release: str,
     feature_snapshot_id: str,
+    bot_config_version_id: UUID | None = None,
 ) -> str:
     material = {
         "account_id": str(account_id),
@@ -830,6 +989,9 @@ def _decision_idempotency_key(
         "strategy_release": strategy_release,
         "feature_snapshot_id": feature_snapshot_id,
     }
+    # Chỉ thêm khi bot có version publish để key lịch sử (MB-01) giữ nguyên.
+    if bot_config_version_id is not None:
+        material["bot_config_version_id"] = str(bot_config_version_id)
     digest = hashlib.sha256(
         json.dumps(material, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()

@@ -25,6 +25,9 @@ TABLES = (
     "trade_cost",
     "paper_execution_checkpoint",
 )
+# Bảng bot-scoped do migration sau MB-01 thêm (MB-02); vẫn kiểm chặt không có index lạ.
+LATER_BOT_SCOPED_TABLES = ("bot_config_version", "bot_config_request")
+BOT_SCOPE_INDEXES = {f"ix_{table}_bot_scope" for table in (*TABLES, *LATER_BOT_SCOPED_TABLES)}
 NOW = datetime(2026, 10, 24, tzinfo=UTC)
 
 
@@ -442,7 +445,7 @@ def verify(connection, previous):
             "WHERE i.indisvalid AND c.relname LIKE 'ix_%%_bot_scope'"
         ).fetchall()
     }
-    assert indexed == {f"ix_{table}_bot_scope" for table in TABLES}, indexed
+    assert indexed == BOT_SCOPE_INDEXES, indexed
     rejected(connection, lambda: connection.execute("UPDATE fill SET price=101"))
     rejected(
         connection,
@@ -803,7 +806,7 @@ with psycopg.connect(
         )
         assert database.execute(
             "SELECT count(*) FROM pg_class WHERE relname LIKE 'ix_%%_bot_scope'"
-        ).fetchone()[0] == len(TABLES)
+        ).fetchone()[0] == len(BOT_SCOPE_INDEXES)
     elif phase == "verify_legacy":
         assert snapshot(database) == json.loads(os.environ["MB01_SNAPSHOT"])
     else:

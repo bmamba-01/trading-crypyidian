@@ -15,6 +15,8 @@ from trading_bot.adapters.database.engine import (
     database_url_from_secret,
 )
 from trading_bot.adapters.secrets.local_mfa import LocalMfaSecretProvider
+from trading_bot.admin.bot_service import BotConfigAdminService
+from trading_bot.admin.bots_router import router as bots_router
 from trading_bot.admin.settings_router import router as settings_router
 from trading_bot.admin.settings_service import SettingsAdminService
 from trading_bot.application.paper_runtime_application import (
@@ -75,6 +77,11 @@ def create_app(
         )
         application.state.settings_admin_service = (
             SettingsAdminService(active_session_factory)
+            if active_session_factory is not None
+            else None
+        )
+        application.state.bot_admin_service = (
+            BotConfigAdminService(active_session_factory)
             if active_session_factory is not None
             else None
         )
@@ -175,6 +182,7 @@ def create_app(
         app.state.paper_application = None
     app.include_router(auth_router)
     app.include_router(settings_router)
+    app.include_router(bots_router)
 
     @app.exception_handler(RequestValidationError)
     async def validation_error_response(

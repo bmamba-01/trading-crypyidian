@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import StrEnum
+from typing import TYPE_CHECKING
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -29,6 +30,9 @@ from trading_bot.domain.strategy.contracts import (
     StrategySelection,
 )
 from trading_bot.domain.strategy.registry import StrategyRegistry
+
+if TYPE_CHECKING:
+    from trading_bot.application.bot_config_resolver import EffectiveBotConfig
 
 type StrategyResult = StrategyCandidate | NoTrade
 type PlanResult = TradePlan | PlanRejected
@@ -140,8 +144,14 @@ class PaperDecisionCycle:
         open_exposures: tuple[OpenExposure, ...],
         cost_model: CostModel,
         strategy_parameters: tuple[tuple[str, int], ...] = (),
+        selection_override: StrategySelection | None = None,
+        allowed_symbols: tuple[str, ...] | None = None,
+        allowed_timeframes: tuple[str, ...] | None = None,
     ) -> DecisionCycleResult:
-        """Chuẩn bị quyết định từ root settings mà chưa gửi PAPER intent."""
+        """Chuẩn bị quyết định từ root settings mà chưa gửi PAPER intent.
+
+        ``selection_override``/``allowed_*`` đến từ cấu hình hiệu lực của bot (tập con root).
+        """
         settings_version_id = str(published_settings.settings_version_id)
         if (
             published_settings.effective_at is not None
@@ -184,12 +194,34 @@ class PaperDecisionCycle:
                 ),
             )
             return DecisionCycleResult(DecisionCycleOutcome.NO_TRADE, no_trade)
+        if (allowed_symbols is not None and snapshot.symbol not in allowed_symbols) or (
+            allowed_timeframes is not None and not observed_timeframes.issubset(allowed_timeframes)
+        ):
+            no_trade = NoTrade(
+                strategy_id=published_settings.settings.strategy.default_release,
+                code="BOT_MARKET_SCOPE_MISMATCH",
+                detail_vi="Symbol hoặc timeframe nằm ngoài universe của cấu hình bot hiệu lực.",
+            )
+            return DecisionCycleResult(DecisionCycleOutcome.NO_TRADE, no_trade)
         selection = strategy_selection_from_published_settings(
             published_settings.settings,
             settings_version_id=settings_version_id,
             is_published=True,
         )
-        if strategy_parameters:
+        if selection_override is not None:
+            if (
+                selection_override.settings_version_id != settings_version_id
+                or selection_override.active_release_ids != selection.active_release_ids
+                or not selection_override.published
+            ):
+                no_trade = NoTrade(
+                    strategy_id=published_settings.settings.strategy.default_release,
+                    code="BOT_CONFIG_SCOPE_MISMATCH",
+                    detail_vi="Strategy của bot không cùng root version/release đang chạy.",
+                )
+                return DecisionCycleResult(DecisionCycleOutcome.NO_TRADE, no_trade)
+            selection = selection_override
+        elif strategy_parameters:
             selection = StrategySelection(
                 settings_version_id=selection.settings_version_id,
                 active_release_ids=selection.active_release_ids,
@@ -220,23 +252,51 @@ class PaperDecisionCycle:
         risk_state: RiskState,
         open_exposures: tuple[OpenExposure, ...],
         cost_model: CostModel,
+        bot_config: EffectiveBotConfig | None = None,
     ) -> DecisionCycleResult:
-        """Nạp hard caps đã ghim trong root settings trước khi đánh giá tín hiệu."""
+        """Nạp hard caps root; có cấu hình bot thì thay bằng giới hạn đã siết của bot."""
         profile = await load_risk_profile(
             session,
             workspace_id=published_settings.workspace_id,
             profile_id=published_settings.settings.risk.profile_version_id,
         )
         effective_planner = profile.apply_to(planner_settings)
+        if bot_config is None:
+            return self.prepare_published(
+                published_settings=published_settings,
+                snapshot=snapshot,
+                evaluated_at=evaluated_at,
+                planner_settings=effective_planner,
+                account=account,
+                risk_state=risk_state,
+                open_exposures=open_exposures,
+                cost_model=cost_model,
+            )
+        if (
+            bot_config.workspace_id != published_settings.workspace_id
+            or bot_config.settings_version_id != published_settings.settings_version_id
+            or bot_config.settings_hash != published_settings.settings_hash
+            or bot_config.risk_profile_version_id != profile.profile_id
+        ):
+            no_trade = NoTrade(
+                strategy_id=published_settings.settings.strategy.default_release,
+                code="BOT_CONFIG_SCOPE_MISMATCH",
+                detail_vi="Cấu hình bot không được resolve trên root/risk profile đang chạy.",
+            )
+            return DecisionCycleResult(DecisionCycleOutcome.NO_TRADE, no_trade)
+        # Resolver đã chứng minh mọi giới hạn bot <= root, nên thay limits không nới cap.
         return self.prepare_published(
             published_settings=published_settings,
             snapshot=snapshot,
             evaluated_at=evaluated_at,
-            planner_settings=effective_planner,
+            planner_settings=replace(effective_planner, limits=bot_config.risk_limits),
             account=account,
             risk_state=risk_state,
             open_exposures=open_exposures,
             cost_model=cost_model,
+            selection_override=bot_config.strategy_selection(),
+            allowed_symbols=bot_config.symbols,
+            allowed_timeframes=bot_config.timeframes,
         )
 
     def prepare(
