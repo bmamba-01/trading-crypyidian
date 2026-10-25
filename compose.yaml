@@ -155,6 +155,44 @@ services:
     cap_drop: ["ALL"]
     security_opt: ["no-new-privileges:true"]
 
+  # Chỉ local/test: gieo dataset QA qua `scripts/seed_qa_data.py seed --local-only`.
+  # Profile riêng nên `up` mặc định không chạy; credentials đi qua stdin, không qua env.
+  qa-seed:
+    image: ${CRYPIDIAN_APP_IMAGE:-crypidian-app:local}
+    profiles: ["qa"]
+    command: ["python", "/qa/scripts/seed_qa_data.py", "apply"]
+    environment:
+      TRADING_BOT_APP_ENV: local
+      TRADING_BOT_TRADING_MODE: PAPER
+      TRADING_BOT_DATABASE_USER: crypidian_admin
+      TRADING_BOT_DATABASE_PASSWORD_FILE: /run/secrets/postgres_password
+      TRADING_BOT_DATABASE_HOST: postgres
+      TRADING_BOT_DATABASE_NAME: crypidian
+      TRADING_BOT_MFA_ENCRYPTION_KEY_FILE: /run/secrets/mfa_encryption_key
+      TRADING_BOT_MFA_SECRET_DIRECTORY: /var/lib/crypidian/mfa-secrets
+    depends_on:
+      migrator:
+        condition: service_completed_successfully
+      mfa-volume-provisioner:
+        condition: service_completed_successfully
+    secrets:
+      - postgres_password
+      - mfa_encryption_key
+    networks:
+      - backend
+    volumes:
+      - mfa_secrets:/var/lib/crypidian/mfa-secrets
+      - ./scripts/seed_qa_data.py:/qa/scripts/seed_qa_data.py:ro
+      - ./scripts/qa_seed_layers.py:/qa/scripts/qa_seed_layers.py:ro
+      - ./tests/fixtures/qa_dataset:/qa/tests/fixtures/qa_dataset:ro
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    user: "10001:10001"
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    restart: "no"
+
   trading-runtime:
     image: ${CRYPIDIAN_APP_IMAGE:-crypidian-app:local}
     environment:
