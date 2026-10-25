@@ -2,7 +2,8 @@ name: crypidian
 
 services:
   postgres:
-    image: postgres:18.1-bookworm@sha256:cc9f4143a8d2fa8cf3749d0cb4d26ecf2d53a77a2ac807e9ebd67ae22426221a
+    # SEC-02: minor 18.6 (vá CVE-2026-14666 và các CVE 18.2–18.6); digest là OCI index đa kiến trúc.
+    image: postgres:18.6-bookworm@sha256:bbf83594798e144bff365a9c191c5d779f181fb3135902064ab8ff11918020fc
     environment:
       POSTGRES_DB: crypidian
       POSTGRES_USER: crypidian_admin
