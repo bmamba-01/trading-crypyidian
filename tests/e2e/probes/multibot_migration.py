@@ -520,11 +520,13 @@ def verify(connection, previous):
         )
         assert connection.execute("SELECT count(*) FROM approval_request").fetchone()[0] == 2
         # Hàng workspace-only chỉ đọc; bot không được sửa hoặc chuyển hàng của mình thành NULL.
-        assert (
-            connection.execute(
+        # SEC-01 (R5): runtime chỉ còn SELECT trên approval_request nên bị chặn ở quyền bảng.
+        rejected(
+            connection,
+            lambda: connection.execute(
                 "UPDATE approval_request SET status=status WHERE bot_id IS NULL"
-            ).rowcount
-            == 0
+            ),
+            "42501",
         )
         rejected(
             connection,
