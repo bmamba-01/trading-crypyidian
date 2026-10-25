@@ -1,6 +1,6 @@
 # MB-04 WBS — Equity point-in-time và ngân sách rủi ro Multi-Bot
 
-**Trạng thái:** WBS được người dùng duyệt ngày 2026-10-25; triển khai sau integration pass.
+**Trạng thái:** WBS được người dùng duyệt ngày 2026-10-25; MB04.1 domain đã đạt các gate; MB04.2–6 chưa bắt đầu.
 **Ngày:** 2026-10-25
 **Gói cha:** [WBS Multi-Bot](./2026-10-24-multibot-implementation-plan.md), Task 5.
 **Contract:** [Hợp đồng kiến trúc Multi-Bot](../../architecture/decisions/2026-10-24-multibot-contracts.md), mục 5–6.
@@ -70,10 +70,12 @@ Giữ `risk_decision`/`risk_reservation` làm nguồn ledger đang có; chỉ th
 
 ### MB04.1 — RED unit contracts cho equity, mark và chuyển đổi
 
-- [ ] Viết unit tests trước source cho PAPER equity đúng công thức, không double-count realized; nhiều fills/vị thế long-short; phí đã chốt; mark favorable/adverse; thứ tự mark và `as_of`.
-- [ ] Kiểm tra `Decimal` chính xác, không nhận float/NaN/Infinity/giá âm, currency mismatch, UTC-naive, thời gian tương lai, mark stale, missing mark, position scope sai, snapshot unknown.
-- [ ] Kiểm tra USDT identity; non-USDT direct/approved route; stale/missing/future/rejected FX; rounding theo Decimal policy; conversion có provenance/hash.
-- [ ] Kiểm tra venue basis validator không cộng realized lần hai, nhưng không nối venue adapter trong WP này.
+**Tiến độ 2026-10-25:** thêm domain thuần tại `domain/risk/equity.py` và 55 focused unit tests; full unit 848 passed. Hợp đồng giữ UTC/Decimal/frozen lineage và typed reason code. FX DIRECT được duyệt làm tròn xuống 1e-8 USDT; USDT identity giữ nguyên. Full Compose E2E cuối đạt 18 passed / 895.46s sau khi Docker Desktop inspect 500 ở lượt đầu; Ruff/mypy/migration/config và teardown đạt. Chưa nghiệm thu toàn MB-04. Config/repository/budget/reservation chưa nối runtime.
+
+- [x] Viết unit tests trước source cho PAPER equity đúng công thức, không double-count realized; nhiều fills/vị thế long-short; phí đã chốt; mark favorable/adverse; thứ tự mark và `as_of`.
+- [x] Kiểm tra `Decimal` chính xác, không nhận float/NaN/Infinity/giá âm, currency mismatch, UTC-naive, thời gian tương lai, mark stale, missing mark, position scope sai, snapshot unknown.
+- [x] Kiểm tra USDT identity; non-USDT direct/approved route; stale/missing/future/rejected FX; rounding theo Decimal policy; conversion có provenance/hash.
+- [x] Kiểm tra venue basis validator không cộng realized lần hai, nhưng không nối venue adapter trong WP này.
 
 **Nghiệm thu:** RED chứng minh đúng các contract và fail-closed; các trường hợp boundary đều assert reason code cụ thể, không chỉ assert boolean.
 
