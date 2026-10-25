@@ -120,15 +120,17 @@ WP-03 is a dependency for real Binance account activity detection and private or
 
 **Interfaces:** `resolve_effective_bot_config(workspace_settings: PublishedWorkspaceSettings, bot_version: BotConfigVersion, account: TradingAccount, as_of: datetime) -> EffectiveBotConfig`; `BotConfigAdminService.create_draft/publish/rollback(...)`.
 
-- [ ] **Step 1: Add unit tests for inheritance, explicit override allowlist, schema/hash validation, root-version pin, effective time and secret-field rejection.**
-- [ ] **Step 2: Add tests that reject bot overlay raising workspace/account risk caps, changing venue/mode, selecting inactive release or referencing another workspace.** Include boundary equality and Decimal cases.
-- [ ] **Step 3: Implement immutable `BotConfigVersion` JSON/hash with parent version, revision, author/approver, effective time, audit/outbox event.**
-- [ ] **Step 4: Implement resolver.** Resolve root published version + bot published version + approved strategy/model releases; return lineage IDs/hashes and validated effective risk subset. Drafts never affect runtime.
-- [ ] **Step 5: Add Admin API endpoints.** `GET /api/v1/bots`; `POST /api/v1/bots`; `GET /api/v1/bots/{bot_id}`; `POST /api/v1/bots/{bot_id}/config-drafts`; `PUT /api/v1/bots/{bot_id}/config-drafts/{draft_id}`; `POST .../validate`; `POST .../publish`; `POST .../rollback`. Every operation verifies workspace and bot permission; risk change requires recent MFA.
-- [ ] **Step 6: Add API tests for CSRF, RBAC, stale revision/parent, idempotent retry, audit/outbox and cross-bot/cross-workspace denial.**
-- [ ] **Step 7: Compose E2E publish a bot overlay while a PAPER position is open.** New entries use new overlay; old position keeps pinned strategy/config and protective exits; root hard caps remain enforced.
+- [x] **Step 1: Add unit tests for inheritance, explicit override allowlist, schema/hash validation, root-version pin, effective time and secret-field rejection.**
+- [x] **Step 2: Add tests that reject bot overlay raising workspace/account risk caps, changing venue/mode, selecting inactive release or referencing another workspace.** Include boundary equality and Decimal cases.
+- [x] **Step 3: Implement immutable `BotConfigVersion` JSON/hash with parent version, revision, author/approver, effective time, audit/outbox event.**
+- [x] **Step 4: Implement resolver.** Resolve root published version + bot published version + approved strategy/model releases; return lineage IDs/hashes and validated effective risk subset. Drafts never affect runtime.
+- [x] **Step 5: Add Admin API endpoints.** `GET /api/v1/bots`; `POST /api/v1/bots`; `GET /api/v1/bots/{bot_id}`; `POST /api/v1/bots/{bot_id}/config-drafts`; `PUT /api/v1/bots/{bot_id}/config-drafts/{draft_id}`; `POST .../validate`; `POST .../publish`; `POST .../rollback`. Every operation verifies workspace and bot permission; risk change requires recent MFA.
+- [x] **Step 6: Add API tests for CSRF, RBAC, stale revision/parent, idempotent retry, audit/outbox and cross-bot/cross-workspace denial.**
+- [x] **Step 7: Compose E2E publish a bot overlay while a PAPER position is open.** New entries use new overlay; old position keeps pinned strategy/config and protective exits; root hard caps remain enforced.
 
 **Acceptance:** effective config is deterministic and hash-verifiable; bot publish never mutates root settings; no overlay can relax root cap; publish is immutable, audited and serialized; active positions keep original config lineage.
+
+**Trạng thái 2026-10-25:** hoàn thành và tích hợp vào `dev`; review độc lập đạt. Unit MB-02 670 passed, E2E tập trung đạt; suite tích hợp cuối 793 unit + 18 E2E đạt. Chi tiết và giới hạn còn lại: [MB-02 WBS](./2026-10-24-mb02-bot-config-wbs.md).
 
 ### Task 4 — MB-03: Shared evidence and per-bot strategy candidates
 
@@ -136,14 +138,16 @@ WP-03 is a dependency for real Binance account activity detection and private or
 
 **Interfaces:** `SharedSignalEvidence(workspace_id: UUID, evidence_id: UUID, symbol: str, setup_type: str, observed_at: datetime, available_at: datetime, validity_end: datetime, feature_snapshot_id: str, source_refs: tuple[str, ...], model_release_id: UUID | None, evidence_hash: str)`; `async dispatch_evidence(evidence: SharedSignalEvidence, bots: Sequence[BotInstance], as_of: datetime) -> Sequence[BotDecision]`.
 
-- [ ] **Step 1: Add domain tests for causality, validity interval, workspace scope, provenance hash and no account/quantity/order fields in shared evidence.**
-- [ ] **Step 2: Add dispatcher tests with two bots using different strategy releases.** Shared market evidence is persisted once; each bot produces its own candidate/NoTrade and unique decision idempotency; stale/foreign evidence rejects.
-- [ ] **Step 3: Implement evidence repository and idempotent outbox fan-out.** Deduplicate shared source event once, then enqueue one `(workspace_id, bot_id, evidence_id, bot_config_version_id)` decision job per eligible bot.
-- [ ] **Step 4: Invoke existing StrategyRegistry/PaperDecisionCycle using bot-specific `StrategySelection`.** Do not make shared detector output directly executable; record per-bot veto/abstain/reason and selection lineage.
-- [ ] **Step 5: Add temporal tests.** Evidence, feature, market/research inputs and model release must have `available_at <= evaluated_at`; future or revised-later evidence is rejected for historical evaluation.
-- [ ] **Step 6: Add PostgreSQL E2E.** One shared event feeds two bots; assert one shared evidence row, two bot-scoped decisions, isolated candidate/config/version and retry creates no duplicates.
+- [x] **Step 1: Add domain tests for causality, validity interval, workspace scope, provenance hash and no account/quantity/order fields in shared evidence.**
+- [x] **Step 2: Add dispatcher tests with two bots using different strategy releases.** Shared market evidence is persisted once; each bot produces its own candidate/NoTrade and unique decision idempotency; stale/foreign evidence rejects.
+- [x] **Step 3: Implement evidence repository and idempotent outbox fan-out.** Deduplicate shared source event once, then enqueue one `(workspace_id, bot_id, evidence_id, bot_config_version_id)` decision job per eligible bot.
+- [x] **Step 4: Invoke existing StrategyRegistry/PaperDecisionCycle using bot-specific `StrategySelection`.** Do not make shared detector output directly executable; record per-bot veto/abstain/reason and selection lineage.
+- [x] **Step 5: Add temporal tests.** Evidence, feature, market/research inputs and model release must have `available_at <= evaluated_at`; future or revised-later evidence is rejected for historical evaluation.
+- [x] **Step 6: Add PostgreSQL E2E.** One shared event feeds two bots; assert one shared evidence row, two bot-scoped decisions, isolated candidate/config/version and retry creates no duplicates.
 
 **Acceptance:** common market/research evidence is not duplicated per bot; each bot runs its own strategy and decision; evidence cannot create a venue order; per-bot replay is deterministic and point-in-time valid.
+
+**Trạng thái 2026-10-25:** hoàn thành và tích hợp vào `dev`; migration được re-chain sau MB-02, có FK ghép config; review độc lập đạt. Suite tích hợp cuối 793 unit + 18 E2E đạt. Các giới hạn đã chuyển tiếp sang MB-04/MB-05 gồm risk gate chưa nhận candidate fan-out, eligibility exclusion chưa persist và một số retry semantics. Chi tiết: [MB-03 WBS](./2026-10-24-mb03-shared-evidence-wbs.md).
 
 ### Task 5 — MB-04: Equity conversion and aggregate workspace/account risk
 

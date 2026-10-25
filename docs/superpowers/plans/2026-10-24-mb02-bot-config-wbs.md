@@ -1,6 +1,6 @@
 # MB-02 WBS — Bot config versioning, root+bot resolver và Admin API
 
-**Trạng thái:** đã triển khai và kiểm chứng ngày 2026-10-24 trên nhánh worktree (unit 670, E2E MB-02 tập trung đạt); chờ review độc lập và tích hợp của controller.\
+**Trạng thái:** hoàn thành và tích hợp vào `dev` ngày 2026-10-25; review độc lập đạt.\
 **Ngày:** 2026-10-24\
 **Gói cha:** [WBS Multi-Bot](./2026-10-24-multibot-implementation-plan.md), Task 3.\
 **Contract:** [Hợp đồng kiến trúc Multi-Bot](../../architecture/decisions/2026-10-24-multibot-contracts.md) mục 3 (root config/overlay), mục 6 (serialization/idempotency), mục 7 (RBAC/RLS).\
@@ -99,3 +99,10 @@ Migration `d2b4f6a8c1e3` (down `c7a90d3f8e21`); downgrade bị chặn `MB02_DOWN
 - **Idempotency key — khóa chống lặp:** khóa do client gửi để retry trả cùng kết quả thay vì tạo thay đổi mới.
 - **Request fingerprint — dấu vân tay yêu cầu:** hash payload chuẩn hóa để phát hiện tái dùng key với nội dung khác.
 - **Tighten-only — chỉ được siết:** giá trị con chỉ có thể nhỏ hơn hoặc bằng giới hạn cha.
+
+## Kết quả tích hợp cuối 2026-10-25
+
+- Commit triển khai `e53331b`, merge MB-02 `6d25454`; tích hợp cuối ở `dev` qua `1b589bb`.
+- Review độc lập MB-02: spec compliant, quality approved; review tích hợp xử lý các ranh giới bot config, strategy fan-out và QA seed.
+- E2E tập trung MB-02 đạt; suite tích hợp cuối **793 unit passed**, **18 E2E passed / 844.69 giây**.
+- Giới hạn chuyển tiếp: strategy release khác root có thể bị chặn trên đường PAPER cũ với `PAPER_BOT_STRATEGY_FANOUT_REQUIRED` cho đến khi MB-04/MB-05 nối đường candidate/risk/runtime. Minor API/audit items được ghi trong SDD ledger để xử lý ở WP phù hợp.

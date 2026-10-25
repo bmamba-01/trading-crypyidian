@@ -1,6 +1,6 @@
 # SEC-01/SEC-02 WBS — Quyền DB tối thiểu theo process và PostgreSQL 18.6
 
-**Trạng thái:** đã triển khai trên nhánh worktree (2026-10-24/25); chờ controller tích hợp.\
+**Trạng thái:** SEC-01/SEC-02 hoàn thành và tích hợp vào `dev` ngày 2026-10-25; review độc lập đạt. Phạm vi là hardening role DB và cập nhật PostgreSQL image, không phải toàn bộ security backlog.\
 **Gói cha:** [Nghiên cứu bảo mật Admin/bot](../../research/security-admin-bot-2026.md) mục 3.1 và 4.0 (SEC-01, SEC-02, P0).\
 **Liên quan:** [MB-01 WBS, rulings 6, 14, 16](./2026-10-24-mb01-identity-migration-wbs.md), [hợp đồng Multi-Bot](../../architecture/decisions/2026-10-24-multibot-contracts.md).\
 **Revision Alembic:** `f4d6b8c0e2a5` (down `c7a90d3f8e21`; controller nối lại chuỗi khi tích hợp với MB-02/MB-03).
@@ -97,3 +97,10 @@ Ký hiệu: S=SELECT, I=INSERT, U=UPDATE (U(cột) = chỉ cột liệt kê), D=
 - **Group role — role nhóm:** role PostgreSQL không đăng nhập, quyền của nó được thành viên thừa hưởng (PG18 Role Membership).
 - **Column-level privilege — quyền cấp cột:** GRANT UPDATE/SELECT trên cột cụ thể thay vì toàn bảng (PG18 Privileges).
 - **Image index digest — digest chỉ mục image đa kiến trúc:** SHA-256 của OCI image index trỏ tới manifest từng kiến trúc; ghim digest này để mọi nền tảng dùng cùng bản phát hành.
+
+## Kết quả tích hợp cuối 2026-10-25
+
+- Migration `f4d6b8c0e2a5` được re-chain sau MB-03; PostgreSQL image pin lên 18.6; ACL matrix bao gồm bảng MB-02/03; quyền `admin_web` chỉ cập nhật các cột lock cần thiết.
+- Commit triển khai/fix `dc264bd`, `0ea21d7`; merge `a5a8e1b`; re-chain/ma trận cuối `1b589bb`.
+- Unit hardening ban đầu 540 passed; final integration **793 unit passed**, **18 E2E passed / 844.69 giây**; E2E riêng `test_db_role_least_privilege.py` đạt 1/1 sau khi khởi động lại Docker Desktop.
+- Còn lại: [nghiên cứu security gaps](../../research/security-admin-bot-2026.md) có yêu cầu P0/P1 khác thuộc MB-07/MB-09/WP-03; không xem SEC-01/02 là security sign-off toàn hệ thống.

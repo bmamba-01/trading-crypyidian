@@ -1,6 +1,6 @@
 # MB-03 WBS — Shared signal evidence và fan-out strategy theo bot
 
-**Trạng thái:** WBS viết trước code ngày 2026-10-24; đã triển khai và kiểm chứng trên nhánh worktree riêng (song song MB-02), chờ controller tích hợp.\
+**Trạng thái:** WBS viết trước code ngày 2026-10-24; hoàn thành và tích hợp vào `dev` ngày 2026-10-25; review độc lập đạt.\
 **Ngày:** 2026-10-24\
 **Gói cha:** [WBS Multi-Bot](./2026-10-24-multibot-implementation-plan.md), Task 4.\
 **Contract:** [Hợp đồng kiến trúc Multi-Bot](../../architecture/decisions/2026-10-24-multibot-contracts.md) §2, §4, §6–§8.\
@@ -106,3 +106,10 @@ MB-03 đạt khi evidence chung không nhân bản theo bot; mỗi bot chạy st
 - **Validity window — cửa sổ hiệu lực:** khoảng `[available_at, validity_end)` mà evidence được phép dùng cho quyết định.
 - **Data revision — bản sửa đổi dữ liệu:** phiên bản sau của cùng một quan sát; lưu thành bản ghi mới có `available_at` muộn hơn, không ghi đè bản cũ.
 - **Decision job — tác vụ quyết định theo bot:** bản ghi bot-scoped ghim evidence, config và `evaluated_at` để bot đánh giá đúng một lần.
+
+## Kết quả tích hợp cuối 2026-10-25
+
+- Commit triển khai/fix `a92a8b3`, `b1e8b4a`, `251311b`; merge `7901df3`; integration commit `61450bf`; final re-chain/ACL verification nằm trong `1b589bb`.
+- Migration chain cuối: `c7a90d3f8e21` (MB-01) → `d2b4f6a8c1e3` (MB-02) → `e3c5a7b9d2f4` (MB-03) → `f4d6b8c0e2a5` (SEC-01/02); một Alembic head.
+- Review độc lập MB-03 và review integration rulings đạt. Full suite integration cuối **793 unit passed**, **18 E2E passed / 844.69 giây**.
+- Giới hạn chuyển tiếp: fan-out exclusions chưa persist thành audit/report artifact; old PAPER candidate path chưa nối fan-out vào MB-04/05; consumer retry phải giữ `evaluated_at` đã ghim. Chi tiết nằm trong SDD ledger.
