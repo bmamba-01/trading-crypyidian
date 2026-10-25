@@ -115,13 +115,13 @@ Giữ `risk_decision`/`risk_reservation` làm nguồn ledger đang có; chỉ th
 
 ### MB04.5 — Atomic workspace/account/bot reservation
 
-- [ ] Cập nhật risk evaluation để dùng normalized equity/caps, lưu lineage root+bot+account+snapshot/FX refs.
-- [ ] Reservation acquire workspace lock rồi account lock; sau lock re-read root cap có hiệu lực, account cap, bot cap, open worst-case risk, active reservations, exchange/account state và equity revision.
-- [ ] Kiểm idempotent replay trước/sau hết hạn; reservation UNKNOWN giữ budget; release/expire/reconcile/transfer phải dùng cùng lock order và không double-count.
-- [ ] Xử lý root publish race và cap breach theo contract; serialization/audit/outbox trong UoW hiện hành; repository không commit transaction caller.
-- [ ] Kiểm transaction rollback không để snapshot/budget/decision orphan hoặc runtime state đã publish trước commit.
+- [x] Cập nhật risk evaluation để dùng normalized equity/caps, lưu lineage root+bot+account+snapshot/FX refs.
+- [x] Reservation acquire workspace lock rồi account lock; sau lock re-read root cap có hiệu lực, account cap, bot cap, open worst-case risk, active reservations, exchange/account state và equity revision.
+- [x] Kiểm idempotent replay trước/sau hết hạn; reservation UNKNOWN giữ budget; release/expire/reconcile/transfer phải dùng cùng lock order và không double-count.
+- [x] Xử lý root publish race và cap breach theo contract; serialization/audit/outbox trong UoW hiện hành; repository không commit transaction caller.
+- [x] Kiểm transaction rollback không để snapshot/budget/decision orphan hoặc runtime state đã publish trước commit.
 
-**Nghiệm thu:** không có đường đua tạo reservation vượt tổng cap; decision/reseve dùng cùng point-in-time lineage đã kiểm; lỗi downstream rollback nguyên tử.
+**Nghiệm thu:** không có đường đua tạo reservation vượt tổng cap; decision/reserve dùng cùng point-in-time lineage đã kiểm; lỗi downstream rollback nguyên tử. 13 unit tests đạt 100% tại `tests/unit/test_workspace_risk_coordinator.py`.
 
 ### MB04.6 — Compose E2E và quality gates
 

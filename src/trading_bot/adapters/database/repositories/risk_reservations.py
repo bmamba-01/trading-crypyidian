@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, fields, is_dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -536,6 +536,123 @@ class RiskReservationRepository:
         record.resolution_reason = reason.value
         await self._session.flush()
         return _to_domain(record)
+
+    async def lock_workspace_risk(self, workspace_id: UUID) -> None:
+        """Khóa Advisory Lock cấp 1 theo workspace_id (Ruling 10)."""
+        await self._session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:risk_lock, 0))"),
+            {"risk_lock": f"workspace-risk:{workspace_id}"},
+        )
+
+    async def lock_account_risk(self, workspace_id: UUID, account_id: UUID) -> None:
+        """Khóa Advisory Lock cấp 2 theo workspace_id và account_id (Ruling 10)."""
+        await self._session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:risk_lock, 0))"),
+            {"risk_lock": f"account-risk:{workspace_id}:{account_id}"},
+        )
+
+    async def lock_accounts_risk(self, workspace_id: UUID, account_ids: Sequence[UUID]) -> None:
+        """Khóa Advisory Lock cấp 2 cho nhiều account sắp xếp UUID tăng dần (Ruling 10)."""
+        for acc_id in sorted(set(account_ids)):
+            await self.lock_account_risk(workspace_id, acc_id)
+
+    async def get_by_idempotency_key(
+        self,
+        *,
+        workspace_id: UUID,
+        bot_id: UUID,
+        account_id: UUID,
+        idempotency_key: str,
+    ) -> RiskReservationRecord | None:
+        """Tìm bản ghi reservation theo scope và idempotency key."""
+        return await self._session.scalar(
+            select(RiskReservationRecord).where(
+                RiskReservationRecord.workspace_id == workspace_id,
+                RiskReservationRecord.bot_id == bot_id,
+                RiskReservationRecord.account_id == account_id,
+                RiskReservationRecord.idempotency_key == idempotency_key,
+            )
+        )
+
+    async def get_decision_by_key(
+        self,
+        *,
+        workspace_id: UUID,
+        bot_id: UUID,
+        account_id: UUID,
+        decision_key: str,
+    ) -> RiskDecisionRecord | None:
+        """Tìm bản ghi decision theo scope và decision key."""
+        return await self._session.scalar(
+            select(RiskDecisionRecord).where(
+                RiskDecisionRecord.workspace_id == workspace_id,
+                RiskDecisionRecord.bot_id == bot_id,
+                RiskDecisionRecord.account_id == account_id,
+                RiskDecisionRecord.decision_key == decision_key,
+            )
+        )
+
+    async def get_decision_by_idempotency_key(
+        self,
+        *,
+        workspace_id: UUID,
+        bot_id: UUID,
+        account_id: UUID,
+        idempotency_key: str,
+    ) -> RiskDecisionRecord | None:
+        """Tìm bản ghi decision theo scope và idempotency key nằm trong payload."""
+        result = await self._session.scalars(
+            select(RiskDecisionRecord)
+            .where(
+                RiskDecisionRecord.workspace_id == workspace_id,
+                RiskDecisionRecord.bot_id == bot_id,
+                RiskDecisionRecord.account_id == account_id,
+            )
+            .order_by(RiskDecisionRecord.created_at.desc())
+        )
+        for record in result.all():
+            if (
+                isinstance(record.payload, dict)
+                and record.payload.get("idempotency_key") == idempotency_key
+            ):
+                return record
+        return None
+
+    async def list_active_reservations(self, *, workspace_id: UUID) -> list[RiskReservationRecord]:
+        """Lấy danh sách các reservation đang active (RESERVED hoặc UNKNOWN) trong workspace."""
+        result = await self._session.scalars(
+            select(RiskReservationRecord).where(
+                RiskReservationRecord.workspace_id == workspace_id,
+                RiskReservationRecord.status.in_(_HELD_STATUSES),
+            )
+        )
+        return list(result.all())
+
+    async def expire_overdue(
+        self,
+        *,
+        workspace_id: UUID,
+        as_of: datetime,
+        account_ids: Sequence[UUID] | None = None,
+    ) -> int:
+        """Giải phóng các row RESERVED có expires_at <= as_of sang RELEASED; bỏ qua UNKNOWN."""
+        _require_aware(as_of, "as_of")
+        stmt = select(RiskReservationRecord).where(
+            RiskReservationRecord.workspace_id == workspace_id,
+            RiskReservationRecord.status == ReservationStatus.RESERVED.value,
+            RiskReservationRecord.expires_at <= as_of,
+        )
+        if account_ids is not None:
+            stmt = stmt.where(RiskReservationRecord.account_id.in_(list(account_ids)))
+        stmt = stmt.with_for_update()
+        result = await self._session.scalars(stmt)
+        due = list(result.all())
+        for record in due:
+            record.status = ReservationStatus.RELEASED.value
+            record.resolution_reason = ReservationReleaseReason.EXPIRED_BEFORE_SUBMIT.value
+        if due:
+            await self._session.flush()
+        return len(due)
 
     async def get_workspace_risk_aggregate(
         self, *, workspace_id: UUID, as_of: datetime
