@@ -136,8 +136,8 @@ def test_bot_overlay_versions_admin_api_and_open_paper_position() -> None:
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "downgrade", "c7a90d3f8e21")
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "head")
         current = compose("run", "--rm", "--no-deps", "migrator", "alembic", "current")
-        # Head sau tích hợp là MB-03 (nối sau MB-02); downgrade ở trên đi qua cả hai.
-        assert "e3c5a7b9d2f4" in current.stdout
+        # Head sau tích hợp là SEC-01 (MB-02 → MB-03 → SEC-01); downgrade ở trên đi qua cả ba.
+        assert "f4d6b8c0e2a5" in current.stdout
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "check")
 
         # --- Owner, MFA, risk profile và root settings ------------------------------------

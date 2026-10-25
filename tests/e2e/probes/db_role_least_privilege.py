@@ -98,6 +98,30 @@ POLICY_ROLES = {
     "workspace_settings_version": {ADMIN, RUNTIME},
 }
 DML = ("SELECT", "INSERT", "UPDATE", "DELETE")
+# Bảng MB-02/MB-03 (tích hợp đợt 2): chỉ grant trực tiếp, không qua crypidian_app; worker
+# không có quyền. Kiểm cùng ma trận với bảng identity/config.
+MULTIBOT_TABLES = (
+    "bot_config_version",
+    "bot_config_request",
+    "shared_signal_evidence",
+    "bot_decision_job",
+    "bot_decision",
+)
+TABLE_PRIVILEGES[ADMIN] |= {
+    "bot_config_version": {"SELECT", "INSERT", "UPDATE"},
+    "bot_config_request": {"SELECT", "INSERT"},
+    "shared_signal_evidence": {"SELECT"},
+    "bot_decision_job": {"SELECT"},
+    "bot_decision": {"SELECT"},
+}
+TABLE_PRIVILEGES[RUNTIME] |= {
+    "bot_config_version": {"SELECT"},
+    "shared_signal_evidence": {"SELECT", "INSERT"},
+    "bot_decision_job": {"SELECT", "INSERT"},
+    "bot_decision": {"SELECT", "INSERT"},
+}
+# Runtime chỉ chuyển trạng thái job (và khóa FOR UPDATE) qua quyền cấp cột.
+COLUMN_UPDATE[RUNTIME] |= {"bot_decision_job": {"status", "completed_at"}}
 
 
 def identity(name):
@@ -328,7 +352,7 @@ def check_matrix(connection):
     """has_table_privilege/has_column_privilege cho 5 process role và crypidian_app."""
     problems = []
     for role in (*PROCESS_ROLES, "crypidian_app"):
-        for table in IDENTITY_TABLES:
+        for table in (*IDENTITY_TABLES, *MULTIBOT_TABLES):
             expected = TABLE_PRIVILEGES.get(role, {}).get(table, set())
             actual = {
                 privilege
@@ -403,7 +427,8 @@ def check_matrix(connection):
             "SELECT has_table_privilege(%s, %s, %s)", (role, table, privilege)
         ).fetchone()[0]
         assert actual is expected, (role, table, privilege, actual)
-    return {"matrix_rows": len(PROCESS_ROLES + ("crypidian_app",)) * len(IDENTITY_TABLES)}
+    tables = len(IDENTITY_TABLES) + len(MULTIBOT_TABLES)
+    return {"matrix_rows": len(PROCESS_ROLES + ("crypidian_app",)) * tables}
 
 
 def scope(connection, workspace=W1, member="", bot=""):

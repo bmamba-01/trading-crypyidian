@@ -15,7 +15,8 @@ PROBE_BOOTSTRAP = (
     "os.environ.update(SEC01_PHASE=p['phase'],SEC01_SNAPSHOT=p['snapshot']);"
     "exec(compile(p['code'],'db_role_least_privilege.py','exec'),{'__name__':'__main__'})"
 )
-PREVIOUS_HEAD = "c7a90d3f8e21"
+# Head trước SEC-01 sau tích hợp: MB-03 (bảng MB-02/MB-03 đã có grant trực tiếp riêng).
+PREVIOUS_HEAD = "e3c5a7b9d2f4"
 WORKER_SERVICES = ("execution-gateway", "ingestion-worker", "trainer-worker")
 
 

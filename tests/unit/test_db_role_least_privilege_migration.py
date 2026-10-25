@@ -71,7 +71,8 @@ def test_revision_chain_is_reserved_for_controller_integration() -> None:
     module = _load()
 
     assert module.revision == "f4d6b8c0e2a5"
-    assert module.down_revision == "c7a90d3f8e21"
+    # Tích hợp đợt 2: SEC-01 nối sau MB-03 (MB-01 → MB-02 → MB-03 → SEC-01).
+    assert module.down_revision == "e3c5a7b9d2f4"
 
 
 def test_upgrade_removes_group_identity_access_and_worker_membership(

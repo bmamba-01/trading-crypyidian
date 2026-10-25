@@ -7,13 +7,13 @@ giới hạn `TO` role dự định, giữ nguyên biểu thức. Xem
 `docs/superpowers/plans/2026-10-24-sec01-sec02-db-hardening-wbs.md`.
 
 Revision ID: f4d6b8c0e2a5
-Revises: c7a90d3f8e21
+Revises: e3c5a7b9d2f4
 """
 
 from alembic import op
 
 revision = "f4d6b8c0e2a5"
-down_revision = "c7a90d3f8e21"
+down_revision = "e3c5a7b9d2f4"
 branch_labels = None
 depends_on = None
 
