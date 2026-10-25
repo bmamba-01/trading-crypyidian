@@ -3,9 +3,11 @@
 import http.cookiejar
 import json
 import os
+import secrets
 import socket
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 import uuid
@@ -13,7 +15,7 @@ from pathlib import Path
 
 import pyotp
 from scripts.docker_image import build_image_reference, ensure_image_available
-from tests.fixtures.qa_dataset import build_qa_dataset
+from tests.fixtures.qa_dataset import build_qa_dataset, qa_id
 
 # Bootstrap ngắn đọc gói JSON từ stdin: Windows giới hạn dòng lệnh 32.767 ký tự.
 PROBE_BOOTSTRAP = (
@@ -73,6 +75,26 @@ REQUIRE_CHECKS = {
     ("qa.strategy_admin", "C", "bot:config:publish"): True,
     ("qa.owner", "C", "bot:runtime:resume"): True,
 }
+# Seed lại sau khi probe `mutate` làm lệch baseline: mỗi bộ đếm phải đúng một thay đổi.
+EXPECTED_RESET_CHANGES = {
+    "bot_grant.created": 1,
+    "bot_grant.revoked": 1,
+    "mfa_factor.deleted": 1,
+    "mfa_factor.rotated": 1,
+    "role_binding.deleted": 1,
+    "secret_reference.updated": 1,
+    "trading_account.updated": 1,
+    "user_account.password_rotated": 1,
+    "user_membership.updated": 1,
+}
+
+
+def _wait_for_next_totp_step(step: int) -> None:
+    """Login chặn phát lại counter TOTP đã dùng; đăng nhập lại cần chu kỳ 30 giây mới."""
+    deadline = time.monotonic() + 45
+    while int(time.time()) // 30 <= step:
+        assert time.monotonic() < deadline, "Đồng hồ không sang chu kỳ TOTP mới"
+        time.sleep(0.5)
 
 
 def _login(port: int, account: dict[str, object], *, slug: str | None = None):
@@ -150,6 +172,8 @@ def test_qa_seed_is_idempotent_and_accounts_work_through_real_boundaries() -> No
                 "workspace": member.workspace_key,
                 "user_id": str(member.user_id),
                 "membership_id": str(member.membership_id),
+                "mfa_factor_id": str(member.mfa_factor_id),
+                "secret_reference_id": str(member.secret_reference_id),
                 "roles": [role.value for role in member.roles],
             }
             for member in dataset.members
@@ -233,6 +257,7 @@ def test_qa_seed_is_idempotent_and_accounts_work_through_real_boundaries() -> No
             web_port, credentials["qa.owner"], slug=dataset.workspace("qa_other").slug
         )
         assert foreign_status == 401
+        first_login_step = int(time.time()) // 30
 
         # (b) Ma trận RLS/grant dưới login crypidian_admin_web thật.
         admin = probe("admin_matrix", "admin-web")
@@ -260,6 +285,84 @@ def test_qa_seed_is_idempotent_and_accounts_work_through_real_boundaries() -> No
         assert runtime["qa:OTHER"] == []
         assert runtime["bot_a_reads_account_b"] == 0
         assert runtime["bot_a_sees_qa_bots"] == 3
+
+        # (e) Reset về baseline: làm lệch trạng thái như thao tác thủ công rồi seed lại.
+        mutation = probe("mutate", "migrator")
+        assert mutation["revoked"] == 1
+        # Trigger MB-01 đồng bộ bot theo account ngay khi account bị tắt/đổi tên.
+        assert mutation["bot_a"] == ["DISABLED", "qa-paper-a-mutated"]
+        suspended_status, _, _ = _login(web_port, credentials["qa.analyst_reviewer"])
+        assert suspended_status == 401
+        document = json.loads(credentials_file.read_text(encoding="utf-8"))
+        old_risk_admin = dict(document["accounts"]["qa.risk_admin"])
+        new_password, new_totp = secrets.token_urlsafe(24), pyotp.random_base32()
+        document["accounts"]["qa.risk_admin"] |= {"password": new_password, "totp_secret": new_totp}
+        credentials_file.write_text(json.dumps(document), encoding="utf-8")
+
+        reset = seed()
+        reset_summary = json.loads(reset.stdout.strip().splitlines()[-1])
+        assert reset_summary["changes"] == EXPECTED_RESET_CHANGES
+        # Lịch sử grant bất biến: thêm grant lạ (đã thu hồi) và grant cấp lại.
+        assert reset_summary["counts"] == EXPECTED_COUNTS | {"bot_grant": 8}
+        assert reset_summary["bots"] == first_summary["bots"]
+        for value in (new_password, new_totp):
+            assert value not in reset.stdout
+            assert value not in reset.stderr
+        restored = probe("verify_reset", "migrator")
+        assert restored["account_a"] == ["ENABLED", "qa-paper-a"]
+        assert restored["bot_a"] == ["ENABLED", "qa-paper-a", "A"]
+        assert restored["membership_status"] == {
+            member.key: member.membership_status for member in dataset.members
+        }
+        assert restored["operator_roles"] == ["operator"]
+        assert restored["strategy_factors"] == [
+            str(dataset.member("qa.strategy_admin").mfa_factor_id)
+        ]
+        grants = restored["operator_grants"]
+        assert {(account, permission) for _, account, permission, live in grants if live} == {
+            ("A", "bot:read"),
+            ("A", "bot:runtime:pause"),
+            ("A", "bot:runtime:resume"),
+        }
+        revoked_grants = sorted(
+            (account, permission) for _, account, permission, live in grants if not live
+        )
+        assert revoked_grants == [("A", "bot:runtime:pause"), ("B", "bot:read")]
+        reissued = str(qa_id("bot_grant", "A:qa.operator:bot:runtime:pause:reissue:1"))
+        assert [
+            grant_id
+            for grant_id, _, permission, live in grants
+            if live and permission == "bot:runtime:pause"
+        ] == [reissued]
+        before, after = mutation["references"], restored["references"]
+        assert after["qa.risk_admin"] != before["qa.risk_admin"]
+        assert restored["risk_admin_reference_key"] == after["qa.risk_admin"]
+        assert restored["counters"]["qa.risk_admin"] is None
+        unchanged = set(before) - {"qa.risk_admin"}
+        assert {key: after[key] for key in unchanged} == {key: before[key] for key in unchanged}
+        # Tệp TOTP bị thay phải bị xóa; mọi tệp còn được tham chiếu phải còn nguyên.
+        context["mfa_files"] = {f"current:{key}": value for key, value in after.items()} | {
+            "superseded:qa.risk_admin": before["qa.risk_admin"]
+        }
+        assert probe("mfa_files", "admin-web") == {f"current:{key}": True for key in after} | {
+            "superseded:qa.risk_admin": False
+        }
+
+        # Đăng nhập lại sau reset qua API thật (chờ chu kỳ TOTP mới để tránh chặn phát lại).
+        _wait_for_next_totp_step(first_login_step)
+        rotated = json.loads(credentials_file.read_text(encoding="utf-8"))["accounts"]
+        assert rotated["qa.risk_admin"]["password"] == new_password
+        stale_status, _, _ = _login(web_port, old_risk_admin)
+        assert stale_status == 401
+        for member in dataset.members:
+            status, body, _ = _login(web_port, rotated[member.key])
+            if member.membership_status != "ACTIVE":
+                assert status == 401, (member.key, status, body)
+                continue
+            assert status == 200, (member.key, status, body)
+            assert body["roles"] == [role.value for role in member.roles]
+        idle = seed()
+        assert json.loads(idle.stdout.strip().splitlines()[-1])["changes"] == {}
 
         # (d) Tệp credentials bị git ignore và không có tệp .secrets nào được theo dõi.
         for path in (credentials_file, root / ".secrets" / "qa_accounts.json"):

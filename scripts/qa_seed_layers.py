@@ -697,6 +697,33 @@ async def count_dataset_rows(session: AsyncSession, dataset: QaDataset) -> dict[
     return {table: int(value or 0) for table, value in counts.items()}
 
 
+def releasable_references(
+    superseded: Sequence[tuple[UUID, str]], live_references: set[str]
+) -> list[tuple[UUID, str]]:
+    """Chỉ trả reference không còn hàng nào trỏ tới, mỗi reference một lần.
+
+    Tệp TOTP được định vị chỉ theo reference (không theo workspace), nên một factor lạ
+    trỏ cùng tệp với factor thật không được làm xóa tệp đang dùng.
+    """
+    releasable: list[tuple[UUID, str]] = []
+    seen: set[str] = set()
+    for workspace_id, reference in superseded:
+        if reference in live_references or reference in seen:
+            continue
+        seen.add(reference)
+        releasable.append((workspace_id, reference))
+    return releasable
+
+
+async def collect_live_mfa_references(session: AsyncSession) -> set[str]:
+    """Mọi reference MFA còn được tham chiếu trong toàn database (sau các lớp seed)."""
+    factor_references = await session.scalars(select(MfaFactor.secret_reference))
+    secret_references = await session.scalars(
+        select(SecretReference.reference_key).where(SecretReference.provider == "local_mfa")
+    )
+    return set(factor_references.all()) | set(secret_references.all())
+
+
 async def apply_dataset(
     sessions: async_sessionmaker[AsyncSession],
     dataset: QaDataset,
@@ -726,13 +753,19 @@ async def apply_dataset(
             for _name, layer in SEED_LAYERS:
                 await layer(context)
             counts = await count_dataset_rows(session, dataset)
+            await session.flush()
+            # Xác định tệp được phép xóa trong cùng transaction, trước commit.
+            releasable = releasable_references(
+                context.superseded_references, await collect_live_mfa_references(session)
+            )
     except BaseException:
         if context is not None:
             for workspace_id, reference in context.stored_references:
                 secret_provider.delete_mfa_secret(workspace_id, reference)
         raise
     assert context is not None
-    for workspace_id, reference in context.superseded_references:
+    # Chỉ xóa tệp TOTP bị thay sau khi commit thành công và không còn hàng nào trỏ tới.
+    for workspace_id, reference in releasable:
         secret_provider.delete_mfa_secret(workspace_id, reference)
     return {
         "dataset_version": dataset.version,

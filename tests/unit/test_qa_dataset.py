@@ -16,7 +16,12 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 
 import pytest
 from scripts import seed_qa_data
-from scripts.qa_seed_layers import SEED_LAYERS, DatabaseFacts, validate_database_facts
+from scripts.qa_seed_layers import (
+    SEED_LAYERS,
+    DatabaseFacts,
+    releasable_references,
+    validate_database_facts,
+)
 from scripts.seed_qa_data import (
     SeedGuardError,
     build_apply_payload,
@@ -551,6 +556,23 @@ def test_seed_orchestrator_passes_secrets_only_via_stdin_and_never_prints_them(
         assert value not in output.out
         assert value not in output.err
     assert json.loads(output.out.strip().splitlines()[-1]) == summary
+
+
+def test_superseded_mfa_files_are_released_only_when_no_row_references_them() -> None:
+    first, second = UUID(int=1), UUID(int=2)
+    superseded = [
+        # Factor lạ trỏ cùng tệp với factor thật: tệp còn sống, không được xóa.
+        (first, "local-mfa:00000000-0000-0000-0000-00000000000a"),
+        (first, "local-mfa:00000000-0000-0000-0000-00000000000b"),
+        (second, "local-mfa:00000000-0000-0000-0000-00000000000b"),
+        (first, "local-mfa:00000000-0000-0000-0000-00000000000c"),
+    ]
+    live = {"local-mfa:00000000-0000-0000-0000-00000000000a"}
+
+    assert releasable_references(superseded, live) == [
+        (first, "local-mfa:00000000-0000-0000-0000-00000000000b"),
+        (first, "local-mfa:00000000-0000-0000-0000-00000000000c"),
+    ]
 
 
 def test_redact_secrets_masks_every_known_value() -> None:

@@ -118,7 +118,7 @@ $env:PYTHONPATH = "$PWD\src"
 .\.venv\Scripts\python.exe -m pytest tests\e2e\test_qa_seed.py -q -p no:cacheprovider -rA
 ```
 
-Test tạo Compose project ngẫu nhiên `crypidian-qa-e2e-<hex>`, migrate head (`alembic check`), seed hai lần (số hàng và digest nội dung không đổi, lần hai không có thay đổi), đăng nhập từng tài khoản qua Admin API thật, kiểm tra ma trận RLS/grant dưới login `crypidian_admin_web`, bot scope dưới `crypidian_trading_runtime`, và tệp credentials bị git ignore. Test dùng tệp credentials riêng `.secrets/qa_accounts-<project>.json` và xóa nó khi kết thúc.
+Test tạo Compose project ngẫu nhiên `crypidian-qa-e2e-<hex>`, migrate head (`alembic check`), seed hai lần (số hàng và digest nội dung không đổi, lần hai không có thay đổi), đăng nhập từng tài khoản qua Admin API thật, kiểm tra ma trận RLS/grant dưới login `crypidian_admin_web`, bot scope dưới `crypidian_trading_runtime`, và tệp credentials bị git ignore. Sau đó test làm lệch baseline như thao tác thủ công (thu hồi grant pause của operator, thêm grant lạ trên bot B, đình chỉ analyst, thêm role thừa cho operator, tắt và đổi tên account A, thêm factor MFA lạ trỏ cùng tệp TOTP đang dùng, đổi mật khẩu/TOTP của `qa.risk_admin` trong tệp credentials), seed lại và kiểm: bộ đếm thay đổi đúng từng mục, account A và bot A trở lại ENABLED/tên gốc, grant cấp lại có ID `...:reissue:1`, tệp TOTP bị thay đã xóa còn mọi tệp đang được tham chiếu còn nguyên, mọi tài khoản đăng nhập lại được qua API (tài khoản đã xoay dùng mật khẩu/TOTP mới, mật khẩu cũ bị 401), và lần seed kế tiếp không còn thay đổi. Test dùng tệp credentials riêng `.secrets/qa_accounts-<project>.json` và xóa nó khi kết thúc.
 
 ## 4. Thông tin đăng nhập
 

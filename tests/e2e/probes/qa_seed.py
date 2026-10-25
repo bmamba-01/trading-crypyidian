@@ -204,5 +204,143 @@ def runtime_scope():
     return observed
 
 
-PHASES = {"snapshot": snapshot, "admin_matrix": admin_matrix, "runtime_scope": runtime_scope}
+def mfa_references(connection):
+    """Reference TOTP hiện tại của factor tất định từng thành viên."""
+    references = {}
+    for member_key, member in CONTEXT["members"].items():
+        references[member_key] = connection.execute(
+            "SELECT secret_reference FROM mfa_factor WHERE id = %s",
+            (UUID(member["mfa_factor_id"]),),
+        ).fetchone()[0]
+    return references
+
+
+def mutate():
+    """Mô phỏng thao tác thủ công của QA làm lệch baseline; seed lại phải khôi phục."""
+    workspace = UUID(CONTEXT["workspaces"]["qa"])
+    members = {key: UUID(member["membership_id"]) for key, member in CONTEXT["members"].items()}
+    bots = {key: UUID(value) for key, value in CONTEXT["bots"].items()}
+    with connect() as connection, connection.transaction():
+        before = mfa_references(connection)
+        revoked = connection.execute(
+            "UPDATE bot_grant SET revoked_at = now() WHERE workspace_id = %s AND bot_id = %s "
+            "AND membership_id = %s AND permission = 'bot:runtime:pause' AND revoked_at IS NULL",
+            (workspace, bots["A"], members["qa.operator"]),
+        ).rowcount
+        connection.execute(
+            "INSERT INTO bot_grant (id, workspace_id, bot_id, membership_id, permission, "
+            "granted_by) VALUES (gen_random_uuid(), %s, %s, %s, 'bot:read', %s)",
+            (workspace, bots["B"], members["qa.operator"], members["qa.owner"]),
+        )
+        connection.execute(
+            "UPDATE user_membership SET status = 'SUSPENDED' WHERE id = %s",
+            (members["qa.analyst_reviewer"],),
+        )
+        connection.execute(
+            "INSERT INTO role_binding (id, workspace_id, membership_id, role) "
+            "VALUES (gen_random_uuid(), %s, %s, 'risk_admin')",
+            (workspace, members["qa.operator"]),
+        )
+        connection.execute(
+            "UPDATE trading_account SET status = 'DISABLED', name = 'qa-paper-a-mutated' "
+            "WHERE id = %s",
+            (UUID(CONTEXT["accounts"]["A"]["id"]),),
+        )
+        # Factor lạ trỏ CÙNG tệp TOTP đang dùng: xóa factor lạ không được xóa tệp còn sống.
+        connection.execute(
+            "INSERT INTO mfa_factor (id, workspace_id, membership_id, factor_type, "
+            "secret_reference, verified_at) VALUES (gen_random_uuid(), %s, %s, 'TOTP', %s, now())",
+            (workspace, members["qa.strategy_admin"], before["qa.strategy_admin"]),
+        )
+        bot_a = connection.execute(
+            "SELECT status, name FROM bot_instance WHERE id = %s", (bots["A"],)
+        ).fetchone()
+    return {"references": before, "revoked": revoked, "bot_a": list(bot_a)}
+
+
+def verify_reset():
+    accounts = {UUID(account["id"]): key for key, account in CONTEXT["accounts"].items()}
+    bot_accounts = {UUID(value): key for key, value in CONTEXT["bots"].items()}
+    members = CONTEXT["members"]
+    with connect() as connection:
+        account_a = connection.execute(
+            "SELECT status, name FROM trading_account WHERE id = %s",
+            (UUID(CONTEXT["accounts"]["A"]["id"]),),
+        ).fetchone()
+        bot_a = connection.execute(
+            "SELECT status, name, trading_account_id FROM bot_instance WHERE id = %s",
+            (UUID(CONTEXT["bots"]["A"]),),
+        ).fetchone()
+        membership_status = {
+            key: connection.execute(
+                "SELECT status FROM user_membership WHERE id = %s",
+                (UUID(member["membership_id"]),),
+            ).fetchone()[0]
+            for key, member in members.items()
+        }
+        operator = UUID(members["qa.operator"]["membership_id"])
+        operator_roles = sorted(
+            row[0]
+            for row in connection.execute(
+                "SELECT role FROM role_binding WHERE membership_id = %s", (operator,)
+            ).fetchall()
+        )
+        strategy_factors = [
+            str(row[0])
+            for row in connection.execute(
+                "SELECT id FROM mfa_factor WHERE membership_id = %s",
+                (UUID(members["qa.strategy_admin"]["membership_id"]),),
+            ).fetchall()
+        ]
+        grants = [
+            [str(row[0]), bot_accounts.get(row[1], "FOREIGN"), row[2], row[3]]
+            for row in connection.execute(
+                "SELECT id, bot_id, permission, revoked_at IS NULL FROM bot_grant "
+                "WHERE membership_id = %s ORDER BY id",
+                (operator,),
+            ).fetchall()
+        ]
+        risk_admin = UUID(members["qa.risk_admin"]["secret_reference_id"])
+        risk_admin_key = connection.execute(
+            "SELECT reference_key FROM secret_reference WHERE id = %s", (risk_admin,)
+        ).fetchone()[0]
+        references = mfa_references(connection)
+        counters = {
+            key: connection.execute(
+                "SELECT last_used_counter FROM mfa_factor WHERE id = %s",
+                (UUID(member["mfa_factor_id"]),),
+            ).fetchone()[0]
+            for key, member in members.items()
+        }
+    return {
+        "account_a": list(account_a),
+        "bot_a": [bot_a[0], bot_a[1], accounts[bot_a[2]]],
+        "membership_status": membership_status,
+        "operator_roles": operator_roles,
+        "strategy_factors": strategy_factors,
+        "operator_grants": grants,
+        "risk_admin_reference_key": risk_admin_key,
+        "references": references,
+        "counters": counters,
+    }
+
+
+def mfa_files():
+    """Tồn tại tệp TOTP đã mã hóa theo reference (chạy trong service có volume MFA)."""
+    directory = Path(os.environ["TRADING_BOT_MFA_SECRET_DIRECTORY"])
+    result = {}
+    for label, reference in CONTEXT["mfa_files"].items():
+        _, _, identifier = reference.partition(":")
+        result[label] = (directory / f"{UUID(identifier).hex}.bin").is_file()
+    return result
+
+
+PHASES = {
+    "snapshot": snapshot,
+    "admin_matrix": admin_matrix,
+    "runtime_scope": runtime_scope,
+    "mutate": mutate,
+    "verify_reset": verify_reset,
+    "mfa_files": mfa_files,
+}
 print(json.dumps(PHASES[PHASE](), sort_keys=True))
