@@ -89,7 +89,8 @@ def test_create_derives_stable_hash_and_workspace_scoped_identity() -> None:
 
     assert first == second
     assert len(first.evidence_hash) == 64
-    assert first.evidence_id == signal_evidence_id(WORKSPACE_A, first.evidence_hash)
+    assert len(first.content_hash) == 64
+    assert first.evidence_id == signal_evidence_id(WORKSPACE_A, first.content_hash)
     assert first.canonical_json() == second.canonical_json()
 
 
@@ -99,6 +100,37 @@ def test_same_content_in_another_workspace_has_different_hash_and_id() -> None:
 
     assert foreign.evidence_hash != first.evidence_hash
     assert foreign.evidence_id != first.evidence_id
+
+
+def test_retry_with_later_timestamps_keeps_the_observation_identity() -> None:
+    """Re-run/retry detector dùng đồng hồ wall-clock không được tạo evidence mới."""
+    first = _evidence()
+    retry = _evidence(
+        available_at=AVAILABLE + timedelta(minutes=3),
+        validity_end=VALID_UNTIL + timedelta(minutes=3),
+    )
+
+    assert retry.content_hash == first.content_hash
+    assert retry.evidence_id == first.evidence_id
+    assert retry.evidence_hash != first.evidence_hash
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"observed_at": OBSERVED - timedelta(minutes=1)},
+        {"setup_type": "range_reversion"},
+        {"source_refs": ("market_bar:binance:BTCUSDT:1h:2026-10-20T09", "research:revised")},
+        {"model_release_id": MODEL_RELEASE},
+        {"feature_snapshot_id": "e" * 64},
+    ],
+)
+def test_content_change_is_a_new_observation_identity(overrides: dict[str, object]) -> None:
+    base = _evidence()
+    changed = _evidence(**overrides)
+
+    assert changed.content_hash != base.content_hash
+    assert changed.evidence_id != base.evidence_id
 
 
 def test_source_ref_order_does_not_change_provenance_hash() -> None:
@@ -287,6 +319,7 @@ def test_later_revision_is_new_evidence_and_unusable_for_earlier_evaluation() ->
     historical_time = AVAILABLE + timedelta(minutes=10)
 
     assert revision.evidence_id != original.evidence_id
+    assert revision.content_hash != original.content_hash
     assert original.unavailable_reason(historical_time) is None
     assert revision.unavailable_reason(historical_time) == "EVIDENCE_NOT_YET_AVAILABLE"
 

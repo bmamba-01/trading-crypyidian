@@ -33,6 +33,8 @@ class SharedSignalEvidenceRecord(UuidPrimaryKey, CreatedAt, Base):
     __table_args__ = (
         UniqueConstraint("workspace_id", "id", name="uq_shared_signal_evidence_workspace_id"),
         UniqueConstraint("workspace_id", "evidence_hash", name="uq_shared_signal_evidence_hash"),
+        # Định danh observation không gồm mốc thời gian: retry chỉ khác timestamp bị chặn ở DB.
+        UniqueConstraint("workspace_id", "content_hash", name="uq_shared_signal_evidence_content"),
         ForeignKeyConstraint(
             ["workspace_id"],
             ["workspace.id"],
@@ -44,7 +46,9 @@ class SharedSignalEvidenceRecord(UuidPrimaryKey, CreatedAt, Base):
             ["feature_snapshot.workspace_id", "feature_snapshot.snapshot_id"],
             name="fk_shared_signal_evidence_feature_snapshot",
         ),
-        CheckConstraint("length(evidence_hash) = 64", name="evidence_hash_sha256"),
+        CheckConstraint(
+            "length(evidence_hash) = 64 AND length(content_hash) = 64", name="evidence_hash_sha256"
+        ),
         CheckConstraint("length(feature_snapshot_id) = 64", name="evidence_feature_sha256"),
         CheckConstraint(
             "observed_at <= available_at AND available_at < validity_end",
@@ -77,6 +81,7 @@ class SharedSignalEvidenceRecord(UuidPrimaryKey, CreatedAt, Base):
     feature_snapshot_id: Mapped[str] = mapped_column(String(64), nullable=False)
     source_refs: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
     model_release_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     evidence_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     schema_version: Mapped[str] = mapped_column(String(64), nullable=False)
     canonical_json: Mapped[str] = mapped_column(Text, nullable=False)

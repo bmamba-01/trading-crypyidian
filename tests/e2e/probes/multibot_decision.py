@@ -335,6 +335,7 @@ async def dispatch(state):
         SharedSignalEvidenceRepository,
     )
     from trading_bot.application.bot_dispatcher import (
+        BotDecisionConflict,
         BotDecisionContext,
         BotEvidenceDispatcher,
         EvidenceScopeError,
@@ -406,9 +407,34 @@ async def dispatch(state):
             validity_end=DECISION_TIME + timedelta(hours=1),
             sources=(EvidenceSourceRef("market_bar:binance:BTCUSDT:1h:0", DECISION_TIME),),
         )
-        first = await dispatcher.dispatch_evidence(evidence, contexts, DECISION_TIME)
-        retry = await dispatcher.dispatch_evidence(evidence, contexts, DECISION_TIME)
+        as_of = DECISION_TIME + timedelta(minutes=5)
+        first = await dispatcher.dispatch_evidence(evidence, contexts, as_of)
+        retry = await dispatcher.dispatch_evidence(evidence, contexts, as_of)
         assert retry == first
+        for decision in first:
+            candidate = json.loads(decision.candidate_json)
+            assert candidate["settings_version_id"] == str(identity("root-settings-v1"))
+        # Detector chạy lại: cùng observation nhưng available_at/validity_end wall-clock muộn hơn.
+        rerun = build_shared_signal_evidence(
+            feature_snapshot=feature,
+            setup_type="trend_breakout",
+            observed_at=DECISION_TIME - timedelta(minutes=1),
+            available_at=DECISION_TIME + timedelta(minutes=2),
+            validity_end=DECISION_TIME + timedelta(hours=1, minutes=2),
+            sources=(EvidenceSourceRef("market_bar:binance:BTCUSDT:1h:0", DECISION_TIME),),
+        )
+        assert rerun.evidence_id == evidence.evidence_id
+        assert rerun.evidence_hash != evidence.evidence_hash
+        assert await dispatcher.dispatch_evidence(rerun, contexts, as_of) == first
+        recorded = await dispatcher.record_evidence(rerun, evaluated_at=as_of)
+        assert recorded.created is False
+        assert recorded.evidence == evidence
+        try:
+            await dispatcher.dispatch_evidence(rerun, contexts, as_of + timedelta(minutes=5))
+        except BotDecisionConflict:
+            pass
+        else:
+            raise AssertionError("Dispatch lại cùng observation ở mốc khác phải conflict")
         # Event outbox do dispatch ghi: consumer fan-out lại phải dedupe rồi acknowledge.
         consumed = await consumer.consume_once(workspace_id=workspace_a, now=datetime.now(UTC))
         assert {job.bot_id for job in consumed} == {context.bot_id for context in contexts}
@@ -435,7 +461,8 @@ async def dispatch(state):
                 raise AssertionError(error.code) from error
         else:
             raise AssertionError("Revision muộn phải bị từ chối cho đánh giá lịch sử")
-        assert await dispatcher.record_evidence(revision, evaluated_at=revision_time) is True
+        recorded_revision = await dispatcher.record_evidence(revision, evaluated_at=revision_time)
+        assert recorded_revision.created is True
         revision_jobs = await consumer.consume_once(workspace_id=workspace_a, now=datetime.now(UTC))
         assert len(revision_jobs) == 2
         revision_decisions = []
@@ -565,6 +592,31 @@ def verify(connection, state):
         assert [row[2] for row in rows] == ["h01-v1", "h03-v1"], rows
         assert [row[3] for row in rows] == [state["config_a1"], state["config_a2"]], rows
         assert rows[0][4] != rows[1][4], rows
+    # Retry chỉ khác mốc thời gian không tạo hàng mới: một hàng cho mỗi content_hash.
+    assert count(connection, "SELECT count(DISTINCT content_hash) FROM shared_signal_evidence") == 2
+    # Candidate mang root workspace_settings_version; bot config chỉ ở cột riêng.
+    assert [
+        row[0]
+        for row in connection.execute(
+            "SELECT DISTINCT payload->'candidate'->>'settings_version_id' FROM bot_decision"
+        )
+    ] == [str(identity("root-settings-v1"))]
+    # DB chặn trực tiếp hàng trùng content_hash dù ID/hash/timestamp khác.
+    rejected(
+        connection,
+        lambda: connection.execute(
+            "INSERT INTO shared_signal_evidence (id, workspace_id, symbol, setup_type, "
+            "observed_at, available_at, validity_end, feature_snapshot_id, source_refs, "
+            "model_release_id, content_hash, evidence_hash, schema_version, canonical_json) "
+            "SELECT %s, workspace_id, symbol, setup_type, observed_at, "
+            "available_at + interval '3 minutes', validity_end + interval '3 minutes', "
+            "feature_snapshot_id, source_refs, model_release_id, content_hash, %s, "
+            "schema_version, canonical_json FROM shared_signal_evidence WHERE id=%s",
+            (identity("retry-row"), "d" * 64, evidence_id),
+        ),
+        "23505",
+        marker="uq_shared_signal_evidence_content",
+    )
     assert count(connection, "SELECT count(*) FROM shared_signal_evidence") == 2
     assert count(connection, "SELECT count(*) FROM bot_decision_job") == 4
     assert count(connection, "SELECT count(*) FROM bot_decision") == 4
@@ -649,6 +701,7 @@ def verify(connection, state):
             validity_end=DECISION_TIME + timedelta(hours=1),
             feature_snapshot_id="e" * 64,
             source_refs=Jsonb(["orphan"]),
+            content_hash="e" * 64,
             evidence_hash="e" * 64,
             schema_version="test",
             canonical_json="{}",

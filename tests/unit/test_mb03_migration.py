@@ -55,6 +55,12 @@ def test_bot_scoped_policies_are_per_role_and_grants_are_least_privilege() -> No
     assert "crypidian_ingestion_worker" not in source
 
 
+def test_observation_identity_is_unique_without_timestamps() -> None:
+    source = MIGRATION.read_text(encoding="utf-8")
+
+    assert '"workspace_id", "content_hash", name="uq_shared_signal_evidence_content"' in source
+
+
 def test_downgrade_refuses_to_drop_decision_history() -> None:
     source = MIGRATION.read_text(encoding="utf-8")
 

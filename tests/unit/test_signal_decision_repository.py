@@ -9,7 +9,7 @@ from typing import Any
 from uuid import UUID
 
 import pytest
-from sqlalchemy import Index
+from sqlalchemy import Index, UniqueConstraint
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.exc import IntegrityError
 from tests.unit.test_bot_dispatcher import (
@@ -127,11 +127,20 @@ def _evidence_row(evidence: Any, **overrides: object) -> SimpleNamespace:
         "feature_snapshot_id": evidence.feature_snapshot_id,
         "source_refs": list(evidence.source_refs),
         "model_release_id": evidence.model_release_id,
+        "content_hash": evidence.content_hash,
         "evidence_hash": evidence.evidence_hash,
         "canonical_json": evidence.canonical_json(),
     }
     values.update(overrides)
     return SimpleNamespace(**values)
+
+
+def _retry_of(evidence: Any) -> Any:
+    """Cùng observation (feature/source/model) nhưng available_at/validity_end muộn hơn."""
+    return _evidence(
+        available_at=evidence.available_at + timedelta(minutes=2),
+        validity_end=evidence.validity_end + timedelta(minutes=2),
+    )
 
 
 def _job() -> BotDecisionJob:
@@ -184,6 +193,13 @@ def test_schema_registers_workspace_evidence_and_bot_scoped_job_decision_tables(
     forbidden = {"bot_id", "account_id", "trading_account_id", "quantity", "notional", "side"}
 
     assert not forbidden & set(evidence.columns.keys())
+    # Dedupe observation ở DB không phụ thuộc timestamp do caller cấp.
+    assert any(
+        isinstance(constraint, UniqueConstraint)
+        and tuple(column.name for column in constraint.columns) == ("workspace_id", "content_hash")
+        for constraint in evidence.constraints
+    )
+    assert evidence.c.content_hash.nullable is False
     assert any(
         tuple(column.name for column in constraint.columns)
         == ("workspace_id", "feature_snapshot_id")
@@ -236,7 +252,35 @@ async def test_append_evidence_persists_canonical_row_once() -> None:
     assert row.workspace_id == WORKSPACE
     assert row.canonical_json == evidence.canonical_json()
     assert row.source_refs == list(evidence.source_refs)
+    assert row.content_hash == evidence.content_hash
     assert "shared_signal_evidence.workspace_id =" in session.statements[0]
+    assert "shared_signal_evidence.content_hash =" in session.statements[0]
+
+
+async def test_append_retry_with_later_timestamps_returns_stored_original() -> None:
+    original = _evidence()
+    retry = _retry_of(original)
+    session = FakeSession([_evidence_row(original)])
+
+    result = await SharedSignalEvidenceRepository(session).append(retry)  # type: ignore[arg-type]
+
+    assert result.duplicate is True
+    assert result.evidence == original
+    assert result.evidence_hash == original.evidence_hash
+    assert session.added == []
+
+
+async def test_concurrent_retry_insert_resolves_to_stored_original() -> None:
+    original = _evidence()
+    session = FakeSession(
+        [None, _evidence_row(original)],
+        flush_error=IntegrityError("insert", {}, RuntimeError("uq content_hash")),
+    )
+
+    result = await SharedSignalEvidenceRepository(session).append(_retry_of(original))  # type: ignore[arg-type]
+
+    assert result.duplicate is True
+    assert result.evidence == original
 
 
 async def test_append_same_evidence_is_duplicate_and_different_payload_conflicts() -> None:
@@ -411,9 +455,10 @@ async def test_store_records_evidence_and_outbox_event_in_one_transaction() -> N
     session = FakeSession([None])
     store = PostgresSignalDecisionStore(FakeSessions(session))  # type: ignore[arg-type]
 
-    created = await store.record_evidence(evidence, evaluated_at=DECISION_TIME)
+    recorded = await store.record_evidence(evidence, evaluated_at=DECISION_TIME)
 
-    assert created is True
+    assert recorded.created is True
+    assert recorded.evidence == evidence
     assert session.committed is True
     evidence_rows = [row for row in session.added if isinstance(row, SharedSignalEvidenceRecord)]
     events = [row for row in session.added if isinstance(row, OutboxEvent)]
@@ -430,7 +475,23 @@ async def test_store_skips_outbox_event_for_duplicate_evidence() -> None:
     session = FakeSession([_evidence_row(evidence)])
     store = PostgresSignalDecisionStore(FakeSessions(session))  # type: ignore[arg-type]
 
-    assert await store.record_evidence(evidence, evaluated_at=DECISION_TIME) is False
+    recorded = await store.record_evidence(evidence, evaluated_at=DECISION_TIME)
+
+    assert recorded.created is False
+    assert session.added == []
+
+
+async def test_store_retry_with_later_timestamps_returns_original_without_new_event() -> None:
+    original = _evidence()
+    session = FakeSession([_evidence_row(original)])
+    store = PostgresSignalDecisionStore(FakeSessions(session))  # type: ignore[arg-type]
+
+    recorded = await store.record_evidence(
+        _retry_of(original), evaluated_at=DECISION_TIME + timedelta(minutes=3)
+    )
+
+    assert recorded.created is False
+    assert recorded.evidence == original
     assert session.added == []
 
 

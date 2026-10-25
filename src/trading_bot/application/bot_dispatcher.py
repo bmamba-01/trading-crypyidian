@@ -95,11 +95,16 @@ class BotDecisionContext:
         self.strategy_selection()
 
     def strategy_selection(self) -> StrategySelection:
-        """Selection riêng của bot; settings version là bot config version đã publish."""
+        """Selection riêng của bot (release + tham số của bot).
+
+        `settings_version_id` là root `workspace_settings_version` theo ruling controller:
+        planner (STALE_SETTINGS_VERSION), FK `order_intent.settings_version_id` và kiểm tra
+        ledger đọc nó như root. Bot config version chỉ nằm ở `bot_config_version_id`.
+        """
         return strategy_selection_for_release(
             release_id=self.strategy_release_id,
             parameters=dict(self.strategy_parameters),
-            settings_version_id=str(self.bot_config_version_id),
+            settings_version_id=str(self.root_settings_version_id),
         )
 
     def canonical_payload(self) -> dict[str, Any]:
@@ -403,6 +408,14 @@ class EvidenceRecordedEvent:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class RecordedEvidence:
+    """Evidence chuẩn đã lưu (bản ghi đầu tiên của observation) và cờ vừa tạo mới."""
+
+    evidence: SharedSignalEvidence
+    created: bool
+
+
 type DecisionEvaluator = Callable[[SharedSignalEvidence, BotDecisionJob], Awaitable[BotDecision]]
 
 
@@ -411,7 +424,7 @@ class SignalDecisionStore(Protocol):
 
     async def record_evidence(
         self, evidence: SharedSignalEvidence, *, evaluated_at: datetime
-    ) -> bool: ...
+    ) -> RecordedEvidence: ...
 
     async def load_evidence(
         self, *, workspace_id: UUID, evidence_id: UUID
@@ -476,8 +489,8 @@ class BotEvidenceDispatcher:
 
     async def record_evidence(
         self, evidence: SharedSignalEvidence, *, evaluated_at: datetime
-    ) -> bool:
-        """Ghi evidence + outbox event cùng transaction; trả False nếu evidence đã có."""
+    ) -> RecordedEvidence:
+        """Ghi evidence + outbox event cùng transaction; observation đã có trả bản ghi đầu tiên."""
         evidence.require_usable_at(evaluated_at)
         return await self._store.record_evidence(evidence, evaluated_at=evaluated_at)
 
@@ -518,8 +531,9 @@ class BotEvidenceDispatcher:
         """Ghi evidence, fan-out và đánh giá từng bot; an toàn khi retry."""
         _validate_scope(evidence, bots)
         evidence.require_usable_at(as_of)
-        await self._store.record_evidence(evidence, evaluated_at=as_of)
-        jobs = await self.fan_out(evidence, bots, as_of)
+        recorded = await self._store.record_evidence(evidence, evaluated_at=as_of)
+        # Retry cùng observation (chỉ khác mốc thời gian) dùng bản ghi đầu tiên đã lưu.
+        jobs = await self.fan_out(recorded.evidence, bots, as_of)
         return tuple([await self.process_job(job) for job in jobs])
 
     async def _evaluate(self, evidence: SharedSignalEvidence, job: BotDecisionJob) -> BotDecision:

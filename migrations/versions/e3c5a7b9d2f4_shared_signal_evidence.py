@@ -65,6 +65,7 @@ def upgrade() -> None:
         sa.Column("feature_snapshot_id", sa.String(64), nullable=False),
         sa.Column("source_refs", jsonb, nullable=False),
         sa.Column("model_release_id", sa.Uuid(), nullable=True),
+        sa.Column("content_hash", sa.String(64), nullable=False),
         sa.Column("evidence_hash", sa.String(64), nullable=False),
         sa.Column("schema_version", sa.String(64), nullable=False),
         sa.Column("canonical_json", sa.Text(), nullable=False),
@@ -73,6 +74,10 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id", name="pk_shared_signal_evidence"),
         sa.UniqueConstraint("workspace_id", "id", name="uq_shared_signal_evidence_workspace_id"),
         sa.UniqueConstraint("workspace_id", "evidence_hash", name="uq_shared_signal_evidence_hash"),
+        # Observation identity bỏ available_at/validity_end: retry chỉ khác thời gian bị chặn.
+        sa.UniqueConstraint(
+            "workspace_id", "content_hash", name="uq_shared_signal_evidence_content"
+        ),
         sa.ForeignKeyConstraint(
             ["workspace_id"],
             ["workspace.id"],
@@ -84,7 +89,9 @@ def upgrade() -> None:
             ["feature_snapshot.workspace_id", "feature_snapshot.snapshot_id"],
             name="fk_shared_signal_evidence_feature_snapshot",
         ),
-        sa.CheckConstraint("length(evidence_hash) = 64", name="evidence_hash_sha256"),
+        sa.CheckConstraint(
+            "length(evidence_hash) = 64 AND length(content_hash) = 64", name="evidence_hash_sha256"
+        ),
         sa.CheckConstraint("length(feature_snapshot_id) = 64", name="evidence_feature_sha256"),
         sa.CheckConstraint(
             "observed_at <= available_at AND available_at < validity_end",

@@ -24,6 +24,8 @@ SIGNAL_EVIDENCE_SCHEMA_VERSION = "crypidian-shared-signal-evidence-v1"
 SIGNAL_EVIDENCE_NAMESPACE = UUID("5d0c9a52-7f3e-5b8e-9c41-3a6f0e2b7d18")
 _SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
 _SETUP_TYPE = re.compile(r"^[a-z0-9][a-z0-9_.:-]{0,79}$")
+# Mốc do caller/detector cấp: không thuộc định danh observation (retry ≠ revision).
+_CALLER_TIMESTAMPS = frozenset({"available_at", "validity_end"})
 
 
 class SignalEvidenceError(ValueError):
@@ -106,8 +108,18 @@ class SharedSignalEvidence:
         expected_hash = _hash(self.canonical_payload())
         if self.evidence_hash != expected_hash:
             raise ValueError("evidence_hash không khớp nội dung canonical.")
-        if self.evidence_id != signal_evidence_id(self.workspace_id, self.evidence_hash):
-            raise ValueError("evidence_id không khớp workspace và evidence_hash.")
+        if self.evidence_id != signal_evidence_id(self.workspace_id, self.content_hash):
+            raise ValueError("evidence_id không khớp workspace và content_hash của observation.")
+
+    @property
+    def content_hash(self) -> str:
+        """Hash định danh observation, bỏ `available_at`/`validity_end` do caller cấp.
+
+        Hai lần chạy detector cho cùng feature/source/model/observed_at là retry, nên phải
+        cùng ID dù đồng hồ wall-clock khác; revision thật luôn đổi nội dung nên đổi hash.
+        `evidence_hash` vẫn phủ cả mốc thời gian để xác minh toàn vẹn bản ghi đã lưu.
+        """
+        return _hash(_content_payload(self.canonical_payload()))
 
     @classmethod
     def create(
@@ -123,7 +135,7 @@ class SharedSignalEvidence:
         source_refs: Sequence[str],
         model_release_id: UUID | None,
     ) -> SharedSignalEvidence:
-        """Dựng evidence và tính hash/ID tất định từ nội dung canonical."""
+        """Dựng evidence; hash toàn vẹn từ payload, ID tất định từ content hash observation."""
         for name, value in (
             ("observed_at", observed_at),
             ("available_at", available_at),
@@ -144,7 +156,7 @@ class SharedSignalEvidence:
         evidence_hash = _hash(payload)
         return cls(
             workspace_id=workspace_id,
-            evidence_id=signal_evidence_id(workspace_id, evidence_hash),
+            evidence_id=signal_evidence_id(workspace_id, _hash(_content_payload(payload))),
             symbol=symbol,
             setup_type=setup_type,
             observed_at=observed_at,
@@ -176,7 +188,7 @@ class SharedSignalEvidence:
         )
 
     def canonical_payload(self) -> dict[str, Any]:
-        """Payload canonical dùng cho hash; không có evidence_id vì ID suy ra từ hash."""
+        """Payload canonical dùng cho evidence_hash; không có evidence_id vì ID suy ra từ hash."""
         return _canonical_payload(
             workspace_id=self.workspace_id,
             symbol=self.symbol,
@@ -269,9 +281,14 @@ def build_shared_signal_evidence(
     )
 
 
-def signal_evidence_id(workspace_id: UUID, evidence_hash: str) -> UUID:
-    """UUID tất định theo workspace + hash nên cùng sự kiện nguồn chỉ có một ID."""
-    return uuid5(SIGNAL_EVIDENCE_NAMESPACE, f"{workspace_id}:{evidence_hash}")
+def signal_evidence_id(workspace_id: UUID, content_hash: str) -> UUID:
+    """UUID tất định theo workspace + content hash nên cùng observation chỉ có một ID."""
+    return uuid5(SIGNAL_EVIDENCE_NAMESPACE, f"{workspace_id}:{content_hash}")
+
+
+def _content_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Phần định danh observation: bỏ mốc khả dụng/hết hạn mà caller có thể lấy từ wall-clock."""
+    return {key: value for key, value in payload.items() if key not in _CALLER_TIMESTAMPS}
 
 
 def _canonical_payload(

@@ -30,6 +30,7 @@ from trading_bot.application.bot_dispatcher import (
     DecisionEvaluator,
     EvidenceRecordedEvent,
     EvidenceScopeError,
+    RecordedEvidence,
 )
 from trading_bot.application.outbox import OutboxRepository, UnitOfWork
 from trading_bot.domain.events import EventEnvelope
@@ -195,13 +196,16 @@ class PostgresSignalDecisionStore:
 
     async def record_evidence(
         self, evidence: SharedSignalEvidence, *, evaluated_at: datetime
-    ) -> bool:
-        """Evidence + outbox event cùng transaction workspace; event chỉ ghi khi evidence mới."""
+    ) -> RecordedEvidence:
+        """Evidence + outbox event cùng transaction workspace; event chỉ ghi khi observation mới.
+
+        Retry cùng observation trả bản ghi đầu tiên và không tạo event thứ hai.
+        """
         event = EvidenceRecordedEvent.for_evidence(evidence, evaluated_at=evaluated_at)
         async with UnitOfWork(self._sessions, workspace_id=evidence.workspace_id) as uow:
             result = await SharedSignalEvidenceRepository(uow.session).append(evidence)
             if result.duplicate:
-                return False
+                return RecordedEvidence(evidence=result.evidence, created=False)
             uow.enqueue(
                 EventEnvelope(
                     event_type=EVIDENCE_RECORDED_EVENT,
@@ -216,7 +220,7 @@ class PostgresSignalDecisionStore:
                     event_id=event.event_id,
                 )
             )
-            return True
+            return RecordedEvidence(evidence=evidence, created=True)
 
     async def load_evidence(
         self, *, workspace_id: UUID, evidence_id: UUID

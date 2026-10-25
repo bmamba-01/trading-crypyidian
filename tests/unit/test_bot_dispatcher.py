@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import json
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
@@ -22,6 +23,7 @@ from trading_bot.application.bot_dispatcher import (
     DecisionEvaluator,
     EvidenceRecordedEvent,
     EvidenceScopeError,
+    RecordedEvidence,
     SignalEvidenceFanOutConsumer,
 )
 from trading_bot.domain.market.signal_evidence import SharedSignalEvidence, SignalEvidenceError
@@ -157,16 +159,18 @@ class InMemoryStore:
 
     async def record_evidence(
         self, evidence: SharedSignalEvidence, *, evaluated_at: datetime
-    ) -> bool:
+    ) -> RecordedEvidence:
+        # Mô phỏng unique (workspace_id, content_hash): bản ghi đầu tiên thắng.
         key = (evidence.workspace_id, evidence.evidence_id)
         if key in self.evidence:
-            assert self.evidence[key] == evidence
-            return False
+            stored = self.evidence[key]
+            assert stored.content_hash == evidence.content_hash
+            return RecordedEvidence(evidence=stored, created=False)
         self.evidence[key] = evidence
         event = EvidenceRecordedEvent.for_evidence(evidence, evaluated_at=evaluated_at)
         self.events[event.event_id] = event
         self.event_status[event.event_id] = "PENDING"
-        return True
+        return RecordedEvidence(evidence=evidence, created=True)
 
     async def load_evidence(
         self, *, workspace_id: UUID, evidence_id: UUID
@@ -321,6 +325,57 @@ async def test_retry_creates_no_duplicates_and_does_not_rerun_strategy() -> None
     assert len(store.jobs) == 2
     assert len(store.decisions) == 2
     assert len(snapshots.calls) == calls_after_first == 2
+
+
+async def test_retry_with_later_timestamps_creates_no_second_evidence_job_or_decision() -> None:
+    """Detector chạy lại với available_at/validity_end wall-clock là retry, không phải mới."""
+    dispatcher, store, snapshots = _dispatcher()
+    contexts = [_context(), _context_b()]
+    as_of = DECISION_TIME + timedelta(minutes=5)
+    original = _evidence()
+    retry = _evidence(
+        available_at=DECISION_TIME + timedelta(minutes=2),
+        validity_end=DECISION_TIME + timedelta(hours=1, minutes=2),
+    )
+
+    first = await dispatcher.dispatch_evidence(original, contexts, as_of)
+    second = await dispatcher.dispatch_evidence(retry, contexts, as_of)
+    recorded = await dispatcher.record_evidence(retry, evaluated_at=as_of)
+
+    assert second == first
+    assert recorded.created is False
+    assert recorded.evidence == original
+    assert {item.evidence_hash for item in second} == {original.evidence_hash}
+    assert len(store.evidence) == 1
+    assert len(store.events) == 1
+    assert len(store.jobs) == 2
+    assert len(store.decisions) == 2
+    assert len(snapshots.calls) == 2
+    # Dispatch lại cùng observation ở mốc khác là conflict fail-closed, vẫn không ghi gì thêm.
+    with pytest.raises(BotDecisionConflict):
+        await dispatcher.dispatch_evidence(retry, contexts, as_of + timedelta(minutes=5))
+    assert (len(store.evidence), len(store.events), len(store.jobs), len(store.decisions)) == (
+        1,
+        1,
+        2,
+        2,
+    )
+
+
+async def test_candidate_settings_version_is_the_root_workspace_settings_version() -> None:
+    dispatcher, _, _ = _dispatcher()
+
+    decisions = await dispatcher.dispatch_evidence(
+        _evidence(), [_context(), _context_b()], DECISION_TIME
+    )
+
+    for decision in decisions:
+        assert decision.candidate_json is not None
+        candidate = json.loads(decision.candidate_json)
+        assert candidate["settings_version_id"] == str(ROOT_VERSION)
+        assert decision.root_settings_version_id == ROOT_VERSION
+    assert {decision.bot_config_version_id for decision in decisions} == {CONFIG_A, CONFIG_B}
+    assert _context().strategy_selection().settings_version_id == str(ROOT_VERSION)
 
 
 async def test_replay_on_fresh_store_is_deterministic() -> None:
@@ -563,8 +618,8 @@ async def test_outbox_consumer_fans_out_recorded_evidence_then_acknowledges() ->
 
     provider = Provider()
     consumer = SignalEvidenceFanOutConsumer(store, dispatcher, provider, worker_id="worker-1")
-    assert await dispatcher.record_evidence(evidence, evaluated_at=DECISION_TIME) is True
-    assert await dispatcher.record_evidence(evidence, evaluated_at=DECISION_TIME) is False
+    assert (await dispatcher.record_evidence(evidence, evaluated_at=DECISION_TIME)).created is True
+    assert (await dispatcher.record_evidence(evidence, evaluated_at=DECISION_TIME)).created is False
 
     jobs = await consumer.consume_once(workspace_id=WORKSPACE, now=datetime.now(UTC))
     decisions_a = await dispatcher.process_pending(workspace_id=WORKSPACE, account_id=ACCOUNT_A)

@@ -23,11 +23,18 @@ class SignalEvidenceRepositoryConflict(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class EvidenceAppendResult:
-    """Kết quả append evidence mới hoặc nhận diện lần ghi lặp."""
+    """Kết quả append: evidence chuẩn đã lưu (bản ghi đầu tiên) và cờ ghi lặp."""
 
-    evidence_id: UUID
-    evidence_hash: str
+    evidence: SharedSignalEvidence
     duplicate: bool
+
+    @property
+    def evidence_id(self) -> UUID:
+        return self.evidence.evidence_id
+
+    @property
+    def evidence_hash(self) -> str:
+        return self.evidence.evidence_hash
 
 
 class SharedSignalEvidenceRepository:
@@ -37,11 +44,15 @@ class SharedSignalEvidenceRepository:
         self._session = session
 
     async def append(self, evidence: SharedSignalEvidence) -> EvidenceAppendResult:
-        """Append bất biến; ghi lặp cùng nội dung trả lại hàng hiện có."""
-        canonical_json = evidence.canonical_json()
+        """Append bất biến; cùng observation (kể cả retry chỉ khác mốc thời gian) trả hàng đầu tiên.
+
+        Unique `(workspace_id, content_hash)` chặn ở DB mọi retry có `available_at` hoặc
+        `validity_end` lấy từ đồng hồ khác; revision thật đổi nội dung nên là hàng mới.
+        """
         existing = await self._find(evidence)
         if existing is not None:
-            return _existing_result(existing, evidence, canonical_json)
+            return _existing_result(existing, evidence)
+        canonical_json = evidence.canonical_json()
         row = SharedSignalEvidenceRecord(
             id=evidence.evidence_id,
             workspace_id=evidence.workspace_id,
@@ -53,6 +64,7 @@ class SharedSignalEvidenceRepository:
             feature_snapshot_id=evidence.feature_snapshot_id,
             source_refs=list(evidence.source_refs),
             model_release_id=evidence.model_release_id,
+            content_hash=evidence.content_hash,
             evidence_hash=evidence.evidence_hash,
             schema_version=SIGNAL_EVIDENCE_SCHEMA_VERSION,
             canonical_json=canonical_json,
@@ -67,8 +79,8 @@ class SharedSignalEvidenceRepository:
                 raise SignalEvidenceRepositoryConflict(
                     "Không thể append evidence do xung đột ràng buộc khác."
                 ) from error
-            return _existing_result(existing, evidence, canonical_json)
-        return EvidenceAppendResult(evidence.evidence_id, evidence.evidence_hash, duplicate=False)
+            return _existing_result(existing, evidence)
+        return EvidenceAppendResult(evidence=evidence, duplicate=False)
 
     async def get(self, *, workspace_id: UUID, evidence_id: UUID) -> SharedSignalEvidence | None:
         """Đọc evidence theo ID trong workspace và xác minh hash/cột đã lưu."""
@@ -116,6 +128,7 @@ class SharedSignalEvidenceRepository:
                 SharedSignalEvidenceRecord.workspace_id == evidence.workspace_id,
                 or_(
                     SharedSignalEvidenceRecord.id == evidence.evidence_id,
+                    SharedSignalEvidenceRecord.content_hash == evidence.content_hash,
                     SharedSignalEvidenceRecord.evidence_hash == evidence.evidence_hash,
                 ),
             )
@@ -139,6 +152,7 @@ def restore_evidence(row: SharedSignalEvidenceRecord) -> SharedSignalEvidence:
         row.feature_snapshot_id,
         tuple(sorted(row.source_refs)),
         row.model_release_id,
+        row.content_hash,
         row.evidence_hash,
     )
     restored = (
@@ -152,6 +166,7 @@ def restore_evidence(row: SharedSignalEvidenceRecord) -> SharedSignalEvidence:
         evidence.feature_snapshot_id,
         evidence.source_refs,
         evidence.model_release_id,
+        evidence.content_hash,
         evidence.evidence_hash,
     )
     if stored != restored:
@@ -160,14 +175,10 @@ def restore_evidence(row: SharedSignalEvidenceRecord) -> SharedSignalEvidence:
 
 
 def _existing_result(
-    existing: SharedSignalEvidenceRecord,
-    evidence: SharedSignalEvidence,
-    canonical_json: str,
+    existing: SharedSignalEvidenceRecord, evidence: SharedSignalEvidence
 ) -> EvidenceAppendResult:
-    if (
-        existing.id != evidence.evidence_id
-        or existing.evidence_hash != evidence.evidence_hash
-        or existing.canonical_json != canonical_json
-    ):
-        raise SignalEvidenceRepositoryConflict("Evidence ID/hash đã tồn tại với payload khác.")
-    return EvidenceAppendResult(evidence.evidence_id, evidence.evidence_hash, duplicate=True)
+    """Cùng observation → trả hàng đầu tiên (retry); khớp ID/hash mà khác observation → conflict."""
+    stored = restore_evidence(existing)
+    if (stored.evidence_id, stored.content_hash) != (evidence.evidence_id, evidence.content_hash):
+        raise SignalEvidenceRepositoryConflict("Evidence ID/hash đã tồn tại với observation khác.")
+    return EvidenceAppendResult(evidence=stored, duplicate=True)
