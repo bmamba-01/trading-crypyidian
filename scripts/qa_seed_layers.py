@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from tests.fixtures.qa_dataset import SEEDED_AT, QaDataset, QaMember, qa_id
 
 from trading_bot.adapters.database.models import (
+    BotConfigVersion,
     BotGrant,
     BotInstance,
     MfaFactor,
@@ -30,6 +31,7 @@ from trading_bot.adapters.database.models import (
     RiskProfileVersion,
     RoleBinding,
     SecretReference,
+    StrategyRelease,
     TradingAccount,
     UserAccount,
     UserMembership,
@@ -37,11 +39,23 @@ from trading_bot.adapters.database.models import (
     WorkspaceSettingsVersion,
 )
 from trading_bot.adapters.database.models.market_entities import MarketBar, MarketInstrument
+from trading_bot.adapters.database.repositories.bot_config_versions import (
+    BotConfigVersionRepository,
+)
 from trading_bot.adapters.database.repositories.market_data import (
     MarketDataRepository,
     MarketRepositoryConflict,
 )
+from trading_bot.adapters.database.repositories.workspace_settings import (
+    WorkspaceSettingsRepository,
+)
+from trading_bot.application.bot_config_resolver import (
+    load_strategy_releases,
+    validate_bot_overlay,
+)
+from trading_bot.application.runtime_risk_profile import load_risk_profile
 from trading_bot.auth.security import PasswordManager
+from trading_bot.config.bot_settings import BotConfigOverlay
 from trading_bot.domain.market.ingestion import IngestionDisposition
 from trading_bot.ports.secrets import SecretAccessError, SecretProvider
 
@@ -58,6 +72,8 @@ REQUIRED_TABLES = (
     "risk_profile_version",
     "workspace_settings_version",
     "paper_account_seed",
+    "strategy_release",
+    "bot_config_version",
     "market_instrument",
     "market_bar",
 )
@@ -567,6 +583,117 @@ async def apply_bots_layer(context: SeedContext) -> None:
         await _ensure_paper_seed(context, seed.account_key)
 
 
+async def apply_strategy_releases_layer(context: SeedContext) -> None:
+    """Release H01/H03 PUBLISHED khớp hash registry, để resolver MB-02 chấp nhận overlay."""
+    for release in context.dataset.strategy_releases:
+        workspace_id = context.workspace_id(release.workspace_key)
+        owner = await context.session.scalar(
+            select(StrategyRelease.id).where(
+                StrategyRelease.workspace_id == workspace_id,
+                StrategyRelease.name == release.name,
+                StrategyRelease.version == release.version,
+            )
+        )
+        if owner is not None and owner != release.id:
+            raise SeedGuardError(
+                f"Xung đột strategy_release {release.name} v{release.version}: đã thuộc bản "
+                f"ghi {owner} ngoài dataset QA; từ chối ghi đè."
+            )
+        await _ensure_row(
+            context,
+            StrategyRelease,
+            release.id,
+            {
+                "workspace_id": workspace_id,
+                "name": release.name,
+                "version": release.version,
+                "status": release.status,
+                "recipe": {},
+                "content_hash": release.content_hash,
+                "created_at": SEEDED_AT,
+            },
+            identity=("workspace_id", "name", "version", "content_hash"),
+            mutable=("status",),
+        )
+
+
+def bot_config_publication(
+    head: Any, baseline_hash: str, *, effective_at: datetime, now: datetime
+) -> tuple[UUID | None, datetime] | None:
+    """Quyết định publish cho một bot: `None` nếu head đã là baseline.
+
+    Chưa có version: publish baseline hiệu lực từ `effective_at` (mốc dataset). Head lệch
+    baseline (vd. QA publish tay): publish version mới nối sau head, hiệu lực từ `now` vì
+    lịch sử version bất biến và không được lùi hiệu lực trước head.
+    """
+    if head is None:
+        return None, effective_at
+    if head.overlay_hash == baseline_hash:
+        return None
+    return head.id, now
+
+
+async def apply_bot_configs_layer(context: SeedContext) -> None:
+    """Config bot PUBLISHED cho bot A/B qua repository MB-02 (DRAFT → validate → PUBLISHED)."""
+    session = context.session
+    dataset = context.dataset
+    repository = BotConfigVersionRepository(session)
+    for config in dataset.bot_configs:
+        workspace_id = context.workspace_id(config.workspace_key)
+        bot_id = context.bot_ids[config.account_key]
+        account = await session.get(TradingAccount, dataset.account(config.account_key).id)
+        if account is None:
+            raise SeedGuardError(f"Thiếu account {config.account_key} cho cấu hình bot QA.")
+        await repository.lock_bot(workspace_id=workspace_id, bot_id=bot_id)
+        head = await repository.get_head(workspace_id=workspace_id, bot_id=bot_id)
+        decision = bot_config_publication(
+            head, config.overlay_hash, effective_at=config.effective_at, now=context.now
+        )
+        if decision is None:
+            continue
+        parent_id, effective_at = decision
+        root = await WorkspaceSettingsRepository(session).load_effective_config(
+            workspace_id=workspace_id, as_of=effective_at
+        )
+        if root is None:
+            raise SeedGuardError("Root settings QA chưa hiệu lực; không thể publish config bot.")
+        overlay = BotConfigOverlay.model_validate(config.overlay_json)
+        issues = validate_bot_overlay(
+            overlay,
+            workspace_settings=root,
+            account=account,
+            root_risk_profile=await load_risk_profile(
+                session, workspace_id=workspace_id, profile_id=root.settings.risk.profile_version_id
+            ),
+            strategy_releases=await load_strategy_releases(session, workspace_id=workspace_id),
+        )
+        if issues:
+            fields = ", ".join(issue.field for issue in issues)
+            raise SeedGuardError(f"Overlay QA của bot {config.account_key} không hợp lệ: {fields}.")
+        draft = await repository.create_draft(
+            workspace_id=workspace_id,
+            bot_id=bot_id,
+            account_id=account.id,
+            overlay=overlay,
+            base_settings_version_id=root.settings_version_id,
+            base_settings_hash=root.settings_hash,
+            created_by=dataset.member(config.created_by_member_key).membership_id,
+            parent_version_id=parent_id,
+        )
+        await repository.publish_draft(
+            workspace_id=workspace_id,
+            bot_id=bot_id,
+            draft_id=draft.id,
+            expected_revision=draft.revision,
+            expected_parent_version_id=parent_id,
+            approved_by=dataset.member(config.approved_by_member_key).membership_id,
+            base_settings_version_id=root.settings_version_id,
+            base_settings_hash=root.settings_hash,
+            effective_at=effective_at,
+        )
+        context.changes["bot_config_version.published"] += 1
+
+
 async def apply_market_layer(context: SeedContext) -> None:
     """Instrument và nến qua MarketDataRepository (idempotency key, revision 1)."""
     repository = MarketDataRepository(context.session)
@@ -604,7 +731,9 @@ async def apply_market_layer(context: SeedContext) -> None:
 SEED_LAYERS: tuple[tuple[str, SeedLayer], ...] = (
     ("access", apply_access_layer),
     ("root_settings", apply_root_settings_layer),
+    ("strategy_releases", apply_strategy_releases_layer),
     ("bots", apply_bots_layer),
+    ("bot_configs", apply_bot_configs_layer),
     ("market", apply_market_layer),
 )
 _COUNTED_MODELS: tuple[Any, ...] = (
@@ -618,6 +747,8 @@ _COUNTED_MODELS: tuple[Any, ...] = (
     RiskProfileVersion,
     WorkspaceSettingsVersion,
     PaperAccountSeed,
+    StrategyRelease,
+    BotConfigVersion,
     MarketInstrument,
     MarketBar,
 )

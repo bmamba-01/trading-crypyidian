@@ -19,6 +19,7 @@ from scripts import seed_qa_data
 from scripts.qa_seed_layers import (
     SEED_LAYERS,
     DatabaseFacts,
+    bot_config_publication,
     releasable_references,
     validate_database_facts,
 )
@@ -48,7 +49,9 @@ from trading_bot.adapters.database.repositories.workspace_settings import (
 )
 from trading_bot.auth.bot_policy import BotPermission, role_allows_bot_permission
 from trading_bot.auth.policy import Role
+from trading_bot.config.bot_settings import BotConfigOverlay, canonical_overlay, overlay_hash
 from trading_bot.config.workspace_settings import WorkspaceSettings
+from trading_bot.domain.strategy.registry import StrategyRegistry
 
 DATASET_PACKAGE = Path(__file__).parents[1] / "fixtures" / "qa_dataset"
 LOCAL_APPLY_ENVIRONMENT = {
@@ -80,6 +83,7 @@ def _all_identifiers(dataset: QaDataset) -> list[UUID]:
     identifiers.extend(profile.id for profile in dataset.risk_profiles)
     identifiers.extend(version.id for version in dataset.settings_versions)
     identifiers.extend(seed.id for seed in dataset.paper_seeds)
+    identifiers.extend(release.id for release in dataset.strategy_releases)
     identifiers.extend(item.version.record_id for item in dataset.bars)
     return identifiers
 
@@ -491,9 +495,64 @@ def test_seed_layers_keep_documented_extension_order() -> None:
     assert [name for name, _ in SEED_LAYERS] == [
         "access",
         "root_settings",
+        "strategy_releases",
         "bots",
+        "bot_configs",
         "market",
     ]
+
+
+def test_bots_a_and_b_have_published_configs_with_distinct_strategy_releases(
+    dataset: QaDataset,
+) -> None:
+    configs = {config.account_key: config for config in dataset.bot_configs}
+    registry = StrategyRegistry()
+
+    # Ruling tích hợp: fan-out cần config PUBLISHED; QA bot A/B chạy release khác nhau.
+    assert sorted(configs) == ["A", "B"]
+    assert configs["A"].release_id != configs["B"].release_id
+    assert {configs["A"].release_id, configs["B"].release_id} == {"h01-v1", "h03-v1"}
+    qa_settings = dataset.settings_for(QA_WORKSPACE_KEY)
+    for config in configs.values():
+        overlay = BotConfigOverlay.model_validate(config.overlay_json)
+        assert canonical_overlay(overlay) == config.overlay_json
+        assert overlay_hash(config.overlay_json) == config.overlay_hash
+        assert overlay.strategy is not None
+        assert overlay.strategy.release_id == config.release_id
+        assert config.workspace_key == QA_WORKSPACE_KEY
+        assert dataset.account(config.account_key).status == "ENABLED"
+        assert config.effective_at == qa_settings.effective_at
+        assert Role.STRATEGY_ADMIN in dataset.member(config.created_by_member_key).roles
+        assert Role.OWNER in dataset.member(config.approved_by_member_key).roles
+    released = {
+        (release.workspace_key, release.name): release for release in dataset.strategy_releases
+    }
+    for workspace_key in (QA_WORKSPACE_KEY, QA_OTHER_WORKSPACE_KEY):
+        for name in ("h01-v1", "h03-v1"):
+            release = released[(workspace_key, name)]
+            assert release.status == "PUBLISHED"
+            assert release.version == 1
+            assert release.content_hash == registry.get_release(name).content_hash
+
+
+def test_bot_config_publication_keeps_baseline_and_restores_drift() -> None:
+    now = MARKET_END + timedelta(days=30)
+    baseline = "a" * 64
+    head = type("Head", (), {"id": qa_id("bot_config_version", "head"), "overlay_hash": baseline})
+
+    # Lần đầu: publish với hiệu lực từ SEEDED_AT (dữ liệu replay lịch sử resolve được).
+    assert bot_config_publication(None, baseline, effective_at=MARKET_END, now=now) == (
+        None,
+        MARKET_END,
+    )
+    # Head đã đúng baseline: không ghi gì (idempotent).
+    assert bot_config_publication(head, baseline, effective_at=MARKET_END, now=now) is None
+    # Head lệch baseline (publish thủ công): version mới nối sau head, hiệu lực từ now.
+    drifted = type("Head", (), {"id": head.id, "overlay_hash": "b" * 64})
+    assert bot_config_publication(drifted, baseline, effective_at=MARKET_END, now=now) == (
+        head.id,
+        now,
+    )
 
 
 def test_cli_refuses_without_local_only_before_docker_or_files(

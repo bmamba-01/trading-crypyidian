@@ -221,8 +221,15 @@ def test_schema_registers_workspace_evidence_and_bot_scoped_job_decision_tables(
             and constraint.referred_table.name == "shared_signal_evidence"
             for constraint in table.foreign_key_constraints
         ), name
-        # Chưa có bảng bot_config_version (MB-02): cột config version không có FK.
-        assert not table.c.bot_config_version_id.foreign_keys
+        # Tích hợp MB-02: config version ghép cùng workspace + bot của job/quyết định.
+        assert any(
+            tuple(column.name for column in constraint.columns)
+            == ("workspace_id", "bot_id", "bot_config_version_id")
+            and constraint.referred_table.name == "bot_config_version"
+            and tuple(element.column.name for element in constraint.elements)
+            == ("workspace_id", "bot_id", "id")
+            for constraint in table.foreign_key_constraints
+        ), name
         assert any(
             isinstance(index, Index)
             and index.name == f"ix_{name}_bot_scope"

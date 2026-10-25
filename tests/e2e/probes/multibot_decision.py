@@ -3,6 +3,10 @@
 Phase `seed`/`verify`/`prepare_downgrade`/`verify_downgraded` chạy bằng migrator
 (superuser, dùng `SET LOCAL ROLE` để kiểm RLS từng role). Phase `dispatch` chạy bằng
 login thật của `crypidian_trading_runtime` và gọi đúng code dispatcher/store của app.
+
+Tích hợp MB-02: context của bot đến từ `EffectiveBotDecisionContextProvider` (resolver MB-02
+trên root settings + bot config PUBLISHED); bot A3 ENABLED chưa publish config bị loại khỏi
+fan-out với lý do `BOT_CONFIG_NOT_PUBLISHED`.
 """
 
 import asyncio
@@ -33,6 +37,25 @@ EXECUTION_TABLES = (
     "trade",
 )
 NEW_TABLES = ("shared_signal_evidence", "bot_decision_job", "bot_decision")
+ROOT_EFFECTIVE_AT = DECISION_TIME - timedelta(days=2)
+BOT_CONFIG_EFFECTIVE_AT = DECISION_TIME - timedelta(days=1)
+HARD_CAPS = {
+    "schema_version": 1,
+    "hard_caps": {
+        "max_aggregate_open_risk": "250",
+        "max_notional": "10000",
+        "max_leverage": "5",
+        "max_positions": 2,
+        "max_symbol_notional": "2000",
+        "max_concentration_fraction": "0.2",
+        "max_daily_loss": "200",
+        "max_rolling_loss": "500",
+        "max_account_age_seconds": 30,
+        "max_data_age_seconds": 300,
+    },
+}
+# Bot A1/A2 có config PUBLISHED với release khác nhau; A3 ENABLED nhưng chưa publish.
+BOT_CONFIG_RELEASES = {"a1": "h01-v1", "a2": "h03-v1"}
 
 
 def identity(name):
@@ -149,6 +172,7 @@ def seed(connection):
     accounts = {
         "a1": (workspace_a, "MB03 bot A1"),
         "a2": (workspace_a, "MB03 bot A2"),
+        "a3": (workspace_a, "MB03 bot A3"),
         "b1": (workspace_b, "MB03 bot B1"),
     }
     for key, (workspace, name) in accounts.items():
@@ -184,6 +208,7 @@ def seed(connection):
         permission="bot:read",
         granted_by=identity("owner-member"),
     )
+    root = seed_root_and_bot_configs(connection, workspace_a, bots)
     snapshot = feature_snapshot(workspace_a)
     payload = snapshot.canonical_payload()
     insert(
@@ -216,14 +241,140 @@ def seed(connection):
         "workspace_b": str(workspace_b),
         "account_a1": str(identity("account-a1")),
         "account_a2": str(identity("account-a2")),
+        "account_a3": str(identity("account-a3")),
         "account_b1": str(identity("account-b1")),
         "bot_a1": bots["a1"],
         "bot_a2": bots["a2"],
+        "bot_a3": bots["a3"],
         "bot_b1": bots["b1"],
         "owner_member": str(identity("owner-member")),
         "operator_member": str(identity("operator-member")),
         "feature_snapshot_id": snapshot.snapshot_id,
+        **root,
     }
+
+
+def seed_root_and_bot_configs(connection, workspace, bots):
+    """Root settings + risk profile + release PUBLISHED và config bot A1/A2 qua DRAFT→PUBLISHED.
+
+    Hash tính bằng đúng hàm của ứng dụng để resolver MB-02 chấp nhận; bot A3 không có config.
+    """
+    from trading_bot.adapters.database.repositories.workspace_settings import (
+        canonical_settings,
+        settings_hash,
+    )
+    from trading_bot.config.bot_settings import BotConfigOverlay, canonical_overlay, overlay_hash
+    from trading_bot.config.workspace_settings import WorkspaceSettings
+    from trading_bot.domain.strategy.registry import StrategyRegistry
+
+    owner = identity("owner-member")
+    profile = identity("risk-profile")
+    insert(
+        connection,
+        "risk_profile_version",
+        id=profile,
+        workspace_id=workspace,
+        name="MB03 risk",
+        version=1,
+        max_risk_fraction=Decimal("0.01"),
+        settings=Jsonb(HARD_CAPS),
+        is_active=True,
+    )
+    settings = WorkspaceSettings.model_validate(
+        {
+            "schema_version": 1,
+            "runtime": {"mode": "PAPER", "timezone": "UTC"},
+            "market_data": {
+                "venue": "BINANCE_USDM",
+                "symbols": ["BTCUSDT", "ETHUSDT"],
+                "timeframes": ["1h", "4h"],
+                "max_age_seconds": 30,
+            },
+            "features": {"formula_version": "crypidian-features-v1", "sessions_timezone": "UTC"},
+            "strategy": {
+                "default_release": "h03-v1",
+                "parameters": {},
+                "entry_timeframe": "1h",
+                "confirmation_timeframe": "4h",
+            },
+            "risk": {"profile_version_id": str(profile)},
+            "paper_execution": {
+                "quote_asset": "USDT",
+                "starting_equity": "10000",
+                "fee_schedule_version": "paper-fees-v1",
+                "fill_model": "next_bar_with_adverse_costs",
+            },
+        }
+    )
+    payload = canonical_settings(settings)
+    root_hash = settings_hash(payload)
+    insert(
+        connection,
+        "workspace_settings_version",
+        id=identity("root-settings-v1"),
+        workspace_id=workspace,
+        version=1,
+        schema_version=settings.schema_version,
+        settings_json=Jsonb(payload),
+        settings_hash=root_hash,
+        status="PUBLISHED",
+        revision=1,
+        created_by=owner,
+        approved_by=owner,
+        published_at=ROOT_EFFECTIVE_AT,
+        effective_at=ROOT_EFFECTIVE_AT,
+    )
+    registry = StrategyRegistry()
+    for release in sorted(set(BOT_CONFIG_RELEASES.values())):
+        insert(
+            connection,
+            "strategy_release",
+            id=identity("release-" + release),
+            workspace_id=workspace,
+            name=release,
+            version=1,
+            status="PUBLISHED",
+            recipe=Jsonb({}),
+            content_hash=registry.get_release(release).content_hash,
+        )
+    configs = {}
+    for key, release in BOT_CONFIG_RELEASES.items():
+        overlay = canonical_overlay(
+            BotConfigOverlay.model_validate(
+                {
+                    "schema_version": 1,
+                    "strategy": {"release_id": release},
+                    "universe": {"symbols": ["BTCUSDT"]},
+                }
+            )
+        )
+        version_id = identity(f"config-{key}-v1")
+        insert(
+            connection,
+            "bot_config_version",
+            id=version_id,
+            workspace_id=workspace,
+            bot_id=UUID(bots[key]),
+            account_id=identity("account-" + key),
+            version=1,
+            schema_version=1,
+            overlay_json=Jsonb(overlay),
+            overlay_hash=overlay_hash(overlay),
+            base_settings_version_id=identity("root-settings-v1"),
+            base_settings_hash=root_hash,
+            status="DRAFT",
+            revision=1,
+            created_by=owner,
+            updated_by=owner,
+        )
+        # Trigger MB-02 chỉ cho INSERT DRAFT; publish là chuyển trạng thái riêng.
+        connection.execute(
+            "UPDATE bot_config_version SET status='PUBLISHED', approved_by=%s, "
+            "published_at=%s, effective_at=%s WHERE id=%s",
+            (owner, BOT_CONFIG_EFFECTIVE_AT, BOT_CONFIG_EFFECTIVE_AT, version_id),
+        )
+        configs[f"config_{key}"] = str(version_id)
+    return {"root_settings_hash": root_hash, **configs}
 
 
 def fixture_snapshots():
@@ -334,9 +485,11 @@ async def dispatch(state):
     from trading_bot.adapters.database.repositories.signal_evidence import (
         SharedSignalEvidenceRepository,
     )
+    from trading_bot.application.bot_decision_contexts import (
+        EffectiveBotDecisionContextProvider,
+    )
     from trading_bot.application.bot_dispatcher import (
         BotDecisionConflict,
-        BotDecisionContext,
         BotEvidenceDispatcher,
         EvidenceScopeError,
         SignalEvidenceFanOutConsumer,
@@ -366,31 +519,34 @@ async def dispatch(state):
         async def snapshot_for(self, *, evidence, context, evaluated_at):
             return snapshots[context.strategy_release_id]
 
-    def context(key, release, config):
-        return BotDecisionContext(
-            workspace_id=workspace_a,
-            bot_id=UUID(state["bot_" + key]),
-            account_id=UUID(state["account_" + key]),
-            bot_config_version_id=identity(config),
-            bot_config_hash=hashlib.sha256(config.encode()).hexdigest(),
-            root_settings_version_id=identity("root-settings-v1"),
-            root_settings_hash="1" * 64,
-            strategy_release_id=release,
-            symbols=("BTCUSDT",),
-            effective_at=DECISION_TIME - timedelta(days=1),
-        )
-
-    contexts = (context("a1", "h01-v1", "config-a1-v1"), context("a2", "h03-v1", "config-a2-v1"))
-
-    class Provider:
-        async def contexts_for(self, *, workspace_id, as_of):
-            assert workspace_id == workspace_a
-            return contexts
-
+    exclusions = []
+    provider = EffectiveBotDecisionContextProvider(sessions, on_exclusion=exclusions.append)
     store = PostgresSignalDecisionStore(sessions)
     dispatcher = BotEvidenceDispatcher(store, strategies=StrategyRegistry(), snapshots=Snapshots())
-    consumer = SignalEvidenceFanOutConsumer(store, dispatcher, Provider(), worker_id="mb03-e2e")
+    consumer = SignalEvidenceFanOutConsumer(store, dispatcher, provider, worker_id="mb03-e2e")
     try:
+        # Context thật từ resolver MB-02 dưới login runtime: chỉ bot có config PUBLISHED.
+        as_of = DECISION_TIME + timedelta(minutes=5)
+        eligibility = await provider.eligibility(workspace_id=workspace_a, as_of=as_of)
+        assert [(str(item.bot_id), item.reason_code) for item in eligibility.exclusions] == [
+            (state["bot_a3"], "BOT_CONFIG_NOT_PUBLISHED")
+        ], eligibility.exclusions
+        # Thứ tự theo release để khớp oracle (bot_id do trigger sinh ngẫu nhiên).
+        contexts = tuple(sorted(eligibility.contexts, key=lambda item: item.strategy_release_id))
+        assert [str(item.bot_id) for item in contexts] == [state["bot_a1"], state["bot_a2"]]
+        assert [str(item.bot_config_version_id) for item in contexts] == [
+            state["config_a1"],
+            state["config_a2"],
+        ]
+        assert [item.strategy_release_id for item in contexts] == ["h01-v1", "h03-v1"]
+        for item in contexts:
+            assert item.root_settings_version_id == identity("root-settings-v1")
+            assert item.root_settings_hash == state["root_settings_hash"]
+            assert item.symbols == ("BTCUSDT",)
+            assert item.effective_at == BOT_CONFIG_EFFECTIVE_AT
+        # Tất định theo as_of: resolve lại cho cùng context (consumer ghim context hash).
+        again = await provider.contexts_for(workspace_id=workspace_a, as_of=as_of)
+        assert sorted(again, key=lambda item: item.strategy_release_id) == list(contexts)
         async with UnitOfWork(sessions, workspace_id=workspace_a) as uow:
             current_user = await uow.session.scalar(text("SELECT current_user"))
             feature = await FeatureSnapshotRepository(uow.session).get_as_of(
@@ -407,7 +563,6 @@ async def dispatch(state):
             validity_end=DECISION_TIME + timedelta(hours=1),
             sources=(EvidenceSourceRef("market_bar:binance:BTCUSDT:1h:0", DECISION_TIME),),
         )
-        as_of = DECISION_TIME + timedelta(minutes=5)
         first = await dispatcher.dispatch_evidence(evidence, contexts, as_of)
         retry = await dispatcher.dispatch_evidence(evidence, contexts, as_of)
         assert retry == first
@@ -549,6 +704,8 @@ async def dispatch(state):
         "revision_id": str(revision.evidence_id),
         "config_a1": str(contexts[0].bot_config_version_id),
         "config_a2": str(contexts[1].bot_config_version_id),
+        # Provider loại A3 ở mọi lần resolve (dispatch + mỗi event consumer) cùng lý do.
+        "exclusions": sorted({(str(item.bot_id), item.reason_code) for item in exclusions}),
         "decisions": [
             {
                 "bot_id": str(item.bot_id),
@@ -687,6 +844,37 @@ def verify(connection, state):
         ),
         "23503",
     )
+    # FK ghép config version: job của bot A2 không được ghim config đã publish của bot A1.
+    rejected(
+        connection,
+        lambda: insert(
+            connection,
+            "bot_decision_job",
+            id=identity("cross-config-job"),
+            workspace_id=workspace_a,
+            bot_id=bot_a2,
+            account_id=state["account_a2"],
+            evidence_id=evidence_id,
+            evidence_hash="0" * 64,
+            bot_config_version_id=state["config_a1"],
+            evaluated_at=DECISION_TIME,
+            context_hash="0" * 64,
+            context_payload=Jsonb({}),
+            status="PENDING",
+        ),
+        "23503",
+        marker="fk_bot_decision_job_bot_config_version",
+    )
+    # Bot A3 chưa publish config: không có job/quyết định nào.
+    for table in ("bot_decision_job", "bot_decision"):
+        assert (
+            count(
+                connection,
+                sql.SQL("SELECT count(*) FROM {} WHERE bot_id=%s").format(sql.Identifier(table)),
+                state["bot_a3"],
+            )
+            == 0
+        )
     rejected(
         connection,
         lambda: insert(
@@ -803,7 +991,9 @@ def prepare_downgrade(connection):
 def verify_downgraded(connection):
     for table in NEW_TABLES:
         assert count(connection, "SELECT to_regclass(%s) IS NULL", table) is True, table
-    assert count(connection, "SELECT count(*) FROM bot_instance") == 3
+    assert count(connection, "SELECT count(*) FROM bot_instance") == 4
+    # Downgrade chỉ về MB-02: config bot đã publish vẫn còn nguyên.
+    assert count(connection, "SELECT count(*) FROM bot_config_version") == 2
 
 
 password = Path(os.environ["TRADING_BOT_DATABASE_PASSWORD_FILE"]).read_text().strip()

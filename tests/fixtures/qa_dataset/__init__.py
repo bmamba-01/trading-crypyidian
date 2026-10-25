@@ -5,7 +5,9 @@ cùng một phiên bản code luôn tạo cùng `QaDataset`. `scripts/seed_qa_da
 vào PostgreSQL theo từng lớp; tài liệu `docs/testing/qa-test-data.md` mô tả cách mở rộng.
 
 Các lớp hiện có (thứ tự seed): `access` (workspace/thành viên/account/grant),
-`root_settings` (risk profile, settings v1, seed vốn PAPER), `market` (instrument, nến).
+`root_settings` (risk profile, settings v1, seed vốn PAPER), `strategy_releases` (release
+H01/H03 PUBLISHED), `bots` (account/bot/grant), `bot_configs` (cấu hình bot PUBLISHED cho
+bot A/B qua repository MB-02), `market` (instrument, nến).
 WP sau thêm lớp mới thành module riêng + trường mới trên `QaDataset`, không sửa lớp cũ.
 """
 
@@ -23,6 +25,12 @@ from tests.fixtures.qa_dataset.access import (
     build_grants,
     build_members,
     build_workspaces,
+)
+from tests.fixtures.qa_dataset.bot_configs import (
+    QaBotConfig,
+    QaStrategyRelease,
+    build_bot_configs,
+    build_strategy_releases,
 )
 from tests.fixtures.qa_dataset.identity import (
     DATASET_VERSION,
@@ -65,6 +73,8 @@ class QaDataset:
     risk_profiles: tuple[QaRiskProfile, ...]
     settings_versions: tuple[QaSettingsVersion, ...]
     paper_seeds: tuple[QaPaperSeed, ...]
+    strategy_releases: tuple[QaStrategyRelease, ...]
+    bot_configs: tuple[QaBotConfig, ...]
     instruments: tuple[QaInstrument, ...]
     bars: tuple[QaBar, ...]
 
@@ -120,6 +130,8 @@ def build_qa_dataset() -> QaDataset:
         risk_profiles=risk_profiles,
         settings_versions=settings_versions,
         paper_seeds=build_paper_seeds(accounts, settings_versions),
+        strategy_releases=build_strategy_releases(),
+        bot_configs=build_bot_configs(),
         instruments=build_instruments(),
         bars=build_bars(),
     )
@@ -135,6 +147,7 @@ __all__ = [
     "QA_WORKSPACE_KEY",
     "SEEDED_AT",
     "QaBar",
+    "QaBotConfig",
     "QaBotGrant",
     "QaDataset",
     "QaInstrument",
@@ -142,6 +155,7 @@ __all__ = [
     "QaPaperSeed",
     "QaRiskProfile",
     "QaSettingsVersion",
+    "QaStrategyRelease",
     "QaTradingAccount",
     "QaWorkspace",
     "build_qa_dataset",

@@ -5,18 +5,25 @@ Phase:
 - `admin_matrix` (admin-web, `crypidian_admin_web`): RLS theo membership/grant và
   `BotGrantRepository.require` ở tầng ứng dụng.
 - `runtime_scope` (trading-runtime, `crypidian_trading_runtime`): RLS theo bot scope.
+- `mutate`/`verify_reset` (migrator): làm lệch baseline (gồm publish tay config bot B) và
+  kiểm seed lại khôi phục.
+- `feature_snapshot` (migrator) + `fanout` (trading-runtime): feature snapshot test-only rồi
+  fan-out một shared evidence tới các bot QA có config PUBLISHED qua provider MB-02/MB-03.
 Ngữ cảnh (ID dataset, bot ID, danh sách kiểm tra) đến từ test qua stdin, không chứa bí mật.
 """
 
 import asyncio
+import hashlib
 import json
 import os
-from datetime import UTC, datetime
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from uuid import UUID
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 import psycopg
 from psycopg import sql
+from psycopg.types.json import Jsonb
 
 PHASE = os.environ["QA_PHASE"]
 CONTEXT = json.loads(os.environ["QA_CONTEXT"])
@@ -31,9 +38,14 @@ WORKSPACE_TABLES = (
     "risk_profile_version",
     "workspace_settings_version",
     "paper_account_seed",
+    "strategy_release",
+    "bot_config_version",
     "market_instrument",
     "market_bar",
 )
+# Mốc dữ liệu QA (`MARKET_END` = `SEEDED_AT` của dataset); probe không import tests/.
+MARKET_END = datetime(2026, 10, 1, tzinfo=UTC)
+FANOUT_AS_OF = MARKET_END + timedelta(minutes=5)
 
 
 def connect():
@@ -215,6 +227,63 @@ def mfa_references(connection):
     return references
 
 
+def bot_config_heads(connection):
+    """Version PUBLISHED mới nhất (version, overlay hash, parent) của bot A/B."""
+    heads = {}
+    for key in ("A", "B"):
+        row = connection.execute(
+            "SELECT id::text, version, overlay_hash, parent_version_id::text "
+            "FROM bot_config_version WHERE bot_id = %s AND status = 'PUBLISHED' "
+            "ORDER BY version DESC LIMIT 1",
+            (UUID(CONTEXT["bots"][key]),),
+        ).fetchone()
+        heads[key] = list(row) if row else None
+    return heads
+
+
+def publish_drift_config(connection, workspace, bot_id, member):
+    """QA publish tay config bot B với release khác baseline (DRAFT → PUBLISHED như MB-02)."""
+    from trading_bot.config.bot_settings import BotConfigOverlay, canonical_overlay, overlay_hash
+
+    head = connection.execute(
+        "SELECT id, version, account_id, base_settings_version_id, base_settings_hash "
+        "FROM bot_config_version WHERE bot_id = %s AND status = 'PUBLISHED' "
+        "ORDER BY version DESC LIMIT 1",
+        (bot_id,),
+    ).fetchone()
+    overlay = canonical_overlay(
+        BotConfigOverlay.model_validate(
+            {"schema_version": 1, "strategy": {"release_id": "h03-v1", "parameters": {}}}
+        )
+    )
+    drift_id = connection.execute(
+        "INSERT INTO bot_config_version (id, workspace_id, bot_id, account_id, version, "
+        "parent_version_id, schema_version, overlay_json, overlay_hash, "
+        "base_settings_version_id, base_settings_hash, status, revision, created_by, updated_by) "
+        "VALUES (gen_random_uuid(), %s, %s, %s, %s, %s, 1, %s, %s, %s, %s, 'DRAFT', 1, %s, %s) "
+        "RETURNING id",
+        (
+            workspace,
+            bot_id,
+            head[2],
+            head[1] + 1,
+            head[0],
+            Jsonb(overlay),
+            overlay_hash(overlay),
+            head[3],
+            head[4],
+            member,
+            member,
+        ),
+    ).fetchone()[0]
+    connection.execute(
+        "UPDATE bot_config_version SET status = 'PUBLISHED', approved_by = %s, "
+        "published_at = now(), effective_at = now() WHERE id = %s",
+        (member, drift_id),
+    )
+    return str(drift_id)
+
+
 def mutate():
     """Mô phỏng thao tác thủ công của QA làm lệch baseline; seed lại phải khôi phục."""
     workspace = UUID(CONTEXT["workspaces"]["qa"])
@@ -222,6 +291,7 @@ def mutate():
     bots = {key: UUID(value) for key, value in CONTEXT["bots"].items()}
     with connect() as connection, connection.transaction():
         before = mfa_references(connection)
+        drift_config = publish_drift_config(connection, workspace, bots["B"], members["qa.owner"])
         revoked = connection.execute(
             "UPDATE bot_grant SET revoked_at = now() WHERE workspace_id = %s AND bot_id = %s "
             "AND membership_id = %s AND permission = 'bot:runtime:pause' AND revoked_at IS NULL",
@@ -255,7 +325,14 @@ def mutate():
         bot_a = connection.execute(
             "SELECT status, name FROM bot_instance WHERE id = %s", (bots["A"],)
         ).fetchone()
-    return {"references": before, "revoked": revoked, "bot_a": list(bot_a)}
+        heads = bot_config_heads(connection)
+    return {
+        "references": before,
+        "revoked": revoked,
+        "bot_a": list(bot_a),
+        "drift_config": drift_config,
+        "bot_config_heads": heads,
+    }
 
 
 def verify_reset():
@@ -312,7 +389,9 @@ def verify_reset():
             ).fetchone()[0]
             for key, member in members.items()
         }
+        heads = bot_config_heads(connection)
     return {
+        "bot_config_heads": heads,
         "account_a": list(account_a),
         "bot_a": [bot_a[0], bot_a[1], accounts[bot_a[2]]],
         "membership_status": membership_status,
@@ -323,6 +402,180 @@ def verify_reset():
         "references": references,
         "counters": counters,
     }
+
+
+def feature_snapshot():
+    """Feature snapshot test-only (không thuộc dataset) làm nguồn cho shared evidence QA."""
+    from trading_bot.domain.market.feature_snapshot import (
+        DataFreshness,
+        FeatureSnapshot,
+        MarketRegime,
+        RegimeAssessment,
+    )
+
+    workspace = UUID(CONTEXT["workspaces"]["qa"])
+    provisional = FeatureSnapshot(
+        snapshot_id="0" * 64,
+        content_hash="0" * 64,
+        workspace_id=workspace,
+        symbol="BTCUSDT",
+        timeframe="1h",
+        as_of=MARKET_END - timedelta(minutes=2),
+        computed_at=MARKET_END - timedelta(seconds=90),
+        schema_hash="a" * 64,
+        formula_hash="b" * 64,
+        code_hash="c" * 64,
+        input_bar_ids=("qa-bar-btcusdt-1h-last",),
+        input_event_ids=("qa-event",),
+        features={"atr_14": 2.0},
+        warmup={"atr_14": True},
+        quality_flags=(),
+        data_freshness=DataFreshness.FRESH,
+        data_coverage=1.0,
+        regime=RegimeAssessment(MarketRegime.TREND, 0.8, 1.0, "QA_FIXTURE", "Dữ liệu QA E2E."),
+        is_usable=True,
+    )
+    digest = hashlib.sha256(provisional.canonical_json().encode()).hexdigest()
+    snapshot = replace(provisional, snapshot_id=digest, content_hash=digest)
+    payload = snapshot.canonical_payload()
+    values = {
+        "id": uuid5(NAMESPACE_URL, "crypidian-qa-e2e:feature-snapshot:" + digest),
+        "workspace_id": workspace,
+        "snapshot_id": snapshot.snapshot_id,
+        "content_hash": snapshot.content_hash,
+        "symbol": snapshot.symbol,
+        "timeframe": snapshot.timeframe,
+        "as_of": snapshot.as_of,
+        "computed_at": snapshot.computed_at,
+        "schema_hash": snapshot.schema_hash,
+        "formula_hash": snapshot.formula_hash,
+        "code_hash": snapshot.code_hash,
+        "input_bar_ids": Jsonb(list(snapshot.input_bar_ids)),
+        "input_event_ids": Jsonb(list(snapshot.input_event_ids)),
+        "features": Jsonb(dict(snapshot.features)),
+        "warmup": Jsonb(dict(snapshot.warmup)),
+        "quality_flags": Jsonb(list(snapshot.quality_flags)),
+        "data_freshness": snapshot.data_freshness.value,
+        "data_coverage": snapshot.data_coverage,
+        "regime": Jsonb(payload["regime"]),
+        "is_usable": True,
+        "canonical_json": snapshot.canonical_json(),
+    }
+    with connect() as connection, connection.transaction():
+        connection.execute(
+            sql.SQL("INSERT INTO feature_snapshot ({}) VALUES ({})").format(
+                sql.SQL(",").join(map(sql.Identifier, values)),
+                sql.SQL(",").join(sql.Placeholder() for _ in values),
+            ),
+            tuple(values.values()),
+        )
+    return {"feature_snapshot_id": snapshot.snapshot_id}
+
+
+async def fanout_async():
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from trading_bot.adapters.database.engine import (
+        create_database_engine,
+        database_url_from_secret,
+    )
+    from trading_bot.adapters.database.repositories.bot_decisions import (
+        PostgresSignalDecisionStore,
+    )
+    from trading_bot.adapters.database.repositories.feature_snapshots import (
+        FeatureSnapshotRepository,
+    )
+    from trading_bot.application.bot_decision_contexts import (
+        EffectiveBotDecisionContextProvider,
+    )
+    from trading_bot.application.bot_dispatcher import BotEvidenceDispatcher
+    from trading_bot.application.outbox import UnitOfWork
+    from trading_bot.domain.market.signal_evidence import (
+        EvidenceSourceRef,
+        build_shared_signal_evidence,
+    )
+    from trading_bot.domain.strategy.contracts import DecisionSnapshot
+    from trading_bot.domain.strategy.registry import StrategyRegistry
+
+    class EmptySnapshots:
+        """Snapshot point-in-time rỗng: strategy tự abstain, chỉ chứng minh fan-out/lineage."""
+
+        async def snapshot_for(self, *, evidence, context, evaluated_at):
+            return DecisionSnapshot(
+                symbol=evidence.symbol,
+                decision_time=evaluated_at,
+                snapshot_id=f"qa-empty-{context.bot_id}",
+                series=(),
+                features=(),
+            )
+
+    workspace = UUID(CONTEXT["workspaces"]["qa"])
+    engine = create_database_engine(
+        database_url_from_secret(
+            username=os.environ["TRADING_BOT_DATABASE_USER"],
+            password_file=Path(os.environ["TRADING_BOT_DATABASE_PASSWORD_FILE"]),
+            host="postgres",
+            database="crypidian",
+        )
+    )
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        provider = EffectiveBotDecisionContextProvider(sessions)
+        eligibility = await provider.eligibility(workspace_id=workspace, as_of=FANOUT_AS_OF)
+        async with UnitOfWork(sessions, workspace_id=workspace) as uow:
+            feature = await FeatureSnapshotRepository(uow.session).get_as_of(
+                workspace_id=workspace, symbol="BTCUSDT", timeframe="1h", as_of=MARKET_END
+            )
+        evidence = build_shared_signal_evidence(
+            feature_snapshot=feature,
+            setup_type="qa_trend_breakout",
+            observed_at=MARKET_END - timedelta(minutes=1),
+            available_at=MARKET_END,
+            validity_end=MARKET_END + timedelta(hours=1),
+            sources=(EvidenceSourceRef("market_bar:qa:BTCUSDT:1h:last", MARKET_END),),
+        )
+        dispatcher = BotEvidenceDispatcher(
+            PostgresSignalDecisionStore(sessions),
+            strategies=StrategyRegistry(),
+            snapshots=EmptySnapshots(),
+        )
+        decisions = await dispatcher.dispatch_evidence(evidence, eligibility.contexts, FANOUT_AS_OF)
+        retry = await dispatcher.dispatch_evidence(evidence, eligibility.contexts, FANOUT_AS_OF)
+    finally:
+        await engine.dispose()
+    bot_keys = {value: key for key, value in CONTEXT["bots"].items()}
+    return {
+        "identity": "crypidian_trading_runtime"
+        if os.environ["TRADING_BOT_DATABASE_USER"] == "crypidian_trading_runtime"
+        else os.environ["TRADING_BOT_DATABASE_USER"],
+        "contexts": {
+            bot_keys[str(item.bot_id)]: {
+                "release": item.strategy_release_id,
+                "bot_config_version_id": str(item.bot_config_version_id),
+                "root_settings_version_id": str(item.root_settings_version_id),
+            }
+            for item in eligibility.contexts
+        },
+        "exclusions": [
+            [bot_keys.get(str(item.bot_id), "FOREIGN"), item.reason_code]
+            for item in eligibility.exclusions
+        ],
+        "decisions": {
+            bot_keys[str(item.bot_id)]: {
+                "release": item.strategy_release_id,
+                "status": item.status.value,
+                "bot_config_version_id": str(item.bot_config_version_id),
+                "root_settings_version_id": str(item.root_settings_version_id),
+                "evidence_id": str(item.evidence_id),
+            }
+            for item in decisions
+        },
+        "retry_identical": list(retry) == list(decisions),
+    }
+
+
+def fanout():
+    return asyncio.run(fanout_async())
 
 
 def mfa_files():
@@ -342,5 +595,7 @@ PHASES = {
     "mutate": mutate,
     "verify_reset": verify_reset,
     "mfa_files": mfa_files,
+    "feature_snapshot": feature_snapshot,
+    "fanout": fanout,
 }
 print(json.dumps(PHASES[PHASE](), sort_keys=True))

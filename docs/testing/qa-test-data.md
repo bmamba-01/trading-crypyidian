@@ -12,16 +12,17 @@ Tài liệu này mô tả bộ dữ liệu QA tất định (deterministic QA da
 | `tests/fixtures/qa_dataset/identity.py` | Namespace UUIDv5, hàm `qa_id(kind, key)`, mốc thời gian cố định `SEEDED_AT`/`MARKET_END`, phiên bản `crypidian-qa-v1`. |
 | `tests/fixtures/qa_dataset/access.py` | Lớp danh tính và quyền: workspace, thành viên, PAPER account, grant theo bot. |
 | `tests/fixtures/qa_dataset/root_settings.py` | Lớp cấu hình gốc: risk profile, `WorkspaceSettings` v1 đã publish, seed vốn PAPER. |
+| `tests/fixtures/qa_dataset/bot_configs.py` | Lớp strategy release (H01/H03 PUBLISHED) và cấu hình bot baseline đã publish cho bot A/B (tích hợp MB-02/MB-03). |
 | `tests/fixtures/qa_dataset/market.py` | Lớp dữ liệu thị trường tổng hợp: instrument và nến BTCUSDT/ETHUSDT. |
 | `scripts/seed_qa_data.py` | CLI: lệnh `seed` (máy dev, điều phối Compose, quản lý tệp credentials) và `apply` (trong container). |
 | `scripts/qa_seed_layers.py` | Ghi dataset vào PostgreSQL theo từng lớp trong một transaction (`SEED_LAYERS`). |
 | Service Compose `qa-seed` (profile `qa`) | Container chạy `apply` với login owner local, volume MFA và khóa mã hóa MFA. `docker compose up` mặc định không chạy service này. |
 | `tests/unit/test_qa_dataset.py` | Bất biến dataset, chốt an toàn, credentials, thứ tự lớp. |
-| `tests/e2e/test_qa_seed.py`, `tests/e2e/probes/qa_seed.py` | Compose E2E: seed hai lần, đăng nhập API thật, ma trận RLS/grant, runtime bot scope, git ignore. |
+| `tests/e2e/test_qa_seed.py`, `tests/e2e/probes/qa_seed.py` | Compose E2E: seed hai lần, đăng nhập API thật, ma trận RLS/grant, runtime bot scope, reset baseline (gồm config bot), fan-out evidence tới bot A/B, git ignore. |
 
 ## 2. Nội dung dataset
 
-Mọi ID là UUIDv5 sinh từ `QA_NAMESPACE` và khóa nghiệp vụ (ví dụ `qa_id("trading_account", "A")`), nên seed lặp lại luôn ra cùng khóa chính trên mọi máy. ID tất định **không phải bí mật**; an toàn dựa vào xác thực và RLS. Riêng `bot_instance.id` do trigger DB sinh ngẫu nhiên khi insert account (đúng hợp đồng MB-01); seed tra bot theo account và in ra trong tóm tắt.
+Mọi ID là UUIDv5 sinh từ `QA_NAMESPACE` và khóa nghiệp vụ (ví dụ `qa_id("trading_account", "A")`), nên seed lặp lại luôn ra cùng khóa chính trên mọi máy. ID tất định **không phải bí mật**; an toàn dựa vào xác thực và RLS. Ngoại lệ có chủ đích: `bot_instance.id` do trigger DB sinh ngẫu nhiên khi insert account (đúng hợp đồng MB-01), và `bot_config_version.id` do repository MB-02 cấp (`uuid4`) khi tạo draft; seed tra bot theo account, tra config theo bot + overlay hash, và in bot ID trong tóm tắt.
 
 ### 2.1 Workspace
 
@@ -77,7 +78,23 @@ Tất cả account là `PAPER`/`binance_usdm`/`local`. Bot được trigger `tra
 - `qa_other`: symbol `BTCUSDT`; vốn khởi tạo 5000 USDT; còn lại như trên.
 - Hash settings tính bằng đúng `settings_hash(canonical_settings(...))` của repository.
 
-### 2.6 Dữ liệu thị trường tổng hợp (chỉ workspace `qa`)
+### 2.6 Strategy release và cấu hình bot (MB-02/MB-03)
+
+Ruling tích hợp: fan-out shared evidence (MB-03) chỉ dành cho bot có cấu hình bot **PUBLISHED** hiệu lực tại thời điểm đánh giá; bot chưa publish bị loại với lý do `BOT_CONFIG_NOT_PUBLISHED` (vẫn dùng root-fallback của MB-02 trên đường PAPER cũ).
+
+- `strategy_release` `h01-v1` và `h03-v1` (version 1, PUBLISHED, `content_hash` = hash của registry built-in) có ở **cả hai** workspace, ID `qa_id("strategy_release", "<workspace>:<release>:1")`. Trạng thái là field mutable được đưa về PUBLISHED.
+- Cấu hình bot baseline (schema overlay v1), publish qua `BotConfigVersionRepository` (DRAFT → `validate_bot_overlay` so với root → PUBLISHED), `created_by = qa.strategy_admin`, `approved_by = qa.owner`, `effective_at = 2026-10-01T00:00:00Z` (bằng root):
+
+| Bot | Strategy release | Overlay risk | Universe |
+| --- | --- | --- | --- |
+| A | `h03-v1` (release mặc định của root) | `per_trade_risk_fraction` 0.005 (root 0.01) | kế thừa root (BTCUSDT, ETHUSDT) |
+| B | `h01-v1` (khác root) | `max_positions` 1 (root 2) | kế thừa root |
+| C (DISABLED), OTHER | — không có config, dùng root-fallback | — | — |
+
+- Idempotent: nếu version PUBLISHED mới nhất của bot đã có đúng overlay hash baseline thì không ghi gì. Nếu QA đã publish tay một overlay khác, seed publish **version mới** mang overlay baseline (cha = head hiện tại, hiệu lực từ thời điểm seed) vì lịch sử version bất biến; draft dở dang của QA được giữ nguyên (draft không có hiệu lực).
+- Với mốc `as_of` trong khoảng dữ liệu (ví dụ `2026-10-01T00:05Z`), resolver trả v1 baseline của A và B; provider fan-out (`EffectiveBotDecisionContextProvider`) chỉ liệt kê bot ENABLED trên account PAPER ENABLED nên C không xuất hiện.
+
+### 2.7 Dữ liệu thị trường tổng hợp (chỉ workspace `qa`)
 
 - Instrument nguồn `BINANCE_USDM` (quy cách mô phỏng): BTCUSDT tick 0.1, bước khối lượng 0.001, notional tối thiểu 5; ETHUSDT tick 0.01.
 - Nến nguồn `CRYPIDIAN_QA_FIXTURE`, đều đã đóng: mỗi symbol 240 nến 1h và 220 nến 4h (tổng 920), kết thúc lúc `2026-10-01T00:00:00Z`. Đủ cho các strategy built-in: H03 cần 56 nến 1h, H06 cần 121 nến 1h, H01 cần EMA200 trên 4h.
@@ -107,7 +124,7 @@ Kết quả in workspace ID, bot ID theo account, số hàng QA từng bảng v�
 - Hàng được tạo theo ID tất định; chạy lại không tạo hàng trùng.
 - Hàng đã có phải khớp identity của dataset (slug, email, mode, account, hash settings...). Nếu bị dữ liệu khác chiếm, seed dừng và không ghi đè.
 - Trạng thái mà QA hay thay đổi khi thử thủ công được đưa về baseline: trạng thái user/membership/account, `max_notional`, tên account, tập role của thành viên QA, grant đang hiệu lực (grant lạ của thành viên QA bị thu hồi bằng `revoked_at`; grant bị thu hồi được cấp lại bằng hàng mới vì lịch sử grant bất biến), mật khẩu và TOTP theo tệp credentials.
-- Bảng bất biến (settings đã publish, seed vốn PAPER, nến, lịch sử grant) không bị sửa hay xóa. Settings v2 do QA publish qua Admin API vẫn giữ và có hiệu lực.
+- Bảng bất biến (settings đã publish, seed vốn PAPER, nến, lịch sử grant, version config bot) không bị sửa hay xóa. Settings v2 do QA publish qua Admin API vẫn giữ và có hiệu lực. Config bot A/B lệch baseline được khôi phục bằng một version PUBLISHED mới (mục 2.6).
 - Xoay mật khẩu/TOTP: xóa hoặc sửa mục trong tệp credentials rồi chạy lại `seed`; mục thiếu/hỏng được sinh mới và DB được cập nhật theo.
 - Reset hoàn toàn (xóa mọi dữ liệu local của project): `docker compose --profile paper --profile qa down --volumes`, rồi `up` và `seed` lại. Lệnh này xóa volume PostgreSQL/MFA của project, chỉ dùng cho môi trường local.
 
@@ -118,7 +135,7 @@ $env:PYTHONPATH = "$PWD\src"
 .\.venv\Scripts\python.exe -m pytest tests\e2e\test_qa_seed.py -q -p no:cacheprovider -rA
 ```
 
-Test tạo Compose project ngẫu nhiên `crypidian-qa-e2e-<hex>`, migrate head (`alembic check`), seed hai lần (số hàng và digest nội dung không đổi, lần hai không có thay đổi), đăng nhập từng tài khoản qua Admin API thật, kiểm tra ma trận RLS/grant dưới login `crypidian_admin_web`, bot scope dưới `crypidian_trading_runtime`, và tệp credentials bị git ignore. Sau đó test làm lệch baseline như thao tác thủ công (thu hồi grant pause của operator, thêm grant lạ trên bot B, đình chỉ analyst, thêm role thừa cho operator, tắt và đổi tên account A, thêm factor MFA lạ trỏ cùng tệp TOTP đang dùng, đổi mật khẩu/TOTP của `qa.risk_admin` trong tệp credentials), seed lại và kiểm: bộ đếm thay đổi đúng từng mục, account A và bot A trở lại ENABLED/tên gốc, grant cấp lại có ID `...:reissue:1`, tệp TOTP bị thay đã xóa còn mọi tệp đang được tham chiếu còn nguyên, mọi tài khoản đăng nhập lại được qua API (tài khoản đã xoay dùng mật khẩu/TOTP mới, mật khẩu cũ bị 401), và lần seed kế tiếp không còn thay đổi. Test dùng tệp credentials riêng `.secrets/qa_accounts-<project>.json` và xóa nó khi kết thúc.
+Test tạo Compose project ngẫu nhiên `crypidian-qa-e2e-<hex>`, migrate head (`alembic check`), seed hai lần (số hàng và digest nội dung không đổi, lần hai không có thay đổi), đăng nhập từng tài khoản qua Admin API thật, kiểm tra ma trận RLS/grant dưới login `crypidian_admin_web`, bot scope dưới `crypidian_trading_runtime`, và tệp credentials bị git ignore. Sau đó test làm lệch baseline như thao tác thủ công (thu hồi grant pause của operator, thêm grant lạ trên bot B, đình chỉ analyst, thêm role thừa cho operator, tắt và đổi tên account A, thêm factor MFA lạ trỏ cùng tệp TOTP đang dùng, đổi mật khẩu/TOTP của `qa.risk_admin` trong tệp credentials, publish tay config v2 của bot B với release khác baseline), seed lại và kiểm: bộ đếm thay đổi đúng từng mục (gồm `bot_config_version.published` = 1), account A và bot A trở lại ENABLED/tên gốc, config bot B có v3 mang overlay baseline nối sau v2 còn bot A giữ v1, grant cấp lại có ID `...:reissue:1`, tệp TOTP bị thay đã xóa còn mọi tệp đang được tham chiếu còn nguyên, mọi tài khoản đăng nhập lại được qua API (tài khoản đã xoay dùng mật khẩu/TOTP mới, mật khẩu cũ bị 401), và lần seed kế tiếp không còn thay đổi. Cuối cùng test chèn một feature snapshot test-only (không thuộc dataset) và, dưới login `crypidian_trading_runtime`, dùng provider MB-02/MB-03 resolve context tại `2026-10-01T00:05Z` rồi dispatch một shared evidence: đúng hai quyết định cho bot A (`h03-v1`) và B (`h01-v1`), cùng evidence, config version khác nhau, lineage root settings v1 của workspace `qa`, không bot nào bị loại, retry trả y hệt. Test dùng tệp credentials riêng `.secrets/qa_accounts-<project>.json` và xóa nó khi kết thúc.
 
 ## 4. Thông tin đăng nhập
 
@@ -160,8 +177,8 @@ Hợp đồng lớp (layer contract):
 
 Gợi ý theo WP:
 
-- **MB-02 (bot config versions):** module `bot_configs.py` tạo `BotConfigVersion` v1 đã publish cho bot A và B (overlay chỉ siết cap, ví dụ cap thấp hơn cho B), bot C giữ cấu hình gốc; lớp `bot_configs` đứng sau `bots`. ID dạng `qa_id("bot_config_version", "A:1")`. Bot ID lấy từ `SeedContext.bot_ids`.
-- **MB-03 (shared evidence):** module `evidence.py` tạo evidence dùng chung từ nến cuối của BTCUSDT (ứng viên phá kênh) với `available_at` từ fixture; lớp `shared_evidence` đứng sau `market`. Evidence không chứa account/quantity.
+- **MB-02/MB-03 (đã làm khi tích hợp):** lớp `strategy_releases` (sau `root_settings`) và `bot_configs` (sau `bots`), xem mục 2.6. ID version config do repository MB-02 cấp, không dùng `qa_id`.
+- **MB-03 (shared evidence trong dataset, chưa làm):** nếu cần evidence cố định trong dataset, thêm module `evidence.py` dựng feature snapshot + evidence từ nến cuối BTCUSDT (ứng viên phá kênh) với `available_at` từ fixture; lớp `shared_evidence` đứng sau `market`. Evidence không chứa account/quantity. Hiện E2E tự chèn feature snapshot test-only.
 - **MB-04 (risk tổng hợp):** settings v1 bất biến; nếu cần cap workspace mới, thêm settings v2 như phiên bản mới (parent v1) thay vì sửa v1.
 - **MB-05 (runtime nhiều bot):** không seed lease/checkpoint runtime; test tự tạo. Account C (DISABLED) dùng để kiểm bot không được khởi chạy.
 - **MB-06 (báo cáo):** lớp `paper_ledger` ghi các trade tất định cho bot A và B qua repository ledger, kèm PnL mong đợi dạng hằng số để đối chiếu báo cáo từng bot và tổng workspace.
@@ -173,6 +190,7 @@ Gợi ý theo WP:
 - Policy `bot_grant_read` cho thành viên đọc grant của chính mình mà không xét trạng thái membership; thành viên bị đình chỉ vẫn không có phiên đăng nhập vì `login`/`authenticate` yêu cầu ACTIVE.
 - Dữ liệu thị trường chỉ có ở workspace `qa`; mốc thời gian là quá khứ nên không dùng để chạy runtime live.
 - Reset hoàn toàn cần xóa volume vì nhiều bảng là append-only/bất biến.
+- Khôi phục config bot về baseline tạo version mới hiệu lực từ thời điểm seed; replay ở mốc trước đó vẫn thấy version cũ (đúng ngữ nghĩa point-in-time).
 
 ## 9. Thuật ngữ
 

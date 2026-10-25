@@ -1,12 +1,14 @@
 """Thêm shared signal evidence (workspace) và job/quyết định strategy theo bot.
 
 Revision ID: e3c5a7b9d2f4
-Revises: c7a90d3f8e21
+Revises: d2b4f6a8c1e3
 
 Evidence chung chỉ scope workspace, bất biến và không có cột bot/account/lệnh.
 Job/quyết định theo bot dùng FK ghép tới bot_instance, RLS ENABLE + FORCE với policy
-riêng từng role và grant trực tiếp tối thiểu (mẫu MB-01). `bot_config_version_id`
-chưa có FK vì bảng `bot_config_version` thuộc MB-02; controller thêm khi tích hợp.
+riêng từng role và grant trực tiếp tối thiểu (mẫu MB-01). Tích hợp sau MB-02:
+`bot_config_version_id` có FK ghép `(workspace_id, bot_id, bot_config_version_id)` tới
+`bot_config_version(workspace_id, bot_id, id)` nên job/quyết định chỉ ghim được config
+của chính bot đó.
 """
 
 import sqlalchemy as sa
@@ -14,7 +16,7 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision = "e3c5a7b9d2f4"
-down_revision = "c7a90d3f8e21"
+down_revision = "d2b4f6a8c1e3"
 branch_labels = None
 depends_on = None
 
@@ -28,6 +30,12 @@ _BOT_INSTANCE_SCOPE = [
     "bot_instance.workspace_id",
     "bot_instance.id",
     "bot_instance.trading_account_id",
+]
+# Đích FK là unique `uq_bot_config_version_bot_id` (workspace_id, bot_id, id) của MB-02.
+_BOT_CONFIG_VERSION_SCOPE = [
+    "bot_config_version.workspace_id",
+    "bot_config_version.bot_id",
+    "bot_config_version.id",
 ]
 _WORKSPACE = "workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid"
 _MEMBER = "NULLIF(current_setting('app.membership_id', true), '')::uuid"
@@ -148,6 +156,11 @@ def upgrade() -> None:
             ["shared_signal_evidence.workspace_id", "shared_signal_evidence.id"],
             name="fk_bot_decision_job_evidence",
         ),
+        sa.ForeignKeyConstraint(
+            ["workspace_id", "bot_id", "bot_config_version_id"],
+            _BOT_CONFIG_VERSION_SCOPE,
+            name="fk_bot_decision_job_bot_config_version",
+        ),
         sa.CheckConstraint(
             "status IN ('PENDING', 'COMPLETED')", name="bot_decision_job_status_valid"
         ),
@@ -223,6 +236,11 @@ def upgrade() -> None:
             ["workspace_id", "evidence_id"],
             ["shared_signal_evidence.workspace_id", "shared_signal_evidence.id"],
             name="fk_bot_decision_evidence",
+        ),
+        sa.ForeignKeyConstraint(
+            ["workspace_id", "bot_id", "bot_config_version_id"],
+            _BOT_CONFIG_VERSION_SCOPE,
+            name="fk_bot_decision_bot_config_version",
         ),
         sa.CheckConstraint(
             "status IN ('CANDIDATE', 'ABSTAIN', 'VETO')", name="bot_decision_status_valid"

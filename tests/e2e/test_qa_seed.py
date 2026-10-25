@@ -36,6 +36,8 @@ EXPECTED_COUNTS = {
     "risk_profile_version": 2,
     "workspace_settings_version": 2,
     "paper_account_seed": 4,
+    "strategy_release": 4,
+    "bot_config_version": 2,
     "market_instrument": 2,
     "market_bar": 920,
 }
@@ -77,6 +79,7 @@ REQUIRE_CHECKS = {
 }
 # Seed lại sau khi probe `mutate` làm lệch baseline: mỗi bộ đếm phải đúng một thay đổi.
 EXPECTED_RESET_CHANGES = {
+    "bot_config_version.published": 1,
     "bot_grant.created": 1,
     "bot_grant.revoked": 1,
     "mfa_factor.deleted": 1,
@@ -184,6 +187,7 @@ def test_qa_seed_is_idempotent_and_accounts_work_through_real_boundaries() -> No
         },
         "require_checks": [list(check) for check in REQUIRE_CHECKS],
     }
+    baseline_configs = {config.account_key: config for config in dataset.bot_configs}
 
     def probe(phase, service):
         payload = json.dumps({"phase": phase, "context": context, "code": probe_code})
@@ -227,6 +231,8 @@ def test_qa_seed_is_idempotent_and_accounts_work_through_real_boundaries() -> No
         assert second_snapshot == first_snapshot
         assert first_summary["counts"] == second_summary["counts"] == EXPECTED_COUNTS
         assert first_summary["changes"]["market_bar.created"] == 920
+        assert first_summary["changes"]["strategy_release.created"] == 4
+        assert first_summary["changes"]["bot_config_version.published"] == 2
         assert second_summary["changes"] == {}
         assert second_summary["bots"] == first_summary["bots"]
 
@@ -289,6 +295,10 @@ def test_qa_seed_is_idempotent_and_accounts_work_through_real_boundaries() -> No
         # (e) Reset về baseline: làm lệch trạng thái như thao tác thủ công rồi seed lại.
         mutation = probe("mutate", "migrator")
         assert mutation["revoked"] == 1
+        # Config bot B bị publish tay sang release khác baseline (v2); A giữ v1.
+        assert mutation["bot_config_heads"]["A"][1:3] == [1, baseline_configs["A"].overlay_hash]
+        assert mutation["bot_config_heads"]["B"][1] == 2
+        assert mutation["bot_config_heads"]["B"][2] != baseline_configs["B"].overlay_hash
         # Trigger MB-01 đồng bộ bot theo account ngay khi account bị tắt/đổi tên.
         assert mutation["bot_a"] == ["DISABLED", "qa-paper-a-mutated"]
         suspended_status, _, _ = _login(web_port, credentials["qa.analyst_reviewer"])
@@ -303,12 +313,23 @@ def test_qa_seed_is_idempotent_and_accounts_work_through_real_boundaries() -> No
         reset_summary = json.loads(reset.stdout.strip().splitlines()[-1])
         assert reset_summary["changes"] == EXPECTED_RESET_CHANGES
         # Lịch sử grant bất biến: thêm grant lạ (đã thu hồi) và grant cấp lại.
-        assert reset_summary["counts"] == EXPECTED_COUNTS | {"bot_grant": 8}
+        # Lịch sử config bất biến: baseline của B được publish lại thành v3 nối sau v2.
+        assert reset_summary["counts"] == EXPECTED_COUNTS | {
+            "bot_grant": 8,
+            "bot_config_version": 4,
+        }
         assert reset_summary["bots"] == first_summary["bots"]
         for value in (new_password, new_totp):
             assert value not in reset.stdout
             assert value not in reset.stderr
         restored = probe("verify_reset", "migrator")
+        heads = restored["bot_config_heads"]
+        assert heads["A"] == mutation["bot_config_heads"]["A"]
+        assert heads["B"][1:] == [
+            3,
+            baseline_configs["B"].overlay_hash,
+            mutation["drift_config"],
+        ]
         assert restored["account_a"] == ["ENABLED", "qa-paper-a"]
         assert restored["bot_a"] == ["ENABLED", "qa-paper-a", "A"]
         assert restored["membership_status"] == {
@@ -363,6 +384,31 @@ def test_qa_seed_is_idempotent_and_accounts_work_through_real_boundaries() -> No
             assert body["roles"] == [role.value for role in member.roles]
         idle = seed()
         assert json.loads(idle.stdout.strip().splitlines()[-1])["changes"] == {}
+
+        # (f) Dataset QA dẫn fan-out MB-03: một shared evidence → quyết định cho bot A và B
+        # (config PUBLISHED, release khác nhau); C DISABLED không được liệt kê, OTHER khác
+        # workspace. Context resolve tại mốc dữ liệu nên bot B dùng v1 baseline.
+        probe("feature_snapshot", "migrator")
+        fanout = probe("fanout", "trading-runtime")
+        assert fanout["identity"] == "crypidian_trading_runtime"
+        assert fanout["exclusions"] == []
+        root_settings = str(dataset.settings_for("qa").id)
+        expected_releases = {key: config.release_id for key, config in baseline_configs.items()}
+        assert expected_releases["A"] != expected_releases["B"]
+        assert {key: item["release"] for key, item in fanout["contexts"].items()} == (
+            expected_releases
+        )
+        assert {key: item["release"] for key, item in fanout["decisions"].items()} == (
+            expected_releases
+        )
+        decisions = fanout["decisions"]
+        assert len({item["evidence_id"] for item in decisions.values()}) == 1
+        assert decisions["A"]["bot_config_version_id"] != decisions["B"]["bot_config_version_id"]
+        for key, item in decisions.items():
+            assert item["root_settings_version_id"] == root_settings
+            assert item["bot_config_version_id"] == fanout["contexts"][key]["bot_config_version_id"]
+            assert item["status"] in {"CANDIDATE", "ABSTAIN"}
+        assert fanout["retry_identical"] is True
 
         # (d) Tệp credentials bị git ignore và không có tệp .secrets nào được theo dõi.
         for path in (credentials_file, root / ".secrets" / "qa_accounts.json"):

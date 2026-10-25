@@ -23,11 +23,12 @@ def _module() -> ModuleType:
     return module
 
 
-def test_revision_chain_is_pinned_for_controller_rechain() -> None:
+def test_revision_chain_follows_mb02_bot_config_versions() -> None:
     module = _module()
 
     assert module.revision == "e3c5a7b9d2f4"
-    assert module.down_revision == "c7a90d3f8e21"
+    # Tích hợp: MB-03 nối sau MB-02 để FK tới bot_config_version tồn tại.
+    assert module.down_revision == "d2b4f6a8c1e3"
 
 
 def test_every_new_table_enables_and_forces_rls_with_immutability_guard() -> None:
@@ -65,3 +66,12 @@ def test_downgrade_refuses_to_drop_decision_history() -> None:
     source = MIGRATION.read_text(encoding="utf-8")
 
     assert "MB03_DOWNGRADE_REQUIRES_EXPORT_OF_DECISIONS" in source
+
+
+def test_job_and_decision_reference_bot_config_version_of_same_bot() -> None:
+    source = MIGRATION.read_text(encoding="utf-8")
+
+    for table in ("bot_decision_job", "bot_decision"):
+        assert f'name="fk_{table}_bot_config_version"' in source, table
+    # FK ghép cùng workspace + bot: config của bot khác không thể được ghim vào job/quyết định.
+    assert source.count('["workspace_id", "bot_id", "bot_config_version_id"]') == 2

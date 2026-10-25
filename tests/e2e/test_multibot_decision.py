@@ -1,4 +1,7 @@
-"""MB-03: một shared evidence → quyết định riêng cho hai bot PAPER trên PostgreSQL thật."""
+"""MB-03: một shared evidence → quyết định riêng cho hai bot PAPER trên PostgreSQL thật.
+
+Sau tích hợp, MB-03 nối sau MB-02 (`d2b4f6a8c1e3`): downgrade/upgrade chỉ lặp trên MB-03.
+"""
 
 import json
 import os
@@ -91,6 +94,11 @@ def test_shared_evidence_fans_out_to_two_paper_bots_without_duplicates() -> None
             dispatched["config_a1"],
             dispatched["config_a2"],
         ]
+        assert [item["bot_config_version_id"] for item in decisions] == [
+            seeded["config_a1"],
+            seeded["config_a2"],
+        ]
+        assert dispatched["exclusions"] == [[seeded["bot_a3"], "BOT_CONFIG_NOT_PUBLISHED"]]
         assert {item["status"] for item in decisions} == {"CANDIDATE"}
         assert len({item["candidate_id"] for item in decisions}) == 2
         assert len({item["idempotency_key"] for item in decisions}) == 2
@@ -102,12 +110,12 @@ def test_shared_evidence_fans_out_to_two_paper_bots_without_duplicates() -> None
             "migrator",
             "alembic",
             "downgrade",
-            "c7a90d3f8e21",
+            "d2b4f6a8c1e3",
             success=False,
         )
         assert "MB03_DOWNGRADE_REQUIRES_EXPORT_OF_DECISIONS" in guard.stderr
         run_probe("prepare_downgrade")
-        compose("run", "--rm", "--no-deps", "migrator", "alembic", "downgrade", "c7a90d3f8e21")
+        compose("run", "--rm", "--no-deps", "migrator", "alembic", "downgrade", "d2b4f6a8c1e3")
         run_probe("verify_downgraded")
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "head")
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "check")

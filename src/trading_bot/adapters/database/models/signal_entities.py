@@ -24,6 +24,12 @@ _BOT_INSTANCE_SCOPE = (
     "bot_instance.id",
     "bot_instance.trading_account_id",
 )
+# FK ghép cùng workspace + bot tới unique (workspace_id, bot_id, id) của bot_config_version.
+_BOT_CONFIG_VERSION_SCOPE = (
+    "bot_config_version.workspace_id",
+    "bot_config_version.bot_id",
+    "bot_config_version.id",
+)
 
 
 class SharedSignalEvidenceRecord(UuidPrimaryKey, CreatedAt, Base):
@@ -113,6 +119,11 @@ class BotDecisionJobRecord(UuidPrimaryKey, CreatedAt, Base):
             ["shared_signal_evidence.workspace_id", "shared_signal_evidence.id"],
             name="fk_bot_decision_job_evidence",
         ),
+        ForeignKeyConstraint(
+            ["workspace_id", "bot_id", "bot_config_version_id"],
+            list(_BOT_CONFIG_VERSION_SCOPE),
+            name="fk_bot_decision_job_bot_config_version",
+        ),
         CheckConstraint("status IN ('PENDING', 'COMPLETED')", name="bot_decision_job_status_valid"),
         CheckConstraint(
             "(status = 'COMPLETED') = (completed_at IS NOT NULL)",
@@ -134,7 +145,7 @@ class BotDecisionJobRecord(UuidPrimaryKey, CreatedAt, Base):
     account_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     evidence_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     evidence_hash: Mapped[str] = mapped_column(String(64), nullable=False)
-    # MB-02 chưa merge: controller thêm FK tới bot_config_version khi tích hợp.
+    # Chỉ version PUBLISHED hiệu lực mới được fan-out (provider); FK chặn config bot khác.
     bot_config_version_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     evaluated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     context_hash: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -173,6 +184,11 @@ class BotDecisionRecord(UuidPrimaryKey, CreatedAt, Base):
             ["shared_signal_evidence.workspace_id", "shared_signal_evidence.id"],
             name="fk_bot_decision_evidence",
         ),
+        ForeignKeyConstraint(
+            ["workspace_id", "bot_id", "bot_config_version_id"],
+            list(_BOT_CONFIG_VERSION_SCOPE),
+            name="fk_bot_decision_bot_config_version",
+        ),
         CheckConstraint(
             "status IN ('CANDIDATE', 'ABSTAIN', 'VETO')", name="bot_decision_status_valid"
         ),
@@ -197,7 +213,7 @@ class BotDecisionRecord(UuidPrimaryKey, CreatedAt, Base):
     job_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     evidence_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     evidence_hash: Mapped[str] = mapped_column(String(64), nullable=False)
-    # MB-02 chưa merge: controller thêm FK tới bot_config_version khi tích hợp.
+    # Chỉ version PUBLISHED hiệu lực mới được fan-out (provider); FK chặn config bot khác.
     bot_config_version_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     bot_config_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     root_settings_version_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)

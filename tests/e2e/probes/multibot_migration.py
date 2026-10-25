@@ -25,8 +25,14 @@ TABLES = (
     "trade_cost",
     "paper_execution_checkpoint",
 )
-# Bảng bot-scoped do migration sau MB-01 thêm (MB-02); vẫn kiểm chặt không có index lạ.
-LATER_BOT_SCOPED_TABLES = ("bot_config_version", "bot_config_request")
+# Bảng bot-scoped do migration sau MB-01 thêm (MB-02 config, MB-03 job/quyết định);
+# vẫn kiểm chặt không có index lạ.
+LATER_BOT_SCOPED_TABLES = (
+    "bot_config_version",
+    "bot_config_request",
+    "bot_decision_job",
+    "bot_decision",
+)
 BOT_SCOPE_INDEXES = {f"ix_{table}_bot_scope" for table in (*TABLES, *LATER_BOT_SCOPED_TABLES)}
 NOW = datetime(2026, 10, 24, tzinfo=UTC)
 
