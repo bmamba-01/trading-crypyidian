@@ -60,10 +60,17 @@ from trading_bot.adapters.database.models.risk_entities import (
     RiskReservationRecord,
     TradePlanRecord,
 )
+from trading_bot.adapters.database.models.signal_entities import (
+    BotDecisionJobRecord,
+    BotDecisionRecord,
+    SharedSignalEvidenceRecord,
+)
 
 __all__ = [
     "BotConfigRequest",
     "BotConfigVersion",
+    "BotDecisionJobRecord",
+    "BotDecisionRecord",
     "BotGrant",
     "BotInstance",
     "ApprovalRequest",
@@ -98,6 +105,7 @@ __all__ = [
     "RoleBinding",
     "SecretReference",
     "Session",
+    "SharedSignalEvidenceRecord",
     "StrategyRelease",
     "TelegramBinding",
     "TradingAccount",

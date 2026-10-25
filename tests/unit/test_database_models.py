@@ -68,6 +68,9 @@ def test_schema_contains_all_foundation_tables() -> None:
         "backtest_scenario",
         "backtest_trade_outcome",
         "paper_execution_checkpoint",
+        "shared_signal_evidence",
+        "bot_decision_job",
+        "bot_decision",
     }
 
 
