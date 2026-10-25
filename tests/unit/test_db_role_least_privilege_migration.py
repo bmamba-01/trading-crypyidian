@@ -139,9 +139,9 @@ def test_upgrade_limits_admin_updates_to_columns_code_writes(
             "TO crypidian_admin_web",
             'GRANT UPDATE (last_used_counter, verified_at) ON TABLE "mfa_factor" '
             "TO crypidian_admin_web",
-            'GRANT UPDATE (max_notional, name, status, updated_at) ON TABLE "trading_account" '
-            "TO crypidian_admin_web",
-            'GRANT UPDATE (status) ON TABLE "user_membership" TO crypidian_admin_web',
+            # Lock-only: không code admin nào (kể cả MB-02 e53331b) sửa cột account/membership.
+            'GRANT UPDATE (updated_at) ON TABLE "trading_account" TO crypidian_admin_web',
+            'GRANT UPDATE (created_at) ON TABLE "user_membership" TO crypidian_admin_web',
         ]
     )
 

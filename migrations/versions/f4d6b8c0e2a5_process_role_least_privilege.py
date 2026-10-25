@@ -57,15 +57,17 @@ DIRECT_GRANTS: dict[str, dict[str, tuple[str, ...]]] = {
     ADMIN: {
         # Đọc control-plane (đã chịu RLS); ghi chỉ ở bảng và cột mà code admin thật sự ghi.
         "workspace": ("SELECT",),
-        # BotGrantRepository khóa membership FOR UPDATE; tạm ngưng thành viên sửa status.
-        "user_membership": ("SELECT", "INSERT", "UPDATE (status)"),
+        # BotGrantRepository khóa membership FOR UPDATE; UPDATE(created_at) chỉ là cột lock-only
+        # (như runtime R4). Không code nào sửa status — cột này nằm trong predicate RLS MB-01.
+        "user_membership": ("SELECT", "INSERT", "UPDATE (created_at)"),
         "role_binding": ("SELECT", "INSERT"),
         "session": ("SELECT", "INSERT", "UPDATE (csrf_token_hash, mfa_verified_at, revoked_at)"),
         "mfa_factor": ("SELECT", "INSERT", "UPDATE (last_used_counter, verified_at)"),
         "telegram_binding": ("SELECT",),
         "secret_reference": ("SELECT", "INSERT"),
-        # Không đổi được workspace/venue/mode/environment của account qua quyền DB.
-        "trading_account": ("SELECT", "INSERT", "UPDATE (max_notional, name, status, updated_at)"),
+        # MB-02 tạo bot bằng INSERT account PAPER và khóa account FOR UPDATE; không code nào
+        # sửa cột account (max_notional là cap rủi ro), nên UPDATE chỉ cột lock-only updated_at.
+        "trading_account": ("SELECT", "INSERT", "UPDATE (updated_at)"),
         "config_version": ("SELECT",),
         "risk_profile_version": ("SELECT", "INSERT"),
         "approval_request": ("SELECT",),

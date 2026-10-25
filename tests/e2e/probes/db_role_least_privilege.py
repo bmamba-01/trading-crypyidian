@@ -75,10 +75,11 @@ TABLE_PRIVILEGES = {
 }
 COLUMN_UPDATE = {
     ADMIN: {
-        "user_membership": {"status"},
+        # Cột lock-only (như R4): chỉ để SELECT ... FOR UPDATE, không phải dữ liệu nghiệp vụ.
+        "user_membership": {"created_at"},
         "session": {"revoked_at", "csrf_token_hash", "mfa_verified_at"},
         "mfa_factor": {"verified_at", "last_used_counter"},
-        "trading_account": {"name", "status", "max_notional", "updated_at"},
+        "trading_account": {"updated_at"},
     },
     RUNTIME: {"trading_account": {"updated_at"}},
 }
@@ -589,6 +590,11 @@ def admin(connection):
         "UPDATE trading_account SET mode = 'PAPER'",
         "UPDATE trading_account SET environment = 'production'",
         "UPDATE user_membership SET user_id = user_id",
+        # Fix round 1: không code nào sửa status membership (predicate RLS MB-01) hay cap account.
+        "UPDATE user_membership SET status = 'SUSPENDED'",
+        "UPDATE trading_account SET max_notional = 999999",
+        "UPDATE trading_account SET status = 'DISABLED'",
+        "UPDATE trading_account SET name = 'renamed'",
         "UPDATE role_binding SET role = 'owner'",
         "DELETE FROM role_binding",
         "DELETE FROM session",
@@ -634,7 +640,6 @@ def admin(connection):
             ).rowcount
             == 1
         )
-        assert connection.execute("UPDATE user_membership SET status = 'ACTIVE'").rowcount == 1
         connection.execute(
             "INSERT INTO role_binding (id, workspace_id, membership_id, role) "
             "VALUES (gen_random_uuid(), %s, %s, 'analyst_reviewer')",
@@ -666,21 +671,23 @@ def admin(connection):
             ).rowcount
             == 1
         )
+        # MB-02 tạo bot bằng INSERT account PAPER (trigger tạo bot) rồi khóa account FOR UPDATE.
+        connection.execute(
+            "INSERT INTO trading_account (id, workspace_id, name, venue, mode, environment, "
+            "status, max_notional) VALUES (%s, %s, 'admin-paper', 'binance_usdm', 'PAPER', "
+            "'local', 'DISABLED', 1000) RETURNING created_at",
+            (identity("admin-account"), W1),
+        )
         assert (
             connection.execute(
-                "UPDATE trading_account SET status = 'DISABLED', max_notional = 5000, name = name "
-                "WHERE id = %s",
-                (A1,),
-            ).rowcount
+                "SELECT count(*) FROM bot_instance WHERE trading_account_id = %s",
+                (identity("admin-account"),),
+            ).fetchone()[0]
             == 1
         )
-        assert (
-            connection.execute(
-                "SELECT status FROM bot_instance WHERE trading_account_id = %s", (A1,)
-            ).fetchone()[0]
-            == "DISABLED"
-        )
-        connection.execute("UPDATE trading_account SET status = 'ENABLED' WHERE id = %s", (A1,))
+        assert connection.execute(
+            "SELECT id FROM trading_account WHERE id = %s FOR UPDATE", (A1,)
+        ).fetchone() == (A1,)
         connection.execute("SELECT id FROM workspace WHERE id = %s FOR UPDATE", (W1,))
     # RLS workspace của admin không đổi: GUC W2 không thấy dữ liệu W1.
     assert (
@@ -695,7 +702,7 @@ def admin(connection):
     )
     assert scalar(connection, "SELECT count(*) FROM mfa_factor", workspace=W2, member=M2) == 1
     assert scalar(connection, "SELECT count(*) FROM mfa_factor", workspace="") == 0
-    return {"role": ADMIN, "denied": 16}
+    return {"role": ADMIN, "denied": 20}
 
 
 password = Path(os.environ["TRADING_BOT_DATABASE_PASSWORD_FILE"]).read_text().strip()
