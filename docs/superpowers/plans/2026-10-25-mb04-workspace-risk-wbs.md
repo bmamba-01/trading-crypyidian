@@ -1,6 +1,6 @@
 # MB-04 WBS — Equity point-in-time và ngân sách rủi ro Multi-Bot
 
-**Trạng thái:** WBS được người dùng duyệt ngày 2026-10-25; MB04.1 domain đã đạt các gate; MB04.2–6 chưa bắt đầu.
+**Trạng thái:** WBS được người dùng duyệt ngày 2026-10-25; MB04.1 và MB04.2 domain đã đạt các gate; MB04.3–6 chưa bắt đầu.
 **Ngày:** 2026-10-25
 **Gói cha:** [WBS Multi-Bot](./2026-10-24-multibot-implementation-plan.md), Task 5.
 **Contract:** [Hợp đồng kiến trúc Multi-Bot](../../architecture/decisions/2026-10-24-multibot-contracts.md), mục 5–6.
@@ -81,12 +81,14 @@ Giữ `risk_decision`/`risk_reservation` làm nguồn ledger đang có; chỉ th
 
 ### MB04.2 — Unit contracts cho budget/reservation và breach
 
-- [ ] Kiểm tra workspace/account/bot cap từng scope; giới hạn nhỏ nhất được áp dụng; boundary chính xác bằng cap được phép, vượt cap bị từ chối.
-- [ ] Kiểm tra open worst-case risk + pending `RESERVED`/`UNKNOWN`; `RELEASED` không còn giữ; transfer sang open-risk không double-count.
-- [ ] Kiểm tra disabled account/bot theo mẫu số contract và exposure đang mở vẫn được tính.
-- [ ] Kiểm tra stale/unknown/future/mismatched equity hoặc quote làm `DENY_NEW_ENTRY`; protective-management decision không bị xóa/đổi.
-- [ ] Kiểm tra cap mới dưới exposure tạo breach có nguyên nhân, chặn entry, phục hồi entry chỉ khi snapshot mới chứng minh dưới cap; không tự flatten.
-- [ ] Kiểm tra cùng idempotency key/payload cho kết quả cũ, payload khác conflict, key có bot scope khác nhau không xung đột.
+**Tiến độ 2026-10-25:** thêm module domain `domain/risk/workspace_budget.py` và 35 focused unit tests `tests/unit/test_workspace_risk.py`; full unit đạt 883 passed. Đảm bảo tính toán trần 3 cấp (workspace/account/bot), tổng hợp rủi ro mở + reservation không double-count, loại trừ vốn account disabled nhưng vẫn tính exposure của nó, fail-closed mẫu số không usable, tự động tạo trạng thái `CAPACITY_BREACH_AFTER_TIGHTENING` không tự flatten vị thế, bảo vệ các hành động protective exits/monitoring, và bảo toàn tính idempotent theo `(workspace_id, bot_id, account_id, operation, key)`. Ruff check/format và mypy đạt 100%.
+
+- [x] Kiểm tra workspace/account/bot cap từng scope; giới hạn nhỏ nhất được áp dụng; boundary chính xác bằng cap được phép, vượt cap bị từ chối.
+- [x] Kiểm tra open worst-case risk + pending `RESERVED`/`UNKNOWN`; `RELEASED` không còn giữ; transfer sang open-risk không double-count.
+- [x] Kiểm tra disabled account/bot theo mẫu số contract và exposure đang mở vẫn được tính.
+- [x] Kiểm tra stale/unknown/future/mismatched equity hoặc quote làm `DENY_NEW_ENTRY`; protective-management decision không bị xóa/đổi.
+- [x] Kiểm tra cap mới dưới exposure tạo breach có nguyên nhân, chặn entry, phục hồi entry chỉ khi snapshot mới chứng minh dưới cap; không tự flatten.
+- [x] Kiểm tra cùng idempotency key/payload cho kết quả cũ, payload khác conflict, key có bot scope khác nhau không xung đột.
 
 **Nghiệm thu:** domain budget thuần/deterministic; không đọc đồng hồ global, DB, API sàn hoặc cấu hình ngầm.
 
