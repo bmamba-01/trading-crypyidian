@@ -12,7 +12,7 @@ from enum import Enum
 from typing import cast
 from uuid import UUID, uuid4
 
-from sqlalchemy import case, exists, func, select
+from sqlalchemy import case, exists, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from trading_bot.adapters.database.bot_scope import bind_account_bot
@@ -34,6 +34,7 @@ from trading_bot.domain.risk.reservations import (
     ReservationStatus,
     RiskReservation,
 )
+from trading_bot.domain.risk.workspace_budget import WorkspaceRiskAggregate
 
 _HELD_STATUSES = (ReservationStatus.RESERVED.value, ReservationStatus.UNKNOWN.value)
 
@@ -535,6 +536,26 @@ class RiskReservationRepository:
         record.resolution_reason = reason.value
         await self._session.flush()
         return _to_domain(record)
+
+    async def get_workspace_risk_aggregate(
+        self, *, workspace_id: UUID, as_of: datetime
+    ) -> WorkspaceRiskAggregate:
+        """Gọi SQL aggregate function get_workspace_risk_aggregate và ánh xạ sang DTO."""
+        _require_aware(as_of, "as_of")
+        stmt = text(
+            "SELECT workspace_id, total_open_risk_usdt, total_pending_risk_usdt, "
+            "active_bot_count, has_unknown_exposure "
+            "FROM public.get_workspace_risk_aggregate(:workspace_id, :as_of)"
+        )
+        result = await self._session.execute(stmt, {"workspace_id": workspace_id, "as_of": as_of})
+        row = result.one()
+        return WorkspaceRiskAggregate(
+            workspace_id=row[0] if isinstance(row[0], UUID) else UUID(str(row[0])),
+            total_open_risk_usdt=Decimal(str(row[1])),
+            total_pending_risk_usdt=Decimal(str(row[2])),
+            active_bot_count=int(row[3]),
+            has_unknown_exposure=bool(row[4]),
+        )
 
     async def expire_due(
         self, *, workspace_id: UUID, account_id: UUID, now: datetime | None = None

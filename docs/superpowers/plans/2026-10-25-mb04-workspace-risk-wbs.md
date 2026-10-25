@@ -105,11 +105,11 @@ Giữ `risk_decision`/`risk_reservation` làm nguồn ledger đang có; chỉ th
 
 ### MB04.4 — Equity/conversion repository và root aggregate access
 
-- [ ] Dựng PAPER account snapshot từ seed + ledger realized + position state/fills + market mark có `as_of` phù hợp; đối chiếu gross/net, fees và short position sign.
-- [ ] Lưu mark/FX provenance cùng snapshot/version/hash; không chấp nhận một symbol mark thuộc workspace/account khác.
-- [ ] Thực hiện tổng hợp workspace equity/open-risk/reservation qua giao diện aggregate tối thiểu như ruling 9; không đưa row-level data bot khác vào process runtime.
-- [ ] Kiểm database owner, `SECURITY DEFINER`, `search_path`, `row_security`, function execute grants và revocation. Nếu không thể đảm bảo role/context an toàn bằng real-role E2E, fail implementation và dừng để thiết kế lại; không cấp `BYPASSRLS`.
-- [ ] Admin root validation chỉ dùng workspace-wide roles như MB-01; member operator không được xem aggregate vượt grant.
+- [x] Dựng PAPER account snapshot từ seed + ledger realized + position state/fills + market mark có `as_of` phù hợp; đối chiếu gross/net, fees và short position sign.
+- [x] Lưu mark/FX provenance cùng snapshot/version/hash; không chấp nhận một symbol mark thuộc workspace/account khác.
+- [x] Thực hiện tổng hợp workspace equity/open-risk/reservation qua giao diện aggregate tối thiểu như ruling 9; không đưa row-level data bot khác vào process runtime.
+- [x] Kiểm database owner, `SECURITY DEFINER`, `search_path`, `row_security`, function execute grants và revocation. Nếu không thể đảm bảo role/context an toàn bằng real-role E2E, fail implementation và dừng để thiết kế lại; không cấp `BYPASSRLS`.
+- [x] Admin root validation chỉ dùng workspace-wide roles như MB-01; member operator không được xem aggregate vượt grant.
 
 **Nghiệm thu:** runtime lấy đúng equity bản thân + workspace aggregate tối thiểu; query khác bot bị từ chối; aggregate không trả identity/position/symbol của bot khác; stale/missing input biểu diễn unknown chứ không thành zero.
 

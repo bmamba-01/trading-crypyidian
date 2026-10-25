@@ -9,7 +9,7 @@ from dataclasses import dataclass, fields, is_dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from trading_bot.domain.risk.equity import (
     AccountEquitySnapshot,
@@ -261,6 +261,17 @@ class CapacityBreachState:
     current_exposure_usdt: Decimal
     excess_usdt: Decimal
     reason_code: BudgetReasonCode = BudgetReasonCode.CAPACITY_BREACH_AFTER_TIGHTENING
+
+
+@dataclass(frozen=True, slots=True)
+class WorkspaceRiskAggregate:
+    """Tổng hợp rủi ro toàn workspace qua SQL aggregate tối thiểu."""
+
+    workspace_id: UUID
+    total_open_risk_usdt: Decimal
+    total_pending_risk_usdt: Decimal
+    active_bot_count: int
+    has_unknown_exposure: bool
 
 
 @dataclass(frozen=True, slots=True)
