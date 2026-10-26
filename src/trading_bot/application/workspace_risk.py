@@ -119,6 +119,14 @@ class ReservationRequest:
             raise ValueError("requested_risk_usdt phải là Decimal hữu hạn.")
         if self.requested_risk_usdt <= ZERO:
             raise ValueError("requested_risk_usdt phải lớn hơn 0.")
+        for name, value in (
+            ("requested_notional", self.requested_notional),
+            ("requested_initial_margin", self.requested_initial_margin),
+        ):
+            if not isinstance(value, Decimal) or not value.is_finite() or value < ZERO:
+                raise ValueError(f"{name} phải là Decimal hữu hạn không âm.")
+            if value == ZERO:
+                raise ValueError(f"{name} phải lớn hơn 0.")
         if self.as_of.tzinfo is None or self.as_of.utcoffset() != timedelta(0):
             raise ValueError("as_of phải là UTC aware datetime.")
         if self.expires_at.tzinfo is None or self.expires_at.utcoffset() != timedelta(0):
@@ -139,6 +147,27 @@ class ReservationResult:
     decision: WorkspaceRiskDecision | None = None
     reservation: RiskReservation | None = None
     is_replay: bool = False
+
+
+def _request_payload_hash(request: ReservationRequest) -> str:
+    """Tạo dấu vân tay ổn định cho toàn bộ payload yêu cầu reservation."""
+    payload = {
+        "workspace_id": request.workspace_id,
+        "bot_id": request.bot_id,
+        "account_id": request.account_id,
+        "idempotency_key": request.idempotency_key,
+        "requested_risk_usdt": request.requested_risk_usdt,
+        "as_of": request.as_of,
+        "expires_at": request.expires_at,
+        "symbol": request.symbol,
+        "requested_notional": request.requested_notional,
+        "requested_initial_margin": request.requested_initial_margin,
+        "plan_hash": request.plan_hash,
+        "candidate_id": request.candidate_id,
+        "operation": request.operation,
+    }
+    canonical = json.dumps(_canonical_value(payload), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 class WorkspaceRiskCoordinator:
@@ -176,10 +205,9 @@ class WorkspaceRiskCoordinator:
         self,
         request: ReservationRequest,
         *,
-        account_max_open_risk_fraction: Decimal | None = None,
+        account_max_open_risk_fraction: Decimal,
         bot_max_open_risk_fraction: Decimal | None = None,
         other_account_scopes: Sequence[AccountScopeInput] | None = None,
-        positions: Sequence[PositionRisk] | None = None,
     ) -> ReservationResult:
         """Đánh giá và lưu reservation nguyên tử theo 4 bước Ruling 10."""
         # ---------------------------------------------------------------------
@@ -197,11 +225,20 @@ class WorkspaceRiskCoordinator:
             account_id=request.account_id,
             idempotency_key=request.idempotency_key,
         )
+        existing_dec = await self._reservations_repo.get_decision_by_idempotency_key(
+            workspace_id=request.workspace_id,
+            bot_id=request.bot_id,
+            account_id=request.account_id,
+            idempotency_key=request.idempotency_key,
+        )
         if existing_res is not None:
-            # So khớp payload
+            # Chỉ replay nếu fingerprint toàn payload khớp; thiếu lineage cũ thì fail closed.
             if (
                 existing_res.plan_hash == request.plan_hash
-                and Decimal(str(existing_res.reserved_risk)) == request.requested_risk_usdt
+                and existing_dec is not None
+                and isinstance(existing_dec.payload, dict)
+                and existing_dec.payload.get("request_payload_hash")
+                == _request_payload_hash(request)
             ):
                 return ReservationResult(
                     approved=True,
@@ -217,14 +254,13 @@ class WorkspaceRiskCoordinator:
             )
 
         # 2b. Kiểm tra nếu quyết định từ chối đã tồn tại với cùng idempotency key
-        existing_dec = await self._reservations_repo.get_decision_by_idempotency_key(
-            workspace_id=request.workspace_id,
-            bot_id=request.bot_id,
-            account_id=request.account_id,
-            idempotency_key=request.idempotency_key,
-        )
         if existing_dec is not None:
-            if existing_dec.plan_hash == request.plan_hash:
+            if (
+                existing_dec.plan_hash == request.plan_hash
+                and isinstance(existing_dec.payload, dict)
+                and existing_dec.payload.get("request_payload_hash")
+                == _request_payload_hash(request)
+            ):
                 return ReservationResult(
                     approved=False,
                     reason_code=BudgetReasonCode(existing_dec.reason_code),
@@ -251,24 +287,16 @@ class WorkspaceRiskCoordinator:
         )
 
         # 2e. Re-read positions và active reservations
-        open_positions = (
-            positions
-            if positions is not None
-            else await self._load_open_positions(request.workspace_id)
-        )
+        open_positions = await self._load_open_positions(request.workspace_id)
         db_reservations = await self._reservations_repo.list_active_reservations(
             workspace_id=request.workspace_id
         )
         active_reservations = [self.to_budget_reservation(r) for r in db_reservations]
 
-        workspace_aggregate = None
-        try:
-            workspace_aggregate = await self._reservations_repo.get_workspace_risk_aggregate(
-                workspace_id=request.workspace_id,
-                as_of=request.as_of,
-            )
-        except Exception:
-            pass
+        workspace_aggregate = await self._reservations_repo.get_workspace_risk_aggregate(
+            workspace_id=request.workspace_id,
+            as_of=request.as_of,
+        )
 
         # ---------------------------------------------------------------------
         # Bước 3: Đánh giá qua WorkspaceBudgetEngine.evaluate
@@ -295,6 +323,7 @@ class WorkspaceRiskCoordinator:
         decision_payload = _canonical_value(decision)
         if isinstance(decision_payload, dict):
             decision_payload["idempotency_key"] = request.idempotency_key
+            decision_payload["request_payload_hash"] = _request_payload_hash(request)
 
         decision_key = hashlib.sha256(
             json.dumps(decision_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -337,14 +366,8 @@ class WorkspaceRiskCoordinator:
             plan_hash=request.plan_hash,
             symbol=request.symbol,
             reserved_risk=request.requested_risk_usdt,
-            reserved_notional=(
-                request.requested_notional if request.requested_notional > ZERO else Decimal("1")
-            ),
-            reserved_initial_margin=(
-                request.requested_initial_margin
-                if request.requested_initial_margin > ZERO
-                else Decimal("1")
-            ),
+            reserved_notional=request.requested_notional,
+            reserved_initial_margin=request.requested_initial_margin,
             expires_at=request.expires_at,
             status=ReservationStatus.RESERVED.value,
             resolution_reason=None,
@@ -481,7 +504,7 @@ class WorkspaceRiskCoordinator:
             bot_max_open_risk_fraction=bot_cap,
             snapshot=snapshot,
             conversion=conversion,
-            risk_profile_version_id="profile_v1",
+            risk_profile_version_id="",
         )
 
     # -------------------------------------------------------------------------
@@ -500,6 +523,7 @@ class WorkspaceRiskCoordinator:
             root_settings_hash=published.settings_hash,
             max_equity_age=timedelta(seconds=risk.max_equity_age_seconds),
             max_conversion_age=timedelta(seconds=risk.max_conversion_age_seconds),
+            risk_profile_version_id=str(risk.profile_version_id),
         )
 
     async def _load_account_scopes(
@@ -507,7 +531,7 @@ class WorkspaceRiskCoordinator:
         workspace_id: UUID,
         bot_id: UUID,
         account_id: UUID,
-        account_cap: Decimal | None,
+        account_cap: Decimal,
         bot_cap: Decimal | None,
         as_of: datetime,
         other_scopes: Sequence[AccountScopeInput] | None = None,
@@ -530,7 +554,7 @@ class WorkspaceRiskCoordinator:
             max_age=policy.max_conversion_age,
         )
 
-        acc_fraction = account_cap if account_cap is not None else Decimal("0.2")
+        acc_fraction = account_cap
         bot_fraction = bot_cap
 
         target_scope = AccountScopeInput(
@@ -542,7 +566,7 @@ class WorkspaceRiskCoordinator:
             bot_max_open_risk_fraction=bot_fraction,
             snapshot=snap,
             conversion=conv,
-            risk_profile_version_id="profile_v1",
+            risk_profile_version_id=policy.risk_profile_version_id,
         )
 
         scopes = [target_scope]

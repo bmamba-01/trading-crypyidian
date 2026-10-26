@@ -151,7 +151,7 @@ WP-03 is a dependency for real Binance account activity detection and private or
 
 ### Task 5 — MB-04: Equity conversion and aggregate workspace/account risk
 
-**Trạng thái 2026-10-25:** MB04.1 đã có domain thuần `domain/risk/equity.py`, 55 focused / 848 full unit passed; full Compose E2E cuối 18 passed / 895.46s, quality/migration/config và teardown đạt. Chưa nghiệm thu MB-04; config, repository, budget/reservation và concurrency E2E mới thuộc các slice MB04.2–6 chưa triển khai. Xem [WBS chi tiết](./2026-10-25-mb04-workspace-risk-wbs.md).
+**Trạng thái 2026-10-26:** MB04.1–MB04.6 đã có code trên nhánh implement; nghiệm thu tổng còn mở. Rà soát mới phát hiện một số đường fail-open/idempotency đã được sửa test-first; tuy vậy cap/profile/status và danh sách workspace scopes vẫn có phần do caller truyền, coordinator chưa được nối vào runtime, và review độc lập chưa có bằng chứng. Lượt unit mới nhất 969 passed; targeted E2E regression 2 passed; full E2E đang được chạy lại sau khi sửa hai lỗi regression và assertion legacy. Xem [WBS chi tiết](./2026-10-25-mb04-workspace-risk-wbs.md) và [implementation memory](../../implementation/implementation-memory.md).
 
 **Files:** Create `domain/risk/workspace_budget.py`, `application/workspace_risk.py`, account-equity/conversion repositories and tests `test_workspace_risk.py`, `test_risk_conversion.py`, `test_workspace_risk_repository.py`.
 

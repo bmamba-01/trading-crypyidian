@@ -25,6 +25,7 @@ from trading_bot.domain.risk.workspace_budget import (
     WorkspaceBudgetBook,
     WorkspaceBudgetEngine,
     WorkspacePolicy,
+    WorkspaceRiskAggregate,
 )
 
 D = Decimal
@@ -865,7 +866,9 @@ def test_non_usdt_account_converted_to_usdt_in_workspace_equity() -> None:
     policy = create_policy(root_fraction=D("0.10"))
 
     # acc-btc có 2 BTC, tỷ giá 60000 USDT/BTC -> 120,000 USDT
-    btc_snap = create_snapshot(asset="BTC", capital=D("2"))
+    btc_snap = create_snapshot(
+        workspace_id="ws-1", bot_id="b-btc", account_id="a-btc", asset="BTC", capital=D("2")
+    )
     fx = create_conversion(base_asset="BTC", rate=D("60000"))
     acc_btc = create_account(bot_id="b-btc", account_id="a-btc", snapshot=btc_snap, conversion=fx)
 
@@ -1002,6 +1005,38 @@ def test_unknown_target_bot_raises_scope_mismatch() -> None:
             as_of=NOW,
         )
     assert err.value.reason_code == BudgetReasonCode.SCOPE_MISMATCH
+
+
+def test_workspace_budget_rejects_foreign_snapshot_scope() -> None:
+    """Snapshot của workspace khác không được làm phình mẫu số risk hiện tại."""
+    foreign_snapshot = create_snapshot(
+        workspace_id="ws-attacker",
+        bot_id="bot-1",
+        account_id="acc-1",
+        capital=D("1000000"),
+    )
+    account = create_account(snapshot=foreign_snapshot)
+    aggregate = WorkspaceRiskAggregate(
+        workspace_id="ws-1",
+        total_open_risk_usdt=D("0"),
+        total_pending_risk_usdt=D("0"),
+        active_bot_count=1,
+        has_unknown_exposure=False,
+    )
+
+    decision = WorkspaceBudgetEngine().evaluate(
+        policy=create_policy(),
+        accounts=(account,),
+        positions=(),
+        reservations=(),
+        target_bot_id="bot-1",
+        requested_risk_usdt=D("100"),
+        as_of=NOW,
+        workspace_aggregate=aggregate,
+    )
+
+    assert not decision.approved
+    assert decision.reason_code == BudgetReasonCode.SCOPE_MISMATCH
 
 
 def test_zero_requested_risk_evaluation() -> None:

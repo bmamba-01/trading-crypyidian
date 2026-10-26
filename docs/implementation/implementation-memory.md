@@ -653,3 +653,26 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
   - **Ruling 9 RLS Enforcement**: Khi chạy dưới `crypidian_trading_runtime`, application không thể dùng SELECT trên bảng `risk_reservation` để lấy pending rủi ro của bot khác. Phải dùng SQL function `SECURITY DEFINER get_workspace_risk_aggregate(p_workspace_id, p_as_of)`. Hàm này trả về aggregate tổng mức rủi ro mở và đang chờ mà không làm rò rỉ metadata các bot.
   - **Admin Privilege Partitioning**: Cập nhật `workspace_settings_version` yêu cầu quyền ghi chỉ thuộc về role admin. Bot runtime chỉ có quyền SELECT. Do đó các thao tác cấu hình admin trong probe/test phải thực thi qua service/role có thẩm quyền (`migrator`/`crypidian_admin`).
 - **Đã đọc lại mục memory sau cập nhật:** có; đối chiếu code diff, probe, test output và WBS MB04.6.
+
+### 2026-10-26 — MB-04 review vòng tích hợp và siết fail-closed
+
+- **Phạm vi:** worktree `mb04-risk`, nhánh `mb04-workspace-risk`; review thủ công coordinator/domain, thêm regression tests, sửa contract request reservation và cập nhật trạng thái MB-04. Không truy cập Binance private API, không phát sinh lệnh live.
+- **Phát hiện và nguyên nhân:**
+  1. Lỗi tải workspace aggregate bị nuốt exception và có thể tiếp tục tính chỉ với bot hiện tại. Sửa để lỗi aggregate propagate trước khi ghi decision/reservation; aggregate `unknown`, mismatch workspace và số enabled scopes lệch `active_bot_count` đều deny entry.
+  2. Snapshot/conversion ngoài scope account/workspace có thể được dùng để tính workspace equity. Sửa validate scope trước khi tính.
+  3. Idempotency chỉ so `plan_hash`/risk và có thể replay khi symbol/notional/candidate khác. Sửa hash toàn bộ request payload; payload khác cùng key bị conflict.
+  4. `requested_notional`/`requested_initial_margin` nhận giá trị không Decimal/không hữu hạn và đường ghi DB từng dùng placeholder `1`. Database contract yêu cầu cả hai lớn hơn 0; request giờ validate sớm và E2E/test fixtures truyền giá trị tường minh.
+  5. Bỏ tham số cho phép caller ghi đè positions đã đọc sau lock; đọc position state từ repository. Tuy nhiên account/bot caps, enabled status và other workspace scopes vẫn còn một phần đến từ caller, nên MB04.5 chưa đạt nghiệm thu tổng; coordinator cũng chưa có runtime call site.
+  6. E2E MB-02 cũ so sánh bot overlay optional `None` như Decimal và ghim migration head cũ; cập nhật assertion để khớp contract overlay và MB-04 migration head.
+- **Code/test đổi:** `application/workspace_risk.py`, `domain/risk/workspace_budget.py`, `tests/unit/test_workspace_risk.py`, `tests/unit/test_workspace_risk_coordinator.py`, `tests/e2e/probes/workspace_risk_concurrency.py`, `tests/e2e/probes/multibot_config.py`, `tests/e2e/test_multibot_config.py`; cập nhật WBS MB-04, project status và multibot parent plan.
+- **RED→GREEN:** regression đầu tiên cho aggregate failure, unknown exposure, workspace scopes thiếu, foreign snapshot, idempotency payload mismatch và tiền invalid đều tái hiện trước phần sửa. Sau sửa: `tests/unit/test_workspace_risk.py tests/unit/test_workspace_risk_coordinator.py` → **60 passed**; full `tests/unit` → **969 passed**. Ruff targeted và mypy 2 source modules pass.
+- **E2E:** lượt full đầu có **17 passed, 2 failed**; traceback xác định hai failure do thiếu notional/margin thực ở probe và assertion legacy `None <= None`/migration head cũ. Sau sửa, hai test E2E ảnh hưởng chạy lại → **2 passed trong 140.64s**. Kết quả full suite cuối ở mục `Kết quả cuối cùng vòng MB-04` bên dưới.
+- **Review và giới hạn:** review độc lập không có báo cáo khả dụng; lần mời reviewer trước gặp hết credits. Đây là tự review thủ công, không thay thế independent review. Chưa tra nguồn ngoài vì vòng này không đổi API/sàn/dependency; contract SQL/Python không thay đổi.
+- **Trạng thái commit:** chưa commit; chờ full E2E, quality gates cuối, cập nhật memory/WBS chính xác và tích hợp fast-forward lên `dev`. Không push.
+
+#### Kết quả cuối cùng vòng MB-04 ngày 2026-10-26
+
+- **Verification:** full unit chạy lại sau mọi thay đổi → **969 passed/12.62s**; `ruff check .` đạt; `ruff format --check .` → **310 files already formatted**; `mypy src` → **116 source files sạch**; `alembic heads` → một head `c8f1e3a5b7d9`; `git diff --check` đạt.
+- **Full E2E:** `pytest tests/e2e -q -s` → **18 passed, 1 timeout / 1438.83s** ở `test_process_roles_cannot_write_identity_or_config_and_downgrade_restores_acl`, khi Compose chạy probe `seed` quá 300 giây. Chạy riêng lại đúng test → **1 passed/60.91s**; hai E2E regression đã sửa trước đó → **2 passed/140.64s**. Timeout không tái hiện khi chạy riêng nhưng full suite chưa green trong một lượt, do đó acceptance gate E2E vẫn mở.
+- **Trạng thái tích hợp:** MB-04 code có thể commit lên `dev` theo yêu cầu; tuy vậy không đánh dấu MB-04 hoàn tất. Còn thiếu authoritative loading của account/bot profile/status và tất cả workspace scopes sau lock, runtime call site cho `WorkspaceRiskCoordinator`, independent review; full Compose E2E một lượt không timeout.
+- **Đã đọc lại mục memory:** đọc lại các mục `MB-04 review vòng tích hợp` và `Kết quả cuối cùng`, đối chiếu WBS/project status và output test: 969 unit, 18 E2E + 1 timeout, isolated retry 1 pass, targeted regression 2 pass. Không ghi full E2E pass hay independent review.
