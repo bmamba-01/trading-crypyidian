@@ -260,6 +260,9 @@ class MemorySettings:
     async def lock_workspace(self, workspace_id: UUID) -> None:
         STORE.locks.append(f"workspace:{workspace_id}")
 
+    async def lock_workspace_risk(self, workspace_id: UUID) -> None:
+        STORE.locks.append(f"risk:{workspace_id}")
+
 
 async def memory_root(session: object, *, workspace_id: UUID) -> RootContext | None:
     del session
@@ -477,8 +480,9 @@ async def test_publish_is_serialized_with_root_lock_and_never_writes_root_settin
     assert version["status"] == "PUBLISHED"
     assert version["effective_at"] is not None
     assert version["approved_by"] == str(owner.membership_id)
-    assert STORE.locks[-2:] == [
+    assert STORE.locks[-3:] == [
         f"workspace:{STORE.world.workspace_id}",
+        f"risk:{STORE.world.workspace_id}",
         f"bot:{STORE.world.bot_id}",
     ]
     unit = MemoryUnitOfWork.instances[-1]

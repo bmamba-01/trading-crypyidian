@@ -23,6 +23,7 @@ from trading_bot.domain.risk.planner import (
     TradePlan,
     TradePlanner,
 )
+from trading_bot.domain.risk.workspace_budget import WorkspaceRiskDecision
 from trading_bot.domain.strategy.contracts import (
     DecisionSnapshot,
     NoTrade,
@@ -90,6 +91,7 @@ class DecisionCycleResult:
     plan: PlanResult | None = None
     risk_decision: RiskDecision | None = None
     order: PaperOrderIntent | None = None
+    workspace_risk_decision: WorkspaceRiskDecision | None = None
 
 
 class PaperDecisionCycle:

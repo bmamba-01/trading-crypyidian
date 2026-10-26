@@ -540,7 +540,9 @@ class BotConfigAdminService:
         unit: UnitOfWork, principal: Principal, bot_id: UUID
     ) -> BotConfigVersionRepository:
         # Cùng lock với root publish và runtime decision rồi mới lock bot (thứ tự cố định).
-        await WorkspaceSettingsRepository(unit.session).lock_workspace(principal.workspace_id)
+        settings = WorkspaceSettingsRepository(unit.session)
+        await settings.lock_workspace(principal.workspace_id)
+        await settings.lock_workspace_risk(principal.workspace_id)
         versions = BotConfigVersionRepository(unit.session)
         await versions.lock_bot(workspace_id=principal.workspace_id, bot_id=bot_id)
         return versions

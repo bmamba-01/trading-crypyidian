@@ -31,6 +31,7 @@ from trading_bot.adapters.database.models import (
 from trading_bot.adapters.database.repositories.account_equity import (
     AccountEquityRepository,
 )
+from trading_bot.adapters.database.repositories.bot_instances import BotInstanceRepository
 from trading_bot.adapters.database.repositories.risk_conversion import (
     RiskConversionRepository,
 )
@@ -39,6 +40,14 @@ from trading_bot.adapters.database.repositories.risk_reservations import (
 )
 from trading_bot.adapters.database.repositories.workspace_settings import (
     WorkspaceSettingsRepository,
+)
+from trading_bot.application.bot_config_resolver import (
+    BotConfigResolutionError,
+    load_effective_bot_config,
+)
+from trading_bot.application.runtime_risk_profile import (
+    RiskProfileRuntimeError,
+    load_risk_profile,
 )
 from trading_bot.domain.risk.equity import (
     AccountEquitySnapshot,
@@ -183,6 +192,11 @@ class WorkspaceRiskCoordinator:
         equity_repo: Any = None,
         conversion_repo: Any = None,
         reservations_repo: Any = None,
+        target_status_loader: Any = None,
+        test_scope_caps_loader: Callable[
+            [ReservationRequest], tuple[Decimal, Decimal | None, str, str]
+        ]
+        | None = None,
     ) -> None:
         self._session = session
         self._clock = clock or (lambda: datetime.now(UTC))
@@ -193,6 +207,15 @@ class WorkspaceRiskCoordinator:
         self._reservations_repo = reservations_repo or RiskReservationRepository(
             session, clock=self._clock
         )
+        self._target_status_loader = target_status_loader
+        test_scope_caps_loader = test_scope_caps_loader or getattr(
+            session, "test_scope_caps_loader", None
+        )
+        if isinstance(session, AsyncSession) and (
+            test_scope_caps_loader is not None or target_status_loader is not None
+        ):
+            raise ValueError("Không được thay nguồn scope/status trên AsyncSession production.")
+        self._test_scope_caps_loader = test_scope_caps_loader
 
     async def acquire_locks(self, workspace_id: UUID, account_ids: Sequence[UUID]) -> None:
         """Thực hiện khóa advisory 2 cấp theo Ruling 10: workspace trước -> accounts tăng dần."""
@@ -204,10 +227,6 @@ class WorkspaceRiskCoordinator:
     async def reserve(
         self,
         request: ReservationRequest,
-        *,
-        account_max_open_risk_fraction: Decimal,
-        bot_max_open_risk_fraction: Decimal | None = None,
-        other_account_scopes: Sequence[AccountScopeInput] | None = None,
     ) -> ReservationResult:
         """Đánh giá và lưu reservation nguyên tử theo 4 bước Ruling 10."""
         # ---------------------------------------------------------------------
@@ -273,7 +292,26 @@ class WorkspaceRiskCoordinator:
             )
 
         # 2c. Re-read root settings mới nhất
-        policy = await self._load_policy(request.workspace_id)
+        policy = await self._load_policy(request.workspace_id, as_of=request.as_of)
+        target_enabled = await self._target_is_enabled(request)
+        bot_config_version_id = ""
+        bot_config_hash = ""
+        if isinstance(self._session, AsyncSession):
+            (
+                account_max_open_risk_fraction,
+                bot_max_open_risk_fraction,
+                bot_config_version_id,
+                bot_config_hash,
+            ) = await self._load_authoritative_caps(request)
+        elif self._test_scope_caps_loader is not None:
+            (
+                account_max_open_risk_fraction,
+                bot_max_open_risk_fraction,
+                bot_config_version_id,
+                bot_config_hash,
+            ) = self._test_scope_caps_loader(request)
+        else:
+            raise ValueError("Coordinator cần AsyncSession hoặc test scope caps loader.")
 
         # 2d. Re-read accounts & bot scopes
         accounts = await self._load_account_scopes(
@@ -283,7 +321,10 @@ class WorkspaceRiskCoordinator:
             account_max_open_risk_fraction,
             bot_max_open_risk_fraction,
             request.as_of,
-            other_scopes=other_account_scopes,
+            policy=policy,
+            enabled=target_enabled,
+            bot_config_version_id=bot_config_version_id,
+            bot_config_hash=bot_config_hash,
         )
 
         # 2e. Re-read positions và active reservations
@@ -296,6 +337,7 @@ class WorkspaceRiskCoordinator:
         workspace_aggregate = await self._reservations_repo.get_workspace_risk_aggregate(
             workspace_id=request.workspace_id,
             as_of=request.as_of,
+            max_mark_age=policy.max_mark_age,
         )
 
         # ---------------------------------------------------------------------
@@ -324,6 +366,7 @@ class WorkspaceRiskCoordinator:
         if isinstance(decision_payload, dict):
             decision_payload["idempotency_key"] = request.idempotency_key
             decision_payload["request_payload_hash"] = _request_payload_hash(request)
+            decision_payload["candidate_expires_at"] = request.expires_at.isoformat()
 
         decision_key = hashlib.sha256(
             json.dumps(decision_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -511,8 +554,12 @@ class WorkspaceRiskCoordinator:
     # Helper nạp dữ liệu Re-read sau khóa
     # -------------------------------------------------------------------------
 
-    async def _load_policy(self, workspace_id: UUID) -> WorkspacePolicy:
-        published = await self._settings_repo.load_effective_config(workspace_id=workspace_id)
+    async def _load_policy(
+        self, workspace_id: UUID, *, as_of: datetime | None = None
+    ) -> WorkspacePolicy:
+        published = await self._settings_repo.load_effective_config(
+            workspace_id=workspace_id, as_of=as_of
+        )
         if published is None:
             raise ValueError(f"Không tìm thấy cấu hình root hợp lệ cho workspace {workspace_id}.")
         risk = published.settings.risk
@@ -524,6 +571,7 @@ class WorkspaceRiskCoordinator:
             max_equity_age=timedelta(seconds=risk.max_equity_age_seconds),
             max_conversion_age=timedelta(seconds=risk.max_conversion_age_seconds),
             risk_profile_version_id=str(risk.profile_version_id),
+            max_mark_age=timedelta(seconds=risk.max_mark_age_seconds),
         )
 
     async def _load_account_scopes(
@@ -534,24 +582,27 @@ class WorkspaceRiskCoordinator:
         account_cap: Decimal,
         bot_cap: Decimal | None,
         as_of: datetime,
-        other_scopes: Sequence[AccountScopeInput] | None = None,
+        policy: WorkspacePolicy | None = None,
+        enabled: bool = True,
+        bot_config_version_id: str = "",
+        bot_config_hash: str = "",
     ) -> list[AccountScopeInput]:
         # Nạp snapshot và conversion cho target account
-        policy = await self._load_policy(workspace_id)
+        effective_policy = policy or await self._load_policy(workspace_id, as_of=as_of)
         snap = await self._equity_repo.load_paper_equity_snapshot(
             workspace_id=workspace_id,
             bot_id=bot_id,
             account_id=account_id,
             as_of=as_of,
-            max_equity_age=policy.max_equity_age,
-            max_mark_age=policy.max_equity_age,
+            max_equity_age=effective_policy.max_equity_age,
+            max_mark_age=effective_policy.max_mark_age,
         )
         conv = await self._conversion_repo.get_conversion_observation(
             workspace_id=workspace_id,
             base_asset=snap.asset if snap is not None else "USDT",
             quote_asset="USDT",
             as_of=as_of,
-            max_age=policy.max_conversion_age,
+            max_age=effective_policy.max_conversion_age,
         )
 
         acc_fraction = account_cap
@@ -561,20 +612,82 @@ class WorkspaceRiskCoordinator:
             workspace_id=str(workspace_id),
             bot_id=str(bot_id),
             account_id=str(account_id),
-            enabled=True,
+            enabled=enabled,
             account_max_open_risk_fraction=acc_fraction,
             bot_max_open_risk_fraction=bot_fraction,
             snapshot=snap,
             conversion=conv,
-            risk_profile_version_id=policy.risk_profile_version_id,
+            risk_profile_version_id=effective_policy.risk_profile_version_id,
+            bot_config_version_id=bot_config_version_id,
+            bot_config_hash=bot_config_hash,
         )
 
-        scopes = [target_scope]
-        if other_scopes:
-            for s in other_scopes:
-                if s.account_id != str(account_id):
-                    scopes.append(s)
-        return scopes
+        return [target_scope]
+
+    async def _target_is_enabled(self, request: ReservationRequest) -> bool:
+        """Kiểm tra lại identity/status của bot và PAPER account trong transaction hiện tại."""
+        if self._target_status_loader is not None:
+            return bool(
+                await self._target_status_loader(
+                    workspace_id=request.workspace_id,
+                    bot_id=request.bot_id,
+                    account_id=request.account_id,
+                )
+            )
+        # Session giả không đại diện cho PostgreSQL identity trong unit tests.
+        if not isinstance(self._session, AsyncSession):
+            return True
+        linked = await BotInstanceRepository(self._session).get_with_account(
+            workspace_id=request.workspace_id, bot_id=request.bot_id
+        )
+        if linked is None:
+            return False
+        bot, account = linked
+        return (
+            account.id == request.account_id
+            and account.mode == "PAPER"
+            and account.status == "ENABLED"
+            and bot.status == "ENABLED"
+        )
+
+    async def _load_authoritative_caps(
+        self, request: ReservationRequest
+    ) -> tuple[Decimal, Decimal | None, str, str]:
+        """Nạp lại root profile và bot overlay sau workspace/account risk locks."""
+        try:
+            published = await self._settings_repo.load_effective_config(
+                workspace_id=request.workspace_id, as_of=request.as_of
+            )
+            if published is None or published.workspace_id != request.workspace_id:
+                raise ValueError("Root workspace settings không hiệu lực tại as_of.")
+            profile = await load_risk_profile(
+                self._session,
+                workspace_id=request.workspace_id,
+                profile_id=published.settings.risk.profile_version_id,
+            )
+            effective = await load_effective_bot_config(
+                self._session,
+                workspace_id=request.workspace_id,
+                account_id=request.account_id,
+                as_of=request.as_of,
+                published=published,
+            )
+        except (RiskProfileRuntimeError, BotConfigResolutionError) as error:
+            raise ValueError("Root risk profile hoặc bot overlay không hợp lệ.") from error
+        if effective is not None and (
+            effective.workspace_id != request.workspace_id
+            or effective.bot_id != request.bot_id
+            or effective.account_id != request.account_id
+            or effective.settings_version_id != published.settings_version_id
+            or not effective.verify_hash()
+        ):
+            raise ValueError("Effective bot configuration lệch scope/version.")
+        return (
+            profile.limits.account_max_open_risk_fraction,
+            effective.risk_limits.account_max_open_risk_fraction if effective else None,
+            str(effective.bot_config_version_id) if effective else "",
+            effective.bot_config_hash if effective else "",
+        )
 
     async def _load_open_positions(self, workspace_id: UUID) -> list[PositionRisk]:
         """Nạp danh sách các vị thế OPEN từ database."""

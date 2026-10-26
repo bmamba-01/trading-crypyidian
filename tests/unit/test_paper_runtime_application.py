@@ -290,6 +290,10 @@ def _application_with_fakes(
                 risk_decision=SimpleNamespace(
                     approved=True,
                     plan_hash=plan_hash,
+                    requested_risk=Decimal("100"),
+                    requested_notional=Decimal("1000"),
+                    requested_initial_margin=Decimal("200"),
+                    candidate_expires_at=evaluated_at + timedelta(minutes=5),
                     workspace_id=str(workspace_id),
                     account_id=str(account_id),
                     settings_version_id=str(published.settings_version_id),
@@ -340,6 +344,20 @@ def _application_with_fakes(
         def order(self, intent_id: str) -> SimpleNamespace:
             return SimpleNamespace(intent_id=intent_id)
 
+    class _WorkspaceRiskCoordinator:
+        async def reserve(self, request, **kwargs: object) -> SimpleNamespace:
+            events.append("L2-L4:workspace-reserve")
+            counters.reserves += 1
+            idempotency_keys.append(request.idempotency_key)
+            counters.workspace_request = request
+            counters.workspace_caps = kwargs
+            return SimpleNamespace(
+                approved=True,
+                decision_id=uuid4(),
+                reservation_id=reservation_id,
+                decision=SimpleNamespace(approved=True),
+            )
+
     runtime_account = SimpleNamespace(
         account_id=account_id,
         bot_id=uuid4(),
@@ -368,6 +386,7 @@ def _application_with_fakes(
         unit_of_work_factory=_FakeUnitOfWork,
         settings_repository_factory=lambda _session: _SettingsRepository(),
         risk_repository_factory=lambda _session: _RiskRepository(),
+        workspace_risk_coordinator_factory=lambda _session: _WorkspaceRiskCoordinator(),
         decision_cycle_factory=lambda _gateway: _Cycle(),
         account_invalidation_callback=lambda account, reason: callback_state.invalidations.append(
             (account, reason)
@@ -404,6 +423,28 @@ def test_submission_failure_rolls_back_uow_and_skips_after_commit_publish() -> N
     assert _FakeUnitOfWork.instances[0].rolled_back is True
     assert _FakeUnitOfWork.instances[0].committed is False
     assert callback_state.published is False
+
+
+def test_workspace_budget_denial_skips_paper_submission() -> None:
+    service, command, _, _, counters, *_ = _application_with_fakes(fail_submission=False)
+
+    class _DeniedWorkspaceCoordinator:
+        async def reserve(self, request, **_: object) -> SimpleNamespace:
+            return SimpleNamespace(
+                approved=False,
+                decision_id=uuid4(),
+                reservation_id=None,
+                decision=SimpleNamespace(approved=False),
+            )
+
+    service._workspace_risk_coordinator_factory = lambda _session: _DeniedWorkspaceCoordinator()
+    result = asyncio.run(service.evaluate_and_submit(command))
+
+    assert result.decision is not None
+    assert result.decision.outcome is DecisionCycleOutcome.RISK_REJECTED
+    assert result.decision.workspace_risk_decision is not None
+    assert result.submission is None
+    assert counters.submissions == 0
 
 
 def test_retry_reuses_stable_idempotency_key_and_commits_each_uow() -> None:

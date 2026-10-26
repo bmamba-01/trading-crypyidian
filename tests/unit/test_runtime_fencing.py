@@ -159,7 +159,7 @@ def test_application_calls_fence_right_after_l1_and_before_l2_l4() -> None:
     asyncio.run(service.evaluate_and_submit(command))
 
     assert events[:2] == ["L1", "fence"]
-    assert events.index("fence") < events.index("L2-L4:reserve")
+    assert events.index("fence") < events.index("L2-L4:workspace-reserve")
     assert events.index("fence") < events.index("L4:submit")
 
 

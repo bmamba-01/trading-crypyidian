@@ -1018,10 +1018,12 @@ def test_workspace_budget_rejects_foreign_snapshot_scope() -> None:
     account = create_account(snapshot=foreign_snapshot)
     aggregate = WorkspaceRiskAggregate(
         workspace_id="ws-1",
+        total_equity_usdt=D("10000"),
         total_open_risk_usdt=D("0"),
         total_pending_risk_usdt=D("0"),
         active_bot_count=1,
         has_unknown_exposure=False,
+        has_unknown_equity=False,
     )
 
     decision = WorkspaceBudgetEngine().evaluate(
@@ -1037,6 +1039,71 @@ def test_workspace_budget_rejects_foreign_snapshot_scope() -> None:
 
     assert not decision.approved
     assert decision.reason_code == BudgetReasonCode.SCOPE_MISMATCH
+
+
+def test_workspace_budget_uses_authoritative_workspace_equity_aggregate() -> None:
+    """Mẫu số workspace lấy từ aggregate độc lập, không chỉ equity bot đang xét."""
+    policy = create_policy(workspace_id="ws-1", root_fraction=D("0.15"))
+    snapshot = create_snapshot(
+        workspace_id="ws-1", bot_id="bot-1", account_id="acc-1", capital=D("10000")
+    )
+    account = create_account(snapshot=snapshot, account_fraction=D("0.3"))
+    aggregate = WorkspaceRiskAggregate(
+        workspace_id="ws-1",
+        total_equity_usdt=D("20000"),
+        total_open_risk_usdt=D("0"),
+        total_pending_risk_usdt=D("0"),
+        active_bot_count=2,
+        has_unknown_exposure=False,
+        has_unknown_equity=False,
+    )
+
+    decision = WorkspaceBudgetEngine().evaluate(
+        policy=policy,
+        accounts=[account],
+        positions=[],
+        reservations=[],
+        workspace_aggregate=aggregate,
+        target_bot_id="bot-1",
+        requested_risk_usdt=D("2500"),
+        as_of=NOW,
+    )
+
+    assert decision.approved
+    assert decision.workspace_equity_usdt == D("20000")
+    assert decision.workspace_budget.cap_usdt == D("3000")
+
+
+def test_workspace_budget_denies_unknown_equity_in_another_active_account() -> None:
+    """Một account active chưa định giá được phải làm denominator workspace unknown."""
+    policy = create_policy(workspace_id="ws-1", root_fraction=D("0.5"))
+    snapshot = create_snapshot(
+        workspace_id="ws-1", bot_id="bot-1", account_id="acc-1", capital=D("10000")
+    )
+    account = create_account(snapshot=snapshot, account_fraction=D("0.5"))
+    aggregate = WorkspaceRiskAggregate(
+        workspace_id="ws-1",
+        total_equity_usdt=D("10000"),
+        total_open_risk_usdt=D("0"),
+        total_pending_risk_usdt=D("0"),
+        active_bot_count=2,
+        has_unknown_exposure=False,
+        has_unknown_equity=True,
+    )
+
+    decision = WorkspaceBudgetEngine().evaluate(
+        policy=policy,
+        accounts=[account],
+        positions=[],
+        reservations=[],
+        workspace_aggregate=aggregate,
+        target_bot_id="bot-1",
+        requested_risk_usdt=D("100"),
+        as_of=NOW,
+    )
+
+    assert not decision.approved
+    assert decision.reason_code == BudgetReasonCode.WORKSPACE_EQUITY_UNKNOWN
 
 
 def test_zero_requested_risk_evaluation() -> None:

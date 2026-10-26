@@ -2534,6 +2534,9 @@ def test_paper_stack_starts_and_keeps_database_and_object_store_data() -> None:
                     idempotency_key = application_result.idempotency_key
                     assert idempotency_key is not None
                     risk_decision_id = application_result.risk_decision_id
+                    single_account_risk_decision_id = (
+                        application_result.single_account_risk_decision_id
+                    )
                     reservation_id = application_result.risk_reservation_id
                     assert risk_decision_id is not None and reservation_id is not None
                     intent_id = submitted.ledger_intent_id
@@ -2684,7 +2687,7 @@ def test_paper_stack_starts_and_keeps_database_and_object_store_data() -> None:
                     next_reservation = await risk_repository.reserve(
                         risk_decision,
                         idempotency_key=f'{idempotency_key}:after-close',
-                        risk_decision_id=risk_decision_id,
+                        risk_decision_id=single_account_risk_decision_id,
                     )
                     assert next_reservation.status.value == 'RESERVED'
                     await risk_repository.release_before_submit(

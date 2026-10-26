@@ -47,10 +47,14 @@ class FakeSession:
         self.seed = seed
         self.realized_pnl = realized_pnl
         self.open_trades = list(open_trades or [])
+        self.statements: list[str] = []
 
     async def scalar(self, statement: object) -> object | None:
         stmt_text = str(statement).lower()
+        self.statements.append(stmt_text)
         if "paper_account_seed" in stmt_text:
+            if self.seed is not None and getattr(self.seed, "created_at", NOW) > NOW:
+                return None
             return self.seed
         if "sum" in stmt_text and "net_pnl" in stmt_text:
             return self.realized_pnl
@@ -150,6 +154,27 @@ async def test_load_paper_equity_seed_only_no_trades() -> None:
     assert snapshot.unrealized_pnl == Decimal("0")
     assert snapshot.asset == "USDT"
     assert len(snapshot.positions) == 0
+
+
+@pytest.mark.asyncio
+async def test_future_paper_seed_is_not_available_at_decision_as_of() -> None:
+    future_seed = make_seed()
+    future_seed.created_at = NOW + timedelta(seconds=1)
+    session = FakeSession(seed=future_seed)
+    repo = AccountEquityRepository(session)  # type: ignore[arg-type]
+
+    snapshot = await repo.load_paper_equity_snapshot(
+        workspace_id=WORKSPACE_ID,
+        bot_id=BOT_ID,
+        account_id=ACCOUNT_ID,
+        as_of=NOW,
+        max_equity_age=MAX_EQUITY_AGE,
+        max_mark_age=MAX_MARK_AGE,
+    )
+
+    assert snapshot.known is False
+    assert snapshot.unknown_reason == EquityReasonCode.BASIS_UNKNOWN.value
+    assert any("paper_account_seed.created_at <=" in query for query in session.statements)
 
 
 @pytest.mark.asyncio

@@ -1,6 +1,6 @@
 # MB-04 WBS — Equity point-in-time và ngân sách rủi ro Multi-Bot
 
-**Trạng thái:** Code MB04.1–MB04.6 đã có trên nhánh implement; nghiệm thu tổng còn mở. Ngày 2026-10-26 phát hiện và sửa các lỗi fail-open, idempotency, dữ liệu tiền reservation và assertion E2E cũ. Chỉ đánh dấu hoàn tất sau khi full E2E/quality pass, nguồn cap/scope có thẩm quyền được nạp sau khóa, runtime được nối, và review độc lập có bằng chứng.
+**Trạng thái:** MB-04 hoàn tất trên nhánh `dev` sau full unit/E2E/quality gates ngày 2026-10-26. Nguồn cap/scope authoritative được nạp sau khóa; PAPER runtime đã nối workspace risk gate; migration equity point-in-time và DB security được xác minh. Đã tự review DB/code/auth/bảo mật/cơ chế; không có báo cáo review độc lập trong vòng này.
 **Ngày cập nhật:** 2026-10-26
 **Gói cha:** [WBS Multi-Bot](./2026-10-24-multibot-implementation-plan.md), Task 5.
 **Contract:** [Hợp đồng kiến trúc Multi-Bot](../../architecture/decisions/2026-10-24-multibot-contracts.md), mục 5–6.
@@ -144,13 +144,52 @@ Quality Gates (bằng chứng lịch sử 2026-10-25): Full 957 unit tests passe
 - [ ] Review độc lập theo spec + quality; mọi finding P0/P1/P2 được sửa test-first và chạy lại suite liên quan. Chưa có báo cáo review độc lập khả dụng trong checkout này.
 - [x] Cập nhật/reread implementation memory, trạng thái project, MB-04 WBS/main plan và ledger trước commit `dev`; không push trừ khi user yêu cầu.
 
+## WBS bổ sung — Hoàn thiện các gap MB-04 (2026-10-26)
+
+Phần này làm rõ nghiệm thu còn thiếu đã được phát hiện trong vòng review; nằm trong phạm vi MB-04 đã duyệt, vẫn chỉ áp dụng PAPER.
+
+### MB04.7 — Workspace equity aggregate an toàn qua DB
+
+- Tính scalar `total_equity_usdt` cho toàn bộ bot/account PAPER đang ENABLED tại `as_of`: seed + net realized PnL của trade đã đóng + PnL từ exit fill một phần + UPNL phần còn mở theo weighted entry/exit fills và mark khả dụng mới nhất, trừ fee/slippage/funding đã ghi đến `as_of`.
+- Hàm trả `has_unknown_equity` nếu thiếu seed, fill/entry, mark; mark tương lai/quá cũ; giá trị âm/non-finite; account quote asset không có direct conversion đã duyệt; hoặc active account count không khớp identity bot/account.
+- Mở rộng `get_workspace_risk_aggregate` mà không trả bot/account ID, symbol, balance từng account hay row-level data. Thực thi dưới role chủ sở hữu hàm, khóa `search_path`, kiểm tra `app.workspace_id`, revoke PUBLIC và grant execute đúng runtime/admin.
+- Bổ sung E2E bằng `crypidian_trading_runtime` chứng minh tổng equity khớp seed + realized + long/short UPNL, đúng `as_of`, unknown/freshness fail-closed, RLS không rò rỉ và `BYPASSRLS` vẫn false; migration downgrade/upgrade và `alembic check` đạt.
+
+**Nghiệm thu:** aggregate workspace equity được tính độc lập với dữ liệu bot hiện tại, không double-count realized, fail-closed khi một active account chưa định giá được, và chỉ trả scalar tối thiểu.
+
+**Ghi nhận nghiệm thu 2026-10-26:** migration `e4f6a8c0d2b5` nối head `d9b2f4a6c8e1`; scalar equity tính seed + realized + PnL exit một phần + UPNL còn mở − phí/slippage/funding. Fee/slippage từ fill phải khớp `trade_cost`; lệch sổ hoặc quote/cost không hỗ trợ thì unknown. Seed chỉ được dùng nếu `created_at <= as_of`. Compose E2E bao phủ long/short, partial exit/costs, realized, thiếu/future seed, thiếu fill, mark tương lai, quote khác USDT, RLS/grants/BYPASSRLS và migration rehearsal; full suite **20/20** đạt. `alembic check` chạy trong migrator Compose vì host Windows dùng ProactorEventLoop không tương thích async Psycopg.
+
+### MB04.8 — Nạp policy/config và scope authoritative sau khóa
+
+- `WorkspaceRiskCoordinator.reserve` chỉ nhận request plan; bỏ cap và danh sách scope do caller cung cấp.
+- Sau khi lấy workspace lock rồi account lock, nạp root settings có hiệu lực và risk profile theo workspace/version; xác minh bot + PAPER account mục tiêu tồn tại, ENABLED và ánh xạ 1:1; resolve bot overlay đã publish từ DB để lấy cap và lineage.
+- Chỉ lấy equity/conversion/positions theo bot mục tiêu bằng repository dưới RLS; lấy workspace equity/open/pending/count/unknown qua aggregate scalar. Không đọc rows của bot khác và không chấp nhận snapshot/account scope truyền vào từ caller.
+- Kiểm root/account/bot cap, status, profile ID, config version/hash, max age và aggregate scope đồng nhất; thiếu hoặc sai thì deny entry trước persistence reservation.
+- Unit tests cho disabled/missing target, foreign bot/account, profile thiếu/sai workspace, overlay draft/không hiệu lực/nới cap, aggregate missing/stale/unknown, active count mismatch và request không thể override cap.
+
+**Nghiệm thu:** toàn bộ căn cứ của quyết định được đọc lại từ nguồn authoritative sau lock; test chứng minh một request giả mạo không thể tăng cap hoặc thêm equity cho workspace.
+
+**Trạng thái 2026-10-26: HOÀN TẤT.** Sau workspace→account locks, `reserve(request)` nạp effective root theo `as_of`, risk profile thuộc workspace, bot overlay đã publish, bot/account mapping/status từ DB; không nhận cap hoặc workspace scope từ caller. Chỉ test fake có thể inject loader riêng; constructor từ chối loader này với `AsyncSession` production. DTO lưu bot config version/hash cùng root/profile/snapshot/conversion lineage. Unit kiểm tra disabled target, cấu hình theo `as_of`, API không nhận cap và thứ tự khóa bot publish; bot overlay publish/rollback lấy workspace risk lock trước bot lock để serialize với reserve. Full unit/E2E/quality gates đạt.
+
+### MB04.9 — Runtime wiring và khóa vòng đời reservation
+
+- PAPER `evaluate_and_submit` gọi coordinator sau RiskEngine gate, trước mọi gateway submit; quyết định workspace deny được ghi nhận và không gọi gateway.
+- Reservation/decision giữ root settings, profile, bot config, snapshot/mark/conversion IDs, request hash và candidate/plan lineage; cùng transaction với intent/outbox.
+- Fill, no-fill release, UNKNOWN, reconcile, transfer-to-open và expiry đều lấy cùng workspace risk lock trước account lock; không để đường legacy mutate reservation ngoài thứ tự khóa.
+- E2E chạy runtime thật qua request → gate → reservation → PAPER submit, deny do workspace cap không gửi order, cross-bot concurrent request không vượt root cap, và verify commit/rollback/idempotency bằng DB.
+- Review thủ công code/SQL/auth/RLS/strategy risk interactions; cập nhật glossary nếu thêm thuật ngữ; full unit/E2E/quality, memory read-back và push `dev`.
+
+**Nghiệm thu:** không có đường PAPER entry nào bỏ qua workspace risk gate; tất cả mutation risk share cùng lock order và reservation lifecycle không double-count.
+
+**Ghi nhận nghiệm thu 2026-10-26:** runtime gọi workspace coordinator trước PAPER submit; workspace deny trả `RISK_REJECTED` và unit test khẳng định gateway call count bằng 0. Workspace decision lưu candidate expiry; kết quả runtime giữ riêng single-account decision ID làm lineage. Mutation lifecycle và expiry batch dùng workspace advisory lock trước account locks. Compose PAPER runtime E2E xác nhận đường submit/lineage; Compose workspace-risk E2E kiểm tra coordinator từ chối khi siết cap và hai bot cạnh tranh không vượt cap. No-submit được kiểm tra ở unit runtime và E2E coordinator/DB; chưa có một scenario Compose duy nhất ghép denial với runtime HTTP/service.
+
 ## Cổng nghiệm thu tổng MB-04
 
-MB-04 chỉ hoàn tất khi snapshot vốn là point-in-time và không double-count; mọi equity/FX/mark unknown hoặc stale fail-closed; aggregate risk gồm vị thế + reservation đang giữ và kiểm tra workspace/account/bot cap đồng thời; coordinator tự nạp nguồn cap/scope authoritative sau khóa và được nối vào runtime; concurrency E2E chứng minh reservation và root cap publish được serialize theo workspace→account; cap tightening không flatten và không cho mở entry mới; RLS/grants giữ nguyên cách ly bot và workspace; migration/history chính xác; toàn bộ unit/E2E/quality pass; review độc lập không có finding nghiêm trọng chưa xử lý; memory/status/WBS đồng nhất.
+MB-04 hoàn tất: snapshot vốn point-in-time; PnL closed/open/partial-exit và chi phí không bị double-count; mọi equity/FX/mark unknown hoặc stale fail-closed; aggregate risk gồm vị thế + reservation đang giữ; nguồn cap/scope authoritative được nạp sau khóa và nối vào runtime; concurrency E2E chứng minh reservation và root publish được serialize; RLS/grants giữ cách ly bot/workspace; migration/history chính xác; full unit/E2E/quality pass; self-review DB/code/auth/security hoàn tất; memory/status/WBS đồng nhất. No-submit được kiểm chứng bằng unit runtime và E2E coordinator. Review độc lập chưa thực hiện và không được ghi nhận như một kết quả đạt.
 
 ## Nguồn hiện hành và thuật ngữ EN→VI
 
-- PostgreSQL 18, [CREATE FUNCTION / SECURITY DEFINER](https://www.postgresql.org/docs/current/sql-createfunction.html), [Explicit Locking / Advisory Locks](https://www.postgresql.org/docs/current/explicit-locking.html#ADVISORY-LOCKS), [Row Security Policies](https://www.postgresql.org/docs/current/ddl-rowsecurity.html), kiểm tra **2026-10-25**. E2E phải xác minh quyền function và RLS thật; policy nhiều permissive có phép OR.
+- PostgreSQL 18, [CREATE FUNCTION / SECURITY DEFINER](https://www.postgresql.org/docs/current/sql-createfunction.html), [Explicit Locking / Advisory Locks](https://www.postgresql.org/docs/current/explicit-locking.html#ADVISORY-LOCKS), [Row Security Policies](https://www.postgresql.org/docs/current/ddl-rowsecurity.html), kiểm tra **2026-10-26**. E2E phải xác minh quyền function và RLS thật; policy nhiều permissive có phép OR.
 - **Mark-to-market equity — vốn định giá theo giá thị trường:** vốn gốc + realized PnL + unrealized PnL theo mark cùng thời điểm; [glossary](../../research/glossary-vi.md).
 - **Worst-case stop risk — rủi ro lỗ tối đa theo mức dừng:** mức lỗ giả định nếu giá đi tới stop bảo vệ theo công thức/fee đã xác định; [glossary](../../research/glossary-vi.md).
 - **Risk conversion observation — quan sát quy đổi rủi ro:** chuyển vốn, exposure và reservation về đơn vị chung USDT theo observation có thời điểm/nguồn; [glossary](../../research/glossary-vi.md).

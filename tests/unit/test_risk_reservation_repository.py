@@ -155,9 +155,11 @@ async def test_reserve_locks_workspace_account_and_persists_scoped_idempotent_re
     assert result.account_id == str(account_id)
     assert result.reserved_risk == Decimal("60")
     assert result.reserved_initial_margin == Decimal("100")
-    assert "trading_account" in session.statements[0]
-    assert "FOR UPDATE" in session.statements[0]
-    assert "workspace_id" in session.statements[0]
+    assert "pg_advisory_xact_lock" in session.statements[0]
+    assert "pg_advisory_xact_lock" in session.statements[1]
+    assert "trading_account" in session.statements[2]
+    assert "FOR UPDATE" in session.statements[2]
+    assert "workspace_id" in session.statements[2]
     assert len(session.added) == 1
     assert session.added[0].risk_decision_id == decision_id
     assert session.added[0].expires_at == approved.candidate_expires_at
@@ -271,7 +273,7 @@ async def test_reserve_returns_existing_reservation_for_same_key_and_plan() -> N
 
     assert result.reservation_id == reservation_id
     assert result.status is ReservationStatus.UNKNOWN
-    assert len(session.statements) == 4
+    assert len(session.statements) == 6
     assert not session.added
 
 
@@ -747,9 +749,11 @@ async def test_get_workspace_risk_aggregate_queries_and_maps_dto() -> None:
                 def one(self):
                     return (
                         workspace_id,
+                        Decimal("25000"),
                         Decimal("1500.50"),
                         Decimal("500.25"),
                         3,
+                        False,
                         False,
                     )
 
@@ -758,17 +762,25 @@ async def test_get_workspace_risk_aggregate_queries_and_maps_dto() -> None:
     session = AggregateSession()
     repo = RiskReservationRepository(session)  # type: ignore[arg-type]
 
-    agg = await repo.get_workspace_risk_aggregate(workspace_id=workspace_id, as_of=as_of)
+    agg = await repo.get_workspace_risk_aggregate(
+        workspace_id=workspace_id, as_of=as_of, max_mark_age=timedelta(seconds=60)
+    )
 
     assert agg.workspace_id == workspace_id
+    assert agg.total_equity_usdt == Decimal("25000")
     assert agg.total_open_risk_usdt == Decimal("1500.50")
     assert agg.total_pending_risk_usdt == Decimal("500.25")
     assert agg.active_bot_count == 3
     assert agg.has_unknown_exposure is False
+    assert agg.has_unknown_equity is False
     assert len(session.executed_statements) == 1
     stmt, params = session.executed_statements[0]
-    assert "get_workspace_risk_aggregate" in str(stmt)
-    assert params == {"workspace_id": workspace_id, "as_of": as_of}
+    assert "get_workspace_risk_equity_aggregate" in str(stmt)
+    assert params == {
+        "workspace_id": workspace_id,
+        "as_of": as_of,
+        "max_mark_age_seconds": 60,
+    }
 
 
 @pytest.mark.asyncio
@@ -778,4 +790,6 @@ async def test_get_workspace_risk_aggregate_rejects_naive_as_of() -> None:
     naive_as_of = datetime(2026, 10, 25, 12, 0, 0, tzinfo=UTC).replace(tzinfo=None)
 
     with pytest.raises(ReservationConflict, match="as_of"):
-        await repo.get_workspace_risk_aggregate(workspace_id=uuid4(), as_of=naive_as_of)
+        await repo.get_workspace_risk_aggregate(
+            workspace_id=uuid4(), as_of=naive_as_of, max_mark_age=timedelta(seconds=60)
+        )

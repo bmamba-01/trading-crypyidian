@@ -251,7 +251,23 @@ def seed_phase() -> dict[str, str]:
             version=1,
             max_risk_fraction=Decimal("0.02"),
             max_open_risk_fraction=Decimal("0.25"),
-            settings=Jsonb({"hard_caps": {"max_aggregate_open_risk": "2500"}}),
+            settings=Jsonb(
+                {
+                    "schema_version": 1,
+                    "hard_caps": {
+                        "max_aggregate_open_risk": "2500",
+                        "max_notional": "100000",
+                        "max_leverage": "10",
+                        "max_positions": 10,
+                        "max_symbol_notional": "50000",
+                        "max_concentration_fraction": "1",
+                        "max_daily_loss": "5000",
+                        "max_rolling_loss": "10000",
+                        "max_account_age_seconds": 86400,
+                        "max_data_age_seconds": 3600,
+                    },
+                }
+            ),
             is_active=True,
         )
 
@@ -330,6 +346,7 @@ def seed_phase() -> dict[str, str]:
             source_settings_version_id=settings_id,
             source_settings_hash=s_hash,
             idempotency_key=f"seed-acc1-{ws_id.hex[:6]}",
+            created_at=NOW - timedelta(seconds=1),
         )
         _insert(
             conn,
@@ -343,6 +360,7 @@ def seed_phase() -> dict[str, str]:
             source_settings_version_id=settings_id,
             source_settings_hash=s_hash,
             idempotency_key=f"seed-acc2-{ws_id.hex[:6]}",
+            created_at=NOW - timedelta(seconds=1),
         )
 
         # 9. Seed Trade Plans cho Bot 1 và Bot 2 (phục vụ concurrency barrier)
@@ -409,20 +427,6 @@ def concurrency_barrier_phase(state: dict[str, str]) -> dict[str, object]:
                     {"ws": str(ws_id), "bot": str(bot_id)},
                 )
 
-                # Dựng scope cho other account bằng coordinator.build_account_scope
-                # (tránh cross-bot DB query bị RLS chặn)
-                coordinator = WorkspaceRiskCoordinator(session)
-                other_scope = coordinator.build_account_scope(
-                    workspace_id=ws_id,
-                    bot_id=other_bot_id,
-                    account_id=other_acc_id,
-                    account_cap=Decimal("0.25"),
-                    snapshot=_create_snapshot(
-                        ws_id, other_bot_id, other_acc_id, Decimal("10000"), NOW
-                    ),
-                    conversion=_create_conversion(ws_id, NOW),
-                )
-
                 coordinator = WorkspaceRiskCoordinator(session)
                 req = ReservationRequest(
                     workspace_id=ws_id,
@@ -441,11 +445,7 @@ def concurrency_barrier_phase(state: dict[str, str]) -> dict[str, object]:
                 # Đồng bộ barrier thật sự trước khi gọi reserve
                 barrier.wait(timeout=30)
 
-                res = await coordinator.reserve(
-                    req,
-                    account_max_open_risk_fraction=Decimal("0.25"),
-                    other_account_scopes=[other_scope],
-                )
+                res = await coordinator.reserve(req)
                 await session.commit()
                 return {
                     "bot_idx": bot_idx,
@@ -620,6 +620,79 @@ def admin_tighten_phase(state: dict[str, str]) -> dict[str, str]:
             opened_at=NOW,
             lineage=Jsonb({"worst_case_loss_usdt": "1200"}),
         )
+        _insert(
+            conn,
+            "market_instrument",
+            id=uuid4(),
+            workspace_id=ws_id,
+            source="e2e-fixture",
+            idempotency_key=f"instrument-{ws_id.hex[:8]}",
+            symbol="BTCUSDT",
+            base_asset="BTC",
+            quote_asset="USDT",
+            tick_size=Decimal("0.1"),
+            quantity_step=Decimal("0.001"),
+            min_notional=Decimal("5"),
+            status="ACTIVE",
+            revision=1,
+            checksum="e" * 64,
+            supersedes_id=None,
+            event_at=NOW,
+            received_at=NOW,
+            available_at=NOW,
+        )
+        instrument_id = conn.execute(
+            "SELECT id FROM market_instrument WHERE workspace_id = %s AND symbol = 'BTCUSDT'",
+            (ws_id,),
+        ).fetchone()[0]
+        _insert(
+            conn,
+            "market_bar",
+            id=uuid4(),
+            workspace_id=ws_id,
+            instrument_id=instrument_id,
+            symbol="BTCUSDT",
+            timeframe="1h",
+            source="e2e-fixture",
+            logical_key=f"bar-{ws_id.hex[:8]}",
+            idempotency_key=f"bar-{ws_id.hex[:8]}",
+            revision=1,
+            checksum="f" * 64,
+            supersedes_id=None,
+            raw_reference_id=None,
+            source_cursor=None,
+            open_time=NOW - timedelta(hours=1),
+            close_time=NOW,
+            event_at=NOW,
+            received_at=NOW,
+            available_at=NOW,
+            open=Decimal("10000"),
+            high=Decimal("10100"),
+            low=Decimal("9900"),
+            close=Decimal("10000"),
+            volume=Decimal("1"),
+            is_closed=True,
+        )
+        _insert(
+            conn,
+            "fill",
+            id=uuid4(),
+            workspace_id=ws_id,
+            bot_id=bot1_id,
+            account_id=acc1_id,
+            mode="PAPER",
+            intent_id=intent_id,
+            fill_role="ENTRY",
+            fill_key=f"fill-{ws_id.hex[:8]}",
+            bar_key=f"bar-{ws_id.hex[:8]}",
+            fill_policy_version="e2e-v1",
+            quantity=Decimal("1"),
+            price=Decimal("10000"),
+            fee_amount=Decimal("0"),
+            slippage_amount=Decimal("0"),
+            occurred_at=NOW,
+            lineage=Jsonb({}),
+        )
 
         # 2. Admin publish siết Root cap xuống 5% (0.05 * 20,000 = 1,000 USDT)
         new_settings = _make_workspace_payload(profile_id, "0.05")
@@ -652,7 +725,7 @@ def admin_tighten_phase(state: dict[str, str]) -> dict[str, str]:
 def bot2_breach_phase(state: dict[str, str]) -> dict[str, object]:
     """Bot 2 xin reserve 1,000 USDT -> bị từ chối bởi CAPACITY_BREACH_AFTER_TIGHTENING."""
     ws_id = UUID(state["workspace_id"])
-    acc1_id, acc2_id = UUID(state["acc1_id"]), UUID(state["acc2_id"])
+    acc2_id = UUID(state["acc2_id"])
     bot1_id, bot2_id = UUID(state["bot1_id"]), UUID(state["bot2_id"])
     trade_id = UUID(state["trade_id"])
 
@@ -667,14 +740,6 @@ def bot2_breach_phase(state: dict[str, str]) -> dict[str, object]:
                 {"ws": str(ws_id), "bot": str(bot2_id)},
             )
             coordinator = WorkspaceRiskCoordinator(session)
-            scope1 = coordinator.build_account_scope(
-                workspace_id=ws_id,
-                bot_id=bot1_id,
-                account_id=acc1_id,
-                account_cap=Decimal("0.25"),
-                snapshot=_create_snapshot(ws_id, bot1_id, acc1_id, Decimal("10000"), NOW),
-                conversion=_create_conversion(ws_id, NOW),
-            )
             req = ReservationRequest(
                 workspace_id=ws_id,
                 bot_id=bot2_id,
@@ -688,11 +753,7 @@ def bot2_breach_phase(state: dict[str, str]) -> dict[str, object]:
                 symbol="BTCUSDT",
                 plan_hash="plan-tightening-2",
             )
-            res = await coordinator.reserve(
-                req,
-                account_max_open_risk_fraction=Decimal("0.25"),
-                other_account_scopes=[scope1],
-            )
+            res = await coordinator.reserve(req)
             await session.commit()
             return {
                 "approved": res.approved,
@@ -754,18 +815,39 @@ def rls_checks_phase(state: dict[str, str]) -> dict[str, object]:
         # 4. Gọi SQL function get_workspace_risk_aggregate(ws_id, as_of)
         # Hàm SECURITY DEFINER phải trả aggregate scalar mà không rò rỉ bot_id / symbol
         agg_row = conn.execute(
-            "SELECT workspace_id, total_open_risk_usdt, total_pending_risk_usdt, "
-            "active_bot_count, has_unknown_exposure "
-            "FROM get_workspace_risk_aggregate(%s, %s)",
-            (ws_id, NOW),
+            "SELECT workspace_id, total_equity_usdt, total_open_risk_usdt, "
+            "total_pending_risk_usdt, active_bot_count, has_unknown_exposure, has_unknown_equity "
+            "FROM get_workspace_risk_equity_aggregate(%s, %s, %s)",
+            (ws_id, NOW, 3600),
         ).fetchone()
+        unknown_equity = conn.execute(
+            "SELECT has_unknown_equity FROM get_workspace_risk_equity_aggregate(%s, %s, %s)",
+            (ws_id, NOW + timedelta(hours=2), 3600),
+        ).fetchone()[0]
+        function_execute = conn.execute(
+            "SELECT has_function_privilege('crypidian_trading_runtime', "
+            "'public.get_workspace_risk_equity_aggregate(uuid,timestamptz,integer)', 'EXECUTE')"
+        ).fetchone()[0]
+        public_execute = conn.execute(
+            "SELECT EXISTS (SELECT 1 FROM aclexplode(coalesce(p.proacl, "
+            "acldefault('f', p.proowner))) acl WHERE p.oid = "
+            "'public.get_workspace_risk_equity_aggregate(uuid,timestamptz,integer)'::regprocedure "
+            "AND acl.grantee = 0 AND acl.privilege_type = 'EXECUTE') "
+            "FROM pg_proc p WHERE p.oid = "
+            "'public.get_workspace_risk_equity_aggregate(uuid,timestamptz,integer)'::regprocedure"
+        ).fetchone()[0]
 
         agg_result = {
             "workspace_id": str(agg_row[0]),
-            "total_open_risk_usdt": str(agg_row[1]),
-            "total_pending_risk_usdt": str(agg_row[2]),
-            "active_bot_count": int(agg_row[3]),
-            "has_unknown_exposure": bool(agg_row[4]),
+            "total_equity_usdt": str(agg_row[1]),
+            "total_open_risk_usdt": str(agg_row[2]),
+            "total_pending_risk_usdt": str(agg_row[3]),
+            "active_bot_count": int(agg_row[4]),
+            "has_unknown_exposure": bool(agg_row[5]),
+            "has_unknown_equity": bool(agg_row[6]),
+            "unknown_after_mark_removal": bool(unknown_equity),
+            "function_execute": bool(function_execute),
+            "public_execute": bool(public_execute),
         }
 
     return {
@@ -774,6 +856,192 @@ def rls_checks_phase(state: dict[str, str]) -> dict[str, object]:
         "bot2_reservations_count": int(bot2_reservations_count),
         "aggregate": agg_result,
     }
+
+
+def equity_edge_cases_phase(state: dict[str, str]) -> dict[str, bool]:
+    """Kiểm tra realized PnL, short UPNL, seed/fill thiếu và quote không hỗ trợ."""
+    ws_id = UUID(state["workspace_id"])
+    with _get_db_connection() as conn:
+        conn.execute("BEGIN")
+        try:
+            # Tạm tắt trigger append-only trong transaction kiểm thử; ROLLBACK khôi phục cả DDL.
+            conn.execute("ALTER TABLE trade DISABLE TRIGGER trade_close_guard")
+            conn.execute("ALTER TABLE market_bar DISABLE TRIGGER market_bar_immutable")
+            conn.execute("ALTER TABLE fill DISABLE TRIGGER fill_append_only")
+            conn.execute(
+                "ALTER TABLE paper_account_seed DISABLE TRIGGER paper_account_seed_immutable"
+            )
+            conn.execute("SELECT set_config('app.workspace_id', %s, true)", (str(ws_id),))
+            trade = conn.execute(
+                "SELECT id, bot_id, account_id, intent_id FROM trade "
+                "WHERE workspace_id = %s AND mode = 'PAPER' AND status = 'OPEN' "
+                "ORDER BY opened_at LIMIT 1",
+                (ws_id,),
+            ).fetchone()
+            assert trade is not None, "Fixture phải có một vị thế PAPER đang mở"
+            trade_id, bot_id, account_id, intent_id = trade
+
+            def aggregate_equity(as_of: datetime = NOW) -> tuple[Decimal, bool]:
+                row = conn.execute(
+                    "SELECT total_equity_usdt, has_unknown_equity "
+                    "FROM get_workspace_risk_equity_aggregate(%s, %s, %s)",
+                    (ws_id, as_of, 3600),
+                ).fetchone()
+                assert row is not None
+                return Decimal(row[0]), bool(row[1])
+
+            # Giá tăng 1.000 USDT tạo UPNL dương cho long 1 BTC.
+            conn.execute(
+                "UPDATE market_bar SET close = 11000, high = 11100 "
+                "WHERE workspace_id = %s AND symbol = 'BTCUSDT'",
+                (ws_id,),
+            )
+            long_equity, long_unknown = aggregate_equity()
+
+            # Giá giảm 1.000 USDT tạo UPNL dương cho short 1 BTC.
+            conn.execute("UPDATE trade SET side = 'SHORT' WHERE id = %s", (trade_id,))
+            conn.execute(
+                "UPDATE market_bar SET close = 9000, low = 8900 "
+                "WHERE workspace_id = %s AND symbol = 'BTCUSDT'",
+                (ws_id,),
+            )
+            short_equity, short_unknown = aggregate_equity()
+
+            # Mark đến sau as_of không được dùng; thiếu mark khả dụng phải fail-closed.
+            conn.execute(
+                "UPDATE market_bar SET received_at = %s, available_at = %s "
+                "WHERE workspace_id = %s AND symbol = 'BTCUSDT'",
+                (NOW + timedelta(seconds=1), NOW + timedelta(seconds=1), ws_id),
+            )
+            _, future_mark_unknown = aggregate_equity()
+            conn.execute(
+                "UPDATE market_bar SET received_at = %s, available_at = %s "
+                "WHERE workspace_id = %s AND symbol = 'BTCUSDT'",
+                (NOW, NOW, ws_id),
+            )
+            conn.execute("UPDATE trade SET side = 'LONG' WHERE id = %s", (trade_id,))
+            conn.execute(
+                "UPDATE market_bar SET close = 11000 WHERE workspace_id = %s "
+                "AND symbol = 'BTCUSDT'",
+                (ws_id,),
+            )
+
+            # Mark-to-market phải cộng phần đã chốt một phần, phần còn mở và trừ cost đã ghi.
+            exit_fill_key = f"partial-exit-{ws_id.hex[:8]}"
+            _insert(
+                conn,
+                "fill",
+                id=uuid4(),
+                workspace_id=ws_id,
+                bot_id=bot_id,
+                account_id=account_id,
+                mode="PAPER",
+                intent_id=intent_id,
+                fill_role="EXIT",
+                fill_key=exit_fill_key,
+                bar_key=f"bar-{ws_id.hex[:8]}",
+                fill_policy_version="e2e-v1",
+                quantity=Decimal("0.25"),
+                price=Decimal("10500"),
+                fee_amount=Decimal("1"),
+                slippage_amount=Decimal("2"),
+                occurred_at=NOW,
+                lineage=Jsonb({}),
+            )
+            for cost_type, amount in (("FEE", "1"), ("SLIPPAGE", "2"), ("FUNDING", "5")):
+                _insert(
+                    conn,
+                    "trade_cost",
+                    id=uuid4(),
+                    workspace_id=ws_id,
+                    bot_id=bot_id,
+                    account_id=account_id,
+                    mode="PAPER",
+                    trade_id=trade_id,
+                    cost_key=f"{exit_fill_key}:{cost_type.lower()}",
+                    cost_type=cost_type,
+                    amount=Decimal(amount),
+                    currency="USDT",
+                    occurred_at=NOW,
+                    source_event_id=exit_fill_key,
+                    lineage=Jsonb({}),
+                )
+            partial_equity, partial_unknown = aggregate_equity()
+
+            # PnL đã chốt được cộng đúng một lần vào vốn gốc.
+            conn.execute(
+                "UPDATE trade SET status = 'CLOSED', closed_at = %s, gross_pnl = 250, "
+                "net_pnl = 250 WHERE id = %s",
+                (NOW, trade_id),
+            )
+            realized_equity, realized_unknown = aggregate_equity()
+
+            # Vị thế mở thiếu seed hoặc entry fill phải khiến equity thành unknown.
+            conn.execute(
+                "UPDATE trade SET status = 'OPEN', closed_at = NULL, gross_pnl = 0, "
+                "net_pnl = 0 WHERE id = %s",
+                (trade_id,),
+            )
+            seed = conn.execute(
+                "SELECT id, initial_equity, quote_asset, source_settings_version_id, "
+                "source_settings_hash, idempotency_key, created_at FROM paper_account_seed "
+                "WHERE workspace_id = %s AND bot_id = %s AND trading_account_id = %s",
+                (ws_id, bot_id, account_id),
+            ).fetchone()
+            assert seed is not None
+            conn.execute("DELETE FROM paper_account_seed WHERE id = %s", (seed[0],))
+            _, missing_seed_unknown = aggregate_equity()
+            conn.execute(
+                "INSERT INTO paper_account_seed "
+                "(id, workspace_id, bot_id, trading_account_id, initial_equity, quote_asset, "
+                "source_settings_version_id, source_settings_hash, idempotency_key, created_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                (seed[0], ws_id, bot_id, account_id, *seed[1:]),
+            )
+            conn.execute(
+                "UPDATE paper_account_seed SET created_at = %s WHERE id = %s",
+                (NOW + timedelta(seconds=1), seed[0]),
+            )
+            _, future_seed_unknown = aggregate_equity()
+            conn.execute(
+                "UPDATE paper_account_seed SET created_at = %s WHERE id = %s",
+                (seed[-1], seed[0]),
+            )
+            conn.execute(
+                "DELETE FROM fill WHERE workspace_id = %s AND intent_id = %s "
+                "AND fill_role = 'ENTRY'",
+                (ws_id, intent_id),
+            )
+            _, missing_fill_unknown = aggregate_equity()
+
+            # Không cộng trực tiếp tài sản định giá bằng đơn vị khác vào USDT.
+            conn.execute("UPDATE trade SET quote_asset = 'BTC' WHERE id = %s", (trade_id,))
+            _, unsupported_quote_unknown = aggregate_equity()
+            conn.execute(
+                "UPDATE trade SET status = 'CLOSED', closed_at = %s, gross_pnl = 250, "
+                "net_pnl = 250 WHERE id = %s",
+                (NOW, trade_id),
+            )
+            _, unsupported_realized_quote_unknown = aggregate_equity()
+
+            return {
+                "long_pnl_correct": long_equity == Decimal("21000") and not long_unknown,
+                "short_pnl_correct": short_equity == Decimal("21000") and not short_unknown,
+                "partial_exit_and_costs_correct": (
+                    partial_equity == Decimal("20867") and not partial_unknown
+                ),
+                "future_mark_unknown": future_mark_unknown,
+                "realized_pnl_correct": (
+                    realized_equity == Decimal("20250") and not realized_unknown
+                ),
+                "missing_seed_unknown": missing_seed_unknown,
+                "future_seed_unknown": future_seed_unknown,
+                "missing_fill_unknown": missing_fill_unknown,
+                "unsupported_quote_unknown": unsupported_quote_unknown,
+                "unsupported_realized_quote_unknown": unsupported_realized_quote_unknown,
+            }
+        finally:
+            conn.execute("ROLLBACK")
 
 
 def insert_custom_profile_guard_phase(state: dict[str, str]) -> dict[str, str]:
@@ -822,6 +1090,8 @@ def main() -> None:
         res = tighten_and_breach_phase(state)
     elif phase == "rls_checks":
         res = rls_checks_phase(state)
+    elif phase == "equity_edge_cases":
+        res = equity_edge_cases_phase(state)
     elif phase == "insert_custom_profile_guard":
         res = insert_custom_profile_guard_phase(state)
     elif phase == "cleanup_custom_profile_guard":

@@ -58,6 +58,7 @@ from trading_bot.application.paper_lifecycle import (
     PositionLifecycleResult,
 )
 from trading_bot.application.paper_runtime_bootstrap import PaperRuntimeAccount
+from trading_bot.application.workspace_risk import ReservationRequest, WorkspaceRiskCoordinator
 from trading_bot.config.bot_settings import BotConfigOverlay, overlay_hash
 from trading_bot.config.workspace_settings import PublishedWorkspaceSettings, WorkspaceSettings
 from trading_bot.domain.execution.paper import PaperBar
@@ -167,6 +168,7 @@ class PaperDecisionApplicationResult:
     submission: PaperSubmissionResult | None = None
     risk_decision_id: UUID | None = None
     risk_reservation_id: UUID | None = None
+    single_account_risk_decision_id: UUID | None = None
     duplicate: bool = False
 
 
@@ -229,6 +231,7 @@ class PaperRuntimeApplicationService:
         unit_of_work_factory: Any = UnitOfWork,
         settings_repository_factory: Any = WorkspaceSettingsRepository,
         risk_repository_factory: Any = RiskReservationRepository,
+        workspace_risk_coordinator_factory: Any = WorkspaceRiskCoordinator,
         decision_cycle_factory: Any | None = None,
         account_invalidation_callback: Callable[[UUID, str], None] | None = None,
         bot_config_loader: BotConfigLoader | None = None,
@@ -243,6 +246,7 @@ class PaperRuntimeApplicationService:
         self._unit_of_work_factory = unit_of_work_factory
         self._settings_repository_factory = settings_repository_factory
         self._risk_repository_factory = risk_repository_factory
+        self._workspace_risk_coordinator_factory = workspace_risk_coordinator_factory
         self._decision_cycle_factory = decision_cycle_factory or self._make_decision_cycle
         self._account_invalidation_callback = account_invalidation_callback
         self._bot_config_loader = bot_config_loader or load_runtime_bot_config
@@ -401,11 +405,42 @@ class PaperRuntimeApplicationService:
                 evaluation = await risk_repository.record_evaluation(
                     plan=plan, decision=risk_decision
                 )
-                reservation = await risk_repository.reserve(
-                    risk_decision,
-                    idempotency_key=idempotency_key,
-                    risk_decision_id=evaluation.risk_decision_id,
+                workspace_reservation = await self._workspace_risk_coordinator_factory(
+                    uow.session
+                ).reserve(
+                    ReservationRequest(
+                        workspace_id=self._workspace_id,
+                        bot_id=account.bot_id,
+                        account_id=command.account_id,
+                        idempotency_key=idempotency_key,
+                        requested_risk_usdt=risk_decision.requested_risk,
+                        requested_notional=risk_decision.requested_notional,
+                        requested_initial_margin=risk_decision.requested_initial_margin,
+                        as_of=command.evaluated_at,
+                        expires_at=risk_decision.candidate_expires_at,
+                        symbol=plan.symbol,
+                        plan_hash=plan.plan_hash,
+                        candidate_id=plan.candidate_id,
+                    ),
                 )
+                if not workspace_reservation.approved:
+                    denied_decision = DecisionCycleResult(
+                        outcome=DecisionCycleOutcome.RISK_REJECTED,
+                        strategy_result=decision.strategy_result,
+                        plan=decision.plan,
+                        risk_decision=decision.risk_decision,
+                        workspace_risk_decision=workspace_reservation.decision,
+                    )
+                    return PaperDecisionApplicationResult(
+                        decision=denied_decision,
+                        idempotency_key=idempotency_key,
+                        risk_decision_id=workspace_reservation.decision_id,
+                    )
+                if (
+                    workspace_reservation.decision_id is None
+                    or workspace_reservation.reservation_id is None
+                ):
+                    raise PaperRuntimeApplicationError("WORKSPACE_RESERVATION_RESULT_INVALID")
                 evidence = dict(context.evidence)
                 evidence.update(
                     {
@@ -416,7 +451,8 @@ class PaperRuntimeApplicationService:
                         .content_hash,
                         "feature_snapshot_id": command.feature_snapshot_id,
                         "evaluated_at": command.evaluated_at.isoformat(),
-                        "risk_decision_id": str(evaluation.risk_decision_id),
+                        "risk_decision_id": str(workspace_reservation.decision_id),
+                        "single_account_risk_decision_id": str(evaluation.risk_decision_id),
                         "plan_hash": plan.plan_hash,
                     }
                     | bot_lineage
@@ -429,8 +465,8 @@ class PaperRuntimeApplicationService:
                     idempotency_key=idempotency_key,
                     strategy_release_id=strategy_release_id,
                     feature_snapshot_id=command.feature_snapshot_id,
-                    risk_decision_id=evaluation.risk_decision_id,
-                    risk_reservation_id=reservation.reservation_id,
+                    risk_decision_id=workspace_reservation.decision_id,
+                    risk_reservation_id=workspace_reservation.reservation_id,
                     quote_asset=profile.quote_asset,
                     evidence=evidence,
                     fencing_token=_account_token(account),
@@ -439,8 +475,9 @@ class PaperRuntimeApplicationService:
                     decision=decision,
                     idempotency_key=idempotency_key,
                     submission=submission,
-                    risk_decision_id=evaluation.risk_decision_id,
-                    risk_reservation_id=reservation.reservation_id,
+                    risk_decision_id=workspace_reservation.decision_id,
+                    risk_reservation_id=workspace_reservation.reservation_id,
+                    single_account_risk_decision_id=evaluation.risk_decision_id,
                 )
         except PaperRuntimeApplicationError:
             raise

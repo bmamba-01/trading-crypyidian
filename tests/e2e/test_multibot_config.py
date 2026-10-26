@@ -138,7 +138,7 @@ def test_bot_overlay_versions_admin_api_and_open_paper_position() -> None:
         current = compose("run", "--rm", "--no-deps", "migrator", "alembic", "current")
         # Head tích hợp gồm cả MB-05 (registry runtime); downgrade ở trên vẫn kiểm tra luồng
         # đảo chiều sạch qua migration MB-05 (chưa có hàng runtime).
-        assert "d9b2f4a6c8e1" in current.stdout
+        assert "e4f6a8c0d2b5" in current.stdout
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "check")
 
         # --- Owner, MFA, risk profile và root settings ------------------------------------

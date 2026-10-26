@@ -6,7 +6,7 @@ import hashlib
 import json
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, fields, is_dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from enum import Enum
 from typing import cast
@@ -637,6 +637,19 @@ class RiskReservationRepository:
     ) -> int:
         """Giải phóng các row RESERVED có expires_at <= as_of sang RELEASED; bỏ qua UNKNOWN."""
         _require_aware(as_of, "as_of")
+        await self.lock_workspace_risk(workspace_id)
+        if account_ids is not None:
+            locked_account_ids = list(account_ids)
+        else:
+            account_result = await self._session.scalars(
+                select(RiskReservationRecord.account_id).where(
+                    RiskReservationRecord.workspace_id == workspace_id,
+                    RiskReservationRecord.status == ReservationStatus.RESERVED.value,
+                    RiskReservationRecord.expires_at <= as_of,
+                )
+            )
+            locked_account_ids = list(account_result.all())
+        await self.lock_accounts_risk(workspace_id, locked_account_ids)
         stmt = select(RiskReservationRecord).where(
             RiskReservationRecord.workspace_id == workspace_id,
             RiskReservationRecord.status == ReservationStatus.RESERVED.value,
@@ -655,23 +668,39 @@ class RiskReservationRepository:
         return len(due)
 
     async def get_workspace_risk_aggregate(
-        self, *, workspace_id: UUID, as_of: datetime
+        self, *, workspace_id: UUID, as_of: datetime, max_mark_age: timedelta
     ) -> WorkspaceRiskAggregate:
-        """Gọi SQL aggregate function get_workspace_risk_aggregate và ánh xạ sang DTO."""
+        """Nạp scalar risk/equity workspace theo as_of và freshness policy đã nạp từ DB."""
         _require_aware(as_of, "as_of")
+        if not isinstance(max_mark_age, timedelta) or max_mark_age <= timedelta(0):
+            raise ReservationConflict("max_mark_age phải là thời hạn dương.")
+        max_mark_age_seconds = int(max_mark_age.total_seconds())
+        if max_mark_age_seconds <= 0 or max_mark_age.total_seconds() != max_mark_age_seconds:
+            raise ReservationConflict("max_mark_age phải được biểu diễn bằng giây nguyên dương.")
         stmt = text(
-            "SELECT workspace_id, total_open_risk_usdt, total_pending_risk_usdt, "
-            "active_bot_count, has_unknown_exposure "
-            "FROM public.get_workspace_risk_aggregate(:workspace_id, :as_of)"
+            "SELECT workspace_id, total_equity_usdt, total_open_risk_usdt, "
+            "total_pending_risk_usdt, active_bot_count, has_unknown_exposure, "
+            "has_unknown_equity "
+            "FROM public.get_workspace_risk_equity_aggregate("
+            ":workspace_id, :as_of, :max_mark_age_seconds)"
         )
-        result = await self._session.execute(stmt, {"workspace_id": workspace_id, "as_of": as_of})
+        result = await self._session.execute(
+            stmt,
+            {
+                "workspace_id": workspace_id,
+                "as_of": as_of,
+                "max_mark_age_seconds": max_mark_age_seconds,
+            },
+        )
         row = result.one()
         return WorkspaceRiskAggregate(
             workspace_id=row[0] if isinstance(row[0], UUID) else UUID(str(row[0])),
-            total_open_risk_usdt=Decimal(str(row[1])),
-            total_pending_risk_usdt=Decimal(str(row[2])),
-            active_bot_count=int(row[3]),
-            has_unknown_exposure=bool(row[4]),
+            total_equity_usdt=Decimal(str(row[1])),
+            total_open_risk_usdt=Decimal(str(row[2])),
+            total_pending_risk_usdt=Decimal(str(row[3])),
+            active_bot_count=int(row[4]),
+            has_unknown_exposure=bool(row[5]),
+            has_unknown_equity=bool(row[6]),
         )
 
     async def expire_due(
@@ -718,6 +747,8 @@ class RiskReservationRepository:
         return len(due)
 
     async def _lock_account(self, *, workspace_id: UUID, account_id: UUID) -> None:
+        await self.lock_workspace_risk(workspace_id)
+        await self.lock_account_risk(workspace_id, account_id)
         account = await self._session.scalar(
             select(TradingAccount)
             .where(

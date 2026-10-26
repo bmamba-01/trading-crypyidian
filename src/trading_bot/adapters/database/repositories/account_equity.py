@@ -70,6 +70,7 @@ class AccountEquityRepository:
                 PaperAccountSeed.workspace_id == workspace_id,
                 PaperAccountSeed.bot_id == bot_id,
                 PaperAccountSeed.trading_account_id == account_id,
+                PaperAccountSeed.created_at <= as_of,
             )
         )
         if seed is None:

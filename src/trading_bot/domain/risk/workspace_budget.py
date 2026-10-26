@@ -28,6 +28,7 @@ class BudgetReasonCode(StrEnum):
     APPROVED = "APPROVED"
     WORKSPACE_CAP_EXCEEDED = "WORKSPACE_CAP_EXCEEDED"
     WORKSPACE_EXPOSURE_UNKNOWN = "WORKSPACE_EXPOSURE_UNKNOWN"
+    WORKSPACE_EQUITY_UNKNOWN = "WORKSPACE_EQUITY_UNKNOWN"
     WORKSPACE_SCOPE_INCOMPLETE = "WORKSPACE_SCOPE_INCOMPLETE"
     ACCOUNT_CAP_EXCEEDED = "ACCOUNT_CAP_EXCEEDED"
     BOT_CAP_EXCEEDED = "BOT_CAP_EXCEEDED"
@@ -224,6 +225,7 @@ class WorkspacePolicy:
     max_equity_age: timedelta
     max_conversion_age: timedelta
     risk_profile_version_id: str = ""
+    max_mark_age: timedelta = timedelta(seconds=60)
 
     def __post_init__(self) -> None:
         _text(self.workspace_id, self.root_settings_version_id, self.root_settings_hash)
@@ -237,6 +239,10 @@ class WorkspacePolicy:
         _require(
             isinstance(self.max_conversion_age, timedelta)
             and self.max_conversion_age >= timedelta(0),
+            BudgetReasonCode.LINEAGE_INVALID,
+        )
+        _require(
+            isinstance(self.max_mark_age, timedelta) and self.max_mark_age > timedelta(0),
             BudgetReasonCode.LINEAGE_INVALID,
         )
 
@@ -273,10 +279,12 @@ class WorkspaceRiskAggregate:
     """Tổng hợp rủi ro toàn workspace qua SQL aggregate tối thiểu."""
 
     workspace_id: UUID
+    total_equity_usdt: Decimal
     total_open_risk_usdt: Decimal
     total_pending_risk_usdt: Decimal
     active_bot_count: int
     has_unknown_exposure: bool
+    has_unknown_equity: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -436,8 +444,13 @@ class WorkspaceBudgetEngine:
                 data_error_code = BudgetReasonCode.WORKSPACE_EXPOSURE_UNKNOWN
             else:
                 try:
+                    _amount(workspace_aggregate.total_equity_usdt)
                     _amount(workspace_aggregate.total_open_risk_usdt)
                     _amount(workspace_aggregate.total_pending_risk_usdt)
+                    _require(
+                        workspace_aggregate.total_equity_usdt > ZERO,
+                        BudgetReasonCode.DENOMINATOR_UNUSABLE,
+                    )
                     _require(
                         isinstance(workspace_aggregate.active_bot_count, int)
                         and not isinstance(workspace_aggregate.active_bot_count, bool)
@@ -448,13 +461,24 @@ class WorkspaceBudgetEngine:
                         isinstance(workspace_aggregate.has_unknown_exposure, bool),
                         BudgetReasonCode.AMOUNT_INVALID,
                     )
+                    _require(
+                        isinstance(workspace_aggregate.has_unknown_equity, bool),
+                        BudgetReasonCode.AMOUNT_INVALID,
+                    )
+                    _require(
+                        not workspace_aggregate.has_unknown_equity,
+                        BudgetReasonCode.WORKSPACE_EQUITY_UNKNOWN,
+                    )
                     enabled_scope_count = sum(1 for account in accounts if account.enabled)
                     _require(
-                        workspace_aggregate.active_bot_count == enabled_scope_count,
+                        workspace_aggregate.active_bot_count > 0
+                        and workspace_aggregate.active_bot_count >= enabled_scope_count,
                         BudgetReasonCode.WORKSPACE_SCOPE_INCOMPLETE,
                     )
                 except BudgetValidationError as error:
                     data_error_code = error.reason_code
+                if data_error_code is None:
+                    workspace_equity_usdt = workspace_aggregate.total_equity_usdt
 
         # Nếu lỗi dữ liệu mẫu số và là lệnh vào mới -> Fail-closed từ chối ngay
         if data_error_code is not None and not is_protective:

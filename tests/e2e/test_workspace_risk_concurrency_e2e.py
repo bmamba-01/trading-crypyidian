@@ -158,10 +158,30 @@ def test_workspace_risk_concurrency_and_rls_isolation_e2e() -> None:
         # Gọi get_workspace_risk_aggregate scalar thành công, không rò rỉ bot_id/symbol
         agg = rls_res["aggregate"]
         assert agg["workspace_id"] == seeded["workspace_id"]
+        assert Decimal(agg["total_equity_usdt"]) == Decimal("20000")
         assert Decimal(agg["total_open_risk_usdt"]) == Decimal("1200")
         assert agg["active_bot_count"] == 2
+        assert agg["has_unknown_equity"] is False
+        assert agg["unknown_after_mark_removal"] is True
+        assert agg["function_execute"] is True
+        assert agg["public_execute"] is False
         assert "bot_id" not in agg
         assert "symbol" not in agg
+
+        # Kiểm tra các nhánh equity mà fixture concurrency không bao phủ.
+        edge_cases = run_probe("equity_edge_cases", state=seeded, service="migrator")
+        assert edge_cases == {
+            "long_pnl_correct": True,
+            "short_pnl_correct": True,
+            "partial_exit_and_costs_correct": True,
+            "future_mark_unknown": True,
+            "realized_pnl_correct": True,
+            "missing_seed_unknown": True,
+            "future_seed_unknown": True,
+            "missing_fill_unknown": True,
+            "unsupported_quote_unknown": True,
+            "unsupported_realized_quote_unknown": True,
+        }
 
         # ---------------------------------------------------------------------
         # Kịch bản 4: Migration Rehearsal (Upgrade -> Downgrade Guard -> Upgrade)
