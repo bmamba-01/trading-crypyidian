@@ -95,7 +95,8 @@ def _pause(session: RecordingSession, **overrides: object):
 
 
 def test_first_pause_inserts_revision_one_after_taking_l1() -> None:
-    session = RecordingSession(scalar_results=[None, ACCOUNT])
+    # M5 (Part B): account của bot được resolve trước current control.
+    session = RecordingSession(scalar_results=[ACCOUNT, None])
 
     result = _pause(session)
 
@@ -108,17 +109,17 @@ def test_first_pause_inserts_revision_one_after_taking_l1() -> None:
 
 
 def test_each_change_inserts_next_revision_and_current_is_max_revision() -> None:
-    session = RecordingSession(scalar_results=[_bot_control(1, "PAUSED"), ACCOUNT])
+    session = RecordingSession(scalar_results=[ACCOUNT, _bot_control(1, "PAUSED")])
 
     result = _pause(session, target=BotEntryState.ENABLED, expected_revision=1)
 
     assert (result.revision, result.entry_state, result.changed) == (2, BotEntryState.ENABLED, True)
     assert session.added[0].revision == 2
-    assert "ORDER BY bot_runtime_control.revision DESC" in session.statements[1]
+    assert "ORDER BY bot_runtime_control.revision DESC" in session.statements[2]
 
 
 def test_pause_when_already_paused_is_noop_without_new_row() -> None:
-    session = RecordingSession(scalar_results=[_bot_control(3, "PAUSED")])
+    session = RecordingSession(scalar_results=[ACCOUNT, _bot_control(3, "PAUSED")])
 
     result = _pause(session)
 
@@ -128,12 +129,12 @@ def test_pause_when_already_paused_is_noop_without_new_row() -> None:
 
 
 def test_expected_revision_mismatch_and_duplicate_revision_conflict() -> None:
-    session = RecordingSession(scalar_results=[_bot_control(2, "PAUSED")])
+    session = RecordingSession(scalar_results=[ACCOUNT, _bot_control(2, "PAUSED")])
     with pytest.raises(RuntimeControlError) as error:
         _pause(session, target=BotEntryState.ENABLED, expected_revision=1)
     assert error.value.reason_code == "CONTROL_REVISION_CONFLICT"
 
-    session = RecordingSession(scalar_results=[None, ACCOUNT])
+    session = RecordingSession(scalar_results=[ACCOUNT, None])
     session.flush_error = IntegrityError("INSERT", {}, Exception("uq_bot_runtime_control_revision"))
     with pytest.raises(RuntimeControlError) as error:
         _pause(session)
@@ -143,7 +144,7 @@ def test_expected_revision_mismatch_and_duplicate_revision_conflict() -> None:
 def test_control_requires_reason() -> None:
     for overrides in ({"reason_code": " "}, {"reason_text": ""}, {"reason_text": "x" * 501}):
         with pytest.raises(RuntimeControlError) as error:
-            _pause(RecordingSession(scalar_results=[None, ACCOUNT]), **overrides)
+            _pause(RecordingSession(scalar_results=[ACCOUNT, None]), **overrides)
         assert error.value.reason_code == "CONTROL_REASON_REQUIRED"
 
 

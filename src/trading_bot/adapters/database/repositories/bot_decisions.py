@@ -11,7 +11,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -30,7 +30,9 @@ from trading_bot.application.bot_dispatcher import (
     DecisionEvaluator,
     EvidenceRecordedEvent,
     EvidenceScopeError,
+    JobRetryPolicy,
     RecordedEvidence,
+    reconcile_existing_job,
 )
 from trading_bot.application.outbox import OutboxRepository, UnitOfWork
 from trading_bot.domain.events import EventEnvelope
@@ -38,6 +40,7 @@ from trading_bot.domain.market.signal_evidence import SharedSignalEvidence
 
 _PENDING = "PENDING"
 _COMPLETED = "COMPLETED"
+_DEAD = "DEAD"
 
 
 class BotDecisionRepository:
@@ -95,23 +98,47 @@ class BotDecisionRepository:
         return row
 
     async def pending_jobs(
-        self, *, workspace_id: UUID, bot_id: UUID, account_id: UUID, limit: int
+        self,
+        *,
+        workspace_id: UUID,
+        bot_id: UUID,
+        account_id: UUID,
+        limit: int,
+        now: datetime | None = None,
     ) -> tuple[BotDecisionJob, ...]:
-        """Job còn chờ của một bot theo thứ tự thời điểm đánh giá."""
+        """Job còn chờ của một bot theo thứ tự thời điểm đánh giá; bỏ qua job đang backoff."""
         if limit < 1:
             raise ValueError("limit phải lớn hơn 0.")
-        rows = await self._session.scalars(
-            select(BotDecisionJobRecord)
-            .where(
-                BotDecisionJobRecord.workspace_id == workspace_id,
-                BotDecisionJobRecord.bot_id == bot_id,
-                BotDecisionJobRecord.account_id == account_id,
-                BotDecisionJobRecord.status == _PENDING,
+        query = select(BotDecisionJobRecord).where(
+            BotDecisionJobRecord.workspace_id == workspace_id,
+            BotDecisionJobRecord.bot_id == bot_id,
+            BotDecisionJobRecord.account_id == account_id,
+            BotDecisionJobRecord.status == _PENDING,
+        )
+        if now is not None:
+            query = query.where(
+                or_(
+                    BotDecisionJobRecord.next_attempt_at.is_(None),
+                    BotDecisionJobRecord.next_attempt_at <= now,
+                )
             )
-            .order_by(BotDecisionJobRecord.evaluated_at, BotDecisionJobRecord.id)
-            .limit(limit)
+        rows = await self._session.scalars(
+            query.order_by(BotDecisionJobRecord.evaluated_at, BotDecisionJobRecord.id).limit(limit)
         )
         return tuple(restore_job(row) for row in rows.all())
+
+    async def find_job(self, job: BotDecisionJob, *, lock: bool) -> BotDecisionJobRecord:
+        """Đọc hàng job trong scope bot; `lock=True` chỉ dùng cho transaction ghi ngắn."""
+        query = select(BotDecisionJobRecord).where(
+            BotDecisionJobRecord.workspace_id == job.workspace_id,
+            BotDecisionJobRecord.bot_id == job.bot_id,
+            BotDecisionJobRecord.id == job.job_id,
+        )
+        row = await self._session.scalar(query.with_for_update() if lock else query)
+        if row is None:
+            raise BotDecisionConflict("Không tìm thấy job trong scope bot hiện tại.")
+        _same_job(row, job)
+        return row
 
     async def decision_for_job(self, job: BotDecisionJob) -> BotDecision | None:
         """Quyết định đã lưu của job (hash và scope được xác minh)."""
@@ -236,37 +263,79 @@ class PostgresSignalDecisionStore:
             return await BotDecisionRepository(uow.session).insert_job(job)
 
     async def pending_jobs(
-        self, *, workspace_id: UUID, account_id: UUID, limit: int
+        self, *, workspace_id: UUID, account_id: UUID, limit: int, now: datetime | None = None
     ) -> tuple[BotDecisionJob, ...]:
         async with UnitOfWork(self._sessions, workspace_id=workspace_id) as uow:
             bot_id = await uow.bind_account(account_id)
             return await BotDecisionRepository(uow.session).pending_jobs(
-                workspace_id=workspace_id, bot_id=bot_id, account_id=account_id, limit=limit
+                workspace_id=workspace_id,
+                bot_id=bot_id,
+                account_id=account_id,
+                limit=limit,
+                now=now,
             )
 
     async def complete_job(self, job: BotDecisionJob, evaluate: DecisionEvaluator) -> BotDecision:
-        """Khóa job, đánh giá đúng một lần, ghi quyết định và đánh dấu COMPLETED cùng commit."""
+        """Đọc job (không khóa) → đánh giá ngoài transaction → khóa ngắn, ghi và COMPLETED.
+
+        MB05.8: không giữ `FOR UPDATE` quanh đánh giá (snapshot provider có thể chậm); đánh giá
+        thuần và tất định nên hai worker cùng đánh giá cho cùng hash, transaction ghi kiểm lại
+        trạng thái dưới khóa và trả quyết định đã lưu nếu job vừa được hoàn tất.
+        """
         async with UnitOfWork(self._sessions, workspace_id=job.workspace_id) as uow:
             await _bind_job_bot(uow, job.account_id, job.bot_id)
             repository = BotDecisionRepository(uow.session)
-            record = await repository.lock_job(job)
+            record = await repository.find_job(job, lock=False)
             if record.status == _COMPLETED:
-                stored = await repository.decision_for_job(job)
-                if stored is None:
-                    raise BotDecisionConflict("Job đã COMPLETED nhưng thiếu quyết định.")
-                return stored
+                return await _stored_decision(repository, job)
+            if record.status != _PENDING:
+                raise BotDecisionConflict("Job không còn PENDING (DEAD) nên không được xử lý.")
             evidence = await SharedSignalEvidenceRepository(uow.session).get(
                 workspace_id=job.workspace_id, evidence_id=job.evidence_id
             )
             if evidence is None or evidence.evidence_hash != job.evidence_hash:
                 raise EvidenceScopeError("Evidence của job không tồn tại hoặc sai hash.")
-            decision = await evaluate(evidence, job)
-            if decision.job_id != job.job_id or decision.idempotency_key != job.idempotency_key:
-                raise BotDecisionConflict("Quyết định không thuộc job đang xử lý.")
+        decision = await evaluate(evidence, job)
+        if decision.job_id != job.job_id or decision.idempotency_key != job.idempotency_key:
+            raise BotDecisionConflict("Quyết định không thuộc job đang xử lý.")
+        async with UnitOfWork(self._sessions, workspace_id=job.workspace_id) as uow:
+            await _bind_job_bot(uow, job.account_id, job.bot_id)
+            repository = BotDecisionRepository(uow.session)
+            record = await repository.find_job(job, lock=True)
+            if record.status == _COMPLETED:
+                return await _stored_decision(repository, job)
+            if record.status != _PENDING:
+                raise BotDecisionConflict("Job không còn PENDING (DEAD) nên không được xử lý.")
             stored_decision = await repository.insert_decision(decision)
             record.status = _COMPLETED
             record.completed_at = self._clock()
             return stored_decision
+
+    async def record_job_failure(
+        self, job: BotDecisionJob, *, error_code: str, now: datetime, policy: JobRetryPolicy
+    ) -> str:
+        """Ghi lần thử lỗi trong transaction riêng; quá ngưỡng -> DEAD + audit (ruling 16)."""
+        async with UnitOfWork(self._sessions, workspace_id=job.workspace_id) as uow:
+            await _bind_job_bot(uow, job.account_id, job.bot_id)
+            record = await BotDecisionRepository(uow.session).find_job(job, lock=True)
+            if record.status != _PENDING:
+                return str(record.status)
+            attempts = int(record.attempts or 0) + 1
+            record.attempts = attempts
+            record.last_error_code = error_code[:80]
+            if attempts >= policy.max_attempts:
+                record.status = _DEAD
+                record.next_attempt_at = None
+                uow.record_audit(
+                    action="bot.decision_job.dead",
+                    target_type="bot_decision_job",
+                    target_id=job.job_id,
+                    reason=error_code[:80],
+                    after_state={"attempts": attempts},
+                )
+                return _DEAD
+            record.next_attempt_at = now + timedelta(seconds=policy.delay_seconds(attempts))
+            return _PENDING
 
     async def claim_evidence_events(
         self,
@@ -387,9 +456,14 @@ def restore_decision(row: BotDecisionRecord) -> BotDecision:
 
 
 def _same_job(row: BotDecisionJobRecord, job: BotDecisionJob) -> BotDecisionJob:
-    stored = restore_job(row)
-    if stored != job:
-        raise BotDecisionConflict("Job cùng key nhưng khác evidence/context/thời điểm đánh giá.")
+    """Job cùng key: chỉ khác `evaluated_at` trả job đã ghim (ruling 17); khác nữa: conflict."""
+    return reconcile_existing_job(restore_job(row), job)
+
+
+async def _stored_decision(repository: BotDecisionRepository, job: BotDecisionJob) -> BotDecision:
+    stored = await repository.decision_for_job(job)
+    if stored is None:
+        raise BotDecisionConflict("Job đã COMPLETED nhưng thiếu quyết định.")
     return stored
 
 

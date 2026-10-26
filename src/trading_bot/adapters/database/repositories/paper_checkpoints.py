@@ -9,6 +9,7 @@ from uuid import UUID, uuid4
 from sqlalchemy import select, text
 
 from trading_bot.adapters.database.bot_scope import bind_account_bot
+from trading_bot.adapters.database.models.bot_runtime_entities import BotRuntimeLeaseRecord
 from trading_bot.adapters.database.models.entities import TradingAccount
 from trading_bot.adapters.database.models.paper_entities import (
     FillRecord,
@@ -78,6 +79,9 @@ class PaperCheckpointRepository:
                 or existing.event_at != occurred_at
             ):
                 raise PaperCheckpointConflict("Checkpoint event key đã có payload khác.")
+            # M2: nhánh replay không INSERT nên trigger fence không chạy; tự kiểm fence ở DB
+            # (cùng điều kiện trigger) để writer đã mất lease không "thành công" giả.
+            await _assert_replay_fence(uow, account_id=account_id, fencing_token=fencing_token)
             latest = await self.load_latest(uow, account_id=account_id)
             if latest is None:
                 raise PaperCheckpointConflict("Không tìm thấy latest account checkpoint.")
@@ -269,6 +273,36 @@ class PaperCheckpointRepository:
             costs=costs,
             reservations=reservations,
         )
+
+
+async def _assert_replay_fence(
+    uow: UnitOfWork, *, account_id: UUID, fencing_token: FencingToken | None
+) -> None:
+    """Fence DB cho replay checkpoint: `FOR SHARE` hàng lease, token hiện hành, chưa hết hạn.
+
+    Token None chỉ hợp lệ khi bot chưa từng có lease (replay genesis của seed).
+    """
+    lease = await uow.session.scalar(
+        select(BotRuntimeLeaseRecord)
+        .where(
+            BotRuntimeLeaseRecord.workspace_id == uow.workspace_id,
+            BotRuntimeLeaseRecord.bot_id == uow.session.info.get("bot_id"),
+        )
+        .with_for_update(read=True)
+    )
+    if fencing_token is None:
+        if lease is not None:
+            raise PaperCheckpointConflict("FENCING_TOKEN_REQUIRED")
+        return
+    now = await uow.session.scalar(text("SELECT clock_timestamp()"))
+    if (
+        lease is None
+        or lease.account_id != account_id
+        or int(lease.fencing_token) != int(fencing_token)
+    ):
+        raise PaperCheckpointConflict("STALE_FENCING_TOKEN")
+    if not isinstance(now, datetime) or lease.expires_at <= now:
+        raise PaperCheckpointConflict("LEASE_EXPIRED")
 
 
 def _validate_request(

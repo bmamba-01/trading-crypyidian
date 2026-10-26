@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Iterator, Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any, Protocol
 from uuid import UUID
@@ -16,14 +16,26 @@ from sqlalchemy import select
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from trading_bot.adapters.database.models.entities import StrategyRelease, WorkspaceSettingsVersion
+from trading_bot.adapters.database.models.bot_entities import BotInstance
+from trading_bot.adapters.database.models.entities import (
+    StrategyRelease,
+    TradingAccount,
+    WorkspaceSettingsVersion,
+)
 from trading_bot.adapters.database.models.paper_entities import OrderIntentRecord, TradeRecord
+from trading_bot.adapters.database.repositories.account_activity_incidents import (
+    AccountActivityIncidentRepository,
+)
 from trading_bot.adapters.database.repositories.bot_config_versions import (
     BotConfigVersionRepository,
 )
+from trading_bot.adapters.database.repositories.bot_runtime_controls import read_runtime_control
 from trading_bot.adapters.database.repositories.bot_runtime_leases import (
     RuntimeFenceGuard,
     runtime_db_reason,
+)
+from trading_bot.adapters.database.repositories.bot_runtime_states import (
+    BotRuntimeStateRepository,
 )
 from trading_bot.adapters.database.repositories.risk_reservations import (
     RiskReservationRepository,
@@ -63,9 +75,17 @@ from trading_bot.config.bot_settings import BotConfigOverlay, overlay_hash
 from trading_bot.config.workspace_settings import PublishedWorkspaceSettings, WorkspaceSettings
 from trading_bot.domain.execution.paper import PaperBar
 from trading_bot.domain.execution.runtime_control import (
+    BotEntryState,
+    BotReadiness,
+    EntryGate,
+    EntryGateInput,
     FencingToken,
+    RuntimeActivityStatus,
     RuntimeControlError,
+    RuntimeControlSnapshot,
     RuntimeFence,
+    RuntimeOperation,
+    WorkspaceKillState,
 )
 from trading_bot.domain.risk.engine import RiskState
 from trading_bot.domain.risk.planner import (
@@ -74,6 +94,8 @@ from trading_bot.domain.risk.planner import (
     PlannerSettings,
     PlanRejected,
 )
+from trading_bot.domain.risk.reservations import ReservationReleaseReason
+from trading_bot.domain.risk.workspace_budget import BudgetConflictError
 from trading_bot.domain.strategy.contracts import DecisionSnapshot, NoTrade, StrategySelection
 from trading_bot.domain.strategy.registry import StrategyRegistry
 
@@ -170,6 +192,33 @@ class PaperDecisionApplicationResult:
     risk_reservation_id: UUID | None = None
     single_account_risk_decision_id: UUID | None = None
     duplicate: bool = False
+    # Ngân sách workspace/account/bot MB-04 từ chối entry (quyết định vẫn được lưu).
+    entry_block_reason: str | None = None
+    runtime_control_revisions: Mapping[str, int] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class EntryGateState:
+    """State runtime đọc trong transaction entry (ruling 4): readiness, activity, incident."""
+
+    account_enabled: bool
+    bot_enabled: bool
+    readiness: BotReadiness | None
+    activity_status: RuntimeActivityStatus | None
+    activity_checked_at: datetime | None
+    open_incident: bool
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeControlApplyResult:
+    """Kết quả áp control cho một bot; cờ phục vụ readiness (không làm căn cứ entry)."""
+
+    bot_paused: bool
+    workspace_killed: bool
+    changed: bool
+    revisions: Mapping[str, int]
+    cancelled_intent_ids: tuple[str, ...] = ()
+    released_reservation_intent_ids: tuple[UUID, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -237,6 +286,11 @@ class PaperRuntimeApplicationService:
         bot_config_loader: BotConfigLoader | None = None,
         fence_guard_factory: Any = RuntimeFenceGuard,
         lease_lost_callback: Callable[[UUID, str], None] | None = None,
+        control_reader: Callable[..., Awaitable[RuntimeControlSnapshot]] = read_runtime_control,
+        gate_state_loader: Callable[..., Awaitable[EntryGateState]] | None = None,
+        state_repository_factory: Any = BotRuntimeStateRepository,
+        clock: Callable[[], datetime] | None = None,
+        activity_max_age: timedelta = timedelta(minutes=10),
     ) -> None:
         self._workspace_id = workspace_id
         self._sessions = sessions
@@ -252,6 +306,11 @@ class PaperRuntimeApplicationService:
         self._bot_config_loader = bot_config_loader or load_runtime_bot_config
         self._fence_guard_factory = fence_guard_factory
         self._lease_lost_callback = lease_lost_callback
+        self._control_reader = control_reader
+        self._gate_state_loader = gate_state_loader or load_entry_gate_state
+        self._state_repository_factory = state_repository_factory
+        self._clock = clock or (lambda: datetime.now(UTC))
+        self._activity_max_age = activity_max_age
         self._invalid_accounts: set[UUID] = set()
 
     def is_available_for(self, account_id: UUID) -> bool:
@@ -265,6 +324,26 @@ class PaperRuntimeApplicationService:
     @property
     def is_ready(self) -> bool:
         return not self._invalid_accounts
+
+    def runtime_account(self, account_id: UUID) -> PaperRuntimeAccount | None:
+        """Account đang công bố (None khi STANDBY/không READY)."""
+        if account_id in self._invalid_accounts:
+            return None
+        return self._active_accounts.get(account_id)
+
+    def gateway_view(self) -> Mapping[UUID, Any]:
+        """View sống account -> gateway (đổi theo publish/remove), cho activity adapter PAPER."""
+        return _GatewayView(self._active_accounts)
+
+    def remove_account(self, account_id: UUID) -> None:
+        """Supervisor mất lease: gỡ gateway, không ảnh hưởng bot khác."""
+        self._active_accounts.pop(account_id, None)
+
+    def publish_account(self, account: PaperRuntimeAccount) -> None:
+        """Supervisor re-acquire lease: thay instance mới (token mới, gateway đã hydrate lại)."""
+        _account_fence(account)
+        self._active_accounts[account.account_id] = account
+        self._invalid_accounts.discard(account.account_id)
 
     async def evaluate_and_submit(
         self, command: PaperDecisionCommand
@@ -288,6 +367,9 @@ class PaperRuntimeApplicationService:
                     self._workspace_id
                 )
                 await self._require_fence(uow, account)
+                # Ruling 27: đọc lại control + state trong chính transaction entry, sau L1.
+                control = await self._read_control(uow, account)
+                await self._enforce_entry_gate(uow, account, control)
                 published, profile = await self._load_published_profile(
                     uow, account=account, as_of=command.evaluated_at
                 )
@@ -405,23 +487,15 @@ class PaperRuntimeApplicationService:
                 evaluation = await risk_repository.record_evaluation(
                     plan=plan, decision=risk_decision
                 )
-                workspace_reservation = await self._workspace_risk_coordinator_factory(
-                    uow.session
-                ).reserve(
-                    ReservationRequest(
-                        workspace_id=self._workspace_id,
-                        bot_id=account.bot_id,
-                        account_id=command.account_id,
-                        idempotency_key=idempotency_key,
-                        requested_risk_usdt=risk_decision.requested_risk,
-                        requested_notional=risk_decision.requested_notional,
-                        requested_initial_margin=risk_decision.requested_initial_margin,
-                        as_of=command.evaluated_at,
-                        expires_at=risk_decision.candidate_expires_at,
-                        symbol=plan.symbol,
-                        plan_hash=plan.plan_hash,
-                        candidate_id=plan.candidate_id,
-                    ),
+                control_revisions = control.revisions()
+                workspace_reservation = await self._reserve_budget(
+                    uow,
+                    account=account,
+                    plan=plan,
+                    risk_decision=risk_decision,
+                    idempotency_key=idempotency_key,
+                    evaluated_at=command.evaluated_at,
+                    control_revisions=control_revisions,
                 )
                 if not workspace_reservation.approved:
                     denied_decision = DecisionCycleResult(
@@ -435,6 +509,9 @@ class PaperRuntimeApplicationService:
                         decision=denied_decision,
                         idempotency_key=idempotency_key,
                         risk_decision_id=workspace_reservation.decision_id,
+                        single_account_risk_decision_id=evaluation.risk_decision_id,
+                        entry_block_reason=str(workspace_reservation.reason_code),
+                        runtime_control_revisions=control_revisions,
                     )
                 if (
                     workspace_reservation.decision_id is None
@@ -454,6 +531,7 @@ class PaperRuntimeApplicationService:
                         "risk_decision_id": str(workspace_reservation.decision_id),
                         "single_account_risk_decision_id": str(evaluation.risk_decision_id),
                         "plan_hash": plan.plan_hash,
+                        "runtime_control_revisions": dict(control_revisions),
                     }
                     | bot_lineage
                 )
@@ -478,6 +556,7 @@ class PaperRuntimeApplicationService:
                     risk_decision_id=workspace_reservation.decision_id,
                     risk_reservation_id=workspace_reservation.reservation_id,
                     single_account_risk_decision_id=evaluation.risk_decision_id,
+                    runtime_control_revisions=control_revisions,
                 )
         except PaperRuntimeApplicationError:
             raise
@@ -486,6 +565,8 @@ class PaperRuntimeApplicationService:
             raise PaperRuntimeApplicationError("PAPER_PUBLISH_FAILED") from None
         except PaperLifecycleConflict, SettingsVersionConflict, ExecutionProfileResolutionError:
             raise PaperRuntimeApplicationError("PAPER_COMMAND_REJECTED") from None
+        except BudgetConflictError:
+            raise PaperRuntimeApplicationError("PAPER_IDEMPOTENCY_CONFLICT") from None
         except DBAPIError as error:
             self._raise_if_fence_rejected(command.account_id, error)
             raise
@@ -516,6 +597,18 @@ class PaperRuntimeApplicationService:
                     or intent.symbol != command.bar.symbol
                 ):
                     raise PaperRuntimeApplicationError("PAPER_INTENT_SCOPE_MISMATCH")
+                # Ruling 6/27: đọc lại control trong transaction fill; bot bị pause/kill thì hủy
+                # phần chưa khớp (và giải phóng reservation chưa fill) thay vì khớp.
+                control = await self._read_control(uow, account)
+                if _entries_blocked(control):
+                    applied = await self._apply_pause_in_uow(uow, account, control)
+                    order = applied.gateway.order(command.paper_intent_id)
+                    return EntryLifecycleResult(
+                        order=order,
+                        position=applied.gateway.position(command.paper_intent_id),
+                        trade_id=None,
+                        persisted_fill_count=0,
+                    )
                 return await account.coordinator.apply_entry_market_event(
                     uow,
                     account_id=command.account_id,
@@ -625,6 +718,257 @@ class PaperRuntimeApplicationService:
             self._raise_if_fence_rejected(command.account_id, error)
             raise
 
+    async def apply_runtime_control(self, account_id: UUID) -> RuntimeControlApplyResult:
+        """Áp control đã commit (pause/kill hoặc resume/release) trong command có fence.
+
+        Kiểm nhanh không khóa trước; chỉ khi revision/cờ pause lệch mới lấy L1 → fence →
+        (L2 → L3 → L4) để hủy lệnh chưa khớp, giải phóng reservation và append checkpoint.
+        """
+        account = self._require_account(account_id)
+        if self._sessions is None:
+            raise PaperRuntimeApplicationError("DATABASE_UNAVAILABLE")
+        async with self._unit_of_work_factory(
+            self._sessions, workspace_id=self._workspace_id, bot_id=account.bot_id
+        ) as uow:
+            control = await self._read_control(uow, account)
+            state = await self._state_repository_factory(uow.session).get(
+                workspace_id=self._workspace_id, bot_id=account.bot_id
+            )
+        if not self._control_change_needed(account, control, state):
+            return _apply_result(control, changed=False)
+        try:
+            async with self._unit_of_work_factory(
+                self._sessions, workspace_id=self._workspace_id, bot_id=account.bot_id
+            ) as uow:
+                await self._settings_repository_factory(uow.session).lock_workspace(
+                    self._workspace_id
+                )
+                await self._require_fence(uow, account)
+                control = await self._read_control(uow, account)
+                state = await self._state_repository_factory(uow.session).get(
+                    workspace_id=self._workspace_id, bot_id=account.bot_id
+                )
+                if not self._control_change_needed(account, control, state):
+                    return _apply_result(control, changed=False)
+                if _entries_blocked(control):
+                    applied = await self._apply_pause_in_uow(uow, account, control)
+                else:
+                    applied = await self._apply_resume_in_uow(uow, account, control)
+                return _apply_result(
+                    control,
+                    changed=True,
+                    cancelled=applied.cancelled_intent_ids,
+                    released=applied.released_reservation_intent_ids,
+                )
+        except PaperRuntimeApplicationError:
+            raise
+        except AfterCommitCallbackError:
+            self._invalidate_account(account_id, "PAPER_PUBLISH_FAILED")
+            raise PaperRuntimeApplicationError("PAPER_PUBLISH_FAILED") from None
+        except PaperLifecycleConflict:
+            raise PaperRuntimeApplicationError("PAPER_COMMAND_REJECTED") from None
+        except DBAPIError as error:
+            self._raise_if_fence_rejected(account_id, error)
+            raise
+
+    async def expire_reservations(self, account_id: UUID, *, as_of: datetime) -> int:
+        """Giải phóng reservation RESERVED quá hạn chưa gắn intent (command có fence, C6)."""
+        account = self._require_account(account_id)
+        if as_of.tzinfo is None or as_of.utcoffset() is None:
+            raise PaperRuntimeApplicationError("EXPIRY_TIME_INVALID")
+        if self._sessions is None:
+            raise PaperRuntimeApplicationError("DATABASE_UNAVAILABLE")
+        try:
+            async with self._unit_of_work_factory(
+                self._sessions, workspace_id=self._workspace_id, bot_id=account.bot_id
+            ) as uow:
+                await self._settings_repository_factory(uow.session).lock_workspace(
+                    self._workspace_id
+                )
+                await self._require_fence(uow, account)
+                coordinator = self._workspace_risk_coordinator_factory(uow.session)
+                await coordinator.acquire_locks(self._workspace_id, [account.account_id])
+                expired: int = await self._risk_repository_factory(uow.session).expire_due(
+                    workspace_id=self._workspace_id, account_id=account.account_id, now=as_of
+                )
+                return expired
+        except PaperRuntimeApplicationError:
+            raise
+        except DBAPIError as error:
+            self._raise_if_fence_rejected(account_id, error)
+            raise
+
+    def _control_change_needed(
+        self, account: PaperRuntimeAccount, control: RuntimeControlSnapshot, state: Any
+    ) -> bool:
+        revisions = control.revisions()
+        applied = (
+            (
+                int(getattr(state, "applied_workspace_control_revision", 0) or 0),
+                int(getattr(state, "applied_bot_control_revision", 0) or 0),
+            )
+            if state is not None
+            else (0, 0)
+        )
+        paused = bool(getattr(account.gateway, "entries_paused", False))
+        return applied != (revisions["workspace"], revisions["bot"]) or paused != (
+            _entries_blocked(control)
+        )
+
+    async def _apply_pause_in_uow(
+        self, uow: UnitOfWork, account: PaperRuntimeAccount, control: RuntimeControlSnapshot
+    ) -> Any:
+        """Một transaction có fence: hủy order chưa khớp, giải phóng reservation, checkpoint."""
+        revisions = control.revisions()
+        coordinator = self._workspace_risk_coordinator_factory(uow.session)
+        await coordinator.acquire_locks(self._workspace_id, [account.account_id])
+
+        async def release(ledger_intent_id: UUID) -> None:
+            intent = await _load_scoped_intent(
+                uow, account_id=account.account_id, intent_id=ledger_intent_id
+            )
+            if intent is None:
+                raise PaperRuntimeApplicationError("PAPER_INTENT_SCOPE_MISMATCH")
+            await coordinator.release_reservation(
+                workspace_id=self._workspace_id,
+                account_id=account.account_id,
+                reservation_id=intent.risk_reservation_id,
+                reason=ReservationReleaseReason.CANCELLED_NO_FILL,
+            )
+
+        occurred_at = self._clock()
+        applied = await account.coordinator.apply_entry_pause(
+            uow,
+            account_id=account.account_id,
+            event_key=f"control:pause:{revisions['workspace']}:{revisions['bot']}",
+            occurred_at=occurred_at,
+            fencing_token=_require_token(account),
+            release_reservation=release,
+        )
+        await self._record_applied_control(uow, account, control, occurred_at, paused=True)
+        return applied
+
+    async def _apply_resume_in_uow(
+        self, uow: UnitOfWork, account: PaperRuntimeAccount, control: RuntimeControlSnapshot
+    ) -> Any:
+        revisions = control.revisions()
+        occurred_at = self._clock()
+        applied = await account.coordinator.apply_entry_resume(
+            uow,
+            account_id=account.account_id,
+            event_key=f"control:resume:{revisions['workspace']}:{revisions['bot']}",
+            occurred_at=occurred_at,
+            fencing_token=_require_token(account),
+        )
+        await self._record_applied_control(uow, account, control, occurred_at, paused=False)
+        return applied
+
+    async def _record_applied_control(
+        self,
+        uow: UnitOfWork,
+        account: PaperRuntimeAccount,
+        control: RuntimeControlSnapshot,
+        occurred_at: datetime,
+        *,
+        paused: bool,
+    ) -> None:
+        revisions = control.revisions()
+        repository = self._state_repository_factory(uow.session)
+        state = await repository.get(workspace_id=self._workspace_id, bot_id=account.bot_id)
+        await repository.upsert(
+            fence=_account_fence(account),
+            workspace_id=self._workspace_id,
+            bot_id=account.bot_id,
+            account_id=account.account_id,
+            readiness=BotReadiness.READY,
+            reason_code=getattr(state, "reason_code", None) if state is not None else None,
+            heartbeat_at=occurred_at,
+            applied_bot_control_revision=revisions["bot"],
+            applied_workspace_control_revision=revisions["workspace"],
+        )
+        record_audit = getattr(uow, "record_audit", None)
+        if record_audit is not None:
+            record_audit(
+                action="bot.runtime.pause_applied" if paused else "bot.runtime.resume_applied",
+                target_type="bot_instance",
+                target_id=account.bot_id,
+                reason=_control_reason(control),
+                after_state={"runtime_control_revisions": dict(revisions)},
+            )
+
+    async def _read_control(
+        self, uow: UnitOfWork, account: PaperRuntimeAccount
+    ) -> RuntimeControlSnapshot:
+        try:
+            return await self._control_reader(
+                uow.session, workspace_id=self._workspace_id, bot_id=account.bot_id
+            )
+        except RuntimeControlError:
+            raise PaperRuntimeApplicationError("RUNTIME_CONTROL_UNAVAILABLE") from None
+
+    async def _enforce_entry_gate(
+        self, uow: UnitOfWork, account: PaperRuntimeAccount, control: RuntimeControlSnapshot
+    ) -> None:
+        """Mọi điều kiện entry của ruling 4 đọc trong transaction; chặn thì không ghi gì."""
+        state = await self._gate_state_loader(uow, account=account, workspace_id=self._workspace_id)
+        activity = state.activity_status
+        if activity is RuntimeActivityStatus.VERIFIED and (
+            state.activity_checked_at is None
+            or self._clock() - state.activity_checked_at > self._activity_max_age
+        ):
+            activity = RuntimeActivityStatus.UNVERIFIED
+        decision = EntryGate.evaluate(
+            EntryGateInput(
+                account_enabled=state.account_enabled,
+                bot_enabled=state.bot_enabled,
+                workspace_kill_state=control.workspace_kill_state,
+                bot_entry_state=control.bot_entry_state,
+                readiness=state.readiness or BotReadiness.STARTING,
+                lease_held=True,
+                open_incident=state.open_incident,
+                activity_status=activity,
+                control_available=True,
+            ),
+            RuntimeOperation.NEW_ENTRY,
+        )
+        if not decision.allowed and decision.reason is not None:
+            raise PaperRuntimeApplicationError(decision.reason.value)
+
+    async def _reserve_budget(
+        self,
+        uow: UnitOfWork,
+        *,
+        account: PaperRuntimeAccount,
+        plan: Any,
+        risk_decision: Any,
+        idempotency_key: str,
+        evaluated_at: datetime,
+        control_revisions: Mapping[str, int],
+    ) -> Any:
+        """Đường reservation duy nhất của runtime: `WorkspaceRiskCoordinator.reserve` (MB-04).
+
+        Caller đã giữ L1 + fence và đọc lại control (ruling 27); coordinator lấy L2 → L3, tự nạp
+        lại root/profile/bot overlay và aggregate equity workspace (không nhận trần từ caller),
+        lưu quyết định ngân sách kèm `runtime_control_revisions` rồi mới ghi reservation.
+        """
+        request = ReservationRequest(
+            workspace_id=self._workspace_id,
+            bot_id=account.bot_id,
+            account_id=account.account_id,
+            idempotency_key=idempotency_key,
+            requested_risk_usdt=risk_decision.requested_risk,
+            requested_notional=risk_decision.requested_notional,
+            requested_initial_margin=risk_decision.requested_initial_margin,
+            as_of=evaluated_at.astimezone(UTC),
+            expires_at=risk_decision.candidate_expires_at.astimezone(UTC),
+            symbol=plan.symbol,
+            plan_hash=plan.plan_hash,
+            candidate_id=str(plan.candidate_id),
+        )
+        return await self._workspace_risk_coordinator_factory(uow.session).reserve(
+            request, evidence={"runtime_control_revisions": dict(control_revisions)}
+        )
+
     async def _require_fence(self, uow: UnitOfWork, account: PaperRuntimeAccount) -> None:
         """Fence application (ruling 9a): ngay sau L1, trước mọi đọc/ghi state và L2–L4.
 
@@ -632,11 +976,12 @@ class PaperRuntimeApplicationService:
         `active_accounts`), không ảnh hưởng bot khác; UoW rollback nên không có ghi nào.
         """
         try:
+            fence = _account_fence(account)
             await self._fence_guard_factory(uow.session).require(
                 workspace_id=self._workspace_id,
                 bot_id=account.bot_id,
                 account_id=account.account_id,
-                fence=_account_fence(account),
+                fence=fence,
             )
         except RuntimeControlError as error:
             if error.reason_code in LEASE_LOSS_REASONS:
@@ -1034,15 +1379,110 @@ class PaperRuntimeApplicationService:
         return PaperDecisionCycle(StrategyRegistry(), TradePlanner(), RiskEngine(), gateway)
 
 
-def _account_fence(account: PaperRuntimeAccount) -> RuntimeFence | None:
-    """Fence của account đã bootstrap; None ở chế độ chuyển tiếp trước registry MB05.5."""
-    fence = getattr(account, "fence", None)
-    return fence if isinstance(fence, RuntimeFence) else None
+def _account_fence(account: PaperRuntimeAccount) -> RuntimeFence:
+    """Fence bắt buộc của account đã bootstrap (MB05.5 đóng chế độ chuyển tiếp không token)."""
+    try:
+        fence = getattr(account, "fence", None)
+    except RuntimeControlError:
+        fence = None
+    if not isinstance(fence, RuntimeFence):
+        raise RuntimeControlError("FENCING_TOKEN_REQUIRED")
+    return fence
 
 
-def _account_token(account: PaperRuntimeAccount) -> FencingToken | None:
-    fence = _account_fence(account)
-    return fence.fencing_token if fence is not None else None
+def _account_token(account: PaperRuntimeAccount) -> FencingToken:
+    return _account_fence(account).fencing_token
+
+
+def _require_token(account: PaperRuntimeAccount) -> FencingToken:
+    return _account_token(account)
+
+
+def _entries_blocked(control: RuntimeControlSnapshot) -> bool:
+    return (
+        control.workspace_kill_state is WorkspaceKillState.KILLED
+        or control.bot_entry_state is BotEntryState.PAUSED
+    )
+
+
+def _control_reason(control: RuntimeControlSnapshot) -> str:
+    if control.workspace_kill_state is WorkspaceKillState.KILLED:
+        return "WORKSPACE_KILLED"
+    if control.bot_entry_state is BotEntryState.PAUSED:
+        return "BOT_PAUSED"
+    return "ENTRIES_ENABLED"
+
+
+def _apply_result(
+    control: RuntimeControlSnapshot,
+    *,
+    changed: bool,
+    cancelled: tuple[str, ...] = (),
+    released: tuple[UUID, ...] = (),
+) -> RuntimeControlApplyResult:
+    return RuntimeControlApplyResult(
+        bot_paused=control.bot_entry_state is BotEntryState.PAUSED,
+        workspace_killed=control.workspace_kill_state is WorkspaceKillState.KILLED,
+        changed=changed,
+        revisions=control.revisions(),
+        cancelled_intent_ids=cancelled,
+        released_reservation_intent_ids=released,
+    )
+
+
+class _GatewayView(Mapping[UUID, Any]):
+    """Mapping chỉ đọc account -> gateway trên dict account đang công bố (không sao chép)."""
+
+    def __init__(self, accounts: Mapping[UUID, PaperRuntimeAccount]) -> None:
+        self._accounts = accounts
+
+    def __getitem__(self, key: UUID) -> Any:
+        return self._accounts[key].gateway
+
+    def __iter__(self) -> Iterator[UUID]:
+        return iter(self._accounts)
+
+    def __len__(self) -> int:
+        return len(self._accounts)
+
+
+async def load_entry_gate_state(
+    uow: UnitOfWork, *, account: PaperRuntimeAccount, workspace_id: UUID
+) -> EntryGateState:
+    """Đọc trạng thái hành chính, readiness/activity và incident OPEN trong transaction entry."""
+    session = uow.session
+    account_status = await session.scalar(
+        select(TradingAccount.status).where(
+            TradingAccount.workspace_id == workspace_id,
+            TradingAccount.id == account.account_id,
+        )
+    )
+    bot_status = await session.scalar(
+        select(BotInstance.status).where(
+            BotInstance.workspace_id == workspace_id, BotInstance.id == account.bot_id
+        )
+    )
+    state = await BotRuntimeStateRepository(session).get(
+        workspace_id=workspace_id, bot_id=account.bot_id
+    )
+    incidents = await AccountActivityIncidentRepository(session).list_open(
+        workspace_id=workspace_id, bot_id=account.bot_id
+    )
+    readiness = BotReadiness(state.readiness) if state is not None else None
+    activity = (
+        RuntimeActivityStatus(state.activity_status)
+        if state is not None and state.activity_status
+        else None
+    )
+    return EntryGateState(
+        account_enabled=account_status == "ENABLED",
+        bot_enabled=bot_status == "ENABLED",
+        readiness=readiness,
+        activity_status=activity,
+        activity_checked_at=state.activity_checked_at if state is not None else None,
+        open_incident=bool(incidents)
+        or (state is not None and state.reason_code == "EXTERNAL_ACTIVITY_UNRECONCILED"),
+    )
 
 
 async def _load_scoped_intent(

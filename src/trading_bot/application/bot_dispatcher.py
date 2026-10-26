@@ -269,6 +269,69 @@ class BotDecisionJob:
         )
 
 
+def reconcile_existing_job(stored: BotDecisionJob, requested: BotDecisionJob) -> BotDecisionJob:
+    """Job đã có cùng key (ruling 17): chỉ khác `evaluated_at` thì trả job cũ (ack).
+
+    `evaluated_at` được ghim từ event đầu tiên; retry chỉ khác mốc thời gian không phải job mới
+    và không phải conflict (trước MB05.8 nó làm event bị DEAD). Khác evidence/context là
+    `BotDecisionConflict` (fail-closed).
+    """
+    if (
+        stored.job_id,
+        stored.evidence_id,
+        stored.evidence_hash,
+        stored.context.context_hash,
+    ) != (
+        requested.job_id,
+        requested.evidence_id,
+        requested.evidence_hash,
+        requested.context.context_hash,
+    ) or stored.context != requested.context:
+        raise BotDecisionConflict("Job cùng key nhưng khác evidence/context đã ghim.")
+    return stored
+
+
+@dataclass(frozen=True, slots=True)
+class JobRetryPolicy:
+    """Số lần thử và backoff có trần cho job lỗi (mô hình dead-letter, ruling 16)."""
+
+    max_attempts: int = 5
+    base_delay_seconds: int = 30
+    max_delay_seconds: int = 900
+
+    def __post_init__(self) -> None:
+        if (
+            self.max_attempts < 1
+            or self.base_delay_seconds < 1
+            or self.max_delay_seconds < self.base_delay_seconds
+        ):
+            raise ValueError("JobRetryPolicy không hợp lệ.")
+
+    def delay_seconds(self, attempt: int) -> int:
+        """Exponential backoff có trần: base * 2^(attempt-1) nhưng không vượt max."""
+        if attempt < 1:
+            raise ValueError("attempt phải >= 1.")
+        if attempt - 1 >= (self.max_delay_seconds // self.base_delay_seconds).bit_length():
+            return self.max_delay_seconds
+        return min(self.base_delay_seconds << (attempt - 1), self.max_delay_seconds)
+
+
+_SAFE_CODE = re.compile(r"^[A-Z][A-Z0-9_]{0,79}$")
+
+
+def job_error_code(error: BaseException) -> str:
+    """Mã lỗi an toàn lưu `last_error_code`: reason code máy đọc hoặc tên lớp dạng SNAKE.
+
+    Không bao giờ lưu thông điệp tự do (có thể chứa dữ liệu nhạy cảm/stack).
+    """
+    code = getattr(error, "reason_code", None) or getattr(error, "code", None)
+    if isinstance(code, str) and _SAFE_CODE.fullmatch(code):
+        return code
+    snake = re.sub(r"(?<!^)(?=[A-Z])", "_", type(error).__name__).upper()
+    snake = re.sub(r"[^A-Z0-9_]", "_", snake)[:80]
+    return snake if _SAFE_CODE.fullmatch(snake) else "JOB_EVALUATION_FAILED"
+
+
 @dataclass(frozen=True, slots=True)
 class BotDecision:
     """Quyết định bất biến của một bot cho một evidence, kèm đầy đủ lineage."""
@@ -433,12 +496,16 @@ class SignalDecisionStore(Protocol):
     async def enqueue_job(self, job: BotDecisionJob) -> BotDecisionJob: ...
 
     async def pending_jobs(
-        self, *, workspace_id: UUID, account_id: UUID, limit: int
+        self, *, workspace_id: UUID, account_id: UUID, limit: int, now: datetime | None = None
     ) -> tuple[BotDecisionJob, ...]: ...
 
     async def complete_job(
         self, job: BotDecisionJob, evaluate: DecisionEvaluator
     ) -> BotDecision: ...
+
+    async def record_job_failure(
+        self, job: BotDecisionJob, *, error_code: str, now: datetime, policy: JobRetryPolicy
+    ) -> str: ...
 
     async def claim_evidence_events(
         self,
@@ -514,13 +581,34 @@ class BotEvidenceDispatcher:
         return await self._store.complete_job(job, self._evaluate)
 
     async def process_pending(
-        self, *, workspace_id: UUID, account_id: UUID, limit: int = 20
+        self,
+        *,
+        workspace_id: UUID,
+        account_id: UUID,
+        limit: int = 20,
+        now: datetime | None = None,
+        policy: JobRetryPolicy | None = None,
     ) -> tuple[BotDecision, ...]:
-        """Xử lý job còn chờ của một bot/account (worker riêng theo bot)."""
+        """Xử lý job còn chờ của một bot/account; poison job không chặn job sau (ruling 16).
+
+        Mỗi job một transaction. Job lỗi được ghi trong transaction riêng (`attempts += 1`,
+        `last_error_code` an toàn, `next_attempt_at` theo backoff có trần); quá ngưỡng thì
+        `DEAD` kèm audit; vòng lặp tiếp tục job kế tiếp.
+        """
+        moment = now or datetime.now(UTC)
+        retry = policy or JobRetryPolicy()
         jobs = await self._store.pending_jobs(
-            workspace_id=workspace_id, account_id=account_id, limit=limit
+            workspace_id=workspace_id, account_id=account_id, limit=limit, now=moment
         )
-        return tuple([await self.process_job(job) for job in jobs])
+        decisions: list[BotDecision] = []
+        for job in jobs:
+            try:
+                decisions.append(await self.process_job(job))
+            except Exception as error:
+                await self._store.record_job_failure(
+                    job, error_code=job_error_code(error), now=moment, policy=retry
+                )
+        return tuple(decisions)
 
     async def dispatch_evidence(
         self,

@@ -131,7 +131,8 @@ async def test_checkpoint_duplicate_is_idempotent_but_conflicting_payload_reject
     existing = _checkpoint(revision=3, key="bar:one", event_hash="b" * 64, snapshot=snapshot)
     existing.account_id = account_id
     existing.workspace_id = workspace_id
-    same_session = FakeSession([_account(), existing, existing])
+    # Replay token None: kiểm "chưa từng có lease" (M2) -> lease None.
+    same_session = FakeSession([_account(), existing, None, existing])
     same_uow = SimpleNamespace(session=same_session, workspace_id=workspace_id)
     result = await PaperCheckpointRepository().append(
         same_uow,  # type: ignore[arg-type]
@@ -174,7 +175,7 @@ async def test_duplicate_historical_event_returns_latest_account_snapshot() -> N
     )
     latest.account_id = account_id
     latest.workspace_id = workspace_id
-    session = FakeSession([_account(), existing, latest])
+    session = FakeSession([_account(), existing, None, latest])
     uow = SimpleNamespace(session=session, workspace_id=workspace_id)
 
     result = await PaperCheckpointRepository().append(

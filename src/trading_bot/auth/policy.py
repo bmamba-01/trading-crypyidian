@@ -23,6 +23,8 @@ class Permission(StrEnum):
     RISK_PROFILE_WRITE = "risk_profile:write"
     RUNTIME_PAUSE = "runtime:pause"
     RUNTIME_RESUME = "runtime:resume"
+    # Kill/release toàn workspace (MB-05 ruling 30): chỉ owner, risk_admin.
+    WORKSPACE_KILL = "workspace:kill"
     MEMBER_WRITE = "member:write"
     SECRET_WRITE = "secret:write"
 
@@ -53,6 +55,7 @@ ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
             Permission.RISK_PROFILE_WRITE,
             Permission.RUNTIME_PAUSE,
             Permission.RUNTIME_RESUME,
+            Permission.WORKSPACE_KILL,
         }
     ),
     Role.ANALYST_REVIEWER: frozenset(

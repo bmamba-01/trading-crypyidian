@@ -103,6 +103,25 @@ def test_shared_evidence_fans_out_to_two_paper_bots_without_duplicates() -> None
         assert len({item["candidate_id"] for item in decisions}) == 2
         assert len({item["idempotency_key"] for item in decisions}) == 2
         assert run_probe("verify", seeded | dispatched) == {"verified": True}
+        # MB05.8: poison job không chặn job sau, backoff rồi DEAD + audit; exclusion lưu bền.
+        assert run_probe("pause_controls", seeded) == {"paused": True}
+        queue = run_probe("runtime_queue", seeded, service="trading-runtime")
+        assert queue["first_round"] == [True], queue
+        assert queue["second_round"] == 0
+        assert queue["after_dead"] == 0
+        assert queue["exclusions"] == sorted(
+            [[seeded["bot_a1"], "BOT_PAUSED"], [seeded["bot_a3"], "BOT_DISABLED"]]
+        ), queue
+        verified = run_probe("verify_queue", seeded | queue)
+        assert verified["poison"] == ["DEAD", 2, "RUNTIME_ERROR"], verified
+        assert verified["healthy"] == "COMPLETED"
+        assert verified["a1_exclusion"] == "BOT_PAUSED"
+        actions = [(row[0], row[1], row[2]) for row in verified["audits"]]
+        assert ("bot.decision_job.dead", queue["poison_job_id"], "RUNTIME_ERROR") in actions
+        excluded = [row for row in actions if row[0] == "bot.fanout.excluded"]
+        assert sorted((row[1], row[2]) for row in excluded) == sorted(
+            [(seeded["bot_a1"], "BOT_PAUSED"), (seeded["bot_a3"], "BOT_DISABLED")]
+        )
         guard = compose(
             "run",
             "--rm",
@@ -113,7 +132,9 @@ def test_shared_evidence_fans_out_to_two_paper_bots_without_duplicates() -> None
             "d2b4f6a8c1e3",
             success=False,
         )
-        assert "MB03_DOWNGRADE_REQUIRES_EXPORT_OF_DECISIONS" in guard.stderr
+        # Downgrade đi qua MB-05 trước MB-03: hàng runtime (control/lease/state, job DEAD) chặn
+        # trước với guard MB-05; sau khi export (prepare_downgrade) cả hai guard đều qua.
+        assert "MB05_DOWNGRADE_REQUIRES_EXPORT_OF_RUNTIME_STATE" in guard.stderr
         run_probe("prepare_downgrade")
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "downgrade", "d2b4f6a8c1e3")
         run_probe("verify_downgraded")

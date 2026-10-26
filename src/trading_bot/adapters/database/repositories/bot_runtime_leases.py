@@ -202,10 +202,14 @@ class RuntimeFenceGuard:
         account_id: UUID,
         fence: RuntimeFence | None,
     ) -> None:
-        """Có fence: kiểm token hiện hành; chưa có (pre-registry): bot phải chưa từng có lease."""
+        """Kiểm token hiện hành; thiếu fence luôn bị từ chối (M3 đóng ở MB05.5).
+
+        Trước MB05.5 `fence=None` được nhận khi bot chưa từng có lease (chế độ chuyển tiếp, kiểm
+        không khóa hàng). Registry giờ luôn lấy lease khi bootstrap nên không runtime writer nào
+        chạy mà không token; NULL token chỉ còn ở checkpoint genesis (trigger DB `genesis_null`).
+        """
         if fence is None:
-            await _require_unleased(self._session, workspace_id=workspace_id, bot_id=bot_id)
-            return
+            raise RuntimeControlError("FENCING_TOKEN_REQUIRED")
         await _require_current(
             self._session,
             workspace_id=workspace_id,
@@ -260,5 +264,9 @@ async def require_current_fence(
 
 
 async def require_unleased(uow: _UnitOfWorkLike, *, bot_id: UUID) -> None:
-    """Chế độ chuyển tiếp trước registry MB05.5: chỉ hợp lệ khi bot chưa từng có hàng lease."""
+    """Kiểm bot chưa từng có hàng lease (điều kiện ghi checkpoint genesis/seed, không phải runtime).
+
+    Không runtime command nào dùng hàm này sau MB05.5; giữ để công cụ seed/kiểm thử kiểm điều
+    kiện genesis cùng ngữ nghĩa với trigger DB.
+    """
     await _require_unleased(uow.session, workspace_id=uow.workspace_id, bot_id=bot_id)

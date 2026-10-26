@@ -19,6 +19,7 @@ from trading_bot.application.paper_runtime_bootstrap import (
 )
 from trading_bot.config.workspace_settings import PublishedWorkspaceSettings, WorkspaceSettings
 from trading_bot.domain.execution.paper import PaperExecutionGateway
+from trading_bot.domain.execution.runtime_control import FencingToken, LeaseGrant
 
 
 def _published(workspace_id: UUID) -> PublishedWorkspaceSettings:
@@ -32,7 +33,7 @@ def _published(workspace_id: UUID) -> PublishedWorkspaceSettings:
 
 
 class _FakeUnitOfWork:
-    def __init__(self, _sessions: object, *, workspace_id: UUID) -> None:
+    def __init__(self, _sessions: object, *, workspace_id: UUID, **_: object) -> None:
         self.workspace_id = workspace_id
         self.session = object()
         self.callbacks: list[Callable[[], None]] = []
@@ -52,6 +53,37 @@ class _FakeUnitOfWork:
 
     def after_commit(self, callback: Callable[[], None]) -> None:
         self.callbacks.append(callback)
+
+    def record_audit(self, **_: object) -> None:
+        return None
+
+
+class _FakeLease:
+    """Lease giả: mọi bot lấy được token 1 (registry MB05.5 bắt buộc lease khi bootstrap)."""
+
+    def __init__(self, _session: object) -> None:
+        pass
+
+    async def database_now(self) -> datetime:
+        return datetime(2026, 10, 26, tzinfo=UTC)
+
+    async def acquire_grant(self, workspace_id, bot_id, owner_id, expires_at) -> LeaseGrant:
+        del workspace_id, bot_id
+        return LeaseGrant(
+            owner_id, FencingToken(1), datetime(2026, 10, 26, tzinfo=UTC), expires_at, True
+        )
+
+
+class _FakeStateRepository:
+    def __init__(self, _session: object) -> None:
+        pass
+
+    async def upsert(self, **_: object) -> None:
+        return None
+
+
+async def _no_bot_config(**_: object) -> None:
+    return None
 
 
 class _FakeAccountRepository:
@@ -148,6 +180,9 @@ def _service(
         coordinator_factory=lambda gateway, _ledger, _checkpoints: _FakeCoordinator(
             gateway, failing_ids or set()
         ),
+        lease_factory=_FakeLease,
+        state_repository_factory=_FakeStateRepository,
+        bot_config_loader=_no_bot_config,
     )
     return service, gateways
 
@@ -220,6 +255,9 @@ async def test_strategy_only_publish_restarts_with_open_position_and_pinned_fill
         settings_repository_factory=lambda _session: settings_repository,
         gateway_factory=make_gateway,
         coordinator_factory=lambda gateway, _ledger, _checkpoints: RecoveringCoordinator(gateway),
+        lease_factory=_FakeLease,
+        state_repository_factory=_FakeStateRepository,
+        bot_config_loader=_no_bot_config,
     )
 
     result = await service.bootstrap()
@@ -232,22 +270,26 @@ async def test_strategy_only_publish_restarts_with_open_position_and_pinned_fill
 
 
 @pytest.mark.asyncio
-async def test_one_account_recovery_failure_blocks_every_gateway_publication() -> None:
+async def test_one_account_recovery_failure_isolated_from_sibling_gateway_publication() -> None:
+    """Thay đổi hành vi có chủ đích (MB05.5 ruling 1): bỏ all-or-nothing của MB-01.
+
+    Account lỗi checkpoint chỉ làm bot của nó RECOVERY_REQUIRED; sibling vẫn hydrate, công bố
+    gateway và READY (trước đây sibling bị BLOCKED_BY_WORKSPACE và active_accounts rỗng).
+    """
     workspace_id = uuid4()
     accounts = (_account(workspace_id), _account(workspace_id))
     service, gateways = _service(workspace_id, accounts, failing_ids={accounts[1].id})
 
     result = await service.bootstrap()
 
-    assert result.ready is False
-    assert result.active_accounts == {}
-    assert all(gateway.published is False for gateway in gateways)
+    assert result.ready is True
+    assert set(result.active_accounts) == {accounts[0].id}
+    assert sorted(gateway.published for gateway in gateways) == [False, True]
+    assert result.active_accounts[accounts[0].id].gateway.published is True
     assert result.account_states[accounts[1].id].status is (
         PaperAccountRuntimeStatus.RECOVERY_REQUIRED
     )
-    assert result.account_states[accounts[0].id].status is (
-        PaperAccountRuntimeStatus.BLOCKED_BY_WORKSPACE
-    )
+    assert result.account_states[accounts[0].id].status is PaperAccountRuntimeStatus.READY
 
 
 @pytest.mark.asyncio
@@ -275,7 +317,9 @@ async def test_bootstrap_fails_closed_when_effective_settings_are_unavailable() 
     assert result.ready is False
     assert result.active_accounts == {}
     assert gateways == []
-    assert result.account_states[account.id].status is (PaperAccountRuntimeStatus.RECOVERY_REQUIRED)
+    assert result.account_states[account.id].status is (
+        PaperAccountRuntimeStatus.BLOCKED_BY_WORKSPACE
+    )
 
 
 @pytest.mark.asyncio
@@ -288,7 +332,9 @@ async def test_bootstrap_rejects_account_seed_quote_asset_mismatch() -> None:
 
     result = await service.bootstrap()
 
-    assert result.ready is False
+    # Seed lệch quote asset chỉ chặn đúng bot đó (pha bot), workspace vẫn phục vụ được.
+    assert result.ready is True
     assert result.active_accounts == {}
     assert gateways == []
     assert result.account_states[account.id].status is (PaperAccountRuntimeStatus.RECOVERY_REQUIRED)
+    assert result.account_states[account.id].reason_code == "ACCOUNT_SEED_MISMATCH"

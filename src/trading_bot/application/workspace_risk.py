@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, fields, is_dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -227,8 +227,15 @@ class WorkspaceRiskCoordinator:
     async def reserve(
         self,
         request: ReservationRequest,
+        *,
+        evidence: Mapping[str, object] | None = None,
     ) -> ReservationResult:
-        """Đánh giá và lưu reservation nguyên tử theo 4 bước Ruling 10."""
+        """Đánh giá và lưu reservation nguyên tử theo 4 bước Ruling 10.
+
+        `evidence` (MB-05, ruling 27): bằng chứng caller đọc trong cùng transaction, ví dụ
+        `runtime_control_revisions`, được lưu cùng quyết định ngân sách. Không thuộc fingerprint
+        idempotency (replay cùng request vẫn khớp) và không ảnh hưởng đánh giá.
+        """
         # ---------------------------------------------------------------------
         # Bước 1: Khóa 2 cấp Advisory Lock
         # ---------------------------------------------------------------------
@@ -367,6 +374,9 @@ class WorkspaceRiskCoordinator:
             decision_payload["idempotency_key"] = request.idempotency_key
             decision_payload["request_payload_hash"] = _request_payload_hash(request)
             decision_payload["candidate_expires_at"] = request.expires_at.isoformat()
+            decision_payload["decision_kind"] = "WORKSPACE_BUDGET"
+            if evidence:
+                decision_payload["evidence"] = _canonical_value(dict(evidence))
 
         decision_key = hashlib.sha256(
             json.dumps(decision_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")

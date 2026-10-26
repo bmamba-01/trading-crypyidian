@@ -1,0 +1,209 @@
+"""Supervisor runtime PAPER theo tick (MB05.5): lease, control, activity và job theo bot.
+
+Mỗi tick, với từng bot của registry: gia hạn hoặc lấy lại lease (re-acquire thì hydrate lại và
+công bố instance mới), áp control mới (pause/kill/resume) qua command có fence, kiểm activity
+account và xử lý decision job pending. Exception của một bot chỉ đánh dấu bot đó; bot khác vẫn
+được xử lý trong cùng tick. Đồng hồ ứng dụng tiêm vào (unit test), hạn lease theo đồng hồ DB.
+Dừng sạch khi lifespan kết thúc và trả lease đang giữ để process kế tiếp tiếp quản ngay.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import logging
+from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime, timedelta
+from typing import Any, Protocol
+from uuid import UUID
+
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from trading_bot.adapters.database.repositories.bot_runtime_leases import BotRuntimeLease
+from trading_bot.application.bot_runtime_registry import BotRuntimeRegistry
+from trading_bot.application.outbox import UnitOfWork
+from trading_bot.domain.execution.runtime_control import (
+    BotReadiness,
+    RuntimeControlError,
+)
+from trading_bot.ports.account_activity import ActivityVerdict
+
+logger = logging.getLogger(__name__)
+
+TICK_FAILED = "SUPERVISOR_TICK_FAILED"
+_LEASE_LOSS = frozenset(
+    {"STALE_FENCING_TOKEN", "LEASE_EXPIRED", "LEASE_NOT_HELD", "LEASE_SCOPE_MISMATCH"}
+)
+
+
+class SupervisedApplication(Protocol):
+    async def apply_runtime_control(self, account_id: UUID) -> Any: ...
+
+    def remove_account(self, account_id: UUID) -> None: ...
+
+    def publish_account(self, account: Any) -> None: ...
+
+
+class BotRuntimeSupervisor:
+    """Vòng `asyncio` điều phối từng bot; không giữ khóa DB giữa các tick."""
+
+    def __init__(
+        self,
+        *,
+        registry: BotRuntimeRegistry,
+        application: SupervisedApplication,
+        bootstrap: Any,
+        sessions: async_sessionmaker[AsyncSession] | None,
+        workspace_id: UUID,
+        lease_factory: Callable[[Any], Any] = BotRuntimeLease,
+        unit_of_work_factory: Callable[..., Any] = UnitOfWork,
+        activity_guard: Any | None = None,
+        job_processor: Callable[[UUID, datetime], Awaitable[Any]] | None = None,
+        clock: Callable[[], datetime] | None = None,
+        tick_seconds: float = 5.0,
+        lease_ttl: timedelta = timedelta(seconds=30),
+    ) -> None:
+        if tick_seconds <= 0:
+            raise ValueError("tick_seconds phải dương.")
+        self._registry = registry
+        self._application = application
+        self._bootstrap = bootstrap
+        self._sessions = sessions
+        self._workspace_id = workspace_id
+        self._lease_factory = lease_factory
+        self._unit_of_work_factory = unit_of_work_factory
+        self._activity_guard = activity_guard
+        self._job_processor = job_processor
+        self._clock = clock or (lambda: datetime.now(UTC))
+        self._tick_seconds = tick_seconds
+        self._lease_ttl = lease_ttl
+        self._stopping = asyncio.Event()
+        self._tick_lock = asyncio.Lock()
+
+    async def tick_once(self) -> None:
+        """Một lượt cho mọi bot; lỗi của bot nào chỉ ghi nhận cho bot đó."""
+        async with self._tick_lock:
+            for account_id in self._registry.account_ids():
+                if self._stopping.is_set():
+                    return
+                try:
+                    await self._tick_bot(account_id)
+                except Exception as error:
+                    logger.error(
+                        "Supervisor tick lỗi cho một bot; exception_type=%s reason_code=%s",
+                        type(error).__name__,
+                        getattr(error, "reason_code", None),
+                    )
+                    self._registry.record_error(account_id, TICK_FAILED)
+
+    async def run(self) -> None:
+        """Lặp tick tới khi `stop()`; không để exception thoát vòng lặp."""
+        while not self._stopping.is_set():
+            await self.tick_once()
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(self._stopping.wait(), timeout=self._tick_seconds)
+
+    async def stop(self) -> None:
+        """Dừng vòng lặp rồi trả lease đang giữ (lần acquire sau phải tăng token)."""
+        self._stopping.set()
+        async with self._tick_lock:
+            for account_id in self._registry.account_ids():
+                entry = self._registry.entry(account_id)
+                if not entry.holds_lease or entry.bot_id is None or entry.fence is None:
+                    continue
+                try:
+                    async with self._unit_of_work_factory(
+                        self._sessions, workspace_id=self._workspace_id, bot_id=entry.bot_id
+                    ) as uow:
+                        await self._lease_factory(uow.session).release_if_owner(
+                            self._workspace_id,
+                            entry.bot_id,
+                            entry.fence.owner_id,
+                            entry.fence.fencing_token,
+                        )
+                except Exception as error:
+                    logger.warning(
+                        "Không trả được lease khi dừng; exception_type=%s", type(error).__name__
+                    )
+
+    async def _tick_bot(self, account_id: UUID) -> None:
+        entry = self._registry.entry(account_id)
+        if entry.blocked_by_workspace or entry.bot_id is None:
+            return
+        if entry.holds_lease:
+            await self._renew(account_id)
+            entry = self._registry.entry(account_id)
+        if entry.readiness is BotReadiness.STANDBY:
+            await self._reacquire(account_id)
+            entry = self._registry.entry(account_id)
+        if entry.readiness is not BotReadiness.READY:
+            return
+        try:
+            await self._ready_steps(account_id)
+        except RuntimeControlError as error:
+            # Fence của state/incident từ chối giữa tick (lease hết hạn/bị tiếp quản): hạ STANDBY
+            # đúng bot đó thay vì để lỗi lặp lại mỗi tick.
+            if error.reason_code in _LEASE_LOSS:
+                await self._demote(account_id, error.reason_code)
+                return
+            raise
+
+    async def _ready_steps(self, account_id: UUID) -> None:
+        control = await self._application.apply_runtime_control(account_id)
+        self._registry.set_control_flags(
+            account_id,
+            bot_paused=bool(getattr(control, "bot_paused", False)),
+            workspace_killed=bool(getattr(control, "workspace_killed", False)),
+        )
+        if self._activity_guard is not None:
+            classification = await self._activity_guard.inspect_once(account_id)
+            self._registry.set_activity_blocked(
+                account_id, classification.verdict is not ActivityVerdict.CLEAN
+            )
+        if self._job_processor is not None:
+            await self._job_processor(account_id, self._clock())
+        self._registry.record_error(account_id, None)
+
+    async def _renew(self, account_id: UUID) -> None:
+        entry = self._registry.entry(account_id)
+        if entry.fence is None or entry.bot_id is None:  # pragma: no cover - holds_lease đã kiểm
+            return
+        try:
+            async with self._unit_of_work_factory(
+                self._sessions, workspace_id=self._workspace_id, bot_id=entry.bot_id
+            ) as uow:
+                lease = self._lease_factory(uow.session)
+                now = await lease.database_now()
+                await lease.renew(
+                    self._workspace_id,
+                    entry.bot_id,
+                    entry.fence.owner_id,
+                    entry.fence.fencing_token,
+                    now + self._lease_ttl,
+                )
+        except RuntimeControlError as error:
+            await self._demote(account_id, error.reason_code)
+
+    async def _demote(self, account_id: UUID, reason_code: str) -> None:
+        """Mất lease: gỡ gateway khỏi application, hạ STANDBY, audit (không cần fence)."""
+        entry = self._registry.entry(account_id)
+        self._application.remove_account(account_id)
+        self._registry.mark_standby(account_id, reason_code)
+        async with self._unit_of_work_factory(
+            self._sessions, workspace_id=self._workspace_id, bot_id=entry.bot_id
+        ) as uow:
+            uow.record_audit(
+                action="bot.runtime.lease_lost",
+                target_type="bot_instance",
+                target_id=entry.bot_id,
+                reason=reason_code,
+            )
+
+    async def _reacquire(self, account_id: UUID) -> None:
+        outcome = await self._bootstrap.bootstrap_bot(account_id)
+        status = str(getattr(outcome.status, "value", outcome.status))
+        if status == "READY" and outcome.account is not None:
+            self._application.publish_account(outcome.account)
+            self._registry.mark_ready(account_id, outcome.account.fence, outcome.account.bot_id)
+        elif status == "RECOVERY_REQUIRED":
+            self._registry.mark_recovery(account_id, outcome.reason_code or TICK_FAILED)

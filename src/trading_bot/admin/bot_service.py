@@ -361,6 +361,20 @@ class BotConfigAdminService:
                         "message": "Bản nháp dựa trên phiên bản cũ; publish sẽ bị từ chối.",
                     }
                 )
+            root_release = root.published.settings.strategy.default_release
+            if overlay.strategy is not None and overlay.strategy.release_id != root_release:
+                # MB-05 ruling 28: cảnh báo không chặn; runtime entry cần fan-out MB-05b.
+                warnings.append(
+                    {
+                        "field": "strategy.release_id",
+                        "code": "BOT_RELEASE_DIFFERS_FROM_ROOT",
+                        "message": (
+                            "Release của bot khác strategy.default_release của root: publish vẫn "
+                            "được, nhưng runtime PAPER từ chối entry của bot "
+                            "(PAPER_BOT_STRATEGY_FANOUT_REQUIRED) tới khi MB-05b nối fan-out."
+                        ),
+                    }
+                )
             return {"valid": not issues, "errors": _issue_dicts(issues), "warnings": warnings}
 
     # --- Publish / rollback -----------------------------------------------------------------

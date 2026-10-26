@@ -715,3 +715,37 @@ def test_risk_profile_fixture_matches_hard_caps() -> None:
         )
     ).limits
     assert limits.max_positions == 2
+
+
+async def test_validate_warns_non_blocking_when_bot_release_differs_from_root() -> None:
+    """MB05.8 / ruling 28: release overlay khác root -> cảnh báo, publish vẫn được."""
+    principal = actor(Role.OWNER)
+    other_release = BotConfigOverlay.model_validate(
+        {"schema_version": 1, "strategy": {"release_id": "h01-v1", "parameters": {}}}
+    )
+    same_release = BotConfigOverlay.model_validate(
+        {
+            "schema_version": 1,
+            "strategy": {"release_id": "h03-v1", "parameters": {"donchian_lookback": 55}},
+        }
+    )
+    differing = await draft(principal, other_release)
+    same = await draft(principal, same_release)
+
+    warned = await service().validate_draft(
+        principal, bot_id=STORE.world.bot_id, draft_id=UUID(differing["id"])
+    )
+    plain = await service().validate_draft(
+        principal, bot_id=STORE.world.bot_id, draft_id=UUID(same["id"])
+    )
+
+    assert warned["valid"] is True
+    assert warned["errors"] == []
+    assert [warning["code"] for warning in warned["warnings"]] == ["BOT_RELEASE_DIFFERS_FROM_ROOT"]
+    assert warned["warnings"][0]["field"] == "strategy.release_id"
+    assert "MB-05b" in warned["warnings"][0]["message"]
+    version = await service().publish(
+        principal, bot_id=STORE.world.bot_id, draft_id=UUID(differing["id"]), expected_revision=1
+    )
+    assert version["status"] == "PUBLISHED"
+    assert plain["warnings"] == []

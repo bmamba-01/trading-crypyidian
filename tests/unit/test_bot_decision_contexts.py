@@ -351,3 +351,198 @@ async def test_outbox_consumer_fans_out_only_to_bots_with_published_config() -> 
     ]
     assert [decision.strategy_release_id for decision in decisions] == ["h01-v1", "h03-v1"]
     assert {decision.root_settings_version_id for decision in decisions} == {ROOT_VERSION}
+
+
+# --- MB05.8 / ruling 18: lý do loại khỏi fan-out theo trạng thái runtime, lưu bền ----------
+
+
+def _gated_harness(
+    gate_codes: dict[UUID, str | None], bots: tuple[RuntimeBotRef, ...] | None = None
+) -> Harness:
+    from trading_bot.application.bot_decision_contexts import (
+        EffectiveBotDecisionContextProvider,
+    )
+
+    harness = Harness(
+        bots or _refs((BOT_A, ACCOUNT_A), (BOT_B, ACCOUNT_B)),
+        {BOT_A: _effective(), BOT_B: _effective_b(), BOT_C: _effective()},
+    )
+    gate_calls: list[UUID | None] = []
+
+    async def gate(uow: FakeUnitOfWork, bot: RuntimeBotRef) -> str | None:
+        assert uow.account_id == bot.account_id, "Gate runtime phải đọc trong scope đúng bot"
+        gate_calls.append(uow.account_id)
+        return gate_codes.get(bot.bot_id)
+
+    provider = harness.provider
+    harness.provider = EffectiveBotDecisionContextProvider(
+        object(),  # type: ignore[arg-type]
+        unit_of_work_factory=provider._unit_of_work_factory,
+        list_bots=provider._list_bots,
+        load_config=provider._load_config,
+        on_exclusion=harness.exclusions.append,
+        runtime_gate=gate,  # type: ignore[arg-type]
+    )
+    harness.gate_calls = gate_calls  # type: ignore[attr-defined]
+    return harness
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "BOT_PAUSED",
+        "WORKSPACE_KILLED",
+        "EXTERNAL_ACTIVITY_UNRECONCILED",
+        "BOT_RECOVERY_REQUIRED",
+        "BOT_STANDBY",
+    ],
+)
+async def test_runtime_blocked_bot_is_excluded_with_code(code: str) -> None:
+    harness = _gated_harness({BOT_A: code})
+
+    eligibility = await harness.provider.eligibility(workspace_id=WORKSPACE, as_of=AS_OF)
+
+    assert [context.bot_id for context in eligibility.contexts] == [BOT_B]
+    assert [(item.bot_id, item.reason_code) for item in eligibility.exclusions] == [(BOT_A, code)]
+
+
+async def test_disabled_bot_is_listed_and_excluded_without_resolving_config() -> None:
+    disabled = RuntimeBotRef(bot_id=BOT_C, account_id=ACCOUNT_C, enabled=False)
+    harness = _gated_harness({}, bots=(*_refs((BOT_A, ACCOUNT_A)), disabled))
+
+    eligibility = await harness.provider.eligibility(workspace_id=WORKSPACE, as_of=AS_OF)
+
+    assert [(item.bot_id, item.reason_code) for item in eligibility.exclusions] == [
+        (BOT_C, "BOT_DISABLED")
+    ]
+    assert all(call[0] != BOT_C for call in harness.loader_calls)
+    assert ACCOUNT_C not in harness.gate_calls  # type: ignore[attr-defined]
+
+
+async def test_runtime_gate_reads_control_incident_and_state_in_bot_scope() -> None:
+    from types import SimpleNamespace
+
+    from trading_bot.application.bot_decision_contexts import RuntimeFanOutGate
+    from trading_bot.domain.execution.runtime_control import (
+        BotControlState,
+        BotEntryState,
+        RuntimeControlSnapshot,
+        WorkspaceControlState,
+        WorkspaceKillState,
+    )
+
+    def gate(control: RuntimeControlSnapshot, incidents: int, readiness: str | None):
+        async def controls(_session: object, **_: object) -> RuntimeControlSnapshot:
+            return control
+
+        async def open_incidents(_session: object, **_: object) -> int:
+            return incidents
+
+        async def state(_session: object, **_: object) -> object:
+            return None if readiness is None else SimpleNamespace(readiness=readiness)
+
+        return RuntimeFanOutGate(
+            control_reader=controls, incident_counter=open_incidents, state_loader=state
+        )
+
+    uow = FakeUnitOfWork([], WORKSPACE)
+    await uow.bind_account(ACCOUNT_A)
+    bot = RuntimeBotRef(bot_id=BOT_A, account_id=ACCOUNT_A)
+    clear = RuntimeControlSnapshot(None, None)
+    killed = RuntimeControlSnapshot(WorkspaceControlState(1, WorkspaceKillState.KILLED), None)
+    paused = RuntimeControlSnapshot(None, BotControlState(2, BotEntryState.PAUSED))
+
+    assert await gate(clear, 0, None)(uow, bot) is None  # chưa có state: chưa chạy runtime
+    assert await gate(clear, 0, "READY")(uow, bot) is None
+    assert await gate(killed, 0, "READY")(uow, bot) == "WORKSPACE_KILLED"
+    assert await gate(paused, 0, "READY")(uow, bot) == "BOT_PAUSED"
+    assert await gate(clear, 1, "READY")(uow, bot) == "EXTERNAL_ACTIVITY_UNRECONCILED"
+    assert await gate(clear, 0, "RECOVERY_REQUIRED")(uow, bot) == "BOT_RECOVERY_REQUIRED"
+    assert await gate(clear, 0, "STANDBY")(uow, bot) == "BOT_STANDBY"
+
+
+async def test_exclusion_recorder_audits_only_on_code_change_and_persists_for_held_bot() -> None:
+    from types import SimpleNamespace
+
+    from trading_bot.application.bot_decision_contexts import (
+        FanOutEligibility,
+        FanOutExclusionRecorder,
+    )
+    from trading_bot.domain.execution.runtime_control import FencingToken, RuntimeFence
+
+    audits: list[dict[str, Any]] = []
+    states: dict[UUID, Any] = {}
+
+    class Uow:
+        def __init__(self, _sessions: object, **kwargs: Any) -> None:
+            self.workspace_id = kwargs["workspace_id"]
+            self.session = object()
+
+        async def __aenter__(self) -> Any:
+            return self
+
+        async def __aexit__(self, *_: object) -> None:
+            return None
+
+        def record_audit(self, **values: Any) -> None:
+            audits.append(values)
+
+    class States:
+        def __init__(self, _session: object) -> None:
+            pass
+
+        async def get(self, *, workspace_id: UUID, bot_id: UUID) -> Any:
+            return states.get(bot_id)
+
+        async def upsert(self, **values: Any) -> None:
+            assert isinstance(values["fence"], RuntimeFence)
+            states[values["bot_id"]] = SimpleNamespace(
+                fanout_exclusion_code=values["fanout_exclusion_code"],
+                readiness=values["readiness"],
+                reason_code=values["reason_code"],
+            )
+
+    held = SimpleNamespace(
+        account_id=ACCOUNT_A, bot_id=BOT_A, fence=RuntimeFence("runtime-1", FencingToken(2))
+    )
+    recorder = FanOutExclusionRecorder(
+        sessions=object(),  # type: ignore[arg-type]
+        workspace_id=WORKSPACE,
+        accounts={ACCOUNT_A: held}.get,
+        unit_of_work_factory=Uow,
+        state_repository_factory=States,
+        clock=lambda: AS_OF,
+    )
+
+    def eligibility(*codes: tuple[UUID, UUID, str]) -> FanOutEligibility:
+        return FanOutEligibility(
+            workspace_id=WORKSPACE,
+            as_of=AS_OF,
+            contexts=(),
+            exclusions=tuple(
+                FanOutExclusion(bot_id=bot, account_id=account, reason_code=code)
+                for bot, account, code in codes
+            ),
+        )
+
+    await recorder.record(
+        eligibility((BOT_A, ACCOUNT_A, "BOT_PAUSED"), (BOT_C, ACCOUNT_C, "BOT_DISABLED"))
+    )
+    await recorder.record(
+        eligibility((BOT_A, ACCOUNT_A, "BOT_PAUSED"), (BOT_C, ACCOUNT_C, "BOT_DISABLED"))
+    )
+    await recorder.record(eligibility((BOT_A, ACCOUNT_A, "WORKSPACE_KILLED")))
+    # Bot A lại đủ điều kiện (có context) -> xóa mã, không audit thêm.
+    await recorder.record(
+        replace(eligibility(), contexts=(bot_decision_context_from_effective(_effective()),))
+    )
+
+    assert [(audit["target_id"], audit["reason"]) for audit in audits] == [
+        (BOT_A, "BOT_PAUSED"),
+        (BOT_C, "BOT_DISABLED"),
+        (BOT_A, "WORKSPACE_KILLED"),
+    ]
+    assert all(audit["action"] == "bot.fanout.excluded" for audit in audits)
+    # Bot đang giữ lease: mã lưu bền trong bot_runtime_state; hết bị loại thì xóa mã.
+    assert states[BOT_A].fanout_exclusion_code is None
+    assert BOT_C not in states

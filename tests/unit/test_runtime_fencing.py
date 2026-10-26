@@ -131,13 +131,16 @@ def test_fence_guard_dispatches_on_fence_presence() -> None:
     )
     assert "FOR SHARE" in session.statements[0]
 
+    # M3: sau MB05.5 không còn chế độ chuyển tiếp — guard từ chối writer không token.
     session = RecordingSession(scalar_results=[None])
-    asyncio.run(
-        RuntimeFenceGuard(session).require(
-            workspace_id=WORKSPACE, bot_id=BOT, account_id=ACCOUNT, fence=None
+    with pytest.raises(RuntimeControlError) as error:
+        asyncio.run(
+            RuntimeFenceGuard(session).require(
+                workspace_id=WORKSPACE, bot_id=BOT, account_id=ACCOUNT, fence=None
+            )
         )
-    )
-    assert len(session.statements) == 1
+    assert error.value.reason_code == "FENCING_TOKEN_REQUIRED"
+    assert session.statements == []
 
 
 def test_application_calls_fence_right_after_l1_and_before_l2_l4() -> None:
@@ -159,7 +162,7 @@ def test_application_calls_fence_right_after_l1_and_before_l2_l4() -> None:
     asyncio.run(service.evaluate_and_submit(command))
 
     assert events[:2] == ["L1", "fence"]
-    assert events.index("fence") < events.index("L2-L4:workspace-reserve")
+    assert events.index("fence") < events.index("L2-L4:reserve")
     assert events.index("fence") < events.index("L4:submit")
 
 
@@ -169,6 +172,7 @@ def test_application_calls_fence_right_after_l1_and_before_l2_l4() -> None:
 # FENCE_ARGUMENT = method tự gọi fence với `RuntimeFence` bắt buộc; ADMIN = admin-web ghi ý định
 # (runtime không có grant); UNWIRED = chưa có call site runtime, MB-05 Part B phải nối trong
 # command có fence trước khi thêm module gọi.
+LEDGER_READS = {"find_intent_id"}
 LEDGER_WRITES = {
     "create_intent",
     "cancel_remainder",
@@ -219,13 +223,15 @@ ALLOWED_CALLERS = {
     "release_terminal_no_fill": {"adapters/database/repositories/paper_ledger.py"},
     "mark_unknown": {"adapters/database/repositories/paper_ledger.py"},
     "record_evaluation": {"application/paper_runtime_application.py"},
+    # MB-04 + MB-05: runtime chỉ reserve qua `WorkspaceRiskCoordinator.reserve` (một đường duy
+    # nhất); `RiskReservationRepository.reserve` không còn được runtime gọi trực tiếp.
     "reserve": {"application/paper_runtime_application.py"},
     "reconcile": set(),
     "release_before_submit": set(),
     "expire_overdue": set(),
-    "expire_due": set(),
+    "expire_due": {"application/paper_runtime_application.py"},
     "transfer_to_open": set(),
-    "release_reservation": set(),
+    "release_reservation": {"application/paper_runtime_application.py"},
     "append": {"application/paper_lifecycle.py"},
 }
 
@@ -239,7 +245,7 @@ def _public_coroutines(cls: type) -> set[str]:
 
 
 def test_every_write_method_of_paper_risk_repositories_is_classified() -> None:
-    assert _public_coroutines(PaperLedgerRepository) == LEDGER_WRITES
+    assert _public_coroutines(PaperLedgerRepository) == LEDGER_WRITES | LEDGER_READS
     assert _public_coroutines(RiskReservationRepository) == RESERVATION_WRITES | RESERVATION_READS
     assert (
         _public_coroutines(WorkspaceRiskCoordinator)
@@ -312,14 +318,34 @@ def test_fenced_commands_cover_every_runtime_write_call_site() -> None:
     writes = {"record_evaluation", "reserve", "submit_approved"} | {
         "apply_entry_market_event",
         "monitor_market_event",
+        "apply_entry_pause",
+        "apply_entry_resume",
+        "release_reservation",
+        "expire_due",
+        "upsert",
     }
-    for function in service.body:
-        if not isinstance(function, ast.AsyncFunctionDef):
-            continue
-        calls = {
+    # Helper ghi chỉ được gọi từ command đã qua `_require_fence` trong cùng transaction.
+    helpers = {
+        "_apply_pause_in_uow",
+        "_apply_resume_in_uow",
+        "_reserve_budget",
+        "_record_applied_control",
+    }
+    functions = {
+        function.name: {
             node.func.attr
             for node in ast.walk(function)
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
         }
-        if calls & writes:
-            assert "_require_fence" in calls, function.name
+        for function in service.body
+        if isinstance(function, ast.AsyncFunctionDef)
+    }
+    for name, calls in functions.items():
+        if calls & writes and name not in helpers:
+            assert "_require_fence" in calls, name
+    for helper in helpers:
+        callers = [name for name, calls in functions.items() if helper in calls]
+        assert callers, helper
+        for caller in callers:
+            reachable = functions[caller]
+            assert "_require_fence" in reachable or caller in helpers, (helper, caller)

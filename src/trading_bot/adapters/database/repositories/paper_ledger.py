@@ -268,6 +268,19 @@ class PaperLedgerRepository:
         await uow.session.flush()
         return IntentAppendResult(intent_id, duplicate=False)
 
+    async def find_intent_id(
+        self, uow: UnitOfWork, *, account_id: UUID, idempotency_key: str
+    ) -> UUID | None:
+        """Đọc ID intent ledger theo idempotency key trong scope bot hiện tại (chỉ đọc)."""
+        return await uow.session.scalar(
+            select(OrderIntentRecord.id).where(
+                OrderIntentRecord.bot_id == uow.session.info.get("bot_id"),
+                OrderIntentRecord.workspace_id == uow.workspace_id,
+                OrderIntentRecord.account_id == account_id,
+                OrderIntentRecord.idempotency_key == idempotency_key,
+            )
+        )
+
     async def cancel_remainder(
         self, uow: UnitOfWork, *, intent_id: UUID, occurred_at: datetime
     ) -> bool:

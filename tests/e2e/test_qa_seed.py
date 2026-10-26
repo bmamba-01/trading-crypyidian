@@ -386,12 +386,13 @@ def test_qa_seed_is_idempotent_and_accounts_work_through_real_boundaries() -> No
         assert json.loads(idle.stdout.strip().splitlines()[-1])["changes"] == {}
 
         # (f) Dataset QA dẫn fan-out MB-03: một shared evidence → quyết định cho bot A và B
-        # (config PUBLISHED, release khác nhau); C DISABLED không được liệt kê, OTHER khác
-        # workspace. Context resolve tại mốc dữ liệu nên bot B dùng v1 baseline.
+        # (config PUBLISHED, release khác nhau); C DISABLED bị loại với mã BOT_DISABLED (MB05.8,
+        # ruling 18: lý do loại được ghi lại), OTHER khác workspace. Context resolve tại mốc dữ
+        # liệu nên bot B dùng v1 baseline.
         probe("feature_snapshot", "migrator")
         fanout = probe("fanout", "trading-runtime")
         assert fanout["identity"] == "crypidian_trading_runtime"
-        assert fanout["exclusions"] == []
+        assert fanout["exclusions"] == [["C", "BOT_DISABLED"]]
         root_settings = str(dataset.settings_for("qa").id)
         expected_releases = {key: config.release_id for key, config in baseline_configs.items()}
         assert expected_releases["A"] != expected_releases["B"]

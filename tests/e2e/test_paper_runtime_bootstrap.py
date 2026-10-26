@@ -534,10 +534,14 @@ def test_runtime_process_hydrates_and_fails_closed_without_checkpoint() -> None:
             "/health/ready", expected_status=200, container_id=successful_container
         )
         assert ready["status"] == "ready"
+        assert ready["workspace_control"] == "active"
         assert ready["paper_accounts"] == {
             "total": 1,
             "ready": 1,
             "recovery_required": 0,
+            "standby": 0,
+            "paused": 0,
+            "activity_blocked": 0,
             "blocked_by_workspace": 0,
         }
         assert ready["execution_capabilities"] == {
@@ -576,18 +580,27 @@ def test_runtime_process_hydrates_and_fails_closed_without_checkpoint() -> None:
             "mode": "PAPER",
             "role": "trading-runtime",
         }
-        not_ready = wait_for_runtime_health(
-            "/health/ready", expected_status=503, container_id=failed_container
-        )
-        assert not_ready["status"] == "not_ready"
-        assert not_ready["paper_runtime_error_code"] == "PAPER_RECOVERY_CONFLICT"
-        assert not_ready["paper_accounts"] == {
+        # MB05.5 ruling 2/26 (thay đổi có chủ đích): account thiếu checkpoint chỉ làm bot đó
+        # RECOVERY_REQUIRED; sibling vẫn READY; process vẫn phục vụ -> 200 `degraded`.
+        deadline = time.monotonic() + 45
+        degraded: dict[str, object] = {}
+        while time.monotonic() < deadline:
+            status, degraded = probe_runtime_health(failed_container, "/health/ready")
+            counts = degraded.get("paper_accounts", {})
+            if status == 200 and isinstance(counts, dict) and counts.get("ready") == 1:
+                break
+            time.sleep(0.5)
+        assert degraded["status"] == "degraded", degraded
+        assert degraded["paper_accounts"] == {
             "total": 2,
-            "ready": 0,
+            "ready": 1,
             "recovery_required": 1,
-            "blocked_by_workspace": 1,
+            "standby": 0,
+            "paused": 0,
+            "activity_blocked": 0,
+            "blocked_by_workspace": 0,
         }
-        response_text = json.dumps(not_ready)
+        response_text = json.dumps(degraded)
         assert workspace_id not in response_text
         assert account_ids["runtime-good"] not in response_text
         assert account_ids["runtime-no-checkpoint"] not in response_text

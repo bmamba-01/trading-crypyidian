@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -67,6 +68,18 @@ class PositionLifecycleResult:
     monitor_result: PositionMonitorResult
 
 
+@dataclass(frozen=True, slots=True)
+class EntryControlResult:
+    """Kết quả áp pause/resume entry trong một transaction có fence (MB05.6)."""
+
+    entries_paused: bool
+    cancelled_intent_ids: tuple[str, ...]
+    released_reservation_intent_ids: tuple[UUID, ...]
+    checkpoint_revision: int
+    gateway: PaperExecutionGateway
+    duplicate: bool
+
+
 class PaperLifecycleCoordinator:
     """Nối state machine PAPER với ledger, không tự quản lý transaction."""
 
@@ -111,6 +124,126 @@ class PaperLifecycleCoordinator:
                 "Checkpoint PAPER không khớp ledger; giữ account ở trạng thái fail-closed."
             ) from error
         return restored
+
+    async def apply_entry_pause(
+        self,
+        uow: UnitOfWork,
+        *,
+        account_id: UUID,
+        event_key: str,
+        occurred_at: datetime,
+        fencing_token: FencingToken,
+        release_reservation: Callable[[UUID], Awaitable[object]],
+    ) -> EntryControlResult:
+        """Pause entry: hủy order ACCEPTED/PARTIALLY_FILLED, giải phóng reservation chưa fill.
+
+        Giữ order UNKNOWN (gateway từ chối hủy, reservation UNKNOWN giữ budget tới reconcile),
+        giữ vị thế mở và stop. Ledger + checkpoint cùng transaction có fence của caller; gateway
+        thật chỉ đổi sau commit.
+        """
+        candidate, revision = await self._latest_candidate(uow, account_id=account_id)
+        before = {order.intent_id: order for order in candidate.open_orders()}
+        candidate.pause_entries()
+        cancelled: list[str] = []
+        released: list[UUID] = []
+        for intent_id, order in sorted(before.items()):
+            if order.status not in {OrderStatus.ACCEPTED, OrderStatus.PARTIALLY_FILLED}:
+                continue
+            ledger_intent_id = await self._ledger.find_intent_id(
+                uow, account_id=account_id, idempotency_key=order.idempotency_key
+            )
+            if ledger_intent_id is None:
+                raise PaperLifecycleConflict("Order PAPER không có intent ledger tương ứng.")
+            await self._ledger.cancel_remainder(
+                uow, intent_id=ledger_intent_id, occurred_at=occurred_at
+            )
+            cancelled.append(intent_id)
+            if order.filled_quantity == 0:
+                await release_reservation(ledger_intent_id)
+                released.append(ledger_intent_id)
+        return await self._append_control_checkpoint(
+            uow,
+            account_id=account_id,
+            candidate=candidate,
+            previous_revision=revision,
+            event_key=event_key,
+            occurred_at=occurred_at,
+            fencing_token=fencing_token,
+            cancelled=tuple(cancelled),
+            released=tuple(released),
+        )
+
+    async def apply_entry_resume(
+        self,
+        uow: UnitOfWork,
+        *,
+        account_id: UUID,
+        event_key: str,
+        occurred_at: datetime,
+        fencing_token: FencingToken,
+    ) -> EntryControlResult:
+        """Mở lại entry sau resume/release đã commit; không đụng order/vị thế hiện có."""
+        candidate, revision = await self._latest_candidate(uow, account_id=account_id)
+        candidate.resume_entries()
+        return await self._append_control_checkpoint(
+            uow,
+            account_id=account_id,
+            candidate=candidate,
+            previous_revision=revision,
+            event_key=event_key,
+            occurred_at=occurred_at,
+            fencing_token=fencing_token,
+            cancelled=(),
+            released=(),
+        )
+
+    async def _latest_candidate(
+        self, uow: UnitOfWork, *, account_id: UUID
+    ) -> tuple[PaperExecutionGateway, int]:
+        if self._checkpoints is None:
+            raise PaperLifecycleConflict("Chưa cấu hình PAPER checkpoint repository.")
+        await self._checkpoints.lock_account(uow, account_id=account_id)
+        latest = await self._checkpoints.load_latest(uow, account_id=account_id)
+        if latest is None:
+            raise PaperLifecycleConflict("PAPER account chưa có checkpoint để áp control.")
+        revision, snapshot = latest
+        candidate = await self._restore_verified(uow, account_id=account_id, snapshot=snapshot)
+        return candidate, revision
+
+    async def _append_control_checkpoint(
+        self,
+        uow: UnitOfWork,
+        *,
+        account_id: UUID,
+        candidate: PaperExecutionGateway,
+        previous_revision: int,
+        event_key: str,
+        occurred_at: datetime,
+        fencing_token: FencingToken,
+        cancelled: tuple[str, ...],
+        released: tuple[UUID, ...],
+    ) -> EntryControlResult:
+        if self._checkpoints is None:  # pragma: no cover - _latest_candidate đã kiểm
+            raise PaperLifecycleConflict("Chưa cấu hình PAPER checkpoint repository.")
+        append_result = await self._checkpoints.append(
+            uow,
+            account_id=account_id,
+            event_key=event_key,
+            event_hash=hashlib.sha256(event_key.encode()).hexdigest(),
+            snapshot=candidate.export_state(),
+            occurred_at=occurred_at,
+            event_scope=None,
+            fencing_token=fencing_token,
+        )
+        uow.after_commit(lambda: self._gateway.replace_state(append_result.snapshot))
+        return EntryControlResult(
+            entries_paused=candidate.entries_paused,
+            cancelled_intent_ids=cancelled,
+            released_reservation_intent_ids=released,
+            checkpoint_revision=max(append_result.revision, previous_revision),
+            gateway=candidate,
+            duplicate=append_result.duplicate,
+        )
 
     async def submit_approved(
         self,
@@ -426,7 +559,9 @@ class PaperLifecycleCoordinator:
             uow,
             intent_id=ledger_intent_id,
             fill_key=fill.fill_id,
-            bar_key=bar.bar_key,
+            # Cùng `bar_key` với fill trong snapshot (khóa close chứa bar thị trường) để đối soát
+            # recovery khớp sau khi đóng vị thế (lỗi tiềm ẩn phát hiện ở E2E MB-05).
+            bar_key=fill.bar_key,
             fill_policy_version=fill.fill_policy_version,
             quantity=fill.quantity,
             price=fill.execution_price,

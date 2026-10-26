@@ -489,7 +489,6 @@ async def dispatch(state):
         EffectiveBotDecisionContextProvider,
     )
     from trading_bot.application.bot_dispatcher import (
-        BotDecisionConflict,
         BotEvidenceDispatcher,
         EvidenceScopeError,
         SignalEvidenceFanOutConsumer,
@@ -584,12 +583,11 @@ async def dispatch(state):
         recorded = await dispatcher.record_evidence(rerun, evaluated_at=as_of)
         assert recorded.created is False
         assert recorded.evidence == evidence
-        try:
-            await dispatcher.dispatch_evidence(rerun, contexts, as_of + timedelta(minutes=5))
-        except BotDecisionConflict:
-            pass
-        else:
-            raise AssertionError("Dispatch lại cùng observation ở mốc khác phải conflict")
+        # MB05.8 ruling 17: retry chỉ khác mốc thời gian -> trả job/quyết định đã ghim (ack),
+        # không conflict (trước đây làm event outbox DEAD).
+        late = await dispatcher.dispatch_evidence(rerun, contexts, as_of + timedelta(minutes=5))
+        assert late == first, late
+        assert {item.evaluated_at for item in late} == {as_of}
         # Event outbox do dispatch ghi: consumer fan-out lại phải dedupe rồi acknowledge.
         consumed = await consumer.consume_once(workspace_id=workspace_a, now=datetime.now(UTC))
         assert {job.bot_id for job in consumed} == {context.bot_id for context in contexts}
@@ -968,8 +966,222 @@ def verify(connection, state):
         assert actual is expected, (column, actual)
 
 
+def pause_controls(connection, state):
+    """MB05.8: pause bot A1 (control append-only) và DISABLE account A3 bằng superuser."""
+    insert(
+        connection,
+        "bot_runtime_control",
+        id=identity("mb05-pause-a1"),
+        workspace_id=identity("workspace-a"),
+        bot_id=UUID(state["bot_a1"]),
+        account_id=identity("account-a1"),
+        revision=1,
+        entry_state="PAUSED",
+        reason_code="E2E_PAUSE",
+        reason_text="Pause để kiểm exclusion fan-out",
+        changed_by=identity("owner-member"),
+        correlation_id=identity("mb05-pause-correlation"),
+    )
+    connection.execute(
+        "UPDATE trading_account SET status='DISABLED' WHERE id=%s", (identity("account-a3"),)
+    )
+
+
+def verify_queue(connection, state):
+    """Đọc DB (superuser) xác nhận DEAD + audit và exclusion lưu bền."""
+    jobs = connection.execute(
+        "SELECT status, attempts, last_error_code FROM bot_decision_job WHERE id=%s",
+        (UUID(state["poison_job_id"]),),
+    ).fetchone()
+    healthy = connection.execute(
+        "SELECT status FROM bot_decision_job WHERE id=%s", (UUID(state["healthy_job_id"]),)
+    ).fetchone()
+    exclusion = connection.execute(
+        "SELECT fanout_exclusion_code FROM bot_runtime_state WHERE bot_id=%s",
+        (UUID(state["bot_a1"]),),
+    ).fetchone()
+    audits = connection.execute(
+        "SELECT action, target_id::text, reason FROM audit_event WHERE action IN "
+        "('bot.decision_job.dead', 'bot.fanout.excluded') ORDER BY occurred_at"
+    ).fetchall()
+    return {
+        "poison": list(jobs),
+        "healthy": healthy[0],
+        "a1_exclusion": exclusion[0] if exclusion else None,
+        "audits": [list(row) for row in audits],
+    }
+
+
+async def runtime_queue(state):
+    """MB05.8 dưới login runtime thật: poison job, backoff/DEAD, exclusion lưu bền."""
+    from types import SimpleNamespace
+
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from trading_bot.adapters.database.engine import (
+        create_database_engine,
+        database_url_from_secret,
+    )
+    from trading_bot.adapters.database.repositories.bot_decisions import (
+        PostgresSignalDecisionStore,
+    )
+    from trading_bot.adapters.database.repositories.bot_runtime_leases import BotRuntimeLease
+    from trading_bot.adapters.database.repositories.feature_snapshots import (
+        FeatureSnapshotRepository,
+    )
+    from trading_bot.application.bot_decision_contexts import (
+        EffectiveBotDecisionContextProvider,
+        FanOutExclusionRecorder,
+        RuntimeFanOutGate,
+        load_published_bot_config,
+    )
+    from trading_bot.application.bot_dispatcher import (
+        BotEvidenceDispatcher,
+        JobRetryPolicy,
+        SignalEvidenceFanOutConsumer,
+    )
+    from trading_bot.application.outbox import UnitOfWork
+    from trading_bot.domain.execution.runtime_control import RuntimeFence
+    from trading_bot.domain.market.signal_evidence import (
+        EvidenceSourceRef,
+        build_shared_signal_evidence,
+    )
+    from trading_bot.domain.strategy.registry import StrategyRegistry
+
+    workspace_a = UUID(state["workspace_a"])
+    engine = create_database_engine(
+        database_url_from_secret(
+            username=os.environ["TRADING_BOT_DATABASE_USER"],
+            password_file=Path(os.environ["TRADING_BOT_DATABASE_PASSWORD_FILE"]),
+            host="postgres",
+            database="crypidian",
+        )
+    )
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    snapshots = fixture_snapshots()
+    out = {}
+    try:
+        async with UnitOfWork(sessions, workspace_id=workspace_a) as uow:
+            feature = await FeatureSnapshotRepository(uow.session).get_as_of(
+                workspace_id=workspace_a, symbol="BTCUSDT", timeframe="1h", as_of=DECISION_TIME
+            )
+
+        def evidence_for(name, minutes):
+            return build_shared_signal_evidence(
+                feature_snapshot=feature,
+                setup_type=name,
+                observed_at=DECISION_TIME - timedelta(minutes=1),
+                available_at=DECISION_TIME + timedelta(minutes=minutes),
+                validity_end=DECISION_TIME + timedelta(hours=1),
+                sources=(
+                    EvidenceSourceRef(f"market_bar:binance:BTCUSDT:1h:{name}", DECISION_TIME),
+                ),
+            )
+
+        poison = evidence_for("mb05_poison", 0)
+        healthy = evidence_for("mb05_healthy", 1)
+
+        class Snapshots:
+            async def snapshot_for(self, *, evidence, context, evaluated_at):
+                if evidence.evidence_id == poison.evidence_id:
+                    raise RuntimeError("snapshot provider lỗi cố ý (poison)")
+                return snapshots[context.strategy_release_id]
+
+        store = PostgresSignalDecisionStore(sessions)
+        dispatcher = BotEvidenceDispatcher(
+            store, strategies=StrategyRegistry(), snapshots=Snapshots()
+        )
+        provider = EffectiveBotDecisionContextProvider(sessions)
+        contexts = await provider.contexts_for(
+            workspace_id=workspace_a, as_of=DECISION_TIME + timedelta(minutes=5)
+        )
+        a1 = next(item for item in contexts if str(item.bot_id) == state["bot_a1"])
+        for item, minutes in ((poison, 2), (healthy, 3)):
+            await dispatcher.record_evidence(
+                item, evaluated_at=DECISION_TIME + timedelta(minutes=minutes)
+            )
+            (job,) = await dispatcher.fan_out(
+                item, (a1,), DECISION_TIME + timedelta(minutes=minutes)
+            )
+            out["poison_job_id" if item is poison else "healthy_job_id"] = str(job.job_id)
+        policy = JobRetryPolicy(max_attempts=2, base_delay_seconds=1, max_delay_seconds=1)
+        now = datetime.now(UTC)
+        first = await dispatcher.process_pending(
+            workspace_id=workspace_a, account_id=a1.account_id, now=now, policy=policy
+        )
+        out["first_round"] = [str(item.evidence_id) == str(healthy.evidence_id) for item in first]
+        second = await dispatcher.process_pending(
+            workspace_id=workspace_a,
+            account_id=a1.account_id,
+            now=now + timedelta(seconds=5),
+            policy=policy,
+        )
+        out["second_round"] = len(second)
+        out["after_dead"] = len(
+            await dispatcher.process_pending(
+                workspace_id=workspace_a,
+                account_id=a1.account_id,
+                now=now + timedelta(minutes=5),
+                policy=policy,
+            )
+        )
+        # Exclusion theo runtime: A1 PAUSED (control), A3 account DISABLED; recorder lưu bền.
+        async with UnitOfWork(sessions, workspace_id=workspace_a) as uow:
+            bot_a1 = await uow.bind_account(a1.account_id)
+            lease = BotRuntimeLease(uow.session)
+            db_now = await lease.database_now()
+            grant = await lease.acquire_grant(
+                workspace_a, bot_a1, "mb05-queue-probe", db_now + timedelta(seconds=120)
+            )
+        held = SimpleNamespace(
+            account_id=a1.account_id,
+            bot_id=bot_a1,
+            fence=RuntimeFence(grant.owner_id, grant.fencing_token),
+        )
+        gated = EffectiveBotDecisionContextProvider(
+            sessions, load_config=load_published_bot_config, runtime_gate=RuntimeFanOutGate()
+        )
+        eligibility = await gated.eligibility(
+            workspace_id=workspace_a, as_of=DECISION_TIME + timedelta(minutes=5)
+        )
+        out["exclusions"] = sorted(
+            [str(item.bot_id), item.reason_code] for item in eligibility.exclusions
+        )
+        recorder = FanOutExclusionRecorder(
+            sessions=sessions,
+            workspace_id=workspace_a,
+            accounts={a1.account_id: held}.get,
+        )
+        await recorder.record(eligibility)
+        await recorder.record(eligibility)  # cùng mã: không audit lặp
+        # Ack event outbox của hai evidence vừa ghi (consumer thật, ngoài gate runtime) để luồng
+        # export/downgrade phía sau không còn event PENDING.
+        consumer = SignalEvidenceFanOutConsumer(store, dispatcher, provider, worker_id="mb05-queue")
+        await consumer.consume_once(workspace_id=workspace_a, now=datetime.now(UTC))
+    finally:
+        await engine.dispose()
+    return out
+
+
 def prepare_downgrade(connection):
     """Mô phỏng export xong: xóa lịch sử MB-03 bằng superuser để downgrade được phép."""
+    # Hàng runtime MB-05 do pha queue tạo (control/lease/state) cũng phải export trước.
+    for table, trigger in (
+        ("bot_runtime_control", "bot_runtime_control_append_only"),
+        ("bot_runtime_state", "bot_runtime_state_identity_guard"),
+        ("bot_runtime_lease", "bot_runtime_lease_guard"),
+    ):
+        connection.execute(
+            sql.SQL("ALTER TABLE {} DISABLE TRIGGER {}").format(
+                sql.Identifier(table), sql.Identifier(trigger)
+            )
+        )
+        connection.execute(sql.SQL("DELETE FROM {}").format(sql.Identifier(table)))
+        connection.execute(
+            sql.SQL("ALTER TABLE {} ENABLE TRIGGER {}").format(
+                sql.Identifier(table), sql.Identifier(trigger)
+            )
+        )
     for table, trigger in (
         ("bot_decision", "bot_decision_immutable"),
         ("bot_decision_job", "bot_decision_job_transition_guard"),
@@ -1001,6 +1213,8 @@ phase = os.environ["MB03_PHASE"]
 state = json.loads(os.environ["MB03_STATE"] or "{}")
 if phase == "dispatch":
     print(json.dumps(asyncio.run(dispatch(state))))
+elif phase == "runtime_queue":
+    print(json.dumps(asyncio.run(runtime_queue(state))))
 else:
     with psycopg.connect(
         host="postgres",
@@ -1020,5 +1234,11 @@ else:
                 prepare_downgrade(database)
         elif phase == "verify_downgraded":
             verify_downgraded(database)
+        elif phase == "pause_controls":
+            with database.transaction():
+                pause_controls(database, state)
+            print(json.dumps({"paused": True}))
+        elif phase == "verify_queue":
+            print(json.dumps(verify_queue(database, state)))
         else:
             raise SystemExit(f"phase không hỗ trợ: {phase}")

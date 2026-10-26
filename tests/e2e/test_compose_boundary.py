@@ -20,6 +20,7 @@ from urllib.request import HTTPCookieProcessor, Request, build_opener, urlopen
 import pyotp
 import pytest
 from scripts.docker_image import build_image_reference, ensure_image_available
+from tests.e2e.multibot_runtime_harness import MB05_EXPORT_SQL
 
 from trading_bot.auth.cookies import session_cookie_name
 from trading_bot.common.http_security import CONTENT_SECURITY_POLICY
@@ -1769,6 +1770,9 @@ def test_paper_stack_starts_and_keeps_database_and_object_store_data() -> None:
             from trading_bot.adapters.database.repositories.paper_checkpoints import (
                 PaperCheckpointRepository,
             )
+            from trading_bot.adapters.database.repositories.bot_runtime_leases import (
+                BotRuntimeLease,
+            )
             from trading_bot.adapters.database.repositories.workspace_settings import (
                 WorkspaceSettingsRepository,
             )
@@ -2736,32 +2740,32 @@ def test_paper_stack_starts_and_keeps_database_and_object_store_data() -> None:
                     assert recovered_position is not None
                     assert recovered_position.quantity == plan.quantity
                     assert recovered_position.position_id == opened_position.position_id
-                exit_opened = entry_closed + timedelta(minutes=1)
-                exit_closed = exit_opened + timedelta(minutes=1)
-                stop_bar = PaperBar(
-                    'h03-paper-stop', plan.symbol, exit_opened, exit_closed, exit_closed,
-                    opened_position.entry_execution_price,
-                    max(opened_position.entry_execution_price, plan.stop_price),
-                    min(opened_position.entry_execution_price, plan.stop_price),
-                    plan.stop_price,
-                )
-                exit_result = await recovered_application.monitor_position(
-                    PaperMonitorCommand(
-                        account_id=account_id,
-                        ledger_intent_id=intent_id,
-                        trade_id=trade.id,
-                        paper_position_id=opened_position.position_id,
-                        bar=stop_bar,
-                        feature_snapshot_id=feature_snapshot_id,
+                    exit_opened = entry_closed + timedelta(minutes=1)
+                    exit_closed = exit_opened + timedelta(minutes=1)
+                    stop_bar = PaperBar(
+                        'h03-paper-stop', plan.symbol, exit_opened, exit_closed, exit_closed,
+                        opened_position.entry_execution_price,
+                        max(opened_position.entry_execution_price, plan.stop_price),
+                        min(opened_position.entry_execution_price, plan.stop_price),
+                        plan.stop_price,
                     )
-                )
-                closed_position = exit_result.position
-                assert closed_position.is_closed
-                assert exit_result.monitor_result.exit_reason == 'STOP_LOSS'
-                assert exit_result.exit_fill_appended
-                assert exit_result.trade_closed
-                exit_fill = exit_result.exit_fill
-                assert exit_fill is not None
+                    exit_result = await recovered_application.monitor_position(
+                        PaperMonitorCommand(
+                            account_id=account_id,
+                            ledger_intent_id=intent_id,
+                            trade_id=trade.id,
+                            paper_position_id=opened_position.position_id,
+                            bar=stop_bar,
+                            feature_snapshot_id=feature_snapshot_id,
+                        )
+                    )
+                    closed_position = exit_result.position
+                    assert closed_position.is_closed
+                    assert exit_result.monitor_result.exit_reason == 'STOP_LOSS'
+                    assert exit_result.exit_fill_appended
+                    assert exit_result.trade_closed
+                    exit_fill = exit_result.exit_fill
+                    assert exit_fill is not None
                 async with UnitOfWork(sessions, workspace_id=workspace_id) as uow:
                     await uow.bind_account(account_id)
                     exit_record = await uow.session.scalar(select(FillRecord).where(
@@ -2883,7 +2887,15 @@ def test_paper_stack_starts_and_keeps_database_and_object_store_data() -> None:
                     )
                     assert isolated_checkpoint_count == 0
                 async with UnitOfWork(sessions, workspace_id=workspace_id) as uow:
-                    await uow.bind_account(account_id)
+                    corrupt_bot_id = await uow.bind_account(account_id)
+                    # MB-05: mọi ghi checkpoint sau genesis cần lease + token hiện hành; writer
+                    # mô phỏng hỏng dữ liệu lấy lease riêng rồi trả lại.
+                    corruptor = BotRuntimeLease(uow.session)
+                    corruptor_now = await corruptor.database_now()
+                    corruptor_token = await corruptor.acquire(
+                        workspace_id, corrupt_bot_id, 'e2e-corruptor',
+                        corruptor_now + timedelta(seconds=60),
+                    )
                     checkpoint_repository = PaperCheckpointRepository()
                     latest_revision, latest_snapshot = await checkpoint_repository.load_latest(
                         uow,
@@ -2911,15 +2923,24 @@ def test_paper_stack_starts_and_keeps_database_and_object_store_data() -> None:
                         event_hash=hashlib.sha256(b'e2e-ledger-lineage-corruption').hexdigest(),
                         snapshot=corrupt_snapshot,
                         occurred_at=exit_closed + timedelta(minutes=1),
+                        fencing_token=corruptor_token,
+                    )
+                    assert await corruptor.release_if_owner(
+                        workspace_id, corrupt_bot_id, 'e2e-corruptor', corruptor_token,
                     )
                 corrupted_app = make_h03_app()
                 async with corrupted_app.router.lifespan_context(corrupted_app):
                     corrupted_runtime = corrupted_app.state.paper_runtime
-                    assert corrupted_app.state.readiness['paper_runtime'] is False
-                    assert corrupted_app.state.paper_application is None
-                assert not corrupted_runtime.ready
-                assert corrupted_runtime.error_code == 'PAPER_RECOVERY_CONFLICT'
-                assert not corrupted_runtime.active_accounts
+                    # MB05.5 ruling 1/26: checkpoint hỏng chỉ cô lập đúng bot đó; sibling
+                    # vẫn READY, process vẫn phục vụ (degraded) thay vì all-or-nothing.
+                    assert corrupted_app.state.readiness['paper_runtime'] is True
+                    assert corrupted_app.state.paper_application is not None
+                    assert corrupted_app.state.paper_registry.status() == 'degraded'
+                assert corrupted_runtime.ready
+                corrupted_state = corrupted_runtime.account_states[account_id]
+                assert corrupted_state.status.value == 'RECOVERY_REQUIRED'
+                assert corrupted_state.reason_code == 'PAPER_RECOVERY_CONFLICT'
+                assert set(corrupted_runtime.active_accounts) == {race_account_id}
                 await engine.dispose()
 
             asyncio.run(main())
@@ -3062,6 +3083,21 @@ def test_paper_stack_starts_and_keeps_database_and_object_store_data() -> None:
             "SELECT count(*) FROM trading_account; COMMIT",
         )
         assert "0" in unscoped_count.stdout.strip().splitlines()
+        # MB-05: runtime để lại lease/state + checkpoint có token; export trước downgrade.
+        compose(
+            "exec",
+            "--no-TTY",
+            "postgres",
+            "psql",
+            "-U",
+            "crypidian_admin",
+            "-d",
+            "crypidian",
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-c",
+            MB05_EXPORT_SQL,
+        )
         compose("run", "--rm", "migrator", "alembic", "downgrade", "base")
         compose("run", "--rm", "migrator", "alembic", "upgrade", "head")
         compose(

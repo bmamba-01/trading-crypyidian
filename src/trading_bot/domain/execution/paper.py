@@ -397,6 +397,11 @@ class PaperExecutionGateway:
         """Cho phép tạo intent PAPER mới sau khi được mở lại."""
         self._entries_paused = False
 
+    @property
+    def entries_paused(self) -> bool:
+        """Cờ pause entry trong snapshot (đồng bộ với control đã áp, MB05.5), chỉ đọc."""
+        return self._entries_paused
+
     def position(self, intent_id: str) -> PaperPosition | None:
         """Trả snapshot vị thế đang gắn với order intent."""
         return self._positions.get(intent_id)

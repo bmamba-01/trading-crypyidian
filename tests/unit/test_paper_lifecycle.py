@@ -225,6 +225,11 @@ async def test_monitor_persists_exit_and_closes_trade_idempotently() -> None:
     assert closed_trade_id == ledger.trade_id
     assert isinstance(gross_pnl, Decimal)
     assert closed_at == stop_bar.closed_at
+    # Hồi quy E2E MB-05: ledger EXIT phải mang đúng `bar_key` của fill trong snapshot (khóa
+    # close idempotent chứa bar thị trường), nếu không đối soát recovery lệch ở lần hydrate sau.
+    exit_values = dict(next(iter(ledger.exits.values())))
+    assert exit_values["bar_key"] == first.exit_fill.bar_key
+    assert stop_bar.bar_key in str(exit_values["bar_key"])
 
 
 @pytest.mark.asyncio
@@ -314,10 +319,17 @@ def test_every_checkpoint_append_in_coordinator_passes_fencing_token() -> None:
         and node.func.attr == "append"
         and "checkpoints" in ast.unparse(node.func.value)
     ]
-    assert len(appends) == 3
+    # submit/entry/monitor + checkpoint control pause/resume (MB05.6) dùng chung một helper.
+    assert len(appends) == 4
     assert all(any(k.arg == "fencing_token" for k in node.keywords) for node in appends)
     for name in ("submit_approved", "apply_entry_market_event", "monitor_market_event"):
         parameter = inspect.signature(getattr(PaperLifecycleCoordinator, name)).parameters[
             "fencing_token"
         ]
         assert parameter.default is None
+    for name in ("apply_entry_pause", "apply_entry_resume"):
+        parameter = inspect.signature(getattr(PaperLifecycleCoordinator, name)).parameters[
+            "fencing_token"
+        ]
+        # Command control mới không có chế độ không token (M3 đóng ở MB05.5).
+        assert parameter.default is inspect.Parameter.empty

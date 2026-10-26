@@ -169,6 +169,16 @@ class BotRuntimeControlRepository:
         """Pause/resume bot; resume bắt buộc `expected_revision` (domain kiểm)."""
         _validate_reason(reason_code, reason_text)
         await WorkspaceSettingsRepository(self._session).lock_workspace(workspace_id)
+        # M5: resolve bot trước khi lập kế hoạch noop — bot không thấy được (khác workspace/
+        # thiếu grant) trả BOT_NOT_FOUND kể cả khi thao tác sẽ là noop (ví dụ resume bot chưa
+        # từng pause), không được trả "đã ENABLED".
+        account_id = await self._session.scalar(
+            select(BotInstance.trading_account_id).where(
+                BotInstance.workspace_id == workspace_id, BotInstance.id == bot_id
+            )
+        )
+        if account_id is None:
+            raise RuntimeControlError("BOT_NOT_FOUND")
         current = await _current_bot(self._session, workspace_id, bot_id)
         change = plan_bot_control_change(
             current, BotEntryState(target), expected_revision=expected_revision
@@ -180,14 +190,6 @@ class BotRuntimeControlRepository:
                 revision=change.next_revision,
                 changed=False,
             )
-        account_id = await self._session.scalar(
-            select(BotInstance.trading_account_id).where(
-                BotInstance.workspace_id == workspace_id, BotInstance.id == bot_id
-            )
-        )
-        if account_id is None:
-            # Bot không thấy được (khác workspace/thiếu grant) trả cùng lỗi như không tồn tại.
-            raise RuntimeControlError("BOT_NOT_FOUND")
         self._session.add(
             BotRuntimeControlRecord(
                 id=uuid4(),

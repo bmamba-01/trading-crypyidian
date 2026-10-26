@@ -53,7 +53,7 @@ def test_runtime_startup_hydration_failure_keeps_readiness_blocked_and_reports_c
         async def bootstrap(self) -> SimpleNamespace:
             return bootstrap_result
 
-    def make_bootstrap(*, sessions: object, workspace_id: UUID) -> _Bootstrap:
+    def make_bootstrap(*, sessions: object, workspace_id: UUID, **_: object) -> _Bootstrap:
         del sessions
         calls.append(workspace_id)
         return _Bootstrap()
@@ -74,6 +74,9 @@ def test_runtime_startup_hydration_failure_keeps_readiness_blocked_and_reports_c
         "total": 1,
         "ready": 0,
         "recovery_required": 1,
+        "standby": 0,
+        "paused": 0,
+        "activity_blocked": 0,
         "blocked_by_workspace": 0,
     }
     assert str(workspace_id) not in response.text
@@ -116,6 +119,9 @@ def test_runtime_readiness_becomes_ready_only_after_all_accounts_hydrate() -> No
         "total": 2,
         "ready": 2,
         "recovery_required": 0,
+        "standby": 0,
+        "paused": 0,
+        "activity_blocked": 0,
         "blocked_by_workspace": 0,
     }
     assert "workspace_id" not in response.text

@@ -25,6 +25,7 @@ from trading_bot.application.bot_dispatcher import (
     EvidenceScopeError,
     RecordedEvidence,
     SignalEvidenceFanOutConsumer,
+    reconcile_existing_job,
 )
 from trading_bot.domain.market.signal_evidence import SharedSignalEvidence, SignalEvidenceError
 from trading_bot.domain.strategy.contracts import DecisionSnapshot
@@ -183,12 +184,11 @@ class InMemoryStore:
         if existing is None:
             self.jobs[key] = job
             return job
-        if existing != job:
-            raise BotDecisionConflict("job khác payload")
-        return existing
+        # Cùng quy tắc với repository PostgreSQL (ruling 17): chỉ khác mốc thời gian -> ack.
+        return reconcile_existing_job(existing, job)
 
     async def pending_jobs(
-        self, *, workspace_id: UUID, account_id: UUID, limit: int
+        self, *, workspace_id: UUID, account_id: UUID, limit: int, now: datetime | None = None
     ) -> tuple[BotDecisionJob, ...]:
         pending = [
             job
@@ -351,15 +351,18 @@ async def test_retry_with_later_timestamps_creates_no_second_evidence_job_or_dec
     assert len(store.jobs) == 2
     assert len(store.decisions) == 2
     assert len(snapshots.calls) == 2
-    # Dispatch lại cùng observation ở mốc khác là conflict fail-closed, vẫn không ghi gì thêm.
-    with pytest.raises(BotDecisionConflict):
-        await dispatcher.dispatch_evidence(retry, contexts, as_of + timedelta(minutes=5))
+    # Thay đổi có chủ đích (MB05.8, ruling 17): retry chỉ khác mốc thời gian trả job cũ (ack,
+    # không conflict) và dùng `evaluated_at` đã ghim; không ghi thêm, không đánh giá lại.
+    third = await dispatcher.dispatch_evidence(retry, contexts, as_of + timedelta(minutes=5))
+    assert third == first
+    assert {decision.evaluated_at for decision in third} == {as_of}
     assert (len(store.evidence), len(store.events), len(store.jobs), len(store.decisions)) == (
         1,
         1,
         2,
         2,
     )
+    assert len(snapshots.calls) == 2
 
 
 async def test_candidate_settings_version_is_the_root_workspace_settings_version() -> None:
@@ -526,15 +529,20 @@ async def test_snapshot_for_another_symbol_is_vetoed() -> None:
     assert decision.reason_code == "DECISION_SNAPSHOT_SCOPE_MISMATCH"
 
 
-async def test_same_job_key_with_different_evaluation_time_is_conflict() -> None:
-    dispatcher, _, _ = _dispatcher()
+async def test_same_job_key_with_different_evaluation_time_acks_existing_job() -> None:
+    """Thay đổi có chủ đích (MB05.8, ruling 17): trước đây là conflict làm event DEAD."""
+    dispatcher, store, _ = _dispatcher()
     evidence = _evidence()
-    await dispatcher.dispatch_evidence(evidence, [_context()], DECISION_TIME)
+    (first,) = await dispatcher.dispatch_evidence(evidence, [_context()], DECISION_TIME)
 
-    with pytest.raises(BotDecisionConflict):
-        await dispatcher.dispatch_evidence(
-            evidence, [_context()], DECISION_TIME + timedelta(minutes=1)
-        )
+    (again,) = await dispatcher.dispatch_evidence(
+        evidence, [_context()], DECISION_TIME + timedelta(minutes=1)
+    )
+
+    assert again == first
+    assert again.evaluated_at == DECISION_TIME
+    assert len(store.jobs) == 1
+    assert len(store.decisions) == 1
 
 
 async def test_new_bot_config_version_gets_its_own_job_and_decision() -> None:
@@ -659,3 +667,145 @@ async def test_outbox_consumer_records_failure_when_evidence_hash_mismatches() -
     assert store.failures == [(event.event_id, "EvidenceScopeError")]
     assert store.jobs == {}
     assert store.receipts == []
+
+
+# --- MB05.8: hàng đợi job theo bot (poison job, backoff, DEAD, retry thời gian) -------------
+
+
+class FailingSnapshots(FixtureSnapshots):
+    """Provider ném lỗi cho evidence chỉ định (poison job) và chạy bình thường cho evidence khác."""
+
+    def __init__(self, poison_feature: str) -> None:
+        super().__init__()
+        self.poison_feature = poison_feature
+
+    async def snapshot_for(self, *, evidence, context, evaluated_at):  # type: ignore[no-untyped-def]
+        if evidence.feature_snapshot_id == self.poison_feature:
+            raise RuntimeError("snapshot provider lỗi tạm thời")
+        return await super().snapshot_for(
+            evidence=evidence, context=context, evaluated_at=evaluated_at
+        )
+
+
+class RetryingStore(InMemoryStore):
+    """Mô phỏng attempts/next_attempt_at/DEAD của PostgreSQL."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.attempts: dict[UUID, int] = {}
+        self.next_attempt: dict[UUID, datetime] = {}
+        self.dead: dict[UUID, str] = {}
+        self.policies: list[object] = []
+
+    async def pending_jobs(self, *, workspace_id, account_id, limit, now=None):  # type: ignore[no-untyped-def]
+        pending = await super().pending_jobs(
+            workspace_id=workspace_id, account_id=account_id, limit=100
+        )
+        ready = [
+            job
+            for job in pending
+            if job.job_id not in self.dead
+            and (now is None or self.next_attempt.get(job.job_id, now) <= now)
+        ]
+        return tuple(ready[:limit])
+
+    async def record_job_failure(self, job, *, error_code, now, policy):  # type: ignore[no-untyped-def]
+        self.policies.append(policy)
+        attempts = self.attempts.get(job.job_id, 0) + 1
+        self.attempts[job.job_id] = attempts
+        if attempts >= policy.max_attempts:
+            self.dead[job.job_id] = error_code
+            return "DEAD"
+        self.next_attempt[job.job_id] = now + timedelta(seconds=policy.delay_seconds(attempts))
+        return "PENDING"
+
+
+async def _two_jobs_for_bot_a(store: RetryingStore, snapshots: FixtureSnapshots):
+    dispatcher = BotEvidenceDispatcher(store, strategies=StrategyRegistry(), snapshots=snapshots)
+    poison = _evidence(feature_snapshot_id="9" * 64)
+    healthy = _evidence()
+    await store.record_evidence(poison, evaluated_at=DECISION_TIME)
+    await store.record_evidence(healthy, evaluated_at=DECISION_TIME)
+    await dispatcher.fan_out(poison, [_context()], DECISION_TIME)
+    await dispatcher.fan_out(healthy, [_context()], DECISION_TIME)
+    return dispatcher, poison, healthy
+
+
+async def test_poison_job_does_not_block_following_job_of_same_bot() -> None:
+    store = RetryingStore()
+    dispatcher, poison, healthy = await _two_jobs_for_bot_a(store, FailingSnapshots("9" * 64))
+
+    decisions = await dispatcher.process_pending(
+        workspace_id=WORKSPACE, account_id=ACCOUNT_A, now=DECISION_TIME
+    )
+
+    assert [decision.evidence_id for decision in decisions] == [healthy.evidence_id]
+    poison_job = next(job for job in store.jobs.values() if job.evidence_id == poison.evidence_id)
+    assert store.attempts[poison_job.job_id] == 1
+    assert store.next_attempt[poison_job.job_id] > DECISION_TIME
+
+
+async def test_failed_job_backs_off_with_cap_then_becomes_dead() -> None:
+    store = RetryingStore()
+    dispatcher, poison, _ = await _two_jobs_for_bot_a(store, FailingSnapshots("9" * 64))
+    poison_job_id = next(
+        job.job_id for job in store.jobs.values() if job.evidence_id == poison.evidence_id
+    )
+    now = DECISION_TIME
+    for _ in range(10):
+        await dispatcher.process_pending(workspace_id=WORKSPACE, account_id=ACCOUNT_A, now=now)
+        now = now + timedelta(hours=1)
+
+    policy = store.policies[0]
+    assert store.dead[poison_job_id] == "RUNTIME_ERROR"
+    assert store.attempts[poison_job_id] == policy.max_attempts
+    delays = [policy.delay_seconds(attempt) for attempt in range(1, 12)]
+    assert delays == sorted(delays)
+    assert max(delays) == policy.max_delay_seconds
+
+
+async def test_job_retry_policy_rejects_invalid_values() -> None:
+    from trading_bot.application.bot_dispatcher import JobRetryPolicy
+
+    with pytest.raises(ValueError, match="JobRetryPolicy"):
+        JobRetryPolicy(max_attempts=0)
+    with pytest.raises(ValueError, match="JobRetryPolicy"):
+        JobRetryPolicy(base_delay_seconds=10, max_delay_seconds=5)
+    assert JobRetryPolicy().delay_seconds(1) == JobRetryPolicy().base_delay_seconds
+
+
+async def test_retry_only_differing_in_time_returns_existing_job_but_context_change_conflicts():
+    store = InMemoryStore()
+    dispatcher = BotEvidenceDispatcher(
+        store, strategies=StrategyRegistry(), snapshots=FixtureSnapshots()
+    )
+    evidence = _evidence()
+    await store.record_evidence(evidence, evaluated_at=DECISION_TIME)
+    (first,) = await dispatcher.fan_out(evidence, [_context()], DECISION_TIME)
+
+    (retry,) = await dispatcher.fan_out(
+        evidence, [_context()], DECISION_TIME + timedelta(minutes=3)
+    )
+    assert retry == first
+    assert retry.evaluated_at == DECISION_TIME
+    with pytest.raises(BotDecisionConflict):
+        await dispatcher.fan_out(
+            evidence,
+            [
+                _context(
+                    strategy_parameters=(("donchian_lookback", 60),), strategy_release_id="h03-v1"
+                )
+            ],
+            DECISION_TIME,
+        )
+
+
+async def test_job_error_code_is_safe_machine_code() -> None:
+    from trading_bot.application.bot_dispatcher import job_error_code
+
+    assert job_error_code(EvidenceScopeError("có dữ liệu nhạy cảm")) == "EVIDENCE_SCOPE_ERROR"
+
+    class Coded(RuntimeError):
+        reason_code = "SNAPSHOT_UNAVAILABLE"
+
+    assert job_error_code(Coded()) == "SNAPSHOT_UNAVAILABLE"

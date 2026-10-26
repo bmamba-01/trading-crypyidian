@@ -94,9 +94,12 @@ def test_revision_chains_after_merged_mb04_head_and_is_single_head() -> None:
     others = [
         path
         for path in VERSIONS.glob("*.py")
-        if path != MIGRATION and 'down_revision = "d9b2f4a6c8e1"' in path.read_text("utf-8")
+        if path != MIGRATION
+        and re.search(r'down_revision(?:: [^=]+)? = "d9b2f4a6c8e1"', path.read_text("utf-8"))
     ]
-    assert others == []
+    # Đúng một revision nối sau Part A: MB-04 equity aggregate; Part B (siết fence genesis, M3)
+    # nối tiếp sau nó (`e1f3a5c7b9d2`, kiểm ở test migration Part B).
+    assert [path.name for path in others] == ["e4f6a8c0d2b5_workspace_equity_aggregate.py"]
 
 
 def test_new_tables_are_declared_and_bot_scoped_tables_use_composite_fk() -> None:

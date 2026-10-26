@@ -20,6 +20,7 @@ from trading_bot.application.paper_execution_profile import (
     resolve_paper_execution_profile,
 )
 from trading_bot.application.paper_runtime_application import (
+    EntryGateState,
     PaperDecisionCommand,
     PaperDecisionContext,
     PaperMonitorCommand,
@@ -30,6 +31,13 @@ from trading_bot.application.paper_runtime_application import (
 from trading_bot.config.settings import AppSettings
 from trading_bot.config.workspace_settings import PublishedWorkspaceSettings, WorkspaceSettings
 from trading_bot.domain.execution.paper import PaperBar
+from trading_bot.domain.execution.runtime_control import (
+    BotReadiness,
+    FencingToken,
+    RuntimeActivityStatus,
+    RuntimeControlSnapshot,
+    RuntimeFence,
+)
 from trading_bot.domain.strategy.registry import StrategyRegistry
 
 
@@ -89,7 +97,8 @@ def test_application_rejects_account_outside_bootstrapped_map_before_loading_con
     assert provider_load_calls == 0
 
 
-def test_lifespan_readiness_turns_not_ready_when_paper_account_is_invalidated() -> None:
+def test_lifespan_readiness_degrades_when_paper_account_is_invalidated() -> None:
+    """Thay đổi có chủ đích (ruling 2/26, WBS C4): invalidation một account chỉ `degraded`."""
     workspace_id = uuid4()
     account_id = uuid4()
 
@@ -114,8 +123,8 @@ def test_lifespan_readiness_turns_not_ready_when_paper_account_is_invalidated() 
         app.state.paper_application._invalidate_account(account_id, "PAPER_PROFILE_DRIFT")
         response = client.get("/health/ready")
 
-    assert response.status_code == 503
-    assert response.json()["paper_runtime_error_code"] == "PAPER_PROFILE_DRIFT"
+    assert response.status_code == 200
+    assert response.json()["status"] == "degraded"
     assert response.json()["paper_accounts"]["recovery_required"] == 1
     assert str(account_id) not in response.text
 
@@ -317,11 +326,20 @@ def _application_with_fakes(
         async def record_evaluation(self, **_: object) -> SimpleNamespace:
             return SimpleNamespace(risk_decision_id=evaluation_id)
 
-        async def reserve(self, _decision, *, idempotency_key, **_: object) -> SimpleNamespace:
-            events.append("L2-L4:reserve")
-            counters.reserves += 1
-            idempotency_keys.append(idempotency_key)
-            return SimpleNamespace(reservation_id=reservation_id)
+    async def _control(_session: object, **_: object) -> RuntimeControlSnapshot:
+        events.append("control")
+        return RuntimeControlSnapshot(workspace=None, bot=None)
+
+    async def _gate_state(_uow: object, **_: object) -> EntryGateState:
+        events.append("gate")
+        return EntryGateState(
+            account_enabled=True,
+            bot_enabled=True,
+            readiness=BotReadiness.READY,
+            activity_status=RuntimeActivityStatus.VERIFIED,
+            activity_checked_at=datetime.now(UTC),
+            open_incident=False,
+        )
 
     class _Coordinator:
         async def submit_approved(self, uow, **kwargs: object) -> SimpleNamespace:
@@ -345,14 +363,21 @@ def _application_with_fakes(
             return SimpleNamespace(intent_id=intent_id)
 
     class _WorkspaceRiskCoordinator:
+        """Coordinator MB-04 giả (đường reservation duy nhất): ghi nhận L2→L4 + reserve."""
+
+        async def acquire_locks(self, *_: object) -> None:
+            events.append("L2-L3")
+
         async def reserve(self, request, **kwargs: object) -> SimpleNamespace:
-            events.append("L2-L4:workspace-reserve")
+            events.append("L2-L4:reserve")
             counters.reserves += 1
             idempotency_keys.append(request.idempotency_key)
             counters.workspace_request = request
             counters.workspace_caps = kwargs
+            counters.budget_kwargs = kwargs
             return SimpleNamespace(
                 approved=True,
+                reason_code="APPROVED",
                 decision_id=uuid4(),
                 reservation_id=reservation_id,
                 decision=SimpleNamespace(approved=True),
@@ -364,6 +389,7 @@ def _application_with_fakes(
         gateway=_Gateway(),
         coordinator=_Coordinator(),
         execution_profile=profile,
+        fence=RuntimeFence("runtime-a", FencingToken(1)),
     )
     _FakeUnitOfWork.instances = []
     _FakeUnitOfWork.scalar_results = []
@@ -385,13 +411,18 @@ def _application_with_fakes(
         context_provider=_ContextProvider(),  # type: ignore[arg-type]
         unit_of_work_factory=_FakeUnitOfWork,
         settings_repository_factory=lambda _session: _SettingsRepository(),
-        risk_repository_factory=lambda _session: _RiskRepository(),
-        workspace_risk_coordinator_factory=lambda _session: _WorkspaceRiskCoordinator(),
         decision_cycle_factory=lambda _gateway: _Cycle(),
         account_invalidation_callback=lambda account, reason: callback_state.invalidations.append(
             (account, reason)
         ),
-        **{"bot_config_loader": _no_bot_config, "fence_guard_factory": _AllowFence}
+        **{
+            "bot_config_loader": _no_bot_config,
+            "fence_guard_factory": _AllowFence,
+            "control_reader": _control,
+            "gate_state_loader": _gate_state,
+            "risk_repository_factory": lambda _session: _RiskRepository(),
+            "workspace_risk_coordinator_factory": lambda _session: _WorkspaceRiskCoordinator(),
+        }
         | service_overrides,  # type: ignore[arg-type]
     )
     command = PaperDecisionCommand(
@@ -432,6 +463,7 @@ def test_workspace_budget_denial_skips_paper_submission() -> None:
         async def reserve(self, request, **_: object) -> SimpleNamespace:
             return SimpleNamespace(
                 approved=False,
+                reason_code="WORKSPACE_CAP_EXCEEDED",
                 decision_id=uuid4(),
                 reservation_id=None,
                 decision=SimpleNamespace(approved=False),
@@ -1078,21 +1110,32 @@ def test_runtime_account_fence_is_presented_and_token_reaches_checkpoint_writer(
     assert counters.submit_kwargs["fencing_token"] == FencingToken(5)
 
 
-def test_pre_registry_account_presents_no_fence_and_no_token() -> None:
-    service, command, _, _, counters, _, _, _ = _application_with_fakes(fail_submission=False)
+def test_account_without_fence_is_rejected_after_registry_closes_transitional_mode() -> None:
+    """M3: sau MB05.5 không còn writer chạy không token; account thiếu fence bị hạ STANDBY."""
+    lease_lost: list[tuple[object, str]] = []
+    service, command, _, _, counters, _, _, _ = _application_with_fakes(
+        fail_submission=False,
+        lease_lost_callback=lambda account, code: lease_lost.append((account, code)),
+    )
+    account = service._active_accounts[command.account_id]
+    service._active_accounts[command.account_id] = SimpleNamespace(
+        **{key: value for key, value in vars(account).items() if key != "fence"}
+    )
 
-    asyncio.run(service.evaluate_and_submit(command))
+    with pytest.raises(PaperRuntimeApplicationError, match="FENCING_TOKEN_REQUIRED"):
+        asyncio.run(service.evaluate_and_submit(command))
 
-    assert counters.fences[-1]["fence"] is None
-    assert counters.submit_kwargs["fencing_token"] is None
+    assert counters.fences == []
+    assert counters.submissions == 0
+    assert lease_lost == [(command.account_id, "FENCING_TOKEN_REQUIRED")]
 
 
 def test_runtime_account_requires_owner_and_token_together() -> None:
     from trading_bot.application.paper_runtime_bootstrap import PaperRuntimeAccount
     from trading_bot.domain.execution.runtime_control import FencingToken, RuntimeControlError
 
-    for owner, token in (("runtime-a", None), (None, FencingToken(1))):
-        with pytest.raises(RuntimeControlError, match="RUNTIME_FENCE_INCOMPLETE"):
+    for owner, token in (("runtime-a", None), (None, FencingToken(1)), (None, None)):
+        with pytest.raises(RuntimeControlError, match="FENCING_TOKEN_REQUIRED"):
             PaperRuntimeAccount(
                 account_id=uuid4(),
                 bot_id=uuid4(),

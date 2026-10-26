@@ -373,8 +373,15 @@ async def test_insert_job_dedupes_same_payload_and_rejects_different_payload() -
     later = BotDecisionJob.create(
         evidence=_evidence(), context=_context(), evaluated_at=DECISION_TIME + timedelta(minutes=1)
     )
+    # MB05.8 ruling 17: chỉ khác evaluated_at -> trả job đã ghim (ack), không conflict.
+    assert await BotDecisionRepository(FakeSession([_job_row(later)])).insert_job(job) == later  # type: ignore[arg-type]
+    other_context = BotDecisionJob.create(
+        evidence=_evidence(),
+        context=_context(strategy_release_id="h03-v1"),
+        evaluated_at=DECISION_TIME,
+    )
     with pytest.raises(BotDecisionConflict):
-        await BotDecisionRepository(FakeSession([_job_row(later)])).insert_job(job)  # type: ignore[arg-type]
+        await BotDecisionRepository(FakeSession([_job_row(other_context)])).insert_job(job)  # type: ignore[arg-type]
 
 
 async def test_stored_job_with_tampered_context_is_rejected() -> None:
@@ -532,26 +539,106 @@ async def test_store_completed_job_returns_stored_decision_without_reevaluation(
 
     assert await store.complete_job(job, evaluate) == decision
     assert calls == []
-    assert any("FOR UPDATE" in statement for statement in session.statements)
+    # Pha đọc không khóa hàng job (MB05.8: không giữ FOR UPDATE quanh đánh giá).
+    assert not any("FOR UPDATE" in statement for statement in session.statements)
 
 
-async def test_store_pending_job_is_evaluated_saved_and_completed_once() -> None:
+async def test_store_pending_job_is_evaluated_outside_lock_then_completed_once() -> None:
+    """MB05.8: pha 1 đọc job + evidence (không khóa) → đánh giá ngoài transaction → pha 2 khóa
+    `FOR UPDATE` ngắn, ghi decision và COMPLETED."""
     job = _job()
     decision = await _decision(job)
+    read = FakeSession([SimpleNamespace(id=BOT_A), _job_row(job), _evidence_row(_evidence())])
     record = _job_row(job)
-    session = FakeSession(
-        [SimpleNamespace(id=BOT_A), record, _evidence_row(_evidence()), None],
-    )
+    write = FakeSession([SimpleNamespace(id=BOT_A), record, None])
+    sessions = FakeSessions(read, write)
     store = PostgresSignalDecisionStore(  # type: ignore[arg-type]
-        FakeSessions(session), clock=lambda: DECISION_TIME + timedelta(seconds=5)
+        sessions, clock=lambda: DECISION_TIME + timedelta(seconds=5)
     )
 
     async def evaluate(_evidence: object, pending: BotDecisionJob) -> BotDecision:
         assert pending == job
+        # Lúc đánh giá: transaction đọc đã kết thúc, chưa mở transaction khóa job.
+        assert sessions.opened == [read]
+        assert read.committed
+        assert not any("FOR UPDATE" in statement for statement in read.statements)
         return decision
 
     assert await store.complete_job(job, evaluate) == decision
     assert record.status == "COMPLETED"
     assert record.completed_at == DECISION_TIME + timedelta(seconds=5)
-    assert [type(row) for row in session.added] == [BotDecisionRecord]
-    assert session.committed is True
+    assert [type(row) for row in write.added] == [BotDecisionRecord]
+    assert any("FOR UPDATE" in statement for statement in write.statements)
+    assert write.committed is True
+
+
+async def test_store_job_completed_concurrently_returns_stored_decision() -> None:
+    job = _job()
+    decision = await _decision(job)
+    read = FakeSession([SimpleNamespace(id=BOT_A), _job_row(job), _evidence_row(_evidence())])
+    write = FakeSession(
+        [
+            SimpleNamespace(id=BOT_A),
+            _job_row(job, status="COMPLETED", completed_at=DECISION_TIME),
+            _decision_row(decision),
+        ]
+    )
+    store = PostgresSignalDecisionStore(FakeSessions(read, write))  # type: ignore[arg-type]
+
+    async def evaluate(_evidence: object, _pending: BotDecisionJob) -> BotDecision:
+        return decision
+
+    assert await store.complete_job(job, evaluate) == decision
+    assert write.added == []
+
+
+async def test_store_records_job_failure_with_backoff_then_dead_and_audit() -> None:
+    from trading_bot.adapters.database.models import AuditEvent
+    from trading_bot.application.bot_dispatcher import JobRetryPolicy
+
+    job = _job()
+    policy = JobRetryPolicy(max_attempts=2, base_delay_seconds=30, max_delay_seconds=600)
+    now = DECISION_TIME + timedelta(minutes=1)
+    first = _job_row(job, attempts=0, last_error_code=None, next_attempt_at=None)
+    first_session = FakeSession([SimpleNamespace(id=BOT_A), first])
+    status = await PostgresSignalDecisionStore(FakeSessions(first_session)).record_job_failure(  # type: ignore[arg-type]
+        job, error_code="RUNTIME_ERROR", now=now, policy=policy
+    )
+    assert status == "PENDING"
+    assert (first.attempts, first.last_error_code) == (1, "RUNTIME_ERROR")
+    assert first.next_attempt_at == now + timedelta(seconds=30)
+    assert any("FOR UPDATE" in statement for statement in first_session.statements)
+
+    second = _job_row(job, attempts=1, last_error_code="RUNTIME_ERROR", next_attempt_at=now)
+    second_session = FakeSession([SimpleNamespace(id=BOT_A), second])
+    status = await PostgresSignalDecisionStore(FakeSessions(second_session)).record_job_failure(  # type: ignore[arg-type]
+        job, error_code="RUNTIME_ERROR", now=now, policy=policy
+    )
+    assert status == "DEAD"
+    assert (second.status, second.attempts) == ("DEAD", 2)
+    audits = [row for row in second_session.added if isinstance(row, AuditEvent)]
+    assert [audit.action for audit in audits] == ["bot.decision_job.dead"]
+    assert audits[0].reason == "RUNTIME_ERROR"
+
+
+async def test_store_pending_jobs_skip_backoff_window() -> None:
+    session = FakeSession([SimpleNamespace(id=BOT_A)], scalars_results=[[]])
+    store = PostgresSignalDecisionStore(FakeSessions(session))  # type: ignore[arg-type]
+
+    await store.pending_jobs(
+        workspace_id=WORKSPACE, account_id=ACCOUNT_A, limit=5, now=DECISION_TIME
+    )
+
+    assert "next_attempt_at" in session.statements[-1]
+
+
+async def test_insert_job_retry_with_other_evaluated_at_returns_stored_job() -> None:
+    job = _job()
+    later = BotDecisionJob.create(
+        evidence=_evidence(), context=_context(), evaluated_at=DECISION_TIME + timedelta(minutes=2)
+    )
+
+    stored = await BotDecisionRepository(FakeSession([_job_row(job)])).insert_job(later)  # type: ignore[arg-type]
+
+    assert stored == job
+    assert stored.evaluated_at == DECISION_TIME

@@ -2,7 +2,7 @@ from pathlib import Path
 from typing import Literal
 from uuid import UUID
 
-from pydantic import model_validator
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 TradingMode = Literal["PAPER", "DEMO"]
@@ -33,6 +33,10 @@ class AppSettings(BaseSettings):
     database_host: str = "postgres"
     database_name: str = "crypidian"
     runtime_workspace_id: UUID | None = None
+    # Lease một writer theo bot (MB-05): TTL ≤ 300 giây (khớp trigger DB), tick supervisor
+    # phải ngắn hơn TTL để kịp gia hạn trước khi hết hạn.
+    runtime_lease_ttl_seconds: int = Field(default=30, ge=3, le=300)
+    runtime_supervisor_tick_seconds: float = Field(default=5.0, gt=0, le=60)
     mfa_encryption_key_file: Path | None = None
     mfa_secret_directory: Path | None = None
     bootstrap_token_file: Path | None = None
@@ -47,6 +51,8 @@ class AppSettings(BaseSettings):
                 )
             if self.trading_mode != "PAPER":
                 raise ValueError("trading-runtime hiện chỉ hỗ trợ mode PAPER.")
+            if self.runtime_supervisor_tick_seconds >= self.runtime_lease_ttl_seconds:
+                raise ValueError("Tick supervisor phải ngắn hơn TTL lease runtime.")
         elif self.runtime_workspace_id is not None:
             raise ValueError(
                 "runtime_workspace_id chỉ được cấu hình cho process_role trading-runtime."

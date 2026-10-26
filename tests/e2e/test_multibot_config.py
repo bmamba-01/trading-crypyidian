@@ -16,6 +16,7 @@ from urllib.request import HTTPCookieProcessor, Request, build_opener
 
 import pyotp
 from scripts.docker_image import build_image_reference, ensure_image_available
+from tests.e2e.multibot_runtime_harness import MB05_EXPORT_SQL
 
 # Bootstrap ngắn đọc gói JSON từ stdin: Windows giới hạn dòng lệnh 32.767 ký tự.
 PROBE_BOOTSTRAP = (
@@ -138,7 +139,7 @@ def test_bot_overlay_versions_admin_api_and_open_paper_position() -> None:
         current = compose("run", "--rm", "--no-deps", "migrator", "alembic", "current")
         # Head tích hợp gồm cả MB-05 (registry runtime); downgrade ở trên vẫn kiểm tra luồng
         # đảo chiều sạch qua migration MB-05 (chưa có hàng runtime).
-        assert "e4f6a8c0d2b5" in current.stdout
+        assert "e1f3a5c7b9d2" in current.stdout
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "check")
 
         # --- Owner, MFA, risk profile và root settings ------------------------------------
@@ -416,6 +417,8 @@ def test_bot_overlay_versions_admin_api_and_open_paper_position() -> None:
         audit = psql(
             "SELECT action || ':' || count(*) FROM audit_event "
             f"WHERE workspace_id = '{workspace_id}' AND action LIKE 'bot.%' "
+            # Audit vòng đời runtime MB-05 (lease) không thuộc phạm vi cấu hình MB-02.
+            "AND action NOT LIKE 'bot.runtime.%' "
             "GROUP BY action ORDER BY action"
         ).stdout.split()
         # 4 draft qua API (v1, loose, retired, v2); retry/replay không ghi audit lần hai.
@@ -523,6 +526,20 @@ def test_bot_overlay_versions_admin_api_and_open_paper_position() -> None:
             "('bot_config_version','bot_config_request')"
         ).stdout.strip()
         assert rls_flags == "bot_config_request:truetrue,bot_config_version:truetrue"
+        # Runtime MB-05 trong probe để lại lease/state: guard MB-05 chặn trước; export rồi mới
+        # kiểm guard MB-02 như cũ.
+        runtime_guard = compose(
+            "run",
+            "--rm",
+            "--no-deps",
+            "migrator",
+            "alembic",
+            "downgrade",
+            "c7a90d3f8e21",
+            success=False,
+        )
+        assert "MB05_DOWNGRADE_REQUIRES_EXPORT_OF_RUNTIME_STATE" in runtime_guard.stderr
+        psql(MB05_EXPORT_SQL)
         guard = compose(
             "run",
             "--rm",
