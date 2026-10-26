@@ -280,3 +280,66 @@
 | Consumer receipt | Biên nhận đã xử lý của consumer | Khóa duy nhất theo workspace, event và consumer dùng để nhận biết lần xử lý lặp; consumer vẫn cần idempotency cho side effect ngoài DB. | [Hợp đồng outbox](../architecture/technical-design.md#service-contracts) |
 | Append-only audit | Nhật ký kiểm toán chỉ ghi nối tiếp | Bản ghi actor/action/target/reason, request ID và hash trước/sau; role ứng dụng chỉ được SELECT/INSERT, trigger từ chối UPDATE/DELETE. | [PostgreSQL trigger](https://www.postgresql.org/docs/18/trigger-definition.html) · [WP-01E](../implementation/01-foundation-database.md#wp-01e--unit-of-work-audit-và-outbox) |
 | SHA-256 state hash | Mã băm trạng thái SHA-256 | Dấu vết 256-bit của biểu diễn JSON đã chuẩn hóa để đối chiếu trạng thái mà không lưu bản chụp; không dùng thay chữ ký số hay xác thực actor. | [Python `hashlib`](https://docs.python.org/3/library/hashlib.html) |
+
+## L. Multi-Bot: cấu hình bot, evidence dùng chung và fan-out
+
+| Thuật ngữ | Bản dịch ưu tiên | Giải thích ngắn trong dự án | Tài liệu tham khảo |
+| --- | --- | --- | --- |
+| Effective configuration | Cấu hình hiệu lực | Kết quả hợp nhất root settings + overlay bot + release đã duyệt tại một thời điểm, có lineage/hash để tái dựng quyết định. | [Contract Multi-Bot](../architecture/decisions/2026-10-24-multibot-contracts.md) · [WBS MB-02](../superpowers/plans/2026-10-24-mb02-bot-config-wbs.md) |
+| Tighten-only | Chỉ được siết | Giá trị cấp con chỉ được nhỏ hơn hoặc bằng giới hạn cấp cha; bằng là hợp lệ. Overlay bot không bao giờ nới root hard cap. | [WBS MB-02](../superpowers/plans/2026-10-24-mb02-bot-config-wbs.md) |
+| Request fingerprint | Dấu vân tay yêu cầu | Hash payload chuẩn hóa, dùng phát hiện tái dùng idempotency key với nội dung khác. | [IETF Idempotency-Key draft](https://datatracker.ietf.org/doc/draft-ietf-httpapi-idempotency-key-header/) |
+| Shared signal evidence | Bằng chứng tín hiệu dùng chung | Fact/setup trung lập scope workspace, có provenance và `available_at`; không phải lệnh hay quyết định của bot, không chứa account/quantity/order. | [Contract Multi-Bot](../architecture/decisions/2026-10-24-multibot-contracts.md) · [WBS MB-03](../superpowers/plans/2026-10-24-mb03-shared-evidence-wbs.md) |
+| Fan-out | Phân phát theo từng bot | Từ một sự kiện chung tạo đúng một job cho mỗi bot đủ điều kiện, idempotent theo `(workspace, bot, evidence, bot_config_version)`. | [WBS MB-03](../superpowers/plans/2026-10-24-mb03-shared-evidence-wbs.md) |
+| Fan-out eligibility | Điều kiện nhận fan-out | Bot ENABLED trên account PAPER ENABLED và có cấu hình bot PUBLISHED hiệu lực tại `as_of`; bot không đạt bị loại kèm mã lý do (vd. `BOT_CONFIG_NOT_PUBLISHED`). | [WBS MB-03](../superpowers/plans/2026-10-24-mb03-shared-evidence-wbs.md) |
+| Validity window | Cửa sổ hiệu lực | Khoảng `[available_at, validity_end)` mà evidence được dùng cho quyết định. | [Contract Multi-Bot](../architecture/decisions/2026-10-24-multibot-contracts.md) |
+| Data revision | Bản sửa đổi dữ liệu | Phiên bản sau của cùng quan sát, lưu thành bản ghi mới có `available_at` muộn hơn. Retry chỉ khác thời gian không phải revision (dedupe bằng `content_hash`). | [WBS MB-03](../superpowers/plans/2026-10-24-mb03-shared-evidence-wbs.md) |
+| Decision job | Tác vụ quyết định theo bot | Bản ghi bot-scoped ghim evidence, config version và `evaluated_at` để bot đánh giá đúng một lần. | [WBS MB-03](../superpowers/plans/2026-10-24-mb03-shared-evidence-wbs.md) |
+| Veto / Abstain (bot decision) | Phủ quyết / Đứng ngoài | Veto: cổng của bot chặn trước khi strategy chạy (config chưa hiệu lực, input tương lai…). Abstain: strategy chủ động không giao dịch. | [WBS MB-03](../superpowers/plans/2026-10-24-mb03-shared-evidence-wbs.md) |
+| Name-based UUID (UUIDv5) | UUID tất định theo tên | UUID sinh từ namespace + nội dung bằng SHA-1; cùng input luôn cùng ID nên retry/replay không nhân bản. Đoán được, không dùng làm bí mật. | [RFC 9562 §5.5](https://www.rfc-editor.org/rfc/rfc9562) |
+| Context adapter | Bộ chuyển đổi context | Hàm chuyển cấu hình hiệu lực đầy đủ (MB-02) sang hợp đồng tối thiểu dispatcher (MB-03) cần, giữ lineage và tất định theo `as_of`. | [Contract Multi-Bot](../architecture/decisions/2026-10-24-multibot-contracts.md) |
+| Revision chain (Alembic) | Chuỗi revision migration | Migration nối nhau bằng `down_revision`; phải có đúng một head để `upgrade head` tất định. | [Alembic Branches](https://alembic.sqlalchemy.org/en/latest/branches.html) |
+
+## M. Bảo mật Admin/bot, phân quyền và khóa sàn
+
+| Thuật ngữ | Bản dịch ưu tiên | Giải thích ngắn trong dự án | Tài liệu tham khảo |
+| --- | --- | --- | --- |
+| Least privilege | Đặc quyền tối thiểu | Mỗi người dùng/process chỉ có đúng quyền đường code của nó cần (SEC-01: grant trực tiếp theo process role). | [NIST SP 800-53 AC-6](https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final) |
+| Group role | Role nhóm | Role PostgreSQL không đăng nhập; thành viên thừa hưởng quyền của nó (nguồn gốc lỗi SEC-01 với `crypidian_app`). | [PostgreSQL role membership](https://www.postgresql.org/docs/18/role-membership.html) |
+| Column-level privilege | Quyền cấp cột | GRANT trên cột cụ thể; dùng cột khóa (`updated_at`) để cho `SELECT … FOR UPDATE` mà không cho sửa dữ liệu nghiệp vụ. | [PostgreSQL privileges](https://www.postgresql.org/docs/18/ddl-priv.html) |
+| Image index digest | Digest chỉ mục image đa kiến trúc | SHA-256 của OCI image index trỏ tới manifest từng kiến trúc; ghim image bằng digest để không đổi âm thầm. | [OCI image index](https://github.com/opencontainers/image-spec/blob/main/image-index.md) |
+| STRIDE | Mô hình phân loại mối đe dọa | Giả mạo, sửa đổi, chối bỏ, lộ thông tin, từ chối dịch vụ, leo thang đặc quyền. | [OWASP Threat Modeling](https://cheatsheetseries.owasp.org/cheatsheets/Threat_Modeling_Cheat_Sheet.html) |
+| Step-up authentication | Xác thực tăng cường | Xác thực lại bằng factor mạnh ngay trước hành động rủi ro cao dù phiên còn hiệu lực. | [OWASP Authentication](https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html) · [Nghiên cứu bảo mật](./security-admin-bot-2026.md) |
+| Transaction authorization (WYSIWYS) | Ủy quyền giao dịch / thấy gì ký nấy | Xác thực gắn với nội dung cụ thể của một thao tác, dùng một lần, có thời hạn. | [OWASP Transaction Authorization](https://cheatsheetseries.owasp.org/cheatsheets/Transaction_Authorization_Cheat_Sheet.html) |
+| Maker-checker / four-eyes | Người lập – người duyệt / bốn mắt | Thay đổi rủi ro cao do một người lập, người khác có thẩm quyền duyệt; người lập không tự duyệt. | [OWASP ASVS 5.0 V2](https://github.com/OWASP/ASVS) |
+| Separation of duties | Phân tách nhiệm vụ | Chia quyền để không ai một mình hoàn tất chuỗi hành động nhạy cảm. | [NIST SP 800-53 AC-5](https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final) |
+| Kill switch | Công tắc dừng khẩn cấp | Hủy lệnh chưa khớp và chặn lệnh mới; dự án vẫn giữ exit bảo vệ cho vị thế đã biết, không tự flatten. | [EU RTS 6 Art. 12](https://eur-lex.europa.eu/legal-content/EN/TXT/HTML/?uri=CELEX:32017R0589) |
+| Break-glass access | Truy cập khẩn cấp | Đường thao tác dự phòng kiểm soát chặt khi control plane hỏng; luôn audit và cảnh báo. | [OWASP Logging](https://cheatsheetseries.owasp.org/cheatsheets/Logging_Cheat_Sheet.html) |
+| Account lockout / login throttling | Khóa tài khoản / giới hạn tần suất đăng nhập | Giới hạn số lần thất bại theo tài khoản và IP, thường bằng delay tăng dần. | [NIST SP 800-63B-4](https://pages.nist.gov/800-63-4/sp800-63b.html) |
+| Credential stuffing / password spraying | Nhồi thông tin đăng nhập / rải mật khẩu | Thử cặp tài khoản/mật khẩu đã lộ / thử ít mật khẩu phổ biến trên nhiều tài khoản. | [OWASP Authentication](https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html) |
+| Idle timeout / absolute timeout | Hết hạn do không hoạt động / hết hạn tuyệt đối | Thời gian tối đa phiên không hoạt động / tổng thời gian tối đa kể từ lúc xác thực. | [OWASP Session Management](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html) |
+| Session rotation | Xoay phiên | Cấp token phiên mới, hủy token cũ khi đăng nhập/xác thực lại/đổi đặc quyền để chống session fixation. | [OWASP ASVS 5.0 V7](https://github.com/OWASP/ASVS) |
+| `__Host-` cookie prefix | Tiền tố cookie `__Host-` | Trình duyệt chỉ nhận cookie Secure, không Domain, `Path=/`; khóa cookie vào đúng host. | [MDN Set-Cookie](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Set-Cookie) |
+| Content Security Policy (CSP) | Chính sách bảo mật nội dung | Header giới hạn nguồn script/style/frame; giảm XSS và clickjacking (`frame-ancestors`). | [OWASP HTTP Headers](https://cheatsheetseries.owasp.org/cheatsheets/HTTP_Headers_Cheat_Sheet.html) |
+| HTTP Strict Transport Security (HSTS) | Bắt buộc HTTPS nghiêm ngặt | Header buộc trình duyệt chỉ dùng HTTPS với host trong thời hạn `max-age`. | [OWASP HTTP Headers](https://cheatsheetseries.owasp.org/cheatsheets/HTTP_Headers_Cheat_Sheet.html) |
+| Fetch Metadata (`Sec-Fetch-Site`) | Siêu dữ liệu Fetch | Header trình duyệt cho biết nguồn request (same-origin/cross-site), dùng chặn CSRF. | [OWASP CSRF Prevention](https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html) |
+| Webhook secret token | Mã bí mật webhook | Chuỗi bí mật đặt khi `setWebhook`; Telegram gửi trong header `X-Telegram-Bot-Api-Secret-Token` để xác minh nguồn. | [Telegram Bot API](https://core.telegram.org/bots/api) |
+| Replay attack | Tấn công phát lại | Gửi lại thông điệp/xác thực hợp lệ đã ghi được để lặp hành động; chống bằng nonce/counter/idempotency. Khác replay backtest. | [NIST SP 800-63B-4](https://pages.nist.gov/800-63-4/sp800-63b.html) |
+| IP access restriction (IP allowlist) | Giới hạn IP truy cập | Chỉ cho dùng API key từ IP đã khai báo; điều kiện bắt buộc cho key giao dịch ở WP-03. | [Binance API key FAQ](https://www.binance.com/en/support/faq/detail/360002502072) |
+| Ed25519 API key | Khóa API Ed25519 | Khóa bất đối xứng: người dùng giữ private key ký request, sàn giữ public key; ưu tiên hơn HMAC (xác nhận hỗ trợ REST USDⓈ-M ở WP-03). | [Binance API key types](https://github.com/binance/binance-spot-api-docs/blob/master/faqs/api_key_types.md) |
+| `recvWindow` | Cửa sổ nhận | Số mili giây sau `timestamp` mà request ký còn hợp lệ (mặc định 5000), giới hạn phát lại và độ trễ. | [Binance USDⓈ-M General Info](https://developers.binance.com/en/docs/products/derivatives-trading-usds-futures/general-info) |
+| listenKey | Khóa luồng dữ liệu người dùng | Token User Data Stream, hiệu lực 60 phút, cần keepalive; coi như secret. | [Binance User Data Streams](https://developers.binance.com/en/docs/products/derivatives-trading-usds-futures/user-data-streams) |
+| BOLA / BFLA | Lỗi ủy quyền cấp đối tượng / cấp chức năng | Truy cập đối tượng của chủ thể khác qua ID / gọi chức năng vượt vai trò. | [OWASP API Top 10 2023](https://owasp.org/API-Security/editions/2023/en/0x11-t10/) |
+| Tamper-evident log (hash chain) | Nhật ký phát hiện giả mạo (chuỗi băm) | Mỗi bản ghi chứa hash bản trước; sửa/xóa làm đứt chuỗi và bị phát hiện. | [OWASP ASVS 5.0 V16](https://github.com/OWASP/ASVS) |
+| Software Bill of Materials (SBOM) | Danh mục thành phần phần mềm | Danh sách thành phần/phiên bản trong build để truy vết lỗ hổng. | [Docker SBOM attestations](https://docs.docker.com/build/metadata/attestations/sbom/) |
+| Dependency cooldown (`exclude-newer`) | Thời gian chờ dependency | Chỉ nhận package tải lên trước một mốc thời gian, giảm rủi ro bản độc hại vừa phát hành. | [uv settings](https://docs.astral.sh/uv/reference/settings/) |
+
+## N. Kiểm thử và dữ liệu QA
+
+| Thuật ngữ | Bản dịch ưu tiên | Giải thích ngắn trong dự án | Tài liệu tham khảo |
+| --- | --- | --- | --- |
+| QA dataset / test fixture | Bộ dữ liệu kiểm thử | Tập dữ liệu cố định, tái lập được, đưa hệ thống về trạng thái biết trước; dự án dùng builder thuần trong `tests/fixtures/qa_dataset`. | [xUnit Test Fixture](http://xunitpatterns.com/test%20fixture%20-%20xUnit.html) · [QA test data](../testing/qa-test-data.md) |
+| Database seeding | Gieo dữ liệu | Ghi dữ liệu nền vào database để chạy thử/kiểm thử; seed QA idempotent, chỉ local/test, có thể đưa trạng thái về baseline. Khác PAPER account seed (vốn khởi tạo). | [QA test data](../testing/qa-test-data.md) |
+| Seed guard | Chốt an toàn khi gieo dữ liệu | Kiểm tra fail-closed trước khi ghi: cờ `--local-only`, Docker endpoint local, env local/PAPER, dữ liệu đích chỉ PAPER và không xung đột. | [QA test data](../testing/qa-test-data.md) |
+| Test account | Tài khoản kiểm thử | Tài khoản chỉ tồn tại ở local/test; mật khẩu/TOTP sinh lúc seed và chỉ lưu trong `.secrets/` (gitignored). | [QA test data](../testing/qa-test-data.md) |
+| Compose profile | Hồ sơ dịch vụ Compose | Nhãn bật/tắt service; service `qa-seed` chỉ chạy khi bật profile `qa`. | [Docker Compose profiles](https://docs.docker.com/compose/how-tos/profiles/) |
+| Reserved test TLD (`.test`) | Tên miền cấp cao dành cho kiểm thử | TLD IETF dành riêng, không phân giải ra Internet; dùng cho email QA `@example.test`. | [RFC 2606](https://www.rfc-editor.org/rfc/rfc2606) |
