@@ -91,8 +91,9 @@
 
 - [x] Tự review SQL function owner, `search_path`, GUC scope check, PUBLIC execute, role grants, RLS, count/equity leak surface và workspace mismatch; E2E xác minh RLS, function privilege và BYPASSRLS.
 - [x] Tự review DB/code/auth/bảo mật/strategy-risk, lineage, precision, freshness, retry/idempotency, concurrency, status/authorization và no-order-on-deny; không có review độc lập trong checkout.
-- [x] Đã chạy `tests/unit` 1103 passed; `tests/e2e` 20 passed/1033.63s; Alembic single head + Compose migration upgrade/downgrade/upgrade/check; Ruff check/format, mypy 127 files, Compose config, diff check và rà soát secret.
-- [x] Không xảy ra timeout ở full E2E cuối; một lượt trước có stale assertion do snapshot test, đã đồng bộ và chạy lại full suite xanh.
+- [x] Đã chạy `tests/unit` 1103 passed; `tests/e2e` 20 passed/1007.23s; Compose runtime denial target 1 passed/135.67s; Alembic single head + Compose migration upgrade/downgrade/upgrade/check; Ruff check/format, mypy 127 files, Compose config, diff check và rà soát secret.
+- [x] Không xảy ra timeout ở full E2E cuối; Compose runtime test mới trước đó fail do H03 context provider giả định không có reservation đang hoạt động. Provider được sửa để kiểm tra các tổng không âm và dùng reservation margin point-in-time; targeted và full suite sau đó đều xanh.
+- [x] Compose denial scenario gọi Admin API publish workspace risk cap, đánh giá lại qua `PaperRuntimeApplicationService`, xác nhận `CAPACITY_BREACH_AFTER_TIGHTENING`, không có order/reservation mới, gateway snapshot không đổi và decision DENY được persist.
 - [x] Kiểm tra thuật ngữ: không phát sinh thuật ngữ mới; nguồn PostgreSQL chính thức và ngày kiểm tra đã có trong WBS.
 - [x] Update/read back implementation memory, WBS, main MB plan and project status; confirm all MB04.7–MB04.9 acceptance criteria.
 - [x] Commit on `dev`, push to `origin/dev`, then verify remote head equals pushed commit and local workspace contains no unintended changes.

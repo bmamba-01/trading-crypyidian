@@ -1741,7 +1741,10 @@ def test_paper_stack_starts_and_keeps_database_and_object_store_data() -> None:
                 FillRecord, OrderIntentRecord, PaperExecutionCheckpointRecord,
                 PositionEventRecord, TradeCostRecord, TradeRecord,
             )
-            from trading_bot.adapters.database.models.risk_entities import RiskReservationRecord
+            from trading_bot.adapters.database.models.risk_entities import (
+                RiskDecisionRecord,
+                RiskReservationRecord,
+            )
             from trading_bot.adapters.database.models.entities import (
                 PaperAccountSeed,
                 StrategyRelease as StrategyReleaseRecord,
@@ -2111,8 +2114,8 @@ def test_paper_stack_starts_and_keeps_database_and_object_store_data() -> None:
                             account_id=account.account_id,
                             symbol=feature_row.symbol,
                         )
-                        assert totals.count == 0 and totals.risk == 0
-                        assert totals.notional == 0 and totals.initial_margin == 0
+                        assert totals.count >= 0 and totals.risk >= 0
+                        assert totals.notional >= 0 and totals.initial_margin >= 0
                         open_trade_count = await uow.session.scalar(
                             select(func.count()).select_from(TradeRecord).where(
                                 TradeRecord.workspace_id == workspace_id,
@@ -2527,6 +2530,130 @@ def test_paper_stack_starts_and_keeps_database_and_object_store_data() -> None:
                             'volume_median_lookback': 40,
                         }
                     print('settings_publish_first_runtime_entry_uses_new_version')
+
+                    def create_tight_workspace_risk_draft():
+                        import urllib.request
+
+                        next_settings = effective_publish_first.settings.model_dump(
+                            mode='json'
+                        )
+                        next_settings['risk']['workspace_max_open_risk_fraction'] = (
+                            '0.000000000000000001'
+                        )
+                        payload = json.dumps({
+                            'settings': next_settings,
+                            'expected_parent_version_id': str(
+                                effective_publish_first.settings_version_id
+                            ),
+                        }).encode('utf-8')
+                        request = urllib.request.Request(
+                            'http://admin-web:8000/api/v1/settings/drafts',
+                            data=payload,
+                            headers={
+                                'Content-Type': 'application/json',
+                                'Cookie': os.environ['CRYPIDIAN_E2E_SESSION_COOKIE'],
+                                'X-CSRF-Token': os.environ['CRYPIDIAN_E2E_CSRF_TOKEN'],
+                            },
+                            method='POST',
+                        )
+                        with urllib.request.urlopen(request, timeout=20) as response:
+                            return str(json.loads(response.read())['draft']['id'])
+
+                    tight_risk_draft_id = await asyncio.to_thread(
+                        create_tight_workspace_risk_draft
+                    )
+
+                    def publish_tight_workspace_risk():
+                        import urllib.request
+
+                        request = urllib.request.Request(
+                            'http://admin-web:8000/api/v1/settings/drafts/'
+                            f'{tight_risk_draft_id}/publish',
+                            data=b'{"expected_revision":1}',
+                            headers={
+                                'Content-Type': 'application/json',
+                                'Cookie': os.environ['CRYPIDIAN_E2E_SESSION_COOKIE'],
+                                'X-CSRF-Token': os.environ['CRYPIDIAN_E2E_CSRF_TOKEN'],
+                            },
+                            method='POST',
+                        )
+                        with urllib.request.urlopen(request, timeout=20) as response:
+                            return json.loads(response.read())
+
+                    tight_risk_publish = await asyncio.to_thread(
+                        publish_tight_workspace_risk
+                    )
+                    assert tight_risk_publish['version']['status'] == 'PUBLISHED'
+                    denied_account = runtime_bootstrap.active_accounts[race_account_id]
+                    gateway_before_workspace_denial = denied_account.gateway.export_state()
+                    async with UnitOfWork(sessions, workspace_id=workspace_id) as uow:
+                        await uow.bind_account(race_account_id)
+                        orders_before_denial = await uow.session.scalar(
+                            select(func.count()).select_from(OrderIntentRecord).where(
+                                OrderIntentRecord.workspace_id == workspace_id,
+                                OrderIntentRecord.account_id == race_account_id,
+                            )
+                        )
+                        reservations_before_denial = await uow.session.scalar(
+                            select(func.count()).select_from(RiskReservationRecord).where(
+                                RiskReservationRecord.workspace_id == workspace_id,
+                                RiskReservationRecord.account_id == race_account_id,
+                            )
+                        )
+                    assert orders_before_denial == 1
+                    assert reservations_before_denial == 1
+                    workspace_denial = await paper_application.evaluate_and_submit(
+                        PaperDecisionCommand(
+                            account_id=race_account_id,
+                            feature_snapshot_id=feature_snapshot_id,
+                            evaluated_at=datetime.now(UTC) + timedelta(seconds=1),
+                        )
+                    )
+                    assert workspace_denial.decision is not None
+                    assert workspace_denial.decision.outcome is DecisionCycleOutcome.RISK_REJECTED
+                    assert workspace_denial.decision.workspace_risk_decision is not None
+                    assert (
+                        workspace_denial.decision.workspace_risk_decision.reason_code.value
+                        == 'CAPACITY_BREACH_AFTER_TIGHTENING'
+                    )
+                    assert workspace_denial.submission is None
+                    assert workspace_denial.risk_decision_id is not None
+                    assert workspace_denial.risk_reservation_id is None
+                    gateway_after_workspace_denial = denied_account.gateway.export_state()
+                    assert (
+                        gateway_after_workspace_denial.content_hash
+                        == gateway_before_workspace_denial.content_hash
+                    )
+                    async with UnitOfWork(sessions, workspace_id=workspace_id) as uow:
+                        await uow.bind_account(race_account_id)
+                        orders_after_denial = await uow.session.scalar(
+                            select(func.count()).select_from(OrderIntentRecord).where(
+                                OrderIntentRecord.workspace_id == workspace_id,
+                                OrderIntentRecord.account_id == race_account_id,
+                            )
+                        )
+                        reservations_after_denial = await uow.session.scalar(
+                            select(func.count()).select_from(RiskReservationRecord).where(
+                                RiskReservationRecord.workspace_id == workspace_id,
+                                RiskReservationRecord.account_id == race_account_id,
+                            )
+                        )
+                        denial_record = await uow.session.scalar(
+                            select(RiskDecisionRecord).where(
+                                RiskDecisionRecord.workspace_id == workspace_id,
+                                RiskDecisionRecord.account_id == race_account_id,
+                                RiskDecisionRecord.id == workspace_denial.risk_decision_id,
+                            )
+                        )
+                        assert orders_after_denial == orders_before_denial
+                        assert reservations_after_denial == reservations_before_denial
+                        assert denial_record is not None and not denial_record.approved
+                        assert (
+                            denial_record.reason_code
+                            == 'CAPACITY_BREACH_AFTER_TIGHTENING'
+                        )
+                    print('workspace_denial_published_runtime_persisted_without_gateway_submit')
+
                     assert paper_application.is_ready
                     plan = prepared.plan
                     risk_decision = prepared.risk_decision

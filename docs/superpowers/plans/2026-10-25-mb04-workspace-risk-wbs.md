@@ -123,12 +123,12 @@ Giữ `risk_decision`/`risk_reservation` làm nguồn ledger đang có; chỉ th
 
 **Nghiệm thu:** không có đường đua tạo reservation vượt tổng cap; decision/reserve dùng cùng point-in-time lineage đã kiểm; lỗi downstream rollback nguyên tử. 13 unit tests đạt 100% tại `tests/unit/test_workspace_risk_coordinator.py`.
 
-**Gap nghiệm thu phát hiện 2026-10-26:** chữ ký `reserve` hiện nhận `account_max_open_risk_fraction`, `bot_max_open_risk_fraction` và `other_account_scopes` từ caller; `target_scope.enabled` vẫn đặt cứng `True`. Đây chưa đáp ứng việc tự nạp account/bot status, profile và toàn bộ scope workspace authoritative sau khóa; chưa có caller runtime nào nối coordinator. Không coi MB04.5 hoặc cổng tổng MB-04 là hoàn tất cho tới khi các điểm này được triển khai và kiểm thử.
+**Gap nghiệm thu lịch sử, đã khép ngày 2026-10-26:** chữ ký `reserve` từng nhận cap/scope từ caller và runtime chưa gọi coordinator. MB04.8–MB04.9 đã chuyển sang policy authoritative sau khóa và nối PAPER runtime vào gate; unit/Compose coverage xác nhận.
 
 ### MB04.6 — Compose E2E và quality gates
 
 **Bằng chứng trước đó (2026-10-25):** Bốn scenario Compose đã từng chạy đạt trên PostgreSQL cô lập. Lượt kiểm tra tổng 2026-10-26 tìm thấy hai lỗi regression và một assertion cũ không tương thích MB-04; hai scenario lỗi đã pass sau sửa. Kết quả full suite cuối cùng được ghi ở implementation memory; không dùng số test lịch sử làm kết quả hiện tại.
-- Full `tests/e2e` lần chạy lại: 18 passed, 1 test `test_process_roles_cannot_write_identity_or_config_and_downgrade_restores_acl` timeout ở Compose `seed` sau 300 giây; chạy riêng lại test này đạt 1 passed/60.91s. Vì timeout không tái hiện, kết quả full suite chưa được xem là green.
+- Lượt E2E lịch sử trước code freeze: 18 passed, 1 timeout; không tính là nghiệm thu. Kết quả snapshot cuối ngày 2026-10-26: full `tests/e2e` **20 passed / 1007.23s**, không timeout.
 - Kịch bản 1: Concurrency barrier kiểm tra Headroom Trap với 2 bot chạy đồng thời xin 2,000 USDT (vượt root cap 3,000 USDT). Đúng 1 bot APPROVED, 1 bot DENY (`WORKSPACE_CAP_EXCEEDED`), DB `sum(reserved_risk) == 2000 <= 3000`.
 - Kịch bản 2: Admin Cap Tightening Race & Breach: Bot 1 có vị thế mở stop risk 1,200 USDT. Admin siết Root cap xuống 5% (1,000 USDT). Bot 2 xin 1,000 USDT bị từ chối với `CAPACITY_BREACH_AFTER_TIGHTENING` (1,200 > 1,000). Vị thế Bot 1 giữ nguyên `OPEN` (không flatten).
 - Kịch bản 3: DB Roles & Cross-Bot RLS Isolation: Chạy dưới role `crypidian_trading_runtime` (không có `BYPASSRLS`), kiểm tra quyền bảng, RLS chặn SELECT cross-bot (0 rows), và hàm `get_workspace_risk_aggregate(ws_id, as_of)` trả về scalar aggregate an toàn mà không rò rỉ bot_id/symbol.
@@ -140,7 +140,7 @@ Quality Gates (bằng chứng lịch sử 2026-10-25): Full 957 unit tests passe
 - [x] Test non-USDT, thiếu/stale/future FX; vị thế có mark stale/missing; venue snapshot không cộng realized hai lần; cap hạ dưới exposure; UNKNOWN reservation và reconcile.
 - [x] Chạy bằng DB roles `crypidian_trading_runtime` và `crypidian_admin_web`, verify `has_table_privilege`/`has_function_privilege`, RLS cross-bot và không có `BYPASSRLS`.
 - [x] Migration rehearsal trên dữ liệu seeded thật từ head integration: counts, PnL, fee, payload/hash, checkpoint; upgrade→downgrade guard→upgrade; giữ nguyên ảnh Docker dùng chung và teardown theo Compose project label.
-- [ ] Full unit/quality gates pass; full E2E trong một lượt không timeout/failure. Unit 969 passed, Ruff/format/mypy/Alembic/diff check đạt; full E2E 18 passed/1 timeout và test timeout isolated rerun pass nên cổng này còn mở.
+- [x] Full unit/quality gates và full E2E một lượt không timeout/failure: unit **1103 passed**; E2E **20 passed / 1007.23s**; Ruff check, format (339 files), mypy (127 source files), Compose config, `git diff --check` và Alembic single head đạt; migration E2E chạy upgrade/downgrade/upgrade + `alembic check`.
 - [ ] Review độc lập theo spec + quality; mọi finding P0/P1/P2 được sửa test-first và chạy lại suite liên quan. Chưa có báo cáo review độc lập khả dụng trong checkout này.
 - [x] Cập nhật/reread implementation memory, trạng thái project, MB-04 WBS/main plan và ledger trước commit `dev`; không push trừ khi user yêu cầu.
 
@@ -181,11 +181,11 @@ Phần này làm rõ nghiệm thu còn thiếu đã được phát hiện trong 
 
 **Nghiệm thu:** không có đường PAPER entry nào bỏ qua workspace risk gate; tất cả mutation risk share cùng lock order và reservation lifecycle không double-count.
 
-**Ghi nhận nghiệm thu 2026-10-26:** runtime gọi workspace coordinator trước PAPER submit; workspace deny trả `RISK_REJECTED` và unit test khẳng định gateway call count bằng 0. Workspace decision lưu candidate expiry; kết quả runtime giữ riêng single-account decision ID làm lineage. Mutation lifecycle và expiry batch dùng workspace advisory lock trước account locks. Compose PAPER runtime E2E xác nhận đường submit/lineage; Compose workspace-risk E2E kiểm tra coordinator từ chối khi siết cap và hai bot cạnh tranh không vượt cap. No-submit được kiểm tra ở unit runtime và E2E coordinator/DB; chưa có một scenario Compose duy nhất ghép denial với runtime HTTP/service.
+**Ghi nhận nghiệm thu 2026-10-26:** runtime gọi workspace coordinator trước PAPER submit; workspace deny trả `RISK_REJECTED` và unit test khẳng định gateway call count bằng 0. Workspace decision lưu candidate expiry; kết quả runtime giữ riêng single-account decision ID làm lineage. Mutation lifecycle và expiry batch dùng workspace advisory lock trước account locks. Compose E2E chạy PAPER runtime thật: admin publish root cap rất thấp qua API, runtime đánh giá lại và nhận `CAPACITY_BREACH_AFTER_TIGHTENING`; không tạo order/reservation, gateway snapshot không đổi, decision DENY được lưu. Cùng full E2E suite còn kiểm tra coordinator từ chối khi siết cap và hai bot cạnh tranh không vượt cap.
 
 ## Cổng nghiệm thu tổng MB-04
 
-MB-04 hoàn tất: snapshot vốn point-in-time; PnL closed/open/partial-exit và chi phí không bị double-count; mọi equity/FX/mark unknown hoặc stale fail-closed; aggregate risk gồm vị thế + reservation đang giữ; nguồn cap/scope authoritative được nạp sau khóa và nối vào runtime; concurrency E2E chứng minh reservation và root publish được serialize; RLS/grants giữ cách ly bot/workspace; migration/history chính xác; full unit/E2E/quality pass; self-review DB/code/auth/security hoàn tất; memory/status/WBS đồng nhất. No-submit được kiểm chứng bằng unit runtime và E2E coordinator. Review độc lập chưa thực hiện và không được ghi nhận như một kết quả đạt.
+MB-04 hoàn tất trong phạm vi PAPER: snapshot vốn point-in-time; PnL closed/open/partial-exit và chi phí không double-count; unknown/stale equity/FX/mark fail-closed; aggregate risk gồm vị thế + reservation; cap/scope authoritative sau khóa và runtime gate; concurrency serialize; RLS/grants và migration/history được kiểm tra. Full unit **1103 passed**, full E2E **20 passed / 1007.23s**, quality gates pass. Tự review DB/code/auth/security hoàn tất; no-submit được chứng minh bằng unit và Compose runtime scenario. Review độc lập không thực hiện và không được ghi nhận như kết quả đạt. MB-04 không bật Binance LIVE execution và không tuyên bố strategy có lợi nhuận.
 
 ## Nguồn hiện hành và thuật ngữ EN→VI
 
