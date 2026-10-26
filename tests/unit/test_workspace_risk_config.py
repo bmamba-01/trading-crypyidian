@@ -19,9 +19,9 @@ from trading_bot.adapters.database.repositories.workspace_settings import (
     settings_hash,
 )
 from trading_bot.application.bot_config_resolver import (
-    BotConfigResolutionError,
     EffectiveBotConfig,
     resolve_effective_bot_config,
+    validate_bot_overlay,
 )
 from trading_bot.application.runtime_risk_profile import (
     risk_limits_from_profile,
@@ -416,53 +416,58 @@ def test_resolver_hierarchy_boundary_equality() -> None:
     assert getattr(effective.risk_limits, "bot_max_open_risk_fraction", None) == Decimal("0.80")
 
 
-def test_resolver_hierarchy_rejects_bot_greater_than_account() -> None:
-    """Bot (0.85) > account (0.80) <= workspace (1.0) bị từ chối với BOT_CONFIG_ROOT_MISMATCH."""
+def _validate(fix: ResolverFixture, overlay: dict[str, Any]) -> list[str]:
+    issues = validate_bot_overlay(
+        BotConfigOverlay.model_validate(overlay),
+        workspace_settings=fix.root,
+        account=fix.account,  # type: ignore[arg-type]
+        root_risk_profile=fix.risk_profile,
+        strategy_releases=fix.releases,  # type: ignore[arg-type]
+    )
+    return [issue.field for issue in issues]
+
+
+def test_overlay_publish_rejects_bot_greater_than_account_but_runtime_clamps() -> None:
+    """Bot (0.85) > account (0.80): publish/validate từ chối (không nới, không bỏ qua âm thầm).
+
+    Overlay đã publish hợp lệ rồi profile siết sau đó: resolve runtime kẹp cap bot về account
+    thay vì làm bot không resolve được (review I4).
+    """
     fix = ResolverFixture(workspace_cap="1.0", account_cap="0.80")
-    version = fix.version(
-        {
-            "schema_version": 1,
-            "risk": {"bot_max_open_risk_fraction": "0.85"},
-        }
-    )
+    overlay = {"schema_version": 1, "risk": {"bot_max_open_risk_fraction": "0.85"}}
 
-    with pytest.raises(BotConfigResolutionError) as exc_info:
-        fix.resolve(version)
-
-    assert exc_info.value.code == "BOT_CONFIG_ROOT_MISMATCH"
-    issue_fields = [issue.field for issue in exc_info.value.issues]
-    assert "risk.bot_max_open_risk_fraction" in issue_fields
+    assert "risk.bot_max_open_risk_fraction" in _validate(fix, overlay)
+    effective = fix.resolve(fix.version(overlay))
+    assert effective.risk_limits.bot_max_open_risk_fraction == Decimal("0.80")
 
 
-def test_resolver_hierarchy_rejects_bot_greater_than_workspace() -> None:
-    """Bot (0.90) <= account (0.90) nhưng > workspace (0.70) bị từ chối."""
+def test_overlay_publish_rejects_bot_greater_than_workspace_but_runtime_clamps() -> None:
+    """Bot (0.80) <= account (0.90) nhưng > workspace (0.70): validate từ chối, resolve kẹp."""
     fix = ResolverFixture(workspace_cap="0.70", account_cap="0.90")
-    version = fix.version(
-        {
-            "schema_version": 1,
-            "risk": {"bot_max_open_risk_fraction": "0.80"},
-        }
+    overlay = {"schema_version": 1, "risk": {"bot_max_open_risk_fraction": "0.80"}}
+
+    assert "risk.bot_max_open_risk_fraction" in _validate(fix, overlay)
+    effective = fix.resolve(fix.version(overlay))
+    assert effective.risk_limits.bot_max_open_risk_fraction == Decimal("0.70")
+
+
+def test_root_tightening_below_profile_account_cap_keeps_bots_resolvable() -> None:
+    """Review I4: workspace (0.70) < account profile (0.80) không làm overlay mất resolve.
+
+    Cap account áp trên vốn account, cap workspace trên vốn workspace (khác mẫu số); siết root
+    được ghi breach khi publish và chặn ở reserve, không biến mọi bot có overlay thành lỗi.
+    """
+    fix = ResolverFixture(workspace_cap="0.70", account_cap="0.80")
+
+    plain = fix.resolve(fix.version({"schema_version": 1}))
+    tightened = fix.resolve(
+        fix.version({"schema_version": 1, "risk": {"bot_max_open_risk_fraction": "0.50"}})
     )
 
-    with pytest.raises(BotConfigResolutionError) as exc_info:
-        fix.resolve(version)
-
-    assert exc_info.value.code == "BOT_CONFIG_ROOT_MISMATCH"
-    issue_fields = [issue.field for issue in exc_info.value.issues]
-    assert "risk.bot_max_open_risk_fraction" in issue_fields
-
-
-def test_resolver_hierarchy_rejects_account_greater_than_workspace() -> None:
-    """Account (0.80) > workspace (0.70) phát hiện lỗi thứ bậc."""
-    fix = ResolverFixture(workspace_cap="0.70", account_cap="0.80")
-    version = fix.version({"schema_version": 1})
-
-    with pytest.raises(BotConfigResolutionError) as exc_info:
-        fix.resolve(version)
-
-    assert exc_info.value.code == "BOT_CONFIG_ROOT_MISMATCH"
-    issue_fields = [issue.field for issue in exc_info.value.issues]
-    assert any("risk" in f for f in issue_fields)
+    assert plain.risk_limits.account_max_open_risk_fraction == Decimal("0.80")
+    assert plain.risk_limits.bot_max_open_risk_fraction is None
+    assert tightened.risk_limits.bot_max_open_risk_fraction == Decimal("0.50")
+    assert _validate(fix, {"schema_version": 1}) == []
 
 
 # ==============================================================================

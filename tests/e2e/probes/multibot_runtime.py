@@ -181,6 +181,8 @@ def _seed_workspace(connection: psycopg.Connection, name: str, fraction: str) ->
         )
         members[role] = str(member)
     profile = uuid4()
+    # MB-04 fix: cap account (phần vốn account) riêng theo biến thể; mặc định cột là 1.0.
+    account_fraction = STATE.get("account_fractions", {}).get(name)
     _insert(
         connection,
         "risk_profile_version",
@@ -191,6 +193,7 @@ def _seed_workspace(connection: psycopg.Connection, name: str, fraction: str) ->
         max_risk_fraction=Decimal("0.01"),
         settings=Jsonb(HARD_CAPS),
         is_active=True,
+        **({"max_open_risk_fraction": Decimal(account_fraction)} if account_fraction else {}),
     )
     settings = WorkspaceSettings.model_validate(
         {
@@ -736,7 +739,15 @@ def _trace_coordinators(app: Any) -> None:
             setattr(coordinator, method, traced)
 
 
-async def entry(app: Any, key: str, snapshot_index: int, minute: int, name: str = "main") -> Any:
+async def entry(
+    app: Any,
+    key: str,
+    snapshot_index: int,
+    minute: int,
+    name: str = "main",
+    *,
+    at: datetime | None = None,
+) -> Any:
     from trading_bot.application.paper_runtime_application import PaperDecisionCommand
 
     ws = _ws(name)
@@ -744,7 +755,7 @@ async def entry(app: Any, key: str, snapshot_index: int, minute: int, name: str 
         PaperDecisionCommand(
             account_id=UUID(ws["accounts"][key]),
             feature_snapshot_id=ws["snapshots"][snapshot_index],
-            evaluated_at=_at(minute),
+            evaluated_at=at or _at(minute),
         )
     )
     if result.submission is None:
@@ -1456,6 +1467,213 @@ async def runtime_activity_clean() -> dict[str, Any]:
     return {"view": view, "a_entry": a_entry}
 
 
+# --- MB-04 fix: đường thật cho C1/C2/C3/I5 ---------------------------------------------------
+async def _publish_root_fraction(sessions: Any, name: str, fraction: str) -> dict[str, Any]:
+    """Admin publish root risk qua `SettingsAdminService` thật (role `crypidian_admin_web`)."""
+    from trading_bot.admin.settings_service import SettingsAdminService
+    from trading_bot.config.workspace_settings import WorkspaceSettings
+
+    service = SettingsAdminService(sessions)
+    owner = _principal("owner", name)
+    current = await service.get_current(owner)
+    assert current is not None
+    payload = dict(current["settings"])
+    payload["risk"] = dict(payload["risk"]) | {"workspace_max_open_risk_fraction": fraction}
+    draft = await service.create_draft(
+        owner,
+        settings=WorkspaceSettings.model_validate(payload),
+        expected_parent_version_id=UUID(current["id"]),
+    )
+    published = await service.publish_draft(
+        owner, draft_id=UUID(draft["id"]), expected_revision=int(draft["revision"])
+    )
+    return {
+        "status": published["status"],
+        "version_id": published["id"],
+        "effective_at": published["effective_at"],
+        "capacity": published.get("capacity"),
+    }
+
+
+async def mb04_admin_setup() -> dict[str, Any]:
+    """C1: overlay bot A siết cap; C3a: siết root cap sau thời điểm `evaluated_at` của runtime."""
+    from trading_bot.admin.bot_service import BotConfigAdminService
+    from trading_bot.config.bot_settings import BotConfigOverlay
+
+    engine = _engine()
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    out: dict[str, Any] = {}
+    try:
+        owner = _principal("owner", "c1")
+        bot_a = UUID(_ws("c1")["bots"]["a"])
+        bots = BotConfigAdminService(sessions)
+        overlay = BotConfigOverlay.model_validate(
+            {"schema_version": 1, "risk": {"bot_max_open_risk_fraction": "0.005"}}
+        )
+        draft = await bots.create_draft(
+            owner, bot_id=bot_a, overlay=overlay, expected_parent_version_id=None
+        )
+        published = await bots.publish(
+            owner, bot_id=bot_a, draft_id=UUID(draft["id"]), expected_revision=draft["revision"]
+        )
+        out["c1_overlay"] = [published["status"], published["overlay"]]
+        out["c3a_publish"] = await _publish_root_fraction(sessions, "c3a", "0.001")
+    finally:
+        await engine.dispose()
+    return out
+
+
+async def mb04_runtime_paths() -> dict[str, Any]:
+    """Runtime PAPER thật (role runtime): coordinator, resolver, ledger, aggregate SQL thật."""
+    out: dict[str, Any] = {}
+    # C1: overlay bot 0.005 (50 USDT) phải chặn yêu cầu ~100 USDT dù account cap là 1.0.
+    async with runtime_app("c1") as app:
+        out["c1_view"] = _registry_view(app)
+        out["c1_a"] = await _outcome(entry(app, "a", 0, 1, name="c1"))
+    # C2: vị thế mở do ledger thật tạo (reservation TRANSFERRED) phải chiếm cap account 150.
+    async with runtime_app("c2") as app:
+        out["c2_view"] = _registry_view(app)
+        a1 = await _outcome(entry(app, "a", 0, 1, name="c2"))
+        out["c2_a1"] = a1
+        if "intent_id" in a1:
+            out["c2_fill"] = await _outcome(fill(app, "a", a1, name="c2"))
+        out["c2_a2"] = await _outcome(entry(app, "a", 1, 2, name="c2"))
+    # C3a: `evaluated_at` trước lần siết root đã commit; coordinator phải đọc cap mới.
+    stale_at = datetime.fromisoformat(STATE["c3a_effective_at"]) - timedelta(seconds=2)
+    out["c3a_evaluated_before_publish"] = stale_at.isoformat()
+    async with runtime_app("c3a") as app:
+        out["c3a_a"] = await _outcome(entry(app, "a", 0, 0, name="c3a", at=stale_at))
+    # C3b: trade của B mở sau `as_of` của A vẫn là exposure hiện hành của workspace.
+    async with runtime_app("c3b") as app:
+        b1 = await _outcome(entry(app, "b", 0, 3, name="c3b"))
+        out["c3b_b1"] = b1
+        if "intent_id" in b1:
+            out["c3b_b_fill"] = await _outcome(fill(app, "b", b1, name="c3b"))
+        out["c3b_a"] = await _outcome(entry(app, "a", 1, 1, name="c3b"))
+    return out
+
+
+def _held_reserved(name: str) -> str:
+    """Tổng risk đang giữ đọc thẳng từ `risk_reservation` (superuser, bỏ qua RLS)."""
+    with _connect() as connection:
+        return str(
+            connection.execute(
+                "SELECT coalesce(sum(reserved_risk), 0) FROM risk_reservation "
+                "WHERE workspace_id = %s AND status IN ('RESERVED', 'UNKNOWN')",
+                (_ws(name)["workspace"],),
+            ).fetchone()[0]
+        )
+
+
+async def _first_of(event: asyncio.Event, task: asyncio.Task[Any]) -> None:
+    """Chờ bên giữ khóa báo đang giữ; nếu task của nó kết thúc trước thì báo lỗi rõ ràng."""
+    waiter = asyncio.create_task(event.wait())
+    done, _ = await asyncio.wait({waiter, task}, timeout=30, return_when=asyncio.FIRST_COMPLETED)
+    if waiter not in done:
+        waiter.cancel()
+        detail = repr(task.exception() or task.result()) if task.done() else "timeout"
+        raise AssertionError(f"Bên giữ khóa không dừng giữa transaction: {detail}")
+
+
+def _advisory_waiters() -> int:
+    """Số khóa đang chờ (advisory L1/L2 hoặc khóa hàng `workspace FOR UPDATE` của draft)."""
+    with _connect() as connection:
+        row = connection.execute("SELECT count(*) FROM pg_locks WHERE NOT granted").fetchone()
+        return int(row[0])
+
+
+async def _wait_blocked(timeout: float = 20.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if await asyncio.to_thread(_advisory_waiters) >= 1:
+            return True
+        await asyncio.sleep(0.05)
+    return False
+
+
+async def mb04_publish_race() -> dict[str, Any]:
+    """I5: barrier publish→reserve và reserve→publish qua runtime + admin service thật.
+
+    Admin `publish_draft` (L1 → L2) và runtime `evaluate_and_submit` (L1 → fence → L2 → L3) chạy
+    trong cùng process với engine role thật; bên giữ khóa dừng giữa transaction cho tới khi
+    `pg_locks` xác nhận bên kia đang chờ advisory lock, rồi mới commit.
+    """
+    from trading_bot.adapters.database.repositories.workspace_settings import (
+        WorkspaceSettingsRepository,
+    )
+
+    runtime_engine = _engine("crypidian_trading_runtime", pool=10)
+    admin_engine = _engine("crypidian_admin_web", pool=4)
+    runtime_sessions = async_sessionmaker(runtime_engine, expire_on_commit=False)
+    admin_sessions = async_sessionmaker(admin_engine, expire_on_commit=False)
+    hold = {"publish": False, "runtime": False}
+    publish_holding, release_publish = asyncio.Event(), asyncio.Event()
+    runtime_holding, release_runtime = asyncio.Event(), asyncio.Event()
+    original_lock_risk = WorkspaceSettingsRepository.lock_workspace_risk
+
+    async def held_lock_risk(self: Any, workspace_id: UUID) -> None:
+        await original_lock_risk(self, workspace_id)
+        if hold["publish"]:
+            publish_holding.set()
+            await release_publish.wait()
+
+    WorkspaceSettingsRepository.lock_workspace_risk = held_lock_risk  # type: ignore[method-assign]
+    out: dict[str, Any] = {}
+    try:
+        async with runtime_app("race5", sessions=runtime_sessions, ttl=120, tick=60) as app:
+            service = app.state.paper_application
+            original_factory = service._workspace_risk_coordinator_factory
+
+            def holding_factory(session: Any) -> Any:
+                coordinator = original_factory(session)
+                real_reserve = coordinator.reserve
+
+                async def reserve(request: Any, **kwargs: Any) -> Any:
+                    result = await real_reserve(request, **kwargs)
+                    if hold["runtime"]:
+                        runtime_holding.set()
+                        await release_runtime.wait()
+                    return result
+
+                coordinator.reserve = reserve
+                return coordinator
+
+            service._workspace_risk_coordinator_factory = holding_factory
+            # Vòng 1 publish→reserve: publish giữ L1+L2; entry phải chờ rồi thấy cap mới.
+            hold["publish"] = True
+            publish_task = asyncio.create_task(
+                _publish_root_fraction(admin_sessions, "race5", "0.001")
+            )
+            await _first_of(publish_holding, publish_task)
+            entry_task = asyncio.create_task(_outcome(entry(app, "a", 0, 1, name="race5")))
+            out["r1_runtime_blocked"] = await _wait_blocked()
+            release_publish.set()
+            out["r1_publish"] = await asyncio.wait_for(publish_task, timeout=60)
+            out["r1_entry"] = await asyncio.wait_for(entry_task, timeout=60)
+            out["r1_held_reserved"] = await asyncio.to_thread(_held_reserved, "race5")
+            hold["publish"] = False
+            # Nới lại cap rồi vòng 2 reserve→publish: runtime giữ L1..L3 sau reserve.
+            out["reset_publish"] = await _publish_root_fraction(admin_sessions, "race5", "1")
+            hold["runtime"] = True
+            entry_task = asyncio.create_task(_outcome(entry(app, "a", 1, 2, name="race5")))
+            await _first_of(runtime_holding, entry_task)
+            publish_task = asyncio.create_task(
+                _publish_root_fraction(admin_sessions, "race5", "0.001")
+            )
+            out["r2_publish_blocked"] = await _wait_blocked()
+            release_runtime.set()
+            out["r2_entry"] = await asyncio.wait_for(entry_task, timeout=60)
+            out["r2_publish"] = await asyncio.wait_for(publish_task, timeout=60)
+            hold["runtime"] = False
+            # Sau breach: entry mới bị chặn, vị thế/reservation cũ giữ nguyên (không flatten).
+            out["r2_b_entry"] = await _outcome(entry(app, "b", 2, 3, name="race5"))
+    finally:
+        WorkspaceSettingsRepository.lock_workspace_risk = original_lock_risk  # type: ignore[method-assign]
+        await runtime_engine.dispose()
+        await admin_engine.dispose()
+    return out
+
+
 # --- inspect (superuser) ---------------------------------------------------------------------
 def inspect() -> dict[str, Any]:
     ws = _ws(STATE.get("inspect_workspace", "main"))
@@ -1524,6 +1742,22 @@ def inspect() -> dict[str, Any]:
                 "FROM risk_decision WHERE workspace_id=%s AND payload->>'decision_kind' = "
                 "'WORKSPACE_BUDGET' ORDER BY created_at",
                 workspace,
+            ),
+            # MB-04 fix: tổng đọc thẳng từ bảng (không qua hàm aggregate đang được kiểm).
+            "held_reserved_risk": str(
+                connection.execute(
+                    "SELECT coalesce(sum(reserved_risk), 0) FROM risk_reservation "
+                    "WHERE workspace_id=%s AND status IN ('RESERVED', 'UNKNOWN')",
+                    (workspace,),
+                ).fetchone()[0]
+            ),
+            "open_trade_risk": str(
+                connection.execute(
+                    "SELECT coalesce(sum(r.reserved_risk), 0) FROM trade t JOIN risk_reservation r "
+                    "ON r.workspace_id = t.workspace_id AND r.id = t.risk_reservation_id "
+                    "WHERE t.workspace_id=%s AND t.status = 'OPEN'",
+                    (workspace,),
+                ).fetchone()[0]
             ),
         }
 
@@ -1733,6 +1967,9 @@ PHASES = {
     "admin_activity_resolve": admin_activity_resolve,
     "runtime_activity_clean": runtime_activity_clean,
     "frozen_worker": frozen_worker,
+    "mb04_admin_setup": mb04_admin_setup,
+    "mb04_runtime_paths": mb04_runtime_paths,
+    "mb04_publish_race": mb04_publish_race,
     "inspect": inspect,
 }
 

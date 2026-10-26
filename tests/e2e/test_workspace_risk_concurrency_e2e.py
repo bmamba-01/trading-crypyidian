@@ -111,6 +111,37 @@ def test_workspace_risk_concurrency_and_rls_isolation_e2e() -> None:
         assert "bot1_id" in seeded
 
         # ---------------------------------------------------------------------
+        # MB-04 fix I1: hàm SECURITY DEFINER do role NOLOGIN/NOBYPASSRLS riêng sở hữu.
+        # ---------------------------------------------------------------------
+        security = run_probe("security_checks", service="migrator")
+        print("security", json.dumps(security))
+        assert security["owner_role"] == [False] * 8, security
+        assert security["aggregator_has_writes"] is False, security
+        assert security["legacy_aggregate_present"] is False, security
+        aggregate_fn = security["aggregate"]
+        state_fn = security["account_state"]
+        assert aggregate_fn["owner"] == "crypidian_risk_aggregator", security
+        assert aggregate_fn["security_definer"] is True
+        assert aggregate_fn["config"] == ["search_path=pg_catalog, pg_temp"]
+        assert aggregate_fn["public_execute"] is False
+        assert aggregate_fn["execute"] == {
+            "crypidian_trading_runtime": True,
+            "crypidian_admin_web": False,
+            "crypidian_execution_gateway": False,
+            "crypidian_ingestion_worker": False,
+            "crypidian_trainer_worker": False,
+            "crypidian_app": False,
+        }, security
+        assert state_fn["owner"] == "crypidian_risk_aggregator", security
+        assert state_fn["security_definer"] is False
+        assert state_fn["config"] == ["search_path=pg_catalog, pg_temp"]
+        assert state_fn["public_execute"] is False
+        assert {role for role, allowed in state_fn["execute"].items() if allowed} == {
+            "crypidian_trading_runtime",
+            "crypidian_admin_web",
+        }, security
+
+        # ---------------------------------------------------------------------
         # Kịch bản 1: Headroom Trap Concurrency Barrier
         # ---------------------------------------------------------------------
         # 2 Bot đồng thời xin 2,000 USDT (tổng 4,000 > 3,000 cap).
@@ -132,6 +163,18 @@ def test_workspace_risk_concurrency_and_rls_isolation_e2e() -> None:
         db_sum = Decimal(str(barrier_res["db_reserved_sum"]))
         assert db_sum == Decimal("2000")
         assert db_sum <= Decimal("3000")
+        # Minor review: kiểm thêm bằng truy vấn thẳng bảng, không chỉ qua hàm đang được kiểm.
+        direct = run_probe("direct_reserved_sum", state=seeded, service="migrator")
+        assert Decimal(direct["reserved_sum"]) == Decimal("2000"), direct
+        assert direct["reserved_count"] == "1", direct
+
+        # MB-04 fix I6: replay chỉ trả kết quả cho reservation còn RESERVED/UNKNOWN và còn hạn.
+        replay = run_probe("replay_dead_reservation", state=seeded, service="trading-runtime")
+        print("replay", json.dumps(replay))
+        assert replay["released_first"] == [True, "APPROVED"], replay
+        assert replay["released_replay"] == "ReservationConflict", replay
+        assert replay["expired_first"] == [True, "APPROVED"], replay
+        assert replay["expired_replay"] == "ReservationConflict", replay
 
         # ---------------------------------------------------------------------
         # Kịch bản 2: Admin Cap Tightening Race & Breach
@@ -170,6 +213,7 @@ def test_workspace_risk_concurrency_and_rls_isolation_e2e() -> None:
 
         # Kiểm tra các nhánh equity mà fixture concurrency không bao phủ.
         edge_cases = run_probe("equity_edge_cases", state=seeded, service="migrator")
+        print("edge_cases", json.dumps(edge_cases))
         assert edge_cases == {
             "long_pnl_correct": True,
             "short_pnl_correct": True,
@@ -181,6 +225,12 @@ def test_workspace_risk_concurrency_and_rls_isolation_e2e() -> None:
             "missing_fill_unknown": True,
             "unsupported_quote_unknown": True,
             "unsupported_realized_quote_unknown": True,
+            # MB-04 fix C3b/C3c/I2/I3/minor.
+            "open_risk_counts_trade_opened_after_as_of": True,
+            "backfilled_stale_mark_unknown": True,
+            "negative_account_equity_unknown": True,
+            "future_as_of_keeps_live_reservation": True,
+            "account_state_matches_aggregate": True,
         }
 
         # ---------------------------------------------------------------------
@@ -206,9 +256,20 @@ def test_workspace_risk_concurrency_and_rls_isolation_e2e() -> None:
         run_probe("cleanup_custom_profile_guard", state=guard_profile, service="migrator")
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "downgrade", PRE_MB04_HEAD)
 
+        # MB-04 fix I1: role aggregator tạo sẵn với LOGIN (cấp cluster) bị migration từ chối.
+        run_probe("precreate_unsafe_aggregator", service="migrator")
+        unsafe = compose(
+            "run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "head", success=False
+        )
+        assert "MB04_RISK_AGGREGATOR_ROLE_UNSAFE" in unsafe.stderr
+        run_probe("harden_aggregator", service="migrator")
+
         # Upgrade lại lên head và alembic check sạch
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "head")
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "check")
+        assert run_probe("security_checks", service="migrator")["aggregate"]["owner"] == (
+            "crypidian_risk_aggregator"
+        )
 
     finally:
         # Dọn dẹp hoàn toàn containers và volumes

@@ -1,385 +1,183 @@
-"""Unit tests cho AccountEquityRepository (MB04.4).
+"""Unit tests cho AccountEquityRepository (MB04.4, sửa review I2/I3).
 
-Kiểm tra:
-- Seed capital và realized PnL không có open position
-- Realized PnL chỉ tính trade CLOSED trước as_of
-- Open positions với mark hợp lệ và tính unrealized PnL
-- Fail-closed khi missing mark
-- Fail-closed khi stale mark
-- Fail-closed khi mark future
-- Fail-closed khi missing seed
-- Fail-closed khi stale equity
+Vốn account mục tiêu không còn tính bằng đường Python riêng (giá entry đầu tiên, bỏ qua exit một
+phần/chi phí, freshness khác SQL). Repository chỉ đọc một hàng của hàm SQL dùng chung
+`workspace_account_risk_state` và dựng snapshot domain có thể kiểm lại; các phép tính PnL/mark
+được kiểm bằng E2E PostgreSQL thật (`test_workspace_risk_concurrency_e2e.py`).
 """
 
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from types import SimpleNamespace
-from uuid import UUID, uuid4
+from typing import Any
+from uuid import UUID
 
 import pytest
 
-from trading_bot.adapters.database.repositories.account_equity import AccountEquityRepository
+from trading_bot.adapters.database.repositories.account_equity import (
+    LEDGER_EQUITY_SOURCE,
+    AccountEquityRepository,
+    mark_age_seconds,
+)
 from trading_bot.domain.risk.equity import (
-    EquityReasonCode,
-    MarketMark,
+    PaperLedgerEquityBasis,
+    normalize_equity_to_usdt,
 )
 
-WORKSPACE_ID = UUID("11111111-1111-4111-8111-111111111111")
-BOT_ID = UUID("22222222-2222-4222-8222-222222222222")
-ACCOUNT_ID = UUID("33333333-3333-4333-8333-333333333333")
-NOW = datetime(2026, 10, 25, 12, 0, 0, tzinfo=UTC)
-MAX_MARK_AGE = timedelta(seconds=60)
-MAX_EQUITY_AGE = timedelta(seconds=120)
+NOW = datetime(2026, 10, 25, 12, 0, tzinfo=UTC)
+WORKSPACE = UUID("11111111-1111-4111-8111-111111111111")
+BOT = UUID("22222222-2222-4222-8222-222222222222")
+ACCOUNT = UUID("33333333-3333-4333-8333-333333333333")
+OTHER_BOT = UUID("44444444-4444-4444-8444-444444444444")
+OTHER_ACCOUNT = UUID("55555555-5555-4555-8555-555555555555")
 
 
-class FakeSession:
-    """Fake SQLAlchemy AsyncSession cho unit test repository."""
-
-    def __init__(
-        self,
-        *,
-        seed: object | None = None,
-        realized_pnl: Decimal = Decimal("0"),
-        open_trades: list[object] | None = None,
-    ) -> None:
-        self.seed = seed
-        self.realized_pnl = realized_pnl
-        self.open_trades = list(open_trades or [])
-        self.statements: list[str] = []
-
-    async def scalar(self, statement: object) -> object | None:
-        stmt_text = str(statement).lower()
-        self.statements.append(stmt_text)
-        if "paper_account_seed" in stmt_text:
-            if self.seed is not None and getattr(self.seed, "created_at", NOW) > NOW:
-                return None
-            return self.seed
-        if "sum" in stmt_text and "net_pnl" in stmt_text:
-            return self.realized_pnl
-        return None
-
-    async def scalars(self, statement: object) -> object:
-        stmt_text = str(statement).lower()
-        if "trade" in stmt_text:
-            trades = self.open_trades
-
-            class _Result:
-                def all(self) -> list[object]:
-                    return list(trades)
-
-            return _Result()
-        return SimpleNamespace(all=lambda: [])
-
-
-def make_seed(initial_equity: Decimal = Decimal("10000.0")) -> SimpleNamespace:
-    return SimpleNamespace(
-        id=uuid4(),
-        workspace_id=WORKSPACE_ID,
-        bot_id=BOT_ID,
-        trading_account_id=ACCOUNT_ID,
-        quote_asset="USDT",
-        initial_equity=initial_equity,
-        created_at=NOW - timedelta(minutes=10),
+def _row(
+    *,
+    bot: UUID = BOT,
+    account: UUID = ACCOUNT,
+    enabled: bool = True,
+    seed: str | None = "10000",
+    realized: str = "0",
+    open_pnl: str = "0",
+    open_count: int = 0,
+    equity: str | None = "10000",
+    unknown_equity: bool = False,
+    open_risk: str = "0",
+    pending: str = "0",
+    unknown_exposure: bool = False,
+) -> tuple[Any, ...]:
+    return (
+        bot,
+        account,
+        enabled,
+        None if seed is None else Decimal(seed),
+        Decimal(realized),
+        Decimal(open_pnl),
+        open_count,
+        None if equity is None else Decimal(equity),
+        unknown_equity,
+        Decimal(open_risk),
+        Decimal(pending),
+        unknown_exposure,
     )
 
 
-def make_mark(
-    symbol: str = "BTCUSDT",
-    price: Decimal = Decimal("60000.0"),
-    as_of: datetime = NOW,
-    available_at: datetime = NOW,
-) -> MarketMark:
-    return MarketMark(
-        workspace_id=str(WORKSPACE_ID),
-        bot_id=str(BOT_ID),
-        account_id=str(ACCOUNT_ID),
-        symbol=symbol,
-        asset="USDT",
-        price=price,
-        as_of=as_of,
-        available_at=available_at,
-        source="binance_mark",
-        source_version="v1",
-        source_hash="a" * 64,
-    )
+class FakeStateSession:
+    def __init__(self, rows: list[tuple[Any, ...]]) -> None:
+        self.rows = rows
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def execute(self, statement: Any, params: dict[str, Any]) -> Any:
+        self.calls.append((str(statement), params))
+        rows = self.rows
+        return type("Result", (), {"all": lambda *_: rows})()
 
 
-def make_open_trade(
-    symbol: str = "BTCUSDT",
-    side: str = "LONG",
-    quantity: Decimal = Decimal("1.5"),
-    entry_price: Decimal = Decimal("58000.0"),
-    opened_at: datetime = NOW - timedelta(minutes=5),
-) -> SimpleNamespace:
-    return SimpleNamespace(
-        id=uuid4(),
-        workspace_id=WORKSPACE_ID,
-        bot_id=BOT_ID,
-        account_id=ACCOUNT_ID,
-        mode="PAPER",
-        status="OPEN",
-        symbol=symbol,
-        quote_asset="USDT",
-        side=side,
-        quantity=quantity,
-        entry_price=entry_price,
-        contract_multiplier=Decimal("1"),
-        opened_at=opened_at,
-        intent_id=uuid4(),
-        plan_hash="b" * 64,
+async def _snapshot(rows: list[tuple[Any, ...]], **kwargs: Any) -> Any:
+    session = FakeStateSession(rows)
+    repo = AccountEquityRepository(session)  # type: ignore[arg-type]
+    snapshot = await repo.load_paper_equity_snapshot(
+        workspace_id=WORKSPACE,
+        bot_id=BOT,
+        account_id=ACCOUNT,
+        as_of=NOW,
+        max_equity_age=timedelta(seconds=300),
+        max_mark_age=kwargs.get("max_mark_age", timedelta(seconds=60)),
     )
+    return snapshot, session
 
 
 @pytest.mark.asyncio
-async def test_load_paper_equity_seed_only_no_trades() -> None:
-    session = FakeSession(seed=make_seed(Decimal("50000")), realized_pnl=Decimal("0"))
-    repo = AccountEquityRepository(session)  # type: ignore[arg-type]
-
-    snapshot = await repo.load_paper_equity_snapshot(
-        workspace_id=WORKSPACE_ID,
-        bot_id=BOT_ID,
-        account_id=ACCOUNT_ID,
-        as_of=NOW,
-        max_equity_age=MAX_EQUITY_AGE,
-        max_mark_age=MAX_MARK_AGE,
+async def test_snapshot_uses_shared_sql_state_and_round_trips_domain_lineage() -> None:
+    """Seed + realized + PnL vị thế mở (gồm exit một phần, chi phí) từ SQL dùng chung."""
+    snapshot, session = await _snapshot(
+        [
+            _row(
+                seed="10000",
+                realized="250",
+                open_pnl="867.125",
+                open_count=1,
+                equity="11117.125",
+            ),
+            _row(bot=OTHER_BOT, account=OTHER_ACCOUNT, seed=None, equity=None),
+        ]
     )
 
     assert snapshot.known is True
-    assert snapshot.unknown_reason is None
-    assert snapshot.equity_amount == Decimal("50000")
-    assert snapshot.seed_capital == Decimal("50000")
-    assert snapshot.cumulative_realized_pnl == Decimal("0")
-    assert snapshot.unrealized_pnl == Decimal("0")
-    assert snapshot.asset == "USDT"
-    assert len(snapshot.positions) == 0
+    assert snapshot.equity_amount == Decimal("11117.125")
+    assert snapshot.seed_capital == Decimal("10000")
+    assert snapshot.cumulative_realized_pnl == Decimal("250")
+    assert snapshot.unrealized_pnl == Decimal("867.125")
+    assert snapshot.source == LEDGER_EQUITY_SOURCE
+    assert isinstance(snapshot.basis, PaperLedgerEquityBasis)
+    assert snapshot.positions == ()
+    assert snapshot.mark_refs == ()
+    # Domain kiểm lại lineage (tính lại từ basis) và cho đúng số vốn.
+    assert normalize_equity_to_usdt(snapshot, None, NOW, timedelta(seconds=300)) == Decimal(
+        "11117.125"
+    )
+    statement, params = session.calls[0]
+    assert "workspace_account_risk_state" in statement
+    assert params == {"workspace_id": WORKSPACE, "as_of": NOW, "max_mark_age_seconds": 60}
 
 
 @pytest.mark.asyncio
-async def test_future_paper_seed_is_not_available_at_decision_as_of() -> None:
-    future_seed = make_seed()
-    future_seed.created_at = NOW + timedelta(seconds=1)
-    session = FakeSession(seed=future_seed)
-    repo = AccountEquityRepository(session)  # type: ignore[arg-type]
-
-    snapshot = await repo.load_paper_equity_snapshot(
-        workspace_id=WORKSPACE_ID,
-        bot_id=BOT_ID,
-        account_id=ACCOUNT_ID,
-        as_of=NOW,
-        max_equity_age=MAX_EQUITY_AGE,
-        max_mark_age=MAX_MARK_AGE,
-    )
+@pytest.mark.parametrize(
+    ("rows", "reason"),
+    [
+        ([], "BASIS_UNKNOWN"),
+        ([_row(seed=None, equity=None)], "BASIS_UNKNOWN"),
+        ([_row(unknown_equity=True)], "SNAPSHOT_UNKNOWN"),
+        # Hàng của bot khác cùng account ID không được dùng (scope bot/account phải khớp).
+        ([_row(bot=OTHER_BOT)], "BASIS_UNKNOWN"),
+        # Vốn âm khớp cờ unknown của SQL: domain không nhận vốn âm.
+        (
+            [_row(seed="10", open_pnl="-20", open_count=1, equity="-10")],
+            "AMOUNT_INVALID",
+        ),
+        # SQL và domain cộng cùng thành phần phải khớp tuyệt đối.
+        ([_row(realized="5", equity="10000")], "LINEAGE_INVALID"),
+    ],
+)
+async def test_snapshot_fails_closed(rows: list[tuple[Any, ...]], reason: str) -> None:
+    snapshot, _ = await _snapshot(rows)
 
     assert snapshot.known is False
-    assert snapshot.unknown_reason == EquityReasonCode.BASIS_UNKNOWN.value
-    assert any("paper_account_seed.created_at <=" in query for query in session.statements)
+    assert snapshot.unknown_reason == reason
+    assert snapshot.equity_amount == Decimal("0")
 
 
 @pytest.mark.asyncio
-async def test_load_paper_equity_with_realized_pnl() -> None:
-    session = FakeSession(
-        seed=make_seed(Decimal("50000")),
-        realized_pnl=Decimal("2500.50"),
+async def test_account_states_map_to_domain_scalars() -> None:
+    session = FakeStateSession(
+        [_row(open_risk="100", pending="50", unknown_exposure=True, enabled=False)]
     )
-    repo = AccountEquityRepository(session)  # type: ignore[arg-type]
-
-    snapshot = await repo.load_paper_equity_snapshot(
-        workspace_id=WORKSPACE_ID,
-        bot_id=BOT_ID,
-        account_id=ACCOUNT_ID,
-        as_of=NOW,
-        max_equity_age=MAX_EQUITY_AGE,
-        max_mark_age=MAX_MARK_AGE,
+    states = await AccountEquityRepository(session).load_account_states(  # type: ignore[arg-type]
+        workspace_id=WORKSPACE, as_of=NOW, max_mark_age=timedelta(seconds=120)
     )
 
-    assert snapshot.known is True
-    assert snapshot.equity_amount == Decimal("52500.50")
-    assert snapshot.cumulative_realized_pnl == Decimal("2500.50")
-    assert snapshot.unrealized_pnl == Decimal("0")
+    domain = states[0].to_domain()
+    assert domain.enabled is False
+    assert domain.open_risk_usdt == Decimal("100")
+    assert domain.pending_risk_usdt == Decimal("50")
+    assert domain.exposure_known is False
+    assert domain.equity_known is True
+
+
+@pytest.mark.parametrize("value", [timedelta(0), timedelta(seconds=-1), timedelta(seconds=1.5)])
+def test_mark_age_must_be_positive_whole_seconds(value: timedelta) -> None:
+    with pytest.raises(ValueError, match="max_mark_age"):
+        mark_age_seconds(value)
 
 
 @pytest.mark.asyncio
-async def test_load_paper_equity_with_open_position_long() -> None:
-    # Seed 50000, Realized 1000
-    # Open position: Long 1.5 BTC at entry 58000, Mark is 60000
-    # Unrealized = (60000 - 58000) * 1.5 = 3000
-    # Total = 50000 + 1000 + 3000 = 54000
-    trade = make_open_trade(
-        symbol="BTCUSDT",
-        side="LONG",
-        quantity=Decimal("1.5"),
-        entry_price=Decimal("58000"),
-    )
-    mark = make_mark(symbol="BTCUSDT", price=Decimal("60000"))
-
-    session = FakeSession(
-        seed=make_seed(Decimal("50000")),
-        realized_pnl=Decimal("1000"),
-        open_trades=[trade],
-    )
-    repo = AccountEquityRepository(session)  # type: ignore[arg-type]
-
-    snapshot = await repo.load_paper_equity_snapshot(
-        workspace_id=WORKSPACE_ID,
-        bot_id=BOT_ID,
-        account_id=ACCOUNT_ID,
-        as_of=NOW,
-        max_equity_age=MAX_EQUITY_AGE,
-        max_mark_age=MAX_MARK_AGE,
-        marks={"BTCUSDT": mark},
-    )
-
-    assert snapshot.known is True
-    assert snapshot.equity_amount == Decimal("54000")
-    assert snapshot.unrealized_pnl == Decimal("3000")
-    assert len(snapshot.positions) == 1
-    assert snapshot.positions[0].symbol == "BTCUSDT"
-
-
-@pytest.mark.asyncio
-async def test_load_paper_equity_with_open_position_short() -> None:
-    # Seed 50000, Realized 0
-    # Short 2 BTC at entry 62000, Mark is 60000 -> gain (62000 - 60000) * 2 = 4000
-    trade = make_open_trade(
-        symbol="BTCUSDT",
-        side="SHORT",
-        quantity=Decimal("2"),
-        entry_price=Decimal("62000"),
-    )
-    mark = make_mark(symbol="BTCUSDT", price=Decimal("60000"))
-
-    session = FakeSession(
-        seed=make_seed(Decimal("50000")),
-        realized_pnl=Decimal("0"),
-        open_trades=[trade],
-    )
-    repo = AccountEquityRepository(session)  # type: ignore[arg-type]
-
-    snapshot = await repo.load_paper_equity_snapshot(
-        workspace_id=WORKSPACE_ID,
-        bot_id=BOT_ID,
-        account_id=ACCOUNT_ID,
-        as_of=NOW,
-        max_equity_age=MAX_EQUITY_AGE,
-        max_mark_age=MAX_MARK_AGE,
-        marks={"BTCUSDT": mark},
-    )
-
-    assert snapshot.known is True
-    assert snapshot.equity_amount == Decimal("54000")
-    assert snapshot.unrealized_pnl == Decimal("4000")
-
-
-@pytest.mark.asyncio
-async def test_load_paper_equity_missing_mark_fails_closed() -> None:
-    trade = make_open_trade(symbol="BTCUSDT")
-    session = FakeSession(
-        seed=make_seed(Decimal("50000")),
-        open_trades=[trade],
-    )
-    repo = AccountEquityRepository(session)  # type: ignore[arg-type]
-
-    snapshot = await repo.load_paper_equity_snapshot(
-        workspace_id=WORKSPACE_ID,
-        bot_id=BOT_ID,
-        account_id=ACCOUNT_ID,
-        as_of=NOW,
-        max_equity_age=MAX_EQUITY_AGE,
-        max_mark_age=MAX_MARK_AGE,
-        marks={},  # Không có mark cho BTCUSDT
-    )
-
-    assert snapshot.known is False
-    assert snapshot.unknown_reason == EquityReasonCode.MARK_MISSING.value
-
-
-@pytest.mark.asyncio
-async def test_load_paper_equity_stale_mark_fails_closed() -> None:
-    trade = make_open_trade(symbol="BTCUSDT")
-    stale_time = NOW - MAX_MARK_AGE - timedelta(seconds=1)
-    stale_mark = make_mark(symbol="BTCUSDT", as_of=stale_time, available_at=stale_time)
-
-    session = FakeSession(
-        seed=make_seed(Decimal("50000")),
-        open_trades=[trade],
-    )
-    repo = AccountEquityRepository(session)  # type: ignore[arg-type]
-
-    snapshot = await repo.load_paper_equity_snapshot(
-        workspace_id=WORKSPACE_ID,
-        bot_id=BOT_ID,
-        account_id=ACCOUNT_ID,
-        as_of=NOW,
-        max_equity_age=MAX_EQUITY_AGE,
-        max_mark_age=MAX_MARK_AGE,
-        marks={"BTCUSDT": stale_mark},
-    )
-
-    assert snapshot.known is False
-    assert snapshot.unknown_reason == EquityReasonCode.MARK_STALE.value
-
-
-@pytest.mark.asyncio
-async def test_load_paper_equity_future_mark_fails_closed() -> None:
-    trade = make_open_trade(symbol="BTCUSDT")
-    future_time = NOW + timedelta(seconds=5)
-    future_mark = make_mark(symbol="BTCUSDT", as_of=future_time, available_at=future_time)
-
-    session = FakeSession(
-        seed=make_seed(Decimal("50000")),
-        open_trades=[trade],
-    )
-    repo = AccountEquityRepository(session)  # type: ignore[arg-type]
-
-    snapshot = await repo.load_paper_equity_snapshot(
-        workspace_id=WORKSPACE_ID,
-        bot_id=BOT_ID,
-        account_id=ACCOUNT_ID,
-        as_of=NOW,
-        max_equity_age=MAX_EQUITY_AGE,
-        max_mark_age=MAX_MARK_AGE,
-        marks={"BTCUSDT": future_mark},
-    )
-
-    assert snapshot.known is False
-    assert snapshot.unknown_reason == EquityReasonCode.OBSERVATION_FUTURE.value
-
-
-@pytest.mark.asyncio
-async def test_load_paper_equity_missing_seed_fails_closed() -> None:
-    session = FakeSession(seed=None)
-    repo = AccountEquityRepository(session)  # type: ignore[arg-type]
-
-    snapshot = await repo.load_paper_equity_snapshot(
-        workspace_id=WORKSPACE_ID,
-        bot_id=BOT_ID,
-        account_id=ACCOUNT_ID,
-        as_of=NOW,
-        max_equity_age=MAX_EQUITY_AGE,
-        max_mark_age=MAX_MARK_AGE,
-    )
-
-    assert snapshot.known is False
-    assert snapshot.unknown_reason == EquityReasonCode.BASIS_UNKNOWN.value
-
-
-@pytest.mark.asyncio
-async def test_load_paper_equity_stale_equity_fails_closed() -> None:
-    session = FakeSession(seed=make_seed(Decimal("50000")))
-    repo = AccountEquityRepository(session)  # type: ignore[arg-type]
-
-    stale_captured = NOW - MAX_EQUITY_AGE - timedelta(seconds=1)
-    snapshot = await repo.load_paper_equity_snapshot(
-        workspace_id=WORKSPACE_ID,
-        bot_id=BOT_ID,
-        account_id=ACCOUNT_ID,
-        as_of=NOW,
-        max_equity_age=MAX_EQUITY_AGE,
-        max_mark_age=MAX_MARK_AGE,
-        captured_at=stale_captured,
-    )
-
-    assert snapshot.known is False
-    assert snapshot.unknown_reason == EquityReasonCode.EQUITY_STALE.value
+async def test_naive_as_of_is_rejected() -> None:
+    repo = AccountEquityRepository(FakeStateSession([]))  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="as_of"):
+        await repo.load_account_states(
+            workspace_id=WORKSPACE,
+            as_of=NOW.replace(tzinfo=None),
+            max_mark_age=timedelta(seconds=60),
+        )

@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import re
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
@@ -27,11 +28,13 @@ from trading_bot.application.runtime_risk_profile import (
     RiskProfileRuntimeError,
     risk_limits_from_profile,
 )
+from trading_bot.application.workspace_risk import assess_risk_capacity
 from trading_bot.auth.bot_policy import WORKSPACE_BOT_ROLES
 from trading_bot.auth.policy import Permission, Principal, authorize
 from trading_bot.auth.service import RECENT_MFA_LIFETIME
 from trading_bot.config.workspace_settings import WorkspaceSettings
 from trading_bot.domain.events import EventEnvelope
+from trading_bot.domain.risk.workspace_budget import CapacityStatus
 from trading_bot.domain.strategy.registry import StrategyRegistry, UnknownStrategyReleaseError
 
 _SECRET_KEY = re.compile(r"(?:secret|token|password|credential|api[_-]?key|cookie)", re.I)
@@ -232,7 +235,8 @@ class SettingsAdminService:
             current_risk = (
                 WorkspaceSettings.model_validate(current.settings_json).risk if current else None
             )
-            if current_risk != settings.risk:
+            risk_changed = current_risk != settings.risk
+            if risk_changed:
                 await repository.lock_workspace_risk(principal.workspace_id)
             await self._guard_paper_policy_change(
                 unit,
@@ -254,7 +258,7 @@ class SettingsAdminService:
                     422, "Risk profile không tồn tại trong workspace hiện tại."
                 )
             try:
-                risk_limits_from_profile(risk_profile)
+                runtime_profile = risk_limits_from_profile(risk_profile)
             except RiskProfileRuntimeError as error:
                 raise SettingsAdminError(422, str(error)) from error
             try:
@@ -273,7 +277,16 @@ class SettingsAdminService:
                 published,
                 current.settings_json if current else None,
             )
-            return serialize_version(published) or {}
+            response = serialize_version(published) or {}
+            if risk_changed:
+                response["capacity"] = await self._record_capacity(
+                    unit,
+                    principal,
+                    published,
+                    settings,
+                    runtime_profile.limits.account_max_open_risk_fraction,
+                )
+            return response
 
     async def rollback(
         self,
@@ -295,7 +308,8 @@ class SettingsAdminService:
             current_risk = (
                 WorkspaceSettings.model_validate(current.settings_json).risk if current else None
             )
-            if current_risk != settings.risk:
+            risk_changed = current_risk != settings.risk
+            if risk_changed:
                 await repository.lock_workspace_risk(principal.workspace_id)
             await self._guard_paper_policy_change(
                 unit,
@@ -340,7 +354,79 @@ class SettingsAdminService:
                 after_state=published.settings_json,
             )
             self._enqueue(unit, "settings.rolled_back", published, {"version": version})
-            return serialize_version(published) or {}
+            response = serialize_version(published) or {}
+            if risk_changed:
+                runtime_profile = await self._load_runtime_profile(unit, principal, settings)
+                response["capacity"] = await self._record_capacity(
+                    unit,
+                    principal,
+                    published,
+                    settings,
+                    runtime_profile.limits.account_max_open_risk_fraction,
+                )
+            return response
+
+    @staticmethod
+    async def _load_runtime_profile(
+        unit: UnitOfWork, principal: Principal, settings: WorkspaceSettings
+    ) -> Any:
+        record = await unit.session.scalar(
+            select(RiskProfileVersion).where(
+                RiskProfileVersion.workspace_id == principal.workspace_id,
+                RiskProfileVersion.id == settings.risk.profile_version_id,
+            )
+        )
+        if record is None:
+            raise SettingsAdminError(422, "Risk profile không tồn tại trong workspace hiện tại.")
+        try:
+            return risk_limits_from_profile(record)
+        except RiskProfileRuntimeError as error:
+            raise SettingsAdminError(422, str(error)) from error
+
+    @staticmethod
+    async def _record_capacity(
+        unit: UnitOfWork,
+        principal: Principal,
+        published: WorkspaceSettingsVersion,
+        settings: WorkspaceSettings,
+        account_fraction: Decimal,
+    ) -> dict[str, Any]:
+        """I5/contract §6: đọc exposure dưới L1+L2 đang giữ, ghi breach nếu cap mới thấp hơn.
+
+        Publish vẫn có hiệu lực; trạng thái `CAPACITY_BREACH_AFTER_TIGHTENING` được audit và đưa
+        vào outbox, entry mới bị coordinator chặn tới khi exposure xuống dưới cap; protective
+        monitoring giữ nguyên, không auto-flatten. Role thay đổi risk (owner/risk_admin) thấy mọi
+        bot qua RLS nên phép cộng theo account là toàn workspace.
+        """
+        if not principal.roles & WORKSPACE_BOT_ROLES:
+            raise SettingsAdminError(
+                403, "Cần role có quyền xem toàn bộ bot để đánh giá capacity sau khi siết cap."
+            )
+        assessment = await assess_risk_capacity(
+            unit.session,
+            workspace_id=principal.workspace_id,
+            workspace_fraction=settings.risk.workspace_max_open_risk_fraction,
+            account_fraction=account_fraction,
+            max_mark_age=timedelta(seconds=settings.risk.max_mark_age_seconds),
+            as_of=datetime.now(UTC),
+        )
+        payload = assessment.payload()
+        action = (
+            "risk.capacity_breach_after_tightening"
+            if assessment.status is CapacityStatus.CAPACITY_BREACH_AFTER_TIGHTENING
+            else "risk.capacity_assessed"
+        )
+        unit.record_audit(
+            action=action,
+            target_type="workspace_settings_version",
+            target_id=published.id,
+            reason=assessment.summary(),
+            after_state=payload,
+        )
+        SettingsAdminService._enqueue(
+            unit, action, published, {"version": published.version, "capacity": payload}
+        )
+        return payload
 
     @staticmethod
     async def _guard_paper_policy_change(

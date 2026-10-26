@@ -38,6 +38,48 @@ DEFAULT_ROOT_FRACTION = Decimal("0.20")
 DEFAULT_ACCOUNT_FRACTION = Decimal("0.10")
 
 
+def _aggregate_from(policy: WorkspacePolicy, accounts: object, as_of: datetime) -> object:
+    """Aggregate workspace nhất quán với chính các account truyền vào (test thuần domain).
+
+    Từ MB-04 fix, `workspace_aggregate` là bắt buộc (không còn chế độ local-only); test engine
+    thuần dựng aggregate từ equity các account enabled để giữ nguyên kỳ vọng số học.
+    """
+    from trading_bot.domain.risk.equity import normalize_equity_to_usdt
+
+    total = Decimal("0")
+    enabled = 0
+    for account in accounts:  # type: ignore[attr-defined]
+        if not account.enabled:
+            continue
+        enabled += 1
+        try:
+            total += normalize_equity_to_usdt(
+                account.snapshot, account.conversion, as_of, policy.max_conversion_age
+            )
+        except Exception:
+            continue
+    return WorkspaceRiskAggregate(
+        workspace_id=policy.workspace_id,  # type: ignore[arg-type]
+        total_equity_usdt=total if total > 0 else Decimal("1"),
+        total_open_risk_usdt=Decimal("0"),
+        total_pending_risk_usdt=Decimal("0"),
+        active_bot_count=max(enabled, 1),
+        has_unknown_exposure=False,
+        has_unknown_equity=False,
+    )
+
+
+class LocalEquityEngine(WorkspaceBudgetEngine):
+    """Engine test: tự dựng aggregate nhất quán khi test không truyền aggregate riêng."""
+
+    def evaluate(self, **kwargs):  # type: ignore[no-untyped-def,override]
+        if "workspace_aggregate" not in kwargs:
+            kwargs["workspace_aggregate"] = _aggregate_from(
+                kwargs["policy"], kwargs["accounts"], kwargs["as_of"]
+            )
+        return super().evaluate(**kwargs)
+
+
 def create_basis(
     workspace_id: str = "ws-1",
     bot_id: str = "bot-1",
@@ -183,7 +225,7 @@ def create_account(
 
 def test_scope_cap_calculation_and_effective_limit() -> None:
     """Kiểm tra cap của workspace, account, bot và áp dụng giới hạn nhỏ nhất."""
-    engine = WorkspaceBudgetEngine()
+    engine = LocalEquityEngine()
     policy = create_policy(root_fraction=D("0.20"))  # Workspace cap: 20%
     # 2 accounts: acc-1 (10000 USDT, 10% account cap = 1000 USDT)
     #             acc-2 (10000 USDT, 15% account cap = 1500 USDT)
@@ -216,7 +258,7 @@ def test_scope_cap_calculation_and_effective_limit() -> None:
 
 def test_bot_overlay_tightens_cap() -> None:
     """Bot overlay có thể siết nhưng không thể nới lỏng cap của account."""
-    engine = WorkspaceBudgetEngine()
+    engine = LocalEquityEngine()
     policy = create_policy(root_fraction=D("0.20"))
     # Account cap 10% = 1000 USDT, bot overlay 5% = 500 USDT
     acc = create_account(
@@ -247,7 +289,7 @@ def test_bot_overlay_tightens_cap() -> None:
 
 def test_smallest_remaining_limit_applied_workspace() -> None:
     """Giới hạn nhỏ nhất được áp dụng: khi workspace headroom nhỏ hơn account."""
-    engine = WorkspaceBudgetEngine()
+    engine = LocalEquityEngine()
     policy = create_policy(root_fraction=D("0.05"))  # Workspace cap: 5% of 10000 = 500 USDT
     acc = create_account(
         bot_id="bot-1",
@@ -273,7 +315,7 @@ def test_smallest_remaining_limit_applied_workspace() -> None:
 
 def test_exact_boundary_permitted_and_exceeded_rejected() -> None:
     """Boundary chính xác bằng cap được phép, chỉ cần vượt 1 quantum là bị từ chối."""
-    engine = WorkspaceBudgetEngine()
+    engine = LocalEquityEngine()
     policy = create_policy(root_fraction=D("0.10"))  # Cap: 1000 USDT
     acc = create_account(capital=D("10000"), account_fraction=D("0.10"))
 
@@ -322,7 +364,7 @@ def test_exact_boundary_permitted_and_exceeded_rejected() -> None:
 
 def test_open_risk_includes_worst_case_and_active_reservations() -> None:
     """open_risk = Σ worst_case_loss + Σ RESERVED_or_UNKNOWN."""
-    engine = WorkspaceBudgetEngine()
+    engine = LocalEquityEngine()
     policy = create_policy(root_fraction=D("0.50"))  # 5000 USDT cap
     acc = create_account(capital=D("10000"), account_fraction=D("0.50"))
 
@@ -396,7 +438,7 @@ def test_open_risk_includes_worst_case_and_active_reservations() -> None:
 
 def test_expired_reserved_reservation_does_not_hold_budget() -> None:
     """Reservation trạng thái RESERVED nếu đã hết hạn tại as_of thì không giữ budget."""
-    engine = WorkspaceBudgetEngine()
+    engine = LocalEquityEngine()
     policy = create_policy(root_fraction=D("0.20"))
     acc = create_account(capital=D("10000"), account_fraction=D("0.20"))
 
@@ -432,7 +474,7 @@ def test_expired_reserved_reservation_does_not_hold_budget() -> None:
 
 def test_disabled_account_excluded_from_equity_denominator() -> None:
     """Account/bot disabled không được tính vào mẫu số workspace equity."""
-    engine = WorkspaceBudgetEngine()
+    engine = LocalEquityEngine()
     policy = create_policy(root_fraction=D("0.10"))
     acc_enabled = create_account(bot_id="b1", account_id="a1", enabled=True, capital=D("10000"))
     acc_disabled = create_account(bot_id="b2", account_id="a2", enabled=False, capital=D("5000"))
@@ -454,7 +496,7 @@ def test_disabled_account_excluded_from_equity_denominator() -> None:
 
 def test_disabled_account_open_risk_and_reservations_still_counted() -> None:
     """Vị thế mở và reservation của bot/account disabled VẪN tính vào tổng rủi ro workspace."""
-    engine = WorkspaceBudgetEngine()
+    engine = LocalEquityEngine()
     policy = create_policy(root_fraction=D("0.10"))  # Cap: 1000 USDT (từ b1)
     acc1 = create_account(bot_id="b1", account_id="a1", enabled=True, capital=D("10000"))
     acc2 = create_account(bot_id="b2", account_id="a2", enabled=False, capital=D("5000"))
@@ -482,7 +524,7 @@ def test_disabled_account_open_risk_and_reservations_still_counted() -> None:
 
 def test_disabled_bot_cannot_open_new_entry() -> None:
     """Bot bị disabled từ chối mở entry mới với reason code BOT_DISABLED."""
-    engine = WorkspaceBudgetEngine()
+    engine = LocalEquityEngine()
     policy = create_policy(root_fraction=D("0.20"))
     acc = create_account(bot_id="b-off", account_id="a-off", enabled=False, capital=D("10000"))
 
@@ -521,7 +563,7 @@ def test_fail_closed_on_unreliable_equity_or_fx(
     corrupt_action: str, expected_code: BudgetReasonCode
 ) -> None:
     """Mẫu số vốn fail-closed khi bất kỳ enabled account nào bị thiếu/stale/future/unknown."""
-    engine = WorkspaceBudgetEngine()
+    engine = LocalEquityEngine()
     policy = create_policy()
 
     if corrupt_action == "MISSING_SNAPSHOT":
@@ -571,7 +613,7 @@ def test_fail_closed_on_unreliable_equity_or_fx(
 
 def test_protective_management_not_denied_on_data_failure_or_cap_exceeded() -> None:
     """Quyết định quản trị bảo vệ (PROTECTIVE_EXIT/MONITORING) KHÔNG bị từ chối dù dữ liệu lỗi."""
-    engine = WorkspaceBudgetEngine()
+    engine = LocalEquityEngine()
     policy = create_policy(root_fraction=D("0.01"))  # Cap rất nhỏ
 
     # Dữ liệu snapshot hoàn toàn unknown
@@ -616,7 +658,7 @@ def test_protective_management_not_denied_on_data_failure_or_cap_exceeded() -> N
 
 def test_cap_tightening_creates_breach_and_blocks_entry_without_flattening() -> None:
     """Siết cap dưới exposure tạo breach, chặn entry mới, không tự flatten vị thế."""
-    engine = WorkspaceBudgetEngine()
+    engine = LocalEquityEngine()
     acc = create_account(capital=D("10000"), account_fraction=D("0.20"))
 
     # Đang có vị thế mở 1500 USDT
@@ -661,7 +703,7 @@ def test_cap_tightening_creates_breach_and_blocks_entry_without_flattening() -> 
 
 def test_breach_recovery_when_exposure_drops_below_cap() -> None:
     """Entry được phục hồi khi vị thế giảm làm exposure xuống dưới cap đã siết."""
-    engine = WorkspaceBudgetEngine()
+    engine = LocalEquityEngine()
     acc = create_account(capital=D("10000"), account_fraction=D("0.20"))
     policy_tightened = create_policy(root_fraction=D("0.10"))  # Cap: 1000 USDT
 
@@ -693,7 +735,7 @@ def test_breach_recovery_when_exposure_drops_below_cap() -> None:
 def test_idempotency_same_key_and_payload_returns_cached_result() -> None:
     """Cùng idempotency key và payload trả về kết quả cũ đã ghi."""
     book = WorkspaceBudgetBook()
-    engine = WorkspaceBudgetEngine()
+    engine = LocalEquityEngine()
     policy = create_policy()
     acc = create_account()
 
@@ -724,7 +766,7 @@ def test_idempotency_same_key_and_payload_returns_cached_result() -> None:
 def test_idempotency_same_key_different_payload_raises_conflict() -> None:
     """Cùng idempotency key nhưng payload khác phải báo CONFLICT."""
     book = WorkspaceBudgetBook()
-    engine = WorkspaceBudgetEngine()
+    engine = LocalEquityEngine()
     policy = create_policy()
     acc = create_account()
 
@@ -753,7 +795,7 @@ def test_idempotency_same_key_different_payload_raises_conflict() -> None:
 def test_idempotency_different_bot_scope_does_not_conflict() -> None:
     """Khóa idempotency có bot scope khác nhau không gây xung đột."""
     book = WorkspaceBudgetBook()
-    engine = WorkspaceBudgetEngine()
+    engine = LocalEquityEngine()
     policy = create_policy()
     acc1 = create_account(bot_id="bot-A", account_id="acc-A")
     acc2 = create_account(bot_id="bot-B", account_id="acc-B")
@@ -834,7 +876,7 @@ def test_bot_overlay_greater_than_account_fraction_rejected() -> None:
 
 def test_disabled_account_with_broken_snapshot_does_not_poison_workspace_equity() -> None:
     """Account disabled có snapshot lỗi không làm hỏng mẫu số vốn của các bot enabled."""
-    engine = WorkspaceBudgetEngine()
+    engine = LocalEquityEngine()
     policy = create_policy(root_fraction=D("0.10"))
     acc_enabled = create_account(bot_id="b1", account_id="a1", enabled=True, capital=D("10000"))
     # acc_disabled có snapshot không known
@@ -862,7 +904,7 @@ def test_disabled_account_with_broken_snapshot_does_not_poison_workspace_equity(
 
 def test_non_usdt_account_converted_to_usdt_in_workspace_equity() -> None:
     """Tài khoản có tài sản gốc BTC được quy đổi chuẩn xác sang USDT theo tỷ giá quan sát."""
-    engine = WorkspaceBudgetEngine()
+    engine = LocalEquityEngine()
     policy = create_policy(root_fraction=D("0.10"))
 
     # acc-btc có 2 BTC, tỷ giá 60000 USDT/BTC -> 120,000 USDT
@@ -894,7 +936,7 @@ def test_non_usdt_account_converted_to_usdt_in_workspace_equity() -> None:
 
 def test_account_level_breach_when_account_cap_tightened() -> None:
     """Breach chỉ xảy ra ở cấp account khi chỉ có account cap bị siết dưới exposure."""
-    engine = WorkspaceBudgetEngine()
+    engine = LocalEquityEngine()
     # Workspace cap lớn (50% của 20000 = 10000 USDT)
     policy = create_policy(root_fraction=D("0.50"))
     acc1 = create_account(
@@ -927,7 +969,7 @@ def test_account_level_breach_when_account_cap_tightened() -> None:
 
 def test_bot_level_breach_when_bot_overlay_tightened() -> None:
     """Breach chỉ xảy ra ở cấp bot khi chỉ có bot overlay bị siết dưới exposure."""
-    engine = WorkspaceBudgetEngine()
+    engine = LocalEquityEngine()
     policy = create_policy(root_fraction=D("0.50"))
     # Account cap 20% = 2000 USDT, bot overlay 5% = 500 USDT
     acc = create_account(
@@ -961,7 +1003,7 @@ def test_bot_level_breach_when_bot_overlay_tightened() -> None:
 
 def test_simultaneous_workspace_and_account_breaches() -> None:
     """Phát hiện đồng thời nhiều cấp breach (Workspace và Account)."""
-    engine = WorkspaceBudgetEngine()
+    engine = LocalEquityEngine()
     # Workspace cap 5% = 500 USDT, Account cap 5% = 500 USDT
     policy = create_policy(root_fraction=D("0.05"))
     acc = create_account(
@@ -990,7 +1032,7 @@ def test_simultaneous_workspace_and_account_breaches() -> None:
 
 def test_unknown_target_bot_raises_scope_mismatch() -> None:
     """Yêu cầu đánh giá cho bot không tồn tại trong danh sách accounts báo lỗi SCOPE_MISMATCH."""
-    engine = WorkspaceBudgetEngine()
+    engine = LocalEquityEngine()
     policy = create_policy()
     acc = create_account(bot_id="b1", account_id="a1")
 
@@ -1026,7 +1068,7 @@ def test_workspace_budget_rejects_foreign_snapshot_scope() -> None:
         has_unknown_equity=False,
     )
 
-    decision = WorkspaceBudgetEngine().evaluate(
+    decision = LocalEquityEngine().evaluate(
         policy=create_policy(),
         accounts=(account,),
         positions=(),
@@ -1058,7 +1100,7 @@ def test_workspace_budget_uses_authoritative_workspace_equity_aggregate() -> Non
         has_unknown_equity=False,
     )
 
-    decision = WorkspaceBudgetEngine().evaluate(
+    decision = LocalEquityEngine().evaluate(
         policy=policy,
         accounts=[account],
         positions=[],
@@ -1091,7 +1133,7 @@ def test_workspace_budget_denies_unknown_equity_in_another_active_account() -> N
         has_unknown_equity=True,
     )
 
-    decision = WorkspaceBudgetEngine().evaluate(
+    decision = LocalEquityEngine().evaluate(
         policy=policy,
         accounts=[account],
         positions=[],
@@ -1108,7 +1150,7 @@ def test_workspace_budget_denies_unknown_equity_in_another_active_account() -> N
 
 def test_zero_requested_risk_evaluation() -> None:
     """Yêu cầu rủi ro bằng 0 được duyệt hợp lệ nếu không có breach."""
-    engine = WorkspaceBudgetEngine()
+    engine = LocalEquityEngine()
     policy = create_policy()
     acc = create_account()
 
@@ -1163,7 +1205,7 @@ def test_validation_rejects_naive_datetime() -> None:
         )
     assert err.value.reason_code == BudgetReasonCode.TIMESTAMP_INVALID
 
-    engine = WorkspaceBudgetEngine()
+    engine = LocalEquityEngine()
     policy = create_policy()
     acc = create_account()
     with pytest.raises(BudgetValidationError) as err:
@@ -1181,7 +1223,7 @@ def test_validation_rejects_naive_datetime() -> None:
 
 def test_reservation_transition_no_double_counting() -> None:
     """Quy trình chuyển đổi reservation sang vị thế mở không làm double-count rủi ro."""
-    engine = WorkspaceBudgetEngine()
+    engine = LocalEquityEngine()
     policy = create_policy(root_fraction=D("0.20"))  # Cap 2000 USDT
     acc = create_account(capital=D("10000"), account_fraction=D("0.20"))
 
@@ -1227,3 +1269,188 @@ def test_reservation_transition_no_double_counting() -> None:
     assert d2.account_budget.open_risk_usdt == D("500")
     assert d2.account_budget.pending_risk_usdt == D("0")
     assert d2.account_budget.remaining_risk_usdt == D("1500")
+
+
+# ==============================================================================
+# MB-04 fix: aggregate bắt buộc, context Decimal cục bộ, mốc reservation, capacity (I5)
+# ==============================================================================
+
+
+def test_workspace_aggregate_is_required() -> None:
+    """Minor review: không còn chế độ local-only âm thầm khi thiếu aggregate workspace."""
+    with pytest.raises(TypeError, match="workspace_aggregate"):
+        WorkspaceBudgetEngine().evaluate(  # type: ignore[call-arg]
+            policy=create_policy(),
+            accounts=(create_account(),),
+            positions=(),
+            reservations=(),
+            target_bot_id="bot-1",
+            requested_risk_usdt=D("1"),
+            as_of=NOW,
+        )
+
+
+def test_caps_use_local_context_with_floor_and_exposure_ceiling() -> None:
+    """Context ambient precision thấp không được nới cap hay đếm thiếu exposure."""
+    from decimal import localcontext
+
+    policy = create_policy(root_fraction=D("0.123456789"))
+    account = create_account(account_fraction=D("0.0333333333"), capital=D("10000.123456789"))
+    position = PositionRisk("ws-1", "bot-1", "acc-1", "pos-1", "BTCUSDT", D("100.000000001"))
+    aggregate = WorkspaceRiskAggregate(
+        workspace_id="ws-1",  # type: ignore[arg-type]
+        total_equity_usdt=D("10000.123456789"),
+        total_open_risk_usdt=D("0"),
+        total_pending_risk_usdt=D("0"),
+        active_bot_count=1,
+        has_unknown_exposure=False,
+        has_unknown_equity=False,
+    )
+    with localcontext() as ambient:
+        ambient.prec = 4
+        decision = WorkspaceBudgetEngine().evaluate(
+            workspace_aggregate=aggregate,
+            policy=policy,
+            accounts=(account,),
+            positions=(position,),
+            reservations=(),
+            target_bot_id="bot-1",
+            requested_risk_usdt=D("1"),
+            as_of=NOW,
+        )
+
+    assert decision.account_budget.cap_usdt == D("0.0333333333") * D("10000.123456789")
+    assert decision.workspace_budget.cap_usdt == D("0.123456789") * D("10000.123456789")
+    assert decision.account_budget.open_risk_usdt == D("100.000000001")
+    expected_remaining = D("0.0333333333") * D("10000.123456789") - D("100.000000001")
+    assert decision.account_budget.remaining_risk_usdt == max(D("0"), expected_remaining)
+
+
+def test_reservation_cutoff_keeps_live_reservation_when_as_of_is_future() -> None:
+    """C3c: RESERVED còn hạn theo đồng hồ thật vẫn giữ budget dù as_of ở tương lai."""
+    future = NOW + timedelta(minutes=5)
+    account = create_account(snapshot=create_snapshot(as_of=future, captured_at=future))
+    reservation = BudgetReservation(
+        "res-1",
+        "ws-1",
+        "bot-1",
+        "acc-1",
+        "key-1",
+        D("300"),
+        ReservationStatus.RESERVED,
+        NOW + timedelta(minutes=1),
+    )
+
+    decision = LocalEquityEngine().evaluate(
+        policy=create_policy(),
+        accounts=(account,),
+        positions=(),
+        reservations=(reservation,),
+        target_bot_id="bot-1",
+        requested_risk_usdt=D("1"),
+        as_of=future,
+        reservation_cutoff=NOW,
+    )
+
+    assert decision.account_budget.pending_risk_usdt == D("300")
+    with pytest.raises(BudgetValidationError):
+        LocalEquityEngine().evaluate(
+            policy=create_policy(),
+            accounts=(account,),
+            positions=(),
+            reservations=(),
+            target_bot_id="bot-1",
+            requested_risk_usdt=D("1"),
+            as_of=future,
+            reservation_cutoff=future + timedelta(seconds=1),
+        )
+
+
+def test_effective_bot_fraction_only_tightens() -> None:
+    from trading_bot.domain.risk.workspace_budget import effective_bot_open_risk_fraction
+
+    assert (
+        effective_bot_open_risk_fraction(
+            bot_fraction=None, account_fraction=D("0.5"), workspace_fraction=D("0.2")
+        )
+        is None
+    )
+    assert effective_bot_open_risk_fraction(
+        bot_fraction=D("0.4"), account_fraction=D("0.3"), workspace_fraction=D("0.9")
+    ) == D("0.3")
+    assert effective_bot_open_risk_fraction(
+        bot_fraction=D("0.4"), account_fraction=D("0.9"), workspace_fraction=D("0.25")
+    ) == D("0.25")
+    assert effective_bot_open_risk_fraction(
+        bot_fraction=D("0.1"), account_fraction=D("0.9"), workspace_fraction=D("0.25")
+    ) == D("0.1")
+
+
+def _state(
+    account: str,
+    *,
+    enabled: bool = True,
+    equity: str | None = "10000",
+    open_risk: str = "0",
+    pending: str = "0",
+    equity_known: bool = True,
+    exposure_known: bool = True,
+) -> object:
+    from trading_bot.domain.risk.workspace_budget import AccountRiskState
+
+    return AccountRiskState(
+        bot_id=f"bot-{account}",
+        account_id=account,
+        enabled=enabled,
+        equity_usdt=None if equity is None else D(equity),
+        equity_known=equity_known,
+        open_risk_usdt=D(open_risk),
+        pending_risk_usdt=D(pending),
+        exposure_known=exposure_known,
+    )
+
+
+@pytest.mark.parametrize(
+    ("states", "workspace_fraction", "account_fraction", "status", "scopes"),
+    [
+        # Exposure 300 (gồm bot disabled) > cap workspace 0.01 × 20.000 = 200.
+        (
+            (_state("a", open_risk="100"), _state("b"), _state("c", enabled=False, pending="200")),
+            "0.01",
+            "1",
+            "CAPACITY_BREACH_AFTER_TIGHTENING",
+            ("WORKSPACE",),
+        ),
+        # Account a: 150 > 0.01 × 10.000 = 100 (workspace 150 <= 0.5 × 20.000).
+        (
+            (_state("a", open_risk="150"), _state("b")),
+            "0.5",
+            "0.01",
+            "CAPACITY_BREACH_AFTER_TIGHTENING",
+            ("ACCOUNT",),
+        ),
+        ((_state("a", open_risk="100"), _state("b")), "0.5", "0.5", "WITHIN_CAP", ()),
+        ((_state("a", equity_known=False), _state("b")), "0.5", "0.5", "UNKNOWN", ()),
+        ((_state("a", exposure_known=False),), "0.5", "0.5", "UNKNOWN", ()),
+    ],
+)
+def test_capacity_assessment_after_risk_change(
+    states: tuple[object, ...],
+    workspace_fraction: str,
+    account_fraction: str,
+    status: str,
+    scopes: tuple[str, ...],
+) -> None:
+    from trading_bot.domain.risk.workspace_budget import assess_capacity_after_risk_change
+
+    assessment = assess_capacity_after_risk_change(
+        workspace_fraction=D(workspace_fraction),
+        account_fraction=D(account_fraction),
+        states=states,  # type: ignore[arg-type]
+    )
+
+    assert assessment.status.value == status
+    assert assessment.breached_scopes == scopes
+    payload = assessment.payload()
+    assert payload["status"] == status
+    assert "bot-" not in assessment.summary()  # không lộ định danh bot trong lý do audit

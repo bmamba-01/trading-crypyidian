@@ -22,7 +22,6 @@ from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy.dialects import postgresql
-from sqlalchemy.ext.asyncio import AsyncSession
 from tests.unit.bot_scope_fakes import BotScopeSession
 
 from trading_bot.adapters.database.models import (
@@ -30,7 +29,9 @@ from trading_bot.adapters.database.models import (
     RiskReservationRecord,
     TradingAccount,
 )
+from trading_bot.application import workspace_risk as workspace_risk_module
 from trading_bot.application.workspace_risk import (
+    AuthoritativeCaps,
     ReservationRequest,
     WorkspaceRiskCoordinator,
 )
@@ -45,6 +46,7 @@ from trading_bot.domain.risk.equity import (
     mark_to_market_equity,
 )
 from trading_bot.domain.risk.reservations import (
+    ReservationConflict,
     ReservationReleaseReason,
     ReservationStatus,
 )
@@ -64,8 +66,17 @@ async def _async_false() -> bool:
     return False
 
 
+async def _enabled_target(**_: Any) -> bool:
+    return True
+
+
 class FakeRiskSession(BotScopeSession):
-    """Session giả lập hỗ trợ ghi nhận câu lệnh SQL, add records và lock ordering."""
+    """Session giả lập hỗ trợ ghi nhận câu lệnh SQL, add records và lock ordering.
+
+    Cap account/bot không còn được inject qua thuộc tính session: test truyền `caps_loader`
+    tường minh vào constructor (xem `make_coordinator`). Đường authoritative thật được kiểm ở
+    E2E `test_workspace_risk_real_paths.py`.
+    """
 
     def __init__(self) -> None:
         self.statements: list[str] = []
@@ -78,19 +89,29 @@ class FakeRiskSession(BotScopeSession):
         self.total_open_risk_usdt = Decimal("0")
         self.total_pending_risk_usdt = Decimal("0")
         self.has_unknown_equity = False
-        self.test_account_cap = Decimal("0.5")
-        self.test_bot_cap: Decimal | None = None
+        self.account_cap = Decimal("0.5")
+        self.bot_cap: Decimal | None = None
+        self.trade_rows: list[tuple[Any, ...]] = []
+        self.on_workspace_lock: Any = None
+        self.caps_reads: list[tuple[datetime, int]] = []
         self.records: dict[type, list[object]] = {
             RiskReservationRecord: [],
             RiskDecisionRecord: [],
             TradingAccount: [],
         }
 
-    def test_scope_caps_loader(
-        self, request: ReservationRequest
-    ) -> tuple[Decimal, Decimal | None, str, str]:
-        del request
-        return self.test_account_cap, self.test_bot_cap, "", ""
+    async def load_caps(
+        self,
+        request: ReservationRequest,
+        published: PublishedWorkspaceSettings,
+        read_at: datetime,
+    ) -> AuthoritativeCaps:
+        del request, published
+        self.caps_reads.append((read_at, len(self.lock_keys())))
+        return AuthoritativeCaps(self.account_cap, self.bot_cap)
+
+    def lock_keys(self) -> list[str]:
+        return [p["risk_lock"] for p in self.params_list if "risk_lock" in p]
 
     async def execute(self, statement: Any, params: object = None) -> Any:
         try:
@@ -98,8 +119,15 @@ class FakeRiskSession(BotScopeSession):
         except Exception:
             compiled = str(statement)
         self.statements.append(compiled)
+        if "FROM trade LEFT OUTER JOIN risk_reservation" in compiled:
+            rows = list(self.trade_rows)
+            return type("Result", (), {"all": lambda *a, **k: rows})()
         if isinstance(params, dict):
             self.params_list.append(params)
+            lock = params.get("risk_lock")
+            if isinstance(lock, str) and lock.startswith("workspace-risk:"):
+                if self.on_workspace_lock is not None:
+                    self.on_workspace_lock()
             if "get_workspace_risk_equity_aggregate" in compiled:
                 aggregate = (
                     params["workspace_id"],
@@ -258,17 +286,25 @@ def _make_valid_settings(ws_cap_fraction: Decimal, profile_id: UUID) -> Workspac
 
 
 class FakeSettingsRepo:
-    def __init__(self, ws_cap_fraction: Decimal = Decimal("0.5")) -> None:
+    def __init__(
+        self,
+        ws_cap_fraction: Decimal = Decimal("0.5"),
+        session: FakeRiskSession | None = None,
+    ) -> None:
         self.ws_cap_fraction = ws_cap_fraction
         self.version_id = uuid4()
         self.version_hash = "a" * 64
         self.profile_id = uuid4()
         self.as_of_values: list[datetime | None] = []
+        self.session = session
+        self.locks_held_at_read: list[list[str]] = []
 
     async def load_effective_config(
         self, *, workspace_id: UUID, as_of: datetime | None = None
     ) -> PublishedWorkspaceSettings:
         self.as_of_values.append(as_of)
+        if self.session is not None:
+            self.locks_held_at_read.append(self.session.lock_keys())
         settings = _make_valid_settings(self.ws_cap_fraction, self.profile_id)
         return PublishedWorkspaceSettings(
             workspace_id=workspace_id,
@@ -319,6 +355,13 @@ class FakeConversionRepo:
 # -----------------------------------------------------------------------------
 
 
+def make_coordinator(session: FakeRiskSession, **kwargs: Any) -> WorkspaceRiskCoordinator:
+    """Coordinator với nguồn cap/status thay TƯỜNG MINH (không còn fallback ngầm)."""
+    kwargs.setdefault("caps_loader", session.load_caps)
+    kwargs.setdefault("target_status_loader", _enabled_target)
+    return WorkspaceRiskCoordinator(session, **kwargs)  # type: ignore[arg-type]
+
+
 async def _reserve_with_test_caps(
     coordinator: WorkspaceRiskCoordinator,
     session: FakeRiskSession,
@@ -327,23 +370,23 @@ async def _reserve_with_test_caps(
     account_cap: Decimal,
     bot_cap: Decimal | None = None,
 ) -> Any:
-    session.test_account_cap = account_cap
-    session.test_bot_cap = bot_cap
+    session.account_cap = account_cap
+    session.bot_cap = bot_cap
     return await coordinator.reserve(request)
 
 
-def test_production_async_session_rejects_test_scope_and_status_loaders() -> None:
-    with pytest.raises(ValueError, match="Không được thay nguồn scope/status"):
-        WorkspaceRiskCoordinator(
-            AsyncSession(),
-            test_scope_caps_loader=lambda _: (Decimal("0.5"), None, "", ""),
-        )
+def test_default_sources_are_authoritative_and_session_attribute_cannot_inject() -> None:
+    """Review: loader giả qua thuộc tính session đã che C1; giờ mặc định luôn là nguồn DB."""
 
-    with pytest.raises(ValueError, match="Không được thay nguồn scope/status"):
-        WorkspaceRiskCoordinator(
-            AsyncSession(),
-            target_status_loader=lambda **_: True,
-        )
+    class SessionWithLegacyHook(FakeRiskSession):
+        def test_scope_caps_loader(self, request: ReservationRequest) -> Any:
+            raise AssertionError("Không được dùng loader ngầm từ session.")
+
+    session = SessionWithLegacyHook()
+    coordinator = WorkspaceRiskCoordinator(session)  # type: ignore[arg-type]
+
+    assert coordinator._caps_loader == coordinator._load_authoritative_caps
+    assert coordinator._target_status_loader == coordinator._load_target_status
 
 
 @pytest.mark.asyncio
@@ -354,7 +397,7 @@ async def test_lock_order_workspace_then_accounts_sorted() -> None:
     acc_id_1 = UUID("20000000-0000-0000-0000-000000000002")
     acc_id_2 = UUID("10000000-0000-0000-0000-000000000001")
 
-    coordinator = WorkspaceRiskCoordinator(
+    coordinator = make_coordinator(
         session,
         clock=lambda: NOW,
         settings_repo=FakeSettingsRepo(),
@@ -375,14 +418,14 @@ async def test_lock_order_workspace_then_accounts_sorted() -> None:
 
 @pytest.mark.asyncio
 async def test_reread_after_lock_detects_new_cap() -> None:
-    """Sau khi có lock, coordinator nạp cấu hình mới nhất từ repository."""
+    """Publish commit trong lúc chờ workspace lock phải được thấy: đọc cap SAU cả hai khóa."""
     session = FakeRiskSession()
     ws_id = uuid4()
     acc_id = uuid4()
     bot_id = uuid4()
 
-    settings_repo = FakeSettingsRepo(ws_cap_fraction=Decimal("0.8"))
-    coordinator = WorkspaceRiskCoordinator(
+    settings_repo = FakeSettingsRepo(ws_cap_fraction=Decimal("0.8"), session=session)
+    coordinator = make_coordinator(
         session,
         clock=lambda: NOW,
         settings_repo=settings_repo,
@@ -390,8 +433,11 @@ async def test_reread_after_lock_detects_new_cap() -> None:
         conversion_repo=FakeConversionRepo(),
     )
 
-    # Giả lập draft mới được publish với cap 0.3 trước khi evaluate
-    settings_repo.ws_cap_fraction = Decimal("0.3")
+    # Publish siết cap còn 0.3 commit đúng lúc reservation được cấp workspace lock.
+    def publish_while_waiting() -> None:
+        settings_repo.ws_cap_fraction = Decimal("0.3")
+
+    session.on_workspace_lock = publish_while_waiting
 
     request = ReservationRequest(
         workspace_id=ws_id,
@@ -414,6 +460,10 @@ async def test_reread_after_lock_detects_new_cap() -> None:
     assert not result.approved
     assert result.reason_code == BudgetReasonCode.WORKSPACE_CAP_EXCEEDED
     assert settings_repo.as_of_values == [NOW]
+    # Thứ tự: root settings và cap account/bot chỉ được đọc khi đã giữ workspace + account lock.
+    expected_locks = [f"workspace-risk:{ws_id}", f"account-risk:{ws_id}:{acc_id}"]
+    assert settings_repo.locks_held_at_read == [expected_locks]
+    assert session.caps_reads == [(NOW, 2)]
 
 
 @pytest.mark.asyncio
@@ -424,7 +474,7 @@ async def test_reserve_approved_within_all_caps() -> None:
     acc_id = uuid4()
     bot_id = uuid4()
 
-    coordinator = WorkspaceRiskCoordinator(
+    coordinator = make_coordinator(
         session,
         clock=lambda: NOW,
         settings_repo=FakeSettingsRepo(ws_cap_fraction=Decimal("0.5")),  # ws_cap = 5000
@@ -474,7 +524,7 @@ async def test_reserve_fails_closed_when_workspace_aggregate_is_unavailable() ->
     acc_id = uuid4()
     bot_id = uuid4()
 
-    coordinator = WorkspaceRiskCoordinator(
+    coordinator = make_coordinator(
         session,
         clock=lambda: NOW,
         settings_repo=FakeSettingsRepo(),
@@ -514,7 +564,7 @@ async def test_reserve_denies_when_workspace_aggregate_has_unknown_exposure() ->
     acc_id = uuid4()
     bot_id = uuid4()
 
-    coordinator = WorkspaceRiskCoordinator(
+    coordinator = make_coordinator(
         session,
         clock=lambda: NOW,
         settings_repo=FakeSettingsRepo(),
@@ -567,7 +617,7 @@ async def test_reserve_denies_when_enabled_workspace_equity_is_unknown() -> None
     ws_id = uuid4()
     acc_id = uuid4()
     bot_id = uuid4()
-    coordinator = WorkspaceRiskCoordinator(
+    coordinator = make_coordinator(
         session,
         clock=lambda: NOW,
         settings_repo=FakeSettingsRepo(),
@@ -600,7 +650,7 @@ async def test_reserve_denies_when_authoritative_target_bot_is_disabled() -> Non
     """Bot/account status được nạp lại trong transaction trước workspace budget."""
     session = FakeRiskSession()
     ws_id, acc_id, bot_id = uuid4(), uuid4(), uuid4()
-    coordinator = WorkspaceRiskCoordinator(
+    coordinator = make_coordinator(
         session,
         clock=lambda: NOW,
         settings_repo=FakeSettingsRepo(),
@@ -639,7 +689,7 @@ async def test_reserve_denied_when_exceeds_bot_overlay_cap() -> None:
     acc_id = uuid4()
     bot_id = uuid4()
 
-    coordinator = WorkspaceRiskCoordinator(
+    coordinator = make_coordinator(
         session,
         clock=lambda: NOW,
         settings_repo=FakeSettingsRepo(ws_cap_fraction=Decimal("0.5")),
@@ -702,7 +752,7 @@ async def test_transfer_to_open_does_not_double_count_risk() -> None:
     )
     session.records[RiskReservationRecord].append(res_record)
 
-    coordinator = WorkspaceRiskCoordinator(
+    coordinator = make_coordinator(
         session,
         clock=lambda: NOW,
         settings_repo=FakeSettingsRepo(),
@@ -749,6 +799,7 @@ async def test_transfer_to_open_does_not_double_count_risk() -> None:
         target_bot_id=str(bot_id),
         requested_risk_usdt=Decimal("100"),
         as_of=NOW,
+        workspace_aggregate=_aggregate(ws_id),
     )
     # Tổng pending = 0, open = 500
     assert decision.account_budget.open_risk_usdt == Decimal("500")
@@ -782,7 +833,7 @@ async def test_unknown_reservation_keeps_budget_even_after_expiry() -> None:
     )
     session.records[RiskReservationRecord].append(res_record)
 
-    coordinator = WorkspaceRiskCoordinator(
+    coordinator = make_coordinator(
         session,
         clock=lambda: NOW,
         settings_repo=FakeSettingsRepo(),
@@ -815,6 +866,7 @@ async def test_unknown_reservation_keeps_budget_even_after_expiry() -> None:
         target_bot_id=str(bot_id),
         requested_risk_usdt=Decimal("100"),
         as_of=NOW,
+        workspace_aggregate=_aggregate(ws_id),
     )
     assert decision.account_budget.pending_risk_usdt == Decimal("800")
 
@@ -880,7 +932,7 @@ async def test_expire_overdue_only_releases_expired_reserved_and_ignores_unknown
     )
     session.records[RiskReservationRecord].extend([rec_expired, rec_unknown, rec_active])
 
-    coordinator = WorkspaceRiskCoordinator(
+    coordinator = make_coordinator(
         session,
         clock=lambda: NOW,
         settings_repo=FakeSettingsRepo(),
@@ -904,7 +956,7 @@ async def test_idempotency_replay_and_conflict() -> None:
     acc_id = uuid4()
     bot_id = uuid4()
 
-    coordinator = WorkspaceRiskCoordinator(
+    coordinator = make_coordinator(
         session,
         clock=lambda: NOW,
         settings_repo=FakeSettingsRepo(),
@@ -974,7 +1026,7 @@ async def test_transaction_rollback_prevents_orphan_state() -> None:
     acc_id = uuid4()
     bot_id = uuid4()
 
-    coordinator = WorkspaceRiskCoordinator(
+    coordinator = make_coordinator(
         session,
         clock=lambda: NOW,
         settings_repo=FakeSettingsRepo(),
@@ -1014,7 +1066,7 @@ async def test_reserve_denied_when_exceeds_account_cap() -> None:
     acc_id = uuid4()
     bot_id = uuid4()
 
-    coordinator = WorkspaceRiskCoordinator(
+    coordinator = make_coordinator(
         session,
         clock=lambda: NOW,
         settings_repo=FakeSettingsRepo(ws_cap_fraction=Decimal("0.8")),
@@ -1061,7 +1113,7 @@ async def test_reserve_denied_when_exceeds_workspace_cap() -> None:
     # ws_cap = 0.3 * 20000 = 6000 USDT
     # acc 2 đã chiếm 5500 USDT (qua existing position)
     settings_repo = FakeSettingsRepo(ws_cap_fraction=Decimal("0.3"))
-    coordinator = WorkspaceRiskCoordinator(
+    coordinator = make_coordinator(
         session,
         clock=lambda: NOW,
         settings_repo=settings_repo,
@@ -1122,7 +1174,7 @@ async def test_release_reservation_returns_risk_to_budget() -> None:
     )
     session.records[RiskReservationRecord].append(res_record)
 
-    coordinator = WorkspaceRiskCoordinator(
+    coordinator = make_coordinator(
         session,
         clock=lambda: NOW,
         settings_repo=FakeSettingsRepo(),
@@ -1151,7 +1203,7 @@ async def test_multi_account_lock_sorting() -> None:
     acc_a = UUID("10000000-0000-0000-0000-000000000001")
     acc_b = UUID("20000000-0000-0000-0000-000000000002")
 
-    coordinator = WorkspaceRiskCoordinator(
+    coordinator = make_coordinator(
         session,
         clock=lambda: NOW,
         settings_repo=FakeSettingsRepo(),
@@ -1166,3 +1218,271 @@ async def test_multi_account_lock_sorting() -> None:
     assert locks[1] == f"account-risk:{ws_id}:{acc_a}"
     assert locks[2] == f"account-risk:{ws_id}:{acc_b}"
     assert locks[3] == f"account-risk:{ws_id}:{acc_c}"
+
+
+# -----------------------------------------------------------------------------
+# Sửa review độc lập MB-04 (C1, C2, C3, I6) — nguồn thật ở E2E, đây là bất biến đơn vị.
+# -----------------------------------------------------------------------------
+
+
+def _aggregate(workspace_id: UUID, **overrides: Any) -> WorkspaceRiskAggregate:
+    values: dict[str, Any] = {
+        "workspace_id": workspace_id,
+        "total_equity_usdt": Decimal("10000"),
+        "total_open_risk_usdt": ZERO,
+        "total_pending_risk_usdt": ZERO,
+        "active_bot_count": 1,
+        "has_unknown_exposure": False,
+        "has_unknown_equity": False,
+    }
+    values.update(overrides)
+    return WorkspaceRiskAggregate(**values)
+
+
+def _request(
+    ws_id: UUID,
+    bot_id: UUID,
+    acc_id: UUID,
+    *,
+    key: str,
+    risk: str = "500",
+    as_of: datetime = NOW,
+    expires_at: datetime | None = None,
+) -> ReservationRequest:
+    return ReservationRequest(
+        workspace_id=ws_id,
+        bot_id=bot_id,
+        account_id=acc_id,
+        idempotency_key=key,
+        requested_risk_usdt=Decimal(risk),
+        requested_notional=Decimal("5000"),
+        requested_initial_margin=Decimal("1000"),
+        as_of=as_of,
+        expires_at=expires_at or as_of + timedelta(minutes=5),
+        plan_hash=f"plan-{key}",
+    )
+
+
+def _coordinator_at(session: FakeRiskSession, clock_at: datetime, **kwargs: Any) -> Any:
+    kwargs.setdefault("settings_repo", FakeSettingsRepo())
+    return make_coordinator(
+        session,
+        clock=lambda: clock_at,
+        equity_repo=FakeEquityRepo({}),
+        conversion_repo=FakeConversionRepo(),
+        **kwargs,
+    )
+
+
+@pytest.mark.asyncio
+async def test_stale_evaluated_at_reads_caps_and_equity_at_clock_after_lock() -> None:
+    """C3a: evaluated_at cũ hơn publish đã commit -> root/cap/equity đọc tại clock sau khóa."""
+    session = FakeRiskSession()
+    ws_id, acc_id, bot_id = uuid4(), uuid4(), uuid4()
+    later = NOW + timedelta(seconds=30)
+    settings_repo = FakeSettingsRepo(session=session)
+    coordinator = _coordinator_at(session, later, settings_repo=settings_repo)
+
+    result = await coordinator.reserve(_request(ws_id, bot_id, acc_id, key="stale-as-of"))
+
+    assert result.approved
+    assert settings_repo.as_of_values == [later]
+    assert session.caps_reads == [(later, 2)]
+    assert result.decision is not None
+    assert result.decision.as_of == later
+    payload = session.records[RiskDecisionRecord][0].payload  # type: ignore[attr-defined]
+    assert payload["requested_as_of"] == NOW.isoformat()
+    assert payload["risk_read_at"] == later.isoformat()
+    aggregate_params = [p for p in session.params_list if "max_mark_age_seconds" in p]
+    assert aggregate_params[0]["as_of"] == later
+
+
+@pytest.mark.asyncio
+async def test_future_as_of_keeps_reservations_live_by_real_clock() -> None:
+    """C3c: as_of tương lai không được làm rơi RESERVED còn hạn theo đồng hồ thật."""
+    session = FakeRiskSession()
+    ws_id, acc_id, bot_id = uuid4(), uuid4(), uuid4()
+    session.records[RiskReservationRecord].append(
+        RiskReservationRecord(
+            id=uuid4(),
+            workspace_id=ws_id,
+            bot_id=bot_id,
+            account_id=acc_id,
+            risk_decision_id=uuid4(),
+            idempotency_key="live-by-clock",
+            plan_hash="p-live",
+            symbol="BTCUSDT",
+            reserved_risk=Decimal("1800"),
+            reserved_notional=Decimal("5000"),
+            reserved_initial_margin=Decimal("1000"),
+            expires_at=NOW + timedelta(seconds=30),
+            status=ReservationStatus.RESERVED.value,
+            resolution_reason=None,
+        )
+    )
+    coordinator = _coordinator_at(session, NOW)
+    future = NOW + timedelta(minutes=1)
+
+    # get_by_idempotency_key của fake trả reservation có sẵn: dùng key khác qua decision trống.
+    session.records[RiskReservationRecord][0].idempotency_key = "other"
+    coordinator._reservations_repo.get_by_idempotency_key = _none_async
+    result = await _reserve_with_test_caps(
+        coordinator,
+        session,
+        _request(ws_id, bot_id, acc_id, key="future-as-of", risk="500", as_of=future),
+        account_cap=Decimal("0.2"),
+    )
+
+    # Cap account 2000; reservation còn hạn 1800 + 500 > 2000 -> từ chối.
+    assert not result.approved
+    assert result.reason_code == BudgetReasonCode.ACCOUNT_CAP_EXCEEDED
+    assert result.decision is not None
+    assert result.decision.account_budget.pending_risk_usdt == Decimal("1800")
+
+
+async def _none_async(**_: Any) -> None:
+    return None
+
+
+@pytest.mark.asyncio
+async def test_candidate_expired_by_clock_is_rejected_before_persistence() -> None:
+    """C3: candidate đã hết hạn theo đồng hồ thật không được giữ ngân sách."""
+    session = FakeRiskSession()
+    ws_id, acc_id, bot_id = uuid4(), uuid4(), uuid4()
+    coordinator = _coordinator_at(session, NOW + timedelta(minutes=10))
+
+    with pytest.raises(ReservationConflict, match="hết hạn"):
+        await coordinator.reserve(_request(ws_id, bot_id, acc_id, key="expired-candidate"))
+    assert session.added == []
+
+
+@pytest.mark.asyncio
+async def test_open_trade_risk_comes_from_linked_reservation_not_lineage() -> None:
+    """C2: trade OPEN chiếm cap account bằng reserved_risk của reservation liên kết."""
+    session = FakeRiskSession()
+    ws_id, acc_id, bot_id = uuid4(), uuid4(), uuid4()
+    session.trade_rows = [(uuid4(), ws_id, bot_id, acc_id, "BTCUSDT", uuid4(), Decimal("1700"))]
+    coordinator = _coordinator_at(session, NOW)
+
+    result = await _reserve_with_test_caps(
+        coordinator,
+        session,
+        _request(ws_id, bot_id, acc_id, key="open-trade-risk", risk="500"),
+        account_cap=Decimal("0.2"),
+    )
+
+    # Cap account 2000: open 1700 + 500 > 2000.
+    assert not result.approved
+    assert result.reason_code == BudgetReasonCode.ACCOUNT_CAP_EXCEEDED
+    assert result.decision is not None
+    assert result.decision.account_budget.open_risk_usdt == Decimal("1700")
+    assert any("FROM trade LEFT OUTER JOIN risk_reservation" in s for s in session.statements)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("risk", [None, Decimal("0"), Decimal("-5")])
+async def test_open_trade_without_valid_reservation_risk_fails_closed(
+    risk: Decimal | None,
+) -> None:
+    """C2: thiếu reservation/rủi ro hợp lệ -> exposure unknown, không bao giờ là 0."""
+    session = FakeRiskSession()
+    ws_id, acc_id, bot_id = uuid4(), uuid4(), uuid4()
+    reservation_id = None if risk is None else uuid4()
+    session.trade_rows = [(uuid4(), ws_id, bot_id, acc_id, "BTCUSDT", reservation_id, risk)]
+    coordinator = _coordinator_at(session, NOW)
+
+    result = await _reserve_with_test_caps(
+        coordinator,
+        session,
+        _request(ws_id, bot_id, acc_id, key=f"unknown-open-{risk}", risk="10"),
+        account_cap=Decimal("0.2"),
+    )
+
+    assert not result.approved
+    assert result.reason_code == BudgetReasonCode.WORKSPACE_EXPOSURE_UNKNOWN
+    assert result.reservation_id is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "reason", "clock_offset"),
+    [
+        (ReservationStatus.RELEASED.value, "CANCELLED_BEFORE_SUBMIT", timedelta(0)),
+        (ReservationStatus.TRANSFERRED.value, "OPEN_RISK_RECORDED", timedelta(0)),
+        (ReservationStatus.RESERVED.value, None, timedelta(minutes=6)),
+    ],
+)
+async def test_replay_of_dead_reservation_is_a_conflict(
+    status: str, reason: str | None, clock_offset: timedelta
+) -> None:
+    """I6: replay chỉ trả approved khi reservation còn RESERVED/UNKNOWN và chưa hết hạn."""
+    session = FakeRiskSession()
+    ws_id, acc_id, bot_id = uuid4(), uuid4(), uuid4()
+    clock = {"now": NOW}
+    coordinator = make_coordinator(
+        session,
+        clock=lambda: clock["now"],
+        settings_repo=FakeSettingsRepo(),
+        equity_repo=FakeEquityRepo({}),
+        conversion_repo=FakeConversionRepo(),
+    )
+    request = _request(ws_id, bot_id, acc_id, key=f"dead-{status}")
+    first = await _reserve_with_test_caps(coordinator, session, request, account_cap=Decimal("0.2"))
+    assert first.approved
+    record = session.records[RiskReservationRecord][0]
+    record.status = status  # type: ignore[attr-defined]
+    record.resolution_reason = reason  # type: ignore[attr-defined]
+    clock["now"] = NOW + clock_offset
+
+    with pytest.raises(ReservationConflict):
+        await coordinator.reserve(request)
+
+
+@pytest.mark.asyncio
+async def test_replay_of_live_unknown_reservation_returns_recorded_result() -> None:
+    session = FakeRiskSession()
+    ws_id, acc_id, bot_id = uuid4(), uuid4(), uuid4()
+    coordinator = _coordinator_at(session, NOW)
+    request = _request(ws_id, bot_id, acc_id, key="live-unknown")
+    first = await _reserve_with_test_caps(coordinator, session, request, account_cap=Decimal("0.2"))
+    session.records[RiskReservationRecord][0].status = ReservationStatus.UNKNOWN.value  # type: ignore[attr-defined]
+
+    replay = await coordinator.reserve(request)
+
+    assert replay.approved
+    assert replay.is_replay
+    assert replay.reservation_id == first.reservation_id
+
+
+@pytest.mark.asyncio
+async def test_authoritative_caps_use_resolved_bot_overlay_fraction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """C1: cap bot = `bot_max_open_risk_fraction` của overlay do resolver THẬT trả về.
+
+    Bản lỗi trả `account_max_open_risk_fraction` (0.80) làm cap bot -> overlay 0.50 bị bỏ qua.
+    """
+    from tests.unit.test_workspace_risk_config import ResolverFixture
+
+    fix = ResolverFixture(workspace_cap="1.0", account_cap="0.80")
+    effective = fix.resolve(
+        fix.version({"schema_version": 1, "risk": {"bot_max_open_risk_fraction": "0.50"}})
+    )
+
+    async def profile(*_: Any, **__: Any) -> Any:
+        return fix.risk_profile
+
+    async def overlay(*_: Any, **__: Any) -> Any:
+        return effective
+
+    monkeypatch.setattr(workspace_risk_module, "load_risk_profile", profile)
+    monkeypatch.setattr(workspace_risk_module, "load_effective_bot_config", overlay)
+    coordinator = WorkspaceRiskCoordinator(FakeRiskSession())  # type: ignore[arg-type]
+    request = _request(fix.workspace_id, fix.bot_id, fix.account_id, key="c1")
+
+    caps = await coordinator._load_authoritative_caps(request, fix.root, NOW)
+
+    assert caps.account_max_open_risk_fraction == Decimal("0.80")
+    assert caps.bot_max_open_risk_fraction == Decimal("0.50")
+    assert caps.bot_config_version_id == str(effective.bot_config_version_id)
+    assert caps.bot_config_hash == effective.bot_config_hash

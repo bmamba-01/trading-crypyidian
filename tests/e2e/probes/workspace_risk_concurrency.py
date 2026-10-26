@@ -464,12 +464,13 @@ def concurrency_barrier_phase(state: dict[str, str]) -> dict[str, object]:
         f1.result()
         f2.result()
 
-    # Query DB xác nhận sum(reserved_risk) của status='RESERVED' qua get_workspace_risk_aggregate
+    # Tổng pending qua aggregate SQL (role runtime); tổng đọc thẳng bảng chạy ở pha
+    # `direct_reserved_sum` bằng superuser (RLS runtime chỉ thấy bot của mình).
     with _get_db_connection() as conn:
         conn.execute("SELECT set_config('app.workspace_id', %s, false)", (str(ws_id),))
         row = conn.execute(
-            "SELECT total_pending_risk_usdt FROM get_workspace_risk_aggregate(%s, %s)",
-            (ws_id, NOW),
+            "SELECT total_pending_risk_usdt FROM get_workspace_risk_equity_aggregate(%s, %s, %s)",
+            (ws_id, NOW, 3600),
         ).fetchone()
         reserved_sum = row[0]
 
@@ -477,6 +478,84 @@ def concurrency_barrier_phase(state: dict[str, str]) -> dict[str, object]:
         "results": results,
         "db_reserved_sum": str(reserved_sum),
     }
+
+
+def direct_reserved_sum_phase(state: dict[str, str]) -> dict[str, str]:
+    """Tổng reservation đang giữ đọc thẳng `risk_reservation` (không qua hàm đang được kiểm)."""
+    with _get_db_connection() as conn:
+        row = conn.execute(
+            "SELECT coalesce(sum(reserved_risk), 0), count(*) FROM risk_reservation "
+            "WHERE workspace_id = %s AND status IN ('RESERVED', 'UNKNOWN')",
+            (UUID(state["workspace_id"]),),
+        ).fetchone()
+    return {"reserved_sum": str(row[0]), "reserved_count": str(row[1])}
+
+
+def replay_dead_reservation_phase(state: dict[str, str]) -> dict[str, object]:
+    """I6: replay idempotent không được trả approved cho reservation đã RELEASED/hết hạn."""
+    ws_id = UUID(state["workspace_id"])
+    acc2_id, bot2_id = UUID(state["acc2_id"]), UUID(state["bot2_id"])
+
+    async def _run() -> dict[str, object]:
+        engine = create_async_engine(_get_async_url(), pool_pre_ping=True)
+        out: dict[str, object] = {}
+        try:
+            cases = (("released", timedelta(minutes=10)), ("expired", timedelta(seconds=2)))
+            for case, ttl in cases:
+                now = datetime.now(UTC)
+                request = ReservationRequest(
+                    workspace_id=ws_id,
+                    bot_id=bot2_id,
+                    account_id=acc2_id,
+                    idempotency_key=f"i6-{case}",
+                    requested_risk_usdt=Decimal("100"),
+                    requested_notional=Decimal("1000"),
+                    requested_initial_margin=Decimal("100"),
+                    as_of=now,
+                    expires_at=now + ttl,
+                    symbol="BTCUSDT",
+                    plan_hash="plan-hash-2",
+                )
+                async with AsyncSession(engine) as session:
+                    await _bind(session, ws_id, bot2_id)
+                    first = await WorkspaceRiskCoordinator(session).reserve(request)
+                    await session.commit()
+                out[f"{case}_first"] = [first.approved, first.reason_code.value]
+                if case == "released":
+                    async with AsyncSession(engine) as session:
+                        await _bind(session, ws_id, bot2_id)
+                        assert first.reservation_id is not None
+                        await WorkspaceRiskCoordinator(session).release_reservation(
+                            workspace_id=ws_id,
+                            account_id=acc2_id,
+                            reservation_id=first.reservation_id,
+                        )
+                        await session.commit()
+                else:
+                    await asyncio.sleep(3)
+                async with AsyncSession(engine) as session:
+                    await _bind(session, ws_id, bot2_id)
+                    try:
+                        replay = await WorkspaceRiskCoordinator(session).reserve(request)
+                        out[f"{case}_replay"] = [replay.approved, replay.is_replay]
+                    except Exception as error:
+                        out[f"{case}_replay"] = type(error).__name__
+                    await session.rollback()
+        finally:
+            await engine.dispose()
+        return out
+
+    return asyncio.run(_run())
+
+
+async def _bind(session: AsyncSession, workspace_id: UUID, bot_id: UUID) -> None:
+    await session.execute(
+        text(
+            "SELECT set_config('app.workspace_id', :ws, false), "
+            "set_config('app.bot_id', :bot, false)"
+        ),
+        {"ws": str(workspace_id), "bot": str(bot_id)},
+    )
 
 
 def admin_tighten_phase(state: dict[str, str]) -> dict[str, str]:
@@ -618,7 +697,9 @@ def admin_tighten_phase(state: dict[str, str]) -> dict[str, str]:
             status="OPEN",
             mode="PAPER",
             opened_at=NOW,
-            lineage=Jsonb({"worst_case_loss_usdt": "1200"}),
+            # Không ghi rủi ro vào lineage (ledger thật cũng không): coordinator phải lấy 1.200 từ
+            # reservation liên kết (review C2).
+            lineage=Jsonb({}),
         )
         _insert(
             conn,
@@ -822,7 +903,7 @@ def rls_checks_phase(state: dict[str, str]) -> dict[str, object]:
         ).fetchone()
         unknown_equity = conn.execute(
             "SELECT has_unknown_equity FROM get_workspace_risk_equity_aggregate(%s, %s, %s)",
-            (ws_id, NOW + timedelta(hours=2), 3600),
+            (ws_id, NOW + timedelta(hours=3), 3600),
         ).fetchone()[0]
         function_execute = conn.execute(
             "SELECT has_function_privilege('crypidian_trading_runtime', "
@@ -889,6 +970,88 @@ def equity_edge_cases_phase(state: dict[str, str]) -> dict[str, bool]:
                 ).fetchone()
                 assert row is not None
                 return Decimal(row[0]), bool(row[1])
+
+            def aggregate_row(as_of: datetime) -> tuple[Decimal, Decimal, Decimal, bool]:
+                row = conn.execute(
+                    "SELECT total_equity_usdt, total_open_risk_usdt, total_pending_risk_usdt, "
+                    "has_unknown_equity FROM get_workspace_risk_equity_aggregate(%s, %s, %s)",
+                    (ws_id, as_of, 3600),
+                ).fetchone()
+                assert row is not None
+                return Decimal(row[0]), Decimal(row[1]), Decimal(row[2]), bool(row[3])
+
+            def set_bar(open_time: datetime, close_time: datetime, close: str) -> None:
+                conn.execute(
+                    "UPDATE market_bar SET open_time = %s, close_time = %s, close = %s, "
+                    "low = least(low, %s) WHERE workspace_id = %s AND symbol = 'BTCUSDT'",
+                    (open_time, close_time, Decimal(close), Decimal(close), ws_id),
+                )
+
+            # MB-04 fix C3b: trade OPEN mở sau as_of (opened_at = NOW) vẫn là exposure hiện hành.
+            _, open_risk_before_open, _, _ = aggregate_row(NOW - timedelta(minutes=1))
+            # MB-04 fix I2: nến cũ backfill muộn (available_at mới, close_time cũ 3 giờ) không
+            # phải mark tươi: độ tươi đo theo thời điểm quan sát close_time.
+            set_bar(NOW - timedelta(hours=4), NOW - timedelta(hours=3), "10000")
+            _, backfilled_stale_mark_unknown = aggregate_equity()
+            set_bar(NOW - timedelta(hours=1), NOW, "10000")
+            # Minor: vốn âm của một account là unknown (khớp domain), không phải một số âm hợp lệ.
+            conn.execute(
+                "UPDATE paper_account_seed SET initial_equity = 1 WHERE workspace_id = %s "
+                "AND bot_id = %s",
+                (ws_id, bot_id),
+            )
+            set_bar(NOW - timedelta(hours=1), NOW, "5000")
+            _, negative_account_equity_unknown = aggregate_equity()
+            conn.execute(
+                "UPDATE paper_account_seed SET initial_equity = 10000 WHERE workspace_id = %s "
+                "AND bot_id = %s",
+                (ws_id, bot_id),
+            )
+            set_bar(NOW - timedelta(hours=1), NOW, "10000")
+            # C3c: RESERVED còn hạn theo đồng hồ thật vẫn giữ budget khi as_of ở tương lai.
+            bot2_id, acc2_id = UUID(state["bot2_id"]), UUID(state["acc2_id"])
+            c3c_decision = uuid4()
+            _insert(
+                conn,
+                "risk_decision",
+                id=c3c_decision,
+                workspace_id=ws_id,
+                bot_id=bot2_id,
+                account_id=acc2_id,
+                decision_key="c" * 64,
+                plan_hash="plan-tightening-2",
+                snapshot_id=state["feature_snapshot_id"],
+                approved=True,
+                reason_code="APPROVED",
+                detail_vi="C3c fixture",
+                payload=Jsonb({"approved": True}),
+            )
+            conn.execute(
+                "INSERT INTO risk_reservation (id, workspace_id, bot_id, account_id, "
+                "risk_decision_id, reserved_risk, reserved_notional, reserved_initial_margin, "
+                "status, idempotency_key, symbol, plan_hash, expires_at) VALUES "
+                "(%s, %s, %s, %s, %s, 100, 1000, 100, 'RESERVED', 'c3c-live', 'BTCUSDT', "
+                "'plan-tightening-2', now() + interval '5 minutes')",
+                (uuid4(), ws_id, bot2_id, acc2_id, c3c_decision),
+            )
+            _, _, pending_at_future_as_of, _ = aggregate_row(NOW + timedelta(minutes=30))
+            # I3: vốn từng account (hàm invoker dùng chung) cộng lại đúng bằng aggregate.
+            account_state_matches_aggregate: object = None
+            if conn.execute(
+                "SELECT to_regprocedure("
+                "'public.workspace_account_risk_state(uuid,timestamptz,integer)') IS NOT NULL"
+            ).fetchone()[0]:
+                rows = conn.execute(
+                    "SELECT is_enabled, equity_usdt, has_unknown_equity FROM "
+                    "public.workspace_account_risk_state(%s, %s, %s)",
+                    (ws_id, NOW, 3600),
+                ).fetchall()
+                total, _, _, unknown_total = aggregate_row(NOW)
+                account_state_matches_aggregate = (
+                    sum((Decimal(row[1]) for row in rows if row[0]), Decimal("0")) == total
+                    and not unknown_total
+                    and not any(row[2] for row in rows if row[0])
+                )
 
             # Giá tăng 1.000 USDT tạo UPNL dương cho long 1 BTC.
             conn.execute(
@@ -1039,9 +1202,125 @@ def equity_edge_cases_phase(state: dict[str, str]) -> dict[str, bool]:
                 "missing_fill_unknown": missing_fill_unknown,
                 "unsupported_quote_unknown": unsupported_quote_unknown,
                 "unsupported_realized_quote_unknown": unsupported_realized_quote_unknown,
+                "open_risk_counts_trade_opened_after_as_of": (
+                    open_risk_before_open == Decimal("1200")
+                ),
+                "backfilled_stale_mark_unknown": backfilled_stale_mark_unknown,
+                "negative_account_equity_unknown": negative_account_equity_unknown,
+                "future_as_of_keeps_live_reservation": pending_at_future_as_of == Decimal("100"),
+                "account_state_matches_aggregate": account_state_matches_aggregate,
             }
         finally:
             conn.execute("ROLLBACK")
+
+
+AGGREGATE_FN = "public.get_workspace_risk_equity_aggregate(uuid,timestamptz,integer)"
+STATE_FN = "public.workspace_account_risk_state(uuid,timestamptz,integer)"
+PROCESS_ROLES = (
+    "crypidian_trading_runtime",
+    "crypidian_admin_web",
+    "crypidian_execution_gateway",
+    "crypidian_ingestion_worker",
+    "crypidian_trainer_worker",
+    "crypidian_app",
+)
+
+
+def security_checks_phase(state: dict[str, str]) -> dict[str, object]:
+    """I1: owner/role/search_path/grant của hàm SECURITY DEFINER đọc từ catalog (superuser)."""
+    del state
+    with _get_db_connection() as conn:
+
+        def scalar(query: str, *params: object) -> object:
+            row = conn.execute(query, params).fetchone()
+            return None if row is None else row[0]
+
+        def function_facts(signature: str) -> dict[str, object] | None:
+            if scalar("SELECT to_regprocedure(%s) IS NOT NULL", signature) is not True:
+                return None
+            row = conn.execute(
+                "SELECT pg_get_userbyid(p.proowner), p.prosecdef, p.proconfig::text[] "
+                "FROM pg_proc p WHERE p.oid = %s::regprocedure",
+                (signature,),
+            ).fetchone()
+            execute = {
+                role: bool(
+                    scalar("SELECT has_function_privilege(%s, %s, 'EXECUTE')", role, signature)
+                )
+                for role in PROCESS_ROLES
+            }
+            public_execute = bool(
+                scalar(
+                    "SELECT EXISTS (SELECT 1 FROM pg_proc p CROSS JOIN LATERAL aclexplode("
+                    "coalesce(p.proacl, acldefault('f', p.proowner))) acl WHERE p.oid = "
+                    "%s::regprocedure AND acl.grantee = 0 AND acl.privilege_type = 'EXECUTE')",
+                    signature,
+                )
+            )
+            return {
+                "owner": row[0],
+                "security_definer": row[1],
+                "config": list(row[2] or []),
+                "execute": execute,
+                "public_execute": public_execute,
+            }
+
+        owner_role = conn.execute(
+            "SELECT rolcanlogin, rolsuper, rolbypassrls, rolinherit, rolcreaterole, rolcreatedb, "
+            "rolreplication, EXISTS (SELECT 1 FROM pg_auth_members a WHERE a.roleid = r.oid "
+            "OR a.member = r.oid) FROM pg_roles r WHERE rolname = 'crypidian_risk_aggregator'"
+        ).fetchone()
+        aggregator_writes = None
+        if owner_role is not None:
+            aggregator_writes = any(
+                bool(
+                    scalar(
+                        "SELECT has_table_privilege('crypidian_risk_aggregator', %s, %s)",
+                        table,
+                        privilege,
+                    )
+                )
+                for table in (
+                    "trade",
+                    "risk_reservation",
+                    "fill",
+                    "paper_account_seed",
+                    "market_bar",
+                    "bot_instance",
+                    "trading_account",
+                    "trade_cost",
+                )
+                for privilege in ("INSERT", "UPDATE", "DELETE")
+            )
+        return {
+            "aggregate": function_facts(AGGREGATE_FN),
+            "account_state": function_facts(STATE_FN),
+            "legacy_aggregate_present": scalar(
+                "SELECT to_regprocedure("
+                "'public.get_workspace_risk_aggregate(uuid,timestamptz)') IS NOT NULL"
+            ),
+            "owner_role": None if owner_role is None else list(owner_role),
+            "aggregator_has_writes": aggregator_writes,
+        }
+
+
+def precreate_unsafe_aggregator_phase(state: dict[str, str]) -> dict[str, bool]:
+    """Role cấp cluster tạo sẵn với LOGIN phải làm migration từ chối (như MB-01 provisioner)."""
+    del state
+    with _get_db_connection() as conn:
+        exists = conn.execute(
+            "SELECT 1 FROM pg_roles WHERE rolname = 'crypidian_risk_aggregator'"
+        ).fetchone()
+        assert exists is None, "Downgrade phải xóa role aggregator"
+        conn.execute("CREATE ROLE crypidian_risk_aggregator LOGIN")
+    return {"precreated": True}
+
+
+def harden_aggregator_phase(state: dict[str, str]) -> dict[str, bool]:
+    del state
+    with _get_db_connection() as conn:
+        conn.execute("ALTER ROLE crypidian_risk_aggregator NOLOGIN NOINHERIT")
+    return {"hardened": True}
 
 
 def insert_custom_profile_guard_phase(state: dict[str, str]) -> dict[str, str]:
@@ -1082,6 +1361,16 @@ def main() -> None:
         res = seed_phase()
     elif phase == "concurrency_barrier":
         res = concurrency_barrier_phase(state)
+    elif phase == "direct_reserved_sum":
+        res = direct_reserved_sum_phase(state)
+    elif phase == "replay_dead_reservation":
+        res = replay_dead_reservation_phase(state)
+    elif phase == "security_checks":
+        res = security_checks_phase(state)
+    elif phase == "precreate_unsafe_aggregator":
+        res = precreate_unsafe_aggregator_phase(state)
+    elif phase == "harden_aggregator":
+        res = harden_aggregator_phase(state)
     elif phase == "admin_tighten":
         res = admin_tighten_phase(state)
     elif phase == "bot2_breach":

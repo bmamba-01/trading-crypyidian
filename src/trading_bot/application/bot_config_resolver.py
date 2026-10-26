@@ -46,6 +46,7 @@ from trading_bot.config.bot_settings import (
 )
 from trading_bot.config.workspace_settings import PublishedWorkspaceSettings
 from trading_bot.domain.risk.planner import RiskLimits
+from trading_bot.domain.risk.workspace_budget import effective_bot_open_risk_fraction
 from trading_bot.domain.strategy.contracts import StrategySelection
 from trading_bot.domain.strategy.registry import (
     StrategyRegistry,
@@ -238,6 +239,8 @@ def resolve_effective_bot_config(
         root_risk_profile=root_risk_profile,
         strategy_releases=strategy_releases,
         registry=registry or StrategyRegistry(),
+        # Overlay đã publish hợp lệ; root/profile siết sau đó -> kẹp cap bot thay vì unresolvable.
+        strict_open_risk_caps=False,
     )
     if evaluation.issues or evaluation.strategy is None or evaluation.risk_limits is None:
         raise BotConfigResolutionError("BOT_CONFIG_ROOT_MISMATCH", evaluation.issues)
@@ -361,6 +364,7 @@ def _evaluate(
     root_risk_profile: RuntimeRiskProfile,
     strategy_releases: Sequence[StrategyRelease],
     registry: ReleaseCatalog,
+    strict_open_risk_caps: bool = True,
 ) -> _Evaluation:
     issues: list[OverlayIssue] = []
     root = workspace_settings.settings
@@ -405,6 +409,7 @@ def _evaluate(
         root_risk_profile.limits,
         issues,
         workspace_settings=workspace_settings,
+        strict_open_risk_caps=strict_open_risk_caps,
     )
     return _Evaluation(tuple(issues), strategy, tuple(symbols), tuple(timeframes), limits)
 
@@ -484,6 +489,7 @@ def _evaluate_risk(
     issues: list[OverlayIssue],
     *,
     workspace_settings: PublishedWorkspaceSettings,
+    strict_open_risk_caps: bool,
 ) -> RiskLimits | None:
     values: dict[str, Decimal | int] = {}
     for name in RISK_FIELDS:
@@ -502,16 +508,13 @@ def _evaluate_risk(
     values["max_notional"] = min(Decimal(values["max_notional"]), account_cap)
 
     ws_cap = workspace_settings.settings.risk.workspace_max_open_risk_fraction
+    # Review I4: cap account (phần vốn account) và cap workspace (phần vốn workspace) có mẫu số
+    # khác nhau nên không so trực tiếp; siết root dưới cap profile không được làm mọi bot có
+    # overlay mất resolve — exposure vượt cap được ghi breach khi publish và chặn ở reserve.
     acc_cap = root_limits.account_max_open_risk_fraction
-    if acc_cap > ws_cap:
-        issues.append(
-            OverlayIssue(
-                "risk.account_max_open_risk_fraction", "Account không được nới giới hạn root."
-            )
-        )
 
     bot_cap = overlay.risk.bot_max_open_risk_fraction if overlay.risk is not None else None
-    if bot_cap is not None:
+    if bot_cap is not None and strict_open_risk_caps:
         if bot_cap > acc_cap:
             issues.append(
                 OverlayIssue(
@@ -522,6 +525,11 @@ def _evaluate_risk(
             issues.append(
                 OverlayIssue("risk.bot_max_open_risk_fraction", "Bot không được nới giới hạn root.")
             )
+    elif bot_cap is not None:
+        # Resolve runtime của overlay đã publish: root/profile siết sau đó thì kẹp, không nới.
+        bot_cap = effective_bot_open_risk_fraction(
+            bot_fraction=bot_cap, account_fraction=acc_cap, workspace_fraction=ws_cap
+        )
 
     try:
         return RiskLimits(

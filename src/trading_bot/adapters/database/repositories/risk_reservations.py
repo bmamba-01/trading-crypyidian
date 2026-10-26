@@ -600,23 +600,22 @@ class RiskReservationRepository:
         account_id: UUID,
         idempotency_key: str,
     ) -> RiskDecisionRecord | None:
-        """Tìm bản ghi decision theo scope và idempotency key nằm trong payload."""
-        result = await self._session.scalars(
+        """Tìm bản ghi decision theo scope và idempotency key nằm trong payload.
+
+        Lọc ngay trong SQL (`payload ->> 'idempotency_key'`) trên index scope bot/account, không
+        nạp mọi decision của account vào Python (review minor).
+        """
+        return await self._session.scalar(
             select(RiskDecisionRecord)
             .where(
                 RiskDecisionRecord.workspace_id == workspace_id,
                 RiskDecisionRecord.bot_id == bot_id,
                 RiskDecisionRecord.account_id == account_id,
+                RiskDecisionRecord.payload["idempotency_key"].astext == idempotency_key,
             )
             .order_by(RiskDecisionRecord.created_at.desc())
+            .limit(1)
         )
-        for record in result.all():
-            if (
-                isinstance(record.payload, dict)
-                and record.payload.get("idempotency_key") == idempotency_key
-            ):
-                return record
-        return None
 
     async def list_active_reservations(self, *, workspace_id: UUID) -> list[RiskReservationRecord]:
         """Lấy danh sách các reservation đang active (RESERVED hoặc UNKNOWN) trong workspace."""

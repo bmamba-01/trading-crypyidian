@@ -7,7 +7,7 @@ import json
 from collections.abc import Sequence
 from dataclasses import dataclass, fields, is_dataclass
 from datetime import datetime, timedelta
-from decimal import Decimal
+from decimal import ROUND_CEILING, ROUND_FLOOR, Context, Decimal, localcontext
 from enum import StrEnum
 from uuid import UUID, uuid4
 
@@ -143,6 +143,67 @@ def _hash(value: object) -> str:
     return hashlib.sha256(
         json.dumps(_canonical(value), sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
+
+
+def _exact_context(values: Sequence[Decimal], rounding: str) -> Context:
+    """Context Decimal cục bộ, độc lập context ambient của caller.
+
+    Precision đủ lớn để phép cộng/trừ/nhân hữu hạn của miền này là chính xác; `rounding` là chốt
+    an toàn có hướng: trần (cap) và phần còn lại làm tròn xuống, exposure làm tròn lên.
+    """
+    precision = 32 + sum(
+        len(value.as_tuple().digits) + abs(int(value.as_tuple().exponent))
+        for value in values
+        if value.is_finite()
+    )
+    return Context(prec=precision, rounding=rounding)
+
+
+def _floor_product(fraction: Decimal, amount: Decimal) -> Decimal:
+    """Cap = fraction × vốn, làm tròn xuống (không bao giờ nới trần do làm tròn)."""
+    with localcontext(_exact_context((fraction, amount), ROUND_FLOOR)):
+        return fraction * amount
+
+
+def _ceiling_sum(values: Sequence[Decimal]) -> Decimal:
+    """Tổng exposure làm tròn lên (không bao giờ đếm thiếu rủi ro do làm tròn)."""
+    with localcontext(_exact_context(values, ROUND_CEILING)):
+        total = ZERO
+        for value in values:
+            total += value
+        return total
+
+
+def _floor_sum(values: Sequence[Decimal]) -> Decimal:
+    """Tổng vốn (mẫu số của cap) làm tròn xuống."""
+    with localcontext(_exact_context(values, ROUND_FLOOR)):
+        total = ZERO
+        for value in values:
+            total += value
+        return total
+
+
+def _floor_difference(minuend: Decimal, subtrahend: Decimal) -> Decimal:
+    """Phần còn lại = cap − exposure, làm tròn xuống."""
+    with localcontext(_exact_context((minuend, subtrahend), ROUND_FLOOR)):
+        return minuend - subtrahend
+
+
+def effective_bot_open_risk_fraction(
+    *,
+    bot_fraction: Decimal | None,
+    account_fraction: Decimal,
+    workspace_fraction: Decimal,
+) -> Decimal | None:
+    """Cap bot hiệu lực: bot chỉ được siết, không nới account/workspace (contract §3, §5).
+
+    Overlay đã publish hợp lệ có thể trở nên lỏng hơn khi root/profile siết sau đó; khi resolve
+    runtime, cap bot được kẹp về min(bot, account, workspace) thay vì làm bot không resolve được
+    (review I4). Kiểm tra chặt (từ chối overlay lỏng hơn) vẫn áp ở bước validate/publish overlay.
+    """
+    if bot_fraction is None:
+        return None
+    return min(bot_fraction, account_fraction, workspace_fraction)
 
 
 @dataclass(frozen=True, slots=True)
@@ -332,15 +393,29 @@ class WorkspaceBudgetEngine:
         target_bot_id: str,
         requested_risk_usdt: Decimal,
         as_of: datetime,
-        workspace_aggregate: WorkspaceRiskAggregate | None = None,
+        workspace_aggregate: WorkspaceRiskAggregate,
+        reservation_cutoff: datetime | None = None,
         operation: BudgetOperation = BudgetOperation.NEW_ENTRY,
         candidate_id: str = "",
         idempotency_key: str = "",
         plan_hash: str = "",
     ) -> WorkspaceRiskDecision:
-        """Đánh giá ngân sách rủi ro 3 scope tại điểm thời gian as_of tường minh."""
+        """Đánh giá ngân sách rủi ro 3 scope tại điểm thời gian as_of tường minh.
+
+        `workspace_aggregate` là bắt buộc: thiếu aggregate thì không có căn cứ workspace (không
+        còn chế độ local-only âm thầm). `reservation_cutoff` (mặc định `as_of`) là mốc đồng hồ
+        thật để xét RESERVED còn hiệu lực; caller truyền min(as_of, now) để as_of tương lai không
+        làm rơi reservation còn hạn (review C3c).
+        """
         _utc(as_of)
         _amount(requested_risk_usdt)
+        _require(
+            isinstance(workspace_aggregate, WorkspaceRiskAggregate),
+            BudgetReasonCode.LINEAGE_INVALID,
+        )
+        cutoff = as_of if reservation_cutoff is None else reservation_cutoff
+        _utc(cutoff)
+        _require(cutoff <= as_of, BudgetReasonCode.TIMESTAMP_INVALID)
 
         # 1. Tìm target account gắn với target_bot_id
         target_acc = next((acc for acc in accounts if acc.bot_id == target_bot_id), None)
@@ -429,7 +504,7 @@ class WorkspaceBudgetEngine:
                     snap, acc.conversion, as_of, policy.max_conversion_age
                 )
                 account_equities[acc.account_id] = eq
-                workspace_equity_usdt += eq
+                workspace_equity_usdt = _floor_sum((workspace_equity_usdt, eq))
             except EquityValidationError as err:
                 mapped_code = getattr(
                     BudgetReasonCode, err.reason_code.name, BudgetReasonCode.DENOMINATOR_UNUSABLE
@@ -437,7 +512,7 @@ class WorkspaceBudgetEngine:
                 data_error_code = mapped_code
                 break
 
-        if workspace_aggregate is not None and data_error_code is None:
+        if data_error_code is None:
             if str(workspace_aggregate.workspace_id) != policy.workspace_id:
                 data_error_code = BudgetReasonCode.SCOPE_MISMATCH
             elif workspace_aggregate.has_unknown_exposure:
@@ -512,51 +587,61 @@ class WorkspaceBudgetEngine:
 
         # 4. Tính toán rủi ro mở và reservation đang giữ cho từng scope
         # Rủi ro mở và reservation của MỌI bot (kể cả disabled) đều tính vào workspace!
-        ws_open_risk = ZERO
-        ws_pending_risk = ZERO
-        acc_open_risk = ZERO
-        acc_pending_risk = ZERO
-        bot_open_risk = ZERO
-        bot_pending_risk = ZERO
+        ws_open_items: list[Decimal] = []
+        ws_pending_items: list[Decimal] = []
+        acc_open_items: list[Decimal] = []
+        acc_pending_items: list[Decimal] = []
+        bot_open_items: list[Decimal] = []
+        bot_pending_items: list[Decimal] = []
 
         for pos in positions:
-            ws_open_risk += pos.worst_case_loss_usdt
+            ws_open_items.append(pos.worst_case_loss_usdt)
             if pos.account_id == target_acc.account_id:
-                acc_open_risk += pos.worst_case_loss_usdt
+                acc_open_items.append(pos.worst_case_loss_usdt)
             if pos.bot_id == target_bot_id:
-                bot_open_risk += pos.worst_case_loss_usdt
+                bot_open_items.append(pos.worst_case_loss_usdt)
 
         for res in reservations:
             # RELEASED và TRANSFERRED không giữ budget
             if res.status in (ReservationStatus.RELEASED, ReservationStatus.TRANSFERRED):
                 continue
 
-            # RESERVED đã quá hạn không giữ budget; UNKNOWN tiếp tục giữ bất kể hạn
-            if res.status == ReservationStatus.RESERVED and res.expires_at <= as_of:
+            # RESERVED quá hạn theo đồng hồ thật không giữ budget; UNKNOWN giữ bất kể hạn.
+            if res.status == ReservationStatus.RESERVED and res.expires_at <= cutoff:
                 continue
 
-            ws_pending_risk += res.reserved_risk_usdt
+            ws_pending_items.append(res.reserved_risk_usdt)
             if res.account_id == target_acc.account_id:
-                acc_pending_risk += res.reserved_risk_usdt
+                acc_pending_items.append(res.reserved_risk_usdt)
             if res.bot_id == target_bot_id:
-                bot_pending_risk += res.reserved_risk_usdt
+                bot_pending_items.append(res.reserved_risk_usdt)
 
-        if workspace_aggregate is not None:
-            ws_open_risk = max(ws_open_risk, workspace_aggregate.total_open_risk_usdt)
-            ws_pending_risk = max(ws_pending_risk, workspace_aggregate.total_pending_risk_usdt)
+        ws_open_risk = max(_ceiling_sum(ws_open_items), workspace_aggregate.total_open_risk_usdt)
+        ws_pending_risk = max(
+            _ceiling_sum(ws_pending_items), workspace_aggregate.total_pending_risk_usdt
+        )
+        acc_open_risk = _ceiling_sum(acc_open_items)
+        acc_pending_risk = _ceiling_sum(acc_pending_items)
+        bot_open_risk = _ceiling_sum(bot_open_items)
+        bot_pending_risk = _ceiling_sum(bot_pending_items)
 
-        # 5. Tính trần (Cap) từng scope
-        workspace_cap = policy.root_workspace_max_open_risk_fraction * workspace_equity_usdt
-        account_cap = target_acc.account_max_open_risk_fraction * target_acc_equity
+        # 5. Tính trần (Cap) từng scope: làm tròn xuống, không phụ thuộc context ambient.
+        workspace_cap = _floor_product(
+            policy.root_workspace_max_open_risk_fraction, workspace_equity_usdt
+        )
+        account_cap = _floor_product(target_acc.account_max_open_risk_fraction, target_acc_equity)
         if target_acc.bot_max_open_risk_fraction is not None:
-            bot_cap = min(account_cap, target_acc.bot_max_open_risk_fraction * target_acc_equity)
+            bot_cap = min(
+                account_cap,
+                _floor_product(target_acc.bot_max_open_risk_fraction, target_acc_equity),
+            )
         else:
             bot_cap = account_cap
 
-        # 6. Kiểm tra Breach do siết Cap (Cap tightening breach)
-        ws_exposure = ws_open_risk + ws_pending_risk
-        acc_exposure = acc_open_risk + acc_pending_risk
-        bot_exposure = bot_open_risk + bot_pending_risk
+        # 6. Kiểm tra Breach do siết Cap (Cap tightening breach); exposure làm tròn lên.
+        ws_exposure = _ceiling_sum((ws_open_risk, ws_pending_risk))
+        acc_exposure = _ceiling_sum((acc_open_risk, acc_pending_risk))
+        bot_exposure = _ceiling_sum((bot_open_risk, bot_pending_risk))
 
         breaches: list[CapacityBreachState] = []
         if ws_exposure > workspace_cap:
@@ -568,7 +653,7 @@ class WorkspaceBudgetEngine:
                     scope_name="WORKSPACE",
                     cap_usdt=workspace_cap,
                     current_exposure_usdt=ws_exposure,
-                    excess_usdt=ws_exposure - workspace_cap,
+                    excess_usdt=-_floor_difference(workspace_cap, ws_exposure),
                 )
             )
         if acc_exposure > account_cap:
@@ -580,7 +665,7 @@ class WorkspaceBudgetEngine:
                     scope_name="ACCOUNT",
                     cap_usdt=account_cap,
                     current_exposure_usdt=acc_exposure,
-                    excess_usdt=acc_exposure - account_cap,
+                    excess_usdt=-_floor_difference(account_cap, acc_exposure),
                 )
             )
         if target_acc.bot_max_open_risk_fraction is not None and bot_exposure > bot_cap:
@@ -592,13 +677,13 @@ class WorkspaceBudgetEngine:
                     scope_name="BOT",
                     cap_usdt=bot_cap,
                     current_exposure_usdt=bot_exposure,
-                    excess_usdt=bot_exposure - bot_cap,
+                    excess_usdt=-_floor_difference(bot_cap, bot_exposure),
                 )
             )
 
-        ws_remaining = max(ZERO, workspace_cap - ws_exposure)
-        acc_remaining = max(ZERO, account_cap - acc_exposure)
-        bot_remaining = max(ZERO, bot_cap - bot_exposure)
+        ws_remaining = max(ZERO, _floor_difference(workspace_cap, ws_exposure))
+        acc_remaining = max(ZERO, _floor_difference(account_cap, acc_exposure))
+        bot_remaining = max(ZERO, _floor_difference(bot_cap, bot_exposure))
 
         ws_budget = ScopeBudget(
             "WORKSPACE",
@@ -851,6 +936,131 @@ class WorkspaceBudgetEngine:
             conversion_ids=(conversion_id,) if conversion_id else (),
             plan_hash=plan_hash,
         )
+
+
+class CapacityStatus(StrEnum):
+    """Kết quả đánh giá capacity khi publish thay đổi root/profile risk (contract §6)."""
+
+    WITHIN_CAP = "WITHIN_CAP"
+    CAPACITY_BREACH_AFTER_TIGHTENING = "CAPACITY_BREACH_AFTER_TIGHTENING"
+    UNKNOWN = "UNKNOWN"
+
+
+@dataclass(frozen=True, slots=True)
+class AccountRiskState:
+    """Scalar vốn/exposure của một account do ledger SQL tính (cùng nguồn với aggregate)."""
+
+    bot_id: str
+    account_id: str
+    enabled: bool
+    equity_usdt: Decimal | None
+    equity_known: bool
+    open_risk_usdt: Decimal
+    pending_risk_usdt: Decimal
+    exposure_known: bool
+
+    def __post_init__(self) -> None:
+        _text(self.bot_id, self.account_id)
+        _amount(self.open_risk_usdt)
+        _amount(self.pending_risk_usdt)
+        if self.equity_usdt is not None:
+            _amount(self.equity_usdt, signed=True)
+
+
+@dataclass(frozen=True, slots=True)
+class CapacityAssessment:
+    """Đánh giá exposure hiện hành so với cap mới, đọc dưới workspace risk lock."""
+
+    status: CapacityStatus
+    breached_scopes: tuple[str, ...]
+    workspace_equity_usdt: Decimal | None
+    workspace_cap_usdt: Decimal | None
+    workspace_exposure_usdt: Decimal
+    breached_account_count: int
+    unknown_reasons: tuple[str, ...]
+
+    def payload(self) -> dict[str, object]:
+        """Payload JSON ổn định cho audit/outbox/API; không chứa ID bot/account."""
+        value = _canonical(self)
+        assert isinstance(value, dict)
+        return value
+
+    def summary(self) -> str:
+        """Lý do audit máy đọc được (scope, exposure, cap) — không chứa định danh bot."""
+        cap = "-" if self.workspace_cap_usdt is None else _canonical(self.workspace_cap_usdt)
+        return (
+            f"{self.status.value}; scopes={','.join(self.breached_scopes) or '-'}; "
+            f"workspace_exposure_usdt={_canonical(self.workspace_exposure_usdt)}; "
+            f"workspace_cap_usdt={cap}; "
+            f"breached_accounts={self.breached_account_count}; "
+            f"unknown={','.join(self.unknown_reasons) or '-'}"
+        )
+
+
+def assess_capacity_after_risk_change(
+    *,
+    workspace_fraction: Decimal,
+    account_fraction: Decimal,
+    states: Sequence[AccountRiskState],
+) -> CapacityAssessment:
+    """So exposure hiện hành (vị thế mở + reservation còn giữ) với cap root/profile mới.
+
+    Exposure của mọi bot (kể cả disabled) tính vào workspace; cap account chỉ xét account
+    enabled có vốn đã biết. Siết dưới exposure -> `CAPACITY_BREACH_AFTER_TIGHTENING` (publish vẫn
+    hiệu lực, entry mới bị chặn ở reserve, không auto-flatten). Thiếu dữ kiện -> `UNKNOWN`.
+    """
+    _fraction(workspace_fraction)
+    _fraction(account_fraction)
+    unknown: list[str] = []
+    enabled = [state for state in states if state.enabled]
+    exposure = _ceiling_sum(
+        [value for state in states for value in (state.open_risk_usdt, state.pending_risk_usdt)]
+    )
+    if any(not state.exposure_known for state in states):
+        unknown.append("EXPOSURE_UNKNOWN")
+    if not enabled:
+        unknown.append("NO_ENABLED_ACCOUNT")
+
+    def known_equity(state: AccountRiskState) -> Decimal | None:
+        if not state.equity_known or state.equity_usdt is None or state.equity_usdt < ZERO:
+            return None
+        return state.equity_usdt
+
+    if any(known_equity(state) is None for state in enabled):
+        unknown.append("EQUITY_UNKNOWN")
+    breached: list[str] = []
+    workspace_equity: Decimal | None = None
+    workspace_cap: Decimal | None = None
+    if enabled and "EQUITY_UNKNOWN" not in unknown:
+        workspace_equity = _floor_sum([known_equity(state) or ZERO for state in enabled])
+        workspace_cap = _floor_product(workspace_fraction, workspace_equity)
+        if exposure > workspace_cap:
+            breached.append("WORKSPACE")
+    account_breaches = 0
+    for state in enabled:
+        equity = known_equity(state)
+        if equity is None:
+            continue
+        account_exposure = _ceiling_sum((state.open_risk_usdt, state.pending_risk_usdt))
+        if account_exposure > _floor_product(account_fraction, equity):
+            account_breaches += 1
+    if account_breaches:
+        breached.append("ACCOUNT")
+    if breached:
+        status = CapacityStatus.CAPACITY_BREACH_AFTER_TIGHTENING
+    elif unknown:
+        status = CapacityStatus.UNKNOWN
+    else:
+        status = CapacityStatus.WITHIN_CAP
+    return CapacityAssessment(
+        status=status,
+        breached_scopes=tuple(breached),
+        workspace_equity_usdt=workspace_equity,
+        workspace_cap_usdt=workspace_cap,
+        workspace_exposure_usdt=exposure,
+        breached_account_count=account_breaches,
+        unknown_reasons=tuple(unknown),
+    )
 
 
 class WorkspaceBudgetBook:

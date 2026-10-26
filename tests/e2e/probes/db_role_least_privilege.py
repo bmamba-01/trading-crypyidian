@@ -247,6 +247,14 @@ def acl_state(connection):
         "JOIN pg_roles m ON m.oid = a.member JOIN pg_roles g ON g.oid = a.grantor "
         "WHERE r.rolname LIKE 'crypidian%' OR m.rolname LIKE 'crypidian%'"
     ).fetchall()
+    # MB-04 fix: owner, SECURITY DEFINER, search_path và EXECUTE của hàm trong schema public.
+    functions = connection.execute(
+        "SELECT p.oid::regprocedure::text, pg_get_userbyid(p.proowner), p.prosecdef, "
+        "coalesce(array_to_string(p.proconfig, ';'), ''), COALESCE(r.rolname, 'PUBLIC'), "
+        "x.privilege_type FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace "
+        "CROSS JOIN LATERAL aclexplode(COALESCE(p.proacl, acldefault('f', p.proowner))) x "
+        "LEFT JOIN pg_roles r ON r.oid = x.grantee WHERE n.nspname = 'public'"
+    ).fetchall()
     return {
         name: sorted([list(map(str, row)) for row in rows])
         for name, rows in (
@@ -255,8 +263,55 @@ def acl_state(connection):
             ("schema", schema),
             ("policies", policies),
             ("members", members),
+            ("functions", functions),
         )
     }
+
+
+# MB-04 fix (I1): hàm SECURITY DEFINER chỉ do role NOLOGIN riêng sở hữu và grant tối thiểu.
+DEFINER_OWNERS = {"crypidian_bot_provisioner", "crypidian_risk_aggregator"}
+FUNCTION_EXECUTE = {
+    "get_workspace_risk_equity_aggregate(uuid,timestamp with time zone,integer)": {RUNTIME},
+    "workspace_account_risk_state(uuid,timestamp with time zone,integer)": {RUNTIME, ADMIN},
+}
+
+
+def check_functions(connection):
+    """Không hàm SECURITY DEFINER nào do superuser/role login sở hữu; EXECUTE đúng ma trận."""
+    problems = []
+    definers = connection.execute(
+        "SELECT p.oid::regprocedure::text, pg_get_userbyid(p.proowner), "
+        "coalesce(array_to_string(p.proconfig, ';'), ''), o.rolcanlogin, o.rolsuper, "
+        "o.rolbypassrls FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace "
+        "JOIN pg_roles o ON o.oid = p.proowner WHERE n.nspname = 'public' AND p.prosecdef"
+    ).fetchall()
+    for signature, owner, config, can_login, superuser, bypass in definers:
+        if owner not in DEFINER_OWNERS or can_login or superuser or bypass:
+            problems.append(("definer owner", signature, owner))
+        if "search_path=pg_catalog, pg_temp" not in config:
+            problems.append(("definer search_path", signature, config))
+    for signature, allowed in FUNCTION_EXECUTE.items():
+        for role in (*PROCESS_ROLES, "crypidian_app"):
+            granted = connection.execute(
+                "SELECT has_function_privilege(%s, %s, 'EXECUTE')", (role, signature)
+            ).fetchone()[0]
+            if granted is not (role in allowed):
+                problems.append(("execute", signature, role, granted))
+        public = connection.execute(
+            "SELECT EXISTS (SELECT 1 FROM pg_proc p CROSS JOIN LATERAL aclexplode(coalesce("
+            "p.proacl, acldefault('f', p.proowner))) x WHERE p.oid = %s::regprocedure "
+            "AND x.grantee = 0)",
+            (signature,),
+        ).fetchone()[0]
+        if public:
+            problems.append(("public execute", signature))
+    absent = connection.execute(
+        "SELECT to_regprocedure('public.get_workspace_risk_aggregate(uuid,timestamptz)')"
+    ).fetchone()[0]
+    if absent is not None:
+        problems.append(("dead legacy aggregate still present",))
+    assert not problems, problems
+    return {"definers": len(definers)}
 
 
 def seed(connection):
@@ -938,7 +993,7 @@ with psycopg.connect(
         with database.transaction():
             result = seed(database)
     elif phase == "matrix":
-        result = check_matrix(database)
+        result = check_matrix(database) | check_functions(database)
     elif phase == "worker":
         result = worker(database, os.environ["TRADING_BOT_DATABASE_USER"])
     elif phase == "runtime":

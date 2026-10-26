@@ -144,6 +144,21 @@ class PaperEquityBasis(EquityBasis):
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class PaperLedgerEquityBasis(EquityBasis):
+    """Vốn PAPER do ledger SQL định giá (một phép tính dùng chung với aggregate workspace).
+
+    `open_position_pnl` đã gồm PnL phần exit một phần, UPNL phần còn mở tại mark hợp lệ và
+    chi phí đã ghi của trade đang mở (review I3); không còn vị thế/mark rời để tính lại nên
+    snapshot loại này không mang `positions`/`mark_refs`.
+    """
+
+    initial_capital_before_realized_pnl: Decimal
+    cumulative_realized_pnl: Decimal
+    open_position_pnl: Decimal
+    open_position_count: int
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class VenueEquityBasis(EquityBasis):
     """Chỉ là hợp đồng kiểu; không kết nối venue hoặc suy đoán ngữ nghĩa API."""
 
@@ -230,7 +245,7 @@ class AccountEquitySnapshot:
     source_version: str
     source_hash: str
     mark_refs: tuple[MarketMark, ...]
-    basis: PaperEquityBasis | VenueEquityBasis
+    basis: PaperEquityBasis | VenueEquityBasis | PaperLedgerEquityBasis
     positions: tuple[OpenPositionValuation, ...]
     known: bool = True
     unknown_reason: str | None = None
@@ -247,14 +262,19 @@ def _scope(item: EquityBasis | OpenPositionValuation | MarketMark, basis: Equity
 
 
 def mark_to_market_equity(
-    basis: PaperEquityBasis | VenueEquityBasis,
+    basis: PaperEquityBasis | VenueEquityBasis | PaperLedgerEquityBasis,
     open_positions: Sequence[OpenPositionValuation],
     marks: Mapping[str, MarketMark],
     as_of: datetime,
 ) -> AccountEquitySnapshot:
     """Tính seed + realized + UPNL; venue total không được cộng realized lần hai."""
     _utc(as_of)
-    _require(type(basis) in (PaperEquityBasis, VenueEquityBasis), EquityReasonCode.BASIS_UNKNOWN)
+    _require(
+        type(basis) in (PaperEquityBasis, VenueEquityBasis, PaperLedgerEquityBasis),
+        EquityReasonCode.BASIS_UNKNOWN,
+    )
+    if isinstance(basis, PaperLedgerEquityBasis):
+        return _ledger_equity(basis, open_positions, marks, as_of)
     _require(basis.known is True and basis.unknown_reason is None, EquityReasonCode.BASIS_UNKNOWN)
     _text(
         basis.workspace_id,
@@ -346,6 +366,75 @@ def mark_to_market_equity(
         ordered_marks,
         basis,
         ordered_positions,
+    )
+
+
+def _ledger_equity(
+    basis: PaperLedgerEquityBasis,
+    open_positions: Sequence[OpenPositionValuation],
+    marks: Mapping[str, MarketMark],
+    as_of: datetime,
+) -> AccountEquitySnapshot:
+    """Seed + realized + PnL vị thế mở đã được ledger SQL định giá; không tính lại từ mark."""
+    _require(basis.known is True and basis.unknown_reason is None, EquityReasonCode.BASIS_UNKNOWN)
+    _text(
+        basis.workspace_id,
+        basis.bot_id,
+        basis.account_id,
+        basis.asset,
+        basis.source,
+        basis.source_version,
+    )
+    for stamp in (basis.as_of, basis.captured_at, basis.available_at):
+        _observed(stamp, as_of)
+    _require(basis.as_of == as_of, EquityReasonCode.AS_OF_MISMATCH)
+    _age(basis.max_mark_age)
+    _age(basis.max_equity_age)
+    _require(basis.captured_at <= basis.available_at, EquityReasonCode.TIMESTAMP_INVALID)
+    _require(as_of - basis.captured_at <= basis.max_equity_age, EquityReasonCode.EQUITY_STALE)
+    _amount(basis.initial_capital_before_realized_pnl)
+    _amount(basis.cumulative_realized_pnl, signed=True)
+    _amount(basis.open_position_pnl, signed=True)
+    _require(
+        isinstance(basis.open_position_count, int)
+        and not isinstance(basis.open_position_count, bool)
+        and basis.open_position_count >= 0,
+        EquityReasonCode.LINEAGE_INVALID,
+    )
+    # Định giá đã nằm trong ledger SQL: không nhận vị thế/mark rời để tránh hai nguồn sự thật.
+    _require(not open_positions and not marks, EquityReasonCode.LINEAGE_INVALID)
+    _require(
+        basis.open_position_count > 0 or basis.open_position_pnl == ZERO,
+        EquityReasonCode.LINEAGE_INVALID,
+    )
+    values = [
+        basis.initial_capital_before_realized_pnl,
+        basis.cumulative_realized_pnl,
+        basis.open_position_pnl,
+    ]
+    with localcontext(_context(values)):
+        total = values[0] + values[1] + values[2]
+    # Vốn âm là không xác định (khớp cờ unknown của SQL), không phải vốn 0.
+    _amount(total)
+    return AccountEquitySnapshot(
+        basis.workspace_id,
+        basis.bot_id,
+        basis.account_id,
+        basis.asset,
+        total,
+        "PAPER",
+        basis.initial_capital_before_realized_pnl,
+        basis.cumulative_realized_pnl,
+        basis.open_position_pnl,
+        basis.captured_at,
+        as_of,
+        basis.available_at,
+        basis.source,
+        basis.source_version,
+        _hash((basis, (), ())),
+        (),
+        basis,
+        (),
     )
 
 

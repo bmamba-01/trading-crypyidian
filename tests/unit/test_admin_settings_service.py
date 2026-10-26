@@ -469,11 +469,11 @@ async def test_rollback_uses_publish_parent_guard_on_race() -> None:
 @pytest.mark.asyncio
 async def test_rollback_publishes_new_version_and_writes_audit_and_outbox() -> None:
     actor = principal()
-    earlier = make_version(
-        version=1, parent_version_id=None, settings=sample_settings(), status="PUBLISHED"
-    )
+    # Cùng khối risk: rollback không đổi risk nên không cần đánh giá capacity (xem test I5).
+    base = sample_settings()
+    earlier = make_version(version=1, parent_version_id=None, settings=base, status="PUBLISHED")
     current = make_version(
-        version=2, parent_version_id=earlier.id, settings=sample_settings(), status="PUBLISHED"
+        version=2, parent_version_id=earlier.id, settings=base, status="PUBLISHED"
     )
     MemorySettingsRepository.versions = [earlier, current]
     MemorySettingsRepository.current = current
@@ -490,6 +490,150 @@ async def test_rollback_publishes_new_version_and_writes_audit_and_outbox() -> N
     assert len(uow.audits) == 1
     assert uow.audits[0]["action"] == "settings.rolled_back"
     assert len(uow.events) == 1
+
+
+def _breach_assessment() -> Any:
+    from decimal import Decimal
+
+    from trading_bot.domain.risk.workspace_budget import CapacityAssessment, CapacityStatus
+
+    return CapacityAssessment(
+        status=CapacityStatus.CAPACITY_BREACH_AFTER_TIGHTENING,
+        breached_scopes=("WORKSPACE",),
+        workspace_equity_usdt=Decimal("20000"),
+        workspace_cap_usdt=Decimal("20"),
+        workspace_exposure_usdt=Decimal("100"),
+        breached_account_count=0,
+        unknown_reasons=(),
+    )
+
+
+def _capacity_spy(monkeypatch: pytest.MonkeyPatch, calls: list[dict[str, Any]]) -> None:
+    from decimal import Decimal
+
+    async def assess(session: object, **kwargs: Any) -> Any:
+        del session
+        calls.append(kwargs)
+        return _breach_assessment()
+
+    async def profile_exists(self: object, statement: object) -> object:
+        del self, statement
+        return object()
+
+    monkeypatch.setattr(settings_service, "assess_risk_capacity", assess)
+    monkeypatch.setattr(MemorySession, "scalar", profile_exists)
+    monkeypatch.setattr(
+        settings_service,
+        "risk_limits_from_profile",
+        lambda _profile: SimpleNamespace(
+            limits=SimpleNamespace(account_max_open_risk_fraction=Decimal("0.25"))
+        ),
+    )
+
+
+def _tightened(settings: WorkspaceSettings, fraction: str) -> WorkspaceSettings:
+    payload = settings.model_dump(mode="json")
+    payload["risk"]["workspace_max_open_risk_fraction"] = fraction
+    return WorkspaceSettings.model_validate(payload)
+
+
+@pytest.mark.asyncio
+async def test_risk_tightening_publish_records_capacity_breach_under_risk_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """I5/contract §6: siết cap dưới exposure -> publish hiệu lực, breach được audit + outbox."""
+    from decimal import Decimal
+
+    calls: list[dict[str, Any]] = []
+    _capacity_spy(monkeypatch, calls)
+    order: list[str] = []
+
+    async def lock_risk(self: object, workspace_id: object) -> None:
+        del self, workspace_id
+        order.append("risk_lock")
+
+    monkeypatch.setattr(MemorySettingsRepository, "lock_workspace_risk", lock_risk)
+    actor = principal()
+    original = sample_settings()
+    parent = make_version(version=1, parent_version_id=None, settings=original, status="PUBLISHED")
+    MemorySettingsRepository.current = parent
+    MemorySettingsRepository.versions = [parent]
+    draft = await SettingsAdminService(object()).create_draft(
+        actor, settings=_tightened(original, "0.001"), expected_parent_version_id=parent.id
+    )
+
+    published = await SettingsAdminService(object()).publish_draft(
+        actor, draft_id=UUID(str(draft["id"])), expected_revision=1
+    )
+
+    assert published["status"] == "PUBLISHED"
+    assert published["capacity"]["status"] == "CAPACITY_BREACH_AFTER_TIGHTENING"
+    assert published["capacity"]["breached_scopes"] == ["WORKSPACE"]
+    assert order == ["risk_lock"]
+    assert calls[0]["workspace_fraction"] == Decimal("0.001")
+    assert calls[0]["account_fraction"] == Decimal("0.25")
+    assert calls[0]["as_of"].tzinfo is not None
+    uow = MemoryUnitOfWork.instances[-1]
+    actions = [audit["action"] for audit in uow.audits]
+    assert actions == ["settings.published", "risk.capacity_breach_after_tightening"]
+    assert "WORKSPACE" in uow.audits[-1]["reason"]
+    assert [event.event_type for event in uow.events] == [  # type: ignore[attr-defined]
+        "settings.published",
+        "risk.capacity_breach_after_tightening",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_non_risk_publish_does_not_assess_capacity(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[dict[str, Any]] = []
+    _capacity_spy(monkeypatch, calls)
+    actor = principal()
+    original = sample_settings()
+    parent = make_version(version=1, parent_version_id=None, settings=original, status="PUBLISHED")
+    MemorySettingsRepository.current = parent
+    MemorySettingsRepository.versions = [parent]
+    payload = original.model_dump(mode="json")
+    payload["market_data"]["max_age_seconds"] = 60
+    draft = await SettingsAdminService(object()).create_draft(
+        actor,
+        settings=WorkspaceSettings.model_validate(payload),
+        expected_parent_version_id=parent.id,
+    )
+
+    published = await SettingsAdminService(object()).publish_draft(
+        actor, draft_id=UUID(str(draft["id"])), expected_revision=1
+    )
+
+    assert "capacity" not in published
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_risk_rollback_records_capacity_assessment(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[dict[str, Any]] = []
+    _capacity_spy(monkeypatch, calls)
+    actor = principal()
+    base = sample_settings()
+    earlier = make_version(
+        version=1, parent_version_id=None, settings=_tightened(base, "0.001"), status="PUBLISHED"
+    )
+    current = make_version(
+        version=2, parent_version_id=earlier.id, settings=base, status="PUBLISHED"
+    )
+    MemorySettingsRepository.versions = [earlier, current]
+    MemorySettingsRepository.current = current
+
+    result = await SettingsAdminService(object()).rollback(
+        actor, version=earlier.version, reason="Siết lại cap"
+    )
+
+    assert result["capacity"]["status"] == "CAPACITY_BREACH_AFTER_TIGHTENING"
+    uow = MemoryUnitOfWork.instances[-1]
+    assert [audit["action"] for audit in uow.audits] == [
+        "settings.rolled_back",
+        "risk.capacity_breach_after_tightening",
+    ]
+    assert len(calls) == 1
 
 
 def test_response_redacts_secret_named_fields_recursively() -> None:
