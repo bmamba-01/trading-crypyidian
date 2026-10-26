@@ -22,6 +22,7 @@ from trading_bot.domain.execution.paper import (
 )
 from trading_bot.domain.execution.paper_state import PaperExecutionSnapshot
 from trading_bot.domain.execution.position_monitor import PositionMonitorResult
+from trading_bot.domain.execution.runtime_control import FencingToken
 from trading_bot.domain.risk.planner import TradePlan
 
 if TYPE_CHECKING:
@@ -125,6 +126,7 @@ class PaperLifecycleCoordinator:
         risk_reservation_id: UUID,
         quote_asset: str,
         evidence: dict[str, object],
+        fencing_token: FencingToken | None = None,
     ) -> PaperSubmissionResult:
         """Ghi intent/checkpoint nguyên tử; state ứng viên chỉ công bố sau commit."""
         if self._checkpoints is None:
@@ -191,6 +193,7 @@ class PaperLifecycleCoordinator:
             snapshot=snapshot,
             occurred_at=evaluated_at,
             event_scope=None,
+            fencing_token=fencing_token,
         )
         uow.after_commit(lambda: self._gateway.replace_state(append_result.snapshot))
         return PaperSubmissionResult(order, intent.intent_id, intent.duplicate)
@@ -204,6 +207,7 @@ class PaperLifecycleCoordinator:
         bar: PaperBar,
         available_quantity: Decimal | None = None,
         account_id: UUID | None = None,
+        fencing_token: FencingToken | None = None,
     ) -> EntryLifecycleResult:
         """Khớp lệnh PAPER và ghi mọi fill/position event theo khóa ổn định.
 
@@ -238,6 +242,7 @@ class PaperLifecycleCoordinator:
                 snapshot=snapshot,
                 occurred_at=bar.opened_at,
                 event_scope=_market_event_scope(paper_intent_id, bar.symbol),
+                fencing_token=fencing_token,
             )
             uow.after_commit(lambda: self._gateway.replace_state(append_result.snapshot))
             return result
@@ -337,6 +342,7 @@ class PaperLifecycleCoordinator:
         opposing_signal: bool = False,
         atr: Decimal | None = None,
         account_id: UUID | None = None,
+        fencing_token: FencingToken | None = None,
     ) -> PositionLifecycleResult:
         """Monitor stop/target/trailing và ghi EXIT fill, transition, đóng trade.
 
@@ -377,6 +383,7 @@ class PaperLifecycleCoordinator:
                 snapshot=snapshot,
                 occurred_at=bar.opened_at,
                 event_scope=_market_event_scope(paper_position_id, bar.symbol),
+                fencing_token=fencing_token,
             )
             uow.after_commit(lambda: self._gateway.replace_state(append_result.snapshot))
             return candidate_result

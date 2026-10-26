@@ -37,6 +37,11 @@ from trading_bot.application.paper_lifecycle import (
     PaperLifecycleCoordinator,
 )
 from trading_bot.domain.execution.paper import PaperExecutionGateway
+from trading_bot.domain.execution.runtime_control import (
+    FencingToken,
+    RuntimeControlError,
+    RuntimeFence,
+)
 
 
 class PaperAccountRuntimeStatus(StrEnum):
@@ -53,11 +58,29 @@ class PaperAccountRuntimeState:
 
 @dataclass(frozen=True, slots=True)
 class PaperRuntimeAccount:
+    """Account đã hydrate; `owner_id`/`fencing_token` bất biến, re-acquire thì thay instance.
+
+    Cả hai là None trong chế độ chuyển tiếp trước registry MB05.5 (bot chưa từng có lease).
+    """
+
     account_id: UUID
     bot_id: UUID
     gateway: PaperExecutionGateway
     coordinator: PaperLifecycleCoordinator
     execution_profile: ResolvedPaperExecutionProfile
+    owner_id: str | None = None
+    fencing_token: FencingToken | None = None
+
+    def __post_init__(self) -> None:
+        if (self.owner_id is None) != (self.fencing_token is None):
+            raise RuntimeControlError("RUNTIME_FENCE_INCOMPLETE")
+
+    @property
+    def fence(self) -> RuntimeFence | None:
+        """Bằng chứng lease trình cho mọi command thay đổi state PAPER."""
+        if self.owner_id is None or self.fencing_token is None:
+            return None
+        return RuntimeFence(self.owner_id, self.fencing_token)
 
 
 @dataclass(frozen=True, slots=True)

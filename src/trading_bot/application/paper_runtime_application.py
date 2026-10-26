@@ -13,12 +13,17 @@ from uuid import UUID
 
 from pydantic import ValidationError
 from sqlalchemy import select
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from trading_bot.adapters.database.models.entities import StrategyRelease, WorkspaceSettingsVersion
 from trading_bot.adapters.database.models.paper_entities import OrderIntentRecord, TradeRecord
 from trading_bot.adapters.database.repositories.bot_config_versions import (
     BotConfigVersionRepository,
+)
+from trading_bot.adapters.database.repositories.bot_runtime_leases import (
+    RuntimeFenceGuard,
+    runtime_db_reason,
 )
 from trading_bot.adapters.database.repositories.risk_reservations import (
     RiskReservationRepository,
@@ -56,6 +61,11 @@ from trading_bot.application.paper_runtime_bootstrap import PaperRuntimeAccount
 from trading_bot.config.bot_settings import BotConfigOverlay, overlay_hash
 from trading_bot.config.workspace_settings import PublishedWorkspaceSettings, WorkspaceSettings
 from trading_bot.domain.execution.paper import PaperBar
+from trading_bot.domain.execution.runtime_control import (
+    FencingToken,
+    RuntimeControlError,
+    RuntimeFence,
+)
 from trading_bot.domain.risk.engine import RiskState
 from trading_bot.domain.risk.planner import (
     AccountSnapshot,
@@ -65,6 +75,17 @@ from trading_bot.domain.risk.planner import (
 )
 from trading_bot.domain.strategy.contracts import DecisionSnapshot, NoTrade, StrategySelection
 from trading_bot.domain.strategy.registry import StrategyRegistry
+
+# Mã fence nghĩa là process không còn là writer hiện hành của bot: hạ bot về STANDBY.
+LEASE_LOSS_REASONS = frozenset(
+    {
+        "STALE_FENCING_TOKEN",
+        "LEASE_EXPIRED",
+        "LEASE_NOT_HELD",
+        "LEASE_SCOPE_MISMATCH",
+        "FENCING_TOKEN_REQUIRED",
+    }
+)
 
 
 class PaperRuntimeApplicationError(RuntimeError):
@@ -211,6 +232,8 @@ class PaperRuntimeApplicationService:
         decision_cycle_factory: Any | None = None,
         account_invalidation_callback: Callable[[UUID, str], None] | None = None,
         bot_config_loader: BotConfigLoader | None = None,
+        fence_guard_factory: Any = RuntimeFenceGuard,
+        lease_lost_callback: Callable[[UUID, str], None] | None = None,
     ) -> None:
         self._workspace_id = workspace_id
         self._sessions = sessions
@@ -223,6 +246,8 @@ class PaperRuntimeApplicationService:
         self._decision_cycle_factory = decision_cycle_factory or self._make_decision_cycle
         self._account_invalidation_callback = account_invalidation_callback
         self._bot_config_loader = bot_config_loader or load_runtime_bot_config
+        self._fence_guard_factory = fence_guard_factory
+        self._lease_lost_callback = lease_lost_callback
         self._invalid_accounts: set[UUID] = set()
 
     def is_available_for(self, account_id: UUID) -> bool:
@@ -258,6 +283,7 @@ class PaperRuntimeApplicationService:
                 await self._settings_repository_factory(uow.session).lock_workspace(
                     self._workspace_id
                 )
+                await self._require_fence(uow, account)
                 published, profile = await self._load_published_profile(
                     uow, account=account, as_of=command.evaluated_at
                 )
@@ -407,6 +433,7 @@ class PaperRuntimeApplicationService:
                     risk_reservation_id=reservation.reservation_id,
                     quote_asset=profile.quote_asset,
                     evidence=evidence,
+                    fencing_token=_account_token(account),
                 )
                 return PaperDecisionApplicationResult(
                     decision=decision,
@@ -422,6 +449,9 @@ class PaperRuntimeApplicationService:
             raise PaperRuntimeApplicationError("PAPER_PUBLISH_FAILED") from None
         except PaperLifecycleConflict, SettingsVersionConflict, ExecutionProfileResolutionError:
             raise PaperRuntimeApplicationError("PAPER_COMMAND_REJECTED") from None
+        except DBAPIError as error:
+            self._raise_if_fence_rejected(command.account_id, error)
+            raise
 
     async def apply_entry_event(self, command: PaperEntryEventCommand) -> EntryLifecycleResult:
         """Áp dụng một bar entry qua coordinator và ledger cùng UoW."""
@@ -436,6 +466,7 @@ class PaperRuntimeApplicationService:
                 await self._settings_repository_factory(uow.session).lock_workspace(
                     self._workspace_id
                 )
+                await self._require_fence(uow, account)
                 published, profile = await self._load_published_profile(
                     uow, account=account, as_of=command.bar.opened_at
                 )
@@ -454,6 +485,7 @@ class PaperRuntimeApplicationService:
                     paper_intent_id=command.paper_intent_id,
                     ledger_intent_id=command.ledger_intent_id,
                     bar=command.bar,
+                    fencing_token=_account_token(account),
                 )
         except PaperRuntimeApplicationError:
             raise
@@ -462,6 +494,9 @@ class PaperRuntimeApplicationService:
             raise PaperRuntimeApplicationError("PAPER_PUBLISH_FAILED") from None
         except PaperLifecycleConflict, SettingsVersionConflict, ExecutionProfileResolutionError:
             raise PaperRuntimeApplicationError("PAPER_COMMAND_REJECTED") from None
+        except DBAPIError as error:
+            self._raise_if_fence_rejected(command.account_id, error)
+            raise
 
     async def monitor_position(self, command: PaperMonitorCommand) -> PositionLifecycleResult:
         """Áp dụng một bar monitor cho trade đúng account đã bootstrap."""
@@ -476,6 +511,7 @@ class PaperRuntimeApplicationService:
                 await self._settings_repository_factory(uow.session).lock_workspace(
                     self._workspace_id
                 )
+                await self._require_fence(uow, account)
                 published, profile = await self._load_published_profile(
                     uow, account=account, as_of=command.bar.opened_at
                 )
@@ -539,6 +575,7 @@ class PaperRuntimeApplicationService:
                     bar=command.bar,
                     opposing_signal=opposing_signal,
                     atr=evidence.atr,
+                    fencing_token=_account_token(account),
                 )
         except PaperRuntimeApplicationError:
             raise
@@ -547,6 +584,39 @@ class PaperRuntimeApplicationService:
             raise PaperRuntimeApplicationError("PAPER_PUBLISH_FAILED") from None
         except PaperLifecycleConflict, SettingsVersionConflict, ExecutionProfileResolutionError:
             raise PaperRuntimeApplicationError("PAPER_COMMAND_REJECTED") from None
+        except DBAPIError as error:
+            self._raise_if_fence_rejected(command.account_id, error)
+            raise
+
+    async def _require_fence(self, uow: UnitOfWork, account: PaperRuntimeAccount) -> None:
+        """Fence application (ruling 9a): ngay sau L1, trước mọi đọc/ghi state và L2–L4.
+
+        Bị từ chối nghĩa là process không còn là writer hiện hành: hạ bot về STANDBY (gỡ khỏi
+        `active_accounts`), không ảnh hưởng bot khác; UoW rollback nên không có ghi nào.
+        """
+        try:
+            await self._fence_guard_factory(uow.session).require(
+                workspace_id=self._workspace_id,
+                bot_id=account.bot_id,
+                account_id=account.account_id,
+                fence=_account_fence(account),
+            )
+        except RuntimeControlError as error:
+            if error.reason_code in LEASE_LOSS_REASONS:
+                self._demote_account(account.account_id, error.reason_code)
+            raise PaperRuntimeApplicationError(error.reason_code) from None
+
+    def _raise_if_fence_rejected(self, account_id: UUID, error: DBAPIError) -> None:
+        """Trigger DB fence từ chối (kể cả khi bỏ qua application) cũng hạ bot về STANDBY."""
+        reason = runtime_db_reason(error, "")
+        if reason in LEASE_LOSS_REASONS:
+            self._demote_account(account_id, reason)
+            raise PaperRuntimeApplicationError(reason) from None
+
+    def _demote_account(self, account_id: UUID, reason_code: str) -> None:
+        self._active_accounts.pop(account_id, None)
+        if self._lease_lost_callback is not None:
+            self._lease_lost_callback(account_id, reason_code)
 
     def _require_account(self, account_id: UUID) -> PaperRuntimeAccount:
         account = self._active_accounts.get(account_id)
@@ -925,6 +995,17 @@ class PaperRuntimeApplicationService:
         from trading_bot.domain.strategy.registry import StrategyRegistry
 
         return PaperDecisionCycle(StrategyRegistry(), TradePlanner(), RiskEngine(), gateway)
+
+
+def _account_fence(account: PaperRuntimeAccount) -> RuntimeFence | None:
+    """Fence của account đã bootstrap; None ở chế độ chuyển tiếp trước registry MB05.5."""
+    fence = getattr(account, "fence", None)
+    return fence if isinstance(fence, RuntimeFence) else None
+
+
+def _account_token(account: PaperRuntimeAccount) -> FencingToken | None:
+    fence = _account_fence(account)
+    return fence.fencing_token if fence is not None else None
 
 
 async def _load_scoped_intent(

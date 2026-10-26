@@ -219,7 +219,12 @@ async def _no_bot_config(**_: object) -> None:
     return None
 
 
-def _application_with_fakes(*, fail_submission: bool, **service_overrides: object):
+def _application_with_fakes(
+    *,
+    fail_submission: bool,
+    lock_events: list[str] | None = None,
+    **service_overrides: object,
+):
     workspace_id = uuid4()
     account_id = uuid4()
     evaluated_at = datetime.now(UTC)
@@ -233,7 +238,17 @@ def _application_with_fakes(*, fail_submission: bool, **service_overrides: objec
     profile = resolve_paper_execution_profile(published, default_paper_execution_profile_catalog())
     context = _approved_context(workspace_id, account_id, published, evaluated_at)
     callback_state = SimpleNamespace(published=False, fail_publish=False, invalidations=[])
-    counters = SimpleNamespace(context_loads=0, cycles=0, reserves=0, submissions=0)
+    counters = SimpleNamespace(context_loads=0, cycles=0, reserves=0, submissions=0, fences=[])
+    events = lock_events if lock_events is not None else []
+
+    class _AllowFence:
+        """Fence giả mặc định: bot chưa có lease (chế độ chuyển tiếp) luôn hợp lệ."""
+
+        def __init__(self, _session: object) -> None:
+            pass
+
+        async def require(self, **kwargs: object) -> None:
+            counters.fences.append(kwargs)
 
     class _ContextProvider:
         async def load_context(self, **_: object) -> PaperDecisionContext:
@@ -242,7 +257,7 @@ def _application_with_fakes(*, fail_submission: bool, **service_overrides: objec
 
     class _SettingsRepository:
         async def lock_workspace(self, _workspace_id: object) -> None:
-            return None
+            events.append("L1")
 
         async def load_effective_config(self, **_: object) -> PublishedWorkspaceSettings:
             return published
@@ -299,13 +314,16 @@ def _application_with_fakes(*, fail_submission: bool, **service_overrides: objec
             return SimpleNamespace(risk_decision_id=evaluation_id)
 
         async def reserve(self, _decision, *, idempotency_key, **_: object) -> SimpleNamespace:
+            events.append("L2-L4:reserve")
             counters.reserves += 1
             idempotency_keys.append(idempotency_key)
             return SimpleNamespace(reservation_id=reservation_id)
 
     class _Coordinator:
         async def submit_approved(self, uow, **kwargs: object) -> SimpleNamespace:
+            events.append("L4:submit")
             counters.submissions += 1
+            counters.submit_kwargs = kwargs
             callback_state.submitted_evidence = kwargs["evidence"]
 
             def publish() -> None:
@@ -354,7 +372,8 @@ def _application_with_fakes(*, fail_submission: bool, **service_overrides: objec
         account_invalidation_callback=lambda account, reason: callback_state.invalidations.append(
             (account, reason)
         ),
-        **{"bot_config_loader": _no_bot_config} | service_overrides,  # type: ignore[arg-type]
+        **{"bot_config_loader": _no_bot_config, "fence_guard_factory": _AllowFence}
+        | service_overrides,  # type: ignore[arg-type]
     )
     command = PaperDecisionCommand(
         account_id=account_id,
@@ -875,3 +894,194 @@ def test_after_commit_publish_failure_invalidates_account_and_blocks_retry() -> 
     with pytest.raises(PaperRuntimeApplicationError, match="PAPER_ACCOUNT_NOT_READY"):
         asyncio.run(service.evaluate_and_submit(command))
     assert len(_FakeUnitOfWork.instances) == 1
+
+
+# --- MB05.4: fencing tại ranh giới thực thi account -----------------------------------------
+
+
+class _StaleFenceFor:
+    """Fence giả: bot trong `stale_bots` bị từ chối với reason code cho trước."""
+
+    def __init__(self, stale_bots: set[object], reason: str = "STALE_FENCING_TOKEN") -> None:
+        self.stale_bots = stale_bots
+        self.reason = reason
+        self.calls: list[dict[str, object]] = []
+
+    def __call__(self, _session: object) -> _StaleFenceFor:
+        return self
+
+    async def require(self, **kwargs: object) -> None:
+        from trading_bot.domain.execution.runtime_control import RuntimeControlError
+
+        self.calls.append(kwargs)
+        if kwargs["bot_id"] in self.stale_bots:
+            raise RuntimeControlError(self.reason)
+
+
+def _two_bot_service(reason: str = "STALE_FENCING_TOKEN"):
+    lease_lost: list[tuple[object, str]] = []
+    service, command, callback_state, _, counters, _, _, _ = _application_with_fakes(
+        fail_submission=False,
+        lease_lost_callback=lambda account, code: lease_lost.append((account, code)),
+    )
+    first = service._active_accounts[command.account_id]
+    sibling_id = uuid4()
+    sibling = SimpleNamespace(**{**vars(first), "account_id": sibling_id, "bot_id": uuid4()})
+    service._active_accounts[sibling_id] = sibling
+    guard = _StaleFenceFor({first.bot_id}, reason)
+    service._fence_guard_factory = guard
+    return service, command, sibling_id, lease_lost, counters, callback_state, guard
+
+
+@pytest.mark.parametrize(
+    "reason", ["STALE_FENCING_TOKEN", "LEASE_EXPIRED", "LEASE_NOT_HELD", "FENCING_TOKEN_REQUIRED"]
+)
+def test_stale_fence_rejects_decision_before_any_write_and_demotes_only_that_bot(
+    reason: str,
+) -> None:
+    service, command, sibling_id, lease_lost, counters, _, _ = _two_bot_service(reason=reason)
+    _FakeUnitOfWork.instances = []
+
+    with pytest.raises(PaperRuntimeApplicationError, match=reason):
+        asyncio.run(service.evaluate_and_submit(command))
+
+    assert counters.context_loads == 0
+    assert counters.reserves == 0
+    assert counters.submissions == 0
+    assert _FakeUnitOfWork.instances[0].rolled_back is True
+    assert _FakeUnitOfWork.instances[0].committed is False
+    assert lease_lost == [(command.account_id, reason)]
+    assert not service.is_available_for(command.account_id)
+    assert service.is_available_for(sibling_id)
+    # Mất lease là STANDBY, không phải lỗi recovery: readiness process không bị hạ cờ.
+    assert service.is_ready
+    with pytest.raises(PaperRuntimeApplicationError, match="PAPER_ACCOUNT_NOT_READY"):
+        asyncio.run(service.evaluate_and_submit(command))
+
+
+def test_sibling_bot_commands_continue_after_other_bot_loses_lease() -> None:
+    service, command, sibling_id, _, counters, _, guard = _two_bot_service()
+    with pytest.raises(PaperRuntimeApplicationError, match="STALE_FENCING_TOKEN"):
+        asyncio.run(service.evaluate_and_submit(command))
+
+    sibling_command = replace(command, account_id=sibling_id)
+    with pytest.raises(PaperRuntimeApplicationError) as error:
+        asyncio.run(service.evaluate_and_submit(sibling_command))
+
+    # Sibling qua được fence (lỗi sau đó chỉ do fixture context gắn account đầu tiên).
+    assert error.value.reason_code == "PAPER_DECISION_CONTEXT_MISMATCH"
+    assert guard.calls[-1]["account_id"] == sibling_id
+    assert counters.context_loads == 1
+
+
+def _bar_for(opened_at: datetime) -> PaperBar:
+    return PaperBar(
+        "fence-bar",
+        "BTCUSDT",
+        opened_at,
+        opened_at + timedelta(minutes=1),
+        opened_at + timedelta(minutes=1),
+        Decimal("100"),
+        Decimal("101"),
+        Decimal("99"),
+        Decimal("100"),
+    )
+
+
+def test_stale_fence_rejects_entry_event_and_monitor_before_coordinator() -> None:
+    from trading_bot.application.paper_runtime_application import PaperEntryEventCommand
+
+    for command_kind in ("entry", "monitor"):
+        service, command, _, lease_lost, _, _, guard = _two_bot_service()
+        account = service._active_accounts[command.account_id]
+        account.coordinator.apply_entry_market_event = None  # gọi tới sẽ TypeError
+        account.coordinator.monitor_market_event = None
+        _FakeUnitOfWork.instances = []
+        _FakeUnitOfWork.scalar_results = []
+        bar = _bar_for(datetime.now(UTC))
+        if command_kind == "entry":
+            call = service.apply_entry_event(
+                PaperEntryEventCommand(command.account_id, uuid4(), "paper:x", bar)
+            )
+        else:
+            call = service.monitor_position(
+                PaperMonitorCommand(command.account_id, uuid4(), uuid4(), "paper:x", bar, "f")
+            )
+        with pytest.raises(PaperRuntimeApplicationError, match="STALE_FENCING_TOKEN"):
+            asyncio.run(call)
+        assert _FakeUnitOfWork.instances[0].rolled_back is True
+        assert lease_lost == [(command.account_id, "STALE_FENCING_TOKEN")]
+        assert guard.calls[0]["bot_id"] == account.bot_id
+
+
+def test_runtime_account_fence_is_presented_and_token_reaches_checkpoint_writer() -> None:
+    from trading_bot.application.paper_runtime_bootstrap import PaperRuntimeAccount
+    from trading_bot.domain.execution.runtime_control import FencingToken, RuntimeFence
+
+    service, command, _, _, counters, _, _, _ = _application_with_fakes(fail_submission=False)
+    old = service._active_accounts[command.account_id]
+    service._active_accounts[command.account_id] = PaperRuntimeAccount(
+        account_id=old.account_id,
+        bot_id=old.bot_id,
+        gateway=old.gateway,
+        coordinator=old.coordinator,
+        execution_profile=old.execution_profile,
+        owner_id="runtime-a",
+        fencing_token=FencingToken(5),
+    )
+
+    asyncio.run(service.evaluate_and_submit(command))
+
+    assert counters.fences[-1]["fence"] == RuntimeFence("runtime-a", FencingToken(5))
+    assert counters.fences[-1]["bot_id"] == old.bot_id
+    assert counters.submit_kwargs["fencing_token"] == FencingToken(5)
+
+
+def test_pre_registry_account_presents_no_fence_and_no_token() -> None:
+    service, command, _, _, counters, _, _, _ = _application_with_fakes(fail_submission=False)
+
+    asyncio.run(service.evaluate_and_submit(command))
+
+    assert counters.fences[-1]["fence"] is None
+    assert counters.submit_kwargs["fencing_token"] is None
+
+
+def test_runtime_account_requires_owner_and_token_together() -> None:
+    from trading_bot.application.paper_runtime_bootstrap import PaperRuntimeAccount
+    from trading_bot.domain.execution.runtime_control import FencingToken, RuntimeControlError
+
+    for owner, token in (("runtime-a", None), (None, FencingToken(1))):
+        with pytest.raises(RuntimeControlError, match="RUNTIME_FENCE_INCOMPLETE"):
+            PaperRuntimeAccount(
+                account_id=uuid4(),
+                bot_id=uuid4(),
+                gateway=object(),  # type: ignore[arg-type]
+                coordinator=object(),  # type: ignore[arg-type]
+                execution_profile=object(),  # type: ignore[arg-type]
+                owner_id=owner,
+                fencing_token=token,
+            )
+
+
+def test_db_trigger_stale_token_is_mapped_and_demotes_account() -> None:
+    from sqlalchemy.exc import IntegrityError
+
+    lease_lost: list[tuple[object, str]] = []
+    service, command, _, _, _, _, _, _ = _application_with_fakes(
+        fail_submission=False,
+        lease_lost_callback=lambda account, code: lease_lost.append((account, code)),
+    )
+    account = service._active_accounts[command.account_id]
+
+    async def _rejected(*_: object, **__: object) -> None:
+        raise IntegrityError("INSERT", {}, Exception("MB05_STALE_FENCING_TOKEN"))
+
+    account.coordinator.submit_approved = _rejected
+    _FakeUnitOfWork.instances = []
+
+    with pytest.raises(PaperRuntimeApplicationError, match="STALE_FENCING_TOKEN"):
+        asyncio.run(service.evaluate_and_submit(command))
+
+    assert _FakeUnitOfWork.instances[0].rolled_back is True
+    assert lease_lost == [(command.account_id, "STALE_FENCING_TOKEN")]
+    assert not service.is_available_for(command.account_id)

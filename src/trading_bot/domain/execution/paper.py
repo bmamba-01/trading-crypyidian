@@ -401,6 +401,15 @@ class PaperExecutionGateway:
         """Trả snapshot vị thế đang gắn với order intent."""
         return self._positions.get(intent_id)
 
+    def open_orders(self) -> tuple[PaperOrderIntent, ...]:
+        """Order còn hiệu lực trên account (ACCEPTED/PARTIALLY_FILLED/UNKNOWN), chỉ đọc."""
+        live = {OrderStatus.ACCEPTED, OrderStatus.PARTIALLY_FILLED, OrderStatus.UNKNOWN}
+        return tuple(order for order in self._orders.values() if order.status in live)
+
+    def open_positions(self) -> tuple[PaperPosition, ...]:
+        """Vị thế chưa đóng của account, chỉ đọc (nguồn activity PAPER của MB-05)."""
+        return tuple(position for position in self._positions.values() if not position.is_closed)
+
     def order(self, intent_id: str) -> PaperOrderIntent:
         """Trả snapshot order để retry/reconcile có thể kiểm tra trạng thái."""
         return self._get_order(intent_id)

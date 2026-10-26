@@ -71,7 +71,66 @@ def test_schema_contains_all_foundation_tables() -> None:
         "shared_signal_evidence",
         "bot_decision_job",
         "bot_decision",
+        "workspace_runtime_control",
+        "bot_runtime_control",
+        "bot_runtime_lease",
+        "bot_runtime_state",
+        "account_activity_incident",
     }
+
+
+def test_mb05_runtime_tables_use_composite_bot_fk_and_bot_scope_index() -> None:
+    bot_instance_scope = {
+        "bot_instance.workspace_id",
+        "bot_instance.id",
+        "bot_instance.trading_account_id",
+    }
+    for name in (
+        "bot_runtime_control",
+        "bot_runtime_lease",
+        "bot_runtime_state",
+        "account_activity_incident",
+    ):
+        table = Base.metadata.tables[name]
+        assert any(
+            [element.parent.name for element in constraint.elements]
+            == ["workspace_id", "bot_id", "account_id"]
+            and {element.target_fullname for element in constraint.elements} == bot_instance_scope
+            for constraint in table.foreign_key_constraints
+        ), name
+        indexes = {index.name: index for index in table.indexes}
+        assert [column.name for column in indexes[f"ix_{name}_bot_scope"].columns] == [
+            "workspace_id",
+            "bot_id",
+            "account_id",
+        ], name
+    lease = Base.metadata.tables["bot_runtime_lease"]
+    unique_columns = {
+        tuple(column.name for column in constraint.columns)
+        for constraint in lease.constraints
+        if isinstance(constraint, UniqueConstraint)
+    }
+    assert {("workspace_id", "bot_id"), ("workspace_id", "account_id")} <= unique_columns
+    workspace_control = Base.metadata.tables["workspace_runtime_control"]
+    assert "bot_id" not in workspace_control.c
+    assert workspace_control.c.workspace_id.foreign_keys
+    for name in ("bot_runtime_lease", "bot_runtime_state", "account_activity_incident"):
+        assert Base.metadata.tables[name].c.fencing_token.type.__class__.__name__ == "BigInteger"
+    checkpoint = Base.metadata.tables["paper_execution_checkpoint"]
+    assert checkpoint.c.fencing_token.nullable is True
+    job = Base.metadata.tables["bot_decision_job"]
+    assert job.c.attempts.nullable is False
+    assert {"last_error_code", "next_attempt_at"} <= set(job.c.keys())
+    incident = Base.metadata.tables["account_activity_incident"]
+    open_unique = {index.name: index for index in incident.indexes}[
+        "uq_account_activity_incident_open"
+    ]
+    assert open_unique.unique is True
+    assert [column.name for column in open_unique.columns] == [
+        "workspace_id",
+        "bot_id",
+        "fingerprint",
+    ]
 
 
 def test_risk_reservation_requires_persisted_decision_and_positive_initial_margin() -> None:

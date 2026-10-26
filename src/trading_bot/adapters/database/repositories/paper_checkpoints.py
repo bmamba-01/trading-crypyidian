@@ -25,6 +25,7 @@ from trading_bot.adapters.database.models.risk_entities import (
 from trading_bot.application.outbox import UnitOfWork
 from trading_bot.application.paper_recovery import verify_paper_ledger_consistency
 from trading_bot.domain.execution.paper_state import PaperExecutionSnapshot
+from trading_bot.domain.execution.runtime_control import FencingToken
 
 
 class PaperCheckpointConflict(RuntimeError):
@@ -51,8 +52,16 @@ class PaperCheckpointRepository:
         snapshot: PaperExecutionSnapshot,
         occurred_at: datetime,
         event_scope: str | None = None,
+        fencing_token: FencingToken | None = None,
     ) -> PaperCheckpointAppendResult:
+        """Append revision kế tiếp; `fencing_token` là token lease hiện hành (trigger DB kiểm).
+
+        None chỉ hợp lệ khi bot chưa từng có hàng lease (chuyển tiếp trước registry MB05.5).
+        Token không đi vào snapshot hash/canonical payload.
+        """
         _validate_request(uow, event_key, event_hash, snapshot, occurred_at, event_scope)
+        if fencing_token is not None and not isinstance(fencing_token, FencingToken):
+            raise PaperCheckpointConflict("Fencing token checkpoint không hợp lệ.")
         await self.lock_account(uow, account_id=account_id)
         existing = await uow.session.scalar(
             select(PaperExecutionCheckpointRecord).where(
@@ -116,6 +125,7 @@ class PaperCheckpointRepository:
             policy_hash=snapshot.policy_hash,
             snapshot_hash=snapshot.content_hash,
             snapshot_payload=snapshot.payload,
+            fencing_token=int(fencing_token) if fencing_token is not None else None,
         )
         uow.session.add(row)
         await uow.session.flush()

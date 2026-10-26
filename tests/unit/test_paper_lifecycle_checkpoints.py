@@ -30,6 +30,7 @@ class Checkpoint:
 class MemoryCheckpoints:
     def __init__(self, snapshot: PaperExecutionSnapshot) -> None:
         self.rows = [Checkpoint(1, "seed", "0" * 64, "seed", NOW, snapshot)]
+        self.fencing_tokens: list[object] = []
 
     async def lock_account(self, _uow: object, *, account_id: object) -> None:
         assert account_id is not None
@@ -55,8 +56,10 @@ class MemoryCheckpoints:
         snapshot: PaperExecutionSnapshot,
         occurred_at: datetime,
         event_scope: str | None = None,
+        fencing_token: object = None,
     ):
         del account_id
+        self.fencing_tokens.append(fencing_token)
         for row in self.rows:
             if row.event_key == event_key:
                 assert (row.event_hash, row.event_scope, row.event_at) == (

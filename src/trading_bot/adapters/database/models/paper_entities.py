@@ -7,6 +7,7 @@ from uuid import UUID
 
 from sqlalchemy import (
     JSON,
+    BigInteger,
     CheckConstraint,
     DateTime,
     ForeignKeyConstraint,
@@ -389,6 +390,9 @@ class PaperExecutionCheckpointRecord(UuidPrimaryKey, CreatedAt, Base):
             name="fk_paper_checkpoint_account",
         ),
         CheckConstraint("mode = 'PAPER'", name="paper_checkpoint_mode"),
+        CheckConstraint(
+            "fencing_token IS NULL OR fencing_token >= 1", name="paper_checkpoint_token_positive"
+        ),
         CheckConstraint("revision > 0", name="paper_checkpoint_revision_positive"),
         CheckConstraint("schema_version > 0", name="paper_checkpoint_schema_positive"),
         CheckConstraint("length(event_key) > 0", name="paper_checkpoint_event_key_nonempty"),
@@ -432,3 +436,6 @@ class PaperExecutionCheckpointRecord(UuidPrimaryKey, CreatedAt, Base):
     policy_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     snapshot_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     snapshot_payload: Mapped[str] = mapped_column(Text, nullable=False)
+    # MB-05: token lease hiện hành của writer; NULL chỉ hợp lệ khi bot chưa từng có lease
+    # (trigger DB `paper_execution_checkpoint_fence`). Không đi vào snapshot hash.
+    fencing_token: Mapped[int | None] = mapped_column(BigInteger, nullable=True)

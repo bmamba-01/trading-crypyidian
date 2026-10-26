@@ -32,6 +32,11 @@ LATER_BOT_SCOPED_TABLES = (
     "bot_config_request",
     "bot_decision_job",
     "bot_decision",
+    # MB-05 registry runtime.
+    "bot_runtime_control",
+    "bot_runtime_lease",
+    "bot_runtime_state",
+    "account_activity_incident",
 )
 BOT_SCOPE_INDEXES = {f"ix_{table}_bot_scope" for table in (*TABLES, *LATER_BOT_SCOPED_TABLES)}
 NOW = datetime(2026, 10, 24, tzinfo=UTC)
@@ -55,7 +60,9 @@ def snapshot(connection):
     return {
         table: connection.execute(
             sql.SQL(
-                "SELECT COALESCE(jsonb_agg(to_jsonb(t) - 'bot_id' ORDER BY id), "
+                # fencing_token (MB-05) là cột mới, NULL trên checkpoint lịch sử.
+                "SELECT COALESCE(jsonb_agg(to_jsonb(t) - 'bot_id' - 'fencing_token' "
+                "ORDER BY id), "
                 "'[]'::jsonb) FROM {} t"
             ).format(sql.Identifier(table))
         ).fetchone()[0]

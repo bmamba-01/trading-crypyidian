@@ -9,10 +9,12 @@ from sqlalchemy import (
     DateTime,
     ForeignKeyConstraint,
     Index,
+    Integer,
     String,
     Text,
     UniqueConstraint,
     Uuid,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
@@ -124,7 +126,11 @@ class BotDecisionJobRecord(UuidPrimaryKey, CreatedAt, Base):
             list(_BOT_CONFIG_VERSION_SCOPE),
             name="fk_bot_decision_job_bot_config_version",
         ),
-        CheckConstraint("status IN ('PENDING', 'COMPLETED')", name="bot_decision_job_status_valid"),
+        # MB-05: DEAD sau khi vượt max_attempts (poison job không chặn hàng đợi bot).
+        CheckConstraint(
+            "status IN ('PENDING', 'COMPLETED', 'DEAD')", name="bot_decision_job_status_valid"
+        ),
+        CheckConstraint("attempts >= 0", name="bot_decision_job_attempts_valid"),
         CheckConstraint(
             "(status = 'COMPLETED') = (completed_at IS NOT NULL)",
             name="bot_decision_job_completion_consistent",
@@ -152,6 +158,11 @@ class BotDecisionJobRecord(UuidPrimaryKey, CreatedAt, Base):
     context_payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="PENDING")
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    last_error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class BotDecisionRecord(UuidPrimaryKey, CreatedAt, Base):

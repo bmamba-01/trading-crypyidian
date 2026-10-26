@@ -120,8 +120,67 @@ TABLE_PRIVILEGES[RUNTIME] |= {
     "bot_decision_job": {"SELECT", "INSERT"},
     "bot_decision": {"SELECT", "INSERT"},
 }
-# Runtime chỉ chuyển trạng thái job (và khóa FOR UPDATE) qua quyền cấp cột.
-COLUMN_UPDATE[RUNTIME] |= {"bot_decision_job": {"status", "completed_at"}}
+# Runtime chỉ chuyển trạng thái job (và khóa FOR UPDATE) qua quyền cấp cột; MB-05 thêm cột
+# retry/poison job (attempts, last_error_code, next_attempt_at).
+COLUMN_UPDATE[RUNTIME] |= {
+    "bot_decision_job": {
+        "status",
+        "completed_at",
+        "attempts",
+        "last_error_code",
+        "next_attempt_at",
+    }
+}
+# Bảng registry runtime MB-05: admin ghi ý định control/resolution, runtime giữ lease ghi
+# lease/state/incident; không DELETE, UPDATE chỉ cấp cột (SEC R10).
+RUNTIME_REGISTRY_TABLES = (
+    "workspace_runtime_control",
+    "bot_runtime_control",
+    "bot_runtime_lease",
+    "bot_runtime_state",
+    "account_activity_incident",
+)
+MULTIBOT_TABLES += RUNTIME_REGISTRY_TABLES
+TABLE_PRIVILEGES[ADMIN] |= {
+    "workspace_runtime_control": {"SELECT", "INSERT"},
+    "bot_runtime_control": {"SELECT", "INSERT"},
+    "bot_runtime_lease": {"SELECT"},
+    "bot_runtime_state": {"SELECT"},
+    "account_activity_incident": {"SELECT"},
+}
+TABLE_PRIVILEGES[RUNTIME] |= {
+    "workspace_runtime_control": {"SELECT"},
+    "bot_runtime_control": {"SELECT"},
+    "bot_runtime_lease": {"SELECT", "INSERT"},
+    "bot_runtime_state": {"SELECT", "INSERT"},
+    "account_activity_incident": {"SELECT", "INSERT"},
+}
+COLUMN_UPDATE[RUNTIME] |= {
+    "bot_runtime_lease": {"owner_id", "fencing_token", "acquired_at", "renewed_at", "expires_at"},
+    "bot_runtime_state": {
+        "readiness",
+        "reason_code",
+        "applied_bot_control_revision",
+        "applied_workspace_control_revision",
+        "last_checkpoint_revision",
+        "activity_cursor",
+        "activity_checked_at",
+        "activity_status",
+        "fanout_exclusion_code",
+        "heartbeat_at",
+        "fencing_token",
+        "updated_at",
+    },
+}
+COLUMN_UPDATE[ADMIN] |= {
+    "account_activity_incident": {
+        "status",
+        "resolution_code",
+        "resolution_reason",
+        "resolved_by",
+        "resolved_at",
+    }
+}
 
 
 def identity(name):
@@ -523,6 +582,47 @@ IDENTITY_ATTACKS = (
 )
 
 
+RUNTIME_REGISTRY_ATTACKS = (
+    (
+        "INSERT INTO workspace_runtime_control (id, workspace_id, revision, kill_state, "
+        "reason_code, reason_text, changed_by, correlation_id) VALUES (gen_random_uuid(), %s, "
+        "1, 'ACTIVE', 'forged', 'forged', %s, gen_random_uuid())",
+        (W1, M1),
+    ),
+    (
+        "INSERT INTO bot_runtime_control (id, workspace_id, bot_id, account_id, revision, "
+        "entry_state, reason_code, reason_text, changed_by, correlation_id) SELECT "
+        "gen_random_uuid(), workspace_id, id, trading_account_id, 1, 'ENABLED', 'forged', "
+        "'forged', %s, gen_random_uuid() FROM bot_instance",
+        (M1,),
+    ),
+    ("UPDATE bot_runtime_lease SET bot_id = bot_id", ()),
+    ("DELETE FROM bot_runtime_lease", ()),
+    ("DELETE FROM bot_runtime_state", ()),
+    ("UPDATE bot_runtime_state SET account_id = account_id", ()),
+    ("UPDATE account_activity_incident SET status = 'RESOLVED'", ()),
+    ("DELETE FROM account_activity_incident", ()),
+    ("UPDATE bot_decision_job SET evidence_hash = evidence_hash", ()),
+    ("DELETE FROM bot_decision_job", ()),
+)
+ADMIN_REGISTRY_ATTACKS = (
+    "INSERT INTO bot_runtime_lease (id, workspace_id, bot_id, account_id, owner_id, "
+    "fencing_token, expires_at) SELECT gen_random_uuid(), workspace_id, id, trading_account_id, "
+    "'admin', 1, now() + interval '1 minute' FROM bot_instance",
+    "UPDATE bot_runtime_lease SET fencing_token = fencing_token + 1",
+    "INSERT INTO bot_runtime_state (id, workspace_id, bot_id, account_id, readiness, "
+    "heartbeat_at, fencing_token) SELECT gen_random_uuid(), workspace_id, id, "
+    "trading_account_id, 'READY', now(), 1 FROM bot_instance",
+    "UPDATE bot_runtime_state SET readiness = 'READY'",
+    "UPDATE workspace_runtime_control SET kill_state = 'ACTIVE'",
+    "DELETE FROM workspace_runtime_control",
+    "UPDATE bot_runtime_control SET entry_state = 'ENABLED'",
+    "DELETE FROM bot_runtime_control",
+    "UPDATE account_activity_incident SET fingerprint = fingerprint",
+    "DELETE FROM account_activity_incident",
+)
+
+
 def worker(connection, role):
     assert connection.execute("SELECT current_user").fetchone()[0] == role
     for statement, params in IDENTITY_ATTACKS:
@@ -559,6 +659,9 @@ def runtime(connection):
         "version, config, config_hash) SELECT gen_random_uuid(), workspace_id, id, "
         "trading_account_id, 9, '{}', repeat('f', 64) FROM bot_instance",
     )
+    # MB-05: runtime không ghi control/resolution, không xóa/sửa identity lease/state/job.
+    for statement, params in RUNTIME_REGISTRY_ATTACKS:
+        denied(connection, statement, params)
     # Group crypidian_app không còn quyền identity: SET ROLE không mở lại đường ghi.
     with connection.transaction():
         scope(connection)
@@ -603,7 +706,7 @@ def runtime(connection):
             ).fetchone()[0]
             == 1
         )
-    return {"role": RUNTIME, "denied": len(IDENTITY_ATTACKS) + 3}
+    return {"role": RUNTIME, "denied": len(IDENTITY_ATTACKS) + 3 + len(RUNTIME_REGISTRY_ATTACKS)}
 
 
 def admin(connection):
@@ -634,6 +737,7 @@ def admin(connection):
         "content_hash) VALUES (gen_random_uuid(), "
         "current_setting('app.workspace_id')::uuid, 'evil', 9, 'PUBLISHED', '{}', "
         "repeat('e', 64))",
+        *ADMIN_REGISTRY_ATTACKS,
     ):
         denied(connection, statement)
     with connection.transaction():
@@ -727,7 +831,7 @@ def admin(connection):
     )
     assert scalar(connection, "SELECT count(*) FROM mfa_factor", workspace=W2, member=M2) == 1
     assert scalar(connection, "SELECT count(*) FROM mfa_factor", workspace="") == 0
-    return {"role": ADMIN, "denied": 20}
+    return {"role": ADMIN, "denied": 20 + len(ADMIN_REGISTRY_ATTACKS)}
 
 
 password = Path(os.environ["TRADING_BOT_DATABASE_PASSWORD_FILE"]).read_text().strip()

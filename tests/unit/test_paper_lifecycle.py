@@ -262,3 +262,62 @@ async def test_monitor_persists_trailing_stop_transition_without_exit() -> None:
     assert result.exit_fill is None
     assert result.position.stop_price > entry.position.stop_price
     assert any("stop-update" in key for key in ledger.positions)
+
+
+@pytest.mark.asyncio
+async def test_coordinator_passes_fencing_token_to_checkpoint_append() -> None:
+    """MB05.4: token lease hiện hành đi tới checkpoint để trigger DB fence kiểm."""
+    from tests.unit.test_paper_lifecycle_checkpoints import (
+        CallbackUow,
+        MemoryCheckpoints,
+        _bar,
+        _gateway,
+    )
+    from tests.unit.test_paper_lifecycle_checkpoints import MemoryLedger as CheckpointLedger
+
+    from trading_bot.domain.execution.runtime_control import FencingToken
+
+    account_id = uuid4()
+    baseline = _gateway()
+    order = baseline.submit(_plan(), "fenced-order", submitted_at=NOW, eligible_after=NOW)
+    checkpoints = MemoryCheckpoints(baseline.export_state())
+    coordinator = PaperLifecycleCoordinator(
+        _gateway(),
+        CheckpointLedger(),  # type: ignore[arg-type]
+        checkpoints,  # type: ignore[arg-type]
+    )
+
+    await coordinator.apply_entry_market_event(
+        CallbackUow(),  # type: ignore[arg-type]
+        account_id=account_id,
+        paper_intent_id=order.intent_id,
+        ledger_intent_id=uuid4(),
+        bar=_bar(),
+        fencing_token=FencingToken(7),
+    )
+
+    assert checkpoints.fencing_tokens == [FencingToken(7)]
+
+
+def test_every_checkpoint_append_in_coordinator_passes_fencing_token() -> None:
+    import ast
+    import inspect
+
+    from trading_bot.application import paper_lifecycle
+
+    tree = ast.parse(inspect.getsource(paper_lifecycle))
+    appends = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "append"
+        and "checkpoints" in ast.unparse(node.func.value)
+    ]
+    assert len(appends) == 3
+    assert all(any(k.arg == "fencing_token" for k in node.keywords) for node in appends)
+    for name in ("submit_approved", "apply_entry_market_event", "monitor_market_event"):
+        parameter = inspect.signature(getattr(PaperLifecycleCoordinator, name)).parameters[
+            "fencing_token"
+        ]
+        assert parameter.default is None
