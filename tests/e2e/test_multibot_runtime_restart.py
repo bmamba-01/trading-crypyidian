@@ -28,6 +28,13 @@ def test_restart_isolation_sibling_failure_and_runtime_workspace_caps() -> None:
         genesis = harness.probe("genesis")
         assert genesis["main_a_null_revision_2"] == {"error": "MB05_FENCING_TOKEN_REQUIRED"}
         assert genesis["main_b_null_revision_2"] == {"error": "MB05_FENCING_TOKEN_REQUIRED"}
+        # Gap (a): trigger dùng chung trên bảng không có cột `revision` trả đúng mã fence (không
+        # phải SQLSTATE 42703 "record new has no field revision").
+        for key in ("a", "b"):
+            for table in ("bot_runtime_state", "account_activity_incident"):
+                assert genesis[f"main_{key}_{table}_null"] == {
+                    "error": "MB05_FENCING_TOKEN_REQUIRED"
+                }, genesis
 
         setup = harness.probe("runtime_restart_setup")
         assert setup["start"]["summary"]["total"] == 2, setup  # C DISABLED không có trong registry

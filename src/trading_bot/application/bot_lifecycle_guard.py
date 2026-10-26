@@ -1,5 +1,7 @@
 """Guard "phải phẳng mới được disable" cho bot/account (MB05.6, ruling 29).
 
+Lấy L1 `workspace-settings` trước khi đếm, cùng thứ tự khóa với đường entry/fill.
+
 MB-07 gọi `ensure_flat_for_disable` trong cùng transaction với đường disable (và thêm grant cột
 `status` cùng code đó, SEC R10). Không có chế độ disable chỉ-thoát: người vận hành pause bot
 (exits bảo vệ vẫn chạy) cho tới khi phẳng. Chỉ đọc trong scope bot của transaction (RLS).
@@ -15,6 +17,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from trading_bot.adapters.database.models.bot_entities import BotInstance
 from trading_bot.adapters.database.models.paper_entities import OrderIntentRecord, TradeRecord
 from trading_bot.adapters.database.models.risk_entities import RiskReservationRecord
+from trading_bot.adapters.database.repositories.workspace_settings import (
+    WorkspaceSettingsRepository,
+)
 
 OPEN_ORDER_STATUSES = frozenset({"ACCEPTED", "PARTIALLY_FILLED", "UNKNOWN"})
 HELD_RESERVATION_STATUSES = frozenset({"RESERVED", "UNKNOWN"})
@@ -48,6 +53,9 @@ class BotLifecycleGuard:
         self._session = session
 
     async def ensure_flat_for_disable(self, workspace_id: UUID, bot_id: UUID) -> None:
+        # L1 trước khi đếm (fix round 1, M7): entry/fill đang chạy giữ L1 nên không thể mở vị
+        # thế/reservation mới giữa lúc đếm và lúc đường disable commit.
+        await WorkspaceSettingsRepository(self._session).lock_workspace(workspace_id)
         bot = await self._session.scalar(
             select(BotInstance.id).where(
                 BotInstance.workspace_id == workspace_id, BotInstance.id == bot_id

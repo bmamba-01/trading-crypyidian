@@ -307,3 +307,89 @@ def test_reserve_budget_uses_single_coordinator_path_without_caller_caps() -> No
     assert result.decision.outcome.value == "RISK_REJECTED"
     assert result.submission is None
     assert counters.submissions == 0
+
+
+# --- Fix round 1 / I1: entry event sau khi pause đã được áp dụng -------------------------------
+
+
+class _AppliedStates(_StateRepository):
+    def __init__(self, store: list[dict[str, Any]], applied: tuple[int, int]) -> None:
+        super().__init__(store)
+        self.applied = applied
+
+    async def get(self, **_: object) -> SimpleNamespace:
+        return SimpleNamespace(
+            applied_workspace_control_revision=self.applied[0],
+            applied_bot_control_revision=self.applied[1],
+            reason_code=None,
+        )
+
+
+def _entry_command(account_id: Any, paper_intent_id: str = "paper:key-1") -> Any:
+    opened = datetime.now(UTC)
+    bar = PaperBar(
+        "bar-after-pause",
+        "BTCUSDT",
+        opened,
+        opened + timedelta(minutes=1),
+        opened + timedelta(minutes=1),
+        Decimal("100"),
+        Decimal("101"),
+        Decimal("99"),
+        Decimal("100"),
+    )
+    return PaperEntryEventCommand(account_id, uuid4(), paper_intent_id, bar)
+
+
+def test_entry_event_after_supervisor_applied_pause_returns_cancelled_without_new_checkpoint():
+    """I1: supervisor đã áp pause (revision khớp, gateway paused) -> entry event trả CANCELLED.
+
+    Trước bản sửa: entry event gọi lại apply-pause, append checkpoint cùng event key
+    `control:pause:<ws>:<bot>` với `event_at` khác -> `PaperCheckpointConflict` không được ánh xạ.
+    """
+    states: list[dict[str, Any]] = []
+    (service, command, *_), _, _ = _service(
+        _snapshot(bot_rev=3, paused=True),
+        state_repository_factory=_AppliedStates(states, (0, 3)),
+    )
+    account = service._active_accounts[command.account_id]
+    cancelled = SimpleNamespace(intent_id="paper:key-1", status=OrderStatus.CANCELLED)
+    account.gateway.entries_paused = True
+    account.gateway.order = lambda _id: cancelled
+    account.gateway.position = lambda _id: None
+
+    async def must_not_pause(*_: object, **__: object) -> None:
+        raise AssertionError("Pause đã áp: không được append checkpoint control lần nữa")
+
+    account.coordinator.apply_entry_pause = must_not_pause
+    _FakeUnitOfWork.scalar_results = [SimpleNamespace(idempotency_key="key-1", symbol="BTCUSDT")]
+
+    result = asyncio.run(service.apply_entry_event(_entry_command(command.account_id)))
+
+    assert result.order.status is OrderStatus.CANCELLED
+    assert result.persisted_fill_count == 0
+    assert states == []
+
+
+@pytest.mark.parametrize("path", ["fill", "pause"])
+def test_checkpoint_conflict_is_mapped_to_command_rejected(path: str) -> None:
+    from trading_bot.adapters.database.repositories.paper_checkpoints import (
+        PaperCheckpointConflict,
+    )
+
+    states: list[dict[str, Any]] = []
+    snapshot = _snapshot(bot_rev=1, paused=True) if path == "pause" else _snapshot()
+    (service, command, *_), _, _ = _service(
+        snapshot, state_repository_factory=_AppliedStates(states, (0, 0))
+    )
+    account = service._active_accounts[command.account_id]
+
+    async def conflict(*_: object, **__: object) -> None:
+        raise PaperCheckpointConflict("Checkpoint event key đã có payload khác.")
+
+    account.coordinator.apply_entry_market_event = conflict
+    account.coordinator.apply_entry_pause = conflict
+    _FakeUnitOfWork.scalar_results = [SimpleNamespace(idempotency_key="key-1", symbol="BTCUSDT")]
+
+    with pytest.raises(PaperRuntimeApplicationError, match="PAPER_COMMAND_REJECTED"):
+        asyncio.run(service.apply_entry_event(_entry_command(command.account_id)))

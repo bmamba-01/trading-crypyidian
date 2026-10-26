@@ -37,6 +37,9 @@ from trading_bot.adapters.database.repositories.bot_runtime_leases import (
 from trading_bot.adapters.database.repositories.bot_runtime_states import (
     BotRuntimeStateRepository,
 )
+from trading_bot.adapters.database.repositories.paper_checkpoints import (
+    PaperCheckpointConflict,
+)
 from trading_bot.adapters.database.repositories.risk_reservations import (
     RiskReservationRepository,
 )
@@ -563,7 +566,12 @@ class PaperRuntimeApplicationService:
         except AfterCommitCallbackError:
             self._invalidate_account(command.account_id, "PAPER_PUBLISH_FAILED")
             raise PaperRuntimeApplicationError("PAPER_PUBLISH_FAILED") from None
-        except PaperLifecycleConflict, SettingsVersionConflict, ExecutionProfileResolutionError:
+        except (
+            PaperLifecycleConflict,
+            PaperCheckpointConflict,
+            SettingsVersionConflict,
+            ExecutionProfileResolutionError,
+        ):
             raise PaperRuntimeApplicationError("PAPER_COMMAND_REJECTED") from None
         except BudgetConflictError:
             raise PaperRuntimeApplicationError("PAPER_IDEMPOTENCY_CONFLICT") from None
@@ -601,11 +609,18 @@ class PaperRuntimeApplicationService:
                 # phần chưa khớp (và giải phóng reservation chưa fill) thay vì khớp.
                 control = await self._read_control(uow, account)
                 if _entries_blocked(control):
-                    applied = await self._apply_pause_in_uow(uow, account, control)
-                    order = applied.gateway.order(command.paper_intent_id)
+                    state = await self._state_repository_factory(uow.session).get(
+                        workspace_id=self._workspace_id, bot_id=account.bot_id
+                    )
+                    if not self._control_change_needed(account, control, state):
+                        # Pause đã áp (thường bởi supervisor): order chưa khớp đã bị hủy trong
+                        # checkpoint; không append checkpoint control lần hai (fix round 1, I1).
+                        gateway: Any = account.gateway
+                    else:
+                        gateway = (await self._apply_pause_in_uow(uow, account, control)).gateway
                     return EntryLifecycleResult(
-                        order=order,
-                        position=applied.gateway.position(command.paper_intent_id),
+                        order=gateway.order(command.paper_intent_id),
+                        position=gateway.position(command.paper_intent_id),
                         trade_id=None,
                         persisted_fill_count=0,
                     )
@@ -622,7 +637,12 @@ class PaperRuntimeApplicationService:
         except AfterCommitCallbackError:
             self._invalidate_account(command.account_id, "PAPER_PUBLISH_FAILED")
             raise PaperRuntimeApplicationError("PAPER_PUBLISH_FAILED") from None
-        except PaperLifecycleConflict, SettingsVersionConflict, ExecutionProfileResolutionError:
+        except (
+            PaperLifecycleConflict,
+            PaperCheckpointConflict,
+            SettingsVersionConflict,
+            ExecutionProfileResolutionError,
+        ):
             raise PaperRuntimeApplicationError("PAPER_COMMAND_REJECTED") from None
         except DBAPIError as error:
             self._raise_if_fence_rejected(command.account_id, error)
@@ -712,7 +732,12 @@ class PaperRuntimeApplicationService:
         except AfterCommitCallbackError:
             self._invalidate_account(command.account_id, "PAPER_PUBLISH_FAILED")
             raise PaperRuntimeApplicationError("PAPER_PUBLISH_FAILED") from None
-        except PaperLifecycleConflict, SettingsVersionConflict, ExecutionProfileResolutionError:
+        except (
+            PaperLifecycleConflict,
+            PaperCheckpointConflict,
+            SettingsVersionConflict,
+            ExecutionProfileResolutionError,
+        ):
             raise PaperRuntimeApplicationError("PAPER_COMMAND_REJECTED") from None
         except DBAPIError as error:
             self._raise_if_fence_rejected(command.account_id, error)
@@ -765,7 +790,7 @@ class PaperRuntimeApplicationService:
         except AfterCommitCallbackError:
             self._invalidate_account(account_id, "PAPER_PUBLISH_FAILED")
             raise PaperRuntimeApplicationError("PAPER_PUBLISH_FAILED") from None
-        except PaperLifecycleConflict:
+        except PaperLifecycleConflict, PaperCheckpointConflict:
             raise PaperRuntimeApplicationError("PAPER_COMMAND_REJECTED") from None
         except DBAPIError as error:
             self._raise_if_fence_rejected(account_id, error)

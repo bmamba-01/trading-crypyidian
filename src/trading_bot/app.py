@@ -1,7 +1,7 @@
 import asyncio
 import contextlib
 import logging
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -9,12 +9,14 @@ from typing import Any
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from trading_bot.adapters.database.engine import (
     create_database_engine,
     create_session_factory,
     database_url_from_secret,
+    runtime_session_timeouts,
 )
 from trading_bot.adapters.paper.account_activity import PaperLedgerAccountActivityAdapter
 from trading_bot.adapters.secrets.local_mfa import LocalMfaSecretProvider
@@ -41,6 +43,48 @@ from trading_bot.ports.secrets import SecretProvider
 
 logger = logging.getLogger(__name__)
 
+DATABASE_PROBE_TIMEOUT_SECONDS = 2.0
+
+
+async def probe_database(
+    sessions: Callable[[], Any], *, timeout: float = DATABASE_PROBE_TIMEOUT_SECONDS
+) -> bool:
+    """Kiểm tra DB rẻ và có giới hạn (`SELECT 1`) cho readiness; lỗi/quá hạn → False."""
+
+    async def _select_one() -> None:
+        async with sessions() as session:
+            await session.execute(text("SELECT 1"))
+
+    try:
+        await asyncio.wait_for(_select_one(), timeout=timeout)
+    except Exception:
+        return False
+    return True
+
+
+def build_database_engine(settings: AppSettings) -> AsyncEngine | None:
+    """Engine production theo role; None khi chưa cấu hình credential DB.
+
+    `trading-runtime` đặt timeout phiên suy từ TTL lease (fix round 1, I2): worker treo giữa
+    transaction không giữ L1/`FOR SHARE` lease quá TTL/3, mọi chờ khóa có giới hạn.
+    """
+    if not (settings.database_user and settings.database_password_file):
+        return None
+    database_url = database_url_from_secret(
+        username=settings.database_user,
+        password_file=settings.database_password_file,
+        host=settings.database_host,
+        database=settings.database_name,
+    )
+    if settings.process_role == "trading-runtime":
+        return create_database_engine(
+            database_url,
+            session_timeouts=runtime_session_timeouts(
+                timedelta(seconds=settings.runtime_lease_ttl_seconds)
+            ),
+        )
+    return create_database_engine(database_url)
+
 
 def create_app(
     settings: AppSettings | None = None,
@@ -50,6 +94,7 @@ def create_app(
     paper_runtime_bootstrap_factory: Callable[..., Any] | None = None,
     paper_decision_context_provider_factory: Callable[..., Any] | None = None,
     paper_runtime_supervisor_factory: Callable[..., Any] | None = None,
+    database_probe: Callable[[], Awaitable[bool]] | None = None,
 ) -> FastAPI:
     """Tạo ứng dụng mà không kết nối mạng hay tải credential khi import."""
     app_settings = settings or AppSettings()
@@ -59,19 +104,18 @@ def create_app(
         engine: AsyncEngine | None = None
         active_session_factory = session_factory
         active_secret_provider = secret_provider
-        if (
-            active_session_factory is None
-            and app_settings.database_user
-            and app_settings.database_password_file
-        ):
-            database_url = database_url_from_secret(
-                username=app_settings.database_user,
-                password_file=app_settings.database_password_file,
-                host=app_settings.database_host,
-                database=app_settings.database_name,
-            )
-            engine = create_database_engine(database_url)
-            active_session_factory = create_session_factory(engine)
+        if active_session_factory is None:
+            engine = build_database_engine(app_settings)
+            if engine is not None:
+                active_session_factory = create_session_factory(engine)
+        application.state.database_probe = database_probe
+        if database_probe is None and isinstance(active_session_factory, async_sessionmaker):
+            probe_sessions = active_session_factory
+
+            async def _default_probe() -> bool:
+                return await probe_database(probe_sessions)
+
+            application.state.database_probe = _default_probe
         if (
             active_secret_provider is None
             and app_settings.mfa_encryption_key_file
@@ -164,7 +208,7 @@ def create_app(
         }
 
     @app.get("/health/ready", include_in_schema=False, response_model=None)
-    def ready_health() -> JSONResponse | dict[str, object]:
+    async def ready_health() -> JSONResponse | dict[str, object]:
         """Readiness theo vai trò; runtime: 200 `ready`/`degraded`, 503 khi không phục vụ được.
 
         Ruling 2/26: một bot lỗi/pause/standby chỉ làm `degraded`; 503 chỉ khi DB không truy cập
@@ -183,6 +227,12 @@ def create_app(
         pending = sorted(
             name for name in ("database", "paper_runtime") if not app.state.readiness[name]
         )
+        error_code = getattr(app.state, "paper_runtime_error_code", "PAPER_BOOTSTRAP_NOT_RUN")
+        probe = getattr(app.state, "database_probe", None)
+        if not pending and probe is not None and not await probe():
+            # Gap (b): DB mất sau khi khởi động → 503 thay vì giữ cờ bootstrap cũ.
+            pending = ["database"]
+            error_code = "DATABASE_UNAVAILABLE"
         if pending:
             return JSONResponse(
                 status_code=503,
@@ -190,9 +240,7 @@ def create_app(
                     "status": "not_ready",
                     "pending": pending,
                     "paper_accounts": summary,
-                    "paper_runtime_error_code": getattr(
-                        app.state, "paper_runtime_error_code", "PAPER_BOOTSTRAP_NOT_RUN"
-                    ),
+                    "paper_runtime_error_code": error_code,
                 },
             )
         return {
@@ -294,7 +342,7 @@ async def _start_paper_runtime(
             active_accounts=result.active_accounts,
             context_provider=context_provider,
             account_invalidation_callback=registry.mark_recovery,
-            lease_lost_callback=registry.mark_standby,
+            lease_lost_callback=registry.mark_lease_lost,
         )
         state.paper_application = paper_application
     except Exception:

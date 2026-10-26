@@ -848,10 +848,10 @@ def _registry_view(app: Any) -> dict[str, Any]:
     }
 
 
-def _ready(app: Any) -> tuple[int, Any]:
+async def _ready(app: Any) -> tuple[int, Any]:
     """Gọi đúng handler `/health/ready` của app (không cần HTTP client trong image)."""
     route = next(item for item in app.routes if getattr(item, "path", "") == "/health/ready")
-    response = route.endpoint()
+    response = await route.endpoint()
     if hasattr(response, "status_code"):
         return int(response.status_code), json.loads(response.body)
     return 200, response
@@ -865,6 +865,30 @@ def app_name(app: Any) -> str:
 
 
 # --- pha: genesis + runtime ------------------------------------------------------------------
+_NULL_TOKEN_WRITES = {
+    "bot_runtime_state": (
+        "INSERT INTO bot_runtime_state (workspace_id, bot_id, account_id, readiness, "
+        "fencing_token) VALUES (:workspace, :bot, :account, 'READY', NULL)"
+    ),
+    "account_activity_incident": (
+        "INSERT INTO account_activity_incident (workspace_id, bot_id, account_id, fencing_token) "
+        "VALUES (:workspace, :bot, :account, NULL)"
+    ),
+}
+
+
+async def _raw_null_write(sessions: Any, workspace: UUID, account: UUID, statement: str) -> str:
+    """Ghi thẳng NULL token dưới role runtime (bỏ qua application), trong scope đúng bot."""
+    from trading_bot.application.outbox import UnitOfWork
+
+    async with UnitOfWork(sessions, workspace_id=workspace) as uow:
+        bot = await uow.bind_account(account)
+        await uow.session.execute(
+            text(statement), {"workspace": workspace, "bot": bot, "account": account}
+        )
+    return "OK"
+
+
 async def genesis() -> dict[str, Any]:
     from trading_bot.adapters.database.repositories.paper_checkpoints import (
         PaperCheckpointRepository,
@@ -923,6 +947,11 @@ async def genesis() -> dict[str, Any]:
 
                 # M3 (DB): NULL token chỉ hợp lệ cho genesis revision 1, kể cả khi chưa có lease.
                 out[f"{name}_{key}_null_revision_2"] = await _outcome(null_revision_two())
+                # Gap (a): bảng strict không có cột `revision` -> đúng mã fence, không phải 42703.
+                for table, statement in _NULL_TOKEN_WRITES.items():
+                    out[f"{name}_{key}_{table}_null"] = await _outcome(
+                        _raw_null_write(sessions, workspace, account, statement)
+                    )
     finally:
         await engine.dispose()
     return out
@@ -1010,7 +1039,7 @@ async def runtime_corrupt_b() -> dict[str, Any]:
 async def runtime_after_corruption() -> dict[str, Any]:
     async with runtime_app() as app:
         view = _registry_view(app)
-        health_status, health_body = _ready(app)
+        health_status, health_body = await _ready(app)
         a1 = STATE["a1"]
         stop = await stop_out(app, "a", a1, STATE["a_fill"]["trade_id"])
         a2 = await _outcome(entry(app, "a", 2, 40))
@@ -1049,6 +1078,9 @@ async def runtime_after_pause() -> dict[str, Any]:
         ws = _ws()
         a_gateway = app.state.paper_accounts[UUID(ws["accounts"]["a"])].gateway
         a2_status = a_gateway.order(STATE["a2"]["paper_intent_id"]).status.value
+        # I1: event fill của a2 tới sau khi supervisor đã áp pause -> CANCELLED, không xung đột
+        # checkpoint `control:pause` lặp.
+        a2_fill = await _outcome(fill(app, "a", STATE["a2"]))
         blocked = await _outcome(entry(app, "a", 3, 10))
         stop = await stop_out(app, "a", STATE["a1"], STATE["a_fill"]["trade_id"])
         b_fill = await fill(app, "b", STATE["b1"])
@@ -1056,6 +1088,7 @@ async def runtime_after_pause() -> dict[str, Any]:
     return {
         "view": view,
         "a2_status": a2_status,
+        "a2_fill": a2_fill,
         "a_entry": blocked,
         "a_stop": stop,
         "b_fill": b_fill,
@@ -1561,6 +1594,104 @@ async def lease_stale_writes() -> dict[str, Any]:
     return out
 
 
+# --- I2: worker treo giữa transaction -------------------------------------------------------
+_LEASE_ROW = (
+    "SELECT fencing_token FROM bot_runtime_lease WHERE workspace_id = :workspace "
+    "AND bot_id = :bot {mode}"
+)
+
+
+async def frozen_worker() -> dict[str, Any]:
+    """Worker treo giữa transaction (giữ L1 + `FOR SHARE` hàng lease của A) dưới engine production.
+
+    Engine dựng bằng `build_database_engine` (cùng đường `create_app`) với TTL 6s -> lock 1s, idle
+    2s, statement 3s. Trong lúc treo: L1 của bot B (mọi command, kể cả exit bảo vệ, lấy L1 trước)
+    và khóa `FOR UPDATE` hàng lease A (đường renew/takeover) thất bại có giới hạn `55P03`. Sau khi
+    PostgreSQL cắt phiên treo: cả hai đi tiếp ngay; transaction treo không commit được.
+    """
+    from trading_bot.adapters.database.repositories.workspace_settings import (
+        WorkspaceSettingsRepository,
+    )
+    from trading_bot.app import build_database_engine
+    from trading_bot.application.outbox import UnitOfWork
+    from trading_bot.config.settings import AppSettings
+
+    ws = _ws()
+    workspace = UUID(ws["workspace"])
+    account_a, account_b = UUID(ws["accounts"]["a"]), UUID(ws["accounts"]["b"])
+    engine = build_database_engine(
+        AppSettings(
+            process_role="trading-runtime",
+            runtime_workspace_id=workspace,
+            runtime_lease_ttl_seconds=6,
+        )
+    )
+    assert engine is not None
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    holding = asyncio.Event()
+    out: dict[str, Any] = {}
+
+    async def frozen() -> Any:
+        try:
+            async with UnitOfWork(sessions, workspace_id=workspace) as uow:
+                bot = await uow.bind_account(account_a)
+                settings = await uow.session.execute(
+                    text(
+                        "SELECT current_setting('lock_timeout'), "
+                        "current_setting('idle_in_transaction_session_timeout'), "
+                        "current_setting('statement_timeout')"
+                    )
+                )
+                out["session_settings"] = list(settings.one())
+                await WorkspaceSettingsRepository(uow.session).lock_workspace(workspace)
+                await uow.session.execute(
+                    text(_LEASE_ROW.format(mode="FOR SHARE")),
+                    {"workspace": workspace, "bot": bot},
+                )
+                holding.set()
+                await asyncio.sleep(5)  # "đóng băng": idle in transaction, giữ khóa
+                await uow.session.execute(text("SELECT 1"))
+            return "COMMITTED"
+        except Exception as error:
+            message = str(getattr(error, "orig", error)).lower()
+            return {"error": type(error).__name__, "idle_timeout": "idle-in-transaction" in message}
+
+    async def timed(account: UUID, action: str) -> list[Any]:
+        started = time.monotonic()
+        try:
+            async with UnitOfWork(sessions, workspace_id=workspace) as uow:
+                bot = await uow.bind_account(account)
+                if action == "l1":
+                    await WorkspaceSettingsRepository(uow.session).lock_workspace(workspace)
+                else:
+                    await uow.session.execute(
+                        text(_LEASE_ROW.format(mode="FOR UPDATE")),
+                        {"workspace": workspace, "bot": bot},
+                    )
+            result = "OK"
+        except Exception as error:
+            result = _code(error)
+        return [result, round(time.monotonic() - started, 2)]
+
+    try:
+        task = asyncio.create_task(frozen())
+        await asyncio.wait_for(holding.wait(), timeout=10)
+        held_at = time.monotonic()
+        # Hai lần chờ chạy song song: mỗi lần hết `lock_timeout` (1s) trước khi idle timeout (2s)
+        # cắt phiên treo, nên kết quả không phụ thuộc thứ tự.
+        out["blocked_l1_b"], out["blocked_lease_a"] = await asyncio.gather(
+            timed(account_b, "l1"), timed(account_a, "lease")
+        )
+        # Chờ quá idle timeout (2s) tính từ câu lệnh cuối của phiên treo.
+        await asyncio.sleep(max(0.0, 3.0 - (time.monotonic() - held_at)))
+        out["after_l1_b"] = await timed(account_b, "l1")
+        out["after_lease_a"] = await timed(account_a, "lease")
+        out["frozen"] = await task
+    finally:
+        await engine.dispose()
+    return out
+
+
 def diagnose_fills() -> dict[str, Any]:
     ws = _ws()
     with _connect() as connection:
@@ -1601,6 +1732,7 @@ PHASES = {
     "runtime_activity_foreign": runtime_activity_foreign,
     "admin_activity_resolve": admin_activity_resolve,
     "runtime_activity_clean": runtime_activity_clean,
+    "frozen_worker": frozen_worker,
     "inspect": inspect,
 }
 

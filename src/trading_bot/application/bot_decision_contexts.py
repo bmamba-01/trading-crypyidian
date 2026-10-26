@@ -130,6 +130,12 @@ ConfigLoader = Callable[
 RuntimeGate = Callable[[ScopedUnitOfWork, RuntimeBotRef], Awaitable[str | None]]
 
 
+class ExclusionRecorder(Protocol):
+    """Lưu bền kết quả eligibility (lý do loại) sau mỗi lượt fan-out."""
+
+    async def record(self, eligibility: FanOutEligibility) -> None: ...
+
+
 async def list_enabled_runtime_bots(uow: ScopedUnitOfWork) -> tuple[RuntimeBotRef, ...]:
     """Mọi bot PAPER của workspace kèm cờ ENABLED (bot và account) để loại có mã lý do."""
     rows = (
@@ -184,14 +190,18 @@ class EffectiveBotDecisionContextProvider:
         list_bots: BotLister = list_enabled_runtime_bots,
         load_config: ConfigLoader = load_published_bot_config,
         on_exclusion: Callable[[FanOutExclusion], None] | None = None,
-        runtime_gate: RuntimeGate | None = None,
+        runtime_gate: RuntimeGate,
+        exclusion_recorder: ExclusionRecorder,
     ) -> None:
+        # Fix round 1 (I3): gate + recorder bắt buộc (fail-closed). Thiếu gate thì bot bị pause/
+        # kill/incident vẫn lọt fan-out; thiếu recorder thì lý do loại không được lưu bền.
         self._sessions = sessions
         self._unit_of_work_factory = unit_of_work_factory
         self._list_bots = list_bots
         self._load_config = load_config
         self._on_exclusion = on_exclusion
         self._runtime_gate = runtime_gate
+        self._exclusion_recorder = exclusion_recorder
 
     async def contexts_for(
         self, *, workspace_id: UUID, as_of: datetime
@@ -230,12 +240,14 @@ class EffectiveBotDecisionContextProvider:
             )
             if self._on_exclusion is not None:
                 self._on_exclusion(exclusion)
-        return FanOutEligibility(
+        eligibility = FanOutEligibility(
             workspace_id=workspace_id,
             as_of=point,
             contexts=tuple(contexts),
             exclusions=tuple(exclusions),
         )
+        await self._exclusion_recorder.record(eligibility)
+        return eligibility
 
     async def _resolve(
         self, workspace_id: UUID, bot: RuntimeBotRef, as_of: datetime
@@ -248,11 +260,10 @@ class EffectiveBotDecisionContextProvider:
                 bound = await uow.bind_account(bot.account_id)
                 if bound != bot.bot_id:
                     return BOT_CONFIG_SCOPE_MISMATCH
-                if self._runtime_gate is not None:
-                    # Đọc control/incident/state trong scope đúng bot; resume không backfill.
-                    blocked = await self._runtime_gate(uow, bot)
-                    if blocked is not None:
-                        return blocked
+                # Đọc control/incident/state trong scope đúng bot; resume không backfill.
+                blocked = await self._runtime_gate(uow, bot)
+                if blocked is not None:
+                    return blocked
                 config = await self._load_config(uow, bot, as_of)
             if config is None:
                 return BOT_CONFIG_NOT_PUBLISHED

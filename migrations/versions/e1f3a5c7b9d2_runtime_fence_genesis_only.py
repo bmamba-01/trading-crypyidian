@@ -27,11 +27,7 @@ _FUNCTION = """CREATE OR REPLACE FUNCTION public.mb05_require_runtime_fence() RE
     DECLARE v_token bigint; v_expires timestamptz;
     BEGIN
         IF NEW.fencing_token IS NULL THEN
-            IF {null_condition} AND NOT EXISTS (
-                SELECT 1 FROM public.bot_runtime_lease l
-                WHERE l.workspace_id = NEW.workspace_id AND l.bot_id = NEW.bot_id) THEN
-                RETURN NEW;
-            END IF;
+{null_condition}
             RAISE EXCEPTION 'MB05_FENCING_TOKEN_REQUIRED';
         END IF;
         SELECT l.fencing_token, l.expires_at INTO v_token, v_expires
@@ -46,9 +42,23 @@ _FUNCTION = """CREATE OR REPLACE FUNCTION public.mb05_require_runtime_fence() RE
         END IF;
         RETURN NEW;
     END $$"""
+_NO_LEASE_YET = """NOT EXISTS (
+                    SELECT 1 FROM public.bot_runtime_lease l
+                    WHERE l.workspace_id = NEW.workspace_id AND l.bot_id = NEW.bot_id)"""
 # Genesis: revision 1 của account (checkpoint đầu tiên) và bot chưa từng có lease.
-_GENESIS = "TG_ARGV[0] = 'genesis_null' AND NEW.revision = 1"
-_TRANSITIONAL = "TG_ARGV[0] = 'transitional_null'"
+# Fix round 1 (gap a): hàm dùng chung cho `bot_runtime_state`/`account_activity_incident` (không
+# có cột `revision`). PL/pgSQL chuẩn bị cả biểu thức IF thành một câu SQL nên
+# `TG_ARGV[0] = 'genesis_null' AND NEW.revision = 1` lỗi 42703 với bảng strict thay vì
+# `MB05_FENCING_TOKEN_REQUIRED`; `NEW.revision` chỉ được đọc trong nhánh IF lồng riêng của
+# `genesis_null` (chỉ trigger checkpoint dùng tham số này).
+_GENESIS = f"""            IF TG_ARGV[0] = 'genesis_null' THEN
+                IF NEW.revision = 1 AND {_NO_LEASE_YET} THEN
+                    RETURN NEW;
+                END IF;
+            END IF;"""
+_TRANSITIONAL = f"""            IF TG_ARGV[0] = 'transitional_null' AND {_NO_LEASE_YET} THEN
+                RETURN NEW;
+            END IF;"""
 
 
 def _replace_checkpoint_trigger(mode: str) -> None:

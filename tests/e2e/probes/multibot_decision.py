@@ -487,6 +487,8 @@ async def dispatch(state):
     )
     from trading_bot.application.bot_decision_contexts import (
         EffectiveBotDecisionContextProvider,
+        FanOutExclusionRecorder,
+        RuntimeFanOutGate,
     )
     from trading_bot.application.bot_dispatcher import (
         BotEvidenceDispatcher,
@@ -519,7 +521,15 @@ async def dispatch(state):
             return snapshots[context.strategy_release_id]
 
     exclusions = []
-    provider = EffectiveBotDecisionContextProvider(sessions, on_exclusion=exclusions.append)
+    # I3: gate + recorder bắt buộc như wiring production (probe không giữ lease nào).
+    provider = EffectiveBotDecisionContextProvider(
+        sessions,
+        on_exclusion=exclusions.append,
+        runtime_gate=RuntimeFanOutGate(),
+        exclusion_recorder=FanOutExclusionRecorder(
+            sessions=sessions, workspace_id=workspace_a, accounts=lambda _account: None
+        ),
+    )
     store = PostgresSignalDecisionStore(sessions)
     dispatcher = BotEvidenceDispatcher(store, strategies=StrategyRegistry(), snapshots=Snapshots())
     consumer = SignalEvidenceFanOutConsumer(store, dispatcher, provider, worker_id="mb03-e2e")
@@ -1091,7 +1101,19 @@ async def runtime_queue(state):
         dispatcher = BotEvidenceDispatcher(
             store, strategies=StrategyRegistry(), snapshots=Snapshots()
         )
-        provider = EffectiveBotDecisionContextProvider(sessions)
+        # Một recorder dùng chung cho mọi provider của pha: khử nhiễu audit theo bộ nhớ process.
+        held_accounts: dict = {}
+        recorder = FanOutExclusionRecorder(
+            sessions=sessions, workspace_id=workspace_a, accounts=held_accounts.get
+        )
+
+        async def bypass_gate(_uow, _bot):
+            # Chỉ để dựng job cho A1 đã PAUSED (kiểm queue poison/backoff), không phải wiring thật.
+            return None
+
+        provider = EffectiveBotDecisionContextProvider(
+            sessions, runtime_gate=bypass_gate, exclusion_recorder=recorder
+        )
         contexts = await provider.contexts_for(
             workspace_id=workspace_a, as_of=DECISION_TIME + timedelta(minutes=5)
         )
@@ -1138,8 +1160,12 @@ async def runtime_queue(state):
             bot_id=bot_a1,
             fence=RuntimeFence(grant.owner_id, grant.fencing_token),
         )
+        held_accounts[a1.account_id] = held
         gated = EffectiveBotDecisionContextProvider(
-            sessions, load_config=load_published_bot_config, runtime_gate=RuntimeFanOutGate()
+            sessions,
+            load_config=load_published_bot_config,
+            runtime_gate=RuntimeFanOutGate(),
+            exclusion_recorder=recorder,
         )
         eligibility = await gated.eligibility(
             workspace_id=workspace_a, as_of=DECISION_TIME + timedelta(minutes=5)
@@ -1147,16 +1173,12 @@ async def runtime_queue(state):
         out["exclusions"] = sorted(
             [str(item.bot_id), item.reason_code] for item in eligibility.exclusions
         )
-        recorder = FanOutExclusionRecorder(
-            sessions=sessions,
-            workspace_id=workspace_a,
-            accounts={a1.account_id: held}.get,
-        )
+        # Provider đã ghi qua recorder; ghi lại cùng mã không audit lặp.
         await recorder.record(eligibility)
-        await recorder.record(eligibility)  # cùng mã: không audit lặp
+        await recorder.record(eligibility)
         # Ack event outbox của hai evidence vừa ghi (consumer thật, ngoài gate runtime) để luồng
         # export/downgrade phía sau không còn event PENDING.
-        consumer = SignalEvidenceFanOutConsumer(store, dispatcher, provider, worker_id="mb05-queue")
+        consumer = SignalEvidenceFanOutConsumer(store, dispatcher, gated, worker_id="mb05-queue")
         await consumer.consume_once(workspace_id=workspace_a, now=datetime.now(UTC))
     finally:
         await engine.dispose()

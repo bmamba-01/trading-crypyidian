@@ -487,6 +487,8 @@ async def fanout_async():
     )
     from trading_bot.application.bot_decision_contexts import (
         EffectiveBotDecisionContextProvider,
+        FanOutExclusionRecorder,
+        RuntimeFanOutGate,
     )
     from trading_bot.application.bot_dispatcher import BotEvidenceDispatcher
     from trading_bot.application.outbox import UnitOfWork
@@ -520,7 +522,13 @@ async def fanout_async():
     )
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     try:
-        provider = EffectiveBotDecisionContextProvider(sessions)
+        provider = EffectiveBotDecisionContextProvider(
+            sessions,
+            runtime_gate=RuntimeFanOutGate(),
+            exclusion_recorder=FanOutExclusionRecorder(
+                sessions=sessions, workspace_id=workspace, accounts=lambda _account: None
+            ),
+        )
         eligibility = await provider.eligibility(workspace_id=workspace, as_of=FANOUT_AS_OF)
         async with UnitOfWork(sessions, workspace_id=workspace) as uow:
             feature = await FeatureSnapshotRepository(uow.session).get_as_of(

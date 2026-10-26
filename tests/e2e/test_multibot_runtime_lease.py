@@ -4,6 +4,10 @@ Chứng minh: container 2 ở STANDBY khi container 1 giữ lease; pause contain
 container 2 lấy lease (token +1) và hydrate; unpause container 1 -> mọi lệnh của nó bị từ chối
 `STALE_FENCING_TOKEN` (renew, fence application, trigger DB khi bỏ qua application), không có
 ghi ledger/checkpoint nào, container 1 tự hạ bot về STANDBY (Kleppmann 2016; docker pause).
+
+Fix round 1 (I2): worker treo *giữa transaction* (giữ L1 + `FOR SHARE` hàng lease) dưới engine
+production: chờ khóa của bot khác thất bại có giới hạn (`lock_timeout`), PostgreSQL cắt phiên treo
+sau `idle_in_transaction_session_timeout`, rồi L1/khóa lease đi tiếp và container 2 hồi `ready`.
 """
 
 from __future__ import annotations
@@ -68,6 +72,23 @@ def test_paused_worker_loses_lease_and_is_fenced_out() -> None:
         assert {audit[2] for audit in lost} == {"STALE_FENCING_TOKEN"}
         # Process mới vẫn là writer duy nhất: container 2 READY, container 1 STANDBY.
         assert _counts(*harness.health(second), ready=2)
+
+        frozen = harness.probe("frozen_worker")
+        # TTL 6s -> lock 1s, idle-in-transaction 2s, statement 3s (đặt khi mở kết nối).
+        assert frozen["session_settings"] == ["1s", "2s", "3s"], frozen
+        for key in ("blocked_l1_b", "blocked_lease_a"):
+            assert frozen[key][0] == "SQLSTATE_55P03", frozen
+            assert 0.8 <= frozen[key][1] < 2.5, frozen
+        for key in ("after_l1_b", "after_lease_a"):
+            assert frozen[key][0] == "OK", frozen
+            assert frozen[key][1] < 1.0, frozen
+        assert frozen["frozen"] != "COMMITTED", frozen
+        # Runtime thật (container 2, cùng timeout) bị chặn tạm thời rồi tự hồi, giữ nguyên lease.
+        harness.wait_health(
+            second, lambda s, b: _counts(s, b, ready=2) and b["status"] == "ready", timeout=30
+        )
+        after = harness.inspect()
+        assert {key: value[1] for key, value in after["leases"].items()} == {"a": 2, "b": 2}
     finally:
         for container in containers:
             harness.docker("unpause", container)

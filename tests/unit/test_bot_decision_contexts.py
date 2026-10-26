@@ -37,6 +37,7 @@ from trading_bot.application.bot_config_resolver import (
 from trading_bot.application.bot_decision_contexts import (
     BOT_CONFIG_NOT_PUBLISHED,
     EffectiveBotDecisionContextProvider,
+    FanOutEligibility,
     FanOutExclusion,
     RuntimeBotRef,
     bot_decision_context_from_effective,
@@ -155,6 +156,7 @@ class Harness:
         self.transactions: list[tuple[UUID, UUID | None]] = []
         self.loader_calls: list[tuple[UUID, UUID | None, datetime]] = []
         self.exclusions: list[FanOutExclusion] = []
+        self.recorder = _Recorder()
 
         def factory(_sessions: object, *, workspace_id: UUID) -> FakeUnitOfWork:
             return FakeUnitOfWork(self.transactions, workspace_id)
@@ -179,7 +181,22 @@ class Harness:
             list_bots=list_bots,  # type: ignore[arg-type]
             load_config=load,  # type: ignore[arg-type]
             on_exclusion=self.exclusions.append,
+            runtime_gate=_open_gate,  # type: ignore[arg-type]
+            exclusion_recorder=self.recorder,
         )
+
+
+async def _open_gate(uow: object, bot: RuntimeBotRef) -> str | None:
+    del uow, bot
+    return None
+
+
+class _Recorder:
+    def __init__(self) -> None:
+        self.recorded: list[FanOutEligibility] = []
+
+    async def record(self, eligibility: FanOutEligibility) -> None:
+        self.recorded.append(eligibility)
 
 
 def _refs(*pairs: tuple[UUID, UUID]) -> tuple[RuntimeBotRef, ...]:
@@ -382,6 +399,7 @@ def _gated_harness(
         load_config=provider._load_config,
         on_exclusion=harness.exclusions.append,
         runtime_gate=gate,  # type: ignore[arg-type]
+        exclusion_recorder=provider._exclusion_recorder,
     )
     harness.gate_calls = gate_calls  # type: ignore[attr-defined]
     return harness

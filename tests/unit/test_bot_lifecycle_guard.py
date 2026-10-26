@@ -41,7 +41,8 @@ def test_flat_bot_passes_and_queries_only_that_bot_scope() -> None:
 
     assert asyncio.run(guard.ensure_flat_for_disable(WORKSPACE, BOT)) is None
 
-    statements = session.statements[1:]
+    # [0] L1 advisory lock (M7), [1] tra bot, sau đó ba câu đếm theo bot.
+    statements = session.statements[2:]
     assert all("bot_id" in statement for statement in statements)
     assert "trade" in statements[0]
     assert "order_intent" in statements[1]

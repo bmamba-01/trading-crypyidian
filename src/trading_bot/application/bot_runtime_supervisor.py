@@ -130,6 +130,7 @@ class BotRuntimeSupervisor:
         entry = self._registry.entry(account_id)
         if entry.blocked_by_workspace or entry.bot_id is None:
             return
+        await self._audit_pending_lease_loss(account_id)
         if entry.holds_lease:
             await self._renew(account_id)
             entry = self._registry.entry(account_id)
@@ -186,9 +187,23 @@ class BotRuntimeSupervisor:
 
     async def _demote(self, account_id: UUID, reason_code: str) -> None:
         """Mất lease: gỡ gateway khỏi application, hạ STANDBY, audit (không cần fence)."""
-        entry = self._registry.entry(account_id)
         self._application.remove_account(account_id)
         self._registry.mark_standby(account_id, reason_code)
+        await self._audit_lease_lost(account_id, reason_code)
+
+    async def _audit_pending_lease_loss(self, account_id: UUID) -> None:
+        """Audit mất lease do application phát hiện qua command (M1); lỗi ghi thì giữ lại."""
+        reason_code = self._registry.take_pending_lease_loss(account_id)
+        if reason_code is None:
+            return
+        try:
+            await self._audit_lease_lost(account_id, reason_code)
+        except Exception:
+            self._registry.restore_pending_lease_loss(account_id, reason_code)
+            raise
+
+    async def _audit_lease_lost(self, account_id: UUID, reason_code: str) -> None:
+        entry = self._registry.entry(account_id)
         async with self._unit_of_work_factory(
             self._sessions, workspace_id=self._workspace_id, bot_id=entry.bot_id
         ) as uow:

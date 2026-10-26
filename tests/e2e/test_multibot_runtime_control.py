@@ -40,6 +40,8 @@ def test_pause_kill_resume_permissions_exits_and_ruling_27_race() -> None:
 
         after_pause = harness.probe("runtime_after_pause")
         assert after_pause["a2_status"] == "CANCELLED", after_pause
+        # I1: fill tới sau khi pause đã áp không lặp checkpoint control (không conflict).
+        assert after_pause["a2_fill"] == {"status": "CANCELLED", "fills": 0, "trade_id": None}
         assert after_pause["view"]["summary"]["paused"] == 1
         assert after_pause["view"]["status"] == "degraded"
         assert after_pause["a_entry"] == {"error": "BOT_PAUSED"}

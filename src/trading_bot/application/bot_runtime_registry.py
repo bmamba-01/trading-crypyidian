@@ -40,6 +40,8 @@ class BotRuntimeEntry:
     activity_blocked: bool = False
     blocked_by_workspace: bool = False
     last_error_code: str | None = None
+    # Mất lease phát hiện ngoài supervisor (command bị fence từ chối) chờ supervisor audit.
+    pending_lease_loss: str | None = None
 
     @property
     def holds_lease(self) -> bool:
@@ -138,10 +140,37 @@ class BotRuntimeRegistry:
         self._update(account_id, **changes)
 
     def mark_standby(self, account_id: UUID, reason_code: str) -> None:
-        """Mất lease: bot không còn là writer trong process này, không ảnh hưởng bot khác."""
+        """Mất lease: bot không còn là writer trong process này, không ảnh hưởng bot khác.
+
+        Lỗi tick cũ bị xóa: trạng thái STANDBY đã mô tả bot; giữ `last_error_code` làm readiness
+        kẹt `degraded` dù bot khác đã tiếp quản (fix round 1, M1).
+        """
         self._update(
-            account_id, readiness=BotReadiness.STANDBY, reason_code=reason_code, fence=None
+            account_id,
+            readiness=BotReadiness.STANDBY,
+            reason_code=reason_code,
+            fence=None,
+            last_error_code=None,
         )
+
+    def mark_lease_lost(self, account_id: UUID, reason_code: str) -> None:
+        """Callback của application khi command bị fence từ chối: hạ STANDBY và chờ audit.
+
+        Callback chạy đồng bộ trong đường command nên không ghi DB; supervisor ghi
+        `bot.runtime.lease_lost` đúng một lần ở tick kế tiếp (fix round 1, M1).
+        """
+        self.mark_standby(account_id, reason_code)
+        self._update(account_id, pending_lease_loss=reason_code)
+
+    def take_pending_lease_loss(self, account_id: UUID) -> str | None:
+        entry = self._entries.get(account_id)
+        if entry is None or entry.pending_lease_loss is None:
+            return None
+        self._update(account_id, pending_lease_loss=None)
+        return entry.pending_lease_loss
+
+    def restore_pending_lease_loss(self, account_id: UUID, reason_code: str) -> None:
+        self._update(account_id, pending_lease_loss=reason_code)
 
     def mark_recovery(self, account_id: UUID, reason_code: str) -> None:
         self._update(account_id, readiness=BotReadiness.RECOVERY_REQUIRED, reason_code=reason_code)

@@ -119,8 +119,13 @@ def test_shared_evidence_fans_out_to_two_paper_bots_without_duplicates() -> None
         actions = [(row[0], row[1], row[2]) for row in verified["audits"]]
         assert ("bot.decision_job.dead", queue["poison_job_id"], "RUNTIME_ERROR") in actions
         excluded = [row for row in actions if row[0] == "bot.fanout.excluded"]
+        # Pha dispatch (I3: recorder bắt buộc) đã audit A3 chưa publish; pha queue audit đổi mã.
         assert sorted((row[1], row[2]) for row in excluded) == sorted(
-            [(seeded["bot_a1"], "BOT_PAUSED"), (seeded["bot_a3"], "BOT_DISABLED")]
+            [
+                (seeded["bot_a3"], "BOT_CONFIG_NOT_PUBLISHED"),
+                (seeded["bot_a1"], "BOT_PAUSED"),
+                (seeded["bot_a3"], "BOT_DISABLED"),
+            ]
         )
         guard = compose(
             "run",
