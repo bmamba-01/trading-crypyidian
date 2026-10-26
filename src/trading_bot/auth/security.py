@@ -1,5 +1,5 @@
 import hmac
-from collections import defaultdict, deque
+from collections import deque
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Lock
@@ -71,48 +71,129 @@ class TotpManager:
         return None
 
 
-class LoginRateLimiter:
-    """Giới hạn thử đăng nhập trong một process để giảm đoán mật khẩu tự động."""
+class _SlidingWindowCounter:
+    """Đếm lỗi theo khóa trong cửa sổ trượt; gọi khi đã giữ lock của limiter."""
 
-    def __init__(self, *, max_attempts: int = 5, window_seconds: int = 300) -> None:
-        if max_attempts < 1 or window_seconds < 1:
+    def __init__(self, *, max_attempts: int, window_seconds: int, max_keys: int) -> None:
+        if max_attempts < 1 or window_seconds < 1 or max_keys < 1:
             raise ValueError("Ngưỡng giới hạn đăng nhập phải lớn hơn 0")
         self.max_attempts = max_attempts
         self.window_seconds = window_seconds
-        self._failures: dict[str, deque[float]] = defaultdict(deque)
-        self._lock = Lock()
+        self.max_keys = max_keys
+        self._failures: dict[str, deque[float]] = {}
 
-    @staticmethod
-    def _key(client_ip: str, email: str) -> str:
-        return f"{client_ip.strip()}:{email.strip().casefold()}"
+    def allow(self, key: str, now: float) -> bool:
+        failures = self._failures.get(key)
+        if failures is None:
+            return True
+        self._discard_expired(failures, now)
+        if not failures:
+            self._failures.pop(key, None)
+            return True
+        return len(failures) < self.max_attempts
 
-    def allow(self, client_ip: str, email: str, *, now: float | None = None) -> bool:
-        timestamp = now if now is not None else monotonic()
-        key = self._key(client_ip, email)
-        with self._lock:
-            failures = self._failures.get(key)
-            if failures is None:
-                return True
-            self._discard_expired(failures, timestamp)
+    def record(self, key: str, now: float) -> None:
+        failures = self._failures.get(key)
+        if failures is None:
+            if len(self._failures) >= self.max_keys:
+                self._evict(now)
+            failures = self._failures[key] = deque()
+        self._discard_expired(failures, now)
+        failures.append(now)
+
+    def reset(self, key: str) -> None:
+        self._failures.pop(key, None)
+
+    def __len__(self) -> int:
+        return len(self._failures)
+
+    def _evict(self, now: float) -> None:
+        # Dọn khóa hết cửa sổ trước; nếu vẫn đầy thì bỏ khóa cũ nhất (thứ tự chèn).
+        for key in list(self._failures):
+            failures = self._failures[key]
+            self._discard_expired(failures, now)
             if not failures:
-                self._failures.pop(key, None)
-                return True
-            return len(failures) < self.max_attempts
-
-    def record_failure(self, client_ip: str, email: str, *, now: float | None = None) -> None:
-        timestamp = now if now is not None else monotonic()
-        with self._lock:
-            failures = self._failures[self._key(client_ip, email)]
-            self._discard_expired(failures, timestamp)
-            failures.append(timestamp)
-
-    def record_success(self, client_ip: str, email: str) -> None:
-        with self._lock:
-            self._failures.pop(self._key(client_ip, email), None)
+                del self._failures[key]
+        while len(self._failures) >= self.max_keys:
+            del self._failures[next(iter(self._failures))]
 
     def _discard_expired(self, failures: deque[float], now: float) -> None:
         while failures and now - failures[0] >= self.window_seconds:
             failures.popleft()
+
+
+class LoginRateLimiter:
+    """Giới hạn thử xác thực trong RAM của một process (SEC-08, bước đầu).
+
+    Ba bộ đếm độc lập, chặn khi bất kỳ bộ nào chạm ngưỡng: theo IP + email, theo tài
+    khoản (email chuẩn hóa, mọi IP) chống credential stuffing phân tán, và theo IP (mọi
+    email) chống password spraying. Khóa dựa trên email người gửi nhập nên hành vi giống
+    nhau dù tài khoản có tồn tại hay không. Giới hạn: mất khi restart và không chia sẻ
+    giữa replica; limiter bền vững (DB/Redis) để MB-07/MB-09.
+    """
+
+    def __init__(
+        self,
+        *,
+        max_attempts: int = 5,
+        window_seconds: int = 300,
+        account_max_attempts: int = 10,
+        account_window_seconds: int = 900,
+        ip_max_attempts: int = 20,
+        ip_window_seconds: int = 900,
+        max_tracked_keys: int = 10_000,
+    ) -> None:
+        self._pair = _SlidingWindowCounter(
+            max_attempts=max_attempts, window_seconds=window_seconds, max_keys=max_tracked_keys
+        )
+        self._account = _SlidingWindowCounter(
+            max_attempts=account_max_attempts,
+            window_seconds=account_window_seconds,
+            max_keys=max_tracked_keys,
+        )
+        self._ip = _SlidingWindowCounter(
+            max_attempts=ip_max_attempts,
+            window_seconds=ip_window_seconds,
+            max_keys=max_tracked_keys,
+        )
+        self.max_attempts = max_attempts
+        self.window_seconds = window_seconds
+        self._lock = Lock()
+
+    @staticmethod
+    def _keys(client_ip: str, email: str) -> tuple[str, str, str]:
+        address = client_ip.strip()
+        account = email.strip().casefold()
+        return f"{address}:{account}", account, address
+
+    def allow(self, client_ip: str, email: str, *, now: float | None = None) -> bool:
+        timestamp = now if now is not None else monotonic()
+        pair_key, account_key, ip_key = self._keys(client_ip, email)
+        with self._lock:
+            return (
+                self._pair.allow(pair_key, timestamp)
+                and self._account.allow(account_key, timestamp)
+                and self._ip.allow(ip_key, timestamp)
+            )
+
+    def record_failure(self, client_ip: str, email: str, *, now: float | None = None) -> None:
+        timestamp = now if now is not None else monotonic()
+        pair_key, account_key, ip_key = self._keys(client_ip, email)
+        with self._lock:
+            self._pair.record(pair_key, timestamp)
+            self._account.record(account_key, timestamp)
+            self._ip.record(ip_key, timestamp)
+
+    def record_success(self, client_ip: str, email: str) -> None:
+        """Xóa bộ đếm lỗi liên tiếp của tài khoản; giữ bộ đếm IP để không reset spray."""
+        pair_key, account_key, _ = self._keys(client_ip, email)
+        with self._lock:
+            self._pair.reset(pair_key)
+            self._account.reset(account_key)
+
+    def tracked_key_count(self) -> int:
+        with self._lock:
+            return len(self._pair) + len(self._account) + len(self._ip)
 
 
 def verify_bootstrap_token(token_file: Path | None, candidate: str | None) -> bool:

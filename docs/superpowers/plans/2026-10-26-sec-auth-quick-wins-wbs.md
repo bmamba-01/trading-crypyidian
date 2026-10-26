@@ -1,0 +1,60 @@
+# SEC auth quick wins WBS — header bảo mật, cookie phiên, idle timeout, throttle xác thực
+
+**Trạng thái:** SEC-27, SEC-13, SEC-08 (phần in-memory) triển khai trên nhánh worktree ngày 2026-10-26; **SEC-09 dừng ở NEEDS_CONTEXT** (cần migration, xem R9).\
+**Gói cha:** [Nghiên cứu bảo mật Admin/bot](../../research/security-admin-bot-2026.md) mục 3 (SEC-08, SEC-09, SEC-13, SEC-27, P1) và test SECT-04…07, SECT-12, SECT-32.\
+**Ràng buộc:** không migration Alembic; không đụng file của MB-04 (MB-04 sửa `create_risk_profile` trong `auth/service.py`, nên vòng này **không sửa** `auth/service.py`).\
+**Ngày kiểm tra nguồn:** 2026-10-26 (tải bằng `curl -sL`, trích đoạn bằng Python).
+
+## 1. Hiện trạng đã xác minh (base `43bda10`)
+
+- Không có middleware header; `Cache-Control: no-store` chỉ đặt thủ công ở một số route, `/auth/me` và mọi response lỗi (401/403/422/429/503) không có (`app.py:167-185`, `auth/router.py:174-178`).
+- Cookie `crypidian_session`, `Path=/api/v1`, `Secure` chỉ khi `app_env == "production"`, `HttpOnly`, `SameSite=Strict`, không prefix (`auth/router.py:136-144`); tên cookie là hằng số dùng trực tiếp ở 6 chỗ đọc/ghi và một E2E (`tests/e2e/test_compose_boundary.py:799`).
+- Bảng `session` chỉ có `id, created_at, workspace_id, membership_id, token_hash, expires_at, revoked_at, csrf_token_hash, mfa_verified_at`; `crypidian_admin_web` chỉ được `UPDATE (csrf_token_hash, mfa_verified_at, revoked_at)` (`migrations/versions/f4d6b8c0e2a5_process_role_least_privilege.py:64`).
+- `LoginRateLimiter` chỉ đếm theo khóa `IP:email` (5 lần/300 giây); `/auth/reauthenticate` không gọi limiter (`auth/security.py:74-115`, `auth/router.py:197-212`).
+
+## 2. Công việc
+
+| Mã | Việc | Kiểm thử (RED trước) | File |
+| --- | --- | --- | --- |
+| Q1 | SEC-27: ASGI middleware thêm header bảo mật cho mọi response HTTP (kể cả lỗi, 404), HSTS chỉ ở production | `tests/unit/test_security_headers.py` | `src/trading_bot/common/http_security.py`, `src/trading_bot/app.py` |
+| Q2 | SEC-13: một nguồn duy nhất cho tên/thuộc tính cookie; `__Host-` khi Secure; `Path=/`; mọi chỗ đọc/ghi/xóa dùng helper | `tests/unit/test_auth_cookies.py` | `src/trading_bot/auth/cookies.py`, `src/trading_bot/auth/router.py`, `tests/e2e/test_compose_boundary.py` |
+| Q3 | SEC-09: idle timeout | — (NEEDS_CONTEXT, R9) | — |
+| Q4 | SEC-08: limiter 3 bộ đếm (IP+email, tài khoản, IP); áp cho `/auth/reauthenticate`; phản hồi đồng nhất | `tests/unit/test_auth_security.py`, `tests/unit/test_auth_throttle_routes.py` | `src/trading_bot/auth/security.py`, `src/trading_bot/auth/router.py` |
+| Q5 | E2E Compose: header + thuộc tính cookie trên response thật; reauth sai 5 lần → lần 6 trả 429, phiên vẫn dùng được | `tests/e2e/test_compose_boundary.py` | như trên |
+| Q6 | Báo cáo, glossary/memory đề xuất cho controller | — | `.superpowers/sdd/.../sec-auth-report.md` |
+
+## 3. Rulings
+
+- **R1 — Bộ header (SEC-27).** Mọi response HTTP nhận (nếu route chưa tự đặt):
+  - `Content-Security-Policy: default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'` — chặt cho admin render phía server không dùng script bên thứ ba; `frame-ancestors 'none'` chống clickjacking; `base-uri`/`object-src` chặn hai vector chèn phổ biến. Không có `'unsafe-inline'`: MB-07 phải để JS/CSS ở file tĩnh cùng origin (hoặc nonce nếu cần, thêm sau). Docs/Swagger đã tắt (`docs_url=None`) nên không vỡ trang CDN.
+  - `X-Content-Type-Options: nosniff`; `X-Frame-Options: DENY` (dự phòng cho trình duyệt cũ, OWASP REST vẫn khuyến nghị).
+  - `Referrer-Policy: no-referrer` (chặt hơn mặc định OWASP `strict-origin-when-cross-origin`; admin không cần gửi referrer ra ngoài, theo đề xuất SEC-27 của tài liệu nghiên cứu).
+  - `Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()` — tắt tính năng nhạy cảm admin không dùng.
+  - `Cross-Origin-Opener-Policy: same-origin`; `Cross-Origin-Resource-Policy: same-origin`.
+  - `Strict-Transport-Security: max-age=31536000; includeSubDomains` **chỉ khi `app_env == "production"`** (production phải chạy sau HTTPS; ASVS 5.0 V3.4.1 cần ≥1 năm và áp cho subdomain từ L2). Không thêm `preload` vì là quyết định cấp domain của người vận hành.
+  - Nguồn: [OWASP HTTP Headers](https://cheatsheetseries.owasp.org/cheatsheets/HTTP_Headers_Cheat_Sheet.html), [OWASP REST Security – Security headers](https://cheatsheetseries.owasp.org/cheatsheets/REST_Security_Cheat_Sheet.html), kiểm tra 2026-10-26.
+- **R2 — `Cache-Control: no-store` mặc định cho mọi response** (không chỉ API đã xác thực) nếu route chưa đặt. Lý do: response lỗi 401/403/429 và `/auth/me` cũng chứa thông tin phiên; secure-by-default cho MB-07. Route nào cần cache (asset tĩnh MB-07) tự đặt `Cache-Control` riêng và middleware không ghi đè. Nguồn: OWASP REST Security (`Cache-Control: no-store` cho mọi API response trình duyệt có thể đọc).
+- **R3 — Middleware dạng ASGI thuần**, không dùng `BaseHTTPMiddleware`, dùng `MutableHeaders.setdefault` trên message `http.response.start`. Giới hạn: response 500 do `ServerErrorMiddleware` (ngoài cùng của Starlette) tạo sẽ không có header; chấp nhận vì body lỗi 500 không chứa dữ liệu phiên.
+- **R4 — Secure ⇔ `app_env == "production"`.** `local`/`test` là HTTP cục bộ (Compose E2E, TestClient) nên không Secure; production bắt buộc HTTPS (TLS kết thúc ở reverse proxy). Không thêm cờ cấu hình mới để tránh trạng thái "production nhưng không Secure".
+- **R5 — Tên cookie:** `__Host-crypidian_session` khi Secure, `crypidian_session` khi không. Ở production server **chỉ đọc** tên có prefix, bỏ qua cookie không prefix (cookie do subdomain/HTTP chèn không thể giả `__Host-`). Mọi chỗ đọc/ghi/xóa đi qua `auth/cookies.py` (`session_cookie_name`, `read_session_cookie`, `set_session_cookie`, `clear_session_cookie`). Không dùng prefix mới `__Host-Http-` (MDN 2026 có mô tả) vì chưa cần và hỗ trợ trình duyệt còn hạn chế; xem lại ở MB-07. Nguồn: [MDN Set-Cookie – cookie prefixes](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Set-Cookie), [OWASP Session – Cookie Name Prefixes](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html), kiểm tra 2026-10-26.
+- **R6 — `Path=/`, không `Domain`, `HttpOnly`, `Max-Age` = absolute 12 giờ.** `Path=/` là điều kiện của `__Host-` và cần cho trang Admin Web MB-07 ngoài `/api/v1`. Cookie cũ `Path=/api/v1` trong trình duyệt dev cùng tên sẽ tự hết hạn ≤12 giờ; Starlette lấy giá trị sau cùng (cookie `Path=/` đứng sau theo RFC 6265 §5.4), nên không cần xóa chủ động.
+- **R7 — Giữ `SameSite=Strict`.** Admin không có luồng vào cross-site cần cookie (không OAuth redirect, không magic link email, không nhúng); Strict loại cookie khỏi mọi request cross-site, kể cả điều hướng top-level, nên giảm CSRF thêm một lớp ngoài token `X-CSRF-Token`. Hệ quả chấp nhận: mở link Admin từ email/chat sẽ thấy chưa đăng nhập ở request đầu, tải lại là có phiên. Nguồn: OWASP Session – SameSite Attribute; MDN Set-Cookie.
+- **R8 — Throttle (SEC-08), trong RAM của process, 3 bộ đếm cửa sổ trượt độc lập**, request bị chặn nếu **bất kỳ** bộ đếm nào chạm ngưỡng:
+  - `IP+email`: 5 lỗi / 300 giây (giữ nguyên giá trị cũ).
+  - Theo tài khoản (email chuẩn hóa, mọi IP): 10 lỗi / 900 giây — chặn credential stuffing phân tán nhiều IP; ≪100 lỗi liên tiếp của NIST SP 800-63B-4 §3.2.2.
+  - Theo IP (mọi email): 20 lỗi / 900 giây — chặn password spraying (SECT-06: 20 email/1 IP → lần 21 bị 429).
+  - Thành công xóa bộ đếm `IP+email` và tài khoản (NIST tính lỗi *liên tiếp*), **không** xóa bộ đếm IP (một tài khoản hợp lệ không được reset khả năng spray).
+  - Áp cho `/auth/login`, `/auth/bootstrap`, `/auth/bootstrap/verify` (xác minh MFA tách riêng) và **`/auth/reauthenticate`** (khóa = IP + email của phiên; dùng chung bộ đếm tài khoản với login vì cùng kiểm mật khẩu + TOTP). Kiểm `allow()` trước khi chạy Argon2.
+  - Không lộ tồn tại tài khoản: khóa dựa trên email người gửi nhập, không phụ thuộc tài khoản có thật; 429 dùng cùng thông điệp "Thử lại sau khi hết thời gian giới hạn" cho mọi trường hợp.
+  - Bộ nhớ: mỗi bộ đếm giữ tối đa 10.000 khóa; khi vượt thì dọn khóa đã hết cửa sổ, nếu vẫn vượt thì bỏ khóa cũ nhất (bộ đếm IP vẫn chặn spray từ một IP).
+  - **Giới hạn đã biết:** mất khi restart, không chia sẻ giữa replica (Compose hiện chạy 1 admin-web); bộ đếm tài khoản cho phép kẻ tấn công biết email khóa tạm Owner ≤15 phút (OWASP Authentication – Account Lockout nêu rủi ro DoS này). Limiter bền vững (DB/Redis), delay tăng dần và giới hạn Argon2 đồng thời để MB-07/MB-09. `request.client.host` sau reverse proxy là IP proxy cho tới khi có cấu hình trusted proxy (SEC-29).
+  - Nguồn: [NIST SP 800-63B-4 §3.2.2 Rate Limiting](https://pages.nist.gov/800-63-4/sp800-63b.html), [OWASP Authentication – Account Lockout](https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html), kiểm tra 2026-10-26.
+- **R9 — SEC-09 idle timeout: NEEDS_CONTEXT, không triển khai.** Bảng `session` không có cột last-seen; cột duy nhất có thể dùng làm hạn trượt là `expires_at` (giữ hạn idle, lấy absolute từ `created_at + 12h`) nhưng `crypidian_admin_web` không có quyền `UPDATE expires_at` (SEC-01 R3 cố ý chặn). Cả hai hướng đều cần migration:
+  - (A) Thêm `session.last_seen_at timestamptz` + `GRANT UPDATE (last_seen_at)` cho admin_web; ghi lại tối đa mỗi 60 giây/phiên; idle 30 phút (OWASP 15–30 phút cho ứng dụng rủi ro thấp; NIST AAL2 ≤1 giờ). Đề xuất.
+  - (B) `GRANT UPDATE (expires_at)` và dùng `expires_at` làm hạn idle trượt, absolute từ `created_at`; không thêm cột nhưng nới ruling SEC-01 R3 (admin kéo dài được phiên trong giới hạn absolute).
+  - (C) Bộ đếm idle trong RAM: không bền, sai khi nhiều replica — không khuyến nghị.
+  - Nguồn: NIST SP 800-63B-4 §2.2.3/§5.2 (AAL2: overall ≤24 giờ, inactivity SHOULD ≤1 giờ), OWASP Session – Idle Timeout, kiểm tra 2026-10-26.
+
+## 4. Cổng kiểm tra
+
+Unit đầy đủ, `ruff check`, `ruff format --check`, `mypy src`, `git diff --check`; E2E Compose tuần tự: `tests/e2e/test_health_endpoint.py`, `tests/e2e/test_qa_seed.py`, `tests/e2e/test_compose_boundary.py`, `tests/e2e/test_multibot_config.py`, `tests/e2e/test_paper_runtime_bootstrap.py` (các file có đăng nhập).

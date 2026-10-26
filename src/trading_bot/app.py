@@ -26,6 +26,7 @@ from trading_bot.application.paper_runtime_bootstrap import PaperRuntimeBootstra
 from trading_bot.auth.router import router as auth_router
 from trading_bot.auth.security import LoginRateLimiter
 from trading_bot.auth.service import AuthService
+from trading_bot.common.http_security import SecurityHeadersMiddleware, security_headers
 from trading_bot.config.settings import AppSettings
 from trading_bot.ports.secrets import SecretProvider
 
@@ -170,6 +171,7 @@ def create_app(
         redoc_url=None,
         lifespan=lifespan,
     )
+    app.add_middleware(SecurityHeadersMiddleware, headers=security_headers(app_settings))
     app.state.settings = app_settings
     app.state.login_limiter = LoginRateLimiter()
     app.state.readiness = {

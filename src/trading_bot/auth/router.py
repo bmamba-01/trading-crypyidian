@@ -3,6 +3,11 @@ from typing import Annotated, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 
+from trading_bot.auth.cookies import (
+    clear_session_cookie,
+    read_session_cookie,
+    set_session_cookie,
+)
 from trading_bot.auth.policy import Permission, Principal, authorize
 from trading_bot.auth.schemas import (
     BootstrapRequest,
@@ -22,7 +27,7 @@ from trading_bot.auth.service import (
 from trading_bot.config.settings import AppSettings
 
 router = APIRouter(prefix="/api/v1", tags=["authentication and administration"])
-SESSION_COOKIE_NAME = "crypidian_session"
+THROTTLED_DETAIL = "Thử lại sau khi hết thời gian giới hạn"
 
 
 def get_auth_service(request: Request) -> AuthService:
@@ -55,7 +60,7 @@ async def bootstrap_owner(
     email = body.email.strip().casefold()
     address = client_address(request)
     if not limiter.allow(address, email):
-        raise HTTPException(status_code=429, detail="Thử lại sau khi hết thời gian giới hạn")
+        raise HTTPException(status_code=429, detail=THROTTLED_DETAIL)
     settings: AppSettings = request.app.state.settings
     if not verify_bootstrap_token(
         settings.bootstrap_token_file,
@@ -94,7 +99,7 @@ async def verify_bootstrap(
     email = body.email.strip().casefold()
     address = client_address(request)
     if not limiter.allow(address, email):
-        raise HTTPException(status_code=429, detail="Thử lại sau khi hết thời gian giới hạn")
+        raise HTTPException(status_code=429, detail=THROTTLED_DETAIL)
     try:
         await service.confirm_bootstrap(
             workspace_slug=body.workspace_slug,
@@ -120,7 +125,7 @@ async def login(
     email = body.email.strip().casefold()
     address = client_address(request)
     if not limiter.allow(address, email):
-        raise HTTPException(status_code=429, detail="Thử lại sau khi hết thời gian giới hạn")
+        raise HTTPException(status_code=429, detail=THROTTLED_DETAIL)
     try:
         result = await service.login(
             workspace_slug=body.workspace_slug,
@@ -133,14 +138,11 @@ async def login(
         raise_auth_failure(error)
     limiter.record_success(address, email)
     settings: AppSettings = request.app.state.settings
-    response.set_cookie(
-        SESSION_COOKIE_NAME,
+    set_session_cookie(
+        response,
+        settings,
         result.cookie_value,
         max_age=int(SESSION_LIFETIME.total_seconds()),
-        path="/api/v1",
-        secure=settings.app_env == "production",
-        httponly=True,
-        samesite="strict",
     )
     response.headers["Cache-Control"] = "no-store"
     return identity_body(result.email, result.principal) | {"csrf_token": result.csrf_token}
@@ -150,7 +152,7 @@ async def current_identity(
     request: Request, service: Annotated[AuthService, Depends(get_auth_service)]
 ) -> AuthIdentity:
     try:
-        return await service.authenticate(request.cookies.get(SESSION_COOKIE_NAME))
+        return await service.authenticate(read_session_cookie(request))
     except AuthenticationFailure as error:
         raise_auth_failure(error)
     raise AssertionError("Không thể tiếp tục sau lỗi xác thực")
@@ -163,7 +165,7 @@ async def require_csrf(
 ) -> AuthIdentity:
     try:
         await service.verify_csrf(
-            request.cookies.get(SESSION_COOKIE_NAME),
+            read_session_cookie(request),
             request.headers.get("X-CSRF-Token"),
         )
     except AuthenticationFailure as error:
@@ -187,7 +189,7 @@ async def get_csrf_token(
 ) -> dict[str, str]:
     del identity
     try:
-        token = await service.issue_csrf_token(request.cookies.get(SESSION_COOKIE_NAME))
+        token = await service.issue_csrf_token(read_session_cookie(request))
     except AuthenticationFailure as error:
         raise_auth_failure(error)
     response.headers["Cache-Control"] = "no-store"
@@ -200,16 +202,23 @@ async def reauthenticate(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_csrf)],
     service: Annotated[AuthService, Depends(get_auth_service)],
+    limiter: Annotated[LoginRateLimiter, Depends(get_rate_limiter)],
 ) -> None:
-    del identity
+    # Dùng chung bộ đếm với login vì cùng kiểm mật khẩu + TOTP (SEC-08); khóa theo
+    # email của phiên nên không lộ thông tin tài khoản khác.
+    address = client_address(request)
+    if not limiter.allow(address, identity.email):
+        raise HTTPException(status_code=429, detail=THROTTLED_DETAIL)
     try:
         await service.reauthenticate(
-            request.cookies.get(SESSION_COOKIE_NAME),
+            read_session_cookie(request),
             password=body.password,
             code=body.code,
         )
     except AuthenticationFailure as error:
+        limiter.record_failure(address, identity.email)
         raise_auth_failure(error)
+    limiter.record_success(address, identity.email)
 
 
 @router.post("/auth/logout", status_code=status.HTTP_204_NO_CONTENT)
@@ -220,14 +229,8 @@ async def logout(
     service: Annotated[AuthService, Depends(get_auth_service)],
 ) -> None:
     del identity
-    await service.logout(request.cookies.get(SESSION_COOKIE_NAME))
-    response.delete_cookie(
-        SESSION_COOKIE_NAME,
-        path="/api/v1",
-        secure=request.app.state.settings.app_env == "production",
-        httponly=True,
-        samesite="strict",
-    )
+    await service.logout(read_session_cookie(request))
+    clear_session_cookie(response, request.app.state.settings)
 
 
 @router.post("/risk-profiles", status_code=status.HTTP_201_CREATED)

@@ -21,6 +21,13 @@ import pyotp
 import pytest
 from scripts.docker_image import build_image_reference, ensure_image_available
 
+from trading_bot.auth.cookies import session_cookie_name
+from trading_bot.common.http_security import CONTENT_SECURITY_POLICY
+from trading_bot.config.settings import AppSettings
+
+# Compose chạy `TRADING_BOT_APP_ENV=local` qua HTTP nên cookie không Secure, không `__Host-`.
+LOCAL_SESSION_COOKIE_NAME = session_cookie_name(AppSettings(app_env="local"))
+
 
 def test_h03_paper_application_probe_embedded_python_compiles() -> None:
     module = ast.parse(Path(__file__).read_text(encoding="utf-8"))
@@ -368,6 +375,22 @@ def test_paper_stack_starts_and_keeps_database_and_object_store_data() -> None:
         )
         assert login_status == 200
         csrf_token = str(login["csrf_token"])
+        # SEC-13: cookie phiên thật qua Compose (HTTP cục bộ) có Path=/, HttpOnly, Strict.
+        session_cookie = next(
+            cookie for cookie in cookie_jar if cookie.name == LOCAL_SESSION_COOKIE_NAME
+        )
+        assert session_cookie.path == "/"
+        assert not session_cookie.secure
+        assert session_cookie.has_nonstandard_attr("HttpOnly")
+        assert str(session_cookie.get_nonstandard_attr("SameSite")).lower() == "strict"
+        # SEC-27: header bảo mật trên response đã xác thực của admin-web thật.
+        with client.open(f"http://127.0.0.1:{port}/api/v1/auth/me", timeout=10) as me_response:
+            assert me_response.headers["Content-Security-Policy"] == CONTENT_SECURITY_POLICY
+            assert me_response.headers["X-Content-Type-Options"] == "nosniff"
+            assert me_response.headers["Referrer-Policy"] == "no-referrer"
+            assert me_response.headers["Cross-Origin-Opener-Policy"] == "same-origin"
+            assert me_response.headers["Cache-Control"] == "no-store"
+            assert me_response.headers.get("Strict-Transport-Security") is None
         identity_status, identity = api_request("GET", "/api/v1/auth/me")
         assert identity_status == 200
         assert identity["roles"] == ["owner"]
@@ -796,7 +819,7 @@ def test_paper_stack_starts_and_keeps_database_and_object_store_data() -> None:
         assert race_login_status == 200
         race_csrf_token = str(race_login["csrf_token"])
         race_session_cookie = next(
-            cookie for cookie in cookie_jar if cookie.name == "crypidian_session"
+            cookie for cookie in cookie_jar if cookie.name == LOCAL_SESSION_COOKIE_NAME
         )
         race_strategy = competing_settings["strategy"] | {"parameters": {"donchian_lookback": 56}}
         race_settings = competing_settings | {"strategy": race_strategy}
@@ -811,6 +834,22 @@ def test_paper_stack_starts_and_keeps_database_and_object_store_data() -> None:
         )
         assert race_draft_status == 201
         race_draft_id = str(race_draft_response["draft"]["id"])
+        # SEC-08/SECT-05: reauthenticate sai 5 lần → lần 6 bị 429 trước khi kiểm mật khẩu;
+        # phiên không bị thu hồi. Đặt sau lần login cuối của owner vì bộ đếm IP+email
+        # cũng chặn login của chính tài khoản này trong cửa sổ 5 phút.
+        reauth_statuses = [
+            api_request(
+                "POST",
+                "/api/v1/auth/reauthenticate",
+                {"password": "not the owner password", "code": "000000"},
+                {"X-CSRF-Token": race_csrf_token},
+            )
+            for _ in range(6)
+        ]
+        assert [status for status, _ in reauth_statuses] == [401] * 5 + [429]
+        assert reauth_statuses[-1][1] == {"detail": "Thử lại sau khi hết thời gian giới hạn"}
+        assert reauth_statuses[0][1] == {"detail": "Thông tin xác thực không hợp lệ"}
+        assert api_request("GET", "/api/v1/auth/me")[0] == 200
         environment["CRYPIDIAN_E2E_SESSION_COOKIE"] = (
             f"{race_session_cookie.name}={race_session_cookie.value}"
         )
