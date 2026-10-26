@@ -225,6 +225,8 @@ ALLOWED_CALLERS = {
     "record_evaluation": {"application/paper_runtime_application.py"},
     # MB-04 + MB-05: runtime chỉ reserve qua `WorkspaceRiskCoordinator.reserve` (một đường duy
     # nhất); `RiskReservationRepository.reserve` không còn được runtime gọi trực tiếp.
+    # Khớp theo tên nên receiver được ghim riêng: đúng một `.reserve(` qua
+    # `self._workspace_risk_coordinator_factory(...)` (test_mb05b_fix_round3).
     "reserve": {"application/paper_runtime_application.py"},
     "reconcile": set(),
     "release_before_submit": set(),

@@ -97,7 +97,7 @@ from trading_bot.domain.risk.planner import (
     PlannerSettings,
     PlanRejected,
 )
-from trading_bot.domain.risk.reservations import ReservationReleaseReason
+from trading_bot.domain.risk.reservations import ReservationConflict, ReservationReleaseReason
 from trading_bot.domain.risk.workspace_budget import BudgetConflictError
 from trading_bot.domain.strategy.contracts import DecisionSnapshot, NoTrade, StrategySelection
 from trading_bot.domain.strategy.registry import StrategyRegistry
@@ -990,9 +990,15 @@ class PaperRuntimeApplicationService:
             plan_hash=plan.plan_hash,
             candidate_id=str(plan.candidate_id),
         )
-        return await self._workspace_risk_coordinator_factory(uow.session).reserve(
-            request, evidence={"runtime_control_revisions": dict(control_revisions)}
-        )
+        try:
+            return await self._workspace_risk_coordinator_factory(uow.session).reserve(
+                request, evidence={"runtime_control_revisions": dict(control_revisions)}
+            )
+        except ValueError, ReservationConflict:
+            # Fix round 3: policy/scope không hiệu lực (root, profile, overlay lệch) hoặc xung đột
+            # reservation -> mã an toàn; transaction vẫn rollback. Hẹp có chủ đích: lỗi lập trình
+            # (TypeError, ...) không bị che.
+            raise PaperRuntimeApplicationError("WORKSPACE_RISK_POLICY_UNAVAILABLE") from None
 
     async def _require_fence(self, uow: UnitOfWork, account: PaperRuntimeAccount) -> None:
         """Fence application (ruling 9a): ngay sau L1, trước mọi đọc/ghi state và L2–L4.
