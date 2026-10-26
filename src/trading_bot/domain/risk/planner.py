@@ -68,15 +68,30 @@ class RiskLimits:
     max_rolling_loss: Decimal
     max_account_age: timedelta
     max_data_age: timedelta
+    account_max_open_risk_fraction: Decimal = Decimal("1.0")
+    bot_max_open_risk_fraction: Decimal | None = None
 
     def __post_init__(self) -> None:
-        fractions = (self.per_trade_risk_fraction, self.max_concentration_fraction)
+        fractions = [
+            self.per_trade_risk_fraction,
+            self.max_concentration_fraction,
+            self.account_max_open_risk_fraction,
+        ]
+        if self.bot_max_open_risk_fraction is not None:
+            fractions.append(self.bot_max_open_risk_fraction)
         if any(not isinstance(value, Decimal) or not value.is_finite() for value in fractions):
             raise ValueError("Tỷ lệ risk phải là Decimal hữu hạn.")
         if not ZERO < self.per_trade_risk_fraction <= Decimal("1"):
             raise ValueError("Tỷ lệ risk mỗi lệnh phải nằm trong (0, 1].")
         if not ZERO < self.max_concentration_fraction <= Decimal("1"):
             raise ValueError("Tỷ lệ tập trung phải nằm trong (0, 1].")
+        if not ZERO < self.account_max_open_risk_fraction <= Decimal("1"):
+            raise ValueError("Tỷ lệ risk mở tối đa tài khoản phải nằm trong (0, 1].")
+        if (
+            self.bot_max_open_risk_fraction is not None
+            and not ZERO < self.bot_max_open_risk_fraction <= Decimal("1")
+        ):
+            raise ValueError("Tỷ lệ risk mở tối đa bot phải nằm trong (0, 1].")
         amounts = (
             self.max_aggregate_open_risk,
             self.max_notional,

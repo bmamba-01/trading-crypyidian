@@ -36,8 +36,10 @@ class QaRiskProfile:
     name: str
     version: int
     max_risk_fraction: Decimal
+
     settings: dict[str, Any]
     is_active: bool
+    max_open_risk_fraction: Decimal = Decimal("1.0")
 
 
 @dataclass(frozen=True, slots=True)

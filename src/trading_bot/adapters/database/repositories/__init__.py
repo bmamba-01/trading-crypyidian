@@ -4,6 +4,14 @@ from sqlalchemy import Select, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from trading_bot.adapters.database.models import TradingAccount, Workspace
+from trading_bot.adapters.database.repositories.account_equity import AccountEquityRepository
+from trading_bot.adapters.database.repositories.risk_conversion import RiskConversionRepository
+
+__all__ = [
+    "AccountEquityRepository",
+    "RiskConversionRepository",
+    "WorkspaceRepository",
+]
 
 
 class WorkspaceRepository:

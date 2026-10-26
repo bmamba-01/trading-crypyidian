@@ -638,7 +638,12 @@ async def after_phase():
         report["current_symbols"] = list(current.symbols)
         report["current_per_trade"] = str(current.risk_limits.per_trade_risk_fraction)
         report["root_caps_enforced"] = all(
-            getattr(current.risk_limits, name) <= getattr(root_profile.limits, name)
+            getattr(current.risk_limits, name) is None
+            or getattr(current.risk_limits, name)
+            <= getattr(
+                root_profile.limits,
+                "account_max_open_risk_fraction" if name == "bot_max_open_risk_fraction" else name,
+            )
             for name in RISK_FIELDS
         )
         statuses = list(

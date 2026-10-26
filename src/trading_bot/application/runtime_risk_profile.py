@@ -96,11 +96,18 @@ def risk_limits_from_profile(record: object) -> RuntimeRiskProfile:
         name = _string_value(record, "name")
         version = _int_value(record, "version")
         max_risk_fraction = _decimal_value(record, "max_risk_fraction")
+        raw_open_risk = getattr(record, "max_open_risk_fraction", None)
+        max_open_risk_fraction = (
+            _decimal_value(record, "max_open_risk_fraction")
+            if raw_open_risk is not None
+            else Decimal("1.0")
+        )
         settings = _value(record, "settings")
         parsed = _RiskProfileSettingsV1.model_validate(settings)
         caps = parsed.hard_caps
         limits = RiskLimits(
             per_trade_risk_fraction=max_risk_fraction,
+            account_max_open_risk_fraction=max_open_risk_fraction,
             max_aggregate_open_risk=caps.max_aggregate_open_risk,
             max_notional=caps.max_notional,
             max_leverage=caps.max_leverage,

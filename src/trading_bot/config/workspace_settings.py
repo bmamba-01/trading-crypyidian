@@ -6,7 +6,7 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from types import MappingProxyType
 from typing import Any, Literal, cast
 from uuid import UUID
@@ -114,8 +114,49 @@ def _thaw_parameter_value(value: Any) -> Any:
     return value
 
 
+def exact_decimal(value: object) -> Decimal:
+    """Chỉ nhận chuỗi/Decimal/int để không mất độ chính xác qua float JSON."""
+    if isinstance(value, bool) or isinstance(value, float):
+        raise ValueError("Giá trị Decimal phải là chuỗi hoặc số nguyên, không dùng float.")
+    if isinstance(value, Decimal):
+        parsed = value
+    elif isinstance(value, (str, int)):
+        try:
+            parsed = Decimal(value)
+        except (InvalidOperation, ValueError) as error:
+            raise ValueError("Giá trị Decimal không hợp lệ.") from error
+    else:
+        raise ValueError("Giá trị Decimal phải là chuỗi hoặc số nguyên.")
+    if not parsed.is_finite():
+        raise ValueError("Giá trị Decimal phải hữu hạn.")
+    return parsed
+
+
+def decimal_text(value: Decimal) -> str:
+    """Biểu diễn chuẩn hóa: giá trị bằng nhau luôn ra cùng chuỗi để hash ổn định."""
+    normalized = value.normalize()
+    text = format(normalized, "f")
+    return "0" if text in {"-0", "0"} else text
+
+
 class RiskSettings(FrozenSettingsModel):
     profile_version_id: UUID
+    workspace_max_open_risk_fraction: Decimal = Field(default=Decimal("1.0"))
+    max_equity_age_seconds: int = Field(default=300, ge=1, le=86_400)
+    max_conversion_age_seconds: int = Field(default=300, ge=1, le=86_400)
+    max_mark_age_seconds: int = Field(default=60, ge=1, le=3_600)
+
+    @field_validator("workspace_max_open_risk_fraction", mode="before")
+    @classmethod
+    def parse_workspace_max_open_risk_fraction(cls, value: object) -> Decimal:
+        parsed = exact_decimal(value)
+        if not Decimal("0") < parsed <= Decimal("1"):
+            raise ValueError("workspace_max_open_risk_fraction phải nằm trong (0, 1].")
+        return parsed
+
+    @field_serializer("workspace_max_open_risk_fraction")
+    def serialize_fraction(self, value: Decimal) -> str:
+        return decimal_text(value)
 
 
 class PaperExecutionSettings(FrozenSettingsModel):

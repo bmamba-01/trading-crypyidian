@@ -229,6 +229,11 @@ class SettingsAdminService:
                 raise SettingsAdminError(
                     409, "Bản nháp dựa trên cấu hình cũ; hãy tạo bản nháp mới."
                 )
+            current_risk = (
+                WorkspaceSettings.model_validate(current.settings_json).risk if current else None
+            )
+            if current_risk != settings.risk:
+                await repository.lock_workspace_risk(principal.workspace_id)
             await self._guard_paper_policy_change(
                 unit,
                 workspace_id=principal.workspace_id,
@@ -287,6 +292,11 @@ class SettingsAdminService:
                 raise SettingsAdminError(404, "Không tìm thấy phiên bản đã publish để rollback.")
             current = await repository.get_effective(workspace_id=principal.workspace_id)
             settings = WorkspaceSettings.model_validate(target.settings_json)
+            current_risk = (
+                WorkspaceSettings.model_validate(current.settings_json).risk if current else None
+            )
+            if current_risk != settings.risk:
+                await repository.lock_workspace_risk(principal.workspace_id)
             await self._guard_paper_policy_change(
                 unit,
                 workspace_id=principal.workspace_id,
@@ -417,8 +427,8 @@ class SettingsAdminService:
     ) -> None:
         if parent_settings is None and parent is not None:
             parent_settings = WorkspaceSettings.model_validate(parent.settings_json)
-        before = parent_settings.risk.profile_version_id if parent_settings else None
-        if settings.risk.profile_version_id != before:
+        before = parent_settings.risk if parent_settings else None
+        if settings.risk != before:
             if not authorize(principal, Permission.RISK_PROFILE_WRITE):
                 raise SettingsAdminError(403, "Cần quyền thay đổi hồ sơ rủi ro.")
             now = datetime.now(UTC)

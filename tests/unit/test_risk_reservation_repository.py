@@ -729,3 +729,53 @@ async def test_release_rejects_submit_flag_even_when_row_is_already_released() -
             reason=ReservationReleaseReason.CANCELLED_BEFORE_SUBMIT,
             order_was_submitted=True,
         )  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_get_workspace_risk_aggregate_queries_and_maps_dto() -> None:
+    workspace_id = uuid4()
+    as_of = datetime(2026, 10, 25, 12, 0, 0, tzinfo=UTC)
+
+    class AggregateSession:
+        def __init__(self) -> None:
+            self.executed_statements = []
+
+        async def execute(self, statement, params=None):
+            self.executed_statements.append((statement, params))
+
+            class _Result:
+                def one(self):
+                    return (
+                        workspace_id,
+                        Decimal("1500.50"),
+                        Decimal("500.25"),
+                        3,
+                        False,
+                    )
+
+            return _Result()
+
+    session = AggregateSession()
+    repo = RiskReservationRepository(session)  # type: ignore[arg-type]
+
+    agg = await repo.get_workspace_risk_aggregate(workspace_id=workspace_id, as_of=as_of)
+
+    assert agg.workspace_id == workspace_id
+    assert agg.total_open_risk_usdt == Decimal("1500.50")
+    assert agg.total_pending_risk_usdt == Decimal("500.25")
+    assert agg.active_bot_count == 3
+    assert agg.has_unknown_exposure is False
+    assert len(session.executed_statements) == 1
+    stmt, params = session.executed_statements[0]
+    assert "get_workspace_risk_aggregate" in str(stmt)
+    assert params == {"workspace_id": workspace_id, "as_of": as_of}
+
+
+@pytest.mark.asyncio
+async def test_get_workspace_risk_aggregate_rejects_naive_as_of() -> None:
+    session = ReservationSession([])
+    repo = RiskReservationRepository(session)  # type: ignore[arg-type]
+    naive_as_of = datetime(2026, 10, 25, 12, 0, 0, tzinfo=UTC).replace(tzinfo=None)
+
+    with pytest.raises(ReservationConflict, match="as_of"):
+        await repo.get_workspace_risk_aggregate(workspace_id=uuid4(), as_of=naive_as_of)

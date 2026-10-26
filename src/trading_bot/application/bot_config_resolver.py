@@ -158,10 +158,11 @@ def compute_effective_hash(config: EffectiveBotConfig) -> str:
         "universe": {"symbols": list(config.symbols), "timeframes": list(config.timeframes)},
         "risk_limits": {
             **{
-                name: decimal_text(getattr(limits, name))
+                name: (decimal_text(val) if (val := getattr(limits, name)) is not None else None)
                 for name in RISK_FIELDS
                 if name != "max_positions"
             },
+            "account_max_open_risk_fraction": decimal_text(limits.account_max_open_risk_fraction),
             "max_positions": limits.max_positions,
             "max_account_age_seconds": int(limits.max_account_age.total_seconds()),
             "max_data_age_seconds": int(limits.max_data_age.total_seconds()),
@@ -398,7 +399,13 @@ def _evaluate(
                 )
             )
         timeframes = selected
-    limits = _evaluate_risk(overlay, account, root_risk_profile.limits, issues)
+    limits = _evaluate_risk(
+        overlay,
+        account,
+        root_risk_profile.limits,
+        issues,
+        workspace_settings=workspace_settings,
+    )
     return _Evaluation(tuple(issues), strategy, tuple(symbols), tuple(timeframes), limits)
 
 
@@ -475,9 +482,13 @@ def _evaluate_risk(
     account: TradingAccount,
     root_limits: RiskLimits,
     issues: list[OverlayIssue],
+    *,
+    workspace_settings: PublishedWorkspaceSettings,
 ) -> RiskLimits | None:
     values: dict[str, Decimal | int] = {}
     for name in RISK_FIELDS:
+        if name == "bot_max_open_risk_fraction":
+            continue
         root_value: Decimal | int = getattr(root_limits, name)
         requested = getattr(overlay.risk, name) if overlay.risk is not None else None
         if requested is not None and requested > root_value:
@@ -489,6 +500,29 @@ def _evaluate_risk(
         issues.append(OverlayIssue("risk.max_notional", "Bot không được nới cap của account."))
     # Cap account là hard cap riêng: lấy giá trị chặt nhất giữa root, account và overlay.
     values["max_notional"] = min(Decimal(values["max_notional"]), account_cap)
+
+    ws_cap = workspace_settings.settings.risk.workspace_max_open_risk_fraction
+    acc_cap = root_limits.account_max_open_risk_fraction
+    if acc_cap > ws_cap:
+        issues.append(
+            OverlayIssue(
+                "risk.account_max_open_risk_fraction", "Account không được nới giới hạn root."
+            )
+        )
+
+    bot_cap = overlay.risk.bot_max_open_risk_fraction if overlay.risk is not None else None
+    if bot_cap is not None:
+        if bot_cap > acc_cap:
+            issues.append(
+                OverlayIssue(
+                    "risk.bot_max_open_risk_fraction", "Bot không được nới cap của account."
+                )
+            )
+        if bot_cap > ws_cap:
+            issues.append(
+                OverlayIssue("risk.bot_max_open_risk_fraction", "Bot không được nới giới hạn root.")
+            )
+
     try:
         return RiskLimits(
             per_trade_risk_fraction=Decimal(values["per_trade_risk_fraction"]),
@@ -502,6 +536,8 @@ def _evaluate_risk(
             max_rolling_loss=Decimal(values["max_rolling_loss"]),
             max_account_age=root_limits.max_account_age,
             max_data_age=root_limits.max_data_age,
+            account_max_open_risk_fraction=acc_cap,
+            bot_max_open_risk_fraction=bot_cap,
         )
     except ValueError:
         issues.append(OverlayIssue("risk", "Giới hạn risk hiệu lực không hợp lệ."))

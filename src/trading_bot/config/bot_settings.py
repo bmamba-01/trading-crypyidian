@@ -10,7 +10,7 @@ import hashlib
 import json
 import re
 from collections.abc import Mapping
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from typing import Any, Literal, cast
 
 from pydantic import Field, field_serializer, field_validator, model_validator
@@ -21,12 +21,22 @@ from trading_bot.config.workspace_settings import (
     _freeze_parameter_value,
     _thaw_parameter_value,
 )
+from trading_bot.config.workspace_settings import (
+    decimal_text as decimal_text,
+)
+from trading_bot.config.workspace_settings import (
+    exact_decimal as exact_decimal,
+)
 
 BOT_OVERLAY_SCHEMA_VERSION = 1
 _SECRET_KEY_PATTERN = re.compile(r"(?:secret|token|password|credential|api[_-]?key|cookie)", re.I)
 _SYMBOL_PATTERN = re.compile(r"[A-Z0-9_]{2,32}")
 # Thứ tự cố định để so sánh/hiển thị; MB-04 sẽ thêm trường fraction mở rộng tại đây.
-RISK_FRACTION_FIELDS = ("per_trade_risk_fraction", "max_concentration_fraction")
+RISK_FRACTION_FIELDS = (
+    "per_trade_risk_fraction",
+    "max_concentration_fraction",
+    "bot_max_open_risk_fraction",
+)
 RISK_AMOUNT_FIELDS = (
     "max_aggregate_open_risk",
     "max_notional",
@@ -49,31 +59,6 @@ def _reject_secret_keys(value: Any, path: str) -> None:
     elif isinstance(value, (list, tuple)):
         for index, child in enumerate(value):
             _reject_secret_keys(child, f"{path}{index}.")
-
-
-def exact_decimal(value: object) -> Decimal:
-    """Chỉ nhận chuỗi/Decimal/int để không mất độ chính xác qua float JSON."""
-    if isinstance(value, bool) or isinstance(value, float):
-        raise ValueError("Giá trị Decimal phải là chuỗi hoặc số nguyên, không dùng float.")
-    if isinstance(value, Decimal):
-        parsed = value
-    elif isinstance(value, (str, int)):
-        try:
-            parsed = Decimal(value)
-        except (InvalidOperation, ValueError) as error:
-            raise ValueError("Giá trị Decimal không hợp lệ.") from error
-    else:
-        raise ValueError("Giá trị Decimal phải là chuỗi hoặc số nguyên.")
-    if not parsed.is_finite():
-        raise ValueError("Giá trị Decimal phải hữu hạn.")
-    return parsed
-
-
-def decimal_text(value: Decimal) -> str:
-    """Biểu diễn chuẩn hóa: giá trị bằng nhau luôn ra cùng chuỗi để hash ổn định."""
-    normalized = value.normalize()
-    text = format(normalized, "f")
-    return "0" if text in {"-0", "0"} else text
 
 
 class BotStrategyOverlay(FrozenSettingsModel):
@@ -125,6 +110,7 @@ class BotRiskOverlay(FrozenSettingsModel):
 
     per_trade_risk_fraction: Decimal | None = None
     max_concentration_fraction: Decimal | None = None
+    bot_max_open_risk_fraction: Decimal | None = None
     max_aggregate_open_risk: Decimal | None = None
     max_notional: Decimal | None = None
     max_leverage: Decimal | None = None
