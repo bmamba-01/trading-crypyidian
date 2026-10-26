@@ -134,6 +134,30 @@ def test_every_new_table_enables_and_forces_rls_with_per_role_policies(
         assert any("bot_id = NULLIF(current_setting('app.bot_id'" in s for s in runtime), table
 
 
+def test_pause_write_policy_separates_pause_and_resume_grants(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ruling 20/30: grant pause chỉ ghi được PAUSED, grant resume chỉ ghi được ENABLED."""
+    statements = _statements(_module(), "upgrade", monkeypatch)
+    [policy] = [
+        s for s in statements if s.startswith('CREATE POLICY pause_write ON "bot_runtime_control"')
+    ]
+
+    assert " FOR INSERT TO crypidian_admin_web " in policy
+    assert (
+        "(bot_runtime_control.entry_state = 'PAUSED' AND g.permission = 'bot:runtime:pause')"
+        in policy
+    )
+    assert (
+        "(bot_runtime_control.entry_state = 'ENABLED' AND g.permission = 'bot:runtime:resume')"
+        in policy
+    )
+    # Không còn nhánh chấp nhận grant bất kỳ cho mọi entry_state.
+    assert "IN ('bot:runtime:pause', 'bot:runtime:resume')" not in policy
+    # Nhánh role workspace-wide (owner/risk_admin) giữ nguyên cho cả pause và resume.
+    assert "r.role IN ('owner','risk_admin')" in policy
+
+
 def test_grants_match_data_plan_without_delete_or_group_role(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

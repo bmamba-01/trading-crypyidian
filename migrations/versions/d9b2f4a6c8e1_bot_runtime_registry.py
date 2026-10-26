@@ -425,10 +425,13 @@ def _create_policies() -> None:
             f"USING ({_member_policy(table)})"
         )
     table = "bot_runtime_control"
+    # Ruling 20/30: grant theo bot tách quyền — `bot:runtime:pause` chỉ ghi hàng PAUSED,
+    # `bot:runtime:resume` chỉ ghi hàng ENABLED; role workspace-wide (owner/risk_admin) giữ cả hai.
     pause_grant = (
         f"EXISTS (SELECT 1 FROM bot_grant g WHERE g.workspace_id = {table}.workspace_id "
         f"AND g.membership_id = {_MEMBER} AND g.bot_id = {table}.bot_id "
-        "AND g.permission IN ('bot:runtime:pause', 'bot:runtime:resume') "
+        f"AND (({table}.entry_state = 'PAUSED' AND g.permission = 'bot:runtime:pause') "
+        f"OR ({table}.entry_state = 'ENABLED' AND g.permission = 'bot:runtime:resume')) "
         "AND g.revoked_at IS NULL)"
     )
     op.execute(

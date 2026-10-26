@@ -110,7 +110,13 @@ def _insert(connection: psycopg.Connection, table: str, **values: object) -> Non
 def seed() -> dict[str, str]:
     ws, ws2 = uuid4(), uuid4()
     accounts = {"acc_a": uuid4(), "acc_b": uuid4(), "acc_other": uuid4()}
-    members = {"owner": uuid4(), "operator": uuid4(), "other_owner": uuid4()}
+    # operator: chỉ grant pause bot A; resumer: chỉ grant resume bot A (ruling 20 tách quyền).
+    members = {
+        "owner": uuid4(),
+        "operator": uuid4(),
+        "resumer": uuid4(),
+        "other_owner": uuid4(),
+    }
     with _connect() as connection, connection.transaction():
         for workspace, slug in ((ws, "mb05-w1"), (ws2, "mb05-w2")):
             _insert(
@@ -147,7 +153,7 @@ def seed() -> dict[str, str]:
                 id=uuid4(),
                 workspace_id=workspace,
                 membership_id=member,
-                role="operator" if name == "operator" else "owner",
+                role="operator" if name in ("operator", "resumer") else "owner",
             )
         for name, account in accounts.items():
             _insert(
@@ -176,6 +182,16 @@ def seed() -> dict[str, str]:
             bot_id=bots["bot_a"],
             membership_id=members["operator"],
             permission="bot:runtime:pause",
+            granted_by=members["owner"],
+        )
+        _insert(
+            connection,
+            "bot_grant",
+            id=uuid4(),
+            workspace_id=ws,
+            bot_id=bots["bot_a"],
+            membership_id=members["resumer"],
+            permission="bot:runtime:resume",
             granted_by=members["owner"],
         )
     return {
@@ -509,6 +525,20 @@ async def admin_control() -> dict[str, Any]:
             bot_control("operator", "bot_a", BotEntryState.PAUSED, None)
         )
         out["operator_pause_a_again"] = await outcome(
+            bot_control("operator", "bot_a", BotEntryState.PAUSED, None)
+        )
+        # Grant pause-only không được ghi hàng ENABLED (resume) — RLS WITH CHECK chặn.
+        out["pause_grant_resume_a"] = await outcome(
+            bot_control("operator", "bot_a", BotEntryState.ENABLED, 1)
+        )
+        out["resume_grant_resume_a"] = await outcome(
+            bot_control("resumer", "bot_a", BotEntryState.ENABLED, 1)
+        )
+        # Đối xứng: grant resume-only không được ghi hàng PAUSED.
+        out["resume_grant_pause_a"] = await outcome(
+            bot_control("resumer", "bot_a", BotEntryState.PAUSED, None)
+        )
+        out["pause_grant_pause_a_after_resume"] = await outcome(
             bot_control("operator", "bot_a", BotEntryState.PAUSED, None)
         )
         out["operator_pause_b"] = await outcome(

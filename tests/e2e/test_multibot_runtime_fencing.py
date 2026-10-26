@@ -126,6 +126,10 @@ def test_runtime_lease_fencing_controls_and_downgrade_guard_on_real_postgres() -
         control = run_probe("admin_control", state, service="admin-web")
         assert control["operator_pause_a"] == [1, True], control
         assert control["operator_pause_a_again"] == [1, False]
+        assert control["pause_grant_resume_a"] == "CONTROL_WRITE_REJECTED"
+        assert control["resume_grant_resume_a"] == [2, True]
+        assert control["resume_grant_pause_a"] == "CONTROL_WRITE_REJECTED"
+        assert control["pause_grant_pause_a_after_resume"] == [3, True]
         assert control["operator_pause_b"] == "BOT_NOT_FOUND"
         assert control["operator_kill"] == "CONTROL_WRITE_REJECTED"
         assert control["owner_kill"] == [1, True]
@@ -140,7 +144,7 @@ def test_runtime_lease_fencing_controls_and_downgrade_guard_on_real_postgres() -
 
         read = run_probe("runtime_control_read", state, service="trading-runtime")
         assert read == {
-            "bot_a": {"workspace": 2, "bot": 1, "entry": "PAUSED"},
+            "bot_a": {"workspace": 2, "bot": 3, "entry": "PAUSED"},
             "bot_b": {"workspace": 2, "bot": 0, "entry": "ENABLED"},
             "workspace": "ACTIVE",
         }
