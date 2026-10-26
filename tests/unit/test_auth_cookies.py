@@ -150,9 +150,36 @@ def test_logout_clears_cookie_with_same_name_and_attributes() -> None:
         )
 
         assert response.status_code == 204
-        attributes = _attributes(_session_set_cookie(response.headers.get_list("set-cookie"), name))
-        assert attributes["path"] == "/"
+        cleared = _cleared_by_path(response.headers.get_list("set-cookie"), name)
+        attributes = cleared["/"]
         assert attributes["max-age"] == "0"
         assert attributes["httponly"] == "True"
         assert ("secure" in attributes) is secure
         assert service.seen_cookies[-1] == COOKIE_VALUE
+
+
+def _cleared_by_path(header_values: list[str], name: str) -> dict[str, dict[str, str]]:
+    cleared: dict[str, dict[str, str]] = {}
+    for value in header_values:
+        if value.startswith(f"{name}="):
+            attributes = _attributes(value)
+            cleared[attributes["path"]] = attributes
+    return cleared
+
+
+def test_local_logout_also_clears_legacy_api_path_cookie() -> None:
+    """Cookie cũ `Path=/api/v1` (trước SEC-13) không được dùng lại sau logout."""
+    client, _ = _client("local")
+
+    response = client.post(
+        "/api/v1/auth/logout",
+        headers={"Cookie": f"crypidian_session={COOKIE_VALUE}", "X-CSRF-Token": "csrf-token"},
+    )
+
+    assert response.status_code == 204
+    cleared = _cleared_by_path(response.headers.get_list("set-cookie"), "crypidian_session")
+    assert set(cleared) == {"/", "/api/v1"}
+    for attributes in cleared.values():
+        assert attributes["max-age"] == "0"
+        assert attributes["httponly"] == "True"
+        assert attributes["samesite"].lower() == "strict"

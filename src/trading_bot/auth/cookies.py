@@ -14,6 +14,7 @@ from trading_bot.config.settings import AppSettings
 SESSION_COOKIE_BASE_NAME = "crypidian_session"
 SESSION_COOKIE_HOST_PREFIX = "__Host-"
 SESSION_COOKIE_PATH = "/"
+LEGACY_SESSION_COOKIE_PATH = "/api/v1"
 SESSION_COOKIE_SAMESITE: Final = "strict"
 
 
@@ -57,3 +58,14 @@ def clear_session_cookie(response: Response, settings: AppSettings) -> None:
         httponly=True,
         samesite=SESSION_COOKIE_SAMESITE,
     )
+    if not session_cookie_secure(settings):
+        # Cookie cùng tên từ trước SEC-13 (`Path=/api/v1`) vẫn được trình duyệt gửi kèm;
+        # nếu không xóa, phiên cũ chưa thu hồi sẽ được dùng lại ngay sau logout.
+        # Production đọc tên `__Host-` nên cookie cũ không prefix đã bị bỏ qua.
+        response.delete_cookie(
+            SESSION_COOKIE_BASE_NAME,
+            path=LEGACY_SESSION_COOKIE_PATH,
+            secure=False,
+            httponly=True,
+            samesite=SESSION_COOKIE_SAMESITE,
+        )

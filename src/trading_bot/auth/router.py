@@ -58,15 +58,18 @@ async def bootstrap_owner(
     limiter: Annotated[LoginRateLimiter, Depends(get_rate_limiter)],
 ) -> dict[str, str]:
     email = body.email.strip().casefold()
+    scope = body.workspace_slug.strip().casefold()
     address = client_address(request)
-    if not limiter.allow(address, email):
+    if not limiter.allow(address, email, account_scope=scope):
         raise HTTPException(status_code=429, detail=THROTTLED_DETAIL)
     settings: AppSettings = request.app.state.settings
     if not verify_bootstrap_token(
         settings.bootstrap_token_file,
         request.headers.get("X-Bootstrap-Token"),
     ):
-        limiter.record_failure(address, email)
+        # Token bootstrap sai không chứng minh gì về tài khoản: không ghi bộ đếm tài khoản
+        # để endpoint này không thành đường khóa email bất kỳ (fix round 1 SEC-08).
+        limiter.record_failure(address, email, count_account=False)
         raise HTTPException(status_code=403, detail="Mã bootstrap không hợp lệ")
     try:
         result = await service.bootstrap(
@@ -77,9 +80,9 @@ async def bootstrap_owner(
             mode=body.mode,
         )
     except AuthenticationFailure as error:
-        limiter.record_failure(address, email)
+        limiter.record_failure(address, email, count_account=False)
         raise_auth_failure(error)
-    limiter.record_success(address, email)
+    limiter.record_success(address, email, account_scope=scope)
     response.headers["Cache-Control"] = "no-store"
     return {
         "workspace_id": str(result.workspace_id),
@@ -97,8 +100,9 @@ async def verify_bootstrap(
     limiter: Annotated[LoginRateLimiter, Depends(get_rate_limiter)],
 ) -> dict[str, str]:
     email = body.email.strip().casefold()
+    scope = body.workspace_slug.strip().casefold()
     address = client_address(request)
-    if not limiter.allow(address, email):
+    if not limiter.allow(address, email, account_scope=scope):
         raise HTTPException(status_code=429, detail=THROTTLED_DETAIL)
     try:
         await service.confirm_bootstrap(
@@ -107,9 +111,9 @@ async def verify_bootstrap(
             code=body.code,
         )
     except AuthenticationFailure as error:
-        limiter.record_failure(address, email)
+        limiter.record_failure(address, email, account_scope=scope)
         raise_auth_failure(error)
-    limiter.record_success(address, email)
+    limiter.record_success(address, email, account_scope=scope)
     response.headers["Cache-Control"] = "no-store"
     return {"status": "active"}
 
@@ -123,8 +127,9 @@ async def login(
     limiter: Annotated[LoginRateLimiter, Depends(get_rate_limiter)],
 ) -> dict[str, object]:
     email = body.email.strip().casefold()
+    scope = body.workspace_slug.strip().casefold()
     address = client_address(request)
-    if not limiter.allow(address, email):
+    if not limiter.allow(address, email, account_scope=scope):
         raise HTTPException(status_code=429, detail=THROTTLED_DETAIL)
     try:
         result = await service.login(
@@ -134,9 +139,9 @@ async def login(
             code=body.code,
         )
     except AuthenticationFailure as error:
-        limiter.record_failure(address, email)
+        limiter.record_failure(address, email, account_scope=scope)
         raise_auth_failure(error)
-    limiter.record_success(address, email)
+    limiter.record_success(address, email, account_scope=scope)
     settings: AppSettings = request.app.state.settings
     set_session_cookie(
         response,
@@ -204,10 +209,12 @@ async def reauthenticate(
     service: Annotated[AuthService, Depends(get_auth_service)],
     limiter: Annotated[LoginRateLimiter, Depends(get_rate_limiter)],
 ) -> None:
-    # Dùng chung bộ đếm với login vì cùng kiểm mật khẩu + TOTP (SEC-08); khóa theo
-    # email của phiên nên không lộ thông tin tài khoản khác.
+    # SEC-08: khóa theo IP + email của phiên. Bộ đếm tài khoản dùng phạm vi riêng theo
+    # workspace_id của phiên (khác phạm vi slug của login) để lỗi login do kẻ tấn công
+    # dồn vào không chặn được reauth của phiên đang sống; cặp IP quen vẫn bỏ qua nó.
     address = client_address(request)
-    if not limiter.allow(address, identity.email):
+    scope = f"workspace-id:{identity.principal.workspace_id}"
+    if not limiter.allow(address, identity.email, account_scope=scope):
         raise HTTPException(status_code=429, detail=THROTTLED_DETAIL)
     try:
         await service.reauthenticate(
@@ -216,9 +223,9 @@ async def reauthenticate(
             code=body.code,
         )
     except AuthenticationFailure as error:
-        limiter.record_failure(address, identity.email)
+        limiter.record_failure(address, identity.email, account_scope=scope)
         raise_auth_failure(error)
-    limiter.record_success(address, identity.email)
+    limiter.record_success(address, identity.email, account_scope=scope)
 
 
 @router.post("/auth/logout", status_code=status.HTTP_204_NO_CONTENT)

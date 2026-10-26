@@ -71,6 +71,60 @@ def test_login_limiter_throttles_one_account_across_many_ips() -> None:
     assert limiter.allow("10.0.0.99", "owner@example.test", now=3 + 900)
 
 
+OWNER_IP = "198.51.100.10"
+ATTACKER_IP = "203.0.113.66"
+OWNER_EMAIL = "owner@example.test"
+
+
+def test_sustained_low_rate_attack_does_not_lock_out_owner_from_familiar_ip() -> None:
+    """Fix round 1: 1 lỗi/90 giây từ một IP trong 3 giờ không khóa Owner ở IP quen."""
+    limiter = LoginRateLimiter()
+    limiter.record_success(OWNER_IP, OWNER_EMAIL, now=0)
+
+    owner_blocked_at: list[int] = []
+    unfamiliar_blocked = 0
+    for step in range(1, 121):
+        now = step * 90
+        if limiter.allow(ATTACKER_IP, OWNER_EMAIL, now=now):
+            limiter.record_failure(ATTACKER_IP, OWNER_EMAIL, now=now)
+        if not limiter.allow(OWNER_IP, OWNER_EMAIL, now=now + 1):
+            owner_blocked_at.append(now)
+        if not limiter.allow("192.0.2.200", OWNER_EMAIL, now=now + 1):
+            unfamiliar_blocked += 1
+
+    assert owner_blocked_at == []
+    # Rủi ro còn lại có chủ đích: IP/thiết bị chưa từng đăng nhập vẫn bị chặn theo tài khoản.
+    assert unfamiliar_blocked > 100
+
+
+def test_familiar_pair_expires_after_the_familiarity_window() -> None:
+    limiter = LoginRateLimiter(account_max_attempts=2, familiar_pair_seconds=1000)
+    limiter.record_success(OWNER_IP, OWNER_EMAIL, now=0)
+    limiter.record_failure(ATTACKER_IP, OWNER_EMAIL, now=1500)
+    limiter.record_failure(ATTACKER_IP, OWNER_EMAIL, now=1501)
+
+    assert not limiter.allow(OWNER_IP, OWNER_EMAIL, now=1502)
+
+
+def test_account_counter_is_scoped_by_workspace() -> None:
+    limiter = LoginRateLimiter(account_max_attempts=2)
+    for index in range(2):
+        limiter.record_failure(
+            f"10.0.1.{index}", OWNER_EMAIL, account_scope="Paper-Workspace", now=index
+        )
+
+    assert not limiter.allow("10.0.1.9", OWNER_EMAIL, account_scope="paper-workspace", now=3)
+    assert limiter.allow("10.0.1.9", OWNER_EMAIL, account_scope="other-workspace", now=3)
+
+
+def test_failures_can_skip_the_account_counter() -> None:
+    limiter = LoginRateLimiter(account_max_attempts=1)
+
+    limiter.record_failure("10.0.2.1", OWNER_EMAIL, count_account=False, now=0)
+
+    assert limiter.allow("10.0.2.2", OWNER_EMAIL, now=1)
+
+
 def test_login_limiter_throttles_password_spraying_from_one_ip() -> None:
     """SECT-06: 20 email khác nhau từ một IP → lần thứ 21 bị chặn theo IP."""
     limiter = LoginRateLimiter()
