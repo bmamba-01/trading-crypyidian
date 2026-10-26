@@ -91,6 +91,8 @@ Ruling tích hợp: fan-out shared evidence (MB-03) chỉ dành cho bot có cấ
 | B | `h01-v1` (khác root) | `max_positions` 1 (root 2) | kế thừa root |
 | C (DISABLED), OTHER | — không có config, dùng root-fallback | — | — |
 
+> **Lưu ý cho tester — bot B trên đường PAPER cũ:** root-fallback chỉ áp dụng cho bot **chưa có** config. Bot có config PUBLISHED mà strategy release khác `strategy.default_release` của root (bot B: `h01-v1` ≠ `h03-v1`) bị đường entry PAPER hiện có (`PaperRuntimeApplicationService`) từ chối với mã `PAPER_BOT_STRATEGY_FANOUT_REQUIRED`: không tạo plan, reservation hay intent. Điều này là chủ đích cho tới khi MB-04/MB-05 nối candidate từ fan-out MB-03 vào planning/risk. Sau khi seed, tester nên kỳ vọng: bot A (`h03-v1` = release root) chạy entry PAPER với giới hạn đã siết của overlay; bot B chỉ nhận job/quyết định qua fan-out shared evidence (`bot_decision`), còn mọi entry PAPER của B trả `PAPER_BOT_STRATEGY_FANOUT_REQUIRED` — đó không phải lỗi dữ liệu QA.
+
 - Idempotent: nếu version PUBLISHED mới nhất của bot đã có đúng overlay hash baseline thì không ghi gì. Nếu QA đã publish tay một overlay khác, seed publish **version mới** mang overlay baseline (cha = head hiện tại, hiệu lực từ thời điểm seed) vì lịch sử version bất biến; draft dở dang của QA được giữ nguyên (draft không có hiệu lực).
 - Với mốc `as_of` trong khoảng dữ liệu (ví dụ `2026-10-01T00:05Z`), resolver trả v1 baseline của A và B; provider fan-out (`EffectiveBotDecisionContextProvider`) chỉ liệt kê bot ENABLED trên account PAPER ENABLED nên C không xuất hiện.
 
@@ -190,6 +192,7 @@ Gợi ý theo WP:
 - Policy `bot_grant_read` cho thành viên đọc grant của chính mình mà không xét trạng thái membership; thành viên bị đình chỉ vẫn không có phiên đăng nhập vì `login`/`authenticate` yêu cầu ACTIVE.
 - Dữ liệu thị trường chỉ có ở workspace `qa`; mốc thời gian là quá khứ nên không dùng để chạy runtime live.
 - Reset hoàn toàn cần xóa volume vì nhiều bảng là append-only/bất biến.
+- Bot B (config PUBLISHED, release `h01-v1` khác root) bị đường entry PAPER cũ từ chối với `PAPER_BOT_STRATEGY_FANOUT_REQUIRED` cho tới MB-04/MB-05 (xem lưu ý ở mục 2.6); chỉ bot chưa có config mới dùng root-fallback.
 - Khôi phục config bot về baseline tạo version mới hiệu lực từ thời điểm seed; replay ở mốc trước đó vẫn thấy version cũ (đúng ngữ nghĩa point-in-time).
 
 ## 9. Thuật ngữ

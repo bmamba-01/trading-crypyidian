@@ -3,8 +3,14 @@
 Ruling tích hợp (controller, 2026-10-25): fan-out evidence chỉ dành cho bot có cấu hình
 bot PUBLISHED hiệu lực tại `as_of`. Bot chưa publish (hoặc config không resolve được) bị loại
 khỏi fan-out kèm mã lý do được log và trả về cho caller; đường PAPER hiện có của bot đó vẫn
-dùng root-fallback của MB-02. Kết quả tất định theo `as_of`: cùng dữ liệu đã publish luôn
-cho cùng tập context (consumer ghim context hash vào job nên phụ thuộc điều này).
+dùng root-fallback của MB-02.
+
+Tính tất định: nội dung của một context đã được chọn chỉ phụ thuộc các version đã publish
+hiệu lực tại `as_of` (root settings, config bot, release), nên resolve lại ở cùng `as_of`
+luôn cho cùng context/context hash (consumer ghim context hash vào job). Riêng việc một bot
+có được *chọn* hay không vẫn có thể đổi theo trạng thái hiện tại của bot/account (ENABLED,
+PAPER) và của strategy release trong workspace (vd. release bị RETIRED làm resolver lỗi);
+khi đó bot bị loại kèm lý do chứ không bao giờ nhận context có nội dung khác.
 """
 
 from __future__ import annotations
