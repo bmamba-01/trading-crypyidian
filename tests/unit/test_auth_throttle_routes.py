@@ -8,7 +8,12 @@ from fastapi.testclient import TestClient
 
 from trading_bot.app import create_app
 from trading_bot.auth.policy import Principal, Role
-from trading_bot.auth.router import get_auth_service, require_csrf
+from trading_bot.auth.router import (
+    get_auth_service,
+    login_account_scope,
+    require_csrf,
+    session_account_scope,
+)
 from trading_bot.auth.service import AuthenticationFailure, AuthIdentity
 from trading_bot.config.settings import AppSettings
 
@@ -36,6 +41,9 @@ class RejectingAuthService:
 
     async def login(self, **_: object) -> object:
         self.login_calls += 1
+        raise AuthenticationFailure(401, "Thông tin xác thực không hợp lệ")
+
+    async def confirm_bootstrap(self, **_: object) -> None:
         raise AuthenticationFailure(401, "Thông tin xác thực không hợp lệ")
 
 
@@ -106,8 +114,13 @@ def test_bootstrap_wrong_token_does_not_feed_the_account_counter() -> None:
     ]
 
     assert statuses == [403] * 5
-    assert limiter.account_failure_count("paper-workspace", "owner@example.test") == 0
-    assert limiter.allow("192.0.2.50", "owner@example.test", account_scope="paper-workspace")
+    assert (
+        limiter.account_failure_count(login_account_scope("Paper-Workspace"), "owner@example.test")
+        == 0
+    )
+    assert limiter.allow(
+        "192.0.2.50", "owner@example.test", account_scope=login_account_scope("paper-workspace")
+    )
 
 
 def test_login_scopes_account_counter_by_workspace_slug() -> None:
@@ -127,8 +140,49 @@ def test_login_scopes_account_counter_by_workspace_slug() -> None:
         },
     )
 
-    assert limiter.account_failure_count("paper-workspace", "owner@example.test") == 1
-    assert limiter.account_failure_count("other-workspace", "owner@example.test") == 0
+    assert (
+        limiter.account_failure_count(login_account_scope("Paper-Workspace"), "owner@example.test")
+        == 1
+    )
+    assert (
+        limiter.account_failure_count(login_account_scope("other-workspace"), "owner@example.test")
+        == 0
+    )
+
+
+def test_login_slug_cannot_forge_the_reauth_account_scope() -> None:
+    """Fix round 2: slug `workspace-id:<uuid>` không được ghi vào bộ đếm reauth."""
+    service = RejectingAuthService()
+    app = create_app(AppSettings(app_env="test"))
+    app.dependency_overrides[get_auth_service] = lambda: service
+    limiter = app.state.login_limiter
+    client = TestClient(app)
+    forged_scope = f"workspace-id:{PRINCIPAL.workspace_id}"
+
+    for path, payload in (
+        (
+            "/api/v1/auth/login",
+            {
+                "workspace_slug": forged_scope,
+                "email": "owner@example.test",
+                "password": "wrong password value",
+                "code": "000000",
+            },
+        ),
+        (
+            "/api/v1/auth/bootstrap/verify",
+            {"workspace_slug": forged_scope, "email": "owner@example.test", "code": "000000"},
+        ),
+    ):
+        client.post(path, json=payload)
+
+    assert limiter.account_failure_count(forged_scope, "owner@example.test") == 0
+    assert (
+        limiter.account_failure_count(
+            session_account_scope(PRINCIPAL.workspace_id), "owner@example.test"
+        )
+        == 0
+    )
 
 
 def test_familiar_owner_can_log_in_while_account_is_under_attack() -> None:
@@ -162,9 +216,13 @@ def test_familiar_owner_can_log_in_while_account_is_under_attack() -> None:
     # Kẻ tấn công từ nhiều IP khác làm đầy bộ đếm tài khoản.
     for index in range(10):
         limiter.record_failure(
-            f"203.0.113.{index}", "owner@example.test", account_scope="paper-workspace"
+            f"203.0.113.{index}",
+            "owner@example.test",
+            account_scope=login_account_scope("paper-workspace"),
         )
-    assert not limiter.allow("203.0.113.200", "owner@example.test", account_scope="paper-workspace")
+    assert not limiter.allow(
+        "203.0.113.200", "owner@example.test", account_scope=login_account_scope("paper-workspace")
+    )
 
     assert client.post("/api/v1/auth/login", json=payload).status_code == 200
 
@@ -180,7 +238,9 @@ def test_login_attack_on_account_does_not_block_reauthenticate_of_live_session()
     limiter = app.state.login_limiter
     for index in range(10):
         limiter.record_failure(
-            f"203.0.113.{index}", "owner@example.test", account_scope="paper-workspace"
+            f"203.0.113.{index}",
+            "owner@example.test",
+            account_scope=login_account_scope("paper-workspace"),
         )
 
     response = TestClient(app).post(

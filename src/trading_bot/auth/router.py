@@ -1,5 +1,6 @@
 from datetime import UTC, datetime
 from typing import Annotated, cast
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 
@@ -45,6 +46,20 @@ def client_address(request: Request) -> str:
     return request.client.host if request.client is not None else "unknown"
 
 
+def login_account_scope(workspace_slug: str) -> str:
+    """Phạm vi bộ đếm tài khoản cho login/bootstrap theo slug người gửi nhập.
+
+    Tiền tố `slug:` tách namespace khỏi `workspace-id:` của reauth: slug thô chưa qua
+    `normalize_slug` (ví dụ `workspace-id:<uuid>`) không thể trùng khóa reauth.
+    """
+    return f"slug:{workspace_slug.strip().casefold()}"
+
+
+def session_account_scope(workspace_id: UUID) -> str:
+    """Phạm vi bộ đếm tài khoản cho reauth, lấy từ phiên đã xác thực."""
+    return f"workspace-id:{workspace_id}"
+
+
 def raise_auth_failure(error: AuthenticationFailure) -> None:
     raise HTTPException(status_code=error.status_code, detail=error.message) from error
 
@@ -58,7 +73,7 @@ async def bootstrap_owner(
     limiter: Annotated[LoginRateLimiter, Depends(get_rate_limiter)],
 ) -> dict[str, str]:
     email = body.email.strip().casefold()
-    scope = body.workspace_slug.strip().casefold()
+    scope = login_account_scope(body.workspace_slug)
     address = client_address(request)
     if not limiter.allow(address, email, account_scope=scope):
         raise HTTPException(status_code=429, detail=THROTTLED_DETAIL)
@@ -100,7 +115,7 @@ async def verify_bootstrap(
     limiter: Annotated[LoginRateLimiter, Depends(get_rate_limiter)],
 ) -> dict[str, str]:
     email = body.email.strip().casefold()
-    scope = body.workspace_slug.strip().casefold()
+    scope = login_account_scope(body.workspace_slug)
     address = client_address(request)
     if not limiter.allow(address, email, account_scope=scope):
         raise HTTPException(status_code=429, detail=THROTTLED_DETAIL)
@@ -127,7 +142,7 @@ async def login(
     limiter: Annotated[LoginRateLimiter, Depends(get_rate_limiter)],
 ) -> dict[str, object]:
     email = body.email.strip().casefold()
-    scope = body.workspace_slug.strip().casefold()
+    scope = login_account_scope(body.workspace_slug)
     address = client_address(request)
     if not limiter.allow(address, email, account_scope=scope):
         raise HTTPException(status_code=429, detail=THROTTLED_DETAIL)
@@ -213,7 +228,7 @@ async def reauthenticate(
     # workspace_id của phiên (khác phạm vi slug của login) để lỗi login do kẻ tấn công
     # dồn vào không chặn được reauth của phiên đang sống; cặp IP quen vẫn bỏ qua nó.
     address = client_address(request)
-    scope = f"workspace-id:{identity.principal.workspace_id}"
+    scope = session_account_scope(identity.principal.workspace_id)
     if not limiter.allow(address, identity.email, account_scope=scope):
         raise HTTPException(status_code=429, detail=THROTTLED_DETAIL)
     try:
