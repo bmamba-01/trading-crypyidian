@@ -19,6 +19,7 @@ from sqlalchemy import Select, select, text
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from trading_bot.adapters.database.errors import is_transient_database_error
 from trading_bot.adapters.database.models import BotInstance, BotRuntimeLeaseRecord
 from trading_bot.domain.execution.runtime_control import (
     MAX_LEASE_TTL,
@@ -185,6 +186,10 @@ class BotRuntimeLease:
         except IntegrityError as error:
             raise RuntimeControlError(runtime_db_reason(error, default)) from None
         except DBAPIError as error:
+            if is_transient_database_error(error):
+                # Lock/statement timeout: giữ nguyên để caller thử lại (fix round 2), không
+                # đổi thành mã từ chối lease (renew bị hạ STANDBY, acquire ghi recovery).
+                raise
             raise RuntimeControlError(runtime_db_reason(error, default)) from None
 
 

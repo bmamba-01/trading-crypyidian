@@ -19,6 +19,7 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from trading_bot.adapters.database.errors import is_transient_database_error
 from trading_bot.adapters.database.repositories.bot_runtime_leases import BotRuntimeLease
 from trading_bot.application.bot_runtime_registry import BotRuntimeRegistry
 from trading_bot.application.outbox import UnitOfWork
@@ -31,6 +32,7 @@ from trading_bot.ports.account_activity import ActivityVerdict
 logger = logging.getLogger(__name__)
 
 TICK_FAILED = "SUPERVISOR_TICK_FAILED"
+TRANSIENT_DATABASE_TIMEOUT = "TRANSIENT_DATABASE_TIMEOUT"
 _LEASE_LOSS = frozenset(
     {"STALE_FENCING_TOKEN", "LEASE_EXPIRED", "LEASE_NOT_HELD", "LEASE_SCOPE_MISMATCH"}
 )
@@ -79,6 +81,8 @@ class BotRuntimeSupervisor:
         self._lease_ttl = lease_ttl
         self._stopping = asyncio.Event()
         self._tick_lock = asyncio.Lock()
+        # account -> (số lần timeout liên tiếp, thời điểm được thử lại); fix round 2.
+        self._retry: dict[UUID, tuple[int, datetime]] = {}
 
     async def tick_once(self) -> None:
         """Một lượt cho mọi bot; lỗi của bot nào chỉ ghi nhận cho bot đó."""
@@ -128,13 +132,15 @@ class BotRuntimeSupervisor:
 
     async def _tick_bot(self, account_id: UUID) -> None:
         entry = self._registry.entry(account_id)
-        if entry.blocked_by_workspace or entry.bot_id is None:
+        if entry.blocked_by_workspace:
+            return
+        if entry.bot_id is None and entry.readiness is not BotReadiness.STANDBY:
             return
         await self._audit_pending_lease_loss(account_id)
         if entry.holds_lease:
             await self._renew(account_id)
             entry = self._registry.entry(account_id)
-        if entry.readiness is BotReadiness.STANDBY:
+        if entry.readiness is BotReadiness.STANDBY and not self._backing_off(account_id):
             await self._reacquire(account_id)
             entry = self._registry.entry(account_id)
         if entry.readiness is not BotReadiness.READY:
@@ -215,10 +221,41 @@ class BotRuntimeSupervisor:
             )
 
     async def _reacquire(self, account_id: UUID) -> None:
-        outcome = await self._bootstrap.bootstrap_bot(account_id)
+        try:
+            outcome = await self._bootstrap.bootstrap_bot(account_id)
+        except Exception as error:
+            if not is_transient_database_error(error):
+                raise
+            self._schedule_retry(account_id)
+            self._registry.mark_standby(account_id, TRANSIENT_DATABASE_TIMEOUT)
+            return
         status = str(getattr(outcome.status, "value", outcome.status))
         if status == "READY" and outcome.account is not None:
+            self._retry.pop(account_id, None)
             self._application.publish_account(outcome.account)
             self._registry.mark_ready(account_id, outcome.account.fence, outcome.account.bot_id)
         elif status == "RECOVERY_REQUIRED":
+            self._retry.pop(account_id, None)
             self._registry.mark_recovery(account_id, outcome.reason_code or TICK_FAILED)
+        elif outcome.reason_code == TRANSIENT_DATABASE_TIMEOUT:
+            self._schedule_retry(account_id)
+            self._registry.mark_standby(account_id, TRANSIENT_DATABASE_TIMEOUT)
+        else:
+            self._retry.pop(account_id, None)
+
+    def _backing_off(self, account_id: UUID) -> bool:
+        retry = self._retry.get(account_id)
+        return retry is not None and self._clock() < retry[1]
+
+    def _schedule_retry(self, account_id: UUID) -> None:
+        """Backoff lũy thừa 2 theo tick, trần = TTL lease (fix round 2).
+
+        Timeout tạm thời (lock/statement) khi re-acquire: bot ở STANDBY và được thử lại; không dồn
+        thêm tải khóa lên workspace đang tranh chấp mỗi tick, nhưng cũng không chờ quá một TTL.
+        """
+        attempts = self._retry.get(account_id, (0, self._clock()))[0] + 1
+        delay = min(
+            timedelta(seconds=self._tick_seconds * (2**attempts)),
+            max(self._lease_ttl, timedelta(seconds=self._tick_seconds)),
+        )
+        self._retry[account_id] = (attempts, self._clock() + delay)

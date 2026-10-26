@@ -31,6 +31,7 @@ from trading_bot.application.paper_runtime_application import (
     PaperRuntimeApplicationService,
 )
 from trading_bot.application.paper_runtime_bootstrap import (
+    TRANSIENT_DATABASE_TIMEOUT,
     PaperRuntimeBootstrapService,
     new_runtime_owner_id,
 )
@@ -140,20 +141,23 @@ def create_app(
             if active_session_factory is not None
             else None
         )
-        supervisor: Any | None = None
+        stopping = asyncio.Event()
         supervisor_task: asyncio.Task[None] | None = None
         if app_settings.process_role == "trading-runtime":
-            supervisor, supervisor_task = await _start_paper_runtime(
+            supervisor_task = await _start_paper_runtime(
                 application,
                 app_settings=app_settings,
                 session_factory=active_session_factory,
                 bootstrap_factory=paper_runtime_bootstrap_factory,
                 context_provider_factory=paper_decision_context_provider_factory,
                 supervisor_factory=paper_runtime_supervisor_factory,
+                stopping=stopping,
             )
         try:
             yield
         finally:
+            stopping.set()
+            supervisor = getattr(application.state, "paper_supervisor", None)
             if supervisor is not None:
                 await supervisor.stop()
             if supervisor_task is not None:
@@ -279,11 +283,13 @@ async def _start_paper_runtime(
     bootstrap_factory: Callable[..., Any] | None,
     context_provider_factory: Callable[..., Any] | None,
     supervisor_factory: Callable[..., Any] | None,
-) -> tuple[Any | None, asyncio.Task[None] | None]:
+    stopping: asyncio.Event,
+) -> asyncio.Task[None] | None:
     """Bootstrap theo bot, dựng registry + application, chạy supervisor (MB05.5).
 
     Không còn cờ readiness toàn process gắn với một account: lỗi/mất lease của một bot chỉ đổi
-    trạng thái bot đó trong registry (WBS C4).
+    trạng thái bot đó trong registry (WBS C4). Timeout tạm thời ở pha workspace (lock/statement,
+    fix round 2) không thành 503 dính: task nền thử lại bootstrap với backoff có trần.
     """
     state = application.state
     state.paper_runtime = None
@@ -307,25 +313,112 @@ async def _start_paper_runtime(
             owner_id=owner_id,
             lease_ttl=lease_ttl,
         )
-        result = await bootstrap.bootstrap()
     except Exception:
-        result = None
-    if result is None:
-        state.paper_runtime_error_code = "PAPER_BOOTSTRAP_FAILED"
-        logger.error(
-            "PAPER runtime bootstrap failed; diagnostic_code=%s", state.paper_runtime_error_code
+        bootstrap = None
+    wiring: dict[str, Any] = {
+        "app_settings": app_settings,
+        "session_factory": session_factory,
+        "context_provider_factory": context_provider_factory,
+        "supervisor_factory": supervisor_factory,
+        "lease_ttl": lease_ttl,
+    }
+    result = await _run_bootstrap(bootstrap)
+    if _bootstrap_is_transient(result):
+        _record_bootstrap_result(state, result)
+        logger.warning(
+            "PAPER runtime bootstrap timeout tạm thời; sẽ thử lại; diagnostic_code=%s",
+            state.paper_runtime_error_code,
         )
-        return None, None
-    registry = BotRuntimeRegistry.from_bootstrap(result)
+        return asyncio.create_task(
+            _retry_paper_runtime(application, bootstrap, stopping=stopping, **wiring)
+        )
+    supervisor = await _wire_paper_runtime(application, bootstrap, result, **wiring)
+    return asyncio.create_task(supervisor.run()) if supervisor is not None else None
+
+
+async def _run_bootstrap(bootstrap: Any) -> Any:
+    if bootstrap is None:
+        return None
+    try:
+        return await bootstrap.bootstrap()
+    except Exception:
+        return None
+
+
+def _bootstrap_is_transient(result: Any) -> bool:
+    return (
+        result is not None
+        and not result.ready
+        and getattr(result, "error_code", None) == TRANSIENT_DATABASE_TIMEOUT
+    )
+
+
+def _record_bootstrap_result(state: Any, result: Any) -> None:
     state.paper_runtime = result
-    state.paper_registry = registry
     state.paper_accounts = result.active_accounts
     state.paper_account_readiness = result.account_states
     state.paper_runtime_error_code = result.error_code
     state.readiness["database"] = result.database_ready
     state.readiness["paper_runtime"] = result.ready
+
+
+async def _retry_paper_runtime(
+    application: FastAPI,
+    bootstrap: Any,
+    *,
+    stopping: asyncio.Event,
+    app_settings: AppSettings,
+    **wiring: Any,
+) -> None:
+    """Thử lại bootstrap (backoff ×2 từ một tick, trần = TTL lease) tới khi không còn timeout."""
+    delay = app_settings.runtime_supervisor_tick_seconds
+    cap = max(float(app_settings.runtime_lease_ttl_seconds), delay)
+    while not stopping.is_set():
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(stopping.wait(), timeout=delay)
+        if stopping.is_set():
+            return
+        result = await _run_bootstrap(bootstrap)
+        if _bootstrap_is_transient(result):
+            _record_bootstrap_result(application.state, result)
+            delay = min(delay * 2, cap)
+            continue
+        supervisor = await _wire_paper_runtime(
+            application, bootstrap, result, app_settings=app_settings, **wiring
+        )
+        if supervisor is None:
+            return
+        if stopping.is_set():
+            await supervisor.stop()
+            return
+        await supervisor.run()
+        return
+
+
+async def _wire_paper_runtime(
+    application: FastAPI,
+    bootstrap: Any,
+    result: Any,
+    *,
+    app_settings: AppSettings,
+    session_factory: async_sessionmaker[AsyncSession] | None,
+    context_provider_factory: Callable[..., Any] | None,
+    supervisor_factory: Callable[..., Any] | None,
+    lease_ttl: timedelta,
+) -> Any | None:
+    """Từ kết quả bootstrap: registry, application, supervisor + tick đầu đồng bộ."""
+    state = application.state
+    if result is None:
+        state.paper_runtime_error_code = "PAPER_BOOTSTRAP_FAILED"
+        logger.error(
+            "PAPER runtime bootstrap failed; diagnostic_code=%s", state.paper_runtime_error_code
+        )
+        return None
+    registry = BotRuntimeRegistry.from_bootstrap(result)
+    state.paper_registry = registry
+    _record_bootstrap_result(state, result)
     if not result.ready:
-        return None, None
+        return None
     try:
         context_provider = (
             context_provider_factory(
@@ -353,10 +446,10 @@ async def _start_paper_runtime(
         logger.error(
             "PAPER application wiring failed; diagnostic_code=%s", state.paper_runtime_error_code
         )
-        return None, None
+        return None
     if not hasattr(bootstrap, "bootstrap_bot") or getattr(result, "owner_id", None) is None:
         # Bootstrap giả (test cũ) không quản lý lease: không chạy supervisor.
-        return None, None
+        return None
     supervisor_builder = supervisor_factory or _default_supervisor
     supervisor = supervisor_builder(
         registry=registry,
@@ -370,7 +463,7 @@ async def _start_paper_runtime(
     state.paper_supervisor = supervisor
     # Tick đầu chạy đồng bộ: áp control đã có và xác minh activity trước khi nhận command.
     await supervisor.tick_once()
-    return supervisor, asyncio.create_task(supervisor.run())
+    return supervisor
 
 
 def _default_supervisor(**kwargs: Any) -> BotRuntimeSupervisor:

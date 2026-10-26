@@ -27,6 +27,10 @@ from uuid import UUID, uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from trading_bot.adapters.database.errors import (
+    database_sqlstate,
+    is_transient_database_error,
+)
 from trading_bot.adapters.database.repositories.bot_runtime_leases import BotRuntimeLease
 from trading_bot.adapters.database.repositories.bot_runtime_states import (
     BotRuntimeStateRepository,
@@ -72,6 +76,8 @@ from trading_bot.domain.execution.runtime_control import (
 logger = logging.getLogger(__name__)
 
 DEFAULT_LEASE_TTL = timedelta(seconds=30)
+# Lock/statement timeout khi bootstrap (fix round 2): tạm thời, thử lại; không phải lỗi recovery.
+TRANSIENT_DATABASE_TIMEOUT = "TRANSIENT_DATABASE_TIMEOUT"
 
 
 def new_runtime_owner_id() -> str:
@@ -159,6 +165,14 @@ class _BotBootstrapFailure(RuntimeError):
         self.reason_code = reason_code
 
 
+class _TransientBotFailure(RuntimeError):
+    """Lock/statement timeout trong pha bot; mang `bot_id` để supervisor thử lại."""
+
+    def __init__(self, bot_id: UUID | None) -> None:
+        super().__init__(TRANSIENT_DATABASE_TIMEOUT)
+        self.bot_id = bot_id
+
+
 @dataclass(frozen=True, slots=True)
 class _WorkspaceContext:
     published: PublishedWorkspaceSettings
@@ -217,6 +231,7 @@ class PaperRuntimeBootstrapService:
         self._bot_config_loader = bot_config_loader
         self._workspace: _WorkspaceContext | None = None
         self._listed_account_ids: list[UUID] = []
+        self._last_bot_id: UUID | None = None
 
     @property
     def owner_id(self) -> str:
@@ -243,10 +258,19 @@ class PaperRuntimeBootstrapService:
                 list(self._listed_account_ids), error.reason_code, database_ready
             )
         except Exception as error:  # DB/hạ tầng: không lộ chi tiết
+            if is_transient_database_error(error):
+                # Fix round 2: chờ L1/statement quá hạn -> caller (app) thử lại có backoff.
+                logger.warning(
+                    "Pha workspace PAPER runtime timeout tạm thời; database_sqlstate=%s",
+                    database_sqlstate(error),
+                )
+                return self._workspace_failed(
+                    list(self._listed_account_ids), TRANSIENT_DATABASE_TIMEOUT, True
+                )
             logger.error(
                 "Lỗi pha workspace PAPER runtime; exception_type=%s database_sqlstate=%s",
                 type(error).__name__,
-                getattr(getattr(error, "orig", None), "sqlstate", None),
+                database_sqlstate(error),
             )
             return self._workspace_failed(
                 list(self._listed_account_ids), "PAPER_BOOTSTRAP_FAILED", database_ready
@@ -331,6 +355,8 @@ class PaperRuntimeBootstrapService:
         bot_id: UUID | None = None
         try:
             return await self._hydrate_bot(account, workspace)
+        except _TransientBotFailure as error:
+            return self._transient_standby(account.id, error.bot_id)
         except _BotBootstrapFailure as error:
             reason = error.reason_code
         except RuntimeControlError as error:
@@ -343,19 +369,46 @@ class PaperRuntimeBootstrapService:
                 )
             reason = error.reason_code
         except Exception as error:
+            if is_transient_database_error(error):
+                return self._transient_standby(account.id, bot_id)
             logger.error(
                 "Lỗi pha bot PAPER runtime; exception_type=%s database_sqlstate=%s",
                 type(error).__name__,
-                getattr(getattr(error, "orig", None), "sqlstate", None),
+                database_sqlstate(error),
             )
             reason = "PAPER_BOOTSTRAP_FAILED"
         return await self._record_recovery_required(account, reason, bot_id)
 
+    def _transient_standby(self, account_id: UUID, bot_id: UUID | None) -> BotBootstrapOutcome:
+        """Timeout tạm thời: STANDBY (không lease, không ghi state) để supervisor thử lại.
+
+        Không bao giờ ghi RECOVERY_REQUIRED cho lock/statement timeout (fix round 2): đó không
+        phải lỗi dữ liệu, và RECOVERY_REQUIRED không được supervisor thử lại.
+        """
+        logger.warning("Pha bot PAPER runtime timeout tạm thời; sẽ thử lại ở tick sau.")
+        return BotBootstrapOutcome(
+            account_id, bot_id, PaperAccountRuntimeStatus.STANDBY, TRANSIENT_DATABASE_TIMEOUT
+        )
+
     async def _hydrate_bot(self, account: Any, workspace: _WorkspaceContext) -> BotBootstrapOutcome:
+        # Pha bot chạy tuần tự (bootstrap hoặc supervisor giữ `_tick_lock`), nên ghi bot_id vừa
+        # bind vào instance là an toàn; cần để STANDBY tạm thời vẫn mang bot_id cho supervisor.
+        self._last_bot_id = None
+        try:
+            return await self._hydrate_bot_in_uow(account, workspace)
+        except Exception as error:
+            if is_transient_database_error(error):
+                raise _TransientBotFailure(self._last_bot_id) from error
+            raise
+
+    async def _hydrate_bot_in_uow(
+        self, account: Any, workspace: _WorkspaceContext
+    ) -> BotBootstrapOutcome:
         async with self._unit_of_work_factory(
             self._sessions, workspace_id=self._workspace_id
         ) as uow:
             bot_id = await uow.bind_account(account.id)
+            self._last_bot_id = bot_id
             if (
                 account.workspace_id != self._workspace_id
                 or account.mode != "PAPER"
@@ -459,6 +512,8 @@ class PaperRuntimeBootstrapService:
                 )
             logger.error("Không ghi được RECOVERY_REQUIRED; reason_code=%s", error.reason_code)
         except Exception as error:
+            if is_transient_database_error(error):
+                return self._transient_standby(account.id, bot_id)
             logger.error(
                 "Không ghi được RECOVERY_REQUIRED; exception_type=%s", type(error).__name__
             )

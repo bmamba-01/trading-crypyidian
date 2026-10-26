@@ -20,6 +20,19 @@ from trading_bot.domain.execution.runtime_control import (
 NOW = datetime(2026, 10, 26, 9, 0, tzinfo=UTC)
 
 
+class _PgError(Exception):
+    def __init__(self, sqlstate: str) -> None:
+        super().__init__(f"synthetic sqlstate {sqlstate}")
+        self.sqlstate = sqlstate
+
+
+def database_error(sqlstate: str) -> Exception:
+    """DBAPIError giả mang SQLSTATE như psycopg (55P03 lock_timeout, 57014 statement_timeout)."""
+    from sqlalchemy.exc import OperationalError
+
+    return OperationalError("SELECT 1", {}, _PgError(sqlstate))
+
+
 def published_settings(workspace_id: UUID) -> PublishedWorkspaceSettings:
     return PublishedWorkspaceSettings(
         workspace_id=workspace_id,
@@ -56,6 +69,17 @@ class World:
         self.bot_configs: dict[UUID, object | None] = {}
         self.gateways: list[FakeGateway] = []
         self.settings_unavailable = False
+        # (site, key) -> [số lần còn lỗi, sqlstate]; site: "l1", "acquire", "hydrate".
+        self.transient: dict[tuple[str, object], list[Any]] = {}
+
+    def fail_transient(self, site: str, key: object, times: int = 1, sqlstate: str = "55P03"):
+        self.transient[(site, key)] = [times, sqlstate]
+
+    def maybe_fail(self, site: str, key: object) -> None:
+        entry = self.transient.get((site, key))
+        if entry is not None and entry[0] > 0:
+            entry[0] -= 1
+            raise database_error(entry[1])
 
     # --- factories ---------------------------------------------------------------------
     def unit_of_work(self, _sessions: object, *, workspace_id: UUID, bot_id=None, **_: object):
@@ -148,7 +172,7 @@ class FakeSettingsRepository:
         self.world = world
 
     async def lock_workspace(self, _workspace_id: UUID) -> None:
-        return None
+        self.world.maybe_fail("l1", None)
 
     async def load_effective_config(self, *, workspace_id: UUID, **_: object):
         if self.world.settings_unavailable or self.world.published is None:
@@ -167,6 +191,7 @@ class FakeLease:
         self, workspace_id: UUID, bot_id: UUID, owner_id: str, expires_at: datetime
     ) -> LeaseGrant:
         del workspace_id
+        self.world.maybe_fail("acquire", bot_id)
         if bot_id in self.world.held_elsewhere:
             raise RuntimeControlError("LEASE_HELD_ELSEWHERE")
         previous_owner = self.world.owners.get(bot_id)
@@ -235,6 +260,7 @@ class FakeCoordinator:
         self.gateway = gateway
 
     async def hydrate_account(self, uow: FakeUnitOfWork, *, account_id: UUID) -> None:
+        self.world.maybe_fail("hydrate", account_id)
         if account_id in self.world.failing_hydrate:
             from trading_bot.application.paper_lifecycle import PaperLifecycleConflict
 
