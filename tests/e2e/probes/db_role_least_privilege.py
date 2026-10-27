@@ -469,6 +469,18 @@ def check_matrix(connection):
             (table,),
         ).fetchone()[0]
         assert set(actual_roles) == roles, (table, actual_roles)
+    receipt_policies = {
+        row[0]: (set(row[1]), row[2])
+        for row in connection.execute(
+            "SELECT policyname, roles::text[], cmd FROM pg_policies "
+            "WHERE schemaname='public' AND tablename='telegram_update_receipt'"
+        ).fetchall()
+    }
+    assert receipt_policies == {
+        "workspace_isolation": ({ADMIN}, "SELECT"),
+        "receipt_insert": ({ADMIN}, "INSERT"),
+        "receipt_purge": ({ADMIN}, "DELETE"),
+    }, receipt_policies
     for table in FORCE_RLS_TABLES:
         enabled, forced = connection.execute(
             "SELECT relrowsecurity, relforcerowsecurity FROM pg_class WHERE oid = %s::regclass",
@@ -735,7 +747,7 @@ def admin(connection):
         # Fix round 1: không code nào sửa status membership (predicate RLS MB-01) hay cap account.
         "UPDATE user_membership SET status = 'SUSPENDED'",
         "UPDATE trading_account SET max_notional = 999999",
-        "UPDATE trading_account SET status = 'DISABLED'",
+        # MB-07a: `UPDATE (status)` đã được cấp; chuyển trạng thái kiểm ở `admin_account_status`.
         "UPDATE trading_account SET name = 'renamed'",
         "UPDATE role_binding SET role = 'owner'",
         "DELETE FROM role_binding",
@@ -754,6 +766,8 @@ def admin(connection):
         *ADMIN_REGISTRY_ATTACKS,
     ):
         denied(connection, statement)
+    admin_account_status(connection)
+    admin_telegram_receipt(connection)
     with connection.transaction():
         scope(connection, member=M1)
         for table in (
@@ -845,7 +859,56 @@ def admin(connection):
     )
     assert scalar(connection, "SELECT count(*) FROM mfa_factor", workspace=W2, member=M2) == 1
     assert scalar(connection, "SELECT count(*) FROM mfa_factor", workspace="") == 0
-    return {"role": ADMIN, "denied": 20 + len(ADMIN_REGISTRY_ATTACKS)}
+    return {"role": ADMIN, "denied": 19 + len(ADMIN_REGISTRY_ATTACKS)}
+
+
+def admin_account_status(connection):
+    """MB-07a (migration f7b9d1e3a5c8): admin-web chỉ ENABLED → DISABLED; rollback dữ liệu."""
+    with connection.transaction(force_rollback=True):
+        scope(connection, member=M1)
+        status = connection.execute(
+            "SELECT status FROM trading_account WHERE id = %s", (A1,)
+        ).fetchone()[0]
+        assert status == "ENABLED", status
+        disabled = connection.execute(
+            "UPDATE trading_account SET status = 'DISABLED' WHERE id = %s", (A1,)
+        ).rowcount
+        assert disabled == 1
+        outcome = "ALLOWED"
+        try:
+            with connection.transaction():
+                connection.execute(
+                    "UPDATE trading_account SET status = 'ENABLED' WHERE id = %s", (A1,)
+                )
+        except psycopg.Error as error:
+            outcome = f"{error.sqlstate}:{str(error).splitlines()[0]}"
+        assert outcome == "23514:MB07A_ACCOUNT_STATUS_TRANSITION_DENIED", outcome
+
+
+def admin_telegram_receipt(connection):
+    """Receipt Telegram: admin-web INSERT/SELECT; DELETE chỉ xóa được hàng quá 7 ngày."""
+    with connection.transaction(force_rollback=True):
+        scope(connection, member=M1)
+        connection.execute(
+            "INSERT INTO telegram_update_receipt (id, workspace_id, update_id) "
+            "VALUES (gen_random_uuid(), %s, 4242)",
+            (W1,),
+        )
+        visible = connection.execute(
+            "SELECT count(*) FROM telegram_update_receipt WHERE update_id = 4242"
+        ).fetchone()[0]
+        assert visible == 1
+        purged = connection.execute(
+            "DELETE FROM telegram_update_receipt WHERE update_id = 4242"
+        ).rowcount
+        assert purged == 0, "receipt gần đây phải bất biến (policy receipt_purge)"
+        denied_update = False
+        try:
+            with connection.transaction():
+                connection.execute("UPDATE telegram_update_receipt SET update_id = 1")
+        except psycopg.Error as error:
+            denied_update = error.sqlstate == "42501"
+        assert denied_update
 
 
 password = Path(os.environ["TRADING_BOT_DATABASE_PASSWORD_FILE"]).read_text().strip()

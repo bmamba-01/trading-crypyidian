@@ -328,7 +328,8 @@ def mb07a_inspect() -> dict[str, Any]:
         # Fix round 1 minor 1: lớp DB chặn admin-web enable lại account đã DISABLED.
         account_a = ws["accounts"]["a"]
         try:
-            with connection.transaction():
+            # force_rollback: kể cả khi trigger không chặn, dữ liệu không đổi.
+            with connection.transaction(force_rollback=True):
                 connection.execute("SET LOCAL ROLE crypidian_admin_web")
                 connection.execute("SELECT set_config('app.workspace_id', %s, true)", (workspace,))
                 connection.execute(
@@ -339,8 +340,12 @@ def mb07a_inspect() -> dict[str, Any]:
             reenable = (
                 "MB07A_ACCOUNT_STATUS_TRANSITION_DENIED"
                 if "MB07A_ACCOUNT_STATUS_TRANSITION_DENIED" in str(error)
-                else type(error).__name__
+                else f"{type(error).__name__}:{error.sqlstate}"
             )
+        finally:
+            # Fix round 2 (6): role luôn trả về superuser của probe, kể cả nhánh lỗi.
+            connection.execute("RESET ROLE")
+        role_after = connection.execute("SELECT current_user").fetchone()[0]
         dump = connection.execute(
             "SELECT coalesce(string_agg(coalesce(reason, '') || ' ' || action, ' '), '') "
             "FROM audit_event"
@@ -356,6 +361,7 @@ def mb07a_inspect() -> dict[str, Any]:
         "bot_status": {key: list(value) for key, value in bot_status.items()},
         "controls": controls,
         "admin_web_reenable": reenable,
+        "role_after_reenable": role_after,
         "audit_leak": any(token in dump for token in tokens),
         # Text tin nhắn người dùng không vào audit (ruling 41); chỉ mã lý do/hằng của handler.
         "user_text_in_audit": "MB07A-USER-TEXT" in dump,

@@ -90,6 +90,7 @@ def _setup(
     configured: bool = True,
     throttle: TelegramCommandThrottle | None = None,
     unbound_sampler: TelegramCommandThrottle | None = None,
+    pause_throttle: TelegramCommandThrottle | None = None,
 ) -> tuple[TestClient, Store, FakeTelegramStore, RecordingTelegramSender]:
     store = seeded_store()
     telegram = FakeTelegramStore()
@@ -105,8 +106,9 @@ def _setup(
             store=telegram,
             handler=BotCommandHandler(build_operations(store)),
             sender=sender,
-            throttle=throttle or TelegramCommandThrottle(),
+            throttle=throttle if throttle is not None else TelegramCommandThrottle(),
             unbound_sampler=unbound_sampler,
+            pause_throttle=pause_throttle,
         )
         if configured
         else None
@@ -448,12 +450,15 @@ def test_failing_audit_after_claim_still_returns_200() -> None:
 
     response = _send(client, _message("/bots", update_id=303))
 
-    assert response.json() == {"ok": True, "status": "unavailable"}
+    # Fix round 2 (4): lỗi không tạm thời có trạng thái/mã riêng, không phải "unavailable".
+    assert response.json() == {"ok": True, "status": "failed"}
     assert sender.messages
 
 
-def test_sender_is_throttled_before_any_database_or_audit_work() -> None:
-    client, _, telegram, _ = _setup(throttle=TelegramCommandThrottle(limit=2, window_seconds=60))
+def test_sender_is_throttled_before_claim_or_binding_lookup() -> None:
+    client, _, telegram, sender = _setup(
+        throttle=TelegramCommandThrottle(limit=2, window_seconds=60)
+    )
 
     statuses = [
         _send(client, _message("/bots", user=UNBOUND_TG, update_id=index)).json()["status"]
@@ -463,6 +468,137 @@ def test_sender_is_throttled_before_any_database_or_audit_work() -> None:
     assert statuses == ["unbound", "unbound", "throttled", "throttled"]
     assert telegram.calls.count("claim") == 2
     assert telegram.calls.count("binding") == 2
+    # Fix round 2 (2): throttle có trả lời + audit gộp mẫu (1 lần/cửa sổ/sender), không lookup DB.
+    throttled = [audit for audit in telegram.audits if audit["reason"] == "TELEGRAM_THROTTLED"]
+    assert len(throttled) == 1
+    assert throttled[0]["actor_membership_id"] is None
+    assert sum("Quá nhiều lệnh" in text for _, text in sender.messages) == 1
+
+
+# --- fix round 2 -----------------------------------------------------------------------------
+def test_throttled_bound_user_gets_reply_and_sampled_audit_never_silent() -> None:
+    client, store, telegram, sender = _setup(
+        throttle=TelegramCommandThrottle(limit=1, window_seconds=60)
+    )
+
+    first = _send(client, _message("/bots", update_id=601))
+    second = _send(client, _message("/bots", update_id=602))
+    third = _send(client, _message("/bots", update_id=603))
+
+    assert [r.json()["status"] for r in (first, second, third)] == [
+        "processed",
+        "throttled",
+        "throttled",
+    ]
+    assert (WORKSPACE, 602) not in telegram.receipts
+    assert sum("Quá nhiều lệnh" in text for _, text in sender.messages) == 1
+    assert [a["reason"] for a in telegram.audits].count("TELEGRAM_THROTTLED") == 1
+
+
+def test_pause_has_its_own_bounded_budget_so_other_commands_cannot_starve_it() -> None:
+    """Pause giảm rủi ro + idempotent (SEC-22): không bị lệnh khác làm cạn ngân sách."""
+    client, store, telegram, sender = _setup(
+        throttle=TelegramCommandThrottle(limit=1, window_seconds=60),
+        pause_throttle=TelegramCommandThrottle(limit=2, window_seconds=60),
+    )
+
+    _send(client, _message("/bots", update_id=701))
+    assert _send(client, _message("/bots", update_id=702)).json()["status"] == "throttled"
+    paused = _send(client, _message(f"/bot pause {BOT_A}", update_id=703))
+    again = _send(client, _message(f"/bot pause {BOT_A}", update_id=704))
+    flood = _send(client, _message(f"/bot pause {BOT_A}", update_id=705))
+
+    assert paused.json()["status"] == "processed"
+    assert again.json()["status"] == "processed"
+    assert flood.json()["status"] == "throttled"  # vẫn có trần
+    assert store.bot_rows[BOT_A][-1].value == "PAUSED"
+
+
+def test_throttle_evicts_expired_keys_and_bounds_memory() -> None:
+    now = [0.0]
+    throttle = TelegramCommandThrottle(limit=1, window_seconds=10, clock=lambda: now[0], max_keys=3)
+
+    for key in ("a", "b", "c"):
+        assert throttle.allow(key)
+    assert len(throttle) == 3
+    assert throttle.allow("d")  # vượt trần: khóa cũ nhất bị loại
+    assert len(throttle) == 3
+    now[0] = 11.0
+    assert throttle.allow("e")
+    assert len(throttle) == 1  # mọi khóa đã hết cửa sổ bị dọn theo thời gian
+    assert throttle.allow("a")
+
+
+def test_many_distinct_senders_do_not_grow_samplers_without_bound() -> None:
+    client, _, _, _ = _setup()
+    service = client.app.state.telegram_webhook  # type: ignore[attr-defined]
+
+    for index in range(1, 40):
+        _send(client, _message("/bots", user=9_000_000 + index, update_id=800 + index))
+
+    assert len(service._throttle) <= service._throttle.max_keys
+    assert len(service._unbound_sampler) <= service._unbound_sampler.max_keys
+    assert service._throttle.max_keys <= 10_000
+
+
+@pytest.mark.parametrize(
+    ("error", "status", "reason"),
+    [
+        (lock_timeout_error(), "unavailable", "RUNTIME_CONTROL_UNAVAILABLE"),
+        (RuntimeError("bug"), "failed", "TELEGRAM_COMMAND_FAILED"),
+    ],
+    ids=["transient", "non-transient"],
+)
+def test_catch_all_distinguishes_transient_and_logs_sqlstate_and_location(
+    error: BaseException, status: str, reason: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.DEBUG)
+    client, _, telegram, _ = _setup()
+    telegram.fail_binding = error
+
+    response = _send(client, _message("/bots", update_id=901))
+
+    assert response.json() == {"ok": True, "status": status}
+    assert telegram.audits[-1]["reason"] == reason
+    errors = [record for record in caplog.records if record.levelno == logging.ERROR]
+    assert len(errors) == 1
+    text = errors[0].getMessage()
+    assert "test_telegram_webhook.py:" in text  # frame ném lỗi (file:dòng)
+    expected_state = "55P03" if status == "unavailable" else "None"
+    assert f"sqlstate={expected_state}" in text
+    assert errors[0].exc_info is None  # không stack/giá trị biến
+    assert "SQL-PARAM-MUST-NOT-LEAK" not in caplog.text
+
+
+def test_binding_failure_reply_goes_through_unbound_sampler() -> None:
+    client, _, telegram, sender = _setup()
+    telegram.fail_binding = lock_timeout_error()
+
+    for index in (911, 912, 913):
+        _send(client, _message("/bots", update_id=index))
+
+    assert len(sender.messages) == 1
+    assert len([a for a in telegram.audits if a["reason"] == "RUNTIME_CONTROL_UNAVAILABLE"]) == 3
+
+
+def test_applied_pause_is_not_reported_as_rejected_when_accept_audit_fails() -> None:
+    client, store, telegram, sender = _setup()
+    original = telegram.record_audit
+
+    async def flaky_audit(workspace_id: UUID, **values: Any) -> None:
+        if values["action"] == "telegram.command.accepted":
+            raise RuntimeError("audit down")
+        await original(workspace_id, **values)
+
+    telegram.record_audit = flaky_audit  # type: ignore[method-assign]
+
+    response = _send(client, _message(f"/bot pause {BOT_A}", update_id=921))
+
+    assert response.json() == {"ok": True, "status": "processed"}
+    assert store.bot_rows[BOT_A][-1].value == "PAUSED"
+    assert not [a for a in telegram.audits if a["action"] == "telegram.command.rejected"]
+    assert "đã pause" in sender.messages[-1][1]
+    assert "thử lại" not in sender.messages[-1][1]
 
 
 def test_unbound_rejections_are_coalesced_per_sender() -> None:
