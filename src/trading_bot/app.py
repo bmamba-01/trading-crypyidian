@@ -21,16 +21,16 @@ from trading_bot.adapters.database.engine import (
 )
 from trading_bot.adapters.paper.account_activity import PaperLedgerAccountActivityAdapter
 from trading_bot.adapters.secrets.local_mfa import LocalMfaSecretProvider
-from trading_bot.admin.bot_reports_router import router as bot_reports_router
 from trading_bot.adapters.telegram.recording_sender import RecordingTelegramSender
 from trading_bot.admin.bot_control_router import router as bot_control_router
+from trading_bot.admin.bot_reports_router import router as bot_reports_router
 from trading_bot.admin.bot_service import BotConfigAdminService
 from trading_bot.admin.bots_router import router as bots_router
 from trading_bot.admin.settings_router import router as settings_router
 from trading_bot.admin.settings_service import SettingsAdminService
 from trading_bot.application.account_activity_guard import AccountActivityGuard
-from trading_bot.application.bot_reporting import BotReportingService
 from trading_bot.application.bot_operations import BotOperationsService
+from trading_bot.application.bot_reporting import BotReportingService
 from trading_bot.application.bot_runtime_registry import BotRuntimeRegistry
 from trading_bot.application.bot_runtime_supervisor import BotRuntimeSupervisor
 from trading_bot.application.paper_runtime_application import (
