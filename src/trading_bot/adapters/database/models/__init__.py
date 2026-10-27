@@ -72,6 +72,7 @@ from trading_bot.adapters.database.models.signal_entities import (
     BotDecisionRecord,
     SharedSignalEvidenceRecord,
 )
+from trading_bot.adapters.database.models.telegram_entities import TelegramUpdateReceipt
 
 __all__ = [
     "AccountActivityIncidentRecord",
@@ -120,6 +121,7 @@ __all__ = [
     "SharedSignalEvidenceRecord",
     "StrategyRelease",
     "TelegramBinding",
+    "TelegramUpdateReceipt",
     "TradingAccount",
     "TradePlanRecord",
     "TradeCostRecord",

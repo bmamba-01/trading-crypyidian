@@ -64,6 +64,22 @@ def runtime_session_timeouts(lease_ttl: timedelta) -> SessionTimeouts:
     )
 
 
+def admin_web_session_timeouts() -> SessionTimeouts:
+    """Timeout phiên admin-web (MB-07a ruling 40).
+
+    Đường disable bot (guard phẳng) và control mutation giữ L1 `workspace-settings` trong
+    admin-web: request treo giữa transaction bị PostgreSQL cắt sau 15 s để runtime không bị chặn
+    lâu; chờ khóa quá 5 s trả `55P03` thay vì treo request; câu lệnh dài nhất 30 s (báo cáo
+    MB-06 cũng chạy trong admin-web). `lock_timeout` < `statement_timeout` theo khuyến nghị
+    PostgreSQL; đặt theo phiên qua `options`, không đặt toàn cục.
+    """
+    return SessionTimeouts(
+        lock_timeout_ms=5_000,
+        idle_in_transaction_timeout_ms=15_000,
+        statement_timeout_ms=30_000,
+    )
+
+
 def create_database_engine(
     url: URL, *, session_timeouts: SessionTimeouts | None = None
 ) -> AsyncEngine:

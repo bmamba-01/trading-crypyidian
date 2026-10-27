@@ -181,6 +181,11 @@ COLUMN_UPDATE[ADMIN] |= {
         "resolved_at",
     }
 }
+# MB-07a (migration f7b9d1e3a5c8): disable bot cập nhật đúng cột `trading_account.status`
+# (ruling 29/34); bảng dedup Telegram append-only chỉ admin-web SELECT/INSERT.
+COLUMN_UPDATE[ADMIN]["trading_account"] = {"updated_at", "status"}
+MULTIBOT_TABLES += ("telegram_update_receipt",)
+TABLE_PRIVILEGES[ADMIN] |= {"telegram_update_receipt": {"SELECT", "INSERT"}}
 
 
 def identity(name):

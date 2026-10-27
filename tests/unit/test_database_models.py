@@ -76,6 +76,7 @@ def test_schema_contains_all_foundation_tables() -> None:
         "bot_runtime_lease",
         "bot_runtime_state",
         "account_activity_incident",
+        "telegram_update_receipt",
     }
 
 

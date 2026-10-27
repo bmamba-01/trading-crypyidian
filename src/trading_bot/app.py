@@ -13,6 +13,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from trading_bot.adapters.database.engine import (
+    admin_web_session_timeouts,
     create_database_engine,
     create_session_factory,
     database_url_from_secret,
@@ -21,12 +22,15 @@ from trading_bot.adapters.database.engine import (
 from trading_bot.adapters.paper.account_activity import PaperLedgerAccountActivityAdapter
 from trading_bot.adapters.secrets.local_mfa import LocalMfaSecretProvider
 from trading_bot.admin.bot_reports_router import router as bot_reports_router
+from trading_bot.adapters.telegram.recording_sender import RecordingTelegramSender
+from trading_bot.admin.bot_control_router import router as bot_control_router
 from trading_bot.admin.bot_service import BotConfigAdminService
 from trading_bot.admin.bots_router import router as bots_router
 from trading_bot.admin.settings_router import router as settings_router
 from trading_bot.admin.settings_service import SettingsAdminService
 from trading_bot.application.account_activity_guard import AccountActivityGuard
 from trading_bot.application.bot_reporting import BotReportingService
+from trading_bot.application.bot_operations import BotOperationsService
 from trading_bot.application.bot_runtime_registry import BotRuntimeRegistry
 from trading_bot.application.bot_runtime_supervisor import BotRuntimeSupervisor
 from trading_bot.application.paper_runtime_application import (
@@ -43,6 +47,13 @@ from trading_bot.auth.service import AuthService
 from trading_bot.common.http_security import SecurityHeadersMiddleware, security_headers
 from trading_bot.config.settings import AppSettings
 from trading_bot.ports.secrets import SecretProvider
+from trading_bot.telegram.bot_commands import BotCommandHandler
+from trading_bot.telegram.webhook import (
+    DatabaseTelegramStore,
+    TelegramWebhookService,
+    load_webhook_secret,
+)
+from trading_bot.telegram.webhook import router as telegram_router
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +97,9 @@ def build_database_engine(settings: AppSettings) -> AsyncEngine | None:
                 timedelta(seconds=settings.runtime_lease_ttl_seconds)
             ),
         )
+    if settings.process_role == "admin-web":
+        # MB-07a ruling 40: admin-web giữ L1 khi disable/control; mọi chờ/treo có giới hạn.
+        return create_database_engine(database_url, session_timeouts=admin_web_session_timeouts())
     return create_database_engine(database_url)
 
 
@@ -148,6 +162,15 @@ def create_app(
             if active_session_factory is not None
             else None
         )
+        application.state.bot_operations_service = (
+            BotOperationsService(active_session_factory)
+            if active_session_factory is not None
+            else None
+        )
+        application.state.telegram_sender = RecordingTelegramSender()
+        application.state.telegram_webhook = _build_telegram_webhook(
+            app_settings, active_session_factory, application.state
+        )
         stopping = asyncio.Event()
         supervisor_task: asyncio.Task[None] | None = None
         if app_settings.process_role == "trading-runtime":
@@ -194,6 +217,8 @@ def create_app(
     app.include_router(settings_router)
     app.include_router(bots_router)
     app.include_router(bot_reports_router)
+    app.include_router(bot_control_router)
+    app.include_router(telegram_router)
 
     @app.exception_handler(RequestValidationError)
     async def validation_error_response(
@@ -269,6 +294,28 @@ def create_app(
         }
 
     return app
+
+
+def _build_telegram_webhook(
+    settings: AppSettings,
+    sessions: async_sessionmaker[AsyncSession] | None,
+    state: Any,
+) -> TelegramWebhookService | None:
+    """Webhook Telegram chỉ bật khi admin-web cấu hình workspace + secret và có DB (ruling 37)."""
+    if (
+        settings.telegram_workspace_id is None
+        or settings.telegram_webhook_secret_file is None
+        or sessions is None
+        or state.bot_operations_service is None
+    ):
+        return None
+    return TelegramWebhookService(
+        workspace_id=settings.telegram_workspace_id,
+        secret=load_webhook_secret(settings.telegram_webhook_secret_file),
+        store=DatabaseTelegramStore(sessions),
+        handler=BotCommandHandler(state.bot_operations_service),
+        sender=state.telegram_sender,
+    )
 
 
 def _empty_summary() -> dict[str, int]:

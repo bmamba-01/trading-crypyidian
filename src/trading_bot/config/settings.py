@@ -40,6 +40,23 @@ class AppSettings(BaseSettings):
     mfa_encryption_key_file: Path | None = None
     mfa_secret_directory: Path | None = None
     bootstrap_token_file: Path | None = None
+    # Webhook Telegram (MB-07a ruling 37): gắn với một workspace deployment và một secret riêng;
+    # chỉ admin-web phục vụ webhook. Secret chỉ đọc từ file, không nhận qua biến môi trường.
+    telegram_workspace_id: UUID | None = None
+    telegram_webhook_secret_file: Path | None = None
+
+    @model_validator(mode="after")
+    def validate_telegram_webhook(self) -> AppSettings:
+        """Webhook Telegram cần đủ workspace + file secret và chỉ chạy ở admin-web."""
+        configured = (self.telegram_workspace_id, self.telegram_webhook_secret_file)
+        if any(value is not None for value in configured):
+            if any(value is None for value in configured):
+                raise ValueError(
+                    "Webhook Telegram cần cả telegram_workspace_id và telegram_webhook_secret_file."
+                )
+            if self.process_role != "admin-web":
+                raise ValueError("Webhook Telegram chỉ cấu hình cho process_role admin-web.")
+        return self
 
     @model_validator(mode="after")
     def validate_runtime_identity(self) -> AppSettings:

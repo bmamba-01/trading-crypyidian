@@ -31,8 +31,9 @@ def test_strict_fence_migration_chains_after_part_a_head() -> None:
 
     assert module.revision == "e1f3a5c7b9d2"
     assert module.down_revision == "e4f6a8c0d2b5"  # sau MB-04 equity aggregate
-    heads = {_load(path.stem.split("_")[0]).down_revision for path in VERSIONS.glob("*.py")}
-    assert "e1f3a5c7b9d2" not in heads  # chưa có revision nào nối sau (single head)
+    parents = [_load(path.stem.split("_")[0]).down_revision for path in VERSIONS.glob("*.py")]
+    # MB-07a nối đúng một revision sau (`f7b9d1e3a5c8`); chuỗi vẫn một head.
+    assert parents.count("e1f3a5c7b9d2") == 1
 
 
 def _executed(module: ModuleType, function: str) -> list[str]:
