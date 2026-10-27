@@ -20,11 +20,13 @@ from trading_bot.adapters.database.engine import (
 )
 from trading_bot.adapters.paper.account_activity import PaperLedgerAccountActivityAdapter
 from trading_bot.adapters.secrets.local_mfa import LocalMfaSecretProvider
+from trading_bot.admin.bot_reports_router import router as bot_reports_router
 from trading_bot.admin.bot_service import BotConfigAdminService
 from trading_bot.admin.bots_router import router as bots_router
 from trading_bot.admin.settings_router import router as settings_router
 from trading_bot.admin.settings_service import SettingsAdminService
 from trading_bot.application.account_activity_guard import AccountActivityGuard
+from trading_bot.application.bot_reporting import BotReportingService
 from trading_bot.application.bot_runtime_registry import BotRuntimeRegistry
 from trading_bot.application.bot_runtime_supervisor import BotRuntimeSupervisor
 from trading_bot.application.paper_runtime_application import (
@@ -141,6 +143,11 @@ def create_app(
             if active_session_factory is not None
             else None
         )
+        application.state.bot_reporting_service = (
+            BotReportingService(active_session_factory)
+            if active_session_factory is not None
+            else None
+        )
         stopping = asyncio.Event()
         supervisor_task: asyncio.Task[None] | None = None
         if app_settings.process_role == "trading-runtime":
@@ -186,6 +193,7 @@ def create_app(
     app.include_router(auth_router)
     app.include_router(settings_router)
     app.include_router(bots_router)
+    app.include_router(bot_reports_router)
 
     @app.exception_handler(RequestValidationError)
     async def validation_error_response(
