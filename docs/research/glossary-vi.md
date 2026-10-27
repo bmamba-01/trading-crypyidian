@@ -344,3 +344,17 @@
 | Test account | Tài khoản kiểm thử | Tài khoản chỉ tồn tại ở local/test; mật khẩu/TOTP sinh lúc seed và chỉ lưu trong `.secrets/` (gitignored). | [QA test data](../testing/qa-test-data.md) |
 | Compose profile | Hồ sơ dịch vụ Compose | Nhãn bật/tắt service; service `qa-seed` chỉ chạy khi bật profile `qa`. | [Docker Compose profiles](https://docs.docker.com/compose/how-tos/profiles/) |
 | Reserved test TLD (`.test`) | Tên miền cấp cao dành cho kiểm thử | TLD IETF dành riêng, không phân giải ra Internet; dùng cho email QA `@example.test`. | [RFC 2606](https://www.rfc-editor.org/rfc/rfc2606) |
+
+## O. Báo cáo bot và điều khiển qua Telegram
+
+| Thuật ngữ | Bản dịch ưu tiên | Giải thích ngắn trong dự án | Tài liệu tham khảo |
+| --- | --- | --- | --- |
+| Workspace aggregate report | Báo cáo tổng hợp workspace | Cộng số liệu mọi bot trong workspace; chỉ khi yêu cầu tường minh `scope=workspace` và có role cấp workspace. | [WBS MB-06](../superpowers/plans/2026-10-27-mb06-bot-reports-wbs.md) · [OWASP API1 BOLA](https://owasp.org/API-Security/editions/2023/en/0xa1-broken-object-level-authorization/) |
+| Realized drawdown | Mức sụt giảm đã thực hiện | Mức giảm lớn nhất từ đỉnh xuống đáy của PnL ròng tích lũy từ trade đã đóng (không gồm UPNL). | [WBS MB-06](../superpowers/plans/2026-10-27-mb06-bot-reports-wbs.md) · [Investopedia drawdown](https://www.investopedia.com/terms/d/drawdown.asp) |
+| Half-open interval `[start, end)` | Khoảng nửa mở | Gồm `start`, không gồm `end`, tránh đếm trùng trade ở biên kỳ báo cáo. | [Python ranges](https://docs.python.org/3/library/stdtypes.html#ranges) |
+| Report hash | Mã băm báo cáo | SHA-256 trên JSON canonical (khóa sắp xếp, Decimal chuẩn hóa, không có thời điểm tạo) để chứng minh cùng ledger cho cùng báo cáo. | [WBS MB-06](../superpowers/plans/2026-10-27-mb06-bot-reports-wbs.md) · [hashlib](https://docs.python.org/3/library/hashlib.html) |
+| Repeatable-read read-only snapshot | Ảnh chụp nhất quán chỉ đọc | Transaction PostgreSQL `REPEATABLE READ, READ ONLY` đặt trước truy vấn đầu tiên: mọi câu SELECT của một báo cáo thấy cùng một snapshot và không thể ghi. | [PostgreSQL SET TRANSACTION](https://www.postgresql.org/docs/current/sql-set-transaction.html) · [Transaction isolation](https://www.postgresql.org/docs/current/transaction-iso.html) |
+| Update deduplication | Khử trùng lặp update | Lưu bền vững `update_id` Telegram đã nhận (giữ 7 ngày) và bỏ qua lần giao lặp. | [WBS MB-07a](../superpowers/plans/2026-10-27-mb07a-bot-control-api-telegram-wbs.md) · [Telegram Update](https://core.telegram.org/bots/api#update) |
+| At-most-once processing | Xử lý tối đa một lần | Claim update trước khi xử lý; lỗi sau claim được audit và trả lời người dùng thay vì xử lý lại. | [WBS MB-07a](../superpowers/plans/2026-10-27-mb07a-bot-control-api-telegram-wbs.md) |
+| Constant-time comparison | So sánh hằng thời gian | So sánh bí mật mà thời gian không phụ thuộc vị trí ký tự khác nhau, chống tấn công thời gian. | [hmac.compare_digest](https://docs.python.org/3/library/hmac.html#hmac.compare_digest) |
+| Ambiguous target rejection | Từ chối đích mơ hồ | Lệnh đổi trạng thái thiếu ID bot rõ ràng bị từ chối kèm danh sách ID, không đoán bot. | [WBS MB-07a](../superpowers/plans/2026-10-27-mb07a-bot-control-api-telegram-wbs.md) · [OWASP Transaction Authorization](https://cheatsheetseries.owasp.org/cheatsheets/Transaction_Authorization_Cheat_Sheet.html) |

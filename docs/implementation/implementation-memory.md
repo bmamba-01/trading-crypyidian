@@ -737,3 +737,15 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Kiểm thử cuối trên `274793e`:** `tests/unit` 1247 passed; `tests/e2e` 24 passed / 1297s tuần tự; Ruff/format/mypy sạch; alembic một head `e1f3a5c7b9d2`.
 - **Việc còn mở:** MB-04 bàn giao cho phiên Codex (người dùng quyết định 2026-10-27): finding + nhánh `mb04-review-fixes` (`b5efea4` đã re-review, `26ed21e` WIP chưa kiểm chứng) ghi ở `docs/implementation/reviews/2026-10-26-mb04-independent-review.md`; SEC-09; MB-05b; SEC-01b (admin_web/runtime còn kế thừa DML vận hành qua `crypidian_app`); timeout cho admin-web trước MB-07; backfill `bar_key` cho dữ liệu dev cũ nếu cần.
 - **Đã đọc lại mục memory sau cập nhật:** có; đối chiếu ledger `.superpowers/sdd/2026-10-24-multibot-implementation-plan/progress.md`, `git log`, kết quả test và trạng thái MB-04.
+
+### 2026-10-27 — MB-06 báo cáo theo bot và MB-07a điều khiển bot qua API/Telegram
+
+- **Phạm vi:** hai gói độc lập với MB-04 (MB-04 bàn giao cho phiên Codex), làm song song trong worktree riêng; gộp vào `dev` sau khi máy khởi động lại.
+- **MB-06:** `application/bot_reporting.py`, `adapters/database/repositories/bot_reports.py`, `admin/bot_reports_router.py`, `domain/reporting.py`; `UnitOfWork(snapshot_read_only=True)` đặt `SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY` trước truy vấn đầu tiên. Review độc lập phát hiện báo cáo nhiều câu lệnh ở READ COMMITTED có thể trả 409 giả/hash lệch khi đang giao dịch → sửa.
+- **MB-07a:** `application/bot_operations.py`, `admin/bot_control_router.py`, `telegram/bot_commands.py`, `telegram/webhook.py`, migration `f7b9d1e3a5c8` (admin-web `UPDATE(status)` + trigger chỉ ENABLED→DISABLED; `telegram_update_receipt` không UPDATE, xóa >7 ngày). Review phát hiện: lock timeout 5 s làm pause/kill trả 500 không audit và lệnh pause Telegram mất im lặng; throttle bỏ lệnh im lặng; bộ đếm throttle không giới hạn; secret rỗng; body không giới hạn; probe phân quyền sai → đều đã sửa test-first.
+- **Gộp:** cherry-pick vào `dev`; xung đột `app.py` (hai bên cùng thêm router/service) giải bằng hợp nhất cả hai; commit sắp xếp import `c2792da`.
+- **Kiểm thử:** unit 1530 passed; Ruff/format/mypy (146 file) sạch; alembic một head `f7b9d1e3a5c8`; Unit 1530 passed; full E2E 26 test: lượt 1 có 19 đạt + 7 lỗi hạ tầng Docker (hết dải địa chỉ network do nhiều project chạy song song), chạy lại tuần tự 7/7 đạt (841 s).
+- **Môi trường:** WSL + WMI kẹt (Python import SQLAlchemy treo, Docker 500) cần Restart thật (Shut down với Fast Startup không đủ). Git Bash `PYTHONPATH="$PWD/src"` bị Python Windows bỏ qua → dùng `cygpath -m`.
+- **Phối hợp:** phiên Codex đang có worktree `mb04-closeout`/`mb04-mb06-integration` (nhánh `mb04-mb06-closeout` chỉ chứa bản sửa MB-04) và chạy E2E `mb05b`; migration MB-04 `f7a9c1e3b5d8` của Codex cũng nối sau `e1f3a5c7b9d2` → khi Codex gộp phải nối lại sau `f7b9d1e3a5c8`.
+- **Việc còn mở:** MB-07b (Admin Web pages cần nâng `uv` lên 0.13 cho `jinja2`), liên kết/thu hồi binding Telegram, SEC-09 idle timeout, SEC-01b.
+- **Đã đọc lại mục memory sau cập nhật:** có; đối chiếu `git log`, kết quả unit/E2E và ledger SDD.
