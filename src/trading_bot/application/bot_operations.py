@@ -15,15 +15,17 @@ Kênh gọi (router HTTP, handler Telegram) không mở session DB; chỉ gọi 
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, TypeVar
 from uuid import UUID, uuid4
 
-from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import DBAPIError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from trading_bot.adapters.database.errors import is_transient_database_error
 from trading_bot.adapters.database.repositories.bot_grants import BotGrantRepository
 from trading_bot.adapters.database.repositories.bot_operations import (
     BotIdentityRow,
@@ -46,6 +48,11 @@ from trading_bot.domain.execution.runtime_control import (
     WorkspaceControlResult,
     WorkspaceKillState,
 )
+
+logger = logging.getLogger(__name__)
+_T = TypeVar("_T")
+# Lỗi DB tạm thời (lock/statement timeout, ruling 40): thử lại sau, không phải lỗi dữ liệu.
+UNAVAILABLE = "RUNTIME_CONTROL_UNAVAILABLE"
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,23 +156,40 @@ class PrincipalBotOperations:
 
     # --- control: ủy quyền MB-05 -----------------------------------------------------------
     async def pause_bot(self, bot_id: UUID, reason: str) -> BotControlResult:
-        return await self._control.pause_bot(bot_id, reason)
+        return await self._mutation(self._control.pause_bot(bot_id, reason), bot_id, "bot_instance")
 
     async def resume_bot(
         self, bot_id: UUID, reason: str, expected_revision: int | None
     ) -> BotControlResult:
-        return await self._control.resume_bot(bot_id, reason, expected_revision)
+        return await self._mutation(
+            self._control.resume_bot(bot_id, reason, expected_revision), bot_id, "bot_instance"
+        )
 
     async def kill_workspace(self, reason: str) -> WorkspaceControlResult:
-        return await self._control.pause_workspace(reason)
+        return await self._mutation(
+            self._control.pause_workspace(reason), self._principal.workspace_id, "workspace"
+        )
 
     async def release_workspace(
         self, reason: str, expected_revision: int | None
     ) -> WorkspaceControlResult:
-        return await self._control.release_workspace(reason, expected_revision)
+        return await self._mutation(
+            self._control.release_workspace(reason, expected_revision),
+            self._principal.workspace_id,
+            "workspace",
+        )
 
     # --- đọc trạng thái ------------------------------------------------------------------
     async def list_bots(self) -> list[BotRuntimeStatus]:
+        return await self._read(self._list_bots())
+
+    async def bot_status(self, bot_id: UUID) -> BotRuntimeStatus:
+        return await self._read(self._bot_status(bot_id))
+
+    async def workspace_status(self) -> WorkspaceRuntimeStatus:
+        return await self._read(self._workspace_status())
+
+    async def _list_bots(self) -> list[BotRuntimeStatus]:
         async with self._uow() as uow:
             repository = self._service._operations_repository_factory(uow.session)
             workspace = await repository.workspace_control(self._principal.workspace_id)
@@ -176,7 +200,7 @@ class PrincipalBotOperations:
                     result.append(_status(row, runtime, workspace))
             return result
 
-    async def bot_status(self, bot_id: UUID) -> BotRuntimeStatus:
+    async def _bot_status(self, bot_id: UUID) -> BotRuntimeStatus:
         async with self._uow(bot_id) as uow:
             repository = self._service._operations_repository_factory(uow.session)
             row = await repository.get_bot(self._principal.workspace_id, bot_id)
@@ -186,8 +210,8 @@ class PrincipalBotOperations:
             workspace = await repository.workspace_control(self._principal.workspace_id)
             return _status(row, runtime, workspace)
 
-    async def workspace_status(self) -> WorkspaceRuntimeStatus:
-        bots = await self.list_bots()
+    async def _workspace_status(self) -> WorkspaceRuntimeStatus:
+        bots = await self._list_bots()
         async with self._uow() as uow:
             workspace = await self._service._operations_repository_factory(
                 uow.session
@@ -235,12 +259,51 @@ class PrincipalBotOperations:
         except LookupError:
             await self._audit_disable_denied(bot_id, "BOT_NOT_FOUND", correlation_id)
             raise BotRuntimeControlError("BOT_NOT_FOUND") from None
-        except DBAPIError:
-            # Ví dụ chờ L1 quá `lock_timeout` (55P03, ruling 40): không treo, không lộ chi tiết DB.
-            await self._audit_disable_denied(bot_id, "RUNTIME_CONTROL_UNAVAILABLE", correlation_id)
-            raise BotRuntimeControlError("RUNTIME_CONTROL_UNAVAILABLE") from None
+        except DBAPIError as error:
+            if not is_transient_database_error(error):
+                raise
+            # Chờ L1 quá `lock_timeout` (55P03, ruling 40): không treo, không lộ chi tiết DB.
+            await self._audit_disable_denied(bot_id, UNAVAILABLE, correlation_id)
+            raise BotRuntimeControlError(UNAVAILABLE) from None
 
     # --- nội bộ --------------------------------------------------------------------------
+    async def _mutation(self, call: Awaitable[_T], target_id: UUID, target_type: str) -> _T:
+        """Fix round 1 (Important #1): lỗi DB tạm thời 55P03/57014 → `RUNTIME_CONTROL_UNAVAILABLE`.
+
+        Control service MB-05 chỉ dịch lỗi domain; `pg_advisory_xact_lock` hết `lock_timeout`
+        ném `DBAPIError` thô (transaction chính đã rollback). Ở đây ghi audit từ chối ở transaction
+        riêng rồi ném lỗi có mã, **không** giữ chuỗi exception (câu SQL/params, ruling 41).
+        """
+        try:
+            return await call
+        except DBAPIError as error:
+            if not is_transient_database_error(error):
+                raise
+        await self._audit_control_unavailable(target_id, target_type)
+        raise BotRuntimeControlError(UNAVAILABLE) from None
+
+    @staticmethod
+    async def _read(call: Awaitable[_T]) -> _T:
+        try:
+            return await call
+        except DBAPIError as error:
+            if not is_transient_database_error(error):
+                raise
+        raise BotRuntimeControlError(UNAVAILABLE) from None
+
+    async def _audit_control_unavailable(self, target_id: UUID, target_type: str) -> None:
+        try:
+            async with self._uow() as uow:
+                uow.record_audit(
+                    action="bot.runtime.control_denied",
+                    target_type=target_type,
+                    target_id=target_id,
+                    reason=UNAVAILABLE,
+                )
+        except SQLAlchemyError:
+            # DB vẫn không phản hồi: không để lỗi audit che mã lỗi trả cho người dùng.
+            logger.warning("Không ghi được audit control_denied; code=%s", UNAVAILABLE)
+
     def _uow(self, bot_id: UUID | None = None, correlation_id: UUID | None = None) -> Any:
         return self._service._unit_of_work_factory(
             self._service._sessions,
@@ -268,13 +331,16 @@ class PrincipalBotOperations:
     async def _audit_disable_denied(
         self, bot_id: UUID, reason_code: str, correlation_id: UUID
     ) -> None:
-        async with self._uow(None, correlation_id) as uow:
-            uow.record_audit(
-                action="bot.lifecycle.disable_denied",
-                target_type="bot_instance",
-                target_id=bot_id,
-                reason=reason_code,
-            )
+        try:
+            async with self._uow(None, correlation_id) as uow:
+                uow.record_audit(
+                    action="bot.lifecycle.disable_denied",
+                    target_type="bot_instance",
+                    target_id=bot_id,
+                    reason=reason_code,
+                )
+        except SQLAlchemyError:
+            logger.warning("Không ghi được audit disable_denied; code=%s", reason_code)
 
 
 def _status(

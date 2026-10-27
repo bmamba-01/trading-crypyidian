@@ -13,6 +13,8 @@ from types import SimpleNamespace
 from typing import Any
 from uuid import UUID, uuid4
 
+from sqlalchemy.exc import DBAPIError
+
 from trading_bot.adapters.database.repositories.bot_operations import (
     BotIdentityRow,
     BotRuntimeRow,
@@ -59,6 +61,12 @@ class Store:
     bots: dict[UUID, dict[str, Any]] = field(default_factory=dict)
     not_flat: dict[UUID, tuple[int, int, int]] = field(default_factory=dict)
     readiness: dict[UUID, tuple[str, str | None]] = field(default_factory=dict)
+    # Lỗi DB ném ra khi chạm L1/đọc control (mô phỏng `lock_timeout` 55P03 dưới tải).
+    fail_with: BaseException | None = None
+
+    def maybe_fail(self) -> None:
+        if self.fail_with is not None:
+            raise self.fail_with
 
     def add_bot(self, bot_id: UUID, name: str, status: str = "ENABLED") -> None:
         self.bots[bot_id] = {"name": name, "status": status, "account_id": uuid4()}
@@ -112,6 +120,7 @@ class FakeControls:
         self.store: Store = session.store
 
     async def append_bot_control(self, **kwargs: Any) -> BotControlResult:
+        self.store.maybe_fail()
         self.store.events.append("L1")
         rows = self.store.bot_rows.setdefault(kwargs["bot_id"], [])
         current = BotControlState(len(rows), rows[-1]) if rows else None
@@ -130,6 +139,7 @@ class FakeControls:
         return BotControlResult(kwargs["bot_id"], kwargs["target"], change.next_revision, True)
 
     async def append_workspace_control(self, **kwargs: Any) -> WorkspaceControlResult:
+        self.store.maybe_fail()
         self.store.events.append("L1")
         rows = self.store.workspace_rows
         current = WorkspaceControlState(len(rows), rows[-1]) if rows else None
@@ -197,6 +207,7 @@ class FakeOperationsRepository:
 
     async def bot_runtime(self, workspace_id: UUID, bot_id: UUID) -> BotRuntimeRow:
         del workspace_id
+        self.store.maybe_fail()
         rows = self.store.bot_rows.get(bot_id, [])
         readiness = self.store.readiness.get(bot_id)
         return BotRuntimeRow(
@@ -232,6 +243,7 @@ class FakeGuard:
 
     async def ensure_flat_for_disable(self, workspace_id: UUID, bot_id: UUID) -> None:
         del workspace_id
+        self.store.maybe_fail()
         self.store.events.append("guard:L1")
         counts = self.store.not_flat.get(bot_id)
         if counts:
@@ -241,6 +253,19 @@ class FakeGuard:
                 open_orders=counts[1],
                 held_reservations=counts[2],
             )
+
+
+class _LockNotAvailable(Exception):
+    sqlstate = "55P03"
+
+
+def lock_timeout_error() -> DBAPIError:
+    """`DBAPIError` như psycopg ném khi hết `lock_timeout`; params chứa giá trị nhạy cảm giả."""
+    return DBAPIError(
+        "SELECT pg_advisory_xact_lock(hashtextextended(%(lock)s, 0))",
+        {"lock": "SQL-PARAM-MUST-NOT-LEAK"},
+        _LockNotAvailable("canceling statement due to lock timeout SQL-PARAM-MUST-NOT-LEAK"),
+    )
 
 
 def build_operations(store: Store, *, clock: Any = None) -> BotOperationsService:

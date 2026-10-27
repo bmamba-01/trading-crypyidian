@@ -182,10 +182,13 @@ COLUMN_UPDATE[ADMIN] |= {
     }
 }
 # MB-07a (migration f7b9d1e3a5c8): disable bot cập nhật đúng cột `trading_account.status`
-# (ruling 29/34); bảng dedup Telegram append-only chỉ admin-web SELECT/INSERT.
+# (ruling 29/34); bảng dedup Telegram chỉ admin-web SELECT/INSERT và DELETE (policy chỉ cho xóa
+# hàng quá 7 ngày — retention, fix round 1), FORCE RLS, policy đọc `workspace_isolation`.
 COLUMN_UPDATE[ADMIN]["trading_account"] = {"updated_at", "status"}
 MULTIBOT_TABLES += ("telegram_update_receipt",)
-TABLE_PRIVILEGES[ADMIN] |= {"telegram_update_receipt": {"SELECT", "INSERT"}}
+TABLE_PRIVILEGES[ADMIN] |= {"telegram_update_receipt": {"SELECT", "INSERT", "DELETE"}}
+POLICY_ROLES["telegram_update_receipt"] = {ADMIN}
+FORCE_RLS_TABLES = ("telegram_update_receipt",)
 
 
 def identity(name):
@@ -466,6 +469,12 @@ def check_matrix(connection):
             (table,),
         ).fetchone()[0]
         assert set(actual_roles) == roles, (table, actual_roles)
+    for table in FORCE_RLS_TABLES:
+        enabled, forced = connection.execute(
+            "SELECT relrowsecurity, relforcerowsecurity FROM pg_class WHERE oid = %s::regclass",
+            (table,),
+        ).fetchone()
+        assert (enabled, forced) == (True, True), (table, enabled, forced)
     privileges = {
         (role, table, privilege): expected
         for role, table, privilege, expected in (

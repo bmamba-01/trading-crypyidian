@@ -10,9 +10,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import timedelta
 from uuid import UUID, uuid4
 
-from sqlalchemy import select
+from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,6 +25,9 @@ from trading_bot.adapters.database.models import (
     UserMembership,
 )
 from trading_bot.auth.policy import Role
+
+# Khớp policy `receipt_purge` của migration f7b9d1e3a5c8 (`interval '7 days'`).
+RECEIPT_RETENTION = timedelta(days=7)
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,6 +45,16 @@ class TelegramUpdateReceiptRepository:
         self._session = session
 
     async def claim(self, workspace_id: UUID, update_id: int) -> bool:
+        # Retention (fix round 1 minor 3): xóa receipt quá hạn trong cùng transaction trước khi
+        # claim. Telegram chọn `update_id` ngẫu nhiên sau ≥1 tuần không có update, nên receipt cũ
+        # hơn 7 ngày không còn giá trị chống replay mà có thể chặn nhầm update mới. Policy DB
+        # `receipt_purge` chỉ cho xóa hàng quá 7 ngày (hàng gần đây vẫn bất biến).
+        await self._session.execute(
+            delete(TelegramUpdateReceipt).where(
+                TelegramUpdateReceipt.workspace_id == workspace_id,
+                TelegramUpdateReceipt.created_at < func.now() - RECEIPT_RETENTION,
+            )
+        )
         inserted = await self._session.scalar(
             insert(TelegramUpdateReceipt)
             .values(id=uuid4(), workspace_id=workspace_id, update_id=update_id)

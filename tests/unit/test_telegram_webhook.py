@@ -19,6 +19,7 @@ from tests.unit.bot_operations_fakes import (
     WORKSPACE,
     Store,
     build_operations,
+    lock_timeout_error,
     member,
     seeded_store,
 )
@@ -51,6 +52,7 @@ class FakeTelegramStore:
         self.receipts: set[tuple[UUID, int]] = set()
         self.bindings: dict[tuple[UUID, str], TelegramBindingIdentity] = {}
         self.audits: list[dict[str, Any]] = []
+        self.fail_binding: BaseException | None = None
 
     async def claim_update(self, workspace_id: UUID, update_id: int) -> bool:
         self.calls.append("claim")
@@ -64,6 +66,8 @@ class FakeTelegramStore:
         self, workspace_id: UUID, telegram_user_id: str
     ) -> TelegramBindingIdentity | None:
         self.calls.append("binding")
+        if self.fail_binding is not None:
+            raise self.fail_binding
         return self.bindings.get((workspace_id, telegram_user_id))
 
     async def record_audit(self, workspace_id: UUID, **values: Any) -> None:
@@ -82,7 +86,10 @@ def _bind(store: Store, telegram: FakeTelegramStore, kind: str, tg_user: int, ws
 
 
 def _setup(
-    *, configured: bool = True, throttle: TelegramCommandThrottle | None = None
+    *,
+    configured: bool = True,
+    throttle: TelegramCommandThrottle | None = None,
+    unbound_sampler: TelegramCommandThrottle | None = None,
 ) -> tuple[TestClient, Store, FakeTelegramStore, RecordingTelegramSender]:
     store = seeded_store()
     telegram = FakeTelegramStore()
@@ -99,6 +106,7 @@ def _setup(
             handler=BotCommandHandler(build_operations(store)),
             sender=sender,
             throttle=throttle or TelegramCommandThrottle(),
+            unbound_sampler=unbound_sampler,
         )
         if configured
         else None
@@ -394,3 +402,120 @@ def test_telegram_settings_only_for_admin_web(tmp_path: Path) -> None:
             telegram_workspace_id=WORKSPACE,
             telegram_webhook_secret_file=secret,
         )
+
+
+# --- fix round 1 -----------------------------------------------------------------------------
+def test_pause_during_lock_timeout_is_rejected_audited_and_answered() -> None:
+    """Important #1: 55P03 trong control → mã RUNTIME_CONTROL_UNAVAILABLE, không mất lặng lẽ."""
+    client, store, telegram, sender = _setup()
+    store.fail_with = lock_timeout_error()
+
+    response = _send(client, _message(f"/bot pause {BOT_A}", update_id=301))
+
+    assert response.json() == {"ok": True, "status": "processed"}
+    assert telegram.audits[-1]["action"] == "telegram.command.rejected"
+    assert telegram.audits[-1]["reason"] == "pause:RUNTIME_CONTROL_UNAVAILABLE"
+    assert "thử lại" in sender.messages[-1][1]
+    assert store.audits[-1]["reason"] == "RUNTIME_CONTROL_UNAVAILABLE"
+
+
+def test_any_failure_after_claim_is_audited_answered_and_never_logs_sql(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.DEBUG)
+    client, store, telegram, sender = _setup()
+    telegram.fail_binding = lock_timeout_error()
+
+    response = _send(client, _message(f"/bot pause {BOT_A}", update_id=302))
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "status": "unavailable"}
+    assert (WORKSPACE, 302) in telegram.receipts
+    assert telegram.audits[-1]["action"] == "telegram.command.rejected"
+    assert telegram.audits[-1]["reason"] == "RUNTIME_CONTROL_UNAVAILABLE"
+    assert "thử lại" in sender.messages[-1][1]
+    assert "SQL-PARAM-MUST-NOT-LEAK" not in caplog.text + response.text + repr(telegram.audits)
+
+
+def test_failing_audit_after_claim_still_returns_200() -> None:
+    client, _, telegram, sender = _setup()
+    telegram.fail_binding = RuntimeError("down")
+
+    async def broken_audit(workspace_id: UUID, **values: Any) -> None:
+        raise RuntimeError("audit down")
+
+    telegram.record_audit = broken_audit  # type: ignore[method-assign]
+
+    response = _send(client, _message("/bots", update_id=303))
+
+    assert response.json() == {"ok": True, "status": "unavailable"}
+    assert sender.messages
+
+
+def test_sender_is_throttled_before_any_database_or_audit_work() -> None:
+    client, _, telegram, _ = _setup(throttle=TelegramCommandThrottle(limit=2, window_seconds=60))
+
+    statuses = [
+        _send(client, _message("/bots", user=UNBOUND_TG, update_id=index)).json()["status"]
+        for index in (401, 402, 403, 404)
+    ]
+
+    assert statuses == ["unbound", "unbound", "throttled", "throttled"]
+    assert telegram.calls.count("claim") == 2
+    assert telegram.calls.count("binding") == 2
+
+
+def test_unbound_rejections_are_coalesced_per_sender() -> None:
+    client, _, telegram, sender = _setup()
+
+    for index in (501, 502, 503):
+        assert _send(client, _message("/bots", user=UNBOUND_TG, update_id=index)).json() == {
+            "ok": True,
+            "status": "unbound",
+        }
+
+    unbound = [audit for audit in telegram.audits if audit["reason"] == "TELEGRAM_NOT_BOUND"]
+    assert len(unbound) == 1
+    assert len(sender.messages) == 1
+
+
+@pytest.mark.parametrize("secret", ["", "short", "x" * 31, "bad secret " + "x" * 40, "x" * 257])
+def test_service_refuses_empty_or_invalid_secret(secret: str) -> None:
+    store = seeded_store()
+    with pytest.raises(ValueError, match="32–256"):
+        TelegramWebhookService(
+            workspace_id=WORKSPACE,
+            secret=secret,
+            store=FakeTelegramStore(),
+            handler=BotCommandHandler(build_operations(store)),
+            sender=RecordingTelegramSender(),
+        )
+
+
+def test_chunked_oversized_body_is_rejected_without_claim() -> None:
+    client, _, telegram, _ = _setup()
+
+    def chunks() -> Any:
+        yield b'{"update_id": 1, "pad": "'
+        for _ in range(80):
+            yield b"x" * 1024
+        yield b'"}'
+
+    response = client.post(
+        "/api/v1/telegram/webhook",
+        content=chunks(),
+        headers={SECRET_HEADER: SECRET, "Content-Type": "application/json"},
+    )
+
+    assert response.status_code == 413
+    assert telegram.calls == []
+
+
+@pytest.mark.parametrize("update_id", [2**63, 2**70])
+def test_update_id_beyond_bigint_is_rejected(update_id: int) -> None:
+    client, _, telegram, _ = _setup()
+
+    response = _send(client, _message("/bots", update_id=update_id))
+
+    assert response.status_code == 400
+    assert telegram.calls == []

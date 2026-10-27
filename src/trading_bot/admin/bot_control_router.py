@@ -68,7 +68,13 @@ def _operations(request: Request, identity: AuthIdentity) -> PrincipalBotOperati
         BotOperationsService | None, getattr(request.app.state, "bot_operations_service", None)
     )
     if service is None:
-        raise HTTPException(status_code=503, detail="Dịch vụ vận hành bot chưa sẵn sàng")
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "SERVICE_UNAVAILABLE",
+                "message": "Dịch vụ vận hành bot chưa sẵn sàng.",
+            },
+        )
     return service.for_principal(identity.principal)
 
 

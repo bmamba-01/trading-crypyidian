@@ -17,6 +17,7 @@ from tests.unit.bot_operations_fakes import (
     FOREIGN_BOT,
     Store,
     build_operations,
+    lock_timeout_error,
     member,
     seeded_store,
 )
@@ -110,7 +111,41 @@ def test_service_not_wired_returns_503() -> None:
     client = _client(store, member(store, "owner"))
     client.app.state.bot_operations_service = None  # type: ignore[attr-defined]
 
-    assert client.get(f"/api/v1/bots/{BOT_A}/runtime").status_code == 503
+    response = client.get(f"/api/v1/bots/{BOT_A}/runtime")
+
+    assert response.status_code == 503
+    # Fix round 1 minor (6): 503 dùng cùng dạng body ổn định `{"code", "message"}`.
+    assert response.json()["detail"]["code"] == "SERVICE_UNAVAILABLE"
+    assert set(response.json()["detail"]) == {"code", "message"}
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "body"),
+    [
+        ("POST", f"/api/v1/bots/{BOT_A}/runtime/pause", {"reason": "Bảo trì"}),
+        ("POST", f"/api/v1/bots/{BOT_A}/runtime/resume", {"reason": "x", "expected_revision": 1}),
+        ("POST", "/api/v1/workspace/runtime/kill", {"reason": "Sự cố"}),
+        ("POST", "/api/v1/workspace/runtime/release", {"reason": "x", "expected_revision": 1}),
+        ("POST", f"/api/v1/bots/{BOT_A}/disable", {"reason": "Ngừng"}),
+        ("GET", f"/api/v1/bots/{BOT_A}/runtime", None),
+        ("GET", "/api/v1/workspace/runtime", None),
+    ],
+)
+def test_lock_timeout_under_load_is_503_unavailable_not_500(
+    method: str, path: str, body: dict[str, Any] | None
+) -> None:
+    """Important #1: 55P03 khi runtime giữ L1 > lock_timeout → 503 có mã, có audit, không SQL."""
+    store = seeded_store()
+    client = _client(store, member(store, "owner"))
+    store.fail_with = lock_timeout_error()
+
+    response = client.request(method, path, json=body, headers={"X-CSRF-Token": CSRF_TOKEN})
+
+    assert response.status_code == 503, response.text
+    assert response.json()["detail"]["code"] == "RUNTIME_CONTROL_UNAVAILABLE"
+    assert "SQL-PARAM-MUST-NOT-LEAK" not in response.text
+    if method == "POST":
+        assert store.audits[-1]["reason"] == "RUNTIME_CONTROL_UNAVAILABLE"
 
 
 # --- ma trận pause/resume bot ---------------------------------------------------------------

@@ -7,12 +7,14 @@ from datetime import timedelta
 from typing import Any
 
 import pytest
+from sqlalchemy.exc import DBAPIError
 from tests.unit.bot_operations_fakes import (
     BOT_A,
     BOT_B,
     FOREIGN_BOT,
     WORKSPACE,
     build_operations,
+    lock_timeout_error,
     member,
     seeded_store,
 )
@@ -203,3 +205,67 @@ def test_disable_flat_bot_runs_guard_before_account_write_then_noop() -> None:
     assert [audit["action"] for audit in store.audits] == ["bot.disabled", "bot.disabled.noop"]
     assert store.audits[0]["reason"] == "Ngừng vĩnh viễn"
     assert store.audits[0]["target_id"] == BOT_A
+
+
+# --- fix round 1 (Important #1, ruling 40/41): lock_timeout 55P03 → RUNTIME_CONTROL_UNAVAILABLE
+CONTROL_CALLS = {
+    "pause": lambda ops: ops.pause_bot(BOT_A, "Bảo trì"),
+    "resume": lambda ops: ops.resume_bot(BOT_A, "Xong", expected_revision=1),
+    "kill": lambda ops: ops.kill_workspace("Sự cố"),
+    "release": lambda ops: ops.release_workspace("Hết", expected_revision=1),
+    "disable": lambda ops: ops.disable_bot(BOT_A, "Ngừng"),
+}
+
+
+@pytest.mark.parametrize("call", CONTROL_CALLS.values(), ids=CONTROL_CALLS.keys())
+def test_transient_lock_timeout_becomes_unavailable_with_denied_audit(call: Any) -> None:
+    store = seeded_store()
+    owner = member(store, "owner")
+    store.fail_with = lock_timeout_error()
+    ops = build_operations(store).for_principal(owner)
+
+    with pytest.raises(BotRuntimeControlError) as error:
+        _run(call(ops))
+
+    assert error.value.reason_code == "RUNTIME_CONTROL_UNAVAILABLE"
+    # Không giữ chuỗi exception chứa câu SQL/params (ruling 41).
+    assert error.value.__cause__ is None
+    assert error.value.__suppress_context__ is True
+    assert "SQL-PARAM-MUST-NOT-LEAK" not in str(error.value)
+    denied = store.audits[-1]
+    assert denied["action"] in {"bot.runtime.control_denied", "bot.lifecycle.disable_denied"}
+    assert denied["reason"] == "RUNTIME_CONTROL_UNAVAILABLE"
+    assert denied["actor"] == owner.membership_id
+    assert "SQL-PARAM-MUST-NOT-LEAK" not in repr(store.audits)
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda ops: ops.bot_status(BOT_A),
+        lambda ops: ops.list_bots(),
+        lambda ops: ops.workspace_status(),
+    ],
+    ids=["status", "list", "workspace"],
+)
+def test_transient_error_on_read_paths_is_unavailable(call: Any) -> None:
+    store = seeded_store()
+    owner = member(store, "owner")
+    store.fail_with = lock_timeout_error()
+    ops = build_operations(store).for_principal(owner)
+
+    with pytest.raises(BotRuntimeControlError) as error:
+        _run(call(ops))
+
+    assert error.value.reason_code == "RUNTIME_CONTROL_UNAVAILABLE"
+    assert error.value.__cause__ is None
+
+
+def test_non_transient_database_error_is_not_masked() -> None:
+    store = seeded_store()
+    owner = member(store, "owner")
+    store.fail_with = DBAPIError("SELECT 1", {}, Exception("boom"))
+    ops = build_operations(store).for_principal(owner)
+
+    with pytest.raises(DBAPIError):
+        _run(ops.pause_bot(BOT_A, "Bảo trì"))

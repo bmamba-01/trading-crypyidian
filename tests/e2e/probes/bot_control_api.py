@@ -325,6 +325,22 @@ def mb07a_inspect() -> dict[str, Any]:
                 (workspace,),
             ).fetchall()
         ]
+        # Fix round 1 minor 1: lớp DB chặn admin-web enable lại account đã DISABLED.
+        account_a = ws["accounts"]["a"]
+        try:
+            with connection.transaction():
+                connection.execute("SET LOCAL ROLE crypidian_admin_web")
+                connection.execute("SELECT set_config('app.workspace_id', %s, true)", (workspace,))
+                connection.execute(
+                    "UPDATE trading_account SET status = 'ENABLED' WHERE id = %s", (account_a,)
+                )
+            reenable = "ALLOWED"
+        except psycopg.Error as error:
+            reenable = (
+                "MB07A_ACCOUNT_STATUS_TRANSITION_DENIED"
+                if "MB07A_ACCOUNT_STATUS_TRANSITION_DENIED" in str(error)
+                else type(error).__name__
+            )
         dump = connection.execute(
             "SELECT coalesce(string_agg(coalesce(reason, '') || ' ' || action, ' '), '') "
             "FROM audit_event"
@@ -339,6 +355,7 @@ def mb07a_inspect() -> dict[str, Any]:
         "receipts": receipts,
         "bot_status": {key: list(value) for key, value in bot_status.items()},
         "controls": controls,
+        "admin_web_reenable": reenable,
         "audit_leak": any(token in dump for token in tokens),
         # Text tin nhắn người dùng không vào audit (ruling 41); chỉ mã lý do/hằng của handler.
         "user_text_in_audit": "MB07A-USER-TEXT" in dump,

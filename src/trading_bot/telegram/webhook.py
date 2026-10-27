@@ -56,6 +56,9 @@ __all__ = [
 logger = logging.getLogger(__name__)
 SECRET_HEADER = "X-Telegram-Bot-Api-Secret-Token"
 MAX_BODY_BYTES = 64 * 1024
+# Cột `update_id` là BIGINT có dấu (fix round 1 minor 5).
+MAX_UPDATE_ID = 2**63 - 1
+UNAVAILABLE = "RUNTIME_CONTROL_UNAVAILABLE"
 _SECRET_PATTERN = re.compile(r"^[A-Za-z0-9_-]{32,256}$")
 _FORGED_FIELDS = {
     "sender_chat": "TELEGRAM_SENDER_CHAT",
@@ -70,8 +73,7 @@ router = APIRouter(prefix="/api/v1/telegram", tags=["telegram"])
 def load_webhook_secret(path: Path) -> str:
     """Đọc secret webhook từ file; 32–256 ký tự `A-Za-z0-9_-` (Telegram cho phép 1–256)."""
     value = path.read_text(encoding="utf-8").strip()
-    if not _SECRET_PATTERN.fullmatch(value):
-        raise ValueError("Secret webhook Telegram phải gồm 32–256 ký tự [A-Za-z0-9_-].")
+    _require_valid_secret(value)
     return value
 
 
@@ -160,13 +162,21 @@ class TelegramWebhookService:
         handler: BotCommandHandler,
         sender: TelegramMessageSender,
         throttle: TelegramCommandThrottle | None = None,
+        unbound_sampler: TelegramCommandThrottle | None = None,
     ) -> None:
+        # Fix round 1 minor (4): không chạy với secret rỗng/yếu (header thiếu = b"" sẽ khớp).
+        _require_valid_secret(secret)
         self._workspace_id = workspace_id
         self._secret = secret.encode("utf-8")
         self._store = store
         self._handler = handler
         self._sender = sender
+        # Throttle theo Telegram sender ID, áp TRƯỚC mọi việc DB/audit (fix round 1 minor 2).
         self._throttle = throttle or TelegramCommandThrottle()
+        # Từ chối "chưa liên kết": audit + trả lời tối đa 1 lần/10 phút/sender (gộp mẫu).
+        self._unbound_sampler = unbound_sampler or TelegramCommandThrottle(
+            limit=1, window_seconds=600
+        )
 
     def verify_secret(self, header: str | None) -> bool:
         """So sánh hằng thời gian trên bytes; thiếu header là sai."""
@@ -175,9 +185,29 @@ class TelegramWebhookService:
 
     async def process(self, update: Mapping[str, Any]) -> str:
         update_id = int(update["update_id"])
+        sender_key = _sender_key(update)
+        if sender_key is not None and not self._throttle.allow(sender_key):
+            return "throttled"
         if not await self._store.claim_update(self._workspace_id, update_id):
             return "duplicate"
         request_id = update_request_id(self._workspace_id, update_id)
+        try:
+            return await self._process_claimed(update, request_id)
+        except Exception as error:
+            # Update đã claim nên Telegram không giao lại (ruling 38): không để lệnh biến mất
+            # lặng lẽ — audit + trả lời người dùng, trả 200. Chỉ log tên lớp lỗi, không SQL.
+            logger.warning(
+                "Telegram update lỗi sau claim; code=%s error=%s",
+                UNAVAILABLE,
+                type(error).__name__,
+            )
+            await self._safe_audit(request_id, "telegram.command.rejected", UNAVAILABLE)
+            message = update.get("message")
+            if isinstance(message, Mapping) and _forgery_code(message) is None:
+                await self._safe_send(int(message["from"]["id"]), reject(UNAVAILABLE).message)
+            return "unavailable"
+
+    async def _process_claimed(self, update: Mapping[str, Any], request_id: UUID) -> str:
         message = update.get("message")
         if not isinstance(message, Mapping):
             # edited_message, callback_query, channel_post… : đã claim, bỏ qua (ruling 38).
@@ -193,16 +223,14 @@ class TelegramWebhookService:
         sender_id = int(message["from"]["id"])
         identity = await self._store.resolve_binding(self._workspace_id, str(sender_id))
         if identity is None:
-            await self._audit(
-                request_id, "telegram.update.rejected", None, None, "TELEGRAM_NOT_BOUND"
-            )
-            await self._sender.send_message(
-                sender_id, "Tài khoản Telegram này chưa được liên kết với workspace."
-            )
+            if self._unbound_sampler.allow(str(sender_id)):
+                await self._audit(
+                    request_id, "telegram.update.rejected", None, None, "TELEGRAM_NOT_BOUND"
+                )
+                await self._sender.send_message(
+                    sender_id, "Tài khoản Telegram này chưa được liên kết với workspace."
+                )
             return "unbound"
-        if not self._throttle.allow(str(identity.membership_id)):
-            await self._sender.send_message(sender_id, "Quá nhiều lệnh; hãy thử lại sau.")
-            return "throttled"
         principal = telegram_principal(
             user_id=identity.user_id,
             membership_id=identity.membership_id,
@@ -230,6 +258,18 @@ class TelegramWebhookService:
         await self._sender.send_message(sender_id, result.message)
         return "processed"
 
+    async def _safe_audit(self, request_id: UUID, action: str, reason: str) -> None:
+        try:
+            await self._audit(request_id, action, None, None, reason)
+        except Exception as error:
+            logger.warning("Không ghi được audit Telegram; error=%s", type(error).__name__)
+
+    async def _safe_send(self, chat_id: int, text: str) -> None:
+        try:
+            await self._sender.send_message(chat_id, text)
+        except Exception as error:
+            logger.warning("Không gửi được trả lời Telegram; error=%s", type(error).__name__)
+
     async def _audit(
         self,
         request_id: UUID,
@@ -247,6 +287,23 @@ class TelegramWebhookService:
             actor_membership_id=actor,
             request_id=request_id,
         )
+
+
+def _require_valid_secret(secret: str) -> None:
+    if not isinstance(secret, str) or not _SECRET_PATTERN.fullmatch(secret):
+        raise ValueError("Secret webhook Telegram phải gồm 32–256 ký tự [A-Za-z0-9_-].")
+
+
+def _sender_key(update: Mapping[str, Any]) -> str | None:
+    """Telegram sender ID của update (message/edited_message/callback…), không cần DB."""
+    for value in update.values():
+        if isinstance(value, Mapping):
+            sender = value.get("from")
+            if isinstance(sender, Mapping):
+                sender_id = sender.get("id")
+                if isinstance(sender_id, int) and not isinstance(sender_id, bool):
+                    return str(sender_id)
+    return None
 
 
 def _forgery_code(message: Mapping[str, Any]) -> str | None:
@@ -293,14 +350,21 @@ async def telegram_webhook(request: Request) -> JSONResponse:
     declared = request.headers.get("content-length")
     if declared is not None and (not declared.isdigit() or int(declared) > MAX_BODY_BYTES):
         return _status(413, "too_large")
-    body = await request.body()
-    if len(body) > MAX_BODY_BYTES:
-        return _status(413, "too_large")
+    # Đọc body theo luồng có trần: chunked không có Content-Length (fix round 1 minor 5).
+    body = bytearray()
+    async for chunk in request.stream():
+        body.extend(chunk)
+        if len(body) > MAX_BODY_BYTES:
+            return _status(413, "too_large")
     try:
-        update = json.loads(body)
+        update = json.loads(bytes(body))
     except ValueError:
         return _status(400, "invalid")
     update_id = update.get("update_id") if isinstance(update, dict) else None
-    if not isinstance(update_id, int) or isinstance(update_id, bool) or update_id <= 0:
+    if (
+        not isinstance(update_id, int)
+        or isinstance(update_id, bool)
+        or not 0 < update_id <= MAX_UPDATE_ID
+    ):
         return _status(400, "invalid")
     return _status(200, await service.process(update))

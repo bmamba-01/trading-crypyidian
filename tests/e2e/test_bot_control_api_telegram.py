@@ -155,6 +155,7 @@ def test_admin_api_and_telegram_share_runtime_control_plane() -> None:
         assert db["bot_status"]["b"] == ["ENABLED", "ENABLED"]
         b_controls = [row for row in db["controls"] if row[0] == bots["b"]]
         assert [row[1:3] for row in b_controls] == [[1, "PAUSED"]]
+        assert db["admin_web_reenable"] == "MB07A_ACCOUNT_STATUS_TRANSITION_DENIED"
         assert db["audit_leak"] is False
         assert db["user_text_in_audit"] is False
     finally:
