@@ -7,7 +7,10 @@ Quy tắc chính (WBS MB-06):
   tồn tại hay bot workspace khác đều trả cùng lỗi ``REPORT_NOT_FOUND`` (chống BOLA dò ID).
 - Không có đường nào mặc định gộp bot: báo cáo bot bắt buộc ``bot_id``; tổng hợp workspace chỉ
   chạy khi ``scope=workspace`` tường minh và role workspace-wide có ``bot:report:read``.
-- Đọc trong transaction ``READ ONLY``; số liệu lấy nguyên văn từ ledger append-only.
+- Mọi SELECT của một báo cáo chạy trong MỘT transaction ``REPEATABLE READ, READ ONLY``
+  (``UnitOfWork(snapshot_read_only=True)``): một snapshot duy nhất nên trade đóng giữa hai câu
+  truy vấn không làm lệch đối soát/hash; mọi ghi bị PostgreSQL từ chối. Số liệu lấy nguyên
+  văn từ ledger append-only.
 """
 
 from __future__ import annotations
@@ -31,6 +34,8 @@ from trading_bot.auth.bot_policy import (
 )
 from trading_bot.auth.policy import Principal
 from trading_bot.domain.portfolio.reporting import (
+    MAX_BOTS_PER_WORKSPACE_REPORT,
+    MAX_OPEN_TRADES_PER_BOT,
     MAX_REPORT_WINDOW,
     MAX_TRADES_PER_BOT,
     REPORT_MODE,
@@ -122,9 +127,9 @@ class BotReportingService:
             workspace_id=principal.workspace_id,
             bot_id=bot_id,
             actor_membership_id=principal.membership_id,
+            snapshot_read_only=True,
         ) as unit:
             repository = self._repository(unit.session)
-            await repository.set_read_only()
             try:
                 await self._grants(unit.session).require(
                     principal, bot_id=bot_id, permission=BotPermission.REPORT_READ
@@ -167,12 +172,22 @@ class BotReportingService:
             workspace_id=principal.workspace_id,
             bot_id=None,
             actor_membership_id=principal.membership_id,
+            snapshot_read_only=True,
         ) as unit:
             repository = self._repository(unit.session)
-            await repository.set_read_only()
             grants = self._grants(unit.session)
+            bots = await repository.list_bots(
+                workspace_id=principal.workspace_id, limit=MAX_BOTS_PER_WORKSPACE_REPORT + 1
+            )
+            if len(bots) > MAX_BOTS_PER_WORKSPACE_REPORT:
+                raise BotReportError(
+                    422,
+                    "REPORT_TOO_MANY_BOTS",
+                    f"Workspace có hơn {MAX_BOTS_PER_WORKSPACE_REPORT} bot; tổng hợp bị từ chối, "
+                    "hãy dùng báo cáo theo từng bot.",
+                )
             reports: list[BotReport] = []
-            for bot in await repository.list_bots(workspace_id=principal.workspace_id):
+            for bot in bots:
                 try:
                     await grants.require(
                         principal, bot_id=bot.bot_id, permission=BotPermission.REPORT_READ
@@ -208,12 +223,20 @@ class BotReportingService:
             start=query.start,
             end=query.end,
             max_closed=MAX_TRADES_PER_BOT,
+            max_open=MAX_OPEN_TRADES_PER_BOT,
         )
         if len(snapshot.closed_trades) > MAX_TRADES_PER_BOT:
             raise BotReportError(
                 422,
                 "REPORT_TOO_LARGE",
                 f"Cửa sổ có hơn {MAX_TRADES_PER_BOT} trade đóng; hãy thu hẹp start/end.",
+            )
+        if len(snapshot.open_trades) > MAX_OPEN_TRADES_PER_BOT:
+            raise BotReportError(
+                422,
+                "REPORT_TOO_MANY_OPEN_TRADES",
+                f"Bot có hơn {MAX_OPEN_TRADES_PER_BOT} trade mở tại end; báo cáo bị từ chối, "
+                "cần điều tra ledger trước.",
             )
         try:
             return build_bot_report(

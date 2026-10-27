@@ -5,7 +5,7 @@ from __future__ import annotations
 import random
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, localcontext
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -20,9 +20,12 @@ from trading_bot.application.bot_reporting import (
     BotReportQuery,
     ReportScope,
 )
+from trading_bot.application.outbox import UnitOfWork
 from trading_bot.auth.bot_policy import BotPermission
 from trading_bot.auth.policy import Principal, Role
 from trading_bot.domain.portfolio.reporting import (
+    MAX_BOTS_PER_WORKSPACE_REPORT,
+    MAX_OPEN_TRADES_PER_BOT,
     MAX_TRADES_PER_BOT,
     REPORT_VERSION,
     BotLedgerSnapshot,
@@ -67,7 +70,9 @@ def make_trade(
     candidate: str | None = None,
     trade_id: UUID | None = None,
 ) -> LedgerTrade:
-    total = Decimal(fee) + Decimal(funding) + Decimal(slippage)
+    with localcontext(prec=76):  # như DB Numeric(38,18): không làm tròn dữ liệu test
+        total = Decimal(fee) + Decimal(funding) + Decimal(slippage)
+        net = Decimal(gross) - total
     return LedgerTrade(
         trade_id=trade_id or uuid4(),
         intent_id=uuid4(),
@@ -85,7 +90,7 @@ def make_trade(
         funding_total=Decimal(funding) if closed_at is not None else Decimal(0),
         slippage_total=Decimal(slippage) if closed_at is not None else Decimal(0),
         total_cost=total if closed_at is not None else Decimal(0),
-        net_pnl=(Decimal(gross) - total) if closed_at is not None else Decimal(0),
+        net_pnl=net if closed_at is not None else Decimal(0),
         settings_version_id=SETTINGS_V1,
         strategy_release_id=RELEASE_H03,
         strategy_release_hash="a" * 64,
@@ -526,8 +531,15 @@ async def test_repository_queries_filter_scope_and_half_open_window() -> None:
     repository = BotReportRepository(session)  # type: ignore[arg-type]
 
     loaded = await repository.load_bot_ledger(
-        workspace_id=W1, bot_id=BOT_A, account_id=ACC_A, start=START, end=END, max_closed=10
+        workspace_id=W1,
+        bot_id=BOT_A,
+        account_id=ACC_A,
+        start=START,
+        end=END,
+        max_closed=10,
+        max_open=5,
     )
+    await repository.list_bots(workspace_id=W1, limit=3)
     await repository.workspace_closed_totals(workspace_id=W1, start=START, end=END)
 
     assert loaded.closed_trades == ()
@@ -545,17 +557,66 @@ async def test_repository_queries_filter_scope_and_half_open_window() -> None:
     open_sql = next(s for s in session.statements if "trade.opened_at <" in s)
     assert "trade.bot_id =" in open_sql
     assert "trade.closed_at IS NULL" in open_sql
+    assert "LIMIT" in open_sql  # cap trade mở (max_open + 1)
+    bots_sql = next(s for s in session.statements if "FROM bot_instance" in s)
+    assert "bot_instance.workspace_id =" in bots_sql
+    assert "LIMIT" in bots_sql  # cap bot của báo cáo tổng hợp (limit + 1)
     totals_sql = session.statements[-1]
     assert "trade.workspace_id =" in totals_sql
     assert "GROUP BY trade.quote_asset" in totals_sql
     assert all("UPDATE" not in s and "INSERT" not in s for s in session.statements)
 
 
+class TransactionLogSession:
+    """Session giả ghi thứ tự BEGIN/câu lệnh để kiểm tra snapshot được đặt trước truy vấn."""
+
+    def __init__(self) -> None:
+        self.log: list[str] = []
+        self.info: dict[str, Any] = {}
+
+    async def begin(self) -> None:
+        self.log.append("BEGIN")
+
+    async def execute(self, statement: Any, _params: Any = None) -> None:
+        self.log.append(str(statement))
+
+    async def commit(self) -> None:
+        self.log.append("COMMIT")
+
+    async def rollback(self) -> None:
+        self.log.append("ROLLBACK")
+
+    async def close(self) -> None:
+        self.log.append("CLOSE")
+
+
 @pytest.mark.asyncio
-async def test_repository_switches_transaction_to_read_only() -> None:
-    session = RecordingSession()
-    await BotReportRepository(session).set_read_only()  # type: ignore[arg-type]
-    assert session.statements == ["SET TRANSACTION READ ONLY"]
+async def test_snapshot_unit_sets_repeatable_read_only_before_first_query() -> None:
+    session = TransactionLogSession()
+
+    async with UnitOfWork(
+        lambda: session,  # type: ignore[arg-type]
+        workspace_id=W1,
+        snapshot_read_only=True,
+    ):
+        pass
+
+    # Mức cô lập chỉ đổi được trước truy vấn đầu tiên (kể cả SELECT set_config của UoW).
+    assert session.log[0] == "BEGIN"
+    assert session.log[1] == "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY"
+    assert session.log[2].startswith("SELECT set_config('app.workspace_id'")
+
+
+@pytest.mark.asyncio
+async def test_default_unit_of_work_keeps_default_transaction_mode() -> None:
+    session = TransactionLogSession()
+
+    async with UnitOfWork(lambda: session, workspace_id=W1):  # type: ignore[arg-type]
+        pass
+
+    assert session.log[0] == "BEGIN"
+    assert session.log[1].startswith("SELECT set_config('app.workspace_id'")
+    assert not any("SET TRANSACTION" in entry for entry in session.log)
 
 
 # --- Service: ma trận ủy quyền và scope tường minh ---------------------------------------
@@ -592,23 +653,22 @@ class FakeRepository:
     def __init__(self, session: object) -> None:
         del session
 
-    async def set_read_only(self) -> None:
-        STORE.calls.append("read_only")
-
     async def get_bot(self, *, workspace_id: UUID, bot_id: UUID) -> ReportBot | None:
         STORE.calls.append(f"get_bot:{bot_id}")
         return STORE.bots.get((workspace_id, bot_id))
 
-    async def list_bots(self, *, workspace_id: UUID) -> list[ReportBot]:
+    async def list_bots(self, *, workspace_id: UUID, limit: int) -> list[ReportBot]:
         STORE.calls.append("list_bots")
+        assert limit == MAX_BOTS_PER_WORKSPACE_REPORT + 1
         return sorted(
             (bot for (ws, _), bot in STORE.bots.items() if ws == workspace_id),
             key=lambda bot: str(bot.bot_id),
-        )
+        )[:limit]
 
     async def load_bot_ledger(self, **kwargs: Any) -> BotLedgerSnapshot:
         STORE.calls.append(f"ledger:{kwargs['bot_id']}")
         assert kwargs["max_closed"] == MAX_TRADES_PER_BOT
+        assert kwargs["max_open"] == MAX_OPEN_TRADES_PER_BOT
         return STORE.snapshots.get(kwargs["bot_id"]) or snapshot(
             [], bot_id=kwargs["bot_id"], account_id=kwargs["account_id"]
         )
@@ -658,6 +718,11 @@ OWNER_W2 = principal(Role.OWNER, workspace_id=W2)
 
 @pytest.fixture(autouse=True)
 def fresh_store() -> None:
+    reset_store()
+
+
+def reset_store() -> Store:
+    """Dữ liệu chuẩn giống QA dataset; test API dùng lại để đi qua service thật."""
     global STORE
     STORE = Store()
     STORE.bots = {
@@ -680,6 +745,7 @@ def fresh_store() -> None:
         (BOT_A, OPERATOR.membership_id, BotPermission.READ.value),
         (BOT_A, OPERATOR.membership_id, BotPermission.RUNTIME_PAUSE.value),
     }
+    return STORE
 
 
 def service() -> BotReportingService:
@@ -744,15 +810,17 @@ async def test_query_for_other_workspace_is_not_found_before_touching_database()
 async def test_bot_report_runs_in_read_only_bot_scoped_unit() -> None:
     await service().get_bot_report(bot_query(BOT_A), ANALYST)
 
+    # Một snapshot REPEATABLE READ, READ ONLY cho mọi SELECT của báo cáo (đặt khi mở UoW).
     assert STORE.units == [
         {
             "workspace_id": W1,
             "bot_id": BOT_A,
             "actor_membership_id": ANALYST.membership_id,
+            "snapshot_read_only": True,
         }
     ]
-    assert STORE.calls.index("read_only") < STORE.calls.index(f"ledger:{BOT_A}")
-    assert STORE.calls[:2] == ["uow", "read_only"]
+    assert STORE.calls[0] == "uow"
+    assert STORE.calls.index("uow") < STORE.calls.index(f"ledger:{BOT_A}")
 
 
 @pytest.mark.asyncio
@@ -791,11 +859,17 @@ async def test_workspace_report_for_workspace_report_roles(actor: Principal) -> 
         STORE.snapshots[BOT_B].closed_trades[0].net_pnl
     )
     assert report.totals["USDT"].net_pnl == expected
+    # Ledger từng bot và tổng ledger đối soát đọc trong CÙNG một snapshot (một UoW).
     assert STORE.units == [
-        {"workspace_id": W1, "bot_id": None, "actor_membership_id": actor.membership_id}
+        {
+            "workspace_id": W1,
+            "bot_id": None,
+            "actor_membership_id": actor.membership_id,
+            "snapshot_read_only": True,
+        }
     ]
-    assert STORE.calls[:2] == ["uow", "read_only"]
-    assert "ledger_totals" in STORE.calls
+    assert STORE.calls[0] == "uow"
+    assert STORE.calls[-2:] == ["ledger_totals", "exit"]
 
 
 @pytest.mark.asyncio
@@ -847,6 +921,53 @@ async def test_report_too_large_is_rejected() -> None:
     with pytest.raises(BotReportError) as caught:
         await service().get_bot_report(bot_query(BOT_A), OWNER)
     assert (caught.value.status_code, caught.value.code) == (422, "REPORT_TOO_LARGE")
+
+
+@pytest.mark.asyncio
+async def test_too_many_open_trades_is_rejected() -> None:
+    opened = tuple(
+        make_trade(closed_at=None, opened_at=START + timedelta(seconds=i))
+        for i in range(MAX_OPEN_TRADES_PER_BOT + 1)
+    )
+    STORE.snapshots[BOT_A] = replace(STORE.snapshots[BOT_A], open_trades=opened)
+    with pytest.raises(BotReportError) as caught:
+        await service().get_bot_report(bot_query(BOT_A), OWNER)
+    assert (caught.value.status_code, caught.value.code) == (422, "REPORT_TOO_MANY_OPEN_TRADES")
+
+
+@pytest.mark.asyncio
+async def test_workspace_report_caps_bot_count() -> None:
+    for _ in range(MAX_BOTS_PER_WORKSPACE_REPORT):
+        bot_id = uuid4()
+        STORE.bots[(W1, bot_id)] = ReportBot(workspace_id=W1, bot_id=bot_id, account_id=uuid4())
+    with pytest.raises(BotReportError) as caught:
+        await service().get_workspace_report(bot_query(None, scope=ReportScope.WORKSPACE), OWNER)
+    assert (caught.value.status_code, caught.value.code) == (422, "REPORT_TOO_MANY_BOTS")
+    assert not any(call.startswith("ledger:") for call in STORE.calls)
+
+
+def test_sums_use_exact_wide_decimal_context() -> None:
+    # Numeric(38,18): 38 chữ số có nghĩa; context mặc định (prec 28) sẽ làm tròn âm thầm.
+    big = "12345678901234567890.123456789012345678"
+    trades = [
+        make_trade(gross=big, fee="0", slippage="0", closed_at=START + timedelta(hours=1)),
+        make_trade(gross=big, fee="0", slippage="0", closed_at=START + timedelta(hours=2)),
+    ]
+    usdt = report_for(snapshot(trades)).totals["USDT"]
+    assert usdt.net_pnl == Decimal("24691357802469135780.246913578024691356")
+    assert usdt.gross_pnl == usdt.net_pnl
+    assert report_for(snapshot(trades)).as_dict()["totals"]["USDT"]["net_pnl"] == (
+        "24691357802469135780.246913578024691356"
+    )
+
+
+def test_inexact_decimal_arithmetic_fails_closed() -> None:
+    huge = make_trade(gross="1E+80", fee="0", slippage="0", closed_at=START + timedelta(hours=1))
+    tiny = make_trade(
+        gross="0.000000000000000001", fee="0", slippage="0", closed_at=START + timedelta(hours=2)
+    )
+    with pytest.raises(ReportIntegrityError, match="Decimal"):
+        report_for(snapshot([huge, tiny]))
 
 
 @pytest.mark.asyncio

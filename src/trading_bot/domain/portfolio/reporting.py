@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, Inexact, localcontext
 from typing import Any
 from uuid import UUID
 
@@ -20,6 +21,10 @@ REPORT_VERSION = "bot-report.v1"
 REPORT_MODE = "PAPER"
 MAX_REPORT_WINDOW = timedelta(days=366)
 MAX_TRADES_PER_BOT = 10_000
+MAX_OPEN_TRADES_PER_BOT = 1_000
+MAX_BOTS_PER_WORKSPACE_REPORT = 200
+# Numeric(38,18) có tối đa 38 chữ số có nghĩa; 76 đủ cho mọi tổng/hiệu báo cáo hợp lý.
+DECIMAL_PRECISION = 76
 WINDOW_BOUNDARY = "[start,end) theo trade.closed_at"
 # Khóa evidence của order_intent mang lineage cấu hình MB-02 (effective config).
 INTENT_LINEAGE_KEYS = (
@@ -205,7 +210,8 @@ def canonical_decimal(value: Decimal) -> str:
         raise ReportIntegrityError("Ledger chứa Decimal không hữu hạn.")
     if value == 0:
         return "0"
-    return format(value.normalize(), "f")
+    with exact_decimal():  # normalize() làm tròn theo context: không được dùng prec 28
+        return format(value.normalize(), "f")
 
 
 def canonical_time(value: datetime) -> str:
@@ -236,6 +242,24 @@ def _optional_text(value: object) -> str | None:
 # --- Báo cáo bot -------------------------------------------------------------------------
 
 
+@contextmanager
+def exact_decimal() -> Iterator[None]:
+    """Context Decimal rộng (prec 76 ≥ 2 x Numeric(38,18)) và bẫy ``Inexact``.
+
+    Context mặc định (prec 28) làm tròn âm thầm số 38 chữ số của ledger; mọi phép cộng/so
+    sánh của báo cáo phải chính xác tuyệt đối, nếu không thì dừng (fail-closed).
+    """
+    with localcontext() as context:
+        context.prec = DECIMAL_PRECISION
+        context.traps[Inexact] = True
+        try:
+            yield
+        except Inexact as error:
+            raise ReportIntegrityError(
+                "Phép tính Decimal của báo cáo không chính xác (vượt độ chính xác)."
+            ) from error
+
+
 def build_bot_report(
     *,
     snapshot: BotLedgerSnapshot,
@@ -245,6 +269,20 @@ def build_bot_report(
     report_version: str = REPORT_VERSION,
 ) -> BotReport:
     """Dựng báo cáo một bot; kiểm lại scope/cửa sổ từng hàng và đối soát cost với trade."""
+    with exact_decimal():
+        return _build_bot_report(
+            snapshot=snapshot, start=start, end=end, mode=mode, report_version=report_version
+        )
+
+
+def _build_bot_report(
+    *,
+    snapshot: BotLedgerSnapshot,
+    start: datetime,
+    end: datetime,
+    mode: str,
+    report_version: str,
+) -> BotReport:
     window = {"start": canonical_time(start), "end": canonical_time(end)}
     closed = sorted(snapshot.closed_trades, key=_trade_order)
     for trade in closed:
@@ -497,6 +535,28 @@ def build_workspace_report(
     report_version: str = REPORT_VERSION,
 ) -> WorkspaceAggregateReport:
     """Cộng các báo cáo bot; số trade/net PnL phải khớp tổng ledger độc lập theo quote asset."""
+    with exact_decimal():
+        return _build_workspace_report(
+            workspace_id=workspace_id,
+            start=start,
+            end=end,
+            bot_reports=bot_reports,
+            ledger=ledger,
+            mode=mode,
+            report_version=report_version,
+        )
+
+
+def _build_workspace_report(
+    *,
+    workspace_id: UUID,
+    start: datetime,
+    end: datetime,
+    bot_reports: Sequence[BotReport],
+    ledger: Mapping[str, tuple[int, Decimal]],
+    mode: str,
+    report_version: str,
+) -> WorkspaceAggregateReport:
     reports = sorted(bot_reports, key=lambda r: str(r.bot_id))
     if len({r.bot_id for r in reports}) != len(reports):
         raise ReportIntegrityError("Một bot xuất hiện nhiều lần trong tổng hợp.")

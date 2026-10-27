@@ -401,8 +401,17 @@ def test_bot_reports_isolate_bots_and_workspace_aggregate_reconciles() -> None:
         # Operator thấy hàng bot A ở RLS (có grant bất kỳ) nhưng API vẫn 404 ở (4):
         # quyền theo hành động do ứng dụng kiểm, RLS chỉ là lớp scope.
         assert rls["qa_operator@qa"]["trades"] == {bot_a: 4}
-        assert rls["repository_forged"] == {"closed": 0, "open": 0, "totals": {}}
+        # Membership SUSPENDED dù còn role workspace-wide và grant bot A: 0 hàng.
+        assert rls["qa_suspended@qa"] == {"trades": {}, "costs": 0}
+        snapshot_mode = {"isolation": "repeatable read", "read_only": "on", "write_rejected": True}
+        assert rls["repository_forged"] == {
+            "closed": 0,
+            "open": 0,
+            "totals": {},
+            **snapshot_mode,
+        }
         owner_view = rls["repository_owner"]
+        assert {key: owner_view[key] for key in snapshot_mode} == snapshot_mode
         assert (owner_view["closed"], owner_view["open"]) == (2, 2)
         assert owner_view["totals"]["USDT"][0] == 4
         assert Decimal(owner_view["totals"]["USDT"][1]) == Decimal("14.22")

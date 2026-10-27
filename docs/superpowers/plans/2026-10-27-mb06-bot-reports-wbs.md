@@ -32,9 +32,10 @@
 | R8 | `BotReportQuery.scope` mặc định `bot`; `get_bot_report` bắt buộc `bot_id`; `get_workspace_report` chỉ chạy khi `scope=workspace` tường minh và `bot_id` trống. API `GET /api/v1/reports` bắt buộc tham số `scope`; thiếu scope, `scope=bot` thiếu `bot_id`, `scope=workspace` kèm `bot_id` → 422. Không có đường nào mặc định gộp bot. |
 | R9 | Báo cáo bot cần `BotGrantRepository.require(..., BotPermission.REPORT_READ)` (role workspace-wide đi thẳng; operator/analyst cần grant `bot:report:read` còn hiệu lực). Thiếu quyền, bot không tồn tại, workspace khác (kể cả `workspace_id` của truy vấn khác workspace phiên) → cùng `REPORT_NOT_FOUND` 404, cùng thông điệp. |
 | R10 | Tổng hợp workspace cần `bot:report:read` từ role workspace-wide (`owner`/`strategy_admin`/`risk_admin`); grant từng bot không đủ (tổng hợp bao cả bot tương lai/chưa grant) → 403 `WORKSPACE_REPORT_FORBIDDEN` (không lộ đối tượng). Vẫn gọi `require` cho từng bot trong vòng lặp. |
-| R11 | Workspace luôn lấy từ phiên; transaction đọc qua `UnitOfWork(workspace, bot, membership)` rồi `SET TRANSACTION READ ONLY` (PostgreSQL cho phép chuyển sang read-only trong transaction) → mọi ghi trong báo cáo bị DB từ chối. |
+| R11 | Workspace luôn lấy từ phiên; mọi SELECT của một báo cáo (bot hoặc tổng hợp, gồm cả tổng ledger đối soát R12) chạy trong **một** transaction `UnitOfWork(workspace, bot, membership, snapshot_read_only=True)`: UoW chạy `SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY` ngay sau `begin()`, **trước** `SELECT set_config` (PostgreSQL chỉ cho đổi isolation trước truy vấn đầu). Một snapshot duy nhất → trade đóng giữa hai câu không làm lệch đối soát (409 giả) hay hash (trade lọt giữa danh sách đóng/mở); mọi ghi bị DB từ chối. Mặc định UoW (`snapshot_read_only=False`) không đổi cho caller khác. *(Fix round 1: thay `SET TRANSACTION READ ONLY` sau truy vấn đầu dưới READ COMMITTED.)* |
 | R12 | Tổng hợp workspace kiểm chéo với tổng ledger độc lập không lọc bot (`count`, `sum(net_pnl)` theo quote asset trong cửa sổ); lệch → 409. |
-| R13 | Giới hạn tài nguyên: ≤ 10.000 trade đóng mỗi bot trong một báo cáo; vượt → 422 `REPORT_TOO_LARGE` (thu hẹp cửa sổ). Mode chỉ `PAPER`; `report_version` chỉ `bot-report.v1`. |
+| R13 | Giới hạn tài nguyên: ≤ 10.000 trade đóng mỗi bot trong một báo cáo (vượt → 422 `REPORT_TOO_LARGE`, thu hẹp cửa sổ); ≤ 1.000 trade mở tại `end` mỗi bot (vượt → 422 `REPORT_TOO_MANY_OPEN_TRADES`); ≤ 200 bot mỗi báo cáo tổng hợp (vượt → 422 `REPORT_TOO_MANY_BOTS`); truy vấn dùng `LIMIT cap+1`. Mode chỉ `PAPER`; `report_version` chỉ `bot-report.v1`. |
+| R14 | Cộng/so sánh Decimal trong `localcontext(prec=76)` với bẫy `Inexact` (cột Numeric(38,18) có 38 chữ số, context mặc định prec 28 làm tròn âm thầm); phép tính không chính xác → `LEDGER_RECONCILIATION_FAILED`. *(Fix round 1.)* |
 
 ## 4. Dữ liệu và truy vấn
 
@@ -73,7 +74,7 @@ RLS: `crypidian_admin_web` thấy hàng khi membership ACTIVE có role workspace
 
 ## 7. Nguồn (kiểm tra 2026-10-27)
 
-- PostgreSQL 18 [SET TRANSACTION](https://www.postgresql.org/docs/current/sql-set-transaction.html): transaction read-only cấm INSERT/UPDATE/DELETE/MERGE/COPY FROM trên bảng không tạm; isolation không đổi được sau truy vấn đầu (nên dùng READ COMMITTED mặc định, dựa vào bất biến trade đã đóng không nhận cost mới).
+- PostgreSQL 18 [SET TRANSACTION](https://www.postgresql.org/docs/current/sql-set-transaction.html): transaction read-only cấm INSERT/UPDATE/DELETE/MERGE/COPY FROM trên bảng không tạm; isolation không đổi được sau truy vấn đầu tiên của transaction → đặt `REPEATABLE READ, READ ONLY` ngay sau BEGIN (R11); REPEATABLE READ: mọi câu thấy cùng snapshot chụp ở truy vấn đầu.
 - PostgreSQL 18 [Row Security Policies](https://www.postgresql.org/docs/current/ddl-rowsecurity.html) (đã ghi trong memory MB-01/02).
 - OWASP [API1:2023 Broken Object Level Authorization](https://owasp.org/API-Security/editions/2023/en/0xa1-broken-object-level-authorization/): kiểm quyền trên bản ghi ở mọi hàm nhận ID từ client.
 - OWASP [API4:2023 Unrestricted Resource Consumption](https://owasp.org/API-Security/editions/2023/en/0xa4-unrestricted-resource-consumption/): giới hạn kích thước truy vấn/kết quả.

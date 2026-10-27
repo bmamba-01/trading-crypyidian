@@ -8,6 +8,7 @@ from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
+from tests.unit import test_bot_reporting as reporting
 
 from trading_bot.admin.bot_reports_router import router as reports_router
 from trading_bot.app import create_app
@@ -62,9 +63,13 @@ class RecordingReports:
         return _Report({"scope": "workspace", "report_hash": "w" * 64})
 
 
-def client_with(service: RecordingReports | None) -> TestClient:
+def _identity(principal: Principal) -> AuthIdentity:
+    return AuthIdentity(principal=principal, email="member@example.test")
+
+
+def client_with(service: object | None, *, identity: AuthIdentity = ACTOR) -> TestClient:
     app = create_app(AppSettings(app_env="test"))
-    app.dependency_overrides[current_identity] = lambda: ACTOR
+    app.dependency_overrides[current_identity] = lambda: identity
     if service is not None:
         app.state.bot_reporting_service = cast(object, service)
     return TestClient(app)
@@ -130,23 +135,34 @@ def test_implicit_or_ambiguous_scope_is_rejected(params: dict[str, str], code: s
     assert service.calls == []
 
 
-def test_not_found_and_forbidden_bot_are_indistinguishable() -> None:
+def test_not_found_and_forbidden_bot_are_indistinguishable_through_real_service() -> None:
+    """Đi qua BotReportingService + BotGrantRepository.require thật (chỉ thay nguồn dữ liệu)."""
+    reporting.reset_store()
+    cases = [
+        (reporting.ANALYST, reporting.BOT_B),  # analyst chưa được grant bot B
+        (reporting.OPERATOR, reporting.BOT_A),  # operator có bot:read nhưng thiếu report grant
+        (reporting.MULTI, reporting.BOT_A),  # nhiều role không mượn quyền workspace
+        (reporting.OWNER, uuid4()),  # bot không tồn tại
+        (reporting.OWNER, reporting.BOT_X),  # bot của workspace khác
+        (reporting.OWNER_W2, reporting.BOT_A),  # owner W2 dò bot W1
+    ]
     bodies = []
-    for error in (
-        BotReportError(404, "REPORT_NOT_FOUND", NOT_FOUND_MESSAGE),
-        BotReportError(404, "REPORT_NOT_FOUND", NOT_FOUND_MESSAGE),
-    ):
-        response = client_with(RecordingReports(error)).get(
-            "/api/v1/reports", params={"scope": "bot", "bot_id": str(uuid4()), **WINDOW}
+    for actor, bot_id in cases:
+        client = client_with(reporting.service(), identity=_identity(actor))
+        response = client.get(
+            "/api/v1/reports", params={"scope": "bot", "bot_id": str(bot_id), **WINDOW}
         )
-        assert response.status_code == 404
+        assert response.status_code == 404, (actor.roles, bot_id)
         assert response.headers["Cache-Control"] == "no-store"
         bodies.append(response.json())
-    assert (
-        bodies[0]
-        == bodies[1]
-        == {"detail": {"code": "REPORT_NOT_FOUND", "message": NOT_FOUND_MESSAGE}}
+    assert all(body == bodies[0] for body in bodies)
+    assert bodies[0] == {"detail": {"code": "REPORT_NOT_FOUND", "message": NOT_FOUND_MESSAGE}}
+    # Đối chứng dương: cùng đường thật trả 200 khi có grant bot:report:read.
+    allowed = client_with(reporting.service(), identity=_identity(reporting.ANALYST)).get(
+        "/api/v1/reports", params={"scope": "bot", "bot_id": str(reporting.BOT_A), **WINDOW}
     )
+    assert allowed.status_code == 200
+    assert allowed.json()["report"]["bot_id"] == str(reporting.BOT_A)
 
 
 @pytest.mark.parametrize(

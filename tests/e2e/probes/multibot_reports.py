@@ -394,16 +394,21 @@ def _scope(connection, workspace_id, membership_id):
 
 
 async def _repository_view(workspace_id, membership_id, bot_id, account_id, start, end):
+    from sqlalchemy import text
+    from sqlalchemy.exc import DBAPIError
+
     from trading_bot.adapters.database.repositories.bot_reports import BotReportRepository
     from trading_bot.application.outbox import UnitOfWork
 
     engine, sessions = sessions_factory()
     try:
         async with UnitOfWork(
-            sessions, workspace_id=workspace_id, actor_membership_id=membership_id
+            sessions,
+            workspace_id=workspace_id,
+            actor_membership_id=membership_id,
+            snapshot_read_only=True,
         ) as uow:
             repository = BotReportRepository(uow.session)
-            await repository.set_read_only()
             snapshot = await repository.load_bot_ledger(
                 workspace_id=workspace_id,
                 bot_id=bot_id,
@@ -411,16 +416,29 @@ async def _repository_view(workspace_id, membership_id, bot_id, account_id, star
                 start=start,
                 end=end,
                 max_closed=100,
+                max_open=100,
             )
             totals = await repository.workspace_closed_totals(
                 workspace_id=workspace_id, start=start, end=end
             )
+            # Transaction báo cáo phải đúng REPEATABLE READ + READ ONLY trên PostgreSQL thật.
+            isolation = (await uow.session.execute(text("SHOW transaction_isolation"))).scalar()
+            read_only = (await uow.session.execute(text("SHOW transaction_read_only"))).scalar()
+            write_rejected = False
+            try:
+                async with uow.session.begin_nested():
+                    await uow.session.execute(text("UPDATE trade SET symbol = symbol WHERE false"))
+            except DBAPIError as error:
+                write_rejected = "read-only" in str(error)
     finally:
         await engine.dispose()
     return {
         "closed": len(snapshot.closed_trades),
         "open": len(snapshot.open_trades),
         "totals": {asset: [count, str(net)] for asset, (count, net) in totals.items()},
+        "isolation": isolation,
+        "read_only": read_only,
+        "write_rejected": write_rejected,
     }
 
 
@@ -441,6 +459,8 @@ def rls():
             "qa_owner@qa": (qa, members["qa.owner"]),
             "qa_analyst@qa": (qa, members["qa.analyst_reviewer"]),
             "qa_operator@qa": (qa, members["qa.operator"]),
+            # Membership SUSPENDED (giữ role risk_admin + grant bot A) không thấy hàng nào.
+            "qa_suspended@qa": (qa, members["qa.suspended"]),
         }
         for name, (workspace_id, membership_id) in cases.items():
             with connection.transaction():

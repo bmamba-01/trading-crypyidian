@@ -13,7 +13,7 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import func, or_, select, text
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from trading_bot.adapters.database.models import BotInstance
@@ -40,10 +40,6 @@ class BotReportRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    async def set_read_only(self) -> None:
-        """Chuyển transaction hiện tại sang READ ONLY: mọi ghi sau đó bị PostgreSQL từ chối."""
-        await self._session.execute(text("SET TRANSACTION READ ONLY"))
-
     async def get_bot(self, *, workspace_id: UUID, bot_id: UUID) -> ReportBot | None:
         rows = await self._session.execute(
             select(BotInstance.workspace_id, BotInstance.id, BotInstance.trading_account_id).where(
@@ -53,11 +49,13 @@ class BotReportRepository:
         found = rows.all()
         return _bot(found[0]) if found else None
 
-    async def list_bots(self, *, workspace_id: UUID) -> list[ReportBot]:
+    async def list_bots(self, *, workspace_id: UUID, limit: int) -> list[ReportBot]:
+        """Tối đa ``limit`` bot (caller truyền cap + 1 để phát hiện vượt cap)."""
         rows = await self._session.execute(
             select(BotInstance.workspace_id, BotInstance.id, BotInstance.trading_account_id)
             .where(BotInstance.workspace_id == workspace_id)
             .order_by(BotInstance.id)
+            .limit(limit)
         )
         return [_bot(row) for row in rows.all()]
 
@@ -70,8 +68,10 @@ class BotReportRepository:
         start: datetime,
         end: datetime,
         max_closed: int,
+        max_open: int,
     ) -> BotLedgerSnapshot:
-        """Trade đóng trong ``[start, end)`` (tối đa ``max_closed + 1`` hàng) và lineage."""
+        """Trade đóng trong ``[start, end)`` (tối đa ``max_closed + 1`` hàng), trade mở tại end
+        (tối đa ``max_open + 1``) và lineage; hàng thừa chỉ để service phát hiện vượt cap."""
         scope = (
             TradeRecord.workspace_id == workspace_id,
             TradeRecord.bot_id == bot_id,
@@ -96,9 +96,10 @@ class BotReportRepository:
                 or_(TradeRecord.closed_at.is_(None), TradeRecord.closed_at >= end),
             )
             .order_by(TradeRecord.opened_at, TradeRecord.id)
+            .limit(max_open + 1)
         )
         trades = [_trade(row) for row in closed]
-        if len(trades) > max_closed:
+        if len(trades) > max_closed or len(open_rows) > max_open:
             # Service từ chối báo cáo quá lớn; không cần đọc lineage của hàng thừa.
             return _snapshot(workspace_id, bot_id, account_id, trades, open_rows, (), (), ())
         trade_ids = [trade.trade_id for trade in trades]
