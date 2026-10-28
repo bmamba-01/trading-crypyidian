@@ -1,6 +1,6 @@
 # MB-04 WBS — Equity point-in-time và ngân sách rủi ro Multi-Bot
 
-**Trạng thái:** MB-04 hoàn tất trong phạm vi PAPER trên worktree `mb04-latest-dev` từ nền `dev@67702f4`; full unit/E2E và quality gates đều đạt. Đã tự review DB/code/auth/risk và sửa race do E2E outbox probe không lọc event type. Chưa commit/push; đang chuẩn bị tích hợp vào `dev`.
+**Trạng thái:** MB-04 hoàn tất trong phạm vi PAPER; commit `fd5a751` đã push lên `origin/dev` và checkout `dev` đồng bộ. Full unit/E2E và quality gates đều đạt. Đã tự review DB/code/auth/risk và sửa failure E2E do probe không lọc event type.
 **Ngày cập nhật:** 2026-10-28
 **Gói cha:** [WBS Multi-Bot](./2026-10-24-multibot-implementation-plan.md), Task 5.
 **Contract:** [Hợp đồng kiến trúc Multi-Bot](../../architecture/decisions/2026-10-24-multibot-contracts.md), mục 5–6.
