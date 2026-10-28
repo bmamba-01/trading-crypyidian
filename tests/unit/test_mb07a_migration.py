@@ -64,13 +64,16 @@ def _run(function: str) -> list[str]:
     return recorder.statements
 
 
-def test_single_migration_chains_after_mb05_head_and_is_the_only_head() -> None:
+def test_migration_chain_keeps_mb07a_then_mb04_hardening_as_single_head() -> None:
     module = _load(REVISION)
-    parents = [_load(path.stem.split("_")[0]).down_revision for path in VERSIONS.glob("*.py")]
+    revisions = [_load(path.stem.split("_")[0]) for path in VERSIONS.glob("*.py")]
+    children = [item.revision for item in revisions if item.down_revision == REVISION]
+    parents = [item.down_revision for item in revisions]
 
     assert module.down_revision == "e1f3a5c7b9d2"
     assert parents.count("e1f3a5c7b9d2") == 1
-    assert REVISION not in parents
+    assert children == ["f7a9c1e3b5d8"]
+    assert "b3d5f7a9c1e4" not in parents
 
 
 def test_upgrade_grants_only_status_column_and_creates_receipt_table_with_split_policies() -> None:

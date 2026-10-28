@@ -1,7 +1,7 @@
 """MB-04 fix: aggregate rủi ro workspace do role NOLOGIN sở hữu, một phép tính equity dùng chung.
 
 Revision ID: f7a9c1e3b5d8
-Revises: e1f3a5c7b9d2
+Revises: f7b9d1e3a5c8
 
 Sửa các finding review độc lập MB-04:
 - I1: hàm `SECURITY DEFINER` không còn do superuser migrator sở hữu. Role riêng
@@ -28,7 +28,7 @@ xóa role nếu không database nào khác còn phụ thuộc.
 from alembic import op
 
 revision = "f7a9c1e3b5d8"
-down_revision = "e1f3a5c7b9d2"
+down_revision = "f7b9d1e3a5c8"
 branch_labels = None
 depends_on = None
 

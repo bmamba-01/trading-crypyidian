@@ -271,8 +271,13 @@ def acl_state(connection):
 # MB-04 fix (I1): hàm SECURITY DEFINER chỉ do role NOLOGIN riêng sở hữu và grant tối thiểu.
 DEFINER_OWNERS = {"crypidian_bot_provisioner", "crypidian_risk_aggregator"}
 FUNCTION_EXECUTE = {
-    "get_workspace_risk_equity_aggregate(uuid,timestamp with time zone,integer)": {RUNTIME},
-    "workspace_account_risk_state(uuid,timestamp with time zone,integer)": {RUNTIME, ADMIN},
+    "get_workspace_risk_equity_aggregate(uuid,timestamp with time zone,integer,text,text[])": {
+        RUNTIME
+    },
+    "workspace_account_risk_state(uuid,timestamp with time zone,integer,text,text[])": {
+        RUNTIME,
+        ADMIN,
+    },
 }
 
 

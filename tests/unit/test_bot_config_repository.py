@@ -195,3 +195,25 @@ def test_request_fingerprint_is_order_independent_and_payload_sensitive() -> Non
 
     assert first == same
     assert len({first, other, other_operation}) == 3
+
+
+async def test_publish_without_explicit_time_uses_database_clock() -> None:
+    """Fix round 2 (Minor 3): overlay effective_at đóng dấu bằng đồng hồ DB."""
+    draft = _draft()
+    published = SimpleNamespace(id=draft.id, status="PUBLISHED")
+    session = RecordingSession(draft, None, draft.id, published)
+
+    await BotConfigVersionRepository(session).publish_draft(  # type: ignore[arg-type]
+        workspace_id=uuid4(),
+        bot_id=uuid4(),
+        draft_id=draft.id,  # type: ignore[arg-type]
+        expected_revision=2,
+        expected_parent_version_id=None,
+        approved_by=uuid4(),
+        base_settings_version_id=uuid4(),
+        base_settings_hash="c" * 64,
+    )
+
+    values = session.statements[2].split(" SET ", 1)[-1].split(" WHERE ", 1)[0].replace(" ", "")
+    assert "effective_at=statement_timestamp()" in values
+    assert "published_at=statement_timestamp()" in values

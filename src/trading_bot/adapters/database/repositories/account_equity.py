@@ -24,15 +24,56 @@ from trading_bot.domain.risk.equity import (
     PaperLedgerEquityBasis,
     mark_to_market_equity,
 )
-from trading_bot.domain.risk.workspace_budget import AccountRiskState
+from trading_bot.domain.risk.workspace_budget import AccountRiskState, MarkPolicy
 
 LEDGER_EQUITY_SOURCE = "paper_ledger_sql"
-LEDGER_EQUITY_SOURCE_VERSION = "mb04-account-risk-state-v2"
+LEDGER_EQUITY_SOURCE_VERSION = "mb04-account-risk-state-v3"
 _STATE_QUERY = text(
-    "SELECT bot_id, account_id, is_enabled, seed_equity_usdt, realized_pnl_usdt, "
-    "open_position_pnl_usdt, open_position_count, equity_usdt, has_unknown_equity, "
-    "open_risk_usdt, pending_risk_usdt, has_unknown_exposure "
-    "FROM public.workspace_account_risk_state(:workspace_id, :as_of, :max_mark_age_seconds)"
+    "WITH state AS (SELECT * FROM public.workspace_account_risk_state(:workspace_id, :as_of, "
+    ":max_mark_age_seconds, :mark_source, :mark_timeframes)), source_rows AS ("
+    "SELECT s.bot_id, s.trading_account_id AS account_id, "
+    "'seed:' || s.id::text || ':' || s.source_settings_hash || ':' || s.initial_equity::text "
+    "|| ':' || s.quote_asset AS source_ref "
+    "FROM public.paper_account_seed s WHERE s.workspace_id = :workspace_id "
+    "AND s.created_at <= :as_of "
+    "UNION ALL SELECT t.bot_id, t.account_id, 'trade:' || t.id::text || ':' || t.status || ':' "
+    "|| t.symbol || ':' || t.side || ':' || t.quote_asset || ':' || t.intent_id::text || ':' "
+    "|| t.opened_at::text || ':' || coalesce(t.net_pnl::text, '') || ':' "
+    "|| coalesce(t.closed_at::text, '') "
+    "FROM public.trade t WHERE t.workspace_id = :workspace_id AND t.mode = 'PAPER' AND "
+    "((t.status = 'CLOSED' AND t.closed_at <= :as_of) OR "
+    "(t.status = 'OPEN' AND t.opened_at <= :as_of)) "
+    "UNION ALL SELECT t.bot_id, f.account_id, 'fill:' || f.id::text || ':' || f.fill_role || ':' "
+    "|| f.quantity::text || ':' || f.price::text || ':' || f.fee_amount::text || ':' "
+    "|| f.slippage_amount::text || ':' || f.occurred_at::text "
+    "FROM public.fill f JOIN public.trade t ON t.workspace_id = f.workspace_id "
+    "AND t.account_id = f.account_id AND t.intent_id = f.intent_id "
+    "WHERE f.workspace_id = :workspace_id AND f.mode = 'PAPER' AND f.occurred_at <= :as_of "
+    "AND ((t.status = 'CLOSED' AND t.closed_at <= :as_of) OR "
+    "(t.status = 'OPEN' AND t.opened_at <= :as_of)) "
+    "UNION ALL SELECT t.bot_id, c.account_id, 'cost:' || c.id::text || ':' || c.cost_type || ':' "
+    "|| c.amount::text || ':' || c.currency || ':' || c.occurred_at::text "
+    "FROM public.trade_cost c JOIN public.trade t ON t.workspace_id = c.workspace_id "
+    "AND t.account_id = c.account_id AND t.id = c.trade_id "
+    "WHERE c.workspace_id = :workspace_id AND c.mode = 'PAPER' AND c.occurred_at <= :as_of "
+    "AND ((t.status = 'CLOSED' AND t.closed_at <= :as_of) OR "
+    "(t.status = 'OPEN' AND t.opened_at <= :as_of)) "
+    "UNION ALL SELECT t.bot_id, t.account_id, 'mark:' || mark.id::text || ':' "
+    "|| mark.revision::text || ':' || mark.checksum "
+    "FROM public.trade t JOIN LATERAL (SELECT mb.id, mb.revision, mb.checksum "
+    "FROM public.market_bar mb WHERE mb.workspace_id = t.workspace_id AND mb.symbol = t.symbol "
+    "AND mb.is_closed AND mb.source = :mark_source AND mb.timeframe = ANY(:mark_timeframes) "
+    "AND mb.close_time <= :as_of AND mb.available_at <= :as_of "
+    "ORDER BY mb.close_time DESC, mb.available_at DESC, mb.revision DESC LIMIT 1) mark ON true "
+    "WHERE t.workspace_id = :workspace_id AND t.mode = 'PAPER' AND t.status = 'OPEN' "
+    "AND t.opened_at <= :as_of), provenance AS (SELECT bot_id, account_id, "
+    "array_agg(source_ref ORDER BY source_ref) AS source_refs FROM source_rows "
+    "GROUP BY bot_id, account_id) "
+    "SELECT state.bot_id, state.account_id, state.is_enabled, state.seed_equity_usdt, "
+    "state.realized_pnl_usdt, state.open_position_pnl_usdt, state.open_position_count, "
+    "state.equity_usdt, state.has_unknown_equity, state.open_risk_usdt, state.pending_risk_usdt, "
+    "state.has_unknown_exposure, coalesce(provenance.source_refs, ARRAY[]::text[]) "
+    "FROM state LEFT JOIN provenance USING (bot_id, account_id)"
 )
 
 
@@ -52,6 +93,7 @@ class AccountLedgerState:
     open_risk_usdt: Decimal
     pending_risk_usdt: Decimal
     has_unknown_exposure: bool
+    source_refs: tuple[str, ...]
 
     def to_domain(self) -> AccountRiskState:
         return AccountRiskState(
@@ -92,7 +134,12 @@ class AccountEquityRepository:
         self._session = session
 
     async def load_account_states(
-        self, *, workspace_id: UUID, as_of: datetime, max_mark_age: timedelta
+        self,
+        *,
+        workspace_id: UUID,
+        as_of: datetime,
+        max_mark_age: timedelta,
+        mark_policy: MarkPolicy,
     ) -> list[AccountLedgerState]:
         """Các account nhìn thấy dưới RLS của role hiện tại, tính tại `as_of`."""
         _validate_aware(as_of, "as_of")
@@ -102,6 +149,8 @@ class AccountEquityRepository:
                 "workspace_id": workspace_id,
                 "as_of": as_of,
                 "max_mark_age_seconds": mark_age_seconds(max_mark_age),
+                "mark_source": mark_policy.source,
+                "mark_timeframes": list(mark_policy.timeframes),
             },
         )
         states: list[AccountLedgerState] = []
@@ -120,6 +169,7 @@ class AccountEquityRepository:
                     open_risk_usdt=_decimal(row[9]) or Decimal("0"),
                     pending_risk_usdt=_decimal(row[10]) or Decimal("0"),
                     has_unknown_exposure=bool(row[11]),
+                    source_refs=tuple(row[12] or ()),
                 )
             )
         return states
@@ -133,11 +183,15 @@ class AccountEquityRepository:
         as_of: datetime,
         max_equity_age: timedelta,
         max_mark_age: timedelta,
+        mark_policy: MarkPolicy,
     ) -> AccountEquitySnapshot:
         """Snapshot vốn của đúng bot/account mục tiêu từ cùng phép tính với aggregate."""
         _validate_aware(as_of, "as_of")
         states = await self.load_account_states(
-            workspace_id=workspace_id, as_of=as_of, max_mark_age=max_mark_age
+            workspace_id=workspace_id,
+            as_of=as_of,
+            max_mark_age=max_mark_age,
+            mark_policy=mark_policy,
         )
         state = next(
             (item for item in states if item.account_id == account_id and item.bot_id == bot_id),
@@ -163,6 +217,7 @@ class AccountEquityRepository:
             cumulative_realized_pnl=state.realized_pnl_usdt if state else Decimal("0"),
             open_position_pnl=state.open_position_pnl_usdt if state else Decimal("0"),
             open_position_count=state.open_position_count if state else 0,
+            source_refs=state.source_refs if state else (),
         )
         if state is None or state.seed_equity_usdt is None:
             return _unknown_snapshot(basis, EquityReasonCode.BASIS_UNKNOWN)

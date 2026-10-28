@@ -14,6 +14,7 @@ from uuid import UUID, uuid4
 from trading_bot.domain.risk.equity import (
     AccountEquitySnapshot,
     EquityValidationError,
+    PaperLedgerEquityBasis,
     RiskConversionObservation,
     normalize_equity_to_usdt,
 )
@@ -276,6 +277,25 @@ class AccountScopeInput:
 
 
 @dataclass(frozen=True, slots=True)
+class MarkPolicy:
+    """Nguồn và timeframe nến được phép làm giá mark (fix round 2, I2).
+
+    Lấy từ root settings (`market_data.venue`, `market_data.timeframes`); SQL chỉ xét nến đóng
+    đúng nguồn/timeframe, tươi khi `as_of − close_time ≤ max_mark_age` và đúng độ dài danh định.
+    """
+
+    source: str
+    timeframes: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        _text(self.source, *self.timeframes)
+        _require(
+            len(self.timeframes) > 0 and len(set(self.timeframes)) == len(self.timeframes),
+            BudgetReasonCode.LINEAGE_INVALID,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class WorkspacePolicy:
     """Chính sách ngân sách root và thời hạn dữ liệu khả dụng."""
 
@@ -287,6 +307,7 @@ class WorkspacePolicy:
     max_conversion_age: timedelta
     risk_profile_version_id: str = ""
     max_mark_age: timedelta = timedelta(seconds=60)
+    mark_policy: MarkPolicy | None = None
 
     def __post_init__(self) -> None:
         _text(self.workspace_id, self.root_settings_version_id, self.root_settings_hash)
@@ -378,6 +399,7 @@ class WorkspaceRiskDecision:
     snapshot_ids: tuple[str, ...]
     conversion_ids: tuple[str, ...]
     plan_hash: str = ""
+    snapshot_source_refs: tuple[str, ...] = ()
 
 
 class WorkspaceBudgetEngine:
@@ -935,6 +957,13 @@ class WorkspaceBudgetEngine:
             snapshot_ids=(snapshot_id,) if snapshot_id else (),
             conversion_ids=(conversion_id,) if conversion_id else (),
             plan_hash=plan_hash,
+            snapshot_source_refs=(
+                target_acc.snapshot.basis.source_refs
+                if isinstance(target_acc.snapshot.basis, PaperLedgerEquityBasis)
+                else ()
+            )
+            if target_acc.snapshot is not None
+            else (),
         )
 
 

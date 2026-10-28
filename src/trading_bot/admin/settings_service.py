@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
@@ -405,10 +405,8 @@ class SettingsAdminService:
         assessment = await assess_risk_capacity(
             unit.session,
             workspace_id=principal.workspace_id,
-            workspace_fraction=settings.risk.workspace_max_open_risk_fraction,
+            settings=settings,
             account_fraction=account_fraction,
-            max_mark_age=timedelta(seconds=settings.risk.max_mark_age_seconds),
-            as_of=datetime.now(UTC),
         )
         payload = assessment.payload()
         action = (

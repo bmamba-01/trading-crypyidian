@@ -23,6 +23,7 @@ from trading_bot.domain.risk.reservations import (
     ReservationReleaseReason,
     ReservationStatus,
 )
+from trading_bot.domain.risk.workspace_budget import MarkPolicy
 
 NOW = datetime(2026, 10, 22, 12, tzinfo=UTC)
 
@@ -763,7 +764,10 @@ async def test_get_workspace_risk_aggregate_queries_and_maps_dto() -> None:
     repo = RiskReservationRepository(session)  # type: ignore[arg-type]
 
     agg = await repo.get_workspace_risk_aggregate(
-        workspace_id=workspace_id, as_of=as_of, max_mark_age=timedelta(seconds=60)
+        workspace_id=workspace_id,
+        as_of=as_of,
+        max_mark_age=timedelta(seconds=60),
+        mark_policy=MarkPolicy("BINANCE_USDM", ("1m", "1h")),
     )
 
     assert agg.workspace_id == workspace_id
@@ -780,6 +784,8 @@ async def test_get_workspace_risk_aggregate_queries_and_maps_dto() -> None:
         "workspace_id": workspace_id,
         "as_of": as_of,
         "max_mark_age_seconds": 60,
+        "mark_source": "BINANCE_USDM",
+        "mark_timeframes": ["1m", "1h"],
     }
 
 
@@ -791,5 +797,8 @@ async def test_get_workspace_risk_aggregate_rejects_naive_as_of() -> None:
 
     with pytest.raises(ReservationConflict, match="as_of"):
         await repo.get_workspace_risk_aggregate(
-            workspace_id=uuid4(), as_of=naive_as_of, max_mark_age=timedelta(seconds=60)
+            workspace_id=uuid4(),
+            as_of=naive_as_of,
+            max_mark_age=timedelta(seconds=60),
+            mark_policy=MarkPolicy("BINANCE_USDM", ("1m",)),
         )

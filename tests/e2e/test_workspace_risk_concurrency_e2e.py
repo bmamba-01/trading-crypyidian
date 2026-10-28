@@ -231,6 +231,12 @@ def test_workspace_risk_concurrency_and_rls_isolation_e2e() -> None:
             "negative_account_equity_unknown": True,
             "future_as_of_keeps_live_reservation": True,
             "account_state_matches_aggregate": True,
+            # Fix round 2 (I2): mark chỉ từ timeframe/source cấu hình, không nới theo độ dài nến.
+            "day_bar_mark_unknown": True,
+            "week_bar_mark_unknown": True,
+            "malformed_open_time_unknown": True,
+            "foreign_source_mark_unknown": True,
+            "configured_mark_known": True,
         }
 
         # ---------------------------------------------------------------------

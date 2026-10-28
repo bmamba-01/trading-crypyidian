@@ -1,7 +1,7 @@
 # MB-04 WBS — Equity point-in-time và ngân sách rủi ro Multi-Bot
 
-**Trạng thái:** MB-04 hoàn tất trên nhánh `dev` sau full unit/E2E/quality gates ngày 2026-10-26. Nguồn cap/scope authoritative được nạp sau khóa; PAPER runtime đã nối workspace risk gate; migration equity point-in-time và DB security được xác minh. Đã tự review DB/code/auth/bảo mật/cơ chế; không có báo cáo review độc lập trong vòng này.
-**Ngày cập nhật:** 2026-10-26
+**Trạng thái:** MB-04 hoàn tất trong phạm vi PAPER trên worktree `mb04-latest-dev` từ nền `dev@67702f4`; full unit/E2E và quality gates đều đạt. Đã tự review DB/code/auth/risk và sửa race do E2E outbox probe không lọc event type. Chưa commit/push; đang chuẩn bị tích hợp vào `dev`.
+**Ngày cập nhật:** 2026-10-28
 **Gói cha:** [WBS Multi-Bot](./2026-10-24-multibot-implementation-plan.md), Task 5.
 **Contract:** [Hợp đồng kiến trúc Multi-Bot](../../architecture/decisions/2026-10-24-multibot-contracts.md), mục 5–6.
 **Phụ thuộc:** MB-01, MB-02 và MB-03 phải được tích hợp, review và xác minh trên cùng migration head trước khi bắt đầu code MB-04.
@@ -198,11 +198,31 @@ Review độc lập đọc tĩnh dev @ `b85c21b` (`.superpowers/sdd/2026-10-24-m
 - [x] Minor: context Decimal cục bộ (cap/phần còn lại làm tròn xuống, exposure làm tròn lên), kết quả SQL `numeric` không ép scale; `workspace_aggregate` bắt buộc; vốn âm từng account là unknown; assertion thứ tự đọc-sau-khóa; barrier E2E kiểm thêm tổng `risk_reservation` đọc thẳng bảng; tra decision theo idempotency key lọc trong SQL.
 - Migration `f7a9c1e3b5d8` nối `e1f3a5c7b9d2`, một head; downgrade trả lại nguyên văn hàm/grant của `e4f6a8c0d2b5`/`c8f1e3a5b7d9` và xóa role nếu không còn phụ thuộc.
 
-**Ruling ghi nhận (chi tiết trong report):** R1 `read_at = max(as_of, clock())` (không từ chối as_of tương lai vì E2E MB-05 dùng thời gian mô phỏng; mốc giữ reservation dùng clock thật); R2 lỗi chính sách trước khi đánh giá (candidate hết hạn, replay reservation chết) là `ReservationConflict` → runtime `WORKSPACE_RISK_POLICY_UNAVAILABLE`, transaction rollback, như đường reserve legacy; R3 độ tươi mark theo `close_time` cộng một khoảng nến; R4 không so cap account với cap root (khác mẫu số; nếu ép account ≤ root thì cap workspace không bao giờ chạm được khi các account cùng phần trăm — trái kịch bản headroom trap); R5 admin-web không gọi aggregate definer mà cộng hàng `workspace_account_risk_state` dưới RLS của chính nó (owner/risk_admin thấy mọi bot), nên EXECUTE definer bị thu hồi khỏi admin-web; breach khi publish đánh giá scope WORKSPACE và ACCOUNT (scope BOT do coordinator chặn khi reserve).
+**Fix round 2 (re-review 2026-10-26):**
+
+- [x] **I2/R3 siết lại:** mark chỉ từ nến đóng đúng nguồn `market_data.venue` và timeframe thuộc `market_data.timeframes` của root; tươi khi `as_of − close_time ≤ max_mark_age` (bỏ phần nới theo độ dài nến lấy từ dữ liệu); nến phải đúng độ dài danh định (±1 giây dưới, theo quy ước Binance `open + interval − 1ms`), timeframe lạ/nến hỏng → unknown. Migration `b3d5f7a9c1e4` (nối `f7a9c1e3b5d8`, đổi chữ ký hàm thêm `p_mark_source`, `p_mark_timeframes`). E2E: nến 1d/1w, `open_time` sai, nguồn lạ đều unknown (RED trên `b5efea4`: cả bốn là known).
+- [x] **As_of tương lai:** root/profile/overlay đọc tại `now` (đồng hồ sau khóa), không tại `read_at`; vốn/mark/exposure vẫn tại `read_at` cho mô phỏng MB-05. E2E `c4`: version root lỏng hơn lịch +30 phút không được dùng khi `evaluated_at` = +60 phút (RED: APPROVED).
+- [x] **Đồng hồ DB:** coordinator dùng `clock_timestamp()` sau khóa; publish root/overlay đóng dấu `published_at/effective_at` bằng `statement_timestamp()`; `get_effective` không có `as_of` so với `clock_timestamp()` — một nguồn thời gian, không phụ thuộc lệch đồng hồ process.
+- [x] **Guard loader:** `AsyncSession` production từ chối `caps_loader`/`target_status_loader` thay thế; unit test chỉ tiêm trên session giả.
+- Controller phê chuẩn ruling R4 (không validate account ≤ workspace khi publish; kẹp runtime không bao giờ nới cap).
+**Ruling ghi nhận (chi tiết trong report):** R1 `read_at = max(as_of, clock())` (không từ chối as_of tương lai vì E2E MB-05 dùng thời gian mô phỏng; mốc giữ reservation dùng clock thật); R2 lỗi chính sách trước khi đánh giá (candidate hết hạn, replay reservation chết) là `ReservationConflict` → runtime `WORKSPACE_RISK_POLICY_UNAVAILABLE`, transaction rollback, như đường reserve legacy; R3 độ tươi mark theo `close_time` ≤ `max_mark_age` (bản round 1 cộng thêm một khoảng nến đã bị thay ở fix round 2); R4 không so cap account với cap root (khác mẫu số; nếu ép account ≤ root thì cap workspace không bao giờ chạm được khi các account cùng phần trăm — trái kịch bản headroom trap); R5 admin-web không gọi aggregate definer mà cộng hàng `workspace_account_risk_state` dưới RLS của chính nó (owner/risk_admin thấy mọi bot), nên EXECUTE definer bị thu hồi khỏi admin-web; breach khi publish đánh giá scope WORKSPACE và ACCOUNT (scope BOT do coordinator chặn khi reserve).
+
+### MB04.11 — Bổ sung provenance cho equity SQL và quyết định risk (2026-10-27)
+
+- [x] Thêm source refs point-in-time từ seed, trade, fill, cost và mark; truy vấn refs cùng một câu SQL với `workspace_account_risk_state` để cùng MVCC snapshot, chịu cùng RLS và không tạo cửa sổ race giữa tính vốn với truy xuất nguồn.
+- [x] Đưa refs vào `PaperLedgerEquityBasis`; hash equity snapshot bao phủ refs nên thay ID/revision/checksum/giá trị nguồn làm hash đổi dù tổng equity giữ nguyên. Tăng source version lên `mb04-account-risk-state-v3`.
+- [x] Đưa source refs vào `WorkspaceRiskDecision` và payload bất biến của `risk_decision`, cho phép truy ngược các quyết định cũ về seed/trade/fill/cost/mark đã dùng.
+- [x] Unit RED/GREEN: thay mark revision trong cùng seed/equity tạo hash khác; quyết định được persist refs.
+- [x] Compose E2E trên PostgreSQL thật: decision sau khi có vị thế persist refs `trade`, `fill`, `mark`; kiểm cùng lúc đường RLS và tính snapshot. `tests/e2e/test_workspace_risk_real_paths.py` → **1 passed / 56.11s**.
+- [x] Full unit → **1570 passed / 30.00s**; E2E migration/config/concurrency (`test_multibot_config.py`, `test_workspace_risk_concurrency_e2e.py`) → **2 passed / 190.35s**; migration tests → **17 passed / 1.99s**.
+- [x] Ruff check; Ruff format **399 files already formatted**; mypy **146 source files**; Compose config; Alembic `heads` → một head `b3d5f7a9c1e4`; `git diff --check`.
+- [x] Full `tests/e2e` → **27 passed / 1924.14s** sau khi cô lập event type trong `test_compose_boundary.py`; lần full trước 26/1 đã làm rõ và tái hiện failure do probe claim toàn bộ loại outbox event trong khi chỉ kỳ vọng event của chính nó.
+
+**Nghiệm thu MB04.11:** cùng câu lệnh SQL point-in-time tạo equity và danh sách nguồn; snapshot hash đổi khi nguồn/revision đổi dù tiền không đổi; risk decision payload lưu đầy đủ source refs. Target E2E và full Compose E2E đều đạt.
 
 ## Cổng nghiệm thu tổng MB-04
 
-MB-04 hoàn tất trong phạm vi PAPER: snapshot vốn point-in-time; PnL closed/open/partial-exit và chi phí không double-count; unknown/stale equity/FX/mark fail-closed; aggregate risk gồm vị thế + reservation; cap/scope authoritative sau khóa và runtime gate; concurrency serialize; RLS/grants và migration/history được kiểm tra. Full unit **1103 passed**, full E2E **20 passed / 1007.23s**, quality gates pass. Tự review DB/code/auth/security hoàn tất; no-submit được chứng minh bằng unit và Compose runtime scenario. Review độc lập không thực hiện và không được ghi nhận như kết quả đạt. **Cập nhật 2026-10-26:** review độc lập đã có (3 Critical + 6 Important) và đã được sửa ở MB04.10; số liệu suite sau sửa nằm trong report sửa lỗi. MB-04 không bật Binance LIVE execution và không tuyên bố strategy có lợi nhuận.
+MB-04 chỉ áp dụng PAPER và không chứng minh strategy có lợi nhuận. **Trạng thái hiện hành 2026-10-28:** toàn bộ review finding, provenance, migration chain, full unit/E2E và quality gates đã đạt. Failure outbox đã được tái hiện bằng event nhiễu khác loại và sửa probe bằng bộ lọc `event_types`; full E2E sau sửa đạt 27/27. Có thể commit/tích hợp lên `dev`.
 
 ## Nguồn hiện hành và thuật ngữ EN→VI
 

@@ -156,6 +156,8 @@ class PaperLedgerEquityBasis(EquityBasis):
     cumulative_realized_pnl: Decimal
     open_position_pnl: Decimal
     open_position_count: int
+    # Các khóa/hash nguồn được đọc trong cùng snapshot SQL point-in-time.
+    source_refs: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

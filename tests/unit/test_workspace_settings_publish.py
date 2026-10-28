@@ -153,3 +153,34 @@ async def test_load_effective_settings_fails_closed_on_content_hash_mismatch() -
 
     with pytest.raises(SettingsVersionConflict, match="Hash settings"):
         await repository.load_effective_config(workspace_id=record.workspace_id)
+
+
+@pytest.mark.asyncio
+async def test_publish_stamps_effective_time_with_database_clock() -> None:
+    """Fix round 2 (Minor 3): effective_at do DB đóng dấu, cùng đồng hồ coordinator so sánh."""
+    workspace_id = uuid4()
+    parent_id = uuid4()
+    draft = draft_record(parent_id)
+    published = SimpleNamespace(id=draft.id, parent_version_id=parent_id, status="PUBLISHED")
+    session = SequencedSession(
+        [
+            SimpleNamespace(id=workspace_id),
+            draft,
+            SimpleNamespace(id=parent_id),
+            draft.id,
+            published,
+        ]
+    )
+
+    await WorkspaceSettingsRepository(session).publish_draft(  # type: ignore[arg-type]
+        workspace_id=workspace_id,
+        draft_id=draft.id,
+        expected_revision=draft.revision,
+        approved_by=uuid4(),
+        expected_parent_version_id=parent_id,
+    )
+
+    update = session.statements[3]
+    values = update.split(" SET ", 1)[-1].split(" WHERE ", 1)[0]
+    assert "published_at=statement_timestamp()" in values.replace(" ", "")
+    assert "effective_at=statement_timestamp()" in values.replace(" ", "")

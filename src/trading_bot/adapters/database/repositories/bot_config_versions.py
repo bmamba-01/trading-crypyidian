@@ -8,7 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -98,7 +98,8 @@ class BotConfigVersionRepository:
         self, *, workspace_id: UUID, bot_id: UUID, as_of: datetime | None = None
     ) -> BotConfigVersion | None:
         """Version đã publish có hiệu lực tại ``as_of``; draft không bao giờ được trả."""
-        point = as_of or datetime.now(UTC)
+        # Không có as_of: so với đồng hồ DB, cùng nguồn với statement_timestamp() khi publish.
+        point = as_of if as_of is not None else func.clock_timestamp()
         return await self._session.scalar(
             select(BotConfigVersion)
             .where(
@@ -215,7 +216,8 @@ class BotConfigVersionRepository:
         head = await self.get_head(workspace_id=workspace_id, bot_id=bot_id)
         if (head.id if head is not None else None) != expected_parent_version_id:
             raise BotConfigVersionConflict("Phiên bản cấu hình bot hiện hành đã thay đổi.")
-        moment = effective_at or datetime.now(UTC)
+        # Fix round 2 (Minor 3): đóng dấu bằng đồng hồ DB, cùng nguồn coordinator so sánh.
+        moment = effective_at if effective_at is not None else func.statement_timestamp()
         updated_id = await self._session.scalar(
             update(BotConfigVersion)
             .where(

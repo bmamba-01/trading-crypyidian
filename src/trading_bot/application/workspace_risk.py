@@ -30,7 +30,7 @@ from enum import Enum
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import and_, select
+from sqlalchemy import and_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from trading_bot.adapters.database.models import (
@@ -59,7 +59,7 @@ from trading_bot.application.runtime_risk_profile import (
     RiskProfileRuntimeError,
     load_risk_profile,
 )
-from trading_bot.config.workspace_settings import PublishedWorkspaceSettings
+from trading_bot.config.workspace_settings import PublishedWorkspaceSettings, WorkspaceSettings
 from trading_bot.domain.risk.equity import (
     AccountEquitySnapshot,
     RiskConversionObservation,
@@ -79,6 +79,7 @@ from trading_bot.domain.risk.workspace_budget import (
     BudgetReasonCode,
     BudgetReservation,
     CapacityAssessment,
+    MarkPolicy,
     PositionRisk,
     WorkspaceBudgetEngine,
     WorkspacePolicy,
@@ -212,6 +213,14 @@ def caps_from_resolved(
     )
 
 
+def mark_policy_from(settings: WorkspaceSettings) -> MarkPolicy:
+    """Mark chỉ từ venue và timeframe đã cấu hình ở root (fix round 2, I2)."""
+    return MarkPolicy(
+        source=settings.market_data.venue,
+        timeframes=tuple(settings.market_data.timeframes),
+    )
+
+
 def _policy_from(published: PublishedWorkspaceSettings) -> WorkspacePolicy:
     risk = published.settings.risk
     return WorkspacePolicy(
@@ -223,33 +232,51 @@ def _policy_from(published: PublishedWorkspaceSettings) -> WorkspacePolicy:
         max_conversion_age=timedelta(seconds=risk.max_conversion_age_seconds),
         risk_profile_version_id=str(risk.profile_version_id),
         max_mark_age=timedelta(seconds=risk.max_mark_age_seconds),
+        mark_policy=mark_policy_from(published.settings),
     )
+
+
+async def database_now(session: AsyncSession) -> datetime:
+    """Đồng hồ DB (`clock_timestamp()`): cùng nguồn với `statement_timestamp()` đóng dấu
+    `effective_at` khi publish, nên so sánh không phụ thuộc lệch đồng hồ giữa các process."""
+    value = await session.scalar(text("SELECT clock_timestamp()"))
+    if not isinstance(value, datetime) or value.tzinfo is None:
+        raise ValueError("Không đọc được đồng hồ DB có múi giờ.")
+    return value.astimezone(UTC)
 
 
 async def assess_risk_capacity(
     session: AsyncSession,
     *,
     workspace_id: UUID,
-    workspace_fraction: Decimal,
+    settings: WorkspaceSettings,
     account_fraction: Decimal,
-    max_mark_age: timedelta,
-    as_of: datetime,
 ) -> CapacityAssessment:
     """Đánh giá breach khi publish root/profile risk (I5, contract §6).
 
     Caller phải giữ workspace-settings lock rồi workspace-risk lock (cùng khóa với reservation)
     để exposure đọc được là tổng thứ tự với mọi reservation. Dùng cùng phép tính SQL theo account
     với runtime (`workspace_account_risk_state`), dưới RLS của role gọi (admin owner/risk_admin
-    thấy mọi bot của workspace).
+    thấy mọi bot của workspace), tại đồng hồ DB và chính sách mark của settings mới.
     """
     states = await AccountEquityRepository(session).load_account_states(
-        workspace_id=workspace_id, as_of=as_of, max_mark_age=max_mark_age
+        workspace_id=workspace_id,
+        as_of=await database_now(session),
+        max_mark_age=timedelta(seconds=settings.risk.max_mark_age_seconds),
+        mark_policy=mark_policy_from(settings),
     )
+    workspace_fraction = settings.risk.workspace_max_open_risk_fraction
     return assess_capacity_after_risk_change(
         workspace_fraction=workspace_fraction,
         account_fraction=account_fraction,
         states=[state.to_domain() for state in states],
     )
+
+
+def _require_mark_policy(policy: WorkspacePolicy) -> MarkPolicy:
+    if policy.mark_policy is None:
+        raise ValueError("Chính sách mark (nguồn/timeframe) của root settings bị thiếu.")
+    return policy.mark_policy
 
 
 def _request_payload_hash(request: ReservationRequest) -> str:
@@ -291,26 +318,33 @@ class WorkspaceRiskCoordinator:
     ) -> None:
         """Mặc định mọi nguồn là authoritative (DB trong transaction của caller).
 
-        `caps_loader`/`target_status_loader` chỉ để unit test thay **tường minh**; không còn
-        đường thay ngầm qua thuộc tính session hay nhánh theo kiểu session (review: chính đường
-        đó đã che lỗi C1 vì `_load_authoritative_caps` không bao giờ chạy trong test).
+        `caps_loader`/`target_status_loader` chỉ để unit test thay **tường minh** trên session
+        giả; session production (`AsyncSession`) từ chối loader thay thế (fix round 2, Minor 4).
+        Không còn đường thay ngầm qua thuộc tính session (review: chính đường đó đã che C1).
+        `clock` mặc định là đồng hồ DB `clock_timestamp()` (Minor 3); test truyền đồng hồ cố định.
         """
+        if isinstance(session, AsyncSession) and (
+            caps_loader is not None or target_status_loader is not None
+        ):
+            raise ValueError(
+                "Session production không nhận caps/status loader thay thế; chỉ test dùng."
+            )
         self._session = session
-        self._clock = clock or (lambda: datetime.now(UTC))
+        self._clock = clock
         self._engine = engine or WorkspaceBudgetEngine()
         self._settings_repo = settings_repo or WorkspaceSettingsRepository(session)
         self._equity_repo = equity_repo or AccountEquityRepository(session)
         self._conversion_repo = conversion_repo or RiskConversionRepository(session)
         self._reservations_repo = reservations_repo or RiskReservationRepository(
-            session, clock=self._clock
+            session, clock=clock
         )
         self._target_status_loader: TargetStatusLoader = (
             target_status_loader or self._load_target_status
         )
         self._caps_loader: CapsLoader = caps_loader or self._load_authoritative_caps
 
-    def _now(self) -> datetime:
-        now = self._clock()
+    async def _now(self) -> datetime:
+        now = self._clock() if self._clock is not None else await database_now(self._session)
         if now.tzinfo is None or now.utcoffset() != timedelta(0):
             raise ValueError("Đồng hồ coordinator phải trả UTC aware datetime.")
         return now
@@ -338,9 +372,11 @@ class WorkspaceRiskCoordinator:
         # Bước 1: Khóa 2 cấp Advisory Lock
         # ---------------------------------------------------------------------
         await self.acquire_locks(request.workspace_id, [request.account_id])
-        # C3: mốc đọc lấy SAU khi giữ khóa. Publish đã commit trước khi ta có khóa có
-        # effective_at <= now nên luôn được thấy, kể cả khi `as_of` (evaluated_at) cũ hơn.
-        now = self._now()
+        # C3: mốc lấy SAU khi giữ khóa, theo đồng hồ DB. Publish đã commit trước khi ta có khóa
+        # có effective_at (statement_timestamp) <= now nên luôn được thấy, kể cả khi `as_of`
+        # (evaluated_at) cũ hơn. Fix round 2: cấu hình/cap đọc tại `now`, không bao giờ tại một
+        # điểm tương lai (version lịch sau có thể lỏng hơn); vốn/mark/exposure đọc tại read_at.
+        now = await self._now()
         read_at = max(request.as_of, now)
 
         # ---------------------------------------------------------------------
@@ -416,8 +452,8 @@ class WorkspaceRiskCoordinator:
         if request.expires_at <= now:
             raise ReservationConflict("Candidate đã hết hạn trước khi reserve.")
 
-        # 2d. Re-read root settings, root profile, bot overlay và status tại read_at.
-        published = await self._load_published(request.workspace_id, read_at)
+        # 2d. Re-read root settings, root profile, bot overlay và status tại `now`.
+        published = await self._load_published(request.workspace_id, now)
         policy = _policy_from(published)
         target_enabled = bool(
             await self._target_status_loader(
@@ -426,7 +462,7 @@ class WorkspaceRiskCoordinator:
                 account_id=request.account_id,
             )
         )
-        caps = await self._caps_loader(request, published, read_at)
+        caps = await self._caps_loader(request, published, now)
 
         # 2e. Re-read accounts & bot scopes
         accounts = await self._load_account_scopes(
@@ -453,6 +489,7 @@ class WorkspaceRiskCoordinator:
             workspace_id=request.workspace_id,
             as_of=read_at,
             max_mark_age=policy.max_mark_age,
+            mark_policy=_require_mark_policy(policy),
         )
         if open_risk_unknown:
             # C2: trade OPEN thiếu reservation/rủi ro hợp lệ -> exposure không xác định, chặn entry.
@@ -490,6 +527,7 @@ class WorkspaceRiskCoordinator:
             # Lineage C3: thời điểm quyết định yêu cầu và mốc đọc authoritative sau khóa.
             decision_payload["requested_as_of"] = request.as_of.isoformat()
             decision_payload["risk_read_at"] = read_at.isoformat()
+            decision_payload["config_read_at"] = now.isoformat()
             if evidence:
                 decision_payload["evidence"] = _canonical_value(dict(evidence))
 
@@ -692,7 +730,7 @@ class WorkspaceRiskCoordinator:
     async def _load_policy(
         self, workspace_id: UUID, *, as_of: datetime | None = None
     ) -> WorkspacePolicy:
-        return _policy_from(await self._load_published(workspace_id, as_of or self._now()))
+        return _policy_from(await self._load_published(workspace_id, as_of or await self._now()))
 
     async def _load_account_scopes(
         self,
@@ -716,6 +754,7 @@ class WorkspaceRiskCoordinator:
             as_of=as_of,
             max_equity_age=effective_policy.max_equity_age,
             max_mark_age=effective_policy.max_mark_age,
+            mark_policy=_require_mark_policy(effective_policy),
         )
         conv = await self._conversion_repo.get_conversion_observation(
             workspace_id=workspace_id,

@@ -34,7 +34,7 @@ from trading_bot.domain.risk.reservations import (
     ReservationStatus,
     RiskReservation,
 )
-from trading_bot.domain.risk.workspace_budget import WorkspaceRiskAggregate
+from trading_bot.domain.risk.workspace_budget import MarkPolicy, WorkspaceRiskAggregate
 
 _HELD_STATUSES = (ReservationStatus.RESERVED.value, ReservationStatus.UNKNOWN.value)
 
@@ -667,7 +667,12 @@ class RiskReservationRepository:
         return len(due)
 
     async def get_workspace_risk_aggregate(
-        self, *, workspace_id: UUID, as_of: datetime, max_mark_age: timedelta
+        self,
+        *,
+        workspace_id: UUID,
+        as_of: datetime,
+        max_mark_age: timedelta,
+        mark_policy: MarkPolicy,
     ) -> WorkspaceRiskAggregate:
         """Nạp scalar risk/equity workspace theo as_of và freshness policy đã nạp từ DB."""
         _require_aware(as_of, "as_of")
@@ -681,7 +686,7 @@ class RiskReservationRepository:
             "total_pending_risk_usdt, active_bot_count, has_unknown_exposure, "
             "has_unknown_equity "
             "FROM public.get_workspace_risk_equity_aggregate("
-            ":workspace_id, :as_of, :max_mark_age_seconds)"
+            ":workspace_id, :as_of, :max_mark_age_seconds, :mark_source, :mark_timeframes)"
         )
         result = await self._session.execute(
             stmt,
@@ -689,6 +694,8 @@ class RiskReservationRepository:
                 "workspace_id": workspace_id,
                 "as_of": as_of,
                 "max_mark_age_seconds": max_mark_age_seconds,
+                "mark_source": mark_policy.source,
+                "mark_timeframes": list(mark_policy.timeframes),
             },
         )
         row = result.one()

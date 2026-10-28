@@ -26,7 +26,14 @@ def test_workspace_risk_caps_hold_through_real_runtime_admin_and_ledger_paths() 
         harness.state = harness.probe(
             "seed",
             "migrator",
-            variants={"c1": "1", "c2": "1", "c3a": "1", "c3b": "0.0075", "race5": "1"},
+            variants={
+                "c1": "1",
+                "c2": "1",
+                "c3a": "1",
+                "c3b": "0.0075",
+                "c4": "0.001",
+                "race5": "1",
+            },
             account_fractions={"c2": "0.015"},
         )
         # Checkpoint genesis cho mọi account (như runtime registry yêu cầu trước hydrate).
@@ -36,6 +43,7 @@ def test_workspace_risk_caps_hold_through_real_runtime_admin_and_ledger_paths() 
         assert admin["c1_overlay"][0] == "PUBLISHED", admin
         assert admin["c3a_publish"]["status"] == "PUBLISHED", admin
         harness.state["c3a_effective_at"] = admin["c3a_publish"]["effective_at"]
+        assert admin["c4_scheduled"]["status"] == "PUBLISHED", admin
 
         paths = harness.probe("mb04_runtime_paths")
         print("paths", json.dumps(paths), harness.last_stderr)
@@ -58,6 +66,15 @@ def test_workspace_risk_caps_hold_through_real_runtime_admin_and_ledger_paths() 
         assert inspected["c2"]["trades"]["a"] == ["OPEN"]
         assert inspected["c2"]["reservations"]["a"] == [["TRANSFERRED", "OPEN_RISK_RECORDED"]]
         assert Decimal(inspected["c2"]["open_trade_risk"]) > 0
+        source_refs = [
+            reference
+            for row in inspected["c2"]["risk_source_refs"]
+            for snapshot_refs in row
+            for reference in (snapshot_refs or [])
+        ]
+        assert any(reference.startswith("trade:") for reference in source_refs), source_refs
+        assert any(reference.startswith("fill:") for reference in source_refs), source_refs
+        assert any(reference.startswith("mark:") for reference in source_refs), source_refs
 
         # C3a: root siết sau evaluated_at nhưng trước khi reserve chạy -> cap mới (20 USDT).
         assert paths["c3a_a"] == {"blocked": "WORKSPACE_CAP_EXCEEDED"}, paths
@@ -68,6 +85,10 @@ def test_workspace_risk_caps_hold_through_real_runtime_admin_and_ledger_paths() 
         assert paths["c3b_a"] == {"blocked": "WORKSPACE_CAP_EXCEEDED"}, paths
         assert inspected["c3b"]["trades"]["b"] == ["OPEN"]
         assert "a" not in inspected["c3b"]["reservations"]
+
+        # Fix round 2: version root lỏng hơn nhưng chưa hiệu lực không được dùng dù
+        # evaluated_at mô phỏng đã vượt effective_at (cap/config đọc tại clock sau khóa).
+        assert paths["c4_a"] == {"blocked": "WORKSPACE_CAP_EXCEEDED"}, paths
 
         # I5 vòng 1 (publish→reserve): entry chờ khóa rồi thấy cap mới, không reserve nào vượt.
         assert race["r1_runtime_blocked"] is True, race

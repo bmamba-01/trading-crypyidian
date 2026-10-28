@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 from uuid import UUID
 
@@ -141,7 +141,9 @@ class WorkspaceSettingsRepository:
         if current_id != expected_parent_version_id:
             raise SettingsVersionConflict("Phiên bản cấu hình hiện hành đã thay đổi.")
 
-        now = datetime.now(UTC)
+        # Fix round 2 (Minor 3): đóng dấu bằng đồng hồ DB (cùng nguồn clock_timestamp() mà
+        # coordinator so sánh), không bằng đồng hồ process admin.
+        now = func.statement_timestamp()
         updated_id = await self._session.scalar(
             update(WorkspaceSettingsVersion)
             .where(
@@ -168,7 +170,8 @@ class WorkspaceSettingsRepository:
     async def get_effective(
         self, *, workspace_id: UUID, as_of: datetime | None = None
     ) -> WorkspaceSettingsVersion | None:
-        point = as_of or datetime.now(UTC)
+        # Không có as_of: so với đồng hồ DB, cùng nguồn với statement_timestamp() khi publish.
+        point = as_of if as_of is not None else func.clock_timestamp()
         return await self._session.scalar(
             select(WorkspaceSettingsVersion)
             .where(

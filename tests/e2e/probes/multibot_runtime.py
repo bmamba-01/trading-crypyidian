@@ -202,7 +202,8 @@ def _seed_workspace(connection: psycopg.Connection, name: str, fraction: str) ->
             "market_data": {
                 "venue": "BINANCE_USDM",
                 "symbols": ["BTCUSDT"],
-                "timeframes": ["1h", "4h"],
+                # Nến mark 1m phải nằm trong timeframe cấu hình (fix round 2, I2).
+                "timeframes": ["1m", "1h", "4h"],
                 "max_age_seconds": 30,
             },
             "features": {"formula_version": "crypidian-features-v1", "sessions_timezone": "UTC"},
@@ -422,7 +423,7 @@ def _seed_marks(connection: psycopg.Connection, workspace: UUID, t0: datetime) -
                     instrument,
                     "BTCUSDT",
                     "1m",
-                    "MB05B_E2E",
+                    "BINANCE_USDM",
                     f"mb05b:{minute}",
                     f"mb05b-bar:{instrument}:{minute}",
                     1,
@@ -1495,6 +1496,47 @@ async def _publish_root_fraction(sessions: Any, name: str, fraction: str) -> dic
     }
 
 
+async def _schedule_root_fraction(
+    sessions: Any, name: str, fraction: str, *, minutes: int
+) -> dict[str, Any]:
+    """Version root LỎNG HƠN có hiệu lực trong tương lai (repository nhận `effective_at`).
+
+    Đường này có thật (qa_seed dùng `publish_draft(effective_at=...)`); fix round 2 kiểm rằng
+    coordinator không dùng version chưa hiệu lực dù `evaluated_at` mô phỏng ở tương lai.
+    """
+    from trading_bot.adapters.database.repositories.workspace_settings import (
+        WorkspaceSettingsRepository,
+    )
+    from trading_bot.application.outbox import UnitOfWork
+    from trading_bot.config.workspace_settings import WorkspaceSettings
+
+    owner = _principal("owner", name)
+    async with UnitOfWork(
+        sessions, workspace_id=owner.workspace_id, actor_membership_id=owner.membership_id
+    ) as uow:
+        repository = WorkspaceSettingsRepository(uow.session)
+        current = await repository.get_effective(workspace_id=owner.workspace_id)
+        assert current is not None
+        payload = dict(current.settings_json)
+        payload["risk"] = dict(payload["risk"]) | {"workspace_max_open_risk_fraction": fraction}
+        draft = await repository.create_draft(
+            workspace_id=owner.workspace_id,
+            settings=WorkspaceSettings.model_validate(payload),
+            created_by=owner.membership_id,
+            parent_version_id=current.id,
+        )
+        effective_at = datetime.now(UTC) + timedelta(minutes=minutes)
+        published = await repository.publish_draft(
+            workspace_id=owner.workspace_id,
+            draft_id=draft.id,
+            expected_revision=draft.revision,
+            approved_by=owner.membership_id,
+            expected_parent_version_id=current.id,
+            effective_at=effective_at,
+        )
+        return {"status": published.status, "effective_at": effective_at.isoformat()}
+
+
 async def mb04_admin_setup() -> dict[str, Any]:
     """C1: overlay bot A siết cap; C3a: siết root cap sau thời điểm `evaluated_at` của runtime."""
     from trading_bot.admin.bot_service import BotConfigAdminService
@@ -1518,6 +1560,7 @@ async def mb04_admin_setup() -> dict[str, Any]:
         )
         out["c1_overlay"] = [published["status"], published["overlay"]]
         out["c3a_publish"] = await _publish_root_fraction(sessions, "c3a", "0.001")
+        out["c4_scheduled"] = await _schedule_root_fraction(sessions, "c4", "1", minutes=30)
     finally:
         await engine.dispose()
     return out
@@ -1550,6 +1593,10 @@ async def mb04_runtime_paths() -> dict[str, Any]:
         if "intent_id" in b1:
             out["c3b_b_fill"] = await _outcome(fill(app, "b", b1, name="c3b"))
         out["c3b_a"] = await _outcome(entry(app, "a", 1, 1, name="c3b"))
+    # Fix round 2 (Important 2): root hiện hành siết 0.001; version lỏng (1.0) chỉ hiệu lực sau
+    # 30 phút. evaluated_at mô phỏng +60 phút không được làm coordinator dùng version tương lai.
+    async with runtime_app("c4") as app:
+        out["c4_a"] = await _outcome(entry(app, "a", 0, 60, name="c4"))
     return out
 
 
@@ -1741,6 +1788,12 @@ def inspect() -> dict[str, Any]:
                 "SELECT approved, reason_code, payload->'evidence'->'runtime_control_revisions' "
                 "FROM risk_decision WHERE workspace_id=%s AND payload->>'decision_kind' = "
                 "'WORKSPACE_BUDGET' ORDER BY created_at",
+                workspace,
+            ),
+            "risk_source_refs": rows(
+                "SELECT payload->'snapshot_source_refs' FROM risk_decision "
+                "WHERE workspace_id=%s AND payload->>'decision_kind' = 'WORKSPACE_BUDGET' "
+                "ORDER BY created_at",
                 workspace,
             ),
             # MB-04 fix: tổng đọc thẳng từ bảng (không qua hàm aggregate đang được kiểm).

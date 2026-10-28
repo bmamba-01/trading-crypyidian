@@ -50,6 +50,58 @@ from trading_bot.domain.risk.equity import (
 
 NOW = datetime.now(UTC)
 ZERO = Decimal("0")
+# Chính sách mark của workspace fixture: venue root và timeframe root (fix round 2, I2).
+MARK_SOURCE = "BINANCE_USDM"
+MARK_TIMEFRAMES = ["1h", "4h"]
+MARK_AGE_SECONDS = 3600
+_AGGREGATE_V2 = "public.get_workspace_risk_equity_aggregate(uuid,timestamptz,integer,text,text[])"
+_STATE_V2 = "public.workspace_account_risk_state(uuid,timestamptz,integer,text,text[])"
+
+
+def _has_function(conn: psycopg.Connection, signature: str) -> bool:
+    return bool(conn.execute("SELECT to_regprocedure(%s) IS NOT NULL", (signature,)).fetchone()[0])
+
+
+def _aggregate_signature(conn: psycopg.Connection) -> str:
+    if _has_function(conn, _AGGREGATE_V2):
+        return _AGGREGATE_V2
+    return "public.get_workspace_risk_equity_aggregate(uuid,timestamptz,integer)"
+
+
+def _aggregate(
+    conn: psycopg.Connection, columns: str, workspace_id: UUID, as_of: datetime
+) -> tuple[Any, ...]:
+    """Gọi aggregate theo chữ ký hiện có (v2 nhận nguồn/timeframe mark; v1 cho bằng chứng RED)."""
+    if _has_function(conn, _AGGREGATE_V2):
+        row = conn.execute(
+            f"SELECT {columns} FROM get_workspace_risk_equity_aggregate(%s, %s, %s, %s, %s)",
+            (workspace_id, as_of, MARK_AGE_SECONDS, MARK_SOURCE, MARK_TIMEFRAMES),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            f"SELECT {columns} FROM get_workspace_risk_equity_aggregate(%s, %s, %s)",
+            (workspace_id, as_of, MARK_AGE_SECONDS),
+        ).fetchone()
+    assert row is not None
+    return tuple(row)
+
+
+def _account_states(
+    conn: psycopg.Connection, columns: str, workspace_id: UUID, as_of: datetime
+) -> list[tuple[Any, ...]] | None:
+    if _has_function(conn, _STATE_V2):
+        rows = conn.execute(
+            f"SELECT {columns} FROM public.workspace_account_risk_state(%s, %s, %s, %s, %s)",
+            (workspace_id, as_of, MARK_AGE_SECONDS, MARK_SOURCE, MARK_TIMEFRAMES),
+        ).fetchall()
+    elif _has_function(conn, "public.workspace_account_risk_state(uuid,timestamptz,integer)"):
+        rows = conn.execute(
+            f"SELECT {columns} FROM public.workspace_account_risk_state(%s, %s, %s)",
+            (workspace_id, as_of, MARK_AGE_SECONDS),
+        ).fetchall()
+    else:
+        return None
+    return [tuple(row) for row in rows]
 
 
 def _get_db_connection() -> psycopg.Connection:
@@ -151,6 +203,8 @@ def _make_workspace_payload(profile_id: UUID, workspace_cap: str = "0.15") -> di
             "workspace_max_open_risk_fraction": workspace_cap,
             "max_equity_age_seconds": 3600,
             "max_conversion_age_seconds": 3600,
+            # Fixture dùng nến 1h; mark tươi tối đa 1 giờ theo close_time (fix round 2, I2).
+            "max_mark_age_seconds": MARK_AGE_SECONDS,
         },
         "paper_execution": {
             "quote_asset": "USDT",
@@ -468,10 +522,7 @@ def concurrency_barrier_phase(state: dict[str, str]) -> dict[str, object]:
     # `direct_reserved_sum` bằng superuser (RLS runtime chỉ thấy bot của mình).
     with _get_db_connection() as conn:
         conn.execute("SELECT set_config('app.workspace_id', %s, false)", (str(ws_id),))
-        row = conn.execute(
-            "SELECT total_pending_risk_usdt FROM get_workspace_risk_equity_aggregate(%s, %s, %s)",
-            (ws_id, NOW, 3600),
-        ).fetchone()
+        row = _aggregate(conn, "total_pending_risk_usdt", ws_id, NOW)
         reserved_sum = row[0]
 
     return {
@@ -734,7 +785,7 @@ def admin_tighten_phase(state: dict[str, str]) -> dict[str, str]:
             instrument_id=instrument_id,
             symbol="BTCUSDT",
             timeframe="1h",
-            source="e2e-fixture",
+            source=MARK_SOURCE,
             logical_key=f"bar-{ws_id.hex[:8]}",
             idempotency_key=f"bar-{ws_id.hex[:8]}",
             revision=1,
@@ -895,27 +946,25 @@ def rls_checks_phase(state: dict[str, str]) -> dict[str, object]:
 
         # 4. Gọi SQL function get_workspace_risk_aggregate(ws_id, as_of)
         # Hàm SECURITY DEFINER phải trả aggregate scalar mà không rò rỉ bot_id / symbol
-        agg_row = conn.execute(
-            "SELECT workspace_id, total_equity_usdt, total_open_risk_usdt, "
-            "total_pending_risk_usdt, active_bot_count, has_unknown_exposure, has_unknown_equity "
-            "FROM get_workspace_risk_equity_aggregate(%s, %s, %s)",
-            (ws_id, NOW, 3600),
-        ).fetchone()
-        unknown_equity = conn.execute(
-            "SELECT has_unknown_equity FROM get_workspace_risk_equity_aggregate(%s, %s, %s)",
-            (ws_id, NOW + timedelta(hours=3), 3600),
-        ).fetchone()[0]
+        agg_row = _aggregate(
+            conn,
+            "workspace_id, total_equity_usdt, total_open_risk_usdt, total_pending_risk_usdt, "
+            "active_bot_count, has_unknown_exposure, has_unknown_equity",
+            ws_id,
+            NOW,
+        )
+        unknown_equity = _aggregate(conn, "has_unknown_equity", ws_id, NOW + timedelta(hours=3))[0]
+        signature = _aggregate_signature(conn)
         function_execute = conn.execute(
-            "SELECT has_function_privilege('crypidian_trading_runtime', "
-            "'public.get_workspace_risk_equity_aggregate(uuid,timestamptz,integer)', 'EXECUTE')"
+            "SELECT has_function_privilege('crypidian_trading_runtime', %s, 'EXECUTE')",
+            (signature,),
         ).fetchone()[0]
         public_execute = conn.execute(
             "SELECT EXISTS (SELECT 1 FROM aclexplode(coalesce(p.proacl, "
-            "acldefault('f', p.proowner))) acl WHERE p.oid = "
-            "'public.get_workspace_risk_equity_aggregate(uuid,timestamptz,integer)'::regprocedure "
+            "acldefault('f', p.proowner))) acl WHERE p.oid = %s::regprocedure "
             "AND acl.grantee = 0 AND acl.privilege_type = 'EXECUTE') "
-            "FROM pg_proc p WHERE p.oid = "
-            "'public.get_workspace_risk_equity_aggregate(uuid,timestamptz,integer)'::regprocedure"
+            "FROM pg_proc p WHERE p.oid = %s::regprocedure",
+            (signature, signature),
         ).fetchone()[0]
 
         agg_result = {
@@ -963,21 +1012,17 @@ def equity_edge_cases_phase(state: dict[str, str]) -> dict[str, bool]:
             trade_id, bot_id, account_id, intent_id = trade
 
             def aggregate_equity(as_of: datetime = NOW) -> tuple[Decimal, bool]:
-                row = conn.execute(
-                    "SELECT total_equity_usdt, has_unknown_equity "
-                    "FROM get_workspace_risk_equity_aggregate(%s, %s, %s)",
-                    (ws_id, as_of, 3600),
-                ).fetchone()
-                assert row is not None
+                row = _aggregate(conn, "total_equity_usdt, has_unknown_equity", ws_id, as_of)
                 return Decimal(row[0]), bool(row[1])
 
             def aggregate_row(as_of: datetime) -> tuple[Decimal, Decimal, Decimal, bool]:
-                row = conn.execute(
-                    "SELECT total_equity_usdt, total_open_risk_usdt, total_pending_risk_usdt, "
-                    "has_unknown_equity FROM get_workspace_risk_equity_aggregate(%s, %s, %s)",
-                    (ws_id, as_of, 3600),
-                ).fetchone()
-                assert row is not None
+                row = _aggregate(
+                    conn,
+                    "total_equity_usdt, total_open_risk_usdt, total_pending_risk_usdt, "
+                    "has_unknown_equity",
+                    ws_id,
+                    as_of,
+                )
                 return Decimal(row[0]), Decimal(row[1]), Decimal(row[2]), bool(row[3])
 
             def set_bar(open_time: datetime, close_time: datetime, close: str) -> None:
@@ -994,6 +1039,32 @@ def equity_edge_cases_phase(state: dict[str, str]) -> dict[str, bool]:
             set_bar(NOW - timedelta(hours=4), NOW - timedelta(hours=3), "10000")
             _, backfilled_stale_mark_unknown = aggregate_equity()
             set_bar(NOW - timedelta(hours=1), NOW, "10000")
+
+            # Fix round 2 (I2/R3): mark chỉ lấy từ timeframe/source đã cấu hình; độ dài nến
+            # không được nới cửa sổ tươi (nến 1d/1w hoặc open_time sai không qua được).
+            def mark_case(
+                timeframe: str, source: str, open_time: datetime, close: datetime
+            ) -> bool:
+                conn.execute(
+                    "UPDATE market_bar SET timeframe = %s, source = %s, open_time = %s, "
+                    "close_time = %s WHERE workspace_id = %s AND symbol = 'BTCUSDT'",
+                    (timeframe, source, open_time, close, ws_id),
+                )
+                return aggregate_equity()[1]
+
+            day_bar_mark_unknown = mark_case(
+                "1d", MARK_SOURCE, NOW - timedelta(hours=26), NOW - timedelta(hours=2)
+            )
+            week_bar_mark_unknown = mark_case(
+                "1w", MARK_SOURCE, NOW - timedelta(days=9), NOW - timedelta(days=2)
+            )
+            malformed_open_time_unknown = mark_case(
+                "1h", MARK_SOURCE, NOW - timedelta(hours=5), NOW - timedelta(minutes=10)
+            )
+            foreign_source_mark_unknown = mark_case(
+                "1h", "UNTRUSTED_FEED", NOW - timedelta(hours=1), NOW
+            )
+            configured_mark_known = not mark_case("1h", MARK_SOURCE, NOW - timedelta(hours=1), NOW)
             # Minor: vốn âm của một account là unknown (khớp domain), không phải một số âm hợp lệ.
             conn.execute(
                 "UPDATE paper_account_seed SET initial_equity = 1 WHERE workspace_id = %s "
@@ -1037,15 +1108,8 @@ def equity_edge_cases_phase(state: dict[str, str]) -> dict[str, bool]:
             _, _, pending_at_future_as_of, _ = aggregate_row(NOW + timedelta(minutes=30))
             # I3: vốn từng account (hàm invoker dùng chung) cộng lại đúng bằng aggregate.
             account_state_matches_aggregate: object = None
-            if conn.execute(
-                "SELECT to_regprocedure("
-                "'public.workspace_account_risk_state(uuid,timestamptz,integer)') IS NOT NULL"
-            ).fetchone()[0]:
-                rows = conn.execute(
-                    "SELECT is_enabled, equity_usdt, has_unknown_equity FROM "
-                    "public.workspace_account_risk_state(%s, %s, %s)",
-                    (ws_id, NOW, 3600),
-                ).fetchall()
+            rows = _account_states(conn, "is_enabled, equity_usdt, has_unknown_equity", ws_id, NOW)
+            if rows is not None:
                 total, _, _, unknown_total = aggregate_row(NOW)
                 account_state_matches_aggregate = (
                     sum((Decimal(row[1]) for row in rows if row[0]), Decimal("0")) == total
@@ -1209,13 +1273,18 @@ def equity_edge_cases_phase(state: dict[str, str]) -> dict[str, bool]:
                 "negative_account_equity_unknown": negative_account_equity_unknown,
                 "future_as_of_keeps_live_reservation": pending_at_future_as_of == Decimal("100"),
                 "account_state_matches_aggregate": account_state_matches_aggregate,
+                "day_bar_mark_unknown": day_bar_mark_unknown,
+                "week_bar_mark_unknown": week_bar_mark_unknown,
+                "malformed_open_time_unknown": malformed_open_time_unknown,
+                "foreign_source_mark_unknown": foreign_source_mark_unknown,
+                "configured_mark_known": configured_mark_known,
             }
         finally:
             conn.execute("ROLLBACK")
 
 
-AGGREGATE_FN = "public.get_workspace_risk_equity_aggregate(uuid,timestamptz,integer)"
-STATE_FN = "public.workspace_account_risk_state(uuid,timestamptz,integer)"
+AGGREGATE_FN = _AGGREGATE_V2
+STATE_FN = _STATE_V2
 PROCESS_ROLES = (
     "crypidian_trading_runtime",
     "crypidian_admin_web",

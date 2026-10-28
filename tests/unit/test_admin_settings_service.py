@@ -570,9 +570,8 @@ async def test_risk_tightening_publish_records_capacity_breach_under_risk_lock(
     assert published["capacity"]["status"] == "CAPACITY_BREACH_AFTER_TIGHTENING"
     assert published["capacity"]["breached_scopes"] == ["WORKSPACE"]
     assert order == ["risk_lock"]
-    assert calls[0]["workspace_fraction"] == Decimal("0.001")
+    assert calls[0]["settings"].risk.workspace_max_open_risk_fraction == Decimal("0.001")
     assert calls[0]["account_fraction"] == Decimal("0.25")
-    assert calls[0]["as_of"].tzinfo is not None
     uow = MemoryUnitOfWork.instances[-1]
     actions = [audit["action"] for audit in uow.audits]
     assert actions == ["settings.published", "risk.capacity_breach_after_tightening"]

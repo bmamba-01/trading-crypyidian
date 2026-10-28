@@ -22,6 +22,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy.dialects import postgresql
+from sqlalchemy.ext.asyncio import AsyncSession
 from tests.unit.bot_scope_fakes import BotScopeSession
 
 from trading_bot.adapters.database.models import (
@@ -42,6 +43,7 @@ from trading_bot.config.workspace_settings import (
 from trading_bot.domain.risk.equity import (
     AccountEquitySnapshot,
     PaperEquityBasis,
+    PaperLedgerEquityBasis,
     RiskConversionObservation,
     mark_to_market_equity,
 )
@@ -94,6 +96,7 @@ class FakeRiskSession(BotScopeSession):
         self.trade_rows: list[tuple[Any, ...]] = []
         self.on_workspace_lock: Any = None
         self.caps_reads: list[tuple[datetime, int]] = []
+        self.db_now = NOW
         self.records: dict[type, list[object]] = {
             RiskReservationRecord: [],
             RiskDecisionRecord: [],
@@ -147,6 +150,8 @@ class FakeRiskSession(BotScopeSession):
         except Exception:
             compiled = str(statement)
         self.statements.append(compiled)
+        if "clock_timestamp()" in compiled:
+            return self.db_now
 
         # Trả về record khớp từ self.records
         # 1. Tìm RiskReservationRecord
@@ -328,8 +333,7 @@ class FakeEquityRepo:
         as_of: datetime,
         max_equity_age: timedelta,
         max_mark_age: timedelta,
-        captured_at: datetime | None = None,
-        marks: Any = None,
+        mark_policy: Any = None,
     ) -> AccountEquitySnapshot:
         return self.snapshots.get(
             account_id,
@@ -517,6 +521,59 @@ async def test_reserve_approved_within_all_caps() -> None:
 
 
 @pytest.mark.asyncio
+async def test_risk_decision_persists_equity_source_references() -> None:
+    """Quyết định lưu tham chiếu nguồn để đối chiếu lại lineage lịch sử."""
+    session = FakeRiskSession()
+    ws_id, acc_id, bot_id = uuid4(), uuid4(), uuid4()
+    basis = PaperLedgerEquityBasis(
+        workspace_id=str(ws_id),
+        bot_id=str(bot_id),
+        account_id=str(acc_id),
+        asset="USDT",
+        as_of=NOW,
+        captured_at=NOW,
+        available_at=NOW,
+        source="paper_ledger_sql",
+        source_version="mb04-account-risk-state-v3",
+        max_mark_age=timedelta(seconds=60),
+        max_equity_age=timedelta(seconds=300),
+        initial_capital_before_realized_pnl=Decimal("10000"),
+        cumulative_realized_pnl=ZERO,
+        open_position_pnl=ZERO,
+        open_position_count=0,
+        source_refs=("seed:seed-id:settings-hash",),
+    )
+    snapshot = mark_to_market_equity(basis, (), {}, NOW)
+    coordinator = make_coordinator(
+        session,
+        clock=lambda: NOW,
+        settings_repo=FakeSettingsRepo(ws_cap_fraction=Decimal("0.5")),
+        equity_repo=FakeEquityRepo({acc_id: snapshot}),
+        conversion_repo=FakeConversionRepo(),
+    )
+    request = ReservationRequest(
+        workspace_id=ws_id,
+        bot_id=bot_id,
+        account_id=acc_id,
+        idempotency_key="source-lineage",
+        requested_risk_usdt=Decimal("100"),
+        as_of=NOW,
+        expires_at=NOW + timedelta(minutes=5),
+        symbol="BTCUSDT",
+        requested_notional=Decimal("1000"),
+        requested_initial_margin=Decimal("200"),
+        plan_hash="source-lineage-plan",
+    )
+
+    result = await _reserve_with_test_caps(
+        coordinator, session, request, account_cap=Decimal("0.2"), bot_cap=Decimal("0.1")
+    )
+
+    assert result.approved
+    assert session.added[0].payload["snapshot_source_refs"] == ["seed:seed-id:settings-hash"]
+
+
+@pytest.mark.asyncio
 async def test_reserve_fails_closed_when_workspace_aggregate_is_unavailable() -> None:
     """Không tạo entry nếu aggregate workspace không thể đọc được."""
     session = FakeRiskSession()
@@ -533,7 +590,7 @@ async def test_reserve_fails_closed_when_workspace_aggregate_is_unavailable() ->
     )
 
     async def fail_aggregate(
-        *, workspace_id: UUID, as_of: datetime, max_mark_age: timedelta
+        *, workspace_id: UUID, as_of: datetime, max_mark_age: timedelta, mark_policy: Any
     ) -> WorkspaceRiskAggregate:
         raise RuntimeError("aggregate unavailable")
 
@@ -573,7 +630,7 @@ async def test_reserve_denies_when_workspace_aggregate_has_unknown_exposure() ->
     )
 
     async def unknown_aggregate(
-        *, workspace_id: UUID, as_of: datetime, max_mark_age: timedelta
+        *, workspace_id: UUID, as_of: datetime, max_mark_age: timedelta, mark_policy: Any
     ) -> WorkspaceRiskAggregate:
         return WorkspaceRiskAggregate(
             workspace_id=str(workspace_id),
@@ -1486,3 +1543,61 @@ async def test_authoritative_caps_use_resolved_bot_overlay_fraction(
     assert caps.bot_max_open_risk_fraction == Decimal("0.50")
     assert caps.bot_config_version_id == str(effective.bot_config_version_id)
     assert caps.bot_config_hash == effective.bot_config_hash
+
+
+# -----------------------------------------------------------------------------
+# Fix round 2: cấu hình đọc tại clock (không tại as_of tương lai), clock DB, guard loader.
+# -----------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_future_as_of_reads_root_and_caps_at_clock_not_at_future_point() -> None:
+    """Important 2: version root/overlay lịch tương lai (có thể lỏng hơn) không được dùng."""
+    session = FakeRiskSession()
+    ws_id, acc_id, bot_id = uuid4(), uuid4(), uuid4()
+    future = NOW + timedelta(hours=1)
+    settings_repo = FakeSettingsRepo(session=session)
+    coordinator = _coordinator_at(session, NOW, settings_repo=settings_repo)
+
+    result = await coordinator.reserve(
+        _request(ws_id, bot_id, acc_id, key="future-config", as_of=future)
+    )
+
+    assert result.approved
+    assert settings_repo.as_of_values == [NOW]
+    assert session.caps_reads == [(NOW, 2)]
+    # Vốn/mark vẫn đọc tại read_at (mô phỏng MB-05) — chỉ cấu hình bị ghim vào clock.
+    aggregate_params = [p for p in session.params_list if "max_mark_age_seconds" in p]
+    assert aggregate_params[0]["as_of"] == future
+    payload = session.records[RiskDecisionRecord][0].payload  # type: ignore[attr-defined]
+    assert payload["config_read_at"] == NOW.isoformat()
+
+
+@pytest.mark.asyncio
+async def test_default_clock_is_database_clock_after_locks() -> None:
+    """Minor 3: so sánh effective_at và hạn reservation dùng đồng hồ DB, không đồng hồ app."""
+    session = FakeRiskSession()
+    session.db_now = NOW + timedelta(seconds=7)
+    ws_id, acc_id, bot_id = uuid4(), uuid4(), uuid4()
+    settings_repo = FakeSettingsRepo(session=session)
+    coordinator = make_coordinator(
+        session,
+        settings_repo=settings_repo,
+        equity_repo=FakeEquityRepo({}),
+        conversion_repo=FakeConversionRepo(),
+    )
+
+    result = await coordinator.reserve(_request(ws_id, bot_id, acc_id, key="db-clock"))
+
+    assert result.approved
+    assert settings_repo.as_of_values == [NOW + timedelta(seconds=7)]
+    clock_index = next(i for i, s in enumerate(session.statements) if "clock_timestamp()" in s)
+    lock_index = max(i for i, s in enumerate(session.statements) if "pg_advisory_xact_lock" in s)
+    assert clock_index > lock_index
+
+
+@pytest.mark.parametrize("loader", ["caps_loader", "target_status_loader"])
+def test_production_async_session_rejects_injected_loaders(loader: str) -> None:
+    """Minor 4: session production không nhận loader cap/status thay thế; test opt-in bằng fake."""
+    with pytest.raises(ValueError, match="loader"):
+        WorkspaceRiskCoordinator(AsyncSession(), **{loader: _enabled_target})  # type: ignore[arg-type]

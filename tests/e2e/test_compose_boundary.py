@@ -1116,9 +1116,10 @@ def test_paper_stack_starts_and_keeps_database_and_object_store_data() -> None:
                 engine = create_database_engine(url)
                 sessions = async_sessionmaker(engine, expire_on_commit=False)
                 first_id = uuid4()
+                retry_event_type = 'e2e.outbox.retry.v1'
                 now = datetime.now(UTC)
                 envelope = EventEnvelope(
-                    event_type='risk.profile.created.v1',
+                    event_type=retry_event_type,
                     workspace_id=workspace_id,
                     aggregate_type='risk_profile',
                     aggregate_id=uuid4(),
@@ -1186,6 +1187,26 @@ def test_paper_stack_starts_and_keeps_database_and_object_store_data() -> None:
                         OutboxEvent.id != first_id,
                         OutboxEvent.status == 'PENDING',
                     ).values(status='DELIVERED', completed_at=now))
+
+                unrelated_envelope = EventEnvelope(
+                    event_type='e2e.unrelated.v1',
+                    workspace_id=workspace_id,
+                    aggregate_type='e2e',
+                    aggregate_id=uuid4(),
+                    occurred_at=now,
+                    correlation_id=uuid4(),
+                    idempotency_key='e2e:unrelated',
+                    schema_version=1,
+                    payload={},
+                    event_id=uuid4(),
+                )
+                async with UnitOfWork(sessions, workspace_id=workspace_id) as unit:
+                    unit.enqueue(unrelated_envelope)
+
+                async with sessions() as session, session.begin():
+                    await session.execute(text(
+                        "SELECT set_config('app.workspace_id', :workspace_id, true)"
+                    ), {'workspace_id': str(workspace_id)})
                     repository = OutboxRepository(session)
                     claim_time = now + timedelta(seconds=1)
                     claimed = await repository.claim_ready(
@@ -1194,8 +1215,11 @@ def test_paper_stack_starts_and_keeps_database_and_object_store_data() -> None:
                         now=claim_time,
                         lease_duration=timedelta(seconds=30),
                         max_attempts=2,
+                        event_types=(retry_event_type,),
                     )
-                    assert [event.id for event in claimed] == [first_id]
+                    assert [event.id for event in claimed] == [first_id], [
+                        (event.id, event.event_type) for event in claimed
+                    ]
                 async with sessions() as session, session.begin():
                     await session.execute(text(
                         "SELECT set_config('app.workspace_id', :workspace_id, true)"
@@ -1207,6 +1231,7 @@ def test_paper_stack_starts_and_keeps_database_and_object_store_data() -> None:
                         now=claim_time,
                         lease_duration=timedelta(seconds=30),
                         max_attempts=2,
+                        event_types=(retry_event_type,),
                     ) == []
                     assert await repository.record_failure(
                         workspace_id=workspace_id,
@@ -1228,6 +1253,7 @@ def test_paper_stack_starts_and_keeps_database_and_object_store_data() -> None:
                         now=retry_time,
                         lease_duration=timedelta(seconds=30),
                         max_attempts=2,
+                        event_types=(retry_event_type,),
                     )
                     assert [event.attempts for event in retried] == [2]
                     assert await repository.record_failure(
@@ -1241,7 +1267,7 @@ def test_paper_stack_starts_and_keeps_database_and_object_store_data() -> None:
 
                 delivered_id = uuid4()
                 delivered_envelope = EventEnvelope(
-                    event_type='risk.profile.created.v1',
+                    event_type=retry_event_type,
                     workspace_id=workspace_id,
                     aggregate_type='risk_profile',
                     aggregate_id=uuid4(),
@@ -1266,8 +1292,11 @@ def test_paper_stack_starts_and_keeps_database_and_object_store_data() -> None:
                         now=delivered_time,
                         lease_duration=timedelta(seconds=30),
                         max_attempts=2,
+                        event_types=(retry_event_type,),
                     )
-                    assert [event.id for event in delivered] == [delivered_id]
+                    assert [event.id for event in delivered] == [delivered_id], [
+                        (event.id, event.event_type) for event in delivered
+                    ]
                     assert await repository.acknowledge(
                         workspace_id=workspace_id,
                         event_id=delivered_id,

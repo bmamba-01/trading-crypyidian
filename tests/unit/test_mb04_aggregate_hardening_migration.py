@@ -43,7 +43,7 @@ def _executed(module: ModuleType, function: str, monkeypatch: pytest.MonkeyPatch
 def test_migration_chains_after_mb05_head_as_single_head() -> None:
     module = _module()
     assert module.revision == "f7a9c1e3b5d8"
-    assert module.down_revision == "e1f3a5c7b9d2"
+    assert module.down_revision == "f7b9d1e3a5c8"
     parents = set()
     for path in VERSIONS.glob("*.py"):
         spec = importlib.util.spec_from_file_location(path.stem, path)
@@ -52,7 +52,9 @@ def test_migration_chains_after_mb05_head_as_single_head() -> None:
         loaded = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(loaded)
         parents.add(loaded.down_revision)
-    assert "f7a9c1e3b5d8" not in parents
+    # Fix round 2 nối migration mark policy ngay sau; head mới là b3d5f7a9c1e4.
+    assert "f7a9c1e3b5d8" in parents
+    assert "b3d5f7a9c1e4" not in parents
 
 
 def test_upgrade_owns_definer_function_by_guarded_nologin_role(
@@ -118,3 +120,46 @@ def test_downgrade_restores_previous_functions_and_drops_role(
     assert sql.count("DROP POLICY risk_aggregate_read") == 8
     assert "REVOKE USAGE ON SCHEMA public FROM crypidian_risk_aggregator" in sql
     assert "DROP ROLE IF EXISTS crypidian_risk_aggregator" in sql
+
+
+def _round2_module() -> ModuleType:
+    path = next(VERSIONS.glob("b3d5f7a9c1e4_*.py"))
+    spec = importlib.util.spec_from_file_location(path.stem, path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_round2_mark_policy_filters_source_timeframe_and_drops_bar_allowance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fix round 2 (I2): LATERAL lọc nguồn/timeframe; tươi chỉ theo max_mark_age; nến đúng hình."""
+    module = _round2_module()
+    assert module.down_revision == "f7a9c1e3b5d8"
+    sql = "\n".join(_executed(module, "upgrade", monkeypatch))
+
+    assert "mb.source = p_mark_source AND mb.timeframe = ANY (p_mark_timeframes)" in sql
+    assert "p_as_of - mk.close_time > make_interval(secs => p_max_mark_age_seconds)" in sql
+    assert "(mk.close_time - mk.open_time) + make_interval" not in sql
+    assert "WHEN '1d' THEN interval '1 day'" in sql
+    assert "cardinality(p_mark_timeframes) = 0" in sql
+    assert sql.count("OWNER TO crypidian_risk_aggregator") == 2
+    assert sql.count("SET search_path = pg_catalog, pg_temp") == 2
+    assert (
+        "GRANT EXECUTE ON FUNCTION public.get_workspace_risk_equity_aggregate(uuid, timestamptz, "
+        "integer, text, text[]) TO crypidian_trading_runtime" in sql
+    )
+
+
+def test_round2_downgrade_restores_round1_functions(monkeypatch: pytest.MonkeyPatch) -> None:
+    sql = "\n".join(_executed(_round2_module(), "downgrade", monkeypatch))
+
+    previous = _module()
+    assert " ".join(previous.ACCOUNT_STATE_FUNCTION.split()) in sql
+    assert " ".join(previous.AGGREGATE_FUNCTION.split()) in sql
+    assert (
+        "GRANT EXECUTE ON FUNCTION public.get_workspace_risk_equity_aggregate(uuid, timestamptz, "
+        "integer) TO crypidian_trading_runtime" in sql
+    )
