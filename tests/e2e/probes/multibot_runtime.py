@@ -36,7 +36,7 @@ from uuid import UUID, uuid4
 import psycopg
 from psycopg import sql
 from psycopg.types.json import Jsonb
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.engine import URL
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
@@ -314,6 +314,7 @@ def _seed_workspace(connection: psycopg.Connection, name: str, fraction: str) ->
         granted_by=owner,
     )
     snapshots = [_seed_feature_snapshot(connection, workspace, index) for index in range(40)]
+    eth_snapshot = _seed_feature_snapshot(connection, workspace, 50, symbol="ETHUSDT")
     _seed_marks(connection, workspace, t0)
     return {
         "workspace": str(workspace),
@@ -322,10 +323,13 @@ def _seed_workspace(connection: psycopg.Connection, name: str, fraction: str) ->
         "bots": bots,
         "settings_version_id": str(settings_id),
         "snapshots": snapshots,
+        "eth_snapshot": eth_snapshot,
     }
 
 
-def _seed_feature_snapshot(connection: psycopg.Connection, workspace: UUID, index: int) -> str:
+def _seed_feature_snapshot(
+    connection: psycopg.Connection, workspace: UUID, index: int, *, symbol: str = "BTCUSDT"
+) -> str:
     from dataclasses import replace
 
     from trading_bot.domain.market.feature_snapshot import (
@@ -340,7 +344,7 @@ def _seed_feature_snapshot(connection: psycopg.Connection, workspace: UUID, inde
         snapshot_id="0" * 64,
         content_hash="0" * 64,
         workspace_id=workspace,
-        symbol="BTCUSDT",
+        symbol=symbol,
         timeframe="1h",
         as_of=t0 - timedelta(hours=1, minutes=index),
         computed_at=t0 - timedelta(hours=1, minutes=index) + timedelta(seconds=1),
@@ -496,6 +500,11 @@ class _StubStrategy:
 
 
 class _StubRegistry:
+    def get_release(self, release_id: str) -> Any:
+        from trading_bot.domain.strategy.registry import StrategyRegistry
+
+        return StrategyRegistry().get_release(release_id)
+
     def resolve(self, release_id: str, selection: Any) -> _StubStrategy:
         del selection
         return _StubStrategy(release_id)
@@ -509,8 +518,119 @@ def _cycle(gateway: Any) -> Any:
     return PaperDecisionCycle(_StubRegistry(), TradePlanner(), RiskEngine(), gateway)  # type: ignore[arg-type]
 
 
+def _strategy_snapshot(release_id: str, snapshot_id: str, decision_time: datetime) -> Any:
+    """Nến/feature tối giản nhưng hợp lệ để strategy H01/H03 tái lập candidate point-in-time."""
+    from dataclasses import replace
+
+    from trading_bot.domain.market.models import OHLCVBar
+    from trading_bot.domain.strategy.contracts import (
+        DecisionSnapshot,
+        FeatureObservation,
+        MarketSeries,
+        SeriesQuality,
+    )
+
+    intervals = {"1h": timedelta(hours=1), "4h": timedelta(hours=4)}
+    start = decision_time - timedelta(hours=2) + timedelta(microseconds=1)
+
+    def bar(index: int, timeframe: str, close: float, *, high: float, low: float) -> Any:
+        opened = start + index * intervals[timeframe]
+        closed = opened + intervals[timeframe] - timedelta(microseconds=1)
+        price = Decimal(str(close))
+        return OHLCVBar(
+            symbol="BTCUSDT",
+            timeframe=timeframe,
+            open_time=opened,
+            close_time=closed,
+            event_at=closed,
+            received_at=closed,
+            available_at=closed,
+            open=price,
+            high=Decimal(str(high)),
+            low=Decimal(str(low)),
+            close=price,
+            volume=Decimal("10"),
+            is_closed=True,
+        )
+
+    def feature(name: str, timeframe: str, value: float, previous: float | None = None) -> Any:
+        return FeatureObservation(
+            feature_id=f"{timeframe}:{name}:{decision_time.isoformat()}",
+            name=name,
+            timeframe=timeframe,
+            value=value,
+            previous_value=previous,
+            available_at=decision_time,
+        )
+
+    def qualify(series: tuple[Any, ...]) -> tuple[Any, ...]:
+        return tuple(
+            replace(
+                item,
+                quality=SeriesQuality.READY,
+                expected_interval=intervals[item.timeframe],
+                max_event_age=2 * intervals[item.timeframe],
+                backfill_complete=True,
+            )
+            for item in series
+        )
+
+    if release_id == "h01-v1":
+        series = qualify(
+            (
+                MarketSeries(
+                    "1h",
+                    (
+                        bar(0, "1h", 100.0, high=101.0, low=99.0),
+                        bar(1, "1h", 101.0, high=102.0, low=100.0),
+                    ),
+                ),
+                MarketSeries("4h", (bar(-1, "4h", 110.0, high=111.0, low=109.0),)),
+            )
+        )
+        features = (
+            feature("ema_20", "1h", 101.0, 99.0),
+            feature("ema_80", "1h", 100.5, 100.0),
+            feature("ema_200", "4h", 100.0),
+            feature("adx_14", "1h", 20.0),
+            feature("atr_14", "1h", 2.0),
+        )
+    else:
+        bars = tuple(bar(index - 54, "1h", 96.0, high=100.0, low=95.0) for index in range(55)) + (
+            bar(1, "1h", 101.5, high=102.0, low=94.0),
+        )
+        series = qualify((MarketSeries("1h", bars, quote_volumes=(5.0,) * 55 + (6.0,)),))
+        features = (feature("atr_14", "1h", 2.0),)
+    return DecisionSnapshot(
+        symbol="BTCUSDT",
+        decision_time=decision_time,
+        snapshot_id=snapshot_id,
+        series=series,
+        features=features,
+        position_is_flat=True,
+        macro_blackout=False,
+        macro_evidence_ids=("mb05-runtime-macro",),
+        macro_evidence_available_at=decision_time,
+        macro_is_fresh=True,
+    )
+
+
 class SyntheticContextProvider:
     """Context point-in-time nhất quán với ledger thật (reservation/vị thế của account)."""
+
+    async def snapshot_for(self, *, evidence: Any, context: Any, evaluated_at: datetime) -> Any:
+        from dataclasses import replace
+
+        snapshot = _strategy_snapshot(
+            context.strategy_release_id,
+            evidence.feature_snapshot_id,
+            evaluated_at - timedelta(seconds=1),
+        )
+        if STATE.get("force_future_input"):
+            features = list(snapshot.features)
+            features[0] = replace(features[0], available_at=evaluated_at + timedelta(seconds=1))
+            snapshot = replace(snapshot, features=tuple(features))
+        return snapshot
 
     async def load_context(
         self,
@@ -535,7 +655,6 @@ class SyntheticContextProvider:
             OpenExposure,
             PlannerSettings,
         )
-        from trading_bot.domain.strategy.contracts import DecisionSnapshot, MarketSeries
         from trading_bot.domain.strategy.registry import StrategyRegistry
 
         published = published_settings
@@ -547,7 +666,19 @@ class SyntheticContextProvider:
             workspace_id=published.workspace_id,
             profile_id=published.settings.risk.profile_version_id,
         )
-        release = published.settings.strategy.default_release
+        from trading_bot.application.bot_config_resolver import load_effective_bot_config
+
+        bot_config = await load_effective_bot_config(
+            uow.session,
+            workspace_id=published.workspace_id,
+            account_id=account.account_id,
+            as_of=command.evaluated_at,
+        )
+        release = (
+            bot_config.strategy.release_id
+            if bot_config is not None
+            else published.settings.strategy.default_release
+        )
         planner = PlannerSettings(
             workspace_id=workspace,
             settings_version_id=version,
@@ -575,7 +706,7 @@ class SyntheticContextProvider:
             version,
             decided,
             Decimal("10000"),
-            Decimal("10000"),
+            Decimal(str(STATE.get("candidate_available_margin", "10000"))),
             True,
         )
         totals = await RiskReservationRepository(uow.session)._active_totals(
@@ -615,7 +746,7 @@ class SyntheticContextProvider:
             account_captured_at=decided,
             market_data_as_of=decided - timedelta(seconds=1),
             equity=Decimal("10000"),
-            available_margin=Decimal("10000"),
+            available_margin=Decimal(str(STATE.get("candidate_available_margin", "10000"))),
             open_exposures=exposures,
             realized_loss_today=Decimal("0"),
             realized_loss_rolling=Decimal("0"),
@@ -628,13 +759,7 @@ class SyntheticContextProvider:
             pending_symbol_reservation_notional=totals.symbol_notional,
         )
         return PaperDecisionContext(
-            snapshot=DecisionSnapshot(
-                symbol="BTCUSDT",
-                decision_time=decided,
-                snapshot_id=command.feature_snapshot_id,
-                series=(MarketSeries("1h", ()),),
-                features=(),
-            ),
+            snapshot=_strategy_snapshot(release, command.feature_snapshot_id, decided),
             planner_settings=planner,
             account=snapshot_account,
             risk_state=state,
@@ -687,6 +812,7 @@ async def runtime_app(
     tick: float = 20.0,
     sessions: Any = None,
     supervisor_factory: Any = None,
+    use_real_strategy: bool = False,
 ) -> AsyncIterator[Any]:
     from trading_bot.app import create_app
     from trading_bot.config.settings import AppSettings
@@ -709,7 +835,8 @@ async def runtime_app(
     try:
         async with app.router.lifespan_context(app):
             if app.state.paper_application is not None:
-                app.state.paper_application._decision_cycle_factory = _cycle
+                if not use_real_strategy:
+                    app.state.paper_application._decision_cycle_factory = _cycle
                 _trace_coordinators(app)
             yield app
     finally:
@@ -977,6 +1104,636 @@ async def runtime_restart_setup() -> dict[str, Any]:
         filled = await fill(app, "a", a1)
         view = _registry_view(app)
     return {"start": view_start, "a1": a1, "b1": b1, "a_fill": filled, "view": view}
+
+
+def seed_candidate_bot_configs() -> dict[str, Any]:
+    """Tạo config PAPER riêng: bot A dùng h01, bot B dùng h03, root vẫn là h03."""
+    from trading_bot.config.bot_settings import BotConfigOverlay, canonical_overlay, overlay_hash
+    from trading_bot.domain.strategy.registry import StrategyRegistry
+
+    workspace = UUID(_ws()["workspace"])
+    root_id = UUID(_ws()["settings_version_id"])
+    with _connect() as connection, connection.transaction():
+        root = connection.execute(
+            "SELECT settings_hash, created_by FROM workspace_settings_version "
+            "WHERE workspace_id=%s AND id=%s",
+            (workspace, root_id),
+        ).fetchone()
+        if root is None:
+            raise AssertionError("Thiếu root settings cho test fan-out PAPER.")
+        root_hash, owner = root
+        registry = StrategyRegistry()
+        release_id = uuid4()
+        _insert(
+            connection,
+            "strategy_release",
+            id=release_id,
+            workspace_id=workspace,
+            name="h01-v1",
+            version=1,
+            status="PUBLISHED",
+            recipe=Jsonb({}),
+            content_hash=registry.get_release("h01-v1").content_hash,
+        )
+        config_ids = {}
+        for key, release in (("a", "h01-v1"), ("b", "h03-v1")):
+            overlay_payload: dict[str, Any] = {
+                "schema_version": 1,
+                "strategy": {"release_id": release},
+            }
+            if key == "a" and STATE.get("hard_cap_overlay"):
+                overlay_payload["risk"] = STATE["hard_cap_overlay"]
+            overlay = canonical_overlay(BotConfigOverlay.model_validate(overlay_payload))
+            config_id = uuid4()
+            _insert(
+                connection,
+                "bot_config_version",
+                id=config_id,
+                workspace_id=workspace,
+                bot_id=UUID(_ws()["bots"][key]),
+                account_id=UUID(_ws()["accounts"][key]),
+                version=1,
+                schema_version=1,
+                overlay_json=Jsonb(overlay),
+                overlay_hash=overlay_hash(overlay),
+                base_settings_version_id=root_id,
+                base_settings_hash=root_hash,
+                status="DRAFT",
+                revision=1,
+                created_by=owner,
+                updated_by=owner,
+            )
+            connection.execute(
+                "UPDATE bot_config_version SET status='PUBLISHED', approved_by=%s, "
+                "published_at=%s, effective_at=%s WHERE workspace_id=%s AND id=%s",
+                (owner, _at(-10), _at(-10), workspace, config_id),
+            )
+            config_ids[key] = str(config_id)
+    return {"config_ids": config_ids, "h01_release_id": str(release_id)}
+
+
+async def runtime_fanout_to_paper_intents() -> dict[str, Any]:
+    """E2E một evidence qua consumer runtime, strategy theo bot và ledger PAPER thật."""
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from trading_bot.adapters.database.models import (
+        BotDecisionRecord,
+        OrderIntentRecord,
+        StrategyRelease,
+    )
+    from trading_bot.adapters.database.repositories.bot_decisions import (
+        PostgresSignalDecisionStore,
+    )
+    from trading_bot.adapters.database.repositories.feature_snapshots import (
+        FeatureSnapshotRepository,
+    )
+    from trading_bot.application.outbox import UnitOfWork
+    from trading_bot.domain.market.signal_evidence import (
+        EvidenceSourceRef,
+        build_shared_signal_evidence,
+    )
+
+    workspace = UUID(_ws()["workspace"])
+    engine = _engine(pool=8)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with runtime_app(sessions=sessions, use_real_strategy=True) as app:
+            original_submit = app.state.paper_application.evaluate_and_submit
+            failed_decision_ids: list[UUID] = []
+
+            async def fail_one_candidate(command: Any) -> Any:
+                if not failed_decision_ids:
+                    failed_decision_ids.append(command.bot_decision_id)
+                    raise RuntimeError("MB05B_TRANSIENT_SUBMIT_PROBE")
+                return await original_submit(command)
+
+            app.state.paper_application.evaluate_and_submit = fail_one_candidate
+            moment = datetime.now(UTC).replace(microsecond=0)
+            from trading_bot.application.bot_decision_contexts import (
+                EffectiveBotDecisionContextProvider,
+                FanOutExclusionRecorder,
+                RuntimeFanOutGate,
+            )
+
+            eligibility = await EffectiveBotDecisionContextProvider(
+                sessions,
+                runtime_gate=RuntimeFanOutGate(),
+                exclusion_recorder=FanOutExclusionRecorder(
+                    sessions=sessions,
+                    workspace_id=workspace,
+                    accounts=app.state.paper_application.runtime_account,
+                ),
+            ).eligibility(workspace_id=workspace, as_of=moment + timedelta(seconds=1))
+            async with UnitOfWork(sessions, workspace_id=workspace) as uow:
+                feature = await FeatureSnapshotRepository(uow.session).get_as_of(
+                    workspace_id=workspace,
+                    symbol="BTCUSDT",
+                    timeframe="1h",
+                    as_of=moment,
+                )
+            if feature is None:
+                raise AssertionError("Thiếu feature snapshot cho evidence test.")
+            evidence = build_shared_signal_evidence(
+                feature_snapshot=feature,
+                setup_type="mb05.runtime_fanout",
+                observed_at=moment,
+                available_at=moment,
+                validity_end=moment + timedelta(minutes=10),
+                sources=(
+                    EvidenceSourceRef(
+                        f"market_bar:binance:BTCUSDT:1h:runtime:{moment.isoformat()}",
+                        moment,
+                    ),
+                ),
+            )
+            recorded = await PostgresSignalDecisionStore(sessions).record_evidence(
+                evidence, evaluated_at=moment + timedelta(seconds=1)
+            )
+            await app.state.paper_supervisor.tick_once()
+            await app.state.paper_supervisor.tick_once()
+            decisions = []
+            intent_rows = []
+            for key in ("a", "b"):
+                account_id = UUID(_ws()["accounts"][key])
+                async with UnitOfWork(sessions, workspace_id=workspace) as uow:
+                    bot_id = await uow.bind_account(account_id)
+                    decisions.extend(
+                        await uow.session.scalars(
+                            select(BotDecisionRecord).where(
+                                BotDecisionRecord.workspace_id == workspace,
+                                BotDecisionRecord.bot_id == bot_id,
+                                BotDecisionRecord.evidence_id == evidence.evidence_id,
+                            )
+                        )
+                    )
+                    intent_rows.extend(
+                        await uow.session.execute(
+                            select(OrderIntentRecord, StrategyRelease.name)
+                            .join(
+                                StrategyRelease,
+                                (StrategyRelease.workspace_id == OrderIntentRecord.workspace_id)
+                                & (StrategyRelease.id == OrderIntentRecord.strategy_release_id),
+                            )
+                            .where(
+                                OrderIntentRecord.workspace_id == workspace,
+                                OrderIntentRecord.account_id == account_id,
+                                OrderIntentRecord.evidence["bot_decision_id"]
+                                .as_string()
+                                .is_not(None),
+                            )
+                        )
+                    )
+            expected = {UUID(_ws()["bots"]["a"]): "h01-v1", UUID(_ws()["bots"]["b"]): "h03-v1"}
+            return {
+                "decisions": [
+                    [str(item.bot_id), item.status, item.candidate_id, str(item.id)]
+                    for item in decisions
+                ],
+                "intents": [
+                    [
+                        str(intent.bot_id),
+                        release_name,
+                        str(intent.evidence.get("bot_decision_id")),
+                        intent.evidence.get("bot_candidate_id"),
+                        intent.evidence.get("strategy_release_hash"),
+                    ]
+                    for intent, release_name in intent_rows
+                ],
+                "expected_bot_ids": {str(key): value for key, value in expected.items()},
+                "supervisor_errors": {
+                    str(account_id): entry.last_error_code
+                    for account_id, entry in app.state.paper_registry.entries().items()
+                },
+                "worker_wired": app.state.paper_supervisor._job_processor is not None,
+                "recorded_created": recorded.created,
+                "recovered_decision_id": str(failed_decision_ids[0]),
+                "eligible_contexts": [
+                    [str(item.bot_id), item.strategy_release_id] for item in eligibility.contexts
+                ],
+                "eligibility_exclusions": [
+                    [str(item.bot_id), item.reason_code] for item in eligibility.exclusions
+                ],
+            }
+    finally:
+        await engine.dispose()
+
+
+async def runtime_non_candidate_decisions() -> dict[str, Any]:
+    """ABSTAIN ngoài universe và VETO future input không được gửi sang PAPER planner."""
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from trading_bot.adapters.database.models import BotDecisionRecord, OrderIntentRecord
+    from trading_bot.adapters.database.repositories.bot_decisions import (
+        PostgresSignalDecisionStore,
+    )
+    from trading_bot.adapters.database.repositories.feature_snapshots import (
+        FeatureSnapshotRepository,
+    )
+    from trading_bot.application.outbox import UnitOfWork
+    from trading_bot.domain.market.signal_evidence import (
+        EvidenceSourceRef,
+        build_shared_signal_evidence,
+    )
+
+    workspace = UUID(_ws()["workspace"])
+    engine = _engine(pool=8)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with runtime_app(sessions=sessions, use_real_strategy=True) as app:
+            submitted: list[Any] = []
+
+            async def capture(command: Any) -> None:
+                submitted.append(command)
+
+            app.state.paper_application.evaluate_and_submit = capture
+            now = datetime.now(UTC).replace(microsecond=0)
+            async with UnitOfWork(sessions, workspace_id=workspace) as uow:
+                repository = FeatureSnapshotRepository(uow.session)
+                btc = await repository.get_as_of(
+                    workspace_id=workspace,
+                    symbol="BTCUSDT",
+                    timeframe="1h",
+                    as_of=now,
+                )
+                eth = await repository.get_as_of(
+                    workspace_id=workspace,
+                    symbol="ETHUSDT",
+                    timeframe="1h",
+                    as_of=now,
+                )
+            if btc is None or eth is None:
+                raise AssertionError("Thiếu feature snapshots BTC/ETH cho negative path.")
+
+            store = PostgresSignalDecisionStore(sessions)
+            evidence_ids: dict[str, UUID] = {}
+            for label, feature in (("veto", btc), ("abstain", eth)):
+                observed = now - timedelta(seconds=2)
+                evidence = build_shared_signal_evidence(
+                    feature_snapshot=feature,
+                    setup_type=f"mb05.runtime_non_candidate.{label}",
+                    observed_at=observed,
+                    available_at=observed,
+                    validity_end=now + timedelta(minutes=10),
+                    sources=(
+                        EvidenceSourceRef(
+                            f"market_bar:binance:{feature.symbol}:1h:non-candidate:{label}",
+                            observed,
+                        ),
+                    ),
+                )
+                recorded = await store.record_evidence(
+                    evidence, evaluated_at=now - timedelta(seconds=1)
+                )
+                evidence_ids[label] = recorded.evidence.evidence_id
+
+            await app.state.paper_supervisor.tick_once()
+            decisions = []
+            for key in ("a", "b"):
+                async with UnitOfWork(sessions, workspace_id=workspace) as uow:
+                    await uow.bind_account(UUID(_ws()["accounts"][key]))
+                    decisions.extend(
+                        await uow.session.scalars(
+                            select(BotDecisionRecord).where(
+                                BotDecisionRecord.workspace_id == workspace,
+                                BotDecisionRecord.evidence_id.in_(tuple(evidence_ids.values())),
+                            )
+                        )
+                    )
+                    intent_count = await uow.session.scalar(
+                        select(func.count())
+                        .select_from(OrderIntentRecord)
+                        .where(
+                            OrderIntentRecord.workspace_id == workspace,
+                            OrderIntentRecord.account_id == UUID(_ws()["accounts"][key]),
+                        )
+                    )
+                    if intent_count:
+                        raise AssertionError("ABSTAIN/VETO đã tạo PAPER intent.")
+            return {
+                "decisions": [
+                    [str(item.evidence_id), item.status, item.reason_code] for item in decisions
+                ],
+                "abstain_evidence_id": str(evidence_ids["abstain"]),
+                "veto_evidence_id": str(evidence_ids["veto"]),
+                "submitted_count": len(submitted),
+            }
+    finally:
+        await engine.dispose()
+
+
+async def runtime_paused_candidate_check() -> dict[str, Any]:
+    """Published candidate bị chặn bởi pause admin trước planner/reservation."""
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from trading_bot.application.paper_runtime_application import (
+        PaperBotDecisionCommand,
+        PaperRuntimeApplicationError,
+    )
+
+    account_id = UUID(_ws()["accounts"]["a"])
+    engine = _engine(pool=8)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with runtime_app(sessions=sessions, use_real_strategy=True) as app:
+            try:
+                await app.state.paper_application.evaluate_and_submit(
+                    PaperBotDecisionCommand(
+                        account_id=account_id,
+                        bot_decision_id=UUID(STATE["candidate_id"]),
+                    )
+                )
+                reason = "UNEXPECTEDLY_ACCEPTED"
+            except PaperRuntimeApplicationError as error:
+                reason = error.reason_code
+        return {"pause_reason": reason}
+    finally:
+        await engine.dispose()
+
+
+async def runtime_fenced_candidate_check() -> dict[str, Any]:
+    """Worker cũ mất lease sau takeover và không được xử lý candidate đã persist."""
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from trading_bot.adapters.database.repositories.bot_decisions import (
+        PostgresSignalDecisionStore,
+    )
+    from trading_bot.adapters.database.repositories.bot_runtime_leases import BotRuntimeLease
+    from trading_bot.adapters.database.repositories.feature_snapshots import (
+        FeatureSnapshotRepository,
+    )
+    from trading_bot.application.outbox import UnitOfWork
+    from trading_bot.application.paper_runtime_application import (
+        PaperRuntimeApplicationError,
+    )
+    from trading_bot.domain.market.signal_evidence import (
+        EvidenceSourceRef,
+        build_shared_signal_evidence,
+    )
+
+    workspace = UUID(_ws()["workspace"])
+    bot_id = UUID(_ws()["bots"]["a"])
+    account_id = UUID(_ws()["accounts"]["a"])
+    runtime_engine = _engine("crypidian_trading_runtime", pool=8)
+    sessions = async_sessionmaker(runtime_engine, expire_on_commit=False)
+    try:
+        async with runtime_app(sessions=sessions, use_real_strategy=True) as app:
+            original_submit = app.state.paper_application.evaluate_and_submit
+            captured: list[Any] = []
+
+            async def capture(command: Any) -> None:
+                captured.append(command)
+
+            app.state.paper_application.evaluate_and_submit = capture
+            now = datetime.now(UTC).replace(microsecond=0)
+            async with UnitOfWork(sessions, workspace_id=workspace) as uow:
+                feature = await FeatureSnapshotRepository(uow.session).get_as_of(
+                    workspace_id=workspace,
+                    symbol="BTCUSDT",
+                    timeframe="1h",
+                    as_of=now,
+                )
+            if feature is None:
+                raise AssertionError("Thiếu BTC feature cho test fencing candidate.")
+            evidence = build_shared_signal_evidence(
+                feature_snapshot=feature,
+                setup_type="mb05.runtime_fence_takeover",
+                observed_at=now - timedelta(seconds=2),
+                available_at=now - timedelta(seconds=2),
+                validity_end=now + timedelta(minutes=10),
+                sources=(
+                    EvidenceSourceRef(
+                        f"market_bar:binance:BTCUSDT:1h:fence:{now.isoformat()}",
+                        now - timedelta(seconds=2),
+                    ),
+                ),
+            )
+            await PostgresSignalDecisionStore(sessions).record_evidence(
+                evidence, evaluated_at=now - timedelta(seconds=1)
+            )
+            await app.state.paper_supervisor.tick_once()
+            app.state.paper_application.evaluate_and_submit = original_submit
+            candidates = [item for item in captured if item.account_id == account_id]
+            if not candidates:
+                raise AssertionError("Worker chưa tạo persisted candidate cho bot A.")
+
+            with _connect() as connection, connection.transaction():
+                connection.execute(
+                    "ALTER TABLE bot_runtime_lease DISABLE TRIGGER bot_runtime_lease_guard"
+                )
+                connection.execute(
+                    "UPDATE bot_runtime_lease SET "
+                    "renewed_at=clock_timestamp()-interval '2 seconds', "
+                    "expires_at=clock_timestamp()-interval '1 second' "
+                    "WHERE workspace_id=%s AND bot_id=%s",
+                    (workspace, bot_id),
+                )
+                connection.execute(
+                    "ALTER TABLE bot_runtime_lease ENABLE TRIGGER bot_runtime_lease_guard"
+                )
+            async with UnitOfWork(sessions, workspace_id=workspace, bot_id=bot_id) as uow:
+                lease = BotRuntimeLease(uow.session)
+                db_now = await lease.database_now()
+                new_token = await lease.acquire(
+                    workspace, bot_id, "e2e-fence-successor", db_now + timedelta(seconds=60)
+                )
+            try:
+                await original_submit(candidates[0])
+                reason = "UNEXPECTEDLY_ACCEPTED"
+            except PaperRuntimeApplicationError as error:
+                reason = error.reason_code
+            return {"reason": reason, "new_token": int(new_token)}
+    finally:
+        await runtime_engine.dispose()
+
+
+async def runtime_account_hard_cap_race() -> dict[str, Any]:
+    """Hai candidate persisted cùng account đua qua L1/L2 và cap số vị thế thật."""
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from trading_bot.adapters.database.repositories.bot_decisions import (
+        PostgresSignalDecisionStore,
+    )
+    from trading_bot.adapters.database.repositories.feature_snapshots import (
+        FeatureSnapshotRepository,
+    )
+    from trading_bot.application.outbox import UnitOfWork
+    from trading_bot.domain.market.signal_evidence import (
+        EvidenceSourceRef,
+        build_shared_signal_evidence,
+    )
+
+    workspace = UUID(_ws()["workspace"])
+    account_id = UUID(_ws()["accounts"]["a"])
+    engine = _engine(pool=8)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with runtime_app(sessions=sessions, use_real_strategy=True) as app:
+            now = datetime.now(UTC).replace(microsecond=0)
+            async with UnitOfWork(sessions, workspace_id=workspace) as uow:
+                feature = await FeatureSnapshotRepository(uow.session).get_as_of(
+                    workspace_id=workspace,
+                    symbol="BTCUSDT",
+                    timeframe="1h",
+                    as_of=now,
+                )
+            if feature is None:
+                raise AssertionError("Thiếu feature snapshot cho race hard-cap.")
+            store = PostgresSignalDecisionStore(sessions)
+            for index in range(2):
+                observed = now + timedelta(seconds=index)
+                evidence = build_shared_signal_evidence(
+                    feature_snapshot=feature,
+                    setup_type=f"mb05.runtime_hard_cap.{index}",
+                    observed_at=observed,
+                    available_at=observed,
+                    validity_end=now + timedelta(minutes=10),
+                    sources=(
+                        EvidenceSourceRef(
+                            f"market_bar:binance:BTCUSDT:1h:hard-cap:{index}", observed
+                        ),
+                    ),
+                )
+                await store.record_evidence(evidence, evaluated_at=observed + timedelta(seconds=1))
+
+            captured: list[Any] = []
+            original_submit = app.state.paper_application.evaluate_and_submit
+
+            async def capture_only(command: Any) -> None:
+                captured.append(command)
+
+            app.state.paper_application.evaluate_and_submit = capture_only
+            await app.state.paper_supervisor.tick_once()
+            app.state.paper_application.evaluate_and_submit = original_submit
+            account_commands = list(
+                {
+                    item.bot_decision_id: item for item in captured if item.account_id == account_id
+                }.values()
+            )
+            if len(account_commands) != 2:
+                raise AssertionError(
+                    "Kỳ vọng hai decision riêng cùng account, nhận "
+                    f"{[str(item.bot_decision_id) for item in account_commands]} từ "
+                    f"{len(captured)} lần gọi."
+                )
+            if STATE.get("pause_candidate"):
+                return {"candidate_id": str(account_commands[0].bot_decision_id)}
+            bot_b_commands = [
+                item for item in captured if item.account_id == UUID(_ws()["accounts"]["b"])
+            ]
+            if not bot_b_commands:
+                raise AssertionError("Thiếu persisted candidate của bot B để kiểm tra cross-scope.")
+            from trading_bot.application.paper_runtime_application import (
+                PaperBotDecisionCommand,
+                PaperRuntimeApplicationError,
+            )
+
+            try:
+                await original_submit(
+                    PaperBotDecisionCommand(
+                        account_id=account_id,
+                        bot_decision_id=bot_b_commands[0].bot_decision_id,
+                    )
+                )
+                cross_scope_reason = "UNEXPECTEDLY_ACCEPTED"
+            except PaperRuntimeApplicationError as error:
+                cross_scope_reason = error.reason_code
+
+            arrived = 0
+            barrier = asyncio.Event()
+
+            async def submit_together(command: Any) -> Any:
+                nonlocal arrived
+                arrived += 1
+                if arrived == 2:
+                    barrier.set()
+                await asyncio.wait_for(barrier.wait(), timeout=20)
+                return await original_submit(command)
+
+            results = await asyncio.wait_for(
+                asyncio.gather(*(submit_together(command) for command in account_commands)),
+                timeout=60,
+            )
+            async with UnitOfWork(sessions, workspace_id=workspace) as uow:
+                await uow.bind_account(account_id)
+                from trading_bot.adapters.database.models.paper_entities import (
+                    OrderIntentRecord,
+                )
+                from trading_bot.adapters.database.models.risk_entities import (
+                    RiskReservationRecord,
+                )
+
+                intent_count = await uow.session.scalar(
+                    select(func.count())
+                    .select_from(OrderIntentRecord)
+                    .where(
+                        OrderIntentRecord.workspace_id == workspace,
+                        OrderIntentRecord.account_id == account_id,
+                        OrderIntentRecord.evidence["bot_decision_id"].as_string().is_not(None),
+                    )
+                )
+                reserved_count = await uow.session.scalar(
+                    select(func.count())
+                    .select_from(RiskReservationRecord)
+                    .where(
+                        RiskReservationRecord.workspace_id == workspace,
+                        RiskReservationRecord.account_id == account_id,
+                        RiskReservationRecord.status == "RESERVED",
+                    )
+                )
+                reserved_notional = await uow.session.scalar(
+                    select(
+                        func.coalesce(func.sum(RiskReservationRecord.reserved_notional), 0)
+                    ).where(
+                        RiskReservationRecord.workspace_id == workspace,
+                        RiskReservationRecord.account_id == account_id,
+                        RiskReservationRecord.status == "RESERVED",
+                    )
+                )
+                reserved_margin = await uow.session.scalar(
+                    select(
+                        func.coalesce(func.sum(RiskReservationRecord.reserved_initial_margin), 0)
+                    ).where(
+                        RiskReservationRecord.workspace_id == workspace,
+                        RiskReservationRecord.account_id == account_id,
+                        RiskReservationRecord.status == "RESERVED",
+                    )
+                )
+            return {
+                "commands": [str(item.bot_decision_id) for item in account_commands],
+                "outcomes": [
+                    {
+                        "blocked": result.entry_block_reason,
+                        "cycle": result.decision.outcome.value if result.decision else None,
+                        "reason": (
+                            result.decision.risk_decision.reason_code
+                            if result.decision and result.decision.risk_decision
+                            else None
+                        ),
+                    }
+                    for result in results
+                ],
+                "approved_plan": next(
+                    (
+                        {
+                            "notional": str(result.decision.plan.notional),
+                            "initial_margin": str(result.decision.plan.initial_margin),
+                        }
+                        for result in results
+                        if result.decision
+                        and result.decision.outcome.value == "RISK_APPROVED"
+                        and result.decision.plan is not None
+                    ),
+                    None,
+                ),
+                "intent_count": int(intent_count or 0),
+                "reserved_count": int(reserved_count or 0),
+                "reserved_notional": str(reserved_notional or 0),
+                "reserved_margin": str(reserved_margin or 0),
+                "cross_scope_reason": cross_scope_reason,
+            }
+    finally:
+        await engine.dispose()
 
 
 async def runtime_restart_check() -> dict[str, Any]:
@@ -2003,6 +2760,12 @@ PHASES = {
     "diagnose_fills": diagnose_fills,
     "lease_stale_writes": lease_stale_writes,
     "seed": seed,
+    "candidate_bot_configs": seed_candidate_bot_configs,
+    "runtime_fanout_to_paper_intents": runtime_fanout_to_paper_intents,
+    "runtime_non_candidate_decisions": runtime_non_candidate_decisions,
+    "runtime_paused_candidate_check": runtime_paused_candidate_check,
+    "runtime_fenced_candidate_check": runtime_fenced_candidate_check,
+    "runtime_account_hard_cap_race": runtime_account_hard_cap_race,
     "genesis": genesis,
     "runtime_restart_setup": runtime_restart_setup,
     "runtime_restart_check": runtime_restart_check,

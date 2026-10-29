@@ -66,7 +66,7 @@ def test_backtest_run_trial_report_persist_once_and_are_tenant_isolated() -> Non
     }
     try:
         subprocess.run(
-            ["docker", "info", "--format", "{{.ServerVersion}}"],
+            ["docker", "version", "--format", "{{.Server.Version}}"],
             check=True,
             capture_output=True,
             text=True,

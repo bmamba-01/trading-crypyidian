@@ -243,7 +243,7 @@ def test_paper_stack_starts_and_keeps_database_and_object_store_data() -> None:
     }
     try:
         subprocess.run(
-            ["docker", "info", "--format", "{{.ServerVersion}}"],
+            ["docker", "version", "--format", "{{.Server.Version}}"],
             check=True,
             capture_output=True,
             text=True,

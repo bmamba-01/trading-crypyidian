@@ -125,7 +125,7 @@ class ComposeHarness:
         )
 
     def start(self, *services: str) -> None:
-        info = self.docker("info", "--format", "{{.ServerVersion}}", timeout=30)
+        info = self.docker("version", "--format", "{{.Server.Version}}", timeout=30)
         if info.returncode:
             pytest.fail(f"Docker daemon cần chạy cho E2E Compose: {info.stderr[-500:]}")
         ensure_image_available(ROOT, self.image)
@@ -139,6 +139,10 @@ class ComposeHarness:
             "db-provisioner",
             *services,
         )
+        # `compose up --wait` chỉ đảm bảo container provisioner đã khởi động;
+        # migrator chạy bằng `--no-deps` nên không tự chờ one-shot service hoàn tất.
+        # Chạy provisioner đồng bộ để migration không đua trước lúc role được tạo.
+        self.compose("run", "--rm", "--no-deps", "db-provisioner")
         self.compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "head")
 
     def probe(self, phase: str, service: str = "trading-runtime", **extra: Any) -> dict[str, Any]:

@@ -429,6 +429,31 @@ async def test_insert_decision_writes_lineage_columns() -> None:
     assert row.payload == decision.canonical_payload()
 
 
+async def test_pending_candidate_query_is_scoped_and_excludes_existing_intent() -> None:
+    job = _job()
+    decision = await _decision(job)
+    session = FakeSession(scalars_results=[[_decision_row(decision)]])
+
+    pending = await BotDecisionRepository(session).pending_candidate_decisions(
+        workspace_id=WORKSPACE,
+        bot_id=BOT_A,
+        account_id=ACCOUNT_A,
+        now=DECISION_TIME,
+    )  # type: ignore[arg-type]
+
+    assert pending == (decision,)
+    sql = session.statements[0]
+    assert "bot_decision.workspace_id =" in sql
+    assert "bot_decision.bot_id =" in sql
+    assert "bot_decision.account_id =" in sql
+    assert "bot_decision.status =" in sql
+    assert "NOT (EXISTS" in sql
+    assert "order_intent.account_id = bot_decision.account_id" in sql
+    assert "order_intent.evidence ->>" in sql
+    assert "bot_decision.payload" in sql
+    assert "TIMESTAMP WITH TIME ZONE" in sql
+
+
 async def test_claim_ready_can_filter_event_types() -> None:
     session = FakeSession(scalars_results=[[]])
 

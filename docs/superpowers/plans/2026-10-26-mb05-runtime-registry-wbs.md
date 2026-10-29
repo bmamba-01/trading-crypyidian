@@ -218,18 +218,19 @@ Triển khai trên nhánh worktree (chưa merge, chờ review độc lập). Mig
 
 ## MB-05b — Nối candidate fan-out vào runtime (sau MB-05 core, ruling 28)
 
-**Điều kiện bắt đầu:** MB-05 core đã merge vào `dev` và review đạt; cảnh báo validate `BOT_RELEASE_DIFFERS_FROM_ROOT` (MB05.8) đã có. MB-05b viết WBS chi tiết riêng (ngắn) dựa trên mục này trước khi code.
+**Trạng thái cập nhật 2026-10-29:** implementation, unit, security path, risk hard-cap, reviewer độc lập và full E2E **36 passed / 3524.36s**. Runtime worker chỉ chạy khi provider point-in-time được inject; app mặc định báo `market_dispatch: not_configured` cho tới khi adapter WP-05 sẵn sàng. Cổng kỹ thuật đã đạt; chờ commit/push `dev`. Bản kế hoạch chi tiết có trạng thái từng WBS/AC tại [WBS MB-05b](./2026-10-28-mb05b-runtime-fanout-wbs.md); trạng thái đó là nguồn hiện hành thay cho checklist lịch sử bên dưới.
 
-- [ ] RED unit `tests/unit/test_paper_runtime_application.py`: `PaperBotDecisionCommand(account_id, bot_decision_id)` cho bot B (release `h01-v1` ≠ root `h03-v1`) tạo plan/reservation/intent với lineage bot config + root settings version; quyết định `ABSTAIN/VETO` không tạo intent; decision sai bot/account/workspace bị từ chối; transaction tuân bất biến ruling 27 (đọc control trong cùng transaction) và fencing; monitor vị thế của B dùng release pin của B.
-- [ ] Cập nhật kỳ vọng `PAPER_BOT_STRATEGY_FANOUT_REQUIRED` trong `tests/unit/test_paper_runtime_bot_config.py`: đường lệnh cũ theo feature snapshot (không có `bot_decision_id`) vẫn từ chối release khác root; đường bot decision mới chấp nhận.
-- [ ] GREEN: `paper_runtime_application.py` (đường bot decision, pin release bot trong `_load_position_release_pin`), reservation qua `WorkspaceRiskCoordinator`; supervisor gửi decision `CANDIDATE` còn hiệu lực sang runtime; `DecisionSnapshotProvider` lấy từ bảng market thật chỉ khi đã có trong repo, nếu không giữ provider tiêm vào và ghi giới hạn.
-- [ ] E2E `tests/e2e/test_multibot_fanout_runtime.py`: một evidence → job A và B; B tạo intent qua coordinator MB-04 với lineage riêng; pause B giữa chừng → không intent mới; vị thế B exit theo pin của B.
-- [ ] Wiring production trong `src/trading_bot/app.py` (fix round 1, I3): dựng `EffectiveBotDecisionContextProvider` với `runtime_gate=RuntimeFanOutGate()` và `exclusion_recorder=FanOutExclusionRecorder(sessions, workspace_id, accounts=application.runtime_account)` (hai tham số này đã bắt buộc, keyword-only); tiêm `job_processor` (dispatcher `process_pending` + `JobRetryPolicy`) vào `BotRuntimeSupervisor` để supervisor xử lý job pending của bot đang giữ lease; test tĩnh/unit ghim `app.py` truyền đủ gate, recorder và `job_processor`.
-- [ ] Cập nhật `docs/testing/qa-test-data.md` mục 2.6/8: bot B không còn bị `PAPER_BOT_STRATEGY_FANOUT_REQUIRED` trên đường bot decision; cân nhắc bỏ/giữ cảnh báo validate khi runtime đã hỗ trợ.
-- [ ] **Ruling controller (bắt buộc, fix round 3):** MB-05b phải nạp risk context bên trong cùng transaction L1 và thêm E2E đa bot đồng thời chứng minh các hard cap đơn account (notional, tập trung theo symbol, số vị thế tối đa, margin); nếu không, khôi phục bước kiểm lại của repository bên trong coordinator dưới L3.
+- [x] Persisted `PaperBotDecisionCommand` chạy release riêng của bot; ABSTAIN/VETO, sai scope/lineage, pause và fence cũ fail-closed; đường legacy vẫn giữ `PAPER_BOT_STRATEGY_FANOUT_REQUIRED`.
+- [x] Runtime worker nối dispatcher, fan-out gate/exclusion recorder và recovery scan; worker chỉ active khi inject `DecisionSnapshotProvider`. App mặc định chưa có adapter market-data → `DecisionSnapshot`, `/health/ready` công bố `market_dispatch: not_configured`; tự động fan-out cần adapter theo WP-05.
+- [x] PostgreSQL Compose E2E positive/negative: fan-out, lineage, restart/recovery, ABSTAIN/VETO, cross-scope, pause, takeover fence và account hard caps (max positions, total notional, symbol notional, concentration, initial margin).
+- [x] Cập nhật `docs/testing/qa-test-data.md` phân biệt API legacy với đường persisted fan-out.
+- [x] Đồng bộ thứ tự bootstrap E2E runtime harness: chạy `db-provisioner` đồng bộ trước migrator để loại race role provisioning.
+- [x] **Ruling controller:** RiskContext được nạp trong cùng transaction L1; concurrency tests xác nhận tổng reservation/intent không vượt notional, symbol concentration, max positions hay margin cap.
   - Nguyên văn: "MB-05b must load the risk context inside the same L1 transaction and add a concurrent multi-bot E2E proving single-account hard caps (notional, symbol concentration, max positions, margin) — otherwise restore the repository re-check inside the coordinator under L3."
+- [x] Review độc lập read-only; finding về provider production được xử lý bằng readiness `market_dispatch: not_configured` và ghi giới hạn rõ trong WBS/project status; WP-05 sở hữu adapter market data thực.
+- [x] Full `tests/e2e` 36 passed / 3524.36s sau harness fix/readiness probe; unit 1577, reviewer độc lập, Ruff/format/mypy/Alembic/Compose config và diff check đạt. Chờ commit/push lên `dev`.
 
-**Nghiệm thu MB-05b:** QA bot B chạy entry PAPER bằng release riêng qua fan-out với risk MB-04, fencing và bất biến control; đường cũ không đổi hành vi; unit + E2E + quality gates đạt; review độc lập đạt.
+**Nghiệm thu MB-05b:** QA bot B chạy entry PAPER bằng release riêng qua persisted fan-out với risk MB-04, fencing và bất biến control; đường legacy giữ nguyên; full unit/E2E + quality gates và review độc lập đạt.
 
 ## Phụ thuộc MB-04 (đối chiếu lại sau merge)
 

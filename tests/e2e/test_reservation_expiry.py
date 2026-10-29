@@ -68,7 +68,7 @@ def test_postgres_expiry_releases_only_due_reserved_risk() -> None:
     due_id, unknown_id = str(uuid.uuid4()), str(uuid.uuid4())
     try:
         subprocess.run(
-            ["docker", "info", "--format", "{{.ServerVersion}}"],
+            ["docker", "version", "--format", "{{.Server.Version}}"],
             check=True,
             capture_output=True,
             text=True,

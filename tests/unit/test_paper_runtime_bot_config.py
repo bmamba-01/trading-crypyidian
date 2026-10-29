@@ -129,6 +129,27 @@ def test_bot_config_version_changes_decision_idempotency_key_but_legacy_key_is_s
     assert len({legacy, first, second}) == 3
 
 
+def test_bot_decision_id_changes_idempotency_key_without_changing_legacy_key() -> None:
+    arguments = {
+        "account_id": uuid4(),
+        "settings_version_id": uuid4(),
+        "strategy_release": "h03-v1",
+        "feature_snapshot_id": "feature-1",
+        "bot_config_version_id": uuid4(),
+    }
+
+    first = _decision_idempotency_key(**arguments, bot_decision_id=uuid4())
+    second = _decision_idempotency_key(**arguments, bot_decision_id=uuid4())
+    legacy = _decision_idempotency_key(
+        account_id=arguments["account_id"],
+        settings_version_id=arguments["settings_version_id"],
+        strategy_release=arguments["strategy_release"],
+        feature_snapshot_id=arguments["feature_snapshot_id"],
+    )
+    assert first != second
+    assert legacy.startswith("paper-decision-v1:")
+
+
 def test_bot_config_resolution_failure_blocks_entry_fail_closed() -> None:
     async def loader(**_: Any) -> None:
         raise BotConfigResolutionError("BOT_CONFIG_ROOT_MISMATCH")

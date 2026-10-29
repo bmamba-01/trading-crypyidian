@@ -223,7 +223,7 @@ class PaperDecisionCycle:
         if selection_override is not None:
             if (
                 selection_override.settings_version_id != settings_version_id
-                or selection_override.active_release_ids != selection.active_release_ids
+                or len(selection_override.active_release_ids) != 1
                 or not selection_override.published
             ):
                 no_trade = NoTrade(
@@ -240,12 +240,26 @@ class PaperDecisionCycle:
                 published=selection.published,
                 parameters=strategy_parameters,
             )
+        release_id = selection.active_release_ids[0]
+        release_hashes = dict(planner_settings.release_content_hashes)
+        try:
+            registered_hash = self._strategies.get_release(release_id).content_hash
+        except KeyError:
+            registered_hash = None
+        if registered_hash is None or release_hashes.get(release_id) != registered_hash:
+            no_trade = NoTrade(
+                strategy_id=release_id,
+                code="STRATEGY_RELEASE_NOT_IN_PUBLISHED_SCOPE",
+                detail_vi="Strategy release không thuộc danh sách đã publish của workspace.",
+            )
+            return DecisionCycleResult(DecisionCycleOutcome.NO_TRADE, no_trade)
+        effective_planner = replace(planner_settings, active_release_ids=(release_id,))
         return self.prepare(
             snapshot=snapshot,
             evaluated_at=evaluated_at,
-            release_id=published_settings.settings.strategy.default_release,
+            release_id=release_id,
             selection=selection,
-            planner_settings=planner_settings,
+            planner_settings=effective_planner,
             account=account,
             risk_state=risk_state,
             open_exposures=open_exposures,

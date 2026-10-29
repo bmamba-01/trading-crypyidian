@@ -5,6 +5,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from uuid import uuid4
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -34,6 +35,7 @@ from trading_bot.application.bot_reporting import BotReportingService
 from trading_bot.application.bot_runtime_registry import BotRuntimeRegistry
 from trading_bot.application.bot_runtime_supervisor import BotRuntimeSupervisor
 from trading_bot.application.paper_runtime_application import (
+    PaperBotDecisionCommand,
     PaperRuntimeApplicationService,
 )
 from trading_bot.application.paper_runtime_bootstrap import (
@@ -506,6 +508,12 @@ async def _wire_paper_runtime(
         # Bootstrap giả (test cũ) không quản lý lease: không chạy supervisor.
         return None
     supervisor_builder = supervisor_factory or _default_supervisor
+    job_processor = _runtime_job_processor(
+        context_provider=context_provider,
+        sessions=session_factory,
+        workspace_id=result.workspace_id,
+        application=paper_application,
+    )
     supervisor = supervisor_builder(
         registry=registry,
         application=paper_application,
@@ -514,11 +522,85 @@ async def _wire_paper_runtime(
         workspace_id=result.workspace_id,
         tick_seconds=app_settings.runtime_supervisor_tick_seconds,
         lease_ttl=lease_ttl,
+        job_processor=job_processor,
     )
     state.paper_supervisor = supervisor
     # Tick đầu chạy đồng bộ: áp control đã có và xác minh activity trước khi nhận command.
     await supervisor.tick_once()
     return supervisor
+
+
+def _runtime_job_processor(
+    *, context_provider: Any, sessions: Any, workspace_id: Any, application: Any
+) -> Callable[..., Any] | None:
+    """Nối worker job khi context provider có thể dựng snapshot decision đã lưu."""
+    if sessions is None or not callable(getattr(context_provider, "snapshot_for", None)):
+        return None
+    decision_snapshot_provider = context_provider
+    from trading_bot.adapters.database.repositories.bot_decisions import (
+        PostgresSignalDecisionStore,
+    )
+    from trading_bot.application.bot_decision_contexts import (
+        EffectiveBotDecisionContextProvider,
+        FanOutExclusionRecorder,
+        RuntimeFanOutGate,
+    )
+    from trading_bot.application.bot_dispatcher import (
+        BotEvidenceDispatcher,
+        SignalEvidenceFanOutConsumer,
+    )
+    from trading_bot.domain.strategy.registry import StrategyRegistry
+
+    decision_contexts = EffectiveBotDecisionContextProvider(
+        sessions,
+        runtime_gate=RuntimeFanOutGate(),
+        exclusion_recorder=FanOutExclusionRecorder(
+            sessions=sessions,
+            workspace_id=workspace_id,
+            accounts=application.runtime_account,
+        ),
+    )
+    store = PostgresSignalDecisionStore(sessions)
+    dispatcher = BotEvidenceDispatcher(
+        store,
+        strategies=StrategyRegistry(),
+        snapshots=decision_snapshot_provider,
+    )
+    consumer = SignalEvidenceFanOutConsumer(
+        store,
+        dispatcher,
+        decision_contexts,
+        worker_id=f"paper-runtime-{uuid4().hex}",
+    )
+
+    async def process_pending(account_id: Any, now: Any) -> Any:
+        await consumer.consume_once(workspace_id=workspace_id, now=now)
+        await dispatcher.process_pending(workspace_id=workspace_id, account_id=account_id, now=now)
+        pending_candidates = await store.pending_candidate_decisions(
+            workspace_id=workspace_id, account_id=account_id, now=now
+        )
+        return await _submit_bot_candidates(application, pending_candidates)
+
+    return process_pending
+
+
+async def _submit_bot_candidates(application: Any, decisions: Any) -> tuple[Any, ...]:
+    """Chuyển candidate đã lưu thành PAPER command riêng; abstain/veto không đặt lệnh."""
+    from trading_bot.application.bot_dispatcher import BotDecisionStatus
+
+    results = []
+    for decision in decisions:
+        if decision.status is not BotDecisionStatus.CANDIDATE:
+            continue
+        results.append(
+            await application.evaluate_and_submit(
+                PaperBotDecisionCommand(
+                    account_id=decision.account_id,
+                    bot_decision_id=decision.decision_id,
+                )
+            )
+        )
+    return tuple(results)
 
 
 def _default_supervisor(**kwargs: Any) -> BotRuntimeSupervisor:

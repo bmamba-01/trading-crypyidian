@@ -141,6 +141,64 @@ def test_strategy_without_parameter_contract_rejects_parameterized_settings() ->
         )
 
 
+def test_bot_strategy_override_can_select_release_different_from_root() -> None:
+    snapshot, now, planner_settings, account, state, costs = _inputs()
+    root = WorkspaceSettings.model_validate(valid_payload())
+    version_id = UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
+    settings_hash = "f" * 64
+    planner_settings = replace(
+        planner_settings,
+        settings_version_id=str(version_id),
+        settings_hash=settings_hash,
+        active_release_ids=("h01-v1",),
+        release_content_hashes=(
+            ("h01-v1", StrategyRegistry().get_release("h01-v1").content_hash),
+            ("h03-v1", StrategyRegistry().get_release("h03-v1").content_hash),
+        ),
+    )
+    account = replace(account, settings_version_id=str(version_id))
+    state = replace(state, settings_version_id=str(version_id))
+    published = PublishedWorkspaceSettings(
+        workspace_id=WORKSPACE_ID,
+        settings_version_id=version_id,
+        settings_hash=settings_hash,
+        settings=root,
+    )
+    selection = StrategySelection(
+        settings_version_id=str(version_id),
+        active_release_ids=("h03-v1",),
+        published=True,
+    )
+    cycle = PaperDecisionCycle(
+        StrategyRegistry(),
+        TradePlanner(),
+        RiskEngine(),
+        PaperExecutionGateway(
+            PaperExecutionPolicy(
+                version_id="paper-v1",
+                latency=timedelta(0),
+                spread_rate=Decimal("0"),
+                slippage_rate=Decimal("0"),
+                fee_rate=Decimal("0"),
+            )
+        ),
+    )
+
+    result = cycle.prepare_published(
+        published_settings=published,
+        snapshot=snapshot,
+        evaluated_at=now,
+        planner_settings=planner_settings,
+        account=account,
+        risk_state=state,
+        open_exposures=(),
+        cost_model=costs,
+        selection_override=selection,
+    )
+
+    assert getattr(result.strategy_result, "strategy_id", None) == "H03"
+
+
 def test_draft_root_settings_cannot_create_runtime_strategy_selection() -> None:
     settings = WorkspaceSettings.model_validate(valid_payload())
 

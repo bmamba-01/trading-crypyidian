@@ -9,6 +9,12 @@ from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
+from tests.unit.test_bot_dispatcher import (
+    DECISION_TIME,
+    _context_b,
+    _dispatcher,
+    _evidence,
+)
 from tests.unit.test_workspace_settings import valid_payload
 
 from trading_bot.adapters.database.repositories.workspace_settings import settings_hash
@@ -21,6 +27,7 @@ from trading_bot.application.paper_execution_profile import (
 )
 from trading_bot.application.paper_runtime_application import (
     EntryGateState,
+    PaperBotDecisionCommand,
     PaperDecisionCommand,
     PaperDecisionContext,
     PaperMonitorCommand,
@@ -95,6 +102,231 @@ def test_application_rejects_account_outside_bootstrapped_map_before_loading_con
 
     assert provider_factory_calls == 1
     assert provider_load_calls == 0
+
+
+def test_persisted_abstain_bot_decision_does_not_reach_planner_or_submit() -> None:
+    service, legacy_command, _, _, counters, published, _, _ = _application_with_fakes(
+        fail_submission=False
+    )
+    account = service._active_accounts[legacy_command.account_id]
+    context = replace(
+        _context_b(strategy_parameters=(("donchian_lookback", 60),)),
+        workspace_id=service._workspace_id,
+        bot_id=account.bot_id,
+        account_id=account.account_id,
+        root_settings_version_id=published.settings_version_id,
+        root_settings_hash=published.settings_hash,
+    )
+    dispatcher, _, _ = _dispatcher()
+    decisions = asyncio.run(
+        dispatcher.dispatch_evidence(
+            _evidence(workspace_id=service._workspace_id), [context], DECISION_TIME
+        )
+    )
+    decision = decisions[0]
+    assert decision.status.value == "ABSTAIN"
+    row = SimpleNamespace(
+        id=decision.decision_id,
+        workspace_id=decision.workspace_id,
+        bot_id=decision.bot_id,
+        account_id=decision.account_id,
+        status=decision.status.value,
+        decision_hash=decision.decision_hash,
+        candidate_id=decision.candidate_id,
+        evidence_hash=decision.evidence_hash,
+        bot_config_version_id=decision.bot_config_version_id,
+        bot_config_hash=decision.bot_config_hash,
+        root_settings_version_id=decision.root_settings_version_id,
+        root_settings_hash=decision.root_settings_hash,
+        strategy_release_id=decision.strategy_release_id,
+        strategy_release_hash=decision.strategy_release_hash,
+        evaluated_at=decision.evaluated_at,
+        payload=decision.canonical_payload(),
+    )
+    _FakeUnitOfWork.scalar_results = [row]
+    result = asyncio.run(
+        service.evaluate_and_submit(
+            PaperBotDecisionCommand(
+                account_id=account.account_id,
+                bot_decision_id=decision.decision_id,
+            )
+        )
+    )
+
+    assert result.entry_block_reason == "ABSTAIN"
+    assert counters.context_loads == 0
+    assert counters.reserves == 0
+    assert counters.submissions == 0
+
+
+def test_runtime_job_worker_requires_and_wires_snapshot_provider() -> None:
+    from trading_bot.app import _runtime_job_processor
+
+    workspace_id = uuid4()
+    application = SimpleNamespace(runtime_account=lambda _account_id: None)
+    assert (
+        _runtime_job_processor(
+            context_provider=object(),
+            sessions=object(),
+            workspace_id=workspace_id,
+            application=application,
+        )
+        is None
+    )
+
+    class SnapshotProvider:
+        async def snapshot_for(self, **_: object) -> None:
+            return None
+
+    processor = _runtime_job_processor(
+        context_provider=SnapshotProvider(),
+        sessions=object(),
+        workspace_id=workspace_id,
+        application=application,
+    )
+    assert callable(processor)
+
+
+def test_runtime_worker_submits_only_persisted_candidate_decisions() -> None:
+    from trading_bot.app import _submit_bot_candidates
+    from trading_bot.application.bot_dispatcher import BotDecisionStatus
+
+    candidate_id, abstain_id = uuid4(), uuid4()
+    account_id = uuid4()
+
+    class Application:
+        commands: list[PaperBotDecisionCommand]
+
+        def __init__(self) -> None:
+            self.commands = []
+
+        async def evaluate_and_submit(self, command: PaperBotDecisionCommand) -> str:
+            self.commands.append(command)
+            return "submitted"
+
+    application = Application()
+    result = asyncio.run(
+        _submit_bot_candidates(
+            application,
+            (
+                SimpleNamespace(
+                    status=BotDecisionStatus.CANDIDATE,
+                    decision_id=candidate_id,
+                    account_id=account_id,
+                ),
+                SimpleNamespace(
+                    status=BotDecisionStatus.ABSTAIN,
+                    decision_id=abstain_id,
+                    account_id=account_id,
+                ),
+                SimpleNamespace(
+                    status=BotDecisionStatus.VETO,
+                    decision_id=uuid4(),
+                    account_id=account_id,
+                ),
+            ),
+        )
+    )
+
+    assert result == ("submitted",)
+    assert application.commands == [
+        PaperBotDecisionCommand(account_id=account_id, bot_decision_id=candidate_id)
+    ]
+
+
+def test_persisted_candidate_runs_bot_release_and_preserves_bot_lineage() -> None:
+    from tests.unit.test_bot_dispatcher import (
+        FixtureSnapshots,
+        _dispatcher,
+        _evidence,
+        _shift,
+    )
+    from tests.unit.test_paper_runtime_bot_config import effective_for
+
+    from trading_bot.application.bot_decision_contexts import bot_decision_context_from_effective
+
+    service, legacy_command, callback_state, _, counters, published, _, context = (
+        _application_with_fakes(fail_submission=False)
+    )
+    account = service._active_accounts[legacy_command.account_id]
+    config = effective_for(
+        published,
+        account.account_id,
+        account.bot_id,
+        {"schema_version": 1, "strategy": {"release_id": "h03-v1"}},
+    )
+    evaluated_at = legacy_command.evaluated_at
+    evidence = _evidence(
+        workspace_id=service._workspace_id,
+        available_at=evaluated_at - timedelta(minutes=1),
+        observed_at=evaluated_at - timedelta(minutes=2),
+        validity_end=evaluated_at + timedelta(hours=1),
+        feature_snapshot_id="f" * 64,
+    )
+    context.snapshot.snapshot_id = evidence.feature_snapshot_id
+
+    class Snapshots:
+        async def snapshot_for(self, *, evidence, context, evaluated_at):
+            base = FixtureSnapshots()._overrides.get(context.bot_id)
+            if base is None:
+                from tests.unit.test_strategy_hypotheses import _h03_snapshot
+
+                base = _h03_snapshot()
+            return _shift(base, evaluated_at - base.decision_time)
+
+    dispatcher, _, _ = _dispatcher(snapshots=Snapshots())
+    bot_context = bot_decision_context_from_effective(config)
+    decision = asyncio.run(dispatcher.dispatch_evidence(evidence, [bot_context], evaluated_at))[0]
+    assert decision.status.value == "CANDIDATE"
+    counters.candidate_id_override = decision.candidate_id
+
+    service._bot_config_loader = lambda **_: asyncio.sleep(0, result=config)
+    _FakeUnitOfWork.scalar_results = [
+        SimpleNamespace(
+            id=decision.decision_id,
+            workspace_id=decision.workspace_id,
+            bot_id=decision.bot_id,
+            account_id=decision.account_id,
+            status=decision.status.value,
+            decision_hash=decision.decision_hash,
+            candidate_id=decision.candidate_id,
+            evidence_hash=decision.evidence_hash,
+            bot_config_version_id=decision.bot_config_version_id,
+            bot_config_hash=decision.bot_config_hash,
+            root_settings_version_id=decision.root_settings_version_id,
+            root_settings_hash=decision.root_settings_hash,
+            strategy_release_id=decision.strategy_release_id,
+            strategy_release_hash=decision.strategy_release_hash,
+            evaluated_at=decision.evaluated_at,
+            payload=decision.canonical_payload(),
+        ),
+        evaluated_at + timedelta(seconds=1),
+    ]
+    _FakeUnitOfWork.strategy_releases = [
+        SimpleNamespace(
+            id=config.strategy.workspace_release_id,
+            workspace_id=service._workspace_id,
+            name="h03-v1",
+            status="PUBLISHED",
+            content_hash=StrategyRegistry().get_release("h03-v1").content_hash,
+        )
+    ]
+
+    result = asyncio.run(
+        service.evaluate_and_submit(
+            PaperBotDecisionCommand(
+                account_id=account.account_id, bot_decision_id=decision.decision_id
+            )
+        )
+    )
+
+    assert result.submission is not None
+    assert result.submission.duplicate is False
+    assert counters.cycles == counters.reserves == counters.submissions == 1
+    assert counters.cycle_kwargs["bot_config"].strategy.release_id == "h03-v1"
+    assert callback_state.submitted_evidence["bot_decision_id"] == str(decision.decision_id)
+    assert callback_state.submitted_evidence["bot_decision_hash"] == decision.decision_hash
+    assert callback_state.submitted_evidence["bot_candidate_id"] == decision.candidate_id
 
 
 def test_lifespan_readiness_degrades_when_paper_account_is_invalidated() -> None:
@@ -275,8 +507,16 @@ def _application_with_fakes(
         async def prepare_published_with_risk_profile(self, **kwargs: object) -> SimpleNamespace:
             counters.cycles += 1
             counters.cycle_kwargs = kwargs
-            candidate_id = "candidate-123"
+            candidate_id = getattr(counters, "candidate_id_override", "candidate-123")
             plan_hash = "b" * 64
+            snapshot_id = kwargs["snapshot"].snapshot_id
+            bot_config = kwargs.get("bot_config")
+            release_name = (
+                bot_config.strategy.release_id
+                if bot_config is not None
+                else published.settings.strategy.default_release
+            )
+            release_hash = StrategyRegistry().get_release(release_name).content_hash
             return SimpleNamespace(
                 outcome=DecisionCycleOutcome.RISK_APPROVED,
                 plan=SimpleNamespace(
@@ -285,13 +525,11 @@ def _application_with_fakes(
                     settings_version_id=str(published.settings_version_id),
                     settings_hash=published.settings_hash,
                     risk_profile_version_id=str(published.settings.risk.profile_version_id),
-                    snapshot_id="feature-123",
+                    snapshot_id=snapshot_id,
                     symbol="BTCUSDT",
                     direction="long",
-                    strategy_release_id=published.settings.strategy.default_release,
-                    release_content_hash=StrategyRegistry()
-                    .get_release(published.settings.strategy.default_release)
-                    .content_hash,
+                    strategy_release_id=release_name,
+                    release_content_hash=release_hash,
                     candidate_id=candidate_id,
                     cost_model_version=profile.profile_hash,
                     plan_hash=plan_hash,
@@ -307,10 +545,8 @@ def _application_with_fakes(
                     account_id=str(account_id),
                     settings_version_id=str(published.settings_version_id),
                     risk_profile_version_id=str(published.settings.risk.profile_version_id),
-                    snapshot_id="feature-123",
-                    release_content_hash=StrategyRegistry()
-                    .get_release(published.settings.strategy.default_release)
-                    .content_hash,
+                    snapshot_id=snapshot_id,
+                    release_content_hash=release_hash,
                 ),
                 strategy_result=SimpleNamespace(
                     candidate_id=candidate_id,

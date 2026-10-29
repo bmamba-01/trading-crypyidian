@@ -68,7 +68,7 @@ def test_exit_fills_are_idempotent_and_do_not_change_entry_order_fill() -> None:
     ids = {name: str(uuid.uuid4()) for name in ("workspace", "account", "intent", "trade")}
     try:
         subprocess.run(
-            ["docker", "info", "--format", "{{.ServerVersion}}"],
+            ["docker", "version", "--format", "{{.Server.Version}}"],
             check=True,
             capture_output=True,
             text=True,

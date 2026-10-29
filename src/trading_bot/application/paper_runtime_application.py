@@ -5,14 +5,15 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Awaitable, Callable, Iterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, is_dataclass, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from typing import Any, Protocol
+from types import SimpleNamespace
+from typing import Any, Protocol, cast
 from uuid import UUID
 
 from pydantic import ValidationError
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -23,6 +24,7 @@ from trading_bot.adapters.database.models.entities import (
     WorkspaceSettingsVersion,
 )
 from trading_bot.adapters.database.models.paper_entities import OrderIntentRecord, TradeRecord
+from trading_bot.adapters.database.models.signal_entities import BotDecisionRecord
 from trading_bot.adapters.database.repositories.account_activity_incidents import (
     AccountActivityIncidentRepository,
 )
@@ -53,6 +55,7 @@ from trading_bot.application.bot_config_resolver import (
     EffectiveBotConfig,
     load_effective_bot_config,
 )
+from trading_bot.application.bot_dispatcher import BotDecision, BotDecisionStatus
 from trading_bot.application.outbox import AfterCommitCallbackError, UnitOfWork
 from trading_bot.application.paper_decision_cycle import (
     DecisionCycleOutcome,
@@ -129,6 +132,14 @@ class PaperDecisionCommand:
     account_id: UUID
     feature_snapshot_id: str
     evaluated_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class PaperBotDecisionCommand:
+    """Yêu cầu runtime xử lý decision đã lưu, không nhận candidate do caller tự tạo."""
+
+    account_id: UUID
+    bot_decision_id: UUID
 
 
 @dataclass(frozen=True, slots=True)
@@ -349,13 +360,15 @@ class PaperRuntimeApplicationService:
         self._invalid_accounts.discard(account.account_id)
 
     async def evaluate_and_submit(
-        self, command: PaperDecisionCommand
+        self, command: PaperDecisionCommand | PaperBotDecisionCommand
     ) -> PaperDecisionApplicationResult:
         """Đánh giá, reserve và tạo intent/checkpoint trong một transaction."""
         account = self._require_account(command.account_id)
-        if not command.feature_snapshot_id.strip():
+        if isinstance(command, PaperDecisionCommand) and not command.feature_snapshot_id.strip():
             raise PaperRuntimeApplicationError("FEATURE_SNAPSHOT_REQUIRED")
-        if command.evaluated_at.tzinfo is None or command.evaluated_at.utcoffset() is None:
+        if isinstance(command, PaperDecisionCommand) and (
+            command.evaluated_at.tzinfo is None or command.evaluated_at.utcoffset() is None
+        ):
             raise PaperRuntimeApplicationError("DECISION_TIME_INVALID")
         if self._sessions is None:
             raise PaperRuntimeApplicationError("DATABASE_UNAVAILABLE")
@@ -373,23 +386,76 @@ class PaperRuntimeApplicationService:
                 # Ruling 27: đọc lại control + state trong chính transaction entry, sau L1.
                 control = await self._read_control(uow, account)
                 await self._enforce_entry_gate(uow, account, control)
+                bot_decision = None
+                if isinstance(command, PaperBotDecisionCommand):
+                    bot_decision = await self._load_candidate_bot_decision(
+                        uow, account=account, decision_id=command.bot_decision_id
+                    )
+                    if bot_decision.status is not BotDecisionStatus.CANDIDATE:
+                        return PaperDecisionApplicationResult(
+                            decision=None, entry_block_reason=bot_decision.status.value
+                        )
+                    command = PaperDecisionCommand(
+                        account_id=command.account_id,
+                        feature_snapshot_id=bot_decision.feature_snapshot_id,
+                        evaluated_at=bot_decision.evaluated_at,
+                    )
+                assert isinstance(command, PaperDecisionCommand)
                 published, profile = await self._load_published_profile(
                     uow, account=account, as_of=command.evaluated_at
                 )
                 bot_config = await self._load_bot_config(
-                    uow, account=account, published=published, as_of=command.evaluated_at
+                    uow,
+                    account=account,
+                    published=published,
+                    as_of=command.evaluated_at,
+                    allow_strategy_mismatch=bot_decision is not None,
                 )
+                if bot_decision is not None:
+                    if bot_config is None or (
+                        bot_decision.strategy_release_id != bot_config.strategy.release_id
+                        or bot_decision.bot_config_version_id != bot_config.bot_config_version_id
+                        or bot_decision.bot_config_hash != bot_config.bot_config_hash
+                        or bot_decision.root_settings_version_id != published.settings_version_id
+                        or bot_decision.root_settings_hash != published.settings_hash
+                    ):
+                        raise PaperRuntimeApplicationError("BOT_DECISION_CONFIG_MISMATCH")
+                    try:
+                        release_hash = (
+                            StrategyRegistry()
+                            .get_release(bot_config.strategy.release_id)
+                            .content_hash
+                        )
+                    except KeyError:
+                        raise PaperRuntimeApplicationError(
+                            "PAPER_STRATEGY_RELEASE_NOT_PUBLISHED"
+                        ) from None
+                    if bot_decision.strategy_release_hash != release_hash:
+                        raise PaperRuntimeApplicationError("BOT_DECISION_RELEASE_MISMATCH")
                 bot_lineage = _bot_lineage(bot_config)
                 strategy_release_id = await self._resolve_strategy_release_id(
-                    uow, published=published
+                    uow,
+                    published=published,
+                    release_name=(
+                        bot_config.strategy.release_id
+                        if bot_decision is not None and bot_config is not None
+                        else published.settings.strategy.default_release
+                    ),
                 )
                 idempotency_key = _decision_idempotency_key(
                     account_id=command.account_id,
                     settings_version_id=published.settings_version_id,
-                    strategy_release=published.settings.strategy.default_release,
+                    strategy_release=(
+                        bot_config.strategy.release_id
+                        if bot_decision is not None and bot_config is not None
+                        else published.settings.strategy.default_release
+                    ),
                     feature_snapshot_id=command.feature_snapshot_id,
                     bot_config_version_id=(
                         bot_config.bot_config_version_id if bot_config is not None else None
+                    ),
+                    bot_decision_id=(
+                        bot_decision.decision_id if bot_decision is not None else None
                     ),
                 )
                 existing = await uow.session.scalar(
@@ -409,11 +475,26 @@ class PaperRuntimeApplicationService:
                         or existing.evidence.get("evaluated_at") != command.evaluated_at.isoformat()
                         or existing.evidence.get("strategy_release_hash")
                         != StrategyRegistry()
-                        .get_release(published.settings.strategy.default_release)
+                        .get_release(
+                            bot_config.strategy.release_id
+                            if bot_decision is not None and bot_config is not None
+                            else published.settings.strategy.default_release
+                        )
                         .content_hash
                         or any(
                             existing.evidence.get(key) != value
                             for key, value in _bot_lineage_expectation(bot_lineage).items()
+                        )
+                        or (
+                            bot_decision is not None
+                            and any(
+                                existing.evidence.get(key) != value
+                                for key, value in {
+                                    "bot_decision_id": str(bot_decision.decision_id),
+                                    "bot_decision_hash": bot_decision.decision_hash,
+                                    "bot_candidate_id": bot_decision.candidate_id,
+                                }.items()
+                            )
                         )
                     ):
                         raise PaperRuntimeApplicationError("PAPER_IDEMPOTENCY_CONFLICT")
@@ -438,12 +519,21 @@ class PaperRuntimeApplicationService:
                     execution_profile=profile,
                     account=account,
                 )
+                if bot_decision is not None and bot_config is not None:
+                    context = _context_for_bot_release(
+                        context, release_id=bot_config.strategy.release_id
+                    )
                 self._validate_context(
                     context,
                     command=command,
                     account=account,
                     published=published,
                     profile=profile,
+                    strategy_release_id=(
+                        bot_config.strategy.release_id
+                        if bot_decision is not None and bot_config is not None
+                        else published.settings.strategy.default_release
+                    ),
                 )
                 cycle = self._decision_cycle_factory(account.gateway)
                 decision = await cycle.prepare_published_with_risk_profile(
@@ -485,6 +575,14 @@ class PaperRuntimeApplicationService:
                     context=context,
                     published=published,
                     profile=profile,
+                    strategy_release_id=(
+                        bot_config.strategy.release_id
+                        if bot_decision is not None and bot_config is not None
+                        else published.settings.strategy.default_release
+                    ),
+                    expected_candidate_id=(
+                        bot_decision.candidate_id if bot_decision is not None else None
+                    ),
                 )
                 risk_repository = self._risk_repository_factory(uow.session)
                 evaluation = await risk_repository.record_evaluation(
@@ -527,7 +625,11 @@ class PaperRuntimeApplicationService:
                         "settings_hash": published.settings_hash,
                         "paper_execution_profile_hash": profile.profile_hash,
                         "strategy_release_hash": StrategyRegistry()
-                        .get_release(published.settings.strategy.default_release)
+                        .get_release(
+                            bot_config.strategy.release_id
+                            if bot_decision is not None and bot_config is not None
+                            else published.settings.strategy.default_release
+                        )
                         .content_hash,
                         "feature_snapshot_id": command.feature_snapshot_id,
                         "evaluated_at": command.evaluated_at.isoformat(),
@@ -538,6 +640,14 @@ class PaperRuntimeApplicationService:
                     }
                     | bot_lineage
                 )
+                if bot_decision is not None:
+                    evidence.update(
+                        {
+                            "bot_decision_id": str(bot_decision.decision_id),
+                            "bot_decision_hash": bot_decision.decision_hash,
+                            "bot_candidate_id": bot_decision.candidate_id,
+                        }
+                    )
                 submission = await account.coordinator.submit_approved(
                     uow,
                     account_id=command.account_id,
@@ -1072,6 +1182,7 @@ class PaperRuntimeApplicationService:
         account: PaperRuntimeAccount,
         published: PublishedWorkspaceSettings,
         as_of: datetime,
+        allow_strategy_mismatch: bool = False,
     ) -> EffectiveBotConfig | None:
         """Resolve overlay bot cho entry mới; mọi sai lệch đều chặn entry (fail-closed)."""
         try:
@@ -1091,10 +1202,64 @@ class PaperRuntimeApplicationService:
             or not config.verify_hash()
         ):
             raise PaperRuntimeApplicationError("PAPER_BOT_CONFIG_SCOPE_MISMATCH")
-        if config.strategy.release_id != published.settings.strategy.default_release:
+        if (
+            config.strategy.release_id != published.settings.strategy.default_release
+            and not allow_strategy_mismatch
+        ):
             # Chạy release riêng của bot cần fan-out theo bot (MB-03); chưa hỗ trợ ở đây.
             raise PaperRuntimeApplicationError("PAPER_BOT_STRATEGY_FANOUT_REQUIRED")
         return config
+
+    async def _load_candidate_bot_decision(
+        self, uow: UnitOfWork, *, account: PaperRuntimeAccount, decision_id: UUID
+    ) -> BotDecision:
+        row = await uow.session.scalar(
+            select(BotDecisionRecord).where(
+                BotDecisionRecord.workspace_id == self._workspace_id,
+                BotDecisionRecord.bot_id == account.bot_id,
+                BotDecisionRecord.account_id == account.account_id,
+                BotDecisionRecord.id == decision_id,
+            )
+        )
+        if row is None:
+            raise PaperRuntimeApplicationError("BOT_DECISION_NOT_FOUND")
+        try:
+            decision = BotDecision.from_payload(row.payload, row.decision_hash)
+        except KeyError, TypeError, ValueError:
+            raise PaperRuntimeApplicationError("BOT_DECISION_INVALID") from None
+        if (
+            decision.decision_id != decision_id
+            or decision.workspace_id != self._workspace_id
+            or decision.bot_id != account.bot_id
+            or decision.account_id != account.account_id
+            or row.status != decision.status.value
+            or row.candidate_id != decision.candidate_id
+            or row.evidence_hash != decision.evidence_hash
+            or row.bot_config_version_id != decision.bot_config_version_id
+            or row.bot_config_hash != decision.bot_config_hash
+            or row.root_settings_version_id != decision.root_settings_version_id
+            or row.root_settings_hash != decision.root_settings_hash
+            or row.strategy_release_id != decision.strategy_release_id
+            or row.strategy_release_hash != decision.strategy_release_hash
+            or row.evaluated_at != decision.evaluated_at
+        ):
+            raise PaperRuntimeApplicationError("BOT_DECISION_SCOPE_MISMATCH")
+        if decision.status is not BotDecisionStatus.CANDIDATE:
+            return decision
+        try:
+            candidate_payload = json.loads(decision.candidate_json or "")
+            expiry = datetime.fromisoformat(candidate_payload["expires_at"])
+        except KeyError, TypeError, ValueError:
+            raise PaperRuntimeApplicationError("BOT_DECISION_INVALID") from None
+        database_now = await uow.session.scalar(select(func.clock_timestamp()))
+        if (
+            expiry.tzinfo is None
+            or expiry.utcoffset() is None
+            or not isinstance(database_now, datetime)
+            or expiry <= database_now
+        ):
+            raise PaperRuntimeApplicationError("BOT_DECISION_EXPIRED")
+        return decision
 
     def _invalidate_account(self, account_id: UUID, reason_code: str) -> None:
         self._invalid_accounts.add(account_id)
@@ -1125,12 +1290,6 @@ class PaperRuntimeApplicationService:
         try:
             settings = WorkspaceSettings.model_validate(settings_version.settings_json)
             parameters = tuple(sorted(settings.strategy.parameters.items()))
-            StrategySelection(
-                settings_version_id=str(settings_version_id),
-                active_release_ids=(settings.strategy.default_release,),
-                published=True,
-                parameters=parameters,
-            )
         except TypeError, ValueError:
             return invalid_pin
         release_id = intent.strategy_release_id
@@ -1154,16 +1313,16 @@ class PaperRuntimeApplicationService:
             registered = StrategyRegistry().get_release(release.name)
         except KeyError:
             return invalid_pin
-        if (
-            registered.content_hash != release_hash
-            or settings.strategy.default_release != release.name
-        ):
+        if registered.content_hash != release_hash:
             return invalid_pin
+        selected_parameters = parameters
+        if release.name != settings.strategy.default_release:
+            selected_parameters = ()
         pinned_parameters = await self._pinned_bot_parameters(
             uow,
             intent=intent,
-            root_release=settings.strategy.default_release,
-            root_parameters=parameters,
+            root_release=release.name,
+            root_parameters=selected_parameters,
         )
         if pinned_parameters is None:
             return invalid_pin
@@ -1262,10 +1421,14 @@ class PaperRuntimeApplicationService:
         )
 
     async def _resolve_strategy_release_id(
-        self, uow: UnitOfWork, *, published: PublishedWorkspaceSettings
+        self,
+        uow: UnitOfWork,
+        *,
+        published: PublishedWorkspaceSettings,
+        release_name: str | None = None,
     ) -> UUID:
         """Resolve el UUID từ release đã publish trong workspace, không từ caller."""
-        release_name = published.settings.strategy.default_release
+        release_name = release_name or published.settings.strategy.default_release
         try:
             expected_hash = StrategyRegistry().get_release(release_name).content_hash
         except KeyError:
@@ -1299,6 +1462,7 @@ class PaperRuntimeApplicationService:
         account: PaperRuntimeAccount,
         published: PublishedWorkspaceSettings,
         profile: ResolvedPaperExecutionProfile,
+        strategy_release_id: str | None = None,
     ) -> None:
         runtime_account_id = str(account.account_id)
         settings_version_id = str(published.settings_version_id)
@@ -1308,8 +1472,8 @@ class PaperRuntimeApplicationService:
             or context.planner_settings.settings_version_id != settings_version_id
             or context.planner_settings.settings_hash != published.settings_hash
             or not context.planner_settings.published
-            or context.planner_settings.active_release_ids
-            != (published.settings.strategy.default_release,)
+            or (strategy_release_id or published.settings.strategy.default_release)
+            not in dict(context.planner_settings.release_content_hashes)
             or context.account.workspace_id != str(published.workspace_id)
             or context.account.account_id != runtime_account_id
             or context.account.settings_version_id != settings_version_id
@@ -1354,11 +1518,13 @@ class PaperRuntimeApplicationService:
         context: PaperDecisionContext,
         published: PublishedWorkspaceSettings,
         profile: ResolvedPaperExecutionProfile,
+        strategy_release_id: str,
+        expected_candidate_id: str | None = None,
     ) -> None:
         plan = decision.plan
         risk_decision = decision.risk_decision
         strategy_result = decision.strategy_result
-        release_id = published.settings.strategy.default_release
+        release_id = strategy_release_id
         if (
             plan is None
             or isinstance(plan, PlanRejected)
@@ -1375,6 +1541,7 @@ class PaperRuntimeApplicationService:
             or plan.release_content_hash
             != dict(context.planner_settings.release_content_hashes).get(release_id)
             or plan.candidate_id != getattr(strategy_result, "candidate_id", None)
+            or (expected_candidate_id is not None and plan.candidate_id != expected_candidate_id)
             or plan.direction != strategy_result.direction
             or plan.cost_model_version != profile.profile_hash
             or risk_decision.plan_hash != plan.plan_hash
@@ -1408,6 +1575,25 @@ class PaperRuntimeApplicationService:
         from trading_bot.domain.strategy.registry import StrategyRegistry
 
         return PaperDecisionCycle(StrategyRegistry(), TradePlanner(), RiskEngine(), gateway)
+
+
+def _context_for_bot_release(
+    context: PaperDecisionContext, *, release_id: str
+) -> PaperDecisionContext:
+    """Gắn release bot đã resolve vào planner context giữ nguyên root version."""
+    release_hash = StrategyRegistry().get_release(release_id).content_hash
+    hashes = dict(context.planner_settings.release_content_hashes)
+    hashes[release_id] = release_hash
+    changes = {
+        "active_release_ids": (release_id,),
+        "release_content_hashes": tuple(sorted(hashes.items())),
+    }
+    planner = (
+        replace(context.planner_settings, **cast(Any, changes))
+        if is_dataclass(context.planner_settings)
+        else SimpleNamespace(**(vars(context.planner_settings) | changes))
+    )
+    return replace(context, planner_settings=planner)
 
 
 def _account_fence(account: PaperRuntimeAccount) -> RuntimeFence:
@@ -1571,6 +1757,7 @@ def _decision_idempotency_key(
     strategy_release: str,
     feature_snapshot_id: str,
     bot_config_version_id: UUID | None = None,
+    bot_decision_id: UUID | None = None,
 ) -> str:
     material = {
         "account_id": str(account_id),
@@ -1581,6 +1768,8 @@ def _decision_idempotency_key(
     # Chỉ thêm khi bot có version publish để key lịch sử (MB-01) giữ nguyên.
     if bot_config_version_id is not None:
         material["bot_config_version_id"] = str(bot_config_version_id)
+    if bot_decision_id is not None:
+        material["bot_decision_id"] = str(bot_decision_id)
     digest = hashlib.sha256(
         json.dumps(material, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()

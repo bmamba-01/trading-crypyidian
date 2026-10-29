@@ -11,10 +11,11 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-from sqlalchemy import or_, select
+from sqlalchemy import DateTime, String, cast, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from trading_bot.adapters.database.models.paper_entities import OrderIntentRecord
 from trading_bot.adapters.database.models.signal_entities import (
     BotDecisionJobRecord,
     BotDecisionRecord,
@@ -156,6 +157,53 @@ class BotDecisionRepository:
             raise BotDecisionConflict("Quyết định đã lưu không khớp idempotency key của job.")
         return decision
 
+    async def pending_candidate_decisions(
+        self,
+        *,
+        workspace_id: UUID,
+        bot_id: UUID,
+        account_id: UUID,
+        now: datetime,
+        limit: int = 100,
+    ) -> tuple[BotDecision, ...]:
+        """Candidates chưa có intent để phục hồi submit sau crash giữa hai transaction.
+
+        Lookup luôn scope đủ ba khóa bot; candidate đã hết hạn hoặc đã tạo intent bị loại. Order
+        theo mới nhất và có giới hạn để một decision cũ/kẹt không che bot khác trong worker tick.
+        """
+        if now.tzinfo is None or now.utcoffset() is None:
+            raise ValueError("now phải có múi giờ.")
+        if limit < 1:
+            raise ValueError("limit phải lớn hơn 0.")
+        expiry = cast(
+            BotDecisionRecord.payload["candidate"]["expires_at"].as_string(),
+            DateTime(timezone=True),
+        )
+        existing_intent = (
+            select(OrderIntentRecord.id)
+            .where(
+                OrderIntentRecord.workspace_id == BotDecisionRecord.workspace_id,
+                OrderIntentRecord.account_id == BotDecisionRecord.account_id,
+                OrderIntentRecord.evidence["bot_decision_id"].as_string()
+                == cast(BotDecisionRecord.id, String),
+            )
+            .exists()
+        )
+        rows = await self._session.scalars(
+            select(BotDecisionRecord)
+            .where(
+                BotDecisionRecord.workspace_id == workspace_id,
+                BotDecisionRecord.bot_id == bot_id,
+                BotDecisionRecord.account_id == account_id,
+                BotDecisionRecord.status == "CANDIDATE",
+                expiry > now,
+                ~existing_intent,
+            )
+            .order_by(BotDecisionRecord.created_at.desc(), BotDecisionRecord.id)
+            .limit(limit)
+        )
+        return tuple(restore_decision(row) for row in rows.all())
+
     async def insert_decision(self, decision: BotDecision) -> BotDecision:
         """Ghi quyết định bất biến; ghi lặp cùng hash trả bản cũ, khác hash là conflict."""
         existing = await self._session.scalar(
@@ -273,6 +321,20 @@ class PostgresSignalDecisionStore:
                 account_id=account_id,
                 limit=limit,
                 now=now,
+            )
+
+    async def pending_candidate_decisions(
+        self, *, workspace_id: UUID, account_id: UUID, now: datetime, limit: int = 100
+    ) -> tuple[BotDecision, ...]:
+        """Đọc candidate chưa submit trong scope bot để runtime phục hồi qua nhiều tick."""
+        async with UnitOfWork(self._sessions, workspace_id=workspace_id) as uow:
+            bot_id = await uow.bind_account(account_id)
+            return await BotDecisionRepository(uow.session).pending_candidate_decisions(
+                workspace_id=workspace_id,
+                bot_id=bot_id,
+                account_id=account_id,
+                now=now,
+                limit=limit,
             )
 
     async def complete_job(self, job: BotDecisionJob, evaluate: DecisionEvaluator) -> BotDecision:

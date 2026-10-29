@@ -68,7 +68,7 @@ def test_sensitivity_scenario_and_replay_outcomes_are_persisted_and_reproducible
     }
     try:
         subprocess.run(
-            ["docker", "info", "--format", "{{.ServerVersion}}"],
+            ["docker", "version", "--format", "{{.Server.Version}}"],
             check=True,
             capture_output=True,
             text=True,

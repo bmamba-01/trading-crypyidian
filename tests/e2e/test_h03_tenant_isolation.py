@@ -76,7 +76,7 @@ def test_h03_decision_rejects_workspace_a_inputs_when_scoped_to_workspace_b() ->
 
     try:
         subprocess.run(
-            ["docker", "info", "--format", "{{.ServerVersion}}"],
+            ["docker", "version", "--format", "{{.Server.Version}}"],
             check=True,
             capture_output=True,
             text=True,

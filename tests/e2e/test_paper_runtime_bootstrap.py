@@ -153,7 +153,7 @@ def test_runtime_process_hydrates_and_fails_closed_without_checkpoint() -> None:
 
     try:
         subprocess.run(
-            ["docker", "info", "--format", "{{.ServerVersion}}"],
+            ["docker", "version", "--format", "{{.Server.Version}}"],
             check=True,
             capture_output=True,
             text=True,

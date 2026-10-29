@@ -216,7 +216,7 @@ def test_bot_reports_isolate_bots_and_workspace_aggregate_reconciles() -> None:
         return parsed
 
     info = subprocess.run(
-        ["docker", "info", "--format", "{{.ServerVersion}}"],
+        ["docker", "version", "--format", "{{.Server.Version}}"],
         capture_output=True,
         text=True,
         timeout=30,

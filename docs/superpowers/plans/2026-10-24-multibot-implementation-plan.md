@@ -184,6 +184,8 @@ WP-03 is a dependency for real Binance account activity detection and private or
 
 **Acceptance:** exactly one active writer/account; foreign state cannot be silently adopted; entry pause/kill semantics match spec; active known positions maintain protective exits; restart preserves isolated bot state; sibling bot failures are isolated.
 
+**Cập nhật MB-05b (2026-10-29):** đã nối persisted `CANDIDATE` decision theo strategy release riêng vào PAPER runtime/MB-04 coordinator, có recovery/idempotency, pause/fencing và E2E hard-cap. Unit 1577 passed; full E2E **36 passed / 3524.36s**; independent review và quality gates đạt. Runtime worker cần `DecisionSnapshotProvider` được inject; app mặc định chưa có adapter market-data → `DecisionSnapshot` và readiness ghi `market_dispatch: not_configured`. Tự động fan-out từ market data phụ thuộc adapter WP-05. Chi tiết: [WBS MB-05](./2026-10-26-mb05-runtime-registry-wbs.md) · [WBS MB-05b](./2026-10-28-mb05b-runtime-fanout-wbs.md).
+
 ### Task 7 — MB-06: Bot-scoped reports and explicit workspace aggregation
 
 **Files:** Create `application/bot_reporting.py`, `admin/bot_reports_router.py`, reporting schemas/repository and tests `test_bot_reporting.py`, `test_bot_reports_api.py`, `tests/e2e/test_multibot_reports.py`.
