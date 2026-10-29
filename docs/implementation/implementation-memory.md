@@ -868,3 +868,9 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Tài liệu đồng bộ:** MB-05b WBS .1–.9, WBS cha, project status, main multibot plan, QA test data, glossary EN→VI và WBS MB-07b đã được cập nhật; các dòng MB-05b không còn báo đang implement/đợi E2E. MB-07b mới là WBS, chưa code; không sửa worktree MB-07a.
 - **Trạng thái Git:** việc cần làm tiếp theo là rà diff cuối, commit trên nhánh hiện tại, fast-forward/merge vào local `dev` và push `origin/dev` theo yêu cầu đã được user cho phép. Không xóa worktree hay dọn container/image ngoài các Compose project test.
 - **Đã đọc lại memory sau cập nhật:** so kết quả 36/36, 1577 unit, sáu quality gate, reviewer disposition và trạng thái WBS/project-plan; xác nhận MB-05b đạt theo phạm vi đã ghi và giới hạn provider vẫn rõ.
+
+#### MB-05b closeout — commit và đồng bộ dev
+
+- **Commit:** `d35db4d88e7037f0006377c771221f20ffc054f7` (`feat(multibot): complete persisted strategy fanout`) được tạo trên `mb05-runtime-fanout`, fast-forward vào `dev` từ base `71391e5`, và push thành công lên `origin/dev` (`bmamba-01/trading-crypyidian`). Không force push.
+- **Kiểm chứng sau đồng bộ:** xác nhận remote push báo `71391e5..d35db4d dev -> dev`; checkout `dev` trỏ đúng commit mới. Worktree `mb05-runtime-fanout` được giữ lại để dễ truy vết, chưa dọn dẹp.
+- **Đã đọc lại memory:** đối chiếu phần round 11 với commit SHA, output merge/push và trạng thái branch; MB-05b đã đóng theo phạm vi WBS. Giới hạn production market dispatch vẫn chờ adapter WP-05 như đã ghi.
