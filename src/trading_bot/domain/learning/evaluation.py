@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import math
 import random
+from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from enum import StrEnum
 
 ZERO = Decimal("0")
 
@@ -14,6 +16,11 @@ ZERO = Decimal("0")
 def _aware(value: datetime, name: str) -> None:
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError(f"{name} phải có múi giờ.")
+
+
+def _utc(value: datetime, name: str) -> datetime:
+    _aware(value, name)
+    return value.astimezone(UTC)
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,9 +31,11 @@ class TemporalWindow:
     end: datetime
 
     def __post_init__(self) -> None:
-        _aware(self.start, "start")
-        _aware(self.end, "end")
-        if self.start >= self.end:
+        start = _utc(self.start, "start")
+        end = _utc(self.end, "end")
+        object.__setattr__(self, "start", start)
+        object.__setattr__(self, "end", end)
+        if start >= end:
             raise ValueError("Temporal window phải có start < end.")
 
 
@@ -77,6 +86,121 @@ def walk_forward_splits(
     return tuple(result)
 
 
+def purge_overlapping_samples(
+    sample_windows: Sequence[TemporalWindow],
+    protected_windows: Sequence[TemporalWindow],
+) -> tuple[TemporalWindow, ...]:
+    """Giữ lại các mẫu không chồng lấn với cửa sổ validation/test được bảo vệ."""
+    return tuple(
+        sample
+        for sample in sample_windows
+        if not any(
+            sample.start < protected.end and protected.start < sample.end
+            for protected in protected_windows
+        )
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class SampleLineage:
+    """Nguồn gốc tối thiểu của mẫu; availability là mốc muộn nhất của mọi đầu vào.
+
+    Caller phải tổng hợp cả dữ liệu nguồn và các bản sửa đổi đã dùng vào
+    feature_available_at. Khoảng nhãn biểu diễn thời gian quan sát kết quả,
+    không biểu diễn cửa sổ đọc dữ liệu quá khứ của đặc trưng.
+    """
+
+    sample_id: str
+    decision_at: datetime
+    feature_available_at: datetime
+    label_interval: TemporalWindow
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.sample_id, str) or not self.sample_id.strip():
+            raise ValueError("sample_id phải là chuỗi không rỗng.")
+        for name in ("decision_at", "feature_available_at"):
+            value = getattr(self, name)
+            if not isinstance(value, datetime):
+                raise ValueError(f"{name} phải là thời điểm có múi giờ.")
+            object.__setattr__(self, name, _utc(value, name))
+        if not isinstance(self.label_interval, TemporalWindow):
+            raise ValueError("label_interval phải có nguồn gốc thời gian đầy đủ.")
+        if self.label_interval.start < self.decision_at:
+            raise ValueError("Khoảng nhãn không được bắt đầu trước quyết định.")
+
+
+class SampleExclusionReason(StrEnum):
+    """Mã lý do loại mẫu ổn định; một mẫu có thể vi phạm nhiều điều kiện."""
+
+    FEATURE_UNAVAILABLE_AT_DECISION = "feature_unavailable_at_decision"
+    LABEL_INCOMPLETE_AT_CUTOFF = "label_incomplete_at_cutoff"
+    PROTECTED_LABEL_OVERLAP = "protected_label_overlap"
+
+
+@dataclass(frozen=True, slots=True)
+class SampleExclusion:
+    """Danh tính mẫu bị loại và đầy đủ lý do theo thứ tự kiểm tra cố định."""
+
+    sample_id: str
+    reasons: tuple[SampleExclusionReason, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class TemporalSampleSelection:
+    """Kết quả thuần, bất biến; hai tập đều được sắp theo sample_id."""
+
+    eligible_sample_ids: tuple[str, ...]
+    exclusions: tuple[SampleExclusion, ...]
+
+
+def select_temporal_samples(
+    samples: Sequence[SampleLineage],
+    *,
+    evaluation_cutoff: datetime,
+    protected_samples: Sequence[SampleLineage] = (),
+) -> TemporalSampleSelection:
+    """Chọn mẫu đủ thời điểm và loại giao khoảng nhãn validation/test.
+
+    Khoảng nhãn là nửa mở; hoàn tất đúng cutoff được chấp nhận. Dữ liệu
+    lịch sử dùng chung không bị loại nếu đã khả dụng tại decision_at.
+    Các mẫu bảo vệ luôn giữ nguyên vùng nhãn, kể cả khi bản thân chúng chưa
+    đủ điều kiện tại cutoff; không âm thầm thu hẹp vùng bảo vệ. Thiếu nguồn
+    gốc hay trùng danh tính ở bất kỳ vai trò nào làm toàn bộ phép chọn lỗi.
+    """
+    if not isinstance(evaluation_cutoff, datetime):
+        raise ValueError("evaluation_cutoff phải là thời điểm có múi giờ.")
+    evaluation_cutoff = _utc(evaluation_cutoff, "evaluation_cutoff")
+    candidates = tuple(samples)
+    protected = tuple(protected_samples)
+    seen: set[str] = set()
+    for sample in (*candidates, *protected):
+        if not isinstance(sample, SampleLineage):
+            raise ValueError("Mẫu phải có SampleLineage đầy đủ.")
+        if sample.sample_id in seen:
+            raise ValueError("sample_id bị trùng giữa các mẫu hoặc vai trò.")
+        seen.add(sample.sample_id)
+
+    eligible: list[str] = []
+    exclusions: list[SampleExclusion] = []
+    for sample in sorted(candidates, key=lambda item: item.sample_id):
+        reasons: list[SampleExclusionReason] = []
+        if sample.feature_available_at > sample.decision_at:
+            reasons.append(SampleExclusionReason.FEATURE_UNAVAILABLE_AT_DECISION)
+        if sample.label_interval.end > evaluation_cutoff:
+            reasons.append(SampleExclusionReason.LABEL_INCOMPLETE_AT_CUTOFF)
+        if any(
+            sample.label_interval.start < held.label_interval.end
+            and held.label_interval.start < sample.label_interval.end
+            for held in protected
+        ):
+            reasons.append(SampleExclusionReason.PROTECTED_LABEL_OVERLAP)
+        if reasons:
+            exclusions.append(SampleExclusion(sample.sample_id, tuple(reasons)))
+        else:
+            eligible.append(sample.sample_id)
+    return TemporalSampleSelection(tuple(eligible), tuple(exclusions))
+
+
 @dataclass(frozen=True, slots=True)
 class EvaluationTrade:
     """Kết quả một giao dịch đã đóng; các chi phí được ghi tách riêng."""
@@ -93,8 +217,8 @@ class EvaluationTrade:
     def __post_init__(self) -> None:
         if not self.trade_id.strip():
             raise ValueError("trade_id không được để trống.")
-        _aware(self.opened_at, "opened_at")
-        _aware(self.closed_at, "closed_at")
+        object.__setattr__(self, "opened_at", _utc(self.opened_at, "opened_at"))
+        object.__setattr__(self, "closed_at", _utc(self.closed_at, "closed_at"))
         if self.closed_at < self.opened_at:
             raise ValueError("Giao dịch không thể đóng trước khi mở.")
         if not isinstance(self.gross_pnl, Decimal) or not self.gross_pnl.is_finite():

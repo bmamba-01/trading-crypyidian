@@ -81,7 +81,8 @@ def test_shared_evidence_fans_out_to_two_paper_bots_without_duplicates() -> None
 
     ensure_image_available(root, image)
     try:
-        compose("up", "--detach", "--wait", "--wait-timeout", "180", "postgres", "db-provisioner")
+        compose("up", "--detach", "--wait", "--wait-timeout", "180", "postgres")
+        compose("run", "--rm", "--no-deps", "db-provisioner")
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "head")
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "check")
         seeded = run_probe("seed")

@@ -89,7 +89,8 @@ def test_runtime_lease_fencing_controls_and_downgrade_guard_on_real_postgres() -
 
     ensure_image_available(root, image)
     try:
-        compose("up", "--detach", "--wait", "--wait-timeout", "180", "postgres", "db-provisioner")
+        compose("up", "--detach", "--wait", "--wait-timeout", "180", "postgres")
+        compose("run", "--rm", "--no-deps", "db-provisioner")
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "head")
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "check")
         state = run_probe("seed")

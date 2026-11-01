@@ -67,6 +67,10 @@ from trading_bot.adapters.database.models.paper_entities import (
     TradeCostRecord,
     TradeRecord,
 )
+from trading_bot.adapters.database.models.research_entities import (
+    SourcePolicyRevisionRecord,
+    SourceQuotaEventRecord,
+)
 from trading_bot.adapters.database.models.risk_entities import (
     RiskDecisionRecord,
     RiskReservationRecord,
@@ -125,6 +129,8 @@ __all__ = [
     "PaperExecutionCheckpointRecord",
     "PositionEventRecord",
     "RiskProfileVersion",
+    "SourcePolicyRevisionRecord",
+    "SourceQuotaEventRecord",
     "RiskDecisionRecord",
     "RiskReservationRecord",
     "RoleBinding",

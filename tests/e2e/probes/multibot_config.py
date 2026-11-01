@@ -467,7 +467,13 @@ async def open_phase():
     engine, sessions = database()
     account_id = UUID(STATE["account_id"])
     now = datetime.now(UTC)
-    bars = fixture_bars(now)
+    # Dùng đồng hồ PostgreSQL, cùng nguồn thời gian với ``effective_at`` khi
+    # publish. Tạo snapshot trước một giây, còn decision_time nằm đúng tại mốc
+    # DB hiện tại nên các version publish sau entry không thể lọt vào truy vấn.
+    async with sessions() as session, session.begin():
+        decision_clock = await session.scalar(select(func.clock_timestamp()))
+    assert decision_clock is not None
+    bars = fixture_bars(decision_clock - timedelta(seconds=2, milliseconds=2))
     window_start = bars[0].open_time
     window_end = bars[-1].open_time + timedelta(hours=1)
     async with UnitOfWork(sessions, workspace_id=WORKSPACE_ID) as uow:

@@ -5,6 +5,16 @@
 **Stories:** US-15, US-23, US-26…29.
 **Tài liệu:** [AI use cases](../product/use-cases.md#4-chi-tiết-use-case), [training sequence](../product/sequence-diagrams.md#sd-10--trade-review-outcome-label-và-attribution), [glossary AI](../research/glossary-vi.md#e-dữ-liệu-và-chiến-lược-huấn-luyện-ai), [strategy research](../research/strategies-2026.md).
 
+**Foundation offline hiện có:** scorer/abstention domain contract và application service có preflight rights/as-of/schema, deadline/cancel; bounded DSL/hypothesis, sample lineage + interval purge, completed-outcome labels và canonical dataset manifest. Chưa có manifest builder/repository, trial persistence, trainer, evaluator integration, model registry hay runtime/promotion; caller-supplied refs/hashes chưa được DB xác minh.
+
+## Ranh giới phụ thuộc và thứ tự khởi động
+
+- Có thể bắt đầu offline trước WP-05: đóng băng scorer/abstention contract; DSL chỉ nhận feature/recipe đã có trong WP-02; tăng cường sample-level temporal validation, replay, trial accounting và test leakage trên dữ liệu PAPER đã persist. Các bước này không được đọc hoặc giả định có research feature.
+- Có thể thiết kế schema label/manifest trước WP-05, nhưng dataset chỉ nhận outcome WP-02 đã đóng đủ fill/fee/funding và feature point-in-time hiện có. Không đưa provisional outcome vào train. Mọi record dựa trên research source phải chờ WP-05 cung cấp source identity, rights, revision và `available_at`/`as_of` semantics.
+- Trainer, registry/promotion và drift dựa trên research feature chỉ bắt đầu sau khi manifest, temporal evaluator và rights contract đạt. WP-03 Binance Demo không phải dependency của offline/PAPER learning; không dùng WP-06 để mở venue execution hoặc LIVE.
+- Baseline replay của WP-02 có thể được tái sử dụng, nhưng không giả định rằng fixed time-gap đã loại mọi leakage. Với từng sample, kiểm tra feature/source đã khả dụng tại decision/as-of cutoff và lưu khoảng outcome/label được quan sát; purge sample train khi label/outcome interval của nó chồng lấn vùng label validation/test hoặc khi feature/source cần thiết vượt cutoff. Cửa sổ feature lịch sử có thể dùng chung nếu toàn bộ dữ liệu đã khả dụng trước decision; không purge máy móc chỉ vì hai lookback lịch sử cùng đọc một nến. `purge`/`embargo` theo thời lượng là hàng rào bổ sung, không thay thế các kiểm tra này.
+- Thứ tự chi tiết, module boundaries và nguồn được ghi tại [WBS WP-06 learning](../superpowers/plans/2026-11-01-wp06-learning-wbs.md).
+
 ## WP-06A — Hợp đồng scorer và abstention
 
 1. Định nghĩa `ScoreRequest` có candidate, feature snapshot IDs, `as_of`, strategy/version, context đã lọc và schema version.
@@ -39,13 +49,13 @@
 ## WP-06D — Trainer và temporal evaluation
 
 1. Bắt đầu bằng baseline CPU có giám sát, deterministic seed và time-series split; benchmark với rule đơn giản/naive baseline.
-2. Dùng expanding/rolling walk-forward; purging/embargo khi nhãn hoặc cửa sổ feature chồng lấn; khóa holdout dùng một lần.
+2. Dùng expanding/rolling walk-forward; với mỗi sample lưu feature/source availability và label/outcome interval. Purge sample train nếu label/outcome interval giao với validation/test hoặc nếu feature/source vượt cutoff; feature lookback lịch sử được dùng chung khi vẫn point-in-time hợp lệ. Embargo sau cửa sổ kiểm định là hàng rào bổ sung. Khóa holdout dùng một lần; không tái dùng holdout để sửa DSL, threshold hay model.
 3. Điều chỉnh phí, funding, slippage, fill rejection và latency; tính net metrics, drawdown, expectancy, calibration và confidence interval.
 4. Lưu toàn bộ trial/parameter search để tính selection bias; không tối ưu threshold trên test cuối.
-5. Lưu code/data/config/feature/label/library/seed hashes, model artifact checksum, evaluation report và sample counts.
+5. Lưu manifest bất biến gồm query/range/as-of, sample IDs hoặc digest, feature availability/label intervals, exclusions, source rights, feature/label/schema/compiler versions, code/config/library/seed hashes, trial ledger, artifact checksum, evaluation report và sample counts. Có thể tái dựng chính xác tập sample đã cấp cho trainer.
 6. Nêu rõ giới hạn CPCV/PBO/DSR và loại bằng chứng; không dùng một metric để kết luận chắc chắn có lợi nhuận.
 
-**Nghiệm thu:** train có thể tái lập theo manifest trong tolerance; leakage fixture làm evaluation fail; report có so sánh baseline, chi phí, coverage và holdout integrity.
+**Nghiệm thu:** train có thể tái lập theo manifest trong tolerance; leakage fixture làm evaluation fail; label interval overlap bị purge dù event timestamps nằm ở hai fold khác nhau; future/revised-after-cutoff feature/source bị từ chối; historical feature lookback dùng chung chỉ được chấp nhận khi availability trước decision đã được xác minh; report có so sánh baseline, chi phí, coverage, toàn bộ trial budget và holdout integrity.
 
 ## WP-06E — Model registry, paper promotion và rollback
 

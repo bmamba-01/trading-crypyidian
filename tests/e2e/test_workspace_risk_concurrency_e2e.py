@@ -98,7 +98,8 @@ def test_workspace_risk_concurrency_and_rls_isolation_e2e() -> None:
 
     try:
         # Khởi động PostgreSQL và provisioner
-        compose("up", "--detach", "--wait", "--wait-timeout", "180", "postgres", "db-provisioner")
+        compose("up", "--detach", "--wait", "--wait-timeout", "180", "postgres")
+        compose("run", "--rm", "--no-deps", "db-provisioner")
 
         # Nâng cấp lên head và xác nhận schema sạch
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "head")

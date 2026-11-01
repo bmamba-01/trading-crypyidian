@@ -1,0 +1,222 @@
+"""Manifest bất biến và canonical cho tập sample học máy."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from dataclasses import dataclass, field
+from datetime import datetime
+from enum import StrEnum
+from uuid import UUID
+
+from trading_bot.domain.learning.labels import _sha256, _timestamp
+
+
+class DatasetSplit(StrEnum):
+    """Phân hoạch temporal được ghim cho từng sample."""
+
+    TRAIN = "train"
+    VALIDATION = "validation"
+    TEST = "test"
+    HOLDOUT = "holdout"
+
+
+@dataclass(frozen=True, slots=True)
+class DatasetSample:
+    """Thành viên đã qua kiểm tra point-in-time của dataset."""
+
+    sample_id: str
+    decision_at: datetime
+    feature_available_at: datetime
+    outcome_start: datetime
+    outcome_end: datetime
+    feature_snapshot_hash: str
+    outcome_id: str
+    outcome_hash: str
+    label_hash: str
+    label_value: int
+    label_version: str
+    split: DatasetSplit
+    source_dependent: bool
+    source_rights_hashes: tuple[str, ...]
+    source_revision_refs: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        for name in ("sample_id", "outcome_id", "label_version"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{name} không được để trống.")
+        for name in ("feature_snapshot_hash", "outcome_hash", "label_hash"):
+            _sha256(getattr(self, name), name)
+        object.__setattr__(self, "decision_at", _timestamp(self.decision_at, "decision_at"))
+        object.__setattr__(
+            self,
+            "feature_available_at",
+            _timestamp(self.feature_available_at, "feature_available_at"),
+        )
+        object.__setattr__(self, "outcome_start", _timestamp(self.outcome_start, "outcome_start"))
+        object.__setattr__(self, "outcome_end", _timestamp(self.outcome_end, "outcome_end"))
+        if self.feature_available_at > self.decision_at:
+            raise ValueError("Feature phải khả dụng không muộn hơn decision_at.")
+        if self.outcome_start < self.decision_at or self.outcome_end <= self.outcome_start:
+            raise ValueError("Khoảng outcome phải bắt đầu sau decision và có độ dài dương.")
+        if type(self.label_value) is not int or self.label_value not in {-1, 0, 1}:
+            raise ValueError("label_value phải là một trong -1, 0 hoặc 1.")
+        if type(self.split) is not DatasetSplit:
+            raise ValueError("split phải là DatasetSplit tường minh.")
+        if type(self.source_dependent) is not bool:
+            raise ValueError("source_dependent phải là boolean tường minh.")
+        rights = tuple(sorted(set(self.source_rights_hashes)))
+        for rights_hash in rights:
+            _sha256(rights_hash, "source_rights_hash")
+        object.__setattr__(self, "source_rights_hashes", rights)
+        revisions = tuple(sorted(set(self.source_revision_refs)))
+        if any(not ref.strip() for ref in revisions):
+            raise ValueError("source_revision_refs không được chứa giá trị rỗng.")
+        object.__setattr__(self, "source_revision_refs", revisions)
+        if self.source_dependent and (not rights or not revisions):
+            raise ValueError("Sample phụ thuộc nguồn phải ghim rights hash và source revision.")
+        if not self.source_dependent and (rights or revisions):
+            raise ValueError("Sample không phụ thuộc nguồn không được mang lineage nguồn.")
+
+
+@dataclass(frozen=True, slots=True)
+class DatasetExclusion:
+    """Sample bị loại cùng danh sách lý do ổn định."""
+
+    sample_id: str
+    reasons: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if not self.sample_id.strip():
+            raise ValueError("sample_id exclusion không được để trống.")
+        reasons = tuple(sorted(set(self.reasons)))
+        if not reasons or any(not reason.strip() for reason in reasons):
+            raise ValueError("Exclusion phải có ít nhất một lý do không rỗng.")
+        object.__setattr__(self, "reasons", reasons)
+
+
+@dataclass(frozen=True, slots=True)
+class DatasetManifest:
+    """Manifest pin phạm vi truy vấn, versions, membership và exclusions."""
+
+    workspace_id: UUID
+    query_hash: str
+    symbols: tuple[str, ...]
+    data_start: datetime
+    data_end: datetime
+    as_of: datetime
+    feature_schema_version: str
+    feature_version: str
+    label_version: str
+    sample_schema_version: str
+    samples: tuple[DatasetSample, ...]
+    exclusions: tuple[DatasetExclusion, ...]
+    holdout_sealed_at: datetime | None
+    manifest_version: str = "dataset-manifest-v1"
+    retention_policy_ref: str = "unspecified-offline-fixture"
+    canonical_json: str = field(init=False)
+    content_hash: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        _sha256(self.query_hash, "query_hash")
+        start = _timestamp(self.data_start, "data_start")
+        end = _timestamp(self.data_end, "data_end")
+        as_of = _timestamp(self.as_of, "as_of")
+        object.__setattr__(self, "data_start", start)
+        object.__setattr__(self, "data_end", end)
+        object.__setattr__(self, "as_of", as_of)
+        if start >= end:
+            raise ValueError("data_start phải trước data_end.")
+        if not self.symbols or any(not symbol.strip() for symbol in self.symbols):
+            raise ValueError("symbols phải chứa ít nhất một mã hợp lệ.")
+        object.__setattr__(self, "symbols", tuple(sorted(set(self.symbols))))
+        for name in (
+            "feature_schema_version",
+            "feature_version",
+            "label_version",
+            "sample_schema_version",
+            "manifest_version",
+            "retention_policy_ref",
+        ):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{name} không được để trống.")
+
+        samples = tuple(sorted(self.samples, key=lambda item: item.sample_id))
+        exclusions = tuple(sorted(self.exclusions, key=lambda item: item.sample_id))
+        sample_ids = [item.sample_id for item in samples]
+        excluded_ids = [item.sample_id for item in exclusions]
+        if len(sample_ids) != len(set(sample_ids)) or len(excluded_ids) != len(set(excluded_ids)):
+            raise ValueError("Dataset không được có sample_id duplicate.")
+        if set(sample_ids) & set(excluded_ids):
+            raise ValueError("Sample không thể đồng thời hợp lệ và bị loại.")
+        for item in samples:
+            if not start <= item.decision_at < end:
+                raise ValueError("Sample decision nằm ngoài data range.")
+            if item.decision_at > as_of:
+                raise ValueError("Sample decision nằm sau as_of.")
+            if item.label_version != self.label_version:
+                raise ValueError("Label version của sample không khớp manifest.")
+            if item.outcome_end > as_of:
+                raise ValueError("outcome_end của sample không được sau as_of.")
+        object.__setattr__(self, "samples", samples)
+        object.__setattr__(self, "exclusions", exclusions)
+
+        has_holdout = any(item.split is DatasetSplit.HOLDOUT for item in samples)
+        if self.holdout_sealed_at is not None:
+            object.__setattr__(
+                self, "holdout_sealed_at", _timestamp(self.holdout_sealed_at, "holdout_sealed_at")
+            )
+        if has_holdout and self.holdout_sealed_at is None:
+            raise ValueError("Holdout sample yêu cầu trạng thái sealed và thời điểm niêm phong.")
+        if not has_holdout and self.holdout_sealed_at is not None:
+            raise ValueError("Không được niêm phong holdout khi manifest không có holdout sample.")
+
+        payload = self._payload()
+        canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        object.__setattr__(self, "canonical_json", canonical)
+        content_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        object.__setattr__(self, "content_hash", content_hash)
+
+    def _payload(self) -> dict[str, object]:
+        return {
+            "manifest_version": self.manifest_version,
+            "workspace_id": str(self.workspace_id),
+            "query_hash": self.query_hash,
+            "symbols": list(self.symbols),
+            "data_range": [self.data_start.isoformat(), self.data_end.isoformat()],
+            "as_of": self.as_of.isoformat(),
+            "feature_schema_version": self.feature_schema_version,
+            "feature_version": self.feature_version,
+            "label_version": self.label_version,
+            "sample_schema_version": self.sample_schema_version,
+            "samples": [
+                {
+                    "sample_id": item.sample_id,
+                    "decision_at": item.decision_at.isoformat(),
+                    "feature_available_at": item.feature_available_at.isoformat(),
+                    "outcome_start": item.outcome_start.isoformat(),
+                    "outcome_end": item.outcome_end.isoformat(),
+                    "feature_snapshot_hash": item.feature_snapshot_hash,
+                    "outcome_id": item.outcome_id,
+                    "outcome_hash": item.outcome_hash,
+                    "label_hash": item.label_hash,
+                    "label_value": item.label_value,
+                    "label_version": item.label_version,
+                    "split": item.split.value,
+                    "source_dependent": item.source_dependent,
+                    "source_rights_hashes": list(item.source_rights_hashes),
+                    "source_revision_refs": list(item.source_revision_refs),
+                }
+                for item in self.samples
+            ],
+            "exclusions": [
+                {"sample_id": item.sample_id, "reasons": list(item.reasons)}
+                for item in self.exclusions
+            ],
+            "holdout_sealed_at": (
+                self.holdout_sealed_at.isoformat() if self.holdout_sealed_at else None
+            ),
+            "retention_policy_ref": self.retention_policy_ref,
+        }
