@@ -172,7 +172,7 @@ def test_application_calls_fence_right_after_l1_and_before_l2_l4() -> None:
 # FENCE_ARGUMENT = method tự gọi fence với `RuntimeFence` bắt buộc; ADMIN = admin-web ghi ý định
 # (runtime không có grant); UNWIRED = chưa có call site runtime, MB-05 Part B phải nối trong
 # command có fence trước khi thêm module gọi.
-LEDGER_READS = {"find_intent_id"}
+LEDGER_READS = {"find_intent_id", "find_open_trade_id"}
 LEDGER_WRITES = {
     "create_intent",
     "cancel_remainder",

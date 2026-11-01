@@ -80,7 +80,8 @@ def test_process_roles_cannot_write_identity_or_config_and_downgrade_restores_ac
 
     ensure_image_available(root, image)
     try:
-        compose("up", "--detach", "--wait", "--wait-timeout", "180", "postgres", "db-provisioner")
+        compose("up", "--detach", "--wait", "--wait-timeout", "180", "postgres")
+        compose("run", "--rm", "--no-deps", "db-provisioner")
         migrate("upgrade", PREVIOUS_HEAD)
         before = run_probe("acl_snapshot")
         migrate("upgrade", "head")

@@ -80,6 +80,16 @@ class EntryControlResult:
     duplicate: bool
 
 
+@dataclass(frozen=True, slots=True)
+class FlattenCloseResult:
+    """Một vị thế được đóng từ operation PAPER đã xác nhận."""
+
+    position_id: str
+    closed: bool
+    fill_key: str | None
+    trade_closed: bool
+
+
 class PaperLifecycleCoordinator:
     """Nối state machine PAPER với ledger, không tự quản lý transaction."""
 
@@ -195,6 +205,92 @@ class PaperLifecycleCoordinator:
             fencing_token=fencing_token,
             cancelled=(),
             released=(),
+        )
+
+    async def close_position_for_operation(
+        self,
+        uow: UnitOfWork,
+        *,
+        account_id: UUID,
+        position_id: str,
+        operation_id: UUID,
+        reference_price: Decimal,
+        closed_at: datetime,
+        fencing_token: FencingToken,
+    ) -> FlattenCloseResult:
+        """Đóng vị thế bằng mark đã xác nhận, ghi fill/trade/checkpoint cùng UoW."""
+        if not reference_price.is_finite() or reference_price <= 0:
+            raise PaperLifecycleConflict("Flatten reference price không hợp lệ.")
+        if closed_at.tzinfo is None or closed_at.utcoffset() is None:
+            raise PaperLifecycleConflict("Flatten close time cần timezone.")
+        if self._checkpoints is None:
+            raise PaperLifecycleConflict("Chưa cấu hình PAPER checkpoint repository.")
+        candidate, _revision = await self._latest_candidate(uow, account_id=account_id)
+        position = candidate.position(position_id)
+        if position is None:
+            raise PaperLifecycleConflict("Flatten position không tồn tại trong checkpoint.")
+        if position.is_closed:
+            return FlattenCloseResult(position_id, True, None, True)
+        order = candidate.order(position_id)
+        intent_id = await self._ledger.find_intent_id(
+            uow, account_id=account_id, idempotency_key=order.idempotency_key
+        )
+        if intent_id is None:
+            raise PaperLifecycleConflict("Flatten position thiếu intent ledger.")
+        trade_id = await self._ledger.find_open_trade_id(uow, intent_id=intent_id)
+        if trade_id is None:
+            raise PaperLifecycleConflict("Flatten position thiếu trade đang mở.")
+        event_key = (
+            f"flatten:{operation_id}:{hashlib.sha256(position_id.encode()).hexdigest()[:16]}:"
+            f"{hashlib.sha256(f'{position.quantity}:{reference_price}:{closed_at.isoformat()}'.encode()).hexdigest()[:16]}"
+        )
+        receipt = candidate.close_position(
+            position_id,
+            position.quantity,
+            reference_price=reference_price,
+            closed_at=closed_at,
+            idempotency_key=event_key,
+        )
+        fill = receipt.fill
+        if fill is None or receipt.filled_quantity <= 0:
+            raise PaperLifecycleConflict("Flatten close không tạo exit fill.")
+        appended = await self._ledger.append_exit_fill(
+            uow,
+            intent_id=intent_id,
+            fill_key=fill.fill_id,
+            bar_key=fill.bar_key,
+            fill_policy_version=fill.fill_policy_version,
+            quantity=fill.quantity,
+            price=fill.execution_price,
+            fee_amount=fill.fee_cost,
+            slippage_amount=fill.slippage_cost,
+            occurred_at=fill.filled_at,
+        )
+        trade_closed = False
+        if appended and receipt.position.is_closed:
+            await self._ledger.close_trade(
+                uow,
+                trade_id=trade_id,
+                gross_pnl=receipt.position.gross_realized_pnl,
+                closed_at=closed_at,
+            )
+            trade_closed = True
+        snapshot = candidate.export_state()
+        event_hash = hashlib.sha256(
+            f"{event_key}:{reference_price}:{closed_at.isoformat()}".encode()
+        ).hexdigest()
+        checkpoint = await self._checkpoints.append(
+            uow,
+            account_id=account_id,
+            event_key=event_key,
+            event_hash=event_hash,
+            snapshot=snapshot,
+            occurred_at=closed_at,
+            fencing_token=fencing_token,
+        )
+        uow.after_commit(lambda: self._gateway.replace_state(checkpoint.snapshot))
+        return FlattenCloseResult(
+            position_id, receipt.position.is_closed, fill.fill_id, trade_closed
         )
 
     async def _latest_candidate(

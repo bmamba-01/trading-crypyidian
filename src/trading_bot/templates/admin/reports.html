@@ -1,0 +1,22 @@
+{% extends "admin/base.html" %}
+{% block title %}Báo cáo — Crypidian{% endblock %}
+{% block heading %}Báo cáo{% endblock %}
+{% block content %}
+<form method="get" action="/admin/reports">
+  <label for="scope">Phạm vi</label>
+  <select id="scope" name="scope">
+    <option value="bot" {% if scope == "bot" %}selected{% endif %}>Một bot</option>
+    <option value="workspace" {% if scope == "workspace" %}selected{% endif %}>Toàn workspace</option>
+  </select>
+  <label for="bot_id">Bot (khi chọn phạm vi một bot)</label>
+  <select id="bot_id" name="bot_id">
+    {% for bot in bots %}<option value="{{ bot.id }}" {% if bot_id == bot.id %}selected{% endif %}>{{ bot.name }}</option>{% endfor %}
+  </select>
+  <label for="start">Bắt đầu (ISO-8601 có múi giờ)</label>
+  <input id="start" name="start" type="text" value="{{ start }}" required>
+  <label for="end">Kết thúc (ISO-8601 có múi giờ)</label>
+  <input id="end" name="end" type="text" value="{{ end }}" required>
+  <button type="submit">Xem báo cáo</button>
+</form>
+{% if report %}<pre>{{ report | tojson(indent=2) }}</pre>{% endif %}
+{% endblock %}

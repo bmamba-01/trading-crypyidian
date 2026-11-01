@@ -1,0 +1,33 @@
+{% extends "admin/base.html" %}
+{% block title %}Tổng quan — Crypidian{% endblock %}
+{% block heading %}Tổng quan workspace{% endblock %}
+{% block content %}
+<p>Xin chào {{ identity.email }}.</p>
+<section aria-label="Tình trạng workspace">
+  <p>Tổng số bot: {{ bot_count }}</p>
+  <p>Bot sẵn sàng: {{ ready_count }}</p>
+  <p>Điều khiển workspace: {{ workspace.kill_state }}</p>
+</section>
+<section aria-label="Điều khiển workspace">
+  <form method="post" action="/admin/workspace/kill">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label for="kill-reason">Lý do dừng toàn workspace</label>
+    <input id="kill-reason" name="reason" maxlength="500" required>
+    <button type="submit">Dừng entry workspace</button>
+  </form>
+  <form method="post" action="/admin/workspace/release">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="expected_revision" value="{{ workspace.revision }}">
+    <label for="release-reason">Lý do gỡ kill</label>
+    <input id="release-reason" name="reason" maxlength="500" required>
+    <button type="submit">Gỡ kill workspace</button>
+  </form>
+</section>
+<ul>
+  {% for bot in bots %}
+  <li><a href="/admin/bots/{{ bot.id }}">{{ bot.name }}</a> — {{ bot.readiness }}</li>
+  {% else %}
+  <li>Workspace chưa có bot nào.</li>
+  {% endfor %}
+</ul>
+{% endblock %}

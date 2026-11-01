@@ -1,6 +1,6 @@
 # MB-07b WBS — Admin Web, flatten-all và liên kết Telegram
 
-**Trạng thái:** WBS chuẩn bị trước code; chưa bắt đầu triển khai. Phụ thuộc nghiệm thu MB-05b, MB-06 và E2E/review MB-07a.
+**Trạng thái:** MB-07b đang triển khai trên `dev`; Task 1–6 đã có implementation trong working tree, còn E2E/accessibility/review cuối.
 **Ngày:** 2026-10-29
 **Phạm vi gốc:** Task 8 / MB-07 trong [kế hoạch Multi-Bot](./2026-10-24-multibot-implementation-plan.md); tiếp nối [WBS MB-07a](./2026-10-27-mb07a-bot-control-api-telegram-wbs.md).
 **Liên quan:** [RBAC và cấu hình bot](./2026-10-24-mb02-bot-config-wbs.md), [runtime/fencing](./2026-10-26-mb05-runtime-registry-wbs.md), [báo cáo bot](./2026-10-27-mb06-bot-reports-wbs.md), [nghiên cứu bảo mật](../../research/security-admin-bot-2026.md), [glossary EN→VI](../../research/glossary-vi.md).
@@ -34,6 +34,8 @@ Hoàn thiện giao diện web quản trị nhiều bot, bổ sung luồng flatte
 | MB07b.4 | Telegram link/revoke | Một lần code, hash-at-rest, TTL, verify qua `/start <code>` private-chat, callback nonce, revoke, rebind và xử lý membership locked. | Code hết hạn/phát lại/sai workspace không bind; code và secret không lộ; rebind sau revoke được; active duplicate bị chặn trong DB; user locked không thể điều khiển ngay cả trước cleanup nền. |
 | MB07b.5 | UI accessibility/security polish | Navigation keyboard, focus/error summary, labels/semantic HTML, CSP-safe templates, output encoding, no inline secret, CSRF/session expiry behavior. | Automated accessibility checks đạt cho luồng chính; manual checklist có kết quả; kiểm tra HTML/log/API không chứa credential, MFA secret, webhook secret hoặc link token. |
 | MB07b.6 | E2E, regression và review | Playwright end-to-end trên Compose image dùng chung; PostgreSQL/RLS thật; operation idempotency, concurrency, restart recovery; independent review. | Unit + API + browser E2E không skip; full unit/E2E liên quan pass; Ruff/format/mypy/Alembic/Compose/diff pass; review không còn finding mức cao; memory cập nhật và đọc lại trước commit. |
+
+**Ruling 2026-11-01 (MB07b.3):** admin-web không dùng runtime gateway trong RAM vì process/DB role riêng. Confirm ghi operation ledger bền vững; `BotRuntimeSupervisor` thực thi từng bot dưới lease/fence. Mark PAPER là `MarketBar` đã đóng theo MarkPolicy workspace, còn mới theo max-mark-age; mark thiếu/cũ chặn item và giữ bot PAUSED. Không tự resume khi operation partial/blocked.
 
 ## Kế hoạch test-first
 
@@ -71,3 +73,27 @@ Các mục trên đã được thêm vào [glossary EN→VI](../../research/glos
 
 Tài liệu/version runtime của FastAPI/Jinja2/Playwright và Telegram Bot API cần được kiểm tra lại từ tài liệu chính thức ngay trước khi khóa dependency/API trong `MB07b.0`.
 
+### MB-07b progress (2026-11-01)
+
+- Task 1–3: template runtime/dependencies, read views, CSRF-protected HTML forms hoàn thành ở working tree; browser E2E còn chờ task 7.
+- Task 4 enable: implementation và service/API/DB-role integration đạt. Unit regression 134/134; E2E `test_bot_control_api_telegram.py` + `test_db_role_least_privilege.py` 2/2; Ruff, format, mypy và wheel đạt. Root cause SQL NULL ở trigger marker đã được sửa fail-closed. **Còn race E2E enable-vs-disable/pause.**
+- Task 5 đang triển khai: preview/confirm/status API và HTML review/result, RLS ledger migration, snapshot provider, runtime worker dưới workspace lock/fence và PAPER reduce-only close đã có trong working tree. Full unit 1615/1615; E2E combined migration/enable/control/DB-role có runtime operation riêng process 4/4; Ruff/format/mypy/lock/build/Compose/diff đạt. E2E operation lifecycle stale/replay/partial/restart/concurrency chưa có.
+- Task 6 Telegram link/revoke/rebind có service, API + HTML, one-time digest ledger/callback nonce, partial unique index active, RLS/grants, strict private webhook và membership recheck; Compose E2E kiểm mã hết hạn/replay, callback đúng sender, active duplicate, revoke/rebind, lock/revoke. Đầu ra kiểm thử mới nhất được ghi trong implementation memory.
+- Còn race E2E enable-vs-disable/pause; Task 5 stale/replay/partial/restart/concurrency operation E2E; Task 7 Playwright/accessibility/security và review độc lập/full regression. Sender Telegram hiện vẫn là adapter ghi bộ nhớ; deployment cần adapter gửi Bot API để người dùng nhận nút xác nhận thật. Không commit/push.
+
+
+## Cập nhật tiến độ (2026-11-01)
+
+MB07b.0 đã hoàn tất; dependency Jinja2 3.1.6, Playwright 1.64.1 và pytest-playwright 0.10.0 được khóa, Chromium đã cài. Task 1–4 có code và targeted checks theo progress phía trên. Task 5 đang triển khai; task 6–7 còn mở. Xem [implementation memory](../../implementation/implementation-memory.md) và [kế hoạch thực thi](./2026-11-01-mb07b-admin-web-operations.md).
+
+### MB07b.1 — tiến độ read-only (2026-11-01)
+
+Đã có `/admin`, `/admin/bots`, `/admin/bots/{id}`, `/admin/reports` dùng `BotConfigAdminService`, `BotOperationsService`, `BotReportingService`. Báo cáo workspace cần `scope=workspace` tường minh; trang và responses đặt `Cache-Control: no-store`. Unit/API target đạt 99/99. Form create/config/control đã được thêm ở task 3; browser E2E và accessibility checklist còn mở.
+
+### Cập nhật tích hợp Task 7 (2026-11-01)
+
+- Đã thêm `/admin/login` GET/POST với form workspace/email/password/TOTP; POST dùng cùng `AuthService.login` và `LoginRateLimiter` như API, đặt cookie phiên theo chính sách hiện có rồi PRG về `/admin`.
+- Trước khi có session, GET phát token ngẫu nhiên gắn với cookie host-only `HttpOnly`, `SameSite=Strict`, `Path=/`, hết hạn sau 5 phút; production dùng prefix `__Host-` và `Secure`. POST so sánh token cookie/form constant-time; thiếu/sai token trả 403 trước khi gọi auth service. Lỗi credential render thông báo chung và không echo trường nhạy cảm.
+- Unit login cuối 4/4; regression auth/web trước vòng review 20/20; browser Compose kiểm bootstrap owner/MFA, login success với mật khẩu/TOTP thật, credential sai/error chung, headers/cache, field labels và không phản chiếu mật khẩu. Review độc lập phát hiện lỗi auth service 503 bị ánh xạ thành 401 và sau đó callback/revoke lock inversion sinh PostgreSQL `40P01`; cả hai đã có regression, sửa và re-review đạt. Manual accessibility checklist vẫn mở.
+- Final verification sau các fix/review: full unit **1641 passed / 9.14s**; Compose E2E tích hợp **9 passed / 291.60s**; Ruff, format 329 files, mypy 154 modules, `uv lock --check`, wheel, Compose config, Alembic single head `e2c4a6f8b1d3` và `git diff --check` đạt.
+- Xóa tag `crypidian-app:e2e-*` sau mỗi lượt Compose khi xác nhận `docker ps -a` không có container tham chiếu; cuối cùng 0 container/volume, không còn tag E2E, chỉ giữ PostgreSQL + Garage **743.8 MB** và build cache **903.4 MB**.

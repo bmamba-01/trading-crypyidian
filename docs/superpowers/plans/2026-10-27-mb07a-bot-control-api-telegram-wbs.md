@@ -1,6 +1,6 @@
 # MB-07a WBS — Admin API điều khiển bot và lệnh Telegram (PAPER)
 
-**Trạng thái:** đã triển khai trên nhánh worktree (2026-10-27): unit + quality gates đạt; **E2E Compose `tests/e2e/test_bot_control_api_telegram.py` còn chờ** (Docker daemon treo, `docker info` quá 30 s); chờ review độc lập và lượt E2E tuần tự của controller.\
+**Trạng thái:** đã triển khai và tích hợp `dev` (`132bd67`, `93f29a7`, `9824013`, `c2792da`; xác nhận trong `67702f4`). Review độc lập và các vòng sửa đã hoàn tất. E2E Compose từng lỗi hạ tầng khi chạy song song; lượt chạy tuần tự 7/7 đạt theo memory. Kiểm tra lại ngày 2026-11-01: unit mục tiêu 217/217 và `tests/e2e/test_bot_control_api_telegram.py` 1/1 đạt.\
 **Phạm vi gốc:** Task 8 / MB-07 của [kế hoạch Multi-Bot](./2026-10-24-multibot-implementation-plan.md), phần điều khiển bot qua Admin API + Telegram (controller chia MB-07 thành MB-07a và MB-07b ngày 2026-10-27).\
 **Liên kết:** [MB-05 WBS](./2026-10-26-mb05-runtime-registry-wbs.md) (ruling 20, 25–30), [ADR addendum runtime control](../../architecture/decisions/2026-10-26-runtime-control-addendum.md), [nghiên cứu bảo mật](../../research/security-admin-bot-2026.md) (SEC-19/20/22/23/24/35/36/37/38), [bộ dữ liệu QA](../../testing/qa-test-data.md), [glossary EN→VI](../../research/glossary-vi.md).
 
@@ -95,7 +95,7 @@ Một control plane dùng chung cho mọi bot: Admin API và Telegram gọi **c�
 - [x] GREEN migration `f7b9d1e3a5c8`, model `TelegramUpdateReceipt`, `admin_web_session_timeouts()`.
 
 ### MB07a.5 — Compose E2E và cổng chất lượng
-- [ ] (viết xong, **chờ chạy** — Docker treo) `tests/e2e/test_bot_control_api_telegram.py` (probe qua stdin, tái dùng probe MB-05): Admin API thật (cookie phiên + CSRF, role `crypidian_admin_web`) pause A → runtime chặn entry, giữ stop của vị thế mở; ma trận kill/release; disable bị `BOT_NOT_FLAT`; Telegram handler thật pause/status, ID lạ, mơ hồ, replay, user W2; audit; không secret trong response/audit.
+- [x] `tests/e2e/test_bot_control_api_telegram.py` (probe qua stdin, tái dùng probe MB-05): Admin API thật (cookie phiên + CSRF, role `crypidian_admin_web`) pause A → runtime chặn entry, giữ stop của vị thế mở; ma trận kill/release; disable bị `BOT_NOT_FLAT`; Telegram handler thật pause/status, ID lạ, mơ hồ, replay, user W2; audit; không secret trong response/audit. Chạy lại 2026-11-01: **1 passed / 34.27s**.
 - [x] Full unit, ruff/format, mypy, `git diff --check`, một alembic head; cập nhật ghim E2E head (`test_multibot_config.py`) và ma trận grant (`probes/db_role_least_privilege.py`).
 
 ## Nguồn đã kiểm tra (2026-10-27)

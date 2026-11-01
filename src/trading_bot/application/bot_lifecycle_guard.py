@@ -52,6 +52,10 @@ class BotLifecycleGuard:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
+    async def lock_workspace_for_enable(self, workspace_id: UUID) -> None:
+        """Giữ L1 theo cùng thứ tự khóa entry/disable trước khi xét enable."""
+        await WorkspaceSettingsRepository(self._session).lock_workspace(workspace_id)
+
     async def ensure_flat_for_disable(self, workspace_id: UUID, bot_id: UUID) -> None:
         # L1 trước khi đếm (fix round 1, M7): entry/fill đang chạy giữ L1 nên không thể mở vị
         # thế/reservation mới giữa lúc đếm và lúc đường disable commit.

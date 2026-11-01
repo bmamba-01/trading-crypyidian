@@ -1,0 +1,13 @@
+{% extends "admin/base.html" %}
+{% block title %}Tạo bot — Crypidian{% endblock %}
+{% block heading %}Tạo account PAPER{% endblock %}
+{% block content %}
+<form method="post" action="/admin/bots/new">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <label for="name">Tên bot</label>
+  <input id="name" name="name" type="text" maxlength="120" required autocomplete="off">
+  <label for="max_notional">Giới hạn notional</label>
+  <input id="max_notional" name="max_notional" type="number" min="0.00000001" step="any" required>
+  <button type="submit">Tạo bot PAPER</button>
+</form>
+{% endblock %}

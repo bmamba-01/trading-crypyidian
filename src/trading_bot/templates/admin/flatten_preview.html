@@ -1,0 +1,28 @@
+{% extends "admin/base.html" %}
+{% block title %}Xác nhận flatten — Crypidian{% endblock %}
+{% block heading %}Rà soát flatten PAPER{% endblock %}
+{% block content %}
+<p>Preview hết hạn lúc <time datetime="{{ preview.expires_at.isoformat() }}">{{ preview.expires_at }}</time>.</p>
+<p role="status" aria-live="polite">{{ preview.bot_count }} bot, {{ preview.position_count }} vị thế và {{ preview.open_order_count }} lệnh mở.</p>
+<p>Hash preview: <code>{{ preview.preview_hash }}</code></p>
+<table>
+  <caption>Các mục trong snapshot</caption>
+  <thead><tr><th scope="col">Bot</th><th scope="col">Loại</th><th scope="col">Symbol</th><th scope="col">ID</th><th scope="col">Quantity</th><th scope="col">Mark</th><th scope="col">Trạng thái</th></tr></thead>
+  <tbody>
+    {% for target in preview.targets %}
+    <tr><td>{{ target.bot_id }}</td><td>{{ target.target_type }}</td><td>{{ target.symbol }}</td><td>{{ target.target_id }}</td><td>{{ target.quantity }}</td><td>{{ target.mark_price or "—" }}</td><td>{{ target.error_code or target.status }}</td></tr>
+    {% else %}
+    <tr><td colspan="7">Không có vị thế hoặc lệnh mở trong snapshot.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+<form method="post" action="/admin/flatten/confirm">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <input type="hidden" name="preview_id" value="{{ preview.preview_id }}">
+  <input type="hidden" name="preview_hash" value="{{ preview.preview_hash }}">
+  <input type="hidden" name="idempotency_key" value="{{ idempotency_key }}">
+  <label for="confirm-reason">Lý do xác nhận</label>
+  <input id="confirm-reason" name="reason" value="{{ reason }}" maxlength="500" required>
+  <button type="submit">Xác nhận flatten</button>
+</form>
+{% endblock %}

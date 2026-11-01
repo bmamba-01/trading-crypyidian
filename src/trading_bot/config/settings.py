@@ -44,10 +44,13 @@ class AppSettings(BaseSettings):
     # chỉ admin-web phục vụ webhook. Secret chỉ đọc từ file, không nhận qua biến môi trường.
     telegram_workspace_id: UUID | None = None
     telegram_webhook_secret_file: Path | None = None
+    telegram_bot_username: str | None = None
 
     @model_validator(mode="after")
     def validate_telegram_webhook(self) -> AppSettings:
         """Webhook Telegram cần đủ workspace + file secret và chỉ chạy ở admin-web."""
+        if self.telegram_bot_username == "":
+            self.telegram_bot_username = None
         configured = (self.telegram_workspace_id, self.telegram_webhook_secret_file)
         if any(value is not None for value in configured):
             if any(value is None for value in configured):
@@ -56,6 +59,13 @@ class AppSettings(BaseSettings):
                 )
             if self.process_role != "admin-web":
                 raise ValueError("Webhook Telegram chỉ cấu hình cho process_role admin-web.")
+        if self.telegram_bot_username is not None:
+            import re
+
+            if self.process_role != "admin-web" or not re.fullmatch(
+                r"[A-Za-z0-9_]{5,32}", self.telegram_bot_username
+            ):
+                raise ValueError("telegram_bot_username không hợp lệ hoặc sai process role.")
         return self
 
     @model_validator(mode="after")

@@ -222,6 +222,7 @@ Triển khai trên nhánh worktree (chưa merge, chờ review độc lập). Mig
 
 - [x] Persisted `PaperBotDecisionCommand` chạy release riêng của bot; ABSTAIN/VETO, sai scope/lineage, pause và fence cũ fail-closed; đường legacy vẫn giữ `PAPER_BOT_STRATEGY_FANOUT_REQUIRED`.
 - [x] Runtime worker nối dispatcher, fan-out gate/exclusion recorder và recovery scan; worker chỉ active khi inject `DecisionSnapshotProvider`. App mặc định chưa có adapter market-data → `DecisionSnapshot`, `/health/ready` công bố `market_dispatch: not_configured`; tự động fan-out cần adapter theo WP-05.
+- `RuntimeFanOutGate` là cổng runtime cho bot giữ lease/control/readiness; supervisor tiêm `job_processor` để nối dispatcher và recovery scan sau khi áp control.
 - [x] PostgreSQL Compose E2E positive/negative: fan-out, lineage, restart/recovery, ABSTAIN/VETO, cross-scope, pause, takeover fence và account hard caps (max positions, total notional, symbol notional, concentration, initial margin).
 - [x] Cập nhật `docs/testing/qa-test-data.md` phân biệt API legacy với đường persisted fan-out.
 - [x] Đồng bộ thứ tự bootstrap E2E runtime harness: chạy `db-provisioner` đồng bộ trước migrator để loại race role provisioning.

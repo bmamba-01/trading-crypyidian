@@ -1,0 +1,10 @@
+{% extends "admin/base.html" %}
+{% block title %}Mã liên kết Telegram · Crypidian{% endblock %}
+{% block heading %}Mã liên kết đã tạo{% endblock %}
+{% block content %}
+  <p role="status" aria-live="polite">Mã chỉ được hiển thị lần này và hết hạn lúc <time datetime="{{ expires_at.isoformat() }}">{{ expires_at }}</time>.</p>
+  <p>Mở bot Telegram trong tin nhắn riêng để xác nhận:</p>
+  <p><a href="{{ link_url }}" rel="noreferrer" aria-label="Mở bot Telegram trong tin nhắn riêng">Mở Telegram</a></p>
+  <p>Nếu liên kết bị lộ hoặc hết hạn, hãy tạo mã mới.</p>
+  <a href="/admin/telegram">Quay lại quản lý Telegram</a>
+{% endblock %}

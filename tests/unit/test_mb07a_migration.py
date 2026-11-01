@@ -64,7 +64,7 @@ def _run(function: str) -> list[str]:
     return recorder.statements
 
 
-def test_migration_chain_keeps_mb07a_then_mb04_hardening_as_single_head() -> None:
+def test_migration_chain_keeps_mb07a_then_mb04_and_mb07b_as_single_head() -> None:
     module = _load(REVISION)
     revisions = [_load(path.stem.split("_")[0]) for path in VERSIONS.glob("*.py")]
     children = [item.revision for item in revisions if item.down_revision == REVISION]
@@ -73,7 +73,9 @@ def test_migration_chain_keeps_mb07a_then_mb04_hardening_as_single_head() -> Non
     assert module.down_revision == "e1f3a5c7b9d2"
     assert parents.count("e1f3a5c7b9d2") == 1
     assert children == ["f7a9c1e3b5d8"]
-    assert "b3d5f7a9c1e4" not in parents
+    enable = _load("c8e4a2f6d190")
+    assert enable.down_revision == "b3d5f7a9c1e4"
+    assert parents.count("b3d5f7a9c1e4") == 1
 
 
 def test_upgrade_grants_only_status_column_and_creates_receipt_table_with_split_policies() -> None:

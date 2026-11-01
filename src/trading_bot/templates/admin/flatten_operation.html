@@ -1,0 +1,14 @@
+{% extends "admin/base.html" %}
+{% block title %}Operation flatten — Crypidian{% endblock %}
+{% block heading %}Trạng thái flatten PAPER{% endblock %}
+{% block content %}
+<p id="operation-status" role="status" aria-live="polite">Operation {{ operation.id }}: <strong>{{ operation.status }}</strong></p>
+<ul>
+  {% for item in operation["items"] %}
+  <li>{{ item.symbol }} — {{ item.target_type }} — {{ item.quantity }} — {{ item.status }}{% if item.error_code %} ({{ item.error_code }}){% endif %}</li>
+  {% else %}
+  <li>Không có mục cần xử lý.</li>
+  {% endfor %}
+</ul>
+<a href="/admin/flatten">Tạo preview mới</a>
+{% endblock %}

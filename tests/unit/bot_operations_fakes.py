@@ -61,6 +61,10 @@ class Store:
     bots: dict[UUID, dict[str, Any]] = field(default_factory=dict)
     not_flat: dict[UUID, tuple[int, int, int]] = field(default_factory=dict)
     readiness: dict[UUID, tuple[str, str | None]] = field(default_factory=dict)
+    activity_status: dict[UUID, str] = field(default_factory=dict)
+    applied_revisions: dict[UUID, tuple[int, int]] = field(default_factory=dict)
+    published_config: set[UUID] = field(default_factory=set)
+    open_incidents: set[UUID] = field(default_factory=set)
     # Lỗi DB ném ra khi chạm L1/đọc control (mô phỏng `lock_timeout` 55P03 dưới tải).
     fail_with: BaseException | None = None
 
@@ -236,6 +240,43 @@ class FakeOperationsRepository:
                 return True
         raise AssertionError("account không tồn tại")
 
+    async def enable_account(self, workspace_id: UUID, account_id: UUID) -> bool:
+        del workspace_id
+        self.store.events.append("account:lock")
+        for bot_id, bot in self.store.bots.items():
+            if bot["account_id"] == account_id:
+                if bot["status"] == "ENABLED":
+                    return False
+                self.session.uow.pending_status[bot_id] = "ENABLED"
+                self.store.events.append("account:enabled")
+                return True
+        raise AssertionError("account không tồn tại")
+
+    async def enable_snapshot(self, workspace_id: UUID, bot_id: UUID) -> Any:
+        del workspace_id
+        bot = self.store.bots[bot_id]
+        runtime = self.store.readiness.get(bot_id)
+        applied = self.store.applied_revisions.get(bot_id, (-1, -1))
+        workspace_revision = len(self.store.workspace_rows)
+        return SimpleNamespace(
+            account_status=bot["status"],
+            bot_status=bot["status"],
+            mode="PAPER",
+            venue="binance_usdm",
+            workspace_killed=bool(
+                self.store.workspace_rows
+                and self.store.workspace_rows[-1] is WorkspaceKillState.KILLED
+            ),
+            readiness=runtime[0] if runtime else None,
+            activity_status=self.store.activity_status.get(bot_id),
+            applied_bot_revision=applied[0],
+            bot_revision=len(self.store.bot_rows.get(bot_id, [])),
+            applied_workspace_revision=applied[1],
+            workspace_revision=workspace_revision,
+            open_incident=bot_id in self.store.open_incidents,
+            published_config=bot_id in self.store.published_config,
+        )
+
 
 class FakeGuard:
     def __init__(self, session: Any) -> None:
@@ -253,6 +294,11 @@ class FakeGuard:
                 open_orders=counts[1],
                 held_reservations=counts[2],
             )
+
+    async def lock_workspace_for_enable(self, workspace_id: UUID) -> None:
+        del workspace_id
+        self.store.maybe_fail()
+        self.store.events.append("guard:L1")
 
 
 class _LockNotAvailable(Exception):

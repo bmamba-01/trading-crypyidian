@@ -503,3 +503,52 @@ def test_no_session_or_csrf_token_in_responses_or_audit() -> None:
     assert SESSION_TOKEN not in dumped
     assert CSRF_TOKEN not in dumped
     assert all("set-cookie" not in response.headers for response in responses)
+
+
+def test_enable_endpoint_requires_csrf_before_application_service() -> None:
+    store = seeded_store()
+    client = _client(store, member(store, "owner"), csrf=False)
+
+    class AuthStub:
+        async def verify_csrf(self, _cookie: str | None, _token: str | None) -> None:
+            raise AuthenticationFailure(403, "Thiếu mã CSRF")
+
+    client.app.dependency_overrides[get_auth_service] = lambda: AuthStub()  # type: ignore[attr-defined]
+
+    response = client.post(
+        f"/api/v1/bots/{BOT_A}/enable",
+        json={"reason": "Đã đối soát"},
+    )
+
+    assert response.status_code == 403
+    assert store.bots[BOT_A]["status"] == "ENABLED"
+    assert store.audits == []
+
+
+def test_enable_endpoint_denies_unreconciled_bot_without_state_change() -> None:
+    store = seeded_store()
+    store.bots[BOT_A]["status"] = "DISABLED"
+    client = _client(store, member(store, "owner"))
+
+    response = _post(client, f"/api/v1/bots/{BOT_A}/enable", {"reason": "Đã rà soát"})
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "BOT_ENABLE_RECONCILIATION_REQUIRED"
+    assert store.bots[BOT_A]["status"] == "DISABLED"
+    assert store.audits[-1]["action"] == "bot.lifecycle.enable_denied"
+
+
+def test_enable_endpoint_enables_only_after_reconciliation_snapshot_is_ready() -> None:
+    store = seeded_store()
+    store.bots[BOT_A]["status"] = "DISABLED"
+    store.readiness[BOT_A] = ("STANDBY", None)
+    store.activity_status[BOT_A] = "VERIFIED"
+    store.applied_revisions[BOT_A] = (0, 0)
+    store.published_config.add(BOT_A)
+    client = _client(store, member(store, "owner"))
+
+    response = _post(client, f"/api/v1/bots/{BOT_A}/enable", {"reason": "Đã rà soát"})
+
+    assert response.status_code == 200
+    assert response.json()["bot"] == {"id": str(BOT_A), "status": "ENABLED", "changed": True}
+    assert store.bots[BOT_A]["status"] == "ENABLED"

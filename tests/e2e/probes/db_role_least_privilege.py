@@ -52,7 +52,9 @@ TABLE_PRIVILEGES = {
         "role_binding": {"SELECT", "INSERT"},
         "session": {"SELECT", "INSERT"},
         "mfa_factor": {"SELECT", "INSERT"},
-        "telegram_binding": {"SELECT"},
+        "telegram_binding": {"SELECT", "INSERT"},
+        "telegram_link_request": {"SELECT", "INSERT"},
+        "telegram_binding_challenge": {"SELECT", "INSERT"},
         "secret_reference": {"SELECT", "INSERT"},
         "trading_account": {"SELECT", "INSERT"},
         "config_version": {"SELECT"},
@@ -79,6 +81,9 @@ COLUMN_UPDATE = {
         "user_membership": {"created_at"},
         "session": {"revoked_at", "csrf_token_hash", "mfa_verified_at"},
         "mfa_factor": {"verified_at", "last_used_counter"},
+        "telegram_binding": {"revoked_at"},
+        "telegram_link_request": {"expires_at", "consumed_at"},
+        "telegram_binding_challenge": {"consumed_at"},
         "trading_account": {"updated_at"},
     },
     RUNTIME: {"trading_account": {"updated_at"}},
@@ -89,6 +94,8 @@ POLICY_ROLES = {
     "session": {ADMIN},
     "mfa_factor": {ADMIN},
     "telegram_binding": {ADMIN},
+    "telegram_link_request": {ADMIN},
+    "telegram_binding_challenge": {ADMIN},
     "secret_reference": {ADMIN},
     "watchlist_version": {ADMIN},
     "watchlist_item": {ADMIN},
@@ -185,10 +192,18 @@ COLUMN_UPDATE[ADMIN] |= {
 # (ruling 29/34); bảng dedup Telegram chỉ admin-web SELECT/INSERT và DELETE (policy chỉ cho xóa
 # hàng quá 7 ngày — retention, fix round 1), FORCE RLS, policy đọc `workspace_isolation`.
 COLUMN_UPDATE[ADMIN]["trading_account"] = {"updated_at", "status"}
-MULTIBOT_TABLES += ("telegram_update_receipt",)
+MULTIBOT_TABLES += (
+    "telegram_update_receipt",
+    "telegram_link_request",
+    "telegram_binding_challenge",
+)
 TABLE_PRIVILEGES[ADMIN] |= {"telegram_update_receipt": {"SELECT", "INSERT", "DELETE"}}
 POLICY_ROLES["telegram_update_receipt"] = {ADMIN}
-FORCE_RLS_TABLES = ("telegram_update_receipt",)
+FORCE_RLS_TABLES = (
+    "telegram_update_receipt",
+    "telegram_link_request",
+    "telegram_binding_challenge",
+)
 
 
 def identity(name):
@@ -632,8 +647,9 @@ IDENTITY_ATTACKS = (
         (W1,),
     ),
     (
-        "INSERT INTO telegram_binding (id, workspace_id, membership_id, telegram_user_id) "
-        "VALUES (gen_random_uuid(), %s, %s, 'forged')",
+        "INSERT INTO telegram_binding (id, workspace_id, membership_id, "
+        "telegram_user_id, revoked_at) "
+        "VALUES (gen_random_uuid(), %s, %s, 'forged', now())",
         (W1, M1),
     ),
     ("UPDATE workspace_settings_version SET status = 'PUBLISHED' WHERE workspace_id = %s", (W1,)),
@@ -816,8 +832,6 @@ def admin(connection):
         "DELETE FROM user_membership",
         "DELETE FROM trading_account",
         "DELETE FROM workspace_settings_version",
-        "INSERT INTO telegram_binding (id, workspace_id, membership_id, telegram_user_id) "
-        "SELECT gen_random_uuid(), workspace_id, id, 'forged' FROM user_membership",
         "UPDATE approval_request SET status = 'APPROVED'",
         "INSERT INTO strategy_release (id, workspace_id, name, version, status, recipe, "
         "content_hash) VALUES (gen_random_uuid(), "
@@ -935,6 +949,10 @@ def admin_account_status(connection):
         ).rowcount
         assert disabled == 1
         outcome = "ALLOWED"
+        guard_state = connection.execute(
+            "SELECT current_user, current_setting('app.bot_enable_authorized', true), "
+            "pg_get_functiondef('public.mb07a_guard_account_status()'::regprocedure)"
+        ).fetchone()
         try:
             with connection.transaction():
                 connection.execute(
@@ -942,7 +960,18 @@ def admin_account_status(connection):
                 )
         except psycopg.Error as error:
             outcome = f"{error.sqlstate}:{str(error).splitlines()[0]}"
-        assert outcome == "23514:MB07A_ACCOUNT_STATUS_TRANSITION_DENIED", outcome
+        assert outcome == "23514:MB07A_ACCOUNT_STATUS_TRANSITION_DENIED", {
+            "outcome": outcome,
+            "current_user": guard_state[0],
+            "enable_marker": guard_state[1],
+            "guard_has_marker": "app.bot_enable_authorized" in guard_state[2],
+        }
+        with connection.transaction():
+            connection.execute("SELECT set_config('app.bot_enable_authorized', 'on', true)")
+            enabled = connection.execute(
+                "UPDATE trading_account SET status = 'ENABLED' WHERE id = %s", (A1,)
+            ).rowcount
+            assert enabled == 1
 
 
 def admin_telegram_receipt(connection):

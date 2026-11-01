@@ -41,6 +41,8 @@ _LEASE_LOSS = frozenset(
 class SupervisedApplication(Protocol):
     async def apply_runtime_control(self, account_id: UUID) -> Any: ...
 
+    async def process_flatten_operations(self, account_id: UUID) -> int: ...
+
     def remove_account(self, account_id: UUID) -> None: ...
 
     def publish_account(self, account: Any) -> None: ...
@@ -162,6 +164,9 @@ class BotRuntimeSupervisor:
             bot_paused=bool(getattr(control, "bot_paused", False)),
             workspace_killed=bool(getattr(control, "workspace_killed", False)),
         )
+        flatten_processor = getattr(self._application, "process_flatten_operations", None)
+        if flatten_processor is not None:
+            await flatten_processor(account_id)
         if self._activity_guard is not None:
             classification = await self._activity_guard.inspect_once(account_id)
             self._registry.set_activity_blocked(

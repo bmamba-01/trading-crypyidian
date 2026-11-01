@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}Crypidian{% endblock %}</title>
+    <link rel="stylesheet" href="/static/admin.css">
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content">Bỏ qua điều hướng, tới nội dung chính</a>
+    <header>
+      <a href="/admin" aria-label="Crypidian — trang quản trị">Crypidian</a>
+      {% block navigation %}
+        <nav aria-label="Điều hướng chính">
+          <a href="/admin">Tổng quan</a>
+          <a href="/admin/bots">Bot</a>
+          <a href="/admin/reports">Báo cáo</a>
+          <a href="/admin/flatten">Flatten workspace</a>
+          <a href="/admin/telegram">Telegram</a>
+        </nav>
+      {% endblock %}
+      {% if identity %}<span>{{ identity.email }}</span>{% endif %}
+    </header>
+    <main id="main-content">
+      <h1>{% block heading %}{% endblock %}</h1>
+      {% block content %}{% endblock %}
+    </main>
+  </body>
+</html>

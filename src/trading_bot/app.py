@@ -4,12 +4,15 @@ import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
@@ -20,6 +23,9 @@ from trading_bot.adapters.database.engine import (
     database_url_from_secret,
     runtime_session_timeouts,
 )
+from trading_bot.adapters.database.repositories.flatten_snapshot import (
+    PostgresFlattenSnapshotProvider,
+)
 from trading_bot.adapters.paper.account_activity import PaperLedgerAccountActivityAdapter
 from trading_bot.adapters.secrets.local_mfa import LocalMfaSecretProvider
 from trading_bot.adapters.telegram.recording_sender import RecordingTelegramSender
@@ -29,11 +35,14 @@ from trading_bot.admin.bot_service import BotConfigAdminService
 from trading_bot.admin.bots_router import router as bots_router
 from trading_bot.admin.settings_router import router as settings_router
 from trading_bot.admin.settings_service import SettingsAdminService
+from trading_bot.admin.telegram_binding_router import router as telegram_binding_router
+from trading_bot.admin.web_router import router as admin_web_router
 from trading_bot.application.account_activity_guard import AccountActivityGuard
 from trading_bot.application.bot_operations import BotOperationsService
 from trading_bot.application.bot_reporting import BotReportingService
 from trading_bot.application.bot_runtime_registry import BotRuntimeRegistry
 from trading_bot.application.bot_runtime_supervisor import BotRuntimeSupervisor
+from trading_bot.application.flatten_all import FlattenAllService
 from trading_bot.application.paper_runtime_application import (
     PaperBotDecisionCommand,
     PaperRuntimeApplicationService,
@@ -43,6 +52,7 @@ from trading_bot.application.paper_runtime_bootstrap import (
     PaperRuntimeBootstrapService,
     new_runtime_owner_id,
 )
+from trading_bot.application.telegram_binding import TelegramBindingService
 from trading_bot.auth.router import router as auth_router
 from trading_bot.auth.security import LoginRateLimiter
 from trading_bot.auth.service import AuthService
@@ -169,6 +179,23 @@ def create_app(
             if active_session_factory is not None
             else None
         )
+        application.state.flatten_all_service = (
+            FlattenAllService(
+                active_session_factory,
+                snapshot_provider=PostgresFlattenSnapshotProvider(),
+                operations_factory=application.state.bot_operations_service.for_principal,
+            )
+            if active_session_factory is not None
+            else None
+        )
+        application.state.telegram_binding_service = (
+            TelegramBindingService(
+                DatabaseTelegramStore(active_session_factory),
+                bot_username=app_settings.telegram_bot_username,
+            )
+            if active_session_factory is not None and app_settings.telegram_bot_username
+            else None
+        )
         application.state.telegram_sender = RecordingTelegramSender()
         application.state.telegram_webhook = _build_telegram_webhook(
             app_settings, active_session_factory, application.state
@@ -206,6 +233,12 @@ def create_app(
     )
     app.add_middleware(SecurityHeadersMiddleware, headers=security_headers(app_settings))
     app.state.settings = app_settings
+    app.state.templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
+    app.mount(
+        "/static",
+        StaticFiles(directory=str(Path(__file__).parent / "static")),
+        name="static",
+    )
     app.state.login_limiter = LoginRateLimiter()
     app.state.readiness = {
         "database": False,
@@ -220,6 +253,8 @@ def create_app(
     app.include_router(bots_router)
     app.include_router(bot_reports_router)
     app.include_router(bot_control_router)
+    app.include_router(telegram_binding_router)
+    app.include_router(admin_web_router)
     app.include_router(telegram_router)
 
     @app.exception_handler(RequestValidationError)

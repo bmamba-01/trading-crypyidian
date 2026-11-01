@@ -53,6 +53,12 @@ class FakeTelegramStore:
         self.bindings: dict[tuple[UUID, str], TelegramBindingIdentity] = {}
         self.audits: list[dict[str, Any]] = []
         self.fail_binding: BaseException | None = None
+        self.link_code: str | None = None
+        self.link_nonce = "n" * 43
+        self.link_consumed = False
+        self.callback_consumed = False
+        self.link_code_inputs: list[str] = []
+        self.callback_inputs: list[tuple[str, str]] = []
 
     async def claim_update(self, workspace_id: UUID, update_id: int) -> bool:
         self.calls.append("claim")
@@ -73,6 +79,30 @@ class FakeTelegramStore:
     async def record_audit(self, workspace_id: UUID, **values: Any) -> None:
         self.calls.append("audit")
         self.audits.append(values | {"workspace_id": workspace_id})
+
+    async def consume_link_code(
+        self, workspace_id: UUID, code: str, telegram_user_id: str, request_id: UUID
+    ) -> str | None:
+        del workspace_id, telegram_user_id, request_id
+        self.link_code_inputs.append(code)
+        if code != self.link_code or self.link_consumed:
+            return None
+        self.link_consumed = True
+        return self.link_nonce
+
+    async def confirm_link_callback(
+        self, workspace_id: UUID, nonce: str, telegram_user_id: str, request_id: UUID
+    ) -> bool:
+        del workspace_id, request_id
+        self.callback_inputs.append((nonce, telegram_user_id))
+        accepted = (
+            nonce == self.link_nonce
+            and telegram_user_id == str(UNBOUND_TG)
+            and not self.callback_consumed
+        )
+        if accepted:
+            self.callback_consumed = True
+        return accepted
 
 
 def _bind(store: Store, telegram: FakeTelegramStore, kind: str, tg_user: int, ws: UUID) -> None:
@@ -254,6 +284,91 @@ def test_non_command_text_is_ignored() -> None:
 
     assert response.json()["status"] == "ignored"
     assert sender.messages == []
+
+
+def test_start_link_code_requires_private_confirmation_and_never_audits_code(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    client, _, telegram, sender = _setup()
+    code = "a" * 43
+    telegram.link_code = code
+    caplog.set_level(logging.INFO, logger=webhook_module.__name__)
+
+    response = _send(client, _message(f"/start {code}", user=UNBOUND_TG, update_id=81))
+
+    assert response.json() == {"ok": True, "status": "link_confirmation_required"}
+    assert telegram.link_code_inputs == [code]
+    assert list(sender.confirmations) == [
+        (
+            UNBOUND_TG,
+            "Xác nhận liên kết tài khoản Telegram này với Crypidian.",
+            f"bind:{telegram.link_nonce}",
+        )
+    ]
+    assert code not in caplog.text
+    assert all(code not in str(audit) for audit in telegram.audits)
+
+
+def test_start_link_code_from_group_is_rejected_before_code_lookup() -> None:
+    client, _, telegram, sender = _setup()
+    telegram.link_code = "a" * 43
+
+    response = _send(
+        client,
+        _message(
+            f"/start {telegram.link_code}",
+            user=UNBOUND_TG,
+            update_id=82,
+            chat={"id": -10, "type": "group"},
+        ),
+    )
+
+    assert response.json()["status"] == "rejected"
+    assert telegram.link_code_inputs == []
+    assert list(sender.confirmations) == []
+
+
+def test_link_callback_is_bound_to_private_sender_and_single_use() -> None:
+    client, _, telegram, sender = _setup()
+    callback = {
+        "update_id": 83,
+        "callback_query": {
+            "id": "callback-1",
+            "from": {"id": UNBOUND_TG, "is_bot": False},
+            "message": {"message_id": 1, "chat": {"id": UNBOUND_TG, "type": "private"}},
+            "data": f"bind:{telegram.link_nonce}",
+        },
+    }
+
+    response = _send(client, callback)
+    replay = _send(client, callback | {"update_id": 84})
+
+    assert response.json()["status"] == "linked"
+    assert replay.json()["status"] == "link_confirmation_invalid"
+    assert telegram.callback_inputs == [
+        (telegram.link_nonce, str(UNBOUND_TG)),
+        (telegram.link_nonce, str(UNBOUND_TG)),
+    ]
+    assert len(sender.callback_answers) == 2
+
+
+def test_link_callback_from_different_user_is_not_accepted() -> None:
+    client, _, telegram, sender = _setup()
+    callback = {
+        "update_id": 85,
+        "callback_query": {
+            "id": "callback-2",
+            "from": {"id": OWNER_TG, "is_bot": False},
+            "message": {"message_id": 1, "chat": {"id": OWNER_TG, "type": "private"}},
+            "data": f"bind:{telegram.link_nonce}",
+        },
+    }
+
+    response = _send(client, callback)
+
+    assert response.json()["status"] == "link_confirmation_invalid"
+    assert telegram.callback_inputs == [(telegram.link_nonce, str(OWNER_TG))]
+    assert sender.callback_answers[-1][1] == "Xác nhận không hợp lệ hoặc đã hết hạn."
 
 
 # --- SECT-40: update giả mạo ----------------------------------------------------------------

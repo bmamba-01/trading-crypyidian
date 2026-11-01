@@ -1,0 +1,66 @@
+{% extends "admin/base.html" %}
+{% block title %}{{ bot.name }} — Crypidian{% endblock %}
+{% block heading %}{{ bot.name }}{% endblock %}
+{% block content %}
+<dl>
+  <dt>Trạng thái account</dt><dd>{{ bot.status }} / {{ bot.account_status }} / {{ bot.account_mode }}</dd>
+  <dt>Readiness</dt><dd>{{ bot.readiness }}</dd>
+  <dt>Trạng thái entry</dt><dd>{{ bot.entry_state }}</dd>
+  <dt>Cho phép mở entry</dt><dd>{{ "Có" if bot.entry_allowed else "Không" }}</dd>
+</dl>
+<section aria-labelledby="bot-control-heading">
+  <h2 id="bot-control-heading">Điều khiển bot</h2>
+  {% if bot.status == "DISABLED" and "owner" in identity.principal.roles %}
+  <form method="post" action="/admin/bots/{{ bot.id }}/enable">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label for="enable-reason">Lý do bật lại bot</label>
+    <input id="enable-reason" name="reason" maxlength="500" required>
+    <button type="submit">Bật bot sau đối soát</button>
+  </form>
+  {% endif %}
+  <form method="post" action="/admin/bots/{{ bot.id }}/pause">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label for="pause-reason">Lý do pause</label>
+    <input id="pause-reason" name="reason" maxlength="500" required>
+    <button type="submit">Pause bot</button>
+  </form>
+  <form method="post" action="/admin/bots/{{ bot.id }}/resume">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="expected_revision" value="{{ bot.control_revision }}">
+    <label for="resume-reason">Lý do resume</label>
+    <input id="resume-reason" name="reason" maxlength="500" required>
+    <button type="submit">Resume bot</button>
+  </form>
+  <form method="post" action="/admin/bots/{{ bot.id }}/disable">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label for="disable-reason">Lý do disable</label>
+    <input id="disable-reason" name="reason" maxlength="500" required>
+    <button type="submit">Disable bot</button>
+  </form>
+</section>
+<section aria-label="Cấu hình chiến lược">
+  <h2>Bản nháp cấu hình</h2>
+  {% if draft_validation == "valid" %}<p role="status">Bản nháp đã qua kiểm định.</p>{% endif %}
+  {% if draft_validation == "invalid" %}<p role="alert">Bản nháp không hợp lệ; xem lỗi qua API cấu hình.</p>{% endif %}
+  {% if config_draft %}
+  <p>Draft {{ config_draft.id }} — revision {{ config_draft.revision }}</p>
+  <form method="post" action="/admin/bots/{{ bot.id }}/config-drafts/{{ config_draft.id }}/validate">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit">Kiểm định bản nháp</button>
+  </form>
+  <form method="post" action="/admin/bots/{{ bot.id }}/config-drafts/{{ config_draft.id }}/publish">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="expected_revision" value="{{ config_draft.revision }}">
+    <button type="submit">Publish bản nháp</button>
+  </form>
+  {% endif %}
+  <form method="post" action="/admin/bots/{{ bot.id }}/config-drafts">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="expected_parent_version_id" value="{{ config_parent_version_id }}">
+    <label for="overlay-json">Overlay JSON</label>
+    <textarea id="overlay-json" name="overlay_json" rows="10" cols="72" required>{{ config_draft_json }}</textarea>
+    <button type="submit">Tạo bản nháp</button>
+  </form>
+</section>
+<p><a href="/admin/bots">Quay lại danh sách bot</a></p>
+{% endblock %}

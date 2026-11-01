@@ -23,6 +23,11 @@ from trading_bot.adapters.database.models.entities import (
     TradingAccount,
     WorkspaceSettingsVersion,
 )
+from trading_bot.adapters.database.models.flatten_entities import (
+    FlattenOperationItemRecord,
+    FlattenOperationRecord,
+)
+from trading_bot.adapters.database.models.market_entities import MarketBar
 from trading_bot.adapters.database.models.paper_entities import OrderIntentRecord, TradeRecord
 from trading_bot.adapters.database.models.signal_entities import BotDecisionRecord
 from trading_bot.adapters.database.repositories.account_activity_incidents import (
@@ -76,7 +81,11 @@ from trading_bot.application.paper_lifecycle import (
     PositionLifecycleResult,
 )
 from trading_bot.application.paper_runtime_bootstrap import PaperRuntimeAccount
-from trading_bot.application.workspace_risk import ReservationRequest, WorkspaceRiskCoordinator
+from trading_bot.application.workspace_risk import (
+    ReservationRequest,
+    WorkspaceRiskCoordinator,
+    mark_policy_from,
+)
 from trading_bot.config.bot_settings import BotConfigOverlay, overlay_hash
 from trading_bot.config.workspace_settings import PublishedWorkspaceSettings, WorkspaceSettings
 from trading_bot.domain.execution.paper import PaperBar
@@ -906,6 +915,192 @@ class PaperRuntimeApplicationService:
             self._raise_if_fence_rejected(account_id, error)
             raise
 
+    async def process_flatten_operations(self, account_id: UUID) -> int:
+        """Xử lý một mục flatten sau khi pause đã được runtime áp và fence còn hợp lệ."""
+        account = self._require_account(account_id)
+        if self._sessions is None:
+            raise PaperRuntimeApplicationError("DATABASE_UNAVAILABLE")
+        processed = 0
+        try:
+            async with self._unit_of_work_factory(
+                self._sessions, workspace_id=self._workspace_id, bot_id=account.bot_id
+            ) as uow:
+                await self._settings_repository_factory(uow.session).lock_workspace(
+                    self._workspace_id
+                )
+                await self._require_fence(uow, account)
+                control = await self._read_control(uow, account)
+                state = await self._state_repository_factory(uow.session).get(
+                    workspace_id=self._workspace_id, bot_id=account.bot_id
+                )
+                revisions = control.revisions()
+                applied = (
+                    int(getattr(state, "applied_workspace_control_revision", 0) or 0),
+                    int(getattr(state, "applied_bot_control_revision", 0) or 0),
+                )
+                if (
+                    not _entries_blocked(control)
+                    or not bool(getattr(account.gateway, "entries_paused", False))
+                    or applied != (revisions["workspace"], revisions["bot"])
+                ):
+                    return 0
+
+                now = await uow.session.scalar(select(func.clock_timestamp()))
+                if not isinstance(now, datetime) or now.tzinfo is None:
+                    raise PaperRuntimeApplicationError("DATABASE_CLOCK_UNAVAILABLE")
+                published = await self._settings_repository_factory(
+                    uow.session
+                ).load_effective_config(workspace_id=self._workspace_id)
+                if published is None:
+                    raise PaperRuntimeApplicationError("WORKSPACE_SETTINGS_UNAVAILABLE")
+                mark_policy = mark_policy_from(published.settings)
+                max_mark_age = timedelta(seconds=published.settings.risk.max_mark_age_seconds)
+                item = await uow.session.scalar(
+                    select(FlattenOperationItemRecord)
+                    .where(
+                        FlattenOperationItemRecord.workspace_id == self._workspace_id,
+                        FlattenOperationItemRecord.bot_id == account.bot_id,
+                        FlattenOperationItemRecord.account_id == account.account_id,
+                        FlattenOperationItemRecord.status == "PENDING",
+                    )
+                    .order_by(
+                        FlattenOperationItemRecord.updated_at,
+                        FlattenOperationItemRecord.id,
+                    )
+                    .with_for_update(skip_locked=True)
+                    .limit(1)
+                )
+                if item is not None:
+                    item.attempt_count += 1
+                    item.status = "PROCESSING"
+                    if item.target_type == "OPEN_ORDER":
+                        open_intents = {order.intent_id for order in account.gateway.open_orders()}
+                        if item.target_id not in open_intents:
+                            item.status = "COMPLETED"
+                            item.result = {"outcome": "TERMINAL_AFTER_PAUSE"}
+                            item.last_error_code = None
+                        else:
+                            item.status = "BLOCKED"
+                            item.last_error_code = "FLATTEN_ORDER_REQUIRES_RECONCILIATION"
+                    else:
+                        mark = await uow.session.scalar(
+                            select(MarketBar)
+                            .where(
+                                MarketBar.workspace_id == self._workspace_id,
+                                MarketBar.symbol == item.symbol,
+                                MarketBar.source == mark_policy.source,
+                                MarketBar.timeframe.in_(mark_policy.timeframes),
+                                MarketBar.is_closed.is_(True),
+                                MarketBar.close_time <= now,
+                                MarketBar.available_at <= now,
+                            )
+                            .order_by(
+                                MarketBar.close_time.desc(),
+                                MarketBar.available_at.desc(),
+                                MarketBar.revision.desc(),
+                            )
+                            .limit(1)
+                        )
+                        mark_failure = _flatten_mark_failure_code(
+                            item, mark, now=now, max_mark_age=max_mark_age
+                        )
+                        if mark_failure == "FLATTEN_MARK_NOT_ADVANCED":
+                            # Không dùng lại mark đã tạo partial fill; giữ PENDING chờ nến mới.
+                            item.status = "PENDING"
+                            item.last_error_code = None
+                        elif mark_failure is not None:
+                            item.status = "BLOCKED"
+                            item.last_error_code = mark_failure
+                        else:
+                            assert mark is not None
+                            closed = await account.coordinator.close_position_for_operation(
+                                uow,
+                                account_id=account.account_id,
+                                position_id=item.target_id,
+                                operation_id=item.operation_id,
+                                reference_price=mark.close,
+                                closed_at=now,
+                                fencing_token=_require_token(account),
+                            )
+                            item.status = "COMPLETED" if closed.closed else "PENDING"
+                            item.result = {
+                                "outcome": "CLOSED" if closed.closed else "PARTIALLY_CLOSED",
+                                "fill_key": closed.fill_key,
+                                "trade_closed": closed.trade_closed,
+                                "mark_record_id": str(mark.id),
+                                "mark_revision": mark.revision,
+                                "mark_checksum": mark.checksum,
+                                "mark_close_time": mark.close_time.isoformat(),
+                                "mark_price": str(mark.close),
+                            }
+                            item.last_error_code = None if closed.closed else "FLATTEN_CLOSE_FAILED"
+                    processed = 1
+
+                operation_ids = await uow.session.scalars(
+                    select(FlattenOperationRecord.id)
+                    .join(
+                        FlattenOperationItemRecord,
+                        (
+                            FlattenOperationItemRecord.workspace_id
+                            == FlattenOperationRecord.workspace_id
+                        )
+                        & (FlattenOperationItemRecord.operation_id == FlattenOperationRecord.id),
+                    )
+                    .where(
+                        FlattenOperationRecord.workspace_id == self._workspace_id,
+                        FlattenOperationItemRecord.bot_id == account.bot_id,
+                        FlattenOperationRecord.status.in_(("QUEUED", "PROCESSING", "PARTIAL")),
+                    )
+                    .distinct()
+                )
+                for operation_id in operation_ids.all():
+                    statuses = list(
+                        (
+                            await uow.session.scalars(
+                                select(FlattenOperationItemRecord.status).where(
+                                    FlattenOperationItemRecord.workspace_id == self._workspace_id,
+                                    FlattenOperationItemRecord.operation_id == operation_id,
+                                )
+                            )
+                        ).all()
+                    )
+                    if statuses and all(status == "COMPLETED" for status in statuses):
+                        aggregate = "COMPLETED"
+                    elif statuses and all(status == "BLOCKED" for status in statuses):
+                        aggregate = "BLOCKED"
+                    elif any(status in {"PENDING", "PROCESSING"} for status in statuses):
+                        partial_fill = await uow.session.scalar(
+                            select(func.count(FlattenOperationItemRecord.id)).where(
+                                FlattenOperationItemRecord.workspace_id == self._workspace_id,
+                                FlattenOperationItemRecord.operation_id == operation_id,
+                                FlattenOperationItemRecord.result["outcome"].as_string()
+                                == "PARTIALLY_CLOSED",
+                            )
+                        )
+                        aggregate = "PARTIAL" if int(partial_fill or 0) else "PROCESSING"
+                    elif statuses:
+                        aggregate = "PARTIAL"
+                    else:
+                        aggregate = "COMPLETED"
+                    operation = await uow.session.scalar(
+                        select(FlattenOperationRecord)
+                        .where(
+                            FlattenOperationRecord.workspace_id == self._workspace_id,
+                            FlattenOperationRecord.id == operation_id,
+                        )
+                        .with_for_update()
+                    )
+                    if operation is not None:
+                        operation.status = aggregate
+            return processed
+        except PaperRuntimeApplicationError:
+            raise
+        except PaperLifecycleConflict, PaperCheckpointConflict:
+            raise PaperRuntimeApplicationError("FLATTEN_OPERATION_REJECTED") from None
+        except DBAPIError as error:
+            self._raise_if_fence_rejected(account_id, error)
+            raise
+
     async def expire_reservations(self, account_id: UUID, *, as_of: datetime) -> int:
         """Giải phóng reservation RESERVED quá hạn chưa gắn intent (command có fence, C6)."""
         account = self._require_account(account_id)
@@ -1575,6 +1770,43 @@ class PaperRuntimeApplicationService:
         from trading_bot.domain.strategy.registry import StrategyRegistry
 
         return PaperDecisionCycle(StrategyRegistry(), TradePlanner(), RiskEngine(), gateway)
+
+
+def _flatten_mark_failure_code(
+    item: FlattenOperationItemRecord,
+    mark: MarketBar | None,
+    *,
+    now: datetime,
+    max_mark_age: timedelta,
+) -> str | None:
+    """Giữ mark preview cho lần đầu; retry partial chỉ nhận mark mới hơn lần khớp gần nhất."""
+    if item.mark_price is None or item.mark_record_id is None:
+        return "FLATTEN_MARK_UNAVAILABLE"
+    if mark is None or mark.close_time > now or now - mark.close_time > max_mark_age:
+        return "FLATTEN_MARK_STALE"
+
+    if item.result.get("outcome") == "PARTIALLY_CLOSED":
+        previous_close_text = item.result.get("mark_close_time")
+        if not isinstance(previous_close_text, str):
+            return "FLATTEN_MARK_CHANGED"
+        try:
+            previous_close = datetime.fromisoformat(previous_close_text)
+        except ValueError:
+            return "FLATTEN_MARK_CHANGED"
+        if previous_close.tzinfo is None or previous_close.utcoffset() is None:
+            return "FLATTEN_MARK_CHANGED"
+        if mark.close_time <= previous_close:
+            return "FLATTEN_MARK_NOT_ADVANCED"
+        return None
+
+    if (
+        mark.id != item.mark_record_id
+        or mark.revision != item.mark_revision
+        or mark.checksum != item.mark_checksum
+        or mark.close_time != item.mark_close_time
+    ):
+        return "FLATTEN_MARK_CHANGED"
+    return None
 
 
 def _context_for_bot_release(

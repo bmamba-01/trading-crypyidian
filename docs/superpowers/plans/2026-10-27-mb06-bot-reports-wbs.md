@@ -1,6 +1,7 @@
 # WBS MB-06 — Báo cáo theo bot và tổng hợp workspace tường minh
 
 **Ngày:** 2026-10-27 · **Gói:** Task 7 / MB-06 trong [WBS Multi-Bot](2026-10-24-multibot-implementation-plan.md) · **Nền:** `dev` @ `1b583f7` (MB-01..MB-03, MB-05 Part A+B). **Chế độ:** chỉ PAPER, không gọi sàn.
+**Trạng thái:** đã triển khai và tích hợp `dev` (`611a307`, xác nhận hoàn tất trong `67702f4`). Code domain/service/repository/router, unit/API test và Compose E2E đều có trong nhánh hiện tại.
 
 **Căn cứ:** [hợp đồng Multi-Bot §7](../../architecture/decisions/2026-10-24-multibot-contracts.md) (bot ID không phải bằng chứng ủy quyền; service kiểm `BotPermission` theo hành động; RLS là lớp bổ sung), Global Constraints + Review Focus 5 của plan, [nghiên cứu bảo mật](../../research/security-admin-bot-2026.md) SEC-18/SEC-19 (BOLA → 404 như nhau), [QA dataset](../../testing/qa-test-data.md) (vai trò/grant chuẩn).
 

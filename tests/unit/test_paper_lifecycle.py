@@ -304,6 +304,77 @@ async def test_coordinator_passes_fencing_token_to_checkpoint_append() -> None:
     assert checkpoints.fencing_tokens == [FencingToken(7)]
 
 
+@pytest.mark.asyncio
+async def test_flatten_close_persists_reduce_only_exit_and_checkpoint() -> None:
+    from tests.unit.test_paper_lifecycle_checkpoints import CallbackUow, MemoryCheckpoints
+
+    from trading_bot.domain.execution.runtime_control import FencingToken
+
+    class FlattenLedger(MemoryLedger):
+        def __init__(self, intent_id: UUID) -> None:
+            super().__init__()
+            self.intent_id = intent_id
+            self.exits: list[dict[str, object]] = []
+
+        async def find_intent_id(self, _uow: object, **_values: object) -> UUID:
+            return self.intent_id
+
+        async def find_open_trade_id(self, _uow: object, **_values: object) -> UUID:
+            return self.trade_id
+
+        async def append_exit_fill(self, _uow: object, **values: object) -> bool:
+            self.exits.append(values)
+            return True
+
+    gateway = _gateway()
+    domain_order = gateway.submit(_plan(), "flatten-close-1", submitted_at=NOW, eligible_after=NOW)
+    ledger_intent_id = uuid4()
+    ledger = FlattenLedger(ledger_intent_id)
+    seed_coordinator = PaperLifecycleCoordinator(gateway, ledger)  # type: ignore[arg-type]
+    opened = await seed_coordinator.apply_entry_market_event(
+        object(),
+        paper_intent_id=domain_order.intent_id,
+        ledger_intent_id=ledger_intent_id,
+        bar=_bar("flatten-entry", 1),
+        available_quantity=Decimal("0.4"),
+    )
+    assert opened.position is not None
+    account_id = uuid4()
+    checkpoints = MemoryCheckpoints(gateway.export_state())
+    coordinator = PaperLifecycleCoordinator(
+        gateway,
+        ledger,
+        checkpoints,  # type: ignore[arg-type]
+    )
+    uow = CallbackUow()
+
+    result = await coordinator.close_position_for_operation(
+        uow,  # type: ignore[arg-type]
+        account_id=account_id,
+        position_id=opened.position.position_id,
+        operation_id=uuid4(),
+        reference_price=Decimal("102"),
+        closed_at=NOW + timedelta(minutes=4),
+        fencing_token=FencingToken(9),
+    )
+    uow.commit()
+
+    assert result.closed
+    assert result.trade_closed
+    assert result.fill_key is not None
+    assert len(ledger.exits) == 1
+    assert ledger.exits[0]["quantity"] == opened.position.quantity
+    assert ledger.closed == [
+        (
+            ledger.trade_id,
+            gateway.position(opened.position.position_id).gross_realized_pnl,
+            NOW + timedelta(minutes=4),
+        )
+    ]
+    assert gateway.position(opened.position.position_id).is_closed
+    assert checkpoints.fencing_tokens == [FencingToken(9)]
+
+
 def test_every_checkpoint_append_in_coordinator_passes_fencing_token() -> None:
     import ast
     import inspect
@@ -319,8 +390,8 @@ def test_every_checkpoint_append_in_coordinator_passes_fencing_token() -> None:
         and node.func.attr == "append"
         and "checkpoints" in ast.unparse(node.func.value)
     ]
-    # submit/entry/monitor + checkpoint control pause/resume (MB05.6) dùng chung một helper.
-    assert len(appends) == 4
+    # submit/entry/monitor + control pause/resume + flatten close đều có fence.
+    assert len(appends) == 5
     assert all(any(k.arg == "fencing_token" for k in node.keywords) for node in appends)
     for name in ("submit_approved", "apply_entry_market_event", "monitor_market_event"):
         parameter = inspect.signature(getattr(PaperLifecycleCoordinator, name)).parameters[

@@ -281,6 +281,17 @@ class PaperLedgerRepository:
             )
         )
 
+    async def find_open_trade_id(self, uow: UnitOfWork, *, intent_id: UUID) -> UUID | None:
+        """Đọc trade OPEN thuộc intent hiện hành trong scope bot/account."""
+        return await uow.session.scalar(
+            select(TradeRecord.id).where(
+                TradeRecord.bot_id == uow.session.info.get("bot_id"),
+                TradeRecord.workspace_id == uow.workspace_id,
+                TradeRecord.intent_id == intent_id,
+                TradeRecord.status == "OPEN",
+            )
+        )
+
     async def cancel_remainder(
         self, uow: UnitOfWork, *, intent_id: UUID, occurred_at: datetime
     ) -> bool:

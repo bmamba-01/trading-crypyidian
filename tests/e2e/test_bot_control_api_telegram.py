@@ -121,10 +121,23 @@ def test_admin_api_and_telegram_share_runtime_control_plane() -> None:
             200,
             {"bot": {"id": bots["a"], "status": "DISABLED", "changed": True}},
         ], tg
+        assert tg["enable_config_draft"][0] == 201
+        assert tg["enable_config_validation"]["body"]["valid"] is True
+        assert tg["enable_config_publish"]["status"] == 200
         assert tg["owner_disable_a_again"] == {
             "bot": {"id": bots["a"], "status": "DISABLED", "changed": False}
         }
-        assert tg["status_a_after_disable"] == "DISABLED"
+        enable_snapshot = tg["enable_snapshot"]
+        assert enable_snapshot["account"] == ["DISABLED", "PAPER", "binance_usdm", "DISABLED"]
+        assert enable_snapshot["runtime"][0:2] == ["READY", "VERIFIED"]
+        assert enable_snapshot["runtime"][2] == enable_snapshot["bot_revision"]
+        assert enable_snapshot["incidents"] == 0
+        assert enable_snapshot["published_configs"] >= 1
+        assert tg["owner_enable_a"] == [
+            200,
+            {"bot": {"id": bots["a"], "status": "ENABLED", "changed": True}},
+        ], {"result": tg["owner_enable_a"], "snapshot": tg["enable_snapshot"]}
+        assert tg["status_a_after_enable"] == "ENABLED"
         assert tg["no_secret_leak"] is True
         assert tg["replies_leak"] is False
 
@@ -140,6 +153,7 @@ def test_admin_api_and_telegram_share_runtime_control_plane() -> None:
             "bot.lifecycle.disable_denied",
             "bot.disabled",
             "bot.disabled.noop",
+            "bot.enabled",
             "telegram.command.accepted",
             "telegram.command.rejected",
             "telegram.update.rejected",
@@ -151,13 +165,106 @@ def test_admin_api_and_telegram_share_runtime_control_plane() -> None:
         assert "resume:RECENT_MFA_REQUIRED" in reasons
         # Mỗi update đúng secret được claim đúng một lần (kể cả replay, group, edited).
         assert db["receipts"] == 12, db["receipts"]  # update 101–112; sai secret không claim
-        assert db["bot_status"]["a"] == ["DISABLED", "DISABLED"]
+        assert db["bot_status"]["a"] == ["ENABLED", "ENABLED"]
         assert db["bot_status"]["b"] == ["ENABLED", "ENABLED"]
         b_controls = [row for row in db["controls"] if row[0] == bots["b"]]
         assert [row[1:3] for row in b_controls] == [[1, "PAUSED"]]
-        assert db["admin_web_reenable"] == "MB07A_ACCOUNT_STATUS_TRANSITION_DENIED", db
         assert db["role_after_reenable"] != "crypidian_admin_web"
         assert db["audit_leak"] is False
         assert db["user_text_in_audit"] is False
+    finally:
+        harness.down()
+
+
+def test_flatten_operation_is_processed_by_fenced_paper_runtime() -> None:
+    harness = BotControlHarness()
+    try:
+        harness.start("admin-web")
+        harness.state = harness.probe(
+            "seed",
+            "migrator",
+            variants={"main": "1", "other": "1"},
+            fresh_mark_only=True,
+        )
+        harness.probe("genesis")
+        setup = harness.probe("runtime_control_setup")
+        harness.state |= setup
+        harness.state |= harness.probe("mb07a_auth_seed", "migrator")
+        harness.probe("mb07b_seed_fresh_mark", "migrator")
+        harness.environment["TRADING_BOT_RUNTIME_WORKSPACE_ID"] = harness.state["workspaces"][
+            "main"
+        ]["workspace"]
+        harness.compose("up", "--detach", "--wait", "--wait-timeout", "180", "trading-runtime")
+        result = harness.probe("mb07b_flatten_api", "admin-web")
+        harness.state["mb07b_operation_id"] = result["operation"]["id"]
+        database = harness.probe("mb07b_flatten_inspect", "migrator")
+
+        assert result["preview"]["position_count"] == 1, result
+        assert result["operation"]["status"] == "COMPLETED", {
+            "status": result["operation"]["status"],
+            "items": [
+                (item["target_type"], item["status"], item["error_code"], item["result"])
+                for item in result["operation"]["items"]
+            ],
+        }
+        assert result["operation"]["items"]
+        assert all(item["status"] == "COMPLETED" for item in result["operation"]["items"]), result
+        assert any(
+            item["target_type"] == "POSITION" and item["result"]["outcome"] == "CLOSED"
+            for item in result["operation"]["items"]
+        ), result
+        assert database["status"] == "COMPLETED", database
+        assert database["exit_fill_count"] == 1, database
+    finally:
+        harness.down()
+
+
+def test_telegram_binding_link_revoke_rebind_and_locked_member_are_database_backed() -> None:
+    harness = BotControlHarness()
+    try:
+        harness.start("admin-web")
+        harness.state = harness.probe("seed", "migrator", variants={"main": "1", "other": "1"})
+        harness.probe("genesis")
+        harness.state |= harness.probe("mb07a_auth_seed", "migrator")
+
+        result = harness.probe("mb07b_telegram_binding_lifecycle", "admin-web")
+
+        assert result["rebind_history"] == 3, result
+        assert result["active_owner_binding"] == "7000004", result
+        assert result["link_audit_count"] >= 6, result
+        assert result["wrong_workspace_status"] == "link_invalid", result
+        harness.probe("mb07b_telegram_lock_seed", "migrator")
+        locked = harness.probe("mb07b_telegram_lock_webhook", "admin-web")
+        assert locked == {"webhook_status": "unbound", "active_binding_count": 0}, locked
+    finally:
+        harness.down()
+
+
+def test_enable_pause_and_disable_pause_are_serialized_by_workspace_l1() -> None:
+    """Các mutation cạnh tranh phải xếp hàng ở L1 và giữ cả hai trạng thái cuối."""
+    harness = BotControlHarness()
+    try:
+        harness.start("admin-web")
+        harness.state = harness.probe("seed", "migrator", variants={"main": "1", "other": "1"})
+        harness.probe("genesis")
+        runtime = harness.probe("mb07b_enable_race_runtime_setup")
+        assert runtime["closed"]["closed"] is True, runtime
+        harness.state |= harness.probe("mb07a_auth_seed", "migrator")
+
+        prepared = harness.probe("mb07b_enable_race_prepare", "admin-web")
+        assert prepared["published"]["status"] == 200, prepared
+        assert prepared["disabled"]["status"] == 200, prepared
+
+        result = harness.probe("mb07b_enable_pause_disable_race", "admin-web")
+        assert result["enable_pause"]["queued_on_l1"] is True, result
+        assert result["enable_pause"]["first"]["status"] == 200, result
+        assert result["enable_pause"]["second"]["status"] == 200, result
+        assert result["resume"]["status"] == 200, result
+        assert result["disable_pause"]["queued_on_l1"] is True, result
+        assert result["disable_pause"]["first"]["status"] == 200, result
+        assert result["disable_pause"]["second"]["status"] == 200, result
+        final_bot = result["final_status"]["body"]["bot"]
+        assert final_bot["status"] == "DISABLED", final_bot
+        assert final_bot["entry_state"] == "PAUSED", final_bot
     finally:
         harness.down()

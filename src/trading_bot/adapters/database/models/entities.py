@@ -122,7 +122,20 @@ class TelegramBinding(UuidPrimaryKey, CreatedAt, Base):
     __tablename__ = "telegram_binding"
     __table_args__ = (
         UniqueConstraint("workspace_id", "id", name="uq_telegram_binding_workspace_id"),
-        UniqueConstraint("workspace_id", "telegram_user_id", name="uq_telegram_binding_user"),
+        Index(
+            "uq_telegram_binding_active_user",
+            "workspace_id",
+            "telegram_user_id",
+            unique=True,
+            postgresql_where=text("revoked_at IS NULL"),
+        ),
+        Index(
+            "uq_telegram_binding_active_membership",
+            "workspace_id",
+            "membership_id",
+            unique=True,
+            postgresql_where=text("revoked_at IS NULL"),
+        ),
         ForeignKeyConstraint(
             ["workspace_id", "membership_id"],
             ["user_membership.workspace_id", "user_membership.id"],

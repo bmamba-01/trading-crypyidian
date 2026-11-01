@@ -14,6 +14,7 @@ dependencies = [
     "cryptography==50.0.2",
     "fastapi==0.156.4",
     "httpx2>=2,<3",
+    "jinja2==3.1.6",
     "psycopg[binary]==3.3.6",
     "pydantic-settings==2.16.0",
     "pyotp==2.10.0",
@@ -24,8 +25,10 @@ dependencies = [
 [dependency-groups]
 dev = [
     "mypy>=1.18,<2",
+    "playwright==1.64.1",
     "pytest>=9.1,<10",
     "pytest-asyncio>=1.4,<2",
+    "pytest-playwright==0.10.0",
     "ruff>=0.14,<1",
     "uv-build>=0.13.0,<0.14",
 ]

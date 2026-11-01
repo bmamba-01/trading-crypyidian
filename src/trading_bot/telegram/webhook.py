@@ -14,6 +14,7 @@ secret hay Telegram user id.
 
 from __future__ import annotations
 
+import hashlib
 import hmac
 import json
 import logging
@@ -77,6 +78,8 @@ _FORGED_FIELDS = {
     "forward_origin": "TELEGRAM_FORWARDED",
     "guest_bot_caller_user": "TELEGRAM_GUEST_BOT",
 }
+_LINK_START = re.compile(r"^/start(?:@[A-Za-z0-9_]+)?\s+([A-Za-z0-9_-]{43,64})$")
+_LINK_CALLBACK = re.compile(r"^bind:([A-Za-z0-9_-]{43,64})$")
 
 router = APIRouter(prefix="/api/v1/telegram", tags=["telegram"])
 
@@ -101,6 +104,14 @@ class TelegramStore(Protocol):
     ) -> TelegramBindingIdentity | None: ...
 
     async def record_audit(self, workspace_id: UUID, **values: Any) -> None: ...
+
+    async def consume_link_code(
+        self, workspace_id: UUID, code: str, telegram_user_id: str, request_id: UUID
+    ) -> str | None: ...
+
+    async def confirm_link_callback(
+        self, workspace_id: UUID, nonce: str, telegram_user_id: str, request_id: UUID
+    ) -> bool: ...
 
 
 class DatabaseTelegramStore:
@@ -134,6 +145,99 @@ class DatabaseTelegramStore:
                 target_id=values.get("target_id"),
                 reason=values.get("reason"),
             )
+
+    async def create_link_request(
+        self,
+        workspace_id: UUID,
+        membership_id: UUID,
+        created_by: UUID,
+        digest: str,
+        expires_at: Any,
+        reason: str,
+    ) -> None:
+        async with UnitOfWork(
+            self._sessions, workspace_id=workspace_id, actor_membership_id=created_by
+        ) as uow:
+            await TelegramBindingRepository(uow.session).create_link_request(
+                workspace_id, membership_id, created_by, digest, expires_at, reason
+            )
+            uow.record_audit(
+                action="telegram.binding.link_requested",
+                target_type="user_membership",
+                target_id=membership_id,
+                reason=reason,
+            )
+
+    async def revoke(
+        self,
+        workspace_id: UUID,
+        membership_id: UUID,
+        actor_membership_id: UUID,
+        reason: str,
+    ) -> int:
+        async with UnitOfWork(
+            self._sessions, workspace_id=workspace_id, actor_membership_id=actor_membership_id
+        ) as uow:
+            count = await TelegramBindingRepository(uow.session).revoke(workspace_id, membership_id)
+            uow.record_audit(
+                action="telegram.binding.revoked",
+                target_type="user_membership",
+                target_id=membership_id,
+                reason=reason,
+            )
+            return count
+
+    async def list_bindings(self, workspace_id: UUID) -> list[dict[str, str]]:
+        async with UnitOfWork(self._sessions, workspace_id=workspace_id) as uow:
+            return await TelegramBindingRepository(uow.session).list_active(workspace_id)
+
+    async def consume_link_code(
+        self, workspace_id: UUID, code: str, telegram_user_id: str, request_id: UUID
+    ) -> str | None:
+        digest = hashlib.sha256(code.encode("ascii")).hexdigest()
+        async with UnitOfWork(
+            self._sessions, workspace_id=workspace_id, request_id=request_id
+        ) as uow:
+            result = await TelegramBindingRepository(uow.session).create_link_challenge(
+                workspace_id, digest, telegram_user_id
+            )
+            if result is None:
+                uow.record_audit(
+                    action="telegram.binding.link_rejected",
+                    target_type="telegram_update",
+                    reason="TELEGRAM_LINK_INVALID",
+                )
+                return None
+            nonce, membership_id = result
+            uow.record_audit(
+                action="telegram.binding.challenge_created",
+                target_type="user_membership",
+                target_id=membership_id,
+                reason="TELEGRAM_LINK_CONFIRMATION_REQUIRED",
+            )
+            return nonce
+
+    async def confirm_link_callback(
+        self, workspace_id: UUID, nonce: str, telegram_user_id: str, request_id: UUID
+    ) -> bool:
+        digest = hashlib.sha256(nonce.encode("ascii")).hexdigest()
+        async with UnitOfWork(
+            self._sessions, workspace_id=workspace_id, request_id=request_id
+        ) as uow:
+            accepted, membership_id = await TelegramBindingRepository(
+                uow.session
+            ).confirm_link_challenge(workspace_id, digest, telegram_user_id)
+            uow.record_audit(
+                action=(
+                    "telegram.binding.verified" if accepted else "telegram.binding.confirm_rejected"
+                ),
+                target_type="user_membership" if membership_id else "telegram_update",
+                target_id=membership_id,
+                reason=(
+                    "TELEGRAM_LINK_CONFIRMED" if accepted else "TELEGRAM_LINK_CONFIRMATION_INVALID"
+                ),
+            )
+            return accepted
 
 
 class TelegramCommandThrottle:
@@ -331,6 +435,9 @@ class TelegramWebhookService:
     async def _process_claimed(
         self, update: Mapping[str, Any], request_id: UUID, progress: _Progress
     ) -> str:
+        callback = update.get("callback_query")
+        if isinstance(callback, Mapping):
+            return await self._process_link_callback(callback, request_id, progress)
         message = update.get("message")
         if not isinstance(message, Mapping):
             # edited_message, callback_query, channel_post… : đã claim, bỏ qua (ruling 38).
@@ -345,6 +452,23 @@ class TelegramWebhookService:
             return "rejected"
         sender_id = int(message["from"]["id"])
         progress.sender_id = sender_id
+        link_match = _LINK_START.fullmatch(text)
+        if link_match is not None:
+            nonce = await self._store.consume_link_code(
+                self._workspace_id, link_match.group(1), str(sender_id), request_id
+            )
+            if nonce is None:
+                await self._safe_send(
+                    sender_id,
+                    "Mã liên kết không hợp lệ hoặc đã hết hạn. Hãy tạo mã mới trong Admin Web.",
+                )
+                return "link_invalid"
+            await self._sender.send_link_confirmation(
+                sender_id,
+                "Xác nhận liên kết tài khoản Telegram này với Crypidian.",
+                f"bind:{nonce}",
+            )
+            return "link_confirmation_required"
         identity = await self._store.resolve_binding(self._workspace_id, str(sender_id))
         if identity is None:
             if self._unbound_sampler.allow(str(sender_id)):
@@ -386,6 +510,43 @@ class TelegramWebhookService:
         await self._sender.send_message(sender_id, result.message)
         progress.sent = True
         return "processed"
+
+    async def _process_link_callback(
+        self, callback: Mapping[str, Any], request_id: UUID, progress: _Progress
+    ) -> str:
+        sender = callback.get("from")
+        message = callback.get("message")
+        data = callback.get("data")
+        callback_id = callback.get("id")
+        chat = message.get("chat") if isinstance(message, Mapping) else None
+        sender_id = sender.get("id") if isinstance(sender, Mapping) else None
+        if (
+            not isinstance(sender, Mapping)
+            or not isinstance(sender_id, int)
+            or isinstance(sender_id, bool)
+            or sender_id <= 0
+            or sender.get("is_bot") is not False
+            or not isinstance(chat, Mapping)
+            or chat.get("type") != "private"
+            or chat.get("id") != sender_id
+            or not isinstance(callback_id, str)
+            or not isinstance(data, str)
+        ):
+            await self._audit(
+                request_id, "telegram.update.rejected", None, None, "TELEGRAM_CALLBACK_INVALID"
+            )
+            return "rejected"
+        progress.sender_id = sender_id
+        match = _LINK_CALLBACK.fullmatch(data)
+        accepted = False
+        if match is not None:
+            accepted = await self._store.confirm_link_callback(
+                self._workspace_id, match.group(1), str(sender_id), request_id
+            )
+        answer = "Đã liên kết Telegram." if accepted else "Xác nhận không hợp lệ hoặc đã hết hạn."
+        await self._sender.answer_callback(callback_id, answer)
+        await self._safe_send(sender_id, answer)
+        return "linked" if accepted else "link_confirmation_invalid"
 
     async def _safe_audit(
         self,

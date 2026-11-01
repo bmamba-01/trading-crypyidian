@@ -269,3 +269,86 @@ def test_non_transient_database_error_is_not_masked() -> None:
 
     with pytest.raises(DBAPIError):
         _run(ops.pause_bot(BOT_A, "Bảo trì"))
+
+
+def test_enable_bot_requires_owner_recent_mfa_and_reason() -> None:
+    store = seeded_store()
+    owner = member(store, "owner")
+    operator = member(store, "operator")
+    stale = member(store, "owner", mfa_age=timedelta(minutes=16))
+    service = build_operations(store)
+
+    assert _code(service.for_principal(operator).enable_bot(BOT_A, "Bật")) == (
+        "CONTROL_PERMISSION_DENIED"
+    )
+    assert _code(service.for_principal(stale).enable_bot(BOT_A, "Bật")) == ("RECENT_MFA_REQUIRED")
+    assert _code(service.for_principal(owner).enable_bot(BOT_A, "  ")) == (
+        "CONTROL_REASON_REQUIRED"
+    )
+
+
+def test_enable_bot_requires_reconciled_safe_workspace_and_published_config() -> None:
+    store = seeded_store()
+    owner = member(store, "owner")
+    store.bots[BOT_A]["status"] = "DISABLED"
+    ops = build_operations(store).for_principal(owner)
+
+    assert _code(ops.enable_bot(BOT_A, "Bật sau kiểm tra")) == (
+        "BOT_ENABLE_RECONCILIATION_REQUIRED"
+    )
+    assert store.bots[BOT_A]["status"] == "DISABLED"
+    assert store.audits[-1]["action"] == "bot.lifecycle.enable_denied"
+
+
+def test_enable_bot_checks_l1_before_account_lock_and_is_idempotent() -> None:
+    store = seeded_store()
+    owner = member(store, "owner")
+    store.bots[BOT_A]["status"] = "DISABLED"
+    store.readiness[BOT_A] = ("STANDBY", None)
+    store.activity_status[BOT_A] = "VERIFIED"
+    store.bot_rows[BOT_A] = [BotEntryState.PAUSED]
+    store.applied_revisions[BOT_A] = (1, 0)
+    store.published_config.add(BOT_A)
+    ops = build_operations(store).for_principal(owner)
+
+    first = _run(ops.enable_bot(BOT_A, "Đã đối soát"))
+    second = _run(ops.enable_bot(BOT_A, "Lặp"))
+
+    assert (first.changed, first.status) == (True, "ENABLED")
+    assert second.changed is False
+    assert store.bots[BOT_A]["status"] == "ENABLED"
+    assert store.bot_rows[BOT_A] == [BotEntryState.PAUSED]
+    assert store.events.index("guard:L1") < store.events.index("account:lock")
+    assert [audit["action"] for audit in store.audits[-2:]] == [
+        "bot.enabled",
+        "bot.enabled.noop",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("blocker", "expected"),
+    [
+        ("workspace_kill", "BOT_ENABLE_WORKSPACE_KILLED"),
+        ("incident", "BOT_ENABLE_OPEN_INCIDENT"),
+        ("config", "BOT_ENABLE_CONFIG_REQUIRED"),
+    ],
+)
+def test_enable_bot_rejects_kill_incident_and_missing_published_config(
+    blocker: str, expected: str
+) -> None:
+    store = seeded_store()
+    owner = member(store, "owner")
+    store.bots[BOT_A]["status"] = "DISABLED"
+    store.readiness[BOT_A] = ("READY", None)
+    store.activity_status[BOT_A] = "VERIFIED"
+    store.applied_revisions[BOT_A] = (0, 0)
+    store.published_config.add(BOT_A)
+    if blocker == "workspace_kill":
+        store.workspace_rows.append(WorkspaceKillState.KILLED)
+    elif blocker == "incident":
+        store.open_incidents.add(BOT_A)
+    else:
+        store.published_config.remove(BOT_A)
+
+    assert _code(build_operations(store).for_principal(owner).enable_bot(BOT_A, "Bật")) == expected
+    assert store.bots[BOT_A]["status"] == "DISABLED"

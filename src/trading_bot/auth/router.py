@@ -24,6 +24,7 @@ from trading_bot.auth.service import (
     AuthenticationFailure,
     AuthIdentity,
     AuthService,
+    LoginResult,
 )
 from trading_bot.config.settings import AppSettings
 
@@ -62,6 +63,35 @@ def session_account_scope(workspace_id: UUID) -> str:
 
 def raise_auth_failure(error: AuthenticationFailure) -> None:
     raise HTTPException(status_code=error.status_code, detail=error.message) from error
+
+
+async def authenticate_login(
+    *,
+    workspace_slug: str,
+    email: str,
+    password: str,
+    code: str,
+    address: str,
+    service: AuthService,
+    limiter: LoginRateLimiter,
+) -> LoginResult:
+    """Dùng chung xác thực, MFA và throttle cho API lẫn form HTML."""
+    normalized_email = email.strip().casefold()
+    scope = login_account_scope(workspace_slug)
+    if not limiter.allow(address, normalized_email, account_scope=scope):
+        raise HTTPException(status_code=429, detail=THROTTLED_DETAIL)
+    try:
+        result = await service.login(
+            workspace_slug=workspace_slug,
+            email=normalized_email,
+            password=password,
+            code=code,
+        )
+    except AuthenticationFailure as error:
+        limiter.record_failure(address, normalized_email, account_scope=scope)
+        raise_auth_failure(error)
+    limiter.record_success(address, normalized_email, account_scope=scope)
+    return result
 
 
 @router.post("/auth/bootstrap", status_code=status.HTTP_201_CREATED)
@@ -141,22 +171,15 @@ async def login(
     service: Annotated[AuthService, Depends(get_auth_service)],
     limiter: Annotated[LoginRateLimiter, Depends(get_rate_limiter)],
 ) -> dict[str, object]:
-    email = body.email.strip().casefold()
-    scope = login_account_scope(body.workspace_slug)
-    address = client_address(request)
-    if not limiter.allow(address, email, account_scope=scope):
-        raise HTTPException(status_code=429, detail=THROTTLED_DETAIL)
-    try:
-        result = await service.login(
-            workspace_slug=body.workspace_slug,
-            email=email,
-            password=body.password,
-            code=body.code,
-        )
-    except AuthenticationFailure as error:
-        limiter.record_failure(address, email, account_scope=scope)
-        raise_auth_failure(error)
-    limiter.record_success(address, email, account_scope=scope)
+    result = await authenticate_login(
+        workspace_slug=body.workspace_slug,
+        email=body.email,
+        password=body.password,
+        code=body.code,
+        address=client_address(request),
+        service=service,
+        limiter=limiter,
+    )
     settings: AppSettings = request.app.state.settings
     set_session_cookie(
         response,

@@ -52,9 +52,10 @@ def test_migration_chains_after_mb05_head_as_single_head() -> None:
         loaded = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(loaded)
         parents.add(loaded.down_revision)
-    # Fix round 2 nối migration mark policy ngay sau; head mới là b3d5f7a9c1e4.
+    # Các migration MB-07b tiếp tục nối trên head mark-policy MB-05b.
     assert "f7a9c1e3b5d8" in parents
-    assert "b3d5f7a9c1e4" not in parents
+    assert "b3d5f7a9c1e4" in parents
+    assert "c8e4a2f6d190" in parents
 
 
 def test_upgrade_owns_definer_function_by_guarded_nologin_role(

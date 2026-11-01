@@ -77,6 +77,11 @@ def test_schema_contains_all_foundation_tables() -> None:
         "bot_runtime_state",
         "account_activity_incident",
         "telegram_update_receipt",
+        "telegram_link_request",
+        "telegram_binding_challenge",
+        "flatten_preview",
+        "flatten_operation",
+        "flatten_operation_item",
     }
 
 

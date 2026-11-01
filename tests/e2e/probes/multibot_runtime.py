@@ -418,7 +418,8 @@ def _seed_marks(connection: psycopg.Connection, workspace: UUID, t0: datetime) -
     )
     with connection.cursor() as cursor:
         rows = []
-        for minute in range(-5, MARK_MINUTES):
+        mark_end = 1 if STATE.get("fresh_mark_only") else MARK_MINUTES
+        for minute in range(-5, mark_end):
             closed = t0 + timedelta(minutes=minute)
             rows.append(
                 (

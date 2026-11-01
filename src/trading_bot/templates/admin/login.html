@@ -1,0 +1,32 @@
+{% extends "admin/base.html" %}
+
+{% block title %}Đăng nhập · Crypidian{% endblock %}
+
+{% block content %}
+  <section aria-labelledby="login-heading" class="login-panel">
+    <h2 id="login-heading">Đăng nhập</h2>
+    {% if error %}
+      <div class="error-summary" role="alert" tabindex="-1">
+        <p>{{ error }}</p>
+      </div>
+    {% endif %}
+    <form action="/admin/login" method="post">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label for="workspace-slug">Mã workspace</label>
+      <input id="workspace-slug" name="workspace_slug" autocomplete="organization" required>
+
+      <label for="email">Email</label>
+      <input id="email" name="email" type="email" autocomplete="username" required>
+
+      <label for="password">Mật khẩu</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required>
+
+      <label for="totp-code">Mã xác thực 6 chữ số</label>
+      <input id="totp-code" name="code" inputmode="numeric" autocomplete="one-time-code" minlength="6" maxlength="6" pattern="[0-9]{6}" required>
+
+      <button type="submit">Đăng nhập</button>
+    </form>
+  </section>
+{% endblock %}
+
+{% block navigation %}{% endblock %}

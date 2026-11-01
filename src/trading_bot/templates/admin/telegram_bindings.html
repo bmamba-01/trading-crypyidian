@@ -1,0 +1,35 @@
+{% extends "admin/base.html" %}
+{% block title %}Liên kết Telegram · Crypidian{% endblock %}
+{% block heading %}Liên kết Telegram{% endblock %}
+{% block content %}
+  <section aria-labelledby="telegram-link-heading">
+    <h2 id="telegram-link-heading">Tạo liên kết một lần</h2>
+    <p id="telegram-link-help">Mã chỉ dùng trong tin nhắn riêng, hết hạn sau tối đa 10 phút và cần xác nhận trên Telegram.</p>
+    <form method="post" action="/admin/telegram/link">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label for="link-reason">Lý do</label>
+      <input id="link-reason" name="reason" minlength="1" maxlength="500" required aria-describedby="telegram-link-help">
+      <button type="submit">Tạo mã liên kết</button>
+    </form>
+  </section>
+  <section aria-labelledby="telegram-bindings-heading">
+    <h2 id="telegram-bindings-heading">Binding đang hoạt động</h2>
+    {% if bindings %}
+      <ul>
+      {% for binding in bindings %}
+        <li>
+          Membership <code>{{ binding.membership_id }}</code>, tạo lúc {{ binding.created_at }}
+          <form method="post" action="/admin/telegram/revoke/{{ binding.membership_id }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <label for="revoke-reason-{{ loop.index }}">Lý do thu hồi</label>
+            <input id="revoke-reason-{{ loop.index }}" name="reason" maxlength="500" required>
+            <button type="submit">Thu hồi</button>
+          </form>
+        </li>
+      {% endfor %}
+      </ul>
+    {% else %}
+      <p>Chưa có binding hoạt động.</p>
+    {% endif %}
+  </section>
+{% endblock %}

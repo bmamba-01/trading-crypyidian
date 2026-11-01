@@ -60,6 +60,7 @@ services:
       TRADING_BOT_MFA_ENCRYPTION_KEY_FILE: /run/secrets/mfa_encryption_key
       TRADING_BOT_MFA_SECRET_DIRECTORY: /var/lib/crypidian/mfa-secrets
       TRADING_BOT_BOOTSTRAP_TOKEN_FILE: /run/secrets/bootstrap_token
+      TRADING_BOT_TELEGRAM_BOT_USERNAME: ${TRADING_BOT_TELEGRAM_BOT_USERNAME:-}
     depends_on:
       mfa-volume-provisioner:
         condition: service_completed_successfully

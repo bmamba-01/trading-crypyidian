@@ -44,6 +44,11 @@ from trading_bot.adapters.database.models.entities import (
     WorkspaceSettingsVersion,
 )
 from trading_bot.adapters.database.models.feature_entities import FeatureSnapshotRecord
+from trading_bot.adapters.database.models.flatten_entities import (
+    FlattenOperationItemRecord,
+    FlattenOperationRecord,
+    FlattenPreviewRecord,
+)
 from trading_bot.adapters.database.models.market_entities import (
     IngestionCursor,
     IngestionGap,
@@ -72,7 +77,11 @@ from trading_bot.adapters.database.models.signal_entities import (
     BotDecisionRecord,
     SharedSignalEvidenceRecord,
 )
-from trading_bot.adapters.database.models.telegram_entities import TelegramUpdateReceipt
+from trading_bot.adapters.database.models.telegram_entities import (
+    TelegramBindingChallenge,
+    TelegramLinkRequest,
+    TelegramUpdateReceipt,
+)
 
 __all__ = [
     "AccountActivityIncidentRecord",
@@ -96,6 +105,9 @@ __all__ = [
     "BacktestScenarioRecord",
     "BacktestTradeOutcomeRecord",
     "FeatureSnapshotRecord",
+    "FlattenOperationItemRecord",
+    "FlattenOperationRecord",
+    "FlattenPreviewRecord",
     "ExchangeOrderRecord",
     "FillRecord",
     "IngestionCursor",
@@ -121,6 +133,8 @@ __all__ = [
     "SharedSignalEvidenceRecord",
     "StrategyRelease",
     "TelegramBinding",
+    "TelegramBindingChallenge",
+    "TelegramLinkRequest",
     "TelegramUpdateReceipt",
     "TradingAccount",
     "TradePlanRecord",

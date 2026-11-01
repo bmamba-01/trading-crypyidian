@@ -77,7 +77,8 @@ def test_multibot_backfill_constraints_rls_and_downgrade_guard() -> None:
 
     ensure_image_available(root, image)
     try:
-        compose("up", "--detach", "--wait", "--wait-timeout", "180", "postgres", "db-provisioner")
+        compose("up", "--detach", "--wait", "--wait-timeout", "180", "postgres")
+        compose("run", "--rm", "--no-deps", "db-provisioner")
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "b2e7a9d4c631")
         snapshot = json.loads(run_probe("seed").stdout.strip().splitlines()[-1])
         run_probe("unsupported_account")

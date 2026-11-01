@@ -120,6 +120,16 @@ class BotDisableResult:
         return {"id": str(self.bot_id), "status": self.status, "changed": self.changed}
 
 
+@dataclass(frozen=True, slots=True)
+class BotEnableResult:
+    bot_id: UUID
+    status: str
+    changed: bool
+
+    def as_dict(self) -> dict[str, Any]:
+        return {"id": str(self.bot_id), "status": self.status, "changed": self.changed}
+
+
 class BotOperationsService:
     """Factory theo principal; không giữ state giữa các request."""
 
@@ -266,6 +276,60 @@ class PrincipalBotOperations:
             await self._audit_disable_denied(bot_id, UNAVAILABLE, correlation_id)
             raise BotRuntimeControlError(UNAVAILABLE) from None
 
+    async def enable_bot(self, bot_id: UUID, reason: str) -> BotEnableResult:
+        """Bật lại account PAPER chỉ khi runtime, control, incident và config đã đối soát."""
+        correlation_id = uuid4()
+        principal = self._principal
+        try:
+            if Role.OWNER not in principal.roles:
+                raise BotRuntimeControlError("CONTROL_PERMISSION_DENIED")
+            self._require_recent_mfa()
+            if not isinstance(reason, str) or not reason.strip() or len(reason) > 500:
+                raise BotRuntimeControlError("CONTROL_REASON_REQUIRED")
+            async with self._uow(bot_id, correlation_id) as uow:
+                repository = self._service._operations_repository_factory(uow.session)
+                row = await repository.get_bot(principal.workspace_id, bot_id)
+                if row is None:
+                    raise BotRuntimeControlError("BOT_NOT_FOUND")
+                await self._service._lifecycle_guard_factory(uow.session).lock_workspace_for_enable(
+                    principal.workspace_id
+                )
+                snapshot = await repository.enable_snapshot(principal.workspace_id, bot_id)
+                if snapshot.account_status == "ENABLED" and snapshot.bot_status == "ENABLED":
+                    uow.record_audit(
+                        action="bot.enabled.noop",
+                        target_type="bot_instance",
+                        target_id=bot_id,
+                        reason=reason,
+                        before_state={"status": "ENABLED"},
+                        after_state={"status": "ENABLED"},
+                    )
+                    return BotEnableResult(bot_id, "ENABLED", False)
+                precondition_error = _enable_snapshot_error(snapshot)
+                if precondition_error is not None:
+                    raise BotRuntimeControlError(precondition_error)
+                changed = await repository.enable_account(principal.workspace_id, row.account_id)
+                uow.record_audit(
+                    action="bot.enabled" if changed else "bot.enabled.noop",
+                    target_type="bot_instance",
+                    target_id=bot_id,
+                    reason=reason,
+                    before_state={"status": "DISABLED"},
+                    after_state={"status": "ENABLED"},
+                )
+                return BotEnableResult(bot_id, "ENABLED", changed)
+        except BotRuntimeControlError as error:
+            await self._audit_enable_denied(bot_id, error.reason_code, correlation_id)
+            raise
+        except LookupError:
+            await self._audit_enable_denied(bot_id, "BOT_NOT_FOUND", correlation_id)
+            raise BotRuntimeControlError("BOT_NOT_FOUND") from None
+        except DBAPIError as error:
+            if not is_transient_database_error(error):
+                raise
+            await self._audit_enable_denied(bot_id, UNAVAILABLE, correlation_id)
+            raise BotRuntimeControlError(UNAVAILABLE) from None
+
     # --- nội bộ --------------------------------------------------------------------------
     async def _mutation(self, call: Awaitable[_T], target_id: UUID, target_type: str) -> _T:
         """Fix round 1 (Important #1): lỗi DB tạm thời 55P03/57014 → `RUNTIME_CONTROL_UNAVAILABLE`.
@@ -341,6 +405,44 @@ class PrincipalBotOperations:
                 )
         except SQLAlchemyError:
             logger.warning("Không ghi được audit disable_denied; code=%s", reason_code)
+
+    async def _audit_enable_denied(
+        self, bot_id: UUID, reason_code: str, correlation_id: UUID
+    ) -> None:
+        try:
+            async with self._uow(None, correlation_id) as uow:
+                uow.record_audit(
+                    action="bot.lifecycle.enable_denied",
+                    target_type="bot_instance",
+                    target_id=bot_id,
+                    reason=reason_code,
+                )
+        except SQLAlchemyError:
+            logger.warning("Không ghi được audit enable_denied; code=%s", reason_code)
+
+
+def _enable_snapshot_error(snapshot: Any) -> str | None:
+    """Trả reason code cho precondition đầu tiên chưa đạt trong snapshot đã khóa."""
+    if (
+        snapshot.account_status != "DISABLED"
+        or snapshot.bot_status != "DISABLED"
+        or snapshot.mode != "PAPER"
+        or snapshot.venue != "binance_usdm"
+    ):
+        return "BOT_ENABLE_ACCOUNT_STATE_INVALID"
+    if snapshot.workspace_killed:
+        return "BOT_ENABLE_WORKSPACE_KILLED"
+    if (
+        snapshot.readiness not in {"READY", "STANDBY"}
+        or snapshot.activity_status != "VERIFIED"
+        or snapshot.applied_bot_revision != snapshot.bot_revision
+    ):
+        return "BOT_ENABLE_RECONCILIATION_REQUIRED"
+    if snapshot.open_incident:
+        return "BOT_ENABLE_OPEN_INCIDENT"
+    if not snapshot.published_config:
+        return "BOT_ENABLE_CONFIG_REQUIRED"
+    return None
 
 
 def _status(

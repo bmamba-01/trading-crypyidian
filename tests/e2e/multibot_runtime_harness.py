@@ -136,12 +136,11 @@ class ComposeHarness:
             "--wait-timeout",
             "180",
             "postgres",
-            "db-provisioner",
             *services,
         )
-        # `compose up --wait` chỉ đảm bảo container provisioner đã khởi động;
-        # migrator chạy bằng `--no-deps` nên không tự chờ one-shot service hoàn tất.
-        # Chạy provisioner đồng bộ để migration không đua trước lúc role được tạo.
+        # Provisioner là tiến trình chạy một lần; chạy trong `up --wait` khiến
+        # Compose chờ trạng thái running|healthy rồi báo lỗi khi container kết thúc.
+        # Chạy đồng bộ sau khi PostgreSQL healthy để migration không đua role.
         self.compose("run", "--rm", "--no-deps", "db-provisioner")
         self.compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "head")
 
