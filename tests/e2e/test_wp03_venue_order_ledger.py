@@ -131,6 +131,14 @@ def test_venue_order_ledger_idempotency_transitions_rls_and_downgrade_guard() ->
         assert result["event_mutation_rejected"] is True
         assert result["cross_workspace_visible"] is False
         assert result["cross_bot_visible"] is False
+        reconciled = run_probe("reconcile")
+        assert reconciled["absent_status"] == "HELD"
+        assert reconciled["absent_reason"] == "RESERVATION_BRIDGE_REQUIRED"
+        assert reconciled["absent_transition_count"] == 3
+        assert reconciled["partial_status"] == "APPLIED"
+        assert reconciled["partial_state"] == "PARTIALLY_FILLED"
+        assert reconciled["partial_transition_count"] == 4
+        assert reconciled["reservation_status"] == "UNKNOWN"
         downgrade = migrate("downgrade", PREVIOUS_HEAD, success=False)
         assert "WP03_VENUE_ORDER_HISTORY_DOWNGRADE_BLOCKED" in (downgrade.stdout + downgrade.stderr)
         migrate("check")

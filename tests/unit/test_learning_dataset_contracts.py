@@ -222,3 +222,32 @@ def test_manifest_hash_changes_with_version_exclusion_or_holdout_state() -> None
     assert baseline.content_hash != new_feature_version.content_hash
     assert baseline.content_hash != new_split_policy.content_hash
     assert baseline.content_hash != excluded.content_hash
+
+
+def test_manifest_round_trips_from_canonical_payload_and_verifies_hash() -> None:
+    original = manifest(
+        samples=(sample("train"), sample("holdout", DatasetSplit.HOLDOUT)),
+        exclusions=(DatasetExclusion("dropped", ("source_rights_revoked",)),),
+    )
+
+    restored = DatasetManifest.from_canonical_json(
+        original.canonical_json,
+        expected_content_hash=original.content_hash,
+    )
+
+    assert restored == original
+    assert restored.content_hash == original.content_hash
+
+
+def test_manifest_canonical_loader_rejects_unknown_or_tampered_payload() -> None:
+    original = manifest()
+    with pytest.raises(ValueError, match="canonical"):
+        DatasetManifest.from_canonical_json(
+            original.canonical_json.replace('"query_hash"', '"other_hash"'),
+            expected_content_hash=original.content_hash,
+        )
+    with pytest.raises(ValueError, match="hash"):
+        DatasetManifest.from_canonical_json(
+            original.canonical_json,
+            expected_content_hash="0" * 64,
+        )

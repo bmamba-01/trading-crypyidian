@@ -223,3 +223,139 @@ class DatasetManifest:
             ),
             "retention_policy_ref": self.retention_policy_ref,
         }
+
+    @classmethod
+    def from_canonical_json(
+        cls,
+        canonical_json: str,
+        *,
+        expected_content_hash: str,
+    ) -> DatasetManifest:
+        """Tái dựng manifest đã lưu và xác minh schema, canonical bytes cùng content hash."""
+        if not isinstance(canonical_json, str) or not canonical_json:
+            raise ValueError("canonical_json phải là chuỗi không rỗng.")
+        _sha256(expected_content_hash, "expected_content_hash")
+        try:
+            payload = json.loads(canonical_json)
+        except (TypeError, ValueError) as error:
+            raise ValueError("canonical manifest JSON không hợp lệ.") from error
+        expected_keys = {
+            "manifest_version",
+            "workspace_id",
+            "query_hash",
+            "symbols",
+            "data_range",
+            "as_of",
+            "feature_schema_version",
+            "feature_version",
+            "label_version",
+            "sample_schema_version",
+            "split_policy_version",
+            "samples",
+            "exclusions",
+            "holdout_sealed_at",
+            "retention_policy_ref",
+        }
+        if not isinstance(payload, dict) or set(payload) != expected_keys:
+            raise ValueError("canonical manifest có schema không hỗ trợ.")
+
+        def parse_timestamp(value: object, name: str) -> datetime:
+            if not isinstance(value, str):
+                raise ValueError(f"{name} phải là chuỗi ISO-8601.")
+            try:
+                parsed = datetime.fromisoformat(value)
+            except ValueError as error:
+                raise ValueError(f"{name} phải là chuỗi ISO-8601.") from error
+            return _timestamp(parsed, name)
+
+        try:
+            data_range = payload["data_range"]
+            if not isinstance(data_range, list) or len(data_range) != 2:
+                raise ValueError("data_range phải có đúng hai mốc.")
+            raw_samples = payload["samples"]
+            raw_exclusions = payload["exclusions"]
+            symbols = payload["symbols"]
+            if not isinstance(raw_samples, list) or not isinstance(raw_exclusions, list):
+                raise ValueError("samples/exclusions phải là danh sách.")
+            if not isinstance(symbols, list) or any(not isinstance(item, str) for item in symbols):
+                raise ValueError("symbols phải là danh sách chuỗi.")
+            samples = tuple(
+                DatasetSample(
+                    sample_id=item["sample_id"],
+                    decision_at=parse_timestamp(item["decision_at"], "decision_at"),
+                    feature_available_at=parse_timestamp(
+                        item["feature_available_at"], "feature_available_at"
+                    ),
+                    outcome_start=parse_timestamp(item["outcome_start"], "outcome_start"),
+                    outcome_end=parse_timestamp(item["outcome_end"], "outcome_end"),
+                    feature_snapshot_hash=item["feature_snapshot_hash"],
+                    outcome_id=item["outcome_id"],
+                    outcome_hash=item["outcome_hash"],
+                    label_hash=item["label_hash"],
+                    label_value=item["label_value"],
+                    label_version=item["label_version"],
+                    split=DatasetSplit(item["split"]),
+                    source_dependent=item["source_dependent"],
+                    source_rights_hashes=tuple(item["source_rights_hashes"]),
+                    source_revision_refs=tuple(item["source_revision_refs"]),
+                )
+                for item in raw_samples
+                if isinstance(item, dict)
+                and set(item)
+                == {
+                    "sample_id",
+                    "decision_at",
+                    "feature_available_at",
+                    "outcome_start",
+                    "outcome_end",
+                    "feature_snapshot_hash",
+                    "outcome_id",
+                    "outcome_hash",
+                    "label_hash",
+                    "label_value",
+                    "label_version",
+                    "split",
+                    "source_dependent",
+                    "source_rights_hashes",
+                    "source_revision_refs",
+                }
+            )
+            if len(samples) != len(raw_samples):
+                raise ValueError("Sample canonical có schema không hỗ trợ.")
+            exclusions = tuple(
+                DatasetExclusion(item["sample_id"], tuple(item["reasons"]))
+                for item in raw_exclusions
+                if isinstance(item, dict) and set(item) == {"sample_id", "reasons"}
+            )
+            if len(exclusions) != len(raw_exclusions):
+                raise ValueError("Exclusion canonical có schema không hỗ trợ.")
+            holdout = payload["holdout_sealed_at"]
+            if holdout is not None and not isinstance(holdout, str):
+                raise ValueError("holdout_sealed_at phải là chuỗi hoặc null.")
+            manifest = cls(
+                workspace_id=UUID(payload["workspace_id"]),
+                query_hash=payload["query_hash"],
+                symbols=tuple(symbols),
+                data_start=parse_timestamp(data_range[0], "data_start"),
+                data_end=parse_timestamp(data_range[1], "data_end"),
+                as_of=parse_timestamp(payload["as_of"], "as_of"),
+                feature_schema_version=payload["feature_schema_version"],
+                feature_version=payload["feature_version"],
+                label_version=payload["label_version"],
+                sample_schema_version=payload["sample_schema_version"],
+                split_policy_version=payload["split_policy_version"],
+                samples=samples,
+                exclusions=exclusions,
+                holdout_sealed_at=parse_timestamp(holdout, "holdout_sealed_at")
+                if holdout is not None
+                else None,
+                manifest_version=payload["manifest_version"],
+                retention_policy_ref=payload["retention_policy_ref"],
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError("canonical manifest fields are invalid.") from error
+        if manifest.canonical_json != canonical_json:
+            raise ValueError("canonical manifest JSON is not in canonical form.")
+        if manifest.content_hash != expected_content_hash:
+            raise ValueError("canonical manifest hash does not match.")
+        return manifest

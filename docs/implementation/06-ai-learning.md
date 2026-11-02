@@ -5,7 +5,7 @@
 **Stories:** US-15, US-23, US-26…29.
 **Tài liệu:** [AI use cases](../product/use-cases.md#4-chi-tiết-use-case), [training sequence](../product/sequence-diagrams.md#sd-10--trade-review-outcome-label-và-attribution), [glossary AI](../research/glossary-vi.md#e-dữ-liệu-và-chiến-lược-huấn-luyện-ai), [strategy research](../research/strategies-2026.md).
 
-**Foundation offline hiện có:** scorer/abstention domain contract và application service có preflight rights/as-of/schema, deadline/cancel; bounded DSL/hypothesis, sample lineage + interval purge, completed-outcome labels và canonical dataset manifest. `DatasetManifestBuilder` nhận sample authoritative qua verifier port và fail-closed khi mismatch/timeout/revoked; `select_walk_forward_samples` áp cửa sổ fold, point-in-time availability, cutoff và purge nhãn giao nhau. Chưa có verifier adapter/repository, persistence, trial ledger, trainer, evaluator/report integration, model registry hay runtime/promotion; caller-supplied candidate list chưa chứng minh completeness.
+**Foundation offline hiện có:** scorer/abstention domain contract và application service có preflight rights/as-of/schema, deadline/cancel; bounded DSL/hypothesis, sample lineage + interval purge, completed-outcome labels và canonical dataset manifest. `DatasetManifestBuilder` xác minh sample qua verifier port; manifest được lưu immutable theo workspace với trainer-worker SELECT-only. `build_manifest_fold_plan` gắn split/cutoff/sample selection với manifest hash. Chưa có verifier adapter/repository đầy đủ, trial ledger, trainer, evaluator/report integration, model registry hay runtime/promotion; caller-supplied candidate list chưa chứng minh completeness.
 
 ## Ranh giới phụ thuộc và thứ tự khởi động
 

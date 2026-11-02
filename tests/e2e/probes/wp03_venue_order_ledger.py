@@ -747,11 +747,142 @@ async def _ledger() -> dict[str, object]:
         await engine.dispose()
 
 
+async def _reconcile() -> dict[str, object]:
+    from trading_bot.adapters.database.venue_reconciliation_ledger import (
+        DatabaseVenueOrderLedgerPort,
+    )
+    from trading_bot.application.venue_order_reconciliation import (
+        VenueOrderReconciliationService,
+    )
+    from trading_bot.domain.execution.venue_orders import (
+        ReconciliationOutcome,
+        ReconciliationSource,
+        VenueReconciliation,
+    )
+    from trading_bot.ports.venue_reconciliation import VerifiedVenueReconciliation
+
+    engine = _engine(RUNTIME)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    workspace_id = UUID(STATE["workspace_id"])
+    bot_id = UUID(STATE["bot_id"])
+    account_id = UUID(STATE["account_id"])
+    intent_id = UUID(STATE["intent_id"])
+    reservation_id = UUID(STATE["reservation_id"])
+    ledger = DatabaseVenueOrderLedgerPort(
+        sessions=sessions,
+        workspace_id=workspace_id,
+        bot_id=bot_id,
+        account_id=account_id,
+    )
+
+    class FixedVerifier:
+        def __init__(self, outcome: ReconciliationOutcome) -> None:
+            self.outcome = outcome
+
+        async def verify(self, *, intent):
+            now = datetime.now(UTC)
+            absent = self.outcome is ReconciliationOutcome.ORDER_ABSENT
+            evidence = VenueReconciliation(
+                outcome=self.outcome,
+                source=(
+                    ReconciliationSource.ORDER_QUERY_AND_TRADE_HISTORY
+                    if absent
+                    else ReconciliationSource.REST_ORDER_QUERY
+                ),
+                source_ref="wp03-e2e-verified-source",
+                workspace_id=str(workspace_id),
+                account_id=str(account_id),
+                client_order_id=intent.client_order_id,
+                checked_at=now,
+                cumulative_filled=Decimal("0") if absent else Decimal("0.003"),
+                venue_order_id=None if absent else "wp03-e2e-venue-order",
+            )
+            return VerifiedVenueReconciliation(
+                intent_id=intent.id,
+                workspace_id=workspace_id,
+                bot_id=bot_id,
+                account_id=account_id,
+                reservation_id=reservation_id,
+                evidence=evidence,
+            )
+
+    absent_service = VenueOrderReconciliationService(
+        ledger=ledger,
+        verifier=FixedVerifier(ReconciliationOutcome.ORDER_ABSENT),
+    )
+    absent_result = await absent_service.reconcile_unknown(
+        workspace_id=workspace_id,
+        account_id=account_id,
+        intent_id=intent_id,
+    )
+    async with sessions() as session, session.begin():
+        session.info["bot_id"] = bot_id
+        repository = VenueOrderLedgerRepository(session)
+        after_absent = await repository.get_intent(
+            workspace_id=workspace_id,
+            account_id=account_id,
+            intent_id=intent_id,
+        )
+        assert after_absent is not None
+        absent_transition_count = len(
+            await repository.list_transitions(
+                workspace_id=workspace_id,
+                account_id=account_id,
+                intent_id=intent_id,
+            )
+        )
+
+    partial_service = VenueOrderReconciliationService(
+        ledger=ledger,
+        verifier=FixedVerifier(ReconciliationOutcome.ORDER_OPEN),
+    )
+    partial_result = await partial_service.reconcile_unknown(
+        workspace_id=workspace_id,
+        account_id=account_id,
+        intent_id=intent_id,
+    )
+    async with sessions() as session, session.begin():
+        session.info["bot_id"] = bot_id
+        repository = VenueOrderLedgerRepository(session)
+        final = await repository.get_intent(
+            workspace_id=workspace_id,
+            account_id=account_id,
+            intent_id=intent_id,
+        )
+        assert final is not None
+        transition_count = len(
+            await repository.list_transitions(
+                workspace_id=workspace_id,
+                account_id=account_id,
+                intent_id=intent_id,
+            )
+        )
+        reservation_status = await session.scalar(
+            select(RiskReservationRecord.status).where(
+                RiskReservationRecord.workspace_id == workspace_id,
+                RiskReservationRecord.account_id == account_id,
+                RiskReservationRecord.id == reservation_id,
+            )
+        )
+    await engine.dispose()
+    return {
+        "absent_status": absent_result.status.value,
+        "absent_reason": absent_result.reason,
+        "absent_transition_count": absent_transition_count,
+        "partial_status": partial_result.status.value,
+        "partial_state": final.state,
+        "partial_transition_count": transition_count,
+        "reservation_status": reservation_status,
+    }
+
+
 async def main() -> None:
     if PHASE == "seed":
         result = await _seed()
     elif PHASE == "ledger":
         result = await _ledger()
+    elif PHASE == "reconcile":
+        result = await _reconcile()
     else:
         raise AssertionError(f"Unknown WP03 E2E phase: {PHASE}")
     print(json.dumps(result, default=str, sort_keys=True))

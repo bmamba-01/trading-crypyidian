@@ -49,6 +49,7 @@ from trading_bot.adapters.database.models.flatten_entities import (
     FlattenOperationRecord,
     FlattenPreviewRecord,
 )
+from trading_bot.adapters.database.models.learning_entities import DatasetManifestRecord
 from trading_bot.adapters.database.models.market_entities import (
     IngestionCursor,
     IngestionGap,
@@ -116,6 +117,7 @@ __all__ = [
     "FlattenOperationItemRecord",
     "FlattenOperationRecord",
     "FlattenPreviewRecord",
+    "DatasetManifestRecord",
     "ExchangeOrderRecord",
     "FillRecord",
     "IngestionCursor",
