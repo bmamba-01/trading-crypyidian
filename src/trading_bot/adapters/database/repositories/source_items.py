@@ -151,6 +151,7 @@ class SourceItemRepository:
         )
         self._session.add(row)
         await self._session.flush()
+        await self._session.refresh(row)
         return row
 
     async def select_accessible(
@@ -176,18 +177,25 @@ class SourceItemRepository:
             workspace_id=workspace_id,
             source_id=source_id,
         )
-        selected = history.select_as_of(
-            instant,
-            evaluated_at=now,
-            current_takedown_at=takedown.taken_down_at if takedown else None,
-        )
-        if selected is None or policies is None:
+        # Timestamp nguồn có thể bị backdate; chỉ DB recorded_at xác nhận lúc hệ
+        # thống đã ghi nhận row. Hash chain đầy đủ vẫn được kiểm trước khi lọc.
+        known = [
+            entry
+            for row, entry in zip(stored, history.entries, strict=True)
+            if _utc(row.recorded_at, "recorded_at") <= instant
+            and entry.revision.available_at is not None
+            and entry.revision.available_at <= instant
+        ]
+        if not known or policies is None:
             return None
+        selected_entry = known[-1]
+        selected = selected_entry.revision
+        # Thu hồi hiện hành không bị lọc theo cutoff; tombstone đến muộn vẫn
+        # chặn phát lại revision trước khi DB biết tombstone đó.
         current_tombstoned = any(
             row.tombstoned and row.available_at is not None and row.available_at <= now
             for row in stored
         )
-        selected_row = next(row for row in stored if row.revision_id == selected.revision_id)
         # Retention hiện hành không được bị né bằng cách replay revision cũ.
         deadlines = [
             row.retention_expires_at for row in stored if row.retention_expires_at is not None
@@ -203,7 +211,7 @@ class SourceItemRepository:
             retention_expires_at=min(deadlines) if deadlines else None,
             takedown_at=takedown.taken_down_at if takedown else None,
         )
-        return selected_row.to_entry() if decision.permitted else None
+        return selected_entry if decision.permitted else None
 
     async def _bind(self, workspace_id: UUID, source_id: str, item_id: str | None = None) -> None:
         if not isinstance(workspace_id, UUID):

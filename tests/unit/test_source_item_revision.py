@@ -119,6 +119,8 @@ def test_malformed_identity_is_rejected(field: str, value: object) -> None:
     [
         "http://example.test/a",
         "https:///a",
+        "https://",
+        "https://-invalid.example/a",
         "https://user:pass@example.test/a",
         "https://example.test/a#fragment",
         "https://Example.test/a",

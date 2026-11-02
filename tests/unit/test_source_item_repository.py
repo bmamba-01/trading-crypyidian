@@ -19,6 +19,11 @@ from trading_bot.domain.research.source_policy import SourcePolicyState, SourceU
 WORKSPACE = uuid4()
 
 
+class ItemSession(FakeSession):
+    async def refresh(self, instance):
+        instance.taken_down_at = self.database_now + timedelta(microseconds=7)
+
+
 def revision(revision_id="r1", **changes):
     return replace(
         SourceItemRevision(
@@ -48,6 +53,7 @@ def rows(*revisions, retention_expires_at=None):
                 WORKSPACE, number, history.latest, retention_expires_at=retention_expires_at
             )
         )
+        result[-1].recorded_at = NOW + timedelta(minutes=3)
     return result
 
 
@@ -229,14 +235,14 @@ async def test_access_loads_authoritative_current_state_before_pure_policy_gate(
 @pytest.mark.asyncio
 async def test_takedown_is_db_clock_stamped_and_immutable_retry():
     now = NOW + timedelta(days=1)
-    session = FakeSession(scalar_results=[None], rows_results=[rows(revision())], database_now=now)
+    session = ItemSession(scalar_results=[None], rows_results=[rows(revision())], database_now=now)
     record = await SourceItemRepository(session).take_down(
         workspace_id=WORKSPACE,
         source_id="official-calendar",
         item_id="item-1",
         reason_code="rights_withdrawn",
     )
-    assert record.taken_down_at == now
+    assert record.taken_down_at == now + timedelta(microseconds=7)
     assert session.added == [record]
     retry = FakeSession(scalar_results=[record])
     assert (
@@ -255,3 +261,70 @@ async def test_takedown_is_db_clock_stamped_and_immutable_retry():
             item_id="item-1",
             reason_code="provider_deleted",
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("minutes", "expected"), [(5, "r1"), (61, "r2")])
+async def test_asof_excludes_backdated_source_revision_until_database_recording(minutes, expected):
+    from trading_bot.adapters.database.models import SourcePolicyRevisionRecord
+
+    stored = rows(revision(), revision("r2"))
+    stored[0].recorded_at = NOW + timedelta(minutes=4)
+    stored[1].recorded_at = NOW + timedelta(hours=1)
+    policy_rows = [
+        SourcePolicyRevisionRecord.from_domain(WORKSPACE, item)
+        for item in approved(discovered()).revisions
+    ]
+    session = FakeSession(rows_results=[stored, policy_rows], database_now=NOW + timedelta(hours=2))
+    result = await SourceItemRepository(session).select_accessible(
+        workspace_id=WORKSPACE,
+        source_id="official-calendar",
+        item_id="item-1",
+        as_of=NOW + timedelta(minutes=minutes),
+        purpose=SourceUsePurpose.METADATA,
+    )
+    assert result.revision.revision_id == expected
+
+
+@pytest.mark.asyncio
+async def test_asof_cannot_see_first_revision_recorded_later_than_source_timestamps():
+    from trading_bot.adapters.database.models import SourcePolicyRevisionRecord
+
+    stored = rows(revision())
+    stored[0].recorded_at = NOW + timedelta(hours=1)
+    policy_rows = [
+        SourcePolicyRevisionRecord.from_domain(WORKSPACE, item)
+        for item in approved(discovered()).revisions
+    ]
+    result = await SourceItemRepository(
+        FakeSession(rows_results=[stored, policy_rows], database_now=NOW + timedelta(hours=2))
+    ).select_accessible(
+        workspace_id=WORKSPACE,
+        source_id="official-calendar",
+        item_id="item-1",
+        as_of=NOW + timedelta(minutes=5),
+        purpose=SourceUsePurpose.METADATA,
+    )
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_current_tombstone_recorded_after_cutoff_still_blocks_old_replay():
+    from trading_bot.adapters.database.models import SourcePolicyRevisionRecord
+
+    stored = rows(revision(), revision("r2", tombstoned=True))
+    stored[1].recorded_at = NOW + timedelta(hours=1)
+    policy_rows = [
+        SourcePolicyRevisionRecord.from_domain(WORKSPACE, item)
+        for item in approved(discovered()).revisions
+    ]
+    result = await SourceItemRepository(
+        FakeSession(rows_results=[stored, policy_rows], database_now=NOW + timedelta(hours=2))
+    ).select_accessible(
+        workspace_id=WORKSPACE,
+        source_id="official-calendar",
+        item_id="item-1",
+        as_of=NOW + timedelta(minutes=5),
+        purpose=SourceUsePurpose.METADATA,
+    )
+    assert result is None

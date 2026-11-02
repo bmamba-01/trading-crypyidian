@@ -49,3 +49,17 @@ def test_upgrade_preserves_rls_and_separates_revision_and_takedown_writers():
     assert "WP05_ITEM_PREDECESSOR_INVALID" in sql
     assert "WP05_ITEM_HASH_INVALID" in sql
     assert "WP05_ITEM_TAKEN_DOWN" in sql
+
+
+def test_database_knowledge_timestamp_is_persisted_outside_source_metadata_hash():
+    assert "recorded_at" in SourceItemRevisionRecord.__table__.columns
+    assert SourceItemRevisionRecord.__table__.c.recorded_at.nullable is False
+
+
+def test_recording_boundary_migration_is_linear():
+    path = next((Path(__file__).parents[2] / "migrations/versions").glob("d0f2a4c6e8b1_*.py"), None)
+    assert path is not None, "Migration thời điểm DB ghi nhận chưa được triển khai."
+    spec = importlib.util.spec_from_file_location(path.stem, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.down_revision == "c9e1f3a5b7d0"

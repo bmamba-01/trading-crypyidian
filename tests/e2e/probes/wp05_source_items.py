@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from trading_bot.adapters.database.models import (
     SourceItemRevisionRecord,
+    SourceItemTakedownRecord,
     Workspace,
 )
 from trading_bot.adapters.database.repositories.source_items import SourceItemRepository
@@ -157,11 +158,14 @@ async def _persist():
     async with sessions() as session, session.begin():
         repository = SourceItemRepository(session)
         prior = None
+        first_recorded_cutoff = None
         for revision in _revisions():
             result = await repository.append_revision(
                 workspace_id=WORKSPACE, revision=revision, predecessor_revision_id=prior
             )
             assert not result.is_duplicate
+            if prior is None:
+                first_recorded_cutoff = await session.scalar(text("SELECT clock_timestamp()"))
             prior = revision.revision_id
         duplicate = await repository.append_revision(
             workspace_id=WORKSPACE, revision=_revision(), predecessor_revision_id=None
@@ -201,7 +205,7 @@ async def _persist():
                 retention_expires_at=expiry,
             )
     await engine.dispose()
-    return {"persisted": True}
+    return {"persisted": True, "first_recorded_cutoff": first_recorded_cutoff.isoformat()}
 
 
 async def _readback():
@@ -228,7 +232,7 @@ async def _readback():
             source_id=SOURCE,
             item_id="item",
             purpose=SourceUsePurpose.METADATA,
-            as_of=at + timedelta(microseconds=1),
+            as_of=datetime.fromisoformat(STATE["first_recorded_cutoff"]),
         )
         assert earlier.revision.revision_id == "r1"
         latest = await repository.select_accessible(
@@ -439,7 +443,7 @@ async def _withdrawn_readback():
                     source_id=SOURCE,
                     item_id=item_id,
                     purpose=SourceUsePurpose.METADATA,
-                    as_of=datetime.fromisoformat(STATE["at"]) + timedelta(microseconds=1),
+                    as_of=datetime.fromisoformat(STATE["first_recorded_cutoff"]),
                 )
                 is None
             )
@@ -462,9 +466,249 @@ async def _withdrawn_readback():
     return {"no_resurrection_after_restart": True}
 
 
+async def _legacy_recording_seed():
+    """Hàng trước migration mới không có bằng chứng DB time đáng tin cậy."""
+    from uuid import uuid4
+
+    from trading_bot.domain.research.source_item_history import SourceItemRevisionEntry
+
+    engine = _engine(INGESTION)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    async with sessions() as session, session.begin():
+        await _scope(session)
+        candidate = _revision(item_id="legacy-row", canonical_url="https://example.invalid/legacy")
+        entry = SourceItemRevisionEntry.create(
+            candidate, predecessor_revision_id=None, predecessor_hash=None
+        )
+        record = SourceItemRevisionRecord.from_entry(WORKSPACE, 1, entry)
+        values = {
+            column.name: getattr(record, column.name)
+            for column in SourceItemRevisionRecord.__table__.columns
+            if column.name not in {"id", "created_at", "recorded_at"}
+        }
+        values |= {"id": uuid4(), "created_at": candidate.observed_at - timedelta(days=1)}
+        columns = ", ".join(values)
+        placeholders = ", ".join(f":{key}" for key in values)
+        await session.execute(
+            text(f"INSERT INTO source_item_revision ({columns}) VALUES ({placeholders})"), values
+        )
+        cutoff = await session.scalar(text("SELECT clock_timestamp()"))
+    await engine.dispose()
+    return {"legacy_cutoff": cutoff.isoformat()}
+
+
+async def _legacy_recording_readback():
+    """Backfill chỉ mở lịch sử từ lúc migration, không dùng created_at caller cũ."""
+    engine = _engine(INGESTION)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    async with sessions() as session, session.begin():
+        repository = SourceItemRepository(session)
+        before = await repository.select_accessible(
+            workspace_id=WORKSPACE,
+            source_id=SOURCE,
+            item_id="legacy-row",
+            purpose=SourceUsePurpose.METADATA,
+            as_of=datetime.fromisoformat(STATE["legacy_cutoff"]),
+        )
+        assert before is None
+        after = await repository.select_accessible(
+            workspace_id=WORKSPACE,
+            source_id=SOURCE,
+            item_id="legacy-row",
+            purpose=SourceUsePurpose.METADATA,
+        )
+        assert after is not None
+    await engine.dispose()
+    return {"conservative_backfill": True}
+
+
+async def _review_regressions():
+    """Tái hiện source timestamp backdate, raw timestamp giả và URL bypass domain."""
+    from dataclasses import asdict
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    from trading_bot.domain.research.source_item_history import (
+        SourceItemRevisionEntry,
+        _revision_digest,
+    )
+
+    failures = []
+    engine = _engine(INGESTION)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    async with sessions() as session, session.begin():
+        before = await session.scalar(text("SELECT clock_timestamp()"))
+        await SourceItemRepository(session).append_revision(
+            workspace_id=WORKSPACE,
+            revision=_revision(
+                item_id="late-arrival", canonical_url="https://example.invalid/late"
+            ),
+            predecessor_revision_id=None,
+        )
+    async with sessions() as session, session.begin():
+        repository = SourceItemRepository(session)
+        early = await repository.select_accessible(
+            workspace_id=WORKSPACE,
+            source_id=SOURCE,
+            item_id="late-arrival",
+            purpose=SourceUsePurpose.METADATA,
+            as_of=before,
+        )
+        if early is not None:
+            failures.append("Revision đến muộn bị lộ trước thời điểm DB ghi nhận")
+        after = await session.scalar(text("SELECT clock_timestamp()"))
+        visible = await repository.select_accessible(
+            workspace_id=WORKSPACE,
+            source_id=SOURCE,
+            item_id="late-arrival",
+            purpose=SourceUsePurpose.METADATA,
+            as_of=after,
+        )
+        assert visible is not None
+
+    async with sessions() as session, session.begin():
+        await _scope(session)
+        candidate = _revision(item_id="raw-clock", canonical_url="https://example.invalid/raw")
+        entry = SourceItemRevisionEntry.create(
+            candidate, predecessor_revision_id=None, predecessor_hash=None
+        )
+        record = SourceItemRevisionRecord.from_entry(WORKSPACE, 1, entry)
+        spoofed = before - timedelta(days=10)
+        values = {
+            column.name: getattr(record, column.name)
+            for column in SourceItemRevisionRecord.__table__.columns
+            if column.name not in {"id", "created_at", "recorded_at"}
+        }
+        values |= {"id": uuid4(), "created_at": spoofed}
+        if "recorded_at" in SourceItemRevisionRecord.__table__.columns:
+            values["recorded_at"] = spoofed
+        columns = ", ".join(values)
+        placeholders = ", ".join(f":{key}" for key in values)
+        actual = (
+            await session.execute(
+                text(
+                    f"INSERT INTO source_item_revision ({columns}) VALUES ({placeholders}) "
+                    "RETURNING created_at"
+                ),
+                values,
+            )
+        ).scalar_one()
+        if actual < before:
+            failures.append("Raw INSERT giả được thời điểm DB tạo row")
+        if "recorded_at" in SourceItemRevisionRecord.__table__.columns:
+            recorded = await session.scalar(
+                text("SELECT recorded_at FROM source_item_revision WHERE id = :id"),
+                {"id": values["id"]},
+            )
+            assert recorded >= before
+            assert recorded == actual
+            assert record.to_entry().revision_hash == entry.revision_hash
+
+        for number, url in enumerate(
+            (
+                "https://",
+                "https://-invalid.example/path",
+                "https://:443/path",
+                "https://example.invalid:/path",
+                "https://EXAMPLE.invalid/path",
+                "https://example.invalid/path#fragment",
+                "https://[:::]/path",
+                "https://example..invalid/path",
+                "https://example.invalid/%zz",
+                "https://example.invalid:70000/path",
+            ),
+            1,
+        ):
+            candidate = _revision(item_id=f"raw-url-{number}")
+            entry = SourceItemRevisionEntry.create(
+                candidate, predecessor_revision_id=None, predecessor_hash=None
+            )
+            record = SourceItemRevisionRecord.from_entry(WORKSPACE, 1, entry)
+            values = {
+                column.name: getattr(record, column.name)
+                for column in SourceItemRevisionRecord.__table__.columns
+                if column.name not in {"id", "created_at", "recorded_at"}
+            }
+            values |= {
+                "id": uuid4(),
+                "canonical_url": url,
+                "revision_hash": _revision_digest(
+                    SimpleNamespace(**(asdict(candidate) | {"canonical_url": url})), None
+                ),
+            }
+            columns = ", ".join(values)
+            placeholders = ", ".join(f":{key}" for key in values)
+            error_code = None
+            try:
+                async with session.begin_nested():
+                    await session.execute(
+                        text(
+                            f"INSERT INTO source_item_revision ({columns}) VALUES ({placeholders})"
+                        ),
+                        values,
+                    )
+            except DBAPIError as error:
+                error_code = error.orig.sqlstate
+            if error_code != "23514":
+                failures.append(f"Raw INSERT chấp nhận canonical URL không hợp lệ: {url}")
+        for number, url in enumerate(
+            (
+                "https://example.invalid",
+                "https://example.invalid:443/path?a=%20&b='x'",
+                "https://[::1]/synthetic",
+                "https://[::ffff:192.0.2.1]:443/fixture",
+            ),
+            1,
+        ):
+            candidate = _revision(item_id=f"valid-url-{number}", canonical_url=url)
+            await SourceItemRepository(session).append_revision(
+                workspace_id=WORKSPACE,
+                revision=candidate,
+                predecessor_revision_id=None,
+            )
+            loaded = await session.scalar(
+                select(SourceItemRevisionRecord).where(
+                    SourceItemRevisionRecord.item_id == candidate.item_id,
+                )
+            )
+            assert loaded.to_entry().revision == candidate
+    await engine.dispose()
+
+    engine = _engine(ADMIN)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    async with sessions() as session, session.begin():
+        result = await SourceItemRepository(session).take_down(
+            workspace_id=WORKSPACE,
+            source_id=SOURCE,
+            item_id="withdraw-response",
+            reason_code="rights_withdrawn",
+        )
+        initial_timestamp = result.taken_down_at
+        persisted = await session.scalar(
+            select(SourceItemTakedownRecord.taken_down_at).where(
+                SourceItemTakedownRecord.item_id == "withdraw-response"
+            )
+        )
+    async with sessions() as session, session.begin():
+        retry = await SourceItemRepository(session).take_down(
+            workspace_id=WORKSPACE,
+            source_id=SOURCE,
+            item_id="withdraw-response",
+            reason_code="rights_withdrawn",
+        )
+        if initial_timestamp != persisted or persisted != retry.taken_down_at:
+            failures.append("Timestamp takedown lần đầu khác DB hoặc retry")
+    await engine.dispose()
+    assert not failures, failures
+    return {"review_regressions": True}
+
+
 async def _main():
     handlers = {
         "seed": _seed,
+        "review_regressions": _review_regressions,
+        "legacy_recording_seed": _legacy_recording_seed,
+        "legacy_recording_readback": _legacy_recording_readback,
         "persist": _persist,
         "readback": _readback,
         "roles": _roles,

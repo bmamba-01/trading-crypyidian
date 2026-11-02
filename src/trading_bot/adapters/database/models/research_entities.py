@@ -18,6 +18,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     Uuid,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
@@ -269,6 +270,9 @@ class SourceItemRevisionRecord(UuidPrimaryKey, CreatedAt, Base):
             "AND position('@' in split_part(canonical_url, '/', 3)) = 0",
             name="source_item_url_metadata",
         ),
+        CheckConstraint(
+            "public.source_item_url_valid(canonical_url)", name="source_item_url_domain_valid"
+        ),
         Index(
             "ix_source_item_revision_available",
             "workspace_id",
@@ -281,6 +285,9 @@ class SourceItemRevisionRecord(UuidPrimaryKey, CreatedAt, Base):
     workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     source_id: Mapped[str] = mapped_column(String(128), nullable=False)
     item_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("clock_timestamp()")
+    )
     revision_id: Mapped[str] = mapped_column(String(128), nullable=False)
     sequence: Mapped[int] = mapped_column(Integer, nullable=False)
     canonical_url: Mapped[str] = mapped_column(Text, nullable=False)
