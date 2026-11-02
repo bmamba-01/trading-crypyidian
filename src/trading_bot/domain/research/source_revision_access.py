@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -63,6 +64,7 @@ def evaluate_source_revision_access(
     current_tombstoned: bool,
     retention_expires_at: datetime | None = None,
     takedown_at: datetime | None = None,
+    policy_known_at: Mapping[str, datetime] | None = None,
 ) -> SourceAccessDecision:
     """Kiểm quyền cho revision cụ thể, đồng thời áp dụng takedown hiện hành.
 
@@ -106,6 +108,19 @@ def evaluate_source_revision_access(
     if revision.source_id != policy_history.source_id:
         return decision(SourceAccessReason.SOURCE_MISMATCH)
 
+    if policy_known_at is not None:
+        previous_known = None
+        for entry in policy_history.revisions:
+            raw_known = policy_known_at.get(entry.policy.policy_id)
+            if raw_known is None:
+                return decision(SourceAccessReason.POLICY_UNAVAILABLE_AS_OF)
+            known = _utc(raw_known, "policy_known_at")
+            if known < entry.created_at or (previous_known is not None and known < previous_known):
+                return decision(SourceAccessReason.INVALID_REQUEST)
+            previous_known = known
+        if previous_known is None or previous_known >= evaluated:
+            return decision(SourceAccessReason.POLICY_UNAVAILABLE_AS_OF)
+
     # Takedown/retention là trạng thái hiện hành, do đó lịch sử không được dùng
     # để hồi sinh revision đã bị rút hoặc hết hạn lưu.
     if revision.tombstoned:
@@ -138,7 +153,15 @@ def evaluate_source_revision_access(
         )
 
     policy_at = evaluated if mode is SourceAccessMode.CURRENT else instant
-    eligible = [entry for entry in policy_history.revisions if entry.created_at <= policy_at]
+    eligible = [
+        entry
+        for entry in policy_history.revisions
+        if (
+            policy_known_at[entry.policy.policy_id] < policy_at
+            if policy_known_at is not None
+            else entry.created_at <= policy_at
+        )
+    ]
     if not eligible:
         return decision(SourceAccessReason.POLICY_UNAVAILABLE_AS_OF)
     selected = eligible[-1]

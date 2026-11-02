@@ -24,6 +24,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from trading_bot.adapters.database.models.base import Base, CreatedAt, UuidPrimaryKey
+from trading_bot.adapters.database.models.postgres_types import Xid8
 
 if TYPE_CHECKING:
     from trading_bot.domain.research.source_item_history import SourceItemRevisionEntry
@@ -117,6 +118,9 @@ class SourcePolicyRevisionRecord(UuidPrimaryKey, CreatedAt, Base):
     )
 
     workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    barrier_txid: Mapped[str] = mapped_column(
+        Xid8(), nullable=False, server_default=text("pg_current_xact_id()")
+    )
     source_id: Mapped[str] = mapped_column(String(128), nullable=False)
     sequence: Mapped[int] = mapped_column(Integer, nullable=False)
     policy_id: Mapped[str] = mapped_column(String(160), nullable=False)
@@ -308,6 +312,9 @@ class SourceItemRevisionRecord(UuidPrimaryKey, CreatedAt, Base):
     )
 
     workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    barrier_txid: Mapped[str] = mapped_column(
+        Xid8(), nullable=False, server_default=text("pg_current_xact_id()")
+    )
     source_id: Mapped[str] = mapped_column(String(128), nullable=False)
     item_id: Mapped[str] = mapped_column(String(128), nullable=False)
     recorded_at: Mapped[datetime] = mapped_column(
@@ -408,3 +415,82 @@ class SourceItemTakedownRecord(UuidPrimaryKey, Base):
     item_id: Mapped[str] = mapped_column(String(128), nullable=False)
     taken_down_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     reason_code: Mapped[str] = mapped_column(String(64), nullable=False)
+
+
+class SourcePolicyObservationRecord(UuidPrimaryKey, Base):
+    """Receipt do transaction khác quan sát policy đã commit; không phải commit time."""
+
+    __tablename__ = "source_policy_observation"
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id", "source_id", "sequence", name="uq_source_policy_observation_sequence"
+        ),
+        UniqueConstraint("workspace_id", "policy_id", name="uq_source_policy_observation_policy"),
+        ForeignKeyConstraint(
+            ["workspace_id", "source_id", "sequence"],
+            [
+                "source_policy_revision.workspace_id",
+                "source_policy_revision.source_id",
+                "source_policy_revision.sequence",
+            ],
+            ondelete="RESTRICT",
+            name="fk_policy_observation_sequence",
+        ),
+        ForeignKeyConstraint(
+            ["workspace_id", "policy_id"],
+            ["source_policy_revision.workspace_id", "source_policy_revision.policy_id"],
+            ondelete="RESTRICT",
+            name="fk_policy_observation_policy",
+        ),
+        _python_timestamp_constraint("known_at", nullable=False, prefix="spo"),
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    source_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    policy_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    known_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("clock_timestamp()")
+    )
+
+
+class SourceItemObservationRecord(UuidPrimaryKey, Base):
+    """Receipt append-only xác nhận đã thấy revision commit từ transaction khác."""
+
+    __tablename__ = "source_item_observation"
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id",
+            "source_id",
+            "item_id",
+            "sequence",
+            name="uq_source_item_observation_sequence",
+        ),
+        UniqueConstraint(
+            "workspace_id",
+            "source_id",
+            "item_id",
+            "revision_id",
+            name="uq_source_item_observation_revision",
+        ),
+        ForeignKeyConstraint(
+            ["workspace_id", "source_id", "item_id", "revision_id"],
+            [
+                "source_item_revision.workspace_id",
+                "source_item_revision.source_id",
+                "source_item_revision.item_id",
+                "source_item_revision.revision_id",
+            ],
+            ondelete="RESTRICT",
+        ),
+        _python_timestamp_constraint("known_at", nullable=False, prefix="sio"),
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    source_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    item_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    revision_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    known_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("clock_timestamp()")
+    )

@@ -8,14 +8,16 @@ from uuid import uuid4
 import pytest
 from sqlalchemy.dialects import postgresql
 
-from trading_bot.adapters.database.models import SourcePolicyRevisionRecord, SourceQuotaEventRecord
+from trading_bot.adapters.database.models import (
+    SourcePolicyObservationRecord,
+    SourcePolicyRevisionRecord,
+    SourceQuotaEventRecord,
+)
 from trading_bot.adapters.database.repositories.source_registry import (
     SourceQuotaExceededError,
     SourceRegistryConflict,
     SourceRegistryRepository,
 )
-from trading_bot.application.source_registry import SourceRegistryService
-from trading_bot.auth.policy import Principal, Role
 from trading_bot.domain.research.source_policy import (
     SourcePolicyState,
     SourceUsePurpose,
@@ -70,6 +72,19 @@ def approved(source: SourceRegistryEntry) -> SourceRegistryEntry:
         valid_until=NOW + timedelta(days=30),
         approved_by="reviewer-1",
     )
+
+
+def policy_receipts(rows):
+    return [
+        SourcePolicyObservationRecord(
+            workspace_id=row.workspace_id,
+            source_id=row.source_id,
+            policy_id=row.policy_id,
+            sequence=row.sequence,
+            known_at=row.created_at,
+        )
+        for row in rows
+    ]
 
 
 class FakeResult:
@@ -144,7 +159,7 @@ async def test_append_revision_uses_database_clock_for_creation_timestamp() -> N
     assert row.allowed_purposes == []
     assert "source_policy_revision.workspace_id" in session.statements[4]
     assert "pg_advisory_xact_lock" in session.statements[1]
-    assert "clock_timestamp()" in session.statements[3]
+    assert any("clock_timestamp()" in statement for statement in session.statements)
 
 
 @pytest.mark.asyncio
@@ -161,19 +176,17 @@ async def test_verified_revision_review_time_comes_from_database_clock_not_candi
         for revision in source.revisions[:-1]
     ]
     session = FakeSession(scalar_results=[None], rows_results=[existing], database_now=database_now)
-    actor = Principal(uuid4(), uuid4(), WORKSPACE_ID, frozenset({Role.OWNER}), NOW)
-    reviewer = Principal(uuid4(), uuid4(), WORKSPACE_ID, frozenset({Role.ANALYST_REVIEWER}), NOW)
-
     result = (
-        await SourceRegistryService(SourceRegistryRepository(session))
-        .for_principal(actor)
-        .append_revision(candidate, reviewer=reviewer)
-    )
+        await SourceRegistryRepository(session).append_revision(
+            workspace_id=WORKSPACE_ID,
+            revision=candidate,
+        )
+    ).revision
 
     assert result.created_at == database_now
     assert result.policy.reviewed_at == database_now
-    assert result.actor_id == str(actor.user_id)
-    assert result.approved_by == str(reviewer.user_id)
+    assert result.actor_id == candidate.actor_id
+    assert result.approved_by == candidate.approved_by
     row = session.added[0]
     assert isinstance(row, SourcePolicyRevisionRecord)
     assert row.created_at == database_now
@@ -303,8 +316,8 @@ async def test_quota_reservation_requires_current_policy_and_is_idempotent() -> 
     ]
     session = FakeSession(
         scalar_results=[None],
-        rows_results=[policy_rows, []],
-        database_now=NOW + timedelta(minutes=2),
+        rows_results=[policy_rows, policy_receipts(policy_rows), []],
+        database_now=NOW + timedelta(minutes=3),
     )
 
     result = await SourceRegistryRepository(session).reserve_quota(
@@ -326,7 +339,7 @@ async def test_quota_reservation_requires_current_policy_and_is_idempotent() -> 
     assert event.reserved_cost == Decimal("0.10")
     assert event.cost_unit == "USD"
     assert "pg_advisory_xact_lock" in session.statements[1]
-    assert "clock_timestamp()" in session.statements[3]
+    assert any("clock_timestamp()" in statement for statement in session.statements)
     assert "source_quota_event.workspace_id" in session.statements[-1]
 
 
@@ -351,7 +364,9 @@ async def test_quota_reservation_retry_returns_original_without_charging_again()
         reserved_cost=Decimal("0.10"),
         cost_unit="USD",
     )
-    session = FakeSession(scalar_results=[stored], rows_results=[policy_rows])
+    session = FakeSession(
+        scalar_results=[stored], rows_results=[policy_rows, policy_receipts(policy_rows)]
+    )
 
     result = await SourceRegistryRepository(session).reserve_quota(
         workspace_id=WORKSPACE_ID,
@@ -391,7 +406,23 @@ async def test_quota_idempotent_retry_returns_duplicate_after_policy_revocation(
         cost_unit="USD",
     )
 
-    result = await SourceRegistryRepository(FakeSession(scalar_results=[stored])).reserve_quota(
+    result = await SourceRegistryRepository(
+        FakeSession(
+            scalar_results=[stored],
+            rows_results=[
+                [
+                    SourcePolicyRevisionRecord.from_domain(WORKSPACE_ID, item)
+                    for item in source.revisions
+                ],
+                policy_receipts(
+                    [
+                        SourcePolicyRevisionRecord.from_domain(WORKSPACE_ID, item)
+                        for item in source.revisions
+                    ]
+                ),
+            ],
+        )
+    ).reserve_quota(
         workspace_id=WORKSPACE_ID,
         source_id=source.source_id,
         idempotency_key="poll-before-revocation",
@@ -459,7 +490,7 @@ async def test_quota_reservation_is_denied_without_verified_purpose_or_after_exp
         await SourceRegistryRepository(
             FakeSession(
                 scalar_results=[None],
-                rows_results=[pending_rows],
+                rows_results=[pending_rows, policy_receipts(pending_rows)],
                 database_now=NOW + timedelta(minutes=2),
             )
         ).reserve_quota(
@@ -479,7 +510,7 @@ async def test_quota_reservation_is_denied_without_verified_purpose_or_after_exp
     rows[-1].valid_until = NOW + timedelta(minutes=5)
     session = FakeSession(
         scalar_results=[None],
-        rows_results=[rows],
+        rows_results=[rows, policy_receipts(rows)],
         database_now=NOW + timedelta(minutes=10),
     )
     with pytest.raises(PermissionError, match="policy"):
@@ -491,7 +522,7 @@ async def test_quota_reservation_is_denied_without_verified_purpose_or_after_exp
             reserved_bytes=100,
             reserved_cost=Decimal("0.01"),
         )
-    assert "clock_timestamp()" in session.statements[3]
+    assert any("clock_timestamp()" in statement for statement in session.statements)
 
 
 @pytest.mark.asyncio
@@ -517,7 +548,7 @@ async def test_cost_unit_change_within_active_window_fails_closed_with_stable_me
     )
     session = FakeSession(
         scalar_results=[None],
-        rows_results=[policy_rows, [prior_event]],
+        rows_results=[policy_rows, policy_receipts(policy_rows), [prior_event]],
         database_now=NOW + timedelta(minutes=3),
     )
 
@@ -555,7 +586,7 @@ async def test_quota_reservation_serializes_usage_and_rejects_budget_overflow() 
     )
     session = FakeSession(
         scalar_results=[None],
-        rows_results=[policy_rows, [prior_event]],
+        rows_results=[policy_rows, policy_receipts(policy_rows), [prior_event]],
         database_now=NOW + timedelta(minutes=3),
     )
 

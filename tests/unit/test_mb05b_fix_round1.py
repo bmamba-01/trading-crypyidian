@@ -53,7 +53,7 @@ def test_create_database_engine_passes_session_timeouts_as_connection_options(mo
 
     engine_module.create_database_engine("postgresql+psycopg://x", session_timeouts=timeouts)  # type: ignore[arg-type]
 
-    assert captured["connect_args"] == {"options": timeouts.as_options()}
+    assert captured["connect_args"] == {"options": "-c timezone=UTC " + timeouts.as_options()}
     assert captured["pool_pre_ping"] is True
 
 

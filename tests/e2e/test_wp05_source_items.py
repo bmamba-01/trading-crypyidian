@@ -101,7 +101,10 @@ def test_source_item_metadata_persists_with_restart_rls_and_durable_takedown() -
         run_probe("legacy_timestamp_validation")
         migrate("upgrade", "head")
         migrate("check")
+        run_probe("observe_legacy")
         run_probe("legacy_recording_readback")
+        run_probe("utc_boundary")
+        run_probe("observer_boundary")
         run_probe("timestamp_range")
         run_probe("review_regressions")
         state.update(run_probe("persist"))
@@ -115,7 +118,7 @@ def test_source_item_metadata_persists_with_restart_rls_and_durable_takedown() -
         compose("up", "--detach", "--wait", "--wait-timeout", "180", "postgres")
         run_probe("withdrawn_readback")
         downgrade = migrate("downgrade", PREVIOUS_HEAD, success=False)
-        assert "WP05_ITEM_HISTORY_DOWNGRADE_BLOCKED" in (downgrade.stdout + downgrade.stderr)
+        assert "WP05_SOURCE_OBSERVATION_DOWNGRADE_BLOCKED" in (downgrade.stdout + downgrade.stderr)
         migrate("check")
     finally:
         subprocess.run(

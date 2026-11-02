@@ -5,9 +5,19 @@ from datetime import timedelta
 from uuid import uuid4
 
 import pytest
-from tests.unit.test_source_registry_repository import NOW, FakeSession, approved, discovered
+from tests.unit.test_source_registry_repository import (
+    NOW,
+    FakeSession,
+    approved,
+    discovered,
+    policy_receipts,
+)
 
-from trading_bot.adapters.database.models import SourceItemRevisionRecord, SourceItemTakedownRecord
+from trading_bot.adapters.database.models import (
+    SourceItemObservationRecord,
+    SourceItemRevisionRecord,
+    SourceItemTakedownRecord,
+)
 from trading_bot.adapters.database.repositories.source_items import SourceItemRepository
 from trading_bot.domain.research.source_item_history import (
     SourceItemHistory,
@@ -54,7 +64,22 @@ def rows(*revisions, retention_expires_at=None):
             )
         )
         result[-1].recorded_at = NOW + timedelta(minutes=3)
+        result[-1].created_at = NOW + timedelta(minutes=3)
     return result
+
+
+def item_receipts(stored):
+    return [
+        SourceItemObservationRecord(
+            workspace_id=WORKSPACE,
+            source_id=row.source_id,
+            item_id=row.item_id,
+            revision_id=row.revision_id,
+            sequence=row.sequence,
+            known_at=row.recorded_at,
+        )
+        for row in stored
+    ]
 
 
 @pytest.mark.asyncio
@@ -216,7 +241,12 @@ async def test_access_loads_authoritative_current_state_before_pure_policy_gate(
     )
     session = FakeSession(
         scalar_results=[takedown],
-        rows_results=[stored, [] if case == "missing_policy" else policy_rows],
+        rows_results=[
+            stored,
+            item_receipts(stored),
+            [] if case == "missing_policy" else policy_rows,
+            policy_receipts(policy_rows),
+        ],
         database_now=NOW + timedelta(days=1),
     )
     selected = await SourceItemRepository(session).select_accessible(
@@ -275,7 +305,10 @@ async def test_asof_excludes_backdated_source_revision_until_database_recording(
         SourcePolicyRevisionRecord.from_domain(WORKSPACE, item)
         for item in approved(discovered()).revisions
     ]
-    session = FakeSession(rows_results=[stored, policy_rows], database_now=NOW + timedelta(hours=2))
+    session = FakeSession(
+        rows_results=[stored, item_receipts(stored), policy_rows, policy_receipts(policy_rows)],
+        database_now=NOW + timedelta(hours=2),
+    )
     result = await SourceItemRepository(session).select_accessible(
         workspace_id=WORKSPACE,
         source_id="official-calendar",
@@ -297,7 +330,10 @@ async def test_asof_cannot_see_first_revision_recorded_later_than_source_timesta
         for item in approved(discovered()).revisions
     ]
     result = await SourceItemRepository(
-        FakeSession(rows_results=[stored, policy_rows], database_now=NOW + timedelta(hours=2))
+        FakeSession(
+            rows_results=[stored, item_receipts(stored), policy_rows, policy_receipts(policy_rows)],
+            database_now=NOW + timedelta(hours=2),
+        )
     ).select_accessible(
         workspace_id=WORKSPACE,
         source_id="official-calendar",
@@ -319,7 +355,10 @@ async def test_current_tombstone_recorded_after_cutoff_still_blocks_old_replay()
         for item in approved(discovered()).revisions
     ]
     result = await SourceItemRepository(
-        FakeSession(rows_results=[stored, policy_rows], database_now=NOW + timedelta(hours=2))
+        FakeSession(
+            rows_results=[stored, item_receipts(stored), policy_rows, policy_receipts(policy_rows)],
+            database_now=NOW + timedelta(hours=2),
+        )
     ).select_accessible(
         workspace_id=WORKSPACE,
         source_id="official-calendar",

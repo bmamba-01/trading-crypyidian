@@ -80,7 +80,9 @@ class Repository:
         self.revisions: list[tuple[UUID, SourcePolicyRevision]] = []
         self.reservations: list[dict[str, object]] = []
 
-    async def append_revision(self, *, workspace_id: UUID, revision: SourcePolicyRevision):
+    async def append_revision_and_observe(
+        self, *, workspace_id: UUID, revision: SourcePolicyRevision
+    ):
         self.revisions.append((workspace_id, revision))
         return SimpleNamespace(revision=revision, is_duplicate=False)
 
@@ -91,6 +93,25 @@ class Repository:
 
 def service(repository: Repository) -> SourceRegistryService:
     return SourceRegistryService(repository)  # type: ignore[arg-type]
+
+
+def test_application_rejects_raw_transaction_scoped_repository():
+    from tests.unit.test_source_registry_repository import FakeSession
+
+    from trading_bot.adapters.database.repositories.source_registry import SourceRegistryRepository
+
+    with pytest.raises(TypeError, match="append_revision_and_observe"):
+        SourceRegistryService(SourceRegistryRepository(FakeSession()))
+
+
+@pytest.mark.asyncio
+async def test_post_commit_observation_failure_is_not_swallowed():
+    class Unobserved(Repository):
+        async def append_revision_and_observe(self, **kwargs):
+            raise LookupError("Source đã commit nhưng receipt chưa hoàn tất.")
+
+    with pytest.raises(LookupError, match="receipt"):
+        await service(Unobserved()).for_principal(principal(Role.OWNER)).append_revision(revision())
 
 
 def test_permissions_separate_source_policy_author_and_reviewer() -> None:

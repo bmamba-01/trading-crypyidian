@@ -119,7 +119,7 @@ def test_source_registry_workspace_roles_append_only_and_concurrent_quota() -> N
         run_probe("revoke")
         run_probe("revoked_retry")
         downgrade = migrate("downgrade", PREVIOUS_HEAD, success=False)
-        assert "WP05_SOURCE_HISTORY_DOWNGRADE_BLOCKED" in (downgrade.stdout + downgrade.stderr)
+        assert "WP05_SOURCE_OBSERVATION_DOWNGRADE_BLOCKED" in (downgrade.stdout + downgrade.stderr)
         migrate("check")
     finally:
         subprocess.run(

@@ -10,7 +10,11 @@ from uuid import UUID
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from trading_bot.adapters.database.models import SourceItemRevisionRecord, SourceItemTakedownRecord
+from trading_bot.adapters.database.models import (
+    SourceItemObservationRecord,
+    SourceItemRevisionRecord,
+    SourceItemTakedownRecord,
+)
 from trading_bot.adapters.database.repositories.source_registry import SourceRegistryRepository
 from trading_bot.domain.research.source_item_history import (
     SourceItemHistory,
@@ -173,22 +177,47 @@ class SourceItemRepository:
         stored = await self._rows(workspace_id, source_id, item_id)
         history = _history(source_id, item_id, stored)
         takedown = await self._takedown(workspace_id, source_id, item_id)
-        policies = await SourceRegistryRepository(self._session).get_entry(
+        result = await self._session.scalars(
+            select(SourceItemObservationRecord)
+            .where(
+                SourceItemObservationRecord.workspace_id == workspace_id,
+                SourceItemObservationRecord.source_id == source_id,
+                SourceItemObservationRecord.item_id == item_id,
+            )
+            .order_by(SourceItemObservationRecord.sequence)
+        )
+        receipts = {row.sequence: row for row in result.all()}
+        known_at: dict[str, datetime] = {}
+        previous = None
+        for number, row in enumerate(stored, 1):
+            receipt = receipts.get(number)
+            if receipt is None or receipt.revision_id != row.revision_id:
+                return None
+            known = _utc(receipt.known_at, "known_at")
+            if (
+                known < row.recorded_at
+                or known < row.created_at
+                or (previous is not None and known < previous)
+            ):
+                return None
+            previous = known
+            known_at[row.revision_id] = known
+        policies = await SourceRegistryRepository(self._session).get_observed_entry(
             workspace_id=workspace_id,
             source_id=source_id,
         )
-        # Timestamp nguồn có thể bị backdate; chỉ DB recorded_at xác nhận lúc hệ
-        # thống đã ghi nhận row. Hash chain đầy đủ vẫn được kiểm trước khi lọc.
-        known = [
+        # Timestamp audit không chứng minh commit. Receipt từ transaction khác
+        # đóng dấu quan sát bảo thủ; hash chain đầy đủ được kiểm trước khi lọc.
+        known_entries = [
             entry
             for row, entry in zip(stored, history.entries, strict=True)
-            if _utc(row.recorded_at, "recorded_at") <= instant
+            if known_at[row.revision_id] < instant
             and entry.revision.available_at is not None
             and entry.revision.available_at <= instant
         ]
-        if not known or policies is None:
+        if not known_entries or policies is None:
             return None
-        selected_entry = known[-1]
+        selected_entry = known_entries[-1]
         selected = selected_entry.revision
         # Thu hồi hiện hành không bị lọc theo cutoff; tombstone đến muộn vẫn
         # chặn phát lại revision trước khi DB biết tombstone đó.
@@ -202,7 +231,8 @@ class SourceItemRepository:
         ]
         decision = evaluate_source_revision_access(
             revision=selected,
-            policy_history=policies,
+            policy_history=policies.history,
+            policy_known_at=policies.known_at,
             purpose=purpose,
             mode=SourceAccessMode.CURRENT if instant == now else SourceAccessMode.HISTORICAL_REPLAY,
             as_of=instant,
@@ -212,6 +242,49 @@ class SourceItemRepository:
             takedown_at=takedown.taken_down_at if takedown else None,
         )
         return selected_entry if decision.permitted else None
+
+    async def finalize_revision(
+        self,
+        *,
+        workspace_id: UUID,
+        source_id: str,
+        item_id: str,
+        revision_id: str,
+    ) -> SourceItemObservationRecord:
+        """Quan sát revision ở transaction mới; retry giữ nguyên receipt/known_at."""
+        await self._bind(workspace_id, source_id, item_id)
+        source = await self._session.scalar(
+            select(SourceItemRevisionRecord).where(
+                SourceItemRevisionRecord.workspace_id == workspace_id,
+                SourceItemRevisionRecord.source_id == source_id,
+                SourceItemRevisionRecord.item_id == item_id,
+                SourceItemRevisionRecord.revision_id == revision_id,
+            )
+        )
+        if source is None:
+            raise LookupError("Revision chưa visible trong workspace của observer.")
+        await self._lock(workspace_id, source_id)
+        existing = await self._session.scalar(
+            select(SourceItemObservationRecord).where(
+                SourceItemObservationRecord.workspace_id == workspace_id,
+                SourceItemObservationRecord.source_id == source_id,
+                SourceItemObservationRecord.item_id == item_id,
+                SourceItemObservationRecord.revision_id == revision_id,
+            )
+        )
+        if existing is not None:
+            return existing
+        receipt = SourceItemObservationRecord(
+            workspace_id=workspace_id,
+            source_id=source_id,
+            item_id=item_id,
+            revision_id=revision_id,
+            sequence=source.sequence,
+        )
+        self._session.add(receipt)
+        await self._session.flush()
+        await self._session.refresh(receipt)
+        return receipt
 
     async def _bind(self, workspace_id: UUID, source_id: str, item_id: str | None = None) -> None:
         if not isinstance(workspace_id, UUID):

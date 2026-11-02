@@ -34,7 +34,7 @@ class SourcePolicyAppend(Protocol):
 class SourceRegistryRepository(Protocol):
     """Các thao tác persistence chạy trong transaction do caller sở hữu."""
 
-    async def append_revision(
+    async def append_revision_and_observe(
         self, *, workspace_id: UUID, revision: SourcePolicyRevision
     ) -> SourcePolicyAppend: ...
 
@@ -57,6 +57,11 @@ class SourceRegistryService:
         self,
         repository: SourceRegistryRepository,
     ) -> None:
+        if not callable(getattr(repository, "append_revision_and_observe", None)):
+            raise TypeError("Source registry port bắt buộc append_revision_and_observe sau commit.")
+        validate_port = getattr(repository, "validate_application_port", None)
+        if validate_port is not None:
+            validate_port()
         self._repository = repository
 
     def for_principal(self, principal: Principal) -> PrincipalSourceRegistryService:
@@ -101,7 +106,7 @@ class PrincipalSourceRegistryService:
             actor_id=str(actor.user_id),
             approved_by=approver_id,
         )
-        result = await self._service._repository.append_revision(
+        result = await self._service._repository.append_revision_and_observe(
             workspace_id=actor.workspace_id, revision=revision
         )
         return result.revision

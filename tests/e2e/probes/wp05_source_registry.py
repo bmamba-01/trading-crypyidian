@@ -20,6 +20,7 @@ from trading_bot.adapters.database.repositories.source_registry import (
     SourceQuotaExceededError,
     SourceRegistryRepository,
 )
+from trading_bot.adapters.database.source_observer import PostCommitSourceObserver
 from trading_bot.domain.research.source_policy import SourcePolicyState, SourceUsePurpose
 from trading_bot.domain.research.source_registry import SourceBudget, SourceRegistryEntry
 
@@ -493,6 +494,14 @@ async def _main() -> None:
         "revoked_retry": _revoked_retry,
     }
     result = await phases[PHASE]()
+    if PHASE in {"registry", "revoke"}:
+        engine = _engine(ADMIN)
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        progress = await PostCommitSourceObserver(sessions).recover_policy(
+            workspace_id=UUID(STATE["workspace_id"]), source_id=STATE["source_id"]
+        )
+        assert progress.complete
+        await engine.dispose()
     print(json.dumps(result, default=str))
 
 

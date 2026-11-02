@@ -84,12 +84,13 @@ def create_database_engine(
     url: URL, *, session_timeouts: SessionTimeouts | None = None
 ) -> AsyncEngine:
     """Khởi tạo engine bất đồng bộ với kiểm tra kết nối khi mượn pool."""
-    if session_timeouts is None:
-        return create_async_engine(url, pool_pre_ping=True)
+    options = "-c timezone=UTC"
+    if session_timeouts is not None:
+        options += " " + session_timeouts.as_options()
     return create_async_engine(
         url,
         pool_pre_ping=True,
-        connect_args={"options": session_timeouts.as_options()},
+        connect_args={"options": options},
     )
 
 

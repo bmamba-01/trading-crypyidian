@@ -85,6 +85,8 @@ def test_schema_contains_all_foundation_tables() -> None:
         "flatten_operation",
         "flatten_operation_item",
         "source_policy_revision",
+        "source_item_observation",
+        "source_policy_observation",
         "source_item_revision",
         "source_item_takedown",
         "source_quota_event",

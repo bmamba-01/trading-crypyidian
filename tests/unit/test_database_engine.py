@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 
+from trading_bot.adapters.database import engine as engine_module
 from trading_bot.adapters.database.engine import database_url_from_secret
 
 
@@ -34,3 +35,20 @@ def test_database_url_rejects_empty_secret(tmp_path: Path) -> None:
             host="postgres",
             database="crypidian",
         )
+
+
+@pytest.mark.parametrize("with_timeouts", [False, True])
+def test_every_database_engine_pins_utc_and_keeps_timeout_options(monkeypatch, with_timeouts):
+    captured = {}
+
+    def create(url, **kwargs):
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(engine_module, "create_async_engine", create)
+    timeouts = engine_module.admin_web_session_timeouts() if with_timeouts else None
+    engine_module.create_database_engine("postgresql+psycopg://fixture", session_timeouts=timeouts)
+    options = captured.get("connect_args", {}).get("options", "")
+    assert "-c timezone=UTC" in options
+    if timeouts:
+        assert timeouts.as_options() in options

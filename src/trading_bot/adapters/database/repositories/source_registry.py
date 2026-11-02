@@ -2,15 +2,21 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from types import MappingProxyType
 from uuid import UUID
 
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from trading_bot.adapters.database.models import SourcePolicyRevisionRecord, SourceQuotaEventRecord
+from trading_bot.adapters.database.models import (
+    SourcePolicyObservationRecord,
+    SourcePolicyRevisionRecord,
+    SourceQuotaEventRecord,
+)
 from trading_bot.domain.research.source_policy import (
     SourcePolicyState,
     SourceRightsPolicy,
@@ -50,6 +56,14 @@ class SourceQuotaReservationResult:
     window_started_at: datetime
     policy_sequence: int
     is_duplicate: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ObservedSourcePolicy:
+    """Audit history gốc và mốc quan sát bảo thủ riêng cho mỗi policy."""
+
+    history: SourceRegistryEntry
+    known_at: Mapping[str, datetime]
 
 
 class SourceRegistryRepository:
@@ -145,6 +159,10 @@ class SourceRegistryRepository:
         await self._bind_workspace(workspace_id)
         await self._lock_source(workspace_id, source_id)
 
+        observed = await self.get_observed_entry(workspace_id=workspace_id, source_id=source_id)
+        if observed is None:
+            raise PermissionError("Policy hiện hành chưa có chuỗi receipt đầy đủ.")
+
         duplicate = await self._session.scalar(
             select(SourceQuotaEventRecord).where(
                 SourceQuotaEventRecord.workspace_id == workspace_id,
@@ -168,14 +186,10 @@ class SourceRegistryRepository:
             raise RuntimeError("database clock_timestamp() không trả thời gian có múi giờ.")
         now = now.astimezone(UTC)
 
-        policy_rows = await self._policy_rows(workspace_id=workspace_id, source_id=source_id)
-        if not policy_rows:
-            raise PermissionError("source policy không tồn tại hoặc chưa được duyệt.")
-        entry = SourceRegistryEntry(
-            source_id,
-            tuple(_to_domain_revision(row) for row in policy_rows),
-        )
+        entry = observed.history
         current = entry.current
+        if observed.known_at[current.policy.policy_id] >= now:
+            raise PermissionError("Receipt policy chưa khả dụng theo database clock.")
         if not entry.permits(purpose, at=now):
             raise PermissionError(
                 "source policy không cho phép mục đích tại thời điểm reservation."
@@ -209,6 +223,83 @@ class SourceRegistryRepository:
         self._session.add(event)
         await self._session.flush()
         return SourceQuotaReservationResult(event.id, window_started_at, current.sequence, False)
+
+    async def finalize_policy(
+        self,
+        *,
+        workspace_id: UUID,
+        source_id: str,
+        policy_id: str,
+    ) -> SourcePolicyObservationRecord:
+        """Chỉ gọi ở transaction mới sau source commit; DB chặn cùng top-level xid."""
+        await self._bind_workspace(workspace_id)
+        source = await self._session.scalar(
+            select(SourcePolicyRevisionRecord).where(
+                SourcePolicyRevisionRecord.workspace_id == workspace_id,
+                SourcePolicyRevisionRecord.source_id == source_id,
+                SourcePolicyRevisionRecord.policy_id == policy_id,
+            )
+        )
+        if source is None:
+            raise LookupError("Policy chưa visible trong workspace của observer.")
+        await self._lock_source(workspace_id, source_id)
+        existing = await self._session.scalar(
+            select(SourcePolicyObservationRecord).where(
+                SourcePolicyObservationRecord.workspace_id == workspace_id,
+                SourcePolicyObservationRecord.policy_id == policy_id,
+            )
+        )
+        if existing is not None:
+            return existing
+        receipt = SourcePolicyObservationRecord(
+            workspace_id=workspace_id,
+            source_id=source_id,
+            policy_id=policy_id,
+            sequence=source.sequence,
+        )
+        self._session.add(receipt)
+        await self._session.flush()
+        await self._session.refresh(receipt)
+        return receipt
+
+    async def get_observed_entry(
+        self,
+        *,
+        workspace_id: UUID,
+        source_id: str,
+    ) -> ObservedSourcePolicy | None:
+        """Không fallback policy VERIFIED cũ nếu latest hoặc predecessor thiếu receipt."""
+        await self._bind_workspace(workspace_id)
+        await self._lock_source(workspace_id, source_id)
+        rows = await self._policy_rows(workspace_id=workspace_id, source_id=source_id)
+        if not rows:
+            return None
+        result = await self._session.scalars(
+            select(SourcePolicyObservationRecord)
+            .where(
+                SourcePolicyObservationRecord.workspace_id == workspace_id,
+                SourcePolicyObservationRecord.source_id == source_id,
+            )
+            .order_by(SourcePolicyObservationRecord.sequence)
+        )
+        receipts = {row.sequence: row for row in result.all()}
+        known_at: dict[str, datetime] = {}
+        previous = None
+        for number, row in enumerate(rows, 1):
+            receipt = receipts.get(number)
+            if row.sequence != number or receipt is None or receipt.policy_id != row.policy_id:
+                return None
+            known = receipt.known_at
+            if (
+                known < row.created_at
+                or (row.reviewed_at is not None and known < row.reviewed_at)
+                or (previous is not None and known < previous)
+            ):
+                return None
+            previous = known
+            known_at[row.policy_id] = known
+        history = SourceRegistryEntry(source_id, tuple(_to_domain_revision(row) for row in rows))
+        return ObservedSourcePolicy(history, MappingProxyType(known_at))
 
     async def _bind_workspace(self, workspace_id: UUID) -> None:
         await self._session.execute(

@@ -17,12 +17,14 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from trading_bot.adapters.database.models import (
+    SourceItemObservationRecord,
     SourceItemRevisionRecord,
     SourceItemTakedownRecord,
     Workspace,
 )
 from trading_bot.adapters.database.repositories.source_items import SourceItemRepository
 from trading_bot.adapters.database.repositories.source_registry import SourceRegistryRepository
+from trading_bot.adapters.database.source_observer import PostCommitSourceObserver
 from trading_bot.domain.research.source_item_history import SourceItemHistoryConflict
 from trading_bot.domain.research.source_items import SourceItemRevision
 from trading_bot.domain.research.source_policy import SourcePolicyState, SourceUsePurpose
@@ -121,8 +123,34 @@ async def _seed():
         ),
     )
     async with sessions() as session, session.begin():
-        repository = SourceRegistryRepository(session)
-        initial = await repository.append_revision(workspace_id=WORKSPACE, revision=entry.current)
+        from types import SimpleNamespace
+        from uuid import uuid4
+
+        from trading_bot.adapters.database.models import SourcePolicyRevisionRecord
+
+        await _scope(session)
+
+        async def append_legacy(revision):
+            record = SourcePolicyRevisionRecord.from_domain(WORKSPACE, revision)
+            values = {
+                column.name: getattr(record, column.name)
+                for column in SourcePolicyRevisionRecord.__table__.columns
+                if column.name != "barrier_txid"
+            }
+            values["id"] = uuid4()
+            values["allowed_purposes"] = json.dumps(values["allowed_purposes"])
+            columns = ", ".join(values)
+            placeholders = ", ".join(
+                "CAST(:allowed_purposes AS jsonb)" if name == "allowed_purposes" else f":{name}"
+                for name in values
+            )
+            await session.execute(
+                text(f"INSERT INTO source_policy_revision ({columns}) VALUES ({placeholders})"),
+                values,
+            )
+            return SimpleNamespace(revision=revision)
+
+        initial = await append_legacy(entry.current)
         entry = SourceRegistryEntry(SOURCE, (initial.revision,))
         entry = entry.transition(
             policy_id="fixture-pending",
@@ -131,7 +159,7 @@ async def _seed():
             at=datetime.now(UTC),
             reason="Rà fixture",
         )
-        pending = await repository.append_revision(workspace_id=WORKSPACE, revision=entry.current)
+        pending = await append_legacy(entry.current)
         entry = SourceRegistryEntry(SOURCE, (initial.revision, pending.revision))
         reviewed_at = datetime.now(UTC)
         entry = entry.transition(
@@ -145,11 +173,29 @@ async def _seed():
             reviewed_at=reviewed_at,
             allowed_purposes=frozenset({SourceUsePurpose.METADATA}),
         )
-        await repository.append_revision(workspace_id=WORKSPACE, revision=entry.current)
+        await append_legacy(entry.current)
     async with sessions() as session, session.begin():
         at = await session.scalar(text("SELECT clock_timestamp()"))
     await engine.dispose()
     return {"at": at.isoformat()}
+
+
+async def _observe_legacy():
+    engine = _engine(ADMIN)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    progress = await PostCommitSourceObserver(sessions).recover_policy(
+        workspace_id=WORKSPACE, source_id=SOURCE
+    )
+    assert progress.complete
+    await engine.dispose()
+    engine = _engine(INGESTION)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    progress = await PostCommitSourceObserver(sessions).recover_item(
+        workspace_id=WORKSPACE, source_id=SOURCE, item_id="legacy-row"
+    )
+    assert progress.complete
+    await engine.dispose()
+    return {"legacy_observed_after_migration_commit": True}
 
 
 async def _persist():
@@ -204,6 +250,20 @@ async def _persist():
                 predecessor_revision_id=None,
                 retention_expires_at=expiry,
             )
+    observer = PostCommitSourceObserver(sessions)
+    for item_id in ("item", "repost", "retained", "zero-microseconds"):
+        assert (
+            await observer.recover_item(workspace_id=WORKSPACE, source_id=SOURCE, item_id=item_id)
+        ).complete
+    async with sessions() as session, session.begin():
+        await _scope(session)
+        known = await session.scalar(
+            select(SourceItemObservationRecord.known_at).where(
+                SourceItemObservationRecord.item_id == "item",
+                SourceItemObservationRecord.sequence == 1,
+            )
+        )
+        first_recorded_cutoff = known + timedelta(microseconds=1)
     await engine.dispose()
     return {"persisted": True, "first_recorded_cutoff": first_recorded_cutoff.isoformat()}
 
@@ -339,6 +399,7 @@ async def _guards():
         values = {
             column.name: getattr(row, column.name)
             for column in SourceItemRevisionRecord.__table__.columns
+            if column.name != "barrier_txid"
         }
     await engine.dispose()
     from uuid import uuid4
@@ -406,6 +467,9 @@ async def _withdraw():
             revision=_revision("r2", item_id="repost", tombstoned=True),
             predecessor_revision_id="r1",
         )
+    await PostCommitSourceObserver(sessions).recover_item(
+        workspace_id=WORKSPACE, source_id=SOURCE, item_id="repost"
+    )
     await engine.dispose()
     engine = _engine(ADMIN)
     sessions = async_sessionmaker(engine, expire_on_commit=False)
@@ -484,7 +548,7 @@ async def _legacy_recording_seed():
         values = {
             column.name: getattr(record, column.name)
             for column in SourceItemRevisionRecord.__table__.columns
-            if column.name not in {"id", "created_at", "recorded_at"}
+            if column.name not in {"id", "created_at", "recorded_at", "barrier_txid"}
         }
         values |= {"id": uuid4(), "created_at": candidate.observed_at - timedelta(days=1)}
         columns = ", ".join(values)
@@ -556,6 +620,11 @@ async def _review_regressions():
         )
         if early is not None:
             failures.append("Revision đến muộn bị lộ trước thời điểm DB ghi nhận")
+    await PostCommitSourceObserver(sessions).recover_item(
+        workspace_id=WORKSPACE, source_id=SOURCE, item_id="late-arrival"
+    )
+    async with sessions() as session, session.begin():
+        repository = SourceItemRepository(session)
         after = await session.scalar(text("SELECT clock_timestamp()"))
         visible = await repository.select_accessible(
             workspace_id=WORKSPACE,
@@ -577,7 +646,7 @@ async def _review_regressions():
         values = {
             column.name: getattr(record, column.name)
             for column in SourceItemRevisionRecord.__table__.columns
-            if column.name not in {"id", "created_at", "recorded_at"}
+            if column.name not in {"id", "created_at", "recorded_at", "barrier_txid"}
         }
         values |= {"id": uuid4(), "created_at": spoofed}
         if "recorded_at" in SourceItemRevisionRecord.__table__.columns:
@@ -627,7 +696,7 @@ async def _review_regressions():
             values = {
                 column.name: getattr(record, column.name)
                 for column in SourceItemRevisionRecord.__table__.columns
-                if column.name not in {"id", "created_at", "recorded_at"}
+                if column.name not in {"id", "created_at", "recorded_at", "barrier_txid"}
             }
             values |= {
                 "id": uuid4(),
@@ -732,6 +801,8 @@ async def _raw_timestamp_insert(session, item_id, changes):
         dtype = (
             "uuid"
             if field == "workspace_id"
+            else "xid8"
+            if field == "barrier_txid"
             else "timestamptz"
             if field.endswith("_at")
             else "text"
@@ -760,7 +831,11 @@ async def _raw_timestamp_insert(session, item_id, changes):
         f"encode(sha256(convert_to(replace(replace({payload}, ' : ', ':'), "
         "', ', ','), 'UTF8')), 'hex')"
     )
-    columns = [column.name for column in SourceItemRevisionRecord.__table__.columns]
+    columns = [
+        column.name
+        for column in SourceItemRevisionRecord.__table__.columns
+        if column.name != "barrier_txid" or "barrier_txid" in values
+    ]
     selected = [digest if field == "revision_hash" else f"c.{field}" for field in columns]
     statement = (
         f"WITH c AS (SELECT {', '.join(typed)}) "
@@ -921,6 +996,11 @@ async def _timestamp_range():
             assert row.event_at.year == (1 if number == 0 else 9999)
             assert row.retention_expires_at == row.event_at
             row.to_entry()
+    for item_id in ("valid-time-0", "valid-time-1"):
+        await PostCommitSourceObserver(sessions).recover_item(
+            workspace_id=WORKSPACE, source_id=SOURCE, item_id=item_id
+        )
+    async with sessions() as session, session.begin():
         assert (
             await SourceItemRepository(session).select_accessible(
                 workspace_id=WORKSPACE,
@@ -967,11 +1047,583 @@ async def _timestamp_range():
     return {"finite_python_datetime": True}
 
 
+async def _utc_engine_boundary():
+    """App engine ép UTC dù role mặc định và raw session render ngoài miền Python."""
+    from trading_bot.adapters.database.engine import (
+        admin_web_session_timeouts,
+        create_database_engine,
+    )
+
+    raw = _engine()
+    async with raw.connect() as connection:
+        await connection.execute(
+            text("ALTER ROLE CURRENT_USER SET timezone = 'Pacific/Kiritimati'")
+        )
+        await connection.commit()
+    try:
+        for timeouts in (None, admin_web_session_timeouts()):
+            app = create_database_engine(raw.url, session_timeouts=timeouts)
+            async with app.connect() as connection:
+                assert await connection.scalar(text("SHOW TimeZone")) == "UTC"
+            await app.dispose()
+        async with raw.connect() as connection, connection.begin():
+            for number, (zone, instant) in enumerate(
+                (
+                    ("Etc/GMT+12", "0001-01-01 00:00:00+00"),
+                    ("Pacific/Kiritimati", "9999-12-31 23:59:59.999999+00"),
+                )
+            ):
+                await connection.execute(
+                    text("SELECT set_config('TimeZone', :zone, true)"), {"zone": zone}
+                )
+                await _raw_timestamp_insert(
+                    connection, f"timezone-bound-{number}", {"event_at": instant}
+                )
+                nested = await connection.begin_nested()
+                failed = False
+                try:
+                    await connection.scalar(
+                        text("SELECT event_at FROM source_item_revision WHERE item_id = :item"),
+                        {"item": f"timezone-bound-{number}"},
+                    )
+                except DBAPIError, ValueError, OverflowError:
+                    failed = True
+                finally:
+                    await nested.rollback()
+                assert failed, "Raw session không được tự clamp timestamp ngoài miền Python."
+        app = create_database_engine(raw.url)
+        sessions = async_sessionmaker(app, expire_on_commit=False)
+        async with sessions() as session, session.begin():
+            assert await session.scalar(text("SHOW TimeZone")) == "UTC"
+            for number, year in ((0, 1), (1, 9999)):
+                row = await session.scalar(
+                    select(SourceItemRevisionRecord).where(
+                        SourceItemRevisionRecord.item_id == f"timezone-bound-{number}"
+                    )
+                )
+                assert row.event_at.year == year
+                row.to_entry()
+        await app.dispose()
+    finally:
+        async with raw.connect() as connection:
+            await connection.execute(text("ALTER ROLE CURRENT_USER RESET timezone"))
+            await connection.commit()
+        await raw.dispose()
+    return {"app_engine_utc_roundtrip": True}
+
+
+async def _raw_item_receipt(session, item_id, revision_id):
+    await session.execute(
+        text(
+            "INSERT INTO source_item_observation "
+            "(id, workspace_id, source_id, item_id, revision_id, sequence, known_at) "
+            "VALUES (gen_random_uuid(), :workspace, :source, :item, :revision, "
+            "999, '0001-01-01+00'::timestamptz)"
+        ),
+        {"workspace": WORKSPACE, "source": SOURCE, "item": item_id, "revision": revision_id},
+    )
+
+
+async def _observer_boundary():
+    """Hai connection và raw receipt kiểm commit barrier, cutoff và recovery thực."""
+    writer_engine = _engine(INGESTION)
+    reader_engine = _engine(INGESTION)
+    writers = async_sessionmaker(writer_engine, expire_on_commit=False)
+    readers = async_sessionmaker(reader_engine, expire_on_commit=False)
+    try:
+        # Lỗi top-level rollback cả source insert; không dùng flush giả commit.
+        failure = None
+        try:
+            async with writers() as writer, writer.begin():
+                await SourceItemRepository(writer).append_revision(
+                    workspace_id=WORKSPACE,
+                    revision=_revision(item_id="same-top-level"),
+                    predecessor_revision_id=None,
+                )
+                await _raw_item_receipt(writer, "same-top-level", "r1")
+        except DBAPIError as error:
+            failure = str(error.orig)
+        assert failure is not None
+        assert "WP05_OBSERVATION_REQUIRES_NEW_TRANSACTION" in failure
+
+        async with writers() as writer, readers() as reader:
+            async with writer.begin():
+                await _scope(writer)
+                await _raw_timestamp_insert(writer, "forged-source-barrier", {"barrier_txid": "0"})
+                assert await writer.scalar(
+                    text(
+                        "SELECT barrier_txid = pg_current_xact_id() FROM source_item_revision "
+                        "WHERE item_id = 'forged-source-barrier'"
+                    )
+                )
+                await SourceItemRepository(writer).append_revision(
+                    workspace_id=WORKSPACE,
+                    revision=_revision(
+                        item_id="held-over-cutoff", canonical_url="https://example.invalid/held"
+                    ),
+                    predecessor_revision_id=None,
+                )
+                failure = None
+                try:
+                    async with writer.begin_nested():
+                        await _raw_item_receipt(writer, "held-over-cutoff", "r1")
+                except DBAPIError as error:
+                    failure = str(error.orig)
+                assert failure is not None
+                assert "WP05_OBSERVATION_REQUIRES_NEW_TRANSACTION" in failure
+                barrier, top = (
+                    await writer.execute(
+                        text(
+                            "SELECT barrier_txid::text, pg_current_xact_id()::text "
+                            "FROM source_item_revision WHERE item_id = 'held-over-cutoff'"
+                        )
+                    )
+                ).one()
+                assert barrier == top
+                async with reader.begin():
+                    assert not (
+                        await SourceItemRepository(reader).get_history(
+                            workspace_id=WORKSPACE, source_id=SOURCE, item_id="held-over-cutoff"
+                        )
+                    ).entries
+                    try:
+                        await SourceItemRepository(reader).finalize_revision(
+                            workspace_id=WORKSPACE,
+                            source_id=SOURCE,
+                            item_id="held-over-cutoff",
+                            revision_id="r1",
+                        )
+                    except LookupError:
+                        pass
+                    else:
+                        raise AssertionError("Observer thấy source chưa commit.")
+                    cutoff = await reader.scalar(text("SELECT clock_timestamp()"))
+            async with reader.begin():
+                assert (
+                    await SourceItemRepository(reader).select_accessible(
+                        workspace_id=WORKSPACE,
+                        source_id=SOURCE,
+                        item_id="held-over-cutoff",
+                        purpose=SourceUsePurpose.METADATA,
+                        as_of=cutoff,
+                    )
+                    is None
+                )
+                await _scope(reader)
+                await _raw_item_receipt(reader, "held-over-cutoff", "r1")
+                receipt = await reader.scalar(
+                    select(SourceItemObservationRecord).where(
+                        SourceItemObservationRecord.item_id == "held-over-cutoff"
+                    )
+                )
+                known, receipt_id = receipt.known_at, receipt.id
+                assert known > cutoff
+                assert receipt.sequence == 1
+            async with reader.begin():
+                repository = SourceItemRepository(reader)
+                assert (
+                    await repository.select_accessible(
+                        workspace_id=WORKSPACE,
+                        source_id=SOURCE,
+                        item_id="held-over-cutoff",
+                        purpose=SourceUsePurpose.METADATA,
+                        as_of=known,
+                    )
+                    is None
+                )
+                assert (
+                    await repository.select_accessible(
+                        workspace_id=WORKSPACE,
+                        source_id=SOURCE,
+                        item_id="held-over-cutoff",
+                        purpose=SourceUsePurpose.METADATA,
+                        as_of=known + timedelta(microseconds=1),
+                    )
+                    is not None
+                )
+                retry = await repository.finalize_revision(
+                    workspace_id=WORKSPACE,
+                    source_id=SOURCE,
+                    item_id="held-over-cutoff",
+                    revision_id="r1",
+                )
+                assert (retry.id, retry.known_at) == (receipt_id, known)
+
+        # Mất process giữa commit/finalize: không receipt thì deny; recovery có cursor.
+        async with writers() as writer, writer.begin():
+            repository = SourceItemRepository(writer)
+            await repository.append_revision(
+                workspace_id=WORKSPACE,
+                revision=_revision(
+                    item_id="recover-gap", canonical_url="https://example.invalid/recovery"
+                ),
+                predecessor_revision_id=None,
+            )
+            await repository.append_revision(
+                workspace_id=WORKSPACE,
+                revision=_revision(
+                    "r2", item_id="recover-gap", canonical_url="https://example.invalid/recovery"
+                ),
+                predecessor_revision_id="r1",
+            )
+        await _expect_denied(
+            INGESTION,
+            "INSERT INTO source_item_observation "
+            "(id, workspace_id, source_id, item_id, revision_id, sequence) "
+            "VALUES (gen_random_uuid(), :workspace, :source, 'recover-gap', 'r2', 2)",
+            "WP05_OBSERVATION_PREDECESSOR_MISSING",
+            parameters={"workspace": WORKSPACE, "source": SOURCE},
+        )
+        observer = PostCommitSourceObserver(readers)
+        first = await observer.recover_item(
+            workspace_id=WORKSPACE, source_id=SOURCE, item_id="recover-gap", limit=1
+        )
+        assert (first.last_sequence, first.complete) == (1, False)
+        async with readers() as reader, reader.begin():
+            assert (
+                await SourceItemRepository(reader).select_accessible(
+                    workspace_id=WORKSPACE,
+                    source_id=SOURCE,
+                    item_id="recover-gap",
+                    purpose=SourceUsePurpose.METADATA,
+                )
+                is None
+            )
+        second = await observer.recover_item(
+            workspace_id=WORKSPACE,
+            source_id=SOURCE,
+            item_id="recover-gap",
+            after_sequence=1,
+            limit=1,
+        )
+        assert (second.last_sequence, second.complete) == (2, True)
+        _, progress = await observer.append_item(
+            workspace_id=WORKSPACE,
+            revision=_revision(
+                item_id="adapter-write", canonical_url="https://example.invalid/adapter"
+            ),
+            predecessor_revision_id=None,
+        )
+        assert progress.complete
+    finally:
+        await writer_engine.dispose()
+        await reader_engine.dispose()
+
+    # Policy INSERT giữ qua cutoff: latest raw unfinalized đóng cả quota và access.
+    engine = _engine(ADMIN)
+    peer = _engine(ADMIN)
+    writes = async_sessionmaker(engine, expire_on_commit=False)
+    observes = async_sessionmaker(peer, expire_on_commit=False)
+    try:
+        policy_source = "policy-observer-fixture"
+        at = datetime.now(UTC)
+        entry = SourceRegistryEntry.discover(
+            source_id=policy_source,
+            publisher="Giả lập",
+            endpoint_url="https://example.invalid/policy",
+            access_method="GET",
+            auth_scope="fixture-only",
+            actor_id="operator",
+            at=at,
+            reason="Fixture observer",
+            budget=SourceBudget(
+                window=timedelta(hours=1),
+                max_requests=3,
+                max_bytes=1000,
+                max_cost=Decimal(0),
+                cost_unit="USD",
+            ),
+        )
+        entry = entry.transition(
+            policy_id="observer-pending",
+            state=SourcePolicyState.RIGHTS_PENDING,
+            actor_id="operator",
+            at=at,
+            reason="Rà quyền",
+        )
+        entry = entry.transition(
+            policy_id="observer-verified",
+            state=SourcePolicyState.VERIFIED,
+            actor_id="operator",
+            approved_by="reviewer",
+            at=at,
+            reviewed_at=at,
+            evidence_ref="fixture:observer",
+            allowed_purposes=frozenset({SourceUsePurpose.METADATA}),
+            reason="Duyệt fixture",
+        )
+        async with writes() as writer, observes() as reader:
+            async with writer.begin():
+                for revision in entry.revisions:
+                    await SourceRegistryRepository(writer).append_revision(
+                        workspace_id=WORKSPACE, revision=revision
+                    )
+                failure = None
+                try:
+                    async with writer.begin_nested():
+                        await writer.execute(
+                            text(
+                                "INSERT INTO source_policy_observation "
+                                "(id, workspace_id, source_id, policy_id, sequence, known_at) "
+                                "VALUES (gen_random_uuid(), :workspace, :source, :policy, "
+                                "3, '0001-01-01+00')"
+                            ),
+                            {
+                                "workspace": WORKSPACE,
+                                "source": policy_source,
+                                "policy": entry.current.policy.policy_id,
+                            },
+                        )
+                except DBAPIError as error:
+                    failure = str(error.orig)
+                assert failure is not None
+                assert "WP05_OBSERVATION_REQUIRES_NEW_TRANSACTION" in failure
+                async with reader.begin():
+                    assert (
+                        await SourceRegistryRepository(reader).get_entry(
+                            workspace_id=WORKSPACE, source_id=policy_source
+                        )
+                        is None
+                    )
+                    try:
+                        await SourceRegistryRepository(reader).finalize_policy(
+                            workspace_id=WORKSPACE,
+                            source_id=policy_source,
+                            policy_id=entry.current.policy.policy_id,
+                        )
+                    except LookupError:
+                        pass
+                    else:
+                        raise AssertionError("Policy observer thấy source chưa commit.")
+                    cutoff = await reader.scalar(text("SELECT clock_timestamp()"))
+            async with reader.begin():
+                assert (
+                    await SourceRegistryRepository(reader).get_observed_entry(
+                        workspace_id=WORKSPACE, source_id=policy_source
+                    )
+                    is None
+                )
+            item_engine = _engine(INGESTION)
+            item_sessions = async_sessionmaker(item_engine, expire_on_commit=False)
+            await PostCommitSourceObserver(item_sessions).append_item(
+                workspace_id=WORKSPACE,
+                revision=_revision(
+                    source_id=policy_source,
+                    item_id="policy-gate",
+                    canonical_url="https://example.invalid/policy-gate",
+                ),
+                predecessor_revision_id=None,
+            )
+            observer = PostCommitSourceObserver(observes, quota_sessions=item_sessions)
+            first = await observer.recover_policy(
+                workspace_id=WORKSPACE, source_id=policy_source, limit=2
+            )
+            assert (first.last_sequence, first.complete) == (2, False)
+            async with reader.begin():
+                assert (
+                    await SourceRegistryRepository(reader).get_observed_entry(
+                        workspace_id=WORKSPACE, source_id=policy_source
+                    )
+                    is None
+                )
+            progress = await observer.recover_policy(
+                workspace_id=WORKSPACE, source_id=policy_source, after_sequence=2
+            )
+            assert progress.complete
+            async with reader.begin():
+                observed = await SourceRegistryRepository(reader).get_observed_entry(
+                    workspace_id=WORKSPACE, source_id=policy_source
+                )
+                known = observed.known_at[entry.current.policy.policy_id]
+                assert known > cutoff
+                audit = observed.history.current
+                assert audit.created_at < known
+                receipt = await SourceRegistryRepository(reader).finalize_policy(
+                    workspace_id=WORKSPACE,
+                    source_id=policy_source,
+                    policy_id=audit.policy.policy_id,
+                )
+                assert receipt.known_at == known
+        # Item dùng policy mới để kiểm strict policy observation boundary thật.
+        async with item_sessions() as reader, reader.begin():
+            for boundary, expected in ((known, False), (known + timedelta(microseconds=1), True)):
+                selected = await SourceItemRepository(reader).select_accessible(
+                    workspace_id=WORKSPACE,
+                    source_id=policy_source,
+                    item_id="policy-gate",
+                    purpose=SourceUsePurpose.METADATA,
+                    as_of=boundary,
+                )
+                assert (selected is not None) is expected
+            assert (
+                await SourceItemRepository(reader).select_accessible(
+                    workspace_id=WORKSPACE,
+                    source_id=policy_source,
+                    item_id="policy-gate",
+                    purpose=SourceUsePurpose.METADATA,
+                    as_of=cutoff,
+                )
+                is None
+            )
+            assert (
+                await SourceItemRepository(reader).select_accessible(
+                    workspace_id=WORKSPACE,
+                    source_id=policy_source,
+                    item_id="policy-gate",
+                    purpose=SourceUsePurpose.METADATA,
+                )
+                is not None
+            )
+        async with writes() as writer, writer.begin():
+            current = await SourceRegistryRepository(writer).get_entry(
+                workspace_id=WORKSPACE, source_id=policy_source
+            )
+            revoked = current.transition(
+                policy_id="observer-revoked",
+                state=SourcePolicyState.REVOKED,
+                actor_id="operator",
+                at=datetime.now(UTC),
+                reason="Thu hồi fixture",
+            )
+            await SourceRegistryRepository(writer).append_revision(
+                workspace_id=WORKSPACE, revision=revoked.current
+            )
+        async with item_sessions() as reader, reader.begin():
+            repository = SourceItemRepository(reader)
+            assert (
+                await repository.select_accessible(
+                    workspace_id=WORKSPACE,
+                    source_id=policy_source,
+                    item_id="policy-gate",
+                    purpose=SourceUsePurpose.METADATA,
+                )
+                is None
+            )
+            denied = False
+            try:
+                await SourceRegistryRepository(reader).reserve_quota(
+                    workspace_id=WORKSPACE,
+                    source_id=policy_source,
+                    idempotency_key="unfinalized-revoke",
+                    purpose=SourceUsePurpose.METADATA,
+                    reserved_bytes=1,
+                    reserved_cost="0",
+                )
+            except PermissionError:
+                denied = True
+            assert denied
+        assert (
+            await observer.recover_policy(
+                workspace_id=WORKSPACE, source_id=policy_source, after_sequence=3
+            )
+        ).complete
+        async with item_sessions() as reader, reader.begin():
+            assert (
+                await SourceItemRepository(reader).select_accessible(
+                    workspace_id=WORKSPACE,
+                    source_id=policy_source,
+                    item_id="policy-gate",
+                    purpose=SourceUsePurpose.METADATA,
+                )
+                is None
+            )
+        recheck = revoked.transition(
+            policy_id="observer-recheck",
+            state=SourcePolicyState.RIGHTS_PENDING,
+            actor_id="operator",
+            at=datetime.now(UTC),
+            reason="Rà quyền lại",
+        )
+        from uuid import uuid4
+
+        from trading_bot.application.source_registry import SourceRegistryService
+        from trading_bot.auth.policy import Principal, Role
+
+        owner = Principal(uuid4(), uuid4(), WORKSPACE, frozenset({Role.OWNER}), datetime.now(UTC))
+        reviewer = Principal(
+            uuid4(), uuid4(), WORKSPACE, frozenset({Role.ANALYST_REVIEWER}), datetime.now(UTC)
+        )
+        facade = SourceRegistryService(observer).for_principal(owner)
+        await facade.append_revision(recheck.current)
+        now = datetime.now(UTC)
+        approved = recheck.transition(
+            policy_id="observer-app-verified",
+            state=SourcePolicyState.VERIFIED,
+            actor_id="forged",
+            approved_by="forged-reviewer",
+            at=now,
+            reviewed_at=now,
+            evidence_ref="fixture:app-rights",
+            allowed_purposes=frozenset({SourceUsePurpose.METADATA}),
+            reason="Duyệt app fixture",
+        )
+        saved = await facade.append_revision(approved.current, reviewer=reviewer)
+        assert saved.actor_id == str(owner.user_id)
+        assert saved.approved_by == str(reviewer.user_id)
+        retry = await facade.append_revision(approved.current, reviewer=reviewer)
+        assert retry == saved
+        usage = await facade.reserve_usage(
+            source_id=policy_source,
+            idempotency_key="principal-observer-quota",
+            purpose=SourceUsePurpose.METADATA,
+            reserved_bytes=1,
+            reserved_cost="0",
+        )
+        assert not usage.is_duplicate
+        await item_engine.dispose()
+    finally:
+        await engine.dispose()
+        await peer.dispose()
+
+    for role in (
+        "crypidian_trading_runtime",
+        "crypidian_trainer_worker",
+        "crypidian_execution_gateway",
+    ):
+        for table in ("source_item_observation", "source_policy_observation"):
+            await _expect_denied(role, f"SELECT * FROM {table}")
+    await _expect_denied(ADMIN, "INSERT INTO source_item_observation DEFAULT VALUES")
+    await _expect_denied(INGESTION, "INSERT INTO source_policy_observation DEFAULT VALUES")
+    for table in ("source_item_observation", "source_policy_observation"):
+        await _expect_denied(None, f"DELETE FROM {table}", "WP05_SOURCE_HISTORY_APPEND_ONLY")
+        await _expect_denied(
+            None, f"UPDATE {table} SET known_at = known_at", "WP05_SOURCE_HISTORY_APPEND_ONLY"
+        )
+    engine = _engine(INGESTION)
+    async with engine.connect() as connection:
+        assert await connection.scalar(text("SELECT count(*) FROM source_item_observation")) == 0
+        await connection.execute(
+            text("SELECT set_config('app.workspace_id', :workspace, false)"),
+            {"workspace": str(OTHER)},
+        )
+        assert await connection.scalar(text("SELECT count(*) FROM source_item_observation")) == 0
+        await connection.execute(
+            text("SELECT set_config('app.workspace_id', :workspace, false)"),
+            {"workspace": str(WORKSPACE)},
+        )
+        assert await connection.scalar(text("SELECT count(*) FROM source_item_observation")) > 0
+        assert await connection.scalar(text("SELECT count(*) FROM source_policy_observation")) > 0
+    await engine.dispose()
+    await _expect_denied(
+        INGESTION,
+        "INSERT INTO source_item_observation "
+        "(id, workspace_id, source_id, item_id, revision_id, sequence) "
+        "VALUES (gen_random_uuid(), :workspace, :source, 'held-over-cutoff', 'r1', 1)",
+        "WP05_OBSERVATION_SCOPE_INVALID",
+        workspace=OTHER,
+        parameters={"workspace": WORKSPACE, "source": SOURCE},
+    )
+    return {"post_commit_observation": True, "strict_boundary_and_policy_gate": True}
+
+
 async def _main():
     handlers = {
         "seed": _seed,
         "review_regressions": _review_regressions,
         "timestamp_range": _timestamp_range,
+        "utc_boundary": _utc_engine_boundary,
+        "observe_legacy": _observe_legacy,
+        "observer_boundary": _observer_boundary,
         "legacy_timestamp_validation": _legacy_timestamp_validation,
         "legacy_recording_seed": _legacy_recording_seed,
         "legacy_recording_readback": _legacy_recording_readback,
