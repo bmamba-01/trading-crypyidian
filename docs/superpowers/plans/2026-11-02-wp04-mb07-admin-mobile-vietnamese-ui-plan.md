@@ -6,7 +6,7 @@
 
 ## Mục đích
 
-Làm cho Admin Web dễ truy cập trên điện thoại và máy tính bảng, đồng thời bảo đảm toàn bộ nội dung người vận hành nhìn thấy được viết bằng tiếng Việt rõ ràng, có dấu đầy đủ. Giữ các luồng vận hành, phân quyền, CSRF, MFA, nhật ký kiểm toán và giới hạn PAPER hiện có. Kế hoạch này chỉ thay đổi cách trình bày; không thêm chỉ số giao dịch, luồng vận hành hay hành vi sản phẩm mới.
+Làm cho Admin Web dễ truy cập trên điện thoại và máy tính bảng, bảo đảm toàn bộ nội dung người vận hành nhìn thấy được viết bằng tiếng Việt có dấu, đồng thời bổ sung trang tổng quan thống kê các bot đang hoạt động theo yêu cầu trước đó. Giữ các luồng vận hành, phân quyền, CSRF, MFA, nhật ký kiểm toán và giới hạn PAPER hiện có. Thống kê phải lấy từ hợp đồng báo cáo MB-06 đã có; không tự tạo công thức hoặc hiển thị số liệu chưa được hỗ trợ.
 
 ## Hiện trạng đã kiểm tra
 
@@ -16,6 +16,7 @@ Làm cho Admin Web dễ truy cập trên điện thoại và máy tính bảng, 
 - `src/trading_bot/templates/admin/bot_detail.html:6-8,45-61` có tên trường và nội dung còn pha tiếng Anh; `reports.html:15-21` nhận thời gian dạng ISO-8601 và hiển thị báo cáo thành JSON thô. `flatten_preview.html:5,8-16` trình bày thời gian chưa định dạng địa phương và bảng bảy cột; `telegram_bindings.html:21` cũng hiển thị thời gian thô.
 - `src/trading_bot/static/admin.css:3` chỉ định `system-ui, sans-serif`. Font thực tế vì thế tùy hệ điều hành/trình duyệt; repo chưa khóa hoặc tự lưu một font và chưa kiểm tra riêng ký tự/dấu tiếng Việt. CSS hiện có thuộc tính `flex-wrap`, kiểu biểu mẫu đăng nhập và chiều rộng bảng cơ bản; không có điểm ngắt bố cục theo màn hình, chỉ có truy vấn media giảm chuyển động tại dòng 103.
 - Chưa tìm thấy Bootstrap hoặc Tailwind trong thư viện phụ thuộc, mẫu HTML hay CSS hiện hành. Bảng đóng toàn bộ có bảy cột trong bảng `width: 100%`; báo cáo dùng `<pre>` JSON. Trên màn hình hẹp, hai thành phần này có nguy cơ cuộn/tràn ngang và khó đọc.
+- `dashboard.html` hiện chỉ hiển thị trạng thái workspace, nút chặn entry và readiness của bot; chưa có tóm tắt hiệu quả bot. MB-06 đã có số liệu PnL thực hiện, số lệnh đóng, phí, funding, slippage và drawdown từ ledger. Chưa có hợp đồng PnL chưa thực hiện hay chuỗi thời gian riêng cho dashboard; không được suy diễn chúng từ trạng thái vị thế.
 - `tests/unit/test_admin_accessibility.py` có một kiểm tra nền về liên kết bỏ qua điều hướng, vùng nội dung chính, vùng đang được chọn và giảm chuyển động. `tests/e2e/test_admin_web_workflows.py` có một luồng trình duyệt rộng, bao gồm đăng nhập, điều hướng, bàn phím, bot, đóng toàn bộ, cấu hình và Telegram; hiện không đặt kích thước khung nhìn điện thoại hay kiểm tra tràn ngang. Kế hoạch MB-07b ghi Task 7 còn mở vì danh sách kiểm tra trợ năng thủ công chưa hoàn tất.
 - Tài liệu `docs/implementation/04-admin-telegram.md` đã yêu cầu giao diện tiếng Việt, nhãn trợ năng và thông báo lỗi tiếng Việt; thiết kế MB-07b đặt mục tiêu WCAG 2.2 AA. Các tài liệu này chưa định nghĩa cách hiển thị thích ứng trên điện thoại hoặc quy tắc dịch trạng thái.
 
@@ -30,7 +31,8 @@ Làm cho Admin Web dễ truy cập trên điện thoại và máy tính bảng, 
 ## Định hướng thiết kế đề xuất
 
 - Thiết kế ưu tiên điện thoại, dùng nội dung và độ rộng thực tế để quyết định bố cục. Điều hướng hiển thị rõ, gọn trên điện thoại; không ẩn thao tác chính sau menu không thể dùng bằng bàn phím hoặc trình đọc màn hình.
-- Trang tổng quan giữ đúng dữ liệu đang có và xếp các số liệu/bộ điều khiển thành khối dễ đọc một cột trên điện thoại, nhiều cột trên màn hình rộng. Không thêm PnL, biểu đồ hoặc chỉ số ngoài phạm vi hiện tại.
+- Trang tổng quan hiển thị trạng thái/sẵn sàng và các thẻ thống kê theo bot đang hoạt động: PnL thực hiện, số lệnh đóng, phí/funding/slippage và drawdown, lấy từ kết quả MB-06. PnL và số liệu tiền tệ phải nhóm theo tài sản; không cộng trộn tài sản với nhau hoặc đưa PnL chưa thực hiện vào tổng. Khối thẻ xếp một cột trên điện thoại, nhiều cột trên màn hình rộng. Chỉ thêm biểu đồ khi dữ liệu nguồn và quy tắc tổng hợp đã được xác nhận trong inventory; không tạo chỉ số ước tính.
+- Thống kê mặc định chỉ bao gồm bot người dùng có quyền xem. Tổng workspace phải theo quyền và phạm vi tường minh của MB-06; không suy ra tổng workspace bằng cách cộng các bot grant một phần, và không phát sinh N+1 report với snapshot khác nhau. Dùng application query/read service trong một snapshot read-only nhất quán, không truy vấn DB từ template/router.
 - Danh sách bot hiển thị mỗi bot thành khối có tên, trạng thái đã dịch và liên kết chi tiết; biểu mẫu và thao tác xếp dọc, trường nhập chiếm chiều rộng phù hợp màn hình.
 - Bảng xem trước flatten chuyển thành danh sách/khối có nhãn cho từng giá trị ở màn hình hẹp; giữ bảng có caption và tiêu đề cột ở màn hình lớn. Nếu có trường hợp cần cuộn ngang, vùng cuộn phải nhận biết được và không làm cuộn toàn trang.
 - Báo cáo trình bày nhãn và giá trị đã định dạng trong giao diện thay vì chỉ đưa JSON thô. JSON chỉ giữ lại như dữ liệu kỹ thuật có chủ đích nếu người dùng cần xem, với tên và cách truy cập riêng.
@@ -50,9 +52,10 @@ Làm cho Admin Web dễ truy cập trên điện thoại và máy tính bảng, 
 - Thay đổi `src/trading_bot/templates/admin/base.html` và `src/trading_bot/static/admin.css`; thêm tệp CSS Bootstrap có khóa phiên bản và tệp font/giấy phép nếu phương án được duyệt.
 - Giữ `lang="vi"`, khung nhìn, liên kết bỏ qua điều hướng, vùng nội dung, thứ tự đề mục, vùng đang được chọn và chế độ giảm chuyển động; bố cục phải sử dụng được ở chiều rộng nhỏ trước khi mở rộng.
 
-### Giai đoạn 3 — Việt hóa và cập nhật màn hình
+### Giai đoạn 3 — Việt hóa, thống kê và cập nhật màn hình
 
 - Thêm lớp trình bày/mô hình hiển thị cho nhãn đã dịch; không sửa enum lưu DB, mã API hoặc quyết định quyền.
+- Thêm application query/view model cho thẻ thống kê dashboard dựa trên report MB-06; tải dữ liệu trong snapshot `REPEATABLE READ, READ ONLY`, giới hạn bot theo quyền hiện hữu và giữ workspace aggregate opt-in. Trước khi code, xác nhận report MB-06 có đủ dữ liệu/snapshot bounds cho thẻ theo bot; nếu không, mở rộng read contract có test thay vì suy diễn từ bảng.
 - Rà và cập nhật các trang: `login.html`, `dashboard.html`, `bots.html`, `bot_create.html`, `bot_detail.html`, `reports.html`, `flatten.html`, `flatten_preview.html`, `flatten_operation.html`, `telegram_bindings.html`, `telegram_link_created.html`.
 - Trình bày bảng đóng toàn bộ và báo cáo phù hợp màn hình hẹp; nhóm biểu mẫu và thao tác quan trọng theo trang; thêm trang/thành phần lỗi tiếng Việt cho các luồng biểu mẫu nếu hợp đồng hiện tại cho phép, giữ nguyên mã trạng thái HTTP và hành vi bảo mật.
 
@@ -68,25 +71,26 @@ Làm cho Admin Web dễ truy cập trên điện thoại và máy tính bảng, 
 
 - `src/trading_bot/templates/admin/base.html` và toàn bộ `src/trading_bot/templates/admin/*.html`.
 - `src/trading_bot/static/admin.css`, CSS Bootstrap tự lưu ở static, font woff2 và tệp giấy phép/ghi công tương ứng.
-- Một mô-đun trình bày/mô hình hiển thị trong `src/trading_bot/admin/` để ánh xạ enum và lý do lỗi sang nhãn/hướng dẫn tiếng Việt; tên mô-đun sẽ chốt khi kiểm kê mã trước khi triển khai.
-- `tests/unit/test_admin_accessibility.py`, `tests/unit/test_admin_web_views.py` hoặc mô-đun unit mới chuyên kiểm tra bản địa hóa; `tests/e2e/test_admin_web_workflows.py` hoặc E2E mới cho khung nhìn thích ứng.
+- Mô-đun trình bày trong `src/trading_bot/admin/` để ánh xạ enum/lỗi sang nhãn tiếng Việt và application query/view model để đọc thống kê MB-06 trong snapshot nhất quán; tên chính xác chốt khi kiểm kê mã trước khi triển khai.
+- `tests/unit/test_admin_accessibility.py`, `tests/unit/test_admin_web_views.py` hoặc unit mới cho bản địa hóa, metrics theo tài sản và bot/workspace scope; `tests/e2e/test_admin_web_workflows.py` hoặc E2E mới cho khung nhìn thích ứng, cards thống kê và tràn ngang.
 - `docs/implementation/admin-web-accessibility-checklist-vi.md`; sau vòng triển khai mới cập nhật `docs/implementation/implementation-memory.md` theo quy trình dự án. Chưa sửa WBS, project status hoặc memory trong kế hoạch này.
 
 ## Tiêu chí nghiệm thu đề xuất
 
 1. Mọi trang Admin khai báo `lang="vi"`; mọi nội dung người dùng đọc được, gồm điều hướng, tiêu đề, nút, nhãn, lỗi, trạng thái, ngày giờ và tên trợ năng, là tiếng Việt tự nhiên và có dấu. Tên riêng/sản phẩm, email, URL, ID/mã băm, mã giao thức hoặc nội dung JSON có thể giữ nguyên khi cần; không được dùng enum/mã kỹ thuật tiếng Anh làm nhãn duy nhất.
 2. Be Vietnam Pro được tự lưu, giấy phép và ghi công rõ ràng, trình duyệt xác nhận font đã tải; nếu font không tải thì font dự phòng vẫn hiển thị đúng dấu. Không phụ thuộc mạng phân phối nội dung bên ngoài.
-3. Mọi màn hình/luồng chính hoạt động trên các kích thước khung nhìn nêu ở Giai đoạn 4, không có tràn ngang toàn trang ở chế độ dọc; nội dung dài có giải pháp đọc rõ ràng. Bố cục dùng được ở mức phóng đại 200% và chỉ bằng bàn phím.
-4. Nhãn, lỗi, trạng thái, vùng đang chọn, độ tương phản, vùng nội dung, đề mục và bảng đạt danh sách kiểm tra WCAG 2.2 AA hiện có; hoàn tất cả kiểm thử tự động trên trình duyệt lẫn danh sách kiểm tra thủ công, không có mục bị bỏ qua.
-5. Không thay đổi đường dẫn, mã API, vai trò/phạm vi quyền, CSRF, MFA, nhật ký kiểm toán, no-store, CSP hoặc chế độ PAPER; kiểm thử hồi quy chứng minh các bất biến này giữ nguyên.
+3. Dashboard thống kê lấy dữ liệu từ MB-06 trong snapshot nhất quán, tôn trọng bot grants/workspace scope và nhóm PnL theo tài sản; không hiển thị PnL chưa thực hiện hoặc chỉ số không có nguồn authoritative.
+4. Mọi màn hình/luồng chính hoạt động trên các kích thước khung nhìn nêu ở Giai đoạn 4, không có tràn ngang toàn trang ở chế độ dọc; nội dung dài có giải pháp đọc rõ ràng. Bố cục dùng được ở mức phóng đại 200% và chỉ bằng bàn phím.
+5. Nhãn, lỗi, trạng thái, vùng đang chọn, độ tương phản, vùng nội dung, đề mục và bảng đạt danh sách kiểm tra WCAG 2.2 AA hiện có; hoàn tất cả kiểm thử tự động trên trình duyệt lẫn danh sách kiểm tra thủ công, không có mục bị bỏ qua.
+6. Không thay đổi đường dẫn/mã API ngoài read contract được duyệt cho thống kê, vai trò/phạm vi quyền, CSRF, MFA, nhật ký kiểm toán, no-store, CSP hoặc chế độ PAPER; kiểm thử hồi quy chứng minh các bất biến này giữ nguyên.
 
 ## Quyết định còn chờ xem xét
 
-- Chọn Bootstrap 5.3 CSS tự lưu (đề xuất) hay tiếp tục CSS tự viết.
-- Chấp thuận Be Vietnam Pro tự lưu làm font chính; xác nhận phương án đóng gói tập ký tự/độ đậm và ghi công sau khi kiểm tra tệp nguồn cụ thể.
-- Chốt múi giờ hiển thị mặc định cho người vận hành (UTC hay Asia/Ho_Chi_Minh).
+- Dùng Bootstrap 5.3 CSS tự lưu làm mặc định theo chỉ dẫn trước về một framework CSS phổ biến; giữ Jinja và HTML render phía máy chủ.
+- Dùng Be Vietnam Pro tự lưu làm font chính sau khi chốt subset/độ đậm và ghi công từ tệp nguồn cụ thể.
+- Dùng `Asia/Ho_Chi_Minh` làm múi giờ hiển thị mặc định, có nhãn rõ; giữ thời gian lưu/truyền theo UTC.
 - Chốt quy ước tiếng Việt cho trạng thái và thuật ngữ kỹ thuật; các mã máy vẫn dùng tiếng Anh phía server.
-- Xác nhận phạm vi giao diện chỉ trình bày dữ liệu hiện hữu, không thêm phân tích dữ liệu hay biểu đồ trong vòng này.
+- Ưu tiên thẻ thống kê MB-06 trong MVP; chỉ thêm biểu đồ theo thời gian sau khi xác nhận hợp đồng chuỗi thời gian authoritative.
 
 ## Nguồn đã kiểm tra ngày 2026-11-02
 
