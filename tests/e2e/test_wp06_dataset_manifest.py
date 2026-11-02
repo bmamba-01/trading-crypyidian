@@ -18,6 +18,7 @@ PROBE_BOOTSTRAP = (
     "exec(compile(p['code'],'wp06_dataset_manifest.py','exec'),{'__name__':'__main__'})"
 )
 PREVIOUS_HEAD = "a7c9e2f4b6d8"
+MANIFEST_HEAD = "b8d0f1a3c5e7"
 
 
 def test_dataset_manifest_persists_immutably_with_workspace_rls_and_trainer_read_only() -> None:
@@ -91,16 +92,22 @@ def test_dataset_manifest_persists_immutably_with_workspace_rls_and_trainer_read
         compose("up", "--detach", "--wait", "--wait-timeout", "180", "postgres")
         compose("run", "--rm", "--no-deps", "db-provisioner")
         migrate("upgrade", PREVIOUS_HEAD)
-        migrate("upgrade", "head")
-        migrate("check")
+        migrate("upgrade", MANIFEST_HEAD)
         run_probe("seed")
-        run_probe("persist")
+        persisted = run_probe("persist")
+        assert persisted["versions"] == ["dataset-manifest-v1", "dataset-manifest-v2"]
+        assert persisted["folds"] == 2
+        assert persisted["holdout_interval_overlap_rejected"] is True
         run_probe("roles")
         assert run_probe("unscoped")["unscoped_rows"] == 0
-        downgrade = migrate("downgrade", PREVIOUS_HEAD, success=False)
+        dataset_guard = migrate("downgrade", PREVIOUS_HEAD, success=False)
         assert "WP06_DATASET_MANIFEST_DOWNGRADE_REQUIRES_EMPTY_TABLE" in (
-            downgrade.stdout + downgrade.stderr
+            dataset_guard.stdout + dataset_guard.stderr
         )
+        migrate("upgrade", "head")
+        migrate("check")
+        downgrade = migrate("downgrade", PREVIOUS_HEAD, success=False)
+        assert "WP03_RISK_GUARD_DOWNGRADE_BLOCKED" in (downgrade.stdout + downgrade.stderr)
         migrate("check")
     finally:
         subprocess.run(

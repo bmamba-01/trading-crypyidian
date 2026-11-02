@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from bisect import bisect_left
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Literal
@@ -68,6 +69,19 @@ def _sample_role(sample: DatasetSample, fold: WalkForwardSplit) -> SampleRole | 
     if _inside(sample.decision_at, fold.test.start, fold.test.end):
         return "test"
     return None
+
+
+def _overlapping_holdout_id(
+    interval: TemporalWindow,
+    *,
+    holdout_starts: tuple[datetime, ...],
+    holdout_prefix_max_ends: tuple[tuple[datetime, str], ...],
+) -> str | None:
+    index = bisect_left(holdout_starts, interval.end) - 1
+    if index < 0:
+        return None
+    max_end, sample_id = holdout_prefix_max_ends[index]
+    return sample_id if max_end > interval.start else None
 
 
 def _expected_split(role: SampleRole) -> DatasetSplit:
@@ -138,6 +152,8 @@ def build_manifest_fold_plan(
 
     Hàm chỉ chọn thành viên cho đánh giá; không train model, không tính metric và
     không khẳng định manifest đã chứa toàn bộ các sample của truy vấn nguồn.
+    V2 suy vai trò development theo từng fold; legacy giữ split cố định.
+    Seal holdout không cấp quyền truy cập; mọi cửa sổ chạm holdout đều bị từ chối.
     """
     if type(manifest) is not DatasetManifest:
         raise ValueError("manifest phải là DatasetManifest authoritative.")
@@ -168,12 +184,53 @@ def build_manifest_fold_plan(
         )
         for sample in manifest.samples
     )
+    holdout_intervals = tuple(
+        sorted(
+            (
+                sample.outcome_start,
+                sample.outcome_end,
+                sample.sample_id,
+            )
+            for sample in manifest.samples
+            if sample.split is DatasetSplit.HOLDOUT
+        )
+    )
+    holdout_starts = tuple(item[0] for item in holdout_intervals)
+    holdout_prefix_max_ends_list: list[tuple[datetime, str]] = []
+    max_holdout_end: datetime | None = None
+    max_holdout_id = ""
+    for _, holdout_end, holdout_id in holdout_intervals:
+        if max_holdout_end is None or holdout_end > max_holdout_end:
+            max_holdout_end = holdout_end
+            max_holdout_id = holdout_id
+        holdout_prefix_max_ends_list.append((max_holdout_end, max_holdout_id))
+    holdout_prefix_max_ends = tuple(holdout_prefix_max_ends_list)
 
     planned: list[ManifestFoldSelection] = []
     for fold in normalized_folds:
         for lineage in lineages:
             sample = samples_by_id[lineage.sample_id]
             role = _sample_role(sample, fold)
+            if manifest.manifest_version == "dataset-manifest-v2":
+                if role is not None:
+                    if sample.split is DatasetSplit.HOLDOUT:
+                        raise ValueError(
+                            f"Holdout {sample.sample_id} nằm trong cửa sổ fold {role}."
+                        )
+                    sample_interval = lineage.label_interval
+                    overlapping_holdout_id = _overlapping_holdout_id(
+                        sample_interval,
+                        holdout_starts=holdout_starts,
+                        holdout_prefix_max_ends=holdout_prefix_max_ends,
+                    )
+                    if overlapping_holdout_id is not None:
+                        message = (
+                            f"Holdout outcome interval {overlapping_holdout_id} giao với "
+                            f"khoảng outcome của sample {sample.sample_id} trong "
+                            f"cửa sổ fold {role}."
+                        )
+                        raise ValueError(message)
+                continue
             if role is not None and sample.split is not _expected_split(role):
                 raise ValueError(
                     f"Sample {sample.sample_id} split assignment không khớp vai trò {role}."

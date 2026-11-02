@@ -101,10 +101,16 @@ def test_workspace_risk_concurrency_and_rls_isolation_e2e() -> None:
         compose("up", "--detach", "--wait", "--wait-timeout", "180", "postgres")
         compose("run", "--rm", "--no-deps", "db-provisioner")
 
-        # Nâng cấp lên head và xác nhận schema sạch
-        compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "head")
-        compose("run", "--rm", "--no-deps", "migrator", "alembic", "check")
-
+        # Nâng cấp tới mốc trước f4 để kiểm riêng các guard migration cũ.
+        compose(
+            "run",
+            "--rm",
+            "--no-deps",
+            "migrator",
+            "alembic",
+            "upgrade",
+            "e0b2d4f6a8c1",
+        )
         # Gieo dữ liệu: 1 workspace, 2 PAPER accounts (10k mỗi bên = 20k equity), 2 bots
         seeded = run_probe("seed", service="migrator")
         assert "workspace_id" in seeded
@@ -246,7 +252,7 @@ def test_workspace_risk_concurrency_and_rls_isolation_e2e() -> None:
         # Chèn risk_profile_version có max_open_risk_fraction = 0.5
         guard_profile = run_probe("insert_custom_profile_guard", state=seeded, service="migrator")
 
-        # Downgrade bị chặn bởi exception MB04_DOWNGRADE_GUARD_CUSTOM_ACCOUNT_CAPS_EXIST
+        # Kiểm guard gốc MB04 trên schema trước migration khóa rollback WP-03.
         blocked = compose(
             "run",
             "--rm",
@@ -259,9 +265,17 @@ def test_workspace_risk_concurrency_and_rls_isolation_e2e() -> None:
         )
         assert "MB04_DOWNGRADE_GUARD_CUSTOM_ACCOUNT_CAPS_EXIST" in blocked.stderr
 
-        # Xóa row test -> downgrade thành công
+        # Xóa row test -> downgrade thành công.
         run_probe("cleanup_custom_profile_guard", state=guard_profile, service="migrator")
-        compose("run", "--rm", "--no-deps", "migrator", "alembic", "downgrade", PRE_MB04_HEAD)
+        compose(
+            "run",
+            "--rm",
+            "--no-deps",
+            "migrator",
+            "alembic",
+            "downgrade",
+            PRE_MB04_HEAD,
+        )
 
         # MB-04 fix I1: role aggregator tạo sẵn với LOGIN (cấp cluster) bị migration từ chối.
         run_probe("precreate_unsafe_aggregator", service="migrator")
@@ -271,8 +285,20 @@ def test_workspace_risk_concurrency_and_rls_isolation_e2e() -> None:
         assert "MB04_RISK_AGGREGATOR_ROLE_UNSAFE" in unsafe.stderr
         run_probe("harden_aggregator", service="migrator")
 
-        # Upgrade lại lên head và alembic check sạch
+        # Áp dụng migration WP-03 mới, sau đó xác nhận guard toàn cục vẫn chặn rollback.
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "head")
+        compose("run", "--rm", "--no-deps", "migrator", "alembic", "check")
+        global_guard = compose(
+            "run",
+            "--rm",
+            "--no-deps",
+            "migrator",
+            "alembic",
+            "downgrade",
+            PRE_MB04_HEAD,
+            success=False,
+        )
+        assert "WP03_RISK_GUARD_DOWNGRADE_BLOCKED" in global_guard.stderr
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "check")
         assert run_probe("security_checks", service="migrator")["aggregate"]["owner"] == (
             "crypidian_risk_aggregator"

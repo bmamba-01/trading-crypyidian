@@ -18,6 +18,7 @@ PROBE_BOOTSTRAP = (
     "exec(compile(p['code'],'wp05_source_registry.py','exec'),{'__name__':'__main__'})"
 )
 PREVIOUS_HEAD = "e2c4a6f8b1d3"
+REGISTRY_HEAD = "c6e8a0b2d4f6"
 
 
 def test_source_registry_workspace_roles_append_only_and_concurrent_quota() -> None:
@@ -102,12 +103,18 @@ def test_source_registry_workspace_roles_append_only_and_concurrent_quota() -> N
         compose("up", "--detach", "--wait", "--wait-timeout", "180", "postgres")
         compose("run", "--rm", "--no-deps", "db-provisioner")
         migrate("upgrade", PREVIOUS_HEAD)
-        migrate("upgrade", "head")
-        migrate("check")
+        migrate("upgrade", REGISTRY_HEAD)
+        # Registry trống được phép rollback theo guard lịch sử của migration WP-05A.
         migrate("downgrade", PREVIOUS_HEAD)
+        migrate("upgrade", REGISTRY_HEAD)
+        run_probe("seed")
+        run_probe("seed_downgrade_guard")
+        registry_guard = migrate("downgrade", PREVIOUS_HEAD, success=False)
+        assert "WP05_SOURCE_HISTORY_DOWNGRADE_BLOCKED" in (
+            registry_guard.stdout + registry_guard.stderr
+        )
         migrate("upgrade", "head")
         migrate("check")
-        run_probe("seed")
         run_probe("registry")
         transitions = run_probe("policy_transition_guard")
         assert len(transitions["transition_failures"]) == 3
@@ -118,8 +125,8 @@ def test_source_registry_workspace_roles_append_only_and_concurrent_quota() -> N
         run_probe("append_only")
         run_probe("revoke")
         run_probe("revoked_retry")
-        downgrade = migrate("downgrade", PREVIOUS_HEAD, success=False)
-        assert "WP05_SOURCE_OBSERVATION_DOWNGRADE_BLOCKED" in (downgrade.stdout + downgrade.stderr)
+        global_guard = migrate("downgrade", PREVIOUS_HEAD, success=False)
+        assert "WP03_RISK_GUARD_DOWNGRADE_BLOCKED" in (global_guard.stdout + global_guard.stderr)
         migrate("check")
     finally:
         subprocess.run(

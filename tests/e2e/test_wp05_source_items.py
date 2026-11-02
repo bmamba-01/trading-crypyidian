@@ -91,16 +91,12 @@ def test_source_item_metadata_persists_with_restart_rls_and_durable_takedown() -
         compose("up", "--detach", "--wait", "--wait-timeout", "180", "postgres")
         compose("run", "--rm", "--no-deps", "db-provisioner")
         migrate("upgrade", PREVIOUS_HEAD)
-        migrate("upgrade", "head")
-        migrate("check")
-        migrate("downgrade", PREVIOUS_HEAD)
         migrate("upgrade", "c9e1f3a5b7d0")
         state.update(run_probe("seed"))
         state.update(run_probe("legacy_recording_seed"))
         migrate("upgrade", "d0f2a4c6e8b1")
         run_probe("legacy_timestamp_validation")
-        migrate("upgrade", "head")
-        migrate("check")
+        migrate("upgrade", "e0b2d4f6a8c1")
         run_probe("observe_legacy")
         run_probe("legacy_recording_readback")
         run_probe("utc_boundary")
@@ -117,8 +113,13 @@ def test_source_item_metadata_persists_with_restart_rls_and_durable_takedown() -
         compose("restart", "postgres")
         compose("up", "--detach", "--wait", "--wait-timeout", "180", "postgres")
         run_probe("withdrawn_readback")
-        downgrade = migrate("downgrade", PREVIOUS_HEAD, success=False)
-        assert "WP05_SOURCE_OBSERVATION_DOWNGRADE_BLOCKED" in (downgrade.stdout + downgrade.stderr)
+        observation_guard = migrate("downgrade", PREVIOUS_HEAD, success=False)
+        assert "WP05_SOURCE_OBSERVATION_DOWNGRADE_BLOCKED" in (
+            observation_guard.stdout + observation_guard.stderr
+        )
+        migrate("upgrade", "head")
+        global_guard = migrate("downgrade", PREVIOUS_HEAD, success=False)
+        assert "WP03_RISK_GUARD_DOWNGRADE_BLOCKED" in (global_guard.stdout + global_guard.stderr)
         migrate("check")
     finally:
         subprocess.run(

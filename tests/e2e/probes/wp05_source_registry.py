@@ -86,6 +86,46 @@ async def _seed() -> dict[str, object]:
     return {"seeded": True}
 
 
+async def _seed_downgrade_guard() -> dict[str, object]:
+    """Tạo hàng tương thích WP-05A để kiểm guard trước các revision kế tiếp."""
+    engine = _engine(ADMIN)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    workspace_id = UUID(STATE["workspace_id"])
+    source_id = f"{STATE['source_id']}-rollback-guard"
+    try:
+        async with sessions() as session, session.begin():
+            await session.execute(
+                text("SELECT set_config('app.workspace_id', :workspace_id, true)"),
+                {"workspace_id": str(workspace_id)},
+            )
+            await session.execute(
+                text(
+                    """INSERT INTO source_policy_revision (
+                           workspace_id, source_id, sequence, policy_id, state,
+                           allowed_purposes, publisher, endpoint_url, access_method,
+                           auth_scope, attribution, retention_ref, quota_window_seconds,
+                           quota_max_requests, quota_max_bytes, quota_max_cost,
+                           quota_cost_unit, actor_id, reason, id
+                       ) VALUES (
+                           :workspace_id, :source_id, 1, :policy_id, 'discovered',
+                           '[]'::jsonb, 'Official Publisher',
+                           'https://example.gov/calendar.json', 'GET', 'public',
+                           'Official Publisher', 'terms-v1', 3600, 1, 100, 1.00,
+                           'USD', 'operator-e2e', 'migration rollback guard', :id
+                       )"""
+                ),
+                {
+                    "workspace_id": workspace_id,
+                    "source_id": source_id,
+                    "policy_id": f"{source_id}:policy:1",
+                    "id": uuid4(),
+                },
+            )
+        return {"seeded": True, "source_id": source_id}
+    finally:
+        await engine.dispose()
+
+
 async def _assert_append_only() -> dict[str, object]:
     engine = _engine()
     sessions = async_sessionmaker(engine, expire_on_commit=False)
@@ -302,7 +342,8 @@ async def _registry() -> dict[str, object]:
             allowed_purposes=frozenset({SourceUsePurpose.METADATA}),
             evidence_ref="https://example.gov/terms",
             reviewed_at=AT + timedelta(minutes=1),
-            valid_until=AT + timedelta(days=1),
+            # Fixture có mốc AT cố định; thời hạn dài tránh hết hạn theo ngày chạy E2E.
+            valid_until=AT + timedelta(days=3650),
             approved_by="reviewer-e2e",
         )
         async with sessions() as session, session.begin():
@@ -486,6 +527,7 @@ async def _revoked_retry() -> dict[str, object]:
 async def _main() -> None:
     phases = {
         "seed": _seed,
+        "seed_downgrade_guard": _seed_downgrade_guard,
         "append_only": _assert_append_only,
         "policy_transition_guard": _assert_policy_transition_guard,
         "registry": _registry,

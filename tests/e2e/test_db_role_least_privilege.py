@@ -20,7 +20,7 @@ PREVIOUS_HEAD = "e3c5a7b9d2f4"
 WORKER_SERVICES = ("execution-gateway", "ingestion-worker", "trainer-worker")
 
 
-def test_process_roles_cannot_write_identity_or_config_and_downgrade_restores_acl() -> None:
+def test_process_roles_cannot_write_identity_or_config_and_risk_guard_blocks_downgrade() -> None:
     root = Path(__file__).parents[2]
     subprocess.run(
         [sys.executable, "scripts/prepare_local_secrets.py"],
@@ -42,7 +42,9 @@ def test_process_roles_cannot_write_identity_or_config_and_downgrade_restores_ac
         "compose.yaml",
     ]
 
-    def compose(*args: str, stdin: str | None = None) -> subprocess.CompletedProcess[str]:
+    def compose(
+        *args: str, stdin: str | None = None, success: bool = True
+    ) -> subprocess.CompletedProcess[str]:
         result = subprocess.run(
             base + list(args),
             cwd=root,
@@ -54,7 +56,11 @@ def test_process_roles_cannot_write_identity_or_config_and_downgrade_restores_ac
             errors="replace",
             timeout=300,
         )
-        assert result.returncode == 0, (args, result.stdout[-5000:], result.stderr[-5000:])
+        assert (result.returncode == 0) is success, (
+            args,
+            result.stdout[-5000:],
+            result.stderr[-5000:],
+        )
         return result
 
     probe = (root / "tests/e2e/probes/db_role_least_privilege.py").read_text(encoding="utf-8")
@@ -75,17 +81,24 @@ def test_process_roles_cannot_write_identity_or_config_and_downgrade_restores_ac
         parsed: dict[str, object] = json.loads(result.stdout.strip().splitlines()[-1])
         return parsed
 
-    def migrate(*args: str) -> None:
-        compose("run", "--rm", "--no-deps", "migrator", "alembic", *args)
+    def migrate(*args: str, success: bool = True) -> subprocess.CompletedProcess[str]:
+        return compose("run", "--rm", "--no-deps", "migrator", "alembic", *args, success=success)
 
     ensure_image_available(root, image)
     try:
         compose("up", "--detach", "--wait", "--wait-timeout", "180", "postgres")
         compose("run", "--rm", "--no-deps", "db-provisioner")
         migrate("upgrade", PREVIOUS_HEAD)
-        before = run_probe("acl_snapshot")
+        before_sec01 = run_probe("acl_snapshot")
+        migrate("upgrade", "f4d6b8c0e2a5")
+        migrate("downgrade", PREVIOUS_HEAD)
+        assert run_probe("acl_compare", snapshot=json.dumps(before_sec01))["acl_restored"] is True
+        migrate("upgrade", "e0b2d4f6a8c1")
+        legacy_grant = run_probe("grant_legacy_trigger_execute")
+        assert legacy_grant["execute"] is True
         migrate("upgrade", "head")
         migrate("check")
+        assert run_probe("legacy_trigger_execute")["execute"] is False
         seeded = run_probe("seed")
         assert int(str(seeded["server_version_num"])) >= 180006
         run_probe("matrix")
@@ -93,10 +106,11 @@ def test_process_roles_cannot_write_identity_or_config_and_downgrade_restores_ac
             assert run_probe("worker", service=service)["denied"]
         assert run_probe("runtime", service="trading-runtime")["denied"]
         assert run_probe("admin", service="admin-web")["denied"]
-        # Downgrade phải trả đúng ACL/policy/membership trước SEC-01; re-upgrade lặp lại được.
-        migrate("downgrade", PREVIOUS_HEAD)
-        assert run_probe("acl_compare", snapshot=json.dumps(before))["acl_restored"] is True
-        migrate("upgrade", "head")
+        # Guard bảo mật là rào rollback toàn cục; kiểm schema/ACL không đổi sau lần từ chối.
+        before_guard = run_probe("acl_snapshot")
+        downgrade = migrate("downgrade", PREVIOUS_HEAD, success=False)
+        assert "WP03_RISK_GUARD_DOWNGRADE_BLOCKED" in (downgrade.stdout + downgrade.stderr)
+        assert run_probe("acl_compare", snapshot=json.dumps(before_guard))["acl_restored"] is True
         run_probe("matrix")
         migrate("check")
     finally:

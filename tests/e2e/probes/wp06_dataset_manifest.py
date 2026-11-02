@@ -1,10 +1,11 @@
-"""Probe PostgreSQL WP-06: persistencia, RLS y bloqueo de mutación."""
+"""Probe PostgreSQL WP-06: lưu v1/v2 bất biến, RLS và quyền chỉ đọc."""
 
 from __future__ import annotations
 
 import asyncio
 import json
 import os
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import UUID
@@ -16,7 +17,9 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from trading_bot.adapters.database.models import DatasetManifestRecord, Workspace
 from trading_bot.adapters.database.repositories.dataset_manifest import DatasetManifestRepository
+from trading_bot.application.learning_fold_plan import build_manifest_fold_plan
 from trading_bot.domain.learning.dataset import DatasetManifest, DatasetSample, DatasetSplit
+from trading_bot.domain.learning.evaluation import TemporalWindow, WalkForwardSplit
 
 STATE = json.loads(os.environ.get("WP06_STATE", "{}"))
 PHASE = os.environ.get("WP06_PHASE", "")
@@ -76,6 +79,92 @@ def _manifest(workspace_id: UUID, *, variant: str = "a") -> DatasetManifest:
     )
 
 
+def _manifest_v2(workspace_id: UUID, *, variant: str = "a") -> DatasetManifest:
+    original = _manifest(workspace_id, variant=variant)
+    prototype = original.samples[0]
+    return replace(
+        original,
+        manifest_version="dataset-manifest-v2",
+        data_start=NOW,
+        data_end=NOW + timedelta(hours=16),
+        as_of=NOW + timedelta(hours=16),
+        samples=tuple(
+            replace(
+                prototype,
+                sample_id=f"{name}-{variant}",
+                decision_at=NOW + timedelta(hours=decision),
+                feature_available_at=NOW,
+                outcome_start=NOW + timedelta(hours=decision),
+                outcome_end=NOW + timedelta(hours=end),
+                split=DatasetSplit.HOLDOUT if name == "sealed" else DatasetSplit.DEVELOPMENT,
+            )
+            for name, decision, end in (
+                ("train", 1, 2),
+                ("train-overlap", 2, 5),
+                ("validation", 4, 5),
+                ("test", 6, 7),
+                ("validation-next", 9, 10),
+                ("test-next", 11, 12),
+                ("sealed", 14, 15),
+            )
+        ),
+        holdout_sealed_at=NOW + timedelta(hours=16),
+    )
+
+
+def _fold_plan(manifest: DatasetManifest):
+    def window(start: int, end: int) -> TemporalWindow:
+        return TemporalWindow(NOW + timedelta(hours=start), NOW + timedelta(hours=end))
+
+    return build_manifest_fold_plan(
+        manifest,
+        folds=(
+            WalkForwardSplit(window(0, 3), window(3, 5), window(5, 8)),
+            WalkForwardSplit(window(0, 8), window(8, 10), window(10, 13)),
+        ),
+        expected_split_policy_version="split-v1",
+        evaluation_cutoff=NOW + timedelta(hours=13),
+    )
+
+
+def _assert_holdout_interval_protected(manifest: DatasetManifest) -> None:
+    prototype = manifest.samples[0]
+    candidate = replace(
+        manifest,
+        samples=tuple(
+            replace(sample, outcome_end=NOW + timedelta(hours=9))
+            if sample.sample_id == "test-a"
+            else sample
+            for sample in manifest.samples
+        )
+        + (
+            replace(
+                prototype,
+                sample_id="holdout-edge-a",
+                decision_at=NOW + timedelta(hours=8),
+                feature_available_at=NOW,
+                outcome_start=NOW + timedelta(hours=8),
+                outcome_end=NOW + timedelta(hours=10),
+                split=DatasetSplit.HOLDOUT,
+            ),
+        ),
+    )
+    first_fold = _fold_plan(manifest).folds[0].split
+    try:
+        build_manifest_fold_plan(
+            candidate,
+            folds=(first_fold,),
+            expected_split_policy_version="split-v1",
+            evaluation_cutoff=NOW + timedelta(hours=13),
+        )
+    except ValueError as error:
+        message = str(error).lower()
+        if "holdout" not in message or "interval" not in message:
+            raise AssertionError("Kế hoạch bị từ chối vì lý do khác holdout interval.") from error
+        return
+    raise AssertionError("Fold đã nhận sample có outcome interval giao holdout.")
+
+
 async def _seed() -> dict[str, object]:
     engine = _engine()
     sessions = async_sessionmaker(engine, expire_on_commit=False)
@@ -103,25 +192,55 @@ async def _persist() -> dict[str, object]:
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     workspace_id = UUID(STATE["workspace_id"])
     other_workspace_id = UUID(STATE["other_workspace_id"])
-    manifest = _manifest(workspace_id)
+    manifests = (_manifest(workspace_id), _manifest_v2(workspace_id))
     async with sessions() as session, session.begin():
         repository = DatasetManifestRepository(session)
-        first = await repository.append(workspace_id=workspace_id, manifest=manifest)
-        duplicate = await repository.append(workspace_id=workspace_id, manifest=manifest)
-        loaded = await repository.get_by_hash(
-            workspace_id=workspace_id,
-            manifest_hash=manifest.content_hash,
-        )
-        hidden = await repository.get_by_hash(
-            workspace_id=other_workspace_id,
-            manifest_hash=manifest.content_hash,
-        )
-        assert not first.is_duplicate
-        assert duplicate.is_duplicate
-        assert loaded == manifest
-        assert hidden is None
+        for manifest in manifests:
+            first = await repository.append(workspace_id=workspace_id, manifest=manifest)
+            duplicate = await repository.append(workspace_id=workspace_id, manifest=manifest)
+            assert not first.is_duplicate
+            assert duplicate.is_duplicate
+    async with sessions() as session, session.begin():
+        repository = DatasetManifestRepository(session)
+        for manifest in manifests:
+            loaded = await repository.get_by_hash(
+                workspace_id=workspace_id,
+                manifest_hash=manifest.content_hash,
+            )
+            hidden = await repository.get_by_hash(
+                workspace_id=other_workspace_id,
+                manifest_hash=manifest.content_hash,
+            )
+            assert loaded == manifest
+            assert loaded.canonical_json == manifest.canonical_json
+            assert loaded.content_hash == manifest.content_hash
+            assert hidden is None
+            if loaded.manifest_version == "dataset-manifest-v2":
+                plan = _fold_plan(loaded)
+                _assert_holdout_interval_protected(loaded)
+                assert plan.content_hash == _fold_plan(manifest).content_hash
+                assert plan.folds[0].train_sample_ids == ("train-a",)
+                assert plan.folds[0].validation_sample_ids == ("validation-a",)
+                assert plan.folds[0].test_sample_ids == ("test-a",)
+                assert plan.folds[0].exclusions[0].reasons == (
+                    "label_incomplete_at_cutoff",
+                    "protected_label_overlap",
+                )
+                assert plan.folds[1].train_sample_ids == (
+                    "test-a",
+                    "train-a",
+                    "train-overlap-a",
+                    "validation-a",
+                )
+                assert plan.folds[1].validation_sample_ids == ("validation-next-a",)
+                assert plan.folds[1].test_sample_ids == ("test-next-a",)
+                assert plan.folds[1].exclusions == ()
     await engine.dispose()
-    return {"manifest_hash": manifest.content_hash}
+    return {
+        "versions": [manifest.manifest_version for manifest in manifests],
+        "folds": 2,
+        "holdout_interval_overlap_rejected": True,
+    }
 
 
 async def _assert_roles_and_immutability() -> dict[str, object]:
@@ -152,11 +271,12 @@ async def _assert_roles_and_immutability() -> dict[str, object]:
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     async with sessions() as session, session.begin():
         repository = DatasetManifestRepository(session)
-        loaded = await repository.get_by_hash(
-            workspace_id=workspace_id,
-            manifest_hash=manifest.content_hash,
-        )
-        assert loaded == manifest
+        for expected in (manifest, _manifest_v2(workspace_id)):
+            loaded = await repository.get_by_hash(
+                workspace_id=workspace_id,
+                manifest_hash=expected.content_hash,
+            )
+            assert loaded == expected
     await engine.dispose()
 
     engine = _engine(TRAINER)
@@ -166,7 +286,7 @@ async def _assert_roles_and_immutability() -> dict[str, object]:
             async with session.begin():
                 await DatasetManifestRepository(session).append(
                     workspace_id=workspace_id,
-                    manifest=_manifest(workspace_id, variant="b"),
+                    manifest=_manifest_v2(workspace_id, variant="b"),
                 )
         except DBAPIError as error:
             errors.append(str(error.orig))

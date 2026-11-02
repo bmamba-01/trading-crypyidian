@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
@@ -76,3 +77,34 @@ def test_manifest_record_detects_mutated_jsonb_or_denormalized_index_fields() ->
     record.sample_count = 99
     with pytest.raises(ValueError, match="chỉ mục"):
         record.to_domain()
+
+
+@pytest.mark.parametrize("with_holdout", [False, True])
+def test_v2_manifest_round_trips_same_record_and_canonical_loader(with_holdout: bool) -> None:
+    original = manifest()
+    samples = (replace(original.samples[0], split=DatasetSplit.DEVELOPMENT),)
+    if with_holdout:
+        samples += (replace(original.samples[0], sample_id="holdout", split=DatasetSplit.HOLDOUT),)
+    original = replace(
+        original,
+        manifest_version="dataset-manifest-v2",
+        samples=samples,
+        holdout_sealed_at=NOW if with_holdout else None,
+    )
+    restored = DatasetManifestRecord.from_domain(original).to_domain()
+    assert restored.canonical_json == original.canonical_json
+    assert restored.content_hash == original.content_hash
+    assert restored.samples == original.samples
+    if with_holdout:
+        with pytest.raises(ValueError, match="sealed"):
+            replace(original, holdout_sealed_at=None)
+
+
+def test_loader_rejects_legacy_payload_relabeled_as_v2() -> None:
+    import hashlib
+
+    invalid = manifest().canonical_json.replace("dataset-manifest-v1", "dataset-manifest-v2")
+    with pytest.raises(ValueError, match="fields are invalid"):
+        DatasetManifest.from_canonical_json(
+            invalid, expected_content_hash=hashlib.sha256(invalid.encode()).hexdigest()
+        )

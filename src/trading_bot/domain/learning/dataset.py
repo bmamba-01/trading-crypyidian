@@ -13,12 +13,13 @@ from trading_bot.domain.learning.labels import _sha256, _timestamp
 
 
 class DatasetSplit(StrEnum):
-    """Phân hoạch temporal được ghim cho từng sample."""
+    """Phân hoạch cố định v1 hoặc tập phát triển/holdout của v2."""
 
     TRAIN = "train"
     VALIDATION = "validation"
     TEST = "test"
     HOLDOUT = "holdout"
+    DEVELOPMENT = "development"
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,6 +155,11 @@ class DatasetManifest:
         if set(sample_ids) & set(excluded_ids):
             raise ValueError("Sample không thể đồng thời hợp lệ và bị loại.")
         for item in samples:
+            if self.manifest_version == "dataset-manifest-v2":
+                if item.split not in {DatasetSplit.DEVELOPMENT, DatasetSplit.HOLDOUT}:
+                    raise ValueError("Manifest v2 chỉ nhận split development hoặc holdout.")
+            elif item.split is DatasetSplit.DEVELOPMENT:
+                raise ValueError("Split development chỉ được dùng với dataset-manifest-v2.")
             if not start <= item.decision_at < end:
                 raise ValueError("Sample decision nằm ngoài data range.")
             if item.decision_at > as_of:

@@ -131,15 +131,31 @@ def test_bot_overlay_versions_admin_api_and_open_paper_position() -> None:
 
     ensure_image_available(root, image)
     try:
-        compose("up", "--detach", "--wait", "--wait-timeout", "180")
-        # Downgrade/upgrade khi chưa có version bot: migration đảo chiều sạch.
-        compose("run", "--rm", "--no-deps", "migrator", "alembic", "downgrade", "c7a90d3f8e21")
-        compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "head")
+        compose(
+            "up",
+            "--detach",
+            "--wait",
+            "--wait-timeout",
+            "180",
+            "postgres",
+            "object-store",
+        )
+        compose("run", "--rm", "--no-deps", "db-provisioner")
+        # Rehearsal MB-02/05 trên head cũ để WP-03 guard mới không che chúng.
+        compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "e0b2d4f6a8c1")
+        compose("run", "--rm", "--no-deps", "mfa-volume-provisioner")
+        compose(
+            "up",
+            "--detach",
+            "--wait",
+            "--wait-timeout",
+            "180",
+            "--no-deps",
+            "admin-web",
+            "trading-runtime",
+        )
         current = compose("run", "--rm", "--no-deps", "migrator", "alembic", "current")
-        # Head tích hợp gồm cả MB-05 (registry runtime) và MB-04 fix (aggregate hardening);
-        # downgrade ở trên kiểm tra luồng đảo chiều sạch qua các migration đó.
         assert "e0b2d4f6a8c1" in current.stdout
-        compose("run", "--rm", "--no-deps", "migrator", "alembic", "check")
 
         # --- Owner, MFA, risk profile và root settings ------------------------------------
         status, bootstrap = api(
@@ -525,8 +541,6 @@ def test_bot_overlay_versions_admin_api_and_open_paper_position() -> None:
             "('bot_config_version','bot_config_request')"
         ).stdout.strip()
         assert rls_flags == "bot_config_request:truetrue,bot_config_version:truetrue"
-        # Runtime MB-05 trong probe để lại lease/state: guard MB-05 chặn trước; export rồi mới
-        # kiểm guard MB-02 như cũ.
         runtime_guard = compose(
             "run",
             "--rm",
@@ -539,7 +553,7 @@ def test_bot_overlay_versions_admin_api_and_open_paper_position() -> None:
         )
         assert "MB05_DOWNGRADE_REQUIRES_EXPORT_OF_RUNTIME_STATE" in runtime_guard.stderr
         psql(MB05_EXPORT_SQL)
-        guard = compose(
+        config_guard = compose(
             "run",
             "--rm",
             "--no-deps",
@@ -549,6 +563,19 @@ def test_bot_overlay_versions_admin_api_and_open_paper_position() -> None:
             "c7a90d3f8e21",
             success=False,
         )
-        assert "MB02_DOWNGRADE_REQUIRES_EXPORT_OF_BOT_CONFIG" in guard.stderr
+        assert "MB02_DOWNGRADE_REQUIRES_EXPORT_OF_BOT_CONFIG" in config_guard.stderr
+        compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "head")
+        risk_guard = compose(
+            "run",
+            "--rm",
+            "--no-deps",
+            "migrator",
+            "alembic",
+            "downgrade",
+            "c7a90d3f8e21",
+            success=False,
+        )
+        assert "WP03_RISK_GUARD_DOWNGRADE_BLOCKED" in risk_guard.stderr
+        compose("run", "--rm", "--no-deps", "migrator", "alembic", "check")
     finally:
         compose("down", "--volumes", "--remove-orphans")

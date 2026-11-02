@@ -91,8 +91,15 @@ def test_runtime_lease_fencing_controls_and_downgrade_guard_on_real_postgres() -
     try:
         compose("up", "--detach", "--wait", "--wait-timeout", "180", "postgres")
         compose("run", "--rm", "--no-deps", "db-provisioner")
-        compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "head")
-        compose("run", "--rm", "--no-deps", "migrator", "alembic", "check")
+        compose(
+            "run",
+            "--rm",
+            "--no-deps",
+            "migrator",
+            "alembic",
+            "upgrade",
+            "e0b2d4f6a8c1",
+        )
         state = run_probe("seed")
 
         fencing = run_probe("runtime_fencing", state, service="trading-runtime")
@@ -165,6 +172,17 @@ def test_runtime_lease_fencing_controls_and_downgrade_guard_on_real_postgres() -
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "downgrade", PRE_MB05_HEAD)
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "head")
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "check")
+        global_guard = compose(
+            "run",
+            "--rm",
+            "--no-deps",
+            "migrator",
+            "alembic",
+            "downgrade",
+            PRE_MB05_HEAD,
+            success=False,
+        )
+        assert "WP03_RISK_GUARD_DOWNGRADE_BLOCKED" in global_guard.stderr
     finally:
         subprocess.run(
             [*base, "down", "--volumes", "--remove-orphans"],

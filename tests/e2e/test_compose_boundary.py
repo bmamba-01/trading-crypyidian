@@ -20,7 +20,6 @@ from urllib.request import HTTPCookieProcessor, Request, build_opener, urlopen
 import pyotp
 import pytest
 from scripts.docker_image import build_image_reference, ensure_image_available
-from tests.e2e.multibot_runtime_harness import MB05_EXPORT_SQL
 
 from trading_bot.auth.cookies import session_cookie_name
 from trading_bot.common.http_security import CONTENT_SECURITY_POLICY
@@ -258,7 +257,7 @@ def test_paper_stack_starts_and_keeps_database_and_object_store_data() -> None:
     except RuntimeError as error:
         pytest.fail(str(error))
 
-    def compose(*arguments: str) -> subprocess.CompletedProcess[str]:
+    def compose(*arguments: str, success: bool = True) -> subprocess.CompletedProcess[str]:
         command = [
             "docker",
             "compose",
@@ -289,7 +288,7 @@ def test_paper_stack_starts_and_keeps_database_and_object_store_data() -> None:
             pytest.fail(
                 f"Docker Compose vượt quá timeout cho {' '.join(arguments)}:\n{output[-4000:]}"
             )
-        if result.returncode:
+        if (result.returncode == 0) is not success:
             pytest.fail(
                 "Lệnh Docker Compose thất bại: "
                 f"{' '.join(arguments)}\n"
@@ -3112,23 +3111,12 @@ def test_paper_stack_starts_and_keeps_database_and_object_store_data() -> None:
             "SELECT count(*) FROM trading_account; COMMIT",
         )
         assert "0" in unscoped_count.stdout.strip().splitlines()
-        # MB-05: runtime để lại lease/state + checkpoint có token; export trước downgrade.
-        compose(
-            "exec",
-            "--no-TTY",
-            "postgres",
-            "psql",
-            "-U",
-            "crypidian_admin",
-            "-d",
-            "crypidian",
-            "-v",
-            "ON_ERROR_STOP=1",
-            "-c",
-            MB05_EXPORT_SQL,
+        # WP-03 hardening khóa downgrade toàn chain; trạng thái schema được giữ nguyên.
+        downgrade = compose(
+            "run", "--rm", "migrator", "alembic", "downgrade", "base", success=False
         )
-        compose("run", "--rm", "migrator", "alembic", "downgrade", "base")
-        compose("run", "--rm", "migrator", "alembic", "upgrade", "head")
+        assert "WP03_RISK_GUARD_DOWNGRADE_BLOCKED" in (downgrade.stdout + downgrade.stderr)
+        compose("run", "--rm", "migrator", "alembic", "check")
         compose(
             "exec",
             "--no-TTY",

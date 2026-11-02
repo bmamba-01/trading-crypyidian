@@ -87,8 +87,15 @@ def test_multibot_backfill_constraints_rls_and_downgrade_guard() -> None:
         )
         assert "MB01_UNSUPPORTED_ACCOUNT_MODE_OR_STATUS" in unsupported.stderr
         run_probe("restore_account")
-        compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "head")
-        compose("run", "--rm", "--no-deps", "migrator", "alembic", "check")
+        compose(
+            "run",
+            "--rm",
+            "--no-deps",
+            "migrator",
+            "alembic",
+            "upgrade",
+            "e0b2d4f6a8c1",
+        )
         run_probe("verify", json.dumps(snapshot))
         run_probe("actual_runtime", service="trading-runtime")
         run_probe("actual_admin", service="admin-web")
@@ -106,15 +113,32 @@ def test_multibot_backfill_constraints_rls_and_downgrade_guard() -> None:
         run_probe("prepare_downgrade")
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "downgrade", "b2e7a9d4c631")
         run_probe("verify_legacy", json.dumps(snapshot))
-        # Role cấp cluster có thể đã tồn tại do database khác; upgrade phải không lỗi.
         run_probe("precreate_provisioner_role")
         unsafe = compose(
-            "run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "head", success=False
+            "run",
+            "--rm",
+            "--no-deps",
+            "migrator",
+            "alembic",
+            "upgrade",
+            "head",
+            success=False,
         )
         assert "MB01_PROVISIONER_ROLE_UNSAFE" in unsafe.stderr
         run_probe("harden_provisioner_role")
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "head")
         run_probe("verify_reupgrade")
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "check")
+        global_guard = compose(
+            "run",
+            "--rm",
+            "--no-deps",
+            "migrator",
+            "alembic",
+            "downgrade",
+            "b2e7a9d4c631",
+            success=False,
+        )
+        assert "WP03_RISK_GUARD_DOWNGRADE_BLOCKED" in global_guard.stderr
     finally:
         compose("down", "--volumes", "--remove-orphans")
