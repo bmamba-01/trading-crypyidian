@@ -13,6 +13,64 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 
 ## Nhật ký các vòng
 
+### 2026-11-02 — WP-03 Task 1: Offline response/event parser và golden fixtures Binance USDⓈ-M
+
+- **Mục tiêu/phạm vi:** Triển khai bộ raw DTOs và canonical parsers offline cho 3 API families của Binance USDⓈ-M theo WBS Task 1:
+  1. Regular order responses (`POST /fapi/v1/order`, `GET /fapi/v1/order`)
+  2. Algo order responses (`POST /fapi/v1/algoOrder`, `GET /fapi/v1/algoOrder`)
+  3. User Data Stream WebSocket events (`ORDER_TRADE_UPDATE`, `ALGO_UPDATE`, `ACCOUNT_UPDATE`)
+  Tuân thủ fail-closed validation: từ chối status/enum lạ, không cho phép số âm cho quantity/price (cho phép unrealizedProfit và positionAmt âm), từ chối payload lẫn lộn giữa các family.
+- **Nguồn đã kiểm tra (2026-11-01 / 2026-11-02):**
+  - [Binance USDⓈ-M User Data Streams](https://developers.binance.com/docs/derivatives/usds-margined-futures/user-data-streams)
+  - [Binance USDⓈ-M Trade REST API](https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api)
+  - [Binance USDⓈ-M Change Log](https://developers.binance.com/en/docs/products/derivatives-trading-usds-futures/change-log)
+- **Thay đổi:**
+  - Tạo `src/trading_bot/domain/execution/venue_parsers.py`: chứa các enum (`RegularOrderStatus`, `RegularOrderType`, `ConditionalAlgoOrderType`, `AlgoOrderStatus`, `OrderSide`, `ExecutionType`), các frozen dataclass DTOs (`RegularOrderResponse`, `AlgoOrderResponse`, `OrderTradeUpdateEvent`, `AlgoUpdateEvent`, `AccountBalanceUpdate`, `PositionUpdate`, `AccountUpdateEvent`), exception `VenueParserError`, và các parser hàm thuần fail-closed: `parse_regular_order_response`, `parse_algo_order_response`, `parse_order_trade_update`, `parse_algo_update`, `parse_account_update`.
+  - Tạo 8 golden fixtures trong `tests/fixtures/binance_usdm/`: `regular_order_accepted.json`, `regular_order_partial.json`, `regular_order_unknown_status.json`, `algo_order_new.json`, `algo_order_triggered.json`, `order_trade_update_partial.json`, `algo_update_rejected.json`, `account_update.json`. Mỗi fixture đều có `_fixture_metadata` truy vết URL, API family, scenario và ngày kiểm tra.
+  - Thêm định nghĩa thuật ngữ `Execution report / Order update` vào `docs/research/glossary-vi.md`.
+  - Tạo unit tests toàn diện trong `tests/unit/test_venue_parsers.py` (28 test cases).
+- **TDD/vấn đề:**
+  - Viết test trước trong `tests/unit/test_venue_parsers.py`, chạy pytest kiểm tra trạng thái RED (`ModuleNotFoundError`).
+  - Viết module `src/trading_bot/domain/execution/venue_parsers.py`, chạy test kiểm tra trạng thái GREEN (28 passed).
+  - Ruff báo 5 lỗi E501 line too long và mypy báo union attribute access với dict get; đã chuẩn hóa type annotation `src: dict[str, Any]` và ngắt dòng chuỗi thông báo lỗi.
+- **Chất lượng:**
+  - Ruff check: `.venv/bin/ruff check src/trading_bot/domain/execution/venue_parsers.py tests/unit/test_venue_parsers.py` → All checks passed!
+  - Mypy: `.venv/bin/mypy src/trading_bot/domain/execution/venue_parsers.py` và `tests/unit/test_venue_parsers.py` → Success: no issues found.
+  - Pytest: `.venv/bin/pytest tests/unit/test_venue_parsers.py -v` → 28 passed in 0.04s.
+  - Regression unit tests: `.venv/bin/pytest tests/unit/test_venue* tests/unit/test_binance* -q` → 155 passed in 0.41s.
+- **Giới hạn còn mở:** Các parser hiện tại là pure offline functions/DTOs. Cần tích hợp vào transport adapter/worker và outbox stream ở các Task kế tiếp của WP-03.
+- **Commit/nhánh:** Chưa commit.
+- **Đã đọc lại mục memory sau cập nhật:** Có.
+
+### 2026-11-02 — WP-04: Admin UI & Responsive Layout Enhancement
+
+- **Mục tiêu/phạm vi:** Triển khai cải tiến giao diện Admin Web theo tài liệu khảo sát `docs/research/admin-dashboard-market-review-2026-11-02.md`: banner thông báo chế độ PAPER nội bộ (theo ruling 2026-11-02), thẻ KPI (Tổng bot, Bot sẵn sàng, Kill switch khẩn cấp, Chế độ vận hành), danh sách bot responsive (table desktop sang cards mobile), Dark/Light mode qua `prefers-color-scheme`, hit target di động >= 44px, và các thuộc tính accessibility ARIA (landmarks, skip-link, aria-label, aria-live).
+- **Nguồn đã kiểm tra (2026-11-02):**
+  + Entrade Dashboard (https://hdsd.entrade.com.vn/chuc-nang-avatar/dashboard): danh sách bot, filter môi trường.
+  + Binance Support PnL (https://www.binance.com/vi/support/faq/detail/07d9c7a2f2524e8eb4c3baf947826faa): KPI định nghĩa rõ ràng.
+  + FreqUI (https://www.freqtrade.io/en/latest/freq-ui/): bố cục responsive đa thiết bị.
+  + Bootstrap 5.3 Responsive Grid (https://getbootstrap.com/docs/5.3/layout/grid/): nguyên lý mobile-first breakpoints.
+- **Thay đổi:**
+  + `src/trading_bot/templates/admin/base.html`: thêm system mode banner với badge "Chế độ: Mô phỏng (PAPER) nội bộ" và mô tả an toàn ("mô phỏng nội bộ trong database — không gọi API hay đặt lệnh lên Binance"), bổ sung ARIA landmarks (`header role="banner"`, `main role="main"`, `footer role="contentinfo"`).
+  + `src/trading_bot/templates/admin/dashboard.html`: thiết kế lại với 4 KPI cards ngữ nghĩa (Tổng số bot, Bot sẵn sàng, Trạng thái khẩn cấp `ACTIVE`/`KILLED` với `aria-live="polite"`, Chế độ PAPER); form dừng/gỡ khẩn cấp workspace; bảng danh sách bot responsive với `data-label` chuyển đổi linh hoạt từ bảng trên desktop sang card view trên mobile.
+  + `src/trading_bot/static/admin.css`: viết lại toàn bộ theo kiến trúc Mobile-First, thuần CSS không phụ thuộc framework/JS ngoài; hỗ trợ Dark/Light mode tự động qua `prefers-color-scheme: dark`; chuẩn hóa hit-target tối thiểu 44px (2.75rem); bảo toàn WCAG AA contrast và `prefers-reduced-motion`.
+  + `tests/unit/test_admin_dashboard_ui.py`: bộ 6 unit tests TDD kiểm tra banner mode/disclaimer, KPI cards, trạng thái KILLED, thuộc tính accessibility/skip-link/landmarks, autoescape chống XSS và CSS dark mode/hit target.
+- **TDD/vấn đề phát sinh và xử lý:**
+  + Giai đoạn RED ban đầu: 4 tests thất bại do template chưa có banner PAPER, chưa có KPI card grid, thiếu data-label responsive và admin.css chưa có media query dark mode.
+  + Giai đoạn GREEN: sau khi cập nhật template và CSS, toàn bộ 6 test trong suite mới đạt.
+  + Lỗi typing mypy `Argument "bots" has incompatible type "list[dict[str, Collection[str]]]"; expected "list[dict[str, object]]"`: đã chỉnh type annotation trong fixture stub thành `list[dict[str, Any]]` để tương thích type invariance.
+  + Lỗi Ruff unused import `pytest` và type quotes: đã xóa import thừa và bỏ quotes.
+- **Verification:**
+  + Unit tests: `PYTHONPATH="$PWD:$PWD/src" .venv/bin/pytest tests/unit/test_admin_dashboard_ui.py tests/unit/test_admin_web_smoke.py tests/unit/test_admin_web_views.py -q` → **20 passed trong 1.04 giây**.
+  + Ruff check: `.venv/bin/ruff check src/trading_bot/admin/web_router.py tests/unit/test_admin_dashboard_ui.py tests/unit/test_admin_web_smoke.py tests/unit/test_admin_web_views.py` → **All checks passed!**
+  + Mypy: `.venv/bin/mypy src/trading_bot/admin/web_router.py tests/unit/test_admin_dashboard_ui.py` → **Success: no issues found in 2 source files**.
+- **Giới hạn còn mở:**
+  + Equity time series và chart PnL trực quan chưa được đưa vào dashboard vì cần authoritative ledger series (theo ruling trong `admin-dashboard-market-review-2026-11-02.md`).
+  + Chế độ hiển thị cố định PAPER; việc chuyển sang Live/Demo Binance Futures cần được kích hoạt khi module execution thật (WP-03) hoàn tất kết nối API và khóa an toàn.
+- **Commit/nhánh:** `dev`; chưa commit (chờ người dùng chỉ định).
+- **Đã đọc lại mục memory sau cập nhật:** có; đối chiếu đầy đủ với các thay đổi template, CSS, tests và output kiểm thử.
+
+
 ### 2026-10-23 — WP-02F: persistence sensitivity scenario và replay trade outcomes
 
 - **Mục tiêu/phạm vi:** lưu cost/parameter overrides cho từng sensitivity trial và từng evaluation trade outcome canonical; phát hiện retry dùng payload khác, giữ hash outcome tính lại được từ DB. Bám WBS Task 9/10. Không sửa `application/backtest.py`, `application/paper_lifecycle.py`, `tests/e2e/test_compose_boundary.py` hoặc module evaluator của replay-parity stream; không commit.
@@ -1080,3 +1138,64 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Tài liệu:** cập nhật module plans, WBS WP03/05/06, project-status và glossary EN→VI gồm source item history, manifest fold plan và persisted immutable manifest. Không thay đổi API/library/dependency; không phát sinh kiểm tra endpoint/provider mới.
 - **Commit/remote:** commit `607c37b` đã push `origin/dev`; vòng hiện tại sau commit này chưa commit/push. Không tuyên bố các package hoàn tất: WP03 composition/verifier thật/risk resolution, WP05 source-item persistence/rights/provider/takedown/connector, WP06 verifier completeness/evaluator/trial/trainer/registry/promotion/drift còn mở.
 - **Đã đọc lại mục memory sau cập nhật:** xác nhận mục này đã ghi đúng 4 E2E/2039 unit/static/Alembic head và working diff; các giới hạn production/WBS vẫn mở như đã nêu. Sẵn sàng commit vòng hai.
+
+## 2026-11-02 — Nghiên cứu khởi tạo Binance Futures Demo và dashboard responsive
+
+- **Mục tiêu/phạm vi:** theo yêu cầu nghiên cứu cách lấy tài khoản Futures Demo thật để kiểm thử và đối chiếu dashboard bot/quant tiếng Việt, mobile-first cùng CSS framework phù hợp. Vòng này chỉ cập nhật kế hoạch/trạng thái/tài liệu nghiên cứu; không thêm code/dependency, không đăng nhập Binance thay người dùng, không gửi API request/private request hoặc lệnh.
+- **Binance Demo đã kiểm tra 2026-11-02:** FAQ hiện hành hướng dẫn đăng nhập bằng account Binance tại `demo.binance.com`, chọn Futures Demo, tạo API key bên trong Demo API Management. Availability tùy quốc gia/vùng; không giả định Việt Nam được mở hoặc dùng biện pháp lách vùng. Host công bố `https://demo-fapi.binance.com` và `wss://demo-fstream.binance.com`; General Info chỉ nói “most endpoints” trên testnet. `GET /fapi/v3/account` USER_DATA được đề xuất làm authenticated read-only smoke đầu tiên, trước bất kỳ quyền/test order nào. Nguồn đã ghi trong WP-03: Binance Demo FAQ/how-to, USDⓈ-M General Info và Account REST catalog.
+- **Secret boundary local:** chỉ đọc metadata kích thước file, không đọc credential. `.secrets/binance_api_key` và `.secrets/binance_api_secret` đều **0 byte**; là tên secret generic đang khai báo cho execution-gateway profile PAPER, nên WBS yêu cầu không tái sử dụng cho Demo. Owner phải tự tạo Demo key; implementation cần secret refs/files/profile riêng và opt-in read-only E2E. Không yêu cầu user dán key vào hội thoại.
+- **Dashboard research:** `/admin` hiện chỉ có bot count/readiness/workspace kill; `/admin/reports` in JSON. `BotReportingService` hiện là PAPER-only realized ledger snapshot; totals gồm gross/net PnL, fee/funding/slippage, trade count và realized-PnL drawdown theo quote asset; chưa có equity series, Demo stats hay unrealized positions trên UI. Đã ghi caveat này để không vẽ/interpolate số liệu không có nguồn.
+- **Benchmark/CSS:** đối chiếu Entrade Dashboard (tiếng Việt, live/virtual filter, assets), Binance Bot PnL analytics, FreqUI (responsive multi-bot, caveat balance), và Binance Trading Bot open-source phone layout. State of CSS 2025: Tailwind 2.041 vs Bootstrap 1.194 respondent; W3Techs 2026-08-07: Bootstrap 74,6% among detected framework sites. Đây là các mẫu số khác nhau. Vì repo dùng FastAPI/Jinja không có frontend build, đề xuất Bootstrap 5.3 self-host pinned assets + custom CSS, giữ SSR; không thêm SPA/Node. Dashboard mobile dùng KPI cards/roster cards, nav thu gọn, filter xuống dòng; mode/quote/time/freshness tường minh, stale/unknown không đổi thành zero, không gộp mode/quote.
+- **Tài liệu đổi:** `docs/implementation/03-binance-execution.md`, WP-03 WBS, Plan 04, `docs/research/admin-dashboard-market-review-2026-11-02.md`, `docs/implementation/project-status.md` và memory này. Chưa sửa Bootstrap asset/Docker hoặc API runtime; patch/version/license recheck vẫn cần trước khi thêm asset.
+- **Kiểm thử:** vòng này chỉ sửa tài liệu; không chạy unit/E2E. `git diff --check` được chạy ở bước đóng vòng để xác nhận diff hygiene; không xem số liệu test ở vòng trước là kết quả chạy lại.
+- **Việc còn mở:** owner xác nhận Demo eligibility/tự tạo API key trong Binance UI; trước đó tiếp tục offline WP-03 adapter/secret separation. Dashboard cần WBS/design plan tiếp theo trước khi implement; source/evaluator/production integration của WP-05/06 vẫn theo WBS, không được xem là hoàn tất.
+- **Đã đọc lại mục memory sau cập nhật:** đối chiếu entry này với diff WP-03/04, WBS, project-status và research note; xác nhận nguồn/ngày, hai secret file chỉ đọc metadata 0 byte, không phát sinh private API/trade, và test status ghi rõ docs-only không chạy unit/E2E. `git diff --check` đạt.
+
+## 2026-11-02 — Chốt demo nội bộ dùng PAPER simulator
+
+- **Quyết định người dùng:** tạm thời chạy “demo” như một lệnh mô phỏng đã được vào, không gửi order lên Binance; bot ghi nhận trạng thái vào DB.
+- **Đối chiếu implementation:** `PaperRuntimeApplicationService` đã nhận intent sau khi strategy/planner/risk gate duyệt; paper coordinator lưu intent và lifecycle ledger; entry event mô phỏng tạo fill/position và trade OPEN trong DB. Đường mô phỏng không chèn trade bỏ qua risk, intent hoặc fill. Tuy nhiên `market_dispatch=not_configured`, nên hiện chưa tự quét thị trường/phát quyết định nền; service/replay được gọi bằng input tường minh.
+- **Phân định phạm vi:** demo đang dùng trong sản phẩm được gọi là “Mô phỏng (PAPER)” và không cần Binance account/API key. WP-03E external Binance Futures Demo account/venue run được hoãn; tài liệu tạo account/key giữ làm tham khảo cho lần tích hợp sau. Không có Binance private API hay order được gửi trong vòng này. WP-03 adapter/lifecycle và các việc WP-05/WP-06 khác vẫn theo WBS.
+- **Tài liệu đổi:** Plan 02, Plan 03, Plan 04, WBS WP-03, project-status, WP-04 dashboard market review và memory này; làm rõ ledger evidence, nhãn dashboard và trạng thái trì hoãn WP-03E.
+- **Kiểm tra:** chỉ sửa tài liệu; không chạy unit/E2E trong vòng này. `git diff --check` đạt. Đây không phải bằng chứng chạy lại runtime hoặc kiểm thử tích hợp.
+- **Đã đọc lại entry sau cập nhật:** xác nhận user ruling, PAPER path, giới hạn chưa có autonomous dispatcher, không cần account/key cho demo tạm thời và trạng thái WP-03E khớp với tài liệu liên quan.
+
+## 2026-11-02 — WP-05C: Persistence và Repository cho Source Item Revision và Takedown
+
+- **Mục tiêu/phạm vi:** triển khai WP-05 Task 2 (WP-05C) lưu trữ bền vững metadata revision của research item và lệnh takedown; bảo đảm hash chain bất biến, kiểm tra predecessor/tombstone, idempotency khi retry cùng payload và reject khi xung đột ID/payload/predecessor; hỗ trợ tra cứu point-in-time `as_of` và chặn dữ liệu khi có takedown active. Không gọi mạng ngoài, không lưu body nội dung bản quyền thô.
+- **Thay đổi mã nguồn:**
+  * Thêm `src/trading_bot/adapters/database/models/source_item_entities.py`: định nghĩa `SourceItemRevisionRecord` (bảng `research_source_item_revisions`) với workspace FK, CheckConstraints regex identifier, hash SHA-256, sequence/unique index, timestamp check `available_at >= observed_at`, `published_at <= observed_at`, `edited_at <= observed_at`, và URL HTTPS. Định nghĩa `SourceTakedownRecord` (bảng `research_source_takedowns`) với workspace FK, partial unique index cho active takedown per source/item, và timestamp check `effective_at >= requested_at`. Cung cấp chuyển đổi 2 chiều `from_domain`/`to_domain` với bảo vệ chống sửa đổi canonical JSONB payload.
+  * Cập nhật `src/trading_bot/adapters/database/models/__init__.py`: export `SourceItemRevisionRecord` và `SourceTakedownRecord`.
+  * Thêm `src/trading_bot/adapters/database/repositories/source_item_repository.py`: `SourceItemRepository` cài đặt `append_revision`, `load_history`, `record_takedown`, `is_takedown_active`, `get_latest_usable_revision` cùng cơ chế RLS workspace binding `set_config` và transaction advisory lock `pg_advisory_xact_lock`.
+  * Cập nhật `tests/unit/test_database_models.py` ghi nhận thêm 2 bảng mới trong metadata.
+  * Thêm `tests/unit/test_source_item_persistence.py`: 17 unit tests bao phủ toàn diện round-trip domain/record, tamper detection, append sequence/predecessor, idempotent retry, conflict on tampered hash, tombstone/predecessor rejection, load history hash chain verification, takedown active gating và point-in-time retrieval.
+- **TDD và sửa lỗi phát sinh:**
+  * Vòng RED ban đầu bắt đúng `ImportError` do module chưa có.
+  * Vòng GREEN đầu tiên phát hiện test fixture nâng `observed_at` cho revision 2 mà không nâng `available_at`, vi phạm bất biến `available_at >= observed_at` của domain `SourceItemRevision`; sửa fixture helper `make_revision` để tự động nâng `available_at` tương ứng.
+  * Full suite regression phát hiện `test_database_models.py` cần khai báo 2 bảng mới trong foundation tables set; cập nhật set.
+- **Kiểm chứng và chất lượng:**
+  * Unit test mục tiêu: `PYTHONPATH="$PWD:$PWD/src" .venv/bin/pytest tests/unit/test_source_item_persistence.py -v` → **17 passed / 0.28s**.
+  * Nhóm liên quan research: `tests/unit/test_source_*.py` → **149 passed / 0.44s**.
+  * Toàn bộ unit test: `PYTHONPATH="$PWD:$PWD/src" .venv/bin/pytest tests/unit -q` → **2090 passed / 8.68s**, 0 failure, 0 skip.
+  * Static checks: `.venv/bin/ruff check` đạt; `.venv/bin/ruff format` các file mục tiêu đạt; `.venv/bin/mypy src/trading_bot` đạt **184 source files, no issues**.
+- **Đã đọc lại memory:** đối chiếu source/test/models, các ràng buộc DB constraints, kết quả 17 unit test persistence và 2090 full unit pass; xác nhận tuân thủ đầy đủ quy ước của AGENTS.md và skill `futures-bot-implementation`.
+
+## 2026-11-02 — Playwright E2E Admin Dashboard: kiểm thử toàn diện chức năng và bộ screenshots Desktop & Mobile
+
+- **Mục tiêu/phạm vi:** thiết lập kịch bản Playwright E2E tự động bao phủ 100% các phân hệ giao diện của Admin Dashboard (Login, Dashboard KPI, Kill Switch, Release, Bot List, Bot Detail, Pause Bot, Config Drafts/Validate/Publish, Flatten Preview/Review/Confirm/Operation status, Báo cáo PnL/Trades, Telegram Link Deep-Link/Revoke) trên cả hai kích thước màn hình Desktop (1280x800) và Mobile iPhone (390x844); tự động xuất loạt 22 ảnh chụp màn hình chất lượng cao để đối soát và kiểm chứng tính năng.
+- **Thay đổi mã nguồn:**
+  * Thêm `tests/e2e/test_admin_dashboard_playwright.py`: bộ kiểm thử E2E Playwright hoàn chỉnh chạy tự động với pytest, sử dụng in-process uvicorn server và in-memory mock services phản ánh chính xác nghiệp vụ thực tế; kiểm tra đầy đủ các mốc semantic HTML, ARIA landmarks, form CSRF, cookie session, chuyển đổi trạng thái bot/workspace và bảo vệ dữ liệu.
+  * Thư mục screenshots: lưu trữ 22 ảnh màn hình tương ứng với các trạng thái Desktop và Mobile tại `/Users/macbook/.gemini/antigravity/brain/4f23167d-60fd-49c3-8248-ddb2b669a2a7/screenshots/`.
+- **Vấn đề phát sinh và nguyên nhân gốc:**
+  * Locator login ban đầu tìm `#workspace_slug` bị timeout vì id thực tế trong template `login.html` là `workspace-slug`; chuẩn hóa sang `page.get_by_label(...)` bám sát WCAG accessibility.
+  * `Principal` trong mock auth service ban đầu truyền thừa `permissions` và thiếu `mfa_verified_at`; đã sửa theo đúng định nghĩa `@dataclass` của domain `Principal`.
+  * `MockFlattenAllService.confirm` cần nhận keyword argument `preview_id` và trả về `ConfirmOperationResult(operation_id=...)` thay vì dict thô.
+  * `MockTelegramBindingService.create_link` cần trả về đối tượng có thuộc tính `expires_at` kiểu `datetime` thay vì chuỗi ISO string để template `telegram_link_created.html` gọi được `.isoformat()`.
+- **Kiểm chứng và chất lượng:**
+  * Pytest E2E: `PYTHONPATH="$PWD:$PWD/src" .venv/bin/pytest tests/e2e/test_admin_dashboard_playwright.py -v` → **1 passed trong 19.06s** (bao phủ cả kịch bản Desktop và Mobile).
+  * 22 tệp ảnh screenshots được lưu trữ và kiểm tra toàn vẹn dung lượng/định dạng.
+  * Ruff check: `.venv/bin/ruff check tests/e2e/test_admin_dashboard_playwright.py` → **All checks passed!**
+  * Mypy: `.venv/bin/mypy tests/e2e/test_admin_dashboard_playwright.py` → **Success: no issues found in 1 source file**.
+  * `git diff --check`: đạt chuẩn, không có lỗi whitespace hay conflict.
+- **Commit/nhánh:** commit trên nhánh `dev` theo yêu cầu người dùng, đồng bộ lên remote người dùng sở hữu `origin` (`git@github.com:bmamba-01/trading-crypyidian.git`).
+- **Đã đọc lại memory:** đối chiếu toàn bộ các bước xử lý lỗi, kết quả test E2E 1 passed / 19.06s, danh sách ảnh chụp màn hình và static checks; xác nhận tuân thủ nghiêm ngặt quy định AGENTS.md và skill `futures-bot-implementation`.

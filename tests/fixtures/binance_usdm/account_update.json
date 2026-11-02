@@ -1,0 +1,37 @@
+{
+  "_fixture_metadata": {
+    "endpoint": "USER_DATA_STREAM",
+    "method": "WEBSOCKET",
+    "api_family": "ACCOUNT_UPDATE",
+    "source_url": "https://developers.binance.com/docs/derivatives/usds-margined-futures/user-data-streams/Event-Account-Update",
+    "checked_date": "2026-11-01",
+    "scenario": "Account update WebSocket event with balances and positions"
+  },
+  "e": "ACCOUNT_UPDATE",
+  "E": 1798214405200,
+  "T": 1798214405190,
+  "a": {
+    "m": "ORDER",
+    "B": [
+      {
+        "a": "USDT",
+        "wb": "10000.50000000",
+        "cw": "9500.50000000",
+        "bc": "-0.50000000"
+      }
+    ],
+    "P": [
+      {
+        "s": "BTCUSDT",
+        "pa": "0.020",
+        "ep": "50000.00000",
+        "cr": "0",
+        "up": "-15.20000000",
+        "mt": "cross",
+        "iw": "0.00000000",
+        "ps": "BOTH",
+        "ma": "USDT"
+      }
+    ]
+  }
+}

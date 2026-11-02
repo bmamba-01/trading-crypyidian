@@ -7,6 +7,8 @@
 
 **Thiết kế đã duyệt:** [WP-02 trading core/config design](../superpowers/specs/2026-10-22-wp02-trading-core-design.md).
 
+**Quy ước demo tạm thời:** khi nói “demo” trong sản phẩm hiện tại, hiểu là mô phỏng nội bộ bằng PAPER; không gọi Binance và không cần account/API key Binance. Trade chỉ được ghi OPEN sau khi candidate qua RiskEngine, intent được lưu và simulator nhận entry event tạo fill/position trong ledger. Không chèn một trade giả bỏ qua risk, intent hoặc fill. Đường này chưa tự quét thị trường/phát tín hiệu nền vì `market_dispatch=not_configured`; hiện service/replay phải được gọi bằng input rõ ràng.
+
 **WBS chi tiết:** [WP-02 implementation plan](../superpowers/plans/2026-10-22-wp02-implementation-plan.md) — người dùng đã duyệt WBS ngày 2026-10-22. Bổ sung [WBS pinning/replay progression](./wp02e-profile-pinning-and-replay-progression-wbs.md) xử lý PP2/PP5/RP4/PP6. WP-02 đã nghiệm thu trong phạm vi PAPER/replay MVP; final full suite và independent review đạt.
 
 ## WP-02A — Hợp đồng dữ liệu thị trường và adapter đọc

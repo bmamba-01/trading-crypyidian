@@ -82,6 +82,10 @@ from trading_bot.adapters.database.models.signal_entities import (
     BotDecisionRecord,
     SharedSignalEvidenceRecord,
 )
+from trading_bot.adapters.database.models.source_item_entities import (
+    SourceItemRevisionRecord,
+    SourceTakedownRecord,
+)
 from trading_bot.adapters.database.models.telegram_entities import (
     TelegramBindingChallenge,
     TelegramLinkRequest,
@@ -135,8 +139,10 @@ __all__ = [
     "PaperExecutionCheckpointRecord",
     "PositionEventRecord",
     "RiskProfileVersion",
+    "SourceItemRevisionRecord",
     "SourcePolicyRevisionRecord",
     "SourceQuotaEventRecord",
+    "SourceTakedownRecord",
     "RiskDecisionRecord",
     "RiskReservationRecord",
     "RoleBinding",

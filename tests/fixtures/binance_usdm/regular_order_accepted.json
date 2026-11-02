@@ -1,0 +1,31 @@
+{
+  "_fixture_metadata": {
+    "endpoint": "/fapi/v1/order",
+    "method": "POST",
+    "api_family": "REGULAR_ORDER",
+    "source_url": "https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api/New-Order",
+    "checked_date": "2026-11-01",
+    "scenario": "Order submitted and accepted as NEW"
+  },
+  "clientOrderId": "crypidian_test_001",
+  "cumQty": "0",
+  "cumQuote": "0",
+  "executedQty": "0",
+  "orderId": 10000001,
+  "avgPrice": "0.00000",
+  "origQty": "0.050",
+  "price": "50000.00",
+  "reduceOnly": false,
+  "side": "BUY",
+  "positionSide": "BOTH",
+  "status": "NEW",
+  "stopPrice": "0",
+  "closePosition": false,
+  "symbol": "BTCUSDT",
+  "timeInForce": "GTC",
+  "type": "LIMIT",
+  "origType": "LIMIT",
+  "updateTime": 1798214400000,
+  "workingType": "CONTRACT_PRICE",
+  "priceProtect": false
+}

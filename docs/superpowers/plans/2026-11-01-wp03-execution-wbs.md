@@ -1,6 +1,6 @@
 # WP-03 Binance USDⓈ-M Execution Implementation Plan
 
-> **Trạng thái:** Cập nhật 2026-11-02; WP-03B có durable venue intent/transition ledger, PostgreSQL repository, bot-scoped RLS/FK, DB-backed `VenueOrderLedgerPort` adapter và Compose E2E đã đạt. `VenueOrderReconciliationService` qua verifier port kiểm scope/freshness/fill monotonicity và ghi transition verified; E2E fake verifier xác nhận partial fill vào audit, `ORDER_ABSENT` giữ UNKNOWN. Adapter chưa được wire vào composition/worker và chưa có verifier venue thật. Chưa có transaction bridge ghi open-risk rồi release/transfer an toàn; venue-linked risk vẫn bị giữ. Caller-provided evidence hash không thể release/transfer hoặc chuyển `UNKNOWN→RETRYABLE`. PAPER không liên kết venue vẫn giữ luồng cũ. HMAC process-local chưa có rehydrate contract. Chưa có production transport, secret provider, outbox bridge, authenticated stream/protection hoặc order Demo; Demo vẫn chờ gate PAPER/risk.
+> **Trạng thái:** Cập nhật 2026-11-02; WP-03B có durable venue intent/transition ledger, PostgreSQL repository, bot-scoped RLS/FK, DB-backed `VenueOrderLedgerPort` adapter và Compose E2E đã đạt. `VenueOrderReconciliationService` qua verifier port kiểm scope/freshness/fill monotonicity và ghi transition verified; E2E fake verifier xác nhận partial fill vào audit, `ORDER_ABSENT` giữ UNKNOWN. Adapter chưa được wire vào composition/worker và chưa có verifier venue thật. Chưa có transaction bridge ghi open-risk rồi release/transfer an toàn; venue-linked risk vẫn bị giữ. Caller-provided evidence hash không thể release/transfer hoặc chuyển `UNKNOWN→RETRYABLE`. PAPER không liên kết venue vẫn giữ luồng cũ. HMAC process-local chưa có rehydrate contract. Chưa có production transport, secret provider, outbox bridge, authenticated stream/protection hoặc order Demo. Quyết định 2026-11-02: demo tạm thời trong sản phẩm dùng PAPER simulator/DB ledger; chạy trên Binance Futures Demo thật là phạm vi WP-03E riêng và được hoãn.
 
 **Goal:** Bổ sung execution adapter USDⓈ-M Demo với intent bền vững, reservation không mất khi trạng thái chưa rõ, protective order và reconciliation có thể phục hồi; LIVE tiếp tục bị khóa.
 
@@ -18,18 +18,21 @@
 | WP-03B lifecycle/UNKNOWN | Đang triển khai một phần (domain + DB ledger + reconciliation application/adapter) | Intent/reservation HMAC proof, guarded lifecycle, error classifier, fake transport; migration/repository ghi intent, bot/workspace/account/reservation/settings scope, idempotency/client ID, DB transition graph, append-only audit và reservation locking. DB ledger port bind workspace/bot/account, translate command và sequence-guard ghi transaction. Compose E2E fake verifier xác nhận partial fill append transition nhưng giữ reservation UNKNOWN; absent giữ nguyên transition count. | Adapter chưa nối composition/worker và verifier venue thật chưa có. Chưa có transaction bridge ghi open-risk rồi transfer/release reservation an toàn. HMAC proof process-local nên row load không tái tạo domain intent sau restart; cross-process submit claim, history/stream reconcile, fill dedupe, protection và recovery còn mở. |
 | WP-03C stream/protection | Chưa bắt đầu | PAPER simulator có partial-fill/cancel remainder/protective exit; account activity port có classifier. | `ORDER_TRADE_UPDATE`/`ACCOUNT_UPDATE`/`ALGO_UPDATE`, venue partial fill, algo lifecycle, protect đúng quantity và reject recovery. |
 | WP-03D startup/reconcile | PAPER recovery nền; venue chưa bắt đầu | PAPER hydrate/checkpoint verify, runtime lease/fencing, foreign activity incident persistence. | Snapshot venue, event gap/reconnect reconciliation, readiness gate venue, orphan/mismatch handling/runbook. |
-| WP-03E Demo run | Bị chặn bởi readiness gate | Tài liệu Binance công bố testnet REST/WS hosts. Chưa có Demo account/key hoặc evidence về simulator capabilities. | Xác nhận key/account/permissions, PAPER risk gate, successful host/key isolation, Demo scenarios và sanitized evidence package. |
+| WP-03E Binance Futures Demo run | Tạm hoãn theo quyết định 2026-11-02 | Flow tạo account/key và REST/WS host đã được nghiên cứu; hiện chưa cần account/key để chạy demo nội bộ. Hai file Binance secret local còn rỗng; không có handshake hay venue order nào được chạy. | Mở lại sau khi WP-03 readiness/risk/host gates đạt và có account/key riêng do owner cấp. Khi mở lại, triển khai secret scope tách khỏi PAPER, read-only handshake opt-in, rồi mới xét order scenarios và sanitized evidence. |
 
 **Hiện có thể làm:** Task 0–2 contract inventory, offline adapter/test doubles, parser fixtures, schema/error contracts, state machine và fault simulation. Không cần gửi request tới Binance.
 
-**Chặn Demo execution:** chưa xác nhận đủ ổn định PAPER/risk gate; daily/rolling loss-window semantics còn mở theo project status. Cần hoàn thiện semantics hoặc chốt cấu hình Demo bị giới hạn mà RiskEngine thực sự cưỡng chế. Không dùng review tài liệu này như bằng chứng đã mở gate.
+**Binance Futures Demo execution vẫn đóng:** PAPER/risk gate và daily/rolling loss-window semantics còn mở theo project status. Demo nội bộ hiện dùng PAPER simulator, không cần mở gate venue/API. Không dùng review tài liệu này như bằng chứng đã mở gate Binance.
 
 ## Global Constraints
 
 - Chỉ USDⓈ-M Demo/testnet. LIVE bị loại khỏi enum/config/runtime và không thể được adapter tự chọn.
 - Binance docs gọi Demo REST host là `https://demo-fapi.binance.com` và WS host là `wss://demo-fstream.binance.com`. Production host là host khác. Chỉ cặp Demo đã pin được phép trong mode Demo; mode, account ID, credential reference và hosts phải được kiểm tra cùng nhau trước readiness.
+- Binance FAQ hướng dẫn người dùng đăng nhập `demo.binance.com`, mở Futures Demo, rồi tạo key tại API Management trong môi trường đó; availability phụ thuộc quốc gia/vùng. Người vận hành tự tạo key, không gửi secret qua chat. Key Demo cần secret reference/file riêng; tuyệt đối không dùng hai placeholder `binance_api_key`/`binance_api_secret` đang mount cho execution-gateway profile `paper`.
+- Có thể kiểm tra API availability bằng signed USER_DATA read-only (`GET /fapi/v3/account`) sau khi Demo key được cấp và adapter/secret boundary pass. Đây không phải mở gate gửi order. Chỉ cấp trade permission cho key Demo ở bước test order có chủ đích; không cấp withdrawal.
 - Không đưa key, secret, signature, listen key, raw private payload hoặc thông tin account nhạy cảm vào log, audit, fixture, report hay evidence package. Listen key không được persist như credential lâu dài.
 - Không gọi mạng/đặt lệnh sàn trong unit test; contract test dùng transport fake/fixture. Demo tests riêng biệt, explicit opt-in, chỉ sau gate và account/key được xác nhận.
+- Real Demo credential smoke phải là opt-in riêng, mặc định tắt, dùng credential Demo riêng và chỉ GET; kiểm tra timeout/redaction/account response schema. Không chạy test này như một phần mặc định của CI và không đưa response/account ID vào log/artifact.
 - Ghi intent/outbox và risk reservation trước side effect ngoài DB. DB outbox receipt không bảo đảm exactly-once với API Binance.
 - HTTP 503 “Unknown error…” và timeout sau khi request có thể đã tới sàn được giữ `UNKNOWN`; query bằng stream/order history trước retry. Phân loại riêng các 503 Binance mô tả thất bại; backoff khi 429, dừng khi 418, chỉ áp dụng `Retry-After` nếu endpoint/response hiện hành xác nhận header và ý nghĩa của nó.
 - `UNKNOWN` giữ reservation; không release theo TTL khi đã submit. Chỉ release sau bằng chứng `ORDER_ABSENT`; chuyển sang exposure trong transaction không được tạo khoảng hở giữ risk.
@@ -93,6 +96,48 @@ Có thể làm song song các contract/fixture không cùng ownership; migration
 - [ ] **Step 5: Add glossary EN→VI/source links** for any new trading/API term that enters implementation or product documentation.
 
 **Acceptance:** every required operation maps to official current documentation and a parser/schema fixture; there is no unresolved mismatch between regular and algo order semantics; unsupported Demo capabilities are labeled unknown rather than assumed.
+
+### Task 1 next offline deliverable — response/event parser and fixtures
+
+**Status:** chỉ chốt contract offline theo audit nguồn chính thức đã ghi trong mục này ngày 2026-11-02. Không tra cứu mới, không gọi Demo/production API, không chọn SDK và không bổ sung claim về endpoint support. Trước khi biến các trường cần tra cứu thành code/fixture đạt, chạy lại kiểm tra nguồn chính thức hiện hành và ghi ngày/URL.
+
+**Files:**
+- Parser/DTO implementation sau này: `src/trading_bot/adapters/binance_usdm/demo_rest.py`, module mới `src/trading_bot/adapters/binance_usdm/order_schemas.py` (nếu tách DTO giúp không trộn schema; tránh sửa domain `VenueOrderIntent` để phản ánh raw Binance enums).
+- Unit tests sau này: `tests/unit/test_binance_usdm_order_schemas.py`, `tests/unit/test_demo_rest_adapter.py`.
+- Fixtures sau này: `tests/fixtures/binance_usdm/regular_order_accepted.json`, `regular_order_partial.json`, `regular_order_unknown_status.json`, `algo_order_new.json`, `algo_order_triggered.json`, `algo_update_rejected.json`, `order_trade_update_partial.json`, `account_v3_minimal.json`.
+- Không ghi account identifier, API key, secret, signature, listen key hoặc response lấy từ tài khoản vào fixture. Dùng symbol/order IDs giả lập và ghi fixture metadata: endpoint, method, API family, source URL, checked date, scenario, các trường đã lược bỏ.
+
+**Raw schema và parser boundary đã biết từ audit:**
+
+| Hợp đồng | Trường/enum đã được audit ghi nhận | Parser contract offline | Chưa được phép đóng băng nếu chưa tra lại nguồn |
+| --- | --- | --- | --- |
+| Regular order submit/query (`POST/GET /fapi/v1/order`) | `symbol`, `orderId`, `clientOrderId`, trường status regular order và `executedQty` được matrix ngày 2026-11-02 ghi nhận; adapter hiện gửi `MARKET` hoặc `LIMIT`. | Tạo `RegularOrderResponse` riêng; dùng các trường này làm schema candidate, nhưng exact required set phải đối chiếu endpoint page trước khi fixture thành golden. Query parser giữ `executedQty` là Decimal string hữu hạn/không âm và không vượt intent quantity. Raw state field được tách khỏi state projection nội bộ. | Audit 2026-11-02 không lưu exhaustive enum status. Cần tra lại enum regular status (gồm `EXPIRED_IN_MATCH`/`REJECTED` nếu supported), field `type`, `updateTime`, `avgPrice`, `origQty`, response variants theo `newOrderRespType`, retention và error body. Adapter hiện yêu cầu `updateTime` khi query; chưa được xem là official-required field cho tới khi tra endpoint page. |
+| Conditional algo submit/query (`POST/GET /fapi/v1/algoOrder`) | Algo family dùng định danh riêng `algoId`, `clientAlgoId`, và ID lệnh thường sau trigger `actualOrderId`; response/status phân biệt algo với regular order. Các conditional types trong audit: `STOP_MARKET`, `TAKE_PROFIT_MARKET`, `STOP`, `TAKE_PROFIT`, `TRAILING_STOP_MARKET`. Field trigger được gọi là `triggerPrice`; Change Log 2026-10-23 tăng max `callbackRate` trailing stop lên 20. | Tạo `AlgoOrderResponse` riêng; parse algo ID/client ID/status/order type ở namespace riêng. `actualOrderId` là optional/unavailable trước trigger theo lifecycle và chỉ dùng để nối sang regular order sau khi có evidence. Không đưa algo status vào parser `_ORDER_STATUS` của regular order. | Đầy đủ required/optional fields, exact status casing/field name theo REST response, semantics absent/zero/null của `actualOrderId`, parameter constraints (`quantity`, `closePosition`, `reduceOnly`, working/trigger types), client ID rule, Demo support và các response lỗi. Không lấy schema Portfolio Margin `/papi/...` thay USDⓈ-M `/fapi/...`. |
+| Algo lifecycle stream (`ALGO_UPDATE`) | Event family riêng; audit ghi các lifecycle status `NEW`, `CANCELED`, `TRIGGERING`, `TRIGGERED`, `FINISHED`, `REJECTED`, `EXPIRED`. | Tạo `AlgoUpdateEvent`/parser riêng. `NEW` xác nhận điều kiện được đặt; `TRIGGERING`/`TRIGGERED` yêu cầu query/reconcile regular order/position; `FINISHED` không tự đồng nghĩa fill; `REJECTED`/`EXPIRED`/`CANCELED` không bảo đảm vị thế đã đóng. | Exact WS nesting/casing, event ID/time fields, location of `algoId`/`clientAlgoId`/`actualOrderId`, rejection reason code and duplicate identity need fresh User Data Stream/schema lookup before creating accepted raw JSON fixture. |
+| Regular order stream (`ORDER_TRADE_UPDATE`) | User Data Stream audit xác nhận event family riêng cho regular order update; regular status và fill quantities được đối soát với order thường. | Fixture/parser tách khỏi algo: event chỉ có thể cập nhật regular order/fill; event status/type không nhận từ enum algo. Cumulative fill phải monotonic/idempotent, mỗi fill/trade không được cộng lặp. | Exact envelope/nested `o` field names, trade ID, `lastFilledQty`/`cumFilledQty`, fee and timestamp keys/status enum must be rechecked in official stream schema before the fixture is considered authoritative. |
+| Account read smoke (`GET /fapi/v3/account`, `USER_DATA`) | Audit 2026-11-02 xác nhận đây là proposed first signed read-only Demo connectivity smoke; không gửi order. | `account_v3_minimal.json` chỉ được thêm sau khi ghi chính xác các account fields cần cho readiness/equity. Trước đó contract fake có thể test `HTTP 200 + JSON object` và sanitized account scope mà không giả định field nghiệp vụ. | Exact balance/position fields, equity semantics, `availableBalance`, margin/unrealized/realized inclusion, optional arrays, permission behavior and Demo availability. Chưa dùng raw schema này để định risk/equity. |
+
+**Enum boundary bắt buộc:**
+
+- Raw DTO chia riêng `RegularOrderType` và `ConditionalAlgoOrderType`; không có một `OrderType` enum dùng chung cho submit/parse hai REST family.
+- Với adapter hiện tại, regular submit enum chỉ hỗ trợ `MARKET` và `LIMIT`. Không suy ra các type khác được phép trên regular `/fapi/v1/order`; conditional type bị từ chối cục bộ tại boundary trước khi transport được gọi.
+- Algo enum riêng gồm năm conditional type được Change Log/REST audit ghi nhận. Enum này không được chấp nhận ở `DemoUsdMRestAdapter.submit_order`.
+- `RegularOrderStatus` và `AlgoOrderStatus` tách riêng. Audit 2026-11-02 không ghi enum regular đầy đủ; khóa exhaustive enum trước khi code. Chuỗi raw unknown, field bắt buộc thiếu, sai kiểu hoặc status không hợp lệ không được ép thành `REJECTED`, `CANCELED` hay `ORDER_ABSENT`; parser trả sanitized contract error, caller giữ intent/reservation `UNKNOWN` và đóng entry gate tới reconcile.
+- Internal `VenueOrderState` là projection, không phải venue enum. `ALGO_UPDATE.TRIGGERED`/`FINISHED` không map thẳng sang `FILLED`; chỉ linked normal order/fill evidence có thể xác nhận quantity/terminal execution. `ALGO_UPDATE.REJECTED` báo conditional protection không thành công và phải tạo missing-protection path.
+- Không đặt acceptance vào `RETRYABLE` chỉ vì schema parse fail. Sai/mới schema là unknown contract, phải giữ risk và dừng entry; retry API semantics được kiểm riêng bởi classifier hiện có.
+
+**Test matrix sau này:**
+
+1. Valid regular `MARKET NEW`, regular `LIMIT NEW`, regular partial query, regular filled/canceled terminal examples dùng các fields có nguồn chính thức.
+2. Valid algo `NEW` trước trigger và event/query sau trigger có cả algo ID lẫn linked regular-order ID khi schema chính thức xác nhận; mỗi parser từ chối fixture của family kia.
+3. Reject conditional type gửi qua regular adapter và regular `MARKET`/`LIMIT` gửi nhầm vào algo parser trước transport; assert transport call count bằng 0.
+4. Unknown enum, thiếu required ID, `orderId`/`algoId` sai kiểu, Decimal malformed/nonfinite/negative, fill > requested, client/symbol mismatch, invalid event timestamps và malformed/non-object JSON đều fail closed, không lộ raw body.
+5. Optional/unknown additive fields trong schema đã được audit không làm hỏng parser; breaking enum/required-field change không bị bỏ qua.
+6. `ALGO_UPDATE` `REJECTED`, `EXPIRED`, `CANCELED`, `TRIGGERING`, `TRIGGERED`, `FINISHED` có assertion mapping/routing riêng như trên; không giả lập payload field chính xác cho tới khi có official schema snapshot.
+
+**RED/GREEN sequence khi implement:** chốt official schema snapshot trước; viết fixtures tối thiểu chỉ từ trường đã xác minh; viết failing parser tests; implement raw DTO → canonical adapter result; chạy suite mục tiêu offline; thêm regression cho mỗi field mismatch; chỉ sau khi pass và independent review mới wire parser vào composition. Parser fixture không phải bằng chứng Binance Demo endpoint hỗ trợ order/stream.
+
+**Acceptance/failure modes:** regular/algo enums và IDs không thể lẫn; unverified fields được đánh dấu follow-up thay vì được khẳng định; malformed/unknown schema không giải phóng risk hoặc tự chuyển thành reject; fixture traceable tới official USDⓈ-M page, API family, checked date và scenario; không phát sinh network call/credential requirement.
 
 ## Task 2 — WP-03A.2: ExchangeGateway, host/key boundary and signed readiness (contract/offline first)
 
@@ -192,7 +237,7 @@ Có thể làm song song các contract/fixture không cùng ownership; migration
 
 **Acceptance:** runtime cannot open entries before snapshot/reconcile/protection pass; restart makes no duplicates; foreign activity creates persistent incident; stale/incomplete equity never becomes zero/known; opening gate requires current approved risk policy and fully resolved required incidents.
 
-## Task 8 — WP-03E: Demo account validation and contract run (BỊ CHẶN TỚI KHI GATE PASS)
+## Task 8 — WP-03E: Binance Futures Demo account validation and contract run (TẠM HOÃN TỚI KHI GATE PASS)
 
 **Files:** explicit opt-in Demo E2E configuration and probe under `tests/e2e/`; sanitized evidence report under a non-secret test-artifact location; update project status/memory on implementation.
 - Do not put actual key/account identifiers or signed payloads in repository artifacts.
@@ -235,6 +280,9 @@ Có thể làm song song các contract/fixture không cùng ownership; migration
 - [USDⓈ-M User Data Streams](https://developers.binance.com/en/docs/products/derivatives-trading-usds-futures/user-data-streams) — listen key validity/renewal, WS base/path, 24-hour connection, event ordering, `ORDER_TRADE_UPDATE`, `ACCOUNT_UPDATE`, `ALGO_UPDATE`.
 - [USDⓈ-M Change Log](https://developers.binance.com/en/docs/products/derivatives-trading-usds-futures/change-log) — conditional order migration effective 2025-12-09; new `/fapi/v1/algoOrder` family; old regular order conditional types rejected; current updates to algo behavior/rate limits.
 - [USDⓈ-M REST API catalog](https://developers.binance.com/en/docs/catalog/core-trading-derivatives-trading-usd-s-m-futures/api/rest-api) and [WebSocket Streams catalog](https://developers.binance.com/en/docs/catalog/core-trading-derivatives-trading-usd-s-m-futures/api/ws-streams) — endpoint schema references; re-verify exact operations and Demo coverage before code.
+- [How to Use Binance Demo Trading?](https://www.binance.com/en/support/faq/detail/9be58f73e5e14338809e3b705b9687dd) and [How to Test Futures Demo Trading](https://www.binance.com/en-IA/support/faq/detail/ab78f9a1b8824cf0a106b4229c76496d) — checked **2026-11-02**; user logs into `demo.binance.com`, selects Futures Demo, creates an API key in Demo API Management; eligibility is region-dependent and simulator may differ from Live.
+- [USDⓈ-M Account Information V3](https://developers.binance.com/en/docs/catalog/core-trading-derivatives-trading-usd-s-m-futures/api/rest-api/account#account-information-v3) — checked **2026-11-02**; signed read-only `GET /fapi/v3/account` (`USER_DATA`) is the proposed first account connectivity smoke, before any order permission/test.
+- [USDⓈ-M General Info](https://developers.binance.com/en/docs/products/derivatives-trading-usds-futures/general-info) — rechecked **2026-11-02**; Demo REST/WS hosts and “most endpoints” qualification confirmed.
 
 ### Ma trận năng lực API đã đối chiếu — kiểm tra 2026-11-01
 

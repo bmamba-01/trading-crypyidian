@@ -8,10 +8,12 @@
   </head>
   <body>
     <a class="skip-link" href="#main-content">Bỏ qua điều hướng, tới nội dung chính</a>
-    <header>
-      <a href="/admin" aria-label="Crypidian — trang quản trị">Crypidian</a>
+    <header role="banner">
+      <div class="brand-bar">
+        <a href="/admin" aria-label="Crypidian — trang quản trị" class="brand-title">Crypidian</a>
+      </div>
       {% block navigation %}
-        <nav aria-label="Điều hướng chính">
+        <nav aria-label="Điều hướng chính" class="main-nav">
           <a href="/admin">Tổng quan</a>
           <a href="/admin/bots">Bot</a>
           <a href="/admin/reports">Báo cáo</a>
@@ -19,11 +21,29 @@
           <a href="/admin/telegram">Telegram</a>
         </nav>
       {% endblock %}
-      {% if identity %}<span>{{ identity.email }}</span>{% endif %}
+      {% if identity %}
+        <div class="user-info">
+          <span class="user-email" aria-label="Tài khoản đăng nhập">{{ identity.email }}</span>
+        </div>
+      {% endif %}
     </header>
+
+    <div class="system-mode-banner" role="status" aria-label="Thông báo chế độ vận hành">
+      <div class="mode-badge-wrapper">
+        <span class="badge badge-paper">Chế độ: Mô phỏng (PAPER) nội bộ</span>
+      </div>
+      <p class="mode-description">
+        Hệ thống đang chạy mô phỏng nội bộ trong database — không gọi API hay đặt lệnh lên Binance (theo ruling 2026-11-02).
+      </p>
+    </div>
+
     <main id="main-content">
       <h1>{% block heading %}{% endblock %}</h1>
       {% block content %}{% endblock %}
     </main>
+
+    <footer role="contentinfo" class="admin-footer">
+      <p>Crypidian Admin — Môi trường thử nghiệm an toàn độc lập (PAPER mode)</p>
+    </footer>
   </body>
 </html>

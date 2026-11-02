@@ -5,6 +5,10 @@
 **Stories:** US-01…07, US-21, US-22, US-24, US-25, US-28. \
 **Tài liệu:** [UC admin](../product/use-cases.md#4-chi-tiết-use-case), [sequence SD-01/02/12](../product/sequence-diagrams.md), [glossary](../research/glossary-vi.md), [language policy](../standards/language-policy.md).
 
+**Admin/dashboard research:** [khảo sát dashboard bot và CSS framework 2026-11-02](../research/admin-dashboard-market-review-2026-11-02.md). Hướng đề xuất là giữ FastAPI + Jinja, self-host Bootstrap 5.3 đã pin và hỗ trợ mobile trên mọi trang Admin; nghiên cứu framework cần recheck patch/version và license trước khi thêm asset vào image.
+
+**Nhãn môi trường:** demo tạm thời trong sản phẩm phải hiển thị là “Mô phỏng (PAPER)”. Chỉ dùng nhãn “Binance Futures Demo” khi execution thực sự kết nối venue Binance; không suy ra kết nối đó từ paper trade ledger.
+
 ## WP-04A — API, session và authorization layer
 
 1. Xây `FastAPI` routers cho auth, workspaces, users, accounts, config, risk, watchlists, sources, strategies, trades, incidents, reports và experiments.
@@ -17,7 +21,7 @@
 
 ## WP-04B — Admin UI server-rendered
 
-1. Tạo Jinja2 + HTMX layout tiếng Việt, ưu tiên vận hành đơn giản; JS chỉ dùng cho chart/interaction cần thiết.
+1. Duy trì layout FastAPI + Jinja tiếng Việt; dùng Bootstrap 5.3 tự host cho responsive grid/components và CSS thương hiệu riêng. Không đưa JavaScript framework vào vòng này; JS chỉ dùng cho chart/menu mobile cần thiết và phải self-host/pin.
 2. Screens: setup, mode badge, credential ref, member/role, config draft/publish, risk limits, watchlist, strategy release, source registry, trade timeline, incident, report, experiment/promotion.
 3. Mọi thuật ngữ kỹ thuật có tooltip/link glossary; hiển thị tên strategy/model tiếng Việt cùng ID/version tiếng Anh.
 4. Secrets chỉ nhập mới/rotate, không render lại giá trị. Các màn hình live luôn hiển thị environment và trạng thái readiness.
@@ -30,10 +34,10 @@
 1. Xây config lifecycle draft → validated → proposed → approved → active/retired, bất biến sau publish.
 2. Bắt buộc reason cho credential/risk/strategy/live-sensitive actions; hỗ trợ dual approval khi policy yêu cầu.
 3. Render audit trail có actor, thời điểm, target, before/after hash, reason và correlation ID; quyền xem audit riêng.
-4. Dashboard lọc mode/strategy/symbol/time; phân tách gross/net PnL, fees, funding, slippage, drawdown, exposure, trade count và coverage.
+4. Dashboard lọc mode/strategy/symbol/time; phân tách gross/net PnL, fees, funding, slippage, drawdown, exposure, trade count và coverage. Không cộng mode hoặc quote asset khác nhau; số liệu stale/unknown/incomplete hiển thị rõ trạng thái thay vì zero.
 5. Báo cáo phải nêu dữ liệu chưa đủ và khác biệt PAPER/DEMO/LIVE; export giữ phạm vi/filter/version.
 
-**Nghiệm thu:** config version conflict không mất dữ liệu; dashboard không gộp mode; audit có thể truy từ lệnh về config và người duyệt.
+**Nghiệm thu:** config version conflict không mất dữ liệu; dashboard không gộp mode; audit có thể truy từ lệnh về config và người duyệt. Tất cả trang dùng được ở viewport mobile, không tràn ngang vì nav/form/table; chart chỉ nhận series authoritative có đơn vị, currency, time range và freshness.
 
 ## WP-04D — Telegram webhook, bind và command policy
 

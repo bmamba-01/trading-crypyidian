@@ -7,7 +7,7 @@
 
 **WBS triển khai:** [WP-05 research ingestion WBS](../superpowers/plans/2026-11-01-wp05-research-wbs.md).
 
-**Foundation hiện có:** `SourceRightsPolicy`, `SourceItemRevision`, `SourceItemHistory` append-only hash chain và `source_revision_access.py` giữ metadata/as-of/purpose/takedown contracts. WP05A có append-only policy/quota persistence, RLS/role split, DB-clock checks, transition guard và downgrade guard (`c6e8a0b2d4f6`); `application/source_registry.py` buộc thao tác qua Principal với quyền write/approve/use riêng. Quyền hiện hành đã revoke/expired/blocked chặn cả historical replay. Chưa có HTTP/composition wiring, verified provider rights, source item repository/takedown persistence/propagation hay connector; quota events là reservation/estimate, chưa mở fetch boundary.
+**Foundation hiện có:** `SourceRightsPolicy`, `SourceItemRevision`, `SourceItemHistory` append-only hash chain và `source_revision_access.py` giữ metadata/as-of/purpose/takedown contracts. WP05A có append-only policy/quota persistence, RLS/role split, DB-clock checks, transition guard và downgrade guard (`c6e8a0b2d4f6`); `application/source_registry.py` buộc ghi/duyệt/sử dụng policy qua Principal. Đây mới là contract và registry policy: `SourceItemHistory` chưa persist; gate nhận `evaluated_at`, `current_tombstoned`, `takedown_at` và `retention_expires_at` từ caller, chưa có loader authoritative; source revision chưa ghim sequence policy lúc ingest. Chưa có source-item/takedown/retention repository, outbox/expiry worker, connector hoặc reverse index tới manifest WP-06. `DatasetManifest` hiện lưu opaque source revision refs/rights hashes trong canonical JSON, không có bảng liên kết để truy ngược artifact. Không được tuyên bố có propagation hay xóa downstream cho tới khi các ranh giới đó được triển khai.
 
 ### Quy tắc chung về quyền nguồn và dữ liệu
 
@@ -15,8 +15,9 @@
 2. Registry version hóa evidence quyền, URL/điều khoản, ngày kiểm tra, người duyệt, endpoint, phương thức/auth scope, quota/rate, attribution, retention, expiry và các mục đích được phép độc lập: metadata, reference/display, embedding, training, redistribution. Không suy ra quyền từ việc nội dung xem được công khai hoặc có RSS/API.
 3. Triển khai metadata-first: không ghi body mặc định. Chỉ lưu raw body/excerpt khi policy cho phép đúng nội dung và retention; tách blob khỏi metadata, gắn checksum/URI/TTL và thực thi xóa. Pending/blocked/expired/revoked không được fetch, lưu body, trích xuất, đưa vào evidence, embedding hoặc training.
 4. Mọi bản ghi phải giữ thời gian nguồn và thời gian hệ thống biết nội dung riêng: `published_at`, `edited_at`, `observed_at`, `available_at`; sự kiện có `event_at` riêng. Thời gian có timezone, kiểm tra nhân quả/clock skew. Revision/correction/deletion là append-only; replay `as_of` chỉ thấy phiên bản có `available_at <= as_of`.
-5. Takedown/thu hồi quyền phải dừng connector ngay, lưu tombstone/audit cần thiết, xóa hoặc hạn chế blob theo điều khoản, và đánh giá toàn bộ artifact dẫn xuất (event, embedding, dataset, model) theo policy. Mỗi artifact downstream phải mang source/policy/revision lineage để WP-06 có thể loại bỏ hoặc dựng lại manifest.
-6. Nội dung bên ngoài là dữ liệu không tin cậy, không phải chỉ thị cho hệ thống. Parser/extractor bị giới hạn kích thước, loại nội dung, thời gian và schema; không có tool/secret; lỗi, mơ hồ, stale hoặc thiếu coverage trả `unknown/review/degraded`, không tự tạo giá trị thuận lợi.
+5. Hết hạn quyền phải bị chặn đồng bộ theo `clock_timestamp()` tại mỗi operation boundary; không dựa vào job để quyết định một fetch/read mới có được phép hay không. Thu hồi/khóa ghi policy revision append-only; takedown item cần tombstone/audit authoritative. Khi chưa có connector, chỉ có thể chứng minh quota reservation bị từ chối, chưa thể tuyên bố connector/cursor đã dừng.
+6. Takedown/thu hồi phải làm artifact downstream thành ineligible và cho phép xác định phạm vi ảnh hưởng. Manifest WP-06 là immutable; không sửa/xóa manifest cũ bằng cách giả lập propagation. WP-06 cần reverse lineage index và append-only eligibility/invalidation record riêng. Chỉ tuyên bố xóa nội dung/model khi artifact có repository, retention contract và thao tác xóa được cấp quyền.
+7. Nội dung bên ngoài là dữ liệu không tin cậy, không phải chỉ thị cho hệ thống. Parser/extractor bị giới hạn kích thước, loại nội dung, thời gian và schema; không có tool/secret; lỗi, mơ hồ, stale hoặc thiếu coverage trả `unknown/review/degraded`, không tự tạo giá trị thuận lợi.
 
 **Nguồn chính thức đã kiểm tra 2026-11-01 (điều khoản/API có thể đổi; kiểm tra lại trước khi bật từng connector):**
 
@@ -33,17 +34,19 @@
 4. Thực thi quota/backoff, cursor, retry policy và lịch poll; lưu metadata skip/error để người vận hành thấy nguyên nhân.
 5. Version policy thay đổi; hết hạn/thu hồi phải vô hiệu connector và cursor trước lần fetch kế tiếp, sau đó xác định nội dung và artifact/dataset/model cần xóa, đánh dấu ineligible hoặc dựng lại theo retention/license.
 
-**Nghiệm thu:** connector disabled cho tới policy pass; pending/blocked/expired/revoked không fetch, không ghi body, không extract và không vào evidence/training; mỗi mục đích sử dụng có quyền riêng; quota 429 có backoff; mọi item có source/policy provenance và đường takedown.
+**Ranh giới hiện có:** `reserve_quota` kiểm policy bằng đồng hồ PostgreSQL; `valid_until <= clock_timestamp()` làm reservation mới thất bại. Đây là kiểm tra tại thời điểm gọi, không tự append trạng thái `expired`, hủy cursor, phát outbox hay quét artifact. `get_entry` chỉ trả policy history. Mọi fetch/read sau này phải gọi gate dựa trên repository authoritative ở operation boundary; không dùng policy cache, thời điểm, purpose, tombstone hay retention do request tự khai để cấp quyền.
+
+**Nghiệm thu:** connector disabled cho tới policy pass; pending/blocked/expired/revoked không fetch, không ghi body, không extract và không vào evidence/training; mỗi mục đích sử dụng có quyền riêng; quota 429 có backoff; mọi item có source/policy provenance và đường takedown. Expiry/revoke phải được đọc từ policy repository bằng DB clock ở operation boundary; cursor không được tiếp tục chỉ vì worker đã nạp policy cũ.
 
 ## WP-05B — Normalize, deduplicate và sửa nội dung
 
-1. Tạo `SourceItem` với canonical URL, hash, publisher, language, `published_at`, `edited_at`, `observed_at`, `available_at`, `expires_at`, source group, policy version và revision.
+1. Tạo `SourceItem` với canonical URL, hash, publisher, language, `published_at`, `edited_at`, `observed_at`, `available_at`, `expires_at`, source group và revision. `SourceItemRevision` hiện chưa có `expires_at`, source group hay policy identity; domain/schema tương lai phải bổ sung và băm policy sequence lúc ingest trước khi persistence được dùng.
 2. Phân biệt bài gốc, repost, quote, correction và deleted/updated item; tránh đếm bản sao thành nhiều ý kiến.
 3. Với nội dung bị sửa/xóa, giữ lineage revision/tombstone, hash và thời điểm hệ thống nhận biết; replay chỉ thấy phiên bản đã khả dụng tại thời điểm đó, còn truy vấn hiện hành tôn trọng takedown.
 4. Metadata-first; giữ raw body chỉ khi quyền/retention cho phép. Nếu không, chỉ lưu reference/hash hoặc excerpt tối thiểu được policy cho phép.
-5. Tách metadata/event quan trọng khỏi blob; blob có checksum, storage URI và policy retention.
+5. Tách metadata/event quan trọng khỏi blob; blob có checksum, storage URI và policy retention. Foundation hiện không có body/blob, `expires_at` hoặc storage URI trong `SourceItemRevision`; metadata/hash không chứng minh quyền lưu hoặc việc đã xóa.
 
-**Nghiệm thu:** canonical duplicates liên kết cùng nhóm; revision không ghi đè nội dung lịch sử; truy vấn as-of chỉ trả phiên bản đã khả dụng; takedown loại nội dung khỏi truy vấn hiện hành và áp dụng retention lên blob/artifact dẫn xuất.
+**Nghiệm thu:** canonical duplicates liên kết cùng nhóm; revision không ghi đè nội dung lịch sử; truy vấn as-of chỉ trả phiên bản đã khả dụng; takedown loại nội dung khỏi truy vấn hiện hành và áp dụng retention lên blob/artifact dẫn xuất. Item revision phải ghim policy sequence lúc ingest; gate kiểm cả grant đã gắn với revision lẫn rights hiện hành để policy mới không tự tái hợp thức hóa dữ liệu cũ. Domain hiện chưa có trường lineage đó.
 
 ## WP-05C — News và macro catalyst
 
@@ -77,12 +80,24 @@
 
 ## WP-05F — Rights, privacy và kiểm soát dữ liệu
 
-Viết source runbook tiếng Việt cho thêm nguồn, kiểm tra terms, quota, retention/deletion, takedown, xuất dữ liệu và tái tạo dataset manifest. Thêm bảng lưu nội dung/mục đích được phép, thời hạn xóa, policy version, bằng chứng và người duyệt. Thu hồi quyền phải dừng fetch trước; sau đó xóa/ẩn dữ liệu và xử lý embedding, dataset, model hoặc báo cáo dẫn xuất theo đúng điều khoản.
+Làm theo lát metadata-only trước; không tạo body/blob table. Source-item/takedown storage phải ghi policy sequence tại ingest, tombstone/takedown event, thời gian DB, actor/evidence ref và retention deadline nếu retention được định lượng. Policy `valid_until` được kiểm trực tiếp theo DB clock; expiry worker/outbox chỉ phát sự kiện propagation, không phải lớp duy nhất chặn fetch/read.
+
+Takedown item và revoke source có phạm vi khác nhau: tombstone/takedown chặn item; policy `blocked`, `rights_pending`, `revoked` hoặc hết hạn chặn mọi item của source theo purpose được yêu cầu. Mọi read/replay kiểm policy gắn với item revision và policy hiện hành. Thiếu item/policy/takedown/retention authority hoặc không xác định được quyền thì deny. Hash chain chỉ phát hiện thay đổi lịch sử, không xác thực publisher, quyền hay việc đã xóa dữ liệu.
+
+Không mở lưu body/excerpt/embedding nếu chưa có schema artifact, storage adapter, deadline retention authoritative, deletion retry/audit và E2E xác nhận xóa. Nếu điều khoản yêu cầu xóa metadata/hash/reference mà immutable manifest không hỗ trợ, research sample phải bị loại khỏi training tới khi WP-06 có retention/erasure design được duyệt.
 
 **Kiểm tra khi triển khai:** fixtures cho policy gate, connector disabled khi `rights_pending`, dedup/revision/tombstone, timestamp as-of, prompt injection, retention/takedown và source outage; rà soát quyền theo từng provider/endpoint/mục đích trước khi bật connector.
+
+### Hợp đồng propagation quyền vào WP-06
+
+1. WP-05 sở hữu policy history, source-item revision, tombstone/takedown, retention eligibility và feed rights-change/expiry. Expiry phát hiện theo DB clock; event consumer có thể at-least-once/idempotent, không thay gate đồng bộ khi đọc quyền.
+2. WP-05 trả lineage canonical (workspace/source/item/revision/policy sequence + rights decision/reason) qua port xác thực. Caller không tự dựng refs, `evaluated_at`, `takedown_at`, `retention_expires_at` hay `source_training_eligible`.
+3. WP-06 sở hữu reverse index từ manifest tới từng source revision và append-only eligibility/invalidation events. Manifest canonical giữ nguyên; invalidation chặn manifest/sample khi đọc/build/train. Rebuild được phép tạo manifest mới có exclusion rõ ràng, không sửa bản cũ.
+4. WP-06 kiểm tra live rights khi build và ngay trước mọi trainer/evaluator/model consumer. Event consumer tăng tốc và ghi audit; event bị trễ hoặc thiếu không mở quyền. Thiếu lookup/lineage/event state thì fail closed.
+5. Hiện `source_rights_hashes` và `source_revision_refs` là hai mảng chuỗi opaque, được chuẩn hóa riêng, không ghép từng revision với policy hash/purpose; canonical JSONB không có reverse index/trainer check. Chưa thể xác định manifest/sample/model nào bị ảnh hưởng hoặc xác nhận propagation. WP-06 cần manifest version có lineage tuple cho từng source revision trước khi lập index. WP-06 chưa có trainer/model registry, nên chưa có model deletion/unlearning.
 
 ## Quan hệ với WP-06 và MB-08
 
 - WP-06 có thể phát triển scorer/DSL/labeling độc lập, nhưng mọi dataset dùng research context phải pin source/policy/revision, thời điểm khả dụng, mục đích `training` được cấp phép, exclusions và retention trong manifest. Nếu quyền chưa rõ, row bị loại khỏi training; WP-05 không tự tạo label, train, đánh giá hoặc promote model.
-- Trước khi WP-06 train trên research data, WP-05 phải cung cấp hợp đồng ổn định cho `SourceItem` revision, as-of query, rights eligibility, takedown/lineage và manifest/rebuild. Thu hồi source phải cho phép WP-06 tìm data/artifact bị ảnh hưởng và loại bỏ hoặc dựng lại theo điều khoản; không mặc định rằng hash hoặc model artifact được miễn nghĩa vụ xóa.
+- Trước khi WP-06 train trên research data, WP-05 phải persist item revision gắn policy sequence, cung cấp as-of/current-rights gate, tombstone/takedown/retention và rights-change feed. WP-06 phải có reverse lineage index, immutable invalidation ledger và live trainer gate. Hiện manifest refs là opaque strings; chưa có cơ chế truy ngược, invalidation hay trainer, vì vậy research-dependent training phải disabled/fail closed. Không mặc định hash/manifest/model artifact được miễn nghĩa vụ xóa; nếu policy yêu cầu xóa cả lineage, chờ retention/erasure design WP-06.
 - WP-03 Binance private account/order/reconcile không phải dependency của public/official research ingestion; WP-05 không đọc account credentials hoặc endpoint riêng tư. MB-08 chỉ tiêu thụ immutable, approved reference từ WP-05/WP-06 và không nhân đôi connector/trainer. MB-05 market dispatch vẫn `not_configured` cho đến khi adapter point-in-time và readiness/coverage gate được nối, cấu hình và kiểm chứng.
