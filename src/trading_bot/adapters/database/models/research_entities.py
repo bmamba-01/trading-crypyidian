@@ -2,10 +2,12 @@
 
 from datetime import datetime
 from decimal import Decimal
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKeyConstraint,
@@ -21,6 +23,9 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from trading_bot.adapters.database.models.base import Base, CreatedAt, UuidPrimaryKey
+
+if TYPE_CHECKING:
+    from trading_bot.domain.research.source_item_history import SourceItemRevisionEntry
 
 
 class SourcePolicyRevisionRecord(UuidPrimaryKey, CreatedAt, Base):
@@ -211,3 +216,162 @@ class SourceQuotaEventRecord(UuidPrimaryKey, CreatedAt, Base):
     reserved_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
     reserved_cost: Mapped[Decimal] = mapped_column(Numeric(384, 128), nullable=False)
     cost_unit: Mapped[str] = mapped_column(String(32), nullable=False)
+
+
+class SourceItemRevisionRecord(UuidPrimaryKey, CreatedAt, Base):
+    """Revision metadata bất biến; không có cột body, excerpt, embedding hoặc blob."""
+
+    __tablename__ = "source_item_revision"
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id",
+            "source_id",
+            "item_id",
+            "revision_id",
+            name="uq_source_item_revision_identity",
+        ),
+        UniqueConstraint(
+            "workspace_id",
+            "source_id",
+            "item_id",
+            "sequence",
+            name="uq_source_item_revision_sequence",
+        ),
+        ForeignKeyConstraint(["workspace_id"], ["workspace.id"], ondelete="RESTRICT"),
+        CheckConstraint("sequence >= 1", name="source_item_sequence_positive"),
+        CheckConstraint(
+            "source_id ~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$' AND "
+            "item_id ~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$' AND "
+            "revision_id ~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'",
+            name="source_item_identifiers_valid",
+        ),
+        CheckConstraint(
+            "revision_hash ~ '^[0-9a-f]{64}$' AND "
+            "(predecessor_hash IS NULL OR predecessor_hash ~ '^[0-9a-f]{64}$')",
+            name="source_item_hashes_valid",
+        ),
+        CheckConstraint(
+            "(sequence = 1 AND predecessor_revision_id IS NULL AND predecessor_hash IS NULL) OR "
+            "(sequence > 1 AND predecessor_revision_id IS NOT NULL "
+            "AND predecessor_hash IS NOT NULL)",
+            name="source_item_predecessor_present",
+        ),
+        CheckConstraint(
+            "(available_at IS NULL OR available_at >= observed_at) AND "
+            "(published_at IS NULL OR published_at <= observed_at) AND "
+            "(edited_at IS NULL OR edited_at <= observed_at) AND "
+            "(published_at IS NULL OR edited_at IS NULL OR published_at <= edited_at)",
+            name="source_item_timestamps_causal",
+        ),
+        CheckConstraint(
+            "canonical_url LIKE 'https://%' AND position('#' in canonical_url) = 0 "
+            "AND canonical_url !~ '[[:space:]]' "
+            "AND position('@' in split_part(canonical_url, '/', 3)) = 0",
+            name="source_item_url_metadata",
+        ),
+        Index(
+            "ix_source_item_revision_available",
+            "workspace_id",
+            "source_id",
+            "item_id",
+            "available_at",
+        ),
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    source_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    item_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    revision_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    canonical_url: Mapped[str] = mapped_column(Text, nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    available_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    event_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    edited_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    tombstoned: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    predecessor_revision_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    predecessor_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    revision_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    retention_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    @classmethod
+    def from_entry(
+        cls,
+        workspace_id: UUID,
+        sequence: int,
+        entry: SourceItemRevisionEntry,
+        *,
+        retention_expires_at: datetime | None = None,
+    ) -> SourceItemRevisionRecord:
+        """Ánh xạ đúng hợp đồng hash metadata, giữ retention ngoài hash domain."""
+        revision = entry.revision
+        return cls(
+            workspace_id=workspace_id,
+            sequence=sequence,
+            source_id=revision.source_id,
+            item_id=revision.item_id,
+            revision_id=revision.revision_id,
+            canonical_url=revision.canonical_url,
+            observed_at=revision.observed_at,
+            available_at=revision.available_at,
+            event_at=revision.event_at,
+            published_at=revision.published_at,
+            edited_at=revision.edited_at,
+            tombstoned=revision.tombstoned,
+            predecessor_revision_id=entry.predecessor_revision_id,
+            predecessor_hash=entry.predecessor_hash,
+            revision_hash=entry.revision_hash,
+            retention_expires_at=retention_expires_at,
+        )
+
+    def to_entry(self) -> SourceItemRevisionEntry:
+        """Dựng lại và xác minh hash trước khi trả metadata đã lưu."""
+        from trading_bot.domain.research.source_item_history import SourceItemRevisionEntry
+        from trading_bot.domain.research.source_items import SourceItemRevision
+
+        return SourceItemRevisionEntry(
+            revision=SourceItemRevision(
+                source_id=self.source_id,
+                item_id=self.item_id,
+                revision_id=self.revision_id,
+                canonical_url=self.canonical_url,
+                observed_at=self.observed_at,
+                available_at=self.available_at,
+                event_at=self.event_at,
+                published_at=self.published_at,
+                edited_at=self.edited_at,
+                tombstoned=self.tombstoned,
+            ),
+            predecessor_revision_id=self.predecessor_revision_id,
+            predecessor_hash=self.predecessor_hash,
+            revision_hash=self.revision_hash,
+        )
+
+
+class SourceItemTakedownRecord(UuidPrimaryKey, Base):
+    """Lệnh rút metadata hiện hành, không có đường khôi phục qua replay."""
+
+    __tablename__ = "source_item_takedown"
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id", "source_id", "item_id", name="uq_source_item_takedown_identity"
+        ),
+        ForeignKeyConstraint(["workspace_id"], ["workspace.id"], ondelete="RESTRICT"),
+        CheckConstraint(
+            "source_id ~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$' AND "
+            "item_id ~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'",
+            name="source_item_takedown_identifiers_valid",
+        ),
+        CheckConstraint(
+            "reason_code ~ '^[a-z][a-z0-9_]{0,63}$'", name="source_item_takedown_reason_valid"
+        ),
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    source_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    item_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    taken_down_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    reason_code: Mapped[str] = mapped_column(String(64), nullable=False)
