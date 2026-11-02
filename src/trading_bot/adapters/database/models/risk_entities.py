@@ -124,6 +124,7 @@ class RiskReservationRecord(UuidPrimaryKey, CreatedAt, Base):
         ),
         Index("ix_risk_reservation_bot_scope", "workspace_id", "bot_id", "account_id"),
         UniqueConstraint("workspace_id", "id", name="uq_risk_reservation_workspace_id"),
+        UniqueConstraint("workspace_id", "account_id", "id", name="uq_risk_reservation_account_id"),
         UniqueConstraint(
             "workspace_id",
             "account_id",

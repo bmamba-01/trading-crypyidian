@@ -58,11 +58,10 @@ def test_source_registry_workspace_roles_append_only_and_concurrent_quota() -> N
             errors="replace",
             timeout=300,
         )
-        assert (result.returncode == 0) is success, (
-            args,
-            result.stdout[-5000:],
-            result.stderr[-5000:],
-        )
+        if (result.returncode == 0) is not success:
+            raise AssertionError(
+                f"Compose lệnh {args!r} thất bại:\n{result.stdout}\n{result.stderr}"
+            )
         return result
 
     probe = (root / "tests/e2e/probes/wp05_source_registry.py").read_text(encoding="utf-8")

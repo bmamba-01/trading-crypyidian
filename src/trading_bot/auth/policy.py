@@ -27,6 +27,9 @@ class Permission(StrEnum):
     WORKSPACE_KILL = "workspace:kill"
     MEMBER_WRITE = "member:write"
     SECRET_WRITE = "secret:write"
+    RESEARCH_SOURCE_WRITE = "research_source:write"
+    RESEARCH_SOURCE_APPROVE = "research_source:approve"
+    RESEARCH_SOURCE_USE = "research_source:use"
 
 
 ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
@@ -59,7 +62,12 @@ ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
         }
     ),
     Role.ANALYST_REVIEWER: frozenset(
-        {Permission.WORKSPACE_READ, Permission.TRADE_READ, Permission.TRADE_REVIEW}
+        {
+            Permission.WORKSPACE_READ,
+            Permission.TRADE_READ,
+            Permission.TRADE_REVIEW,
+            Permission.RESEARCH_SOURCE_APPROVE,
+        }
     ),
 }
 

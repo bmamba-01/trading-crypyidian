@@ -86,6 +86,10 @@ from trading_bot.adapters.database.models.telegram_entities import (
     TelegramLinkRequest,
     TelegramUpdateReceipt,
 )
+from trading_bot.adapters.database.models.venue_entities import (
+    VenueOrderIntentRecord,
+    VenueOrderTransitionRecord,
+)
 
 __all__ = [
     "AccountActivityIncidentRecord",
@@ -143,6 +147,8 @@ __all__ = [
     "TelegramLinkRequest",
     "TelegramUpdateReceipt",
     "TradingAccount",
+    "VenueOrderIntentRecord",
+    "VenueOrderTransitionRecord",
     "TradePlanRecord",
     "TradeCostRecord",
     "TradeRecord",

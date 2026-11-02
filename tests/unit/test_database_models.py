@@ -55,6 +55,8 @@ def test_schema_contains_all_foundation_tables() -> None:
         "trade_plan",
         "risk_decision",
         "risk_reservation",
+        "venue_order_intent",
+        "venue_order_transition",
         "feature_snapshot",
         "order_intent",
         "exchange_order",

@@ -306,17 +306,24 @@ async def _registry() -> dict[str, object]:
         )
         async with sessions() as session, session.begin():
             repository = SourceRegistryRepository(session)
+            persisted_revisions = []
             for revision in verified.revisions:
+                database_before_append = await session.scalar(text("SELECT clock_timestamp()"))
+                assert isinstance(database_before_append, datetime)
                 result = await repository.append_revision(
                     workspace_id=workspace_id,
                     revision=revision,
                 )
                 assert result.is_duplicate is False
+                assert result.revision.created_at >= database_before_append
+                if result.revision.state is SourcePolicyState.VERIFIED:
+                    assert result.revision.policy.reviewed_at == result.revision.created_at
+                persisted_revisions.append(result.revision)
             restored = await repository.get_entry(
                 workspace_id=workspace_id,
                 source_id=source_id,
             )
-            assert restored == verified
+            assert restored == SourceRegistryEntry(source_id, tuple(persisted_revisions))
         async with sessions() as session, session.begin():
             missing = await SourceRegistryRepository(session).get_entry(
                 workspace_id=other_workspace_id,
@@ -421,11 +428,13 @@ async def _revoke() -> dict[str, object]:
             repository = SourceRegistryRepository(session)
             current = await repository.get_entry(workspace_id=workspace_id, source_id=source_id)
             assert current is not None
+            database_now = await session.scalar(text("SELECT clock_timestamp()"))
+            assert isinstance(database_now, datetime)
             revoked = current.transition(
                 policy_id=f"{source_id}:policy:revoked",
                 state=SourcePolicyState.REVOKED,
                 actor_id="reviewer-e2e",
-                at=AT + timedelta(hours=2),
+                at=database_now,
                 reason="E2E revoke",
             )
             await repository.append_revision(

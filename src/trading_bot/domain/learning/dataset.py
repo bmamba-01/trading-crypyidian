@@ -110,6 +110,7 @@ class DatasetManifest:
     feature_version: str
     label_version: str
     sample_schema_version: str
+    split_policy_version: str
     samples: tuple[DatasetSample, ...]
     exclusions: tuple[DatasetExclusion, ...]
     holdout_sealed_at: datetime | None
@@ -136,6 +137,7 @@ class DatasetManifest:
             "feature_version",
             "label_version",
             "sample_schema_version",
+            "split_policy_version",
             "manifest_version",
             "retention_policy_ref",
         ):
@@ -191,6 +193,7 @@ class DatasetManifest:
             "feature_version": self.feature_version,
             "label_version": self.label_version,
             "sample_schema_version": self.sample_schema_version,
+            "split_policy_version": self.split_policy_version,
             "samples": [
                 {
                     "sample_id": item.sample_id,

@@ -7,7 +7,7 @@
 
 **WBS triển khai:** [WP-05 research ingestion WBS](../superpowers/plans/2026-11-01-wp05-research-wbs.md).
 
-**Foundation hiện có:** `SourceRightsPolicy` và `SourceItemRevision` giữ rights/as-of domain contracts. WP05A thêm append-only policy/quota PostgreSQL persistence, RLS/role split, DB-clock effective checks, DB transition guard, self-approval inequality và downgrade guard (`c6e8a0b2d4f6`). Chưa có authenticated approval service, verified provider rights, source connector, item persistence hay takedown operation; quota events là reservation/estimate và chưa có fetch boundary.
+**Foundation hiện có:** `SourceRightsPolicy` và `SourceItemRevision` giữ rights/as-of domain contracts. WP05A có append-only policy/quota PostgreSQL persistence, RLS/role split, DB-clock checks, transition guard và downgrade guard (`c6e8a0b2d4f6`). `application/source_registry.py` buộc thao tác qua Principal đã xác thực, quyền write/approve/use tách riêng và provenance từ principal UUID. Repository đóng dấu policy/review/quota bằng DB clock. `source_revision_access.py` chọn policy theo as-of nhưng vẫn bắt buộc quyền hiện hành còn verified, còn hiệu lực và cho phép đúng purpose; tombstone/takedown/retention chặn cả historical replay. Chưa có HTTP/composition wiring, verified provider rights, source item repository, takedown persistence/propagation hay connector; quota events là reservation/estimate, chưa mở fetch boundary.
 
 ### Quy tắc chung về quyền nguồn và dữ liệu
 

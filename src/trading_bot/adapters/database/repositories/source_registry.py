@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from uuid import UUID
@@ -72,23 +72,35 @@ class SourceRegistryRepository:
         )
         if duplicate is not None:
             stored = _to_domain_revision(duplicate)
-            if stored == revision:
+            if _same_revision_payload(stored, revision):
                 return SourceRegistryAppendResult(stored, True)
             raise SourceRegistryConflict("idempotency policy_id đã có payload khác.")
 
+        now = await self._session.scalar(text("SELECT clock_timestamp()"))
+        if not isinstance(now, datetime) or now.tzinfo is None or now.utcoffset() is None:
+            raise RuntimeError("database clock_timestamp() không trả thời gian có múi giờ.")
+        now = now.astimezone(UTC)
+        policy = revision.policy
+        if policy.state is SourcePolicyState.VERIFIED:
+            if policy.valid_until is not None and policy.valid_until <= now:
+                raise SourceRegistryConflict("valid_until phải sau database clock.")
+        if policy.reviewed_at is not None:
+            policy = replace(policy, reviewed_at=now)
+        canonical_revision = replace(revision, policy=policy, created_at=now)
+
         rows = await self._policy_rows(
-            workspace_id=workspace_id, source_id=revision.policy.source_id
+            workspace_id=workspace_id, source_id=canonical_revision.policy.source_id
         )
         history = tuple(_to_domain_revision(row) for row in rows)
         expected_sequence = len(history) + 1
-        if revision.sequence != expected_sequence:
+        if canonical_revision.sequence != expected_sequence:
             raise SourceRegistryConflict(
                 f"sequence policy phải liên tiếp; cần {expected_sequence}."
             )
-        SourceRegistryEntry(revision.policy.source_id, (*history, revision))
-        self._session.add(SourcePolicyRevisionRecord.from_domain(workspace_id, revision))
+        SourceRegistryEntry(canonical_revision.policy.source_id, (*history, canonical_revision))
+        self._session.add(SourcePolicyRevisionRecord.from_domain(workspace_id, canonical_revision))
         await self._session.flush()
-        return SourceRegistryAppendResult(revision, False)
+        return SourceRegistryAppendResult(canonical_revision, False)
 
     async def get_entry(self, *, workspace_id: UUID, source_id: str) -> SourceRegistryEntry | None:
         """Đọc toàn bộ lịch sử nguồn trong đúng workspace theo thứ tự revision."""
@@ -269,6 +281,19 @@ def _to_domain_revision(row: SourcePolicyRevisionRecord) -> SourcePolicyRevision
         reason=row.reason,
         approved_by=row.approved_by,
     )
+
+
+def _same_revision_payload(stored: SourcePolicyRevision, candidate: SourcePolicyRevision) -> bool:
+    """So sánh request idempotent bỏ qua timestamp do DB tự đóng dấu."""
+    comparable_policy = stored.policy
+    if candidate.policy.state is SourcePolicyState.VERIFIED:
+        comparable_policy = replace(comparable_policy, reviewed_at=candidate.policy.reviewed_at)
+    comparable = replace(
+        stored,
+        policy=comparable_policy,
+        created_at=candidate.created_at,
+    )
+    return comparable == candidate
 
 
 def _current_usage(

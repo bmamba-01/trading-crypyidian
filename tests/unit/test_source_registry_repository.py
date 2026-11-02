@@ -14,6 +14,8 @@ from trading_bot.adapters.database.repositories.source_registry import (
     SourceRegistryConflict,
     SourceRegistryRepository,
 )
+from trading_bot.application.source_registry import SourceRegistryService
+from trading_bot.auth.policy import Principal, Role
 from trading_bot.domain.research.source_policy import (
     SourcePolicyState,
     SourceUsePurpose,
@@ -84,11 +86,13 @@ class FakeSession:
         *,
         scalar_results: list[object | None] | None = None,
         rows_results: list[list[object]] | None = None,
+        database_now: datetime = NOW,
     ) -> None:
         self.scalar_results = iter(scalar_results or [])
         self.rows_results = iter(rows_results or [])
         self.added: list[object] = []
         self.statements: list[str] = []
+        self.database_now = database_now
 
     async def execute(self, statement: object, params: object | None = None) -> object:
         del params
@@ -96,7 +100,10 @@ class FakeSession:
         return SimpleNamespace()
 
     async def scalar(self, statement: object) -> object | None:
-        self.statements.append(str(statement.compile(dialect=postgresql.dialect())))
+        compiled = str(statement.compile(dialect=postgresql.dialect()))
+        self.statements.append(compiled)
+        if "clock_timestamp()" in compiled:
+            return self.database_now
         return next(self.scalar_results, None)
 
     async def scalars(self, statement: object) -> FakeResult:
@@ -115,9 +122,10 @@ class FakeSession:
 
 
 @pytest.mark.asyncio
-async def test_append_revision_is_workspace_scoped_and_preserves_candidate_policy() -> None:
+async def test_append_revision_uses_database_clock_for_creation_timestamp() -> None:
     entry = discovered()
-    session = FakeSession(scalar_results=[None], rows_results=[[]])
+    database_now = NOW + timedelta(hours=4)
+    session = FakeSession(scalar_results=[None], rows_results=[[]], database_now=database_now)
 
     result = await SourceRegistryRepository(session).append_revision(
         workspace_id=WORKSPACE_ID,
@@ -131,9 +139,65 @@ async def test_append_revision_is_workspace_scoped_and_preserves_candidate_polic
     assert row.source_id == entry.source_id
     assert row.sequence == 1
     assert row.state == "discovered"
+    assert row.created_at == database_now
+    assert result.revision.created_at == database_now
     assert row.allowed_purposes == []
-    assert "source_policy_revision.workspace_id" in session.statements[3]
+    assert "source_policy_revision.workspace_id" in session.statements[4]
     assert "pg_advisory_xact_lock" in session.statements[1]
+    assert "clock_timestamp()" in session.statements[3]
+
+
+@pytest.mark.asyncio
+async def test_verified_revision_review_time_comes_from_database_clock_not_candidate() -> None:
+    source = approved(discovered())
+    candidate = replace(
+        source.current,
+        created_at=NOW - timedelta(days=20),
+        policy=replace(source.current.policy, reviewed_at=NOW - timedelta(days=20)),
+    )
+    database_now = NOW + timedelta(hours=3)
+    existing = [
+        SourcePolicyRevisionRecord.from_domain(WORKSPACE_ID, revision)
+        for revision in source.revisions[:-1]
+    ]
+    session = FakeSession(scalar_results=[None], rows_results=[existing], database_now=database_now)
+    actor = Principal(uuid4(), uuid4(), WORKSPACE_ID, frozenset({Role.OWNER}), NOW)
+    reviewer = Principal(uuid4(), uuid4(), WORKSPACE_ID, frozenset({Role.ANALYST_REVIEWER}), NOW)
+
+    result = (
+        await SourceRegistryService(SourceRegistryRepository(session))
+        .for_principal(actor)
+        .append_revision(candidate, reviewer=reviewer)
+    )
+
+    assert result.created_at == database_now
+    assert result.policy.reviewed_at == database_now
+    assert result.actor_id == str(actor.user_id)
+    assert result.approved_by == str(reviewer.user_id)
+    row = session.added[0]
+    assert isinstance(row, SourcePolicyRevisionRecord)
+    assert row.created_at == database_now
+    assert row.reviewed_at == database_now
+
+
+@pytest.mark.asyncio
+async def test_verified_revision_expired_by_database_clock_is_rejected() -> None:
+    source = approved(discovered())
+    expired_at_db = NOW + timedelta(days=31)
+    existing = [
+        SourcePolicyRevisionRecord.from_domain(WORKSPACE_ID, revision)
+        for revision in source.revisions[:-1]
+    ]
+    session = FakeSession(
+        scalar_results=[None], rows_results=[existing], database_now=expired_at_db
+    )
+
+    with pytest.raises(SourceRegistryConflict, match="database clock"):
+        await SourceRegistryRepository(session).append_revision(
+            workspace_id=WORKSPACE_ID, revision=source.current
+        )
+
+    assert session.added == []
 
 
 @pytest.mark.asyncio
@@ -238,8 +302,9 @@ async def test_quota_reservation_requires_current_policy_and_is_idempotent() -> 
         for revision in source.revisions
     ]
     session = FakeSession(
-        scalar_results=[None, NOW + timedelta(minutes=2)],
+        scalar_results=[None],
         rows_results=[policy_rows, []],
+        database_now=NOW + timedelta(minutes=2),
     )
 
     result = await SourceRegistryRepository(session).reserve_quota(
@@ -393,8 +458,9 @@ async def test_quota_reservation_is_denied_without_verified_purpose_or_after_exp
     with pytest.raises(PermissionError, match="policy"):
         await SourceRegistryRepository(
             FakeSession(
-                scalar_results=[None, NOW + timedelta(minutes=2)],
+                scalar_results=[None],
                 rows_results=[pending_rows],
+                database_now=NOW + timedelta(minutes=2),
             )
         ).reserve_quota(
             workspace_id=WORKSPACE_ID,
@@ -411,7 +477,11 @@ async def test_quota_reservation_is_denied_without_verified_purpose_or_after_exp
         for revision in source.revisions
     ]
     rows[-1].valid_until = NOW + timedelta(minutes=5)
-    session = FakeSession(scalar_results=[None, NOW + timedelta(minutes=10)], rows_results=[rows])
+    session = FakeSession(
+        scalar_results=[None],
+        rows_results=[rows],
+        database_now=NOW + timedelta(minutes=10),
+    )
     with pytest.raises(PermissionError, match="policy"):
         await SourceRegistryRepository(session).reserve_quota(
             workspace_id=WORKSPACE_ID,
@@ -446,8 +516,9 @@ async def test_cost_unit_change_within_active_window_fails_closed_with_stable_me
         cost_unit="USD",
     )
     session = FakeSession(
-        scalar_results=[None, NOW + timedelta(minutes=3)],
+        scalar_results=[None],
         rows_results=[policy_rows, [prior_event]],
+        database_now=NOW + timedelta(minutes=3),
     )
 
     with pytest.raises(ValueError, match="cost_unit changed within the active quota window"):
@@ -483,8 +554,9 @@ async def test_quota_reservation_serializes_usage_and_rejects_budget_overflow() 
         cost_unit="USD",
     )
     session = FakeSession(
-        scalar_results=[None, NOW + timedelta(minutes=3)],
+        scalar_results=[None],
         rows_results=[policy_rows, [prior_event]],
+        database_now=NOW + timedelta(minutes=3),
     )
 
     with pytest.raises(SourceQuotaExceededError):

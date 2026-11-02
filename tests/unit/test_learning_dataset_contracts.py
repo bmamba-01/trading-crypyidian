@@ -81,6 +81,7 @@ def manifest(
         feature_version="features-build-4",
         label_version="pnl-sign-v1",
         sample_schema_version="sample-v1",
+        split_policy_version="walk-forward-v1",
         samples=(sample(),) if samples is None else samples,
         exclusions=exclusions,
         holdout_sealed_at=NOW
@@ -205,6 +206,7 @@ def test_manifest_requires_explicit_holdout_seal_when_holdout_samples_exist() ->
             feature_version="features-build-4",
             label_version="pnl-sign-v1",
             sample_schema_version="sample-v1",
+            split_policy_version="walk-forward-v1",
             samples=(holdout,),
             exclusions=(),
             holdout_sealed_at=None,
@@ -214,7 +216,9 @@ def test_manifest_requires_explicit_holdout_seal_when_holdout_samples_exist() ->
 def test_manifest_hash_changes_with_version_exclusion_or_holdout_state() -> None:
     baseline = manifest()
     new_feature_version = replace(baseline, feature_version="features-build-5")
+    new_split_policy = replace(baseline, split_policy_version="walk-forward-v2")
     excluded = manifest(exclusions=(DatasetExclusion("sample-2", ("missing_feature",)),))
 
     assert baseline.content_hash != new_feature_version.content_hash
+    assert baseline.content_hash != new_split_policy.content_hash
     assert baseline.content_hash != excluded.content_hash

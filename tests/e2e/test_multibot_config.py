@@ -70,11 +70,10 @@ def test_bot_overlay_versions_admin_api_and_open_paper_position() -> None:
             errors="replace",
             timeout=300,
         )
-        assert (result.returncode == 0) is success, (
-            args[:6],
-            result.stdout[-5000:],
-            result.stderr[-5000:],
-        )
+        if (result.returncode == 0) is not success:
+            raise AssertionError(
+                f"Compose lệnh {args[:6]!r} thất bại:\n{result.stdout}\n{result.stderr}"
+            )
         return result
 
     probe = (root / "tests/e2e/probes/multibot_config.py").read_text(encoding="utf-8")
@@ -139,7 +138,7 @@ def test_bot_overlay_versions_admin_api_and_open_paper_position() -> None:
         current = compose("run", "--rm", "--no-deps", "migrator", "alembic", "current")
         # Head tích hợp gồm cả MB-05 (registry runtime) và MB-04 fix (aggregate hardening);
         # downgrade ở trên kiểm tra luồng đảo chiều sạch qua các migration đó.
-        assert "c6e8a0b2d4f6" in current.stdout
+        assert "a7c9e2f4b6d8" in current.stdout
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "check")
 
         # --- Owner, MFA, risk profile và root settings ------------------------------------
