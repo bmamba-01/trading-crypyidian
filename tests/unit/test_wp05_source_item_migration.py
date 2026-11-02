@@ -3,7 +3,8 @@
 import importlib.util
 from pathlib import Path
 
-from sqlalchemy import UniqueConstraint
+import pytest
+from sqlalchemy import CheckConstraint, UniqueConstraint
 
 from trading_bot.adapters.database.models import SourceItemRevisionRecord, SourceItemTakedownRecord
 
@@ -63,3 +64,48 @@ def test_recording_boundary_migration_is_linear():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     assert module.down_revision == "c9e1f3a5b7d0"
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "recorded_at",
+        "created_at",
+        "observed_at",
+        "available_at",
+        "event_at",
+        "published_at",
+        "edited_at",
+        "retention_expires_at",
+    ],
+)
+def test_revision_timestamp_has_finite_python_datetime_bounds(field):
+    constraints = SourceItemRevisionRecord.__table__.constraints
+    constraint = next(
+        (
+            item
+            for item in constraints
+            if isinstance(item, CheckConstraint) and f"isfinite({field})" in str(item.sqltext)
+        ),
+        None,
+    )
+    assert constraint is not None, f"Thiếu CHECK miền Python datetime cho {field}."
+    assert f"isfinite({field})" in str(constraint.sqltext)
+    assert "0001-01-01" in str(constraint.sqltext)
+    assert "10000-01-01" in str(constraint.sqltext)
+
+
+def test_takedown_timestamp_has_same_finite_python_datetime_bounds():
+    assert any(
+        isinstance(item, CheckConstraint) and "isfinite(taken_down_at)" in str(item.sqltext)
+        for item in SourceItemTakedownRecord.__table__.constraints
+    )
+
+
+def test_timestamp_range_migration_follows_recording_boundary():
+    path = next((Path(__file__).parents[2] / "migrations/versions").glob("d1a3c5e7f9b2_*.py"), None)
+    assert path is not None, "Migration miền timestamp chưa được triển khai."
+    spec = importlib.util.spec_from_file_location(path.stem, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.down_revision == "d0f2a4c6e8b1"

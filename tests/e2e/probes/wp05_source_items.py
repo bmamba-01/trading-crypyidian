@@ -703,10 +703,276 @@ async def _review_regressions():
     return {"review_regressions": True}
 
 
+async def _raw_timestamp_insert(session, item_id, changes):
+    """Tạo hash bằng SQL để probe giá trị PostgreSQL nằm ngoài miền Python."""
+    candidate = _revision(item_id=item_id, canonical_url="https://example.invalid/time-range")
+    values = {
+        "workspace_id": str(WORKSPACE),
+        "source_id": SOURCE,
+        "item_id": item_id,
+        "revision_id": "r1",
+        "canonical_url": candidate.canonical_url,
+        "observed_at": candidate.observed_at.isoformat(),
+        "available_at": candidate.available_at.isoformat(),
+        "event_at": candidate.event_at.isoformat(),
+        "published_at": candidate.published_at.isoformat(),
+        "edited_at": candidate.edited_at.isoformat(),
+        "retention_expires_at": None,
+        "created_at": candidate.observed_at.isoformat(),
+        "recorded_at": candidate.observed_at.isoformat(),
+    } | changes
+    typed = [
+        "gen_random_uuid() AS id",
+        "1 AS sequence",
+        "false AS tombstoned",
+        "NULL::text AS predecessor_revision_id",
+        "NULL::text AS predecessor_hash",
+    ]
+    for field in values:
+        dtype = (
+            "uuid"
+            if field == "workspace_id"
+            else "timestamptz"
+            if field.endswith("_at")
+            else "text"
+        )
+        typed.append(f"CAST(:{field} AS {dtype}) AS {field}")
+    payload = (
+        "json_build_object("
+        + ", ".join(
+            (
+                "'available_at', public.source_item_timestamp(c.available_at)",
+                "'canonical_url', c.canonical_url",
+                "'edited_at', public.source_item_timestamp(c.edited_at)",
+                "'event_at', public.source_item_timestamp(c.event_at)",
+                "'item_id', c.item_id",
+                "'observed_at', public.source_item_timestamp(c.observed_at)",
+                "'predecessor_hash', c.predecessor_hash",
+                "'published_at', public.source_item_timestamp(c.published_at)",
+                "'revision_id', c.revision_id",
+                "'source_id', c.source_id",
+                "'tombstoned', c.tombstoned",
+            )
+        )
+        + ")::text"
+    )
+    digest = (
+        f"encode(sha256(convert_to(replace(replace({payload}, ' : ', ':'), "
+        "', ', ','), 'UTF8')), 'hex')"
+    )
+    columns = [column.name for column in SourceItemRevisionRecord.__table__.columns]
+    selected = [digest if field == "revision_hash" else f"c.{field}" for field in columns]
+    statement = (
+        f"WITH c AS (SELECT {', '.join(typed)}) "
+        f"INSERT INTO source_item_revision ({', '.join(columns)}) "
+        f"SELECT {', '.join(selected)} FROM c RETURNING 1"
+    )
+    return await session.scalar(text(statement), values)
+
+
+async def _legacy_timestamp_validation():
+    """Upgrade phải fail rõ và rollback CHECK, giữ nguyên hàng cũ sai timestamp."""
+    import importlib.util
+
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+
+    path = Path("/app/migrations/versions/d1a3c5e7f9b2_wp05_python_timestamp_range.py")
+    spec = importlib.util.spec_from_file_location(path.stem, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    def apply_upgrade(connection):
+        original = module.op
+        module.op = Operations(MigrationContext.configure(connection))
+        try:
+            module.upgrade()
+        finally:
+            module.op = original
+
+    engine = _engine()
+    async with engine.connect() as connection:
+        transaction = await connection.begin()
+        try:
+            await _raw_timestamp_insert(
+                connection, "legacy-invalid-time", {"retention_expires_at": "infinity"}
+            )
+            before = (
+                await connection.execute(
+                    text(
+                        "SELECT revision_hash, retention_expires_at::text "
+                        "FROM source_item_revision "
+                        "WHERE item_id = 'legacy-invalid-time'"
+                    )
+                )
+            ).one()
+            nested = await connection.begin_nested()
+            diagnostic = None
+            try:
+                await connection.run_sync(apply_upgrade)
+            except DBAPIError as error:
+                diagnostic = (error.orig.sqlstate, error.orig.diag.constraint_name)
+            finally:
+                await nested.rollback()
+            assert diagnostic == (
+                "23514",
+                "ck_source_item_revision_sir_retention_expires_at_pytime",
+            )
+            after = (
+                await connection.execute(
+                    text(
+                        "SELECT revision_hash, retention_expires_at::text "
+                        "FROM source_item_revision "
+                        "WHERE item_id = 'legacy-invalid-time'"
+                    )
+                )
+            ).one()
+            assert before == after
+            assert after[1] == "infinity"
+            assert (
+                await connection.scalar(
+                    text(
+                        "SELECT count(*) FROM pg_constraint "
+                        "WHERE conrelid = 'source_item_revision'::regclass "
+                        "AND conname LIKE '%_pytime'"
+                    )
+                )
+                == 0
+            )
+        finally:
+            await transaction.rollback()
+    await engine.dispose()
+    return {"invalid_legacy_row_blocks_upgrade_unchanged": True}
+
+
+async def _timestamp_range():
+    """Raw TIMESTAMPTZ ngoài miền Python phải bị từ chối trước khi thành history."""
+    failures = []
+    engine = _engine(INGESTION)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    async with sessions() as session, session.begin():
+        await _scope(session)
+        for number, instant in enumerate(
+            ("infinity", "-infinity", "0001-01-01 00:00:00 BC", "10000-01-01 00:00:00+00")
+        ):
+            for field in (
+                "observed_at",
+                "available_at",
+                "event_at",
+                "published_at",
+                "edited_at",
+                "retention_expires_at",
+            ):
+                changes = {field: instant}
+                if field in {"observed_at", "available_at", "published_at", "edited_at"}:
+                    changes |= dict.fromkeys(
+                        ("observed_at", "available_at", "published_at", "edited_at"), instant
+                    )
+                error_code = None
+                constraint = None
+                nested = await session.begin_nested()
+                try:
+                    await _raw_timestamp_insert(session, f"bad-time-{number}-{field}", changes)
+                except DBAPIError as error:
+                    error_code = error.orig.sqlstate
+                    constraint = error.orig.diag.constraint_name
+                finally:
+                    await nested.rollback()
+                if error_code != "23514" or "_pytime" not in (constraint or ""):
+                    failures.append(
+                        f"Raw {field}={instant} chưa bị CHECK miền Python chặn: "
+                        f"{error_code}/{constraint}"
+                    )
+        for number, instant in enumerate(
+            ("infinity", "-infinity", "0001-01-01 00:00:00 BC", "10000-01-01 00:00:00+00")
+        ):
+            assert (
+                await _raw_timestamp_insert(
+                    session,
+                    f"server-time-{number}",
+                    {"created_at": instant, "recorded_at": instant},
+                )
+                == 1
+            )
+            row = await session.scalar(
+                select(SourceItemRevisionRecord).where(
+                    SourceItemRevisionRecord.item_id == f"server-time-{number}"
+                )
+            )
+            assert row.recorded_at == row.created_at
+            assert row.recorded_at.year >= 1
+            assert row.recorded_at.year <= 9999
+        for number, instant in enumerate(
+            ("0001-01-01 00:00:00+00", "9999-12-31 23:59:59.999999+00")
+        ):
+            assert (
+                await _raw_timestamp_insert(
+                    session,
+                    f"valid-time-{number}",
+                    {"event_at": instant, "retention_expires_at": instant},
+                )
+                == 1
+            )
+            row = await session.scalar(
+                select(SourceItemRevisionRecord).where(
+                    SourceItemRevisionRecord.item_id == f"valid-time-{number}"
+                )
+            )
+            assert row.event_at.year == (1 if number == 0 else 9999)
+            assert row.retention_expires_at == row.event_at
+            row.to_entry()
+        assert (
+            await SourceItemRepository(session).select_accessible(
+                workspace_id=WORKSPACE,
+                source_id=SOURCE,
+                item_id="valid-time-0",
+                purpose=SourceUsePurpose.METADATA,
+            )
+            is None
+        )
+        assert (
+            await SourceItemRepository(session).select_accessible(
+                workspace_id=WORKSPACE,
+                source_id=SOURCE,
+                item_id="valid-time-1",
+                purpose=SourceUsePurpose.METADATA,
+            )
+            is not None
+        )
+    await engine.dispose()
+    engine = _engine(ADMIN)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    async with sessions() as session, session.begin():
+        await _scope(session)
+        for number, instant in enumerate(
+            ("infinity", "-infinity", "0001-01-01 00:00:00 BC", "10000-01-01 00:00:00+00")
+        ):
+            actual = await session.scalar(
+                text(
+                    "INSERT INTO source_item_takedown "
+                    "(id, workspace_id, source_id, item_id, taken_down_at, reason_code) "
+                    "VALUES (gen_random_uuid(), :workspace_id, :source_id, :item_id, "
+                    "CAST(:instant AS timestamptz), 'rights_withdrawn') RETURNING taken_down_at"
+                ),
+                {
+                    "workspace_id": WORKSPACE,
+                    "source_id": SOURCE,
+                    "item_id": f"server-takedown-{number}",
+                    "instant": instant,
+                },
+            )
+            assert 1 <= actual.year <= 9999
+    await engine.dispose()
+    assert not failures, failures
+    return {"finite_python_datetime": True}
+
+
 async def _main():
     handlers = {
         "seed": _seed,
         "review_regressions": _review_regressions,
+        "timestamp_range": _timestamp_range,
+        "legacy_timestamp_validation": _legacy_timestamp_validation,
         "legacy_recording_seed": _legacy_recording_seed,
         "legacy_recording_readback": _legacy_recording_readback,
         "persist": _persist,

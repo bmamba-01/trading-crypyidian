@@ -29,6 +29,18 @@ if TYPE_CHECKING:
     from trading_bot.domain.research.source_item_history import SourceItemRevisionEntry
 
 
+def _python_timestamp_constraint(field: str, *, nullable: bool, prefix: str) -> CheckConstraint:
+    """Chặn timestamp PostgreSQL hữu hạn nhưng ngoài miền datetime UTC của Python."""
+    bounded = (
+        f"isfinite({field}) AND {field} >= TIMESTAMPTZ '0001-01-01 00:00:00+00' "
+        f"AND {field} < TIMESTAMPTZ '10000-01-01 00:00:00+00'"
+    )
+    return CheckConstraint(
+        f"{field} IS NULL OR ({bounded})" if nullable else bounded,
+        name=f"{prefix}_{field}_pytime",
+    )
+
+
 class SourcePolicyRevisionRecord(UuidPrimaryKey, CreatedAt, Base):
     """Snapshot append-only của policy, quyền, endpoint và quota nguồn."""
 
@@ -273,6 +285,19 @@ class SourceItemRevisionRecord(UuidPrimaryKey, CreatedAt, Base):
         CheckConstraint(
             "public.source_item_url_valid(canonical_url)", name="source_item_url_domain_valid"
         ),
+        *(
+            _python_timestamp_constraint(field, nullable=nullable, prefix="sir")
+            for field, nullable in (
+                ("recorded_at", False),
+                ("created_at", False),
+                ("observed_at", False),
+                ("available_at", True),
+                ("event_at", True),
+                ("published_at", True),
+                ("edited_at", True),
+                ("retention_expires_at", True),
+            )
+        ),
         Index(
             "ix_source_item_revision_available",
             "workspace_id",
@@ -375,6 +400,7 @@ class SourceItemTakedownRecord(UuidPrimaryKey, Base):
         CheckConstraint(
             "reason_code ~ '^[a-z][a-z0-9_]{0,63}$'", name="source_item_takedown_reason_valid"
         ),
+        _python_timestamp_constraint("taken_down_at", nullable=False, prefix="sit"),
     )
 
     workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
