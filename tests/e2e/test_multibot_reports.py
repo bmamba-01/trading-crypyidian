@@ -151,8 +151,15 @@ def _login(port: int, account: dict[str, Any]) -> urllib.request.OpenerDirector:
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    with opener.open(request, timeout=20) as response:
-        assert response.status == 200
+    try:
+        with opener.open(request, timeout=20) as response:
+            assert response.status == 200
+    except urllib.error.HTTPError as error:
+        detail = error.read().decode("utf-8", errors="replace")
+        raise AssertionError(
+            f"Đăng nhập E2E thất bại cho {account['email']}: "
+            f"HTTP {error.code}, phản hồi={detail[:200]!r}"
+        ) from error
     return opener
 
 

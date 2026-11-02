@@ -29,6 +29,14 @@
 
 **Nghiệm thu:** contract fixtures bao phủ accepted/rejected/partial/unknown; request và parser theo API version đã pin; test chứng minh Demo key/mode không tạo production URL; SDK không làm mất trường/trạng thái cần thiết; capability/giới hạn Demo được ghi rõ.
 
+### Contract offline kế tiếp — parser regular và Algo
+
+Theo [audit API kiểm tra 2026-11-02](../research/wp03-binance-usdm-capability-audit-2026-11-02.md) và [Task 1A trong WBS WP-03](../superpowers/plans/2026-11-01-wp03-execution-wbs.md), parser phải có DTO và enum raw riêng cho regular order và Algo Service. Lát cắt regular hiện chỉ hỗ trợ `MARKET`/`LIMIT`; năm loại conditional (`STOP`, `STOP_MARKET`, `TAKE_PROFIT`, `TAKE_PROFIT_MARKET`, `TRAILING_STOP_MARKET`) thuộc Algo Service. Nếu gửi nhầm qua `/fapi/v1/order`, lỗi `-4120 STOP_ORDER_SWITCH_ALGO` là mismatch/routing rejection, không phải order thường bị fill, vắng mặt hay lý do release reservation.
+
+Regular DTO giữ các trường đã được audit nhận diện (`symbol`, `orderId`, `clientOrderId`, `status`, `executedQty`). Algo DTO tách `algoId`, `clientAlgoId`, `algoType=CONDITIONAL`, `triggerPrice`, `algoStatus` và `actualOrderId` (ID riêng của regular order sinh sau trigger). `ORDER_TRADE_UPDATE` và `ALGO_UPDATE` cần parser riêng; không ép raw payload vào một order-status enum chung. Các Algo status `NEW`, `TRIGGERING`, `TRIGGERED`, `FINISHED`, `CANCELED`, `REJECTED`, `EXPIRED` không được chuyển trực tiếp thành regular `FILLED`; sau trigger phải reconcile regular order/fill.
+
+Unknown status, field bắt buộc thiếu, JSON sai dạng, response parse lỗi sau side effect, timeout hoặc HTTP 503 `Unknown error...` không chứng minh lệnh bị từ chối/vắng mặt: chiếu thành `UNKNOWN`, giữ reservation và entry gate, rồi reconcile trước retry. Không xóa raw status/code cần thiết để điều tra. Audit ngày 2026-11-02 chưa xác minh đầy đủ regular status enum, query `updateTime` hiện adapter đang đòi, Algo nullability/response schema và nested field của stream events; cần tra lại tài liệu Binance chính thức, ghi URL/ngày, trước khi khóa fixture hoặc biến các trường này thành bắt buộc. Contract fixture offline không chứng minh Algo/private stream hỗ trợ trên Demo.
+
 ## WP-03B — State machine, idempotency và UNKNOWN
 
 1. Chốt state machine order thường `CREATED → SUBMITTING → ACKNOWLEDGED/PARTIALLY_FILLED/FILLED/CANCELED/REJECTED/UNKNOWN`; tách vòng đời conditional algo (`NEW/TRIGGERING/TRIGGERED/FINISHED/CANCELED/REJECTED/EXPIRED`) và order thường sau trigger.

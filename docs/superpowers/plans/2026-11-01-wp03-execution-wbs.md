@@ -81,18 +81,48 @@ Có thể làm song song các contract/fixture không cùng ownership; migration
 ## Task 1 — WP-03A.1: Official API capability and SDK audit (có thể làm ngay; read-only)
 
 **Files:**
-- Create/update at implementation time: `docs/superpowers/plans/2026-11-01-wp03-execution-wbs.md` capability appendix/table; dependency inventory only if SDK is added.
-- Tests: API schema fixtures under `tests/fixtures/binance_usdm/`; no network test required.
+- [Capability and SDK audit checked 2026-11-02](../../research/wp03-binance-usdm-capability-audit-2026-11-02.md) — tài liệu hiện hành cho nguồn, endpoint, quyền, rate/history, event/recovery, Demo unknown và đánh giá SDK; supersede kết luận API/SDK của appendix kiểm tra ngày 2026-11-01.
+- Tests/fixtures: chưa thêm trong vòng tài liệu này; schema/parser fixtures dưới `tests/fixtures/binance_usdm/` vẫn mở.
+
+**Trạng thái 2026-11-02:** hoàn tất phần kiểm toán tài liệu read-only (Step 1–5); Task 1 **chưa đạt nghiệm thu đầy đủ** cho tới khi có contract fixtures/parser và xử lý mismatch enum regular-order với Algo migration. Chưa có Demo network evidence.
 
 **Interfaces:** endpoint matrix separates public read, signed USER_DATA, TRADE, user-stream management, WebSocket account events, regular orders and algo conditional orders. Include endpoint path/method, mode support, auth permission, rate limit, timestamp/recvWindow, request/response enums, history windows, event source and recovery endpoint. Audit current official SDK version/API coverage and licensing; choose SDK only if event and Algo Service semantics are represented correctly. If HTTP transport fallback is needed, it stays inside `adapters/binance_usdm/`.
 
-- [ ] **Step 1: Verify official USDⓈ-M General Info, REST catalog, User Data Streams and Change Log.** Capture checked date **2026-11-01** (re-check at implementation if docs have changed); record production/testnet endpoints, signed-request rules, status/error variants, conditional-order migration date and account-stream event schemas.
-- [ ] **Step 2: Enumerate endpoints.** At minimum `exchangeInfo`; account/balance/position risk; create/query/cancel regular order; trade history; account configuration needed by readiness; mark/funding if risk/equity consumes them; listen-key lifecycle; user-data stream; create/query/cancel/open/history conditional algo orders.
-- [ ] **Step 3: Verify retention, pagination and consistency limits** for orders/trades/positions and all snapshot endpoints; define which data source is authoritative for each reconcile decision.
-- [ ] **Step 4: Compare official SDK to the matrix.** Record exact package/version/license/API gaps; do not add dependency until this review demonstrates a benefit and compatibility.
-- [ ] **Step 5: Add glossary EN→VI/source links** for any new trading/API term that enters implementation or product documentation.
+- [x] **Step 1: Verify official USDⓈ-M General Info, REST catalog, User Data Streams and Change Log.** Re-checked **2026-11-02**; captured hosts, generic Testnet caveat, signed-request/error behavior, conditional-order migration and stream event semantics in the linked audit.
+- [x] **Step 2: Enumerate endpoints.** Audit covers exchange metadata/time, account/balance/positions/config, regular order submit/query/cancel/open/all, trade history, mark/funding, listen-key lifecycle and conditional Algo submit/query/cancel/open/history.
+- [x] **Step 3: Verify retention, pagination and consistency limits** for documented order/trade/algo endpoints and snapshots. Where docs do not set a maximum history window, Demo behavior or event replay guarantee, the audit labels it unknown/open and treats recovery guidance as an implementation inference.
+- [x] **Step 4: Compare official SDK to the matrix.** Recorded `18.2.0`, MIT, Python range, claimed API surface, Binance documentation disclaimer, default retries and unresolved operation-level semantics; no SDK dependency added.
+- [x] **Step 5: Check glossary EN→VI/source coverage** for terms used in the audit; no new trading/AI concept was introduced in this documentation-only round.
 
 **Acceptance:** every required operation maps to official current documentation and a parser/schema fixture; there is no unresolved mismatch between regular and algo order semantics; unsupported Demo capabilities are labeled unknown rather than assumed.
+
+**Acceptance status:** tài liệu nguồn và Demo unknown đã có; quy tắc định tuyến conditional theo Change Log đã chốt ở Task 1A dưới đây, nhưng parser/schema fixtures chưa tạo. Chỉ phần documentation audit hoàn tất; Task 1 vẫn mở tới khi có fixture và parser.
+
+### Task 1A — Contract parser và schema fixtures offline (có thể làm ngay)
+
+**Nguồn contract:** [Capability audit kiểm tra 2026-11-02](../../research/wp03-binance-usdm-capability-audit-2026-11-02.md), đặc biệt bảng endpoint, mismatch regular/algo và mục việc còn mở. Chỉ dùng các dữ kiện audit đã xác nhận; không biến fixture offline thành bằng chứng endpoint chạy được trên Demo.
+
+**Files dự kiến:**
+- Tạo `src/trading_bot/adapters/binance_usdm/order_schemas.py` cho DTO/parser raw tách biệt theo họ order; `demo_rest.py` hiện là adapter regular MARKET/LIMIT, chưa có parser Algo.
+- Tạo `tests/unit/test_binance_usdm_order_schemas.py` và fixture JSON dưới `tests/fixtures/binance_usdm/` cho regular response, Algo response/status và stream event. Nếu cần adapter behavior cases, bổ sung riêng vào `tests/unit/test_demo_rest_adapter.py`.
+- Gắn metadata nguồn/ngày/schema-surface vào fixture hoặc test case: Binance USDⓈ-M Trade REST API, User Data Streams, Change Log; kiểm tra **2026-11-02** theo audit liên kết ở trên. Không chứa dữ liệu account/key thực.
+
+**DTO và enum contract:**
+- `RegularOrderType` trong lát cắt adapter hiện tại chỉ chấp nhận `MARKET` và `LIMIT`. `STOP`, `STOP_MARKET`, `TAKE_PROFIT`, `TAKE_PROFIT_MARKET`, `TRAILING_STOP_MARKET` thuộc `ConditionalAlgoOrderType`, không được serialize/gửi qua `/fapi/v1/order`.
+- Regular response DTO giữ riêng `symbol`, `orderId`, `clientOrderId`, `status`, `executedQty` khi có. Audit chưa đóng băng toàn bộ regular `status` enum/response schema; code hiện còn yêu cầu `updateTime` khi query nhưng audit chưa xác minh trường này. Trước khi đóng golden fixture hoặc coi `updateTime` là bắt buộc, tra lại schema chính thức hiện hành và ghi URL/ngày.
+- Algo DTO giữ riêng `algoType=CONDITIONAL`, conditional order type, `triggerPrice`, `algoId`, `clientAlgoId`, `algoStatus`, và `actualOrderId` nếu Algo đã tạo regular order sau trigger. `algoStatus` không dùng chung enum với regular `status`. Audit ghi nhận các Algo status: `NEW`, `TRIGGERING`, `TRIGGERED`, `FINISHED`, `CANCELED`, `REJECTED`, `EXPIRED`; schema field casing, required/nullability và response đầy đủ vẫn phải đối chiếu trang endpoint trước khi cố định parser.
+- Tạo parser event riêng cho `ORDER_TRADE_UPDATE` và `ALGO_UPDATE`. Audit xác nhận tên event, các Algo status nêu trên và ordering metadata `T`/`E`, nhưng chưa lưu đủ nested JSON field contract để sinh payload fixture đầy đủ; trước bước đó phải đọc lại schema event chính thức, không tự suy diễn cấu trúc `o`/field con. `ACCOUNT_UPDATE` không thuộc fixture order-parser tối thiểu này.
+- `VenueOrderState` chỉ là canonical projection nội bộ sau khi parse hợp lệ; không tái sử dụng raw venue status/type enum giữa regular và Algo.
+
+**Ma trận fixture và lỗi:**
+- Regular: accepted MARKET/LIMIT ACK có các field bắt buộc đã xác minh; partial-fill status/`executedQty` sau khi status schema được kiểm chứng; unknown status giữ raw value nhưng projection về `UNKNOWN`; unknown/missing required field và JSON/type sai bị parse failure fail-closed.
+- Conditional migration: regular endpoint trả lỗi `-4120 STOP_ORDER_SWITCH_ALGO` cho conditional type phải được phân loại là lỗi routing/schema contract, không thành regular `REJECTED`/absent và không giải phóng reservation. Tạo Algo fixtures riêng cho `NEW`, `TRIGGERED`, `FINISHED`, `REJECTED`, liên kết `algoId`/`clientAlgoId`/`actualOrderId` đúng vai trò; `TRIGGERED`/`FINISHED` không đồng nghĩa regular order `FILLED`.
+- HTTP 503 `Unknown error...`, timeout sau submit, response mơ hồ hoặc parse failure sau side effect giữ order `UNKNOWN`, reservation và entry gate; query stream/order trước retry. Không parse lỗi thành “không tồn tại”. Fixture lỗi phải giữ code/message Binance cần thiết đã khử dữ liệu nhạy cảm.
+- Field/schema không có trong audit (đặc biệt full regular status list, query `updateTime`, Algo optional/null fields, event nested fields và Demo-specific response) là **fresh official lookup required before code/fixture freeze**. Không giả lập endpoint support từ production docs.
+
+**Trình tự implement sau khi contract được cập nhật:** viết parser tests RED từ fixture nhỏ đã đối chiếu nguồn; triển khai parser regular/Algo riêng; chạy unit tests offline; bổ sung consumer/adapter mapping và fault cases; sau cùng mới xem xét E2E fake boundary. Demo flow vẫn bị chặn bởi PAPER/risk gate và xác nhận Demo endpoint/credential riêng.
+
+**Acceptance Task 1A:** regular và Algo DTO/type/status không thể bị nhầm lẫn; conditional regular-route `-4120` được nhận diện; các trạng thái Algo trigger/finish không bị map thành fill; unknown/malformed/ambiguous responses fail closed và giữ reservation; mọi fixture có nguồn/ngày và không có secret; chưa tuyên bố Demo capability.
 
 ## Task 2 — WP-03A.2: ExchangeGateway, host/key boundary and signed readiness (contract/offline first)
 
