@@ -13,6 +13,40 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 
 ## Nhật ký các vòng
 
+### 2026-11-02 — WP-03 Task 2 (WP-03A.2): ExchangeGateway Host/Key Boundary và Secret Separation
+
+- **Mục tiêu/phạm vi:** Thiết lập hợp đồng port `ExchangeGateway` và bộ lọc an toàn ranh giới máy chủ/khóa bí mật cho Binance USDⓈ-M Futures theo WBS Task 2:
+  1. Port neutral `ExchangeGateway`, `ReadinessProbeResult`, `GatewayReadinessReport` với 4 probe categories: `PUBLIC_DATA`, `USER_DATA`, `TRADE_CAPABILITY`, `STREAM_AND_CLOCK`.
+  2. Host & Mode Boundary: Cho phép danh sách allowlist chính thức (Demo/Testnet/Production), cấm tuyệt đối kết nối tới production host (`https://fapi.binance.com`, `wss://fstream.binance.com`) khi ở chế độ `DEMO` hoặc `PAPER` (fail-closed, ném `HostBoundaryViolationError`). Chặn URL chứa query injection, fragment, userinfo hoặc path lạ.
+  3. Secret separation & Redaction: `ApiKeyCredentials` và `SecretReference` tự động che giấu (`[REDACTED]`, masked tail key `***1234`) trong `__repr__` và `__str__`; tiện ích `redact_sensitive_text` tự động che chữ ký HMAC, API key, listenKey; `SecretRedactingLoggingFilter` cho standard logging.
+  4. Request signature & timestamp boundary: Kiểm tra `recvWindow` trong khoảng 1000ms đến 60000ms; phát hiện và chặn clock drift lệch quá dung sai so với server time; hàm tính chữ ký HMAC-SHA256 chuẩn fail-closed.
+  5. Readiness probes phân loại độc lập: Thăm dò public data, signed USER_DATA (xử lý 401/403/429), năng lực TRADE (canTrade), stream & clock skew (offset và listenKey), tổng hợp báo cáo độc lập không giấu lỗi.
+- **Nguồn đã kiểm tra (2026-11-01 / 2026-11-02):**
+  - [Binance USDⓈ-M General Info](https://developers.binance.com/en/docs/products/derivatives-trading-usds-futures/general-info)
+  - [Binance USDⓈ-M Trade REST API](https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api)
+  - [Binance USDⓈ-M User Data Streams](https://developers.binance.com/docs/derivatives/usds-margined-futures/user-data-streams)
+  - [OWASP Logging Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Logging_Cheat_Sheet.html)
+- **Thay đổi:**
+  - `src/trading_bot/ports/exchange_gateway.py`: Chứa các enum `ReadinessStatus`, `ProbeCategory`, các frozen dataclass DTOs `ReadinessProbeResult`, `GatewayReadinessReport`, `GatewayEndpoints`, `SecretReference`, và giao thức `ExchangeGateway`.
+  - `src/trading_bot/adapters/binance_usdm/gateway_boundary.py`: Chứa `BinanceExecutionMode`, constants allowlist hosts, các exceptions (`GatewayBoundaryError`, `HostBoundaryViolationError`, `TimestampBoundaryError`, `ClockDriftBoundaryError`), class `ApiKeyCredentials` che giấu secret, hàm `redact_sensitive_text`, filter `SecretRedactingLoggingFilter`, hàm `validate_host_boundary`, `validate_recv_window`, `validate_timestamp_and_drift`, và `sign_hmac_sha256`.
+  - `src/trading_bot/adapters/binance_usdm/gateway.py`: Lớp `BinanceUsdMExchangeGateway` thực thi `ExchangeGateway`, kiểm tra ranh giới khi khởi tạo và triển khai 4 probes (`probe_public_data`, `probe_user_data`, `probe_trade_capability`, `probe_stream_and_clock`) cùng hàm `check_readiness()`.
+  - `docs/research/glossary-vi.md`: Bổ sung mục P cho các thuật ngữ mới: Exchange gateway, Readiness probe, Clock drift, Secret redaction, Host allowlist.
+  - `tests/unit/test_exchange_gateway_boundary.py`: Bộ 34 unit tests TDD bao quát toàn diện host boundary, secret masking, redaction filter, timestamp/clock drift, và các kịch bản probe (READY, FAILED, DEGRADED, auth error, canTrade=False).
+- **TDD/vấn đề phát sinh và xử lý:**
+  - RED phase: `tests/unit/test_exchange_gateway_boundary.py` ban đầu gặp `ModuleNotFoundError: No module named 'trading_bot.adapters.binance_usdm.gateway'`.
+  - GREEN phase: Triển khai 3 modules, chạy pytest. Lần đầu gặp lỗi do điều kiện `or "fapi.binance.com" in parsed_rest.netloc` bắt nhầm domain `demo-fapi.binance.com`. Đã sửa thành so sánh chính xác `parsed_rest.netloc == "fapi.binance.com"` và `parsed_ws.netloc == "fstream.binance.com"`.
+  - Ruff lint: Xử lý các dòng dài quá 100 ký tự và unused imports.
+  - Mypy: Chuẩn hóa type annotation `responses: dict[str, tuple[int, Any]]` cho mock transport để tránh lỗi type invariance.
+- **Chất lượng:**
+  - Pytest: `PYTHONPATH="$PWD:$PWD/src" .venv/bin/pytest tests/unit/test_exchange_gateway_boundary.py -v` → **34 passed in 0.06s**.
+  - Regression unit tests: `PYTHONPATH="$PWD:$PWD/src" .venv/bin/pytest tests/unit/test_exchange* tests/unit/test_binance* tests/unit/test_venue* -q` → **189 passed in 0.42s**.
+  - Ruff check: `.venv/bin/ruff check src/trading_bot/ports/exchange_gateway.py src/trading_bot/adapters/binance_usdm/gateway_boundary.py src/trading_bot/adapters/binance_usdm/gateway.py tests/unit/test_exchange_gateway_boundary.py` → **All checks passed!**
+  - Ruff format: `.venv/bin/ruff format --check src/trading_bot/ports/exchange_gateway.py src/trading_bot/adapters/binance_usdm/gateway_boundary.py src/trading_bot/adapters/binance_usdm/gateway.py tests/unit/test_exchange_gateway_boundary.py` → **4 files already formatted**.
+  - Mypy: `.venv/bin/mypy src/trading_bot/ports/exchange_gateway.py src/trading_bot/adapters/binance_usdm/gateway_boundary.py src/trading_bot/adapters/binance_usdm/gateway.py tests/unit/test_exchange_gateway_boundary.py` → **Success: no issues found in 4 source files**.
+- **Giới hạn còn mở:** Hiện tại các probes chạy qua `SignedHttpTransport` offline mock. Sẽ kết nối với network HTTP client thực tế ở giai đoạn tích hợp Demo gate (WP-03B).
+- **Commit/nhánh:** Chưa commit.
+- **Đã đọc lại mục memory sau cập nhật:** Có.
+
 ### 2026-11-02 — WP-03 Task 1: Offline response/event parser và golden fixtures Binance USDⓈ-M
 
 - **Mục tiêu/phạm vi:** Triển khai bộ raw DTOs và canonical parsers offline cho 3 API families của Binance USDⓈ-M theo WBS Task 1:
@@ -1199,3 +1233,29 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
   * `git diff --check`: đạt chuẩn, không có lỗi whitespace hay conflict.
 - **Commit/nhánh:** commit trên nhánh `dev` theo yêu cầu người dùng, đồng bộ lên remote người dùng sở hữu `origin` (`git@github.com:bmamba-01/trading-crypyidian.git`).
 - **Đã đọc lại memory:** đối chiếu toàn bộ các bước xử lý lỗi, kết quả test E2E 1 passed / 19.06s, danh sách ảnh chụp màn hình và static checks; xác nhận tuân thủ nghiêm ngặt quy định AGENTS.md và skill `futures-bot-implementation`.
+
+## 2026-11-02 — WP-05 Task 3: Alembic Migration cho Source Item Revisions và Takedowns
+
+- **Mục tiêu/phạm vi:** triển khai WP-05 Task 3 tạo migration Alembic cho 2 bảng `research_source_item_revisions` và `research_source_takedowns` tiếp nối head `b8d0f1a3c5e7`, thiết lập Row Level Security (RLS) với chính sách workspace isolation, trigger bất biến append-only cho revision, và phân quyền least privilege cho các process roles `crypidian_admin_web` và `crypidian_ingestion_worker`. Kiểm tra hoàn toàn offline không gọi network.
+- **Thay đổi mã nguồn:**
+  * Thêm `migrations/versions/d4e5f6a7b8c9_wp05_source_item_storage.py`: migration revision `d4e5f6a7b8c9` (nối từ `b8d0f1a3c5e7`):
+    - Tạo bảng `research_source_item_revisions` khớp mô hình `SourceItemRevisionRecord` với đầy đủ CheckConstraints (regex identifier, sequence dương, độ dài policy_id, định dạng SHA-256 hash, predecessor chain, timestamp causality `available_at >= observed_at`, `published_at <= observed_at`, `edited_at <= observed_at`, `edited_at >= published_at`, URL HTTPS không chứa hash), UniqueConstraints (`workspace_id, source_id, item_id, revision_id`, `workspace_id, source_id, item_id, sequence`, `workspace_id, id`), Foreign Key tới `workspace.id` với `ondelete="RESTRICT"`, và các chỉ mục tìm kiếm/point-in-time (`ix_research_source_item_revisions_lookup`, `ix_research_source_item_revisions_available`).
+    - Tạo bảng `research_source_takedowns` khớp mô hình `SourceTakedownRecord` với CheckConstraints (regex identifier, reason/requested_by present, `effective_at >= requested_at`), Foreign Key tới `workspace.id` với `ondelete="RESTRICT"`, partial unique index cho takedown đang hoạt động (`uq_research_source_takedowns_active` với `is_active = true`), và chỉ mục tra cứu `ix_research_source_takedowns_lookup`.
+    - Kích hoạt `ENABLE ROW LEVEL SECURITY` và `FORCE ROW LEVEL SECURITY` cho cả hai bảng.
+    - Thiết lập policy `workspace_isolation` gán cho `crypidian_admin_web` và `crypidian_ingestion_worker` sử dụng `workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid`.
+    - Tạo hàm `reject_source_item_revision_mutation()` và trigger `research_source_item_revisions_append_only` chặn `BEFORE UPDATE OR DELETE` trên bảng revisions.
+    - Cấp quyền tối thiểu: `REVOKE ALL PRIVILEGES` từ PUBLIC và `crypidian_app`; `GRANT SELECT, INSERT` cho revisions tới `crypidian_admin_web, crypidian_ingestion_worker`; `GRANT SELECT, INSERT, UPDATE` cho takedowns tới `crypidian_admin_web` và `GRANT SELECT, INSERT` tới `crypidian_ingestion_worker`.
+    - Hàm `downgrade()` hoàn chỉnh với guard chặn downgrade khi bảng có dữ liệu `WP05_SOURCE_ITEM_STORAGE_DOWNGRADE_BLOCKED`, thu hồi quyền, gỡ triggers, policies, hàm PL/pgSQL, chỉ mục và xóa bảng theo đúng thứ tự.
+  * Thêm `tests/unit/test_wp05_source_item_storage_migration.py`: 3 unit tests bao phủ kiểm tra ràng buộc model, cấu trúc các lệnh SQL của `upgrade()` và `downgrade()`.
+- **TDD và xử lý lỗi phát sinh:**
+  * Lỗi assertion `JSON` vs `JSONB` trong unit test: do model dùng `JSON().with_variant(JSONB, "postgresql")`, kiểm tra dialect implementation `rev_table.c.canonical_payload.type.dialect_impl(postgresql.dialect())` là `JSONB`.
+  * Naming convention prefix của CheckConstraint: Base metadata tự động thêm prefix `ck_<table_name>_<constraint_name>`, đã chuẩn hóa assertion loại bỏ tiền tố bảng để khớp tên gốc.
+  * Line length ruff: ngắt dòng các câu lệnh SQL assert và grant để tuân thủ giới hạn 100 ký tự.
+- **Kiểm chứng và chất lượng:**
+  * Alembic heads: `.venv/bin/alembic heads` → `d4e5f6a7b8c9 (head)`.
+  * Offline SQL rendering: `.venv/bin/alembic upgrade b8d0f1a3c5e7:d4e5f6a7b8c9 --sql` và `.venv/bin/alembic upgrade head --sql` sinh DDL PostgreSQL chuẩn xác 100%.
+  * Unit test migration mới: `PYTHONPATH="$PWD:$PWD/src" .venv/bin/pytest tests/unit/test_wp05_source_item_storage_migration.py -v` → **3 passed in 0.26s**.
+  * Unit test liên quan WP-05/database models: `pytest tests/unit/test_wp05_* tests/unit/test_source_* tests/unit/test_database_models.py` → **163 passed in 0.49s**.
+  * Toàn bộ test suite unit: `pytest tests/unit -q` → **2127 passed in 8.97s**, 0 failure.
+  * Static checks: `.venv/bin/ruff check` đạt; `.venv/bin/ruff format --check` đạt 100%.
+- **Đã đọc lại memory:** đối chiếu toàn bộ các thay đổi migration, SQL render, RLS/least privilege roles, trigger append-only, test suite và các quy định của AGENTS.md.
