@@ -51,6 +51,30 @@ class PersistedBacktestOutcomes:
     outcomes_hash: str
 
 
+@dataclass(frozen=True, slots=True)
+class PersistedBacktestTradeOutcome:
+    """Một trade row đã đọc lại và xác minh hash/canonical payload."""
+
+    record_id: UUID
+    workspace_id: UUID
+    run_id: UUID
+    trial_record_id: UUID
+    manifest_hash: str
+    ordinal: int
+    trade_id: str
+    outcome_hash: str
+    canonical_json: str
+    trade: EvaluationTrade
+
+
+@dataclass(frozen=True, slots=True)
+class PersistedBacktestTradeOutcomeRows:
+    """Các trade row của một trial theo ordinal cùng hash tổng hợp."""
+
+    rows: tuple[PersistedBacktestTradeOutcome, ...]
+    outcomes_hash: str
+
+
 class BacktestOutcomeRepository:
     """Transaction do caller quản lý; từng truy vấn đều mang workspace cụ thể."""
 
@@ -165,6 +189,19 @@ class BacktestOutcomeRepository:
         self, *, workspace_id: UUID, trial_record_id: UUID
     ) -> PersistedBacktestOutcomes:
         """Đọc lại outcomes theo thứ tự và tái xác minh hash từng dòng/toàn bộ."""
+        persisted = await self.load_trade_outcome_rows(
+            workspace_id=workspace_id,
+            trial_record_id=trial_record_id,
+        )
+        return PersistedBacktestOutcomes(
+            trades=tuple(row.trade for row in persisted.rows),
+            outcomes_hash=persisted.outcomes_hash,
+        )
+
+    async def load_trade_outcome_rows(
+        self, *, workspace_id: UUID, trial_record_id: UUID
+    ) -> PersistedBacktestTradeOutcomeRows:
+        """Đọc lại từng row authoritative, giữ UUID, lineage, hash và ordinal."""
         result = await self._session.scalars(
             select(BacktestTradeOutcomeRecord)
             .where(
@@ -174,22 +211,126 @@ class BacktestOutcomeRepository:
             .order_by(BacktestTradeOutcomeRecord.ordinal)
         )
         rows = tuple(result.all())
-        trades: list[EvaluationTrade] = []
+        persisted_rows: list[PersistedBacktestTradeOutcome] = []
         canonical_values: list[str] = []
         for expected_ordinal, row in enumerate(rows):
             if row.ordinal != expected_ordinal:
                 raise BacktestRepositoryConflict("Dãy outcome bị thiếu hoặc sai ordinal.")
+            if row.workspace_id != workspace_id or row.trial_record_id != trial_record_id:
+                raise BacktestRepositoryConflict("Outcome row vượt workspace/trial scope.")
+            if type(row.outcome) is not dict or set(row.outcome) != {
+                "trade_id",
+                "opened_at",
+                "closed_at",
+                "gross_pnl",
+                "fees",
+                "funding",
+                "slippage",
+                "exposure",
+            }:
+                raise BacktestRepositoryConflict("Outcome payload không đúng schema trade.")
             if _canonical(row.outcome) != row.canonical_json:
                 raise BacktestRepositoryConflict("Canonical outcome không khớp JSON đã lưu.")
             if _sha256(row.canonical_json) != row.outcome_hash:
                 raise BacktestRepositoryConflict("Hash outcome đã lưu không khớp payload.")
             trade = _trade_from_payload(row.outcome)
-            if trade.trade_id != row.trade_id:
-                raise BacktestRepositoryConflict("Trade ID không khớp payload outcome.")
-            trades.append(trade)
+            if trade.trade_id != row.trade_id or _trade_payload(trade) != row.outcome:
+                raise BacktestRepositoryConflict("Trade không khớp payload outcome chuẩn hóa.")
+            persisted_rows.append(
+                PersistedBacktestTradeOutcome(
+                    record_id=row.id,
+                    workspace_id=row.workspace_id,
+                    run_id=row.run_id,
+                    trial_record_id=row.trial_record_id,
+                    manifest_hash=row.manifest_hash,
+                    ordinal=row.ordinal,
+                    trade_id=row.trade_id,
+                    outcome_hash=row.outcome_hash,
+                    canonical_json=row.canonical_json,
+                    trade=trade,
+                )
+            )
             canonical_values.append(row.canonical_json)
-        return PersistedBacktestOutcomes(
-            trades=tuple(trades),
+        canonical_order = tuple(
+            sorted(
+                persisted_rows,
+                key=lambda item: (item.trade.closed_at, item.trade.trade_id),
+            )
+        )
+        if tuple(item.record_id for item in persisted_rows) != tuple(
+            item.record_id for item in canonical_order
+        ):
+            raise BacktestRepositoryConflict("Ordinal outcome không theo thứ tự trade canonical.")
+        return PersistedBacktestTradeOutcomeRows(
+            rows=tuple(persisted_rows),
+            outcomes_hash=_sha256(_canonical(canonical_values)),
+        )
+
+    async def load_trade_outcome_rows_by_id(
+        self,
+        *,
+        workspace_id: UUID,
+        trial_record_id: UUID,
+        outcome_record_ids: set[UUID],
+    ) -> PersistedBacktestTradeOutcomeRows:
+        """Đọc đúng các outcome UUID được yêu cầu, không tải payload khác."""
+        if not outcome_record_ids or any(type(item) is not UUID for item in outcome_record_ids):
+            raise ValueError("outcome_record_ids phải là tập UUID không rỗng.")
+        result = await self._session.scalars(
+            select(BacktestTradeOutcomeRecord)
+            .where(
+                BacktestTradeOutcomeRecord.workspace_id == workspace_id,
+                BacktestTradeOutcomeRecord.trial_record_id == trial_record_id,
+                BacktestTradeOutcomeRecord.id.in_(outcome_record_ids),
+            )
+            .order_by(BacktestTradeOutcomeRecord.ordinal)
+        )
+        rows = tuple(result.all())
+        if {row.id for row in rows} != outcome_record_ids or len(rows) != len(outcome_record_ids):
+            raise BacktestRepositoryConflict(
+                "Không tìm thấy đủ outcome UUID trong trial/workspace."
+            )
+
+        persisted_rows: list[PersistedBacktestTradeOutcome] = []
+        canonical_values: list[str] = []
+        for row in rows:
+            if row.workspace_id != workspace_id or row.trial_record_id != trial_record_id:
+                raise BacktestRepositoryConflict("Outcome row vượt workspace/trial scope.")
+            if type(row.outcome) is not dict or set(row.outcome) != {
+                "trade_id",
+                "opened_at",
+                "closed_at",
+                "gross_pnl",
+                "fees",
+                "funding",
+                "slippage",
+                "exposure",
+            }:
+                raise BacktestRepositoryConflict("Outcome payload không đúng schema trade.")
+            if _canonical(row.outcome) != row.canonical_json:
+                raise BacktestRepositoryConflict("Canonical outcome không khớp JSON đã lưu.")
+            if _sha256(row.canonical_json) != row.outcome_hash:
+                raise BacktestRepositoryConflict("Hash outcome đã lưu không khớp payload.")
+            trade = _trade_from_payload(row.outcome)
+            if trade.trade_id != row.trade_id or _trade_payload(trade) != row.outcome:
+                raise BacktestRepositoryConflict("Trade không khớp payload outcome chuẩn hóa.")
+            persisted_rows.append(
+                PersistedBacktestTradeOutcome(
+                    record_id=row.id,
+                    workspace_id=row.workspace_id,
+                    run_id=row.run_id,
+                    trial_record_id=row.trial_record_id,
+                    manifest_hash=row.manifest_hash,
+                    ordinal=row.ordinal,
+                    trade_id=row.trade_id,
+                    outcome_hash=row.outcome_hash,
+                    canonical_json=row.canonical_json,
+                    trade=trade,
+                )
+            )
+            canonical_values.append(row.canonical_json)
+        return PersistedBacktestTradeOutcomeRows(
+            rows=tuple(persisted_rows),
             outcomes_hash=_sha256(_canonical(canonical_values)),
         )
 

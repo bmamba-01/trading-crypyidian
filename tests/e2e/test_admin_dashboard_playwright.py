@@ -518,6 +518,31 @@ def test_admin_dashboard_desktop_and_mobile_workflows(admin_server_url: str) -> 
         assert "Chế độ: Mô phỏng (PAPER) nội bộ" in page.content()
         assert "Tổng số bot" in page.content()
 
+        # Kiểm tra Live status bar, Pulse dot và Toggle button trên Desktop
+        assert page.locator(".live-status-bar").is_visible()
+        assert page.locator("#live-pulse-dot").is_visible()
+        assert "Tự động cập nhật 5s" in page.content()
+        toggle_btn = page.locator("#toggle-realtime-btn")
+        assert toggle_btn.is_visible()
+        assert toggle_btn.get_attribute("aria-pressed") == "true"
+        assert toggle_btn.inner_text() == "Tạm dừng"
+
+        # Thao tác Tạm dừng cập nhật
+        toggle_btn.click()
+        assert toggle_btn.get_attribute("aria-pressed") == "false"
+        assert toggle_btn.inner_text() == "Tiếp tục"
+        assert "Đã tạm dừng tự động cập nhật" in page.content()
+
+        # Thao tác Tiếp tục cập nhật và kiểm tra đồng bộ thời gian từ API
+        toggle_btn.click()
+        assert toggle_btn.get_attribute("aria-pressed") == "true"
+        assert toggle_btn.inner_text() == "Tạm dừng"
+        page.wait_for_function(
+            "document.getElementById('live-updated-at').textContent !== '--:--:--'"
+        )
+        updated_time = page.locator("#live-updated-at").inner_text()
+        assert len(updated_time) >= 5
+
         page.get_by_label("Lý do dừng toàn workspace").fill("Thử nghiệm dừng khẩn cấp")
         page.get_by_role("button", name="Dừng entry workspace").click()
         page.wait_for_load_state("networkidle")
@@ -618,6 +643,9 @@ def test_admin_dashboard_desktop_and_mobile_workflows(admin_server_url: str) -> 
         page_m.wait_for_load_state("networkidle")
 
         page_m.screenshot(path=str(SCREENSHOTS_DIR / "02_dashboard_mobile.png"), full_page=True)
+        assert page_m.locator(".live-status-bar").is_visible()
+        assert page_m.locator("#toggle-realtime-btn").is_visible()
+        assert "Tự động cập nhật 5s" in page_m.content()
 
         page_m.get_by_label("Lý do dừng toàn workspace").fill("Dừng trên mobile")
         page_m.get_by_role("button", name="Dừng entry workspace").click()

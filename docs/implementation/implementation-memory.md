@@ -13,6 +13,45 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 
 ## Nhật ký các vòng
 
+### 2026-11-04 — WP-06: Tích hợp hoàn thiện AI Learning Fold Evaluation & Outcome Verification (từ nhánh Codex sang dev)
+
+- **Mục tiêu/phạm vi:** Tích hợp và hoàn thiện các module AI Learning Fold Evaluation và Outcome Verification từ nhánh `codex/updated-wbs-wp06-fold-v2` sang nhánh `dev` sạch sẽ:
+  1. Fold Evaluation logic: Xây dựng kế hoạch fold temporal (`ManifestFoldPlan`) hỗ trợ phiên bản manifest v2 (`dataset-manifest-v2`) với phân hoạch `DEVELOPMENT` và `HOLDOUT`. Tự động suy vai trò `train`, `validation`, `test` cho từng fold; cô lập hoàn toàn khoảng thời gian holdout (`_overlapping_holdout_id` qua `bisect_left`) để chống rò rỉ dữ liệu.
+  2. Walk-Forward Fold Evaluation Async Service: Triển khai `build_walk_forward_evaluation_report` tính toán các metrics (net PnL, gross PnL, fees, funding, slippage, expectancy, max drawdown, confidence interval) cho từng vai trò trong từng fold dựa trên DTOs bất biến (`FoldEvaluation`, `FoldRoleMetrics`, `WalkForwardEvaluationReport`). Xác thực khoảng thời gian giao dịch nửa mở `[outcome_start, outcome_end]`, kiểm tra hash dòng/kết quả chuẩn hóa và fail-closed khi có lỗi.
+  3. Database Outcome Verifier: Triển khai `DatabaseFoldOutcomeVerifier` tuân thủ protocol `FoldOutcomeVerifier`, thực thi trong snapshot PostgreSQL `REPEATABLE READ`/`SERIALIZABLE`, `READ ONLY`. Đối soát tính liên tục của ordinal trade, trạng thái `COMPLETED` của trial, và tính toàn vẹn của replay manifest/report metadata.
+  4. Mở rộng repository: Bổ sung các phương thức `load_trade_outcome_rows` và `load_trade_outcome_rows_by_id` cùng DTOs `PersistedBacktestTradeOutcome`, `PersistedBacktestTradeOutcomeRows` vào `BacktestOutcomeRepository`.
+- **Nguồn đã kiểm tra:**
+  - Scikit-learn, [`TimeSeriesSplit`](https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.TimeSeriesSplit.html) (tham khảo semantics).
+  - Bailey et al., [*Statistical Overfitting and Backtest Performance*](https://sdm.lbl.gov/oapapers/ssrn-id2507040-bailey.pdf) (trial ledger & holdout gating).
+- **Thay đổi:**
+  - `src/trading_bot/domain/learning/dataset.py`: Bổ sung `DatasetSplit.DEVELOPMENT`, logic kiểm tra phân hoạch cho manifest v2.
+  - `src/trading_bot/application/learning_fold_plan.py`: Bổ sung thuật toán `_overlapping_holdout_id`, hỗ trợ manifest v2 tự động gán role theo từng fold, bảo vệ interval holdout và kiểm tra leakage temporal.
+  - `src/trading_bot/application/learning_fold_evaluation.py`: Module tính toán Walk-Forward Evaluation async, protocol `FoldOutcomeVerifier`, hàm `build_walk_forward_evaluation_report`, xác thực batch và hash bất biến.
+  - `src/trading_bot/adapters/database/repositories/backtest_outcomes.py`: Mở rộng với `PersistedBacktestTradeOutcome`, `PersistedBacktestTradeOutcomeRows`, `load_trade_outcome_rows` và `load_trade_outcome_rows_by_id`.
+  - `src/trading_bot/adapters/database/learning_fold_outcome_verifier.py`: Thực thi `DatabaseFoldOutcomeVerifier` đọc snapshot chỉ đọc, đối soát trial status `COMPLETED`, ordinal liên tục, hash payload, workspace/manifest scope.
+  - `tests/unit/test_learning_fold_plan.py`: Bổ sung 31 unit test cases cho v2 fold plan, expanding/rolling folds, holdout isolation, temporal & membership guards.
+  - `tests/unit/test_learning_fold_evaluation.py`: Bộ 6 unit test cases bao quát report generation, trade payload hash verification, boundary check `[outcome_start, outcome_end]`, fail-closed khi verifier lỗi.
+  - `tests/unit/test_dataset_manifest_persistence.py`: Bổ sung unit test cho v2 round-trip và loader verification.
+  - `tests/fixtures/runtime_replay.py`: Hỗ trợ tham số tùy chọn `start_at` cho generator fixture.
+  - `tests/e2e/test_learning_fold_outcome_verifier.py` & `tests/e2e/probes/wp06_fold_outcome_verifier.py`: E2E test và probe kiểm tra verifier trên Docker Compose PostgreSQL.
+  - `tests/e2e/probes/wp06_dataset_manifest.py`: Cập nhật probe kiểm tra v1 và v2 dataset manifest.
+  - `docs/research/glossary-vi.md`: Cập nhật định nghĩa `Dataset split policy version`, `Development sample`, `Fold outcome verifier`, `Label / outcome interval`.
+- **TDD/vấn đề phát sinh và xử lý:**
+  - Mypy ban đầu báo 9 lỗi type checking (thiếu return type annotation, type assignment conflict giữa `BacktestTrialRecord` và `BacktestTrialRecord | None`, và type của transaction query `isolation`/`read_only`). Đã chuẩn hóa type annotation đầy đủ: `ManifestFoldPlan`, `expected_train: tuple[str, ...]`, `selected_trial = trials.get(trial_record_id)`, `isolation: object = ...`. Chạy lại mypy trên 7 files liên quan: 0 lỗi.
+  - Ruff check & format: Tự động sửa 5 lỗi import ordering và unused import; kiểm tra lại toàn bộ `src` và `tests` (403 files): 0 lỗi.
+- **Chất lượng:**
+  - Unit tests mục tiêu: `PYTHONPATH="$PWD:$PWD/src" .venv/bin/pytest tests/unit/test_learning_fold_plan.py tests/unit/test_learning_fold_evaluation.py tests/unit/test_dataset_manifest_persistence.py -v` → **52 passed in 0.33s**.
+  - Regression unit tests toàn bộ: `PYTHONPATH="$PWD:$PWD/src" .venv/bin/pytest tests/unit -q` → **2172 passed in 10.32s**.
+  - Ruff check: `.venv/bin/ruff check src tests` → **All checks passed!**
+  - Ruff format: `.venv/bin/ruff format --check src tests` → **403 files already formatted**.
+  - Mypy: `.venv/bin/mypy src/trading_bot/application/learning_fold_plan.py src/trading_bot/application/learning_fold_evaluation.py src/trading_bot/domain/learning/dataset.py src/trading_bot/adapters/database/learning_fold_outcome_verifier.py src/trading_bot/adapters/database/repositories/backtest_outcomes.py tests/unit/test_learning_fold_plan.py tests/unit/test_learning_fold_evaluation.py` → **Success: no issues found in 7 source files**.
+- **Giới hạn còn mở:**
+  - Chưa wire `DatabaseFoldOutcomeVerifier` vào composition root hoặc scheduler của bot.
+  - Chưa triển khai persistence lưu `WalkForwardEvaluationReport` vào DB (sẽ thực hiện ở WP-06.6 Model Registry).
+  - Quy ước hiện tại: Mỗi sample tương ứng đúng một trade hoàn tất (`trade_count == 1`). Multi-trade / zero-trade sample sẽ được xem xét mở rộng ở các giai đoạn sau.
+- **Commit/nhánh:** `dev`; chưa commit (chờ người dùng/parent chỉ định).
+- **Đã đọc lại mục memory sau cập nhật:** Có; đối chiếu đầy đủ với các thay đổi code, test suite 52 unit + 2172 regression passed, ruff/mypy outputs.
+
 ### 2026-11-02 — WP-03 Task 2 (WP-03A.2): ExchangeGateway Host/Key Boundary và Secret Separation
 
 - **Mục tiêu/phạm vi:** Thiết lập hợp đồng port `ExchangeGateway` và bộ lọc an toàn ranh giới máy chủ/khóa bí mật cho Binance USDⓈ-M Futures theo WBS Task 2:
@@ -1259,3 +1298,33 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
   * Toàn bộ test suite unit: `pytest tests/unit -q` → **2127 passed in 8.97s**, 0 failure.
   * Static checks: `.venv/bin/ruff check` đạt; `.venv/bin/ruff format --check` đạt 100%.
 - **Đã đọc lại memory:** đối chiếu toàn bộ các thay đổi migration, SQL render, RLS/least privilege roles, trigger append-only, test suite và các quy định của AGENTS.md.
+
+
+## 2026-11-04 — WP-04: Tối ưu hóa Admin Web và Cơ chế Real-time 5s tự động cập nhật Dashboard
+
+- **Mục tiêu/phạm vi:** triển khai hoàn thiện gói công việc WP-04 về tối ưu hóa Admin Web; xây dựng endpoint API thời gian thực không lưu cache, thanh chỉ báo trạng thái Live Status Bar với hiệu ứng xung động (Pulse Dot), cơ chế thăm dò tự động mỗi 5 giây bằng vanilla JavaScript thuần túy (không CDN ngoài, zero-dependency, WCAG 2.2 AA), cập nhật DOM mượt mà không reload trang cho KPI và danh sách bot, cùng bộ kiểm thử tự động Unit test và E2E Playwright.
+- **Thay đổi mã nguồn:**
+  * Sửa `src/trading_bot/admin/web_router.py`:
+    - Thêm endpoint `GET /admin/api/dashboard/realtime`, áp dụng xác thực bắt buộc qua `identity: Annotated[AuthIdentity, Depends(current_identity)]`, header `Cache-Control: no-store`.
+    - Trả về JSON gồm: `server_time` (chuỗi ISO 8601 UTC và giờ VN Asia/Ho_Chi_Minh), `workspace` status, `bot_count`, `ready_count`, danh sách `bots` (id, name, status, account_mode, readiness, entry_allowed, control_revision), và `metrics` tóm tắt hiệu suất từ `bot_reporting_service` (nếu khả dụng) với cơ chế graceful fallback trả `{}` khi chưa có dữ liệu hoặc service ném ngoại lệ.
+  * Sửa `src/trading_bot/templates/admin/dashboard.html`:
+    - Thêm thanh trạng thái trực tiếp `live-status-bar` phía trên KPI cards gồm: chấm xung động `#live-pulse-dot`, nhãn "Tự động cập nhật 5s", đồng hồ thời gian thực `#live-updated-at`, nút toggle `#toggle-realtime-btn` (`aria-pressed="true"`), và vùng thông báo trợ năng `live-status-msg` (`aria-live="polite"`).
+    - Thêm các ID và data-attributes `#kpi-bot-count`, `#kpi-ready-count`, `#kpi-kill-status`, `#kpi-workspace-revision`, `#workspace-release-revision`, cùng `data-bot-id`, `data-bot-field` trên từng hàng bot để DOM được cập nhật động mượt mà.
+    - Tích hợp mã vanilla JavaScript nội bộ tự động thăm dò `GET /admin/api/dashboard/realtime` mỗi 5000ms, cập nhật KPI và bảng bot, xử lý nút Tạm dừng/Tiếp tục, xử lý lỗi 401 phiên hết hạn và mất kết nối mạng tự phục hồi khi có mạng lại. Tuyệt đối không dùng CDN ngoài.
+  * Sửa `src/trading_bot/static/admin.css`:
+    - Bổ sung định kiểu cho `.live-status-bar`, `.pulse-dot` và hiệu ứng vòng lặp `@keyframes pulse-ring`.
+    - Thêm các trạng thái chỉ báo màu sắc: `.pulse-paused` (xám khi tạm dừng), `.pulse-warning` (vàng khi mất kết nối), `.pulse-error` (đỏ khi hết phiên).
+    - Tối ưu hóa responsive breakpoints cho mobile (`@media (max-width: 768px)` và `@media (max-width: 576px)`), hỗ trợ chế độ tương phản cao Dark mode (`prefers-color-scheme: dark`) và tắt hoạt ảnh khi người dùng yêu cầu giảm chuyển động (`@media (prefers-reduced-motion: reduce)`).
+  * Thêm `tests/unit/test_admin_realtime_api.py`: 5 unit tests kiểm tra xác thực bảo mật, cấu trúc JSON trả về, cache control `no-store`, trích xuất số liệu metrics báo cáo, xử lý lỗi service an toàn và phản ánh trạng thái workspace KILLED.
+  * Sửa `tests/unit/test_admin_dashboard_ui.py`: thêm test `test_dashboard_renders_live_status_bar_and_pulse_elements` xác minh hiển thị Live Status Bar, nút toggle, các mốc DOM ID và cấm tuyệt đối CDN ngoài.
+  * Sửa `tests/e2e/test_admin_dashboard_playwright.py`: cập nhật kịch bản E2E Playwright trên Desktop và Mobile, kiểm tra Live Status Bar, chấm pulse, thao tác Tạm dừng / Tiếp tục và tự động đồng bộ thời gian từ API.
+  * Cập nhật `docs/research/glossary-vi.md`: thêm mục Q "Vận hành Web Quản trị và Giám sát thời gian thực" với các thuật ngữ `Real-time polling`, `Pulse status indicator`, `Zero-dependency client runtime`.
+- **TDD và xử lý lỗi phát sinh:**
+  * Lỗi 503 trong unit test khi chưa xác thực: do `current_identity` phụ thuộc vào `get_auth_service(request)`, tạo `MockUnauthenticatedAuthService` trả đúng mã 401 khi không có cookie phiên.
+  * Lỗi định dạng dòng lệnh ruff: tự động chạy `ruff format` để chuẩn hóa các dòng assertion Playwright và unit test.
+- **Kiểm chứng và chất lượng:**
+  * Unit test Real-time API & UI: `pytest tests/unit/test_admin_realtime_api.py tests/unit/test_admin_dashboard_ui.py -v` → **12 passed in 0.70s**.
+  * Toàn bộ test Admin web: `pytest tests/unit/test_admin_*.py -v` → **88 passed in 1.72s**.
+  * E2E Playwright: `pytest tests/e2e/test_admin_dashboard_playwright.py -v` → **1 passed in 19.74s** (bao phủ cả Desktop 1280x800 và Mobile iPhone 390x844).
+  * Static checks: `.venv/bin/ruff check src/ tests/` đạt 100%; `.venv/bin/ruff format --check src/ tests/` đạt 403 files already formatted.
+- **Đã đọc lại memory:** đối chiếu toàn bộ các thay đổi API, template, stylesheet, unit test, test E2E Playwright và glossary; xác nhận tuân thủ đầy đủ quy ước của AGENTS.md và skill `futures-bot-implementation`.

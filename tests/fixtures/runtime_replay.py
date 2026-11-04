@@ -44,10 +44,11 @@ def build_h03_runtime_sensitivity(
     workspace_id: UUID,
     scenarios: tuple[SensitivityScenario, ...],
     *,
+    start_at: datetime | None = None,
     include_second_trade: bool = False,
 ) -> RuntimePaperReplayComparison:
     """Chạy H03-v1 qua PAPER runtime với evaluator/provider mới cho từng trial."""
-    start = datetime(2026, 10, 20, tzinfo=UTC)
+    start = start_at or datetime(2026, 10, 20, tzinfo=UTC)
     decision_time = start + timedelta(hours=60)
     entry_time = decision_time + timedelta(hours=2)
     exit_time = entry_time + timedelta(hours=1)

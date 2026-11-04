@@ -4,11 +4,12 @@ import hmac
 import json
 import secrets
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Annotated, Any, cast
 from urllib.parse import parse_qs
 from uuid import UUID, uuid4
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.templating import Jinja2Templates
@@ -42,6 +43,15 @@ from trading_bot.auth.service import (
     AuthService,
 )
 from trading_bot.config.bot_settings import BotConfigOverlay
+from trading_bot.domain.portfolio.reporting import (
+    REPORT_MODE,
+    REPORT_VERSION,
+)
+
+try:
+    VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
+except Exception:  # pragma: no cover
+    VN_TZ = timezone(timedelta(hours=7))
 
 router = APIRouter(prefix="/admin", tags=["admin web"])
 LOGIN_CSRF_COOKIE = "crypidian_login_csrf"
@@ -316,6 +326,106 @@ async def dashboard(
         },
         headers={"Cache-Control": "no-store"},
     )
+
+
+@router.get("/api/dashboard/realtime")
+async def dashboard_realtime(
+    request: Request,
+    response: Response,
+    identity: Annotated[AuthIdentity, Depends(current_identity)],
+) -> dict[str, Any]:
+    """Cung cấp dữ liệu cập nhật thời gian thực định kỳ (5s) cho Admin Dashboard."""
+    response.headers["Cache-Control"] = "no-store"
+    now_utc = datetime.now(UTC)
+    now_vn = now_utc.astimezone(VN_TZ)
+
+    principal = identity.principal
+    try:
+        bots = await _admin_service(request).list_bots(principal)
+        operations = _operations(request, identity)
+        runtime = [_runtime_dict(item) for item in await operations.list_bots()]
+        workspace = _runtime_dict(await operations.workspace_status())
+    except BotAdminError as error:
+        raise HTTPException(status_code=error.status_code, detail=error.message) from error
+
+    runtime_by_id = {str(item["id"]): item for item in runtime}
+    bot_views = [_bot_view(bot, runtime_by_id.get(str(bot["id"]))) for bot in bots]
+
+    # Thu thập tóm tắt hiệu suất nếu service báo cáo khả dụng
+    metrics: dict[str, Any] = {}
+    reporting_service = getattr(request.app.state, "bot_reporting_service", None)
+    if reporting_service is not None:
+        try:
+            query = BotReportQuery(
+                workspace_id=principal.workspace_id,
+                bot_id=None,
+                start=now_utc - timedelta(days=30),
+                end=now_utc,
+                mode=REPORT_MODE,
+                report_version=REPORT_VERSION,
+                scope=ReportScope.WORKSPACE,
+            )
+            report = await reporting_service.get_workspace_report(query, principal)
+            if hasattr(report, "totals") and isinstance(report.totals, dict):
+                total_closed = 0
+                total_won = 0
+                net_pnl = Decimal("0")
+                for item in report.totals.values():
+                    total_closed += getattr(item, "closed_trade_count", 0)
+                    total_won += getattr(item, "winning_trade_count", 0)
+                    net_pnl += getattr(item, "net_pnl", Decimal("0"))
+                win_rate = (
+                    round(float(total_won / total_closed * 100), 2) if total_closed > 0 else 0.0
+                )
+                metrics = {
+                    "total_closed_trades": total_closed,
+                    "net_pnl": str(net_pnl),
+                    "win_rate": win_rate,
+                }
+            elif hasattr(report, "as_dict"):
+                report_dict = report.as_dict()
+                if "totals" in report_dict and isinstance(report_dict["totals"], dict):
+                    total_closed = 0
+                    total_won = 0
+                    net_pnl = Decimal("0")
+                    for item in report_dict["totals"].values():
+                        total_closed += int(item.get("closed_trade_count", 0))
+                        total_won += int(item.get("winning_trade_count", 0))
+                        net_pnl += Decimal(str(item.get("net_pnl", "0")))
+                    win_rate = (
+                        round(float(total_won / total_closed * 100), 2) if total_closed > 0 else 0.0
+                    )
+                    metrics = {
+                        "total_closed_trades": total_closed,
+                        "net_pnl": str(net_pnl),
+                        "win_rate": win_rate,
+                    }
+        except Exception:
+            metrics = {}
+
+    return {
+        "server_time": {
+            "iso": now_utc.isoformat(),
+            "vn": now_vn.strftime("%d/%m/%Y %H:%M:%S"),
+            "vn_time": now_vn.strftime("%H:%M:%S"),
+        },
+        "workspace": workspace,
+        "bot_count": len(bot_views),
+        "ready_count": sum(bot.readiness == "READY" for bot in bot_views),
+        "bots": [
+            {
+                "id": b.id,
+                "name": b.name,
+                "status": b.status,
+                "account_mode": b.account_mode,
+                "readiness": b.readiness,
+                "entry_allowed": b.entry_allowed,
+                "control_revision": b.control_revision,
+            }
+            for b in bot_views
+        ],
+        "metrics": metrics,
+    }
 
 
 @router.get("/bots")

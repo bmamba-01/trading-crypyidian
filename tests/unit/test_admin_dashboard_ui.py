@@ -255,3 +255,37 @@ def test_admin_css_supports_responsive_and_dark_mode() -> None:
 
     # Mobile responsive rules (media query cho màn hình nhỏ)
     assert "@media (max-width:" in css_content or "@media (min-width:" in css_content
+
+
+def test_dashboard_renders_live_status_bar_and_pulse_elements() -> None:
+    """Kiểm tra thanh trạng thái trực tiếp, pulse dot và script realtime không dùng CDN."""
+    client = _create_test_client()
+    response = client.get("/admin")
+
+    assert response.status_code == 200
+    html = response.text
+
+    # Live status bar và accessibility
+    assert 'class="live-status-bar"' in html
+    assert 'id="live-pulse-dot"' in html
+    assert 'id="live-updated-at"' in html
+    assert 'id="toggle-realtime-btn"' in html
+    assert 'aria-pressed="true"' in html
+    assert "Tự động cập nhật 5s" in html
+
+    # IDs và data attributes phục vụ cập nhật DOM
+    assert 'id="kpi-bot-count"' in html
+    assert 'id="kpi-ready-count"' in html
+    assert 'id="kpi-kill-status"' in html
+    assert 'id="kpi-workspace-revision"' in html
+    assert 'id="workspace-release-revision"' in html
+
+    # Không sử dụng CDN ngoài
+    assert "cdn." not in html
+    assert "cdnjs." not in html
+    assert "unpkg." not in html
+    assert "jsdelivr." not in html
+
+    # Có script gọi polling endpoint
+    assert "/admin/api/dashboard/realtime" in html
+    assert "pollIntervalMs = 5000" in html or "5000" in html

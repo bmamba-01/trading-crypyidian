@@ -1,9 +1,13 @@
+from dataclasses import replace
 from datetime import UTC, datetime
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
-from trading_bot.application.learning_fold_plan import build_manifest_fold_plan
+from trading_bot.application.learning_fold_plan import (
+    ManifestFoldPlan,
+    build_manifest_fold_plan,
+)
 from trading_bot.domain.learning.dataset import DatasetManifest, DatasetSample, DatasetSplit
 from trading_bot.domain.learning.evaluation import TemporalWindow, WalkForwardSplit
 
@@ -181,3 +185,346 @@ def test_manifest_plan_rejects_reusing_prior_test_window_as_next_validation() ->
             expected_split_policy_version="policy-v1",
             evaluation_cutoff=at(10),
         )
+
+
+def development_manifest() -> DatasetManifest:
+    return replace(
+        manifest(),
+        manifest_version="dataset-manifest-v2",
+        data_end=at(16),
+        as_of=at(16),
+        samples=tuple(replace(item, split=DatasetSplit.DEVELOPMENT) for item in manifest().samples)
+        + (
+            sample("validation-next", 9, 10, DatasetSplit.DEVELOPMENT),
+            sample("test-next", 11, 12, DatasetSplit.DEVELOPMENT),
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    "fixed_split", [DatasetSplit.TRAIN, DatasetSplit.VALIDATION, DatasetSplit.TEST]
+)
+def test_v2_rejects_manifests_containing_only_fixed_role(fixed_split: DatasetSplit) -> None:
+    with pytest.raises(ValueError, match="v2"):
+        replace(
+            manifest(),
+            manifest_version="dataset-manifest-v2",
+            samples=(sample("fixed", 1, 2, fixed_split),),
+        )
+
+
+def plan_for(dataset: DatasetManifest, *, train_start: int = 0) -> ManifestFoldPlan:
+    return build_manifest_fold_plan(
+        dataset,
+        folds=(split(), split(train_start, 8, 10, 13)),
+        expected_split_policy_version=dataset.split_policy_version,
+        evaluation_cutoff=at(13),
+    )
+
+
+@pytest.mark.parametrize("train_start", [0, 3])
+def test_v2_expanding_and_rolling_folds_reassign_old_validation_and_test_to_train(
+    train_start: int,
+) -> None:
+    dataset = development_manifest()
+    plan = plan_for(dataset, train_start=train_start)
+    first, second = plan.folds
+    assert first.train_sample_ids == ("train-safe",)
+    assert first.validation_sample_ids == ("validation-safe",)
+    assert first.test_sample_ids == ("test-safe",)
+    assert [(item.role, item.sample_id, item.reasons) for item in first.exclusions] == [
+        ("train", "train-overlap", ("label_incomplete_at_cutoff",)),
+        ("validation", "validation-overlap", ("label_incomplete_at_cutoff",)),
+    ]
+    expected_train: tuple[str, ...] = ("test-safe", "validation-overlap", "validation-safe")
+    if train_start == 0:
+        expected_train = (
+            "test-safe",
+            "train-overlap",
+            "train-safe",
+            "validation-overlap",
+            "validation-safe",
+        )
+    assert second.train_sample_ids == expected_train
+    assert second.validation_sample_ids == ("validation-next",)
+    assert second.test_sample_ids == ("test-next",)
+    assert second.exclusions == ()
+    for fold in plan.folds:
+        assert len(
+            {*fold.train_sample_ids, *fold.validation_sample_ids, *fold.test_sample_ids}
+        ) == sum(
+            len(ids)
+            for ids in (fold.train_sample_ids, fold.validation_sample_ids, fold.test_sample_ids)
+        )
+    assert (
+        plan.content_hash
+        == plan_for(
+            replace(dataset, samples=tuple(reversed(dataset.samples))), train_start=train_start
+        ).content_hash
+    )
+
+
+@pytest.mark.parametrize("decision", [1, 4, 6, 9, 11])
+def test_v2_rejects_holdout_inside_any_fold_role(decision: int) -> None:
+    dataset = development_manifest()
+    dataset = replace(
+        dataset,
+        samples=dataset.samples + (sample("sealed", decision, decision + 1, DatasetSplit.HOLDOUT),),
+        holdout_sealed_at=at(16),
+    )
+    with pytest.raises(ValueError, match="[Hh]oldout"):
+        plan_for(dataset)
+
+
+def test_v2_keeps_holdout_outside_fold_windows_separate() -> None:
+    dataset = development_manifest()
+    sealed = replace(
+        dataset,
+        samples=dataset.samples + (sample("sealed", 14, 15, DatasetSplit.HOLDOUT),),
+        holdout_sealed_at=at(16),
+    )
+    plan = plan_for(sealed)
+    assert all(
+        "sealed"
+        not in (
+            *fold.train_sample_ids,
+            *fold.validation_sample_ids,
+            *fold.test_sample_ids,
+            *fold.excluded_sample_ids,
+        )
+        for fold in plan.folds
+    )
+
+
+@pytest.mark.parametrize(("test_outcome_end", "should_reject"), [(8, False), (9, True)])
+def test_v2_protects_holdout_outcome_interval_at_half_open_test_boundary(
+    test_outcome_end: int,
+    should_reject: bool,
+) -> None:
+    dataset = development_manifest()
+    samples = tuple(
+        replace(item, outcome_end=at(test_outcome_end)) if item.sample_id == "test-safe" else item
+        for item in dataset.samples
+    )
+    dataset = replace(
+        dataset,
+        samples=samples + (sample("sealed-edge", 8, 10, DatasetSplit.HOLDOUT),),
+        holdout_sealed_at=at(16),
+    )
+
+    def build() -> ManifestFoldPlan:
+        return build_manifest_fold_plan(
+            dataset,
+            folds=(split(),),
+            expected_split_policy_version="policy-v1",
+            evaluation_cutoff=at(13),
+        )
+
+    if should_reject:
+        with pytest.raises(ValueError, match="Holdout.*(interval|khoảng outcome)"):
+            build()
+    else:
+        plan = build()
+        assert plan.folds[0].test_sample_ids == ("test-safe",)
+
+
+def test_v2_interval_lookup_handles_nested_holdouts() -> None:
+    dataset = development_manifest()
+    dataset = replace(
+        dataset,
+        data_end=at(22),
+        as_of=at(21),
+        samples=(
+            sample("train-window", 6, 7, DatasetSplit.DEVELOPMENT),
+            sample("validation-window", 7, 8, DatasetSplit.DEVELOPMENT),
+            sample("test-window", 8, 13, DatasetSplit.DEVELOPMENT),
+            sample("holdout-long", 1, 20, DatasetSplit.HOLDOUT),
+            sample("holdout-short", 2, 3, DatasetSplit.HOLDOUT),
+        ),
+        holdout_sealed_at=at(21),
+    )
+    fold = WalkForwardSplit(
+        train=TemporalWindow(at(6), at(7)),
+        validation=TemporalWindow(at(7), at(8)),
+        test=TemporalWindow(at(8), at(9)),
+    )
+    with pytest.raises(ValueError, match="Holdout outcome interval holdout-long"):
+        build_manifest_fold_plan(
+            dataset,
+            folds=(fold,),
+            expected_split_policy_version="policy-v1",
+            evaluation_cutoff=at(21),
+        )
+
+
+@pytest.mark.parametrize(
+    "fixed_split", [DatasetSplit.TRAIN, DatasetSplit.VALIDATION, DatasetSplit.TEST]
+)
+def test_v2_rejects_each_fixed_role_even_when_mixed_with_development(
+    fixed_split: DatasetSplit,
+) -> None:
+    dataset = development_manifest()
+    with pytest.raises(ValueError, match="v2"):
+        replace(dataset, samples=dataset.samples + (sample("fixed", 14, 15, fixed_split),))
+
+
+@pytest.mark.parametrize("version", ["dataset-manifest-v1", "legacy-custom", "dataset-manifest-v3"])
+def test_development_split_requires_exact_v2_version(version: str) -> None:
+    with pytest.raises(ValueError, match="v2"):
+        replace(development_manifest(), manifest_version=version)
+
+
+def test_legacy_bytes_hash_loader_and_fixed_roles_remain_unchanged() -> None:
+    dataset = replace(manifest(), workspace_id=UUID("00000000-0000-0000-0000-000000000001"))
+    assert (
+        dataset.content_hash == "dbb32408b2b9792d656e86c1f2d3aa8041eab7efecca2652435b791114aef196"
+    )
+    for legacy in (dataset, replace(dataset, manifest_version="legacy-custom")):
+        restored = DatasetManifest.from_canonical_json(
+            legacy.canonical_json, expected_content_hash=legacy.content_hash
+        )
+        assert restored.canonical_json == legacy.canonical_json
+        assert restored.content_hash == legacy.content_hash
+        with pytest.raises(ValueError, match="split assignment"):
+            build_manifest_fold_plan(
+                restored,
+                folds=(split(train_end=5, validation_end=7),),
+                expected_split_policy_version="policy-v1",
+                evaluation_cutoff=at(8),
+            )
+
+
+def test_v2_hash_binds_membership_windows_policy_cutoff_and_exclusion_reasons() -> None:
+    dataset = development_manifest()
+    baseline = plan_for(dataset)
+    added = replace(
+        dataset, samples=dataset.samples + (sample("train-extra", 1, 2, DatasetSplit.DEVELOPMENT),)
+    )
+    policy = replace(dataset, split_policy_version="policy-v2")
+    overlap = replace(
+        dataset,
+        samples=tuple(
+            replace(item, outcome_end=at(5)) if item.sample_id == "train-overlap" else item
+            for item in dataset.samples
+        ),
+    )
+    assert baseline.content_hash != plan_for(added).content_hash
+    assert baseline.content_hash != plan_for(policy).content_hash
+    assert baseline.content_hash != plan_for(dataset, train_start=1).content_hash
+    changed = plan_for(overlap)
+    assert changed.folds[0].exclusions[0].reasons == (
+        "label_incomplete_at_cutoff",
+        "protected_label_overlap",
+    )
+    assert changed.content_hash != baseline.content_hash
+    later = build_manifest_fold_plan(
+        dataset,
+        folds=tuple(fold.split for fold in baseline.folds),
+        expected_split_policy_version="policy-v1",
+        evaluation_cutoff=at(14),
+    )
+    assert later.content_hash != baseline.content_hash
+
+
+def test_v2_old_test_must_still_complete_before_later_training_cutoff() -> None:
+    dataset = development_manifest()
+    dataset = replace(
+        dataset, samples=dataset.samples + (sample("test-late", 7, 11, DatasetSplit.DEVELOPMENT),)
+    )
+    first, second = plan_for(dataset).folds
+    assert "test-late" in first.test_sample_ids
+    assert "test-late" not in second.train_sample_ids
+    assert ("label_incomplete_at_cutoff", "protected_label_overlap") == next(
+        item.reasons for item in second.exclusions if item.sample_id == "test-late"
+    )
+
+
+def test_v2_test_outcome_after_evaluation_cutoff_is_excluded() -> None:
+    dataset = development_manifest()
+    dataset = replace(
+        dataset,
+        samples=dataset.samples + (sample("test-incomplete", 7, 15, DatasetSplit.DEVELOPMENT),),
+    )
+    first = plan_for(dataset).folds[0]
+    assert first.test_sample_ids == ("test-safe",)
+    assert next(
+        item.reasons for item in first.exclusions if item.sample_id == "test-incomplete"
+    ) == ("label_incomplete_at_cutoff",)
+
+
+@pytest.mark.parametrize(
+    ("failure", "message"),
+    [
+        ("duplicate", "duplicate"),
+        ("feature", "Feature phải khả dụng"),
+        ("as_of", "evaluation_cutoff không được sau manifest.as_of"),
+        ("range", "Fold không tương thích với thứ tự hoặc phạm vi manifest"),
+        ("cutoff", "evaluation_cutoff phải không trước cuối cửa sổ test"),
+        ("reuse", "không tái dùng cửa sổ test"),
+        ("empty", "Mỗi fold phải còn sample train, validation và test"),
+    ],
+)
+def test_v2_retains_temporal_and_membership_guards(failure: str, message: str) -> None:
+    dataset = development_manifest()
+
+    def duplicate() -> object:
+        return replace(dataset, samples=dataset.samples + (dataset.samples[0],))
+
+    def feature() -> object:
+        return replace(
+            dataset.samples[0],
+            feature_available_at=dataset.samples[0].decision_at.replace(day=2),
+        )
+
+    def as_of() -> object:
+        return build_manifest_fold_plan(
+            dataset,
+            folds=(split(),),
+            expected_split_policy_version="policy-v1",
+            evaluation_cutoff=at(17),
+        )
+
+    def range_error() -> object:
+        return build_manifest_fold_plan(
+            dataset,
+            folds=(split(train_start=-1),),
+            expected_split_policy_version="policy-v1",
+            evaluation_cutoff=at(13),
+        )
+
+    def cutoff() -> object:
+        return build_manifest_fold_plan(
+            dataset,
+            folds=(split(),),
+            expected_split_policy_version="policy-v1",
+            evaluation_cutoff=at(7),
+        )
+
+    def reuse() -> object:
+        return build_manifest_fold_plan(
+            dataset,
+            folds=(split(), split(train_end=4, validation_end=7, test_end=9)),
+            expected_split_policy_version="policy-v1",
+            evaluation_cutoff=at(13),
+        )
+
+    def empty() -> object:
+        return plan_for(
+            replace(
+                dataset,
+                samples=tuple(item for item in dataset.samples if item.sample_id != "test-next"),
+            )
+        )
+
+    actions = {
+        "duplicate": duplicate,
+        "feature": feature,
+        "as_of": as_of,
+        "range": range_error,
+        "cutoff": cutoff,
+        "reuse": reuse,
+        "empty": empty,
+    }
+
+    with pytest.raises(ValueError, match=message):
+        actions[failure]()
