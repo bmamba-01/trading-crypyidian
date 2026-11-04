@@ -13,6 +13,27 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 
 ## Nhật ký các vòng
 
+### 2026-11-04 — Nghiên cứu & Thiết kế Kiến trúc Hợp nhất QUANTSMART (L0-L6, Strategy Card, Coordinate Lab, Anti-Consensus)
+
+- **Mục tiêu/phạm vi:** Nghiên cứu sâu và đánh giá toàn diện repository `github.com/Jokejoker-designer/QUANTSMART` (Apache-2.0, Local-first Quant Workspace). Đối soát và chắt lọc 5 giá trị tinh hoa (Module nguyên tử & Candle Anatomy, Kiến trúc phân tầng 7 lớp L0-L6, Anti-Consensus Illusion & Dead Node Detection, Coordinate Lab hình học công thức đa chiều, Strategy Card đóng gói dạng khai báo có băm SHA-256 xác thực). So sánh đối chiếu với Trading Crypidian và thiết kế phương án hợp nhất kiến trúc vào Crypidian mà không phá vỡ các bất biến cốt lõi của Risk Engine và sổ cái kép PostgreSQL RLS.
+- **Nguồn đã kiểm tra (2026-11-04):**
+  - QUANTSMART Repository: [`github.com/Jokejoker-designer/QUANTSMART`](https://github.com/Jokejoker-designer/QUANTSMART) và tài liệu module `docs/CUSTOM_MODULES.md`.
+  - Bailey et al., [*Pseudo-Mathematics and Financial Charlatanism: The Effects of Backtest Overfitting on Out-of-Sample Performance*](https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2308659) (tham khảo cơ sở toán học cho Anti-Consensus và trừng phạt đa cộng tuyến).
+  - Ink & Switch, [*Local-first software: You own your data, in spite of the cloud*](https://www.inkandswitch.com/local-first/) (tham khảo mô hình bảo mật cục bộ).
+- **Thay đổi:**
+  - `docs/research/quantsmart-synthesis-and-integration-plan.md`: Xuất bản tài liệu báo cáo chuyên sâu 8 phần gồm Executive Summary, Phân tích 5 giá trị tinh hoa, Ma trận so sánh đối chiếu Crypidian vs QUANTSMART, Thiết kế mô hình hợp nhất bảo toàn ranh giới Risk Engine, Schema Pydantic v2 cho `StrategyCard`, Thuật toán Anti-Consensus / Dead Node / Coordinate Lab, Thiết kế DB PostgreSQL RLS và lộ trình WBS 5 giai đoạn.
+  - `docs/research/glossary-vi.md`: Thêm mục mới `## R. Kiến trúc Module Định lượng và Thiết kế Chiến lược Dạng Khai báo (QUANTSMART Synthesis)` định nghĩa 15 thuật ngữ EN→VI mới (Atomic processing block, Composition lane L0-L6, Data hygiene, Candle anatomy primitive, Context gate, Strategy trigger, Execution zone, Anti-consensus illusion, Dead node detection, Coordinate Lab, Formula singularity, Sensitivity/gradient analysis, Strategy Card, Microscope replay, Local-first quantitative workspace).
+- **Quyết định kiến trúc cốt lõi:**
+  1. *Nguyên tắc bất biến ranh giới an toàn:* Strategy Card và Pipeline L0-L6 chỉ sinh ra `StrategyCandidate` (tín hiệu giả định thô). Tuyệt đối cấm Strategy Card tự sinh lệnh hoặc kết nối gateway sàn. Mọi candidate bắt buộc phải qua `TradePlanner` và `RiskEngine` của Crypidian để thẩm định vốn và tạo `RiskReservation` nguyên tử.
+  2. *Phân tách L4 (Context Gate) vs L5 (Strategy Trigger):* Loại bỏ sự nhập nhằng trong các hàm chiến lược cũ. L4 quyết định tính phù hợp của thị trường (PASS/BLOCK); L5 chỉ kích hoạt khi L4 cho phép.
+  3. *Thẩm định đồ thị trước thực thi:* Tích hợp thuật toán Anti-Consensus (cảnh báo tương quan $|r| > 0.85$), Dead Node Detection (cắt tỉa node mồ côi hoặc mâu thuẫn), và Coordinate Lab (quét điểm kỳ dị chia cho 0 và độ nhạy gradient) vào khâu xác thực Strategy Card.
+- **Chất lượng:**
+  - Tài liệu Markdown chuẩn hóa code fence, đường dẫn liên kết nội bộ kiểm tra đầy đủ.
+  - Không có thay đổi mã nguồn ảnh hưởng tới regression test suite hiện tại.
+- **Giới hạn còn mở:**
+  - Chờ Parent Agent và User phê duyệt bản kế hoạch kiến trúc để khởi tạo nhánh phát triển Phase 1 (`WP-SC.1`).
+- **Đã đọc lại mục memory sau cập nhật:** Có.
+
 ### 2026-11-04 — WP-06: Tích hợp hoàn thiện AI Learning Fold Evaluation & Outcome Verification (từ nhánh Codex sang dev)
 
 - **Mục tiêu/phạm vi:** Tích hợp và hoàn thiện các module AI Learning Fold Evaluation và Outcome Verification từ nhánh `codex/updated-wbs-wp06-fold-v2` sang nhánh `dev` sạch sẽ:
