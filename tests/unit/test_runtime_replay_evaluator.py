@@ -120,6 +120,8 @@ def _setup():
         pipeline_content_hash="e" * 64,
         execution_events=(),
         reserve_risk=lambda decision, key: decision.approved and bool(key),
+        opposing_signal=False,
+        atr_by_symbol=(("BTCUSDT", Decimal("1")),),
     )
     evaluator = RuntimeReplayEvaluator(
         cycle=cycle,
@@ -137,6 +139,10 @@ def _setup():
     return evaluator, context, observation, gateway, manifest
 
 
+def _first_intent_id(evaluator: RuntimeReplayEvaluator) -> str:
+    return next(iter(evaluator._intent_plans))
+
+
 def test_replay_evaluator_calls_published_runtime_decision_cycle_and_reserves() -> None:
     evaluator, _, observation, gateway, _ = _setup()
     reservations: list[str] = []
@@ -147,14 +153,16 @@ def test_replay_evaluator_calls_published_runtime_decision_cycle_and_reserves() 
     )
 
     assert evaluator(observation.snapshot) is None
-    assert reservations == [f"replay:{observation.snapshot.snapshot_id}:h01-v1"]
-    assert gateway.order("paper:replay:snapshot-test-v1:h01-v1").status.value == "ACCEPTED"
+    assert len(reservations) == 1
+    assert reservations[0].startswith(f"replay:{observation.snapshot.snapshot_id}:runtime:")
+    assert reservations[0].endswith(":h01-v1")
+    assert gateway.order(_first_intent_id(evaluator)).status.value == "ACCEPTED"
 
 
 def test_replay_evaluator_owns_account_and_exposure_after_first_observation() -> None:
     evaluator, context, first, gateway, _ = _setup()
     assert evaluator(first.snapshot) is None
-    intent_id = f"paper:replay:{first.snapshot.snapshot_id}:h01-v1"
+    intent_id = _first_intent_id(evaluator)
     pending_at = first.snapshot.decision_time + timedelta(seconds=5)
     opened = first.snapshot.decision_time + timedelta(seconds=10)
     decision_at = opened + timedelta(seconds=1)
@@ -258,6 +266,167 @@ def test_replay_evaluator_owns_account_and_exposure_after_first_observation() ->
     assert projected_exposures[0].symbol == "BTCUSDT"
 
 
+def test_replay_evaluator_derives_position_flat_from_pending_runtime_order() -> None:
+    evaluator, context, first, _, _ = _setup()
+    evaluator(first.snapshot)
+    decision_time = first.snapshot.decision_time + timedelta(minutes=1)
+    evaluated_at = decision_time + timedelta(seconds=1)
+    evaluator.context_provider = lambda _: replace(
+        context,
+        evaluated_at=evaluated_at,
+        risk_state=replace(
+            context.risk_state,
+            evaluated_at=evaluated_at,
+            market_data_as_of=decision_time,
+        ),
+        execution_events=(),
+    )
+    prepared_snapshots = []
+    prepare = evaluator._cycle.prepare_published
+
+    def capture(**kwargs):
+        prepared_snapshots.append(kwargs["snapshot"])
+        return prepare(**kwargs)
+
+    evaluator._cycle.prepare_published = capture
+    second = replace(
+        first.snapshot,
+        snapshot_id="position-state-check",
+        decision_time=decision_time,
+    )
+
+    evaluator(second)
+
+    assert len(prepared_snapshots) == 1
+    assert prepared_snapshots[0].position_is_flat is False
+    assert prepared_snapshots[0].snapshot_id.startswith("position-state-check:runtime:")
+
+
+@pytest.mark.parametrize("missing_context", ["atr", "opposing_signal"])
+def test_replay_evaluator_fails_closed_when_exit_recipe_context_is_missing(
+    missing_context: str,
+) -> None:
+    evaluator, context, observation, gateway, _ = _setup()
+    evaluator(observation.snapshot)
+    intent_id = _first_intent_id(evaluator)
+    order = gateway.order(intent_id)
+    entry_time = order.eligible_at + timedelta(seconds=1)
+    gateway.apply_market_event(
+        PaperBar(
+            bar_key=f"context-entry-{missing_context}",
+            symbol="BTCUSDT",
+            opened_at=entry_time,
+            closed_at=entry_time + timedelta(minutes=1),
+            available_at=entry_time + timedelta(minutes=1),
+            open=Decimal("100"),
+            high=Decimal("101"),
+            low=Decimal("99"),
+            close=Decimal("100"),
+        )
+    )
+    position = gateway.position(intent_id)
+    assert position is not None
+    recipe = replace(
+        position.recipe,
+        trailing_atr_multiple=(Decimal("2") if missing_context == "atr" else None),
+        opposite_signal_exit=missing_context == "opposing_signal",
+    )
+    gateway._positions[intent_id] = replace(position, recipe=recipe)
+    event_time = entry_time + timedelta(minutes=2)
+    monitor_bar = PaperBar(
+        bar_key=f"context-monitor-{missing_context}",
+        symbol="BTCUSDT",
+        opened_at=event_time,
+        closed_at=event_time + timedelta(minutes=1),
+        available_at=event_time + timedelta(minutes=1),
+        open=Decimal("100"),
+        high=Decimal("101"),
+        low=Decimal("99"),
+        close=Decimal("100"),
+    )
+    current = replace(
+        context,
+        evaluated_at=monitor_bar.available_at + timedelta(seconds=1),
+        risk_state=replace(
+            context.risk_state,
+            evaluated_at=monitor_bar.available_at + timedelta(seconds=1),
+            market_data_as_of=monitor_bar.available_at,
+        ),
+        execution_events=(monitor_bar,),
+        opposing_signal=None,
+        atr_by_symbol=(),
+    )
+
+    with pytest.raises(ReplayEvaluationContextError, match="point-in-time"):
+        evaluator._advance_execution(
+            current,
+            replace(observation.snapshot, decision_time=monitor_bar.available_at),
+        )
+
+
+def test_replay_evaluator_closes_hard_stop_without_trailing_or_opposing_context() -> None:
+    evaluator, context, observation, gateway, _ = _setup()
+    evaluator(observation.snapshot)
+    intent_id = _first_intent_id(evaluator)
+    order = gateway.order(intent_id)
+    entry_time = order.eligible_at + timedelta(seconds=1)
+    gateway.apply_market_event(
+        PaperBar(
+            bar_key="hard-stop-entry",
+            symbol="BTCUSDT",
+            opened_at=entry_time,
+            closed_at=entry_time + timedelta(minutes=1),
+            available_at=entry_time + timedelta(minutes=1),
+            open=Decimal("100"),
+            high=Decimal("101"),
+            low=Decimal("99"),
+            close=Decimal("100"),
+        )
+    )
+    position = gateway.position(intent_id)
+    assert position is not None
+    gateway._positions[intent_id] = replace(
+        position,
+        recipe=replace(
+            position.recipe,
+            trailing_atr_multiple=Decimal("2"),
+            opposite_signal_exit=True,
+        ),
+    )
+    close_time = entry_time + timedelta(minutes=2)
+    stop_bar = PaperBar(
+        bar_key="hard-stop-close",
+        symbol="BTCUSDT",
+        opened_at=close_time,
+        closed_at=close_time + timedelta(minutes=1),
+        available_at=close_time + timedelta(minutes=1),
+        open=position.stop_price,
+        high=position.stop_price + Decimal("1"),
+        low=position.stop_price - Decimal("1"),
+        close=position.stop_price,
+    )
+    current = replace(
+        context,
+        evaluated_at=stop_bar.available_at + timedelta(seconds=1),
+        risk_state=replace(
+            context.risk_state,
+            evaluated_at=stop_bar.available_at + timedelta(seconds=1),
+            market_data_as_of=stop_bar.available_at,
+        ),
+        execution_events=(stop_bar,),
+        opposing_signal=None,
+        atr_by_symbol=(),
+    )
+
+    trade = evaluator._advance_execution(
+        current,
+        replace(observation.snapshot, decision_time=stop_bar.available_at),
+    )
+
+    assert trade is not None
+    assert gateway.position(intent_id).exit_reason == "STOP_LOSS"
+
+
 def test_replay_account_state_counts_two_simultaneous_positions_and_risk_rejects_cap() -> None:
     evaluator, context, observation, gateway, _ = _setup()
     context = replace(
@@ -267,7 +436,7 @@ def test_replay_account_state_counts_two_simultaneous_positions_and_risk_rejects
     )
     evaluator.context_provider = lambda _: context
     evaluator(observation.snapshot)
-    first_intent_id = f"paper:replay:{observation.snapshot.snapshot_id}:h01-v1"
+    first_intent_id = _first_intent_id(evaluator)
     first_reservation = evaluator._reservations[first_intent_id]
     first_plan = first_reservation.plan
     second_plan = replace(
@@ -335,7 +504,7 @@ def test_replay_account_state_counts_two_simultaneous_positions_and_risk_rejects
 def test_replay_account_state_releases_terminal_unfilled_reservation(terminal_status: str) -> None:
     evaluator, context, observation, gateway, _ = _setup()
     evaluator(observation.snapshot)
-    intent_id = f"paper:replay:{observation.snapshot.snapshot_id}:h01-v1"
+    intent_id = _first_intent_id(evaluator)
     if terminal_status == "cancel":
         gateway.cancel_unfilled(intent_id)
     else:
@@ -381,7 +550,7 @@ def test_sequential_paper_trades_update_equity_and_next_risk_budget() -> None:
 
     evaluator._cycle.prepare_published = capture_candidate
     evaluator(observation.snapshot)
-    first_intent_id = f"paper:replay:{observation.snapshot.snapshot_id}:h01-v1"
+    first_intent_id = _first_intent_id(evaluator)
     first_plan = evaluator._intent_plans[first_intent_id]
     first_opened = observation.snapshot.decision_time + timedelta(seconds=10)
     first_closed = first_opened + timedelta(hours=1)
@@ -614,7 +783,7 @@ def test_replay_evaluator_rejects_future_execution_event() -> None:
 def test_replay_evaluator_uses_shared_paper_fill_and_position_monitor() -> None:
     evaluator, context, observation, gateway, _ = _setup()
     assert evaluator(observation.snapshot) is None
-    intent_id = f"paper:replay:{observation.snapshot.snapshot_id}:h01-v1"
+    intent_id = _first_intent_id(evaluator)
     order = gateway.order(intent_id)
     assert order.stop_price > 0
 
@@ -738,7 +907,6 @@ class _PersistenceSession:
 @pytest.mark.asyncio
 async def test_runner_composes_runtime_evaluator_into_persistable_report_and_trade() -> None:
     evaluator, context, first, gateway, manifest = _setup()
-    intent_id = f"paper:replay:{first.snapshot.snapshot_id}:h01-v1"
     opened = first.snapshot.decision_time + timedelta(seconds=10)
     closed = opened + timedelta(hours=1)
     later_snapshot = replace(
@@ -750,6 +918,7 @@ async def test_runner_composes_runtime_evaluator_into_persistable_report_and_tra
     def provider(snapshot):
         if snapshot.snapshot_id != "snapshot-exit":
             return context
+        intent_id = _first_intent_id(evaluator)
         order = gateway.order(intent_id)
         if order.direction == "long":
             low = min(order.stop_price - Decimal("1"), Decimal("99"))
@@ -794,6 +963,7 @@ async def test_runner_composes_runtime_evaluator_into_persistable_report_and_tra
     assert replay_run.sensitivity_run.scenario == SensitivityScenario("base", "BASE")
     assert replay_run.sensitivity_run.result.trade_count == 1
     assert len(replay_run.trade_outcomes) == 1
+    intent_id = _first_intent_id(evaluator)
     assert replay_run.trade_outcomes[0].trade_id == gateway.position(intent_id).position_id
     assert replay_run.sensitivity_run.result.net_pnl == replay_run.trade_outcomes[0].net_pnl
 
@@ -877,11 +1047,11 @@ def test_runtime_sensitivity_builds_fresh_cost_context_and_fill_gateway_per_tria
         )
         registry = StrategyRegistry()
         cycle = PaperDecisionCycle(registry, TradePlanner(), RiskEngine(), gateway)
-        intent_id = f"paper:replay:{first.snapshot.snapshot_id}:h01-v1"
 
         def provider(snapshot):
             if snapshot.snapshot_id != "sensitivity-exit":
                 return context
+            intent_id = _first_intent_id(evaluator)
             order = gateway.order(intent_id)
             stop_low = order.stop_price - Decimal("1")
             stop_high = order.stop_price + Decimal("1")
@@ -941,7 +1111,7 @@ def test_runtime_sensitivity_builds_fresh_cost_context_and_fill_gateway_per_tria
         slippage_stressed.trade_outcomes[0].slippage
     )
     assert base.sensitivity_run.result.net_pnl > slippage_stressed.sensitivity_run.result.net_pnl
-    intent_id = f"paper:replay:{first.snapshot.snapshot_id}:h01-v1"
+    intent_id = _first_intent_id(built[2])
     slippage_fills = built[2].gateway.order(intent_id).fills
     slippage_position = built[2].gateway.position(intent_id)
     assert len(slippage_fills) == 1

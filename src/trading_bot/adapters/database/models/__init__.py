@@ -1,9 +1,13 @@
 from trading_bot.adapters.database.models.backtest_entities import (
+    BacktestDatasetManifestRecord,
+    BacktestDatasetReplayBundleRecord,
     BacktestReportRecord,
     BacktestRunRecord,
     BacktestTrialRecord,
 )
+from trading_bot.adapters.database.models.backtest_job_entities import BacktestReplayJobRecord
 from trading_bot.adapters.database.models.backtest_outcome_entities import (
+    BacktestRunDatasetRightsRecord,
     BacktestScenarioRecord,
     BacktestTradeOutcomeRecord,
 )
@@ -69,6 +73,10 @@ from trading_bot.adapters.database.models.paper_entities import (
     TradeRecord,
 )
 from trading_bot.adapters.database.models.research_entities import (
+    SourceItemObservationRecord,
+    SourceItemRevisionRecord,
+    SourceItemTakedownRecord,
+    SourcePolicyObservationRecord,
     SourcePolicyRevisionRecord,
     SourceQuotaEventRecord,
 )
@@ -83,7 +91,6 @@ from trading_bot.adapters.database.models.signal_entities import (
     SharedSignalEvidenceRecord,
 )
 from trading_bot.adapters.database.models.source_item_entities import (
-    SourceItemRevisionRecord,
     SourceTakedownRecord,
 )
 from trading_bot.adapters.database.models.strategy_card_entities import StrategyCardRecord
@@ -113,6 +120,10 @@ __all__ = [
     "AuditEvent",
     "ConsumerReceipt",
     "Base",
+    "BacktestDatasetManifestRecord",
+    "BacktestDatasetReplayBundleRecord",
+    "BacktestReplayJobRecord",
+    "BacktestRunDatasetRightsRecord",
     "BacktestReportRecord",
     "BacktestRunRecord",
     "BacktestTrialRecord",
@@ -140,7 +151,10 @@ __all__ = [
     "PaperExecutionCheckpointRecord",
     "PositionEventRecord",
     "RiskProfileVersion",
+    "SourceItemObservationRecord",
     "SourceItemRevisionRecord",
+    "SourceItemTakedownRecord",
+    "SourcePolicyObservationRecord",
     "SourcePolicyRevisionRecord",
     "SourceQuotaEventRecord",
     "SourceTakedownRecord",

@@ -57,6 +57,7 @@ class OHLCVBar:
     close: Decimal
     volume: Decimal
     is_closed: bool
+    quote_volume: Decimal | None = None
     source: str = ""
     source_cursor: str | None = None
     checksum: str | None = None
@@ -79,6 +80,10 @@ class OHLCVBar:
         _require_decimal(self.volume, "volume")
         if self.volume < 0:
             raise ValueError("volume không được âm.")
+        if self.quote_volume is not None:
+            _require_decimal(self.quote_volume, "quote_volume")
+            if self.quote_volume < 0:
+                raise ValueError("quote_volume không được âm.")
         if self.high < max(self.open, self.close) or self.low > min(self.open, self.close):
             raise ValueError("Giá OHLC không thỏa quan hệ high/low.")
         if self.high < self.low:

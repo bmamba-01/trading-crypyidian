@@ -10,7 +10,21 @@ from decimal import Decimal
 from uuid import UUID, uuid5
 
 from trading_bot.application.backtest import ReplayManifest, ReplayObservation
+from trading_bot.application.backtest_dataset_manifest import build_backtest_dataset_manifest
+from trading_bot.application.backtest_dataset_replay import BacktestDatasetReplayInput
+from trading_bot.application.backtest_dataset_replay_bundle import (
+    BacktestDatasetReplayBundle,
+    build_backtest_dataset_replay_bundle,
+)
+from trading_bot.application.backtest_dataset_replay_context import (
+    run_backtest_dataset_runtime_replay,
+)
 from trading_bot.application.backtest_sensitivity import SensitivityScenario
+from trading_bot.application.binance_rest_backfill import (
+    BackfillRightsEvidence,
+    BackfillRightsPurpose,
+    RestBackfillRequest,
+)
 from trading_bot.application.paper_decision_cycle import PaperDecisionCycle
 from trading_bot.application.runtime_replay_evaluator import (
     ReplayEvaluationContext,
@@ -38,6 +52,260 @@ from trading_bot.domain.strategy.contracts import (
     SeriesQuality,
 )
 from trading_bot.domain.strategy.registry import StrategyRegistry
+
+
+def build_h01_dataset_runtime_replay(
+    workspace_id: UUID,
+    *,
+    bundle: BacktestDatasetReplayBundle | None = None,
+    scenarios: tuple[SensitivityScenario, ...] | None = None,
+) -> tuple[BacktestDatasetReplayBundle, RuntimePaperReplayComparison]:
+    """Chạy bundle synthetic đa timeframe qua runtime PAPER và BacktestRunner."""
+    if bundle is None:
+        start = datetime(2026, 11, 3, tzinfo=UTC)
+        evaluation_start = start + timedelta(hours=4)
+        range_end = start + timedelta(hours=8)
+        rights = BackfillRightsEvidence(
+            workspace_id=workspace_id,
+            provider="BINANCE_USDM_REST",
+            purpose=BackfillRightsPurpose.BACKTEST_RESEARCH,
+            terms_url="https://example.invalid/synthetic-replay-terms",
+            policy_fingerprint=hashlib.sha256(b"synthetic-replay-policy").hexdigest(),
+            verified_at=start - timedelta(days=1),
+            checked_at=start - timedelta(hours=1),
+            valid_until=range_end + timedelta(days=1),
+        )
+        inputs: list[BacktestDatasetReplayInput] = []
+        for timeframe, interval, count in (
+            ("1h", timedelta(hours=1), 8),
+            ("4h", timedelta(hours=4), 2),
+        ):
+            bars: list[OHLCVBar] = []
+            for index in range(count):
+                opened_at = start + interval * index
+                closed_at = opened_at + interval - timedelta(milliseconds=1)
+                price = Decimal(100 + index)
+                cursor = f"synthetic:{timeframe}:{opened_at.isoformat()}"
+                bars.append(
+                    OHLCVBar(
+                        symbol="BTCUSDT",
+                        timeframe=timeframe,
+                        open_time=opened_at,
+                        close_time=closed_at,
+                        event_at=closed_at,
+                        received_at=closed_at,
+                        available_at=closed_at,
+                        open=price,
+                        high=price + Decimal("2"),
+                        low=price - Decimal("1"),
+                        close=price + Decimal("1"),
+                        volume=Decimal("1"),
+                        quote_volume=Decimal("100"),
+                        is_closed=True,
+                        source="BINANCE_USDM_REST_BACKFILL",
+                        source_cursor=cursor,
+                        checksum=hashlib.sha256(cursor.encode()).hexdigest(),
+                    )
+                )
+            request = RestBackfillRequest(
+                symbol="BTCUSDT",
+                interval=timeframe,
+                start=start,
+                end=range_end,
+                purpose=BackfillRightsPurpose.BACKTEST_RESEARCH,
+            )
+            manifest = build_backtest_dataset_manifest(
+                request,
+                evaluation_start=evaluation_start,
+                warmup_bars=int((evaluation_start - start) / interval),
+                bars=tuple(bars),
+                rights_evidence=rights,
+                prepared_at=range_end,
+            )
+            manifest.require_ready()
+            inputs.append(BacktestDatasetReplayInput(manifest, tuple(bars), rights))
+        bundle = build_backtest_dataset_replay_bundle(tuple(inputs))
+    elif bundle.workspace_id != workspace_id:
+        raise ValueError("Bundle replay fixture không khớp workspace.")
+    start = bundle.evaluation_start - timedelta(hours=4)
+    evaluation_start = bundle.evaluation_start
+    range_end = bundle.range_end
+
+    registry = StrategyRegistry()
+    release = registry.get_release("h01-v1")
+    settings_id = uuid5(workspace_id, "wp07-bundle-replay-settings-v1")
+    risk_id = uuid5(workspace_id, "wp07-bundle-replay-risk-v1")
+    settings_hash = hashlib.sha256(b"wp07-bundle-replay-settings").hexdigest()
+    feature_hash = "c" * 64
+    pipeline_hash = "d" * 64
+    payload = {
+        "schema_version": 1,
+        "runtime": {"mode": "PAPER", "timezone": "UTC"},
+        "market_data": {
+            "venue": "BINANCE_USDM",
+            "symbols": ["BTCUSDT"],
+            "timeframes": ["1h", "4h"],
+            "max_age_seconds": 14400,
+        },
+        "features": {"formula_version": "synthetic-v1", "sessions_timezone": "UTC"},
+        "strategy": {
+            "default_release": "h01-v1",
+            "parameters": {},
+            "entry_timeframe": "1h",
+            "confirmation_timeframe": "4h",
+        },
+        "risk": {"profile_version_id": str(risk_id)},
+        "paper_execution": {
+            "quote_asset": "USDT",
+            "starting_equity": "10000",
+            "fee_schedule_version": "synthetic-fees-v1",
+            "fill_model": "next_bar_with_adverse_costs",
+        },
+    }
+    published = PublishedWorkspaceSettings(
+        workspace_id=workspace_id,
+        settings_version_id=settings_id,
+        settings_hash=settings_hash,
+        settings=WorkspaceSettings.model_validate(payload),
+    )
+    planner_settings = PlannerSettings(
+        workspace_id=str(workspace_id),
+        settings_version_id=str(settings_id),
+        risk_profile_version_id=str(risk_id),
+        published=True,
+        active_release_ids=("h01-v1",),
+        leverage=Decimal("2"),
+        exchange=ExchangeRules(
+            Decimal("0.1"),
+            Decimal("0.01"),
+            Decimal("1"),
+            Decimal("5"),
+            Decimal("10000"),
+            Decimal("100"),
+        ),
+        limits=RiskLimits(
+            per_trade_risk_fraction=Decimal("0.01"),
+            max_aggregate_open_risk=Decimal("250"),
+            max_notional=Decimal("10000"),
+            max_leverage=Decimal("5"),
+            max_positions=2,
+            max_symbol_notional=Decimal("2000"),
+            max_concentration_fraction=Decimal("0.2"),
+            max_daily_loss=Decimal("200"),
+            max_rolling_loss=Decimal("500"),
+            max_account_age=timedelta(days=1),
+            max_data_age=timedelta(hours=8),
+        ),
+        release_content_hashes=(("h01-v1", release.content_hash),),
+        settings_hash=settings_hash,
+    )
+    account_time = evaluation_start - timedelta(seconds=1)
+    account = AccountSnapshot(
+        workspace_id=str(workspace_id),
+        account_id="paper-bundle-fixture",
+        settings_version_id=str(settings_id),
+        captured_at=account_time,
+        equity=Decimal("10000"),
+        available_margin=Decimal("10000"),
+        is_known=True,
+    )
+    risk_state = RiskState(
+        workspace_id=str(workspace_id),
+        account_id=account.account_id,
+        settings_version_id=str(settings_id),
+        risk_profile_version_id=str(risk_id),
+        evaluated_at=evaluation_start,
+        account_captured_at=account_time,
+        market_data_as_of=evaluation_start,
+        equity=account.equity,
+        available_margin=account.available_margin,
+        open_exposures=(),
+        realized_loss_today=Decimal("0"),
+        realized_loss_rolling=Decimal("0"),
+        open_position_count=0,
+        is_known=True,
+        pending_reservation_initial_margin=Decimal("0"),
+    )
+    costs = CostModel(
+        version_id="synthetic-cost-v1",
+        entry_fee_rate=Decimal("0.001"),
+        exit_fee_rate=Decimal("0.001"),
+        adverse_funding_per_unit=Decimal("0"),
+        entry_slippage_rate=Decimal("0"),
+        exit_slippage_rate=Decimal("0"),
+    )
+    seed = ReplayEvaluationContext(
+        published_settings=published,
+        evaluated_at=evaluation_start + timedelta(microseconds=1),
+        planner_settings=planner_settings,
+        account=account,
+        risk_state=risk_state,
+        open_exposures=(),
+        cost_model=costs,
+        feature_schema_hash=feature_hash,
+        pipeline_content_hash=pipeline_hash,
+        execution_events=(),
+        reserve_risk=lambda decision, key: decision.approved and bool(key),
+    )
+
+    def context_seed_factory(
+        scenario: SensitivityScenario, _manifest: ReplayManifest
+    ) -> ReplayEvaluationContext:
+        if scenario.kind != "COST":
+            return seed
+        overrides = dict(scenario.cost_overrides)
+        return replace(
+            seed,
+            cost_model=replace(
+                seed.cost_model,
+                entry_fee_rate=Decimal(overrides.get("entry_fee_rate", "0.001")),
+                exit_fee_rate=Decimal(overrides.get("exit_fee_rate", "0.001")),
+            ),
+        )
+
+    fill_version = "paper-fill-v1"
+    manifest = ReplayManifest(
+        dataset_hash=bundle.dataset_hash,
+        range_start=bundle.evaluation_start,
+        range_end=bundle.range_end,
+        settings_version_id=str(settings_id),
+        risk_profile_version_id=str(risk_id),
+        strategy_release_id="h01-v1",
+        strategy_content_hash=release.content_hash,
+        feature_schema_hash=feature_hash,
+        fill_model_version=fill_version,
+        pipeline_content_hash=pipeline_hash,
+        cost_assumptions=(
+            ("entry_fee_rate", "0.001"),
+            ("exit_fee_rate", "0.001"),
+            ("adverse_funding_per_unit", "0"),
+            ("entry_slippage_rate", "0"),
+            ("exit_slippage_rate", "0"),
+            ("spread_rate", "0"),
+        ),
+        parameter_family_hash=hashlib.sha256(b"wp07-bundle-parameters").hexdigest(),
+        trial_count=1,
+        trial_index=0,
+        seed=7,
+    )
+    comparison = run_backtest_dataset_runtime_replay(
+        bundle,
+        manifest,
+        strategies=registry,
+        execution_interval="1h",
+        context_seed_factory=context_seed_factory,
+        gateway_factory=lambda scenario, _manifest: PaperExecutionGateway(
+            PaperExecutionPolicy(
+                version_id=fill_version,
+                latency=timedelta(0),
+                spread_rate=Decimal("0"),
+                slippage_rate=Decimal("0"),
+                fee_rate=Decimal(dict(scenario.cost_overrides).get("entry_fee_rate", "0.001")),
+            )
+        ),
+        scenarios=scenarios,
+    )
+    return bundle, comparison
 
 
 def build_h03_runtime_sensitivity(
@@ -400,6 +668,8 @@ def build_h03_runtime_sensitivity(
                 pipeline_content_hash="d" * 64,
                 execution_events=execution_events,
                 reserve_risk=reserve_risk,
+                opposing_signal=False,
+                atr_by_symbol=(("BTCUSDT", Decimal("2")),),
             )
 
         return RuntimeReplayEvaluator(

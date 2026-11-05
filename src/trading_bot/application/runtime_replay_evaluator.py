@@ -32,6 +32,7 @@ from trading_bot.domain.execution.paper import (
     OrderStatus,
     PaperBar,
     PaperExecutionGateway,
+    PaperPosition,
 )
 from trading_bot.domain.learning.evaluation import EvaluationTrade
 from trading_bot.domain.risk.engine import RiskDecision, RiskState
@@ -67,8 +68,10 @@ class ReplayEvaluationContext:
     pipeline_content_hash: str
     execution_events: tuple[PaperBar, ...]
     reserve_risk: Callable[[RiskDecision, str], bool]
-    opposing_signal: bool = False
+    opposing_signal: bool | None = None
     atr_by_symbol: tuple[tuple[str, Decimal], ...] = ()
+    atr_by_bar: tuple[tuple[str, str, Decimal], ...] = ()
+    opposing_signal_by_bar: tuple[tuple[str, str, bool | None], ...] = ()
 
 
 ContextProvider = Callable[[DecisionSnapshot], ReplayEvaluationContext]
@@ -266,9 +269,10 @@ class RuntimeReplayEvaluator:
             self._reservations,
             candidate_symbol=snapshot.symbol,
         )
+        runtime_snapshot = self._runtime_snapshot(snapshot, account, risk_state, open_exposures)
         result = self._cycle.prepare_published(
             published_settings=context.published_settings,
-            snapshot=snapshot,
+            snapshot=runtime_snapshot,
             evaluated_at=context.evaluated_at,
             planner_settings=context.planner_settings,
             account=account,
@@ -280,7 +284,9 @@ class RuntimeReplayEvaluator:
 
         if result.outcome is DecisionCycleOutcome.RISK_APPROVED:
             assert result.risk_decision is not None
-            idempotency_key = f"replay:{snapshot.snapshot_id}:{self._manifest.strategy_release_id}"
+            idempotency_key = (
+                f"replay:{runtime_snapshot.snapshot_id}:{self._manifest.strategy_release_id}"
+            )
             if not context.reserve_risk(result.risk_decision, idempotency_key):
                 raise ReplayEvaluationContextError(
                     "Không ghi nhận được reservation trước khi tạo PAPER intent."
@@ -298,6 +304,57 @@ class RuntimeReplayEvaluator:
             )
 
         return closed_trade
+
+    def _runtime_snapshot(
+        self,
+        snapshot: DecisionSnapshot,
+        account: AccountSnapshot,
+        risk_state: RiskState,
+        open_exposures: tuple[OpenExposure, ...],
+    ) -> DecisionSnapshot:
+        """Gắn trạng thái portfolio đã reducer tính vào snapshot strategy."""
+        symbol_open = any(
+            exposure.symbol == snapshot.symbol and exposure.notional > ZERO
+            for exposure in open_exposures
+        )
+        order_open = any(order.symbol == snapshot.symbol for order in self._gateway.open_orders())
+        position_open = any(
+            position.symbol == snapshot.symbol for position in self._gateway.open_positions()
+        )
+        position_is_flat = not (symbol_open or order_open or position_open)
+        runtime_state_hash = _hash_payload(
+            {
+                "source_snapshot_id": snapshot.snapshot_id,
+                "position_is_flat": position_is_flat,
+                "equity": str(account.equity),
+                "available_margin": str(account.available_margin),
+                "open_position_count": risk_state.open_position_count,
+                "pending_reservation_count": risk_state.pending_reservation_count,
+                "pending_reservation_risk": str(risk_state.pending_reservation_risk),
+                "pending_reservation_notional": str(risk_state.pending_reservation_notional),
+                "pending_symbol_reservation_notional": str(
+                    risk_state.pending_symbol_reservation_notional
+                ),
+                "pending_reservation_initial_margin": str(
+                    risk_state.pending_reservation_initial_margin
+                ),
+                "realized_loss_today": str(risk_state.realized_loss_today),
+                "realized_loss_rolling": str(risk_state.realized_loss_rolling),
+                "open_exposures": sorted(
+                    (
+                        item.symbol,
+                        str(item.notional),
+                        str(item.risk_amount),
+                    )
+                    for item in open_exposures
+                ),
+            }
+        )
+        return replace(
+            snapshot,
+            snapshot_id=f"{snapshot.snapshot_id}:runtime:{runtime_state_hash}",
+            position_is_flat=position_is_flat,
+        )
 
     def _validate_context(
         self, context: ReplayEvaluationContext, snapshot: DecisionSnapshot
@@ -359,6 +416,8 @@ class RuntimeReplayEvaluator:
             raise ReplayEvaluationContextError("Feature/pipeline hash không khớp manifest.")
         if not account.is_known or not state.is_known:
             raise ReplayEvaluationContextError("Account hoặc RiskState chưa được xác nhận.")
+        if state.equity != account.equity or state.available_margin != account.available_margin:
+            raise ReplayEvaluationContextError("Account và RiskState lệch equity/margin.")
         if (
             context.evaluated_at < snapshot.decision_time
             or state.evaluated_at != context.evaluated_at
@@ -409,6 +468,24 @@ class RuntimeReplayEvaluator:
             context.execution_events
         ):
             raise ReplayEvaluationContextError("Execution event bị trùng trong một context.")
+        event_keys = {(event.symbol, event.bar_key) for event in context.execution_events}
+        atr_keys = tuple((symbol, bar_key) for symbol, bar_key, _ in context.atr_by_bar)
+        opposing_keys = tuple(
+            (symbol, bar_key) for symbol, bar_key, _ in context.opposing_signal_by_bar
+        )
+        if len(atr_keys) != len(set(atr_keys)) or not set(atr_keys) <= event_keys:
+            raise ReplayEvaluationContextError("ATR theo bar bị trùng hoặc không thuộc event.")
+        if len(opposing_keys) != len(set(opposing_keys)) or not set(opposing_keys) <= event_keys:
+            raise ReplayEvaluationContextError(
+                "Opposing signal theo bar bị trùng hoặc không thuộc event."
+            )
+        if any(not value.is_finite() or value <= ZERO for _, _, value in context.atr_by_bar):
+            raise ReplayEvaluationContextError("ATR theo bar phải hữu hạn và dương.")
+        if any(
+            signal is not None and not isinstance(signal, bool)
+            for _, _, signal in context.opposing_signal_by_bar
+        ):
+            raise ReplayEvaluationContextError("Opposing signal theo bar phải bool hoặc None.")
 
     def _advance_execution(
         self, context: ReplayEvaluationContext, snapshot: DecisionSnapshot
@@ -416,6 +493,10 @@ class RuntimeReplayEvaluator:
         """Chạy fill/monitor PAPER trên event mới; chỉ trả trade khi vị thế đã đóng."""
         closed_trades: list[EvaluationTrade] = []
         atr_by_symbol = dict(context.atr_by_symbol)
+        atr_by_bar = {(symbol, bar_key): atr for symbol, bar_key, atr in context.atr_by_bar}
+        opposing_by_bar = {
+            (symbol, bar_key): signal for symbol, bar_key, signal in context.opposing_signal_by_bar
+        }
         events = sorted(
             context.execution_events,
             key=lambda item: (item.available_at, item.opened_at, item.bar_key),
@@ -432,11 +513,34 @@ class RuntimeReplayEvaluator:
                     continue
                 if position.symbol != event.symbol:
                     continue
+                atr = atr_by_bar.get(event_key, atr_by_symbol.get(event.symbol))
+                opposing_signal = opposing_by_bar.get(event_key, context.opposing_signal)
+                fixed_exit = _fixed_exit_preempts_optional_context(
+                    position,
+                    event,
+                    opposing_signal,
+                )
+                if (
+                    not fixed_exit
+                    and position.recipe.trailing_atr_multiple is not None
+                    and atr is None
+                ):
+                    raise ReplayEvaluationContextError(
+                        "Thiếu ATR point-in-time cho trailing stop tại execution bar."
+                    )
+                if (
+                    not fixed_exit
+                    and position.recipe.opposite_signal_exit
+                    and opposing_signal is None
+                ):
+                    raise ReplayEvaluationContextError(
+                        "Thiếu opposing signal point-in-time cho exit recipe."
+                    )
                 result = self._gateway.monitor_position(
                     position,
                     event,
-                    opposing_signal=context.opposing_signal,
-                    atr=atr_by_symbol.get(event.symbol),
+                    opposing_signal=opposing_signal is True,
+                    atr=atr,
                 )
                 if (
                     not result.position.is_closed
@@ -467,6 +571,23 @@ class RuntimeReplayEvaluator:
                 "Một observation đóng nhiều vị thế; EvaluationTrade hiện chỉ biểu diễn một trade."
             )
         return closed_trades[0] if closed_trades else None
+
+
+def _fixed_exit_preempts_optional_context(
+    position: PaperPosition,
+    event: PaperBar,
+    opposing_signal: bool | None,
+) -> bool:
+    """Nhận biết stop/target/time exit vốn không cần ATR hay tín hiệu đối nghịch."""
+    if position.direction == "long":
+        stop_hit = event.low <= position.stop_price
+        target_hit = position.target_price is not None and event.high >= position.target_price
+    else:
+        stop_hit = event.high >= position.stop_price
+        target_hit = position.target_price is not None and event.low <= position.target_price
+    time_stop_due = position.bars_held + 1 >= position.recipe.max_hold_bars
+    opposing_exit = position.recipe.opposite_signal_exit and opposing_signal is True
+    return stop_hit or target_hit or time_stop_due or opposing_exit
 
 
 RuntimeEvaluatorFactory = Callable[[SensitivityScenario, ReplayManifest], RuntimeReplayEvaluator]
@@ -510,6 +631,8 @@ def run_runtime_paper_replay(
     runtime_evaluator_factory: RuntimeEvaluatorFactory,
     scenarios: tuple[SensitivityScenario, ...] | None = None,
     runner: BacktestRunner | None = None,
+    progress_callback: Callable[[int, int], None] | None = None,
+    cancel_requested: Callable[[], bool] | None = None,
 ) -> RuntimePaperReplayComparison:
     """Chạy scenario bằng evaluator PAPER cụ thể và giữ outcome theo từng trial."""
     active_scenarios = (
@@ -557,6 +680,8 @@ def run_runtime_paper_replay(
         scenarios=active_scenarios,
         evaluator_factory=evaluator_factory,
         runner=runner,
+        progress_callback=progress_callback,
+        cancel_requested=cancel_requested,
     )
     results: list[RuntimePaperReplayRun] = []
     for sensitivity_run in comparison.runs:

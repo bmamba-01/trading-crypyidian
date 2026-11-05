@@ -1482,3 +1482,47 @@ th {
     animation: none !important;
   }
 }
+
+/* WP-05: Research Sources & Policy Admin UI */
+.source-console-grid { display: grid; gap: 1.5rem; min-width: 0; }
+.source-console-grid > section { min-width: 0; }
+.source-list { grid-template-columns: minmax(0, 1fr); }
+.source-evidence-notice { border-left: 4px solid #996300; background: #fff5d6; padding: 1rem; }
+.source-history { padding-left: 1.5rem; }
+.source-history article, .source-metadata { background: #fff; border: 1px solid #c4cfda; border-radius: .5rem; padding: 1rem; margin-bottom: 1rem; }
+.source-history h4 { font-size: 1rem; line-height: 1.65; }
+.source-console-grid details { border-top: 1px solid #c4cfda; margin-block: 1rem; }
+@media (min-width: 1024px) {
+  .source-console-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); }
+  .source-metadata { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .75rem; }
+}
+.source-purpose-options { min-width: 0; padding: .75rem; border: 1px solid #647789; border-radius: .3rem; }
+.source-purpose-options legend { font-size: 1rem; font-weight: 600; }
+.source-purpose-options label { display: flex; align-items: center; gap: .75rem; min-height: 44px; padding-block: .25rem; }
+.source-purpose-options input { width: 44px; height: 44px; flex: 0 0 44px; accent-color: #123b5b; }
+
+/* Backtest replay styles */
+.backtest-form { max-width: 64rem; }
+.backtest-form-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: .8rem; }
+.backtest-form-field { display: grid; align-content: start; gap: .25rem; min-width: 0; }
+.backtest-form-field small { color: #42586b; line-height: 1.5; }
+.backtest-jobs-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .5rem; }
+.backtest-jobs-heading a { display: inline-flex; align-items: center; min-height: 44px; }
+.backtest-job-table-wrap { display: none; max-width: 100%; overflow-x: auto; background: #fff; border: 1px solid #c4cfda; border-radius: .5rem; }
+.backtest-job-table { min-width: 58rem; margin: 0; }
+.backtest-job-table th, .backtest-job-table td { padding: .75rem; vertical-align: middle; }
+.backtest-job-stage, .backtest-error-code { display: block; color: #42586b; font-size: .9rem; }
+.backtest-error-code { color: #711414; }
+.backtest-job-table progress, .backtest-job-card progress { width: min(100%, 12rem); min-height: 1rem; vertical-align: middle; }
+.backtest-progress-value { display: block; font-variant-numeric: tabular-nums; }
+.backtest-job-cards { display: grid; gap: .8rem; }
+.backtest-job-card { min-width: 0; padding: 1rem; border: 1px solid #c4cfda; border-radius: .5rem; background: #fff; }
+.backtest-job-card h3 { overflow-wrap: anywhere; }
+.backtest-job-card dl { display: grid; grid-template-columns: minmax(0, 1fr); gap: .55rem; margin-bottom: .7rem; }
+.backtest-job-card dl > div { min-width: 0; }
+.backtest-job-card dt { font-weight: 600; }
+.backtest-job-card dd { margin: .1rem 0 0; }
+.backtest-cancel-form { display: inline-grid; max-width: 10rem; padding: 0; margin: 0; border: 0; background: transparent; }
+.backtest-empty-state { padding: 1rem; border: 1px dashed #647789; border-radius: .5rem; background: #fff; }
+@media (min-width: 640px) { .backtest-form-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .backtest-form-field--wide { grid-column: 1 / -1; } .backtest-job-card dl { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (min-width: 1024px) { .backtest-job-table-wrap { display: block; } .backtest-job-cards { display: none; } }

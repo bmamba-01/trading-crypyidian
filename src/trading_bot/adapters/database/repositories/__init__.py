@@ -5,6 +5,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from trading_bot.adapters.database.models import TradingAccount, Workspace
 from trading_bot.adapters.database.repositories.account_equity import AccountEquityRepository
+from trading_bot.adapters.database.repositories.backtest_dataset_manifests import (
+    BacktestDatasetManifestRepository,
+)
 from trading_bot.adapters.database.repositories.dataset_manifest import DatasetManifestRepository
 from trading_bot.adapters.database.repositories.risk_conversion import RiskConversionRepository
 from trading_bot.adapters.database.repositories.source_registry import SourceRegistryRepository
@@ -16,6 +19,7 @@ from trading_bot.adapters.database.repositories.strategy_card_repository import 
 
 __all__ = [
     "AccountEquityRepository",
+    "BacktestDatasetManifestRepository",
     "DatasetManifestRepository",
     "RiskConversionRepository",
     "SourceRegistryRepository",

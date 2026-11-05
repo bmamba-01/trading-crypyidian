@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
+from types import MappingProxyType
 from urllib.parse import urlsplit
 
 from trading_bot.domain.research.source_policy import (
@@ -202,6 +206,18 @@ class SourceBudget:
 
 
 @dataclass(frozen=True, slots=True)
+class SourceQuotaSnapshot:
+    """Mức sử dụng quota hiện hành, được tính bằng đồng hồ database."""
+
+    source_id: str
+    policy_sequence: int
+    as_of: datetime
+    window_started_at: datetime
+    budget: SourceBudget
+    usage: SourceUsage
+
+
+@dataclass(frozen=True, slots=True)
 class SourcePolicyRevision:
     """Một snapshot append-only của quyền, endpoint, quota và người duyệt."""
 
@@ -277,6 +293,40 @@ class SourcePolicyRevision:
     def state(self) -> SourcePolicyState:
         """Trả trạng thái của policy snapshot."""
         return self.policy.state
+
+
+def source_rights_hash(revision: SourcePolicyRevision) -> str:
+    """Băm ổn định các điều kiện quyền và hạn mức đã được duyệt của policy."""
+    if type(revision) is not SourcePolicyRevision:
+        raise ValueError("revision phải là SourcePolicyRevision.")
+    policy = revision.policy
+    budget = revision.budget
+    payload = {
+        "policy_id": policy.policy_id,
+        "source_id": policy.source_id,
+        "sequence": revision.sequence,
+        "state": policy.state.value,
+        "allowed_purposes": sorted(purpose.value for purpose in policy.allowed_purposes),
+        "evidence_ref": policy.evidence_ref,
+        "reviewed_at": policy.reviewed_at.isoformat() if policy.reviewed_at else None,
+        "valid_until": policy.valid_until.isoformat() if policy.valid_until else None,
+        "approved_by": revision.approved_by,
+        "publisher": revision.publisher,
+        "endpoint_url": revision.endpoint_url,
+        "access_method": revision.access_method,
+        "auth_scope": revision.auth_scope,
+        "attribution": revision.attribution,
+        "retention_ref": revision.retention_ref,
+        "budget": {
+            "window": [budget.window.days, budget.window.seconds, budget.window.microseconds],
+            "max_requests": budget.max_requests,
+            "max_bytes": budget.max_bytes,
+            "max_cost": str(budget.max_cost),
+            "cost_unit": budget.cost_unit,
+        },
+    }
+    canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True, slots=True)
@@ -428,3 +478,31 @@ class SourceRegistryEntry:
             approved_by=approved_by,
         )
         return SourceRegistryEntry(self.source_id, (*self.revisions, revision))
+
+
+@dataclass(frozen=True, slots=True)
+class ObservedSourcePolicy:
+    """Policy history kèm receipt cho biết từng revision đã được quan sát sau commit."""
+
+    history: SourceRegistryEntry
+    known_at: Mapping[str, datetime]
+
+    def __post_init__(self) -> None:
+        if type(self.history) is not SourceRegistryEntry:
+            raise ValueError("history phải là SourceRegistryEntry.")
+        receipts = dict(self.known_at)
+        expected_ids = {revision.policy.policy_id for revision in self.history.revisions}
+        if set(receipts) != expected_ids:
+            raise ValueError("known_at phải có receipt cho mọi policy revision.")
+        normalized: dict[str, datetime] = {}
+        previous: datetime | None = None
+        for revision in self.history.revisions:
+            policy = revision.policy
+            known = _utc(receipts[policy.policy_id], "known_at")
+            if known < revision.created_at or (policy.reviewed_at and known < policy.reviewed_at):
+                raise ValueError("known_at không được trước policy revision hoặc review.")
+            if previous is not None and known < previous:
+                raise ValueError("known_at không được lùi giữa các policy revision.")
+            normalized[policy.policy_id] = known
+            previous = known
+        object.__setattr__(self, "known_at", MappingProxyType(normalized))

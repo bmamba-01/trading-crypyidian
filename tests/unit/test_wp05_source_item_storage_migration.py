@@ -11,7 +11,7 @@ from sqlalchemy import CheckConstraint, UniqueConstraint
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.dialects.postgresql import JSONB
 
-from trading_bot.adapters.database.models import (
+from trading_bot.adapters.database.models.source_item_entities import (
     SourceItemRevisionRecord,
     SourceTakedownRecord,
 )

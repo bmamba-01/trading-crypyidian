@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}Crypidian{% endblock %}</title>
     <link rel="stylesheet" href="/static/admin.css">
+    {% block head_extra %}{% endblock %}
   </head>
   <body>
     <a class="skip-link" href="#main-content">Bỏ qua điều hướng, tới nội dung chính</a>
@@ -17,7 +18,9 @@
           <a href="/admin">Tổng quan</a>
           <a href="/admin/bots">Bot</a>
           <a href="/admin/reports">Báo cáo</a>
+          <a href="/admin/backtests">Kiểm định Backtest</a>
           <a href="/admin/strategy-cards">Chiến lược</a>
+          <a href="/admin/research-sources">Nguồn dữ liệu</a>
           <a href="/admin/flatten">Flatten workspace</a>
           <a href="/admin/telegram">Telegram</a>
         </nav>
@@ -46,5 +49,6 @@
     <footer role="contentinfo" class="admin-footer">
       <p>Crypidian Admin — Môi trường thử nghiệm an toàn độc lập (PAPER mode)</p>
     </footer>
+    {% block scripts %}{% endblock %}
   </body>
 </html>

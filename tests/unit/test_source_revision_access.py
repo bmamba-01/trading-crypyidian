@@ -11,6 +11,7 @@ from trading_bot.domain.research.source_policy import (
 from trading_bot.domain.research.source_registry import (
     SourceBudget,
     SourceRegistryEntry,
+    source_rights_hash,
 )
 from trading_bot.domain.research.source_revision_access import (
     SourceAccessMode,
@@ -102,6 +103,27 @@ def test_current_access_uses_current_verified_policy_and_explicit_purpose() -> N
     decision = access(purpose=SourceUsePurpose.EMBEDDING)
     assert not decision.permitted
     assert decision.reason is SourceAccessReason.PURPOSE_NOT_APPROVED
+
+
+def test_rights_hash_is_stable_and_changes_with_authoritative_rights_terms() -> None:
+    revision = source_registry().current
+
+    stable = source_rights_hash(revision)
+    changed_purposes = replace(
+        revision,
+        policy=replace(
+            revision.policy,
+            allowed_purposes=frozenset({SourceUsePurpose.METADATA}),
+        ),
+    )
+    changed_reason = replace(revision, reason="Audit note changed")
+
+    assert len(stable) == 64
+    assert source_rights_hash(revision) == stable
+    assert source_rights_hash(changed_purposes) != stable
+    assert source_rights_hash(changed_reason) == stable
+    with pytest.raises(ValueError, match="SourcePolicyRevision"):
+        source_rights_hash(object())  # type: ignore[arg-type]
 
 
 def test_revoked_current_rights_deny_current_use_and_historical_replay() -> None:

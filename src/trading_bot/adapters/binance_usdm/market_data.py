@@ -520,6 +520,7 @@ def _parse_kline(
             low=_decimal(value[3], "low"),
             close=_decimal(value[4], "close"),
             volume=_decimal(value[5], "volume"),
+            quote_volume=_decimal(value[7], "quote asset volume"),
             is_closed=close_time < received_at,
             source="BINANCE_USDM",
             source_cursor=str(value[0]),

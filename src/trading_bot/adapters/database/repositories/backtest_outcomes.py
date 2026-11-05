@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from trading_bot.adapters.database.models.backtest_entities import BacktestTrialRecord
 from trading_bot.adapters.database.models.backtest_outcome_entities import (
+    BacktestRunDatasetRightsRecord,
     BacktestScenarioRecord,
     BacktestTradeOutcomeRecord,
 )
@@ -25,7 +26,9 @@ from trading_bot.adapters.database.repositories.backtests import (
     BacktestRepositoryConflict,
 )
 from trading_bot.application.backtest import EvaluationReport, ReplayRejected
+from trading_bot.application.backtest_dataset_replay_bundle import BacktestDatasetReplayBundle
 from trading_bot.application.backtest_sensitivity import SensitivityRun
+from trading_bot.application.binance_rest_backfill import BackfillRightsEvidence
 from trading_bot.domain.learning.evaluation import EvaluationTrade
 
 
@@ -87,9 +90,12 @@ class BacktestOutcomeRepository:
         workspace_id: UUID,
         sensitivity_run: SensitivityRun,
         trade_outcomes: tuple[EvaluationTrade, ...],
+        dataset_bundle: BacktestDatasetReplayBundle | None = None,
     ) -> BacktestOutcomeAppendResult:
         """Lưu sensitivity values và outcomes sau khi kiểm tra report/lineage."""
         manifest = sensitivity_run.manifest
+        if dataset_bundle is not None:
+            _validate_dataset_bundle(workspace_id, manifest.dataset_hash, dataset_bundle)
         result = sensitivity_run.result
         if result.manifest_hash != manifest.content_hash:
             raise BacktestRepositoryConflict("Manifest sensitivity không khớp kết quả.")
@@ -174,6 +180,13 @@ class BacktestOutcomeRepository:
                 raise BacktestRepositoryConflict("Ordinal outcome đã gắn với trade khác.")
             outcome_duplicates.append(duplicate)
 
+        if dataset_bundle is not None:
+            await self._append_dataset_rights(
+                workspace_id=workspace_id,
+                appended=appended,
+                bundle=dataset_bundle,
+            )
+
         return BacktestOutcomeAppendResult(
             run_id=appended.run_id,
             trial_record_id=appended.trial_record_id,
@@ -184,6 +197,52 @@ class BacktestOutcomeRepository:
             trade_count=len(ordered_trades),
             duplicate=(appended.duplicate and scenario_duplicate and all(outcome_duplicates)),
         )
+
+    async def _append_dataset_rights(
+        self,
+        *,
+        workspace_id: UUID,
+        appended: BacktestAppendResult,
+        bundle: BacktestDatasetReplayBundle,
+    ) -> None:
+        """Ghi đủ biên nhận mới hoặc so toàn bộ bằng chứng cũ, không ghi hồi tố."""
+        expected = tuple(
+            BacktestRunDatasetRightsRecord.from_bundle_component(
+                workspace_id=workspace_id,
+                run_id=appended.run_id,
+                bundle_hash=bundle.dataset_hash,
+                component=component,
+            )
+            for component in bundle.components
+        )
+        result = await self._session.scalars(
+            select(BacktestRunDatasetRightsRecord).where(
+                BacktestRunDatasetRightsRecord.workspace_id == workspace_id,
+                BacktestRunDatasetRightsRecord.run_id == appended.run_id,
+            )
+        )
+        existing = tuple(result.all())
+        if appended.run_duplicate and not existing:
+            # Run cũ không có bằng chứng: giữ nguyên lịch sử thiếu biên nhận.
+            return
+        if existing:
+            expected_by_child = {row.child_dataset_hash: row for row in expected}
+            if len(existing) != len(expected) or {
+                row.child_dataset_hash for row in existing
+            } != set(expected_by_child):
+                raise BacktestRepositoryConflict(
+                    "Tập biên nhận quyền đã lưu không đầy đủ hoặc khác."
+                )
+            for row in existing:
+                expected_receipt = expected_by_child[row.child_dataset_hash]
+                if appended.run_duplicate:
+                    _validate_rights_receipt_retry(row, expected_receipt)
+                else:
+                    _validate_rights_receipt(row, expected_receipt)
+            return
+        for row in expected:
+            self._session.add(row)
+        await self._session.flush()
 
     async def load_trade_outcomes(
         self, *, workspace_id: UUID, trial_record_id: UUID
@@ -333,6 +392,109 @@ class BacktestOutcomeRepository:
             rows=tuple(persisted_rows),
             outcomes_hash=_sha256(_canonical(canonical_values)),
         )
+
+
+def _validate_dataset_bundle(
+    workspace_id: UUID, dataset_hash: str, bundle: BacktestDatasetReplayBundle
+) -> None:
+    """Kiểm scope và snapshot quyền đầy đủ trước bất kỳ thao tác ghi outcome."""
+    if type(bundle) is not BacktestDatasetReplayBundle:
+        raise ValueError("dataset_bundle phải là BacktestDatasetReplayBundle đã xác thực.")
+    if bundle.workspace_id != workspace_id:
+        raise BacktestRepositoryConflict("Bundle không khớp workspace của outcome.")
+    if bundle.dataset_hash != dataset_hash:
+        raise BacktestRepositoryConflict("Hash bundle không khớp manifest sensitivity.")
+    for component in bundle.components:
+        manifest = component.manifest
+        manifest.require_ready()
+        rights = component.current_rights
+        if type(rights) is not BackfillRightsEvidence or (
+            manifest.rights_workspace_id != workspace_id
+            or rights.workspace_id != workspace_id
+            or rights.provider != manifest.rights_provider
+            or rights.purpose.value != manifest.rights_purpose
+            or rights.policy_fingerprint != manifest.policy_fingerprint
+        ):
+            raise BacktestRepositoryConflict("Bằng chứng quyền không khớp scope/policy manifest.")
+        if rights.checked_at is None:
+            raise ValueError("checked_at từ đồng hồ database là bắt buộc cho biên nhận quyền.")
+
+
+def _validate_rights_receipt(
+    row: BacktestRunDatasetRightsRecord, expected: BacktestRunDatasetRightsRecord
+) -> None:
+    """So canonical, JSONB, hash và cột chỉ mục để từ chối bằng chứng bị đổi."""
+    _validate_stored_rights_receipt_integrity(row)
+    fields = (
+        "workspace_id",
+        "run_id",
+        "bundle_hash",
+        "child_dataset_hash",
+        "interval",
+        "provider",
+        "purpose",
+        "terms_url",
+        "policy_fingerprint",
+        "verified_at",
+        "checked_at",
+        "valid_until",
+        "canonical_evidence",
+        "evidence_hash",
+    )
+    if (
+        any(getattr(row, field) != getattr(expected, field) for field in fields)
+        or row.canonical_evidence != expected.canonical_evidence
+    ):
+        raise BacktestRepositoryConflict("Biên nhận quyền đã lưu không khớp bằng chứng lần chạy.")
+
+
+def _validate_rights_receipt_retry(
+    row: BacktestRunDatasetRightsRecord, current: BacktestRunDatasetRightsRecord
+) -> None:
+    """Giữ receipt đầu khi retry deterministic đã kiểm lại policy hiện hành."""
+    _validate_stored_rights_receipt_integrity(row)
+    policy_bound_fields = (
+        "workspace_id",
+        "run_id",
+        "bundle_hash",
+        "child_dataset_hash",
+        "interval",
+        "provider",
+        "purpose",
+        "terms_url",
+        "policy_fingerprint",
+        "verified_at",
+    )
+    if any(getattr(row, field) != getattr(current, field) for field in policy_bound_fields):
+        raise BacktestRepositoryConflict(
+            "Receipt của run cũ không khớp scope hoặc policy quyền hiện hành."
+        )
+
+
+def _validate_stored_rights_receipt_integrity(row: BacktestRunDatasetRightsRecord) -> None:
+    """Xác minh row, JSONB, canonical text và hash của snapshot quyền đầu tiên."""
+    expected_payload = {
+        "schema_version": 1,
+        "workspace_id": str(row.workspace_id),
+        "run_id": str(row.run_id),
+        "bundle_hash": row.bundle_hash,
+        "child_dataset_hash": row.child_dataset_hash,
+        "interval": row.interval,
+        "provider": row.provider,
+        "purpose": row.purpose,
+        "terms_url": row.terms_url,
+        "policy_fingerprint": row.policy_fingerprint,
+        "verified_at": row.verified_at.isoformat(),
+        "checked_at": row.checked_at.isoformat(),
+        "valid_until": row.valid_until.isoformat(),
+    }
+    if (
+        type(row.evidence_json) is not dict
+        or row.evidence_json != expected_payload
+        or _canonical(row.evidence_json) != row.canonical_evidence
+        or _sha256(row.canonical_evidence) != row.evidence_hash
+    ):
+        raise BacktestRepositoryConflict("Biên nhận quyền đã lưu sai canonical hoặc hash.")
 
 
 async def _append_unique(

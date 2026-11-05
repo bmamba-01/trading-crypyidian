@@ -5,7 +5,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 from fastapi import FastAPI, Request
@@ -26,19 +26,24 @@ from trading_bot.adapters.database.engine import (
 from trading_bot.adapters.database.repositories.flatten_snapshot import (
     PostgresFlattenSnapshotProvider,
 )
+from trading_bot.adapters.database.source_policy_admin import DatabaseSourcePolicyAdminRepository
 from trading_bot.adapters.paper.account_activity import PaperLedgerAccountActivityAdapter
 from trading_bot.adapters.secrets.local_mfa import LocalMfaSecretProvider
 from trading_bot.adapters.telegram.recording_sender import RecordingTelegramSender
+from trading_bot.admin.backtest_replay_router import router as backtest_replay_router
 from trading_bot.admin.bot_control_router import router as bot_control_router
 from trading_bot.admin.bot_reports_router import router as bot_reports_router
 from trading_bot.admin.bot_service import BotConfigAdminService
 from trading_bot.admin.bots_router import router as bots_router
+from trading_bot.admin.research_source_router import admin_router as research_source_admin_router
+from trading_bot.admin.research_source_router import router as research_source_router
 from trading_bot.admin.settings_router import router as settings_router
 from trading_bot.admin.settings_service import SettingsAdminService
 from trading_bot.admin.strategy_card_service import StrategyCardAdminService
 from trading_bot.admin.telegram_binding_router import router as telegram_binding_router
 from trading_bot.admin.web_router import router as admin_web_router
 from trading_bot.application.account_activity_guard import AccountActivityGuard
+from trading_bot.application.backtest_replay_jobs import BacktestReplayJobService
 from trading_bot.application.bot_operations import BotOperationsService
 from trading_bot.application.bot_reporting import BotReportingService
 from trading_bot.application.bot_runtime_registry import BotRuntimeRegistry
@@ -52,6 +57,10 @@ from trading_bot.application.paper_runtime_bootstrap import (
     TRANSIENT_DATABASE_TIMEOUT,
     PaperRuntimeBootstrapService,
     new_runtime_owner_id,
+)
+from trading_bot.application.source_policy_admin import (
+    SourcePolicyAdminRepository,
+    SourcePolicyAdminService,
 )
 from trading_bot.application.telegram_binding import TelegramBindingService
 from trading_bot.auth.router import router as auth_router
@@ -170,8 +179,23 @@ def create_app(
             if active_session_factory is not None
             else None
         )
+        application.state.source_policy_admin_service = (
+            SourcePolicyAdminService(
+                cast(
+                    SourcePolicyAdminRepository,
+                    DatabaseSourcePolicyAdminRepository(active_session_factory),
+                )
+            )
+            if active_session_factory is not None
+            else None
+        )
         application.state.bot_reporting_service = (
             BotReportingService(active_session_factory)
+            if active_session_factory is not None
+            else None
+        )
+        application.state.backtest_replay_job_service = (
+            BacktestReplayJobService(active_session_factory)
             if active_session_factory is not None
             else None
         )
@@ -258,8 +282,11 @@ def create_app(
     app.include_router(settings_router)
     app.include_router(bots_router)
     app.include_router(bot_reports_router)
+    app.include_router(backtest_replay_router)
     app.include_router(bot_control_router)
     app.include_router(telegram_binding_router)
+    app.include_router(research_source_router)
+    app.include_router(research_source_admin_router)
     app.include_router(admin_web_router)
     app.include_router(telegram_router)
 

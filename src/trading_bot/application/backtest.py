@@ -165,6 +165,10 @@ class ReplayRejected:
     trial_record: TrialRecord
 
 
+class ReplayCancelled(RuntimeError):
+    """Dừng replay tại ranh giới observation trước khi ghi outcome."""
+
+
 ReplayResult = EvaluationReport | ReplayRejected
 ReplayEvaluator = Callable[[DecisionSnapshot], EvaluationTrade | None]
 
@@ -219,6 +223,8 @@ class BacktestRunner:
         *,
         manifest: ReplayManifest,
         evaluator: ReplayEvaluator,
+        progress_callback: Callable[[int, int], None] | None = None,
+        cancel_requested: Callable[[], bool] | None = None,
     ) -> ReplayResult:
         """Chạy evaluator tuần tự; lỗi được ghi thành trial thất bại, không bị nuốt."""
         manifest_hash = manifest.content_hash
@@ -275,8 +281,13 @@ class BacktestRunner:
                 return rejected(reason, str(error))
             usable.append(item)
 
+        if progress_callback is not None:
+            progress_callback(0, len(usable))
+
         trades: list[EvaluationTrade] = []
         for index, item in enumerate(usable):
+            if cancel_requested is not None and cancel_requested():
+                raise ReplayCancelled("Replay bị yêu cầu dừng tại ranh giới observation.")
             try:
                 trade = evaluator(item.snapshot)
             except Exception as error:
@@ -312,6 +323,8 @@ class BacktestRunner:
                             "TRADE_OUTSIDE_RANGE", "Giao dịch đóng ngoài khoảng replay nửa mở."
                         )
                 trades.append(trade)
+            if progress_callback is not None:
+                progress_callback(index + 1, len(usable))
 
         try:
             metrics = build_evaluation_metrics(

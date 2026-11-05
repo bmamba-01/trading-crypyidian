@@ -84,6 +84,8 @@ def run_sensitivity(
     scenarios: tuple[SensitivityScenario, ...],
     evaluator_factory: EvaluatorFactory,
     runner: BacktestRunner | None = None,
+    progress_callback: Callable[[int, int], None] | None = None,
+    cancel_requested: Callable[[], bool] | None = None,
 ) -> SensitivityComparison:
     """Chạy BASE và các biến thể với manifest/trial riêng, theo thứ tự xác định.
 
@@ -95,6 +97,8 @@ def run_sensitivity(
     ordered = _validate_and_order_scenarios(scenarios, manifest)
     active_runner = runner or BacktestRunner()
     runs: list[SensitivityRun] = []
+    observation_count = len(observations)
+    total_work = observation_count * len(ordered)
     for trial_index, scenario in enumerate(ordered):
         scenario_manifest = _manifest_for_scenario(
             manifest,
@@ -107,6 +111,14 @@ def run_sensitivity(
             observations,
             manifest=scenario_manifest,
             evaluator=evaluator,
+            progress_callback=(
+                lambda completed, _total, offset=trial_index * observation_count: (
+                    progress_callback(offset + completed, total_work)
+                    if progress_callback is not None
+                    else None
+                )
+            ),
+            cancel_requested=cancel_requested,
         )
         runs.append(SensitivityRun(scenario, scenario_manifest, result))
     return SensitivityComparison(

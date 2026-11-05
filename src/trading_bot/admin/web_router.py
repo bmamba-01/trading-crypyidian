@@ -12,11 +12,23 @@ from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from fastapi.routing import APIRoute
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, ValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from trading_bot.admin.bot_schemas import CreateBotRequest
 from trading_bot.admin.bot_service import BotAdminError, BotConfigAdminService
+from trading_bot.admin.presentation import (
+    METRICS,
+    PNL_METRIC_KEYS,
+    label_vi,
+    local_time,
+    number_vi,
+    pnl_tone,
+)
 from trading_bot.admin.strategy_card_service import StrategyCardAdminService
 from trading_bot.application.bot_lifecycle_guard import BotNotFlatError
 from trading_bot.application.bot_operations import BotOperationsService, PrincipalBotOperations
@@ -56,9 +68,74 @@ try:
 except Exception:  # pragma: no cover
     VN_TZ = timezone(timedelta(hours=7))
 
-router = APIRouter(prefix="/admin", tags=["admin web"])
 LOGIN_CSRF_COOKIE = "crypidian_login_csrf"
 LOGIN_CSRF_HOST_COOKIE = "__Host-crypidian_login_csrf"
+
+
+def _templates(request: Request) -> Jinja2Templates:
+    """Đăng ký định dạng trình bày dùng chung cho mọi trang quản trị."""
+    templates = cast(Jinja2Templates, request.app.state.templates)
+    templates.env.filters.update(
+        label_vi=label_vi,
+        local_time=local_time,
+        number_vi=number_vi,
+        pnl_tone=pnl_tone,
+    )
+    templates.env.globals["report_metrics"] = METRICS
+    templates.env.globals["pnl_metric_keys"] = PNL_METRIC_KEYS
+    return templates
+
+
+class AdminHTMLRoute(APIRoute):
+    """Lỗi của trang HTML giữ mã HTTP và không phản chiếu dữ liệu nội bộ/biểu mẫu."""
+
+    def get_route_handler(self) -> Any:
+        original = super().get_route_handler()
+
+        async def handle(request: Request) -> Response:
+            try:
+                return await original(request)
+            except (StarletteHTTPException, RequestValidationError, AuthenticationFailure) as error:
+                status = (
+                    error.status_code
+                    if isinstance(error, (StarletteHTTPException, AuthenticationFailure))
+                    else 422
+                )
+                messages = {
+                    401: "Phiên đăng nhập không hợp lệ hoặc đã hết hạn.",
+                    403: "Xác thực hoặc quyền truy cập chưa đáp ứng yêu cầu.",
+                    404: "Không tìm thấy nội dung trong phạm vi được cấp quyền.",
+                    409: "Trạng thái đã thay đổi hoặc điều kiện vận hành chưa đáp ứng.",
+                    422: "Thông tin gửi lên không hợp lệ hoặc chưa đầy đủ.",
+                    429: "Bạn đã gửi quá nhiều yêu cầu. Hãy chờ rồi thử lại.",
+                    503: "Dịch vụ tạm thời chưa sẵn sàng. Hãy thử lại sau.",
+                }
+                headers = (
+                    dict(error.headers or {}) if isinstance(error, StarletteHTTPException) else {}
+                )
+                headers["Cache-Control"] = "no-store"
+                if self.response_class is JSONResponse:
+                    return JSONResponse(
+                        {"detail": messages.get(status, "Không thể xử lý yêu cầu này.")},
+                        status_code=status,
+                        headers=headers,
+                    )
+                return _templates(request).TemplateResponse(
+                    request=request,
+                    name="admin/error.html",
+                    context={
+                        "identity": None,
+                        "error_message": messages.get(status, "Không thể xử lý yêu cầu này."),
+                        "error_status": status,
+                    },
+                    status_code=status,
+                    headers=headers,
+                )
+
+        return handle
+
+
+router = APIRouter(prefix="/admin", tags=["admin web"])
 
 
 @dataclass(frozen=True, slots=True)
@@ -255,7 +332,7 @@ async def submit_login(request: Request) -> Response:
     return response
 
 
-async def _parse_form(request: Request) -> dict[str, str]:
+async def _parse_form(request: Request, *, max_bytes: int = 16_384) -> dict[str, str]:
     """Đọc form urlencoded giới hạn kích thước, từ chối field trùng để tránh nhập nhằng."""
     if (
         request.headers.get("content-type", "").split(";", 1)[0]
@@ -263,7 +340,7 @@ async def _parse_form(request: Request) -> dict[str, str]:
     ):
         raise HTTPException(status_code=415, detail="Chỉ nhận form urlencoded.")
     raw = await request.body()
-    if len(raw) > 16_384:
+    if len(raw) > max_bytes:
         raise HTTPException(status_code=413, detail="Form quá lớn.")
     try:
         values = parse_qs(raw.decode("utf-8"), keep_blank_values=True, strict_parsing=True)

@@ -2,24 +2,33 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from types import MappingProxyType
 from uuid import UUID
 
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from trading_bot.adapters.database.models import SourcePolicyRevisionRecord, SourceQuotaEventRecord
+from trading_bot.adapters.database.models import (
+    SourcePolicyObservationRecord,
+    SourcePolicyRevisionRecord,
+    SourceQuotaEventRecord,
+    UserMembership,
+)
 from trading_bot.domain.research.source_policy import (
     SourcePolicyState,
     SourceRightsPolicy,
     SourceUsePurpose,
 )
 from trading_bot.domain.research.source_registry import (
+    ObservedSourcePolicy,
     SourceBudget,
     SourcePolicyRevision,
     SourceQuotaExceeded,
+    SourceQuotaSnapshot,
     SourceRegistryEntry,
     SourceUsage,
     normalize_source_cost,
@@ -63,6 +72,23 @@ class SourceRegistryRepository:
     ) -> SourceRegistryAppendResult:
         """Append policy revision sau khóa workspace/source và kiểm tra history hiện tại."""
         await self._bind_workspace(workspace_id)
+        policy_id = revision.policy.policy_id
+        match = re.fullmatch(r"policy:([0-9a-f]{32}):[0-9a-f]{64}", policy_id)
+        if match is not None:
+            key = UUID(hex=match.group(1))
+            await self._session.execute(
+                text("SELECT pg_advisory_xact_lock(hashtextextended(:lock_key, 0))"),
+                {"lock_key": f"research-policy-key:{workspace_id}:{key.hex}"},
+            )
+            matches = await self.find_revisions_by_idempotency_key(
+                workspace_id=workspace_id, key=key
+            )
+            if len(matches) > 1 or any(
+                stored.policy.policy_id != policy_id
+                or stored.policy.source_id != revision.policy.source_id
+                for stored in matches
+            ):
+                raise SourceRegistryConflict("idempotency key đã có revision khác trong workspace.")
         await self._lock_source(workspace_id, revision.policy.source_id)
         duplicate = await self._session.scalar(
             select(SourcePolicyRevisionRecord).where(
@@ -113,6 +139,114 @@ class SourceRegistryRepository:
             tuple(_to_domain_revision(row) for row in rows),
         )
 
+    async def list_entries(self, *, workspace_id: UUID) -> tuple[SourceRegistryEntry, ...]:
+        """Liệt kê tối đa 200 nguồn trong workspace, lịch sử có thứ tự."""
+        await self._bind_workspace(workspace_id)
+        result = await self._session.scalars(
+            select(SourcePolicyRevisionRecord.source_id)
+            .where(SourcePolicyRevisionRecord.workspace_id == workspace_id)
+            .distinct()
+            .order_by(SourcePolicyRevisionRecord.source_id)
+            .limit(200)
+        )
+        entries = []
+        for source_id in result.all():
+            entry = await self.get_entry(workspace_id=workspace_id, source_id=source_id)
+            if entry is not None:
+                entries.append(entry)
+        return tuple(entries)
+
+    async def get_quota_snapshot(
+        self, *, workspace_id: UUID, source_id: str
+    ) -> SourceQuotaSnapshot | None:
+        """Đọc usage dưới source lock và clock DB, không ghi reservation."""
+        await self._bind_workspace(workspace_id)
+        await self._lock_source(workspace_id, source_id)
+        entry = await self.get_entry(workspace_id=workspace_id, source_id=source_id)
+        if entry is None:
+            return None
+        return await self._quota_snapshot_locked(
+            workspace_id=workspace_id, source_id=source_id, entry=entry
+        )
+
+    async def _quota_snapshot_locked(
+        self, *, workspace_id: UUID, source_id: str, entry: SourceRegistryEntry
+    ) -> SourceQuotaSnapshot:
+        now = await self.database_clock(workspace_id=workspace_id)
+        current = entry.current
+        events = await self._quota_events(workspace_id=workspace_id, source_id=source_id)
+        usage, started = _current_usage(events, at=now, budget=current.budget)
+        if usage is None:
+            usage = SourceUsage(started, 0, 0, Decimal(0), current.budget.cost_unit)
+        return SourceQuotaSnapshot(source_id, current.sequence, now, started, current.budget, usage)
+
+    async def get_source_snapshot(
+        self, *, workspace_id: UUID, source_id: str
+    ) -> tuple[SourceRegistryEntry, SourceQuotaSnapshot | None] | None:
+        """Đọc history và quota dưới cùng source lock/transaction."""
+        await self._bind_workspace(workspace_id)
+        await self._lock_source(workspace_id, source_id)
+        entry = await self.get_entry(workspace_id=workspace_id, source_id=source_id)
+        if entry is None:
+            return None
+        quota = await self._quota_snapshot_locked(
+            workspace_id=workspace_id, source_id=source_id, entry=entry
+        )
+        return entry, quota
+
+    async def find_revisions_by_idempotency_key(
+        self, *, workspace_id: UUID, key: UUID
+    ) -> tuple[SourcePolicyRevision, ...]:
+        """Tìm tối đa hai revision cùng key trên toàn workspace để phát hiện bất nhất."""
+        if not isinstance(key, UUID):
+            raise ValueError("idempotency_key phải là UUID.")
+        await self._bind_workspace(workspace_id)
+        result = await self._session.scalars(
+            select(SourcePolicyRevisionRecord)
+            .where(
+                SourcePolicyRevisionRecord.workspace_id == workspace_id,
+                SourcePolicyRevisionRecord.policy_id.like(f"policy:{key.hex}:%"),
+            )
+            .limit(2)
+        )
+        return tuple(_to_domain_revision(row) for row in result.all())
+
+    async def membership_id_for_user(self, *, workspace_id: UUID, user_id: UUID) -> UUID | None:
+        """Tra membership legacy trong workspace; dữ liệu thiếu/mơ hồ trả None."""
+        await self._bind_workspace(workspace_id)
+        result = await self._session.scalars(
+            select(UserMembership.id)
+            .where(UserMembership.workspace_id == workspace_id, UserMembership.user_id == user_id)
+            .limit(2)
+        )
+        memberships = result.all()
+        return memberships[0] if len(memberships) == 1 else None
+
+    async def database_clock(self, *, workspace_id: UUID) -> datetime:
+        """Đọc clock PostgreSQL trong workspace thay cho đồng hồ caller khi xét quyền."""
+        if not isinstance(workspace_id, UUID):
+            raise ValueError("workspace_id phải là UUID.")
+        await self._bind_workspace(workspace_id)
+        now = await self._session.scalar(text("SELECT clock_timestamp()"))
+        if not isinstance(now, datetime) or now.tzinfo is None or now.utcoffset() is None:
+            raise RuntimeError("database clock_timestamp() không trả thời gian có múi giờ.")
+        return now.astimezone(UTC)
+
+    async def enqueue_expired_policy_events(self, *, workspace_id: UUID, batch_size: int) -> int:
+        """Dùng DB clock để append idempotent expiry events cho một batch trong workspace."""
+        if not isinstance(workspace_id, UUID):
+            raise ValueError("workspace_id phải là UUID.")
+        if type(batch_size) is not int or not 1 <= batch_size <= 500:
+            raise ValueError("batch_size phải là số nguyên từ 1 đến 500.")
+        await self._bind_workspace(workspace_id)
+        inserted = await self._session.scalar(
+            text("SELECT public.enqueue_expired_source_policy_events(:batch_size)"),
+            {"batch_size": batch_size},
+        )
+        if type(inserted) is not int:
+            raise RuntimeError("database expiry scanner không trả số event hợp lệ.")
+        return inserted
+
     async def reserve_quota(
         self,
         *,
@@ -145,6 +279,10 @@ class SourceRegistryRepository:
         await self._bind_workspace(workspace_id)
         await self._lock_source(workspace_id, source_id)
 
+        observed = await self.get_observed_entry(workspace_id=workspace_id, source_id=source_id)
+        if observed is None:
+            raise PermissionError("Policy hiện hành chưa có chuỗi receipt đầy đủ.")
+
         duplicate = await self._session.scalar(
             select(SourceQuotaEventRecord).where(
                 SourceQuotaEventRecord.workspace_id == workspace_id,
@@ -168,14 +306,10 @@ class SourceRegistryRepository:
             raise RuntimeError("database clock_timestamp() không trả thời gian có múi giờ.")
         now = now.astimezone(UTC)
 
-        policy_rows = await self._policy_rows(workspace_id=workspace_id, source_id=source_id)
-        if not policy_rows:
-            raise PermissionError("source policy không tồn tại hoặc chưa được duyệt.")
-        entry = SourceRegistryEntry(
-            source_id,
-            tuple(_to_domain_revision(row) for row in policy_rows),
-        )
+        entry = observed.history
         current = entry.current
+        if observed.known_at[current.policy.policy_id] >= now:
+            raise PermissionError("Receipt policy chưa khả dụng theo database clock.")
         if not entry.permits(purpose, at=now):
             raise PermissionError(
                 "source policy không cho phép mục đích tại thời điểm reservation."
@@ -209,6 +343,83 @@ class SourceRegistryRepository:
         self._session.add(event)
         await self._session.flush()
         return SourceQuotaReservationResult(event.id, window_started_at, current.sequence, False)
+
+    async def finalize_policy(
+        self,
+        *,
+        workspace_id: UUID,
+        source_id: str,
+        policy_id: str,
+    ) -> SourcePolicyObservationRecord:
+        """Chỉ gọi ở transaction mới sau source commit; DB chặn cùng top-level xid."""
+        await self._bind_workspace(workspace_id)
+        source = await self._session.scalar(
+            select(SourcePolicyRevisionRecord).where(
+                SourcePolicyRevisionRecord.workspace_id == workspace_id,
+                SourcePolicyRevisionRecord.source_id == source_id,
+                SourcePolicyRevisionRecord.policy_id == policy_id,
+            )
+        )
+        if source is None:
+            raise LookupError("Policy chưa visible trong workspace của observer.")
+        await self._lock_source(workspace_id, source_id)
+        existing = await self._session.scalar(
+            select(SourcePolicyObservationRecord).where(
+                SourcePolicyObservationRecord.workspace_id == workspace_id,
+                SourcePolicyObservationRecord.policy_id == policy_id,
+            )
+        )
+        if existing is not None:
+            return existing
+        receipt = SourcePolicyObservationRecord(
+            workspace_id=workspace_id,
+            source_id=source_id,
+            policy_id=policy_id,
+            sequence=source.sequence,
+        )
+        self._session.add(receipt)
+        await self._session.flush()
+        await self._session.refresh(receipt)
+        return receipt
+
+    async def get_observed_entry(
+        self,
+        *,
+        workspace_id: UUID,
+        source_id: str,
+    ) -> ObservedSourcePolicy | None:
+        """Không fallback policy VERIFIED cũ nếu latest hoặc predecessor thiếu receipt."""
+        await self._bind_workspace(workspace_id)
+        await self._lock_source(workspace_id, source_id)
+        rows = await self._policy_rows(workspace_id=workspace_id, source_id=source_id)
+        if not rows:
+            return None
+        result = await self._session.scalars(
+            select(SourcePolicyObservationRecord)
+            .where(
+                SourcePolicyObservationRecord.workspace_id == workspace_id,
+                SourcePolicyObservationRecord.source_id == source_id,
+            )
+            .order_by(SourcePolicyObservationRecord.sequence)
+        )
+        receipts = {row.sequence: row for row in result.all()}
+        known_at: dict[str, datetime] = {}
+        previous = None
+        for number, row in enumerate(rows, 1):
+            receipt = receipts.get(number)
+            if row.sequence != number or receipt is None or receipt.policy_id != row.policy_id:
+                return None
+            known = receipt.known_at
+            if (
+                known < row.created_at
+                or (row.reviewed_at is not None and known < row.reviewed_at)
+                or (previous is not None and known < previous)
+            ):
+                return None
+            previous = known
+            known_at[row.policy_id] = known
+        history = SourceRegistryEntry(source_id, tuple(_to_domain_revision(row) for row in rows))
+        return ObservedSourcePolicy(history, MappingProxyType(known_at))
 
     async def _bind_workspace(self, workspace_id: UUID) -> None:
         await self._session.execute(
