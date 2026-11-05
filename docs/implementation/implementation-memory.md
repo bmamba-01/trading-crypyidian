@@ -13,6 +13,69 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 
 ## Nhật ký các vòng
 
+### 2026-11-05 — WP-SC.1: Domain Models, Candle Anatomy Primitives & Declarative Schema cho Strategy Card
+
+- **Mục tiêu/phạm vi:** Triển khai nền móng miền nghiệp vụ WP-SC.1 cho kiến trúc Bản kê Chiến lược Khai báo (Declarative Strategy Card) lấy cảm hứng từ QUANTSMART:
+  1. `models.py`: Định nghĩa các Enums `CompositionLayer` (L0 đến L6), `DataType` (PRICE_SERIES, NUMERIC_SCALAR, BOOLEAN_FLAG, CATEGORICAL_STATE), `NodeExecutionRole` (STATELESS_TRANSFORM, STATEFUL_WINDOW, GATE_FILTER, TERMINAL_ZONE); và các Frozen Dataclasses bất biến `TypedPort`, `GraphNode`, `GraphEdge`, `ParameterBound`, `CompatibilityMap`, `ExecutionProfile`.
+  2. `anatomy.py`: Thư viện khối nguyên tử giải phẫu nến đo đạc hình học thuần túy bằng `Decimal`: `lower_wick_ratio`, `upper_wick_ratio`, `body_ratio`, `close_location`, `wick_rejection_strength` với cơ chế chống chia cho 0 an toàn khi nến phẳng ($High == Low$).
+  3. `schema.py`: Pydantic v2 model `StrategyCard` với validator kiểm tra toàn vẹn cấu trúc và thuật toán Kahn phát hiện chu trình (Acyclic DAG check); hàm `compute_canonical_hash` tuần tự hóa canonical JSON (sorted keys, compact, bất biến thứ tự phần tử) và sinh mã băm SHA-256 64 ký tự phục vụ audit/provenance.
+- **Nguồn đã kiểm tra (2026-11-05):**
+  - QUANTSMART Custom Modules Specification: [`github.com/Jokejoker-designer/QUANTSMART/blob/main/docs/CUSTOM_MODULES.md`](https://github.com/Jokejoker-designer/QUANTSMART/blob/main/docs/CUSTOM_MODULES.md) (nguyên lý khối nguyên tử giải phẫu nến và typed ports).
+  - RFC 8785 JSON Canonicalization Scheme (JCS): [`datatracker.ietf.org/doc/html/rfc8785`](https://datatracker.ietf.org/doc/html/rfc8785) (chuẩn hóa JSON tất định cho chữ ký số và mã băm toàn vẹn).
+- **Thay đổi mã nguồn:**
+  - `src/trading_bot/domain/strategy_card/models.py`: Tạo mới các Enum và Frozen Dataclass cho đồ thị và metadata chiến lược.
+  - `src/trading_bot/domain/strategy_card/anatomy.py`: Triển khai 5 hàm nguyên tử hình học nến Decimal với safe fallback khi $H=L$ (`close_location` trả về Decimal("0.5") trung lập, các tỷ lệ wick/body trả về Decimal(0)).
+  - `src/trading_bot/domain/strategy_card/schema.py`: Triển khai `StrategyCard` Pydantic v2 model, Kahn DAG cycle detector, validator tham chiếu node và hàm `compute_canonical_hash`.
+  - `src/trading_bot/domain/strategy_card/__init__.py`: Xuất khẩu đầy đủ các symbols của domain models, anatomy và schema.
+  - `tests/unit/test_strategy_card_schema.py`: Bộ 16 unit tests TDD kiểm thử Hammer, Doji phẳng, Marubozu, Shooting Star, Dragonfly/Gravestone Doji, immutability, DAG Kahn cycle/self-loop/missing node/duplicate id, diamond DAG và tính tất định của canonical hash.
+  - `docs/research/glossary-vi.md`: Bổ sung định nghĩa `Wick rejection strength` và `Canonical content hash` vào mục R.
+- **TDD và xử lý lỗi phát sinh:**
+  - RED phase: Kiểm tra ban đầu gặp `ModuleNotFoundError: No module named 'trading_bot.domain.strategy_card'`.
+  - GREEN phase: Cài đặt logic, kiểm tra 12 test ban đầu và mở rộng lên 16 test với các mô hình nến và hình thái đồ thị phức tạp (Diamond graph, chu trình gián tiếp).
+  - Xử lý Mypy: Sắp xếp các danh sách bằng thuộc tính đối tượng trước khi trích xuất dict (`sorted(card.parameters, key=lambda p: p.name)`) để loại trừ lỗi so sánh `object` type invariance của dictionary.
+  - Sửa lỗi Ruff: Đảm bảo độ dài dòng <= 100 ký tự, sử dụng `dict.fromkeys` và xóa `list()` bọc ngoài trong `sorted()`.
+- **Kiểm chứng và chất lượng:**
+  - Unit tests mục tiêu: `PYTHONPATH="$PWD:$PWD/src" .venv/bin/pytest tests/unit/test_strategy_card_schema.py -v` → **16 passed in 0.07s**.
+  - Toàn bộ regression unit tests: `PYTHONPATH="$PWD:$PWD/src" .venv/bin/pytest tests/unit -q` → **2203 passed in 9.92s** (0 failure, 0 skip).
+  - Ruff check: `.venv/bin/ruff check src/trading_bot/domain/strategy_card/models.py src/trading_bot/domain/strategy_card/anatomy.py src/trading_bot/domain/strategy_card/schema.py tests/unit/test_strategy_card_schema.py` → **All checks passed!**
+  - Ruff format: `.venv/bin/ruff format --check src/trading_bot/domain/strategy_card/models.py src/trading_bot/domain/strategy_card/anatomy.py src/trading_bot/domain/strategy_card/schema.py tests/unit/test_strategy_card_schema.py` → **4 files already formatted**.
+  - Mypy: `.venv/bin/mypy src/trading_bot/domain/strategy_card/models.py src/trading_bot/domain/strategy_card/anatomy.py src/trading_bot/domain/strategy_card/schema.py tests/unit/test_strategy_card_schema.py` → **Success: no issues found in 4 source files**.
+- **Giới hạn còn mở:**
+  - Chưa liên kết Strategy Card vào Pipeline Runtime Executor (sẽ thực hiện ở WP-SC.3).
+  - Chưa lưu trữ bảng DB `strategy_cards` (sẽ thực hiện ở WP-SC.4).
+- **Đã đọc lại mục memory sau cập nhật:** Có; đối chiếu đầy đủ với các thay đổi code, test suite 16 unit + 2203 regression passed, ruff/mypy outputs.
+
+### 2026-11-05 — WP-SC.2: Verification Engine, Anti-Consensus Illusion Analyzer & Coordinate Lab Math cho Strategy Card
+
+- **Mục tiêu/phạm vi:** Triển khai gói công việc WP-SC.2 thuộc kiến trúc Strategy Card lấy cảm hứng từ QUANTSMART:
+  1. `AntiConsensusAnalyzer` (`orthogonality.py`): Đo đạc ma trận tương quan Pearson `calculate_correlation_matrix` giữa các chỉ báo đầu ra, phát hiện và xuất cảnh báo đỏ khi $|r| \ge threshold$ (mặc định 0.85) nhằm chống hiện tượng đa cộng tuyến và ảo giác đồng thuận (Consensus Illusion) khi nhiều chỉ báo cùng đo một biến thể giá đóng cửa.
+  2. `DeadNodeDetector` (`graph_verifier.py`): Thẩm định đồ thị Strategy Card, duyệt ngược từ các node tầng quyết định `L6_ZONES` về `L0_DATA_HYGIENE` theo thuật toán BFS/DFS để phát hiện các node mồ côi (Unwired / Dead Nodes); phát hiện chu trình (Cycle Detection) bảo đảm đồ thị là DAG thuần túy; phát hiện các ngõ cụt logic (Logic Dead Ends: cổng AND bị triệt tiêu bởi False, cổng OR bị vô hiệu hóa bởi True, hoặc cổng logic thiếu kết nối đầu vào).
+  3. `CoordinateLabEngine` (`geometry_lab.py`): Động cơ toán học khảo sát hình học công thức đa chiều: quét lưới tham số `sweep_parameter_grid` tạo meshgrid và trích xuất lát cắt 1D/2D; quét dò điểm kỳ dị `detect_singularities` phát hiện điểm chia cho 0 khi nến phẳng ($H=L$), vô cực (Infinity), NaN hoặc lỗi miền giá trị toán học kèm safe default; phân tích độ nhạy gradient `calculate_gradient_sensitivity` và `evaluate_fragility` bằng sai phân hữu hạn trung tâm phát hiện bề mặt răng cưa (Knife-Edge Fragility) cảnh báo nguy cơ quá khớp (Overfitting).
+- **Nguồn đã kiểm tra (2026-11-05):**
+  - Bailey et al., [*Pseudo-Mathematics and Financial Charlatanism: The Effects of Backtest Overfitting on Out-of-Sample Performance*](https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2308659) (cơ sở toán học trừng phạt tương quan cao và bề mặt tham số có gradient quá dốc).
+  - QUANTSMART Custom Modules Specification: [`github.com/Jokejoker-designer/QUANTSMART/blob/main/docs/CUSTOM_MODULES.md`](https://github.com/Jokejoker-designer/QUANTSMART/blob/main/docs/CUSTOM_MODULES.md) (tham khảo ý tưởng Coordinate Lab và kiểm tra tĩnh đồ thị).
+- **Thay đổi mã nguồn:**
+  - `src/trading_bot/domain/strategy_card/orthogonality.py`: Tạo mới module tính ma trận Pearson, class `AntiConsensusAnalyzer`, DTO `OrthogonalityReport`.
+  - `src/trading_bot/domain/strategy_card/graph_verifier.py`: Tạo mới module duyệt ngược đồ thị, class `DeadNodeDetector`, DTO `GraphVerificationReport`.
+  - `src/trading_bot/domain/strategy_card/geometry_lab.py`: Tạo mới module toán học tọa độ, class `CoordinateLabEngine` (grid sweep, singularity sweep, gradient finite difference).
+  - `src/trading_bot/domain/strategy_card/__init__.py`: Export các lớp và hàm của verification engine.
+  - `tests/unit/test_strategy_card_verification.py`: Bộ 14 unit tests TDD bao phủ toàn diện ảo giác đồng thuận, nút mồ côi, chu trình, ngõ cụt logic, chia cho 0, NaN, vô cực và độ nhạy gradient.
+  - `docs/research/glossary-vi.md`: Bổ sung 2 thuật ngữ tiếng Việt vào mục R: `Knife-edge fragility` (Độ mỏng manh răng cưa) và `Singularity sweep` (Quét dò điểm kỳ dị).
+- **TDD và xử lý lỗi phát sinh:**
+  - RED phase: Khởi tạo test fail do module chưa tồn tại (`ModuleNotFoundError`).
+  - GREEN phase: Triển khai toàn bộ giải thuật toán học bằng Python Standard Library thuần túy (zero external dependency, không dùng numpy/scipy ngoài), bảo đảm tính tất định và tốc độ microsecond.
+  - Sửa lỗi ruff: Chuẩn hóa ngắt dòng chuỗi thông báo tiếng Việt không vượt quá 100 ký tự; thay thế dict comprehension khởi tạo state bằng `dict.fromkeys(node_map, 0)`.
+- **Kiểm chứng và chất lượng:**
+  - Unit tests mục tiêu: `pytest tests/unit/test_strategy_card_verification.py -v` → **14 passed in 0.09s**.
+  - Nhóm Strategy Card (WP-SC.1 + WP-SC.2): `pytest tests/unit/test_strategy_card_*.py -v` → **30 passed in 0.12s**.
+  - Toàn bộ regression unit tests: `pytest tests/unit -q` → **2203 passed in 10.39s** (0 failure, 0 skip).
+  - Ruff check: `.venv/bin/ruff check src/ tests/` → **All checks passed!**
+  - Ruff format: `.venv/bin/ruff format --check src/ tests/` → **412 files already formatted**.
+  - Mypy: `.venv/bin/mypy src/trading_bot/domain/strategy_card/ tests/unit/test_strategy_card_verification.py` → **Success: no issues found in 5 source files**.
+- **Giới hạn còn mở:**
+  - Chuẩn bị tích hợp vào WP-SC.3: Runtime Pipeline Engine L0→L6 Topo Executor & Context Gate.
+- **Đã đọc lại memory sau cập nhật:** Có; đối chiếu đầy đủ với các thay đổi code, test suite 14 unit + 2203 regression passed, ruff/mypy outputs.
+
 ### 2026-11-04 — Nghiên cứu & Thiết kế Kiến trúc Hợp nhất QUANTSMART (L0-L6, Strategy Card, Coordinate Lab, Anti-Consensus)
 
 - **Mục tiêu/phạm vi:** Nghiên cứu sâu và đánh giá toàn diện repository `github.com/Jokejoker-designer/QUANTSMART` (Apache-2.0, Local-first Quant Workspace). Đối soát và chắt lọc 5 giá trị tinh hoa (Module nguyên tử & Candle Anatomy, Kiến trúc phân tầng 7 lớp L0-L6, Anti-Consensus Illusion & Dead Node Detection, Coordinate Lab hình học công thức đa chiều, Strategy Card đóng gói dạng khai báo có băm SHA-256 xác thực). So sánh đối chiếu với Trading Crypidian và thiết kế phương án hợp nhất kiến trúc vào Crypidian mà không phá vỡ các bất biến cốt lõi của Risk Engine và sổ cái kép PostgreSQL RLS.
