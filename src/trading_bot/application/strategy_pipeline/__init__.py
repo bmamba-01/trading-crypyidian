@@ -14,6 +14,12 @@ from trading_bot.application.strategy_pipeline.context_gate import (
     ContextGateResult,
     ContextGateStatus,
 )
+from trading_bot.application.strategy_pipeline.microscope import (
+    LayerTrace,
+    MicroscopeReplayService,
+    MicroscopeTrace,
+    PresetCandle,
+)
 from trading_bot.application.strategy_pipeline.pipeline_engine import (
     PipelineExecutionResult,
     StrategyCandidate,
@@ -35,7 +41,11 @@ __all__ = [
     "ContextGateResult",
     "ContextGateStatus",
     "ExecutionZones",
+    "LayerTrace",
+    "MicroscopeReplayService",
+    "MicroscopeTrace",
     "PipelineExecutionResult",
+    "PresetCandle",
     "StrategyCandidate",
     "StrategyPipelineEngine",
     "TriggerEvaluationResult",

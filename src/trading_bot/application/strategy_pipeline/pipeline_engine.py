@@ -322,7 +322,7 @@ class StrategyPipelineEngine:
     ) -> Decimal:
         """Tính toán chỉ báo L2 (ATR, EMA, v.v.)."""
         op = node.operation.lower()
-        if "atr" in op:
+        if "atr" in op or "true_range" in op:
             # Biên độ thực sự của nến hiện tại
             return bar.high - bar.low
         if "ema" in op or "sma" in op:

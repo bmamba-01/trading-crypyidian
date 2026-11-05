@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import json
 import re
 import time
 from collections.abc import Callable
@@ -17,6 +16,11 @@ from urllib.parse import urlencode
 from uuid import UUID
 
 from trading_bot.adapters.binance_usdm.demo_target import BinanceDemoTarget
+from trading_bot.adapters.binance_usdm.order_schemas import (
+    OrderSchemaError,
+    decode_order_object,
+    validate_regular_order_family,
+)
 from trading_bot.adapters.binance_usdm.submission_errors import (
     BinanceResponse,
     SubmissionFailure,
@@ -219,6 +223,7 @@ class DemoUsdMRestAdapter:
         try:
             if payload is None:
                 raise ValueError
+            _validate_regular_response_family(payload, intent)
             order_id = payload.get("orderId")
             client_order_id = payload.get("clientOrderId")
             symbol = payload.get("symbol")
@@ -266,6 +271,7 @@ class DemoUsdMRestAdapter:
         try:
             if payload is None:
                 raise ValueError
+            _validate_regular_response_family(payload, intent)
             if (
                 payload.get("clientOrderId") != intent.client_order_id
                 or payload.get("symbol") != intent.symbol
@@ -383,10 +389,15 @@ def _binance_failure(
 
 def _json_object(body: bytes) -> dict[str, object] | None:
     try:
-        value = json.loads(body)
-    except UnicodeDecodeError, json.JSONDecodeError, TypeError:
+        return decode_order_object(body)
+    except OrderSchemaError:
         return None
-    return value if isinstance(value, dict) else None
+
+
+def _validate_regular_response_family(payload: dict[str, object], intent: VenueOrderIntent) -> None:
+    validate_regular_order_family(payload)
+    if "type" in payload and payload["type"] != intent.order_type:
+        raise ValueError("Type của response không khớp intent thường.")
 
 
 def _integer(payload: dict[str, object] | None, key: str) -> int | None:

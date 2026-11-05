@@ -432,3 +432,17 @@ class StrategyCardAdminService:
             if c.card_id == card_id and c.version == version:
                 return c
         return None
+
+    async def get_domain_card(self, principal: Principal, card_id: str) -> StrategyCard | None:
+        """Lấy thực thể StrategyCard miền nghiệp vụ phục vụ động cơ thực thi và soi kính hiển vi."""
+        if self._session_factory is not None:
+            async with self._session_factory() as session:
+                repo = StrategyCardRepository(session)
+                rec = await repo.get_card(workspace_id=principal.workspace_id, card_id=card_id)
+                if rec is not None:
+                    return rec.to_domain()
+
+        for card in self._fallback_cards:
+            if card.card_id == card_id:
+                return card
+        return None

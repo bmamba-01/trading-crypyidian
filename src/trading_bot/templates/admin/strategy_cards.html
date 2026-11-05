@@ -151,6 +151,15 @@
                 <span class="meta-value">{{ card.created_at_formatted }}</span>
               </div>
             </footer>
+
+            <!-- Thanh tác vụ chiến lược -->
+            <div class="strategy-card-actions">
+              <a href="/admin/strategy-cards/{{ card.card_id }}/microscope"
+                 class="btn btn-secondary btn-sm btn-microscope"
+                 aria-label="Soi kính hiển vi vết lịch sử cho {{ card.name }}">
+                🔍 Soi kính hiển vi (Microscope)
+              </a>
+            </div>
           </div>
         </article>
       {% endfor %}

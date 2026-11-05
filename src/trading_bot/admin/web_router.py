@@ -13,7 +13,7 @@ from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.templating import Jinja2Templates
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from trading_bot.admin.bot_schemas import CreateBotRequest
 from trading_bot.admin.bot_service import BotAdminError, BotConfigAdminService
@@ -28,6 +28,7 @@ from trading_bot.application.bot_reporting import (
 )
 from trading_bot.application.bot_runtime_control import BotRuntimeControlError
 from trading_bot.application.flatten_all import FlattenAllError, FlattenAllService
+from trading_bot.application.strategy_pipeline.microscope import MicroscopeReplayService
 from trading_bot.auth.cookies import read_session_cookie, set_session_cookie
 from trading_bot.auth.policy import Role
 from trading_bot.auth.router import (
@@ -48,6 +49,7 @@ from trading_bot.domain.portfolio.reporting import (
     REPORT_MODE,
     REPORT_VERSION,
 )
+from trading_bot.domain.strategy_card.schema import compute_canonical_hash
 
 try:
     VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
@@ -134,6 +136,25 @@ def _strategy_card_service(request: Request) -> StrategyCardAdminService:
         service = StrategyCardAdminService()
         request.app.state.strategy_card_service = service
     return service
+
+
+def _microscope_service(request: Request) -> MicroscopeReplayService:
+    service = cast(
+        MicroscopeReplayService | None,
+        getattr(request.app.state, "microscope_replay_service", None),
+    )
+    if service is None:
+        service = MicroscopeReplayService()
+        request.app.state.microscope_replay_service = service
+    return service
+
+
+class InspectBarRequest(BaseModel):
+    """Yêu cầu kiểm định nến tức thời gửi từ giao diện Microscope Replay."""
+
+    ohlcv: dict[str, Any]
+    preset_id: str | None = None
+    context: dict[str, Any] | None = None
 
 
 def _login_csrf_cookie_name(request: Request) -> str:
@@ -1056,4 +1077,82 @@ async def strategy_cards_api(
         "status": "success",
         "total": len(cards),
         "cards": [c.to_dict() for c in cards],
+    }
+
+
+@router.get("/strategy-cards/{card_id}/microscope")
+async def strategy_card_microscope_page(
+    card_id: str,
+    request: Request,
+    response: Response,
+    identity: Annotated[AuthIdentity, Depends(current_identity)],
+) -> Response:
+    """Hiển thị không gian làm việc Soi kính hiển vi (Microscope Replay Workspace)."""
+    response.headers["Cache-Control"] = "no-store"
+    card_service = _strategy_card_service(request)
+    microscope_service = _microscope_service(request)
+
+    card = await card_service.get_domain_card(identity.principal, card_id)
+    if card is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Không tìm thấy Strategy Card với mã định danh '{card_id}'",
+        )
+
+    presets = microscope_service.get_presets()
+    initial_preset = presets[0] if presets else None
+    initial_trace = None
+    if initial_preset:
+        initial_trace = microscope_service.inspect_bar(
+            card=card,
+            ohlcv=initial_preset.ohlcv,
+            context=initial_preset.context,
+        )
+
+    templates = cast(Jinja2Templates, request.app.state.templates)
+    return templates.TemplateResponse(
+        request=request,
+        name="admin/microscope_replay.html",
+        context={
+            "identity": identity,
+            "card": card,
+            "card_hash": compute_canonical_hash(card),
+            "presets": presets,
+            "presets_data": [p.to_dict() for p in presets],
+            "initial_preset": initial_preset,
+            "initial_trace": initial_trace,
+        },
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.post("/api/strategy-cards/{card_id}/inspect-bar")
+async def inspect_bar_api(
+    card_id: str,
+    payload: InspectBarRequest,
+    request: Request,
+    response: Response,
+    identity: Annotated[AuthIdentity, Depends(current_identity)],
+) -> dict[str, Any]:
+    """API thực thi soi vết nến tức thời qua 7 tầng L0->L6 trả về MicroscopeTrace."""
+    response.headers["Cache-Control"] = "no-store"
+    card_service = _strategy_card_service(request)
+    microscope_service = _microscope_service(request)
+
+    card = await card_service.get_domain_card(identity.principal, card_id)
+    if card is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Không tìm thấy Strategy Card với mã định danh '{card_id}'",
+        )
+
+    trace = microscope_service.inspect_bar(
+        card=card,
+        ohlcv=payload.ohlcv,
+        context=payload.context,
+    )
+
+    return {
+        "status": "success",
+        "trace": trace.to_dict(),
     }

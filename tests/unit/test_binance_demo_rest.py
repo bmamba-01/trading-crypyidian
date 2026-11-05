@@ -362,3 +362,61 @@ def test_submit_rejects_non_submitting_intent_before_transport() -> None:
     with pytest.raises(BinanceAdapterError, match="SUBMITTING"):
         adapter.submit_order(accepted)
     assert not transport.requests
+
+
+def test_algo_routing_error_is_unknown_on_submit_and_never_order_missing_on_query() -> None:
+    adapter, transport = make_adapter(
+        response(400, {"code": -4120, "msg": "STOP_ORDER_SWITCH_ALGO"})
+    )
+    intent = make_started_intent()
+    result = adapter.submit_order(intent)
+    assert isinstance(result, SubmissionFailed)
+    assert result.failure.kind is BinanceFailureKind.ROUTING_MISMATCH
+    assert result.failure.outcome is SubmissionOutcome.UNKNOWN
+    assert result.failure.retry_allowed is False
+    with pytest.raises(BinanceAdapterError) as captured:
+        adapter.query_order(intent)
+    assert captured.value.failure.kind is BinanceFailureKind.ROUTING_MISMATCH
+    assert captured.value.failure.outcome is SubmissionOutcome.UNKNOWN
+    assert len(transport.requests) == 2
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"algoId": 201},
+        {"algoStatus": "NEW"},
+        {"type": "STOP_MARKET"},
+        {"origType": "TAKE_PROFIT"},
+        {"type": "LIMIT"},
+    ],
+)
+def test_regular_adapter_does_not_accept_mixed_or_wrong_family_response(
+    extra: dict[str, object],
+) -> None:
+    data = {
+        "symbol": "BTCUSDT",
+        "orderId": 123,
+        "clientOrderId": "crypidian-1-entry",
+        "status": "NEW",
+        "executedQty": "0",
+        "updateTime": NOW_MS,
+    } | extra
+    adapter, _ = make_adapter(response(200, data))
+    intent = make_started_intent()
+    result = adapter.submit_order(intent)
+    assert isinstance(result, SubmissionFailed)
+    assert result.failure.outcome is SubmissionOutcome.UNKNOWN
+    with pytest.raises(BinanceAdapterError):
+        adapter.query_order(intent)
+
+
+def test_duplicate_json_order_identity_is_unknown_after_submit() -> None:
+    body = (
+        b'{"symbol":"BTCUSDT","orderId":123,"orderId":124,'
+        b'"clientOrderId":"crypidian-1-entry","status":"NEW"}'
+    )
+    adapter, _ = make_adapter(BinanceHttpResponse(status_code=200, headers={}, body=body))
+    result = adapter.submit_order(make_started_intent())
+    assert isinstance(result, SubmissionFailed)
+    assert result.failure.outcome is SubmissionOutcome.UNKNOWN

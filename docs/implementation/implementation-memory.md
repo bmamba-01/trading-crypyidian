@@ -13,6 +13,109 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 
 ## Nhật ký các vòng
 
+### 2026-11-05 — WP-SC.6: Kính hiển vi soi vết lịch sử (Microscope Replay Workspace) & Playwright Automation Test cho Strategy Card
+
+- **Mục tiêu/phạm vi:** Hoàn thiện gói công việc WP-SC.6 triển khai không gian làm việc mô phỏng và soi kính hiển vi vết nến điểm thời gian (Microscope Replay Workspace) lấy cảm hứng từ QUANTSMART:
+  1. `microscope.py`:
+     - DTO frozen dataclass `LayerTrace`: ghi vết từng node gồm `layer` (L0→L6), `node_id`, `operation`, `inputs`, `output`, `status` (`SUCCESS`, `FAILED`, `BLOCK`, `PASS`, `TRIGGERED`, `NO_SIGNAL`, `SKIPPED`).
+     - DTO frozen dataclass `MicroscopeTrace`: tổng hợp toàn diện vết nến gồm `card_id`, `card_name`, `content_hash`, `timestamp`, `ohlcv`, `layer_traces`, `is_short_circuited`, `short_circuit_reason`, `context_gate_passed`, `trigger_signal`, `zones` (`entry_price`, `stop_loss`, `take_profit`, `risk_reward_ratio`), `candidate_id` (SHA-256 tất định).
+     - DTO frozen dataclass `PresetCandle`: cấu trúc kịch bản nến mẫu có sẵn.
+     - Class `MicroscopeReplayService`:
+       * Cung cấp 3 kịch bản mẫu điển hình qua `get_presets()`:
+         - "Mẫu 1 — Nến Hammer đảo chiều tăng (L4 PASS, L5 LONG, L6 Zones đầy đủ)"
+         - "Mẫu 2 — Nến biến động thấp (L4 BLOCK do ATR < 15, Ngắt mạch tức thì)"
+         - "Mẫu 3 — Nến Shooting Star đảo chiều giảm (L4 PASS, L5 SHORT, L6 Zones)"
+       * Phương thức `inspect_bar(card, ohlcv, context)`: mổ xẻ chi tiết 7 phân tầng L0→L6; thẩm định L0 Data Hygiene thô chống ném exception runtime; thực thi L4 Context Gate và kích hoạt cơ chế ngắt mạch khẩn cấp (Short-Circuit) cô lập tức thì tầng L5 và L6; kích hoạt L5 Strategy Trigger theo hướng linh hoạt (LONG/SHORT); tính toán vùng rủi ro hình học L6 Execution Zones và băm `candidate_id` tất định.
+  2. `pipeline_engine.py`: Bổ sung nhận diện `or "true_range" in op` trong `_compute_l2_node` đảm bảo tính toán ATR chính xác từ biên độ nến.
+  3. `strategy_card_service.py`: Bổ sung phương thức `get_domain_card(principal, card_id)` phục vụ động cơ thực thi pipeline và giao diện Microscope Replay.
+  4. `web_router.py`:
+     - Endpoint `GET /admin/strategy-cards/{card_id}/microscope`: Render giao diện HTML soi kính hiển vi `microscope_replay.html`.
+     - Endpoint `POST /admin/api/strategy-cards/{card_id}/inspect-bar`: REST API nhận payload OHLCV/context và trả về JSON `MicroscopeTrace`.
+     - Request schema `InspectBarRequest` và helper `_microscope_service`.
+  5. `strategy_cards.html`: Bổ sung nút liên kết tác vụ "🔍 Soi kính hiển vi (Microscope)" trên từng Strategy Card điều hướng trực tiếp sang trang soi vết.
+  6. `microscope_replay.html` & `admin.css`:
+     - Giao diện tiếng Việt chuẩn mực, semantic HTML5, WCAG 2.2 AA, mobile-first responsive.
+     - Thanh tóm tắt thẻ chiến lược, bộ chọn 3 kịch bản nến mẫu (Presets) một chạm, form nhập điểm thời gian thủ công.
+     - Banner trạng thái trực quan: Cảnh báo đỏ nổi bật khi ngắt mạch (Short-Circuited) kèm lý do chi tiết; Banner xanh khi quy trình thông suốt (Pipeline Passed).
+     - Bảng trực quan hóa 7 tầng L0→L6 với các khối đo đạc nguyên tử nến (L1), chỉ báo (L2), thuật toán (L3), cổng bối cảnh (L4), ngòi nổ (L5), và tọa độ vùng giá Entry/SL/TP kèm Candidate ID SHA-256 (L6).
+     - Kịch bản client-side không phụ thuộc thư viện ngoài (zero-dependency vanilla JS), tự động gọi API và cập nhật DOM mượt mà không reload trang.
+  7. `test_microscope_replay.py`: Bộ 12 unit tests TDD kiểm thử service, presets, nến Hammer, nến biến động thấp ngắt mạch, nến Shooting Star đảo chiều giảm, nến hỏng L0, serialization to_dict, xác thực 401, 404 và REST API JSON.
+  8. `test_admin_microscope_playwright.py`: Bộ 3 E2E tests tự động hóa với Playwright kiểm thử Desktop (1280x800), Mobile iPhone (390x844), tương tác chọn Presets đổi trạng thái DOM tức thời, click điều hướng và chụp 2 ảnh screenshot bằng chứng lưu vào artifacts.
+- **Nguồn đã kiểm tra (2026-11-05):**
+  - QUANTSMART Custom Modules Specification: [`github.com/Jokejoker-designer/QUANTSMART/blob/main/docs/CUSTOM_MODULES.md`](https://github.com/Jokejoker-designer/QUANTSMART/blob/main/docs/CUSTOM_MODULES.md) (mô hình Microscope Replay soi vết nến điểm thời gian).
+  - W3C Web Content Accessibility Guidelines (WCAG) 2.2 AA: [`www.w3.org/TR/WCAG22/`](https://www.w3.org/TR/WCAG22/) (aria-live polite, landmarks, focus contrast).
+  - RFC 8785 JSON Canonicalization Scheme: [`datatracker.ietf.org/doc/html/rfc8785`](https://datatracker.ietf.org/doc/html/rfc8785) (đối soát băm tất định Candidate ID).
+- **Thay đổi mã nguồn:**
+  - `src/trading_bot/application/strategy_pipeline/microscope.py`: Tạo mới module dịch vụ Microscope Replay, các DTOs `LayerTrace`, `MicroscopeTrace`, `PresetCandle` và class `MicroscopeReplayService`.
+  - `src/trading_bot/application/strategy_pipeline/__init__.py`: Xuất khẩu các DTOs và service mới.
+  - `src/trading_bot/application/strategy_pipeline/pipeline_engine.py`: Chỉnh sửa `_compute_l2_node` nhận diện `average_true_range`.
+  - `src/trading_bot/admin/strategy_card_service.py`: Thêm phương thức `get_domain_card`.
+  - `src/trading_bot/admin/web_router.py`: Bổ sung 2 endpoints `GET /admin/strategy-cards/{card_id}/microscope` và `POST /admin/api/strategy-cards/{card_id}/inspect-bar`.
+  - `src/trading_bot/templates/admin/strategy_cards.html`: Bổ sung nút "Soi kính hiển vi (Microscope)".
+  - `src/trading_bot/templates/admin/microscope_replay.html`: Tạo mới giao diện HTML5 Microscope Replay.
+  - `src/trading_bot/static/admin.css`: Bổ sung style tokens cho nút microscope, summary card, presets list, form grid, alert banners, 7 layer cards, anatomy boxes và zones metrics.
+  - `tests/unit/test_microscope_replay.py`: Tạo mới bộ 12 unit tests kiểm thử service, presets, short-circuit và web router/API.
+  - `tests/e2e/test_admin_microscope_playwright.py`: Tạo mới bộ 3 tests Playwright E2E cho Desktop và Mobile, chụp 2 ảnh screenshot.
+  - `docs/research/glossary-vi.md`: Thêm 2 thuật ngữ tiếng Việt vào mục R: `Microscope replay workspace` và `Layer trace`.
+- **TDD và xử lý lỗi phát sinh:**
+  - RED phase: Khởi tạo gặp `ModuleNotFoundError: No module named 'trading_bot.application.strategy_pipeline.microscope'`.
+  - Xử lý nến hỏng L0: Nến vi phạm High < Low kích hoạt `ValueError` của `OHLCVBar.__post_init__` trước khi qua `_check_data_hygiene`. Đã bổ sung bước kiểm tra độ sạch thô trên dict OHLCV trước khi tạo `OHLCVBar`, bảo đảm fail-safe ngắt mạch ngay tại L0.
+  - Xử lý nhận diện ATR: Hàm `_compute_l2_node` chỉ tìm `"atr" in op` nên bỏ sót `"average_true_range"`, dẫn đến trả về `close` gây vượt trần `max_atr`. Đã bổ sung `or "true_range" in op`.
+  - Xử lý nến Shooting Star cho chiều SHORT: Bổ sung logic thông minh định tuyến râu trên (`upper_wick_ratio`) cho chiều SHORT khi card chỉ có cấu hình generic wick.
+  - Xử lý Jinja2 serialization: Tránh lỗi `<bound method to_dict>` trong Jinja2 filter `tojson` bằng cách truyền trực tiếp `presets_data = [p.to_dict() for p in presets]` vào context.
+  - Sửa lỗi Ruff: Đảm bảo độ dài dòng <= 100 ký tự cho assertions và selectors.
+- **Kiểm chứng và chất lượng:**
+  - Unit tests mục tiêu: `pytest tests/unit/test_microscope_replay.py -v` → **12 passed in 1.23s**.
+  - Playwright E2E browser tests: `pytest tests/e2e/test_admin_microscope_playwright.py -v` → **3 passed in 5.42s**.
+  - Nhóm Strategy Card (WP-SC.1 → WP-SC.6): `pytest tests/unit/test_strategy_card_*.py tests/unit/test_admin_strategy_cards_ui.py tests/unit/test_microscope_replay.py tests/e2e/test_admin_*.py -v` → **62 passed in 6.5s**.
+  - Screenshots xác thực giao diện:
+    * Desktop (1280x800): `/Users/macbook/.gemini/antigravity/brain/4f23167d-60fd-49c3-8248-ddb2b669a2a7/screenshots/15_microscope_desktop.png` (517 KB).
+    * Mobile iPhone (390x844): `/Users/macbook/.gemini/antigravity/brain/4f23167d-60fd-49c3-8248-ddb2b669a2a7/screenshots/11_microscope_mobile.png` (509 KB).
+  - Toàn bộ regression unit tests: `PYTHONPATH="$PWD:$PWD/src" pytest tests/unit -q` → **2397 passed in 11.57s** (0 failure, 0 skip).
+  - Ruff check: `.venv/bin/ruff check src/ tests/` → **All checks passed!**
+  - Ruff format: `.venv/bin/ruff format --check src/ tests/` → **429 files already formatted**.
+- **Giới hạn còn mở:**
+  - Toàn bộ 6 gói công việc của kiến trúc Strategy Card và Microscope Replay (WP-SC.1 đến WP-SC.6) đã hoàn tất 100%.
+- **Đã đọc lại memory sau cập nhật:** Có; đối chiếu đầy đủ với các thay đổi code, test suite 12 unit + 3 Playwright + 2397 regression passed, ruff check/format sạch sẽ, và 2 ảnh screenshot đã lưu.
+
+### 2026-11-05 — WP-03A: Binance USDⓈ-M Order Schemas, DTO Contracts & Fail-Closed Validation
+
+- **Mục tiêu/phạm vi:** Tích hợp và hoàn thiện gói công việc WP-03A (kế thừa phiên làm việc của Codex) định nghĩa hợp đồng schema dữ liệu lệnh và sự kiện WebSocket cho Binance Futures USDⓈ-M tuân thủ nghiêm ngặt nguyên tắc fail-closed và phân lập rạch ròi hai họ lệnh:
+  1. `order_schemas.py`:
+     - Định nghĩa các enum bất biến: `RegularOrderType` (`MARKET`, `LIMIT`), `ConditionalAlgoOrderType` (`STOP`, `STOP_MARKET`, `TAKE_PROFIT`, `TAKE_PROFIT_MARKET`, `TRAILING_STOP_MARKET`), `RegularOrderStatus` (`NEW`, `PARTIALLY_FILLED`, `FILLED`, `CANCELED`, `EXPIRED`, `EXPIRED_IN_MATCH`, `UNKNOWN`), `AlgoOrderStatus` (`NEW`, `TRIGGERING`, `TRIGGERED`, `FINISHED`, `CANCELED`, `REJECTED`, `EXPIRED`, `UNKNOWN`).
+     - Định nghĩa các frozen slots dataclasses DTOs: `RegularOrder` (kèm alias `RegularOrderResponse`), `AlgoOrder` (kèm alias `AlgoOrderResponse`), `OrderTradeUpdate` (kèm alias `OrderTradeUpdateEvent`), `AlgoUpdate` (kèm alias `AlgoUpdateEvent`), `AccountUpdateBalance`, `AccountUpdatePosition`, `AccountUpdateEvent`.
+     - Phân định trạng thái domain an toàn: `RegularOrder.canonical_state` kiểm soát tính nhất quán số lượng đã khớp với trạng thái, chuyển `UNKNOWN` nếu có mâu thuẫn; `AlgoOrder.canonical_state` luôn chiếu `UNKNOWN` (vì vòng đời Algo không phải bằng chứng xác nhận fill của lệnh thường trên matching engine).
+     - Triển khai các hàm phân tích cú pháp an toàn: `parse_regular_order` (alias `parse_regular_order_response`), `parse_algo_order` (alias `parse_algo_order_response`), `parse_order_trade_update` (alias `parse_order_trade_update_event`), `parse_algo_update` (alias `parse_algo_update_event`), `parse_account_update_event` (alias `parse_account_update`).
+     - Bộ giải mã an toàn `decode_order_object`: từ chối JSON chứa key trùng lặp (`object_pairs_hook`), từ chối số không hữu hạn (`NaN`, `Infinity` qua `parse_constant`), kiểm tra Decimal hữu hạn không âm cho giá và số lượng thông thường, cho phép giá trị âm có chủ đích ở `position_amount`, `unrealized_profit` và `balance_change` trong sự kiện `ACCOUNT_UPDATE`.
+     - Hàm rào chắn `validate_regular_order_family` và `regular_order_path`: ngăn chặn tuyệt đối các trường thuộc Algo Service (`algoId`, `algoStatus`, v.v.) xâm nhập vào luồng lệnh thường.
+  2. `submission_errors.py`: Bổ sung loại lỗi `ROUTING_MISMATCH` vào `BinanceFailureKind`; xử lý mã lỗi `-4120` (`STOP_ORDER_SWITCH_ALGO`) từ chối retry, chuyển kết quả thành `SubmissionOutcome.UNKNOWN` và yêu cầu `operator_clearance_required=True`.
+  3. `demo_rest.py`: Tích hợp `decode_order_object`, `validate_regular_order_family` và `OrderSchemaError` từ `order_schemas.py`; bảo đảm các phản hồi REST gửi/truy vấn lệnh thường được kiểm tra đúng họ và loại trừ xung đột schema.
+  4. `wp03_order_contracts.json`: Fixture kiểm thử chứa đầy đủ 11 kịch bản synthetic data (`regular_ack`, `regular_partial`, `algo_new`, `algo_triggered`, `algo_finished`, `algo_rejected`, `order_event`, `algo_event`, `account_update`, `routing_mismatch`, `ambiguous_503`) có metadata URL, ngày kiểm tra và bề mặt API.
+  5. `wp03a-task1a-order-schema-contract-2026-11-02.md`: Tài liệu nghiên cứu chi tiết cơ sở pháp lý API, quyết định kỹ thuật và các required facts nội bộ.
+  6. `glossary-vi.md`: Thêm thuật ngữ `Routing mismatch (-4120)` vào mục P.
+- **Nguồn đã kiểm tra (2026-11-01 / 2026-11-02):**
+  - Binance USDⓈ-M Trade REST API: [`developers.binance.com/en/docs/catalog/core-trading-derivatives-trading-usd-s-m-futures/api/rest-api/trade`](https://developers.binance.com/en/docs/catalog/core-trading-derivatives-trading-usd-s-m-futures/api/rest-api/trade)
+  - Binance USDⓈ-M User Data Streams: [`developers.binance.com/en/docs/products/derivatives-trading-usds-futures/user-data-streams`](https://developers.binance.com/en/docs/products/derivatives-trading-usds-futures/user-data-streams)
+  - Binance USDⓈ-M Change Log: [`developers.binance.com/en/docs/products/derivatives-trading-usds-futures/change-log`](https://developers.binance.com/en/docs/products/derivatives-trading-usds-futures/change-log) (conditional migration và mã lỗi -4120)
+  - Binance USDⓈ-M General Info: [`developers.binance.com/en/docs/products/derivatives-trading-usds-futures/general-info`](https://developers.binance.com/en/docs/products/derivatives-trading-usds-futures/general-info)
+- **Thay đổi mã nguồn:**
+  - `src/trading_bot/adapters/binance_usdm/order_schemas.py`: Tạo mới module schema và parser an toàn cho Binance USDⓈ-M.
+  - `src/trading_bot/adapters/binance_usdm/submission_errors.py`: Bổ sung `ROUTING_MISMATCH` và xử lý `-4120`.
+  - `src/trading_bot/adapters/binance_usdm/demo_rest.py`: Sử dụng `order_schemas.py` và bảo vệ routing family.
+  - `tests/fixtures/binance_usdm/wp03_order_contracts.json`: Bổ sung fixture hợp đồng schema đầy đủ.
+  - `docs/research/wp03a-task1a-order-schema-contract-2026-11-02.md`: Tích hợp tài liệu nghiên cứu hợp đồng.
+  - `tests/unit/test_binance_usdm_order_schemas.py`: Bộ 141 unit tests kiểm thử phân tích cú pháp, boundary, validation, aliases và ACCOUNT_UPDATE.
+  - `tests/unit/test_binance_demo_rest.py`: Bổ sung 3 unit tests kiểm thử lỗi -4120, discriminator và duplicate keys (tổng cộng 21 tests).
+  - `docs/research/glossary-vi.md`: Thêm thuật ngữ `Routing mismatch (-4120)`.
+- **TDD và kiểm chứng chất lượng:**
+  - Unit tests mục tiêu: `pytest tests/unit/test_binance_usdm_order_schemas.py tests/unit/test_venue_parsers.py tests/unit/test_binance_demo_rest.py -v` → **190 passed in 0.29s**.
+  - Toàn bộ unit tests hồi quy: `pytest tests/unit -q` → **2391 passed in 23.34s** (0 failure, 0 skipped).
+  - Static analysis Ruff check: `.venv/bin/ruff check src/ tests/` → **All checks passed!**
+  - Static analysis Ruff format: `.venv/bin/ruff format --check src/ tests/` → **428 files already formatted**.
+  - Static analysis Mypy: `.venv/bin/mypy src/trading_bot/adapters/binance_usdm/order_schemas.py src/trading_bot/adapters/binance_usdm/submission_errors.py src/trading_bot/adapters/binance_usdm/demo_rest.py` → **Success: no issues found in 3 source files**.
+- **Giới hạn còn mở:** WP-03A cung cấp tầng parser thuần túy offline và DTO validation. Việc kết nối trực tiếp vào stream consumer thời gian thực, outbox worker và quy trình reconciliation vị thế/lệnh ở sàn thật sẽ được thực hiện tại các gói tiếp theo (WP-03C, WP-03D).
+- **Đã đọc lại memory sau cập nhật:** Có.
+
 ### 2026-11-05 — WP-SC.4 & WP-SC.5: Strategy Card Persistence, Admin Web UI & Playwright Automation Test
 
 - **Mục tiêu/phạm vi:** Hoàn thiện 2 gói công việc cuối cùng của kiến trúc Bản kê Chiến lược Khai báo (Declarative Strategy Card) lấy cảm hứng từ QUANTSMART:
