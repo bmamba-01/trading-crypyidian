@@ -8,12 +8,20 @@ from trading_bot.adapters.database.repositories.account_equity import AccountEqu
 from trading_bot.adapters.database.repositories.dataset_manifest import DatasetManifestRepository
 from trading_bot.adapters.database.repositories.risk_conversion import RiskConversionRepository
 from trading_bot.adapters.database.repositories.source_registry import SourceRegistryRepository
+from trading_bot.adapters.database.repositories.strategy_card_repository import (
+    StrategyCardConflict,
+    StrategyCardNotFoundError,
+    StrategyCardRepository,
+)
 
 __all__ = [
     "AccountEquityRepository",
     "DatasetManifestRepository",
     "RiskConversionRepository",
     "SourceRegistryRepository",
+    "StrategyCardConflict",
+    "StrategyCardNotFoundError",
+    "StrategyCardRepository",
     "WorkspaceRepository",
 ]
 

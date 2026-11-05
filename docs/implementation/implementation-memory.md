@@ -13,6 +13,99 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 
 ## Nhật ký các vòng
 
+### 2026-11-05 — WP-SC.4 & WP-SC.5: Strategy Card Persistence, Admin Web UI & Playwright Automation Test
+
+- **Mục tiêu/phạm vi:** Hoàn thiện 2 gói công việc cuối cùng của kiến trúc Bản kê Chiến lược Khai báo (Declarative Strategy Card) lấy cảm hứng từ QUANTSMART:
+  1. `strategy_card_entities.py`: Model ORM `StrategyCardRecord` (bảng `strategy_cards`) lưu trữ bất biến (append-only), tenant-scoped theo `workspace_id` (RLS), cột `card_payload` kiểu JSONB, các ràng buộc duy nhất `(workspace_id, card_id, version)` và `(workspace_id, content_hash)`; hàm `from_domain` và `to_domain` tự động đối soát canonical SHA-256 content hash phát hiện và chặn đứng mọi hành vi can thiệp trái phép (tampered data).
+  2. `strategy_card_repository.py`: Tầng Repository `StrategyCardRepository` hỗ trợ `save_card` (kèm khóa phân tán giao dịch `pg_advisory_xact_lock` và RLS workspace binding), `get_card`, `list_cards` (lọc `is_active`), `get_active_card`, `set_active_card` (kích hoạt phiên bản và hạ cờ phiên bản cũ trong cùng transaction).
+  3. `e5f6a7b8c9d0_strategy_card_storage.py`: Bản di chuyển Alembic tạo bảng `strategy_cards` có RLS và cấp quyền cho vai trò `crypidian_admin_web`.
+  4. `strategy_card_service.py`: Dịch vụ `StrategyCardAdminService` phân tích cấu trúc đồ thị, chạy `DeadNodeDetector` đếm nút mồ côi, chạy `AntiConsensusAnalyzer` kiểm định trực giao tín hiệu và thống kê các tầng L0→L6.
+  5. `web_router.py`: Bổ sung 2 endpoints:
+     - `GET /admin/strategy-cards`: Hiển thị giao diện HTML quản trị Strategy Cards, các thẻ KPI, danh sách card, băm SHA-256 rút gọn có tooltip, huy hiệu trực giao "Đã kiểm định (Orthogonal)", và lưới 7 phân tầng L0→L6.
+     - `GET /admin/api/strategy-cards`: Trả về JSON danh sách thẻ chiến lược cho client / automation script.
+  6. `base.html`, `strategy_cards.html`, `admin.css`: Thêm liên kết điều hướng "Chiến lược" vào thanh menu chính; thiết kế template HTML5 chuẩn mực theo mobile-first và tiêu chuẩn tiếp cận WCAG 2.2 AA; bổ sung hệ thống CSS style tokens cho Strategy Cards.
+  7. `test_admin_strategy_cards_playwright.py`: Bộ kiểm thử E2E tự động hóa bằng Playwright trên cả hai độ phân giải Desktop (1280x800) và Mobile iPhone (390x844), xác nhận điều hướng và chụp 2 ảnh screenshot bằng chứng lưu vào thư mục artifacts.
+- **Nguồn đã kiểm tra (2026-11-05):**
+  - RFC 8785 JSON Canonicalization Scheme (JCS): [`datatracker.ietf.org/doc/html/rfc8785`](https://datatracker.ietf.org/doc/html/rfc8785) (đối soát tính toàn vẹn của canonical hash qua lưu trữ JSONB).
+  - W3C Web Content Accessibility Guidelines (WCAG) 2.2 AA: [`www.w3.org/TR/WCAG22/`](https://www.w3.org/TR/WCAG22/) (các yêu cầu contrast, semantic landmarks, skip link, aria-label).
+  - QUANTSMART Custom Modules Specification: [`github.com/Jokejoker-designer/QUANTSMART/blob/main/docs/CUSTOM_MODULES.md`](https://github.com/Jokejoker-designer/QUANTSMART/blob/main/docs/CUSTOM_MODULES.md) (tham khảo mô hình trực quan hóa phân tầng L0-L6).
+- **Thay đổi mã nguồn:**
+  - `src/trading_bot/adapters/database/models/strategy_card_entities.py`: Định nghĩa model ORM `StrategyCardRecord` và phương thức chuyển đổi `from_domain` / `to_domain`.
+  - `src/trading_bot/adapters/database/models/__init__.py`: Xuất khẩu `StrategyCardRecord`.
+  - `src/trading_bot/adapters/database/repositories/strategy_card_repository.py`: Triển khai `StrategyCardRepository`, `StrategyCardConflict`, `StrategyCardNotFoundError`.
+  - `src/trading_bot/adapters/database/repositories/__init__.py`: Xuất khẩu `StrategyCardRepository` và các lỗi.
+  - `migrations/versions/e5f6a7b8c9d0_strategy_card_storage.py`: Tạo mới migration bảng `strategy_cards` có RLS và grant quyền.
+  - `src/trading_bot/admin/strategy_card_service.py`: Tạo mới class `StrategyCardAdminService`, `StrategyCardView` và 2 card mẫu demo (Donchian Breakout, Adaptive Wick Reversion).
+  - `src/trading_bot/admin/web_router.py`: Thêm route `GET /admin/strategy-cards` và `GET /admin/api/strategy-cards`.
+  - `src/trading_bot/templates/admin/base.html`: Thêm liên kết `<a href="/admin/strategy-cards">Chiến lược</a>` vào navigation bar.
+  - `src/trading_bot/templates/admin/strategy_cards.html`: Tạo mới giao diện HTML quản lý Strategy Cards chuẩn WCAG 2.2 AA.
+  - `src/trading_bot/static/admin.css`: Bổ sung CSS responsive, status-dots, hash-code và layer pills.
+  - `src/trading_bot/app.py`: Tích hợp `StrategyCardAdminService` vào lifespan và state ứng dụng.
+  - `tests/unit/test_strategy_card_persistence.py`: Tạo mới bộ 12 unit tests kiểm thử ORM roundtrip, hash tampering, duplicate idempotency, version conflict, và truy vấn repository.
+  - `tests/unit/test_admin_strategy_cards_ui.py`: Tạo mới bộ 5 unit tests kiểm thử xác thực 401, render HTML, WCAG semantics và API JSON.
+  - `tests/e2e/test_admin_strategy_cards_playwright.py`: Tạo mới bộ 3 E2E tests với Playwright kiểm thử Desktop, Mobile và navigation click, chụp 2 ảnh screenshots.
+  - `docs/research/glossary-vi.md`: Bổ sung 2 thuật ngữ tiếng Việt vào mục R: `Declarative strategy card persistence` và `Strategy card orthogonality badge`.
+- **TDD và xử lý lỗi phát sinh:**
+  - RED phase: Kiểm tra ban đầu gặp `ModuleNotFoundError: strategy_card_entities` và `strategy_card_repository`. Sau khi implement, toàn bộ 12 test persistence pass.
+  - Phát hiện lỗi xác thực 503 thay vì 401: Trong môi trường test tối giản không có `auth_service`, `current_identity` quăng 503. Đã bổ sung `_MockUnauthService` ném `AuthenticationFailure(401)` chuẩn xác.
+  - Sửa lỗi lặp dòng trong `web_router.py`: Dùng target duy nhất để thay thế sạch sẽ.
+  - Sửa lỗi Ruff: Đảm bảo độ dài dòng <= 100 ký tự, tách assertion nhiều vế (PT018), xóa unused imports.
+- **Kiểm chứng và chất lượng:**
+  - Persistence unit tests: `pytest tests/unit/test_strategy_card_persistence.py -v` → **12 passed in 0.33s**.
+  - Admin Web UI unit tests: `pytest tests/unit/test_admin_strategy_cards_ui.py -v` → **5 passed in 0.74s**.
+  - Playwright E2E browser tests: `pytest tests/e2e/test_admin_strategy_cards_playwright.py -v` → **3 passed in 4.36s**.
+  - Nhóm Strategy Card (WP-SC.1 → WP-SC.5): `pytest tests/unit/test_strategy_card_*.py tests/unit/test_admin_strategy_cards_ui.py tests/e2e/test_admin_strategy_cards_playwright.py -v` → **50 passed in 4.51s**.
+  - Screenshots xác thực giao diện:
+    * Desktop (1280x800): `/Users/macbook/.gemini/antigravity/brain/4f23167d-60fd-49c3-8248-ddb2b669a2a7/screenshots/14_strategy_cards_desktop.png` (206 KB).
+    * Mobile iPhone (390x844): `/Users/macbook/.gemini/antigravity/brain/4f23167d-60fd-49c3-8248-ddb2b669a2a7/screenshots/10_strategy_cards_mobile.png` (218 KB).
+  - Toàn bộ regression unit tests: `PYTHONPATH="$PWD:$PWD/src" pytest tests/unit -q` → **2237 passed in 9.43s** (0 failure, 0 skip).
+  - Ruff check: `.venv/bin/ruff check src/ tests/` → **All checks passed!**
+  - Ruff format: `.venv/bin/ruff format --check src/ tests/` → **424 files already formatted**.
+- **Giới hạn còn mở:**
+  - Toàn bộ 5 gói công việc của kiến trúc Strategy Card (WP-SC.1 đến WP-SC.5) đã hoàn tất và vượt qua 100% các tiêu chí nghiệm thu.
+- **Đã đọc lại memory sau cập nhật:** Có; đối chiếu đầy đủ với các thay đổi code, test suite 50 Strategy Card tests + 2237 regression passed, ruff check/format sạch sẽ, và 2 ảnh screenshot đã lưu.
+
+### 2026-11-05 — WP-SC.3: Strategy Pipeline Runtime Engine (L0→L6 & Context Gate) cho Strategy Card
+
+- **Mục tiêu/phạm vi:** Triển khai động cơ thực thi quy trình định lượng tuần tự phân tầng L0→L6 cho Strategy Card (lấy cảm hứng từ kiến trúc QUANTSMART):
+  1. `context_gate.py`: Định nghĩa Enum `ContextGateStatus` (PASS, BLOCK), Dataclass `ContextGateResult` (status, reasons, metrics); Class `ContextGateEvaluator` thẩm định các điều kiện lọc bối cảnh thị trường tại L4 (biến động ATR min/max, xu hướng EMA thuận/nghịch chiều, lọc vĩ mô Macro Blackout). Khi phát hiện bối cảnh bất lợi, trả về `BLOCK` kèm lý do cụ thể và kích hoạt ngắt mạch tức thì (Short-Circuit).
+  2. `trigger_evaluator.py`: Định nghĩa Enum `TriggerSignal` (LONG_ENTRY, SHORT_ENTRY, NO_SIGNAL), Dataclass `TriggerEvaluationResult` (signal, trigger_score, evidence_nodes, metadata); Class `TriggerEvaluator` thẩm định tầng L5 `STRATEGY_TRIGGER` với rào chắn bảo vệ phòng thủ: CHỈ ĐƯỢC PHÉP ĐÁNH GIÁ KHI L4 LÀ PASS (ném lỗi `PermissionError` nếu vi phạm). Trích xuất chính xác nguồn dữ liệu số theo `GraphEdge` của đồ thị DAG loại trừ nhầm lẫn chỉ báo biên độ.
+  3. `zone_builder.py`: Định nghĩa Dataclass `ExecutionZones` (entry_price, stop_loss_price, take_profit_price, risk_reward_ratio, direction) kiểm soát bất biến vị trí tương đối giữa SL, TP và Entry; Class `ZoneBuilder` tính toán vùng giá vào lệnh, dừng lỗ ban đầu và chốt lời mục tiêu dựa trên bội số biến động ATR và tỷ lệ R:R.
+  4. `pipeline_engine.py`: Class `StrategyPipelineEngine` và `StrategyCandidate`:
+     - Tầng L0: Kiểm tra độ sạch của nến (`DataHygiene`: $H \ge L$, $High \ge \max(O,C)$, $Low \le \min(O,C)$, giá dương). Nếu nến hỏng -> ngắt mạch ngay tại L0 (`DATA_HYGIENE_FAILED`).
+     - Tầng L1: Tính toán các khối nguyên tử giải phẫu nến (`anatomy.py`).
+     - Tầng L2: Tính toán chỉ báo (ATR, EMA, v.v.).
+     - Tầng L3: Chấm điểm thuật toán lượng hóa.
+     - Tầng L4: Đánh giá qua `ContextGateEvaluator`. NẾU L4 LÀ BLOCK -> NGẮT MẠCH TỨC THÌ (SHORT-CIRCUIT), L5 Trigger tuyệt đối KHÔNG chạy.
+     - Tầng L5: Đánh giá qua `TriggerEvaluator` (chỉ khi L4 PASS).
+     - Tầng L6: Dựng `ExecutionZones` qua `ZoneBuilder` và đóng gói thành `StrategyCandidate` mang `candidate_id` băm SHA-256 tất định.
+     - NGUYÊN TẮC BẤT BIẾN AN TOÀN: Pipeline chỉ sinh ra `StrategyCandidate`, tuyệt đối không tạo order sàn.
+- **Nguồn đã kiểm tra (2026-11-05):**
+  - QUANTSMART Strategy Studio & Custom Modules: [`github.com/Jokejoker-designer/QUANTSMART/blob/main/docs/CUSTOM_MODULES.md`](https://github.com/Jokejoker-designer/QUANTSMART/blob/main/docs/CUSTOM_MODULES.md) (nguyên lý phân tầng L0→L6, Context Gate và Execution Zones).
+  - RFC 8785 JSON Canonicalization Scheme: [`datatracker.ietf.org/doc/html/rfc8785`](https://datatracker.ietf.org/doc/html/rfc8785) (chuẩn hóa băm tất định cho Candidate ID).
+- **Thay đổi mã nguồn:**
+  - `src/trading_bot/application/strategy_pipeline/context_gate.py`: Tạo mới module L4 Context Gate.
+  - `src/trading_bot/application/strategy_pipeline/trigger_evaluator.py`: Tạo mới module L5 Strategy Trigger với GraphEdge-aware mapping.
+  - `src/trading_bot/application/strategy_pipeline/zone_builder.py`: Tạo mới module L6 Zone Builder và Dataclass ExecutionZones.
+  - `src/trading_bot/application/strategy_pipeline/pipeline_engine.py`: Tạo mới module điều phối tổng thể L0->L6, băm Candidate ID và Dataclass StrategyCandidate.
+  - `src/trading_bot/application/strategy_pipeline/__init__.py`: Export các lớp và hàm công khai.
+  - `tests/unit/test_strategy_pipeline_engine.py`: Bộ 17 unit tests TDD kiểm thử toàn diện L0 nến hỏng, L4 ngắt mạch short-circuit, L5 bảo vệ phòng thủ, L6 hình học giá LONG/SHORT, luồng hoàn chỉnh L0->L6 và tính tất định SHA-256.
+  - `tests/unit/test_database_models.py`: Bổ sung `strategy_cards` vào danh sách foundation tables đã đăng ký trong SQLAlchemy metadata.
+  - `docs/research/glossary-vi.md`: Thêm 2 thuật ngữ `Context gate short-circuit` và `Execution zone geometry` vào mục R.
+- **TDD và xử lý lỗi phát sinh:**
+  - RED phase: Khởi tạo gặp `ModuleNotFoundError: No module named 'trading_bot.application.strategy_pipeline'`.
+  - GREEN phase: Triển khai 4 module cốt lõi, giải quyết lỗi bắt nhầm giá trị ATR trong TriggerEvaluator bằng cách liên kết chính xác incoming edges theo cấu trúc DAG của StrategyCard.
+  - Kiểm tra ruff check & ruff format: Đảm bảo độ dài dòng <= 100 ký tự và dọn dẹp các import chưa dùng.
+- **Kiểm chứng và chất lượng:**
+  - Unit tests mục tiêu: `pytest tests/unit/test_strategy_pipeline_engine.py -v` → **17 passed in 0.11s**.
+  - Toàn bộ regression unit tests: `pytest tests/unit -q` → **2232 passed in 8.85s** (0 failure, 0 skip).
+  - Ruff check: `.venv/bin/ruff check src/trading_bot/application/strategy_pipeline/ tests/unit/test_strategy_pipeline_engine.py` → **All checks passed!**
+  - Ruff format: `.venv/bin/ruff format --check src/trading_bot/application/strategy_pipeline/ tests/unit/test_strategy_pipeline_engine.py` → **6 files already formatted**.
+  - Mypy: `.venv/bin/mypy src/trading_bot/application/strategy_pipeline/ tests/unit/test_strategy_pipeline_engine.py` → **Success: no issues found in 6 source files**.
+- **Giới hạn còn mở:**
+  - Sẵn sàng tích hợp sang WP-SC.4: Database Persistence (RLS) & Admin Management API.
+- **Đã đọc lại mục memory sau cập nhật:** Có; đối chiếu đầy đủ với các thay đổi code, test suite 17 unit + 2232 regression passed, ruff/mypy outputs.
+
 ### 2026-11-05 — WP-SC.1: Domain Models, Candle Anatomy Primitives & Declarative Schema cho Strategy Card
 
 - **Mục tiêu/phạm vi:** Triển khai nền móng miền nghiệp vụ WP-SC.1 cho kiến trúc Bản kê Chiến lược Khai báo (Declarative Strategy Card) lấy cảm hứng từ QUANTSMART:

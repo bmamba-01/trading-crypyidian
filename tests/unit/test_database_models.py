@@ -89,6 +89,7 @@ def test_schema_contains_all_foundation_tables() -> None:
         "research_source_item_revisions",
         "research_source_takedowns",
         "dataset_manifest",
+        "strategy_cards",
     }
 
 

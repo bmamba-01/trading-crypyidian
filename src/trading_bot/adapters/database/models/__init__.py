@@ -86,6 +86,7 @@ from trading_bot.adapters.database.models.source_item_entities import (
     SourceItemRevisionRecord,
     SourceTakedownRecord,
 )
+from trading_bot.adapters.database.models.strategy_card_entities import StrategyCardRecord
 from trading_bot.adapters.database.models.telegram_entities import (
     TelegramBindingChallenge,
     TelegramLinkRequest,
@@ -149,6 +150,7 @@ __all__ = [
     "SecretReference",
     "Session",
     "SharedSignalEvidenceRecord",
+    "StrategyCardRecord",
     "StrategyRelease",
     "TelegramBinding",
     "TelegramBindingChallenge",

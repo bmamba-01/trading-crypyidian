@@ -17,6 +17,7 @@ from pydantic import ValidationError
 
 from trading_bot.admin.bot_schemas import CreateBotRequest
 from trading_bot.admin.bot_service import BotAdminError, BotConfigAdminService
+from trading_bot.admin.strategy_card_service import StrategyCardAdminService
 from trading_bot.application.bot_lifecycle_guard import BotNotFlatError
 from trading_bot.application.bot_operations import BotOperationsService, PrincipalBotOperations
 from trading_bot.application.bot_reporting import (
@@ -121,6 +122,17 @@ def _auth_service(request: Request) -> AuthService:
     service = cast(AuthService | None, getattr(request.app.state, "auth_service", None))
     if service is None:
         raise HTTPException(status_code=503, detail="Dịch vụ xác thực chưa sẵn sàng")
+    return service
+
+
+def _strategy_card_service(request: Request) -> StrategyCardAdminService:
+    service = cast(
+        StrategyCardAdminService | None,
+        getattr(request.app.state, "strategy_card_service", None),
+    )
+    if service is None:
+        service = StrategyCardAdminService()
+        request.app.state.strategy_card_service = service
     return service
 
 
@@ -1003,3 +1015,45 @@ async def reports(
         },
         headers={"Cache-Control": "no-store"},
     )
+
+
+@router.get("/strategy-cards")
+async def strategy_cards_page(
+    request: Request,
+    response: Response,
+    identity: Annotated[AuthIdentity, Depends(current_identity)],
+) -> Response:
+    """Hiển thị danh sách Strategy Cards, các tầng L0-L6 và kết quả kiểm định."""
+    response.headers["Cache-Control"] = "no-store"
+    service = _strategy_card_service(request)
+    cards = await service.list_strategy_cards(identity.principal)
+    templates = cast(Jinja2Templates, request.app.state.templates)
+    return templates.TemplateResponse(
+        request=request,
+        name="admin/strategy_cards.html",
+        context={
+            "identity": identity,
+            "cards": cards,
+            "total_cards": len(cards),
+            "active_cards_count": sum(1 for c in cards if c.is_active),
+            "verified_cards_count": sum(1 for c in cards if c.is_verified),
+        },
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.get("/api/strategy-cards")
+async def strategy_cards_api(
+    request: Request,
+    response: Response,
+    identity: Annotated[AuthIdentity, Depends(current_identity)],
+) -> dict[str, Any]:
+    """Trả về JSON danh sách Strategy Cards có sẵn trong workspace."""
+    response.headers["Cache-Control"] = "no-store"
+    service = _strategy_card_service(request)
+    cards = await service.list_strategy_cards(identity.principal)
+    return {
+        "status": "success",
+        "total": len(cards),
+        "cards": [c.to_dict() for c in cards],
+    }
