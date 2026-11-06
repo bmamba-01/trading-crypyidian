@@ -44,4 +44,5 @@ async def test_revoke_exclusively_locks_membership_before_invalidating_link_stat
     assert session.lock_statement is not None
     assert "FROM user_membership" in session.lock_statement
     assert "FOR UPDATE OF user_membership" in session.lock_statement
-    assert len(session.update_statements) == 3
+    assert len(session.update_statements) == 4
+    assert "UPDATE telegram_signal_subscription" in session.update_statements[-1]

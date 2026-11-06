@@ -98,6 +98,8 @@ def test_schema_contains_all_foundation_tables() -> None:
         "research_source_takedowns",
         "dataset_manifest",
         "strategy_cards",
+        "telegram_signal_subscription",
+        "telegram_signal_delivery",
     }
 
 

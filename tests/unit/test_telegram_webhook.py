@@ -59,6 +59,7 @@ class FakeTelegramStore:
         self.callback_consumed = False
         self.link_code_inputs: list[str] = []
         self.callback_inputs: list[tuple[str, str]] = []
+        self.signal_preferences: dict[tuple[UUID, UUID], bool] = {}
 
     async def claim_update(self, workspace_id: UUID, update_id: int) -> bool:
         self.calls.append("claim")
@@ -103,6 +104,16 @@ class FakeTelegramStore:
         if accepted:
             self.callback_consumed = True
         return accepted
+
+    async def set_signal_notifications(
+        self, workspace_id: UUID, membership_id: UUID, *, enabled: bool
+    ) -> int:
+        self.calls.append("signal_notifications")
+        assert workspace_id == WORKSPACE
+        rows = [key for key in self.signal_preferences if key[0] == membership_id]
+        for key in rows:
+            self.signal_preferences[key] = enabled
+        return len(rows)
 
 
 def _bind(store: Store, telegram: FakeTelegramStore, kind: str, tg_user: int, ws: UUID) -> None:
@@ -284,6 +295,39 @@ def test_non_command_text_is_ignored() -> None:
 
     assert response.json()["status"] == "ignored"
     assert sender.messages == []
+
+
+def test_start_only_reenables_existing_private_signal_opt_ins() -> None:
+    client, _, telegram, sender = _setup()
+    identity = telegram.bindings[(WORKSPACE, str(OPERATOR_TG))]
+
+    response = _send(client, _message("/start"))
+
+    assert response.json()["status"] == "signal_notifications_not_configured"
+    assert telegram.signal_preferences == {}
+    assert sender.messages[-1] == (
+        OPERATOR_TG,
+        "Chưa có đăng ký tín hiệu nào. Hãy bật bot muốn theo dõi trong Admin Web.",
+    )
+    assert identity.membership_id is not None
+
+
+def test_start_and_stop_change_only_previously_selected_signal_bots() -> None:
+    client, _, telegram, sender = _setup()
+    identity = telegram.bindings[(WORKSPACE, str(OPERATOR_TG))]
+    preference = (identity.membership_id, BOT_A)
+    telegram.signal_preferences[preference] = False
+
+    started = _send(client, _message("/start", update_id=91))
+    stopped = _send(client, _message("/stop", update_id=92))
+
+    assert started.json()["status"] == "signal_notifications_enabled"
+    assert stopped.json()["status"] == "signal_notifications_disabled"
+    assert telegram.signal_preferences == {preference: False}
+    assert sender.messages[-2:] == [
+        (OPERATOR_TG, "Đã bật lại các đăng ký nhận tín hiệu đã chọn."),
+        (OPERATOR_TG, "Đã tắt toàn bộ thông báo tín hiệu Telegram."),
+    ]
 
 
 def test_start_link_code_requires_private_confirmation_and_never_audits_code(

@@ -24,6 +24,7 @@ from trading_bot.adapters.database.models import (
     TelegramBinding,
     TelegramBindingChallenge,
     TelegramLinkRequest,
+    TelegramSignalSubscription,
     TelegramUpdateReceipt,
     UserAccount,
     UserMembership,
@@ -298,6 +299,14 @@ class TelegramBindingRepository:
                 TelegramBindingChallenge.consumed_at.is_(None),
             )
             .values(consumed_at=now)
+        )
+        await self._session.execute(
+            update(TelegramSignalSubscription)
+            .where(
+                TelegramSignalSubscription.workspace_id == workspace_id,
+                TelegramSignalSubscription.membership_id == membership_id,
+            )
+            .values(enabled=False)
         )
         return len(result.scalars().all())
 

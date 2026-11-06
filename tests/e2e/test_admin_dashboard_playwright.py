@@ -439,7 +439,10 @@ def create_test_admin_app() -> FastAPI:
 
     app_settings = AppSettings(app_env="local")
     app.state.settings = app_settings
+    from trading_bot.admin.presentation import label_vi
+
     templates = Jinja2Templates(directory="src/trading_bot/templates")
+    templates.env.filters["label_vi"] = label_vi
     templates.env.globals["session_cookie_name"] = lambda s: "crypidian_session"
     app.state.templates = templates
     app.state.login_limiter = LoginRateLimiter()
@@ -567,8 +570,8 @@ def test_admin_dashboard_desktop_and_mobile_workflows(admin_server_url: str) -> 
         page.wait_for_load_state("networkidle")
         page.screenshot(path=str(SCREENSHOTS_DIR / "06_bot_detail_desktop.png"), full_page=True)
 
-        page.get_by_label("Lý do pause").fill("Tạm dừng bot")
-        page.get_by_role("button", name="Pause bot").click()
+        page.get_by_label("Lý do tạm dừng").fill("Tạm dừng bot")
+        page.get_by_role("button", name="Tạm dừng bot").click()
         page.wait_for_load_state("networkidle")
         page.screenshot(path=str(SCREENSHOTS_DIR / "07_bot_paused_desktop.png"), full_page=True)
 
@@ -576,7 +579,7 @@ def test_admin_dashboard_desktop_and_mobile_workflows(admin_server_url: str) -> 
         page.wait_for_load_state("networkidle")
         page.get_by_role("button", name="Kiểm định bản nháp").click()
         page.wait_for_load_state("networkidle")
-        page.get_by_role("button", name="Publish bản nháp").click()
+        page.get_by_role("button", name="Công bố bản nháp").click()
         page.wait_for_load_state("networkidle")
         page.screenshot(
             path=str(SCREENSHOTS_DIR / "08_bot_config_published_desktop.png"), full_page=True

@@ -97,6 +97,11 @@ from trading_bot.adapters.database.models.strategy_card_entities import Strategy
 from trading_bot.adapters.database.models.telegram_entities import (
     TelegramBindingChallenge,
     TelegramLinkRequest,
+    TelegramSignalDelivery,
+    TelegramSignalDeliveryRecord,
+    TelegramSignalFilterRecord,
+    TelegramSignalSubscription,
+    TelegramSignalSubscriptionRecord,
     TelegramUpdateReceipt,
 )
 from trading_bot.adapters.database.models.venue_entities import (
@@ -169,6 +174,11 @@ __all__ = [
     "TelegramBinding",
     "TelegramBindingChallenge",
     "TelegramLinkRequest",
+    "TelegramSignalDelivery",
+    "TelegramSignalDeliveryRecord",
+    "TelegramSignalFilterRecord",
+    "TelegramSignalSubscription",
+    "TelegramSignalSubscriptionRecord",
     "TelegramUpdateReceipt",
     "TradingAccount",
     "VenueOrderIntentRecord",

@@ -232,14 +232,14 @@ class OutboxRepository:
         _validate_time(now)
         event = await self._locked_event(workspace_id, event_id)
         _validate_active_lease(event, worker_id, now)
-        receipt = await self._session.scalar(
-            select(ConsumerReceipt).where(
+        receipt_id = await self._session.scalar(
+            select(ConsumerReceipt.id).where(
                 ConsumerReceipt.workspace_id == workspace_id,
                 ConsumerReceipt.outbox_event_id == event_id,
                 ConsumerReceipt.consumer_name == consumer_name,
             )
         )
-        created = receipt is None
+        created = receipt_id is None
         if created:
             self._session.add(
                 ConsumerReceipt(

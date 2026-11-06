@@ -5,17 +5,21 @@ from uuid import UUID
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKeyConstraint,
     Index,
+    Integer,
     String,
     UniqueConstraint,
     Uuid,
+    text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
-from trading_bot.adapters.database.models.base import Base, CreatedAt, UuidPrimaryKey
+from trading_bot.adapters.database.models.base import Base, CreatedAt, UpdatedAt, UuidPrimaryKey
 
 
 class TelegramLinkRequest(UuidPrimaryKey, CreatedAt, Base):
@@ -99,3 +103,138 @@ class TelegramUpdateReceipt(UuidPrimaryKey, CreatedAt, Base):
 
     workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     update_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+
+class TelegramSignalSubscription(UuidPrimaryKey, CreatedAt, UpdatedAt, Base):
+    """Opt-in signal Telegram của một thành viên cho một bot cụ thể."""
+
+    __tablename__ = "telegram_signal_subscription"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "id", name="uq_telegram_signal_subscription_workspace_id"),
+        UniqueConstraint(
+            "workspace_id", "bot_id", "id", name="uq_telegram_signal_subscription_workspace_bot_id"
+        ),
+        UniqueConstraint(
+            "workspace_id",
+            "membership_id",
+            "bot_id",
+            name="uq_telegram_signal_subscription_member_bot",
+        ),
+        ForeignKeyConstraint(
+            ["workspace_id", "membership_id"],
+            ["user_membership.workspace_id", "user_membership.id"],
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["workspace_id", "bot_id"],
+            ["bot_instance.workspace_id", "bot_instance.id"],
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["workspace_id", "telegram_binding_id"],
+            ["telegram_binding.workspace_id", "telegram_binding.id"],
+            ondelete="CASCADE",
+        ),
+        CheckConstraint("telegram_chat_id > 0", name="telegram_signal_chat_id_positive"),
+        *(
+            CheckConstraint(
+                f"jsonb_typeof({name}) = 'array' AND jsonb_array_length({name}) <= 100",
+                name=f"telegram_signal_{name}_filter_valid",
+            )
+            for name in ("symbols", "timeframes", "directions", "strategy_ids", "setup_codes")
+        ),
+        Index(
+            "ix_telegram_signal_subscription_ready",
+            "workspace_id",
+            "bot_id",
+            "enabled",
+        ),
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    membership_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    bot_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    telegram_binding_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    telegram_chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    symbols: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, server_default=text("'[]'::jsonb")
+    )
+    timeframes: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, server_default=text("'[]'::jsonb")
+    )
+    directions: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, server_default=text("'[]'::jsonb")
+    )
+    strategy_ids: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, server_default=text("'[]'::jsonb")
+    )
+    setup_codes: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, server_default=text("'[]'::jsonb")
+    )
+
+
+class TelegramSignalDelivery(UuidPrimaryKey, CreatedAt, Base):
+    """Delivery ledger idempotent gắn một candidate decision với một subscription."""
+
+    __tablename__ = "telegram_signal_delivery"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "id", name="uq_telegram_signal_delivery_workspace_id"),
+        UniqueConstraint(
+            "workspace_id",
+            "subscription_id",
+            "decision_id",
+            name="uq_telegram_signal_delivery_decision",
+        ),
+        ForeignKeyConstraint(
+            ["workspace_id", "bot_id", "subscription_id"],
+            [
+                "telegram_signal_subscription.workspace_id",
+                "telegram_signal_subscription.bot_id",
+                "telegram_signal_subscription.id",
+            ],
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["workspace_id", "decision_id"],
+            ["bot_decision.workspace_id", "bot_decision.id"],
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            "status IN ('PENDING', 'PROCESSING', 'SENT', 'EXPIRED', 'DEAD', 'FILTERED')",
+            name="telegram_signal_delivery_status_valid",
+        ),
+        CheckConstraint("attempts >= 0", name="telegram_signal_delivery_attempts_nonnegative"),
+        CheckConstraint(
+            "(status = 'SENT') = (sent_at IS NOT NULL)",
+            name="telegram_signal_delivery_sent_consistent",
+        ),
+        Index(
+            "ix_telegram_signal_delivery_ready",
+            "workspace_id",
+            "status",
+            "available_at",
+        ),
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    bot_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    subscription_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    decision_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="PENDING")
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    lease_owner: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(120), nullable=True)
+
+
+# Tên bí danh chuẩn hóa tương thích ngược
+TelegramSignalSubscriptionRecord = TelegramSignalSubscription
+TelegramSignalDeliveryRecord = TelegramSignalDelivery
+TelegramSignalFilterRecord = TelegramSignalSubscription

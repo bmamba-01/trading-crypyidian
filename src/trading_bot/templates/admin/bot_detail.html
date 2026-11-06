@@ -1,16 +1,17 @@
 {% extends "admin/base.html" %}
-{% block title %}{{ bot.name }} — Crypidian{% endblock %}
+{% block title %}{{ bot.name }} · Quản trị Bot{% endblock %}
 {% block heading %}{{ bot.name }}{% endblock %}
 {% block content %}
 <dl>
-  <dt>Trạng thái account</dt><dd>{{ bot.status }} / {{ bot.account_status }} / {{ bot.account_mode }}</dd>
-  <dt>Readiness</dt><dd>{{ bot.readiness }}</dd>
-  <dt>Trạng thái entry</dt><dd>{{ bot.entry_state }}</dd>
-  <dt>Cho phép mở entry</dt><dd>{{ "Có" if bot.entry_allowed else "Không" }}</dd>
+  <dt>Trạng thái tài khoản</dt><dd>{{ bot.status | label_vi }} / {{ bot.account_status | label_vi }} / {{ bot.account_mode | label_vi }}</dd>
+  <dt>Mức sẵn sàng</dt><dd>{{ bot.readiness | label_vi }}</dd>
+  <dt>Trạng thái mở vị thế</dt><dd>{{ bot.entry_state | label_vi }}</dd>
+  <dt>Cho phép mở vị thế</dt><dd>{{ "Có" if bot.entry_allowed else "Không" }}</dd>
 </dl>
 <section aria-labelledby="bot-control-heading">
   <h2 id="bot-control-heading">Điều khiển bot</h2>
-  {% if bot.status == "DISABLED" and "owner" in identity.principal.roles %}
+  {% if bot.needs_manual_enable %}
+  <p role="alert">Bot cần xác nhận an toàn trước khi chạy lại do từng bị flatten thủ công hoặc gặp sự cố tài khoản.</p>
   <form method="post" action="/admin/bots/{{ bot.id }}/enable">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <label for="enable-reason">Lý do bật lại bot</label>
@@ -20,30 +21,66 @@
   {% endif %}
   <form method="post" action="/admin/bots/{{ bot.id }}/pause">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <label for="pause-reason">Lý do pause</label>
+    <label for="pause-reason">Lý do tạm dừng</label>
     <input id="pause-reason" name="reason" maxlength="500" required>
-    <button type="submit">Pause bot</button>
+    <button type="submit">Tạm dừng bot</button>
   </form>
   <form method="post" action="/admin/bots/{{ bot.id }}/resume">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <input type="hidden" name="expected_revision" value="{{ bot.control_revision }}">
-    <label for="resume-reason">Lý do resume</label>
+    <label for="resume-reason">Lý do tiếp tục</label>
     <input id="resume-reason" name="reason" maxlength="500" required>
-    <button type="submit">Resume bot</button>
+    <button type="submit">Tiếp tục bot</button>
   </form>
   <form method="post" action="/admin/bots/{{ bot.id }}/disable">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <label for="disable-reason">Lý do disable</label>
+    <label for="disable-reason">Lý do tắt</label>
     <input id="disable-reason" name="reason" maxlength="500" required>
-    <button type="submit">Disable bot</button>
+    <button type="submit">Tắt bot</button>
   </form>
+</section>
+<section aria-labelledby="telegram-signal-heading">
+  <h2 id="telegram-signal-heading">Nhận tín hiệu qua Telegram</h2>
+  <p>Chế độ này chỉ gửi thông báo khi bot bắt được tín hiệu; không tạo giao dịch PAPER và không gửi lệnh lên sàn.</p>
+  {% if telegram_signal_state is none %}
+    <p role="status">Chức năng đăng ký tín hiệu hiện chưa sẵn sàng.</p>
+  {% elif telegram_signal_state.binding_linked %}
+    <p role="status">{% if telegram_signal_state.enabled %}Đang nhận tín hiệu cho bot này.{% else %}Chưa đăng ký nhận tín hiệu cho bot này.{% endif %}</p>
+    {% if signal_filter_error == "invalid" %}<p role="alert">Danh sách bộ lọc không hợp lệ. Hãy kiểm tra mã cặp, khung thời gian, hướng và giới hạn tối đa 100 giá trị.</p>{% endif %}
+    <form method="post" action="/admin/bots/{{ bot.id }}/telegram-signals">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit" name="enabled" value="{{ 'false' if telegram_signal_state.enabled else 'true' }}">
+        {{ "Tắt thông báo tín hiệu" if telegram_signal_state.enabled else "Bật thông báo tín hiệu" }}
+      </button>
+    </form>
+    <h3 id="telegram-signal-filters-heading">Lọc tín hiệu muốn nhận</h3>
+    <p id="telegram-signal-filters-help">Để trống một ô nghĩa là nhận mọi giá trị của tiêu chí đó. Có thể ngăn cách bằng dấu phẩy hoặc xuống dòng; mỗi danh sách tối đa 100 mục.</p>
+    <form method="post" action="/admin/bots/{{ bot.id }}/telegram-signal-filters" aria-labelledby="telegram-signal-filters-heading">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      {% set signal_filters = telegram_signal_state.filters.as_dict() %}
+      <label for="signal-filter-symbols">Cặp giao dịch, ví dụ BTCUSDT</label>
+      <textarea id="signal-filter-symbols" name="symbols" rows="2" maxlength="12000" aria-describedby="telegram-signal-filters-help">{{ signal_filters.symbols | join(", ") }}</textarea>
+      <label for="signal-filter-timeframes">Khung thời gian, ví dụ 5m, 1h, 4h</label>
+      <textarea id="signal-filter-timeframes" name="timeframes" rows="2" maxlength="12000" aria-describedby="telegram-signal-filters-help">{{ signal_filters.timeframes | join(", ") }}</textarea>
+      <label for="signal-filter-directions">Hướng giao dịch: LONG hoặc SHORT</label>
+      <textarea id="signal-filter-directions" name="directions" rows="2" maxlength="12000" aria-describedby="telegram-signal-filters-help">{{ signal_filters.directions | join(", ") }}</textarea>
+      <label for="signal-filter-strategies">Mã chiến thuật, ví dụ H01</label>
+      <textarea id="signal-filter-strategies" name="strategy_ids" rows="2" maxlength="12000" aria-describedby="telegram-signal-filters-help">{{ signal_filters.strategy_ids | join(", ") }}</textarea>
+      <label for="signal-filter-setups">Mã setup/tín hiệu, ví dụ H01_BREAKOUT</label>
+      <textarea id="signal-filter-setups" name="setup_codes" rows="2" maxlength="12000" aria-describedby="telegram-signal-filters-help">{{ signal_filters.setup_codes | join(", ") }}</textarea>
+      <button type="submit">Lưu bộ lọc tín hiệu</button>
+    </form>
+  {% else %}
+    <p>Hãy liên kết Telegram riêng trước khi bật thông báo.</p>
+    <a href="/admin/telegram">Liên kết Telegram</a>
+  {% endif %}
 </section>
 <section aria-label="Cấu hình chiến lược">
   <h2>Bản nháp cấu hình</h2>
   {% if draft_validation == "valid" %}<p role="status">Bản nháp đã qua kiểm định.</p>{% endif %}
   {% if draft_validation == "invalid" %}<p role="alert">Bản nháp không hợp lệ; xem lỗi qua API cấu hình.</p>{% endif %}
   {% if config_draft %}
-  <p>Draft {{ config_draft.id }} — revision {{ config_draft.revision }}</p>
+  <p>Bản nháp {{ config_draft.id }} — phiên bản {{ config_draft.revision }}</p>
   <form method="post" action="/admin/bots/{{ bot.id }}/config-drafts/{{ config_draft.id }}/validate">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <button type="submit">Kiểm định bản nháp</button>
@@ -51,16 +88,15 @@
   <form method="post" action="/admin/bots/{{ bot.id }}/config-drafts/{{ config_draft.id }}/publish">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <input type="hidden" name="expected_revision" value="{{ config_draft.revision }}">
-    <button type="submit">Publish bản nháp</button>
+    <button type="submit">Công bố bản nháp</button>
   </form>
   {% endif %}
   <form method="post" action="/admin/bots/{{ bot.id }}/config-drafts">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <input type="hidden" name="expected_parent_version_id" value="{{ config_parent_version_id }}">
-    <label for="overlay-json">Overlay JSON</label>
+    <label for="overlay-json">Cấu hình bổ sung (JSON)</label>
     <textarea id="overlay-json" name="overlay_json" rows="10" cols="72" required>{{ config_draft_json }}</textarea>
     <button type="submit">Tạo bản nháp</button>
   </form>
 </section>
-<p><a href="/admin/bots">Quay lại danh sách bot</a></p>
 {% endblock %}

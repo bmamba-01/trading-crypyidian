@@ -2,6 +2,7 @@
 
 import hmac
 import json
+import re
 import secrets
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, timezone
@@ -41,6 +42,10 @@ from trading_bot.application.bot_reporting import (
 from trading_bot.application.bot_runtime_control import BotRuntimeControlError
 from trading_bot.application.flatten_all import FlattenAllError, FlattenAllService
 from trading_bot.application.strategy_pipeline.microscope import MicroscopeReplayService
+from trading_bot.application.telegram_signal_subscription import (
+    TelegramSignalSubscriptionError,
+)
+from trading_bot.application.telegram_signals import TelegramSignalFilters
 from trading_bot.auth.cookies import read_session_cookie, set_session_cookie
 from trading_bot.auth.policy import Role
 from trading_bot.auth.router import (
@@ -264,7 +269,7 @@ def _clear_login_csrf_cookie(response: Response, request: Request) -> None:
 
 def _login_page(request: Request, *, error: str | None = None) -> Response:
     token = secrets.token_urlsafe(32)
-    templates = cast(Jinja2Templates, request.app.state.templates)
+    templates = _templates(request)
     page = templates.TemplateResponse(
         request=request,
         name="admin/login.html",
@@ -422,7 +427,7 @@ async def dashboard(
         raise HTTPException(status_code=error.status_code, detail=error.message) from error
     runtime_by_id = {str(item["id"]): item for item in runtime}
     bot_views = [_bot_view(bot, runtime_by_id.get(str(bot["id"]))) for bot in bots]
-    templates = cast(Jinja2Templates, request.app.state.templates)
+    templates = _templates(request)
     return templates.TemplateResponse(
         request=request,
         name="admin/dashboard.html",
@@ -552,7 +557,7 @@ async def bot_list(
     except BotAdminError as error:
         raise HTTPException(status_code=error.status_code, detail=error.message) from error
     runtime_by_id = {str(item["id"]): item for item in runtime}
-    templates = cast(Jinja2Templates, request.app.state.templates)
+    templates = _templates(request)
     return templates.TemplateResponse(
         request=request,
         name="admin/bots.html",
@@ -576,7 +581,7 @@ async def create_bot_page(
         csrf_token = await _auth_service(request).issue_csrf_token(read_session_cookie(request))
     except AuthenticationFailure as error:
         raise HTTPException(status_code=error.status_code, detail=error.message) from error
-    templates = cast(Jinja2Templates, request.app.state.templates)
+    templates = _templates(request)
     return templates.TemplateResponse(
         request=request,
         name="admin/bot_create.html",
@@ -617,6 +622,7 @@ async def bot_detail(
     response: Response,
     identity: Annotated[AuthIdentity, Depends(current_identity)],
     draft_validation: str | None = None,
+    signal_filter_error: str | None = None,
 ) -> Response:
     """Chi tiết bot; service dùng cùng lỗi 404 cho bot không tồn tại/ngoài grant."""
     response.headers["Cache-Control"] = "no-store"
@@ -624,6 +630,12 @@ async def bot_detail(
         bot = await _admin_service(request).get_bot(identity.principal, bot_id=bot_id)
         runtime = _runtime_dict(await _operations(request, identity).bot_status(bot_id))
         csrf_token = await _auth_service(request).issue_csrf_token(read_session_cookie(request))
+        signal_service = getattr(request.app.state, "telegram_signal_subscription_service", None)
+        signal_state = (
+            await signal_service.get_state(identity.principal, bot_id=bot_id)
+            if signal_service is not None
+            else None
+        )
     except BotAdminError as error:
         raise HTTPException(status_code=error.status_code, detail=error.message) from error
     except BotRuntimeControlError as error:
@@ -632,7 +644,9 @@ async def bot_detail(
         raise HTTPException(status_code=503, detail="Không thể tải trạng thái bot.") from error
     except AuthenticationFailure as error:
         raise HTTPException(status_code=error.status_code, detail=error.message) from error
-    templates = cast(Jinja2Templates, request.app.state.templates)
+    except TelegramSignalSubscriptionError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    templates = _templates(request)
     versions = bot.get("versions", [])
     published = next((item for item in versions if item.get("status") == "PUBLISHED"), None)
     draft = next((item for item in versions if item.get("status") == "DRAFT"), None)
@@ -649,9 +663,89 @@ async def bot_detail(
             if draft
             else '{\n  "schema_version": 1\n}',
             "draft_validation": draft_validation,
+            "signal_filter_error": signal_filter_error,
+            "telegram_signal_state": signal_state,
         },
         headers={"Cache-Control": "no-store"},
     )
+
+
+@router.post("/bots/{bot_id}/telegram-signals")
+async def set_bot_telegram_signals_form(
+    bot_id: UUID,
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(current_identity)],
+) -> Response:
+    """Bật/tắt cảnh báo tín hiệu Telegram; thao tác này không gửi hoặc ghi lệnh."""
+    values = await _parse_form(request)
+    await _verify_form_csrf(request, values)
+    raw_enabled = values.get("enabled")
+    if raw_enabled not in {"true", "false"}:
+        raise HTTPException(status_code=422, detail="Trạng thái đăng ký tín hiệu không hợp lệ.")
+    service = getattr(request.app.state, "telegram_signal_subscription_service", None)
+    if service is None:
+        raise HTTPException(status_code=503, detail="Đăng ký tín hiệu Telegram chưa sẵn sàng.")
+    try:
+        await service.set_enabled(
+            identity.principal, bot_id=bot_id, enabled=(raw_enabled == "true")
+        )
+    except TelegramSignalSubscriptionError as error:
+        message = str(error)
+        status = 404 if "Không tìm thấy bot" in message else 409
+        raise HTTPException(status_code=status, detail=message) from error
+    return Response(
+        status_code=303,
+        headers={"Location": f"/admin/bots/{bot_id}", "Cache-Control": "no-store"},
+    )
+
+
+@router.post("/bots/{bot_id}/telegram-signal-filters")
+async def set_bot_telegram_signal_filters_form(
+    bot_id: UUID,
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(current_identity)],
+) -> Response:
+    """Lưu allowlist signal của chính thành viên; không kích hoạt giao dịch."""
+    values = await _parse_form(request, max_bytes=65_536)
+    await _verify_form_csrf(request, values)
+    try:
+        filters = TelegramSignalFilters(
+            symbols=_parse_filter_values(values.get("symbols", "")),
+            timeframes=_parse_filter_values(values.get("timeframes", "")),
+            directions=_parse_filter_values(values.get("directions", "")),
+            strategy_ids=_parse_filter_values(values.get("strategy_ids", "")),
+            setup_codes=_parse_filter_values(values.get("setup_codes", "")),
+        )
+    except ValueError:
+        return Response(
+            status_code=303,
+            headers={
+                "Location": f"/admin/bots/{bot_id}?signal_filter_error=invalid",
+                "Cache-Control": "no-store",
+            },
+        )
+
+    service = getattr(request.app.state, "telegram_signal_subscription_service", None)
+    if service is None:
+        raise HTTPException(status_code=503, detail="Đăng ký tín hiệu Telegram chưa sẵn sàng.")
+    try:
+        await service.set_filters(identity.principal, bot_id=bot_id, filters=filters)
+    except TelegramSignalSubscriptionError as error:
+        message = str(error)
+        status = 404 if "Không tìm thấy bot" in message else 409
+        raise HTTPException(status_code=status, detail=message) from error
+    return Response(
+        status_code=303,
+        headers={"Location": f"/admin/bots/{bot_id}", "Cache-Control": "no-store"},
+    )
+
+
+def _parse_filter_values(raw: str) -> tuple[str, ...]:
+    """Nhận danh sách tối đa 100 giá trị, ngăn cách bằng dấu phẩy hoặc dòng mới."""
+    values = tuple(value.strip() for value in re.split(r"[,\r\n]+", raw) if value.strip())
+    if len(values) > 100:
+        raise ValueError("Một allowlist chỉ được có tối đa 100 giá trị.")
+    return values
 
 
 @router.post("/bots/{bot_id}/config-drafts")
@@ -859,7 +953,7 @@ async def flatten_page(
         csrf_token = await _auth_service(request).issue_csrf_token(read_session_cookie(request))
     except AuthenticationFailure as error:
         raise HTTPException(status_code=error.status_code, detail=error.message) from error
-    templates = cast(Jinja2Templates, request.app.state.templates)
+    templates = _templates(request)
     return templates.TemplateResponse(
         request=request,
         name="admin/flatten.html",
@@ -892,7 +986,7 @@ async def flatten_preview_form(
         ) from error
     except AuthenticationFailure as error:
         raise HTTPException(status_code=error.status_code, detail=error.message) from error
-    templates = cast(Jinja2Templates, request.app.state.templates)
+    templates = _templates(request)
     return templates.TemplateResponse(
         request=request,
         name="admin/flatten_preview.html",
@@ -962,7 +1056,7 @@ async def flatten_operation_page(
         raise HTTPException(
             status_code=status, detail="Không tìm thấy operation flatten."
         ) from error
-    templates = cast(Jinja2Templates, request.app.state.templates)
+    templates = _templates(request)
     return templates.TemplateResponse(
         request=request,
         name="admin/flatten_operation.html",
@@ -984,7 +1078,7 @@ async def telegram_bindings_page(
         raise HTTPException(status_code=403, detail="Không đủ quyền quản lý Telegram.") from error
     except AuthenticationFailure as error:
         raise HTTPException(status_code=error.status_code, detail=error.message) from error
-    templates = cast(Jinja2Templates, request.app.state.templates)
+    templates = _templates(request)
     return templates.TemplateResponse(
         request=request,
         name="admin/telegram_bindings.html",
@@ -1012,7 +1106,7 @@ async def telegram_link_form(
         ) from error
     except AuthenticationFailure as error:
         raise HTTPException(status_code=error.status_code, detail=error.message) from error
-    templates = cast(Jinja2Templates, request.app.state.templates)
+    templates = _templates(request)
     return templates.TemplateResponse(
         request=request,
         name="admin/telegram_link_created.html",
@@ -1098,7 +1192,7 @@ async def reports(
         bots = await _admin_service(request).list_bots(identity.principal)
     except BotAdminError as error:
         raise HTTPException(status_code=error.status_code, detail=error.message) from error
-    templates = cast(Jinja2Templates, request.app.state.templates)
+    templates = _templates(request)
     return templates.TemplateResponse(
         request=request,
         name="admin/reports.html",
@@ -1125,7 +1219,7 @@ async def strategy_cards_page(
     response.headers["Cache-Control"] = "no-store"
     service = _strategy_card_service(request)
     cards = await service.list_strategy_cards(identity.principal)
-    templates = cast(Jinja2Templates, request.app.state.templates)
+    templates = _templates(request)
     return templates.TemplateResponse(
         request=request,
         name="admin/strategy_cards.html",
@@ -1186,7 +1280,7 @@ async def strategy_card_microscope_page(
             context=initial_preset.context,
         )
 
-    templates = cast(Jinja2Templates, request.app.state.templates)
+    templates = _templates(request)
     return templates.TemplateResponse(
         request=request,
         name="admin/microscope_replay.html",
