@@ -20,6 +20,7 @@ from trading_bot.application.backtest_dataset_replay_bundle import (
     BacktestDatasetReplayBundle,
     BacktestDatasetReplayBundleReference,
 )
+from trading_bot.application.backtest_decision_opportunities import ReplayDecisionOpportunity
 from trading_bot.application.backtest_job_persistence import (
     BacktestJobPersistToken,
     JobPersistenceFactory,
@@ -65,6 +66,7 @@ class ReplayOutcomeExecutionPort(Protocol):
         sensitivity_run: SensitivityRun,
         trade_outcomes: tuple[EvaluationTrade, ...],
         dataset_bundle: BacktestDatasetReplayBundle,
+        opportunities: tuple[ReplayDecisionOpportunity, ...] = (),
     ) -> BacktestOutcomeAppendResult: ...
 
 
@@ -206,6 +208,7 @@ class BacktestDatasetReplayExecutionService:
                         sensitivity_run=run.sensitivity_run,
                         trade_outcomes=run.trade_outcomes,
                         dataset_bundle=current_bundle,
+                        opportunities=run.opportunities,
                     )
                 )
             outcomes = tuple(persisted)

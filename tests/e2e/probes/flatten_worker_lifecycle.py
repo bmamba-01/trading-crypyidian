@@ -206,7 +206,13 @@ async def mb07b_flatten_duplicate_claim() -> dict[str, Any]:
 async def mb07b_flatten_single_position_setup() -> dict[str, Any]:
     """Tạo đúng một vị thế đang mở, không để lệnh entry dư làm nhiễu claim test."""
     async with runtime_app(tick=20) as app:
-        entry_result = await entry(app, "a", 0, 1)
+        entry_result = await entry(
+            app,
+            "a",
+            0,
+            1,
+            at=datetime.now(UTC) - timedelta(minutes=1),
+        )
         entry_fill = await fill(app, "a", entry_result)
     return {"single_position_entry": entry_result, "single_position_fill": entry_fill}
 

@@ -18,7 +18,7 @@
       <div class="form-group" id="bot-select-wrap">
         <label for="bot_id">Bot Giao Dịch</label>
         <select id="bot_id" name="bot_id">
-          <option value="">-- Chọn Bot --</option>
+          <option value="">Không chọn bot</option>
           {% for bot in bots %}
             <option value="{{ bot.id }}" {% if bot_id == bot.id %}selected{% endif %}>{{ bot.name }} ({{ bot.symbol or "BTCUSDT" }})</option>
           {% endfor %}
@@ -72,6 +72,10 @@
         Khoảng: {{ report.window.start | local_time }} ➔ {{ report.window.end | local_time }}
       </span>
     {% endif %}
+  </div>
+
+  <div class="authoritative-metrics-block" style="margin-top: 1rem;">
+    {% with totals=report.get("totals", {}) %}{% include "admin/metric_cards.html" %}{% endwith %}
   </div>
 
   <!-- Thống Kê Tổng Quan (Trading Metrics Grid Cards) -->
@@ -568,6 +572,7 @@
     }
   }
 </script>
+<details style="margin-top: 1.5rem;"><summary>Dữ liệu kỹ thuật JSON</summary><pre>{{ report | tojson(indent=2) }}</pre></details>
 {% endblock %}
 
 {% block scripts %}

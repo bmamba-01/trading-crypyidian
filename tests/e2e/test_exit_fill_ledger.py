@@ -10,11 +10,16 @@ from decimal import Decimal
 from pathlib import Path
 from textwrap import dedent
 
-import pytest
 from scripts.docker_image import build_image_reference, ensure_image_available
 
 
-def _compose(root: Path, project: str, environment: dict[str, str], *args: str):
+def _compose(
+    root: Path,
+    project: str,
+    environment: dict[str, str],
+    *args: str,
+    success: bool = True,
+):
     result = subprocess.run(
         [
             "docker",
@@ -36,11 +41,11 @@ def _compose(root: Path, project: str, environment: dict[str, str], *args: str):
         errors="replace",
         timeout=240,
     )
-    if result.returncode:
-        pytest.fail(
-            f"Compose command failed: {' '.join(args)}\n"
-            f"stdout:\n{result.stdout[-4000:]}\nstderr:\n{result.stderr[-4000:]}"
-        )
+    assert (result.returncode == 0) is success, (
+        args,
+        result.stdout[-4000:],
+        result.stderr[-4000:],
+    )
     return result
 
 
@@ -366,7 +371,7 @@ def test_exit_fills_are_idempotent_and_do_not_change_entry_order_fill() -> None:
             ["CLOSED", "0E-18"],
             ["REDUCED", "0.600000000000000000"],
         ]
-        _compose(
+        downgrade = _compose(
             root,
             project,
             environment,
@@ -377,18 +382,8 @@ def test_exit_fills_are_idempotent_and_do_not_change_entry_order_fill() -> None:
             "alembic",
             "downgrade",
             "5b8c3f4a1d92",
+            success=False,
         )
-        _compose(
-            root,
-            project,
-            environment,
-            "run",
-            "--rm",
-            "--no-deps",
-            "migrator",
-            "alembic",
-            "upgrade",
-            "head",
-        )
+        assert "WP03_RISK_GUARD_DOWNGRADE_BLOCKED" in (downgrade.stdout + downgrade.stderr)
     finally:
         _compose(root, project, environment, "down", "--volumes", "--remove-orphans")

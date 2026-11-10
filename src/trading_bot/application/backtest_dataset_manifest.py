@@ -15,10 +15,18 @@ from trading_bot.application.binance_rest_backfill import (
     BackfillRightsPurpose,
     RestBackfillRequest,
 )
-from trading_bot.domain.market.models import OHLCVBar
+from trading_bot.domain.market.models import MarketBarSourceIdentity, OHLCVBar
 
 _BACKFILL_SOURCE = "BINANCE_USDM_REST_BACKFILL"
 _SHA256_LENGTH = 64
+
+
+def _is_sha256(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == _SHA256_LENGTH
+        and all(character in "0123456789abcdef" for character in value)
+    )
 
 
 class BacktestDatasetNotReady(RuntimeError):
@@ -59,11 +67,12 @@ class BacktestDatasetManifest:
     missing_open_times: tuple[datetime, ...]
     bars_content_hash: str
     dataset_hash: str
+    bar_identity_hash: str | None = None
     schema_version: int = 3
 
     def __post_init__(self) -> None:
-        if type(self.schema_version) is not int or self.schema_version not in {2, 3}:
-            raise ValueError("schema_version chỉ hỗ trợ 2 hoặc 3.")
+        if type(self.schema_version) is not int or self.schema_version not in {2, 3, 4}:
+            raise ValueError("schema_version chỉ hỗ trợ 2, 3 hoặc 4.")
         for name in (
             "prepared_at",
             "rights_verified_at",
@@ -94,6 +103,11 @@ class BacktestDatasetManifest:
                 or any(character not in "0123456789abcdef" for character in digest)
             ):
                 raise ValueError(f"{name} phải là SHA-256 hex chữ thường.")
+        if self.schema_version == 4:
+            if not _is_sha256(self.bar_identity_hash):
+                raise ValueError("bar_identity_hash phải là SHA-256 khi schema v4.")
+        elif self.bar_identity_hash is not None:
+            raise ValueError("Manifest v2/v3 không được có bar_identity_hash.")
         if self.warmup_start > self.evaluation_start or self.evaluation_start >= self.range_end:
             raise ValueError("Manifest cần khoảng evaluation không rỗng sau warm-up.")
         if type(self.rights_workspace_id) is not UUID:
@@ -158,6 +172,11 @@ class BacktestDatasetManifest:
         return self.bar_count == self.expected_bar_count and not self.missing_open_times
 
     @property
+    def has_pinned_source_identities(self) -> bool:
+        """Cho biết manifest có ghim ordered MarketBar identity cho scorer parity."""
+        return self.schema_version == 4 and self.bar_identity_hash is not None
+
+    @property
     def status(self) -> str:
         """Trạng thái có thể lưu trong backtest run hoặc màn hình chuẩn bị dữ liệu."""
         return "READY" if self.is_ready else "INCOMPLETE"
@@ -214,7 +233,10 @@ class BacktestDatasetManifest:
             "status",
             "dataset_hash",
         }
-        if set(payload) != expected_fields or payload.get("schema_version") not in {2, 3}:
+        schema_version = payload.get("schema_version")
+        if schema_version == 4:
+            expected_fields.add("bar_identity_hash")
+        if set(payload) != expected_fields or schema_version not in {2, 3, 4}:
             raise ValueError("canonical_json fields/schema_version không hợp lệ.")
         canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         if canonical != canonical_json:
@@ -226,6 +248,8 @@ class BacktestDatasetManifest:
         coverage_ratio = payload.pop("coverage_ratio")
         schema_version = payload.pop("schema_version")
         payload["schema_version"] = schema_version
+        if schema_version < 4:
+            payload["bar_identity_hash"] = None
         payload["rights_provider"] = payload.pop("provider")
         payload["rights_purpose"] = payload.pop("purpose")
         try:
@@ -275,6 +299,7 @@ def build_backtest_dataset_manifest(
     bars: Sequence[OHLCVBar],
     rights_evidence: BackfillRightsEvidence,
     prepared_at: datetime,
+    schema_version: int = 3,
 ) -> BacktestDatasetManifest:
     """Tạo manifest chuẩn hóa; nến thiếu được liệt kê chứ không nội suy."""
     if not isinstance(request, RestBackfillRequest):
@@ -350,8 +375,14 @@ def build_backtest_dataset_manifest(
     )
     warmup_observed = sum(item.open_time.astimezone(UTC) < evaluation for item in ordered)
     evaluation_observed = len(ordered) - warmup_observed
-    schema_version = 3
+    if type(schema_version) is not int or schema_version not in {2, 3, 4}:
+        raise ValueError("schema_version chỉ hỗ trợ 2, 3 hoặc 4.")
     bars_hash = backtest_dataset_bars_hash(ordered, schema_version=schema_version)
+    bar_identity_hash = (
+        backtest_dataset_bar_identity_hash(ordered, workspace_id=rights_evidence.workspace_id)
+        if schema_version == 4
+        else None
+    )
     manifest_payload = {
         "schema_version": schema_version,
         "request_fingerprint": request.fingerprint,
@@ -382,6 +413,8 @@ def build_backtest_dataset_manifest(
         "bars_content_hash": bars_hash,
         "status": "READY" if not missing else "INCOMPLETE",
     }
+    if schema_version == 4:
+        manifest_payload["bar_identity_hash"] = bar_identity_hash
     canonical = json.dumps(
         manifest_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     )
@@ -410,15 +443,125 @@ def build_backtest_dataset_manifest(
         bar_count=len(ordered),
         missing_open_times=missing,
         bars_content_hash=bars_hash,
+        bar_identity_hash=bar_identity_hash,
         dataset_hash=dataset_hash,
         schema_version=schema_version,
     )
 
 
+@dataclass(frozen=True, slots=True)
+class MarketBarIdentityMetadata:
+    """Định danh và thời gian nguồn; không chứa giá, volume hay raw payload."""
+
+    source_identity: MarketBarSourceIdentity
+    source: str
+    symbol: str
+    timeframe: str
+    open_time: datetime
+    close_time: datetime
+    available_at: datetime
+    is_closed: bool
+    raw_reference: str | None
+
+    @property
+    def checksum(self) -> str:
+        """Checksum được ghim cùng identity authoritative."""
+        return self.source_identity.checksum
+
+    @classmethod
+    def from_bar(cls, bar: OHLCVBar) -> MarketBarIdentityMetadata:
+        """Tách metadata thật, không dựng bar hoặc giá giả."""
+        if type(bar.source_identity) is not MarketBarSourceIdentity:
+            raise ValueError("Identity nguồn authoritative bắt buộc cho manifest v4.")
+        if bar.source_identity.checksum != bar.checksum:
+            raise ValueError("Checksum bar không khớp identity nguồn.")
+        return cls(
+            bar.source_identity,
+            bar.source,
+            bar.symbol,
+            bar.timeframe,
+            bar.open_time,
+            bar.close_time,
+            bar.available_at,
+            bar.is_closed,
+            bar.raw_reference,
+        )
+
+
+def backtest_dataset_bar_identity_hash(bars: Sequence[OHLCVBar], *, workspace_id: UUID) -> str:
+    """Ghim ordered định danh record/revision, giữ nguyên bytes manifest v4."""
+    if not isinstance(bars, Sequence) or any(type(bar) is not OHLCVBar for bar in bars):
+        raise ValueError("bars phải là dãy OHLCVBar hợp lệ.")
+    return backtest_dataset_identity_metadata_hash(
+        tuple(MarketBarIdentityMetadata.from_bar(bar) for bar in bars), workspace_id=workspace_id
+    )
+
+
+def backtest_dataset_identity_metadata_hash(
+    bars: Sequence[MarketBarIdentityMetadata], *, workspace_id: UUID
+) -> str:
+    """Ghim ordered định danh record/revision đã đọc từ MarketBar."""
+    if type(workspace_id) is not UUID:
+        raise ValueError("workspace_id cho identity digest phải là UUID.")
+    if not isinstance(bars, Sequence) or any(
+        type(bar) is not MarketBarIdentityMetadata for bar in bars
+    ):
+        raise ValueError("bars phải là dãy metadata định danh hợp lệ.")
+    ordered = tuple(
+        sorted(
+            bars,
+            key=lambda bar: (
+                bar.open_time.astimezone(UTC),
+                bar.source,
+                bar.symbol,
+                bar.timeframe,
+            ),
+        )
+    )
+    payload: list[dict[str, object]] = []
+    seen_record_ids: set[UUID] = set()
+    seen_versions: set[tuple[str, int]] = set()
+    for bar in ordered:
+        identity = bar.source_identity
+        if type(identity) is not MarketBarSourceIdentity:
+            raise ValueError(
+                "Identity nguồn authoritative của từng bar là bắt buộc cho manifest v4."
+            )
+        if identity.workspace_id != workspace_id:
+            raise ValueError("Identity bar không thuộc workspace của manifest.")
+        if identity.checksum != bar.checksum:
+            raise ValueError("Checksum bar không khớp identity nguồn.")
+        version_key = (identity.logical_key, identity.revision)
+        if identity.record_id in seen_record_ids or version_key in seen_versions:
+            raise ValueError("Identity record/revision bar bị trùng trong manifest.")
+        seen_record_ids.add(identity.record_id)
+        seen_versions.add(version_key)
+        payload.append(
+            {
+                "workspace_id": str(identity.workspace_id),
+                "record_id": str(identity.record_id),
+                "logical_key": identity.logical_key,
+                "revision": identity.revision,
+                "supersedes_record_id": (
+                    None
+                    if identity.supersedes_record_id is None
+                    else str(identity.supersedes_record_id)
+                ),
+                "checksum": identity.checksum,
+                "source": bar.source,
+                "symbol": bar.symbol,
+                "timeframe": bar.timeframe,
+                "open_time": bar.open_time.astimezone(UTC).isoformat(),
+            }
+        )
+    canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 def backtest_dataset_bars_hash(bars: Sequence[OHLCVBar], *, schema_version: int = 3) -> str:
     """Tính hash ổn định theo thời gian mở nến cho snapshot dataset."""
-    if type(schema_version) is not int or schema_version not in {2, 3}:
-        raise ValueError("schema_version chỉ hỗ trợ 2 hoặc 3.")
+    if type(schema_version) is not int or schema_version not in {2, 3, 4}:
+        raise ValueError("schema_version chỉ hỗ trợ 2, 3 hoặc 4.")
     if not isinstance(bars, Sequence) or any(type(bar) is not OHLCVBar for bar in bars):
         raise ValueError("bars phải là dãy OHLCVBar hợp lệ.")
     ordered = tuple(
@@ -462,7 +605,7 @@ def backtest_dataset_bars_hash(bars: Sequence[OHLCVBar], *, schema_version: int 
 
 
 def _manifest_payload(manifest: BacktestDatasetManifest) -> dict[str, object]:
-    return {
+    payload: dict[str, object] = {
         "schema_version": manifest.schema_version,
         "request_fingerprint": manifest.request_fingerprint,
         "policy_fingerprint": manifest.policy_fingerprint,
@@ -492,3 +635,6 @@ def _manifest_payload(manifest: BacktestDatasetManifest) -> dict[str, object]:
         "bars_content_hash": manifest.bars_content_hash,
         "status": manifest.status,
     }
+    if manifest.schema_version == 4:
+        payload["bar_identity_hash"] = manifest.bar_identity_hash
+    return payload

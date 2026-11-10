@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import secrets
+import socket
 import threading
 import time
 from datetime import UTC, datetime, timedelta
@@ -111,6 +112,23 @@ class MockRevampAdminService:
                 "account": {"mode": "PAPER", "status": "ACTIVE"},
             }
         ]
+
+    async def get_bot(self, principal: Principal, *, bot_id: UUID) -> dict[str, Any]:
+        return {
+            "id": str(bot_id),
+            "name": "Binance BTC Trend Pullback H01",
+            "symbol": "BTCUSDT",
+            "status": "RUNNING",
+            "account": {"mode": "PAPER", "status": "ACTIVE"},
+            "versions": [
+                {
+                    "id": str(uuid4()),
+                    "status": "PUBLISHED",
+                    "revision": 1,
+                    "overlay": {"schema_version": 1},
+                }
+            ],
+        }
 
 
 class MockRevampReportingService:
@@ -326,9 +344,10 @@ class MockRevampBotOperationsService:
             BOT_ID: {
                 "id": str(BOT_ID),
                 "readiness": "READY",
-                "entry_state": "ENABLED",
+                "entry_state": "POSITION_OPEN",
                 "entry_allowed": True,
                 "control_revision": 1,
+                "needs_manual_enable": False,
             }
         }
 
@@ -383,7 +402,11 @@ def create_revamp_test_app() -> FastAPI:
 
 @pytest.fixture(scope="module")
 def revamp_server_url() -> Any:
-    port = 8098
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+
     app = create_revamp_test_app()
     config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
     server = uvicorn.Server(config)
@@ -459,7 +482,7 @@ def test_trading_revamp_playwright_desktop_and_mobile(revamp_server_url: str) ->
         assert page.locator("text=Tỷ Lệ Thắng (Win Rate)").is_visible()
         assert page.locator("text=Profit Factor").is_visible()
         assert page.locator("text=Max Drawdown").is_visible()
-        assert page.locator("text=Thời Gian Giữ Lệnh").is_visible()
+        assert page.locator("text=Thời Gian Giữ Lệnh").first.is_visible()
 
         # Kiểm tra Tooltips có đầy đủ thuộc tính data-tooltip
         tooltips = page.locator(".tooltip-term")
@@ -549,6 +572,138 @@ def test_trading_revamp_playwright_desktop_and_mobile(revamp_server_url: str) ->
         # Chụp screenshots mobile
         page_m.screenshot(
             path=str(SCREENSHOTS_DIR / "16_trading_revamp_mobile.png"), full_page=True
+        )
+
+        mobile_ctx.close()
+        browser.close()
+
+
+def test_bot_detail_trading_revamp_playwright_desktop_and_mobile(
+    revamp_server_url: str,
+) -> None:
+    """Kiểm thử Playwright E2E cho giao diện Chi Tiết Bot Revamp: Live 5s, Charts, Positions & AI Phạt."""
+    base_url = revamp_server_url
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+
+        # =========================================================================
+        # 1. KỊCH BẢN DESKTOP (1280x800)
+        # =========================================================================
+        desktop_ctx = browser.new_context(viewport={"width": 1280, "height": 800})
+        page = desktop_ctx.new_page()
+
+        # Đăng nhập
+        page.goto(f"{base_url}/admin/login", wait_until="networkidle")
+        page.get_by_label("Mã workspace").fill("demo-workspace")
+        page.get_by_label("Email").fill("admin@crypidian.io")
+        page.get_by_label("Mật khẩu").fill("correct_password")
+        page.get_by_label("Mã xác thực 6 chữ số").fill("123456")
+        page.get_by_role("button", name="Đăng nhập").click()
+        page.wait_for_load_state("networkidle")
+
+        # Truy cập trang Chi tiết Bot
+        page.goto(f"{base_url}/admin/bots/{BOT_ID}", wait_until="networkidle")
+
+        # 1.1 Kiểm tra Header Bot và Badges
+        assert page.locator("text=Binance BTC Trend Pullback H01").first.is_visible()
+        assert page.locator("text=BTCUSDT").first.is_visible()
+        assert page.locator("text=● ĐANG CHẠY").is_visible()
+        assert page.locator("text=Chế độ: PAPER").is_visible()
+
+        # 1.2 Kiểm tra Live Status Bar 5s
+        assert page.locator(".live-status-bar").is_visible()
+        assert page.locator("#live-pulse-dot").is_visible()
+        assert page.locator("#live-updated-at").is_visible()
+        toggle_btn = page.locator("#toggle-realtime-btn")
+        assert toggle_btn.is_visible()
+
+        # Tương tác với nút Tạm dừng / Tiếp tục cập nhật 5s
+        toggle_btn.click()
+        assert toggle_btn.inner_text() == "Tiếp tục"
+        toggle_btn.click()
+        assert toggle_btn.inner_text() == "Tạm dừng"
+
+        # 1.3 Kiểm tra Lưới Thẻ Chỉ Số KPI Trading
+        assert page.locator("#kpi-open-positions").is_visible()
+        assert page.locator("#kpi-win-rate").is_visible()
+        assert page.locator("#kpi-profit-factor").is_visible()
+        assert page.locator("#kpi-net-pnl").is_visible()
+        assert page.locator("#kpi-max-drawdown").is_visible()
+
+        # 1.4 Kiểm tra Biểu đồ nến Lightweight Charts
+        assert page.locator("#trade-chart").is_visible()
+        assert page.locator("#trade-chart-event-detail").is_visible()
+        assert page.locator("text=Chốt lời (🎯 TP)").is_visible()
+        assert page.locator("text=Dừng lỗ (🛑 SL)").is_visible()
+
+        # 1.5 Kiểm tra Bảng Vị Thế Đang Mở và Thẻ Reasoning L4-L6
+        assert page.locator("#open-positions-heading").is_visible()
+        assert page.locator("text=Khối Lượng").first.is_visible()
+        assert page.locator("text=Đòn Bẩy").first.is_visible()
+        assert page.locator("text=Giá Vào Lệnh").first.is_visible()
+        assert page.locator("text=L4 Cửa Bối Cảnh (Context Gate)").first.is_visible()
+        assert page.locator("text=L5 Điểm Kích Hoạt (Trigger Score)").first.is_visible()
+        assert page.locator("text=L6 Vùng Giá & Tỷ Lệ R:R").first.is_visible()
+
+        # 1.6 Kiểm tra Bảng Lịch Sử Khớp Lệnh & Nút 1-click Phạt AI
+        assert page.locator("#recent-trades-heading").is_visible()
+        assert page.locator("text=Vì sao vào:").first.is_visible()
+        assert page.locator("text=Vì sao thoát:").first.is_visible()
+        ai_btn = page.locator(".btn-ingest-ai").first
+        assert ai_btn.is_visible()
+
+        # Bấm nút đưa ca sai lệch vào dữ liệu phạt AI
+        ai_btn.click(force=True)
+        page.wait_for_selector("button:has-text('Đã tiếp nhận vào dữ liệu phạt AI!')", timeout=5000)
+
+        # Chụp màn hình Desktop Light Theme
+        page.screenshot(
+            path=str(SCREENSHOTS_DIR / "23_bot_detail_trading_revamp_desktop.png"),
+            full_page=True,
+        )
+
+        # Chuyển sang Dark Theme và chụp
+        page.evaluate("() => document.documentElement.setAttribute('data-theme', 'dark')")
+        page.screenshot(
+            path=str(SCREENSHOTS_DIR / "24_bot_detail_dark_desktop.png"),
+            full_page=True,
+        )
+
+        desktop_ctx.close()
+
+        # =========================================================================
+        # 2. KỊCH BẢN MOBILE (390x844 - iPhone)
+        # =========================================================================
+        mobile_ctx = browser.new_context(
+            viewport={"width": 390, "height": 844},
+            is_mobile=True,
+            has_touch=True,
+        )
+        page_m = mobile_ctx.new_page()
+
+        # Đăng nhập mobile
+        page_m.goto(f"{base_url}/admin/login", wait_until="networkidle")
+        page_m.get_by_label("Mã workspace").fill("demo-workspace")
+        page_m.get_by_label("Email").fill("admin@crypidian.io")
+        page_m.get_by_label("Mật khẩu").fill("correct_password")
+        page_m.get_by_label("Mã xác thực 6 chữ số").fill("123456")
+        page_m.get_by_role("button", name="Đăng nhập").click()
+        page_m.wait_for_load_state("networkidle")
+
+        # Truy cập trang Chi tiết Bot
+        page_m.goto(f"{base_url}/admin/bots/{BOT_ID}", wait_until="networkidle")
+
+        # Xác nhận hiển thị responsive trên mobile
+        assert page_m.locator("text=Binance BTC Trend Pullback H01").first.is_visible()
+        assert page_m.locator(".live-status-bar").is_visible()
+        assert page_m.locator("#trade-chart").is_visible()
+        assert page_m.locator("#open-positions-heading").is_visible()
+
+        # Chụp màn hình Mobile
+        page_m.screenshot(
+            path=str(SCREENSHOTS_DIR / "25_bot_detail_mobile.png"),
+            full_page=True,
         )
 
         mobile_ctx.close()

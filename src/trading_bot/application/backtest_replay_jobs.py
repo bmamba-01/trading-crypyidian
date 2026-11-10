@@ -36,6 +36,7 @@ class BacktestReplayJobSubmission:
     fee_rate: Decimal
     slippage_rate: Decimal
     seed: int
+    learning_intent: str = "RESEARCH"
 
     def __post_init__(self) -> None:
         if not isinstance(self.bundle_hash, str) or _SHA256.fullmatch(self.bundle_hash) is None:
@@ -59,6 +60,11 @@ class BacktestReplayJobSubmission:
             raise ValueError("Trượt giá phải nằm trong [0, 100%).")
         if type(self.seed) is not int or not 0 <= self.seed <= 2**31 - 1:
             raise ValueError("Seed phải là số nguyên từ 0 đến 2,147,483,647.")
+        if type(self.learning_intent) is not str or self.learning_intent not in {
+            "RESEARCH",
+            "TRAINING_BASE",
+        }:
+            raise ValueError("Mục đích replay không hợp lệ.")
 
     def to_payload(self) -> dict[str, str | int]:
         """Chuẩn hóa Decimal thành chuỗi để payload JSON không đi qua float."""
@@ -71,6 +77,7 @@ class BacktestReplayJobSubmission:
             "fee_rate": str(self.fee_rate),
             "slippage_rate": str(self.slippage_rate),
             "seed": self.seed,
+            "learning_intent": self.learning_intent,
         }
 
     @classmethod
@@ -86,7 +93,10 @@ class BacktestReplayJobSubmission:
             "slippage_rate",
             "seed",
         }
-        if type(payload) is not dict or set(payload) != fields:
+        if type(payload) is not dict or frozenset(payload) not in {
+            frozenset(fields),
+            frozenset(fields | {"learning_intent"}),
+        }:
             raise ValueError("Payload job replay có field thiếu hoặc không nhận diện.")
         decimal_fields = (
             "starting_equity",
@@ -105,6 +115,7 @@ class BacktestReplayJobSubmission:
             fee_rate=Decimal(payload["fee_rate"]),
             slippage_rate=Decimal(payload["slippage_rate"]),
             seed=payload["seed"],
+            learning_intent=payload.get("learning_intent", "RESEARCH"),
         )
 
 
@@ -119,6 +130,7 @@ class BacktestReplayJob:
     bundle_hash: str
     strategy_release_id: str
     execution_interval: str
+    learning_intent: str
     created_at: datetime
     updated_at: datetime
     error_code: str | None
@@ -219,6 +231,7 @@ class BacktestReplayJobService:
 
 
 def _to_job(row: BacktestReplayJobRecord) -> BacktestReplayJob:
+    learning_intent = str(row.request_payload.get("learning_intent", "RESEARCH"))
     return BacktestReplayJob(
         id=row.id,
         status=row.status,
@@ -227,10 +240,15 @@ def _to_job(row: BacktestReplayJobRecord) -> BacktestReplayJob:
         bundle_hash=row.bundle_hash,
         strategy_release_id=row.strategy_release_id,
         execution_interval=row.execution_interval,
+        learning_intent=learning_intent,
         created_at=row.created_at,
         updated_at=row.updated_at,
         error_code=row.error_code,
-        result_run_ids=tuple(str(value) for value in row.result_run_ids),
+        result_run_ids=(
+            ()
+            if learning_intent != "RESEARCH"
+            else tuple(str(value) for value in row.result_run_ids)
+        ),
         cancel_requested=row.cancel_requested,
         cancel_requested_at=row.cancel_requested_at,
         cancel_requested_by=row.cancel_requested_by,

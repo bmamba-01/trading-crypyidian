@@ -134,3 +134,13 @@ def test_learning_post_mortem_service_ingestion() -> None:
     assert retrieved is not None
     assert retrieved.sample_id == sample.sample_id
     assert len(service.list_ingested_samples()) == 1
+
+    # Xuất mẫu huấn luyện DatasetSample
+    dataset_samples = service.export_dataset_samples(workspace_id=uuid4())
+    assert len(dataset_samples) == 1
+    ds = dataset_samples[0]
+    assert ds.sample_id == str(sample.sample_id)
+    assert ds.outcome_id == str(trade_id)
+    assert ds.label_value == 0  # ABSTAIN
+    assert ds.label_version == "counterfactual_negative_v1"
+    assert ds.source_dependent is False

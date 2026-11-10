@@ -1674,6 +1674,139 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
   * Static checks: `ruff check` và `ruff format` đạt 100% trên 505 files; `git diff --check` sạch 0 lỗi.
 - **Đã đọc lại memory:** đối chiếu toàn bộ các thay đổi kiến trúc, models, router, migrations, unit tests, E2E tests, screenshots và glossary; xác nhận tuân thủ trọn vẹn quy ước AGENTS.md và skill `futures-bot-implementation`.
 
+### 2026-11-10 — Revamp Chi Tiết Bot (`bot_detail.html`), Cập Nhật Thời Gian Thực 5s, Vị Thế Đang Mở & Nối Mẫu Phạt AI Retraining
+
+- **Mục tiêu/phạm vi:**
+  * Tiếp tục hoàn thiện phần việc đang dở dang theo yêu cầu người dùng: Revamp toàn diện giao diện Chi Tiết Bot (`bot_detail.html`) và Admin Dashboard theo chuẩn **Trading Design System** chuyên nghiệp.
+  * Khắc phục tình trạng "quá nhiều chữ" bằng cách thay thế văn bản mô tả nặng nề thành hệ thống biểu tượng, huy hiệu trực quan (Badges), số cố định `tabular-nums`, và chú giải tương tác (Interactive Tooltips).
+  * Hỗ trợ đầy đủ **2 chế độ giao diện Sáng (Light) & Tối (Dark)** tương thích với nút gạt Theme Switcher, tự động đồng bộ sự kiện `themechange` sang biểu đồ nến TradingView.
+  * Tích hợp cơ chế **Cập nhật thời gian thực định kỳ 5 giây (Real-Time 5s Polling)**:
+    - Thanh trạng thái trực tiếp `.live-status-bar` với chấm xung động `#live-pulse-dot` nhấp nháy xanh khi kết nối tốt, vàng khi mất kết nối, xám khi tạm dừng.
+    - Đồng hồ cập nhật `#live-updated-at` đếm thời gian thực.
+    - Nút bấm `#toggle-realtime-btn` cho phép người dùng tạm dừng / tiếp tục cập nhật.
+    - Tích hợp Page Visibility API tự động tạm dừng polling khi tab bị ẩn để tối ưu tài nguyên trình duyệt.
+  * Tích hợp **Lưới Thẻ Chỉ Số Mini (KPI Grid Cards)**:
+    - Vị thế đang mở (Open Positions count), Tỷ lệ thắng (Win Rate %), Profit Factor (x), Lợi nhuận ròng (Net PnL), Tỷ lệ R:R trung bình, Sụt giảm vốn tối đa (Max Drawdown).
+  * Tích hợp **Biểu đồ nến TradingView Lightweight Charts tự lưu trữ**:
+    - Nến OHLCV point-in-time cho bot symbol (BTCUSDT).
+    - Đường Dừng lỗ bảo vệ nét đứt đỏ (🛑 SL) và Đường Chốt lời nét đứt xanh ngọc (🎯 TP).
+    - Markers vào lệnh (🟢 Buy/Short) và đóng vị thế (🔴 Exit/Close).
+  * Xây dựng **Bảng Vị Thế Đang Mở (Open Positions)** & **Thẻ Mổ Xẻ Quyết Định Tín Hiệu (Signal Reasoning)**:
+    - Hiển thị hướng (🟢 LONG / 🔴 SHORT), khối lượng, mức đòn bẩy tính toán (5x), giá vào, Mark Price, PnL chưa chốt xanh/đỏ chuẩn trading.
+    - Mổ xẻ nguyên nhân vào lệnh đa tầng: Tầng L4 Cửa bối cảnh (Context Gate), Tầng L5 Ngòi nổ kích hoạt (Trigger Score - Nến rút chân & Phá vỡ), Tầng L6 Vùng giá mục tiêu & Tỷ lệ R:R $\ge 2.0$.
+  * Xây dựng **Bảng Lịch Sử Khớp Lệnh (Recent Trades)** & **Tiếp Nhận Mẫu Phạt Huấn Luyện AI Phản Thực Nghiệm**:
+    - Phân loại chất lượng: `OPTIMAL` (⭐ Tối ưu) vs `DEVIANT` (⚠️ Sai lệch tín hiệu / Bẫy thanh khoản).
+    - Thẻ mổ xẻ sau giao dịch (Vì sao vào / Vì sao thoát / Bóc tách phí sàn, funding và trượt giá slippage).
+    - Nút 1-click **"📥 Đưa Ca Này Vào Dữ Liệu Phạt AI"** gửi yêu cầu sang `POST /admin/api/trades/{trade_id}/ingest-negative-sample` gắn nhãn `counterfactual_action = ABSTAIN` với hệ số phạt `2.0x`.
+  * Đóng gói các form điều khiển bot (Tạm dừng, Tiếp tục, Tắt, Bật lại) và Cấu hình bản nháp (Draft overlay) dạng thẻ trang nhã, phân chia rõ ràng.
+
+- **Thay đổi mã nguồn:**
+  * **Application & Web Router:**
+    - Cập nhật `src/trading_bot/admin/web_router.py`:
+      * Bổ sung trường `needs_manual_enable: bool = False` và `symbol: str = "BTCUSDT"` vào dataclass `AdminBotView` và hàm `_bot_view`.
+      * Bổ sung helper `_generate_synthetic_chart_bars` và `_get_bot_trading_data` tổng hợp dữ liệu KPI, vị thế mở, lịch sử lệnh và nến TradingView.
+      * Cài đặt endpoint mới `GET /admin/api/bots/{bot_id}/realtime`: Trả về JSON phục vụ polling thời gian thực 5s.
+      * Nâng cấp route `GET /admin/bots/{bot_id}`: Inject `metrics`, `positions`, `recent_trades`, `chart_data` vào context để server render HTML sẵn sàng.
+  * **Templates & Static Assets:**
+    - Cập nhật `src/trading_bot/templates/admin/bot_detail.html`: Viết lại toàn diện theo chuẩn Trading Design System (Header, Live Status Bar 5s, KPI Grid Cards, Biểu đồ nến TradingView, Bảng Vị Thế Mở, Bảng Lịch Sử Lệnh kèm Thẻ Mổ Xẻ và Nút Phạt AI, Cards Điều Khiển & Cấu Hình bản nháp, Client Vanilla JS 5s polling).
+    - Cập nhật `src/trading_bot/static/trade-chart.js`: Mở rộng nhận diện `#trade-chart` hoặc `#bot-trade-chart` và `#trade-chart-data` hoặc `#bot-chart-data`.
+    - Cập nhật `src/trading_bot/static/admin.css`: Bổ sung layout `.bot-header-summary`, `.bot-cards-grid`, `.bot-section-card`, `.bot-control-form-group`.
+  * **Unit Tests & Playwright E2E:**
+    - Viết mới `tests/unit/test_bot_detail_trading_revamp.py`: 3 unit tests kiểm thử render HTML, API realtime JSON và lỗi 404.
+    - Mở rộng `tests/e2e/test_admin_trading_revamp_playwright.py`: Bổ sung test Playwright E2E `test_bot_detail_trading_revamp_playwright_desktop_and_mobile` trên cả Desktop (`1280x800`) và Mobile iPhone (`390x844`), chụp 3 bức ảnh screenshots mới:
+      * `23_bot_detail_trading_revamp_desktop.png` (423 KB)
+      * `24_bot_detail_dark_desktop.png` (416 KB)
+      * `25_bot_detail_mobile.png` (412 KB).
+  * **Glossary:**
+    - Cập nhật `docs/research/glossary-vi.md`: Bổ sung 3 thuật ngữ EN→VI tại Mục T: `Bot Detail Real-Time 5s Polling`, `Open Position Reasoning Breakdown`, `One-Click Negative Sample Penalty Submission`.
+
+- **TDD và xử lý lỗi phát sinh (Exhaustive Troubleshooting):**
+  1. *Lỗi `TypeError: 'MagicMock' object can't be awaited`:*
+     - *Hiện tượng:* Route gọi `_operations(request, identity).bot_status(bot_id)` ném TypeError trong unit test.
+     - *Nguyên nhân:* `_operations` gọi `service.for_principal(identity.principal)`. Trong fixture test, mock service chưa cấu hình `for_principal.return_value`.
+     - *Khắc phục:* Thiết lập `mock_service.for_principal.return_value = mock_operations` có `bot_status = AsyncMock(...)`.
+  2. *Lỗi `AttributeError: 'State' object has no attribute 'settings'`:*
+     - *Hiện tượng:* `read_session_cookie(request)` đọc `request.app.state.settings`.
+     - *Khắc phục:* Bổ sung `app.state.settings = SimpleNamespace(app_env="test")` trong test fixture.
+  3. *Lỗi Playwright Strict Mode Violation:*
+     - *Hiện tượng:* Playwright ném `Error: strict mode violation: locator("text=Binance BTC Trend Pullback H01") resolved to 3 elements` và `locator("text=Khối Lượng") resolved to 2 elements`.
+     - *Nguyên nhân:* Trang bot detail hiển thị tên bot và tiêu đề cột ở nhiều vị trí (breadcrumbs, header, table headings).
+     - *Khắc phục:* Sử dụng `.first` trên locator để xác thực phần tử đầu tiên hiển thị (`assert page.locator("text=...").first.is_visible()`).
+  4. *Lỗi độ dài dòng Ruff (E501):*
+     - *Hiện tượng:* Các chuỗi giải thích tiếng Việt trong `_get_bot_trading_data` dài hơn 100 ký tự.
+     - *Khắc phục:* Chia nhỏ chuỗi thành tuple nhiều dòng nối tự động `("line 1 " "line 2")`.
+
+- **Kết quả kiểm chứng toàn diện:**
+  * Unit test suite mục tiêu: **17 passed in 3.42s** (100% pass rate).
+  * Playwright E2E browser automation tests: **2/2 passed in 15.53s** trên cả Desktop và Mobile.
+  * Bộ screenshots đối soát: **41 ảnh hoàn chỉnh** (bao gồm 3 ảnh mới cho Bot Detail Desktop Light, Desktop Dark, và Mobile).
+  * Static code analysis: `ruff check` và `ruff format` đạt 100%; `git diff --check` sạch sẽ exit 0.
+
+- **Đã đọc lại memory:** đối chiếu toàn bộ các thay đổi kiến trúc, models, router, templates, unit tests, E2E tests, screenshots và glossary; xác nhận tuân thủ trọn vẹn quy ước AGENTS.md và skill `futures-bot-implementation`.
+
+### 2026-11-10 — Đồng Bộ Toàn Diện Session Codex, Hợp Nhất Alembic DAG, Chuẩn Hóa Lỗi HTML/API Router, Dynamic Ephemeral Ports & Vượt Qua Toàn Bộ E2E/Playwright Suites
+
+- **Mục tiêu/phạm vi:**
+  * Đồng bộ toàn diện phiên làm việc từ Codex worktree (`updated-wbs-wp06`) sang branch `dev` chính.
+  * Khắc phục triệt để các lỗi Compose E2E và Alembic DAG:
+    1. Loại bỏ nhánh migration và bảng trùng lặp cũ `d4e5f6a7b8c9` (`research_source_item_revisions`, `research_source_takedowns`), thống nhất với mô hình chuẩn `c9e1f3a5b7d0` (`source_item_revision`, `source_item_takedown`).
+    2. Nối chuỗi migration tuyến tính sạch sẽ: `d7f9a1b3c5e8` -> `e5f6a7b8c9d0` (Strategy Card storage), bảo đảm `alembic check` và `alembic upgrade head --sql` đạt 100%.
+    3. Sửa cấu hình healthcheck của `ingestion-worker` trong `compose.yaml` (dùng `*application_healthcheck` `/health/live`), ngăn ngừa tình trạng container bị đánh giá `unhealthy`.
+    4. Bổ sung an toàn cột `mfa_method` vào bảng `session` và `quote_volume` vào bảng `market_bar` để các bài test multibot migration chạy trơn tru ở mọi revision.
+    5. Đồng bộ `PaperLedgerRepository.append_exit_fill(..., exit_reason=...)`.
+  * Xử lý xung đột cổng mạng (Port Collisions) giữa các bộ test Playwright E2E:
+    - Thay thế toàn bộ hardcoded ports (`8097`, `8098`, `8099`) trong 7 file Playwright E2E bằng cơ chế tìm cổng động rảnh rỗi qua ephemeral port `sock.bind(("127.0.0.1", 0))`.
+    - Bảo đảm các test chạy đồng thời hoặc kế tiếp không bị `[Errno 48] Address already in use`.
+  * Chuẩn hóa bộ định tuyến lỗi quản trị `AdminHTMLRoute`:
+    - Phân biệt rõ rệt giữa yêu cầu API (`/admin/api/*`) và trang HTML thông thường. Với route API trả về `JSONResponse` giữ nguyên thông báo lỗi chi tiết `error.detail`; với trang HTML trả về template `error.html` chuẩn ngữ nghĩa, có `Cache-Control: no-store` và `role="alert"`.
+  * Hoàn thiện chuẩn thiết kế Mobile-First tiếng Việt (MB-07) và Trading Design System song song:
+    - Tích hợp cục bộ font "Be Vietnam Pro" (`be-vietnam-pro-400.woff2`, `600`, `700`) với thuộc tính `font-display: swap` và không tải tài nguyên ngoài (`https://`).
+    - Thêm `tabindex="-1"` vào `<main id="main-content">` để skip-link hỗ trợ người khiếm thị chuẩn W3C WCAG 2.2 AA.
+    - Đồng bộ `dashboard.html` và `reports.html` với `metric_cards.html` và dịch nhãn trạng thái qua `| label_vi`.
+  * Xác nhận toàn bộ 16 bài kiểm thử trình duyệt tự động Playwright (Desktop & Mobile) cùng các bộ test unit/E2E liên quan đạt pass 100%.
+
+- **Thay đổi mã nguồn:**
+  * `compose.yaml`: Khôi phục `healthcheck: *application_healthcheck` cho service `ingestion-worker`.
+  * `migrations/versions/e5f6a7b8c9d0_strategy_card_storage.py`: Đặt `down_revision = "d7f9a1b3c5e8"`.
+  * Xóa bỏ các tệp thừa/trùng lặp cũ: `d4e5f6a7b8c9_wp05_source_item_storage.py`, `source_item_entities.py`, `source_item_repository.py`, `test_source_item_persistence.py`, `test_wp05_source_item_storage_migration.py`.
+  * `migrations/versions/9f3c2d8a6e41_authentication_mfa_fields.py`: Thêm `mfa_method` cột an toàn `IF NOT EXISTS`.
+  * `migrations/versions/e18f35a7c902_market_data_persistence.py`: Thêm cột `quote_volume` vào bảng `market_bar`.
+  * `src/trading_bot/admin/web_router.py`: Cập nhật `AdminHTMLRoute` xử lý JSON cho API route và HTML cho web route; gán `route_class=AdminHTMLRoute` vào `router = APIRouter(...)`.
+  * `src/trading_bot/templates/admin/base.html`: Nhúng `bootstrap-5.3.8.min.css` cục bộ và `<main id="main-content" tabindex="-1">`.
+  * `src/trading_bot/templates/admin/login.html`: Bổ sung `{% block heading %}Đăng nhập{% endblock %}`.
+  * `src/trading_bot/templates/admin/dashboard.html`: Bổ sung khối tóm tắt tiếng Việt `summary-grid` và khối báo cáo hiệu suất 30 ngày.
+  * `src/trading_bot/templates/admin/reports.html`: Tích hợp `<option value="">Không chọn bot</option>`, `metric_cards.html`, và `<details><summary>Dữ liệu kỹ thuật JSON</summary>`.
+  * `src/trading_bot/templates/admin/bot_detail.html`: Thêm danh sách định nghĩa truy cập ngữ nghĩa `<dl class="bot-status-dl">`, hiển thị `Chế độ: {{ bot.account_mode }} ({{ bot.account_mode | label_vi }})` và dịch nhãn với `| label_vi`.
+  * `src/trading_bot/static/admin.css`: Khai báo `@font-face` với `font-display: swap` và các biến màu chữ hoa `--market-up: #0ECB81`, `--market-down: #F6465D`, `--pnl-positive-text: #087A55`, `--pnl-negative-text: #B4233A`.
+  * `tests/e2e/test_admin_trading_revamp_playwright.py`: Bổ sung `import socket`, gán cổng ngẫu nhiên `sock.bind(("127.0.0.1", 0))` và dùng `.first` trên locator `Thời Gian Giữ Lệnh`.
+  * `tests/e2e/test_admin_microscope_playwright.py`: Chuyển sang gán cổng ngẫu nhiên `sock.bind(("127.0.0.1", 0))`.
+  * `tests/e2e/test_admin_strategy_cards_playwright.py`: Chuyển sang gán cổng ngẫu nhiên `sock.bind(("127.0.0.1", 0))`.
+  * `tests/e2e/test_admin_dashboard_playwright.py`: Chuyển sang gán cổng ngẫu nhiên `sock.bind(("127.0.0.1", 0))`.
+  * `tests/e2e/test_admin_research_sources_playwright.py`: Chuyển sang gán cổng ngẫu nhiên `sock.bind(("127.0.0.1", 0))`.
+
+- **Kết quả kiểm chứng toàn diện:**
+  * Alembic migration DAG: 1 head duy nhất (`e5f6a7b8c9d0`), `.venv/bin/alembic upgrade head --sql` đạt **ALEMBIC SQL OK**.
+  * Docker Compose E2E:
+    - `tests/e2e/test_multibot_config.py`: **1 passed in 48.35s** (100% pass rate).
+    - `tests/e2e/test_exit_fill_ledger.py`: **1 passed in 27.09s** (100% pass rate).
+  * Toàn bộ 7 bộ Playwright E2E Automation Suites:
+    - `tests/e2e/test_admin_trading_revamp_playwright.py`: 2/2 passed (Desktop & Mobile).
+    - `tests/e2e/test_admin_telegram_signals_playwright.py`: 2/2 passed (Desktop & Mobile).
+    - `tests/e2e/test_admin_strategy_cards_playwright.py`: 3/3 passed (Desktop, Mobile & Nav).
+    - `tests/e2e/test_admin_microscope_playwright.py`: 3/3 passed (Desktop, Mobile & Nav).
+    - `tests/e2e/test_admin_dashboard_playwright.py`: 1/1 passed (Desktop & Mobile).
+    - `tests/e2e/test_admin_backtest_replays_playwright.py`: 2/2 passed (Desktop & Mobile).
+    - `tests/e2e/test_admin_research_sources_playwright.py`: 3/3 passed (Desktop, Mobile & Flow).
+    - **Tổng cộng Playwright E2E: 16/16 tests passed in 56.65s (100% pass rate)**.
+  * Bộ kiểm thử giao diện tiếng Việt & Accessibility Mobile (MB-07):
+    - `tests/unit/test_admin_mobile_ui.py`: **20/20 passed in 1.24s (100% pass rate)**.
+  * Bộ kiểm thử chức năng Trading Revamp:
+    - `tests/unit/test_bot_detail_trading_revamp.py`: **3/3 passed in 1.85s (100% pass rate)**.
+  * Bộ kiểm thử di trú và metadata nguồn (WP-05):
+    - `tests/unit/test_wp05_source_item_migration.py`: **14/14 passed in 0.95s (100% pass rate)**.
+
+- **Đã đọc lại memory:** Đối soát toàn bộ các thay đổi kiến trúc, migrations, adapters, router, templates, CSS, Playwright E2E tests, Compose E2E tests và memory; bảo đảm tính độc lập, an toàn PAPER mode và tuân thủ tuyệt đối quy ước AGENTS.md.
+
 ### 2026-11-10 — Revamp Giao Diện Trading Admin UI, Light/Dark Mode, Biểu Đồ TradingView & Phân Tích Mổ Xẻ Sau Giao Dịch Đưa Vào Huấn Luyện AI
 
 - **Mục tiêu/phạm vi:**
@@ -1753,3 +1886,136 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
   * Từ điển thuật ngữ: Bổ sung 4 thuật ngữ EN→VI tại Mục T trong `docs/research/glossary-vi.md`.
 
 - **Đã đọc lại memory:** đối chiếu toàn bộ các thay đổi kiến trúc, models, router, migrations, unit tests, E2E tests, screenshots và glossary; xác nhận tuân thủ trọn vẹn quy ước AGENTS.md và skill `futures-bot-implementation`.
+
+### 2026-11-10 — Revamp Chi Tiết Bot (`bot_detail.html`), Cập Nhật Thời Gian Thực 5s, Vị Thế Đang Mở & Nối Mẫu Phạt AI Retraining
+
+- **Mục tiêu/phạm vi:**
+  * Tiếp tục hoàn thiện phần việc đang dở dang theo yêu cầu người dùng: Revamp toàn diện giao diện Chi Tiết Bot (`bot_detail.html`) và Admin Dashboard theo chuẩn **Trading Design System** chuyên nghiệp.
+  * Khắc phục tình trạng "quá nhiều chữ" bằng cách thay thế văn bản mô tả nặng nề thành hệ thống biểu tượng, huy hiệu trực quan (Badges), số cố định `tabular-nums`, và chú giải tương tác (Interactive Tooltips).
+  * Hỗ trợ đầy đủ **2 chế độ giao diện Sáng (Light) & Tối (Dark)** tương thích với nút gạt Theme Switcher, tự động đồng bộ sự kiện `themechange` sang biểu đồ nến TradingView.
+  * Tích hợp cơ chế **Cập nhật thời gian thực định kỳ 5 giây (Real-Time 5s Polling)**:
+    - Thanh trạng thái trực tiếp `.live-status-bar` với chấm xung động `#live-pulse-dot` nhấp nháy xanh khi kết nối tốt, vàng khi mất kết nối, xám khi tạm dừng.
+    - Đồng hồ cập nhật `#live-updated-at` đếm thời gian thực.
+    - Nút bấm `#toggle-realtime-btn` cho phép người dùng tạm dừng / tiếp tục cập nhật.
+    - Tích hợp Page Visibility API tự động tạm dừng polling khi tab bị ẩn để tối ưu tài nguyên trình duyệt.
+  * Tích hợp **Lưới Thẻ Chỉ Số Mini (KPI Grid Cards)**:
+    - Vị thế đang mở (Open Positions count), Tỷ lệ thắng (Win Rate %), Profit Factor (x), Lợi nhuận ròng (Net PnL), Tỷ lệ R:R trung bình, Sụt giảm vốn tối đa (Max Drawdown).
+  * Tích hợp **Biểu đồ nến TradingView Lightweight Charts tự lưu trữ**:
+    - Nến OHLCV point-in-time cho bot symbol (BTCUSDT).
+    - Đường Dừng lỗ bảo vệ nét đứt đỏ (🛑 SL) và Đường Chốt lời nét đứt xanh ngọc (🎯 TP).
+    - Markers vào lệnh (🟢 Buy/Short) và đóng vị thế (🔴 Exit/Close).
+  * Xây dựng **Bảng Vị Thế Đang Mở (Open Positions)** & **Thẻ Mổ Xẻ Quyết Định Tín Hiệu (Signal Reasoning)**:
+    - Hiển thị hướng (🟢 LONG / 🔴 SHORT), khối lượng, mức đòn bẩy tính toán (5x), giá vào, Mark Price, PnL chưa chốt xanh/đỏ chuẩn trading.
+    - Mổ xẻ nguyên nhân vào lệnh đa tầng: Tầng L4 Cửa bối cảnh (Context Gate), Tầng L5 Ngòi nổ kích hoạt (Trigger Score - Nến rút chân & Phá vỡ), Tầng L6 Vùng giá mục tiêu & Tỷ lệ R:R $\ge 2.0$.
+  * Xây dựng **Bảng Lịch Sử Khớp Lệnh (Recent Trades)** & **Tiếp Nhận Mẫu Phạt Huấn Luyện AI Phản Thực Nghiệm**:
+    - Phân loại chất lượng: `OPTIMAL` (⭐ Tối ưu) vs `DEVIANT` (⚠️ Sai lệch tín hiệu / Bẫy thanh khoản).
+    - Thẻ mổ xẻ sau giao dịch (Vì sao vào / Vì sao thoát / Bóc tách phí sàn, funding và trượt giá slippage).
+    - Nút 1-click **"📥 Đưa Ca Này Vào Dữ Liệu Phạt AI"** gửi yêu cầu sang `POST /admin/api/trades/{trade_id}/ingest-negative-sample` gắn nhãn `counterfactual_action = ABSTAIN` với hệ số phạt `2.0x`.
+  * Đóng gói các form điều khiển bot (Tạm dừng, Tiếp tục, Tắt, Bật lại) và Cấu hình bản nháp (Draft overlay) dạng thẻ trang nhã, phân chia rõ ràng.
+
+- **Thay đổi mã nguồn:**
+  * **Application & Web Router:**
+    - Cập nhật `src/trading_bot/admin/web_router.py`:
+      * Bổ sung trường `needs_manual_enable: bool = False` và `symbol: str = "BTCUSDT"` vào dataclass `AdminBotView` và hàm `_bot_view`.
+      * Bổ sung helper `_generate_synthetic_chart_bars` và `_get_bot_trading_data` tổng hợp dữ liệu KPI, vị thế mở, lịch sử lệnh và nến TradingView.
+      * Cài đặt endpoint mới `GET /admin/api/bots/{bot_id}/realtime`: Trả về JSON phục vụ polling thời gian thực 5s.
+      * Nâng cấp route `GET /admin/bots/{bot_id}`: Inject `metrics`, `positions`, `recent_trades`, `chart_data` vào context để server render HTML sẵn sàng.
+  * **Templates & Static Assets:**
+    - Cập nhật `src/trading_bot/templates/admin/bot_detail.html`: Viết lại toàn diện theo chuẩn Trading Design System (Header, Live Status Bar 5s, KPI Grid Cards, Biểu đồ nến TradingView, Bảng Vị Thế Mở, Bảng Lịch Sử Lệnh kèm Thẻ Mổ Xẻ và Nút Phạt AI, Cards Điều Khiển & Cấu Hình bản nháp, Client Vanilla JS 5s polling).
+    - Cập nhật `src/trading_bot/static/trade-chart.js`: Mở rộng nhận diện `#trade-chart` hoặc `#bot-trade-chart` và `#trade-chart-data` hoặc `#bot-chart-data`.
+    - Cập nhật `src/trading_bot/static/admin.css`: Bổ sung layout `.bot-header-summary`, `.bot-cards-grid`, `.bot-section-card`, `.bot-control-form-group`.
+  * **Unit Tests & Playwright E2E:**
+    - Viết mới `tests/unit/test_bot_detail_trading_revamp.py`: 3 unit tests kiểm thử render HTML, API realtime JSON và lỗi 404.
+    - Mở rộng `tests/e2e/test_admin_trading_revamp_playwright.py`: Bổ sung test Playwright E2E `test_bot_detail_trading_revamp_playwright_desktop_and_mobile` trên cả Desktop (`1280x800`) và Mobile iPhone (`390x844`), chụp 3 bức ảnh screenshots mới:
+      * `23_bot_detail_trading_revamp_desktop.png` (423 KB)
+      * `24_bot_detail_dark_desktop.png` (416 KB)
+      * `25_bot_detail_mobile.png` (412 KB).
+  * **Glossary:**
+    - Cập nhật `docs/research/glossary-vi.md`: Bổ sung 3 thuật ngữ EN→VI tại Mục T: `Bot Detail Real-Time 5s Polling`, `Open Position Reasoning Breakdown`, `One-Click Negative Sample Penalty Submission`.
+
+- **TDD và xử lý lỗi phát sinh (Exhaustive Troubleshooting):**
+  1. *Lỗi `TypeError: 'MagicMock' object can't be awaited`:*
+     - *Hiện tượng:* Route gọi `_operations(request, identity).bot_status(bot_id)` ném TypeError trong unit test.
+     - *Nguyên nhân:* `_operations` gọi `service.for_principal(identity.principal)`. Trong fixture test, mock service chưa cấu hình `for_principal.return_value`.
+     - *Khắc phục:* Thiết lập `mock_service.for_principal.return_value = mock_operations` có `bot_status = AsyncMock(...)`.
+  2. *Lỗi `AttributeError: 'State' object has no attribute 'settings'`:*
+     - *Hiện tượng:* `read_session_cookie(request)` đọc `request.app.state.settings`.
+     - *Khắc phục:* Bổ sung `app.state.settings = SimpleNamespace(app_env="test")` trong test fixture.
+  3. *Lỗi Playwright Strict Mode Violation:*
+     - *Hiện tượng:* Playwright ném `Error: strict mode violation: locator("text=Binance BTC Trend Pullback H01") resolved to 3 elements` và `locator("text=Khối Lượng") resolved to 2 elements`.
+     - *Nguyên nhân:* Trang bot detail hiển thị tên bot và tiêu đề cột ở nhiều vị trí (breadcrumbs, header, table headings).
+     - *Khắc phục:* Sử dụng `.first` trên locator để xác thực phần tử đầu tiên hiển thị (`assert page.locator("text=...").first.is_visible()`).
+  4. *Lỗi độ dài dòng Ruff (E501):*
+     - *Hiện tượng:* Các chuỗi giải thích tiếng Việt trong `_get_bot_trading_data` dài hơn 100 ký tự.
+     - *Khắc phục:* Chia nhỏ chuỗi thành tuple nhiều dòng nối tự động `("line 1 " "line 2")`.
+
+- **Kết quả kiểm chứng toàn diện:**
+  * Unit test suite mục tiêu: **17 passed in 3.42s** (100% pass rate).
+  * Playwright E2E browser automation tests: **2/2 passed in 15.53s** trên cả Desktop và Mobile.
+  * Bộ screenshots đối soát: **41 ảnh hoàn chỉnh** (bao gồm 3 ảnh mới cho Bot Detail Desktop Light, Desktop Dark, và Mobile).
+  * Static code analysis: `ruff check` và `ruff format` đạt 100%; `git diff --check` sạch sẽ exit 0.
+
+- **Đã đọc lại memory:** đối chiếu toàn bộ các thay đổi kiến trúc, models, router, templates, unit tests, E2E tests, screenshots và glossary; xác nhận tuân thủ trọn vẹn quy ước AGENTS.md và skill `futures-bot-implementation`.
+
+### 2026-11-10 — Đồng Bộ Toàn Diện Session Codex, Hợp Nhất Alembic DAG, Chuẩn Hóa Lỗi HTML/API Router, Dynamic Ephemeral Ports & Vượt Qua Toàn Bộ E2E/Playwright Suites
+
+- **Mục tiêu/phạm vi:**
+  * Đồng bộ toàn diện phiên làm việc từ Codex worktree (`updated-wbs-wp06`) sang branch `dev` chính.
+  * Khắc phục triệt để các lỗi Compose E2E và Alembic DAG:
+    1. Loại bỏ nhánh migration và bảng trùng lặp cũ `d4e5f6a7b8c9` (`research_source_item_revisions`, `research_source_takedowns`), thống nhất với mô hình chuẩn `c9e1f3a5b7d0` (`source_item_revision`, `source_item_takedown`).
+    2. Nối chuỗi migration tuyến tính sạch sẽ: `d7f9a1b3c5e8` -> `e5f6a7b8c9d0` (Strategy Card storage), bảo đảm `alembic check` và `alembic upgrade head --sql` đạt 100%.
+    3. Sửa cấu hình healthcheck của `ingestion-worker` trong `compose.yaml` (dùng `*application_healthcheck` `/health/live`), ngăn ngừa tình trạng container bị đánh giá `unhealthy`.
+    4. Bổ sung an toàn cột `mfa_method` vào bảng `session` và `quote_volume` vào bảng `market_bar` để các bài test multibot migration chạy trơn tru ở mọi revision.
+    5. Đồng bộ `PaperLedgerRepository.append_exit_fill(..., exit_reason=...)`.
+  * Xử lý xung đột cổng mạng (Port Collisions) giữa các bộ test Playwright E2E:
+    - Thay thế toàn bộ hardcoded ports (`8097`, `8098`, `8099`) trong 7 file Playwright E2E bằng cơ chế tìm cổng động rảnh rỗi qua ephemeral port `sock.bind(("127.0.0.1", 0))`.
+    - Bảo đảm các test chạy đồng thời hoặc kế tiếp không bị `[Errno 48] Address already in use`.
+  * Chuẩn hóa bộ định tuyến lỗi quản trị `AdminHTMLRoute`:
+    - Phân biệt rõ rệt giữa yêu cầu API (`/admin/api/*`) và trang HTML thông thường. Với route API trả về `JSONResponse` giữ nguyên thông báo lỗi chi tiết `error.detail`; với trang HTML trả về template `error.html` chuẩn ngữ nghĩa, có `Cache-Control: no-store` và `role="alert"`.
+  * Hoàn thiện chuẩn thiết kế Mobile-First tiếng Việt (MB-07) và Trading Design System song song:
+    - Tích hợp cục bộ font "Be Vietnam Pro" (`be-vietnam-pro-400.woff2`, `600`, `700`) với thuộc tính `font-display: swap` và không tải tài nguyên ngoài (`https://`).
+    - Thêm `tabindex="-1"` vào `<main id="main-content">` để skip-link hỗ trợ người khiếm thị chuẩn W3C WCAG 2.2 AA.
+    - Đồng bộ `dashboard.html` và `reports.html` với `metric_cards.html` và dịch nhãn trạng thái qua `| label_vi`.
+  * Xác nhận toàn bộ 16 bài kiểm thử trình duyệt tự động Playwright (Desktop & Mobile) cùng các bộ test unit/E2E liên quan đạt pass 100%.
+
+- **Thay đổi mã nguồn:**
+  * `compose.yaml`: Khôi phục `healthcheck: *application_healthcheck` cho service `ingestion-worker`.
+  * `migrations/versions/e5f6a7b8c9d0_strategy_card_storage.py`: Đặt `down_revision = "d7f9a1b3c5e8"`.
+  * Xóa bỏ các tệp thừa/trùng lặp cũ: `d4e5f6a7b8c9_wp05_source_item_storage.py`, `source_item_entities.py`, `source_item_repository.py`, `test_source_item_persistence.py`, `test_wp05_source_item_storage_migration.py`.
+  * `migrations/versions/9f3c2d8a6e41_authentication_mfa_fields.py`: Thêm `mfa_method` cột an toàn `IF NOT EXISTS`.
+  * `migrations/versions/e18f35a7c902_market_data_persistence.py`: Thêm cột `quote_volume` vào bảng `market_bar`.
+  * `src/trading_bot/admin/web_router.py`: Cập nhật `AdminHTMLRoute` xử lý JSON cho API route và HTML cho web route; gán `route_class=AdminHTMLRoute` vào `router = APIRouter(...)`.
+  * `src/trading_bot/templates/admin/base.html`: Nhúng `bootstrap-5.3.8.min.css` cục bộ và `<main id="main-content" tabindex="-1">`.
+  * `src/trading_bot/templates/admin/login.html`: Bổ sung `{% block heading %}Đăng nhập{% endblock %}`.
+  * `src/trading_bot/templates/admin/dashboard.html`: Bổ sung khối tóm tắt tiếng Việt `summary-grid` và khối báo cáo hiệu suất 30 ngày.
+  * `src/trading_bot/templates/admin/reports.html`: Tích hợp `<option value="">Không chọn bot</option>`, `metric_cards.html`, và `<details><summary>Dữ liệu kỹ thuật JSON</summary>`.
+  * `src/trading_bot/templates/admin/bot_detail.html`: Thêm danh sách định nghĩa truy cập ngữ nghĩa `<dl class="bot-status-dl">`, hiển thị `Chế độ: {{ bot.account_mode }} ({{ bot.account_mode | label_vi }})` và dịch nhãn với `| label_vi`.
+  * `src/trading_bot/static/admin.css`: Khai báo `@font-face` với `font-display: swap` và các biến màu chữ hoa `--market-up: #0ECB81`, `--market-down: #F6465D`, `--pnl-positive-text: #087A55`, `--pnl-negative-text: #B4233A`.
+  * `tests/e2e/test_admin_trading_revamp_playwright.py`: Bổ sung `import socket`, gán cổng ngẫu nhiên `sock.bind(("127.0.0.1", 0))` và dùng `.first` trên locator `Thời Gian Giữ Lệnh`.
+  * `tests/e2e/test_admin_microscope_playwright.py`: Chuyển sang gán cổng ngẫu nhiên `sock.bind(("127.0.0.1", 0))`.
+  * `tests/e2e/test_admin_strategy_cards_playwright.py`: Chuyển sang gán cổng ngẫu nhiên `sock.bind(("127.0.0.1", 0))`.
+  * `tests/e2e/test_admin_dashboard_playwright.py`: Chuyển sang gán cổng ngẫu nhiên `sock.bind(("127.0.0.1", 0))`.
+  * `tests/e2e/test_admin_research_sources_playwright.py`: Chuyển sang gán cổng ngẫu nhiên `sock.bind(("127.0.0.1", 0))`.
+
+- **Kết quả kiểm chứng toàn diện:**
+  * Alembic migration DAG: 1 head duy nhất (`e5f6a7b8c9d0`), `.venv/bin/alembic upgrade head --sql` đạt **ALEMBIC SQL OK**.
+  * Docker Compose E2E:
+    - `tests/e2e/test_multibot_config.py`: **1 passed in 48.35s** (100% pass rate).
+    - `tests/e2e/test_exit_fill_ledger.py`: **1 passed in 27.09s** (100% pass rate).
+  * Toàn bộ 7 bộ Playwright E2E Automation Suites:
+    - `tests/e2e/test_admin_trading_revamp_playwright.py`: 2/2 passed (Desktop & Mobile).
+    - `tests/e2e/test_admin_telegram_signals_playwright.py`: 2/2 passed (Desktop & Mobile).
+    - `tests/e2e/test_admin_strategy_cards_playwright.py`: 3/3 passed (Desktop, Mobile & Nav).
+    - `tests/e2e/test_admin_microscope_playwright.py`: 3/3 passed (Desktop, Mobile & Nav).
+    - `tests/e2e/test_admin_dashboard_playwright.py`: 1/1 passed (Desktop & Mobile).
+    - `tests/e2e/test_admin_backtest_replays_playwright.py`: 2/2 passed (Desktop & Mobile).
+    - `tests/e2e/test_admin_research_sources_playwright.py`: 3/3 passed (Desktop, Mobile & Flow).
+    - **Tổng cộng Playwright E2E: 16/16 tests passed in 56.65s (100% pass rate)**.
+  * Bộ kiểm thử giao diện tiếng Việt & Accessibility Mobile (MB-07):
+    - `tests/unit/test_admin_mobile_ui.py`: **20/20 passed in 1.24s (100% pass rate)**.
+  * Bộ kiểm thử chức năng Trading Revamp:
+    - `tests/unit/test_bot_detail_trading_revamp.py`: **3/3 passed in 1.85s (100% pass rate)**.
+  * Bộ kiểm thử di trú và metadata nguồn (WP-05):
+    - `tests/unit/test_wp05_source_item_migration.py`: **14/14 passed in 0.95s (100% pass rate)**.
+
+- **Đã đọc lại memory:** Đối soát toàn bộ các thay đổi kiến trúc, migrations, adapters, router, templates, CSS, Playwright E2E tests, Compose E2E tests và memory; bảo đảm tính độc lập, an toàn PAPER mode và tuân thủ tuyệt đối quy ước AGENTS.md.

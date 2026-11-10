@@ -4,10 +4,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from trading_bot.application.learning_fold_plan import (
-    ManifestFoldPlan,
-    build_manifest_fold_plan,
-)
+from trading_bot.application.learning_fold_plan import build_manifest_fold_plan
 from trading_bot.domain.learning.dataset import DatasetManifest, DatasetSample, DatasetSplit
 from trading_bot.domain.learning.evaluation import TemporalWindow, WalkForwardSplit
 
@@ -99,6 +96,30 @@ def test_manifest_plan_binds_authoritative_hashes_and_purges_overlapping_outcome
         "validation-overlap",
     )
     assert len(plan.content_hash) == 64
+
+
+def test_legacy_research_lineage_cannot_enter_a_new_fold_plan() -> None:
+    original = manifest()
+    legacy = replace(
+        original,
+        samples=tuple(
+            replace(
+                item,
+                source_dependent=True,
+                source_rights_hashes=("9" * 64,),
+                source_revision_refs=(f"source-a:{item.sample_id}",),
+            )
+            for item in original.samples
+        ),
+    )
+
+    with pytest.raises(ValueError, match="lineage nguồn cũ"):
+        build_manifest_fold_plan(
+            legacy,
+            folds=(split(),),
+            expected_split_policy_version="policy-v1",
+            evaluation_cutoff=at(8),
+        )
 
 
 def test_manifest_plan_is_deterministic_across_candidate_order() -> None:
@@ -213,7 +234,7 @@ def test_v2_rejects_manifests_containing_only_fixed_role(fixed_split: DatasetSpl
         )
 
 
-def plan_for(dataset: DatasetManifest, *, train_start: int = 0) -> ManifestFoldPlan:
+def plan_for(dataset: DatasetManifest, *, train_start: int = 0):
     return build_manifest_fold_plan(
         dataset,
         folds=(split(), split(train_start, 8, 10, 13)),
@@ -236,7 +257,7 @@ def test_v2_expanding_and_rolling_folds_reassign_old_validation_and_test_to_trai
         ("train", "train-overlap", ("label_incomplete_at_cutoff",)),
         ("validation", "validation-overlap", ("label_incomplete_at_cutoff",)),
     ]
-    expected_train: tuple[str, ...] = ("test-safe", "validation-overlap", "validation-safe")
+    expected_train = ("test-safe", "validation-overlap", "validation-safe")
     if train_start == 0:
         expected_train = (
             "test-safe",
@@ -312,7 +333,7 @@ def test_v2_protects_holdout_outcome_interval_at_half_open_test_boundary(
         holdout_sealed_at=at(16),
     )
 
-    def build() -> ManifestFoldPlan:
+    def build():
         return build_manifest_fold_plan(
             dataset,
             folds=(split(),),

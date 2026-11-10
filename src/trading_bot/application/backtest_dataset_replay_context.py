@@ -60,6 +60,7 @@ class BacktestDatasetReplayContextProvider:
         execution_interval: str,
         opposing_signal_provider: OpposingSignalProvider | None = None,
         evaluated_at_offset: timedelta = timedelta(microseconds=1),
+        capture_opportunities: bool = False,
     ) -> None:
         if not isinstance(bundle, BacktestDatasetReplayBundle):
             raise BacktestReplayContextBuildError("Cần bundle replay đã kiểm rights/hash.")
@@ -118,6 +119,22 @@ class BacktestDatasetReplayContextProvider:
             for component in bundle.components
             for bar in component.bars
         }
+        if capture_opportunities and not all(
+            item.manifest.has_pinned_source_identities for item in bundle.components
+        ):
+            raise BacktestReplayContextBuildError(
+                "Opportunity capture đòi source manifest v4 đã ghim."
+            )
+        self._opportunity_sources = (
+            {
+                item.snapshot.snapshot_id: (item, ordinal)
+                for ordinal, item in enumerate(ordered_observations)
+            }
+            if capture_opportunities
+            else {}
+        )
+        if capture_opportunities and len(self._opportunity_sources) != len(ordered_observations):
+            raise BacktestReplayContextBuildError("Snapshot nguồn opportunity bị trùng.")
         usable: list[ReplayObservation] = []
         for observation in ordered_observations:
             decision_time = observation.snapshot.decision_time
@@ -140,9 +157,9 @@ class BacktestDatasetReplayContextProvider:
                     continue
                 raise BacktestReplayContextBuildError(str(error)) from error
             usable.append(observation)
-        if not usable:
+        if not usable and not capture_opportunities:
             raise BacktestReplayContextBuildError("Không có observation usable để replay.")
-        if seed.account.captured_at > usable[0].snapshot.decision_time:
+        if seed.account.captured_at > ordered_observations[0].snapshot.decision_time:
             raise BacktestReplayContextBuildError(
                 "Account seed được chụp sau observation đầu tiên."
             )
@@ -164,7 +181,18 @@ class BacktestDatasetReplayContextProvider:
         self._opposing_signal_provider = opposing_signal_provider
         self._evaluated_at_offset = evaluated_at_offset
         self._next_observation = 0
-        self._last_decision_time = usable[0].snapshot.decision_time
+        self._last_decision_time = ordered_observations[0].snapshot.decision_time
+
+    def opportunity_source_for(
+        self, snapshot: DecisionSnapshot
+    ) -> tuple[ReplayObservation, int] | None:
+        """Tra đúng nội dung nguồn đã ghim trước readiness filter, không tra gần thời gian."""
+        source = self._opportunity_sources.get(snapshot.snapshot_id)
+        if source is not None and source[0].snapshot != snapshot:
+            raise BacktestReplayContextBuildError(
+                "Snapshot opportunity khác nội dung nguồn đã ghim."
+            )
+        return source
 
     def __call__(self, snapshot: DecisionSnapshot) -> ReplayEvaluationContext:
         """Trả event mới giữa hai quyết định, không lặp bar hoặc phát bar tương lai."""
@@ -251,6 +279,13 @@ class BacktestDatasetRuntimeEvaluatorFactory:
             seed=seed,
             execution_interval=self.execution_interval,
             opposing_signal_provider=opposing_provider,
+            capture_opportunities=(
+                scenario.kind == "BASE"
+                and manifest.learning_intent == "TRAINING_BASE"
+                and all(
+                    item.manifest.has_pinned_source_identities for item in self.bundle.components
+                )
+            ),
         )
         cycle = PaperDecisionCycle(
             self.strategies,

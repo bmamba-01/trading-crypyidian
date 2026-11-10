@@ -9,11 +9,16 @@ import uuid
 from pathlib import Path
 from textwrap import dedent
 
-import pytest
 from scripts.docker_image import build_image_reference, ensure_image_available
 
 
-def _compose(repository_root: Path, project_name: str, environment: dict[str, str], *args: str):
+def _compose(
+    repository_root: Path,
+    project_name: str,
+    environment: dict[str, str],
+    *args: str,
+    success: bool = True,
+):
     command = [
         "docker",
         "compose",
@@ -36,11 +41,11 @@ def _compose(repository_root: Path, project_name: str, environment: dict[str, st
         errors="replace",
         timeout=240,
     )
-    if result.returncode:
-        pytest.fail(
-            f"Compose command failed: {' '.join(args)}\n"
-            f"stdout:\n{result.stdout[-4000:]}\nstderr:\n{result.stderr[-4000:]}"
-        )
+    assert (result.returncode == 0) is success, (
+        args,
+        result.stdout[-4000:],
+        result.stderr[-4000:],
+    )
     return result
 
 
@@ -338,7 +343,7 @@ def test_backtest_run_trial_report_persist_once_and_are_tenant_isolated() -> Non
         assert result["report_hash"] == result["replay_report_hash"]
         assert len(result["trade_hash"]) == 64
         assert result["net_pnl"] == "21.50"
-        _compose(
+        downgrade = _compose(
             repository_root,
             project_name,
             environment,
@@ -349,19 +354,9 @@ def test_backtest_run_trial_report_persist_once_and_are_tenant_isolated() -> Non
             "alembic",
             "downgrade",
             "c42e8f1a7d30",
+            success=False,
         )
-        _compose(
-            repository_root,
-            project_name,
-            environment,
-            "run",
-            "--rm",
-            "--no-deps",
-            "migrator",
-            "alembic",
-            "upgrade",
-            "head",
-        )
+        assert "WP03_RISK_GUARD_DOWNGRADE_BLOCKED" in (downgrade.stdout + downgrade.stderr)
     finally:
         _compose(
             repository_root, project_name, environment, "down", "--volumes", "--remove-orphans"

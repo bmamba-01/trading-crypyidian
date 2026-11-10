@@ -10,7 +10,9 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
 from typing import Protocol
+from uuid import UUID
 
+from trading_bot.domain.market.feature_snapshot import DataFreshness, MarketRegime
 from trading_bot.domain.market.models import OHLCVBar
 from trading_bot.domain.strategy.recipes import ExitRecipe
 
@@ -75,6 +77,13 @@ class MarketSeries:
     backfill_complete: bool | None = None
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "bars", _immutable_tuple(self.bars, "bars"))
+        if self.quote_volumes is not None:
+            object.__setattr__(
+                self,
+                "quote_volumes",
+                _immutable_tuple(self.quote_volumes, "quote_volumes"),
+            )
         if not self.timeframe.strip():
             raise ValueError("timeframe không được để trống.")
         if any(bar.timeframe != self.timeframe for bar in self.bars):
@@ -96,6 +105,122 @@ class MarketSeries:
 
 
 @dataclass(frozen=True, slots=True)
+class DecisionSnapshotTimeframeLineage:
+    """Bằng chứng bất biến cho feature snapshot của đúng một timeframe."""
+
+    workspace_id: UUID
+    symbol: str
+    timeframe: str
+    feature_snapshot_id: str
+    schema_version: str
+    schema_hash: str
+    formula_version: str
+    formula_hash: str
+    code_hash: str
+    feature_order: tuple[str, ...]
+    source_event_ids: tuple[str, ...]
+    source_bar_ids: tuple[str, ...]
+    source_event_digest: str
+    as_of: datetime
+    freshness_as_of: datetime
+    available_at: datetime | None
+    freshness: DataFreshness
+    series_quality: SeriesQuality
+    data_coverage: float
+    warmup_by_feature: tuple[tuple[str, bool], ...]
+    quality_by_feature: tuple[tuple[str, FeatureQuality], ...]
+    quality_flags: tuple[str, ...]
+    regime_version: str
+    regime: MarketRegime
+    regime_confidence: float
+    regime_coverage: float
+    regime_reason_code: str
+    source_identity_pinned: bool
+
+    def __post_init__(self) -> None:
+        for name in (
+            "feature_order",
+            "source_event_ids",
+            "source_bar_ids",
+            "warmup_by_feature",
+            "quality_by_feature",
+            "quality_flags",
+        ):
+            if type(getattr(self, name)) is not tuple:
+                raise ValueError(f"{name} phải là tuple bất biến.")
+        if type(self.workspace_id) is not UUID:
+            raise ValueError("workspace_id của lineage phải là UUID.")
+        for name in (
+            "symbol",
+            "timeframe",
+            "feature_snapshot_id",
+            "schema_version",
+            "formula_version",
+            "regime_version",
+            "regime_reason_code",
+        ):
+            if not getattr(self, name).strip():
+                raise ValueError(f"{name} của lineage không được để trống.")
+        for name in ("schema_hash", "formula_hash", "code_hash", "source_event_digest"):
+            value = getattr(self, name)
+            if not _is_sha256(value):
+                raise ValueError(f"{name} của lineage phải là SHA-256 hex chữ thường.")
+        _aware(self.as_of, "lineage.as_of")
+        _aware(self.freshness_as_of, "lineage.freshness_as_of")
+        if self.freshness_as_of < self.as_of:
+            raise ValueError("Mốc freshness của lineage không được trước evidence cutoff.")
+        if self.available_at is not None:
+            _aware(self.available_at, "lineage.available_at")
+        if (
+            type(self.freshness) is not DataFreshness
+            or type(self.series_quality) is not SeriesQuality
+        ):
+            raise ValueError("Lineage cần enum freshness và series quality tường minh.")
+        if not math.isfinite(self.data_coverage) or not 0.0 <= self.data_coverage <= 1.0:
+            raise ValueError("data_coverage của lineage phải nằm trong [0, 1].")
+        for name in ("regime_confidence", "regime_coverage"):
+            value = getattr(self, name)
+            if not math.isfinite(value) or not 0.0 <= value <= 1.0:
+                raise ValueError(f"{name} của lineage phải nằm trong [0, 1].")
+        if type(self.regime) is not MarketRegime:
+            raise ValueError("regime của lineage phải là MarketRegime.")
+        if type(self.source_identity_pinned) is not bool:
+            raise ValueError("source_identity_pinned phải là bool.")
+        if not self.feature_order or any(
+            not isinstance(name, str) or not name.strip() for name in self.feature_order
+        ):
+            raise ValueError("Lineage cần feature_order không rỗng.")
+        if len(self.feature_order) != len(set(self.feature_order)):
+            raise ValueError("feature_order của lineage không được trùng.")
+        if len(self.source_event_ids) != len(self.source_bar_ids):
+            raise ValueError("Source event và bar IDs phải cùng độ dài.")
+        for field_name in ("source_event_ids", "source_bar_ids"):
+            values = getattr(self, field_name)
+            if any(not value.strip() for value in values) or len(values) != len(set(values)):
+                raise ValueError(f"{field_name} cần IDs không rỗng và duy nhất.")
+        if any(type(item) is not tuple or len(item) != 2 for item in self.warmup_by_feature):
+            raise ValueError("Warmup summary cần các cặp tuple.")
+        if tuple(name for name, _ in self.warmup_by_feature) != self.feature_order:
+            raise ValueError("Warmup summary phải theo đúng feature_order.")
+        if any(type(value) is not bool for _, value in self.warmup_by_feature):
+            raise ValueError("Warmup summary chỉ nhận bool.")
+        if any(type(item) is not tuple or len(item) != 2 for item in self.quality_by_feature):
+            raise ValueError("Quality summary cần các cặp tuple.")
+        if tuple(name for name, _ in self.quality_by_feature) != self.feature_order:
+            raise ValueError("Quality summary phải theo đúng feature_order.")
+        if any(type(value) is not FeatureQuality for _, value in self.quality_by_feature):
+            raise ValueError("Quality summary cần FeatureQuality tường minh.")
+        if len(self.quality_flags) != len(set(self.quality_flags)) or any(
+            not item.strip() for item in self.quality_flags
+        ):
+            raise ValueError("quality_flags phải không rỗng và duy nhất.")
+        if self.source_event_digest != _source_event_digest(
+            self.timeframe, self.source_event_ids, self.source_bar_ids
+        ):
+            raise ValueError("source_event_digest không khớp source IDs của timeframe.")
+
+
+@dataclass(frozen=True, slots=True)
 class DecisionSnapshot:
     """Đầu vào đóng băng cho một lần đánh giá, không tự loại dữ liệu tương lai."""
 
@@ -109,16 +234,42 @@ class DecisionSnapshot:
     macro_evidence_ids: tuple[str, ...] = ()
     macro_evidence_available_at: datetime | None = None
     macro_is_fresh: bool | None = None
+    # Rỗng chỉ để giữ tương thích với snapshot legacy không đủ điều kiện training.
+    timeframe_lineage: tuple[DecisionSnapshotTimeframeLineage, ...] = ()
+    freshness_as_of: datetime | None = None
 
     def __post_init__(self) -> None:
+        for name in ("series", "features", "macro_evidence_ids", "timeframe_lineage"):
+            object.__setattr__(self, name, _immutable_tuple(getattr(self, name), name))
         if not self.symbol.strip():
             raise ValueError("symbol không được để trống.")
         if not self.snapshot_id.strip():
             raise ValueError("snapshot_id không được để trống.")
         _aware(self.decision_time, "decision_time")
+        if self.freshness_as_of is not None:
+            _aware(self.freshness_as_of, "freshness_as_of")
+            if self.freshness_as_of < self.decision_time:
+                raise ValueError("freshness_as_of không được trước evidence cutoff.")
         timeframes = [item.timeframe for item in self.series]
         if len(timeframes) != len(set(timeframes)):
             raise ValueError("Không được lặp timeframe trong snapshot.")
+        if self.timeframe_lineage:
+            if self.freshness_as_of is None:
+                raise ValueError("Snapshot có timeframe lineage phải ghim freshness_as_of.")
+            if any(
+                type(item) is not DecisionSnapshotTimeframeLineage
+                for item in self.timeframe_lineage
+            ):
+                raise ValueError("timeframe_lineage phải chứa domain lineage đã đóng băng.")
+            lineage_timeframes = tuple(item.timeframe for item in self.timeframe_lineage)
+            if len(lineage_timeframes) != len(set(lineage_timeframes)):
+                raise ValueError("Không được lặp timeframe lineage trong snapshot.")
+            if lineage_timeframes != tuple(timeframes):
+                raise ValueError("Timeframe lineage phải theo đúng thứ tự các series.")
+            if any(item.symbol != self.symbol for item in self.timeframe_lineage):
+                raise ValueError("Timeframe lineage phải cùng symbol với snapshot.")
+            if any(item.freshness_as_of != self.freshness_as_of for item in self.timeframe_lineage):
+                raise ValueError("Timeframe lineage phải khớp freshness_as_of của snapshot.")
         keys = [(item.name, item.timeframe) for item in self.features]
         if len(keys) != len(set(keys)):
             raise ValueError("feature key bị lặp trong snapshot.")
@@ -145,6 +296,34 @@ class DecisionSnapshot:
             (item for item in self.features if item.name == name and item.timeframe == timeframe),
             None,
         )
+
+
+def _source_event_digest(
+    timeframe: str,
+    source_event_ids: tuple[str, ...],
+    source_bar_ids: tuple[str, ...],
+) -> str:
+    payload = {
+        "timeframe": timeframe,
+        "source_event_ids": list(source_event_ids),
+        "source_bar_ids": list(source_bar_ids),
+    }
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _is_sha256(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def _immutable_tuple(value: object, name: str) -> tuple[object, ...]:
+    if not isinstance(value, (tuple, list)):
+        raise ValueError(f"{name} phải là list hoặc tuple để đóng băng.")
+    return tuple(value)
 
 
 @dataclass(frozen=True, slots=True)

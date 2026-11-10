@@ -11,6 +11,7 @@ from datetime import datetime
 from uuid import UUID
 
 from trading_bot.application.backtest_dataset_manifest import (
+    backtest_dataset_bar_identity_hash,
     backtest_dataset_bars_hash,
 )
 from trading_bot.application.backtest_dataset_replay import BacktestDatasetReplayInput
@@ -271,6 +272,20 @@ class BacktestDatasetReplayBundle:
                 != manifest.bars_content_hash
             ):
                 raise BacktestDatasetBundleMismatch("Hash bars của manifest con bị thay đổi.")
+            if manifest.schema_version == 4:
+                try:
+                    observed_identity_hash = backtest_dataset_bar_identity_hash(
+                        item.bars,
+                        workspace_id=manifest.rights_workspace_id,
+                    )
+                except ValueError as error:
+                    raise BacktestDatasetBundleMismatch(
+                        "Identity record/revision bar của manifest con không hợp lệ."
+                    ) from error
+                if observed_identity_hash != manifest.bar_identity_hash:
+                    raise BacktestDatasetBundleMismatch(
+                        "Identity record/revision bar của manifest con bị thay đổi."
+                    )
         expected_hash = _bundle_hash(
             components=self.components,
             workspace_id=self.workspace_id,

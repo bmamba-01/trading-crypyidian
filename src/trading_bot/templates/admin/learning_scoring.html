@@ -1,0 +1,60 @@
+{% extends "admin/base.html" %}
+{% block title %}Chấm điểm mô hình | Crypidian{% endblock %}
+{% block head_extra %}<meta name="robots" content="noindex, nofollow">{% endblock %}
+{% block heading %}Điều phối chấm điểm mô hình{% endblock %}
+{% block content %}
+  <div class="learning-scoring-page" id="learning-scoring-page">
+    <section class="learning-scoring-lock" aria-labelledby="learning-scoring-lock-heading">
+      <h2 id="learning-scoring-lock-heading">Quyền runtime chưa được xác minh</h2>
+      <p><strong>Chế độ chỉ quan sát (SHADOW) và cổng PAPER (PAPER_GATE) đang khóa.</strong> Chưa có cổng quyền hiện hành để xác nhận lại quyền dữ liệu trước khi chấm. Trang này không bật bộ chấm và không tạo lệnh.</p>
+      <p>Chế độ chỉ quan sát (SHADOW) chỉ ghi nhận điểm, không tác động quyết định hoặc lệnh. Cổng PAPER (PAPER_GATE) chỉ có thể đi tiếp qua các cổng vận hành và bộ máy quản trị rủi ro hiện hữu sau khi báo cáo, bằng chứng và quyền được xác minh đầy đủ.</p>
+    </section>
+
+    <section class="learning-scoring-card" aria-labelledby="learning-scoring-status-heading">
+      <div class="learning-scoring-card-heading">
+        <div>
+          <h2 id="learning-scoring-status-heading">Trạng thái hiện tại</h2>
+          <p>Thông tin được đọc theo không gian làm việc của phiên đăng nhập.</p>
+        </div>
+        <span class="learning-scoring-mode learning-scoring-mode--{{ snapshot.mode.value|lower }}">{{ mode_label }}</span>
+      </div>
+      <dl class="learning-scoring-metadata">
+        <div><dt>Trạng thái sức khỏe</dt><dd>{{ health_label }}</dd></div>
+        <div><dt>Bộ chấm có thể hoạt động</dt><dd>{{ "Có" if snapshot.runtime_usable else "Không" }}</dd></div>
+        <div><dt>Phiên bản triển khai</dt><dd>{{ snapshot.deployment_revision }}</dd></div>
+        <div><dt>Phiên bản con trỏ danh mục mô hình</dt><dd>{{ snapshot.active_pointer_version }}</dd></div>
+        <div><dt>Mã sự kiện triển khai</dt><dd><code>{{ event_id_short }}</code></dd></div>
+      </dl>
+      <p class="learning-scoring-report-caveat"><strong>Báo cáo và bằng chứng:</strong> Giao diện quản trị hiện chưa cung cấp siêu dữ liệu báo cáo của bộ chấm, chính sách hoặc bằng chứng để xác nhận phạm vi. Báo cáo chẩn đoán ở danh mục cũ hoặc trạng thái chưa kết luận (<code>INCONCLUSIVE</code>) không chứng minh đủ điều kiện bật cổng PAPER.</p>
+    </section>
+
+    <section class="learning-scoring-card" aria-labelledby="learning-scoring-history-heading">
+      <h2 id="learning-scoring-history-heading">Lịch sử điểm chấm</h2>
+      <p>Giao diện quản trị chưa hỗ trợ lấy danh sách sự kiện điểm chấm. Khi chưa có bộ chấm đang vận hành, trang chưa có bản ghi điểm để phân trang.</p>
+      <p class="learning-scoring-metadata-note">Trang chỉ hiển thị siêu dữ liệu triển khai; không tải hoặc hiển thị vectơ đặc trưng, giá trị đặc trưng, nhãn hay dữ liệu kiểm định.</p>
+    </section>
+
+    <section class="learning-scoring-card" aria-labelledby="learning-scoring-controls-heading">
+      <h2 id="learning-scoring-controls-heading">Điều khiển an toàn</h2>
+      {% if can_disable %}
+        <form id="scorer-disable-form"
+          data-csrf-token="{{ csrf_token }}"
+          data-expected-pointer-version="{{ snapshot.active_pointer_version }}"
+          data-expected-deployment-revision="{{ snapshot.deployment_revision }}">
+          <p>Bản triển khai hiện đang bật nhưng quyền chưa xác minh. Người duyệt có thể ghi sự kiện tắt bằng kiểm tra phiên bản CAS và xác thực TOTP gần đây.</p>
+          <label for="scorer-disable-reason">Lý do tắt</label>
+          <textarea id="scorer-disable-reason" name="reason" minlength="12" maxlength="500" required></textarea>
+          <button type="submit">Tắt chấm điểm</button>
+        </form>
+      {% elif snapshot.mode.value != "DISABLED" and has_approval %}
+        <p class="learning-scoring-access-note">Cần xác thực TOTP gần đây để tắt deployment đang hoạt động.</p>
+      {% elif snapshot.mode.value != "DISABLED" %}
+        <p class="learning-scoring-access-note">Chỉ người có quyền duyệt mới được tắt deployment.</p>
+      {% else %}
+        <p>Scorer đang tắt. Không có thao tác bật chế độ nào khả dụng khi quyền hiện hành chưa được xác minh.</p>
+      {% endif %}
+      <p id="learning-scoring-status" role="status" aria-live="polite" hidden></p>
+    </section>
+  </div>
+{% endblock %}
+{% block scripts %}<script src="/static/learning-scoring.js" defer></script>{% endblock %}

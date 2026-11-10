@@ -2,7 +2,13 @@
 {% block title %}Tổng quan — Crypidian{% endblock %}
 {% block heading %}Tổng quan workspace{% endblock %}
 {% block content %}
-<p class="welcome-banner">Xin chào <strong>{{ identity.email }}</strong>.</p>
+<p class="welcome-banner">Xin chào {{ identity.email }}.</p>
+
+<section class="summary-grid" aria-label="Tình trạng không gian làm việc" style="margin-bottom: 1rem;">
+  <p>Tổng số bot: {{ bot_count }}</p>
+  <p>Bot sẵn sàng: {{ ready_count }}</p>
+  <p>Điều khiển không gian làm việc: {{ workspace.kill_state | label_vi }}</p>
+</section>
 
 <!-- Thanh trạng thái cập nhật trực tiếp (Real-time Live Status Bar) -->
 <div class="live-status-bar" role="region" aria-label="Trạng thái cập nhật trực tiếp">
@@ -74,6 +80,22 @@
       <button type="submit" class="btn btn-secondary">Gỡ kill workspace</button>
     </form>
   </div>
+</section>
+
+<section aria-labelledby="performance-heading" class="dashboard-performance-section" style="margin-bottom: 1.5rem;">
+  <h2 id="performance-heading">Hiệu quả bot trong 30 ngày</h2>
+  {% if dashboard_reports is defined and dashboard_reports %}
+  <p>Từ {{ report_start | local_time }} đến {{ report_end | local_time }}; không gồm mốc kết thúc. Chỉ bot có quyền xem báo cáo; số liệu tiền tệ theo từng tài sản.</p>
+  {% for report in dashboard_reports %}
+  <article class="bot-report"><h3>{{ report.name }}</h3>
+  {% with totals=report.totals %}{% include "admin/metric_cards.html" %}{% endwith %}</article>
+  {% endfor %}
+  {% elif metrics_loaded %}
+  <p role="status">Chưa có bot đang hoạt động được cấp quyền xem báo cáo.</p>
+  {% else %}
+  <p role="status">Thống kê hiệu quả chưa sẵn sàng. {{ metrics_message | default("Hãy kiểm tra quyền xem báo cáo hoặc thử lại sau.") }}</p>
+  {% endif %}
+  <p><a href="/admin/reports">Xem báo cáo theo phạm vi được cấp quyền</a></p>
 </section>
 
 <section aria-label="Danh sách bot trong workspace" class="bot-roster-section">

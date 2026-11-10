@@ -8,12 +8,14 @@ làm dữ liệu phạt cho các chu kỳ huấn luyện và tinh chỉnh Scorer
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
 
+from trading_bot.domain.learning.dataset import DatasetSample, DatasetSplit
 from trading_bot.domain.portfolio.post_mortem import (
     TradePostMortem,
     evaluate_trade_post_mortem,
@@ -110,3 +112,47 @@ class LearningPostMortemService:
             if sample.trade_id == trade_id:
                 return sample
         return None
+
+    def export_dataset_samples(
+        self,
+        *,
+        workspace_id: UUID,
+        split: DatasetSplit = DatasetSplit.TRAIN,
+    ) -> list[DatasetSample]:
+        """Chuyển đổi toàn bộ các mẫu phạt phản thực nghiệm thành DatasetSample.
+
+        Gán nhãn phản thực nghiệm (counterfactual_action = ABSTAIN -> label_value = 0)
+        để đưa vào tập huấn luyện của Fold, dạy cho mô hình AI cách phạt và tránh các
+        điểm vào lệnh bẫy thanh khoản / trượt giá cao.
+        """
+        samples: list[DatasetSample] = []
+        for record in self._retraining_ledger.values():
+            sample_hash = hashlib.sha256(str(record.sample_id).encode("utf-8")).hexdigest()
+            feature_hash = (
+                hashlib.sha256(record.feature_snapshot_id.encode("utf-8")).hexdigest()
+                if record.feature_snapshot_id
+                else sample_hash
+            )
+            outcome_hash = hashlib.sha256(str(record.trade_id).encode("utf-8")).hexdigest()
+            label_hash = hashlib.sha256(record.counterfactual_action.encode("utf-8")).hexdigest()
+
+            sample = DatasetSample(
+                sample_id=str(record.sample_id),
+                decision_at=record.created_at,
+                feature_available_at=record.created_at,
+                outcome_start=record.created_at,
+                outcome_end=record.created_at + timedelta(seconds=60),
+                feature_snapshot_hash=feature_hash,
+                outcome_id=str(record.trade_id),
+                outcome_hash=outcome_hash,
+                label_hash=label_hash,
+                label_value=0,  # 0 đại diện cho ABSTAIN (phạt đứng ngoài)
+                label_version="counterfactual_negative_v1",
+                split=split,
+                source_dependent=False,
+                source_rights_hashes=(),
+                source_revision_refs=(),
+                source_references=(),
+            )
+            samples.append(sample)
+        return samples

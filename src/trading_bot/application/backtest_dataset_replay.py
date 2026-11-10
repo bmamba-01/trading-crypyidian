@@ -9,6 +9,7 @@ from uuid import UUID
 
 from trading_bot.application.backtest_dataset_manifest import (
     BacktestDatasetManifest,
+    backtest_dataset_bar_identity_hash,
     backtest_dataset_bars_hash,
 )
 from trading_bot.application.binance_rest_backfill import (
@@ -139,10 +140,19 @@ class BacktestDatasetReplayLoader:
                     "Manifest schema v2 không ghim quote volume hiện có trong dữ liệu."
                 )
             observed_hash = backtest_dataset_bars_hash(bars, schema_version=manifest.schema_version)
+            observed_identity_hash = (
+                backtest_dataset_bar_identity_hash(bars, workspace_id=workspace_id)
+                if manifest.schema_version == 4
+                else None
+            )
         except ValueError as error:
             raise BacktestDatasetDataChanged("Dữ liệu bar đọc lại không hợp lệ.") from error
         if observed_hash != manifest.bars_content_hash:
             raise BacktestDatasetDataChanged("Hash bar đọc lại không khớp snapshot của manifest.")
+        if manifest.schema_version == 4 and observed_identity_hash != manifest.bar_identity_hash:
+            raise BacktestDatasetDataChanged(
+                "Identity record/revision bar đọc lại không khớp manifest."
+            )
         return BacktestDatasetReplayInput(
             manifest=manifest,
             bars=bars,

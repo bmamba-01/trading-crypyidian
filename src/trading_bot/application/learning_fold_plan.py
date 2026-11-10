@@ -166,6 +166,10 @@ def build_manifest_fold_plan(
         raise ValueError("split policy của manifest không khớp phiên bản được yêu cầu.")
     if any(type(sample) is not DatasetSample for sample in manifest.samples):
         raise ValueError("Manifest thiếu sample lineage authoritative hợp lệ.")
+    if any(sample.source_dependent and not sample.source_references for sample in manifest.samples):
+        raise ValueError(
+            "Manifest có lineage nguồn cũ chưa ghép cặp; không thể dùng trong đánh giá fold."
+        )
     cutoff = _utc(evaluation_cutoff, "evaluation_cutoff")
     if cutoff > manifest.as_of:
         raise ValueError("evaluation_cutoff không được sau manifest.as_of.")

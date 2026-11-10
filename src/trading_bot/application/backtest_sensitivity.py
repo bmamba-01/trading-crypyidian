@@ -112,11 +112,11 @@ def run_sensitivity(
             manifest=scenario_manifest,
             evaluator=evaluator,
             progress_callback=(
-                lambda completed, _total, offset=trial_index * observation_count: (
-                    progress_callback(offset + completed, total_work)
-                    if progress_callback is not None
-                    else None
+                lambda completed, _total, offset=trial_index * observation_count: progress_callback(
+                    offset + completed, total_work
                 )
+                if progress_callback is not None
+                else None
             ),
             cancel_requested=cancel_requested,
         )

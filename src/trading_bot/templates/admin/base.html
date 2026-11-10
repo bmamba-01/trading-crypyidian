@@ -4,6 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}Crypidian{% endblock %}</title>
+    <link rel="stylesheet" href="/static/vendor/bootstrap-5.3.8.min.css">
     <link rel="stylesheet" href="/static/admin.css">
     <script>
       (function() {
@@ -55,7 +56,7 @@
       </p>
     </div>
 
-    <main id="main-content">
+    <main id="main-content" tabindex="-1">
       <h1>{% block heading %}{% endblock %}</h1>
       {% block content %}{% endblock %}
     </main>

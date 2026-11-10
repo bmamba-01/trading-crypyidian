@@ -1,3 +1,4 @@
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import Select, select, text
@@ -9,11 +10,48 @@ from trading_bot.adapters.database.repositories.backtest_dataset_manifests impor
     BacktestDatasetManifestRepository,
 )
 from trading_bot.adapters.database.repositories.dataset_manifest import DatasetManifestRepository
+from trading_bot.adapters.database.repositories.learning_attempts import (
+    LearningAttemptConflict,
+    LearningAttemptRepository,
+    LearningAttemptWriteResult,
+)
+from trading_bot.adapters.database.repositories.learning_evaluation_reports import (
+    LearningEvaluationReportConflict,
+    LearningEvaluationReportRepository,
+    LearningEvaluationReportWriteResult,
+)
+from trading_bot.adapters.database.repositories.learning_fold_samples import (
+    LearningFoldSampleRepository,
+    NormalizedLearningDatasetConflict,
+    NormalizedLearningDatasetWriteResult,
+)
+from trading_bot.adapters.database.repositories.learning_scorer_artifacts import (
+    LearningScorerArtifactConflict,
+    LearningScorerArtifactRepository,
+)
+from trading_bot.adapters.database.repositories.learning_scorer_test_access import (
+    LearningScorerTestAccessRepository,
+    LearningScorerTestEvaluationReportRepository,
+)
+from trading_bot.adapters.database.repositories.learning_split_approvals import (
+    LearningSplitApprovalRepository,
+)
+from trading_bot.adapters.database.repositories.learning_split_candidates import (
+    LearningSplitCandidateRepository,
+)
+from trading_bot.adapters.database.repositories.learning_training_artifacts import (
+    LearningTrainingArtifactConflict,
+    LearningTrainingArtifactRepository,
+    LearningTrainingArtifactWriteResult,
+)
+from trading_bot.adapters.database.repositories.learning_training_jobs import (
+    LearningTrainingJobConflict,
+    LearningTrainingJobRepository,
+)
 from trading_bot.adapters.database.repositories.risk_conversion import RiskConversionRepository
 from trading_bot.adapters.database.repositories.source_registry import SourceRegistryRepository
 from trading_bot.adapters.database.repositories.strategy_card_repository import (
     StrategyCardConflict,
-    StrategyCardNotFoundError,
     StrategyCardRepository,
 )
 
@@ -21,13 +59,50 @@ __all__ = [
     "AccountEquityRepository",
     "BacktestDatasetManifestRepository",
     "DatasetManifestRepository",
+    "StrategyCardConflict",
+    "StrategyCardRepository",
+    "LearningSplitApprovalRepository",
+    "LearningSplitCandidateRepository",
+    "LearningFoldSampleRepository",
+    "NormalizedLearningDatasetConflict",
+    "NormalizedLearningDatasetWriteResult",
+    "LearningEvaluationReportConflict",
+    "LearningEvaluationReportRepository",
+    "LearningAttemptConflict",
+    "LearningAttemptRepository",
+    "LearningAttemptWriteResult",
+    "LearningTrainingArtifactConflict",
+    "LearningTrainingArtifactRepository",
+    "LearningTrainingArtifactWriteResult",
+    "LearningScorerArtifactConflict",
+    "LearningScorerArtifactRepository",
+    "LearningScorerTestAccessRepository",
+    "LearningScorerTestEvaluationReportRepository",
+    "LearningScorerTestOpportunityProofConflict",
+    "LearningScorerTestOpportunityProofRepository",
+    "LearningScorerTestOpportunityProofWriteResult",
+    "LearningTrainingJobConflict",
+    "LearningTrainingJobRepository",
+    "LearningEvaluationReportWriteResult",
     "RiskConversionRepository",
     "SourceRegistryRepository",
-    "StrategyCardConflict",
-    "StrategyCardNotFoundError",
-    "StrategyCardRepository",
     "WorkspaceRepository",
 ]
+
+
+def __getattr__(name: str) -> Any:
+    """Carrega o proof TEST apenas quando pedido para evitar ciclo de inicialização."""
+    if name in {
+        "LearningScorerTestOpportunityProofConflict",
+        "LearningScorerTestOpportunityProofRepository",
+        "LearningScorerTestOpportunityProofWriteResult",
+    }:
+        from trading_bot.adapters.database.repositories import (
+            learning_scorer_test_opportunity_proofs,
+        )
+
+        return getattr(learning_scorer_test_opportunity_proofs, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 class WorkspaceRepository:

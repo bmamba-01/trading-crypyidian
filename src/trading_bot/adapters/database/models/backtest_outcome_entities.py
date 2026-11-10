@@ -87,6 +87,45 @@ class BacktestTradeOutcomeRecord(UuidPrimaryKey, CreatedAt, Base):
         CheckConstraint("length(outcome_hash) = 64", name="backtest_outcome_sha256"),
         CheckConstraint("ordinal >= 0", name="backtest_outcome_ordinal_nonnegative"),
         CheckConstraint("jsonb_typeof(outcome) = 'object'", name="backtest_outcome_object"),
+        CheckConstraint(
+            "(entry_decision_snapshot_id IS NULL AND entry_decision_at IS NULL AND "
+            "entry_feature_schema_hash IS NULL AND entry_features IS NULL AND "
+            "entry_features_hash IS NULL AND entry_symbol IS NULL) OR "
+            "(entry_decision_snapshot_id IS NOT NULL AND "
+            "length(btrim(entry_decision_snapshot_id)) > 0 AND entry_decision_at IS NOT NULL "
+            "AND entry_feature_schema_hash IS NOT NULL AND entry_features IS NOT NULL AND "
+            "entry_features_hash IS NOT NULL AND entry_symbol IS NOT NULL AND entry_symbol ~ "
+            "'^[A-Z0-9_]{2,32}$' AND entry_feature_schema_hash ~ '^[0-9a-f]{64}$' AND "
+            "entry_features_hash ~ '^[0-9a-f]{64}$' AND "
+            "public.wp06_entry_features_valid(entry_features))",
+            name="entry_provenance_valid",
+        ),
+        ForeignKeyConstraint(
+            ["workspace_id", "trial_record_id", "entry_opportunity_event_id"],
+            [
+                "backtest_decision_opportunity.workspace_id",
+                "backtest_decision_opportunity.trial_record_id",
+                "backtest_decision_opportunity.event_id",
+            ],
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint(
+            "workspace_id",
+            "trial_record_id",
+            "entry_candidate_id",
+            name="uq_backtest_outcome_entry_candidate",
+        ),
+        CheckConstraint(
+            (
+                "(entry_opportunity_event_id IS NULL AND entry_candidate_id IS NULL AND"
+                " entry_vector_hash IS NULL) OR (entry_opportunity_event_id IS NOT NULL"
+                " AND length(btrim(entry_opportunity_event_id)) > 0 AND entry_candidate"
+                "_id IS NOT NULL AND entry_vector_hash IS NOT NULL AND entry_decision_s"
+                "napshot_id IS NOT NULL AND entry_candidate_id ~ '^[0-9a-f]{64}$' AND e"
+                "ntry_vector_hash ~ '^[0-9a-f]{64}$')"
+            ),
+            name="outcome_opportunity_link_valid",
+        ),
         Index(
             "ix_backtest_outcome_workspace_trial",
             "workspace_id",
@@ -104,6 +143,19 @@ class BacktestTradeOutcomeRecord(UuidPrimaryKey, CreatedAt, Base):
     outcome_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     outcome: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     canonical_json: Mapped[str] = mapped_column(Text, nullable=False)
+    entry_decision_snapshot_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    entry_decision_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    entry_feature_schema_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    entry_features: Mapped[list[list[Any]] | None] = mapped_column(
+        JSONB(none_as_null=True), nullable=True
+    )
+    entry_features_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    entry_symbol: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    entry_opportunity_event_id: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    entry_candidate_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    entry_vector_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
 class BacktestRunDatasetRightsRecord(UuidPrimaryKey, CreatedAt, Base):

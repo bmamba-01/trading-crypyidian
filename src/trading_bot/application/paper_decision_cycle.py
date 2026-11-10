@@ -92,6 +92,8 @@ class DecisionCycleResult:
     risk_decision: RiskDecision | None = None
     order: PaperOrderIntent | None = None
     workspace_risk_decision: WorkspaceRiskDecision | None = None
+    strategy_invoked: bool = False
+    candidate_id: str | None = None
 
 
 class PaperDecisionCycle:
@@ -355,14 +357,21 @@ class PaperDecisionCycle:
         strategy = self._strategies.resolve(release_id, selection)
         strategy_result = strategy.evaluate(snapshot, selection)
         if isinstance(strategy_result, NoTrade):
-            return DecisionCycleResult(DecisionCycleOutcome.NO_TRADE, strategy_result)
+            return DecisionCycleResult(
+                DecisionCycleOutcome.NO_TRADE, strategy_result, strategy_invoked=True
+            )
         if strategy_result.settings_version_id != planner_settings.settings_version_id:
             no_trade = NoTrade(
                 strategy_id=strategy_result.strategy_id,
                 code="STALE_SETTINGS_VERSION",
                 detail_vi="Candidate dùng phiên bản cấu hình khác planner.",
             )
-            return DecisionCycleResult(DecisionCycleOutcome.NO_TRADE, no_trade)
+            return DecisionCycleResult(
+                DecisionCycleOutcome.NO_TRADE,
+                no_trade,
+                strategy_invoked=True,
+                candidate_id=strategy_result.candidate_id,
+            )
 
         plan = self._planner.plan(
             strategy_result,
@@ -377,6 +386,7 @@ class PaperDecisionCycle:
                 DecisionCycleOutcome.PLAN_REJECTED,
                 strategy_result,
                 plan=plan,
+                strategy_invoked=True,
             )
 
         decision = self._risk_engine.evaluate(plan, risk_state, planner_settings)
@@ -385,6 +395,7 @@ class PaperDecisionCycle:
                 DecisionCycleOutcome.RISK_REJECTED,
                 strategy_result,
                 plan=plan,
+                strategy_invoked=True,
                 risk_decision=decision,
             )
 
@@ -392,6 +403,7 @@ class PaperDecisionCycle:
             DecisionCycleOutcome.RISK_APPROVED,
             strategy_result,
             plan=plan,
+            strategy_invoked=True,
             risk_decision=decision,
         )
 
@@ -423,6 +435,7 @@ class PaperDecisionCycle:
             plan=result.plan,
             risk_decision=result.risk_decision,
             order=order,
+            strategy_invoked=result.strategy_invoked,
         )
 
     def evaluate(

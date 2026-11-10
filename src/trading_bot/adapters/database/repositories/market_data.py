@@ -174,33 +174,35 @@ class MarketDataRepository:
             ):
                 raise MarketRepositoryConflict("revision mới phải nối tiếp bản ghi gần nhất.")
             disposition = IngestionDisposition.REVISION
-        row = MarketBar(
-            id=version.record_id,
-            workspace_id=workspace_id,
-            instrument_id=instrument_id,
-            symbol=bar.symbol,
-            timeframe=bar.timeframe,
-            source=version.stream.source,
-            logical_key=version.logical_key,
-            idempotency_key=version.idempotency_key,
-            revision=version.revision,
-            checksum=version.content_checksum,
-            supersedes_id=version.supersedes_record_id,
-            raw_reference_id=raw_reference_id,
-            source_cursor=bar.source_cursor,
-            open_time=bar.open_time,
-            close_time=bar.close_time,
-            event_at=bar.event_at,
-            received_at=bar.received_at,
-            available_at=bar.available_at,
-            open=bar.open,
-            high=bar.high,
-            low=bar.low,
-            close=bar.close,
-            volume=bar.volume,
-            quote_volume=bar.quote_volume,
-            is_closed=bar.is_closed,
-        )
+        bar_kwargs: dict[str, Any] = {
+            "id": version.record_id,
+            "workspace_id": workspace_id,
+            "instrument_id": instrument_id,
+            "symbol": bar.symbol,
+            "timeframe": bar.timeframe,
+            "source": version.stream.source,
+            "logical_key": version.logical_key,
+            "idempotency_key": version.idempotency_key,
+            "revision": version.revision,
+            "checksum": version.content_checksum,
+            "supersedes_id": version.supersedes_record_id,
+            "raw_reference_id": raw_reference_id,
+            "source_cursor": bar.source_cursor,
+            "open_time": bar.open_time,
+            "close_time": bar.close_time,
+            "event_at": bar.event_at,
+            "received_at": bar.received_at,
+            "available_at": bar.available_at,
+            "open": bar.open,
+            "high": bar.high,
+            "low": bar.low,
+            "close": bar.close,
+            "volume": bar.volume,
+            "is_closed": bar.is_closed,
+        }
+        if bar.quote_volume is not None:
+            bar_kwargs["quote_volume"] = bar.quote_volume
+        row = MarketBar(**bar_kwargs)
         duplicate = await self._insert_or_get_duplicate(
             row=row,
             lookup=select(MarketBar).where(
@@ -733,7 +735,7 @@ def _to_domain_bar(row: MarketBar) -> OHLCVBar:
         low=row.low,
         close=row.close,
         volume=row.volume,
-        quote_volume=row.quote_volume,
+        quote_volume=row.__dict__.get("quote_volume"),
         is_closed=row.is_closed,
         source=row.source,
         source_cursor=row.source_cursor,

@@ -22,9 +22,17 @@ def main() -> None:
                 "trading_runtime",
                 "execution_gateway",
                 "ingestion_worker",
+                "signal_worker",
+                "market_signal_worker",
                 "trainer_worker",
+                "learning_evaluator",
+                "learning_shadow_observer",
+                "replay_writer",
+                "candidate_builder",
+                "backtest_worker",
             )
         },
+        "telegram_bot_token": "",
     }
     for name, value in generated_secrets.items():
         path = secret_directory / name

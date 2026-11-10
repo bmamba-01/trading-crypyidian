@@ -61,6 +61,7 @@ services:
       TRADING_BOT_MFA_SECRET_DIRECTORY: /var/lib/crypidian/mfa-secrets
       TRADING_BOT_BOOTSTRAP_TOKEN_FILE: /run/secrets/bootstrap_token
       TRADING_BOT_TELEGRAM_BOT_USERNAME: ${TRADING_BOT_TELEGRAM_BOT_USERNAME:-}
+      TRADING_BOT_TELEGRAM_BOT_TOKEN_FILE: /run/secrets/telegram_bot_token
     depends_on:
       mfa-volume-provisioner:
         condition: service_completed_successfully
@@ -85,6 +86,7 @@ services:
       - database_admin_web_password
       - mfa_encryption_key
       - bootstrap_token
+      - telegram_bot_token
     volumes:
       - mfa_secrets:/var/lib/crypidian/mfa-secrets
     healthcheck: &application_healthcheck
@@ -150,6 +152,13 @@ services:
       - database_execution_gateway_password
       - database_ingestion_worker_password
       - database_trainer_worker_password
+      - database_learning_evaluator_password
+      - database_learning_shadow_observer_password
+      - database_candidate_builder_password
+      - database_replay_writer_password
+      - database_backtest_worker_password
+      - database_signal_worker_password
+      - database_market_signal_worker_password
     networks:
       - backend
     read_only: true
@@ -259,6 +268,9 @@ services:
       TRADING_BOT_APP_ENV: local
       TRADING_BOT_TRADING_MODE: PAPER
       TRADING_BOT_PROCESS_ROLE: ingestion-worker
+      # Worker này chỉ xử lý một workspace; thay UUID mẫu bằng workspace đã provision.
+      TRADING_BOT_INGESTION_WORKSPACE_ID: ${TRADING_BOT_INGESTION_WORKSPACE_ID:-00000000-0000-0000-0000-000000000000}
+      TRADING_BOT_INGESTION_WORKER_TICK_SECONDS: ${TRADING_BOT_INGESTION_WORKER_TICK_SECONDS:-5}
       TRADING_BOT_DATABASE_USER: crypidian_ingestion_worker
       TRADING_BOT_DATABASE_PASSWORD_FILE: /run/secrets/database_ingestion_worker_password
     profiles: ["paper"]
@@ -281,6 +293,50 @@ services:
     healthcheck: *application_healthcheck
     restart: unless-stopped
 
+  candidate-proof-builder:
+    image: ${CRYPIDIAN_APP_IMAGE:-crypidian-app:local}
+    command: ["python", "-m", "trading_bot.cli.candidate_proof"]
+    profiles: ["learning-proof"]
+    environment:
+      TRADING_BOT_DATABASE_USER: crypidian_candidate_builder
+      TRADING_BOT_DATABASE_PASSWORD_FILE: /run/secrets/database_candidate_builder_password
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - backend
+    secrets:
+      - database_candidate_builder_password
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    user: "10001:10001"
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    restart: "no"
+
+  learning-split-builder:
+    image: ${CRYPIDIAN_APP_IMAGE:-crypidian-app:local}
+    command: ["python", "-m", "trading_bot.cli.learning_split_candidate"]
+    profiles: ["learning-proof"]
+    environment:
+      TRADING_BOT_DATABASE_USER: crypidian_candidate_builder
+      TRADING_BOT_DATABASE_PASSWORD_FILE: /run/secrets/database_candidate_builder_password
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - backend
+    secrets:
+      - database_candidate_builder_password
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    user: "10001:10001"
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    restart: "no"
+
   trainer-worker:
     image: ${CRYPIDIAN_APP_IMAGE:-crypidian-app:local}
     environment:
@@ -289,6 +345,7 @@ services:
       TRADING_BOT_PROCESS_ROLE: trainer-worker
       TRADING_BOT_DATABASE_USER: crypidian_trainer_worker
       TRADING_BOT_DATABASE_PASSWORD_FILE: /run/secrets/database_trainer_worker_password
+      TRADING_BOT_LEARNING_TRAINING_WORKSPACE_ID: ${TRADING_BOT_LEARNING_TRAINING_WORKSPACE_ID:-00000000-0000-0000-0000-000000000000}
     profiles: ["paper"]
     depends_on:
       postgres:
@@ -306,6 +363,181 @@ services:
     cap_drop: ["ALL"]
     security_opt: ["no-new-privileges:true"]
     healthcheck: *application_healthcheck
+    cpus: 1.0
+    mem_limit: 1g
+    pids_limit: 64
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1g
+          pids: 64
+    restart: unless-stopped
+    stop_grace_period: 330s
+
+  learning-shadow-observer:
+    image: ${CRYPIDIAN_APP_IMAGE:-crypidian-app:local}
+    command: ["python", "-m", "trading_bot.cli.learning_shadow", "run"]
+    environment:
+      TRADING_BOT_APP_ENV: local
+      TRADING_BOT_TRADING_MODE: PAPER
+      TRADING_BOT_PROCESS_ROLE: learning-shadow-observer
+      TRADING_BOT_DATABASE_USER: crypidian_learning_shadow_observer
+      TRADING_BOT_DATABASE_PASSWORD_FILE: /run/secrets/database_learning_shadow_observer_password
+      TRADING_BOT_LEARNING_SHADOW_OBSERVER_WORKSPACE_ID: ${TRADING_BOT_LEARNING_SHADOW_OBSERVER_WORKSPACE_ID:-00000000-0000-0000-0000-000000000000}
+    profiles: ["learning"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrator:
+        condition: service_completed_successfully
+    networks:
+      - backend
+    secrets:
+      - database_learning_shadow_observer_password
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    user: "10001:10001"
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    cpus: 0.5
+    mem_limit: 256m
+    pids_limit: 32
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256m
+          pids: 32
+    restart: unless-stopped
+    stop_grace_period: 20s
+
+  learning-evaluator:
+    image: ${CRYPIDIAN_APP_IMAGE:-crypidian-app:local}
+    command: ["python", "-m", "trading_bot.cli.learning_evaluation"]
+    environment:
+      TRADING_BOT_APP_ENV: local
+      TRADING_BOT_TRADING_MODE: PAPER
+      TRADING_BOT_PROCESS_ROLE: learning-evaluator
+      TRADING_BOT_DATABASE_USER: crypidian_learning_evaluator
+      TRADING_BOT_DATABASE_PASSWORD_FILE: /run/secrets/database_learning_evaluator_password
+    profiles: ["learning"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrator:
+        condition: service_completed_successfully
+    networks:
+      - backend
+    secrets:
+      - database_learning_evaluator_password
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    user: "10001:10001"
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    restart: "no"
+
+  backtest-worker:
+    image: ${CRYPIDIAN_APP_IMAGE:-crypidian-app:local}
+    command: ["python", "-m", "trading_bot.cli.backtest_replay", "worker"]
+    environment:
+      TRADING_BOT_APP_ENV: local
+      TRADING_BOT_TRADING_MODE: PAPER
+      TRADING_BOT_PROCESS_ROLE: backtest-worker
+      # Mỗi worker được scope vào một workspace để không cần bypass RLS.
+      TRADING_BOT_BACKTEST_WORKER_WORKSPACE_ID: ${TRADING_BOT_BACKTEST_WORKER_WORKSPACE_ID:-00000000-0000-0000-0000-000000000000}
+      TRADING_BOT_BACKTEST_WORKER_TICK_SECONDS: ${TRADING_BOT_BACKTEST_WORKER_TICK_SECONDS:-2}
+      TRADING_BOT_BACKTEST_WORKER_LEASE_SECONDS: ${TRADING_BOT_BACKTEST_WORKER_LEASE_SECONDS:-120}
+      TRADING_BOT_DATABASE_USER: crypidian_backtest_worker
+      TRADING_BOT_DATABASE_PASSWORD_FILE: /run/secrets/database_backtest_worker_password
+      TRADING_BOT_BACKTEST_REPLAY_DATABASE_USER: crypidian_replay_writer
+      TRADING_BOT_BACKTEST_REPLAY_DATABASE_PASSWORD_FILE: /run/secrets/database_replay_writer_password
+    profiles: ["backtest"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrator:
+        condition: service_completed_successfully
+    networks:
+      - backend
+    secrets:
+      - database_backtest_worker_password
+      - database_replay_writer_password
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    user: "10001:10001"
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+
+  telegram-signal-worker:
+    image: ${CRYPIDIAN_APP_IMAGE:-crypidian-app:local}
+    environment:
+      TRADING_BOT_APP_ENV: local
+      TRADING_BOT_TRADING_MODE: PAPER
+      TRADING_BOT_PROCESS_ROLE: signal-worker
+      # Thay UUID mẫu bằng workspace có bot decision và subscription Telegram.
+      TRADING_BOT_SIGNAL_WORKSPACE_ID: ${TRADING_BOT_SIGNAL_WORKSPACE_ID:-00000000-0000-0000-0000-000000000000}
+      TRADING_BOT_SIGNAL_WORKER_TICK_SECONDS: ${TRADING_BOT_SIGNAL_WORKER_TICK_SECONDS:-5}
+      TRADING_BOT_SIGNAL_WORKER_MAX_CANDIDATE_AGE_SECONDS: ${TRADING_BOT_SIGNAL_WORKER_MAX_CANDIDATE_AGE_SECONDS:-7200}
+      TRADING_BOT_SIGNAL_WORKER_MAX_ATTEMPTS: ${TRADING_BOT_SIGNAL_WORKER_MAX_ATTEMPTS:-5}
+      TRADING_BOT_TELEGRAM_BOT_TOKEN_FILE: /run/secrets/telegram_bot_token
+      TRADING_BOT_DATABASE_USER: crypidian_signal_worker
+      TRADING_BOT_DATABASE_PASSWORD_FILE: /run/secrets/database_signal_worker_password
+    profiles: ["signal"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrator:
+        condition: service_completed_successfully
+    networks:
+      - backend
+      - telegram_egress
+    secrets:
+      - database_signal_worker_password
+      - telegram_bot_token
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    user: "10001:10001"
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    healthcheck: *application_healthcheck
+    restart: unless-stopped
+
+  market-signal-worker:
+    image: ${CRYPIDIAN_APP_IMAGE:-crypidian-app:local}
+    environment:
+      TRADING_BOT_APP_ENV: local
+      TRADING_BOT_TRADING_MODE: PAPER
+      TRADING_BOT_PROCESS_ROLE: market-signal-worker
+      # Thay UUID mẫu bằng workspace có bot PAPER đã publish và nến trong DB.
+      TRADING_BOT_MARKET_SIGNAL_WORKSPACE_ID: ${TRADING_BOT_MARKET_SIGNAL_WORKSPACE_ID:-00000000-0000-0000-0000-000000000000}
+      TRADING_BOT_SIGNAL_WORKER_TICK_SECONDS: ${TRADING_BOT_SIGNAL_WORKER_TICK_SECONDS:-5}
+      TRADING_BOT_SIGNAL_WORKER_MAX_CANDIDATE_AGE_SECONDS: ${TRADING_BOT_SIGNAL_WORKER_MAX_CANDIDATE_AGE_SECONDS:-7200}
+      TRADING_BOT_DATABASE_USER: crypidian_market_signal_worker
+      TRADING_BOT_DATABASE_PASSWORD_FILE: /run/secrets/database_market_signal_worker_password
+    profiles: ["signal-producer"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrator:
+        condition: service_completed_successfully
+    networks:
+      - backend
+    secrets:
+      - database_market_signal_worker_password
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    user: "10001:10001"
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    healthcheck: *application_healthcheck
     restart: unless-stopped
 
 networks:
@@ -314,6 +546,7 @@ networks:
   web_ingress:
   exchange_egress:
   source_egress:
+  telegram_egress:
 
 volumes:
   garage_data:
@@ -341,5 +574,21 @@ secrets:
     file: ./.secrets/database_execution_gateway_password
   database_ingestion_worker_password:
     file: ./.secrets/database_ingestion_worker_password
+  database_candidate_builder_password:
+    file: ./.secrets/database_candidate_builder_password
   database_trainer_worker_password:
     file: ./.secrets/database_trainer_worker_password
+  database_learning_evaluator_password:
+    file: ./.secrets/database_learning_evaluator_password
+  database_learning_shadow_observer_password:
+    file: ./.secrets/database_learning_shadow_observer_password
+  database_replay_writer_password:
+    file: ./.secrets/database_replay_writer_password
+  database_signal_worker_password:
+    file: ./.secrets/database_signal_worker_password
+  database_market_signal_worker_password:
+    file: ./.secrets/database_market_signal_worker_password
+  database_backtest_worker_password:
+    file: ./.secrets/database_backtest_worker_password
+  telegram_bot_token:
+    file: ./.secrets/telegram_bot_token

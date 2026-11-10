@@ -81,6 +81,10 @@ class Session(UuidPrimaryKey, CreatedAt, Base):
     __table_args__ = (
         UniqueConstraint("workspace_id", "id", name="uq_session_workspace_id"),
         UniqueConstraint("token_hash", name="uq_session_token_hash"),
+        CheckConstraint(
+            "mfa_method IS NULL OR mfa_method = 'TOTP'",
+            name="session_mfa_method_valid",
+        ),
         ForeignKeyConstraint(["workspace_id"], ["workspace.id"], ondelete="CASCADE"),
         ForeignKeyConstraint(
             ["workspace_id", "membership_id"],
@@ -97,6 +101,7 @@ class Session(UuidPrimaryKey, CreatedAt, Base):
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     csrf_token_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
     mfa_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    mfa_method: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
 
 class MfaFactor(UuidPrimaryKey, CreatedAt, Base):

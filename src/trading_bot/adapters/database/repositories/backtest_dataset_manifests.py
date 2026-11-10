@@ -99,7 +99,7 @@ class BacktestDatasetManifestRepository:
     ) -> None:
         try:
             stored = record.to_domain()
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             raise BacktestDatasetManifestConflict(
                 "dataset hash đã có payload canonical khác hoặc dữ liệu lưu sai."
             ) from None

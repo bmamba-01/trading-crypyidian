@@ -10,11 +10,15 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import select
+from sqlalchemy import Uuid, bindparam, select, text
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from trading_bot.adapters.database.models.backtest_entities import BacktestTrialRecord
+from trading_bot.adapters.database.models.backtest_opportunity_entities import (
+    BacktestDecisionOpportunityRecord,
+)
 from trading_bot.adapters.database.models.backtest_outcome_entities import (
     BacktestRunDatasetRightsRecord,
     BacktestScenarioRecord,
@@ -27,6 +31,7 @@ from trading_bot.adapters.database.repositories.backtests import (
 )
 from trading_bot.application.backtest import EvaluationReport, ReplayRejected
 from trading_bot.application.backtest_dataset_replay_bundle import BacktestDatasetReplayBundle
+from trading_bot.application.backtest_decision_opportunities import ReplayDecisionOpportunity
 from trading_bot.application.backtest_sensitivity import SensitivityRun
 from trading_bot.application.binance_rest_backfill import BackfillRightsEvidence
 from trading_bot.domain.learning.evaluation import EvaluationTrade
@@ -91,6 +96,27 @@ class BacktestOutcomeRepository:
         sensitivity_run: SensitivityRun,
         trade_outcomes: tuple[EvaluationTrade, ...],
         dataset_bundle: BacktestDatasetReplayBundle | None = None,
+        opportunities: tuple[ReplayDecisionOpportunity, ...] = (),
+    ) -> BacktestOutcomeAppendResult:
+        """Bao savepoint toàn lượt append để caller bắt lỗi cũng không giữ hàng dở dang."""
+        _validate_opportunity_links(workspace_id, sensitivity_run, trade_outcomes, opportunities)
+        async with self._session.begin_nested():
+            return await self._append_sensitivity_run(
+                workspace_id=workspace_id,
+                sensitivity_run=sensitivity_run,
+                trade_outcomes=trade_outcomes,
+                dataset_bundle=dataset_bundle,
+                opportunities=opportunities,
+            )
+
+    async def _append_sensitivity_run(
+        self,
+        *,
+        workspace_id: UUID,
+        sensitivity_run: SensitivityRun,
+        trade_outcomes: tuple[EvaluationTrade, ...],
+        dataset_bundle: BacktestDatasetReplayBundle | None = None,
+        opportunities: tuple[ReplayDecisionOpportunity, ...] = (),
     ) -> BacktestOutcomeAppendResult:
         """Lưu sensitivity values và outcomes sau khi kiểm tra report/lineage."""
         manifest = sensitivity_run.manifest
@@ -145,6 +171,15 @@ class BacktestOutcomeRepository:
             canonical_payload=canonical_scenario,
         )
 
+        opportunity_duplicates = []
+        for opportunity in opportunities:
+            opportunity_duplicates.append(
+                await self._append_opportunity(
+                    appended=appended,
+                    scenario_id=scenario_row.id,
+                    opportunity=opportunity,
+                )
+            )
         ordered_trades = _canonical_trade_order(trade_outcomes)
         outcome_payloads = tuple(_trade_payload(trade) for trade in ordered_trades)
         canonical_outcomes = tuple(_canonical(payload) for payload in outcome_payloads)
@@ -172,6 +207,19 @@ class BacktestOutcomeRepository:
                     outcome_hash=_sha256(canonical),
                     outcome=payload,
                     canonical_json=canonical,
+                    entry_decision_snapshot_id=trade.entry_decision_snapshot_id,
+                    entry_decision_at=trade.entry_decision_at,
+                    entry_feature_schema_hash=trade.entry_feature_schema_hash,
+                    entry_features=(
+                        [list(item) for item in trade.entry_features]
+                        if trade.has_entry_provenance
+                        else None
+                    ),
+                    entry_features_hash=trade.entry_features_hash,
+                    entry_symbol=trade.entry_symbol,
+                    entry_opportunity_event_id=trade.entry_opportunity_event_id,
+                    entry_candidate_id=trade.entry_candidate_id,
+                    entry_vector_hash=trade.entry_vector_hash,
                 ),
                 canonical_attribute="canonical_json",
                 canonical_payload=canonical,
@@ -195,8 +243,65 @@ class BacktestOutcomeRepository:
             scenario_hash=scenario_row.scenario_hash,
             outcomes_hash=outcomes_hash,
             trade_count=len(ordered_trades),
-            duplicate=(appended.duplicate and scenario_duplicate and all(outcome_duplicates)),
+            duplicate=(
+                appended.duplicate
+                and scenario_duplicate
+                and all(outcome_duplicates)
+                and all(opportunity_duplicates)
+            ),
         )
+
+    async def _append_opportunity(
+        self,
+        *,
+        appended: BacktestAppendResult,
+        scenario_id: UUID,
+        opportunity: ReplayDecisionOpportunity,
+    ) -> bool:
+        """Retry chỉ đọc canonical metadata; không cần quyền SELECT toàn bảng."""
+        lookup = select(BacktestDecisionOpportunityRecord.canonical_opportunity).where(
+            BacktestDecisionOpportunityRecord.workspace_id == opportunity.workspace_id,
+            BacktestDecisionOpportunityRecord.trial_record_id == appended.trial_record_id,
+            BacktestDecisionOpportunityRecord.query_version == opportunity.query_version,
+            BacktestDecisionOpportunityRecord.event_id == opportunity.event_id,
+        )
+        canonical = opportunity.canonical_json()
+        existing = await self._session.scalar(lookup)
+        if existing is not None:
+            if existing != canonical:
+                raise BacktestRepositoryConflict("Opportunity event đã tồn tại với canonical khác.")
+            return True
+        payload = opportunity.canonical_payload()
+        values = {
+            key: getattr(opportunity, key)
+            for key in payload
+            if key not in {"scenario_id", "feature_snapshot_ids", "source_event_digests"}
+        }
+        row = BacktestDecisionOpportunityRecord(
+            **values,
+            id=uuid4(),
+            run_id=appended.run_id,
+            trial_record_id=appended.trial_record_id,
+            scenario_id=scenario_id,
+            scenario_key=opportunity.scenario_id,
+            feature_snapshot_ids=[list(pair) for pair in opportunity.feature_snapshot_ids],
+            source_event_digests=[list(pair) for pair in opportunity.source_event_digests],
+            canonical_opportunity=canonical,
+            content_hash=opportunity.content_hash,
+            idempotency_key=opportunity.idempotency_key,
+        )
+        try:
+            async with self._session.begin_nested():
+                self._session.add(row)
+                await self._session.flush()
+        except IntegrityError as error:
+            existing = await self._session.scalar(lookup)
+            if existing != canonical:
+                raise BacktestRepositoryConflict(
+                    "Opportunity event/ordinal bị conflict."
+                ) from error
+            return True
+        return False
 
     async def _append_dataset_rights(
         self,
@@ -277,24 +382,7 @@ class BacktestOutcomeRepository:
                 raise BacktestRepositoryConflict("Dãy outcome bị thiếu hoặc sai ordinal.")
             if row.workspace_id != workspace_id or row.trial_record_id != trial_record_id:
                 raise BacktestRepositoryConflict("Outcome row vượt workspace/trial scope.")
-            if type(row.outcome) is not dict or set(row.outcome) != {
-                "trade_id",
-                "opened_at",
-                "closed_at",
-                "gross_pnl",
-                "fees",
-                "funding",
-                "slippage",
-                "exposure",
-            }:
-                raise BacktestRepositoryConflict("Outcome payload không đúng schema trade.")
-            if _canonical(row.outcome) != row.canonical_json:
-                raise BacktestRepositoryConflict("Canonical outcome không khớp JSON đã lưu.")
-            if _sha256(row.canonical_json) != row.outcome_hash:
-                raise BacktestRepositoryConflict("Hash outcome đã lưu không khớp payload.")
-            trade = _trade_from_payload(row.outcome)
-            if trade.trade_id != row.trade_id or _trade_payload(trade) != row.outcome:
-                raise BacktestRepositoryConflict("Trade không khớp payload outcome chuẩn hóa.")
+            trade = _validate_trade_outcome_row(row)
             persisted_rows.append(
                 PersistedBacktestTradeOutcome(
                     record_id=row.id,
@@ -355,24 +443,77 @@ class BacktestOutcomeRepository:
         for row in rows:
             if row.workspace_id != workspace_id or row.trial_record_id != trial_record_id:
                 raise BacktestRepositoryConflict("Outcome row vượt workspace/trial scope.")
-            if type(row.outcome) is not dict or set(row.outcome) != {
-                "trade_id",
-                "opened_at",
-                "closed_at",
-                "gross_pnl",
-                "fees",
-                "funding",
-                "slippage",
-                "exposure",
-            }:
-                raise BacktestRepositoryConflict("Outcome payload không đúng schema trade.")
-            if _canonical(row.outcome) != row.canonical_json:
-                raise BacktestRepositoryConflict("Canonical outcome không khớp JSON đã lưu.")
-            if _sha256(row.canonical_json) != row.outcome_hash:
-                raise BacktestRepositoryConflict("Hash outcome đã lưu không khớp payload.")
-            trade = _trade_from_payload(row.outcome)
-            if trade.trade_id != row.trade_id or _trade_payload(trade) != row.outcome:
-                raise BacktestRepositoryConflict("Trade không khớp payload outcome chuẩn hóa.")
+            trade = _validate_trade_outcome_row(row)
+            persisted_rows.append(
+                PersistedBacktestTradeOutcome(
+                    record_id=row.id,
+                    workspace_id=row.workspace_id,
+                    run_id=row.run_id,
+                    trial_record_id=row.trial_record_id,
+                    manifest_hash=row.manifest_hash,
+                    ordinal=row.ordinal,
+                    trade_id=row.trade_id,
+                    outcome_hash=row.outcome_hash,
+                    canonical_json=row.canonical_json,
+                    trade=trade,
+                )
+            )
+            canonical_values.append(row.canonical_json)
+        return PersistedBacktestTradeOutcomeRows(
+            rows=tuple(persisted_rows),
+            outcomes_hash=_sha256(_canonical(canonical_values)),
+        )
+
+    async def load_authorized_evaluation_fold_rows(
+        self,
+        *,
+        receipt_id: UUID,
+        workspace_id: UUID,
+        manifest_hash: str,
+        split_policy_version: str,
+        fold_plan_hash: str,
+        fold_id: str,
+        outcome_record_ids: set[UUID],
+    ) -> PersistedBacktestTradeOutcomeRows:
+        """Đọc payload đúng một fold qua hàm DB và tiêu thụ fold trong receipt."""
+        if any(type(value) is not UUID for value in (receipt_id, workspace_id)):
+            raise ValueError("Receipt và workspace phải là UUID.")
+        if not outcome_record_ids or any(type(item) is not UUID for item in outcome_record_ids):
+            raise ValueError("Fold evaluator cần đúng tập UUID outcome không rỗng.")
+        statement = text(
+            "SELECT * FROM public.wp06_read_learning_fold_outcomes("
+            "target_receipt_id => CAST(:receipt_id AS uuid), "
+            "target_workspace => CAST(:workspace_id AS uuid), "
+            "target_manifest_hash => CAST(:manifest_hash AS text), "
+            "target_split_policy_version => CAST(:split_policy_version AS text), "
+            "target_fold_plan_hash => CAST(:fold_plan_hash AS text), "
+            "target_fold_id => CAST(:fold_id AS text), "
+            "target_outcome_ids => CAST(:outcome_ids AS uuid[]))"
+        ).bindparams(bindparam("outcome_ids", type_=ARRAY(Uuid(as_uuid=True))))
+        rows_result = await self._session.scalars(
+            select(BacktestTradeOutcomeRecord).from_statement(statement),
+            {
+                "receipt_id": str(receipt_id),
+                "workspace_id": str(workspace_id),
+                "manifest_hash": manifest_hash,
+                "split_policy_version": split_policy_version,
+                "fold_plan_hash": fold_plan_hash,
+                "fold_id": fold_id,
+                "outcome_ids": sorted(outcome_record_ids, key=str),
+            },
+        )
+        records = tuple(rows_result.all())
+        record_ids = {row.id for row in records}
+        if len(record_ids) != len(records) or record_ids != outcome_record_ids:
+            raise BacktestRepositoryConflict(
+                "Gateway không trả đủ đúng các outcome UUID đã gán cho fold."
+            )
+        persisted_rows: list[PersistedBacktestTradeOutcome] = []
+        canonical_values: list[str] = []
+        for row in sorted(records, key=lambda item: item.ordinal):
+            if row.workspace_id != workspace_id:
+                raise BacktestRepositoryConflict("Gateway outcome vượt workspace scope.")
+            trade = _validate_trade_outcome_row(row)
             persisted_rows.append(
                 PersistedBacktestTradeOutcome(
                     record_id=row.id,
@@ -524,8 +665,77 @@ async def _append_unique(
 
 
 def _validate_existing(row: Any, attribute: str, payload: str) -> None:
+    if isinstance(row, BacktestTradeOutcomeRecord):
+        _validate_trade_outcome_row(row)
     if getattr(row, attribute) != payload:
         raise BacktestRepositoryConflict("Khóa idempotency đã tồn tại với payload khác.")
+
+
+def _validate_opportunity_links(
+    workspace_id: UUID,
+    run: SensitivityRun,
+    trades: tuple[EvaluationTrade, ...],
+    opportunities: tuple[ReplayDecisionOpportunity, ...],
+) -> None:
+    if type(opportunities) is not tuple or any(
+        type(item) is not ReplayDecisionOpportunity for item in opportunities
+    ):
+        raise ValueError("opportunities phải là tuple contract bất biến.")
+    if not opportunities:
+        if any(trade.entry_opportunity_event_id is not None for trade in trades):
+            raise ValueError("Entry opportunity link thiếu tập opportunity cùng trial.")
+        return
+    manifest = run.manifest
+    if (
+        run.scenario.kind != "BASE"
+        or manifest.learning_intent != "TRAINING_BASE"
+        or not isinstance(run.result, EvaluationReport)
+    ):
+        raise ValueError("Opportunity chỉ được append cùng BASE TRAINING_BASE đã hoàn tất.")
+    if len(opportunities) != run.result.observation_count or tuple(
+        item.decision_ordinal for item in opportunities
+    ) != tuple(range(len(opportunities))):
+        raise ValueError("Opportunity count/ordinal không khớp trial.")
+    by_event = {item.event_id: item for item in opportunities}
+    if len(by_event) != len(opportunities):
+        raise ValueError("Opportunity event_id bị trùng.")
+    for item in opportunities:
+        if (
+            item.workspace_id != workspace_id
+            or item.manifest_hash != manifest.content_hash
+            or item.bundle_hash != manifest.dataset_hash
+            or item.scenario_id != run.scenario.scenario_id
+            or item.strategy_release_id != manifest.strategy_release_id
+            or item.strategy_content_hash != manifest.strategy_content_hash
+            or item.evaluation_start != manifest.range_start
+            or item.range_end != manifest.range_end
+            or item.content_hash != _sha256(item.canonical_json())
+        ):
+            raise ValueError("Opportunity scope/hash không khớp workspace/trial.")
+    linked_candidates = set()
+    for trade in trades:
+        entry_opportunity = by_event.get(trade.entry_opportunity_event_id or "")
+        if (
+            entry_opportunity is None
+            or entry_opportunity.input_state != "EVALUATED"
+            or entry_opportunity.strategy_state != "CANDIDATE"
+            or entry_opportunity.decision_outcome != "PAPER_INTENT_CREATED"
+            or (
+                trade.entry_candidate_id != entry_opportunity.candidate_id
+                or trade.entry_decision_snapshot_id != entry_opportunity.runtime_snapshot_id
+                or trade.entry_decision_at != entry_opportunity.decision_at
+                or trade.entry_symbol != entry_opportunity.symbol
+                or trade.entry_feature_schema_hash != entry_opportunity.feature_schema_hash
+                or trade.entry_vector_hash != entry_opportunity.vector_hash
+                or trade.entry_features_hash != entry_opportunity.feature_values_hash
+            )
+        ):
+            raise ValueError(
+                "Entry outcome không khớp exact opportunity/candidate/snapshot/schema/vector."
+            )
+        if trade.entry_candidate_id in linked_candidates:
+            raise ValueError("Entry candidate không được nối nhiều outcome.")
+        linked_candidates.add(trade.entry_candidate_id)
 
 
 def _validate_outcomes_against_report(
@@ -562,7 +772,7 @@ def _canonical_trade_order(trades: tuple[EvaluationTrade, ...]) -> tuple[Evaluat
 
 
 def _trade_payload(trade: EvaluationTrade) -> dict[str, Any]:
-    return {
+    payload: dict[str, Any] = {
         "trade_id": trade.trade_id,
         "opened_at": trade.opened_at.isoformat(),
         "closed_at": trade.closed_at.isoformat(),
@@ -572,9 +782,106 @@ def _trade_payload(trade: EvaluationTrade) -> dict[str, Any]:
         "slippage": str(trade.slippage),
         "exposure": str(trade.exposure),
     }
+    if trade.has_entry_provenance:
+        assert trade.entry_decision_at is not None
+        payload.update(
+            {
+                "entry_decision_snapshot_id": trade.entry_decision_snapshot_id,
+                "entry_decision_at": trade.entry_decision_at.isoformat(),
+                "entry_feature_schema_hash": trade.entry_feature_schema_hash,
+                "entry_features": [list(item) for item in trade.entry_features],
+                "entry_features_hash": trade.entry_features_hash,
+                "entry_symbol": trade.entry_symbol,
+            }
+        )
+    if trade.entry_opportunity_event_id is not None:
+        payload.update(
+            {
+                "entry_opportunity_event_id": trade.entry_opportunity_event_id,
+                "entry_candidate_id": trade.entry_candidate_id,
+                "entry_vector_hash": trade.entry_vector_hash,
+            }
+        )
+    return payload
+
+
+def _validate_trade_outcome_row(row: BacktestTradeOutcomeRecord) -> EvaluationTrade:
+    """Một đường kiểm schema/hash/cột dùng chung cho loader và retry."""
+    legacy_keys = {
+        "trade_id",
+        "opened_at",
+        "closed_at",
+        "gross_pnl",
+        "fees",
+        "funding",
+        "slippage",
+        "exposure",
+    }
+    entry_keys = {
+        "entry_decision_snapshot_id",
+        "entry_decision_at",
+        "entry_feature_schema_hash",
+        "entry_features",
+        "entry_features_hash",
+        "entry_symbol",
+    }
+    link_keys = {"entry_opportunity_event_id", "entry_candidate_id", "entry_vector_hash"}
+    if type(row.outcome) is not dict or set(row.outcome) not in (
+        legacy_keys,
+        legacy_keys | entry_keys,
+        legacy_keys | entry_keys | link_keys,
+    ):
+        raise BacktestRepositoryConflict("Outcome payload không đúng schema trade.")
+    try:
+        if _canonical(row.outcome) != row.canonical_json:
+            raise ValueError("Canonical outcome không khớp JSON đã lưu.")
+        if _sha256(row.canonical_json) != row.outcome_hash:
+            raise ValueError("Hash outcome đã lưu không khớp payload.")
+        trade = _trade_from_payload(row.outcome)
+        if (
+            trade.trade_id != row.trade_id
+            or _canonical(_trade_payload(trade)) != row.canonical_json
+        ):
+            raise ValueError("Trade không khớp payload outcome chuẩn hóa.")
+        for key in entry_keys | link_keys:
+            expected = getattr(trade, key)
+            actual = getattr(row, key)
+            if key == "entry_features":
+                expected = [list(item) for item in expected] if trade.has_entry_provenance else None
+                if _canonical(actual) != _canonical(expected):
+                    raise ValueError("Cột vector entry không khớp payload.")
+            elif actual != expected:
+                raise ValueError("Cột entry provenance không khớp payload.")
+        return trade
+    except (ValueError, TypeError, KeyError, ArithmeticError) as error:
+        raise BacktestRepositoryConflict("Outcome sai canonical/hash/entry provenance.") from error
 
 
 def _trade_from_payload(payload: dict[str, Any]) -> EvaluationTrade:
+    entry: dict[str, Any] = {}
+    if "entry_decision_snapshot_id" in payload:
+        features = payload["entry_features"]
+        if type(features) is not list or any(
+            type(pair) is not list or len(pair) != 2 for pair in features
+        ):
+            raise ValueError("Vector entry JSON phải là danh sách các cặp.")
+        if not isinstance(payload["entry_decision_at"], str):
+            raise ValueError("entry_decision_at phải là chuỗi ISO có múi giờ.")
+        entry = {
+            "entry_decision_snapshot_id": payload["entry_decision_snapshot_id"],
+            "entry_decision_at": datetime.fromisoformat(payload["entry_decision_at"]),
+            "entry_feature_schema_hash": payload["entry_feature_schema_hash"],
+            "entry_features": tuple(tuple(pair) for pair in features),
+            "entry_features_hash": payload["entry_features_hash"],
+            "entry_symbol": payload["entry_symbol"],
+        }
+    if "entry_opportunity_event_id" in payload:
+        entry.update(
+            {
+                key: payload[key]
+                for key in ("entry_opportunity_event_id", "entry_candidate_id", "entry_vector_hash")
+            }
+        )
     return EvaluationTrade(
         trade_id=str(payload["trade_id"]),
         opened_at=datetime.fromisoformat(str(payload["opened_at"])),
@@ -584,6 +891,7 @@ def _trade_from_payload(payload: dict[str, Any]) -> EvaluationTrade:
         funding=Decimal(str(payload["funding"])),
         slippage=Decimal(str(payload["slippage"])),
         exposure=Decimal(str(payload["exposure"])),
+        **entry,
     )
 
 

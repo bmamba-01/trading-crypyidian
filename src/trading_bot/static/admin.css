@@ -1,10 +1,38 @@
 /* Crypidian Admin Web UI Stylesheet — Mobile-First, Accessible, Zero-Dependency */
 
+@font-face {
+  font-family: "Be Vietnam Pro";
+  src: url("/static/fonts/be-vietnam-pro-400.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Be Vietnam Pro";
+  src: url("/static/fonts/be-vietnam-pro-600.woff2") format("woff2");
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Be Vietnam Pro";
+  src: url("/static/fonts/be-vietnam-pro-700.woff2") format("woff2");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
 :root,
 :root[data-theme="light"] {
   color-scheme: light dark;
   font-family: "Be Vietnam Pro", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   line-height: 1.5;
+
+  --market-up: #0ECB81;
+  --market-down: #F6465D;
+  --market-flat: #8B98A5;
+  --pnl-positive-text: #087A55;
+  --pnl-negative-text: #B4233A;
 
   /* Bảng màu giao diện sáng (Light Mode) */
   --bg-base: #f8fafc;
@@ -1983,4 +2011,71 @@ th {
 
 .btn-ai-retrain:active {
   transform: translateY(0);
+}
+
+/* Bot Detail Trading UI Revamp styles */
+.bot-header-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1.25rem;
+  padding: 1rem 1.25rem;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-main);
+  border-radius: 0.5rem;
+}
+
+.bot-header-badges {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.bot-cards-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 1.25rem;
+  margin-top: 1.5rem;
+}
+
+@media (min-width: 900px) {
+  .bot-cards-grid {
+    grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  }
+}
+
+.bot-section-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-main);
+  border-radius: 0.5rem;
+  padding: 1.25rem;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+}
+
+.bot-section-card h2,
+.bot-section-card h3 {
+  margin-top: 0;
+  margin-bottom: 0.75rem;
+  font-size: 1.1rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.bot-control-form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.bot-control-form-group:last-child {
+  border-bottom: none;
+  margin-bottom: 0;
+  padding-bottom: 0;
 }

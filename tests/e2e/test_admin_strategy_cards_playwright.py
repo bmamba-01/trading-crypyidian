@@ -11,6 +11,7 @@ Kiểm tra:
 from __future__ import annotations
 
 import secrets
+import socket
 import threading
 import time
 from datetime import UTC, datetime
@@ -157,8 +158,12 @@ def create_test_admin_app() -> FastAPI:
 
 @pytest.fixture(scope="module")
 def strategy_cards_server_url() -> Any:
-    """Khởi chạy uvicorn server in-process trên cổng 8099 cho Playwright test."""
-    port = 8099
+    """Khởi chạy uvicorn server in-process trên cổng ngẫu nhiên cho Playwright test."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+
     app = create_test_admin_app()
     config = uvicorn.Config(
         app=app,

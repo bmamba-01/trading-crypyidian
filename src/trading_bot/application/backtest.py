@@ -8,6 +8,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
+from uuid import UUID
 
 from trading_bot.domain.learning.evaluation import EvaluationTrade, build_evaluation_metrics
 from trading_bot.domain.strategy.contracts import DecisionSnapshot
@@ -37,6 +38,8 @@ class ReplayManifest:
     trial_count: int
     trial_index: int
     seed: int
+    learning_intent: str = "RESEARCH"
+    learning_job_id: str | None = None
 
     def __post_init__(self) -> None:
         _aware(self.range_start, "range_start")
@@ -73,6 +76,20 @@ class ReplayManifest:
                 raise ValueError("Cost assumption phải hữu hạn và không âm.")
         if self.trial_count < 1 or not 0 <= self.trial_index < self.trial_count or self.seed < 0:
             raise ValueError("trial_index phải thuộc trial_count; seed không âm.")
+        if type(self.learning_intent) is not str or self.learning_intent not in {
+            "RESEARCH",
+            "TRAINING_BASE",
+        }:
+            raise ValueError("learning_intent không được hỗ trợ.")
+        if self.learning_intent == "TRAINING_BASE":
+            try:
+                if type(self.learning_job_id) is not str:
+                    raise ValueError
+                UUID(self.learning_job_id or "")
+            except (TypeError, ValueError) as error:
+                raise ValueError("Replay TRAINING_BASE cần UUID job đã xếp hàng.") from error
+        elif self.learning_job_id is not None:
+            raise ValueError("Replay RESEARCH không được gắn job học.")
 
     @property
     def content_hash(self) -> str:
@@ -94,6 +111,9 @@ class ReplayManifest:
             "trial_index": self.trial_index,
             "seed": self.seed,
         }
+        if self.learning_intent != "RESEARCH":
+            payload["learning_intent"] = self.learning_intent
+            payload["learning_job_id"] = self.learning_job_id
         canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(canonical.encode()).hexdigest()
 
@@ -275,6 +295,17 @@ class BacktestRunner:
             except ValueError as error:
                 reason = str(error).split(":", maxsplit=1)[0]
                 if reason == "INPUT_NOT_READY":
+                    hook = getattr(evaluator, "record_input_excluded", None)
+                    if callable(hook):
+                        try:
+                            hook(item, reason)
+                        except Exception as hook_error:
+                            return rejected(
+                                "EVALUATOR_FAILED",
+                                "Hook trace thất bại; chi tiết riêng không ghi vào báo cáo.",
+                                status="FAILED",
+                                error_type=type(hook_error).__name__,
+                            )
                     continue
                 if reason == "LOOKAHEAD":
                     reason = "LOOKAHEAD_DETECTED"

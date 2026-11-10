@@ -1,7 +1,4 @@
-"""MB-03: một shared evidence → quyết định riêng cho hai bot PAPER trên PostgreSQL thật.
-
-Sau tích hợp, MB-03 nối sau MB-02 (`d2b4f6a8c1e3`): downgrade/upgrade chỉ lặp trên MB-03.
-"""
+"""MB-03: shared evidence tạo quyết định PAPER riêng cho từng bot."""
 
 import json
 import os
@@ -83,8 +80,15 @@ def test_shared_evidence_fans_out_to_two_paper_bots_without_duplicates() -> None
     try:
         compose("up", "--detach", "--wait", "--wait-timeout", "180", "postgres")
         compose("run", "--rm", "--no-deps", "db-provisioner")
-        compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "head")
-        compose("run", "--rm", "--no-deps", "migrator", "alembic", "check")
+        compose(
+            "run",
+            "--rm",
+            "--no-deps",
+            "migrator",
+            "alembic",
+            "upgrade",
+            "e0b2d4f6a8c1",
+        )
         seeded = run_probe("seed")
         # Login thật của trading runtime chạy dispatcher/store/consumer của ứng dụng.
         dispatched = run_probe("dispatch", seeded, service="trading-runtime")
@@ -138,13 +142,24 @@ def test_shared_evidence_fans_out_to_two_paper_bots_without_duplicates() -> None
             "d2b4f6a8c1e3",
             success=False,
         )
-        # Downgrade đi qua MB-05 trước MB-03: hàng runtime (control/lease/state, job DEAD) chặn
-        # trước với guard MB-05; sau khi export (prepare_downgrade) cả hai guard đều qua.
+        # MB-05 chặn trước MB-03; sau khi export state, kiểm tiếp rollback sạch.
         assert "MB05_DOWNGRADE_REQUIRES_EXPORT_OF_RUNTIME_STATE" in guard.stderr
         run_probe("prepare_downgrade")
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "downgrade", "d2b4f6a8c1e3")
         run_probe("verify_downgraded")
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "head")
+        compose("run", "--rm", "--no-deps", "migrator", "alembic", "check")
+        global_guard = compose(
+            "run",
+            "--rm",
+            "--no-deps",
+            "migrator",
+            "alembic",
+            "downgrade",
+            "d2b4f6a8c1e3",
+            success=False,
+        )
+        assert "WP03_RISK_GUARD_DOWNGRADE_BLOCKED" in global_guard.stderr
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "check")
     finally:
         compose("down", "--volumes", "--remove-orphans")

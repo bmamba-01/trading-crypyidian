@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import secrets
+import socket
 import threading
 import time
 from dataclasses import dataclass
@@ -469,7 +470,11 @@ def create_test_admin_app() -> FastAPI:
 @pytest.fixture(scope="module")
 def admin_server_url() -> Any:
     """Khởi chạy uvicorn server in-process cho Playwright."""
-    port = 8097
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+
     app = create_test_admin_app()
     config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
     server = uvicorn.Server(config)

@@ -2,16 +2,14 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
-import math
 from collections import defaultdict
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import case, func, select
+from sqlalchemy import case, select
+from sqlalchemy.dialects.postgresql import distinct_on
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from trading_bot.adapters.database.models.market_entities import MarketBar
@@ -28,6 +26,10 @@ from trading_bot.application.bot_dispatcher import (
     BotEvidenceDispatcher,
     SignalEvidenceFanOutConsumer,
 )
+from trading_bot.application.decision_snapshot_builder import (
+    build_decision_snapshot_from_bars,
+    quote_volumes_for_bars,
+)
 from trading_bot.application.market_signal_scanner import (
     MarketSignalObservation,
     MarketSignalScanner,
@@ -36,28 +38,14 @@ from trading_bot.application.market_signal_scanner import (
 )
 from trading_bot.application.outbox import UnitOfWork
 from trading_bot.application.strategy_market_requirements import (
-    FEATURES_BY_RELEASE as _FEATURES_BY_RELEASE,
-)
-from trading_bot.application.strategy_market_requirements import (
     TIMEFRAME_INTERVALS,
+    feature_requirements_for_release,
     feature_settings_for,
 )
 from trading_bot.domain.execution.runtime_control import BotEntryState, WorkspaceKillState
-from trading_bot.domain.market.feature_snapshot import (
-    DataFreshness,
-    FeatureCalculator,
-    FeatureSettings,
-    FeatureSnapshot,
-)
-from trading_bot.domain.market.models import MarketSnapshot, OHLCVBar
-from trading_bot.domain.market.validation import inspect_bar_series
-from trading_bot.domain.strategy.contracts import (
-    DecisionSnapshot,
-    FeatureObservation,
-    FeatureQuality,
-    MarketSeries,
-    SeriesQuality,
-)
+from trading_bot.domain.market.feature_snapshot import FeatureCalculator
+from trading_bot.domain.market.models import MarketBarSourceIdentity, MarketSnapshot, OHLCVBar
+from trading_bot.domain.strategy.contracts import DecisionSnapshot
 from trading_bot.domain.strategy.registry import StrategyRegistry
 
 _MAX_BARS_PER_STREAM = 256
@@ -115,7 +103,10 @@ class PostgresClosedMarketObservationSource(QualifiedMarketObservationSource):
                 snapshot = FeatureCalculator(feature_settings_for(timeframe)).calculate(
                     MarketSnapshot(as_of=snapshot_as_of, bars=bars),
                     workspace_id=workspace_id,
-                    input_event_ids=tuple(str(row.id) for row in stream),
+                    input_event_ids=tuple(
+                        _persisted_market_bar_event_id(bar, workspace_id=workspace_id)
+                        for bar in bars
+                    ),
                     symbol=symbol,
                     timeframe=timeframe,
                     computed_at=snapshot_as_of,
@@ -167,9 +158,15 @@ class PostgresMarketDecisionSnapshotProvider:
         _validate_as_of(evaluated_at)
         if evidence.workspace_id != context.workspace_id:
             raise ValueError("Evidence và config bot phải cùng workspace.")
+        evidence_cutoff = getattr(evidence, "observed_at", None)
+        if not isinstance(evidence_cutoff, datetime):
+            raise ValueError("Evidence cần có observed_at làm cutoff bất biến.")
+        _validate_as_of(evidence_cutoff)
+        if evidence_cutoff > evaluated_at:
+            raise ValueError("Evidence cutoff không được sau evaluated_at.")
         try:
-            requirements = _FEATURES_BY_RELEASE[context.strategy_release_id]
-        except KeyError as error:
+            requirements = feature_requirements_for_release(context.strategy_release_id)
+        except ValueError as error:
             raise ValueError(
                 "Strategy release chưa được hỗ trợ bởi market snapshot provider."
             ) from error
@@ -177,101 +174,27 @@ class PostgresMarketDecisionSnapshotProvider:
             rows = await _latest_bar_rows(
                 uow.session,
                 workspace_id=context.workspace_id,
-                as_of=evaluated_at,
+                as_of=evidence_cutoff,
                 symbols=(evidence.symbol,),
                 timeframes=tuple(requirements),
                 max_bars_per_stream=self._source._max_bars_per_stream,
             )
         grouped = _group_bars(rows)
-        series: list[MarketSeries] = []
-        features: list[FeatureObservation] = []
-        snapshot_ids: list[str] = []
-        for timeframe, names in requirements.items():
-            stream = grouped.get((evidence.symbol, timeframe), ())
-            bars = tuple(_to_bar(row) for row in stream)
-            settings = feature_settings_for(timeframe)
-            if not bars:
-                series.append(
-                    MarketSeries(
-                        timeframe=timeframe,
-                        bars=(),
-                        quality=SeriesQuality.INCOMPLETE,
-                        expected_interval=settings.expected_interval,
-                        max_event_age=settings.max_event_age,
-                        backfill_complete=False,
-                    )
-                )
-                continue
-            feature_snapshot = _calculate_feature_snapshot(
-                workspace_id=context.workspace_id,
-                bars=bars,
-                event_ids=tuple(str(row.id) for row in stream),
-                settings=settings,
-            )
-            previous_snapshot = (
-                _calculate_feature_snapshot(
-                    workspace_id=context.workspace_id,
-                    bars=bars[:-1],
-                    event_ids=tuple(str(row.id) for row in stream[:-1]),
-                    settings=settings,
-                )
-                if len(bars) > 1
-                else None
-            )
-            quality_report = inspect_bar_series(
-                bars,
-                as_of=evaluated_at,
-                expected_interval=settings.expected_interval,
-                max_event_age=settings.max_event_age,
-                expected_range_start=bars[0].open_time,
-                expected_range_end=bars[-1].open_time + settings.expected_interval,
-                backfill_complete=True,
-            )
-            series_quality = _series_quality(quality_report)
-            series.append(
-                MarketSeries(
-                    timeframe=timeframe,
-                    bars=bars,
-                    quality=series_quality,
-                    expected_interval=settings.expected_interval,
-                    max_event_age=settings.max_event_age,
-                    backfill_complete=True,
-                    quote_volumes=_quote_volumes(bars),
-                )
-            )
-            snapshot_ids.append(feature_snapshot.snapshot_id)
-            for name in names:
-                value = feature_snapshot.features.get(name)
-                previous_value = previous_snapshot.features.get(name) if previous_snapshot else None
-                quality = _feature_quality(feature_snapshot, value)
-                features.append(
-                    FeatureObservation(
-                        feature_id=f"{feature_snapshot.snapshot_id}:{name}",
-                        name=name,
-                        timeframe=timeframe,
-                        value=value,
-                        previous_value=previous_value,
-                        available_at=feature_snapshot.as_of,
-                        quality=quality,
-                    )
-                )
-        canonical = {
-            "decision_time": evaluated_at.astimezone(UTC).isoformat(),
-            "evidence_id": str(evidence.evidence_id),
-            "feature_snapshot_ids": snapshot_ids,
-            "series_bar_ids": {
-                item.timeframe: [bar.open_time.isoformat() for bar in item.bars] for item in series
-            },
-        }
-        snapshot_id = hashlib.sha256(_canonical_json(canonical).encode("utf-8")).hexdigest()
-        return DecisionSnapshot(
+        return build_decision_snapshot_from_bars(
+            workspace_id=context.workspace_id,
             symbol=evidence.symbol,
-            decision_time=evaluated_at.astimezone(UTC),
-            snapshot_id=snapshot_id,
-            series=tuple(series),
-            features=tuple(features),
+            strategy_release_id=context.strategy_release_id,
+            decision_time=evidence_cutoff,
+            series_quality_as_of=evaluated_at,
+            bars_by_timeframe={
+                timeframe: tuple(
+                    _to_bar(row) for row in grouped.get((evidence.symbol, timeframe), ())
+                )
+                for timeframe in requirements
+            },
             # Signal-only chỉ đưa strategy qua bộ lọc; không đọc PAPER position hay tạo lệnh.
             position_is_flat=True,
+            source_identity_required=True,
         )
 
 
@@ -366,18 +289,34 @@ async def _latest_bar_rows(
     timeframes: Sequence[str],
     max_bars_per_stream: int,
 ) -> tuple[MarketBar, ...]:
-    base = (
-        select(
-            MarketBar.id.label("bar_id"),
-            func.row_number()
-            .over(
-                partition_by=(
-                    MarketBar.workspace_id,
-                    MarketBar.symbol,
-                    MarketBar.timeframe,
+    result_rows: list[MarketBar] = []
+    for symbol in sorted(set(symbols)):
+        for timeframe in sorted(set(timeframes)):
+            filters = (
+                MarketBar.workspace_id == workspace_id,
+                MarketBar.symbol == symbol,
+                MarketBar.timeframe == timeframe,
+                MarketBar.source.in_((_LIVE_BAR_SOURCE, _BACKFILL_BAR_SOURCE)),
+                MarketBar.is_closed.is_(True),
+                MarketBar.close_time <= as_of,
+                MarketBar.available_at <= as_of,
+            )
+            open_times_result = await session.scalars(
+                select(MarketBar.open_time)
+                .where(*filters)
+                .distinct()
+                .order_by(MarketBar.open_time.desc())
+                .limit(max_bars_per_stream)
+            )
+            open_times = tuple(open_times_result.all())
+            if not open_times:
+                continue
+            rows_result = await session.scalars(
+                select(MarketBar)
+                .where(*filters, MarketBar.open_time.in_(open_times))
+                .ext(distinct_on(MarketBar.open_time))
+                .order_by(
                     MarketBar.open_time,
-                ),
-                order_by=(
                     case(
                         (MarketBar.source == _LIVE_BAR_SOURCE, 0),
                         (MarketBar.source == _BACKFILL_BAR_SOURCE, 1),
@@ -386,42 +325,10 @@ async def _latest_bar_rows(
                     MarketBar.available_at.desc(),
                     MarketBar.revision.desc(),
                     MarketBar.id.desc(),
-                ),
+                )
             )
-            .label("revision_rank"),
-        )
-        .where(
-            MarketBar.workspace_id == workspace_id,
-            MarketBar.symbol.in_(symbols),
-            MarketBar.timeframe.in_(timeframes),
-            MarketBar.source.in_((_LIVE_BAR_SOURCE, _BACKFILL_BAR_SOURCE)),
-            MarketBar.is_closed.is_(True),
-            MarketBar.close_time <= as_of,
-            MarketBar.available_at <= as_of,
-        )
-        .cte("market_signal_bar_revisions")
-    )
-    latest = select(base.c.bar_id).where(base.c.revision_rank == 1).cte("market_signal_latest_bars")
-    ordered = (
-        select(
-            MarketBar.id.label("bar_id"),
-            func.row_number()
-            .over(
-                partition_by=(MarketBar.workspace_id, MarketBar.symbol, MarketBar.timeframe),
-                order_by=(MarketBar.open_time.desc(), MarketBar.available_at.desc()),
-            )
-            .label("stream_rank"),
-        )
-        .join(latest, latest.c.bar_id == MarketBar.id)
-        .cte("market_signal_ordered_bars")
-    )
-    rows = await session.scalars(
-        select(MarketBar)
-        .join(ordered, ordered.c.bar_id == MarketBar.id)
-        .where(ordered.c.stream_rank <= max_bars_per_stream)
-        .order_by(MarketBar.symbol, MarketBar.timeframe, MarketBar.open_time)
-    )
-    return tuple(rows.all())
+            result_rows.extend(rows_result.all())
+    return tuple(result_rows)
 
 
 def _group_bars(rows: Sequence[MarketBar]) -> dict[tuple[str, str], tuple[MarketBar, ...]]:
@@ -453,57 +360,32 @@ def _to_bar(row: MarketBar) -> OHLCVBar:
         source_cursor=row.source_cursor,
         checksum=row.checksum,
         raw_reference=None if row.raw_reference_id is None else str(row.raw_reference_id),
+        source_identity=MarketBarSourceIdentity(
+            workspace_id=row.workspace_id,
+            record_id=row.id,
+            logical_key=row.logical_key,
+            revision=row.revision,
+            supersedes_record_id=row.supersedes_id,
+            checksum=row.checksum,
+        ),
     )
+
+
+def _persisted_market_bar_event_id(bar: OHLCVBar, *, workspace_id: UUID) -> str:
+    """Trả ID bản ghi nguồn để PostgreSQL xác minh rights lineage trực tiếp."""
+    identity = bar.source_identity
+    if (
+        type(identity) is not MarketBarSourceIdentity
+        or identity.workspace_id != workspace_id
+        or identity.checksum != bar.checksum
+    ):
+        raise ValueError("Signal market bar thiếu identity DB chính xác trong workspace.")
+    return str(identity.record_id)
 
 
 def _quote_volumes(bars: tuple[OHLCVBar, ...]) -> tuple[float, ...] | None:
-    """Trả khối lượng tài sản định giá khi toàn chuỗi có số liệu nguồn đầy đủ."""
-    if not bars or any(bar.quote_volume is None for bar in bars):
-        return None
-    values = tuple(float(bar.quote_volume) for bar in bars if bar.quote_volume is not None)
-    return values if all(math.isfinite(value) for value in values) else None
-
-
-def _calculate_feature_snapshot(
-    *,
-    workspace_id: UUID,
-    bars: tuple[OHLCVBar, ...],
-    event_ids: tuple[str, ...],
-    settings: FeatureSettings,
-) -> FeatureSnapshot:
-    if not bars:
-        raise ValueError("Không thể tính feature snapshot từ chuỗi nến rỗng.")
-    as_of = max(bar.available_at for bar in bars)
-    return FeatureCalculator(settings).calculate(
-        MarketSnapshot(as_of=as_of, bars=bars),
-        workspace_id=workspace_id,
-        input_event_ids=event_ids,
-        computed_at=as_of,
-    )
-
-
-def _series_quality(report: Any) -> SeriesQuality:
-    if report.is_usable:
-        return SeriesQuality.READY
-    if report.stale:
-        return SeriesQuality.STALE
-    if report.duplicate_keys or report.future_available_count or report.unclosed_count:
-        return SeriesQuality.INVALID
-    return SeriesQuality.INCOMPLETE
-
-
-def _feature_quality(snapshot: FeatureSnapshot, value: float | None) -> FeatureQuality:
-    if snapshot.data_freshness is DataFreshness.STALE:
-        return FeatureQuality.STALE
-    if value is None:
-        return FeatureQuality.MISSING
-    if not snapshot.is_usable:
-        return FeatureQuality.INVALID
-    return FeatureQuality.READY
-
-
-def _canonical_json(value: dict[str, Any]) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    """Giữ lại helper tương thích; phép tính dùng chung nằm trong snapshot builder."""
+    return quote_volumes_for_bars(bars)
 
 
 def _validate_as_of(value: datetime) -> None:

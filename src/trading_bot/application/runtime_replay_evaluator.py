@@ -8,7 +8,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime
 from decimal import Decimal
-from typing import ClassVar
+from typing import ClassVar, cast
 
 from trading_bot.application.backtest import (
     BacktestRunner,
@@ -18,15 +18,27 @@ from trading_bot.application.backtest import (
     ReplayObservation,
     ReplayRejected,
 )
+from trading_bot.application.backtest_decision_opportunities import (
+    DecisionOutcome,
+    ReplayDecisionOpportunity,
+    metadata_hash,
+)
 from trading_bot.application.backtest_sensitivity import (
     SensitivityRun,
     SensitivityScenario,
     run_sensitivity,
 )
+from trading_bot.application.decision_snapshot_builder import build_decision_snapshot_from_bars
+from trading_bot.application.learning_feature_vector import (
+    LearningFeatureVectorBuildError,
+    build_learning_feature_vector,
+)
 from trading_bot.application.paper_decision_cycle import (
     DecisionCycleOutcome,
+    DecisionCycleResult,
     PaperDecisionCycle,
 )
+from trading_bot.application.strategy_market_requirements import entry_timeframe_for_release
 from trading_bot.config.workspace_settings import PublishedWorkspaceSettings
 from trading_bot.domain.execution.paper import (
     OrderStatus,
@@ -34,16 +46,23 @@ from trading_bot.domain.execution.paper import (
     PaperExecutionGateway,
     PaperPosition,
 )
-from trading_bot.domain.learning.evaluation import EvaluationTrade
+from trading_bot.domain.learning.evaluation import EvaluationTrade, calculate_entry_features_hash
+from trading_bot.domain.learning.feature_vector import LearningFeatureVector
 from trading_bot.domain.risk.engine import RiskDecision, RiskState
 from trading_bot.domain.risk.planner import (
     AccountSnapshot,
     CostModel,
     OpenExposure,
     PlannerSettings,
+    PlanRejected,
     TradePlan,
 )
-from trading_bot.domain.strategy.contracts import DecisionSnapshot
+from trading_bot.domain.strategy.contracts import (
+    DecisionSnapshot,
+    FeatureQuality,
+    NoTrade,
+    StrategyCandidate,
+)
 from trading_bot.domain.strategy.registry import StrategyRegistry
 
 ZERO = Decimal("0")
@@ -197,9 +216,21 @@ class RuntimePaperReplayRun:
     sensitivity_run: SensitivityRun
     trade_outcomes: tuple[EvaluationTrade, ...]
     partial_trade_count: int = 0
+    opportunities: tuple[ReplayDecisionOpportunity, ...] = ()
 
     def __post_init__(self) -> None:
+        if type(self.opportunities) is not tuple:
+            raise ValueError("opportunities phải là tuple bất biến.")
+        if len({item.event_id for item in self.opportunities}) != len(self.opportunities):
+            raise ValueError("Opportunity event bị trùng trong run.")
+        if any(
+            item.manifest_hash != self.sensitivity_run.manifest.content_hash
+            for item in self.opportunities
+        ):
+            raise ValueError("Opportunity lệch manifest của run.")
         result = self.sensitivity_run.result
+        if isinstance(result, ReplayRejected) and self.opportunities:
+            raise ValueError("Replay chưa hoàn tất không được cấp opportunity proof metadata.")
         if isinstance(result, EvaluationReport):
             if len(self.trade_outcomes) != result.trade_count or self.partial_trade_count:
                 raise ValueError("Completed replay phải có đúng số outcome như report.")
@@ -207,6 +238,21 @@ class RuntimePaperReplayRun:
             raise ValueError("Replay chưa hoàn tất không được trả outcome để lưu cùng report.")
         elif self.partial_trade_count < 0:
             raise ValueError("partial_trade_count không được âm.")
+
+
+@dataclass(frozen=True, slots=True)
+class _EntryDecisionProvenance:
+    """Bằng chứng entry đóng băng theo intent, không lấy từ observation exit."""
+
+    snapshot_id: str
+    decision_at: datetime
+    schema_hash: str
+    features: tuple[tuple[str, float], ...]
+    features_hash: str
+    symbol: str
+    opportunity_event_id: str | None = None
+    candidate_id: str | None = None
+    vector_hash: str | None = None
 
 
 class RuntimeReplayEvaluator:
@@ -240,10 +286,12 @@ class RuntimeReplayEvaluator:
         self.strategy_parameters = _runtime_parameters(self.scenario)
         self.context_provider = context_provider
         self._intent_plans: dict[str, TradePlan] = {}
+        self._intent_entry_provenance: dict[str, _EntryDecisionProvenance | None] = {}
         self._reservations: dict[str, _ReplayReservation] = {}
         self._account_state: ReplayAccountState | None = None
         self._seen_events: set[tuple[str, str]] = set()
         self._emitted_trades: set[str] = set()
+        self._opportunities: dict[str, ReplayDecisionOpportunity] = {}
 
     @property
     def manifest_hash(self) -> str:
@@ -254,6 +302,134 @@ class RuntimeReplayEvaluator:
     def gateway(self) -> PaperExecutionGateway:
         """Gateway PAPER riêng của evaluator để điều phối kiểm tra cách ly scenario."""
         return self._gateway
+
+    @property
+    def opportunities(self) -> tuple[ReplayDecisionOpportunity, ...]:
+        """Trả metadata theo ordinal nguồn, kể cả hook loại input chạy trước evaluator."""
+        return tuple(sorted(self._opportunities.values(), key=lambda item: item.decision_ordinal))
+
+    def _opportunity_source(
+        self, snapshot: DecisionSnapshot
+    ) -> tuple[ReplayObservation, int] | None:
+        if self.scenario.kind != "BASE" or self._manifest.learning_intent != "TRAINING_BASE":
+            return None
+        lookup = getattr(self.context_provider, "opportunity_source_for", None)
+        if not callable(lookup):
+            return None
+        source = cast(tuple[ReplayObservation, int] | None, lookup(snapshot))
+        if source is not None and source[0].snapshot != snapshot:
+            raise ReplayEvaluationContextError("Opportunity không trỏ đúng observation nguồn.")
+        return source
+
+    def record_input_excluded(self, observation: ReplayObservation, reason_code: str) -> None:
+        """Hook trước readiness skip; không tạo quyền/lineage cho nguồn legacy."""
+        source = self._opportunity_source(observation.snapshot)
+        if source is not None:
+            if source[0] != observation:
+                raise ReplayEvaluationContextError("Hook input-excluded lệch event nguồn đã ghim.")
+            self._record_opportunity(source, reason_code=reason_code)
+
+    def _record_opportunity(
+        self,
+        source: tuple[ReplayObservation, int] | None,
+        *,
+        runtime_snapshot: DecisionSnapshot | None = None,
+        vector: LearningFeatureVector | None = None,
+        result: DecisionCycleResult | None = None,
+        reason_code: str | None = None,
+    ) -> ReplayDecisionOpportunity | None:
+        if source is None:
+            return None
+        observation, ordinal = source
+        snapshot = observation.snapshot
+        lineage = vector.timeframe_lineage if vector is not None else snapshot.timeframe_lineage
+        if not lineage or any(not item.source_identity_pinned for item in lineage):
+            raise ReplayEvaluationContextError("Opportunity thiếu exact source lineage đã ghim.")
+        candidate_id = None
+        invoked = False
+        outcome: DecisionOutcome = "NO_TRADE"
+        if result is not None:
+            invoked = result.strategy_invoked
+            candidate_id = (
+                result.strategy_result.candidate_id
+                if isinstance(result.strategy_result, StrategyCandidate)
+                else result.candidate_id
+            )
+            outcome = result.outcome.value
+            if result.risk_decision is not None:
+                reason_code = result.risk_decision.reason_code
+            elif isinstance(result.plan, PlanRejected):
+                reason_code = result.plan.reason_code
+            elif isinstance(result.strategy_result, NoTrade):
+                reason_code = result.strategy_result.code
+            else:
+                reason_code = result.strategy_result.reason_code
+        if reason_code is None:
+            raise ReplayEvaluationContextError("Opportunity thiếu reason_code.")
+        feature_values_hash = None
+        if vector is not None and runtime_snapshot is not None:
+            vector_features = tuple(
+                (feature.key, float(feature.value)) for feature in vector.features
+            )
+            feature_values_hash = calculate_entry_features_hash(
+                runtime_snapshot.snapshot_id,
+                runtime_snapshot.decision_time,
+                vector.feature_schema_hash,
+                vector_features,
+            )
+        item = ReplayDecisionOpportunity(
+            workspace_id=lineage[0].workspace_id,
+            manifest_hash=self._manifest.content_hash,
+            bundle_hash=self._manifest.dataset_hash,
+            scenario_id=self.scenario.scenario_id,
+            symbol=snapshot.symbol,
+            strategy_release_id=self._manifest.strategy_release_id,
+            strategy_content_hash=self._manifest.strategy_content_hash,
+            decision_timeframe=entry_timeframe_for_release(self._manifest.strategy_release_id)
+            or "",
+            evaluation_start=self._manifest.range_start,
+            range_end=self._manifest.range_end,
+            event_id=observation.event_id,
+            decision_ordinal=ordinal,
+            event_at=observation.event_at,
+            available_at=observation.available_at,
+            decision_at=snapshot.decision_time,
+            snapshot_id=snapshot.snapshot_id,
+            runtime_snapshot_id=runtime_snapshot.snapshot_id
+            if runtime_snapshot is not None
+            else None,
+            feature_snapshot_ids=tuple(
+                (part.timeframe, part.feature_snapshot_id) for part in lineage
+            ),
+            source_event_digests=tuple(
+                (part.timeframe, part.source_event_digest) for part in lineage
+            ),
+            source_refs_digest=metadata_hash(
+                [
+                    {"timeframe": part.timeframe, "source_event_digest": part.source_event_digest}
+                    for part in lineage
+                ]
+            ),
+            feature_schema_hash=vector.feature_schema_hash if vector is not None else None,
+            vector_hash=vector.vector_hash if vector is not None else None,
+            feature_values_hash=feature_values_hash,
+            input_state="EVALUATED" if result is not None else "INPUT_EXCLUDED",
+            strategy_state="CANDIDATE"
+            if candidate_id is not None
+            else "NO_CANDIDATE"
+            if invoked
+            else "NOT_RUN",
+            decision_outcome=outcome,
+            reason_code=reason_code,
+            candidate_id=candidate_id,
+        )
+        previous = self._opportunities.get(item.event_id)
+        if previous is not None and previous != item:
+            raise ReplayEvaluationContextError(
+                "Opportunity retry có cùng event nhưng khác nội dung."
+            )
+        self._opportunities[item.event_id] = item
+        return item
 
     def __call__(self, snapshot: DecisionSnapshot) -> EvaluationTrade | None:
         """Đánh giá một observation rồi áp dụng event đã available theo thứ tự ổn định."""
@@ -269,7 +445,30 @@ class RuntimeReplayEvaluator:
             self._reservations,
             candidate_symbol=snapshot.symbol,
         )
+        source = self._opportunity_source(snapshot)
+        vector = None
+        if source is not None:
+            try:
+                build_learning_feature_vector(
+                    snapshot,
+                    strategy_release_id=self._manifest.strategy_release_id,
+                    strategy_release_content_hash=self._manifest.strategy_content_hash,
+                )
+            except LearningFeatureVectorBuildError as error:
+                self._record_opportunity(
+                    source, reason_code=f"FEATURE_VECTOR_{error.reason_code.value}"
+                )
+                return closed_trade
         runtime_snapshot = self._runtime_snapshot(snapshot, account, risk_state, open_exposures)
+        if source is not None:
+            vector = build_learning_feature_vector(
+                runtime_snapshot,
+                strategy_release_id=self._manifest.strategy_release_id,
+                strategy_release_content_hash=self._manifest.strategy_content_hash,
+            )
+            if vector.feature_schema_hash != self._manifest.feature_schema_hash:
+                self._record_opportunity(source, reason_code="FEATURE_SCHEMA_MISMATCH")
+                return closed_trade
         result = self._cycle.prepare_published(
             published_settings=context.published_settings,
             snapshot=runtime_snapshot,
@@ -298,12 +497,68 @@ class RuntimeReplayEvaluator:
             )
             if submitted.order is None or not isinstance(submitted.plan, TradePlan):
                 raise ReplayEvaluationContextError("PAPER submit thiếu order hoặc TradePlan.")
+            opportunity = self._record_opportunity(
+                source, runtime_snapshot=runtime_snapshot, vector=vector, result=submitted
+            )
+            if submitted.order.intent_id not in self._intent_entry_provenance:
+                self._intent_entry_provenance[submitted.order.intent_id] = (
+                    self._capture_entry_provenance(
+                        runtime_snapshot, vector=vector, opportunity=opportunity
+                    )
+                )
             self._intent_plans[submitted.order.intent_id] = submitted.plan
             self._reservations[submitted.order.intent_id] = _ReplayReservation(
                 submitted.plan, result.risk_decision
             )
 
+        else:
+            self._record_opportunity(
+                source, runtime_snapshot=runtime_snapshot, vector=vector, result=result
+            )
         return closed_trade
+
+    def _capture_entry_provenance(
+        self,
+        snapshot: DecisionSnapshot,
+        *,
+        vector: LearningFeatureVector | None = None,
+        opportunity: ReplayDecisionOpportunity | None = None,
+    ) -> _EntryDecisionProvenance | None:
+        """Chụp feature READY; thiếu hoặc không biểu diễn được thì bỏ provenance."""
+        try:
+            features = tuple(
+                sorted(
+                    (f"{item.timeframe}:{item.name}", float(item.value))
+                    for item in snapshot.features
+                    if item.quality is FeatureQuality.READY and item.value is not None
+                )
+            )
+            if not features:
+                return None
+            schema_hash = (
+                vector.feature_schema_hash
+                if vector is not None
+                else self._manifest.feature_schema_hash
+            )
+            return _EntryDecisionProvenance(
+                snapshot.snapshot_id,
+                snapshot.decision_time,
+                schema_hash,
+                features,
+                calculate_entry_features_hash(
+                    snapshot.snapshot_id,
+                    snapshot.decision_time,
+                    schema_hash,
+                    features,
+                ),
+                snapshot.symbol,
+                opportunity.event_id if opportunity is not None else None,
+                opportunity.candidate_id if opportunity is not None else None,
+                opportunity.vector_hash if opportunity is not None else None,
+            )
+        except ValueError, TypeError, ArithmeticError:
+            # Bỏ provenance tùy chọn không hợp lệ, giữ luồng ghi nhận trạng thái PAPER.
+            return None
 
     def _runtime_snapshot(
         self,
@@ -322,6 +577,37 @@ class RuntimeReplayEvaluator:
             position.symbol == snapshot.symbol for position in self._gateway.open_positions()
         )
         position_is_flat = not (symbol_open or order_open or position_open)
+        if snapshot.timeframe_lineage and all(
+            item.source_identity_pinned for item in snapshot.timeframe_lineage
+        ):
+
+            def rebuild(flat: bool | None) -> DecisionSnapshot:
+                return build_decision_snapshot_from_bars(
+                    workspace_id=snapshot.timeframe_lineage[0].workspace_id,
+                    symbol=snapshot.symbol,
+                    strategy_release_id=self._manifest.strategy_release_id,
+                    decision_time=snapshot.decision_time,
+                    series_quality_as_of=snapshot.freshness_as_of or snapshot.decision_time,
+                    bars_by_timeframe={series.timeframe: series.bars for series in snapshot.series},
+                    position_is_flat=flat,
+                    macro_blackout=snapshot.macro_blackout,
+                    macro_evidence_ids=snapshot.macro_evidence_ids,
+                    macro_evidence_available_at=snapshot.macro_evidence_available_at,
+                    macro_is_fresh=snapshot.macro_is_fresh,
+                    source_identity_required=True,
+                )
+
+            original = rebuild(snapshot.position_is_flat)
+            if original != snapshot:
+                raise ReplayEvaluationContextError(
+                    "Snapshot pinned không khớp envelope canonical trước runtime rebuild."
+                )
+            return (
+                snapshot
+                if snapshot.position_is_flat == position_is_flat
+                else rebuild(position_is_flat)
+            )
+        # Legacy không có content identity pinned vẫn giữ namespace cũ, không cấp opportunity proof.
         runtime_state_hash = _hash_payload(
             {
                 "source_snapshot_id": snapshot.snapshot_id,
@@ -565,6 +851,20 @@ class RuntimeReplayEvaluator:
                         exposure=plan.notional,
                     )
                 )
+                provenance = self._intent_entry_provenance.get(intent_id)
+                if provenance is not None:
+                    closed_trades[-1] = replace(
+                        closed_trades[-1],
+                        entry_decision_snapshot_id=provenance.snapshot_id,
+                        entry_decision_at=provenance.decision_at,
+                        entry_feature_schema_hash=provenance.schema_hash,
+                        entry_features=provenance.features,
+                        entry_features_hash=provenance.features_hash,
+                        entry_symbol=provenance.symbol,
+                        entry_opportunity_event_id=provenance.opportunity_event_id,
+                        entry_candidate_id=provenance.candidate_id,
+                        entry_vector_hash=provenance.vector_hash,
+                    )
                 self._emitted_trades.add(position.position_id)
         if len(closed_trades) > 1:
             raise ReplayEvaluationContextError(
@@ -600,6 +900,10 @@ class _CapturingRuntimeEvaluator:
     evaluator: RuntimeReplayEvaluator
     captured: list[EvaluationTrade]
     emits_trade_on_close: ClassVar[bool] = True
+
+    def record_input_excluded(self, observation: ReplayObservation, reason_code: str) -> None:
+        """Giữ hook khi runner được bọc để thu trade outcomes."""
+        self.evaluator.record_input_excluded(observation, reason_code)
 
     def __call__(self, snapshot: DecisionSnapshot) -> EvaluationTrade | None:
         trade = self.evaluator(snapshot)
@@ -640,6 +944,7 @@ def run_runtime_paper_replay(
     )
     captured_by_manifest: dict[str, list[EvaluationTrade]] = {}
     evaluators: list[RuntimeReplayEvaluator] = []
+    evaluator_by_manifest: dict[str, RuntimeReplayEvaluator] = {}
 
     def evaluator_factory(
         scenario: SensitivityScenario, scenario_manifest: ReplayManifest
@@ -669,6 +974,7 @@ def run_runtime_paper_replay(
                 "Mỗi trial phải tạo gateway và context provider mới."
             )
         evaluators.append(evaluator)
+        evaluator_by_manifest[scenario_manifest.content_hash] = evaluator
         captured: list[EvaluationTrade] = []
         captured_by_manifest[scenario_manifest.content_hash] = captured
 
@@ -703,6 +1009,9 @@ def run_runtime_paper_replay(
             RuntimePaperReplayRun(
                 sensitivity_run=sensitivity_run,
                 trade_outcomes=tuple(captured),
+                opportunities=evaluator_by_manifest[
+                    sensitivity_run.manifest.content_hash
+                ].opportunities,
             )
         )
     return RuntimePaperReplayComparison(tuple(results))

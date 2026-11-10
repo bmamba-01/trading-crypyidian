@@ -232,6 +232,22 @@ async def _seed() -> dict[str, object]:
                 status="RESERVED",
             )
         )
+        session.add(
+            RiskReservationRecord(
+                id=UUID(STATE["guard_reservation_id"]),
+                workspace_id=workspace_id,
+                account_id=account_id,
+                risk_decision_id=risk_decision_id,
+                idempotency_key=f"wp03-reservation-{STATE['guard_reservation_id'][:8]}",
+                plan_hash=plan_hash,
+                symbol="BTCUSDT",
+                reserved_risk=Decimal("1"),
+                reserved_notional=Decimal("100"),
+                reserved_initial_margin=Decimal("20"),
+                expires_at=datetime.now(UTC) + timedelta(hours=1),
+                status="RESERVED",
+            )
+        )
         await session.flush()
         await session.execute(
             text("SELECT set_config('app.bot_id', :bot_id, true)"),
@@ -287,7 +303,7 @@ async def _seed() -> dict[str, object]:
                 RiskReservationRecord.account_id == account_id,
             )
         )
-        assert seeded_reservations == 3, seeded_reservations
+        assert seeded_reservations == 4, seeded_reservations
     await engine.dispose()
     return {"seeded": True, "bot_id": str(bot_id), "other_bot_id": str(other_bot_id)}
 
@@ -307,6 +323,82 @@ def _intent() -> VenueOrderIntent:
         client_order_id=STATE["client_order_id"],
         created_at=datetime.now(UTC),
     )
+
+
+async def _trigger_security() -> dict[str, object]:
+    engine = _engine(RUNTIME)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    workspace_id = UUID(STATE["workspace_id"])
+    account_id = UUID(STATE["account_id"])
+    reservation_id = UUID(STATE["guard_reservation_id"])
+    try:
+        async with sessions() as session, session.begin():
+            session.info["bot_id"] = UUID(STATE["bot_id"])
+            await session.execute(
+                text("SELECT set_config('app.workspace_id', :workspace_id, true)"),
+                {"workspace_id": str(workspace_id)},
+            )
+            await session.execute(
+                text("SELECT set_config('app.bot_id', :bot_id, true)"),
+                {"bot_id": STATE["bot_id"]},
+            )
+            spoofed_intent = VenueOrderIntent(
+                intent_id=UUID(STATE["guard_intent_id"]),
+                workspace_id=STATE["workspace_id"],
+                account_id=STATE["account_id"],
+                idempotency_key="wp03-trigger-search-path-intent",
+                reservation_id=reservation_id,
+                plan_hash=STATE["plan_hash"],
+                settings_version=STATE["settings_version_id"],
+                symbol="BTCUSDT",
+                side="BUY",
+                quantity=Decimal("0.01"),
+                client_order_id=STATE["guard_client_order_id"],
+                created_at=datetime.now(UTC),
+            )
+            repository = VenueOrderLedgerRepository(session)
+            await repository.create_intent(
+                workspace_id=workspace_id,
+                account_id=account_id,
+                reservation_id=reservation_id,
+                intent=spoofed_intent,
+                actor_id="runtime-e2e",
+            )
+            await session.execute(
+                text(
+                    "CREATE TEMP TABLE venue_order_intent (workspace_id uuid, bot_id uuid, "
+                    "account_id uuid, reservation_id uuid, state text)"
+                )
+            )
+            spoof_transfer_blocked = False
+            try:
+                async with session.begin_nested():
+                    await session.execute(
+                        text(
+                            "UPDATE risk_reservation SET status = 'TRANSFERRED', "
+                            "resolution_reason = 'OPEN_RISK_RECORDED' "
+                            "WHERE workspace_id = :workspace_id AND id = :reservation_id"
+                        ),
+                        {"workspace_id": workspace_id, "reservation_id": reservation_id},
+                    )
+            except DBAPIError as error:
+                if "WP03_VENUE_ORDER_TRANSFER_NEEDS_OPEN_RISK_RECORD" not in str(error.orig):
+                    raise RuntimeError(
+                        "Bảng tạm làm sai kết quả kiểm intent venue của risk guard."
+                    ) from error
+                spoof_transfer_blocked = True
+            reservation_status = await session.scalar(
+                select(RiskReservationRecord.status).where(
+                    RiskReservationRecord.workspace_id == workspace_id,
+                    RiskReservationRecord.id == reservation_id,
+                )
+            )
+        return {
+            "spoof_transfer_blocked": spoof_transfer_blocked,
+            "spoof_reservation_status": reservation_status,
+        }
+    finally:
+        await engine.dispose()
 
 
 async def _ledger() -> dict[str, object]:
@@ -347,6 +439,88 @@ async def _ledger() -> dict[str, object]:
             )
             assert duplicate.is_duplicate
             assert not first.is_duplicate
+            await session.execute(text("SELECT set_config('app.workspace_id', '', true)"))
+            missing_workspace_update = await session.execute(
+                text(
+                    "UPDATE risk_reservation SET status = 'RELEASED', "
+                    "resolution_reason = 'EXPIRED_BEFORE_SUBMIT' "
+                    "WHERE workspace_id = :workspace_id AND id = :reservation_id"
+                ),
+                {
+                    "workspace_id": workspace_id,
+                    "reservation_id": UUID(STATE["reservation_id"]),
+                },
+            )
+            await session.execute(
+                text("SELECT set_config('app.workspace_id', :workspace_id, true)"),
+                {"workspace_id": STATE["other_workspace_id"]},
+            )
+            wrong_workspace_update = await session.execute(
+                text(
+                    "UPDATE risk_reservation SET status = 'RELEASED', "
+                    "resolution_reason = 'EXPIRED_BEFORE_SUBMIT' "
+                    "WHERE workspace_id = :workspace_id AND id = :reservation_id"
+                ),
+                {
+                    "workspace_id": workspace_id,
+                    "reservation_id": UUID(STATE["reservation_id"]),
+                },
+            )
+            await session.execute(
+                text("SELECT set_config('app.workspace_id', :workspace_id, true)"),
+                {"workspace_id": str(workspace_id)},
+            )
+            await session.execute(text("SELECT set_config('app.bot_id', '', true)"))
+            missing_bot_update = await session.execute(
+                text(
+                    "UPDATE risk_reservation SET status = 'RELEASED', "
+                    "resolution_reason = 'EXPIRED_BEFORE_SUBMIT' "
+                    "WHERE workspace_id = :workspace_id AND id = :reservation_id"
+                ),
+                {
+                    "workspace_id": workspace_id,
+                    "reservation_id": UUID(STATE["reservation_id"]),
+                },
+            )
+            await session.execute(
+                text("SELECT set_config('app.bot_id', :bot_id, true)"),
+                {"bot_id": STATE["other_bot_id"]},
+            )
+            wrong_bot_update = await session.execute(
+                text(
+                    "UPDATE risk_reservation SET status = 'RELEASED', "
+                    "resolution_reason = 'EXPIRED_BEFORE_SUBMIT' "
+                    "WHERE workspace_id = :workspace_id AND id = :reservation_id"
+                ),
+                {
+                    "workspace_id": workspace_id,
+                    "reservation_id": UUID(STATE["reservation_id"]),
+                },
+            )
+            await session.execute(
+                text("SELECT set_config('app.bot_id', :bot_id, true)"),
+                {"bot_id": STATE["bot_id"]},
+            )
+            wrong_account_update = await session.execute(
+                text(
+                    "UPDATE risk_reservation SET status = 'RELEASED', "
+                    "resolution_reason = 'EXPIRED_BEFORE_SUBMIT' "
+                    "WHERE workspace_id = :workspace_id AND id = :reservation_id "
+                    "AND account_id = :other_account_id"
+                ),
+                {
+                    "workspace_id": workspace_id,
+                    "reservation_id": UUID(STATE["reservation_id"]),
+                    "other_account_id": UUID(STATE["other_account_id"]),
+                },
+            )
+            reservation_after_wrong_scope = await session.scalar(
+                select(RiskReservationRecord.status).where(
+                    RiskReservationRecord.workspace_id == workspace_id,
+                    RiskReservationRecord.account_id == account_id,
+                    RiskReservationRecord.id == UUID(STATE["reservation_id"]),
+                )
+            )
             await session.execute(
                 text(
                     "UPDATE risk_reservation SET status = 'UNKNOWN', resolution_reason = NULL "
@@ -734,6 +908,12 @@ async def _ledger() -> dict[str, object]:
             "retry_without_deadline_rejected": retry_without_deadline_rejected,
             "reservation_release_blocked": reservation_release_blocked,
             "reservation_transfer_blocked": reservation_transfer_blocked,
+            "missing_workspace_update_rows": missing_workspace_update.rowcount,
+            "wrong_workspace_update_rows": wrong_workspace_update.rowcount,
+            "missing_bot_update_rows": missing_bot_update.rowcount,
+            "wrong_bot_update_rows": wrong_bot_update.rowcount,
+            "wrong_account_update_rows": wrong_account_update.rowcount,
+            "reservation_after_wrong_scope": reservation_after_wrong_scope,
             "reservation_after_submit": reservation_after_submit,
             "paper_unknown_release_succeeded": paper_unknown_release_succeeded,
             "paper_unknown_transfer_succeeded": paper_unknown_transfer_succeeded,
@@ -879,6 +1059,8 @@ async def _reconcile() -> dict[str, object]:
 async def main() -> None:
     if PHASE == "seed":
         result = await _seed()
+    elif PHASE == "trigger_security":
+        result = await _trigger_security()
     elif PHASE == "ledger":
         result = await _ledger()
     elif PHASE == "reconcile":

@@ -78,14 +78,13 @@ class DatasetEvidenceVerification:
         if sample.source_dependent:
             if self.source_training_eligible is None:
                 raise ValueError("Sample phụ thuộc nguồn cần kết quả rights tường minh.")
-            if self.source_training_eligible and (
-                not sample.source_rights_hashes or not sample.source_revision_refs
-            ):
-                raise ValueError("Rights được phép phải ghim policy hash và revision ref.")
+            if self.source_training_eligible and not sample.source_references:
+                raise ValueError("Rights được phép phải ghim typed source references.")
         elif (
             self.source_training_eligible is not None
             or sample.source_rights_hashes
             or sample.source_revision_refs
+            or sample.source_references
         ):
             raise ValueError("Sample WP-02 không được mang quyền hoặc lineage nguồn.")
 
@@ -330,8 +329,12 @@ class DatasetManifestBuilder:
         ):
             return "provenance_mismatch"
         if authoritative.source_dependent:
+            if request.manifest_version != "dataset-manifest-v3":
+                return "typed_source_lineage_required"
             if evidence.source_training_eligible is not True:
                 return "source_training_not_eligible"
+            if not authoritative.source_references:
+                return "typed_source_lineage_unverified"
         elif evidence.source_training_eligible is not None:
             return "provenance_mismatch"
         return None

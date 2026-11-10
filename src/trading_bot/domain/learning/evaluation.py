@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 import random
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -201,6 +204,50 @@ def select_temporal_samples(
     return TemporalSampleSelection(tuple(eligible), tuple(exclusions))
 
 
+def _normalized_entry_features(
+    features: tuple[tuple[str, float], ...],
+) -> tuple[tuple[str, float], ...]:
+    """Chuẩn hóa vector bất biến, từ chối khóa trùng và số không hữu hạn."""
+    if not isinstance(features, tuple) or not features:
+        raise ValueError("entry_features phải là tuple không rỗng.")
+    normalized: list[tuple[str, float]] = []
+    for pair in features:
+        if not isinstance(pair, tuple) or len(pair) != 2:
+            raise ValueError("entry_features phải chứa cặp khóa/giá trị.")
+        key, value = pair
+        if not isinstance(key, str) or not key.strip():
+            raise ValueError("Khóa entry feature không được rỗng.")
+        if type(value) not in (int, float) or not math.isfinite(value):
+            raise ValueError("Giá trị entry feature phải là số hữu hạn.")
+        normalized.append((key.strip(), float(value) if value != 0 else 0.0))
+    if len({key for key, _ in normalized}) != len(normalized):
+        raise ValueError("Khóa entry feature bị trùng sau chuẩn hóa.")
+    return tuple(sorted(normalized))
+
+
+def calculate_entry_features_hash(
+    snapshot_id: str,
+    decision_at: datetime,
+    schema_hash: str,
+    features: tuple[tuple[str, float], ...],
+) -> str:
+    """SHA-256 của vector canonical, gắn snapshot/thời điểm UTC và schema."""
+    if not isinstance(snapshot_id, str) or not snapshot_id.strip():
+        raise ValueError("entry_decision_snapshot_id không được rỗng.")
+    if not isinstance(decision_at, datetime):
+        raise ValueError("entry_decision_at phải có múi giờ.")
+    if not isinstance(schema_hash, str) or re.fullmatch(r"[0-9a-f]{64}", schema_hash) is None:
+        raise ValueError("entry_feature_schema_hash phải là lowercase SHA-256.")
+    payload = {
+        "entry_decision_snapshot_id": snapshot_id,
+        "entry_decision_at": _utc(decision_at, "entry_decision_at").isoformat(),
+        "entry_feature_schema_hash": schema_hash,
+        "entry_features": _normalized_entry_features(features),
+    }
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 @dataclass(frozen=True, slots=True)
 class EvaluationTrade:
     """Kết quả một giao dịch đã đóng; các chi phí được ghi tách riêng."""
@@ -213,6 +260,15 @@ class EvaluationTrade:
     funding: Decimal
     slippage: Decimal
     exposure: Decimal
+    entry_decision_snapshot_id: str | None = None
+    entry_decision_at: datetime | None = None
+    entry_feature_schema_hash: str | None = None
+    entry_features: tuple[tuple[str, float], ...] = ()
+    entry_features_hash: str | None = None
+    entry_symbol: str | None = None
+    entry_opportunity_event_id: str | None = None
+    entry_candidate_id: str | None = None
+    entry_vector_hash: str | None = None
 
     def __post_init__(self) -> None:
         if not self.trade_id.strip():
@@ -229,6 +285,77 @@ class EvaluationTrade:
                 raise ValueError(f"{name} phải là Decimal hữu hạn không âm.")
         if not isinstance(self.funding, Decimal) or not self.funding.is_finite():
             raise ValueError("funding phải là dòng tiền Decimal hữu hạn có dấu.")
+
+        if (
+            len(
+                {
+                    value is None
+                    for value in (
+                        self.entry_opportunity_event_id,
+                        self.entry_candidate_id,
+                        self.entry_vector_hash,
+                    )
+                }
+            )
+            != 1
+        ):
+            raise ValueError("Entry opportunity/candidate phải cùng có hoặc cùng vắng.")
+        if self.entry_opportunity_event_id is not None:
+            if (
+                not isinstance(self.entry_opportunity_event_id, str)
+                or not self.entry_opportunity_event_id.strip()
+            ):
+                raise ValueError("entry_opportunity_event_id không được trống.")
+            if (
+                not isinstance(self.entry_candidate_id, str)
+                or re.fullmatch("[0-9a-f]{64}", self.entry_candidate_id) is None
+            ):
+                raise ValueError("entry_candidate_id phải là SHA-256 hex chữ thường.")
+            if (
+                not isinstance(self.entry_vector_hash, str)
+                or re.fullmatch("[0-9a-f]{64}", self.entry_vector_hash) is None
+            ):
+                raise ValueError("entry_vector_hash phải là SHA-256 hex chữ thường.")
+            if self.entry_decision_snapshot_id is None:
+                raise ValueError("Entry opportunity đòi provenance đầy đủ.")
+
+        metadata = (
+            self.entry_decision_snapshot_id,
+            self.entry_decision_at,
+            self.entry_feature_schema_hash,
+            self.entry_features_hash,
+            self.entry_symbol,
+        )
+        if all(value is None for value in metadata) and self.entry_features == ():
+            return
+        if any(value is None for value in metadata):
+            raise ValueError("Entry provenance phải đầy đủ hoặc hoàn toàn vắng mặt.")
+        assert self.entry_decision_snapshot_id is not None
+        assert self.entry_decision_at is not None
+        assert self.entry_feature_schema_hash is not None
+        if not isinstance(self.entry_symbol, str):
+            raise ValueError("entry_symbol phải là mã symbol hợp lệ.")
+        entry_symbol = self.entry_symbol.strip().upper()
+        if re.fullmatch(r"[A-Z0-9_]{2,32}", entry_symbol) is None:
+            raise ValueError("entry_symbol phải là mã symbol hợp lệ.")
+        object.__setattr__(self, "entry_symbol", entry_symbol)
+        expected_hash = calculate_entry_features_hash(
+            self.entry_decision_snapshot_id,
+            self.entry_decision_at,
+            self.entry_feature_schema_hash,
+            self.entry_features,
+        )
+        if self.entry_features_hash != expected_hash:
+            raise ValueError("entry_features_hash không khớp SHA-256 canonical.")
+        object.__setattr__(
+            self, "entry_decision_at", _utc(self.entry_decision_at, "entry_decision_at")
+        )
+        object.__setattr__(self, "entry_features", _normalized_entry_features(self.entry_features))
+
+    @property
+    def has_entry_provenance(self) -> bool:
+        """Outcome legacy thiếu bằng chứng entry nên không đủ điều kiện học."""
+        return self.entry_decision_snapshot_id is not None
 
     @property
     def net_pnl(self) -> Decimal:

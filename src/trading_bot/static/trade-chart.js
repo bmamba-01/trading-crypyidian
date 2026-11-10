@@ -107,11 +107,15 @@
   };
 
   const chartForTrade = () => {
-    const container = document.getElementById("trade-chart");
+    const container =
+      document.getElementById("trade-chart") || document.getElementById("bot-trade-chart");
     if (!container) return;
-    const payload = readData("trade-chart-data");
+    const payload = readData("trade-chart-data") || readData("bot-chart-data");
     if (!chartLibrary || !payload || !Array.isArray(payload.bars) || payload.bars.length === 0) {
-      showFallback(container, "Biểu đồ chưa tải được; bảng chi tiết giao dịch bên dưới vẫn đầy đủ dữ liệu.");
+      showFallback(
+        container,
+        "Biểu đồ chưa tải được; bảng chi tiết giao dịch bên dưới vẫn đầy đủ dữ liệu."
+      );
       return;
     }
 
@@ -210,7 +214,9 @@
       markers.sort((left, right) => left.time - right.time);
       chartLibrary.createSeriesMarkers(candleSeries, markers);
 
-      const eventDetail = document.getElementById("trade-chart-event-detail");
+      const eventDetail =
+        document.getElementById("trade-chart-event-detail") ||
+        document.getElementById("bot-chart-event-detail");
       if (eventDetail) {
         chart.subscribeCrosshairMove((parameter) => {
           if (parameter.time === undefined || parameter.time === null) return;

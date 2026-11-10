@@ -24,6 +24,8 @@ def _compose(
             "compose",
             "--profile",
             "paper",
+            "--profile",
+            "learning",
             "--project-name",
             project_name,
             "-f",
@@ -43,7 +45,7 @@ def _compose(
     return result
 
 
-def test_fold_evaluator_reads_selected_trade_in_trainer_read_only_snapshot() -> None:
+def test_evaluator_uses_one_shot_receipt_before_disclosing_fold_payload() -> None:
     repository_root = Path(__file__).parents[2]
     subprocess.run(
         [sys.executable, "scripts/prepare_local_secrets.py"],
@@ -90,6 +92,30 @@ def test_fold_evaluator_reads_selected_trade_in_trainer_read_only_snapshot() -> 
             "upgrade",
             "head",
         )
+        _compose(
+            repository_root,
+            project_name,
+            environment,
+            "run",
+            "--rm",
+            "--no-deps",
+            "migrator",
+            "alembic",
+            "check",
+        )
+        heads = _compose(
+            repository_root,
+            project_name,
+            environment,
+            "run",
+            "--rm",
+            "--no-deps",
+            "migrator",
+            "alembic",
+            "heads",
+        )
+        assert heads.stdout.strip().count("(head)") == 1, heads.stdout
+        assert "c4e6a8b0d2f3 (head)" in heads.stdout
         seeded = _compose(
             repository_root,
             project_name,
@@ -124,7 +150,7 @@ def test_fold_evaluator_reads_selected_trade_in_trainer_read_only_snapshot() -> 
             f"WP06_STATE={json.dumps(state)}",
             "--volume",
             test_volume,
-            "trainer-worker",
+            "learning-evaluator",
             "python",
             script,
             "verify",
@@ -141,7 +167,155 @@ def test_fold_evaluator_reads_selected_trade_in_trainer_read_only_snapshot() -> 
         assert result["candidate_completeness_verified"] is False
         assert result["holdout_payload_in_report"] is False
         assert result["mismatched_workspace_rejected"] is True
-        assert result["read_only_snapshot_required"] is True
+        assert result["repeatable_read_write_required"] is True
+        assert result["rollback_before_commit_allows_retry"] is True
+        assert result["crash_after_commit_retry_denied"] is True
+        assert result["concurrent_single_receipt_winner"] is True
+        assert result["receipt_persisted_before_report"] is True
+        assert result["receipt_fold_consumed_once"] is True
+        assert result["evaluator_direct_payload_select_denied"] is True
+        assert result["persisted_report_id"]
+        assert result["persisted_report_hash"] == result["report_hash"]
+        assert result["persisted_report_canonical_hash_matches"] is True
+        assert result["persisted_report_duplicate_retry"] is True
+        assert result["retry_kept_same_record"] is True
+        assert result["changed_payload_rejected"] is True
+        assert result["holdout_payload_in_canonical_report"] is False
+        assert result["cross_workspace_hidden"] is True
+        assert result["evaluator_select_insert_only"] is True
+        assert result["evaluator_update_denied"] is True
+        assert result["evaluator_delete_denied"] is True
+
+        admin_payload_check = _compose(
+            repository_root,
+            project_name,
+            environment
+            | {
+                "CRYPIDIAN_E2E_WORKSPACE_ID": workspace_id,
+                "WP06_STATE": json.dumps(state),
+            },
+            "run",
+            "--rm",
+            "--no-deps",
+            "-e",
+            f"CRYPIDIAN_E2E_WORKSPACE_ID={workspace_id}",
+            "-e",
+            f"WP06_STATE={json.dumps(state)}",
+            "--volume",
+            test_volume,
+            "admin-web",
+            "python",
+            script,
+            "verify-payload-denied",
+        )
+        admin_payload_result = json.loads(admin_payload_check.stdout.strip().splitlines()[-1])
+        assert admin_payload_result == {
+            "app_payload_select_denied": True,
+            "direct_payload_select_denied": True,
+            "legacy_verifier_denied": True,
+            "metadata_column_allowed": True,
+        }
+        trainer_payload_check = _compose(
+            repository_root,
+            project_name,
+            environment
+            | {
+                "CRYPIDIAN_E2E_WORKSPACE_ID": workspace_id,
+                "WP06_STATE": json.dumps(state),
+            },
+            "run",
+            "--rm",
+            "--no-deps",
+            "-e",
+            f"CRYPIDIAN_E2E_WORKSPACE_ID={workspace_id}",
+            "-e",
+            f"WP06_STATE={json.dumps(state)}",
+            "--volume",
+            test_volume,
+            "trainer-worker",
+            "python",
+            script,
+            "verify-payload-denied",
+        )
+        trainer_payload_result = json.loads(trainer_payload_check.stdout.strip().splitlines()[-1])
+        assert trainer_payload_result == {
+            "app_payload_select_denied": True,
+            "direct_payload_select_denied": True,
+            "legacy_verifier_denied": True,
+            "metadata_column_allowed": False,
+        }
+
+        admin_verified = _compose(
+            repository_root,
+            project_name,
+            environment
+            | {
+                "CRYPIDIAN_E2E_WORKSPACE_ID": workspace_id,
+                "WP06_STATE": json.dumps(state),
+            },
+            "run",
+            "--rm",
+            "--no-deps",
+            "-e",
+            f"CRYPIDIAN_E2E_WORKSPACE_ID={workspace_id}",
+            "-e",
+            f"WP06_STATE={json.dumps(state)}",
+            "--volume",
+            test_volume,
+            "admin-web",
+            "python",
+            script,
+            "verify-admin",
+        )
+        admin_result = json.loads(admin_verified.stdout.strip().splitlines()[-1])
+        assert admin_result["admin_can_read"] is True
+        assert admin_result["admin_select_only"] is True
+        assert admin_result["admin_update_denied"] is True
+        assert admin_result["admin_delete_denied"] is True
+        assert admin_result["admin_cross_workspace_hidden"] is True
+
+        downgrade = subprocess.run(
+            [
+                "docker",
+                "compose",
+                "--profile",
+                "paper",
+                "--project-name",
+                project_name,
+                "-f",
+                "compose.yaml",
+                "run",
+                "--rm",
+                "--no-deps",
+                "migrator",
+                "alembic",
+                "downgrade",
+                "a8c0e2f4b6d9",
+            ],
+            check=False,
+            capture_output=True,
+            cwd=repository_root,
+            env=environment,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=300,
+        )
+        downgrade_output = downgrade.stdout + downgrade.stderr
+        assert downgrade.returncode != 0
+        assert "WP06_SPLIT_CANDIDATE_DOWNGRADE_REQUIRES_EMPTY_TABLE" in downgrade_output
+        current = _compose(
+            repository_root,
+            project_name,
+            environment,
+            "run",
+            "--rm",
+            "--no-deps",
+            "migrator",
+            "alembic",
+            "current",
+        )
+        assert "c4e6a8b0d2f3 (head)" in current.stdout
     finally:
         subprocess.run(
             [

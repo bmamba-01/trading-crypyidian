@@ -24,7 +24,6 @@ from trading_bot.adapters.database.repositories.backtest_outcomes import (
     BacktestOutcomeRepository,
     PersistedBacktestTradeOutcome,
 )
-from trading_bot.adapters.database.repositories.dataset_manifest import DatasetManifestRepository
 from trading_bot.application.backtest import ReplayManifest
 from trading_bot.application.learning_fold_evaluation import (
     FoldOutcomeExpectation,
@@ -74,16 +73,27 @@ class FoldOutcomeVerificationError(ValueError):
 
 
 class DatabaseFoldOutcomeVerifier(FoldOutcomeVerifier):
-    """Xác minh một trade đã đóng cho mỗi sample trong transaction snapshot chỉ đọc.
+    """Xác minh trade trong transaction rights-serialized, không đọc lại payload ngoài receipt.
 
-    Caller phải mở transaction PostgreSQL ở isolation ``REPEATABLE READ`` hoặc
-    ``SERIALIZABLE`` và ``READ ONLY`` trước khi gọi adapter. Adapter không tự mở,
-    commit hay thay đổi isolation của transaction do caller quản lý. Adapter chỉ
-    dùng report để xác nhận lineage; không đọc hoặc xác minh report metrics/hash.
+    Caller mở transaction PostgreSQL ``READ COMMITTED`` để source gate nhận quyền
+    mới nhất sau khi chờ WP-05 lock. Outcome/trial/report đã proof-seal và append-only;
+    mọi truy vấn vẫn ở cùng transaction với receipt evaluator. Adapter không tự
+    mở, commit hay thay đổi isolation. Adapter chỉ xác minh report lineage, không
+    đọc hoặc xác minh report metrics/hash.
     """
 
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        *,
+        access_receipt_id: UUID,
+        manifest: DatasetManifest,
+    ) -> None:
+        if type(access_receipt_id) is not UUID or type(manifest) is not DatasetManifest:
+            raise ValueError("Verifier cần receipt và manifest đã nhận từ gateway authoritative.")
         self._session = session
+        self._access_receipt_id = access_receipt_id
+        self._manifest = manifest
 
     async def load_verified_fold_outcomes(
         self,
@@ -95,13 +105,10 @@ class DatabaseFoldOutcomeVerifier(FoldOutcomeVerifier):
         """
         if type(request) is not FoldOutcomeVerificationRequest:
             raise FoldOutcomeVerificationError("Verifier cần request WP06 có kiểu tường minh.")
-        await self._require_read_only_snapshot(request.workspace_id)
-        manifest = await DatasetManifestRepository(self._session).get_by_hash(
-            workspace_id=request.workspace_id,
-            manifest_hash=request.manifest_hash,
-        )
-        if type(manifest) is not DatasetManifest:
-            raise FoldOutcomeVerificationError("Không tìm thấy manifest authoritative trong scope.")
+        await self._require_receipt_snapshot(request.workspace_id)
+        if request.access_receipt_id != self._access_receipt_id:
+            raise FoldOutcomeVerificationError("Request không khớp receipt evaluator hiện hành.")
+        manifest = self._manifest
 
         self._validate_request_and_manifest(request, manifest)
         outcome_record_ids = {
@@ -136,7 +143,9 @@ class DatabaseFoldOutcomeVerifier(FoldOutcomeVerifier):
         run_ids = {trial.run_id for trial in trials.values()}
         runs = await self._load_runs(request.workspace_id, run_ids)
 
-        rows_by_trial: dict[UUID, dict[UUID, PersistedBacktestTradeOutcome]] = {}
+        rows_by_trial: dict[UUID, dict[UUID, PersistedBacktestTradeOutcome]] = {
+            trial_id: {} for trial_id in trials
+        }
         for trial_record_id, trial in trials.items():
             report = reports.get(trial_record_id)
             run = runs.get(trial.run_id)
@@ -186,39 +195,35 @@ class DatabaseFoldOutcomeVerifier(FoldOutcomeVerifier):
                     "Trial parameter family/index/count không khớp replay manifest."
                 )
 
-            requested_ids = {
-                outcome_id
-                for outcome_id, requested_trial_id in target_trial_by_id.items()
-                if requested_trial_id == trial_record_id
-            }
-            persisted = await BacktestOutcomeRepository(
-                self._session
-            ).load_trade_outcome_rows_by_id(
-                workspace_id=request.workspace_id,
-                trial_record_id=trial_record_id,
-                outcome_record_ids=requested_ids,
-            )
-            rows_by_id = {row.record_id: row for row in persisted.rows}
-            if len(rows_by_id) != len(persisted.rows):
-                raise FoldOutcomeVerificationError("Trade outcome row UUID bị lặp trong trial.")
-            for row in persisted.rows:
-                if (
-                    row.workspace_id != request.workspace_id
-                    or row.trial_record_id != trial_record_id
-                    or row.run_id != trial.run_id
-                    or row.manifest_hash != trial.manifest_hash
-                ):
-                    raise FoldOutcomeVerificationError(
-                        "Trade row lệch workspace, run, trial hoặc replay manifest."
-                    )
-            rows_by_trial[trial_record_id] = rows_by_id
+        persisted = await BacktestOutcomeRepository(
+            self._session
+        ).load_authorized_evaluation_fold_rows(
+            receipt_id=self._access_receipt_id,
+            workspace_id=request.workspace_id,
+            manifest_hash=request.manifest_hash,
+            split_policy_version=request.split_policy_version,
+            fold_plan_hash=request.fold_plan_hash,
+            fold_id=request.fold_id,
+            outcome_record_ids=outcome_record_ids,
+        )
+        for row in persisted.rows:
+            if (
+                row.workspace_id != request.workspace_id
+                or row.trial_record_id not in trials
+                or row.run_id != trials[row.trial_record_id].run_id
+                or row.manifest_hash != trials[row.trial_record_id].manifest_hash
+            ):
+                raise FoldOutcomeVerificationError(
+                    "Trade row lệch workspace, run, trial hoặc replay manifest."
+                )
+            rows_by_trial[row.trial_record_id][row.record_id] = row
 
         fold_outcomes: list[PersistedFoldOutcome] = []
         for expectation in request.expected_outcomes:
             record_id = UUID(expectation.outcome_id)
             trial_record_id = target_trial_by_id[record_id]
-            selected_trial = trials.get(trial_record_id)
-            if selected_trial is None or selected_trial.status != "COMPLETED":
+            target_trial = trials.get(trial_record_id)
+            if target_trial is None or target_trial.status != "COMPLETED":
                 raise FoldOutcomeVerificationError(
                     "Outcome chỉ được dùng khi trial có trạng thái COMPLETED."
                 )
@@ -242,7 +247,7 @@ class DatabaseFoldOutcomeVerifier(FoldOutcomeVerifier):
                 self._build_fold_outcome(
                     request=request,
                     expectation=expectation,
-                    status=selected_trial.status,
+                    status=target_trial.status,
                     outcome_hash=persisted_row.outcome_hash,
                     trade=persisted_row.trade,
                 )
@@ -259,24 +264,24 @@ class DatabaseFoldOutcomeVerifier(FoldOutcomeVerifier):
             batch_hash=verification_batch_hash(request, outcomes),
         )
 
-    async def _require_read_only_snapshot(self, workspace_id: UUID) -> None:
+    async def _require_receipt_snapshot(self, workspace_id: UUID) -> None:
         if not self._session.in_transaction():
             raise FoldOutcomeVerificationError(
-                "Caller phải mở UnitOfWork snapshot_read_only trước khi xác minh outcome."
+                "Caller phải mở transaction rights-serialized và có receipt evaluator."
             )
-        isolation: object = (
-            await self._session.execute(text("SHOW transaction_isolation"))
-        ).scalar_one()
-        read_only: object = (
-            await self._session.execute(text("SHOW transaction_read_only"))
-        ).scalar_one()
-        if str(isolation).lower() not in {"repeatable read", "serializable"}:
+        isolation: str = str(
+            (await self._session.execute(text("SHOW transaction_isolation"))).scalar_one()
+        )
+        read_only: str = str(
+            (await self._session.execute(text("SHOW transaction_read_only"))).scalar_one()
+        )
+        if str(isolation).lower() not in {"read committed", "repeatable read", "serializable"}:
             raise FoldOutcomeVerificationError(
-                "Outcome verifier yêu cầu transaction REPEATABLE READ hoặc SERIALIZABLE."
+                "Outcome verifier cần isolation READ COMMITTED, REPEATABLE READ hoặc SERIALIZABLE."
             )
-        if str(read_only).lower() not in {"on", "true", "1"}:
+        if str(read_only).lower() not in {"off", "false", "0"}:
             raise FoldOutcomeVerificationError(
-                "Outcome verifier chỉ chạy trong transaction READ ONLY."
+                "Outcome verifier cần transaction READ WRITE để ghi receipt fold."
             )
         if self._session.info.get("workspace_id") != workspace_id:
             raise FoldOutcomeVerificationError(
@@ -495,6 +500,8 @@ class DatabaseFoldOutcomeVerifier(FoldOutcomeVerifier):
             raise FoldOutcomeVerificationError("Replay manifest JSONB/canonical scope không khớp.")
         try:
             normalized = dict(payload)
+            normalized.setdefault("learning_intent", "RESEARCH")
+            normalized.setdefault("learning_job_id", None)
             normalized["range_start"] = datetime.fromisoformat(str(normalized["range_start"]))
             normalized["range_end"] = datetime.fromisoformat(str(normalized["range_end"]))
             normalized["cost_assumptions"] = tuple(

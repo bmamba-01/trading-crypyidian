@@ -36,15 +36,18 @@ class UnitOfWork:
         actor_membership_id: UUID | None = None,
         request_id: UUID | None = None,
         snapshot_read_only: bool = False,
+        snapshot_repeatable_read: bool = False,
     ) -> None:
         self._sessions = sessions
         self.workspace_id = workspace_id
         self.bot_id = bot_id
         self.actor_membership_id = actor_membership_id
         self.request_id = request_id or uuid4()
-        # Chỉ dành cho luồng đọc nhiều câu (báo cáo MB-06): một snapshot nhất quán, cấm ghi.
-        # Mặc định False giữ nguyên READ COMMITTED read-write cho mọi caller khác.
+        # Evaluator cần snapshot nhất quán nhưng ghi receipt trước khi trả payload.
+        if snapshot_read_only and snapshot_repeatable_read:
+            raise ValueError("Chọn một chế độ snapshot transaction.")
         self.snapshot_read_only = snapshot_read_only
+        self.snapshot_repeatable_read = snapshot_repeatable_read
         self._session: AsyncSession | None = None
         self._after_commit: list[Callable[[], None]] = []
 
@@ -59,11 +62,14 @@ class UnitOfWork:
         self._after_commit.clear()
         try:
             await self._session.begin()
-            if self.snapshot_read_only:
+            if self.snapshot_read_only or self.snapshot_repeatable_read:
                 # PostgreSQL chỉ cho đổi isolation trước truy vấn đầu tiên của transaction,
                 # nên phải chạy trước SELECT set_config bên dưới.
                 await self._session.execute(
-                    text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+                    text(
+                        "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, "
+                        + ("READ ONLY" if self.snapshot_read_only else "READ WRITE")
+                    )
                 )
             await self._session.execute(
                 text(

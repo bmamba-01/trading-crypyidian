@@ -14,6 +14,7 @@ from uuid import NAMESPACE_URL, uuid5
 
 import psycopg
 from psycopg import sql
+from psycopg.errors import InsufficientPrivilege
 from psycopg.types.json import Jsonb
 
 ADMIN = "crypidian_admin_web"
@@ -21,7 +22,9 @@ RUNTIME = "crypidian_trading_runtime"
 GATEWAY = "crypidian_execution_gateway"
 INGESTION = "crypidian_ingestion_worker"
 TRAINER = "crypidian_trainer_worker"
-PROCESS_ROLES = (ADMIN, RUNTIME, GATEWAY, INGESTION, TRAINER)
+REPLAY_WRITER = "crypidian_replay_writer"
+LEGACY_TRIGGER_GRANTEE = "crypidian_legacy_trigger_integrator"
+PROCESS_ROLES = (ADMIN, RUNTIME, GATEWAY, INGESTION, TRAINER, REPLAY_WRITER)
 WORKER_ROLES = (GATEWAY, INGESTION, TRAINER)
 
 # Bảng identity/auth/config thuộc phạm vi SEC-01.
@@ -284,8 +287,21 @@ def acl_state(connection):
 
 
 # MB-04 fix (I1): hàm SECURITY DEFINER chỉ do role NOLOGIN riêng sở hữu và grant tối thiểu.
-DEFINER_OWNERS = {"crypidian_bot_provisioner", "crypidian_risk_aggregator"}
+DEFINER_OWNERS = {
+    "crypidian_backtest_persist_owner",
+    "crypidian_bot_provisioner",
+    "crypidian_candidate_locker",
+    "crypidian_risk_aggregator",
+    "crypidian_source_expiry_scanner",
+    "crypidian_source_rights_emitter",
+}
 FUNCTION_EXECUTE = {
+    "begin_backtest_job_persist(uuid,uuid,text,integer)": {REPLAY_WRITER},
+    "complete_backtest_job_persist(uuid,uuid,text,integer,uuid[])": {REPLAY_WRITER},
+    "enqueue_expired_source_policy_events(integer)": {INGESTION},
+    "emit_source_policy_rights_event()": set(),
+    "emit_source_item_revision_rights_event()": set(),
+    "emit_source_item_takedown_rights_event()": set(),
     "get_workspace_risk_equity_aggregate(uuid,timestamp with time zone,integer,text,text[])": {
         RUNTIME
     },
@@ -310,6 +326,17 @@ def check_functions(connection):
             problems.append(("definer owner", signature, owner))
         if "search_path=pg_catalog, pg_temp" not in config:
             problems.append(("definer search_path", signature, config))
+    definer_roles = connection.execute(
+        "SELECT rolcanlogin, rolsuper, rolbypassrls, rolreplication, rolcreaterole, "
+        "rolcreatedb, rolinherit, EXISTS (SELECT 1 FROM pg_auth_members m "
+        "WHERE m.roleid = r.oid OR m.member = r.oid) FROM pg_roles r "
+        "WHERE rolname IN ('crypidian_source_expiry_scanner', 'crypidian_source_rights_emitter') "
+        "ORDER BY rolname"
+    ).fetchall()
+    if len(definer_roles) != 2 or any(
+        role != (False, False, False, False, False, False, False, False) for role in definer_roles
+    ):
+        problems.append(("source rights definer role posture", definer_roles))
     for signature, allowed in FUNCTION_EXECUTE.items():
         for role in (*PROCESS_ROLES, "crypidian_app"):
             granted = connection.execute(
@@ -325,6 +352,113 @@ def check_functions(connection):
         ).fetchone()[0]
         if public:
             problems.append(("public execute", signature))
+
+    guard_signature = "public.protect_risk_reservation_transition()"
+    guard = connection.execute(
+        "SELECT p.prosecdef, pg_get_userbyid(p.proowner), "
+        "coalesce(array_to_string(p.proconfig, ';'), ''), o.rolcanlogin, o.rolsuper, "
+        "o.rolbypassrls, o.rolcreaterole, o.rolcreatedb, o.rolreplication, o.rolinherit, "
+        "EXISTS (SELECT 1 FROM pg_auth_members m WHERE m.roleid = o.oid OR m.member = o.oid), "
+        "pg_get_functiondef(p.oid), "
+        "EXISTS (SELECT 1 FROM pg_proc f CROSS JOIN LATERAL aclexplode(coalesce("
+        "f.proacl, acldefault('f', f.proowner))) x WHERE f.oid = p.oid AND x.grantee = 0), "
+        "ARRAY(SELECT pg_get_userbyid(x.grantee) FROM aclexplode(coalesce("
+        "p.proacl, acldefault('f', p.proowner))) x WHERE x.grantee <> p.proowner) "
+        "FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace "
+        "JOIN pg_roles o ON o.oid = p.proowner "
+        "WHERE n.nspname = 'public' AND p.oid = to_regprocedure(%s)",
+        (guard_signature,),
+    ).fetchone()
+    if guard is None:
+        problems.append(("risk guard missing", guard_signature))
+    else:
+        (
+            security_definer,
+            owner,
+            config,
+            can_login,
+            superuser,
+            bypass,
+            create_role,
+            create_database,
+            replication,
+            inherit,
+            membership,
+            definition,
+            public_execute,
+            other_acl_grantees,
+        ) = guard
+        if security_definer:
+            problems.append(("risk guard must be SECURITY INVOKER", guard_signature))
+        if owner != "crypidian_risk_reservation_guard" or any(
+            (
+                can_login,
+                superuser,
+                bypass,
+                create_role,
+                create_database,
+                replication,
+                inherit,
+                membership,
+            )
+        ):
+            problems.append(
+                (
+                    "risk guard owner unsafe",
+                    owner,
+                    can_login,
+                    superuser,
+                    bypass,
+                    create_role,
+                    create_database,
+                    replication,
+                    inherit,
+                    membership,
+                )
+            )
+        if "search_path=pg_catalog, pg_temp" not in config:
+            problems.append(("risk guard search_path", config))
+        normalized_definition = definition.lower().replace('"', "")
+        if normalized_definition.count("from public.venue_order_intent") != 4:
+            problems.append(("risk guard venue table not schema-qualified",))
+        if public_execute or other_acl_grantees:
+            problems.append(
+                ("risk guard unexpected function ACL", public_execute, other_acl_grantees)
+            )
+        for role in ("crypidian_app", *PROCESS_ROLES):
+            granted = connection.execute(
+                "SELECT has_function_privilege(%s, %s, 'EXECUTE')", (role, guard_signature)
+            ).fetchone()[0]
+            if granted:
+                problems.append(("risk guard execute", role, granted))
+
+    trigger_created = False
+    trigger_table = "wp03_risk_guard_trigger_probe"
+    connection.execute(f"DROP TABLE IF EXISTS public.{trigger_table}")
+    connection.execute(f"CREATE TABLE public.{trigger_table} (id integer)")
+    connection.execute(f"GRANT TRIGGER ON TABLE public.{trigger_table} TO {INGESTION}")
+    try:
+        with connection.transaction():
+            connection.execute(f"SET LOCAL ROLE {INGESTION}")
+            connection.execute(
+                f"CREATE TRIGGER wp03_trigger_probe BEFORE UPDATE ON public.{trigger_table} "
+                "FOR EACH ROW EXECUTE FUNCTION public.protect_risk_reservation_transition()"
+            )
+    except InsufficientPrivilege as error:
+        message = str(error).lower()
+        if "permission denied for function" not in message or (
+            "protect_risk_reservation_transition" not in message
+        ):
+            problems.append(("trigger probe denied for unexpected reason", str(error)))
+        trigger_created = False
+    else:
+        trigger_created = True
+        connection.execute(f"DROP TRIGGER wp03_trigger_probe ON public.{trigger_table}")
+    finally:
+        connection.execute(f"DROP TABLE IF EXISTS public.{trigger_table}")
+    if trigger_created:
+        problems.append(("nonprivileged role can create risk guard trigger", INGESTION))
+
     absent = connection.execute(
         "SELECT to_regprocedure('public.get_workspace_risk_aggregate(uuid,timestamptz)')"
     ).fetchone()[0]
@@ -568,10 +702,18 @@ def check_matrix(connection):
             # R1: worker giữ đúng grant trực tiếp cho việc của mình, mất DML vận hành của group.
             (INGESTION, "market_bar", "INSERT", True),
             (INGESTION, "ingestion_cursor", "UPDATE", True),
-            (TRAINER, "backtest_run", "INSERT", True),
-            (TRAINER, "market_bar", "SELECT", True),
+            (TRAINER, "backtest_run", "INSERT", False),
+            (REPLAY_WRITER, "backtest_run", "INSERT", True),
+            (REPLAY_WRITER, "backtest_run_dataset_rights", "INSERT", True),
+            # WP-07C: replay writer ghi kết quả; trainer đọc chẩn đoán đến khi Task 3 thu hẹp.
+            (TRAINER, "market_instrument", "SELECT", False),
+            (TRAINER, "market_bar", "SELECT", False),
+            (TRAINER, "market_funding", "SELECT", False),
+            (TRAINER, "market_open_interest", "SELECT", False),
             (GATEWAY, "audit_event", "INSERT", True),
             (INGESTION, "outbox_event", "INSERT", False),
+            (INGESTION, "outbox_event", "SELECT", True),
+            (TRAINER, "outbox_event", "SELECT", True),
             (TRAINER, "order_intent", "SELECT", False),
             (GATEWAY, "outbox_event", "UPDATE", False),
             (INGESTION, "feature_snapshot", "INSERT", False),
@@ -587,6 +729,13 @@ def check_matrix(connection):
             "SELECT has_table_privilege(%s, %s, %s)", (role, table, privilege)
         ).fetchone()[0]
         assert actual is expected, (role, table, privilege, actual)
+    ingestion_outbox_columns = connection.execute(
+        "SELECT has_column_privilege(%s, 'public.outbox_event', 'status', 'UPDATE'), "
+        "has_column_privilege(%s, 'public.outbox_event', 'payload', 'UPDATE'), "
+        "has_column_privilege(%s, 'public.outbox_event', 'workspace_id', 'UPDATE')",
+        (INGESTION, INGESTION, INGESTION),
+    ).fetchone()
+    assert ingestion_outbox_columns == (True, False, False), ingestion_outbox_columns
     tables = len(IDENTITY_TABLES) + len(MULTIBOT_TABLES)
     return {"matrix_rows": len(PROCESS_ROLES + ("crypidian_app",)) * tables}
 
@@ -740,14 +889,25 @@ def worker(connection, role):
     ):
         denied(connection, sql.SQL("SELECT count(*) FROM {}").format(sql.Identifier(table)))
     denied(connection, "SET LOCAL ROLE crypidian_app")
-    denied(connection, "SELECT count(*) FROM outbox_event")
+    if role in (INGESTION, TRAINER):
+        assert scalar(connection, "SELECT count(*) FROM outbox_event") == 0
+    if role == INGESTION:
+        denied(
+            connection,
+            "UPDATE outbox_event SET payload = '{}'::jsonb WHERE workspace_id = %s",
+            (W1,),
+        )
+    elif role != TRAINER:
+        denied(connection, "SELECT count(*) FROM outbox_event")
     own_job = {
         INGESTION: "SELECT count(*) FROM market_bar",
         TRAINER: "SELECT count(*) FROM backtest_run",
+        REPLAY_WRITER: "SELECT count(*) FROM backtest_run",
         GATEWAY: "SELECT has_table_privilege(current_user, 'audit_event', 'INSERT')",
     }[role]
     assert scalar(connection, own_job) is not None
-    return {"role": role, "denied": len(IDENTITY_ATTACKS) + 9}
+    denied_count = len(IDENTITY_ATTACKS) + 8 + (role != TRAINER)
+    return {"role": role, "denied": denied_count}
 
 
 def runtime(connection):
@@ -1026,6 +1186,27 @@ with psycopg.connect(
     elif phase == "seed":
         with database.transaction():
             result = seed(database)
+    elif phase == "grant_legacy_trigger_execute":
+        database.execute(f"CREATE ROLE {LEGACY_TRIGGER_GRANTEE} NOLOGIN")
+        database.execute(
+            "GRANT EXECUTE ON FUNCTION public.protect_risk_reservation_transition() "
+            f"TO {LEGACY_TRIGGER_GRANTEE}"
+        )
+        result = {
+            "execute": database.execute(
+                "SELECT has_function_privilege(%s, "
+                "'public.protect_risk_reservation_transition()', 'EXECUTE')",
+                (LEGACY_TRIGGER_GRANTEE,),
+            ).fetchone()[0]
+        }
+    elif phase == "legacy_trigger_execute":
+        result = {
+            "execute": database.execute(
+                "SELECT has_function_privilege(%s, "
+                "'public.protect_risk_reservation_transition()', 'EXECUTE')",
+                (LEGACY_TRIGGER_GRANTEE,),
+            ).fetchone()[0]
+        }
     elif phase == "matrix":
         result = check_matrix(database) | check_functions(database)
     elif phase == "worker":

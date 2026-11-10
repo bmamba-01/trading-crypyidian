@@ -76,10 +76,13 @@ def test_venue_order_ledger_idempotency_transitions_rls_and_downgrade_guard() ->
         "other_reservation_id": str(uuid.uuid4()),
         "cross_bot_reservation_id": str(uuid.uuid4()),
         "paper_transfer_reservation_id": str(uuid.uuid4()),
+        "guard_reservation_id": str(uuid.uuid4()),
+        "guard_intent_id": str(uuid.uuid4()),
         "risk_decision_id": str(uuid.uuid4()),
         "other_risk_decision_id": str(uuid.uuid4()),
         "other_intent_id": str(uuid.uuid4()),
         "other_client_order_id": f"wp03{uuid.uuid4().hex[:24]}",
+        "guard_client_order_id": f"wp03{uuid.uuid4().hex[:24]}",
         "client_order_id": f"wp03{uuid.uuid4().hex[:24]}",
     }
 
@@ -111,6 +114,9 @@ def test_venue_order_ledger_idempotency_transitions_rls_and_downgrade_guard() ->
         seed_result = run_probe("seed")
         state["bot_id"] = str(seed_result["bot_id"])
         state["other_bot_id"] = str(seed_result["other_bot_id"])
+        spoof_result = run_probe("trigger_security")
+        assert spoof_result["spoof_transfer_blocked"] is True
+        assert spoof_result["spoof_reservation_status"] == "RESERVED"
         result = run_probe("ledger")
         assert result["duplicate_create"] is True
         assert result["first_create"] is False
@@ -123,6 +129,12 @@ def test_venue_order_ledger_idempotency_transitions_rls_and_downgrade_guard() ->
         assert result["retry_without_deadline_rejected"] is True
         assert result["reservation_release_blocked"] is True
         assert result["reservation_transfer_blocked"] is True
+        assert result["missing_workspace_update_rows"] == 0
+        assert result["wrong_workspace_update_rows"] == 0
+        assert result["missing_bot_update_rows"] == 0
+        assert result["wrong_bot_update_rows"] == 0
+        assert result["wrong_account_update_rows"] == 0
+        assert result["reservation_after_wrong_scope"] == "RESERVED"
         assert result["reservation_after_submit"] == "UNKNOWN"
         assert result["paper_unknown_release_succeeded"] is True
         assert result["paper_unknown_transfer_succeeded"] is True
@@ -140,7 +152,7 @@ def test_venue_order_ledger_idempotency_transitions_rls_and_downgrade_guard() ->
         assert reconciled["partial_transition_count"] == 4
         assert reconciled["reservation_status"] == "UNKNOWN"
         downgrade = migrate("downgrade", PREVIOUS_HEAD, success=False)
-        assert "WP03_VENUE_ORDER_HISTORY_DOWNGRADE_BLOCKED" in (downgrade.stdout + downgrade.stderr)
+        assert "WP03_RISK_GUARD_DOWNGRADE_BLOCKED" in (downgrade.stdout + downgrade.stderr)
         migrate("check")
     finally:
         subprocess.run(

@@ -1,0 +1,41 @@
+{% extends "admin/base.html" %}
+{% block title %}Quan sát mô hình | Crypidian{% endblock %}
+{% block head_extra %}<link rel="stylesheet" href="/static/learning-observations.css">{% endblock %}
+{% block heading %}Quan sát mô hình và chất lượng dữ liệu{% endblock %}
+{% block content %}
+  <section class="learning-observations-notice" aria-label="Giới hạn của trang quan sát">
+    <h2>Chỉ theo dõi, không tác động giao dịch</h2>
+    <p><strong>Mô hình thử nghiệm đang ở trạng thái ABSTAIN — chưa đánh giá hiệu năng.</strong> Các bản ghi này chỉ phản ánh tình trạng dữ liệu và lineage đã lưu; chúng không xác nhận lợi nhuận hay chất lượng dự đoán.</p>
+    <p>Trang chỉ đọc tối đa 50 dòng metadata trong không gian làm việc hiện tại. Không hiển thị đặc trưng, nhãn, dữ liệu nguồn hoặc nội dung phần kiểm định giữ kín; không có thao tác xếp lịch huấn luyện hay đổi mô hình đang dùng.</p>
+  </section>
+
+  <p class="learning-observations-count" role="status">Đang hiển thị {{ record_count }} bản ghi gần đây.</p>
+
+  <div class="learning-observations-groups">
+    {% for group in groups %}
+      <section aria-labelledby="learning-observations-{{ group.kind }}-heading">
+        <h2 id="learning-observations-{{ group.kind }}-heading">{{ group.title }}</h2>
+        {% if group.records %}
+          <div class="learning-observations-list">
+            {% for record in group.records %}
+              <article class="learning-observations-card">
+                <header>
+                  <span class="learning-observations-state learning-observations-state--{{ group.kind }}">{{ record.status }}</span>
+                  <time datetime="{{ record.occurred_at.isoformat() }}">{{ record.occurred_at|local_time|replace('(Asia/Ho_Chi_Minh)', '(giờ Việt Nam (UTC+7))') }}</time>
+                </header>
+                <p class="learning-observations-id">Mã bản ghi <code>{{ record.record_id }}</code></p>
+                <dl>
+                  {% for label, value in record.fields %}
+                    <div><dt>{{ label }}</dt><dd>{{ value }}</dd></div>
+                  {% endfor %}
+                </dl>
+              </article>
+            {% endfor %}
+          </div>
+        {% else %}
+          <p class="learning-observations-empty">Chưa có {{ group.title|lower }} trong không gian làm việc này.</p>
+        {% endif %}
+      </section>
+    {% endfor %}
+  </div>
+{% endblock %}

@@ -211,6 +211,8 @@ def build_backtest_replay_plan(
         trial_count=1,
         trial_index=0,
         seed=submission.seed,
+        learning_intent=submission.learning_intent,
+        learning_job_id=(str(job_id) if submission.learning_intent == "TRAINING_BASE" else None),
     )
     pinned_bundle_reference = BacktestDatasetReplayBundleReference.from_bundle(bundle)
 

@@ -16,6 +16,7 @@ Kiểm tra:
 from __future__ import annotations
 
 import secrets
+import socket
 import threading
 import time
 from datetime import UTC, datetime, timedelta
@@ -329,8 +330,12 @@ def create_test_research_sources_app() -> FastAPI:
 
 @pytest.fixture(scope="module")
 def sources_server_url() -> Any:
-    """Khởi chạy uvicorn server in-process trên cổng 8097 cho Playwright test."""
-    port = 8097
+    """Khởi chạy uvicorn server in-process trên cổng ngẫu nhiên cho Playwright test."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+
     app = create_test_research_sources_app()
     config = uvicorn.Config(
         app=app,
