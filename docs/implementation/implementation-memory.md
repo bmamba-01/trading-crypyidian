@@ -1807,6 +1807,46 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 
 - **Đã đọc lại memory:** Đối soát toàn bộ các thay đổi kiến trúc, migrations, adapters, router, templates, CSS, Playwright E2E tests, Compose E2E tests và memory; bảo đảm tính độc lập, an toàn PAPER mode và tuân thủ tuyệt đối quy ước AGENTS.md.
 
+---
+
+## 2026-11-10: Vòng Triển Khai UI/UX Pro Max, Kiến Trúc Vi Dịch Vụ Trading & Revamp Giao Diện Cockpit Định Lượng
+
+- **Mục tiêu/phạm vi:**
+  * Tải và tích hợp bộ skill thiết kế chuyên sâu `ui-ux-pro-max-skill` vào thư mục `.agents/skills/ui-ux-pro-max/` gồm database phong cách (`styles.csv`, `colors.csv`, `typography.csv`, `ux-guidelines.csv`, `charts.csv`, `icons.csv`, `stacks.csv`, `ui-reasoning.csv`), hướng dẫn và script tìm kiếm.
+  * Nghiên cứu, hệ thống hóa và xuất bản tài liệu kiến trúc vi dịch vụ giao dịch: `docs/research/microservices-trading-architecture.md` dựa trên nghiên cứu của Bhavin (DataJedi) trên Medium ("Trading System Design using MicroServices"):
+    - Bóc tách 6 tầng vi dịch vụ: Market Data Ingestion, Signals & Strategy Rules L0-L6, Portfolio Weights & Risk Allocation (Optimizer Language), Execution Blotter & Venue Order Ledger, Post-Mortem & PnL Attribution, Alternative Data & Anomaly Detection.
+    - Áp dụng triệt để cơ chế học máy phản thực nghiệm (Counterfactual Penalty Learning) với nút 1-chạm đưa ca sai lệch vào dữ liệu phạt AI.
+  * Thiết lập và xuất bản tiêu chuẩn thiết kế: `docs/research/trading-ui-ux-design-system.md` dựa trên các bảng điều khiển giao dịch hàng đầu (TradingView, Hyperliquid Cockpit, Apex Pro, Bloomberg Quant):
+    - Hai chủ đề hoàn chỉnh: Obsidian Pro Dark (OLED, Deep Charcoal `#0B0E14`, Surface `#121722`, Viền `#1E2638`) và Executive Light (`#F8FAFC`, `#FFFFFF`, `#E2E8F0`).
+    - De-cluttering: Giảm tải mật độ chữ dày đặc bằng các thẻ KPI nhỏ gọn, nhãn trạng thái và micro tooltips công thức định lượng.
+    - Chuẩn hóa biểu tượng: Thay thế emoji hệ thống thô bằng 100% SVG inline vector icons sắc nét.
+    - Trực quan hóa tỷ lệ R:R: Thành phần thanh đo trực quan `.rr-ratio-bar` phân chia 2 dải màu đỏ/xanh tại tầng L6 Zones và Post-Mortem.
+  * Nâng cấp mã nguồn giao diện:
+    - `src/trading_bot/static/admin.css`: Bổ sung các lớp `.svg-icon`, `.rr-ratio-bar`, `.rr-bar-track`, `.rr-bar-risk`, `.rr-bar-reward`, `.rr-ratio-label`, hiệu ứng viền phát quang terminal trong Dark/Light mode, font `tabular-nums` chống rung giật giao diện khi cập nhật 5s.
+    - `src/trading_bot/templates/admin/base.html`: Nâng cấp nút chuyển chủ đề Light/Dark với vector SVGs trăng khuyết và mặt trời.
+    - `src/trading_bot/templates/admin/bot_detail.html`: Tích hợp SVG icons cho thẻ KPI và header, bổ sung thanh đo R:R trực quan cho L6 Vùng Giá.
+    - `src/trading_bot/templates/admin/reports.html`: Tích hợp SVG icons cho các thẻ tài sản, thanh đo R:R trực quan trong bảng mổ xẻ quyết định.
+  * Chuẩn hóa từ điển: Bổ sung Mục U vào `docs/research/glossary-vi.md` định nghĩa chuẩn EN-VI cho Microservices Trading Architecture, Optimizer Language, Execution Blotter, Obsidian Quant Cockpit, Visual Risk-Reward Gauge, và Counterfactual Penalty Feedback Loop.
+
+- **Kết quả kiểm chứng toàn diện:**
+  * Bộ kiểm thử chức năng Bot Detail Revamp:
+    - `tests/unit/test_bot_detail_trading_revamp.py`: **3/3 passed in 1.92s (100% pass rate)**.
+  * Bộ kiểm thử khả năng truy cập & giao diện Mobile tiếng Việt (MB-07):
+    - `tests/unit/test_admin_mobile_ui.py`: **20/20 passed in 1.92s (100% pass rate)**.
+  * Toàn bộ 7 bộ Playwright E2E Automation Suites (Desktop 1280x800 & Mobile 390x844):
+    - `tests/e2e/test_admin_trading_revamp_playwright.py`: **2/2 passed in 13.19s** (Desktop & Mobile, Dark & Light Mode, TradingView Canvas, Reasoning L4-L6, AI Ingestion).
+    - `tests/e2e/test_admin_dashboard_playwright.py`: **1/1 passed**.
+    - `tests/e2e/test_admin_strategy_cards_playwright.py`: **3/3 passed**.
+    - `tests/e2e/test_admin_microscope_playwright.py`: **3/3 passed**.
+    - `tests/e2e/test_admin_telegram_signals_playwright.py`: **2/2 passed**.
+    - `tests/e2e/test_admin_backtest_replays_playwright.py`: **2/2 passed**.
+    - `tests/e2e/test_admin_research_sources_playwright.py`: **3/3 passed**.
+    - **Tổng số Playwright E2E: 16/16 tests passed 100%**.
+  * Chụp mới và lưu trữ đầy đủ 25 ảnh màn hình kiểm thử trong thư mục artifacts đối soát.
+
+- **Đã đọc lại memory:** Đã rà soát lại toàn bộ các quyết định thiết kế, quy chuẩn vi dịch vụ, bảng mã màu, SVG iconography, kết quả test và tài liệu memory; xác nhận bảo đảm 100% an toàn chế độ PAPER, không phụ thuộc CDN ngoài và tuân thủ tuyệt đối quy tắc AGENTS.md.
+
+
 ### 2026-11-10 — Revamp Giao Diện Trading Admin UI, Light/Dark Mode, Biểu Đồ TradingView & Phân Tích Mổ Xẻ Sau Giao Dịch Đưa Vào Huấn Luyện AI
 
 - **Mục tiêu/phạm vi:**
@@ -2019,3 +2059,43 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
     - `tests/unit/test_wp05_source_item_migration.py`: **14/14 passed in 0.95s (100% pass rate)**.
 
 - **Đã đọc lại memory:** Đối soát toàn bộ các thay đổi kiến trúc, migrations, adapters, router, templates, CSS, Playwright E2E tests, Compose E2E tests và memory; bảo đảm tính độc lập, an toàn PAPER mode và tuân thủ tuyệt đối quy ước AGENTS.md.
+
+---
+
+## 2026-11-10: Vòng Triển Khai UI/UX Pro Max, Kiến Trúc Vi Dịch Vụ Trading & Revamp Giao Diện Cockpit Định Lượng
+
+- **Mục tiêu/phạm vi:**
+  * Tải và tích hợp bộ skill thiết kế chuyên sâu `ui-ux-pro-max-skill` vào thư mục `.agents/skills/ui-ux-pro-max/` gồm database phong cách (`styles.csv`, `colors.csv`, `typography.csv`, `ux-guidelines.csv`, `charts.csv`, `icons.csv`, `stacks.csv`, `ui-reasoning.csv`), hướng dẫn và script tìm kiếm.
+  * Nghiên cứu, hệ thống hóa và xuất bản tài liệu kiến trúc vi dịch vụ giao dịch: `docs/research/microservices-trading-architecture.md` dựa trên nghiên cứu của Bhavin (DataJedi) trên Medium ("Trading System Design using MicroServices"):
+    - Bóc tách 6 tầng vi dịch vụ: Market Data Ingestion, Signals & Strategy Rules L0-L6, Portfolio Weights & Risk Allocation (Optimizer Language), Execution Blotter & Venue Order Ledger, Post-Mortem & PnL Attribution, Alternative Data & Anomaly Detection.
+    - Áp dụng triệt để cơ chế học máy phản thực nghiệm (Counterfactual Penalty Learning) với nút 1-chạm đưa ca sai lệch vào dữ liệu phạt AI.
+  * Thiết lập và xuất bản tiêu chuẩn thiết kế: `docs/research/trading-ui-ux-design-system.md` dựa trên các bảng điều khiển giao dịch hàng đầu (TradingView, Hyperliquid Cockpit, Apex Pro, Bloomberg Quant):
+    - Hai chủ đề hoàn chỉnh: Obsidian Pro Dark (OLED, Deep Charcoal `#0B0E14`, Surface `#121722`, Viền `#1E2638`) và Executive Light (`#F8FAFC`, `#FFFFFF`, `#E2E8F0`).
+    - De-cluttering: Giảm tải mật độ chữ dày đặc bằng các thẻ KPI nhỏ gọn, nhãn trạng thái và micro tooltips công thức định lượng.
+    - Chuẩn hóa biểu tượng: Thay thế emoji hệ thống thô bằng 100% SVG inline vector icons sắc nét.
+    - Trực quan hóa tỷ lệ R:R: Thành phần thanh đo trực quan `.rr-ratio-bar` phân chia 2 dải màu đỏ/xanh tại tầng L6 Zones và Post-Mortem.
+  * Nâng cấp mã nguồn giao diện:
+    - `src/trading_bot/static/admin.css`: Bổ sung các lớp `.svg-icon`, `.rr-ratio-bar`, `.rr-bar-track`, `.rr-bar-risk`, `.rr-bar-reward`, `.rr-ratio-label`, hiệu ứng viền phát quang terminal trong Dark/Light mode, font `tabular-nums` chống rung giật giao diện khi cập nhật 5s.
+    - `src/trading_bot/templates/admin/base.html`: Nâng cấp nút chuyển chủ đề Light/Dark với vector SVGs trăng khuyết và mặt trời.
+    - `src/trading_bot/templates/admin/bot_detail.html`: Tích hợp SVG icons cho thẻ KPI và header, bổ sung thanh đo R:R trực quan cho L6 Vùng Giá.
+    - `src/trading_bot/templates/admin/reports.html`: Tích hợp SVG icons cho các thẻ tài sản, thanh đo R:R trực quan trong bảng mổ xẻ quyết định.
+  * Chuẩn hóa từ điển: Bổ sung Mục U vào `docs/research/glossary-vi.md` định nghĩa chuẩn EN-VI cho Microservices Trading Architecture, Optimizer Language, Execution Blotter, Obsidian Quant Cockpit, Visual Risk-Reward Gauge, và Counterfactual Penalty Feedback Loop.
+
+- **Kết quả kiểm chứng toàn diện:**
+  * Bộ kiểm thử chức năng Bot Detail Revamp:
+    - `tests/unit/test_bot_detail_trading_revamp.py`: **3/3 passed in 1.92s (100% pass rate)**.
+  * Bộ kiểm thử khả năng truy cập & giao diện Mobile tiếng Việt (MB-07):
+    - `tests/unit/test_admin_mobile_ui.py`: **20/20 passed in 1.92s (100% pass rate)**.
+  * Toàn bộ 7 bộ Playwright E2E Automation Suites (Desktop 1280x800 & Mobile 390x844):
+    - `tests/e2e/test_admin_trading_revamp_playwright.py`: **2/2 passed in 13.19s** (Desktop & Mobile, Dark & Light Mode, TradingView Canvas, Reasoning L4-L6, AI Ingestion).
+    - `tests/e2e/test_admin_dashboard_playwright.py`: **1/1 passed**.
+    - `tests/e2e/test_admin_strategy_cards_playwright.py`: **3/3 passed**.
+    - `tests/e2e/test_admin_microscope_playwright.py`: **3/3 passed**.
+    - `tests/e2e/test_admin_telegram_signals_playwright.py`: **2/2 passed**.
+    - `tests/e2e/test_admin_backtest_replays_playwright.py`: **2/2 passed**.
+    - `tests/e2e/test_admin_research_sources_playwright.py`: **3/3 passed**.
+    - **Tổng số Playwright E2E: 16/16 tests passed 100%**.
+  * Chụp mới và lưu trữ đầy đủ 25 ảnh màn hình kiểm thử trong thư mục artifacts đối soát.
+
+- **Đã đọc lại memory:** Đã rà soát lại toàn bộ các quyết định thiết kế, quy chuẩn vi dịch vụ, bảng mã màu, SVG iconography, kết quả test và tài liệu memory; xác nhận bảo đảm 100% an toàn chế độ PAPER, không phụ thuộc CDN ngoài và tuân thủ tuyệt đối quy tắc AGENTS.md.
+

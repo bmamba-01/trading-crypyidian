@@ -93,7 +93,7 @@
           <span class="tooltip-term" data-tooltip="Lợi nhuận ròng thực tế = Lãi gộp - (Phí giao dịch + Phí Funding + Trượt giá)">
             Lời / Lỗ Ròng (Net PnL) <span class="tooltip-icon">ⓘ</span>
           </span>
-          <span>💰</span>
+          <svg class="svg-icon" viewBox="0 0 24 24" style="color: #0ecb81;"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
         </div>
         <div class="metric-value {% if net_val > 0 %}pnl-positive{% elif net_val < 0 %}pnl-negative{% endif %} tabular-nums">
           {% if net_val > 0 %}+{% endif %}{{ totals.net_pnl }} {{ asset }}
@@ -109,7 +109,7 @@
           <span class="tooltip-term" data-tooltip="Tỷ lệ thắng = (Số lệnh thắng / Tổng lệnh đã đóng) × 100%">
             Tỷ Lệ Thắng (Win Rate) <span class="tooltip-icon">ⓘ</span>
           </span>
-          <span>🎯</span>
+          <svg class="svg-icon" viewBox="0 0 24 24" style="color: var(--primary);"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>
         </div>
         <div class="metric-value tabular-nums" style="color: var(--primary);">
           {{ totals.win_rate_percent or "0" }}%
@@ -125,7 +125,7 @@
           <span class="tooltip-term" data-tooltip="Hệ số lợi nhuận = Tổng lãi gộp / Tổng lỗ gộp. Giá trị > 1.5 biểu thị chiến lược vượt trội">
             Profit Factor <span class="tooltip-icon">ⓘ</span>
           </span>
-          <span>📈</span>
+          <svg class="svg-icon" viewBox="0 0 24 24" style="color: #0ecb81;"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>
         </div>
         <div class="metric-value tabular-nums">
           {{ totals.profit_factor or "N/A" }}{% if totals.profit_factor %}x{% endif %}
@@ -141,7 +141,7 @@
           <span class="tooltip-term" data-tooltip="Mức sụt giảm lớn nhất từ đỉnh vốn tích lũy trong kỳ báo cáo">
             Max Drawdown <span class="tooltip-icon">ⓘ</span>
           </span>
-          <span>🛡️</span>
+          <svg class="svg-icon" viewBox="0 0 24 24" style="color: var(--danger);"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
         </div>
         <div class="metric-value tabular-nums" style="color: var(--danger);">
           -{{ totals.max_drawdown }} {{ asset }}
@@ -157,7 +157,7 @@
           <span class="tooltip-term" data-tooltip="Thời gian nắm giữ vị thế trung bình từ lúc vào lệnh đến khi đóng hoàn toàn">
             Thời Gian Giữ Lệnh <span class="tooltip-icon">ⓘ</span>
           </span>
-          <span>⏱️</span>
+          <svg class="svg-icon" viewBox="0 0 24 24" style="color: var(--text-muted);"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
         </div>
         <div class="metric-value tabular-nums" style="font-size: 1.25rem;">
           {% if totals.average_holding_seconds %}
@@ -287,8 +287,17 @@
                   L6 Tỷ Lệ R:R & Kế Hoạch Vùng Giá <span class="tooltip-icon">ⓘ</span>
                 </span>
               </dt>
-              <dd class="tabular-nums">
-                1 : {{ pm.entry_analysis.risk_reward_ratio or "2.0" }} (SL: {{ pm.entry_analysis.stop_loss_price }} | TP: {{ pm.entry_analysis.take_profit_price }})
+              <dd>
+                <div class="rr-ratio-bar">
+                  <span class="rr-bar-track" aria-hidden="true">
+                    <span class="rr-bar-risk"></span>
+                    <span class="rr-bar-reward"></span>
+                  </span>
+                  <span class="rr-ratio-label tabular-nums">1 : {{ pm.entry_analysis.risk_reward_ratio or "2.0" }}</span>
+                </div>
+                <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.2rem;" class="tabular-nums">
+                  SL: {{ pm.entry_analysis.stop_loss_price }} | TP: {{ pm.entry_analysis.take_profit_price }}
+                </div>
               </dd>
             </div>
             <div class="reasoning-kv-item" style="border-bottom: none;">

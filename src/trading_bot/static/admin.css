@@ -2079,3 +2079,118 @@ th {
   margin-bottom: 0;
   padding-bottom: 0;
 }
+
+/* =========================================================================
+   UI/UX PRO MAX — INSTITUTIONAL QUANT TRADING DESIGN SYSTEM EXTENSIONS
+   Obsidian Pro & Executive Light Styling, Vector SVG Icons, R:R Visual Gauge
+   ========================================================================= */
+
+.svg-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.15em;
+  height: 1.15em;
+  vertical-align: -0.15em;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.svg-icon-sm {
+  width: 0.95em;
+  height: 0.95em;
+}
+
+.svg-icon-lg {
+  width: 1.4em;
+  height: 1.4em;
+}
+
+/* Visual Risk : Reward Gauge (Thanh đo tỷ lệ R:R trực quan) */
+.rr-ratio-bar {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  background: var(--bg-surface-subtle);
+  padding: 0.25rem 0.6rem;
+  border-radius: 9999px;
+  border: 1px solid var(--border-subtle);
+  font-size: 0.8rem;
+  font-weight: 700;
+  margin-top: 0.25rem;
+}
+
+.rr-bar-track {
+  display: flex;
+  width: 72px;
+  height: 8px;
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--border-subtle);
+}
+
+.rr-bar-risk {
+  height: 100%;
+  background: #f6465d;
+  flex: 1;
+}
+
+.rr-bar-reward {
+  height: 100%;
+  background: #0ecb81;
+  flex: 2.5;
+}
+
+.rr-ratio-label {
+  color: var(--text-main);
+  font-family: var(--font-mono, monospace);
+  letter-spacing: -0.02em;
+}
+
+/* Institutional Terminal Card Glows */
+:root[data-theme="dark"] .trading-metric-card:hover,
+:root[data-theme="dark"] .bot-section-card:hover,
+:root[data-theme="dark"] .trade-reasoning-panel:hover {
+  border-color: rgba(59, 130, 246, 0.4);
+  box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.5), 0 0 12px 0 rgba(59, 130, 246, 0.1);
+}
+
+:root[data-theme="light"] .trading-metric-card:hover,
+:root[data-theme="light"] .bot-section-card:hover,
+:root[data-theme="light"] .trade-reasoning-panel:hover {
+  border-color: rgba(37, 99, 235, 0.3);
+  box-shadow: 0 4px 16px -2px rgba(37, 99, 235, 0.08);
+}
+
+/* Micro Tooltip & Quantitative Callout */
+.term-explain-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.15rem 0.45rem;
+  border-radius: 0.25rem;
+  background: var(--bg-surface-subtle);
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  border: 1px solid var(--border-subtle);
+}
+
+/* Enhanced Tabular numbers */
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+  -moz-font-feature-settings: "tnum";
+  -webkit-font-feature-settings: "tnum";
+  font-feature-settings: "tnum";
+}
+
+/* Smooth Interactive Transition */
+.btn-ai-retrain,
+.quick-filter-btn,
+.trading-metric-card,
+.bot-section-card {
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+

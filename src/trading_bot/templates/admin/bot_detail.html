@@ -20,7 +20,8 @@
     </nav>
     <div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
       <h2 style="margin: 0; font-size: 1.35rem; display: flex; align-items: center; gap: 0.4rem;">
-        <span>🤖 {{ bot.name }}</span>
+        <svg class="svg-icon" viewBox="0 0 24 24" style="color: var(--primary);"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/></svg>
+        <span>{{ bot.name }}</span>
       </h2>
       <span class="badge" style="background: var(--bg-surface-subtle); border: 1px solid var(--border-subtle); font-size: 0.8rem;">
         Cặp: <strong>{{ bot.symbol }}</strong>
@@ -76,7 +77,7 @@
         <span class="tooltip-term" data-tooltip="Số lượng vị thế giao dịch đang mở tại thời điểm hiện tại">
           Vị Thế Đang Mở <span class="tooltip-icon">ⓘ</span>
         </span>
-        <span>📊</span>
+        <svg class="svg-icon" viewBox="0 0 24 24" style="color: var(--primary);"><path d="M18 20V10M12 20V4M6 20v-6"/></svg>
       </div>
       <div class="metric-value tabular-nums" id="kpi-open-positions" style="color: var(--primary);">
         {{ metrics.open_positions_count or (positions | length) }}
@@ -92,7 +93,7 @@
         <span class="tooltip-term" data-tooltip="Tỷ lệ thắng = (Số lệnh thắng / Tổng lệnh đã đóng) × 100%">
           Tỷ Lệ Thắng (Win Rate) <span class="tooltip-icon">ⓘ</span>
         </span>
-        <span>🎯</span>
+        <svg class="svg-icon" viewBox="0 0 24 24" style="color: #0ecb81;"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>
       </div>
       <div class="metric-value tabular-nums" id="kpi-win-rate" style="color: #0ecb81;">
         {{ metrics.win_rate_percent or 0 }}%
@@ -108,7 +109,7 @@
         <span class="tooltip-term" data-tooltip="Hệ số lợi nhuận = Tổng lãi gộp / Tổng lỗ gộp. Giá trị > 1.5 biểu thị chiến lược sinh lời bền vững">
           Profit Factor <span class="tooltip-icon">ⓘ</span>
         </span>
-        <span>📈</span>
+        <svg class="svg-icon" viewBox="0 0 24 24" style="color: var(--primary);"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>
       </div>
       <div class="metric-value tabular-nums" id="kpi-profit-factor">
         {{ metrics.profit_factor or "N/A" }}{% if metrics.profit_factor and metrics.profit_factor != "N/A" %}x{% endif %}
@@ -124,7 +125,7 @@
         <span class="tooltip-term" data-tooltip="Lợi nhuận ròng thực tế = Lãi gộp - (Phí sàn + Funding + Trượt giá)">
           Lợi Nhuận Ròng (Net PnL) <span class="tooltip-icon">ⓘ</span>
         </span>
-        <span>💰</span>
+        <svg class="svg-icon" viewBox="0 0 24 24" style="color: #0ecb81;"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
       </div>
       <div class="metric-value tabular-nums pnl-positive" id="kpi-net-pnl">
         {{ metrics.net_pnl or "+0.00" }} USDT
@@ -140,7 +141,7 @@
         <span class="tooltip-term" data-tooltip="Mức sụt giảm tài khoản lớn nhất từ đỉnh vốn tích lũy trong kỳ">
           Max Drawdown <span class="tooltip-icon">ⓘ</span>
         </span>
-        <span>🛡️</span>
+        <svg class="svg-icon" viewBox="0 0 24 24" style="color: #f6465d;"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
       </div>
       <div class="metric-value tabular-nums" id="kpi-max-drawdown" style="color: #f6465d;">
         {{ metrics.max_drawdown or "-0.00" }} USDT
@@ -296,7 +297,15 @@
                 L6 Vùng Giá & Tỷ Lệ R:R <span class="tooltip-icon">ⓘ</span>
               </span>
             </dt>
-            <dd class="tabular-nums">{{ r.l6_risk_reward }}</dd>
+            <dd>
+              <div class="rr-ratio-bar">
+                <span class="rr-bar-track" aria-hidden="true">
+                  <span class="rr-bar-risk"></span>
+                  <span class="rr-bar-reward"></span>
+                </span>
+                <span class="rr-ratio-label tabular-nums">Tỷ Lệ R:R: {{ r.l6_risk_reward }}</span>
+              </div>
+            </dd>
           </div>
           <div class="reasoning-kv-item" style="border-bottom: none;">
             <dt>Đòn bẩy & Quản trị vốn</dt>
