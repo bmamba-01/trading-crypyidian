@@ -139,6 +139,7 @@ def upgrade() -> None:
         sa.Column("low", sa.Numeric(38, 18), nullable=False),
         sa.Column("close", sa.Numeric(38, 18), nullable=False),
         sa.Column("volume", sa.Numeric(38, 18), nullable=False),
+        sa.Column("quote_volume", sa.Numeric(38, 18), nullable=True),
         sa.Column("is_closed", sa.Boolean(), nullable=False),
         sa.Column("id", sa.Uuid(), nullable=False),
         sa.Column(

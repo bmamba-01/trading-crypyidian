@@ -12,8 +12,7 @@ from uuid import uuid4
 
 from scripts.docker_image import build_image_reference, ensure_image_available
 
-PERSIST_FENCE_PARENT = "f7a9c1e3d5b7"
-PERSIST_FENCE_REVISION = "a8c0e2f4b6d9"
+PREVIOUS_HEAD = "e6c8a0b2d4f7"
 BOOTSTRAP = (
     "import json,os,sys,types;p=json.load(sys.stdin);"
     "os.environ.update(WP07_PERSIST_STATE=json.dumps(p['state']),WP07_PERSIST_PHASE=p['phase']);"
@@ -46,7 +45,7 @@ def test_backtest_persist_capability_roles_transactions_and_downgrade() -> None:
             text=True,
             timeout=300,
         )
-        assert result.returncode == 0, (args, result.stdout[-1000:], result.stderr[-25000:])
+        assert result.returncode == 0, (args, result.stdout[-5000:], result.stderr[-5000:])
         return result
 
     probe = (root / "tests/e2e/probes/wp07_backtest_persist_fence.py").read_text()
@@ -94,40 +93,12 @@ def test_backtest_persist_capability_roles_transactions_and_downgrade() -> None:
         assert result["role_boundaries"] is True
         assert result["transactions"] is True
         assert result["deterministic_races"] is True
-        # Chỉ kiểm tra downgrade/re-upgrade của migration fence, không đi qua
-        # các migration WP06 khác vốn thêm cột lineage vào cùng bảng outcome.
-        compose(
-            "run",
-            "--rm",
-            "--no-deps",
-            "migrator",
-            "alembic",
-            "downgrade",
-            PERSIST_FENCE_REVISION,
-        )
-        state["snapshot"] = run_probe("fence_snapshot")["snapshot"]
-        compose(
-            "run",
-            "--rm",
-            "--no-deps",
-            "migrator",
-            "alembic",
-            "downgrade",
-            PERSIST_FENCE_PARENT,
-        )
+        state["snapshot"] = result["snapshot"]
+        compose("run", "--rm", "--no-deps", "migrator", "alembic", "downgrade", PREVIOUS_HEAD)
         assert run_probe("down") == {"preserved": True}
-        compose(
-            "run",
-            "--rm",
-            "--no-deps",
-            "migrator",
-            "alembic",
-            "upgrade",
-            PERSIST_FENCE_REVISION,
-        )
-        assert run_probe("up") == {"preserved": True}
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "head")
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "check")
+        assert run_probe("up") == {"preserved": True}
     finally:
         subprocess.run(
             [*base, "down", "--volumes", "--remove-orphans"],

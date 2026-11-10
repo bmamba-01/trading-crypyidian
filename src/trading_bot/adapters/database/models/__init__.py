@@ -164,6 +164,7 @@ from trading_bot.adapters.database.models.signal_entities import (
     BotDecisionRecord,
     SharedSignalEvidenceRecord,
 )
+from trading_bot.adapters.database.models.strategy_card_entities import StrategyCardRecord
 from trading_bot.adapters.database.models.telegram_entities import (
     TelegramBindingChallenge,
     TelegramLinkRequest,
@@ -290,4 +291,5 @@ __all__ = [
     "WatchlistVersion",
     "Workspace",
     "WorkspaceSettingsVersion",
+    "StrategyCardRecord",
 ]

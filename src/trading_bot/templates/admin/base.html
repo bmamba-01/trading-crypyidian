@@ -6,34 +6,83 @@
     <title>{% block title %}Crypidian{% endblock %}</title>
     <link rel="stylesheet" href="/static/vendor/bootstrap-5.3.8.min.css">
     <link rel="stylesheet" href="/static/admin.css">
+    <script>
+      (function() {
+        const saved = localStorage.getItem("crypidian_theme");
+        const theme = saved || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+        document.documentElement.setAttribute("data-theme", theme);
+      })();
+    </script>
     {% block head_extra %}{% endblock %}
   </head>
   <body>
     <a class="skip-link" href="#main-content">Bỏ qua điều hướng, tới nội dung chính</a>
-    <header class="container-fluid app-header">
-      <a href="/admin" aria-label="Crypidian — trang quản trị">Crypidian</a>
+    <header role="banner">
+      <div class="brand-bar">
+        <a href="/admin" aria-label="Crypidian — trang quản trị" class="brand-title">Crypidian</a>
+      </div>
       {% block navigation %}
-        <nav aria-label="Điều hướng chính" class="nav">
+        <nav aria-label="Điều hướng chính" class="main-nav">
           <a href="/admin" {% if request.url.path == "/admin" %}aria-current="page"{% endif %}>Tổng quan</a>
           <a href="/admin/bots" {% if request.url.path.startswith("/admin/bots") %}aria-current="page"{% endif %}>Bot</a>
           <a href="/admin/reports" {% if request.url.path.startswith("/admin/reports") %}aria-current="page"{% endif %}>Báo cáo</a>
-          <a href="/admin/backtests" {% if request.url.path.startswith("/admin/backtests") %}aria-current="page"{% endif %}>Kiểm thử</a>
-          <a href="/admin/research-sources" {% if request.url.path.startswith("/admin/research-sources") %}aria-current="page"{% endif %}>Nguồn nghiên cứu</a>
-          <a href="/admin/learning/models" {% if request.url.path.startswith("/admin/learning/models") %}aria-current="page"{% endif %}>Mô hình học</a>
-          <a href="/admin/learning/scoring" {% if request.url.path.startswith("/admin/learning/scoring") %}aria-current="page"{% endif %}>Chấm điểm mô hình</a>
+          <a href="/admin/backtests" {% if request.url.path.startswith("/admin/backtests") %}aria-current="page"{% endif %}>Kiểm định Backtest</a>
+          <a href="/admin/strategy-cards" {% if request.url.path.startswith("/admin/strategy-cards") %}aria-current="page"{% endif %}>Chiến lược</a>
+          <a href="/admin/research-sources" {% if request.url.path.startswith("/admin/research-sources") %}aria-current="page"{% endif %}>Nguồn dữ liệu</a>
+          <a href="/admin/learning/models" {% if request.url.path.startswith("/admin/learning/models") %}aria-current="page"{% endif %}>Mô hình</a>
+          <a href="/admin/learning/observations" {% if request.url.path.startswith("/admin/learning/observations") %}aria-current="page"{% endif %}>Quan sát mô hình</a>
+          <a href="/admin/learning/scoring" {% if request.url.path.startswith("/admin/learning/scoring") %}aria-current="page"{% endif %}>Chấm điểm</a>
           <a href="/admin/learning/splits" {% if request.url.path.startswith("/admin/learning/splits") %}aria-current="page"{% endif %}>Duyệt phân chia dữ liệu</a>
           <a href="/admin/learning/training" {% if request.url.path.startswith("/admin/learning/training") %}aria-current="page"{% endif %}>Huấn luyện</a>
-          <a href="/admin/learning/observations" {% if request.url.path.startswith("/admin/learning/observations") %}aria-current="page"{% endif %}>Quan sát mô hình</a>
-          <a href="/admin/flatten" {% if request.url.path.startswith("/admin/flatten") %}aria-current="page"{% endif %}>Đóng toàn bộ vị thế</a>
+          <a href="/admin/flatten">Đóng vị thế toàn bộ</a>
           <a href="/admin/telegram" {% if request.url.path.startswith("/admin/telegram") %}aria-current="page"{% endif %}>Telegram</a>
         </nav>
       {% endblock %}
-      {% if identity %}<span>{{ identity.email }}</span>{% endif %}
+      <div class="header-actions">
+        <button id="theme-toggle" class="theme-toggle-btn" type="button" aria-label="Chuyển chế độ sáng/tối" title="Chuyển đổi Light/Dark mode">
+          <span class="theme-icon theme-icon-dark" aria-hidden="true"><svg class="svg-icon" viewBox="0 0 24 24"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg></span>
+          <span class="theme-icon theme-icon-light" aria-hidden="true"><svg class="svg-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg></span>
+          <span class="theme-label visually-hidden">Chuyển giao diện</span>
+        </button>
+        {% if identity %}
+          <div class="user-info">
+            <span class="user-email" aria-label="Tài khoản đăng nhập">{{ identity.email }}</span>
+          </div>
+        {% endif %}
+      </div>
     </header>
+
+    <div class="system-mode-banner" role="status" aria-label="Thông báo chế độ vận hành">
+      <div class="mode-badge-wrapper">
+        <span class="badge badge-paper">Chế độ: Mô phỏng (PAPER) nội bộ</span>
+      </div>
+      <p class="mode-description">
+        Hệ thống đang chạy mô phỏng nội bộ trong cơ sở dữ liệu — không gọi API hay đặt lệnh lên Binance (theo quyết định ngày 02/11/2026).
+      </p>
+    </div>
+
     <main id="main-content" tabindex="-1">
       <h1>{% block heading %}{% endblock %}</h1>
       {% block content %}{% endblock %}
     </main>
+
+    <footer role="contentinfo" class="admin-footer">
+      <p>Crypidian Admin — Môi trường thử nghiệm an toàn độc lập (PAPER mode)</p>
+    </footer>
+    <script>
+      (function() {
+        const toggleBtn = document.getElementById("theme-toggle");
+        if (toggleBtn) {
+          toggleBtn.addEventListener("click", () => {
+            const current = document.documentElement.getAttribute("data-theme") || "dark";
+            const next = current === "dark" ? "light" : "dark";
+            document.documentElement.setAttribute("data-theme", next);
+            localStorage.setItem("crypidian_theme", next);
+            window.dispatchEvent(new CustomEvent("themechange", { detail: { theme: next } }));
+          });
+        }
+      })();
+    </script>
     {% block scripts %}{% endblock %}
   </body>
 </html>

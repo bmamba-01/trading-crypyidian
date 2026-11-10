@@ -232,3 +232,9 @@ class TelegramSignalDelivery(UuidPrimaryKey, CreatedAt, Base):
     )
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_error_code: Mapped[str | None] = mapped_column(String(120), nullable=True)
+
+
+# Tên bí danh chuẩn hóa tương thích ngược
+TelegramSignalSubscriptionRecord = TelegramSignalSubscription
+TelegramSignalDeliveryRecord = TelegramSignalDelivery
+TelegramSignalFilterRecord = TelegramSignalSubscription

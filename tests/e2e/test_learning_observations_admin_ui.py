@@ -205,7 +205,8 @@ def test_learning_observations_page_is_read_only_vietnamese_and_responsive(
         assert service.principals == [_identity().principal]
         assert service.facade.calls == [50]
         assert "workspace_id" not in browser_page.url.split("?", maxsplit=1)[0]
-        assert browser_page.get_by_role("button").count() == 0
+        expect(browser_page.get_by_role("button", name="Chuyển chế độ sáng/tối")).to_be_visible()
+        assert browser_page.get_by_role("button").count() == 1
         assert browser_page.locator("form").count() == 0
 
         page_text = browser_page.locator("body").inner_text().lower()

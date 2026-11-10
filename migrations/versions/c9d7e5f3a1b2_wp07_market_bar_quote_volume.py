@@ -2,7 +2,6 @@
 
 from collections.abc import Sequence
 
-import sqlalchemy as sa
 from alembic import op
 
 revision: str = "c9d7e5f3a1b2"
@@ -12,14 +11,16 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "market_bar",
-        sa.Column("quote_volume", sa.Numeric(precision=38, scale=18), nullable=True),
+    op.execute(
+        "ALTER TABLE public.market_bar ADD COLUMN IF NOT EXISTS quote_volume NUMERIC(38, 18)"
     )
-    op.create_check_constraint(
-        "market_bar_quote_volume_nonnegative",
-        "market_bar",
-        "quote_volume IS NULL OR quote_volume >= 0",
+    op.execute(
+        "DO $$ BEGIN "
+        "IF NOT EXISTS (SELECT 1 FROM pg_constraint "
+        "WHERE conname = 'market_bar_quote_volume_nonnegative') THEN "
+        "ALTER TABLE public.market_bar ADD CONSTRAINT market_bar_quote_volume_nonnegative "
+        "CHECK (quote_volume IS NULL OR quote_volume >= 0); "
+        "END IF; END $$"
     )
 
 
@@ -30,5 +31,7 @@ def downgrade() -> None:
         "RAISE EXCEPTION 'WP07_MARKET_BAR_QUOTE_VOLUME_DOWNGRADE_REQUIRES_EMPTY_COLUMN'; "
         "END IF; END $$"
     )
-    op.drop_constraint("market_bar_quote_volume_nonnegative", "market_bar", type_="check")
-    op.drop_column("market_bar", "quote_volume")
+    op.execute(
+        "ALTER TABLE public.market_bar DROP CONSTRAINT IF EXISTS "
+        "market_bar_quote_volume_nonnegative"
+    )

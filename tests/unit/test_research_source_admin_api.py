@@ -2,6 +2,7 @@
 
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from pathlib import Path
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException
@@ -252,8 +253,9 @@ def test_composition_admin_web_only_and_no_ingestion_factory():
         AppSettings(
             app_env="test",
             process_role="trainer-worker",
+            trading_mode="PAPER",
             database_user="crypidian_trainer_worker",
-            database_password_file="/tmp/trainer-test-secret",
+            database_password_file=Path("/tmp/trainer-test-secret"),
             learning_training_workspace_id=uuid4(),
         ),
         AppSettings(
@@ -262,7 +264,7 @@ def test_composition_admin_web_only_and_no_ingestion_factory():
             backtest_worker_workspace_id=uuid4(),
             database_user="crypidian_backtest_worker",
             backtest_replay_database_user="crypidian_replay_writer",
-            backtest_replay_database_password_file="/tmp/replay-writer-test-secret",
+            backtest_replay_database_password_file=Path("/tmp/replay-writer-test-secret"),
         ),
         AppSettings(
             app_env="test",

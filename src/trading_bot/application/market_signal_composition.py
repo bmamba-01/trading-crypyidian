@@ -16,9 +16,6 @@ from trading_bot.adapters.database.models.market_entities import MarketBar
 from trading_bot.adapters.database.repositories.bot_decisions import PostgresSignalDecisionStore
 from trading_bot.adapters.database.repositories.bot_runtime_controls import read_runtime_control
 from trading_bot.adapters.database.repositories.feature_snapshots import FeatureSnapshotRepository
-from trading_bot.adapters.database.repositories.learning_scorer_runtime_committer import (
-    PostgresScorerRuntimeCommitter,
-)
 from trading_bot.application.bot_decision_contexts import (
     EffectiveBotDecisionContextProvider,
     RuntimeBotRef,
@@ -238,10 +235,7 @@ def build_market_signal_scanner(
         runtime_gate=SignalRuntimeGate(),
         exclusion_recorder=SignalExclusionRecorder(),
     )
-    store = PostgresSignalDecisionStore(
-        sessions,
-        score_candidate=PostgresScorerRuntimeCommitter(),
-    )
+    store = PostgresSignalDecisionStore(sessions)
     dispatcher = BotEvidenceDispatcher(
         store,
         strategies=StrategyRegistry(),

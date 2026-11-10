@@ -51,7 +51,7 @@
 {% if detail %}
 <p class="badge text-bg-primary">{{ state_labels[detail.current.state] }}</p>
 <dl class="source-metadata">
-{% for label, value in [('Nhà xuất bản',detail.current.publisher),('Địa chỉ nguồn',detail.current.endpoint_url),('Phương thức truy cập',detail.current.access_method),('Phạm vi xác thực',detail.current.auth_scope),('Evidence tham chiếu',detail.current.evidence_ref or 'Chưa cung cấp'),('Ghi công','Chưa được duyệt' if detail.current.attribution == 'not approved' else detail.current.attribution),('Lưu giữ',detail.current.retention_ref),('Hết hạn',detail.current.valid_until or 'Không đặt thời hạn')] %}
+{% for label, value in [('Nhà xuất bản',detail.current.publisher),('Địa chỉ nguồn',detail.current.endpoint_url),('Phương thức truy cập',detail.current.access_method),('Phạm vi xác thực',detail.current.auth_scope),('Evidence tham chiếu',detail.current.evidence_ref or 'Chưa cung cấp'),('Ghi công',detail.current.attribution),('Lưu giữ',detail.current.retention_ref),('Hết hạn',detail.current.valid_until or 'Không đặt thời hạn')] %}
 <div><dt>{{ label }}</dt><dd>{{ value }}</dd></div>{% endfor %}
 </dl>
 <h3>Quota hiện hành</h3>

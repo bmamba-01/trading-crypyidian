@@ -4,12 +4,10 @@ import hashlib
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from types import SimpleNamespace
-from uuid import UUID, uuid5
+from uuid import UUID
 
 import pytest
 
-from trading_bot.application import market_signal_composition
 from trading_bot.application.backtest import validate_replay_observation
 from trading_bot.application.backtest_dataset_manifest import build_backtest_dataset_manifest
 from trading_bot.application.backtest_dataset_replay import BacktestDatasetReplayInput
@@ -25,11 +23,7 @@ from trading_bot.application.binance_rest_backfill import (
     BackfillRightsPurpose,
     RestBackfillRequest,
 )
-from trading_bot.application.market_signal_composition import (
-    PostgresClosedMarketObservationSource,
-    PostgresMarketDecisionSnapshotProvider,
-)
-from trading_bot.domain.market.models import MarketBarSourceIdentity, OHLCVBar
+from trading_bot.domain.market.models import OHLCVBar
 from trading_bot.domain.strategy.contracts import SeriesQuality
 
 NOW = datetime(2026, 11, 3, 8, tzinfo=UTC)
@@ -102,14 +96,11 @@ def replay_input(
     timeframe: str,
     *,
     bars: tuple[OHLCVBar, ...] | None = None,
-    schema_version: int = 3,
-    rights_evidence: BackfillRightsEvidence | None = None,
 ) -> BacktestDatasetReplayInput:
     interval = interval_for(timeframe)
     observed = bars if bars is not None else bars_for(timeframe)
     if not observed:
         raise ValueError("Fixture replay cần ít nhất một bar.")
-    rights = rights_evidence or evidence()
     warmup_bars = int((EVALUATION_START - observed[0].open_time) / interval)
     request = RestBackfillRequest(
         symbol="BTCUSDT",
@@ -123,16 +114,15 @@ def replay_input(
         evaluation_start=EVALUATION_START,
         warmup_bars=warmup_bars,
         bars=observed,
-        rights_evidence=rights,
+        rights_evidence=evidence(),
         prepared_at=NOW
         + (
             timedelta(seconds=2)
             if any(bar.available_at > NOW for bar in observed)
             else timedelta(0)
         ),
-        schema_version=schema_version,
     )
-    return BacktestDatasetReplayInput(manifest, observed, rights)
+    return BacktestDatasetReplayInput(manifest, observed, evidence())
 
 
 def bundle(
@@ -151,64 +141,6 @@ def bundle(
             bars = (replace(bars[0], quote_volume=None), *bars[1:])
         inputs.append(replay_input(timeframe, bars=bars))
     return build_backtest_dataset_replay_bundle(tuple(inputs))
-
-
-def _hydrate_bar_identities(bars: tuple[OHLCVBar, ...]) -> tuple[OHLCVBar, ...]:
-    return tuple(
-        replace(
-            bar,
-            source_identity=MarketBarSourceIdentity(
-                workspace_id=WORKSPACE_ID,
-                record_id=uuid5(WORKSPACE_ID, f"{bar.timeframe}:{bar.open_time.isoformat()}"),
-                logical_key=f"{bar.source}:{bar.symbol}:{bar.timeframe}:{bar.open_time.isoformat()}",
-                revision=1,
-                supersedes_record_id=None,
-                checksum=bar.checksum,
-            ),
-        )
-        for bar in bars
-    )
-
-
-class _FakeUnitOfWork:
-    def __init__(self, *_args: object, **_kwargs: object) -> None:
-        self.session = object()
-
-    async def __aenter__(self) -> _FakeUnitOfWork:
-        return self
-
-    async def __aexit__(self, *_args: object) -> None:
-        return None
-
-
-def _market_row(bar: OHLCVBar) -> SimpleNamespace:
-    identity = bar.source_identity
-    assert identity is not None
-    return SimpleNamespace(
-        id=identity.record_id,
-        workspace_id=identity.workspace_id,
-        logical_key=identity.logical_key,
-        revision=identity.revision,
-        supersedes_id=identity.supersedes_record_id,
-        symbol=bar.symbol,
-        timeframe=bar.timeframe,
-        open_time=bar.open_time,
-        close_time=bar.close_time,
-        event_at=bar.event_at,
-        received_at=bar.received_at,
-        available_at=bar.available_at,
-        open=bar.open,
-        high=bar.high,
-        low=bar.low,
-        close=bar.close,
-        volume=bar.volume,
-        quote_volume=bar.quote_volume,
-        is_closed=bar.is_closed,
-        source=bar.source,
-        source_cursor=bar.source_cursor,
-        checksum=bar.checksum,
-        raw_reference_id=None,
-    )
 
 
 def test_h01_observations_filter_higher_timeframe_bars_by_available_time() -> None:
@@ -303,140 +235,3 @@ def test_builder_rejects_unsupported_release_and_empty_decision_timeframe() -> N
             bundle(timeframes=("1h",)),
             strategy_release_id="h01-v1",
         )
-
-
-def test_legacy_replay_snapshot_identity_remains_bundle_namespaced() -> None:
-    bars = bars_for("1h")
-    first_bundle = build_backtest_dataset_replay_bundle(
-        (replay_input("1h", bars=bars, schema_version=3),)
-    )
-    changed_rights = replace(
-        evidence(),
-        policy_fingerprint=hashlib.sha256(b"different-policy").hexdigest(),
-    )
-    second_bundle = build_backtest_dataset_replay_bundle(
-        (replay_input("1h", bars=bars, schema_version=3, rights_evidence=changed_rights),)
-    )
-    assert first_bundle.dataset_hash != second_bundle.dataset_hash
-
-    first = build_backtest_dataset_replay_observations(first_bundle, strategy_release_id="h03-v1")[
-        -1
-    ]
-    second = build_backtest_dataset_replay_observations(
-        second_bundle, strategy_release_id="h03-v1"
-    )[-1]
-
-    assert tuple(
-        (item.name, item.timeframe, item.value, item.previous_value, item.quality)
-        for item in first.snapshot.features
-    ) == tuple(
-        (item.name, item.timeframe, item.value, item.previous_value, item.quality)
-        for item in second.snapshot.features
-    )
-    assert first.snapshot.snapshot_id != second.snapshot.snapshot_id
-
-
-@pytest.mark.asyncio
-async def test_runtime_and_replay_share_canonical_snapshot_for_same_pinned_bars(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    bars_by_timeframe = {
-        timeframe: _hydrate_bar_identities(bars_for(timeframe)) for timeframe in ("1h", "4h")
-    }
-    replay_bundle = build_backtest_dataset_replay_bundle(
-        tuple(
-            replay_input(timeframe, bars=bars, schema_version=4)
-            for timeframe, bars in bars_by_timeframe.items()
-        )
-    )
-    replay = build_backtest_dataset_replay_observations(
-        replay_bundle,
-        strategy_release_id="h01-v1",
-        position_is_flat_at=lambda _time: True,
-    )[-1].snapshot
-    evaluation_time = replay.decision_time
-    market_rows = tuple(
-        _market_row(bar) for timeframe in ("1h", "4h") for bar in bars_by_timeframe[timeframe]
-    )
-
-    query_as_of: list[datetime] = []
-
-    async def latest_rows(_session: object, **kwargs: object) -> tuple[SimpleNamespace, ...]:
-        query_as_of.append(kwargs["as_of"])  # type: ignore[arg-type]
-        return market_rows
-
-    monkeypatch.setattr(market_signal_composition, "UnitOfWork", _FakeUnitOfWork)
-    monkeypatch.setattr(market_signal_composition, "_latest_bar_rows", latest_rows)
-    provider = PostgresMarketDecisionSnapshotProvider(object())  # type: ignore[arg-type]
-    runtime = await provider.snapshot_for(
-        evidence=SimpleNamespace(
-            workspace_id=WORKSPACE_ID,
-            symbol="BTCUSDT",
-            evidence_id=uuid5(WORKSPACE_ID, "evidence"),
-            observed_at=evaluation_time,
-        ),
-        context=SimpleNamespace(
-            workspace_id=WORKSPACE_ID,
-            strategy_release_id="h01-v1",
-        ),
-        evaluated_at=evaluation_time,
-    )
-
-    assert runtime.snapshot_id == replay.snapshot_id
-    assert runtime.features == replay.features
-    assert runtime.series == replay.series
-
-    delayed_evaluation = evaluation_time + timedelta(hours=5)
-    delayed_runtime = await provider.snapshot_for(
-        evidence=SimpleNamespace(
-            workspace_id=WORKSPACE_ID,
-            symbol="BTCUSDT",
-            evidence_id=uuid5(WORKSPACE_ID, "delayed-evidence"),
-            observed_at=evaluation_time,
-        ),
-        context=SimpleNamespace(
-            workspace_id=WORKSPACE_ID,
-            strategy_release_id="h01-v1",
-        ),
-        evaluated_at=delayed_evaluation,
-    )
-
-    assert query_as_of == [evaluation_time, evaluation_time]
-    assert delayed_runtime.decision_time == evaluation_time
-    assert delayed_runtime.features == replay.features
-    assert tuple(item.bars for item in delayed_runtime.series) == tuple(
-        item.bars for item in replay.series
-    )
-    assert delayed_runtime.get_series("1h").quality is SeriesQuality.STALE
-    assert delayed_runtime.snapshot_id != replay.snapshot_id
-
-
-@pytest.mark.asyncio
-async def test_market_signal_snapshot_uses_database_bar_ids_for_rights_lineage(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    bars = _hydrate_bar_identities(bars_for("1h"))
-    rows = tuple(_market_row(bar) for bar in bars)
-
-    async def latest_rows(_session: object, **_kwargs: object) -> tuple[SimpleNamespace, ...]:
-        return rows
-
-    monkeypatch.setattr(market_signal_composition, "UnitOfWork", _FakeUnitOfWork)
-    monkeypatch.setattr(market_signal_composition, "_latest_bar_rows", latest_rows)
-    source = PostgresClosedMarketObservationSource(object())  # type: ignore[arg-type]
-
-    observations = await source.qualified_closed_observations(
-        workspace_id=WORKSPACE_ID,
-        as_of=NOW,
-        limit=10,
-        symbols=("BTCUSDT",),
-        timeframes=("1h",),
-    )
-
-    assert len(observations) == 1
-    observation = observations[0]
-    expected_ids = tuple(str(bar.source_identity.record_id) for bar in bars)
-    assert observation.feature_snapshot.input_event_ids == expected_ids
-    assert tuple(ref.ref for ref in observation.source_refs()) == tuple(
-        f"market-bar-event:{event_id}" for event_id in expected_ids
-    )

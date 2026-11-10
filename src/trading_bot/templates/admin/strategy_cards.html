@@ -1,0 +1,173 @@
+{% extends "admin/base.html" %}
+
+{% block title %}Quản lý Thẻ Chiến lược (Strategy Cards) — Crypidian Admin{% endblock %}
+
+{% block heading %}Quản lý Thẻ Chiến lược (Strategy Cards){% endblock %}
+
+{% block content %}
+<section class="page-intro" aria-labelledby="intro-heading">
+  <h2 id="intro-heading" class="sr-only">Giới thiệu kiến trúc Thẻ Chiến lược</h2>
+  <p class="intro-description">
+    Hệ thống bản kê chiến lược dạng khai báo (Declarative Strategy Cards) lấy cảm hứng từ kiến trúc phân tầng
+    <strong>L0 → L6</strong> của QUANTSMART. Đồ thị tính toán DAG được kiểm định tĩnh chống nút chết (Dead Nodes)
+    và ảo giác đồng thuận (Anti-Consensus Illusion) trước khi chuyển sang động cơ thực thi.
+  </p>
+</section>
+
+<!-- KPI Tổng quan -->
+<section class="kpi-grid" aria-label="Chỉ số tổng quan chiến lược" role="region">
+  <article class="kpi-card" aria-labelledby="kpi-total-title">
+    <span class="kpi-label" id="kpi-total-title">Tổng số chiến lược</span>
+    <span class="kpi-value" aria-label="{{ total_cards }} bản kê chiến lược">{{ total_cards }}</span>
+    <span class="kpi-hint">Đã đóng gói khai báo</span>
+  </article>
+
+  <article class="kpi-card" aria-labelledby="kpi-active-title">
+    <span class="kpi-label" id="kpi-active-title">Đang kích hoạt</span>
+    <span class="kpi-value kpi-success" aria-label="{{ active_cards_count }} chiến lược đang kích hoạt">{{ active_cards_count }}</span>
+    <span class="kpi-hint">Sẵn sàng nhận tín hiệu</span>
+  </article>
+
+  <article class="kpi-card" aria-labelledby="kpi-verified-title">
+    <span class="kpi-label" id="kpi-verified-title">Đã kiểm định (Orthogonal)</span>
+    <span class="kpi-value kpi-primary" aria-label="{{ verified_cards_count }} chiến lược đạt chuẩn trực giao">{{ verified_cards_count }}</span>
+    <span class="kpi-hint">Không có nút mồ côi</span>
+  </article>
+</section>
+
+<!-- Danh sách các thẻ chiến lược -->
+<section class="cards-section" aria-labelledby="section-cards-heading">
+  <div class="section-header">
+    <h2 id="section-cards-heading">Danh sách Bản kê Chiến lược trong Workspace</h2>
+    <span class="badge badge-paper-subtle">Cơ chế lưu trữ Append-Only (Bất biến)</span>
+  </div>
+
+  {% if cards %}
+    <div class="strategy-cards-grid" role="list" aria-label="Danh sách các thẻ chiến lược">
+      {% for card in cards %}
+        <article class="strategy-card-item" role="listitem" aria-labelledby="card-title-{{ loop.index }}">
+          <header class="strategy-card-header">
+            <div class="strategy-header-main">
+              <h3 id="card-title-{{ loop.index }}" class="strategy-name">{{ card.name }}</h3>
+              <span class="strategy-id-badge" title="Mã định danh chiến lược">{{ card.card_id }}</span>
+            </div>
+            <div class="strategy-header-meta">
+              <span class="badge badge-version">Phiên bản {{ card.version }}</span>
+              {% if card.is_active %}
+                <span class="badge badge-success" aria-label="Trạng thái: Đang hoạt động">
+                  <span class="status-dot dot-green" aria-hidden="true"></span> Đang hoạt động
+                </span>
+              {% else %}
+                <span class="badge badge-neutral" aria-label="Trạng thái: Lưu trữ">
+                  <span class="status-dot dot-gray" aria-hidden="true"></span> Lưu trữ
+                </span>
+              {% endif %}
+            </div>
+          </header>
+
+          <div class="strategy-card-body">
+            <!-- Dòng mã băm bất biến và trạng thái kiểm định -->
+            <div class="integrity-row">
+              <div class="hash-wrapper">
+                <span class="hash-label">Băm xác thực (SHA-256):</span>
+                <code class="hash-code" title="{{ card.content_hash }}" tabindex="0" aria-label="Mã băm SHA-256 bất biến">{{ card.short_hash }}</code>
+              </div>
+
+              <div class="verification-wrapper">
+                {% if card.is_verified %}
+                  <span class="badge badge-success" aria-label="Trạng thái kiểm định: Đã kiểm định (Orthogonal)">
+                    <span class="status-dot dot-green" aria-hidden="true"></span> Đã kiểm định (Orthogonal)
+                  </span>
+                {% elif card.has_consensus_warning %}
+                  <span class="badge badge-warning" aria-label="Cảnh báo: Tương quan cao phát hiện ảo giác đồng thuận">
+                    <span class="status-dot dot-yellow" aria-hidden="true"></span> Cảnh báo tương quan cao
+                  </span>
+                {% elif card.dead_nodes_count > 0 %}
+                  <span class="badge badge-danger" aria-label="Cảnh báo: Có {{ card.dead_nodes_count }} nút mồ côi">
+                    <span class="status-dot dot-red" aria-hidden="true"></span> {{ card.dead_nodes_count }} node mồ côi
+                  </span>
+                {% endif %}
+              </div>
+            </div>
+
+            <!-- Bảng phân tầng 7 lớp kiến trúc L0 -> L6 -->
+            <div class="layers-container" aria-label="Phân tầng kiến trúc L0 đến L6">
+              <h4 class="layers-heading">Phân tầng Kiến trúc Đồ thị ({{ card.total_nodes }} nodes, {{ card.total_edges }} edges):</h4>
+              <div class="layers-grid">
+                <div class="layer-pill" title="Tầng L0: Kiểm tra độ sạch dữ liệu & tính nhân quả">
+                  <span class="layer-tag">L0</span>
+                  <span class="layer-name">Data Hygiene</span>
+                  <span class="layer-count">{{ card.layers_breakdown.L0_DATA_HYGIENE }}</span>
+                </div>
+                <div class="layer-pill" title="Tầng L1: Giải phẫu nến nguyên tử (râu, thân, vị trí đóng)">
+                  <span class="layer-tag">L1</span>
+                  <span class="layer-name">Candle Anatomy</span>
+                  <span class="layer-count">{{ card.layers_breakdown.L1_CANDLE_ANATOMY }}</span>
+                </div>
+                <div class="layer-pill" title="Tầng L2: Chỉ báo làm mượt kinh điển (EMA, ATR, VWAP)">
+                  <span class="layer-tag">L2</span>
+                  <span class="layer-name">Indicators</span>
+                  <span class="layer-count">{{ card.layers_breakdown.L2_INDICATORS }}</span>
+                </div>
+                <div class="layer-pill" title="Tầng L3: Thuật toán chuẩn hóa [-1, 1], Z-Score">
+                  <span class="layer-tag">L3</span>
+                  <span class="layer-name">Algorithms</span>
+                  <span class="layer-count">{{ card.layers_breakdown.L3_ALGORITHMS }}</span>
+                </div>
+                <div class="layer-pill layer-gate" title="Tầng L4: Cổng bối cảnh thị trường (Short-circuit nếu BLOCK)">
+                  <span class="layer-tag">L4</span>
+                  <span class="layer-name">Context Gate</span>
+                  <span class="layer-count">{{ card.layers_breakdown.L4_CONTEXT_GATE }}</span>
+                </div>
+                <div class="layer-pill layer-trigger" title="Tầng L5: Ngòi nổ kích hoạt điểm vào lệnh">
+                  <span class="layer-tag">L5</span>
+                  <span class="layer-name">Trigger</span>
+                  <span class="layer-count">{{ card.layers_breakdown.L5_STRATEGY_TRIGGER }}</span>
+                </div>
+                <div class="layer-pill layer-zones" title="Tầng L6: Tọa độ vùng lệnh, chốt lời và cắt lỗ">
+                  <span class="layer-tag">L6</span>
+                  <span class="layer-name">Zones</span>
+                  <span class="layer-count">{{ card.layers_breakdown.L6_ZONES }}</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Metadata chi tiết -->
+            <footer class="strategy-meta-footer">
+              <div class="meta-item">
+                <span class="meta-label">Cặp giao dịch:</span>
+                <span class="meta-value">{{ card.target_symbols | join(', ') }}</span>
+              </div>
+              <div class="meta-item">
+                <span class="meta-label">Khung thời gian:</span>
+                <span class="meta-value">{{ card.timeframes | join(', ') }}</span>
+              </div>
+              <div class="meta-item">
+                <span class="meta-label">Tác giả:</span>
+                <span class="meta-value">{{ card.author }}</span>
+              </div>
+              <div class="meta-item">
+                <span class="meta-label">Thời điểm phát hành:</span>
+                <span class="meta-value">{{ card.created_at_formatted }}</span>
+              </div>
+            </footer>
+
+            <!-- Thanh tác vụ chiến lược -->
+            <div class="strategy-card-actions">
+              <a href="/admin/strategy-cards/{{ card.card_id }}/microscope"
+                 class="btn btn-secondary btn-sm btn-microscope"
+                 aria-label="Soi kính hiển vi vết lịch sử cho {{ card.name }}">
+                🔍 Soi kính hiển vi (Microscope)
+              </a>
+            </div>
+          </div>
+        </article>
+      {% endfor %}
+    </div>
+  {% else %}
+    <div class="empty-state" role="status">
+      <p>Chưa có bản kê chiến lược nào trong không gian làm việc này.</p>
+    </div>
+  {% endif %}
+</section>
+{% endblock %}

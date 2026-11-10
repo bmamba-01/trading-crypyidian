@@ -1,0 +1,22 @@
+{
+  "_fixture_metadata": {
+    "endpoint": "/fapi/v1/order",
+    "method": "GET",
+    "api_family": "REGULAR_ORDER",
+    "source_url": "https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api/Query-Order",
+    "checked_date": "2026-11-01",
+    "scenario": "Order response with invalid/unknown status to test fail-closed parser"
+  },
+  "clientOrderId": "crypidian_test_unknown",
+  "cumQuote": "0",
+  "executedQty": "0",
+  "orderId": 10000099,
+  "avgPrice": "0",
+  "origQty": "0.050",
+  "price": "50000.00",
+  "side": "BUY",
+  "status": "WEIRD_NEW_STATUS_XYZ",
+  "symbol": "BTCUSDT",
+  "type": "LIMIT",
+  "updateTime": 1798214400000
+}

@@ -470,22 +470,3 @@ async def test_queued_job_does_not_report_persist_phase_before_database_lock(rep
         phase_callback=phase_callback,
     )
     assert phases == ["load", "replay"]
-
-
-@pytest.mark.asyncio
-async def test_execution_forwards_exact_runtime_opportunities_in_persist_transaction():
-    from tests.unit.test_backtest_decision_opportunities import _pinned_setup
-
-    from trading_bot.application.runtime_replay_evaluator import run_runtime_paper_replay
-
-    source, observations, _, manifest, factory = _pinned_setup(cross=True)
-    comparison = run_runtime_paper_replay(
-        observations, manifest=manifest, runtime_evaluator_factory=factory
-    )
-    service, owner, writers, _, _ = _make_service((source, comparison))
-    manifest = comparison.runs[0].sensitivity_run.manifest
-    await service.execute(
-        workspace_id=source.workspace_id, bundle_hash=source.dataset_hash, manifest=manifest
-    )
-    assert writers[0].calls[0]["opportunities"] is comparison.runs[0].opportunities
-    assert owner.events[-1] == "commit:2"

@@ -77,21 +77,6 @@ class SensitivityComparison:
 EvaluatorFactory = Callable[[SensitivityScenario, ReplayManifest], ReplayEvaluator]
 
 
-def _trial_progress_callback(
-    callback: Callable[[int, int], None] | None,
-    *,
-    offset: int,
-    total_work: int,
-) -> Callable[[int, int], None] | None:
-    if callback is None:
-        return None
-
-    def report(completed: int, _total: int) -> None:
-        callback(offset + completed, total_work)
-
-    return report
-
-
 def run_sensitivity(
     observations: tuple[ReplayObservation, ...],
     *,
@@ -122,15 +107,16 @@ def run_sensitivity(
             trial_count=len(ordered),
         )
         evaluator = evaluator_factory(scenario, scenario_manifest)
+        scenario_progress = _progress_callback_for_offset(
+            progress_callback,
+            offset=trial_index * observation_count,
+            total=total_work,
+        )
         result = active_runner.run(
             observations,
             manifest=scenario_manifest,
             evaluator=evaluator,
-            progress_callback=_trial_progress_callback(
-                progress_callback,
-                offset=trial_index * observation_count,
-                total_work=total_work,
-            ),
+            progress_callback=scenario_progress,
             cancel_requested=cancel_requested,
         )
         runs.append(SensitivityRun(scenario, scenario_manifest, result))
@@ -138,6 +124,21 @@ def run_sensitivity(
         runs=tuple(runs),
         is_complete=all(isinstance(run.result, EvaluationReport) for run in runs),
     )
+
+
+def _progress_callback_for_offset(
+    callback: Callable[[int, int], None] | None,
+    *,
+    offset: int,
+    total: int,
+) -> Callable[[int, int], None] | None:
+    if callback is None:
+        return None
+
+    def report_progress(completed: int, _scenario_total: int) -> None:
+        callback(offset + completed, total)
+
+    return report_progress
 
 
 def _validate_and_order_scenarios(

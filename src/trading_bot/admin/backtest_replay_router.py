@@ -58,8 +58,6 @@ class BacktestJobView:
     bundle_hash_short: str
     strategy_name: str
     execution_interval: str
-    learning_intent: str
-    quarantined: bool
     created_at: Any
     created_at_compact: str
     error_code: str | None
@@ -118,7 +116,6 @@ def _submission(values: dict[str, str]) -> BacktestReplayJobSubmission:
         fee_rate=_decimal(values, "fee_rate"),
         slippage_rate=_decimal(values, "slippage_rate"),
         seed=seed,
-        learning_intent=values.get("learning_intent", "RESEARCH").strip(),
     )
 
 
@@ -143,11 +140,7 @@ def _job_view(job: Any) -> BacktestJobView:
     error_code = getattr(job, "error_code", None)
     if error_code is not None and re.fullmatch(r"[A-Z0-9_]{1,80}", str(error_code)) is None:
         error_code = "BACKTEST_FAILED"
-    learning_intent = str(getattr(job, "learning_intent", "RESEARCH"))
-    quarantined = learning_intent != "RESEARCH"
-    result_run_ids = (
-        () if quarantined else tuple(str(value) for value in getattr(job, "result_run_ids", ()))
-    )
+    result_run_ids = tuple(str(value) for value in getattr(job, "result_run_ids", ()))
     created_at = getattr(job, "created_at", None)
     created_at_compact = (
         created_at.astimezone(ZoneInfo("Asia/Ho_Chi_Minh")).strftime("%d/%m/%y %H:%M")
@@ -164,16 +157,6 @@ def _job_view(job: Any) -> BacktestJobView:
         bundle_hash_short=str(getattr(job, "bundle_hash", ""))[:12],
         strategy_name=release.name_vi if release else "Không xác định",
         execution_interval=str(getattr(job, "execution_interval", "")),
-        learning_intent=(
-            "Kiểm thử thường"
-            if not quarantined
-            else (
-                "Tạo dữ liệu học (BASE) · quarantine"
-                if learning_intent == "TRAINING_BASE"
-                else "Mục đích chưa nhận diện · quarantine"
-            )
-        ),
-        quarantined=quarantined,
         created_at=created_at,
         created_at_compact=created_at_compact,
         error_code=str(error_code) if error_code else None,

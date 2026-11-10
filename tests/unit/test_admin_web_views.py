@@ -148,7 +148,7 @@ def test_bot_detail_shows_telegram_signal_only_opt_in_state() -> None:
 
     assert response.status_code == 200, response.text
     assert "Nhận tín hiệu qua Telegram" in response.text
-    assert "Đang nhận tín hiệu cho bot này." in response.text
+    assert "Đang nhận thông báo tín hiệu cho bot này." in response.text
     assert "không tạo giao dịch PAPER và không gửi lệnh lên sàn" in response.text
     assert 'value="false"' in response.text
     assert 'name="symbols"' in response.text
@@ -333,6 +333,7 @@ def test_admin_report_renders_chart_annotations_and_accessible_fill_table() -> N
         async def get_bot_report(self, _query: object, _principal: Principal) -> object:
             trade = {
                 "trade_id": trade_id,
+                "bot_id": str(BOT_ID),
                 "symbol": "BTCUSDT",
                 "side": "LONG",
                 "quote_asset": "USDT",
@@ -436,13 +437,12 @@ def test_admin_report_renders_chart_annotations_and_accessible_fill_table() -> N
     )
 
     assert response.status_code == 200, response.text
-    assert "Vì sao bắt tín hiệu" in response.text
+    assert "Vì sao vào lệnh?" in response.text
     assert "Nến đóng cửa vượt đỉnh kênh." in response.text
     assert "Dừng lỗ" in response.text
     assert "100.25" in response.text
     assert "110.25" in response.text
-    assert "mobile-trade-list" in response.text
-    assert "desktop-trades table-responsive" in response.text
+    assert "table-responsive" in response.text
     assert "Tỷ lệ giao dịch có lãi (%)" in response.text
     assert "Hệ số lợi nhuận" in response.text
     assert "Không xác định" in response.text

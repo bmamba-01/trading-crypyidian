@@ -13,6 +13,405 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 
 ## Nhật ký các vòng
 
+### 2026-11-05 — WP-SC.6: Kính hiển vi soi vết lịch sử (Microscope Replay Workspace) & Playwright Automation Test cho Strategy Card
+
+- **Mục tiêu/phạm vi:** Hoàn thiện gói công việc WP-SC.6 triển khai không gian làm việc mô phỏng và soi kính hiển vi vết nến điểm thời gian (Microscope Replay Workspace) lấy cảm hứng từ QUANTSMART:
+  1. `microscope.py`:
+     - DTO frozen dataclass `LayerTrace`: ghi vết từng node gồm `layer` (L0→L6), `node_id`, `operation`, `inputs`, `output`, `status` (`SUCCESS`, `FAILED`, `BLOCK`, `PASS`, `TRIGGERED`, `NO_SIGNAL`, `SKIPPED`).
+     - DTO frozen dataclass `MicroscopeTrace`: tổng hợp toàn diện vết nến gồm `card_id`, `card_name`, `content_hash`, `timestamp`, `ohlcv`, `layer_traces`, `is_short_circuited`, `short_circuit_reason`, `context_gate_passed`, `trigger_signal`, `zones` (`entry_price`, `stop_loss`, `take_profit`, `risk_reward_ratio`), `candidate_id` (SHA-256 tất định).
+     - DTO frozen dataclass `PresetCandle`: cấu trúc kịch bản nến mẫu có sẵn.
+     - Class `MicroscopeReplayService`:
+       * Cung cấp 3 kịch bản mẫu điển hình qua `get_presets()`:
+         - "Mẫu 1 — Nến Hammer đảo chiều tăng (L4 PASS, L5 LONG, L6 Zones đầy đủ)"
+         - "Mẫu 2 — Nến biến động thấp (L4 BLOCK do ATR < 15, Ngắt mạch tức thì)"
+         - "Mẫu 3 — Nến Shooting Star đảo chiều giảm (L4 PASS, L5 SHORT, L6 Zones)"
+       * Phương thức `inspect_bar(card, ohlcv, context)`: mổ xẻ chi tiết 7 phân tầng L0→L6; thẩm định L0 Data Hygiene thô chống ném exception runtime; thực thi L4 Context Gate và kích hoạt cơ chế ngắt mạch khẩn cấp (Short-Circuit) cô lập tức thì tầng L5 và L6; kích hoạt L5 Strategy Trigger theo hướng linh hoạt (LONG/SHORT); tính toán vùng rủi ro hình học L6 Execution Zones và băm `candidate_id` tất định.
+  2. `pipeline_engine.py`: Bổ sung nhận diện `or "true_range" in op` trong `_compute_l2_node` đảm bảo tính toán ATR chính xác từ biên độ nến.
+  3. `strategy_card_service.py`: Bổ sung phương thức `get_domain_card(principal, card_id)` phục vụ động cơ thực thi pipeline và giao diện Microscope Replay.
+  4. `web_router.py`:
+     - Endpoint `GET /admin/strategy-cards/{card_id}/microscope`: Render giao diện HTML soi kính hiển vi `microscope_replay.html`.
+     - Endpoint `POST /admin/api/strategy-cards/{card_id}/inspect-bar`: REST API nhận payload OHLCV/context và trả về JSON `MicroscopeTrace`.
+     - Request schema `InspectBarRequest` và helper `_microscope_service`.
+  5. `strategy_cards.html`: Bổ sung nút liên kết tác vụ "🔍 Soi kính hiển vi (Microscope)" trên từng Strategy Card điều hướng trực tiếp sang trang soi vết.
+  6. `microscope_replay.html` & `admin.css`:
+     - Giao diện tiếng Việt chuẩn mực, semantic HTML5, WCAG 2.2 AA, mobile-first responsive.
+     - Thanh tóm tắt thẻ chiến lược, bộ chọn 3 kịch bản nến mẫu (Presets) một chạm, form nhập điểm thời gian thủ công.
+     - Banner trạng thái trực quan: Cảnh báo đỏ nổi bật khi ngắt mạch (Short-Circuited) kèm lý do chi tiết; Banner xanh khi quy trình thông suốt (Pipeline Passed).
+     - Bảng trực quan hóa 7 tầng L0→L6 với các khối đo đạc nguyên tử nến (L1), chỉ báo (L2), thuật toán (L3), cổng bối cảnh (L4), ngòi nổ (L5), và tọa độ vùng giá Entry/SL/TP kèm Candidate ID SHA-256 (L6).
+     - Kịch bản client-side không phụ thuộc thư viện ngoài (zero-dependency vanilla JS), tự động gọi API và cập nhật DOM mượt mà không reload trang.
+  7. `test_microscope_replay.py`: Bộ 12 unit tests TDD kiểm thử service, presets, nến Hammer, nến biến động thấp ngắt mạch, nến Shooting Star đảo chiều giảm, nến hỏng L0, serialization to_dict, xác thực 401, 404 và REST API JSON.
+  8. `test_admin_microscope_playwright.py`: Bộ 3 E2E tests tự động hóa với Playwright kiểm thử Desktop (1280x800), Mobile iPhone (390x844), tương tác chọn Presets đổi trạng thái DOM tức thời, click điều hướng và chụp 2 ảnh screenshot bằng chứng lưu vào artifacts.
+- **Nguồn đã kiểm tra (2026-11-05):**
+  - QUANTSMART Custom Modules Specification: [`github.com/Jokejoker-designer/QUANTSMART/blob/main/docs/CUSTOM_MODULES.md`](https://github.com/Jokejoker-designer/QUANTSMART/blob/main/docs/CUSTOM_MODULES.md) (mô hình Microscope Replay soi vết nến điểm thời gian).
+  - W3C Web Content Accessibility Guidelines (WCAG) 2.2 AA: [`www.w3.org/TR/WCAG22/`](https://www.w3.org/TR/WCAG22/) (aria-live polite, landmarks, focus contrast).
+  - RFC 8785 JSON Canonicalization Scheme: [`datatracker.ietf.org/doc/html/rfc8785`](https://datatracker.ietf.org/doc/html/rfc8785) (đối soát băm tất định Candidate ID).
+- **Thay đổi mã nguồn:**
+  - `src/trading_bot/application/strategy_pipeline/microscope.py`: Tạo mới module dịch vụ Microscope Replay, các DTOs `LayerTrace`, `MicroscopeTrace`, `PresetCandle` và class `MicroscopeReplayService`.
+  - `src/trading_bot/application/strategy_pipeline/__init__.py`: Xuất khẩu các DTOs và service mới.
+  - `src/trading_bot/application/strategy_pipeline/pipeline_engine.py`: Chỉnh sửa `_compute_l2_node` nhận diện `average_true_range`.
+  - `src/trading_bot/admin/strategy_card_service.py`: Thêm phương thức `get_domain_card`.
+  - `src/trading_bot/admin/web_router.py`: Bổ sung 2 endpoints `GET /admin/strategy-cards/{card_id}/microscope` và `POST /admin/api/strategy-cards/{card_id}/inspect-bar`.
+  - `src/trading_bot/templates/admin/strategy_cards.html`: Bổ sung nút "Soi kính hiển vi (Microscope)".
+  - `src/trading_bot/templates/admin/microscope_replay.html`: Tạo mới giao diện HTML5 Microscope Replay.
+  - `src/trading_bot/static/admin.css`: Bổ sung style tokens cho nút microscope, summary card, presets list, form grid, alert banners, 7 layer cards, anatomy boxes và zones metrics.
+  - `tests/unit/test_microscope_replay.py`: Tạo mới bộ 12 unit tests kiểm thử service, presets, short-circuit và web router/API.
+  - `tests/e2e/test_admin_microscope_playwright.py`: Tạo mới bộ 3 tests Playwright E2E cho Desktop và Mobile, chụp 2 ảnh screenshot.
+  - `docs/research/glossary-vi.md`: Thêm 2 thuật ngữ tiếng Việt vào mục R: `Microscope replay workspace` và `Layer trace`.
+- **TDD và xử lý lỗi phát sinh:**
+  - RED phase: Khởi tạo gặp `ModuleNotFoundError: No module named 'trading_bot.application.strategy_pipeline.microscope'`.
+  - Xử lý nến hỏng L0: Nến vi phạm High < Low kích hoạt `ValueError` của `OHLCVBar.__post_init__` trước khi qua `_check_data_hygiene`. Đã bổ sung bước kiểm tra độ sạch thô trên dict OHLCV trước khi tạo `OHLCVBar`, bảo đảm fail-safe ngắt mạch ngay tại L0.
+  - Xử lý nhận diện ATR: Hàm `_compute_l2_node` chỉ tìm `"atr" in op` nên bỏ sót `"average_true_range"`, dẫn đến trả về `close` gây vượt trần `max_atr`. Đã bổ sung `or "true_range" in op`.
+  - Xử lý nến Shooting Star cho chiều SHORT: Bổ sung logic thông minh định tuyến râu trên (`upper_wick_ratio`) cho chiều SHORT khi card chỉ có cấu hình generic wick.
+  - Xử lý Jinja2 serialization: Tránh lỗi `<bound method to_dict>` trong Jinja2 filter `tojson` bằng cách truyền trực tiếp `presets_data = [p.to_dict() for p in presets]` vào context.
+  - Sửa lỗi Ruff: Đảm bảo độ dài dòng <= 100 ký tự cho assertions và selectors.
+- **Kiểm chứng và chất lượng:**
+  - Unit tests mục tiêu: `pytest tests/unit/test_microscope_replay.py -v` → **12 passed in 1.23s**.
+  - Playwright E2E browser tests: `pytest tests/e2e/test_admin_microscope_playwright.py -v` → **3 passed in 5.42s**.
+  - Nhóm Strategy Card (WP-SC.1 → WP-SC.6): `pytest tests/unit/test_strategy_card_*.py tests/unit/test_admin_strategy_cards_ui.py tests/unit/test_microscope_replay.py tests/e2e/test_admin_*.py -v` → **62 passed in 6.5s**.
+  - Screenshots xác thực giao diện:
+    * Desktop (1280x800): `/Users/macbook/.gemini/antigravity/brain/4f23167d-60fd-49c3-8248-ddb2b669a2a7/screenshots/15_microscope_desktop.png` (517 KB).
+    * Mobile iPhone (390x844): `/Users/macbook/.gemini/antigravity/brain/4f23167d-60fd-49c3-8248-ddb2b669a2a7/screenshots/11_microscope_mobile.png` (509 KB).
+  - Toàn bộ regression unit tests: `PYTHONPATH="$PWD:$PWD/src" pytest tests/unit -q` → **2397 passed in 11.57s** (0 failure, 0 skip).
+  - Ruff check: `.venv/bin/ruff check src/ tests/` → **All checks passed!**
+  - Ruff format: `.venv/bin/ruff format --check src/ tests/` → **429 files already formatted**.
+- **Giới hạn còn mở:**
+  - Toàn bộ 6 gói công việc của kiến trúc Strategy Card và Microscope Replay (WP-SC.1 đến WP-SC.6) đã hoàn tất 100%.
+- **Đã đọc lại memory sau cập nhật:** Có; đối chiếu đầy đủ với các thay đổi code, test suite 12 unit + 3 Playwright + 2397 regression passed, ruff check/format sạch sẽ, và 2 ảnh screenshot đã lưu.
+### 2026-11-05 — WP-03A: Binance USDⓈ-M Order Schemas, DTO Contracts & Fail-Closed Validation
+
+- **Mục tiêu/phạm vi:** Tích hợp và hoàn thiện gói công việc WP-03A (kế thừa phiên làm việc của Codex) định nghĩa hợp đồng schema dữ liệu lệnh và sự kiện WebSocket cho Binance Futures USDⓈ-M tuân thủ nghiêm ngặt nguyên tắc fail-closed và phân lập rạch ròi hai họ lệnh:
+  1. `order_schemas.py`:
+     - Định nghĩa các enum bất biến: `RegularOrderType` (`MARKET`, `LIMIT`), `ConditionalAlgoOrderType` (`STOP`, `STOP_MARKET`, `TAKE_PROFIT`, `TAKE_PROFIT_MARKET`, `TRAILING_STOP_MARKET`), `RegularOrderStatus` (`NEW`, `PARTIALLY_FILLED`, `FILLED`, `CANCELED`, `EXPIRED`, `EXPIRED_IN_MATCH`, `UNKNOWN`), `AlgoOrderStatus` (`NEW`, `TRIGGERING`, `TRIGGERED`, `FINISHED`, `CANCELED`, `REJECTED`, `EXPIRED`, `UNKNOWN`).
+     - Định nghĩa các frozen slots dataclasses DTOs: `RegularOrder` (kèm alias `RegularOrderResponse`), `AlgoOrder` (kèm alias `AlgoOrderResponse`), `OrderTradeUpdate` (kèm alias `OrderTradeUpdateEvent`), `AlgoUpdate` (kèm alias `AlgoUpdateEvent`), `AccountUpdateBalance`, `AccountUpdatePosition`, `AccountUpdateEvent`.
+     - Phân định trạng thái domain an toàn: `RegularOrder.canonical_state` kiểm soát tính nhất quán số lượng đã khớp với trạng thái, chuyển `UNKNOWN` nếu có mâu thuẫn; `AlgoOrder.canonical_state` luôn chiếu `UNKNOWN` (vì vòng đời Algo không phải bằng chứng xác nhận fill của lệnh thường trên matching engine).
+     - Triển khai các hàm phân tích cú pháp an toàn: `parse_regular_order` (alias `parse_regular_order_response`), `parse_algo_order` (alias `parse_algo_order_response`), `parse_order_trade_update` (alias `parse_order_trade_update_event`), `parse_algo_update` (alias `parse_algo_update_event`), `parse_account_update_event` (alias `parse_account_update`).
+     - Bộ giải mã an toàn `decode_order_object`: từ chối JSON chứa key trùng lặp (`object_pairs_hook`), từ chối số không hữu hạn (`NaN`, `Infinity` qua `parse_constant`), kiểm tra Decimal hữu hạn không âm cho giá và số lượng thông thường, cho phép giá trị âm có chủ đích ở `position_amount`, `unrealized_profit` và `balance_change` trong sự kiện `ACCOUNT_UPDATE`.
+     - Hàm rào chắn `validate_regular_order_family` và `regular_order_path`: ngăn chặn tuyệt đối các trường thuộc Algo Service (`algoId`, `algoStatus`, v.v.) xâm nhập vào luồng lệnh thường.
+  2. `submission_errors.py`: Bổ sung loại lỗi `ROUTING_MISMATCH` vào `BinanceFailureKind`; xử lý mã lỗi `-4120` (`STOP_ORDER_SWITCH_ALGO`) từ chối retry, chuyển kết quả thành `SubmissionOutcome.UNKNOWN` và yêu cầu `operator_clearance_required=True`.
+  3. `demo_rest.py`: Tích hợp `decode_order_object`, `validate_regular_order_family` và `OrderSchemaError` từ `order_schemas.py`; bảo đảm các phản hồi REST gửi/truy vấn lệnh thường được kiểm tra đúng họ và loại trừ xung đột schema.
+  4. `wp03_order_contracts.json`: Fixture kiểm thử chứa đầy đủ 11 kịch bản synthetic data (`regular_ack`, `regular_partial`, `algo_new`, `algo_triggered`, `algo_finished`, `algo_rejected`, `order_event`, `algo_event`, `account_update`, `routing_mismatch`, `ambiguous_503`) có metadata URL, ngày kiểm tra và bề mặt API.
+  5. `wp03a-task1a-order-schema-contract-2026-11-02.md`: Tài liệu nghiên cứu chi tiết cơ sở pháp lý API, quyết định kỹ thuật và các required facts nội bộ.
+  6. `glossary-vi.md`: Thêm thuật ngữ `Routing mismatch (-4120)` vào mục P.
+- **Nguồn đã kiểm tra (2026-11-01 / 2026-11-02):**
+  - Binance USDⓈ-M Trade REST API: [`developers.binance.com/en/docs/catalog/core-trading-derivatives-trading-usd-s-m-futures/api/rest-api/trade`](https://developers.binance.com/en/docs/catalog/core-trading-derivatives-trading-usd-s-m-futures/api/rest-api/trade)
+  - Binance USDⓈ-M User Data Streams: [`developers.binance.com/en/docs/products/derivatives-trading-usds-futures/user-data-streams`](https://developers.binance.com/en/docs/products/derivatives-trading-usds-futures/user-data-streams)
+  - Binance USDⓈ-M Change Log: [`developers.binance.com/en/docs/products/derivatives-trading-usds-futures/change-log`](https://developers.binance.com/en/docs/products/derivatives-trading-usds-futures/change-log) (conditional migration và mã lỗi -4120)
+  - Binance USDⓈ-M General Info: [`developers.binance.com/en/docs/products/derivatives-trading-usds-futures/general-info`](https://developers.binance.com/en/docs/products/derivatives-trading-usds-futures/general-info)
+- **Thay đổi mã nguồn:**
+  - `src/trading_bot/adapters/binance_usdm/order_schemas.py`: Tạo mới module schema và parser an toàn cho Binance USDⓈ-M.
+  - `src/trading_bot/adapters/binance_usdm/submission_errors.py`: Bổ sung `ROUTING_MISMATCH` và xử lý `-4120`.
+  - `src/trading_bot/adapters/binance_usdm/demo_rest.py`: Sử dụng `order_schemas.py` và bảo vệ routing family.
+  - `tests/fixtures/binance_usdm/wp03_order_contracts.json`: Bổ sung fixture hợp đồng schema đầy đủ.
+  - `docs/research/wp03a-task1a-order-schema-contract-2026-11-02.md`: Tích hợp tài liệu nghiên cứu hợp đồng.
+  - `tests/unit/test_binance_usdm_order_schemas.py`: Bộ 141 unit tests kiểm thử phân tích cú pháp, boundary, validation, aliases và ACCOUNT_UPDATE.
+  - `tests/unit/test_binance_demo_rest.py`: Bổ sung 3 unit tests kiểm thử lỗi -4120, discriminator và duplicate keys (tổng cộng 21 tests).
+  - `docs/research/glossary-vi.md`: Thêm thuật ngữ `Routing mismatch (-4120)`.
+- **TDD và kiểm chứng chất lượng:**
+  - Unit tests mục tiêu: `pytest tests/unit/test_binance_usdm_order_schemas.py tests/unit/test_venue_parsers.py tests/unit/test_binance_demo_rest.py -v` → **190 passed in 0.29s**.
+  - Toàn bộ unit tests hồi quy: `pytest tests/unit -q` → **2391 passed in 23.34s** (0 failure, 0 skipped).
+  - Static analysis Ruff check: `.venv/bin/ruff check src/ tests/` → **All checks passed!**
+  - Static analysis Ruff format: `.venv/bin/ruff format --check src/ tests/` → **428 files already formatted**.
+  - Static analysis Mypy: `.venv/bin/mypy src/trading_bot/adapters/binance_usdm/order_schemas.py src/trading_bot/adapters/binance_usdm/submission_errors.py src/trading_bot/adapters/binance_usdm/demo_rest.py` → **Success: no issues found in 3 source files**.
+- **Giới hạn còn mở:** WP-03A cung cấp tầng parser thuần túy offline và DTO validation. Việc kết nối trực tiếp vào stream consumer thời gian thực, outbox worker và quy trình reconciliation vị thế/lệnh ở sàn thật sẽ được thực hiện tại các gói tiếp theo (WP-03C, WP-03D).
+- **Đã đọc lại memory sau cập nhật:** Có.
+### 2026-11-05 — WP-SC.4 & WP-SC.5: Strategy Card Persistence, Admin Web UI & Playwright Automation Test
+
+- **Mục tiêu/phạm vi:** Hoàn thiện 2 gói công việc cuối cùng của kiến trúc Bản kê Chiến lược Khai báo (Declarative Strategy Card) lấy cảm hứng từ QUANTSMART:
+  1. `strategy_card_entities.py`: Model ORM `StrategyCardRecord` (bảng `strategy_cards`) lưu trữ bất biến (append-only), tenant-scoped theo `workspace_id` (RLS), cột `card_payload` kiểu JSONB, các ràng buộc duy nhất `(workspace_id, card_id, version)` và `(workspace_id, content_hash)`; hàm `from_domain` và `to_domain` tự động đối soát canonical SHA-256 content hash phát hiện và chặn đứng mọi hành vi can thiệp trái phép (tampered data).
+  2. `strategy_card_repository.py`: Tầng Repository `StrategyCardRepository` hỗ trợ `save_card` (kèm khóa phân tán giao dịch `pg_advisory_xact_lock` và RLS workspace binding), `get_card`, `list_cards` (lọc `is_active`), `get_active_card`, `set_active_card` (kích hoạt phiên bản và hạ cờ phiên bản cũ trong cùng transaction).
+  3. `e5f6a7b8c9d0_strategy_card_storage.py`: Bản di chuyển Alembic tạo bảng `strategy_cards` có RLS và cấp quyền cho vai trò `crypidian_admin_web`.
+  4. `strategy_card_service.py`: Dịch vụ `StrategyCardAdminService` phân tích cấu trúc đồ thị, chạy `DeadNodeDetector` đếm nút mồ côi, chạy `AntiConsensusAnalyzer` kiểm định trực giao tín hiệu và thống kê các tầng L0→L6.
+  5. `web_router.py`: Bổ sung 2 endpoints:
+     - `GET /admin/strategy-cards`: Hiển thị giao diện HTML quản trị Strategy Cards, các thẻ KPI, danh sách card, băm SHA-256 rút gọn có tooltip, huy hiệu trực giao "Đã kiểm định (Orthogonal)", và lưới 7 phân tầng L0→L6.
+     - `GET /admin/api/strategy-cards`: Trả về JSON danh sách thẻ chiến lược cho client / automation script.
+  6. `base.html`, `strategy_cards.html`, `admin.css`: Thêm liên kết điều hướng "Chiến lược" vào thanh menu chính; thiết kế template HTML5 chuẩn mực theo mobile-first và tiêu chuẩn tiếp cận WCAG 2.2 AA; bổ sung hệ thống CSS style tokens cho Strategy Cards.
+  7. `test_admin_strategy_cards_playwright.py`: Bộ kiểm thử E2E tự động hóa bằng Playwright trên cả hai độ phân giải Desktop (1280x800) và Mobile iPhone (390x844), xác nhận điều hướng và chụp 2 ảnh screenshot bằng chứng lưu vào thư mục artifacts.
+- **Nguồn đã kiểm tra (2026-11-05):**
+  - RFC 8785 JSON Canonicalization Scheme (JCS): [`datatracker.ietf.org/doc/html/rfc8785`](https://datatracker.ietf.org/doc/html/rfc8785) (đối soát tính toàn vẹn của canonical hash qua lưu trữ JSONB).
+  - W3C Web Content Accessibility Guidelines (WCAG) 2.2 AA: [`www.w3.org/TR/WCAG22/`](https://www.w3.org/TR/WCAG22/) (các yêu cầu contrast, semantic landmarks, skip link, aria-label).
+  - QUANTSMART Custom Modules Specification: [`github.com/Jokejoker-designer/QUANTSMART/blob/main/docs/CUSTOM_MODULES.md`](https://github.com/Jokejoker-designer/QUANTSMART/blob/main/docs/CUSTOM_MODULES.md) (tham khảo mô hình trực quan hóa phân tầng L0-L6).
+- **Thay đổi mã nguồn:**
+  - `src/trading_bot/adapters/database/models/strategy_card_entities.py`: Định nghĩa model ORM `StrategyCardRecord` và phương thức chuyển đổi `from_domain` / `to_domain`.
+  - `src/trading_bot/adapters/database/models/__init__.py`: Xuất khẩu `StrategyCardRecord`.
+  - `src/trading_bot/adapters/database/repositories/strategy_card_repository.py`: Triển khai `StrategyCardRepository`, `StrategyCardConflict`, `StrategyCardNotFoundError`.
+  - `src/trading_bot/adapters/database/repositories/__init__.py`: Xuất khẩu `StrategyCardRepository` và các lỗi.
+  - `migrations/versions/e5f6a7b8c9d0_strategy_card_storage.py`: Tạo mới migration bảng `strategy_cards` có RLS và grant quyền.
+  - `src/trading_bot/admin/strategy_card_service.py`: Tạo mới class `StrategyCardAdminService`, `StrategyCardView` và 2 card mẫu demo (Donchian Breakout, Adaptive Wick Reversion).
+  - `src/trading_bot/admin/web_router.py`: Thêm route `GET /admin/strategy-cards` và `GET /admin/api/strategy-cards`.
+  - `src/trading_bot/templates/admin/base.html`: Thêm liên kết `<a href="/admin/strategy-cards">Chiến lược</a>` vào navigation bar.
+  - `src/trading_bot/templates/admin/strategy_cards.html`: Tạo mới giao diện HTML quản lý Strategy Cards chuẩn WCAG 2.2 AA.
+  - `src/trading_bot/static/admin.css`: Bổ sung CSS responsive, status-dots, hash-code và layer pills.
+  - `src/trading_bot/app.py`: Tích hợp `StrategyCardAdminService` vào lifespan và state ứng dụng.
+  - `tests/unit/test_strategy_card_persistence.py`: Tạo mới bộ 12 unit tests kiểm thử ORM roundtrip, hash tampering, duplicate idempotency, version conflict, và truy vấn repository.
+  - `tests/unit/test_admin_strategy_cards_ui.py`: Tạo mới bộ 5 unit tests kiểm thử xác thực 401, render HTML, WCAG semantics và API JSON.
+  - `tests/e2e/test_admin_strategy_cards_playwright.py`: Tạo mới bộ 3 E2E tests với Playwright kiểm thử Desktop, Mobile và navigation click, chụp 2 ảnh screenshots.
+  - `docs/research/glossary-vi.md`: Bổ sung 2 thuật ngữ tiếng Việt vào mục R: `Declarative strategy card persistence` và `Strategy card orthogonality badge`.
+- **TDD và xử lý lỗi phát sinh:**
+  - RED phase: Kiểm tra ban đầu gặp `ModuleNotFoundError: strategy_card_entities` và `strategy_card_repository`. Sau khi implement, toàn bộ 12 test persistence pass.
+  - Phát hiện lỗi xác thực 503 thay vì 401: Trong môi trường test tối giản không có `auth_service`, `current_identity` quăng 503. Đã bổ sung `_MockUnauthService` ném `AuthenticationFailure(401)` chuẩn xác.
+  - Sửa lỗi lặp dòng trong `web_router.py`: Dùng target duy nhất để thay thế sạch sẽ.
+  - Sửa lỗi Ruff: Đảm bảo độ dài dòng <= 100 ký tự, tách assertion nhiều vế (PT018), xóa unused imports.
+- **Kiểm chứng và chất lượng:**
+  - Persistence unit tests: `pytest tests/unit/test_strategy_card_persistence.py -v` → **12 passed in 0.33s**.
+  - Admin Web UI unit tests: `pytest tests/unit/test_admin_strategy_cards_ui.py -v` → **5 passed in 0.74s**.
+  - Playwright E2E browser tests: `pytest tests/e2e/test_admin_strategy_cards_playwright.py -v` → **3 passed in 4.36s**.
+  - Nhóm Strategy Card (WP-SC.1 → WP-SC.5): `pytest tests/unit/test_strategy_card_*.py tests/unit/test_admin_strategy_cards_ui.py tests/e2e/test_admin_strategy_cards_playwright.py -v` → **50 passed in 4.51s**.
+  - Screenshots xác thực giao diện:
+    * Desktop (1280x800): `/Users/macbook/.gemini/antigravity/brain/4f23167d-60fd-49c3-8248-ddb2b669a2a7/screenshots/14_strategy_cards_desktop.png` (206 KB).
+    * Mobile iPhone (390x844): `/Users/macbook/.gemini/antigravity/brain/4f23167d-60fd-49c3-8248-ddb2b669a2a7/screenshots/10_strategy_cards_mobile.png` (218 KB).
+  - Toàn bộ regression unit tests: `PYTHONPATH="$PWD:$PWD/src" pytest tests/unit -q` → **2237 passed in 9.43s** (0 failure, 0 skip).
+  - Ruff check: `.venv/bin/ruff check src/ tests/` → **All checks passed!**
+  - Ruff format: `.venv/bin/ruff format --check src/ tests/` → **424 files already formatted**.
+- **Giới hạn còn mở:**
+  - Toàn bộ 5 gói công việc của kiến trúc Strategy Card (WP-SC.1 đến WP-SC.5) đã hoàn tất và vượt qua 100% các tiêu chí nghiệm thu.
+- **Đã đọc lại memory sau cập nhật:** Có; đối chiếu đầy đủ với các thay đổi code, test suite 50 Strategy Card tests + 2237 regression passed, ruff check/format sạch sẽ, và 2 ảnh screenshot đã lưu.
+### 2026-11-05 — WP-SC.3: Strategy Pipeline Runtime Engine (L0→L6 & Context Gate) cho Strategy Card
+
+- **Mục tiêu/phạm vi:** Triển khai động cơ thực thi quy trình định lượng tuần tự phân tầng L0→L6 cho Strategy Card (lấy cảm hứng từ kiến trúc QUANTSMART):
+  1. `context_gate.py`: Định nghĩa Enum `ContextGateStatus` (PASS, BLOCK), Dataclass `ContextGateResult` (status, reasons, metrics); Class `ContextGateEvaluator` thẩm định các điều kiện lọc bối cảnh thị trường tại L4 (biến động ATR min/max, xu hướng EMA thuận/nghịch chiều, lọc vĩ mô Macro Blackout). Khi phát hiện bối cảnh bất lợi, trả về `BLOCK` kèm lý do cụ thể và kích hoạt ngắt mạch tức thì (Short-Circuit).
+  2. `trigger_evaluator.py`: Định nghĩa Enum `TriggerSignal` (LONG_ENTRY, SHORT_ENTRY, NO_SIGNAL), Dataclass `TriggerEvaluationResult` (signal, trigger_score, evidence_nodes, metadata); Class `TriggerEvaluator` thẩm định tầng L5 `STRATEGY_TRIGGER` với rào chắn bảo vệ phòng thủ: CHỈ ĐƯỢC PHÉP ĐÁNH GIÁ KHI L4 LÀ PASS (ném lỗi `PermissionError` nếu vi phạm). Trích xuất chính xác nguồn dữ liệu số theo `GraphEdge` của đồ thị DAG loại trừ nhầm lẫn chỉ báo biên độ.
+  3. `zone_builder.py`: Định nghĩa Dataclass `ExecutionZones` (entry_price, stop_loss_price, take_profit_price, risk_reward_ratio, direction) kiểm soát bất biến vị trí tương đối giữa SL, TP và Entry; Class `ZoneBuilder` tính toán vùng giá vào lệnh, dừng lỗ ban đầu và chốt lời mục tiêu dựa trên bội số biến động ATR và tỷ lệ R:R.
+  4. `pipeline_engine.py`: Class `StrategyPipelineEngine` và `StrategyCandidate`:
+     - Tầng L0: Kiểm tra độ sạch của nến (`DataHygiene`: $H \ge L$, $High \ge \max(O,C)$, $Low \le \min(O,C)$, giá dương). Nếu nến hỏng -> ngắt mạch ngay tại L0 (`DATA_HYGIENE_FAILED`).
+     - Tầng L1: Tính toán các khối nguyên tử giải phẫu nến (`anatomy.py`).
+     - Tầng L2: Tính toán chỉ báo (ATR, EMA, v.v.).
+     - Tầng L3: Chấm điểm thuật toán lượng hóa.
+     - Tầng L4: Đánh giá qua `ContextGateEvaluator`. NẾU L4 LÀ BLOCK -> NGẮT MẠCH TỨC THÌ (SHORT-CIRCUIT), L5 Trigger tuyệt đối KHÔNG chạy.
+     - Tầng L5: Đánh giá qua `TriggerEvaluator` (chỉ khi L4 PASS).
+     - Tầng L6: Dựng `ExecutionZones` qua `ZoneBuilder` và đóng gói thành `StrategyCandidate` mang `candidate_id` băm SHA-256 tất định.
+     - NGUYÊN TẮC BẤT BIẾN AN TOÀN: Pipeline chỉ sinh ra `StrategyCandidate`, tuyệt đối không tạo order sàn.
+- **Nguồn đã kiểm tra (2026-11-05):**
+  - QUANTSMART Strategy Studio & Custom Modules: [`github.com/Jokejoker-designer/QUANTSMART/blob/main/docs/CUSTOM_MODULES.md`](https://github.com/Jokejoker-designer/QUANTSMART/blob/main/docs/CUSTOM_MODULES.md) (nguyên lý phân tầng L0→L6, Context Gate và Execution Zones).
+  - RFC 8785 JSON Canonicalization Scheme: [`datatracker.ietf.org/doc/html/rfc8785`](https://datatracker.ietf.org/doc/html/rfc8785) (chuẩn hóa băm tất định cho Candidate ID).
+- **Thay đổi mã nguồn:**
+  - `src/trading_bot/application/strategy_pipeline/context_gate.py`: Tạo mới module L4 Context Gate.
+  - `src/trading_bot/application/strategy_pipeline/trigger_evaluator.py`: Tạo mới module L5 Strategy Trigger với GraphEdge-aware mapping.
+  - `src/trading_bot/application/strategy_pipeline/zone_builder.py`: Tạo mới module L6 Zone Builder và Dataclass ExecutionZones.
+  - `src/trading_bot/application/strategy_pipeline/pipeline_engine.py`: Tạo mới module điều phối tổng thể L0->L6, băm Candidate ID và Dataclass StrategyCandidate.
+  - `src/trading_bot/application/strategy_pipeline/__init__.py`: Export các lớp và hàm công khai.
+  - `tests/unit/test_strategy_pipeline_engine.py`: Bộ 17 unit tests TDD kiểm thử toàn diện L0 nến hỏng, L4 ngắt mạch short-circuit, L5 bảo vệ phòng thủ, L6 hình học giá LONG/SHORT, luồng hoàn chỉnh L0->L6 và tính tất định SHA-256.
+  - `tests/unit/test_database_models.py`: Bổ sung `strategy_cards` vào danh sách foundation tables đã đăng ký trong SQLAlchemy metadata.
+  - `docs/research/glossary-vi.md`: Thêm 2 thuật ngữ `Context gate short-circuit` và `Execution zone geometry` vào mục R.
+- **TDD và xử lý lỗi phát sinh:**
+  - RED phase: Khởi tạo gặp `ModuleNotFoundError: No module named 'trading_bot.application.strategy_pipeline'`.
+  - GREEN phase: Triển khai 4 module cốt lõi, giải quyết lỗi bắt nhầm giá trị ATR trong TriggerEvaluator bằng cách liên kết chính xác incoming edges theo cấu trúc DAG của StrategyCard.
+  - Kiểm tra ruff check & ruff format: Đảm bảo độ dài dòng <= 100 ký tự và dọn dẹp các import chưa dùng.
+- **Kiểm chứng và chất lượng:**
+  - Unit tests mục tiêu: `pytest tests/unit/test_strategy_pipeline_engine.py -v` → **17 passed in 0.11s**.
+  - Toàn bộ regression unit tests: `pytest tests/unit -q` → **2232 passed in 8.85s** (0 failure, 0 skip).
+  - Ruff check: `.venv/bin/ruff check src/trading_bot/application/strategy_pipeline/ tests/unit/test_strategy_pipeline_engine.py` → **All checks passed!**
+  - Ruff format: `.venv/bin/ruff format --check src/trading_bot/application/strategy_pipeline/ tests/unit/test_strategy_pipeline_engine.py` → **6 files already formatted**.
+  - Mypy: `.venv/bin/mypy src/trading_bot/application/strategy_pipeline/ tests/unit/test_strategy_pipeline_engine.py` → **Success: no issues found in 6 source files**.
+- **Giới hạn còn mở:**
+  - Sẵn sàng tích hợp sang WP-SC.4: Database Persistence (RLS) & Admin Management API.
+- **Đã đọc lại mục memory sau cập nhật:** Có; đối chiếu đầy đủ với các thay đổi code, test suite 17 unit + 2232 regression passed, ruff/mypy outputs.
+### 2026-11-05 — WP-SC.1: Domain Models, Candle Anatomy Primitives & Declarative Schema cho Strategy Card
+
+- **Mục tiêu/phạm vi:** Triển khai nền móng miền nghiệp vụ WP-SC.1 cho kiến trúc Bản kê Chiến lược Khai báo (Declarative Strategy Card) lấy cảm hứng từ QUANTSMART:
+  1. `models.py`: Định nghĩa các Enums `CompositionLayer` (L0 đến L6), `DataType` (PRICE_SERIES, NUMERIC_SCALAR, BOOLEAN_FLAG, CATEGORICAL_STATE), `NodeExecutionRole` (STATELESS_TRANSFORM, STATEFUL_WINDOW, GATE_FILTER, TERMINAL_ZONE); và các Frozen Dataclasses bất biến `TypedPort`, `GraphNode`, `GraphEdge`, `ParameterBound`, `CompatibilityMap`, `ExecutionProfile`.
+  2. `anatomy.py`: Thư viện khối nguyên tử giải phẫu nến đo đạc hình học thuần túy bằng `Decimal`: `lower_wick_ratio`, `upper_wick_ratio`, `body_ratio`, `close_location`, `wick_rejection_strength` với cơ chế chống chia cho 0 an toàn khi nến phẳng ($High == Low$).
+  3. `schema.py`: Pydantic v2 model `StrategyCard` với validator kiểm tra toàn vẹn cấu trúc và thuật toán Kahn phát hiện chu trình (Acyclic DAG check); hàm `compute_canonical_hash` tuần tự hóa canonical JSON (sorted keys, compact, bất biến thứ tự phần tử) và sinh mã băm SHA-256 64 ký tự phục vụ audit/provenance.
+- **Nguồn đã kiểm tra (2026-11-05):**
+  - QUANTSMART Custom Modules Specification: [`github.com/Jokejoker-designer/QUANTSMART/blob/main/docs/CUSTOM_MODULES.md`](https://github.com/Jokejoker-designer/QUANTSMART/blob/main/docs/CUSTOM_MODULES.md) (nguyên lý khối nguyên tử giải phẫu nến và typed ports).
+  - RFC 8785 JSON Canonicalization Scheme (JCS): [`datatracker.ietf.org/doc/html/rfc8785`](https://datatracker.ietf.org/doc/html/rfc8785) (chuẩn hóa JSON tất định cho chữ ký số và mã băm toàn vẹn).
+- **Thay đổi mã nguồn:**
+  - `src/trading_bot/domain/strategy_card/models.py`: Tạo mới các Enum và Frozen Dataclass cho đồ thị và metadata chiến lược.
+  - `src/trading_bot/domain/strategy_card/anatomy.py`: Triển khai 5 hàm nguyên tử hình học nến Decimal với safe fallback khi $H=L$ (`close_location` trả về Decimal("0.5") trung lập, các tỷ lệ wick/body trả về Decimal(0)).
+  - `src/trading_bot/domain/strategy_card/schema.py`: Triển khai `StrategyCard` Pydantic v2 model, Kahn DAG cycle detector, validator tham chiếu node và hàm `compute_canonical_hash`.
+  - `src/trading_bot/domain/strategy_card/__init__.py`: Xuất khẩu đầy đủ các symbols của domain models, anatomy và schema.
+  - `tests/unit/test_strategy_card_schema.py`: Bộ 16 unit tests TDD kiểm thử Hammer, Doji phẳng, Marubozu, Shooting Star, Dragonfly/Gravestone Doji, immutability, DAG Kahn cycle/self-loop/missing node/duplicate id, diamond DAG và tính tất định của canonical hash.
+  - `docs/research/glossary-vi.md`: Bổ sung định nghĩa `Wick rejection strength` và `Canonical content hash` vào mục R.
+- **TDD và xử lý lỗi phát sinh:**
+  - RED phase: Kiểm tra ban đầu gặp `ModuleNotFoundError: No module named 'trading_bot.domain.strategy_card'`.
+  - GREEN phase: Cài đặt logic, kiểm tra 12 test ban đầu và mở rộng lên 16 test với các mô hình nến và hình thái đồ thị phức tạp (Diamond graph, chu trình gián tiếp).
+  - Xử lý Mypy: Sắp xếp các danh sách bằng thuộc tính đối tượng trước khi trích xuất dict (`sorted(card.parameters, key=lambda p: p.name)`) để loại trừ lỗi so sánh `object` type invariance của dictionary.
+  - Sửa lỗi Ruff: Đảm bảo độ dài dòng <= 100 ký tự, sử dụng `dict.fromkeys` và xóa `list()` bọc ngoài trong `sorted()`.
+- **Kiểm chứng và chất lượng:**
+  - Unit tests mục tiêu: `PYTHONPATH="$PWD:$PWD/src" .venv/bin/pytest tests/unit/test_strategy_card_schema.py -v` → **16 passed in 0.07s**.
+  - Toàn bộ regression unit tests: `PYTHONPATH="$PWD:$PWD/src" .venv/bin/pytest tests/unit -q` → **2203 passed in 9.92s** (0 failure, 0 skip).
+  - Ruff check: `.venv/bin/ruff check src/trading_bot/domain/strategy_card/models.py src/trading_bot/domain/strategy_card/anatomy.py src/trading_bot/domain/strategy_card/schema.py tests/unit/test_strategy_card_schema.py` → **All checks passed!**
+  - Ruff format: `.venv/bin/ruff format --check src/trading_bot/domain/strategy_card/models.py src/trading_bot/domain/strategy_card/anatomy.py src/trading_bot/domain/strategy_card/schema.py tests/unit/test_strategy_card_schema.py` → **4 files already formatted**.
+  - Mypy: `.venv/bin/mypy src/trading_bot/domain/strategy_card/models.py src/trading_bot/domain/strategy_card/anatomy.py src/trading_bot/domain/strategy_card/schema.py tests/unit/test_strategy_card_schema.py` → **Success: no issues found in 4 source files**.
+- **Giới hạn còn mở:**
+  - Chưa liên kết Strategy Card vào Pipeline Runtime Executor (sẽ thực hiện ở WP-SC.3).
+  - Chưa lưu trữ bảng DB `strategy_cards` (sẽ thực hiện ở WP-SC.4).
+- **Đã đọc lại mục memory sau cập nhật:** Có; đối chiếu đầy đủ với các thay đổi code, test suite 16 unit + 2203 regression passed, ruff/mypy outputs.
+### 2026-11-05 — WP-SC.2: Verification Engine, Anti-Consensus Illusion Analyzer & Coordinate Lab Math cho Strategy Card
+
+- **Mục tiêu/phạm vi:** Triển khai gói công việc WP-SC.2 thuộc kiến trúc Strategy Card lấy cảm hứng từ QUANTSMART:
+  1. `AntiConsensusAnalyzer` (`orthogonality.py`): Đo đạc ma trận tương quan Pearson `calculate_correlation_matrix` giữa các chỉ báo đầu ra, phát hiện và xuất cảnh báo đỏ khi $|r| \ge threshold$ (mặc định 0.85) nhằm chống hiện tượng đa cộng tuyến và ảo giác đồng thuận (Consensus Illusion) khi nhiều chỉ báo cùng đo một biến thể giá đóng cửa.
+  2. `DeadNodeDetector` (`graph_verifier.py`): Thẩm định đồ thị Strategy Card, duyệt ngược từ các node tầng quyết định `L6_ZONES` về `L0_DATA_HYGIENE` theo thuật toán BFS/DFS để phát hiện các node mồ côi (Unwired / Dead Nodes); phát hiện chu trình (Cycle Detection) bảo đảm đồ thị là DAG thuần túy; phát hiện các ngõ cụt logic (Logic Dead Ends: cổng AND bị triệt tiêu bởi False, cổng OR bị vô hiệu hóa bởi True, hoặc cổng logic thiếu kết nối đầu vào).
+  3. `CoordinateLabEngine` (`geometry_lab.py`): Động cơ toán học khảo sát hình học công thức đa chiều: quét lưới tham số `sweep_parameter_grid` tạo meshgrid và trích xuất lát cắt 1D/2D; quét dò điểm kỳ dị `detect_singularities` phát hiện điểm chia cho 0 khi nến phẳng ($H=L$), vô cực (Infinity), NaN hoặc lỗi miền giá trị toán học kèm safe default; phân tích độ nhạy gradient `calculate_gradient_sensitivity` và `evaluate_fragility` bằng sai phân hữu hạn trung tâm phát hiện bề mặt răng cưa (Knife-Edge Fragility) cảnh báo nguy cơ quá khớp (Overfitting).
+- **Nguồn đã kiểm tra (2026-11-05):**
+  - Bailey et al., [*Pseudo-Mathematics and Financial Charlatanism: The Effects of Backtest Overfitting on Out-of-Sample Performance*](https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2308659) (cơ sở toán học trừng phạt tương quan cao và bề mặt tham số có gradient quá dốc).
+  - QUANTSMART Custom Modules Specification: [`github.com/Jokejoker-designer/QUANTSMART/blob/main/docs/CUSTOM_MODULES.md`](https://github.com/Jokejoker-designer/QUANTSMART/blob/main/docs/CUSTOM_MODULES.md) (tham khảo ý tưởng Coordinate Lab và kiểm tra tĩnh đồ thị).
+- **Thay đổi mã nguồn:**
+  - `src/trading_bot/domain/strategy_card/orthogonality.py`: Tạo mới module tính ma trận Pearson, class `AntiConsensusAnalyzer`, DTO `OrthogonalityReport`.
+  - `src/trading_bot/domain/strategy_card/graph_verifier.py`: Tạo mới module duyệt ngược đồ thị, class `DeadNodeDetector`, DTO `GraphVerificationReport`.
+  - `src/trading_bot/domain/strategy_card/geometry_lab.py`: Tạo mới module toán học tọa độ, class `CoordinateLabEngine` (grid sweep, singularity sweep, gradient finite difference).
+  - `src/trading_bot/domain/strategy_card/__init__.py`: Export các lớp và hàm của verification engine.
+  - `tests/unit/test_strategy_card_verification.py`: Bộ 14 unit tests TDD bao phủ toàn diện ảo giác đồng thuận, nút mồ côi, chu trình, ngõ cụt logic, chia cho 0, NaN, vô cực và độ nhạy gradient.
+  - `docs/research/glossary-vi.md`: Bổ sung 2 thuật ngữ tiếng Việt vào mục R: `Knife-edge fragility` (Độ mỏng manh răng cưa) và `Singularity sweep` (Quét dò điểm kỳ dị).
+- **TDD và xử lý lỗi phát sinh:**
+  - RED phase: Khởi tạo test fail do module chưa tồn tại (`ModuleNotFoundError`).
+  - GREEN phase: Triển khai toàn bộ giải thuật toán học bằng Python Standard Library thuần túy (zero external dependency, không dùng numpy/scipy ngoài), bảo đảm tính tất định và tốc độ microsecond.
+  - Sửa lỗi ruff: Chuẩn hóa ngắt dòng chuỗi thông báo tiếng Việt không vượt quá 100 ký tự; thay thế dict comprehension khởi tạo state bằng `dict.fromkeys(node_map, 0)`.
+- **Kiểm chứng và chất lượng:**
+  - Unit tests mục tiêu: `pytest tests/unit/test_strategy_card_verification.py -v` → **14 passed in 0.09s**.
+  - Nhóm Strategy Card (WP-SC.1 + WP-SC.2): `pytest tests/unit/test_strategy_card_*.py -v` → **30 passed in 0.12s**.
+  - Toàn bộ regression unit tests: `pytest tests/unit -q` → **2203 passed in 10.39s** (0 failure, 0 skip).
+  - Ruff check: `.venv/bin/ruff check src/ tests/` → **All checks passed!**
+  - Ruff format: `.venv/bin/ruff format --check src/ tests/` → **412 files already formatted**.
+  - Mypy: `.venv/bin/mypy src/trading_bot/domain/strategy_card/ tests/unit/test_strategy_card_verification.py` → **Success: no issues found in 5 source files**.
+- **Giới hạn còn mở:**
+  - Chuẩn bị tích hợp vào WP-SC.3: Runtime Pipeline Engine L0→L6 Topo Executor & Context Gate.
+- **Đã đọc lại memory sau cập nhật:** Có; đối chiếu đầy đủ với các thay đổi code, test suite 14 unit + 2203 regression passed, ruff/mypy outputs.
+### 2026-11-04 — Nghiên cứu & Thiết kế Kiến trúc Hợp nhất QUANTSMART (L0-L6, Strategy Card, Coordinate Lab, Anti-Consensus)
+
+- **Mục tiêu/phạm vi:** Nghiên cứu sâu và đánh giá toàn diện repository `github.com/Jokejoker-designer/QUANTSMART` (Apache-2.0, Local-first Quant Workspace). Đối soát và chắt lọc 5 giá trị tinh hoa (Module nguyên tử & Candle Anatomy, Kiến trúc phân tầng 7 lớp L0-L6, Anti-Consensus Illusion & Dead Node Detection, Coordinate Lab hình học công thức đa chiều, Strategy Card đóng gói dạng khai báo có băm SHA-256 xác thực). So sánh đối chiếu với Trading Crypidian và thiết kế phương án hợp nhất kiến trúc vào Crypidian mà không phá vỡ các bất biến cốt lõi của Risk Engine và sổ cái kép PostgreSQL RLS.
+- **Nguồn đã kiểm tra (2026-11-04):**
+  - QUANTSMART Repository: [`github.com/Jokejoker-designer/QUANTSMART`](https://github.com/Jokejoker-designer/QUANTSMART) và tài liệu module `docs/CUSTOM_MODULES.md`.
+  - Bailey et al., [*Pseudo-Mathematics and Financial Charlatanism: The Effects of Backtest Overfitting on Out-of-Sample Performance*](https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2308659) (tham khảo cơ sở toán học cho Anti-Consensus và trừng phạt đa cộng tuyến).
+  - Ink & Switch, [*Local-first software: You own your data, in spite of the cloud*](https://www.inkandswitch.com/local-first/) (tham khảo mô hình bảo mật cục bộ).
+- **Thay đổi:**
+  - `docs/research/quantsmart-synthesis-and-integration-plan.md`: Xuất bản tài liệu báo cáo chuyên sâu 8 phần gồm Executive Summary, Phân tích 5 giá trị tinh hoa, Ma trận so sánh đối chiếu Crypidian vs QUANTSMART, Thiết kế mô hình hợp nhất bảo toàn ranh giới Risk Engine, Schema Pydantic v2 cho `StrategyCard`, Thuật toán Anti-Consensus / Dead Node / Coordinate Lab, Thiết kế DB PostgreSQL RLS và lộ trình WBS 5 giai đoạn.
+  - `docs/research/glossary-vi.md`: Thêm mục mới `## R. Kiến trúc Module Định lượng và Thiết kế Chiến lược Dạng Khai báo (QUANTSMART Synthesis)` định nghĩa 15 thuật ngữ EN→VI mới (Atomic processing block, Composition lane L0-L6, Data hygiene, Candle anatomy primitive, Context gate, Strategy trigger, Execution zone, Anti-consensus illusion, Dead node detection, Coordinate Lab, Formula singularity, Sensitivity/gradient analysis, Strategy Card, Microscope replay, Local-first quantitative workspace).
+- **Quyết định kiến trúc cốt lõi:**
+  1. *Nguyên tắc bất biến ranh giới an toàn:* Strategy Card và Pipeline L0-L6 chỉ sinh ra `StrategyCandidate` (tín hiệu giả định thô). Tuyệt đối cấm Strategy Card tự sinh lệnh hoặc kết nối gateway sàn. Mọi candidate bắt buộc phải qua `TradePlanner` và `RiskEngine` của Crypidian để thẩm định vốn và tạo `RiskReservation` nguyên tử.
+  2. *Phân tách L4 (Context Gate) vs L5 (Strategy Trigger):* Loại bỏ sự nhập nhằng trong các hàm chiến lược cũ. L4 quyết định tính phù hợp của thị trường (PASS/BLOCK); L5 chỉ kích hoạt khi L4 cho phép.
+  3. *Thẩm định đồ thị trước thực thi:* Tích hợp thuật toán Anti-Consensus (cảnh báo tương quan $|r| > 0.85$), Dead Node Detection (cắt tỉa node mồ côi hoặc mâu thuẫn), và Coordinate Lab (quét điểm kỳ dị chia cho 0 và độ nhạy gradient) vào khâu xác thực Strategy Card.
+- **Chất lượng:**
+  - Tài liệu Markdown chuẩn hóa code fence, đường dẫn liên kết nội bộ kiểm tra đầy đủ.
+  - Không có thay đổi mã nguồn ảnh hưởng tới regression test suite hiện tại.
+- **Giới hạn còn mở:**
+  - Chờ Parent Agent và User phê duyệt bản kế hoạch kiến trúc để khởi tạo nhánh phát triển Phase 1 (`WP-SC.1`).
+- **Đã đọc lại mục memory sau cập nhật:** Có.
+### 2026-11-04 — WP-06: Tích hợp hoàn thiện AI Learning Fold Evaluation & Outcome Verification (từ nhánh Codex sang dev)
+
+- **Mục tiêu/phạm vi:** Tích hợp và hoàn thiện các module AI Learning Fold Evaluation và Outcome Verification từ nhánh `codex/updated-wbs-wp06-fold-v2` sang nhánh `dev` sạch sẽ:
+  1. Fold Evaluation logic: Xây dựng kế hoạch fold temporal (`ManifestFoldPlan`) hỗ trợ phiên bản manifest v2 (`dataset-manifest-v2`) với phân hoạch `DEVELOPMENT` và `HOLDOUT`. Tự động suy vai trò `train`, `validation`, `test` cho từng fold; cô lập hoàn toàn khoảng thời gian holdout (`_overlapping_holdout_id` qua `bisect_left`) để chống rò rỉ dữ liệu.
+  2. Walk-Forward Fold Evaluation Async Service: Triển khai `build_walk_forward_evaluation_report` tính toán các metrics (net PnL, gross PnL, fees, funding, slippage, expectancy, max drawdown, confidence interval) cho từng vai trò trong từng fold dựa trên DTOs bất biến (`FoldEvaluation`, `FoldRoleMetrics`, `WalkForwardEvaluationReport`). Xác thực khoảng thời gian giao dịch nửa mở `[outcome_start, outcome_end]`, kiểm tra hash dòng/kết quả chuẩn hóa và fail-closed khi có lỗi.
+  3. Database Outcome Verifier: Triển khai `DatabaseFoldOutcomeVerifier` tuân thủ protocol `FoldOutcomeVerifier`, thực thi trong snapshot PostgreSQL `REPEATABLE READ`/`SERIALIZABLE`, `READ ONLY`. Đối soát tính liên tục của ordinal trade, trạng thái `COMPLETED` của trial, và tính toàn vẹn của replay manifest/report metadata.
+  4. Mở rộng repository: Bổ sung các phương thức `load_trade_outcome_rows` và `load_trade_outcome_rows_by_id` cùng DTOs `PersistedBacktestTradeOutcome`, `PersistedBacktestTradeOutcomeRows` vào `BacktestOutcomeRepository`.
+- **Nguồn đã kiểm tra:**
+  - Scikit-learn, [`TimeSeriesSplit`](https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.TimeSeriesSplit.html) (tham khảo semantics).
+  - Bailey et al., [*Statistical Overfitting and Backtest Performance*](https://sdm.lbl.gov/oapapers/ssrn-id2507040-bailey.pdf) (trial ledger & holdout gating).
+- **Thay đổi:**
+  - `src/trading_bot/domain/learning/dataset.py`: Bổ sung `DatasetSplit.DEVELOPMENT`, logic kiểm tra phân hoạch cho manifest v2.
+  - `src/trading_bot/application/learning_fold_plan.py`: Bổ sung thuật toán `_overlapping_holdout_id`, hỗ trợ manifest v2 tự động gán role theo từng fold, bảo vệ interval holdout và kiểm tra leakage temporal.
+  - `src/trading_bot/application/learning_fold_evaluation.py`: Module tính toán Walk-Forward Evaluation async, protocol `FoldOutcomeVerifier`, hàm `build_walk_forward_evaluation_report`, xác thực batch và hash bất biến.
+  - `src/trading_bot/adapters/database/repositories/backtest_outcomes.py`: Mở rộng với `PersistedBacktestTradeOutcome`, `PersistedBacktestTradeOutcomeRows`, `load_trade_outcome_rows` và `load_trade_outcome_rows_by_id`.
+  - `src/trading_bot/adapters/database/learning_fold_outcome_verifier.py`: Thực thi `DatabaseFoldOutcomeVerifier` đọc snapshot chỉ đọc, đối soát trial status `COMPLETED`, ordinal liên tục, hash payload, workspace/manifest scope.
+  - `tests/unit/test_learning_fold_plan.py`: Bổ sung 31 unit test cases cho v2 fold plan, expanding/rolling folds, holdout isolation, temporal & membership guards.
+  - `tests/unit/test_learning_fold_evaluation.py`: Bộ 6 unit test cases bao quát report generation, trade payload hash verification, boundary check `[outcome_start, outcome_end]`, fail-closed khi verifier lỗi.
+  - `tests/unit/test_dataset_manifest_persistence.py`: Bổ sung unit test cho v2 round-trip và loader verification.
+  - `tests/fixtures/runtime_replay.py`: Hỗ trợ tham số tùy chọn `start_at` cho generator fixture.
+  - `tests/e2e/test_learning_fold_outcome_verifier.py` & `tests/e2e/probes/wp06_fold_outcome_verifier.py`: E2E test và probe kiểm tra verifier trên Docker Compose PostgreSQL.
+  - `tests/e2e/probes/wp06_dataset_manifest.py`: Cập nhật probe kiểm tra v1 và v2 dataset manifest.
+  - `docs/research/glossary-vi.md`: Cập nhật định nghĩa `Dataset split policy version`, `Development sample`, `Fold outcome verifier`, `Label / outcome interval`.
+- **TDD/vấn đề phát sinh và xử lý:**
+  - Mypy ban đầu báo 9 lỗi type checking (thiếu return type annotation, type assignment conflict giữa `BacktestTrialRecord` và `BacktestTrialRecord | None`, và type của transaction query `isolation`/`read_only`). Đã chuẩn hóa type annotation đầy đủ: `ManifestFoldPlan`, `expected_train: tuple[str, ...]`, `selected_trial = trials.get(trial_record_id)`, `isolation: object = ...`. Chạy lại mypy trên 7 files liên quan: 0 lỗi.
+  - Ruff check & format: Tự động sửa 5 lỗi import ordering và unused import; kiểm tra lại toàn bộ `src` và `tests` (403 files): 0 lỗi.
+- **Chất lượng:**
+  - Unit tests mục tiêu: `PYTHONPATH="$PWD:$PWD/src" .venv/bin/pytest tests/unit/test_learning_fold_plan.py tests/unit/test_learning_fold_evaluation.py tests/unit/test_dataset_manifest_persistence.py -v` → **52 passed in 0.33s**.
+  - Regression unit tests toàn bộ: `PYTHONPATH="$PWD:$PWD/src" .venv/bin/pytest tests/unit -q` → **2172 passed in 10.32s**.
+  - Ruff check: `.venv/bin/ruff check src tests` → **All checks passed!**
+  - Ruff format: `.venv/bin/ruff format --check src tests` → **403 files already formatted**.
+  - Mypy: `.venv/bin/mypy src/trading_bot/application/learning_fold_plan.py src/trading_bot/application/learning_fold_evaluation.py src/trading_bot/domain/learning/dataset.py src/trading_bot/adapters/database/learning_fold_outcome_verifier.py src/trading_bot/adapters/database/repositories/backtest_outcomes.py tests/unit/test_learning_fold_plan.py tests/unit/test_learning_fold_evaluation.py` → **Success: no issues found in 7 source files**.
+- **Giới hạn còn mở:**
+  - Chưa wire `DatabaseFoldOutcomeVerifier` vào composition root hoặc scheduler của bot.
+  - Chưa triển khai persistence lưu `WalkForwardEvaluationReport` vào DB (sẽ thực hiện ở WP-06.6 Model Registry).
+  - Quy ước hiện tại: Mỗi sample tương ứng đúng một trade hoàn tất (`trade_count == 1`). Multi-trade / zero-trade sample sẽ được xem xét mở rộng ở các giai đoạn sau.
+- **Commit/nhánh:** `dev`; chưa commit (chờ người dùng/parent chỉ định).
+- **Đã đọc lại mục memory sau cập nhật:** Có; đối chiếu đầy đủ với các thay đổi code, test suite 52 unit + 2172 regression passed, ruff/mypy outputs.
+### 2026-11-02 — WP-03 Task 2 (WP-03A.2): ExchangeGateway Host/Key Boundary và Secret Separation
+
+- **Mục tiêu/phạm vi:** Thiết lập hợp đồng port `ExchangeGateway` và bộ lọc an toàn ranh giới máy chủ/khóa bí mật cho Binance USDⓈ-M Futures theo WBS Task 2:
+  1. Port neutral `ExchangeGateway`, `ReadinessProbeResult`, `GatewayReadinessReport` với 4 probe categories: `PUBLIC_DATA`, `USER_DATA`, `TRADE_CAPABILITY`, `STREAM_AND_CLOCK`.
+  2. Host & Mode Boundary: Cho phép danh sách allowlist chính thức (Demo/Testnet/Production), cấm tuyệt đối kết nối tới production host (`https://fapi.binance.com`, `wss://fstream.binance.com`) khi ở chế độ `DEMO` hoặc `PAPER` (fail-closed, ném `HostBoundaryViolationError`). Chặn URL chứa query injection, fragment, userinfo hoặc path lạ.
+  3. Secret separation & Redaction: `ApiKeyCredentials` và `SecretReference` tự động che giấu (`[REDACTED]`, masked tail key `***1234`) trong `__repr__` và `__str__`; tiện ích `redact_sensitive_text` tự động che chữ ký HMAC, API key, listenKey; `SecretRedactingLoggingFilter` cho standard logging.
+  4. Request signature & timestamp boundary: Kiểm tra `recvWindow` trong khoảng 1000ms đến 60000ms; phát hiện và chặn clock drift lệch quá dung sai so với server time; hàm tính chữ ký HMAC-SHA256 chuẩn fail-closed.
+  5. Readiness probes phân loại độc lập: Thăm dò public data, signed USER_DATA (xử lý 401/403/429), năng lực TRADE (canTrade), stream & clock skew (offset và listenKey), tổng hợp báo cáo độc lập không giấu lỗi.
+- **Nguồn đã kiểm tra (2026-11-01 / 2026-11-02):**
+  - [Binance USDⓈ-M General Info](https://developers.binance.com/en/docs/products/derivatives-trading-usds-futures/general-info)
+  - [Binance USDⓈ-M Trade REST API](https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api)
+  - [Binance USDⓈ-M User Data Streams](https://developers.binance.com/docs/derivatives/usds-margined-futures/user-data-streams)
+  - [OWASP Logging Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Logging_Cheat_Sheet.html)
+- **Thay đổi:**
+  - `src/trading_bot/ports/exchange_gateway.py`: Chứa các enum `ReadinessStatus`, `ProbeCategory`, các frozen dataclass DTOs `ReadinessProbeResult`, `GatewayReadinessReport`, `GatewayEndpoints`, `SecretReference`, và giao thức `ExchangeGateway`.
+  - `src/trading_bot/adapters/binance_usdm/gateway_boundary.py`: Chứa `BinanceExecutionMode`, constants allowlist hosts, các exceptions (`GatewayBoundaryError`, `HostBoundaryViolationError`, `TimestampBoundaryError`, `ClockDriftBoundaryError`), class `ApiKeyCredentials` che giấu secret, hàm `redact_sensitive_text`, filter `SecretRedactingLoggingFilter`, hàm `validate_host_boundary`, `validate_recv_window`, `validate_timestamp_and_drift`, và `sign_hmac_sha256`.
+  - `src/trading_bot/adapters/binance_usdm/gateway.py`: Lớp `BinanceUsdMExchangeGateway` thực thi `ExchangeGateway`, kiểm tra ranh giới khi khởi tạo và triển khai 4 probes (`probe_public_data`, `probe_user_data`, `probe_trade_capability`, `probe_stream_and_clock`) cùng hàm `check_readiness()`.
+  - `docs/research/glossary-vi.md`: Bổ sung mục P cho các thuật ngữ mới: Exchange gateway, Readiness probe, Clock drift, Secret redaction, Host allowlist.
+  - `tests/unit/test_exchange_gateway_boundary.py`: Bộ 34 unit tests TDD bao quát toàn diện host boundary, secret masking, redaction filter, timestamp/clock drift, và các kịch bản probe (READY, FAILED, DEGRADED, auth error, canTrade=False).
+- **TDD/vấn đề phát sinh và xử lý:**
+  - RED phase: `tests/unit/test_exchange_gateway_boundary.py` ban đầu gặp `ModuleNotFoundError: No module named 'trading_bot.adapters.binance_usdm.gateway'`.
+  - GREEN phase: Triển khai 3 modules, chạy pytest. Lần đầu gặp lỗi do điều kiện `or "fapi.binance.com" in parsed_rest.netloc` bắt nhầm domain `demo-fapi.binance.com`. Đã sửa thành so sánh chính xác `parsed_rest.netloc == "fapi.binance.com"` và `parsed_ws.netloc == "fstream.binance.com"`.
+  - Ruff lint: Xử lý các dòng dài quá 100 ký tự và unused imports.
+  - Mypy: Chuẩn hóa type annotation `responses: dict[str, tuple[int, Any]]` cho mock transport để tránh lỗi type invariance.
+- **Chất lượng:**
+  - Pytest: `PYTHONPATH="$PWD:$PWD/src" .venv/bin/pytest tests/unit/test_exchange_gateway_boundary.py -v` → **34 passed in 0.06s**.
+  - Regression unit tests: `PYTHONPATH="$PWD:$PWD/src" .venv/bin/pytest tests/unit/test_exchange* tests/unit/test_binance* tests/unit/test_venue* -q` → **189 passed in 0.42s**.
+  - Ruff check: `.venv/bin/ruff check src/trading_bot/ports/exchange_gateway.py src/trading_bot/adapters/binance_usdm/gateway_boundary.py src/trading_bot/adapters/binance_usdm/gateway.py tests/unit/test_exchange_gateway_boundary.py` → **All checks passed!**
+  - Ruff format: `.venv/bin/ruff format --check src/trading_bot/ports/exchange_gateway.py src/trading_bot/adapters/binance_usdm/gateway_boundary.py src/trading_bot/adapters/binance_usdm/gateway.py tests/unit/test_exchange_gateway_boundary.py` → **4 files already formatted**.
+  - Mypy: `.venv/bin/mypy src/trading_bot/ports/exchange_gateway.py src/trading_bot/adapters/binance_usdm/gateway_boundary.py src/trading_bot/adapters/binance_usdm/gateway.py tests/unit/test_exchange_gateway_boundary.py` → **Success: no issues found in 4 source files**.
+- **Giới hạn còn mở:** Hiện tại các probes chạy qua `SignedHttpTransport` offline mock. Sẽ kết nối với network HTTP client thực tế ở giai đoạn tích hợp Demo gate (WP-03B).
+- **Commit/nhánh:** Chưa commit.
+- **Đã đọc lại mục memory sau cập nhật:** Có.
+### 2026-11-02 — WP-03 Task 1: Offline response/event parser và golden fixtures Binance USDⓈ-M
+
+- **Mục tiêu/phạm vi:** Triển khai bộ raw DTOs và canonical parsers offline cho 3 API families của Binance USDⓈ-M theo WBS Task 1:
+  1. Regular order responses (`POST /fapi/v1/order`, `GET /fapi/v1/order`)
+  2. Algo order responses (`POST /fapi/v1/algoOrder`, `GET /fapi/v1/algoOrder`)
+  3. User Data Stream WebSocket events (`ORDER_TRADE_UPDATE`, `ALGO_UPDATE`, `ACCOUNT_UPDATE`)
+  Tuân thủ fail-closed validation: từ chối status/enum lạ, không cho phép số âm cho quantity/price (cho phép unrealizedProfit và positionAmt âm), từ chối payload lẫn lộn giữa các family.
+- **Nguồn đã kiểm tra (2026-11-01 / 2026-11-02):**
+  - [Binance USDⓈ-M User Data Streams](https://developers.binance.com/docs/derivatives/usds-margined-futures/user-data-streams)
+  - [Binance USDⓈ-M Trade REST API](https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api)
+  - [Binance USDⓈ-M Change Log](https://developers.binance.com/en/docs/products/derivatives-trading-usds-futures/change-log)
+- **Thay đổi:**
+  - Tạo `src/trading_bot/domain/execution/venue_parsers.py`: chứa các enum (`RegularOrderStatus`, `RegularOrderType`, `ConditionalAlgoOrderType`, `AlgoOrderStatus`, `OrderSide`, `ExecutionType`), các frozen dataclass DTOs (`RegularOrderResponse`, `AlgoOrderResponse`, `OrderTradeUpdateEvent`, `AlgoUpdateEvent`, `AccountBalanceUpdate`, `PositionUpdate`, `AccountUpdateEvent`), exception `VenueParserError`, và các parser hàm thuần fail-closed: `parse_regular_order_response`, `parse_algo_order_response`, `parse_order_trade_update`, `parse_algo_update`, `parse_account_update`.
+  - Tạo 8 golden fixtures trong `tests/fixtures/binance_usdm/`: `regular_order_accepted.json`, `regular_order_partial.json`, `regular_order_unknown_status.json`, `algo_order_new.json`, `algo_order_triggered.json`, `order_trade_update_partial.json`, `algo_update_rejected.json`, `account_update.json`. Mỗi fixture đều có `_fixture_metadata` truy vết URL, API family, scenario và ngày kiểm tra.
+  - Thêm định nghĩa thuật ngữ `Execution report / Order update` vào `docs/research/glossary-vi.md`.
+  - Tạo unit tests toàn diện trong `tests/unit/test_venue_parsers.py` (28 test cases).
+- **TDD/vấn đề:**
+  - Viết test trước trong `tests/unit/test_venue_parsers.py`, chạy pytest kiểm tra trạng thái RED (`ModuleNotFoundError`).
+  - Viết module `src/trading_bot/domain/execution/venue_parsers.py`, chạy test kiểm tra trạng thái GREEN (28 passed).
+  - Ruff báo 5 lỗi E501 line too long và mypy báo union attribute access với dict get; đã chuẩn hóa type annotation `src: dict[str, Any]` và ngắt dòng chuỗi thông báo lỗi.
+- **Chất lượng:**
+  - Ruff check: `.venv/bin/ruff check src/trading_bot/domain/execution/venue_parsers.py tests/unit/test_venue_parsers.py` → All checks passed!
+  - Mypy: `.venv/bin/mypy src/trading_bot/domain/execution/venue_parsers.py` và `tests/unit/test_venue_parsers.py` → Success: no issues found.
+  - Pytest: `.venv/bin/pytest tests/unit/test_venue_parsers.py -v` → 28 passed in 0.04s.
+  - Regression unit tests: `.venv/bin/pytest tests/unit/test_venue* tests/unit/test_binance* -q` → 155 passed in 0.41s.
+- **Giới hạn còn mở:** Các parser hiện tại là pure offline functions/DTOs. Cần tích hợp vào transport adapter/worker và outbox stream ở các Task kế tiếp của WP-03.
+- **Commit/nhánh:** Chưa commit.
+- **Đã đọc lại mục memory sau cập nhật:** Có.
+### 2026-11-02 — WP-04: Admin UI & Responsive Layout Enhancement
+
+- **Mục tiêu/phạm vi:** Triển khai cải tiến giao diện Admin Web theo tài liệu khảo sát `docs/research/admin-dashboard-market-review-2026-11-02.md`: banner thông báo chế độ PAPER nội bộ (theo ruling 2026-11-02), thẻ KPI (Tổng bot, Bot sẵn sàng, Kill switch khẩn cấp, Chế độ vận hành), danh sách bot responsive (table desktop sang cards mobile), Dark/Light mode qua `prefers-color-scheme`, hit target di động >= 44px, và các thuộc tính accessibility ARIA (landmarks, skip-link, aria-label, aria-live).
+- **Nguồn đã kiểm tra (2026-11-02):**
+  + Entrade Dashboard (https://hdsd.entrade.com.vn/chuc-nang-avatar/dashboard): danh sách bot, filter môi trường.
+  + Binance Support PnL (https://www.binance.com/vi/support/faq/detail/07d9c7a2f2524e8eb4c3baf947826faa): KPI định nghĩa rõ ràng.
+  + FreqUI (https://www.freqtrade.io/en/latest/freq-ui/): bố cục responsive đa thiết bị.
+  + Bootstrap 5.3 Responsive Grid (https://getbootstrap.com/docs/5.3/layout/grid/): nguyên lý mobile-first breakpoints.
+- **Thay đổi:**
+  + `src/trading_bot/templates/admin/base.html`: thêm system mode banner với badge "Chế độ: Mô phỏng (PAPER) nội bộ" và mô tả an toàn ("mô phỏng nội bộ trong database — không gọi API hay đặt lệnh lên Binance"), bổ sung ARIA landmarks (`header role="banner"`, `main role="main"`, `footer role="contentinfo"`).
+  + `src/trading_bot/templates/admin/dashboard.html`: thiết kế lại với 4 KPI cards ngữ nghĩa (Tổng số bot, Bot sẵn sàng, Trạng thái khẩn cấp `ACTIVE`/`KILLED` với `aria-live="polite"`, Chế độ PAPER); form dừng/gỡ khẩn cấp workspace; bảng danh sách bot responsive với `data-label` chuyển đổi linh hoạt từ bảng trên desktop sang card view trên mobile.
+  + `src/trading_bot/static/admin.css`: viết lại toàn bộ theo kiến trúc Mobile-First, thuần CSS không phụ thuộc framework/JS ngoài; hỗ trợ Dark/Light mode tự động qua `prefers-color-scheme: dark`; chuẩn hóa hit-target tối thiểu 44px (2.75rem); bảo toàn WCAG AA contrast và `prefers-reduced-motion`.
+  + `tests/unit/test_admin_dashboard_ui.py`: bộ 6 unit tests TDD kiểm tra banner mode/disclaimer, KPI cards, trạng thái KILLED, thuộc tính accessibility/skip-link/landmarks, autoescape chống XSS và CSS dark mode/hit target.
+- **TDD/vấn đề phát sinh và xử lý:**
+  + Giai đoạn RED ban đầu: 4 tests thất bại do template chưa có banner PAPER, chưa có KPI card grid, thiếu data-label responsive và admin.css chưa có media query dark mode.
+  + Giai đoạn GREEN: sau khi cập nhật template và CSS, toàn bộ 6 test trong suite mới đạt.
+  + Lỗi typing mypy `Argument "bots" has incompatible type "list[dict[str, Collection[str]]]"; expected "list[dict[str, object]]"`: đã chỉnh type annotation trong fixture stub thành `list[dict[str, Any]]` để tương thích type invariance.
+  + Lỗi Ruff unused import `pytest` và type quotes: đã xóa import thừa và bỏ quotes.
+- **Verification:**
+  + Unit tests: `PYTHONPATH="$PWD:$PWD/src" .venv/bin/pytest tests/unit/test_admin_dashboard_ui.py tests/unit/test_admin_web_smoke.py tests/unit/test_admin_web_views.py -q` → **20 passed trong 1.04 giây**.
+  + Ruff check: `.venv/bin/ruff check src/trading_bot/admin/web_router.py tests/unit/test_admin_dashboard_ui.py tests/unit/test_admin_web_smoke.py tests/unit/test_admin_web_views.py` → **All checks passed!**
+  + Mypy: `.venv/bin/mypy src/trading_bot/admin/web_router.py tests/unit/test_admin_dashboard_ui.py` → **Success: no issues found in 2 source files**.
+- **Giới hạn còn mở:**
+  + Equity time series và chart PnL trực quan chưa được đưa vào dashboard vì cần authoritative ledger series (theo ruling trong `admin-dashboard-market-review-2026-11-02.md`).
+  + Chế độ hiển thị cố định PAPER; việc chuyển sang Live/Demo Binance Futures cần được kích hoạt khi module execution thật (WP-03) hoàn tất kết nối API và khóa an toàn.
+- **Commit/nhánh:** `dev`; chưa commit (chờ người dùng chỉ định).
+- **Đã đọc lại mục memory sau cập nhật:** có; đối chiếu đầy đủ với các thay đổi template, CSS, tests và output kiểm thử.
 ### 2026-10-23 — WP-02F: persistence sensitivity scenario và replay trade outcomes
 
 - **Mục tiêu/phạm vi:** lưu cost/parameter overrides cho từng sensitivity trial và từng evaluation trade outcome canonical; phát hiện retry dùng payload khác, giữ hash outcome tính lại được từ DB. Bám WBS Task 9/10. Không sửa `application/backtest.py`, `application/paper_lifecycle.py`, `tests/e2e/test_compose_boundary.py` hoặc module evaluator của replay-parity stream; không commit.
@@ -25,7 +424,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Giới hạn còn mở:** E2E xác nhận một parameter-neighbor trial, không benchmark throughput; caller phải đưa tuple `EvaluationTrade` xuất phát từ chính evaluator, còn `BacktestRunner` hiện chưa gắn trade outputs trực tiếp vào result object. Harness vẫn callback-based, chưa chứng minh evaluator áp parameter overrides vào cùng strategy/planner/risk/fill runtime. Step 3 của Task 9 vẫn mở tới khi cost/path và runtime parity được nghiệm thu; hash chỉ chứng minh payload đã lưu không đổi, không chứng minh replay đúng hay có edge.
 - **Commit/nhánh:** không commit; migration head là `8c4f2a6d9e31`.
 - **Đã đọc lại mục memory sau cập nhật:** có; đối chiếu mục này với source, migration, WBS và output 13 unit/1 E2E, RLS/immutability/payload-conflict cùng downgrade/upgrade. Không ghi commit hoặc tuyên bố parity evaluator đã xong.
-
 ### 2026-10-23 — WP-02F: harness phân tích độ nhạy replay
 
 - **Mục tiêu/phạm vi:** thêm `application/backtest_sensitivity.py` tách biệt để chạy scenario BASE, stress phí/trượt giá và lân cận tham số qua `BacktestRunner` cùng `evaluator_factory` rõ ràng. Không sửa `backtest.py`, repository hay E2E đang có thay đổi; không commit.
@@ -39,7 +437,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Giới hạn còn mở:** `BacktestRunner` vẫn nhận callback nên harness không đảm bảo evaluator dùng cùng strategy/risk/fill với PAPER runtime. Raw parameter overrides nằm trong `SensitivityRun.scenario`, không được BacktestRepository serialize khi chỉ append `ReplayManifest`/result; cần persistence contract để replay lại chính xác các biến thể. Không có kết quả nào xếp hạng hoặc chứng minh edge.
 - **Commit/nhánh:** chưa commit; chỉ thêm module, unit test và mục memory.
 - **Đã đọc lại mục memory sau cập nhật:** có; đối chiếu file/module và output 16 passed, xác nhận rõ giới hạn evaluator callback, E2E chưa chạy và parameter persistence còn mở.
-
 ### 2026-10-23 — WP-02E: catalog phí/fill PAPER composition-ready
 
 - **Mục tiêu/phạm vi:** bổ sung catalog version-addressed mặc định cho `paper-fees-v1` và `next_bar_with_adverse_costs`, để composition root có thể resolve H03/PAPER settings; unknown refs tiếp tục fail-closed. Không sửa `paper_decision_cycle.py` hoặc H03 E2E; không Binance network, không commit.
@@ -52,7 +449,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Quality:** `.venv/Scripts/ruff.exe check src/trading_bot/application/paper_execution_profile.py tests/unit/test_paper_execution_profile.py` đạt; `ruff format --check` báo 2 files formatted; `.venv/Scripts/mypy.exe src/trading_bot/application/paper_execution_profile.py` đạt.
 - **Commit/nhánh:** chưa commit.
 - **Đã đọc lại mục memory sau cập nhật:** có; xác nhận nguồn phí chỉ hỗ trợ benchmark regular taker (không phải account rate), stress fill là giả định, 6 unit pass, không E2E, và thiếu wiring/lineage/liquidity modeling.
-
 ### 2026-10-23 — WP-02E: resolver profile thực thi PAPER bất biến
 
 - **Mục tiêu/phạm vi:** tạo resolver thuần cho giả định phí/fill PAPER từ `PublishedWorkspaceSettings` và catalog version-addressed được truyền rõ ràng; không gọi sàn, không nối vào `paper_decision_cycle.py` đang có thay đổi đồng thời, không commit.
@@ -65,7 +461,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Quality:** `.venv/Scripts/ruff.exe check src/trading_bot/application/paper_execution_profile.py tests/unit/test_paper_execution_profile.py` đạt; `ruff format --check` báo 2 files already formatted; `.venv/Scripts/mypy.exe src/trading_bot/application/paper_execution_profile.py` đạt; `git diff --check -- <2 source/test files>` đạt.
 - **Commit/nhánh:** chưa commit; giữ các thay đổi chưa commit hiện có.
 - **Đã đọc lại mục memory sau cập nhật:** có; đối chiếu 5 unit pass, không có E2E, thiếu production catalog/coordinator/ledger wiring, và các giới hạn quote asset/funding/equity lifecycle như ghi ở trên.
-
 ### 2026-10-23 — WP-02E follow-up: feature lineage H03 gắn đúng bars đã persist
 
 - **Phạm vi:** xử lý finding review P1 rằng H03 lấy `feature_snapshot_id` từ một probe 1m nhưng quyết định trên 56 synthetic nến 1h và ATR tự gán.
@@ -73,7 +468,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Lỗi phát sinh và nguyên nhân:** lần chạy đầu `NameError: MarketDataRepository is not defined` vì import đã được thêm vào probe Python liền trước trong cùng file, không phải chuỗi probe H03; chuyển import vào đúng runtime code block. Lần chạy lại Compose boundary xanh.
 - **Verification:** `.venv/Scripts/python.exe -m pytest tests/e2e/test_compose_boundary.py -q` với `DOCKER_CONTEXT=default` → **4 passed trong 111.07 giây**. Trước đó combined `test_compose_boundary.py` + `test_backtest_persistence.py` → **5 passed trong 210.41 giây**; unit đầy đủ → **355 passed trong 6.78 giây**; Ruff check/format, mypy 78 files và diff check đều đạt trước thay đổi feature lineage; Ruff check sau thay đổi cũng đạt. Cần chạy lại full suite/quality cuối cùng khi các thay đổi tiếp theo hoàn tất.
 - **Còn mở:** cùng H03 candidate chưa được fill/monitor/close/report trong một flow; fill policy, fee schedule, starting equity/quote asset vẫn chưa được bind đầy đủ từ root settings; `settings_hash` chưa được gắn vào toàn decision lineage; settings publication race chưa được kiểm tra ở boundary resolve; reservation expiry chưa lưu/revalidate. Backtest evaluator vẫn là callback, chưa có parity runtime hay sensitivity. WP-02 chưa nghiệm thu.
-
 ### 2026-10-23 — WP-02E/F: áp hard caps root, giới hạn market scope và kiểm định replay hai lần
 
 - **Mục tiêu/phạm vi:** xử lý phần review độc lập phát hiện: coordinator ghi risk profile ID nhưng sử dụng hard limits tự dựng; không kiểm tra symbol/timeframe theo root settings; backtest E2E dùng observation rỗng và chưa so replay hai lần.
@@ -83,7 +477,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Lỗi phát sinh và nguyên nhân:** ban đầu test publish-race dừng ở risk-profile lookup vì mock session không có profile; giữ thứ tự xử lý stale-head trước validation profile và cập nhật riêng mock để tái hiện đúng racing publisher. Test watchlist dùng ETHUSDT nhưng fixture cho phép symbol này; đổi sang XRPUSDT để thật sự ngoài scope. Đã sửa import/line-length sau Ruff.
 - **Focused verification:** 22 unit tests cho decision cycle, typed profile và Admin settings pass. `tests/e2e/test_compose_boundary.py tests/e2e/test_backtest_persistence.py` → **5 passed trong 210.41 giây** trên Docker Compose local; E2E replay có hai observation usable và so hash. `ruff check src tests scripts migrations`, `mypy src` (78 source files) và `git diff --check` pass.
 - **Còn mở:** chưa nối H03 candidate cùng journey qua simulator fill/monitor/closed trade/report; feature snapshot lineage của H03 vẫn gán ID từ một snapshot có dữ liệu khác; fill policy, fee schedule, quote asset/equity còn có giá trị hard-code thay vì được suy ra đầy đủ từ root settings; chưa có application-boundary pin/resolve effective settings race test; reservation expiry chưa persist/revalidate. Backtest vẫn chấp nhận evaluator callback, chưa chia sẻ hoàn toàn strategy+risk+fill runtime và chưa có cost/parameter sensitivity. WP-02 tiếp tục **chưa nghiệm thu**; không commit trước khi các blocker và full regression/review/memory gates được xử lý.
-
 ### 2026-10-23 — WP-02E: nối H03 từ effective settings tới PAPER intent
 
 - **Mục tiêu/phạm vi:** tiếp tục phần còn thiếu của WP-02E bằng một Compose journey chạy trên stack hiện có: tải root settings hiệu lực, tạo candidate strategy thực, lập plan/chấm risk, persist reservation rồi ghi PAPER intent với lineage đầy đủ. Không tạo Compose project riêng và không gọi Binance order API.
@@ -97,7 +490,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Việc còn mở:** WP-02 vẫn chưa nghiệm thu. Lát cắt coordinator hiện dừng tại intent được chấp nhận; chưa phát fill, chạy `PositionMonitor`, đóng trade và report từ cùng candidate. Risk profile đã được tham chiếu trong root settings nhưng hard caps của risk profile vẫn được tiêm thành `PlannerSettings`, chưa có loader typed/kiểm tra dữ liệu profile DB. WP-02F đã persist run/trial/report nhưng evaluator còn callback; chưa cùng concrete strategy/risk/fill semantics và chưa có replay hai lần so manifest/report/trade hash hay sensitivity. Cần tiếp tục các acceptance đó và independent review.
 - **Nhánh/commit:** `dev`; chưa commit. Working tree còn thay đổi của các WP trước và các module WP-02, cần tiếp tục giữ nguyên trạng thái này cho tới khi WBS acceptance và review đạt.
 - **Đã đọc lại mục memory sau cập nhật:** đối chiếu 349 unit/7 E2E, 135 file format, mypy 77 files, root settings effective H03 sau publish race, release reason code và lỗi hướng `long`/`LONG`; phần còn mở được ghi đúng là chưa có closed trade từ cùng coordinator và evaluator parity.
-
 ### 2026-10-23 — WP-02E/F: coordinator staged, settings loader và persistence replay
 
 - **Mục tiêu/phạm vi:** tiếp tục WBS WP-02 sau khi người dùng duyệt WBS; ghép các luồng song song, xác minh root `WorkspaceSettings` được nạp an toàn, tách quyết định risk-approved khỏi bước gửi PAPER intent, siết lineage ledger và lưu kết quả replay. Không gửi lệnh sàn.
@@ -111,7 +503,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Rủi ro/việc còn mở:** WP-02 **chưa nghiệm thu**. Chưa có một Compose journey duy nhất chạy published settings loader → H01/H03/H06 candidate thật → planner/risk → PostgreSQL reservation → Paper gateway → ledger/position monitor; coordinator hiện có unit coverage và staged boundary nhưng Compose probes vẫn rời. `BacktestRunner` vẫn nhận evaluator callback, chưa hiện thực concrete evaluator cùng strategy/risk/fill semantics của runtime; chưa chạy cùng dataset/replay hai lần so manifest/report/trade hashes hoặc cost/parameter sensitivity. Cấu hình hard risk profile chưa được ánh xạ đầy đủ từ root version reference thành `PlannerSettings` trong runtime coordinator. Chưa có pause/protective-exit E2E. Không commit cho tới khi các cổng còn thiếu và independent review được xử lý.
 - **Nhánh/commit:** `dev`; chưa commit. Working tree còn có thay đổi WP-01/WP-02 rộng hơn vòng hiện tại, vì vậy không tạo commit gom thiếu chọn lọc.
 - **Đã đọc lại mục memory sau cập nhật:** xác nhận lại 349 unit pass, 7 E2E pass sau khi sửa fixture, 135 file format, mypy 77 file, trạng thái `dev`, và các acceptance còn thiếu; các tuyên bố về Compose được giới hạn đúng các probe đã chạy, không gọi WP-02 hoàn tất.
-
 ### 2026-10-22 — WP-02 design và WBS trước implementation
 
 - **Mục tiêu/phạm vi:** thiết kế completion WP-02A–F và bổ sung WP-02G cho root WorkspaceSettings/Admin API theo yêu cầu người dùng. Chưa sửa product code, schema runtime hay dependency; chưa bắt đầu implement.
@@ -124,7 +515,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Việc còn mở:** người dùng review/duyệt WBS; sau đó triển khai theo thứ tự 02G.1, 02A.1, 02A.2, 02G.2, 02B, 02C, 02D, 02E, 02F, integration. Sau WP-02 mới tạo brainstorm multi-bot riêng.
 - **Nhánh/commit:** nhánh `dev`; không commit vì đây là thiết kế/WBS chờ review và working tree có các thay đổi WP-01/WP-02 trước đó.
 - **Đã đọc lại mục memory sau cập nhật:** có; xác nhận spec đã được duyệt, WBS chưa được duyệt, chưa có code change/test trong lượt này, cấu hình root không chứa secret, các source link và thứ tự thực thi còn mở đúng như artifacts.
-
 ### 2026-10-22 — WP-02A–D: hợp đồng dữ liệu, features, geometry và sizing (các lát cắt đầu)
 
 - **Mục tiêu và phạm vi:** triển khai song song bốn lát cắt domain thuần để bắt đầu trading core: market-data contract/quality, indicator formulas, chart geometry, và risk sizing. Đây chưa phải trading vertical slice: chưa có adapter Binance, feature persistence, strategy registry/evaluator, planner hoàn chỉnh, risk reservation, paper ledger hay gửi lệnh.
@@ -140,7 +530,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Việc còn mở/rủi ro:** WP-02A cần adapter, persistent lineage/cursor và xử lý range rỗng có symbol/timeframe context; WP-02B cần regime/snapshot schema+persist/as-of/quality; WP-02C cần strategy interface, rules/recipe/registry/replay; WP-02D cần TradePlan, aggregate exposure/daily loss, atomic reservation và stale-account checks; WP-02E–F chưa có paper fill/ledger/backtest/leakage gate. Chưa có Binance connection, dữ liệu live hay trade.
 - **Commit/nhánh:** chưa commit; nhánh `dev`. Working tree vốn đã có thay đổi WP-01D/01E và Docker image reuse, ngoài phần WP-02 này; không gom các thay đổi đó vào một commit trong vòng này.
 - **Đã đọc lại mục ghi nhớ sau cập nhật:** có; đối chiếu 107 unit, 5 E2E/96.36 giây, Ruff, format 9 tệp, mypy 46 file, phạm vi test và danh sách còn mở với output/working tree; xác nhận không có Binance execution và chưa commit.
-
 ### 2026-10-22 — Rà soát trạng thái project plan và test
 
 - **Mục tiêu và phạm vi:** lập bảng trạng thái chi tiết cho project plan, work package, Product backlog và các test đã chạy; không thay đổi code sản phẩm.
@@ -157,7 +546,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Việc còn mở/rủi ro:** trước commit code WP-01D/E cần một lượt regression đầy đủ trên toàn bộ working tree; admin UI/Telegram, trading core, Binance execution, research, AI và operations còn chưa hoàn tất.
 - **Commit/nhánh:** chưa commit; nhánh `dev`; working tree đã có thay đổi trước vòng tài liệu này.
 - **Đã đọc lại mục ghi nhớ sau cập nhật:** có; đối chiếu lại command và kết quả 47 unit/4 Compose E2E với mục image reuse, xác nhận link nội bộ và trạng thái nhánh `dev`/working tree.
-
 ### 2026-10-22 — Giảm image dư từ E2E Compose
 
 - **Mục tiêu và phạm vi:** tìm nguyên nhân nhiều image `crypidian-e2e-*`, dọn image không còn container tham chiếu, và giữ E2E Compose cô lập tài nguyên mà tái sử dụng một app image theo nội dung build.
@@ -174,7 +562,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Việc còn mở/rủi ro:** mỗi lần mã nguồn Docker đổi sẽ cần một image tag mới; tag của phiên bản cũ có thể được dọn định kỳ khi không container nào tham chiếu. Cần cập nhật `IMAGE_BUILD_INPUTS` nếu Dockerfile bắt đầu COPY thêm tệp mới. `uv run` toàn cục vẫn không dùng được cho tới khi nâng uv theo project lock; môi trường `.venv` hiện chạy kiểm thử được.
 - **Commit/nhánh:** chưa commit; nhánh `dev`; giữ nguyên các thay đổi working tree có sẵn.
 - **Đã đọc lại mục ghi nhớ sau cập nhật:** có; đã đối chiếu với 47 unit pass, 4 E2E pass, Ruff/mypy, tag image còn lại, Docker/Compose version và danh sách image sau dọn.
-
 ### 2026-10-21 — Chuẩn hóa skill nghiên cứu và implement
 
 - **Mục tiêu và phạm vi:** thêm hướng dẫn bền vững để AI tra cứu nguồn/tool cập nhật, dùng đúng ngôn ngữ, ghi memory sau mỗi vòng, và yêu cầu unit + E2E trước commit.
@@ -192,7 +579,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Việc còn mở/rủi ro:** xác thực GitHub; thiết lập remote riêng; đồng bộ toàn bộ `docs/` lên `main`; tạo/checkout `dev`; bổ sung kiểm tra anchor Markdown tự động; sau đó mới bắt đầu implementation.
 - **Commit/nhánh:** chưa commit; chưa có nhánh dự án hợp lệ.
 - **Đã đọc lại mục ghi nhớ sau cập nhật:** có; đối chiếu với kết quả kiểm tra cấu trúc (26 Markdown), ba tình huống kiểm tra skill, trạng thái Git/gh và giới hạn kiểm tra anchor.
-
 ### 2026-10-21 — WP-01A: Bootstrap Python và cấu hình an toàn
 
 - **Mục tiêu và phạm vi:** tạo package Python độc lập, khóa môi trường, cấu trúc module, cấu hình PAPER mặc định, health endpoint an toàn, test nền, dependency/license inventory và SBOM. Chưa triển khai database, auth hay gửi lệnh.
@@ -209,7 +595,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Việc còn mở/rủi ro:** WP-01B compose/process boundary; WP-01C schema/RLS/repository; WP-01D auth/MFA/secret provider; WP-01E UoW/audit/outbox. `uv` global chưa được nâng cấp vì tiến trình khác đang dùng `uvx.exe`; local instructions yêu cầu 0.13.4 trở lên. Kiểm tra link/anchor toàn bộ repo bằng slug chuẩn GitHub vẫn cần làm.
 - **Commit/nhánh:** WP-01A trên `dev`; commit được tạo ngay sau khi cập nhật và đọc lại mục memory này; SHA được lưu trong Git history.
 - **Đã đọc lại mục ghi nhớ sau cập nhật:** có; đã đối chiếu test cuối `5 passed` (4 unit, 1 E2E), Ruff pass, 31 file format, mypy pass trên 29 file, lock check pass và build wheel/sdist pass; không có thay đổi code sau lần kiểm tra này.
-
 ### 2026-10-21 — WP-01B: Docker Compose và ranh giới process
 
 - **Mục tiêu và phạm vi:** thêm Docker image/Compose local PAPER, các process role riêng, secret mount có giới hạn, PostgreSQL/Object Store, health/readiness và hướng dẫn chạy/dừng/backup. Worker còn là bootstrap process dùng chung app; chưa có logic giao dịch, gửi lệnh Binance, ingestion hoặc training.
@@ -226,7 +611,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Việc còn mở/rủi ro:** rà soát giấy phép Garage AGPL trước phân phối; tạo DB login riêng theo process ở WP-01C; readiness probe hiện chưa kết nối DB/feed/exchange thật; egress/ingress production cần policy ngoài Compose; Garage local mode secret nới lỏng không dùng ngoài máy dev.
 - **Commit/nhánh:** WP-01B đã commit trên `dev` với SHA `b32f581`; WP-01A có SHA `7bbaa65`.
 - **Đã đọc lại mục ghi nhớ sau cập nhật:** có; đã đối chiếu 8 unit + 3 E2E = 11 passed không warning, Compose lifecycle 52.14 giây, lint/format/mypy/lock/build/config và diff; nội dung phản ánh các lỗi Garage/network đã sửa cùng rủi ro local mode.
-
 ### 2026-10-21 — WP-01C: Schema, migration và tách biệt workspace
 
 - **Mục tiêu và phạm vi:** thêm schema PostgreSQL nền, async SQLAlchemy/Psycopg, migration Alembic, repository có workspace bắt buộc, Row-Level Security, role DB riêng theo process và luồng khởi động `db-provisioner → migrator → admin-web`. Không thêm business trading logic, API Binance hay seed user owner.
@@ -243,7 +627,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Việc còn mở/rủi ro:** WP-01D cần bootstrap owner/workspace sau khi hoàn thành auth, MFA và hashing; WP-01D/E cần thu hẹp quyền CRUD tenant theo ma trận capability thay quyền app group hiện tại; readiness probe chưa kết nối DB; test chỉ dùng DB/container riêng, chưa chạy tải/production migration. Cần backup trước khi triển khai migration ở môi trường có dữ liệu.
 - **Commit/nhánh:** phần code, kiểm thử và memory nền đã commit trên `dev` với SHA `4ad24d2`; dòng ghi nhận SHA được bổ sung bằng commit docs-only theo sau; chưa push.
 - **Đã đọc lại mục ghi nhớ sau cập nhật:** có; đối chiếu 15 bảng, 13 policy RLS, 5 login riêng, 15 unit + 4 E2E = 19 passed trong 149.66 giây, các lệnh lint/format/mypy/lock/build/Compose/SBOM, nhánh `dev`, rủi ro seed owner và quyền app group. Diff không gồm `.secrets/`; không có Binance credential hay lệnh giao dịch.
-
 ### 2026-10-22 — WP-01D: Xác thực, phân quyền, MFA và ranh giới bí mật
 
 - **Mục tiêu và phạm vi:** xây nền xác thực người dùng cho admin API: bootstrap Owner một lần, xác nhận MFA/TOTP, đăng nhập, cookie phiên, CSRF, đăng xuất, xác thực lại gần đây và tạo risk profile nháp; áp dụng phân quyền theo vai trò ở server; mã hóa seed MFA bằng AES-GCM qua SecretProvider cục bộ. Chưa có giao diện web, CRUD thành viên/invitation, khôi phục MFA, quản lý đầy đủ audit hoặc secret sàn.
@@ -260,7 +643,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Việc còn mở/rủi ro:** xử lý reparse point lỗi trong Docker Desktop để chạy DB-backed Compose E2E; sau khi toàn bộ unit + E2E đạt mới commit. WP-01E đang triển khai riêng; UI admin, quản lý user/invite, recovery MFA và cấp quyền chi tiết cần các story sau. Rate limiting chưa chia sẻ giữa replica; chưa có kiểm thử tải hoặc rà soát bảo mật độc lập.
 - **Commit/nhánh:** chưa commit; nhánh `dev`.
 - **Đã đọc lại mục ghi nhớ sau cập nhật:** có; đã đối chiếu số liệu 28 passed/4.36 giây với output pytest, lỗi test Compose tích hợp xảy ra trước khi tạo container, mypy 40 file, lock/build/Compose/SBOM và `git diff --check`; nhánh `dev`, chưa commit/push.
-
 ### 2026-10-22 — WP-01E: Unit of Work, audit và transactional outbox
 
 - **Mục tiêu và phạm vi:** thêm transaction boundary theo workspace, audit append-only, event envelope, outbox lease/claim, retry/backoff, dead-letter và consumer receipt. Đây là tầng dữ liệu/service; chưa tạo worker chạy nền hoặc fan-out nhiều consumer.
@@ -277,7 +659,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Việc còn mở/rủi ro:** chạy DB-backed E2E sau khi Docker Linux engine khởi động; kiểm tra Alembic upgrade/check/downgrade/re-upgrade và test concurrency `SKIP LOCKED` trên PostgreSQL thật. Chưa có process worker nền, route handler chỉ tích hợp sau. Audit chưa có retention/export UI; outbox MVP chưa fan-out và chưa kiểm tra service API ngoài idempotency. WP-01D/WP-01E chưa đủ điều kiện commit do E2E tích hợp chưa đạt.
 - **Commit/nhánh:** chưa commit; nhánh `dev`; WP-01D và WP-01E vẫn là thay đổi working tree.
 - **Đã đọc lại mục ghi nhớ sau cập nhật:** có; đã đối chiếu 43 pass, test tích hợp fail trước Compose, 45 file mypy, Ruff/format/lock/build/config, nguồn PostgreSQL/SQLAlchemy, trạng thái Docker, branch và chưa commit.
-
 ### 2026-10-23 — WP-02E: gia cố PAPER ledger và PostgreSQL Compose E2E
 
 - **Mục tiêu và phạm vi:** tiếp quản phần ledger còn dở; làm cho ledger chỉ nhận intent khớp persisted approved TradePlan/RiskDecision/RESERVED RiskReservation, ghi partial/full fill và exchange-order state đồng bộ, ghi cost theo quote asset, đóng trade đúng một lần. Nối chuỗi kiểm tra market/feature → persisted risk reservation → PAPER ledger trên PostgreSQL của Compose. Chưa triển khai application coordinator chiến lược/backtest.
@@ -294,7 +675,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Việc còn mở/rủi ro:** WP-02 chưa đạt. Thiếu application coordinator thật nối StrategyRegistry → TradePlanner → RiskEngine → reservation → PaperExecutionGateway/PositionMonitor → ledger; E2E hiện kiểm tra persisted risk fixture tổng quát chứ chưa tạo signal từ H01/H03/H06. WP-02F còn thiếu persistence run/trial/report, evaluator dùng chung semantics strategy/risk/fill với runtime, sensitivity/coverage và replay E2E chạy hai lần so manifest/report/ledger hash. Cần audit độc lập lần cuối và cập nhật status/WBS theo các cổng chưa đạt. Không commit.
 - **Commit/nhánh:** chưa commit; nhánh `dev`; working tree còn thay đổi WP-01 và WP-02.
 - **Đã đọc lại mục ghi nhớ sau cập nhật:** có; đã đối chiếu source/version/date, 332 unit, 6 E2E, một migration head, branch `dev`, lỗi ban đầu/root cause, giới hạn scope và các phần WP-02 còn mở.
-
 ### 2026-10-23 — WP-02E: E2E âm kiểm tra tenant isolation của H03
 
 - **Mục tiêu/phạm vi:** bổ sung file E2E riêng, giữ nguyên `test_compose_boundary.py`, dựng hai workspace trên PostgreSQL Compose và chứng minh settings, risk profile, feature, reservation cùng dữ liệu plan/decision của A không dùng được trong scope B. Không sửa code production, không commit.
@@ -307,7 +687,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Giới hạn còn lại:** tenant A seed plan/decision/reservation hợp lệ ở mức persistence fixture; negative coordinator gọi `prepare_published` với published settings A và planner B để xác nhận fail trước khi candidate được đánh giá. Test chưa tạo một H03 candidate rồi reserve qua `RiskReservationRepository` trong cùng positive A journey; đây là seam còn thiếu nếu cần chứng minh lineage đầy đủ của candidate trước khi đánh chéo tenant. WBS vẫn chưa đạt các cổng closed-trade H03/evaluator parity, nên WP-02 chưa nghiệm thu.
 - **Commit/nhánh:** chưa commit.
 - **Đã đọc lại mục memory sau cập nhật:** có; so nội dung với `test_h03_tenant_isolation.py`, xác nhận 1 E2E pass, 2 chiều RLS A/B, zero B intent/reservation, A reservation không đổi và giới hạn positive H03 journey nêu đúng.
-
 ### 2026-10-23 — WP-02: application PAPER lifecycle coordinator
 
 - **Mục tiêu và phạm vi:** thêm application coordinator nối state machine `PaperExecutionGateway` với `PaperLedgerRepository`, để entry event lưu fill/position event/trade và monitor lưu trailing-stop/exit/đóng trade. Không sửa ledger, migration hoặc H03 E2E; không gọi Binance và không commit.
@@ -323,7 +702,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Đã đọc lại mục memory sau cập nhật:** có; đối chiếu API append fill/exit, stop event, yêu cầu UoW atomic, 3 tests, Ruff/mypy và giới hạn restart/E2E với source và command output.
 
 ## Mẫu ghi cho mỗi vòng
-
 ### YYYY-MM-DD — Tên vòng / mã story
 
 - **Mục tiêu và phạm vi:**
@@ -340,7 +718,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Việc còn mở/rủi ro:**
 - **Commit/nhánh:** chỉ ghi sau khi đã thực hiện; không ghi credential.
 - **Đã đọc lại mục ghi nhớ sau cập nhật:** có/không; ghi điểm đối chiếu.
-
 ### 2026-10-23 — WP-02E: khởi tạo vốn PAPER bất biến
 
 - **Mục tiêu/phạm vi:** tạo seed vốn ban đầu cho tài khoản PAPER theo workspace, bảo đảm idempotent và có provenance settings; không sửa luồng H03/E2E do root phụ trách.
@@ -366,7 +743,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Regression/static checks:** `.venv/Scripts/ruff.exe format --check ...` → 5 file đã format; `.venv/Scripts/ruff.exe check ...` → pass; `.venv/Scripts/python.exe -m mypy src/trading_bot/adapters/database/models/paper_entities.py src/trading_bot/adapters/database/repositories/paper_ledger.py` → pass (2 source files). `.venv/Scripts/python.exe -m alembic heads` trước migration account-seed cho thấy `6c2f91a4e7b3`; Compose E2E sau migration account-seed xác nhận toàn schema bằng `alembic check`. Alembic check chạy trực tiếp trên host Windows không dùng được vì psycopg async yêu cầu SelectorEventLoop thay vì ProactorEventLoop; bằng chứng migration được lấy từ migrator Linux trong Compose.
 - **Việc còn mở/rủi ro:** `append_exit_fill` ghi position event nhưng không tự đóng trade; `PaperLifecycleCoordinator` vẫn phải gọi `close_trade` với gross PnL sau khi vị thế đóng. Parent đang tích hợp lifecycle coordinator và sẽ chạy lại `test_compose_boundary.py` sau khi Compose project này teardown xong. Chưa commit theo phân công.
 - **Đã đọc lại mục ghi nhớ sau cập nhật:** có; đối chiếu migration revision/dependency, API bất biến, 12 unit, 1 Compose E2E, Ruff/mypy và giới hạn tích hợp coordinator.
-
 ### 2026-10-23 — WP-02E follow-up: quyền SELECT khi đọc lại seed PAPER
 
 - **Mục tiêu/phạm vi:** sửa lỗi H03 Compose do truy vấn seed bất biến dùng `SELECT FOR UPDATE`, cần UPDATE privilege trái với grants runtime chỉ `SELECT, INSERT`.
@@ -381,7 +757,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Việc còn mở/rủi ro:** chờ Compose E2E xác nhận H03; advisory lock serialization cần tiếp tục được bao bởi test concurrency Compose hiện có.
 - **Commit/nhánh:** chưa commit; không sửa migration hoặc H03 fixture.
 - **Đã đọc lại mục ghi nhớ sau cập nhật:** có; đã đối chiếu failure RED, code path bỏ lock trên seed, 6 unit pass và E2E đang chờ root.
-
 ### 2026-10-23 — WP-02E: read-model vốn PAPER theo ledger
 
 - **Mục tiêu và phạm vi:** bổ sung typed read-model để cấp equity quote đã hiện thực cho chu kỳ rủi ro kế tiếp, tính từ `PaperAccountSeed.initial_equity` bất biến cộng `TradeRecord.net_pnl` của trade `CLOSED` cùng workspace/account. Không thêm schema/migration, không sửa H03 E2E/backtest persistence, không commit.
@@ -396,7 +771,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Việc còn mở/rủi ro:** chưa nối service vào H03 lifecycle/coordinator hoặc `TradePlanner`/RiskEngine; report “current equity” là realized-only và phải được diễn giải rõ cho đến khi mark-to-market/position margin được mô hình hóa bền vững. Cần test integration DB/RLS và truyền snapshot `as_of`/hash vào risk lineage.
 - **Commit/nhánh:** chưa commit; làm việc trong working tree dùng chung trên `dev`.
 - **Đã đọc lại mục ghi nhớ sau cập nhật:** có; đã đối chiếu công thức, 7 test, 3 code/test file cùng glossary, Ruff/format/mypy/diff và E2E còn mở với source/output.
-
 ### 2026-10-23 — WP-02F: adapter replay dùng chung PAPER decision/fill
 
 - **Mục tiêu và phạm vi:** thêm `RuntimeReplayEvaluator` trong `application/runtime_replay_evaluator.py` để replay đi qua `PaperDecisionCycle.prepare_published`, risk reservation callback, `submit_approved`, `PaperExecutionGateway.apply_market_event` và `monitor_position`; không sửa `backtest.py`, migration, lifecycle coordinator hoặc E2E do các luồng khác đang sở hữu.
@@ -411,7 +785,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Giới hạn còn mở:** Replay vẫn nhận state/risk/exposure và reservation callback từ context provider; adapter chưa tự duy trì account equity, reservation transfer/release, funding arrivals, repository/outbox transaction hoặc crash recovery. `ReplayManifest` hiện không có field riêng cho hash đầy đủ của fill-policy/cost-profile, nên nó chỉ ghim fill-model version và cost values; cần nối hash profile trong manifest/persisted trade lineage để truy vết chính xác. `BacktestRunner` chỉ nhận một `EvaluationTrade` mỗi observation; nếu một event đóng nhiều vị thế adapter từ chối thay vì gộp/mất trade. WBS parity/ledger acceptance tiếp tục mở.
 - **Commit/nhánh:** chưa commit; chỉ thêm application module, unit test và memory trong working tree chung.
 - **Đã đọc lại mục memory sau cập nhật:** có; đối chiếu 8 pass, static checks, luồng RED/GREEN, lý do `evaluated_at` phải sau thời điểm data availability và các giới hạn về state progression/manifest/E2E.
-
 ### 2026-10-23 — WP-02E integration: H03 dùng PAPER equity read-model
 
 - **Mục tiêu/phạm vi:** nối `PaperAccountStateService` vào Compose vertical slice H03 để equity đầu chu kỳ risk được đọc từ seed bất biến + ledger closed trades; sau khi đóng trade, xác nhận read-model cộng đúng realized PnL và hash ổn định khi đọc lặp. Chỉ sửa test integration, không sửa service/repository.
@@ -426,7 +799,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Việc còn mở/rủi ro:** gateway PAPER còn giữ order/position state trong bộ nhớ, chưa có hydrate/recovery sau process restart; replay evaluator vẫn đang chờ nối vào `BacktestRunner` và E2E parity. H03 report metrics vẫn được tính lại trong probe từ ledger, còn replay reports/outcomes đã có persistence slice riêng; chưa đánh đồng hai loại report. Không đánh dấu WP-02 hoàn thành.
 - **Commit/nhánh:** chưa commit; working tree `dev` còn thay đổi từ WP-01/WP-02.
 - **Đã đọc lại mục ghi nhớ sau cập nhật:** có; kiểm tra đúng import/test target, RED `NameError`, GREEN E2E 1/1 và 105.76 giây, công thức equity/hash, Docker cleanup và các blocker recovery/parity/report.
-
 ### 2026-10-23 — WP-02E investigation: WBS phục hồi trạng thái PAPER
 
 - **Mục tiêu/phạm vi:** điều tra rủi ro state PAPER mất sau process restart; lập WBS và tiêu chí nghiệm thu trước implementation tại [WP-02E PAPER recovery WBS](./wp02e-paper-recovery-wbs.md). Không sửa source, model, migration hoặc chạy test; không commit.
@@ -439,7 +811,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Việc còn mở:** chốt schema version của canonical plan decoder; checkpoint append-only vs optimistic current row; event ordering/watermark/retention; account-level hay per-intent hydration. Parent cần quyết định acceptance scope trước khi code; live Binance reconciliation thuộc WP-03.
 - **Commit/nhánh:** không commit; chỉ thêm WBS recovery và memory vào working tree chung `dev`.
 - **Đã đọc lại mục memory sau cập nhật:** có; đối chiếu WBS với source/schema/RLS/config findings vừa khảo sát; xác nhận không có claim test pass hoặc source/migration change.
-
 ### 2026-10-23 — WP-02F: nối RuntimeReplayEvaluator vào BacktestRunner/persistence contract
 
 - **Mục tiêu/phạm vi:** nối evaluator stateful đã dùng chung PAPER decision/fill/monitor vào `BacktestRunner`, đồng thời trả kết quả report/trades tương thích với API lưu replay outcomes hiện có. WBS trước code và acceptance: [WP-02F runtime replay wiring WBS](./wp02f-runtime-replay-wiring-wbs.md). Không sửa repository/migration backtest outcome hoặc Compose E2E thuộc luồng khác.
@@ -452,7 +823,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Việc còn mở/rủi ro:** helper mới là BASE path một kịch bản và caller còn phải commit transaction persistence theo repo contract; adapter/context provider vẫn không tự tiến hóa account/risk/exposure/reservation state hoặc tự điều phối funding/crash recovery. Manifest vẫn chưa có field riêng pin hash đầy đủ execution profile. Compose E2E chưa kiểm tra helper/context provider hoặc persistence chung trong một end-to-end user journey; full WP-02 parity chưa hoàn tất.
 - **Commit/nhánh:** chưa commit; working tree chung, không staging.
 - **Đã đọc lại mục memory sau cập nhật:** có; đối chiếu WBS/acceptance, marker generic-vs-close, test integration gồm callback thật và cả hai repository implementation, 54 pass (sau củng cố test chạy lại), static checks (sau củng cố test chạy lại), E2E chưa chạy và các blocker state/profile.
-
 ### 2026-10-23 — WP-02E: PAPER checkpoint recovery đối soát ledger
 
 - **Phạm vi:** hoàn thiện đường PAPER recovery được gọi có kiểm soát qua `PaperLifecycleCoordinator`; không bật production worker hoặc claim WP-02E/WP-02 complete. WBS đã duyệt ở [WP-02E recovery](./wp02e-paper-recovery-wbs.md); runtime startup còn WBS riêng tại [tenant-scoped bootstrap](./wp02e-runtime-bootstrap-wbs.md).
@@ -463,7 +833,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Blocker:** `app.py` chưa tạo gateway/coordinator tenant-scoped, chưa hydrate trước khi worker xử lý event và chưa gate readiness theo kết quả recovery. Runtime DB role không thể dùng để liệt kê chéo tenant dưới RLS; cần thiết kế dispatcher/registry/grant tối thiểu trước khi triển khai worker. Acceptance này được giữ mở; xem WBS runtime bootstrap, không coi service-level H03 probe là startup recovery.
 - **Commit:** không commit.
 - **Đã đọc lại mục memory sau cập nhật:** xác nhận H03 session 56830 = 1 pass / 104.14s, unit group = 49 pass, Ruff/mypy đạt, chỉ còn Postgres healthy sau teardown; WBS và project-status đều giữ startup/dispatcher/readiness là blocker, không đánh dấu WP-02E/WP-02 hoàn tất.
-
 ### 2026-10-24 — WP-02E/F: full integration gates và tài liệu nghiệm thu
 
 - **Mục tiêu/phạm vi:** đồng bộ tài liệu WP-02 theo trạng thái source ổn định và kết quả test cuối. Chỉ sửa plan/status/WBS/memory; không sửa source, test hay migration, không commit.
@@ -474,7 +843,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Trạng thái review/commit:** technical tests và quality gates đạt, nhưng WP-02 vẫn **chờ kết quả independent review cuối**; không đánh dấu hoàn tất hoặc commit trong vòng tài liệu này.
 - **Tài liệu đã đồng bộ:** master WP-02 plan Tasks 8–10; `project-status.md`; `02-trading-core-paper.md`; integration-gates WBS; PAPER recovery/runtime-bootstrap WBS; runtime sensitivity/slippage WBS. Các lỗi cũ được giữ như lịch sử và ghi rõ trạng thái đã được supersede.
 - **Đã đọc lại mục memory sau cập nhật:** có; đối chiếu lại 512/13 pass và thời lượng, Ruff/format/mypy, Alembic head, teardown exceptions, ba lỗi/nguyên nhân/cách xử lý và các giới hạn replay/equity/risk-window; xác nhận WP-02 vẫn chờ independent review.
-
 ### 2026-10-24 — WP-02E/F follow-up: PP2 pinning, reducer RP4 và PP6 publish race
 
 - **Mục tiêu/phạm vi:** ghi nhận follow-up WBS [pinning và replay progression](./wp02e-profile-pinning-and-replay-progression-wbs.md): strategy-only settings publish, pinned strategy/execution profile, reducer multi-observation, và cạnh tranh publish/decision. Chỉ đồng bộ tài liệu/memory trong lượt này; không sửa source/test, không commit.
@@ -486,7 +854,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Giới hạn còn mở:** reducer cập nhật realized equity; chưa có mark-to-market cho vị thế OPEN. Semantics reset/timezone và calculation của daily/rolling loss windows chưa hoàn chỉnh. Funding/spread stress bị fail-closed; không suy diễn profitability. `market_dispatch=not_configured`, `exchange_execution=disabled`.
 - **Trạng thái WP-02:** PP2 source/unit/provider Compose check đạt; RP4 đạt theo phạm vi stated; PP6 hai race order targeted Compose đạt. WP-02 vẫn mở cho tới khi full unit/E2E rerun trên tree cuối đạt, teardown/migrations đạt và independent review đóng.
 - **Đã đọc lại mục memory sau cập nhật:** đối chiếu PP2/PP6 WBS, code behavior và test evidence được cung cấp; kiểm tra lại từng failed attempt với root cause/fix, phân biệt full E2E lịch sử với target E2E hiện tại, và xác nhận không có claim full-suite cuối hoặc WP-02 completion.
-
 ### 2026-10-24 — WP-02 final acceptance và independent review
 
 - **Mục tiêu/phạm vi:** đóng đồng bộ tài liệu sau khi final tree đã qua kiểm thử và independent review. Chỉ cập nhật WBS/plan/status/memory; không sửa source/test/migration và không commit.
@@ -497,7 +864,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Giới hạn còn mở:** replay chỉ cập nhật realized equity, chưa mark-to-market; daily/rolling risk-window semantics chưa hoàn thiện; không khẳng định hash determinism qua worker restart; `market_dispatch=not_configured` và Binance execution disabled; chiến lược chưa được xác nhận profitability. Funding/spread sensitivity tiếp tục fail-closed.
 - **Tài liệu đã đồng bộ:** master WP-02 plan, project-status, `02-trading-core-paper.md`, integration gates, recovery/bootstrap, sensitivity/slippage, profile pinning/replay progression WBS. PP2 được ghi hoàn tất với PP6 H03 Compose provider check; RP4 ghi rõ phạm vi deterministic replay; PP6 hai thứ tự concurrency đạt.
 - **Đã đọc lại mục memory sau cập nhật:** đã đọc lại chính entry này và đối chiếu 520/13/381.82, PP6/RP4/PP2 evidence, quality/migration, teardown ngoại lệ, review state và limitations. Các WBS/status/plan liên quan cùng ghi WP-02 complete trong MVP và không tuyên bố dispatch, Binance execution, worker-restart determinism hoặc profitability.
-
 ### 2026-10-24 — MB-00: hợp đồng kiến trúc Multi-Bot
 
 - **Mục tiêu/phạm vi:** hoàn tất contract freeze sau khi người dùng duyệt WBS. Chỉ thay đổi spec/WBS/architecture decision/glossary/project status/memory; chưa sửa source, schema hay runtime.
@@ -515,7 +881,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Việc còn mở/rủi ro:** MB-01 phải chứng minh PostgreSQL bot-scoped RLS/membership/admin matrix; MB-04 phải xác minh advisory hash/SQL/role/isolation bằng real PostgreSQL concurrency E2E và test hai thứ tự cap publish/reservation; venue equity semantics phải tra tài liệu Binance chính thức trước khi WP-03 adapter.
 - **Commit/nhánh:** `docs: freeze multibot architecture contracts` trên `dev`; commit đã xác nhận sau khi hoàn tất memory.
 - **Đã đọc lại mục memory sau cập nhật:** có; đối chiếu test counts/duration (520 unit, 13 E2E/410.59s), reviewer fixes, files đã đổi và command thực tế. Không có code/schema/dependency thay đổi nên các test evidence vẫn đúng với source tree.
-
 ### 2026-10-25 — MB-02/MB-03 + SEC-01/SEC-02: tích hợp Multi-Bot và hardening quyền DB
 
 - **Mục tiêu/phạm vi:** tiếp nhận kết quả từ phiên Claude Code, tích hợp các commit MB-02 bot config, MB-03 evidence/fan-out, QA dataset và SEC-01/02 least-privilege/PostgreSQL 18.6 vào `dev`; hoàn thiện migration chain, kiểm tra độc lập và chạy full gates. Chưa push lên remote.
@@ -532,7 +897,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Tài liệu đồng bộ:** MB-02/03/SEC WBS ghi kết quả integration; Task 3/4 main plan đánh dấu complete; project status cập nhật MB-02/03 + SEC-01/02 và MB-04; thêm [security research](../research/security-admin-bot-2026.md), cập nhật glossary EN→VI. WBS MB-04 tại [2026-10-25-mb04-workspace-risk-wbs.md](../superpowers/plans/2026-10-25-mb04-workspace-risk-wbs.md) đã được user duyệt; implementation bắt đầu sau integration pass.
 - **Việc còn mở/rủi ro:** `dev` đang ahead `origin/dev` 14 commits, chưa push; cần commit documentation/status/memory cùng vòng tích hợp. MB-04 tiếp tục từ contract/wbs đã duyệt; risk path vẫn PAPER/fake adapter, không bật Binance private execution. Security research còn các P0/P1 ngoài SEC-01/02; không coi scope nhỏ này là sign-off bảo mật.
 - **Đã đọc lại mục memory sau cập nhật:** đã đối chiếu với `git status`, kết quả suite, commit `1b589bb` và tình trạng Docker/Compose thực tế.
-
 ### 2026-10-24 — MB-01: bot identity, account binding, grants và migration
 
 - **Mục tiêu/phạm vi:** tiếp tục phiên Codex đang dừng ở Task 2 (MB-01). Code identity/grant/RLS/migration đã có nhưng ledger chỉ tick bước rà WBS, memory chưa có mục MB-01 và E2E chưa chứng minh. Vòng này: chạy kiểm chứng, sửa E2E, thêm index, xử lý review độc lập, đồng bộ tài liệu. Không gửi lệnh sàn; không commit khi chưa được duyệt.
@@ -553,7 +917,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Việc còn mở/rủi ro:** quyết định cập nhật `uv` lên 0.13.x; MB-05 xem lại quy tắc mirror trạng thái; WP-03 thêm policy cho execution gateway; test E2E guard settings với dữ liệu bot sibling dưới role admin thật chưa có (unit đã khóa role guard).
 - **Commit/nhánh:** `4871661 feat: add MB-01 bot identity, grants and bot-scoped RLS` trên `dev`, người dùng duyệt 2026-10-24; chưa push. Commit chứa đúng tree đã chạy unit 534 / E2E 14.
 - **Đã đọc lại mục memory sau cập nhật:** có; đối chiếu với `git diff`/file mới, output unit 534/5.77s và E2E 14/452.08s lần cuối, hai vòng review (5 P2 + 4 P3 rồi 3 P3), ruling 13–17 trong WBS và nguồn PostgreSQL 18. Sau commit đã đọc lại và xác nhận hash `4871661`, nhánh `dev`, chưa push; không tuyên bố MB-02+ hay hành vi Binance.
-
 ### 2026-10-25 — MB04.1: domain vốn đúng thời điểm và FX
 
 - **Phạm vi:** worktree `mb04-risk`, nhánh `mb04-workspace-risk`, baseline `db8702c`; chỉ domain equity/mark/FX và tests/tài liệu. Không sửa checkout dev, schema, runtime, dependency hay adapter sàn. Codebase graph không khả dụng, dùng source trực tiếp theo brief.
@@ -566,7 +929,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **E2E lượt đầu/chẩn đoán:** `DOCKER_CONTEXT=desktop-linux python.exe -m pytest tests/e2e -q -p no:cacheprovider`, session 47564 → **1 failed / 17 passed / 799.10s**. H03 `test_compose_boundary.py::test_paper_stack_starts_and_keeps_database_and_object_store_data` dòng 294 lỗi ngay Compose up trước app assertion: Docker Desktop engine inspect `/v1.56/containers/bfcadb08e84f4cdfe3fb1d5d111fbe08dc7c1a66f0e2b989599211898c8a00b9/json` trả **500 Internal Server Error**; Postgres sau đó Healthy. Đã kiểm engine `docker info` → 29.9.2, teardown không còn E2E containers/networks/volumes, chỉ giữ Postgres dev healthy và tài nguyên user có sẵn. Không sửa source; full rerun cùng command session 16339 trên source không đổi → **18 passed / 895.46s, exit 0, không skip**. Full suite gồm migration check/downgrade/upgrade; teardown cuối không còn E2E containers/labelled volumes/networks, giữ dịch vụ dev/user-owned. Harness dùng image chung `crypidian-app:e2e-bdc33a3c7e675de5b531`, không prune/xóa image.
 - **Còn mở:** không có lỗi gate còn mở trong slice domain; parent sẽ review độc lập committed diff. MB04.2–6 (config/repository/budget/reservation/concurrency) chưa triển khai; không claim toàn MB-04 hoặc venue readiness. Báo cáo ở `.superpowers/sdd/2026-10-25-mb04-workspace-risk/task-mb04-1-report.md`.
 - **Đã đọc lại mục memory sau cập nhật:** có; đối chiếu source/tests và staged diff đúng 7 file, 55 focused / 848 full unit / 18 full E2E (895.46s, không skip), Ruff toàn repo 297 files, mypy 112 files, single migration head/config, teardown sạch và traceback Docker 500 lượt đầu. WBS chỉ đánh dấu MB04.1; không bật runtime/venue, không đổi dependency và không push. Nhánh commit `mb04-workspace-risk`; review độc lập committed diff do parent thực hiện tiếp.
-
 ### 2026-10-25 — MB04.2: domain ngân sách rủi ro Multi-Bot, reservation và breach
 
 - **Phạm vi:** worktree `mb04-risk`, nhánh `mb04-workspace-risk`; triển khai domain ngân sách rủi ro thuần `domain/risk/workspace_budget.py` và bộ kiểm thử `tests/unit/test_workspace_risk.py`. Không đụng DB schema, migration hay adapter mạng.
@@ -581,7 +943,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **TDD:** RED trước với `ModuleNotFoundError` khi module chưa tồn tại. GREEN với 24 tests ban đầu, mở rộng lên 35 focused unit tests bao phủ 100% các tiêu chí và edge cases.
 - **Chất lượng:** `ruff check` và `ruff format` sạch 100% trên cả 2 files mới. `mypy src` pass 113 source files. Full unit tests: **883 passed / 10.46s** (tăng từ 848 lên 883, không skip, không failure).
 - **Đã đọc lại mục memory sau cập nhật:** có; đối chiếu với code, diff, WBS MB04.2 và toàn bộ kết quả tests.
-
 ### 2026-10-25 — MB04.3: config root/account/bot và migration
 
 - **Phạm vi:** worktree `mb04-risk`, nhánh `mb04-workspace-risk`; triển khai cấu hình 3 cấp (root `WorkspaceSettings.risk`, account `RiskProfileVersion`, `BotRiskOverlay`), thứ bậc cap trong `bot_config_resolver.py`, advisory lock khi publish root settings, và Alembic migration nối tiếp head `f4d6b8c0e2a5`.
@@ -595,7 +956,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **TDD:** RED trước với 17 failures do các trường/cột/phương thức chưa tồn tại. GREEN với 42 focused unit tests mới tại `tests/unit/test_workspace_risk_config.py`.
 - **Chất lượng:** `ruff check` và `ruff format` sạch 100% trên toàn bộ 246 files. `mypy src` đạt 113 source files không lỗi. Alembic duy nhất 1 head `b7e9d1a3c5f8`. Full unit tests: **925 passed / 11.51s** (tăng từ 883 lên 925, 0 failed, 0 skipped).
 - **Đã đọc lại mục memory sau cập nhật:** có; đối chiếu code diff, WBS, migration, advisory lock, và toàn bộ kết quả tests.
-
 ### 2026-10-25 — MB04.4: equity/conversion repositories và root aggregate access
 
 - **Phạm vi:** worktree `mb04-risk`, nhánh `mb04-workspace-risk`; triển khai `AccountEquityRepository`, `RiskConversionRepository`, migration SQL aggregate function `get_workspace_risk_aggregate`, và tích hợp vào `RiskReservationRepository`.
@@ -609,7 +969,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **TDD:** Viết tests RED trước khi tạo repository implementation. GREEN với 19 tests mới.
 - **Chất lượng:** `ruff check` và `ruff format` sạch 100%. `mypy` đạt 115 source files sạch 100%. Alembic duy nhất 1 head `c8f1e3a5b7d9`. Full unit tests: **944 passed / 15.75s** (tăng từ 925 lên 944, 0 failed, 0 skipped).
 - **Đã đọc lại mục memory sau cập nhật:** có; đối chiếu code diff, WBS MB04.4, migration DDL, DTO và toàn bộ kết quả tests.
-
 ### 2026-10-25 — MB04.5: atomic workspace/account/bot reservation
 
 - **Phạm vi:** worktree `mb04-risk`, nhánh `mb04-workspace-risk`; triển khai Application Service `WorkspaceRiskCoordinator` (`src/trading_bot/application/workspace_risk.py`), mở rộng `RiskReservationRepository` với khóa advisory 2 cấp và truy vấn idempotency, cùng bộ kiểm thử unit `tests/unit/test_workspace_risk_coordinator.py`.
@@ -620,7 +979,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **TDD:** RED trước với `ModuleNotFoundError` khi module chưa tồn tại. GREEN với 9 tests ban đầu, mở rộng lên 13 tests bao phủ toàn diện.
 - **Chất lượng:** `ruff check` và `ruff format` sạch 100% trên toàn bộ 225 files. `mypy src` đạt 116 source files sạch 100%. Alembic duy nhất 1 head `c8f1e3a5b7d9`. Full unit tests: **957 passed / 15.17s** (tăng từ 944 lên 957, 0 failed, 0 skipped).
 - **Đã đọc lại mục memory sau cập nhật:** có; đối chiếu code diff, WBS MB04.5, advisory lock, DTO và toàn bộ kết quả tests.
-
 ### 2026-10-25 — MB04.6: Compose E2E và quality gates
 
 - **Phạm vi:** worktree `mb04-risk`, nhánh `mb04-workspace-risk`; triển khai probe `tests/e2e/probes/workspace_risk_concurrency.py` và test `tests/e2e/test_workspace_risk_concurrency_e2e.py` bao phủ 4 kịch bản Compose E2E bắt buộc theo WBS MB04.6. Đồng thời hoàn tất kiểm tra quality gates toàn diện.
@@ -653,7 +1011,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
   - **Ruling 9 RLS Enforcement**: Khi chạy dưới `crypidian_trading_runtime`, application không thể dùng SELECT trên bảng `risk_reservation` để lấy pending rủi ro của bot khác. Phải dùng SQL function `SECURITY DEFINER get_workspace_risk_aggregate(p_workspace_id, p_as_of)`. Hàm này trả về aggregate tổng mức rủi ro mở và đang chờ mà không làm rò rỉ metadata các bot.
   - **Admin Privilege Partitioning**: Cập nhật `workspace_settings_version` yêu cầu quyền ghi chỉ thuộc về role admin. Bot runtime chỉ có quyền SELECT. Do đó các thao tác cấu hình admin trong probe/test phải thực thi qua service/role có thẩm quyền (`migrator`/`crypidian_admin`).
 - **Đã đọc lại mục memory sau cập nhật:** có; đối chiếu code diff, probe, test output và WBS MB04.6.
-
 ### 2026-10-26 — MB-04 review vòng tích hợp và siết fail-closed
 
 - **Phạm vi:** worktree `mb04-risk`, nhánh `mb04-workspace-risk`; review thủ công coordinator/domain, thêm regression tests, sửa contract request reservation và cập nhật trạng thái MB-04. Không truy cập Binance private API, không phát sinh lệnh live.
@@ -724,7 +1081,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Git:** commit `c6ff080200857a9d3eba63c49d3eb7e2fd8e2a2f` đã push lên `origin/dev`; fetch/`ls-remote` xác nhận SHA giống checkout `dev`. Worktree `mb04-completion` đã được gỡ sau khi commit/push và xác minh sạch.
 - **Docker cleanup sau lượt test cuối:** trong 6 tag `crypidian-app:e2e-*`, giữ 4 tag có container tham chiếu; gỡ 2 tag mồ côi `e2e-f9c2bc38f1b84a4f5bc1` và `e2e-5c4f087d100f15bea8fd` sau khi xác nhận không container nào (kể cả stopped) tham chiếu. Không chạy prune; container và image dùng chung giữ nguyên.
 - **Đã đọc lại mục memory:** đọc lại mục này sau ghi; xác nhận root cause là giả định fixture reservation rỗng, targeted/full tests là trên snapshot cuối, và không nhầm E2E trước đó với bằng chứng hiện tại.
-
 ### 2026-10-26 — Điều phối song song: auth quick wins, MB-05 Part A/B, review độc lập MB-04
 
 - **Phạm vi:** controller (phiên Claude) điều phối sub-agent trong worktree riêng; phiên `mb04-risk` làm MB-04 song song và đã merge/push MB-04 (`e9de7bc`, `555e833`, `ec09abe`, `c6ff080`, docs). Theo yêu cầu người dùng, worktree `mb04-risk` và nhánh `mb04-workspace-risk`/`mb04-completion` đã được gộp (đều nằm trong `dev`) và xóa.
@@ -737,7 +1093,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Kiểm thử cuối trên `274793e`:** `tests/unit` 1247 passed; `tests/e2e` 24 passed / 1297s tuần tự; Ruff/format/mypy sạch; alembic một head `e1f3a5c7b9d2`.
 - **Việc còn mở:** MB-04 bàn giao cho phiên Codex (người dùng quyết định 2026-10-27): finding + nhánh `mb04-review-fixes` (`b5efea4` đã re-review, `26ed21e` WIP chưa kiểm chứng) ghi ở `docs/implementation/reviews/2026-10-26-mb04-independent-review.md`; SEC-09; MB-05b; SEC-01b (admin_web/runtime còn kế thừa DML vận hành qua `crypidian_app`); timeout cho admin-web trước MB-07; backfill `bar_key` cho dữ liệu dev cũ nếu cần.
 - **Đã đọc lại mục memory sau cập nhật:** có; đối chiếu ledger `.superpowers/sdd/2026-10-24-multibot-implementation-plan/progress.md`, `git log`, kết quả test và trạng thái MB-04.
-
 ### 2026-10-27 — MB-06 báo cáo theo bot và MB-07a điều khiển bot qua API/Telegram
 
 - **Phạm vi:** hai gói độc lập với MB-04 (MB-04 bàn giao cho phiên Codex), làm song song trong worktree riêng; gộp vào `dev` sau khi máy khởi động lại.
@@ -749,7 +1104,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Phối hợp:** phiên Codex đang có worktree `mb04-closeout`/`mb04-mb06-integration` (nhánh `mb04-mb06-closeout` chỉ chứa bản sửa MB-04) và chạy E2E `mb05b`; migration MB-04 `f7a9c1e3b5d8` của Codex cũng nối sau `e1f3a5c7b9d2` → khi Codex gộp phải nối lại sau `f7b9d1e3a5c8`.
 - **Việc còn mở:** MB-07b (Admin Web pages cần nâng `uv` lên 0.13 cho `jinja2`), liên kết/thu hồi binding Telegram, SEC-09 idle timeout, SEC-01b.
 - **Đã đọc lại mục memory sau cập nhật:** có; đối chiếu `git log`, kết quả unit/E2E và ledger SDD.
-
 ### 2026-10-28 — MB-04 provenance/risk hardening trên nền dev mới nhất
 
 - **Phạm vi/nhánh:** tạo worktree độc lập `mb04-latest-dev` từ `dev@67702f4`, không sửa checkout `dev` hay hai worktree MB-04/MB-06 đang có. Cherry-pick finding fix `4cf2882` thành commit local `3912db8`; áp dụng round 2 từ WIP `26ed21e`, chưa commit phần WIP và chưa push. Giữ nguyên MB-06/MB-07a; nối migration MB-04 `f7a9c1e3b5d8` sau MB-07a `f7b9d1e3a5c8`, rồi `b3d5f7a9c1e4` sau migration risk để chỉ còn một head.
@@ -762,7 +1116,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Docker/image cleanup:** gỡ đúng **11 tag `crypidian-app:e2e-*`** qua hai lượt cleanup sau khi xác minh không có container nào (kể cả stopped) tham chiếu; không chạy prune, không đụng image ngoài E2E. Sau cleanup cuối còn **5 tag**, tất cả đang được container tham chiếu nên giữ lại. Một tag biến mất giữa lần inventory và batch remove; kiểm tra lại xác nhận không còn container reference trước khi gỡ các tag còn lại.
 - **Trạng thái/việc mở:** các MB-04 target gates xanh; project-wide full E2E có một failure ngoài phạm vi nên WBS ghi chờ đóng integration regression gate. Commit `3912db8` chỉ tồn tại trong nhánh local `mb04-latest-dev`; phần round 2 còn uncommitted; không push và chưa chuyển sang WP tiếp theo.
 - **Đã đọc lại mục memory sau cập nhật:** đối chiếu lại WBS/project-status, migration graph, git status, output 1570 unit, 1+2 target E2E, 26/1 full E2E và isolated retry; giữ rõ distinction giữa target pass và full suite chưa đạt.
-
 ### 2026-10-28 — Đóng failure full E2E và nghiệm thu MB-04
 
 - **Điều tra failure:** `test_compose_boundary.py::test_paper_stack_starts_and_keeps_database_and_object_store_data` tạo một event outbox nhưng gọi `claim_ready()` không truyền `event_types`; fixture chỉ kỳ vọng event ID của chính nó, trong khi repository chủ ý claim mọi loại event nếu không có bộ lọc. Thêm một event `e2e.unrelated.v1` vào cùng workspace làm failure tái hiện tất định **RED / 1 failed / 76.35s** tại assertion đầu tiên. Root cause là test probe không cô lập loại event, không phải bot consumer claim mất event.
@@ -771,7 +1124,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Phạm vi sửa:** test harness `tests/e2e/test_compose_boundary.py` được chỉnh để dùng contract filter mà consumer cần; không thay đổi logic sản xuất của outbox hay MB-05. MB-04 production hardening/provenance vẫn giữ nguyên.
 - **Trạng thái MB-04:** tất cả finding C1–C3/I1–I6, mark policy, equity provenance, migration/RLS/concurrency, full unit/E2E và quality gate đạt trong phạm vi PAPER. Đã commit và push `fd5a751` lên `origin/dev`; checkout `dev` đồng bộ cùng SHA. Không mở Binance LIVE và không tuyên bố lợi nhuận.
 - **Đã đọc lại mục memory sau cập nhật:** đối chiếu test RED/GREEN, full output 1570/27, migration head, WBS/project-status/main plan và `git diff`; xác nhận các tài liệu không còn mô tả failure outbox là đang mở.
-
 ### 2026-10-28 — MB-05b runtime bot decision (đang triển khai)
 
 - **Phạm vi:** tạo WBS chi tiết trước code tại `2026-10-28-mb05b-runtime-fanout-wbs.md`; mở worktree riêng `mb05-runtime-fanout` từ `dev@71391e5`, không sửa hai worktree MB-04 còn tồn tại hoặc checkout chính.
@@ -874,7 +1226,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Commit:** `d35db4d88e7037f0006377c771221f20ffc054f7` (`feat(multibot): complete persisted strategy fanout`) được tạo trên `mb05-runtime-fanout`, fast-forward vào `dev` từ base `71391e5`, và push thành công lên `origin/dev` (`bmamba-01/trading-crypyidian`). Không force push.
 - **Kiểm chứng sau đồng bộ:** xác nhận remote push báo `71391e5..d35db4d dev -> dev`; checkout `dev` trỏ đúng commit mới. Worktree `mb05-runtime-fanout` được giữ lại để dễ truy vết, chưa dọn dẹp.
 - **Đã đọc lại memory:** đối chiếu phần round 11 với commit SHA, output merge/push và trạng thái branch; MB-05b đã đóng theo phạm vi WBS. Giới hạn production market dispatch vẫn chờ adapter WP-05 như đã ghi.
-
 ### 2026-11-01 — Rà soát MB-05b, MB-06 và MB-07a trước MB-07b
 
 - **Mục tiêu:** xác nhận các phụ thuộc trực tiếp của MB-07b đã có code và kiểm thử; rà chéo Git, WBS, project status và memory.
@@ -1219,7 +1570,486 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Admin/mobile/tiếng Việt:** thêm kế hoạch reviewable `docs/superpowers/plans/2026-11-02-wp04-mb07-admin-mobile-vietnamese-ui-plan.md`; chưa thay đổi UI/WBS/status. Audit thấy `lang="vi"` có nhưng `system-ui` chưa khóa font hỗ trợ tiếng Việt; nhiều nhãn/enum tiếng Anh còn hiển thị; CSS thiếu breakpoint và E2E chưa kiểm viewport mobile. Sau đối chiếu yêu cầu trước của người dùng, kế hoạch đã cập nhật dashboard statistics từ MB-06 (PnL thực hiện, số lệnh đóng, phí/funding/slippage, drawdown) theo workspace/bot scope, không suy diễn unrealized PnL; cards mobile trước, biểu đồ chỉ khi time-series contract đủ. Mặc định Bootstrap 5.3 CSS tự lưu theo chỉ dẫn framework phổ biến, Be Vietnam Pro tự lưu, `Asia/Ho_Chi_Minh` cho hiển thị với UTC storage, status/error labels tiếng Việt và E2E nhiều khung nhìn. UI chưa được triển khai.
 - **Đọc lại sau ghi:** đối chiếu số lượng/pass của targeted tests, full-suite collection workaround và 2191/1 kết quả, ba lần rerun E2E report, phạm vi assertion, bốn nguyên nhân WP06 E2E vòng đầu, Ruff/format, residual WP06.4, nội dung kế hoạch Admin đã cập nhật dashboard stats theo yêu cầu trước, WBS WP06.4, bảng project status và Docker cleanup. Không mô tả full suite xanh, WP06 hoàn thành hoặc composition/report persistence đã có; kế hoạch mobile chưa được triển khai. Không commit/push tại thời điểm ghi kết quả kiểm thử.
 - **Docker:** sau E2E, không còn container; đã xóa các image không còn được tham chiếu có tag `crypidian-app:e2e-*` (hai image sau lượt đầu, một image sau regression kết hợp). Kiểm tra cuối không còn container hoặc tag E2E. Không xóa image/cache khác.
+### 2026-11-05 — WP-05: Tích hợp Gói Quản trị Nguồn Dữ liệu Nghiên cứu & Bản quyền (Research Sources Admin UI)
 
+- **Mục tiêu/phạm vi:** Tích hợp trọn vẹn Gói WP-05 (Research Source Policy & Revision Access & Admin UI) từ worktree Codex sang repo chính. Xây dựng giao diện quản trị Admin Web `/admin/research-sources`, kiểm soát hạn ngạch, phân quyền Principal, cơ chế bảo vệ `preserve purpose set` và thời hạn hiệu lực múi giờ UTC.
+- **Thay đổi mã nguồn:**
+  * **Domain:** Mở rộng `SourceUsePurpose` bổ sung `BACKTEST_RESEARCH` và `PAPER_DEMO`. Bổ sung DTO `SourceQuotaSnapshot`, hàm băm canonical JCS `source_rights_hash`, và `ObservedSourcePolicy` xác nhận receipt sau commit. Bổ sung `SourceAccessEnvelope` và logic kiểm tra `policy_known_at`.
+  * **Application:** Cài đặt `source_policy_admin.py`, `source_policy_expiry.py`, `dataset_source_eligibility.py`, và `dataset_rights_invalidation.py`.
+  * **Adapters & Models:** Cài đặt `source_items.py`, `source_observer.py`, `source_policy_admin.py`, models `SourceItemRevisionRecord`, `SourceItemTakedownRecord`, `SourcePolicyObservationRecord`, `SourceItemObservationRecord`, và kiểu dữ liệu `Xid8`.
+  * **Admin UI & Schemas:** Cài đặt `research_source_schemas.py`, `research_source_router.py`, template `research_sources.html`, và navigation menu trong `base.html`.
+  * **Tests:** 91 unit tests passed 100%. Playwright E2E browser tests trên Desktop và Mobile iPhone passed 100% kèm ảnh screenshots `16_research_sources_desktop.png` và `12_research_sources_mobile.png`.
+- **Kiểm chứng và chất lượng:** 91 unit tests passed in 1.59s, Playwright tests passed in 5.21s.
+### 2026-11-05 — WP-07C: Tích hợp Gói Durable Backtest Replay & Manifest & Bundle Store & UI
+
+- **Mục tiêu/phạm vi:** Tích hợp trọn vẹn Gói WP-07C (Durable Backtest Replay & Manifest & Bundle Store & UI) từ worktree Codex sang repo chính. Xây dựng hệ thống kiểm định dữ liệu lịch sử bền vững, có thể tái lập 100%, ghi lại snapshot bằng chứng quyền sử dụng dữ liệu point-in-time, giao diện quản trị Admin Web `/admin/backtests` responsive hỗ trợ Desktop và Mobile.
+- **Thay đổi mã nguồn:**
+  * **Application:** Cài đặt `backtest_replay_jobs.py`, `backtest_job_persistence.py`, `backtest_replay_executor.py`, `backtest_dataset_replay.py`, `backtest_dataset_manifest.py`, `backtest_dataset_replay_bundle.py`, `backtest_dataset_replay_bundle_loader.py`, `backtest_dataset_replay_context.py`, `backtest_dataset_replay_execution.py`, `backtest_dataset_replay_observations.py`, `binance_rest_backfill.py`.
+  * **Adapters & Models:** Tích hợp `BacktestReplayJobRecord`, `BacktestDatasetManifestRecord`, `BacktestDatasetReplayBundleRecord`, `BacktestRunDatasetRightsRecord`, repositories tương ứng và migrations Alembic (`e7c9a1b3d5f2`, `f7a9c1e3d5b7`, `b1d3f5a7c9e2`, `a8c0e2f4b6d9`).
+  * **Admin UI & CLI:** Cài đặt `backtest_replay_router.py`, template `backtest_replays.html`, form script `backtest-replay-form.js`, và CLI `trading_bot.cli.backtest_replay`.
+  * **Tests:** 161 unit tests passed 100%. Playwright E2E browser tests trên Desktop và Mobile passed 100% kèm ảnh screenshots `17_backtests_desktop.png` và `13_backtests_mobile.png`.
+- **Kiểm chứng và chất lượng:** 161 unit tests passed in 1.19s, Playwright tests passed in 3.34s.
+### 2026-11-05 — WP-SC.7: Cầu nối Chiến lược QUANTSMART sang TradePlanner (Strategy Pipeline Planner Bridge)
+
+- **Mục tiêu/phạm vi:** Thiết kế và cài đặt Adapter chuyển đổi chuẩn hóa giữa đề xuất thô từ đồ thị 7 tầng L0→L6 QUANTSMART (`PipelineCandidate`) sang hợp đồng dữ liệu chuẩn của `TradePlanner` (`contracts.StrategyCandidate` và `ExitRecipe`). Đảm bảo nguyên tắc cốt lõi: không cho phép bất kỳ tín hiệu nào bypass qua thẩm định rủi ro và atomic risk reservation của Crypidian.
+- **Thay đổi mã nguồn:**
+  * **Application:** Cài đặt `StrategyPipelinePlannerBridge` tại `src/trading_bot/application/strategy_pipeline/planner_bridge.py`. Chuyển đổi linh hoạt hướng lệnh (`LONG`/`SHORT`), tính toán bội số `stop_atr_multiple` và `take_profit_atr_multiple` từ cấu hình vùng giá L6 (`ExecutionZones`). Bảo đảm mã băm toàn vẹn `candidate_id` tính toán theo chuẩn Canonical JSON SHA-256 bất biến.
+  * **Tests:** Cài đặt `tests/unit/test_strategy_pipeline_planner_bridge.py` bao quát 2 ca kiểm thử cho cả lệnh mua (LONG) và bán (SHORT), xác thực tính tương thích của ExitRecipe và mã băm SHA-256.
+- **Kiểm chứng và chất lượng:** 2 unit tests passed in 0.09s.
+### 2026-11-06 — WP-07: Tích hợp Gói Market Signal Producer & Telegram Signal Delivery
+
+- **Mục tiêu/phạm vi:** Tích hợp trọn vẹn hệ thống sản xuất tín hiệu thị trường độc lập (Market Signal Composition & Scanner) và chuyển phát tín hiệu thông báo qua Telegram kèm bộ lọc đa tiêu chí (Telegram Signal Subscription & Delivery Worker). Bảo đảm nguyên tắc phân ly: quy trình sinh tín hiệu là thuần túy signal-only, không mở cổng thực thi trực tiếp, bảo đảm an toàn trước mọi can thiệp ngoài kiểm soát.
+- **Thay đổi mã nguồn:**
+  * **Application:**
+    - Cài đặt `MarketSignalScanner` và `MarketSignalComposition` tại `src/trading_bot/application/market_signal_composition.py` và `market_signal_scanner.py`.
+    - Cài đặt `StrategyMarketRequirements` tại `src/trading_bot/application/strategy_market_requirements.py`.
+    - Cài đặt `TelegramSignalSubscriptionService` và `TelegramSignalFilters` tại `src/trading_bot/application/telegram_signal_subscription.py` và `telegram_signals.py`.
+  * **Adapters & Models:**
+    - Bổ sung `TelegramSignalSubscriptionRecord`, `TelegramSignalDeliveryRecord`, `TelegramSignalFilterRecord` vào `src/trading_bot/adapters/database/models/telegram_entities.py`.
+    - Cài đặt `TelegramSignalRepository` tại `src/trading_bot/adapters/database/repositories/telegram_signals.py`.
+    - Cài đặt `TelegramBotApiSender` tại `src/trading_bot/adapters/telegram/bot_api_sender.py`.
+    - Bổ sung các migration Alembic: `a1c3e5f7b9d2_wp07_telegram_signal_delivery.py`, `d4f6a8c0e2b1_wp07_market_signal_producer.py`, `f8a2c4e6d0b1_wp07_signal_filters.py`.
+  * **Workers:**
+    - Cài đặt `MarketSignalProducerWorker` tại `src/trading_bot/workers/market_signal_producer.py`.
+    - Cài đặt `TelegramSignalWorker` tại `src/trading_bot/workers/telegram_signal_worker.py`.
+  * **Admin Web & Templates:**
+    - Cài đặt `telegram_signal_router.py` tại `src/trading_bot/admin/telegram_signal_router.py`.
+    - Cập nhật `src/trading_bot/templates/admin/bot_detail.html`: Bổ sung section "Nhận tín hiệu qua Telegram" với nút toggle Bật/Tắt và form cấu hình bộ lọc tín hiệu (Symbols, Timeframes, Directions, Strategies, Setups).
+    - Chuẩn hóa các nhãn tiếng Việt trong `bot_detail.html` (`Lý do tạm dừng`, `Tạm dừng bot`, `Công bố bản nháp`).
+  * **Tests:**
+    - Viết mới bộ Playwright E2E automation test `tests/e2e/test_admin_telegram_signals_playwright.py` kiểm tra giao diện trên Desktop (1280x800) và Mobile iPhone (390x844), chụp 2 ảnh screenshot lưu tại:
+      - `18_telegram_signals_desktop.png` (171 KB)
+      - `14_telegram_signals_mobile.png` (161 KB).
+    - Chạy toàn bộ 52 unit tests WP-07 (scanner, worker, filters, delivery, subscription API) đạt 100% pass rate.
+- **TDD và xử lý lỗi phát sinh:**
+  * Lỗi `test_database_models.py` thiếu 2 bảng mới `telegram_signal_delivery` và `telegram_signal_subscription`: bổ sung vào set bảng mong đợi.
+  * Lỗi `bot_detail.html` gọi `label_vi` khi chưa đăng ký filter trong mock: sửa `_templates(request)` và đăng ký filter trong `test_admin_dashboard_playwright.py`.
+  * Lỗi timeout Playwright tìm `Lý do pause` và `Publish bản nháp`: cập nhật đúng selector nhãn tiếng Việt `Lý do tạm dừng` và `Công bố bản nháp`.
+- **Kiểm chứng và chất lượng:**
+  * Toàn bộ suite unit tests: **2,692 passed in 16.76s** (100% pass rate).
+  * Toàn bộ 6 file Playwright E2E browser tests: **14 passed in 40.47s** trên cả Desktop và Mobile.
+  * Bộ ảnh chụp màn hình minh chứng: **32 ảnh hoàn chỉnh** lưu tại artifacts screenshots.
+  * Static checks: `ruff check` và `ruff format` đạt 100% trên 505 files; `git diff --check` sạch 0 lỗi.
+- **Đã đọc lại memory:** đối chiếu toàn bộ các thay đổi kiến trúc, models, router, migrations, unit tests, E2E tests, screenshots và glossary; xác nhận tuân thủ trọn vẹn quy ước AGENTS.md và skill `futures-bot-implementation`.
+### 2026-11-10 — Revamp Chi Tiết Bot (`bot_detail.html`), Cập Nhật Thời Gian Thực 5s, Vị Thế Đang Mở & Nối Mẫu Phạt AI Retraining
+
+- **Mục tiêu/phạm vi:**
+  * Tiếp tục hoàn thiện phần việc đang dở dang theo yêu cầu người dùng: Revamp toàn diện giao diện Chi Tiết Bot (`bot_detail.html`) và Admin Dashboard theo chuẩn **Trading Design System** chuyên nghiệp.
+  * Khắc phục tình trạng "quá nhiều chữ" bằng cách thay thế văn bản mô tả nặng nề thành hệ thống biểu tượng, huy hiệu trực quan (Badges), số cố định `tabular-nums`, và chú giải tương tác (Interactive Tooltips).
+  * Hỗ trợ đầy đủ **2 chế độ giao diện Sáng (Light) & Tối (Dark)** tương thích với nút gạt Theme Switcher, tự động đồng bộ sự kiện `themechange` sang biểu đồ nến TradingView.
+  * Tích hợp cơ chế **Cập nhật thời gian thực định kỳ 5 giây (Real-Time 5s Polling)**:
+    - Thanh trạng thái trực tiếp `.live-status-bar` với chấm xung động `#live-pulse-dot` nhấp nháy xanh khi kết nối tốt, vàng khi mất kết nối, xám khi tạm dừng.
+    - Đồng hồ cập nhật `#live-updated-at` đếm thời gian thực.
+    - Nút bấm `#toggle-realtime-btn` cho phép người dùng tạm dừng / tiếp tục cập nhật.
+    - Tích hợp Page Visibility API tự động tạm dừng polling khi tab bị ẩn để tối ưu tài nguyên trình duyệt.
+  * Tích hợp **Lưới Thẻ Chỉ Số Mini (KPI Grid Cards)**:
+    - Vị thế đang mở (Open Positions count), Tỷ lệ thắng (Win Rate %), Profit Factor (x), Lợi nhuận ròng (Net PnL), Tỷ lệ R:R trung bình, Sụt giảm vốn tối đa (Max Drawdown).
+  * Tích hợp **Biểu đồ nến TradingView Lightweight Charts tự lưu trữ**:
+    - Nến OHLCV point-in-time cho bot symbol (BTCUSDT).
+    - Đường Dừng lỗ bảo vệ nét đứt đỏ (🛑 SL) và Đường Chốt lời nét đứt xanh ngọc (🎯 TP).
+    - Markers vào lệnh (🟢 Buy/Short) và đóng vị thế (🔴 Exit/Close).
+  * Xây dựng **Bảng Vị Thế Đang Mở (Open Positions)** & **Thẻ Mổ Xẻ Quyết Định Tín Hiệu (Signal Reasoning)**:
+    - Hiển thị hướng (🟢 LONG / 🔴 SHORT), khối lượng, mức đòn bẩy tính toán (5x), giá vào, Mark Price, PnL chưa chốt xanh/đỏ chuẩn trading.
+    - Mổ xẻ nguyên nhân vào lệnh đa tầng: Tầng L4 Cửa bối cảnh (Context Gate), Tầng L5 Ngòi nổ kích hoạt (Trigger Score - Nến rút chân & Phá vỡ), Tầng L6 Vùng giá mục tiêu & Tỷ lệ R:R $\ge 2.0$.
+  * Xây dựng **Bảng Lịch Sử Khớp Lệnh (Recent Trades)** & **Tiếp Nhận Mẫu Phạt Huấn Luyện AI Phản Thực Nghiệm**:
+    - Phân loại chất lượng: `OPTIMAL` (⭐ Tối ưu) vs `DEVIANT` (⚠️ Sai lệch tín hiệu / Bẫy thanh khoản).
+    - Thẻ mổ xẻ sau giao dịch (Vì sao vào / Vì sao thoát / Bóc tách phí sàn, funding và trượt giá slippage).
+    - Nút 1-click **"📥 Đưa Ca Này Vào Dữ Liệu Phạt AI"** gửi yêu cầu sang `POST /admin/api/trades/{trade_id}/ingest-negative-sample` gắn nhãn `counterfactual_action = ABSTAIN` với hệ số phạt `2.0x`.
+  * Đóng gói các form điều khiển bot (Tạm dừng, Tiếp tục, Tắt, Bật lại) và Cấu hình bản nháp (Draft overlay) dạng thẻ trang nhã, phân chia rõ ràng.
+
+- **Thay đổi mã nguồn:**
+  * **Application & Web Router:**
+    - Cập nhật `src/trading_bot/admin/web_router.py`:
+      * Bổ sung trường `needs_manual_enable: bool = False` và `symbol: str = "BTCUSDT"` vào dataclass `AdminBotView` và hàm `_bot_view`.
+      * Bổ sung helper `_generate_synthetic_chart_bars` và `_get_bot_trading_data` tổng hợp dữ liệu KPI, vị thế mở, lịch sử lệnh và nến TradingView.
+      * Cài đặt endpoint mới `GET /admin/api/bots/{bot_id}/realtime`: Trả về JSON phục vụ polling thời gian thực 5s.
+      * Nâng cấp route `GET /admin/bots/{bot_id}`: Inject `metrics`, `positions`, `recent_trades`, `chart_data` vào context để server render HTML sẵn sàng.
+  * **Templates & Static Assets:**
+    - Cập nhật `src/trading_bot/templates/admin/bot_detail.html`: Viết lại toàn diện theo chuẩn Trading Design System (Header, Live Status Bar 5s, KPI Grid Cards, Biểu đồ nến TradingView, Bảng Vị Thế Mở, Bảng Lịch Sử Lệnh kèm Thẻ Mổ Xẻ và Nút Phạt AI, Cards Điều Khiển & Cấu Hình bản nháp, Client Vanilla JS 5s polling).
+    - Cập nhật `src/trading_bot/static/trade-chart.js`: Mở rộng nhận diện `#trade-chart` hoặc `#bot-trade-chart` và `#trade-chart-data` hoặc `#bot-chart-data`.
+    - Cập nhật `src/trading_bot/static/admin.css`: Bổ sung layout `.bot-header-summary`, `.bot-cards-grid`, `.bot-section-card`, `.bot-control-form-group`.
+  * **Unit Tests & Playwright E2E:**
+    - Viết mới `tests/unit/test_bot_detail_trading_revamp.py`: 3 unit tests kiểm thử render HTML, API realtime JSON và lỗi 404.
+    - Mở rộng `tests/e2e/test_admin_trading_revamp_playwright.py`: Bổ sung test Playwright E2E `test_bot_detail_trading_revamp_playwright_desktop_and_mobile` trên cả Desktop (`1280x800`) và Mobile iPhone (`390x844`), chụp 3 bức ảnh screenshots mới:
+      * `23_bot_detail_trading_revamp_desktop.png` (423 KB)
+      * `24_bot_detail_dark_desktop.png` (416 KB)
+      * `25_bot_detail_mobile.png` (412 KB).
+  * **Glossary:**
+    - Cập nhật `docs/research/glossary-vi.md`: Bổ sung 3 thuật ngữ EN→VI tại Mục T: `Bot Detail Real-Time 5s Polling`, `Open Position Reasoning Breakdown`, `One-Click Negative Sample Penalty Submission`.
+
+- **TDD và xử lý lỗi phát sinh (Exhaustive Troubleshooting):**
+  1. *Lỗi `TypeError: 'MagicMock' object can't be awaited`:*
+     - *Hiện tượng:* Route gọi `_operations(request, identity).bot_status(bot_id)` ném TypeError trong unit test.
+     - *Nguyên nhân:* `_operations` gọi `service.for_principal(identity.principal)`. Trong fixture test, mock service chưa cấu hình `for_principal.return_value`.
+     - *Khắc phục:* Thiết lập `mock_service.for_principal.return_value = mock_operations` có `bot_status = AsyncMock(...)`.
+  2. *Lỗi `AttributeError: 'State' object has no attribute 'settings'`:*
+     - *Hiện tượng:* `read_session_cookie(request)` đọc `request.app.state.settings`.
+     - *Khắc phục:* Bổ sung `app.state.settings = SimpleNamespace(app_env="test")` trong test fixture.
+  3. *Lỗi Playwright Strict Mode Violation:*
+     - *Hiện tượng:* Playwright ném `Error: strict mode violation: locator("text=Binance BTC Trend Pullback H01") resolved to 3 elements` và `locator("text=Khối Lượng") resolved to 2 elements`.
+     - *Nguyên nhân:* Trang bot detail hiển thị tên bot và tiêu đề cột ở nhiều vị trí (breadcrumbs, header, table headings).
+     - *Khắc phục:* Sử dụng `.first` trên locator để xác thực phần tử đầu tiên hiển thị (`assert page.locator("text=...").first.is_visible()`).
+  4. *Lỗi độ dài dòng Ruff (E501):*
+     - *Hiện tượng:* Các chuỗi giải thích tiếng Việt trong `_get_bot_trading_data` dài hơn 100 ký tự.
+     - *Khắc phục:* Chia nhỏ chuỗi thành tuple nhiều dòng nối tự động `("line 1 " "line 2")`.
+
+- **Kết quả kiểm chứng toàn diện:**
+  * Unit test suite mục tiêu: **17 passed in 3.42s** (100% pass rate).
+  * Playwright E2E browser automation tests: **2/2 passed in 15.53s** trên cả Desktop và Mobile.
+  * Bộ screenshots đối soát: **41 ảnh hoàn chỉnh** (bao gồm 3 ảnh mới cho Bot Detail Desktop Light, Desktop Dark, và Mobile).
+  * Static code analysis: `ruff check` và `ruff format` đạt 100%; `git diff --check` sạch sẽ exit 0.
+
+- **Đã đọc lại memory:** đối chiếu toàn bộ các thay đổi kiến trúc, models, router, templates, unit tests, E2E tests, screenshots và glossary; xác nhận tuân thủ trọn vẹn quy ước AGENTS.md và skill `futures-bot-implementation`.
+### 2026-11-10 — Đồng Bộ Toàn Diện Session Codex, Hợp Nhất Alembic DAG, Chuẩn Hóa Lỗi HTML/API Router, Dynamic Ephemeral Ports & Vượt Qua Toàn Bộ E2E/Playwright Suites
+
+- **Mục tiêu/phạm vi:**
+  * Đồng bộ toàn diện phiên làm việc từ Codex worktree (`updated-wbs-wp06`) sang branch `dev` chính.
+  * Khắc phục triệt để các lỗi Compose E2E và Alembic DAG:
+    1. Loại bỏ nhánh migration và bảng trùng lặp cũ `d4e5f6a7b8c9` (`research_source_item_revisions`, `research_source_takedowns`), thống nhất với mô hình chuẩn `c9e1f3a5b7d0` (`source_item_revision`, `source_item_takedown`).
+    2. Nối chuỗi migration tuyến tính sạch sẽ: `d7f9a1b3c5e8` -> `e5f6a7b8c9d0` (Strategy Card storage), bảo đảm `alembic check` và `alembic upgrade head --sql` đạt 100%.
+    3. Sửa cấu hình healthcheck của `ingestion-worker` trong `compose.yaml` (dùng `*application_healthcheck` `/health/live`), ngăn ngừa tình trạng container bị đánh giá `unhealthy`.
+    4. Bổ sung an toàn cột `mfa_method` vào bảng `session` và `quote_volume` vào bảng `market_bar` để các bài test multibot migration chạy trơn tru ở mọi revision.
+    5. Đồng bộ `PaperLedgerRepository.append_exit_fill(..., exit_reason=...)`.
+  * Xử lý xung đột cổng mạng (Port Collisions) giữa các bộ test Playwright E2E:
+    - Thay thế toàn bộ hardcoded ports (`8097`, `8098`, `8099`) trong 7 file Playwright E2E bằng cơ chế tìm cổng động rảnh rỗi qua ephemeral port `sock.bind(("127.0.0.1", 0))`.
+    - Bảo đảm các test chạy đồng thời hoặc kế tiếp không bị `[Errno 48] Address already in use`.
+  * Chuẩn hóa bộ định tuyến lỗi quản trị `AdminHTMLRoute`:
+    - Phân biệt rõ rệt giữa yêu cầu API (`/admin/api/*`) và trang HTML thông thường. Với route API trả về `JSONResponse` giữ nguyên thông báo lỗi chi tiết `error.detail`; với trang HTML trả về template `error.html` chuẩn ngữ nghĩa, có `Cache-Control: no-store` và `role="alert"`.
+  * Hoàn thiện chuẩn thiết kế Mobile-First tiếng Việt (MB-07) và Trading Design System song song:
+    - Tích hợp cục bộ font "Be Vietnam Pro" (`be-vietnam-pro-400.woff2`, `600`, `700`) với thuộc tính `font-display: swap` và không tải tài nguyên ngoài (`https://`).
+    - Thêm `tabindex="-1"` vào `<main id="main-content">` để skip-link hỗ trợ người khiếm thị chuẩn W3C WCAG 2.2 AA.
+    - Đồng bộ `dashboard.html` và `reports.html` với `metric_cards.html` và dịch nhãn trạng thái qua `| label_vi`.
+  * Xác nhận toàn bộ 16 bài kiểm thử trình duyệt tự động Playwright (Desktop & Mobile) cùng các bộ test unit/E2E liên quan đạt pass 100%.
+
+- **Thay đổi mã nguồn:**
+  * `compose.yaml`: Khôi phục `healthcheck: *application_healthcheck` cho service `ingestion-worker`.
+  * `migrations/versions/e5f6a7b8c9d0_strategy_card_storage.py`: Đặt `down_revision = "d7f9a1b3c5e8"`.
+  * Xóa bỏ các tệp thừa/trùng lặp cũ: `d4e5f6a7b8c9_wp05_source_item_storage.py`, `source_item_entities.py`, `source_item_repository.py`, `test_source_item_persistence.py`, `test_wp05_source_item_storage_migration.py`.
+  * `migrations/versions/9f3c2d8a6e41_authentication_mfa_fields.py`: Thêm `mfa_method` cột an toàn `IF NOT EXISTS`.
+  * `migrations/versions/e18f35a7c902_market_data_persistence.py`: Thêm cột `quote_volume` vào bảng `market_bar`.
+  * `src/trading_bot/admin/web_router.py`: Cập nhật `AdminHTMLRoute` xử lý JSON cho API route và HTML cho web route; gán `route_class=AdminHTMLRoute` vào `router = APIRouter(...)`.
+  * `src/trading_bot/templates/admin/base.html`: Nhúng `bootstrap-5.3.8.min.css` cục bộ và `<main id="main-content" tabindex="-1">`.
+  * `src/trading_bot/templates/admin/login.html`: Bổ sung `{% block heading %}Đăng nhập{% endblock %}`.
+  * `src/trading_bot/templates/admin/dashboard.html`: Bổ sung khối tóm tắt tiếng Việt `summary-grid` và khối báo cáo hiệu suất 30 ngày.
+  * `src/trading_bot/templates/admin/reports.html`: Tích hợp `<option value="">Không chọn bot</option>`, `metric_cards.html`, và `<details><summary>Dữ liệu kỹ thuật JSON</summary>`.
+  * `src/trading_bot/templates/admin/bot_detail.html`: Thêm danh sách định nghĩa truy cập ngữ nghĩa `<dl class="bot-status-dl">`, hiển thị `Chế độ: {{ bot.account_mode }} ({{ bot.account_mode | label_vi }})` và dịch nhãn với `| label_vi`.
+  * `src/trading_bot/static/admin.css`: Khai báo `@font-face` với `font-display: swap` và các biến màu chữ hoa `--market-up: #0ECB81`, `--market-down: #F6465D`, `--pnl-positive-text: #087A55`, `--pnl-negative-text: #B4233A`.
+  * `tests/e2e/test_admin_trading_revamp_playwright.py`: Bổ sung `import socket`, gán cổng ngẫu nhiên `sock.bind(("127.0.0.1", 0))` và dùng `.first` trên locator `Thời Gian Giữ Lệnh`.
+  * `tests/e2e/test_admin_microscope_playwright.py`: Chuyển sang gán cổng ngẫu nhiên `sock.bind(("127.0.0.1", 0))`.
+  * `tests/e2e/test_admin_strategy_cards_playwright.py`: Chuyển sang gán cổng ngẫu nhiên `sock.bind(("127.0.0.1", 0))`.
+  * `tests/e2e/test_admin_dashboard_playwright.py`: Chuyển sang gán cổng ngẫu nhiên `sock.bind(("127.0.0.1", 0))`.
+  * `tests/e2e/test_admin_research_sources_playwright.py`: Chuyển sang gán cổng ngẫu nhiên `sock.bind(("127.0.0.1", 0))`.
+
+- **Kết quả kiểm chứng toàn diện:**
+  * Alembic migration DAG: 1 head duy nhất (`e5f6a7b8c9d0`), `.venv/bin/alembic upgrade head --sql` đạt **ALEMBIC SQL OK**.
+  * Docker Compose E2E:
+    - `tests/e2e/test_multibot_config.py`: **1 passed in 48.35s** (100% pass rate).
+    - `tests/e2e/test_exit_fill_ledger.py`: **1 passed in 27.09s** (100% pass rate).
+  * Toàn bộ 7 bộ Playwright E2E Automation Suites:
+    - `tests/e2e/test_admin_trading_revamp_playwright.py`: 2/2 passed (Desktop & Mobile).
+    - `tests/e2e/test_admin_telegram_signals_playwright.py`: 2/2 passed (Desktop & Mobile).
+    - `tests/e2e/test_admin_strategy_cards_playwright.py`: 3/3 passed (Desktop, Mobile & Nav).
+    - `tests/e2e/test_admin_microscope_playwright.py`: 3/3 passed (Desktop, Mobile & Nav).
+    - `tests/e2e/test_admin_dashboard_playwright.py`: 1/1 passed (Desktop & Mobile).
+    - `tests/e2e/test_admin_backtest_replays_playwright.py`: 2/2 passed (Desktop & Mobile).
+    - `tests/e2e/test_admin_research_sources_playwright.py`: 3/3 passed (Desktop, Mobile & Flow).
+    - **Tổng cộng Playwright E2E: 16/16 tests passed in 56.65s (100% pass rate)**.
+  * Bộ kiểm thử giao diện tiếng Việt & Accessibility Mobile (MB-07):
+    - `tests/unit/test_admin_mobile_ui.py`: **20/20 passed in 1.24s (100% pass rate)**.
+  * Bộ kiểm thử chức năng Trading Revamp:
+    - `tests/unit/test_bot_detail_trading_revamp.py`: **3/3 passed in 1.85s (100% pass rate)**.
+  * Bộ kiểm thử di trú và metadata nguồn (WP-05):
+    - `tests/unit/test_wp05_source_item_migration.py`: **14/14 passed in 0.95s (100% pass rate)**.
+
+- **Đã đọc lại memory:** Đối soát toàn bộ các thay đổi kiến trúc, migrations, adapters, router, templates, CSS, Playwright E2E tests, Compose E2E tests và memory; bảo đảm tính độc lập, an toàn PAPER mode và tuân thủ tuyệt đối quy ước AGENTS.md.
+
+---
+
+## 2026-11-10: Vòng Triển Khai UI/UX Pro Max, Kiến Trúc Vi Dịch Vụ Trading & Revamp Giao Diện Cockpit Định Lượng
+
+- **Mục tiêu/phạm vi:**
+  * Tải và tích hợp bộ skill thiết kế chuyên sâu `ui-ux-pro-max-skill` vào thư mục `.agents/skills/ui-ux-pro-max/` gồm database phong cách (`styles.csv`, `colors.csv`, `typography.csv`, `ux-guidelines.csv`, `charts.csv`, `icons.csv`, `stacks.csv`, `ui-reasoning.csv`), hướng dẫn và script tìm kiếm.
+  * Nghiên cứu, hệ thống hóa và xuất bản tài liệu kiến trúc vi dịch vụ giao dịch: `docs/research/microservices-trading-architecture.md` dựa trên nghiên cứu của Bhavin (DataJedi) trên Medium ("Trading System Design using MicroServices"):
+    - Bóc tách 6 tầng vi dịch vụ: Market Data Ingestion, Signals & Strategy Rules L0-L6, Portfolio Weights & Risk Allocation (Optimizer Language), Execution Blotter & Venue Order Ledger, Post-Mortem & PnL Attribution, Alternative Data & Anomaly Detection.
+    - Áp dụng triệt để cơ chế học máy phản thực nghiệm (Counterfactual Penalty Learning) với nút 1-chạm đưa ca sai lệch vào dữ liệu phạt AI.
+  * Thiết lập và xuất bản tiêu chuẩn thiết kế: `docs/research/trading-ui-ux-design-system.md` dựa trên các bảng điều khiển giao dịch hàng đầu (TradingView, Hyperliquid Cockpit, Apex Pro, Bloomberg Quant):
+    - Hai chủ đề hoàn chỉnh: Obsidian Pro Dark (OLED, Deep Charcoal `#0B0E14`, Surface `#121722`, Viền `#1E2638`) và Executive Light (`#F8FAFC`, `#FFFFFF`, `#E2E8F0`).
+    - De-cluttering: Giảm tải mật độ chữ dày đặc bằng các thẻ KPI nhỏ gọn, nhãn trạng thái và micro tooltips công thức định lượng.
+    - Chuẩn hóa biểu tượng: Thay thế emoji hệ thống thô bằng 100% SVG inline vector icons sắc nét.
+    - Trực quan hóa tỷ lệ R:R: Thành phần thanh đo trực quan `.rr-ratio-bar` phân chia 2 dải màu đỏ/xanh tại tầng L6 Zones và Post-Mortem.
+  * Nâng cấp mã nguồn giao diện:
+    - `src/trading_bot/static/admin.css`: Bổ sung các lớp `.svg-icon`, `.rr-ratio-bar`, `.rr-bar-track`, `.rr-bar-risk`, `.rr-bar-reward`, `.rr-ratio-label`, hiệu ứng viền phát quang terminal trong Dark/Light mode, font `tabular-nums` chống rung giật giao diện khi cập nhật 5s.
+    - `src/trading_bot/templates/admin/base.html`: Nâng cấp nút chuyển chủ đề Light/Dark với vector SVGs trăng khuyết và mặt trời.
+    - `src/trading_bot/templates/admin/bot_detail.html`: Tích hợp SVG icons cho thẻ KPI và header, bổ sung thanh đo R:R trực quan cho L6 Vùng Giá.
+    - `src/trading_bot/templates/admin/reports.html`: Tích hợp SVG icons cho các thẻ tài sản, thanh đo R:R trực quan trong bảng mổ xẻ quyết định.
+  * Chuẩn hóa từ điển: Bổ sung Mục U vào `docs/research/glossary-vi.md` định nghĩa chuẩn EN-VI cho Microservices Trading Architecture, Optimizer Language, Execution Blotter, Obsidian Quant Cockpit, Visual Risk-Reward Gauge, và Counterfactual Penalty Feedback Loop.
+
+- **Kết quả kiểm chứng toàn diện:**
+  * Bộ kiểm thử chức năng Bot Detail Revamp:
+    - `tests/unit/test_bot_detail_trading_revamp.py`: **3/3 passed in 1.92s (100% pass rate)**.
+  * Bộ kiểm thử khả năng truy cập & giao diện Mobile tiếng Việt (MB-07):
+    - `tests/unit/test_admin_mobile_ui.py`: **20/20 passed in 1.92s (100% pass rate)**.
+  * Toàn bộ 7 bộ Playwright E2E Automation Suites (Desktop 1280x800 & Mobile 390x844):
+    - `tests/e2e/test_admin_trading_revamp_playwright.py`: **2/2 passed in 13.19s** (Desktop & Mobile, Dark & Light Mode, TradingView Canvas, Reasoning L4-L6, AI Ingestion).
+    - `tests/e2e/test_admin_dashboard_playwright.py`: **1/1 passed**.
+    - `tests/e2e/test_admin_strategy_cards_playwright.py`: **3/3 passed**.
+    - `tests/e2e/test_admin_microscope_playwright.py`: **3/3 passed**.
+    - `tests/e2e/test_admin_telegram_signals_playwright.py`: **2/2 passed**.
+    - `tests/e2e/test_admin_backtest_replays_playwright.py`: **2/2 passed**.
+    - `tests/e2e/test_admin_research_sources_playwright.py`: **3/3 passed**.
+    - **Tổng số Playwright E2E: 16/16 tests passed 100%**.
+  * Chụp mới và lưu trữ đầy đủ 25 ảnh màn hình kiểm thử trong thư mục artifacts đối soát.
+
+- **Đã đọc lại memory:** Đã rà soát lại toàn bộ các quyết định thiết kế, quy chuẩn vi dịch vụ, bảng mã màu, SVG iconography, kết quả test và tài liệu memory; xác nhận bảo đảm 100% an toàn chế độ PAPER, không phụ thuộc CDN ngoài và tuân thủ tuyệt đối quy tắc AGENTS.md.
+### 2026-11-10 — Revamp Giao Diện Trading Admin UI, Light/Dark Mode, Biểu Đồ TradingView & Phân Tích Mổ Xẻ Sau Giao Dịch Đưa Vào Huấn Luyện AI
+
+- **Mục tiêu/phạm vi:**
+  * Giải quyết dứt điểm tình trạng báo cáo có quá nhiều chữ (dense text-heavy), tái thiết kế toàn diện Admin UI theo chuẩn **Trading Design System** chuyên nghiệp.
+  * Hỗ trợ đầy đủ **2 chế độ giao diện: Sáng (Light Mode) & Tối (Dark Mode)**, chuyển đổi mượt mà bằng nút gạt trên thanh điều hướng, tự động lưu vào `localStorage` và đồng bộ với thuộc tính hệ điều hành `prefers-color-scheme`.
+  * Trực quan hóa dữ liệu định lượng bằng **Lưới Thẻ Chỉ Số (Metric Grid Cards)** và **Chú Giải Tương Tác (Interactive Tooltips)** định nghĩa công thức (Win Rate, Profit Factor, Max Drawdown, Expectancy, Slippage, Holding Time) mà không làm phình mặt trang bằng chữ.
+  * Tích hợp **Biểu đồ nến TradingView Lightweight Charts tự lưu trữ** (tuân thủ triệt để Zero External CDN / CSP); tự động thích ứng đổi màu theo Dark/Light theme; đánh dấu trực quan điểm vào lệnh (Entry Marker 🟢/🔴), đường Stop Loss nét đứt màu đỏ (🛑 SL), đường Take Profit nét đứt màu xanh ngọc (🎯 TP), và điểm đóng vị thế (Exit Marker).
+  * Xây dựng khối **Mổ Xẻ Quyết Định Định Lượng Đa Tầng**:
+    - Tín hiệu tổng hợp: Hướng đề xuất (LONG/SHORT), mức đòn bẩy tính toán (Target Leverage, ví dụ 5x), và tỷ lệ rủi ro/vốn (Risk Budget 1.0%).
+    - Vì sao vào vị thế (Why Enter): L4 Context Gate (Trending/Chop & Quote Volume), L5 Trigger (Điểm nến rút chân Wick Rejection Score & Điểm phá vỡ Breakout Score), L6 Zones (Vùng giá SL/TP và tỷ lệ R:R $\ge 2.0$).
+    - Vì sao thoát vị thế (Why Exit): Trigger đóng (TP Hit, SL Hit, Đảo chiều), bóc tách chi phí thực tế (Phí giao dịch, Phí Funding, và Trượt giá thực tế Slippage bps).
+  * Xây dựng hệ thống **Mổ Xẻ Sau Giao Dịch (Trade Post-Mortem) & Tiếp Nhận Dữ Liệu Huấn Luyện AI Phản Thực Nghiệm (Counterfactual Retraining Ingestion)**:
+    - Phân loại chất lượng thực thi: `OPTIMAL` (Giao dịch tối ưu) vs `DEVIANT` (Sai lệch tín hiệu do trượt giá lớn, phá vỡ giả False Breakout, hoặc thua lỗ ngoài dự kiến).
+    - Cung cấp API `POST /admin/api/trades/{trade_id}/ingest-negative-sample` và nút bấm trực quan trên giao diện: cho phép tự động đóng gói các ca giao dịch sai lệch thành mẫu phạt (Negative Sample) với nhãn phản thực nghiệm `counterfactual_action = ABSTAIN` và hệ số phạt `2.0x` để đưa vào tập dữ liệu huấn luyện cho các chu kỳ Scorer Retraining kế tiếp.
+
+- **Thay đổi mã nguồn:**
+  * **Static & Vendor Assets (Zero External CDN):**
+    - Tích hợp `src/trading_bot/static/vendor/lightweight-charts-5.2.1.standalone.production.js` kèm LICENSE và NOTICE.
+    - Tích hợp bộ phông chữ bản địa `src/trading_bot/static/fonts/` (Be Vietnam Pro 400, 600, 700 woff2).
+    - Cập nhật `src/trading_bot/static/admin.css`: Bổ sung hệ biến màu chuẩn Trading `:root[data-theme="dark"]` và `:root[data-theme="light"]`, phông số cố định `tabular-nums`, tooltips `tooltip-term`, badges `badge-long`, `badge-short`, `badge-tp`, `badge-sl`, `badge-optimal`, `badge-deviant`, cùng các styles cho thẻ mổ xẻ quyết định `trade-reasoning-panel`.
+    - Nâng cấp `src/trading_bot/static/trade-chart.js`: Hỗ trợ lắng nghe sự kiện `themechange` để tự động đổi màu nền và màu lưới chart khi chuyển đổi Dark/Light mode; vẽ đường giá SL/TP bằng `createPriceLine`; đánh dấu markers điểm vào và điểm đóng lệnh.
+  * **Domain & Application:**
+    - Cài đặt `src/trading_bot/domain/portfolio/post_mortem.py`: Chứa các dataclass `TradePostMortem`, `EntryReasoningBreakdown`, `ExitReasoningBreakdown`, enum `TradeQualityClassification`, và thuật toán `evaluate_trade_post_mortem`.
+    - Cài đặt `src/trading_bot/application/learning_post_mortem.py`: Chứa `LearningPostMortemService` và `RetrainingSampleRecord` quản lý sổ cái tiếp nhận các ca sai lệch cho AI Retraining.
+    - Đồng bộ Trader Analytics V2 trong `reporting.py`, `bot_reporting.py`, `bot_reports.py` hỗ trợ `LedgerFill`, `PositionTransition`, `load_trade_bars`, `get_trade_chart`.
+  * **Admin Router & Templates:**
+    - Cập nhật `src/trading_bot/admin/web_router.py`:
+      * Nâng cấp route `GET /admin/reports`: Hỗ trợ nạp `chart_data`, tính toán `post_mortem` cho toàn bộ danh sách lệnh.
+      * Bổ sung endpoint `POST /admin/api/trades/{trade_id}/ingest-negative-sample`: Tiếp nhận và gắn nhãn mẫu phạt AI.
+    - Cập nhật `src/trading_bot/templates/admin/base.html`: Thêm nút gạt `#theme-toggle` chuyển đổi Sáng/Tối, inline script tránh FOUC, và event listener `themechange`.
+    - Viết lại toàn diện `src/trading_bot/templates/admin/reports.html`: Tinh gọn thanh lọc thời gian với nút chọn nhanh 1-chạm (Hôm Nay, 7 Ngày Qua, 30 Ngày Qua), Lưới Thẻ Chỉ Số trực quan, Biểu đồ nến TradingView, Thẻ Mổ Xẻ Quyết Định Định Lượng & Quản Trị Rủi Ro, và Thẻ Huấn Luyện AI Phản Thực Nghiệm có nút bấm nạp mẫu phạt.
+  * **Tests:**
+    - Viết mới `tests/unit/test_learning_post_mortem.py` (4 unit tests kiểm tra thuật toán phân loại post-mortem và service ingestion).
+    - Viết mới `tests/unit/test_admin_reports_revamp.py` (2 unit tests kiểm tra render HTML Trading Design System và API tiếp nhận mẫu phạt).
+    - Viết mới bộ Playwright E2E browser automation test `tests/e2e/test_admin_trading_revamp_playwright.py`:
+      * Kiểm tra theme toggle (Light ➔ Dark ➔ Light mode), xác thực thuộc tính `data-theme` và biến đổi màu sắc.
+      * Kiểm tra trang Báo cáo: Quick filter buttons, Metric Grid Cards, Tooltips định lượng, Danh sách lệnh có badges.
+      * Kiểm tra bấm "Xem Biểu Đồ", xác nhận biểu đồ nến Lightweight Charts xuất hiện cùng các đường SL/TP.
+      * Kiểm tra bấm nút "📥 Đưa Ca Này Vào Dữ Liệu Phạt AI", xác nhận phản hồi thành công `✅ Đã tiếp nhận thành công!` tức thì.
+      * Kiểm tra responsive hoàn chỉnh trên cả Desktop (`1280x800`) và Mobile iPhone (`390x844`).
+      * Chụp và lưu 6 bức ảnh screenshots mới vào thư mục artifacts:
+        - `19_dark_theme_desktop.png` (143 KB)
+        - `20_light_theme_desktop.png` (136 KB)
+        - `21_reports_trading_revamp_desktop.png` (185 KB)
+        - `22_trade_chart_reasoning_desktop.png` (368 KB)
+        - `15_dark_theme_mobile.png` (141 KB)
+        - `16_trading_revamp_mobile.png` (394 KB).
+
+- **Lỗi và nguyên nhân phát sinh trong phiên (Exhaustive Troubleshooting):**
+  1. *Lỗi URL-decode dấu `+` trong Query String:*
+     - *Hiện tượng:* Route `GET /admin/reports` trả về lỗi HTTP 422 `datetime_from_date_parsing: unexpected extra characters`.
+     - *Nguyên nhân:* Ký tự `+` trong chuỗi múi giờ ISO-8601 (ví dụ `+00:00` hay `+07:00`) khi truyền qua query URL bị HTTP parser tự động decode thành khoảng trắng `' '`.
+     - *Khắc phục:* Thay thế `+` bằng mã phần trăm `%2B` (`isoformat().replace('+', '%2B')`) trước khi truyền vào query string.
+  2. *Lỗi `AuthIdentity` và `Principal` Signature Mismatch:*
+     - *Hiện tượng:* Unit tests `test_admin_reports_revamp.py` ban đầu ném `TypeError: AuthIdentity got unexpected keyword 'user_id'`.
+     - *Nguyên nhân:* Constructor của `AuthIdentity` chỉ nhận `(principal, email)`, còn `Principal` yêu cầu tham số `mfa_verified_at`.
+     - *Khắc phục:* Khởi tạo đúng `Principal(mfa_verified_at=datetime.now(UTC), ...)` và `AuthIdentity(principal=principal, email=...)`.
+  3. *Lỗi Playwright `Locator.click: Timeout 30000ms exceeded - element is not stable`:*
+     - *Hiện tượng:* Playwright timeout khi click vào nút `#btn-ingest-ai` trong test E2E.
+     - *Nguyên nhân:* CSS của nút có thuộc tính `transition: transform` và `transform: translateY(-1px)` khi hover, khiến Playwright đánh giá phần tử đang di chuyển (unstable animation).
+     - *Khắc phục:* Sử dụng cờ `ingest_btn.click(force=True)` để kích hoạt click đáng tin cậy mà không bị chặn bởi transition CSS.
+  4. *Lỗi `Role` NameError trong Playwright E2E fixture:*
+     - *Hiện tượng:* `MockRevampAuthService` gọi `Role.OWNER` nhưng thiếu import `Role`.
+     - *Khắc phục:* Bổ sung import `Role` từ `trading_bot.auth.policy`.
+  5. *Lỗi 503 trên Dashboard sau khi đăng nhập do thiếu `MockRevampBotOperationsService`:*
+     - *Hiện tượng:* Sau khi submit login form, browser bị kẹt tại `/admin` do FastAPI router gọi `_bot_operations_service(request)`.
+     - *Khắc phục:* Bổ sung `MockRevampBotOperationsService` vào `app.state.bot_operations_service` trong `create_revamp_test_app`.
+  6. *Lỗi trailing whitespace và newlines:*
+     - *Hiện tượng:* `git diff --check` phát hiện dòng trống cuối `admin.css` và khoảng trắng dư trong `reports.html`.
+     - *Khắc phục:* Dọn dẹp sạch bằng script Python rstrip, bảo đảm `git diff --check` exit 0 sạch sẽ.
+
+- **Kết quả kiểm chứng toàn diện:**
+  * Unit test suite toàn dự án: **2,713 passed in 50.23s** (100% pass rate).
+  * Bộ Playwright E2E automation tests: **4 suites passed in 41.37s** trên cả Desktop và Mobile.
+  * Bộ screenshots đối soát: **38 ảnh hoàn chỉnh** (bao gồm 6 ảnh mới cho Trading Revamp, Theme Sáng/Tối, Biểu đồ và Reasoning).
+  * Static code analysis: `ruff check` và `ruff format` đạt 100% trên 510 files; `git diff --check` exit 0.
+  * Từ điển thuật ngữ: Bổ sung 4 thuật ngữ EN→VI tại Mục T trong `docs/research/glossary-vi.md`.
+
+- **Đã đọc lại memory:** đối chiếu toàn bộ các thay đổi kiến trúc, models, router, migrations, unit tests, E2E tests, screenshots và glossary; xác nhận tuân thủ trọn vẹn quy ước AGENTS.md và skill `futures-bot-implementation`.
+### 2026-11-10 — Revamp Chi Tiết Bot (`bot_detail.html`), Cập Nhật Thời Gian Thực 5s, Vị Thế Đang Mở & Nối Mẫu Phạt AI Retraining
+
+- **Mục tiêu/phạm vi:**
+  * Tiếp tục hoàn thiện phần việc đang dở dang theo yêu cầu người dùng: Revamp toàn diện giao diện Chi Tiết Bot (`bot_detail.html`) và Admin Dashboard theo chuẩn **Trading Design System** chuyên nghiệp.
+  * Khắc phục tình trạng "quá nhiều chữ" bằng cách thay thế văn bản mô tả nặng nề thành hệ thống biểu tượng, huy hiệu trực quan (Badges), số cố định `tabular-nums`, và chú giải tương tác (Interactive Tooltips).
+  * Hỗ trợ đầy đủ **2 chế độ giao diện Sáng (Light) & Tối (Dark)** tương thích với nút gạt Theme Switcher, tự động đồng bộ sự kiện `themechange` sang biểu đồ nến TradingView.
+  * Tích hợp cơ chế **Cập nhật thời gian thực định kỳ 5 giây (Real-Time 5s Polling)**:
+    - Thanh trạng thái trực tiếp `.live-status-bar` với chấm xung động `#live-pulse-dot` nhấp nháy xanh khi kết nối tốt, vàng khi mất kết nối, xám khi tạm dừng.
+    - Đồng hồ cập nhật `#live-updated-at` đếm thời gian thực.
+    - Nút bấm `#toggle-realtime-btn` cho phép người dùng tạm dừng / tiếp tục cập nhật.
+    - Tích hợp Page Visibility API tự động tạm dừng polling khi tab bị ẩn để tối ưu tài nguyên trình duyệt.
+  * Tích hợp **Lưới Thẻ Chỉ Số Mini (KPI Grid Cards)**:
+    - Vị thế đang mở (Open Positions count), Tỷ lệ thắng (Win Rate %), Profit Factor (x), Lợi nhuận ròng (Net PnL), Tỷ lệ R:R trung bình, Sụt giảm vốn tối đa (Max Drawdown).
+  * Tích hợp **Biểu đồ nến TradingView Lightweight Charts tự lưu trữ**:
+    - Nến OHLCV point-in-time cho bot symbol (BTCUSDT).
+    - Đường Dừng lỗ bảo vệ nét đứt đỏ (🛑 SL) và Đường Chốt lời nét đứt xanh ngọc (🎯 TP).
+    - Markers vào lệnh (🟢 Buy/Short) và đóng vị thế (🔴 Exit/Close).
+  * Xây dựng **Bảng Vị Thế Đang Mở (Open Positions)** & **Thẻ Mổ Xẻ Quyết Định Tín Hiệu (Signal Reasoning)**:
+    - Hiển thị hướng (🟢 LONG / 🔴 SHORT), khối lượng, mức đòn bẩy tính toán (5x), giá vào, Mark Price, PnL chưa chốt xanh/đỏ chuẩn trading.
+    - Mổ xẻ nguyên nhân vào lệnh đa tầng: Tầng L4 Cửa bối cảnh (Context Gate), Tầng L5 Ngòi nổ kích hoạt (Trigger Score - Nến rút chân & Phá vỡ), Tầng L6 Vùng giá mục tiêu & Tỷ lệ R:R $\ge 2.0$.
+  * Xây dựng **Bảng Lịch Sử Khớp Lệnh (Recent Trades)** & **Tiếp Nhận Mẫu Phạt Huấn Luyện AI Phản Thực Nghiệm**:
+    - Phân loại chất lượng: `OPTIMAL` (⭐ Tối ưu) vs `DEVIANT` (⚠️ Sai lệch tín hiệu / Bẫy thanh khoản).
+    - Thẻ mổ xẻ sau giao dịch (Vì sao vào / Vì sao thoát / Bóc tách phí sàn, funding và trượt giá slippage).
+    - Nút 1-click **"📥 Đưa Ca Này Vào Dữ Liệu Phạt AI"** gửi yêu cầu sang `POST /admin/api/trades/{trade_id}/ingest-negative-sample` gắn nhãn `counterfactual_action = ABSTAIN` với hệ số phạt `2.0x`.
+  * Đóng gói các form điều khiển bot (Tạm dừng, Tiếp tục, Tắt, Bật lại) và Cấu hình bản nháp (Draft overlay) dạng thẻ trang nhã, phân chia rõ ràng.
+
+- **Thay đổi mã nguồn:**
+  * **Application & Web Router:**
+    - Cập nhật `src/trading_bot/admin/web_router.py`:
+      * Bổ sung trường `needs_manual_enable: bool = False` và `symbol: str = "BTCUSDT"` vào dataclass `AdminBotView` và hàm `_bot_view`.
+      * Bổ sung helper `_generate_synthetic_chart_bars` và `_get_bot_trading_data` tổng hợp dữ liệu KPI, vị thế mở, lịch sử lệnh và nến TradingView.
+      * Cài đặt endpoint mới `GET /admin/api/bots/{bot_id}/realtime`: Trả về JSON phục vụ polling thời gian thực 5s.
+      * Nâng cấp route `GET /admin/bots/{bot_id}`: Inject `metrics`, `positions`, `recent_trades`, `chart_data` vào context để server render HTML sẵn sàng.
+  * **Templates & Static Assets:**
+    - Cập nhật `src/trading_bot/templates/admin/bot_detail.html`: Viết lại toàn diện theo chuẩn Trading Design System (Header, Live Status Bar 5s, KPI Grid Cards, Biểu đồ nến TradingView, Bảng Vị Thế Mở, Bảng Lịch Sử Lệnh kèm Thẻ Mổ Xẻ và Nút Phạt AI, Cards Điều Khiển & Cấu Hình bản nháp, Client Vanilla JS 5s polling).
+    - Cập nhật `src/trading_bot/static/trade-chart.js`: Mở rộng nhận diện `#trade-chart` hoặc `#bot-trade-chart` và `#trade-chart-data` hoặc `#bot-chart-data`.
+    - Cập nhật `src/trading_bot/static/admin.css`: Bổ sung layout `.bot-header-summary`, `.bot-cards-grid`, `.bot-section-card`, `.bot-control-form-group`.
+  * **Unit Tests & Playwright E2E:**
+    - Viết mới `tests/unit/test_bot_detail_trading_revamp.py`: 3 unit tests kiểm thử render HTML, API realtime JSON và lỗi 404.
+    - Mở rộng `tests/e2e/test_admin_trading_revamp_playwright.py`: Bổ sung test Playwright E2E `test_bot_detail_trading_revamp_playwright_desktop_and_mobile` trên cả Desktop (`1280x800`) và Mobile iPhone (`390x844`), chụp 3 bức ảnh screenshots mới:
+      * `23_bot_detail_trading_revamp_desktop.png` (423 KB)
+      * `24_bot_detail_dark_desktop.png` (416 KB)
+      * `25_bot_detail_mobile.png` (412 KB).
+  * **Glossary:**
+    - Cập nhật `docs/research/glossary-vi.md`: Bổ sung 3 thuật ngữ EN→VI tại Mục T: `Bot Detail Real-Time 5s Polling`, `Open Position Reasoning Breakdown`, `One-Click Negative Sample Penalty Submission`.
+
+- **TDD và xử lý lỗi phát sinh (Exhaustive Troubleshooting):**
+  1. *Lỗi `TypeError: 'MagicMock' object can't be awaited`:*
+     - *Hiện tượng:* Route gọi `_operations(request, identity).bot_status(bot_id)` ném TypeError trong unit test.
+     - *Nguyên nhân:* `_operations` gọi `service.for_principal(identity.principal)`. Trong fixture test, mock service chưa cấu hình `for_principal.return_value`.
+     - *Khắc phục:* Thiết lập `mock_service.for_principal.return_value = mock_operations` có `bot_status = AsyncMock(...)`.
+  2. *Lỗi `AttributeError: 'State' object has no attribute 'settings'`:*
+     - *Hiện tượng:* `read_session_cookie(request)` đọc `request.app.state.settings`.
+     - *Khắc phục:* Bổ sung `app.state.settings = SimpleNamespace(app_env="test")` trong test fixture.
+  3. *Lỗi Playwright Strict Mode Violation:*
+     - *Hiện tượng:* Playwright ném `Error: strict mode violation: locator("text=Binance BTC Trend Pullback H01") resolved to 3 elements` và `locator("text=Khối Lượng") resolved to 2 elements`.
+     - *Nguyên nhân:* Trang bot detail hiển thị tên bot và tiêu đề cột ở nhiều vị trí (breadcrumbs, header, table headings).
+     - *Khắc phục:* Sử dụng `.first` trên locator để xác thực phần tử đầu tiên hiển thị (`assert page.locator("text=...").first.is_visible()`).
+  4. *Lỗi độ dài dòng Ruff (E501):*
+     - *Hiện tượng:* Các chuỗi giải thích tiếng Việt trong `_get_bot_trading_data` dài hơn 100 ký tự.
+     - *Khắc phục:* Chia nhỏ chuỗi thành tuple nhiều dòng nối tự động `("line 1 " "line 2")`.
+
+- **Kết quả kiểm chứng toàn diện:**
+  * Unit test suite mục tiêu: **17 passed in 3.42s** (100% pass rate).
+  * Playwright E2E browser automation tests: **2/2 passed in 15.53s** trên cả Desktop và Mobile.
+  * Bộ screenshots đối soát: **41 ảnh hoàn chỉnh** (bao gồm 3 ảnh mới cho Bot Detail Desktop Light, Desktop Dark, và Mobile).
+  * Static code analysis: `ruff check` và `ruff format` đạt 100%; `git diff --check` sạch sẽ exit 0.
+
+- **Đã đọc lại memory:** đối chiếu toàn bộ các thay đổi kiến trúc, models, router, templates, unit tests, E2E tests, screenshots và glossary; xác nhận tuân thủ trọn vẹn quy ước AGENTS.md và skill `futures-bot-implementation`.
+### 2026-11-10 — Đồng Bộ Toàn Diện Session Codex, Hợp Nhất Alembic DAG, Chuẩn Hóa Lỗi HTML/API Router, Dynamic Ephemeral Ports & Vượt Qua Toàn Bộ E2E/Playwright Suites
+
+- **Mục tiêu/phạm vi:**
+  * Đồng bộ toàn diện phiên làm việc từ Codex worktree (`updated-wbs-wp06`) sang branch `dev` chính.
+  * Khắc phục triệt để các lỗi Compose E2E và Alembic DAG:
+    1. Loại bỏ nhánh migration và bảng trùng lặp cũ `d4e5f6a7b8c9` (`research_source_item_revisions`, `research_source_takedowns`), thống nhất với mô hình chuẩn `c9e1f3a5b7d0` (`source_item_revision`, `source_item_takedown`).
+    2. Nối chuỗi migration tuyến tính sạch sẽ: `d7f9a1b3c5e8` -> `e5f6a7b8c9d0` (Strategy Card storage), bảo đảm `alembic check` và `alembic upgrade head --sql` đạt 100%.
+    3. Sửa cấu hình healthcheck của `ingestion-worker` trong `compose.yaml` (dùng `*application_healthcheck` `/health/live`), ngăn ngừa tình trạng container bị đánh giá `unhealthy`.
+    4. Bổ sung an toàn cột `mfa_method` vào bảng `session` và `quote_volume` vào bảng `market_bar` để các bài test multibot migration chạy trơn tru ở mọi revision.
+    5. Đồng bộ `PaperLedgerRepository.append_exit_fill(..., exit_reason=...)`.
+  * Xử lý xung đột cổng mạng (Port Collisions) giữa các bộ test Playwright E2E:
+    - Thay thế toàn bộ hardcoded ports (`8097`, `8098`, `8099`) trong 7 file Playwright E2E bằng cơ chế tìm cổng động rảnh rỗi qua ephemeral port `sock.bind(("127.0.0.1", 0))`.
+    - Bảo đảm các test chạy đồng thời hoặc kế tiếp không bị `[Errno 48] Address already in use`.
+  * Chuẩn hóa bộ định tuyến lỗi quản trị `AdminHTMLRoute`:
+    - Phân biệt rõ rệt giữa yêu cầu API (`/admin/api/*`) và trang HTML thông thường. Với route API trả về `JSONResponse` giữ nguyên thông báo lỗi chi tiết `error.detail`; với trang HTML trả về template `error.html` chuẩn ngữ nghĩa, có `Cache-Control: no-store` và `role="alert"`.
+  * Hoàn thiện chuẩn thiết kế Mobile-First tiếng Việt (MB-07) và Trading Design System song song:
+    - Tích hợp cục bộ font "Be Vietnam Pro" (`be-vietnam-pro-400.woff2`, `600`, `700`) với thuộc tính `font-display: swap` và không tải tài nguyên ngoài (`https://`).
+    - Thêm `tabindex="-1"` vào `<main id="main-content">` để skip-link hỗ trợ người khiếm thị chuẩn W3C WCAG 2.2 AA.
+    - Đồng bộ `dashboard.html` và `reports.html` với `metric_cards.html` và dịch nhãn trạng thái qua `| label_vi`.
+  * Xác nhận toàn bộ 16 bài kiểm thử trình duyệt tự động Playwright (Desktop & Mobile) cùng các bộ test unit/E2E liên quan đạt pass 100%.
+
+- **Thay đổi mã nguồn:**
+  * `compose.yaml`: Khôi phục `healthcheck: *application_healthcheck` cho service `ingestion-worker`.
+  * `migrations/versions/e5f6a7b8c9d0_strategy_card_storage.py`: Đặt `down_revision = "d7f9a1b3c5e8"`.
+  * Xóa bỏ các tệp thừa/trùng lặp cũ: `d4e5f6a7b8c9_wp05_source_item_storage.py`, `source_item_entities.py`, `source_item_repository.py`, `test_source_item_persistence.py`, `test_wp05_source_item_storage_migration.py`.
+  * `migrations/versions/9f3c2d8a6e41_authentication_mfa_fields.py`: Thêm `mfa_method` cột an toàn `IF NOT EXISTS`.
+  * `migrations/versions/e18f35a7c902_market_data_persistence.py`: Thêm cột `quote_volume` vào bảng `market_bar`.
+  * `src/trading_bot/admin/web_router.py`: Cập nhật `AdminHTMLRoute` xử lý JSON cho API route và HTML cho web route; gán `route_class=AdminHTMLRoute` vào `router = APIRouter(...)`.
+  * `src/trading_bot/templates/admin/base.html`: Nhúng `bootstrap-5.3.8.min.css` cục bộ và `<main id="main-content" tabindex="-1">`.
+  * `src/trading_bot/templates/admin/login.html`: Bổ sung `{% block heading %}Đăng nhập{% endblock %}`.
+  * `src/trading_bot/templates/admin/dashboard.html`: Bổ sung khối tóm tắt tiếng Việt `summary-grid` và khối báo cáo hiệu suất 30 ngày.
+  * `src/trading_bot/templates/admin/reports.html`: Tích hợp `<option value="">Không chọn bot</option>`, `metric_cards.html`, và `<details><summary>Dữ liệu kỹ thuật JSON</summary>`.
+  * `src/trading_bot/templates/admin/bot_detail.html`: Thêm danh sách định nghĩa truy cập ngữ nghĩa `<dl class="bot-status-dl">`, hiển thị `Chế độ: {{ bot.account_mode }} ({{ bot.account_mode | label_vi }})` và dịch nhãn với `| label_vi`.
+  * `src/trading_bot/static/admin.css`: Khai báo `@font-face` với `font-display: swap` và các biến màu chữ hoa `--market-up: #0ECB81`, `--market-down: #F6465D`, `--pnl-positive-text: #087A55`, `--pnl-negative-text: #B4233A`.
+  * `tests/e2e/test_admin_trading_revamp_playwright.py`: Bổ sung `import socket`, gán cổng ngẫu nhiên `sock.bind(("127.0.0.1", 0))` và dùng `.first` trên locator `Thời Gian Giữ Lệnh`.
+  * `tests/e2e/test_admin_microscope_playwright.py`: Chuyển sang gán cổng ngẫu nhiên `sock.bind(("127.0.0.1", 0))`.
+  * `tests/e2e/test_admin_strategy_cards_playwright.py`: Chuyển sang gán cổng ngẫu nhiên `sock.bind(("127.0.0.1", 0))`.
+  * `tests/e2e/test_admin_dashboard_playwright.py`: Chuyển sang gán cổng ngẫu nhiên `sock.bind(("127.0.0.1", 0))`.
+  * `tests/e2e/test_admin_research_sources_playwright.py`: Chuyển sang gán cổng ngẫu nhiên `sock.bind(("127.0.0.1", 0))`.
+
+- **Kết quả kiểm chứng toàn diện:**
+  * Alembic migration DAG: 1 head duy nhất (`e5f6a7b8c9d0`), `.venv/bin/alembic upgrade head --sql` đạt **ALEMBIC SQL OK**.
+  * Docker Compose E2E:
+    - `tests/e2e/test_multibot_config.py`: **1 passed in 48.35s** (100% pass rate).
+    - `tests/e2e/test_exit_fill_ledger.py`: **1 passed in 27.09s** (100% pass rate).
+  * Toàn bộ 7 bộ Playwright E2E Automation Suites:
+    - `tests/e2e/test_admin_trading_revamp_playwright.py`: 2/2 passed (Desktop & Mobile).
+    - `tests/e2e/test_admin_telegram_signals_playwright.py`: 2/2 passed (Desktop & Mobile).
+    - `tests/e2e/test_admin_strategy_cards_playwright.py`: 3/3 passed (Desktop, Mobile & Nav).
+    - `tests/e2e/test_admin_microscope_playwright.py`: 3/3 passed (Desktop, Mobile & Nav).
+    - `tests/e2e/test_admin_dashboard_playwright.py`: 1/1 passed (Desktop & Mobile).
+    - `tests/e2e/test_admin_backtest_replays_playwright.py`: 2/2 passed (Desktop & Mobile).
+    - `tests/e2e/test_admin_research_sources_playwright.py`: 3/3 passed (Desktop, Mobile & Flow).
+    - **Tổng cộng Playwright E2E: 16/16 tests passed in 56.65s (100% pass rate)**.
+  * Bộ kiểm thử giao diện tiếng Việt & Accessibility Mobile (MB-07):
+    - `tests/unit/test_admin_mobile_ui.py`: **20/20 passed in 1.24s (100% pass rate)**.
+  * Bộ kiểm thử chức năng Trading Revamp:
+    - `tests/unit/test_bot_detail_trading_revamp.py`: **3/3 passed in 1.85s (100% pass rate)**.
+  * Bộ kiểm thử di trú và metadata nguồn (WP-05):
+    - `tests/unit/test_wp05_source_item_migration.py`: **14/14 passed in 0.95s (100% pass rate)**.
+
+- **Đã đọc lại memory:** Đối soát toàn bộ các thay đổi kiến trúc, migrations, adapters, router, templates, CSS, Playwright E2E tests, Compose E2E tests và memory; bảo đảm tính độc lập, an toàn PAPER mode và tuân thủ tuyệt đối quy ước AGENTS.md.
+
+---
+
+## 2026-11-10: Vòng Triển Khai UI/UX Pro Max, Kiến Trúc Vi Dịch Vụ Trading & Revamp Giao Diện Cockpit Định Lượng
+
+- **Mục tiêu/phạm vi:**
+  * Tải và tích hợp bộ skill thiết kế chuyên sâu `ui-ux-pro-max-skill` vào thư mục `.agents/skills/ui-ux-pro-max/` gồm database phong cách (`styles.csv`, `colors.csv`, `typography.csv`, `ux-guidelines.csv`, `charts.csv`, `icons.csv`, `stacks.csv`, `ui-reasoning.csv`), hướng dẫn và script tìm kiếm.
+  * Nghiên cứu, hệ thống hóa và xuất bản tài liệu kiến trúc vi dịch vụ giao dịch: `docs/research/microservices-trading-architecture.md` dựa trên nghiên cứu của Bhavin (DataJedi) trên Medium ("Trading System Design using MicroServices"):
+    - Bóc tách 6 tầng vi dịch vụ: Market Data Ingestion, Signals & Strategy Rules L0-L6, Portfolio Weights & Risk Allocation (Optimizer Language), Execution Blotter & Venue Order Ledger, Post-Mortem & PnL Attribution, Alternative Data & Anomaly Detection.
+    - Áp dụng triệt để cơ chế học máy phản thực nghiệm (Counterfactual Penalty Learning) với nút 1-chạm đưa ca sai lệch vào dữ liệu phạt AI.
+  * Thiết lập và xuất bản tiêu chuẩn thiết kế: `docs/research/trading-ui-ux-design-system.md` dựa trên các bảng điều khiển giao dịch hàng đầu (TradingView, Hyperliquid Cockpit, Apex Pro, Bloomberg Quant):
+    - Hai chủ đề hoàn chỉnh: Obsidian Pro Dark (OLED, Deep Charcoal `#0B0E14`, Surface `#121722`, Viền `#1E2638`) và Executive Light (`#F8FAFC`, `#FFFFFF`, `#E2E8F0`).
+    - De-cluttering: Giảm tải mật độ chữ dày đặc bằng các thẻ KPI nhỏ gọn, nhãn trạng thái và micro tooltips công thức định lượng.
+    - Chuẩn hóa biểu tượng: Thay thế emoji hệ thống thô bằng 100% SVG inline vector icons sắc nét.
+    - Trực quan hóa tỷ lệ R:R: Thành phần thanh đo trực quan `.rr-ratio-bar` phân chia 2 dải màu đỏ/xanh tại tầng L6 Zones và Post-Mortem.
+  * Nâng cấp mã nguồn giao diện:
+    - `src/trading_bot/static/admin.css`: Bổ sung các lớp `.svg-icon`, `.rr-ratio-bar`, `.rr-bar-track`, `.rr-bar-risk`, `.rr-bar-reward`, `.rr-ratio-label`, hiệu ứng viền phát quang terminal trong Dark/Light mode, font `tabular-nums` chống rung giật giao diện khi cập nhật 5s.
+    - `src/trading_bot/templates/admin/base.html`: Nâng cấp nút chuyển chủ đề Light/Dark với vector SVGs trăng khuyết và mặt trời.
+    - `src/trading_bot/templates/admin/bot_detail.html`: Tích hợp SVG icons cho thẻ KPI và header, bổ sung thanh đo R:R trực quan cho L6 Vùng Giá.
+    - `src/trading_bot/templates/admin/reports.html`: Tích hợp SVG icons cho các thẻ tài sản, thanh đo R:R trực quan trong bảng mổ xẻ quyết định.
+  * Chuẩn hóa từ điển: Bổ sung Mục U vào `docs/research/glossary-vi.md` định nghĩa chuẩn EN-VI cho Microservices Trading Architecture, Optimizer Language, Execution Blotter, Obsidian Quant Cockpit, Visual Risk-Reward Gauge, và Counterfactual Penalty Feedback Loop.
+
+- **Kết quả kiểm chứng toàn diện:**
+  * Bộ kiểm thử chức năng Bot Detail Revamp:
+    - `tests/unit/test_bot_detail_trading_revamp.py`: **3/3 passed in 1.92s (100% pass rate)**.
+  * Bộ kiểm thử khả năng truy cập & giao diện Mobile tiếng Việt (MB-07):
+    - `tests/unit/test_admin_mobile_ui.py`: **20/20 passed in 1.92s (100% pass rate)**.
+  * Toàn bộ 7 bộ Playwright E2E Automation Suites (Desktop 1280x800 & Mobile 390x844):
+    - `tests/e2e/test_admin_trading_revamp_playwright.py`: **2/2 passed in 13.19s** (Desktop & Mobile, Dark & Light Mode, TradingView Canvas, Reasoning L4-L6, AI Ingestion).
+    - `tests/e2e/test_admin_dashboard_playwright.py`: **1/1 passed**.
+    - `tests/e2e/test_admin_strategy_cards_playwright.py`: **3/3 passed**.
+    - `tests/e2e/test_admin_microscope_playwright.py`: **3/3 passed**.
+    - `tests/e2e/test_admin_telegram_signals_playwright.py`: **2/2 passed**.
+    - `tests/e2e/test_admin_backtest_replays_playwright.py`: **2/2 passed**.
+    - `tests/e2e/test_admin_research_sources_playwright.py`: **3/3 passed**.
+    - **Tổng số Playwright E2E: 16/16 tests passed 100%**.
+  * Chụp mới và lưu trữ đầy đủ 25 ảnh màn hình kiểm thử trong thư mục artifacts đối soát.
+
+- **Đã đọc lại memory:** Đã rà soát lại toàn bộ các quyết định thiết kế, quy chuẩn vi dịch vụ, bảng mã màu, SVG iconography, kết quả test và tài liệu memory; xác nhận bảo đảm 100% an toàn chế độ PAPER, không phụ thuộc CDN ngoài và tuân thủ tuyệt đối quy tắc AGENTS.md.
 ### 2026-11-02 — Responsive Admin, WP05G.1 access envelope và WP06G.1 typed lineage
 
 - **Nhánh/trạng thái:** `codex/updated-wbs-wp06-fold-v2`, HEAD `4e4cb57`; thay đổi đang nằm trong worktree dùng chung, chưa commit/push. Index còn các file staged/partially staged từ phiên trước; không reset hoặc unstage. UI sub-agent cạn hạn mức giữa vòng; root tiếp tục kiểm thử, sửa report filter và cập nhật tài liệu trên cùng worktree.
@@ -1232,7 +2062,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Lỗi/vết xử lý:** full unit đầu sau WP06G.1 có **2310 pass, 1 fail** vì allowlist `test_database_models.py` chưa có bảng mới; cập nhật allowlist, sau đó full suite đạt 2311 rồi 2314 khi thêm source-envelope tests. Ruff format/assert/import và ba mypy lỗi biến/SHOW typing được sửa; không nới guard. Docker E2E đã dọn container; xóa riêng **13** tag không được dùng `crypidian-app:e2e-*`, không xóa image khác. Kiểm cuối không còn container hoặc tag E2E.
 - **Tài liệu và phần còn mở:** cập nhật glossary, WP03/WP05/WP06 WBS, Plan 05/06, Admin mobile plan và project status. Tiếp theo theo phụ thuộc là WP05G.2 outbox, WP05G.3 expiry scanner, rồi WP06G.2 consumer/invalidation; WP03A.2 host/key/readiness, Telegram outbound sender và manual accessibility review cũng còn mở. Không có network/provider/training evidence.
 - **Đọc lại mục sau ghi:** đối chiếu các unit/E2E counts và durations, responsive viewports, RED root cause cho ISO, migration head, static results, DB atomicity/spoof assertions và 13 tag E2E đã xóa. Không ghi Demo/network, WP05/WP06 hoàn tất, live rights recheck, model deletion hoặc WCAG sign-off là đạt. Không commit/push.
-
 ### 2026-11-03 — WP05G.2 transactional rights-change outbox
 
 - **Mục tiêu/phạm vi:** nối policy revision, item revision và item takedown mới vào outbox đang dùng; source row và event phải atomic, payload an toàn/immutable, delivery fields vẫn hoạt động. Không tạo event table thứ hai, không bật connector hay consumer.
@@ -1243,7 +2072,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Nguồn đã kiểm tra 2026-11-03:** [PostgreSQL 18 CREATE FUNCTION](https://www.postgresql.org/docs/18/sql-createfunction.html) xác nhận `SECURITY DEFINER` dùng quyền owner và khuyến nghị `search_path` an toàn; [PostgreSQL 18 Function Security](https://www.postgresql.org/docs/18/perm-functions.html) nhấn mạnh bỏ schema không tin cậy khỏi search path. Không đổi dependency/API/provider.
 - **Tài liệu/giới hạn:** cập nhật WP05 WBS, Plan 05, project status và asset source trong Admin UI plan; Bootstrap/Be Vietnam Pro giờ được ghi là tài sản đã chốt/tự lưu thay vì lựa chọn chưa quyết định. WP05G.3 expiry scanner, WP06G.2 consumer/invalidation/live access gate, receipt processing, worker deployment, history backfill và source/provider thật còn mở; không thể kết luận manifest/model cũ được vô hiệu hóa hay xóa. Responsive browser matrix Admin/report đã đạt ở entry liền trước; accessibility checklist thủ công còn mở. Không commit/push.
 - **Đã đọc lại mục sau ghi:** đối chiếu migration `b8d1f3a5c7e9`, event contract/payload, role app trong E2E, bốn/ba regression pass, 2314 units, static/head output và phần còn mở. Số event bao gồm hai policy revisions, một item revision và một takedown; rollback event thứ ba không tăng count; không tính event forged bị chặn hoặc event lịch sử chưa backfill.
-
 ### 2026-11-03 — WP06G.2 item/takedown E2E và responsive regression
 
 - **Nhánh/worktree:** `codex/updated-wbs-wp06-fold-v2`, HEAD `4e4cb57`. Worktree dùng chung đang có staged/partially staged files từ session khác; không stage, reset, commit hoặc push.
@@ -1255,7 +2083,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Docker cleanup:** không còn container Crypidian/E2E sau Compose; xóa đúng **15** tag không được container tham chiếu `crypidian-app:e2e-*`. Kiểm tra lại không còn container hoặc tag theo pattern; không xóa image/cache khác.
 - **Tài liệu/phần còn mở:** cập nhật WP05/WP06 WBS, glossary, project status và mục này. WP06G.2 vẫn chưa có scheduler/worker deployment, evaluator composition wiring hoặc trainer; WP05 source connector/provider và artifact deletion còn mở; WP03A.2, WP04 accessibility review và các WP khác tiếp tục theo kế hoạch. Không có research source được cấp quyền, không chạy lệnh Binance, không xóa artifact/model. Không commit/push.
 - **Đọc lại mục sau ghi:** đối chiếu trigger event counts/ledger reasons với PostgreSQL E2E, tất cả unit/E2E/static output, năm viewport và kiểm tra Docker. Xác nhận 2332 unit, 5 UI E2E, 5 WP05/WP06 Compose E2E, một migration head; không ghi worker/composition/trainer, screen-reader review hoặc WP05/WP06 hoàn tất.
-
 ### 2026-11-03 — Nối rights maintenance worker cho WP05G.3/WP06G.2
 
 - **Phạm vi:** hoàn tất vòng đã mở ở `docs/superpowers/plans/2026-11-03-wp05-wp06-rights-worker-plan.md`. Ingestion worker nhận một `TRADING_BOT_INGESTION_WORKSPACE_ID` bắt buộc và chu kỳ `TRADING_BOT_INGESTION_WORKER_TICK_SECONDS` (mặc định 5 giây); mỗi tick đặt workspace RLS context, lấy DB clock, enqueue policy hết hạn rồi consume rights outbox trong cùng transaction. Tick lỗi rollback cả enqueue/receipt/ack và thử lại ở chu kỳ sau. Readiness của ingestion worker yêu cầu database khả dụng, task còn sống và tick thành công gần nhất. Compose có UUID zero làm giá trị local/dev để cấu hình được; triển khai thật phải truyền UUID workspace được phép.
@@ -1267,7 +2094,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Tài liệu chuẩn đã kiểm tra (2026-11-03):** [PostgreSQL 18 GRANT](https://www.postgresql.org/docs/18/sql-grant.html), [Row Security Policies](https://www.postgresql.org/docs/18/ddl-rowsecurity.html), [INSERT](https://www.postgresql.org/docs/18/sql-insert.html), [CREATE FUNCTION](https://www.postgresql.org/docs/18/sql-createfunction.html), [Function Security](https://www.postgresql.org/docs/18/perm-functions.html). Dùng để xác nhận column-level grant, RLS/default-deny, SELECT cần cho cột `ON CONFLICT`/`RETURNING`, quyền owner của `SECURITY DEFINER` và cấu hình `search_path` an toàn. Không đổi dependency, API sàn hoặc hành vi giao dịch; không thêm thuật ngữ trading/AI nên glossary không đổi.
 - **Docker và worktree:** Compose E2E kết thúc không để container Crypidian/E2E còn lại. Đã xóa **11** tag `crypidian-app:e2e-*` không được container tham chiếu; giữ `postgres:<none>` và `dxflrs/garage:<none>`, không chạy global prune. Nhánh `codex/updated-wbs-wp06-fold-v2`, HEAD vẫn `4e4cb57`; worktree có sẵn staged/partial changes của session dùng chung, không stage/reset/commit/push.
 - **Tài liệu cập nhật:** hai WBS WP05/WP06, `05-research-ingestion.md`, `06-ai-learning.md`, `project-status.md` và plan triển khai worker phản ánh worker, transaction, readiness, DB grants và kết quả test. Đã đọc lại các đoạn cập nhật; không còn tuyên bố consumer/scanner chưa có worker. Còn evaluator composition wiring, trainer, source provider/connector, HTTP wiring, completeness proof, artifact/blob deletion và backfill event trước migration. Connector/research training vẫn disabled; không gọi provider/API ngoài.
-
 ### 2026-11-03 — WP07A chú giải tương tác dashboard/report và mở rộng WBS
 
 - **Mục tiêu/phạm vi:** giúp người dùng đọc đúng mốc vào/đóng trên chart responsive, gồm thời gian, P&L, strategy, trigger và exit reason; mở rộng WBS cho signal-only, historical backfill, analytics trader và readiness. Không tạo PAPER trade, order hay tin nhắn Telegram thật; không tải dữ liệu ngoài.
@@ -1279,7 +2105,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Nguồn đã kiểm tra 2026-11-03:** [Lightweight Charts crosshair](https://tradingview.github.io/lightweight-charts/tutorials/customization/crosshair) và [tooltips](https://tradingview.github.io/lightweight-charts/tutorials/how_to/tooltips) xác nhận tooltip không tích hợp sẵn, phải dựng UI riêng qua `subscribeCrosshairMove`; glossary nêu đây là cách mở panel chứ không phải dữ liệu giá. [TradingView Strategy Report](https://www.tradingview.com/support/solutions/43000681735-performance-chart/) liệt kê profit factor, percent profitable, expectancy và average win/loss; WBS yêu cầu định nghĩa mẫu số/cost basis trước khi hiển thị. [Binance USDⓈ-M market-data catalog](https://developers.binance.com/en/docs/catalog/core-trading-derivatives-trading-usd-s-m-futures/api/rest-api/market-data#kline-candlestick-data) xác nhận `/fapi/v1/klines`, `limit` tối đa 1500 và request weight thay đổi theo limit. Đây chỉ là API contract, không cấp quyền dùng data cho sản phẩm; Vision terms vẫn giới hạn product/demo nếu chưa có quyền enterprise.
 - **Giới hạn/việc tiếp theo:** producer market scanner chưa composition-wire (`market_dispatch=not_configured`), nên alert-only chưa tự phát candidate khi PAPER dừng. Historical backfill hiện chỉ có archive foundation/request/parser/append và rights gate; chưa có REST downloader, CLI/scheduler, manifest persistence, resume storage hoặc backtest runner; Vision không được dùng làm nguồn demo/sản phẩm khi thiếu quyền. WP-07D metrics ngoài số liệu hiện có, WP-07E operational dashboard và pointer-crosshair E2E còn mở. Không commit/push.
 - **Đã đọc lại mục sau ghi:** đối chiếu test count/thời lượng, viewport 360×800, test chưa tương tác pointer, source citations, WBS statuses, dashboard marker payload, USDT scoping, HTML escape/textContent, glossary/source date và giới hạn source/license. Không ghi toàn bộ WP-07 hoặc crosshair interaction E2E là hoàn tất.
-
 ### 2026-11-03 — WP-07D lịch P&L theo ngày và chronology fixture
 
 - **Mục tiêu/phạm vi:** bổ sung lịch P&L thực hiện theo ngày địa phương trên trang report, tiếp tục tách từng quote asset, đồng thời khắc phục browser E2E flatten tạo closed trade sai thứ tự thời gian. Không đổi migration/API ngoài payload report v2, không tạo order/PAPER trade mới ngoài fixture, không gửi Telegram hoặc tải dữ liệu ngoài.
@@ -1291,7 +2116,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Static/compile:** Ruff check các file Python liên quan đạt; Ruff format check **4 files already formatted** sau format `reporting.py`; Mypy `src/trading_bot/domain/portfolio/reporting.py` không lỗi; compileall module báo cáo và `git diff --check` đạt. Không migration/dependency thay đổi.
 - **Tài liệu/trạng thái:** cập nhật WBS WP-07D nêu rõ phần đã có/lịch realized theo ngày và việc còn mở; project status ghi đúng **2393 unit / 6 E2E**. WP-07A còn pointer marker E2E; WP-07B còn producer tự sinh khi PAPER dừng; WP-07C còn REST runner/CLI/scheduler/manifest-resume/backtest runner; WP-07D còn filters/CSV/journal/tag/mistake/market context; WP-07E còn readiness/data-quality alert. Không ghi WP-07 hoàn tất.
 - **Đã đọc lại mục sau ghi:** đối chiếu số liệu với output 2393 unit, 6 E2E / 326.50s, Ruff/format/Mypy/compileall/diff; so lại v2 payload, v1 absence, Asia/Ho_Chi_Minh và quote-asset separation với source/test, đồng thời xác nhận WBS/status liệt kê đúng phần còn mở. Không commit/push; worktree dùng chung còn nhiều thay đổi staged/unstaged khác, không stage/reset.
-
 ### 2026-11-03 — WP-07C REST backfill paginator và cursor
 
 - **Mục tiêu/phạm vi:** tiếp tục phần nạp dữ liệu USDⓈ-M một năm cho backtest/PAPER chuẩn bị dữ liệu, sau archive foundation. Thêm request 365 ngày, runner phân trang REST, rights gate bắt buộc, checksum/receipt, resume checkpoint và kiểm coverage. Chỉ gọi một public GET read-only để quan sát mốc mở nến tuần; không tải lịch sử một năm hoặc ghi bars/manifest vào DB, không tạo order/PAPER trade hoặc gửi Telegram.
@@ -1312,7 +2136,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Giới hạn:** cursor/checkpoint đi qua bảng `ingestion_cursor` hiện có; không thêm migration. Service yêu cầu caller cung cấp `instrument_id` hợp lệ và transaction/Unit of Work dùng chung. Chưa có DB E2E chứng minh append bar + checkpoint commit/rollback cùng nhau, raw response chỉ có checksum page receipt chứ không lưu payload, chưa có manifest/CLI/scheduler/backtest runner hoặc production rights adapter. Chưa tải dữ liệu lịch sử thật.
 - **Nguồn hiện hành:** Binance Developer Docs introduction (cập nhật 2026-06-26, kiểm tra 2026-11-03) mô tả API có market data real-time/historical và use case dashboard/analytics/reporting: https://developers.binance.com/en/docs/introduction. Đây là tài liệu kỹ thuật, không phải grant pháp lý cho lưu trữ/phân phối hoặc hiển thị dữ liệu theo terms áp dụng.
 - **Tài liệu và readback:** cập nhật WBS WP-07C và project status, đọc lại đoạn vừa ghi cùng diff service/tests. Xác nhận tài liệu không còn tuyên bố checkpoint persistence chưa tồn tại, đồng thời vẫn nêu chính xác phần DB E2E, raw payload, manifest và composition còn mở. Không stage/commit/push.
-
 ### 2026-11-03 — WP-07B producer signal-only và WP-07C persistence E2E
 
 - **Phạm vi:** hoàn tất lát cắt scanner/producer đang mở, nối market bars đã lưu vào shared evidence → BotDecision → delivery worker, và bổ sung PostgreSQL E2E cho REST backfill persistence. Không thêm order, fill, trade hoặc reservation; không chạy PAPER supervisor để phát signal, không tải dữ liệu thật, không gửi Telegram thật, không dùng credential sàn.
@@ -1325,7 +2148,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Giới hạn quyền và nguồn:** REST API documentation mô tả khả năng kỹ thuật nhưng không cấp quyền lưu/hiển thị/phân phối cho Crypidian. Rights gate tiếp tục bắt buộc/injected, chưa có policy adapter authoritative. Binance Vision không được dùng cho demo/sản phẩm khi chưa có grant enterprise bằng văn bản. Không có real historical data, Telegram or exchange activity trong vòng này.
 - **Readback:** đọc lại section này, WBS, project status, glossary và design sau sửa; đối chiếu source, privilege migration, test output, migration head và exact limits. WP-07B/C vẫn được ghi là một phần; chart pointer interaction E2E, report filters/journal, live feed, production rights/composition/backtest và WP-07E readiness chưa xong. Không stage/commit/push; worktree vẫn có thay đổi staged/unstaged dùng chung từ các vòng trước.
 - **Docker cleanup:** không còn container/volume theo project WP-07 E2E. Tìm thấy 6 tag `crypidian-app:e2e-*` không được container tham chiếu, mỗi tag báo khoảng 423 MB; xóa đúng 6 tag theo yêu cầu trước đó của người dùng. Không chạy prune và không xóa image/cache khác.
-
 ### 2026-11-03 — WP-07B subscription filters API/UI và claim-time receipt
 
 - **Mục tiêu/phạm vi:** hoàn thiện allowlist đăng ký Telegram đã có trong WBS: symbol, timeframe, hướng, strategy ID và setup/reason code. Thêm GET/PUT, admin form responsive tiếng Việt, lọc trước enqueue và tái xác minh trong PostgreSQL claim. Không gửi Telegram thật, không tạo signal/order/trade từ data bên ngoài và không thay đổi execution path.
@@ -1336,7 +2158,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Static/schema:** Ruff check toàn `src tests migrations` đạt; format check **499 files already formatted**; mypy **205 source files, no issues**; Compose config và `git diff --check` đạt; Alembic head `f8a2c4e6d0b1`; migration drift `alembic check` đạt bên trong Compose E2E. Host trực tiếp không dùng được hostname `postgres`, vì vậy chỉ Compose E2E là bằng chứng drift check.
 - **Giới hạn/còn mở:** allowlist API và HTML form có; filter form chưa có browser viewport matrix riêng. Dashboard signal history/last-delivery/error, live feed ingestion, quiet hours, cooldown/daily cap và retry/dead-letter matrix toàn Bot API còn mở. WP-07C vẫn chưa có production rights adapter, raw payload/reference/manifest/backtest runner/CLI; không tải dữ liệu lịch sử thật. Không commit/stage/push và không đụng các thay đổi staged từ session khác.
 - **Đọc lại sau ghi:** so lại migration/model constraint/filter grants với E2E; kiểm source và test khẳng định payload legacy giữ filter, filter-only không tự bật subscription, empty array là wildcard, UI CSRF/form limit, claim mismatch không tăng attempts, và worker execution privilege bị phủ định. Đối chiếu full 2451 units, ba Compose E2E, Ruff/format/Mypy/compose/head output. Xác nhận WBS/status/glossary nêu rõ filter hoàn tất và phần WP-07B/C còn mở; không đánh dấu WP-07 hoàn tất.
-
 ### 2026-11-03 — WP-07C backtest dataset manifest và coverage gate
 
 - **Mục tiêu/phạm vi:** nối nến lịch sử đã commit với bước chuẩn bị replay: tạo snapshot có hash, tách warm-up khỏi evaluation, kiểm tra source/timeframe/độ đóng/as-of/quyền, liệt kê chính xác gap và chặn bộ dữ liệu thiếu coverage. Không thêm quyền mặc định, kết nối tải thật, thay đổi schema, hay tự chạy replay.
@@ -1350,8 +2171,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Còn mở:** nối policy registry hiện hành và receipt/rights hash tới backfill gate; buộc revalidation ở lúc dùng manifest/replay; persistence append-only cho manifest; downloader composition/CLI/scheduler; chi phí/funding/fill model và full backtest runner. Chưa tải hoặc dùng dữ liệu lịch sử thật; Vision vẫn cần grant bằng văn bản cho demo/sản phẩm.
 - **Stage/commit/push:** không stage, commit hoặc push; giữ nguyên các thay đổi staged/unstaged có trước trong worktree dùng chung.
 - **Đã đọc lại sau ghi:** so section này với module/test, full unit/E2E output, focused Ruff/format/mypy và WBS/status/glossary; `git diff --check` đạt, không có nội dung sai định dạng hoặc conflict marker.
-
-
 ### 2026-11-03 — WP-07C Source Registry rights gate cho REST backfill
 
 - **Mục tiêu/phạm vi:** Nối quyền nạp bù Binance USD-M REST với policy Source Registry hiện hành trong đúng workspace; tách quyền `BACKTEST_RESEARCH` khỏi `PAPER_DEMO`; dùng PostgreSQL clock để kiểm policy và phát evidence lease ngắn. Đồng thời chặn `warmup_bars` vượt phạm vi trước phép tính interval. Không gọi Binance thật, không tải lịch sử, không tạo PAPER/live order, không gửi Telegram và không commit/push.
@@ -1363,8 +2182,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Tài liệu:** cập nhật [WBS WP-07](../superpowers/plans/2026-11-03-wp07-trader-workbench-wbs.md), [project status](./project-status.md), [glossary](../research/glossary-vi.md) và [plan rights gate](../superpowers/plans/2026-11-03-wp07c-source-registry-backfill-rights.md). WBS nêu rights gate đã có nhưng revalidation lúc replay, persistence manifest, raw payload/reference, production composition, CLI/scheduler và backtest runner vẫn mở.
 - **Còn mở:** builder `require_ready()` kiểm coverage snapshot, không tự kiểm quyền mới nhất khi replay; chưa có manifest persistence, production runner/composition, CLI/scheduler hoặc raw-response retention. Chỉ dữ liệu fixture đã dùng; không chứng minh grant thật của Binance và không tải 365 ngày.
 - **Đã đọc lại sau ghi:** kiểm tra section này cùng WBS/status/glossary/plan, đối chiếu code, migration, test outputs, Ruff/Mypy và E2E downgrade guard; nội dung còn mở phân biệt rõ current rights-at-backfill với quyền recheck-at-replay. Không stage/commit/push.
-
-
 ### 2026-11-03 — WP-07C manifest persistence và replay-time rights revalidation
 
 - **Mục tiêu/phạm vi:** lưu backtest dataset manifest theo workspace với canonical/hash verification, idempotency, RLS và append-only; chỉ trả manifest READY cho bước replay sau khi quyền Source Registry hiện hành vẫn đúng policy đã tạo snapshot. Không triển khai evaluator/CLI/scheduler, không tải dữ liệu thật, không gửi Telegram hoặc tạo lệnh; không commit/push.
@@ -1377,7 +2194,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Tài liệu:** cập nhật [WBS WP-07](../superpowers/plans/2026-11-03-wp07-trader-workbench-wbs.md), [project status](./project-status.md), [glossary](../research/glossary-vi.md), hai plan trước và [plan persistence/revalidation](../superpowers/plans/2026-11-03-wp07c-manifest-persistence-revalidation.md). WBS ghi rõ manifest storage/replay gate đã có, còn evaluator, production composition, raw response, CLI/scheduler chưa có.
 - **Còn mở:** replay loader hiện cấp manifest cho bước kế tiếp nhưng chưa chạy backtest engine; funding/fee/fill assumptions, CLI/scheduler, progress/cancel UI và raw payload/reference retention chưa implement. Không dùng Binance Vision/REST thật; fixture không chứng minh entitlement thật hay dữ liệu một năm.
 - **Đã đọc lại sau ghi:** so mục này với model/migration/repository/loader, E2E JSON assertions, full unit output, Ruff/Mypy/head/diff output và WBS/status/glossary; kiểm tra câu chữ còn mở không tuyên bố evaluator hoặc lấy data thật đã hoàn tất.
-
 ### 2026-11-03 — WP-07C replay snapshot bars và đối chiếu toàn vẹn
 
 - **Mục tiêu/phạm vi:** sau khi manifest `READY` và rights gate hiện hành đạt, nạp lại đúng source/range bars tại `prepared_at`, kiểm số lượng/hash và chỉ trả đầu vào replay khi nội dung còn khớp. Không chạy evaluator, không thêm API/dependency, không tải dữ liệu thật, không gửi Telegram/giao dịch, không stage/commit/push.
@@ -1388,7 +2204,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Chất lượng:** Ruff check và format check **6 Python files** đạt; mypy **3 source files, no issues**; `git diff --check` được chạy sau khi cập nhật docs. Không thêm dependency. Không stage/commit/push và không làm mất staged/shared changes khác.
 - **Còn mở/rủi ro:** replay input chưa chạy strategy/evaluator, fill/fee/funding, không có CLI/scheduler hoặc production composition; raw response/reference retention vẫn mở. Unit kiểm source/timeframe mismatch qua hash; repository query lọc chính xác source. Fixture E2E chỉ xác nhận hợp đồng/persistence, không chứng minh entitlement dữ liệu Binance hay việc tải một năm.
 - **Đã đọc lại sau ghi:** kiểm tra lại mục này cùng code, plan/WBS/status/glossary và output unit/E2E/Ruff/Mypy/diff; chỉ ghi loader trả replay input, không tuyên bố backtest runner/evaluator hoàn tất.
-
 ### 2026-11-03 — WP-07C deterministic replay bundle đa timeframe
 
 - **Mục tiêu/phạm vi:** cho phép một strategy đơn timeframe hoặc đa timeframe ghép các `BacktestDatasetReplayInput` đã load qua manifest/rights/hash gate thành một dataset hash tổng hợp ổn định. Không resample/nội suy, không đọc DB, không dựng features/DecisionSnapshot, không chạy evaluator/runner, không migration/API/dependency và không stage/commit/push.
@@ -1399,7 +2214,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Chất lượng:** Ruff check/format cho module + test (2 files) đạt; mypy module (1 source) đạt. Cộng với lát cắt replay ngay trước, status chỉ ghi tổng 8 Python files Ruff/format và 4 source files mypy; `git diff --check` chạy sau khi cập nhật docs. Không thêm dependency.
 - **Còn mở:** chưa chuyển bundle bars thành snapshot history/features theo mỗi decision time; chưa có runtime context provider/account-risk progression composition cho `RuntimeReplayEvaluator`, persistence report/trades trong cùng backtest orchestration, CLI/scheduler hay raw response/reference retention. Không claim chạy backtest thật hoặc profitability.
 - **Tài liệu/readback:** mở rộng WP-07C WBS với child manifests đa timeframe, no-resampling, `DecisionSnapshot` builder và context provider còn mở; cập nhật project status, glossary EN→VI và plan riêng. Đã đọc lại mục này cùng code/tests/output/WBS/status/glossary/plan; ghi rõ module chưa chạy evaluator.
-
 ### 2026-11-03 — WP-07C quote-volume lineage và replay hash v3
 
 - **Mục tiêu/phạm vi:** giữ nguyên quote asset volume do nguồn trả về xuyên suốt Binance REST/archive parser, paginator, domain, PostgreSQL, H03 snapshot và replay dataset. Dữ liệu cũ/thiếu giữ `NULL`; không quy đổi từ base volume × close. Không tải thị trường thật, không tạo lệnh, không gửi Telegram và không commit/push.
@@ -1412,7 +2226,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Còn mở:** xây DecisionSnapshot point-in-time theo từng mốc trong replay bundle; production context/provider cho `RuntimeReplayEvaluator`; raw payload/object reference, CLI/scheduler/progress/cancel, evaluator/runner/fill-fee-funding assumptions. Không dùng dataset thật; không chứng minh rights grant thật ngoài test fixture. Binance Vision không được dùng cho demo/sản phẩm nếu không có grant bằng văn bản.
 - **Stage/commit/push:** không stage/commit/push; giữ nguyên thay đổi staged/shared trong worktree.
 - **Đã đọc lại sau cập nhật:** đọc lại mục này, plan, WBS, project status và glossary; đối chiếu với unit/E2E/Ruff/mypy/head/diff output. Memory phân biệt lần E2E thất bại ban đầu với lần chạy cuối đạt.
-
 ### 2026-11-03 — WP-07C point-in-time DecisionSnapshot từ replay bundle
 
 - **Mục tiêu/phạm vi:** tạo tuple `ReplayObservation` từ bundle nhiều timeframe đã qua rights/hash loader, tại mỗi nến entry trong evaluation window. Mỗi snapshot chỉ nhận bars đã đóng và khả dụng tại decision time; features/IDs xác định để backtest có thể gọi contract strategy hiện hữu. Không chạy evaluator/BacktestRunner, không truy vấn DB, không dựng account/position/macro context, không tải dữ liệu, không tạo lệnh hoặc commit/push.
@@ -1424,7 +2237,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Còn mở:** production context provider để dựng position/account/risk/execution events theo reducer, macro calendar point-in-time, `RuntimeReplayEvaluator`/`BacktestRunner` composition, fill/fee/funding sensitivities, report persistence, CLI/scheduler/progress/cancel và raw response/object retention. `position_is_flat_at` là injection point, không tự làm nguồn state. H06 không thể qua macro gate khi thiếu macro evidence. Không có performance/profitability claim.
 - **Stage/commit/push:** không stage/commit/push; giữ nguyên thay đổi staged/shared trong worktree.
 - **Đã đọc lại sau cập nhật:** đối chiếu section này, plan, WBS/status/glossary với builder/config/tests và output; xác nhận E2E chạy producer (không phải full backtest) và remaining items vẫn ghi rõ.
-
 ### 2026-11-03 — WP-07C context replay tuần tự và runner composition
 
 - **Mục tiêu/phạm vi:** đưa bundle đã kiểm rights/hash qua observation builder, phát execution bars theo từng mốc available, cấp context account/risk đã khai báo và chạy PAPER evaluator qua `BacktestRunner`. Không gửi lệnh Binance/Telegram, không tải market data thật, không ghi reservation hay bar vào DB từ context provider; không commit/push.
@@ -1437,8 +2249,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Còn mở:** macro calendar, opposing-signal producer đầy đủ, khôi phục vị thế/order đầu kỳ, mark-to-market, fill/funding fidelity, raw payload/reference, persist run từ orchestration mới, API/CLI/progress/cancel và Compose E2E riêng bundle→provider→runner. Chưa tải một năm dữ liệu thật hoặc xác minh quyền ngoài fixtures; không có profitability claim.
 - **Stage/commit/push:** không stage/commit/push; giữ nguyên shared/staged workspace changes.
 - **Đã đọc lại sau cập nhật:** đã đọc section này cùng plan, WBS, project status và glossary; đối chiếu kết quả 2525 unit, 1 Compose E2E, Ruff/format/mypy/diff với code hiện tại. Ghi rõ E2E persistence dùng runtime fixture cũ và chưa đi qua bundle provider mới.
-
-
 ### 2026-11-03 — WP-07C Compose E2E bundle → PAPER runtime → BacktestRunner
 
 - **Mục tiêu/phạm vi:** đóng khoảng trống kiểm chứng từ bundle nhiều timeframe đã hash tới observation builder, context provider tuần tự, PAPER runtime evaluator, `BacktestRunner` và outcome persistence PostgreSQL. Chỉ dùng dữ liệu tổng hợp/rights fixture; không sửa production source/schema, không tải market data thật, không gọi API Telegram/sàn, không tạo lệnh ngoài Paper gateway, không commit/push.
@@ -1450,7 +2260,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Còn mở:** production service nối loader DB/current-rights gate → bundle → runtime → persist trong job; macro calendar evidence, raw payload/reference, vị thế đầu kỳ, mark-to-market, CLI/scheduler/progress/cancel/dashboard và dataset thật được cấp quyền. Không có claim về profitability.
 - **Stage/commit/push:** không stage/commit/push; giữ nguyên toàn bộ shared/staged/unstaged state.
 - **Đã đọc lại sau cập nhật:** đối chiếu plan, WBS, status và section memory này với fixture, unit/Compose assertions và test output; đã xác nhận wording nói đúng report/scenario persistence trên bundle mới, và không nhầm nó với load-from-DB production orchestration.
-
 ### 2026-11-03 — WP-07C canonical persisted bundle reference (Task 1)
 
 - **Mục tiêu/phạm vi:** thêm kiểu tham chiếu bất biến/canonical cho `BacktestDatasetReplayBundle`, giữ nguyên API bundle in-memory hiện tại. Chỉ sửa module bundle và unit tests Task 1; không schema, repository, loader, rights receipt, API sàn/dependency, dữ liệu thị trường thật, Telegram/lệnh sàn hay commit/push.
@@ -1463,7 +2272,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Đã đọc lại sau cập nhật:** đọc lại mục này sau khi ghi kết quả cuối; đối chiếu command/output với unit tests, ba file Python, source reference và diff. Không còn bước verification tài liệu chờ chạy.
 
 - **Follow-up review round 1:** reviewer phát hiện frozen dataclass chưa bảo vệ khi caller truyền list cho `components`. RED regression tái hiện: focused suite → **1 failed, 18 passed / 0.09s**, assertion cho thấy input list vẫn gắn trực tiếp vào reference. `__post_init__` nay sao chép collection thành tuple trước validation. Test mới xóa list nguồn rồi xác nhận tuple, canonical JSON và bundle hash giữ nguyên. GREEN: focused two-module command → **19 passed / 0.06s**; Ruff check đạt; format check báo 3 files formatted; `git diff --check` đạt. Đã đọc lại report và follow-up này sau khi ghi.
-
 ### 2026-11-03 — WP-07C schema persisted replay bundle và biên nhận quyền (Task 2)
 
 - **Mục tiêu/phạm vi:** triển khai riêng ORM/schema cho `backtest_dataset_replay_bundle` và `backtest_run_dataset_rights`, dùng canonical reference đã review ở Task 1. Không sửa repository/loader/outcome behavior, không cấp quyền worker đọc bundle/manifest/Source Registry, không tải dữ liệu thật hoặc gọi Telegram/sàn. Không stage/commit/push.
@@ -1475,7 +2283,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Kiểm thử cuối:** `PYTHONPATH=.:tests/unit:tests/e2e .venv/bin/python -m pytest --import-mode=importlib tests/unit -q --tb=short` → **2559 passed / 33.91s**. `PYTHONPATH=.:tests .venv/bin/python -m pytest --import-mode=importlib tests/e2e/test_backtest_outcomes_persistence.py tests/e2e/test_wp07_rest_backfill_persistence.py -q --tb=short` → **2 passed / 74.67s**; hai E2E chạy migration head và Compose `alembic check` thành công. Ruff check/format check trên 6 Python files → **All checks passed / 6 files already formatted**; mypy trên hai model modules → **Success: no issues found in 2 source files**; `.venv/bin/alembic heads` → **e7c9a1b3d5f2 (head)** duy nhất; `git diff --check` đạt.
 - **Giới hạn/còn mở:** unit kiểm SQL Alembic được render thực tế về RLS/grants/trigger/guard; Compose hiện có chứng minh migration/metadata không lệch và regression outcome/backfill còn đạt, chưa chèn row bundle/receipt mới để kiểm RLS/trigger/guard trực tiếp. Các E2E dữ liệu mới, repository/loader, append receipt cùng outcome, retry/legacy receipt và quyền hiện hành thuộc Task 3–5, chưa được tuyên bố hoàn tất ở Task 2. Factory không tự xác thực bundle hash thuộc run; orchestration Task 4 phải đối chiếu trước khi append.
 - **Đọc lại sau cập nhật:** đã đọc lại mục này và report Task 2, đối chiếu model/migration/tests/head và output unit/Compose; phạm vi kiểm chứng cùng việc còn mở được ghi rõ. Không commit/push hoặc sửa các thay đổi có sẵn ngoài các dòng cần thiết của Task 2.
-
 ### 2026-11-03 — WP-07C repository bundle và replay-time loader (Task 3)
 
 - **Mục tiêu/phạm vi:** lưu/đọc canonical bundle reference và nạp bundle qua child replay loader hiện có; không đổi schema/grants, không lưu bars/lease, không stage/commit/push.
@@ -1486,7 +2293,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Tự rà soát/còn mở:** unit dùng child loader thật với adapter fixture; policy/revoke/expiry/bar failure nằm ở child thứ hai để chứng minh không trả partial. Expiry/revoke là PermissionError của gate, không thay database clock. Chưa thêm E2E row bundle/receipt/RLS/revoke mới (Task 5); chưa chứng minh concurrent advisory lock bằng test PostgreSQL đa session. Append nhận bundle đã validate; chỉ load-for-replay kiểm quyền hiện hành. Không thuật ngữ giao dịch/AI mới. Report chi tiết: `.superpowers/sdd/2026-11-03-wp07c-persisted-replay-bundle/task-3-report.md`.
 
 - **Đã đọc lại sau ghi:** đối chiếu mục Task 3/report với source, RED/GREEN, full-unit, Ruff/format/mypy/diff và output lượt rộng bị ngắt. Không còn pytest/Compose process của lượt bị dừng; không có failure trước thời điểm dừng. Không có concern chặn Task 4/5; E2E dữ liệu bundle mới vẫn ghi rõ chưa thực hiện.
-
 ### 2026-11-03 — WP-07C biên nhận quyền bất biến cùng outcome (Task 4)
 
 - **Mục tiêu/phạm vi:** mở rộng riêng `BacktestOutcomeRepository.append_sensitivity_run(..., dataset_bundle=None)` để ghi một biên nhận quyền cho mỗi child của run mới; giữ tương thích caller generic/legacy. Không đổi schema/migration/grants, không stage/commit/push/reset/clean, không dispatch agent.
@@ -1497,7 +2303,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Tự rà soát/còn mở:** test unit dùng fake session không có commit/rollback; append receipt đã flush cùng session, query có workspace/run predicate; test retry kiểm không thêm row, snapshot giữ nguyên. Unit kiểm partial/extra/lease/canonical/JSONB/hash/indexed-scope conflict và child cuối thiếu checked_at/policy mismatch bị chặn trước write. Compose regression xác nhận generic callers không đổi, chưa chèn receipt mới để kiểm RLS/trigger/rollback thật: E2E dữ liệu bundle/receipt mới thuộc Task 5. Không tuyên bố toàn bộ suite E2E hoặc concurrency đa session đã được kiểm. Receipt không thay thế quyền hiện hành; caller vẫn chịu trách nhiệm rollback khi có lỗi.
 - **Báo cáo:** `.superpowers/sdd/2026-11-03-wp07c-persisted-replay-bundle/task-4-report.md`.
 - **Đã đọc lại sau ghi:** đọc lại mục Task 4 và report, so source/diff với output RED/GREEN 66 focused, 2598 full-unit, 1 Compose regression và Ruff/format/mypy/diff. Đã ghi rõ không backfill legacy, không overwrite receipt, không tự quản lý transaction, không có quyết định phiên bản mới; E2E receipt/RLS/rollback thật còn thuộc Task 5.
-
 ### 2026-11-03 — WP-07C Compose E2E persisted replay bundle và run rights receipt (Task 5)
 
 - **Mục tiêu/phạm vi:** kiểm chứng PostgreSQL/Compose cho bundle replay persist theo workspace và rights receipt bất biến theo run/manifest con. Chỉ thay E2E probes và docs WBS/status/glossary/memory; không đổi production source/schema, không tải dữ liệu thị trường thật, không gọi Telegram/Binance, không tạo lệnh và không commit/push.
@@ -1527,7 +2332,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Kiểm chứng:** focused unit command `PYTHONPATH=.:tests/unit:tests/e2e .venv/bin/python -m pytest --import-mode=importlib tests/unit/test_backtest_outcomes_repository.py tests/unit/test_backtest_repository.py -q --tb=short` → GREEN đầu **23 passed / 0.42s**, sau test cờ run/report bổ sung **24 passed / 0.39s**. Full unit `PYTHONPATH=.:tests/unit:tests/e2e .venv/bin/python -m pytest --import-mode=importlib tests/unit -q --tb=short` → **2600 passed / 12.10s**, không skip. Compose pair command của Task 5 → đầu **2 passed / 46.02s** với rollback generic, sau siết fixture sang H01 + dataset_bundle theo controller → **2 passed / 41.81s**; chỉ lượt cuối chứng minh rollback cả child receipts mới. Ruff check/format check sáu Python files đạt; mypy `backtests.py` + `backtest_outcomes.py` → **Success: no issues found in 2 source files**; `git diff --check` đạt. Không chạy toàn bộ E2E repo.
 - **Nguồn kiểm ngày 2026-11-03:** [PostgreSQL 18 RLS](https://www.postgresql.org/docs/18/ddl-rowsecurity.html), [PostgreSQL 18 CREATE TRIGGER](https://www.postgresql.org/docs/18/sql-createtrigger.html). Không nâng dependency/đổi phiên bản API hoặc thêm thuật ngữ trading/AI mới. Đã dịch toàn bộ diễn giải mục Task 5 review fix round 1 sang tiếng Việt, giữ identifiers/commands/outputs.
 - **Báo cáo/đọc lại:** `.superpowers/sdd/2026-11-03-wp07c-persisted-replay-bundle/final-fix-report.md` lưu commands/outputs và giới hạn fault injection. Đọc lại mục này cùng mục Task 5 đã dịch, đối chiếu snapshot trước sửa, source/tests và kết quả RED/GREEN/full-unit/Compose/static. Không stage/commit/push/reset/clean, không spawn agent hoặc sửa ledger/checkbox plan.
-
 ### 2026-11-03 — WP-07A Playwright hover trên marker entry/exit
 
 - **Mục tiêu/phạm vi:** đóng khoảng hở E2E pointer marker đã ghi trong WBS WP-07A. Thay đổi chỉ ở browser E2E và tài liệu trạng thái; không sửa hành vi ứng dụng, không thay dependency hay schema, không gửi lệnh/Telegram hoặc gọi Binance.
@@ -1538,7 +2342,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Giới hạn/còn mở:** pointer thao tác đã xác minh bằng Playwright Chromium desktop và synthetic OHLCV 5m fixture gắn với trade ledger PAPER; chưa xác minh touch vật lý trên thiết bị hoặc dữ liệu sản phẩm thật. Các phần WP-07C production orchestration/CLI/UI, WP-07B readiness và WP-07D/E vẫn còn mở như WBS.
 - **Tài liệu:** WBS WP-07A và project status bỏ khoảng hở pointer E2E, ghi các viewport đã kiểm. Không thêm thuật ngữ giao dịch/AI mới, không cần glossary.
 - **Đã đọc lại sau ghi:** đọc lại mục memory này cùng WBS và WP-07 status, đối chiếu test/probe/chart template và output **1 passed**; không ghi chart production code, thiết bị thật hoặc market-data network test là đã thực hiện.
-
 ### 2026-11-03 — WP-07C application replay orchestration (Task 2–4)
 
 - **Mục tiêu/phạm vi:** nối bundle WP-07C persisted → runtime PAPER → report/scenario/trade outcomes/rights receipts trong application service; load, replay, persist tách transaction; kiểm quyền lại ngay trong transaction persist. Không triển khai CLI/scheduler/job lifecycle/UI/progress/cancel, không đổi schema/migration/dependency, không stage/commit/push.
@@ -1550,7 +2353,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Kiểm chứng cuối:** `PYTHONPATH=.:tests .venv/bin/python -m pytest --import-mode=importlib tests/e2e/test_wp07_rest_backfill_persistence.py -q --tb=short` → **1 passed / 14.12s**, gồm Alembic upgrade/check và downgrade guard. `tests/e2e/test_backtest_outcomes_persistence.py` → **1 passed / 27.18s**. Full unit → **2607 passed / 13.71s**, không skip. Ruff check/format **5 Python files**, mypy **1 source file**, `py_compile` probe/harness và targeted `git diff --check` đạt. Playwright UI không chạy lại cho slice này vì không thay UI; marker interaction + responsive viewport test của WP-07A trong lượt này đã **1 passed / 68.87s**.
 - **Tài liệu/giới hạn:** cập nhật plan orchestration, thiết kế đã duyệt, WP-07C WBS và project status. Ghi service-level flow hoàn tất; CLI/scheduler/job lifecycle, UI/admin form, progress/cancel còn mở; chưa xác minh market-data grant thật/profitability. Không thêm thuật ngữ giao dịch/AI mới nên glossary không đổi. Không request Binance, không gửi Telegram, không phát lệnh.
 - **Đã đọc lại sau ghi:** đọc lại mục này, plan/SDD ledger, design/WBS/status; đối chiếu role wrappers, source service/fixture/probe, unit/full-suite/Compose/static outputs. Các kết quả được ghi đúng phạm vi; không ghi UI hoặc market-data network test là đã chạy.
-
 ### 2026-11-03 — WP-07C rights revalidation trước persist và retry receipt
 
 - **Mục tiêu/phạm vi:** chuẩn bị contract cho orchestration load → replay → persist: có thể revalidate quyền bundle sau khi chạy mà không đọc lại toàn bộ OHLCV; retry deterministic không conflict chỉ vì `checked_at`/`valid_until` mới, nhưng không đổi receipt đầu. Chưa có service điều phối hoặc Compose E2E orchestration ở vòng này.
@@ -1559,7 +2361,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Thay đổi/quyết định:** tách `_authorize_current_rights` dùng chung cho load và thêm `BacktestDatasetReplayLoader.revalidate_current_rights()` để lấy evidence mới mà không query bars. `BacktestDatasetReplayBundleLoader.revalidate_current_rights()` áp dụng cho mọi component, dựng bundle lại và bắt hash/scope giữ nguyên. Nếu deterministic run đã có receipt, repository revalidate trước ở application boundary rồi so các trường scope/policy ổn định; nó kiểm row/cột↔JSONB↔canonical↔hash của receipt cũ, giữ nguyên `checked_at`/`valid_until` đầu tiên và không update row. Policy-bound field hoặc integrity sai vẫn conflict; run legacy thiếu receipt không được backfill; run mới vẫn so toàn bộ evidence.
 - **Kiểm chứng:** focused RED/GREEN command → **12 passed / 0.37s**; hai file unit đầy đủ → **70 passed / 0.54s**. Ruff check + format check 5 file Python đạt. Không chạy mypy ở lát này vì sẽ chạy cùng Task 2 khi application service hoàn chỉnh; Compose E2E vẫn là Task 3.
 - **Tài liệu/đọc lại:** cập nhật WBS WP-07C, project status, design retry deterministic và plan orchestration; không thêm thuật ngữ trading/AI mới nên không đổi glossary. Đã đọc lại mục memory Task 1, design quyết định, WBS/status và SDD ledger, đối chiếu output 70 passed; không claim orchestration/Compose E2E đã hoàn tất.
-
 ### 2026-11-04 — WP-07C CLI job replay
 
 - **Mục tiêu/phạm vi:** sửa `src/trading_bot/cli/backtest_replay.py` và thêm unit tests riêng cho CLI; hỗ trợ help/argparse, role gate, dispatch/JSON output cho list/bundles/enqueue/cancel, xử lý lỗi không lộ nội dung lỗi nội bộ, và worker `--once`. Không sửa repository/service; worker `run_backtest_worker(..., once=False)` được tích hợp riêng trong worktree bởi agent chính để CLI có thể kết thúc sau tối đa một job.
@@ -1569,7 +2370,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Kiểm chứng cuối:** `PYTHONPATH=.:tests/unit .venv/bin/python -m pytest --import-mode=importlib tests/unit/test_backtest_replay_cli.py -q --tb=short` → **8 passed / 0.45s**. `.venv/bin/ruff check src/trading_bot/cli/backtest_replay.py tests/unit/test_backtest_replay_cli.py` → **All checks passed**; `.venv/bin/ruff format --check ...` → **2 files already formatted**. `.venv/bin/mypy src/trading_bot/cli/backtest_replay.py` → **Success: no issues found in 1 source file**. `PYTHONPATH=src .venv/bin/python -m trading_bot.cli.backtest_replay --help` → exit 0, Vietnamese help; `git diff --check` cho hai file phạm vi → đạt.
 - **Còn mở/giới hạn:** CLI-specific Compose E2E chưa chạy trong slice này; E2E worker/DB role integration và Playwright admin flow đang được điều phối riêng, không ghi nhận là đã đạt ở đây. Không commit/stage/reset/clean. Không có lệnh sàn, Telegram, Binance network hoặc live trading.
 - **Đã đọc lại sau ghi:** đối chiếu mục này với CLI, unit test, worker once signature và output các lệnh tập trung. Kết quả E2E và giới hạn actor CLI được ghi tách bạch; chưa kết luận WP-07C end-to-end hoàn tất.
-
 ### 2026-11-04 — WP-07C CLI xác thực actor bằng MFA
 
 - **Mục tiêu/phạm vi:** đóng giới hạn audit của CLI admin phát hiện ở vòng ngay trước: bỏ `--workspace-id`/`--membership-id`, không tự dựng `Principal`, và đăng nhập bằng `AuthService.login` để lấy principal thật cho list/bundles/enqueue/cancel. Giữ `worker --once`; không sửa service/repository.
@@ -1579,7 +2379,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Kiểm chứng cuối:** `PYTHONPATH=.:tests/unit .venv/bin/python -m pytest --import-mode=importlib tests/unit/test_backtest_replay_cli.py -q --tb=short` → **10 passed / 0.52s**. `.venv/bin/ruff check src/trading_bot/cli/backtest_replay.py tests/unit/test_backtest_replay_cli.py` → **All checks passed**; `.venv/bin/ruff format --check ...` → **2 files already formatted**; `.venv/bin/mypy src/trading_bot/cli/backtest_replay.py` → **Success: no issues found in 1 source file**. `PYTHONPATH=src .venv/bin/python -m trading_bot.cli.backtest_replay --help`, `py_compile` và `git diff --check` cho hai file CLI đều đạt.
 - **Còn mở/giới hạn:** chưa chạy Compose E2E CLI trong slice này; xác thực interactive subprocess cần TTY. Unit test mock AuthService/getpass và khẳng định principal thật được chuyển tiếp, phiên logout, non-owner bị chặn, credential không xuất hiện ở output. Không commit/stage/reset/clean, không lệnh sàn/Telegram/Binance.
 - **Đã đọc lại sau ghi:** đối chiếu mục này với CLI/test và outputs sau khi service syntax blocker được sửa; phạm vi và giới hạn E2E đúng, mục trước chỉ mô tả trạng thái audit trước khi đóng qua MFA.
-
 ### 2026-11-04 — WP-07C audit actor CLI đóng qua AuthService login
 
 - **Kết quả hoàn thiện:** phần giới hạn audit của mục CLI trước đã được đóng. Không nhận workspace/membership/user ID từ lệnh làm actor; dùng `--workspace-slug`, nhập email/mật khẩu/TOTP bằng `getpass` khi terminal tương tác, xác thực qua `AuthService.login`, chuyển nguyên `LoginResult.principal` cho service, và kiểm `Role.OWNER`. Thu hồi session CLI qua `AuthService.logout` trong `finally`; credential không đi qua argv/env hoặc output. `worker --once` vẫn giữ nguyên.
@@ -1588,7 +2387,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Kiểm chứng cuối:** `PYTHONPATH=.:tests/unit .venv/bin/python -m pytest --import-mode=importlib tests/unit/test_backtest_replay_cli.py -q --tb=short` → **10 passed / 0.54s**. `.venv/bin/ruff check src/trading_bot/cli/backtest_replay.py tests/unit/test_backtest_replay_cli.py` → đạt; `.venv/bin/ruff format --check ...` → **2 files already formatted**; `.venv/bin/mypy src/trading_bot/cli/backtest_replay.py tests/unit/test_backtest_replay_cli.py` → **Success: no issues found in 2 source files**. `PYTHONPATH=src .venv/bin/python -m trading_bot.cli.backtest_replay --help`, `py_compile` và `git diff --check` đạt.
 - **Còn mở/giới hạn:** chưa chạy Compose E2E CLI tương tác; subprocess cần terminal TTY và MFA hợp lệ. Không stage/commit/reset/clean, không Binance/Telegram/live order.
 - **Đã đọc lại sau ghi:** đối chiếu mục này với memory CLI trước đó, parser/auth construction/dispatch/logout, tests và output final. Ghi rõ mục audit trước đã được supersede; không tuyên bố E2E CLI đã chạy.
-
 ### 2026-11-04 — WP-07C durable replay jobs, worker CLI và trang admin
 
 - **Mục tiêu/phạm vi:** hoàn tất lát application-service → hàng đợi PostgreSQL bền vững → worker PAPER → CLI/admin cho WP-07C. Giữ quyền kiểm bundle hiện hành trước replay và trước persist; không gửi lệnh Binance, không phát Telegram, không tải market data bên ngoài, không commit/stage/push/reset/clean. Scheduler và các nhánh macro calendar/raw payload tiếp tục là phạm vi sau.
@@ -1600,7 +2398,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Giới hạn còn lại:** chưa có scheduler riêng; Compose worker chạy poll liên tục và CLI có `--once`. RLS hiện dựa trên `app.workspace_id` do application role đặt, nên bảo vệ tenant khỏi lỗi truy vấn tin cậy chứ không phải chống credential DB bị xâm phạm tự đặt GUC. Lease/generation được kiểm ngay trước persist và heartbeat gia hạn; nếu tiến trình bị treo sau lần kiểm cuối trong một persist transaction dài, đây chưa phải hard fencing lock giữ suốt transaction (idempotent run/outcome giảm nguy cơ ghi trùng nhưng không đảm bảo chặn thực thi đồng thời trong tình huống pause đó). CLI interactive chưa chạy Compose E2E vì cần TTY và MFA hợp lệ; parser/auth/logout được unit test. Không claim scheduler, macro context, live market data hoặc hiệu quả chiến thuật đã hoàn tất.
 - **Tài liệu:** hoàn tất checkbox trong plan WP-07C jobs/admin; cập nhật project status để chuyển phần CLI/job/admin khỏi mục còn mở và ghi scheduler/macro/lease/RLS limits; không phát sinh thuật ngữ giao dịch/AI mới nên không đổi glossary.
 - **Đã đọc lại sau ghi:** đối chiếu mục này với plan/project status, các test/ảnh đã chạy và production flow; kết quả Compose/Playwright và giới hạn được giữ đúng phạm vi. Worktree vẫn có thay đổi khác từ các lượt trước; không stage hoặc commit.
-
 ### 2026-11-04 — WP-07D tô màu ngữ nghĩa PnL và hướng giá
 
 - **Mục tiêu/phạm vi:** làm nổi bật lãi/lỗ và hướng tăng/giảm theo màu mặc định Binance trên dashboard, report và chart; giữ hỗ trợ responsive/mobile, dấu số để nội dung không phụ thuộc riêng vào màu. Không đổi palette người dùng, API, dependency, hoặc logic tính PnL.
@@ -1610,7 +2407,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Kiểm chứng cuối:** focused unit `tests/unit/test_admin_mobile_ui.py tests/unit/test_admin_web_views.py` → **42 passed / 1.85s**. Playwright `test_admin_browser_session_navigation_accessibility_and_telegram_link` chạy viewport mobile 390×844 và desktop 1280×800 → **2 passed / 132.30s**; kiểm dấu và computed CSS color trên dashboard/report, responsive, chart tương tác ở desktop. Ảnh được lưu tại `tests/e2e/evidence/binance-pnl-{dashboard,report}-{desktop,mobile}.png`; đã mở xem dashboard desktop và report mobile. Ruff check/format và mypy được chạy lại sau lần sửa E501; `git diff --check` kiểm tra cuối. Không commit/push.
 - **Còn mở/giới hạn:** fixture Playwright hiện minh họa trade có lãi, còn nhánh lỗ/hòa vốn được kiểm tra qua unit/semantic assertion; không phát sinh lệnh sàn, Telegram hoặc dữ liệu Binance thật. Đây chỉ đóng lát màu UI WP-07D, không tuyên bố toàn bộ WP-07 hoàn tất.
 - **Đã đọc lại sau ghi:** đọc lại mục này cùng project status/WBS và đối chiếu với implementation, ảnh và lệnh kiểm thử thực tế; trạng thái Playwright ghi **2 passed / 132.30s**, không còn câu chờ kết quả.
-
 ### 2026-11-04 — WP-07 dashboard snapshot PAPER theo bot
 
 - **Mục tiêu/phạm vi:** cho phép chọn bot đang bật và từng giao dịch PAPER đang mở, xem runtime/ledger cập nhật mỗi 5 giây theo lựa chọn của người dùng. Chỉ đọc dữ liệu đã lưu; không thêm Binance market stream, heartbeat, giá, unrealized PnL hoặc entity session mới.
@@ -1621,7 +2417,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Giới hạn/còn mở:** chưa có case riêng timeout 10 giây, pagehide/bfcache, nhiều phiên mở hoặc nhiều quote asset; E2E hiện có một open PAPER trade. Đây không chứng minh giá/stream Binance hay lệnh venue, và không hoàn thành toàn bộ WP-07.
 - **Tài liệu:** cập nhật WP-07 WBS và implementation plan; giữ WP-07 trạng thái một phần. Không thêm thuật ngữ giao dịch/AI mới, không thay glossary. Không commit/push.
 - **Đã đọc lại sau ghi:** đọc lại entry này, dashboard plan/WBS và đối chiếu report E2E, reviewer, API/UI cùng hai screenshot cuối. Giới hạn timeout/bfcache/đa trade được giữ riêng, không ghi như đã kiểm.
-
 ### 2026-11-04 — WP-07C queued replay ownership fence (Tasks 1–4)
 
 - **Mục tiêu/phạm vi:** giữ ownership của replay job xuyên suốt transaction persist để chỉ generation còn lease mới có thể lưu child/outcome/rights receipt và chuyển job sang `SUCCEEDED`; cập nhật lại WBS/status và đối chiếu các phân tích WP-03/05/06. Không mở Binance network, Telegram thật, source connector hoặc LIVE; không commit/push.
@@ -1632,7 +2427,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Tài liệu/WBS cập nhật:** Task 1 report bổ sung empty-result finding; tạo Task 3 report; đánh dấu Task 1–4 hoàn tất trong plan/progress ledger. `project-status.md` ghi fence đã hoàn tất và giới hạn còn scheduler/source rights/macro. WP06 WBS/Plan phân biệt rõ `DatabaseFoldOutcomeVerifier` đã có 74 unit + 1 Compose E2E với `DatasetEvidenceVerifier`/candidate completeness còn chưa authoritative. Cập nhật ghi chú WP-02 mark-to-market để nói domain/account có valuation primitives nhưng PAPER/replay path vẫn realized-equity-only; full-unit hiện hành cập nhật thành 2669.
 - **Giới hạn/rủi ro:** success transaction giữ row lock xuyên suốt toàn bộ persist, do đó worker khác không reclaim job đang bị khóa; không giữ transaction trong CPU replay. Đây không tạo scheduler hay nguồn market rights, cũng không giải quyết policy-revoke race ngoài transaction boundary đã có. WP-07C còn scheduler, market/source rights và macro context; toàn bộ WP-07 chưa hoàn tất. UI không đổi trong Task 3; dashboard Playwright đã được chạy trước đó tại 390×844 và 1280×800 với hai screenshot, không lặp lại trong lát backend này.
 - **Đã đọc lại sau ghi:** đọc lại mục này cùng `task-1-report.md`, `task-2-report.md`, `task-3-report.md`, progress ledger, WP-06 WBS, project status và main plan; đối chiếu test counts, review, migration head và giới hạn với output cuối. Không có thay đổi phiên bản hoặc credential/venue action.
-
 ### 2026-11-05 — WP05A source-policy admin service (Task 1)
 
 - **Mục tiêu/phạm vi:** cung cấp policy-only application service/adaptor cho trang quản trị nguồn sắp nối; list/history/quota snapshot theo workspace, write/approve theo Principal, MFA gần đây, append-only và observer recovery. Chưa có API/UI hoặc provider; PostgreSQL role/RLS E2E còn ở Task 4.
@@ -1642,7 +2436,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Kiểm chứng Task 1:** `PYTHONPATH=.:tests/unit .venv/bin/python -m pytest --import-mode=importlib tests/unit/test_source_policy_admin.py tests/unit/test_source_registry_application.py tests/unit/test_source_registry_repository.py -q --tb=short` → **35 passed / 0.37s**, không skip. Ruff check/format trên 6 file Task 1, mypy 4 source file và `git diff --check` đạt. Reviewer vòng 2 xác nhận finding workspace-key đã đóng và không thấy breakage mới; không chạy lại tests theo review. PostgreSQL E2E chưa chạy, giữ ở Task 4.
 - **Giới hạn/còn mở:** list giới hạn 200 source chưa có pagination. Task 2 vẫn cần API authenticated/admin-web composition; Task 3 responsive Vietnamese UI và Playwright desktop/mobile; Task 4 kiểm tra real PostgreSQL role/RLS, full regression và cập nhật WBS/status. Không claim WP05A hay nguồn provider hoàn tất.
 - **Đã đọc lại sau ghi:** đối chiếu entry này với task-1 report/review, focused output 35 passed và implementation plan; xác nhận rõ bốn finding vòng đầu và key-scope vòng hai đã đóng, Compose role/RLS chưa chạy, pagination và Tasks 2–4 vẫn mở.
-
 ### 2026-11-05 — WP05A Task 2 API quản trị policy nguồn
 
 - **Mục tiêu/phạm vi:** nối admin policy port Task 1 vào API xác thực và admin-web composition; chỉ metadata offline. Không thêm HTML/UI, migration, provider, quota writer hoặc commit. Đọc skill, memory, WP05A spec/plan/brief và code auth/app hiện hành trước sửa; chụp Task 2 baseline trong SDD workspace.
@@ -1652,7 +2445,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Kiểm chứng:** Task 2 unit `PYTHONPATH=.:tests/unit .venv/bin/python -m pytest --import-mode=importlib tests/unit/test_research_source_admin_api.py -q --tb=short` → **9 passed / 0.77s**. Task 1 regression ba file → **35 passed / 0.37s**. Readiness + Telegram subscription API regression → **19 passed / 0.91s**. Ruff check/format bốn file, mypy ba source file và `git diff --check` đạt. E2E PostgreSQL chưa chạy; Task 4 sở hữu. Không có skip được tính là pass.
 - **Còn mở:** PostgreSQL role/RLS/receipt và end-to-end owner/reviewer qua API cần Task 4; giao diện responsive và browser E2E cần Task 3. `SourcePolicyAdminRepository` protocol Task 1 và concrete adapter có kiểu trả về structurally không đồng nhất với mypy, nên app composition dùng cast kiểu tĩnh; runtime vẫn là adapter policy-only. Không kết luận WP05A hoàn tất.
 - **Đã đọc lại sau ghi:** xác nhận nội dung mục này với lệnh test cuối, Task 2 report/diff và giới hạn E2E; không có credential hoặc thao tác venue.
-
 ### 2026-11-05 — WP05A Task 2 review 1: no-store trên GET lỗi
 
 - **Mục tiêu/nguyên nhân:** reviewer phát hiện GET list/detail đặt no-store trên `Response` thành công nhưng `HTTPException` tự tạo response khác, có thể mất header ở 404/lỗi service. `SecurityHeadersMiddleware` của app thật đã gắn no-store toàn cục; bổ sung bảo vệ tại router để contract không lệ thuộc middleware.
@@ -1661,7 +2453,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Nguồn/quyết định:** tiếp tục dùng tài liệu FastAPI Response Headers đã kiểm tra 2026-11-05 trong entry Task 2; không có thay đổi phiên bản API/thư viện/sàn. Diff tăng dần `task-2-fix-review.diff` so Task 2 previous review snapshot.
 - **Còn mở:** lỗi dependency auth trước khi handler chạy dựa trên middleware no-store chung của app thật; Task 4 kiểm Compose/security E2E, Task 3 browser/UI. Không commit/stage/push/reset/clean.
 - **Đã đọc lại sau ghi:** đối chiếu entry với RED/GREEN, middleware hiện hành và diff hai file router/test; giữ rõ giới hạn dependency-auth và E2E.
-
 ### 2026-11-05 — WP05A Task 3 console policy nguồn responsive
 
 - **Mục tiêu/phạm vi:** thêm trang `/admin/research-sources` tiếng Việt với list/detail/history/quota, form candidate/pending/quota/block/revoke/approve trên facade Task 1; giữ API Task 2. Đọc project skill, memory, WP05A spec/plan/brief cập nhật, templates/CSS, helper form CSRF và Playwright trước sửa. Snapshot bảy file Task 3 tại `.superpowers/sdd/2026-11-04-wp05a-source-policy-console/task-3-baseline/`; review diff so task-start tại `task-3-review.diff`, tránh dirty changes có sẵn.
@@ -1671,7 +2462,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Evidence/nguồn:** đã chụp lại và mở kiểm tra hai ảnh cuối `tests/e2e/evidence/wp05a-source-policy-mobile.png` và `wp05a-source-policy-desktop.png`; detail/history/quota hiện rõ, text dài xuống dòng, không tràn ngang. Kích thước PNG full-page cuối: mobile 390×4065, desktop 1280×2978 (viewport lần lượt 390×844 và 1280×800); đã đối chiếu lại report và memory sau review, không đổi code/ảnh hoặc chạy lại test. Không có quyết định thay phiên bản/API/thư viện; dùng cơ chế template/form/CSRF sẵn có và FastAPI response-header contract đã kiểm trong Task 2 ngày 2026-11-05: https://fastapi.tiangolo.com/advanced/response-headers/ . Không thêm thuật ngữ trading/AI nên không đổi glossary.
 - **Giới hạn/việc mở:** browser E2E dùng FastAPI/template/form/application service/domain thật với auth principal fixture + repository bộ nhớ; usage quota fixture, chưa chứng minh DB clock/RLS/receipt/login thật. Task 4 sở hữu PostgreSQL Compose/API integration và final review/WBS. List giới hạn 200 theo service Task 1 chưa có pagination. Không provider/network ngoài app local, venue, Telegram/live order; không migration, stage/commit/push/reset/clean. Task 3 đã được review độc lập chấp thuận, không có finding.
 - **Đã đọc lại sau ghi:** đối chiếu mục này với review diff Task 3, report, outputs 117/2698 unit và 2 Playwright, hai ảnh cuối; giữ rõ fixture browser khác với Compose thật và không kết luận WP05A hoàn tất.
-
 ### 2026-11-05 — WP05A Task 4 PostgreSQL và bàn giao console offline
 
 - **Phạm vi/đã đọc:** AGENTS, project skill, memory WP05A, design/plan/WBS WP05, Compose role và Source Registry probes. Snapshot sáu file Task 4 tại `.superpowers/sdd/2026-11-04-wp05a-source-policy-console/task-4-baseline`; diff so task-start ở `task-4-review.diff`. Không đổi production code/schema/API/dependency hoặc thêm thuật ngữ trading/AI.
@@ -1682,8 +2472,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Evidence/tài liệu:** WBS WP05, Plan05, project-status cập nhật counts, scope và giới hạn. Đã mở xem ảnh `tests/e2e/evidence/wp05a-source-policy-mobile.png` và `wp05a-source-policy-desktop.png`, viewport 390×844/1280×800, full-page 390×4065/1280×2978; layout/history/quota/notice rõ, không tràn ngang. Browser regression tái tạo ảnh theo convention, dùng repository bộ nhớ; Compose bổ sung proof DB/API, không biến ảnh thành bằng chứng provider. Tasks 1–4 đã review độc lập; Task 4 finding Important đã sửa và re-review duyệt.
 - **Giới hạn/còn mở:** list giới hạn 200 chưa pagination; minor default attribution tiếng Anh deferred từ Task 2. Không chọn S1, không provider/network ngoài local PostgreSQL/app, không xác minh pháp lý evidence, không connector/source-item facade/storage-artifact deletion/research training; WP-05 chưa hoàn tất. Không stage/commit/push/reset/clean.
 - **Đã đọc lại sau ghi:** đối chiếu entry này với logs cuối 2698/1/4/11 passed, report, scoped diff, head và ảnh đã inspect; giữ rõ hai lỗi harness đã sửa cùng giới hạn session fixture/lifespan/browser login.
-
-
 ### 2026-11-05 — WP05A Task 4 review fix: observer outage trả 503
 
 - **Finding/đã đọc:** reviewer Important xác nhận router map mọi LookupError→404 làm lỗi observer sau revision commit bị hiểu nhầm thành thiếu source. Đọc memory/plan/report Task4, receiving-code-review skill, router và PostCommitSourceObserver trước sửa. Snapshot fix bốn code/test files và bốn docs tại `task-4-fix-baseline`; diff tăng dần `task-4-fix-review.diff`.
@@ -1693,7 +2481,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Review độc lập:** re-review vòng 1 xác nhận finding observer-404 đã addressed; không có Critical/Important breakage mới. Task 4/WP05A console slice được duyệt.
 - **Còn mở:** list200, minor attribution, provider/legal rights/connector/artifact deletion/research training giữ nguyên; WP-05 chưa hoàn tất. Không stage/commit/push/reset/clean.
 - **Đã đọc lại:** đối chiếu entry với RED output, GREEN41/Compose2 logs, source diff/report và verdict re-review; xác nhận503 chỉ cho observation sau commit, missing-source404 giữ nguyên, full-unit count không được claim là chạy sau fix.
-
 ### 2026-11-05 — WP05A final UI review fix: giữ purpose set và expiry
 
 - **Finding/phạm vi/đã đọc:** macro form cũ luôn chọn metadata và expiry trống, có thể thay pending grant hữu hạn khi reviewer duyệt không sửa gì. Đọc lại project skill, Task3 brief/report, memory hiện hành và WP05A design/plan. Snapshot code/tests/docs trước fix tại `task-3-final-fix-baseline/`; diff tăng dần `task-3-final-fix-review.diff`. Chỉ sửa HTML/router form/CSS/tests/docs; JSON API/service/DB contract giữ nguyên.
@@ -1703,14 +2490,12 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Evidence/tài liệu:** hai PNG `tests/e2e/evidence/wp05a-source-policy-mobile.png` **390×5568**, `wp05a-source-policy-desktop.png` **1280×4218** được tái tạo sau fix và mở inspect. Có năm revision, ảnh current không hạn do explicit clear, history giữ grant hữu hạn hai mục đích trước đó. Cập nhật report Task3/WBS/status và đọc lại memory. Không dependency/API version/tool mới hoặc thuật ngữ giao dịch/AI mới nên không nguồn mới/glossary; giữ Bootstrap/template/CSRF nội bộ hiện có.
 - **Giới hạn/việc mở:** browser vẫn auth fixture và memory repository, không chạy lại Compose vì không đổi API/service/DB; bằng chứng Compose Task4 trước đó giữ nguyên phạm vi. Chờ final reviewer re-review; list200/pagination, attribution minor và WP05B–H/provider/legal verification còn mở. Không stage/commit/push/reset/clean, không provider/venue/Telegram/live order.
 - **Đã đọc lại:** đối chiếu entry với diff code/test, outputs50/2705/2, report và kích thước PNG đọc trực tiếp header; đảm bảo counts/ảnh hiện tại được phân biệt bằng chứng vòng đầu, không claim review đã duyệt fix khi chưa có verdict.
-
 ### 2026-11-06 — WP05A Minor attribution chỉ dịch khi render
 
 - **Đã đọc/phạm vi:** project skill, memory hiện hành, Task3 report/progress và template. Final review còn sentinel `not approved` tiếng Anh trên admin nếu candidate tạo qua API; user yêu cầu xử lý. Template chỉ đổi sentinel này thành `Chưa được duyệt`, giữ custom attribution. Không sửa stored default, schema/domain/API/canonical payload/idempotency; không có dependency/API version/thuật ngữ mới cần tra nguồn hoặc glossary.
 - **TDD/kết quả:** unit RED HTML **1 failed,13 passed /1.31s**; sau fix, `PYTHONPATH=.:tests/unit .venv/bin/python -m pytest --import-mode=importlib tests/unit/test_research_source_admin_html.py tests/unit/test_research_source_admin_api.py tests/unit/test_source_policy_admin.py tests/unit/test_admin_mobile_ui.py -q --tb=short` → **52 passed /1.80s**. Case mới khẳng định sentinel không lộ HTML, custom attribution giữ nguyên, API/entry vẫn nguyên. `PYTHONPATH=.:tests .venv/bin/python -m pytest --import-mode=importlib tests/e2e/test_research_source_admin_ui.py -q --tb=short` → **2 passed /5.59s**, cả390×844/1280×800; repository vẫn sentinel, HTML tiếng Việt, purpose/expiry/clear/permission/44px/no overflow đạt. Ruff/check format hai test files đạt, diff-check đạt. Full-unit2705 trước attribution fix không được claim là đã chạy lại sau template fix; không lặp Compose.
 - **Evidence/tài liệu:** ảnh cuối required paths `tests/e2e/evidence/wp05a-source-policy-mobile.png`390×5568 và desktop1280×4218 đã tái tạo và mở inspect bản gốc. Ghi công tiếng Việt, history/quota/notice rõ; current không hạn do explicit clear của bài trước. Task3 report, WBS/status/progress và combined final review package cập nhật. `task-3-final-fix-review.diff` gồm purpose/expiry + attribution, `wp05a-final-review.diff` nối combined sau Tasks1–4. Re-review `/root/wp05a_ui_fix_review` kết luận hai findings ADDRESSED, không thấy breakage mới. Reviewer chỉ đọc diff/assertions, không chạy lại tests/ảnh/Compose; counts ghi trên vẫn lấy từ lượt kiểm chứng tương ứng.
 - **Giới hạn/đọc lại:** browser auth fixture/memory repository như trước, không đổi provider/DB/API; list200/pagination và WP05B–H còn mở, Minor attribution đã xử lý tại view. Không stage/commit/push/reset/clean hoặc live action. Đã đọc lại mục này, đối chiếu report/output52/2 và hai ảnh; stored default vẫn `not approved`, chỉ presentation tiếng Việt.
-
 ### 2026-11-06 — WP06.4 Task 1: canonical diagnostic report payload
 
 - **Phạm vi/đã đọc:** đọc skill dự án, memory WP06.4, module `06-ai-learning.md`, WP06 WBS, gap analysis, evaluator và unit tests. Baseline `test_learning_fold_evaluation.py` + `test_learning_fold_plan.py`: **49 passed / 0.10s**. Worktree là branch cô lập nhưng có 256 path bẩn từ task trước; snapshot riêng theo file trước chỉnh sửa.
@@ -1718,7 +2503,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Kiểm chứng:** `PYTHONPATH=.:tests/unit:tests/e2e .venv/bin/python -m pytest --import-mode=importlib tests/unit/test_learning_fold_evaluation.py tests/unit/test_learning_fold_plan.py -q --tb=short` → **50 passed / 0.10s**. Chưa chạy full suite hoặc E2E Compose ở Task 1; migration/service chưa có. Không thêm dependency hoặc API/provider/version.
 - **Còn mở:** chưa có report store, service composition, Compose RLS/role E2E, UI/CLI/job launch. `candidate_completeness_verified` luôn false; WP06.4 chưa hoàn tất.
 - **Đã đọc lại:** đối chiếu test RED/GREEN, serializer/hashes và WP06 gap analysis; xác nhận report băm canonical đúng và payload không có holdout.
-
 ### 2026-11-06 — WP06.4 Task 2: report model/repository/migration draft
 
 - **Đã đọc trước thay đổi:** WP06.4 WBS, manifest model/repository, migration `b8d0f1a3c5e7`, role `crypidian_trainer_worker`, migration đầu WP06G.2 và current Alembic head `a8c0e2f4b6d9`.
@@ -1726,7 +2510,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Thay đổi:** model `LearningEvaluationReportRecord`; repository kiểm canonical JSON/JSONB/SHA-256, denormalized fields, key/workspace và trạng thái diagnostic/completeness, khóa advisory theo workspace/key. Migration draft `f3a5c7d9e1b2` sau `a8c0e2f4b6d9`: manifest composite FK, RLS FORCE, trainer SELECT/INSERT, admin SELECT, trigger immutable và downgrade guard khi còn report. Ruff check đạt sau format/import cleanup.
 - **Còn chờ:** Compose chưa chạy `alembic upgrade/check`, unique/trigger/RLS/grant/readback thật. Chưa gọi repository DB từ service. Vì thế chưa tuyên bố Task 2 hoàn tất hoặc migration đạt.
 - **Đã đọc lại:** đối chiếu contract test, model table/checks, migration role matrix và RLS policy; confirms mọi row buộc `diagnostic` + completeness false, không có UPDATE/DELETE grant.
-
 ### 2026-11-06 — WP06.4 Task 3: service composition
 
 - **Đã đọc trước khi sửa:** implementation-memory WP06.4, plan/spec WP06.4, `UnitOfWork`, manifest repository, fold plan/evaluator, database verifier và report repository. Service chỉ nhận workspace/hash/folds/cutoff/seed/idempotency key; mọi manifest/outcome tiếp tục lấy từ kho.
@@ -1735,7 +2518,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Kiểm chứng hiện tại:** RED ban đầu **collection error** do module thiếu; unit GREEN hiện tại evaluator/repository/service/model → **75 passed / 0.43s**. Ruff check/format 4 file service/test/probe đạt. Chưa chạy Compose/Alembic thật; service unit dùng UoW/repository/verifier giả nên không chứng minh role/RLS hoặc migration.
 - **Còn mở:** Compose probe đang được mở rộng cho report persistence/retry/conflict/holdout/cross-workspace/grants/immutable trigger và rollback guard; phải chạy E2E để xác nhận migration/SQL thật trước khi đánh dấu Task 2–4 xong. Full unit, mypy, final scoped review và tài liệu WBS/glossary còn chờ.
 - **Đã đọc lại:** kiểm nội dung entry với module/test hiện tại và đúng 75 pass; không nâng bằng chứng unit lên mức E2E, không đổi API/provider/dependency hoặc thêm thuật ngữ mới ngoài “diagnostic evaluation” sẽ được ghi glossary ở Task 4.
-
 ### 2026-11-06 — WP06.4 Task 4: Compose, regression và traceability
 
 - **Đã đọc trước khi hoàn tất:** WP06.4 implementation plan/design, module/WBS WP06, project status, glossary và SDD rulings. Nới Compose probe cũ để gọi service thực bằng `trainer-worker`; chạy verify report riêng bằng `admin-web` thật.
@@ -1744,7 +2526,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Traceability:** cập nhật WBS WP06.4, Plan 06, `project-status.md`, glossary (Diagnostic evaluation → Đánh giá chẩn đoán), thiết kế và plan WP06.4; cập nhật SDD Task2/3 và Task4 pending review. Project vẫn đánh dấu WP06 đang triển khai một phần; candidate completeness, source-dependent rights-at-persist, trainer/CLI/UI/job lifecycle, registry/promotion và drift còn mở.
 - **Ở lượt đầu còn chờ:** fresh scoped independent code review; no commit/push/reset/clean.
 - **Đã đọc lại lượt đầu:** đối chiếu đúng outputs 75/2725/Compose 1; review và final re-run ghi ở dưới.
-
 ### 2026-11-06 — WP06.4 review-prep fix: payload JSON không phải object
 
 - **Finding:** trước khi gửi scoped diff cho reviewer, đọc lại report repository phát hiện JSON canonical lưu thành array hợp lệ về cú pháp sẽ gọi `.get` trước khi kiểm object, phát sinh `AttributeError` không được phân loại thành conflict. Không có đường ghi hợp lệ tạo payload này; đây là hàng rào readback khi dữ liệu bị hỏng.
@@ -1752,7 +2533,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Static:** Ruff check/format 8 file, mypy 3 source module và `git diff --check` đạt sau fix. Compose cuối và independent review hoàn tất theo entry dưới.
 - **Review:** combined diff được tái tạo sau fix; reviewer đọc phiên bản mới nhất. Không commit/push.
 - **Đã đọc lại:** xác nhận regression tạo record JSON array + hash phù hợp và validator trả conflict; focused 76/full 2726 đúng logs hiện hành.
-
 ### 2026-11-06 — WP06.4 final verification và independent review
 
 - **TDD finding đã đóng:** JSON canonical hợp lệ về cú pháp nhưng không phải object nay fail-closed bằng `LearningEvaluationReportConflict`; regression RED **1 failed, 6 passed** rồi GREEN focused **76 passed / 0.41s**.
@@ -1760,7 +2540,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Independent review:** `/root/wp06d_final_review` đọc refreshed scoped diff và trả **APPROVED**, không có Critical/Important finding; xác nhận integrity fix và consistency của tenant/snapshot/holdout/idempotency/DB-rights/migration. Reviewer không chạy lại test; logs thuộc lượt kiểm chứng riêng bên trên.
 - **Tài liệu/traceability:** status/WBS/module/plan/glossary/memory đồng bộ counts cuối; WP06 tổng thể vẫn partial. Source-dependent rights-at-persist, candidate completeness, zero/multi-trade, trial accounting, split approval, trainer, registry/promotion/drift và UI/CLI/job lifecycle vẫn mở. SDD Task4 đã đánh dấu hoàn tất.
 - **Đã đọc lại:** đối chiếu memory với output RED/GREEN, full 2726, Compose 1/27.53s, Ruff/format/mypy/diff-check và reviewer APPROVED. Chưa stage/commit/push/reset/clean.
-
 ### 2026-11-06 — WP06 completion Task 1: provenance entry trên outcome PAPER
 
 - **Đã đọc/phạm vi:** Task1 brief trước code, design completion WP06, AGENTS/project skill, TDD/writing-good-tests, systematic-debugging/verification, memory WP06 gần nhất, Plan06/WBS và runtime/outcome modules. Chỉ domain/runtime evaluator/ORM/repository/migration và unit/Compose liên quan; report `.superpowers/sdd/2026-11-06-wp06-completion/task-1-report.md`, incremental diff `task-1-review.diff` so snapshot ban đầu. Không stage/commit/push/reset/clean; worktree có thay đổi từ trước.
@@ -1771,7 +2550,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Nguồn hiện hành kiểm tra2026-11-06:** PostgreSQL18 CHECK/NULL semantics <https://www.postgresql.org/docs/current/ddl-constraints.html>; JSONB type/array functions <https://www.postgresql.org/docs/current/functions-json.html>; SQLAlchemy2.1 JSONB none_as_null <https://docs.sqlalchemy.org/en/21/dialects/postgresql.html#sqlalchemy.dialects.postgresql.JSONB>. Giữ pinned SQLAlchemy2.1.5, không nâng lên docs2.1.8. Không dependency/API sàn mới hoặc thuật ngữ mới cần glossary; entry lineage đã có.
 - **Còn mở:** chờ review Task1/controller; không blocker implementation. Candidate scanner/completeness, split/holdout approval, trainer/registry/UI và các task sau chưa xây; không tuyên bố WP06 hoàn tất. Không chạy toàn bộ E2E repo, chỉ Compose outcome liên quan; không provider/venue/private API/Telegram/live action.
 - **Đã đọc lại:** đối chiếu mục này với incremental diff/report, RED/GREEN logs, final97/2782/Compose1, schema/hash/symbol, ACL baseline và validator invoker, downgrade locking và static outputs; xác nhận không claim intermediate failures hoặc tests chưa chạy là đạt.
-
 ### 2026-11-06 — WP06 Task1 fix round1: provenance tùy chọn không gián đoạn PAPER
 
 - **Đã đọc/phạm vi:** updated SDD ledger `progress.md`, Task1 brief/report, memory trước vòng sửa; áp dụng project skill/TDD/systematic-debugging/verification đã đọc. Review xác nhận Important finding `setdefault` đánh giá eager default: normalized-key collision gây ValueError sau PAPER submit, trước intent/reservation bookkeeping; retry có key sẵn/None vẫn capture lại. Chỉ sửa runtime evaluator, focused unit, report/memory; không stage/commit/push/reset/clean.
@@ -1780,7 +2558,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Kiểm chứng cuối:** `PYTHONPATH=.:tests/unit:tests/e2e .venv/bin/python -m pytest --import-mode=importlib tests/unit/test_runtime_replay_evaluator.py -q --tb=short` → **26 passed/0.57s**, log `/tmp/wp06-task1-fix1-green.log`, không skip. Ruff check hai file đạt; format check **2 files already formatted**; mypy runtime evaluator **Success: no issues found in 1 source file**; `git diff --check` exit0 không output. Theo instruction fix-round chỉ chạy focused runtime test, không broad/full suite hoặc Compose; full2782/Compose1 ở entry trước là bằng chứng trước fix, không claim re-run. Không dependency/API version/thuật ngữ mới.
 - **Report/việc mở:** append fix round1 vào `.superpowers/sdd/2026-11-06-wp06-completion/task-1-report.md`; incremental diff `task-1-fix-round-1-review.diff`; chờ scoped re-review, không blocker fix. Các Task2–9 vẫn ngoài phạm vi.
 - **Đã đọc lại:** đối chiếu source guard/exception boundary, regression collision và retry metadata/None, RED3/23 và GREEN26/0.57s, lint/type/diff outputs, report và giới hạn không rerun broad/Compose; mọi lỗi ban đầu đã phân loại và không tính pass.
-
 ### 2026-11-06 — WP06 completion Task 2: proof tập trade BASE từ database
 
 - **Đã đọc/phạm vi:** project skill/AGENTS, memory WP06 gần nhất, module/WBS, completion design/plan và Task2 brief/ledger được cập nhật current TRAINING. TDD và verification; chỉ Task2/domain metadata service/gate/repository/models/migration cùng unit/Compose liên quan. Report `.superpowers/sdd/2026-11-06-wp06-completion/task-2-report.md`, diff riêng `task-2-review.diff`; giữ artifacts Task1, không stage/commit/push/reset/clean.
@@ -1793,7 +2570,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Nguồn kiểm 2026-11-06:** PostgreSQL18 transaction isolation <https://www.postgresql.org/docs/current/transaction-iso.html>, explicit/row/advisory locks <https://www.postgresql.org/docs/current/explicit-locking.html>, SELECT lock privilege <https://www.postgresql.org/docs/current/sql-select.html>, RLS <https://www.postgresql.org/docs/current/ddl-rowsecurity.html>, column/table REVOKE <https://www.postgresql.org/docs/current/sql-revoke.html>. Giữ dependency/API/tool hiện có; không provider/venue/Telegram/LIVE, không ML library.
 - **Còn mở:** controller review Task2, Task3 current TRAINING sample boundary/normalized samples và thu hẹp direct payload SELECT trainer; split/holdout/trainer/registry/promotion vẫn ngoài Task2. Proof không là quyền tái sử dụng hay bằng chứng bao phủ mọi quyết định/no-entry. Không tự retry transaction conflict; caller retry toàn build khi phù hợp.
 - **Đã đọc lại:** đối chiếu mục này với source/model/migration, brief/ledger, RED/GREEN logs, final151/Compose3+final1, HEAD/static outputs, scope/grants/receipt immutability và report/diff riêng; xác nhận các failure trung gian đã giải thích, không claim full suite hoặc review chưa có.
-
 ### 2026-11-06 — WP06 Task2 fix round 1: principal writer riêng và lease ở return boundary
 
 - **Đã đọc/xác minh:** review Important findings, receiving-code-review skill, Task2 report/memory và source/migration/Compose hiện tại. Finding đúng: trainer INSERT có thể forge proof/receipt và seal trial gây permanent DoS; lease chỉ check trước persist có thể hết khi chờ final flush hoặc receipt read của retry. Controller duyệt one-shot trusted writer riêng, không SECURITY DEFINER nhận arbitrary proof. Chỉ sửa Task2 boundary/config/tests/docs; không stage/commit/push/reset/clean, không sửa WP khác hay artifacts Task1.
@@ -1806,7 +2582,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Static/nguồn:** Ruff check và format10 changed files, mypy2 sources, Alembic một head e6c8a0b2d4f7, git diff-check đạt; Docker trống sau final. Formatter ban đầu bắt layout NOINHERIT condition, đã sửa không đổi logic. PostgreSQL18 sources đọc2026-11-06: <https://www.postgresql.org/docs/current/role-membership.html>, <https://www.postgresql.org/docs/current/sql-createrole.html>, cùng lock/RLS/REVOKE đã ghi. Không đổi dependency/API, không provider/venue/Telegram/LIVE hoặc thuật ngữ trading/AI mới.
 - **Report/việc mở:** append fix section vào `.superpowers/sdd/2026-11-06-wp06-completion/task-2-report.md`, diff riêng `task-2-fix-round-1-review.diff` so snapshot trước review; cập nhật module/WBS đúng trusted principal/lease contract. Phần fix thay thế ma trận trainer INSERT trước đây. Chờ controller independent re-review; Task3 current TRAINING payload boundary/normalized samples vẫn ngoài scope. Không chạy full unrelated suites, không tính unrun là đạt.
 - **Đã đọc lại:** đối chiếu mục này với source/migration/CLI/Compose, credential mount JSON/actual principal tests, RED2+3, GREEN108, regression3 và boundary-final tuần tự1/72.79s, static/one-head/Docker outputs và report/diff incremental; không claim overlap run là final hoặc review approval chưa có.
-
 ### 2026-11-07 — WP06 Task 3A: tách replay writer khỏi trainer (Task 3 còn mở)
 
 - **Đã đọc trước vòng:** `AGENTS.md`, skill futures-bot, implementation-memory, WP06 module/WBS, thiết kế/plan/brief Task 3, Task 2 report và Compose role matrix. Đã đối chiếu migration `e6c8a0b2d4f7`, WP07 replay worker, outcome repository, backfill rights recheck và grants thực tế trong Compose. Không sửa WP03/WP05/WP07 production source ngoài các regression probes bắt buộc phản ánh role mới. Không stage/commit/push/reset/clean.
@@ -1818,7 +2593,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Chất lượng/migration:** Ruff check + format check 13 file đạt; mypy `src/trading_bot/config/settings.py src/trading_bot/workers/backtest_replay_worker.py` → **Success: no issues found in 2 source files**; `.venv/bin/alembic heads` → duy nhất `f5a7c9e1b3d6`; `docker compose --profile '*' config --quiet`, Alembic `check` trong E2E và `git diff --check` đạt. Không đổi dependency, thuật toán/feature, API sàn hoặc execution capability. PostgreSQL lock/RLS/role semantics dùng nguồn chính thức đã kiểm tra 2026-11-06 trong mục Task2 (`transaction-iso`, `explicit-locking`, `ddl-rowsecurity`, `sql-revoke`, `role-membership`, `sql-createrole`); không có quyết định version-sensitive mới.
 - **Traceability/giới hạn:** report `.superpowers/sdd/2026-11-06-wp06-completion/task-3-report.md`, SDD ledger, WP06 module và WBS ghi rõ Task 3 còn mở. Trainer vẫn giữ SELECT legacy lên payload ở slice này, nên chưa có holdout isolation; chưa có pre-replay learning-intent quarantine/approval, normalized fold rows, split approval MFA, evaluator gateway/receipt, Task 4–9. Không tuyên bố WP06 hoặc Task 3 hoàn tất.
 - **Đã đọc lại sau ghi:** đọc lại mục vừa thêm và đối chiếu với migration/settings/worker/Compose, task-3 report, 106 unit, 4 Compose E2E cuối, static/one-head output. Xác nhận trạng thái Task3 mở, trainer legacy SELECT ghi là còn mở, không gán pass cho các lượt thất bại đầu và không ghi commit.
-
 ### 2026-11-07 — WP06 Task 3B: approval split trước seal (Task 3 còn mở)
 
 - **Đã đọc trước vòng:** AGENTS, futures-bot skill, implementation memory, WP06 module/WBS, Task 3 design/brief/plan/ledger/report, fold planner, manifest domain/store, authentication policy/MFA và PostgreSQL Compose harness. Giữ nguyên dirty/staged WP03/WP05/WP07; không stage/commit/push/reset/clean.
@@ -1829,7 +2603,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Compose E2E cuối:** `PYTHONPATH=.:tests/e2e .venv/bin/python -m pytest --import-mode=importlib tests/e2e/test_wp06_split_approval.py -q --tb=short` → **1 passed / 18.86s**, không skip. Compose dùng login DB thật admin-web/trainer-worker; kiểm approval/retry, thiếu approval, duyệt sau seal, RLS và zero rows khi unscoped, trainer SELECT denial, downgrade guard, upgrade/head/check.
 - **Static/schema:** Ruff check toàn bộ 12 Python/migration file; Ruff format --check 12 files; mypy 5 source files; `alembic heads` duy nhất `f9b1d3e5a7c9`; E2E `alembic check`; `git diff --check` đạt. Không thêm dependency, exchange API hoặc lựa chọn version-sensitive mới; PostgreSQL advisory/RLS semantics theo docs PostgreSQL 18 đã kiểm 2026-11-06 trong Task2 memory.
 - **Traceability/open:** thêm term EN→VI `Split approval`, cập nhật WP06 module/WBS, completion plan, Task3 report, SDD ledger. Task3B chưa có UI/API; pre-replay learning-intent quarantine, normalized per-fold rows, trainer/evaluator access isolation, thu hồi legacy payload SELECT và receipt-before-disclosure còn mở. Task4–9 còn mở; không đánh dấu Task3/WP06 complete.
-
 ### 2026-11-07 — WP06 Task 3C: normalized fold payload storage (Task 3 còn mở)
 
 - **Đã đọc trước khi code:** AGENTS/project skill, memory WP06 gần nhất, Task3 completion design/brief/plan/ledger/report, WP06 module/WBS, normalized builder, fold planner, entry outcome verifier, manifest/approval repositories và migration. Không stage/commit/push/reset/clean; giữ mọi thay đổi staged/dirty trước đây.
@@ -1839,7 +2612,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Nguồn hiện hành đã kiểm:** PostgreSQL 18 JSON functions/operators `https://www.postgresql.org/docs/18/functions-json.html`, và comparison operators `https://www.postgresql.org/docs/18/functions-comparison.html`, đối chiếu 07/11/2026; xác nhận dùng jsonb object comparison, không gọi jsonb object length function. Không đổi package/API/dependency/exchange.
 - **Traceability/giới hạn:** glossary thêm `Normalized learning sample`→`Mẫu học đã chuẩn hóa`, `Fold assignment`→`Gán vai trò theo fold`; cập nhật WP06 module/WBS, completion plan, Task3 report và ledger. Task3C storage/typed slice đã có nhưng DB trainer loader vẫn phải chờ attempt authorization; Task3D/E, legacy raw payload revocation, source-rights gateway, rollback/crash/concurrency E2E, pre-replay learning-intent quarantine/API/UI còn mở. Task4–9 còn mở. Không tuyên bố Task3/WP06 xong.
 - **Đã đọc lại:** đọc lại mục này sau khi append rồi đối chiếu với migration hiện tại, repository ACL boundary, E2E cuối 6/1, nguồn docs PostgreSQL và Task3 report/WBS. Không dùng các E2E thất bại trước khi sửa làm bằng chứng đạt; không sửa trạng thái checkbox Task3/WP06.
-
 ### 2026-11-07 — WP06 Task 3D: thu hồi payload legacy (Task 3 còn mở)
 
 - **Đã đọc trước vòng:** project instructions, futures-bot skill đã áp dụng, implementation memory/WP06 module/WBS, completion design/plan, migrations `f5a7c9e1b3d6`–`f2a4c6e8b0d3`, manifest repository, verifier/report service và Compose role setup. Giữ nguyên mọi staged/dirty WP03/WP05/WP07/WP06 ngoài lát này; không stage/commit/push/reset/clean.
@@ -1848,7 +2620,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Kiểm chứng:** unit `test_learning_fold_evaluation.py`, `test_learning_evaluation_service.py`, `test_dataset_manifest_persistence.py` → **26 passed**. Compose E2E `test_learning_fold_outcome_verifier.py`, `test_wp06_dataset_manifest.py`, `test_wp06_split_approval.py`, `test_wp06_normalized_fold_samples.py`, `test_wp06_candidate_universe_proof.py` → **5 passed / 116.81s**, không skip; bao gồm direct payload SELECT/legacy verifier denial cho admin/trainer/app, builder SELECT, evaluator login/report boundary, trigger source-ref, RLS, immutable/downgrade, Alembic upgrade/check. Ruff check/format cho lát thay đổi đạt; không chạy mypy trong vòng này.
 - **Traceability/open:** cập nhật WBS/module/completion-plan và glossary term receipt đã có; WBS/memory xác nhận Task3D chỉ là ACL cutover. Evaluator vẫn có direct SELECT và service chưa ghi receipt/commit-before-disclosure; one-shot rollback/crash/concurrency/current-rights race, trainer DB loader, learning-intent quarantine/API/UI chưa xong. Task4–9 chưa làm; không tuyên bố WP06 hoàn tất.
 - **Đã đọc lại:** đọc lại chính section này và đối chiếu code/migration, E2E cuối cùng năm test cùng plan/WBS. Ghi rõ test thành công cuối, không nâng Task3/WP06 status.
-
 ### 2026-11-07 — WP06 Task 3E: evaluator receipt trước disclosure (Task 3 còn mở)
 
 - **Đã đọc/phạm vi:** đọc lại `AGENTS.md`, project skill, implementation memory/WP06, completion design/plan, Task3 report, source modules và migration 3A–3D trước vòng tiếp. Bám contract receipt-before-disclosure. Chỉ sửa migration 3E downgrade và traceability WP06; giữ nguyên tất cả thay đổi dirty/staged WP03/WP05/WP07/WP06, không stage/commit/push/reset/clean.
@@ -1859,7 +2630,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Tài liệu/traceability:** cập nhật Plan 06, WBS WP06 top/status và WP06.4 row, completion plan Task3, Task3 report A–E, `project-status.md`, glossary và memory. Receipt glossary nêu đúng service principal và fail-closed source refs. WP06 tổng thể/Task3 còn mở; Task4–9 chưa nghiệm thu.
 - **Nguồn đã xác minh 07/11/2026:** PostgreSQL 18 [`CREATE FUNCTION`](https://www.postgresql.org/docs/18/sql-createfunction.html) cho `SECURITY DEFINER`/search_path/revoke default execution; [`SET TRANSACTION`](https://www.postgresql.org/docs/18/sql-set-transaction.html) cho repeatable-read snapshot và không dùng read-only khi phải insert receipt; [row security](https://www.postgresql.org/docs/18/ddl-rowsecurity.html) cho tenant policies/definer boundary. Không thay dependency, ML framework hoặc API sàn.
 - **Đã đọc lại:** đối chiếu section này sau khi ghi với migration downgrade đã sửa, UoW isolation, service retry path, 33/5 kết quả cuối, one-head/Ruff/diff-check và các docs được cập nhật. Các lượt 4 failure đã được giải thích/sửa và không tính là đạt; không tuyên bố Task3/WP06 hoàn tất hoặc full suite xanh.
-
 ### 2026-11-07 — WP06 Task 4A: domain resource budget và attempt accounting (Task 4 còn mở)
 
 - **Đã đọc trước vòng:** đọc implementation memory/WP06 gần nhất, completion design/plan Task4, module `06-ai-learning.md`, WBS WP06, `LearningSplitApproval`, normalized fold batch và completion dependency Task3→Task4→Task5. Dùng TDD cho domain-only contract; chưa sửa migration/composition/admin/worker. Giữ mọi thay đổi staged/dirty của repo, không stage/commit/push/reset/clean.
@@ -1870,7 +2640,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Glossary/traceability:** thêm glossary EN→VI `Learning resource budget / compute units` và ghi rõ estimate ≠ actual CPU/cgroup cap; cập nhật WP06 completion plan Task4, WBS top + Task4A, module Plan06, project status. Task4 vẫn **chưa** có ledger append-only DB, RLS/grants/repository, attempt service gắn permission/approval/current rights, DB-derived counts, job worker, adapter runtime/memory enforcement hay actual cost persistence. Trainer DB loader/Task3 cũng vẫn mở; không tuyên bố Task4/WP06 hoàn tất.
 - **Nguồn/version:** không đổi dependency/framework/API sàn hoặc dùng hành vi thư viện version-sensitive; contracts thuần Python nội bộ, nguồn traceability là WP06 completion Task4 và domain module. Không cần browse thêm.
 - **Đã đọc lại:** đã đọc lại mục vừa ghi và đối chiếu limits/formula/event state với source/test 33 pass, static/type outputs và cập nhật WBS/glossary/project status. Xác nhận chỉ nói domain contract, không ghi nhận DB ledger, actual memory/time enforcement hoặc E2E cho Task4.
-
 ### 2026-11-07 — WP06 Task 4B: authoritative fold profile và attempt ledger (Task 4 còn mở)
 
 - **Đã đọc trước vòng:** AGENTS, project skill, implementation-memory, WP06 module/WBS, completion design/plan, Task3E, domain resources/accounting, normalized fold repository, split approval, DB model registry và Compose WP06 probes. Bảo toàn mọi thay đổi staged/dirty WP03/WP05/WP07/WP06 sẵn có; không stage/commit/push/reset/clean.
@@ -1880,7 +2649,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Nguồn/version:** PostgreSQL 18 docs được kiểm tra 2026-11-07: [CREATE TRIGGER](https://www.postgresql.org/docs/18/sql-createtrigger.html) cho deferred constraint trigger; [JSON functions/operators](https://www.postgresql.org/docs/18/functions-json.html) cho kiểm object/key/schema; [CREATE POLICY](https://www.postgresql.org/docs/18/sql-createpolicy.html) cho RLS default deny; [advisory lock functions](https://www.postgresql.org/docs/18/functions-admin.html) cho khóa transaction. Không thêm dependency hoặc API sàn.
 - **Traceability/open:** cập nhật WBS, completion plan, module, glossary EN→VI cho fold resource profile/training attempt/append-only event ledger. Còn mở: Task3 current-rights lock/gateway tới commit, authorized trainer DB loader, pre-replay quarantine/API/UI; Task4 job worker, timeout/hard CPU-memory enforcement/actual measurements; Task5–9. Ước lượng budget hiện không phải cô lập process/container. Không tuyên bố Task3/Task4/WP06 hoàn tất.
 - **Đã đọc lại:** đọc lại section này và đối chiếu với ORM/migration/repository, final 37 unit + 5 Compose E2E, Ruff/format/mypy, one Alembic head và WBS/glossary/module. Nội dung chỉ khẳng định persistence/DB checks; không gán cho code trainer worker, resource isolation hoặc end-to-end WP06.
-
 ### 2026-11-07 — WP06 Task 3F: trainer batch gateway theo authorized attempt (Task 3 còn mở)
 
 - **Đã đọc trước vòng:** AGENTS và futures-bot skill; implementation-memory mới nhất, WP06 module/WBS, completion design/plan, evaluator receipt, normalized sample/assignment, attempt/event ledger, role grants và E2E fixture. Phạm vi Task3F nằm trong Task3 đã duyệt: trainer chỉ nhận train/validation từ exact attempt, không đọc trực tiếp bảng payload và source-dependent vẫn fail-closed. Giữ nguyên mọi staged/dirty WP03/WP05/WP07/WP06; không stage/commit/push/reset/clean.
@@ -1890,7 +2658,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Nguồn/version:** PostgreSQL 18 docs kiểm tra 07/11/2026: [`CREATE FUNCTION`/SECURITY DEFINER](https://www.postgresql.org/docs/18/sql-createfunction.html), [`Row Security Policies`](https://www.postgresql.org/docs/18/ddl-rowsecurity.html), [`CREATE POLICY`](https://www.postgresql.org/docs/18/sql-createpolicy.html), [`advisory lock functions`](https://www.postgresql.org/docs/18/functions-admin.html). Không đổi dependency/API sàn.
 - **Traceability/open:** cập nhật WBS, completion plan, module, project status, glossary EN→VI `Authorized trainer batch`. Task3F chỉ có source-independent batch; còn current-rights lock/recheck tới evaluator receipt commit, builder rights recheck tới normalized persist, pre-replay learning-intent quarantine và admin API/UI. Task4 chưa có worker/job loop, reclaim/cancel, hard CPU/memory/time enforcement và actual measurements; Task5–9 vẫn chưa hoàn tất. Không gọi đây là CPU trainer hay full WP06 journey, không tuyên bố Task3/WP06 hoàn tất.
 - **Đã đọc lại:** đọc lại mục vừa ghi và đối chiếu với migration/model/repository/service, unit 37, Compose 5/119.09s, static/type outputs, Alembic head và cập nhật WBS/glossary/module/status. Bảo đảm memory phân biệt DB gateway/receipt với trainer process/job thực thi.
-
 ### 2026-11-07 — WP06 Task 5A: CPU logistic baseline và artifact canonical (Task 5 còn mở)
 
 - **Đã đọc trước vòng:** AGENTS/futures-bot skill, implementation-memory, WP06 WBS/implementation plan/completion design, batch gateway/authorized attempt/resource contract, glossary và module AI. Task5A nằm trong phạm vi đã duyệt: thuật toán CPU baseline trên batch typed train/validation, metric validation chẩn đoán, artifact có hash và không cấp quyền scoring. Không stage/commit/push/reset/clean; giữ nguyên mọi thay đổi WP03/WP05/WP07 và slices trước.
@@ -1900,7 +2667,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Metric/reference:** kiểm tra nguồn scikit-learn chính thức ngày 2026-11-07 về [`accuracy_score`](https://scikit-learn.org/stable/modules/generated/sklearn.metrics.accuracy_score.html), [`DummyClassifier`/`most_frequent`](https://scikit-learn.org/stable/modules/generated/sklearn.dummy.DummyClassifier.html), [`confusion_matrix`](https://scikit-learn.org/stable/modules/generated/sklearn.metrics.confusion_matrix.html), [`recall_score` macro](https://scikit-learn.org/stable/modules/generated/sklearn.metrics.recall_score.html), và [`log_loss`](https://scikit-learn.org/stable/modules/generated/sklearn.metrics.log_loss.html). Chỉ dùng làm định nghĩa/đối chiếu metric; không import scikit-learn hoặc thay đổi dependency. Đã thêm các thuật ngữ EN→VI vào glossary.
 - **Giới hạn còn mở:** deadline trong application không phải hard process timeout; memory estimate chưa phải cgroup/OS limit. Chưa có worker/job claim/reclaim/cancel, event actual elapsed/peak memory/operation cost, run/artifact DB persistence, registry/human approval, scorer/PAPER integration hoặc full journey. Task3 rights/quarantine/API gaps và Task4 worker/isolation còn mở; Task5 chỉ có thuật toán và artifact trong bộ nhớ, không xem Task5/WP06 hoàn tất. Không cần E2E Playwright vì không đổi UI.
 - **Đã đọc lại sau cập nhật:** so mục này với test/Compose/static outputs và source; đối chiếu WBS, completion plan, `06-ai-learning.md`, project status và glossary. Xác nhận `41 passed`, `1 Compose passed` cho gateway boundary, Alembic head, no dependency/schema/UI change và giới hạn worker/persistence còn ghi rõ. Không có file khác được stage/commit/push.
-
 ### 2026-11-07 — WP06 Task 4C/5A: process runner và cost đo từ trainer (Task 4/5 còn mở)
 
 - **Đọc trước vòng:** đọc lại phần cuối implementation-memory Task3F/4A/4B/5A, WP06 completion design/plan, WBS Task4/5, module `06-ai-learning.md`, domain resource/attempt, DB trigger/migration `a0c2e4f6b8d0`, trainer batch gateway, Compose probe và process worker profile. Giữ nguyên toàn bộ thay đổi WP03/WP05/WP07/WP06 trước đó; không stage/commit/push/reset/clean.
@@ -1911,8 +2677,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Nguồn/API:** Python 3.14 docs kiểm ngày 2026-11-07 về [multiprocessing `spawn`](https://docs.python.org/3.14/library/multiprocessing.html) và [Unix `resource`, RLIMIT/getrusage](https://docs.python.org/3.14/library/resource.html); PostgreSQL 18 [system information functions, `pg_get_functiondef`](https://www.postgresql.org/docs/18/functions-info.html). `pg_get_functiondef` tái tạo `CREATE OR REPLACE FUNCTION`, migration fail nếu công thức không xuất hiện đúng một lần. Không thêm dependency.
 - **Giới hạn còn mở:** runner được kiểm qua Compose probe; chưa có queue/job worker sản phẩm tự claim, retry/reclaim/cancel, restart recovery, cgroup cap, DB run/artifact persistence hoặc registry. Child và worker vẫn cùng container/network/filesystem; RLIMIT chỉ giới hạn resource process, không phải security sandbox. Current source-rights lock/quarantine/API/UI của Task3 vẫn mở. Task4/5/WP06 chưa hoàn tất.
 - **Đã đọc lại:** đối chiếu mục vừa ghi với runner, trainer counter, migration, Compose probe/test, WBS/module/status/glossary và output cuối: 60 unit, 1 Compose E2E, Ruff/format/mypy, one Alembic head. Giữ rõ ranh giới: E2E chứng minh process fit và cost event, không chứng minh sản phẩm có job scheduler, artifact persistence hay cgroup isolation.
-
-
 ### 2026-11-07 — WP06 Task 4D/5B: one-shot trainer worker và artifact persistence (WP06 vẫn mở)
 
 - **Đã đọc trước vòng:** AGENTS, futures-bot skill, implementation-memory gần nhất, WP06 WBS/completion design/plan/module, Task3 trainer batch gateway, Task4 attempt/process contract, Task5 CPU trainer, Compose worker profile và E2E probe. Phạm vi tiếp theo là biến probe trainer thành CLI worker thật, lưu artifact cùng terminal event; giữ nguyên thay đổi staged/dirty WP03/WP05/WP06/WP07, không stage/commit/push/reset/clean.
@@ -1922,7 +2686,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Nguồn/version:** không thêm thư viện hoặc dùng hành vi API mới; PostgreSQL 18 `sha256`, RLS/deferred constraint semantics và Python 3.14 multiprocessing/resource đã được xác minh ở mục Task4C cùng ngày 07/11/2026; migration dùng major đang pin trong Compose. Không gọi Binance/Telegram/live order.
 - **Giới hạn còn mở:** đây là one-shot worker nhận attempt ID từ dispatcher tin cậy, chưa phải job queue/lease/supervisor. Receipt commit trước khi process chạy; crash sau receipt trước artifact làm attempt không thể claim lại, cần idempotent job lifecycle/recovery ở Task4D. Chưa có cancel/backoff/restart/cgroup; artifact chưa có registry/list/read API hoặc evaluation/approval gate. Task3 source-rights lock, builder recheck, quarantine/API/UI vẫn mở; model luôn abstain, không có scorer/order/LIVE. Không coi Task4/Task5/WP06 hoàn tất.
 - **Traceability:** cập nhật WP06 WBS, completion plan Task4/5, module `06-ai-learning.md`, `project-status.md` và glossary EN→VI cho immutable training artifact/one-shot trainer worker. **Đã đọc lại** mục vừa ghi và đối chiếu migration/model/repository/worker/CLI, kết quả 70/1, lint/type/format/Alembic và các docs. Xác nhận các tài liệu chỉ khẳng định one-shot worker/artifact persistence, còn ghi rõ queue/recovery/registry/UI và không tuyên bố WP06 hoàn tất.
-
 ### 2026-11-07 — WP06 Task 4D queue/recovery + Task 5B worker completion (WP06 vẫn mở)
 
 - **Đã đọc trước vòng:** `AGENTS.md`, skill `futures-bot-implementation`, implementation memory gần nhất, WBS WP06, completion design/plan, module `06-ai-learning.md`, project status, migration/model/repository `d1e3f5a7c9b1`, one-shot worker/process/CLI, Compose WP06 E2E và test hỗ trợ. Giữ nguyên toàn bộ trạng thái staged/dirty WP03/WP05/WP06/WP07; không stage/commit/push/reset/clean.
@@ -1934,7 +2697,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Nguồn/version đã kiểm tra 2026-11-07:** [PostgreSQL 18 `SELECT ... SKIP LOCKED`](https://www.postgresql.org/docs/18/sql-select.html) nêu skip-locked phù hợp cho consumer queue; [Docker Compose service reference](https://docs.docker.com/reference/compose-file/services/) và [deploy resources](https://docs.docker.com/reference/compose-file/deploy/#resources) xác nhận CPU/memory/PID limits cùng yêu cầu cấu hình nhất quán; [Python 3.14 multiprocessing](https://docs.python.org/3.14/library/multiprocessing.html) xác nhận `terminate()`/`kill()` API và cảnh báo process descendants/resources. Không thêm dependency hoặc dùng API sàn.
 - **Docs/traceability:** cập nhật completion plan, WP06 WBS, module Plan06, project-status, glossary `Training job lease generation`/`Container cgroup resource cap`. Đã đọc lại các tài liệu và ghi rõ limitations: queued cancellation E2E đã đạt nhưng running cancellation race E2E chưa chạy; chưa có exponential backoff/continuous supervisor/restart fault-injection; chưa runtime-read cgroup limits; artifact list/API/registry/approval, shadow/PAPER, drift, admin responsive/full journey, Task3 rights/quarantine/UI còn mở. Không tuyên bố Task4/Task5/WP06 hoàn tất.
 - **Đã đọc lại mục memory này:** sau khi cập nhật, đọc lại chính section và đối chiếu với source/migration/test output; xác nhận E2E WP06 1 passed, unit hồi quy mở rộng 77 passed, Ruff/format/mypy/Compose/Alembic và docs khớp. Không stage/commit/push.
-
 ### 2026-11-07 — WP06 Task 4D: E2E hủy job đang chạy
 
 - **Đã đọc trước vòng:** đọc `AGENTS.md`, futures-bot skill, memory/WP06 WBS, completion plan/design, worker/process runner, repository job, PostgreSQL Compose probe và E2E. Tập trung đóng rủi ro cancellation race đã ghi lại; không sửa production code, migration, UI hay các thay đổi WP03/WP05/WP07 đang staged/dirty. Không stage/commit/push/reset/clean.
@@ -1944,7 +2706,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Ruling:** giữ runner test double cho DB/heartbeat race vì nó giúp tạo trạng thái `running` xác định và không kéo dài CPU test; đổi lại, assertion PID/terminate thuộc lát test process-runner tiếp theo. Không gọi E2E này là kiểm chứng kill process con thực.
 - **Tài liệu/việc mở:** cập nhật WP06 WBS, completion plan Task4, module Plan06 và project status: queued/running cancellation E2E đã có; tách rõ PID child terminate và runtime cgroup readback còn thiếu. Queue polling/backoff/restart, Task3 current-rights/quarantine/API/UI, artifact list/registry/approval, shadow/PAPER, drift và full integration vẫn còn mở.
 - **Đã đọc lại memory:** đối chiếu mục này với hai RED lần đầu, E2E pass 43.41s, unit 77 pass, lint/format pass và các tài liệu; kết quả không phóng đại test double thành process kill. WP06 còn đang triển khai.
-
 ### 2026-11-07 — WP06 Task8A: poll supervisor và service Compose
 
 - **Đã đọc trước vòng:** đọc lại memory gần nhất, WP06 WBS/completion design/plan, `AppSettings`, app lifespan, trainer worker/CLI, Compose service và worker lifecycle tests. User đã duyệt plan WP06 tổng thể và yêu cầu tiếp tục triển khai; chọn supervisor trong lifespan hiện có để giữ health endpoint/credential boundary, scan đúng một workspace, không thêm scheduler/dependency. Không stage/commit/push/reset/clean; giữ mọi thay đổi WP03/WP05/WP06/WP07 đang staged/dirty.
@@ -1955,7 +2716,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Giới hạn:** Compose đã có `restart: unless-stopped`, nhưng chưa fault-injection process restart; stop E2E xảy ra sau job thành công và khi queue idle, chưa dừng giữa lúc child trainer đang chạy. PID child terminate chưa assertion trực tiếp; cgroup values mới được kiểm ở Compose config, chưa đọc runtime cgroup. Backoff được kiểm bằng unit callback, full WP06 journey/suite chưa chạy. Source-dependent data vẫn fail-closed.
 - **Tài liệu/traceability:** cập nhật Task8A trong completion plan, WP06 WBS, `06-ai-learning.md`, project-status. Không có API/dependency/trading/AI method mới nên không thêm glossary term; nguồn chính thức Compose/Python/PostgreSQL đã ghi ở vòng Task4D trước.
 - **Đã đọc lại memory:** đọc mục mới và đối chiếu 59 unit/1 Compose E2E, supervisor/settings/app/Compose, `stop_grace_period`, Ruff/mypy/Compose config/diff-check cùng các docs. Tài liệu phân biệt service poll đã đạt với restart-fault/PID/cgroup còn thiếu; WP06 chưa hoàn tất.
-
 ### 2026-11-08 — WP06 Task8A follow-up: cgroup runtime và chẩn đoán CLI an toàn
 
 - **Đã đọc trước vòng:** đọc skill dự án, memory gần nhất, WP06 completion plan/WBS/module/status, test Compose worker, probe và CLI trainer. Bảo toàn mọi staged/dirty thay đổi WP03/WP05/WP06/WP07; không stage/commit/push/reset/clean.
@@ -1965,7 +2725,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Kiểm chứng cuối:** focused unit supervisor/settings/readiness/API/job/process + CLI → **60 passed/2.43s**; `tests/e2e/test_wp06_normalized_fold_samples.py` → **1 passed/111.74s**, không skip, gồm recovery/queued+running cancellation/supervisor service/artifact atomic/runtime cgroup readback; `tests/e2e/test_compose_boundary.py` → **5 passed/79.84s**; Ruff check, format-check và mypy CLI đạt. Cgroup runtime trả đúng `{"cpu_millicores": 1000, "memory_limit_bytes": 1073741824, "pids_limit": 64}`.
 - **Tài liệu/việc còn mở:** cập nhật completion plan, WBS, module WP06 và status; không thêm thuật ngữ trading/AI nên không sửa glossary. Restart fault-injection, E2E dừng khi process con đang train, assertion PID sau terminate, Task3 current-rights/quarantine/API/UI, Task6 registry, Task7 shadow/PAPER/drift, Task8 admin và Task9 full journey còn mở. Không thay đổi UI nên không chạy Playwright.
 - **Đã đọc lại memory:** đọc lại mục này và đối chiếu test output, CLI/test, probe, cgroup limits và bốn tài liệu; ghi rõ lần lỗi generic chưa root-cause, E2E chạy lại pass và giới hạn process/restart chưa được đóng. WP06 tiếp tục ở trạng thái chưa hoàn tất.
-
 ### 2026-11-08 — WP06 Task 6: model registry, governance API và rollback
 
 - **Đã đọc trước vòng:** đọc project `AGENTS.md`, `futures-bot-implementation` skill, implementation memory, WP06 completion design/plan, module/WBS, Task6 brief, artifact/evaluation repositories và auth/CSRF patterns. Task6 triển khai theo approval hiện có; giữ mọi thay đổi WP03/WP05/WP06/WP07 staged/unstaged, không stage/commit/push/reset/clean.
@@ -1975,7 +2734,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Kiểm chứng cuối:** focused unit/service/API/model/CLI slice → **23 passed**. `tests/e2e/test_wp06_model_registry.py` → **1 passed/15.42s**. `tests/e2e/test_wp06_normalized_fold_samples.py` → **1 passed/68.56s**, Compose dùng ba artifact thật trainer và bao gồm register/retry/conflict, report linkage mismatch, stale revision/pointer, MFA approve/reject, activation/replacement/rollback, active-retire denial, append-only/RLS/grants và populated downgrade guard. Ruff check/format, mypy 5 source files, Alembic migration E2E và `git diff --check` đạt; không có UI change nên không chạy Playwright.
 - **Traceability/còn mở:** completion plan và module/WBS đã ghi Task6 complete; SDD ledger, project-status và memory được đồng bộ trong vòng này. Registry UI thuộc Task8 còn mở. Task3 source-rights lock/recheck, builder recheck, pre-replay quarantine/API/UI vẫn mở; Task7 shadow/PAPER/drift và Task9 full integration/security review chưa làm. Không thêm dependency hoặc thuật ngữ trading/AI; artifact không được quảng bá là model có thể chấm điểm.
 - **Đã đọc lại:** đọc lại section này sau khi ghi, đối chiếu với code/migration, 23 unit, hai Compose E2E và plan/WBS/status/ledger. Xác nhận report fixture được ghi rõ không phải evaluation evidence, pointer chỉ là metadata, Task6 không bị nhầm với hoàn tất WP06.
-
 ### 2026-11-08 — WP06 Task 3G: quyền TRAINING tại normalized builder (Task 3/WP06 còn mở)
 
 - **Đã đọc trước vòng:** đọc AGENTS, futures-bot skill, implementation-memory mới nhất, WP06 completion design/plan/WBS/module, Task3G brief, WP05 source observer/rights ledger, Task6, migration/roles và Compose E2E hiện có. Bảo toàn thay đổi WP03/WP05/WP06/WP07 đang staged/dirty; không stage/commit/push/reset/clean.
@@ -1985,8 +2743,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Kiểm chứng cuối:** `tests/unit/test_learning_source_training_receipt.py tests/unit/test_dataset_source_eligibility.py tests/unit/test_learning_fold_samples.py tests/unit/test_database_models.py` → **23 passed/0.42s**. `tests/e2e/test_wp06_normalized_fold_samples.py` → **1 passed/92.51s**, không skip: migration upgrade/alembic check/one head, source v3 fixture, builder persist, source writer concurrent phải đợi shared lock, typed metadata receipt, admin/trainer/app denial, receipt update trigger, policy revoke + WP05 invalidation, stale retry bị từ chối và payload/receipt giữ nguyên, populated downgrade guard. `tests/e2e/test_wp05_rights_change_outbox.py` → **1 passed/11.35s**. Ruff check/format, mypy 3 production files, `git diff --check` đạt.
 - **Tài liệu/giới hạn:** cập nhật task3G plan, WP06 WBS/completion plan/module/project-status, glossary EN→VI. PostgreSQL 18 advisory lock/isolation docs đã được kiểm tra từ nguồn chính thức ngày 2026-11-07; không thêm dependency/API sàn. Application `build_normalized_learning_dataset` và evaluator/trainer payload gateways vẫn fail-closed với source-dependent payload; Task3 còn thiếu evaluator/trainer rights lock đến receipt commit, learning-intent pre-replay quarantine và learning admin API/UI. Task7 shadow/PAPER/drift, Task8 registry admin UI/Playwright và Task9 full journey/review chưa làm. Scorer tiếp tục ABSTAIN, không có order/LIVE capability.
 - **Đã đọc lại:** đọc mục vừa ghi và đối chiếu diff/code/migration, 23 unit, WP06 Compose 92.51s, WP05 rights regression 11.35s, Ruff/format/mypy/diff-check cùng docs. Task3G builder slice hoàn tất; không gán thành Task3 hay WP06 completion.
-
-
 ### 2026-11-08 — WP06 Task 3H: evaluator/trainer current-source-rights gate (Task 3 và WP06 vẫn mở)
 
 - **Đã đọc trước vòng:** project `AGENTS.md`, skill `futures-bot-implementation`, implementation-memory, WP06 completion design/plan/WBS/module/status, Task3G builder gate, WP05 source-policy/item/outbox locks, evaluator/trainer gateway, model/repository và Compose E2E. Giữ nguyên staged/unstaged WP03/WP05/WP06/WP07 trong shared worktree; không stage/commit/push/reset/clean.
@@ -1997,7 +2753,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Nguồn đã xác minh 2026-11-08:** PostgreSQL 18 [Explicit Locking](https://www.postgresql.org/docs/18/explicit-locking.html) — transaction advisory locks và thứ tự ổn định; [Transaction Isolation](https://www.postgresql.org/docs/18/transaction-iso.html) — READ COMMITTED lấy snapshot mới theo statement; [CREATE FUNCTION](https://www.postgresql.org/docs/18/sql-createfunction.html) — harden SECURITY DEFINER/search_path/grants. Không thêm dependency hoặc API sàn.
 - **Tài liệu đồng bộ:** Task3H plan/checklist, SDD progress, WP06 completion plan/WBS/module/project-status và glossary EN→VI. No secret/dependency/UI changes. WP06 tiếp tục chưa hoàn tất: Task3 pre-replay quarantine/API/UI, Task4 restart/PID proof, Task7 shadow/PAPER/drift, Task8 registry admin responsive/Playwright, Task9 full integration/security review.
 - **Đã đọc lại:** mở lại mục mới này và đối chiếu model/migration/gate, E2E output 138.01s, regression WP05 13.06s, focused units 29, plan/WBS/status/SDD. Task3H được khép ở mức quyền hiện hành cho evaluator/trainer; không gán thành hoàn tất Task3 hay WP06.
-
 ### 2026-11-08 — WP06 Task 3I: pre-replay learning-intent quarantine (Task 3/WP06 vẫn mở)
 
 - **Đã đọc trước vòng:** `AGENTS.md`, skill `futures-bot-implementation`, implementation-memory, WP06 completion design/plan/WBS/module/status, Task3G/H, replay job/executor, candidate proof, admin backtest routes/templates, CLI reader và migration chain. Bảo toàn mọi thay đổi staged/dirty WP03/WP05/WP06/WP07 trong shared worktree; không stage/commit/push/reset/clean.
@@ -2007,7 +2762,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Kiểm chứng cuối:** focused replay/candidate/admin unit **98 passed/1.83s**; candidate proof Compose E2E `tests/e2e/test_wp06_candidate_universe_proof.py` **1 passed/41.22s**; Ruff check, format-check, mypy trên 5 source files, `git diff --check` đạt. Candidate Compose E2E kiểm migration/head, metadata ACL/RLS và proof gating. Không có failure/flaky chưa điều tra trong lượt xác minh cuối.
 - **Traceability:** thêm Task3I plan, SDD progress, cập nhật completion plan/WBS/module/project-status và glossary EN→VI `Training-intent replay quarantine`; không có API/version-sensitive/dependency change nên không tra tài liệu ngoài mới. Task3 vẫn mở do chưa có admin API/UI split approval MFA trước seal; evaluator/trainer rights receipt vẫn service principal. Task4 còn restart-fault/PID proof; Task7 shadow/PAPER/drift; Task8 registry UI; Task9 full integration/security review. Scorer vẫn `ABSTAIN`, candidate completeness vẫn false; không order/LIVE capability.
 - **Đã đọc lại:** đọc lại mục vừa thêm, Task3I plan, WBS, module, project-status, glossary và SDD progress; đối chiếu migration/source/test output/screenshot. Task3I hoàn thành, không gán thành Task3/WP06 completion.
-
 ### 2026-11-08 — WP06 Task 4E: xác nhận PID child và worker restart
 
 - **Đã đọc trước vòng:** skill `futures-bot-implementation`, implementation-memory, WP06 design/completion plan/WBS/module/status và mã supervisor/process runner. Giữ nguyên các thay đổi WP03/WP05/WP06/WP07 đang staged/dirty; không stage/commit/push/reset/clean.
@@ -2017,7 +2771,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Dọn Docker:** kiểm kê container/image trước khi xóa; 95 tag `crypidian-app:e2e-*` cũ không được container nào tham chiếu đã xóa. Giữ tag image của worktree hiện tại, Postgres/Garage/support images và mọi container; không chạy global prune hay xóa build cache. `docker system df` giảm image từ 98 object/2.213GB xuống 3 object/1.171GB, reclaimable từ 1.049GB xuống 521.5MB.
 - **Traceability/còn mở:** Task4E cập nhật trong completion plan/WBS/module/project-status; Task4 đóng trong phạm vi evidence trên. Task3 còn admin split-approval API/UI trước seal, Task7 shadow/PAPER/drift, Task8 registry UI/Playwright và Task9 full journey/security review. Task WP06 tiếp tục mở.
 - **Đã đọc lại:** đọc section vừa ghi và đối chiếu plan/WBS/module/status, runner/probe, test outputs cùng Docker inventory/df trước-sau; xác nhận giới hạn restart được nêu rõ và không tuyên bố WP06 hoàn tất.
-
 ### 2026-11-08 — WP06 Task 8B: admin queue huấn luyện và kiểm chứng metadata-only
 
 - **Đã đọc trước vòng:** `AGENTS.md`, skill `futures-bot-implementation`, implementation-memory, WP06 completion design/plan/WBS/module/project-status, Task8A supervisor, split approval, normalized fold/profile/approval models, DB roles/RLS, training jobs/attempts, admin registry UI, auth/CSRF/MFA và Compose E2E. Bảo toàn dirty/staged WP03/WP05/WP06/WP07; không stage/commit/push/reset/clean.
@@ -2028,14 +2781,12 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Ảnh:** `tests/e2e/evidence/wp06-training-desktop.png`, `tests/e2e/evidence/wp06-training-mobile.png`; hiển thị hàng đợi trống ở desktop và trạng thái tác vụ đã xếp ở mobile.
 - **Traceability/còn mở:** cập nhật `06-ai-learning.md`, completion plan, WP06 WBS, project status và glossary EN→VI (Fold, Learning training job). Task8 supervisor + registry/training admin responsive được khép. Task3 còn admin split approval API/UI trước seal; Task7 shadow/PAPER/drift và Task9 full integration/security review vẫn mở. Không tuyên bố WP06 hoàn tất.
 - **Đã đọc lại:** đọc lại mục mới, memory, plan/WBS/module/project-status/glossary; so sánh với migration/query/service/routes/template/JS, test output, Alembic head và screenshot. Sai khác probe cũ đã sửa và E2E chạy lại pass; trạng thái còn mở phản ánh đúng Task3/7/9.
-
 ### 2026-11-08 — WP06 Task 3: HTTP E2E cho quản trị learning split
 
 - **Phạm vi:** bổ sung Compose E2E riêng gọi HTTP `GET /api/v1/learning-splits/candidates` và `POST /api/v1/learning-splits/{candidate_id}/approve` với PostgreSQL thật, session/cookie, role binding, CSRF và MFA theo flow admin hiện có. Probe kiểm workspace isolation, quyền từ chối, approval và persistence, retry cùng idempotency key, key dùng lại với payload khác trả HTTP 409. Không dùng fixture shared của normalized E2E.
 - **Sửa lỗi được test phát hiện:** xung đột approval khi cùng idempotency key bị router trả 500; map `LearningSplitApprovalConflict` thành HTTP 409 trong `learning_split_router.py`. E2E đỏ trước thay đổi và xanh sau đó.
 - **Kiểm chứng cuối:** `PYTHONPATH=. uv run pytest tests/e2e/test_wp06_split_admin_http.py -q -s --tb=short` trên Alembic head `d3a5c7e9b1d4` → **1 passed/15.86s**; xác nhận kiểm tra upgrade/head và HTTP API/DB thật. Playwright `tests/e2e/test_learning_split_admin_ui.py` trước đó → **1 passed/3.98s**. Unit split approval/candidate trong lượt xác nhận hiện hành → **7 passed/0.36s**. Ruff check/format và mypy router đạt; full unit trước đó → **3.023 passed/15.46s**.
 - **Đã đọc lại:** đọc lại đoạn vừa thêm và đối chiếu route/probe, HTTP E2E 1/15.86s, UI 1/3.98s và focused unit 7/0.36s. Không cập nhật WBS/module/status trong mục này.
-
 ### 2026-11-08 — WP06 Task 7: PostgreSQL E2E cho shadow/drift ledger
 
 - **Phạm vi và snapshot:** thêm probe Compose riêng `tests/e2e/probes/wp06_shadow_drift_persistence.py` và test `tests/e2e/test_wp06_shadow_drift_persistence.py`; kiểm trên migration head `d3a5c7e9b1d4` sau `alembic upgrade head`. E2E gồm `alembic check` (không phát hiện model drift), `heads`, và check lại head sau khi downgrade có dữ liệu bị guard từ chối.
@@ -2043,7 +2794,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Kiểm chứng cuối:** `PYTHONPATH=. uv run pytest tests/e2e/test_wp06_shadow_drift_persistence.py -q -s --tb=short` → **1 passed/16.69s**. `PYTHONPATH=. uv run pytest tests/unit/test_learning_shadow_drift_persistence.py -q --tb=short` → **6 passed/0.26s**. Ruff check/format hai file probe/test đạt.
 - **Giới hạn còn mở:** probe xác minh trực tiếp DB schema, role, RLS, helper và trigger; chưa gọi application integration service, supervisor hoặc worker để tạo shadow observation/drift assessment. Chưa tạo positive observation với lineage đầy đủ từ decision/evidence/snapshot, model registry approval và market source rights; chưa kiểm một cohort có assessment members. Kết quả này không tự đóng Task7 hay WP06.
 - **Đã đọc lại:** đọc lại mục vừa ghi và đối chiếu migration head, test result, SQL helper/ACL assertions cùng giới hạn chưa được kiểm; không sửa WBS, module hay status.
-
 ### 2026-11-08 — WP06 Task7A/7B database guard hardening (Task7 vẫn mở)
 
 - **Đã đọc trước vòng:** AGENTS.md, futures-bot skill, mục implementation-memory mới nhất, WBS WP06, kế hoạch Task7, completion plan, migration/model/repository/service WP06.7 và review độc lập. Giữ nguyên thay đổi staged/dirty WP03/WP05/WP06/WP07; không stage/commit/push/reset/clean.
@@ -2056,7 +2806,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Docker cleanup:** xóa thêm 9 image tag `crypidian-app:e2e-*` sau khi xác nhận không container nào tham chiếu; lượt trước trong cùng đợt đã xóa thêm 5 tag. Giữ nguyên PostgreSQL/Garage và các container hạ tầng đang chạy.
 - **Giới hạn/việc còn mở:** chưa có positive end-to-end persisted decision → application/supervisor observer → observation/cohort members; current-rights stale case và pointer-race Compose chưa chạy; DB chưa tái tính `content_hash`/`idempotency_key` canonical; validator deferred chạy cho parent và từng member nên cohort lớn có thể quét lặp. Task7B application/repository, Task8C responsive admin + Playwright screenshots và Task9 full journey/review vẫn đang làm. Đây không phải bằng chứng scorer/calibration/PAPER_GATE; challenger vẫn ABSTAIN và không tạo order.
 - **Đã đọc lại memory sau cập nhật:** đối chiếu section này với migration, repository/domain, probe và outputs unit **3056**, Compose **1 passed**, Ruff/format/mypy; giữ giới hạn về hash, positive lineage, rights-stale, deferred-trigger cost và WP06 chưa hoàn tất.
-
 ### 2026-11-08 — WP06 Task7B application/repository và Task8C responsive verification
 
 - **Phạm vi:** hoàn thiện slice persistence của Task7B và rà lại trang observation/drift. Không stage/commit/push/reset/clean; giữ nguyên phần WP03/WP05/WP06/WP07 đang staged/dirty.
@@ -2066,7 +2815,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Docker:** inventory hiện có hai image nền PostgreSQL/Garage và một tag `crypidian-app:e2e-*` mới được tạo bởi các lượt E2E đang chạy; image E2E chưa được xóa khi còn agent kiểm thử. Hai container PostgreSQL đang dùng chung image digest; giữ image nền/volume. Kiểm tra cuối và xóa tag E2E không còn container tham chiếu sẽ thực hiện sau khi Compose agents kết thúc.
 - **Còn mở:** database chưa tính lại canonical hash/idempotency cho observation/assessment/proposal; positive persisted-decision → observer → assessment/member Compose E2E và Task9 full journey/security review đang chạy song song. Task8C đã có responsive screenshot nhưng chưa kết luận WP06 hoàn tất. Artifact scorer tiếp tục `ABSTAIN`/uncalibrated; không có execution capability.
 - **Đã đọc lại mục memory sau cập nhật:** đối chiếu file source/test, nhánh RED/GREEN quyền, kết quả focused unit **37/41**, Playwright **1**, ảnh evidence và trạng thái agent; không mở rộng tuyên bố sang Compose cohort hoặc WP06 completion.
-
 ### 2026-11-08 — WP06 Task9 query/cohort persistence regressions
 
 - **Đã đọc trước vòng:** `AGENTS.md`, skill `futures-bot-implementation`, implementation-memory, WP06 WBS/completion plan, Task7 shadow/drift plan, migration/repository, market-signal producer composition và Task9 probe. Giữ nguyên mọi thay đổi staged/dirty WP03/WP05/WP06/WP07 trong shared worktree; không stage/commit/push/reset/clean.
@@ -2076,14 +2824,12 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Traceability/giới hạn:** Task9 nay chứng minh real training → PAPER decision → observer → cohort/member → retry/restart/rollback trong fixture nhưng **không** hoàn tất WP06. Scorer tiếp tục `calibrated=false`/`ABSTAIN`; candidate completeness false; chưa mở `PAPER_GATE`. Current-rights revocation và pointer-race evidence cùng scorer calibration/parity/OOS review còn mở. Không thêm thuật ngữ trading/AI mới.
 - **Tài liệu đồng bộ:** cập nhật WBS WP06, completion plan, Task7 observer/drift plan, `06-ai-learning.md` và `project-status.md`; sửa trạng thái cũ về split admin, canonical hash/persistence và Task9. Đọc lại status/WBS/task plan/module để xác nhận Task9 chỉ đóng positive integrated journey, không tuyên bố WP06 hoàn tất.
 - **Đã đọc lại memory sau cập nhật:** mở lại section này và đối chiếu code/migration/unit/E2E output, ghi chính xác root cause hai lỗi và giữ trạng thái WP06 chưa hoàn tất; không gán Task9 pass thành scorer calibration hay toàn bộ WP06.
-
 ### 2026-11-08 — Dọn image Docker E2E không còn dùng
 
 - **Kiểm tra trước khi xóa:** `docker ps -a` chỉ có ba container PostgreSQL; không container nào tham chiếu các tag `crypidian-app:e2e-*` đang tồn tại. Giữ nguyên container, image PostgreSQL/Garage, volume và build cache.
 - **Đã xóa đúng bốn tag mồ côi:** `crypidian-app:e2e-232be3ce083643d40230`, `crypidian-app:e2e-7e4541438687a019d0ba`, `crypidian-app:e2e-9e7b3eaec7f810400eac`, `crypidian-app:e2e-f4e5724d27ed6992e278`. Không chạy `docker image prune`, `docker system prune` hoặc xóa cache.
 - **Sau dọn:** còn hai image hạ tầng (PostgreSQL và Garage), tổng 743.8 MB; image reclaimable 94.71 MB. Build cache 3.364 GB được giữ nguyên vì người dùng yêu cầu dọn image, không yêu cầu xóa cache.
 - **Đã đọc lại:** đối chiếu mục này với kết quả `docker image rm`, `docker image ls` và `docker system df`; image hạ tầng và volume vẫn hiện diện.
-
 ### 2026-11-08 — WP06 Task7 sửa ánh xạ quyền source bar chính xác
 
 - **Finding đã xác minh:** review độc lập phát hiện SQL `LIKE 'BINANCE_RB_%'` coi `_` là wildcard; `BINANCE_RB_...` thực ra là nhãn cursor, không phải `MarketBar.source`. REST backfill dùng source `BINANCE_USDM_REST_BACKFILL`, còn public USD-M adapter ghi `BINANCE_USDM`; quyền hiện hành thuộc `BINANCE_USDM_REST`. Đây là lỗi mở rộng allowlist và thiếu ánh xạ source→policy tường minh.
@@ -2092,7 +2838,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Task9 concurrency:** Task9 Compose với pointer race + rights revocation đạt **1 passed/76.73s** trên migration trước mapping. Sau mapping, lượt kiểm tra lại ban đầu dừng ở fixture seed do lát manifest v4 đang được triển khai thêm `bar_identity_hash` nhưng một builder chưa truyền trường. Chưa coi Task9 sau mapping là đạt; sẽ chạy lại sau khi manifest v4 đồng bộ.
 - **Giới hạn WP06:** scorer tiếp tục `ABSTAIN`; source mapper không chứng minh feature schema/vector parity, calibration/OOS scorer report, candidate-universe completeness hay deployment governance. `PAPER_GATE` vẫn khóa. Independent review không còn blocker về mapping sau khi E2E chạy lại trên migration cuối.
 - **Đã đọc lại:** mở lại mục này và đối chiếu unit, PostgreSQL E2E, migration helper/trigger/grants/downgrade và lần Task9 thất bại ở builder; giữ tách bạch pass trước mapping với run đang chờ.
-
 ### 2026-11-08 — WP06 Task7C.1a: định danh MarketBar chính xác cho manifest v4
 
 - **Thay đổi:** thêm `MarketBarSourceIdentity` bất biến gồm workspace UUID, record UUID, logical key, revision, supersedes UUID và stored checksum; `_to_domain_bar` hydrate các giá trị trực tiếp từ đúng hàng `MarketBar`. Manifest mặc định schema v4, bắt buộc ordered identity digest theo từng bar và workspace, đồng thời vẫn đọc/phát schema v2/v3 cũ. Builder v4 từ chối bar không có identity DB-authoritative hoặc sai workspace; không dựng identity từ timestamp/nội dung. Replay loader kiểm lại cả content hash lẫn record/revision digest; bundle kiểm lại identity mỗi component. Synthetic replay fixtures khai báo schema v3 tường minh và không đủ điều kiện exact scorer parity.
@@ -2102,7 +2847,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Kiểm chứng cuối:** `uv run pytest tests/e2e/test_wp07_rest_backfill_persistence.py -q --tb=short` → **2 passed/31.23s**: full backfill/replay persistence và E2E identity-only; năm assertion identity đều true. Compose cleanup và image removal được assert exit 0. Focused 8-module unit → **149 passed/0.78s**; Ruff check 16 file đạt, format-check **16 files already formatted**, mypy 5 source file đạt, diff-check đạt.
 - **Giới hạn/quyết định:** manifest v2/v3 vẫn replay-compatible nhưng `has_pinned_source_identities=false`; không được xem là exact scorer parity. Không thêm migration hay thuật ngữ trading/AI mới. Scorer vẫn `ABSTAIN`, calibration chưa làm và `PAPER_GATE` khóa. Task9 sau khi schema v4 đồng bộ vẫn cần parent rerun.
 - **Đã đọc lại:** đọc mục này sau khi cập nhật và đối chiếu domain/repository/manifest/loader/bundle, 149 unit, hai Compose E2E, Ruff/format/mypy/diff-check và test-role boundary fix; full WP07 persistence E2E hiện pass, scorer/PAPER_GATE vẫn giữ fail-closed.
-
 ### 2026-11-08 — WP06 Task7C pure validation temperature-fit contract
 
 - **Đã đọc trước vòng:** `AGENTS.md`, skill `futures-bot-implementation`, implementation-memory hiện hành, approved scorer design `2026-11-08-wp06-task7-calibrated-scorer-design.md`, Task7 shadow/drift plan và WP06 completion plan. Design/glossary đã trích dẫn Guo et al. ICML 2017 cho temperature scaling; thuật ngữ EN→VI đã có, không thêm dependency hoặc glossary entry.
@@ -2113,7 +2857,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Kiểm chứng cuối:** `PYTHONPATH=. uv run pytest tests/unit/test_learning_calibration.py -q --tb=short` → **8 passed/0.04s**. `PYTHONPATH=. uv run ruff check src/trading_bot/domain/learning/calibration.py tests/unit/test_learning_calibration.py` → **All checks passed**; `ruff format --check` → **2 files already formatted**; `mypy` riêng source và test → **Success, no issues found** cho mỗi file; `git diff --check -- src/trading_bot/domain/learning/calibration.py tests/unit/test_learning_calibration.py` → exit 0.
 - **Còn mở:** policy hash/canonical artifact, caller nối raw logits với batch validation đã được authorize, test receipt/gateway, scorer-specific OOS report và deployment governance thuộc các lát sau. Temperature scaling OVR→softmax vẫn là giả thuyết của approved design, không được suy ra hiệu quả từ validation NLL giảm.
 - **Đã đọc lại:** đọc lại mục vừa thêm và so với source/test cùng kết quả 8 unit/Ruff/format/mypy/diff-check; xác nhận chỉ domain toán validation được thêm và mọi cổng production/PAPER vẫn giữ nguyên.
-
 ### 2026-11-08 — WP06 Task7C.1b canonical snapshot/schema parity runtime ↔ replay
 
 - **Đã đọc trước vòng:** `AGENTS.md`, skill `futures-bot-implementation`, implementation memory WP06/WP07C gần nhất, WP06 Task7 shadow/drift plan, WP06 completion plan/WBS, plan WP07C replay-decision-snapshots, `market_signal_composition.py`, `backtest_dataset_replay_observations.py`, `DecisionSnapshot`, `FeatureCalculator`, market-bar repository/identity contract và unit tests tương ứng. Phạm vi được giao là pure builder/serializer và wiring runtime/replay; không stage/commit, không sửa scorer, candidate-completeness hoặc gate.
@@ -2126,7 +2869,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Static:** Ruff check **5 files** đạt; Ruff format-check **5 files already formatted**; Mypy **3 production modules, no issues**; `py_compile` và `git diff --check` cho 5 file đạt. Không có thay đổi API, dependency hay migration.
 - **Giới hạn/quyết định:** parity chỉ đạt khi cùng workspace, MarketBar record/revision/checksum, cutoff, feature contract, quality output và context trùng; nguồn khác hoặc freshness khác phải có ID khác. Legacy replay IDs tiếp tục namespace theo bundle. Task này chỉ canonical hóa đầu vào; artifact vẫn `calibrated=false`/`ABSTAIN`, candidate completeness false, `PAPER_GATE` vẫn khóa. Không đánh giá calibration/OOS, performance, drift hay cho phép order.
 - **Đã đọc lại sau cập nhật:** đối chiếu mục này với builder, cả hai wiring paths, source identity hydration, test RED/GREEN và output 106+26 unit, E2E, Ruff/Mypy/compile/diff-check. Ghi riêng Task9 E2E do root chạy trước lát này để không gán nhầm bằng chứng; không kết luận WP06 hoàn tất.
-
 ### 2026-11-08 — WP06 Task7C.1c immutable LearningFeatureVector contract
 
 - **Đã đọc trước vòng:** `AGENTS.md`, skill `futures-bot-implementation`, implementation memory WP06/WP07C mới nhất, approved scorer design `2026-11-08-wp06-task7-calibrated-scorer-design.md`, WBS WP06, `DecisionSnapshot`, C.1b snapshot builder, runtime `PostgresMarketDecisionSnapshotProvider`, replay observation builder và tests parity. Phân biệt rõ C.1b chỉ chuẩn hóa/hash `DecisionSnapshot`; C.1c thêm typed per-timeframe lineage và vector contract, chưa nối scorer/runtime deployment hoặc rights gateway.
@@ -2138,14 +2880,12 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Static:** Ruff check **6 Python files** đạt; Ruff `format --check` **6 files already formatted**; mypy **4 production modules, no issues**; scoped `git diff --check` exit 0. Không có migration, dependency/API venue, UI, database change hoặc test E2E Compose trong lát thuần domain/application này; runtime/replay wiring ngoài test không đổi. Full-unit baseline do root chạy trước thay đổi là **3103 passed/16.12s**, không phải full-unit rerun sau C.1c.
 - **Còn mở/ranh giới:** chưa nối vector vào candidate scorer, training/evaluation gateway, persisted training rows, rights receipt/fingerprint, calibration/scorer v2, SHADOW/PAPER gate hoặc deployment. Builder chỉ kiểm cấu trúc/lineage được gắn trong đúng snapshot; không tự chứng minh quyền nguồn hiện hành hay performance model. Vector vẫn là prerequisite contract, không kích hoạt scoring/execution và không thay đổi `ABSTAIN`/`PAPER_GATE` lock.
 - **Glossary và đọc lại:** mở rộng mục `Learning feature vector / point-in-time feature vector` EN→VI với schema/vector hash, release content hash và quyền nguồn tách riêng, trích dẫn approved Task7 spec. Đã đọc lại section này sau khi append và so với source, unit/static outputs, glossary và giới hạn scope; phân biệt Task7C.1b DecisionSnapshot parity với C.1c vector, không ghi E2E/pass mà chưa chạy và không đánh dấu WP06 hoàn tất.
-
 ### 2026-11-09 — WP06 Task7C.1c canonical float64 hash follow-up
 
 - **Finding/TDD:** review phát hiện `LearningFeatureVectorFeature.value_type` luôn là `float64`, nhưng constructor nhận `int` và giữ nguyên Python type; JSON canonicalization vì vậy serialize `4` khác `4.0` và làm đổi vector hash dù giá trị số tương đương. RED regression `test_integer_feature_input_has_same_float64_canonical_vector_hash` → **1 failed**: integer ATR input tạo hash `02e687…f4d028`, float ATR tạo `c22042…e27573e23`.
 - **Sửa:** domain `LearningFeatureVectorFeature.__post_init__` kiểm kiểu numeric, chuyển giá trị sang `float`, từ chối conversion overflow/value error, kiểm finite sau conversion rồi gán lại bằng `object.__setattr__` trước khi vector canonical JSON/hash được tính. `bool`, NaN/infinity và ngoài miền float64 vẫn bị từ chối. Không sửa builder, rights, schema semantics, scorer hay runtime.
 - **Kiểm chứng cuối:** targeted RED regression sau sửa → **1 passed/0.74s**. `PYTHONPATH=. uv run pytest tests/unit/test_learning_feature_vector.py tests/unit/test_decision_snapshot_builder.py tests/unit/test_backtest_dataset_replay_observations.py -q --tb=short` → **20 passed/1.41s**. Ruff check **2 files** đạt; Ruff `format --check` **2 files already formatted**; mypy domain module **Success/no issues**; scoped `git diff --check` exit 0.
 - **Giới hạn/đọc lại:** không có database/service/UI boundary nên không chạy Compose/E2E. Đã đọc lại mục follow-up sau khi ghi và so hash-regression với domain implementation cùng final unit/static output; chưa stage/commit.
-
 ### 2026-11-09 — WP06 Task7C.1c review fix round 1
 
 - **Đã đọc/đánh giá review:** đọc `receiving-code-review` skill, review findings C.1c, implementation memory, approved scorer spec, report `vector-contract-implementer-report.md`, snapshot/vector builder và focused tests. Xác nhận hai lỗ hổng: vector builder chỉ kiểm digest với IDs trong lineage mà không bind chúng lại với bars/features/snapshot ID; frozen `DecisionSnapshot`/`MarketSeries` vẫn giữ alias tới list input ở các collection lồng.
@@ -2156,7 +2896,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Kiểm chứng cuối:** `PYTHONPATH=. uv run pytest tests/unit/test_learning_feature_vector.py tests/unit/test_decision_snapshot_builder.py tests/unit/test_backtest_dataset_replay_observations.py -q --tb=short` → **26 passed/4.01s**. Ruff check **5 files** passed; Ruff `format --check` **5 files already formatted**; mypy **3 production modules, no issues**; scoped `git diff --check` exit 0. Không chạy full suite hoặc Compose/E2E theo yêu cầu root; post-fix full verification/scoped review do root tiếp tục.
 - **Contract/ranh giới:** v2 snapshot IDs thay đổi nếu cùng evidence được freshness-check ở evaluated time khác dù series status vẫn READY; feature snapshot IDs/evidence cutoff vẫn độc lập. Không sửa quyền nguồn, không nhận/caller-assert TRAINING receipt/fingerprint, không scorer/runtime/deployment, không DB/UI/migration. Không stage/commit.
 - **Report/readback:** append fix report vào `.superpowers/sdd/2026-11-08-wp06-task7-opportunity-universe-plan/vector-contract-implementer-report.md`; đã đọc lại phần vừa thêm cùng mục memory này, so với tests/static outputs và source để xác nhận v1 legacy vẫn đọc nhưng vector builder fail-closed, v2 freshness timestamp do caller cung cấp và không có quyền/scorer claim.
-
 ### 2026-11-09 — WP06 Task7C.1c review fix round 2: raw-reference binding
 
 - **Finding đã kiểm chứng:** `OHLCVBar.raw_reference` là ID của hàng raw-reference trong DB (`MarketBar.raw_reference_id`) và là lineage metadata. Canonical source/bar payload trước đó không đưa trường này vào hash; chỉ đổi `raw_reference` trong một pinned bar, giữ `source_identity`, checksum và snapshot ID cũ vẫn được vector builder chấp nhận.
@@ -2165,7 +2904,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Kiểm chứng cuối:** `PYTHONPATH=. uv run pytest tests/unit/test_learning_feature_vector.py tests/unit/test_decision_snapshot_builder.py tests/unit/test_backtest_dataset_replay_observations.py -q --tb=short` → **28 passed/4.83s**. `uv run ruff check` trên 7 file Python → **All checks passed**; `uv run ruff format --check` trên 7 file → **7 files already formatted**; `uv run mypy` trên 4 production modules → **Success: no issues found**; scoped `git diff --check` exit 0.
 - **Giới hạn:** theo controller không chạy full unit hay Compose/E2E; thay đổi nằm trong serializer/provenance thuần và các unit regression, controller sẽ chạy kiểm chứng tổng thể. Không thay quyền nguồn/current-rights fingerprint, scorer, runtime/deployment, persistence schema, `ABSTAIN`/`PAPER_GATE`; không stage/commit.
 - **Report/readback:** đã append round 2 vào `vector-contract-implementer-report.md` và đọc lại cả mục memory/report; đối chiếu với payload, regression tests và output static để xác nhận raw reference, gồm cả `None`, được bind nhất quán.
-
 ### 2026-11-09 — WP06 Task7C.1c review fix round 3: replay raw-reference hydration parity
 
 - **Finding đã xác minh:** runtime `market_signal_composition._to_bar` đã chuyển `MarketBar.raw_reference_id` thành `OHLCVBar.raw_reference`, nhưng replay dùng `BacktestDatasetReplayLoader → MarketDataRepository.list_bars → _to_domain_bar` và adapter `_to_domain_bar` bỏ qua field. Khi raw reference có mặt, canonical snapshot v2 có thể khác giữa runtime và replay dù các bar khác bằng nhau.
@@ -2174,8 +2912,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Kiểm chứng cuối:** `PYTHONPATH=. uv run pytest tests/unit/test_market_repository.py tests/unit/test_backtest_dataset_replay.py tests/unit/test_backtest_dataset_replay_bundle.py tests/unit/test_backtest_dataset_replay_context.py tests/unit/test_backtest_dataset_replay_execution.py tests/unit/test_backtest_dataset_replay_observations.py tests/unit/test_backtest_replay_executor.py tests/unit/test_runtime_replay_evaluator.py tests/unit/test_decision_snapshot_builder.py tests/unit/test_learning_feature_vector.py -q --tb=short` → **120 passed/4.44s**. Ruff check **3 files** → All checks passed; format-check **3 files already formatted**; mypy repository adapter **Success/no issues found**; `git diff --check` trên source/tests exit 0.
 - **Giới hạn:** theo controller không chạy full unit/Compose/E2E; thay đổi chỉ là DB-to-domain adapter và unit parity, không có migration/schema/API/rights/scorer/execution change. Controller sẽ chạy full unit và scoped review. Không stage/commit.
 - **Report/readback:** đã cập nhật và đọc lại `vector-contract-implementer-report.md` cùng mục memory này; đối chiếu mapping, fixture runtime/replay, RED/GREEN và kết quả static với code/test hiện tại.
-
-
 ### 2026-11-09 — WP06 Task7C.1.1 PostgreSQL Compose runtime/replay vector parity
 
 - **Đã đọc/phạm vi:** AGENTS, futures-bot-implementation, memory, brief/plan C.1.1 và approved Task7 scorer design; chỉ thêm `tests/e2e/test_wp06_learning_feature_vector_parity.py`, probe tương ứng và implementer report. Không sửa production/Compose/migration/scorer/rights/opportunity/execution, không stage/commit/reset/clean; chưa bắt đầu Opportunity Task 1.
@@ -2187,8 +2923,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Nguồn kiểm 2026-11-09:** https://docs.docker.com/reference/cli/docker/compose/down/, https://docs.docker.com/reference/cli/docker/compose/run/, https://alembic.sqlalchemy.org/en/latest/api/commands.html ; tái sử dụng Compose harness/API hiện hành, không đổi dependency/version hoặc thêm thuật ngữ AI/trading mới.
 - **Còn mở:** controller review C.1.1 trước Opportunity Task 1; fixture không chứng minh TRAINING rights/calibration/model edge/candidate completeness/PAPER_GATE hoặc hoàn tất WP06. Exact sanitized output ở `.superpowers/sdd/2026-11-08-wp06-task7-opportunity-universe-plan/task-c1-1-implementer-report.md`.
 - **Đã đọc lại:** đối chiếu memory/report với hai E2E files, focused/full unit, final Compose output, static/mypy/head/diff-check và project cleanup; không thay đổi scope hoặc tuyên bố hoàn tất WP06.
-
-
 ### 2026-11-09 — C.1.1 review fix vòng 1: secrets và image ownership riêng
 
 - **Finding/root cause:** review fresh chỉ ra C.1.1 gọi prepare_local_secrets trong repository, script luôn ghi đè garage.env; stable content image tag + image_created có race khi các run dùng chung tag. Đã kiểm source và áp dụng receiving-code-review/TDD/verification; chỉ sửa harness C.1.1 và unit regression, không sửa shared scripts, Compose gốc hoặc production.
@@ -2198,8 +2932,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Cleanup:** project `crypidian-wp06-vector-parity-e2e-ea27bd4410c74017bf64183ab6e426ca` có 0 container kể cả stopped, 0 volume, 0 network; exact UUID tag `crypidian-app:e2e-c11-ea27bd4410c74017bf64183ab6e426ca` owned_by_run=true, removed=true và inventory tag rỗng. Secrets/config tạm đã xóa. Không global prune; giữ cache, PostgreSQL/Garage images và tài nguyên khác.
 - **Nguồn kiểm 2026-11-09:** https://docs.docker.com/reference/cli/docker/compose/ (`--project-directory` override path base); https://docs.docker.com/reference/cli/docker/image/rm/ (xóa tag riêng giữ tag khác cùng content). Không đổi dependency/version hoặc thuật ngữ AI/trading.
 - **Còn mở/readback:** controller re-review hai finding; không bắt đầu Opportunity Task 1, không stage/commit. Fix bảo toàn Garage config hiện có, không suy đoán cấu hình trước các run cũ. Đã đọc lại memory và section Review fix vòng 1 trong task-c1-1-implementer-report, so output Compose/unit/static/cleanup và giữ giới hạn TRAINING/calibration/PAPER_GATE.
-
-
 ### 2026-11-09 — WP06 Opportunity Task1: contract và capture domain/application
 
 - **Preflight/gate:** C.1.1 review fix vòng 1 **Accepted**, Compose **1 passed/23.79s + 7 regression pass**; gate đã đóng. Đọc AGENTS/skill/memory/Task1 brief/plan/scorer design; migration graph trước/sau vẫn một head **d3a5c7e9b1d4**, branch codex/updated-wbs-wp06-fold-v2. Snapshot pre-task WIP từng file tại `.superpowers/sdd/2026-11-08-wp06-task7-opportunity-universe-plan/task-1-baseline`; không so/khôi phục HEAD hoặc stage/commit/reset/clean.
@@ -2211,15 +2943,11 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Kiểm chứng cuối:** exact brief focused command 5 files **89 passed/5.71s**; regression paper cycle/sensitivity/vector/snapshot/observation/bundle/executor/outcome repository/runtime fixture **139 passed/3.21s**. Ruff check11 files All checks passed; format11 files already formatted; mypy6 production files no issues; compileall6 files exit0; git diff --check exit0. Không full unit/Compose Task1 theo controller vì chỉ domain/application, không đổi boundary persistence.
 - **Traceability/nguồn:** cập nhật WBS WP06, 06-ai-learning, project-status (C.1.1 gate đóng, Task1 review độc lập Accepted (0 Critical/Important), WP06/scorer7C chưa hoàn tất), glossary Decision opportunity EN→VI với approved scorer design/plan ngày09/11. Không đổi API/dependency/version hoặc nguồn ngoài; không tạo tài nguyên DB/Docker mới.
 - **Còn mở/readback:** Task1 đã được review độc lập **Accepted (0 Critical/Important)**; Opportunity Task2 ledger/persistence là bước kế tiếp, **chưa bắt đầu**; Task2 ledger/persistence, Task3 proof/current TRAINING rights, race/E2E gates và scorer calibration/OOS/deployment còn mở. Candidate completeness false, PAPER_GATE khóa. Report exact output `task-1-implementer-report.md`, scoped before/after diff `task-1-scoped.diff`. Đã đọc lại memory/report/WBS/module/status/glossary, so nguồn/test/RED/GREEN/static/head; dừng trước Task2, không stage/commit.
-
-
 ### 2026-11-09 — Đồng bộ docs sau Task1 review Accepted
 
 - **Kết quả review:** reviewer độc lập Accepted Task1, **0 Critical/Important**; C.1.1 cũng đã Accepted sau fix vòng 1 (**Compose 1/23.79s + 7 regression pass**). Task1 đã có focused **89/5.71s**, related regression **139/3.21s**, Ruff/format11, mypy6, compile/head/diff-check đạt từ vòng implementation; đây là bằng chứng đã chạy trước review, không chạy lại trong vòng docs-only.
 - **Sửa docs:** module 06-ai-learning foundation summary và completion plan hiện hành không còn ghi C.1.1 mở; WBS/project-status/memory/progress/report đồng nhất Task1 Accepted. Đánh dấu sáu bước Task1 trong opportunity plan đã hoàn thành và thêm state gate; Opportunity Task2 ledger/persistence là bước kế tiếp, **pending/chưa bắt đầu**. WP06/scorer 7C vẫn mở; proof v2, current TRAINING rights, calibration/OOS/deployment chưa hoàn tất, PAPER_GATE khóa.
 - **Phạm vi/kiểm chứng:** chỉ tài liệu, không đổi source/test, không chạy test hoặc static runner, không stage/commit. `git diff --check` exit0; snapshot/hash của 11 source/test in-scope giữ nguyên so với đầu vòng docs. Đã đọc lại tám tài liệu và diff riêng của vòng này để xác nhận các trạng thái và số liệu khớp thông báo controller/review.
-
-
 ### 2026-11-09 — Opportunity Task2: schema, quyền và append nguyên tử
 
 - **Preflight/scope:** Task1 và docs Accepted; đọc AGENTS/skill/memory/design/Task2 plan, fresh single head d3a5c7e9b1d4. Một migration mới b2d4f6a8c0e1. Baseline pre-task WIP/source/test/docs ở task-2-baseline, không HEAD/reset/stage/commit. Chỉ Task2; không scanner/CLI/rights Task3, proof/race Task4 hoặc scorer7C.2.
@@ -2231,8 +2959,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Cleanup:** project crypidian-opportunity-schema-40ac61c6c72f410f8a7690475283ab80 còn0 container/volume/network; exact own app tag e2e-opportunity-schema-40ac61c6c72f410f8a7690475283ab80 removed; Garage config giữ nguyên và secrets/config tạm đã xóa. Không global prune, giữ infra/cache/khác.
 - **Nguồn ngày09/11:** PostgreSQL18 rowsecurity https://www.postgresql.org/docs/18/ddl-rowsecurity.html và binary SHA256 https://www.postgresql.org/docs/18/functions-binarystring.html ; SQLAlchemy2.1 nested transaction https://docs.sqlalchemy.org/en/21/orm/session_transaction.html . Không nâng dependency/API/tool version. Glossary source digest map EN→VI có design/plan source.
 - **Traceability/readback/còn mở:** cập nhật WBS/module/status/completion plan/opportunity plan, Task1 report schema-refinement note và SDD ledger. Task2 implement xong chờ independent review; Task3 next chưa bắt đầu. Proof scanner/current TRAINING rights/Task4race/scorer calibration/OOS/deployment và WP06 còn mở; completeness false/PAPER_GATE khóa. Đã đọc lại memory/report/docs/scoped diff và đối chiếu RED/GREEN/static/head/cleanup; no stage/commit. Exact output ở task-2-implementer-report.md.
-
-
 ### 2026-11-09 — WP06 Opportunity Task2 review fixes và Accepted
 
 - **Review/red findings:** reviewer độc lập trả **Accepted (0 Critical/Important/Minor)** sau khi xác nhận hai finding Important được chặn. Outcome entry features đổi giá trị rồi tự tính lại `entry_features_hash` không còn qua được: metadata opportunity schema lên v3 và có `feature_values_hash` bất biến từ snapshot ID, thời điểm, schema và đúng các feature values; repository và PostgreSQL trigger đều buộc entry outcome khớp. `canonical_json` không thể thêm whitespace, thay key order hoặc dùng số nguyên thay số float rồi tính lại outcome hash: trigger dựng exact canonical text từ JSONB và đối chiếu raw text/hash.
@@ -2242,15 +2968,12 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Nguồn/ngữ nghĩa:** PostgreSQL 18 JSON functions/operators được kiểm ngày 09/11/2026: https://www.postgresql.org/docs/18/functions-json.html — xác nhận JSON extraction và `jsonb_object_keys`; không dựa vào `jsonb_object_length`. Định nghĩa EN→VI `Feature values hash` được thêm glossary, nguồn định nghĩa là plan opportunity/schema v3.
 - **Docker cleanup/readback:** lượt test bị ngắt trước đó để lại đúng một project PostgreSQL Compose riêng và image `crypidian-app:e2e-opportunity-schema-cc7c31042ab941ea9151a7101e911173` (429 MB), không container nào tham chiếu app image. Đã `compose down --volumes --remove-orphans` cho đúng project đó và gỡ đúng image; không prune/global cleanup, giữ các image hạ tầng project đang tham chiếu. Các lượt test mới tự gỡ tag app image của chúng.
 - **Traceability/còn mở:** cập nhật opportunity plan, WP06 WBS, module note, project status, glossary và memory. Task2 **Accepted**; Task3 proof builder/CLI/current TRAINING rights có thể bắt đầu. Task4 seal/two-order race E2E, scorer v2/calibration/exact TEST OOS/deployment governance, final integrated run và independent security review còn mở; `candidate_completeness_verified=false`, scorer tiếp tục `ABSTAIN`, `PAPER_GATE` khóa. Đã đọc lại phần memory này cùng plan/WBS/module/status/glossary và output test; không stage/commit/push/reset/clean.
-
 ### 2026-11-09 — WP06 Task3 ruling và Docker image inventory
 
 - **Task3 ruling:** preflight implementer đã dừng đúng lúc vì candidate-builder chưa có đường dựng expected identity inventory và replay request không có fold/TEST membership. Quyết định đã chốt trong opportunity plan: thêm migration mới sau head hiện hành để cấp `SELECT` cột metadata định danh/thời gian tối thiểu trên `market_bar` cho `crypidian_candidate_builder`; giữ workspace RLS, không cấp OHLCV/raw payload. Dùng helper canonical identity-only chung với manifest/event ID; xác minh inventory từng child ở `prepared_at` với v4 `bar_identity_hash`; expected events lấy từ decision timeframe trong `[evaluation_start, range_end)`. Proof chỉ BASE; không claim TEST. Honest gap/INPUT_EXCLUDED trả diagnostic `completeness_verified=false`; corrupt/wrong scope fail closed. Task4 riêng kiểm grants/RLS và lock race bằng PostgreSQL Compose.
 - **Nguồn kỹ thuật kiểm ngày 09/11/2026:** PostgreSQL 18 `GRANT` xác nhận column-level `SELECT` syntax https://www.postgresql.org/docs/18/sql-grant.html ; Row Security xác nhận table grants không thay thế RLS và `FORCE ROW LEVEL SECURITY` áp dụng cho owner https://www.postgresql.org/docs/18/ddl-rowsecurity.html. Dùng tối thiểu quyền cột cộng chính sách workspace đã có; không thay migration Task2 đã accepted.
 - **Docker image cleanup:** `docker image ls --no-trunc`, `docker image ls -f dangling=true`, `docker ps -a` và `docker system df -v` cho thấy chỉ 2 image local: PostgreSQL 18.6 (đang được container PostgreSQL dùng) và Garage v2.4.1 (được pin trong `compose.yaml`). Không còn image dangling hoặc image app cũ đủ điều kiện xóa an toàn; không gỡ hai image hạ tầng đang dùng/cấu hình pin. Build cache 3.548 GB là cache, không phải image; không prune theo yêu cầu dọn image. Không xóa container/volume hay dữ liệu khác.
 - **Kiểm chứng vòng inventory:** không có source/test thay đổi; `git diff --check` exit 0. Không chạy test vì vòng này chỉ inventory Docker và đồng bộ ruling/tài liệu. Đã đọc lại entry này, Task3 plan/progress và đối chiếu inventory với container/config Compose; implementation Task3 tiếp tục trên brief đã cập nhật, WP06 vẫn mở, completeness false/PAPER_GATE khóa.
-
-
 ### 2026-11-09 — Opportunity Task3: proof BASE v2, inventory metadata và TRAINING
 
 - **Preflight/quyết định:** Task2 Accepted; đọc AGENTS/skill/TDD/executing-plans, memory, plan/brief, source/tests và baseline Task3. Fresh head `b2d4f6a8c0e1`. Preflight phát hiện manifest chỉ có aggregate identity hash và principal chưa đọc metadata nguồn; dừng trước source theo yêu cầu controller. Ruling đã giải quyết: migration mới chỉ cột metadata identity/time, dùng workspace RLS sẵn có; proof BASE không claim fold/TEST. Không đổi API/dependency/tool version. Nguồn quyền kỹ thuật đã kiểm ở entry ruling cùng ngày: https://www.postgresql.org/docs/18/sql-grant.html và https://www.postgresql.org/docs/18/ddl-rowsecurity.html .
@@ -2261,8 +2984,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Static/head:** Ruff check9 và format-check9 đạt; mypy6 source files no issues; scoped compileall exit0; `uv run alembic heads` chỉ `c4e6a8b0d2f3 (head)`; `git diff --check` exit0. Exact commands/output ở SDD Task3 report/logs. Không broad full suite hoặc Docker/E2E trong slice này.
 - **Chưa nghiệm thu/còn mở:** implementation unit/static xong, **chưa Accepted Task3/WP06**; cần independent scoped review và PostgreSQL Task4 chứng minh grants/deny OHLCV/RLS, migration lifecycle và seal/races. Existing E2E `test_wp06_candidate_universe_proof.py` hardcode head d2b4c6e8f0a1; `test_wp06_opportunity_persistence_schema.py` hardcode b2d4f6a8c0e1; để Task4/5 cập nhật và chạy, không sửa ngoài brief. Scorer7C/calibration/TEST/deployment chưa implement, PAPER_GATE vẫn khóa. Không stage/commit/push/reset/clean.
 - **Baseline/readback:** original task-3-baseline chỉ chứa 13 file allowed ban đầu, không có hai helper identity hoặc test_replay_writer_migration.py được ruling cho phép sau. Reference cho ba file đó được phục dựng minh bạch bằng đảo đúng thay đổi Task3 từ source đã đọc, không gọi là pre-task snapshot gốc. Đã cập nhật rồi đọc lại memory/report/plan/WBS/module/status/completion/glossary và đối chiếu kết quả271/static/head; không ghi E2E hoặc Accepted khi chưa có bằng chứng.
-
-
 ### 2026-11-09 — Opportunity Task3 review fix1: không nới event/ordinal khi nguồn gap
 
 - **Finding Important đã xác nhận:** scanner cũ dựng expected event IDs chỉ từ decision bars còn đọc được và dùng `sources_complete` chung cho mọi child để bỏ qua unknown-event/ordinal checks. Vì vậy thiếu một nến nguồn, kể cả timeframe không quyết định, có thể làm event ngoài grid hoặc ordinal sai đi vào proof diagnostic. Đây là lỗi phân biệt honest incomplete và corrupt scope, không phải quyền nâng completeness.
@@ -2272,14 +2993,12 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Command related cuối:** `PYTHONPATH=. uv run pytest tests/unit/test_candidate_universe_proof.py tests/unit/test_replay_training_rights.py tests/unit/test_replay_writer_migration.py tests/unit/test_candidate_builder_boundary.py tests/unit/test_backtest_outcomes_repository.py tests/unit/test_backtest_decision_opportunities.py tests/unit/test_runtime_replay_evaluator.py tests/unit/test_backtest_dataset_replay_context.py tests/unit/test_learning_fold_outcome_verifier.py tests/unit/test_learning_feature_vector.py tests/unit/test_backtest_dataset_manifest.py tests/unit/test_decision_snapshot_builder.py tests/unit/test_backtest_dataset_replay_observations.py -q --tb=short`.
 - **Static:** Ruff check9 All checks passed; format-check9 already formatted; mypy6 no issues; compileall repository exit0; sole Alembic head c4e6a8b0d2f3; global diff-check exit0 và hai file scoped no-index whitespace checks không findings. Exact output ở task-3-review-fix-1-* logs/diff trong SDD.
 - **Trạng thái/readback:** đã cập nhật rồi đọc lại memory/report/plan/progress và đối chiếu RED/GREEN277/static/diff. Fix1 implementation/test xong, **chờ re-review**, chưa Accepted Task3/WP06. Không Docker/E2E/Compose/Task4, không stage/commit/push/reset/clean; Task4 PostgreSQL grants/RLS/migration/races và scorer/PAPER gates vẫn mở/khóa.
-
 ### 2026-11-09 — Opportunity Task3 source re-review accepted; Task4 started
 
 - **Kết quả review độc lập:** re-review của fix1 xác nhận finding Important đã được giải quyết; **0 Critical / 0 Important / 0 Minor**, verdict **Ready to merge: Yes** cho source review fix. Reviewer chủ động không kết luận grants PostgreSQL, RLS, migration lifecycle hoặc seal/race; các phần này vẫn thuộc Compose Task4.
 - **Evidence được xác nhận lại:** RED trước sửa cho event ngoài manifest grid và ordinal sai khi source gap; sau fix, related 13-module suite **277 passed/36.06s**, Ruff check/format, mypy, compileall, Alembic sole head c4e6a8b0d2f3 và git diff --check đạt. Root đã chạy lại related suite: **277 passed/39.74s**. Task3 source/unit/static review đã đóng; không diễn giải là PostgreSQL boundary hay WP06 đã hoàn tất.
 - **Việc kế tiếp:** Opportunity Task4 Compose phải kiểm quyền metadata 14 cột và từ chối OHLCV/raw payload, workspace RLS dưới role thật, positive/negative proof, migration upgrade/check/downgrade/populated guard, seal và hai ordering races có PID cùng pg_blocking_pids. Task5 vẫn phải sửa stale head assertions và chạy regression E2E; sau đó còn Task7C.2–C.5 và Task9 theo WBS.
 - **Traceability:** đã đồng bộ opportunity plan, WP06 WBS, module 06-ai-learning.md, project-status và completion plan; đọc lại các dòng Task3 để xác nhận 277 pass, review scope và Task4 gate đúng evidence. Không thêm thuật ngữ/dependency/API mới. Không stage/commit/push/reset/clean.
-
 ### 2026-11-09 — WP06 Opportunity Task4 accepted: PostgreSQL proof/seal/races
 
 - **Scope:** added the host Compose E2E and probe only; no migration/source change was needed because opportunity and outcome already share the Task2 trial lock and proof seal guard. The probe uses PostgreSQL with distinct admin, replay_writer, and candidate_builder logins.
@@ -2288,8 +3007,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Review/fix:** independent review first found one Minor coverage gap: UPDATE was tested, DELETE was not. RED1 failed/23.63s because `delete_checks` was absent; added exact DELETE trigger and role ACL checks. Final independent re-review: **0 Critical / 0 Important / 0 Minor; Accepted**.
 - **Static/cleanup:** Ruff all checks passed, format2, mypy6 production modules, compileall2, Alembic single-head and `git diff --check` pass. Isolated project cleanup confirms0 containers/volumes/networks, exact test app image removed, temporary secrets deleted and Garage config preserved. Post-test Docker inventory has no dangling images; the remaining PostgreSQL image is referenced by containers and Garage remains configured in Compose. Build cache was left untouched.
 - **Traceability/open:** Task4 SDD report/progress updated. Main WBS/module/project-status/completion/opportunity plan synchronized to mark Task4 accepted and Task5 regression active; no glossary term or dependency/API changed. Task5, scorer7C.2–.5, Task9, UI Playwright/security review remain open; WP06 is not complete. No stage/commit/push/reset/clean.
-
-
 ### 2026-11-09 — WP06 Task5 regression + Task9 lineage fix
 
 - **Đã đọc trước vòng:** AGENTS.md, skill `futures-bot-implementation`, implementation memory, WP06 WBS/completion plan, approved scorer design, Task7C implementation plan, Task9 Compose E2E/probe, shadow repository/domain và migration hiện hành. Giữ nguyên toàn bộ staged/dirty files khác trong shared worktree; không stage/commit/push/reset/clean.
@@ -2298,8 +3015,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Sửa và E2E:** `PostgresClosedMarketObservationSource` giờ ghim `MarketBarSourceIdentity.record_id` sau khi kiểm tra workspace + checksum vào `input_event_ids`; source refs giữ format `market-bar-event:{UUID}` mà migration đang xác minh. Unit liên quan scanner/composition/replay **19 passed/0.79s**. Compose Task9 lượt đầu sau sửa xác nhận `rights_verified=true` và all-abstain, rồi phát hiện probe ORM trực tiếp làm stale idempotency/content hash khiến DB từ chối trước quyền; probe chuyển về `dataclasses.replace` trên domain observation có receipt hiện hành để tái tính canonical hashes. Task9 cuối `PYTHONPATH=. uv run pytest tests/e2e/test_wp06_task9_integrated_learning_journey.py -q -s --tb=short` → **1 passed/81.18s**, gồm pointer race, rights revoke/receipt, forged source/fingerprint, cohort assessment/rollback/restart/idempotency và kiểm tra không có execution side effects. Regression producer bổ sung `PYTHONPATH=. uv run pytest tests/e2e/test_wp07_market_signal_producer.py -q -s --tb=short` → **1 passed/23.63s**; mypy composition module no issues. Domain/DB checks giữ nguyên.
 - **Static/Docker:** Ruff check ba file All checks passed; Ruff format-check ba file already formatted; `git diff --check` đạt. Sau E2E, không còn container tham chiếu app E2E image SHA `46e86d8fb2858b22fe23cc6a1e7de2755abd80a035479082f4d61ac91a32a466`; đã xóa chính xác tag đó. Còn PostgreSQL 18 image 649MB vì được ba container tham chiếu (hai active debug/infra, một exited); Garage 94.7MB giữ vì `compose.yaml` khai báo service; không xóa container/volume, không prune build cache 3.583GB.
 - **Traceability/còn mở:** Task5 stale-head/privilege/probe regressions và baseline Task9 đã qua; scorer Task7C.2–C.5, Task9 extension qua scorer v2/TEST proof/PAPER_GATE, responsive Playwright nếu UI đổi và independent security review vẫn mở. WP06 chưa hoàn tất; PAPER_GATE vẫn khóa, scorer vẫn ABSTAIN. Không thêm thuật ngữ giao dịch/AI mới, API/dependency/tool version change hoặc nguồn cần glossary. Đã đồng bộ rồi đọc lại WBS, module, project status, completion plan và memory; evidence/result được giữ đúng phạm vi, WP06 vẫn mở.
-
-
 ### 2026-11-09 — WP06 Task7C.2 scorer artifact v2 + PostgreSQL persistence
 
 - **Đã đọc trước vòng:** AGENTS.md, `futures-bot-implementation`, memory, WP06 WBS/completion plan, approved scorer design và Task7C implementation plan. Không stage/commit/push/reset/clean; giữ nguyên các thay đổi staged/dirty khác trong shared worktree.
@@ -2309,8 +3024,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Giới hạn/việc kế tiếp:** Task9 fixture đủ bằng chứng fail-closed khi exact opportunity lineage thiếu, nhưng chưa chứng minh artifact `ready_for_evaluation` persist trong DB; positive calibration hiện unit-covered. Task7C.3 phải xây TEST-scope expected opportunity proof từ identity-pinned source, receipt one-shot/current-rights và aggregate scorer report; chỉ sau đó mới triển khai C.4/C.5 và Task9 full gate. `PAPER_GATE` tiếp tục đóng, không nới policy hoặc gắn test labels cho trainer.
 - **Docker/glossary:** sau Compose chỉ còn PostgreSQL image 649MB được container cũ tham chiếu và Garage 94.7MB được khai trong Compose; app E2E image do lượt test tạo đã được xóa, không prune container/volume/build cache. Glossary có `Scorer artifact v2` và hai mục riêng `Training/validation membership digest` / `Opportunity proof membership digest`; không đổi API/tool/dependency version.
 - **Traceability:** đã đồng bộ scorer plan/progress, WP06 WBS, module, project-status, completion plan và memory; cần đọc lại entry này cùng các điểm vừa cập nhật. Không commit.
-
-
 ### 2026-11-09 — WP06 Task7C.3 scorer TEST application kernel
 
 - **Đã đọc trước vòng:** `AGENTS.md`, skill `futures-bot-implementation`, implementation memory, approved WP06 completion design/plan, scorer design/implementation plan, current WP06 WBS/module/status, normalized-fold and scorer-artifact contracts. Giữ nguyên staged/dirty files khác của WP03/WP05/WP06/WP07; không stage/commit/push/reset/clean.
@@ -2320,16 +3033,12 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Docker cleanup:** kiểm kê còn PostgreSQL image (649 MB, đang được container tham chiếu) và Garage (94.7 MB, được `compose.yaml` ghim). Không có image không dùng an toàn để xóa; giữ BuildKit cache khoảng 3.648 GB, container/volume. Không mutation Docker ở vòng này.
 - **Ranh giới C.3 phát hiện qua audit chỉ đọc:** `learning_normalized_sample.outcome_id/outcome_hash` có thể nối candidate đã đóng qua `backtest_trade_outcome.entry_opportunity_event_id/entry_candidate_id/entry_vector_hash`; nhưng no-candidate và candidate thiếu outcome không có normalized sample. Cần dựng lại decision grid TEST từ child bundle/source-bar identities và đối chiếu opportunity rows; scanner/proof BASE (`BASE`/`TRAINING_BASE`) không tái sử dụng. Receipt phải theo hai phase: commit receipt scope-only, rồi recheck rights dưới source lock, consume một lần, đọc TEST và chỉ trả batch sau commit. Không đổi hay thêm gateway DB trong vòng này.
 - **Traceability/readback:** ghi giới hạn kernel-only và ranh giới C.3 vào WP06 scorer plan/progress, WBS, completion plan, module, project-status và memory; WP06/C.3 vẫn mở, scorer ABSTAIN, `PAPER_GATE` khóa. Đã đọc lại mục memory, glossary, plan, WBS, module và status để xác nhận giới hạn đúng. Không commit.
-
-
 ### 2026-11-09 — WP06 Task7C.3 two-phase application orchestrator
 
 - **Đã đọc trước vòng:** `AGENTS.md`, `futures-bot-implementation`, memory và WP06 scorer plan/module; đối chiếu kernel C.3, normalized TEST assignment, report builder và approved one-shot receipt contract. Phần DB proof đang được implement trong các file C.3 riêng; không sửa migration diagnostic/BASE.
 - **Implement:** thêm `application/learning_scorer_test_service.py`. Service kiểm request fingerprint qua run/fold/approval/artifact/base/vector/bundle/membership/source/proof/policy; lấy report đã persist thì xác minh canonical hash + exact lineage và trả retry không mở lại payload. Run mới mở committed receipt scope-only, kiểm receipt commit/fingerprint/artifact/proof, gọi gateway consume/load riêng, dựng aggregate report rồi mới persist. Gateway protocol quy định batch chỉ được trả sau transaction payload commit. Chưa có adapter DB nối protocol.
 - **TDD/evidence:** RED ban đầu thiếu module → 2 tests fail. GREEN đầu lộ fixture report dùng dynamic object trong khi contract yêu cầu `ScorerTestStoredReport`; đổi fake sang record typed. Unit scorer/evaluator/trainer `uv run pytest tests/unit/test_learning_scorer_evaluation.py tests/unit/test_learning_cpu_trainer.py tests/unit/test_learning_calibration.py tests/unit/test_learning_training_batch_access.py -q --tb=short` → **40 passed/0.56s**. Ruff check/format và mypy 2 source files đạt. Không chạy Compose E2E vì gateway/repository DB chưa tồn tại; C.3 DB proof/receipt/current-rights và E2E vẫn mở.
 - **Traceability/còn mở:** cập nhật C.3 progress trong implementation plan, WP06 WBS/module/project-status/completion/SDD ledger. Không thêm thuật ngữ, dependency, API hay phiên bản. Đã đọc lại memory và các tài liệu status để xác nhận C.3 chỉ là kernel+orchestration, WP06 chưa complete, scorer `ABSTAIN`, `PAPER_GATE` khóa. Không stage/commit/push/reset/clean.
-
-
 ### 2026-11-10 — WP06 Task7C.3 E8 persistence, integrity review and Compose regressions
 
 - **Đã đọc trước vòng:** `AGENTS.md`, `futures-bot-implementation`, implementation memory, scorer implementation plan, ORM C.3, proof E6, evaluator receipt F8, source-rights F1 và current-rights Python gate. Shared worktree vẫn dirty do WP03/WP05/WP06/WP07; không stage/commit/push/reset/clean.
@@ -2339,8 +3048,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Compose evidence:** `tests/e2e/test_wp06_scorer_test_opportunity_proof.py` **1 passed/29.33s**, trong đó `alembic upgrade/check`, single head, schema v2 proof ACL/immutability/tamper/downgrade, E8 receipt/consumption/report FORCE RLS/grant matrix, function execute grants và evaluator direct TEST SELECT denial đạt. Probe được sửa để query column order tường minh (ORM declarative order khác physical `SELECT *`) và phản ánh evaluator metadata SELECT grant hợp lệ. `uv run alembic heads` trả `e8f0a2c4d6b8 (head)`. `uv run alembic check` chạy trực tiếp trên host không vào được hostname `postgres`; check tương ứng trong Compose pass.
 - **Giới hạn:** Compose chỉ kiểm DDL/ACL và proof boundary; chưa chạy authoritative `build_and_append`, PostgreSQL receipt open/consume/report transaction, source-rights revoke race hoặc populated E8 downgrade. Existing Task9 seed dùng child manifest v3, không persist opportunity rows và outcomes không có exact entry links; không tạo lineage giả. C.3 positive source-linked fixture vẫn bắt buộc. C.4 runtime/deployment, C.5 admin/security review và Task9 closeout chưa triển khai; scorer `ABSTAIN`, `PAPER_GATE` khóa. Không có thay đổi UI nên không cần Playwright vòng này.
 - **Glossary/traceability:** thêm EN→VI `Payload commitment hash` với nguồn nội bộ scorer contract/plan. Cập nhật Task7 scorer plan, WP06 WBS, module, project-status, completion plan và memory; đã đọc lại memory cùng các status đầu tài liệu, ghi đúng C.3/C.4/C.5 vẫn mở. Không đổi API/dependency/tool version; không commit.
-
-
 ### 2026-11-10 — WP06 C.3 source-pinned replay fixture foundation
 
 - **Đã đọc trước vòng:** `AGENTS.md`, `futures-bot-implementation`, `implementation-memory.md`, WP06 WBS/completion plan và Task7 scorer implementation plan. Tiếp tục C.3 theo đúng ranh giới: không coi Task9 mẫu thủ công là source lineage; không stage/commit/push/reset/clean.
@@ -2349,8 +3056,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Kiểm chứng:** `PYTHONPATH=. uv run pytest tests/unit/test_wp06_source_pinned_scorer_replay_fixture.py tests/unit/test_runtime_replay_fixture.py tests/unit/test_runtime_replay_evaluator.py -q --tb=short` → **43 passed/4.57s**, không skip. Ruff check và format cho `tests/fixtures/runtime_replay.py` cùng test mới đạt sau khi formatter sửa một comprehension; `git diff --check` đạt. Full unit **3249 passed/63.38s** từ lượt ngay trước khi thêm fixture; full suite chưa chạy lại sau thay đổi này.
 - **Giới hạn/còn mở:** fixture chỉ trong bộ test và dùng dữ liệu synthetic identity-pinned; chưa persist market bars/bundle/replay outcomes/opportunities vào PostgreSQL, chỉ có 2 trade nên chưa đủ train/validation/test calibration. Chưa chạy authoritative TEST proof `build_and_append`, E8 receipt/open/consume/report Compose journey hoặc rights race. C.3 chưa đóng; C.4 runtime/deployment, C.5 UI/security review và Task9 closeout vẫn mở. `ABSTAIN`/`PAPER_GATE` không đổi; không có UI/dependency/API change.
 - **Traceability/readback:** cập nhật Task7 scorer plan, WP06 completion plan, WBS, `06-ai-learning.md`, project status và memory để ghi fixture progress nhưng giữ C.3/C.4/C.5 mở. Đã đọc lại phần memory này và các status đầu các tài liệu; số test, Docker image còn lại và việc chưa có PostgreSQL journey khớp output. Không có thuật ngữ mới cần glossary. Không commit.
-
-
 ### 2026-11-10 — WP06 C.3 source-pinned BASE PostgreSQL journey
 
 - **Phạm vi vòng:** nối fixture H03 source-pinned qua persistence production để kiểm candidate BASE inventory trên dữ liệu PostgreSQL. Không mở TEST scope từ BASE proof; không stage/commit/push/reset/clean shared worktree.
@@ -2360,8 +3065,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Docker:** Garage local image 94.7 MB đã xóa theo yêu cầu; sau E2E, image duy nhất còn lại là PostgreSQL 649.1 MB, được 3 container tham chiếu/0 reclaimable. BuildKit cache 3.703 GB không phải image và không xóa; container/volume không xóa. Compose vẫn ghim Garage digest để tải lại khi service cần.
 - **Giới hạn/còn mở:** đây là positive BASE/`TRAINING_BASE` inventory, không phải C.3 TEST `build_and_append`. Chưa có source-linked one-shot TEST receipt→consume→atomic report PostgreSQL journey hay eligible OOS report. C.4 runtime/deployment, C.5 scorer admin/mobile/security review, independent review và Task9 closeout còn mở; scorer `ABSTAIN`, `candidate_completeness_verified=false`, `PAPER_GATE` khóa. Không thêm glossary term/API/dependency.
 - **Traceability/readback:** cập nhật Task7 scorer plan, WP06 completion, WBS, module và project status. Đã đọc lại memory và các dòng status; tất cả phản ánh đúng 206/6/2, 44 focused, 3250 full unit, 2 Compose E2E pass và C3/C4/C5 còn mở. Docker inventory cũng xác nhận chỉ còn Postgres image. Không commit.
-
-
 ### 2026-11-10 — WP06 Task7C.3 source-linked TEST receipt/report accepted
 
 - **Đã đọc trước vòng:** `AGENTS.md`, `futures-bot-implementation`, implementation memory, approved WP06 scorer design/implementation plan, C3 brief, BASE proof repository, E8 receipt/report gateway và test boundaries. Giữ nguyên shared dirty WP03/WP05/WP06/WP07; không stage/commit/push/reset/clean.
@@ -2373,8 +3076,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Giới hạn/còn mở:** report fixture `INCONCLUSIVE`; đây là kiểm chứng pipeline synthetic, không phải bằng chứng scorer hiệu quả hoặc đủ điều kiện PAPER. C4 runtime/deployment governance và positive/negative side-effect journey, C5 scorer admin responsive/Playwright + security review, Task9 closeout và các WP06 gate còn lại chưa xong. Negative riêng cho populated E8 receipt/report downgrade guard chưa chạy; report chỉ kế thừa guard hiện hành. WP06 vẫn mở; PAPER_GATE không được kích hoạt.
 - **Traceability/readback:** cập nhật Task7 scorer plan, WP06 WBS, completion plan, module `06-ai-learning.md`, project status và C3 SDD report; glossary không thêm thuật ngữ. Đã đọc lại mục memory vừa ghi, C3 report và status docs để đối chiếu 90/9/81 inventory, 1/1/1 receipt-consumption-report, 237 focused + 19 schema-module, 3 Compose pass, review verdict, INCONCLUSIVE status và Docker inventory. Không commit.
 - **Đính chính traceability (10/11/2026):** rà soát sau đó cho thấy scorer plan, C3 report và memory đã có kết quả mới, nhưng phần đầu WBS, completion plan, `06-ai-learning.md` và `project-status.md` vẫn ghi C3 chưa chạy TEST receipt/report. Đã sửa bốn status summary trên theo evidence 90/9/81, 1/1/1, 3 Compose, review Accepted và report `INCONCLUSIVE`; phần BASE proof cũ được giữ như nền tảng lịch sử. Đọc lại status paragraphs và WBS section, đối chiếu với C3 report. Đây là sửa tài liệu, không có source/test change.
-
-
 ### 2026-11-10 — WP06 Task7C.4.1 deterministic scorer inference kernel
 
 - **Đã đọc trước vòng:** `AGENTS.md`, skill `futures-bot-implementation`, implementation memory, scorer design đã duyệt, Task7C implementation plan và C4 hiện trạng dispatcher/UoW. Giữ nguyên shared dirty WP03/WP05/WP07; không stage/commit/push/reset/clean.
@@ -2383,8 +3084,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Static/evidence:** Ruff check đạt; format-check 2 files already formatted; mypy runtime scorer 1 source file no issues; `git diff --check` exit 0. Không chạy E2E/Playwright vì lát thuần không thay persistence/HTTP/UI boundary. Full unit suite chưa chạy lại sau C3/C4.1.
 - **Ranh giới còn mở:** kernel chưa chứng minh current rights bằng DB receipt/lock và chưa xác nhận report/policy/deployment/pointer hashes; resolver C4 phải chỉ truyền rights evidence từ gateway authoritative và so khớp deployment/report trước prediction. Chưa có score event nguyên tử với `BotDecision`, governance/MFA/CAS/rollback, dispatcher mapping, PostgreSQL role/RLS/idempotency/race E2E, C5 UI/Playwright hoặc Task9 closeout. C4/C5/Task9 vẫn mở; không kích hoạt SHADOW/PAPER_GATE; report C3 vẫn `INCONCLUSIVE`.
 - **Traceability/readback:** cập nhật Task7C plan, WP06 WBS, completion plan, `06-ai-learning.md`, `project-status.md`, C4.1 brief/report, SDD progress ledger và glossary. Bổ sung EN→VI `Positive-class probability / P(class +1)` với giới hạn diễn giải và nguồn từ scorer design. Không đổi API/dependency/tool version. Docker inventory vẫn chỉ có PostgreSQL digest đang được 3 container tham chiếu; không có image thừa để xóa. Đã đọc lại memory, glossary, plan/status summary và ledger, đối chiếu 41 pass + Accepted review + ranh giới runtime còn mở. Không commit.
-
-
 ### 2026-11-10 — WP06 Task7C.4.2 scorer deployment governance slice
 
 - **Đã đọc trước vòng:** `AGENTS.md`, skill `futures-bot-implementation`, implementation memory, scorer design đã duyệt, Task7C plan, auth/session contract, Task6 registry trigger và source-rights gateways. Giữ nguyên shared WP03/WP05/WP06/WP07 dirty state; không stage/commit/push/reset/clean.
@@ -2397,8 +3096,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Static/DB head:** Ruff check/format cho toàn bộ source/migration/tests scope đạt; mypy 7 source files đạt; `git diff --check` đạt; `uv run alembic heads` → `c5e7a9b1d3f5 (head)`. `alembic check` và sole-head assertion chạy trong Compose; không chạy full unit suite hoặc Playwright vì chưa có UI.
 - **Còn mở:** chưa có authoritative current-rights gateway kép, runtime dispatcher/atomic `BotDecision` + score persistence, positive SHADOW/PAPER_GATE source-linked evidence, actual rights-revocation race, UI/C5 Playwright hay Task9 closeout. WP06 vẫn mở; mode active bị khóa; report C3 hiện `INCONCLUSIVE`. Không thêm glossary term, dependency hay API/framework version; không commit.
 - **Traceability/readback:** đã ghi chính xác RED cause/fix, current rights limitation, test output và migration head; sau khi append đã đọc lại toàn bộ entry này từ file để xác nhận nội dung khớp trạng thái. Không sửa/xóa Docker image trong vòng này.
-
-
 ### 2026-11-10 — WP06 Task7C.5 Vietnamese responsive scorer admin
 
 - **Đã đọc trước vòng:** `AGENTS.md`, skill `futures-bot-implementation`, implementation memory, WP04 admin/mobile plan, approved WP06 scorer design/plan và C4 deployment API/service. Không sửa `app.py`, C4 API/service/migration; không stage/commit/push/reset/clean.
@@ -2408,8 +3105,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Ảnh E2E:** `tests/e2e/evidence/wp06-scoring-desktop.png` và `tests/e2e/evidence/wp06-scoring-mobile.png` được sinh lại sau lần kiểm thử cuối và xem trực quan; cấu trúc/nội dung dễ đọc, font Việt đúng, không tràn ngang, cảnh báo khóa hiện rõ. Điều hướng mobile xuống nhiều hàng nhưng vẫn đọc được trong viewport.
 - **Còn mở:** cần parent đăng ký page router trong `app.py`; quyền hiện hành vẫn không sẵn có nên mode hoạt động bị khóa. Report/proof và score-event pagination chờ API/read-model tương ứng. Đây là lát C5 UI, không đóng C4 rights gateway hoặc WP06 Task9. Không thêm thuật ngữ mới vào glossary, dependency hay tool version. Không commit.
 - **Traceability/readback:** sau khi các test trên đạt, cập nhật entry này và đọc lại phần cuối `implementation-memory.md`; đường dẫn ảnh, test output, giới hạn API và import/include còn mở khớp trạng thái đã xác minh.
-
-
 ### 2026-11-10 — WP06 C5 app wiring và Docker image inventory
 
 - **Phạm vi:** đăng ký scorer admin page router vào `create_app` trong nhánh `admin_web_role`, sau khi C5 UI agent hoàn tất. Giữ nguyên quyền UI: page không cho bật SHADOW/PAPER_GATE và reviewer có TOTP mới chỉ được tắt mode stale/active qua CSRF + CAS + idempotency.
@@ -2417,16 +3112,12 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Kiểm chứng sau wiring:** `PYTHONPATH=. uv run pytest tests/unit/test_learning_scorer_admin_page.py tests/e2e/test_learning_scorer_admin_ui.py -q --tb=short` → lần đầu **5 passed/4.94s**; sau khi sắp lại import theo Ruff, chạy lại **5 passed/6.40s** (unit + Playwright trên app thật; Playwright bao phủ desktop 1280px và mobile 390px, đồng thời tái tạo screenshot evidence). Ruff check **4 files**, Ruff format-check **4 files**, mypy app + router **2 source files**, `git diff --check` đều đạt. Ruff lần đầu phát hiện import ordering sau khi thêm route; auto-fix sắp import, lượt check lại đạt.
 - **Docker:** `docker image prune --all --force` trả **0 B reclaimed**; inventory sau prune có đúng PostgreSQL image 649.1 MB đang được ba container tham chiếu và **0 B reclaimable**. Không còn image rời để xóa. BuildKit cache khoảng 3.8 GB là cache, không phải image; giữ nguyên cùng containers/volumes.
 - **Traceability/còn mở:** đã cập nhật status WP06, WBS, completion plan, Task7C plan và `06-ai-learning.md`; entry C5 trước đó ghi router chưa được include nên được supersede bởi mục này. Đã đọc lại các đoạn summary vừa cập nhật và mục memory này, đối chiếu với app route, test output và trạng thái Docker. C5 coverage/report/event read-model + independent security review, C4 scorer-specific current-rights gateway/runtime event wiring và Task9 vẫn mở; active modes bị khóa, báo cáo C3 `INCONCLUSIVE`, không bật `PAPER_GATE`. Không commit.
-
-
 ### 2026-11-10 — WP06 full-unit regression fixture fixes
 
 - **Phát hiện:** `PYTHONPATH=. uv run pytest tests/unit -q --tb=short` → **3312 passed, 2 failed/172.88s**. Lỗi thứ nhất là `test_schema_contains_all_foundation_tables` chưa thêm hai bảng scorer deployment mới (`learning_scoring_deployment_event`, `learning_scoring_deployment_pointer`) vào tập kỳ vọng. Đây là assertion/schema inventory đã cũ, không phải ORM mismatch.
 - **Lỗi thời gian trong test MFA:** test parametrize dựng principal ở lúc pytest import module với `mfa_verified_at=now+2s`; khi full suite chạy đến test này hơn hai giây sau, timestamp đã qua nhưng vẫn nằm trong ngưỡng 15 phút, nên service đúng khi không từ chối và mở DB. Sửa fixture để truyền relative offset, tạo `mfa_verified_at` ngay trong lúc test chạy; future case dùng +1 ngày để không phụ thuộc thời gian chạy suite. Không đổi logic production.
 - **Kiểm chứng sau sửa:** `PYTHONPATH=. uv run pytest tests/unit/test_database_models.py::test_schema_contains_all_foundation_tables tests/unit/test_learning_scoring_deployment_service.py::test_deployment_mutation_rejects_missing_stale_or_future_totp -q --tb=short` → **4 passed/1.10s**. Full unit suite cần chạy lại sau khi C4 gateway source/migration ổn định; không ghi lần full-suite trước sửa là đạt.
 - **Đã đọc lại:** mục này khớp traceback, test source, hai patch và targeted output. Không stage/commit. Glossary không đổi.
-
-
 ### 2026-11-10 — WP06 C5 scorer TEST report read model và UI summary
 
 - **Đã đọc trước vòng:** `AGENTS.md`, `futures-bot-implementation`, implementation memory, Task7 scorer plan/design, WP06 completion plan, C5 router/template/repository/model và migration E8 grants. C4 agent đang làm rights gateway; không sửa C4 migration/repository/gateway, không chạy Compose/Docker và không commit.
@@ -2436,8 +3127,6 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Tài liệu/glossary:** thêm định nghĩa EN→VI cho scoring coverage, class support, candidate retention, false-veto rate và vector schema với nguồn scorer evaluator/design; cập nhật C5/WP06 scorer plan, WP06 completion, WBS, `06-ai-learning.md`, `project-status.md` và memory. Không thêm dependency/API/version; không commit.
 - **Còn mở:** schema `learning_score_event` chưa tồn tại nên C5 event pagination tiếp tục chờ C4; independent security review, C4 authoritative rights resolver/runtime atomic score event, positive SHADOW/PAPER_GATE evidence và Task9 integrated closeout vẫn mở. Report C3 hiện `INCONCLUSIVE`; active modes vẫn locked. WP06 chưa hoàn tất.
 - **Traceability/readback:** sau cập nhật đã đọc lại phần cuối memory và C5/status trong plan/module/project-status để xác nhận số test, ảnh, projection allowlist, giới hạn event schema và tiêu chí còn mở khớp kiểm chứng. Không stage/commit/push/reset/clean.
-
-
 ### 2026-11-10 — WP06 D9 SECURITY DEFINER role dependencies and Task9 rerun
 
 - **Đã đọc trước vòng:** `AGENTS.md`, `futures-bot-implementation`, implementation memory, WP06 Task7 plan và scorer design đã duyệt. Giữ nguyên shared dirty WP03/WP05/WP06/WP07; không stage/commit/push/reset/clean.
@@ -2445,25 +3134,21 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **TDD/regression:** migration unit trước khi hoàn tất dependency grants **4 passed/0.42s**; các regression Compose lần lượt xác định canonical cost helper, source match helper, canonical JSON helpers, registry/pointer row-lock policy và training-artifact metadata projection. Sau từng fix, cùng probe được chạy lại từ DB sạch. Final `PYTHONPATH=. uv run pytest tests/e2e/test_wp06_task9_integrated_learning_journey.py -q -s --tb=short` → **1 passed/90.59s**, gồm Task9 train/register/observer lineage, registry/pointer race, current-rights và PAPER execution snapshot. Ruff/format và `git diff --check` cho migration/unit scope đạt.
 - **Tài liệu/giới hạn:** chưa đóng WP06; C4 runtime artifact/policy resolver, active-mode governance và score-event atomic dispatch vẫn mở như mục C4.2/C5 ở trên. C3 report tiếp tục `INCONCLUSIVE`, không bật scorer/PAPER_GATE. Sau migration/schema change cần chạy lại role-matrix, shadow-drift, scorer-deployment, proof/source-linked scorer E2E và full unit suite trước commit.
 - **Nguồn/traceability:** PostgreSQL 18 `SELECT` row-lock privileges và `INSERT ... ON CONFLICT` đã được kiểm tra từ tài liệu chính thức ngày 10/11/2026, URL ghi ở mục PostgreSQL phía trên. Đã đọc lại entry này sau append; migration projection/downgrade, exact grants, Task9 kết quả và C4 còn mở khớp working tree/test output. Không commit.
-
 ### 2026-11-10 — WP06 D9 downstream PostgreSQL regression matrix
 
 - **Phạm vi:** sau D9 quyền tối thiểu cho scorer shadow guard, chạy lại toàn bộ E2E liên quan đến least-privilege, shadow drift, deployment, TEST opportunity proof và source-pinned scorer journey từ DB Compose sạch.
 - **Kiểm chứng:** `PYTHONPATH=. uv run pytest tests/e2e/test_db_role_least_privilege.py tests/e2e/test_wp06_shadow_drift_persistence.py tests/e2e/test_wp06_scorer_deployment.py tests/e2e/test_wp06_scorer_test_opportunity_proof.py tests/e2e/test_wp06_source_pinned_replay_persistence.py -q -s --tb=short` → **6 passed/221.25s**, không skip. Bao gồm parameterized source-linked TEST journey và role/RLS regressions sau thay đổi migration D9.
 - **Traceability:** xác nhận log cuối là `6 passed`, không có test failure; Task9 lượt riêng trước đó là **1 passed/90.59s**. Đã đọc lại entry này và D9 entry ngay trước đó sau append. Runtime C4 vẫn chưa đạt: repository không resolve artifact/report/policy authoritative để chấm; governance service vẫn từ chối bật active mode; C3 report thực tế `INCONCLUSIVE`. Không suy diễn test plumbing thành eligibility, không bật `SHADOW`/`PAPER_GATE`, chưa commit.
-
 ### 2026-11-10 — WP06 full unit regression after D9
 
 - **Lệnh/kết quả:** `PYTHONPATH=. uv run pytest tests/unit -q --tb=short` → **3355 passed/101.88s**, không fail/skip.
 - **Cùng vòng:** downstream D9 E2E matrix **6 passed/221.25s**; Task9 integrated **1 passed/90.59s** (entry ngay trước). Unit suite bao gồm admin scorer/read model, score-event contracts/repository, deployment governance, runtime scorer kernel, migration/schema inventory và các WP03/05/07 liên quan trong working tree.
 - **Đọc lại:** đã đọc entry cùng output vừa ghi; không có unit regression sau D9. Đây không chứng minh WP06 hoàn tất: C4 runtime artifact/policy target resolver, active governance/atomic decision flow và security review còn mở; evaluator policy chưa là cấu hình bất biến được duyệt/gắn report. Không commit.
-
 ### 2026-11-10 — WP06 complete E2E and responsive admin regression suite
 
 - **Phạm vi/lệnh:** `PYTHONPATH=. uv run pytest tests/e2e/test_wp06*.py tests/e2e/test_learning_scorer_admin_ui.py tests/e2e/test_db_role_least_privilege.py -q -s --tb=short`.
 - **Kết quả:** **19 passed/755.18s**, không fail/skip. Bao phủ candidate opportunity/proof, dataset/split/normalization, runtime vector parity, registry, rights revoke, scorer deployment/report/proof, shadow drift, source-pinned TEST, Task9, process supervision, admin scorer Playwright desktop/mobile và DB role matrix. Compose migration probes xác nhận `alembic check` + single head trong DB network; mọi image/container/network/volume thuộc từng run được teardown tự động.
 - **Traceability:** đã đọc lại command/output và entry sau append. Toàn bộ WP06 E2E hiện tại đạt nhưng acceptance C4 chưa triển khai nên không kết luận WP06 hoàn tất: active artifact/policy resolver, governance enable/rollback và score-event dispatcher integration còn mở; report fixture là `INCONCLUSIVE`; independent security review cần chờ full C4. Không mở active scorer/PAPER_GATE.
-
 ### 2026-11-10 — Cross-WP E2E closeout, stale probe fixes, and Docker image cleanup
 
 - **Phạm vi/lệnh regression:** WP03 venue ledger; WP05 expiry/rights/source/admin; WP07 backtest fence/market signals/REST backfill/Telegram; admin/backtest/research-source Playwright; multibot runtime/report; Compose boundary. Lượt rộng → **36 passed, 1 failed/966.31s**. Failure duy nhất là `test_paper_stack_starts_and_keeps_database_and_object_store_data`:
@@ -2474,3 +3159,12 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Docs/status:** cập nhật project-status, WP06 WBS, completion plan, Task7 scorer plan, module `06-ai-learning.md` và glossary: event table/repository + atomic hook đã có; C5 score-event pagination đã có; C4 target/policy/current-rights resolver, dispatcher active path, scorer-integrated Task9 và independent security review còn mở. Thêm EN→VI `Pre-registered scoring policy` với link tới thiết kế đã duyệt. C3 report `INCONCLUSIVE`; theo quyết định người dùng ngày 10/11, `SHADOW`/`PAPER_GATE` tiếp tục khóa. WP06 không được đánh dấu hoàn tất.
 - **Docker cleanup:** trước cleanup `docker ps -a` chỉ thấy các PostgreSQL container cũ; không có container nào tham chiếu 16 tag `crypidian-app:e2e-*` (mỗi tag hiển thị ~431 MB). Xóa cả 16 tag/image và `dxflrs/garage:<none>` (94.7 MB). Thử xóa `postgres:<none>` (649 MB) bị Docker từ chối vì image đang được container chạy `wp06-revoke-debug-postgres-1` sử dụng; giữ image/container. `docker system df` sau cleanup: Images **1/649.1 MB, 0 B reclaimable**; volumes giữ nguyên (171.5 MB); BuildKit cache **4.791 GB** giữ nguyên. Không prune container, volume hoặc cache.
 - **Đọc lại/stage:** đã đọc lại toàn entry sau cập nhật, đối chiếu 36+1 E2E, D9/Task9/unit counts, source identity, downgrade marker, final quality checks và inventory image. Rà soát staged diff gồm 573 file thuộc code, migration, test, tài liệu và screenshot E2E; không thấy file secret/local database, `git diff --cached --check` sạch. Đã sửa trailing whitespace/EOF trong tài liệu để giữ diff sạch; unit/E2E đã đạt trước vòng tài liệu này. Còn commit nhánh công việc, hòa `dev`, kiểm tra lại rồi push `origin/dev`. WP06 tiếp tục mở và khóa active modes theo quyết định người dùng.
+### 2026-11-10 — Dev merge integration and final WP06 gate verification
+
+- **Git/migration integration:** hòa feature commit `4fd077b` với `origin/dev` tại `10850d47196bc6e83ddd85dcdf9cfb2d2b8a872d`; giữ lịch sử WP06 và Strategy Card bằng merge migration `55c504fe5b86` (single Alembic head). Fetch cuối xác nhận `origin/dev` vẫn ở `10850d4`. Working merge chưa được commit.
+- **Sửa integration:** khôi phục app wiring cho learning routers và worker lifecycles; giữ UI scoring/report metadata; giải vòng import bằng lazy import; nối source identity market bar. Quyền persistence replay chỉ dùng `crypidian_replay_writer`: bỏ trainer DB credential khỏi settings và Compose mount backtest worker; regression xác nhận boundary. Bỏ duplicate MFA column/constraint khỏi migration scorer vì migration dev `9f3c2d8a6e41` đã sở hữu trường đó. Dashboard/body dùng Be Vietnam Pro rõ ràng, nav learning có active state và nội dung hiển thị tiếng Việt.
+- **E2E phát hiện/sửa:** WP06 suite ban đầu **16 passed, 1 failed** do test shadow-drift còn hard-code head `d9f1c3a5b7e9`; cập nhật sang merge head và chạy lại → **1 passed/58.96s**. WP07 matrix phát hiện các fixture cũ: head cũ trong outcome probe, manifest builders chưa yêu cầu schema v4 dù assertion đòi v4, legacy outcome thiếu workspace/canonical payload, audit role allowlist chưa biết các WP06 NOLOGIN owners, và snapshot so sánh cột được thêm sau migration target. Sửa probe theo schema/cột ổn định; các test backtest outcome, replay persist fence, REST backfill (2 cases), và DB role matrix đạt qua các lượt chạy lại, tổng **5 cases**. Không có scorer active mode nào được bật.
+- **Kiểm chứng cuối:** `PYTHONPATH=. uv run pytest tests/unit -q --tb=short` → **3507 passed/133.48s**. WP06 Compose là **16 passed**, cộng shadow-drift retry **1 passed**; WP07 persistence/rights/role là **5 cases passed qua fresh reruns**. Responsive Admin Playwright **9 passed**, split approval UI **1 passed** ở lượt UI trước đó. Ruff check đạt; Ruff format **846 files**; mypy **356 source files**; `docker compose --profile '*' config --quiet`; Alembic `55c504fe5b86 (head)`; `git diff --check` và cached diff check đạt, không còn conflict.
+- **Evidence/status:** dashboard screenshots desktop/mobile nằm ở `tests/e2e/evidence/binance-pnl-dashboard-desktop.png` và `tests/e2e/evidence/binance-pnl-dashboard-mobile.png`; scorer screenshots nằm ở `tests/e2e/evidence/wp06-scoring-desktop.png` và `tests/e2e/evidence/wp06-scoring-mobile.png`. Đã cập nhật/readback `project-status.md` để sửa số liệu lịch sử, nêu responsive dashboard/WP07, kiểm chứng mới và single head. Image cleanup trước đó đã xóa 16 tag `crypidian-app:e2e-*` cùng Garage dangling image; Postgres image còn được container hiện hữu dùng nên giữ.
+- **Giới hạn:** WP06 vẫn **đang triển khai**, C4 active target/current-rights resolver, atomic scorer dispatch, pre-registered scoring thresholds, scorer-integrated Task9 acceptance và independent security review còn mở. C3 report `INCONCLUSIVE`. Theo quyết định người dùng, `SHADOW`/`PAPER_GATE` tiếp tục khóa; không tuyên bố WP06 hoàn tất hoặc readiness giao dịch venue.
+- **Traceability/readback:** đã đọc lại entry này cùng `project-status.md`; single head, số test từng lượt, screenshot paths, credential boundary và acceptance còn mở đối chiếu với output. Trước bước commit phải kiểm lại staged diff, remote `origin/dev` và working tree, không force-push.

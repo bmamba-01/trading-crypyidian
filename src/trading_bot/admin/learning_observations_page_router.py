@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from typing import Annotated, Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -90,12 +89,16 @@ def _present_record(record: Any) -> dict[str, object]:
     metadata = record.metadata
     fields: tuple[tuple[str, str], ...]
     if record.kind == "observation":
+        challenger_reason = metadata.get("challenger_reason")
         fields = (
             ("Mã mô hình thử nghiệm", _short(metadata.get("challenger_registry_id"))),
             ("Phiên bản mô hình", _display(metadata.get("challenger_revision"))),
             (
                 "Lý do tạm dừng",
-                _OBSERVATION_REASONS.get(metadata.get("challenger_reason"), "Chưa xác định"),
+                _OBSERVATION_REASONS.get(
+                    challenger_reason if isinstance(challenger_reason, str) else "",
+                    "Chưa xác định",
+                ),
             ),
             ("Quyết định chiến lược", _incumbent_status(metadata.get("incumbent_status"))),
             ("Độ bao phủ snapshot", _percent(metadata.get("snapshot_coverage"))),
@@ -108,6 +111,7 @@ def _present_record(record: Any) -> dict[str, object]:
     elif record.kind == "assessment":
         reasons = metadata.get("reason_codes")
         reason_codes = reasons if isinstance(reasons, list) else []
+        data_quality_status = metadata.get("data_quality_status")
         reason_labels = tuple(
             _DRIFT_REASONS.get(item, "Lý do chưa nhận diện")
             for item in reason_codes
@@ -124,7 +128,10 @@ def _present_record(record: Any) -> dict[str, object]:
             ("Quan sát đủ điều kiện", _display(metadata.get("eligible_count"))),
             (
                 "Đánh giá dữ liệu",
-                _DATA_STATUS.get(metadata.get("data_quality_status"), "Chưa xác định"),
+                _DATA_STATUS.get(
+                    data_quality_status if isinstance(data_quality_status, str) else "",
+                    "Chưa xác định",
+                ),
             ),
             ("Đánh giá hiệu năng", "Chưa đủ bằng chứng"),
             ("Độ bao phủ trung bình", _percent(metadata.get("snapshot_coverage_rate"))),
@@ -132,7 +139,10 @@ def _present_record(record: Any) -> dict[str, object]:
             ("Tỷ lệ ABSTAIN", _percent(metadata.get("abstention_rate"))),
             ("Lý do", " · ".join(reason_labels) if reason_labels else "Không có"),
         )
-        status = _DATA_STATUS.get(metadata.get("data_quality_status"), "Chưa xác định")
+        status = _DATA_STATUS.get(
+            data_quality_status if isinstance(data_quality_status, str) else "",
+            "Chưa xác định",
+        )
     else:
         reasons = metadata.get("reason_codes")
         reason_codes = reasons if isinstance(reasons, list) else []
@@ -178,16 +188,13 @@ def _boolean(value: object) -> str:
 
 
 def _incumbent_status(value: object) -> str:
-    labels = {
+    if not isinstance(value, str):
+        return "Chưa xác định"
+    return {
         "CANDIDATE": "Đề xuất vào lệnh",
         "ABSTAIN": "Tạm bỏ qua",
         "VETO": "Bị chặn bởi chiến lược",
-    }
-    return _lookup_label(labels, value, "Chưa xác định")
-
-
-def _lookup_label(labels: Mapping[str, str], value: object, default: str) -> str:
-    return labels.get(value, default) if isinstance(value, str) else default
+    }.get(value, "Chưa xác định")
 
 
 __all__ = ["learning_observations_admin_page", "router"]

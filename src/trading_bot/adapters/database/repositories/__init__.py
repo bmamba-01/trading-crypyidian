@@ -29,6 +29,10 @@ from trading_bot.adapters.database.repositories.learning_scorer_artifacts import
     LearningScorerArtifactConflict,
     LearningScorerArtifactRepository,
 )
+from trading_bot.adapters.database.repositories.learning_scorer_test_access import (
+    LearningScorerTestAccessRepository,
+    LearningScorerTestEvaluationReportRepository,
+)
 from trading_bot.adapters.database.repositories.learning_split_approvals import (
     LearningSplitApprovalRepository,
 )
@@ -46,11 +50,17 @@ from trading_bot.adapters.database.repositories.learning_training_jobs import (
 )
 from trading_bot.adapters.database.repositories.risk_conversion import RiskConversionRepository
 from trading_bot.adapters.database.repositories.source_registry import SourceRegistryRepository
+from trading_bot.adapters.database.repositories.strategy_card_repository import (
+    StrategyCardConflict,
+    StrategyCardRepository,
+)
 
 __all__ = [
     "AccountEquityRepository",
     "BacktestDatasetManifestRepository",
     "DatasetManifestRepository",
+    "StrategyCardConflict",
+    "StrategyCardRepository",
     "LearningSplitApprovalRepository",
     "LearningSplitCandidateRepository",
     "LearningFoldSampleRepository",
@@ -81,14 +91,7 @@ __all__ = [
 
 
 def __getattr__(name: str) -> Any:
-    """Carrega repositories do scorer sob demanda para tránh chu trình import."""
-    if name in {
-        "LearningScorerTestAccessRepository",
-        "LearningScorerTestEvaluationReportRepository",
-    }:
-        from trading_bot.adapters.database.repositories import learning_scorer_test_access
-
-        return getattr(learning_scorer_test_access, name)
+    """Carrega o proof TEST apenas quando pedido para evitar ciclo de inicialização."""
     if name in {
         "LearningScorerTestOpportunityProofConflict",
         "LearningScorerTestOpportunityProofRepository",

@@ -1,0 +1,24 @@
+{
+  "_fixture_metadata": {
+    "endpoint": "/fapi/v1/algoOrder",
+    "method": "POST",
+    "api_family": "ALGO_ORDER",
+    "source_url": "https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api/New-Algo-Order",
+    "checked_date": "2026-11-01",
+    "scenario": "Conditional algo order accepted as NEW"
+  },
+  "algoId": 20000001,
+  "clientAlgoId": "crypidian_algo_001",
+  "algoType": "STOP_MARKET",
+  "algoStatus": "NEW",
+  "symbol": "BTCUSDT",
+  "side": "SELL",
+  "positionSide": "BOTH",
+  "triggerPrice": "48000.00",
+  "price": "0",
+  "quantity": "0.050",
+  "actualOrderId": null,
+  "actualPrice": null,
+  "createTime": 1798214400000,
+  "updateTime": 1798214400000
+}

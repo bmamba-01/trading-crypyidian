@@ -1,4 +1,4 @@
-"""Parser thuần cho hợp đồng regular/Algo USDⓈ-M đã kiểm tra ngày 2026-11-02.
+"""Parser thuần cho hợp đồng regular/Algo/account USDⓈ-M đã kiểm tra ngày 2026-11-02.
 
 Không gọi API và không suy ra quyền giải phóng reservation từ DTO. Trường tùy chọn
 thiếu vẫn là None; payload sai phải được caller xử lý như kết quả UNKNOWN.
@@ -20,11 +20,15 @@ class OrderSchemaError(ValueError):
 
 
 class RegularOrderType(StrEnum):
+    """Loại lệnh thường được hỗ trợ trong lát cắt này."""
+
     MARKET = "MARKET"
     LIMIT = "LIMIT"
 
 
 class ConditionalAlgoOrderType(StrEnum):
+    """Loại lệnh điều kiện của Algo Service Binance USDⓈ-M."""
+
     STOP = "STOP"
     STOP_MARKET = "STOP_MARKET"
     TAKE_PROFIT = "TAKE_PROFIT"
@@ -33,6 +37,8 @@ class ConditionalAlgoOrderType(StrEnum):
 
 
 class RegularOrderStatus(StrEnum):
+    """Trạng thái lệnh thường trên Binance Futures USDⓈ-M."""
+
     NEW = "NEW"
     PARTIALLY_FILLED = "PARTIALLY_FILLED"
     FILLED = "FILLED"
@@ -43,6 +49,8 @@ class RegularOrderStatus(StrEnum):
 
 
 class AlgoOrderStatus(StrEnum):
+    """Trạng thái lệnh điều kiện Algo trên Binance Futures USDⓈ-M."""
+
     NEW = "NEW"
     TRIGGERING = "TRIGGERING"
     TRIGGERED = "TRIGGERED"
@@ -159,6 +167,47 @@ class AlgoUpdate:
     event_time_ms: int
     transaction_time_ms: int
     order: AlgoOrder
+
+
+@dataclass(frozen=True, slots=True)
+class AccountUpdateBalance:
+    """Số dư tài sản trong sự kiện ACCOUNT_UPDATE."""
+
+    asset: str
+    wallet_balance: Decimal
+    cross_wallet_balance: Decimal
+    balance_change: Decimal | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AccountUpdatePosition:
+    """Thông tin vị thế trong sự kiện ACCOUNT_UPDATE."""
+
+    symbol: str
+    position_amount: Decimal
+    entry_price: Decimal
+    unrealized_profit: Decimal
+    margin_type: str = "cross"
+    isolated_wallet: Decimal = Decimal("0")
+    position_side: str = "BOTH"
+
+
+@dataclass(frozen=True, slots=True)
+class AccountUpdateEvent:
+    """Sự kiện WebSocket ACCOUNT_UPDATE đã chuẩn hóa."""
+
+    event_time_ms: int
+    transaction_time_ms: int
+    event_reason: str
+    balances: tuple[AccountUpdateBalance, ...]
+    positions: tuple[AccountUpdatePosition, ...]
+
+
+# Các bí danh (aliases) chuẩn hóa theo DTO Contract
+RegularOrderResponse = RegularOrder
+AlgoOrderResponse = AlgoOrder
+OrderTradeUpdateEvent = OrderTradeUpdate
+AlgoUpdateEvent = AlgoUpdate
 
 
 def regular_order_path(order_type: object) -> str:
@@ -283,7 +332,81 @@ def parse_algo_update(payload: object) -> AlgoUpdate:
     )
 
 
+def parse_account_update_event(payload: object) -> AccountUpdateEvent:
+    """Đọc sự kiện ACCOUNT_UPDATE từ WebSocket User Data Stream."""
+    data = decode_order_object(payload)
+    if data.get("e") != "ACCOUNT_UPDATE":
+        raise OrderSchemaError("Sai event type (yêu cầu ACCOUNT_UPDATE).")
+    event_time_ms = _integer(data, "E")
+    transaction_time_ms = _integer(data, "T")
+    nested = data.get("a")
+    if not isinstance(nested, dict):
+        raise OrderSchemaError("Thiếu object a lồng nhau trong ACCOUNT_UPDATE.")
+    nested_data = decode_order_object(nested)
+    event_reason = _text(nested_data, "m")
+
+    raw_balances = nested_data.get("B")
+    if not isinstance(raw_balances, list):
+        raise OrderSchemaError("Trường B (balances) phải là list.")
+    balances: list[AccountUpdateBalance] = []
+    for item in raw_balances:
+        b_data = decode_order_object(item)
+        asset = _text(b_data, "a")
+        wallet_balance = _decimal(b_data, "wb")
+        cross_wallet_balance = _decimal(b_data, "cw")
+        balance_change = _optional_decimal_any_sign(b_data, "bc")
+        balances.append(
+            AccountUpdateBalance(
+                asset=asset,
+                wallet_balance=wallet_balance,
+                cross_wallet_balance=cross_wallet_balance,
+                balance_change=balance_change,
+            )
+        )
+
+    raw_positions = nested_data.get("P")
+    if not isinstance(raw_positions, list):
+        raise OrderSchemaError("Trường P (positions) phải là list.")
+    positions: list[AccountUpdatePosition] = []
+    for p_item in raw_positions:
+        p_data = decode_order_object(p_item)
+        symbol = _text(p_data, "s")
+        position_amount = _decimal_any_sign(p_data, "pa")
+        entry_price = _decimal(p_data, "ep")
+        unrealized_profit = _decimal_any_sign(p_data, "up")
+        margin_type = _text_with_default(p_data, "mt", "cross")
+        isolated_wallet = _optional_decimal(p_data, "iw") or Decimal("0")
+        position_side = _text_with_default(p_data, "ps", "BOTH")
+        positions.append(
+            AccountUpdatePosition(
+                symbol=symbol,
+                position_amount=position_amount,
+                entry_price=entry_price,
+                unrealized_profit=unrealized_profit,
+                margin_type=margin_type,
+                isolated_wallet=isolated_wallet,
+                position_side=position_side,
+            )
+        )
+
+    return AccountUpdateEvent(
+        event_time_ms=event_time_ms,
+        transaction_time_ms=transaction_time_ms,
+        event_reason=event_reason,
+        balances=tuple(balances),
+        positions=tuple(positions),
+    )
+
+
+# Các bí danh (aliases) parser function
+parse_regular_order_response = parse_regular_order
+parse_algo_order_response = parse_algo_order
+parse_order_trade_update_event = parse_order_trade_update
+parse_algo_update_event = parse_algo_update
+parse_account_update = parse_account_update_event
+
 _DECIMAL = re.compile(r"[0-9]+(?:\.[0-9]+)?\Z", re.ASCII)
+_DECIMAL_ANY_SIGN = re.compile(r"-?[0-9]+(?:\.[0-9]+)?\Z", re.ASCII)
 _ID = re.compile(r"[1-9][0-9]*\Z", re.ASCII)
 
 
@@ -335,6 +458,12 @@ def _text(data: dict[str, object], key: str) -> str:
     return value
 
 
+def _text_with_default(data: dict[str, object], key: str, default: str) -> str:
+    if key not in data or data[key] is None:
+        return default
+    return _text(data, key)
+
+
 def _integer(data: dict[str, object], key: str, *, positive: bool = False) -> int:
     value = data.get(key)
     if type(value) is not int or not (int(positive) <= value <= 2**63 - 1):
@@ -361,6 +490,23 @@ def _decimal(data: dict[str, object], key: str) -> Decimal:
 
 def _optional_decimal(data: dict[str, object], key: str) -> Decimal | None:
     return _decimal(data, key) if key in data else None
+
+
+def _decimal_any_sign(data: dict[str, object], key: str) -> Decimal:
+    value = _text(data, key)
+    if not _DECIMAL_ANY_SIGN.fullmatch(value):
+        raise OrderSchemaError("Số thập phân phải là chuỗi hợp lệ.")
+    try:
+        result = Decimal(value)
+    except InvalidOperation:
+        raise OrderSchemaError("Số thập phân không hợp lệ.") from None
+    if not result.is_finite():
+        raise OrderSchemaError("Số thập phân phải hữu hạn.")
+    return result
+
+
+def _optional_decimal_any_sign(data: dict[str, object], key: str) -> Decimal | None:
+    return _decimal_any_sign(data, key) if key in data else None
 
 
 def _linked_order_id(data: dict[str, object], key: str) -> str | None:

@@ -189,6 +189,16 @@ def test_backtest_worker_uses_dedicated_replay_writer_credentials() -> None:
     )
 
 
+def test_backtest_worker_requires_a_separate_replay_writer_identity() -> None:
+    with pytest.raises(ValidationError, match="replay-writer"):
+        AppSettings(
+            process_role="backtest-worker",
+            backtest_worker_workspace_id=UUID("44444444-4444-4444-8444-444444444444"),
+            database_user="crypidian_backtest_worker",
+            database_password_file=Path("/run/secrets/database_backtest_worker_password"),
+        )
+
+
 def test_backtest_worker_rejects_trainer_as_replay_writer() -> None:
     with pytest.raises(ValidationError, match="crypidian_replay_writer"):
         AppSettings(

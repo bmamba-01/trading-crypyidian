@@ -2,6 +2,8 @@
 
 (() => {
   const chartLibrary = window.LightweightCharts;
+  let activeTradeChart = null;
+  let activeDashboardChart = null;
 
   const readData = (id) => {
     const element = document.getElementById(id);
@@ -13,8 +15,23 @@
     container.hidden = true;
     const notice = document.createElement("p");
     notice.setAttribute("role", "status");
+    notice.className = "chart-fallback-notice";
     notice.textContent = message;
     container.insertAdjacentElement("afterend", notice);
+  };
+
+  const getThemeColors = () => {
+    const isDark =
+      document.documentElement.getAttribute("data-theme") === "dark" ||
+      (!document.documentElement.getAttribute("data-theme") &&
+        window.matchMedia("(prefers-color-scheme: dark)").matches);
+    return {
+      isDark,
+      background: isDark ? "#151b26" : "#ffffff",
+      textColor: isDark ? "#94a3b8" : "#475569",
+      gridColor: isDark ? "#1e2638" : "#e2e8f0",
+      borderColor: isDark ? "#242f42" : "#cbd5e1",
+    };
   };
 
   const marketColors = () => {
@@ -23,8 +40,8 @@
       up: style.getPropertyValue("--market-up").trim() || "#0ECB81",
       down: style.getPropertyValue("--market-down").trim() || "#F6465D",
       flat: style.getPropertyValue("--market-flat").trim() || "#8B98A5",
-      upOutline: style.getPropertyValue("--pnl-positive-text").trim() || "#087A55",
-      downOutline: style.getPropertyValue("--pnl-negative-text").trim() || "#B4233A",
+      upOutline: style.getPropertyValue("--pnl-positive-text").trim() || "#0ECB81",
+      downOutline: style.getPropertyValue("--pnl-negative-text").trim() || "#F6465D",
     };
   };
 
@@ -41,18 +58,19 @@
     return selected;
   };
 
-  const createChart = (container, height) =>
-    chartLibrary.createChart(container, {
+  const createChart = (container, height) => {
+    const theme = getThemeColors();
+    return chartLibrary.createChart(container, {
       autoSize: true,
       height,
       layout: {
-        background: { color: "#ffffff" },
-        textColor: "#172b3a",
+        background: { color: theme.background },
+        textColor: theme.textColor,
         fontFamily: '"Be Vietnam Pro", system-ui, sans-serif',
       },
       grid: {
-        vertLines: { color: "#e1e8ee" },
-        horzLines: { color: "#e1e8ee" },
+        vertLines: { color: theme.gridColor },
+        horzLines: { color: theme.gridColor },
       },
       localization: {
         locale: "vi-VN",
@@ -64,25 +82,49 @@
         timeVisible: true,
         secondsVisible: false,
         rightOffset: 6,
-        borderColor: "#aebdca",
+        borderColor: theme.borderColor,
       },
-      rightPriceScale: { borderColor: "#aebdca" },
+      rightPriceScale: { borderColor: theme.borderColor },
       crosshair: { mode: chartLibrary.CrosshairMode?.Normal ?? 0 },
     });
+  };
+
+  const applyThemeUpdate = (chart) => {
+    if (!chart) return;
+    const theme = getThemeColors();
+    chart.applyOptions({
+      layout: {
+        background: { color: theme.background },
+        textColor: theme.textColor,
+      },
+      grid: {
+        vertLines: { color: theme.gridColor },
+        horzLines: { color: theme.gridColor },
+      },
+      timeScale: { borderColor: theme.borderColor },
+      rightPriceScale: { borderColor: theme.borderColor },
+    });
+  };
 
   const chartForTrade = () => {
-    const container = document.getElementById("trade-chart");
+    const container =
+      document.getElementById("trade-chart") || document.getElementById("bot-trade-chart");
     if (!container) return;
-    const payload = readData("trade-chart-data");
+    const payload = readData("trade-chart-data") || readData("bot-chart-data");
     if (!chartLibrary || !payload || !Array.isArray(payload.bars) || payload.bars.length === 0) {
-      showFallback(container, "Biểu đồ chưa tải được; chi tiết giao dịch ở bảng bên dưới vẫn dùng được.");
+      showFallback(
+        container,
+        "Biểu đồ chưa tải được; bảng chi tiết giao dịch bên dưới vẫn đầy đủ dữ liệu."
+      );
       return;
     }
 
     try {
       const bars = payload.bars;
       const colors = marketColors();
-      const chart = createChart(container, 360);
+      const chart = createChart(container, 380);
+      activeTradeChart = chart;
+
       const candleSeries = chart.addSeries(chartLibrary.CandlestickSeries, {
         upColor: colors.up,
         downColor: colors.down,
@@ -92,13 +134,48 @@
         wickDownColor: colors.downOutline,
       });
       candleSeries.setData(bars);
+
       const trade = payload.trade;
       const isLong = trade.side === "LONG";
       const net = Number(trade.net_pnl);
-      const exitCode = trade.exit_reason === "STOP_LOSS" ? "SL" :
-        trade.exit_reason === "TAKE_PROFIT" ? "TP" :
-          trade.exit_reason === "TIME_STOP" ? "TIME" :
-            trade.exit_reason === "OPPOSING_SIGNAL" ? "ĐẢO" : "ĐÓNG";
+      const exitCode =
+        trade.exit_reason === "STOP_LOSS"
+          ? "SL"
+          : trade.exit_reason === "TAKE_PROFIT"
+            ? "TP"
+            : trade.exit_reason === "TIME_STOP"
+              ? "TIME"
+              : trade.exit_reason === "OPPOSING_SIGNAL"
+                ? "ĐẢO"
+                : "ĐÓNG";
+
+      // Vẽ đường Stop Loss (SL) và Take Profit (TP) nếu có dữ liệu định lượng
+      const pm = trade.post_mortem;
+      if (pm && pm.entry_analysis) {
+        const slPrice = Number(pm.entry_analysis.stop_loss_price);
+        const tpPrice = Number(pm.entry_analysis.take_profit_price);
+        if (slPrice > 0) {
+          candleSeries.createPriceLine({
+            price: slPrice,
+            color: colors.down,
+            lineWidth: 1,
+            lineStyle: chartLibrary.LineStyle?.Dashed ?? 2,
+            axisLabelVisible: true,
+            title: "🛑 Dừng lỗ (SL)",
+          });
+        }
+        if (tpPrice > 0) {
+          candleSeries.createPriceLine({
+            price: tpPrice,
+            color: colors.up,
+            lineWidth: 1,
+            lineStyle: chartLibrary.LineStyle?.Dashed ?? 2,
+            axisLabelVisible: true,
+            title: "🎯 Chốt lời (TP)",
+          });
+        }
+      }
+
       const markers = [];
       const markerDetails = new Map();
       for (const fill of trade.fills || []) {
@@ -111,16 +188,16 @@
         const upward = entry ? isLong : !isLong;
         const pnlColor = net > 0 ? colors.up : net < 0 ? colors.down : colors.flat;
         const text = entry
-          ? `Vào ${isLong ? "LONG" : "SHORT"}`
+          ? `🟢 Vào ${isLong ? "LONG" : "SHORT"} @ ${fill.price}`
           : partialExit
             ? "Giảm vị thế"
             : finalExit
-              ? `${exitCode} ${trade.net_pnl} ${trade.quote_asset}`
+              ? `${exitCode} @ ${fill.price} (${trade.net_pnl} ${trade.quote_asset})`
               : "Đóng (chưa rõ)";
         const entryReason = trade.entry_reason || {};
         const explanation = entry
-          ? `Vào lệnh ${trade.symbol} lúc ${fill.occurred_at}; chiến thuật ${entryReason.strategy_id || "Chưa có dữ liệu"}; vì sao bắt tín hiệu: ${entryReason.detail_vi || entryReason.reason_code || "Chưa có dữ liệu"}.`
-          : `Khớp đóng lệnh ${trade.symbol} lúc ${fill.occurred_at}; trạng thái ${fill.position_event_type || "chưa rõ"}; lý do đóng ${trade.exit_reason || "Chưa có dữ liệu"}; PnL ròng ${trade.net_pnl} ${trade.quote_asset}.`;
+          ? `Vào lệnh ${trade.symbol} lúc ${fill.occurred_at}; Giá: ${fill.price}; Chiến thuật: ${entryReason.strategy_id || "TREND_V1"}; Tín hiệu: ${entryReason.detail_vi || "Mô hình nến xác nhận"}.`
+          : `Khớp đóng lệnh ${trade.symbol} lúc ${fill.occurred_at}; Giá: ${fill.price}; Lý do đóng: ${trade.exit_reason || "Chưa rõ"}; PnL ròng: ${trade.net_pnl} ${trade.quote_asset}.`;
         markers.push({
           time,
           position: upward ? "belowBar" : "aboveBar",
@@ -136,7 +213,10 @@
       }
       markers.sort((left, right) => left.time - right.time);
       chartLibrary.createSeriesMarkers(candleSeries, markers);
-      const eventDetail = document.getElementById("trade-chart-event-detail");
+
+      const eventDetail =
+        document.getElementById("trade-chart-event-detail") ||
+        document.getElementById("bot-chart-event-detail");
       if (eventDetail) {
         chart.subscribeCrosshairMove((parameter) => {
           if (parameter.time === undefined || parameter.time === null) return;
@@ -162,7 +242,8 @@
 
     try {
       const chart = createChart(container, 300);
-      const colors = ["#07549a", "#126b45", "#84315b", "#9a4e00", "#5546a5"];
+      activeDashboardChart = chart;
+      const colors = ["#3861fb", "#0ecb81", "#f59e0b", "#a855f7", "#ec4899"];
       const markerDetails = new Map();
       payload.series.forEach((item, index) => {
         const color = colors[index % colors.length];
@@ -195,6 +276,12 @@
       showFallback(container, "Không thể hiển thị biểu đồ hiệu suất lúc này.");
     }
   };
+
+  // Đồng bộ theme khi người dùng nhấn nút gạt Light / Dark mode
+  window.addEventListener("themechange", () => {
+    if (activeTradeChart) applyThemeUpdate(activeTradeChart);
+    if (activeDashboardChart) applyThemeUpdate(activeDashboardChart);
+  });
 
   document.addEventListener("DOMContentLoaded", () => {
     chartForTrade();

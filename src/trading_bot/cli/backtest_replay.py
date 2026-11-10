@@ -118,6 +118,7 @@ def _serialize_job(job: BacktestReplayJob) -> dict[str, object]:
         "bundle_hash": job.bundle_hash,
         "strategy_release_id": job.strategy_release_id,
         "execution_interval": job.execution_interval,
+        "learning_intent": job.learning_intent,
         "created_at": job.created_at.isoformat(),
         "updated_at": job.updated_at.isoformat(),
         "cancel_requested": job.cancel_requested,

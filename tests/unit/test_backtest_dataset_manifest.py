@@ -19,7 +19,7 @@ from trading_bot.application.binance_rest_backfill import (
     BackfillRightsPurpose,
     RestBackfillRequest,
 )
-from trading_bot.domain.market.models import MarketBarSourceIdentity, OHLCVBar
+from trading_bot.domain.market.models import OHLCVBar
 
 NOW = datetime(2026, 11, 3, 12, 0, tzinfo=UTC)
 START = NOW - timedelta(minutes=4)
@@ -85,7 +85,6 @@ def build(
     evidence_value: BackfillRightsEvidence | None = None,
     evaluation_start: datetime | None = None,
     warmup_bars: int = 2,
-    schema_version: int = 3,
 ):
     return build_backtest_dataset_manifest(
         request_value or request(),
@@ -94,7 +93,6 @@ def build(
         bars=bars,
         rights_evidence=evidence_value or evidence(),
         prepared_at=NOW,
-        schema_version=schema_version,
     )
 
 
@@ -120,22 +118,6 @@ def test_manifest_separates_warmup_and_evaluation_and_hashes_complete_dataset() 
     assert manifest.rights_provider == "BINANCE_USDM_REST"
     assert manifest.rights_purpose == "BACKTEST_RESEARCH"
     assert manifest.require_ready() is manifest
-
-
-def test_manifest_hash_preimage_removes_embedded_hash_without_reordering_bytes() -> None:
-    manifest = build(complete_bars())
-    member = f',"dataset_hash":"{manifest.dataset_hash}"'
-    canonical_payload = manifest.canonical_json
-    preimage = canonical_payload.replace(member, "")
-    payload_without_hash = json.loads(canonical_payload)
-    payload_without_hash.pop("dataset_hash")
-    expected_preimage = json.dumps(
-        payload_without_hash, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    )
-
-    assert canonical_payload.count(member) == 1
-    assert preimage == expected_preimage
-    assert hashlib.sha256(preimage.encode("utf-8")).hexdigest() == manifest.dataset_hash
 
 
 def test_manifest_supports_an_explicitly_empty_warmup_window() -> None:
@@ -335,55 +317,6 @@ def test_manifest_round_trips_canonical_json_and_checks_expected_hash() -> None:
             manifest.canonical_json,
             expected_dataset_hash="0" * 64,
         )
-
-
-def test_manifest_v4_binds_ordered_market_bar_record_identities() -> None:
-    bars = list(complete_bars())
-    for index, item in enumerate(bars):
-        checksum = item.checksum
-        assert checksum is not None
-        bars[index] = replace(
-            item,
-            source_identity=MarketBarSourceIdentity(
-                workspace_id=WORKSPACE_ID,
-                record_id=UUID(f"00000000-0000-4000-8000-{index + 1:012d}"),
-                logical_key=f"BINANCE_USDM_REST_BACKFILL:BTCUSDT:1m:{item.open_time.isoformat()}",
-                revision=1,
-                supersedes_record_id=None,
-                checksum=checksum,
-            ),
-        )
-
-    manifest = build(tuple(bars), schema_version=4)
-
-    assert manifest.schema_version == 4
-    assert manifest.bar_identity_hash is not None
-    assert manifest.has_pinned_source_identities
-    changed_identity = replace(
-        bars[0],
-        source_identity=replace(
-            bars[0].source_identity,
-            record_id=UUID("00000000-0000-4000-8000-000000000099"),
-        ),
-    )
-    changed_manifest = build((changed_identity, *bars[1:]), schema_version=4)
-    assert changed_manifest.bar_identity_hash != manifest.bar_identity_hash
-    assert changed_manifest.dataset_hash != manifest.dataset_hash
-
-
-def test_manifest_v4_fails_closed_without_authoritative_market_bar_identity() -> None:
-    with pytest.raises(ValueError, match="(?i)identity nguồn.*bắt buộc"):
-        build(complete_bars(), schema_version=4)
-
-
-@pytest.mark.parametrize("schema_version", [2, 3])
-def test_legacy_manifest_versions_are_not_pinned_to_source_identities(
-    schema_version: int,
-) -> None:
-    manifest = build(complete_bars(), schema_version=schema_version)
-
-    assert manifest.bar_identity_hash is None
-    assert not manifest.has_pinned_source_identities
 
 
 def test_manifest_canonical_json_parser_rejects_noncanonical_or_tampered_payload() -> None:

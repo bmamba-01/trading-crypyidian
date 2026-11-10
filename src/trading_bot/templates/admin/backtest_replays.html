@@ -69,14 +69,6 @@
           {% endif %}
           <small id="execution-interval-help">Chọn khung nến có trong gói dữ liệu.</small>
         </div>
-        <div class="backtest-form-field backtest-form-field--wide">
-          <label for="learning-intent">Mục đích lưu kết quả</label>
-          <select id="learning-intent" name="learning_intent" required>
-            <option value="RESEARCH">Kiểm thử thông thường</option>
-            <option value="TRAINING_BASE">Tạo dữ liệu học từ kịch bản BASE</option>
-          </select>
-          <small>Khi chọn dữ liệu học, intent được ghim trước replay; kết quả bị quarantine, không hiện mã run trong danh sách thông thường. Chỉ luồng builder/evaluator được cấp quyền mới được tiêu thụ dữ liệu sau khi kiểm quyền và split.</small>
-        </div>
         <div class="backtest-form-field">
           <label for="starting-equity">Vốn mô phỏng</label>
           <input id="starting-equity" name="starting_equity" type="number" min="0.01"
@@ -125,7 +117,6 @@
               <th scope="col">Tạo lúc</th>
               <th scope="col">Chiến thuật / khung nến</th>
               <th scope="col">Gói dữ liệu</th>
-              <th scope="col">Mục đích</th>
               <th scope="col">Trạng thái</th>
               <th scope="col">Tiến độ</th>
               <th scope="col">Kết quả</th>
@@ -138,7 +129,6 @@
                 <td><time datetime="{{ job.created_at.isoformat() if job.created_at else '' }}">{{ job.created_at_compact }}</time></td>
                 <td>{{ job.strategy_name }} · {{ job.execution_interval }}</td>
                 <td><code>{{ job.bundle_hash_short }}</code></td>
-                <td>{{ job.learning_intent }}</td>
                 <td>
                   <strong>{{ job.status }}</strong>
                   {% if job.stage %}<span class="backtest-job-stage">{{ job.stage }}</span>{% endif %}
@@ -150,9 +140,7 @@
                   <span class="backtest-progress-value">{{ job.progress }}%</span>
                 </td>
                 <td>
-                  {% if job.quarantined %}
-                    Kết quả đang quarantine
-                  {% elif job.run_ids %}
+                  {% if job.run_ids %}
                     {% for run_id in job.run_ids %}<code>{{ run_id }}</code>{% if not loop.last %}<br>{% endif %}{% endfor %}
                   {% else %}Chưa có{% endif %}
                 </td>
@@ -176,10 +164,9 @@
             <dl>
               <div><dt>Thời điểm tạo</dt><dd>{{ job.created_at|local_time if job.created_at else "—" }}</dd></div>
               <div><dt>Gói dữ liệu</dt><dd><code>{{ job.bundle_hash_short }}</code></dd></div>
-              <div><dt>Mục đích</dt><dd>{{ job.learning_intent }}</dd></div>
               <div><dt>Trạng thái</dt><dd><strong>{{ job.status }}</strong>{% if job.stage %} · {{ job.stage }}{% endif %}</dd></div>
               <div><dt>Tiến độ</dt><dd><progress max="100" value="{{ job.progress }}">{{ job.progress }}%</progress> <span>{{ job.progress }}%</span></dd></div>
-              <div><dt>Kết quả</dt><dd>{% if job.quarantined %}Kết quả đang quarantine{% elif job.run_ids %}{% for run_id in job.run_ids %}<code>{{ run_id }}</code>{% if not loop.last %}, {% endif %}{% endfor %}{% else %}Chưa có{% endif %}</dd></div>
+              <div><dt>Kết quả</dt><dd>{% if job.run_ids %}{% for run_id in job.run_ids %}<code>{{ run_id }}</code>{% if not loop.last %}, {% endif %}{% endfor %}{% else %}Chưa có{% endif %}</dd></div>
               {% if job.error_code %}<div><dt>Mã lỗi</dt><dd>{{ job.error_code }}</dd></div>{% endif %}
             </dl>
             {% if job.can_cancel %}

@@ -1,4 +1,4 @@
-"""WP06: scorer deployment governance ledger and session MFA method."""
+"""WP06: sổ kiểm toán triển khai scorer và con trỏ triển khai theo workspace."""
 
 from collections.abc import Sequence
 
@@ -19,10 +19,6 @@ WORKSPACE = "workspace_id = NULLIF(pg_catalog.current_setting('app.workspace_id'
 
 
 def upgrade() -> None:
-    op.add_column("session", sa.Column("mfa_method", sa.String(16), nullable=True))
-    op.create_check_constraint(
-        "session_mfa_method_valid", "session", "mfa_method IS NULL OR mfa_method = 'TOTP'"
-    )
     op.create_unique_constraint(
         "uq_learning_scorer_artifact_workspace_id",
         "learning_scorer_artifact",
@@ -553,15 +549,9 @@ def downgrade() -> None:
         .execute(sa.text(f"SELECT count(*) FROM public.{POINTER} WHERE revision > 0"))
         .scalar_one()
     )
-    mfa_count = (
-        op.get_bind()
-        .execute(sa.text("SELECT count(*) FROM public.session WHERE mfa_method IS NOT NULL"))
-        .scalar_one()
-    )
-    if event_count or revision_count or mfa_count:
+    if event_count or revision_count:
         raise RuntimeError(
-            "WP06_SCORING_DEPLOYMENT_POPULATED_DOWNGRADE_DENIED; "
-            "deployment history or verified MFA method exists"
+            "WP06_SCORING_DEPLOYMENT_POPULATED_DOWNGRADE_DENIED; deployment history exists"
         )
     op.execute("DROP TRIGGER workspace_scoring_deployment_seed ON public.workspace")
     op.execute(f"DROP TRIGGER {POINTER}_guard ON public.{POINTER}")
@@ -585,5 +575,3 @@ def downgrade() -> None:
         "learning_scorer_artifact",
         type_="unique",
     )
-    op.drop_constraint("session_mfa_method_valid", "session", type_="check")
-    op.drop_column("session", "mfa_method")

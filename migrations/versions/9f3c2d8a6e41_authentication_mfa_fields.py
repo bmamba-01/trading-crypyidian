@@ -22,6 +22,15 @@ def upgrade() -> None:
     op.add_column(
         "session", sa.Column("mfa_verified_at", sa.DateTime(timezone=True), nullable=True)
     )
+    op.execute("ALTER TABLE public.session ADD COLUMN IF NOT EXISTS mfa_method VARCHAR(16)")
+    op.execute(
+        "DO $$ BEGIN "
+        "IF NOT EXISTS (SELECT 1 FROM pg_constraint "
+        "WHERE conname = 'session_mfa_method_valid') THEN "
+        "ALTER TABLE public.session ADD CONSTRAINT session_mfa_method_valid "
+        "CHECK (mfa_method IS NULL OR mfa_method = 'TOTP'); "
+        "END IF; END $$"
+    )
     op.add_column("mfa_factor", sa.Column("last_used_counter", sa.Integer(), nullable=True))
     op.execute("GRANT INSERT, UPDATE ON TABLE workspace TO crypidian_admin_web")
 
@@ -30,5 +39,7 @@ def downgrade() -> None:
     """Thu hồi quyền bootstrap và bỏ các trường được bổ sung trong revision này."""
     op.execute("REVOKE INSERT, UPDATE ON TABLE workspace FROM crypidian_admin_web")
     op.drop_column("mfa_factor", "last_used_counter")
+    op.drop_constraint("session_mfa_method_valid", "session", type_="check")
+    op.drop_column("session", "mfa_method")
     op.drop_column("session", "mfa_verified_at")
     op.drop_column("session", "csrf_token_hash")

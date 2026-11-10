@@ -1,5 +1,7 @@
 """Kiểm tra hợp đồng order offline; fixture không xác nhận năng lực Demo."""
 
+from __future__ import annotations
+
 import json
 from collections.abc import Callable
 from copy import deepcopy
@@ -415,3 +417,86 @@ def test_order_event_accepts_consistent_fill_quantity_boundaries(
     result = schemas.parse_order_trade_update(data)
     assert result.canonical_state is expected
     assert result.last_filled_quantity == Decimal(last)
+
+
+# ============================================================================
+# Tests cho AccountUpdateEvent và parse_account_update_event
+# ============================================================================
+
+
+def test_parse_account_update_fixture() -> None:
+    value = payload("account_update")
+    event = schemas.parse_account_update_event(value)
+
+    assert isinstance(event, schemas.AccountUpdateEvent)
+    assert event.event_time_ms == 1798214405200
+    assert event.transaction_time_ms == 1798214405190
+    assert event.event_reason == "ORDER"
+
+    assert len(event.balances) == 1
+    bal = event.balances[0]
+    assert bal.asset == "USDT"
+    assert bal.wallet_balance == Decimal("10000.50000000")
+    assert bal.cross_wallet_balance == Decimal("9500.50000000")
+    assert bal.balance_change == Decimal("-0.50000000")
+
+    assert len(event.positions) == 1
+    pos = event.positions[0]
+    assert pos.symbol == "BTCUSDT"
+    assert pos.position_amount == Decimal("0.020")
+    assert pos.entry_price == Decimal("50000.00000")
+    assert pos.unrealized_profit == Decimal("-15.20000000")
+    assert pos.margin_type == "cross"
+    assert pos.isolated_wallet == Decimal("0.00000000")
+    assert pos.position_side == "BOTH"
+
+
+def test_parse_account_update_allows_negative_position_amount_and_unrealized_profit() -> None:
+    value = payload("account_update")
+    value["a"]["P"][0]["pa"] = "-0.050"
+    value["a"]["P"][0]["up"] = "-123.45678900"
+    event = schemas.parse_account_update_event(value)
+
+    pos = event.positions[0]
+    assert pos.position_amount == Decimal("-0.050")
+    assert pos.unrealized_profit == Decimal("-123.45678900")
+
+
+def test_parse_account_update_rejects_negative_wallet_balance() -> None:
+    value = payload("account_update")
+    value["a"]["B"][0]["wb"] = "-1000.00"
+    with pytest.raises(schemas.OrderSchemaError):
+        schemas.parse_account_update_event(value)
+
+
+def test_parse_account_update_rejects_negative_entry_price() -> None:
+    value = payload("account_update")
+    value["a"]["P"][0]["ep"] = "-50000.00"
+    with pytest.raises(schemas.OrderSchemaError):
+        schemas.parse_account_update_event(value)
+
+
+def test_parse_account_update_rejects_other_events() -> None:
+    value = payload("order_event")
+    with pytest.raises(schemas.OrderSchemaError):
+        schemas.parse_account_update_event(value)
+
+
+@pytest.mark.parametrize("key", ["B", "P"])
+def test_parse_account_update_rejects_non_list_balance_or_position(key: str) -> None:
+    value = payload("account_update")
+    value["a"][key] = "not-a-list"
+    with pytest.raises(schemas.OrderSchemaError):
+        schemas.parse_account_update_event(value)
+
+
+def test_schema_aliases_are_identical() -> None:
+    assert schemas.RegularOrderResponse is schemas.RegularOrder
+    assert schemas.AlgoOrderResponse is schemas.AlgoOrder
+    assert schemas.OrderTradeUpdateEvent is schemas.OrderTradeUpdate
+    assert schemas.AlgoUpdateEvent is schemas.AlgoUpdate
+    assert schemas.parse_regular_order_response is schemas.parse_regular_order
+    assert schemas.parse_algo_order_response is schemas.parse_algo_order
+    assert schemas.parse_order_trade_update_event is schemas.parse_order_trade_update
+    assert schemas.parse_algo_update_event is schemas.parse_algo_update
+    assert schemas.parse_account_update is schemas.parse_account_update_event

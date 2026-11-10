@@ -66,9 +66,9 @@ class BacktestDatasetManifest:
     bar_count: int
     missing_open_times: tuple[datetime, ...]
     bars_content_hash: str
-    bar_identity_hash: str | None
     dataset_hash: str
-    schema_version: int = 4
+    bar_identity_hash: str | None = None
+    schema_version: int = 3
 
     def __post_init__(self) -> None:
         if type(self.schema_version) is not int or self.schema_version not in {2, 3, 4}:
@@ -299,7 +299,7 @@ def build_backtest_dataset_manifest(
     bars: Sequence[OHLCVBar],
     rights_evidence: BackfillRightsEvidence,
     prepared_at: datetime,
-    schema_version: int = 4,
+    schema_version: int = 3,
 ) -> BacktestDatasetManifest:
     """Tạo manifest chuẩn hóa; nến thiếu được liệt kê chứ không nội suy."""
     if not isinstance(request, RestBackfillRequest):

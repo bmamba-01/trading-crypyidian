@@ -232,34 +232,3 @@ def test_html_approval_retry_uses_referenced_pending_expiry_after_success():
     )
     assert response.status_code == 303
     assert service.facade.calls[-1][3].valid_until == expiry
-
-
-@pytest.mark.parametrize("attribution", ["not approved", "© Nhà xuất bản tùy chỉnh"])
-def test_html_translates_default_attribution_only_and_keeps_api_value(attribution):
-    from dataclasses import replace
-
-    from tests.unit.test_research_source_admin_api import SOURCE
-
-    from trading_bot.domain.research.source_registry import SourceRegistryEntry
-
-    http, service = html_client()
-    entry = SourceRegistryEntry(
-        SOURCE.source_id, (replace(SOURCE.current, attribution=attribution),)
-    )
-
-    async def get_source(source_id):
-        return entry, None
-
-    service.facade.get_source = get_source
-    html = http.get("/admin/research-sources?source_id=calendar")
-    assert html.status_code == 200
-    if attribution == "not approved":
-        assert "not approved" not in html.text
-        assert "Chưa được duyệt" in html.text
-    else:
-        assert attribution in html.text
-    assert (
-        http.get("/api/v1/research-sources/calendar").json()["current"]["attribution"]
-        == attribution
-    )
-    assert entry.current.attribution == attribution

@@ -92,7 +92,6 @@ def replay_input(
         bars=bars,
         rights_evidence=rights,
         prepared_at=NOW,
-        schema_version=3,
     )
     return BacktestDatasetReplayInput(manifest, bars, rights)
 

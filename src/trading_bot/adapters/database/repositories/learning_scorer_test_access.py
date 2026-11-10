@@ -26,10 +26,6 @@ from trading_bot.adapters.database.models.learning_scorer_test_access_entities i
     LearningScorerTestAccessReceiptRecord,
     LearningScorerTestEvaluationReportRecord,
 )
-from trading_bot.adapters.database.replay_training_rights import (
-    DatabaseReplayTrainingRightsGate,
-    training_scope_digest,
-)
 from trading_bot.adapters.database.repositories.backtest_outcomes import (
     _validate_trade_outcome_row,
 )
@@ -313,6 +309,11 @@ async def _current_training_scope_digest(
     bundle_hash: str,
 ) -> str:
     """Lấy quyền TRAINING hiện hành cho mọi child của bundle trong transaction."""
+    from trading_bot.adapters.database.replay_training_rights import (
+        DatabaseReplayTrainingRightsGate,
+        training_scope_digest,
+    )
+
     try:
         receipts = await DatabaseReplayTrainingRightsGate(session).authorize(
             workspace_id=workspace_id,

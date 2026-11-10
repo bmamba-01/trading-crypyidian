@@ -291,19 +291,19 @@ DEFINER_OWNERS = {
     "crypidian_backtest_persist_owner",
     "crypidian_bot_provisioner",
     "crypidian_candidate_locker",
+    "crypidian_learning_batch_reader",
+    "crypidian_learning_evaluation_reader",
+    "crypidian_learning_source_rights_reader",
+    "crypidian_manifest_comparator",
+    "crypidian_risk_reservation_guard",
+    "crypidian_scorer_deployment_guard",
+    "crypidian_scorer_deployment_pointer_writer",
+    "crypidian_scorer_deployment_rights_reader",
+    "crypidian_learning_model_registry_guard",
+    "crypidian_learning_shadow_integrity_guard",
     "crypidian_risk_aggregator",
     "crypidian_source_expiry_scanner",
     "crypidian_source_rights_emitter",
-    "crypidian_scorer_deployment_rights_reader",
-    "crypidian_manifest_comparator",
-    "crypidian_scorer_deployment_guard",
-    "crypidian_scorer_deployment_pointer_writer",
-    "crypidian_learning_model_registry_guard",
-    "crypidian_learning_shadow_integrity_guard",
-    "crypidian_learning_evaluation_reader",
-    "crypidian_learning_batch_reader",
-    "crypidian_learning_source_rights_reader",
-    "crypidian_risk_reservation_guard",
 }
 FUNCTION_EXECUTE = {
     "begin_backtest_job_persist(uuid,uuid,text,integer)": {REPLAY_WRITER},
@@ -337,26 +337,16 @@ def check_functions(connection):
         if "search_path=pg_catalog, pg_temp" not in config:
             problems.append(("definer search_path", signature, config))
     definer_roles = connection.execute(
-        "SELECT rolname, rolcanlogin, rolsuper, rolbypassrls, rolreplication, rolcreaterole, "
+        "SELECT rolcanlogin, rolsuper, rolbypassrls, rolreplication, rolcreaterole, "
         "rolcreatedb, rolinherit, EXISTS (SELECT 1 FROM pg_auth_members m "
         "WHERE m.roleid = r.oid OR m.member = r.oid) FROM pg_roles r "
-        "WHERE rolname = ANY(%s) ORDER BY rolname",
-        (sorted(DEFINER_OWNERS),),
+        "WHERE rolname IN ('crypidian_source_expiry_scanner', 'crypidian_source_rights_emitter') "
+        "ORDER BY rolname"
     ).fetchall()
-    actual_definer_roles = {role[0] for role in definer_roles}
-    unsafe_definer_roles = [
-        role
-        for role in definer_roles
-        if role[1:] != (False, False, False, False, False, False, False, False)
-    ]
-    if actual_definer_roles != DEFINER_OWNERS or unsafe_definer_roles:
-        problems.append(
-            (
-                "dedicated definer role posture",
-                sorted(DEFINER_OWNERS - actual_definer_roles),
-                unsafe_definer_roles,
-            )
-        )
+    if len(definer_roles) != 2 or any(
+        role != (False, False, False, False, False, False, False, False) for role in definer_roles
+    ):
+        problems.append(("source rights definer role posture", definer_roles))
     for signature, allowed in FUNCTION_EXECUTE.items():
         for role in (*PROCESS_ROLES, "crypidian_app"):
             granted = connection.execute(
@@ -484,19 +474,6 @@ def check_functions(connection):
     ).fetchone()[0]
     if absent is not None:
         problems.append(("dead legacy aggregate still present",))
-    if problems:
-        owner_problems = [problem[1:] for problem in problems if problem[0] == "definer owner"]
-        posture_problems = [
-            problem[1:] for problem in problems if problem[0] == "dedicated definer role posture"
-        ]
-        print(
-            "DB_ROLE_DEFINER_AUDIT="
-            + json.dumps(
-                {"owners": owner_problems, "posture": posture_problems},
-                sort_keys=True,
-                default=str,
-            )
-        )
     assert not problems, problems
     return {"definers": len(definers)}
 

@@ -72,7 +72,6 @@ def test_reference_hash_matches_bundle_hash_without_volatile_rights_timestamps()
             bars=bars,
             rights_evidence=rights,
             prepared_at=now,
-            schema_version=3,
         )
         return BacktestDatasetReplayInput(manifest, bars, rights)
 

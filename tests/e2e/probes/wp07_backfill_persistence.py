@@ -426,6 +426,7 @@ async def _exercise() -> dict[str, Any]:
         bars=tuple(bars_after_commit),
         rights_evidence=rights_evidence,
         prepared_at=NOW,
+        schema_version=4,
     )
     dataset_manifest.require_ready()
 
@@ -507,6 +508,7 @@ async def _exercise() -> dict[str, Any]:
             bars=multi_timeframe_bars[child_request.interval],
             rights_evidence=rights_evidence,
             prepared_at=NOW,
+            schema_version=4,
         )
         for child_request in multi_timeframe_requests
     )

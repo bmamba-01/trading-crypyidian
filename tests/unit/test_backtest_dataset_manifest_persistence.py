@@ -77,7 +77,6 @@ def manifest():
             valid_until=NOW + timedelta(days=1),
         ),
         prepared_at=NOW,
-        schema_version=3,
     )
 
 

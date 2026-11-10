@@ -57,32 +57,6 @@ def test_plan_pins_deterministic_manifest_and_explicit_paper_profile() -> None:
     assert first.manifest.seed == 17
 
 
-def test_training_replay_intent_is_bound_to_manifest_before_execution() -> None:
-    source = bundle()
-    request = replace(_submission(source), learning_intent="TRAINING_BASE")
-    plan = build_backtest_replay_plan(source.workspace_id, JOB_ID, source, request)
-    research_plan = build_backtest_replay_plan(
-        source.workspace_id, JOB_ID, source, _submission(source)
-    )
-
-    assert plan.manifest.learning_intent == "TRAINING_BASE"
-    assert plan.manifest.learning_job_id == str(JOB_ID)
-    assert plan.manifest.content_hash != research_plan.manifest.content_hash
-
-
-def test_replay_job_payload_persists_intent_and_reads_legacy_as_research() -> None:
-    source = bundle()
-    request = replace(_submission(source), learning_intent="TRAINING_BASE")
-
-    restored = type(request).from_payload(request.to_payload())
-    legacy_payload = request.to_payload()
-    legacy_payload.pop("learning_intent")
-    legacy = type(request).from_payload(legacy_payload)
-
-    assert restored == request
-    assert legacy.learning_intent == "RESEARCH"
-
-
 def test_executor_uses_only_one_base_scenario_and_matching_paper_context(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

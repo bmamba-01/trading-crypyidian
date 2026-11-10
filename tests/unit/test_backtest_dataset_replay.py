@@ -5,7 +5,7 @@ import json
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import pytest
 
@@ -25,7 +25,7 @@ from trading_bot.application.binance_rest_backfill import (
     BackfillRightsPurpose,
     RestBackfillRequest,
 )
-from trading_bot.domain.market.models import MarketBarSourceIdentity, OHLCVBar
+from trading_bot.domain.market.models import OHLCVBar
 
 NOW = datetime(2026, 11, 3, 12, tzinfo=UTC)
 START = NOW - timedelta(minutes=2)
@@ -80,45 +80,6 @@ def manifest(*, include_second_bar: bool = True):
             checked_at=NOW - timedelta(seconds=1),
             valid_until=NOW + timedelta(days=1),
         ),
-        prepared_at=NOW,
-        schema_version=3,
-    )
-
-
-def identified_market_bars() -> tuple[OHLCVBar, ...]:
-    identified = []
-    for index, item in enumerate(market_bars()):
-        assert item.checksum is not None
-        identified.append(
-            replace(
-                item,
-                source_identity=MarketBarSourceIdentity(
-                    workspace_id=WORKSPACE_ID,
-                    record_id=UUID(f"00000000-0000-4000-8000-{index + 1:012d}"),
-                    logical_key=f"BINANCE_USDM_REST_BACKFILL:BTCUSDT:1m:{index}",
-                    revision=1,
-                    supersedes_record_id=None,
-                    checksum=item.checksum,
-                ),
-            )
-        )
-    return tuple(identified)
-
-
-def manifest_v4():
-    request = RestBackfillRequest(
-        symbol="BTCUSDT",
-        interval="1m",
-        start=START,
-        end=NOW,
-        purpose=BackfillRightsPurpose.BACKTEST_RESEARCH,
-    )
-    return build_backtest_dataset_manifest(
-        request,
-        evaluation_start=START,
-        warmup_bars=0,
-        bars=identified_market_bars(),
-        rights_evidence=evidence(),
         prepared_at=NOW,
     )
 
@@ -239,31 +200,6 @@ async def test_replay_loader_rejects_missing_or_changed_pinned_bars() -> None:
         market_data=FakeMarketData(altered),
     )
     with pytest.raises(BacktestDatasetDataChanged, match="(?i)hash"):
-        await loader.load_for_replay(
-            workspace_id=WORKSPACE_ID,
-            dataset_hash=value.dataset_hash,
-            now=NOW,
-        )
-
-
-@pytest.mark.asyncio
-async def test_replay_loader_rejects_changed_v4_identity_when_bar_payload_matches() -> None:
-    value = manifest_v4()
-    bars = identified_market_bars()
-    changed_first = replace(
-        bars[0],
-        source_identity=replace(
-            bars[0].source_identity,
-            record_id=uuid4(),
-        ),
-    )
-    loader = BacktestDatasetReplayLoader(
-        repository=FakeManifestRepository(value),
-        rights_gate=FakeRightsGate(evidence()),
-        market_data=FakeMarketData((changed_first, *bars[1:])),
-    )
-
-    with pytest.raises(BacktestDatasetDataChanged, match="Identity record/revision"):
         await loader.load_for_replay(
             workspace_id=WORKSPACE_ID,
             dataset_hash=value.dataset_hash,

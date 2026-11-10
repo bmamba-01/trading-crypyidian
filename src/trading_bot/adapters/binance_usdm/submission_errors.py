@@ -80,6 +80,7 @@ def classify_submission_failure(
             False,
             operator_clearance_required=True,
         )
+
     message = response.message.strip().casefold()
     if response.status_code == 418:
         return SubmissionFailure(

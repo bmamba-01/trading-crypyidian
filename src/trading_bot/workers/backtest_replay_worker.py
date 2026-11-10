@@ -454,7 +454,7 @@ def _error_code(error: Exception) -> str:
 
 
 async def run_backtest_worker(settings: AppSettings, *, once: bool = False) -> None:
-    """Dựng hai pool: worker đọc/claim riêng, replay-writer chỉ ghi kết quả."""
+    """Dựng pool đọc/claim và pool ghi hẹp cho replay worker."""
     if settings.process_role != "backtest-worker":
         raise ValueError("CLI worker chỉ chạy với process_role=backtest-worker.")
     if not (settings.database_user and settings.database_password_file):
@@ -462,7 +462,7 @@ async def run_backtest_worker(settings: AppSettings, *, once: bool = False) -> N
     if not (
         settings.backtest_replay_database_user and settings.backtest_replay_database_password_file
     ):
-        raise ValueError("backtest-worker thiếu credential replay-writer.")
+        raise ValueError("backtest-worker thiếu credential replay_writer.")
 
     from trading_bot.adapters.database.engine import (
         create_database_engine,

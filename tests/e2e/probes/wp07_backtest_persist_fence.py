@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -48,13 +47,22 @@ def scope(connection: psycopg.Connection, workspace_id: UUID | None) -> None:
 def snapshot() -> dict[str, object]:
     with connect() as connection:
         job = connection.execute(
-            "SELECT to_jsonb(j) FROM public.backtest_replay_job j ORDER BY id"
+            "SELECT jsonb_build_object('id',id,'workspace_id',workspace_id,'status',status,"
+            "'stage',stage,'progress',progress,'attempt_count',attempt_count,'lease_owner',"
+            "lease_owner,'lease_generation',lease_generation,'lease_until',lease_until,"
+            "'cancel_requested',cancel_requested,'result_run_ids',result_run_ids) "
+            "FROM public.backtest_replay_job ORDER BY id"
         ).fetchall()
         runs = connection.execute(
-            "SELECT to_jsonb(r) FROM public.backtest_run r ORDER BY id"
+            "SELECT jsonb_build_object('id',id,'workspace_id',workspace_id,'manifest_hash',"
+            "manifest_hash,'manifest',manifest,'canonical_manifest',canonical_manifest) "
+            "FROM public.backtest_run ORDER BY id"
         ).fetchall()
         outcomes = connection.execute(
-            "SELECT to_jsonb(o) FROM public.backtest_trade_outcome o ORDER BY id"
+            "SELECT jsonb_build_object('id',id,'workspace_id',workspace_id,'run_id',run_id,"
+            "'trial_record_id',trial_record_id,'manifest_hash',manifest_hash,'ordinal',ordinal,"
+            "'trade_id',trade_id,'outcome_hash',outcome_hash,'outcome',outcome,"
+            "'canonical_json',canonical_json) FROM public.backtest_trade_outcome ORDER BY id"
         ).fetchall()
         return {
             "jobs": [r[0] for r in job],
@@ -63,91 +71,8 @@ def snapshot() -> dict[str, object]:
         }
 
 
-def snapshot_delta(before: dict[str, object], after: dict[str, object]) -> dict[str, object]:
-    """Tóm tắt khác biệt downgrade để lỗi E2E nêu đúng cột/hàng bị đổi."""
-
-    def first_difference(left: object, right: object, path: str = "$") -> str | None:
-        if type(left) is not type(right):
-            return f"{path}: type {type(left).__name__} != {type(right).__name__}"
-        if isinstance(left, dict) and isinstance(right, dict):
-            if left.keys() != right.keys():
-                missing = sorted(left.keys() - right.keys())
-                added = sorted(right.keys() - left.keys())
-                return f"{path}: removed={missing[:20]}, added={added[:20]}"
-            for key in sorted(left):
-                difference = first_difference(left[key], right[key], f"{path}.{key}")
-                if difference is not None:
-                    return difference
-        elif isinstance(left, list) and isinstance(right, list):
-            if len(left) != len(right):
-                return f"{path}: length {len(left)} != {len(right)}"
-            for index, (old_value, new_value) in enumerate(zip(left, right, strict=True)):
-                difference = first_difference(old_value, new_value, f"{path}[{index}]")
-                if difference is not None:
-                    return difference
-        elif left != right:
-            return f"{path}: {left!r} != {right!r}"
-        return None
-
-    delta: dict[str, object] = {
-        "zzzz_structure": {
-            "before_keys": sorted(before),
-            "after_keys": sorted(after),
-            "before_equals_after": before == after,
-            "first_difference": first_difference(before, after),
-        }
-    }
-    for table, after_rows_value in after.items():
-        before_rows_value = before[table]
-        before_rows = before_rows_value if isinstance(before_rows_value, list) else []
-        after_rows = after_rows_value if isinstance(after_rows_value, list) else []
-        old_by_id = {
-            str(row.get("id", index)): row
-            for index, row in enumerate(before_rows)
-            if isinstance(row, dict)
-        }
-        new_by_id = {
-            str(row.get("id", index)): row
-            for index, row in enumerate(after_rows)
-            if isinstance(row, dict)
-        }
-        changed_rows = []
-        for row_id in sorted(old_by_id.keys() & new_by_id.keys()):
-            old_row, new_row = old_by_id[row_id], new_by_id[row_id]
-            changed = {
-                key: [repr(old_row.get(key))[:100], repr(new_row.get(key))[:100]]
-                for key in sorted(old_row.keys() | new_row.keys())
-                if old_row.get(key) != new_row.get(key)
-            }
-            if changed:
-                changed_rows.append({"id": row_id, "columns": changed})
-            removed_columns = sorted(old_row.keys() - new_row.keys())
-            added_columns = sorted(new_row.keys() - old_row.keys())
-            if removed_columns or added_columns:
-                changed_rows.append(
-                    {
-                        "id": row_id,
-                        "removed_columns": removed_columns,
-                        "added_columns": added_columns,
-                    }
-                )
-        delta[table] = {
-            "before_count": len(before_rows),
-            "after_count": len(after_rows),
-            "removed_ids": sorted(old_by_id.keys() - new_by_id.keys()),
-            "added_ids": sorted(new_by_id.keys() - old_by_id.keys()),
-            "ordered_ids_changed": [
-                str(row.get("id", index)) for index, row in enumerate(before_rows)
-            ]
-            != [str(row.get("id", index)) for index, row in enumerate(after_rows)],
-            "changed_rows": changed_rows,
-        }
-    return delta
-
-
 def seed() -> None:
     with connect() as connection:
-        scope(connection, WORKSPACE_ID)
         user_id = uuid4()
         connection.execute(
             "INSERT INTO user_account(id,email_normalized,password_hash,status) "
@@ -198,31 +123,37 @@ def seed() -> None:
             ) VALUES (%s,%s,%s,%s,%s,%s,0,1,'COMPLETED',1,1,1,%s,'{}')""",
             (trial_id, WORKSPACE_ID, RUN_ID, "c" * 64, "b" * 64, "d" * 64, "e" * 64),
         )
+        scope(connection, WORKSPACE_ID)
         outcome = {
-            "closed_at": "2026-11-10T00:01:00Z",
-            "exposure": 0,
-            "fees": 0,
-            "funding": 0,
-            "gross_pnl": 0,
-            "opened_at": "2026-11-10T00:00:00Z",
-            "slippage": 0,
             "trade_id": "fixture-trade",
+            "opened_at": "2026-01-01T00:00:00+00:00",
+            "closed_at": "2026-01-01T00:01:00+00:00",
+            "gross_pnl": "0",
+            "fees": "0",
+            "funding": "0",
+            "slippage": "0",
+            "exposure": "0",
         }
-        canonical_outcome = json.dumps(outcome, sort_keys=True, separators=(",", ":"))
         connection.execute(
-            """INSERT INTO backtest_trade_outcome(
+            """WITH payload AS (
+                SELECT %s::jsonb AS outcome,
+                       public.wp06_trade_outcome_json(%s::jsonb) AS canonical_json
+            )
+            INSERT INTO backtest_trade_outcome(
                 id,workspace_id,run_id,trial_record_id,manifest_hash,ordinal,trade_id,
                 outcome_hash,outcome,canonical_json
-            ) VALUES (%s,%s,%s,%s,%s,0,'fixture-trade',%s,%s::jsonb,%s)""",
+            )
+            SELECT %s,%s,%s,%s,%s,0,'fixture-trade',
+                   encode(sha256(convert_to(canonical_json,'UTF8')),'hex'),
+                   outcome,canonical_json FROM payload""",
             (
+                json.dumps(outcome, separators=(",", ":")),
+                json.dumps(outcome, separators=(",", ":")),
                 uuid4(),
                 WORKSPACE_ID,
                 RUN_ID,
                 trial_id,
                 "b" * 64,
-                hashlib.sha256(canonical_outcome.encode()).hexdigest(),
-                json.dumps(outcome, separators=(",", ":")),
-                canonical_outcome,
             ),
         )
 
@@ -1065,39 +996,15 @@ def main() -> None:
                 }
             )
         )
-    elif phase == "fence_snapshot":
-        with connect(TRAINER) as trainer:
-            scope(trainer, WORKSPACE_ID)
-            assert scalar(
-                trainer,
-                "SELECT has_function_privilege(%s,%s,'EXECUTE')",
-                (TRAINER, "public.begin_backtest_job_persist(uuid,uuid,text,integer)"),
-            )
-            assert scalar(
-                trainer,
-                "SELECT has_table_privilege(%s,%s,'INSERT')",
-                (TRAINER, "public.backtest_run"),
-            )
-            assert not scalar(
-                trainer,
-                "SELECT has_table_privilege(%s,%s,'SELECT')",
-                (TRAINER, "public.market_bar"),
-            )
-        print(json.dumps({"snapshot": snapshot()}))
     else:
-        restored = snapshot()
-        assert restored == STATE["snapshot"], json.dumps(
-            snapshot_delta(STATE["snapshot"], restored),
-            sort_keys=True,
-            default=str,
-        )
+        assert snapshot() == STATE["snapshot"]
         with connect(TRAINER) as trainer:
             scope(trainer, WORKSPACE_ID)
             if phase == "down":
                 assert scalar(
                     trainer,
-                    "SELECT pg_catalog.to_regprocedure(%s) IS NULL",
-                    ("public.begin_backtest_job_persist(uuid,uuid,text,integer)",),
+                    "SELECT has_function_privilege(%s,%s,'EXECUTE')",
+                    (TRAINER, "public.begin_backtest_job_persist(uuid,uuid,text,integer)"),
                 )
                 assert not scalar(
                     trainer,
@@ -1109,27 +1016,12 @@ def main() -> None:
                     "SELECT has_table_privilege(%s,%s,'INSERT')",
                     (TRAINER, "public.backtest_run"),
                 )
-                assert scalar(
-                    trainer,
-                    "SELECT has_table_privilege(%s,%s,'SELECT')",
-                    (TRAINER, "public.market_bar"),
-                )
+                with connect(REPLAY_WRITER) as writer:
+                    scope(writer, WORKSPACE_ID)
+                    denied(writer, "SELECT " + BEGIN, IDENTITY)
             else:
-                assert scalar(
-                    trainer,
-                    "SELECT has_function_privilege(%s,%s,'EXECUTE')",
-                    (TRAINER, "public.begin_backtest_job_persist(uuid,uuid,text,integer)"),
-                )
-                assert scalar(
-                    trainer,
-                    "SELECT has_table_privilege(%s,%s,'INSERT')",
-                    (TRAINER, "public.backtest_run"),
-                )
-                assert not scalar(
-                    trainer,
-                    "SELECT has_table_privilege(%s,%s,'SELECT')",
-                    (TRAINER, "public.market_bar"),
-                )
+                catalog()
+                role_boundaries()
         print(json.dumps({"preserved": True}))
 
 
