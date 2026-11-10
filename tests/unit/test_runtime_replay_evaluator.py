@@ -24,6 +24,7 @@ from trading_bot.application.runtime_replay_evaluator import (
 )
 from trading_bot.config.workspace_settings import PublishedWorkspaceSettings, WorkspaceSettings
 from trading_bot.domain.execution.paper import (
+    OrderStatus,
     PaperBar,
     PaperExecutionGateway,
     PaperExecutionPolicy,
@@ -120,6 +121,8 @@ def _setup():
         pipeline_content_hash="e" * 64,
         execution_events=(),
         reserve_risk=lambda decision, key: decision.approved and bool(key),
+        opposing_signal=False,
+        atr_by_symbol=(("BTCUSDT", Decimal("1")),),
     )
     evaluator = RuntimeReplayEvaluator(
         cycle=cycle,
@@ -137,6 +140,10 @@ def _setup():
     return evaluator, context, observation, gateway, manifest
 
 
+def _first_intent_id(evaluator: RuntimeReplayEvaluator) -> str:
+    return next(iter(evaluator._intent_plans))
+
+
 def test_replay_evaluator_calls_published_runtime_decision_cycle_and_reserves() -> None:
     evaluator, _, observation, gateway, _ = _setup()
     reservations: list[str] = []
@@ -147,14 +154,16 @@ def test_replay_evaluator_calls_published_runtime_decision_cycle_and_reserves() 
     )
 
     assert evaluator(observation.snapshot) is None
-    assert reservations == [f"replay:{observation.snapshot.snapshot_id}:h01-v1"]
-    assert gateway.order("paper:replay:snapshot-test-v1:h01-v1").status.value == "ACCEPTED"
+    assert len(reservations) == 1
+    assert reservations[0].startswith(f"replay:{observation.snapshot.snapshot_id}:runtime:")
+    assert reservations[0].endswith(":h01-v1")
+    assert gateway.order(_first_intent_id(evaluator)).status.value == "ACCEPTED"
 
 
 def test_replay_evaluator_owns_account_and_exposure_after_first_observation() -> None:
     evaluator, context, first, gateway, _ = _setup()
     assert evaluator(first.snapshot) is None
-    intent_id = f"paper:replay:{first.snapshot.snapshot_id}:h01-v1"
+    intent_id = _first_intent_id(evaluator)
     pending_at = first.snapshot.decision_time + timedelta(seconds=5)
     opened = first.snapshot.decision_time + timedelta(seconds=10)
     decision_at = opened + timedelta(seconds=1)
@@ -258,6 +267,167 @@ def test_replay_evaluator_owns_account_and_exposure_after_first_observation() ->
     assert projected_exposures[0].symbol == "BTCUSDT"
 
 
+def test_replay_evaluator_derives_position_flat_from_pending_runtime_order() -> None:
+    evaluator, context, first, _, _ = _setup()
+    evaluator(first.snapshot)
+    decision_time = first.snapshot.decision_time + timedelta(minutes=1)
+    evaluated_at = decision_time + timedelta(seconds=1)
+    evaluator.context_provider = lambda _: replace(
+        context,
+        evaluated_at=evaluated_at,
+        risk_state=replace(
+            context.risk_state,
+            evaluated_at=evaluated_at,
+            market_data_as_of=decision_time,
+        ),
+        execution_events=(),
+    )
+    prepared_snapshots = []
+    prepare = evaluator._cycle.prepare_published
+
+    def capture(**kwargs):
+        prepared_snapshots.append(kwargs["snapshot"])
+        return prepare(**kwargs)
+
+    evaluator._cycle.prepare_published = capture
+    second = replace(
+        first.snapshot,
+        snapshot_id="position-state-check",
+        decision_time=decision_time,
+    )
+
+    evaluator(second)
+
+    assert len(prepared_snapshots) == 1
+    assert prepared_snapshots[0].position_is_flat is False
+    assert prepared_snapshots[0].snapshot_id.startswith("position-state-check:runtime:")
+
+
+@pytest.mark.parametrize("missing_context", ["atr", "opposing_signal"])
+def test_replay_evaluator_fails_closed_when_exit_recipe_context_is_missing(
+    missing_context: str,
+) -> None:
+    evaluator, context, observation, gateway, _ = _setup()
+    evaluator(observation.snapshot)
+    intent_id = _first_intent_id(evaluator)
+    order = gateway.order(intent_id)
+    entry_time = order.eligible_at + timedelta(seconds=1)
+    gateway.apply_market_event(
+        PaperBar(
+            bar_key=f"context-entry-{missing_context}",
+            symbol="BTCUSDT",
+            opened_at=entry_time,
+            closed_at=entry_time + timedelta(minutes=1),
+            available_at=entry_time + timedelta(minutes=1),
+            open=Decimal("100"),
+            high=Decimal("101"),
+            low=Decimal("99"),
+            close=Decimal("100"),
+        )
+    )
+    position = gateway.position(intent_id)
+    assert position is not None
+    recipe = replace(
+        position.recipe,
+        trailing_atr_multiple=(Decimal("2") if missing_context == "atr" else None),
+        opposite_signal_exit=missing_context == "opposing_signal",
+    )
+    gateway._positions[intent_id] = replace(position, recipe=recipe)
+    event_time = entry_time + timedelta(minutes=2)
+    monitor_bar = PaperBar(
+        bar_key=f"context-monitor-{missing_context}",
+        symbol="BTCUSDT",
+        opened_at=event_time,
+        closed_at=event_time + timedelta(minutes=1),
+        available_at=event_time + timedelta(minutes=1),
+        open=Decimal("100"),
+        high=Decimal("101"),
+        low=Decimal("99"),
+        close=Decimal("100"),
+    )
+    current = replace(
+        context,
+        evaluated_at=monitor_bar.available_at + timedelta(seconds=1),
+        risk_state=replace(
+            context.risk_state,
+            evaluated_at=monitor_bar.available_at + timedelta(seconds=1),
+            market_data_as_of=monitor_bar.available_at,
+        ),
+        execution_events=(monitor_bar,),
+        opposing_signal=None,
+        atr_by_symbol=(),
+    )
+
+    with pytest.raises(ReplayEvaluationContextError, match="point-in-time"):
+        evaluator._advance_execution(
+            current,
+            replace(observation.snapshot, decision_time=monitor_bar.available_at),
+        )
+
+
+def test_replay_evaluator_closes_hard_stop_without_trailing_or_opposing_context() -> None:
+    evaluator, context, observation, gateway, _ = _setup()
+    evaluator(observation.snapshot)
+    intent_id = _first_intent_id(evaluator)
+    order = gateway.order(intent_id)
+    entry_time = order.eligible_at + timedelta(seconds=1)
+    gateway.apply_market_event(
+        PaperBar(
+            bar_key="hard-stop-entry",
+            symbol="BTCUSDT",
+            opened_at=entry_time,
+            closed_at=entry_time + timedelta(minutes=1),
+            available_at=entry_time + timedelta(minutes=1),
+            open=Decimal("100"),
+            high=Decimal("101"),
+            low=Decimal("99"),
+            close=Decimal("100"),
+        )
+    )
+    position = gateway.position(intent_id)
+    assert position is not None
+    gateway._positions[intent_id] = replace(
+        position,
+        recipe=replace(
+            position.recipe,
+            trailing_atr_multiple=Decimal("2"),
+            opposite_signal_exit=True,
+        ),
+    )
+    close_time = entry_time + timedelta(minutes=2)
+    stop_bar = PaperBar(
+        bar_key="hard-stop-close",
+        symbol="BTCUSDT",
+        opened_at=close_time,
+        closed_at=close_time + timedelta(minutes=1),
+        available_at=close_time + timedelta(minutes=1),
+        open=position.stop_price,
+        high=position.stop_price + Decimal("1"),
+        low=position.stop_price - Decimal("1"),
+        close=position.stop_price,
+    )
+    current = replace(
+        context,
+        evaluated_at=stop_bar.available_at + timedelta(seconds=1),
+        risk_state=replace(
+            context.risk_state,
+            evaluated_at=stop_bar.available_at + timedelta(seconds=1),
+            market_data_as_of=stop_bar.available_at,
+        ),
+        execution_events=(stop_bar,),
+        opposing_signal=None,
+        atr_by_symbol=(),
+    )
+
+    trade = evaluator._advance_execution(
+        current,
+        replace(observation.snapshot, decision_time=stop_bar.available_at),
+    )
+
+    assert trade is not None
+    assert gateway.position(intent_id).exit_reason == "STOP_LOSS"
+
+
 def test_replay_account_state_counts_two_simultaneous_positions_and_risk_rejects_cap() -> None:
     evaluator, context, observation, gateway, _ = _setup()
     context = replace(
@@ -267,7 +437,7 @@ def test_replay_account_state_counts_two_simultaneous_positions_and_risk_rejects
     )
     evaluator.context_provider = lambda _: context
     evaluator(observation.snapshot)
-    first_intent_id = f"paper:replay:{observation.snapshot.snapshot_id}:h01-v1"
+    first_intent_id = _first_intent_id(evaluator)
     first_reservation = evaluator._reservations[first_intent_id]
     first_plan = first_reservation.plan
     second_plan = replace(
@@ -335,7 +505,7 @@ def test_replay_account_state_counts_two_simultaneous_positions_and_risk_rejects
 def test_replay_account_state_releases_terminal_unfilled_reservation(terminal_status: str) -> None:
     evaluator, context, observation, gateway, _ = _setup()
     evaluator(observation.snapshot)
-    intent_id = f"paper:replay:{observation.snapshot.snapshot_id}:h01-v1"
+    intent_id = _first_intent_id(evaluator)
     if terminal_status == "cancel":
         gateway.cancel_unfilled(intent_id)
     else:
@@ -381,7 +551,7 @@ def test_sequential_paper_trades_update_equity_and_next_risk_budget() -> None:
 
     evaluator._cycle.prepare_published = capture_candidate
     evaluator(observation.snapshot)
-    first_intent_id = f"paper:replay:{observation.snapshot.snapshot_id}:h01-v1"
+    first_intent_id = _first_intent_id(evaluator)
     first_plan = evaluator._intent_plans[first_intent_id]
     first_opened = observation.snapshot.decision_time + timedelta(seconds=10)
     first_closed = first_opened + timedelta(hours=1)
@@ -611,11 +781,48 @@ def test_replay_evaluator_rejects_future_execution_event() -> None:
         evaluator(observation.snapshot)
 
 
-def test_replay_evaluator_uses_shared_paper_fill_and_position_monitor() -> None:
-    evaluator, context, observation, gateway, _ = _setup()
+@pytest.mark.parametrize(("ready", "collision"), [(True, False), (False, False), (False, True)])
+def test_replay_evaluator_uses_shared_paper_fill_and_position_monitor(ready, collision) -> None:
+    from trading_bot.domain.strategy.contracts import FeatureObservation, FeatureQuality
+
+    evaluator, context, observation, gateway, manifest = _setup()
+    extra = (
+        FeatureObservation(
+            "extra-ready", "extra_ready", "1h", 42.0, None, observation.snapshot.decision_time
+        ),
+        FeatureObservation(
+            "extra-stale",
+            "extra_stale",
+            "1h",
+            5.0,
+            None,
+            observation.snapshot.decision_time,
+            FeatureQuality.STALE,
+        ),
+        FeatureObservation(
+            "extra-none", "extra_none", "1h", None, None, observation.snapshot.decision_time
+        ),
+    )
+    if collision:
+        # Hai source key hợp lệ riêng nhưng trùng nhau sau khi trim key canonical.
+        extra += (replace(extra[0], feature_id="extra-collision", name="extra_ready "),)
+    observation = replace(
+        observation,
+        snapshot=replace(
+            observation.snapshot,
+            features=observation.snapshot.features + extra,
+        ),
+    )
     assert evaluator(observation.snapshot) is None
-    intent_id = f"paper:replay:{observation.snapshot.snapshot_id}:h01-v1"
+    intent_id = _first_intent_id(evaluator)
     order = gateway.order(intent_id)
+    assert order.status is OrderStatus.ACCEPTED
+    assert evaluator._reservations[intent_id].plan == evaluator._intent_plans[intent_id]
+    if collision:
+        assert evaluator._intent_entry_provenance[intent_id] is None
+    if not ready and not collision:
+        # Intent không được evaluator ghi bằng chứng vẫn phải đóng như legacy.
+        evaluator._intent_entry_provenance.clear()
     assert order.stop_price > 0
 
     opened = observation.snapshot.decision_time + timedelta(seconds=10)
@@ -663,6 +870,21 @@ def test_replay_evaluator_uses_shared_paper_fill_and_position_monitor() -> None:
     assert trade.fees > 0
     assert trade.slippage == 0
     assert gateway.position(intent_id).is_closed
+    assert trade.has_entry_provenance is ready
+    if ready:
+        assert trade.entry_decision_snapshot_id.startswith(
+            f"{observation.snapshot.snapshot_id}:runtime:"
+        )
+        assert "snapshot-exit" not in trade.entry_decision_snapshot_id
+        assert trade.entry_decision_at == observation.snapshot.decision_time
+        assert trade.entry_feature_schema_hash == manifest.feature_schema_hash
+        assert trade.entry_symbol == "BTCUSDT"
+        assert ("1h:extra_ready", 42.0) in trade.entry_features
+        assert not {"1h:extra_stale", "1h:extra_none"} & dict(trade.entry_features).keys()
+    else:
+        assert trade.entry_features == ()
+        assert trade.entry_features_hash is None
+        assert trade.entry_symbol is None
 
     next_time = closed + timedelta(minutes=1)
     next_snapshot = replace(
@@ -738,7 +960,6 @@ class _PersistenceSession:
 @pytest.mark.asyncio
 async def test_runner_composes_runtime_evaluator_into_persistable_report_and_trade() -> None:
     evaluator, context, first, gateway, manifest = _setup()
-    intent_id = f"paper:replay:{first.snapshot.snapshot_id}:h01-v1"
     opened = first.snapshot.decision_time + timedelta(seconds=10)
     closed = opened + timedelta(hours=1)
     later_snapshot = replace(
@@ -750,6 +971,7 @@ async def test_runner_composes_runtime_evaluator_into_persistable_report_and_tra
     def provider(snapshot):
         if snapshot.snapshot_id != "snapshot-exit":
             return context
+        intent_id = _first_intent_id(evaluator)
         order = gateway.order(intent_id)
         if order.direction == "long":
             low = min(order.stop_price - Decimal("1"), Decimal("99"))
@@ -794,6 +1016,7 @@ async def test_runner_composes_runtime_evaluator_into_persistable_report_and_tra
     assert replay_run.sensitivity_run.scenario == SensitivityScenario("base", "BASE")
     assert replay_run.sensitivity_run.result.trade_count == 1
     assert len(replay_run.trade_outcomes) == 1
+    intent_id = _first_intent_id(evaluator)
     assert replay_run.trade_outcomes[0].trade_id == gateway.position(intent_id).position_id
     assert replay_run.sensitivity_run.result.net_pnl == replay_run.trade_outcomes[0].net_pnl
 
@@ -877,11 +1100,11 @@ def test_runtime_sensitivity_builds_fresh_cost_context_and_fill_gateway_per_tria
         )
         registry = StrategyRegistry()
         cycle = PaperDecisionCycle(registry, TradePlanner(), RiskEngine(), gateway)
-        intent_id = f"paper:replay:{first.snapshot.snapshot_id}:h01-v1"
 
         def provider(snapshot):
             if snapshot.snapshot_id != "sensitivity-exit":
                 return context
+            intent_id = _first_intent_id(evaluator)
             order = gateway.order(intent_id)
             stop_low = order.stop_price - Decimal("1")
             stop_high = order.stop_price + Decimal("1")
@@ -941,7 +1164,7 @@ def test_runtime_sensitivity_builds_fresh_cost_context_and_fill_gateway_per_tria
         slippage_stressed.trade_outcomes[0].slippage
     )
     assert base.sensitivity_run.result.net_pnl > slippage_stressed.sensitivity_run.result.net_pnl
-    intent_id = f"paper:replay:{first.snapshot.snapshot_id}:h01-v1"
+    intent_id = _first_intent_id(built[2])
     slippage_fills = built[2].gateway.order(intent_id).fills
     slippage_position = built[2].gateway.position(intent_id)
     assert len(slippage_fills) == 1
@@ -1011,3 +1234,264 @@ def test_runtime_sensitivity_rejects_reused_gateway_and_context_provider() -> No
             scenarios=scenarios,
             runtime_evaluator_factory=factory,
         )
+
+
+def test_empty_ready_features_cannot_gain_entry_provenance():
+    evaluator, _, observation, _, _ = _setup()
+    empty = replace(observation.snapshot, features=())
+    assert evaluator._capture_entry_provenance(empty) is None
+
+
+@pytest.mark.parametrize("recorded_none", [False, True])
+def test_retry_keeps_recorded_entry_provenance_without_recapturing(monkeypatch, recorded_none):
+    evaluator, _, observation, gateway, _ = _setup()
+    prepared = []
+    runtime_snapshots = []
+    prepare = evaluator._cycle.prepare_published
+
+    def record_prepared(**kwargs):
+        result = prepare(**kwargs)
+        prepared.append(result)
+        runtime_snapshots.append(kwargs["snapshot"])
+        return result
+
+    monkeypatch.setattr(evaluator._cycle, "prepare_published", record_prepared)
+    assert evaluator(observation.snapshot) is None
+    intent_id = _first_intent_id(evaluator)
+    if recorded_none:
+        # Mô phỏng kết quả capture vắng mặt đã được ghi ở lần submit đầu.
+        evaluator._intent_entry_provenance[intent_id] = None
+    first_provenance = evaluator._intent_entry_provenance[intent_id]
+    first_order = gateway.order(intent_id)
+    first_plan = evaluator._intent_plans[intent_id]
+
+    def reject_recapture(_):
+        pytest.fail("Retry không được đánh giá lại optional entry provenance.")
+
+    # Phát lại đúng quyết định đã duyệt và khóa submit cũ qua gateway thật.
+    monkeypatch.setattr(evaluator, "_runtime_snapshot", lambda *args: runtime_snapshots[0])
+    monkeypatch.setattr(evaluator._cycle, "prepare_published", lambda **kwargs: prepared[0])
+    monkeypatch.setattr(evaluator, "_capture_entry_provenance", reject_recapture)
+
+    assert evaluator(observation.snapshot) is None
+    assert gateway.order(intent_id) == first_order
+    assert len(gateway.open_orders()) == 1
+    assert evaluator._intent_entry_provenance[intent_id] is first_provenance
+    assert tuple(evaluator._intent_plans) == (intent_id,)
+    assert evaluator._intent_plans[intent_id] == first_plan
+    assert evaluator._reservations[intent_id].plan == first_plan
+
+
+def test_pinned_replay_captures_exact_cycle_vector_and_original_entry_event(monkeypatch):
+    from tests.unit.test_backtest_decision_opportunities import _pinned_setup
+
+    from trading_bot.application.learning_feature_vector import build_learning_feature_vector
+    from trading_bot.domain.strategy.rules import H01EmaTrendRule
+
+    source, observations, seed, manifest, factory = _pinned_setup(cross=True)
+    seen = []
+    original = H01EmaTrendRule.evaluate
+
+    def capture(self, snapshot, selection):
+        result = original(self, snapshot, selection)
+        seen.append((snapshot, result))
+        return result
+
+    monkeypatch.setattr(H01EmaTrendRule, "evaluate", capture)
+    comparison = run_runtime_paper_replay(
+        observations, manifest=manifest, runtime_evaluator_factory=factory
+    )
+    run = comparison.runs[0]
+    assert comparison.is_complete
+    assert len(run.opportunities) == len(observations)
+    assert len(seen) == len(observations)
+    first = run.opportunities[0]
+    assert first.strategy_state == "CANDIDATE"
+    assert first.candidate_id == seen[0][1].candidate_id
+    assert first.decision_outcome == "PAPER_INTENT_CREATED"
+    for opportunity, (snapshot, _) in zip(run.opportunities, seen, strict=True):
+        vector = build_learning_feature_vector(
+            snapshot,
+            strategy_release_id=manifest.strategy_release_id,
+            strategy_release_content_hash=manifest.strategy_content_hash,
+        )
+        assert opportunity.runtime_snapshot_id == snapshot.snapshot_id == vector.snapshot_id
+        assert opportunity.vector_hash == vector.vector_hash
+        assert opportunity.feature_schema_hash == vector.feature_schema_hash
+        from trading_bot.application.backtest_decision_opportunities import metadata_hash
+
+        expected_refs = [
+            {"timeframe": part.timeframe, "source_event_digest": part.source_event_digest}
+            for part in vector.timeframe_lineage
+        ]
+        assert opportunity.source_refs_digest == metadata_hash(expected_refs)
+        assert ":runtime:" not in snapshot.snapshot_id
+    assert run.trade_outcomes
+    trade = run.trade_outcomes[0]
+    assert trade.entry_opportunity_event_id == observations[0].event_id
+    assert trade.entry_candidate_id == first.candidate_id
+    assert trade.entry_decision_snapshot_id == first.runtime_snapshot_id
+    assert trade.entry_feature_schema_hash == first.feature_schema_hash
+    assert trade.closed_at > first.decision_at
+
+
+def test_pinned_risk_rejection_retains_candidate_identity(monkeypatch):
+    from tests.unit.test_backtest_decision_opportunities import _pinned_setup
+
+    from trading_bot.application.backtest import BacktestRunner, EvaluationReport
+
+    source, observations, seed, manifest, factory = _pinned_setup(cross=True)
+    from trading_bot.domain.strategy.rules import H01EmaTrendRule
+
+    candidates = []
+    original = H01EmaTrendRule.evaluate
+
+    def capture(self, snapshot, selection):
+        result = original(self, snapshot, selection)
+        if isinstance(result, StrategyCandidate):
+            candidates.append(result)
+        return result
+
+    monkeypatch.setattr(H01EmaTrendRule, "evaluate", capture)
+    rejected_seed = replace(
+        seed, risk_state=replace(seed.risk_state, realized_loss_today=Decimal("1000"))
+    )
+    factory = replace(factory, context_seed_factory=lambda _scenario, _manifest: rejected_seed)
+    evaluator = factory(SensitivityScenario("base", "BASE"), manifest)
+    result = BacktestRunner().run(observations, manifest=manifest, evaluator=evaluator)
+    assert isinstance(result, EvaluationReport)
+    opportunity = evaluator.opportunities[0]
+    assert opportunity.strategy_state == "CANDIDATE"
+    assert opportunity.candidate_id == candidates[0].candidate_id
+    assert opportunity.decision_outcome == "RISK_REJECTED"
+    assert not evaluator.gateway.open_orders()
+
+
+def test_pre_strategy_config_stop_is_not_run_not_no_candidate():
+    from tests.unit.test_backtest_decision_opportunities import _pinned_setup
+
+    from trading_bot.application.backtest import BacktestRunner, EvaluationReport
+
+    _, observations, seed, manifest, factory = _pinned_setup()
+    blocked = replace(
+        seed, published_settings=replace(seed.published_settings, effective_at=manifest.range_end)
+    )
+    factory = replace(factory, context_seed_factory=lambda _scenario, _manifest: blocked)
+    evaluator = factory(SensitivityScenario("base", "BASE"), manifest)
+    result = BacktestRunner().run(observations, manifest=manifest, evaluator=evaluator)
+    assert isinstance(result, EvaluationReport)
+    assert all(item.strategy_state == "NOT_RUN" for item in evaluator.opportunities)
+    assert all(item.input_state == "EVALUATED" for item in evaluator.opportunities)
+    assert all(item.reason_code == "SETTINGS_NOT_EFFECTIVE" for item in evaluator.opportunities)
+
+
+def test_legacy_replay_does_not_fabricate_opportunity_proof_metadata():
+    from tests.fixtures.runtime_replay import build_h01_dataset_runtime_replay
+
+    _, comparison = build_h01_dataset_runtime_replay(WORKSPACE_ID)
+    assert comparison.is_complete
+    assert comparison.runs[0].sensitivity_run.result.trade_count == 0
+    assert comparison.runs[0].trade_outcomes == ()
+    assert comparison.runs[0].opportunities == ()
+
+
+def test_pinned_nonflat_cycle_snapshot_keeps_canonical_vector_identity(monkeypatch):
+    from tests.unit.test_backtest_decision_opportunities import _pinned_setup
+
+    from trading_bot.application.learning_feature_vector import build_learning_feature_vector
+    from trading_bot.domain.strategy.rules import H01EmaTrendRule
+
+    _, observations, _, manifest, factory = _pinned_setup(cross=True, close_on_next=False)
+    seen = []
+    original = H01EmaTrendRule.evaluate
+
+    def capture(self, snapshot, selection):
+        seen.append(snapshot)
+        return original(self, snapshot, selection)
+
+    monkeypatch.setattr(H01EmaTrendRule, "evaluate", capture)
+    comparison = run_runtime_paper_replay(
+        observations, manifest=manifest, runtime_evaluator_factory=factory
+    )
+    assert comparison.is_complete
+    assert any(snapshot.position_is_flat is False for snapshot in seen)
+    for snapshot, opportunity in zip(seen, comparison.runs[0].opportunities, strict=True):
+        vector = build_learning_feature_vector(
+            snapshot,
+            strategy_release_id=manifest.strategy_release_id,
+            strategy_release_content_hash=manifest.strategy_content_hash,
+        )
+        assert vector.snapshot_id == opportunity.runtime_snapshot_id
+        assert vector.vector_hash == opportunity.vector_hash
+        if snapshot.position_is_flat is False:
+            assert opportunity.reason_code == "H01_POSITION_NOT_FLAT"
+            assert opportunity.strategy_state == "NO_CANDIDATE"
+
+
+def test_pinned_tampered_features_are_excluded_before_canonical_rebuild(monkeypatch):
+    from tests.unit.test_backtest_decision_opportunities import _pinned_setup
+
+    from trading_bot.application.backtest import BacktestRunner, EvaluationReport
+    from trading_bot.domain.strategy.rules import H01EmaTrendRule
+
+    _, observations, _, manifest, factory = _pinned_setup()
+    original_first = observations[0]
+    changed = replace(
+        original_first,
+        snapshot=replace(
+            original_first.snapshot,
+            features=(
+                replace(
+                    original_first.snapshot.features[0],
+                    value=original_first.snapshot.features[0].value + 0.25,
+                ),
+                *original_first.snapshot.features[1:],
+            ),
+        ),
+    )
+    changed_observations = (changed, *observations[1:])
+    factory = replace(factory, observations=changed_observations)
+    evaluator = factory(SensitivityScenario("base", "BASE"), manifest)
+    seen = []
+    original = H01EmaTrendRule.evaluate
+
+    def capture(self, snapshot, selection):
+        seen.append(snapshot)
+        return original(self, snapshot, selection)
+
+    monkeypatch.setattr(H01EmaTrendRule, "evaluate", capture)
+    result = BacktestRunner().run(changed_observations, manifest=manifest, evaluator=evaluator)
+    assert isinstance(result, EvaluationReport)
+    assert len(seen) == len(observations) - 1
+    assert evaluator.opportunities[0].input_state == "INPUT_EXCLUDED"
+    assert evaluator.opportunities[0].reason_code == "FEATURE_VECTOR_SNAPSHOT_CONTENT_MISMATCH"
+    assert evaluator.opportunities[0].vector_hash is None
+
+
+def test_pinned_research_input_tampering_fails_before_runtime_rebuild():
+    from tests.unit.test_backtest_decision_opportunities import _pinned_setup
+
+    from trading_bot.application.backtest import BacktestRunner, ReplayRejected
+
+    _, observations, _, manifest, factory = _pinned_setup(intent="RESEARCH")
+    first = observations[0]
+    altered = replace(
+        first,
+        snapshot=replace(
+            first.snapshot,
+            features=(
+                replace(first.snapshot.features[0], value=first.snapshot.features[0].value + 0.25),
+                *first.snapshot.features[1:],
+            ),
+        ),
+    )
+    altered_observations = (altered, *observations[1:])
+    evaluator = replace(factory, observations=altered_observations)(
+        SensitivityScenario("base", "BASE"), manifest
+    )
+    result = BacktestRunner().run(altered_observations, manifest=manifest, evaluator=evaluator)
+    assert isinstance(result, ReplayRejected)
+    assert result.reason_code == "EVALUATOR_FAILED"
+    assert result.trial_record.error_type == "ReplayEvaluationContextError"
+    assert evaluator.opportunities == ()
+    assert not evaluator.gateway.open_orders()

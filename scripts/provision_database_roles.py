@@ -9,7 +9,17 @@ PROCESS_ROLES = (
     ("crypidian_trading_runtime", "/run/secrets/database_trading_runtime_password"),
     ("crypidian_execution_gateway", "/run/secrets/database_execution_gateway_password"),
     ("crypidian_ingestion_worker", "/run/secrets/database_ingestion_worker_password"),
+    ("crypidian_signal_worker", "/run/secrets/database_signal_worker_password"),
+    ("crypidian_market_signal_worker", "/run/secrets/database_market_signal_worker_password"),
+    ("crypidian_candidate_builder", "/run/secrets/database_candidate_builder_password"),
+    ("crypidian_replay_writer", "/run/secrets/database_replay_writer_password"),
     ("crypidian_trainer_worker", "/run/secrets/database_trainer_worker_password"),
+    ("crypidian_learning_evaluator", "/run/secrets/database_learning_evaluator_password"),
+    (
+        "crypidian_learning_shadow_observer",
+        "/run/secrets/database_learning_shadow_observer_password",
+    ),
+    ("crypidian_backtest_worker", "/run/secrets/database_backtest_worker_password"),
 )
 
 
@@ -32,9 +42,23 @@ def main() -> None:
                 "SELECT 1 FROM pg_roles WHERE rolname = %s", (role_name,)
             ).fetchone()
             action = sql.SQL("ALTER ROLE" if role_exists else "CREATE ROLE")
+            inheritance = (
+                sql.SQL(" NOINHERIT")
+                if role_name
+                in {
+                    "crypidian_signal_worker",
+                    "crypidian_market_signal_worker",
+                    "crypidian_backtest_worker",
+                    "crypidian_candidate_builder",
+                    "crypidian_replay_writer",
+                    "crypidian_learning_evaluator",
+                    "crypidian_learning_shadow_observer",
+                }
+                else sql.SQL("")
+            )
             statement = sql.SQL(
-                "{} {} LOGIN PASSWORD {} NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS"
-            ).format(action, sql.Identifier(role_name), sql.Literal(password))
+                "{} {} LOGIN PASSWORD {} NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS{}"
+            ).format(action, sql.Identifier(role_name), sql.Literal(password), inheritance)
             connection.execute(statement)
     connection.close()
     print("Đã đồng bộ login database riêng cho từng process local.")

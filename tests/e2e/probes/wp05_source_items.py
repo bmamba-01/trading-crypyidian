@@ -29,6 +29,7 @@ from trading_bot.domain.research.source_item_history import SourceItemHistoryCon
 from trading_bot.domain.research.source_items import SourceItemRevision
 from trading_bot.domain.research.source_policy import SourcePolicyState, SourceUsePurpose
 from trading_bot.domain.research.source_registry import SourceBudget, SourceRegistryEntry
+from trading_bot.domain.research.source_revision_access import SourceAccessReason
 
 STATE = json.loads(os.environ.get("WP05C_STATE", "{}"))
 PHASE = os.environ.get("WP05C_PHASE", "")
@@ -302,6 +303,40 @@ async def _readback():
             purpose=SourceUsePurpose.METADATA,
         )
         assert latest.revision.revision_id == "r3"
+        envelope = await repository.select_access_envelope(
+            workspace_id=WORKSPACE,
+            source_id=SOURCE,
+            item_id="item",
+            purpose=SourceUsePurpose.METADATA,
+        )
+        assert envelope.decision.permitted is True
+        assert envelope.revision.revision.revision_id == "r3"
+        assert envelope.revision_known_at_upper_bound <= envelope.as_of
+        assert envelope.historical_policy_id is not None
+        assert envelope.historical_policy_sequence is not None
+        assert envelope.current_policy_id == envelope.historical_policy_id
+        assert envelope.current_policy_sequence == envelope.historical_policy_sequence
+        assert envelope.rights_hash is not None
+        assert len(envelope.rights_hash) == 64
+        assert envelope.purpose is SourceUsePurpose.METADATA
+        assert envelope.evaluated_at >= envelope.as_of
+        purpose_denied = await repository.select_access_envelope(
+            workspace_id=WORKSPACE,
+            source_id=SOURCE,
+            item_id="item",
+            purpose=SourceUsePurpose.TRAINING,
+        )
+        assert purpose_denied.decision.reason is SourceAccessReason.PURPOSE_NOT_APPROVED
+        assert purpose_denied.revision is None
+        retention_denied = await repository.select_access_envelope(
+            workspace_id=WORKSPACE,
+            source_id=SOURCE,
+            item_id="retained",
+            purpose=SourceUsePurpose.METADATA,
+        )
+        assert retention_denied.decision.reason is SourceAccessReason.RETENTION_EXPIRED
+        assert retention_denied.retention_expires_at is not None
+        assert retention_denied.rights_hash is not None
         assert (
             await repository.select_accessible(
                 workspace_id=WORKSPACE,

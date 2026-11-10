@@ -17,6 +17,7 @@ from trading_bot.application.bot_dispatcher import (
     BotDecision,
     BotDecisionConflict,
     BotDecisionContext,
+    BotDecisionEvaluation,
     BotDecisionJob,
     BotDecisionStatus,
     BotEvidenceDispatcher,
@@ -203,7 +204,10 @@ class InMemoryStore:
         if job.job_id in self.decisions:
             return self.decisions[job.job_id]
         evidence = self.evidence[(job.workspace_id, job.evidence_id)]
-        decision = await evaluate(evidence, job)
+        evaluation = await evaluate(evidence, job)
+        decision = (
+            evaluation.decision if isinstance(evaluation, BotDecisionEvaluation) else evaluation
+        )
         self.decisions[job.job_id] = decision
         return decision
 

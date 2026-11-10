@@ -122,6 +122,7 @@ async def test_klines_keep_decimal_precision_and_mark_current_bar_open() -> None
 
     assert page.records[0].open == Decimal("65000.10")
     assert page.records[0].volume == Decimal("12.34000000")
+    assert page.records[0].quote_volume == Decimal("802340.12345600")
     assert page.records[0].is_closed is True
     assert page.records[1].is_closed is False
     assert page.records[1].event_at == NOW

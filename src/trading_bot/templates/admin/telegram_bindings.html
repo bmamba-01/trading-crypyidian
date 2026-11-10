@@ -13,12 +13,12 @@
     </form>
   </section>
   <section aria-labelledby="telegram-bindings-heading">
-    <h2 id="telegram-bindings-heading">Binding đang hoạt động</h2>
+    <h2 id="telegram-bindings-heading">Liên kết đang hoạt động</h2>
     {% if bindings %}
       <ul>
       {% for binding in bindings %}
         <li>
-          Membership <code>{{ binding.membership_id }}</code>, tạo lúc {{ binding.created_at }}
+          Thành viên <code>{{ binding.membership_id }}</code>, tạo lúc {{ binding.created_at | local_time }}
           <form method="post" action="/admin/telegram/revoke/{{ binding.membership_id }}">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <label for="revoke-reason-{{ loop.index }}">Lý do thu hồi</label>
@@ -29,7 +29,7 @@
       {% endfor %}
       </ul>
     {% else %}
-      <p>Chưa có binding hoạt động.</p>
+      <p>Chưa có liên kết hoạt động.</p>
     {% endif %}
   </section>
 {% endblock %}

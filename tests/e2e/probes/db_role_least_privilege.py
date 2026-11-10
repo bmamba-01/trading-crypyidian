@@ -22,8 +22,9 @@ RUNTIME = "crypidian_trading_runtime"
 GATEWAY = "crypidian_execution_gateway"
 INGESTION = "crypidian_ingestion_worker"
 TRAINER = "crypidian_trainer_worker"
+REPLAY_WRITER = "crypidian_replay_writer"
 LEGACY_TRIGGER_GRANTEE = "crypidian_legacy_trigger_integrator"
-PROCESS_ROLES = (ADMIN, RUNTIME, GATEWAY, INGESTION, TRAINER)
+PROCESS_ROLES = (ADMIN, RUNTIME, GATEWAY, INGESTION, TRAINER, REPLAY_WRITER)
 WORKER_ROLES = (GATEWAY, INGESTION, TRAINER)
 
 # Bảng identity/auth/config thuộc phạm vi SEC-01.
@@ -286,8 +287,31 @@ def acl_state(connection):
 
 
 # MB-04 fix (I1): hàm SECURITY DEFINER chỉ do role NOLOGIN riêng sở hữu và grant tối thiểu.
-DEFINER_OWNERS = {"crypidian_bot_provisioner", "crypidian_risk_aggregator"}
+DEFINER_OWNERS = {
+    "crypidian_backtest_persist_owner",
+    "crypidian_bot_provisioner",
+    "crypidian_candidate_locker",
+    "crypidian_risk_aggregator",
+    "crypidian_source_expiry_scanner",
+    "crypidian_source_rights_emitter",
+    "crypidian_scorer_deployment_rights_reader",
+    "crypidian_manifest_comparator",
+    "crypidian_scorer_deployment_guard",
+    "crypidian_scorer_deployment_pointer_writer",
+    "crypidian_learning_model_registry_guard",
+    "crypidian_learning_shadow_integrity_guard",
+    "crypidian_learning_evaluation_reader",
+    "crypidian_learning_batch_reader",
+    "crypidian_learning_source_rights_reader",
+    "crypidian_risk_reservation_guard",
+}
 FUNCTION_EXECUTE = {
+    "begin_backtest_job_persist(uuid,uuid,text,integer)": {REPLAY_WRITER},
+    "complete_backtest_job_persist(uuid,uuid,text,integer,uuid[])": {REPLAY_WRITER},
+    "enqueue_expired_source_policy_events(integer)": {INGESTION},
+    "emit_source_policy_rights_event()": set(),
+    "emit_source_item_revision_rights_event()": set(),
+    "emit_source_item_takedown_rights_event()": set(),
     "get_workspace_risk_equity_aggregate(uuid,timestamp with time zone,integer,text,text[])": {
         RUNTIME
     },
@@ -312,6 +336,27 @@ def check_functions(connection):
             problems.append(("definer owner", signature, owner))
         if "search_path=pg_catalog, pg_temp" not in config:
             problems.append(("definer search_path", signature, config))
+    definer_roles = connection.execute(
+        "SELECT rolname, rolcanlogin, rolsuper, rolbypassrls, rolreplication, rolcreaterole, "
+        "rolcreatedb, rolinherit, EXISTS (SELECT 1 FROM pg_auth_members m "
+        "WHERE m.roleid = r.oid OR m.member = r.oid) FROM pg_roles r "
+        "WHERE rolname = ANY(%s) ORDER BY rolname",
+        (sorted(DEFINER_OWNERS),),
+    ).fetchall()
+    actual_definer_roles = {role[0] for role in definer_roles}
+    unsafe_definer_roles = [
+        role
+        for role in definer_roles
+        if role[1:] != (False, False, False, False, False, False, False, False)
+    ]
+    if actual_definer_roles != DEFINER_OWNERS or unsafe_definer_roles:
+        problems.append(
+            (
+                "dedicated definer role posture",
+                sorted(DEFINER_OWNERS - actual_definer_roles),
+                unsafe_definer_roles,
+            )
+        )
     for signature, allowed in FUNCTION_EXECUTE.items():
         for role in (*PROCESS_ROLES, "crypidian_app"):
             granted = connection.execute(
@@ -439,6 +484,19 @@ def check_functions(connection):
     ).fetchone()[0]
     if absent is not None:
         problems.append(("dead legacy aggregate still present",))
+    if problems:
+        owner_problems = [problem[1:] for problem in problems if problem[0] == "definer owner"]
+        posture_problems = [
+            problem[1:] for problem in problems if problem[0] == "dedicated definer role posture"
+        ]
+        print(
+            "DB_ROLE_DEFINER_AUDIT="
+            + json.dumps(
+                {"owners": owner_problems, "posture": posture_problems},
+                sort_keys=True,
+                default=str,
+            )
+        )
     assert not problems, problems
     return {"definers": len(definers)}
 
@@ -677,10 +735,18 @@ def check_matrix(connection):
             # R1: worker giữ đúng grant trực tiếp cho việc của mình, mất DML vận hành của group.
             (INGESTION, "market_bar", "INSERT", True),
             (INGESTION, "ingestion_cursor", "UPDATE", True),
-            (TRAINER, "backtest_run", "INSERT", True),
-            (TRAINER, "market_bar", "SELECT", True),
+            (TRAINER, "backtest_run", "INSERT", False),
+            (REPLAY_WRITER, "backtest_run", "INSERT", True),
+            (REPLAY_WRITER, "backtest_run_dataset_rights", "INSERT", True),
+            # WP-07C: replay writer ghi kết quả; trainer đọc chẩn đoán đến khi Task 3 thu hẹp.
+            (TRAINER, "market_instrument", "SELECT", False),
+            (TRAINER, "market_bar", "SELECT", False),
+            (TRAINER, "market_funding", "SELECT", False),
+            (TRAINER, "market_open_interest", "SELECT", False),
             (GATEWAY, "audit_event", "INSERT", True),
             (INGESTION, "outbox_event", "INSERT", False),
+            (INGESTION, "outbox_event", "SELECT", True),
+            (TRAINER, "outbox_event", "SELECT", True),
             (TRAINER, "order_intent", "SELECT", False),
             (GATEWAY, "outbox_event", "UPDATE", False),
             (INGESTION, "feature_snapshot", "INSERT", False),
@@ -696,6 +762,13 @@ def check_matrix(connection):
             "SELECT has_table_privilege(%s, %s, %s)", (role, table, privilege)
         ).fetchone()[0]
         assert actual is expected, (role, table, privilege, actual)
+    ingestion_outbox_columns = connection.execute(
+        "SELECT has_column_privilege(%s, 'public.outbox_event', 'status', 'UPDATE'), "
+        "has_column_privilege(%s, 'public.outbox_event', 'payload', 'UPDATE'), "
+        "has_column_privilege(%s, 'public.outbox_event', 'workspace_id', 'UPDATE')",
+        (INGESTION, INGESTION, INGESTION),
+    ).fetchone()
+    assert ingestion_outbox_columns == (True, False, False), ingestion_outbox_columns
     tables = len(IDENTITY_TABLES) + len(MULTIBOT_TABLES)
     return {"matrix_rows": len(PROCESS_ROLES + ("crypidian_app",)) * tables}
 
@@ -849,14 +922,25 @@ def worker(connection, role):
     ):
         denied(connection, sql.SQL("SELECT count(*) FROM {}").format(sql.Identifier(table)))
     denied(connection, "SET LOCAL ROLE crypidian_app")
-    denied(connection, "SELECT count(*) FROM outbox_event")
+    if role in (INGESTION, TRAINER):
+        assert scalar(connection, "SELECT count(*) FROM outbox_event") == 0
+    if role == INGESTION:
+        denied(
+            connection,
+            "UPDATE outbox_event SET payload = '{}'::jsonb WHERE workspace_id = %s",
+            (W1,),
+        )
+    elif role != TRAINER:
+        denied(connection, "SELECT count(*) FROM outbox_event")
     own_job = {
         INGESTION: "SELECT count(*) FROM market_bar",
         TRAINER: "SELECT count(*) FROM backtest_run",
+        REPLAY_WRITER: "SELECT count(*) FROM backtest_run",
         GATEWAY: "SELECT has_table_privilege(current_user, 'audit_event', 'INSERT')",
     }[role]
     assert scalar(connection, own_job) is not None
-    return {"role": role, "denied": len(IDENTITY_ATTACKS) + 9}
+    denied_count = len(IDENTITY_ATTACKS) + 8 + (role != TRAINER)
+    return {"role": role, "denied": denied_count}
 
 
 def runtime(connection):

@@ -445,6 +445,7 @@ async def test_exit_fill_is_idempotent_records_costs_and_keeps_entry_quantity_un
         "fee_amount": Decimal("0.11"),
         "slippage_amount": Decimal("0.03"),
         "occurred_at": NOW + timedelta(minutes=2),
+        "exit_reason": "STOP_LOSS",
     }
 
     assert await repository.append_exit_fill(uow, **args)
@@ -467,6 +468,10 @@ async def test_exit_fill_is_idempotent_records_costs_and_keeps_entry_quantity_un
     assert len(exit_events) == 1
     assert exit_events[0].event_type == "REDUCED"
     assert exit_events[0].quantity == Decimal("0.6")
+    assert exit_events[0].payload["exit_reason"] == "STOP_LOSS"
+    assert exit_events[0].payload["bar_key"] == "bar-exit"
+    with pytest.raises(PaperLedgerConflict, match="Position event"):
+        await repository.append_exit_fill(uow, **{**args, "exit_reason": "TAKE_PROFIT"})
 
 
 @pytest.mark.asyncio

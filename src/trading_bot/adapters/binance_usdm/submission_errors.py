@@ -16,6 +16,7 @@ class BinanceFailureKind(StrEnum):
     RETRYABLE_FAILURE = "RETRYABLE_FAILURE"
     RATE_LIMITED = "RATE_LIMITED"
     BANNED = "BANNED"
+    ROUTING_MISMATCH = "ROUTING_MISMATCH"
     UNKNOWN = "UNKNOWN"
 
 
@@ -71,6 +72,14 @@ def classify_submission_failure(
             False,
         )
 
+    if response.error_code == -4120:
+        # Sai họ endpoint không chứng minh order vắng mặt hoặc reservation được release.
+        return SubmissionFailure(
+            BinanceFailureKind.ROUTING_MISMATCH,
+            SubmissionOutcome.UNKNOWN,
+            False,
+            operator_clearance_required=True,
+        )
     message = response.message.strip().casefold()
     if response.status_code == 418:
         return SubmissionFailure(

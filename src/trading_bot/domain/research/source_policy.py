@@ -26,6 +26,8 @@ class SourceUsePurpose(StrEnum):
     EMBEDDING = "embedding"
     TRAINING = "training"
     REDISTRIBUTION = "redistribution"
+    BACKTEST_RESEARCH = "backtest_research"
+    PAPER_DEMO = "paper_demo"
 
 
 def _require_aware(value: datetime, name: str) -> None:

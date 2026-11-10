@@ -7,7 +7,9 @@ Mỗi job/quyết định ghi trong transaction riêng đã bind đúng một bo
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import hashlib
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
@@ -20,6 +22,10 @@ from trading_bot.adapters.database.models.signal_entities import (
     BotDecisionJobRecord,
     BotDecisionRecord,
 )
+from trading_bot.adapters.database.repositories.learning_score_events import (
+    LearningScoreEventConflict,
+    LearningScoreEventRepository,
+)
 from trading_bot.adapters.database.repositories.signal_evidence import (
     SharedSignalEvidenceRepository,
 )
@@ -27,6 +33,7 @@ from trading_bot.application.bot_dispatcher import (
     EVIDENCE_RECORDED_EVENT,
     BotDecision,
     BotDecisionConflict,
+    BotDecisionEvaluation,
     BotDecisionJob,
     DecisionEvaluator,
     EvidenceRecordedEvent,
@@ -37,11 +44,58 @@ from trading_bot.application.bot_dispatcher import (
 )
 from trading_bot.application.outbox import OutboxRepository, UnitOfWork
 from trading_bot.domain.events import EventEnvelope
+from trading_bot.domain.learning.score_event import LearningScoreEvent
 from trading_bot.domain.market.signal_evidence import SharedSignalEvidence
 
 _PENDING = "PENDING"
 _COMPLETED = "COMPLETED"
 _DEAD = "DEAD"
+
+
+@dataclass(frozen=True, slots=True)
+class BotDecisionScoringCommit:
+    """Quyết định cuối và score metadata cùng ghi trong transaction job."""
+
+    decision: BotDecision
+    score_event: LearningScoreEvent
+    incumbent_decision: BotDecision
+    vector_hash: str
+    decision_snapshot_id: str
+
+    def __post_init__(self) -> None:
+        event = self.score_event
+        incumbent = self.incumbent_decision
+        final = self.decision
+        expected_candidate_hash = (
+            None
+            if incumbent.candidate_json is None
+            else hashlib.sha256(incumbent.candidate_json.encode("utf-8")).hexdigest()
+        )
+        if (
+            event.workspace_id != final.workspace_id
+            or event.bot_id != final.bot_id
+            or event.bot_decision_id != final.decision_id
+            or event.bot_decision_hash != final.decision_hash
+            or event.final_status != final.status.value
+            or event.incumbent_decision_hash != incumbent.decision_hash
+            or event.incumbent_status != incumbent.status.value
+            or event.candidate_id != incumbent.candidate_id
+            or event.candidate_hash != expected_candidate_hash
+            or event.vector_hash != self.vector_hash
+            or event.decision_snapshot_id != self.decision_snapshot_id
+            or event.decision_snapshot_id != incumbent.decision_snapshot_id
+            or final.decision_id != incumbent.decision_id
+            or incumbent.candidate_id is None
+        ):
+            raise BotDecisionConflict("Score event không khớp candidate, vector hoặc decision.")
+        if event.mode.value == "SHADOW" and final.decision_hash != incumbent.decision_hash:
+            raise BotDecisionConflict("SHADOW không được thay đổi BotDecision strategy.")
+
+
+ScoreCandidate = Callable[
+    [AsyncSession, BotDecisionJob, BotDecisionEvaluation, BotDecision],
+    Awaitable[BotDecisionScoringCommit | None],
+]
 
 
 class BotDecisionRepository:
@@ -265,9 +319,11 @@ class PostgresSignalDecisionStore:
         sessions: async_sessionmaker[AsyncSession],
         *,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        score_candidate: ScoreCandidate | None = None,
     ) -> None:
         self._sessions = sessions
         self._clock = clock
+        self._score_candidate = score_candidate
 
     async def record_evidence(
         self, evidence: SharedSignalEvidence, *, evaluated_at: datetime
@@ -357,7 +413,11 @@ class PostgresSignalDecisionStore:
             )
             if evidence is None or evidence.evidence_hash != job.evidence_hash:
                 raise EvidenceScopeError("Evidence của job không tồn tại hoặc sai hash.")
-        decision = await evaluate(evidence, job)
+        evaluation = await evaluate(evidence, job)
+        if isinstance(evaluation, BotDecisionEvaluation):
+            decision = evaluation.decision
+        else:
+            decision = evaluation
         if decision.job_id != job.job_id or decision.idempotency_key != job.idempotency_key:
             raise BotDecisionConflict("Quyết định không thuộc job đang xử lý.")
         async with UnitOfWork(self._sessions, workspace_id=job.workspace_id) as uow:
@@ -368,7 +428,40 @@ class PostgresSignalDecisionStore:
                 return await _stored_decision(repository, job)
             if record.status != _PENDING:
                 raise BotDecisionConflict("Job không còn PENDING (DEAD) nên không được xử lý.")
-            stored_decision = await repository.insert_decision(decision)
+            scoring_commit = None
+            if (
+                self._score_candidate is not None
+                and isinstance(evaluation, BotDecisionEvaluation)
+                and evaluation.decision.status.value == "CANDIDATE"
+            ):
+                scoring_commit = await self._score_candidate(uow.session, job, evaluation, decision)
+            if scoring_commit is not None:
+                if not isinstance(evaluation, BotDecisionEvaluation):
+                    raise BotDecisionConflict(
+                        "Score event cần kết quả runtime có snapshot/vector strategy."
+                    )
+                if (
+                    evaluation.vector is None
+                    or evaluation.snapshot is None
+                    or scoring_commit.vector_hash != evaluation.vector.vector_hash
+                    or scoring_commit.decision_snapshot_id != evaluation.snapshot.snapshot_id
+                ):
+                    raise BotDecisionConflict(
+                        "Score event không được dựng từ vector/snapshot đã dùng bởi strategy."
+                    )
+            final_decision = scoring_commit.decision if scoring_commit is not None else decision
+            stored_decision = await repository.insert_decision(final_decision)
+            if scoring_commit is not None:
+                if stored_decision.decision_hash != scoring_commit.decision.decision_hash:
+                    raise BotDecisionConflict("BotDecision lưu khác score event đã resolve.")
+                try:
+                    await LearningScoreEventRepository(uow.session).append(
+                        scoring_commit.score_event
+                    )
+                except LearningScoreEventConflict as error:
+                    raise BotDecisionConflict(
+                        "Score event append/idempotency conflict aborted the decision commit."
+                    ) from error
             record.status = _COMPLETED
             record.completed_at = self._clock()
             return stored_decision

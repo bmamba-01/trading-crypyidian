@@ -3,7 +3,7 @@ from uuid import uuid4
 
 import pytest
 
-from trading_bot.auth.policy import Permission, Principal, Role, authorize
+from trading_bot.auth.policy import MfaMethod, Permission, Principal, Role, authorize
 from trading_bot.auth.security import (
     LoginRateLimiter,
     PasswordManager,
@@ -219,6 +219,19 @@ def test_role_policy_checks_permissions_on_server() -> None:
     assert authorize(owner, Permission.RISK_PROFILE_WRITE)
     with pytest.raises(PermissionError):
         authorize(viewer, Permission.RISK_PROFILE_WRITE, raise_error=True)
+
+
+def test_principal_carries_only_a_typed_server_verified_mfa_method() -> None:
+    principal = Principal(
+        user_id=uuid4(),
+        membership_id=uuid4(),
+        workspace_id=uuid4(),
+        roles=frozenset({Role.OWNER}),
+        mfa_verified_at=datetime.now(UTC),
+        mfa_method=MfaMethod.TOTP,
+    )
+
+    assert principal.mfa_method is MfaMethod.TOTP
 
 
 def test_bootstrap_token_is_checked_in_constant_time_and_missing_token_fails(tmp_path) -> None:

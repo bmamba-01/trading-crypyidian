@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Any
 from uuid import UUID
@@ -40,6 +40,7 @@ from trading_bot.domain.portfolio.reporting import (
     MAX_TRADES_PER_BOT,
     REPORT_MODE,
     REPORT_VERSION,
+    SUPPORTED_REPORT_VERSIONS,
     BotReport,
     ReportBot,
     ReportIntegrityError,
@@ -58,6 +59,13 @@ __all__ = [
 ]
 
 NOT_FOUND_MESSAGE = "Không tìm thấy báo cáo bot trong workspace hiện tại."
+CHART_INTERVAL_SECONDS = {
+    "5m": 300,
+    "15m": 900,
+    "1h": 3600,
+    "4h": 14400,
+    "1d": 86400,
+}
 
 
 class ReportScope(StrEnum):
@@ -140,6 +148,130 @@ class BotReportingService:
             if bot is None:
                 raise _not_found()
             return await self._bot_report(repository, bot, query)
+
+    async def get_trade_chart(
+        self,
+        query: BotReportQuery,
+        principal: Principal,
+        *,
+        trade_id: UUID,
+        timeframe: str = "1h",
+    ) -> dict[str, Any]:
+        """Lấy OHLCV nội bộ và sự kiện ledger của một trade đã thuộc báo cáo được phép."""
+        if timeframe not in CHART_INTERVAL_SECONDS:
+            raise BotReportError(
+                422, "CHART_TIMEFRAME_UNSUPPORTED", "Khung biểu đồ không được hỗ trợ."
+            )
+        if query.scope is not ReportScope.BOT or query.bot_id is None:
+            raise BotReportError(422, "BOT_ID_REQUIRED", "Biểu đồ trade cần scope=bot rõ ràng.")
+        report = await self.get_bot_report(query, principal)
+        trade = next(
+            (
+                row
+                for row in report.as_dict().get("trades", [])
+                if row.get("trade_id") == str(trade_id)
+            ),
+            None,
+        )
+        if trade is None:
+            raise _not_found()
+        opened_at = datetime.fromisoformat(trade["opened_at"])
+        closed_at = datetime.fromisoformat(trade["closed_at"])
+        interval = timedelta(seconds=CHART_INTERVAL_SECONDS[timeframe])
+        if closed_at - opened_at > interval * 900:
+            chart_start = closed_at - interval * 899
+            chart_notice = (
+                "Giao dịch dài hơn 900 nến ở khung này; phần biểu đồ được giới hạn "
+                "quanh thời điểm đóng. "
+                "Chọn khung lớn hơn để xem cả điểm vào và điểm đóng."
+            )
+        else:
+            chart_start = opened_at - interval * 20
+            chart_notice = None
+        chart_end = closed_at + interval * 20
+        async with self._unit_of_work(
+            self._sessions,
+            workspace_id=principal.workspace_id,
+            bot_id=query.bot_id,
+            actor_membership_id=principal.membership_id,
+            snapshot_read_only=True,
+        ) as unit:
+            repository = self._repository(unit.session)
+            try:
+                await self._grants(unit.session).require(
+                    principal, bot_id=query.bot_id, permission=BotPermission.REPORT_READ
+                )
+            except PermissionError as error:
+                raise _not_found() from error
+            bars = await repository.load_trade_bars(
+                workspace_id=principal.workspace_id,
+                symbol=trade["symbol"],
+                timeframe=timeframe,
+                start=chart_start,
+                end=chart_end,
+                as_of=datetime.now(UTC),
+                limit=1000,
+            )
+        return {
+            "symbol": trade["symbol"],
+            "side": trade["side"],
+            "timeframe": timeframe,
+            "trade": trade,
+            "bars": bars,
+            "notice": chart_notice,
+        }
+
+    async def get_dashboard_reports(
+        self,
+        query: BotReportQuery,
+        principal: Principal,
+        *,
+        bot_ids: frozenset[UUID] | None = None,
+    ) -> tuple[BotReport, ...]:
+        """Đọc các báo cáo bot được cấp quyền trong cùng snapshot, không tạo tổng workspace.
+
+        Tập bot từ màn hình chỉ thu hẹp lựa chọn; quyền báo cáo vẫn được kiểm lại bên trong
+        snapshot. Mọi ledger và grant dùng chung giao dịch chỉ đọc của MB-06.
+        """
+        if query.scope is not ReportScope.BOT or query.bot_id is not None:
+            raise BotReportError(
+                422,
+                "REPORT_SCOPE_MISMATCH",
+                "Thống kê theo lô chỉ nhận phạm vi bot, không nhận mã bot đơn lẻ.",
+            )
+        _validate_query(query)
+        if query.workspace_id != principal.workspace_id:
+            raise _not_found()
+        async with self._unit_of_work(
+            self._sessions,
+            workspace_id=principal.workspace_id,
+            bot_id=None,
+            actor_membership_id=principal.membership_id,
+            snapshot_read_only=True,
+        ) as unit:
+            repository = self._repository(unit.session)
+            grants = self._grants(unit.session)
+            bots = await repository.list_bots(
+                workspace_id=principal.workspace_id, limit=MAX_BOTS_PER_WORKSPACE_REPORT + 1
+            )
+            if len(bots) > MAX_BOTS_PER_WORKSPACE_REPORT:
+                raise BotReportError(
+                    422,
+                    "REPORT_TOO_MANY_BOTS",
+                    "Phạm vi thống kê quá lớn; hãy xem báo cáo từng bot.",
+                )
+            reports: list[BotReport] = []
+            for bot in bots:
+                if bot_ids is not None and bot.bot_id not in bot_ids:
+                    continue
+                try:
+                    await grants.require(
+                        principal, bot_id=bot.bot_id, permission=BotPermission.REPORT_READ
+                    )
+                except PermissionError:
+                    continue
+                reports.append(await self._bot_report(repository, bot, query))
+            return tuple(reports)
 
     async def get_workspace_report(
         self, query: BotReportQuery, principal: Principal
@@ -272,7 +404,9 @@ def _validate_query(query: BotReportQuery) -> None:
         )
     if query.mode != REPORT_MODE:
         raise BotReportError(422, "REPORT_MODE_UNSUPPORTED", "Báo cáo hiện chỉ hỗ trợ PAPER.")
-    if query.report_version != REPORT_VERSION:
+    if query.report_version not in SUPPORTED_REPORT_VERSIONS:
         raise BotReportError(
-            422, "REPORT_VERSION_UNSUPPORTED", f"Chỉ hỗ trợ report_version={REPORT_VERSION}."
+            422,
+            "REPORT_VERSION_UNSUPPORTED",
+            f"Phiên bản báo cáo phải thuộc {', '.join(sorted(SUPPORTED_REPORT_VERSIONS))}.",
         )

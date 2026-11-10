@@ -17,8 +17,11 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from trading_bot.adapters.database.models import BotInstance
+from trading_bot.adapters.database.models.market_entities import MarketBar
 from trading_bot.adapters.database.models.paper_entities import (
+    FillRecord,
     OrderIntentRecord,
+    PositionEventRecord,
     TradeCostRecord,
     TradeRecord,
 )
@@ -29,7 +32,9 @@ from trading_bot.domain.portfolio.reporting import (
     DecisionLineage,
     IntentLineage,
     LedgerCost,
+    LedgerFill,
     LedgerTrade,
+    PositionTransition,
     ReportBot,
 )
 
@@ -143,6 +148,34 @@ class BotReportRepository:
             if candidates
             else []
         )
+        fills = (
+            await self._scalars(
+                select(FillRecord)
+                .where(
+                    FillRecord.workspace_id == workspace_id,
+                    FillRecord.bot_id == bot_id,
+                    FillRecord.account_id == account_id,
+                    FillRecord.intent_id.in_(intent_ids),
+                )
+                .order_by(FillRecord.occurred_at, FillRecord.fill_key)
+            )
+            if intent_ids
+            else []
+        )
+        position_events = (
+            await self._scalars(
+                select(PositionEventRecord)
+                .where(
+                    PositionEventRecord.workspace_id == workspace_id,
+                    PositionEventRecord.bot_id == bot_id,
+                    PositionEventRecord.account_id == account_id,
+                    PositionEventRecord.intent_id.in_(intent_ids),
+                )
+                .order_by(PositionEventRecord.occurred_at, PositionEventRecord.event_key)
+            )
+            if intent_ids
+            else []
+        )
         return _snapshot(
             workspace_id,
             bot_id,
@@ -152,7 +185,50 @@ class BotReportRepository:
             [_cost(row) for row in costs],
             [_intent(row) for row in intents],
             [_decision(row) for row in decisions],
+            [_fill(row) for row in fills],
+            [_position_event(row) for row in position_events],
         )
+
+    async def load_trade_bars(
+        self,
+        *,
+        workspace_id: UUID,
+        symbol: str,
+        timeframe: str,
+        start: datetime,
+        end: datetime,
+        as_of: datetime,
+        limit: int = 1000,
+    ) -> list[dict[str, Any]]:
+        """Đọc nến đã đóng và khả dụng tại as_of cho biểu đồ, giữ bản sửa mới nhất."""
+        rows = await self._scalars(
+            select(MarketBar)
+            .where(
+                MarketBar.workspace_id == workspace_id,
+                MarketBar.symbol == symbol,
+                MarketBar.timeframe == timeframe,
+                MarketBar.open_time >= start,
+                MarketBar.open_time < end,
+                MarketBar.available_at <= as_of,
+                MarketBar.is_closed.is_(True),
+            )
+            .order_by(MarketBar.open_time, MarketBar.revision.desc())
+            .limit(limit)
+        )
+        selected: dict[datetime, MarketBar] = {}
+        for row in rows:
+            selected.setdefault(row.open_time, row)
+        return [
+            {
+                "time": int(row.open_time.timestamp()),
+                "open": float(row.open),
+                "high": float(row.high),
+                "low": float(row.low),
+                "close": float(row.close),
+                "volume": float(row.volume),
+            }
+            for row in selected.values()
+        ]
 
     async def workspace_closed_totals(
         self, *, workspace_id: UUID, start: datetime, end: datetime
@@ -191,6 +267,8 @@ def _snapshot(
     costs: Sequence[LedgerCost],
     intents: Sequence[IntentLineage],
     decisions: Sequence[DecisionLineage],
+    fills: Sequence[LedgerFill] = (),
+    position_events: Sequence[PositionTransition] = (),
 ) -> BotLedgerSnapshot:
     return BotLedgerSnapshot(
         workspace_id=workspace_id,
@@ -201,6 +279,8 @@ def _snapshot(
         costs=tuple(costs),
         intents=tuple(intents),
         decisions=tuple(decisions),
+        fills=tuple(fills),
+        position_events=tuple(position_events),
     )
 
 
@@ -264,4 +344,35 @@ def _decision(row: BotDecisionRecord) -> DecisionLineage:
         bot_config_hash=row.bot_config_hash,
         root_settings_version_id=row.root_settings_version_id,
         model_release_id=row.model_release_id,
+        candidate=(row.payload or {}).get("candidate") or {},
+    )
+
+
+def _fill(row: FillRecord) -> LedgerFill:
+    return LedgerFill(
+        fill_key=row.fill_key,
+        intent_id=row.intent_id,
+        workspace_id=row.workspace_id,
+        bot_id=row.bot_id,
+        account_id=row.account_id,
+        role=row.fill_role,
+        quantity=row.quantity,
+        price=row.price,
+        occurred_at=row.occurred_at,
+        fee_amount=row.fee_amount,
+        slippage_amount=row.slippage_amount,
+        bar_key=row.bar_key,
+    )
+
+
+def _position_event(row: PositionEventRecord) -> PositionTransition:
+    return PositionTransition(
+        event_key=row.event_key,
+        intent_id=row.intent_id,
+        workspace_id=row.workspace_id,
+        bot_id=row.bot_id,
+        account_id=row.account_id,
+        event_type=row.event_type,
+        occurred_at=row.occurred_at,
+        payload=dict(row.payload or {}),
     )

@@ -12,6 +12,7 @@ from trading_bot.adapters.database.repositories.market_data import (
     MarketDataRepository,
     MarketRepositoryConflict,
     _instrument_checksum,
+    _to_domain_bar,
 )
 from trading_bot.domain.market.ingestion import (
     IngestionDisposition,
@@ -44,6 +45,7 @@ def bar_and_version(
     parent_id: object | None = None,
     open_time: datetime | None = None,
     content_checksum: str = "a" * 64,
+    quote_volume: str | None = None,
     idempotency_key: str = "binance:BTCUSDT:1m:1",
 ) -> tuple[OHLCVBar, MarketRecordVersion]:
     start = open_time or datetime(2026, 10, 22, tzinfo=UTC)
@@ -62,6 +64,7 @@ def bar_and_version(
         close=Decimal("101"),
         volume=Decimal("10.25000000"),
         is_closed=True,
+        quote_volume=None if quote_volume is None else Decimal(quote_volume),
         source="BINANCE_USDM",
         source_cursor=idempotency_key,
         checksum=content_checksum,
@@ -110,7 +113,7 @@ class FakeSession:
 async def test_bar_retry_is_idempotent_and_keeps_decimal_values() -> None:
     workspace_id = uuid4()
     instrument_id = uuid4()
-    bar, version = bar_and_version()
+    bar, version = bar_and_version(quote_volume="1025.12500000")
     session = FakeSession([None, None])
     repository = MarketDataRepository(session)  # type: ignore[arg-type]
 
@@ -128,6 +131,7 @@ async def test_bar_retry_is_idempotent_and_keeps_decimal_values() -> None:
     assert stored.revision == 1
     assert stored.open == Decimal("100")
     assert stored.volume == Decimal("10.25000000")
+    assert stored.quote_volume == Decimal("1025.12500000")
     assert stored.available_at == bar.available_at
 
 
@@ -190,6 +194,7 @@ async def test_as_of_query_excludes_unavailable_rows_and_carries_range_scope() -
         start=as_of - timedelta(hours=1),
         end=as_of,
         as_of=as_of,
+        source="BINANCE_USDM_REST_BACKFILL",
     )
 
     assert bars == []
@@ -197,6 +202,71 @@ async def test_as_of_query_excludes_unavailable_rows_and_carries_range_scope() -
     assert "market_bar.workspace_id" in sql
     assert "market_bar.available_at <=" in sql
     assert "market_bar.open_time <" in sql
+    assert "market_bar.source =" in sql
+
+
+def test_domain_bar_preserves_exact_database_record_identity() -> None:
+    workspace_id = uuid4()
+    record_id = uuid4()
+    parent_id = uuid4()
+    raw_reference_id = uuid4()
+    instant = datetime(2026, 10, 22, tzinfo=UTC)
+    row = SimpleNamespace(
+        workspace_id=workspace_id,
+        id=record_id,
+        logical_key="BINANCE_USDM:BTCUSDT:1m:2026-10-22T00:00:00+00:00",
+        revision=2,
+        supersedes_id=parent_id,
+        checksum="a" * 64,
+        symbol="BTCUSDT",
+        timeframe="1m",
+        open_time=instant,
+        close_time=instant + timedelta(minutes=1),
+        event_at=instant + timedelta(minutes=1),
+        received_at=instant + timedelta(minutes=1, milliseconds=1),
+        available_at=instant + timedelta(minutes=1, milliseconds=2),
+        open=Decimal("100"),
+        high=Decimal("102"),
+        low=Decimal("99"),
+        close=Decimal("101"),
+        volume=Decimal("1"),
+        quote_volume=None,
+        is_closed=True,
+        source="BINANCE_USDM",
+        source_cursor="1729555200000",
+        raw_reference_id=raw_reference_id,
+    )
+
+    result = _to_domain_bar(row)
+
+    assert result.source_identity is not None
+    assert result.source_identity.workspace_id == workspace_id
+    assert result.source_identity.record_id == record_id
+    assert result.source_identity.logical_key == row.logical_key
+    assert result.source_identity.revision == 2
+    assert result.source_identity.supersedes_record_id == parent_id
+    assert result.source_identity.checksum == row.checksum
+    assert result.raw_reference == str(raw_reference_id)
+
+    row.raw_reference_id = None
+    assert _to_domain_bar(row).raw_reference is None
+
+
+@pytest.mark.asyncio
+async def test_market_bar_source_filter_rejects_blank_value() -> None:
+    repository = MarketDataRepository(FakeSession())  # type: ignore[arg-type]
+    instant = datetime(2026, 10, 22, tzinfo=UTC)
+
+    with pytest.raises(ValueError, match="source không được để trống"):
+        await repository.list_bars(
+            workspace_id=uuid4(),
+            symbol="BTCUSDT",
+            timeframe="1m",
+            start=instant - timedelta(minutes=1),
+            end=instant,
+            as_of=instant,
+            source=" ",
+        )
 
 
 @pytest.mark.asyncio

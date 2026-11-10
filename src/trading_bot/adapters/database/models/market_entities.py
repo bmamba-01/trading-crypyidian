@@ -136,6 +136,10 @@ class MarketBar(UuidPrimaryKey, CreatedAt, Base):
         ),
         CheckConstraint("low <= open AND low <= close", name="market_bar_low_consistent"),
         CheckConstraint("volume >= 0", name="market_bar_volume_nonnegative"),
+        CheckConstraint(
+            "quote_volume IS NULL OR quote_volume >= 0",
+            name="market_bar_quote_volume_nonnegative",
+        ),
         Index(
             "ix_market_bar_asof", "workspace_id", "symbol", "timeframe", "open_time", "available_at"
         ),
@@ -164,6 +168,7 @@ class MarketBar(UuidPrimaryKey, CreatedAt, Base):
     low: Mapped[Decimal] = mapped_column(_MARKET_VALUE, nullable=False)
     close: Mapped[Decimal] = mapped_column(_MARKET_VALUE, nullable=False)
     volume: Mapped[Decimal] = mapped_column(_MARKET_VALUE, nullable=False)
+    quote_volume: Mapped[Decimal | None] = mapped_column(_MARKET_VALUE, nullable=True)
     is_closed: Mapped[bool] = mapped_column(nullable=False)
 
 

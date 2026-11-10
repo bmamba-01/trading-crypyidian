@@ -1,14 +1,14 @@
 {% extends "admin/base.html" %}
-{% block title %}Operation flatten — Crypidian{% endblock %}
-{% block heading %}Trạng thái flatten PAPER{% endblock %}
+{% block title %}Thao tác đóng toàn bộ — Crypidian{% endblock %}
+{% block heading %}Trạng thái đóng toàn bộ vị thế mô phỏng{% endblock %}
 {% block content %}
-<p id="operation-status" role="status" aria-live="polite">Operation {{ operation.id }}: <strong>{{ operation.status }}</strong></p>
+<p id="operation-status" role="status" aria-live="polite">Thao tác {{ operation.id }}: <strong>{{ operation.status | label_vi }}</strong></p>
 <ul>
   {% for item in operation["items"] %}
-  <li>{{ item.symbol }} — {{ item.target_type }} — {{ item.quantity }} — {{ item.status }}{% if item.error_code %} ({{ item.error_code }}){% endif %}</li>
+  <li>{{ item.symbol }} — {{ item.target_type | label_vi }} — {{ item.quantity }} — {{ item.status | label_vi }}{% if item.error_code %} ({{ item.error_code | label_vi }}){% endif %}</li>
   {% else %}
   <li>Không có mục cần xử lý.</li>
   {% endfor %}
 </ul>
-<a href="/admin/flatten">Tạo preview mới</a>
+<a href="/admin/flatten">Tạo bản xem trước mới</a>
 {% endblock %}

@@ -1,10 +1,16 @@
-from dataclasses import replace
+from dataclasses import FrozenInstanceError, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from uuid import uuid4
 
 import pytest
 
-from trading_bot.domain.market.models import Instrument, MarketSnapshot, OHLCVBar
+from trading_bot.domain.market.models import (
+    Instrument,
+    MarketBarSourceIdentity,
+    MarketSnapshot,
+    OHLCVBar,
+)
 from trading_bot.domain.market.validation import bars_available_as_of, inspect_bar_series
 
 
@@ -88,6 +94,50 @@ def test_ohlcv_bar_requires_receipt_before_availability() -> None:
 
     with pytest.raises(ValueError, match="received_at.*available_at"):
         replace(bar, available_at=bar.received_at - timedelta(seconds=1))
+
+
+def test_market_bar_source_identity_is_immutable_and_validates_revision_lineage() -> None:
+    source_identity = MarketBarSourceIdentity(
+        workspace_id=uuid4(),
+        record_id=uuid4(),
+        logical_key="BTCUSDT:1m:2026-01-01T00:00:00+00:00",
+        revision=1,
+        supersedes_record_id=None,
+        checksum="a" * 64,
+    )
+
+    with pytest.raises(FrozenInstanceError):
+        source_identity.revision = 2  # type: ignore[misc]
+    with pytest.raises(ValueError, match="Revision sửa đổi"):
+        replace(source_identity, revision=2)
+    with pytest.raises(ValueError, match="Revision đầu"):
+        replace(source_identity, supersedes_record_id=uuid4())
+    with pytest.raises(ValueError, match="SHA-256"):
+        replace(source_identity, checksum="A" * 64)
+
+
+def test_ohlcv_bar_rejects_source_identity_with_a_different_stored_checksum() -> None:
+    bar = make_bar()
+    source_identity = MarketBarSourceIdentity(
+        workspace_id=uuid4(),
+        record_id=uuid4(),
+        logical_key="BTCUSDT:1m:2026-01-01T00:00:00+00:00",
+        revision=1,
+        supersedes_record_id=None,
+        checksum="a" * 64,
+    )
+
+    with pytest.raises(ValueError, match="không khớp source identity"):
+        replace(bar, checksum="b" * 64, source_identity=source_identity)
+
+
+def test_ohlcv_bar_preserves_optional_quote_volume_and_rejects_negative_values() -> None:
+    bar = replace(make_bar(), quote_volume=Decimal("251.37500000"))
+    assert bar.quote_volume == Decimal("251.37500000")
+    assert make_bar().quote_volume is None
+
+    with pytest.raises(ValueError, match="quote_volume"):
+        replace(make_bar(), quote_volume=Decimal("-0.01"))
 
 
 def test_market_snapshot_cannot_include_event_after_as_of() -> None:

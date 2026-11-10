@@ -1,0 +1,10 @@
+{% extends "admin/base.html" %}
+{% block title %}Không thể hoàn tất yêu cầu — Crypidian{% endblock %}
+{% block heading %}Không thể hoàn tất yêu cầu{% endblock %}
+{% block navigation %}{% endblock %}
+{% block content %}
+<div role="alert" class="error-summary"><p>{{ error_message }}</p></div>
+<p>Mã phản hồi: {{ error_status }}.</p>
+<p>Tải lại trang ban đầu để kiểm tra thông tin và trạng thái mới nhất. Nếu cần, đăng nhập lại và xác thực trước khi thử lại; không gửi lại thao tác khi chưa rõ kết quả.</p>
+<p><a href="/admin">Về tổng quan</a> · <a href="/admin/login">Đăng nhập lại</a></p>
+{% endblock %}

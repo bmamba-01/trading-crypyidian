@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pyotp
 from scripts.docker_image import build_image_reference, ensure_image_available
+
 from tests.fixtures.qa_dataset import build_qa_dataset, qa_id
 
 # Bootstrap ngắn đọc gói JSON từ stdin: Windows giới hạn dòng lệnh 32.767 ký tự.

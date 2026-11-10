@@ -11,7 +11,12 @@ ProcessRole = Literal[
     "trading-runtime",
     "execution-gateway",
     "ingestion-worker",
+    "signal-worker",
+    "market-signal-worker",
     "trainer-worker",
+    "learning-shadow-observer",
+    "learning-evaluator",
+    "backtest-worker",
 ]
 
 
@@ -33,10 +38,25 @@ class AppSettings(BaseSettings):
     database_host: str = "postgres"
     database_name: str = "crypidian"
     runtime_workspace_id: UUID | None = None
+    ingestion_workspace_id: UUID | None = None
+    signal_workspace_id: UUID | None = None
+    market_signal_workspace_id: UUID | None = None
+    learning_training_workspace_id: UUID | None = None
+    learning_training_worker_poll_seconds: float = Field(default=5.0, gt=0, le=300)
+    learning_training_worker_max_backoff_seconds: float = Field(default=60.0, gt=0, le=3600)
+    learning_shadow_observer_workspace_id: UUID | None = None
+    learning_shadow_observer_poll_seconds: float = Field(default=5.0, gt=0, le=300)
+    learning_shadow_observer_max_backoff_seconds: float = Field(default=60.0, gt=0, le=3600)
+    backtest_worker_workspace_id: UUID | None = None
+    backtest_worker_tick_seconds: float = Field(default=2.0, gt=0, le=60)
+    backtest_worker_lease_seconds: int = Field(default=120, ge=15, le=900)
+    backtest_replay_database_user: str | None = None
+    backtest_replay_database_password_file: Path | None = None
     # Lease một writer theo bot (MB-05): TTL ≤ 300 giây (khớp trigger DB), tick supervisor
     # phải ngắn hơn TTL để kịp gia hạn trước khi hết hạn.
     runtime_lease_ttl_seconds: int = Field(default=30, ge=3, le=300)
     runtime_supervisor_tick_seconds: float = Field(default=5.0, gt=0, le=60)
+    ingestion_worker_tick_seconds: float = Field(default=5.0, gt=0, le=300)
     mfa_encryption_key_file: Path | None = None
     mfa_secret_directory: Path | None = None
     bootstrap_token_file: Path | None = None
@@ -45,6 +65,10 @@ class AppSettings(BaseSettings):
     telegram_workspace_id: UUID | None = None
     telegram_webhook_secret_file: Path | None = None
     telegram_bot_username: str | None = None
+    telegram_bot_token_file: Path | None = None
+    signal_worker_tick_seconds: float = Field(default=5.0, gt=0, le=300)
+    signal_worker_max_candidate_age_seconds: int = Field(default=7200, ge=5, le=14_400)
+    signal_worker_max_attempts: int = Field(default=5, ge=1, le=20)
 
     @model_validator(mode="after")
     def validate_telegram_webhook(self) -> AppSettings:
@@ -66,6 +90,11 @@ class AppSettings(BaseSettings):
                 r"[A-Za-z0-9_]{5,32}", self.telegram_bot_username
             ):
                 raise ValueError("telegram_bot_username không hợp lệ hoặc sai process role.")
+        if self.telegram_bot_token_file is not None and self.process_role not in {
+            "admin-web",
+            "signal-worker",
+        }:
+            raise ValueError("Token Telegram chỉ được cấu hình cho admin-web hoặc signal-worker.")
         return self
 
     @model_validator(mode="after")
@@ -83,5 +112,153 @@ class AppSettings(BaseSettings):
         elif self.runtime_workspace_id is not None:
             raise ValueError(
                 "runtime_workspace_id chỉ được cấu hình cho process_role trading-runtime."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_ingestion_identity(self) -> AppSettings:
+        """Buộc ingestion worker giới hạn vào một workspace deployment."""
+        if self.process_role == "ingestion-worker":
+            if self.ingestion_workspace_id is None:
+                raise ValueError(
+                    "ingestion-worker cần ingestion_workspace_id từ deployment environment."
+                )
+        elif self.ingestion_workspace_id is not None:
+            raise ValueError(
+                "ingestion_workspace_id chỉ được cấu hình cho process_role ingestion-worker."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_signal_worker_identity(self) -> AppSettings:
+        """Buộc signal worker có workspace riêng và token Bot API từ secret file."""
+        if self.process_role == "signal-worker":
+            if self.signal_workspace_id is None:
+                raise ValueError("signal-worker cần signal_workspace_id từ deployment environment.")
+            if self.telegram_bot_token_file is None:
+                raise ValueError("signal-worker cần telegram_bot_token_file từ secret file.")
+        elif self.signal_workspace_id is not None:
+            raise ValueError("signal_workspace_id chỉ dành cho process_role signal-worker.")
+        return self
+
+    @model_validator(mode="after")
+    def validate_market_signal_worker_identity(self) -> AppSettings:
+        """Buộc market signal producer chạy riêng, theo workspace triển khai."""
+        if self.process_role == "market-signal-worker":
+            if self.market_signal_workspace_id is None:
+                raise ValueError(
+                    "market-signal-worker cần market_signal_workspace_id từ deployment environment."
+                )
+            if self.market_signal_workspace_id.int == 0:
+                raise ValueError(
+                    "market-signal-worker không được dùng workspace UUID placeholder toàn-0."
+                )
+            if self.telegram_bot_token_file is not None:
+                raise ValueError("market-signal-worker không được nhận token Telegram.")
+        elif self.market_signal_workspace_id is not None:
+            raise ValueError(
+                "market_signal_workspace_id chỉ dành cho process_role market-signal-worker."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_backtest_worker_identity(self) -> AppSettings:
+        """Buộc replay worker vào tenant và credential persist riêng."""
+        configured_replay_writer = (
+            self.backtest_replay_database_user,
+            self.backtest_replay_database_password_file,
+        )
+        if self.process_role == "backtest-worker":
+            if (
+                self.backtest_worker_workspace_id is None
+                or self.backtest_worker_workspace_id.int == 0
+            ):
+                raise ValueError(
+                    "backtest-worker cần workspace UUID đã provision, không dùng UUID toàn-0."
+                )
+            if self.trading_mode != "PAPER":
+                raise ValueError("backtest-worker hiện chỉ hỗ trợ chạy PAPER replay.")
+            if any(value is None for value in configured_replay_writer):
+                raise ValueError("backtest-worker cần credential replay-writer riêng để persist.")
+            if self.database_user != "crypidian_backtest_worker":
+                raise ValueError("backtest-worker phải dùng login database replay riêng.")
+            if self.backtest_replay_database_user != "crypidian_replay_writer":
+                raise ValueError("Credential persist phải dùng crypidian_replay_writer.")
+        else:
+            if self.backtest_worker_workspace_id is not None:
+                raise ValueError("backtest_worker_workspace_id chỉ dành cho backtest-worker.")
+            if any(value is not None for value in configured_replay_writer):
+                raise ValueError("Replay-writer credential chỉ được gắn vào backtest-worker.")
+        return self
+
+    @model_validator(mode="after")
+    def validate_learning_evaluator_identity(self) -> AppSettings:
+        """Evaluator không thể khởi động với credential admin hoặc trainer."""
+        if self.process_role == "learning-evaluator":
+            if self.trading_mode != "PAPER":
+                raise ValueError("learning-evaluator chỉ chạy trong chế độ PAPER.")
+            if self.database_user != "crypidian_learning_evaluator":
+                raise ValueError("learning-evaluator cần login database evaluator riêng.")
+            if self.database_password_file is None:
+                raise ValueError("learning-evaluator cần secret database evaluator riêng.")
+        return self
+
+    @model_validator(mode="after")
+    def validate_trainer_worker_identity(self) -> AppSettings:
+        """Trainer chỉ dùng PAPER, một workspace và login database riêng."""
+        if self.process_role == "trainer-worker":
+            if self.trading_mode != "PAPER":
+                raise ValueError("trainer-worker hiện chỉ chạy trong chế độ PAPER.")
+            if self.database_user != "crypidian_trainer_worker":
+                raise ValueError("trainer-worker cần login database trainer riêng.")
+            if self.database_password_file is None:
+                raise ValueError("trainer-worker cần secret database trainer riêng.")
+            if self.learning_training_workspace_id is None:
+                raise ValueError(
+                    "trainer-worker cần learning_training_workspace_id từ deployment environment."
+                )
+            if self.learning_training_workspace_id.int == 0 and self.app_env != "local":
+                raise ValueError("trainer-worker chỉ cho workspace UUID toàn-0 trong local.")
+            if (
+                self.learning_training_worker_max_backoff_seconds
+                < self.learning_training_worker_poll_seconds
+            ):
+                raise ValueError("Backoff tối đa phải lớn hơn hoặc bằng chu kỳ poll.")
+        elif self.learning_training_workspace_id is not None:
+            raise ValueError(
+                "learning_training_workspace_id chỉ dành cho process_role trainer-worker."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_learning_shadow_observer_identity(self) -> AppSettings:
+        """Giới hạn observer vào PAPER, một workspace và credential database riêng."""
+        if self.process_role == "learning-shadow-observer":
+            if self.trading_mode != "PAPER":
+                raise ValueError("learning-shadow-observer chỉ chạy trong chế độ PAPER.")
+            if self.database_user != "crypidian_learning_shadow_observer":
+                raise ValueError("learning-shadow-observer cần login database observer riêng.")
+            if self.database_password_file != Path(
+                "/run/secrets/database_learning_shadow_observer_password"
+            ):
+                raise ValueError("learning-shadow-observer cần secret database observer cố định.")
+            if self.learning_shadow_observer_workspace_id is None:
+                raise ValueError(
+                    "learning-shadow-observer cần learning_shadow_observer_workspace_id "
+                    "từ deployment environment."
+                )
+            if self.learning_shadow_observer_workspace_id.int == 0 and self.app_env != "local":
+                raise ValueError(
+                    "learning-shadow-observer chỉ cho workspace UUID toàn-0 trong local."
+                )
+            if (
+                self.learning_shadow_observer_max_backoff_seconds
+                < self.learning_shadow_observer_poll_seconds
+            ):
+                raise ValueError("Backoff tối đa phải lớn hơn hoặc bằng chu kỳ poll.")
+        elif self.learning_shadow_observer_workspace_id is not None:
+            raise ValueError(
+                "learning_shadow_observer_workspace_id chỉ dành cho process_role "
+                "learning-shadow-observer."
             )
         return self

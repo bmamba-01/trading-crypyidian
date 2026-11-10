@@ -1,0 +1,77 @@
+.learning-observations-notice {
+  padding: 1rem;
+  border: 1px solid #d7a84b;
+  border-left: .4rem solid #996300;
+  border-radius: .5rem;
+  background: #fff8e7;
+}
+.learning-observations-notice h2 { margin-bottom: .5rem; }
+.learning-observations-notice p:last-child { margin-bottom: 0; }
+.learning-observations-count { margin-block: 1rem; }
+.learning-observations-groups {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+  gap: 1.25rem;
+  min-width: 0;
+}
+.learning-observations-groups > section { min-width: 0; }
+.learning-observations-list { display: grid; gap: .85rem; }
+.learning-observations-card {
+  min-width: 0;
+  padding: .9rem;
+  border: 1px solid #c4cfda;
+  border-radius: .5rem;
+  background: #fff;
+}
+.learning-observations-card > header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: .5rem;
+}
+.learning-observations-card time { color: #42586b; font-size: .88rem; }
+.learning-observations-id { margin-block: .7rem; font-size: .88rem; }
+.learning-observations-id code { overflow-wrap: anywhere; }
+.learning-observations-card dl {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: .5rem;
+  margin: 0;
+}
+.learning-observations-card dl > div {
+  min-width: 0;
+  padding: .55rem;
+  border: 1px solid #dce3e9;
+  border-radius: .35rem;
+  background: #fbfcfd;
+}
+.learning-observations-card dt { font-size: .86rem; font-weight: 700; }
+.learning-observations-card dd { margin: .15rem 0 0; overflow-wrap: anywhere; }
+.learning-observations-state {
+  display: inline-flex;
+  min-height: 2rem;
+  align-items: center;
+  padding: .2rem .6rem;
+  border-radius: 999px;
+  background: #edf1f4;
+  color: #42586b;
+  font-size: .86rem;
+  font-weight: 700;
+}
+.learning-observations-state--observation { background: #fff8e7; color: #664800; }
+.learning-observations-state--assessment { background: #eaf3fb; color: #07549a; }
+.learning-observations-state--proposal { background: var(--pnl-positive-bg); color: var(--pnl-positive-text); }
+.learning-observations-empty {
+  min-height: 5rem;
+  padding: 1rem;
+  border: 1px dashed #647789;
+  border-radius: .5rem;
+  background: #fff;
+}
+@media (min-width: 1024px) {
+  .learning-observations-groups { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .learning-observations-card dl { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .learning-observations-card dl > div:first-child:last-child { grid-column: 1 / -1; }
+}

@@ -11,27 +11,55 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import UUID, uuid4
 
-from sqlalchemy import text
+from sqlalchemy import func, select, text
+from sqlalchemy.exc import SQLAlchemyError
 
 from trading_bot.adapters.database.engine import (
     create_database_engine,
     create_session_factory,
     database_url_from_secret,
 )
-from trading_bot.adapters.database.learning_fold_outcome_verifier import (
-    DatabaseFoldOutcomeVerifier,
-    FoldOutcomeVerificationError,
+from trading_bot.adapters.database.models import (
+    LearningEvaluationAccessFoldRecord,
+    UserAccount,
+    UserMembership,
+    Workspace,
 )
 from trading_bot.adapters.database.repositories.backtest_outcomes import BacktestOutcomeRepository
 from trading_bot.adapters.database.repositories.dataset_manifest import DatasetManifestRepository
-from trading_bot.application.backtest_sensitivity import SensitivityScenario
-from trading_bot.application.learning_fold_evaluation import (
-    FoldOutcomeExpectation,
-    FoldOutcomeVerificationRequest,
-    build_walk_forward_evaluation_report,
+from trading_bot.adapters.database.repositories.learning_evaluation_access import (
+    LearningEvaluationAccessConflict,
+    LearningEvaluationAccessRepository,
 )
+from trading_bot.adapters.database.repositories.learning_evaluation_reports import (
+    LearningEvaluationReportConflict,
+    LearningEvaluationReportRepository,
+)
+from trading_bot.adapters.database.repositories.learning_fold_samples import (
+    LearningFoldSampleRepository,
+)
+from trading_bot.adapters.database.repositories.learning_split_approvals import (
+    LearningSplitApprovalRepository,
+)
+from trading_bot.application.backtest_sensitivity import SensitivityScenario
+from trading_bot.application.learning_evaluation import (
+    LearningEvaluationReportService,
+    LearningEvaluationRequest,
+)
+from trading_bot.application.learning_evaluation_access import evaluation_access_fingerprint
 from trading_bot.application.learning_fold_plan import build_manifest_fold_plan
+from trading_bot.application.learning_fold_samples import (
+    NormalizedFoldAssignment,
+    NormalizedLearningDataset,
+    NormalizedLearningSample,
+    normalized_learning_dataset_hash,
+)
+from trading_bot.application.learning_split_approval import (
+    LearningSplitApprovalService,
+    SplitApprovalRequest,
+)
 from trading_bot.application.outbox import UnitOfWork
+from trading_bot.auth.policy import Principal, Role
 from trading_bot.domain.learning.dataset import DatasetManifest, DatasetSample, DatasetSplit
 from trading_bot.domain.learning.evaluation import TemporalWindow, WalkForwardSplit
 
@@ -53,17 +81,27 @@ async def _seed() -> dict[str, object]:
     engine = _engine()
     sessions = create_session_factory(engine)
     async with sessions() as session, session.begin():
-        await session.execute(
-            text(
-                "INSERT INTO workspace (id, name, slug, mode, status) "
-                "VALUES (:id, 'WP06 verifier E2E', :slug, 'PAPER', 'ACTIVE')"
-            ),
-            {"id": str(WORKSPACE_ID), "slug": f"wp06-fold-{str(WORKSPACE_ID)[:8]}"},
+        user_id, membership_id = uuid4(), uuid4()
+        session.add_all(
+            [
+                Workspace(
+                    id=WORKSPACE_ID,
+                    name="WP06 verifier E2E",
+                    slug=f"wp06-fold-{str(WORKSPACE_ID)[:8]}",
+                ),
+                UserAccount(
+                    id=user_id,
+                    email_normalized=f"wp06-fold-{user_id.hex}@example.invalid",
+                    password_hash="fixture-only-not-a-credential",
+                ),
+            ]
         )
+        await session.flush()
         await session.execute(
             text("SELECT set_config('app.workspace_id', :workspace_id, true)"),
             {"workspace_id": str(WORKSPACE_ID)},
         )
+        session.add(UserMembership(id=membership_id, workspace_id=WORKSPACE_ID, user_id=user_id))
         sys.path.insert(0, "/e2e-tests")
         from fixtures.runtime_replay import build_h03_runtime_sensitivity
 
@@ -103,6 +141,8 @@ async def _seed() -> dict[str, object]:
         )
         for index, (sample_id, split) in enumerate(roles):
             outcome = persisted_rows[index]
+            if not outcome.trade.has_entry_provenance:
+                raise AssertionError("Fixture trade cần lineage feature tại entry để chuẩn hóa.")
             decision = outcome.trade.opened_at - timedelta(hours=1)
             samples.append(
                 DatasetSample(
@@ -111,11 +151,11 @@ async def _seed() -> dict[str, object]:
                     feature_available_at=decision - timedelta(minutes=1),
                     outcome_start=outcome.trade.opened_at,
                     outcome_end=outcome.trade.closed_at,
-                    feature_snapshot_hash=hex(index + 2)[2:] * 64,
+                    feature_snapshot_hash=outcome.trade.entry_features_hash,
                     outcome_id=str(outcome.record_id),
                     outcome_hash=outcome.outcome_hash,
                     label_hash=hex(index + 6)[2:] * 64,
-                    label_value=1 if index < 3 else -1,
+                    label_value=(outcome.trade.net_pnl > 0) - (outcome.trade.net_pnl < 0),
                     label_version="e2e-label-v1",
                     split=split,
                     source_dependent=False,
@@ -136,18 +176,114 @@ async def _seed() -> dict[str, object]:
             feature_version="e2e-feature-v1",
             label_version="e2e-label-v1",
             sample_schema_version="e2e-sample-v1",
-            split_policy_version="e2e-split-v1",
+            split_policy_version="wp06-walk-forward-v1",
             samples=tuple(samples),
             exclusions=(),
             holdout_sealed_at=data_end,
             retention_policy_ref="e2e-retention-v1",
         )
-        await DatasetManifestRepository(session).append(
+        folds = _plan(manifest).folds
+        from e2e.probes.wp06_split_approval_anchor import append_split_approval_anchor
+
+        await append_split_approval_anchor(
+            session,
+            manifest=manifest,
+            folds=tuple(item.split for item in folds),
+            evaluation_cutoff=manifest.as_of,
+            trial_record_id=persisted_rows[0].trial_record_id,
+        )
+        identity = Principal(
+            user_id=user_id,
+            membership_id=membership_id,
+            workspace_id=WORKSPACE_ID,
+            roles=frozenset({Role.ANALYST_REVIEWER}),
+            mfa_verified_at=datetime.now(UTC),
+        )
+        approval = (
+            await LearningSplitApprovalService(LearningSplitApprovalRepository(session))
+            .for_principal(identity)
+            .approve(
+                SplitApprovalRequest(
+                    manifest=manifest,
+                    folds=tuple(item.split for item in folds),
+                    evaluation_cutoff=manifest.as_of,
+                    reason="Duyệt fixture kiểm thử receipt evaluator WP06.",
+                    idempotency_key=uuid4(),
+                )
+            )
+        )
+        await DatasetManifestRepository(session).append_for_training(
             workspace_id=WORKSPACE_ID,
             manifest=manifest,
+            folds=tuple(item.split for item in folds),
+            evaluation_cutoff=manifest.as_of,
+        )
+        assignments = tuple(
+            NormalizedFoldAssignment(fold.fold_id, sample_id, role)
+            for fold in folds
+            for role, sample_ids in (
+                ("train", fold.train_sample_ids),
+                ("validation", fold.validation_sample_ids),
+                ("test", fold.test_sample_ids),
+            )
+            for sample_id in sample_ids
+        )
+        selected_sample_ids = {assignment.sample_id for assignment in assignments}
+        samples_by_id = {sample.sample_id: sample for sample in manifest.samples}
+        outcomes_by_id = {str(row.record_id): row for row in persisted_rows}
+        normalized_samples = tuple(
+            NormalizedLearningSample(
+                sample_id=sample_id,
+                outcome_id=samples_by_id[sample_id].outcome_id,
+                outcome_hash=samples_by_id[sample_id].outcome_hash,
+                feature_snapshot_hash=samples_by_id[sample_id].feature_snapshot_hash,
+                feature_schema_hash=outcomes_by_id[
+                    samples_by_id[sample_id].outcome_id
+                ].trade.entry_feature_schema_hash,
+                label_hash=samples_by_id[sample_id].label_hash,
+                label_value=samples_by_id[sample_id].label_value,
+                features=outcomes_by_id[samples_by_id[sample_id].outcome_id].trade.entry_features,
+            )
+            for sample_id in sorted(selected_sample_ids)
+        )
+        normalized = NormalizedLearningDataset(
+            workspace_id=WORKSPACE_ID,
+            manifest_hash=manifest.content_hash,
+            split_policy_version=manifest.split_policy_version,
+            fold_plan_hash=_plan(manifest).content_hash,
+            samples=normalized_samples,
+            assignments=assignments,
+            content_hash="",
+        )
+        from dataclasses import replace as replace_dataclass
+
+        normalized = replace_dataclass(
+            normalized, content_hash=normalized_learning_dataset_hash(normalized)
+        )
+        await LearningFoldSampleRepository(session).append_normalized_dataset(
+            manifest=manifest,
+            fold_plan=_plan(manifest),
+            approval=approval,
+            dataset=normalized,
         )
     await engine.dispose()
-    return {"manifest_hash": manifest.content_hash, "workspace_id": str(WORKSPACE_ID)}
+    plan = _plan(manifest)
+    fold = plan.folds[0]
+    return {
+        "manifest_hash": manifest.content_hash,
+        "workspace_id": str(WORKSPACE_ID),
+        "idempotency_key": str(uuid4()),
+        "rollback_run_id": str(uuid4()),
+        "crash_run_id": str(uuid4()),
+        "race_run_id": str(uuid4()),
+        "evaluation_cutoff": manifest.as_of.isoformat(),
+        "train_start": fold.split.train.start.isoformat(),
+        "train_end": fold.split.train.end.isoformat(),
+        "validation_start": fold.split.validation.start.isoformat(),
+        "validation_end": fold.split.validation.end.isoformat(),
+        "test_start": fold.split.test.start.isoformat(),
+        "test_end": fold.split.test.end.isoformat(),
+    }
 
 
 def _plan(manifest: DatasetManifest):
@@ -178,68 +314,188 @@ async def _verify() -> dict[str, object]:
     engine = _engine()
     sessions = create_session_factory(engine)
     workspace_id = UUID(STATE["workspace_id"])
-    async with UnitOfWork(
-        sessions,
+    evaluation_request = LearningEvaluationRequest(
         workspace_id=workspace_id,
-        snapshot_read_only=True,
-    ) as uow:
-        manifest = await DatasetManifestRepository(uow.session).get_by_hash(
+        manifest_hash=STATE["manifest_hash"],
+        folds=_folds_for_seed(),
+        evaluation_cutoff=datetime.fromisoformat(STATE["evaluation_cutoff"]),
+        seed=19,
+        idempotency_key=UUID(STATE["idempotency_key"]),
+    )
+    request_fingerprint = evaluation_access_fingerprint(evaluation_request)
+    async with UnitOfWork(sessions, workspace_id=workspace_id) as uow:
+        fingerprint_valid = await uow.session.scalar(
+            text("SELECT CAST(:value AS text) ~ '^[0-9a-f]{64}$'"),
+            {"value": request_fingerprint},
+        )
+    if not fingerprint_valid:
+        raise AssertionError("Fingerprint SHA-256 không khớp regex PostgreSQL.")
+    evaluation_service = LearningEvaluationReportService(sessions)
+    saved = await evaluation_service.evaluate(evaluation_request)
+    retried = await evaluation_service.evaluate(evaluation_request)
+    changed_payload_rejected = False
+    try:
+        await evaluation_service.evaluate(replace(evaluation_request, seed=20))
+    except LearningEvaluationReportConflict, LearningEvaluationAccessConflict:
+        changed_payload_rejected = True
+
+    mismatched_workspace_rejected = False
+    try:
+        await evaluation_service.evaluate(replace(evaluation_request, workspace_id=uuid4()))
+    except LearningEvaluationAccessConflict:
+        mismatched_workspace_rejected = True
+
+    # Rollback trước commit không tiêu thụ run; retry cùng khóa phải chạy được.
+    rollback_request = replace(evaluation_request, idempotency_key=UUID(STATE["rollback_run_id"]))
+    try:
+        async with UnitOfWork(
+            sessions,
             workspace_id=workspace_id,
-            manifest_hash=STATE["manifest_hash"],
-        )
-        if manifest is None:
-            raise AssertionError("Trainer worker không thấy manifest trong workspace.")
-        plan = _plan(manifest)
-        report = await build_walk_forward_evaluation_report(
-            manifest,
-            plan,
-            verifier=DatabaseFoldOutcomeVerifier(uow.session),
-            seed=19,
-        )
-
-        selected_fold = plan.folds[0]
-        train = next(item for item in manifest.samples if item.sample_id == "train-sample")
-        expectation = FoldOutcomeExpectation(
-            sample_id=train.sample_id,
-            role="train",
-            outcome_id=train.outcome_id,
-            outcome_hash=train.outcome_hash,
-            outcome_start=train.outcome_start,
-            outcome_end=train.outcome_end,
-        )
-        mismatched_workspace_rejected = False
-        try:
-            await DatabaseFoldOutcomeVerifier(uow.session).load_verified_fold_outcomes(
-                FoldOutcomeVerificationRequest(
-                    workspace_id=uuid4(),
-                    manifest_hash=manifest.content_hash,
-                    split_policy_version=manifest.split_policy_version,
-                    fold_plan=plan,
-                    fold_plan_hash=plan.content_hash,
-                    fold_id=selected_fold.fold_id,
-                    expected_outcomes=(expectation,),
-                )
+            snapshot_repeatable_read=True,
+        ) as uow:
+            await LearningEvaluationAccessRepository(uow.session).open(
+                workspace_id=workspace_id,
+                manifest_hash=rollback_request.manifest_hash,
+                evaluation_run_id=rollback_request.idempotency_key,
+                request_fingerprint=evaluation_access_fingerprint(rollback_request),
             )
-        except FoldOutcomeVerificationError:
-            mismatched_workspace_rejected = True
+            raise RuntimeError("rollback-before-disclosure")
+    except RuntimeError:
+        pass
+    async with UnitOfWork(sessions, workspace_id=workspace_id) as uow:
+        rollback_receipt = await LearningEvaluationAccessRepository(uow.session).get_for_run(
+            workspace_id=workspace_id,
+            evaluation_run_id=rollback_request.idempotency_key,
+        )
+    rollback_succeeded = rollback_receipt is None
+    rollback_retry = await evaluation_service.evaluate(rollback_request)
+    rollback_succeeded = rollback_succeeded and bool(rollback_retry.record_id)
 
-    read_only_required = False
+    # Mô phỏng process chết sau commit receipt nhưng trước khi persist report.
+    crash_request = replace(evaluation_request, idempotency_key=UUID(STATE["crash_run_id"]))
     async with UnitOfWork(
         sessions,
         workspace_id=workspace_id,
-        snapshot_read_only=False,
+        snapshot_repeatable_read=True,
     ) as uow:
+        await LearningEvaluationAccessRepository(uow.session).open(
+            workspace_id=workspace_id,
+            manifest_hash=crash_request.manifest_hash,
+            evaluation_run_id=crash_request.idempotency_key,
+            request_fingerprint=evaluation_access_fingerprint(crash_request),
+        )
+    crash_retry_denied = False
+    try:
+        await evaluation_service.evaluate(crash_request)
+    except LearningEvaluationAccessConflict:
+        crash_retry_denied = True
+
+    # Hai transaction đồng thời cùng khóa: unique receipt chỉ cho phép một bên.
+    race_request = replace(evaluation_request, idempotency_key=UUID(STATE["race_run_id"]))
+
+    async def open_race_receipt() -> bool:
         try:
-            await build_walk_forward_evaluation_report(
-                manifest,
-                plan,
-                verifier=DatabaseFoldOutcomeVerifier(uow.session),
-                seed=19,
+            async with UnitOfWork(
+                sessions,
+                workspace_id=workspace_id,
+                snapshot_repeatable_read=True,
+            ) as uow:
+                await LearningEvaluationAccessRepository(uow.session).open(
+                    workspace_id=workspace_id,
+                    manifest_hash=race_request.manifest_hash,
+                    evaluation_run_id=race_request.idempotency_key,
+                    request_fingerprint=evaluation_access_fingerprint(race_request),
+                )
+            return True
+        except LearningEvaluationAccessConflict:
+            return False
+
+    race_outcomes = await asyncio.gather(open_race_receipt(), open_race_receipt())
+    concurrent_single_winner = sum(race_outcomes) == 1
+
+    async with UnitOfWork(
+        sessions,
+        workspace_id=workspace_id,
+        snapshot_repeatable_read=True,
+    ) as uow:
+        isolation = str(
+            (await uow.session.execute(text("SHOW transaction_isolation"))).scalar_one()
+        )
+        read_only = str(
+            (await uow.session.execute(text("SHOW transaction_read_only"))).scalar_one()
+        )
+    repeatable_read_write_required = isolation.lower() == "repeatable read" and (
+        read_only.lower() in ("off", "false", "0")
+    )
+
+    async with UnitOfWork(sessions, workspace_id=workspace_id) as uow:
+        saved_record = await LearningEvaluationReportRepository(uow.session).get_by_idempotency_key(
+            workspace_id=workspace_id,
+            idempotency_key=evaluation_request.idempotency_key,
+        )
+        if saved_record is None:
+            raise AssertionError("Report diagnostic không đọc lại được trong workspace.")
+        saved_receipt = await LearningEvaluationAccessRepository(uow.session).get_for_run(
+            workspace_id=workspace_id,
+            evaluation_run_id=evaluation_request.idempotency_key,
+        )
+        if saved_receipt is None:
+            raise AssertionError("Receipt đã commit trước khi report được persist.")
+        access_fold_count = await uow.session.scalar(
+            select(func.count())
+            .select_from(LearningEvaluationAccessFoldRecord)
+            .where(
+                LearningEvaluationAccessFoldRecord.workspace_id == workspace_id,
+                LearningEvaluationAccessFoldRecord.receipt_id == saved_receipt.id,
             )
-        except ValueError as error:
-            read_only_required = "verifier thất bại" in str(error).lower()
-    await engine.dispose()
+        )
+        evaluator_grants = await uow.session.execute(
+            text(
+                "SELECT has_table_privilege(current_user, 'learning_evaluation_report', 'SELECT'), "
+                "has_table_privilege(current_user, 'learning_evaluation_report', 'INSERT'), "
+                "has_table_privilege(current_user, 'learning_evaluation_report', 'UPDATE'), "
+                "has_table_privilege(current_user, 'learning_evaluation_report', 'DELETE')"
+            )
+        )
+        evaluator_select, evaluator_insert, evaluator_update, evaluator_delete = (
+            evaluator_grants.one()
+        )
+        update_denied = await _execute_mutation_probe(
+            uow.session,
+            "UPDATE learning_evaluation_report SET seed = seed WHERE id = :record_id",
+            saved.record_id,
+        )
+        delete_denied = await _execute_mutation_probe(
+            uow.session,
+            "DELETE FROM learning_evaluation_report WHERE id = :record_id",
+            saved.record_id,
+        )
+    other_workspace_id = uuid4()
+    async with UnitOfWork(sessions, workspace_id=other_workspace_id) as uow:
+        cross_workspace_record = await LearningEvaluationReportRepository(
+            uow.session
+        ).get_by_idempotency_key(
+            workspace_id=other_workspace_id,
+            idempotency_key=evaluation_request.idempotency_key,
+        )
+    report = saved.report
     evaluated_fold = report.fold_evaluations[0]
+    evaluator_direct_payload_denied = True
+    for column, table in (
+        ("manifest", "dataset_manifest"),
+        ("canonical_manifest", "dataset_manifest"),
+        ("outcome", "backtest_trade_outcome"),
+    ):
+        async with engine.connect() as connection:
+            try:
+                await connection.execute(text(f"SELECT {column} FROM public.{table} LIMIT 1"))
+            except SQLAlchemyError as error:
+                evaluator_direct_payload_denied = evaluator_direct_payload_denied and (
+                    "permission denied" in str(error).lower()
+                )
+            else:
+                evaluator_direct_payload_denied = False
+    await engine.dispose()
     return {
         "manifest_hash": report.manifest_hash,
         "report_hash": report.report_hash,
@@ -253,13 +509,171 @@ async def _verify() -> dict[str, object]:
         "candidate_completeness_verified": report.candidate_completeness_verified,
         "holdout_payload_in_report": "sealed-holdout-sample" in str(report.fold_evaluations),
         "mismatched_workspace_rejected": mismatched_workspace_rejected,
-        "read_only_snapshot_required": read_only_required,
+        "repeatable_read_write_required": repeatable_read_write_required,
+        "rollback_before_commit_allows_retry": rollback_succeeded,
+        "crash_after_commit_retry_denied": crash_retry_denied,
+        "concurrent_single_receipt_winner": concurrent_single_winner,
+        "receipt_persisted_before_report": saved_receipt is not None,
+        "receipt_fold_consumed_once": access_fold_count == 1,
+        "evaluator_direct_payload_select_denied": evaluator_direct_payload_denied,
+        "persisted_report_id": str(saved.record_id),
+        "persisted_report_hash": saved.report.report_hash,
+        "persisted_report_canonical_hash_matches": saved_record.report_hash
+        == saved.report.report_hash,
+        "persisted_report_duplicate_retry": retried.is_duplicate,
+        "retry_kept_same_record": retried.record_id == saved.record_id,
+        "changed_payload_rejected": changed_payload_rejected,
+        "holdout_payload_in_canonical_report": "sealed-holdout-sample"
+        in saved.report.canonical_json,
+        "cross_workspace_hidden": cross_workspace_record is None,
+        "evaluator_select_insert_only": evaluator_select
+        and evaluator_insert
+        and not evaluator_update
+        and not evaluator_delete,
+        "evaluator_update_denied": update_denied,
+        "evaluator_delete_denied": delete_denied,
+    }
+
+
+def _folds_for_seed() -> tuple[WalkForwardSplit, ...]:
+    return (
+        WalkForwardSplit(
+            train=TemporalWindow(
+                datetime.fromisoformat(STATE["train_start"]),
+                datetime.fromisoformat(STATE["train_end"]),
+            ),
+            validation=TemporalWindow(
+                datetime.fromisoformat(STATE["validation_start"]),
+                datetime.fromisoformat(STATE["validation_end"]),
+            ),
+            test=TemporalWindow(
+                datetime.fromisoformat(STATE["test_start"]),
+                datetime.fromisoformat(STATE["test_end"]),
+            ),
+        ),
+    )
+
+
+async def _execute_mutation_probe(session, statement: str, record_id: UUID) -> bool:
+    try:
+        async with session.begin_nested():
+            await session.execute(text(statement), {"record_id": record_id})
+    except SQLAlchemyError:
+        return True
+    return False
+
+
+async def _verify_admin() -> dict[str, object]:
+    engine = _engine()
+    sessions = create_session_factory(engine)
+    workspace_id = UUID(STATE["workspace_id"])
+    async with UnitOfWork(sessions, workspace_id=workspace_id) as uow:
+        record = await LearningEvaluationReportRepository(uow.session).get_by_idempotency_key(
+            workspace_id=workspace_id,
+            idempotency_key=UUID(STATE["idempotency_key"]),
+        )
+        grants = await uow.session.execute(
+            text(
+                "SELECT has_table_privilege(current_user, 'learning_evaluation_report', 'SELECT'), "
+                "has_table_privilege(current_user, 'learning_evaluation_report', 'INSERT'), "
+                "has_table_privilege(current_user, 'learning_evaluation_report', 'UPDATE'), "
+                "has_table_privilege(current_user, 'learning_evaluation_report', 'DELETE')"
+            )
+        )
+        can_select, can_insert, can_update, can_delete = grants.one()
+        if record is None:
+            raise AssertionError("Admin không đọc được report diagnostic trong workspace.")
+        update_denied = await _execute_mutation_probe(
+            uow.session,
+            "UPDATE learning_evaluation_report SET seed = seed WHERE id = :record_id",
+            record.id,
+        )
+        delete_denied = await _execute_mutation_probe(
+            uow.session,
+            "DELETE FROM learning_evaluation_report WHERE id = :record_id",
+            record.id,
+        )
+    other_workspace_id = uuid4()
+    async with UnitOfWork(sessions, workspace_id=other_workspace_id) as other_uow:
+        hidden = await LearningEvaluationReportRepository(other_uow.session).get_by_idempotency_key(
+            workspace_id=other_workspace_id,
+            idempotency_key=UUID(STATE["idempotency_key"]),
+        )
+    await engine.dispose()
+    return {
+        "admin_can_read": record is not None and can_select,
+        "admin_select_only": can_select and not can_insert and not can_update and not can_delete,
+        "admin_update_denied": update_denied,
+        "admin_delete_denied": delete_denied,
+        "admin_cross_workspace_hidden": hidden is None,
+    }
+
+
+async def _verify_legacy_payload_denied() -> dict[str, object]:
+    engine = _engine()
+    sessions = create_session_factory(engine)
+    workspace_id = UUID(STATE["workspace_id"])
+    denied: dict[str, bool] = {}
+    for table, column in (
+        ("dataset_manifest", "manifest"),
+        ("dataset_manifest", "canonical_manifest"),
+        ("backtest_trade_outcome", "outcome"),
+    ):
+        async with engine.connect() as connection:
+            try:
+                await connection.execute(text(f"SELECT {column} FROM public.{table} LIMIT 1"))
+            except SQLAlchemyError as error:
+                denied[f"{table}.{column}"] = "permission denied" in str(error).lower()
+            else:
+                denied[f"{table}.{column}"] = False
+
+    async with engine.connect() as connection:
+        metadata_read = await connection.scalar(
+            text(
+                "SELECT has_column_privilege(current_user, 'public.dataset_manifest', "
+                "'manifest_hash', 'SELECT')"
+            )
+        )
+        app_payload_read = await connection.scalar(
+            text(
+                "SELECT has_column_privilege('crypidian_app', 'public.dataset_manifest', "
+                "'manifest', 'SELECT') OR has_column_privilege('crypidian_app', "
+                "'public.backtest_trade_outcome', 'outcome', 'SELECT')"
+            )
+        )
+
+    legacy_verifier_denied = False
+    try:
+        async with UnitOfWork(
+            sessions,
+            workspace_id=workspace_id,
+        ) as uow:
+            await BacktestOutcomeRepository(uow.session).load_trade_outcome_rows_by_id(
+                workspace_id=workspace_id,
+                trial_record_id=uuid4(),
+                outcome_record_ids={uuid4()},
+            )
+    except SQLAlchemyError as error:
+        legacy_verifier_denied = "permission denied" in str(error).lower()
+    await engine.dispose()
+    return {
+        "direct_payload_select_denied": all(denied.values()),
+        "metadata_column_allowed": bool(metadata_read),
+        "app_payload_select_denied": not bool(app_payload_read),
+        "legacy_verifier_denied": legacy_verifier_denied,
     }
 
 
 async def main() -> None:
     phase = sys.argv[1]
-    result = await (_seed() if phase == "seed" else _verify())
+    if phase == "seed":
+        result = await _seed()
+    elif phase == "verify-admin":
+        result = await _verify_admin()
+    elif phase == "verify-payload-denied":
+        result = await _verify_legacy_payload_denied()
+    else:
+        result = await _verify()
     print(json.dumps(result, sort_keys=True))
 
 

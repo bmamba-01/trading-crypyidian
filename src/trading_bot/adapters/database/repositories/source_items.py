@@ -26,8 +26,12 @@ from trading_bot.domain.research.source_items import (
     _require_canonical_https_url,
 )
 from trading_bot.domain.research.source_policy import SourceUsePurpose
+from trading_bot.domain.research.source_registry import SourcePolicyRevision, source_rights_hash
 from trading_bot.domain.research.source_revision_access import (
+    SourceAccessDecision,
+    SourceAccessEnvelope,
     SourceAccessMode,
+    SourceAccessReason,
     evaluate_source_revision_access,
 )
 
@@ -167,14 +171,78 @@ class SourceItemRepository:
         purpose: SourceUsePurpose,
         as_of: datetime | None = None,
     ) -> SourceItemRevisionEntry | None:
-        """Chọn revision khả dụng với quyền/retention/tombstone/takedown hiện hành."""
+        """Chọn revision khả dụng; giữ hợp đồng tương thích cho consumer cũ."""
+        envelope = await self.select_access_envelope(
+            workspace_id=workspace_id,
+            source_id=source_id,
+            item_id=item_id,
+            purpose=purpose,
+            as_of=as_of,
+        )
+        return envelope.revision
+
+    async def select_access_envelope(
+        self,
+        *,
+        workspace_id: UUID,
+        source_id: str,
+        item_id: str,
+        purpose: SourceUsePurpose,
+        as_of: datetime | None = None,
+    ) -> SourceAccessEnvelope:
+        """Trả quyết định quyền cùng lineage policy, receipt và thời điểm DB."""
+        if type(purpose) is not SourceUsePurpose:
+            raise ValueError("purpose phải là SourceUsePurpose tường minh.")
         await self._bind(workspace_id, source_id, item_id)
         await self._lock(workspace_id, source_id)
         now = await self._now()
         instant = _utc(as_of, "as_of") if as_of is not None else now
         if instant > now:
             raise ValueError("as_of không được sau database clock.")
+        mode = SourceAccessMode.CURRENT if instant == now else SourceAccessMode.HISTORICAL_REPLAY
+
+        def denied(
+            reason: SourceAccessReason,
+            *,
+            policy_id: str | None = None,
+            revision_known_at_upper_bound: datetime | None = None,
+            historical_policy: SourcePolicyRevision | None = None,
+            current_policy: SourcePolicyRevision | None = None,
+            rights_hash: str | None = None,
+            retention_expires_at: datetime | None = None,
+            takedown_at: datetime | None = None,
+        ) -> SourceAccessEnvelope:
+            return SourceAccessEnvelope(
+                decision=SourceAccessDecision(
+                    permitted=False,
+                    mode=mode,
+                    reason=reason,
+                    policy_id=policy_id,
+                    as_of=instant,
+                ),
+                source_id=source_id,
+                item_id=item_id,
+                revision=None,
+                purpose=purpose,
+                as_of=instant,
+                evaluated_at=now,
+                revision_known_at_upper_bound=revision_known_at_upper_bound,
+                historical_policy_id=(
+                    historical_policy.policy.policy_id if historical_policy else None
+                ),
+                historical_policy_sequence=(
+                    historical_policy.sequence if historical_policy else None
+                ),
+                current_policy_id=current_policy.policy.policy_id if current_policy else None,
+                current_policy_sequence=current_policy.sequence if current_policy else None,
+                rights_hash=rights_hash,
+                retention_expires_at=retention_expires_at,
+                takedown_at=takedown_at,
+            )
+
         stored = await self._rows(workspace_id, source_id, item_id)
+        if not stored:
+            return denied(SourceAccessReason.REVISION_NOT_FOUND)
         history = _history(source_id, item_id, stored)
         takedown = await self._takedown(workspace_id, source_id, item_id)
         result = await self._session.scalars(
@@ -192,20 +260,36 @@ class SourceItemRepository:
         for number, row in enumerate(stored, 1):
             receipt = receipts.get(number)
             if receipt is None or receipt.revision_id != row.revision_id:
-                return None
+                return denied(
+                    SourceAccessReason.OBSERVATION_RECEIPT_MISSING,
+                    takedown_at=takedown.taken_down_at if takedown else None,
+                )
             known = _utc(receipt.known_at, "known_at")
             if (
                 known < row.recorded_at
                 or known < row.created_at
                 or (previous is not None and known < previous)
             ):
-                return None
+                return denied(
+                    SourceAccessReason.OBSERVATION_RECEIPT_MISSING,
+                    takedown_at=takedown.taken_down_at if takedown else None,
+                )
             previous = known
             known_at[row.revision_id] = known
         policies = await SourceRegistryRepository(self._session).get_observed_entry(
             workspace_id=workspace_id,
             source_id=source_id,
         )
+        deadlines = [
+            row.retention_expires_at for row in stored if row.retention_expires_at is not None
+        ]
+        retention_deadline = min(deadlines) if deadlines else None
+        if policies is None:
+            return denied(
+                SourceAccessReason.POLICY_NOT_OBSERVED,
+                retention_expires_at=retention_deadline,
+                takedown_at=takedown.taken_down_at if takedown else None,
+            )
         # Timestamp audit không chứng minh commit. Receipt từ transaction khác
         # đóng dấu quan sát bảo thủ; hash chain đầy đủ được kiểm trước khi lọc.
         known_entries = [
@@ -215,8 +299,14 @@ class SourceItemRepository:
             and entry.revision.available_at is not None
             and entry.revision.available_at <= instant
         ]
-        if not known_entries or policies is None:
-            return None
+        current_policy = policies.history.current
+        if not known_entries:
+            return denied(
+                SourceAccessReason.NOT_AVAILABLE_AS_OF,
+                current_policy=current_policy,
+                retention_expires_at=retention_deadline,
+                takedown_at=takedown.taken_down_at if takedown else None,
+            )
         selected_entry = known_entries[-1]
         selected = selected_entry.revision
         # Thu hồi hiện hành không bị lọc theo cutoff; tombstone đến muộn vẫn
@@ -226,22 +316,45 @@ class SourceItemRepository:
             for row in stored
         )
         # Retention hiện hành không được bị né bằng cách replay revision cũ.
-        deadlines = [
-            row.retention_expires_at for row in stored if row.retention_expires_at is not None
-        ]
         decision = evaluate_source_revision_access(
             revision=selected,
             policy_history=policies.history,
             policy_known_at=policies.known_at,
             purpose=purpose,
-            mode=SourceAccessMode.CURRENT if instant == now else SourceAccessMode.HISTORICAL_REPLAY,
+            mode=mode,
             as_of=instant,
             evaluated_at=now,
             current_tombstoned=current_tombstoned,
-            retention_expires_at=min(deadlines) if deadlines else None,
+            retention_expires_at=retention_deadline,
             takedown_at=takedown.taken_down_at if takedown else None,
         )
-        return selected_entry if decision.permitted else None
+        policy_at = now if mode is SourceAccessMode.CURRENT else instant
+        historical_policies = [
+            entry
+            for entry in policies.history.revisions
+            if policies.known_at[entry.policy.policy_id] < policy_at
+        ]
+        historical_policy = historical_policies[-1] if historical_policies else None
+        rights_hash = source_rights_hash(historical_policy) if historical_policy else None
+        return SourceAccessEnvelope(
+            decision=decision,
+            source_id=source_id,
+            item_id=item_id,
+            revision=selected_entry if decision.permitted else None,
+            purpose=purpose,
+            as_of=instant,
+            evaluated_at=now,
+            revision_known_at_upper_bound=known_at[selected.revision_id],
+            historical_policy_id=(
+                historical_policy.policy.policy_id if historical_policy else None
+            ),
+            historical_policy_sequence=(historical_policy.sequence if historical_policy else None),
+            current_policy_id=current_policy.policy.policy_id,
+            current_policy_sequence=current_policy.sequence,
+            rights_hash=rights_hash,
+            retention_expires_at=retention_deadline,
+            takedown_at=takedown.taken_down_at if takedown else None,
+        )
 
     async def finalize_revision(
         self,

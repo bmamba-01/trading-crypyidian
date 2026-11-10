@@ -37,7 +37,7 @@ from trading_bot.domain.market.ingestion import (
     MarketStream,
     assess_ingestion_range,
 )
-from trading_bot.domain.market.models import OHLCVBar
+from trading_bot.domain.market.models import MarketBarSourceIdentity, OHLCVBar
 
 
 class MarketRepositoryConflict(RuntimeError):
@@ -198,6 +198,7 @@ class MarketDataRepository:
             low=bar.low,
             close=bar.close,
             volume=bar.volume,
+            quote_volume=bar.quote_volume,
             is_closed=bar.is_closed,
         )
         duplicate = await self._insert_or_get_duplicate(
@@ -224,8 +225,11 @@ class MarketDataRepository:
         end: datetime,
         as_of: datetime,
         closed_only: bool = False,
+        source: str | None = None,
     ) -> list[OHLCVBar]:
         _validate_range(start, end, as_of)
+        if source is not None and not source.strip():
+            raise ValueError("source không được để trống khi được chỉ định.")
         query = select(MarketBar).where(
             MarketBar.workspace_id == workspace_id,
             MarketBar.symbol == symbol,
@@ -234,6 +238,8 @@ class MarketDataRepository:
             MarketBar.open_time < end,
             MarketBar.available_at <= as_of,
         )
+        if source is not None:
+            query = query.where(MarketBar.source == source)
         if closed_only:
             query = query.where(MarketBar.is_closed.is_(True))
         records = await self._session.scalars(
@@ -727,10 +733,20 @@ def _to_domain_bar(row: MarketBar) -> OHLCVBar:
         low=row.low,
         close=row.close,
         volume=row.volume,
+        quote_volume=row.quote_volume,
         is_closed=row.is_closed,
         source=row.source,
         source_cursor=row.source_cursor,
         checksum=row.checksum,
+        raw_reference=None if row.raw_reference_id is None else str(row.raw_reference_id),
+        source_identity=MarketBarSourceIdentity(
+            workspace_id=row.workspace_id,
+            record_id=row.id,
+            logical_key=row.logical_key,
+            revision=row.revision,
+            supersedes_record_id=row.supersedes_id,
+            checksum=row.checksum,
+        ),
     )
 
 

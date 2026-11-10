@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
@@ -10,12 +11,14 @@ from trading_bot.domain.learning.dataset import (
     DatasetExclusion,
     DatasetManifest,
     DatasetSample,
+    DatasetSourceReference,
     DatasetSplit,
 )
 from trading_bot.domain.learning.labels import (
     OutcomeLabelInput,
     build_outcome_label,
 )
+from trading_bot.domain.research.source_policy import SourceUsePurpose
 
 NOW = datetime(2026, 11, 1, 12, tzinfo=UTC)
 WORKSPACE_ID = uuid4()
@@ -69,6 +72,7 @@ def sample(sample_id: str = "sample-1", split: DatasetSplit = DatasetSplit.TRAIN
 def manifest(
     samples: tuple[DatasetSample, ...] | None = None,
     exclusions: tuple[DatasetExclusion, ...] = (),
+    manifest_version: str = "dataset-manifest-v1",
 ) -> DatasetManifest:
     return DatasetManifest(
         workspace_id=WORKSPACE_ID,
@@ -90,6 +94,21 @@ def manifest(
             for item in ((sample(),) if samples is None else samples)
         )
         else None,
+        manifest_version=manifest_version,
+    )
+
+
+def source_reference(
+    *, revision_id: str = "revision-1", rights_hash: str = "c" * 64
+) -> DatasetSourceReference:
+    return DatasetSourceReference(
+        source_id="source-a",
+        item_id="item-1",
+        revision_id=revision_id,
+        policy_id="policy-a-v2",
+        policy_sequence=2,
+        purpose=SourceUsePurpose.TRAINING,
+        rights_hash=rights_hash,
     )
 
 
@@ -155,6 +174,65 @@ def test_manifest_hash_is_canonical_and_independent_of_sample_input_order() -> N
 
     assert first.content_hash == second.content_hash
     assert first.canonical_json == second.canonical_json
+
+
+def test_manifest_v3_keeps_typed_source_rights_paired_and_round_trips() -> None:
+    research_sample = replace(
+        sample(),
+        source_rights_hashes=(),
+        source_revision_refs=(),
+        source_references=(source_reference(),),
+    )
+    original = manifest(
+        samples=(research_sample,),
+        manifest_version="dataset-manifest-v3",
+    )
+
+    sample_payload = json.loads(original.canonical_json)["samples"][0]
+    assert sample_payload["source_references"] == [
+        {
+            "source_id": "source-a",
+            "item_id": "item-1",
+            "revision_id": "revision-1",
+            "policy_id": "policy-a-v2",
+            "policy_sequence": 2,
+            "purpose": "training",
+            "rights_hash": "c" * 64,
+        }
+    ]
+    assert "source_revision_refs" not in sample_payload
+    assert "source_rights_hashes" not in sample_payload
+    restored = DatasetManifest.from_canonical_json(
+        original.canonical_json,
+        expected_content_hash=original.content_hash,
+    )
+    assert restored == original
+    assert restored.samples[0].source_references == (source_reference(),)
+
+
+def test_manifest_v3_rejects_unpaired_or_conflicting_research_lineage() -> None:
+    with pytest.raises(ValueError, match="typed source reference"):
+        manifest(
+            samples=(sample(),),
+            manifest_version="dataset-manifest-v3",
+        )
+
+    with pytest.raises(ValueError, match="conflicting rights"):
+        replace(
+            sample(),
+            source_rights_hashes=(),
+            source_revision_refs=(),
+            source_references=(source_reference(), source_reference(rights_hash="d" * 64)),
+        )
+
+
+def test_legacy_manifest_canonical_source_fields_remain_unchanged() -> None:
+    legacy = manifest(samples=(sample(),))
+    sample_payload = json.loads(legacy.canonical_json)["samples"][0]
+
+    assert sample_payload["source_rights_hashes"] == ["c" * 64]
+    assert sample_payload["source_revision_refs"] == ["source-a:revision-1"]
+    assert "source_references" not in sample_payload
 
 
 def test_manifest_rejects_duplicate_or_out_of_range_samples() -> None:

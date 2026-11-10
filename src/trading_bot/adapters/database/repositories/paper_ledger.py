@@ -583,6 +583,7 @@ class PaperLedgerRepository:
         fee_amount: Decimal,
         slippage_amount: Decimal,
         occurred_at: datetime,
+        exit_reason: str | None = None,
     ) -> bool:
         """Ghi exit fill vào trade đang mở mà không sửa khối lượng entry của intent."""
         intent = await self._owned_intent(uow, intent_id)
@@ -592,6 +593,11 @@ class PaperLedgerRepository:
             raise PaperLedgerConflict("Exit fill chứa giá trị Decimal không hữu hạn.")
         if quantity <= 0 or price <= 0 or fee_amount < 0 or slippage_amount < 0:
             raise PaperLedgerConflict("Giá/khối lượng phải dương; fee và slippage không âm.")
+        if exit_reason is not None:
+            import re
+
+            if not re.fullmatch(r"[A-Z][A-Z0-9_]{0,79}", exit_reason):
+                raise PaperLedgerConflict("exit_reason phải là mã lý do chữ hoa dạng SNAKE_CASE.")
         _validate_aware(occurred_at)
         previous = await uow.session.scalar(
             select(FillRecord).where(
@@ -628,6 +634,27 @@ class PaperLedgerRepository:
             )
             if actual != expected:
                 raise PaperLedgerConflict("Fill key đã được dùng với payload khác.")
+            previous_event = await uow.session.scalar(
+                select(PositionEventRecord).where(
+                    PositionEventRecord.bot_id == uow.session.info.get("bot_id"),
+                    PositionEventRecord.workspace_id == uow.workspace_id,
+                    PositionEventRecord.account_id == intent.account_id,
+                    PositionEventRecord.event_key == f"exit-fill:{fill_key}",
+                )
+            )
+            expected_event_payload = {
+                "fill_key": fill_key,
+                "closed_quantity": str(quantity),
+                "bar_key": bar_key,
+                **({"exit_reason": exit_reason} if exit_reason is not None else {}),
+            }
+            if (
+                previous_event is None
+                or previous_event.intent_id != intent.id
+                or previous_event.occurred_at != occurred_at
+                or previous_event.payload != expected_event_payload
+            ):
+                raise PaperLedgerConflict("Position event key đã được dùng với payload khác.")
             return False
 
         trade = await uow.session.scalar(
@@ -705,7 +732,12 @@ class PaperLedgerRepository:
             event_type="CLOSED" if new_remaining == 0 else "REDUCED",
             quantity=new_remaining,
             occurred_at=occurred_at,
-            payload={"fill_key": fill_key, "closed_quantity": str(quantity)},
+            payload={
+                "fill_key": fill_key,
+                "closed_quantity": str(quantity),
+                "bar_key": bar_key,
+                **({"exit_reason": exit_reason} if exit_reason is not None else {}),
+            },
         )
         uow.enqueue(
             _paper_event(

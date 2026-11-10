@@ -1,8 +1,10 @@
 """Hợp đồng bất biến cho dữ liệu thị trường đã chuẩn hóa."""
 
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
+from uuid import UUID
 
 
 def _require_aware(value: datetime, name: str) -> None:
@@ -15,6 +17,9 @@ def _require_decimal(value: Decimal, name: str, *, positive: bool = False) -> No
         raise ValueError(f"{name} phải là Decimal hữu hạn.")
     if positive and value <= 0:
         raise ValueError(f"{name} phải lớn hơn 0.")
+
+
+_SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,6 +46,32 @@ class Instrument:
 
 
 @dataclass(frozen=True, slots=True)
+class MarketBarSourceIdentity:
+    """Định danh bất biến của đúng một bản ghi bar trong workspace."""
+
+    workspace_id: UUID
+    record_id: UUID
+    logical_key: str
+    revision: int
+    supersedes_record_id: UUID | None
+    checksum: str
+
+    def __post_init__(self) -> None:
+        if type(self.workspace_id) is not UUID or type(self.record_id) is not UUID:
+            raise ValueError("Identity bar cần workspace UUID và record UUID.")
+        if not isinstance(self.logical_key, str) or not self.logical_key.strip():
+            raise ValueError("logical_key identity bar không được để trống.")
+        if type(self.revision) is not int or self.revision < 1:
+            raise ValueError("revision identity bar phải là số nguyên dương.")
+        if self.revision == 1 and self.supersedes_record_id is not None:
+            raise ValueError("Revision đầu không được có supersedes_record_id.")
+        if self.revision > 1 and type(self.supersedes_record_id) is not UUID:
+            raise ValueError("Revision sửa đổi phải có supersedes_record_id UUID.")
+        if not isinstance(self.checksum, str) or _SHA256.fullmatch(self.checksum) is None:
+            raise ValueError("checksum identity bar phải là SHA-256 hex chữ thường.")
+
+
+@dataclass(frozen=True, slots=True)
 class OHLCVBar:
     """Một nến OHLCV kèm các mốc thời gian cần cho truy vấn point-in-time."""
 
@@ -57,10 +88,12 @@ class OHLCVBar:
     close: Decimal
     volume: Decimal
     is_closed: bool
+    quote_volume: Decimal | None = None
     source: str = ""
     source_cursor: str | None = None
     checksum: str | None = None
     raw_reference: str | None = None
+    source_identity: MarketBarSourceIdentity | None = None
 
     def __post_init__(self) -> None:
         for name in ("symbol", "timeframe"):
@@ -79,10 +112,19 @@ class OHLCVBar:
         _require_decimal(self.volume, "volume")
         if self.volume < 0:
             raise ValueError("volume không được âm.")
+        if self.quote_volume is not None:
+            _require_decimal(self.quote_volume, "quote_volume")
+            if self.quote_volume < 0:
+                raise ValueError("quote_volume không được âm.")
         if self.high < max(self.open, self.close) or self.low > min(self.open, self.close):
             raise ValueError("Giá OHLC không thỏa quan hệ high/low.")
         if self.high < self.low:
             raise ValueError("high phải lớn hơn hoặc bằng low.")
+        if self.source_identity is not None:
+            if type(self.source_identity) is not MarketBarSourceIdentity:
+                raise ValueError("source_identity phải là MarketBarSourceIdentity.")
+            if self.checksum != self.source_identity.checksum:
+                raise ValueError("checksum của bar không khớp source identity.")
 
     @property
     def identity(self) -> tuple[str, str, datetime]:

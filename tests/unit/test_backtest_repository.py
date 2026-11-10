@@ -69,6 +69,7 @@ async def test_append_result_persists_run_trial_and_report_with_workspace_scope(
     )
 
     assert persisted.duplicate is False
+    assert persisted.run_duplicate is False
     assert len(session.added) == 3
     run, trial, report = session.added
     assert run.workspace_id == WORKSPACE_ID
@@ -96,6 +97,7 @@ async def test_append_result_is_idempotent_for_same_manifest_trial_and_report() 
     )
 
     assert persisted.duplicate is True
+    assert persisted.run_duplicate is True
     assert persisted.run_id == first_result.run_id
     assert persisted.trial_record_id == first_result.trial_record_id
     assert persisted.report_id == first_result.report_id
@@ -119,6 +121,32 @@ async def test_append_result_scopes_every_lookup_to_explicit_workspace() -> None
     assert len(session.statements) == 3
     assert all("workspace_id =" in sql for sql in session.statements)
     assert all(row.workspace_id == other_workspace for row in session.added)
+
+
+@pytest.mark.asyncio
+async def test_new_report_keeps_existing_run_status_separate_from_aggregate_duplicate() -> None:
+    from dataclasses import replace
+
+    manifest = make_manifest()
+    result = BacktestRunner().run((), manifest=manifest, evaluator=lambda _: None)
+    first_session = FakeSession([None, None, None])
+    first = await BacktestRepository(first_session).append_result(
+        workspace_id=WORKSPACE_ID, manifest=manifest, result=result
+    )
+    run, trial, _ = first_session.added
+    session = FakeSession([run, trial, None])
+    appended = await BacktestRepository(session).append_result(
+        workspace_id=WORKSPACE_ID,
+        manifest=manifest,
+        result=replace(result, report_hash="0" * 64, caveat_vi="Báo cáo bổ sung."),
+    )
+
+    assert appended.run_id == first.run_id
+    assert appended.trial_record_id == first.trial_record_id
+    assert appended.report_id != first.report_id
+    assert appended.run_duplicate is True
+    assert appended.duplicate is False
+    assert len(session.added) == 1
 
 
 def test_backtest_records_are_append_only_workspace_rls_ready() -> None:

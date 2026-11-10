@@ -19,7 +19,12 @@ from enum import StrEnum
 from typing import Any, Protocol
 from uuid import UUID, uuid5
 
+from trading_bot.application.learning_feature_vector import (
+    LearningFeatureVectorBuildError,
+    build_learning_feature_vector,
+)
 from trading_bot.application.paper_decision_cycle import strategy_selection_for_release
+from trading_bot.domain.learning.feature_vector import LearningFeatureVector
 from trading_bot.domain.market.signal_evidence import SharedSignalEvidence
 from trading_bot.domain.strategy.contracts import (
     DecisionSnapshot,
@@ -479,7 +484,43 @@ class RecordedEvidence:
     created: bool
 
 
-type DecisionEvaluator = Callable[[SharedSignalEvidence, BotDecisionJob], Awaitable[BotDecision]]
+@dataclass(frozen=True, slots=True)
+class BotDecisionEvaluation:
+    """Quyết định strategy và ngữ cảnh runtime từ cùng một snapshot bất biến."""
+
+    decision: BotDecision
+    snapshot: DecisionSnapshot | None
+    candidate_id: str | None
+    vector: LearningFeatureVector | None
+    vector_error_code: str | None = None
+
+    def __post_init__(self) -> None:
+        if (self.decision.status is BotDecisionStatus.CANDIDATE) != (self.candidate_id is not None):
+            raise ValueError("Candidate runtime phải khớp BotDecision strategy.")
+        if self.candidate_id != self.decision.candidate_id:
+            raise ValueError("candidate_id runtime phải khớp BotDecision đã canonical hóa.")
+        if self.vector is not None and (self.snapshot is None or self.candidate_id is None):
+            raise ValueError("Vector runtime chỉ được gắn với candidate và snapshot.")
+        if self.vector is not None:
+            if self.snapshot is None:
+                raise ValueError("Vector runtime cần DecisionSnapshot strategy.")
+            if (
+                self.vector.snapshot_id != self.snapshot.snapshot_id
+                or self.decision.decision_snapshot_id != self.snapshot.snapshot_id
+                or self.vector.workspace_id != self.decision.workspace_id
+                or self.vector.strategy_release_id != self.decision.strategy_release_id
+                or self.vector.strategy_release_content_hash != self.decision.strategy_release_hash
+                or self.vector.decision_time != self.snapshot.decision_time
+            ):
+                raise ValueError("Vector phải được dựng từ chính DecisionSnapshot strategy.")
+        if self.vector_error_code is not None and self.vector is not None:
+            raise ValueError("Evaluation không thể có cả vector lỗi và vector hợp lệ.")
+
+
+type DecisionEvaluator = Callable[
+    [SharedSignalEvidence, BotDecisionJob],
+    Awaitable[BotDecision | BotDecisionEvaluation],
+]
 
 
 class SignalDecisionStore(Protocol):
@@ -624,8 +665,10 @@ class BotEvidenceDispatcher:
         jobs = await self.fan_out(recorded.evidence, bots, as_of)
         return tuple([await self.process_job(job) for job in jobs])
 
-    async def _evaluate(self, evidence: SharedSignalEvidence, job: BotDecisionJob) -> BotDecision:
-        return await evaluate_bot_decision(
+    async def _evaluate(
+        self, evidence: SharedSignalEvidence, job: BotDecisionJob
+    ) -> BotDecisionEvaluation:
+        return await evaluate_bot_decision_with_runtime_context(
             evidence=evidence, job=job, strategies=self._strategies, snapshots=self._snapshots
         )
 
@@ -799,6 +842,54 @@ async def evaluate_bot_decision(
         result.reason_code,
         result.detail_vi,
         candidate=result,
+    )
+
+
+async def evaluate_bot_decision_with_runtime_context(
+    *,
+    evidence: SharedSignalEvidence,
+    job: BotDecisionJob,
+    strategies: StrategyRegistry,
+    snapshots: DecisionSnapshotProvider,
+) -> BotDecisionEvaluation:
+    """Giữ nguyên snapshot strategy và dựng vector từ đúng cùng object đó."""
+    captured: list[DecisionSnapshot] = []
+
+    class CapturingSnapshotProvider:
+        async def snapshot_for(self, **kwargs: Any) -> DecisionSnapshot:
+            snapshot = await snapshots.snapshot_for(**kwargs)
+            captured.append(snapshot)
+            if len(captured) > 1:
+                raise EvidenceScopeError("Một job chỉ được nhận một DecisionSnapshot.")
+            return snapshot
+
+    decision = await evaluate_bot_decision(
+        evidence=evidence,
+        job=job,
+        strategies=strategies,
+        snapshots=CapturingSnapshotProvider(),
+    )
+    snapshot = captured[0] if captured else None
+    vector: LearningFeatureVector | None = None
+    vector_error_code: str | None = None
+    if decision.status is BotDecisionStatus.CANDIDATE:
+        if snapshot is None or decision.strategy_release_hash is None:
+            raise BotDecisionConflict("Candidate thiếu snapshot hoặc hash release đã pin.")
+        try:
+            vector = build_learning_feature_vector(
+                snapshot,
+                strategy_release_id=decision.strategy_release_id,
+                strategy_release_content_hash=decision.strategy_release_hash,
+            )
+        except LearningFeatureVectorBuildError as error:
+            # Candidate strategy được giữ nguyên; khi scorer bật, resolver sẽ từ chối chấm.
+            vector_error_code = error.reason_code.value
+    return BotDecisionEvaluation(
+        decision=decision,
+        snapshot=snapshot,
+        candidate_id=decision.candidate_id,
+        vector=vector,
+        vector_error_code=vector_error_code,
     )
 
 

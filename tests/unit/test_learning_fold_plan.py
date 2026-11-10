@@ -98,6 +98,30 @@ def test_manifest_plan_binds_authoritative_hashes_and_purges_overlapping_outcome
     assert len(plan.content_hash) == 64
 
 
+def test_legacy_research_lineage_cannot_enter_a_new_fold_plan() -> None:
+    original = manifest()
+    legacy = replace(
+        original,
+        samples=tuple(
+            replace(
+                item,
+                source_dependent=True,
+                source_rights_hashes=("9" * 64,),
+                source_revision_refs=(f"source-a:{item.sample_id}",),
+            )
+            for item in original.samples
+        ),
+    )
+
+    with pytest.raises(ValueError, match="lineage nguồn cũ"):
+        build_manifest_fold_plan(
+            legacy,
+            folds=(split(),),
+            expected_split_policy_version="policy-v1",
+            evaluation_cutoff=at(8),
+        )
+
+
 def test_manifest_plan_is_deterministic_across_candidate_order() -> None:
     original = manifest()
     reordered = DatasetManifest(

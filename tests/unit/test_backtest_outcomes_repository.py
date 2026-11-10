@@ -129,7 +129,7 @@ async def test_persists_sensitivity_values_and_canonical_trade_outcome(monkeypat
     async def append_result(self, *, workspace_id, manifest, result):
         assert workspace_id == WORKSPACE_ID
         assert manifest.content_hash == result.manifest_hash
-        return BacktestAppendResult(RUN_ID, TRIAL_RECORD_ID, REPORT_ID, False)
+        return BacktestAppendResult(RUN_ID, TRIAL_RECORD_ID, REPORT_ID, False, run_duplicate=False)
 
     monkeypatch.setattr(BacktestRepository, "append_result", append_result)
     session = FakeSession([SimpleNamespace(trial_id=_run().trial_id), None, None])
@@ -188,3 +188,446 @@ def test_outcome_models_are_append_only_workspace_scoped() -> None:
             constraint.name and constraint.name.startswith("uq_")
             for constraint in model.__table__.constraints
         )
+
+
+def _bundle_run(bundle):
+    from dataclasses import replace
+
+    run = _run()
+    manifest = replace(run.manifest, dataset_hash=bundle.dataset_hash)
+    trial = replace(
+        run.result.trial_record,
+        manifest_hash=manifest.content_hash,
+        trial_id=hashlib.sha256(f"trial:{manifest.content_hash}".encode()).hexdigest(),
+    )
+    return replace(
+        run,
+        manifest=manifest,
+        result=replace(run.result, manifest_hash=manifest.content_hash, trial_record=trial),
+    )
+
+
+class RightsSession(FakeSession):
+    def __init__(self, results, receipts=()):
+        super().__init__(results)
+        self.receipts = receipts
+        self.flushed = []
+
+    async def scalars(self, statement):
+        self.statements.append(str(statement.compile(dialect=postgresql.dialect())))
+        return SimpleNamespace(all=lambda: list(self.receipts))
+
+    async def flush(self):
+        self.flushed = list(self.added)
+
+
+@pytest.mark.asyncio
+async def test_existing_receiptless_run_with_new_report_never_acquires_current_rights():
+    from dataclasses import replace
+
+    from test_backtest_dataset_replay_bundle_persistence import _bundle
+
+    from trading_bot.adapters.database.models.backtest_entities import (
+        BacktestReportRecord,
+        BacktestRunRecord,
+    )
+    from trading_bot.adapters.database.models.backtest_outcome_entities import (
+        BacktestRunDatasetRightsRecord,
+    )
+
+    bundle = _bundle()
+    run = _bundle_run(bundle)
+    # Giữ repository thật để cờ duplicate phụ thuộc từng run/trial/report đã lưu.
+    first_session = RightsSession(
+        [None, None, None, SimpleNamespace(trial_id=run.trial_id), None, None]
+    )
+    first = await BacktestOutcomeRepository(first_session).append_sensitivity_run(
+        workspace_id=bundle.workspace_id,
+        sensitivity_run=run,
+        trade_outcomes=(_trade(),),
+    )
+    stored_run, stored_trial, first_report, scenario, outcome = first_session.added
+    changed_run = replace(
+        run,
+        result=replace(run.result, report_hash="0" * 64, caveat_vi="Báo cáo bổ sung."),
+    )
+    session = RightsSession([stored_run, stored_trial, None, stored_trial, scenario, outcome])
+    second = await BacktestOutcomeRepository(session).append_sensitivity_run(
+        workspace_id=bundle.workspace_id,
+        sensitivity_run=changed_run,
+        trade_outcomes=(_trade(),),
+        dataset_bundle=bundle,
+    )
+
+    assert first.run_id == second.run_id
+    assert first.trial_record_id == second.trial_record_id
+    assert first.report_id != second.report_id
+    assert not second.duplicate
+    all_rows = first_session.added + session.added
+    assert sum(isinstance(row, BacktestRunRecord) for row in all_rows) == 1
+    assert sum(isinstance(row, BacktestReportRecord) for row in all_rows) == 2
+    assert not any(isinstance(row, BacktestRunDatasetRightsRecord) for row in all_rows)
+    assert session.added[0].report_hash != first_report.report_hash
+
+
+def _outcome_append_stub(monkeypatch, *, duplicate=False):
+    from trading_bot.adapters.database.repositories.backtests import BacktestRepository
+
+    async def append_result(self, **kwargs):
+        return BacktestAppendResult(
+            RUN_ID, TRIAL_RECORD_ID, REPORT_ID, duplicate, run_duplicate=duplicate
+        )
+
+    monkeypatch.setattr(BacktestRepository, "append_result", append_result)
+
+
+@pytest.mark.asyncio
+async def test_bundle_outcome_appends_each_child_receipt_in_callers_session(monkeypatch):
+    from test_backtest_dataset_replay_bundle_persistence import _bundle
+
+    from trading_bot.adapters.database.models.backtest_outcome_entities import (
+        BacktestRunDatasetRightsRecord,
+    )
+
+    bundle = _bundle()
+    run = _bundle_run(bundle)
+    _outcome_append_stub(monkeypatch)
+    session = RightsSession([SimpleNamespace(trial_id=run.trial_id), None, None])
+    result = await BacktestOutcomeRepository(session).append_sensitivity_run(
+        workspace_id=bundle.workspace_id,
+        sensitivity_run=run,
+        trade_outcomes=(_trade(),),
+        dataset_bundle=bundle,
+    )
+    receipts = [row for row in session.added if isinstance(row, BacktestRunDatasetRightsRecord)]
+    assert not result.duplicate
+    assert len(receipts) == 2
+    assert {row.child_dataset_hash for row in receipts} == {
+        item.manifest.dataset_hash for item in bundle.components
+    }
+    for row in receipts:
+        assert row in session.flushed
+        assert row.workspace_id == bundle.workspace_id
+        assert row.run_id == RUN_ID
+        assert row.bundle_hash == bundle.dataset_hash
+        assert row.checked_at == bundle.components[0].current_rights.checked_at
+        assert row.evidence_hash == hashlib.sha256(row.canonical_evidence.encode()).hexdigest()
+    assert all("workspace_id =" in statement for statement in session.statements)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid", ["type", "workspace", "hash", "unchecked", "policy"])
+async def test_bundle_outcome_rejects_invalid_evidence_before_any_write(monkeypatch, invalid):
+    from dataclasses import replace
+    from uuid import uuid4
+
+    from test_backtest_dataset_replay_bundle_persistence import _bundle
+
+    from trading_bot.adapters.database.repositories.backtests import BacktestRepositoryConflict
+
+    bundle = _bundle()
+    run = _bundle_run(bundle)
+    workspace_id = bundle.workspace_id
+    if invalid == "workspace":
+        workspace_id = uuid4()
+    elif invalid == "hash":
+        run = _run()
+    elif invalid == "type":
+        bundle = SimpleNamespace(**{field: getattr(bundle, field) for field in bundle.__slots__})
+    else:
+        rights = bundle.components[-1].current_rights
+        changed = replace(
+            rights,
+            **(
+                {"checked_at": None} if invalid == "unchecked" else {"policy_fingerprint": "0" * 64}
+            ),
+        )
+        # Mô phỏng snapshot bị sửa sau khi bundle đã được xác thực.
+        object.__setattr__(bundle.components[-1], "current_rights", changed)
+    session = RightsSession([])
+    with pytest.raises(
+        (ValueError, BacktestRepositoryConflict), match="bundle|workspace|khớp|checked_at|quyền"
+    ):
+        await BacktestOutcomeRepository(session).append_sensitivity_run(
+            workspace_id=workspace_id,
+            sensitivity_run=run,
+            trade_outcomes=(_trade(),),
+            dataset_bundle=bundle,
+        )
+    assert not session.added
+    assert not session.statements
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "state",
+    [
+        "same",
+        "lease",
+        "legacy",
+        "partial",
+        "extra",
+        "verified",
+        "canonical",
+        "json",
+        "hash",
+        "scope",
+    ],
+)
+async def test_duplicate_bundle_outcome_preserves_first_complete_receipts(monkeypatch, state):
+    from dataclasses import replace
+
+    from test_backtest_dataset_replay_bundle_persistence import _bundle
+
+    from trading_bot.adapters.database.models.backtest_outcome_entities import (
+        BacktestRunDatasetRightsRecord,
+    )
+    from trading_bot.adapters.database.repositories.backtests import BacktestRepositoryConflict
+
+    bundle = _bundle()
+    run = _bundle_run(bundle)
+    _outcome_append_stub(monkeypatch)
+    first_session = RightsSession([SimpleNamespace(trial_id=run.trial_id), None, None])
+    await BacktestOutcomeRepository(first_session).append_sensitivity_run(
+        workspace_id=bundle.workspace_id,
+        sensitivity_run=run,
+        trade_outcomes=(_trade(),),
+        dataset_bundle=bundle,
+    )
+    scenario, outcome = first_session.added[:2]
+    receipts = [
+        row for row in first_session.added if isinstance(row, BacktestRunDatasetRightsRecord)
+    ]
+    original = [(row.canonical_evidence, row.evidence_hash) for row in receipts]
+    if state == "legacy":
+        receipts = []
+    elif state == "partial":
+        receipts = receipts[:1]
+    elif state == "extra":
+        receipts = [*receipts, receipts[0]]
+    elif state == "lease":
+        bundle = replace(
+            bundle,
+            components=tuple(
+                replace(
+                    item,
+                    current_rights=replace(
+                        item.current_rights,
+                        checked_at=item.current_rights.checked_at + timedelta(seconds=1),
+                    ),
+                )
+                for item in bundle.components
+            ),
+        )
+    elif state == "verified":
+        bundle = replace(
+            bundle,
+            components=tuple(
+                replace(
+                    item,
+                    current_rights=replace(
+                        item.current_rights,
+                        verified_at=item.current_rights.verified_at + timedelta(seconds=1),
+                    ),
+                )
+                for item in bundle.components
+            ),
+        )
+    elif state == "canonical":
+        receipts[0].canonical_evidence = "{}"
+    elif state == "json":
+        receipts[0].evidence_json = {**receipts[0].evidence_json, "schema_version": True}
+    elif state == "hash":
+        receipts[0].evidence_hash = "0" * 64
+    elif state == "scope":
+        receipts[0].terms_url = "https://example.invalid/changed"
+    _outcome_append_stub(monkeypatch, duplicate=True)
+    session = RightsSession([SimpleNamespace(trial_id=run.trial_id), scenario, outcome], receipts)
+    if state in ("same", "lease", "legacy"):
+        result = await BacktestOutcomeRepository(session).append_sensitivity_run(
+            workspace_id=bundle.workspace_id,
+            sensitivity_run=run,
+            trade_outcomes=(_trade(),),
+            dataset_bundle=bundle,
+        )
+        assert result.duplicate
+        if state in ("same", "lease"):
+            assert [(row.canonical_evidence, row.evidence_hash) for row in receipts] == original
+    else:
+        with pytest.raises(BacktestRepositoryConflict, match="quyền|biên nhận"):
+            await BacktestOutcomeRepository(session).append_sensitivity_run(
+                workspace_id=bundle.workspace_id,
+                sensitivity_run=run,
+                trade_outcomes=(_trade(),),
+                dataset_bundle=bundle,
+            )
+    assert not session.added
+    assert "backtest_run_dataset_rights.workspace_id" in session.statements[-1]
+    assert "backtest_run_dataset_rights.run_id" in session.statements[-1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provenance", [False, True])
+async def test_outcome_round_trip_preserves_legacy_or_complete_entry(monkeypatch, provenance):
+    import json
+    from dataclasses import replace
+
+    from test_evaluation_trade_entry_lineage import trade_with_entry
+
+    from trading_bot.adapters.database.repositories.backtest_outcomes import _trade_payload
+
+    trade = _trade()
+    if provenance:
+        entry = trade_with_entry()
+        trade = replace(
+            trade,
+            entry_decision_snapshot_id=entry.entry_decision_snapshot_id,
+            entry_decision_at=entry.entry_decision_at,
+            entry_feature_schema_hash=entry.entry_feature_schema_hash,
+            entry_features=entry.entry_features,
+            entry_features_hash=entry.entry_features_hash,
+            entry_symbol=entry.entry_symbol,
+        )
+    _outcome_append_stub(monkeypatch)
+    session = RightsSession([SimpleNamespace(trial_id=_run().trial_id), None, None])
+    appended = await BacktestOutcomeRepository(session).append_sensitivity_run(
+        workspace_id=WORKSPACE_ID,
+        sensitivity_run=_run(),
+        trade_outcomes=(trade,),
+    )
+    scenario, outcome = session.added
+    keys = {key for key in outcome.outcome if key.startswith("entry_")}
+    assert len(keys) == (6 if provenance else 0)
+    assert outcome.entry_decision_snapshot_id == trade.entry_decision_snapshot_id
+    assert outcome.entry_features == (
+        json.loads(json.dumps(trade.entry_features)) if provenance else None
+    )
+    assert outcome.entry_features_hash == trade.entry_features_hash
+    assert outcome.entry_symbol == trade.entry_symbol
+    loaded = await BacktestOutcomeRepository(RightsSession([], [outcome])).load_trade_outcomes(
+        workspace_id=WORKSPACE_ID,
+        trial_record_id=TRIAL_RECORD_ID,
+    )
+    assert loaded.trades == (trade,)
+    assert loaded.trades[0].has_entry_provenance is provenance
+    assert loaded.outcomes_hash == appended.outcomes_hash
+    by_id = await BacktestOutcomeRepository(
+        RightsSession([], [outcome])
+    ).load_trade_outcome_rows_by_id(
+        workspace_id=WORKSPACE_ID,
+        trial_record_id=TRIAL_RECORD_ID,
+        outcome_record_ids={outcome.id},
+    )
+    assert by_id.rows[0].trade == trade
+    _outcome_append_stub(monkeypatch, duplicate=True)
+    retry = await BacktestOutcomeRepository(
+        RightsSession(
+            [
+                SimpleNamespace(trial_id=_run().trial_id),
+                scenario,
+                outcome,
+            ]
+        )
+    ).append_sensitivity_run(
+        workspace_id=WORKSPACE_ID,
+        sensitivity_run=_run(),
+        trade_outcomes=(trade,),
+    )
+    assert retry.duplicate
+    assert retry.outcomes_hash == loaded.outcomes_hash
+    assert _trade_payload(trade) == outcome.outcome
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "malformed",
+    [
+        "columns_only",
+        "partial_payload",
+        "vector_shape",
+        "vector_bool",
+        "vector_hash",
+        "column_hash",
+        "column_vector",
+        "column_symbol",
+        "unknown_key",
+        "payload_array",
+    ],
+)
+@pytest.mark.parametrize("loader", ["all", "ids", "retry"])
+async def test_outcome_rejects_malformed_provenance_on_read_and_retry(
+    monkeypatch, malformed, loader
+):
+    import json
+    from dataclasses import replace
+
+    from test_evaluation_trade_entry_lineage import trade_with_entry
+
+    from trading_bot.adapters.database.repositories.backtests import BacktestRepositoryConflict
+
+    entry = trade_with_entry()
+    trade = replace(
+        _trade(),
+        entry_decision_snapshot_id=entry.entry_decision_snapshot_id,
+        entry_decision_at=entry.entry_decision_at,
+        entry_feature_schema_hash=entry.entry_feature_schema_hash,
+        entry_features=entry.entry_features,
+        entry_features_hash=entry.entry_features_hash,
+        entry_symbol=entry.entry_symbol,
+    )
+    _outcome_append_stub(monkeypatch)
+    first = RightsSession([SimpleNamespace(trial_id=_run().trial_id), None, None])
+    await BacktestOutcomeRepository(first).append_sensitivity_run(
+        workspace_id=WORKSPACE_ID,
+        sensitivity_run=_run(),
+        trade_outcomes=(trade,),
+    )
+    scenario, row = first.added
+    if malformed == "columns_only":
+        row.outcome = {
+            key: value for key, value in row.outcome.items() if not key.startswith("entry_")
+        }
+    elif malformed == "partial_payload":
+        row.outcome.pop("entry_decision_at")
+    elif malformed == "vector_shape":
+        row.outcome["entry_features"] = {"1h:atr": 1.0}
+    elif malformed == "vector_bool":
+        row.outcome["entry_features"][0][1] = True
+    elif malformed == "vector_hash":
+        row.outcome["entry_features_hash"] = "0" * 64
+    elif malformed == "column_hash":
+        row.entry_features_hash = "0" * 64
+    elif malformed == "column_symbol":
+        row.entry_symbol = "ETHUSDT"
+    elif malformed == "column_vector":
+        row.entry_features = [["1h:atr", 7.0]]
+    elif malformed == "unknown_key":
+        row.outcome["unknown"] = True
+    elif malformed == "payload_array":
+        row.outcome = []
+    row.canonical_json = json.dumps(
+        row.outcome, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    )
+    row.outcome_hash = hashlib.sha256(row.canonical_json.encode()).hexdigest()
+    _outcome_append_stub(monkeypatch, duplicate=True)
+    session = RightsSession([SimpleNamespace(trial_id=_run().trial_id), scenario, row], [row])
+    repository = BacktestOutcomeRepository(session)
+    if loader == "all":
+        action = repository.load_trade_outcomes(
+            workspace_id=WORKSPACE_ID,
+            trial_record_id=TRIAL_RECORD_ID,
+        )
+    elif loader == "ids":
+        action = repository.load_trade_outcome_rows_by_id(
+            workspace_id=WORKSPACE_ID,
+            trial_record_id=TRIAL_RECORD_ID,
+            outcome_record_ids={row.id},
+        )
+    else:
+        action = repository.append_sensitivity_run(
+            workspace_id=WORKSPACE_ID,
+            sensitivity_run=_run(),
+            trade_outcomes=(trade,),
+        )
+    with pytest.raises(BacktestRepositoryConflict):
+        await action

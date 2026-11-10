@@ -12,6 +12,12 @@ class Role(StrEnum):
     ANALYST_REVIEWER = "analyst_reviewer"
 
 
+class MfaMethod(StrEnum):
+    """Phương thức MFA đã được auth service xác minh và ghi trên phiên."""
+
+    TOTP = "TOTP"
+
+
 class Permission(StrEnum):
     WORKSPACE_READ = "workspace:read"
     SETTINGS_READ = "settings:read"
@@ -30,6 +36,11 @@ class Permission(StrEnum):
     RESEARCH_SOURCE_WRITE = "research_source:write"
     RESEARCH_SOURCE_APPROVE = "research_source:approve"
     RESEARCH_SOURCE_USE = "research_source:use"
+    LEARNING_SPLIT_APPROVE = "learning:split_approve"
+    LEARNING_TRAINING_MANAGE = "learning:training_manage"
+    LEARNING_MODEL_READ = "learning:model_read"
+    LEARNING_MODEL_WRITE = "learning:model_write"
+    LEARNING_MODEL_APPROVE = "learning:model_approve"
 
 
 ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
@@ -67,6 +78,11 @@ ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
             Permission.TRADE_READ,
             Permission.TRADE_REVIEW,
             Permission.RESEARCH_SOURCE_APPROVE,
+            Permission.LEARNING_SPLIT_APPROVE,
+            Permission.LEARNING_TRAINING_MANAGE,
+            Permission.LEARNING_MODEL_READ,
+            Permission.LEARNING_MODEL_WRITE,
+            Permission.LEARNING_MODEL_APPROVE,
         }
     ),
 }
@@ -79,6 +95,7 @@ class Principal:
     workspace_id: UUID
     roles: frozenset[Role]
     mfa_verified_at: datetime
+    mfa_method: MfaMethod | None = None
 
 
 def authorize(principal: Principal, permission: Permission, *, raise_error: bool = False) -> bool:

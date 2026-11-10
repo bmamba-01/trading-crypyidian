@@ -1,6 +1,6 @@
 # Kế hoạch đề xuất: Admin Web thích ứng điện thoại và tiếng Việt
 
-> **Trạng thái:** Bản rà soát và kế hoạch để xem xét; chưa được phê duyệt và chưa triển khai. Tài liệu này không thay đổi WBS, trạng thái dự án hay thiết kế MB-07b hiện hành.
+> **Trạng thái:** Giao diện responsive và Việt hóa đã triển khai ngày 2026-11-02; browser matrix đạt. Danh sách kiểm tra trợ năng thủ công vẫn còn mở.
 >
 > **Ngày rà soát:** 2026-11-02.
 
@@ -26,7 +26,7 @@ Làm cho Admin Web dễ truy cập trên điện thoại và máy tính bảng, 
 2. **Tiếp tục CSS tự viết, bổ sung thiết kế ưu tiên điện thoại.** Không thêm thư viện phụ thuộc hay CSS bên thứ ba; có thể giữ gói nhỏ. Đổi lại, nhóm phải tự xây và duy trì lưới, biểu mẫu, bảng, điểm ngắt và trạng thái nhất quán cho mọi trang.
 3. **Ứng dụng một trang (SPA) riêng.** Có thể tăng khả năng tương tác, nhưng tạo bộ công cụ giao diện và môi trường chạy mới, đồng thời phải kiểm tra lại session, CSRF, CSP, RBAC, truy cập dữ liệu và các luồng trình duyệt. Không phù hợp với phạm vi chỉ làm mới trải nghiệm các trang Jinja hiện có.
 
-**Đề xuất để người dùng xem xét:** phương án 1, dùng Bootstrap CSS tự lưu; giữ Jinja và kết xuất HTML phía máy chủ, hạn chế JavaScript. Đây mới là đề xuất, chưa phải quyết định được phê duyệt. Nếu chọn phương án khác, cập nhật kế hoạch trước khi viết giao diện.
+**Quyết định triển khai:** phương án 1, dùng Bootstrap CSS tự lưu; giữ Jinja và kết xuất HTML phía máy chủ, hạn chế JavaScript. Người dùng đã chấp thuận tiếp tục triển khai theo phương án này.
 
 ## Định hướng thiết kế đề xuất
 
@@ -67,13 +67,12 @@ Làm cho Admin Web dễ truy cập trên điện thoại và máy tính bảng, 
 - Kiểm tra font thực sự tải trong trình duyệt và xem trực quan dấu tiếng Việt ở cỡ giao diện nhỏ, đặc biệt chuỗi mẫu “Tiếng Việt: ă â ê ô ơ ư đ ắ ằ ấ ầ ễ ệ”; kiểm tra font dự phòng và không cắt dấu ở các trình duyệt mục tiêu.
 - Hoàn tất danh sách kiểm tra `docs/implementation/admin-web-accessibility-checklist-vi.md` trên trang/khung nhìn đại diện. Kiểm tra tự động không thay cho kiểm tra thủ công.
 
-## Tệp dự kiến thay đổi khi có phê duyệt
+## Tệp đã triển khai trong vòng này
 
 - `src/trading_bot/templates/admin/base.html` và toàn bộ `src/trading_bot/templates/admin/*.html`.
 - `src/trading_bot/static/admin.css`, CSS Bootstrap tự lưu ở static, font woff2 và tệp giấy phép/ghi công tương ứng.
-- Mô-đun trình bày trong `src/trading_bot/admin/` để ánh xạ enum/lỗi sang nhãn tiếng Việt và application query/view model để đọc thống kê MB-06 trong snapshot nhất quán; tên chính xác chốt khi kiểm kê mã trước khi triển khai.
-- `tests/unit/test_admin_accessibility.py`, `tests/unit/test_admin_web_views.py` hoặc unit mới cho bản địa hóa, metrics theo tài sản và bot/workspace scope; `tests/e2e/test_admin_web_workflows.py` hoặc E2E mới cho khung nhìn thích ứng, cards thống kê và tràn ngang.
-- `docs/implementation/admin-web-accessibility-checklist-vi.md`; sau vòng triển khai mới cập nhật `docs/implementation/implementation-memory.md` theo quy trình dự án. Chưa sửa WBS, project status hoặc memory trong kế hoạch này.
+- `src/trading_bot/admin/presentation.py`, `src/trading_bot/application/bot_reporting.py`, `src/trading_bot/admin/web_router.py` và unit/E2E tests cho nhãn tiếng Việt, metrics MB-06, scope và responsive layouts.
+- `docs/implementation/admin-web-accessibility-checklist-vi.md` giữ các mục cần kiểm tra thủ công; WBS, project status và implementation memory được cập nhật cùng kết quả vòng này.
 
 ## Tiêu chí nghiệm thu đề xuất
 
@@ -84,7 +83,7 @@ Làm cho Admin Web dễ truy cập trên điện thoại và máy tính bảng, 
 5. Nhãn, lỗi, trạng thái, vùng đang chọn, độ tương phản, vùng nội dung, đề mục và bảng đạt danh sách kiểm tra WCAG 2.2 AA hiện có; hoàn tất cả kiểm thử tự động trên trình duyệt lẫn danh sách kiểm tra thủ công, không có mục bị bỏ qua.
 6. Không thay đổi đường dẫn/mã API ngoài read contract được duyệt cho thống kê, vai trò/phạm vi quyền, CSRF, MFA, nhật ký kiểm toán, no-store, CSP hoặc chế độ PAPER; kiểm thử hồi quy chứng minh các bất biến này giữ nguyên.
 
-## Quyết định còn chờ xem xét
+## Quyết định đã chốt cho vòng triển khai
 
 - Dùng Bootstrap 5.3 CSS tự lưu làm mặc định theo chỉ dẫn trước về một framework CSS phổ biến; giữ Jinja và HTML render phía máy chủ.
 - Dùng Be Vietnam Pro tự lưu làm font chính sau khi chốt subset/độ đậm và ghi công từ tệp nguồn cụ thể.
@@ -92,9 +91,17 @@ Làm cho Admin Web dễ truy cập trên điện thoại và máy tính bảng, 
 - Chốt quy ước tiếng Việt cho trạng thái và thuật ngữ kỹ thuật; các mã máy vẫn dùng tiếng Anh phía server.
 - Ưu tiên thẻ thống kê MB-06 trong MVP; chỉ thêm biểu đồ theo thời gian sau khi xác nhận hợp đồng chuỗi thời gian authoritative.
 
+## Kết quả triển khai và kiểm chứng — 2026-11-02
+
+- Admin pages dùng Bootstrap 5.3 CSS tự lưu, Be Vietnam Pro tự lưu và presentation mapping cho nhãn/trạng thái tiếng Việt. Dashboard lấy metrics từ report MB-06 theo bot/workspace scope; báo cáo trình bày theo thẻ tài sản và giữ JSON kỹ thuật trong disclosure.
+- Dashboard, báo cáo, đăng nhập, bot/list/detail, flatten preview và Telegram được kiểm ở **360×800, 390×844, 768×1024, 1024×768, 1280×800**. `tests/e2e/test_admin_web_workflows.py` đạt **5 passed / 264.44s**, bao gồm tràn ngang, target 44px, 200% zoom, focus/keyboard, font Be Vietnam Pro/fallback và giá trị timestamp ISO vừa đủ ô nhập 360px.
+- Ảnh dashboard và báo cáo 360px đã được xem trực quan; bố cục một cột, thẻ và form không tràn ngang, timestamp không bị cắt. Ảnh nằm tại `.superpowers/sdd/2026-11-02-wp04-mb07-admin-mobile-vietnamese-ui-plan/ui-evidence/`.
+- Full unit suite hiện tại đạt **2314 passed**. WBS và project status đã ghi kết quả.
+- **Còn mở:** chưa hoàn thành checklist trợ năng thủ công (`docs/implementation/admin-web-accessibility-checklist-vi.md`); không khẳng định đã audit screen reader hoặc hoàn tất toàn bộ WCAG 2.2 AA.
+
 ## Nguồn đã kiểm tra ngày 2026-11-02
 
 - [Bootstrap 5.3 — Breakpoints](https://getbootstrap.com/docs/5.3/layout/breakpoints/): tài liệu chính thức mô tả cách thiết kế ưu tiên điện thoại và sáu điểm ngắt mặc định (`576`, `768`, `992`, `1200`, `1400` px; mặc định nhỏ hơn `576` px).
 - [Bootstrap 5.3 — Tables](https://getbootstrap.com/docs/5.3/content/tables/): tài liệu chính thức về bảng thích ứng theo độ rộng; bảng cuộn cần được áp dụng có chủ đích để không làm mất khả năng đọc trên điện thoại.
 - [Bootstrap 5.3 — Accessibility](https://getbootstrap.com/docs/5.3/getting-started/accessibility/): Bootstrap không tự bảo đảm khả năng trợ năng; cấu trúc HTML, ARIA, độ tương phản và kiểm tra phải do ứng dụng xác nhận.
-- [Google Fonts — Thông tin Be Vietnam Pro trong kho mã nguồn chính](https://github.com/google/fonts/blob/main/ofl/bevietnampro/METADATA.pb): thông tin trong kho chính thức `google/fonts` liệt kê tập ký tự `vietnamese` và giấy phép OFL. Đây là bằng chứng để đánh giá lựa chọn font, không phải quyết định đã chọn tệp nhị phân hay cách đóng gói.
+- **Tài sản đã chốt và tự lưu:** Bootstrap CSS 5.3.8 và Be Vietnam Pro Regular/SemiBold/Bold, giữ SIL OFL 1.1 cùng nguồn commit Google Fonts `c13390277dfb1fcc7415d84ef7ef9cfc1e52f8c1`. Phiên bản, nguồn tải chính thức, giấy phép và SHA-256 của từng tệp được lưu tại [ASSET-SOURCES.md](../../../src/trading_bot/static/ASSET-SOURCES.md); ứng dụng không tải CDN.

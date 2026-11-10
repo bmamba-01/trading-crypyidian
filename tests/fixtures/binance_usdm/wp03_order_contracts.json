@@ -1,0 +1,298 @@
+{
+  "metadata": {
+    "accessed_on": "2026-11-02",
+    "synthetic": true,
+    "note": "Dữ liệu dựng từ schema công khai, không phải capture Demo; ACK tối thiểu là hợp đồng parser nội bộ, trường tùy chọn thiếu không chứng minh Binance luôn bỏ trường."
+  },
+  "cases": {
+    "regular_ack": {
+      "surface": "POST /fapi/v1/order ACK",
+      "sources": [
+        "https://developers.binance.com/en/docs/catalog/core-trading-derivatives-trading-usd-s-m-futures/api/rest-api/trade#new-order-trade",
+        "https://developers.binance.com/en/docs/products/derivatives-trading-usds-futures/change-log"
+      ],
+      "payload": {
+        "symbol": "BTCUSDT",
+        "orderId": 101,
+        "clientOrderId": "offline-entry",
+        "type": "MARKET",
+        "status": "NEW"
+      }
+    },
+    "regular_partial": {
+      "surface": "GET /fapi/v1/order",
+      "sources": [
+        "https://developers.binance.com/en/docs/catalog/core-trading-derivatives-trading-usd-s-m-futures/api/rest-api/trade#query-order-user_data"
+      ],
+      "payload": {
+        "avgPrice": "61000",
+        "clientOrderId": "offline-entry",
+        "cumQuote": "610",
+        "executedQty": "0.01",
+        "orderId": 101,
+        "origQty": "0.02",
+        "origType": "LIMIT",
+        "price": "61000",
+        "reduceOnly": false,
+        "side": "BUY",
+        "positionSide": "BOTH",
+        "status": "PARTIALLY_FILLED",
+        "stopPrice": "0",
+        "closePosition": false,
+        "symbol": "BTCUSDT",
+        "time": 1750515742000,
+        "timeInForce": "GTC",
+        "type": "LIMIT",
+        "updateTime": 1750515742297,
+        "workingType": "CONTRACT_PRICE",
+        "priceProtect": false,
+        "priceMatch": "NONE",
+        "selfTradePreventionMode": "NONE",
+        "goodTillDate": 0
+      }
+    },
+    "algo_new": {
+      "surface": "POST /fapi/v1/algoOrder",
+      "sources": [
+        "https://developers.binance.com/en/docs/catalog/core-trading-derivatives-trading-usd-s-m-futures/api/rest-api/trade#new-algo-order-trade"
+      ],
+      "payload": {
+        "algoId": 201,
+        "clientAlgoId": "offline-protection",
+        "algoType": "CONDITIONAL",
+        "orderType": "STOP_MARKET",
+        "symbol": "BTCUSDT",
+        "side": "SELL",
+        "positionSide": "BOTH",
+        "timeInForce": "GTC",
+        "quantity": "0.02",
+        "algoStatus": "NEW",
+        "triggerPrice": "60000",
+        "price": "0",
+        "icebergQuantity": "null",
+        "selfTradePreventionMode": "NONE",
+        "workingType": "CONTRACT_PRICE",
+        "priceMatch": "NONE",
+        "closePosition": false,
+        "priceProtect": false,
+        "reduceOnly": true,
+        "createTime": 1750515742000,
+        "triggerTime": 0,
+        "goodTillDate": 0
+      }
+    },
+    "algo_triggered": {
+      "surface": "GET /fapi/v1/algoOrder",
+      "sources": [
+        "https://developers.binance.com/en/docs/catalog/core-trading-derivatives-trading-usd-s-m-futures/api/rest-api/trade#query-algo-order-user_data",
+        "https://developers.binance.com/en/docs/products/derivatives-trading-usds-futures/user-data-streams#event-algo-order-update"
+      ],
+      "payload": {
+        "algoId": 201,
+        "clientAlgoId": "offline-protection",
+        "algoType": "CONDITIONAL",
+        "orderType": "STOP_MARKET",
+        "symbol": "BTCUSDT",
+        "side": "SELL",
+        "positionSide": "BOTH",
+        "timeInForce": "GTC",
+        "quantity": "0.02",
+        "algoStatus": "TRIGGERED",
+        "triggerPrice": "60000",
+        "price": "0",
+        "icebergQuantity": "null",
+        "selfTradePreventionMode": "NONE",
+        "workingType": "CONTRACT_PRICE",
+        "priceMatch": "NONE",
+        "closePosition": false,
+        "priceProtect": false,
+        "reduceOnly": true,
+        "createTime": 1750515742000,
+        "triggerTime": 1750515742200,
+        "goodTillDate": 0,
+        "actualOrderId": "301",
+        "actualPrice": "0",
+        "updateTime": 1750515742297,
+        "actualType": "MARKET",
+        "actualQty": "0.01"
+      }
+    },
+    "algo_finished": {
+      "surface": "GET /fapi/v1/algoOrder",
+      "sources": [
+        "https://developers.binance.com/en/docs/catalog/core-trading-derivatives-trading-usd-s-m-futures/api/rest-api/trade#query-algo-order-user_data",
+        "https://developers.binance.com/en/docs/products/derivatives-trading-usds-futures/user-data-streams#event-algo-order-update"
+      ],
+      "payload": {
+        "algoId": 201,
+        "clientAlgoId": "offline-protection",
+        "algoType": "CONDITIONAL",
+        "orderType": "STOP_MARKET",
+        "symbol": "BTCUSDT",
+        "side": "SELL",
+        "positionSide": "BOTH",
+        "timeInForce": "GTC",
+        "quantity": "0.02",
+        "algoStatus": "FINISHED",
+        "triggerPrice": "60000",
+        "price": "0",
+        "icebergQuantity": "null",
+        "selfTradePreventionMode": "NONE",
+        "workingType": "CONTRACT_PRICE",
+        "priceMatch": "NONE",
+        "closePosition": false,
+        "priceProtect": false,
+        "reduceOnly": true,
+        "createTime": 1750515742000,
+        "triggerTime": 1750515742200,
+        "goodTillDate": 0,
+        "actualOrderId": "301",
+        "actualPrice": "0",
+        "updateTime": 1750515742297,
+        "actualType": "MARKET",
+        "actualQty": "0.01"
+      }
+    },
+    "algo_rejected": {
+      "surface": "GET /fapi/v1/algoOrder",
+      "sources": [
+        "https://developers.binance.com/en/docs/catalog/core-trading-derivatives-trading-usd-s-m-futures/api/rest-api/trade#query-algo-order-user_data",
+        "https://developers.binance.com/en/docs/products/derivatives-trading-usds-futures/user-data-streams#event-algo-order-update"
+      ],
+      "payload": {
+        "algoId": 201,
+        "clientAlgoId": "offline-protection",
+        "algoType": "CONDITIONAL",
+        "orderType": "STOP_MARKET",
+        "symbol": "BTCUSDT",
+        "side": "SELL",
+        "positionSide": "BOTH",
+        "timeInForce": "GTC",
+        "quantity": "0.02",
+        "algoStatus": "REJECTED",
+        "triggerPrice": "60000",
+        "price": "0",
+        "icebergQuantity": "null",
+        "selfTradePreventionMode": "NONE",
+        "workingType": "CONTRACT_PRICE",
+        "priceMatch": "NONE",
+        "closePosition": false,
+        "priceProtect": false,
+        "reduceOnly": true,
+        "createTime": 1750515742000,
+        "triggerTime": 0,
+        "goodTillDate": 0,
+        "actualOrderId": "",
+        "actualPrice": "0",
+        "updateTime": 1750515742297
+      }
+    },
+    "order_event": {
+      "surface": "ORDER_TRADE_UPDATE",
+      "sources": [
+        "https://developers.binance.com/en/docs/catalog/core-trading-derivatives-trading-usd-s-m-futures/api/ws-streams/~schemas#ordertradeupdate"
+      ],
+      "payload": {
+        "e": "ORDER_TRADE_UPDATE",
+        "E": 1750515742303,
+        "T": 1750515742297,
+        "o": {
+          "s": "BTCUSDT",
+          "c": "offline-entry",
+          "S": "BUY",
+          "o": "LIMIT",
+          "f": "GTC",
+          "q": "0.02",
+          "p": "61000",
+          "ap": "61000",
+          "sp": "0",
+          "x": "TRADE",
+          "X": "PARTIALLY_FILLED",
+          "i": 101,
+          "l": "0.01",
+          "z": "0.01",
+          "L": "61000",
+          "N": "USDT",
+          "n": "0.1",
+          "T": 1750515742296,
+          "t": 401,
+          "b": "0",
+          "a": "0",
+          "m": false,
+          "R": false,
+          "wt": "CONTRACT_PRICE",
+          "ot": "LIMIT",
+          "ps": "BOTH",
+          "cp": false,
+          "pP": false,
+          "si": 0,
+          "ss": 0,
+          "rp": "0",
+          "V": "NONE",
+          "pm": "NONE",
+          "gtd": 0,
+          "er": "0"
+        }
+      }
+    },
+    "algo_event": {
+      "surface": "ALGO_UPDATE",
+      "sources": [
+        "https://developers.binance.com/en/docs/catalog/core-trading-derivatives-trading-usd-s-m-futures/api/ws-streams/~schemas#algoupdate"
+      ],
+      "payload": {
+        "e": "ALGO_UPDATE",
+        "E": 1750515742303,
+        "T": 1750515742297,
+        "o": {
+          "caid": "offline-protection",
+          "aid": 201,
+          "at": "CONDITIONAL",
+          "o": "STOP_MARKET",
+          "s": "BTCUSDT",
+          "S": "SELL",
+          "ps": "BOTH",
+          "f": "GTC",
+          "q": "0.02",
+          "X": "FINISHED",
+          "ai": "301",
+          "ap": "60000",
+          "aq": "0.01",
+          "act": "MARKET",
+          "tp": "60000",
+          "p": "0",
+          "V": "NONE",
+          "wt": "CONTRACT_PRICE",
+          "pm": "NONE",
+          "cp": false,
+          "pP": false,
+          "R": true,
+          "tt": 1750515742200,
+          "gtd": 0,
+          "rm": "",
+          "ia": false
+        }
+      }
+    },
+    "routing_mismatch": {
+      "surface": "POST /fapi/v1/order lỗi",
+      "sources": [
+        "https://developers.binance.com/en/docs/products/derivatives-trading-usds-futures/change-log"
+      ],
+      "payload": {
+        "code": -4120,
+        "msg": "STOP_ORDER_SWITCH_ALGO"
+      }
+    },
+    "ambiguous_503": {
+      "surface": "POST /fapi/v1/order HTTP 503",
+      "sources": [
+        "https://developers.binance.com/en/docs/products/derivatives-trading-usds-futures/general-info"
+      ],
+      "payload": {
+        "code": -1000,
+        "msg": "Unknown error, please check your request or try again later."
+      }
+    }
+  }
+}

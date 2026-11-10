@@ -265,6 +265,7 @@ class PaperLifecycleCoordinator:
             fee_amount=fill.fee_cost,
             slippage_amount=fill.slippage_cost,
             occurred_at=fill.filled_at,
+            exit_reason="FLATTEN_OPERATION",
         )
         trade_closed = False
         if appended and receipt.position.is_closed:
@@ -664,6 +665,7 @@ class PaperLifecycleCoordinator:
             fee_amount=fill.fee_cost,
             slippage_amount=fill.slippage_cost,
             occurred_at=fill.filled_at,
+            exit_reason=result.exit_reason,
         )
         trade_closed = False
         if appended and receipt.position.is_closed:

@@ -26,6 +26,7 @@ from typing import Any
 import pyotp
 import pytest
 from scripts.docker_image import build_image_reference, ensure_image_available
+
 from tests.fixtures.qa_dataset import build_qa_dataset
 
 ROOT = Path(__file__).parents[2]
@@ -44,6 +45,7 @@ TRADES: list[dict[str, Any]] = [
         "quantity": "1",
         "entry_price": "100",
         "exit_price": "120",
+        "exit_reason": "TAKE_PROFIT",
         "gross": "20",
         "entry_fee": "0.05",
         "entry_slippage": "0.01",
@@ -59,6 +61,7 @@ TRADES: list[dict[str, Any]] = [
         "quantity": "1",
         "entry_price": "100",
         "exit_price": "92.5",
+        "exit_reason": "STOP_LOSS",
         "gross": "-7.5",
         "entry_fee": "0.05",
         "entry_slippage": "0.01",
@@ -327,13 +330,27 @@ def test_bot_reports_isolate_bots_and_workspace_aggregate_reconciles() -> None:
             trades["A3"]["trade_id"],
         ]
         assert bot_reports["B"]["open_trades"] == []
+        a1 = next(
+            row for row in bot_reports["A"]["trades"] if row["trade_id"] == trades["A1"]["trade_id"]
+        )
+        assert a1["exit_reason"] == "TAKE_PROFIT"
+        assert [(row["role"], row["price"]) for row in a1["fills"]] == [
+            ("ENTRY", "100"),
+            ("EXIT", "120"),
+        ]
+        a2 = next(
+            row for row in bot_reports["A"]["trades"] if row["trade_id"] == trades["A2"]["trade_id"]
+        )
+        assert a2["exit_reason"] == "STOP_LOSS"
         # A1: 4 dòng cost (fee/slippage entry+exit); A2: 4 + funding.
         assert bot_reports["A"]["reconciliation"] == {"closed_trade_rows": 2, "trade_cost_rows": 9}
-        assert Decimal(bot_reports["A"]["totals"]["USDT"]["max_drawdown"]) == Decimal("7.86")
-        assert (
-            bot_reports["A"]["totals"]["USDT"]["drawdown_trough_trade_id"]
-            == (trades["A2"]["trade_id"])
-        )
+        bot_totals = bot_reports["A"]["totals"]["USDT"]
+        assert Decimal(bot_totals["max_drawdown"]) == Decimal("7.86")
+        assert bot_totals["win_rate_percent"] == "50"
+        assert bot_totals["profit_factor"] is not None
+        assert bot_totals["expectancy_per_trade"] is not None
+        assert bot_totals["average_holding_seconds"] is not None
+        assert bot_totals["drawdown_trough_trade_id"] == trades["A2"]["trade_id"]
 
         # (2) Tất định: gọi lại và principal khác cho cùng hash.
         for member in ("qa.owner", "qa.strategy_admin", "qa.risk_admin", "qa.analyst_reviewer"):
@@ -351,6 +368,8 @@ def test_bot_reports_isolate_bots_and_workspace_aggregate_reconciles() -> None:
         assert len(hashes) == 1
         usdt = aggregate["totals"]["USDT"]
         assert usdt["closed_trade_count"] == oracle_before["workspace"]["count"] == 4
+        assert "profit_factor" in usdt
+        assert "max_consecutive_wins" in usdt
         assert Decimal(usdt["net_pnl"]) == Decimal(oracle_before["workspace"]["net_pnl"])
         assert Decimal(usdt["net_pnl"]) == Decimal(per_bot[bot_a]["net_pnl"]) + Decimal(
             per_bot[bot_b]["net_pnl"]

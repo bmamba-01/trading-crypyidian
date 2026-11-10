@@ -5,7 +5,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 from fastapi import FastAPI, Request
@@ -26,23 +26,66 @@ from trading_bot.adapters.database.engine import (
 from trading_bot.adapters.database.repositories.flatten_snapshot import (
     PostgresFlattenSnapshotProvider,
 )
+from trading_bot.adapters.database.source_policy_admin import DatabaseSourcePolicyAdminRepository
 from trading_bot.adapters.paper.account_activity import PaperLedgerAccountActivityAdapter
 from trading_bot.adapters.secrets.local_mfa import LocalMfaSecretProvider
+from trading_bot.adapters.telegram.bot_api_sender import (
+    TelegramBotApiSender,
+    load_telegram_bot_token,
+)
 from trading_bot.adapters.telegram.recording_sender import RecordingTelegramSender
+from trading_bot.admin.backtest_replay_router import router as backtest_replay_router
 from trading_bot.admin.bot_control_router import router as bot_control_router
 from trading_bot.admin.bot_reports_router import router as bot_reports_router
 from trading_bot.admin.bot_service import BotConfigAdminService
 from trading_bot.admin.bots_router import router as bots_router
+from trading_bot.admin.learning_model_registry_page_router import (
+    router as learning_model_registry_page_router,
+)
+from trading_bot.admin.learning_model_registry_router import (
+    router as learning_model_registry_router,
+)
+from trading_bot.admin.learning_observations_page_router import (
+    router as learning_observations_page_router,
+)
+from trading_bot.admin.learning_scoring_deployment_router import (
+    router as learning_scoring_deployment_router,
+)
+from trading_bot.admin.learning_scoring_page_router import (
+    router as learning_scoring_page_router,
+)
+from trading_bot.admin.learning_split_page_router import router as learning_split_page_router
+from trading_bot.admin.learning_split_router import router as learning_split_router
+from trading_bot.admin.learning_training_page_router import (
+    router as learning_training_page_router,
+)
+from trading_bot.admin.learning_training_router import router as learning_training_router
+from trading_bot.admin.research_source_router import admin_router as research_source_admin_router
+from trading_bot.admin.research_source_router import router as research_source_router
 from trading_bot.admin.settings_router import router as settings_router
 from trading_bot.admin.settings_service import SettingsAdminService
 from trading_bot.admin.telegram_binding_router import router as telegram_binding_router
+from trading_bot.admin.telegram_signal_router import router as telegram_signal_router
 from trading_bot.admin.web_router import router as admin_web_router
 from trading_bot.application.account_activity_guard import AccountActivityGuard
+from trading_bot.application.backtest_replay_jobs import BacktestReplayJobService
 from trading_bot.application.bot_operations import BotOperationsService
 from trading_bot.application.bot_reporting import BotReportingService
 from trading_bot.application.bot_runtime_registry import BotRuntimeRegistry
 from trading_bot.application.bot_runtime_supervisor import BotRuntimeSupervisor
 from trading_bot.application.flatten_all import FlattenAllService
+from trading_bot.application.learning_model_registry import LearningModelRegistryService
+from trading_bot.application.learning_observations_admin import (
+    LearningObservationsAdminService,
+)
+from trading_bot.application.learning_scorer_report_read_model import ScorerReportReadModel
+from trading_bot.application.learning_scorer_score_event_read_model import (
+    ScorerScoreEventReadModel,
+)
+from trading_bot.application.learning_scoring_deployment import ScorerDeploymentService
+from trading_bot.application.learning_split_admin import LearningSplitAdminService
+from trading_bot.application.learning_training_admin import LearningTrainingAdminService
+from trading_bot.application.market_signal_composition import build_market_signal_scanner
 from trading_bot.application.paper_runtime_application import (
     PaperBotDecisionCommand,
     PaperRuntimeApplicationService,
@@ -52,7 +95,12 @@ from trading_bot.application.paper_runtime_bootstrap import (
     PaperRuntimeBootstrapService,
     new_runtime_owner_id,
 )
+from trading_bot.application.source_policy_admin import (
+    SourcePolicyAdminRepository,
+    SourcePolicyAdminService,
+)
 from trading_bot.application.telegram_binding import TelegramBindingService
+from trading_bot.application.telegram_signal_subscription import TelegramSignalSubscriptionService
 from trading_bot.auth.router import router as auth_router
 from trading_bot.auth.security import LoginRateLimiter
 from trading_bot.auth.service import AuthService
@@ -66,6 +114,11 @@ from trading_bot.telegram.webhook import (
     load_webhook_secret,
 )
 from trading_bot.telegram.webhook import router as telegram_router
+from trading_bot.workers.learning_training_supervisor import LearningTrainingJobSupervisor
+from trading_bot.workers.learning_training_worker import LearningTrainingAttemptWorker
+from trading_bot.workers.market_signal_producer import MarketSignalProducerWorker
+from trading_bot.workers.research_rights_worker import ResearchRightsMaintenanceWorker
+from trading_bot.workers.telegram_signal_worker import TelegramSignalDeliveryWorker
 
 logger = logging.getLogger(__name__)
 
@@ -123,10 +176,15 @@ def create_app(
     paper_runtime_bootstrap_factory: Callable[..., Any] | None = None,
     paper_decision_context_provider_factory: Callable[..., Any] | None = None,
     paper_runtime_supervisor_factory: Callable[..., Any] | None = None,
+    rights_worker_factory: Callable[..., Any] | None = None,
+    signal_worker_factory: Callable[..., Any] | None = None,
+    market_signal_worker_factory: Callable[..., Any] | None = None,
+    training_supervisor_factory: Callable[..., Any] | None = None,
     database_probe: Callable[[], Awaitable[bool]] | None = None,
 ) -> FastAPI:
     """Tạo ứng dụng mà không kết nối mạng hay tải credential khi import."""
     app_settings = settings or AppSettings()
+    admin_web_role = app_settings.process_role == "admin-web"
 
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
@@ -156,27 +214,80 @@ def create_app(
             )
         application.state.auth_service = (
             AuthService(active_session_factory, active_secret_provider)
-            if active_session_factory is not None and active_secret_provider is not None
+            if admin_web_role
+            and active_session_factory is not None
+            and active_secret_provider is not None
             else None
         )
+        if admin_web_role:
+            application.state.source_policy_admin_service = (
+                SourcePolicyAdminService(
+                    cast(
+                        SourcePolicyAdminRepository,
+                        DatabaseSourcePolicyAdminRepository(active_session_factory),
+                    )
+                )
+                if active_session_factory is not None
+                else None
+            )
+            application.state.learning_model_registry_service = (
+                LearningModelRegistryService(active_session_factory)
+                if active_session_factory is not None
+                else None
+            )
+            application.state.learning_scoring_deployment_service = (
+                ScorerDeploymentService(active_session_factory)
+                if active_session_factory is not None
+                else None
+            )
+            application.state.learning_scoring_report_read_model = (
+                ScorerReportReadModel(active_session_factory)
+                if active_session_factory is not None
+                else None
+            )
+            application.state.learning_scoring_score_event_read_model = (
+                ScorerScoreEventReadModel(active_session_factory)
+                if active_session_factory is not None
+                else None
+            )
+            application.state.learning_observations_admin_service = (
+                LearningObservationsAdminService(active_session_factory)
+                if active_session_factory is not None
+                else None
+            )
+            application.state.learning_training_admin_service = (
+                LearningTrainingAdminService(active_session_factory)
+                if active_session_factory is not None
+                else None
+            )
+            application.state.learning_split_admin_service = (
+                LearningSplitAdminService(active_session_factory)
+                if active_session_factory is not None
+                else None
+            )
         application.state.settings_admin_service = (
             SettingsAdminService(active_session_factory)
-            if active_session_factory is not None
+            if admin_web_role and active_session_factory is not None
             else None
         )
         application.state.bot_admin_service = (
             BotConfigAdminService(active_session_factory)
-            if active_session_factory is not None
+            if admin_web_role and active_session_factory is not None
             else None
         )
         application.state.bot_reporting_service = (
             BotReportingService(active_session_factory)
-            if active_session_factory is not None
+            if admin_web_role and active_session_factory is not None
+            else None
+        )
+        application.state.backtest_replay_job_service = (
+            BacktestReplayJobService(active_session_factory)
+            if admin_web_role and active_session_factory is not None
             else None
         )
         application.state.bot_operations_service = (
             BotOperationsService(active_session_factory)
-            if active_session_factory is not None
+            if admin_web_role and active_session_factory is not None
             else None
         )
         application.state.flatten_all_service = (
@@ -185,7 +296,7 @@ def create_app(
                 snapshot_provider=PostgresFlattenSnapshotProvider(),
                 operations_factory=application.state.bot_operations_service.for_principal,
             )
-            if active_session_factory is not None
+            if admin_web_role and active_session_factory is not None
             else None
         )
         application.state.telegram_binding_service = (
@@ -193,26 +304,138 @@ def create_app(
                 DatabaseTelegramStore(active_session_factory),
                 bot_username=app_settings.telegram_bot_username,
             )
-            if active_session_factory is not None and app_settings.telegram_bot_username
+            if admin_web_role
+            and active_session_factory is not None
+            and app_settings.telegram_bot_username
             else None
         )
-        application.state.telegram_sender = RecordingTelegramSender()
+        application.state.telegram_signal_subscription_service = (
+            TelegramSignalSubscriptionService(active_session_factory)
+            if admin_web_role and active_session_factory is not None
+            else None
+        )
+        telegram_sender = _build_telegram_sender(
+            app_settings,
+            required=app_settings.process_role == "signal-worker",
+        )
+        application.state.telegram_sender = telegram_sender
         application.state.telegram_webhook = _build_telegram_webhook(
             app_settings, active_session_factory, application.state
         )
         stopping = asyncio.Event()
         supervisor_task: asyncio.Task[None] | None = None
-        if app_settings.process_role == "trading-runtime":
-            supervisor_task = await _start_paper_runtime(
-                application,
-                app_settings=app_settings,
-                session_factory=active_session_factory,
-                bootstrap_factory=paper_runtime_bootstrap_factory,
-                context_provider_factory=paper_decision_context_provider_factory,
-                supervisor_factory=paper_runtime_supervisor_factory,
-                stopping=stopping,
-            )
+        rights_worker_task: asyncio.Task[None] | None = None
+        signal_worker_task: asyncio.Task[None] | None = None
+        market_signal_worker_task: asyncio.Task[None] | None = None
+        training_supervisor_task: asyncio.Task[None] | None = None
         try:
+            if app_settings.process_role == "trading-runtime":
+                supervisor_task = await _start_paper_runtime(
+                    application,
+                    app_settings=app_settings,
+                    session_factory=active_session_factory,
+                    bootstrap_factory=paper_runtime_bootstrap_factory,
+                    context_provider_factory=paper_decision_context_provider_factory,
+                    supervisor_factory=paper_runtime_supervisor_factory,
+                    stopping=stopping,
+                )
+            elif app_settings.process_role == "ingestion-worker":
+                if active_session_factory is None:
+                    raise RuntimeError("ingestion-worker cần database session factory.")
+                workspace_id = app_settings.ingestion_workspace_id
+                if workspace_id is None:
+                    raise RuntimeError("ingestion-worker cần ingestion_workspace_id.")
+                worker_factory = rights_worker_factory or ResearchRightsMaintenanceWorker
+                rights_worker = worker_factory(
+                    session_factory=active_session_factory,
+                    workspace_id=workspace_id,
+                    worker_id=f"rights-{uuid4().hex}",
+                    tick_seconds=app_settings.ingestion_worker_tick_seconds,
+                )
+                application.state.rights_worker = rights_worker
+                rights_worker_task = asyncio.create_task(
+                    rights_worker.run(stopping),
+                    name="research-rights-maintenance-worker",
+                )
+                application.state.rights_worker_task = rights_worker_task
+            elif app_settings.process_role == "trainer-worker":
+                if active_session_factory is None:
+                    raise RuntimeError("trainer-worker cần database session factory.")
+                workspace_id = app_settings.learning_training_workspace_id
+                if workspace_id is None:
+                    raise RuntimeError("trainer-worker cần learning_training_workspace_id.")
+                supervisor_factory = training_supervisor_factory or LearningTrainingJobSupervisor
+                training_supervisor = supervisor_factory(
+                    worker=LearningTrainingAttemptWorker(active_session_factory),
+                    workspace_id=workspace_id,
+                    worker_id=f"learning-trainer-{uuid4().hex}",
+                    poll_seconds=app_settings.learning_training_worker_poll_seconds,
+                    max_backoff_seconds=(app_settings.learning_training_worker_max_backoff_seconds),
+                )
+                application.state.learning_training_supervisor = training_supervisor
+                training_supervisor_task = asyncio.create_task(
+                    training_supervisor.run(stopping),
+                    name="learning-training-job-supervisor",
+                )
+                application.state.learning_training_supervisor_task = training_supervisor_task
+            elif app_settings.process_role == "signal-worker":
+                if active_session_factory is None:
+                    raise RuntimeError("signal-worker cần database session factory.")
+                workspace_id = app_settings.signal_workspace_id
+                if workspace_id is None:
+                    raise RuntimeError("signal-worker cần signal_workspace_id.")
+                worker_factory = signal_worker_factory or TelegramSignalDeliveryWorker
+                signal_worker = worker_factory(
+                    session_factory=active_session_factory,
+                    workspace_id=workspace_id,
+                    sender=telegram_sender,
+                    worker_id=f"telegram-signal-{uuid4().hex}",
+                    tick_seconds=app_settings.signal_worker_tick_seconds,
+                    max_candidate_age=timedelta(
+                        seconds=app_settings.signal_worker_max_candidate_age_seconds
+                    ),
+                    max_attempts=app_settings.signal_worker_max_attempts,
+                )
+                application.state.telegram_signal_worker = signal_worker
+                signal_worker_task = asyncio.create_task(
+                    signal_worker.run(stopping), name="telegram-signal-delivery-worker"
+                )
+                application.state.telegram_signal_worker_task = signal_worker_task
+            elif app_settings.process_role == "market-signal-worker":
+                if active_session_factory is None:
+                    raise RuntimeError("market-signal-worker cần database session factory.")
+                workspace_id = app_settings.market_signal_workspace_id
+                if workspace_id is None:
+                    raise RuntimeError("market-signal-worker cần market_signal_workspace_id.")
+                producer_factory = market_signal_worker_factory
+                if producer_factory is None:
+                    max_age = timedelta(
+                        seconds=app_settings.signal_worker_max_candidate_age_seconds
+                    )
+
+                    def default_market_signal_worker_factory(**kwargs: Any) -> Any:
+                        scanner = build_market_signal_scanner(
+                            kwargs["session_factory"],
+                            max_observation_age=max_age,
+                            signal_validity=max_age,
+                        )
+                        return MarketSignalProducerWorker(
+                            scanner,
+                            workspace_id=kwargs["workspace_id"],
+                            tick_seconds=kwargs["tick_seconds"],
+                        )
+
+                    producer_factory = default_market_signal_worker_factory
+                market_signal_worker = producer_factory(
+                    session_factory=active_session_factory,
+                    workspace_id=workspace_id,
+                    tick_seconds=app_settings.signal_worker_tick_seconds,
+                )
+                application.state.market_signal_worker = market_signal_worker
+                market_signal_worker_task = asyncio.create_task(
+                    market_signal_worker.run(stopping), name="market-signal-producer-worker"
+                )
+                application.state.market_signal_worker_task = market_signal_worker_task
             yield
         finally:
             stopping.set()
@@ -222,11 +445,29 @@ def create_app(
             if supervisor_task is not None:
                 with contextlib.suppress(asyncio.CancelledError, TimeoutError):
                     await asyncio.wait_for(supervisor_task, timeout=10)
+            if rights_worker_task is not None:
+                with contextlib.suppress(asyncio.CancelledError, TimeoutError):
+                    await asyncio.wait_for(rights_worker_task, timeout=10)
+            if signal_worker_task is not None:
+                with contextlib.suppress(asyncio.CancelledError, TimeoutError):
+                    await asyncio.wait_for(signal_worker_task, timeout=10)
+            if market_signal_worker_task is not None:
+                with contextlib.suppress(asyncio.CancelledError, TimeoutError):
+                    await asyncio.wait_for(market_signal_worker_task, timeout=10)
+            if training_supervisor_task is not None:
+                with contextlib.suppress(asyncio.CancelledError):
+                    await training_supervisor_task
+            close_sender = getattr(telegram_sender, "aclose", None)
+            if callable(close_sender):
+                await close_sender()
             if engine is not None:
                 await engine.dispose()
 
     app = FastAPI(
         title="Crypidian Trading Bot",
+        openapi_url=None
+        if app_settings.process_role in {"signal-worker", "market-signal-worker"}
+        else "/openapi.json",
         docs_url=None,
         redoc_url=None,
         lifespan=lifespan,
@@ -234,11 +475,13 @@ def create_app(
     app.add_middleware(SecurityHeadersMiddleware, headers=security_headers(app_settings))
     app.state.settings = app_settings
     app.state.templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
-    app.mount(
-        "/static",
-        StaticFiles(directory=str(Path(__file__).parent / "static")),
-        name="static",
-    )
+    worker_role = app_settings.process_role in {"signal-worker", "market-signal-worker"}
+    if not worker_role:
+        app.mount(
+            "/static",
+            StaticFiles(directory=str(Path(__file__).parent / "static")),
+            name="static",
+        )
     app.state.login_limiter = LoginRateLimiter()
     app.state.readiness = {
         "database": False,
@@ -248,14 +491,29 @@ def create_app(
     if app_settings.process_role == "trading-runtime":
         app.state.readiness["paper_runtime"] = False
         app.state.paper_application = None
-    app.include_router(auth_router)
-    app.include_router(settings_router)
-    app.include_router(bots_router)
-    app.include_router(bot_reports_router)
-    app.include_router(bot_control_router)
-    app.include_router(telegram_binding_router)
-    app.include_router(admin_web_router)
-    app.include_router(telegram_router)
+    if not worker_role:
+        app.include_router(auth_router)
+        app.include_router(settings_router)
+        app.include_router(bots_router)
+        app.include_router(bot_reports_router)
+        app.include_router(backtest_replay_router)
+        app.include_router(bot_control_router)
+        app.include_router(telegram_binding_router)
+        app.include_router(telegram_signal_router)
+        if admin_web_role:
+            app.include_router(research_source_router)
+            app.include_router(research_source_admin_router)
+            app.include_router(learning_model_registry_router)
+            app.include_router(learning_scoring_deployment_router)
+            app.include_router(learning_model_registry_page_router)
+            app.include_router(learning_observations_page_router)
+            app.include_router(learning_scoring_page_router)
+            app.include_router(learning_training_router)
+            app.include_router(learning_training_page_router)
+            app.include_router(learning_split_router)
+            app.include_router(learning_split_page_router)
+        app.include_router(admin_web_router)
+        app.include_router(telegram_router)
 
     @app.exception_handler(RequestValidationError)
     async def validation_error_response(
@@ -289,6 +547,85 @@ def create_app(
         được, bootstrap/wiring thất bại hoặc điều kiện workspace lỗi. Body chỉ có bộ đếm.
         """
         runtime_role = app_settings.process_role == "trading-runtime"
+        ingestion_role = app_settings.process_role == "ingestion-worker"
+        signal_role = app_settings.process_role == "signal-worker"
+        market_signal_role = app_settings.process_role == "market-signal-worker"
+        trainer_role = app_settings.process_role == "trainer-worker"
+        if ingestion_role:
+            pending: list[str] = []
+            probe = getattr(app.state, "database_probe", None)
+            if probe is None or not await probe():
+                pending.append("database")
+            worker = getattr(app.state, "rights_worker", None)
+            worker_task = getattr(app.state, "rights_worker_task", None)
+            if (
+                worker is None
+                or not getattr(worker, "last_tick_succeeded", False)
+                or worker_task is None
+                or worker_task.done()
+            ):
+                pending.append("rights_worker")
+            if pending:
+                return JSONResponse(
+                    status_code=503,
+                    content={"status": "not_ready", "pending": sorted(pending)},
+                )
+            return {"status": "ready"}
+        if signal_role:
+            pending = []
+            probe = getattr(app.state, "database_probe", None)
+            if probe is None or not await probe():
+                pending.append("database")
+            worker = getattr(app.state, "telegram_signal_worker", None)
+            worker_task = getattr(app.state, "telegram_signal_worker_task", None)
+            if (
+                worker is None
+                or not getattr(worker, "last_tick_succeeded", False)
+                or worker_task is None
+                or worker_task.done()
+            ):
+                pending.append("telegram_signal_worker")
+            if pending:
+                return JSONResponse(
+                    status_code=503,
+                    content={"status": "not_ready", "pending": sorted(pending)},
+                )
+            return {"status": "ready"}
+        if market_signal_role:
+            pending = []
+            probe = getattr(app.state, "database_probe", None)
+            if probe is None or not await probe():
+                pending.append("database")
+            worker = getattr(app.state, "market_signal_worker", None)
+            worker_task = getattr(app.state, "market_signal_worker_task", None)
+            if (
+                worker is None
+                or not getattr(worker, "last_tick_succeeded", False)
+                or worker_task is None
+                or worker_task.done()
+            ):
+                pending.append("market_signal_worker")
+            if pending:
+                return JSONResponse(
+                    status_code=503,
+                    content={"status": "not_ready", "pending": sorted(pending)},
+                )
+            return {"status": "ready"}
+        if trainer_role:
+            pending = []
+            probe = getattr(app.state, "database_probe", None)
+            if probe is None or not await probe():
+                pending.append("database")
+            supervisor = getattr(app.state, "learning_training_supervisor", None)
+            supervisor_task = getattr(app.state, "learning_training_supervisor_task", None)
+            if supervisor is None or supervisor_task is None or supervisor_task.done():
+                pending.append("learning_training_worker")
+            if pending:
+                return JSONResponse(
+                    status_code=503,
+                    content={"status": "not_ready", "pending": sorted(pending)},
+                )
+            return {"status": "ready"}
         if not runtime_role:
             pending = sorted(name for name, ready in app.state.readiness.items() if not ready)
             if pending:
@@ -331,6 +668,22 @@ def create_app(
         }
 
     return app
+
+
+def _build_telegram_sender(settings: AppSettings, *, required: bool) -> Any:
+    """Chỉ dùng sender thật khi token tồn tại; test/local giữ adapter recording."""
+    path = settings.telegram_bot_token_file
+    if path is None:
+        if required:
+            raise RuntimeError("signal-worker cần telegram_bot_token_file.")
+        return RecordingTelegramSender()
+    try:
+        token = load_telegram_bot_token(path)
+    except OSError, ValueError:
+        if required or settings.app_env == "production":
+            raise RuntimeError("Telegram Bot API token chưa sẵn sàng.") from None
+        return RecordingTelegramSender()
+    return TelegramBotApiSender(token)
 
 
 def _build_telegram_webhook(

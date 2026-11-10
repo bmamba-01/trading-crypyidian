@@ -41,6 +41,8 @@ class BacktestAppendResult:
     trial_record_id: UUID
     report_id: UUID | None
     duplicate: bool
+    # Caller cũ không truyền trạng thái run được coi là run đã có, tránh ghi hồi tố.
+    run_duplicate: bool = True
 
 
 _Record = TypeVar("_Record", BacktestRunRecord, BacktestTrialRecord, BacktestReportRecord)
@@ -155,6 +157,7 @@ class BacktestRepository:
             trial_record_id=trial_row.id,
             report_id=report_id,
             duplicate=run_duplicate and trial_duplicate and report_duplicate,
+            run_duplicate=run_duplicate,
         )
 
     async def _append_unique(

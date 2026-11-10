@@ -1,33 +1,116 @@
 {% extends "admin/base.html" %}
 {% block title %}Tổng quan — Crypidian{% endblock %}
-{% block heading %}Tổng quan workspace{% endblock %}
+{% block heading %}Tổng quan không gian làm việc{% endblock %}
 {% block content %}
 <p>Xin chào {{ identity.email }}.</p>
-<section aria-label="Tình trạng workspace">
+<section class="summary-grid" aria-label="Tình trạng không gian làm việc">
   <p>Tổng số bot: {{ bot_count }}</p>
   <p>Bot sẵn sàng: {{ ready_count }}</p>
-  <p>Điều khiển workspace: {{ workspace.kill_state }}</p>
+  <p>Điều khiển không gian làm việc: {{ workspace.kill_state | label_vi }}</p>
 </section>
-<section aria-label="Điều khiển workspace">
+<section id="dashboard-live" aria-labelledby="dashboard-live-heading">
+  <h2 id="dashboard-live-heading">Theo dõi bot và phiên PAPER</h2>
+  <p>Chọn một bot đang bật để xem trạng thái vận hành và giao dịch PAPER đã ghi nhận. Tự cập nhật mỗi 5 giây khi trang đang hiển thị.</p>
+  <div class="dashboard-live-layout">
+    <div class="dashboard-bot-picker" role="group" aria-label="Chọn bot đang theo dõi">
+      {% for bot in bots if bot.status in ["ENABLED", "ACTIVE"] %}
+      <button type="button" data-dashboard-bot="{{ bot.id }}" aria-pressed="false" aria-controls="dashboard-live-panel">
+        <span>{{ bot.name }}</span><small>{{ bot.status | label_vi }} · {{ bot.readiness | label_vi }}</small>
+      </button>
+      {% else %}<p>Chưa có bot đang bật để theo dõi.</p>{% endfor %}
+    </div>
+    <section id="dashboard-live-panel" class="dashboard-live-panel" role="region" aria-label="Bot đang theo dõi" aria-busy="false">
+      <h3 data-selected-bot-name>Chưa chọn bot</h3>
+      <p class="dashboard-source">PAPER ledger snapshot · Dữ liệu mô phỏng đã lưu</p>
+      <p>Thời điểm quan sát: <time data-observed-at>Chưa có ảnh chụp</time></p>
+      <p data-snapshot-status role="status" aria-live="polite" aria-atomic="true">Chọn bot để tải dữ liệu.</p>
+      <dl class="dashboard-runtime" data-runtime></dl>
+      <div data-totals></div>
+      <section aria-labelledby="dashboard-open-heading">
+        <h4 id="dashboard-open-heading">Phiên PAPER đang mở</h4>
+        <p>Mỗi phiên là một giao dịch PAPER đang mở trong ledger.</p>
+        <label for="dashboard-open-trade">Phiên PAPER đang mở</label>
+        <select id="dashboard-open-trade" disabled><option value="">Chưa có phiên đang mở</option></select>
+        <dl class="dashboard-runtime" data-open-trade-detail></dl>
+      </section>
+      <section aria-labelledby="dashboard-closed-heading">
+        <h4 id="dashboard-closed-heading">Giao dịch PAPER đã đóng gần nhất</h4>
+        <p>Tối đa 10 giao dịch trong 30 ngày; lãi/lỗ và chi phí giữ riêng từng tài sản.</p>
+        <div class="dashboard-closed-trades" data-closed-trades></div>
+      </section>
+      <a data-selected-bot-link hidden>Xem trang bot</a>
+    </section>
+  </div>
+  <noscript><p>Cần bật JavaScript để chọn bot và cập nhật ảnh chụp. Các báo cáo phía dưới vẫn xem được.</p></noscript>
+  <script id="dashboard-live-metrics" type="application/json">{{ report_metrics | tojson }}</script>
+</section>
+<section aria-label="Điều khiển không gian làm việc">
   <form method="post" action="/admin/workspace/kill">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <label for="kill-reason">Lý do dừng toàn workspace</label>
+    <label for="kill-reason">Lý do chặn mở vị thế toàn không gian làm việc</label>
     <input id="kill-reason" name="reason" maxlength="500" required>
-    <button type="submit">Dừng entry workspace</button>
+    <button type="submit">Chặn mở vị thế toàn không gian làm việc</button>
   </form>
   <form method="post" action="/admin/workspace/release">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <input type="hidden" name="expected_revision" value="{{ workspace.revision }}">
-    <label for="release-reason">Lý do gỡ kill</label>
+    <label for="release-reason">Lý do gỡ chặn mở vị thế</label>
     <input id="release-reason" name="reason" maxlength="500" required>
-    <button type="submit">Gỡ kill workspace</button>
+    <button type="submit">Gỡ chặn mở vị thế toàn không gian làm việc</button>
   </form>
 </section>
-<ul>
-  {% for bot in bots %}
-  <li><a href="/admin/bots/{{ bot.id }}">{{ bot.name }}</a> — {{ bot.readiness }}</li>
+<section aria-labelledby="performance-heading">
+  <h2 id="performance-heading">Hiệu quả bot trong 30 ngày</h2>
+  {% if dashboard_chart and dashboard_chart.series %}
+  <p>Đường vốn theo PnL ròng đã thực hiện riêng cho từng bot, chỉ dùng USDT; dấu vào/đóng gắn với thời điểm ledger. Không cộng lẫn tài sản định giá khác.</p>
+  <div id="dashboard-performance-chart" class="chart-canvas chart-canvas--performance" role="img" aria-label="Đường hiệu suất PnL ròng theo bot, có đánh dấu thời điểm vào và đóng lệnh"></div>
+  <p id="dashboard-chart-event-detail" class="chart-event-detail" role="status" aria-live="polite">Rê chuột hoặc chạm vào mốc trên biểu đồ để xem thời điểm, chiến thuật, lý do bắt tín hiệu, lời/lỗ và lý do đóng.</p>
+  {% if dashboard_chart.events %}
+  <details class="chart-event-list">
+    <summary>Chi tiết {{ dashboard_chart.events | length }} giao dịch USDT gần nhất trên biểu đồ</summary>
+    <ol>
+      {% for event in dashboard_chart.events %}
+      <li>
+        {% set event_pnl_tone = event.net_pnl | pnl_tone %}
+        <strong>{{ event.bot_name }} — {{ event.symbol }} / {{ event.side | label_vi }} — <span class="pnl-value pnl-value--{{ event_pnl_tone }}" data-pnl-tone="{{ event_pnl_tone }}">{% if event_pnl_tone == "positive" %}+{% endif %}{{ event.net_pnl | number_vi }} {{ event.quote_asset }}</span></strong>
+        <dl>
+          <div><dt>Vào lúc</dt><dd>{{ event.opened_at | local_time }}</dd></div>
+          <div><dt>Đóng lúc</dt><dd>{{ event.closed_at | local_time }}</dd></div>
+          <div><dt>Chiến thuật</dt><dd>{{ event.strategy_id }}</dd></div>
+          <div><dt>Vì sao bắt tín hiệu</dt><dd>{{ event.entry_detail_vi }}</dd></div>
+          <div><dt>Vì sao đóng</dt><dd>{{ event.exit_reason_vi }}</dd></div>
+          <div><dt>Mã giao dịch</dt><dd><code>{{ event.trade_id }}</code></dd></div>
+        </dl>
+      </li>
+      {% endfor %}
+    </ol>
+  </details>
+  {% endif %}
+  <p class="chart-attribution">Biểu đồ sử dụng <a href="https://www.tradingview.com/lightweight-charts/" target="_blank" rel="noopener noreferrer">TradingView Lightweight Charts</a>, theo giấy phép Apache 2.0.</p>
+  <script id="dashboard-chart-data" type="application/json">{{ dashboard_chart | tojson }}</script>
+  {% else %}<p role="status">Chưa có giao dịch USDT đã đóng trong 30 ngày để dựng biểu đồ hiệu suất.</p>{% endif %}
+  {% if dashboard_reports is defined and dashboard_reports %}
+  <p>Từ {{ report_start | local_time }} đến {{ report_end | local_time }}; không gồm mốc kết thúc. Chỉ bot có quyền xem báo cáo; số liệu tiền tệ theo từng tài sản.</p>
+  {% for report in dashboard_reports %}
+  <article class="bot-report"><h3>{{ report.name }}</h3>
+  {% with totals=report.totals %}{% include "admin/metric_cards.html" %}{% endwith %}</article>
+  {% endfor %}
+  {% elif metrics_loaded %}
+  <p role="status">Chưa có bot đang hoạt động được cấp quyền xem báo cáo.</p>
   {% else %}
-  <li>Workspace chưa có bot nào.</li>
+  <p role="status">Thống kê hiệu quả chưa sẵn sàng. {{ metrics_message | default("Hãy kiểm tra quyền xem báo cáo hoặc thử lại sau.") }}</p>
+  {% endif %}
+  <p><a href="/admin/reports">Xem báo cáo theo phạm vi được cấp quyền</a></p>
+</section>
+<ul class="bot-list">
+  {% for bot in bots %}
+  <li><a href="/admin/bots/{{ bot.id }}">{{ bot.name }}</a> — {{ bot.readiness | label_vi }}</li>
+  {% else %}
+  <li>Không gian làm việc chưa có bot nào.</li>
   {% endfor %}
 </ul>
+{% endblock %}
+{% block scripts %}
+<script src="/static/dashboard-live.js" defer></script>
+{% if dashboard_chart and dashboard_chart.series %}<script src="/static/vendor/lightweight-charts-5.2.1.standalone.production.js"></script><script src="/static/trade-chart.js" defer></script>{% endif %}
 {% endblock %}

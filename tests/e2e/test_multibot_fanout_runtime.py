@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+
 from tests.e2e.multibot_runtime_harness import ComposeHarness
 
 

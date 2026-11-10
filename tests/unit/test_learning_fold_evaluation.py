@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -16,14 +18,21 @@ from trading_bot.application.learning_fold_evaluation import (
     persisted_outcome_row_hash,
     persisted_trade_row_hash,
     verification_batch_hash,
+    walk_forward_evaluation_report_from_canonical_json,
 )
 from trading_bot.application.learning_fold_plan import build_manifest_fold_plan
-from trading_bot.domain.learning.dataset import DatasetManifest, DatasetSample, DatasetSplit
+from trading_bot.domain.learning.dataset import (
+    DatasetManifest,
+    DatasetSample,
+    DatasetSourceReference,
+    DatasetSplit,
+)
 from trading_bot.domain.learning.evaluation import (
     EvaluationTrade,
     TemporalWindow,
     WalkForwardSplit,
 )
+from trading_bot.domain.research.source_policy import SourceUsePurpose
 
 BASE = datetime(2026, 1, 1, tzinfo=UTC)
 WORKSPACE_ID = uuid4()
@@ -190,7 +199,60 @@ async def test_evaluator_uses_exact_fold_membership_and_builds_stable_report() -
     assert fold.test.sample_ids == ("test-sample",)
     assert report.candidate_completeness_verified is False
     assert len(report.report_hash) == 64
+    restored = walk_forward_evaluation_report_from_canonical_json(
+        report.canonical_json,
+        expected_report_hash=report.report_hash,
+    )
+    assert restored == report
     assert report.report_hash == repeated.report_hash
+
+
+@pytest.mark.asyncio
+async def test_evaluator_exposes_canonical_diagnostic_payload_without_holdout() -> None:
+    holdout = DatasetSample(
+        sample_id="sealed-holdout-sample",
+        decision_at=at(9),
+        feature_available_at=at(8),
+        outcome_start=at(9),
+        outcome_end=at(10),
+        feature_snapshot_hash="9" * 64,
+        outcome_id=str(uuid4()),
+        outcome_hash="a" * 64,
+        label_hash="b" * 64,
+        label_value=-1,
+        label_version="labels-v1",
+        split=DatasetSplit.HOLDOUT,
+        source_dependent=False,
+        source_rights_hashes=(),
+        source_revision_refs=(),
+    )
+    dataset = replace(
+        dataset_fixture,
+        data_end=at(12),
+        as_of=at(12),
+        samples=(*dataset_fixture.samples, holdout),
+        holdout_sealed_at=at(11),
+    )
+    verifier = FixtureVerifier()
+    report = await build_walk_forward_evaluation_report(
+        dataset,
+        fold_plan(dataset),
+        verifier=verifier,
+        seed=17,
+    )
+
+    canonical = report.canonical_json
+    payload = json.loads(canonical)
+    assert canonical == json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    assert hashlib.sha256(canonical.encode()).hexdigest() == report.report_hash
+    assert payload["evaluation_mode"] == "diagnostic"
+    assert payload["candidate_completeness_verified"] is False
+    assert "sealed-holdout-sample" not in canonical
+    assert all(
+        expectation.sample_id != "sealed-holdout-sample"
+        for request in verifier.requests
+        for expectation in request.expected_outcomes
+    )
 
 
 @pytest.mark.asyncio
@@ -277,3 +339,76 @@ async def test_evaluator_fails_closed_when_verifier_fails() -> None:
             verifier=BrokenVerifier(),
             seed=17,
         )
+
+
+@pytest.mark.asyncio
+async def test_evaluator_requires_live_rights_gate_for_source_dependent_manifest() -> None:
+    reference = DatasetSourceReference(
+        source_id="source-1",
+        item_id="item-1",
+        revision_id="revision-1",
+        policy_id="policy-1",
+        policy_sequence=3,
+        purpose=SourceUsePurpose.TRAINING,
+        rights_hash="a" * 64,
+    )
+    first = replace(
+        dataset_fixture.samples[0],
+        source_dependent=True,
+        source_references=(reference,),
+    )
+    source_dataset = replace(
+        dataset_fixture,
+        manifest_version="dataset-manifest-v3",
+        samples=(first, *dataset_fixture.samples[1:]),
+    )
+    verifier = FixtureVerifier()
+
+    with pytest.raises(ValueError, match="source-rights eligibility gate"):
+        await build_walk_forward_evaluation_report(
+            source_dataset,
+            fold_plan(source_dataset),
+            verifier=verifier,
+            seed=17,
+        )
+
+    assert verifier.requests == []
+
+
+@pytest.mark.asyncio
+async def test_evaluator_checks_live_rights_gate_before_loading_outcomes() -> None:
+    reference = DatasetSourceReference(
+        source_id="source-1",
+        item_id="item-1",
+        revision_id="revision-1",
+        policy_id="policy-1",
+        policy_sequence=3,
+        purpose=SourceUsePurpose.TRAINING,
+        rights_hash="a" * 64,
+    )
+    first = replace(
+        dataset_fixture.samples[0],
+        source_dependent=True,
+        source_references=(reference,),
+    )
+    source_dataset = replace(
+        dataset_fixture,
+        manifest_version="dataset-manifest-v3",
+        samples=(first, *dataset_fixture.samples[1:]),
+    )
+
+    class DeniedGate:
+        async def assert_eligible(self, *, workspace_id, manifest) -> None:
+            raise RuntimeError("rights changed")
+
+    verifier = FixtureVerifier()
+    with pytest.raises(ValueError, match="eligibility gate failed"):
+        await build_walk_forward_evaluation_report(
+            source_dataset,
+            fold_plan(source_dataset),
+            verifier=verifier,
+            seed=17,
+            source_eligibility_gate=DeniedGate(),
+        )
+
+    assert verifier.requests == []

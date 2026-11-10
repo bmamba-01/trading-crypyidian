@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 
+from trading_bot.domain.research.source_item_history import SourceItemRevisionEntry
 from trading_bot.domain.research.source_items import SourceItemRevision
 from trading_bot.domain.research.source_policy import SourcePolicyState, SourceUsePurpose
 from trading_bot.domain.research.source_registry import SourceRegistryEntry
@@ -34,6 +35,9 @@ class SourceAccessReason(StrEnum):
     REVISION_TOMBSTONED = "revision_tombstoned"
     CURRENT_TAKEDOWN = "current_takedown"
     RETENTION_EXPIRED = "retention_expired"
+    REVISION_NOT_FOUND = "revision_not_found"
+    OBSERVATION_RECEIPT_MISSING = "observation_receipt_missing"
+    POLICY_NOT_OBSERVED = "policy_not_observed"
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,6 +49,79 @@ class SourceAccessDecision:
     reason: SourceAccessReason
     policy_id: str | None
     as_of: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class SourceAccessEnvelope:
+    """Gói quyết định nguồn kèm lineage quyền và mốc thời gian authoritative."""
+
+    decision: SourceAccessDecision
+    source_id: str
+    item_id: str
+    revision: SourceItemRevisionEntry | None
+    purpose: SourceUsePurpose
+    as_of: datetime
+    evaluated_at: datetime
+    revision_known_at_upper_bound: datetime | None
+    historical_policy_id: str | None
+    historical_policy_sequence: int | None
+    current_policy_id: str | None
+    current_policy_sequence: int | None
+    rights_hash: str | None
+    retention_expires_at: datetime | None
+    takedown_at: datetime | None
+
+    def __post_init__(self) -> None:
+        if type(self.decision) is not SourceAccessDecision:
+            raise ValueError("decision phải là SourceAccessDecision.")
+        for name in ("source_id", "item_id"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{name} không được để trống.")
+        if type(self.purpose) is not SourceUsePurpose:
+            raise ValueError("purpose phải là SourceUsePurpose.")
+        for name in ("as_of", "evaluated_at"):
+            object.__setattr__(self, name, _utc(getattr(self, name), name))
+        if self.decision.as_of != self.as_of:
+            raise ValueError("decision.as_of không khớp envelope.")
+        for name in (
+            "revision_known_at_upper_bound",
+            "retention_expires_at",
+            "takedown_at",
+        ):
+            value = getattr(self, name)
+            if value is not None:
+                object.__setattr__(self, name, _utc(value, name))
+        if (self.historical_policy_id is None) != (self.historical_policy_sequence is None):
+            raise ValueError("historical policy id và sequence phải đi cùng nhau.")
+        if (self.current_policy_id is None) != (self.current_policy_sequence is None):
+            raise ValueError("current policy id và sequence phải đi cùng nhau.")
+        for name in ("historical_policy_sequence", "current_policy_sequence"):
+            value = getattr(self, name)
+            if value is not None and (type(value) is not int or value < 1):
+                raise ValueError(f"{name} phải là số nguyên dương.")
+        if self.rights_hash is not None and (
+            len(self.rights_hash) != 64
+            or any(character not in "0123456789abcdef" for character in self.rights_hash)
+        ):
+            raise ValueError("rights_hash phải là SHA-256 hex.")
+        if self.decision.permitted:
+            if type(self.revision) is not SourceItemRevisionEntry:
+                raise ValueError("Quyết định cho phép phải trả revision đã kiểm tra.")
+            if (
+                self.revision.revision.source_id != self.source_id
+                or self.revision.revision.item_id != self.item_id
+            ):
+                raise ValueError("revision không thuộc source/item của envelope.")
+            if (
+                self.revision_known_at_upper_bound is None
+                or self.historical_policy_id is None
+                or self.current_policy_id is None
+                or self.rights_hash is None
+            ):
+                raise ValueError("Envelope được phép phải ghim đủ receipt và policy lineage.")
+        elif self.revision is not None:
+            raise ValueError("Quyết định bị từ chối không được trả revision metadata.")
 
 
 def _utc(value: datetime, name: str) -> datetime:

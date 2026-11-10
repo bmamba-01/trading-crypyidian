@@ -85,7 +85,7 @@ class SourcePolicyRevisionRecord(UuidPrimaryKey, CreatedAt, Base):
         CheckConstraint(
             "jsonb_typeof(allowed_purposes) = 'array' "
             'AND allowed_purposes <@ \'["metadata","display","embedding",'
-            '"training","redistribution"]\'::jsonb',
+            '"training","redistribution","backtest_research","paper_demo"]\'::jsonb',
             name="source_policy_purposes_valid",
         ),
         CheckConstraint(

@@ -230,6 +230,7 @@ async def test_monitor_persists_exit_and_closes_trade_idempotently() -> None:
     exit_values = dict(next(iter(ledger.exits.values())))
     assert exit_values["bar_key"] == first.exit_fill.bar_key
     assert stop_bar.bar_key in str(exit_values["bar_key"])
+    assert exit_values["exit_reason"] == "STOP_LOSS"
 
 
 @pytest.mark.asyncio

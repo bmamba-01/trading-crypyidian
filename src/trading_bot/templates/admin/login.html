@@ -2,9 +2,11 @@
 
 {% block title %}Đăng nhập · Crypidian{% endblock %}
 
+{% block heading %}Đăng nhập{% endblock %}
+
 {% block content %}
-  <section aria-labelledby="login-heading" class="login-panel">
-    <h2 id="login-heading">Đăng nhập</h2>
+  <section aria-label="Thông tin đăng nhập" class="login-panel">
+
     {% if error %}
       <div class="error-summary" role="alert" tabindex="-1">
         <p>{{ error }}</p>
@@ -12,10 +14,10 @@
     {% endif %}
     <form action="/admin/login" method="post">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <label for="workspace-slug">Mã workspace</label>
+      <label for="workspace-slug">Mã không gian làm việc</label>
       <input id="workspace-slug" name="workspace_slug" autocomplete="organization" required>
 
-      <label for="email">Email</label>
+      <label for="email">Địa chỉ thư điện tử</label>
       <input id="email" name="email" type="email" autocomplete="username" required>
 
       <label for="password">Mật khẩu</label>

@@ -19,6 +19,7 @@ PROBE_BOOTSTRAP = (
 )
 PREVIOUS_HEAD = "a7c9e2f4b6d8"
 MANIFEST_HEAD = "b8d0f1a3c5e7"
+PRE_TYPED_LINEAGE_HEAD = "f4a6c8d0e2b5"
 
 
 def test_dataset_manifest_persists_immutably_with_workspace_rls_and_trainer_read_only() -> None:
@@ -94,20 +95,37 @@ def test_dataset_manifest_persists_immutably_with_workspace_rls_and_trainer_read
         migrate("upgrade", PREVIOUS_HEAD)
         migrate("upgrade", MANIFEST_HEAD)
         run_probe("seed")
-        persisted = run_probe("persist")
-        assert persisted["versions"] == ["dataset-manifest-v1", "dataset-manifest-v2"]
-        assert persisted["folds"] == 2
-        assert persisted["holdout_interval_overlap_rejected"] is True
-        run_probe("roles")
-        assert run_probe("unscoped")["unscoped_rows"] == 0
+        run_probe("seed_downgrade_guard")
         dataset_guard = migrate("downgrade", PREVIOUS_HEAD, success=False)
         assert "WP06_DATASET_MANIFEST_DOWNGRADE_REQUIRES_EMPTY_TABLE" in (
             dataset_guard.stdout + dataset_guard.stderr
         )
         migrate("upgrade", "head")
-        migrate("check")
-        downgrade = migrate("downgrade", PREVIOUS_HEAD, success=False)
-        assert "WP03_RISK_GUARD_DOWNGRADE_BLOCKED" in (downgrade.stdout + downgrade.stderr)
+        persisted = run_probe("persist")
+        assert persisted["versions"] == ["dataset-manifest-v1", "dataset-manifest-v2"]
+        assert persisted["folds"] == 2
+        assert persisted["holdout_interval_overlap_rejected"] is True
+        risk_guard = migrate("downgrade", "e0b2d4f6a8c1", success=False)
+        assert "WP03_RISK_GUARD_DOWNGRADE_BLOCKED" in (risk_guard.stdout + risk_guard.stderr)
+        typed = run_probe("persist_typed")
+        assert typed == {
+            "typed_ref_count": 1,
+            "workspace_scope": True,
+            "rights_hash_observed": True,
+            "transaction_atomic": True,
+        }
+        assert run_probe("roles") == {
+            "builder_payload_read": True,
+            "trainer_payload_denied": True,
+            "trainer_insert_denied": True,
+            "append_only": True,
+        }
+        unscoped = run_probe("unscoped")
+        assert unscoped == {"unscoped_rows": 0, "unscoped_source_refs": 0}
+        typed_guard = migrate("downgrade", PRE_TYPED_LINEAGE_HEAD, success=False)
+        assert "WP06_TYPED_SOURCE_REF_DOWNGRADE_REQUIRES_EMPTY_TABLE" in (
+            typed_guard.stdout + typed_guard.stderr
+        )
         migrate("check")
     finally:
         subprocess.run(

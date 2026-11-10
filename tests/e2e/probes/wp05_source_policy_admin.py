@@ -1,0 +1,353 @@
+"""Probe policy admin với login PostgreSQL thật, session xác thực và API offline."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import secrets
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+from pathlib import Path
+from unittest.mock import patch
+from uuid import UUID, uuid4
+
+from httpx2 import ASGITransport, AsyncClient
+from sqlalchemy import text
+from sqlalchemy.engine import URL
+from sqlalchemy.exc import DBAPIError
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+from trading_bot.adapters.database.models import (
+    RoleBinding,
+    Session,
+    SourcePolicyRevisionRecord,
+    UserAccount,
+    UserMembership,
+    Workspace,
+)
+from trading_bot.adapters.database.repositories.source_registry import SourceRegistryRepository
+from trading_bot.adapters.database.source_policy_admin import DatabaseSourcePolicyAdminRepository
+from trading_bot.app import create_app
+from trading_bot.application.source_policy_admin import SourcePolicyAdminService
+from trading_bot.auth.service import AuthService, hash_token
+from trading_bot.config.settings import AppSettings
+from trading_bot.domain.research.source_policy import SourceUsePurpose
+
+STATE = json.loads(os.environ["WP05_ADMIN_STATE"])
+WORKSPACE = UUID(STATE["workspace_id"])
+OTHER = UUID(STATE["other_workspace_id"])
+SOURCE = "policy-admin-fixture"
+ADMIN = "crypidian_admin_web"
+
+
+def engine(role=None):
+    user = role or os.environ["TRADING_BOT_DATABASE_USER"]
+    password_file = (
+        f"/run/secrets/database_{role.removeprefix('crypidian_')}_password"
+        if role
+        else os.environ["TRADING_BOT_DATABASE_PASSWORD_FILE"]
+    )
+    return create_async_engine(
+        URL.create(
+            "postgresql+psycopg",
+            username=user,
+            password=Path(password_file).read_text().strip(),
+            host="postgres",
+            database="crypidian",
+        ),
+        connect_args={"options": "-c timezone=UTC"},
+    )
+
+
+async def scope(session, workspace=WORKSPACE):
+    await session.execute(
+        text("SELECT set_config('app.workspace_id', :workspace, true)"),
+        {"workspace": str(workspace)},
+    )
+
+
+async def seed(sessions):
+    actors = {}
+    now = datetime.now(UTC)
+    async with sessions() as session, session.begin():
+        for workspace in (WORKSPACE, OTHER):
+            session.add(Workspace(id=workspace, name="Policy fixture", slug=f"a-{workspace.hex}"))
+        await session.flush()
+        for name, role, workspace in (
+            ("owner", "owner", WORKSPACE),
+            ("stale", "owner", WORKSPACE),
+            ("reviewer", "analyst_reviewer", WORKSPACE),
+            ("foreign", "owner", OTHER),
+        ):
+            user, member, token, csrf = (
+                uuid4(),
+                uuid4(),
+                secrets.token_urlsafe(32),
+                secrets.token_urlsafe(32),
+            )
+            session.add(
+                UserAccount(
+                    id=user, email_normalized=f"{name}@example.test", password_hash="disabled"
+                )
+            )
+            await session.flush()
+            session.add(
+                UserMembership(id=member, workspace_id=workspace, user_id=user, status="ACTIVE")
+            )
+            await session.flush()
+            session.add(RoleBinding(workspace_id=workspace, membership_id=member, role=role))
+            session.add(
+                Session(
+                    workspace_id=workspace,
+                    membership_id=member,
+                    token_hash=hash_token(token),
+                    csrf_token_hash=hash_token(csrf),
+                    expires_at=now + timedelta(hours=1),
+                    mfa_verified_at=now - timedelta(hours=1) if name == "stale" else now,
+                )
+            )
+            actors[name] = {
+                "user": user,
+                "member": member,
+                "cookie": f"{workspace}:{token}",
+                "csrf": csrf,
+            }
+    return actors
+
+
+async def counts(sessions):
+    async with sessions() as session, session.begin():
+        await scope(session)
+        return tuple(
+            [
+                await session.scalar(text(f"SELECT count(*) FROM {table}"))
+                for table in (
+                    "source_policy_revision",
+                    "source_policy_observation",
+                    "source_quota_event",
+                )
+            ]
+        )
+
+
+async def denied(sessions, statement, *, workspace=WORKSPACE):
+    try:
+        async with sessions() as session, session.begin():
+            await scope(session, workspace)
+            await session.execute(text(statement))
+    except DBAPIError as error:
+        if error.orig.sqlstate not in {"42501", "23514"}:
+            raise AssertionError(str(error)) from error
+    else:
+        raise AssertionError(f"SQL không bị chặn: {statement}")
+
+
+async def run():
+    engines = [engine(), engine(ADMIN), engine("crypidian_ingestion_worker")]
+    base, admin, ingestion = [async_sessionmaker(e, expire_on_commit=False) for e in engines]
+    try:
+        actors = await seed(base)
+        async with admin() as session:
+            assert (await session.execute(text("SELECT session_user, current_user"))).one() == (
+                ADMIN,
+                ADMIN,
+            )
+            flags = (
+                await session.execute(
+                    text("SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname=current_user")
+                )
+            ).one()
+            assert flags == (False, False)
+        repository = DatabaseSourcePolicyAdminRepository(admin)
+        service = SourcePolicyAdminService(repository)
+        app = create_app(AppSettings(app_env="test"))
+        # Xác thực cookie/CSRF/RBAC đọc session thật.
+        # Probe không kiểm login mật khẩu/TOTP.
+        app.state.auth_service = AuthService(admin, None)
+        app.state.source_policy_admin_service = service
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://fixture"
+        ) as client:
+
+            async def request(method, path, payload=None, *, actor="owner", key=None, csrf=True):
+                identity = actors[actor]
+                headers = {"Cookie": f"crypidian_session={identity['cookie']}"}
+                if csrf:
+                    headers["X-CSRF-Token"] = identity["csrf"]
+                if method == "POST":
+                    headers["Idempotency-Key"] = str(key or uuid4())
+                return await client.request(
+                    method, f"/api/v1/research-sources{path}", json=payload, headers=headers
+                )
+
+            payload = {
+                "source_id": SOURCE,
+                "publisher": "Nguồn fixture",
+                "endpoint_url": "https://example.invalid/calendar",
+                "access_method": "GET",
+                "auth_scope": "public",
+                "reason": "Candidate offline",
+                "budget": {
+                    "window_seconds": 3600,
+                    "max_requests": 10,
+                    "max_bytes": 1000,
+                    "max_cost": "1",
+                    "cost_unit": "USD",
+                },
+            }
+            anonymous = await client.get("/api/v1/research-sources")
+            assert anonymous.status_code == 401
+            assert (await request("POST", "", payload, csrf=False)).status_code == 403
+            assert (await request("POST", "", payload, actor="reviewer")).status_code == 403
+            assert (await request("POST", "", payload, actor="stale")).status_code == 403
+            created = await request("POST", "", payload)
+            assert created.status_code == 201, created.text
+            pending_payload = {
+                "state": "rights_pending",
+                "reason": "Đề nghị xem xét",
+                "evidence_ref": "fixture-only-unverified",
+            }
+            key = uuid4()
+            # Fault injection đúng ranh giới sau commit append, trước transaction observer.
+            with patch.object(
+                repository._observer,
+                "_finish_policy",
+                side_effect=LookupError("fixture observation outage"),
+            ):
+                failed = await request("POST", f"/{SOURCE}/revisions", pending_payload, key=key)
+            assert failed.status_code == 503, failed.text
+            assert failed.headers["cache-control"] == "no-store"
+            assert await counts(admin) == (2, 1, 0)
+            async with ingestion() as session, session.begin():
+                try:
+                    await SourceRegistryRepository(session).reserve_quota(
+                        workspace_id=WORKSPACE,
+                        source_id=SOURCE,
+                        idempotency_key="deny-gap",
+                        purpose=SourceUsePurpose.METADATA,
+                        reserved_bytes=1,
+                        reserved_cost="0",
+                    )
+                except PermissionError:
+                    pass
+                else:
+                    raise AssertionError("Receipt thiếu vẫn được dùng nguồn")
+            recovered = await request("POST", f"/{SOURCE}/revisions", pending_payload, key=key)
+            assert recovered.status_code == 201, recovered.text
+            assert await counts(admin) == (2, 2, 0)
+            pending_id = recovered.json()["policy_id"]
+            changed = await request(
+                "POST", f"/{SOURCE}/revisions", pending_payload | {"reason": "Khác"}, key=key
+            )
+            assert changed.status_code == 409
+            approval = {
+                "allowed_purposes": ["metadata"],
+                "valid_until": (datetime.now(UTC) + timedelta(days=1)).isoformat(),
+                "reason": "Duyệt fixture",
+            }
+            path = f"/{SOURCE}/revisions/{pending_id}/approve"
+            assert (await request("POST", path, approval)).status_code == 403
+            assert (await request("POST", path, approval, actor="foreign")).status_code == 404
+            assert await counts(admin) == (2, 2, 0)
+            approved = await request("POST", path, approval, actor="reviewer")
+            assert approved.status_code == 201, approved.text
+            assert (
+                approved.json()["actor_id"]
+                == f"{actors['owner']['user']}:{actors['owner']['member']}"
+            )
+            assert approved.json()["approved_by"] == str(actors["reviewer"]["user"])
+            assert await counts(admin) == (3, 3, 0)
+            # Usage fixture chỉ ghi bằng login ingestion, admin chỉ đọc snapshot theo DB clock.
+            async with ingestion() as session, session.begin():
+                await SourceRegistryRepository(session).reserve_quota(
+                    workspace_id=WORKSPACE,
+                    source_id=SOURCE,
+                    idempotency_key="fixture-usage",
+                    purpose=SourceUsePurpose.METADATA,
+                    reserved_bytes=17,
+                    reserved_cost="0.25",
+                )
+            before = await counts(admin)
+            async with admin() as session:
+                clock_before = await session.scalar(text("SELECT clock_timestamp()"))
+            for _ in range(2):
+                detail = await request("GET", f"/{SOURCE}")
+                assert detail.status_code == 200, detail.text
+                assert detail.headers["cache-control"] == "no-store"
+                history = detail.json()["revisions"]
+                assert history[-1]["actor_id"] == approved.json()["actor_id"]
+                assert history[-1]["approved_by"] == str(actors["reviewer"]["user"])
+                quota = detail.json()["quota"]
+                async with admin() as session:
+                    clock_after = await session.scalar(text("SELECT clock_timestamp()"))
+                assert clock_before <= datetime.fromisoformat(quota["as_of"]) <= clock_after
+                assert quota["policy_sequence"] == 3
+                assert quota["requests_used"] == 1
+                assert quota["bytes_used"] == 17
+                assert Decimal(quota["cost_used"]) == Decimal("0.25")
+            assert await counts(admin) == before == (3, 3, 1)
+            assert (await request("GET", f"/{SOURCE}", actor="foreign")).status_code == 404
+            assert (await request("GET", "", actor="foreign")).json() == []
+        for table in ("source_policy_revision", "source_policy_observation", "source_quota_event"):
+            for action in (f"UPDATE {table} SET source_id = source_id", f"DELETE FROM {table}"):
+                await denied(admin, action)
+            async with admin() as session, session.begin():
+                await scope(session, OTHER)
+                assert await session.scalar(text(f"SELECT count(*) FROM {table}")) == 0
+                assert (
+                    await session.scalar(
+                        text(
+                            "SELECT relrowsecurity AND relforcerowsecurity "
+                            f"FROM pg_class WHERE oid='{table}'::regclass"
+                        )
+                    )
+                    is True
+                )
+            async with admin() as session, session.begin():
+                assert await session.scalar(text(f"SELECT count(*) FROM {table}")) == 0
+        await denied(admin, "INSERT INTO source_quota_event SELECT * FROM source_quota_event")
+        columns = [column.name for column in SourcePolicyRevisionRecord.__table__.columns]
+        values = [
+            "gen_random_uuid()"
+            if name == "id"
+            else f"'{OTHER}'::uuid"
+            if name == "workspace_id"
+            else name
+            for name in columns
+        ]
+        await denied(
+            admin,
+            f"INSERT INTO source_policy_revision ({','.join(columns)}) "
+            f"SELECT {','.join(values)} FROM source_policy_revision WHERE sequence=1",
+        )
+        async with admin() as session, session.begin():
+            await scope(session, OTHER)
+            assert (
+                await session.scalar(
+                    text(
+                        "SELECT count(*) FROM source_policy_revision WHERE workspace_id=:workspace"
+                    ),
+                    {"workspace": WORKSPACE},
+                )
+                == 0
+            )
+        return {
+            "real_admin_login": True,
+            "authenticated_owner_reviewer": True,
+            "policy_rows": 3,
+            "receipt_rows": 3,
+            "quota_rows": 1,
+            "self_approval_denied": True,
+            "foreign_workspace_denied": True,
+            "provenance_preserved": True,
+            "observer_retry_idempotent": True,
+            "quota_read_only": True,
+            "append_only_rls": True,
+        }
+    finally:
+        for item in engines:
+            await item.dispose()
+
+
+print(json.dumps(asyncio.run(run())))

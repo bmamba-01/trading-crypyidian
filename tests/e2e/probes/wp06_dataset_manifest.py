@@ -15,11 +15,21 @@ from sqlalchemy.engine import URL
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from trading_bot.adapters.database.models import DatasetManifestRecord, Workspace
+from trading_bot.adapters.database.models import (
+    DatasetManifestRecord,
+    DatasetManifestSourceRefRecord,
+    Workspace,
+)
 from trading_bot.adapters.database.repositories.dataset_manifest import DatasetManifestRepository
 from trading_bot.application.learning_fold_plan import build_manifest_fold_plan
-from trading_bot.domain.learning.dataset import DatasetManifest, DatasetSample, DatasetSplit
+from trading_bot.domain.learning.dataset import (
+    DatasetManifest,
+    DatasetSample,
+    DatasetSourceReference,
+    DatasetSplit,
+)
 from trading_bot.domain.learning.evaluation import TemporalWindow, WalkForwardSplit
+from trading_bot.domain.research.source_policy import SourceUsePurpose
 
 STATE = json.loads(os.environ.get("WP06_STATE", "{}"))
 PHASE = os.environ.get("WP06_PHASE", "")
@@ -112,6 +122,34 @@ def _manifest_v2(workspace_id: UUID, *, variant: str = "a") -> DatasetManifest:
     )
 
 
+def _manifest_v3(workspace_id: UUID) -> DatasetManifest:
+    original = _manifest(workspace_id, variant="typed")
+    prototype = original.samples[0]
+    return replace(
+        original,
+        manifest_version="dataset-manifest-v3",
+        samples=(
+            replace(
+                prototype,
+                source_dependent=True,
+                source_rights_hashes=(),
+                source_revision_refs=(),
+                source_references=(
+                    DatasetSourceReference(
+                        source_id="official-calendar",
+                        item_id="release-2026-11",
+                        revision_id="revision-1",
+                        policy_id="official-calendar-policy-v2",
+                        policy_sequence=2,
+                        purpose=SourceUsePurpose.TRAINING,
+                        rights_hash="5" * 64,
+                    ),
+                ),
+            ),
+        ),
+    )
+
+
 def _fold_plan(manifest: DatasetManifest):
     def window(start: int, end: int) -> TemporalWindow:
         return TemporalWindow(NOW + timedelta(hours=start), NOW + timedelta(hours=end))
@@ -187,6 +225,21 @@ async def _seed() -> dict[str, object]:
     return {"seeded": True}
 
 
+async def _seed_downgrade_guard() -> dict[str, object]:
+    engine = _engine(ADMIN)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    manifest = _manifest(UUID(STATE["other_workspace_id"]))
+    async with sessions() as session, session.begin():
+        await session.execute(
+            text("SELECT set_config('app.workspace_id', :workspace_id, true)"),
+            {"workspace_id": str(manifest.workspace_id)},
+        )
+        session.add(DatasetManifestRecord.from_domain(manifest))
+        await session.flush()
+    await engine.dispose()
+    return {"inserted": True}
+
+
 async def _persist() -> dict[str, object]:
     engine = _engine(ADMIN)
     sessions = async_sessionmaker(engine, expire_on_commit=False)
@@ -200,6 +253,10 @@ async def _persist() -> dict[str, object]:
             duplicate = await repository.append(workspace_id=workspace_id, manifest=manifest)
             assert not first.is_duplicate
             assert duplicate.is_duplicate
+    await engine.dispose()
+
+    engine = _engine("crypidian_candidate_builder")
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
     async with sessions() as session, session.begin():
         repository = DatasetManifestRepository(session)
         for manifest in manifests:
@@ -243,6 +300,87 @@ async def _persist() -> dict[str, object]:
     }
 
 
+async def _persist_typed() -> dict[str, object]:
+    engine = _engine(ADMIN)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    workspace_id = UUID(STATE["workspace_id"])
+    other_workspace_id = UUID(STATE["other_workspace_id"])
+    manifest = _manifest_v3(workspace_id)
+    reference = manifest.samples[0].source_references[0]
+    rollback_manifest = replace(manifest, query_hash="d" * 64)
+    async with sessions() as session:
+        try:
+            async with session.begin():
+                await DatasetManifestRepository(session).append(
+                    workspace_id=workspace_id,
+                    manifest=rollback_manifest,
+                )
+                raise RuntimeError("WP06_ROLLBACK_FIXTURE")
+        except RuntimeError as error:
+            if str(error) != "WP06_ROLLBACK_FIXTURE":
+                raise
+        async with session.begin():
+            assert (
+                await session.scalar(
+                    select(DatasetManifestRecord.id).where(
+                        DatasetManifestRecord.workspace_id == workspace_id,
+                        DatasetManifestRecord.manifest_hash == rollback_manifest.content_hash,
+                    )
+                )
+                is None
+            )
+            ref_count = await session.scalar(
+                text(
+                    "SELECT count(*) FROM public.dataset_manifest_source_ref "
+                    "WHERE workspace_id = :workspace_id"
+                ),
+                {"workspace_id": workspace_id},
+            )
+            assert ref_count == 0
+    async with sessions() as session, session.begin():
+        repository = DatasetManifestRepository(session)
+        first = await repository.append(workspace_id=workspace_id, manifest=manifest)
+        duplicate = await repository.append(workspace_id=workspace_id, manifest=manifest)
+        assert not first.is_duplicate
+        assert duplicate.is_duplicate
+        matches = await repository.find_source_reference_uses(
+            workspace_id=workspace_id,
+            reference=reference,
+        )
+        wrong_workspace = await repository.find_source_reference_uses(
+            workspace_id=other_workspace_id,
+            reference=reference,
+        )
+        rights_changed = await repository.find_source_reference_uses(
+            workspace_id=workspace_id,
+            reference=replace(reference, rights_hash="6" * 64),
+        )
+        assert len(matches) == 1
+        assert matches[0].manifest_id == first.record.id
+        assert matches[0].sample_id == "sample-typed"
+        assert matches[0].rights_hash == "5" * 64
+        assert wrong_workspace == ()
+        assert rights_changed == matches
+    await engine.dispose()
+
+    engine = _engine("crypidian_candidate_builder")
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    async with sessions() as session, session.begin():
+        loaded = await DatasetManifestRepository(session).get_by_hash(
+            workspace_id=workspace_id,
+            manifest_hash=manifest.content_hash,
+        )
+        assert loaded == manifest
+    await engine.dispose()
+
+    return {
+        "typed_ref_count": len(matches),
+        "workspace_scope": True,
+        "rights_hash_observed": True,
+        "transaction_atomic": True,
+    }
+
+
 async def _assert_roles_and_immutability() -> dict[str, object]:
     workspace_id = UUID(STATE["workspace_id"])
     manifest = _manifest(workspace_id)
@@ -267,7 +405,58 @@ async def _assert_roles_and_immutability() -> dict[str, object]:
     await engine.dispose()
     assert any("WP06_DATASET_MANIFEST_IMMUTABLE" in error for error in errors), repr(errors)
 
-    engine = _engine(TRAINER)
+    engine = _engine()
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    async with sessions() as session:
+        try:
+            async with session.begin():
+                await session.execute(
+                    text("SELECT set_config('app.workspace_id', :workspace_id, true)"),
+                    {"workspace_id": str(workspace_id)},
+                )
+                await session.execute(
+                    update(DatasetManifestSourceRefRecord)
+                    .where(DatasetManifestSourceRefRecord.workspace_id == workspace_id)
+                    .values(rights_hash="7" * 64)
+                )
+        except DBAPIError as error:
+            errors.append(str(error.orig))
+    await engine.dispose()
+    assert any("WP06_DATASET_MANIFEST_IMMUTABLE" in error for error in errors), repr(errors)
+
+    typed_manifest = _manifest_v3(workspace_id)
+    reference = typed_manifest.samples[0].source_references[0]
+    engine = _engine(ADMIN)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    async with sessions() as session:
+        try:
+            async with session.begin():
+                await session.execute(
+                    text("SELECT set_config('app.workspace_id', :workspace_id, true)"),
+                    {"workspace_id": str(workspace_id)},
+                )
+                manifest_record_id = await session.scalar(
+                    select(DatasetManifestRecord.id).where(
+                        DatasetManifestRecord.workspace_id == workspace_id,
+                        DatasetManifestRecord.manifest_hash == typed_manifest.content_hash,
+                    )
+                )
+                assert manifest_record_id is not None
+                session.add(
+                    DatasetManifestSourceRefRecord.from_reference(
+                        workspace_id=workspace_id,
+                        manifest_id=manifest_record_id,
+                        sample_id=typed_manifest.samples[0].sample_id,
+                        reference=replace(reference, rights_hash="8" * 64),
+                    )
+                )
+                await session.flush()
+        except DBAPIError as error:
+            errors.append(str(error.orig))
+    await engine.dispose()
+    assert any("WP06_SOURCE_REF_NOT_IN_MANIFEST" in error for error in errors), repr(errors)
+
+    engine = _engine("crypidian_candidate_builder")
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     async with sessions() as session, session.begin():
         repository = DatasetManifestRepository(session)
@@ -277,6 +466,39 @@ async def _assert_roles_and_immutability() -> dict[str, object]:
                 manifest_hash=expected.content_hash,
             )
             assert loaded == expected
+    await engine.dispose()
+
+    engine = _engine(TRAINER)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    trainer_payload_denied = False
+    try:
+        async with sessions() as session, session.begin():
+            await DatasetManifestRepository(session).get_by_hash(
+                workspace_id=workspace_id,
+                manifest_hash=manifest.content_hash,
+            )
+    except DBAPIError as error:
+        trainer_payload_denied = "permission denied" in str(error.orig).lower()
+    await engine.dispose()
+    assert trainer_payload_denied
+
+    engine = _engine(TRAINER)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    async with sessions() as session, session.begin():
+        repository = DatasetManifestRepository(session)
+        typed = _manifest_v3(workspace_id)
+        uses = await repository.find_source_reference_uses(
+            workspace_id=workspace_id,
+            reference=typed.samples[0].source_references[0],
+        )
+        assert len(uses) == 1
+        assert (
+            await repository.find_source_reference_uses(
+                workspace_id=UUID(STATE["other_workspace_id"]),
+                reference=typed.samples[0].source_references[0],
+            )
+            == ()
+        )
     await engine.dispose()
 
     engine = _engine(TRAINER)
@@ -292,7 +514,12 @@ async def _assert_roles_and_immutability() -> dict[str, object]:
             errors.append(str(error.orig))
     await engine.dispose()
     assert any("permission denied" in error.lower() for error in errors)
-    return {"trainer_select": True, "trainer_insert_denied": True, "append_only": True}
+    return {
+        "builder_payload_read": True,
+        "trainer_payload_denied": True,
+        "trainer_insert_denied": True,
+        "append_only": True,
+    }
 
 
 async def _count_without_workspace_scope() -> dict[str, object]:
@@ -301,15 +528,21 @@ async def _count_without_workspace_scope() -> dict[str, object]:
         count = await connection.scalar(
             select(text("count(*)")).select_from(text("dataset_manifest"))
         )
+        source_ref_count = await connection.scalar(
+            select(text("count(*)")).select_from(text("dataset_manifest_source_ref"))
+        )
     await engine.dispose()
     assert count == 0
-    return {"unscoped_rows": count}
+    assert source_ref_count == 0
+    return {"unscoped_rows": count, "unscoped_source_refs": source_ref_count}
 
 
 async def _main() -> None:
     handlers = {
         "seed": _seed,
+        "seed_downgrade_guard": _seed_downgrade_guard,
         "persist": _persist,
+        "persist_typed": _persist_typed,
         "roles": _assert_roles_and_immutability,
         "unscoped": _count_without_workspace_scope,
     }

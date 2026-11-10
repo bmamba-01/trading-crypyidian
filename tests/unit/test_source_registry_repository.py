@@ -137,6 +137,18 @@ class FakeSession:
 
 
 @pytest.mark.asyncio
+async def test_database_clock_is_workspace_bound_and_comes_from_postgres() -> None:
+    database_now = NOW + timedelta(minutes=4)
+    session = FakeSession(database_now=database_now)
+
+    observed = await SourceRegistryRepository(session).database_clock(workspace_id=WORKSPACE_ID)
+
+    assert observed == database_now
+    assert "set_config('app.workspace_id'" in session.statements[0]
+    assert "clock_timestamp()" in session.statements[1]
+
+
+@pytest.mark.asyncio
 async def test_append_revision_uses_database_clock_for_creation_timestamp() -> None:
     entry = discovered()
     database_now = NOW + timedelta(hours=4)
@@ -602,3 +614,163 @@ async def test_quota_reservation_serializes_usage_and_rejects_budget_overflow() 
 
     assert session.added == []
     assert "pg_advisory_xact_lock" in session.statements[1]
+
+
+@pytest.mark.asyncio
+async def test_policy_admin_list_is_workspace_scoped_and_history_ordered() -> None:
+    first = discovered(source_id="alpha")
+    second = discovered(source_id="beta")
+    rows = [
+        SourcePolicyRevisionRecord.from_domain(WORKSPACE_ID, item.current)
+        for item in (first, second)
+    ]
+    session = FakeSession(rows_results=[["alpha", "beta"], [rows[0]], [rows[1]]])
+
+    entries = await SourceRegistryRepository(session).list_entries(workspace_id=WORKSPACE_ID)
+
+    assert [entry.source_id for entry in entries] == ["alpha", "beta"]
+    assert all(
+        "workspace_id" in statement
+        for statement in session.statements
+        if "source_policy_revision" in statement
+    )
+
+
+@pytest.mark.asyncio
+async def test_policy_admin_quota_uses_database_clock_under_source_lock() -> None:
+    entry = approved(discovered())
+    rows = [
+        SourcePolicyRevisionRecord.from_domain(WORKSPACE_ID, revision)
+        for revision in entry.revisions
+    ]
+    event = SourceQuotaEventRecord(
+        workspace_id=WORKSPACE_ID,
+        source_id=entry.source_id,
+        policy_sequence=3,
+        idempotency_key="event-1",
+        purpose="metadata",
+        window_started_at=NOW + timedelta(minutes=3),
+        occurred_at=NOW + timedelta(minutes=3),
+        reserved_requests=1,
+        reserved_bytes=10,
+        reserved_cost=Decimal("0.25"),
+        cost_unit="USD",
+    )
+    session = FakeSession(rows_results=[rows, [event]], database_now=NOW + timedelta(minutes=4))
+
+    snapshot = await SourceRegistryRepository(session).get_quota_snapshot(
+        workspace_id=WORKSPACE_ID, source_id=entry.source_id
+    )
+
+    assert snapshot is not None
+    assert snapshot.usage.requests_used == 1
+    assert snapshot.usage.bytes_used == 10
+    assert snapshot.as_of == NOW + timedelta(minutes=4)
+    assert "pg_advisory_xact_lock" in session.statements[1]
+    assert any("clock_timestamp()" in statement for statement in session.statements)
+
+
+@pytest.mark.asyncio
+async def test_legacy_actor_membership_lookup_is_workspace_scoped_and_unambiguous() -> None:
+    actor_user = uuid4()
+    membership = uuid4()
+    session = FakeSession(rows_results=[[membership]])
+    resolved = await SourceRegistryRepository(session).membership_id_for_user(
+        workspace_id=WORKSPACE_ID, user_id=actor_user
+    )
+    assert resolved == membership
+    assert "set_config('app.workspace_id'" in session.statements[0]
+    assert "user_membership.workspace_id" in session.statements[1]
+    assert "user_membership.user_id" in session.statements[1]
+    missing = await SourceRegistryRepository(FakeSession(rows_results=[[]])).membership_id_for_user(
+        workspace_id=WORKSPACE_ID, user_id=actor_user
+    )
+    assert missing is None
+    ambiguous = await SourceRegistryRepository(
+        FakeSession(rows_results=[[uuid4(), uuid4()]])
+    ).membership_id_for_user(workspace_id=WORKSPACE_ID, user_id=actor_user)
+    assert ambiguous is None
+
+
+@pytest.mark.asyncio
+async def test_source_snapshot_reads_history_and_quota_under_one_source_lock() -> None:
+    entry = discovered()
+    row = SourcePolicyRevisionRecord.from_domain(WORKSPACE_ID, entry.current)
+    session = FakeSession(rows_results=[[row], []], database_now=NOW + timedelta(minutes=2))
+    result = await SourceRegistryRepository(session).get_source_snapshot(
+        workspace_id=WORKSPACE_ID, source_id=entry.source_id
+    )
+    assert result is not None
+    history, quota = result
+    assert history.current.policy.policy_id == entry.current.policy.policy_id
+    assert quota is not None
+    assert quota.policy_sequence == history.current.sequence
+    assert quota.as_of == NOW + timedelta(minutes=2)
+    assert sum("pg_advisory_xact_lock" in item for item in session.statements) == 1
+    assert session.statements.index(
+        next(item for item in session.statements if "pg_advisory_xact_lock" in item)
+    ) < session.statements.index(
+        next(item for item in session.statements if "source_policy_revision" in item)
+    )
+
+
+@pytest.mark.asyncio
+async def test_revision_idempotency_lookup_is_workspace_scoped_and_bounded() -> None:
+    key = uuid4()
+    entry = discovered().transition(
+        policy_id=f"policy:{key.hex}:" + "a" * 64,
+        state=SourcePolicyState.RIGHTS_PENDING,
+        actor_id="operator-1",
+        at=NOW + timedelta(minutes=1),
+        reason="Submitted",
+        evidence_ref="terms",
+    )
+    row = SourcePolicyRevisionRecord.from_domain(WORKSPACE_ID, entry.current)
+    session = FakeSession(rows_results=[[row]])
+    found = await SourceRegistryRepository(session).find_revisions_by_idempotency_key(
+        workspace_id=WORKSPACE_ID, key=key
+    )
+    assert found == (entry.current,)
+    assert "set_config('app.workspace_id'" in session.statements[0]
+    assert "source_policy_revision.workspace_id" in session.statements[1]
+    assert "source_policy_revision.policy_id LIKE" in session.statements[1]
+    assert "LIMIT" in session.statements[1]
+
+
+@pytest.mark.asyncio
+async def test_append_rechecks_workspace_key_after_key_lock() -> None:
+    key = uuid4()
+    first = discovered(source_id="first").transition(
+        policy_id=f"policy:{key.hex}:" + "a" * 64,
+        state=SourcePolicyState.RIGHTS_PENDING,
+        actor_id="operator-1",
+        at=NOW + timedelta(minutes=1),
+        reason="Submitted",
+        evidence_ref="terms",
+    )
+    second = discovered(source_id="second").transition(
+        policy_id=f"policy:{key.hex}:" + "b" * 64,
+        state=SourcePolicyState.RIGHTS_PENDING,
+        actor_id="operator-1",
+        at=NOW + timedelta(minutes=1),
+        reason="Submitted",
+        evidence_ref="terms",
+    )
+    row = SourcePolicyRevisionRecord.from_domain(WORKSPACE_ID, first.current)
+    session = FakeSession(scalar_results=[None], rows_results=[[row]])
+    with pytest.raises(SourceRegistryConflict, match="idempotency"):
+        await SourceRegistryRepository(session).append_revision(
+            workspace_id=WORKSPACE_ID, revision=second.current
+        )
+    assert not session.added
+    key_lock = next(
+        i
+        for i, sql in enumerate(session.statements)
+        if "research-policy-key" in sql or "pg_advisory_xact_lock" in sql
+    )
+    lookup = next(
+        i
+        for i, sql in enumerate(session.statements)
+        if "source_policy_revision.policy_id LIKE" in sql
+    )
+    assert key_lock < lookup

@@ -1,12 +1,12 @@
 {% extends "admin/base.html" %}
-{% block title %}Flatten workspace — Crypidian{% endblock %}
-{% block heading %}Flatten workspace PAPER{% endblock %}
+{% block title %}Đóng toàn bộ vị thế — Crypidian{% endblock %}
+{% block heading %}Đóng toàn bộ vị thế mô phỏng{% endblock %}
 {% block content %}
-<p>Tạo preview các vị thế và lệnh PAPER đang mở. Xác nhận yêu cầu owner và MFA gần đây.</p>
+<p>Xem trước các vị thế và lệnh mô phỏng đang mở. Xác nhận yêu cầu chủ sở hữu và xác thực đa yếu tố gần đây.</p>
 <form method="post" action="/admin/flatten/preview">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
   <label for="flatten-reason">Lý do</label>
   <textarea id="flatten-reason" name="reason" maxlength="500" required></textarea>
-  <button type="submit">Xem preview</button>
+  <button type="submit">Xem trước</button>
 </form>
 {% endblock %}

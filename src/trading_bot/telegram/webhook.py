@@ -37,6 +37,7 @@ from trading_bot.adapters.database.repositories.telegram import (
     TelegramBindingRepository,
     TelegramUpdateReceiptRepository,
 )
+from trading_bot.adapters.database.repositories.telegram_signals import TelegramSignalRepository
 from trading_bot.application.outbox import UnitOfWork
 from trading_bot.ports.telegram import TelegramMessageSender
 from trading_bot.telegram.bot_commands import (
@@ -112,6 +113,10 @@ class TelegramStore(Protocol):
     async def confirm_link_callback(
         self, workspace_id: UUID, nonce: str, telegram_user_id: str, request_id: UUID
     ) -> bool: ...
+
+    async def set_signal_notifications(
+        self, workspace_id: UUID, membership_id: UUID, *, enabled: bool
+    ) -> int: ...
 
 
 class DatabaseTelegramStore:
@@ -238,6 +243,17 @@ class DatabaseTelegramStore:
                 ),
             )
             return accepted
+
+    async def set_signal_notifications(
+        self, workspace_id: UUID, membership_id: UUID, *, enabled: bool
+    ) -> int:
+        """Thay đổi sở thích alert của binding đã được webhook xác thực."""
+        async with UnitOfWork(
+            self._sessions, workspace_id=workspace_id, actor_membership_id=membership_id
+        ) as uow:
+            return await TelegramSignalRepository(uow.session).set_membership_enabled(
+                workspace_id=workspace_id, membership_id=membership_id, enabled=enabled
+            )
 
 
 class TelegramCommandThrottle:
@@ -481,6 +497,44 @@ class TelegramWebhookService:
             return "unbound"
         progress.binding_resolved = True
         progress.actor = identity.membership_id
+        simple_command = _simple_signal_command(text)
+        if simple_command is not None:
+            enabled = simple_command == "start"
+            changed = await self._store.set_signal_notifications(
+                self._workspace_id, identity.membership_id, enabled=enabled
+            )
+            if enabled and changed:
+                message = "Đã bật lại các đăng ký nhận tín hiệu đã chọn."
+                result_code = "SIGNALS_ENABLED"
+                audit_action = "telegram.signal_notifications.enabled"
+                response_status = "signal_notifications_enabled"
+            elif enabled:
+                message = "Chưa có đăng ký tín hiệu nào. Hãy bật bot muốn theo dõi trong Admin Web."
+                result_code = "SIGNALS_NOT_CONFIGURED"
+                audit_action = "telegram.signal_notifications.start_without_opt_in"
+                response_status = "signal_notifications_not_configured"
+            else:
+                message = "Đã tắt toàn bộ thông báo tín hiệu Telegram."
+                result_code = "SIGNALS_DISABLED"
+                audit_action = "telegram.signal_notifications.disabled"
+                response_status = "signal_notifications_disabled"
+            progress.result = BotCommandResult(
+                True,
+                result_code,
+                message,
+            )
+            progress.reason = f"telegram.signal_notifications.{simple_command}"
+            await self._audit(
+                request_id,
+                audit_action,
+                identity.membership_id,
+                None,
+                progress.reason,
+            )
+            progress.audited = True
+            await self._sender.send_message(sender_id, message)
+            progress.sent = True
+            return response_status
         principal = telegram_principal(
             user_id=identity.user_id,
             membership_id=identity.membership_id,
@@ -622,6 +676,15 @@ def _sender_key(update: Mapping[str, Any]) -> str | None:
                 if isinstance(sender_id, int) and not isinstance(sender_id, bool):
                     return str(sender_id)
     return None
+
+
+def _simple_signal_command(text: str) -> str | None:
+    """Nhận `/start` và `/stop` trần; link code `/start <mã>` được xử lý riêng trước đó."""
+    parts = text.strip().split()
+    if len(parts) != 1 or not parts[0].startswith("/"):
+        return None
+    name = parts[0][1:].split("@", 1)[0].lower()
+    return name if name in {"start", "stop"} else None
 
 
 def _forgery_code(message: Mapping[str, Any]) -> str | None:

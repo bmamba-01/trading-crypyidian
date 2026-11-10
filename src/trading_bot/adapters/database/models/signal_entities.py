@@ -171,6 +171,7 @@ class BotDecisionRecord(UuidPrimaryKey, CreatedAt, Base):
     __tablename__ = "bot_decision"
     __table_args__ = (
         UniqueConstraint("workspace_id", "id", name="uq_bot_decision_workspace_id"),
+        UniqueConstraint("workspace_id", "bot_id", "id", name="uq_bot_decision_workspace_bot_id"),
         UniqueConstraint(
             "workspace_id", "bot_id", "idempotency_key", name="uq_bot_decision_idempotency"
         ),

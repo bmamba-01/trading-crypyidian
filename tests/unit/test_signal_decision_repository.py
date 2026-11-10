@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -21,6 +22,7 @@ from tests.unit.test_bot_dispatcher import (
     _context,
     _evidence,
 )
+from tests.unit.test_learning_score_event import _event as _score_event
 
 from trading_bot.adapters.database.models import (
     Base,
@@ -29,8 +31,12 @@ from trading_bot.adapters.database.models import (
     OutboxEvent,
     SharedSignalEvidenceRecord,
 )
+from trading_bot.adapters.database.models.learning_score_event_entities import (
+    LearningScoreEventRecord,
+)
 from trading_bot.adapters.database.repositories.bot_decisions import (
     BotDecisionRepository,
+    BotDecisionScoringCommit,
     PostgresSignalDecisionStore,
 )
 from trading_bot.adapters.database.repositories.signal_evidence import (
@@ -41,8 +47,10 @@ from trading_bot.application.bot_dispatcher import (
     EVIDENCE_RECORDED_EVENT,
     BotDecision,
     BotDecisionConflict,
+    BotDecisionEvaluation,
     BotDecisionJob,
     EvidenceScopeError,
+    _hash,
     evaluate_bot_decision,
 )
 from trading_bot.application.outbox import OutboxRepository
@@ -52,6 +60,14 @@ from trading_bot.domain.strategy.registry import StrategyRegistry
 class FakeResult:
     def __init__(self, rows: list[object]) -> None:
         self._rows = rows
+
+    def mappings(self) -> FakeResult:
+        return self
+
+    def one_or_none(self) -> object | None:
+        if len(self._rows) > 1:
+            raise AssertionError("Fake query returned more than one row.")
+        return self._rows[0] if self._rows else None
 
     def all(self) -> list[object]:
         return self._rows
@@ -66,12 +82,16 @@ class FakeSession:
         *,
         scalars_results: list[list[object]] | None = None,
         flush_error: Exception | None = None,
+        flush_error_at: int = 1,
     ) -> None:
         self.scalar_results = iter(scalar_results or [])
         self.scalars_results = iter(scalars_results or [])
         self.added: list[object] = []
         self.statements: list[str] = []
         self.flush_error = flush_error
+        self.flush_error_at = flush_error_at
+        self.flush_count = 0
+        self.rolled_back = False
         self.info: dict[str, Any] = {}
         self.committed = False
 
@@ -87,14 +107,16 @@ class FakeSession:
         self._record(statement)
         return FakeResult(next(self.scalars_results))
 
-    async def execute(self, statement: Any, params: object = None) -> None:
+    async def execute(self, statement: Any, params: object = None) -> FakeResult:
         self._record(statement)
+        return FakeResult([])
 
     def add(self, instance: object) -> None:
         self.added.append(instance)
 
     async def flush(self) -> None:
-        if self.flush_error is not None:
+        self.flush_count += 1
+        if self.flush_error is not None and self.flush_count == self.flush_error_at:
             error, self.flush_error = self.flush_error, None
             raise error
 
@@ -109,7 +131,8 @@ class FakeSession:
         self.committed = True
 
     async def rollback(self) -> None:
-        return None
+        self.rolled_back = True
+        self.added.clear()
 
     async def close(self) -> None:
         return None
@@ -595,6 +618,140 @@ async def test_store_pending_job_is_evaluated_outside_lock_then_completed_once()
     assert [type(row) for row in write.added] == [BotDecisionRecord]
     assert any("FOR UPDATE" in statement for statement in write.statements)
     assert write.committed is True
+
+
+async def test_store_commits_score_event_with_bot_decision_and_job_atomically() -> None:
+    job = _job()
+    incumbent = await _decision(job)
+    payload = incumbent.canonical_payload()
+    payload["decision_snapshot_id"] = "5" * 64
+    decision = BotDecision.from_payload(payload, _hash(payload))
+    snapshot = SimpleNamespace(snapshot_id="5" * 64, decision_time=decision.evaluated_at)
+    vector = SimpleNamespace(
+        snapshot_id="5" * 64,
+        vector_hash="6" * 64,
+        workspace_id=decision.workspace_id,
+        strategy_release_id=decision.strategy_release_id,
+        strategy_release_content_hash=decision.strategy_release_hash,
+        decision_time=snapshot.decision_time,
+    )
+    evaluation = BotDecisionEvaluation(
+        decision=decision,
+        snapshot=snapshot,  # type: ignore[arg-type]
+        candidate_id=decision.candidate_id,
+        vector=vector,  # type: ignore[arg-type]
+    )
+    event = _score_event(
+        workspace_id=decision.workspace_id,
+        bot_id=decision.bot_id,
+        bot_decision_id=decision.decision_id,
+        bot_decision_hash=decision.decision_hash,
+        incumbent_decision_hash=decision.decision_hash,
+        candidate_id=decision.candidate_id,
+        candidate_hash=hashlib.sha256(decision.candidate_json.encode()).hexdigest(),
+        decision_snapshot_id=snapshot.snapshot_id,
+        vector_hash=vector.vector_hash,
+    )
+    read = FakeSession([SimpleNamespace(id=BOT_A), _job_row(job), _evidence_row(_evidence())])
+    record = _job_row(job)
+    write = FakeSession([SimpleNamespace(id=BOT_A), record, None, None])
+    sessions = FakeSessions(read, write)
+    resolver_sessions: list[FakeSession] = []
+
+    async def evaluate(_evidence: object, _pending: BotDecisionJob) -> BotDecisionEvaluation:
+        return evaluation
+
+    async def score_candidate(session, _job, captured, actual_incumbent):
+        resolver_sessions.append(session)
+        assert captured is evaluation
+        assert actual_incumbent is decision
+        return BotDecisionScoringCommit(
+            decision=decision,
+            score_event=event,
+            incumbent_decision=decision,
+            vector_hash=vector.vector_hash,
+            decision_snapshot_id=snapshot.snapshot_id,
+        )
+
+    store = PostgresSignalDecisionStore(
+        sessions,
+        score_candidate=score_candidate,  # type: ignore[arg-type]
+    )
+
+    assert await store.complete_job(job, evaluate) == decision
+
+    assert resolver_sessions == [write]
+    assert [type(row) for row in write.added] == [BotDecisionRecord, LearningScoreEventRecord]
+    assert record.status == "COMPLETED"
+    assert record.completed_at is not None
+    assert write.flush_count == 2
+    assert write.committed is True
+
+
+async def test_score_event_failure_rolls_back_decision_and_leaves_job_pending() -> None:
+    job = _job()
+    incumbent = await _decision(job)
+    payload = incumbent.canonical_payload()
+    payload["decision_snapshot_id"] = "5" * 64
+    decision = BotDecision.from_payload(payload, _hash(payload))
+    snapshot = SimpleNamespace(snapshot_id="5" * 64, decision_time=decision.evaluated_at)
+    vector = SimpleNamespace(
+        snapshot_id="5" * 64,
+        vector_hash="6" * 64,
+        workspace_id=decision.workspace_id,
+        strategy_release_id=decision.strategy_release_id,
+        strategy_release_content_hash=decision.strategy_release_hash,
+        decision_time=snapshot.decision_time,
+    )
+    evaluation = BotDecisionEvaluation(
+        decision=decision,
+        snapshot=snapshot,  # type: ignore[arg-type]
+        candidate_id=decision.candidate_id,
+        vector=vector,  # type: ignore[arg-type]
+    )
+    event = _score_event(
+        workspace_id=decision.workspace_id,
+        bot_id=decision.bot_id,
+        bot_decision_id=decision.decision_id,
+        bot_decision_hash=decision.decision_hash,
+        incumbent_decision_hash=decision.decision_hash,
+        candidate_id=decision.candidate_id,
+        candidate_hash=hashlib.sha256(decision.candidate_json.encode()).hexdigest(),
+        decision_snapshot_id=snapshot.snapshot_id,
+        vector_hash=vector.vector_hash,
+    )
+    read = FakeSession([SimpleNamespace(id=BOT_A), _job_row(job), _evidence_row(_evidence())])
+    record = _job_row(job)
+    write = FakeSession(
+        [SimpleNamespace(id=BOT_A), record, None, None, None],
+        flush_error=IntegrityError("insert score event", {}, RuntimeError("trigger denied")),
+        flush_error_at=2,
+    )
+
+    async def evaluate(_evidence: object, _pending: BotDecisionJob) -> BotDecisionEvaluation:
+        return evaluation
+
+    async def score_candidate(session, _job, _captured, _decision):
+        return BotDecisionScoringCommit(
+            decision=decision,
+            score_event=event,
+            incumbent_decision=decision,
+            vector_hash=vector.vector_hash,
+            decision_snapshot_id=snapshot.snapshot_id,
+        )
+
+    store = PostgresSignalDecisionStore(
+        FakeSessions(read, write),
+        score_candidate=score_candidate,  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(BotDecisionConflict, match="Score event"):
+        await store.complete_job(job, evaluate)
+
+    assert record.status == "PENDING"
+    assert record.completed_at is None
+    assert write.rolled_back is True
+    assert write.added == []
 
 
 async def test_store_job_completed_concurrently_returns_stored_decision() -> None:

@@ -390,3 +390,66 @@ def test_manifest_hash_changes_for_risk_pipeline_and_parameter_trial() -> None:
     )
 
     assert base.content_hash != changed.content_hash
+
+
+def test_runner_records_exact_input_excluded_observation_before_skipping_evaluator() -> None:
+    from dataclasses import replace
+
+    fresh = _observation(0)
+    excluded = _observation(1)
+    excluded = replace(
+        excluded,
+        snapshot=replace(
+            excluded.snapshot,
+            series=(replace(excluded.snapshot.series[0], quality=SeriesQuality.STALE),),
+        ),
+    )
+    events = []
+
+    class TraceEvaluator:
+        def record_input_excluded(self, observation, reason_code):
+            events.append(("excluded", observation, reason_code))
+
+        def __call__(self, snapshot):
+            events.append(("evaluated", snapshot.snapshot_id))
+            return None
+
+    result = BacktestRunner().run(
+        (fresh, excluded), manifest=_manifest(), evaluator=TraceEvaluator()
+    )
+
+    assert isinstance(result, EvaluationReport)
+    assert events == [
+        ("excluded", excluded, "INPUT_NOT_READY"),
+        ("evaluated", fresh.snapshot.snapshot_id),
+    ]
+    assert result.usable_observation_count == 1
+    assert result.observation_count == 2
+
+
+def test_runner_input_excluded_hook_failure_is_a_failed_trial() -> None:
+    from dataclasses import replace
+
+    original = _observation(0)
+    excluded = replace(
+        original,
+        snapshot=replace(
+            original.snapshot,
+            series=(replace(original.snapshot.series[0], quality=SeriesQuality.STALE),),
+        ),
+    )
+
+    class BrokenTraceEvaluator:
+        def record_input_excluded(self, observation, reason_code):
+            raise RuntimeError("Chi tiết riêng của hook không được lọt báo cáo.")
+
+        def __call__(self, snapshot):
+            raise AssertionError("Không được đánh giá input đã loại.")
+
+    result = BacktestRunner().run(
+        (excluded,), manifest=_manifest(), evaluator=BrokenTraceEvaluator()
+    )
+    assert isinstance(result, ReplayRejected)
+    assert result.reason_code == "EVALUATOR_FAILED"
+    assert result.trial_record.error_type == "RuntimeError"
+    assert "Chi tiết riêng" not in result.detail_vi

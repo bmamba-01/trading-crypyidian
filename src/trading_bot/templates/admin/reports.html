@@ -2,14 +2,16 @@
 {% block title %}Báo cáo — Crypidian{% endblock %}
 {% block heading %}Báo cáo{% endblock %}
 {% block content %}
-<form method="get" action="/admin/reports">
+<p id="report-help">Nhập thời gian ISO-8601 có múi giờ, ví dụ 2026-11-02T07:00:00+07:00. Kết quả hiển thị theo Asia/Ho_Chi_Minh. Khi chọn toàn không gian làm việc, hãy chọn “Không chọn bot”.</p>
+<form class="report-filter" method="get" action="/admin/reports" aria-describedby="report-help">
   <label for="scope">Phạm vi</label>
   <select id="scope" name="scope">
     <option value="bot" {% if scope == "bot" %}selected{% endif %}>Một bot</option>
-    <option value="workspace" {% if scope == "workspace" %}selected{% endif %}>Toàn workspace</option>
+    <option value="workspace" {% if scope == "workspace" %}selected{% endif %}>Toàn không gian làm việc</option>
   </select>
   <label for="bot_id">Bot (khi chọn phạm vi một bot)</label>
   <select id="bot_id" name="bot_id">
+    <option value="">Không chọn bot</option>
     {% for bot in bots %}<option value="{{ bot.id }}" {% if bot_id == bot.id %}selected{% endif %}>{{ bot.name }}</option>{% endfor %}
   </select>
   <label for="start">Bắt đầu (ISO-8601 có múi giờ)</label>
@@ -18,5 +20,136 @@
   <input id="end" name="end" type="text" value="{{ end }}" required>
   <button type="submit">Xem báo cáo</button>
 </form>
-{% if report %}<pre>{{ report | tojson(indent=2) }}</pre>{% endif %}
+{% if report %}
+<section aria-labelledby="report-heading">
+<h2 id="report-heading">Kết quả báo cáo — {{ report.scope | label_vi }}</h2>
+{% if report.window %}<p>Từ {{ report.window.start | local_time }} đến {{ report.window.end | local_time }}; gồm mốc bắt đầu, không gồm mốc kết thúc.</p>{% endif %}
+{% with totals=report.get("totals", {}) %}{% include "admin/metric_cards.html" %}{% endwith %}
+{% if report.daily_performance %}
+<section aria-labelledby="daily-performance-heading" class="daily-performance">
+  <h3 id="daily-performance-heading">Lịch lãi/lỗ theo ngày</h3>
+  <p>Ngày được tính theo {{ report.daily_performance.timezone }}. Chỉ hiện ngày có giao dịch đã đóng; tài sản định giá được tách riêng.</p>
+  {% for asset, days in report.daily_performance.quote_assets.items() %}
+  <section aria-label="Lãi lỗ theo ngày bằng {{ asset }}">
+    <h4>Tài sản {{ asset }}</h4>
+    <div class="row g-3 daily-performance-grid">
+      {% for day in days %}
+      <article class="col-12 col-sm-6 col-xl-4 daily-performance-card">
+        <h5><time datetime="{{ day.date }}">{{ day.date }}</time></h5>
+        <dl>
+          {% set daily_pnl_tone = day.net_pnl | pnl_tone %}
+          <div><dt>Lãi/lỗ ròng</dt><dd class="pnl-value pnl-value--{{ daily_pnl_tone }}" data-pnl-tone="{{ daily_pnl_tone }}">{% if daily_pnl_tone == "positive" %}+{% endif %}{{ day.net_pnl | number_vi }} {{ asset }}</dd></div>
+          <div><dt>Giao dịch đã đóng</dt><dd>{{ day.closed_trade_count }}</dd></div>
+          <div><dt>Có lãi / thua lỗ / hòa vốn</dt><dd>{{ day.winning_trade_count }} / {{ day.losing_trade_count }} / {{ day.breakeven_trade_count }}</dd></div>
+        </dl>
+      </article>
+      {% else %}<p>Chưa có giao dịch đã đóng trong kỳ báo cáo.</p>{% endfor %}
+    </div>
+  </section>
+  {% endfor %}
+</section>
+{% endif %}
+{% if report.scope == "bot" and report.trades %}
+<section aria-labelledby="trade-history-heading">
+  <h3 id="trade-history-heading">Lịch sử giao dịch</h3>
+  <p>Chọn một giao dịch để xem nến và dấu vào/đóng. Thông tin giá, lời lỗ và lý do lấy từ ledger và quyết định đã lưu.</p>
+  <div class="mobile-trade-list" aria-label="Giao dịch trong kỳ báo cáo">
+    {% for trade in report.trades %}
+    <article class="trade-list-card">
+      <h4>{{ trade.symbol }} / {{ trade.side | label_vi }}</h4>
+      <dl>
+        <div><dt>Mã giao dịch</dt><dd><code>{{ trade.trade_id }}</code></dd></div>
+        <div><dt>Đóng lúc</dt><dd>{{ trade.closed_at | local_time }}</dd></div>
+        {% set trade_pnl_tone = trade.net_pnl | pnl_tone %}
+        <div><dt>Lời/lỗ ròng</dt><dd class="pnl-value pnl-value--{{ trade_pnl_tone }}" data-pnl-tone="{{ trade_pnl_tone }}">{% if trade_pnl_tone == "positive" %}+{% endif %}{{ trade.net_pnl | number_vi }} {{ trade.quote_asset }}</dd></div>
+        <div><dt>Chiến thuật</dt><dd>{{ trade.entry_reason.get("strategy_id", "Chưa có dữ liệu") if trade.entry_reason else "Chưa có dữ liệu" }}</dd></div>
+        <div><dt>Lý do đóng</dt><dd>{{ {"STOP_LOSS": "Dừng lỗ", "TAKE_PROFIT": "Chốt lời", "TIME_STOP": "Đóng theo thời gian", "OPPOSING_SIGNAL": "Tín hiệu ngược chiều", "FLATTEN_OPERATION": "Đóng theo thao tác quản trị"}.get(trade.exit_reason, trade.exit_reason) if trade.exit_reason else "Chưa có dữ liệu" }}</dd></div>
+      </dl>
+      <form class="chart-select-form" method="get" action="/admin/reports">
+        <input type="hidden" name="scope" value="bot">
+        <input type="hidden" name="bot_id" value="{{ bot_id }}">
+        <input type="hidden" name="start" value="{{ start }}">
+        <input type="hidden" name="end" value="{{ end }}">
+        <input type="hidden" name="chart_trade_id" value="{{ trade.trade_id }}">
+        <label class="visually-hidden" for="mobile-timeframe-{{ loop.index }}">Khung biểu đồ cho {{ trade.symbol }}</label>
+        <select id="mobile-timeframe-{{ loop.index }}" name="chart_timeframe">
+          {% for timeframe in ["5m", "15m", "1h", "4h", "1d"] %}<option value="{{ timeframe }}" {% if chart_timeframe == timeframe %}selected{% endif %}>{{ timeframe }}</option>{% endfor %}
+        </select>
+        <button type="submit">Xem biểu đồ</button>
+      </form>
+    </article>
+    {% endfor %}
+  </div>
+  <div class="desktop-trades table-responsive">
+    <table class="trade-history-table">
+      <caption>Giao dịch đã đóng trong kỳ báo cáo</caption>
+      <thead><tr><th scope="col">Mã giao dịch</th><th scope="col">Cặp / hướng</th><th scope="col">Đóng lúc</th><th scope="col">Lời/lỗ ròng</th><th scope="col">Chiến thuật</th><th scope="col">Lý do đóng</th><th scope="col">Biểu đồ</th></tr></thead>
+      <tbody>
+      {% for trade in report.trades %}
+      <tr>
+        <th scope="row"><code>{{ trade.trade_id }}</code></th>
+        <td>{{ trade.symbol }} / {{ trade.side | label_vi }}</td>
+        <td>{{ trade.closed_at | local_time }}</td>
+        {% set trade_pnl_tone = trade.net_pnl | pnl_tone %}
+        <td><span class="pnl-value pnl-value--{{ trade_pnl_tone }}" data-pnl-tone="{{ trade_pnl_tone }}">{% if trade_pnl_tone == "positive" %}+{% endif %}{{ trade.net_pnl | number_vi }} {{ trade.quote_asset }}</span></td>
+        <td>{{ trade.entry_reason.get("strategy_id", "Chưa có dữ liệu") if trade.entry_reason else "Chưa có dữ liệu" }}</td>
+        <td>{{ {"STOP_LOSS": "Dừng lỗ", "TAKE_PROFIT": "Chốt lời", "TIME_STOP": "Đóng theo thời gian", "OPPOSING_SIGNAL": "Tín hiệu ngược chiều", "FLATTEN_OPERATION": "Đóng theo thao tác quản trị"}.get(trade.exit_reason, trade.exit_reason) if trade.exit_reason else "Chưa có dữ liệu" }}</td>
+        <td>
+          <form class="chart-select-form" method="get" action="/admin/reports">
+            <input type="hidden" name="scope" value="bot">
+            <input type="hidden" name="bot_id" value="{{ bot_id }}">
+            <input type="hidden" name="start" value="{{ start }}">
+            <input type="hidden" name="end" value="{{ end }}">
+            <input type="hidden" name="chart_trade_id" value="{{ trade.trade_id }}">
+            <label class="visually-hidden" for="timeframe-{{ loop.index }}">Khung biểu đồ cho {{ trade.symbol }}</label>
+            <select id="timeframe-{{ loop.index }}" name="chart_timeframe">
+              {% for timeframe in ["5m", "15m", "1h", "4h", "1d"] %}<option value="{{ timeframe }}" {% if chart_timeframe == timeframe %}selected{% endif %}>{{ timeframe }}</option>{% endfor %}
+            </select>
+            <button type="submit">Xem biểu đồ</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
+{% if chart_data %}
+{% set selected_trade = chart_data.trade %}
+<section aria-labelledby="trade-chart-heading" class="trade-chart-section">
+  <h3 id="trade-chart-heading">Biểu đồ lệnh {{ chart_data.symbol }} — {{ chart_data.timeframe }}</h3>
+  <p id="trade-chart-help">Nến giá lấy từ kho dữ liệu Crypidian. Dấu vào/đóng được đặt gần cây nến cùng thời điểm; giá và giờ khớp chính xác được ghi trong bảng bên dưới.</p>
+  {% if chart_data.notice %}<p role="status">{{ chart_data.notice }}</p>{% endif %}
+  <div id="trade-chart" class="chart-canvas" role="img" aria-label="Biểu đồ nến {{ chart_data.symbol }} với dấu vào và đóng lệnh"></div>
+  <p id="trade-chart-event-detail" class="chart-event-detail" role="status" aria-live="polite">Rê chuột hoặc chạm vào nến có dấu để đọc giải thích lệnh vào/đóng.</p>
+  {% if not chart_data.bars %}<p role="status">Chưa có nến {{ chart_data.timeframe }} trong kho cho khoảng thời gian này. Bảng khớp lệnh vẫn hiển thị dữ liệu chính xác.</p>{% endif %}
+  <p class="chart-attribution">Biểu đồ sử dụng <a href="https://www.tradingview.com/lightweight-charts/" target="_blank" rel="noopener noreferrer">TradingView Lightweight Charts</a>, theo giấy phép Apache 2.0. Nến và dữ liệu lệnh do Crypidian cung cấp.</p>
+  <dl class="trade-explanation">
+    <div><dt>Cặp / hướng</dt><dd>{{ selected_trade.symbol }} / {{ selected_trade.side | label_vi }}</dd></div>
+    {% set selected_pnl_tone = selected_trade.net_pnl | pnl_tone %}
+    <div><dt>Lời/lỗ ròng</dt><dd class="pnl-value pnl-value--{{ selected_pnl_tone }}" data-pnl-tone="{{ selected_pnl_tone }}">{% if selected_pnl_tone == "positive" %}+{% endif %}{{ selected_trade.net_pnl | number_vi }} {{ selected_trade.quote_asset }}</dd></div>
+    <div><dt>Giờ vào</dt><dd>{{ selected_trade.opened_at | local_time }}</dd></div>
+    <div><dt>Giờ đóng</dt><dd>{{ selected_trade.closed_at | local_time }}</dd></div>
+    <div><dt>Chiến thuật</dt><dd>{{ selected_trade.entry_reason.get("strategy_id", "Chưa có dữ liệu") if selected_trade.entry_reason else "Chưa có dữ liệu" }}</dd></div>
+    <div><dt>Vì sao bắt tín hiệu</dt><dd>{{ selected_trade.entry_reason.get("detail_vi", "Chưa có dữ liệu") if selected_trade.entry_reason else "Chưa có dữ liệu" }}</dd></div>
+    <div><dt>Lý do đóng</dt><dd>{{ {"STOP_LOSS": "Dừng lỗ", "TAKE_PROFIT": "Chốt lời", "TIME_STOP": "Đóng theo thời gian", "OPPOSING_SIGNAL": "Tín hiệu ngược chiều", "FLATTEN_OPERATION": "Đóng theo thao tác quản trị"}.get(selected_trade.exit_reason, selected_trade.exit_reason) if selected_trade.exit_reason else "Chưa có dữ liệu" }}</dd></div>
+    <div><dt>Chi phí</dt><dd>Phí {{ selected_trade.fee_total }}; funding {{ selected_trade.funding_total }}; trượt giá {{ selected_trade.slippage_total }} {{ selected_trade.quote_asset }}</dd></div>
+  </dl>
+  <div class="table-responsive">
+    <table>
+      <caption>Giá khớp vào/đóng đã lưu</caption>
+      <thead><tr><th scope="col">Loại</th><th scope="col">Thời điểm chính xác</th><th scope="col">Giá</th><th scope="col">Khối lượng</th><th scope="col">Bar key</th></tr></thead>
+      <tbody>{% for fill in selected_trade.fills %}<tr><td>{{ fill.role | label_vi }}</td><td>{{ fill.occurred_at | local_time }}</td><td>{{ fill.price }}</td><td>{{ fill.quantity }}</td><td><code>{{ fill.bar_key }}</code></td></tr>{% else %}<tr><td colspan="5">Ledger chưa lưu fill cho giao dịch này.</td></tr>{% endfor %}</tbody>
+    </table>
+  </div>
+</section>
+<script id="trade-chart-data" type="application/json">{{ chart_data | tojson }}</script>
+{% endif %}
+<details><summary>Dữ liệu kỹ thuật JSON</summary><pre>{{ report | tojson(indent=2) }}</pre></details>
+</section>
+{% endif %}
+{% endblock %}
+{% block scripts %}
+{% if chart_data %}<script src="/static/vendor/lightweight-charts-5.2.1.standalone.production.js"></script><script src="/static/trade-chart.js" defer></script>{% endif %}
 {% endblock %}

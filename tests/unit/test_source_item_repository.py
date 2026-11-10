@@ -25,6 +25,10 @@ from trading_bot.domain.research.source_item_history import (
 )
 from trading_bot.domain.research.source_items import SourceItemRevision
 from trading_bot.domain.research.source_policy import SourcePolicyState, SourceUsePurpose
+from trading_bot.domain.research.source_revision_access import (
+    SourceAccessMode,
+    SourceAccessReason,
+)
 
 WORKSPACE = uuid4()
 
@@ -367,3 +371,67 @@ async def test_current_tombstone_recorded_after_cutoff_still_blocks_old_replay()
         purpose=SourceUsePurpose.METADATA,
     )
     assert result is None
+
+
+@pytest.mark.asyncio
+async def test_access_envelope_returns_authoritative_rights_and_temporal_facts():
+    from trading_bot.adapters.database.models import SourcePolicyRevisionRecord
+    from trading_bot.domain.research.source_registry import source_rights_hash
+
+    stored = rows(revision())
+    policy = approved(discovered())
+    policy_rows = [
+        SourcePolicyRevisionRecord.from_domain(WORKSPACE, item) for item in policy.revisions
+    ]
+    database_now = NOW + timedelta(days=1)
+    session = FakeSession(
+        scalar_results=[None],
+        rows_results=[
+            stored,
+            item_receipts(stored),
+            policy_rows,
+            policy_receipts(policy_rows),
+        ],
+        database_now=database_now,
+    )
+
+    envelope = await SourceItemRepository(session).select_access_envelope(
+        workspace_id=WORKSPACE,
+        source_id="official-calendar",
+        item_id="item-1",
+        as_of=NOW + timedelta(minutes=5),
+        purpose=SourceUsePurpose.METADATA,
+    )
+
+    assert envelope.decision.permitted is True
+    assert envelope.decision.reason is SourceAccessReason.ALLOWED
+    assert envelope.decision.mode is SourceAccessMode.HISTORICAL_REPLAY
+    assert envelope.revision.revision.revision_id == "r1"
+    assert envelope.revision_known_at_upper_bound == stored[0].recorded_at
+    assert envelope.historical_policy_id == policy.current.policy.policy_id
+    assert envelope.historical_policy_sequence == policy.current.sequence
+    assert envelope.current_policy_id == policy.current.policy.policy_id
+    assert envelope.current_policy_sequence == policy.current.sequence
+    assert envelope.rights_hash == source_rights_hash(policy.current)
+    assert envelope.purpose is SourceUsePurpose.METADATA
+    assert envelope.as_of == NOW + timedelta(minutes=5)
+    assert envelope.evaluated_at == database_now
+    assert envelope.retention_expires_at is None
+    assert envelope.takedown_at is None
+
+
+@pytest.mark.asyncio
+async def test_access_envelope_denies_unobserved_revision_without_exposing_it():
+    envelope = await SourceItemRepository(
+        FakeSession(rows_results=[[], []], database_now=NOW + timedelta(hours=1))
+    ).select_access_envelope(
+        workspace_id=WORKSPACE,
+        source_id="official-calendar",
+        item_id="item-1",
+        purpose=SourceUsePurpose.METADATA,
+    )
+
+    assert envelope.decision.permitted is False
+    assert envelope.decision.reason is SourceAccessReason.REVISION_NOT_FOUND
+    assert envelope.revision is None
+    assert envelope.rights_hash is None

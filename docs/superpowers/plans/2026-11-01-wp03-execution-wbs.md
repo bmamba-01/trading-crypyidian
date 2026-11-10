@@ -2,6 +2,8 @@
 
 > **Trạng thái:** Cập nhật 2026-11-02; WP-03B có durable venue intent/transition ledger, PostgreSQL repository, bot-scoped RLS/FK, DB-backed `VenueOrderLedgerPort` adapter và Compose E2E đã đạt. `VenueOrderReconciliationService` qua verifier port kiểm scope/freshness/fill monotonicity và ghi transition verified; E2E fake verifier xác nhận partial fill vào audit, `ORDER_ABSENT` giữ UNKNOWN. Adapter chưa được wire vào composition/worker và chưa có verifier venue thật. Chưa có transaction bridge ghi open-risk rồi release/transfer an toàn; venue-linked risk vẫn bị giữ. Caller-provided evidence hash không thể release/transfer hoặc chuyển `UNKNOWN→RETRYABLE`. PAPER không liên kết venue vẫn giữ luồng cũ. HMAC process-local chưa có rehydrate contract. Chưa có production transport, secret provider, outbox bridge, authenticated stream/protection hoặc order Demo; Demo vẫn chờ gate PAPER/risk.
 
+> **Cập nhật 2026-11-04:** Task 1A schema contract/fake parser fixtures đã hoàn tất và có 166 unit evidence được ghi trong memory. Các đoạn Task 1 cũ nói còn khóa enum/updateTime/Algo nullability là lịch sử tại 02/11, được thay bởi [phân tích WP-03 sâu](./2026-11-04-wp03-deep-gap-analysis.md). Không có network transport hay Demo evidence; WP-03B–E còn mở theo gate.
+
 **Goal:** Bổ sung execution adapter USDⓈ-M Demo với intent bền vững, reservation không mất khi trạng thái chưa rõ, protective order và reconciliation có thể phục hồi; LIVE tiếp tục bị khóa.
 
 **Architecture:** Domain/application chỉ gọi port trung lập. Adapter Binance sở hữu SDK/HTTP signing, host allowlist, parser REST/WebSocket và mapping venue. PAPER ledger/reservation/state machine là nền nhưng phải phân biệt dữ liệu PAPER và venue. `ALGO_UPDATE` cùng REST algo-order API quản lý conditional orders; lệnh thường sau trigger tiếp tục được reconcile bằng order/trade events. Outbox đảm bảo ghi ý định trước khi gọi mạng, còn retry bên ngoài cần idempotency/reconcile riêng.
@@ -96,7 +98,7 @@ Có thể làm song song các contract/fixture không cùng ownership; migration
 
 **Acceptance:** every required operation maps to official current documentation and a parser/schema fixture; there is no unresolved mismatch between regular and algo order semantics; unsupported Demo capabilities are labeled unknown rather than assumed.
 
-**Acceptance status:** tài liệu nguồn và Demo unknown đã có; quy tắc định tuyến conditional theo Change Log đã chốt ở Task 1A dưới đây, nhưng parser/schema fixtures chưa tạo. Chỉ phần documentation audit hoàn tất; Task 1 vẫn mở tới khi có fixture và parser.
+**Acceptance status (2026-11-02):** hoàn thành audit tài liệu và contract parser/fixtures offline ở Task 1A; không có mismatch regular/Algo chưa xử lý trong lát cắt hiện tại. 166 unit liên quan parser, Demo REST mapping và submission errors đạt. Đây không phải bằng chứng endpoint được gọi hoặc account Demo hoạt động; không có network request. Task 2 host/key/readiness vẫn mở.
 
 ### Task 1A — Contract parser và schema fixtures offline (có thể làm ngay)
 
@@ -123,6 +125,8 @@ Có thể làm song song các contract/fixture không cùng ownership; migration
 **Trình tự implement sau khi contract được cập nhật:** viết parser tests RED từ fixture nhỏ đã đối chiếu nguồn; triển khai parser regular/Algo riêng; chạy unit tests offline; bổ sung consumer/adapter mapping và fault cases; sau cùng mới xem xét E2E fake boundary. Demo flow vẫn bị chặn bởi PAPER/risk gate và xác nhận Demo endpoint/credential riêng.
 
 **Acceptance Task 1A:** regular và Algo DTO/type/status không thể bị nhầm lẫn; conditional regular-route `-4120` được nhận diện; các trạng thái Algo trigger/finish không bị map thành fill; unknown/malformed/ambiguous responses fail closed và giữ reservation; mọi fixture có nguồn/ngày và không có secret; chưa tuyên bố Demo capability.
+
+**Kết quả implementation Task 1A (2026-11-02):** `order_schemas.py`, `submission_errors.py`, `demo_rest.py`, fixture `wp03_order_contracts.json` và unit parser/adapter đã có. RED/review finding `last filled > cumulative filled` được sửa; regression parser/adapter/submission errors đạt **166 passed**. Luồng REST hiện chỉ có transport interface được inject; chưa có network transport/composition và chưa phát sinh lệnh.
 
 ## Task 2 — WP-03A.2: ExchangeGateway, host/key boundary and signed readiness (contract/offline first)
 

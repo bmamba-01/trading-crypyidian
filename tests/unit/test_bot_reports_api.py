@@ -97,7 +97,7 @@ def test_bot_scope_report_passes_explicit_query_from_session_workspace() -> None
         start=datetime(2026, 10, 1, tzinfo=UTC),
         end=datetime(2026, 10, 2, tzinfo=UTC),
         mode="PAPER",
-        report_version="bot-report.v1",
+        report_version="bot-report.v2",
         scope=ReportScope.BOT,
     )
 

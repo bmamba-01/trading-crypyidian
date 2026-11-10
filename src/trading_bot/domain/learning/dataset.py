@@ -4,12 +4,58 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 from uuid import UUID
 
 from trading_bot.domain.learning.labels import _sha256, _timestamp
+from trading_bot.domain.research.source_policy import SourceUsePurpose
+
+_SOURCE_IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
+_POLICY_IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}\Z")
+
+
+@dataclass(frozen=True, slots=True)
+class DatasetSourceReference:
+    """Ghép một revision nguồn với policy, mục đích và mã băm quyền cụ thể."""
+
+    source_id: str
+    item_id: str
+    revision_id: str
+    policy_id: str
+    policy_sequence: int
+    purpose: SourceUsePurpose
+    rights_hash: str
+
+    def __post_init__(self) -> None:
+        for name in ("source_id", "item_id", "revision_id"):
+            if not isinstance(getattr(self, name), str) or not _SOURCE_IDENTIFIER.fullmatch(
+                getattr(self, name)
+            ):
+                raise ValueError(f"{name} nguồn không hợp lệ.")
+        if not isinstance(self.policy_id, str) or not _POLICY_IDENTIFIER.fullmatch(self.policy_id):
+            raise ValueError("policy_id nguồn không hợp lệ.")
+        if type(self.policy_sequence) is not int or self.policy_sequence < 1:
+            raise ValueError("policy_sequence phải là số nguyên dương.")
+        if type(self.purpose) is not SourceUsePurpose:
+            raise ValueError("purpose phải là SourceUsePurpose tường minh.")
+        if self.purpose is not SourceUsePurpose.TRAINING:
+            raise ValueError("Dataset manifest chỉ ghim quyền TRAINING.")
+        _sha256(self.rights_hash, "rights_hash")
+
+    @property
+    def identity(self) -> tuple[str, str, str, str, int, str]:
+        """Khóa quyền ổn định để phát hiện cùng policy nhưng mang hai mã băm."""
+        return (
+            self.source_id,
+            self.item_id,
+            self.revision_id,
+            self.policy_id,
+            self.policy_sequence,
+            self.purpose.value,
+        )
 
 
 class DatasetSplit(StrEnum):
@@ -41,6 +87,7 @@ class DatasetSample:
     source_dependent: bool
     source_rights_hashes: tuple[str, ...]
     source_revision_refs: tuple[str, ...]
+    source_references: tuple[DatasetSourceReference, ...] = ()
 
     def __post_init__(self) -> None:
         for name in ("sample_id", "outcome_id", "label_version"):
@@ -75,9 +122,25 @@ class DatasetSample:
         if any(not ref.strip() for ref in revisions):
             raise ValueError("source_revision_refs không được chứa giá trị rỗng.")
         object.__setattr__(self, "source_revision_refs", revisions)
-        if self.source_dependent and (not rights or not revisions):
+        raw_references = tuple(self.source_references)
+        if any(type(item) is not DatasetSourceReference for item in raw_references):
+            raise ValueError("source_references phải chứa DatasetSourceReference.")
+        references = tuple(
+            sorted(set(raw_references), key=lambda item: (*item.identity, item.rights_hash))
+        )
+        identities: dict[tuple[str, str, str, str, int, str], str] = {}
+        for item in references:
+            previous_hash = identities.setdefault(item.identity, item.rights_hash)
+            if previous_hash != item.rights_hash:
+                raise ValueError("Cùng source reference có conflicting rights hash.")
+        object.__setattr__(self, "source_references", references)
+        if self.source_dependent and not references and (not rights or not revisions):
             raise ValueError("Sample phụ thuộc nguồn phải ghim rights hash và source revision.")
-        if not self.source_dependent and (rights or revisions):
+        if self.source_dependent and references and (rights or revisions):
+            if rights != tuple(sorted({item.rights_hash for item in references})):
+                raise ValueError("Rights hash cũ không khớp typed source references.")
+            raise ValueError("Không trộn legacy refs với typed source references.")
+        if not self.source_dependent and (rights or revisions or references):
             raise ValueError("Sample không phụ thuộc nguồn không được mang lineage nguồn.")
 
 
@@ -160,6 +223,17 @@ class DatasetManifest:
                     raise ValueError("Manifest v2 chỉ nhận split development hoặc holdout.")
             elif item.split is DatasetSplit.DEVELOPMENT:
                 raise ValueError("Split development chỉ được dùng với dataset-manifest-v2.")
+            if self.manifest_version == "dataset-manifest-v3":
+                if item.source_dependent and not item.source_references:
+                    raise ValueError(
+                        "Manifest v3 yêu cầu typed source reference cho sample phụ thuộc nguồn."
+                    )
+                if item.source_references and not item.source_dependent:
+                    raise ValueError(
+                        "Typed source reference chỉ hợp lệ cho sample phụ thuộc nguồn."
+                    )
+            elif item.source_references:
+                raise ValueError("Typed source reference chỉ được lưu trong manifest v3.")
             if not start <= item.decision_at < end:
                 raise ValueError("Sample decision nằm ngoài data range.")
             if item.decision_at > as_of:
@@ -188,6 +262,40 @@ class DatasetManifest:
         object.__setattr__(self, "content_hash", content_hash)
 
     def _payload(self) -> dict[str, object]:
+        samples = []
+        for item in self.samples:
+            sample_payload: dict[str, object] = {
+                "sample_id": item.sample_id,
+                "decision_at": item.decision_at.isoformat(),
+                "feature_available_at": item.feature_available_at.isoformat(),
+                "outcome_start": item.outcome_start.isoformat(),
+                "outcome_end": item.outcome_end.isoformat(),
+                "feature_snapshot_hash": item.feature_snapshot_hash,
+                "outcome_id": item.outcome_id,
+                "outcome_hash": item.outcome_hash,
+                "label_hash": item.label_hash,
+                "label_value": item.label_value,
+                "label_version": item.label_version,
+                "split": item.split.value,
+                "source_dependent": item.source_dependent,
+            }
+            if self.manifest_version == "dataset-manifest-v3":
+                sample_payload["source_references"] = [
+                    {
+                        "source_id": reference.source_id,
+                        "item_id": reference.item_id,
+                        "revision_id": reference.revision_id,
+                        "policy_id": reference.policy_id,
+                        "policy_sequence": reference.policy_sequence,
+                        "purpose": reference.purpose.value,
+                        "rights_hash": reference.rights_hash,
+                    }
+                    for reference in item.source_references
+                ]
+            else:
+                sample_payload["source_rights_hashes"] = list(item.source_rights_hashes)
+                sample_payload["source_revision_refs"] = list(item.source_revision_refs)
+            samples.append(sample_payload)
         return {
             "manifest_version": self.manifest_version,
             "workspace_id": str(self.workspace_id),
@@ -200,26 +308,7 @@ class DatasetManifest:
             "label_version": self.label_version,
             "sample_schema_version": self.sample_schema_version,
             "split_policy_version": self.split_policy_version,
-            "samples": [
-                {
-                    "sample_id": item.sample_id,
-                    "decision_at": item.decision_at.isoformat(),
-                    "feature_available_at": item.feature_available_at.isoformat(),
-                    "outcome_start": item.outcome_start.isoformat(),
-                    "outcome_end": item.outcome_end.isoformat(),
-                    "feature_snapshot_hash": item.feature_snapshot_hash,
-                    "outcome_id": item.outcome_id,
-                    "outcome_hash": item.outcome_hash,
-                    "label_hash": item.label_hash,
-                    "label_value": item.label_value,
-                    "label_version": item.label_version,
-                    "split": item.split.value,
-                    "source_dependent": item.source_dependent,
-                    "source_rights_hashes": list(item.source_rights_hashes),
-                    "source_revision_refs": list(item.source_revision_refs),
-                }
-                for item in self.samples
-            ],
+            "samples": samples,
             "exclusions": [
                 {"sample_id": item.sample_id, "reasons": list(item.reasons)}
                 for item in self.exclusions
@@ -245,7 +334,7 @@ class DatasetManifest:
             payload = json.loads(canonical_json)
         except (TypeError, ValueError) as error:
             raise ValueError("canonical manifest JSON không hợp lệ.") from error
-        expected_keys = {
+        common_keys = {
             "manifest_version",
             "workspace_id",
             "query_hash",
@@ -262,8 +351,11 @@ class DatasetManifest:
             "holdout_sealed_at",
             "retention_policy_ref",
         }
-        if not isinstance(payload, dict) or set(payload) != expected_keys:
+        if not isinstance(payload, dict) or set(payload) != common_keys:
             raise ValueError("canonical manifest có schema không hỗ trợ.")
+        manifest_version = payload.get("manifest_version")
+        if not isinstance(manifest_version, str) or not manifest_version.strip():
+            raise ValueError("manifest_version không hợp lệ.")
 
         def parse_timestamp(value: object, name: str) -> datetime:
             if not isinstance(value, str):
@@ -285,8 +377,69 @@ class DatasetManifest:
                 raise ValueError("samples/exclusions phải là danh sách.")
             if not isinstance(symbols, list) or any(not isinstance(item, str) for item in symbols):
                 raise ValueError("symbols phải là danh sách chuỗi.")
-            samples = tuple(
-                DatasetSample(
+            sample_base_keys = {
+                "sample_id",
+                "decision_at",
+                "feature_available_at",
+                "outcome_start",
+                "outcome_end",
+                "feature_snapshot_hash",
+                "outcome_id",
+                "outcome_hash",
+                "label_hash",
+                "label_value",
+                "label_version",
+                "split",
+                "source_dependent",
+            }
+            legacy_lineage_keys = {"source_rights_hashes", "source_revision_refs"}
+
+            def parse_sample(item: object) -> DatasetSample:
+                if not isinstance(item, dict):
+                    raise ValueError("Sample canonical phải là object.")
+                lineage_keys = (
+                    {"source_references"}
+                    if manifest_version == "dataset-manifest-v3"
+                    else legacy_lineage_keys
+                )
+                if set(item) != sample_base_keys | lineage_keys:
+                    raise ValueError("Sample canonical có schema không hỗ trợ.")
+                references: tuple[DatasetSourceReference, ...] = ()
+                rights_hashes: tuple[str, ...] = ()
+                revision_refs: tuple[str, ...] = ()
+                if manifest_version == "dataset-manifest-v3":
+                    raw_references = item["source_references"]
+                    if not isinstance(raw_references, list):
+                        raise ValueError("source_references phải là danh sách.")
+                    reference_keys = {
+                        "source_id",
+                        "item_id",
+                        "revision_id",
+                        "policy_id",
+                        "policy_sequence",
+                        "purpose",
+                        "rights_hash",
+                    }
+                    parsed_references = []
+                    for reference in raw_references:
+                        if not isinstance(reference, dict) or set(reference) != reference_keys:
+                            raise ValueError("Typed source reference có schema không hỗ trợ.")
+                        parsed_references.append(
+                            DatasetSourceReference(
+                                source_id=reference["source_id"],
+                                item_id=reference["item_id"],
+                                revision_id=reference["revision_id"],
+                                policy_id=reference["policy_id"],
+                                policy_sequence=reference["policy_sequence"],
+                                purpose=SourceUsePurpose(reference["purpose"]),
+                                rights_hash=reference["rights_hash"],
+                            )
+                        )
+                    references = tuple(parsed_references)
+                else:
+                    rights_hashes = tuple(item["source_rights_hashes"])
+                    revision_refs = tuple(item["source_revision_refs"])
+                return DatasetSample(
                     sample_id=item["sample_id"],
                     decision_at=parse_timestamp(item["decision_at"], "decision_at"),
                     feature_available_at=parse_timestamp(
@@ -302,32 +455,12 @@ class DatasetManifest:
                     label_version=item["label_version"],
                     split=DatasetSplit(item["split"]),
                     source_dependent=item["source_dependent"],
-                    source_rights_hashes=tuple(item["source_rights_hashes"]),
-                    source_revision_refs=tuple(item["source_revision_refs"]),
+                    source_rights_hashes=rights_hashes,
+                    source_revision_refs=revision_refs,
+                    source_references=references,
                 )
-                for item in raw_samples
-                if isinstance(item, dict)
-                and set(item)
-                == {
-                    "sample_id",
-                    "decision_at",
-                    "feature_available_at",
-                    "outcome_start",
-                    "outcome_end",
-                    "feature_snapshot_hash",
-                    "outcome_id",
-                    "outcome_hash",
-                    "label_hash",
-                    "label_value",
-                    "label_version",
-                    "split",
-                    "source_dependent",
-                    "source_rights_hashes",
-                    "source_revision_refs",
-                }
-            )
-            if len(samples) != len(raw_samples):
-                raise ValueError("Sample canonical có schema không hỗ trợ.")
+
+            samples = tuple(parse_sample(item) for item in raw_samples)
             exclusions = tuple(
                 DatasetExclusion(item["sample_id"], tuple(item["reasons"]))
                 for item in raw_exclusions

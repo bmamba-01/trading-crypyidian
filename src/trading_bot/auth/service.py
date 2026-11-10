@@ -18,7 +18,7 @@ from trading_bot.adapters.database.models import (
     UserMembership,
     Workspace,
 )
-from trading_bot.auth.policy import Principal, Role
+from trading_bot.auth.policy import MfaMethod, Principal, Role
 from trading_bot.auth.security import PasswordManager, TotpManager
 from trading_bot.ports.secrets import SecretProvider
 
@@ -267,6 +267,7 @@ class AuthService:
                     csrf_token_hash=hash_token(csrf_token),
                     expires_at=now + SESSION_LIFETIME,
                     mfa_verified_at=now,
+                    mfa_method=MfaMethod.TOTP.value,
                 )
             )
             principal = Principal(
@@ -275,6 +276,7 @@ class AuthService:
                 workspace_id=workspace.id,
                 roles=roles,
                 mfa_verified_at=now,
+                mfa_method=MfaMethod.TOTP,
             )
         return LoginResult(
             cookie_value=f"{principal.workspace_id}:{raw_token}",
@@ -331,6 +333,9 @@ class AuthService:
                 workspace_id=workspace_id,
                 roles=roles,
                 mfa_verified_at=session.mfa_verified_at,
+                mfa_method=(
+                    MfaMethod(session.mfa_method) if session.mfa_method is not None else None
+                ),
             )
             return AuthIdentity(principal=principal, email=user.email_normalized)
 
@@ -444,6 +449,7 @@ class AuthService:
                 raise AuthenticationFailure(401, "Thông tin xác thực không hợp lệ")
             factor.last_used_counter = counter
             session.mfa_verified_at = now
+            session.mfa_method = MfaMethod.TOTP.value
 
     async def create_risk_profile(
         self,

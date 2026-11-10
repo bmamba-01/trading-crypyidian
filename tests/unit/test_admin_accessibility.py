@@ -33,7 +33,7 @@ def test_admin_layout_exposes_skip_link_semantic_main_and_keyboard_focus_styles(
     assert response.status_code == 200
     assert response.headers["Cache-Control"] == "no-store"
     assert 'href="#main-content"' in response.text
-    assert '<main id="main-content">' in response.text
+    assert '<main id="main-content" tabindex="-1">' in response.text
     assert 'rel="stylesheet" href="/static/admin.css"' in response.text
 
     stylesheet = client.get("/static/admin.css")

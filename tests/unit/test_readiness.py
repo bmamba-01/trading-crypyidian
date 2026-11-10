@@ -1,3 +1,5 @@
+from pathlib import Path
+from threading import Event
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 
@@ -17,6 +19,97 @@ def test_readiness_is_blocked_until_all_dependencies_are_ready() -> None:
         "status": "not_ready",
         "pending": ["database", "exchange", "market_data"],
     }
+
+
+def test_ingestion_lifespan_starts_workspace_worker_and_stops_it_on_shutdown() -> None:
+    workspace_id = uuid4()
+    sessions = object()
+    started = Event()
+    stopped = Event()
+    factory_calls: list[dict[str, object]] = []
+
+    class _Worker:
+        last_tick_succeeded = False
+
+        async def run(self, stopping: object) -> None:
+            self.last_tick_succeeded = True
+            started.set()
+            await stopping.wait()  # type: ignore[attr-defined]
+            stopped.set()
+
+    def make_worker(**kwargs: object) -> _Worker:
+        factory_calls.append(kwargs)
+        return _Worker()
+
+    async def database_ready() -> bool:
+        return True
+
+    app = create_app(
+        AppSettings(
+            process_role="ingestion-worker",
+            ingestion_workspace_id=workspace_id,
+        ),
+        session_factory=sessions,  # type: ignore[arg-type]
+        rights_worker_factory=make_worker,
+        database_probe=database_ready,
+    )
+
+    with TestClient(app) as client:
+        assert started.wait(timeout=1)
+        assert client.get("/health/ready").json() == {"status": "ready"}
+        assert len(factory_calls) == 1
+        assert factory_calls[0]["session_factory"] is sessions
+        assert factory_calls[0]["workspace_id"] == workspace_id
+        assert factory_calls[0]["tick_seconds"] == 5.0
+        assert isinstance(factory_calls[0]["worker_id"], str)
+
+    assert stopped.wait(timeout=1)
+
+
+def test_trainer_lifespan_starts_workspace_supervisor_and_stops_it_on_shutdown() -> None:
+    workspace_id = uuid4()
+    sessions = object()
+    started = Event()
+    stopped = Event()
+    factory_calls: list[dict[str, object]] = []
+
+    class _Supervisor:
+        async def run(self, stopping: object) -> None:
+            started.set()
+            await stopping.wait()  # type: ignore[attr-defined]
+            stopped.set()
+
+    def make_supervisor(**kwargs: object) -> _Supervisor:
+        factory_calls.append(kwargs)
+        return _Supervisor()
+
+    async def database_ready() -> bool:
+        return True
+
+    app = create_app(
+        AppSettings(
+            process_role="trainer-worker",
+            trading_mode="PAPER",
+            database_user="crypidian_trainer_worker",
+            database_password_file=Path("/run/secrets/database_trainer_worker_password"),
+            learning_training_workspace_id=workspace_id,
+        ),
+        session_factory=sessions,  # type: ignore[arg-type]
+        training_supervisor_factory=make_supervisor,
+        database_probe=database_ready,
+    )
+
+    with TestClient(app) as client:
+        assert started.wait(timeout=1)
+        assert client.get("/health/ready").json() == {"status": "ready"}
+        assert len(factory_calls) == 1
+        assert factory_calls[0]["worker"]._sessions is sessions  # type: ignore[attr-defined]
+        assert factory_calls[0]["workspace_id"] == workspace_id
+        assert factory_calls[0]["poll_seconds"] == 5.0
+        assert factory_calls[0]["max_backoff_seconds"] == 60.0
+        assert isinstance(factory_calls[0]["worker_id"], str)
+
+    assert stopped.wait(timeout=1)
 
 
 def test_readiness_does_not_expose_credentials() -> None:

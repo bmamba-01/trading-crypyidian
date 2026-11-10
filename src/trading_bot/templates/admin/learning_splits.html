@@ -1,0 +1,74 @@
+{% extends "admin/base.html" %}
+{% block title %}Duyệt phân chia dữ liệu | Crypidian{% endblock %}
+{% block heading %}Duyệt phân chia dữ liệu{% endblock %}
+{% block content %}
+  <section class="learning-split-notice" id="learning-splits" aria-label="Giới hạn dữ liệu">
+    <h2>Phê duyệt trước khi niêm phong</h2>
+    <p>Candidate được dựng từ giao dịch replay đã lưu và proof quyền huấn luyện hiện hành. Trang chỉ hiển thị số lượng, khoảng thời gian và mã băm; không đọc đặc trưng, nhãn, danh tính sample hoặc dữ liệu giữ kín (holdout).</p>
+    <p>Phê duyệt ghim chính xác bản kê, chính sách phân chia và kế hoạch các fold. Cần xác thực MFA gần đây. Builder sẽ kiểm lại quyền trước khi niêm phong; huấn luyện tiếp tục chỉ dùng train/validation của fold đã duyệt.</p>
+  </section>
+  <div class="learning-split-heading">
+    <div>
+      <h2>Candidate chờ xem xét</h2>
+      <p>Chỉ phê duyệt khi các khoảng thời gian và cỡ mẫu phù hợp với mục tiêu huấn luyện.</p>
+    </div>
+    <a href="/admin/learning/splits">Tải lại</a>
+  </div>
+  <p id="learning-split-status" role="status" aria-live="polite">{{ candidates|length }} candidate trong không gian làm việc.</p>
+  <section class="learning-split-candidates" data-csrf-token="{{ csrf_token }}" aria-label="Danh sách candidate">
+    {% if candidates %}
+      {% for candidate in candidates %}
+        {% set preview = candidate.preview %}
+        <article class="learning-split-card" data-candidate-id="{{ candidate.candidate_id }}">
+          <header>
+            <div>
+              <h3>Candidate từ trial {{ candidate.trial_record_id }}</h3>
+              <p>Tạo lúc {{ candidate.created_at.strftime('%Y-%m-%d %H:%M UTC') }} · cutoff đánh giá {{ candidate.evaluation_cutoff.strftime('%Y-%m-%d %H:%M UTC') }}</p>
+            </div>
+            {% if candidate.approved_at %}
+              <span class="learning-split-state learning-split-state--approved" data-candidate-state>Đã phê duyệt</span>
+            {% else %}
+              <span class="learning-split-state" data-candidate-state>Chờ phê duyệt</span>
+            {% endif %}
+          </header>
+          <dl class="learning-split-metadata">
+            <div><dt>Khoảng dữ liệu</dt><dd>{{ preview.data_start }} → {{ preview.data_end }}</dd></div>
+            <div><dt>Thị trường</dt><dd>{{ preview.symbols|join(', ') }}</dd></div>
+            <div><dt>Số sample đủ điều kiện</dt><dd>{{ preview.sample_count }}</dd></div>
+            <div><dt>Phát triển / giữ kín</dt><dd>{{ preview.development_count }} / {{ preview.holdout_count }}</dd></div>
+            <div><dt>Loại do thiếu provenance</dt><dd>{{ preview.exclusion_count }}</dd></div>
+            <div><dt>Chính sách</dt><dd><code>{{ candidate.split_policy_version }}</code></dd></div>
+            <div class="learning-split-hash"><dt>Hash bản kê / fold plan</dt><dd><code>{{ candidate.manifest_hash }}</code><br><code>{{ candidate.fold_plan_hash }}</code></dd></div>
+          </dl>
+          <div class="learning-split-folds">
+            <h4>Kế hoạch từng fold</h4>
+            {% for fold in preview.folds %}
+              <section class="learning-split-fold" aria-label="Fold {{ loop.index }}">
+                <h5>Fold {{ loop.index }}</h5>
+                <dl>
+                  <div><dt>Train</dt><dd>{{ fold.train.start }} – {{ fold.train.end }} · {{ fold.train.count }} mẫu</dd></div>
+                  <div><dt>Validation</dt><dd>{{ fold.validation.start }} – {{ fold.validation.end }} · {{ fold.validation.count }} mẫu</dd></div>
+                  <div><dt>Test</dt><dd>{{ fold.test.start }} – {{ fold.test.end }} · {{ fold.test.count }} mẫu</dd></div>
+                </dl>
+              </section>
+            {% endfor %}
+          </div>
+          {% if not candidate.approved_at %}
+            <form class="learning-split-approval-form" data-approve-form data-candidate-id="{{ candidate.candidate_id }}">
+              <label for="approval-reason-{{ candidate.candidate_id }}">Lý do phê duyệt</label>
+              <textarea id="approval-reason-{{ candidate.candidate_id }}" name="reason" minlength="12" maxlength="500" required></textarea>
+              <button type="submit">Phê duyệt kế hoạch split</button>
+            </form>
+          {% else %}
+            <p class="learning-split-approved-at">Đã phê duyệt lúc {{ candidate.approved_at.strftime('%Y-%m-%d %H:%M UTC') }}. Builder có thể niêm phong sau khi kiểm lại quyền hiện hành.</p>
+          {% endif %}
+        </article>
+      {% endfor %}
+    {% else %}
+      <p class="learning-split-empty">Chưa có candidate nào. Hãy dùng lệnh builder một lần để tạo preview từ trial đã hoàn tất và có proof quyền TRAINING.</p>
+    {% endif %}
+  </section>
+{% endblock %}
+{% block scripts %}
+  <script src="/static/learning-splits.js" defer></script>
+{% endblock %}

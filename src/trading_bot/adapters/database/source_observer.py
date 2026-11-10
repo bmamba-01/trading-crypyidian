@@ -26,6 +26,10 @@ from trading_bot.domain.research.source_policy import SourceUsePurpose
 from trading_bot.domain.research.source_registry import SourcePolicyRevision
 
 
+class SourceObservationIncompleteError(LookupError):
+    """Policy đã commit nhưng receipt chưa hoàn tất; caller cần retry cùng key."""
+
+
 @dataclass(frozen=True, slots=True)
 class ObservationProgress:
     """Cursor là sequence receipt đã commit; complete chỉ đúng khi chain đã quan sát hết."""
@@ -62,7 +66,7 @@ class PostCommitSourceObserver:
         """Port bắt buộc cho app Principal-bound; lỗi observer không bị nuốt sau commit."""
         result, progress = await self.append_policy(workspace_id=workspace_id, revision=revision)
         if not progress.complete:
-            raise LookupError(
+            raise SourceObservationIncompleteError(
                 "Source đã commit nhưng receipt policy chưa hoàn tất; cần retry/recovery."
             )
         return result
@@ -99,9 +103,14 @@ class PostCommitSourceObserver:
             result = await SourceRegistryRepository(session).append_revision(
                 workspace_id=workspace_id, revision=revision
             )
-        progress = await self._finish_policy(
-            workspace_id=workspace_id, source_id=revision.policy.source_id
-        )
+        try:
+            progress = await self._finish_policy(
+                workspace_id=workspace_id, source_id=revision.policy.source_id
+            )
+        except Exception as error:
+            raise SourceObservationIncompleteError(
+                "Source đã commit nhưng observer policy lỗi; cần retry cùng key."
+            ) from error
         return result, progress
 
     async def append_item(

@@ -314,6 +314,7 @@ async def ledger_async():
                         fee_amount=Decimal(spec["exit_fee"]),
                         slippage_amount=Decimal(spec["exit_slippage"]),
                         occurred_at=closed_at,
+                        exit_reason=spec.get("exit_reason"),
                     )
                     await repository.close_trade(
                         uow,

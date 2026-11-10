@@ -1,13 +1,13 @@
 {% extends "admin/base.html" %}
 {% block title %}Bot — Crypidian{% endblock %}
-{% block heading %}Bot trong workspace{% endblock %}
+{% block heading %}Bot trong không gian làm việc{% endblock %}
 {% block content %}
-{% if "owner" in identity.principal.roles %}<p><a href="/admin/bots/new">Tạo bot PAPER</a></p>{% endif %}
-<ul>
+{% if "owner" in identity.principal.roles %}<p><a href="/admin/bots/new">Tạo bot mô phỏng</a></p>{% endif %}
+<ul class="bot-list">
   {% for bot in bots %}
   <li>
     <a href="/admin/bots/{{ bot.id }}">{{ bot.name }}</a>
-    <span>{{ bot.status }} / {{ bot.account_mode }} / {{ bot.readiness }}</span>
+    <span>{{ bot.status | label_vi }} / {{ bot.account_mode | label_vi }} / {{ bot.readiness | label_vi }}</span>
   </li>
   {% else %}
   <li>Chưa có bot được cấp quyền xem.</li>

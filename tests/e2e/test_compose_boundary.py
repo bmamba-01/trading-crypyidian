@@ -214,6 +214,16 @@ def test_compose_services_run_without_root_and_have_healthchecks() -> None:
         assert services[service_name]["read_only"] is True
         assert "healthcheck" in services[service_name]
 
+    trainer = services["trainer-worker"]
+    assert trainer["cpus"] == 1
+    assert trainer["mem_limit"] == "1073741824"
+    assert trainer["pids_limit"] == 64
+    assert trainer["deploy"]["resources"]["limits"] == {
+        "cpus": 1,
+        "memory": "1073741824",
+        "pids": 64,
+    }
+
     application_services = (
         "admin-web",
         "mfa-volume-provisioner",
@@ -575,7 +585,8 @@ def test_paper_stack_starts_and_keeps_database_and_object_store_data() -> None:
             "-Atc",
             "SELECT bool_and(NOT rolsuper AND NOT rolbypassrls) FROM pg_roles "
             "WHERE rolname = ANY(ARRAY['crypidian_admin_web','crypidian_trading_runtime',"
-            "'crypidian_execution_gateway','crypidian_ingestion_worker','crypidian_trainer_worker'])",
+            "'crypidian_execution_gateway','crypidian_ingestion_worker','crypidian_trainer_worker',"
+            "'crypidian_replay_writer'])",
         )
         assert role_flags.stdout.strip() == "t"
         identity_access = compose(
@@ -1757,6 +1768,7 @@ def test_paper_stack_starts_and_keeps_database_and_object_store_data() -> None:
             import hashlib
             import json
             import os
+            from dataclasses import replace
             from datetime import UTC, datetime, timedelta
             from decimal import Decimal
             from pathlib import Path
@@ -1846,6 +1858,7 @@ def test_paper_stack_starts_and_keeps_database_and_object_store_data() -> None:
             )
             from trading_bot.domain.market.ingestion import MarketRecordVersion, MarketStream
             from trading_bot.domain.market.models import MarketSnapshot, OHLCVBar
+            from trading_bot.domain.market.models import MarketBarSourceIdentity
             from trading_bot.domain.risk.engine import RiskEngine, RiskState
             from trading_bot.domain.risk.reservations import ReservationReleaseReason
             from trading_bot.domain.risk.planner import (
@@ -1990,7 +2003,18 @@ def test_paper_stack_starts_and_keeps_database_and_object_store_data() -> None:
                         end=bars[-1].open_time + timedelta(hours=1),
                         as_of=bars[-1].available_at, closed_only=True,
                     )
-                    assert persisted_bars == bars
+                    assert len(persisted_bars) == len(bars)
+                    for expected_bar, persisted_bar in zip(bars, persisted_bars, strict=True):
+                        identity = persisted_bar.source_identity
+                        assert identity is not None
+                        assert identity.workspace_id == workspace_id
+                        assert identity.logical_key == (
+                            f'BTCUSDT:1h:{expected_bar.open_time.isoformat()}'
+                        )
+                        assert identity.revision == 1
+                        assert identity.supersedes_record_id is None
+                        assert identity.checksum == expected_bar.checksum
+                        assert replace(expected_bar, source_identity=identity) == persisted_bar
                     feature_settings = FeatureSettings(
                         code_hash=hashlib.sha256(b'wp02-h03-feature-fixture-v1').hexdigest(),
                         expected_interval=timedelta(hours=1),
@@ -3111,11 +3135,13 @@ def test_paper_stack_starts_and_keeps_database_and_object_store_data() -> None:
             "SELECT count(*) FROM trading_account; COMMIT",
         )
         assert "0" in unscoped_count.stdout.strip().splitlines()
-        # WP-03 hardening khóa downgrade toàn chain; trạng thái schema được giữ nguyên.
+        # WP-06 populated guard gặp MFA session trước khi downgrade có thể tới WP-03.
         downgrade = compose(
             "run", "--rm", "migrator", "alembic", "downgrade", "base", success=False
         )
-        assert "WP03_RISK_GUARD_DOWNGRADE_BLOCKED" in (downgrade.stdout + downgrade.stderr)
+        assert "WP06_SCORING_DEPLOYMENT_POPULATED_DOWNGRADE_DENIED" in (
+            downgrade.stdout + downgrade.stderr
+        )
         compose("run", "--rm", "migrator", "alembic", "check")
         compose(
             "exec",

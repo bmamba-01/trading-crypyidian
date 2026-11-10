@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+import math
+from dataclasses import dataclass, replace
 from datetime import datetime
+from decimal import Decimal
 from typing import Literal, Protocol
 from uuid import UUID
 
@@ -62,6 +64,7 @@ class FoldOutcomeVerificationRequest:
     fold_plan_hash: str
     fold_id: str
     expected_outcomes: tuple[FoldOutcomeExpectation, ...]
+    access_receipt_id: UUID | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,14 +110,20 @@ class FoldOutcomeVerifier(Protocol):
     quả đã hoàn tất, đối chiếu chính xác workspace/manifest/plan/fold/sample,
     kiểm mã băm bản ghi chuẩn khớp giá trị đã lưu trong DB và xác nhận thứ tự
     giao dịch liên tục từ 0 tới `trade_count - 1`. Adapter PostgreSQL yêu cầu
-    transaction `REPEATABLE READ` hoặc `SERIALIZABLE`, `READ ONLY`; không thay bằng
-    callback hoặc lô dữ liệu do bên gọi tự dựng trong bộ nhớ.
+    transaction `REPEATABLE READ` hoặc `SERIALIZABLE`, `READ WRITE` để ghi receipt
+    trong cùng snapshot trước khi payload được trả về.
     """
 
     async def load_verified_fold_outcomes(
         self,
         request: FoldOutcomeVerificationRequest,
     ) -> FoldOutcomeVerificationBatch: ...
+
+
+class SourceRightsEligibilityGate(Protocol):
+    """Kiểm tra quyền nguồn còn hiệu lực trước khi evaluator đọc outcome."""
+
+    async def assert_eligible(self, *, workspace_id: UUID, manifest: DatasetManifest) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,6 +160,11 @@ class WalkForwardEvaluationReport:
     candidate_completeness_verified: Literal[False]
     report_hash: str
     caveat_vi: str
+
+    @property
+    def canonical_json(self) -> str:
+        """Payload chuẩn đã dùng để tạo report_hash, không gồm chính mã băm."""
+        return _canonical_report_json(self)
 
 
 def _sample_role_ids(fold: ManifestFoldSelection) -> dict[str, FoldRole]:
@@ -417,12 +431,171 @@ def _role_payload(role_report: FoldRoleMetrics) -> dict[str, object]:
     }
 
 
+def _canonical_report_json(report: WalkForwardEvaluationReport) -> str:
+    payload = {
+        "evaluation_mode": "diagnostic",
+        "evaluator_version": EVALUATOR_VERSION,
+        "manifest_hash": report.manifest_hash,
+        "fold_plan_hash": report.fold_plan_hash,
+        "split_policy_version": report.split_policy_version,
+        "evaluation_cutoff": report.evaluation_cutoff.isoformat(),
+        "seed": report.seed,
+        "candidate_completeness_verified": report.candidate_completeness_verified,
+        "caveat_vi": report.caveat_vi,
+        "folds": [
+            {
+                "fold_id": fold.fold_id,
+                "train": _role_payload(fold.train),
+                "validation": _role_payload(fold.validation),
+                "test": _role_payload(fold.test),
+                "exclusions": fold.exclusions,
+            }
+            for fold in report.fold_evaluations
+        ],
+    }
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+
+def walk_forward_evaluation_report_from_canonical_json(
+    canonical_json: str,
+    *,
+    expected_report_hash: str,
+) -> WalkForwardEvaluationReport:
+    """Tái dựng report đã lưu sau khi xác minh canonical bytes và mã băm."""
+    if not isinstance(canonical_json, str) or not _sha256_hex(expected_report_hash):
+        raise ValueError("Canonical report hoặc report hash không hợp lệ.")
+    if hashlib.sha256(canonical_json.encode("utf-8")).hexdigest() != expected_report_hash:
+        raise ValueError("Report hash không khớp canonical bytes.")
+    try:
+        payload = json.loads(canonical_json)
+        if (
+            not isinstance(payload, dict)
+            or json.dumps(payload, sort_keys=True, separators=(",", ":")) != canonical_json
+            or payload.get("evaluation_mode") != "diagnostic"
+            or payload.get("evaluator_version") != EVALUATOR_VERSION
+            or payload.get("candidate_completeness_verified") is not False
+            or not isinstance(payload.get("folds"), list)
+        ):
+            raise ValueError("Report canonical không đúng contract diagnostic.")
+        folds = tuple(_fold_from_payload(item) for item in payload["folds"])
+        report = WalkForwardEvaluationReport(
+            manifest_hash=payload["manifest_hash"],
+            fold_plan_hash=payload["fold_plan_hash"],
+            split_policy_version=payload["split_policy_version"],
+            evaluation_cutoff=datetime.fromisoformat(payload["evaluation_cutoff"]),
+            seed=payload["seed"],
+            fold_evaluations=folds,
+            candidate_completeness_verified=False,
+            report_hash=expected_report_hash,
+            caveat_vi=payload["caveat_vi"],
+        )
+    except KeyError, TypeError, ValueError, json.JSONDecodeError:
+        raise ValueError("Canonical report diagnostic không thể tái dựng an toàn.") from None
+    if report.canonical_json != canonical_json:
+        raise ValueError("Report tái dựng không khớp canonical bytes.")
+    return report
+
+
+def _fold_from_payload(payload: object) -> FoldEvaluation:
+    if not isinstance(payload, dict):
+        raise ValueError("Fold report không phải object.")
+    exclusions_payload = payload["exclusions"]
+    if not isinstance(exclusions_payload, list):
+        raise ValueError("Danh sách exclusion không hợp lệ.")
+    exclusions: list[tuple[str, str, tuple[str, ...]]] = []
+    for item in exclusions_payload:
+        if (
+            not isinstance(item, list)
+            or len(item) != 3
+            or not isinstance(item[0], str)
+            or not isinstance(item[1], str)
+            or not isinstance(item[2], list)
+            or any(not isinstance(reason, str) for reason in item[2])
+        ):
+            raise ValueError("Một exclusion trong report không hợp lệ.")
+        exclusions.append((item[0], item[1], tuple(item[2])))
+    return FoldEvaluation(
+        fold_id=_required_text(payload["fold_id"]),
+        train=_role_from_payload(payload["train"], expected_role="train"),
+        validation=_role_from_payload(payload["validation"], expected_role="validation"),
+        test=_role_from_payload(payload["test"], expected_role="test"),
+        exclusions=tuple(exclusions),
+    )
+
+
+def _role_from_payload(payload: object, *, expected_role: FoldRole) -> FoldRoleMetrics:
+    if not isinstance(payload, dict) or payload.get("role") != expected_role:
+        raise ValueError("Role trong report không khớp vị trí.")
+    sample_ids = payload.get("sample_ids")
+    if not isinstance(sample_ids, list) or any(not isinstance(item, str) for item in sample_ids):
+        raise ValueError("Danh sách sample trong report không hợp lệ.")
+    metrics_payload = payload.get("metrics")
+    if not isinstance(metrics_payload, dict):
+        raise ValueError("Metrics trong report không hợp lệ.")
+    confidence = metrics_payload.get("confidence_interval")
+    if confidence is not None and (not isinstance(confidence, list) or len(confidence) != 2):
+        raise ValueError("Khoảng tin cậy report không hợp lệ.")
+    coverage = metrics_payload["coverage"]
+    frequency = metrics_payload["trade_frequency"]
+    if (
+        isinstance(coverage, bool)
+        or not isinstance(coverage, (int, float))
+        or not math.isfinite(float(coverage))
+        or isinstance(frequency, bool)
+        or not isinstance(frequency, (int, float))
+        or not math.isfinite(float(frequency))
+    ):
+        raise ValueError("Tỷ lệ coverage/frequency report không hợp lệ.")
+    counts = tuple(
+        metrics_payload[name]
+        for name in ("observation_count", "usable_observation_count", "trade_count")
+    )
+    if any(type(value) is not int or value < 0 for value in counts):
+        raise ValueError("Số đếm metrics report không hợp lệ.")
+    caveat = metrics_payload["caveat_vi"]
+    if not isinstance(caveat, str):
+        raise ValueError("Giới hạn metrics report không hợp lệ.")
+    metrics = EvaluationMetrics(
+        observation_count=counts[0],
+        usable_observation_count=counts[1],
+        trade_count=counts[2],
+        coverage=float(coverage),
+        trade_frequency=float(frequency),
+        gross_pnl=Decimal(metrics_payload["gross_pnl"]),
+        net_pnl=Decimal(metrics_payload["net_pnl"]),
+        fees=Decimal(metrics_payload["fees"]),
+        funding=Decimal(metrics_payload["funding"]),
+        slippage=Decimal(metrics_payload["slippage"]),
+        expectancy=Decimal(metrics_payload["expectancy"]),
+        max_drawdown=Decimal(metrics_payload["max_drawdown"]),
+        average_exposure=Decimal(metrics_payload["average_exposure"]),
+        confidence_interval=(
+            (Decimal(confidence[0]), Decimal(confidence[1])) if confidence is not None else None
+        ),
+        caveat_vi=caveat,
+    )
+    return FoldRoleMetrics(
+        role=expected_role,
+        sample_ids=tuple(sample_ids),
+        trade_lineage_hash=_required_text(payload["trade_lineage_hash"]),
+        metrics=metrics,
+    )
+
+
+def _required_text(value: object) -> str:
+    if not isinstance(value, str) or not value:
+        raise ValueError("Report cần chuỗi không rỗng.")
+    return value
+
+
 async def build_walk_forward_evaluation_report(
     manifest: DatasetManifest,
     fold_plan: ManifestFoldPlan,
     *,
     verifier: FoldOutcomeVerifier,
     seed: int,
+    source_eligibility_gate: SourceRightsEligibilityGate | None = None,
+    access_receipt_id: UUID | None = None,
 ) -> WalkForwardEvaluationReport:
     """Đọc outcome đã persist qua verifier rồi lập report train/validation/test.
 
@@ -434,6 +607,20 @@ async def build_walk_forward_evaluation_report(
     """
     if type(seed) is not int or seed < 0:
         raise ValueError("seed phải là số nguyên không âm.")
+    if any(sample.source_dependent for sample in manifest.samples):
+        if source_eligibility_gate is None:
+            raise ValueError(
+                "Source-dependent manifest requires a live source-rights eligibility gate."
+            )
+        try:
+            await source_eligibility_gate.assert_eligible(
+                workspace_id=manifest.workspace_id,
+                manifest=manifest,
+            )
+        except Exception:
+            raise ValueError(
+                "Live source-rights eligibility gate failed; refuse evaluation."
+            ) from None
     canonical_plan = _validate_plan(manifest, fold_plan)
     samples_by_id = {sample.sample_id: sample for sample in manifest.samples}
     fold_evaluations: list[FoldEvaluation] = []
@@ -458,6 +645,7 @@ async def build_walk_forward_evaluation_report(
             fold_plan_hash=canonical_plan.content_hash,
             fold_id=fold.fold_id,
             expected_outcomes=expectations,
+            access_receipt_id=access_receipt_id,
         )
         try:
             verified_batch = await verifier.load_verified_fold_outcomes(request)
@@ -524,28 +712,7 @@ async def build_walk_forward_evaluation_report(
             )
         )
 
-    payload = {
-        "evaluator_version": EVALUATOR_VERSION,
-        "manifest_hash": manifest.content_hash,
-        "fold_plan_hash": canonical_plan.content_hash,
-        "split_policy_version": canonical_plan.split_policy_version,
-        "evaluation_cutoff": canonical_plan.evaluation_cutoff.isoformat(),
-        "seed": seed,
-        "candidate_completeness_verified": False,
-        "caveat_vi": WP02_LIMITATIONS_VI,
-        "folds": [
-            {
-                "fold_id": fold.fold_id,
-                "train": _role_payload(fold.train),
-                "validation": _role_payload(fold.validation),
-                "test": _role_payload(fold.test),
-                "exclusions": fold.exclusions,
-            }
-            for fold in fold_evaluations
-        ],
-    }
-    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
-    return WalkForwardEvaluationReport(
+    report = WalkForwardEvaluationReport(
         manifest_hash=manifest.content_hash,
         fold_plan_hash=canonical_plan.content_hash,
         split_policy_version=canonical_plan.split_policy_version,
@@ -553,6 +720,7 @@ async def build_walk_forward_evaluation_report(
         seed=seed,
         fold_evaluations=tuple(fold_evaluations),
         candidate_completeness_verified=False,
-        report_hash=hashlib.sha256(canonical.encode()).hexdigest(),
+        report_hash="",
         caveat_vi=WP02_LIMITATIONS_VI,
     )
+    return replace(report, report_hash=hashlib.sha256(report.canonical_json.encode()).hexdigest())

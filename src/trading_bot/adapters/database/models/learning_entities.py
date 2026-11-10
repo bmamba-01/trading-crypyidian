@@ -22,6 +22,8 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from trading_bot.adapters.database.models.base import Base, CreatedAt, UuidPrimaryKey
+from trading_bot.domain.learning.approval import LearningSplitApproval
+from trading_bot.domain.learning.dataset import DatasetSourceReference
 
 if TYPE_CHECKING:
     from trading_bot.domain.learning.dataset import DatasetManifest
@@ -135,3 +137,277 @@ class DatasetManifestRecord(UuidPrimaryKey, CreatedAt, Base):
         if not all(denormalized):
             raise ValueError("Cột chỉ mục manifest không khớp canonical bytes.")
         return manifest
+
+
+class DatasetManifestSourceRefRecord(UuidPrimaryKey, CreatedAt, Base):
+    """Chỉ mục bất biến để truy ngược nguồn tới sample/manifest theo workspace."""
+
+    __tablename__ = "dataset_manifest_source_ref"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["workspace_id", "manifest_id"],
+            ["dataset_manifest.workspace_id", "dataset_manifest.id"],
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint(
+            "workspace_id",
+            "manifest_id",
+            "sample_id",
+            "source_id",
+            "item_id",
+            "revision_id",
+            "policy_id",
+            "policy_sequence",
+            "purpose",
+            name="uq_dataset_manifest_source_ref",
+        ),
+        CheckConstraint(
+            "source_id ~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$' AND "
+            "item_id ~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$' AND "
+            "revision_id ~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$' AND "
+            "policy_id ~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$'",
+            name="dataset_manifest_source_ref_identifiers_valid",
+        ),
+        CheckConstraint("policy_sequence > 0", name="dataset_manifest_source_ref_sequence_valid"),
+        CheckConstraint("purpose = 'training'", name="dataset_manifest_source_ref_purpose_valid"),
+        CheckConstraint(
+            "rights_hash ~ '^[0-9a-f]{64}$'", name="dataset_manifest_source_ref_hash_valid"
+        ),
+        Index(
+            "ix_dataset_manifest_source_ref_reverse",
+            "workspace_id",
+            "source_id",
+            "item_id",
+            "revision_id",
+            "policy_id",
+            "policy_sequence",
+            "purpose",
+        ),
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    manifest_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    sample_id: Mapped[str] = mapped_column(Text, nullable=False)
+    source_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    item_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    revision_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    policy_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    policy_sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    purpose: Mapped[str] = mapped_column(String(24), nullable=False)
+    rights_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    @classmethod
+    def from_reference(
+        cls,
+        *,
+        workspace_id: UUID,
+        manifest_id: UUID,
+        sample_id: str,
+        reference: DatasetSourceReference,
+    ) -> DatasetManifestSourceRefRecord:
+        """Tạo chỉ mục từ typed reference đã được domain validate."""
+        if type(reference) is not DatasetSourceReference:
+            raise ValueError("reference phải là DatasetSourceReference.")
+        return cls(
+            workspace_id=workspace_id,
+            manifest_id=manifest_id,
+            sample_id=sample_id,
+            source_id=reference.source_id,
+            item_id=reference.item_id,
+            revision_id=reference.revision_id,
+            policy_id=reference.policy_id,
+            policy_sequence=reference.policy_sequence,
+            purpose=reference.purpose.value,
+            rights_hash=reference.rights_hash,
+        )
+
+
+class DatasetManifestEligibilityEventRecord(UuidPrimaryKey, CreatedAt, Base):
+    """Sự kiện bất biến làm mất hiệu lực một sample có source lineage."""
+
+    __tablename__ = "dataset_manifest_eligibility_event"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["workspace_id", "manifest_id"],
+            ["dataset_manifest.workspace_id", "dataset_manifest.id"],
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["workspace_id", "outbox_event_id"],
+            ["outbox_event.workspace_id", "outbox_event.id"],
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint(
+            "workspace_id",
+            "outbox_event_id",
+            "manifest_id",
+            "sample_id",
+            "source_id",
+            "item_id",
+            "revision_id",
+            "policy_id",
+            "policy_sequence",
+            "purpose",
+            name="uq_dataset_manifest_eligibility_event_identity",
+        ),
+        CheckConstraint(
+            "source_id ~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$' AND "
+            "item_id ~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$' AND "
+            "revision_id ~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$' AND "
+            "policy_id ~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$'",
+            name="dataset_manifest_eligibility_event_identifiers_valid",
+        ),
+        CheckConstraint("policy_sequence > 0", name="dataset_manifest_eligibility_sequence_valid"),
+        CheckConstraint("purpose = 'training'", name="dataset_manifest_eligibility_purpose_valid"),
+        CheckConstraint(
+            "rights_hash ~ '^[0-9a-f]{64}$'",
+            name="dataset_manifest_eligibility_hash_valid",
+        ),
+        CheckConstraint(
+            "change_type IN ('policy_revision', 'policy_expired', 'item_revision', "
+            "'item_tombstoned', 'item_takedown')",
+            name="dataset_manifest_eligibility_change_type_valid",
+        ),
+        CheckConstraint(
+            "reason_code IN ('source_policy_changed', 'source_policy_expired', "
+            "'source_item_superseded', 'source_item_tombstoned', 'source_item_takedown')",
+            name="dataset_manifest_eligibility_reason_valid",
+        ),
+        Index(
+            "ix_dataset_manifest_eligibility_latest",
+            "workspace_id",
+            "manifest_id",
+            "sample_id",
+            "created_at",
+        ),
+        Index(
+            "ix_dataset_manifest_eligibility_reference",
+            "workspace_id",
+            "source_id",
+            "item_id",
+            "revision_id",
+            "policy_id",
+            "policy_sequence",
+            "purpose",
+        ),
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    manifest_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    sample_id: Mapped[str] = mapped_column(Text, nullable=False)
+    outbox_event_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    source_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    item_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    revision_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    policy_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    policy_sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    purpose: Mapped[str] = mapped_column(String(24), nullable=False)
+    rights_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    change_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    reason_code: Mapped[str] = mapped_column(String(64), nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class LearningSplitApprovalRecord(UuidPrimaryKey, CreatedAt, Base):
+    """Phê duyệt bất biến gắn với candidate manifest và fold plan cụ thể."""
+
+    __tablename__ = "learning_split_approval"
+    __table_args__ = (
+        ForeignKeyConstraint(["workspace_id"], ["workspace.id"], ondelete="RESTRICT"),
+        ForeignKeyConstraint(
+            ["workspace_id", "actor_membership_id"],
+            ["user_membership.workspace_id", "user_membership.id"],
+            name="fk_learning_split_approval_actor_membership",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint(
+            "workspace_id", "idempotency_key", name="uq_learning_split_approval_idempotency"
+        ),
+        UniqueConstraint(
+            "workspace_id", "manifest_hash", name="uq_learning_split_approval_manifest"
+        ),
+        UniqueConstraint("workspace_id", "id", name="uq_learning_split_approval_workspace_id"),
+        CheckConstraint(
+            "manifest_hash ~ '^[0-9a-f]{64}$' AND fold_plan_hash ~ '^[0-9a-f]{64}$' "
+            "AND approval_hash ~ '^[0-9a-f]{64}$'",
+            name="learning_split_approval_hashes_valid",
+        ),
+        CheckConstraint(
+            "length(btrim(split_policy_version)) BETWEEN 1 AND 128",
+            name="learning_split_approval_policy_present",
+        ),
+        CheckConstraint(
+            "length(btrim(reason)) BETWEEN 12 AND 500",
+            name="learning_split_approval_reason_valid",
+        ),
+        CheckConstraint(
+            "mfa_verified_at <= approved_at AND "
+            "approved_at - mfa_verified_at <= interval '15 minutes'",
+            name="learning_split_approval_mfa_recent",
+        ),
+        CheckConstraint(
+            "length(canonical_approval) > 0",
+            name="learning_split_approval_canonical_present",
+        ),
+        Index("ix_learning_split_approval_workspace_approved", "workspace_id", "approved_at"),
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    actor_membership_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    idempotency_key: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    manifest_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    split_policy_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    fold_plan_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    approved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    mfa_verified_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    approval_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    canonical_approval: Mapped[str] = mapped_column(Text, nullable=False)
+
+    @classmethod
+    def from_domain(cls, approval: LearningSplitApproval) -> LearningSplitApprovalRecord:
+        """Lưu binding canonical đã được Principal service dựng."""
+        if type(approval) is not LearningSplitApproval:
+            raise ValueError("approval phải là LearningSplitApproval.")
+        return cls(
+            workspace_id=approval.workspace_id,
+            actor_membership_id=approval.actor_membership_id,
+            idempotency_key=approval.idempotency_key,
+            manifest_hash=approval.manifest_hash,
+            split_policy_version=approval.split_policy_version,
+            fold_plan_hash=approval.fold_plan_hash,
+            reason=approval.reason.strip(),
+            approved_at=approval.approved_at,
+            mfa_verified_at=approval.mfa_verified_at,
+            approval_hash=approval.content_hash,
+            canonical_approval=approval.canonical_json,
+        )
+
+    def to_domain(self) -> LearningSplitApproval:
+        """Tái dựng approval và kiểm lại hash/cột chỉ mục trước khi dùng."""
+        payload = json.loads(self.canonical_approval)
+        approval = LearningSplitApproval(
+            workspace_id=UUID(payload["workspace_id"]),
+            manifest_hash=payload["manifest_hash"],
+            split_policy_version=payload["split_policy_version"],
+            fold_plan_hash=payload["fold_plan_hash"],
+            actor_membership_id=UUID(payload["actor_membership_id"]),
+            idempotency_key=UUID(payload["idempotency_key"]),
+            reason=payload["reason"],
+            approved_at=datetime.fromisoformat(payload["approved_at"]),
+            mfa_verified_at=datetime.fromisoformat(payload["mfa_verified_at"]),
+        )
+        if (
+            approval.content_hash != self.approval_hash
+            or approval.workspace_id != self.workspace_id
+            or approval.actor_membership_id != self.actor_membership_id
+            or approval.idempotency_key != self.idempotency_key
+            or approval.manifest_hash != self.manifest_hash
+            or approval.split_policy_version != self.split_policy_version
+            or approval.fold_plan_hash != self.fold_plan_hash
+            or approval.reason != self.reason
+            or approval.approved_at != self.approved_at
+            or approval.mfa_verified_at != self.mfa_verified_at
+        ):
+            raise ValueError("Approval canonical không khớp các cột đã chỉ mục.")
+        return approval

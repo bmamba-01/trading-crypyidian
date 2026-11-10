@@ -1,0 +1,88 @@
+{% extends "admin/base.html" %}
+{% block title %}Nguồn nghiên cứu — Crypidian{% endblock %}
+{% block heading %}Nguồn nghiên cứu và quyền sử dụng{% endblock %}
+{% macro hidden(source_id='') %}
+<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+<input type="hidden" name="idempotency_key" value="{{ new_key() }}">
+{% if source_id %}<input type="hidden" name="source_id" value="{{ source_id }}">{% endif %}
+{% endmacro %}
+{% macro purposes(prefix) %}
+<fieldset class="source-purpose-options">
+<legend>Mục đích sử dụng (có thể chọn nhiều)</legend>
+{% for value, label in purpose_labels.items() %}
+<label for="{{ prefix }}-purpose-{{ value }}"><input type="checkbox" id="{{ prefix }}-purpose-{{ value }}" name="purpose_{{ value }}" {% if value in detail.current.allowed_purposes %}checked{% endif %}> <span>{{ label }}</span></label>
+{% endfor %}
+</fieldset>
+{% if prefix == 'approve' %}
+<label for="{{ prefix }}-expiry-action">Xử lý thời hạn</label>
+<select id="{{ prefix }}-expiry-action" name="expiry_action">
+<option value="preserve">Giữ thời hạn của policy chờ duyệt</option>
+<option value="change">Thay đổi sang thời hạn bên dưới</option>
+<option value="clear">Chủ động bỏ thời hạn (không giới hạn)</option>
+</select>
+<p>Để trống ô ngày không xóa thời hạn. Chỉ lựa chọn chủ động bỏ thời hạn mới xóa thời hạn hiện có.</p>
+{% endif %}
+<label for="{{ prefix }}-expiry">Hết hạn (ISO 8601 có múi giờ, tùy chọn)</label>
+<input id="{{ prefix }}-expiry" name="valid_until" value="{{ detail.current.valid_until.isoformat() if detail.current.valid_until else '' }}" placeholder="2027-01-01T00:00:00+00:00">
+{% endmacro %}
+{% block content %}
+<p class="alert alert-info">Chỉ quản lý metadata và policy ngoại tuyến. Không tải dữ liệu nguồn.</p>
+<p class="source-evidence-notice">Evidence tham chiếu do người quản trị cung cấp — chưa được hệ thống xác minh pháp lý</p>
+<div class="source-console-grid">
+<section aria-labelledby="sources-heading">
+<h2 id="sources-heading">Danh sách nguồn</h2>
+<ul class="bot-list source-list">
+{% for entry in entries %}<li><a href="?source_id={{ entry.source_id | urlencode }}#source-detail">{{ entry.source_id }}</a><span>{{ state_labels[entry.current.state] }}</span></li>
+{% else %}<li>Chưa có nguồn ứng viên.</li>{% endfor %}
+</ul>
+{% if can_write %}
+<details><summary>Tạo nguồn ứng viên</summary>
+<form method="post" action="/admin/research-sources/create" aria-label="Tạo nguồn ứng viên">
+{{ hidden() }}
+{% for name, label, value in [('source_id','Mã nguồn',''),('publisher','Nhà xuất bản',''),('endpoint_url','Địa chỉ HTTPS',''),('access_method','Phương thức truy cập','GET'),('auth_scope','Phạm vi xác thực (không nhập credential)','public'),('attribution','Ghi công','Chưa được duyệt'),('retention_ref','Tham chiếu lưu giữ','metadata-only-pending-review'),('window_seconds','Cửa sổ quota (giây)','3600'),('max_requests','Giới hạn số yêu cầu','10'),('max_bytes','Giới hạn byte','1000'),('max_cost','Giới hạn chi phí','1'),('cost_unit','Đơn vị chi phí','USD'),('reason','Lý do tạo nguồn','')] %}
+<label for="create-{{ name }}">{{ label }}</label><input id="create-{{ name }}" name="{{ name }}" value="{{ value }}" required>
+{% endfor %}
+<button type="submit">Tạo nguồn ứng viên</button>
+</form></details>
+{% endif %}
+</section>
+<section id="source-detail" aria-labelledby="detail-heading">
+<h2 id="detail-heading">Chi tiết nguồn{% if detail %}: {{ detail.source_id }}{% endif %}</h2>
+{% if detail %}
+<p class="badge text-bg-primary">{{ state_labels[detail.current.state] }}</p>
+<dl class="source-metadata">
+{% for label, value in [('Nhà xuất bản',detail.current.publisher),('Địa chỉ nguồn',detail.current.endpoint_url),('Phương thức truy cập',detail.current.access_method),('Phạm vi xác thực',detail.current.auth_scope),('Evidence tham chiếu',detail.current.evidence_ref or 'Chưa cung cấp'),('Ghi công','Chưa được duyệt' if detail.current.attribution == 'not approved' else detail.current.attribution),('Lưu giữ',detail.current.retention_ref),('Hết hạn',detail.current.valid_until or 'Không đặt thời hạn')] %}
+<div><dt>{{ label }}</dt><dd>{{ value }}</dd></div>{% endfor %}
+</dl>
+<h3>Quota hiện hành</h3>
+{% if detail.quota %}<p>Số yêu cầu: {{ detail.quota.requests_used }} / {{ detail.quota.budget.max_requests }} · Byte: {{ detail.quota.bytes_used }} / {{ detail.quota.budget.max_bytes }} · Chi phí: {{ detail.quota.cost_used }} / {{ detail.quota.budget.max_cost }} {{ detail.quota.budget.cost_unit }}</p><p>Cửa sổ bắt đầu: {{ detail.quota.window_started_at }} · Tại: {{ detail.quota.as_of }} · Phiên bản {{ detail.quota.policy_sequence }}</p>
+{% else %}<p>Chưa có snapshot sử dụng quota. Giới hạn policy: {{ detail.current.budget.max_requests }} yêu cầu / {{ detail.current.budget.max_bytes }} byte / {{ detail.current.budget.max_cost }} {{ detail.current.budget.cost_unit }} trong {{ detail.current.budget.window_seconds }} giây.</p>{% endif %}
+<h3>Lịch sử policy</h3>
+<ol class="source-history">
+{% for revision in detail.revisions | reverse %}<li><article><h4>Phiên bản {{ revision.sequence }} · {{ state_labels[revision.state] }}</h4><dl>
+<dt>Lý do</dt><dd>{{ revision.reason }}</dd><dt>Người gửi</dt><dd>{{ revision.actor_id }}</dd><dt>Người duyệt</dt><dd>{{ revision.approved_by or 'Chưa duyệt' }}</dd><dt>Mã policy</dt><dd>{{ revision.policy_id }}</dd><dt>Hết hạn</dt><dd>{{ revision.valid_until or "Không đặt thời hạn" }}</dd><dt>Thời điểm ghi nhận</dt><dd>{{ revision.created_at }}</dd><dt>Evidence tham chiếu</dt><dd>{{ revision.evidence_ref or 'Chưa cung cấp' }}</dd><dt>Mục đích</dt><dd>{% for purpose in revision.allowed_purposes %}{{ purpose_labels[purpose] }}{% if not loop.last %}, {% endif %}{% else %}Chưa cấp quyền{% endfor %}</dd>
+</dl></article></li>{% endfor %}
+</ol>
+{% if can_write %}
+<details><summary>Gửi policy chờ duyệt</summary><form method="post" action="/admin/research-sources/revision" aria-label="Gửi policy chờ duyệt">
+{{ hidden(detail.source_id) }}<input type="hidden" name="state" value="rights_pending">
+<label for="pending-evidence">Evidence tham chiếu</label><textarea id="pending-evidence" name="evidence_ref" required></textarea>
+{{ purposes('pending') }}
+{% for name, label, value in [('window_seconds','Cửa sổ quota (giây)',detail.current.budget.window_seconds),('max_requests','Giới hạn số yêu cầu',detail.current.budget.max_requests),('max_bytes','Giới hạn byte',detail.current.budget.max_bytes),('max_cost','Giới hạn chi phí',detail.current.budget.max_cost),('cost_unit','Đơn vị chi phí',detail.current.budget.cost_unit)] %}
+<label for="pending-{{ name }}">{{ label }}</label><input id="pending-{{ name }}" name="{{ name }}" value="{{ value }}" required>
+{% endfor %}
+<label for="pending-reason">Lý do gửi duyệt</label><textarea id="pending-reason" name="reason" required></textarea>
+<button type="submit">Gửi chờ duyệt</button></form></details>
+<details><summary>Chặn hoặc thu hồi quyền</summary><form method="post" action="/admin/research-sources/revision" aria-label="Chặn hoặc thu hồi quyền">{{ hidden(detail.source_id) }}
+<label for="disable-state">Trạng thái</label><select id="disable-state" name="state"><option value="blocked">Chặn</option><option value="revoked">Thu hồi</option></select>
+<label for="disable-reason">Lý do thay đổi</label><textarea id="disable-reason" name="reason" required></textarea><button type="submit">Lưu thay đổi quyền</button></form></details>
+{% endif %}
+{% if can_approve and detail.current.state == 'rights_pending' %}
+<details><summary>Duyệt quyền độc lập</summary><p>Người duyệt phải khác người gửi. Hệ thống kiểm tra lại quyền và MFA ở máy chủ.</p>
+<form method="post" action="/admin/research-sources/approve" aria-label="Duyệt quyền độc lập">{{ hidden(detail.source_id) }}<input type="hidden" name="policy_id" value="{{ detail.current.policy_id }}">{{ purposes('approve') }}
+<label for="approve-reason">Lý do duyệt</label><textarea id="approve-reason" name="reason" required></textarea><button type="submit">Duyệt quyền</button></form></details>
+{% endif %}
+{% else %}<p>Chọn một nguồn để xem lịch sử, quyền sử dụng và quota.</p>{% endif %}
+</section>
+</div>
+{% endblock %}

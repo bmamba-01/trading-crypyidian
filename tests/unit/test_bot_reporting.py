@@ -32,7 +32,9 @@ from trading_bot.domain.portfolio.reporting import (
     DecisionLineage,
     IntentLineage,
     LedgerCost,
+    LedgerFill,
     LedgerTrade,
+    PositionTransition,
     ReportBot,
     ReportIntegrityError,
     build_bot_report,
@@ -140,6 +142,8 @@ def snapshot(
     costs: list[LedgerCost] | None = None,
     intents: list[IntentLineage] | None = None,
     decisions: list[DecisionLineage] | None = None,
+    fills: list[LedgerFill] | None = None,
+    position_events: list[PositionTransition] | None = None,
 ) -> BotLedgerSnapshot:
     return BotLedgerSnapshot(
         workspace_id=workspace_id,
@@ -150,6 +154,8 @@ def snapshot(
         costs=tuple(costs if costs is not None else [c for t in trades for c in costs_for(t)]),
         intents=tuple(intents or ()),
         decisions=tuple(decisions or ()),
+        fills=tuple(fills or ()),
+        position_events=tuple(position_events or ()),
     )
 
 
@@ -197,6 +203,135 @@ def test_bot_report_sums_ledger_columns_exactly() -> None:
     assert payload["reconciliation"] == {"closed_trade_rows": 3, "trade_cost_rows": 11}
 
 
+def test_v2_trader_analytics_use_net_results_and_closed_trade_order() -> None:
+    outcomes = (("10", 30), ("12", 60), ("-4", 90), ("-6", 120), ("0", 180), ("2", 240))
+    trades = [
+        make_trade(
+            gross=net,
+            fee="0",
+            slippage="0",
+            opened_at=START + timedelta(hours=index + 1) - timedelta(minutes=minutes),
+            closed_at=START + timedelta(hours=index + 1),
+            trade_id=UUID(f"00000000-0000-4000-8000-{index + 1:012d}"),
+        )
+        for index, (net, minutes) in enumerate(outcomes)
+    ]
+
+    report = report_for(snapshot(trades))
+    totals = report.totals["USDT"]
+    values = report.as_dict()["totals"]["USDT"]
+
+    assert REPORT_VERSION == "bot-report.v2"
+    assert totals.win_rate_percent == Decimal("50.00000000")
+    assert totals.profit_factor == Decimal("2.40000000")
+    assert totals.expectancy_per_trade == Decimal("2.33333333")
+    assert totals.average_winning_trade == Decimal("8.00000000")
+    assert totals.average_losing_trade == Decimal("-5.00000000")
+    assert totals.max_consecutive_wins == 2
+    assert totals.max_consecutive_losses == 2
+    assert totals.average_holding_seconds == 7200
+    assert values["win_rate_percent"] == "50"
+    assert values["profit_factor"] == "2.4"
+    assert values["expectancy_per_trade"] == "2.33333333"
+
+
+def test_v2_daily_performance_uses_vietnam_dates_and_keeps_quote_assets_separate() -> None:
+    trades = [
+        make_trade(
+            gross="11",
+            fee="1",
+            slippage="0",
+            closed_at=START + timedelta(hours=16, minutes=30),
+            quote="USDT",
+        ),
+        make_trade(
+            gross="-5",
+            fee="0",
+            slippage="0",
+            closed_at=START + timedelta(hours=17, minutes=30),
+            quote="USDT",
+        ),
+        make_trade(
+            gross="4",
+            fee="0",
+            slippage="0",
+            closed_at=START + timedelta(hours=16, minutes=45),
+            quote="USDC",
+        ),
+    ]
+
+    daily = report_for(snapshot(trades)).as_dict()["daily_performance"]
+
+    assert daily == {
+        "timezone": "Asia/Ho_Chi_Minh",
+        "quote_assets": {
+            "USDC": [
+                {
+                    "date": "2026-10-01",
+                    "net_pnl": "4",
+                    "closed_trade_count": 1,
+                    "winning_trade_count": 1,
+                    "losing_trade_count": 0,
+                    "breakeven_trade_count": 0,
+                }
+            ],
+            "USDT": [
+                {
+                    "date": "2026-10-01",
+                    "net_pnl": "10",
+                    "closed_trade_count": 1,
+                    "winning_trade_count": 1,
+                    "losing_trade_count": 0,
+                    "breakeven_trade_count": 0,
+                },
+                {
+                    "date": "2026-10-02",
+                    "net_pnl": "-5",
+                    "closed_trade_count": 1,
+                    "winning_trade_count": 0,
+                    "losing_trade_count": 1,
+                    "breakeven_trade_count": 0,
+                },
+            ],
+        },
+    }
+
+
+def test_v1_report_payload_keeps_legacy_totals_shape_and_v2_adds_metrics() -> None:
+    trade = make_trade(gross="4", fee="0", slippage="0")
+    original = report_for(snapshot([trade])).as_dict()["totals"]["USDT"]
+    legacy = build_bot_report(
+        snapshot=snapshot([trade]),
+        start=START,
+        end=END,
+        report_version="bot-report.v1",
+    ).as_dict()["totals"]["USDT"]
+
+    assert "profit_factor" in original
+    assert "profit_factor" not in legacy
+    assert "daily_performance" not in legacy
+    assert legacy["closed_trade_count"] == 1
+
+
+def test_profit_factor_and_average_outcomes_are_undefined_without_denominator() -> None:
+    winners = [
+        make_trade(gross="3", fee="0", slippage="0"),
+        make_trade(gross="2", fee="0", slippage="0", closed_at=START + timedelta(hours=2)),
+    ]
+    metrics = report_for(snapshot(winners)).totals["USDT"]
+
+    assert metrics.profit_factor is None
+    assert metrics.average_losing_trade is None
+    assert metrics.average_winning_trade == Decimal("2.50000000")
+
+
+def test_closed_trade_with_negative_holding_duration_is_rejected() -> None:
+    trade = make_trade(opened_at=START + timedelta(hours=2), closed_at=START + timedelta(hours=1))
+
+    with pytest.raises(ReportIntegrityError, match="đóng trước khi mở"):
+        report_for(snapshot([trade]))
+
+
 def test_drawdown_tracks_peak_and_trough_trade_lineage() -> None:
     nets = ["10", "-4", "2", "-9", "1"]
     trades = [
@@ -225,6 +360,10 @@ def test_drawdown_starts_from_zero_and_handles_empty_window() -> None:
     empty = report_for(snapshot([]))
     assert empty.totals == {}
     assert empty.as_dict()["trades"] == []
+    assert empty.as_dict()["daily_performance"] == {
+        "timezone": "Asia/Ho_Chi_Minh",
+        "quote_assets": {},
+    }
 
 
 def test_window_is_half_open_on_closed_at() -> None:
@@ -327,6 +466,184 @@ def test_report_carries_config_strategy_model_lineage() -> None:
     assert summary["effective_config_hashes"] == ["8" * 64]
     assert summary["model_release_ids"] == [str(MODEL_M1)]
     assert summary["trades_without_bot_config_lineage"] == 0
+
+
+def test_report_explains_trade_entry_and_exit_from_persisted_evidence() -> None:
+    trade = make_trade(candidate="c" * 64)
+    decision = DecisionLineage(
+        decision_id=uuid4(),
+        bot_id=BOT_A,
+        candidate_id=trade.candidate_id,
+        decision_hash="d" * 64,
+        bot_config_version_id=uuid4(),
+        bot_config_hash="9" * 64,
+        root_settings_version_id=SETTINGS_V1,
+        model_release_id=None,
+        candidate={
+            "strategy_id": "H03",
+            "reason_code": "DONCHIAN_BREAKOUT_CONFIRMED",
+            "detail_vi": "Nến đóng cửa vượt đỉnh kênh Donchian.",
+            "reference_price": "101.25",
+            "signal_at": "2026-10-01T00:15:00+00:00",
+        },
+    )
+    opened_at = trade.opened_at
+    closed_at = trade.closed_at
+    assert closed_at is not None
+    fills = [
+        LedgerFill(
+            fill_key="entry-fill-1",
+            intent_id=trade.intent_id,
+            workspace_id=trade.workspace_id,
+            bot_id=trade.bot_id,
+            account_id=trade.account_id,
+            role="ENTRY",
+            quantity=Decimal("0.2"),
+            price=Decimal("100.5"),
+            occurred_at=opened_at,
+            fee_amount=Decimal("0.25"),
+            slippage_amount=Decimal("0.05"),
+            bar_key="entry-bar",
+        ),
+        LedgerFill(
+            fill_key="exit-fill-1",
+            intent_id=trade.intent_id,
+            workspace_id=trade.workspace_id,
+            bot_id=trade.bot_id,
+            account_id=trade.account_id,
+            role="EXIT",
+            quantity=Decimal("0.2"),
+            price=Decimal("110.5"),
+            occurred_at=closed_at,
+            fee_amount=Decimal("0.25"),
+            slippage_amount=Decimal("0.05"),
+            bar_key="exit-bar",
+        ),
+    ]
+    position_events = [
+        PositionTransition(
+            event_key="exit-fill:exit-fill-1",
+            intent_id=trade.intent_id,
+            workspace_id=trade.workspace_id,
+            bot_id=trade.bot_id,
+            account_id=trade.account_id,
+            event_type="CLOSED",
+            occurred_at=closed_at,
+            payload={
+                "fill_key": "exit-fill-1",
+                "exit_reason": "STOP_LOSS",
+                "bar_key": "exit-bar",
+            },
+        )
+    ]
+
+    payload = report_for(
+        snapshot([trade], decisions=[decision], fills=fills, position_events=position_events)
+    ).as_dict()
+
+    row = payload["trades"][0]
+    assert row["entry_reason"] == {
+        "strategy_id": "H03",
+        "reason_code": "DONCHIAN_BREAKOUT_CONFIRMED",
+        "detail_vi": "Nến đóng cửa vượt đỉnh kênh Donchian.",
+        "reference_price": "101.25",
+        "signal_at": "2026-10-01T00:15:00+00:00",
+    }
+    assert row["exit_reason"] == "STOP_LOSS"
+    assert row["fills"] == [
+        {
+            "fill_key": "entry-fill-1",
+            "role": "ENTRY",
+            "position_event_type": None,
+            "quantity": "0.2",
+            "price": "100.5",
+            "occurred_at": opened_at.isoformat(),
+            "fee_amount": "0.25",
+            "slippage_amount": "0.05",
+            "bar_key": "entry-bar",
+        },
+        {
+            "fill_key": "exit-fill-1",
+            "role": "EXIT",
+            "position_event_type": "CLOSED",
+            "quantity": "0.2",
+            "price": "110.5",
+            "occurred_at": closed_at.isoformat(),
+            "fee_amount": "0.25",
+            "slippage_amount": "0.05",
+            "bar_key": "exit-bar",
+        },
+    ]
+
+
+def test_report_marks_missing_trade_explanation_without_guessing() -> None:
+    payload = report_for(snapshot([make_trade()])).as_dict()
+    row = payload["trades"][0]
+    assert row["entry_reason"] is None
+    assert row["exit_reason"] is None
+    assert row["fills"] == []
+
+
+def test_report_distinguishes_partial_reduction_from_final_close_fill() -> None:
+    trade = make_trade(candidate="c" * 64)
+    closed_at = trade.closed_at
+    assert closed_at is not None
+    fills = [
+        LedgerFill(
+            fill_key="exit-partial",
+            intent_id=trade.intent_id,
+            workspace_id=trade.workspace_id,
+            bot_id=trade.bot_id,
+            account_id=trade.account_id,
+            role="EXIT",
+            quantity=Decimal("0.1"),
+            price=Decimal("105"),
+            occurred_at=closed_at - timedelta(minutes=1),
+            fee_amount=Decimal("0.1"),
+            slippage_amount=Decimal("0.02"),
+            bar_key="partial-bar",
+        ),
+        LedgerFill(
+            fill_key="exit-final",
+            intent_id=trade.intent_id,
+            workspace_id=trade.workspace_id,
+            bot_id=trade.bot_id,
+            account_id=trade.account_id,
+            role="EXIT",
+            quantity=Decimal("0.1"),
+            price=Decimal("110"),
+            occurred_at=closed_at,
+            fee_amount=Decimal("0.1"),
+            slippage_amount=Decimal("0.02"),
+            bar_key="final-bar",
+        ),
+    ]
+    events = [
+        PositionTransition(
+            event_key="exit-fill:exit-partial",
+            intent_id=trade.intent_id,
+            workspace_id=trade.workspace_id,
+            bot_id=trade.bot_id,
+            account_id=trade.account_id,
+            event_type="REDUCED",
+            occurred_at=closed_at - timedelta(minutes=1),
+            payload={"fill_key": "exit-partial"},
+        ),
+        PositionTransition(
+            event_key="exit-fill:exit-final",
+            intent_id=trade.intent_id,
+            workspace_id=trade.workspace_id,
+            bot_id=trade.bot_id,
+            account_id=trade.account_id,
+            event_type="CLOSED",
+            occurred_at=closed_at,
+            payload={"fill_key": "exit-final", "exit_reason": "TAKE_PROFIT"},
+        ),
+    ]
+
+    row = report_for(snapshot([trade], fills=fills, position_events=events)).as_dict()["trades"][0]
+
+    assert [fill["position_event_type"] for fill in row["fills"]] == ["REDUCED", "CLOSED"]
 
 
 def test_missing_lineage_sources_stay_null_without_guessing() -> None:
@@ -456,6 +773,16 @@ def test_workspace_report_sums_bots_and_reconciles_with_ledger() -> None:
     assert usdt.drawdown_trough_trade_id == a_trades[1].trade_id
     payload = aggregate.as_dict()
     assert payload["scope"] == "workspace"
+    assert payload["daily_performance"]["quote_assets"]["USDT"] == [
+        {
+            "date": "2026-10-01",
+            "net_pnl": "1",
+            "closed_trade_count": 3,
+            "winning_trade_count": 2,
+            "losing_trade_count": 1,
+            "breakeven_trade_count": 0,
+        }
+    ]
     assert [row["bot_id"] for row in payload["bots"]] == sorted([str(BOT_A), str(BOT_B)])
     assert {row["bot_id"]: row["report_hash"] for row in payload["bots"]} == {
         str(BOT_A): report_a.report_hash,
@@ -565,6 +892,38 @@ async def test_repository_queries_filter_scope_and_half_open_window() -> None:
     assert "trade.workspace_id =" in totals_sql
     assert "GROUP BY trade.quote_asset" in totals_sql
     assert all("UPDATE" not in s and "INSERT" not in s for s in session.statements)
+
+
+@pytest.mark.asyncio
+async def test_repository_chart_bars_use_workspace_symbol_timeframe_and_asof() -> None:
+    session = RecordingSession()
+    repository = BotReportRepository(session)  # type: ignore[arg-type]
+
+    await repository.load_trade_bars(
+        workspace_id=W1,
+        symbol="BTCUSDT",
+        timeframe="1h",
+        start=START,
+        end=END,
+        as_of=END + timedelta(hours=1),
+        limit=1000,
+    )
+
+    sql = session.statements[-1]
+    for fragment in (
+        "market_bar.workspace_id =",
+        "market_bar.symbol =",
+        "market_bar.timeframe =",
+        "market_bar.open_time >=",
+        "market_bar.open_time <",
+        "market_bar.available_at <=",
+        "market_bar.is_closed IS true",
+        "ORDER BY market_bar.open_time, market_bar.revision DESC",
+        "LIMIT",
+    ):
+        assert fragment in sql, fragment
+    assert "INSERT" not in sql
+    assert "UPDATE" not in sql
 
 
 class TransactionLogSession:
@@ -990,6 +1349,77 @@ async def test_query_validation(changes: dict[str, Any], code: str) -> None:
     assert STORE.units == []
 
 
+@pytest.mark.asyncio
+async def test_legacy_report_v1_remains_supported_with_original_totals_shape() -> None:
+    query = replace(bot_query(BOT_A), report_version="bot-report.v1")
+
+    report = await service().get_bot_report(query, OWNER)
+
+    payload = report.as_dict()
+    assert payload["report_version"] == "bot-report.v1"
+    assert "profit_factor" not in payload["totals"]["USDT"]
+
+
 def test_report_version_constant() -> None:
-    assert REPORT_VERSION == "bot-report.v1"
+    assert REPORT_VERSION == "bot-report.v2"
     assert bot_reporting.MAX_REPORT_WINDOW == timedelta(days=366)
+
+
+@pytest.mark.asyncio
+async def test_dashboard_batch_uses_one_read_snapshot_and_only_granted_bot_ledgers() -> None:
+    reports = await service().get_dashboard_reports(
+        BotReportQuery(workspace_id=W1, bot_id=None, start=START, end=END), ANALYST
+    )
+    assert [r.bot_id for r in reports] == [BOT_A]
+    assert reports[0].totals["USDT"].net_pnl == Decimal("4.85")
+    assert len(STORE.units) == 1
+    assert STORE.units[0]["snapshot_read_only"] is True
+    assert STORE.units[0]["workspace_id"] == W1
+    assert f"ledger:{BOT_B}" not in STORE.calls
+    assert f"ledger:{BOT_X}" not in STORE.calls
+    assert "ledger_totals" not in STORE.calls
+
+
+@pytest.mark.asyncio
+async def test_dashboard_batch_workspace_owner_gets_separate_reports_without_aggregation() -> None:
+    reports = await service().get_dashboard_reports(
+        BotReportQuery(workspace_id=W1, bot_id=None, start=START, end=END), OWNER
+    )
+    assert [r.bot_id for r in reports] == [BOT_A, BOT_B]
+    assert [r.totals["USDT"].net_pnl for r in reports] == [Decimal("4.85"), Decimal("-2.2")]
+    assert len(STORE.units) == 1
+    assert "ledger_totals" not in STORE.calls
+
+
+@pytest.mark.asyncio
+async def test_dashboard_batch_rejects_cross_workspace_before_reading() -> None:
+    with pytest.raises(BotReportError, match="Không tìm thấy"):
+        await service().get_dashboard_reports(
+            BotReportQuery(workspace_id=W2, bot_id=None, start=START, end=END), OWNER
+        )
+    assert STORE.units == []
+
+
+@pytest.mark.asyncio
+async def test_dashboard_batch_applies_active_bot_selection_without_widening_grants() -> None:
+    reports = await service().get_dashboard_reports(
+        BotReportQuery(workspace_id=W1, bot_id=None, start=START, end=END),
+        ANALYST,
+        bot_ids=frozenset({BOT_B, BOT_X}),
+    )
+    assert reports == ()
+    assert not any(c.startswith("ledger:") for c in STORE.calls)
+
+
+@pytest.mark.asyncio
+async def test_dashboard_batch_refuses_cap_and_invalid_scope() -> None:
+    query = BotReportQuery(workspace_id=W1, bot_id=None, start=START, end=END)
+    with pytest.raises(BotReportError):
+        await service().get_dashboard_reports(replace(query, scope=ReportScope.WORKSPACE), OWNER)
+    for _ in range(MAX_BOTS_PER_WORKSPACE_REPORT):
+        bot_id = uuid4()
+        STORE.bots[(W1, bot_id)] = ReportBot(workspace_id=W1, bot_id=bot_id, account_id=uuid4())
+    with pytest.raises(BotReportError) as error:
+        await service().get_dashboard_reports(query, OWNER)
+    assert error.value.code == "REPORT_TOO_MANY_BOTS"
+    assert not any(c.startswith("ledger:") for c in STORE.calls)

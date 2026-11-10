@@ -1,0 +1,134 @@
+{% extends "admin/base.html" %}
+{% block title %}Chấm điểm mô hình | Crypidian{% endblock %}
+{% block head_extra %}<meta name="robots" content="noindex, nofollow">{% endblock %}
+{% block heading %}Điều phối chấm điểm mô hình{% endblock %}
+{% block content %}
+  <div class="learning-scoring-page" id="learning-scoring-page">
+    <section class="learning-scoring-lock" aria-labelledby="learning-scoring-lock-heading">
+      <h2 id="learning-scoring-lock-heading">Quyền runtime chưa được xác minh</h2>
+      <p><strong>Chế độ chỉ quan sát (SHADOW) và cổng PAPER (PAPER_GATE) đang khóa.</strong> Chưa có cổng quyền hiện hành để xác nhận lại quyền dữ liệu trước khi chấm. Trang này không bật bộ chấm và không tạo lệnh.</p>
+      <p>Chế độ chỉ quan sát (SHADOW) chỉ ghi nhận điểm, không tác động quyết định hoặc lệnh. Cổng PAPER (PAPER_GATE) chỉ có thể đi tiếp qua các cổng vận hành và bộ máy quản trị rủi ro hiện hữu sau khi báo cáo, bằng chứng và quyền được xác minh đầy đủ.</p>
+    </section>
+
+    <section class="learning-scoring-card" aria-labelledby="learning-scoring-status-heading">
+      <div class="learning-scoring-card-heading">
+        <div>
+          <h2 id="learning-scoring-status-heading">Trạng thái hiện tại</h2>
+          <p>Thông tin được đọc theo không gian làm việc của phiên đăng nhập.</p>
+        </div>
+        <span class="learning-scoring-mode learning-scoring-mode--{{ snapshot.mode.value|lower }}">{{ mode_label }}</span>
+      </div>
+      <dl class="learning-scoring-metadata">
+        <div><dt>Trạng thái sức khỏe</dt><dd>{{ health_label }}</dd></div>
+        <div><dt>Bộ chấm có thể hoạt động</dt><dd>{{ "Có" if snapshot.runtime_usable else "Không" }}</dd></div>
+        <div><dt>Phiên bản triển khai</dt><dd>{{ snapshot.deployment_revision }}</dd></div>
+        <div><dt>Phiên bản con trỏ danh mục mô hình</dt><dd>{{ snapshot.active_pointer_version }}</dd></div>
+        <div><dt>Mã sự kiện triển khai</dt><dd><code>{{ event_id_short }}</code></dd></div>
+      </dl>
+    </section>
+
+    <section class="learning-scoring-card" aria-labelledby="learning-scoring-report-heading">
+      <div class="learning-scoring-card-heading">
+        <div>
+          <h2 id="learning-scoring-report-heading">Báo cáo scorer TEST gần nhất</h2>
+          <p>Tóm tắt được đọc từ báo cáo đã lưu trong không gian làm việc hiện tại.</p>
+        </div>
+        {% if report_summary %}<span class="learning-scoring-report-status">{{ report_status_label }}</span>{% endif %}
+      </div>
+      {% if report_summary %}
+        <dl class="learning-scoring-report-grid">
+          <div><dt>Thời điểm đánh giá</dt><dd><time datetime="{{ report_summary.evaluated_at.isoformat() }}">{{ report_summary.evaluated_at.strftime("%d/%m/%Y %H:%M UTC") }}</time></dd></div>
+          <div><dt>Số mẫu kiểm định</dt><dd>{{ report_summary.test_sample_count }}</dd></div>
+          <div><dt>Cơ hội quyết định trong phạm vi</dt><dd>{{ report_summary.opportunity_count }}</dd></div>
+          <div><dt>Độ phủ chấm điểm</dt><dd>{{ "%.1f"|format(report_summary.coverage * 100) }}%</dd></div>
+          <div><dt>Lần từ chối chấm (ABSTAIN)</dt><dd>{{ report_summary.abstain_count }}</dd></div>
+          <div><dt>Sai số hiệu chuẩn kỳ vọng (ECE)</dt><dd>{{ "%.1f"|format(report_summary.expected_calibration_error * 100) }}%</dd></div>
+          <div><dt>Tổn thất logarit</dt><dd>{{ "%.4f"|format(report_summary.log_loss) }}</dd></div>
+          <div><dt>Điểm Brier</dt><dd>{{ "%.4f"|format(report_summary.brier_score) }}</dd></div>
+          <div><dt>Tỷ lệ PnL dương bị chặn</dt><dd>{{ "%.1f"|format(report_summary.false_veto_rate * 100) }}%</dd></div>
+          <div><dt>Số cơ hội được chấm</dt><dd>{{ report_summary.scored_candidate_count }} / {{ report_summary.candidate_count }}</dd></div>
+          <div><dt>Số cơ hội được duyệt</dt><dd>{{ report_summary.approved_candidate_count }}</dd></div>
+          {% if report_summary.candidate_retention is not none %}
+            <div><dt>Tỷ lệ giữ lại cơ hội</dt><dd>{{ "%.1f"|format(report_summary.candidate_retention * 100) }}%</dd></div>
+          {% endif %}
+          <div><dt>Đủ bằng chứng về mọi cơ hội</dt><dd>{{ "Có" if report_summary.candidate_completeness_verified else "Chưa" }}</dd></div>
+          <div><dt>Đủ độ phủ cơ hội được chấm</dt><dd>{{ "Có" if report_summary.scored_candidate_coverage_verified else "Chưa" }}</dd></div>
+        </dl>
+        <p class="learning-scoring-class-support"><strong>Phân bố mẫu theo kết quả:</strong>
+          {% for label, count in class_support_labels %}{{ count }} {{ label|lower }}{% if not loop.last %} · {% endif %}{% endfor %}
+        </p>
+        <details class="learning-scoring-lineage">
+            <summary>Siêu dữ liệu dấu vết nguồn (hash rút gọn)</summary>
+          <dl class="learning-scoring-lineage-grid">
+            {% for name, value in report_lineage.items() %}<div><dt>{{ name }}</dt><dd><code>{{ value }}</code></dd></div>{% endfor %}
+            <div><dt>Phiên bản chính sách</dt><dd><code>{{ report_summary.policy_version }}</code></dd></div>
+            <div><dt>Phân hoạch</dt><dd><code>{{ report_summary.fold_id }}</code></dd></div>
+            <div><dt>Phiên bản lược đồ vector</dt><dd><code>{{ report_summary.vector_schema_version }}</code></dd></div>
+          </dl>
+        </details>
+        <p class="learning-scoring-report-caveat"><strong>Giới hạn diễn giải:</strong> Các chỉ số là tổng hợp trên mẫu kiểm định TEST đã đóng. Trạng thái báo cáo không tự xác minh quyền nguồn hiện hành, không bật SHADOW/PAPER_GATE và không thay thế phê duyệt riêng hoặc các cổng rủi ro.</p>
+      {% else %}
+        <p id="learning-scoring-no-report">Chưa có báo cáo scorer TEST đã lưu cho không gian làm việc này.</p>
+      {% endif %}
+    </section>
+
+    <section class="learning-scoring-card" aria-labelledby="learning-scoring-history-heading">
+      <h2 id="learning-scoring-history-heading">Lịch sử điểm chấm</h2>
+      {% if score_event_rows %}
+        <ol class="learning-scoring-event-list">
+          {% for item in score_event_rows %}
+            <li>
+              <div class="learning-scoring-event-heading">
+                <span class="learning-scoring-decision learning-scoring-decision--{{ item.decision_class }}">{{ item.decision_label }}</span>
+                <span>{{ item.mode_label }}</span>
+                <time datetime="{{ item.created_at.isoformat() }}">{{ item.created_at.strftime("%d/%m/%Y %H:%M UTC") }}</time>
+              </div>
+              <dl class="learning-scoring-event-grid">
+                <div><dt>Mã sự kiện</dt><dd><code>{{ item.event_id_short }}</code></dd></div>
+                {% if item.probability is not none %}<div><dt>Xác suất PnL dương</dt><dd>{{ item.probability }}</dd></div>{% endif %}
+                {% if item.confidence is not none %}<div><dt>Độ tin cậy</dt><dd>{{ item.confidence }}</dd></div>{% endif %}
+                {% if item.uncertainty is not none %}<div><dt>Độ bất định</dt><dd>{{ item.uncertainty }}</dd></div>{% endif %}
+                {% if item.reason_code %}<div><dt>Mã lý do</dt><dd><code>{{ item.reason_code }}</code></dd></div>{% endif %}
+              </dl>
+            </li>
+          {% endfor %}
+        </ol>
+        <nav class="learning-scoring-event-pagination" aria-label="Điều hướng lịch sử điểm chấm">
+          {% if score_event_page.has_previous %}
+            <a href="/admin/learning/scoring?score_event_page={{ score_event_page.page - 1 }}">Sự kiện mới hơn</a>
+          {% endif %}
+          <span>Trang {{ score_event_page.page }}</span>
+          {% if score_event_page.has_next %}
+            <a href="/admin/learning/scoring?score_event_page={{ score_event_page.page + 1 }}">Sự kiện cũ hơn</a>
+          {% endif %}
+        </nav>
+      {% else %}
+        <p id="learning-scoring-no-events">Chưa có sự kiện điểm chấm trong không gian làm việc này.</p>
+      {% endif %}
+      <p class="learning-scoring-metadata-note">Lịch sử chỉ đọc các trường điểm và mã lý do đã được cho phép; không tải vectơ, giá trị đặc trưng, nhãn, mẫu TEST hoặc payload canonical.</p>
+    </section>
+
+    <section class="learning-scoring-card" aria-labelledby="learning-scoring-controls-heading">
+      <h2 id="learning-scoring-controls-heading">Điều khiển an toàn</h2>
+      {% if can_disable %}
+        <form id="scorer-disable-form"
+          data-csrf-token="{{ csrf_token }}"
+          data-expected-pointer-version="{{ snapshot.active_pointer_version }}"
+          data-expected-deployment-revision="{{ snapshot.deployment_revision }}">
+          <p>Bản triển khai hiện đang bật nhưng quyền chưa xác minh. Người duyệt có thể ghi sự kiện tắt bằng kiểm tra phiên bản CAS và xác thực TOTP gần đây.</p>
+          <label for="scorer-disable-reason">Lý do tắt</label>
+          <textarea id="scorer-disable-reason" name="reason" minlength="12" maxlength="500" required></textarea>
+          <button type="submit">Tắt chấm điểm</button>
+        </form>
+      {% elif snapshot.mode.value != "DISABLED" and has_approval %}
+        <p class="learning-scoring-access-note">Cần xác thực TOTP gần đây để tắt deployment đang hoạt động.</p>
+      {% elif snapshot.mode.value != "DISABLED" %}
+        <p class="learning-scoring-access-note">Chỉ người có quyền duyệt mới được tắt deployment.</p>
+      {% else %}
+        <p>Scorer đang tắt. Không có thao tác bật chế độ nào khả dụng khi quyền hiện hành chưa được xác minh.</p>
+      {% endif %}
+      <p id="learning-scoring-status" role="status" aria-live="polite" hidden></p>
+    </section>
+  </div>
+{% endblock %}
+{% block scripts %}<script src="/static/learning-scoring.js" defer></script>{% endblock %}

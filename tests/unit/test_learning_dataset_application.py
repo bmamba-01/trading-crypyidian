@@ -18,8 +18,10 @@ from trading_bot.domain.learning.dataset import (
     DatasetExclusion,
     DatasetManifest,
     DatasetSample,
+    DatasetSourceReference,
     DatasetSplit,
 )
+from trading_bot.domain.research.source_policy import SourceUsePurpose
 
 NOW = datetime(2026, 11, 1, 12, tzinfo=UTC)
 WORKSPACE_ID = uuid4()
@@ -52,21 +54,31 @@ def verification(
     as_of=NOW + timedelta(minutes=10),
     source_training_eligible=True,
     source_rights_hashes=("e" * 64,),
-    source_revision_refs=None,
+    source_references=None,
     feature_schema_version="features-v1",
     feature_version="feature-build-v2",
     sample_schema_version="sample-v1",
     split_policy_version="split-policy-v1",
     holdout_sealed_at=None,
 ) -> DatasetEvidenceVerification:
+    references = source_references
+    if item.source_dependent and references is None:
+        references = (
+            DatasetSourceReference(
+                source_id="source-a",
+                item_id=f"item-{item.sample_id}",
+                revision_id=f"revision-{item.sample_id}",
+                policy_id="source-a-policy-v2",
+                policy_sequence=2,
+                purpose=SourceUsePurpose.TRAINING,
+                rights_hash=source_rights_hashes[0],
+            ),
+        )
     authoritative = replace(
         item,
-        source_rights_hashes=(source_rights_hashes if item.source_dependent else ()),
-        source_revision_refs=(
-            (item.source_revision_refs if source_revision_refs is None else source_revision_refs)
-            if item.source_dependent
-            else ()
-        ),
+        source_rights_hashes=(),
+        source_revision_refs=(),
+        source_references=references if item.source_dependent else (),
     )
     return DatasetEvidenceVerification(
         workspace_id=workspace_id,
@@ -108,6 +120,7 @@ def request(samples: tuple[DatasetSample, ...]) -> DatasetManifestBuildRequest:
         exclusions=(),
         holdout_sealed_at=None,
         retention_policy_ref="retention-policy-v1",
+        manifest_version="dataset-manifest-v3",
     )
 
 
@@ -125,7 +138,7 @@ async def test_builder_uses_authoritative_evidence_and_canonical_membership() ->
 
     assert isinstance(result, DatasetManifest)
     assert [item.sample_id for item in result.samples] == ["sample-a", "sample-b"]
-    assert all(item.source_rights_hashes == ("e" * 64,) for item in result.samples)
+    assert all(item.source_references[0].rights_hash == "e" * 64 for item in result.samples)
     assert result.content_hash
     assert len(verifier.calls) == 2
 
@@ -150,6 +163,19 @@ async def test_builder_excludes_samples_without_verified_rights_or_lineage() -> 
         "revoked": ("source_training_not_eligible",),
         "unavailable": ("provenance_unverified",),
     }
+
+
+@pytest.mark.asyncio
+async def test_builder_excludes_source_dependent_samples_from_legacy_manifest_versions() -> None:
+    item = sample("legacy-source")
+    verifier = FakeVerifier({item.sample_id: verification(item)})
+
+    result = await DatasetManifestBuilder(verifier).build(
+        replace(request((item,)), manifest_version="dataset-manifest-v1")
+    )
+
+    assert result.samples == ()
+    assert result.exclusions[0].reasons == ("typed_source_lineage_required",)
 
 
 @pytest.mark.asyncio
@@ -238,15 +264,34 @@ async def test_builder_uses_only_authoritative_source_rights_and_revision_refs()
             authoritative.sample_id: verification(
                 authoritative,
                 source_rights_hashes=("e" * 64,),
-                source_revision_refs=("source-a:verified-revision",),
+                source_references=(
+                    DatasetSourceReference(
+                        source_id="source-a",
+                        item_id="item-rights",
+                        revision_id="verified-revision",
+                        policy_id="source-a-policy-v3",
+                        policy_sequence=3,
+                        purpose=SourceUsePurpose.TRAINING,
+                        rights_hash="e" * 64,
+                    ),
+                ),
             )
         }
     )
 
     result = await DatasetManifestBuilder(verifier).build(request((candidate,)))
 
-    assert result.samples[0].source_rights_hashes == ("e" * 64,)
-    assert result.samples[0].source_revision_refs == ("source-a:verified-revision",)
+    assert result.samples[0].source_references == (
+        DatasetSourceReference(
+            source_id="source-a",
+            item_id="item-rights",
+            revision_id="verified-revision",
+            policy_id="source-a-policy-v3",
+            policy_sequence=3,
+            purpose=SourceUsePurpose.TRAINING,
+            rights_hash="e" * 64,
+        ),
+    )
 
 
 @pytest.mark.asyncio
