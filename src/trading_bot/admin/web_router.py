@@ -41,6 +41,7 @@ from trading_bot.application.bot_reporting import (
 )
 from trading_bot.application.bot_runtime_control import BotRuntimeControlError
 from trading_bot.application.flatten_all import FlattenAllError, FlattenAllService
+from trading_bot.application.learning_post_mortem import LearningPostMortemService
 from trading_bot.application.strategy_pipeline.microscope import MicroscopeReplayService
 from trading_bot.application.telegram_signal_subscription import (
     TelegramSignalSubscriptionError,
@@ -62,6 +63,7 @@ from trading_bot.auth.service import (
     AuthService,
 )
 from trading_bot.config.bot_settings import BotConfigOverlay
+from trading_bot.domain.portfolio.post_mortem import evaluate_trade_post_mortem
 from trading_bot.domain.portfolio.reporting import (
     REPORT_MODE,
     REPORT_VERSION,
@@ -183,6 +185,17 @@ def _reporting_service(request: Request) -> BotReportingService:
     )
     if service is None:
         raise HTTPException(status_code=503, detail="Dịch vụ báo cáo chưa sẵn sàng")
+    return service
+
+
+def _learning_post_mortem_service(request: Request) -> LearningPostMortemService:
+    service = cast(
+        LearningPostMortemService | None,
+        getattr(request.app.state, "learning_post_mortem_service", None),
+    )
+    if service is None:
+        service = LearningPostMortemService()
+        request.app.state.learning_post_mortem_service = service
     return service
 
 
@@ -1149,17 +1162,32 @@ async def reports(
     end: datetime | None = None,
     scope: str | None = None,
     bot_id: str | None = None,
+    chart_trade_id: str | None = None,
+    chart_timeframe: str = "1h",
 ) -> Response:
     """Báo cáo bot mặc định; chỉ tổng hợp workspace khi người dùng chọn scope rõ ràng."""
     response.headers["Cache-Control"] = "no-store"
     report: dict[str, Any] | None = None
+    chart_data: dict[str, Any] | None = None
     parsed_bot_id: UUID | None = None
+    parsed_chart_trade_id: UUID | None = None
     if bot_id and bot_id.strip():
         try:
             parsed_bot_id = UUID(bot_id)
         except ValueError as error:
             raise HTTPException(status_code=422, detail="bot_id phải là UUID hợp lệ.") from error
-    if any(value is not None for value in (start, end, scope)) or parsed_bot_id is not None:
+    if chart_trade_id and chart_trade_id.strip():
+        try:
+            parsed_chart_trade_id = UUID(chart_trade_id)
+        except ValueError as error:
+            raise HTTPException(
+                status_code=422, detail="chart_trade_id phải là UUID hợp lệ."
+            ) from error
+    if (
+        any(value is not None for value in (start, end, scope))
+        or parsed_bot_id is not None
+        or parsed_chart_trade_id is not None
+    ):
         if start is None or end is None or scope is None:
             raise HTTPException(
                 status_code=422, detail="Cần chọn scope, thời điểm bắt đầu và kết thúc."
@@ -1188,6 +1216,34 @@ async def reports(
                 status_code=error.status_code,
                 detail={"code": error.code, "message": error.message},
             ) from error
+
+        # Phân tích Post-Mortem và rủi ro cho danh sách trades
+        if report and "trades" in report and isinstance(report["trades"], list):
+            for trade in report["trades"]:
+                pm = evaluate_trade_post_mortem(trade)
+                trade["post_mortem"] = pm.as_dict()
+
+        if parsed_chart_trade_id is not None:
+            if report_scope is not ReportScope.BOT or parsed_bot_id is None:
+                raise HTTPException(
+                    status_code=422,
+                    detail="Biểu đồ trade cần phạm vi một bot được chọn rõ ràng.",
+                )
+            try:
+                chart_data = await service.get_trade_chart(
+                    query,
+                    identity.principal,
+                    trade_id=parsed_chart_trade_id,
+                    timeframe=chart_timeframe,
+                )
+                if chart_data and "trade" in chart_data:
+                    pm = evaluate_trade_post_mortem(chart_data["trade"])
+                    chart_data["trade"]["post_mortem"] = pm.as_dict()
+            except BotReportError as error:
+                raise HTTPException(
+                    status_code=error.status_code,
+                    detail={"code": error.code, "message": error.message},
+                ) from error
     try:
         bots = await _admin_service(request).list_bots(identity.principal)
     except BotAdminError as error:
@@ -1200,6 +1256,8 @@ async def reports(
             "identity": identity,
             "bots": [_bot_view(bot) for bot in bots],
             "report": report,
+            "chart_data": chart_data,
+            "chart_timeframe": chart_timeframe,
             "start": start.isoformat() if start is not None else "",
             "end": end.isoformat() if end is not None else "",
             "scope": scope or "bot",
@@ -1207,6 +1265,49 @@ async def reports(
         },
         headers={"Cache-Control": "no-store"},
     )
+
+
+@router.post("/api/trades/{trade_id}/ingest-negative-sample")
+async def ingest_trade_negative_sample(
+    request: Request,
+    response: Response,
+    trade_id: UUID,
+    identity: Annotated[AuthIdentity, Depends(current_identity)],
+    reason: str | None = None,
+) -> dict[str, Any]:
+    """Gắn nhãn và đưa ca giao dịch sai lệch/thua lỗ vào tập dữ liệu phạt AI
+    cho các chu kỳ huấn luyện lại.
+    """
+    response.headers["Cache-Control"] = "no-store"
+    service = _learning_post_mortem_service(request)
+    body: dict[str, Any] = {}
+    try:
+        body = await request.json()
+    except Exception:
+        pass
+    override_reason = reason or body.get("reason")
+    sample = service.ingest_trade_for_ai_retraining(
+        {
+            "trade_id": str(trade_id),
+            "bot_id": body.get("bot_id", str(uuid4())),
+            "symbol": body.get("symbol", "BTCUSDT"),
+            "side": body.get("side", "LONG"),
+            "gross_pnl": body.get("gross_pnl", "0"),
+            "fee_total": body.get("fee_total", "0"),
+            "funding_total": body.get("funding_total", "0"),
+            "slippage_total": body.get("slippage_total", "0"),
+            "net_pnl": body.get("net_pnl", "0"),
+            "exit_reason": body.get("exit_reason", "STOP_LOSS"),
+            "holding_duration_seconds": body.get("holding_duration_seconds", 300),
+        },
+        override_reason=override_reason,
+        ingested_by=identity.email,
+    )
+    return {
+        "status": "success",
+        "message": "Đã tiếp nhận ca sai lệch vào dữ liệu phạt huấn luyện AI thành công.",
+        "sample": sample.as_dict(),
+    }
 
 
 @router.get("/strategy-cards")

@@ -5,6 +5,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}Crypidian{% endblock %}</title>
     <link rel="stylesheet" href="/static/admin.css">
+    <script>
+      (function() {
+        const saved = localStorage.getItem("crypidian_theme");
+        const theme = saved || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+        document.documentElement.setAttribute("data-theme", theme);
+      })();
+    </script>
     {% block head_extra %}{% endblock %}
   </head>
   <body>
@@ -25,11 +32,18 @@
           <a href="/admin/telegram">Telegram</a>
         </nav>
       {% endblock %}
-      {% if identity %}
-        <div class="user-info">
-          <span class="user-email" aria-label="Tài khoản đăng nhập">{{ identity.email }}</span>
-        </div>
-      {% endif %}
+      <div class="header-actions">
+        <button id="theme-toggle" class="theme-toggle-btn" type="button" aria-label="Chuyển chế độ sáng/tối" title="Chuyển đổi Light/Dark mode">
+          <span class="theme-icon theme-icon-dark" aria-hidden="true">🌙</span>
+          <span class="theme-icon theme-icon-light" aria-hidden="true">☀️</span>
+          <span class="theme-label visually-hidden">Chuyển giao diện</span>
+        </button>
+        {% if identity %}
+          <div class="user-info">
+            <span class="user-email" aria-label="Tài khoản đăng nhập">{{ identity.email }}</span>
+          </div>
+        {% endif %}
+      </div>
     </header>
 
     <div class="system-mode-banner" role="status" aria-label="Thông báo chế độ vận hành">
@@ -49,6 +63,20 @@
     <footer role="contentinfo" class="admin-footer">
       <p>Crypidian Admin — Môi trường thử nghiệm an toàn độc lập (PAPER mode)</p>
     </footer>
+    <script>
+      (function() {
+        const toggleBtn = document.getElementById("theme-toggle");
+        if (toggleBtn) {
+          toggleBtn.addEventListener("click", () => {
+            const current = document.documentElement.getAttribute("data-theme") || "dark";
+            const next = current === "dark" ? "light" : "dark";
+            document.documentElement.setAttribute("data-theme", next);
+            localStorage.setItem("crypidian_theme", next);
+            window.dispatchEvent(new CustomEvent("themechange", { detail: { theme: next } }));
+          });
+        }
+      })();
+    </script>
     {% block scripts %}{% endblock %}
   </body>
 </html>

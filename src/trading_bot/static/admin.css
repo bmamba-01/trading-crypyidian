@@ -1,11 +1,12 @@
 /* Crypidian Admin Web UI Stylesheet — Mobile-First, Accessible, Zero-Dependency */
 
-:root {
+:root,
+:root[data-theme="light"] {
   color-scheme: light dark;
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-family: "Be Vietnam Pro", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   line-height: 1.5;
 
-  /* Bảng màu giao diện sáng (Light Mode mặc định) */
+  /* Bảng màu giao diện sáng (Light Mode) */
   --bg-base: #f8fafc;
   --bg-surface: #ffffff;
   --bg-surface-subtle: #f1f5f9;
@@ -31,6 +32,19 @@
   --warning-bg: #fef3c7;
   --warning-text: #92400e;
 
+  /* Trading Palette & Market Tones */
+  --market-up: #0ecb81;
+  --market-down: #f6465d;
+  --market-flat: #8b98a5;
+  --pnl-positive-text: #059669;
+  --pnl-negative-text: #dc2626;
+  --pnl-positive-bg: rgba(14, 203, 129, 0.12);
+  --pnl-negative-bg: rgba(246, 70, 93, 0.12);
+  --badge-long-bg: rgba(14, 203, 129, 0.15);
+  --badge-long-text: #087a55;
+  --badge-short-bg: rgba(246, 70, 93, 0.15);
+  --badge-short-text: #b4233a;
+
   /* Nhận diện chế độ PAPER mô phỏng nội bộ */
   --paper-accent: #7c3aed;
   --paper-bg: #ede9fe;
@@ -38,32 +52,88 @@
   --paper-border: #c4b5fd;
 }
 
+:root[data-theme="dark"] {
+  /* Bảng màu giao diện tối chuyên dụng cho Trader (Trading Dark Mode) */
+  --bg-base: #0b0e14;
+  --bg-surface: #151b26;
+  --bg-surface-subtle: #1c2434;
+  --text-main: #f1f5f9;
+  --text-muted: #94a3b8;
+  --border-main: #242f42;
+  --border-subtle: #1e2638;
+  --focus-ring: #c084fc;
+
+  --primary: #3b82f6;
+  --primary-hover: #60a5fa;
+  --primary-contrast: #0f172a;
+  --danger: #f6465d;
+  --danger-hover: #f87171;
+  --danger-contrast: #0f172a;
+  --danger-bg: rgba(246, 70, 93, 0.15);
+  --danger-text: #fca5a5;
+  --success: #0ecb81;
+  --success-bg: rgba(14, 203, 129, 0.15);
+  --success-text: #6ee7b7;
+  --warning: #f59e0b;
+  --warning-bg: rgba(245, 158, 11, 0.15);
+  --warning-text: #fde68a;
+
+  /* Trading Palette & Market Tones */
+  --market-up: #0ecb81;
+  --market-down: #f6465d;
+  --market-flat: #8b98a5;
+  --pnl-positive-text: #0ecb81;
+  --pnl-negative-text: #f6465d;
+  --pnl-positive-bg: rgba(14, 203, 129, 0.15);
+  --pnl-negative-bg: rgba(246, 70, 93, 0.15);
+  --badge-long-bg: rgba(14, 203, 129, 0.2);
+  --badge-long-text: #0ecb81;
+  --badge-short-bg: rgba(246, 70, 93, 0.2);
+  --badge-short-text: #f6465d;
+
+  --paper-accent: #a78bfa;
+  --paper-bg: #2e1065;
+  --paper-text: #e9d5ff;
+  --paper-border: #6d28d9;
+}
+
 @media (prefers-color-scheme: dark) {
-  :root {
-    /* Bảng màu giao diện tối (Dark Mode) có độ tương phản cao */
-    --bg-base: #0f172a;
-    --bg-surface: #1e293b;
-    --bg-surface-subtle: #334155;
-    --text-main: #f8fafc;
+  :root:not([data-theme="light"]) {
+    --bg-base: #0b0e14;
+    --bg-surface: #151b26;
+    --bg-surface-subtle: #1c2434;
+    --text-main: #f1f5f9;
     --text-muted: #94a3b8;
-    --border-main: #475569;
-    --border-subtle: #334155;
+    --border-main: #242f42;
+    --border-subtle: #1e2638;
     --focus-ring: #c084fc;
 
     --primary: #3b82f6;
     --primary-hover: #60a5fa;
     --primary-contrast: #0f172a;
-    --danger: #ef4444;
+    --danger: #f6465d;
     --danger-hover: #f87171;
     --danger-contrast: #0f172a;
-    --danger-bg: #450a0a;
-    --danger-text: #fecaca;
-    --success: #22c55e;
-    --success-bg: #052e16;
-    --success-text: #bbf7d0;
+    --danger-bg: rgba(246, 70, 93, 0.15);
+    --danger-text: #fca5a5;
+    --success: #0ecb81;
+    --success-bg: rgba(14, 203, 129, 0.15);
+    --success-text: #6ee7b7;
     --warning: #f59e0b;
-    --warning-bg: #451a03;
+    --warning-bg: rgba(245, 158, 11, 0.15);
     --warning-text: #fde68a;
+
+    --market-up: #0ecb81;
+    --market-down: #f6465d;
+    --market-flat: #8b98a5;
+    --pnl-positive-text: #0ecb81;
+    --pnl-negative-text: #f6465d;
+    --pnl-positive-bg: rgba(14, 203, 129, 0.15);
+    --pnl-negative-bg: rgba(246, 70, 93, 0.15);
+    --badge-long-bg: rgba(14, 203, 129, 0.2);
+    --badge-long-text: #0ecb81;
+    --badge-short-bg: rgba(246, 70, 93, 0.2);
+    --badge-short-text: #f6465d;
 
     --paper-accent: #a78bfa;
     --paper-bg: #2e1065;
@@ -1526,3 +1596,391 @@ th {
 .backtest-empty-state { padding: 1rem; border: 1px dashed #647789; border-radius: .5rem; background: #fff; }
 @media (min-width: 640px) { .backtest-form-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .backtest-form-field--wide { grid-column: 1 / -1; } .backtest-job-card dl { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (min-width: 1024px) { .backtest-job-table-wrap { display: block; } .backtest-job-cards { display: none; } }
+
+
+/* ==========================================================================
+   TRADING DESIGN SYSTEM REVAMP — Light / Dark Mode, Metric Cards & Reasoning
+   ========================================================================== */
+
+/* Typography & Tabular Figures cho dữ liệu tài chính */
+.tabular-nums,
+.pnl-value,
+.metric-value,
+.trade-table td,
+.daily-performance-card dd {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1;
+}
+
+/* Nút chuyển đổi Theme (Theme Toggle Switcher) */
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.theme-toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.5rem;
+  height: 2.5rem;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--border-main);
+  background: var(--bg-surface);
+  color: var(--text-main);
+  cursor: pointer;
+  font-size: 1.15rem;
+  transition: transform 0.15s ease, background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.theme-toggle-btn:hover {
+  background: var(--bg-surface-subtle);
+  transform: scale(1.08);
+}
+
+:root[data-theme='dark'] .theme-icon-dark,
+:root:not([data-theme='light']) .theme-icon-dark {
+  display: inline-block;
+}
+
+:root[data-theme='dark'] .theme-icon-light,
+:root:not([data-theme='light']) .theme-icon-light {
+  display: none;
+}
+
+:root[data-theme='light'] .theme-icon-dark {
+  display: none;
+}
+
+:root[data-theme='light'] .theme-icon-light {
+  display: inline-block;
+}
+
+/* Tooltip định nghĩa định lượng chuyên nghiệp (Decluttering Text) */
+.tooltip-term {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  cursor: help;
+  border-bottom: 1px dashed var(--text-muted);
+}
+
+.tooltip-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.75rem;
+  width: 1rem;
+  height: 1rem;
+  border-radius: 50%;
+  background: var(--bg-surface-subtle);
+  color: var(--text-muted);
+}
+
+.tooltip-term:hover::after,
+.tooltip-term:focus-visible::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: #0f172a;
+  color: #f8fafc;
+  font-size: 0.75rem;
+  font-weight: 400;
+  line-height: 1.4;
+  padding: 0.45rem 0.65rem;
+  border-radius: 0.375rem;
+  white-space: normal;
+  width: max-content;
+  max-width: 260px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3);
+  z-index: 1000;
+  pointer-events: none;
+  border: 1px solid #334155;
+}
+
+:root[data-theme='light'] .tooltip-term:hover::after,
+:root[data-theme='light'] .tooltip-term:focus-visible::after {
+  background: #0f172a;
+  color: #ffffff;
+}
+
+/* Quick Filter Buttons (Chọn nhanh khoảng thời gian) */
+.quick-filter-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.quick-filter-btn {
+  padding: 0.35rem 0.75rem;
+  min-height: 38px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  border-radius: 0.375rem;
+  border: 1px solid var(--border-main);
+  background: var(--bg-surface);
+  color: var(--text-main);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.quick-filter-btn:hover {
+  background: var(--primary);
+  color: #ffffff;
+  border-color: var(--primary);
+}
+
+/* Trading Metric Grid Cards trực quan hóa */
+.trading-metric-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 1rem;
+  margin-block: 1.25rem;
+}
+
+.trading-metric-card {
+  padding: 1.1rem;
+  border-radius: 0.625rem;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-surface);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  transition: border-color 0.15s ease;
+}
+
+.trading-metric-card:hover {
+  border-color: var(--primary);
+}
+
+.trading-metric-card .metric-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--text-muted);
+  font-size: 0.825rem;
+  font-weight: 500;
+}
+
+.trading-metric-card .metric-value {
+  font-size: 1.5rem;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.trading-metric-card .metric-sub {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+/* Trading Badges trực quan */
+.badge-long {
+  background: var(--badge-long-bg);
+  color: var(--badge-long-text);
+  font-weight: 600;
+  padding: 0.2rem 0.5rem;
+  border-radius: 0.25rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.badge-short {
+  background: var(--badge-short-bg);
+  color: var(--badge-short-text);
+  font-weight: 600;
+  padding: 0.2rem 0.5rem;
+  border-radius: 0.25rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.badge-tp {
+  background: rgba(14, 203, 129, 0.15);
+  color: #0ecb81;
+  padding: 0.2rem 0.5rem;
+  border-radius: 0.25rem;
+  font-weight: 600;
+}
+
+.badge-sl {
+  background: rgba(246, 70, 93, 0.15);
+  color: #f6465d;
+  padding: 0.2rem 0.5rem;
+  border-radius: 0.25rem;
+  font-weight: 600;
+}
+
+.badge-deviant {
+  background: rgba(245, 158, 11, 0.18);
+  color: #d97706;
+  border: 1px solid rgba(245, 158, 11, 0.4);
+  padding: 0.2rem 0.5rem;
+  border-radius: 0.25rem;
+  font-weight: 600;
+}
+
+:root[data-theme='dark'] .badge-deviant {
+  color: #fbbf24;
+}
+
+.badge-optimal {
+  background: rgba(14, 203, 129, 0.18);
+  color: #059669;
+  border: 1px solid rgba(14, 203, 129, 0.4);
+  padding: 0.2rem 0.5rem;
+  border-radius: 0.25rem;
+  font-weight: 600;
+}
+
+:root[data-theme='dark'] .badge-optimal {
+  color: #34d399;
+}
+
+/* Phân tích Nguyên nhân & Quản trị Rủi ro (Trade Reasoning Breakdown) */
+.trade-reasoning-panel {
+  margin-top: 1.5rem;
+  margin-bottom: 2rem;
+  padding: 1.5rem;
+  border-radius: 0.75rem;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-surface);
+}
+
+.trade-reasoning-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  border-bottom: 1px solid var(--border-subtle);
+  padding-bottom: 1rem;
+  margin-bottom: 1.25rem;
+}
+
+.trade-reasoning-header h3 {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.reasoning-columns {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 1.25rem;
+}
+
+@media (min-width: 960px) {
+  .reasoning-columns {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+.reasoning-box {
+  padding: 1.25rem;
+  border-radius: 0.5rem;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-base);
+}
+
+.reasoning-box h4 {
+  margin-top: 0;
+  margin-bottom: 0.75rem;
+  font-size: 0.95rem;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.reasoning-kv-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+}
+
+.reasoning-kv-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-bottom: 0.35rem;
+  border-bottom: 1px dotted var(--border-subtle);
+}
+
+.reasoning-kv-item dt {
+  color: var(--text-muted);
+}
+
+.reasoning-kv-item dd {
+  font-weight: 600;
+  margin: 0;
+}
+
+/* Hộp mổ xẻ và đưa vào AI Retraining */
+.ai-retraining-card {
+  margin-top: 1.25rem;
+  padding: 1.25rem;
+  border-radius: 0.5rem;
+  background: var(--bg-surface-subtle);
+  border: 1px solid var(--border-main);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.ai-retraining-info {
+  flex: 1;
+  min-width: 240px;
+}
+
+.ai-retraining-info h4 {
+  margin: 0 0 0.35rem 0;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.ai-retraining-info p {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+.btn-ai-retrain {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.6rem 1.1rem;
+  min-height: 44px;
+  background: #f59e0b;
+  color: #1e1b4b;
+  font-weight: 600;
+  font-size: 0.875rem;
+  border-radius: 0.375rem;
+  border: none;
+  cursor: pointer;
+  transition: filter 0.15s ease, transform 0.15s ease;
+}
+
+.btn-ai-retrain:hover {
+  filter: brightness(1.1);
+  transform: translateY(-1px);
+}
+
+.btn-ai-retrain:active {
+  transform: translateY(0);
+}

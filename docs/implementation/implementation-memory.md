@@ -1673,3 +1673,83 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
   * Bộ ảnh chụp màn hình minh chứng: **32 ảnh hoàn chỉnh** lưu tại artifacts screenshots.
   * Static checks: `ruff check` và `ruff format` đạt 100% trên 505 files; `git diff --check` sạch 0 lỗi.
 - **Đã đọc lại memory:** đối chiếu toàn bộ các thay đổi kiến trúc, models, router, migrations, unit tests, E2E tests, screenshots và glossary; xác nhận tuân thủ trọn vẹn quy ước AGENTS.md và skill `futures-bot-implementation`.
+
+### 2026-11-10 — Revamp Giao Diện Trading Admin UI, Light/Dark Mode, Biểu Đồ TradingView & Phân Tích Mổ Xẻ Sau Giao Dịch Đưa Vào Huấn Luyện AI
+
+- **Mục tiêu/phạm vi:**
+  * Giải quyết dứt điểm tình trạng báo cáo có quá nhiều chữ (dense text-heavy), tái thiết kế toàn diện Admin UI theo chuẩn **Trading Design System** chuyên nghiệp.
+  * Hỗ trợ đầy đủ **2 chế độ giao diện: Sáng (Light Mode) & Tối (Dark Mode)**, chuyển đổi mượt mà bằng nút gạt trên thanh điều hướng, tự động lưu vào `localStorage` và đồng bộ với thuộc tính hệ điều hành `prefers-color-scheme`.
+  * Trực quan hóa dữ liệu định lượng bằng **Lưới Thẻ Chỉ Số (Metric Grid Cards)** và **Chú Giải Tương Tác (Interactive Tooltips)** định nghĩa công thức (Win Rate, Profit Factor, Max Drawdown, Expectancy, Slippage, Holding Time) mà không làm phình mặt trang bằng chữ.
+  * Tích hợp **Biểu đồ nến TradingView Lightweight Charts tự lưu trữ** (tuân thủ triệt để Zero External CDN / CSP); tự động thích ứng đổi màu theo Dark/Light theme; đánh dấu trực quan điểm vào lệnh (Entry Marker 🟢/🔴), đường Stop Loss nét đứt màu đỏ (🛑 SL), đường Take Profit nét đứt màu xanh ngọc (🎯 TP), và điểm đóng vị thế (Exit Marker).
+  * Xây dựng khối **Mổ Xẻ Quyết Định Định Lượng Đa Tầng**:
+    - Tín hiệu tổng hợp: Hướng đề xuất (LONG/SHORT), mức đòn bẩy tính toán (Target Leverage, ví dụ 5x), và tỷ lệ rủi ro/vốn (Risk Budget 1.0%).
+    - Vì sao vào vị thế (Why Enter): L4 Context Gate (Trending/Chop & Quote Volume), L5 Trigger (Điểm nến rút chân Wick Rejection Score & Điểm phá vỡ Breakout Score), L6 Zones (Vùng giá SL/TP và tỷ lệ R:R $\ge 2.0$).
+    - Vì sao thoát vị thế (Why Exit): Trigger đóng (TP Hit, SL Hit, Đảo chiều), bóc tách chi phí thực tế (Phí giao dịch, Phí Funding, và Trượt giá thực tế Slippage bps).
+  * Xây dựng hệ thống **Mổ Xẻ Sau Giao Dịch (Trade Post-Mortem) & Tiếp Nhận Dữ Liệu Huấn Luyện AI Phản Thực Nghiệm (Counterfactual Retraining Ingestion)**:
+    - Phân loại chất lượng thực thi: `OPTIMAL` (Giao dịch tối ưu) vs `DEVIANT` (Sai lệch tín hiệu do trượt giá lớn, phá vỡ giả False Breakout, hoặc thua lỗ ngoài dự kiến).
+    - Cung cấp API `POST /admin/api/trades/{trade_id}/ingest-negative-sample` và nút bấm trực quan trên giao diện: cho phép tự động đóng gói các ca giao dịch sai lệch thành mẫu phạt (Negative Sample) với nhãn phản thực nghiệm `counterfactual_action = ABSTAIN` và hệ số phạt `2.0x` để đưa vào tập dữ liệu huấn luyện cho các chu kỳ Scorer Retraining kế tiếp.
+
+- **Thay đổi mã nguồn:**
+  * **Static & Vendor Assets (Zero External CDN):**
+    - Tích hợp `src/trading_bot/static/vendor/lightweight-charts-5.2.1.standalone.production.js` kèm LICENSE và NOTICE.
+    - Tích hợp bộ phông chữ bản địa `src/trading_bot/static/fonts/` (Be Vietnam Pro 400, 600, 700 woff2).
+    - Cập nhật `src/trading_bot/static/admin.css`: Bổ sung hệ biến màu chuẩn Trading `:root[data-theme="dark"]` và `:root[data-theme="light"]`, phông số cố định `tabular-nums`, tooltips `tooltip-term`, badges `badge-long`, `badge-short`, `badge-tp`, `badge-sl`, `badge-optimal`, `badge-deviant`, cùng các styles cho thẻ mổ xẻ quyết định `trade-reasoning-panel`.
+    - Nâng cấp `src/trading_bot/static/trade-chart.js`: Hỗ trợ lắng nghe sự kiện `themechange` để tự động đổi màu nền và màu lưới chart khi chuyển đổi Dark/Light mode; vẽ đường giá SL/TP bằng `createPriceLine`; đánh dấu markers điểm vào và điểm đóng lệnh.
+  * **Domain & Application:**
+    - Cài đặt `src/trading_bot/domain/portfolio/post_mortem.py`: Chứa các dataclass `TradePostMortem`, `EntryReasoningBreakdown`, `ExitReasoningBreakdown`, enum `TradeQualityClassification`, và thuật toán `evaluate_trade_post_mortem`.
+    - Cài đặt `src/trading_bot/application/learning_post_mortem.py`: Chứa `LearningPostMortemService` và `RetrainingSampleRecord` quản lý sổ cái tiếp nhận các ca sai lệch cho AI Retraining.
+    - Đồng bộ Trader Analytics V2 trong `reporting.py`, `bot_reporting.py`, `bot_reports.py` hỗ trợ `LedgerFill`, `PositionTransition`, `load_trade_bars`, `get_trade_chart`.
+  * **Admin Router & Templates:**
+    - Cập nhật `src/trading_bot/admin/web_router.py`:
+      * Nâng cấp route `GET /admin/reports`: Hỗ trợ nạp `chart_data`, tính toán `post_mortem` cho toàn bộ danh sách lệnh.
+      * Bổ sung endpoint `POST /admin/api/trades/{trade_id}/ingest-negative-sample`: Tiếp nhận và gắn nhãn mẫu phạt AI.
+    - Cập nhật `src/trading_bot/templates/admin/base.html`: Thêm nút gạt `#theme-toggle` chuyển đổi Sáng/Tối, inline script tránh FOUC, và event listener `themechange`.
+    - Viết lại toàn diện `src/trading_bot/templates/admin/reports.html`: Tinh gọn thanh lọc thời gian với nút chọn nhanh 1-chạm (Hôm Nay, 7 Ngày Qua, 30 Ngày Qua), Lưới Thẻ Chỉ Số trực quan, Biểu đồ nến TradingView, Thẻ Mổ Xẻ Quyết Định Định Lượng & Quản Trị Rủi Ro, và Thẻ Huấn Luyện AI Phản Thực Nghiệm có nút bấm nạp mẫu phạt.
+  * **Tests:**
+    - Viết mới `tests/unit/test_learning_post_mortem.py` (4 unit tests kiểm tra thuật toán phân loại post-mortem và service ingestion).
+    - Viết mới `tests/unit/test_admin_reports_revamp.py` (2 unit tests kiểm tra render HTML Trading Design System và API tiếp nhận mẫu phạt).
+    - Viết mới bộ Playwright E2E browser automation test `tests/e2e/test_admin_trading_revamp_playwright.py`:
+      * Kiểm tra theme toggle (Light ➔ Dark ➔ Light mode), xác thực thuộc tính `data-theme` và biến đổi màu sắc.
+      * Kiểm tra trang Báo cáo: Quick filter buttons, Metric Grid Cards, Tooltips định lượng, Danh sách lệnh có badges.
+      * Kiểm tra bấm "Xem Biểu Đồ", xác nhận biểu đồ nến Lightweight Charts xuất hiện cùng các đường SL/TP.
+      * Kiểm tra bấm nút "📥 Đưa Ca Này Vào Dữ Liệu Phạt AI", xác nhận phản hồi thành công `✅ Đã tiếp nhận thành công!` tức thì.
+      * Kiểm tra responsive hoàn chỉnh trên cả Desktop (`1280x800`) và Mobile iPhone (`390x844`).
+      * Chụp và lưu 6 bức ảnh screenshots mới vào thư mục artifacts:
+        - `19_dark_theme_desktop.png` (143 KB)
+        - `20_light_theme_desktop.png` (136 KB)
+        - `21_reports_trading_revamp_desktop.png` (185 KB)
+        - `22_trade_chart_reasoning_desktop.png` (368 KB)
+        - `15_dark_theme_mobile.png` (141 KB)
+        - `16_trading_revamp_mobile.png` (394 KB).
+
+- **Lỗi và nguyên nhân phát sinh trong phiên (Exhaustive Troubleshooting):**
+  1. *Lỗi URL-decode dấu `+` trong Query String:*
+     - *Hiện tượng:* Route `GET /admin/reports` trả về lỗi HTTP 422 `datetime_from_date_parsing: unexpected extra characters`.
+     - *Nguyên nhân:* Ký tự `+` trong chuỗi múi giờ ISO-8601 (ví dụ `+00:00` hay `+07:00`) khi truyền qua query URL bị HTTP parser tự động decode thành khoảng trắng `' '`.
+     - *Khắc phục:* Thay thế `+` bằng mã phần trăm `%2B` (`isoformat().replace('+', '%2B')`) trước khi truyền vào query string.
+  2. *Lỗi `AuthIdentity` và `Principal` Signature Mismatch:*
+     - *Hiện tượng:* Unit tests `test_admin_reports_revamp.py` ban đầu ném `TypeError: AuthIdentity got unexpected keyword 'user_id'`.
+     - *Nguyên nhân:* Constructor của `AuthIdentity` chỉ nhận `(principal, email)`, còn `Principal` yêu cầu tham số `mfa_verified_at`.
+     - *Khắc phục:* Khởi tạo đúng `Principal(mfa_verified_at=datetime.now(UTC), ...)` và `AuthIdentity(principal=principal, email=...)`.
+  3. *Lỗi Playwright `Locator.click: Timeout 30000ms exceeded - element is not stable`:*
+     - *Hiện tượng:* Playwright timeout khi click vào nút `#btn-ingest-ai` trong test E2E.
+     - *Nguyên nhân:* CSS của nút có thuộc tính `transition: transform` và `transform: translateY(-1px)` khi hover, khiến Playwright đánh giá phần tử đang di chuyển (unstable animation).
+     - *Khắc phục:* Sử dụng cờ `ingest_btn.click(force=True)` để kích hoạt click đáng tin cậy mà không bị chặn bởi transition CSS.
+  4. *Lỗi `Role` NameError trong Playwright E2E fixture:*
+     - *Hiện tượng:* `MockRevampAuthService` gọi `Role.OWNER` nhưng thiếu import `Role`.
+     - *Khắc phục:* Bổ sung import `Role` từ `trading_bot.auth.policy`.
+  5. *Lỗi 503 trên Dashboard sau khi đăng nhập do thiếu `MockRevampBotOperationsService`:*
+     - *Hiện tượng:* Sau khi submit login form, browser bị kẹt tại `/admin` do FastAPI router gọi `_bot_operations_service(request)`.
+     - *Khắc phục:* Bổ sung `MockRevampBotOperationsService` vào `app.state.bot_operations_service` trong `create_revamp_test_app`.
+  6. *Lỗi trailing whitespace và newlines:*
+     - *Hiện tượng:* `git diff --check` phát hiện dòng trống cuối `admin.css` và khoảng trắng dư trong `reports.html`.
+     - *Khắc phục:* Dọn dẹp sạch bằng script Python rstrip, bảo đảm `git diff --check` exit 0 sạch sẽ.
+
+- **Kết quả kiểm chứng toàn diện:**
+  * Unit test suite toàn dự án: **2,713 passed in 50.23s** (100% pass rate).
+  * Bộ Playwright E2E automation tests: **4 suites passed in 41.37s** trên cả Desktop và Mobile.
+  * Bộ screenshots đối soát: **38 ảnh hoàn chỉnh** (bao gồm 6 ảnh mới cho Trading Revamp, Theme Sáng/Tối, Biểu đồ và Reasoning).
+  * Static code analysis: `ruff check` và `ruff format` đạt 100% trên 510 files; `git diff --check` exit 0.
+  * Từ điển thuật ngữ: Bổ sung 4 thuật ngữ EN→VI tại Mục T trong `docs/research/glossary-vi.md`.
+
+- **Đã đọc lại memory:** đối chiếu toàn bộ các thay đổi kiến trúc, models, router, migrations, unit tests, E2E tests, screenshots và glossary; xác nhận tuân thủ trọn vẹn quy ước AGENTS.md và skill `futures-bot-implementation`.

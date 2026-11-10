@@ -13,11 +13,15 @@ from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal, Inexact, localcontext
+from decimal import ROUND_HALF_UP, Decimal, Inexact, localcontext
 from typing import Any
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
-REPORT_VERSION = "bot-report.v1"
+LEGACY_REPORT_VERSION = "bot-report.v1"
+REPORT_VERSION = "bot-report.v2"
+SUPPORTED_REPORT_VERSIONS = frozenset({LEGACY_REPORT_VERSION, REPORT_VERSION})
+ANALYTICS_DECIMAL_PLACES = 8
 REPORT_MODE = "PAPER"
 MAX_REPORT_WINDOW = timedelta(days=366)
 MAX_TRADES_PER_BOT = 10_000
@@ -26,6 +30,7 @@ MAX_BOTS_PER_WORKSPACE_REPORT = 200
 # Numeric(38,18) có tối đa 38 chữ số có nghĩa; 76 đủ cho mọi tổng/hiệu báo cáo hợp lý.
 DECIMAL_PRECISION = 76
 WINDOW_BOUNDARY = "[start,end) theo trade.closed_at"
+REPORT_TIMEZONE = "Asia/Ho_Chi_Minh"
 # Khóa evidence của order_intent mang lineage cấu hình MB-02 (effective config).
 INTENT_LINEAGE_KEYS = (
     "settings_hash",
@@ -93,6 +98,38 @@ class LedgerCost:
 
 
 @dataclass(frozen=True, slots=True)
+class LedgerFill:
+    """Ảnh chỉ đọc của một entry/exit fill đã ghi trong ledger."""
+
+    fill_key: str
+    intent_id: UUID
+    workspace_id: UUID
+    bot_id: UUID
+    account_id: UUID
+    role: str
+    quantity: Decimal
+    price: Decimal
+    occurred_at: datetime
+    fee_amount: Decimal
+    slippage_amount: Decimal
+    bar_key: str
+
+
+@dataclass(frozen=True, slots=True)
+class PositionTransition:
+    """Ảnh chỉ đọc của sự kiện vị thế; exit reason chỉ có nếu đã lưu trong payload."""
+
+    event_key: str
+    intent_id: UUID
+    workspace_id: UUID
+    bot_id: UUID
+    account_id: UUID
+    event_type: str
+    occurred_at: datetime
+    payload: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
 class IntentLineage:
     """Evidence của ``order_intent`` (lineage effective config MB-02)."""
 
@@ -113,6 +150,7 @@ class DecisionLineage:
     bot_config_hash: str
     root_settings_version_id: UUID
     model_release_id: UUID | None
+    candidate: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,6 +165,8 @@ class BotLedgerSnapshot:
     costs: tuple[LedgerCost, ...]
     intents: tuple[IntentLineage, ...]
     decisions: tuple[DecisionLineage, ...]
+    fills: tuple[LedgerFill, ...] = ()
+    position_events: tuple[PositionTransition, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,9 +187,17 @@ class ReportTotals:
     max_drawdown: Decimal
     drawdown_peak_trade_id: UUID | None
     drawdown_trough_trade_id: UUID | None
+    win_rate_percent: Decimal
+    profit_factor: Decimal | None
+    expectancy_per_trade: Decimal | None
+    average_winning_trade: Decimal | None
+    average_losing_trade: Decimal | None
+    max_consecutive_wins: int
+    max_consecutive_losses: int
+    average_holding_seconds: int | None
 
-    def as_dict(self) -> dict[str, Any]:
-        return {
+    def as_dict(self, *, include_analytics: bool = True) -> dict[str, Any]:
+        values = {
             "quote_asset": self.quote_asset,
             "closed_trade_count": self.closed_trade_count,
             "winning_trade_count": self.winning_trade_count,
@@ -165,6 +213,36 @@ class ReportTotals:
             "drawdown_peak_trade_id": _optional_id(self.drawdown_peak_trade_id),
             "drawdown_trough_trade_id": _optional_id(self.drawdown_trough_trade_id),
         }
+        if include_analytics:
+            values.update(
+                {
+                    "win_rate_percent": canonical_decimal(self.win_rate_percent),
+                    "profit_factor": (
+                        None
+                        if self.profit_factor is None
+                        else canonical_decimal(self.profit_factor)
+                    ),
+                    "expectancy_per_trade": (
+                        None
+                        if self.expectancy_per_trade is None
+                        else canonical_decimal(self.expectancy_per_trade)
+                    ),
+                    "average_winning_trade": (
+                        None
+                        if self.average_winning_trade is None
+                        else canonical_decimal(self.average_winning_trade)
+                    ),
+                    "average_losing_trade": (
+                        None
+                        if self.average_losing_trade is None
+                        else canonical_decimal(self.average_losing_trade)
+                    ),
+                    "max_consecutive_wins": self.max_consecutive_wins,
+                    "max_consecutive_losses": self.max_consecutive_losses,
+                    "average_holding_seconds": self.average_holding_seconds,
+                }
+            )
+        return values
 
 
 @dataclass(frozen=True, slots=True)
@@ -269,6 +347,7 @@ def build_bot_report(
     report_version: str = REPORT_VERSION,
 ) -> BotReport:
     """Dựng báo cáo một bot; kiểm lại scope/cửa sổ từng hàng và đối soát cost với trade."""
+    _require_supported_report_version(report_version)
     with exact_decimal():
         return _build_bot_report(
             snapshot=snapshot, start=start, end=end, mode=mode, report_version=report_version
@@ -298,7 +377,10 @@ def _build_bot_report(
     intents = _intent_evidence(snapshot)
     decisions = _decisions_by_candidate(snapshot)
 
-    trade_rows = [_trade_row(trade, intents, decisions) for trade in closed]
+    trade_rows = [
+        _trade_row(trade, intents, decisions, snapshot.fills, snapshot.position_events)
+        for trade in closed
+    ]
     totals = _totals(closed)
     payload: dict[str, Any] = {
         "report_version": report_version,
@@ -308,7 +390,10 @@ def _build_bot_report(
         "bot_id": str(snapshot.bot_id),
         "account_id": str(snapshot.account_id),
         "window": window | {"boundary": WINDOW_BOUNDARY},
-        "totals": {asset: item.as_dict() for asset, item in sorted(totals.items())},
+        "totals": {
+            asset: item.as_dict(include_analytics=report_version == REPORT_VERSION)
+            for asset, item in sorted(totals.items())
+        },
         "trades": trade_rows,
         "open_trades": [
             {
@@ -323,6 +408,8 @@ def _build_bot_report(
         "lineage": _lineage_summary(trade_rows),
         "reconciliation": {"closed_trade_rows": len(closed), "trade_cost_rows": cost_count},
     }
+    if report_version == REPORT_VERSION:
+        payload["daily_performance"] = _daily_performance(closed)
     digest = report_hash(payload)
     return BotReport(
         workspace_id=snapshot.workspace_id,
@@ -360,6 +447,16 @@ def _require_closed_in_window(trade: LedgerTrade, start: datetime, end: datetime
 
 
 def _require_trade_arithmetic(trade: LedgerTrade) -> None:
+    if (
+        trade.opened_at.tzinfo is None
+        or trade.opened_at.utcoffset() is None
+        or trade.closed_at is None
+        or trade.closed_at.tzinfo is None
+        or trade.closed_at.utcoffset() is None
+    ):
+        raise ReportIntegrityError("Trade đóng thiếu timestamp có timezone.")
+    if trade.closed_at < trade.opened_at:
+        raise ReportIntegrityError("Trade đóng trước khi mở.")
     if trade.total_cost != trade.fee_total + trade.funding_total + trade.slippage_total:
         raise ReportIntegrityError("trade.total_cost khác tổng fee + funding + slippage.")
     if trade.net_pnl != trade.gross_pnl - trade.total_cost:
@@ -408,6 +505,8 @@ def _trade_row(
     trade: LedgerTrade,
     intents: Mapping[UUID, Mapping[str, Any]],
     decisions: Mapping[str, Sequence[DecisionLineage]],
+    fills: Sequence[LedgerFill],
+    position_events: Sequence[PositionTransition],
 ) -> dict[str, Any]:
     evidence = intents.get(trade.intent_id, {})
     matched = sorted(decisions.get(trade.candidate_id, ()), key=lambda d: str(d.decision_id))
@@ -430,6 +529,33 @@ def _trade_row(
     }
     for key in INTENT_LINEAGE_KEYS:
         lineage[key] = _optional_text(evidence.get(key))
+    trade_fills = sorted(
+        (item for item in fills if item.intent_id == trade.intent_id),
+        key=lambda item: (item.occurred_at, item.role, item.fill_key),
+    )
+    trade_events = sorted(
+        (item for item in position_events if item.intent_id == trade.intent_id),
+        key=lambda item: (item.occurred_at, item.event_key),
+    )
+    for fill in trade_fills:
+        _require_fill_scope(fill, trade)
+    for event in trade_events:
+        _require_event_scope(event, trade)
+    candidate = next((item.candidate for item in matched if item.candidate), {})
+    entry_reason = _candidate_explanation(candidate)
+    close_events = [
+        event
+        for event in trade_events
+        if event.event_type == "CLOSED" and isinstance(event.payload.get("exit_reason"), str)
+    ]
+    exit_reason = (
+        _optional_text(close_events[-1].payload.get("exit_reason")) if close_events else None
+    )
+    position_event_by_fill = {
+        event.payload.get("fill_key"): event
+        for event in trade_events
+        if isinstance(event.payload.get("fill_key"), str)
+    }
     assert trade.closed_at is not None
     return {
         "trade_id": str(trade.trade_id),
@@ -447,8 +573,72 @@ def _trade_row(
         "slippage_total": canonical_decimal(trade.slippage_total),
         "total_cost": canonical_decimal(trade.total_cost),
         "net_pnl": canonical_decimal(trade.net_pnl),
+        "entry_reason": entry_reason,
+        "exit_reason": exit_reason,
+        "fills": [
+            {
+                "fill_key": fill.fill_key,
+                "role": fill.role,
+                "position_event_type": (
+                    position_event_by_fill[fill.fill_key].event_type
+                    if fill.fill_key in position_event_by_fill
+                    else None
+                ),
+                "quantity": canonical_decimal(fill.quantity),
+                "price": canonical_decimal(fill.price),
+                "occurred_at": canonical_time(fill.occurred_at),
+                "fee_amount": canonical_decimal(fill.fee_amount),
+                "slippage_amount": canonical_decimal(fill.slippage_amount),
+                "bar_key": fill.bar_key,
+            }
+            for fill in trade_fills
+        ],
         "lineage": lineage,
     }
+
+
+def _require_fill_scope(fill: LedgerFill, trade: LedgerTrade) -> None:
+    if (fill.workspace_id, fill.bot_id, fill.account_id) != (
+        trade.workspace_id,
+        trade.bot_id,
+        trade.account_id,
+    ):
+        raise ReportIntegrityError("Ledger trả fill ngoài scope workspace/bot/account.")
+    if fill.role not in {"ENTRY", "EXIT"} or fill.quantity <= 0 or fill.price <= 0:
+        raise ReportIntegrityError("Ledger trả fill sai role hoặc giá trị.")
+    if fill.occurred_at.tzinfo is None or fill.occurred_at.utcoffset() is None:
+        raise ReportIntegrityError("Timestamp fill thiếu timezone.")
+
+
+def _require_event_scope(event: PositionTransition, trade: LedgerTrade) -> None:
+    if (event.workspace_id, event.bot_id, event.account_id) != (
+        trade.workspace_id,
+        trade.bot_id,
+        trade.account_id,
+    ):
+        raise ReportIntegrityError("Ledger trả position event ngoài scope workspace/bot/account.")
+    if event.occurred_at.tzinfo is None or event.occurred_at.utcoffset() is None:
+        raise ReportIntegrityError("Timestamp position event thiếu timezone.")
+
+
+def _candidate_explanation(candidate: Mapping[str, Any]) -> dict[str, Any] | None:
+    if not candidate:
+        return None
+    fields = (
+        "strategy_id",
+        "strategy_release_id",
+        "reason_code",
+        "detail_vi",
+        "reference_price",
+        "signal_at",
+        "eligible_after",
+        "expires_at",
+        "evidence_bar_keys",
+        "evidence_feature_ids",
+        "geometry_version",
+    )
+    explanation = {key: candidate[key] for key in fields if key in candidate}
+    return explanation or None
 
 
 def _lineage_summary(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
@@ -484,6 +674,17 @@ def _totals(trades: Iterable[LedgerTrade]) -> dict[str, ReportTotals]:
     totals: dict[str, ReportTotals] = {}
     for asset, rows in grouped.items():
         drawdown, peak_id, trough_id = realized_drawdown(rows)
+        winners = [trade for trade in rows if trade.net_pnl > 0]
+        losers = [trade for trade in rows if trade.net_pnl < 0]
+        losing_sum = sum((trade.net_pnl for trade in losers), Decimal(0))
+        net_sum = sum((trade.net_pnl for trade in rows), Decimal(0))
+        trade_count = len(rows)
+        max_wins, max_losses = _maximum_streaks(rows)
+        holding_microseconds = sum(
+            _duration_microseconds(trade.closed_at - trade.opened_at)
+            for trade in rows
+            if trade.closed_at is not None
+        )
         totals[asset] = ReportTotals(
             quote_asset=asset,
             closed_trade_count=len(rows),
@@ -495,12 +696,113 @@ def _totals(trades: Iterable[LedgerTrade]) -> dict[str, ReportTotals]:
             funding_total=sum((t.funding_total for t in rows), Decimal(0)),
             slippage_total=sum((t.slippage_total for t in rows), Decimal(0)),
             total_cost=sum((t.total_cost for t in rows), Decimal(0)),
-            net_pnl=sum((t.net_pnl for t in rows), Decimal(0)),
+            net_pnl=net_sum,
             max_drawdown=drawdown,
             drawdown_peak_trade_id=peak_id,
             drawdown_trough_trade_id=trough_id,
+            win_rate_percent=_rounded_ratio(Decimal(len(winners) * 100), Decimal(trade_count)),
+            profit_factor=(
+                None
+                if losing_sum == 0
+                else _rounded_ratio(
+                    sum((trade.net_pnl for trade in winners), Decimal(0)), abs(losing_sum)
+                )
+            ),
+            expectancy_per_trade=_rounded_ratio(net_sum, Decimal(trade_count)),
+            average_winning_trade=(
+                None
+                if not winners
+                else _rounded_ratio(
+                    sum((trade.net_pnl for trade in winners), Decimal(0)), Decimal(len(winners))
+                )
+            ),
+            average_losing_trade=(
+                None if not losers else _rounded_ratio(losing_sum, Decimal(len(losers)))
+            ),
+            max_consecutive_wins=max_wins,
+            max_consecutive_losses=max_losses,
+            average_holding_seconds=(
+                None
+                if not rows
+                else int(
+                    _rounded_ratio(
+                        Decimal(holding_microseconds), Decimal(trade_count * 1_000_000), places=0
+                    )
+                )
+            ),
         )
     return totals
+
+
+def _daily_performance(trades: Iterable[LedgerTrade]) -> dict[str, Any]:
+    """Gom PnL ròng theo ngày Việt Nam, giữ riêng từng quote asset."""
+    timezone = ZoneInfo(REPORT_TIMEZONE)
+    grouped: dict[str, dict[str, list[LedgerTrade]]] = {}
+    for trade in trades:
+        if trade.closed_at is None:
+            raise ReportIntegrityError("Trade đóng thiếu closed_at khi nhóm PnL theo ngày.")
+        local_date = trade.closed_at.astimezone(timezone).date().isoformat()
+        grouped.setdefault(trade.quote_asset, {}).setdefault(local_date, []).append(trade)
+
+    quote_assets: dict[str, list[dict[str, Any]]] = {}
+    for asset, days in sorted(grouped.items()):
+        quote_assets[asset] = []
+        for local_date, rows in sorted(days.items()):
+            quote_assets[asset].append(
+                {
+                    "date": local_date,
+                    "net_pnl": canonical_decimal(
+                        sum((trade.net_pnl for trade in rows), Decimal(0))
+                    ),
+                    "closed_trade_count": len(rows),
+                    "winning_trade_count": sum(1 for trade in rows if trade.net_pnl > 0),
+                    "losing_trade_count": sum(1 for trade in rows if trade.net_pnl < 0),
+                    "breakeven_trade_count": sum(1 for trade in rows if trade.net_pnl == 0),
+                }
+            )
+    return {"timezone": REPORT_TIMEZONE, "quote_assets": quote_assets}
+
+
+def _maximum_streaks(trades: Sequence[LedgerTrade]) -> tuple[int, int]:
+    """Đếm chuỗi thắng/thua liên tiếp theo thứ tự đóng; hòa vốn ngắt cả hai chuỗi."""
+    current_wins = current_losses = max_wins = max_losses = 0
+    for trade in trades:
+        if trade.net_pnl > 0:
+            current_wins += 1
+            current_losses = 0
+            max_wins = max(max_wins, current_wins)
+        elif trade.net_pnl < 0:
+            current_losses += 1
+            current_wins = 0
+            max_losses = max(max_losses, current_losses)
+        else:
+            current_wins = current_losses = 0
+    return max_wins, max_losses
+
+
+def _duration_microseconds(value: timedelta) -> int:
+    return (value.days * 86_400 + value.seconds) * 1_000_000 + value.microseconds
+
+
+def _rounded_ratio(
+    numerator: Decimal, denominator: Decimal, *, places: int = ANALYTICS_DECIMAL_PLACES
+) -> Decimal:
+    if denominator == 0:
+        raise ReportIntegrityError("Mẫu số của chỉ số analytics không được bằng 0.")
+    quantum = Decimal(1).scaleb(-places)
+    with localcontext() as context:
+        context.prec = DECIMAL_PRECISION
+        context.rounding = ROUND_HALF_UP
+        context.traps[Inexact] = False
+        try:
+            return (numerator / denominator).quantize(quantum)
+        except Inexact as error:
+            raise ReportIntegrityError("Không thể làm tròn chỉ số analytics.") from error
+
+
+def _require_supported_report_version(report_version: str) -> None:
+    if report_version not in SUPPORTED_REPORT_VERSIONS:
+        raise ReportIntegrityError("Phiên bản báo cáo không được hỗ trợ.")
 
 
 def realized_drawdown(trades: Sequence[LedgerTrade]) -> tuple[Decimal, UUID | None, UUID | None]:
@@ -535,6 +837,7 @@ def build_workspace_report(
     report_version: str = REPORT_VERSION,
 ) -> WorkspaceAggregateReport:
     """Cộng các báo cáo bot; số trade/net PnL phải khớp tổng ledger độc lập theo quote asset."""
+    _require_supported_report_version(report_version)
     with exact_decimal():
         return _build_workspace_report(
             workspace_id=workspace_id,
@@ -588,7 +891,10 @@ def _build_workspace_report(
             }
             for r in reports
         ],
-        "totals": {asset: item.as_dict() for asset, item in sorted(totals.items())},
+        "totals": {
+            asset: item.as_dict(include_analytics=report_version == REPORT_VERSION)
+            for asset, item in sorted(totals.items())
+        },
         "reconciliation": {
             "bot_count": len(reports),
             "closed_trade_rows": len(merged),
@@ -598,6 +904,8 @@ def _build_workspace_report(
             },
         },
     }
+    if report_version == REPORT_VERSION:
+        payload["daily_performance"] = _daily_performance(merged)
     digest = report_hash(payload)
     return WorkspaceAggregateReport(
         workspace_id=workspace_id,
