@@ -58,7 +58,7 @@ def test_postgres_scorer_deployment_governance_and_rights_gate() -> None:
             compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "head")
             heads = compose("run", "--rm", "--no-deps", "migrator", "alembic", "heads")
             assert heads.stdout.count("(head)") == 1, heads.stdout
-            assert "55c504fe5b86 (head)" in heads.stdout
+            assert "f6c8a0b2d4e7 (head)" in heads.stdout
             check = compose("run", "--rm", "--no-deps", "migrator", "alembic", "check")
             assert "No new upgrade operations detected" in check.stdout + check.stderr
 
@@ -115,6 +115,10 @@ def test_postgres_scorer_deployment_governance_and_rights_gate() -> None:
                 "runtime_rejects_unverified_active": True,
                 "score_event_unknown_key_rejected": True,
                 "score_event_nested_value_rejected": True,
+                "score_event_invalid_result_rejected": True,
+                "score_event_paper_gate_mapping_rejected": True,
+                "score_event_valid_paper_gate_mappings_preserved": True,
+                "score_event_valid_shadow_veto_preserved": True,
                 "score_event_scoring_pointer_lock_wait": True,
                 "score_event_model_pointer_lock_wait": True,
             }

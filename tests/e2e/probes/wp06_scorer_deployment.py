@@ -160,8 +160,54 @@ def _invalid_score_event_payload(*, nested_extra: bool) -> dict[str, object]:
     return payload
 
 
-async def _score_event_invalid_insert_is_rejected(
-    engine: AsyncEngine, *, workspace_id, bot_id, payload: dict[str, object]
+def _score_event_result_payload(
+    *,
+    mode: str = "SHADOW",
+    decision: str = "APPROVE",
+    final_status: str = "CANDIDATE",
+    class_probabilities: list[list[float | int]] | None = None,
+    probability: float | None = 0.5,
+    confidence: float | None = 0.5,
+    uncertainty: float | None = 0.5,
+    evaluation_status: str = "ACCEPTED_SHADOW_ONLY",
+    candidate_completeness_verified: bool = False,
+    reason_code: str | None = None,
+) -> dict[str, object]:
+    """Fixture canonical, rồi để probe gửi event thẳng bằng role worker."""
+    payload = _invalid_score_event_payload(nested_extra=True)
+    payload["timeframe_snapshot_ids"] = [["1m", "a" * 64]]
+    payload["mode"] = mode
+    payload["decision"] = decision
+    payload["final_status"] = final_status
+    payload["class_probabilities"] = class_probabilities or [[-1, 0.2], [0, 0.3], [1, 0.5]]
+    payload["probability"] = probability
+    payload["confidence"] = confidence
+    payload["uncertainty"] = uncertainty
+    payload["evaluation_status"] = evaluation_status
+    payload["candidate_completeness_verified"] = candidate_completeness_verified
+    payload["reason_code"] = reason_code
+    if decision == "ABSTAIN":
+        payload["class_probabilities"] = []
+        payload["probability"] = None
+        payload["confidence"] = None
+        payload["uncertainty"] = None
+        payload["reason_code"] = reason_code or "test-abstain"
+    elif decision == "VETO":
+        payload["reason_code"] = reason_code or "test-veto"
+    if mode == "PAPER_GATE":
+        payload["evaluation_status"] = "ACCEPTED_PAPER_GATE_ELIGIBLE"
+        payload["candidate_completeness_verified"] = True
+    payload.pop("unrecognized_metadata", None)
+    return payload
+
+
+async def _score_event_insert_reaches_expected_guard(
+    engine: AsyncEngine,
+    *,
+    workspace_id,
+    bot_id,
+    payload: dict[str, object],
+    expected_marker: str = "WP06_SCORE_EVENT_CANONICAL_INVALID",
 ) -> bool:
     payload["workspace_id"] = str(workspace_id)
     payload["bot_id"] = str(bot_id)
@@ -169,7 +215,6 @@ async def _score_event_invalid_insert_is_rejected(
         payload, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":")
     )
     event_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-    digest = "a" * 64
     event_id = uuid4()
     decision_id = UUID(payload["bot_decision_id"])
     deployment_event_id = UUID(payload["deployment_event_id"])
@@ -182,46 +227,46 @@ async def _score_event_invalid_insert_is_rejected(
         "workspace_id": workspace_id,
         "bot_id": bot_id,
         "bot_decision_id": decision_id,
-        "bot_decision_hash": digest,
-        "incumbent_decision_hash": digest,
-        "incumbent_status": "CANDIDATE",
-        "final_status": "CANDIDATE",
-        "candidate_id": digest,
-        "candidate_hash": digest,
-        "decision_snapshot_id": digest,
-        "vector_hash": digest,
-        "feature_schema_version": "test-v1",
-        "feature_schema_hash": digest,
+        "bot_decision_hash": payload["bot_decision_hash"],
+        "incumbent_decision_hash": payload["incumbent_decision_hash"],
+        "incumbent_status": payload["incumbent_status"],
+        "final_status": payload["final_status"],
+        "candidate_id": payload["candidate_id"],
+        "candidate_hash": payload["candidate_hash"],
+        "decision_snapshot_id": payload["decision_snapshot_id"],
+        "vector_hash": payload["vector_hash"],
+        "feature_schema_version": payload["feature_schema_version"],
+        "feature_schema_hash": payload["feature_schema_hash"],
         "timeframe_snapshot_ids": json.dumps(payload["timeframe_snapshot_ids"]),
         "source_event_digests": json.dumps(payload["source_event_digests"]),
-        "source_rights_fingerprint": digest,
-        "mode": "SHADOW",
+        "source_rights_fingerprint": payload["source_rights_fingerprint"],
+        "mode": payload["mode"],
         "deployment_event_id": deployment_event_id,
-        "deployment_revision": 1,
+        "deployment_revision": payload["deployment_revision"],
         "registry_id": registry_id,
-        "registry_revision": 1,
-        "active_pointer_version": 0,
+        "registry_revision": payload["registry_revision"],
+        "active_pointer_version": payload["active_pointer_version"],
         "scorer_artifact_id": artifact_id,
-        "scorer_artifact_hash": digest,
-        "base_artifact_hash": digest,
+        "scorer_artifact_hash": payload["scorer_artifact_hash"],
+        "base_artifact_hash": payload["base_artifact_hash"],
         "evaluation_report_id": report_id,
-        "evaluation_report_hash": digest,
-        "evaluation_status": "ACCEPTED_SHADOW_ONLY",
-        "report_scope_hash": digest,
+        "evaluation_report_hash": payload["evaluation_report_hash"],
+        "evaluation_status": payload["evaluation_status"],
+        "report_scope_hash": payload["report_scope_hash"],
         "proof_id": proof_id,
-        "proof_hash": digest,
-        "proof_scope_hash": digest,
-        "candidate_completeness_verified": False,
-        "policy_id": "test-policy",
-        "policy_hash": digest,
-        "decision": "ABSTAIN",
-        "reason_code": "test-abstain",
-        "class_probabilities": "[]",
-        "probability": None,
-        "confidence": None,
-        "uncertainty": None,
-        "model_latency_ms": 0,
-        "idempotency_key": digest,
+        "proof_hash": payload["proof_hash"],
+        "proof_scope_hash": payload["proof_scope_hash"],
+        "candidate_completeness_verified": payload["candidate_completeness_verified"],
+        "policy_id": payload["policy_id"],
+        "policy_hash": payload["policy_hash"],
+        "decision": payload["decision"],
+        "reason_code": payload["reason_code"],
+        "class_probabilities": json.dumps(payload["class_probabilities"]),
+        "probability": payload["probability"],
+        "confidence": payload["confidence"],
+        "uncertainty": payload["uncertainty"],
+        "model_latency_ms": payload["model_latency_ms"],
+        "idempotency_key": payload["idempotency_key"],
         "event_hash": event_hash,
         "canonical_event": canonical,
         "event_payload": canonical,
@@ -252,12 +297,12 @@ async def _score_event_invalid_insert_is_rejected(
             await connection.execute(text(statement), columns)
     except DBAPIError as error:
         message = str(error.orig)
-        if "WP06_SCORE_EVENT_CANONICAL_INVALID" in message:
+        if expected_marker in message:
             return True
         sqlstate = getattr(error.orig, "sqlstate", None)
         raise AssertionError(
             "Score event insert failed for an unexpected PostgreSQL reason "
-            f"(SQLSTATE {sqlstate}): {message}"
+            f"(expected {expected_marker}, SQLSTATE {sqlstate}): {message}"
         ) from error
     return False
 
@@ -277,7 +322,7 @@ async def _score_event_insert_waits_for_pointer_lock(
             {"key": lock_key},
         )
         attempt = asyncio.create_task(
-            _score_event_invalid_insert_is_rejected(
+            _score_event_insert_reaches_expected_guard(
                 worker_engine,
                 workspace_id=workspace_id,
                 bot_id=bot_id,
@@ -592,17 +637,90 @@ async def _probe() -> dict[str, object]:
             )
 
     score_event_bot_id = uuid4()
-    unknown_score_event_rejected = await _score_event_invalid_insert_is_rejected(
+    unknown_score_event_rejected = await _score_event_insert_reaches_expected_guard(
         worker_engine,
         workspace_id=workspace_id,
         bot_id=score_event_bot_id,
         payload=_invalid_score_event_payload(nested_extra=False),
     )
-    nested_score_event_rejected = await _score_event_invalid_insert_is_rejected(
+    nested_score_event_rejected = await _score_event_insert_reaches_expected_guard(
         worker_engine,
         workspace_id=workspace_id,
         bot_id=score_event_bot_id,
         payload=_invalid_score_event_payload(nested_extra=True),
+    )
+    invalid_result_payloads = (
+        _score_event_result_payload(class_probabilities=[[-1, 0.2], [0, 0.3], [0, 0.5]]),
+        _score_event_result_payload(
+            class_probabilities=[[-1, -0.1], [0, 0.3], [1, 0.8]],
+            probability=0.8,
+            confidence=0.8,
+            uncertainty=0.2,
+        ),
+        _score_event_result_payload(
+            class_probabilities=[[-1, 0.2], [0, 0.3], [1, 0.4]],
+            probability=0.4,
+            confidence=0.4,
+            uncertainty=0.6,
+        ),
+        _score_event_result_payload(probability=0.2),
+        _score_event_result_payload(confidence=0.6, uncertainty=0.4),
+        _score_event_result_payload(confidence=0.5, uncertainty=0.4),
+    )
+    invalid_result_rejected = all(
+        [
+            await _score_event_insert_reaches_expected_guard(
+                worker_engine,
+                workspace_id=workspace_id,
+                bot_id=score_event_bot_id,
+                payload=payload,
+                expected_marker="WP06_SCORE_EVENT_RESULT_INVALID",
+            )
+            for payload in invalid_result_payloads
+        ]
+    )
+    invalid_paper_gate_payloads = (
+        _score_event_result_payload(mode="PAPER_GATE", decision="APPROVE", final_status="VETO"),
+        _score_event_result_payload(mode="PAPER_GATE", decision="VETO", final_status="CANDIDATE"),
+        _score_event_result_payload(mode="PAPER_GATE", decision="ABSTAIN", final_status="VETO"),
+    )
+    paper_gate_mapping_rejected = all(
+        [
+            await _score_event_insert_reaches_expected_guard(
+                worker_engine,
+                workspace_id=workspace_id,
+                bot_id=score_event_bot_id,
+                payload=payload,
+                expected_marker="WP06_SCORE_EVENT_RESULT_INVALID",
+            )
+            for payload in invalid_paper_gate_payloads
+        ]
+    )
+    valid_paper_gate_payloads = (
+        _score_event_result_payload(
+            mode="PAPER_GATE", decision="APPROVE", final_status="CANDIDATE"
+        ),
+        _score_event_result_payload(mode="PAPER_GATE", decision="VETO", final_status="VETO"),
+        _score_event_result_payload(mode="PAPER_GATE", decision="ABSTAIN", final_status="ABSTAIN"),
+    )
+    valid_paper_gate_semantics_preserved = all(
+        [
+            await _score_event_insert_reaches_expected_guard(
+                worker_engine,
+                workspace_id=workspace_id,
+                bot_id=score_event_bot_id,
+                payload=payload,
+                expected_marker="WP06_SCORE_EVENT_DECISION_MISMATCH",
+            )
+            for payload in valid_paper_gate_payloads
+        ]
+    )
+    valid_shadow_veto_reaches_decision_check = await _score_event_insert_reaches_expected_guard(
+        worker_engine,
+        workspace_id=workspace_id,
+        bot_id=score_event_bot_id,
+        payload=_score_event_result_payload(decision="VETO", final_status="CANDIDATE"),
+        expected_marker="WP06_SCORE_EVENT_DECISION_MISMATCH",
     )
     scoring_pointer_race_waits = await _score_event_insert_waits_for_pointer_lock(
         seed_engine,
@@ -859,6 +977,10 @@ async def _probe() -> dict[str, object]:
         "forced_rls": True,
         "score_event_unknown_key_rejected": unknown_score_event_rejected,
         "score_event_nested_value_rejected": nested_score_event_rejected,
+        "score_event_invalid_result_rejected": invalid_result_rejected,
+        "score_event_paper_gate_mapping_rejected": paper_gate_mapping_rejected,
+        "score_event_valid_paper_gate_mappings_preserved": valid_paper_gate_semantics_preserved,
+        "score_event_valid_shadow_veto_preserved": valid_shadow_veto_reaches_decision_check,
         "score_event_scoring_pointer_lock_wait": scoring_pointer_race_waits,
         "score_event_model_pointer_lock_wait": model_pointer_race_waits,
     }

@@ -141,6 +141,11 @@ class LearningScoreEventRecord(UuidPrimaryKey, CreatedAt, Base):
             name="learning_score_event_result_valid",
         ),
         CheckConstraint(
+            "public.wp06_score_event_result_is_valid("
+            "mode,decision,final_status,class_probabilities,probability,confidence,uncertainty)",
+            name="learning_score_event_contract_consistent",
+        ),
+        CheckConstraint(
             "event_payload->>'schema_version' = 'crypidian.learning.score-event.v1' "
             "AND NOT (event_payload ?| ARRAY['features','feature_values','labels',"
             "'sample_ids','test_payload','raw_source','candidate_json'])",
