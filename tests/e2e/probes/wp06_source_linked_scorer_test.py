@@ -46,6 +46,11 @@ CURRENT_RIGHTS_COLUMNS = (
     "fingerprint",
     "checked_at",
 )
+QA_MIGRATION_FUNCTIONS = (
+    "public.wp06_lock_scorer_test_sources(uuid, uuid)",
+    "public.wp06_recheck_scorer_current_rights(uuid, uuid)",
+    "public.wp06_verify_scorer_deployment_rights(uuid, uuid, uuid)",
+)
 
 
 def principal():
@@ -141,6 +146,128 @@ async def _verify_migration_body_guards(engine):
                 {"signature": signature},
             )
             assert restored == definition
+
+
+def _qa_migration_downgrade_case(case_name: str):
+    migration = _load_migration(
+        "wp06_qa_migration_guard", "8ac4e2f6b0d1_wp06_first_party_qa_source.py"
+    )
+    if case_name == "test-lock":
+        signature = migration.TEST_LOCK_SIGNATURE
+        _, postimage, count = migration.TEST_LOCK_PATCHES[0]
+        drift = postimage.replace("CRYPIDIAN_FIRST_PARTY_QA", "CRYPIDIAN_FIRST_PARTY_QA_DRIFT", 1)
+        error_marker = "WP06_SCORER_TEST_QA_LOCK_DOWNGRADE_PREIMAGE_UNEXPECTED"
+    elif case_name == "current-rights":
+        signature = migration.CURRENT_RIGHTS_SIGNATURE
+        _, postimage, count = next(
+            patch for patch in migration.CURRENT_RIGHTS_PATCHES if patch[2] == 5
+        )
+        drift = postimage.replace("=", "<>", 1)
+        error_marker = "WP06_SCORER_CURRENT_RIGHTS_QA_DOWNGRADE_PREIMAGE_UNEXPECTED"
+    elif case_name == "deployment":
+        signature = migration.DEPLOYMENT_SIGNATURE
+        _, postimage, count = migration.DEPLOYMENT_PATCHES[0]
+        drift = postimage.replace(
+            "WP06_SCORER_DEPLOYMENT_QA_SOURCE_DENIED",
+            "WP06_SCORER_DEPLOYMENT_QA_SOURCE_DENIED_DRIFT",
+            1,
+        )
+        error_marker = "WP06_SCORER_DEPLOYMENT_QA_GUARD_DOWNGRADE_MARKER_PREIMAGE_UNEXPECTED"
+    else:
+        raise AssertionError(f"Migration guard case không hợp lệ: {case_name}")
+    return signature, postimage, drift, count, error_marker
+
+
+async def _qa_migration_function_hashes(session):
+    return {
+        signature: await session.scalar(
+            text(
+                "SELECT pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to("
+                "pg_catalog.pg_get_functiondef(CAST(:signature AS regprocedure)), "
+                "'UTF8')), 'hex')"
+            ),
+            {"signature": signature},
+        )
+        for signature in QA_MIGRATION_FUNCTIONS
+    }
+
+
+async def _prepare_qa_migration_downgrade_case(sessions, case_name: str):
+    signature, postimage, drift, expected_count, error_marker = _qa_migration_downgrade_case(
+        case_name
+    )
+    async with sessions() as session, session.begin():
+        version = await session.scalar(text("SELECT version_num FROM alembic_version"))
+        assert version == "8ac4e2f6b0d1", version
+        function_hashes = await _qa_migration_function_hashes(session)
+        definition = await session.scalar(
+            text("SELECT pg_catalog.pg_get_functiondef(CAST(:signature AS regprocedure))"),
+            {"signature": signature},
+        )
+        assert definition is not None
+        assert definition.count(postimage) == expected_count, (case_name, expected_count)
+        altered = definition.replace(postimage, drift, 1)
+        assert altered != definition
+        await (await session.connection()).exec_driver_sql(altered)
+        drift_hash = hashlib.sha256(altered.encode("utf-8")).hexdigest()
+    return {
+        "migration_case": case_name,
+        "migration_signature": signature,
+        "migration_error_marker": error_marker,
+        "migration_function_hashes_before": function_hashes,
+        "migration_drift_hash": drift_hash,
+    }
+
+
+async def _check_and_restore_qa_migration_downgrade_case(sessions):
+    case_name = STATE["migration_case"]
+    signature, postimage, drift, _, expected_error = _qa_migration_downgrade_case(case_name)
+    assert STATE["migration_signature"] == signature
+    assert STATE["migration_error_marker"] == expected_error
+    async with sessions() as session, session.begin():
+        version = await session.scalar(text("SELECT version_num FROM alembic_version"))
+        assert version == "8ac4e2f6b0d1", version
+        definitions = {
+            function_signature: await session.scalar(
+                text("SELECT pg_catalog.pg_get_functiondef(CAST(:signature AS regprocedure))"),
+                {"signature": function_signature},
+            )
+            for function_signature in QA_MIGRATION_FUNCTIONS
+        }
+        assert all(isinstance(value, str) for value in definitions.values())
+        current_hashes = {
+            function_signature: hashlib.sha256(definition.encode("utf-8")).hexdigest()
+            for function_signature, definition in definitions.items()
+        }
+        assert current_hashes[signature] == STATE["migration_drift_hash"]
+        assert {
+            function_signature: current_hashes[function_signature]
+            for function_signature in QA_MIGRATION_FUNCTIONS
+            if function_signature != signature
+        } == {
+            function_signature: function_hash
+            for function_signature, function_hash in STATE[
+                "migration_function_hashes_before"
+            ].items()
+            if function_signature != signature
+        }
+        definition = definitions[signature]
+        assert definition.count(drift) == 1, case_name
+        restored_definition = definition.replace(drift, postimage, 1)
+        await (await session.connection()).exec_driver_sql(restored_definition)
+    async with sessions() as session:
+        version = await session.scalar(text("SELECT version_num FROM alembic_version"))
+        restored_hashes = await _qa_migration_function_hashes(session)
+    assert version == "8ac4e2f6b0d1", version
+    assert restored_hashes == STATE["migration_function_hashes_before"]
+    return {
+        "migration_downgrade_rolled_back": True,
+        "migration_revision_preserved": True,
+        "migration_drift_survived_rollback": True,
+        "migration_body_restored": True,
+        "migration_case": case_name,
+        "migration_error_marker": expected_error,
+    }
 
 
 async def counts(sessions):
@@ -240,6 +367,10 @@ async def run(phase):
         if phase == "migration-body-guard":
             await _verify_migration_body_guards(engine)
             return {"altered_function_bodies_rejected": True}
+        if phase == "qa-migration-downgrade-prepare":
+            return await _prepare_qa_migration_downgrade_case(sessions, STATE["migration_case"])
+        if phase == "qa-migration-downgrade-check-restore":
+            return await _check_and_restore_qa_migration_downgrade_case(sessions)
         if phase == "stage":
             assert role == "crypidian_candidate_builder"
             from trading_bot.application.learning_split_candidate import (
