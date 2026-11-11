@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime
 from decimal import Decimal
@@ -66,6 +66,7 @@ from trading_bot.domain.strategy.contracts import (
 from trading_bot.domain.strategy.registry import StrategyRegistry
 
 ZERO = Decimal("0")
+ONE = Decimal("1")
 
 
 class ReplayEvaluationContextError(ValueError):
@@ -122,6 +123,17 @@ class ReplayAccountState:
         self._initial_realized_loss_today = context.risk_state.realized_loss_today
         self._initial_realized_loss_rolling = context.risk_state.realized_loss_rolling
         self._closed_pnl: dict[str, Decimal] = {}
+        self._unrealized_pnl: Decimal = ZERO
+
+    @property
+    def unrealized_pnl(self) -> Decimal:
+        """Tổng PnL chưa hiện thực (Mark-to-Market) của các vị thế đang mở."""
+        return self._unrealized_pnl
+
+    @property
+    def realized_pnl(self) -> Decimal:
+        """Tổng PnL đã chốt của các vị thế đã đóng."""
+        return sum(self._closed_pnl.values(), ZERO)
 
     def project(
         self,
@@ -130,6 +142,7 @@ class ReplayAccountState:
         reservations: dict[str, _ReplayReservation],
         *,
         candidate_symbol: str,
+        mark_prices: Mapping[str, Decimal] | None = None,
     ) -> tuple[AccountSnapshot, RiskState, tuple[OpenExposure, ...]]:
         """Tạo snapshot point-in-time, bỏ qua số dư/exposure provider trả lại."""
         workspace_id = context.account.workspace_id
@@ -142,6 +155,7 @@ class ReplayAccountState:
         pending_margin = self._initial_pending_margin
         pending_count = self._initial_pending_count
         allocated_margin = ZERO
+        unrealized_pnl = ZERO
 
         for intent_id, reservation in reservations.items():
             plan = reservation.plan
@@ -163,6 +177,17 @@ class ReplayAccountState:
                 )
                 open_count += 1
                 allocated_margin += plan.initial_margin * filled_fraction
+                if mark_prices is not None and plan.symbol in mark_prices:
+                    mark = mark_prices[plan.symbol]
+                    if isinstance(mark, Decimal) and mark.is_finite() and mark > ZERO:
+                        direction_sign = ONE if position.direction == "long" else -ONE
+                        pos_unrealized = (
+                            (mark - position.entry_execution_price)
+                            * position.quantity
+                            * position.contract_multiplier
+                            * direction_sign
+                        )
+                        unrealized_pnl += pos_unrealized
             elif position is not None and position.is_closed:
                 self._closed_pnl[position.position_id] = position.net_realized_pnl
 
@@ -183,13 +208,14 @@ class ReplayAccountState:
                     pending_symbol_notional += plan.notional * remaining_fraction
                 pending_margin += plan.initial_margin * remaining_fraction
 
+        self._unrealized_pnl = unrealized_pnl
         realized_pnl = sum(self._closed_pnl.values(), ZERO)
         realized_loss = sum(
             (-amount for amount in self._closed_pnl.values() if amount < ZERO), ZERO
         )
         account = replace(
             context.account,
-            equity=self._initial_equity + realized_pnl,
+            equity=self._initial_equity + realized_pnl + unrealized_pnl,
             available_margin=self._initial_margin - allocated_margin,
         )
         risk_state = replace(
@@ -273,6 +299,7 @@ class RuntimeReplayEvaluator:
         manifest: ReplayManifest,
         context_provider: ContextProvider,
         scenario: SensitivityScenario | None = None,
+        mark_to_market: bool = False,
     ) -> None:
         if cycle.paper_gateway is not gateway:
             raise ReplayEvaluationContextError(
@@ -282,6 +309,7 @@ class RuntimeReplayEvaluator:
         self._strategies = strategies
         self._gateway = gateway
         self._manifest = manifest
+        self._mark_to_market = mark_to_market
         self.scenario = scenario or SensitivityScenario("base", "BASE")
         self.strategy_parameters = _runtime_parameters(self.scenario)
         self.context_provider = context_provider
@@ -431,6 +459,19 @@ class RuntimeReplayEvaluator:
         self._opportunities[item.event_id] = item
         return item
 
+    def _extract_mark_prices(
+        self, snapshot: DecisionSnapshot, context: ReplayEvaluationContext
+    ) -> dict[str, Decimal]:
+        """Trích xuất giá mark mới nhất theo symbol từ execution events và market series."""
+        prices: dict[str, Decimal] = {}
+        for event in context.execution_events:
+            if hasattr(event, "symbol") and hasattr(event, "close"):
+                prices[event.symbol] = event.close
+        for series in snapshot.series:
+            if series.bars and hasattr(series.bars[-1], "close"):
+                prices[snapshot.symbol] = series.bars[-1].close
+        return prices
+
     def __call__(self, snapshot: DecisionSnapshot) -> EvaluationTrade | None:
         """Đánh giá một observation rồi áp dụng event đã available theo thứ tự ổn định."""
         context = self.context_provider(snapshot)
@@ -439,11 +480,15 @@ class RuntimeReplayEvaluator:
             self._account_state = ReplayAccountState(context)
         closed_trade = self._advance_execution(context, snapshot)
         assert self._account_state is not None
+        mark_prices = (
+            self._extract_mark_prices(snapshot, context) if self._mark_to_market else None
+        )
         account, risk_state, open_exposures = self._account_state.project(
             context,
             self._gateway,
             self._reservations,
             candidate_symbol=snapshot.symbol,
+            mark_prices=mark_prices,
         )
         source = self._opportunity_source(snapshot)
         vector = None

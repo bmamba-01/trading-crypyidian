@@ -210,8 +210,8 @@ def test_telegram_signals_desktop_view(app_server: str) -> None:
 
         # Đăng nhập
         page.goto(f"{base_url}/admin/login", wait_until="networkidle")
-        page.get_by_label("Mã workspace").fill("demo-workspace")
-        page.get_by_label("Email").fill("admin@crypidian.io")
+        page.get_by_label("Mã không gian làm việc").fill("demo-workspace")
+        page.get_by_label("Địa chỉ thư điện tử").fill("admin@crypidian.io")
         page.get_by_label("Mật khẩu").fill("correct_password")
         page.get_by_label("Mã xác thực 6 chữ số").fill("123456")
         page.get_by_role("button", name="Đăng nhập").click()
@@ -254,8 +254,8 @@ def test_telegram_signals_mobile_view(app_server: str) -> None:
 
         # Đăng nhập
         page.goto(f"{base_url}/admin/login", wait_until="networkidle")
-        page.get_by_label("Mã workspace").fill("demo-workspace")
-        page.get_by_label("Email").fill("admin@crypidian.io")
+        page.get_by_label("Mã không gian làm việc").fill("demo-workspace")
+        page.get_by_label("Địa chỉ thư điện tử").fill("admin@crypidian.io")
         page.get_by_label("Mật khẩu").fill("correct_password")
         page.get_by_label("Mã xác thực 6 chữ số").fill("123456")
         page.get_by_role("button", name="Đăng nhập").click()

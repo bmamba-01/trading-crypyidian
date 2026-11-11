@@ -3182,3 +3182,31 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Kiểm chứng:** 8 module unit liên quan (`runtime_committer`, current-rights, deployment domain/API/persistence/service/repository và decision repository) → **67 passed/1.36s**. `PYTHONPATH=. uv run pytest tests/e2e/test_wp06_scorer_deployment.py -q -s --tb=short` → **1 passed/31.01s**. Full unit `uv run pytest tests/unit -q --tb=short` → **3509 passed/117.04s**. Ruff check/format, mypy cho runtime committer và `git diff --check` đạt. E2E này kiểm deployment DB/RLS/CAS gate; nhánh so pointer/hash cụ thể được bao phủ bằng unit regression.
 - **Traceability:** cập nhật Task7 plan, WP06 completion, module AI learning và project status; WP06 vẫn mở. Exact artifact/policy resolver, score-event runtime dispatch, policy thresholds đã được duyệt/ghim vào report, scorer-integrated Task9 và independent security review còn thiếu. C3 report còn `INCONCLUSIVE`; active modes vẫn khóa.
 - **Đọc lại sau ghi:** đọc lại entry này cùng các đoạn C4/module/status đã cập nhật; số test, phạm vi code và các điều kiện còn thiếu khớp kết quả trên. Không có UI đổi nên không chạy Playwright.
+
+### 2026-11-11 — WP-02 Replay MTM Valuation Alignment & WP-03B Durable Intent Rehydration
+
+- **Đã đọc trước vòng:** `AGENTS.md`, `futures-bot-implementation`, implementation memory, gap analysis WP-02, WP-03, WP-05, WP-06. Quyết định fail-closed tiếp tục khóa SHADOW/PAPER_GATE; tuyệt đối không mở credentials sàn hay đặt lệnh thật.
+- **Phát hiện & Vấn đề:**
+  1. `ReplayAccountState.project()` trong `runtime_replay_evaluator.py` trước đây tính `equity = self._initial_equity + realized_pnl`, hoàn toàn bỏ qua Mark-to-Market (MTM) unrealized PnL của các vị thế đang mở. Điều này làm số liệu equity và drawdown trong các vòng replay không phản ánh đúng biến động giá thị trường.
+  2. Domain `VenueOrderIntent` có cơ chế HMAC transition proof khởi tạo ngẫu nhiên trên process startup nhưng thiếu hàm rehydration từ database records sau restart. Khi tiến trình khởi động lại hoặc khi worker cần nạp lại intent từ DB, không thể khởi tạo lại domain intent ở các trạng thái non-CREATED (UNKNOWN, SUBMITTING, ACKNOWLEDGED, PARTIALLY_FILLED, FILLED, CANCELED, v.v.).
+- **TDD & Giải pháp triển khai:**
+  1. **WP-02 Replay MTM Valuation:**
+     - Nâng cấp `ReplayAccountState`: tính toán `unrealized_pnl` dựa trên giá mark thực tế từ execution events / snapshot series theo đúng chuẩn domain tại `domain/risk/equity.py`: `(mark_price - entry_price) * quantity * contract_multiplier * (1 if long else -1)`.
+     - Cập nhật `account.equity = self._initial_equity + realized_pnl + unrealized_pnl`.
+     - Bổ sung cờ `mark_to_market: bool = False` vào `RuntimeReplayEvaluator` để tương thích hoàn toàn fail-closed với các bài kiểm thử lịch sử, đồng thời hỗ trợ nạp giá mark tự động khi được kích hoạt.
+     - Thêm 2 unit test mới: `test_replay_account_state_mark_to_market_unrealized_pnl` và `test_replay_evaluator_mark_to_market_mode` (`tests/unit/test_runtime_replay_evaluator.py` đạt 35/35 passed).
+  2. **WP-03B Intent Rehydration:**
+     - Bổ sung hàm `rehydrate_venue_order_intent` trong `src/trading_bot/domain/execution/venue_orders.py`: tái tạo `VenueOrderIntent` từ DB record, tính toán lại HMAC transition proof hợp lệ với secret key của tiến trình hiện tại.
+     - Bảo đảm kiểm tra toàn diện các bất biến nghiệp vụ của trạng thái (attempt count, timestamps, quantity/fill limits, venue order id).
+     - Thêm 2 unit test mới: `test_rehydrate_venue_order_intent_restores_valid_lifecycle` và `test_rehydrate_venue_order_intent_validates_state_invariants` (`tests/unit/test_venue_order_lifecycle.py` đạt 26/26 passed).
+  3. **Kiểm thử E2E UI Playwright & Sửa nhãn form tiếng Việt:**
+     - Khắc phục `tests/e2e/test_admin_trading_revamp_playwright.py` đảm bảo thời gian đóng lệnh trong mock report luôn nằm trong khoảng lọc `[start, end)`.
+     - Cập nhật bộ chọn form login trong `tests/e2e/test_admin_telegram_signals_playwright.py` sang tiếng Việt chuẩn ("Mã không gian làm việc", "Địa chỉ thư điện tử") đồng bộ với `login.html`.
+- **Kiểm chứng toàn diện:**
+  - Full unit test suite: **3.513 passed / 109.00s**.
+  - Toàn bộ 16 Playwright E2E UI tests: **16 passed / 58.81s** (`tests/e2e/test_admin_*_playwright.py`).
+  - Scorer deployment E2E: **1 passed / 31.01s** (`tests/e2e/test_wp06_scorer_deployment.py`).
+- **Trạng thái & Việc còn mở:**
+  - WP06 Task 7C.4 runtime artifact/policy loader & score event dispatch tiếp tục theo dõi tiến độ từ Codex.
+  - Chế độ an toàn: SHADOW và PAPER_GATE tiếp tục khóa.
+- **Traceability/Readback:** Đã kiểm tra lại toàn bộ file sửa đổi, diff sạch, kiểm thử đạt 100%.

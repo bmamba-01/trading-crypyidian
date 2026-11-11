@@ -16,6 +16,7 @@ from trading_bot.domain.execution.venue_orders import (
     VenueOrderState,
     VenueOrderUpdate,
     VenueReconciliation,
+    rehydrate_venue_order_intent,
 )
 
 NOW = datetime(2026, 11, 1, 12, tzinfo=UTC)
@@ -470,3 +471,97 @@ def test_dataclass_copy_cannot_forge_reservation_releasing_transition(
 
     with pytest.raises(VenueOrderConflict, match="chuyển trạng thái"):
         replace(acknowledged, state=state, state_changed_at=NOW + timedelta(seconds=3))
+
+
+def test_rehydrate_venue_order_intent_restores_valid_lifecycle() -> None:
+    """Kiểm tra rehydrate_venue_order_intent khôi phục intent sau restart
+    và tiếp tục chuyển tiếp."""
+    base_id = uuid4()
+    res_id = uuid4()
+    values = {
+        "intent_id": base_id,
+        "workspace_id": "workspace-a",
+        "account_id": "account-a",
+        "idempotency_key": "plan-123-rehydrate",
+        "reservation_id": res_id,
+        "plan_hash": "b" * 64,
+        "settings_version": "settings-v4",
+        "symbol": "BTCUSDT",
+        "side": "BUY",
+        "quantity": Decimal("0.05"),
+        "client_order_id": "crypidian-123-rehydrate",
+        "created_at": NOW,
+        "state": VenueOrderState.UNKNOWN,
+        "attempt_count": 1,
+        "last_attempt_at": NOW + timedelta(seconds=1),
+        "state_changed_at": NOW + timedelta(seconds=2),
+    }
+
+    # Trực tiếp tạo bằng VenueOrderIntent bị chặn vì thiếu transition proof
+    with pytest.raises(VenueOrderConflict, match="chuyển trạng thái"):
+        VenueOrderIntent(**values)
+
+    # Rehydrate từ database record hợp lệ thì thành công
+    rehydrated = rehydrate_venue_order_intent(**values)
+    assert rehydrated.state is VenueOrderState.UNKNOWN
+    assert rehydrated.intent_id == base_id
+    assert rehydrated.reservation_action == "RETAIN"
+
+    # Intent sau khi rehydrate có thể đối soát và tiếp tục chuyển trạng thái bình thường
+    recon = VenueReconciliation(
+        source=ReconciliationSource.REST_ORDER_QUERY,
+        source_ref="query-1",
+        workspace_id="workspace-a",
+        account_id="account-a",
+        client_order_id="crypidian-123-rehydrate",
+        checked_at=NOW + timedelta(seconds=5),
+        outcome=ReconciliationOutcome.FILLED,
+        cumulative_filled=Decimal("0.05"),
+        venue_order_id="venue-rehydrated-1",
+    )
+    filled = rehydrated.resolve_unknown(recon)
+    assert filled.state is VenueOrderState.FILLED
+    assert filled.filled_quantity == Decimal("0.05")
+    assert filled.reservation_action == "TRANSFER_TO_EXPOSURE"
+
+
+def test_rehydrate_venue_order_intent_validates_state_invariants() -> None:
+    """Kiểm tra rehydrate vẫn bảo vệ nghiêm ngặt các bất biến của state."""
+    base_values = {
+        "intent_id": uuid4(),
+        "workspace_id": "workspace-a",
+        "account_id": "account-a",
+        "idempotency_key": "plan-123-invalid",
+        "reservation_id": uuid4(),
+        "plan_hash": "c" * 64,
+        "settings_version": "settings-v4",
+        "symbol": "BTCUSDT",
+        "side": "BUY",
+        "quantity": Decimal("0.05"),
+        "client_order_id": "crypidian-123-invalid",
+        "created_at": NOW,
+    }
+
+    # FILLED mà thiếu venue_order_id hoặc filled_quantity sai phải bị từ chối
+    with pytest.raises(VenueOrderConflict, match="venue_order_id"):
+        rehydrate_venue_order_intent(
+            **base_values,
+            state=VenueOrderState.FILLED,
+            attempt_count=1,
+            last_attempt_at=NOW + timedelta(seconds=1),
+            state_changed_at=NOW + timedelta(seconds=2),
+            filled_quantity=Decimal("0.05"),
+            venue_order_id=None,
+        )
+
+    # PARTIALLY_FILLED mà filled_quantity = 0 phải bị từ chối
+    with pytest.raises(VenueOrderConflict, match="PARTIALLY_FILLED"):
+        rehydrate_venue_order_intent(
+            **base_values,
+            state=VenueOrderState.PARTIALLY_FILLED,
+            attempt_count=1,
+            last_attempt_at=NOW + timedelta(seconds=1),
+            state_changed_at=NOW + timedelta(seconds=2),
+            filled_quantity=Decimal("0"),
+            venue_order_id="venue-p",
+        )

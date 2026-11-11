@@ -7,7 +7,7 @@ import hmac
 import json
 import secrets
 from collections.abc import Callable
-from dataclasses import dataclass, field, fields, replace
+from dataclasses import MISSING, dataclass, field, fields, replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from enum import StrEnum
@@ -604,29 +604,53 @@ def _state_for_reconciliation(
     return VenueOrderState(outcome.value)
 
 
-def _fingerprint(intent: VenueOrderIntent) -> str:
+def _fingerprint_from_values(values: dict[str, Any]) -> str:
+    mode = values.get("mode", ExecutionMode.DEMO)
+    mode_value = mode.value if isinstance(mode, ExecutionMode) else str(mode)
+    limit_price = values.get("limit_price")
     payload = {
-        "mode": intent.mode.value,
-        "workspace_id": intent.workspace_id,
-        "account_id": intent.account_id,
-        "idempotency_key": intent.idempotency_key,
-        "plan_hash": intent.plan_hash,
-        "settings_version": intent.settings_version,
-        "symbol": intent.symbol,
-        "side": intent.side,
-        "quantity": _decimal_text(intent.quantity),
-        "order_type": intent.order_type,
+        "mode": mode_value,
+        "workspace_id": values["workspace_id"],
+        "account_id": values["account_id"],
+        "idempotency_key": values["idempotency_key"],
+        "plan_hash": values["plan_hash"],
+        "settings_version": values["settings_version"],
+        "symbol": values["symbol"],
+        "side": values["side"],
+        "quantity": _decimal_text(values["quantity"]),
+        "order_type": values.get("order_type", "MARKET"),
         "limit_price": (
-            _decimal_text(intent.limit_price) if intent.limit_price is not None else None
+            _decimal_text(limit_price) if limit_price is not None else None
         ),
-        "client_order_id": intent.client_order_id,
+        "client_order_id": values["client_order_id"],
     }
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def _fingerprint(intent: VenueOrderIntent) -> str:
+    return _fingerprint_from_values(
+        {
+            "mode": intent.mode,
+            "workspace_id": intent.workspace_id,
+            "account_id": intent.account_id,
+            "idempotency_key": intent.idempotency_key,
+            "plan_hash": intent.plan_hash,
+            "settings_version": intent.settings_version,
+            "symbol": intent.symbol,
+            "side": intent.side,
+            "quantity": intent.quantity,
+            "order_type": intent.order_type,
+            "limit_price": intent.limit_price,
+            "client_order_id": intent.client_order_id,
+        }
+    )
+
+
 def _make_transition_proof_tools() -> tuple[
-    Callable[..., VenueOrderIntent], Callable[[VenueOrderIntent], bool]
+    Callable[..., VenueOrderIntent],
+    Callable[[VenueOrderIntent], bool],
+    Callable[..., VenueOrderIntent],
 ]:
     key = secrets.token_bytes(32)
 
@@ -668,10 +692,52 @@ def _make_transition_proof_tools() -> tuple[
         changes["_transition_proof"] = sign(values)
         return replace(order, **changes)
 
-    return transition_replace, valid
+    def rehydrate(**values: Any) -> VenueOrderIntent:
+        """Tái tạo VenueOrderIntent từ database record sau khi tiến trình restart."""
+        state = values.get("state", VenueOrderState.CREATED)
+        if type(state) is not VenueOrderState:
+            raise VenueOrderConflict("state phải là VenueOrderState tường minh.")
+        for item in fields(VenueOrderIntent):
+            if item.name not in values and item.default is not MISSING:
+                values[item.name] = item.default
+        if state is VenueOrderState.CREATED:
+            values.pop("_transition_proof", None)
+            return VenueOrderIntent(**values)
+        if "created_at" in values and isinstance(values["created_at"], datetime):
+            values["created_at"] = _aware_utc(values["created_at"], "created_at")
+        if values.get("last_attempt_at") and isinstance(values["last_attempt_at"], datetime):
+            values["last_attempt_at"] = _aware_utc(values["last_attempt_at"], "last_attempt_at")
+        if values.get("state_changed_at") and isinstance(values["state_changed_at"], datetime):
+            values["state_changed_at"] = _aware_utc(
+                values["state_changed_at"], "state_changed_at"
+            )
+        if values.get("retry_not_before") and isinstance(values["retry_not_before"], datetime):
+            values["retry_not_before"] = _aware_utc(
+                values["retry_not_before"], "retry_not_before"
+            )
+        if values.get("last_event_at") and isinstance(values["last_event_at"], datetime):
+            values["last_event_at"] = _aware_utc(values["last_event_at"], "last_event_at")
+        seen_prints = values.get("seen_event_fingerprints")
+        if isinstance(seen_prints, tuple):
+            values["seen_event_fingerprints"] = tuple(sorted(seen_prints))
+        seen_ids = values.get("seen_event_ids")
+        if isinstance(seen_ids, tuple):
+            values["seen_event_ids"] = tuple(dict.fromkeys(seen_ids))
+        values["request_fingerprint"] = _fingerprint_from_values(values)
+        proof_values = {
+            item.name: values.get(item.name)
+            for item in fields(VenueOrderIntent)
+            if item.name != "_transition_proof"
+        }
+        values["_transition_proof"] = sign(proof_values)
+        return VenueOrderIntent(**values)
+
+    return transition_replace, valid, rehydrate
 
 
-_transition_replace, _valid_transition_proof = _make_transition_proof_tools()
+_transition_replace, _valid_transition_proof, rehydrate_venue_order_intent = (
+    _make_transition_proof_tools()
+)
 
 
 def _proof_value(value: object) -> object:

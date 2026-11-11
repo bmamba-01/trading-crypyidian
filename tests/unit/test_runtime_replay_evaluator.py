@@ -1495,3 +1495,125 @@ def test_pinned_research_input_tampering_fails_before_runtime_rebuild():
     assert result.trial_record.error_type == "ReplayEvaluationContextError"
     assert evaluator.opportunities == ()
     assert not evaluator.gateway.open_orders()
+
+
+def test_replay_account_state_mark_to_market_unrealized_pnl() -> None:
+    """Kiểm tra ReplayAccountState tính đúng Mark-to-Market UPNL cho vị thế mở."""
+    evaluator, context, first, gateway, _ = _setup()
+    assert evaluator(first.snapshot) is None
+    intent_id = _first_intent_id(evaluator)
+    opened = first.snapshot.decision_time + timedelta(seconds=10)
+    decision_at = opened + timedelta(seconds=1)
+    event = PaperBar(
+        bar_key="mtm-fill-bar",
+        symbol="BTCUSDT",
+        opened_at=opened,
+        closed_at=decision_at,
+        available_at=decision_at,
+        open=Decimal("100"),
+        high=Decimal("100.5"),
+        low=Decimal("99.5"),
+        close=Decimal("100"),
+    )
+    gateway.apply_market_event(event)
+    position = gateway.position(intent_id)
+    assert position is not None
+    assert not position.is_closed
+
+    state = evaluator._account_state
+    assert state is not None
+
+    # Khi không truyền mark_prices, UPNL mặc định bằng 0, equity giữ nguyên
+    account_no_mtm, _, _ = state.project(
+        context, gateway, evaluator._reservations, candidate_symbol="BTCUSDT"
+    )
+    assert state.unrealized_pnl == Decimal("0")
+    assert account_no_mtm.equity == context.account.equity
+
+    # Khi giá tăng lên 105: lãi thả nổi (105 - entry_price) * quantity
+    diff_gain = Decimal("105") - position.entry_execution_price
+    expected_gain = diff_gain * position.quantity * position.contract_multiplier
+    account_gain, _, _ = state.project(
+        context,
+        gateway,
+        evaluator._reservations,
+        candidate_symbol="BTCUSDT",
+        mark_prices={"BTCUSDT": Decimal("105")},
+    )
+    assert state.unrealized_pnl == expected_gain
+    assert account_gain.equity == context.account.equity + expected_gain
+
+    # Khi giá giảm xuống 95: lỗ thả nổi (95 - entry_price) * quantity
+    diff_loss = Decimal("95") - position.entry_execution_price
+    expected_loss = diff_loss * position.quantity * position.contract_multiplier
+    account_loss, _, _ = state.project(
+        context,
+        gateway,
+        evaluator._reservations,
+        candidate_symbol="BTCUSDT",
+        mark_prices={"BTCUSDT": Decimal("95")},
+    )
+    assert state.unrealized_pnl == expected_loss
+    assert account_loss.equity == context.account.equity + expected_loss
+
+
+def test_replay_evaluator_mark_to_market_mode() -> None:
+    """Kiểm tra RuntimeReplayEvaluator khi bật mark_to_market=True tự động nạp mark prices."""
+    evaluator, context, first, gateway, manifest = _setup()
+    mtm_evaluator = RuntimeReplayEvaluator(
+        cycle=evaluator._cycle,
+        strategies=evaluator._strategies,
+        gateway=gateway,
+        manifest=manifest,
+        context_provider=evaluator.context_provider,
+        mark_to_market=True,
+    )
+    assert mtm_evaluator(first.snapshot) is None
+    opened = first.snapshot.decision_time + timedelta(seconds=10)
+    decision_at = opened + timedelta(seconds=1)
+    event = PaperBar(
+        bar_key="mtm-evaluator-bar",
+        symbol="BTCUSDT",
+        opened_at=opened,
+        closed_at=decision_at,
+        available_at=decision_at,
+        open=Decimal("100"),
+        high=Decimal("100.5"),
+        low=Decimal("99.5"),
+        close=Decimal("100"),
+    )
+    second_snapshot = replace(
+        first.snapshot,
+        snapshot_id="snapshot-progressed-mtm",
+        decision_time=decision_at,
+    )
+    observed_account = []
+
+    def capture(**kwargs):
+        observed_account.append(kwargs["account"])
+        from trading_bot.application.paper_decision_cycle import (
+            DecisionCycleOutcome,
+            DecisionCycleResult,
+        )
+        from trading_bot.domain.strategy.contracts import NoTrade
+
+        return DecisionCycleResult(
+            DecisionCycleOutcome.NO_TRADE,
+            NoTrade("h01-v1", "TEST_NO_TRADE", "Kiểm thử"),
+        )
+
+    mtm_evaluator._cycle.prepare_published = capture
+    mtm_evaluator.context_provider = lambda snapshot: replace(
+        context,
+        evaluated_at=decision_at + timedelta(seconds=1),
+        risk_state=replace(
+            context.risk_state,
+            evaluated_at=decision_at + timedelta(seconds=1),
+            market_data_as_of=decision_at,
+        ),
+        execution_events=(event,),
+    )
+    mtm_evaluator(second_snapshot)
+    assert len(observed_account) == 1
+    # first.snapshot.series[-1] bar close là 102, entry là 100 -> gain = (102 - 100) * 99 = 198
+    assert observed_account[0].equity == Decimal("10198.000")

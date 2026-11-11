@@ -139,6 +139,13 @@ class MockRevampReportingService:
 
     async def get_bot_report(self, query: Any, principal: Principal) -> Any:
         now = datetime.now(UTC)
+        if hasattr(query, "start") and hasattr(query, "end") and query.start and query.end and query.end > query.start:
+            window_duration = query.end - query.start
+            closed_at = query.start + window_duration * 0.9
+            opened_at = query.start + window_duration * 0.5
+        else:
+            opened_at = now - timedelta(hours=2)
+            closed_at = now - timedelta(minutes=5)
         intent_id = uuid4()
         account_id = uuid4()
 
@@ -152,8 +159,8 @@ class MockRevampReportingService:
             symbol="BTCUSDT",
             side="LONG",
             quote_asset="USDT",
-            opened_at=now - timedelta(hours=2),
-            closed_at=now - timedelta(minutes=5),
+            opened_at=opened_at,
+            closed_at=closed_at,
             gross_pnl=Decimal("380.0"),
             fee_total=Decimal("4.5"),
             funding_total=Decimal("1.2"),
@@ -206,7 +213,7 @@ class MockRevampReportingService:
                 role="ENTRY",
                 quantity=Decimal("0.5"),
                 price=Decimal("94200.0"),
-                occurred_at=now - timedelta(hours=2),
+                occurred_at=opened_at,
                 fee_amount=Decimal("2.25"),
                 slippage_amount=Decimal("0.4"),
                 bar_key="btc_1h_bar_1",
@@ -220,7 +227,7 @@ class MockRevampReportingService:
                 role="EXIT",
                 quantity=Decimal("0.5"),
                 price=Decimal("94960.0"),
-                occurred_at=now - timedelta(minutes=5),
+                occurred_at=closed_at,
                 fee_amount=Decimal("2.25"),
                 slippage_amount=Decimal("0.4"),
                 bar_key="btc_1h_bar_2",
@@ -235,7 +242,7 @@ class MockRevampReportingService:
                 bot_id=BOT_ID,
                 account_id=account_id,
                 event_type="CLOSED",
-                occurred_at=now - timedelta(minutes=5),
+                occurred_at=closed_at,
                 payload={"exit_reason": "TAKE_PROFIT", "fill_key": "fill_exit_1"},
             ),
         )
