@@ -139,7 +139,13 @@ class MockRevampReportingService:
 
     async def get_bot_report(self, query: Any, principal: Principal) -> Any:
         now = datetime.now(UTC)
-        if hasattr(query, "start") and hasattr(query, "end") and query.start and query.end and query.end > query.start:
+        if (
+            hasattr(query, "start")
+            and hasattr(query, "end")
+            and query.start
+            and query.end
+            and query.end > query.start
+        ):
             window_duration = query.end - query.start
             closed_at = query.start + window_duration * 0.9
             opened_at = query.start + window_duration * 0.5

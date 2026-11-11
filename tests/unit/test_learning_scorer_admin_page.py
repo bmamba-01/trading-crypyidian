@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import re
-from dataclasses import asdict, replace
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 from fastapi import FastAPI
@@ -80,6 +79,7 @@ class _ScorerScoreEventReadModel:
 
 def _summary() -> ScorerReportSummary:
     return ScorerReportSummary(
+        evaluation_report_id=UUID("d1f2a6cc-d185-4a16-949b-844688cd4edb"),
         created_at=datetime(2026, 11, 10, 8, 30, tzinfo=UTC),
         evaluated_at=datetime(2026, 11, 10, 8, 25, tzinfo=UTC),
         status="INCONCLUSIVE",
@@ -265,8 +265,9 @@ def test_scoring_admin_page_shows_policy_and_rights_gates_for_active_modes() -> 
 
 def test_accepted_shadow_report_shows_exact_id_and_leaves_rights_to_server_recheck() -> None:
     report_id = UUID("ad2d5800-f3e7-4e57-9818-3a64ae69a9a6")
-    summary = SimpleNamespace(
-        **asdict(replace(_summary(), status="ACCEPTED_SHADOW_ONLY")),
+    summary = replace(
+        _summary(),
+        status="ACCEPTED_SHADOW_ONLY",
         evaluation_report_id=report_id,
     )
     client, _service, _principal = _client(report_summary=summary)

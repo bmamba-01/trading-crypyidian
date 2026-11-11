@@ -163,10 +163,13 @@ def test_source_pinned_runtime_replay_persists_exact_lineage_in_postgres(scorer_
         )
         result = json.loads(probe.stdout.strip().splitlines()[-1])
         if scorer_test:
+            assert result["qa_provider"] == "CRYPIDIAN_FIRST_PARTY_QA"
             assert result["bars"] == 470
             assert result["linked_outcomes"] == 27
             assert result["opportunities"] == 270
+            assert result["test_candidate_count"] == 9
             _run_source_linked_test(root, project, environment, volume, result)
+            _run_qa_migration_downgrade_guard(root, project, environment, volume, workspace_id)
             _compose(
                 root,
                 project,
@@ -310,6 +313,8 @@ def _run_source_linked_test(root, project, environment, volume, state):
         "current_training_scope_digest_matched",
         "no_test_receipt_mutation",
         "inconclusive_deployment_denied",
+        "qa_source_deployment_denied",
+        "qa_denial_side_effect_free",
         "outer_gateway_no_test_payload_mutation",
         "deployment_caller_denied",
         "worker_execute_granted",
@@ -317,6 +322,119 @@ def _run_source_linked_test(root, project, environment, volume, state):
     ):
         assert state[name] is True
     assert state["report_status"] == "INCONCLUSIVE"
+    assert state["sample_support_block"] == {
+        "sample_count": 9,
+        "minimum_sample_count": 1000,
+        "class_support": {"-1": 3, "0": 3, "1": 3},
+        "minimum_class_support": 100,
+    }
+
+
+def _run_qa_migration_downgrade_guard(root, project, environment, volume, workspace_id):
+    migration_cases = (
+        (
+            "test-lock",
+            "WP06_SCORER_TEST_QA_LOCK_DOWNGRADE_PREIMAGE_UNEXPECTED",
+        ),
+        (
+            "current-rights",
+            "WP06_SCORER_CURRENT_RIGHTS_QA_DOWNGRADE_PREIMAGE_UNEXPECTED",
+        ),
+        (
+            "deployment",
+            "WP06_SCORER_DEPLOYMENT_QA_GUARD_DOWNGRADE_MARKER_PREIMAGE_UNEXPECTED",
+        ),
+    )
+    for case_name, error_marker in migration_cases:
+        state = {"workspace_id": workspace_id, "migration_case": case_name}
+        prepare = _compose_probe(
+            root,
+            project,
+            environment,
+            "run",
+            "--rm",
+            "--no-deps",
+            "--volume",
+            volume,
+            "-e",
+            "WP06_SOURCE_LINKED_STATE=" + json.dumps(state),
+            "migrator",
+            "python",
+            "/e2e-tests/e2e/probes/wp06_source_linked_scorer_test.py",
+            "qa-migration-downgrade-prepare",
+        )
+        state.update(json.loads(prepare.stdout.strip().splitlines()[-1]))
+        failed = _compose_expected_failure(
+            root,
+            project,
+            environment,
+            "run",
+            "--rm",
+            "--no-deps",
+            "migrator",
+            "alembic",
+            "downgrade",
+            "55c504fe5b86",
+        )
+        output = failed.stdout + failed.stderr
+        assert failed.returncode != 0
+        assert error_marker in output, (case_name, output[-6000:])
+        restored = _compose_probe(
+            root,
+            project,
+            environment,
+            "run",
+            "--rm",
+            "--no-deps",
+            "--volume",
+            volume,
+            "-e",
+            "WP06_SOURCE_LINKED_STATE=" + json.dumps(state),
+            "migrator",
+            "python",
+            "/e2e-tests/e2e/probes/wp06_source_linked_scorer_test.py",
+            "qa-migration-downgrade-check-restore",
+        )
+        result = json.loads(restored.stdout.strip().splitlines()[-1])
+        assert result["migration_case"] == case_name
+        assert result["migration_error_marker"] == error_marker
+        for flag in (
+            "migration_downgrade_rolled_back",
+            "migration_revision_preserved",
+            "migration_drift_survived_rollback",
+            "migration_body_restored",
+        ):
+            assert result[flag] is True
+
+
+def _compose_expected_failure(root, project, environment, *args):
+    result = subprocess.run(
+        [
+            "docker",
+            "compose",
+            "--profile",
+            "paper",
+            "--profile",
+            "learning",
+            "--profile",
+            "learning-proof",
+            "--profile",
+            "signal-producer",
+            "--project-name",
+            project,
+            "-f",
+            "compose.yaml",
+            *args,
+        ],
+        cwd=root,
+        env=environment,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=300,
+    )
+    return result
 
 
 def _lineage_contract(root, project, environment, volume, workspace_id):

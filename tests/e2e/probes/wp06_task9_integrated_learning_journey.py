@@ -899,12 +899,39 @@ def _execution_snapshot() -> dict[str, Any]:
                 "SELECT count(*) FROM bot_decision WHERE workspace_id=%s", (WORKSPACE,)
             ).fetchone()[0]
         )
+        scorer_event_count = int(
+            connection.execute(
+                "SELECT count(*) FROM learning_scoring_deployment_event WHERE workspace_id=%s",
+                (WORKSPACE,),
+            ).fetchone()[0]
+        )
+        score_event_count = int(
+            connection.execute(
+                "SELECT count(*) FROM learning_score_event WHERE workspace_id=%s",
+                (WORKSPACE,),
+            ).fetchone()[0]
+        )
+        scorer_pointer = connection.execute(
+            "SELECT event_id, revision, active_pointer_version, mode "
+            "FROM learning_scoring_deployment_pointer WHERE workspace_id=%s",
+            (WORKSPACE,),
+        ).fetchone()
         return {
             "order_counts": order_counts,
             "training_job_count": job_count,
             "pointer_registry_id": str(pointer[0]) if pointer else None,
             "pointer_version": int(pointer[1]) if pointer else 0,
             "paper_decision_count": decisions,
+            "scoring_deployment_event_count": scorer_event_count,
+            "score_event_count": score_event_count,
+            "scoring_deployment_pointer": {
+                "event_id": str(scorer_pointer[0])
+                if scorer_pointer and scorer_pointer[0]
+                else None,
+                "revision": int(scorer_pointer[1]) if scorer_pointer else 0,
+                "active_pointer_version": int(scorer_pointer[2]) if scorer_pointer else 0,
+                "mode": scorer_pointer[3] if scorer_pointer else "DISABLED",
+            },
         }
 
 
@@ -1048,6 +1075,7 @@ def _verify_scorer_artifacts() -> dict[str, Any]:
 
     return {
         "scorer_artifact_count": len(rows),
+        "scorer_artifact_ids": [str(row[0]) for row in rows],
         "base_v1_unchanged_diagnostic_only": True,
         "canonical_hash_and_lineage_verified": True,
         "trainer_least_privilege_and_workspace_rls": True,
@@ -1055,6 +1083,224 @@ def _verify_scorer_artifacts() -> dict[str, Any]:
         "denormalized_tampering_rejected": True,
         "raw_outcome_and_opportunity_reads_denied": True,
     }
+
+
+async def _verify_scorer_active_mode_gate() -> dict[str, Any]:
+    """Kiểm transaction rollback và active-mode denial bằng metadata lưu thật."""
+    from sqlalchemy import text
+    from sqlalchemy.exc import DBAPIError
+
+    from trading_bot.adapters.database.engine import (
+        create_database_engine,
+        create_session_factory,
+        database_url_from_secret,
+    )
+    from trading_bot.adapters.database.repositories.learning_scorer_current_rights import (
+        LearningScorerCurrentRightsRepository,
+    )
+    from trading_bot.adapters.database.repositories.learning_scoring_deployments import (
+        LearningScoringDeploymentRepository,
+        ScorerDeploymentConflict,
+        ScorerDeploymentRightsUnavailable,
+    )
+    from trading_bot.application.learning_scoring_deployment import ScorerDeploymentService
+    from trading_bot.application.outbox import UnitOfWork
+    from trading_bot.auth.policy import MfaMethod, Principal, Role
+    from trading_bot.domain.learning.scoring_deployment import ScorerDeploymentMode
+
+    engine = create_database_engine(
+        database_url_from_secret(
+            username=os.environ["TRADING_BOT_DATABASE_USER"],
+            password_file=Path(os.environ["TRADING_BOT_DATABASE_PASSWORD_FILE"]),
+            host="postgres",
+            database="crypidian",
+        )
+    )
+    sessions = create_session_factory(engine)
+    principal = Principal(
+        user_id=UUID(STATE["account_id"]),
+        membership_id=UUID(STATE["membership_id"]),
+        workspace_id=WORKSPACE,
+        roles=frozenset({Role.OWNER}),
+        mfa_verified_at=datetime.now(UTC),
+        mfa_method=MfaMethod.TOTP,
+    )
+    facade = ScorerDeploymentService(sessions).for_principal(principal)
+
+    async def persisted_state() -> dict[str, Any]:
+        async with UnitOfWork(
+            sessions,
+            workspace_id=WORKSPACE,
+            actor_membership_id=principal.membership_id,
+        ) as unit:
+            row = (
+                await unit.session.execute(
+                    text(
+                        "SELECT event_id,revision,active_pointer_version,mode "
+                        "FROM public.learning_scoring_deployment_pointer "
+                        "WHERE workspace_id=:workspace"
+                    ),
+                    {"workspace": WORKSPACE},
+                )
+            ).one()
+            event_count = await unit.session.scalar(
+                text(
+                    "SELECT count(*) FROM public.learning_scoring_deployment_event "
+                    "WHERE workspace_id=:workspace"
+                ),
+                {"workspace": WORKSPACE},
+            )
+            score_event_count = await unit.session.scalar(
+                text(
+                    "SELECT count(*) FROM public.learning_score_event WHERE workspace_id=:workspace"
+                ),
+                {"workspace": WORKSPACE},
+            )
+            return {
+                "event_id": str(row.event_id) if row.event_id else None,
+                "revision": int(row.revision),
+                "active_pointer_version": int(row.active_pointer_version),
+                "mode": row.mode,
+                "deployment_event_count": int(event_count or 0),
+                "score_event_count": int(score_event_count or 0),
+            }
+
+    class RollbackAfterWrite(RuntimeError):
+        pass
+
+    try:
+        assert STATE["candidate_completeness_verified"] is False
+        assert STATE["all_artifacts_abstain_uncalibrated"] is True
+        initial = await persisted_state()
+        assert initial["mode"] == "DISABLED"
+        assert initial["revision"] == 0
+        assert initial["deployment_event_count"] == 0
+        assert initial["score_event_count"] == 0
+        admin_state = await facade.load_admin_scoring_deployment()
+        assert admin_state.mode is ScorerDeploymentMode.DISABLED
+        assert admin_state.deployment_revision == 0
+
+        rollback_key = uuid4()
+        rollback_sentinel_seen = False
+        try:
+            async with UnitOfWork(
+                sessions,
+                workspace_id=WORKSPACE,
+                actor_membership_id=principal.membership_id,
+            ) as unit:
+                await LearningScoringDeploymentRepository(unit.session).append_disabled_event(
+                    workspace_id=WORKSPACE,
+                    actor_membership_id=principal.membership_id,
+                    mfa_verified_at=principal.mfa_verified_at,
+                    expected_pointer_version=admin_state.active_pointer_version,
+                    expected_deployment_revision=admin_state.deployment_revision,
+                    idempotency_key=rollback_key,
+                    reason="Ghi nhận thử trong transaction sẽ rollback của Task9.",
+                )
+                raise RollbackAfterWrite("TASK9_SCORER_DEPLOYMENT_ROLLBACK")
+        except RollbackAfterWrite as error:
+            rollback_sentinel_seen = str(error) == "TASK9_SCORER_DEPLOYMENT_ROLLBACK"
+        assert rollback_sentinel_seen
+        after_rollback = await persisted_state()
+        assert after_rollback == initial
+
+        idempotency_key = uuid4()
+        first = await facade.set_mode(
+            mode=ScorerDeploymentMode.DISABLED,
+            expected_pointer_version=admin_state.active_pointer_version,
+            expected_deployment_revision=admin_state.deployment_revision,
+            idempotency_key=idempotency_key,
+            reason="Giữ scorer tắt trong khi chưa có report đủ điều kiện.",
+        )
+        retry = await facade.set_mode(
+            mode=ScorerDeploymentMode.DISABLED,
+            expected_pointer_version=admin_state.active_pointer_version,
+            expected_deployment_revision=admin_state.deployment_revision,
+            idempotency_key=idempotency_key,
+            reason="Giữ scorer tắt trong khi chưa có report đủ điều kiện.",
+        )
+        assert first.event_id == retry.event_id
+        changed_intent_conflicts = False
+        try:
+            await facade.set_mode(
+                mode=ScorerDeploymentMode.DISABLED,
+                expected_pointer_version=admin_state.active_pointer_version,
+                expected_deployment_revision=admin_state.deployment_revision,
+                idempotency_key=idempotency_key,
+                reason="Dùng lại idempotency key với nội dung khác.",
+            )
+        except ScorerDeploymentConflict as error:
+            changed_intent_conflicts = "ý định deployment khác" in str(error)
+        else:
+            raise AssertionError("Khác ý định dùng lại idempotency key phải conflict.")
+        assert changed_intent_conflicts
+        after_disabled = await persisted_state()
+        assert after_disabled["mode"] == "DISABLED"
+        assert after_disabled["revision"] == 1
+        assert after_disabled["deployment_event_count"] == 1
+        assert after_disabled["score_event_count"] == initial["score_event_count"]
+
+        diagnostic_report_rejected = False
+        try:
+            async with UnitOfWork(sessions, workspace_id=WORKSPACE) as unit:
+                async with unit.session.begin_nested():
+                    await LearningScorerCurrentRightsRepository(
+                        unit.session
+                    ).verify_deployment_rights(
+                        workspace_id=WORKSPACE,
+                        scorer_artifact_id=UUID(STATE["scorer_artifact_ids"][0]),
+                        # This is the real fold diagnostic report. It is not a persisted
+                        # scorer TEST report and must not be accepted as one by the gateway.
+                        evaluation_report_id=UUID(STATE["report_id"]),
+                    )
+        except DBAPIError as error:
+            diagnostic_report_rejected = "WP06_SCORER_DEPLOYMENT_REPORT_NOT_FOUND" in str(
+                error.orig
+            )
+        assert diagnostic_report_rejected, (
+            "Diagnostic fold report không được dùng thay cho scorer TEST report authoritative."
+        )
+
+        active_denials: dict[ScorerDeploymentMode, bool] = {}
+        for mode in (ScorerDeploymentMode.SHADOW, ScorerDeploymentMode.PAPER_GATE):
+            key = uuid4()
+            messages: list[str] = []
+            for _ in range(2):
+                try:
+                    await facade.set_mode(
+                        mode=mode,
+                        evaluation_report_id=UUID(STATE["report_id"]),
+                        expected_pointer_version=admin_state.active_pointer_version,
+                        expected_deployment_revision=1,
+                        idempotency_key=key,
+                        reason="Không bật mode khi report scorer đủ điều kiện chưa tồn tại.",
+                    )
+                except ScorerDeploymentRightsUnavailable as error:
+                    messages.append(str(error))
+                else:
+                    raise AssertionError(
+                        f"{mode.value} phải fail-closed khi chưa có rights gateway."
+                    )
+            active_denials[mode] = len(messages) == 2 and all(messages)
+        after_denials = await persisted_state()
+        assert after_denials == after_disabled
+        assert active_denials[ScorerDeploymentMode.SHADOW]
+        assert active_denials[ScorerDeploymentMode.PAPER_GATE]
+        return {
+            "rollback_restored_database_state": after_rollback == initial,
+            "disabled_retry_is_idempotent": first.event_id == retry.event_id,
+            "changed_disabled_intent_conflicts": changed_intent_conflicts,
+            "shadow_denied": active_denials[ScorerDeploymentMode.SHADOW],
+            "paper_gate_denied": active_denials[ScorerDeploymentMode.PAPER_GATE],
+            "active_mode_denials_are_side_effect_free": after_denials == after_disabled,
+            "diagnostic_report_is_incomplete": not STATE["candidate_completeness_verified"],
+            "diagnostic_report_rejected_by_authoritative_gateway": diagnostic_report_rejected,
+            "score_event_count_unchanged": (
+                after_denials["score_event_count"] == initial["score_event_count"]
+            ),
+        }
+    finally:
+        await engine.dispose()
 
 
 async def _verify_scorer_repository_retries() -> dict[str, Any]:
@@ -1711,6 +1957,8 @@ async def _main(phase: str) -> dict[str, Any]:
         return _execution_snapshot()
     if phase == "verify-scorer-artifacts":
         return _verify_scorer_artifacts()
+    if phase == "verify-scorer-active-mode-gate":
+        return await _verify_scorer_active_mode_gate()
     if phase == "verify-scorer-repository-retries":
         return await _verify_scorer_repository_retries()
     if phase == "verify-paper-decisions":

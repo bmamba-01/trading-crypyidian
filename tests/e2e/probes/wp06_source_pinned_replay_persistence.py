@@ -35,7 +35,15 @@ from trading_bot.application.backtest_dataset_replay_bundle import (
     BacktestDatasetReplayBundleReference,
 )
 from trading_bot.application.backtest_replay_jobs import BacktestReplayJobSubmission
+from trading_bot.application.binance_rest_backfill import BackfillRightsPurpose
+from trading_bot.application.binance_rest_backfill_rights import SourceRegistryBackfillRightsGate
 from trading_bot.application.candidate_universe_proof import CandidateUniverseProofService
+from trading_bot.application.first_party_qa_dataset import (
+    CRYPIDIAN_FIRST_PARTY_QA,
+    CRYPIDIAN_FIRST_PARTY_QA_EVIDENCE_REF,
+    CRYPIDIAN_FIRST_PARTY_QA_SOURCE,
+    FirstPartyQADatasetRequest,
+)
 from trading_bot.application.outbox import UnitOfWork
 from trading_bot.domain.market.ingestion import MarketRecordVersion, MarketStream
 from trading_bot.domain.research.source_policy import SourcePolicyState, SourceUsePurpose
@@ -57,36 +65,28 @@ async def run_probe(*, scorer_seed: bool = False) -> dict[str, object]:
         )
     )
     sessions = create_session_factory(engine)
-    bundle, comparison = build_h03_source_pinned_dataset_replay(
-        WORKSPACE_ID,
-        **(
-            {
-                "trade_patterns": ("loss", "flat", "profit") * 9,
-                "pattern_stride": 10,
-                "fee_rate": Decimal("0"),
-            }
-            if scorer_seed
-            else {}
-        ),
+    trade_patterns = ("loss", "flat", "profit") * 9 if scorer_seed else ("loss", "loss")
+    pattern_stride = 10 if scorer_seed else 3
+    bar_count = 200 + pattern_stride * len(trade_patterns)
+    dataset_start = datetime.now(UTC).replace(minute=0, second=0, microsecond=0) - timedelta(
+        hours=bar_count
     )
-    if not comparison.is_complete or len(comparison.runs) != 1:
-        raise AssertionError("Replay source-pinned phải hoàn thành đúng một trial.")
-    replay = comparison.runs[0]
-    if (len(replay.opportunities), len(replay.trade_outcomes)) != (
-        (270, 27) if scorer_seed else (6, 2)
-    ):
-        raise AssertionError("Fixture replay không có đủ opportunity và closed trade đã dự kiến.")
-
+    range_end = dataset_start + timedelta(hours=bar_count)
+    qa_request = FirstPartyQADatasetRequest(
+        symbol="BTCUSDT",
+        interval="1h",
+        start=dataset_start,
+        end=range_end,
+        purpose=BackfillRightsPurpose.BACKTEST_RESEARCH,
+    )
     instrument_id = uuid4()
     account_id = uuid4()
     membership_id = uuid4()
-    job_id = UUID(replay.sensitivity_run.manifest.learning_job_id or "")
-    trial_record_id = None
     async with sessions() as session, session.begin():
         await session.execute(
             text(
                 "INSERT INTO workspace (id,name,slug,mode,status) "
-                "VALUES (:id,'WP06 source-pinned replay',:slug,'PAPER','ACTIVE')"
+                "VALUES (:id,'WP06 source-pinned QA replay',:slug,'PAPER','ACTIVE')"
             ),
             {"id": WORKSPACE_ID, "slug": f"wp06-source-pinned-{WORKSPACE_ID.hex}"},
         )
@@ -112,8 +112,8 @@ async def run_probe(*, scorer_seed: bool = False) -> dict[str, object]:
             MarketInstrument(
                 id=instrument_id,
                 workspace_id=WORKSPACE_ID,
-                source="BINANCE_USDM_REST_BACKFILL",
-                idempotency_key="wp06-source-pinned-fixture-instrument",
+                source=CRYPIDIAN_FIRST_PARTY_QA_SOURCE,
+                idempotency_key="wp06-source-pinned-qa-fixture-instrument",
                 symbol="BTCUSDT",
                 base_asset="BTC",
                 quote_asset="USDT",
@@ -124,10 +124,91 @@ async def run_probe(*, scorer_seed: bool = False) -> dict[str, object]:
                 revision=1,
                 checksum="a" * 64,
                 supersedes_id=None,
-                event_at=bundle.components[0].manifest.warmup_start,
-                received_at=bundle.components[0].manifest.warmup_start,
-                available_at=bundle.components[0].manifest.warmup_start,
+                event_at=dataset_start,
+                received_at=dataset_start,
+                available_at=dataset_start,
             )
+        )
+    policy_now = datetime.now(UTC)
+    rights_history = (
+        SourceRegistryEntry.discover(
+            source_id=CRYPIDIAN_FIRST_PARTY_QA,
+            publisher="Crypidian Repository QA Fixture",
+            endpoint_url=CRYPIDIAN_FIRST_PARTY_QA_EVIDENCE_REF,
+            access_method="GET",
+            auth_scope="repo-owned synthetic QA data; no exchange account",
+            budget=SourceBudget(
+                window=timedelta(hours=1),
+                max_requests=100,
+                max_bytes=1024,
+                max_cost=Decimal("0"),
+                cost_unit="USD",
+            ),
+            actor_id="fixture-operator",
+            at=policy_now - timedelta(minutes=3),
+            reason="Đăng ký fixture synthetic first-party trong workspace Compose tạm.",
+        )
+        .transition(
+            policy_id=f"{CRYPIDIAN_FIRST_PARTY_QA}:source-pinned-pending",
+            state=SourcePolicyState.RIGHTS_PENDING,
+            actor_id="fixture-operator",
+            at=policy_now - timedelta(minutes=2),
+            reason="Ghi nhận nguồn QA đang chờ review trong test workspace.",
+        )
+        .transition(
+            policy_id=f"{CRYPIDIAN_FIRST_PARTY_QA}:source-pinned-training",
+            state=SourcePolicyState.VERIFIED,
+            actor_id="fixture-operator",
+            at=policy_now - timedelta(minutes=1),
+            reason="Chỉ cấp mục đích nghiên cứu và TRAINING cho fixture first-party.",
+            allowed_purposes=frozenset(
+                {SourceUsePurpose.BACKTEST_RESEARCH, SourceUsePurpose.TRAINING}
+            ),
+            evidence_ref=CRYPIDIAN_FIRST_PARTY_QA_EVIDENCE_REF,
+            reviewed_at=policy_now - timedelta(minutes=1),
+            valid_until=policy_now + timedelta(days=7),
+            approved_by="fixture-reviewer",
+        )
+    )
+    for revision in rights_history.revisions:
+        async with UnitOfWork(sessions, workspace_id=WORKSPACE_ID) as uow:
+            await SourceRegistryRepository(uow.session).append_revision(
+                workspace_id=WORKSPACE_ID, revision=revision
+            )
+        async with UnitOfWork(sessions, workspace_id=WORKSPACE_ID) as uow:
+            await SourceRegistryRepository(uow.session).finalize_policy(
+                workspace_id=WORKSPACE_ID,
+                source_id=CRYPIDIAN_FIRST_PARTY_QA,
+                policy_id=revision.policy.policy_id,
+            )
+    async with UnitOfWork(sessions, workspace_id=WORKSPACE_ID) as uow:
+        qa_rights = await SourceRegistryBackfillRightsGate(
+            workspace_id=WORKSPACE_ID,
+            repository=SourceRegistryRepository(uow.session),
+            source_id=CRYPIDIAN_FIRST_PARTY_QA,
+        ).authorize(request=qa_request, now=datetime.now(UTC))
+    bundle, comparison = build_h03_source_pinned_dataset_replay(
+        WORKSPACE_ID,
+        trade_patterns=trade_patterns,
+        pattern_stride=pattern_stride,
+        fee_rate=Decimal("0") if scorer_seed else Decimal("0.001"),
+        rights_evidence=qa_rights,
+        dataset_start=dataset_start,
+    )
+    if not comparison.is_complete or len(comparison.runs) != 1:
+        raise AssertionError("Replay source-pinned phải hoàn thành đúng một trial.")
+    replay = comparison.runs[0]
+    if (len(replay.opportunities), len(replay.trade_outcomes)) != (
+        (270, 27) if scorer_seed else (6, 2)
+    ):
+        raise AssertionError("Fixture replay không có đủ opportunity và closed trade đã dự kiến.")
+
+    job_id = UUID(replay.sensitivity_run.manifest.learning_job_id or "")
+    trial_record_id = None
+    async with sessions() as session, session.begin():
+        await session.execute(
+            text("SELECT set_config('app.workspace_id', :workspace, true)"),
+            {"workspace": str(WORKSPACE_ID)},
         )
         await session.flush()
 
@@ -282,61 +363,16 @@ async def run_probe(*, scorer_seed: bool = False) -> dict[str, object]:
 
     if trial_record_id is None:
         raise AssertionError("Repository chưa trả trial ID.")
-    provider = bundle.components[0].manifest.rights_provider
-    now = datetime.now(UTC)
-    rights_history = (
-        SourceRegistryEntry.discover(
-            source_id=provider,
-            publisher="Fixture",
-            endpoint_url="https://example.invalid/source-pinned-bars",
-            access_method="GET",
-            auth_scope="synthetic fixture",
-            budget=SourceBudget(
-                window=timedelta(hours=1),
-                max_requests=100,
-                max_bytes=1024,
-                max_cost=Decimal("0"),
-                cost_unit="USD",
-            ),
-            actor_id="fixture-operator",
-            at=now - timedelta(minutes=3),
-            reason="Đăng ký nguồn synthetic phục vụ kiểm thử WP06.",
-        )
-        .transition(
-            policy_id=f"{provider}:source-pinned-pending",
-            state=SourcePolicyState.RIGHTS_PENDING,
-            actor_id="fixture-operator",
-            at=now - timedelta(minutes=2),
-            reason="Đang xác minh quyền dùng dữ liệu fixture.",
-        )
-        .transition(
-            policy_id=f"{provider}:source-pinned-training",
-            state=SourcePolicyState.VERIFIED,
-            actor_id="fixture-operator",
-            at=now - timedelta(minutes=1),
-            reason="Chỉ cấp TRAINING cho dữ liệu synthetic của kiểm thử.",
-            allowed_purposes=frozenset({SourceUsePurpose.TRAINING}),
-            evidence_ref="https://example.invalid/source-pinned-training-fixture",
-            reviewed_at=now - timedelta(minutes=1),
-            valid_until=now + timedelta(hours=1),
-            approved_by="fixture-reviewer",
-        )
-    )
-    for revision in rights_history.revisions:
-        async with UnitOfWork(sessions, workspace_id=WORKSPACE_ID) as uow:
-            await SourceRegistryRepository(uow.session).append_revision(
-                workspace_id=WORKSPACE_ID, revision=revision
-            )
-        async with UnitOfWork(sessions, workspace_id=WORKSPACE_ID) as uow:
-            await SourceRegistryRepository(uow.session).finalize_policy(
-                workspace_id=WORKSPACE_ID,
-                source_id=provider,
-                policy_id=revision.policy.policy_id,
-            )
-
     if scorer_seed:
         start = bundle.evaluation_start
         split_bounds = [start + timedelta(hours=offset) for offset in (1, 60, 150, 240)]
+        test_candidate_count = sum(
+            item.candidate_id is not None
+            for item in replay.opportunities
+            if split_bounds[2] <= item.decision_at < split_bounds[3]
+        )
+        if test_candidate_count != 9:
+            raise AssertionError("QA TEST fold phải có đúng 9 outcome source-linked.")
         await engine.dispose()
         return {
             "workspace_id": str(WORKSPACE_ID),
@@ -347,6 +383,8 @@ async def run_probe(*, scorer_seed: bool = False) -> dict[str, object]:
             "bars": len(identity_ids),
             "linked_outcomes": linked_outcomes,
             "opportunities": len(replay.opportunities),
+            "qa_provider": CRYPIDIAN_FIRST_PARTY_QA,
+            "test_candidate_count": test_candidate_count,
             "expected_test_inventory": {
                 hashlib.sha256(item.event_id.encode()).hexdigest(): {
                     "candidate_id_hash": item.candidate_id,

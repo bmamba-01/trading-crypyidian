@@ -260,6 +260,118 @@ def test_trainer_worker_requires_a_workspace_and_rejects_it_for_other_roles() ->
         )
 
 
+def test_scorer_evaluation_policy_uses_versioned_conservative_defaults() -> None:
+    settings = AppSettings()
+    policy = settings.scorer_test_evaluation_policy()
+
+    assert policy.policy_version == "wp06-scorer-test-v1"
+    assert policy.minimum_sample_count == 1_000
+    assert policy.minimum_class_support == 100
+    assert policy.maximum_calibration_error == 0.05
+    assert policy.maximum_log_loss_regression == 0.01
+    assert policy.maximum_brier_regression == 0.01
+    assert policy.minimum_coverage == 0.80
+    assert policy.minimum_candidate_retention == 0.20
+    assert policy.maximum_false_veto_rate == 0.10
+    assert policy.approve_probability_threshold == 0.60
+    assert policy.minimum_confidence == 0.55
+    assert policy.reliability_bin_count == 10
+    assert policy.maximum_standardized_feature_deviation == 6.0
+    assert policy.runtime_inference_timeout_ms == 100
+
+
+def test_scorer_evaluation_policy_reads_all_versioned_environment_flags(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = {
+        "TRADING_BOT_SCORER_TEST_POLICY_VERSION": "wp06-scorer-test-canary-v2",
+        "TRADING_BOT_SCORER_TEST_POLICY_MINIMUM_SAMPLE_COUNT": "1200",
+        "TRADING_BOT_SCORER_TEST_POLICY_MINIMUM_CLASS_SUPPORT": "120",
+        "TRADING_BOT_SCORER_TEST_POLICY_MAXIMUM_CALIBRATION_ERROR": "0.04",
+        "TRADING_BOT_SCORER_TEST_POLICY_MAXIMUM_LOG_LOSS_REGRESSION": "0.02",
+        "TRADING_BOT_SCORER_TEST_POLICY_MAXIMUM_BRIER_REGRESSION": "0.015",
+        "TRADING_BOT_SCORER_TEST_POLICY_MINIMUM_COVERAGE": "0.85",
+        "TRADING_BOT_SCORER_TEST_POLICY_MINIMUM_CANDIDATE_RETENTION": "0.25",
+        "TRADING_BOT_SCORER_TEST_POLICY_MAXIMUM_FALSE_VETO_RATE": "0.08",
+        "TRADING_BOT_SCORER_TEST_POLICY_APPROVE_PROBABILITY_THRESHOLD": "0.62",
+        "TRADING_BOT_SCORER_TEST_POLICY_MINIMUM_CONFIDENCE": "0.56",
+        "TRADING_BOT_SCORER_TEST_POLICY_RELIABILITY_BIN_COUNT": "12",
+        "TRADING_BOT_SCORER_TEST_POLICY_MAXIMUM_STANDARDIZED_FEATURE_DEVIATION": "7.5",
+        "TRADING_BOT_SCORER_TEST_POLICY_RUNTIME_INFERENCE_TIMEOUT_MS": "250",
+    }
+    for name, value in values.items():
+        monkeypatch.setenv(name, value)
+
+    policy = AppSettings().scorer_test_evaluation_policy()
+
+    assert policy.policy_version == "wp06-scorer-test-canary-v2"
+    assert policy.minimum_sample_count == 1_200
+    assert policy.minimum_class_support == 120
+    assert policy.maximum_calibration_error == 0.04
+    assert policy.maximum_log_loss_regression == 0.02
+    assert policy.maximum_brier_regression == 0.015
+    assert policy.minimum_coverage == 0.85
+    assert policy.minimum_candidate_retention == 0.25
+    assert policy.maximum_false_veto_rate == 0.08
+    assert policy.approve_probability_threshold == 0.62
+    assert policy.minimum_confidence == 0.56
+    assert policy.reliability_bin_count == 12
+    assert policy.maximum_standardized_feature_deviation == 7.5
+    assert policy.runtime_inference_timeout_ms == 250
+
+
+def test_scorer_evaluation_policy_rejects_impossible_sample_support() -> None:
+    with pytest.raises(ValidationError, match="minimum_sample_count"):
+        AppSettings(
+            scorer_test_policy_minimum_sample_count=200,
+            scorer_test_policy_minimum_class_support=100,
+        )
+
+
+def test_scorer_evaluation_policy_environment_change_changes_immutable_hash(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    default_hash = AppSettings().scorer_test_evaluation_policy().policy_hash
+    monkeypatch.setenv(
+        "TRADING_BOT_SCORER_TEST_POLICY_MAXIMUM_STANDARDIZED_FEATURE_DEVIATION", "6.1"
+    )
+
+    changed_hash = AppSettings().scorer_test_evaluation_policy().policy_hash
+
+    assert changed_hash != default_hash
+
+
+def test_scorer_evaluation_policy_rejects_out_of_range_environment_flags(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TRADING_BOT_SCORER_TEST_POLICY_MAXIMUM_FALSE_VETO_RATE", "1.01")
+
+    with pytest.raises(ValidationError, match="scorer_test_policy_maximum_false_veto_rate"):
+        AppSettings()
+
+
+def test_scorer_evaluation_policy_rejects_invalid_ood_distance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "TRADING_BOT_SCORER_TEST_POLICY_MAXIMUM_STANDARDIZED_FEATURE_DEVIATION", "nan"
+    )
+
+    with pytest.raises(
+        ValidationError, match="scorer_test_policy_maximum_standardized_feature_deviation"
+    ):
+        AppSettings()
+
+
+def test_scorer_evaluation_policy_rejects_nonpositive_runtime_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TRADING_BOT_SCORER_TEST_POLICY_RUNTIME_INFERENCE_TIMEOUT_MS", "0")
+
+    with pytest.raises(ValidationError, match="scorer_test_policy_runtime_inference_timeout_ms"):
+        AppSettings()
+
+
 def test_learning_shadow_observer_requires_its_dedicated_paper_role() -> None:
     workspace_id = UUID("66666666-6666-4666-8666-666666666666")
     settings = AppSettings(

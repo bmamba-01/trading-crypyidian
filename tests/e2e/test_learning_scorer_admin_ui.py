@@ -5,10 +5,9 @@ from __future__ import annotations
 import socket
 import threading
 import time
-from dataclasses import asdict
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
-from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import uvicorn
@@ -80,6 +79,7 @@ class _ScorerDeploymentFacade:
         self,
         *,
         mode: ScorerDeploymentMode,
+        evaluation_report_id: UUID | None = None,
         expected_pointer_version: int,
         expected_deployment_revision: int,
         idempotency_key: UUID,
@@ -91,6 +91,7 @@ class _ScorerDeploymentFacade:
         self.calls.append(
             {
                 "mode": mode,
+                "evaluation_report_id": evaluation_report_id,
                 "expected_pointer_version": expected_pointer_version,
                 "expected_deployment_revision": expected_deployment_revision,
                 "idempotency_key": idempotency_key,
@@ -154,6 +155,7 @@ class _ScorerReportReadModel:
 
 def _report_summary() -> ScorerReportSummary:
     return ScorerReportSummary(
+        evaluation_report_id=UUID("f1e2d3c4-b5a6-4798-8c7d-6e5f4a3b2c10"),
         created_at=datetime(2026, 11, 10, 8, 30, tzinfo=UTC),
         evaluated_at=datetime(2026, 11, 10, 8, 25, tzinfo=UTC),
         status="INCONCLUSIVE",
@@ -463,10 +465,10 @@ def test_eligible_mode_request_binds_displayed_report_and_surfaces_server_gate(
     browser_page: Page,
 ) -> None:
     report_id = UUID("ad2d5800-f3e7-4e57-9818-3a64ae69a9a6")
-    base_summary = _report_summary()
-    summary_with_id = SimpleNamespace(
-        **{**asdict(base_summary), "status": "ACCEPTED_SHADOW_ONLY"},
+    summary_with_id = replace(
+        _report_summary(),
         evaluation_report_id=report_id,
+        status="ACCEPTED_SHADOW_ONLY",
     )
     (
         app_url,

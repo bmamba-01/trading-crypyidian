@@ -179,6 +179,61 @@ def test_each_process_has_a_separate_database_identity() -> None:
         assert f"database_{service_name.replace('-', '_')}_password" in str(service["secrets"])
 
 
+def test_scorer_policy_is_shared_by_admin_runtime_evaluator_and_market_worker() -> None:
+    repository_root = Path(__file__).parents[2]
+    prepare_local_secrets(repository_root)
+    policy_values = {
+        "TRADING_BOT_SCORER_TEST_POLICY_VERSION": "wp06-scorer-policy-compose-test",
+        "TRADING_BOT_SCORER_TEST_POLICY_MINIMUM_SAMPLE_COUNT": "1200",
+        "TRADING_BOT_SCORER_TEST_POLICY_MINIMUM_CLASS_SUPPORT": "100",
+        "TRADING_BOT_SCORER_TEST_POLICY_MAXIMUM_CALIBRATION_ERROR": "0.05",
+        "TRADING_BOT_SCORER_TEST_POLICY_MAXIMUM_LOG_LOSS_REGRESSION": "0.01",
+        "TRADING_BOT_SCORER_TEST_POLICY_MAXIMUM_BRIER_REGRESSION": "0.01",
+        "TRADING_BOT_SCORER_TEST_POLICY_MINIMUM_COVERAGE": "0.80",
+        "TRADING_BOT_SCORER_TEST_POLICY_MINIMUM_CANDIDATE_RETENTION": "0.20",
+        "TRADING_BOT_SCORER_TEST_POLICY_MAXIMUM_FALSE_VETO_RATE": "0.10",
+        "TRADING_BOT_SCORER_TEST_POLICY_APPROVE_PROBABILITY_THRESHOLD": "0.60",
+        "TRADING_BOT_SCORER_TEST_POLICY_MINIMUM_CONFIDENCE": "0.55",
+        "TRADING_BOT_SCORER_TEST_POLICY_RELIABILITY_BIN_COUNT": "10",
+        "TRADING_BOT_SCORER_TEST_POLICY_MAXIMUM_STANDARDIZED_FEATURE_DEVIATION": "6.0",
+        "TRADING_BOT_SCORER_TEST_POLICY_RUNTIME_INFERENCE_TIMEOUT_MS": "100",
+    }
+    environment = os.environ.copy()
+    environment.update(policy_values)
+    result = subprocess.run(
+        [
+            "docker",
+            "compose",
+            "--profile",
+            "*",
+            "-f",
+            "compose.yaml",
+            "config",
+            "--format",
+            "json",
+        ],
+        check=True,
+        capture_output=True,
+        cwd=repository_root,
+        env=environment,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    services = json.loads(result.stdout)["services"]
+
+    for service_name in (
+        "admin-web",
+        "trading-runtime",
+        "learning-evaluator",
+        "market-signal-worker",
+    ):
+        service_environment = services[service_name]["environment"]
+        assert {key: service_environment.get(key) for key in policy_values} == policy_values, (
+            f"{service_name} phải nhận chính xác policy scorer đã override qua ENV."
+        )
+
+
 def test_compose_services_run_without_root_and_have_healthchecks() -> None:
     repository_root = Path(__file__).parents[2]
     prepare_local_secrets(repository_root)

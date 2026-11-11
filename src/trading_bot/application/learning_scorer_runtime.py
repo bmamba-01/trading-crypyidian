@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import math
 import re
 from dataclasses import dataclass
@@ -138,6 +139,53 @@ class LearningScorerRuntimeResult:
         for _, value in self.class_probabilities:
             if not math.isfinite(value) or not 0.0 <= value <= 1.0:
                 raise ValueError("Xác suất lớp phải hữu hạn trong [0, 1].")
+
+
+def feature_vector_is_out_of_distribution(
+    vector: LearningFeatureVector,
+    base_artifact: LearningCpuArtifact,
+    policy: ScorerTestEvaluationPolicy,
+) -> bool:
+    """Fail-closed nếu schema/statistics lỗi hoặc feature vượt ngưỡng đã ghim."""
+    if (
+        type(vector) is not LearningFeatureVector
+        or type(base_artifact) is not LearningCpuArtifact
+        or type(policy) is not ScorerTestEvaluationPolicy
+    ):
+        return True
+    means = base_artifact.feature_means
+    scales = base_artifact.feature_scales
+    features = vector.features
+    if (
+        not features
+        or tuple(feature.key for feature in features) != base_artifact.feature_names
+        or len(means) != len(features)
+        or len(scales) != len(features)
+    ):
+        return True
+    threshold = policy.maximum_standardized_feature_deviation
+    if (
+        isinstance(threshold, bool)
+        or not isinstance(threshold, (int, float))
+        or not math.isfinite(threshold)
+        or threshold <= 0
+    ):
+        return True
+    for feature, mean, scale in zip(features, means, scales, strict=True):
+        if (
+            any(
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+                for value in (feature.value, mean, scale)
+            )
+            or scale <= 0
+        ):
+            return True
+        deviation = abs(float(feature.value) - float(mean)) / float(scale)
+        if not math.isfinite(deviation) or deviation > float(threshold):
+            return True
+    return False
 
 
 def score_runtime_candidate(
@@ -321,6 +369,31 @@ def score_runtime_candidate(
             else "POSITIVE_PROBABILITY_BELOW_THRESHOLD"
         ),
     )
+
+
+async def score_runtime_candidate_with_deadline(
+    *,
+    request: LearningScorerRuntimeRequest,
+    base_artifact: LearningCpuArtifact,
+    scorer_artifact: LearningScorerArtifact,
+    policy: ScorerTestEvaluationPolicy,
+) -> LearningScorerRuntimeResult:
+    """Chấm trong thread có deadline policy; timeout trả ABSTAIN và không ghi side effect."""
+    if type(policy) is not ScorerTestEvaluationPolicy:
+        raise ValueError("policy phải là ScorerTestEvaluationPolicy đã ghim.")
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(
+                score_runtime_candidate,
+                request=request,
+                base_artifact=base_artifact,
+                scorer_artifact=scorer_artifact,
+                policy=policy,
+            ),
+            timeout=policy.runtime_inference_timeout_ms / 1000,
+        )
+    except TimeoutError:
+        return _abstain(request, scorer_artifact, base_artifact, policy, "RUNTIME_TIMEOUT")
 
 
 def _abstain(

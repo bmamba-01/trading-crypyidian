@@ -864,7 +864,12 @@ async def test_opportunity_proof_exact_inventory_counts_rights_and_retry(opportu
     assert "fold" not in proof.canonical_json
     assert not {"values", "features", "labels", "bars"} & json.loads(proof.canonical_json).keys()
     session = opportunity_persisted[0]
-    assert session.events[:3] == ["source_lock", "training_rights", "trial_lock"]
+    assert session.events[:4] == [
+        "source_lock",
+        "source_lock",
+        "training_rights",
+        "trial_lock",
+    ]
     rights = [row for row in session.rows if type(row).__name__ == "CandidateTrainingRightsRecord"]
     assert len(rights) == 2
     assert all(row.purpose == "training" for row in rights)
@@ -1041,7 +1046,11 @@ async def test_opportunity_rights_denial_precedes_trial_lock_and_source_scan(opp
     opportunity_persisted[2].denied = True
     with pytest.raises(CandidateUniverseProofError):
         await build_opportunity(opportunity_persisted)
-    assert opportunity_persisted[0].events == ["source_lock", "training_rights"]
+    assert opportunity_persisted[0].events == [
+        "source_lock",
+        "source_lock",
+        "training_rights",
+    ]
 
 
 def test_proof_cli_has_closed_trade_default_and_enum_selector():

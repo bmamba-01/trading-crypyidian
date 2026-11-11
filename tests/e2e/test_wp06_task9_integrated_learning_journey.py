@@ -270,6 +270,7 @@ def test_wp06_task9_integrated_learning_journey_uses_real_training_and_paper_lin
         assert scorer_proof["base_v1_update_denied"] is True
         assert scorer_proof["denormalized_tampering_rejected"] is True
         assert scorer_proof["raw_outcome_and_opportunity_reads_denied"] is True
+        state.update(scorer_proof)
 
         scorer_retry = run_probe(
             "trainer-worker", "verify-scorer-repository-retries", state_value=state
@@ -328,7 +329,30 @@ def test_wp06_task9_integrated_learning_journey_uses_real_training_and_paper_lin
         assert persisted_decisions["decision_count"] >= 3
         assert persisted_decisions["snapshot_count"] >= 3
 
-        before = run_probe("migrator", "execution-snapshot", state_value=state)
+        before_gate = run_probe("migrator", "execution-snapshot", state_value=state)
+        scorer_gate = run_probe("admin-web", "verify-scorer-active-mode-gate", state_value=state)
+        assert scorer_gate == {
+            "rollback_restored_database_state": True,
+            "disabled_retry_is_idempotent": True,
+            "changed_disabled_intent_conflicts": True,
+            "shadow_denied": True,
+            "paper_gate_denied": True,
+            "active_mode_denials_are_side_effect_free": True,
+            "diagnostic_report_is_incomplete": True,
+            "diagnostic_report_rejected_by_authoritative_gateway": True,
+            "score_event_count_unchanged": True,
+        }
+        after_gate = run_probe("migrator", "execution-snapshot", state_value=state)
+        assert after_gate["order_counts"] == before_gate["order_counts"]
+        assert after_gate["training_job_count"] == before_gate["training_job_count"]
+        assert after_gate["paper_decision_count"] == before_gate["paper_decision_count"]
+        assert after_gate["score_event_count"] == before_gate["score_event_count"]
+        assert after_gate["scoring_deployment_event_count"] == (
+            before_gate["scoring_deployment_event_count"] + 1
+        )
+        assert after_gate["scoring_deployment_pointer"]["mode"] == "DISABLED"
+        assert after_gate["scoring_deployment_pointer"]["revision"] == 1
+        before = after_gate
         state["initial_execution_snapshot"] = before
         observed, activation, pointer_lock_wait = run_observer_then_activate_challenger()
         state["raced_pointer_version"] = activation["pointer_version"]
@@ -441,7 +465,7 @@ def test_wp06_task9_integrated_learning_journey_uses_real_training_and_paper_lin
         )
         migration_output = migration_probe.stdout + migration_probe.stderr
         assert migration_probe.returncode != 0
-        assert "WP06_SCORER_ARTIFACT_DOWNGRADE_REQUIRES_EMPTY_TABLE" in migration_output
+        assert "WP06_SCORING_DEPLOYMENT_POPULATED_DOWNGRADE_DENIED" in migration_output
         migrate("check")
         heads = migrate("heads")
         assert heads.stdout.count("(head)") == 1, heads.stdout

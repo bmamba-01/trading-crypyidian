@@ -96,6 +96,10 @@ from trading_bot.application.paper_runtime_bootstrap import (
     PaperRuntimeBootstrapService,
     new_runtime_owner_id,
 )
+from trading_bot.application.scorer_runtime_policy import (
+    ConfiguredScorerRuntimePolicyProvider,
+    ScorerRuntimePolicyProvider,
+)
 from trading_bot.application.source_policy_admin import (
     SourcePolicyAdminRepository,
     SourcePolicyAdminService,
@@ -186,6 +190,7 @@ def create_app(
     """Tạo ứng dụng mà không kết nối mạng hay tải credential khi import."""
     app_settings = settings or AppSettings()
     admin_web_role = app_settings.process_role == "admin-web"
+    scorer_policy_provider = _configured_scorer_policy_provider(app_settings)
 
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
@@ -197,6 +202,7 @@ def create_app(
             if engine is not None:
                 active_session_factory = create_session_factory(engine)
         application.state.database_probe = database_probe
+        application.state.scorer_runtime_policy_provider = scorer_policy_provider
         if database_probe is None and isinstance(active_session_factory, async_sessionmaker):
             probe_sessions = active_session_factory
 
@@ -204,6 +210,7 @@ def create_app(
                 return await probe_database(probe_sessions)
 
             application.state.database_probe = _default_probe
+        application.state.scorer_runtime_policy_provider = scorer_policy_provider
         if (
             active_secret_provider is None
             and app_settings.mfa_encryption_key_file
@@ -287,7 +294,10 @@ def create_app(
                 else None
             )
             application.state.learning_scoring_deployment_service = (
-                ScorerDeploymentService(active_session_factory)
+                ScorerDeploymentService(
+                    active_session_factory,
+                    policy_provider=scorer_policy_provider,
+                )
                 if active_session_factory is not None
                 else None
             )
@@ -415,6 +425,7 @@ def create_app(
                         kwargs["session_factory"],
                         max_observation_age=max_age,
                         signal_validity=max_age,
+                        scorer_policy_provider=scorer_policy_provider,
                     )
                     return MarketSignalProducerWorker(
                         scanner,
@@ -684,6 +695,15 @@ def _build_telegram_sender(settings: AppSettings, *, required: bool) -> Any:
     return TelegramBotApiSender(token)
 
 
+def _configured_scorer_policy_provider(
+    settings: object,
+) -> ConfiguredScorerRuntimePolicyProvider | None:
+    """Tạo provider từ AppSettings; thiếu policy thì giữ runtime fail-closed."""
+    if not callable(getattr(settings, "scorer_test_evaluation_policy", None)):
+        return None
+    return ConfiguredScorerRuntimePolicyProvider.from_settings(settings)
+
+
 def _build_telegram_webhook(
     settings: AppSettings,
     sessions: async_sessionmaker[AsyncSession] | None,
@@ -899,6 +919,7 @@ async def _wire_paper_runtime(
         sessions=session_factory,
         workspace_id=result.workspace_id,
         application=paper_application,
+        scorer_policy_provider=_configured_scorer_policy_provider(app_settings),
     )
     supervisor = supervisor_builder(
         registry=registry,
@@ -917,7 +938,12 @@ async def _wire_paper_runtime(
 
 
 def _runtime_job_processor(
-    *, context_provider: Any, sessions: Any, workspace_id: Any, application: Any
+    *,
+    context_provider: Any,
+    sessions: Any,
+    workspace_id: Any,
+    application: Any,
+    scorer_policy_provider: ScorerRuntimePolicyProvider | None = None,
 ) -> Callable[..., Any] | None:
     """Nối worker job khi context provider có thể dựng snapshot decision đã lưu."""
     if sessions is None or not callable(getattr(context_provider, "snapshot_for", None)):
@@ -925,6 +951,9 @@ def _runtime_job_processor(
     decision_snapshot_provider = context_provider
     from trading_bot.adapters.database.repositories.bot_decisions import (
         PostgresSignalDecisionStore,
+    )
+    from trading_bot.adapters.database.repositories.learning_scorer_runtime_committer import (
+        PostgresScorerRuntimeCommitter,
     )
     from trading_bot.application.bot_decision_contexts import (
         EffectiveBotDecisionContextProvider,
@@ -946,7 +975,10 @@ def _runtime_job_processor(
             accounts=application.runtime_account,
         ),
     )
-    store = PostgresSignalDecisionStore(sessions)
+    store = PostgresSignalDecisionStore(
+        sessions,
+        score_candidate=PostgresScorerRuntimeCommitter(scorer_policy_provider),
+    )
     dispatcher = BotEvidenceDispatcher(
         store,
         strategies=StrategyRegistry(),

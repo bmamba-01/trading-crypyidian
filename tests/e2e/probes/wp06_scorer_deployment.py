@@ -437,13 +437,14 @@ async def _probe() -> dict[str, object]:
         "DELETE": False,
     }
     assert privileges["crypidian_trading_runtime"]["learning_scoring_deployment_event"] == {
-        "SELECT": True,
+        # C4 runtime chỉ đọc deployment qua SECURITY DEFINER resolver.
+        "SELECT": False,
         "INSERT": False,
         "UPDATE": False,
         "DELETE": False,
     }
     assert privileges["crypidian_trading_runtime"]["learning_scoring_deployment_pointer"] == {
-        "SELECT": True,
+        "SELECT": False,
         "INSERT": False,
         "UPDATE": False,
         "DELETE": False,
@@ -524,7 +525,7 @@ async def _probe() -> dict[str, object]:
                 is False
             )
 
-        worker_projections = {
+        worker_forbidden_projections = {
             "learning_scoring_deployment_pointer": {
                 "workspace_id",
                 "event_id",
@@ -542,7 +543,7 @@ async def _probe() -> dict[str, object]:
             },
             "learning_model_active_pointer": {"workspace_id", "version"},
         }
-        for table, columns in worker_projections.items():
+        for table, columns in worker_forbidden_projections.items():
             for column in columns:
                 assert (
                     await connection.scalar(
@@ -556,7 +557,7 @@ async def _probe() -> dict[str, object]:
                             "column_name": column,
                         },
                     )
-                    is True
+                    is False
                 )
         for table, columns in {
             "learning_scoring_deployment_event": {"reason", "canonical_event", "event_payload"},
@@ -590,27 +591,20 @@ async def _probe() -> dict[str, object]:
                 text("SELECT set_config('app.bot_id', :bot_id, true)"),
                 {"bot_id": str(uuid4())},
             )
-            await connection.execute(
-                text(
-                    "SELECT workspace_id,event_id,revision,active_pointer_version,mode "
-                    "FROM public.learning_scoring_deployment_pointer "
-                    "WHERE workspace_id=:workspace_id"
-                ),
-                {"workspace_id": workspace_id},
+            await _assert_permission_denied(
+                connection,
+                "SELECT event_id,mode FROM public.learning_scoring_deployment_pointer LIMIT 1",
+                {},
             )
-            await connection.execute(
-                text(
-                    "SELECT workspace_id,id,mode,revision,scorer_artifact_id,evaluation_report_id "
-                    "FROM public.learning_scoring_deployment_event WHERE workspace_id=:workspace_id"
-                ),
-                {"workspace_id": workspace_id},
+            await _assert_permission_denied(
+                connection,
+                "SELECT id,mode FROM public.learning_scoring_deployment_event LIMIT 1",
+                {},
             )
-            await connection.execute(
-                text(
-                    "SELECT workspace_id,version FROM public.learning_model_active_pointer "
-                    "WHERE workspace_id=:workspace_id"
-                ),
-                {"workspace_id": workspace_id},
+            await _assert_permission_denied(
+                connection,
+                "SELECT version FROM public.learning_model_active_pointer LIMIT 1",
+                {},
             )
             await connection.execute(
                 text(
@@ -849,7 +843,7 @@ async def _probe() -> dict[str, object]:
     try:
         await facade.load_active_scoring_deployment()
     except Exception as error:
-        runtime_rejects_unverified_active = "rights gateway" in str(error)
+        runtime_rejects_unverified_active = "WP06_SCORER_RUNTIME_TARGET_EVENT_STALE" in str(error)
     disabled_after_stale_read = await facade.set_mode(
         mode=ScorerDeploymentMode.DISABLED,
         expected_pointer_version=stale_active_state.active_pointer_version,
@@ -910,7 +904,7 @@ async def _probe() -> dict[str, object]:
         workspace_id=workspace_id,
         membership_id=membership_id,
         event=shadow_event,
-        marker="WP06_SCORING_DEPLOYMENT_RIGHTS_GATE_UNAVAILABLE",
+        marker="WP06_SCORER_RUNTIME_TARGET_POINTER_STALE",
     )
 
     bad_cas_event = ScorerDeploymentEvent(

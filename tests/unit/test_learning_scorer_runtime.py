@@ -4,6 +4,7 @@ import hashlib
 import json
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from threading import Event
 from uuid import UUID, uuid4
 
 import pytest
@@ -214,6 +215,8 @@ def _policy(**overrides: float) -> ScorerTestEvaluationPolicy:
         "approve_probability_threshold": 0.7,
         "minimum_confidence": 0.6,
         "reliability_bin_count": 3,
+        "maximum_standardized_feature_deviation": 6.0,
+        "runtime_inference_timeout_ms": 100,
     }
     values.update(overrides)
     return ScorerTestEvaluationPolicy(**values)  # type: ignore[arg-type]
@@ -408,3 +411,104 @@ def test_runtime_scorer_abstains_for_cross_lineage_artifacts(mismatch: str) -> N
 
     assert result.decision is RuntimeScorerDecision.ABSTAIN
     assert result.reason_code == expected_reason
+
+
+def test_runtime_ood_gate_uses_policy_bound_standardized_feature_deviation() -> None:
+    from trading_bot.application.learning_scorer_runtime import (
+        feature_vector_is_out_of_distribution,
+    )
+
+    policy = _policy(maximum_standardized_feature_deviation=6.0)
+    vector = _vector(value=6.0)
+    base = _base_artifact(vector)
+
+    assert not feature_vector_is_out_of_distribution(vector, base, policy)
+    assert feature_vector_is_out_of_distribution(_vector(value=6.000001), base, policy)
+    assert not feature_vector_is_out_of_distribution(_vector(value=-6.0), base, policy)
+    assert feature_vector_is_out_of_distribution(_vector(value=-6.000001), base, policy)
+
+
+def test_runtime_ood_gate_abstains_on_invalid_feature_schema_or_statistics() -> None:
+    from trading_bot.application.learning_scorer_runtime import (
+        feature_vector_is_out_of_distribution,
+    )
+
+    policy = _policy()
+    vector = _vector()
+    base = _base_artifact(vector)
+
+    assert feature_vector_is_out_of_distribution(
+        vector, replace(base, feature_names=("other:feature",)), policy
+    )
+    assert feature_vector_is_out_of_distribution(
+        vector, replace(base, feature_means=(float("nan"),)), policy
+    )
+    assert feature_vector_is_out_of_distribution(
+        vector, replace(base, feature_scales=(0.0,)), policy
+    )
+
+
+def test_runtime_ood_threshold_changes_policy_hash() -> None:
+    assert (
+        _policy(maximum_standardized_feature_deviation=6.0).policy_hash
+        != _policy(maximum_standardized_feature_deviation=5.0).policy_hash
+    )
+
+
+def test_runtime_policy_rejects_nonpositive_standardized_deviation_threshold() -> None:
+    with pytest.raises(ValueError, match="maximum_standardized_feature_deviation phải lớn hơn 0"):
+        _policy(maximum_standardized_feature_deviation=0.0)
+    with pytest.raises(ValueError, match="runtime_inference_timeout_ms phải là số nguyên dương"):
+        _policy(runtime_inference_timeout_ms=0)
+
+
+def test_runtime_inference_timeout_is_bound_into_policy_hash() -> None:
+    assert (
+        _policy(runtime_inference_timeout_ms=100).policy_hash
+        != _policy(runtime_inference_timeout_ms=101).policy_hash
+    )
+
+
+@pytest.mark.asyncio
+async def test_runtime_inference_timeout_returns_abstain_without_waiting_for_worker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import time
+
+    from trading_bot.application import learning_scorer_runtime as runtime_module
+    from trading_bot.application.learning_scorer_runtime import (
+        LearningScorerRuntimeRequest,
+        RuntimeScorerDecision,
+    )
+
+    vector = _vector()
+    base = _base_artifact(vector)
+    scorer = _scorer_artifact(base, vector)
+    original_score = runtime_module.score_runtime_candidate
+    worker_finished = Event()
+
+    def slow_score(**kwargs):
+        try:
+            time.sleep(0.2)
+            return original_score(**kwargs)
+        finally:
+            worker_finished.set()
+
+    monkeypatch.setattr(runtime_module, "score_runtime_candidate", slow_score)
+    request = LearningScorerRuntimeRequest(
+        candidate_id="a" * 64,
+        vector=vector,
+        source_rights_eligible=True,
+        source_rights_hash="b" * 64,
+        is_out_of_distribution=False,
+    )
+    result = await runtime_module.score_runtime_candidate_with_deadline(
+        request=request,
+        base_artifact=base,
+        scorer_artifact=scorer,
+        policy=_policy(runtime_inference_timeout_ms=10),
+    )
+
+    assert not worker_finished.is_set()
+    assert result.decision is RuntimeScorerDecision.ABSTAIN
+    assert result.reason_code == "RUNTIME_TIMEOUT"

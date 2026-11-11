@@ -1,124 +1,227 @@
-"""Fail-closed scorer resolver used while a bot decision is being committed."""
+"""Resolve scorer C4 và ghim score event cùng BotDecision trong một giao dịch."""
 
 from __future__ import annotations
 
-from sqlalchemy import select
+import hashlib
+import json
+import time
+from dataclasses import fields
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from trading_bot.adapters.database.models import LearningScoringDeploymentEventRecord
 from trading_bot.adapters.database.repositories.bot_decisions import BotDecisionScoringCommit
-from trading_bot.adapters.database.repositories.learning_scorer_current_rights import (
-    LearningScorerCurrentRightsRepository,
+from trading_bot.adapters.database.repositories.learning_scorer_runtime_targets import (
+    PostgresScorerRuntimeTargetRepository,
 )
 from trading_bot.adapters.database.repositories.learning_scoring_deployments import (
-    LearningScoringDeploymentRepository,
     ScorerDeploymentRightsUnavailable,
 )
 from trading_bot.application.bot_dispatcher import (
     BotDecision,
     BotDecisionEvaluation,
     BotDecisionJob,
+    BotDecisionStatus,
+)
+from trading_bot.application.learning_scorer_runtime import (
+    LearningScorerRuntimeRequest,
+    LearningScorerRuntimeResult,
+    RuntimeScorerDecision,
+    feature_vector_is_out_of_distribution,
+    score_runtime_candidate_with_deadline,
+)
+from trading_bot.application.scorer_runtime_policy import ScorerRuntimePolicyProvider
+from trading_bot.domain.learning.score_event import (
+    LearningScoreDecision,
+    LearningScoreEvent,
 )
 from trading_bot.domain.learning.scoring_deployment import ScorerDeploymentMode
 
 
 class PostgresScorerRuntimeCommitter:
-    """Revalidate active rights under the decision UoW and keep DISABLED inert.
+    """Ghim target/runtime score chính xác hoặc từ chối toàn bộ decision commit."""
 
-    C4 currently has no approved active report or runtime artifact/policy loader. An active
-    pointer is therefore checked through the authoritative current-rights gateway and then
-    rejected; no caller metadata can manufacture an approval or score event.
-    """
+    def __init__(self, policy_provider: ScorerRuntimePolicyProvider | None = None) -> None:
+        self._policy_provider = policy_provider
 
     async def __call__(
         self,
         session: AsyncSession,
         job: BotDecisionJob,
         evaluation: BotDecisionEvaluation,
-        _incumbent: BotDecision,
+        incumbent: BotDecision,
     ) -> BotDecisionScoringCommit | None:
-        deployment = await LearningScoringDeploymentRepository(
-            session
-        ).load_admin_scoring_deployment(job.workspace_id)
-        if deployment.mode is ScorerDeploymentMode.DISABLED:
+        resolved = await PostgresScorerRuntimeTargetRepository(session).resolve_active(
+            workspace_id=job.workspace_id
+        )
+        if resolved is None:
             return None
-        if deployment.deployment_event_id is None:
+        if self._policy_provider is None:
             raise ScorerDeploymentRightsUnavailable(
-                "Active scorer pointer không có deployment event authoritative."
+                "Scorer rights gateway chưa nhận policy runtime đã cấu hình."
             )
-
-        event_result = await session.execute(
-            select(
-                LearningScoringDeploymentEventRecord.workspace_id,
-                LearningScoringDeploymentEventRecord.id,
-                LearningScoringDeploymentEventRecord.mode,
-                LearningScoringDeploymentEventRecord.revision,
-                LearningScoringDeploymentEventRecord.active_pointer_version,
-                LearningScoringDeploymentEventRecord.scorer_artifact_id,
-                LearningScoringDeploymentEventRecord.scorer_artifact_hash,
-                LearningScoringDeploymentEventRecord.evaluation_report_id,
-                LearningScoringDeploymentEventRecord.evaluation_report_hash,
-                LearningScoringDeploymentEventRecord.evaluation_status,
-                LearningScoringDeploymentEventRecord.proof_hash,
-                LearningScoringDeploymentEventRecord.candidate_completeness_verified,
-                LearningScoringDeploymentEventRecord.report_scope_hash,
-                LearningScoringDeploymentEventRecord.proof_scope_hash,
-                LearningScoringDeploymentEventRecord.policy_hash,
-            ).where(
-                LearningScoringDeploymentEventRecord.workspace_id == job.workspace_id,
-                LearningScoringDeploymentEventRecord.id == deployment.deployment_event_id,
-            )
-        )
-        event = event_result.mappings().one_or_none()
-        if (
-            event is None
-            or event["workspace_id"] != job.workspace_id
-            or event["mode"] != deployment.mode.value
-            or event["revision"] != deployment.deployment_revision
-            or event["active_pointer_version"] != deployment.active_pointer_version
-            or event["scorer_artifact_id"] is None
-            or event["evaluation_report_id"] is None
-        ):
-            raise ScorerDeploymentRightsUnavailable(
-                "Deployment scorer hoặc registry pointer không khớp projection hiện hành."
-            )
-
-        rights = await LearningScorerCurrentRightsRepository(session).verify_deployment_rights(
+        policy = self._policy_provider.get_policy(
             workspace_id=job.workspace_id,
-            scorer_artifact_id=event["scorer_artifact_id"],
-            evaluation_report_id=event["evaluation_report_id"],
+            policy_id=resolved.target.policy_id,
+            expected_policy_hash=resolved.target.policy_hash,
         )
-        mode_eligible = (
-            rights.shadow_eligible
-            if deployment.mode is ScorerDeploymentMode.SHADOW
-            else rights.paper_gate_eligible
-        )
-        if not mode_eligible:
-            raise ScorerDeploymentRightsUnavailable(
-                "Report scorer hoặc quyền nguồn hiện hành không cho phép mode đã bật."
-            )
         if (
-            event["scorer_artifact_hash"] != rights.artifact_hash
-            or event["evaluation_report_hash"] != rights.report_hash
-            or event["proof_hash"] != rights.proof_hash
-            or event["policy_hash"] != rights.policy_hash
-            or event["evaluation_status"] != rights.evaluation_status
-            or event["candidate_completeness_verified"] != rights.candidate_completeness_verified
-            or event["report_scope_hash"] != event["proof_scope_hash"]
+            policy is None
+            or policy.policy_version != resolved.target.policy_id
+            or policy.policy_hash != resolved.target.policy_hash
         ):
             raise ScorerDeploymentRightsUnavailable(
-                "Hash artifact/report/proof/policy hoặc scope trong deployment đã cũ."
+                "Scorer rights gateway không có đúng policy version/hash đã ghim trong report."
             )
         if evaluation.snapshot is None or evaluation.vector is None:
             raise ScorerDeploymentRightsUnavailable(
-                "Candidate không có vector canonical từ DecisionSnapshot strategy."
+                "Scorer candidate thiếu DecisionSnapshot hoặc vector strategy canonical."
+            )
+        if (
+            evaluation.candidate_id is None
+            or evaluation.candidate_id != incumbent.candidate_id
+            or evaluation.snapshot.snapshot_id != incumbent.decision_snapshot_id
+            or evaluation.vector.snapshot_id != evaluation.snapshot.snapshot_id
+            or evaluation.vector.workspace_id != job.workspace_id
+            or evaluation.vector.vector_hash == ""
+        ):
+            raise ScorerDeploymentRightsUnavailable(
+                "Scorer candidate không cùng snapshot/vector với BotDecision strategy."
             )
 
-        # Rights alone do not authenticate the runtime weights or policy. Until a repository
-        # loads and verifies those exact artifacts, fail closed and leave the job pending.
-        raise ScorerDeploymentRightsUnavailable(
-            "Runtime artifact/policy resolver chưa được triển khai; không ghi score event."
+        # Ngưỡng OOD thuộc policy hash; schema/statistics thiếu hoặc sai luôn đóng.
+        is_out_of_distribution = feature_vector_is_out_of_distribution(
+            evaluation.vector,
+            resolved.base_artifact,
+            policy,
         )
+        started = time.perf_counter()
+        result = await score_runtime_candidate_with_deadline(
+            request=LearningScorerRuntimeRequest(
+                candidate_id=evaluation.candidate_id,
+                vector=evaluation.vector,
+                source_rights_eligible=True,
+                source_rights_hash=resolved.source_rights_fingerprint,
+                is_out_of_distribution=is_out_of_distribution,
+            ),
+            base_artifact=resolved.base_artifact,
+            scorer_artifact=resolved.scorer_artifact,
+            policy=policy,
+        )
+        latency_ms = max(0, int((time.perf_counter() - started) * 1000))
+        final_decision = _final_decision(incumbent, resolved.mode, result)
+        vector = evaluation.vector
+        timeframes = tuple(
+            (item.timeframe, item.feature_snapshot_id) for item in vector.timeframe_lineage
+        )
+        source_digests = tuple(
+            (item.timeframe, item.source_event_digest) for item in vector.timeframe_lineage
+        )
+        candidate_json = incumbent.candidate_json
+        if candidate_json is None:
+            raise ScorerDeploymentRightsUnavailable(
+                "Scorer candidate không có payload strategy canonical."
+            )
+        target = resolved.target
+        if target.proof_id is None or target.proof_hash is None or target.proof_scope_hash is None:
+            raise ScorerDeploymentRightsUnavailable(
+                "Scorer rights gateway không trả proof TEST authoritative đầy đủ."
+            )
+        score_event = LearningScoreEvent.create(
+            workspace_id=job.workspace_id,
+            bot_id=job.bot_id,
+            bot_decision_id=incumbent.decision_id,
+            bot_decision_hash=final_decision.decision_hash,
+            incumbent_decision_hash=incumbent.decision_hash,
+            incumbent_status=incumbent.status.value,
+            final_status=final_decision.status.value,
+            candidate_id=evaluation.candidate_id,
+            candidate_hash=hashlib.sha256(candidate_json.encode("utf-8")).hexdigest(),
+            decision_snapshot_id=evaluation.snapshot.snapshot_id,
+            vector_hash=vector.vector_hash,
+            feature_schema_version=vector.schema_version,
+            feature_schema_hash=vector.feature_schema_hash,
+            timeframe_snapshot_ids=timeframes,
+            source_event_digests=source_digests,
+            source_rights_fingerprint=resolved.source_rights_fingerprint,
+            mode=resolved.mode,
+            deployment_event_id=resolved.deployment_event_id,
+            deployment_revision=resolved.deployment_revision,
+            registry_id=target.registry_id,
+            registry_revision=target.registry_revision,
+            active_pointer_version=target.active_pointer_version,
+            scorer_artifact_id=target.scorer_artifact_id,
+            scorer_artifact_hash=target.scorer_artifact_hash,
+            base_artifact_hash=resolved.base_artifact_hash,
+            evaluation_report_id=target.evaluation_report_id,
+            evaluation_report_hash=target.evaluation_report_hash,
+            evaluation_status=target.evaluation_status,
+            report_scope_hash=target.report_scope_hash,
+            proof_id=target.proof_id,
+            proof_hash=target.proof_hash,
+            proof_scope_hash=target.proof_scope_hash,
+            candidate_completeness_verified=target.candidate_completeness_verified is True,
+            policy_id=target.policy_id,
+            policy_hash=target.policy_hash,
+            decision=LearningScoreDecision(result.decision.value),
+            reason_code=result.reason_code,
+            class_probabilities=result.class_probabilities,
+            probability=result.probability,
+            confidence=result.confidence,
+            uncertainty=result.uncertainty,
+            model_latency_ms=latency_ms,
+        )
+        return BotDecisionScoringCommit(
+            decision=final_decision,
+            score_event=score_event,
+            incumbent_decision=incumbent,
+            vector_hash=vector.vector_hash,
+            decision_snapshot_id=evaluation.snapshot.snapshot_id,
+        )
+
+
+def _final_decision(
+    incumbent: BotDecision,
+    mode: ScorerDeploymentMode,
+    result: LearningScorerRuntimeResult,
+) -> BotDecision:
+    if mode is ScorerDeploymentMode.SHADOW or result.decision is RuntimeScorerDecision.APPROVE:
+        return incumbent
+    if mode is not ScorerDeploymentMode.PAPER_GATE:
+        raise ScorerDeploymentRightsUnavailable("Scorer mode runtime không hỗ trợ.")
+    if result.decision is RuntimeScorerDecision.VETO:
+        status = BotDecisionStatus.VETO
+        reason_code = "SCORER_VETO"
+        detail_vi = "Scorer PAPER_GATE đã chặn candidate theo policy đã duyệt."
+    else:
+        status = BotDecisionStatus.ABSTAIN
+        reason_code = "SCORER_ABSTAIN"
+        detail_vi = "Scorer PAPER_GATE không đủ điều kiện để cho phép candidate."
+    values = {field.name: getattr(incumbent, field.name) for field in fields(BotDecision)}
+    values.pop("decision_hash")
+    values["status"] = status
+    values["reason_code"] = reason_code
+    values["detail_vi"] = detail_vi
+    values["candidate_json"] = None
+    gate_code = result.reason_code or result.decision.value
+    values["gate_details"] = (
+        *incumbent.gate_details,
+        f"SCORER_{result.decision.value}:{gate_code}",
+    )
+    canonical = json.dumps(
+        _decision_payload(values),
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    values["decision_hash"] = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return BotDecision(**values)
+
+
+def _decision_payload(values: dict[str, object]) -> dict[str, object]:
+    from trading_bot.application.bot_dispatcher import _decision_payload as canonical_payload
+
+    return canonical_payload(values)
 
 
 __all__ = ["PostgresScorerRuntimeCommitter"]

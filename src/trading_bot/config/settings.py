@@ -1,9 +1,16 @@
+from __future__ import annotations
+
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 from uuid import UUID
 
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+if TYPE_CHECKING:
+    from trading_bot.application.learning_scorer_evaluation import (
+        ScorerTestEvaluationPolicy,
+    )
 
 TradingMode = Literal["PAPER", "DEMO"]
 ProcessRole = Literal[
@@ -69,6 +76,65 @@ class AppSettings(BaseSettings):
     signal_worker_tick_seconds: float = Field(default=5.0, gt=0, le=300)
     signal_worker_max_candidate_age_seconds: int = Field(default=7200, ge=5, le=14_400)
     signal_worker_max_attempts: int = Field(default=5, ge=1, le=20)
+
+    # Chính sách TEST scorer phải có version/hash giống hệt report và deployment được ghim.
+    scorer_test_policy_version: str = Field(
+        default="wp06-scorer-test-v1", min_length=1, max_length=120
+    )
+    scorer_test_policy_minimum_sample_count: int = Field(default=1_000, ge=1)
+    scorer_test_policy_minimum_class_support: int = Field(default=100, ge=1)
+    scorer_test_policy_maximum_calibration_error: float = Field(default=0.05, ge=0, le=1)
+    scorer_test_policy_maximum_log_loss_regression: float = Field(default=0.01, ge=0)
+    scorer_test_policy_maximum_brier_regression: float = Field(default=0.01, ge=0)
+    scorer_test_policy_minimum_coverage: float = Field(default=0.80, ge=0, le=1)
+    scorer_test_policy_minimum_candidate_retention: float = Field(default=0.20, ge=0, le=1)
+    scorer_test_policy_maximum_false_veto_rate: float = Field(default=0.10, ge=0, le=1)
+    scorer_test_policy_approve_probability_threshold: float = Field(default=0.60, ge=0, le=1)
+    scorer_test_policy_minimum_confidence: float = Field(default=0.55, ge=0, le=1)
+    scorer_test_policy_reliability_bin_count: int = Field(default=10, ge=2, le=100)
+    # Giới hạn độ lệch chuẩn hóa theo từng đặc trưng để runtime fail-closed khi OOD.
+    scorer_test_policy_maximum_standardized_feature_deviation: float = Field(
+        default=6.0, gt=0, allow_inf_nan=False
+    )
+    # Deadline riêng cho phép tính scorer thuần; không tính truy vấn/commit DB.
+    scorer_test_policy_runtime_inference_timeout_ms: int = Field(default=100, gt=0, le=10_000)
+
+    def scorer_test_evaluation_policy(self) -> ScorerTestEvaluationPolicy:
+        """Tạo policy bất biến; thay đổi env tạo hash mới để report cũ bị từ chối."""
+        from trading_bot.application.learning_scorer_evaluation import (
+            ScorerTestEvaluationPolicy,
+        )
+
+        return ScorerTestEvaluationPolicy(
+            policy_version=self.scorer_test_policy_version,
+            minimum_sample_count=self.scorer_test_policy_minimum_sample_count,
+            minimum_class_support=self.scorer_test_policy_minimum_class_support,
+            maximum_calibration_error=self.scorer_test_policy_maximum_calibration_error,
+            maximum_log_loss_regression=self.scorer_test_policy_maximum_log_loss_regression,
+            maximum_brier_regression=self.scorer_test_policy_maximum_brier_regression,
+            minimum_coverage=self.scorer_test_policy_minimum_coverage,
+            minimum_candidate_retention=self.scorer_test_policy_minimum_candidate_retention,
+            maximum_false_veto_rate=self.scorer_test_policy_maximum_false_veto_rate,
+            approve_probability_threshold=self.scorer_test_policy_approve_probability_threshold,
+            minimum_confidence=self.scorer_test_policy_minimum_confidence,
+            reliability_bin_count=self.scorer_test_policy_reliability_bin_count,
+            maximum_standardized_feature_deviation=(
+                self.scorer_test_policy_maximum_standardized_feature_deviation
+            ),
+            runtime_inference_timeout_ms=self.scorer_test_policy_runtime_inference_timeout_ms,
+        )
+
+    @model_validator(mode="after")
+    def validate_scorer_test_policy_support(self) -> AppSettings:
+        """Ba lớp đều cần đủ chỗ trong tổng cỡ mẫu tối thiểu."""
+        if self.scorer_test_policy_minimum_sample_count < (
+            self.scorer_test_policy_minimum_class_support * 3
+        ):
+            raise ValueError(
+                "scorer_test_policy_minimum_sample_count phải >= 3 lần "
+                "scorer_test_policy_minimum_class_support."
+            )
+        return self
 
     @model_validator(mode="after")
     def validate_telegram_webhook(self) -> AppSettings:

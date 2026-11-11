@@ -16,7 +16,12 @@ from trading_bot.adapters.database.repositories.backtest_dataset_replay_bundles 
     BacktestDatasetReplayBundleRepository,
 )
 from trading_bot.adapters.database.repositories.source_registry import SourceRegistryRepository
+from trading_bot.application.binance_rest_backfill import (
+    BACKTEST_RIGHTS_PROVIDERS,
+    CRYPIDIAN_FIRST_PARTY_QA_PROVIDER,
+)
 from trading_bot.application.candidate_universe_proof import canonical, digest
+from trading_bot.application.first_party_qa_dataset import CRYPIDIAN_FIRST_PARTY_QA_EVIDENCE_REF
 from trading_bot.domain.research.source_policy import SourceUsePurpose
 from trading_bot.domain.research.source_registry import source_rights_hash
 
@@ -41,6 +46,10 @@ class ReplayTrainingRightsReceipt:
     valid_until: datetime
     purpose: SourceUsePurpose = SourceUsePurpose.TRAINING
     provider: str = SOURCE_ID
+
+    def __post_init__(self) -> None:
+        if self.provider not in BACKTEST_RIGHTS_PROVIDERS:
+            raise ValueError("Receipt provider nằm ngoài allowlist scorer backtest.")
 
     @property
     def scope_payload(self) -> dict[str, object]:
@@ -89,11 +98,12 @@ class DatabaseReplayTrainingRightsGate:
             reference is None
             or reference.workspace_id != workspace_id
             or reference.bundle_hash != bundle_hash
-            or reference.rights_provider != SOURCE_ID
+            or reference.rights_provider not in BACKTEST_RIGHTS_PROVIDERS
         ):
             raise PermissionError("Thiếu replay bundle authoritative đúng provider/workspace/hash.")
+        provider = reference.rights_provider
         registry = SourceRegistryRepository(self._session)
-        observed = await registry.get_observed_entry(workspace_id=workspace_id, source_id=SOURCE_ID)
+        observed = await registry.get_observed_entry(workspace_id=workspace_id, source_id=provider)
         now = await registry.database_clock(workspace_id=workspace_id)
         if observed is None or now.tzinfo is None or now.utcoffset() is None:
             raise PermissionError("Thiếu policy observer hoặc DB clock có múi giờ.")
@@ -103,14 +113,18 @@ class DatabaseReplayTrainingRightsGate:
         known_at = observed.known_at.get(policy.policy_id)
         terms = urlsplit(policy.evidence_ref or "")
         if (
-            observed.history.source_id != SOURCE_ID
-            or policy.source_id != SOURCE_ID
+            observed.history.source_id != provider
+            or policy.source_id != provider
             or known_at is None
             or known_at >= now
             or not observed.history.permits(SourceUsePurpose.TRAINING, at=now)
             or terms.scheme != "https"
             or not terms.netloc
             or policy.reviewed_at is None
+            or (
+                provider == CRYPIDIAN_FIRST_PARTY_QA_PROVIDER
+                and policy.evidence_ref != CRYPIDIAN_FIRST_PARTY_QA_EVIDENCE_REF
+            )
         ):
             raise PermissionError(
                 "Policy hiện hành không cấp TRAINING với observer/evidence hợp lệ."
@@ -130,7 +144,7 @@ class DatabaseReplayTrainingRightsGate:
             child.require_ready()
             if (
                 child.rights_workspace_id != workspace_id
-                or child.rights_provider != SOURCE_ID
+                or child.rights_provider != provider
                 or child.dataset_hash != component.dataset_hash
                 or child.interval != component.interval
                 or child.bars_content_hash != component.bars_content_hash
@@ -155,6 +169,7 @@ class DatabaseReplayTrainingRightsGate:
                     verified_at=policy.reviewed_at,
                     checked_at=now,
                     valid_until=valid_until,
+                    provider=provider,
                 )
             )
         return tuple(receipts)

@@ -704,6 +704,8 @@ def build_h03_source_pinned_dataset_replay(
     trade_patterns: tuple[str, ...] = ("loss", "loss"),
     pattern_stride: int = 3,
     fee_rate: Decimal = Decimal("0.001"),
+    rights_evidence: BackfillRightsEvidence | None = None,
+    dataset_start: datetime | None = None,
 ) -> tuple[BacktestDatasetReplayBundle, RuntimePaperReplayComparison]:
     """Chạy H03 trên bundle v4 có identity nguồn và opportunity do runtime ghi."""
     from trading_bot.application.backtest_dataset_manifest import (
@@ -713,7 +715,12 @@ def build_h03_source_pinned_dataset_replay(
     from trading_bot.application.binance_rest_backfill import (
         BackfillRightsEvidence,
         BackfillRightsPurpose,
-        RestBackfillRequest,
+    )
+    from trading_bot.application.first_party_qa_dataset import (
+        CRYPIDIAN_FIRST_PARTY_QA,
+        CRYPIDIAN_FIRST_PARTY_QA_EVIDENCE_REF,
+        CRYPIDIAN_FIRST_PARTY_QA_SOURCE,
+        FirstPartyQADatasetRequest,
     )
     from trading_bot.domain.market.models import MarketBarSourceIdentity
 
@@ -728,20 +735,37 @@ def build_h03_source_pinned_dataset_replay(
     if not isinstance(fee_rate, Decimal) or not fee_rate.is_finite() or fee_rate < 0:
         raise ValueError("fee_rate phải là Decimal hữu hạn không âm.")
 
-    start = datetime(2026, 10, 20, tzinfo=UTC)
     bar_count = 200 + pattern_stride * len(trade_patterns)
+    end_anchor = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
+    start = dataset_start or end_anchor - timedelta(hours=bar_count)
+    if start.tzinfo is None or start.utcoffset() is None:
+        raise ValueError("dataset_start phải có múi giờ.")
+    start = start.astimezone(UTC)
     range_end = start + timedelta(hours=bar_count)
     evaluation_start = start + timedelta(hours=200)
-    rights = BackfillRightsEvidence(
-        workspace_id=workspace_id,
-        provider="BINANCE_USDM_REST",
-        purpose=BackfillRightsPurpose.BACKTEST_RESEARCH,
-        terms_url="https://example.invalid/wp06-synthetic-replay-terms",
-        policy_fingerprint=hashlib.sha256(b"wp06-source-pinned-policy").hexdigest(),
-        verified_at=start - timedelta(days=2),
-        checked_at=start - timedelta(days=1),
-        valid_until=range_end + timedelta(days=2),
-    )
+    if rights_evidence is None:
+        # Pure unit fixture only; Compose E2E passes evidence issued by the persisted registry gate.
+        rights = BackfillRightsEvidence(
+            workspace_id=workspace_id,
+            provider=CRYPIDIAN_FIRST_PARTY_QA,
+            purpose=BackfillRightsPurpose.BACKTEST_RESEARCH,
+            terms_url=CRYPIDIAN_FIRST_PARTY_QA_EVIDENCE_REF,
+            policy_fingerprint=hashlib.sha256(b"wp06-first-party-qa-unit-policy").hexdigest(),
+            verified_at=start - timedelta(days=2),
+            checked_at=start - timedelta(days=1),
+            valid_until=range_end + timedelta(days=2),
+        )
+    elif type(rights_evidence) is BackfillRightsEvidence:
+        rights = rights_evidence
+    else:
+        raise ValueError("rights_evidence phải là evidence đã xác thực từ Source Registry.")
+    if (
+        rights.workspace_id != workspace_id
+        or rights.provider != CRYPIDIAN_FIRST_PARTY_QA
+        or rights.purpose is not BackfillRightsPurpose.BACKTEST_RESEARCH
+        or rights.terms_url != CRYPIDIAN_FIRST_PARTY_QA_EVIDENCE_REF
+    ):
+        raise PermissionError("Rights evidence không khớp provider fixture QA.")
     bars: list[OHLCVBar] = []
     signal_patterns = {
         200 + pattern_stride * index: pattern for index, pattern in enumerate(trade_patterns)
@@ -827,8 +851,8 @@ def build_h03_source_pinned_dataset_replay(
                 volume=Decimal("100"),
                 quote_volume=quote_volume,
                 is_closed=True,
-                source="BINANCE_USDM_REST_BACKFILL",
-                source_cursor=logical_key,
+                source=CRYPIDIAN_FIRST_PARTY_QA_SOURCE,
+                source_cursor=f"crypidian-first-party-qa:v1:{logical_key}",
                 checksum=checksum,
                 raw_reference=None,
                 source_identity=MarketBarSourceIdentity(
@@ -842,7 +866,7 @@ def build_h03_source_pinned_dataset_replay(
             )
         )
 
-    request = RestBackfillRequest(
+    request = FirstPartyQADatasetRequest(
         symbol="BTCUSDT",
         interval="1h",
         start=start,

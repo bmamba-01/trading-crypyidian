@@ -33,6 +33,24 @@ FUNCTION_SIGNATURES = (
     "public.wp06_open_scorer_test_access_receipt(uuid,uuid,uuid,uuid,uuid,text,text,text,text)",
     "public.wp06_consume_scorer_test_payload(uuid,uuid,text)",
 )
+CURRENT_RIGHTS_COLUMNS = (
+    "scorer_artifact_id",
+    "artifact_hash",
+    "proof_hash",
+    "bundle_hash",
+    "source_scope_hash",
+    "training_membership_digest",
+    "validation_membership_digest",
+    "training_scope_digest",
+    "source_rights_digest",
+    "fingerprint",
+    "checked_at",
+)
+QA_MIGRATION_FUNCTIONS = (
+    "public.wp06_lock_scorer_test_sources(uuid, uuid)",
+    "public.wp06_recheck_scorer_current_rights(uuid, uuid)",
+    "public.wp06_verify_scorer_deployment_rights(uuid, uuid, uuid)",
+)
 
 
 def principal():
@@ -128,6 +146,128 @@ async def _verify_migration_body_guards(engine):
                 {"signature": signature},
             )
             assert restored == definition
+
+
+def _qa_migration_downgrade_case(case_name: str):
+    migration = _load_migration(
+        "wp06_qa_migration_guard", "8ac4e2f6b0d1_wp06_first_party_qa_source.py"
+    )
+    if case_name == "test-lock":
+        signature = migration.TEST_LOCK_SIGNATURE
+        _, postimage, count = migration.TEST_LOCK_PATCHES[0]
+        drift = postimage.replace("CRYPIDIAN_FIRST_PARTY_QA", "CRYPIDIAN_FIRST_PARTY_QA_DRIFT", 1)
+        error_marker = "WP06_SCORER_TEST_QA_LOCK_DOWNGRADE_PREIMAGE_UNEXPECTED"
+    elif case_name == "current-rights":
+        signature = migration.CURRENT_RIGHTS_SIGNATURE
+        _, postimage, count = next(
+            patch for patch in migration.CURRENT_RIGHTS_PATCHES if patch[2] == 5
+        )
+        drift = postimage.replace("=", "<>", 1)
+        error_marker = "WP06_SCORER_CURRENT_RIGHTS_QA_DOWNGRADE_PREIMAGE_UNEXPECTED"
+    elif case_name == "deployment":
+        signature = migration.DEPLOYMENT_SIGNATURE
+        _, postimage, count = migration.DEPLOYMENT_PATCHES[0]
+        drift = postimage.replace(
+            "WP06_SCORER_DEPLOYMENT_QA_SOURCE_DENIED",
+            "WP06_SCORER_DEPLOYMENT_QA_SOURCE_DENIED_DRIFT",
+            1,
+        )
+        error_marker = "WP06_SCORER_DEPLOYMENT_QA_GUARD_DOWNGRADE_MARKER_PREIMAGE_UNEXPECTED"
+    else:
+        raise AssertionError(f"Migration guard case không hợp lệ: {case_name}")
+    return signature, postimage, drift, count, error_marker
+
+
+async def _qa_migration_function_hashes(session):
+    return {
+        signature: await session.scalar(
+            text(
+                "SELECT pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to("
+                "pg_catalog.pg_get_functiondef(CAST(:signature AS regprocedure)), "
+                "'UTF8')), 'hex')"
+            ),
+            {"signature": signature},
+        )
+        for signature in QA_MIGRATION_FUNCTIONS
+    }
+
+
+async def _prepare_qa_migration_downgrade_case(sessions, case_name: str):
+    signature, postimage, drift, expected_count, error_marker = _qa_migration_downgrade_case(
+        case_name
+    )
+    async with sessions() as session, session.begin():
+        version = await session.scalar(text("SELECT version_num FROM alembic_version"))
+        assert version == "b2e4a6c8d0f2", version
+        function_hashes = await _qa_migration_function_hashes(session)
+        definition = await session.scalar(
+            text("SELECT pg_catalog.pg_get_functiondef(CAST(:signature AS regprocedure))"),
+            {"signature": signature},
+        )
+        assert definition is not None
+        assert definition.count(postimage) == expected_count, (case_name, expected_count)
+        altered = definition.replace(postimage, drift, 1)
+        assert altered != definition
+        await (await session.connection()).exec_driver_sql(altered)
+        drift_hash = hashlib.sha256(altered.encode("utf-8")).hexdigest()
+    return {
+        "migration_case": case_name,
+        "migration_signature": signature,
+        "migration_error_marker": error_marker,
+        "migration_function_hashes_before": function_hashes,
+        "migration_drift_hash": drift_hash,
+    }
+
+
+async def _check_and_restore_qa_migration_downgrade_case(sessions):
+    case_name = STATE["migration_case"]
+    signature, postimage, drift, _, expected_error = _qa_migration_downgrade_case(case_name)
+    assert STATE["migration_signature"] == signature
+    assert STATE["migration_error_marker"] == expected_error
+    async with sessions() as session, session.begin():
+        version = await session.scalar(text("SELECT version_num FROM alembic_version"))
+        assert version == "b2e4a6c8d0f2", version
+        definitions = {
+            function_signature: await session.scalar(
+                text("SELECT pg_catalog.pg_get_functiondef(CAST(:signature AS regprocedure))"),
+                {"signature": function_signature},
+            )
+            for function_signature in QA_MIGRATION_FUNCTIONS
+        }
+        assert all(isinstance(value, str) for value in definitions.values())
+        current_hashes = {
+            function_signature: hashlib.sha256(definition.encode("utf-8")).hexdigest()
+            for function_signature, definition in definitions.items()
+        }
+        assert current_hashes[signature] == STATE["migration_drift_hash"]
+        assert {
+            function_signature: current_hashes[function_signature]
+            for function_signature in QA_MIGRATION_FUNCTIONS
+            if function_signature != signature
+        } == {
+            function_signature: function_hash
+            for function_signature, function_hash in STATE[
+                "migration_function_hashes_before"
+            ].items()
+            if function_signature != signature
+        }
+        definition = definitions[signature]
+        assert definition.count(drift) == 1, case_name
+        restored_definition = definition.replace(drift, postimage, 1)
+        await (await session.connection()).exec_driver_sql(restored_definition)
+    async with sessions() as session:
+        version = await session.scalar(text("SELECT version_num FROM alembic_version"))
+        restored_hashes = await _qa_migration_function_hashes(session)
+    assert version == "b2e4a6c8d0f2", version
+    assert restored_hashes == STATE["migration_function_hashes_before"]
+    return {
+        "migration_downgrade_rolled_back": True,
+        "migration_revision_preserved": True,
+        "migration_drift_survived_rollback": True,
+        "migration_body_restored": True,
+        "migration_case": case_name,
+        "migration_error_marker": expected_error,
+    }
 
 
 async def counts(sessions):
@@ -227,6 +367,10 @@ async def run(phase):
         if phase == "migration-body-guard":
             await _verify_migration_body_guards(engine)
             return {"altered_function_bodies_rejected": True}
+        if phase == "qa-migration-downgrade-prepare":
+            return await _prepare_qa_migration_downgrade_case(sessions, STATE["migration_case"])
+        if phase == "qa-migration-downgrade-check-restore":
+            return await _check_and_restore_qa_migration_downgrade_case(sessions)
         if phase == "stage":
             assert role == "crypidian_candidate_builder"
             from trading_bot.application.learning_split_candidate import (
@@ -418,7 +562,7 @@ async def run(phase):
                     == 0
                 )
                 assert proof.candidate_count == 9
-                assert proof.no_candidate_count > 0
+                assert proof.no_candidate_count == 81
                 assert (
                     proof.expected_opportunity_count
                     == proof.candidate_count + proof.no_candidate_count
@@ -672,19 +816,22 @@ async def evaluate(sessions):
         },
         opportunity_proof=proof,
     )
+    # Ghim đầy đủ policy TEST v1 đang dùng bởi cấu hình runtime/evaluator.
     policy = ScorerTestEvaluationPolicy(
-        policy_version="wp06-c3-fixture-only-v1",
-        minimum_sample_count=9,
-        minimum_class_support=2,
-        maximum_calibration_error=0.0,
-        maximum_log_loss_regression=0.0,
-        maximum_brier_regression=0.0,
-        minimum_coverage=1.0,
-        minimum_candidate_retention=1.0,
-        maximum_false_veto_rate=0.0,
-        approve_probability_threshold=1.0,
-        minimum_confidence=1.0,
-        reliability_bin_count=3,
+        policy_version="wp06-scorer-test-v1",
+        minimum_sample_count=1000,
+        minimum_class_support=100,
+        maximum_calibration_error=0.05,
+        maximum_log_loss_regression=0.01,
+        maximum_brier_regression=0.01,
+        minimum_coverage=0.80,
+        minimum_candidate_retention=0.20,
+        maximum_false_veto_rate=0.10,
+        approve_probability_threshold=0.60,
+        minimum_confidence=0.55,
+        reliability_bin_count=10,
+        maximum_standardized_feature_deviation=6.0,
+        runtime_inference_timeout_ms=100,
     )
     request = ScorerTestEvaluationRequest(
         scope=scope,
@@ -796,6 +943,12 @@ async def evaluate(sessions):
         "current_training_rights_bound": True,
         "metadata_only_report": True,
         "report_status": report.status,
+        "sample_support_block": {
+            "sample_count": report.test_sample_count,
+            "minimum_sample_count": policy.minimum_sample_count,
+            "class_support": dict(report.class_support),
+            "minimum_class_support": policy.minimum_class_support,
+        },
         "evaluation_report_id": str(first.record_id),
         "test_access_receipt_id": str(report.test_access_receipt_id),
         "test_payload_consumption_id": str(report.test_payload_consumption_id),
@@ -898,7 +1051,7 @@ async def verify_current_rights(sessions):
                 "AND manifest.id=reference.manifest_id "
                 "WHERE reference.workspace_id=:workspace "
                 "AND manifest.manifest_hash=:manifest_hash "
-                "UNION SELECT 'BINANCE_USDM_REST'::text) AS source_keys "
+                "UNION SELECT 'CRYPIDIAN_FIRST_PARTY_QA'::text) AS source_keys "
                 "ORDER BY source_id LIMIT 1"
             ),
             {"workspace": WORKSPACE, "manifest_hash": STATE["manifest_hash"]},
@@ -907,7 +1060,7 @@ async def verify_current_rights(sessions):
         await verify_manifest_source_ref_fence_v3(sessions)
 
         entry = await SourceRegistryRepository(session).get_entry(
-            workspace_id=WORKSPACE, source_id="BINANCE_USDM_REST"
+            workspace_id=WORKSPACE, source_id="CRYPIDIAN_FIRST_PARTY_QA"
         )
         assert entry is not None
         revision = entry.revisions[-1]
@@ -1205,7 +1358,7 @@ async def verify_current_rights(sessions):
                 await session.execute(
                     text(
                         "SELECT bundle.bundle_hash=:bundle_hash AS proof_bundle_hash, "
-                        "bundle.rights_provider='BINANCE_USDM_REST' AS provider, "
+                        "bundle.rights_provider='CRYPIDIAN_FIRST_PARTY_QA' AS provider, "
                         "bundle.rights_purpose='BACKTEST_RESEARCH' "
                         "AS bundle_backtest_research_purpose, "
                         "bundle.schema_version=1 AS schema_version, "
@@ -1359,9 +1512,9 @@ async def verify_current_rights(sessions):
                     ),
                     {"workspace": str(WORKSPACE), "artifact_id": str(artifact_id)},
                 )
-                return dict(result.mappings().one())
+                return dict(zip(CURRENT_RIGHTS_COLUMNS, result.one(), strict=True))
 
-        # Writer first: the real C4 gateway waits on the same Binance source lock.
+        # Writer first: the C4 gateway waits on the QA source lock.
         pending_resolution = None
         async with UnitOfWork(sessions, workspace_id=WORKSPACE) as source_writer:
             await source_writer.session.execute(
@@ -1374,9 +1527,7 @@ async def verify_current_rights(sessions):
             assert not done, "C4 verifier phải chờ writer nhả cùng source lock"
         assert pending_resolution is not None
         writer_first_rights = await asyncio.wait_for(pending_resolution, timeout=10)
-        assert writer_first_rights["binance_training_scope_digest"] == (
-            expected_training_scope_digest
-        )
+        assert writer_first_rights["training_scope_digest"] == expected_training_scope_digest
         rights_result = await session.execute(
             text(
                 "SELECT * FROM public.wp06_recheck_scorer_current_rights("
@@ -1384,26 +1535,24 @@ async def verify_current_rights(sessions):
             ),
             {"workspace": str(WORKSPACE), "artifact_id": str(artifact_id)},
         )
-        current_rights_row = dict(rights_result.mappings().one())
+        current_rights_row = dict(zip(CURRENT_RIGHTS_COLUMNS, rights_result.one(), strict=True))
         assert current_rights_row["scorer_artifact_id"] == artifact_id
         assert current_rights_row["training_membership_digest"] == expected_digests["train"]
         assert current_rights_row["validation_membership_digest"] == expected_digests["validation"]
-        assert current_rights_row["binance_training_scope_digest"] == (
-            expected_training_scope_digest
-        )
+        assert current_rights_row["training_scope_digest"] == expected_training_scope_digest
         assert current_rights_row["source_rights_digest"] == hashlib.sha256(b"[]").hexdigest()
         assert current_rights_row["fingerprint"]
         assert len(current_rights_row["fingerprint"]) == 64
         assert current_rights_row["checked_at"].tzinfo is not None
         assert current_rights_row["fingerprint"] == writer_first_rights["fingerprint"]
 
-        # C4 verifier first: source writer cannot pass the held lock before caller commit.
+        # C4 verifier first: QA source writer cannot pass the held lock before caller commit.
         try:
             async with UnitOfWork(sessions, workspace_id=WORKSPACE) as source_writer:
                 await source_writer.session.execute(text("SET LOCAL lock_timeout = '200ms'"))
                 await source_writer.session.execute(
                     text("SELECT pg_advisory_xact_lock(hashtextextended(:lock_key,0))"),
-                    {"lock_key": f"research-source:{WORKSPACE}:BINANCE_USDM_REST"},
+                    {"lock_key": f"research-source:{WORKSPACE}:CRYPIDIAN_FIRST_PARTY_QA"},
                 )
         except DBAPIError as error:
             if error.orig.sqlstate != "55P03":
@@ -1453,7 +1602,7 @@ async def verify_current_rights(sessions):
         "backfill_provenance_backtest_research_verified": bundle_diagnostics[
             "bundle_backtest_research_purpose"
         ],
-        "current_training_scope_digest_matched": current_rights_row["binance_training_scope_digest"]
+        "current_training_scope_digest_matched": current_rights_row["training_scope_digest"]
         == expected_training_scope_digest,
         "no_test_receipt_mutation": True,
         "rights_integrity_counts": [int(value) for value in counts_after],
@@ -1675,9 +1824,24 @@ async def verify_manifest_source_ref_fence_v3(sessions):
 
 
 async def verify_inconclusive_denial(sessions):
-    """Admin outer gateway denies C3 INCONCLUSIVE before enabling a mode."""
+    """Admin verifier rejects synthetic QA rights and preserves deployment pointer."""
     assert STATE["report_status"] == "INCONCLUSIVE"
     async with UnitOfWork(sessions, workspace_id=WORKSPACE) as unit:
+        before = tuple(
+            (
+                await unit.session.execute(
+                    text(
+                        "SELECT pointer.event_id,pointer.revision,pointer.active_pointer_version,"
+                        "pointer.mode,(SELECT count(*) FROM "
+                        "public.learning_scoring_deployment_event AS event "
+                        "WHERE event.workspace_id=pointer.workspace_id) AS event_count "
+                        "FROM public.learning_scoring_deployment_pointer AS pointer "
+                        "WHERE pointer.workspace_id=:workspace"
+                    ),
+                    {"workspace": WORKSPACE},
+                )
+            ).one()
+        )
         try:
             async with unit.session.begin_nested():
                 await unit.session.execute(
@@ -1693,10 +1857,10 @@ async def verify_inconclusive_denial(sessions):
                     },
                 )
         except DBAPIError as error:
-            if "WP06_SCORER_DEPLOYMENT_REPORT_NOT_ACCEPTED" not in str(error.orig):
-                raise AssertionError("Gateway từ chối report với mã lỗi khác.") from error
+            if "WP06_SCORER_DEPLOYMENT_QA_SOURCE_DENIED" not in str(error.orig):
+                raise AssertionError("Gateway phải từ chối nguồn QA với marker riêng.") from error
         else:
-            raise AssertionError("INCONCLUSIVE scorer report must not enable SHADOW/PAPER_GATE.")
+            raise AssertionError("Synthetic QA rights không được cấp deployment eligibility.")
         try:
             async with unit.session.begin_nested():
                 await unit.session.execute(
@@ -1716,7 +1880,27 @@ async def verify_inconclusive_denial(sessions):
                 raise AssertionError("Outer verifier từ chối tenant với mã lỗi khác.") from error
         else:
             raise AssertionError("Outer verifier phải từ chối tenant khác workspace GUC.")
-    return {"inconclusive_deployment_denied": True}
+        after = tuple(
+            (
+                await unit.session.execute(
+                    text(
+                        "SELECT pointer.event_id,pointer.revision,pointer.active_pointer_version,"
+                        "pointer.mode,(SELECT count(*) FROM "
+                        "public.learning_scoring_deployment_event AS event "
+                        "WHERE event.workspace_id=pointer.workspace_id) AS event_count "
+                        "FROM public.learning_scoring_deployment_pointer AS pointer "
+                        "WHERE pointer.workspace_id=:workspace"
+                    ),
+                    {"workspace": WORKSPACE},
+                )
+            ).one()
+        )
+        assert after == before, "QA deployment denial must not mutate event or pointer."
+    return {
+        "inconclusive_deployment_denied": True,
+        "qa_source_deployment_denied": True,
+        "qa_denial_side_effect_free": True,
+    }
 
 
 async def verify_deployment_audit(sessions):
@@ -1801,9 +1985,9 @@ async def verify_market_signal_worker_deployment_rights(sessions):
                 },
             )
         except DBAPIError as error:
-            if error.orig.diag.message_primary != "WP06_SCORER_DEPLOYMENT_REPORT_NOT_ACCEPTED":
+            if error.orig.diag.message_primary != "WP06_SCORER_DEPLOYMENT_QA_SOURCE_DENIED":
                 raise AssertionError(
-                    "Market signal worker phải được giới hạn tới đúng report gate"
+                    "Market signal worker phải bị chặn với marker QA deployment cụ thể"
                 ) from error
         else:
             raise AssertionError("INCONCLUSIVE report không thể thành quyền deploy cho worker")

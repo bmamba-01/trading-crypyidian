@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy.dialects import postgresql
@@ -11,6 +11,7 @@ from trading_bot.adapters.database.repositories.learning_scorer_report_read_mode
 )
 
 WORKSPACE_ID = uuid4()
+REPORT_ID = UUID("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee")
 NOW = datetime(2026, 11, 10, 8, 30, tzinfo=UTC)
 
 
@@ -38,6 +39,7 @@ def _metrics() -> dict[str, object]:
 
 def _row() -> dict[str, object]:
     return {
+        "id": REPORT_ID,
         "created_at": NOW,
         "report_hash": "a" * 64,
         "proof_hash": "b" * 64,
@@ -91,6 +93,7 @@ async def test_latest_summary_projects_only_workspace_scoped_metadata() -> None:
     )
 
     assert summary is not None
+    assert summary.evaluation_report_id == REPORT_ID
     assert summary.status == "INCONCLUSIVE"
     assert summary.test_sample_count == 9
     assert summary.opportunity_count == 90

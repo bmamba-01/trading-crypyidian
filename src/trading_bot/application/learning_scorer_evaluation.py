@@ -41,6 +41,8 @@ class ScorerTestEvaluationPolicy:
     approve_probability_threshold: float
     minimum_confidence: float
     reliability_bin_count: int
+    maximum_standardized_feature_deviation: float
+    runtime_inference_timeout_ms: int
 
     def __post_init__(self) -> None:
         if not isinstance(self.policy_version, str) or not self.policy_version.strip():
@@ -49,6 +51,7 @@ class ScorerTestEvaluationPolicy:
             "minimum_sample_count",
             "minimum_class_support",
             "reliability_bin_count",
+            "runtime_inference_timeout_ms",
         ):
             if type(getattr(self, name)) is not int or getattr(self, name) < 1:
                 raise ValueError(f"{name} phải là số nguyên dương.")
@@ -61,6 +64,7 @@ class ScorerTestEvaluationPolicy:
             "maximum_false_veto_rate",
             "approve_probability_threshold",
             "minimum_confidence",
+            "maximum_standardized_feature_deviation",
         ):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -80,6 +84,8 @@ class ScorerTestEvaluationPolicy:
                 and value > 1
             ):
                 raise ValueError(f"{name} phải nằm trong [0, 1].")
+        if self.maximum_standardized_feature_deviation <= 0:
+            raise ValueError("maximum_standardized_feature_deviation phải lớn hơn 0.")
 
     @property
     def policy_hash(self) -> str:

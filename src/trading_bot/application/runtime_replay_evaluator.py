@@ -480,9 +480,7 @@ class RuntimeReplayEvaluator:
             self._account_state = ReplayAccountState(context)
         closed_trade = self._advance_execution(context, snapshot)
         assert self._account_state is not None
-        mark_prices = (
-            self._extract_mark_prices(snapshot, context) if self._mark_to_market else None
-        )
+        mark_prices = self._extract_mark_prices(snapshot, context) if self._mark_to_market else None
         account, risk_state, open_exposures = self._account_state.project(
             context,
             self._gateway,

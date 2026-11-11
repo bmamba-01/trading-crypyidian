@@ -619,9 +619,7 @@ def _fingerprint_from_values(values: dict[str, Any]) -> str:
         "side": values["side"],
         "quantity": _decimal_text(values["quantity"]),
         "order_type": values.get("order_type", "MARKET"),
-        "limit_price": (
-            _decimal_text(limit_price) if limit_price is not None else None
-        ),
+        "limit_price": (_decimal_text(limit_price) if limit_price is not None else None),
         "client_order_id": values["client_order_id"],
     }
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
@@ -708,13 +706,9 @@ def _make_transition_proof_tools() -> tuple[
         if values.get("last_attempt_at") and isinstance(values["last_attempt_at"], datetime):
             values["last_attempt_at"] = _aware_utc(values["last_attempt_at"], "last_attempt_at")
         if values.get("state_changed_at") and isinstance(values["state_changed_at"], datetime):
-            values["state_changed_at"] = _aware_utc(
-                values["state_changed_at"], "state_changed_at"
-            )
+            values["state_changed_at"] = _aware_utc(values["state_changed_at"], "state_changed_at")
         if values.get("retry_not_before") and isinstance(values["retry_not_before"], datetime):
-            values["retry_not_before"] = _aware_utc(
-                values["retry_not_before"], "retry_not_before"
-            )
+            values["retry_not_before"] = _aware_utc(values["retry_not_before"], "retry_not_before")
         if values.get("last_event_at") and isinstance(values["last_event_at"], datetime):
             values["last_event_at"] = _aware_utc(values["last_event_at"], "last_event_at")
         seen_prints = values.get("seen_event_fingerprints")

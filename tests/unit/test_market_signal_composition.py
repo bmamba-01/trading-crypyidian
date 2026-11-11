@@ -1,12 +1,18 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 import pytest
 from sqlalchemy.dialects import postgresql
 
+from trading_bot.adapters.database.repositories.learning_scorer_runtime_committer import (
+    PostgresScorerRuntimeCommitter,
+)
+from trading_bot.application import market_signal_composition
+from trading_bot.application.learning_scorer_evaluation import ScorerTestEvaluationPolicy
 from trading_bot.application.market_signal_composition import _latest_bar_rows
+from trading_bot.application.scorer_runtime_policy import ConfiguredScorerRuntimePolicyProvider
 
 WORKSPACE_ID = UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
 
@@ -85,3 +91,43 @@ async def test_latest_bar_rows_selects_bounded_times_then_preferred_revisions() 
         assert revision_order.index("market_bar.revision desc") < revision_order.index(
             "market_bar.id desc"
         )
+
+
+def test_market_signal_composition_wires_configured_scorer_committer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[object] = []
+
+    class Store:
+        def __init__(self, _sessions, *, score_candidate):
+            captured.append(score_candidate)
+
+    monkeypatch.setattr(market_signal_composition, "PostgresSignalDecisionStore", Store)
+    policy = ScorerTestEvaluationPolicy(
+        policy_version="scorer-runtime-test-v1",
+        minimum_sample_count=1000,
+        minimum_class_support=100,
+        maximum_calibration_error=0.05,
+        maximum_log_loss_regression=0.01,
+        maximum_brier_regression=0.01,
+        minimum_coverage=0.8,
+        minimum_candidate_retention=0.2,
+        maximum_false_veto_rate=0.1,
+        approve_probability_threshold=0.6,
+        minimum_confidence=0.55,
+        reliability_bin_count=10,
+        maximum_standardized_feature_deviation=6.0,
+        runtime_inference_timeout_ms=100,
+    )
+    provider = ConfiguredScorerRuntimePolicyProvider(policy)
+
+    market_signal_composition.build_market_signal_scanner(
+        object(),
+        max_observation_age=timedelta(seconds=30),
+        signal_validity=timedelta(seconds=30),
+        scorer_policy_provider=provider,
+    )
+
+    assert len(captured) == 1
+    assert isinstance(captured[0], PostgresScorerRuntimeCommitter)
+    assert captured[0]._policy_provider is provider

@@ -265,6 +265,8 @@ def _policy(**overrides):
         "approve_probability_threshold": 0.0,
         "minimum_confidence": 0.0,
         "reliability_bin_count": 3,
+        "maximum_standardized_feature_deviation": 6.0,
+        "runtime_inference_timeout_ms": 100,
     }
     values.update(overrides)
     return ScorerTestEvaluationPolicy(**values)
