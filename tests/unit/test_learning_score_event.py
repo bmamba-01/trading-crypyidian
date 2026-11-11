@@ -115,3 +115,14 @@ def test_score_event_rejects_incomplete_distribution_and_ineligible_gate() -> No
 def test_shadow_event_keeps_the_strategy_decision_hash_unchanged() -> None:
     with pytest.raises(ValueError, match="SHADOW.*hash"):
         _event(bot_decision_hash="a" * 64)
+
+
+def test_shadow_veto_keeps_the_strategy_candidate_status() -> None:
+    event = _event(
+        decision=LearningScoreDecision.VETO,
+        reason_code="model_veto",
+        final_status=BotDecisionStatus.CANDIDATE,
+    )
+
+    assert event.decision is LearningScoreDecision.VETO
+    assert event.final_status == BotDecisionStatus.CANDIDATE

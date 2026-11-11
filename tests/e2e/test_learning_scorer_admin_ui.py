@@ -5,14 +5,19 @@ from __future__ import annotations
 import socket
 import threading
 import time
+from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import uvicorn
 from fastapi import FastAPI
 from playwright.sync_api import Page, expect
 
+from trading_bot.adapters.database.repositories.learning_scoring_deployments import (
+    ScorerDeploymentConflict,
+)
 from trading_bot.admin.learning_scoring_page_router import router as scoring_page_router
 from trading_bot.app import create_app
 from trading_bot.auth.policy import MfaMethod, Principal, Role
@@ -66,6 +71,7 @@ class _ScorerDeploymentFacade:
             runtime_usable=False,
         )
         self.calls: list[dict[str, object]] = []
+        self.fail_next_request = False
 
     async def load_admin_scoring_deployment(self) -> ScorerDeploymentAdminSnapshot:
         return self.snapshot
@@ -79,6 +85,9 @@ class _ScorerDeploymentFacade:
         idempotency_key: UUID,
         reason: str,
     ) -> ScorerDeploymentEvent:
+        if self.fail_next_request:
+            self.fail_next_request = False
+            raise ScorerDeploymentConflict("stale scorer revision")
         self.calls.append(
             {
                 "mode": mode,
@@ -134,40 +143,47 @@ class _ScorerDeploymentService:
 class _ScorerReportReadModel:
     def __init__(self) -> None:
         self.workspaces: list[UUID] = []
+        self.summary: object | None = None
 
     async def load_latest_summary(self, workspace_id: UUID) -> ScorerReportSummary:
         self.workspaces.append(workspace_id)
-        return ScorerReportSummary(
-            created_at=datetime(2026, 11, 10, 8, 30, tzinfo=UTC),
-            evaluated_at=datetime(2026, 11, 10, 8, 25, tzinfo=UTC),
-            status="INCONCLUSIVE",
-            report_hash="a" * 64,
-            proof_hash="b" * 64,
-            scorer_artifact_hash="c" * 64,
-            base_artifact_hash="d" * 64,
-            policy_hash="e" * 64,
-            policy_version="test-policy-v1",
-            manifest_hash="f" * 64,
-            fold_plan_hash="1" * 64,
-            fold_id="fold-test-01",
-            vector_schema_version="scorer-vector-v2",
-            vector_schema_hash="2" * 64,
-            candidate_completeness_verified=False,
-            scored_candidate_coverage_verified=False,
-            test_sample_count=9,
-            opportunity_count=90,
-            class_support=((-1, 3), (0, 2), (1, 4)),
-            coverage=0.75,
-            abstain_count=2,
-            log_loss=0.41,
-            brier_score=0.18,
-            expected_calibration_error=0.08,
-            false_veto_rate=0.25,
-            candidate_retention=0.67,
-            candidate_count=6,
-            scored_candidate_count=4,
-            approved_candidate_count=3,
-        )
+        if self.summary is not None:
+            return self.summary
+        return _report_summary()
+
+
+def _report_summary() -> ScorerReportSummary:
+    return ScorerReportSummary(
+        created_at=datetime(2026, 11, 10, 8, 30, tzinfo=UTC),
+        evaluated_at=datetime(2026, 11, 10, 8, 25, tzinfo=UTC),
+        status="INCONCLUSIVE",
+        report_hash="a" * 64,
+        proof_hash="b" * 64,
+        scorer_artifact_hash="c" * 64,
+        base_artifact_hash="d" * 64,
+        policy_hash="e" * 64,
+        policy_version="test-policy-v1",
+        manifest_hash="f" * 64,
+        fold_plan_hash="1" * 64,
+        fold_id="fold-test-01",
+        vector_schema_version="scorer-vector-v2",
+        vector_schema_hash="2" * 64,
+        candidate_completeness_verified=False,
+        scored_candidate_coverage_verified=False,
+        test_sample_count=9,
+        opportunity_count=90,
+        class_support=((-1, 3), (0, 2), (1, 4)),
+        coverage=0.75,
+        abstain_count=2,
+        log_loss=0.41,
+        brier_score=0.18,
+        expected_calibration_error=0.08,
+        false_veto_rate=0.25,
+        candidate_retention=0.67,
+        candidate_count=6,
+        scored_candidate_count=4,
+        approved_candidate_count=3,
+    )
 
 
 class _ScorerScoreEventReadModel:
@@ -326,10 +342,12 @@ def test_scorer_admin_is_locked_responsive_and_uses_cas_disable(
         expect(
             browser_page.get_by_role("heading", name="Điều phối chấm điểm mô hình")
         ).to_be_visible()
-        expect(browser_page.get_by_text("Quyền runtime chưa được xác minh")).to_be_visible()
+        expect(
+            browser_page.get_by_text("Chưa đủ điều kiện báo cáo và ủy quyền để bật chế độ")
+        ).to_be_visible()
         expect(
             browser_page.get_by_text(
-                "Chế độ chỉ quan sát (SHADOW) và cổng PAPER (PAPER_GATE) đang khóa."
+                "SHADOW và PAPER_GATE đang khóa theo các điều kiện được liệt kê bên dưới."
             )
         ).to_be_visible()
         expect(browser_page.get_by_text("Cần xác minh lại quyền hiện hành")).to_be_visible()
@@ -337,12 +355,23 @@ def test_scorer_admin_is_locked_responsive_and_uses_cas_disable(
         expect(
             browser_page.get_by_role("heading", name="Báo cáo scorer TEST gần nhất")
         ).to_be_visible()
-        expect(browser_page.get_by_text("Chưa kết luận")).to_be_visible()
+        expect(browser_page.get_by_text("Chưa kết luận", exact=True)).to_be_visible()
         expect(browser_page.get_by_text("75.0%").first).to_be_visible()
         expect(browser_page.get_by_text("8.0%").first).to_be_visible()
         expect(browser_page.get_by_role("button", name="Tắt chấm điểm")).to_be_visible()
+        expect(browser_page.get_by_label("Chế độ muốn áp dụng")).to_be_visible()
+        expect(browser_page.locator("#scorer-mode option[value='SHADOW']")).to_be_disabled()
+        expect(browser_page.locator("#scorer-mode option[value='PAPER_GATE']")).to_be_disabled()
+        expect(browser_page.get_by_text("INCONCLUSIVE; cần ACCEPTED_SHADOW_ONLY")).to_be_visible()
+        expect(browser_page.get_by_text("runtime_usable=false").first).to_be_visible()
+        expect(
+            browser_page.get_by_text("SHADOW chỉ quan sát và ghi điểm, không thay đổi quyết định.")
+        ).to_be_visible()
+        expect(
+            browser_page.get_by_text("PAPER_GATE vẫn đi qua các cổng RiskEngine thông thường")
+        ).to_be_visible()
         expect(browser_page.locator("#learning-scoring-status")).to_be_hidden()
-        assert browser_page.locator("select").count() == 0
+        assert browser_page.locator("select").count() == 1
         assert "feature_schema_hash" not in browser_page.content()
         assert "test_payload" not in browser_page.content()
         expect(browser_page.get_by_text("Từ chối ứng viên")).to_be_visible()
@@ -373,9 +402,22 @@ def test_scorer_admin_is_locked_responsive_and_uses_cas_disable(
         expect(browser_page.get_by_text("MODEL_UNAVAILABLE")).to_be_visible()
         assert score_event_read_model.calls == [(WORKSPACE_ID, 1), (WORKSPACE_ID, 2)]
 
-        reason = browser_page.get_by_label("Lý do tắt")
+        reason = browser_page.get_by_label("Lý do thay đổi")
         reason.fill("Quyền hiện hành chưa xác minh, tắt deployment scorer.")
         expect(browser_page.get_by_role("button", name="Tắt chấm điểm")).to_be_enabled()
+        service.facade.fail_next_request = True
+        with browser_page.expect_response(
+            lambda item: (
+                item.request.method == "POST"
+                and item.url.endswith("/api/v1/learning-scorer/deployment")
+            )
+        ) as failed_response:
+            browser_page.get_by_role("button", name="Tắt chấm điểm").click()
+        assert failed_response.value.status == 409
+        expect(browser_page.get_by_role("alert")).to_have_text(
+            "Deployment scorer đã đổi hoặc chưa đủ quyền hiện hành để bật."
+        )
+        first_idempotency_key = failed_response.value.request.headers["idempotency-key"]
         with browser_page.expect_request(
             lambda item: (
                 item.method == "POST" and item.url.endswith("/api/v1/learning-scorer/deployment")
@@ -391,6 +433,7 @@ def test_scorer_admin_is_locked_responsive_and_uses_cas_disable(
         request = disable_request.value
         assert request.headers["x-csrf-token"] == "playwright-scorer-csrf-token"
         assert UUID(request.headers["idempotency-key"])
+        assert request.headers["idempotency-key"] == first_idempotency_key
         assert request.post_data_json == {
             "mode": "DISABLED",
             "expected_pointer_version": 4,
@@ -399,15 +442,99 @@ def test_scorer_admin_is_locked_responsive_and_uses_cas_disable(
         }
         assert disable_response.value.status == 200
         assert disable_response.value.headers["cache-control"] == "no-store"
-        assert auth_service.verified_tokens == ["playwright-scorer-csrf-token"]
+        assert auth_service.verified_tokens == [
+            "playwright-scorer-csrf-token",
+            "playwright-scorer-csrf-token",
+        ]
         assert len(service.facade.calls) == 1
         assert service.facade.calls[0]["actor_membership_id"] == MEMBERSHIP_ID
         assert service.facade.calls[0]["expected_pointer_version"] == 4
         assert service.facade.calls[0]["expected_deployment_revision"] == 2
         assert isinstance(service.facade.calls[0]["idempotency_key"], UUID)
         expect(browser_page.get_by_text("Đang tắt").first).to_be_visible()
-        assert len(service.principals) == 4
+        assert len(service.principals) == 5
         assert all(principal.workspace_id == WORKSPACE_ID for principal in service.principals)
         assert report_read_model.workspaces == [WORKSPACE_ID] * 3
+    finally:
+        _stop_app(server, thread, listener)
+
+
+def test_eligible_mode_request_binds_displayed_report_and_surfaces_server_gate(
+    browser_page: Page,
+) -> None:
+    report_id = UUID("ad2d5800-f3e7-4e57-9818-3a64ae69a9a6")
+    base_summary = _report_summary()
+    summary_with_id = SimpleNamespace(
+        **{**asdict(base_summary), "status": "ACCEPTED_SHADOW_ONLY"},
+        evaluation_report_id=report_id,
+    )
+    (
+        app_url,
+        server,
+        thread,
+        listener,
+        service,
+        _auth_service,
+        report_read_model,
+        _score_event_read_model,
+    ) = _serve_app()
+    try:
+        service.facade.snapshot = ScorerDeploymentAdminSnapshot(
+            workspace_id=WORKSPACE_ID,
+            mode=ScorerDeploymentMode.DISABLED,
+            deployment_event_id=None,
+            deployment_revision=0,
+            active_pointer_version=4,
+            health=ScorerDeploymentHealth.DISABLED,
+            runtime_usable=False,
+        )
+        report_read_model.summary = summary_with_id
+        browser_page.route(
+            "**/*",
+            lambda route: (
+                route.continue_() if route.request.url.startswith(app_url + "/") else route.abort()
+            ),
+        )
+        browser_page.route(
+            f"{app_url}/api/v1/learning-scorer/deployment",
+            lambda route: route.fulfill(
+                status=409,
+                headers={"cache-control": "no-store"},
+                content_type="application/json",
+                body='{"detail":"Quyền hiện hành chưa đáp ứng điều kiện deployment."}',
+            ),
+        )
+        response = browser_page.goto(f"{app_url}/admin/learning/scoring", wait_until="load")
+        assert response is not None
+        assert response.status == 200
+        expect(browser_page.locator("#scorer-mode option[value='SHADOW']")).to_be_enabled()
+        assert browser_page.locator("#scorer-deployment-form").get_attribute(
+            "data-evaluation-report-id"
+        ) == str(report_id)
+        browser_page.get_by_label("Chế độ muốn áp dụng").select_option("SHADOW")
+        browser_page.get_by_label("Lý do thay đổi").fill(
+            "Đánh giá SHADOW sau khi kiểm định TEST đạt điều kiện."
+        )
+        with browser_page.expect_request(
+            lambda request: (
+                request.method == "POST"
+                and request.url.endswith("/api/v1/learning-scorer/deployment")
+            )
+        ) as active_request:
+            browser_page.get_by_role("button", name="Gửi yêu cầu bật chế độ").click()
+        request = active_request.value
+        assert request.headers["x-csrf-token"] == "playwright-scorer-csrf-token"
+        assert UUID(request.headers["idempotency-key"])
+        assert request.post_data_json == {
+            "mode": "SHADOW",
+            "evaluation_report_id": str(report_id),
+            "expected_pointer_version": 4,
+            "expected_deployment_revision": 0,
+            "reason": "Đánh giá SHADOW sau khi kiểm định TEST đạt điều kiện.",
+        }
+        expect(browser_page.get_by_role("alert")).to_have_text(
+            "Quyền hiện hành chưa đáp ứng điều kiện deployment."
+        )
+        assert service.facade.snapshot.mode is ScorerDeploymentMode.DISABLED
     finally:
         _stop_app(server, thread, listener)

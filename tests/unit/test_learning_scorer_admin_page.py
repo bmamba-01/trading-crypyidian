@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import re
+from dataclasses import asdict, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 from fastapi import FastAPI
@@ -173,7 +176,7 @@ def test_scoring_admin_page_is_no_store_metadata_only_and_keeps_modes_locked() -
     assert response.headers["Cache-Control"] == "no-store"
     assert "Điều phối chấm điểm mô hình" in response.text
     assert "Đang tắt" in response.text
-    assert "quyền runtime chưa được xác minh" in response.text.lower()
+    assert "chưa đủ điều kiện báo cáo và ủy quyền" in response.text.lower()
     assert "chỉ quan sát" in response.text.lower()
     assert "khóa" in response.text.lower()
     assert "data-feature-value" not in response.text
@@ -182,7 +185,12 @@ def test_scoring_admin_page_is_no_store_metadata_only_and_keeps_modes_locked() -
     assert "data-score-event" not in response.text
     assert "Chưa có báo cáo scorer TEST đã lưu" in response.text
     assert "Chưa có sự kiện điểm chấm trong không gian làm việc này." in response.text
-    assert 'name="mode"' not in response.text
+    assert 'id="scorer-mode"' in response.text
+    assert 'option value="SHADOW" disabled' in response.text
+    assert 'option value="PAPER_GATE" disabled' in response.text
+    assert "Chưa có báo cáo scorer TEST đã lưu trong không gian làm việc này." in response.text
+    assert "máy chủ sẽ xác minh lại quyền hiện hành" in response.text.lower()
+    assert "PAPER_GATE vẫn đi qua các cổng RiskEngine thông thường" in response.text
     assert 'name="actor' not in response.text
     assert service.principals == [principal]
 
@@ -196,10 +204,13 @@ def test_scoring_admin_page_only_shows_cas_disable_for_recent_totp_approver() ->
     response = client.get("/admin/learning/scoring")
 
     assert response.status_code == 200
-    assert 'id="scorer-disable-form"' in response.text
+    assert 'id="scorer-deployment-form"' in response.text
+    assert 'name="mode"' in response.text
     assert 'data-expected-pointer-version="2"' in response.text
     assert 'data-expected-deployment-revision="1"' in response.text
     assert 'data-csrf-token="scorer-page-csrf"' in response.text
+    assert 'value="DISABLED"' in response.text
+    assert 'data-evaluation-report-id="' in response.text
     assert "Tắt chấm điểm" in response.text
     assert "rights" not in response.text.lower() or "quyền" in response.text.lower()
 
@@ -214,7 +225,9 @@ def test_scoring_admin_page_keeps_ordinary_viewer_read_only() -> None:
     response = client.get("/admin/learning/scoring")
 
     assert response.status_code == 200
-    assert 'id="scorer-disable-form"' not in response.text
+    assert 'id="scorer-deployment-form"' in response.text
+    assert re.search(r'<select[^>]*id="scorer-mode"[^>]*disabled', response.text)
+    assert re.search(r'<button[^>]*id="scorer-deployment-submit"[^>]*disabled', response.text)
     assert "cần xác thực totp gần đây" in response.text.lower()
 
 
@@ -228,8 +241,46 @@ def test_scoring_admin_page_hides_mutation_without_recent_totp() -> None:
     response = client.get("/admin/learning/scoring")
 
     assert response.status_code == 200
-    assert 'id="scorer-disable-form"' not in response.text
+    assert 'id="scorer-deployment-form"' in response.text
+    assert re.search(r'<select[^>]*id="scorer-mode"[^>]*disabled', response.text)
+    assert re.search(r'<button[^>]*id="scorer-deployment-submit"[^>]*disabled', response.text)
     assert "xác thực totp gần đây" in response.text.lower()
+
+
+def test_scoring_admin_page_shows_policy_and_rights_gates_for_active_modes() -> None:
+    client, _service, _principal = _client(report_summary=_summary())
+
+    response = client.get("/admin/learning/scoring")
+
+    assert response.status_code == 200
+    assert 'option value="SHADOW" disabled' in response.text
+    assert 'option value="PAPER_GATE" disabled' in response.text
+    assert "INCONCLUSIVE" in response.text
+    assert "candidate_completeness_verified" not in response.text
+    assert "scored_candidate_coverage_verified" not in response.text
+    assert "Báo cáo chưa xác minh đủ bằng chứng về mọi cơ hội TEST" in response.text
+    assert "Báo cáo chưa xác minh đủ độ phủ cơ hội được chấm" in response.text
+    assert "runtime_usable=false" in response.text
+
+
+def test_accepted_shadow_report_shows_exact_id_and_leaves_rights_to_server_recheck() -> None:
+    report_id = UUID("ad2d5800-f3e7-4e57-9818-3a64ae69a9a6")
+    summary = SimpleNamespace(
+        **asdict(replace(_summary(), status="ACCEPTED_SHADOW_ONLY")),
+        evaluation_report_id=report_id,
+    )
+    client, _service, _principal = _client(report_summary=summary)
+
+    response = client.get("/admin/learning/scoring")
+
+    assert response.status_code == 200
+    assert 'option value="SHADOW" disabled' not in response.text
+    assert f'data-evaluation-report-id="{report_id}"' in response.text
+    assert f'name="evaluation_report_id" value="{report_id}"' in response.text
+    assert "Có chế độ đạt điều kiện báo cáo và ủy quyền" in response.text
+    assert "máy chủ sẽ xác minh lại quyền hiện hành" in response.text.lower()
+    assert "health=DISABLED" in response.text
+    assert "runtime_usable=false" in response.text
 
 
 def test_scoring_admin_page_shows_only_persisted_aggregate_report_metadata() -> None:

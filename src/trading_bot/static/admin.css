@@ -2194,3 +2194,206 @@ th {
 .bot-section-card {
   transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
 }
+
+/* WP06 scorer: các cổng quản trị phải đọc được trên desktop và điện thoại. */
+.learning-scoring-page {
+  display: grid;
+  gap: 1rem;
+  min-width: 0;
+}
+
+.learning-scoring-card,
+.learning-scoring-lock {
+  min-width: 0;
+  padding: 1rem;
+  border: 1px solid var(--border-main);
+  border-radius: 0.75rem;
+  background: var(--bg-surface);
+  color: var(--text-main);
+  overflow-wrap: anywhere;
+}
+
+.learning-scoring-lock {
+  border-color: var(--warning);
+  background: var(--warning-bg);
+}
+
+.learning-scoring-card h2,
+.learning-scoring-lock h2 {
+  margin-top: 0;
+}
+
+.learning-scoring-card-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.learning-scoring-metadata,
+.learning-scoring-report-grid,
+.learning-scoring-event-grid,
+.learning-scoring-lineage-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr));
+  gap: 0.75rem;
+  margin: 1rem 0;
+}
+
+.learning-scoring-metadata > div,
+.learning-scoring-report-grid > div,
+.learning-scoring-event-grid > div,
+.learning-scoring-lineage-grid > div {
+  min-width: 0;
+  padding: 0.7rem;
+  border: 1px solid var(--border-subtle);
+  border-radius: 0.5rem;
+  background: var(--bg-surface-subtle);
+}
+
+.learning-scoring-metadata dt,
+.learning-scoring-report-grid dt,
+.learning-scoring-event-grid dt,
+.learning-scoring-lineage-grid dt {
+  color: var(--text-muted);
+  font-size: 0.875rem;
+}
+
+.learning-scoring-metadata dd,
+.learning-scoring-report-grid dd,
+.learning-scoring-event-grid dd,
+.learning-scoring-lineage-grid dd {
+  margin: 0.25rem 0 0;
+  font-weight: 600;
+}
+
+.learning-scoring-mode-fieldset {
+  min-width: 0;
+  margin: 0 0 1rem;
+  padding: 1rem;
+  border: 1px solid var(--border-main);
+  border-radius: 0.625rem;
+}
+
+.learning-scoring-mode-fieldset legend {
+  padding: 0 0.35rem;
+  font-weight: 700;
+}
+
+#scorer-mode,
+#scorer-deployment-reason {
+  display: block;
+  width: 100%;
+  min-height: 2.75rem;
+  margin-top: 0.35rem;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid var(--border-main);
+  border-radius: 0.5rem;
+  background: var(--bg-base);
+  color: var(--text-main);
+  font: inherit;
+}
+
+#scorer-deployment-reason {
+  min-height: 7rem;
+  resize: vertical;
+}
+
+.learning-scoring-field-help,
+.learning-scoring-access-note {
+  color: var(--text-muted);
+  font-size: 0.925rem;
+}
+
+.learning-scoring-mode-gates {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 17rem), 1fr));
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+
+.learning-scoring-mode-gate {
+  min-width: 0;
+  padding: 0.85rem;
+  border: 1px solid var(--border-subtle);
+  border-radius: 0.5rem;
+  background: var(--bg-surface-subtle);
+}
+
+.learning-scoring-mode-gate h3 {
+  margin: 0 0 0.5rem;
+  font-size: 1rem;
+}
+
+.learning-scoring-mode-gate ul {
+  margin: 0;
+  padding-left: 1.25rem;
+}
+
+#scorer-deployment-submit {
+  min-height: 2.75rem;
+  margin: 0.75rem 0;
+  padding: 0.65rem 1rem;
+  border: 1px solid var(--primary);
+  border-radius: 0.5rem;
+  background: var(--primary);
+  color: var(--primary-contrast);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+#scorer-deployment-submit:disabled {
+  opacity: 0.48;
+  cursor: not-allowed;
+}
+
+.learning-scoring-form-error {
+  padding: 0.75rem;
+  border: 1px solid var(--danger);
+  border-radius: 0.5rem;
+  background: var(--danger-bg);
+  color: var(--danger-text);
+}
+
+.learning-scoring-event-list {
+  display: grid;
+  gap: 0.75rem;
+  padding: 0;
+  list-style: none;
+}
+
+.learning-scoring-event-list > li {
+  min-width: 0;
+  padding: 0.85rem;
+  border: 1px solid var(--border-subtle);
+  border-radius: 0.5rem;
+  background: var(--bg-surface-subtle);
+}
+
+.learning-scoring-event-heading,
+.learning-scoring-event-pagination {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+@media (max-width: 40rem) {
+  .learning-scoring-card,
+  .learning-scoring-lock {
+    padding: 0.85rem;
+  }
+
+  .learning-scoring-card-heading {
+    display: grid;
+  }
+
+  .learning-scoring-mode-fieldset {
+    padding: 0.75rem;
+  }
+
+  #scorer-deployment-submit {
+    width: 100%;
+  }
+}
