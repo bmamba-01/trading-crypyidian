@@ -5,9 +5,14 @@
 {% block content %}
   <div class="learning-scoring-page" id="learning-scoring-page">
     <section class="learning-scoring-lock" aria-labelledby="learning-scoring-lock-heading">
-      <h2 id="learning-scoring-lock-heading">Quyền runtime chưa được xác minh</h2>
-      <p><strong>Chế độ chỉ quan sát (SHADOW) và cổng PAPER (PAPER_GATE) đang khóa.</strong> Chưa có cổng quyền hiện hành để xác nhận lại quyền dữ liệu trước khi chấm. Trang này không bật bộ chấm và không tạo lệnh.</p>
-      <p>Chế độ chỉ quan sát (SHADOW) chỉ ghi nhận điểm, không tác động quyết định hoặc lệnh. Cổng PAPER (PAPER_GATE) chỉ có thể đi tiếp qua các cổng vận hành và bộ máy quản trị rủi ro hiện hữu sau khi báo cáo, bằng chứng và quyền được xác minh đầy đủ.</p>
+      {% if active_mode_available %}
+        <h2 id="learning-scoring-lock-heading">Có chế độ đạt điều kiện báo cáo và ủy quyền</h2>
+        <p><strong>Có thể gửi yêu cầu quản trị cho chế độ đủ điều kiện.</strong> Máy chủ vẫn xác minh lại quyền hiện hành, target, policy và phiên bản trước khi ghi; trang này không khẳng định deployment đã bật.</p>
+      {% else %}
+        <h2 id="learning-scoring-lock-heading">Chưa đủ điều kiện báo cáo và ủy quyền để bật chế độ</h2>
+        <p><strong>SHADOW và PAPER_GATE đang khóa theo các điều kiện được liệt kê bên dưới.</strong> Báo cáo scorer gần nhất: {{ report_status_label or "chưa có báo cáo lưu" }}. Trang này không bật bộ chấm và không tạo lệnh.</p>
+      {% endif %}
+      <p>Mọi yêu cầu đều được máy chủ kiểm tra lại quyền runtime hiện hành, policy, target và phiên bản. SHADOW chỉ ghi nhận điểm, không tác động quyết định hoặc lệnh. PAPER_GATE vẫn đi qua các cổng RiskEngine thông thường; scorer không thể bỏ qua bộ máy quản trị rủi ro.</p>
     </section>
 
     <section class="learning-scoring-card" aria-labelledby="learning-scoring-status-heading">
@@ -110,23 +115,49 @@
 
     <section class="learning-scoring-card" aria-labelledby="learning-scoring-controls-heading">
       <h2 id="learning-scoring-controls-heading">Điều khiển an toàn</h2>
-      {% if can_disable %}
-        <form id="scorer-disable-form"
-          data-csrf-token="{{ csrf_token }}"
-          data-expected-pointer-version="{{ snapshot.active_pointer_version }}"
-          data-expected-deployment-revision="{{ snapshot.deployment_revision }}">
-          <p>Bản triển khai hiện đang bật nhưng quyền chưa xác minh. Người duyệt có thể ghi sự kiện tắt bằng kiểm tra phiên bản CAS và xác thực TOTP gần đây.</p>
-          <label for="scorer-disable-reason">Lý do tắt</label>
-          <textarea id="scorer-disable-reason" name="reason" minlength="12" maxlength="500" required></textarea>
-          <button type="submit">Tắt chấm điểm</button>
-        </form>
-      {% elif snapshot.mode.value != "DISABLED" and has_approval %}
-        <p class="learning-scoring-access-note">Cần xác thực TOTP gần đây để tắt deployment đang hoạt động.</p>
-      {% elif snapshot.mode.value != "DISABLED" %}
-        <p class="learning-scoring-access-note">Chỉ người có quyền duyệt mới được tắt deployment.</p>
-      {% else %}
-        <p>Scorer đang tắt. Không có thao tác bật chế độ nào khả dụng khi quyền hiện hành chưa được xác minh.</p>
-      {% endif %}
+      <p>Chọn chế độ đích. Máy chủ sẽ kiểm tra lại quyền, TOTP, báo cáo và phiên bản khi nhận yêu cầu.</p>
+      <form id="scorer-deployment-form"
+        data-csrf-token="{{ csrf_token or '' }}"
+        data-expected-pointer-version="{{ snapshot.active_pointer_version }}"
+        data-expected-deployment-revision="{{ snapshot.deployment_revision }}"
+        data-evaluation-report-id="{{ report_summary.evaluation_report_id if report_summary and report_summary.evaluation_report_id else '' }}"
+        data-current-mode="{{ snapshot.mode.value }}">
+        <input type="hidden" name="expected_pointer_version" value="{{ snapshot.active_pointer_version }}">
+        <input type="hidden" name="expected_deployment_revision" value="{{ snapshot.deployment_revision }}">
+        {% if report_summary and report_summary.evaluation_report_id %}<input type="hidden" name="evaluation_report_id" value="{{ report_summary.evaluation_report_id }}">{% endif %}
+        <fieldset class="learning-scoring-mode-fieldset">
+          <legend>Chế độ scorer</legend>
+          <label for="scorer-mode">Chế độ muốn áp dụng</label>
+          <select id="scorer-mode" name="mode" aria-describedby="scorer-mode-help{% if authorization_gate %} scorer-authorization-gate{% endif %}"{% if authorization_gate %} disabled{% endif %}>
+            {% for option in mode_options %}
+              <option value="{{ option.value }}"{% if option.value == requested_mode %} selected{% endif %}{% if not option.available %} disabled{% endif %}>{{ option.label }}{% if not option.available %} — đang khóa{% endif %}</option>
+            {% endfor %}
+          </select>
+          <p id="scorer-mode-help" class="learning-scoring-field-help">SHADOW chỉ quan sát và ghi điểm, không thay đổi quyết định. PAPER_GATE chỉ có thể chặn ứng viên theo kết quả scorer sau khi qua các cổng RiskEngine thông thường.</p>
+          {% if authorization_gate %}<p id="scorer-authorization-gate" class="learning-scoring-access-note">{{ authorization_gate }}</p>{% endif %}
+          <div class="learning-scoring-mode-gates" aria-label="Điều kiện theo từng chế độ">
+            {% for option in mode_options %}
+              <section class="learning-scoring-mode-gate" aria-labelledby="{{ option.gate_id }}-heading">
+                <h3 id="{{ option.gate_id }}-heading">{{ option.label }}</h3>
+                {% if option.gates %}
+                  <ul id="{{ option.gate_id }}">
+                    {% for gate in option.gates %}<li>{{ gate }}</li>{% endfor %}
+                  </ul>
+                {% else %}
+                  <p id="{{ option.gate_id }}">Đủ điều kiện theo dữ liệu đang hiển thị; máy chủ vẫn sẽ xác minh lại trước khi ghi.</p>
+                {% endif %}
+                {% for note in option.notes %}<p class="learning-scoring-field-help">{{ note }}</p>{% endfor %}
+              </section>
+            {% endfor %}
+          </div>
+        </fieldset>
+        <label for="scorer-deployment-reason">Lý do thay đổi <span aria-hidden="true">*</span></label>
+        <textarea id="scorer-deployment-reason" name="reason" minlength="12" maxlength="500" aria-describedby="scorer-reason-help" required{% if not can_submit %} disabled{% endif %}></textarea>
+        <p id="scorer-reason-help" class="learning-scoring-field-help">Nhập ít nhất 12 ký tự. Lý do sẽ được lưu cùng sự kiện quản trị.</p>
+        <button id="scorer-deployment-submit" type="submit"{% if not can_submit %} disabled{% endif %}>{% if snapshot.mode.value != "DISABLED" %}Tắt chấm điểm{% else %}Ghi nhận thay đổi chế độ{% endif %}</button>
+        <p id="scorer-error" class="learning-scoring-form-error" role="alert" aria-live="assertive" tabindex="-1" hidden></p>
+        <p class="learning-scoring-field-help">Nếu phiên bản đã thay đổi hoặc quyền bị thu hồi, hãy tải lại trang để nhận trạng thái mới rồi gửi lại yêu cầu.</p>
+      </form>
       <p id="learning-scoring-status" role="status" aria-live="polite" hidden></p>
     </section>
   </div>

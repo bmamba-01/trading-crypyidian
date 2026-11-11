@@ -56,6 +56,7 @@ _SCORE_EVENT_DECISION_LABELS: dict[ScorerEventDecision, str] = {
     "VETO": "Từ chối ứng viên",
     "ABSTAIN": "Không chấm được",
 }
+_ACTIVE_REPORT_STATUSES = frozenset({"ACCEPTED_SHADOW_ONLY", "ACCEPTED_PAPER_GATE_ELIGIBLE"})
 
 
 @router.get("/admin/learning/scoring")
@@ -140,11 +141,23 @@ async def learning_scoring_admin_page(
 
     has_approval = authorize(principal, Permission.LEARNING_MODEL_APPROVE)
     recent_totp = _has_recent_totp(principal)
-    can_disable = (
-        snapshot.mode is not ScorerDeploymentMode.DISABLED and has_approval and recent_totp
+    mode_options = tuple(
+        _mode_option(
+            mode,
+            current_mode=snapshot.mode,
+            snapshot=snapshot,
+            report_summary=report_summary,
+            has_approval=has_approval,
+            recent_totp=recent_totp,
+        )
+        for mode in ScorerDeploymentMode
+    )
+    can_submit = any(item["available"] for item in mode_options)
+    active_mode_available = any(
+        item["available"] and item["value"] in {"SHADOW", "PAPER_GATE"} for item in mode_options
     )
     csrf_token: str | None = None
-    if can_disable:
+    if can_submit:
         try:
             csrf_token = await _auth_service(request).issue_csrf_token(read_session_cookie(request))
         except AuthenticationFailure as error:
@@ -164,7 +177,11 @@ async def learning_scoring_admin_page(
             "health_label": _HEALTH_LABELS[snapshot.health],
             "has_approval": has_approval,
             "recent_totp": recent_totp,
-            "can_disable": can_disable,
+            "mode_options": mode_options,
+            "active_mode_available": active_mode_available,
+            "requested_mode": ScorerDeploymentMode.DISABLED.value,
+            "can_submit": can_submit,
+            "authorization_gate": _authorization_gate(has_approval, recent_totp),
             "csrf_token": csrf_token,
             "event_id_short": _short(snapshot.deployment_event_id),
             "report_summary": report_summary,
@@ -229,6 +246,96 @@ def _has_recent_totp(principal: Principal) -> bool:
         and verified_at <= now
         and now - verified_at <= RECENT_MFA_LIFETIME
     )
+
+
+def _authorization_gate(has_approval: bool, recent_totp: bool) -> str | None:
+    if not has_approval:
+        return "Thiếu quyền LEARNING_MODEL_APPROVE để đổi chế độ scorer."
+    if not recent_totp:
+        return "Cần xác thực TOTP gần đây để đổi chế độ scorer."
+    return None
+
+
+def _mode_option(
+    mode: ScorerDeploymentMode,
+    *,
+    current_mode: ScorerDeploymentMode,
+    snapshot: ScorerDeploymentAdminSnapshot,
+    report_summary: Any,
+    has_approval: bool,
+    recent_totp: bool,
+) -> dict[str, Any]:
+    labels = {
+        ScorerDeploymentMode.DISABLED: "DISABLED — Tắt scorer",
+        ScorerDeploymentMode.SHADOW: "SHADOW — Chỉ quan sát",
+        ScorerDeploymentMode.PAPER_GATE: "PAPER_GATE — Cổng PAPER",
+    }
+    gates: list[str] = []
+    if mode is ScorerDeploymentMode.DISABLED:
+        if current_mode is ScorerDeploymentMode.DISABLED:
+            gates.append("Scorer hiện đã tắt.")
+        else:
+            auth_gate = _authorization_gate(has_approval, recent_totp)
+            if auth_gate:
+                gates.append(auth_gate)
+    else:
+        gates.extend(_report_mode_gates(mode, report_summary))
+        auth_gate = _authorization_gate(has_approval, recent_totp)
+        if auth_gate:
+            gates.append(auth_gate)
+        if current_mode is mode:
+            gates.append("Scorer đã ở chế độ này; hãy tải lại để đọc phiên bản hiện hành.")
+
+    notes: tuple[str, ...] = ()
+    if mode is not ScorerDeploymentMode.DISABLED:
+        notes = (
+            "Snapshot deployment hiện ghi "
+            f"health={snapshot.health.value}, runtime_usable="
+            f"{str(snapshot.runtime_usable).lower()}; máy chủ sẽ xác minh lại "
+            "quyền hiện hành và các điều kiện deployment khi nhận POST.",
+        )
+
+    return {
+        "value": mode.value,
+        "label": labels[mode],
+        "available": not gates,
+        "gates": tuple(gates),
+        "notes": notes,
+        "gate_id": f"scorer-{mode.value.lower()}-gate",
+    }
+
+
+def _report_mode_gates(mode: ScorerDeploymentMode, report_summary: Any) -> list[str]:
+    if report_summary is None:
+        return ["Chưa có báo cáo scorer TEST đã lưu trong không gian làm việc này."]
+
+    status = report_summary.status
+    gates: list[str] = []
+    if mode is ScorerDeploymentMode.SHADOW:
+        if status not in _ACTIVE_REPORT_STATUSES:
+            gates.append(
+                "Báo cáo scorer TEST gần nhất có trạng thái "
+                f"{status}; cần ACCEPTED_SHADOW_ONLY hoặc ACCEPTED_PAPER_GATE_ELIGIBLE. "
+                f"Policy {report_summary.policy_version} chưa chấp nhận chế độ SHADOW."
+            )
+    elif status != "ACCEPTED_PAPER_GATE_ELIGIBLE":
+        gates.append(
+            "Báo cáo scorer TEST gần nhất có trạng thái "
+            f"{status}; cần ACCEPTED_PAPER_GATE_ELIGIBLE. "
+            f"Policy {report_summary.policy_version} chưa chấp nhận PAPER_GATE."
+        )
+
+    if (
+        status in _ACTIVE_REPORT_STATUSES
+        and getattr(report_summary, "evaluation_report_id", None) is None
+    ):
+        gates.append("Báo cáo chưa có mã định danh để ghim deployment vào đúng đánh giá.")
+    if mode is ScorerDeploymentMode.PAPER_GATE:
+        if not report_summary.candidate_completeness_verified:
+            gates.append("Báo cáo chưa xác minh đủ bằng chứng về mọi cơ hội TEST.")
+        if not report_summary.scored_candidate_coverage_verified:
+            gates.append("Báo cáo chưa xác minh đủ độ phủ cơ hội được chấm.")
+    return gates
 
 
 def _short(value: object | None) -> str:
