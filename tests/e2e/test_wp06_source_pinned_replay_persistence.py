@@ -163,9 +163,11 @@ def test_source_pinned_runtime_replay_persists_exact_lineage_in_postgres(scorer_
         )
         result = json.loads(probe.stdout.strip().splitlines()[-1])
         if scorer_test:
+            assert result["qa_provider"] == "CRYPIDIAN_FIRST_PARTY_QA"
             assert result["bars"] == 470
             assert result["linked_outcomes"] == 27
             assert result["opportunities"] == 270
+            assert result["test_candidate_count"] == 9
             _run_source_linked_test(root, project, environment, volume, result)
             _compose(
                 root,
@@ -310,6 +312,8 @@ def _run_source_linked_test(root, project, environment, volume, state):
         "current_training_scope_digest_matched",
         "no_test_receipt_mutation",
         "inconclusive_deployment_denied",
+        "qa_source_deployment_denied",
+        "qa_denial_side_effect_free",
         "outer_gateway_no_test_payload_mutation",
         "deployment_caller_denied",
         "worker_execute_granted",
@@ -317,6 +321,12 @@ def _run_source_linked_test(root, project, environment, volume, state):
     ):
         assert state[name] is True
     assert state["report_status"] == "INCONCLUSIVE"
+    assert state["sample_support_block"] == {
+        "sample_count": 9,
+        "minimum_sample_count": 1000,
+        "class_support": {"-1": 3, "0": 3, "1": 3},
+        "minimum_class_support": 100,
+    }
 
 
 def _lineage_contract(root, project, environment, volume, workspace_id):

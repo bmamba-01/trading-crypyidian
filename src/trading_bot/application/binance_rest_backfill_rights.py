@@ -1,4 +1,4 @@
-"""Rights gate nối Binance REST backfill với policy registry đã quan sát."""
+"""Rights gate nối provider backfill đã allowlist với policy registry đã quan sát."""
 
 from __future__ import annotations
 
@@ -8,9 +8,16 @@ from urllib.parse import urlsplit
 from uuid import UUID
 
 from trading_bot.application.binance_rest_backfill import (
+    BACKTEST_RIGHTS_PROVIDERS,
+    BINANCE_USDM_REST_PROVIDER,
+    CRYPIDIAN_FIRST_PARTY_QA_PROVIDER,
     BackfillRightsEvidence,
     BackfillRightsPurpose,
     RestBackfillRequest,
+)
+from trading_bot.application.first_party_qa_dataset import (
+    CRYPIDIAN_FIRST_PARTY_QA_EVIDENCE_REF,
+    FirstPartyQADatasetRequest,
 )
 from trading_bot.domain.research.source_policy import SourceUsePurpose
 from trading_bot.domain.research.source_registry import (
@@ -18,7 +25,7 @@ from trading_bot.domain.research.source_registry import (
     source_rights_hash,
 )
 
-_SOURCE_ID = "BINANCE_USDM_REST"
+_SOURCE_ID = BINANCE_USDM_REST_PROVIDER
 _EVIDENCE_LEASE = timedelta(minutes=5)
 _PURPOSE_MAP = {
     BackfillRightsPurpose.BACKTEST_RESEARCH: SourceUsePurpose.BACKTEST_RESEARCH,
@@ -40,7 +47,11 @@ class BackfillRightsRepository(Protocol):
 
 
 class SourceRegistryBackfillRightsGate:
-    """Chỉ cấp lease ngắn khi policy hiện hành và observer chain còn hợp lệ."""
+    """Chỉ cấp lease ngắn khi policy hiện hành và observer chain còn hợp lệ.
+
+    Binance dùng request REST riêng; QA chỉ nhận request synthetic first-party
+    và evidence đúng tài liệu fixture đã ghim.
+    """
 
     def __init__(
         self,
@@ -51,8 +62,8 @@ class SourceRegistryBackfillRightsGate:
     ) -> None:
         if not isinstance(workspace_id, UUID):
             raise ValueError("workspace_id phải là UUID.")
-        if not isinstance(source_id, str) or not source_id.strip():
-            raise ValueError("source_id không được để trống.")
+        if source_id not in BACKTEST_RIGHTS_PROVIDERS:
+            raise ValueError("source_id phải là Binance REST hoặc first-party QA allowlist.")
         self._workspace_id = workspace_id
         self._repository = repository
         self._source_id = source_id
@@ -60,12 +71,19 @@ class SourceRegistryBackfillRightsGate:
     async def authorize(
         self,
         *,
-        request: RestBackfillRequest,
+        request: RestBackfillRequest | FirstPartyQADatasetRequest,
         now: datetime,
     ) -> BackfillRightsEvidence:
         """Đọc policy/receipt trước, rồi dùng DB clock để kiểm purpose và thời hạn."""
-        if not isinstance(request, RestBackfillRequest):
-            raise ValueError("request phải là RestBackfillRequest.")
+        if type(request) not in {RestBackfillRequest, FirstPartyQADatasetRequest}:
+            raise ValueError("request phải là Binance REST hoặc first-party QA request.")
+        expected_request_type = (
+            FirstPartyQADatasetRequest
+            if self._source_id == CRYPIDIAN_FIRST_PARTY_QA_PROVIDER
+            else RestBackfillRequest
+        )
+        if type(request) is not expected_request_type:
+            raise PermissionError("Request không khớp provider rights gate đã cấu hình.")
         if not isinstance(now, datetime) or now.tzinfo is None or now.utcoffset() is None:
             raise ValueError("now phải có múi giờ.")
         purpose = _PURPOSE_MAP.get(request.purpose)
@@ -104,6 +122,11 @@ class SourceRegistryBackfillRightsGate:
             raise PermissionError("Policy hiện hành không cấp đúng mục đích backfill.")
 
         terms_url = policy.evidence_ref or ""
+        if (
+            self._source_id == CRYPIDIAN_FIRST_PARTY_QA_PROVIDER
+            and terms_url != CRYPIDIAN_FIRST_PARTY_QA_EVIDENCE_REF
+        ):
+            raise PermissionError("QA policy phải trỏ đúng tài liệu fixture first-party.")
         terms = urlsplit(terms_url)
         if terms.scheme != "https" or not terms.netloc:
             raise PermissionError("Policy evidence cần URL điều khoản HTTPS đầy đủ.")
@@ -113,7 +136,7 @@ class SourceRegistryBackfillRightsGate:
             lease_until = min(lease_until, policy.valid_until)
         return BackfillRightsEvidence(
             workspace_id=self._workspace_id,
-            provider="BINANCE_USDM_REST",
+            provider=self._source_id,
             purpose=request.purpose,
             terms_url=terms_url,
             policy_fingerprint=source_rights_hash(current),

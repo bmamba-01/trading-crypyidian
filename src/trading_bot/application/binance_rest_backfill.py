@@ -36,7 +36,24 @@ _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 _WEEK_EPOCH = datetime(1970, 1, 5, tzinfo=UTC)
 _SOURCE = "BINANCE_USDM_REST_BACKFILL"
+BINANCE_USDM_REST_PROVIDER = "BINANCE_USDM_REST"
+CRYPIDIAN_FIRST_PARTY_QA_PROVIDER = "CRYPIDIAN_FIRST_PARTY_QA"
+BACKTEST_RIGHTS_PROVIDERS = frozenset(
+    {BINANCE_USDM_REST_PROVIDER, CRYPIDIAN_FIRST_PARTY_QA_PROVIDER}
+)
+_MARKET_SOURCE_BY_PROVIDER = {
+    BINANCE_USDM_REST_PROVIDER: _SOURCE,
+    CRYPIDIAN_FIRST_PARTY_QA_PROVIDER: "CRYPIDIAN_FIRST_PARTY_QA_FIXTURE",
+}
 _CHECKPOINT_LIMIT = 2 * 1024 * 1024
+
+
+def market_source_for_rights_provider(provider: str) -> str:
+    """Ánh xạ provider đã allowlist sang đúng nhãn nguồn market bar."""
+    try:
+        return _MARKET_SOURCE_BY_PROVIDER[provider]
+    except KeyError, TypeError:
+        raise ValueError("Provider backtest chưa được allowlist.") from None
 
 
 class RestBackfillError(RuntimeError):
@@ -101,7 +118,7 @@ class RestBackfillRequest:
     def fingerprint(self) -> str:
         """Hash xác định gắn symbol, thời gian, mục đích và giới hạn trang."""
         payload = {
-            "provider": "BINANCE_USDM_REST",
+            "provider": BINANCE_USDM_REST_PROVIDER,
             "symbol": self.symbol,
             "interval": self.interval,
             "start": self.start.isoformat(),
@@ -163,8 +180,8 @@ class BackfillRightsEvidence:
     def __post_init__(self) -> None:
         if type(self.workspace_id) is not UUID:
             raise ValueError("workspace_id rights evidence phải là UUID.")
-        if self.provider != "BINANCE_USDM_REST":
-            raise ValueError("Rights evidence không khớp provider REST USD-M.")
+        if self.provider not in BACKTEST_RIGHTS_PROVIDERS:
+            raise ValueError("Rights evidence có provider ngoài allowlist backtest.")
         if not isinstance(self.purpose, BackfillRightsPurpose):
             raise ValueError("Rights evidence cần purpose hợp lệ.")
         parsed = urlparse(self.terms_url)
@@ -432,6 +449,8 @@ class BinanceRestBackfillRunner:
         max_pages: int = 10,
     ) -> RestBackfillBatch:
         instant = _as_utc(now, "now")
+        if type(request) is not RestBackfillRequest:
+            raise ValueError("Binance REST runner chỉ nhận RestBackfillRequest Binance.")
         if isinstance(max_pages, bool) or not 1 <= max_pages <= 100:
             raise ValueError("max_pages phải nằm trong 1..100.")
         interval = _FIXED_INTERVALS[request.interval]

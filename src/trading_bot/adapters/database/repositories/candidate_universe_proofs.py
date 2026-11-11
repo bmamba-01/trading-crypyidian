@@ -31,7 +31,6 @@ from trading_bot.adapters.database.models.candidate_universe_entities import (
 )
 from trading_bot.adapters.database.models.market_entities import MarketBar
 from trading_bot.adapters.database.replay_training_rights import (
-    SOURCE_ID,
     DatabaseReplayTrainingRightsGate,
     ReplayTrainingRightsReceipt,
     training_scope_digest,
@@ -47,6 +46,10 @@ from trading_bot.application.backtest_dataset_replay_bundle import (
     BacktestDatasetReplayBundleReference,
 )
 from trading_bot.application.backtest_dataset_replay_observations import replay_decision_event_id
+from trading_bot.application.binance_rest_backfill import (
+    BACKTEST_RIGHTS_PROVIDERS,
+    market_source_for_rights_provider,
+)
 from trading_bot.application.candidate_universe_proof import (
     DECISION_OPPORTUNITY_QUERY_VERSION,
     QUERY_VERSION,
@@ -103,10 +106,7 @@ class CandidateUniverseProofRepository:
         if type(workspace_id) is not UUID or type(trial_record_id) is not UUID:
             raise CandidateUniverseProofError("Scope phải là UUID tường minh.")
         await self._require_snapshot(workspace_id)
-        await self._session.execute(
-            text("SELECT pg_advisory_xact_lock(hashtextextended(:lock_key, 0))"),
-            {"lock_key": f"research-source:{workspace_id}:{SOURCE_ID}"},
-        )
+        await self._lock_replay_sources(workspace_id)
         locked: object = (
             await self._session.execute(
                 text("SELECT public.wp06_lock_candidate_trial(:workspace_id, :trial_id)"),
@@ -203,10 +203,7 @@ class CandidateUniverseProofRepository:
         if type(workspace_id) is not UUID or type(trial_record_id) is not UUID:
             raise CandidateUniverseProofError("Scope phải là UUID tường minh.")
         await self._require_snapshot(workspace_id)
-        await self._session.execute(
-            text("SELECT pg_advisory_xact_lock(hashtextextended(:lock_key, 0))"),
-            {"lock_key": f"research-source:{workspace_id}:{SOURCE_ID}"},
-        )
+        await self._lock_replay_sources(workspace_id)
         try:
             trial = await self._session.scalar(
                 select(BacktestTrialRecord).where(
@@ -434,6 +431,7 @@ class CandidateUniverseProofRepository:
                 raise CandidateUniverseProofError(
                     "Child manifest thiếu identity v4 hoặc lệch scope."
                 )
+            expected_market_source = market_source_for_rights_provider(dataset.rights_provider)
             receipt = by_child[child.dataset_hash]
             if (
                 receipt.workspace_id != workspace_id
@@ -441,7 +439,7 @@ class CandidateUniverseProofRepository:
                 or receipt.interval != child.interval
                 or receipt.symbol != reference.symbol
                 or receipt.bars_content_hash != child.bars_content_hash
-                or receipt.provider != SOURCE_ID
+                or receipt.provider != reference.rights_provider
             ):
                 raise CandidateUniverseProofError("Receipt TRAINING lệch child scope.")
             columns = [getattr(MarketBar, key) for key in SOURCE_METADATA_COLUMNS]
@@ -453,7 +451,7 @@ class CandidateUniverseProofRepository:
                             MarketBar.workspace_id == workspace_id,
                             MarketBar.symbol == dataset.symbol,
                             MarketBar.timeframe == dataset.interval,
-                            MarketBar.source == "BINANCE_USDM_REST_BACKFILL",
+                            MarketBar.source == expected_market_source,
                             MarketBar.open_time >= dataset.warmup_start,
                             MarketBar.open_time < dataset.range_end,
                             MarketBar.available_at <= dataset.prepared_at,
@@ -471,7 +469,7 @@ class CandidateUniverseProofRepository:
                     row["workspace_id"] != workspace_id
                     or row["symbol"] != dataset.symbol
                     or row["timeframe"] != dataset.interval
-                    or row["source"] != "BINANCE_USDM_REST_BACKFILL"
+                    or row["source"] != expected_market_source
                     or not dataset.warmup_start <= row["open_time"] < dataset.range_end
                     or row["available_at"] > dataset.prepared_at
                     or row["is_closed"] is not True
@@ -834,6 +832,14 @@ class CandidateUniverseProofRepository:
         if isolation != "read committed" or tenant != str(workspace_id):
             raise CandidateUniverseProofError(
                 "Proof yêu cầu snapshot DB nhất quán và tenant binding."
+            )
+
+    async def _lock_replay_sources(self, workspace_id: UUID) -> None:
+        """Khóa hai nguồn replay allowlist theo thứ tự cố định trước khi đọc rights."""
+        for source_id in sorted(BACKTEST_RIGHTS_PROVIDERS):
+            await self._session.execute(
+                text("SELECT pg_advisory_xact_lock(hashtextextended(:lock_key, 0))"),
+                {"lock_key": f"research-source:{workspace_id}:{source_id}"},
             )
 
     async def _scan(

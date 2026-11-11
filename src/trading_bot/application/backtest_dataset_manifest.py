@@ -11,13 +11,20 @@ from urllib.parse import urlsplit
 from uuid import UUID
 
 from trading_bot.application.binance_rest_backfill import (
+    BACKTEST_RIGHTS_PROVIDERS,
+    BINANCE_USDM_REST_PROVIDER,
+    CRYPIDIAN_FIRST_PARTY_QA_PROVIDER,
     BackfillRightsEvidence,
     BackfillRightsPurpose,
     RestBackfillRequest,
+    market_source_for_rights_provider,
+)
+from trading_bot.application.first_party_qa_dataset import (
+    CRYPIDIAN_FIRST_PARTY_QA_EVIDENCE_REF,
+    FirstPartyQADatasetRequest,
 )
 from trading_bot.domain.market.models import MarketBarSourceIdentity, OHLCVBar
 
-_BACKFILL_SOURCE = "BINANCE_USDM_REST_BACKFILL"
 _SHA256_LENGTH = 64
 
 
@@ -115,13 +122,18 @@ class BacktestDatasetManifest:
         for name in ("rights_provider", "rights_purpose", "terms_url", "symbol", "interval"):
             if not isinstance(getattr(self, name), str) or not getattr(self, name).strip():
                 raise ValueError(f"{name} không được để trống.")
-        if self.rights_provider != "BINANCE_USDM_REST":
-            raise ValueError("rights_provider không khớp Binance USD-M REST.")
+        if self.rights_provider not in BACKTEST_RIGHTS_PROVIDERS:
+            raise ValueError("rights_provider nằm ngoài allowlist backtest.")
         if self.rights_purpose != BackfillRightsPurpose.BACKTEST_RESEARCH.value:
             raise ValueError("rights_purpose không được duyệt cho backtest research.")
         terms = urlsplit(self.terms_url)
         if terms.scheme != "https" or not terms.netloc:
             raise ValueError("terms_url phải là HTTPS đầy đủ.")
+        if (
+            self.rights_provider == CRYPIDIAN_FIRST_PARTY_QA_PROVIDER
+            and self.terms_url != CRYPIDIAN_FIRST_PARTY_QA_EVIDENCE_REF
+        ):
+            raise ValueError("QA rights chỉ nhận tài liệu fixture first-party đã ghim.")
         if not self.rights_verified_at <= self.prepared_at < self.rights_valid_until:
             raise ValueError("Rights evidence không hiệu lực tại prepared_at.")
         if self.rights_checked_at is not None and not (
@@ -292,7 +304,7 @@ class BacktestDatasetManifest:
 
 
 def build_backtest_dataset_manifest(
-    request: RestBackfillRequest,
+    request: RestBackfillRequest | FirstPartyQADatasetRequest,
     *,
     evaluation_start: datetime,
     warmup_bars: int,
@@ -302,18 +314,28 @@ def build_backtest_dataset_manifest(
     schema_version: int = 3,
 ) -> BacktestDatasetManifest:
     """Tạo manifest chuẩn hóa; nến thiếu được liệt kê chứ không nội suy."""
-    if not isinstance(request, RestBackfillRequest):
-        raise ValueError("request phải là RestBackfillRequest.")
+    if type(request) not in {RestBackfillRequest, FirstPartyQADatasetRequest}:
+        raise ValueError("request phải là request Binance REST hoặc fixture first-party QA.")
     if not isinstance(rights_evidence, BackfillRightsEvidence):
         raise PermissionError("Thiếu bằng chứng quyền dữ liệu cho backtest.")
     if type(rights_evidence.workspace_id) is not UUID:
         raise PermissionError("Rights evidence chưa được ràng buộc với workspace.")
     if request.purpose is not BackfillRightsPurpose.BACKTEST_RESEARCH:
         raise PermissionError("Request không được duyệt cho mục đích backtest research.")
-    if rights_evidence.provider != "BINANCE_USDM_REST":
-        raise PermissionError("Rights evidence không khớp provider Binance USD-M REST.")
+    expected_provider = (
+        request.provider
+        if type(request) is FirstPartyQADatasetRequest
+        else BINANCE_USDM_REST_PROVIDER
+    )
+    if rights_evidence.provider != expected_provider:
+        raise PermissionError("Rights evidence không khớp provider request backtest.")
     if rights_evidence.purpose is not BackfillRightsPurpose.BACKTEST_RESEARCH:
         raise PermissionError("Rights evidence không khớp mục đích backtest research.")
+    if (
+        type(request) is FirstPartyQADatasetRequest
+        and rights_evidence.terms_url != CRYPIDIAN_FIRST_PARTY_QA_EVIDENCE_REF
+    ):
+        raise PermissionError("QA rights phải trỏ đúng tài liệu fixture first-party.")
 
     instant = _utc(prepared_at, "prepared_at")
     if rights_evidence.checked_at is not None:
@@ -358,8 +380,13 @@ def build_backtest_dataset_manifest(
         seen.add(open_time)
         if item.symbol != request.symbol or item.timeframe != request.interval:
             raise ValueError("Nến không khớp symbol/timeframe của request.")
-        if item.source != _BACKFILL_SOURCE:
-            raise ValueError("Nến không thuộc source REST backfill đã được kiểm soát.")
+        expected_source = market_source_for_rights_provider(expected_provider)
+        if item.source != expected_source:
+            raise ValueError("Nến không khớp market source của provider đã được kiểm soát.")
+        if type(request) is FirstPartyQADatasetRequest:
+            if item.source_cursor is None:
+                raise ValueError("Nến QA cần source cursor versioned.")
+            request.validate_bar_identity(source=item.source, source_cursor=item.source_cursor)
         if not item.is_closed or item.close_time > instant:
             raise ValueError("Nến chưa đóng tại thời điểm chuẩn bị manifest.")
         if item.available_at > instant:

@@ -16,10 +16,10 @@ from trading_bot.application.binance_rest_backfill import (
     BackfillRightsEvidence,
     BackfillRightsPurpose,
     RestBackfillRequest,
+    market_source_for_rights_provider,
 )
+from trading_bot.application.first_party_qa_dataset import FirstPartyQADatasetRequest
 from trading_bot.domain.market.models import OHLCVBar
-
-_BACKFILL_SOURCE = "BINANCE_USDM_REST_BACKFILL"
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,7 +48,7 @@ class CurrentBackfillRightsGate(Protocol):
     async def authorize(
         self,
         *,
-        request: RestBackfillRequest,
+        request: RestBackfillRequest | FirstPartyQADatasetRequest,
         now: datetime,
     ) -> BackfillRightsEvidence: ...
 
@@ -127,7 +127,7 @@ class BacktestDatasetReplayLoader:
                 end=manifest.range_end,
                 as_of=manifest.prepared_at,
                 closed_only=True,
-                source=_BACKFILL_SOURCE,
+                source=market_source_for_rights_provider(manifest.rights_provider),
             )
         )
         if len(bars) != manifest.expected_bar_count:
@@ -189,7 +189,12 @@ class BacktestDatasetReplayLoader:
         workspace_id: UUID,
         now: datetime,
     ) -> BackfillRightsEvidence:
-        request = RestBackfillRequest(
+        request_type = (
+            FirstPartyQADatasetRequest
+            if manifest.rights_provider == "CRYPIDIAN_FIRST_PARTY_QA"
+            else RestBackfillRequest
+        )
+        request = request_type(
             symbol=manifest.symbol,
             interval=manifest.interval,
             start=manifest.warmup_start,
