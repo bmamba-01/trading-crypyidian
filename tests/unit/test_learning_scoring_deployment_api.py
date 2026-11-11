@@ -163,6 +163,7 @@ def test_deployment_post_requires_csrf_idempotency_and_rejects_actor_injection()
     assert service.facade.calls == [
         {
             "mode": ScorerDeploymentMode.DISABLED,
+            "evaluation_report_id": None,
             "expected_pointer_version": 0,
             "expected_deployment_revision": 0,
             "idempotency_key": UUID(headers["Idempotency-Key"]),

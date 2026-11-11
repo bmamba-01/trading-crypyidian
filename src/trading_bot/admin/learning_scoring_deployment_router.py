@@ -95,6 +95,7 @@ async def set_deployment(
     try:
         event = await _facade(request, identity, Permission.LEARNING_MODEL_APPROVE).set_mode(
             mode=body.mode,
+            evaluation_report_id=body.evaluation_report_id,
             expected_pointer_version=body.expected_pointer_version,
             expected_deployment_revision=body.expected_deployment_revision,
             idempotency_key=idempotency_key,

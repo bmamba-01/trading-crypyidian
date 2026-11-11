@@ -5,8 +5,11 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
+from tests.unit.test_learning_scorer_runtime import _policy
 
+from trading_bot.application import learning_scoring_deployment as service_module
 from trading_bot.application.learning_scoring_deployment import ScorerDeploymentService
+from trading_bot.application.scorer_runtime_policy import ConfiguredScorerRuntimePolicyProvider
 from trading_bot.auth.policy import MfaMethod, Principal, Role
 from trading_bot.domain.learning.scoring_deployment import ScorerDeploymentMode
 
@@ -39,12 +42,92 @@ def test_scorer_activation_fails_closed_until_authoritative_rights_gateway_exist
         asyncio.run(
             facade.set_mode(
                 mode=ScorerDeploymentMode.SHADOW,
+                evaluation_report_id=uuid4(),
                 expected_pointer_version=3,
                 expected_deployment_revision=2,
                 idempotency_key=uuid4(),
                 reason="Chờ cổng quyền TRAINING và nguồn WP05.",
             )
         )
+
+
+def test_active_service_requires_selected_persisted_report_before_database_access() -> None:
+    facade = ScorerDeploymentService(_UnusedSessionFactory()).for_principal(_principal())
+
+    with pytest.raises(ValueError, match="evaluation_report_id đã lưu"):
+        asyncio.run(
+            facade.set_mode(
+                mode=ScorerDeploymentMode.SHADOW,
+                evaluation_report_id=None,
+                expected_pointer_version=3,
+                expected_deployment_revision=2,
+                idempotency_key=uuid4(),
+                reason="Chỉ dùng report đã lưu, không nhận ngưỡng từ caller.",
+            )
+        )
+
+
+def test_active_service_forwards_exact_report_id_and_cas_to_authoritative_repository(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report_id = uuid4()
+    expected_pointer_version = 7
+    expected_deployment_revision = 3
+    idempotency_key = uuid4()
+    event = object()
+    captured: dict[str, object] = {}
+
+    class FakeUnitOfWork:
+        def __init__(self, *_args, **_kwargs) -> None:
+            self.session = object()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args) -> None:
+            return None
+
+    class FakeRepository:
+        def __init__(self, _session) -> None:
+            pass
+
+        async def append_active_event(self, **kwargs):
+            captured.update(kwargs)
+            return event
+
+    monkeypatch.setattr(service_module, "UnitOfWork", FakeUnitOfWork)
+    monkeypatch.setattr(service_module, "LearningScoringDeploymentRepository", FakeRepository)
+    policy_provider = ConfiguredScorerRuntimePolicyProvider(_policy())
+    facade = ScorerDeploymentService(
+        object(),
+        policy_provider=policy_provider,  # type: ignore[arg-type]
+    ).for_principal(_principal())
+
+    result = asyncio.run(
+        facade.set_mode(
+            mode=ScorerDeploymentMode.SHADOW,
+            evaluation_report_id=report_id,
+            expected_pointer_version=expected_pointer_version,
+            expected_deployment_revision=expected_deployment_revision,
+            idempotency_key=idempotency_key,
+            reason="Duyệt report đã lưu theo CAS và quyền hiện hành.",
+        )
+    )
+
+    assert result is event
+    assert captured == {
+        "workspace_id": facade._principal.workspace_id,
+        "actor_membership_id": facade._principal.membership_id,
+        "mfa_verified_at": facade._principal.mfa_verified_at,
+        "mode": ScorerDeploymentMode.SHADOW,
+        "evaluation_report_id": report_id,
+        "expected_pointer_version": expected_pointer_version,
+        "expected_deployment_revision": expected_deployment_revision,
+        "idempotency_key": idempotency_key,
+        "reason": "Duyệt report đã lưu theo CAS và quyền hiện hành.",
+        "policy_provider": policy_provider,
+    }
+    assert not {"report_hash", "proof_hash", "policy_hash", "rights"}.intersection(captured)
 
 
 @pytest.mark.parametrize(

@@ -16,6 +16,9 @@ from trading_bot.adapters.database.models.market_entities import MarketBar
 from trading_bot.adapters.database.repositories.bot_decisions import PostgresSignalDecisionStore
 from trading_bot.adapters.database.repositories.bot_runtime_controls import read_runtime_control
 from trading_bot.adapters.database.repositories.feature_snapshots import FeatureSnapshotRepository
+from trading_bot.adapters.database.repositories.learning_scorer_runtime_committer import (
+    PostgresScorerRuntimeCommitter,
+)
 from trading_bot.application.bot_decision_contexts import (
     EffectiveBotDecisionContextProvider,
     RuntimeBotRef,
@@ -37,6 +40,7 @@ from trading_bot.application.market_signal_scanner import (
     QualifiedMarketObservationSource,
 )
 from trading_bot.application.outbox import UnitOfWork
+from trading_bot.application.scorer_runtime_policy import ScorerRuntimePolicyProvider
 from trading_bot.application.strategy_market_requirements import (
     TIMEFRAME_INTERVALS,
     feature_requirements_for_release,
@@ -228,6 +232,7 @@ def build_market_signal_scanner(
     *,
     max_observation_age: timedelta,
     signal_validity: timedelta,
+    scorer_policy_provider: ScorerRuntimePolicyProvider | None = None,
 ) -> _MarketSignalPipeline:
     """Lắp source/context/dispatcher signal-only, không phụ thuộc PAPER supervisor."""
     contexts = EffectiveBotDecisionContextProvider(
@@ -235,7 +240,10 @@ def build_market_signal_scanner(
         runtime_gate=SignalRuntimeGate(),
         exclusion_recorder=SignalExclusionRecorder(),
     )
-    store = PostgresSignalDecisionStore(sessions)
+    store = PostgresSignalDecisionStore(
+        sessions,
+        score_candidate=PostgresScorerRuntimeCommitter(scorer_policy_provider),
+    )
     dispatcher = BotEvidenceDispatcher(
         store,
         strategies=StrategyRegistry(),

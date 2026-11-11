@@ -685,6 +685,8 @@ async def evaluate(sessions):
         approve_probability_threshold=1.0,
         minimum_confidence=1.0,
         reliability_bin_count=3,
+        maximum_standardized_feature_deviation=6.0,
+        runtime_inference_timeout_ms=100,
     )
     request = ScorerTestEvaluationRequest(
         scope=scope,

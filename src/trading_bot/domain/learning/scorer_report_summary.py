@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from uuid import UUID
 
 
 @dataclass(frozen=True, slots=True)
 class ScorerReportSummary:
     """Siêu dữ liệu an toàn để hiển thị báo cáo scorer trong quản trị."""
 
+    evaluation_report_id: UUID
     created_at: datetime
     evaluated_at: datetime
     status: str

@@ -77,6 +77,7 @@ class _ScorerScoreEventReadModel:
 
 def _summary() -> ScorerReportSummary:
     return ScorerReportSummary(
+        evaluation_report_id=UUID("d1f2a6cc-d185-4a16-949b-844688cd4edb"),
         created_at=datetime(2026, 11, 10, 8, 30, tzinfo=UTC),
         evaluated_at=datetime(2026, 11, 10, 8, 25, tzinfo=UTC),
         status="INCONCLUSIVE",

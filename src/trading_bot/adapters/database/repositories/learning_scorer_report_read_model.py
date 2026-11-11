@@ -53,6 +53,7 @@ class LearningScorerReportReadRepository:
         ).label("report_metadata")
         statement = (
             select(
+                report.id,
                 report.created_at,
                 report.report_hash,
                 report.proof_hash,
@@ -104,6 +105,7 @@ def _summary_from_row(row: object) -> ScorerReportSummary:
         raise ValueError("created_at báo cáo scorer phải có múi giờ.")
 
     return ScorerReportSummary(
+        evaluation_report_id=_strict_uuid(row["id"], "report id"),
         created_at=created_at.astimezone(UTC),
         evaluated_at=_strict_datetime(metadata["evaluated_at"], "evaluated_at"),
         status=status,
@@ -208,6 +210,12 @@ def _strict_datetime(value: object, name: str) -> datetime:
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         raise ValueError(f"{name} phải có múi giờ.")
     return parsed.astimezone(UTC)
+
+
+def _strict_uuid(value: object, name: str) -> UUID:
+    if type(value) is not UUID:
+        raise ValueError(f"{name} phải là UUID.")
+    return value
 
 
 def _strict_class_support(value: object) -> tuple[tuple[int, int], ...]:
