@@ -53,8 +53,17 @@ class PostgresScorerRuntimeCommitter:
                 LearningScoringDeploymentEventRecord.id,
                 LearningScoringDeploymentEventRecord.mode,
                 LearningScoringDeploymentEventRecord.revision,
+                LearningScoringDeploymentEventRecord.active_pointer_version,
                 LearningScoringDeploymentEventRecord.scorer_artifact_id,
+                LearningScoringDeploymentEventRecord.scorer_artifact_hash,
                 LearningScoringDeploymentEventRecord.evaluation_report_id,
+                LearningScoringDeploymentEventRecord.evaluation_report_hash,
+                LearningScoringDeploymentEventRecord.evaluation_status,
+                LearningScoringDeploymentEventRecord.proof_hash,
+                LearningScoringDeploymentEventRecord.candidate_completeness_verified,
+                LearningScoringDeploymentEventRecord.report_scope_hash,
+                LearningScoringDeploymentEventRecord.proof_scope_hash,
+                LearningScoringDeploymentEventRecord.policy_hash,
             ).where(
                 LearningScoringDeploymentEventRecord.workspace_id == job.workspace_id,
                 LearningScoringDeploymentEventRecord.id == deployment.deployment_event_id,
@@ -66,11 +75,12 @@ class PostgresScorerRuntimeCommitter:
             or event["workspace_id"] != job.workspace_id
             or event["mode"] != deployment.mode.value
             or event["revision"] != deployment.deployment_revision
+            or event["active_pointer_version"] != deployment.active_pointer_version
             or event["scorer_artifact_id"] is None
             or event["evaluation_report_id"] is None
         ):
             raise ScorerDeploymentRightsUnavailable(
-                "Deployment scorer không khớp projection hiện hành."
+                "Deployment scorer hoặc registry pointer không khớp projection hiện hành."
             )
 
         rights = await LearningScorerCurrentRightsRepository(session).verify_deployment_rights(
@@ -86,6 +96,18 @@ class PostgresScorerRuntimeCommitter:
         if not mode_eligible:
             raise ScorerDeploymentRightsUnavailable(
                 "Report scorer hoặc quyền nguồn hiện hành không cho phép mode đã bật."
+            )
+        if (
+            event["scorer_artifact_hash"] != rights.artifact_hash
+            or event["evaluation_report_hash"] != rights.report_hash
+            or event["proof_hash"] != rights.proof_hash
+            or event["policy_hash"] != rights.policy_hash
+            or event["evaluation_status"] != rights.evaluation_status
+            or event["candidate_completeness_verified"] != rights.candidate_completeness_verified
+            or event["report_scope_hash"] != event["proof_scope_hash"]
+        ):
+            raise ScorerDeploymentRightsUnavailable(
+                "Hash artifact/report/proof/policy hoặc scope trong deployment đã cũ."
             )
         if evaluation.snapshot is None or evaluation.vector is None:
             raise ScorerDeploymentRightsUnavailable(
