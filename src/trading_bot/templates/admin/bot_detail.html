@@ -568,6 +568,7 @@
   (() => {
     let pollingInterval = null;
     let isPolling = true;
+    let currentFp = null;
     const botId = "{{ bot.id }}";
     const pollTime = 5000;
 
@@ -578,12 +579,22 @@
 
     const fetchRealtime = async () => {
       try {
-        const res = await fetch(`/admin/api/bots/${botId}/realtime`, { credentials: "same-origin" });
+        const url = currentFp ? `/admin/api/bots/${botId}/realtime?fp=${encodeURIComponent(currentFp)}` : `/admin/api/bots/${botId}/realtime`;
+        const res = await fetch(url, { credentials: "same-origin" });
         if (!res.ok) throw new Error("Mã lỗi: " + res.status);
         const data = await res.json();
 
         if (updatedAt) {
           updatedAt.textContent = data.server_time.vn_time || data.server_time.vn;
+        }
+
+        if (data.status === "unchanged") {
+          if (pulseDot) pulseDot.className = "pulse-dot";
+          if (statusMsg) statusMsg.textContent = "";
+          return;
+        }
+        if (data.fingerprint) {
+          currentFp = data.fingerprint;
         }
 
         // Cập nhật các chỉ số KPI nếu có

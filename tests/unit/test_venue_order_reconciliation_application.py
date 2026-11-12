@@ -8,6 +8,7 @@ from uuid import uuid4
 import pytest
 
 from trading_bot.application.venue_order_reconciliation import (
+    AtomicVenueReconciliationCoordinator,
     VenueOrderReconciliationService,
     VenueReconciliationStatus,
 )
@@ -244,3 +245,152 @@ async def test_verification_bound_to_another_reservation_is_held() -> None:
     assert result.status is VenueReconciliationStatus.HELD
     assert result.reason == "VERIFICATION_SCOPE_MISMATCH"
     assert not ledger.commands
+
+
+class FakeAtomicBridge:
+    def __init__(self, *, should_fail: bool = False) -> None:
+        self.should_fail = should_fail
+        self.absent_calls = []
+        self.rejected_calls = []
+
+    async def reconcile_order_absent(
+        self,
+        *,
+        workspace_id,
+        account_id,
+        intent_id,
+        reservation_id,
+        expected_sequence,
+        command,
+    ) -> None:
+        if self.should_fail:
+            raise RuntimeError("Database conflict / deadlock simulation")
+        self.absent_calls.append(
+            {
+                "workspace_id": workspace_id,
+                "account_id": account_id,
+                "intent_id": intent_id,
+                "reservation_id": reservation_id,
+                "expected_sequence": expected_sequence,
+                "command": command,
+            }
+        )
+
+    async def reconcile_order_rejected(
+        self,
+        *,
+        workspace_id,
+        account_id,
+        intent_id,
+        reservation_id,
+        expected_sequence,
+        command,
+    ) -> None:
+        if self.should_fail:
+            raise RuntimeError("Database conflict / deadlock simulation")
+        self.rejected_calls.append(
+            {
+                "workspace_id": workspace_id,
+                "account_id": account_id,
+                "intent_id": intent_id,
+                "reservation_id": reservation_id,
+                "expected_sequence": expected_sequence,
+                "command": command,
+            }
+        )
+
+
+@pytest.mark.asyncio
+async def test_order_absent_with_atomic_bridge_releases_reservation_and_cancels_intent() -> None:
+    ledger = FakeLedger()
+    bridge = FakeAtomicBridge()
+    service = VenueOrderReconciliationService(
+        ledger=ledger,
+        verifier=FakeVerifier(evidence(outcome=ReconciliationOutcome.ORDER_ABSENT)),
+        atomic_bridge=bridge,
+        clock=lambda: NOW,
+    )
+
+    result = await service.reconcile_unknown(
+        workspace_id=WORKSPACE_ID, account_id=ACCOUNT_ID, intent_id=INTENT_ID
+    )
+
+    assert result.status is VenueReconciliationStatus.APPLIED
+    assert result.reason == "ORDER_ABSENT_RESERVATION_RELEASED"
+    assert result.resulting_state is VenueOrderState.CANCELED
+    assert result.risk_reservation_held is False
+    assert len(bridge.absent_calls) == 1
+    call = bridge.absent_calls[0]
+    assert call["intent_id"] == INTENT_ID
+    assert call["reservation_id"] == RESERVATION_ID
+    assert call["command"].state is VenueOrderState.CANCELED
+
+
+@pytest.mark.asyncio
+async def test_rejected_with_atomic_bridge_releases_reservation_and_marks_rejected() -> None:
+    ledger = FakeLedger()
+    bridge = FakeAtomicBridge()
+    service = VenueOrderReconciliationService(
+        ledger=ledger,
+        verifier=FakeVerifier(
+            evidence(outcome=ReconciliationOutcome.REJECTED, venue_order_id="venue-rejected-1")
+        ),
+        atomic_bridge=bridge,
+        clock=lambda: NOW,
+    )
+
+    result = await service.reconcile_unknown(
+        workspace_id=WORKSPACE_ID, account_id=ACCOUNT_ID, intent_id=INTENT_ID
+    )
+
+    assert result.status is VenueReconciliationStatus.APPLIED
+    assert result.reason == "REJECTED_RESERVATION_RELEASED"
+    assert result.resulting_state is VenueOrderState.REJECTED
+    assert result.risk_reservation_held is False
+    assert len(bridge.rejected_calls) == 1
+    call = bridge.rejected_calls[0]
+    assert call["intent_id"] == INTENT_ID
+    assert call["reservation_id"] == RESERVATION_ID
+    assert call["command"].state is VenueOrderState.REJECTED
+
+
+@pytest.mark.asyncio
+async def test_atomic_bridge_failure_rolls_back_and_holds_unknown() -> None:
+    ledger = FakeLedger()
+    failing_bridge = FakeAtomicBridge(should_fail=True)
+    service = VenueOrderReconciliationService(
+        ledger=ledger,
+        verifier=FakeVerifier(evidence(outcome=ReconciliationOutcome.ORDER_ABSENT)),
+        atomic_bridge=failing_bridge,
+        clock=lambda: NOW,
+    )
+
+    result = await service.reconcile_unknown(
+        workspace_id=WORKSPACE_ID, account_id=ACCOUNT_ID, intent_id=INTENT_ID
+    )
+
+    assert result.status is VenueReconciliationStatus.HELD
+    assert result.reason == "PERSISTENCE_CONFLICT"
+    assert result.resulting_state is VenueOrderState.UNKNOWN
+    assert result.risk_reservation_held is True
+
+
+@pytest.mark.asyncio
+async def test_atomic_venue_reconciliation_coordinator_delegates_to_service() -> None:
+    ledger = FakeLedger()
+    bridge = FakeAtomicBridge()
+    service = VenueOrderReconciliationService(
+        ledger=ledger,
+        verifier=FakeVerifier(evidence(outcome=ReconciliationOutcome.ORDER_ABSENT)),
+        atomic_bridge=bridge,
+        clock=lambda: NOW,
+    )
+    coordinator = AtomicVenueReconciliationCoordinator(service)
+
+    result = await coordinator.reconcile(
+        workspace_id=WORKSPACE_ID, account_id=ACCOUNT_ID, intent_id=INTENT_ID
+    )
+
+    assert result.status is VenueReconciliationStatus.APPLIED
+    assert result.resulting_state is VenueOrderState.CANCELED
+    assert result.risk_reservation_held is False

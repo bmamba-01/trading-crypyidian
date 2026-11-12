@@ -8,7 +8,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
-from typing import Any
+from typing import Any, Protocol
 from uuid import UUID
 
 from trading_bot.domain.execution.venue_orders import (
@@ -48,13 +48,40 @@ class VenueReconciliationResult:
     risk_reservation_held: bool
 
 
-class VenueOrderReconciliationService:
-    """Áp dụng evidence đã xác minh; reservation vẫn giữ cho tới risk bridge nguyên tử.
+class AtomicVenueReconciliationBridge(Protocol):
+    """Cổng liên kết nguyên tử giữa venue ledger và risk reservation khi lệnh vắng mặt/từ chối."""
 
-    Verifier là trust boundary: adapter tương lai phải xác thực account/mode, tính đầy đủ
+    async def reconcile_order_absent(
+        self,
+        *,
+        workspace_id: UUID,
+        account_id: UUID,
+        intent_id: UUID,
+        reservation_id: UUID,
+        expected_sequence: int,
+        command: VenueOrderTransition,
+    ) -> None: ...
+
+    async def reconcile_order_rejected(
+        self,
+        *,
+        workspace_id: UUID,
+        account_id: UUID,
+        intent_id: UUID,
+        reservation_id: UUID,
+        expected_sequence: int,
+        command: VenueOrderTransition,
+    ) -> None: ...
+
+
+class VenueOrderReconciliationService:
+    """Áp dụng evidence đã xác minh; giải phóng reservation khi có bridge nguyên tử.
+
+    Verifier là trust boundary: adapter phải xác thực account/mode, tính đầy đủ
     query + trade history và chuẩn hóa response trước khi tạo `VenueReconciliation`.
-    Service này cố ý không resolve hoặc retry `ORDER_ABSENT`, vì ledger hiện chưa có một
-    thao tác DB nguyên tử ghép xác minh venue với giải phóng risk reservation.
+    Khi có `atomic_bridge`, các kết quả `ORDER_ABSENT` và `REJECTED` được xử lý nguyên tử
+    với việc giải phóng rủi ro (risk reservation). Nếu không có bridge, service giữ trạng thái
+    fail-closed (HELD) an toàn.
     """
 
     def __init__(
@@ -62,6 +89,7 @@ class VenueOrderReconciliationService:
         *,
         ledger: VenueOrderLedgerPort,
         verifier: VenueReconciliationVerifier,
+        atomic_bridge: AtomicVenueReconciliationBridge | None = None,
         clock: Callable[[], datetime] | None = None,
         max_evidence_age: timedelta = DEFAULT_EVIDENCE_MAX_AGE,
         actor_id: str = "venue-reconciliation-worker",
@@ -72,6 +100,7 @@ class VenueOrderReconciliationService:
             raise ValueError("actor_id phải có từ 1 đến 128 ký tự.")
         self._ledger = ledger
         self._verifier = verifier
+        self._atomic_bridge = atomic_bridge
         self._clock = clock or (lambda: datetime.now(UTC))
         self._max_evidence_age = max_evidence_age
         self._actor_id = actor_id
@@ -132,10 +161,72 @@ class VenueOrderReconciliationService:
         if reason is not None:
             return self._held(intent_id, reason, intent)
         if evidence.outcome is ReconciliationOutcome.ORDER_ABSENT:
+            if self._atomic_bridge is not None:
+                command = VenueOrderTransition(
+                    event_key=f"reconcile:{intent.id}:{_evidence_hash(evidence, verification)}",
+                    actor_id=self._actor_id,
+                    source="RECONCILIATION",
+                    state=VenueOrderState.CANCELED,
+                    attempt_count=intent.attempt_count,
+                    last_attempt_at=intent.last_attempt_at,
+                    retry_not_before=None,
+                    venue_order_id=None,
+                    filled_quantity=evidence.cumulative_filled,
+                    last_event_at=evidence.checked_at,
+                    evidence_hash=_evidence_hash(evidence, verification),
+                )
+                try:
+                    await self._atomic_bridge.reconcile_order_absent(
+                        workspace_id=workspace_id,
+                        account_id=account_id,
+                        intent_id=intent_id,
+                        reservation_id=intent.reservation_id,
+                        expected_sequence=intent.transition_sequence,
+                        command=command,
+                    )
+                    return VenueReconciliationResult(
+                        VenueReconciliationStatus.APPLIED,
+                        "ORDER_ABSENT_RESERVATION_RELEASED",
+                        intent_id,
+                        VenueOrderState.CANCELED,
+                        False,
+                    )
+                except Exception:
+                    return self._held(intent_id, "PERSISTENCE_CONFLICT", intent)
             return self._held(intent_id, "RESERVATION_BRIDGE_REQUIRED", intent)
         if evidence.outcome is ReconciliationOutcome.REJECTED:
-            # DB constraint hiện không cho phép REJECTED mang venue_order_id, trong khi
-            # evidence hiện diện lại phải có ID. Giữ UNKNOWN tới khi schema được mở rộng.
+            if self._atomic_bridge is not None:
+                command = VenueOrderTransition(
+                    event_key=f"reconcile:{intent.id}:{_evidence_hash(evidence, verification)}",
+                    actor_id=self._actor_id,
+                    source="RECONCILIATION",
+                    state=VenueOrderState.REJECTED,
+                    attempt_count=intent.attempt_count,
+                    last_attempt_at=intent.last_attempt_at,
+                    retry_not_before=None,
+                    venue_order_id=evidence.venue_order_id,
+                    filled_quantity=evidence.cumulative_filled,
+                    last_event_at=evidence.checked_at,
+                    evidence_hash=_evidence_hash(evidence, verification),
+                )
+                try:
+                    await self._atomic_bridge.reconcile_order_rejected(
+                        workspace_id=workspace_id,
+                        account_id=account_id,
+                        intent_id=intent_id,
+                        reservation_id=intent.reservation_id,
+                        expected_sequence=intent.transition_sequence,
+                        command=command,
+                    )
+                    return VenueReconciliationResult(
+                        VenueReconciliationStatus.APPLIED,
+                        "REJECTED_RESERVATION_RELEASED",
+                        intent_id,
+                        VenueOrderState.REJECTED,
+                        False,
+                    )
+                except Exception:
+                    return self._held(intent_id, "PERSISTENCE_CONFLICT", intent)
             return self._held(intent_id, "REJECTED_SCHEMA_CONFLICT", intent)
 
         state = _OUTCOME_STATES[evidence.outcome]
@@ -257,3 +348,21 @@ def _evidence_hash(evidence: VenueReconciliation, verification: VerifiedVenueRec
     }
     encoded = json.dumps(values, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
+
+
+class AtomicVenueReconciliationCoordinator:
+    """Điều phối đối soát venue nguyên tử bao gồm ledger và risk reservations."""
+
+    def __init__(
+        self,
+        service: VenueOrderReconciliationService,
+    ) -> None:
+        self._service = service
+
+    async def reconcile(
+        self, *, workspace_id: UUID, account_id: UUID, intent_id: UUID
+    ) -> VenueReconciliationResult:
+        """Thực thi đối soát và trả về kết quả an toàn fail-closed."""
+        return await self._service.reconcile_unknown(
+            workspace_id=workspace_id, account_id=account_id, intent_id=intent_id
+        )

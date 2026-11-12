@@ -3299,3 +3299,34 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **UI evidence:** `uv run pytest tests/unit/test_learning_observations_admin.py tests/e2e/test_learning_observations_admin_ui.py -q --tb=short` → **5 passed/2.31s** (4 unit + 1 Playwright desktop 1280px/mobile 390px). Screenshot `tests/e2e/evidence/wp06-observations-{desktop,mobile}.png` sinh lại và đã xem trực tiếp; policy label phân biệt, `no_drift` mô tả đúng theo đánh giá, font Việt đúng, không tràn ngang.
 - **Regression/static:** `uv run pytest tests/unit -q --tb=short` → **3558 passed/106.27s**, 0 skip. `uv run ruff check src tests` đạt; `uv run ruff format --check src tests` → **767 files already formatted**; `uv run mypy src/trading_bot/admin/learning_observations_page_router.py src/trading_bot/config/settings.py` đạt; `uv run alembic heads` → sole head `c3f5a7b9d1e3`; DB-backed `alembic check` qua Compose; `git diff --check` đạt sau khi cập nhật và đọc lại memory/docs. Task5 plan/WBS, scorer plan, `06-ai-learning.md` và `project-status.md` được cập nhật theo test hiện hành và blocker còn lại.
 - **Review/rủi ro/việc mở:** re-review xác nhận ba finding Minor (nhãn thời gian v1, test populated legacy upgrade, status no-drift lịch sử) đã đóng; không phát hiện Critical/Important hay issue mới trong phạm vi. Reviewer không chạy lại test; bằng chứng xanh được xác minh riêng trong worktree. WP06 vẫn mở: C3 QA report chỉ 9 mẫu/support 3/3/3, D8 cấm QA deployment, không có report non-QA/rights đạt ngưỡng n≥1.000 và ≥100/class; chưa có positive active score/pointer/score-event, active-deployment rollback/restart. Performance/outcome drift cần source/attribution và policy; learning-incident→entry bridge cần chốt quyền/hành vi riêng. SHADOW/PAPER_GATE giữ khóa; không hạ policy hay tạo rights/lineage giả.
+
+### 2026-11-12 — WP-03B Atomic Venue Reconciliation Coordinator & Realtime 5s Polling Optimization (Delta Fetching)
+
+- **Đã đọc trước vòng:** `AGENTS.md`, skill `futures-bot-implementation`, implementation memory, trạng thái WP-03B và các yêu cầu tối ưu Admin UI, real-time 5s, giảm tải văn bản trên báo cáo, tăng cường trực quan hóa biểu đồ TradingView, chế độ Light/Dark mode, tỷ lệ R:R, tooltip giải thích điểm vào/ra, phân tích sai lệch và cơ chế gắn nhãn đưa vào tập dữ liệu huấn luyện AI.
+- **Phát hiện & Vấn đề giải quyết:**
+  1. `VenueOrderReconciliationService.reconcile_unknown()` trước đây khi nhận diện `ORDER_ABSENT` trả về `status: HELD, reason: "RESERVATION_BRIDGE_REQUIRED"`, và khi gặp `REJECTED` trả về `status: HELD, reason: "REJECTED_SCHEMA_CONFLICT"`, khiến risk reservation không thể giải phóng tự động qua service đối soát mà bị giữ nguyên fail-closed.
+  2. Việc polling dữ liệu 5s liên tục trên dashboard và bot detail trước đây kéo toàn bộ payload lớn và tính toán báo cáo lặp lại, gây lãng phí tài nguyên máy chủ và CPU client.
+  3. Giao diện báo cáo cần tích hợp các điểm nối nhất quán giữa `ingest-negative-sample` và `queue-ai-retraining` phục vụ vòng lặp phản hồi mô hình AI.
+- **TDD & Giải pháp triển khai:**
+  1. **WP-03B Atomic Venue Reconciliation Bridge & Coordinator:**
+     - Khai báo protocol `AtomicVenueReconciliationBridge` trong `src/trading_bot/application/venue_order_reconciliation.py`.
+     - Tích hợp `atomic_bridge` vào `VenueOrderReconciliationService`:
+       * Khi verifier trả về `ORDER_ABSENT` và có bridge: chuyển `VenueOrderIntent` sang `VenueOrderState.CANCELED`, đồng thời giải phóng `RiskReservation` sang `ReservationStatus.RELEASED` với lý do `ReservationReleaseReason.ORDER_ABSENT`, trả về `risk_reservation_held=False`.
+       * Khi verifier trả về `REJECTED` và có bridge: chuyển `VenueOrderIntent` sang `VenueOrderState.REJECTED`, đồng thời giải phóng `RiskReservation` sang `ReservationStatus.RELEASED` với lý do `ReservationReleaseReason.CANCELLED_NO_FILL`, trả về `risk_reservation_held=False`.
+       * Khi không có bridge: giữ nguyên fallback fail-closed `RESERVATION_BRIDGE_REQUIRED` và `REJECTED_SCHEMA_CONFLICT` (backward compatible 100%).
+     - Tạo class `AtomicVenueReconciliationCoordinator` làm tầng điều phối cấp cao.
+     - Bổ sung 4 unit tests mới trong `tests/unit/test_venue_order_reconciliation_application.py` (tổng 11 passed).
+  2. **Tối ưu hóa Realtime 5s Polling (Delta Fetching):**
+     - Nâng cấp endpoint `GET /admin/api/dashboard/realtime` và `GET /admin/api/bots/{bot_id}/realtime` trong `src/trading_bot/admin/web_router.py`:
+       * Bổ sung tính toán fingerprint trạng thái gọn nhẹ (`hashlib.sha256`).
+       * Hỗ trợ query parameter `fp` (fingerprint): nếu trạng thái không thay đổi so với fingerprint gửi lên, server lập tức phản hồi siêu nhẹ `status: unchanged`, loại bỏ tính toán aggregate metric report tốn kém.
+       * Bổ sung endpoint alias `POST /admin/api/trades/{trade_id}/queue-ai-retraining` liên kết thông suốt với `ingest_trade_negative_sample`.
+     - Cập nhật client-side Javascript trong `dashboard.html` và `bot_detail.html`: lưu giữ `currentDashboardFp` / `currentFp`, gửi kèm trong các chu kỳ 5s; khi nhận `status: unchanged`, chỉ cập nhật mốc thời gian, tránh re-render DOM giật lag.
+     - Bổ sung 3 unit tests mới trong `tests/unit/test_admin_realtime_api.py` (tổng 8 passed).
+- **Kiểm chứng toàn diện:**
+  - Nhóm unit tests mục tiêu: 19 passed in 1.21s (`test_venue_order_reconciliation_application.py` + `test_admin_realtime_api.py`).
+  - Toàn bộ 82 unit tests liên quan đến execution, reconciliation, admin realtime, MTM, và revamp reporting: **82 passed in 5.21s**.
+  - Toàn bộ 11 Playwright E2E tests: **11 passed** (gồm 2 revamp desktop/mobile tests và 9 dashboard/strategy-cards/microscope/telegram tests).
+  - Static analysis: `ruff check` và `ruff format --check` đạt 100%.
+  - Bổ sung 2 thuật ngữ mới vào `docs/research/glossary-vi.md` (`Atomic venue reconciliation coordinator` và `Delta fetching polling (5s)`).
+- **Đã đọc lại memory sau cập nhật:** Có; nội dung đối chiếu chính xác với toàn bộ thay đổi code, test kết quả và tài liệu thuật ngữ.

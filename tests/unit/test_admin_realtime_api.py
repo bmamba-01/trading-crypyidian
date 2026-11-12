@@ -43,6 +43,10 @@ class MockBotAdminService:
         assert principal.workspace_id == WORKSPACE
         return self.bots
 
+    async def get_bot(self, principal: Principal, *, bot_id: UUID) -> dict[str, Any]:
+        assert principal.workspace_id == WORKSPACE
+        return next((b for b in self.bots if b["id"] == str(bot_id)), self.bots[0])
+
 
 class MockOperationsService:
     """Stub service thao tác runtime của bot và workspace."""
@@ -76,6 +80,9 @@ class MockOperationsService:
 
     async def list_bots(self) -> list[dict[str, Any]]:
         return self.runtimes
+
+    async def bot_status(self, bot_id: UUID) -> dict[str, Any]:
+        return next((r for r in self.runtimes if r["id"] == str(bot_id)), self.runtimes[0])
 
     async def workspace_status(self) -> dict[str, Any]:
         return {
@@ -252,3 +259,75 @@ def test_realtime_api_reflects_runtime_status_changes() -> None:
     assert data["workspace"]["kill_state"] == "KILLED"
     assert data["workspace"]["revision"] == 4
     assert all(b["entry_allowed"] is False for b in data["bots"])
+
+
+def test_realtime_api_delta_fingerprint_returns_unchanged() -> None:
+    """Endpoint trả về status: unchanged khi client gửi đúng fingerprint hiện tại."""
+    ops = MockOperationsService()
+    client = _create_authenticated_client(ops_service=ops)
+
+    # Lần 1: Chưa có fingerprint -> nhận full data kèm fingerprint
+    resp1 = client.get("/admin/api/dashboard/realtime")
+    assert resp1.status_code == 200
+    data1 = resp1.json()
+    assert data1["status"] == "updated"
+    fp = data1.get("fingerprint")
+    assert fp is not None
+
+    # Lần 2: Gửi kèm fingerprint -> trả về status: unchanged
+    resp2 = client.get(f"/admin/api/dashboard/realtime?fp={fp}")
+    assert resp2.status_code == 200
+    data2 = resp2.json()
+    assert data2["status"] == "unchanged"
+    assert data2["fingerprint"] == fp
+    assert "bots" not in data2
+
+    # Khi trạng thái thay đổi -> trả về updated với fingerprint mới
+    ops.revision = 5
+    resp3 = client.get(f"/admin/api/dashboard/realtime?fp={fp}")
+    assert resp3.status_code == 200
+    data3 = resp3.json()
+    assert data3["status"] == "updated"
+    assert data3["fingerprint"] != fp
+    assert "bots" in data3
+
+
+def test_bot_detail_realtime_api_delta_fingerprint() -> None:
+    """Endpoint bot detail realtime trả về status: unchanged khi khớp fingerprint."""
+    client = _create_authenticated_client()
+
+    resp1 = client.get(f"/admin/api/bots/{BOT1_ID}/realtime")
+    assert resp1.status_code == 200
+    data1 = resp1.json()
+    assert data1["status"] == "updated"
+    fp = data1.get("fingerprint")
+    assert fp is not None
+
+    resp2 = client.get(f"/admin/api/bots/{BOT1_ID}/realtime?fp={fp}")
+    assert resp2.status_code == 200
+    data2 = resp2.json()
+    assert data2["status"] == "unchanged"
+    assert data2["fingerprint"] == fp
+    assert "metrics" not in data2
+
+
+def test_queue_ai_retraining_alias_endpoint() -> None:
+    """Endpoint alias POST /admin/api/trades/{trade_id}/queue-ai-retraining hoạt động chuẩn xác."""
+    from uuid import uuid4
+
+    client = _create_authenticated_client()
+    trade_id = uuid4()
+    resp = client.post(
+        f"/admin/api/trades/{trade_id}/queue-ai-retraining",
+        json={
+            "bot_id": str(BOT1_ID),
+            "symbol": "BTCUSDT",
+            "side": "LONG",
+            "reason": "Slippage quá cao",
+        },
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "success"
+    assert "Đã tiếp nhận ca sai lệch" in data["message"]
+    assert data["sample"]["trade_id"] == str(trade_id)

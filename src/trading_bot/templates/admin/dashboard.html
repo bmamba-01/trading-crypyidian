@@ -167,6 +167,7 @@
   var timerId = null;
   var isPaused = false;
   var isFetching = false;
+  var currentDashboardFp = null;
 
   var toggleBtn = document.getElementById('toggle-realtime-btn');
   var pulseDot = document.getElementById('live-pulse-dot');
@@ -196,6 +197,16 @@
         timeEl.textContent = data.server_time.vn_time;
         timeEl.setAttribute('datetime', data.server_time.iso || '');
       }
+    }
+
+    if (data.status === 'unchanged') {
+      if (pulseDot) {
+        pulseDot.className = 'pulse-dot';
+      }
+      return;
+    }
+    if (data.fingerprint) {
+      currentDashboardFp = data.fingerprint;
     }
 
     // 2. Cập nhật KPI số lượng bot
@@ -267,7 +278,8 @@
     if (isPaused || isFetching) return;
     isFetching = true;
 
-    fetch('/admin/api/dashboard/realtime', {
+    var url = currentDashboardFp ? '/admin/api/dashboard/realtime?fp=' + encodeURIComponent(currentDashboardFp) : '/admin/api/dashboard/realtime';
+    fetch(url, {
       method: 'GET',
       headers: {
         'Accept': 'application/json'

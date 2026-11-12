@@ -1,5 +1,6 @@
 """Các trang HTML quản trị; dữ liệu và quyền vẫn do service/backend quyết định."""
 
+import hashlib
 import hmac
 import json
 import re
@@ -474,8 +475,14 @@ async def dashboard_realtime(
     request: Request,
     response: Response,
     identity: Annotated[AuthIdentity, Depends(current_identity)],
+    fp: str | None = None,
+    since: str | None = None,
 ) -> dict[str, Any]:
-    """Cung cấp dữ liệu cập nhật thời gian thực định kỳ (5s) cho Admin Dashboard."""
+    """Cung cấp dữ liệu cập nhật thời gian thực định kỳ (5s) cho Admin Dashboard.
+
+    Hỗ trợ delta fetching thông qua tham số `fp` (fingerprint) và `since`. Khi không
+    có thay đổi trạng thái, server trả về phản hồi siêu nhẹ `status: unchanged`.
+    """
     response.headers["Cache-Control"] = "no-store"
     now_utc = datetime.now(UTC)
     now_vn = now_utc.astimezone(VN_TZ)
@@ -495,6 +502,28 @@ async def dashboard_realtime(
 
     runtime_by_id = {str(item["id"]): item for item in runtime}
     bot_views = [_bot_view(bot, runtime_by_id.get(str(bot["id"]))) for bot in bots]
+
+    # Tính toán fingerprint để kiểm tra delta fetching
+    current_fp_items = [
+        str(workspace.get("revision", 1)),
+        str(len(bots)),
+    ]
+    for b in bot_views:
+        current_fp_items.append(f"{b.id}:{b.control_revision}:{b.status}:{b.readiness}")
+    current_fingerprint = hashlib.sha256(":".join(current_fp_items).encode()).hexdigest()[:16]
+
+    if fp is not None and fp == current_fingerprint:
+        return {
+            "status": "unchanged",
+            "fingerprint": current_fingerprint,
+            "server_time": {
+                "iso": now_utc.isoformat(),
+                "vn": now_vn.strftime("%d/%m/%Y %H:%M:%S"),
+                "vn_time": now_vn.strftime("%H:%M:%S"),
+            },
+            "bot_count": len(bot_views),
+            "ready_count": sum(bot.readiness == "READY" for bot in bot_views),
+        }
 
     # Thu thập tóm tắt hiệu suất nếu service báo cáo khả dụng
     metrics: dict[str, Any] = {}
@@ -549,6 +578,8 @@ async def dashboard_realtime(
             metrics = {}
 
     return {
+        "status": "updated",
+        "fingerprint": current_fingerprint,
         "server_time": {
             "iso": now_utc.isoformat(),
             "vn": now_vn.strftime("%d/%m/%Y %H:%M:%S"),
@@ -1114,9 +1145,18 @@ async def bot_detail_realtime(
     request: Request,
     response: Response,
     identity: Annotated[AuthIdentity, Depends(current_identity)],
+    fp: str | None = None,
+    since: str | None = None,
 ) -> dict[str, Any]:
-    """Cung cấp dữ liệu cập nhật thời gian thực định kỳ (5s) cho Bot Detail view."""
+    """Cung cấp dữ liệu cập nhật thời gian thực định kỳ (5s) cho Bot Detail view.
+
+    Hỗ trợ delta fetching thông qua tham số `fp` (fingerprint) và `since`. Khi không
+    có thay đổi trạng thái hoặc vị thế, server trả về phản hồi siêu nhẹ `status: unchanged`.
+    """
     response.headers["Cache-Control"] = "no-store"
+    now_utc = datetime.now(UTC)
+    now_vn = now_utc.astimezone(VN_TZ)
+
     try:
         bot = await _admin_service(request).get_bot(identity.principal, bot_id=bot_id)
         runtime = _runtime_dict(await _operations(request, identity).bot_status(bot_id))
@@ -1128,11 +1168,34 @@ async def bot_detail_realtime(
         raise HTTPException(status_code=503, detail="Không thể tải trạng thái bot.") from error
 
     bot_view = _bot_view(bot, runtime)
+
+    # Tính toán fingerprint kiểm tra delta fetching
+    current_fp_items = [
+        str(bot_view.control_revision),
+        str(bot_view.status),
+        str(bot_view.readiness),
+        str(bot_view.entry_state),
+        str(bot_view.entry_allowed),
+    ]
+    current_fingerprint = hashlib.sha256(":".join(current_fp_items).encode()).hexdigest()[:16]
+
+    if fp is not None and fp == current_fingerprint:
+        return {
+            "status": "unchanged",
+            "fingerprint": current_fingerprint,
+            "server_time": {
+                "iso": now_utc.isoformat(),
+                "vn": now_vn.strftime("%d/%m/%Y %H:%M:%S"),
+                "vn_time": now_vn.strftime("%H:%M:%S"),
+            },
+            "bot_id": str(bot_id),
+        }
+
     trading_data = await _get_bot_trading_data(request, identity.principal, bot_id, bot, runtime)
 
-    now_utc = datetime.now(UTC)
-    now_vn = now_utc.astimezone(VN_TZ)
     return {
+        "status": "updated",
+        "fingerprint": current_fingerprint,
         "server_time": {
             "iso": now_utc.isoformat(),
             "vn": now_vn.strftime("%d/%m/%Y %H:%M:%S"),
@@ -1846,6 +1909,24 @@ async def ingest_trade_negative_sample(
         "message": "Đã tiếp nhận ca sai lệch vào dữ liệu phạt huấn luyện AI thành công.",
         "sample": sample.as_dict(),
     }
+
+
+@router.post("/api/trades/{trade_id}/queue-ai-retraining")
+async def queue_trade_ai_retraining(
+    request: Request,
+    response: Response,
+    trade_id: UUID,
+    identity: Annotated[AuthIdentity, Depends(current_identity)],
+    reason: str | None = None,
+) -> dict[str, Any]:
+    """Gắn nhãn và đưa ca giao dịch sai lệch vào hàng đợi huấn luyện lại AI (alias)."""
+    return await ingest_trade_negative_sample(
+        request=request,
+        response=response,
+        trade_id=trade_id,
+        identity=identity,
+        reason=reason,
+    )
 
 
 @router.get("/strategy-cards")
