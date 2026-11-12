@@ -273,3 +273,19 @@ def test_observation_rejects_invalid_coverage_and_non_abstain_reason_pair() -> N
             challenger_decision=ScoreDecision.APPROVE,
             challenger_reason=ScoreReason.UNCALIBRATED_SCORE,
         )
+
+
+@pytest.mark.parametrize("days", [0, -1, True, 30.0])
+def test_policy_rejects_invalid_observation_window_days(days: object) -> None:
+    with pytest.raises(ValueError, match="observation_window_days"):
+        _policy(observation_window_days=days)
+
+
+def test_bounded_policy_uses_database_as_of_as_window_end() -> None:
+    result = _assess(
+        tuple(_observation(index) for index in range(3)),
+        _policy(policy_version="coverage-v2-30d", observation_window_days=30),
+    )
+    assert result.window_end == NOW + timedelta(hours=1)
+    assert result.window_start == NOW
+    assert result.performance_status is DriftAssessmentStatus.INCONCLUSIVE

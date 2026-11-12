@@ -127,9 +127,17 @@ class _FakeDriftRepository:
         )
 
     async def list_cohort(
-        self, *, workspace_id: UUID, registry_id: UUID, revision: int
+        self,
+        *,
+        workspace_id: UUID,
+        registry_id: UUID,
+        revision: int,
+        window_start: datetime,
+        window_end: datetime,
     ) -> tuple[LearningDriftCohortMember, ...]:
         self.calls.append("list_cohort")
+        assert window_end == self.timestamp
+        assert window_start == self.timestamp - timedelta(days=30)
         return self.members
 
     async def find_assessment(
@@ -218,12 +226,12 @@ async def test_detected_assessment_revalidates_then_locks_and_persists_proposal(
     assert calls == [
         "rights",
         "cohort_lock",
+        "transaction_timestamp",
         "list_cohort",
         "find_assessment",
-        "transaction_timestamp",
         "persist",
     ]
-    assert result.assessment.policy_version == "coverage-v1"
+    assert result.assessment.policy_version == "coverage-v2-30d"
     assert result.assessment.data_quality_status.value == "detected"
     assert result.assessment.performance_status.value == "inconclusive"
     assert result.proposal is not None
@@ -276,7 +284,7 @@ async def test_empty_cohort_returns_no_assessment_without_persisting_unpinned_sc
     )
 
     assert result is None
-    assert calls == ["rights", "cohort_lock", "list_cohort"]
+    assert calls == ["rights", "cohort_lock", "transaction_timestamp", "list_cohort"]
     assert repositories[0].persisted is None
 
 
@@ -291,7 +299,7 @@ async def test_transaction_timestamp_before_latest_member_fails_closed() -> None
             challenger_revision=REGISTRY_REVISION,
         )
 
-    assert calls[-1] == "transaction_timestamp"
+    assert calls[-1] == "find_assessment"
     assert repositories[0].persisted is None
 
 
@@ -300,7 +308,7 @@ def test_existing_empty_record_cannot_claim_a_requested_cohort_scope() -> None:
         workspace_id=WORKSPACE_ID,
         assessment_id=uuid4(),
         policy=DriftPolicy(
-            policy_version="coverage-v1",
+            policy_version="coverage-v2-30d",
             minimum_observations=3,
             minimum_snapshot_coverage=0.8,
             minimum_quality_rate=0.9,
@@ -320,7 +328,7 @@ def test_existing_empty_record_cannot_claim_a_requested_cohort_scope() -> None:
             workspace_id=WORKSPACE_ID,
             registry_id=REGISTRY_ID,
             revision=REGISTRY_REVISION,
-            policy_version="coverage-v1",
+            policy_version="coverage-v2-30d",
             membership_digest=empty_assessment.membership_digest,
         )
 
@@ -336,7 +344,7 @@ async def test_rights_receipt_mismatch_aborts_without_cohort_read_or_write() -> 
             challenger_revision=REGISTRY_REVISION,
         )
 
-    assert calls == ["rights", "cohort_lock", "list_cohort"]
+    assert calls == ["rights", "cohort_lock", "transaction_timestamp", "list_cohort"]
     assert repositories[0].persisted is None
 
 
@@ -356,9 +364,9 @@ async def test_missing_rights_persists_inconclusive_for_all_ineligible_cohort() 
     assert calls == [
         "rights",
         "cohort_lock",
+        "transaction_timestamp",
         "list_cohort",
         "find_assessment",
-        "transaction_timestamp",
         "persist",
     ]
     assert result.assessment.data_quality_status.value == "inconclusive"
@@ -383,7 +391,7 @@ async def test_missing_rights_aborts_when_cohort_contains_eligible_observation()
             challenger_revision=REGISTRY_REVISION,
         )
 
-    assert calls == ["rights", "cohort_lock", "list_cohort"]
+    assert calls == ["rights", "cohort_lock", "transaction_timestamp", "list_cohort"]
     assert repositories[0].persisted is None
 
 
@@ -406,7 +414,7 @@ async def test_mismatched_current_rights_is_ignored_for_all_ineligible_cohort() 
 
 
 @pytest.mark.asyncio
-async def test_existing_assessment_retry_returns_original_without_new_clock_or_hash() -> None:
+async def test_existing_assessment_retry_reads_bounded_cohort_and_returns_original_hash() -> None:
     members = _members()
     service, _, repositories = _service(members=members)
     original = await service.assess_cohort(
@@ -447,4 +455,10 @@ async def test_existing_assessment_retry_returns_original_without_new_clock_or_h
     assert repeated.assessment == original.assessment
     assert repeated.proposal == original.proposal
     assert repeated.is_duplicate is True
-    assert calls == ["rights", "cohort_lock", "list_cohort", "find_assessment"]
+    assert calls == [
+        "rights",
+        "cohort_lock",
+        "transaction_timestamp",
+        "list_cohort",
+        "find_assessment",
+    ]

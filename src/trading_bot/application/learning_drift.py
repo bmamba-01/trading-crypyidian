@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import timedelta
 from uuid import UUID, uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -101,10 +102,13 @@ class LearningDriftApplication:
                 registry_id=challenger_registry_id,
                 revision=challenger_revision,
             )
+            created_at = await repository.transaction_timestamp(workspace_id=workspace_id)
             members = await repository.list_cohort(
                 workspace_id=workspace_id,
                 registry_id=challenger_registry_id,
                 revision=challenger_revision,
+                window_start=created_at - timedelta(days=policy.observation_window_days),
+                window_end=created_at,
             )
             # Không lưu cohort rỗng vì ledger không có cột ghim scope được yêu cầu.
             if not members:
@@ -145,7 +149,6 @@ class LearningDriftApplication:
                     is_duplicate=True,
                 )
 
-            created_at = await repository.transaction_timestamp(workspace_id=workspace_id)
             if created_at < max(member.observation.observed_at for member in members):
                 raise LearningDriftTimestampConflict(
                     "transaction_timestamp cũ hơn observation mới nhất trong cohort."

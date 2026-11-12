@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -53,9 +53,10 @@ def _assessment_values(
     values: dict[str, Any] = {
         "id": uuid4(),
         "workspace_id": workspace_id,
-        "policy_version": "coverage-v1",
+        "policy_version": "coverage-v2-30d",
         "member_count": 0,
         "eligible_count": 0,
+        "observation_window_days": 30,
         "minimum_observations": 3,
         "minimum_snapshot_coverage": 0.8,
         "minimum_quality_rate": 0.9,
@@ -151,14 +152,15 @@ def _insert_assessment(connection: psycopg.Connection[Any], values: dict[str, An
         INSERT INTO {TABLE} (
             id, workspace_id, policy_version, cohort_registry_id, cohort_revision,
             window_start, window_end, created_at,
-            member_count, eligible_count, minimum_observations,
+            member_count, eligible_count, observation_window_days, minimum_observations,
             minimum_snapshot_coverage, minimum_quality_rate,
             snapshot_coverage_rate, quality_rate, abstention_rate,
             data_quality_status, performance_status, reason_codes,
             membership_digest, idempotency_key, content_hash
         ) VALUES (
             %(id)s, %(workspace_id)s, %(policy_version)s, NULL, NULL, NULL, NULL, %(created_at)s,
-            %(member_count)s, %(eligible_count)s, %(minimum_observations)s,
+            %(member_count)s, %(eligible_count)s, %(observation_window_days)s,
+            %(minimum_observations)s,
             %(minimum_snapshot_coverage)s, %(minimum_quality_rate)s,
             NULL, NULL, NULL, %(data_quality_status)s, %(performance_status)s,
             %(reason_codes)s::jsonb, %(membership_digest)s, %(idempotency_key)s,
@@ -587,6 +589,122 @@ def _observation_insert_params(values: dict[str, Any]) -> tuple[Any, ...]:
     )
 
 
+def _assert_bounded_query_cutoffs_and_expiry() -> bool:
+    from psycopg.rows import dict_row
+    from sqlalchemy.dialects import postgresql
+
+    from trading_bot.adapters.database.repositories.learning_drift import (
+        LearningDriftRepository,
+        _member_from_mapping,
+    )
+    from trading_bot.domain.learning.drift import assess_learning_drift
+
+    # Fixture tạm chỉ chứa metadata; truy vấn production chạy trên PostgreSQL thật.
+    with _connect("crypidian_admin", "/run/secrets/postgres_password") as connection:
+        connection.execute(
+            "CREATE TEMP TABLE learning_shadow_observation "
+            "(LIKE public.learning_shadow_observation INCLUDING DEFAULTS)"
+        )
+        connection.execute("CREATE TEMP TABLE bot_decision (LIKE public.bot_decision)")
+        registry = uuid4()
+        as_of = connection.execute("SELECT transaction_timestamp()").fetchone()[0]
+        ids = [UUID(int=index + 1) for index in range(8)]
+        times = [
+            as_of - timedelta(days=30, microseconds=1),
+            as_of - timedelta(days=30),
+            as_of - timedelta(days=1),
+            as_of,
+            as_of + timedelta(microseconds=1),
+            as_of,
+            as_of,
+            as_of,
+        ]
+        # Bỏ NOT NULL fixture cho các cột lineage không được projection đọc.
+        columns = connection.execute(
+            "SELECT attname FROM pg_attribute WHERE attrelid = "
+            "'pg_temp.learning_shadow_observation'::regclass AND attnum > 0"
+        ).fetchall()
+        for (column,) in columns:
+            connection.execute(
+                psycopg.sql.SQL(
+                    "ALTER TABLE pg_temp.learning_shadow_observation ALTER COLUMN {} DROP NOT NULL"
+                ).format(psycopg.sql.Identifier(column))
+            )
+        for index, observed_at in enumerate(times):
+            connection.execute(
+                "INSERT INTO pg_temp.learning_shadow_observation "
+                "(id, workspace_id, challenger_registry_id, challenger_revision, observed_at, "
+                "snapshot_hash, snapshot_coverage, snapshot_quality_ok, schema_compatible, "
+                "rights_eligible, challenger_decision, challenger_reason) "
+                "VALUES (%s,%s,%s,%s,%s,%s,1,true,true,false,'abstain',"
+                "'SOURCE_RIGHTS_INELIGIBLE')",
+                (
+                    ids[index],
+                    OTHER_WORKSPACE if index == 5 else WORKSPACE,
+                    uuid4() if index == 6 else registry,
+                    2 if index == 7 else 1,
+                    observed_at,
+                    "1" * 64,
+                ),
+            )
+
+        def read(end: datetime) -> tuple[Any, ...]:
+            query = LearningDriftRepository.cohort_statement(
+                workspace_id=WORKSPACE,
+                registry_id=registry,
+                revision=1,
+                window_start=end - timedelta(days=30),
+                window_end=end,
+            ).compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True})
+            with connection.cursor(row_factory=dict_row) as cursor:
+                cursor.execute(str(query))
+                return tuple(_member_from_mapping(row) for row in cursor.fetchall())
+
+        members = read(as_of)
+        assert tuple(member.observation.observation_id for member in members) == tuple(ids[1:4])
+        # Loại observation tương lai trước khi tiến mốc: kiểm việc hết hạn độc lập.
+        connection.execute(
+            "DELETE FROM pg_temp.learning_shadow_observation WHERE id = %s", (ids[4],)
+        )
+        expired = read(as_of + timedelta(microseconds=1))
+        assert tuple(member.observation.observation_id for member in expired) == tuple(ids[2:4])
+        first_digest = LearningDriftRepository.membership_digest(tuple(ids[1:4]))
+        next_digest = LearningDriftRepository.membership_digest(tuple(ids[2:4]))
+        assert first_digest != next_digest
+        assessment = assess_learning_drift(
+            workspace_id=WORKSPACE,
+            assessment_id=uuid4(),
+            policy=LearningDriftRepository.server_policy(),
+            observations=tuple(member.observation for member in expired),
+            created_at=as_of + timedelta(microseconds=1),
+        )
+        assert assessment.member_count == 2
+        assert assessment.data_quality_status.value == "inconclusive"
+        assert assessment.performance_status.value == "inconclusive"
+        assert "low_sample" in [reason.value for reason in assessment.reason_codes]
+        connection.rollback()
+    return True
+
+
+def _assert_bounded_policy_schema() -> bool:
+    with _connect(
+        OBSERVER, "/run/secrets/database_learning_shadow_observer_password"
+    ) as connection:
+        row = connection.execute(
+            "SELECT is_nullable FROM information_schema.columns "
+            "WHERE table_name = 'learning_drift_assessment' "
+            "AND column_name = 'observation_window_days'"
+        ).fetchone()
+        assert row is not None
+        index = connection.execute(
+            "SELECT indexdef FROM pg_indexes WHERE indexname = "
+            "'ix_learning_shadow_observation_cohort_time'"
+        ).fetchone()
+        assert index is not None
+        assert "observed_at" in index[0]
+    return True
+
+
 def main() -> None:
     _seed_workspaces()
     with _connect(OBSERVER, "/run/secrets/database_learning_shadow_observer_password") as observer:
@@ -603,6 +721,15 @@ def main() -> None:
             observer,
             forged_policy,
             "WP06_SHADOW_DRIFT_POLICY_INVALID",
+        )
+
+        _scope(observer, WORKSPACE)
+        forged_duration = _assessment_values(
+            observer, WORKSPACE, reasons=["low_sample", "performance_not_evaluable"]
+        )
+        forged_duration["observation_window_days"] = 31
+        assert _expect_assessment_marker(
+            observer, forged_duration, "WP06_SHADOW_DRIFT_POLICY_INVALID"
         )
 
         _scope(observer, WORKSPACE)
@@ -626,11 +753,12 @@ def main() -> None:
                 id, workspace_id, policy_version, cohort_registry_id, cohort_revision,
                 window_start, window_end,
                 member_count, eligible_count,
-                minimum_observations, minimum_snapshot_coverage, minimum_quality_rate,
+                observation_window_days, minimum_observations,
+                minimum_snapshot_coverage, minimum_quality_rate,
                 data_quality_status, performance_status, reason_codes,
                 membership_digest, idempotency_key, content_hash
-            ) VALUES (%s, %s, 'coverage-v1', NULL, NULL, transaction_timestamp(),
-                      transaction_timestamp(), 1, 0, 3, 0.8, 0.9,
+            ) VALUES (%s, %s, 'coverage-v2-30d', NULL, NULL, transaction_timestamp(),
+                      transaction_timestamp(), 1, 0, 30, 3, 0.8, 0.9,
                       'inconclusive', 'inconclusive',
                       '["low_sample","performance_not_evaluable"]'::jsonb,
                       %s, %s, %s)
@@ -767,7 +895,7 @@ def main() -> None:
             INSERT INTO public.learning_retrain_proposal (
                 id, workspace_id, assessment_id, assessment_hash, policy_version,
                 membership_digest, idempotency_key, reason_codes, content_hash, created_at
-            ) VALUES (%s, %s, %s, %s, 'coverage-v1', %s, %s,
+            ) VALUES (%s, %s, %s, %s, 'coverage-v2-30d', %s, %s,
                       '["coverage_below_threshold"]'::jsonb, %s, %s)
         """
         correct_proposal = _proposal_values(
@@ -925,6 +1053,8 @@ def main() -> None:
     print(
         json.dumps(
             {
+                "bounded_policy_schema": _assert_bounded_policy_schema(),
+                "bounded_cutoffs_and_expiry": _assert_bounded_query_cutoffs_and_expiry(),
                 "empty_assessment_rejected": empty_assessment_rejected,
                 "assessment_rows_scoped_per_workspace": assessment_rows_scoped_per_workspace,
                 "drift_policy_rejected": drift_policy_rejected,

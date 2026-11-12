@@ -1678,6 +1678,21 @@ async def _assess(registry_key: str) -> dict[str, Any]:
         challenger_registry_id=registry_id,
         challenger_revision=revision,
     )
+    from sqlalchemy import select
+
+    from trading_bot.adapters.database.models import LearningDriftAssessmentRecord
+    from trading_bot.application.outbox import UnitOfWork
+
+    async with UnitOfWork(create_session_factory(engine), workspace_id=WORKSPACE) as unit:
+        row = await unit.session.scalar(
+            select(LearningDriftAssessmentRecord).where(
+                LearningDriftAssessmentRecord.id == first.assessment.assessment_id,
+            )
+        )
+        assert row is not None
+        assert row.policy_version == "coverage-v2-30d"
+        assert row.observation_window_days == 30
+        assert row.window_end == row.created_at
     await engine.dispose()
     assert repeated is not None
     return {
@@ -1772,10 +1787,15 @@ async def _assess_after_rights_revocation() -> dict[str, Any]:
                 workspace_id=WORKSPACE,
                 source_id="BINANCE_USDM_REST",
             )
+            as_of = await LearningDriftRepository(unit.session).transaction_timestamp(
+                workspace_id=WORKSPACE
+            )
             members = await LearningDriftRepository(unit.session).list_cohort(
                 workspace_id=WORKSPACE,
                 registry_id=registry_id,
                 revision=revision,
+                window_start=as_of - timedelta(days=30),
+                window_end=as_of,
             )
             before_count = await unit.session.scalar(
                 select(func.count())

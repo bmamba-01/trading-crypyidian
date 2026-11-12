@@ -174,7 +174,7 @@ class LearningShadowObservationRecord(UuidPrimaryKey, CreatedAt, Base):
             "id",
         ),
         Index(
-            "ix_learning_shadow_observation_registry_revision",
+            "ix_learning_shadow_observation_cohort_time",
             "workspace_id",
             "challenger_registry_id",
             "challenger_revision",
@@ -270,6 +270,12 @@ class LearningDriftAssessmentRecord(UuidPrimaryKey, CreatedAt, Base):
             name="learning_drift_assessment_cohort_scope_valid",
         ),
         CheckConstraint(
+            "(policy_version = 'coverage-v2-30d' AND observation_window_days IS NOT NULL "
+            "AND observation_window_days = 30) OR "
+            "(policy_version = 'coverage-v1' AND observation_window_days IS NULL)",
+            name="learning_drift_assessment_observation_window_valid",
+        ),
+        CheckConstraint(
             "minimum_observations >= 1 AND minimum_snapshot_coverage BETWEEN 0 AND 1 "
             "AND minimum_quality_rate BETWEEN 0 AND 1",
             name="learning_drift_assessment_policy_thresholds_valid",
@@ -314,6 +320,7 @@ class LearningDriftAssessmentRecord(UuidPrimaryKey, CreatedAt, Base):
     window_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     member_count: Mapped[int] = mapped_column(Integer, nullable=False)
     eligible_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    observation_window_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
     minimum_observations: Mapped[int] = mapped_column(Integer, nullable=False)
     minimum_snapshot_coverage: Mapped[float] = mapped_column(Float(), nullable=False)
     minimum_quality_rate: Mapped[float] = mapped_column(Float(), nullable=False)

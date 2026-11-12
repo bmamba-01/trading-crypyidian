@@ -1,5 +1,8 @@
 # Project plan và trạng thái triển khai
 
+**WP06 Task7B — cửa sổ quan sát 30 ngày (12/11/2026):** policy server `coverage-v2-30d` cố định `observation_window_days=30`, N=3, coverage≥0,8 và quality≥0,9. Sau source-rights lock → cohort lock, application lấy PostgreSQL `transaction_timestamp()` và chỉ đọc `as_of − 30 ngày ≤ observed_at ≤ as_of` trong workspace/registry/revision. Assessment ghim exact members/digest, `window_start` là member sớm nhất và `window_end=as_of`; retry cùng membership trả row gốc, member hết hạn làm đổi idempotency scope. Migration `c3f5a7b9d1e3` giữ assessment `coverage-v1` cũ với duration NULL, chỉ cho append v2/30 ngày, dùng lại index cohort/time và chặn downgrade khi có v2. Admin chỉ thêm policy/duration/bounds metadata. Performance luôn `INCONCLUSIVE`; không dùng label/outcome/PnL/holdout, không đổi scorer flags/mode hay entry gate. 30 ngày là lựa chọn vận hành khởi điểm, không phải horizon tối ưu đã được nghiên cứu xác nhận. [Thiết kế](../superpowers/specs/2026-11-12-wp06-task7b-bounded-window-design.md) · [Kế hoạch](../superpowers/plans/2026-11-12-wp06-task7b-bounded-window.md).
+
+
 **Cập nhật:** 2026-11-11 (Asia/Ho_Chi_Minh)
 **Nhánh:** `dev` <br>
 **Phạm vi:** repo bot Binance Futures độc lập; không tính mã Freqtrade upstream là implementation của sản phẩm.

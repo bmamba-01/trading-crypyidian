@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Annotated, Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -120,6 +121,17 @@ def _present_record(record: Any) -> dict[str, object]:
         fields = (
             ("Mã mô hình trong nhóm", _short(metadata.get("cohort_registry_id"))),
             ("Phiên bản mô hình", _display(metadata.get("cohort_revision"))),
+            ("Phiên bản policy", _display(metadata.get("policy_version"))),
+            (
+                "Cửa sổ quan sát",
+                (
+                    f"{metadata['observation_window_days']} ngày"
+                    if metadata.get("observation_window_days") is not None
+                    else "Toàn bộ lịch sử (policy cũ)"
+                ),
+            ),
+            ("Bắt đầu nhóm quan sát (UTC)", _utc_display(metadata.get("window_start"))),
+            ("Mốc đánh giá (UTC)", _utc_display(metadata.get("window_end"))),
             (
                 "Số quan sát / ngưỡng tối thiểu",
                 f"{_display(metadata.get('member_count'))} / "
@@ -164,6 +176,16 @@ def _present_record(record: Any) -> dict[str, object]:
         "status": status,
         "fields": fields,
     }
+
+
+def _utc_display(value: object) -> str:
+    """Trình bày mốc metadata theo UTC với định dạng dễ đọc trên di động."""
+    if value is None:
+        return "Chưa có"
+    timestamp = datetime.fromisoformat(value) if isinstance(value, str) else value
+    if not isinstance(timestamp, datetime) or timestamp.tzinfo is None:
+        return "Chưa có"
+    return timestamp.astimezone(UTC).strftime("%d/%m/%Y %H:%M:%S")
 
 
 def _display(value: object) -> str:

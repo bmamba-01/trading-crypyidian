@@ -47,6 +47,7 @@ class DriftPolicy:
     minimum_observations: int
     minimum_snapshot_coverage: float
     minimum_quality_rate: float
+    observation_window_days: int = 30
 
     def __post_init__(self) -> None:
         if (
@@ -56,6 +57,8 @@ class DriftPolicy:
             raise ValueError("policy_version không hợp lệ.")
         if type(self.minimum_observations) is not int or self.minimum_observations < 1:
             raise ValueError("minimum_observations phải là số nguyên dương.")
+        if type(self.observation_window_days) is not int or self.observation_window_days < 1:
+            raise ValueError("observation_window_days phải là số nguyên dương.")
         for name in ("minimum_snapshot_coverage", "minimum_quality_rate"):
             value = getattr(self, name)
             if (
@@ -438,7 +441,11 @@ def assess_learning_drift(
         cohort_registry_id=(ordered[0].challenger_registry_id if ordered else None),
         cohort_revision=(ordered[0].challenger_revision if ordered else None),
         window_start=min((item.observed_at for item in ordered), default=None),
-        window_end=max((item.observed_at for item in ordered), default=None),
+        window_end=(
+            created_at
+            if ordered and policy.policy_version == "coverage-v2-30d"
+            else max((item.observed_at for item in ordered), default=None)
+        ),
         member_ids=member_ids,
         membership_digest=membership_digest,
         member_count=len(ordered),

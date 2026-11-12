@@ -18,7 +18,7 @@ PROBE_BOOTSTRAP = (
     "exec(compile(p['code'],'wp06_shadow_drift_persistence.py','exec'),{'__name__':'__main__'})"
 )
 PREVIOUS_HEAD = "d2b4c6e8f0a1"
-CURRENT_HEAD = "b2e4a6c8d0f2"
+CURRENT_HEAD = "c3f5a7b9d1e3"
 
 
 def test_shadow_drift_postgres_append_only_rls_rights_and_empty_downgrade() -> None:
@@ -103,6 +103,8 @@ def test_shadow_drift_postgres_append_only_rls_rights_and_empty_downgrade() -> N
         assert CURRENT_HEAD in current.stdout
         migrate("check")
         assert data == {
+            "bounded_policy_schema": True,
+            "bounded_cutoffs_and_expiry": True,
             "empty_assessment_rejected": True,
             "assessment_rows_scoped_per_workspace": True,
             "drift_policy_rejected": True,

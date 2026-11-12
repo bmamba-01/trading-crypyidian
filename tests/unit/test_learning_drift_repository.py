@@ -42,6 +42,8 @@ def test_cohort_query_is_workspace_and_revision_scoped_metadata_only() -> None:
         workspace_id=WORKSPACE_ID,
         registry_id=REGISTRY_ID,
         revision=REGISTRY_REVISION,
+        window_start=NOW - timedelta(days=30),
+        window_end=NOW,
     )
     sql = str(
         statement.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True})
@@ -51,6 +53,10 @@ def test_cohort_query_is_workspace_and_revision_scoped_metadata_only() -> None:
     assert str(WORKSPACE_ID) in sql
     assert str(REGISTRY_ID) in sql
     assert "challenger_revision" in sql
+    assert "observed_at >=" in sql
+    assert "observed_at <=" in sql
+    assert "2026-10-09 12:00:00+00:00" in sql
+    assert "2026-11-08 12:00:00+00:00" in sql
     assert "snapshot_coverage" in select_list
     assert "snapshot_quality_ok" in select_list
     assert "rights_fingerprint" in select_list
@@ -103,7 +109,8 @@ def test_transaction_clock_is_postgres_transaction_timestamp() -> None:
 def test_server_policy_cannot_be_overridden_by_request_values() -> None:
     policy = LearningDriftRepository.server_policy()
 
-    assert policy.policy_version == "coverage-v1"
+    assert policy.policy_version == "coverage-v2-30d"
+    assert policy.observation_window_days == 30
     assert policy.minimum_observations == 3
     assert policy.minimum_snapshot_coverage == 0.8
     assert policy.minimum_quality_rate == 0.9
@@ -247,6 +254,7 @@ async def test_persist_appends_assessment_ordered_members_and_detected_proposal_
     assert result.proposal == proposal
     assert result.is_duplicate is False
     assert isinstance(session.added[0], LearningDriftAssessmentRecord)
+    assert session.added[0].observation_window_days == 30
     assert all(isinstance(row, LearningDriftAssessmentMemberRecord) for row in session.added[1:4])
     assert isinstance(session.added[4], LearningRetrainProposalRecord)
     member_rows = session.added[1:4]

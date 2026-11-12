@@ -57,6 +57,10 @@ def _items() -> tuple[LearningObservationAdminItem, ...]:
                 "cohort_registry_id": str(uuid4()),
                 "cohort_revision": 4,
                 "member_count": 2,
+                "policy_version": "coverage-v2-30d",
+                "observation_window_days": 30,
+                "window_start": "2026-11-01T12:00:00+00:00",
+                "window_end": "2026-11-08T12:00:00+00:00",
                 "minimum_observations": 3,
                 "eligible_count": 2,
                 "snapshot_coverage_rate": None,
@@ -194,6 +198,9 @@ def test_learning_observations_page_is_read_only_vietnamese_and_responsive(
             browser_page.get_by_text("Số quan sát / ngưỡng tối thiểu", exact=True)
         ).to_be_visible()
         expect(browser_page.get_by_text("2 / 3", exact=True)).to_be_visible()
+        expect(browser_page.get_by_text("30 ngày", exact=True)).to_be_visible()
+        expect(browser_page.get_by_text("08/11/2026 12:00:00", exact=True)).to_be_visible()
+        expect(browser_page.get_by_text("coverage-v2-30d", exact=True)).to_be_visible()
         expect(browser_page.get_by_text("giờ Việt Nam (UTC+7)", exact=False).first).to_be_visible()
         assert "Asia/Ho_Chi_Minh" not in browser_page.locator("body").inner_text()
         expect(browser_page.get_by_role("link", name="Quan sát mô hình")).to_have_attribute(

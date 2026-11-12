@@ -83,16 +83,29 @@ class LearningDriftRepository:
     def server_policy() -> DriftPolicy:
         """Trả policy cố định do server định nghĩa, không nhận ngưỡng từ request."""
         return DriftPolicy(
-            policy_version="coverage-v1",
+            policy_version="coverage-v2-30d",
+            observation_window_days=30,
             minimum_observations=3,
             minimum_snapshot_coverage=0.8,
             minimum_quality_rate=0.9,
         )
 
     @staticmethod
-    def cohort_statement(*, workspace_id: UUID, registry_id: UUID, revision: int) -> Select[Any]:
+    def cohort_statement(
+        *,
+        workspace_id: UUID,
+        registry_id: UUID,
+        revision: int,
+        window_start: datetime,
+        window_end: datetime,
+    ) -> Select[Any]:
         """Project metadata cần cho drift, không đọc payload quyết định hay feature."""
         _validate_cohort_scope(workspace_id, registry_id, revision)
+        for value in (window_start, window_end):
+            if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None:
+                raise ValueError("Cận cửa sổ phải có timezone.")
+        if window_start > window_end:
+            raise ValueError("Cận đầu cửa sổ không được sau cận cuối.")
         observation = LearningShadowObservationRecord
         baseline_available = exists(
             select(literal(1))
@@ -124,6 +137,8 @@ class LearningDriftRepository:
                 observation.workspace_id == workspace_id,
                 observation.challenger_registry_id == registry_id,
                 observation.challenger_revision == revision,
+                observation.observed_at >= window_start,
+                observation.observed_at <= window_end,
             )
             .order_by(observation.id.asc())
         )
@@ -186,7 +201,13 @@ class LearningDriftRepository:
         )
 
     async def list_cohort(
-        self, *, workspace_id: UUID, registry_id: UUID, revision: int
+        self,
+        *,
+        workspace_id: UUID,
+        registry_id: UUID,
+        revision: int,
+        window_start: datetime,
+        window_end: datetime,
     ) -> tuple[LearningDriftCohortMember, ...]:
         await self._bind_workspace(workspace_id)
         rows = (
@@ -196,6 +217,8 @@ class LearningDriftRepository:
                         workspace_id=workspace_id,
                         registry_id=registry_id,
                         revision=revision,
+                        window_start=window_start,
+                        window_end=window_end,
                     )
                 )
             )
@@ -453,6 +476,7 @@ def _assessment_record(
         window_end=assessment.window_end,
         member_count=assessment.member_count,
         eligible_count=assessment.eligible_count,
+        observation_window_days=policy.observation_window_days,
         minimum_observations=policy.minimum_observations,
         minimum_snapshot_coverage=policy.minimum_snapshot_coverage,
         minimum_quality_rate=policy.minimum_quality_rate,
@@ -516,13 +540,13 @@ def _same_assessment_identity(
     stored: LearningDriftAssessment,
     requested: LearningDriftAssessment,
 ) -> bool:
+    # Retry cùng membership giữ nguyên mốc/hash cũ dù DB as-of mới đã tiến lên.
     return (
         stored.workspace_id == requested.workspace_id
         and stored.policy_version == requested.policy_version
         and stored.cohort_registry_id == requested.cohort_registry_id
         and stored.cohort_revision == requested.cohort_revision
         and stored.window_start == requested.window_start
-        and stored.window_end == requested.window_end
         and stored.member_ids == requested.member_ids
         and stored.membership_digest == requested.membership_digest
         and stored.member_count == requested.member_count

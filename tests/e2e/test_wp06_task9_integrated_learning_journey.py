@@ -465,7 +465,7 @@ def test_wp06_task9_integrated_learning_journey_uses_real_training_and_paper_lin
         )
         migration_output = migration_probe.stdout + migration_probe.stderr
         assert migration_probe.returncode != 0
-        assert "WP06_SCORING_DEPLOYMENT_POPULATED_DOWNGRADE_DENIED" in migration_output
+        assert "WP06_BOUNDED_DRIFT_DOWNGRADE_POPULATED" in migration_output
         migrate("check")
         heads = migrate("heads")
         assert heads.stdout.count("(head)") == 1, heads.stdout
