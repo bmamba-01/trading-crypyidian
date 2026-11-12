@@ -43,11 +43,11 @@
       <span class="kpi-label">Trạng thái khẩn cấp (Công tắc dừng khẩn cấp)</span>
       <div class="kpi-status-container" id="kpi-kill-status" aria-live="polite">
         {% if workspace.kill_state == "ACTIVE" %}
-        <span class="badge badge-success">Đang hoạt động</span>
+        <span class="badge badge-success" id="kpi-kill-state">Đang hoạt động</span>
         {% elif workspace.kill_state == "KILLED" %}
-        <span class="badge badge-danger">Đã dừng khẩn cấp</span>
+        <span class="badge badge-danger" id="kpi-kill-state">Đã dừng khẩn cấp</span>
         {% else %}
-        <span class="badge badge-warning">{{ workspace.kill_state }}</span>
+        <span class="badge badge-warning" id="kpi-kill-state">{{ workspace.kill_state | label_vi }}</span>
         {% endif %}
       </div>
       <span class="kpi-subtext" id="kpi-workspace-revision" data-live-kpi="revision">Lần thay đổi: {{ workspace.revision }}</span>
@@ -114,8 +114,8 @@
           <th scope="col">Tên bot</th>
           <th scope="col">Trạng thái</th>
           <th scope="col">Chế độ</th>
-          <th scope="col">Sẵn sàng (Readiness)</th>
-          <th scope="col">Entry</th>
+          <th scope="col">Mức sẵn sàng</th>
+          <th scope="col">Vào vị thế</th>
           <th scope="col">Thao tác</th>
         </tr>
       </thead>
@@ -126,19 +126,19 @@
             <a href="/admin/bots/{{ bot.id }}" class="bot-link"><strong>{{ bot.name }}</strong></a>
           </td>
           <td data-label="Trạng thái">
-            <span class="badge badge-neutral" data-bot-field="status">{{ bot.status }}</span>
+            <span class="badge badge-neutral" data-bot-field="status">{{ bot.status | label_vi }}</span>
           </td>
           <td data-label="Chế độ">
-            <span class="badge badge-paper-subtle">{{ bot.account_mode }}</span>
+            <span class="badge badge-paper-subtle">{{ bot.account_mode | label_vi }}</span>
           </td>
-          <td data-label="Sẵn sàng (Readiness)">
+          <td data-label="Mức sẵn sàng">
             {% if bot.readiness == "READY" %}
-            <span class="badge badge-success" data-bot-field="readiness">{{ bot.readiness }}</span>
+            <span class="badge badge-success" data-bot-field="readiness">{{ bot.readiness | label_vi }}</span>
             {% else %}
-            <span class="badge badge-warning" data-bot-field="readiness">{{ bot.readiness }}</span>
+            <span class="badge badge-warning" data-bot-field="readiness">{{ bot.readiness | label_vi }}</span>
             {% endif %}
           </td>
-          <td data-label="Entry">
+          <td data-label="Vào vị thế">
             {% if bot.entry_allowed %}
             <span class="status-indicator status-allowed" data-bot-field="entry">Cho phép</span>
             {% else %}
@@ -176,16 +176,16 @@
   var kpiBotCount = document.getElementById('kpi-bot-count');
   var kpiReadyCount = document.getElementById('kpi-ready-count');
   var kpiKillStatus = document.getElementById('kpi-kill-status');
+  var kpiKillState = document.getElementById('kpi-kill-state');
   var kpiRevision = document.getElementById('kpi-workspace-revision');
   var releaseRevisionInput = document.getElementById('workspace-release-revision');
+  var statusLabels = {{ ui_labels_vi | tojson }};
 
-  function escapeHtml(str) {
-    return String(str)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#039;');
+  function labelVi(value) {
+    var key = String(value || '');
+    return Object.prototype.hasOwnProperty.call(statusLabels, key)
+      ? statusLabels[key]
+      : 'Chưa xác định';
   }
 
   function updateDashboard(data) {
@@ -218,17 +218,19 @@
     }
 
     // 3. Cập nhật Workspace kill status
-    if (data.workspace && kpiKillStatus) {
+    if (data.workspace && kpiKillStatus && kpiKillState) {
       var killState = data.workspace.kill_state;
-      var badgeHtml = '';
+      var killLabel = labelVi(killState);
+      var killClass = 'badge badge-warning';
       if (killState === 'ACTIVE') {
-        badgeHtml = '<span class="badge badge-success">ACTIVE (Bình thường)</span>';
+        killLabel = 'Đang hoạt động';
+        killClass = 'badge badge-success';
       } else if (killState === 'KILLED') {
-        badgeHtml = '<span class="badge badge-danger">KILLED (Đã dừng khẩn cấp)</span>';
-      } else {
-        badgeHtml = '<span class="badge badge-warning">' + escapeHtml(killState || 'UNKNOWN') + '</span>';
+        killLabel = 'Đã dừng khẩn cấp';
+        killClass = 'badge badge-danger';
       }
-      kpiKillStatus.innerHTML = badgeHtml;
+      kpiKillState.textContent = killLabel;
+      kpiKillState.className = killClass;
 
       if (typeof data.workspace.revision !== 'undefined') {
         if (kpiRevision) {
@@ -248,11 +250,11 @@
         if (row) {
           var statusEl = row.querySelector('[data-bot-field="status"]');
           if (statusEl && bot.status) {
-            statusEl.textContent = bot.status;
+            statusEl.textContent = labelVi(bot.status);
           }
           var readinessEl = row.querySelector('[data-bot-field="readiness"]');
           if (readinessEl && bot.readiness) {
-            readinessEl.textContent = bot.readiness;
+            readinessEl.textContent = labelVi(bot.readiness);
             readinessEl.className = 'badge ' + (bot.readiness === 'READY' ? 'badge-success' : 'badge-warning');
           }
           var entryEl = row.querySelector('[data-bot-field="entry"]');

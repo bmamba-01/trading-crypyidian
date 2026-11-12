@@ -512,6 +512,20 @@ def test_admin_dashboard_desktop_and_mobile_workflows(admin_server_url: str) -> 
         assert "Thông tin đăng nhập không hợp lệ" in page.content()
         page.screenshot(path=str(SCREENSHOTS_DIR / "02_login_error_desktop.png"), full_page=True)
 
+        realtime_override = {"pending": True}
+
+        def translate_realtime_fixture(route: Any) -> None:
+            response = route.fetch()
+            payload = response.json()
+            if realtime_override["pending"] and payload.get("status") == "updated":
+                payload["workspace"]["kill_state"] = "KILLED"
+                payload["bots"][0]["status"] = "PAUSED"
+                payload["bots"][0]["readiness"] = "DEGRADED"
+                realtime_override["pending"] = False
+            route.fulfill(response=response, json=payload)
+
+        page.route("**/admin/api/dashboard/realtime**", translate_realtime_fixture)
+
         # 1.2 Đăng nhập thành công
         page.get_by_label("Mã không gian làm việc").fill("demo-workspace")
         page.get_by_label("Địa chỉ thư điện tử").fill("admin@crypidian.io")
@@ -530,6 +544,15 @@ def test_admin_dashboard_desktop_and_mobile_workflows(admin_server_url: str) -> 
         assert page.locator(".live-status-bar").is_visible()
         assert page.locator("#live-pulse-dot").is_visible()
         assert "Tự động cập nhật 5s" in page.content()
+        assert page.locator("#kpi-kill-status").inner_text() == "Đã dừng khẩn cấp"
+        assert (
+            page.locator(f'tr[data-bot-id="{BOT1_ID}"] [data-bot-field="status"]').inner_text()
+            == "Tạm dừng"
+        )
+        assert (
+            page.locator(f'tr[data-bot-id="{BOT1_ID}"] [data-bot-field="readiness"]').inner_text()
+            == "Suy giảm"
+        )
         toggle_btn = page.locator("#toggle-realtime-btn")
         assert toggle_btn.is_visible()
         assert toggle_btn.get_attribute("aria-pressed") == "true"
@@ -557,12 +580,12 @@ def test_admin_dashboard_desktop_and_mobile_workflows(admin_server_url: str) -> 
         page.screenshot(
             path=str(SCREENSHOTS_DIR / "04_dashboard_killed_desktop.png"), full_page=True
         )
-        assert "KILLED" in page.content()
+        assert page.locator("#kpi-kill-status").inner_text() == "Đã dừng khẩn cấp"
 
         page.get_by_label("Lý do tiếp tục hoạt động").fill("Khôi phục hoạt động")
         page.get_by_role("button", name="Bỏ dừng khẩn cấp").click()
         page.wait_for_load_state("networkidle")
-        assert "ACTIVE" in page.content()
+        assert page.locator("#kpi-kill-status").inner_text() == "Đang hoạt động"
 
         # 1.4 Danh sách Bot
         page.get_by_role("link", name="Bot", exact=True).click()

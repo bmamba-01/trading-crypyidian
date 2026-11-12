@@ -25,6 +25,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from trading_bot.admin.bot_schemas import CreateBotRequest
 from trading_bot.admin.bot_service import BotAdminError, BotConfigAdminService
 from trading_bot.admin.presentation import (
+    LABELS,
     MARKET_DOWN_COLOR,
     MARKET_FLAT_COLOR,
     MARKET_UP_COLOR,
@@ -95,6 +96,7 @@ def _templates(request: Request) -> Jinja2Templates:
     )
     templates.env.globals["report_metrics"] = METRICS
     templates.env.globals["pnl_metric_keys"] = PNL_METRIC_KEYS
+    templates.env.globals["ui_labels_vi"] = LABELS
     return templates
 
 

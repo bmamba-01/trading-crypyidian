@@ -14,7 +14,7 @@
 <div class="bot-header-summary">
   <div>
     <nav aria-label="Đường dẫn trang" style="margin-bottom: 0.35rem; font-size: 0.85rem; color: var(--text-muted);">
-      <a href="/admin">Dashboard</a> &rsaquo;
+      <a href="/admin">Tổng quan</a> &rsaquo;
       <a href="/admin/bots">Danh Sách Bot</a> &rsaquo;
       <span aria-current="page">{{ bot.name }}</span>
     </nav>
@@ -35,10 +35,10 @@
     {% elif bot.status == "PAUSED" %}
       <span class="badge badge-warning">⏸️ TẠM DỪNG</span>
     {% else %}
-      <span class="badge badge-danger">🛑 {{ bot.status }}</span>
+      <span class="badge badge-danger">🛑 {{ bot.status | label_vi }}</span>
     {% endif %}
 
-    <span class="badge badge-paper">Chế độ: {{ bot.account_mode }} ({{ bot.account_mode | label_vi }})</span>
+    <span class="badge badge-paper">Chế độ: {{ bot.account_mode | label_vi }} ({{ bot.account_mode }})</span>
 
     <span class="badge badge-warning">Mức sẵn sàng: {{ bot.readiness | label_vi }}</span>
 

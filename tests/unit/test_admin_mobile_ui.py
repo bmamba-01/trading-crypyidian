@@ -54,6 +54,8 @@ def test_bot_labels_translate_known_states_and_fail_closed_for_unknown(
     assert f">{code}<" not in page.text
     assert "Mô phỏng" in page.text
     assert "Tạm dừng bot" in page.text
+    assert ">Tổng quan</a>" in page.text
+    assert ">Dashboard</a>" not in page.text
 
 
 def test_dashboard_metrics_fail_closed_when_reporting_service_is_unavailable() -> None:
@@ -64,6 +66,19 @@ def test_dashboard_metrics_fail_closed_when_reporting_service_is_unavailable() -
     assert "Thống kê hiệu quả chưa sẵn sàng" in page.text
     assert "Xem báo cáo theo phạm vi được cấp quyền" in page.text
     assert "Điều khiển không gian làm việc: Đang hoạt động" in page.text
+
+
+def test_dashboard_renders_bot_states_and_table_headers_in_vietnamese() -> None:
+    client = _client()
+    client.app.state.auth_service = AuthServiceStub()
+
+    page = client.get("/admin")
+
+    assert page.status_code == 200
+    assert 'data-bot-field="status">Đã bật</span>' in page.text
+    assert 'data-bot-field="readiness">Sẵn sàng</span>' in page.text
+    assert '<th scope="col">Vào vị thế</th>' in page.text
+    assert '<th scope="col">Entry</th>' not in page.text
 
 
 def test_report_renders_authoritative_metrics_separately_per_asset() -> None:
