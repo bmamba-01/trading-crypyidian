@@ -241,3 +241,88 @@ def test_bootstrap_token_is_checked_in_constant_time_and_missing_token_fails(tmp
     assert verify_bootstrap_token(token_file, "one-time-owner-setup-token")
     assert not verify_bootstrap_token(token_file, "wrong-token")
     assert not verify_bootstrap_token(tmp_path / "missing", "one-time-owner-setup-token")
+
+
+@pytest.mark.parametrize("role", list(Role))
+def test_learning_incident_manage_is_only_for_owner_and_risk_admin(role: Role) -> None:
+    assert hasattr(Permission, "LEARNING_INCIDENT_MANAGE"), (
+        "Chưa có quyền quản lý learning incident"
+    )
+    principal = Principal(
+        user_id=uuid4(),
+        membership_id=uuid4(),
+        workspace_id=uuid4(),
+        roles=frozenset({role}),
+        mfa_verified_at=datetime.now(UTC),
+    )
+    assert authorize(principal, Permission.LEARNING_INCIDENT_MANAGE) is (
+        role in {Role.OWNER, Role.RISK_ADMIN}
+    )
+    # Quyền mới không cấp thêm quyền đọc/phê duyệt model cho risk-admin hoặc operator.
+    assert authorize(principal, Permission.LEARNING_MODEL_READ) is (
+        role in {Role.OWNER, Role.ANALYST_REVIEWER}
+    )
+    assert authorize(principal, Permission.LEARNING_MODEL_APPROVE) is (
+        role in {Role.OWNER, Role.ANALYST_REVIEWER}
+    )
+
+
+@pytest.mark.parametrize(
+    ("role", "allowed"),
+    [
+        (Role.OPERATOR, {"workspace:read", "trade:read", "runtime:pause", "runtime:resume"}),
+        (
+            Role.STRATEGY_ADMIN,
+            {
+                "workspace:read",
+                "settings:read",
+                "settings:write",
+                "strategy:write",
+                "watchlist:write",
+            },
+        ),
+        (
+            Role.RISK_ADMIN,
+            {
+                "workspace:read",
+                "trade:read",
+                "risk_profile:write",
+                "runtime:pause",
+                "runtime:resume",
+                "workspace:kill",
+            },
+        ),
+        (
+            Role.ANALYST_REVIEWER,
+            {
+                "workspace:read",
+                "trade:read",
+                "trade:review",
+                "research_source:approve",
+                "learning:split_approve",
+                "learning:training_manage",
+                "learning:model_read",
+                "learning:model_write",
+                "learning:model_approve",
+            },
+        ),
+    ],
+)
+def test_learning_incident_permission_preserves_existing_role_authorization(role, allowed) -> None:
+    assert hasattr(Permission, "LEARNING_INCIDENT_MANAGE"), (
+        "Chưa có quyền quản lý learning incident"
+    )
+    principal = Principal(
+        user_id=uuid4(),
+        membership_id=uuid4(),
+        workspace_id=uuid4(),
+        roles=frozenset({role}),
+        mfa_verified_at=datetime.now(UTC),
+    )
+    existing_allowed = {
+        permission.value
+        for permission in Permission
+        if permission is not Permission.LEARNING_INCIDENT_MANAGE
+        and authorize(principal, permission)
+    }
+    assert existing_allowed == allowed

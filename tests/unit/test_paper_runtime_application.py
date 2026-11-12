@@ -575,6 +575,7 @@ def _application_with_fakes(
             activity_status=RuntimeActivityStatus.VERIFIED,
             activity_checked_at=datetime.now(UTC),
             open_incident=False,
+            learning_incident_hold_active=False,
         )
 
     class _Coordinator:

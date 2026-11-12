@@ -22,9 +22,12 @@ from trading_bot.domain.execution.runtime_control import (
     BotControlState,
     BotEntryState,
     BotReadiness,
+    EntryGate,
+    EntryGateInput,
     RuntimeActivityStatus,
     RuntimeControlError,
     RuntimeControlSnapshot,
+    RuntimeOperation,
     WorkspaceControlState,
     WorkspaceKillState,
 )
@@ -139,6 +142,7 @@ def _gate(**changes: Any):
         "activity_status": RuntimeActivityStatus.VERIFIED,
         "activity_checked_at": datetime.now(UTC),
         "open_incident": False,
+        "learning_incident_hold_active": False,
     } | changes
 
     async def loader(_uow: object, **_: object) -> EntryGateState:
@@ -158,6 +162,7 @@ def _gate(**changes: Any):
             {"activity_checked_at": datetime.now(UTC) - timedelta(hours=1)},
             "ACCOUNT_ACTIVITY_UNVERIFIED",
         ),
+        ({"learning_incident_hold_active": True}, "LEARNING_INCIDENT_ENTRY_HOLD"),
     ],
 )
 def test_entry_gate_blocks_with_reason_and_writes_nothing(
@@ -172,6 +177,49 @@ def test_entry_gate_blocks_with_reason_and_writes_nothing(
     assert counters.context_loads == 0
     assert counters.reserves == 0
     assert counters.submissions == 0
+
+
+def test_learning_incident_projection_failure_blocks_entry_without_writes() -> None:
+    from trading_bot.adapters.database.repositories.learning_incident_entry_holds import (
+        LearningIncidentHoldUnavailable,
+    )
+
+    async def unavailable(_uow: object, **_: object) -> EntryGateState:
+        raise LearningIncidentHoldUnavailable("projection không khả dụng")
+
+    service, command, _, _, counters, *_ = _application_with_fakes(
+        fail_submission=False, gate_state_loader=unavailable
+    )
+
+    with pytest.raises(PaperRuntimeApplicationError, match="LEARNING_INCIDENT_HOLD_UNAVAILABLE"):
+        asyncio.run(service.evaluate_and_submit(command))
+    assert counters.context_loads == 0
+    assert counters.reserves == 0
+    assert counters.submissions == 0
+
+
+@pytest.mark.parametrize(
+    "operation", [RuntimeOperation.PROTECTIVE_EXIT, RuntimeOperation.PROTECTIVE_MONITORING]
+)
+def test_learning_incident_hold_does_not_block_protective_operations(operation) -> None:
+    decision = EntryGate.evaluate(
+        EntryGateInput(
+            account_enabled=False,
+            bot_enabled=False,
+            workspace_kill_state=None,
+            bot_entry_state=None,
+            readiness=BotReadiness.RECOVERY_REQUIRED,
+            lease_held=False,
+            open_incident=True,
+            activity_status=None,
+            control_available=False,
+            learning_incident_hold_active=True,
+        ),
+        operation,
+    )
+
+    assert decision.allowed is True
+    assert decision.reason is None
 
 
 class _StateRepository:

@@ -39,6 +39,9 @@ from trading_bot.admin.bot_control_router import router as bot_control_router
 from trading_bot.admin.bot_reports_router import router as bot_reports_router
 from trading_bot.admin.bot_service import BotConfigAdminService
 from trading_bot.admin.bots_router import router as bots_router
+from trading_bot.admin.learning_incident_entry_hold_router import (
+    router as learning_incident_entry_hold_router,
+)
 from trading_bot.admin.learning_model_registry_page_router import (
     router as learning_model_registry_page_router,
 )
@@ -75,6 +78,9 @@ from trading_bot.application.bot_reporting import BotReportingService
 from trading_bot.application.bot_runtime_registry import BotRuntimeRegistry
 from trading_bot.application.bot_runtime_supervisor import BotRuntimeSupervisor
 from trading_bot.application.flatten_all import FlattenAllService
+from trading_bot.application.learning_incident_entry_hold import (
+    LearningIncidentEntryHoldService,
+)
 from trading_bot.application.learning_model_registry import LearningModelRegistryService
 from trading_bot.application.learning_observations_admin import (
     LearningObservationsAdminService,
@@ -316,6 +322,11 @@ def create_app(
                 if active_session_factory is not None
                 else None
             )
+            application.state.learning_incident_entry_hold_service = (
+                LearningIncidentEntryHoldService(active_session_factory)
+                if active_session_factory is not None
+                else None
+            )
             application.state.learning_training_admin_service = (
                 LearningTrainingAdminService(active_session_factory)
                 if active_session_factory is not None
@@ -516,6 +527,7 @@ def create_app(
             app.include_router(learning_scoring_deployment_router)
             app.include_router(learning_model_registry_page_router)
             app.include_router(learning_observations_page_router)
+            app.include_router(learning_incident_entry_hold_router)
             app.include_router(learning_scoring_page_router)
             app.include_router(learning_training_router)
             app.include_router(learning_training_page_router)

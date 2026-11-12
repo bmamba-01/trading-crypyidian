@@ -196,6 +196,7 @@ def _gate(**overrides: object) -> EntryGateInput:
         "open_incident": False,
         "activity_status": RuntimeActivityStatus.VERIFIED,
         "control_available": True,
+        "learning_incident_hold_active": False,
     }
     values.update(overrides)
     return EntryGateInput(**values)  # type: ignore[arg-type]
@@ -219,6 +220,7 @@ def test_entry_gate_returns_first_reason_in_fixed_order() -> None:
         open_incident=True,
         activity_status=RuntimeActivityStatus.UNVERIFIED,
         control_available=False,
+        learning_incident_hold_active=True,
     )
     expected_order = [
         EntryBlockReason.BOT_DISABLED,
@@ -229,6 +231,7 @@ def test_entry_gate_returns_first_reason_in_fixed_order() -> None:
         EntryBlockReason.EXTERNAL_ACTIVITY_UNRECONCILED,
         EntryBlockReason.ACCOUNT_ACTIVITY_UNVERIFIED,
         EntryBlockReason.RUNTIME_CONTROL_UNAVAILABLE,
+        EntryBlockReason.LEARNING_INCIDENT_ENTRY_HOLD,
     ]
     fixes: list[dict[str, object]] = [
         {"account_enabled": True, "bot_enabled": True},
@@ -239,6 +242,7 @@ def test_entry_gate_returns_first_reason_in_fixed_order() -> None:
         {"open_incident": False},
         {"activity_status": RuntimeActivityStatus.VERIFIED},
         {"control_available": True},
+        {"learning_incident_hold_active": False},
     ]
     current = everything_wrong
     observed = []
@@ -248,6 +252,23 @@ def test_entry_gate_returns_first_reason_in_fixed_order() -> None:
         current = replace(current, **fix)  # type: ignore[arg-type]
     assert observed == expected_order
     assert [reason.value for reason in EntryBlockReason] == [r.value for r in expected_order]
+
+
+def test_entry_gate_blocks_only_new_entry_for_learning_incident_hold() -> None:
+    blocked = EntryGate.evaluate(
+        _gate(learning_incident_hold_active=True), RuntimeOperation.NEW_ENTRY
+    )
+    exit_decision = EntryGate.evaluate(
+        _gate(learning_incident_hold_active=True), RuntimeOperation.PROTECTIVE_EXIT
+    )
+    monitor_decision = EntryGate.evaluate(
+        _gate(learning_incident_hold_active=True), RuntimeOperation.PROTECTIVE_MONITORING
+    )
+
+    assert blocked.allowed is False
+    assert blocked.reason is EntryBlockReason.LEARNING_INCIDENT_ENTRY_HOLD
+    assert exit_decision.allowed is True
+    assert monitor_decision.allowed is True
 
 
 def test_entry_gate_disabled_account_maps_to_bot_disabled() -> None:

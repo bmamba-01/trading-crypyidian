@@ -223,6 +223,7 @@ class EntryBlockReason(StrEnum):
     EXTERNAL_ACTIVITY_UNRECONCILED = "EXTERNAL_ACTIVITY_UNRECONCILED"
     ACCOUNT_ACTIVITY_UNVERIFIED = "ACCOUNT_ACTIVITY_UNVERIFIED"
     RUNTIME_CONTROL_UNAVAILABLE = "RUNTIME_CONTROL_UNAVAILABLE"
+    LEARNING_INCIDENT_ENTRY_HOLD = "LEARNING_INCIDENT_ENTRY_HOLD"
 
 
 _PROTECTIVE = frozenset(
@@ -247,6 +248,7 @@ class EntryGateInput:
     open_incident: bool
     activity_status: RuntimeActivityStatus | None
     control_available: bool
+    learning_incident_hold_active: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -289,6 +291,10 @@ class EntryGate:
                 or gate.workspace_kill_state is None
                 or gate.bot_entry_state is None,
                 EntryBlockReason.RUNTIME_CONTROL_UNAVAILABLE,
+            ),
+            (
+                gate.learning_incident_hold_active,
+                EntryBlockReason.LEARNING_INCIDENT_ENTRY_HOLD,
             ),
         )
         for blocked, reason in checks:

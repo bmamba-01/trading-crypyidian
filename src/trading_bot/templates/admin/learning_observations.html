@@ -3,15 +3,120 @@
 {% block head_extra %}<link rel="stylesheet" href="/static/learning-observations.css">{% endblock %}
 {% block heading %}Quan sát mô hình và chất lượng dữ liệu{% endblock %}
 {% block content %}
-  <section class="learning-observations-notice" aria-label="Giới hạn của trang quan sát">
+  {% if can_read_models %}<section class="learning-observations-notice" aria-label="Giới hạn của trang quan sát">
     <h2>Chỉ theo dõi, không tác động giao dịch</h2>
     <p><strong>Mô hình thử nghiệm đang ở trạng thái ABSTAIN — chưa đánh giá hiệu năng.</strong> Các bản ghi này chỉ phản ánh tình trạng dữ liệu và lineage đã lưu; chúng không xác nhận lợi nhuận hay chất lượng dự đoán.</p>
     <p>Trang chỉ đọc tối đa 50 dòng metadata trong không gian làm việc hiện tại. Không hiển thị đặc trưng, nhãn, dữ liệu nguồn hoặc nội dung phần kiểm định giữ kín; không có thao tác xếp lịch huấn luyện hay đổi mô hình đang dùng.</p>
-  </section>
+  </section>{% endif %}
 
-  <p class="learning-observations-count" role="status">Đang hiển thị {{ record_count }} bản ghi gần đây.</p>
+  {% if can_read_models %}<p class="learning-observations-count" role="status">Đang hiển thị {{ record_count }} bản ghi gần đây.</p>{% endif %}
 
-  <div class="learning-observations-groups">
+  {% if can_manage_incidents %}
+    <section class="learning-incident-panel" aria-labelledby="learning-incident-heading"
+      data-learning-incident-panel data-csrf-token="{{ csrf_token }}" data-recent-totp="{{ 'true' if recent_totp else 'false' }}">
+      <header class="learning-incident-panel__intro">
+        <h2 id="learning-incident-heading">Sự cố dữ liệu và tạm chặn lệnh vào</h2>
+        <p>Việc tạm chặn chỉ ngăn mở lệnh PAPER mới trong không gian làm việc này. Bot vẫn quản lý vị thế đang mở và tiếp tục lệnh bảo vệ để thoát vị thế; hệ thống không tự xác nhận hoặc tự tháo chặn.</p>
+      </header>
+
+      <p id="learning-incident-status" class="learning-incident-status" role="status" aria-live="polite" hidden></p>
+      <p id="learning-incident-error" class="learning-incident-error" role="alert" tabindex="-1" hidden></p>
+
+      <details class="learning-incident-reauth" {% if not recent_totp %}open{% endif %}>
+        <summary>Xác thực lại bằng mật khẩu và mã bảo mật</summary>
+        <p>Thao tác chặn hoặc tháo chặn yêu cầu mã xác thực còn hiệu lực trong 15 phút. Nếu phiên đã xác thực gần đây, có thể tiếp tục ngay.</p>
+        <form id="learning-incident-reauth-form" data-reauth-form>
+          <label for="learning-incident-password">Mật khẩu tài khoản</label>
+          <input id="learning-incident-password" name="password" type="password" autocomplete="current-password" required>
+          <label for="learning-incident-totp">Mã xác thực 6 chữ số</label>
+          <input id="learning-incident-totp" name="code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" minlength="6" maxlength="6" required>
+          <button type="submit">Xác thực bảo mật</button>
+          <span id="learning-incident-reauth-status" role="status" aria-live="polite"></span>
+        </form>
+      </details>
+
+      <section aria-labelledby="learning-incident-candidates-heading">
+        <h3 id="learning-incident-candidates-heading">Sự cố có thể xử lý</h3>
+        {% if actionable_proposals %}
+          <div class="learning-incident-candidates">
+            {% for item in actionable_proposals %}
+              {% set candidate = item.candidate %}
+              <article class="learning-incident-card learning-incident-card--candidate">
+                <h4>Đề xuất đủ điều kiện theo mô hình và quyền hiện hành</h4>
+                <dl>
+                  <div><dt>Mã đề xuất</dt><dd><code>{{ candidate.proposal_id }}</code></dd></div>
+                  <div><dt>Mã bản đánh giá</dt><dd><code>{{ candidate.assessment_id }}</code></dd></div>
+                  <div><dt>Mã băm bản đánh giá</dt><dd><code>{{ candidate.assessment_hash }}</code></dd></div>
+                  <div><dt>Lý do phát hiện</dt><dd>{{ item.reason_labels|join(' · ') }}</dd></div>
+                  <div><dt>Bản sửa đổi triển khai</dt><dd>{{ candidate.expected_deployment_revision }}</dd></div>
+                  <div><dt>Phiên bản con trỏ mô hình</dt><dd>{{ candidate.expected_active_pointer_version }}</dd></div>
+                </dl>
+                <form class="learning-incident-action-form" data-incident-action-form data-action="hold"
+                  data-proposal-id="{{ candidate.proposal_id }}" data-assessment-id="{{ candidate.assessment_id }}"
+                  data-assessment-hash="{{ candidate.assessment_hash }}" data-expected-revision="{{ candidate.expected_revision }}"
+                  data-deployment-revision="{{ candidate.expected_deployment_revision }}"
+                  data-pointer-version="{{ candidate.expected_active_pointer_version }}">
+                  <label for="learning-incident-hold-reason-{{ candidate.proposal_id }}">Lý do xác nhận chặn lệnh vào</label>
+                  <textarea id="learning-incident-hold-reason-{{ candidate.proposal_id }}" name="reason" minlength="1" maxlength="500" aria-describedby="learning-incident-hold-help-{{ candidate.proposal_id }} learning-incident-hold-error-{{ candidate.proposal_id }}" required></textarea>
+                  <p id="learning-incident-hold-help-{{ candidate.proposal_id }}">Nhập lý do từ 1 đến 500 ký tự.</p>
+                  <p id="learning-incident-hold-error-{{ candidate.proposal_id }}" class="learning-incident-field-error" data-reason-error role="alert" hidden>Vui lòng nhập lý do từ 1 đến 500 ký tự.</p>
+                  <button type="button" data-incident-submit {% if not recent_totp %}disabled{% endif %}>Xác nhận chặn lệnh vào</button>
+                </form>
+              </article>
+            {% endfor %}
+          </div>
+        {% else %}
+          <p class="learning-incident-empty">Không có đề xuất mới nhất nào đủ điều kiện theo mô hình và quyền hiện hành. Bản đánh giá chưa kết luận, mô hình đã đổi hoặc đề xuất đã được xử lý sẽ không có thao tác chặn lệnh vào.</p>
+        {% endif %}
+      </section>
+
+      <section aria-labelledby="learning-incident-open-heading">
+        <h3 id="learning-incident-open-heading">Lệnh vào đang bị tạm chặn</h3>
+        {% if open_holds %}
+          <div class="learning-incident-open-list">
+            {% for item in open_holds %}
+              {% set event = item.event %}
+              <article class="learning-incident-card learning-incident-card--open">
+                <h4>Lệnh vào đang bị chặn</h4>
+                <p><strong>Mã đề xuất:</strong> <code>{{ event.proposal_id }}</code></p>
+                <p><strong>Lý do đã ghi:</strong> {{ event.reason }}</p>
+                <p><strong>Bản sửa đổi hiện tại:</strong> {{ event.revision }} · <time datetime="{{ event.created_at.isoformat() }}">{{ event.created_at|local_time|replace('(Asia/Ho_Chi_Minh)', '(giờ Việt Nam (UTC+7))') }}</time></p>
+                <form class="learning-incident-action-form" data-incident-action-form data-action="release"
+                  data-proposal-id="{{ event.proposal_id }}" data-expected-revision="{{ event.revision }}">
+                  <label for="learning-incident-release-reason-{{ event.proposal_id }}">Lý do tháo chặn lệnh vào</label>
+                  <textarea id="learning-incident-release-reason-{{ event.proposal_id }}" name="reason" minlength="1" maxlength="500" aria-describedby="learning-incident-release-help-{{ event.proposal_id }} learning-incident-release-error-{{ event.proposal_id }}" required></textarea>
+                  <p id="learning-incident-release-help-{{ event.proposal_id }}">Nhập lý do từ 1 đến 500 ký tự.</p>
+                  <p id="learning-incident-release-error-{{ event.proposal_id }}" class="learning-incident-field-error" data-reason-error role="alert" hidden>Vui lòng nhập lý do từ 1 đến 500 ký tự.</p>
+                  <button type="button" data-incident-submit {% if not recent_totp %}disabled{% endif %}>Tháo chặn lệnh vào</button>
+                </form>
+              </article>
+            {% endfor %}
+          </div>
+        {% else %}
+          <p class="learning-incident-empty">Không có lệnh vào nào đang bị tạm chặn trong không gian làm việc này.</p>
+        {% endif %}
+      </section>
+
+      <details class="learning-incident-history">
+        <summary>Lịch sử chặn và tháo chặn ({{ incident_events|length }} sự kiện)</summary>
+        {% if incident_events %}
+          <div class="learning-incident-history-list">
+            {% for item in incident_events %}
+              {% set event = item.event %}
+              <article class="learning-incident-history-item">
+                <header><strong>{{ item.action_label }}</strong><time datetime="{{ event.created_at.isoformat() }}">{{ event.created_at|local_time|replace('(Asia/Ho_Chi_Minh)', '(giờ Việt Nam (UTC+7))') }}</time></header>
+                <p><strong>Mã đề xuất:</strong> <code>{{ event.proposal_id }}</code> · bản sửa đổi {{ event.revision }}</p>
+                <p><strong>Người xác nhận:</strong> <code>{{ event.actor_membership_id }}</code></p>
+                <p><strong>Lý do:</strong> {{ event.reason }}</p>
+              </article>
+            {% endfor %}
+          </div>
+        {% else %}<p class="learning-incident-empty">Chưa có lịch sử sự cố trong không gian làm việc này.</p>{% endif %}
+      </details>
+    </section>
+  {% endif %}
+
+  {% if can_read_models %}<div class="learning-observations-groups">
     {% for group in groups %}
       <section aria-labelledby="learning-observations-{{ group.kind }}-heading">
         <h2 id="learning-observations-{{ group.kind }}-heading">{{ group.title }}</h2>
@@ -38,4 +143,6 @@
       </section>
     {% endfor %}
   </div>
+  {% endif %}
 {% endblock %}
+{% block scripts %}<script src="/static/learning-incident-holds.js" defer></script>{% endblock %}

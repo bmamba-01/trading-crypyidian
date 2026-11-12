@@ -1,4 +1,4 @@
-"""Trang read-only tiếng Việt cho quan sát và drift metadata WP06."""
+"""Trang chỉ đọc tiếng Việt cho quan sát và metadata độ lệch WP06."""
 
 from __future__ import annotations
 
@@ -6,13 +6,25 @@ from datetime import UTC, datetime
 from typing import Annotated, Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from sqlalchemy.exc import SQLAlchemyError
 
-from trading_bot.admin.web_router import _templates
+from trading_bot.adapters.database.repositories.learning_observations_admin import (
+    LearningObservationAdminItem,
+)
+from trading_bot.admin.web_router import _auth_service, _templates
 from trading_bot.application.learning_observations_admin import (
     LearningObservationsAdminService,
 )
+from trading_bot.auth.cookies import read_session_cookie
+from trading_bot.auth.policy import (
+    RECENT_MFA_LIFETIME,
+    MfaMethod,
+    Permission,
+    Principal,
+    authorize,
+)
 from trading_bot.auth.router import current_identity
-from trading_bot.auth.service import AuthIdentity
+from trading_bot.auth.service import AuthenticationFailure, AuthIdentity
 
 router = APIRouter(tags=["admin web"])
 
@@ -50,26 +62,38 @@ async def learning_observations_admin_page(
     response: Response,
     identity: Annotated[AuthIdentity, Depends(current_identity)],
 ) -> Response:
-    """Hiển thị tối đa 50 dòng metadata trong workspace của Principal."""
+    """Hiển thị danh sách mô hình hoặc riêng sổ sự cố theo quyền của Principal."""
     response.headers["Cache-Control"] = "no-store"
-    service = cast(
-        LearningObservationsAdminService | None,
-        getattr(request.app.state, "learning_observations_admin_service", None),
-    )
-    if service is None:
-        raise HTTPException(
-            status_code=503,
-            detail="Dịch vụ quan sát mô hình chưa sẵn sàng.",
-            headers={"Cache-Control": "no-store"},
-        )
-    try:
-        records = await service.for_principal(identity.principal).list_recent(limit=50)
-    except PermissionError as error:
+    principal = identity.principal
+    can_read_models = authorize(principal, Permission.LEARNING_MODEL_READ)
+    can_manage_incidents = authorize(principal, Permission.LEARNING_INCIDENT_MANAGE)
+    if not can_read_models and not can_manage_incidents:
         raise HTTPException(
             status_code=403,
-            detail="Không đủ quyền xem quan sát mô hình.",
+            detail="Không đủ quyền xem quan sát hoặc quản lý sự cố học máy.",
             headers={"Cache-Control": "no-store"},
-        ) from error
+        )
+    records: tuple[LearningObservationAdminItem, ...] = ()
+    if can_read_models:
+        service = cast(
+            LearningObservationsAdminService | None,
+            getattr(request.app.state, "learning_observations_admin_service", None),
+        )
+        if service is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Dịch vụ quan sát mô hình chưa sẵn sàng.",
+                headers={"Cache-Control": "no-store"},
+            )
+        try:
+            records = await service.for_principal(principal).list_recent(limit=50)
+        except PermissionError as error:
+            raise HTTPException(
+                status_code=403,
+                detail="Không đủ quyền xem quan sát mô hình.",
+                headers={"Cache-Control": "no-store"},
+            ) from error
+
     groups = tuple(
         {
             "kind": kind,
@@ -78,11 +102,92 @@ async def learning_observations_admin_page(
         }
         for kind in ("observation", "assessment", "proposal")
     )
+    incident_events: tuple[dict[str, object], ...] = ()
+    open_holds: tuple[dict[str, object], ...] = ()
+    actionable_proposals: tuple[dict[str, object], ...] = ()
+    csrf_token: str | None = None
+    recent_totp = _recent_totp(principal)
+    if can_manage_incidents:
+        incident_service = getattr(request.app.state, "learning_incident_entry_hold_service", None)
+        if incident_service is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Dịch vụ chặn lệnh vào do sự cố chưa sẵn sàng.",
+                headers={"Cache-Control": "no-store"},
+            )
+        try:
+            facade = incident_service.for_principal(principal)
+            history = await facade.list_history(limit=200)
+            active_events = await facade.list_open_holds(limit=100)
+            candidates = await facade.list_actionable_proposals(limit=20)
+            csrf_token = await _auth_service(request).issue_csrf_token(read_session_cookie(request))
+        except PermissionError as error:
+            raise HTTPException(
+                status_code=403,
+                detail="Không đủ quyền xem sự cố học máy.",
+                headers={"Cache-Control": "no-store"},
+            ) from error
+        except AuthenticationFailure as error:
+            raise HTTPException(
+                status_code=error.status_code,
+                detail=error.message,
+                headers={"Cache-Control": "no-store"},
+            ) from error
+        except (SQLAlchemyError, ValueError) as error:
+            raise HTTPException(
+                status_code=503,
+                detail="Chưa thể đọc trạng thái sự cố an toàn.",
+                headers={"Cache-Control": "no-store"},
+            ) from error
+        incident_events = tuple(
+            {
+                "event": event,
+                "action_label": (
+                    "Đang chặn lệnh vào" if event.action.value == "HOLD" else "Đã tháo chặn"
+                ),
+            }
+            for event in history
+        )
+        open_holds = tuple({"event": event} for event in active_events)
+        actionable_proposals = tuple(
+            {
+                "candidate": candidate,
+                "reason_labels": tuple(
+                    _DRIFT_REASONS.get(reason, "Lý do chưa nhận diện")
+                    for reason in candidate.reason_codes
+                ),
+            }
+            for candidate in candidates
+        )
     return _templates(request).TemplateResponse(
         request=request,
         name="admin/learning_observations.html",
-        context={"identity": identity, "groups": groups, "record_count": len(records)},
+        context={
+            "identity": identity,
+            "groups": groups,
+            "record_count": len(records),
+            "can_read_models": can_read_models,
+            "can_manage_incidents": can_manage_incidents,
+            "incident_events": incident_events,
+            "open_holds": open_holds,
+            "actionable_proposals": actionable_proposals,
+            "csrf_token": csrf_token,
+            "recent_totp": recent_totp,
+        },
         headers={"Cache-Control": "no-store"},
+    )
+
+
+def _recent_totp(principal: Principal) -> bool:
+    verified_at = principal.mfa_verified_at
+    now = datetime.now(UTC)
+    return (
+        principal.mfa_method is MfaMethod.TOTP
+        and isinstance(verified_at, datetime)
+        and verified_at.tzinfo is not None
+        and verified_at.utcoffset() is not None
+        and verified_at <= now
+        and now - verified_at <= RECENT_MFA_LIFETIME
     )
 
 

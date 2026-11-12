@@ -84,6 +84,9 @@ from trading_bot.adapters.database.models.learning_fold_sample_entities import (
     NormalizedLearningDatasetRecord,
     NormalizedLearningSampleRecord,
 )
+from trading_bot.adapters.database.models.learning_incident_entry_hold_entities import (
+    LearningIncidentHoldEventRecord,
+)
 from trading_bot.adapters.database.models.learning_model_registry_entities import (
     LearningModelActivePointerRecord,
     LearningModelRegistryEventRecord,
@@ -178,6 +181,7 @@ from trading_bot.adapters.database.models.venue_entities import (
 )
 
 __all__ = [
+    "LearningIncidentHoldEventRecord",
     "CandidateUniverseProofRecord",
     "CandidateTrainingRightsRecord",
     "AccountActivityIncidentRecord",

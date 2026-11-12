@@ -44,6 +44,10 @@ from trading_bot.adapters.database.repositories.bot_runtime_leases import (
 from trading_bot.adapters.database.repositories.bot_runtime_states import (
     BotRuntimeStateRepository,
 )
+from trading_bot.adapters.database.repositories.learning_incident_entry_holds import (
+    LearningIncidentEntryHoldRepository,
+    LearningIncidentHoldUnavailable,
+)
 from trading_bot.adapters.database.repositories.paper_checkpoints import (
     PaperCheckpointConflict,
 )
@@ -222,7 +226,7 @@ class PaperDecisionApplicationResult:
 
 @dataclass(frozen=True, slots=True)
 class EntryGateState:
-    """State runtime đọc trong transaction entry (ruling 4): readiness, activity, incident."""
+    """State runtime đọc trong transaction entry: readiness, activity và learning hold."""
 
     account_enabled: bool
     bot_enabled: bool
@@ -230,6 +234,7 @@ class EntryGateState:
     activity_status: RuntimeActivityStatus | None
     activity_checked_at: datetime | None
     open_incident: bool
+    learning_incident_hold_active: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -1240,7 +1245,12 @@ class PaperRuntimeApplicationService:
         self, uow: UnitOfWork, account: PaperRuntimeAccount, control: RuntimeControlSnapshot
     ) -> None:
         """Mọi điều kiện entry của ruling 4 đọc trong transaction; chặn thì không ghi gì."""
-        state = await self._gate_state_loader(uow, account=account, workspace_id=self._workspace_id)
+        try:
+            state = await self._gate_state_loader(
+                uow, account=account, workspace_id=self._workspace_id
+            )
+        except LearningIncidentHoldUnavailable:
+            raise PaperRuntimeApplicationError("LEARNING_INCIDENT_HOLD_UNAVAILABLE") from None
         activity = state.activity_status
         if activity is RuntimeActivityStatus.VERIFIED and (
             state.activity_checked_at is None
@@ -1258,6 +1268,7 @@ class PaperRuntimeApplicationService:
                 open_incident=state.open_incident,
                 activity_status=activity,
                 control_available=True,
+                learning_incident_hold_active=state.learning_incident_hold_active,
             ),
             RuntimeOperation.NEW_ENTRY,
         )
@@ -1931,6 +1942,9 @@ async def load_entry_gate_state(
         activity_checked_at=state.activity_checked_at if state is not None else None,
         open_incident=bool(incidents)
         or (state is not None and state.reason_code == "EXTERNAL_ACTIVITY_UNRECONCILED"),
+        learning_incident_hold_active=await LearningIncidentEntryHoldRepository(
+            session
+        ).active_hold_exists(workspace_id=workspace_id),
     )
 
 

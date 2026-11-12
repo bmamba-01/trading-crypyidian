@@ -115,7 +115,7 @@ def test_evaluator_uses_one_shot_receipt_before_disclosing_fold_payload() -> Non
             "heads",
         )
         assert heads.stdout.strip().count("(head)") == 1, heads.stdout
-        assert "c3f5a7b9d1e3 (head)" in heads.stdout
+        assert "f5b7d9e1a3c6 (head)" in heads.stdout
         seeded = _compose(
             repository_root,
             project_name,
@@ -315,7 +315,7 @@ def test_evaluator_uses_one_shot_receipt_before_disclosing_fold_payload() -> Non
             "alembic",
             "current",
         )
-        assert "c3f5a7b9d1e3 (head)" in current.stdout
+        assert "f5b7d9e1a3c6 (head)" in current.stdout
     finally:
         subprocess.run(
             [

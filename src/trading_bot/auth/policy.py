@@ -1,7 +1,9 @@
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import StrEnum
 from uuid import UUID
+
+RECENT_MFA_LIFETIME = timedelta(minutes=15)
 
 
 class Role(StrEnum):
@@ -41,6 +43,7 @@ class Permission(StrEnum):
     LEARNING_MODEL_READ = "learning:model_read"
     LEARNING_MODEL_WRITE = "learning:model_write"
     LEARNING_MODEL_APPROVE = "learning:model_approve"
+    LEARNING_INCIDENT_MANAGE = "learning:incident_manage"
 
 
 ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
@@ -70,6 +73,7 @@ ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
             Permission.RUNTIME_PAUSE,
             Permission.RUNTIME_RESUME,
             Permission.WORKSPACE_KILL,
+            Permission.LEARNING_INCIDENT_MANAGE,
         }
     ),
     Role.ANALYST_REVIEWER: frozenset(

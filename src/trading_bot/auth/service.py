@@ -18,12 +18,12 @@ from trading_bot.adapters.database.models import (
     UserMembership,
     Workspace,
 )
+from trading_bot.auth.policy import RECENT_MFA_LIFETIME as RECENT_MFA_LIFETIME
 from trading_bot.auth.policy import MfaMethod, Principal, Role
 from trading_bot.auth.security import PasswordManager, TotpManager
 from trading_bot.ports.secrets import SecretProvider
 
 SESSION_LIFETIME = timedelta(hours=12)
-RECENT_MFA_LIFETIME = timedelta(minutes=15)
 
 
 class AuthenticationFailure(Exception):
