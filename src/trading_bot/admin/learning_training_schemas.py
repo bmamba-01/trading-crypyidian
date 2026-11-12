@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -47,6 +48,19 @@ class LearningTrainingFoldOptionResponse(BaseModel):
         )
 
 
+class LearningTrainingArtifactResultResponse(BaseModel):
+    artifact_id: UUID
+    artifact_hash: str
+    artifact_schema_version: str
+    trainer_version: str
+    approval_hash: str
+    batch_hash: str
+    feature_schema_hash: str
+    attempt_content_hash: str
+    scorer_state: Literal["abstain"]
+    calibrated: Literal[False]
+
+
 class LearningTrainingJobResponse(BaseModel):
     job_id: UUID
     attempt_id: UUID
@@ -66,6 +80,7 @@ class LearningTrainingJobResponse(BaseModel):
     feature_count: int
     created_at: datetime
     updated_at: datetime
+    artifact_result: LearningTrainingArtifactResultResponse | None = None
 
     @classmethod
     def from_domain(cls, value: LearningTrainingJobSnapshot) -> LearningTrainingJobResponse:
@@ -88,6 +103,13 @@ class LearningTrainingJobResponse(BaseModel):
             feature_count=value.feature_count,
             created_at=value.created_at,
             updated_at=value.updated_at,
+            artifact_result=(
+                LearningTrainingArtifactResultResponse.model_validate(
+                    value.artifact_result, from_attributes=True
+                )
+                if value.status == "succeeded" and value.artifact_result is not None
+                else None
+            ),
         )
 
 

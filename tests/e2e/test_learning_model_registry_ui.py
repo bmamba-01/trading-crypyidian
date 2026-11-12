@@ -20,7 +20,9 @@ from trading_bot.auth.service import AuthIdentity
 from trading_bot.config.settings import AppSettings
 from trading_bot.domain.learning.model_registry import (
     LearningModelActivePointer,
+    LearningModelRegistryAction,
     LearningModelRegistryEntry,
+    LearningModelRegistryEvent,
     LearningModelRegistryState,
 )
 
@@ -67,8 +69,44 @@ class _RegistryFacade:
             changed_at=NOW,
         )
 
-    async def list_events(self, _registry_id: UUID) -> tuple[()]:
-        return ()
+    async def list_events(self, registry_id: UUID) -> tuple[LearningModelRegistryEvent, ...]:
+        if registry_id != self.entry.id:
+            raise LookupError("Registry không thuộc workspace hiện tại.")
+        event = LearningModelRegistryEvent(
+            id=uuid4(),
+            workspace_id=WORKSPACE_ID,
+            registry_id=registry_id,
+            sequence=1,
+            action=LearningModelRegistryAction.REGISTER,
+            from_state=None,
+            to_state=LearningModelRegistryState.DRAFT,
+            actor_membership_id=MEMBERSHIP_ID,
+            policy_version="v1",
+            reason_code="registered",
+            reason="Đăng ký artifact sau khi kiểm tra nguồn gốc. " + "a" * 400,
+            idempotency_key=uuid4(),
+            mfa_verified_at=None,
+            expected_revision=None,
+            expected_pointer_version=None,
+            evaluation_report_id=None,
+            evaluation_report_hash=None,
+            created_at=NOW,
+        )
+        return (
+            event,
+            replace(
+                event,
+                id=uuid4(),
+                sequence=2,
+                action=LearningModelRegistryAction.APPROVE,
+                from_state=LearningModelRegistryState.EVALUATED,
+                to_state=LearningModelRegistryState.EVALUATED,
+                reason_code="approved",
+                reason="Đã rà soát báo cáo và nguồn gốc mô hình.",
+                mfa_verified_at=NOW,
+                expected_revision=2,
+            ),
+        )
 
     async def approve(
         self,
@@ -173,17 +211,47 @@ def test_learning_model_registry_admin_is_responsive_and_captures_screenshots(
     SCREENSHOTS.mkdir(parents=True, exist_ok=True)
     app_url, server, thread, listener, service = _serve_app()
     try:
+        mutations: list[str] = []
+        browser_page.on(
+            "request",
+            lambda request: mutations.append(request.url) if request.method == "POST" else None,
+        )
         browser_page.route(
             "**/*",
             lambda route: (
                 route.continue_() if route.request.url.startswith(app_url + "/") else route.abort()
             ),
         )
-        response = browser_page.goto(f"{app_url}/admin/learning/models", wait_until="load")
+        response = browser_page.goto(
+            f"{app_url}/admin/learning/models?artifact_id={ARTIFACT_ID}", wait_until="load"
+        )
         assert response is not None
         assert response.status == 200
         expect(browser_page.get_by_role("heading", name="Quản lý mô hình học")).to_be_visible()
         assert browser_page.locator("[data-action]").count() == 4
+        expect(browser_page.get_by_label("Mã artifact", exact=True)).to_have_value(str(ARTIFACT_ID))
+        assert service.facade.approvals == []
+        assert mutations == []
+        history = browser_page.get_by_role("region", name="Lịch sử thay đổi")
+        expect(history.get_by_text("Chưa đăng ký → Bản nháp")).to_be_visible()
+        expect(history.get_by_text(str(MEMBERSHIP_ID))).to_have_count(2)
+        expect(history.get_by_text("Chưa xác thực MFA")).to_be_visible()
+        expect(history.get_by_text("Đã xác thực MFA")).to_be_visible()
+        expect(history.get_by_text("Đã rà soát báo cáo và nguồn gốc mô hình.")).to_be_visible()
+        expect(history.get_by_text("08/11/2026 12:00 UTC", exact=True)).to_have_count(2)
+        event_response = browser_page.request.get(
+            f"{app_url}/api/v1/learning-models/{ENTRY_ID}/events"
+        )
+        assert event_response.status == 200
+        assert len(event_response.json()) == 2
+        foreign_response = browser_page.request.get(
+            f"{app_url}/api/v1/learning-models/{uuid4()}/events"
+        )
+        assert foreign_response.status == 404
+        assert (
+            not {"canonical_artifact", "samples", "feature_values", "payload"}
+            & event_response.json()[0].keys()
+        )
         expect(browser_page.get_by_text("Chưa nối bộ chấm điểm vào bot")).to_be_visible()
         expect(browser_page.get_by_role("heading", name="Đã đánh giá · chờ duyệt")).to_be_visible()
         expect(browser_page.get_by_text("b" * 12)).to_be_visible()
@@ -194,7 +262,7 @@ def test_learning_model_registry_admin_is_responsive_and_captures_screenshots(
             "element => getComputedStyle(element).fontFamily"
         )
         assert "Be Vietnam Pro" in font_family
-        _assert_layout(browser_page, width=1280, height=900)
+        _assert_layout(browser_page, width=1280, height=800)
         browser_page.screenshot(path=str(SCREENSHOTS / "wp06-registry-desktop.png"), full_page=True)
 
         reason = browser_page.get_by_label("Lý do thao tác")

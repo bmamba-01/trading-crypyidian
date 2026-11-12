@@ -1,6 +1,9 @@
 {% extends "admin/base.html" %}
 {% block title %}Huấn luyện mô hình | Crypidian{% endblock %}
 {% block heading %}Hàng đợi huấn luyện{% endblock %}
+{% block head_extra %}
+  <link rel="stylesheet" href="/static/learning-training.css">
+{% endblock %}
 {% block content %}
   <section class="learning-training-notice" id="learning-training" aria-label="Giới hạn huấn luyện"
     data-csrf-token="{{ csrf_token }}">
@@ -60,6 +63,34 @@
               <div><dt>Lượt nhận / thế hệ khóa</dt><dd>{{ job.attempt_count }} / {{ job.lease_generation }}</dd></div>
               <div><dt>Mã lỗi</dt><dd>{% if job.error_code %}<code>{{ job.error_code }}</code>{% else %}—{% endif %}</dd></div>
             </dl>
+            {% if job.status == 'succeeded' and job.artifact_result %}
+              {% set artifact = job.artifact_result %}
+              <section class="learning-training-artifact" aria-label="Kết quả huấn luyện">
+                <h4>Kết quả huấn luyện</h4>
+                <p class="learning-training-artifact-state"><strong>ABSTAIN · Chưa hiệu chuẩn</strong></p>
+                <dl>
+                  <div><dt>Mã artifact</dt><dd>{{ artifact.artifact_id }}</dd></div>
+                  <div><dt>Hash artifact</dt><dd><code>{{ artifact.artifact_hash }}</code></dd></div>
+                  <div><dt>Phiên bản huấn luyện</dt><dd>{{ artifact.trainer_version }}</dd></div>
+                  <div><dt>Phiên bản cấu trúc artifact</dt><dd>{{ artifact.artifact_schema_version }}</dd></div>
+                </dl>
+                <details>
+                  <summary>Nguồn gốc dữ liệu và lượt chạy</summary>
+                  <dl>
+                    <div><dt>Mã bộ dữ liệu chuẩn hóa</dt><dd>{{ job.normalized_dataset_id }}</dd></div>
+                    <div><dt>Hash bản kê</dt><dd><code>{{ job.manifest_hash }}</code></dd></div>
+                    <div><dt>Hash kế hoạch phân chia</dt><dd><code>{{ job.fold_plan_hash }}</code></dd></div>
+                    <div><dt>Hash lát dữ liệu</dt><dd><code>{{ job.fold_id }}</code></dd></div>
+                    <div><dt>Hash phê duyệt</dt><dd><code>{{ artifact.approval_hash }}</code></dd></div>
+                    <div><dt>Hash lô huấn luyện</dt><dd><code>{{ artifact.batch_hash }}</code></dd></div>
+                    <div><dt>Hash cấu trúc đặc trưng</dt><dd><code>{{ artifact.feature_schema_hash }}</code></dd></div>
+                    <div><dt>Hash nội dung lượt chạy</dt><dd><code>{{ artifact.attempt_content_hash }}</code></dd></div>
+                  </dl>
+                </details>
+                <p>Biểu mẫu chỉ điền sẵn mã artifact; đăng ký, phê duyệt và kích hoạt cần thao tác riêng của người có quyền.</p>
+                <a href="/admin/learning/models?artifact_id={{ artifact.artifact_id }}">Mở biểu mẫu đăng ký artifact</a>
+              </section>
+            {% endif %}
             {% if job.status in ['queued', 'running'] and not job.cancel_requested %}
               <button type="button" class="button-secondary" data-cancel-job="{{ job.job_id }}">Yêu cầu dừng</button>
             {% elif job.cancel_requested %}

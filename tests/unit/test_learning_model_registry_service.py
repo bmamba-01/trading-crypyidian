@@ -13,6 +13,10 @@ class _FakeRepository:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, object]]] = []
 
+    async def list_events(self, **kwargs: object) -> tuple[()]:
+        self.calls.append(("list_events", kwargs))
+        return ()
+
     async def approve(self, **kwargs: object) -> str:
         self.calls.append(("approve", kwargs))
         return "approved"
@@ -113,3 +117,26 @@ def test_only_owner_and_analyst_reviewer_can_manage_model_registry() -> None:
     assert authorize(reviewer, Permission.LEARNING_MODEL_APPROVE)
     assert not authorize(operator, Permission.LEARNING_MODEL_READ)
     assert not authorize(operator, Permission.LEARNING_MODEL_APPROVE)
+
+
+@pytest.mark.asyncio
+async def test_registry_history_uses_authenticated_workspace_and_read_permission(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    principal = _principal(role=Role.ANALYST_REVIEWER, mfa_verified_at=datetime.now(UTC))
+    repository = _FakeRepository()
+    monkeypatch.setattr(registry_application, "UnitOfWork", _FakeUnitOfWork)
+    monkeypatch.setattr(
+        registry_application, "LearningModelRegistryRepository", lambda _: repository
+    )
+    registry_id = uuid4()
+    service = registry_application.LearningModelRegistryService(object())
+
+    assert await service.for_principal(principal).list_events(registry_id) == ()
+    assert repository.calls == [
+        ("list_events", {"workspace_id": principal.workspace_id, "registry_id": registry_id})
+    ]
+    operator = _principal(role=Role.OPERATOR, mfa_verified_at=datetime.now(UTC))
+    with pytest.raises(PermissionError):
+        await service.for_principal(operator).list_events(registry_id)
+    assert len(repository.calls) == 1

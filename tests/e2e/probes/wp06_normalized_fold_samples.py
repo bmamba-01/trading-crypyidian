@@ -60,6 +60,9 @@ from trading_bot.adapters.database.repositories.learning_model_registry import (
 from trading_bot.adapters.database.repositories.learning_split_approvals import (
     LearningSplitApprovalRepository,
 )
+from trading_bot.adapters.database.repositories.learning_training_admin import (
+    LearningTrainingAdminRepository,
+)
 from trading_bot.adapters.database.repositories.learning_training_artifacts import (
     LearningTrainingArtifactRepository,
 )
@@ -71,6 +74,7 @@ from trading_bot.adapters.database.repositories.learning_training_jobs import (
 )
 from trading_bot.adapters.database.repositories.source_registry import SourceRegistryRepository
 from trading_bot.adapters.database.source_observer import PostCommitSourceObserver
+from trading_bot.admin.learning_training_schemas import LearningTrainingJobResponse
 from trading_bot.application.backtest_sensitivity import SensitivityScenario
 from trading_bot.application.learning_cpu_trainer import CPU_TRAINER_VERSION
 from trading_bot.application.learning_fold_evaluation import (
@@ -1116,6 +1120,56 @@ async def _training_admin_lifecycle() -> dict[str, object]:
     cancelled = await facade.cancel(job_id=first.job_id)
     assert cancelled.status == "queued"
     assert cancelled.cancel_requested
+    assert cancelled.artifact_result is None
+    snapshots = await facade.list_jobs()
+    completed = tuple(job for job in snapshots if job.status == "succeeded")
+    assert completed
+    async with sessions() as session, session.begin():
+        repository = LearningTrainingAdminRepository(session)
+        await session.execute(
+            text("SELECT set_config('app.workspace_id', :workspace_id, true)"),
+            {"workspace_id": str(workspace_id)},
+        )
+        for job in completed:
+            result = job.artifact_result
+            assert result is not None
+            # Đọc đối chiếu đúng cột metadata, không materialize model payload.
+            persisted = (
+                await session.execute(
+                    select(
+                        LearningTrainingArtifactRecord.id,
+                        LearningTrainingArtifactRecord.artifact_hash,
+                        LearningTrainingArtifactRecord.approval_hash,
+                        LearningTrainingArtifactRecord.batch_hash,
+                    ).where(
+                        LearningTrainingArtifactRecord.workspace_id == workspace_id,
+                        LearningTrainingArtifactRecord.attempt_id == job.attempt_id,
+                    )
+                )
+            ).one()
+            assert result.artifact_id == persisted.id
+            assert result.artifact_hash == persisted.artifact_hash
+            assert result.approval_hash == persisted.approval_hash
+            assert result.batch_hash == persisted.batch_hash
+            assert result.scorer_state == "abstain"
+            assert result.calibrated is False
+            response = LearningTrainingJobResponse.from_domain(job).model_dump_json()
+            assert all(
+                key not in response
+                for key in ('"canonical_artifact"', '"artifact":', '"samples":', '"features":')
+            )
+            single = await repository.get_job_snapshot(workspace_id=workspace_id, job_id=job.job_id)
+            assert single is not None
+            assert single.artifact_result == result
+        # Dùng cùng connection để kiểm bind workspace không giữ scope cũ.
+        other_workspace_id = uuid4()
+        assert await repository.list_jobs(workspace_id=other_workspace_id) == ()
+        assert (
+            await repository.get_job_snapshot(
+                workspace_id=other_workspace_id, job_id=completed[0].job_id
+            )
+            is None
+        )
     async with sessions() as session:
         await session.execute(
             text("SELECT set_config('app.workspace_id', :workspace_id, true)"),

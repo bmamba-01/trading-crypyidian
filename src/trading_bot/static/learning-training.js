@@ -56,6 +56,10 @@
   };
 
   const renderJobs = (jobs) => {
+    const expandedLineages = new Set(
+      Array.from(jobsRoot.querySelectorAll(".learning-training-artifact details[open]"),
+        (details) => details.closest("[data-job-id]")?.dataset.jobId),
+    );
     jobsRoot.replaceChildren();
     if (!jobs.length) {
       const empty = document.createElement("p");
@@ -92,6 +96,45 @@
       addField(details, "Lượt nhận / thế hệ khóa", `${job.attempt_count} / ${job.lease_generation}`);
       addField(details, "Mã lỗi", job.error_code || "—", Boolean(job.error_code));
       article.append(header, progress, details);
+      if (job.status === "succeeded" && job.artifact_result) {
+        const artifact = job.artifact_result;
+        const result = document.createElement("section");
+        result.className = "learning-training-artifact";
+        result.setAttribute("aria-label", "Kết quả huấn luyện");
+        const resultHeading = document.createElement("h4");
+        resultHeading.textContent = "Kết quả huấn luyện";
+        const state = document.createElement("p");
+        state.className = "learning-training-artifact-state";
+        const stateLabel = document.createElement("strong");
+        stateLabel.textContent = "ABSTAIN · Chưa hiệu chuẩn";
+        state.append(stateLabel);
+        const metadata = document.createElement("dl");
+        addField(metadata, "Mã artifact", artifact.artifact_id);
+        addField(metadata, "Hash artifact", artifact.artifact_hash, true);
+        addField(metadata, "Phiên bản huấn luyện", artifact.trainer_version);
+        addField(metadata, "Phiên bản cấu trúc artifact", artifact.artifact_schema_version);
+        const lineage = document.createElement("details");
+        lineage.open = expandedLineages.has(job.job_id);
+        const summary = document.createElement("summary");
+        summary.textContent = "Nguồn gốc dữ liệu và lượt chạy";
+        const lineageMetadata = document.createElement("dl");
+        addField(lineageMetadata, "Mã bộ dữ liệu chuẩn hóa", job.normalized_dataset_id);
+        addField(lineageMetadata, "Hash bản kê", job.manifest_hash, true);
+        addField(lineageMetadata, "Hash kế hoạch phân chia", job.fold_plan_hash, true);
+        addField(lineageMetadata, "Hash lát dữ liệu", job.fold_id, true);
+        addField(lineageMetadata, "Hash phê duyệt", artifact.approval_hash, true);
+        addField(lineageMetadata, "Hash lô huấn luyện", artifact.batch_hash, true);
+        addField(lineageMetadata, "Hash cấu trúc đặc trưng", artifact.feature_schema_hash, true);
+        addField(lineageMetadata, "Hash nội dung lượt chạy", artifact.attempt_content_hash, true);
+        lineage.append(summary, lineageMetadata);
+        const notice = document.createElement("p");
+        notice.textContent = "Biểu mẫu chỉ điền sẵn mã artifact; đăng ký, phê duyệt và kích hoạt cần thao tác riêng của người có quyền.";
+        const handoff = document.createElement("a");
+        handoff.href = `/admin/learning/models?artifact_id=${encodeURIComponent(artifact.artifact_id)}`;
+        handoff.textContent = "Mở biểu mẫu đăng ký artifact";
+        result.append(resultHeading, state, metadata, lineage, notice, handoff);
+        article.append(result);
+      }
       if (["queued", "running"].includes(job.status) && !job.cancel_requested) {
         const cancel = document.createElement("button");
         cancel.type = "button";

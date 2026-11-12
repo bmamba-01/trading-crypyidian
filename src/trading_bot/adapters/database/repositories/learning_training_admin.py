@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Literal, NamedTuple
 from uuid import UUID
 
 from sqlalchemy import and_, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Bundle
 
 from trading_bot.adapters.database.models.learning_attempt_entities import (
     LearningFoldResourceProfileRecord,
@@ -16,6 +18,9 @@ from trading_bot.adapters.database.models.learning_attempt_entities import (
 from trading_bot.adapters.database.models.learning_entities import LearningSplitApprovalRecord
 from trading_bot.adapters.database.models.learning_fold_sample_entities import (
     NormalizedLearningDatasetRecord,
+)
+from trading_bot.adapters.database.models.learning_training_artifact_entities import (
+    LearningTrainingArtifactRecord,
 )
 from trading_bot.adapters.database.models.learning_training_job_entities import (
     LearningTrainingJobRecord,
@@ -42,6 +47,51 @@ class LearningTrainingFoldOption:
 
 
 @dataclass(frozen=True, slots=True)
+class LearningTrainingArtifactResult:
+    """Metadata nguồn gốc artifact chẩn đoán; không đọc payload mô hình."""
+
+    artifact_id: UUID
+    artifact_hash: str
+    artifact_schema_version: str
+    trainer_version: str
+    approval_hash: str
+    batch_hash: str
+    feature_schema_hash: str
+    attempt_content_hash: str
+    scorer_state: Literal["abstain"] = "abstain"
+    calibrated: Literal[False] = False
+
+
+class _ArtifactMetadataRow(NamedTuple):
+    artifact_id: UUID | None
+    artifact_hash: str
+    artifact_schema_version: str
+    trainer_version: str
+    approval_hash: str
+    batch_hash: str
+    feature_schema_hash: str
+    attempt_content_hash: str
+
+
+_ARTIFACT_METADATA: Bundle[_ArtifactMetadataRow] = Bundle(
+    "artifact_result",
+    LearningTrainingArtifactRecord.id.label("artifact_id"),
+    LearningTrainingArtifactRecord.artifact_hash,
+    LearningTrainingArtifactRecord.artifact_schema_version,
+    LearningTrainingArtifactRecord.trainer_version,
+    LearningTrainingArtifactRecord.approval_hash,
+    LearningTrainingArtifactRecord.batch_hash,
+    LearningTrainingArtifactRecord.feature_schema_hash,
+    LearningTrainingArtifactRecord.attempt_content_hash,
+)
+_ARTIFACT_JOIN = and_(
+    LearningTrainingArtifactRecord.workspace_id == LearningTrainingJobRecord.workspace_id,
+    LearningTrainingArtifactRecord.attempt_id == LearningTrainingJobRecord.attempt_id,
+    LearningTrainingJobRecord.status == "succeeded",
+)
+
+
+@dataclass(frozen=True, slots=True)
 class LearningTrainingJobSnapshot:
     """Read model job/attempt chỉ gồm metadata vận hành đã lưu."""
 
@@ -63,6 +113,7 @@ class LearningTrainingJobSnapshot:
     feature_count: int
     created_at: datetime
     updated_at: datetime
+    artifact_result: LearningTrainingArtifactResult | None = None
 
 
 class LearningTrainingAdminRepository:
@@ -146,7 +197,7 @@ class LearningTrainingAdminRepository:
     async def list_jobs(self, *, workspace_id: UUID) -> tuple[LearningTrainingJobSnapshot, ...]:
         await self._bind_workspace(workspace_id)
         result = await self._session.execute(
-            select(LearningTrainingJobRecord, LearningTrainingAttemptRecord)
+            select(LearningTrainingJobRecord, LearningTrainingAttemptRecord, _ARTIFACT_METADATA)
             .join(
                 LearningTrainingAttemptRecord,
                 and_(
@@ -155,6 +206,7 @@ class LearningTrainingAdminRepository:
                     LearningTrainingAttemptRecord.id == LearningTrainingJobRecord.attempt_id,
                 ),
             )
+            .outerjoin(LearningTrainingArtifactRecord, _ARTIFACT_JOIN)
             .where(LearningTrainingJobRecord.workspace_id == workspace_id)
             .order_by(
                 LearningTrainingJobRecord.created_at.desc(),
@@ -162,7 +214,9 @@ class LearningTrainingAdminRepository:
             )
             .limit(100)
         )
-        return tuple(_job_snapshot(job, attempt) for job, attempt in result.all())
+        return tuple(
+            _job_snapshot(job, attempt, artifact) for job, attempt, artifact in result.all()
+        )
 
     async def lock_idempotency_scope(self, *, workspace_id: UUID, idempotency_key: UUID) -> None:
         await self._bind_workspace(workspace_id)
@@ -300,8 +354,9 @@ class LearningTrainingAdminRepository:
     async def get_job_snapshot(
         self, *, workspace_id: UUID, job_id: UUID
     ) -> LearningTrainingJobSnapshot | None:
+        await self._bind_workspace(workspace_id)
         result = await self._session.execute(
-            select(LearningTrainingJobRecord, LearningTrainingAttemptRecord)
+            select(LearningTrainingJobRecord, LearningTrainingAttemptRecord, _ARTIFACT_METADATA)
             .join(
                 LearningTrainingAttemptRecord,
                 and_(
@@ -310,13 +365,14 @@ class LearningTrainingAdminRepository:
                     LearningTrainingAttemptRecord.id == LearningTrainingJobRecord.attempt_id,
                 ),
             )
+            .outerjoin(LearningTrainingArtifactRecord, _ARTIFACT_JOIN)
             .where(
                 LearningTrainingJobRecord.workspace_id == workspace_id,
                 LearningTrainingJobRecord.id == job_id,
             )
         )
         row = result.one_or_none()
-        return _job_snapshot(*row) if row is not None else None
+        return _job_snapshot(row[0], row[1], row[2]) if row is not None else None
 
     async def _bind_workspace(self, workspace_id: UUID) -> None:
         await self._session.execute(
@@ -328,6 +384,7 @@ class LearningTrainingAdminRepository:
 def _job_snapshot(
     job: LearningTrainingJobRecord,
     attempt: LearningTrainingAttemptRecord,
+    artifact: _ArtifactMetadataRow | None = None,
 ) -> LearningTrainingJobSnapshot:
     return LearningTrainingJobSnapshot(
         job_id=job.id,
@@ -348,11 +405,28 @@ def _job_snapshot(
         feature_count=attempt.resource_request["feature_count"],
         created_at=job.created_at,
         updated_at=job.updated_at,
+        artifact_result=(
+            LearningTrainingArtifactResult(
+                artifact_id=artifact.artifact_id,
+                artifact_hash=artifact.artifact_hash,
+                artifact_schema_version=artifact.artifact_schema_version,
+                trainer_version=artifact.trainer_version,
+                approval_hash=artifact.approval_hash,
+                batch_hash=artifact.batch_hash,
+                feature_schema_hash=artifact.feature_schema_hash,
+                attempt_content_hash=artifact.attempt_content_hash,
+            )
+            if job.status == "succeeded"
+            and artifact is not None
+            and artifact.artifact_id is not None
+            else None
+        ),
     )
 
 
 __all__ = [
     "LearningTrainingAdminRepository",
+    "LearningTrainingArtifactResult",
     "LearningTrainingFoldOption",
     "LearningTrainingJobSnapshot",
 ]

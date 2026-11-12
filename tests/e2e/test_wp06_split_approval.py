@@ -79,7 +79,7 @@ def test_wp06_split_approval_is_preseal_immutable_and_workspace_scoped() -> None
         heads = compose("run", "--rm", "--no-deps", "migrator", "alembic", "heads")
         assert "No new upgrade operations detected" in check.stdout + check.stderr
         assert heads.stdout.count("(head)") == 1
-        assert "f5b7d9e1a3c6 (head)" in heads.stdout
+        assert "f6b8d0e2a4c7 (head)" in heads.stdout
         assert run_probe("admin-web", "admin") == {
             "approval_requires_staged_candidate": True,
             "training_seal_without_candidate_denied": True,

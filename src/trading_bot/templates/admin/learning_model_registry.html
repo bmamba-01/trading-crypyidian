@@ -1,5 +1,8 @@
 {% extends "admin/base.html" %}
 {% block title %}Registry mô hình | Crypidian{% endblock %}
+{% block head_extra %}
+  <link rel="stylesheet" href="/static/learning-model-registry.css">
+{% endblock %}
 {% block heading %}Quản lý mô hình học{% endblock %}
 {% block content %}
   <section class="learning-registry-notice" id="learning-registry" aria-label="Giới hạn vận hành"
@@ -20,7 +23,7 @@
     <form class="learning-registry-register" id="learning-registry-register">
       <div class="learning-registry-field">
         <label for="artifact-id">Mã artifact</label>
-        <input id="artifact-id" name="artifact_id" autocomplete="off" required pattern="[0-9a-fA-F-]{36}" aria-describedby="artifact-id-help">
+        <input id="artifact-id" name="artifact_id" value="{{ artifact_id or '' }}" autocomplete="off" required pattern="[0-9a-fA-F-]{36}" aria-describedby="artifact-id-help">
         <small id="artifact-id-help">Dán UUID artifact đã hoàn tất huấn luyện.</small>
       </div>
       <div class="learning-registry-field learning-registry-field--wide">
@@ -57,6 +60,26 @@
               <div><dt>Hash fold plan</dt><dd><code>{{ entry.fold_plan_hash[:16] }}…</code></dd></div>
               <div><dt>Báo cáo đánh giá</dt><dd>{% if entry.evaluation_report_id %}{{ entry.evaluation_report_id }}{% else %}Chưa gắn{% endif %}</dd></div>
             </dl>
+            <section class="learning-registry-history" aria-labelledby="history-{{ entry.id }}">
+              <h3 id="history-{{ entry.id }}">Lịch sử thay đổi</h3>
+              <p>Chỉ đọc thông tin quản trị theo workspace hiện tại, theo thứ tự ghi nhận.</p>
+              {% for item in events_by_entry[entry.id] %}
+                {% set event = item.event %}
+                <article class="learning-registry-card">
+                  <h4>{{ event.sequence }} · {{ item.action_label }}</h4>
+                  <p>{{ item.from_label }} → {{ item.to_label }}</p>
+                  <dl class="learning-registry-metadata">
+                    <div><dt>Người thực hiện (mã thành viên)</dt><dd>{{ event.actor_membership_id }}</dd></div>
+                    <div><dt>Thời điểm ghi nhận</dt><dd><time datetime="{{ event.created_at.isoformat() }}">{{ event.created_at.strftime('%d/%m/%Y %H:%M UTC') }}</time></dd></div>
+                    <div><dt>Mã lý do</dt><dd>{{ event.reason_code }}</dd></div>
+                    <div><dt>Xác thực đa yếu tố (MFA)</dt><dd>{% if event.mfa_verified_at %}Đã xác thực MFA · {{ event.mfa_verified_at.strftime('%d/%m/%Y %H:%M UTC') }}{% else %}Chưa xác thực MFA{% endif %}</dd></div>
+                  </dl>
+                  <p><strong>Lý do:</strong> {{ event.reason }}</p>
+                </article>
+              {% else %}
+                <p>Chưa có sự kiện trong lịch sử.</p>
+              {% endfor %}
+            </section>
             <details class="learning-registry-actions">
               <summary>Thao tác quản trị</summary>
               <label for="reason-{{ entry.id }}">Lý do thao tác</label>

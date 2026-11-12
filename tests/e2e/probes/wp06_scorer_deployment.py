@@ -373,6 +373,10 @@ async def _probe() -> dict[str, object]:
         seed_engine, second_workspace_id, uuid4().hex[:8]
     )
 
+    from wp06_scorer_paper_rights import verify_paper_rights
+
+    paper_rights_verified = await verify_paper_rights(seed_engine, admin_engine, workspace_id)
+
     async with admin_engine.connect() as connection:
         assert await connection.scalar(text("SELECT current_user")) == "crypidian_admin_web"
         table_state = {}
@@ -961,6 +965,7 @@ async def _probe() -> dict[str, object]:
         "current_state_readable": current_state_readable,
         "event_count": event_count,
         "least_privilege": True,
+        "paper_rights_purposes_and_races": paper_rights_verified,
         "same_intent_retry": same_intent_retry,
         "shadow_rights_gate_rejected": shadow_rejected,
         "stale_active_admin_readable": stale_active_readable,

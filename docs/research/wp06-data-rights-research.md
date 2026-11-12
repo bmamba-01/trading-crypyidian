@@ -18,11 +18,15 @@ Receipt bất biến cho từng run phải ghim tối thiểu:
 
 1. Provider, sản phẩm/gói, venue, loại hợp đồng (ví dụ Binance USDⓈ-M Futures), symbol, interval và khoảng thời gian.
 2. Bản thỏa thuận/license có hiệu lực khi truy cập dữ liệu; URL/version/ngày kiểm tra; mã hợp đồng/order hoặc giấy phép.
-3. Xác nhận bằng văn bản rằng phạm vi cho phép đọc/lưu dữ liệu một năm, backtest, TRAINING/tái TRAINING, giữ model weights/calibration/report/derived outputs và dùng trong PAPER/SHADOW nội bộ.
+3. Xác nhận bằng văn bản rằng phạm vi cho phép đọc/lưu dữ liệu một năm, backtest, `TRAINING`/tái `TRAINING`, giữ model weights/calibration/report/derived outputs và dùng trong PAPER/SHADOW nội bộ. Đây là các purpose riêng: scorer active phải có quyền hiện hành `TRAINING` và `PAPER_DEMO`, không suy quyền PAPER từ quyền TRAINING.
 4. Hạn dùng, quy tắc revoke/takedown, retention/xóa dữ liệu, attribution/share-alike và quyền lưu artifact sau khi gói hết hạn.
 5. Hash của bằng chứng và manifest/snapshot dữ liệu; workspace, actor, purpose và thời điểm recheck. Revoke hoặc thay đổi điều khoản phải chặn run kế tiếp và xử lý theo điều khoản lưu/xóa.
 
 Không chấp nhận README license của mã downloader thay cho license của dữ liệu; không tự điền đồng ý điều khoản thay người sở hữu dữ liệu; không hạ ngưỡng policy để vượt qua thiếu dữ liệu hoặc quyền.
+
+## Khoảng trống contract cần đóng
+
+Rà soát mã ngày 12/11/2026 phát hiện receipt hiện tại ghim fingerprint/reference của policy và metadata lần kiểm, nhưng chưa chứng minh hash của bytes thỏa thuận/license gốc hay một scope có kiểu cho provider, product, venue, contract, symbol, interval, date range và loại output được phép. `evidence_ref` tự nó không chứng minh nội dung được tham chiếu. Vì vậy, trạng thái policy `VERIFIED` và receipt hiện có chưa đủ để tuyên bố đã lưu bằng chứng license chính xác; không tạo positive rights journey dựa trên fixture. Phải giữ `SHADOW`/`PAPER_GATE` khóa cho tới khi contract và bằng chứng áp dụng thật được ghim, xác minh và có quyền hiện hành cho từng purpose.
 
 ## Nguồn chính thức đã kiểm tra
 
@@ -41,6 +45,6 @@ Không chấp nhận README license của mã downloader thay cho license của 
 
 ## Việc còn cần
 
-- Người dùng đã chọn ledger entry-hold riêng; thiết kế chi tiết đang chờ owner duyệt. Cần license/receipt áp dụng cho đúng mục đích nội bộ trước khi tải/training. CoinAPI public pricing đã được nghiên cứu nhưng chưa có báo giá theo yêu cầu cụ thể; chưa gửi yêu cầu ra ngoài, chưa tạo account/API key và chưa phát sinh chi phí.
+- Ledger entry-hold riêng đã được owner duyệt và triển khai; xem spec WP06 incident entry hold. Cần license/receipt áp dụng cho đúng mục đích nội bộ trước khi tải/training. CoinAPI public pricing đã được nghiên cứu nhưng chưa có báo giá theo yêu cầu cụ thể; chưa gửi yêu cầu ra ngoài, chưa tạo account/API key và chưa phát sinh chi phí.
 - Khi có bằng chứng, triển khai provider/evidence adapter nếu cần, nhập nguồn non-QA, tạo run mới với receipt theo run, chạy đủ TRAINING → TEST proof/report theo policy `wp06-scorer-test-v1`, rồi mới kiểm SHADOW, PAPER_GATE riêng, veto/abstain, rollback/restart, history retention và zero-side-effect.
 - Sau journey hợp lệ, chạy independent integrated security review. Giữ active modes khóa trong mọi môi trường sản phẩm cho tới khi các cổng này đạt.

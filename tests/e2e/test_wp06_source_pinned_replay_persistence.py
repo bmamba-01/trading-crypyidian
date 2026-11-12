@@ -331,6 +331,19 @@ def _run_source_linked_test(root, project, environment, volume, state):
 
 
 def _run_qa_migration_downgrade_guard(root, project, environment, volume, workspace_id):
+    # Đưa schema về đúng preimage của guard QA trước khi cố ý làm drift function.
+    _compose(
+        root,
+        project,
+        environment,
+        "run",
+        "--rm",
+        "--no-deps",
+        "migrator",
+        "alembic",
+        "downgrade",
+        "c3f5a7b9d1e3",
+    )
     migration_cases = (
         (
             "test-lock",

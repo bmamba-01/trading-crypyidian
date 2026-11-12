@@ -14,6 +14,7 @@ import uvicorn
 from playwright.sync_api import Page, expect
 
 from trading_bot.adapters.database.repositories.learning_training_admin import (
+    LearningTrainingArtifactResult,
     LearningTrainingFoldOption,
     LearningTrainingJobSnapshot,
 )
@@ -157,6 +158,9 @@ def _serve_app() -> tuple[str, uvicorn.Server, threading.Thread, socket.socket, 
     application.state.auth_service = _AuthService()
     service = _TrainingService()
     application.state.learning_training_admin_service = service
+    from tests.e2e.test_learning_model_registry_ui import _RegistryService
+
+    application.state.learning_model_registry_service = _RegistryService()
 
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -305,5 +309,90 @@ def test_learning_training_admin_enqueues_cancels_and_is_responsive(browser_page
             browser_page.get_by_text("Đã gửi yêu cầu dừng; chờ tiến trình huấn luyện xác nhận.")
         ).to_be_visible()
         assert browser_page.get_by_role("button", name="Yêu cầu dừng").count() == 0
+    finally:
+        _stop_app(server, thread, listener)
+
+
+def test_succeeded_training_hands_off_only_artifact_metadata_to_registry(
+    browser_page: Page,
+) -> None:
+    artifact_id = UUID("99cb93f0-dc18-4525-8c15-06acb60810b2")
+    SCREENSHOTS.mkdir(parents=True, exist_ok=True)
+    app_url, server, thread, listener, service = _serve_app()
+    posts: list[str] = []
+    browser_page.on(
+        "request", lambda request: posts.append(request.url) if request.method == "POST" else None
+    )
+    try:
+        service.facade.job = replace(
+            _job(),
+            status="succeeded",
+            stage="complete",
+            progress=100,
+            artifact_result=LearningTrainingArtifactResult(
+                artifact_id=artifact_id,
+                artifact_hash="f" * 64,
+                artifact_schema_version="cpu-artifact-v1",
+                trainer_version="cpu-trainer-v1",
+                approval_hash="d" * 64,
+                batch_hash="e" * 64,
+                feature_schema_hash="1" * 64,
+                attempt_content_hash="2" * 64,
+            ),
+        )
+        browser_page.route(
+            "**/*",
+            lambda route: (
+                route.continue_() if route.request.url.startswith(app_url + "/") else route.abort()
+            ),
+        )
+        browser_page.set_viewport_size({"width": 1280, "height": 800})
+        response = browser_page.goto(f"{app_url}/admin/learning/training", wait_until="load")
+        assert response is not None
+        assert response.status == 200
+        card = browser_page.locator(".learning-training-card")
+        expect(card.get_by_text(str(artifact_id), exact=True)).to_be_visible()
+        expect(card.get_by_text("ABSTAIN · Chưa hiệu chuẩn", exact=True)).to_be_visible()
+        expect(card.get_by_text("f" * 64, exact=True)).to_be_visible()
+        expect(card.get_by_text("cpu-trainer-v1", exact=True)).to_be_visible()
+        link = card.get_by_role("link", name="Mở biểu mẫu đăng ký artifact")
+        assert link.get_attribute("href") == f"/admin/learning/models?artifact_id={artifact_id}"
+        snapshot = browser_page.request.get(f"{app_url}/api/v1/learning-training/jobs")
+        assert snapshot.status == 200
+        assert snapshot.headers["cache-control"] == "no-store"
+        metadata = snapshot.json()["jobs"][0]["artifact_result"]
+        assert metadata["artifact_id"] == str(artifact_id)
+        assert metadata["scorer_state"] == "abstain"
+        assert metadata["calibrated"] is False
+        assert all(
+            term not in snapshot.text()
+            for term in ("canonical_artifact", "weights", '"features"', '"samples"')
+        )
+        card.get_by_text("Nguồn gốc dữ liệu và lượt chạy", exact=True).click()
+        expect(card.get_by_text(str(DATASET_ID), exact=True)).to_be_visible()
+        expect(card.get_by_text("d" * 64, exact=True)).to_be_visible()
+        _assert_layout(browser_page, width=1280, height=800)
+        browser_page.screenshot(
+            path=str(SCREENSHOTS / "wp06-training-artifact-desktop.png"), full_page=True
+        )
+        _assert_layout(browser_page, width=390, height=844)
+        browser_page.screenshot(
+            path=str(SCREENSHOTS / "wp06-training-artifact-mobile.png"), full_page=True
+        )
+        # Polling phải giữ cùng metadata và đường chuyển sang bước duyệt riêng.
+        assert service.facade.job.artifact_result is not None
+        service.facade.job = replace(
+            service.facade.job,
+            artifact_result=replace(service.facade.job.artifact_result, artifact_hash="3" * 64),
+        )
+        expect(card.get_by_text("3" * 64, exact=True)).to_be_visible()
+        expect(card.get_by_text("ABSTAIN · Chưa hiệu chuẩn", exact=True)).to_be_visible()
+        expect(card.get_by_text(str(DATASET_ID), exact=True)).to_be_visible()
+        link.click()
+        expect(browser_page.get_by_label("Mã artifact", exact=True)).to_have_value(str(artifact_id))
+        expect(
+            browser_page.get_by_role("button", name="Đăng ký artifact", exact=True)
+        ).to_be_visible()
+        assert posts == []
     finally:
         _stop_app(server, thread, listener)
