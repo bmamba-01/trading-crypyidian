@@ -224,16 +224,12 @@ Các bất biến v2: `opportunity_count = candidate_count + no_candidate_count 
 
 ## Task 5: Regression và traceability
 
-**Files:**
+**Kết quả ghi nhận 12/11/2026:** full-unit regression **3558 passed/106.27s**, trong đó sáu module Task5 chạy trực tiếp **210 passed/36.89s, 0 skipped**. Đồng bộ 14 current-head assertions trên 8 E2E files và 2 probes từ `b2e4a6c8d0f2` lên `c3f5a7b9d1e3`; suite 10 E2E files → **11 passed/587.26s, 0 skipped**. Compose bổ sung chạy populated legacy drift, Task9 integrated và paper-boundary, đều pass; Compose ENV override đủ 14 policy values cũng pass. Ruff toàn bộ `src`/`tests`, format **767 files**, mypy hai source modules, Alembic sole head `c3f5a7b9d1e3`, DB-backed `alembic check` và diff-check đạt. BASE proof vẫn chỉ là BASE, không đủ điều kiện TEST/PAPER_GATE.
 
-- Chạy lại test hiện có và cập nhật implementation memory/WBS/module/status/glossary theo AGENTS.md sau khi code slice được duyệt.
-- Đồng bộ mọi assertion `alembic heads`/`alembic current` trong E2E WP06 với head hiện hành `c4e6a8b0d2f3`, đồng thời giữ nguyên các revision được dùng có chủ ý làm downgrade target hoặc trạng thái sau migration thất bại.
-- Không sửa UI; không thêm screenshot task vì không có UI thay đổi.
-
-- [ ] **Bước 1: Unit regression**: `PYTHONPATH=. uv run pytest tests/unit/test_candidate_universe_proof.py tests/unit/test_backtest_outcomes_repository.py tests/unit/test_backtest_decision_opportunities.py tests/unit/test_runtime_replay_evaluator.py tests/unit/test_backtest_dataset_replay_context.py tests/unit/test_learning_fold_outcome_verifier.py -q --tb=short`.
-- [ ] **Bước 2: Compose regression**: chạy `tests/e2e/test_wp06_candidate_universe_proof.py`, `tests/e2e/test_backtest_outcomes_persistence.py`, `tests/e2e/test_wp06_opportunity_persistence_schema.py`, E2E mới `tests/e2e/test_wp06_candidate_opportunity_universe.py`, cùng các E2E WP06 có stale-head assertions: `test_wp06_model_registry.py`, `test_wp06_shadow_drift_persistence.py`, `test_learning_fold_outcome_verifier.py`, `test_wp06_split_approval.py`; mọi test phải pass, không skip.
-- [ ] **Bước 3: Static/DB checks**: Ruff check/format, mypy module đã chạm, Alembic single-head/check và `git diff --check`; điều tra mọi failure/flaky trước khi ghi đạt.
-- [ ] **Bước 4: Cập nhật memory và docs** ghi chính xác contract/query version, receipt/source lock, E2E output, limitations và no-go gates; đọc lại section memory và đối chiếu diff/output. Không tuyên bố WP06/Task7C hoàn tất chỉ vì proof coverage qua.
+- [x] **Bước 1: Unit regression**: lệnh sáu module Task5 chạy trực tiếp → **210 passed/36.89s**, không skip; full unit đồng thời đạt **3558 passed/106.27s**.
+- [x] **Bước 2: Compose regression**: `tests/e2e/test_wp06_normalized_fold_samples.py`, `test_wp06_opportunity_persistence_schema.py`, `test_wp06_model_registry.py`, `test_wp06_scorer_deployment.py`, `test_wp06_candidate_universe_proof.py`, `test_wp06_candidate_opportunity_universe.py`, `test_learning_fold_outcome_verifier.py`, `test_wp06_split_approval.py`, `test_wp06_source_pinned_replay_persistence.py`, `test_backtest_outcomes_persistence.py` → **11 passed/587.26s**, không skip. Drift/legacy migration + Task9 integrated → **3 passed/135.72s**; paper boundary → **1 passed/82.58s**.
+- [x] **Bước 3: Static/DB checks**: `ruff check src tests` đạt; `ruff format --check src tests` → **767 files already formatted**; mypy hai source modules đạt; `uv run alembic heads` chỉ `c3f5a7b9d1e3 (head)`; Compose E2E chạy DB-backed `alembic check`; `git diff --check` đạt.
+- [x] **Bước 4: Cập nhật memory và docs** ghi chính xác regression/output và giới hạn còn mở; memory follow-up đã được đọc lại và đối chiếu test/diff. BASE-only/PAPER_GATE no-go được giữ nguyên; không tuyên bố WP06/Task7C hoàn tất chỉ vì proof coverage qua.
 
 ## Điều kiện nghiệm thu và no-go gates
 

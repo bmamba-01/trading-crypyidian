@@ -72,6 +72,28 @@ def _items() -> tuple[LearningObservationAdminItem, ...]:
             },
         ),
         LearningObservationAdminItem(
+            kind="assessment",
+            record_id=uuid4(),
+            occurred_at=NOW,
+            metadata={
+                "cohort_registry_id": str(uuid4()),
+                "cohort_revision": 3,
+                "member_count": 4,
+                "policy_version": "coverage-v1",
+                "observation_window_days": None,
+                "window_start": "2026-11-04T12:00:00+00:00",
+                "window_end": "2026-11-08T11:59:00+00:00",
+                "minimum_observations": 3,
+                "eligible_count": 4,
+                "snapshot_coverage_rate": 0.94,
+                "quality_rate": 0.9,
+                "abstention_rate": 0.1,
+                "data_quality_status": "no_drift",
+                "performance_status": "inconclusive",
+                "reason_codes": [],
+            },
+        ),
+        LearningObservationAdminItem(
             kind="proposal",
             record_id=uuid4(),
             occurred_at=NOW,
@@ -195,12 +217,20 @@ def test_learning_observations_page_is_read_only_vietnamese_and_responsive(
         ).to_be_visible()
         expect(browser_page.get_by_text("Chờ người đánh giá", exact=False)).to_be_visible()
         expect(
-            browser_page.get_by_text("Số quan sát / ngưỡng tối thiểu", exact=True)
+            browser_page.get_by_text("Số quan sát / ngưỡng tối thiểu", exact=True).first
         ).to_be_visible()
         expect(browser_page.get_by_text("2 / 3", exact=True)).to_be_visible()
         expect(browser_page.get_by_text("30 ngày", exact=True)).to_be_visible()
         expect(browser_page.get_by_text("08/11/2026 12:00:00", exact=True)).to_be_visible()
         expect(browser_page.get_by_text("coverage-v2-30d", exact=True)).to_be_visible()
+        expect(browser_page.get_by_text("Mốc đánh giá (UTC)", exact=True).first).to_be_visible()
+        expect(browser_page.get_by_text("Mốc quan sát cuối (UTC)", exact=True)).to_be_visible()
+        expect(
+            browser_page.get_by_text("Chưa phát hiện vấn đề theo đánh giá này", exact=True).first
+        ).to_be_visible()
+        expect(
+            browser_page.get_by_text("Chưa phát hiện vấn đề theo policy hiện hành", exact=True)
+        ).to_have_count(0)
         expect(browser_page.get_by_text("giờ Việt Nam (UTC+7)", exact=False).first).to_be_visible()
         assert "Asia/Ho_Chi_Minh" not in browser_page.locator("body").inner_text()
         expect(browser_page.get_by_role("link", name="Quan sát mô hình")).to_have_attribute(

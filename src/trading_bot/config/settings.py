@@ -84,8 +84,12 @@ class AppSettings(BaseSettings):
     scorer_test_policy_minimum_sample_count: int = Field(default=1_000, ge=1)
     scorer_test_policy_minimum_class_support: int = Field(default=100, ge=1)
     scorer_test_policy_maximum_calibration_error: float = Field(default=0.05, ge=0, le=1)
-    scorer_test_policy_maximum_log_loss_regression: float = Field(default=0.01, ge=0)
-    scorer_test_policy_maximum_brier_regression: float = Field(default=0.01, ge=0)
+    scorer_test_policy_maximum_log_loss_regression: float = Field(
+        default=0.01, ge=0, allow_inf_nan=False
+    )
+    scorer_test_policy_maximum_brier_regression: float = Field(
+        default=0.01, ge=0, allow_inf_nan=False
+    )
     scorer_test_policy_minimum_coverage: float = Field(default=0.80, ge=0, le=1)
     scorer_test_policy_minimum_candidate_retention: float = Field(default=0.20, ge=0, le=1)
     scorer_test_policy_maximum_false_veto_rate: float = Field(default=0.10, ge=0, le=1)

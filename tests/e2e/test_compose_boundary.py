@@ -185,18 +185,18 @@ def test_scorer_policy_is_shared_by_admin_runtime_evaluator_and_market_worker() 
     policy_values = {
         "TRADING_BOT_SCORER_TEST_POLICY_VERSION": "wp06-scorer-policy-compose-test",
         "TRADING_BOT_SCORER_TEST_POLICY_MINIMUM_SAMPLE_COUNT": "1200",
-        "TRADING_BOT_SCORER_TEST_POLICY_MINIMUM_CLASS_SUPPORT": "100",
-        "TRADING_BOT_SCORER_TEST_POLICY_MAXIMUM_CALIBRATION_ERROR": "0.05",
-        "TRADING_BOT_SCORER_TEST_POLICY_MAXIMUM_LOG_LOSS_REGRESSION": "0.01",
-        "TRADING_BOT_SCORER_TEST_POLICY_MAXIMUM_BRIER_REGRESSION": "0.01",
-        "TRADING_BOT_SCORER_TEST_POLICY_MINIMUM_COVERAGE": "0.80",
-        "TRADING_BOT_SCORER_TEST_POLICY_MINIMUM_CANDIDATE_RETENTION": "0.20",
-        "TRADING_BOT_SCORER_TEST_POLICY_MAXIMUM_FALSE_VETO_RATE": "0.10",
-        "TRADING_BOT_SCORER_TEST_POLICY_APPROVE_PROBABILITY_THRESHOLD": "0.60",
-        "TRADING_BOT_SCORER_TEST_POLICY_MINIMUM_CONFIDENCE": "0.55",
-        "TRADING_BOT_SCORER_TEST_POLICY_RELIABILITY_BIN_COUNT": "10",
-        "TRADING_BOT_SCORER_TEST_POLICY_MAXIMUM_STANDARDIZED_FEATURE_DEVIATION": "6.0",
-        "TRADING_BOT_SCORER_TEST_POLICY_RUNTIME_INFERENCE_TIMEOUT_MS": "100",
+        "TRADING_BOT_SCORER_TEST_POLICY_MINIMUM_CLASS_SUPPORT": "120",
+        "TRADING_BOT_SCORER_TEST_POLICY_MAXIMUM_CALIBRATION_ERROR": "0.04",
+        "TRADING_BOT_SCORER_TEST_POLICY_MAXIMUM_LOG_LOSS_REGRESSION": "0.02",
+        "TRADING_BOT_SCORER_TEST_POLICY_MAXIMUM_BRIER_REGRESSION": "0.015",
+        "TRADING_BOT_SCORER_TEST_POLICY_MINIMUM_COVERAGE": "0.85",
+        "TRADING_BOT_SCORER_TEST_POLICY_MINIMUM_CANDIDATE_RETENTION": "0.25",
+        "TRADING_BOT_SCORER_TEST_POLICY_MAXIMUM_FALSE_VETO_RATE": "0.08",
+        "TRADING_BOT_SCORER_TEST_POLICY_APPROVE_PROBABILITY_THRESHOLD": "0.62",
+        "TRADING_BOT_SCORER_TEST_POLICY_MINIMUM_CONFIDENCE": "0.56",
+        "TRADING_BOT_SCORER_TEST_POLICY_RELIABILITY_BIN_COUNT": "12",
+        "TRADING_BOT_SCORER_TEST_POLICY_MAXIMUM_STANDARDIZED_FEATURE_DEVIATION": "7.5",
+        "TRADING_BOT_SCORER_TEST_POLICY_RUNTIME_INFERENCE_TIMEOUT_MS": "250",
     }
     environment = os.environ.copy()
     environment.update(policy_values)
@@ -3190,13 +3190,11 @@ def test_paper_stack_starts_and_keeps_database_and_object_store_data() -> None:
             "SELECT count(*) FROM trading_account; COMMIT",
         )
         assert "0" in unscoped_count.stdout.strip().splitlines()
-        # WP-06 populated guard gặp MFA session trước khi downgrade có thể tới WP-03.
+        # Stack này không có scorer deployment event; WP03 là migration đầu tiên chặn hạ toàn bộ.
         downgrade = compose(
             "run", "--rm", "migrator", "alembic", "downgrade", "base", success=False
         )
-        assert "WP06_SCORING_DEPLOYMENT_POPULATED_DOWNGRADE_DENIED" in (
-            downgrade.stdout + downgrade.stderr
-        )
+        assert "WP03_RISK_GUARD_DOWNGRADE_BLOCKED" in (downgrade.stdout + downgrade.stderr)
         compose("run", "--rm", "migrator", "alembic", "check")
         compose(
             "exec",

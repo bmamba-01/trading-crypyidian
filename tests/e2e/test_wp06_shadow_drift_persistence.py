@@ -139,3 +139,86 @@ def test_shadow_drift_postgres_append_only_rls_rights_and_empty_downgrade() -> N
             timeout=300,
             check=False,
         )
+
+
+def test_populated_coverage_v1_ledger_survives_bounded_window_upgrade() -> None:
+    root = Path(__file__).parents[2]
+    subprocess.run(
+        [sys.executable, "scripts/prepare_local_secrets.py"],
+        check=True,
+        cwd=root,
+        capture_output=True,
+    )
+    project = f"crypidian-wp06-legacy-e2e-{uuid.uuid4().hex[:10]}"
+    image = build_image_reference(root)
+    environment = os.environ | {"CRYPIDIAN_APP_IMAGE": image}
+    base = [
+        "docker",
+        "compose",
+        "--profile",
+        "paper",
+        "--project-name",
+        project,
+        "-f",
+        "compose.yaml",
+    ]
+
+    def compose(*args: str, stdin: str | None = None) -> subprocess.CompletedProcess[str]:
+        result = subprocess.run(
+            base + list(args),
+            cwd=root,
+            env=environment,
+            input=stdin,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=300,
+        )
+        assert result.returncode == 0, (
+            f"Compose lệnh {args!r} thất bại:\n{result.stdout}\n{result.stderr}"
+        )
+        return result
+
+    probe = (root / "tests/e2e/probes/wp06_legacy_drift_upgrade.py").read_text(encoding="utf-8")
+
+    def snapshot(action: str) -> dict[str, Any]:
+        payload = json.dumps({"state": {"action": action}, "code": probe})
+        result = compose(
+            "run",
+            "--rm",
+            "--no-deps",
+            "-T",
+            "db-provisioner",
+            "python",
+            "-c",
+            PROBE_BOOTSTRAP,
+            stdin=payload,
+        )
+        return json.loads(result.stdout.strip().splitlines()[-1])
+
+    ensure_image_available(root, image)
+    try:
+        compose("up", "--detach", "--wait", "--wait-timeout", "180", "postgres")
+        compose("run", "--rm", "--no-deps", "db-provisioner")
+        compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "b2e4a6c8d0f2")
+        before = snapshot("seed")
+        assert before["canonical"] == [True, True, True, True]
+        assert all(len(rows) == 1 for rows in before["rows"].values())
+        compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", CURRENT_HEAD)
+        after = snapshot("read")
+        assert after["canonical"] == [True, True, True, True]
+        legacy = after["rows"]["learning_drift_assessment"][0][0]
+        assert legacy["policy_version"] == "coverage-v1"
+        assert "observation_window_days" in legacy
+        assert legacy.pop("observation_window_days") is None
+        assert after["rows"] == before["rows"]
+    finally:
+        subprocess.run(
+            [*base, "down", "--volumes", "--remove-orphans"],
+            cwd=root,
+            env=environment,
+            capture_output=True,
+            timeout=300,
+            check=False,
+        )

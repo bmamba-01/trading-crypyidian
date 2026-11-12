@@ -350,6 +350,21 @@ def test_scorer_evaluation_policy_rejects_out_of_range_environment_flags(
         AppSettings()
 
 
+@pytest.mark.parametrize(
+    "field_name",
+    [
+        "scorer_test_policy_maximum_log_loss_regression",
+        "scorer_test_policy_maximum_brier_regression",
+    ],
+)
+@pytest.mark.parametrize("invalid_value", [float("inf"), float("-inf"), float("nan")])
+def test_scorer_evaluation_policy_rejects_nonfinite_regression_limits(
+    field_name: str, invalid_value: float
+) -> None:
+    with pytest.raises(ValidationError, match=field_name):
+        AppSettings(**{field_name: invalid_value})
+
+
 def test_scorer_evaluation_policy_rejects_invalid_ood_distance(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

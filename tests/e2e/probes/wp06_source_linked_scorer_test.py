@@ -198,7 +198,7 @@ async def _prepare_qa_migration_downgrade_case(sessions, case_name: str):
     )
     async with sessions() as session, session.begin():
         version = await session.scalar(text("SELECT version_num FROM alembic_version"))
-        assert version == "b2e4a6c8d0f2", version
+        assert version == "c3f5a7b9d1e3", version
         function_hashes = await _qa_migration_function_hashes(session)
         definition = await session.scalar(
             text("SELECT pg_catalog.pg_get_functiondef(CAST(:signature AS regprocedure))"),
@@ -226,7 +226,7 @@ async def _check_and_restore_qa_migration_downgrade_case(sessions):
     assert STATE["migration_error_marker"] == expected_error
     async with sessions() as session, session.begin():
         version = await session.scalar(text("SELECT version_num FROM alembic_version"))
-        assert version == "b2e4a6c8d0f2", version
+        assert version == "c3f5a7b9d1e3", version
         definitions = {
             function_signature: await session.scalar(
                 text("SELECT pg_catalog.pg_get_functiondef(CAST(:signature AS regprocedure))"),
@@ -258,7 +258,7 @@ async def _check_and_restore_qa_migration_downgrade_case(sessions):
     async with sessions() as session:
         version = await session.scalar(text("SELECT version_num FROM alembic_version"))
         restored_hashes = await _qa_migration_function_hashes(session)
-    assert version == "b2e4a6c8d0f2", version
+    assert version == "c3f5a7b9d1e3", version
     assert restored_hashes == STATE["migration_function_hashes_before"]
     return {
         "migration_downgrade_rolled_back": True,

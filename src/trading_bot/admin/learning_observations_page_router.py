@@ -39,7 +39,7 @@ _DRIFT_REASONS = {
 }
 _DATA_STATUS = {
     "detected": "Phát hiện vấn đề chất lượng dữ liệu",
-    "no_drift": "Chưa phát hiện vấn đề theo policy hiện hành",
+    "no_drift": "Chưa phát hiện vấn đề theo đánh giá này",
     "inconclusive": "Chưa đủ bằng chứng để kết luận",
 }
 
@@ -112,6 +112,14 @@ def _present_record(record: Any) -> dict[str, object]:
     elif record.kind == "assessment":
         reasons = metadata.get("reason_codes")
         reason_codes = reasons if isinstance(reasons, list) else []
+        policy_version = metadata.get("policy_version")
+        window_end_label = {
+            "coverage-v1": "Mốc quan sát cuối (UTC)",
+            "coverage-v2-30d": "Mốc đánh giá (UTC)",
+        }.get(
+            policy_version if isinstance(policy_version, str) else "",
+            "Mốc kết thúc cửa sổ (UTC)",
+        )
         data_quality_status = metadata.get("data_quality_status")
         reason_labels = tuple(
             _DRIFT_REASONS.get(item, "Lý do chưa nhận diện")
@@ -131,7 +139,7 @@ def _present_record(record: Any) -> dict[str, object]:
                 ),
             ),
             ("Bắt đầu nhóm quan sát (UTC)", _utc_display(metadata.get("window_start"))),
-            ("Mốc đánh giá (UTC)", _utc_display(metadata.get("window_end"))),
+            (window_end_label, _utc_display(metadata.get("window_end"))),
             (
                 "Số quan sát / ngưỡng tối thiểu",
                 f"{_display(metadata.get('member_count'))} / "
