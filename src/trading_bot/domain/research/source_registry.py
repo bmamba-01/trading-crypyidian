@@ -11,7 +11,9 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from types import MappingProxyType
 from urllib.parse import urlsplit
+from uuid import UUID
 
+from trading_bot.domain.research.license_scope import SourceLicenseScope, scope_sha256
 from trading_bot.domain.research.source_policy import (
     SourcePolicyState,
     SourceRightsPolicy,
@@ -234,6 +236,14 @@ class SourcePolicyRevision:
     actor_id: str
     reason: str
     approved_by: str | None = None
+    provider: str | None = None
+    product: str | None = None
+    venue: str | None = None
+    contract: str | None = None
+    license_scope: SourceLicenseScope | None = None
+    license_evidence_id: UUID | None = None
+    license_digest: str | None = None
+    license_scope_hash: str | None = None
 
     def __post_init__(self) -> None:
         if type(self.sequence) is not int or self.sequence <= 0:
@@ -289,6 +299,49 @@ class SourcePolicyRevision:
         elif self.approved_by is not None:
             raise ValueError("approved_by chỉ áp dụng cho policy verified.")
 
+        identity = (self.provider, self.product, self.venue, self.contract)
+        if any(value is not None for value in identity):
+            if not all(
+                isinstance(value, str) and re.fullmatch(r"[A-Z0-9][A-Z0-9_.:-]{0,127}", value)
+                for value in identity
+            ):
+                raise ValueError("identity cần đủ provider/product/venue/contract ASCII chữ hoa.")
+        scope = self.license_scope
+        if scope is not None:
+            if not isinstance(scope, SourceLicenseScope):
+                raise ValueError("license_scope phải là SourceLicenseScope.")
+            if scope.source_id != self.policy.source_id or identity != (
+                scope.provider,
+                scope.product,
+                scope.venue,
+                scope.contract,
+            ):
+                raise ValueError("license_scope không khớp source identity.")
+            if self.attribution != scope.attribution:
+                raise ValueError("attribution không khớp license_scope.")
+            if not self.policy.allowed_purposes <= set(scope.allowed_purposes):
+                raise ValueError("purpose vượt license_scope.")
+        evidence = (self.license_evidence_id, self.license_digest, self.license_scope_hash)
+        if any(value is not None for value in evidence):
+            if (
+                not isinstance(self.license_evidence_id, UUID)
+                or scope is None
+                or not isinstance(self.license_digest, str)
+                or re.fullmatch(r"[0-9a-f]{64}", self.license_digest) is None
+                or self.license_scope_hash != scope_sha256(scope)
+            ):
+                raise ValueError("license evidence thiếu hoặc digest/scope_hash không khớp.")
+
+    @property
+    def has_license_evidence(self) -> bool:
+        """Metadata đủ để đối chiếu ledger; không tự xác nhận tồn tại hoặc quyền dùng."""
+        return self.license_scope is not None and self.license_evidence_id is not None
+
+    def require_license_evidence(self) -> None:
+        """Chặn ghi VERIFIED mới thiếu metadata; constructor vẫn đọc được lịch sử cũ."""
+        if self.state is SourcePolicyState.VERIFIED and not self.has_license_evidence:
+            raise ValueError("Policy verified mới cần license evidence digest và scope.")
+
     @property
     def state(self) -> SourcePolicyState:
         """Trả trạng thái của policy snapshot."""
@@ -325,6 +378,14 @@ def source_rights_hash(revision: SourcePolicyRevision) -> str:
             "cost_unit": budget.cost_unit,
         },
     }
+    if revision.license_evidence_id is not None:
+        payload.update(
+            {
+                "license_evidence_id": str(revision.license_evidence_id),
+                "license_digest": revision.license_digest,
+                "license_scope_hash": revision.license_scope_hash,
+            }
+        )
     canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
@@ -351,6 +412,11 @@ class SourceRegistryEntry:
                 raise ValueError("policy.source_id không khớp registry entry.")
             if expected > 1:
                 previous = revisions[expected - 2]
+                for name in ("provider", "product", "venue", "contract"):
+                    if getattr(previous, name) is not None and (
+                        getattr(previous, name) != getattr(revision, name)
+                    ):
+                        raise ValueError("source identity bất biến khi đã được khai báo.")
                 if revision.created_at < previous.created_at:
                     raise ValueError("created_at không được lùi giữa các revision.")
                 if revision.state not in _TRANSITIONS[previous.state]:
@@ -432,6 +498,14 @@ class SourceRegistryEntry:
         attribution: str | None = None,
         retention_ref: str | None = None,
         budget: SourceBudget | None = None,
+        provider: str | None = None,
+        product: str | None = None,
+        venue: str | None = None,
+        contract: str | None = None,
+        license_scope: SourceLicenseScope | None = None,
+        license_evidence_id: UUID | None = None,
+        license_digest: str | None = None,
+        license_scope_hash: str | None = None,
     ) -> SourceRegistryEntry:
         """Thêm policy revision sau khi kiểm tra trạng thái và dữ liệu phê duyệt."""
         current = self.current
@@ -465,6 +539,14 @@ class SourceRegistryEntry:
         revision = SourcePolicyRevision(
             sequence=current.sequence + 1,
             policy=policy,
+            provider=provider if provider is not None else current.provider,
+            product=product if product is not None else current.product,
+            venue=venue if venue is not None else current.venue,
+            contract=contract if contract is not None else current.contract,
+            license_scope=license_scope,
+            license_evidence_id=license_evidence_id,
+            license_digest=license_digest,
+            license_scope_hash=license_scope_hash,
             publisher=publisher if publisher is not None else current.publisher,
             endpoint_url=endpoint_url if endpoint_url is not None else current.endpoint_url,
             access_method=access_method if access_method is not None else current.access_method,

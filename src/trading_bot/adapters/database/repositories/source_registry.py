@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
@@ -13,11 +14,13 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from trading_bot.adapters.database.models import (
+    SourceLicenseEvidenceRecord,
     SourcePolicyObservationRecord,
     SourcePolicyRevisionRecord,
     SourceQuotaEventRecord,
     UserMembership,
 )
+from trading_bot.domain.research.license_scope import SourceLicenseScope, canonical_scope_json
 from trading_bot.domain.research.source_policy import (
     SourcePolicyState,
     SourceRightsPolicy,
@@ -124,9 +127,40 @@ class SourceRegistryRepository:
                 f"sequence policy phải liên tiếp; cần {expected_sequence}."
             )
         SourceRegistryEntry(canonical_revision.policy.source_id, (*history, canonical_revision))
+        canonical_revision.require_license_evidence()
+        if canonical_revision.license_evidence_id is not None:
+            evidence = await self.get_license_evidence(
+                workspace_id=workspace_id,
+                source_id=canonical_revision.policy.source_id,
+                evidence_id=canonical_revision.license_evidence_id,
+            )
+            scope = canonical_revision.license_scope
+            if (
+                evidence is None
+                or scope is None
+                or evidence.evidence_ref != canonical_revision.policy.evidence_ref
+                or evidence.digest != canonical_revision.license_digest
+                or evidence.scope_hash != canonical_revision.license_scope_hash
+                or evidence.canonical_scope != canonical_scope_json(scope)
+                or evidence.license_scope != json.loads(evidence.canonical_scope)
+            ):
+                raise SourceRegistryConflict("license evidence không khớp policy/scope/source.")
         self._session.add(SourcePolicyRevisionRecord.from_domain(workspace_id, canonical_revision))
         await self._session.flush()
         return SourceRegistryAppendResult(canonical_revision, False)
+
+    async def get_license_evidence(
+        self, *, workspace_id: UUID, source_id: str, evidence_id: UUID
+    ) -> SourceLicenseEvidenceRecord | None:
+        """Đọc metadata ledger theo đủ workspace/source; không đọc kho tài liệu ngoài."""
+        await self._bind_workspace(workspace_id)
+        return await self._session.scalar(
+            select(SourceLicenseEvidenceRecord).where(
+                SourceLicenseEvidenceRecord.workspace_id == workspace_id,
+                SourceLicenseEvidenceRecord.source_id == source_id,
+                SourceLicenseEvidenceRecord.id == evidence_id,
+            )
+        )
 
     async def get_entry(self, *, workspace_id: UUID, source_id: str) -> SourceRegistryEntry | None:
         """Đọc toàn bộ lịch sử nguồn trong đúng workspace theo thứ tự revision."""
@@ -461,6 +495,26 @@ class SourceRegistryRepository:
         return list(result.all())
 
 
+def _scope_from_document(document: dict[str, object] | None) -> SourceLicenseScope | None:
+    """Khôi phục value object có validation; không chấp nhận scope JSON sai contract."""
+    if document is None:
+        return None
+    # JSONB là dữ liệu không tin cậy; constructor và so sánh canonical kiểm lại toàn bộ.
+    from typing import Any, cast
+
+    values = cast(dict[str, Any], document.copy())
+    values.pop("scope_version", None)
+    values["data_start"] = datetime.fromisoformat(values["data_start"])
+    values["data_end"] = datetime.fromisoformat(values["data_end"])
+    values["allowed_purposes"] = tuple(
+        SourceUsePurpose(item) for item in values["allowed_purposes"]
+    )
+    scope = SourceLicenseScope(**values)
+    if json.loads(canonical_scope_json(scope)) != document:
+        raise ValueError("license_scope không đúng contract canonical.")
+    return scope
+
+
 def _to_domain_revision(row: SourcePolicyRevisionRecord) -> SourcePolicyRevision:
     policy = SourceRightsPolicy(
         policy_id=row.policy_id,
@@ -474,6 +528,14 @@ def _to_domain_revision(row: SourcePolicyRevisionRecord) -> SourcePolicyRevision
     return SourcePolicyRevision(
         sequence=row.sequence,
         policy=policy,
+        provider=row.provider,
+        product=row.product,
+        venue=row.venue,
+        contract=row.contract,
+        license_scope=_scope_from_document(row.license_scope),
+        license_evidence_id=row.license_evidence_id,
+        license_digest=row.license_digest,
+        license_scope_hash=row.license_scope_hash,
         publisher=row.publisher,
         endpoint_url=row.endpoint_url,
         access_method=row.access_method,

@@ -167,6 +167,9 @@ from trading_bot.adapters.database.models.signal_entities import (
     BotDecisionRecord,
     SharedSignalEvidenceRecord,
 )
+from trading_bot.adapters.database.models.source_license_evidence_entities import (
+    SourceLicenseEvidenceRecord,
+)
 from trading_bot.adapters.database.models.strategy_card_entities import StrategyCardRecord
 from trading_bot.adapters.database.models.telegram_entities import (
     TelegramBindingChallenge,
@@ -269,6 +272,7 @@ __all__ = [
     "SourceItemRevisionRecord",
     "SourceItemTakedownRecord",
     "SourcePolicyRevisionRecord",
+    "SourceLicenseEvidenceRecord",
     "SourceQuotaEventRecord",
     "RiskDecisionRecord",
     "RiskReservationRecord",

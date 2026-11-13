@@ -229,3 +229,119 @@ def test_historical_replay_requires_past_as_of_and_current_requires_current_as_o
 def test_naive_retention_takedown_and_evaluation_times_are_rejected() -> None:
     with pytest.raises(ValueError, match="retention_expires_at"):
         access(retention_expires_at=NOW.replace(tzinfo=None))
+
+
+def licensed_revision():
+    from uuid import UUID
+
+    from trading_bot.domain.research.license_scope import SourceLicenseScope, scope_sha256
+
+    revision = source_registry().current
+    scope = SourceLicenseScope(
+        source_id=revision.policy.source_id,
+        provider="PROVIDER",
+        product="OHLCV",
+        venue="BINANCE",
+        contract="USD_M",
+        symbols=("BTCUSDT",),
+        intervals=("1h",),
+        data_start=NOW - timedelta(days=30),
+        data_end=NOW + timedelta(days=30),
+        allowed_purposes=(SourceUsePurpose.METADATA, SourceUsePurpose.TRAINING),
+        allowed_outputs=("derived_features", "trained_model"),
+        derived_use=("feature_extraction", "model_training"),
+        attribution=revision.attribution,
+        max_retention_days=None,
+    )
+    return replace(
+        revision,
+        provider=scope.provider,
+        product=scope.product,
+        venue=scope.venue,
+        contract=scope.contract,
+        license_scope=scope,
+        license_evidence_id=UUID("12345678-1234-5678-1234-567812345678"),
+        license_digest="a" * 64,
+        license_scope_hash=scope_sha256(scope),
+    )
+
+
+def test_legacy_rights_fingerprint_stays_byte_identical_and_write_requires_evidence() -> None:
+    revision = source_registry().current
+    assert source_rights_hash(revision) == (
+        "8481ab8f1ff2ad59a93dabe457329c4ee1eb39e8579fbde7b0f165512967d852"
+    )
+    assert not revision.has_license_evidence
+    with pytest.raises(ValueError, match="evidence"):
+        revision.require_license_evidence()
+
+
+def test_rights_fingerprint_binds_each_evidence_component() -> None:
+    from uuid import uuid4
+
+    revision = licensed_revision()
+    revision.require_license_evidence()
+    assert revision.has_license_evidence
+    fingerprint = source_rights_hash(revision)
+    assert source_rights_hash(replace(revision, license_digest="b" * 64)) != fingerprint
+    assert source_rights_hash(replace(revision, license_evidence_id=uuid4())) != fingerprint
+    assert fingerprint != source_rights_hash(source_registry().current)
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"license_scope_hash": "f" * 64},
+        {"license_digest": "INVALID"},
+        {"provider": "OTHER"},
+        {"attribution": "Không khớp điều khoản"},
+    ],
+)
+def test_license_revision_rejects_inconsistent_metadata(changes) -> None:
+    with pytest.raises(ValueError, match="license|attribution"):
+        replace(licensed_revision(), **changes)
+
+
+def test_license_revision_rejects_purpose_outside_scope() -> None:
+    revision = licensed_revision()
+    with pytest.raises(ValueError, match="purpose"):
+        replace(
+            revision,
+            policy=replace(
+                revision.policy,
+                allowed_purposes=frozenset(
+                    {
+                        SourceUsePurpose.REDISTRIBUTION,
+                    }
+                ),
+            ),
+        )
+
+
+def test_source_identity_cannot_change_or_disappear_once_set() -> None:
+    history = source_registry()
+    revision = licensed_revision()
+    history = replace(history, revisions=(*history.revisions[:-1], revision))
+    revoked = history.transition(
+        policy_id="revoke-with-identity",
+        state=SourcePolicyState.REVOKED,
+        actor_id="owner",
+        at=NOW,
+        reason="Thu hồi",
+    )
+    assert revoked.current.provider == "PROVIDER"
+    with pytest.raises(ValueError, match="identity"):
+        replace(
+            revoked,
+            revisions=(
+                *revoked.revisions[:-1],
+                replace(
+                    revoked.current,
+                    provider="OTHER",
+                    license_scope=None,
+                    license_evidence_id=None,
+                    license_digest=None,
+                    license_scope_hash=None,
+                ),
+            ),
+        )

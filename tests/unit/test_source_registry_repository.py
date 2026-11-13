@@ -1,3 +1,4 @@
+import json
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -9,6 +10,7 @@ import pytest
 from sqlalchemy.dialects import postgresql
 
 from trading_bot.adapters.database.models import (
+    SourceLicenseEvidenceRecord,
     SourcePolicyObservationRecord,
     SourcePolicyRevisionRecord,
     SourceQuotaEventRecord,
@@ -17,6 +19,11 @@ from trading_bot.adapters.database.repositories.source_registry import (
     SourceQuotaExceededError,
     SourceRegistryConflict,
     SourceRegistryRepository,
+)
+from trading_bot.domain.research.license_scope import (
+    SourceLicenseScope,
+    canonical_scope_json,
+    scope_sha256,
 )
 from trading_bot.domain.research.source_policy import (
     SourcePolicyState,
@@ -72,6 +79,55 @@ def approved(source: SourceRegistryEntry) -> SourceRegistryEntry:
         valid_until=NOW + timedelta(days=30),
         approved_by="reviewer-1",
     )
+
+
+def with_evidence(
+    revision: SourcePolicyRevision,
+) -> tuple[SourcePolicyRevision, SourceLicenseEvidenceRecord]:
+    scope = SourceLicenseScope(
+        source_id=revision.policy.source_id,
+        provider="PROVIDER",
+        product="CALENDAR",
+        venue="PUBLIC",
+        contract="RESEARCH",
+        symbols=("BTCUSDT",),
+        intervals=("1h",),
+        data_start=NOW - timedelta(days=10),
+        data_end=NOW + timedelta(days=10),
+        allowed_purposes=tuple(revision.policy.allowed_purposes),
+        allowed_outputs=("aggregate_report",),
+        derived_use=("aggregate_reporting",),
+        attribution=revision.attribution,
+        max_retention_days=None,
+    )
+    evidence = SourceLicenseEvidenceRecord(
+        id=uuid4(),
+        workspace_id=WORKSPACE_ID,
+        source_id=revision.policy.source_id,
+        policy_id=f"{revision.policy.source_id}:policy:pending",
+        idempotency_key=uuid4(),
+        evidence_ref=revision.policy.evidence_ref,
+        digest="a" * 64,
+        byte_count=123,
+        media_type="text/plain",
+        scope_version=scope.scope_version,
+        license_scope=json.loads(canonical_scope_json(scope)),
+        canonical_scope=canonical_scope_json(scope),
+        scope_hash=scope_sha256(scope),
+        actor_id=revision.actor_id,
+        created_at=NOW,
+    )
+    return replace(
+        revision,
+        provider=scope.provider,
+        product=scope.product,
+        venue=scope.venue,
+        contract=scope.contract,
+        license_scope=scope,
+        license_evidence_id=evidence.id,
+        license_digest=evidence.digest,
+        license_scope_hash=evidence.scope_hash,
+    ), evidence
 
 
 def policy_receipts(rows):
@@ -177,8 +233,9 @@ async def test_append_revision_uses_database_clock_for_creation_timestamp() -> N
 @pytest.mark.asyncio
 async def test_verified_revision_review_time_comes_from_database_clock_not_candidate() -> None:
     source = approved(discovered())
+    licensed, evidence = with_evidence(source.current)
     candidate = replace(
-        source.current,
+        licensed,
         created_at=NOW - timedelta(days=20),
         policy=replace(source.current.policy, reviewed_at=NOW - timedelta(days=20)),
     )
@@ -187,7 +244,9 @@ async def test_verified_revision_review_time_comes_from_database_clock_not_candi
         SourcePolicyRevisionRecord.from_domain(WORKSPACE_ID, revision)
         for revision in source.revisions[:-1]
     ]
-    session = FakeSession(scalar_results=[None], rows_results=[existing], database_now=database_now)
+    session = FakeSession(
+        scalar_results=[None, evidence], rows_results=[existing], database_now=database_now
+    )
     result = (
         await SourceRegistryRepository(session).append_revision(
             workspace_id=WORKSPACE_ID,
@@ -774,3 +833,81 @@ async def test_append_rechecks_workspace_key_after_key_lock() -> None:
         if "source_policy_revision.policy_id LIKE" in sql
     )
     assert key_lock < lookup
+
+
+@pytest.mark.asyncio
+async def test_new_verified_append_without_evidence_fails_before_insert() -> None:
+    source = approved(discovered())
+    rows = [
+        SourcePolicyRevisionRecord.from_domain(WORKSPACE_ID, item) for item in source.revisions[:-1]
+    ]
+    session = FakeSession(
+        scalar_results=[None], rows_results=[rows], database_now=NOW + timedelta(minutes=3)
+    )
+    with pytest.raises(ValueError, match="evidence"):
+        await SourceRegistryRepository(session).append_revision(
+            workspace_id=WORKSPACE_ID,
+            revision=source.current,
+        )
+    assert session.added == []
+
+
+@pytest.mark.asyncio
+async def test_legacy_null_revision_round_trip_and_retry_do_not_invent_evidence() -> None:
+    source = approved(discovered())
+    row = SourcePolicyRevisionRecord.from_domain(WORKSPACE_ID, source.current)
+    session = FakeSession(scalar_results=[row])
+    result = await SourceRegistryRepository(session).append_revision(
+        workspace_id=WORKSPACE_ID,
+        revision=source.current,
+    )
+    assert result.is_duplicate
+    assert result.revision.license_scope is None
+    assert not result.revision.has_license_evidence
+    assert row.license_evidence_id is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mutation", ["digest", "scope", "reference", "missing"])
+async def test_verified_append_requires_matching_evidence_ledger(mutation: str) -> None:
+    source = approved(discovered())
+    candidate, evidence = with_evidence(source.current)
+    if mutation == "digest":
+        evidence.digest = "b" * 64
+    elif mutation == "scope":
+        evidence.canonical_scope += " "
+    elif mutation == "reference":
+        evidence.evidence_ref = "https://other.test/archive"
+    rows = [
+        SourcePolicyRevisionRecord.from_domain(WORKSPACE_ID, revision)
+        for revision in source.revisions[:-1]
+    ]
+    session = FakeSession(
+        scalar_results=[None, None if mutation == "missing" else evidence],
+        rows_results=[rows],
+        database_now=NOW + timedelta(minutes=3),
+    )
+    with pytest.raises(SourceRegistryConflict, match="evidence"):
+        await SourceRegistryRepository(session).append_revision(
+            workspace_id=WORKSPACE_ID, revision=candidate
+        )
+    assert not session.added
+    lookup = session.statements[-1]
+    assert "source_license_evidence.workspace_id" in lookup
+    assert "source_license_evidence.source_id" in lookup
+    assert "source_license_evidence.id" in lookup
+
+
+@pytest.mark.asyncio
+async def test_licensed_revision_round_trip_and_changed_digest_retry_conflicts() -> None:
+    candidate, _ = with_evidence(approved(discovered()).current)
+    row = SourcePolicyRevisionRecord.from_domain(WORKSPACE_ID, candidate)
+    result = await SourceRegistryRepository(FakeSession(scalar_results=[row])).append_revision(
+        workspace_id=WORKSPACE_ID, revision=candidate
+    )
+    assert result.is_duplicate
+    assert result.revision == candidate
+    with pytest.raises(SourceRegistryConflict, match="idempotency"):
+        await SourceRegistryRepository(FakeSession(scalar_results=[row])).append_revision(
+            workspace_id=WORKSPACE_ID, revision=replace(candidate, license_digest="b" * 64)
+        )

@@ -163,3 +163,73 @@ def test_downgrade_drops_policies_triggers_tables_and_indexes() -> None:
     assert joined.index("WP05_SOURCE_HISTORY_DOWNGRADE_BLOCKED") < joined.index(
         "DROP TABLE source_quota_event"
     )
+
+
+def test_license_ledger_has_only_metadata_and_scoped_restrict_foreign_keys() -> None:
+    from trading_bot.adapters.database.models import SourceLicenseEvidenceRecord
+
+    table = SourceLicenseEvidenceRecord.__table__
+    assert {
+        "id",
+        "workspace_id",
+        "source_id",
+        "policy_id",
+        "digest",
+        "byte_count",
+        "media_type",
+        "scope_version",
+        "license_scope",
+        "canonical_scope",
+        "scope_hash",
+        "evidence_ref",
+        "actor_id",
+        "idempotency_key",
+        "created_at",
+    } == set(table.c.keys())
+    assert isinstance(table.c.license_scope.type, JSONB)
+    assert all(fk.ondelete == "RESTRICT" for fk in table.foreign_key_constraints)
+    assert any(
+        set(fk.column_keys) == {"workspace_id", "source_id", "policy_id"}
+        for fk in table.foreign_key_constraints
+    )
+    policy = SourcePolicyRevisionRecord.__table__
+    assert any(
+        set(fk.column_keys) == {"workspace_id", "source_id", "license_evidence_id"}
+        for fk in policy.foreign_key_constraints
+    )
+
+
+def test_license_migration_links_head_enforces_hash_and_append_only_rls() -> None:
+    path = VERSIONS / "a4c6e8f0b2d5_wp06_license_evidence.py"
+    spec = importlib.util.spec_from_file_location(path.stem, path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.down_revision == "f6b8d0e2a4c7"
+    recorder = RecordingOp()
+    module.op = recorder
+    module.upgrade()
+    joined = "\n".join(recorder.statements)
+    assert "FORCE ROW LEVEL SECURITY" in joined
+    assert "BEFORE UPDATE OR DELETE ON source_license_evidence" in joined
+    assert "sha256" in joined
+    assert "canonical_scope::jsonb" in joined
+    assert "WP06_LICENSE_EVIDENCE_REQUIRED" in joined
+    assert "WP06_LICENSE_IDENTITY_IMMUTABLE" in joined
+    assert "GRANT SELECT, INSERT ON TABLE source_license_evidence TO crypidian_admin_web" in joined
+    recorder.statements.clear()
+    module.downgrade()
+    joined = "\n".join(recorder.statements)
+    assert joined.index("WP06_LICENSE_EVIDENCE_DOWNGRADE_BLOCKED") < joined.index(
+        "DROP TABLE source_license_evidence"
+    )
+
+
+def test_legacy_scope_null_is_sql_null_instead_of_json_null() -> None:
+    from sqlalchemy.dialects.postgresql import dialect
+
+    column_type = SourcePolicyRevisionRecord.__table__.c.license_scope.type
+    process = column_type.dialect_impl(dialect()).bind_processor(dialect())
+    assert process is not None
+    assert process(None) is None

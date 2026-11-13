@@ -115,7 +115,15 @@ def test_source_registry_workspace_roles_append_only_and_concurrent_quota() -> N
         )
         migrate("upgrade", "head")
         migrate("check")
+        run_probe("license_schema")
+        migrate("downgrade", "f6b8d0e2a4c7")
+        migrate("upgrade", "head")
         run_probe("registry")
+        run_probe("license_ledger")
+        evidence_guard = migrate("downgrade", "f6b8d0e2a4c7", success=False)
+        assert "WP06_LICENSE_EVIDENCE_DOWNGRADE_BLOCKED" in (
+            evidence_guard.stdout + evidence_guard.stderr
+        )
         transitions = run_probe("policy_transition_guard")
         assert len(transitions["transition_failures"]) == 3
         reservation = run_probe("concurrent_reservations")
@@ -126,7 +134,9 @@ def test_source_registry_workspace_roles_append_only_and_concurrent_quota() -> N
         run_probe("revoke")
         run_probe("revoked_retry")
         global_guard = migrate("downgrade", PREVIOUS_HEAD, success=False)
-        assert "WP03_RISK_GUARD_DOWNGRADE_BLOCKED" in (global_guard.stdout + global_guard.stderr)
+        assert "WP06_LICENSE_EVIDENCE_DOWNGRADE_BLOCKED" in (
+            global_guard.stdout + global_guard.stderr
+        )
         migrate("check")
     finally:
         subprocess.run(

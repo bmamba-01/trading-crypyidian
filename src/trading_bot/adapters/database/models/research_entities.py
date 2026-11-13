@@ -1,5 +1,6 @@
 """Bảng registry quyền nguồn research và reservation quota theo workspace."""
 
+import json
 from datetime import datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING
@@ -47,6 +48,20 @@ class SourcePolicyRevisionRecord(UuidPrimaryKey, CreatedAt, Base):
 
     __tablename__ = "source_policy_revision"
     __table_args__ = (
+        UniqueConstraint(
+            "workspace_id", "source_id", "policy_id", name="uq_source_policy_revision_source_policy"
+        ),
+        ForeignKeyConstraint(
+            ["workspace_id", "source_id", "license_evidence_id"],
+            [
+                "source_license_evidence.workspace_id",
+                "source_license_evidence.source_id",
+                "source_license_evidence.id",
+            ],
+            name="fk_source_policy_license_evidence",
+            ondelete="RESTRICT",
+            use_alter=True,
+        ),
         UniqueConstraint("workspace_id", "policy_id", name="uq_source_policy_revision_policy"),
         UniqueConstraint(
             "workspace_id",
@@ -126,6 +141,16 @@ class SourcePolicyRevisionRecord(UuidPrimaryKey, CreatedAt, Base):
     policy_id: Mapped[str] = mapped_column(String(160), nullable=False)
     state: Mapped[str] = mapped_column(String(24), nullable=False)
     allowed_purposes: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    provider: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    product: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    venue: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    contract: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    license_scope: Mapped[dict[str, object] | None] = mapped_column(
+        JSONB(none_as_null=True), nullable=True
+    )
+    license_evidence_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True)
+    license_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    license_scope_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     evidence_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     valid_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -147,6 +172,7 @@ class SourcePolicyRevisionRecord(UuidPrimaryKey, CreatedAt, Base):
     @classmethod
     def from_domain(cls, workspace_id: UUID, revision: object) -> SourcePolicyRevisionRecord:
         """Chuyển snapshot domain sang ORM; không nhận hoặc lưu credential."""
+        from trading_bot.domain.research.license_scope import canonical_scope_json
         from trading_bot.domain.research.source_registry import SourcePolicyRevision
 
         if not isinstance(revision, SourcePolicyRevision):
@@ -155,6 +181,16 @@ class SourcePolicyRevisionRecord(UuidPrimaryKey, CreatedAt, Base):
         return cls(
             workspace_id=workspace_id,
             source_id=policy.source_id,
+            provider=revision.provider,
+            product=revision.product,
+            venue=revision.venue,
+            contract=revision.contract,
+            license_scope=json.loads(canonical_scope_json(revision.license_scope))
+            if revision.license_scope is not None
+            else None,
+            license_evidence_id=revision.license_evidence_id,
+            license_digest=revision.license_digest,
+            license_scope_hash=revision.license_scope_hash,
             sequence=revision.sequence,
             policy_id=policy.policy_id,
             state=policy.state.value,
