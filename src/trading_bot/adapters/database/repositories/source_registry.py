@@ -150,6 +150,17 @@ class SourceRegistryRepository:
         await self._session.flush()
         return SourceRegistryAppendResult(canonical_revision, False)
 
+    async def evidence_by_id(
+        self, *, workspace_id: UUID, source_id: str, evidence_id: UUID
+    ) -> SourceLicenseEvidence | None:
+        """Chọn evidence bất biến từ lịch sử cùng workspace/source, không giới hạn pending gốc."""
+        row = await self.get_license_evidence(
+            workspace_id=workspace_id,
+            source_id=source_id,
+            evidence_id=evidence_id,
+        )
+        return _evidence_to_domain(row) if row is not None else None
+
     async def evidence_for_pending(
         self, *, workspace_id: UUID, source_id: str, policy_id: str
     ) -> SourceLicenseEvidence | None:

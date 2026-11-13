@@ -102,6 +102,7 @@ class SourceApprovalCommand:
     allowed_purposes: frozenset[SourceUsePurpose]
     valid_until: datetime | None
     reason: str
+    license_evidence_id: UUID | None = None
 
 
 class SourcePolicyAppend(Protocol):
@@ -110,6 +111,10 @@ class SourcePolicyAppend(Protocol):
 
 
 class SourcePolicyAdminRepository(Protocol):
+    async def evidence_by_id(
+        self, *, workspace_id: UUID, source_id: str, evidence_id: UUID
+    ) -> SourceLicenseEvidence | None: ...
+
     async def append_license_evidence(
         self, *, workspace_id: UUID, evidence: SourceLicenseEvidence
     ) -> SourceLicenseEvidence: ...
@@ -311,18 +316,35 @@ class PrincipalSourcePolicyAdminService:
             raise ValueError("Pending revision không còn là phiên bản hiện hành.")
         if await self._same_actor(pending.actor_id):
             raise PermissionError("Reviewer phải khác người gửi policy.")
-        evidence = await self._repository.evidence_for_pending(
+        pending_evidence = await self._repository.evidence_for_pending(
             workspace_id=self._principal.workspace_id,
             source_id=source_id,
             policy_id=pending_policy_id,
         )
+        evidence = pending_evidence
+        if command.license_evidence_id is not None:
+            if not isinstance(command.license_evidence_id, UUID):
+                raise ValueError("license_evidence_id phải là UUID.")
+            evidence = await self._repository.evidence_by_id(
+                workspace_id=self._principal.workspace_id,
+                source_id=source_id,
+                evidence_id=command.license_evidence_id,
+            )
+            if evidence is None:
+                raise LookupError("Không tìm thấy evidence trong workspace/source.")
         if (
             evidence is None
+            or evidence.source_id != source_id
             or evidence.license_scope != pending.license_scope
             or evidence.evidence_ref != pending.policy.evidence_ref
             or not command.allowed_purposes.issubset(evidence.license_scope.allowed_purposes)
         ):
             raise ValueError("Cần evidence cùng pending scope/reference và purpose phù hợp.")
+        if pending_evidence is not None and any(
+            getattr(pending_evidence, name) != getattr(evidence, name)
+            for name in ("digest", "byte_count", "media_type", "evidence_ref", "license_scope")
+        ):
+            raise ValueError("Evidence được chọn khác payload đã upload cho pending.")
         if await self._same_actor(evidence.actor_id):
             raise PermissionError("Reviewer phải khác người upload evidence.")
         at = existing.created_at if existing else datetime.now(UTC)
@@ -462,7 +484,16 @@ def _require_key(key: UUID) -> None:
 
 def _canonical(value: object) -> object:
     if is_dataclass(value) and not isinstance(value, type):
-        return {field.name: _canonical(getattr(value, field.name)) for field in fields(value)}
+        # Giữ key retry của approval cũ khi chưa chọn evidence ID tường minh.
+        return {
+            field.name: _canonical(getattr(value, field.name))
+            for field in fields(value)
+            if not (
+                isinstance(value, SourceApprovalCommand)
+                and field.name == "license_evidence_id"
+                and value.license_evidence_id is None
+            )
+        }
     if isinstance(value, Enum):
         return value.value
     if isinstance(value, UUID):

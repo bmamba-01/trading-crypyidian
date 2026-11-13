@@ -91,12 +91,14 @@ def test_policy_admin_authenticated_roles_recovery_quota_and_rls() -> None:
         )
         data: dict[str, Any] = json.loads(result.stdout.strip().splitlines()[-1])
         assert data == {
+            "prior_evidence_reused_exact_id": True,
+            "prior_evidence_scope_workspace_denials": True,
             "stream_evidence_boundary_idempotency": True,
             "evidence_transaction_rollback": True,
             "real_admin_login": True,
             "authenticated_owner_reviewer": True,
-            "policy_rows": 3,
-            "receipt_rows": 3,
+            "policy_rows": 13,
+            "receipt_rows": 13,
             "quota_rows": 1,
             "self_approval_denied": True,
             "foreign_workspace_denied": True,

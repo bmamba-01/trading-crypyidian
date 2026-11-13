@@ -221,6 +221,7 @@ class SourceRevisionRequest(StrictRequest):
 
 
 class SourceApprovalRequest(StrictRequest):
+    license_evidence_id: UUID | None = None
     allowed_purposes: frozenset[SourceUsePurpose] = Field(min_length=1)
     valid_until: datetime | None = None
     reason: str = Field(min_length=1, max_length=2048)
@@ -235,6 +236,7 @@ class SourceApprovalRequest(StrictRequest):
             allowed_purposes=self.allowed_purposes,
             valid_until=self.valid_until,
             reason=self.reason,
+            license_evidence_id=self.license_evidence_id,
         )
 
 

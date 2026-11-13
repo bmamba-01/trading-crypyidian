@@ -89,3 +89,13 @@ class DatabaseSourcePolicyAdminRepository:
             return await SourceRegistryRepository(session).evidence_for_pending(
                 workspace_id=workspace_id, source_id=source_id, policy_id=policy_id
             )
+
+    async def evidence_by_id(
+        self, *, workspace_id: UUID, source_id: str, evidence_id: UUID
+    ) -> SourceLicenseEvidence | None:
+        async with self._sessions() as session, session.begin():
+            return await SourceRegistryRepository(session).evidence_by_id(
+                workspace_id=workspace_id,
+                source_id=source_id,
+                evidence_id=evidence_id,
+            )

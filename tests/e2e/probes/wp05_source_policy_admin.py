@@ -489,13 +489,111 @@ async def run():
                 )
                 == 0
             )
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://fixture"
+        ) as client:
+            later = await request("POST", f"/{SOURCE}/revisions", pending_payload)
+            assert later.status_code == 201, later.text
+            later_path = f"/{SOURCE}/revisions/{later.json()['policy_id']}/approve"
+            reuse = approval | {"license_evidence_id": evidence["evidence_id"]}
+            reuse_key = uuid4()
+            reused = await request("POST", later_path, reuse, actor="reviewer", key=reuse_key)
+            assert reused.status_code == 201, reused.text
+            retried = await request("POST", later_path, reuse, actor="reviewer", key=reuse_key)
+            assert retried.json() == reused.json()
+            assert reused.json()["license_evidence_id"] == evidence["evidence_id"]
+            assert reused.json()["license_digest"] == evidence["digest"]
+            assert reused.json()["license_scope_hash"] == evidence["scope_hash"]
+            assert await evidence_count() == 1
+            for changes in (
+                {"evidence_ref": "archive:changed"},
+                {"license_scope": license_scope | {"symbols": ["ETHUSDT"]}},
+            ):
+                changed = await request("POST", f"/{SOURCE}/revisions", pending_payload | changes)
+                assert changed.status_code == 201, changed.text
+                changed_path = f"/{SOURCE}/revisions/{changed.json()['policy_id']}/approve"
+                denied_reuse = await request("POST", changed_path, reuse, actor="reviewer")
+                assert denied_reuse.status_code == 409, denied_reuse.text
+                blocked = await request(
+                    "POST",
+                    f"/{SOURCE}/revisions",
+                    {
+                        "state": "blocked",
+                        "reason": "Sửa lại phạm vi",
+                    },
+                )
+                assert blocked.status_code == 201, blocked.text
+            second_source = SOURCE + "-second"
+            second_created = await request("POST", "", payload | {"source_id": second_source})
+            assert second_created.status_code == 201, second_created.text
+            second_pending = await request(
+                "POST",
+                f"/{second_source}/revisions",
+                pending_payload
+                | {
+                    "license_scope": license_scope | {"source_id": second_source},
+                },
+            )
+            assert second_pending.status_code == 201, second_pending.text
+            cross_source = await request(
+                "POST",
+                f"/{second_source}/revisions/{second_pending.json()['policy_id']}/approve",
+                reuse,
+                actor="reviewer",
+            )
+            assert cross_source.status_code == 404, cross_source.text
+            foreign_created = await request("POST", "", payload, actor="foreign")
+            assert foreign_created.status_code == 201, foreign_created.text
+            foreign_pending = await request(
+                "POST", f"/{SOURCE}/revisions", pending_payload, actor="foreign"
+            )
+            assert foreign_pending.status_code == 201, foreign_pending.text
+            foreign_uploaded = await request(
+                "POST",
+                f"/{SOURCE}/revisions/{foreign_pending.json()['policy_id']}/license-evidence",
+                actor="foreign",
+                raw=body,
+                extra_headers=upload_headers,
+            )
+            assert foreign_uploaded.status_code == 201, foreign_uploaded.text
+            final_pending = await request("POST", f"/{SOURCE}/revisions", pending_payload)
+            assert final_pending.status_code == 201, final_pending.text
+            final_path = f"/{SOURCE}/revisions/{final_pending.json()['policy_id']}/approve"
+            cross_workspace = await request(
+                "POST",
+                final_path,
+                reuse
+                | {
+                    "license_evidence_id": foreign_uploaded.json()["evidence_id"],
+                },
+                actor="reviewer",
+            )
+            assert cross_workspace.status_code == 404, cross_workspace.text
+            excessive = await request(
+                "POST",
+                final_path,
+                reuse
+                | {
+                    "allowed_purposes": ["training"],
+                },
+                actor="reviewer",
+            )
+            assert excessive.status_code == 409, excessive.text
+            assert (await request("POST", final_path, reuse)).status_code == 403
+            final_approved = await request("POST", final_path, reuse, actor="reviewer")
+            assert final_approved.status_code == 201, final_approved.text
+            assert final_approved.json()["license_evidence_id"] == evidence["evidence_id"]
+            assert await evidence_count() == 1
+            assert await counts(admin) == (13, 13, 1)
         return {
+            "prior_evidence_reused_exact_id": True,
+            "prior_evidence_scope_workspace_denials": True,
             "stream_evidence_boundary_idempotency": True,
             "evidence_transaction_rollback": True,
             "real_admin_login": True,
             "authenticated_owner_reviewer": True,
-            "policy_rows": 3,
-            "receipt_rows": 3,
+            "policy_rows": 13,
+            "receipt_rows": 13,
             "quota_rows": 1,
             "self_approval_denied": True,
             "foreign_workspace_denied": True,

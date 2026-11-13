@@ -44,6 +44,14 @@ class Repository:
             None,
         )
 
+    async def evidence_by_id(self, *, workspace_id, source_id, evidence_id):
+        if workspace_id != WORKSPACE:
+            return None
+        return next(
+            (e for e in self.evidence if e.source_id == source_id and e.evidence_id == evidence_id),
+            None,
+        )
+
     async def list_entries(self, *, workspace_id):
         return tuple(self.entries.values())
 
@@ -537,3 +545,103 @@ async def test_upload_rejects_permissions_and_noncurrent_policy_before_consuming
             )
     assert consumed == []
     assert repo.evidence == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "change", [None, "reference", "scope", "purpose", "source", "digest", "uploader"]
+)
+async def test_later_pending_can_select_prior_immutable_evidence(change):
+    repo = Repository()
+    service = SourcePolicyAdminService(repo)
+    owner, other, reviewer = principal(), principal(), principal(Role.ANALYST_REVIEWER)
+    facade = service.for_principal(owner)
+    await facade.create_source(
+        SourceCreateCommand(
+            "feed", "Publisher", "https://example.org/", "GET", "public", BUDGET, "Candidate"
+        ),
+        uuid4(),
+    )
+    pending = await facade.submit_pending("feed", pending_command("feed"), uuid4())
+    evidence = await upload_fixture(facade, "feed", pending)
+    approved = await service.for_principal(reviewer).approve_pending(
+        "feed",
+        pending.policy.policy_id,
+        SourceApprovalCommand(frozenset({SourceUsePurpose.METADATA}), None, "Duyệt"),
+        uuid4(),
+    )
+    assert approved.license_evidence_id == evidence.evidence_id
+    command = pending_command("feed")
+    if change == "reference":
+        command = replace(command, evidence_ref="archive:changed")
+    if change == "scope":
+        command = replace(
+            command, license_scope=replace(command.license_scope, symbols=("ETHUSDT",))
+        )
+    if change == "source":
+        await service.for_principal(other).create_source(
+            SourceCreateCommand(
+                "second", "Publisher", "https://example.org/", "GET", "public", BUDGET, "Candidate"
+            ),
+            uuid4(),
+        )
+        command = pending_command("second")
+    source_id = "second" if change == "source" else "feed"
+    later = await service.for_principal(other).submit_pending(source_id, command, uuid4())
+    if change == "digest":
+        current = await upload_fixture(service.for_principal(other), source_id, later)
+        repo.evidence[-1] = replace(current, digest="b" * 64)
+    approval = SourceApprovalCommand(
+        frozenset(
+            {SourceUsePurpose.TRAINING if change == "purpose" else SourceUsePurpose.METADATA}
+        ),
+        None,
+        "Duyệt lại",
+        license_evidence_id=evidence.evidence_id,
+    )
+    actor = owner if change == "uploader" else reviewer
+    if change:
+        error = (
+            PermissionError
+            if change == "uploader"
+            else LookupError
+            if change == "source"
+            else ValueError
+        )
+        with pytest.raises(error):
+            await service.for_principal(actor).approve_pending(
+                source_id, later.policy.policy_id, approval, uuid4()
+            )
+        assert repo.entries[source_id].current == later
+    else:
+        key = uuid4()
+        reused = await service.for_principal(actor).approve_pending(
+            source_id, later.policy.policy_id, approval, key
+        )
+        retry = await service.for_principal(actor).approve_pending(
+            source_id, later.policy.policy_id, approval, key
+        )
+        assert reused == retry
+        assert reused.license_evidence_id == evidence.evidence_id
+        assert reused.license_digest == evidence.digest
+        assert reused.license_scope_hash == evidence.scope_hash
+        assert len(repo.evidence) == 1
+
+
+def test_default_approval_idempotency_payload_remains_compatible():
+    from trading_bot.application.source_policy_admin import _canonical, _policy_id
+
+    command = SourceApprovalCommand(frozenset({SourceUsePurpose.METADATA}), None, "Duyệt")
+    canonical = _canonical(command)
+    assert canonical == {"allowed_purposes": ["metadata"], "valid_until": None, "reason": "Duyệt"}
+    key = uuid4()
+    from dataclasses import make_dataclass
+
+    legacy = make_dataclass("LegacyApproval", ("allowed_purposes", "valid_until", "reason"))(
+        command.allowed_purposes,
+        command.valid_until,
+        command.reason,
+    )
+    assert _policy_id(key, ("feed", "pending", command)) == _policy_id(
+        key, ("feed", "pending", legacy)
+    )

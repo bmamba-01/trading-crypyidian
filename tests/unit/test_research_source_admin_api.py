@@ -571,3 +571,23 @@ async def test_raw_asgi_disconnect_discards_partial_body_without_evidence():
     assert (b"cache-control", b"no-store") in responses[0]["headers"]
     assert json.loads(responses[1]["body"])["detail"] == "Upload bị gián đoạn."
     assert repository.evidence == []
+
+
+def test_approval_api_accepts_explicit_existing_evidence_id_and_rejects_bad_id():
+    http, service = bare_client()
+    evidence_id = uuid4()
+    path = "/api/v1/research-sources/calendar/revisions/later-pending/approve"
+    payload = {
+        "allowed_purposes": ["metadata"],
+        "reason": "Dùng lại bằng chứng",
+        "license_evidence_id": str(evidence_id),
+    }
+    response = http.post(path, json=payload, headers={"Idempotency-Key": str(uuid4())})
+    assert response.status_code == 201
+    assert service.facade.calls[-1][3].license_evidence_id == evidence_id
+    invalid = http.post(
+        path,
+        json=payload | {"license_evidence_id": "bad"},
+        headers={"Idempotency-Key": str(uuid4())},
+    )
+    assert invalid.status_code == 422
