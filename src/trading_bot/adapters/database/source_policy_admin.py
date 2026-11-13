@@ -11,6 +11,7 @@ from trading_bot.adapters.database.repositories.source_registry import (
     SourceRegistryRepository,
 )
 from trading_bot.adapters.database.source_observer import PostCommitSourceObserver
+from trading_bot.application.source_policy_admin import SourceLicenseEvidence
 from trading_bot.domain.research.source_registry import (
     SourcePolicyRevision,
     SourceQuotaSnapshot,
@@ -72,3 +73,19 @@ class DatabaseSourcePolicyAdminRepository:
         return await self._observer.append_revision_and_observe(
             workspace_id=workspace_id, revision=revision
         )
+
+    async def append_license_evidence(
+        self, *, workspace_id: UUID, evidence: SourceLicenseEvidence
+    ) -> SourceLicenseEvidence:
+        async with self._sessions() as session, session.begin():
+            return await SourceRegistryRepository(session).append_license_evidence(
+                workspace_id=workspace_id, evidence=evidence
+            )
+
+    async def evidence_for_pending(
+        self, *, workspace_id: UUID, source_id: str, policy_id: str
+    ) -> SourceLicenseEvidence | None:
+        async with self._sessions() as session, session.begin():
+            return await SourceRegistryRepository(session).evidence_for_pending(
+                workspace_id=workspace_id, source_id=source_id, policy_id=policy_id
+            )

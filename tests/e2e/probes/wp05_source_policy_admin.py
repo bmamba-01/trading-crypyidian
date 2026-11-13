@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import secrets
@@ -170,15 +171,27 @@ async def run():
             transport=ASGITransport(app=app), base_url="http://fixture"
         ) as client:
 
-            async def request(method, path, payload=None, *, actor="owner", key=None, csrf=True):
+            async def request(
+                method,
+                path,
+                payload=None,
+                *,
+                actor="owner",
+                key=None,
+                csrf=True,
+                raw=None,
+                extra_headers=None,
+            ):
                 identity = actors[actor]
                 headers = {"Cookie": f"crypidian_session={identity['cookie']}"}
                 if csrf:
                     headers["X-CSRF-Token"] = identity["csrf"]
                 if method == "POST":
                     headers["Idempotency-Key"] = str(key or uuid4())
+                headers.update(extra_headers or {})
+                kwargs = {"content": raw} if raw is not None else {"json": payload}
                 return await client.request(
-                    method, f"/api/v1/research-sources{path}", json=payload, headers=headers
+                    method, f"/api/v1/research-sources{path}", headers=headers, **kwargs
                 )
 
             payload = {
@@ -203,10 +216,32 @@ async def run():
             assert (await request("POST", "", payload, actor="stale")).status_code == 403
             created = await request("POST", "", payload)
             assert created.status_code == 201, created.text
+            license_scope = {
+                "source_id": SOURCE,
+                "provider": "PROVIDER",
+                "product": "CALENDAR",
+                "venue": "PUBLIC",
+                "contract": "RESEARCH",
+                "symbols": ["BTCUSDT"],
+                "intervals": ["1h"],
+                "data_start": "2026-01-01T00:00:00Z",
+                "data_end": "2027-01-01T00:00:00Z",
+                "allowed_purposes": ["metadata"],
+                "allowed_outputs": ["aggregate_report"],
+                "derived_use": ["aggregate_reporting"],
+                "max_retention_days": None,
+                "attribution": "Nguồn fixture",
+            }
             pending_payload = {
                 "state": "rights_pending",
                 "reason": "Đề nghị xem xét",
                 "evidence_ref": "fixture-only-unverified",
+                "license_scope": license_scope,
+                "attribution": license_scope["attribution"],
+                **{
+                    name: license_scope[name]
+                    for name in ("provider", "product", "venue", "contract")
+                },
             }
             key = uuid4()
             # Fault injection đúng ranh giới sau commit append, trước transaction observer.
@@ -241,6 +276,120 @@ async def run():
                 "POST", f"/{SOURCE}/revisions", pending_payload | {"reason": "Khác"}, key=key
             )
             assert changed.status_code == 409
+            upload_path = f"/{SOURCE}/revisions/{pending_id}/license-evidence"
+
+            async def evidence_count():
+                async with admin() as session, session.begin():
+                    await scope(session)
+                    return await session.scalar(
+                        text("SELECT count(*) FROM source_license_evidence")
+                    )
+
+            async def chunks(*values):
+                for value in values:
+                    yield value
+
+            upload_key = uuid4()
+            upload_headers = {"Content-Type": "text/plain"}
+            for extra, body, code in (
+                ({"Content-Type": "image/png"}, b"x", 415),
+                ({}, b"", 400),
+                ({"Content-Length": "bad"}, b"x", 400),
+                ({"Content-Length": "-1"}, b"x", 400),
+                ({"Content-Length": "2"}, b"x", 400),
+                ({"Content-Length": "10485761"}, b"x", 413),
+                ({"Content-Length": "1"}, chunks(b"a" * 10485760, b"b"), 413),
+            ):
+                rejected = await request(
+                    "POST", upload_path, raw=body, extra_headers=upload_headers | extra
+                )
+                assert rejected.status_code == code, rejected.text
+                assert rejected.headers["cache-control"] == "no-store"
+                assert await evidence_count() == 0
+            for actor, csrf, path, code in (
+                ("owner", False, upload_path, 403),
+                ("stale", True, upload_path, 403),
+                ("reviewer", True, upload_path, 403),
+                ("foreign", True, upload_path, 404),
+                ("owner", True, f"/{SOURCE}/revisions/wrong/license-evidence", 409),
+                ("owner", True, "/missing/revisions/wrong/license-evidence", 404),
+            ):
+                rejected = await request(
+                    "POST", path, raw=b"x", actor=actor, csrf=csrf, extra_headers=upload_headers
+                )
+                assert rejected.status_code == code, rejected.text
+                assert rejected.headers["cache-control"] == "no-store"
+                assert await evidence_count() == 0
+            original_append = SourceRegistryRepository.append_license_evidence
+
+            async def fail_after_flush(repository, **kwargs):
+                await original_append(repository, **kwargs)
+                raise RuntimeError("fixture rollback after flush")
+
+            with patch.object(
+                SourceRegistryRepository, "append_license_evidence", fail_after_flush
+            ):
+                failed_upload = await request(
+                    "POST",
+                    upload_path,
+                    raw=b"Fixture license",
+                    extra_headers=upload_headers,
+                    key=upload_key,
+                )
+            assert failed_upload.status_code == 500, failed_upload.text
+            assert failed_upload.headers["cache-control"] == "no-store"
+            assert await evidence_count() == 0
+            body = b"Fixture license"
+
+            async def initial_upload():
+                return await request(
+                    "POST",
+                    upload_path + "?evidence_ref=attacker&scope=attacker",
+                    raw=chunks(body[:3], body[3:]),
+                    key=upload_key,
+                    extra_headers=upload_headers
+                    | {
+                        "X-Evidence-Ref": "attacker",
+                        "X-Scope": "attacker",
+                        "Content-Disposition": 'attachment; filename="secret-name.txt"',
+                    },
+                )
+
+            uploaded, concurrent = await asyncio.gather(
+                initial_upload(),
+                request(
+                    "POST",
+                    upload_path,
+                    raw=body,
+                    key=upload_key,
+                    extra_headers=upload_headers,
+                ),
+            )
+            assert uploaded.status_code == concurrent.status_code == 201, uploaded.text
+            assert uploaded.json() == concurrent.json()
+            evidence = uploaded.json()
+            assert evidence["digest"] == hashlib.sha256(body).hexdigest()
+            assert evidence["byte_count"] == len(body)
+            assert evidence["evidence_ref"] == pending_payload["evidence_ref"]
+            assert evidence["license_scope"]["provider"] == "PROVIDER"
+            assert "secret-name" not in uploaded.text
+            assert "attacker" not in uploaded.text
+            assert uploaded.headers["cache-control"] == "no-store"
+            for retry_key in (upload_key, uuid4()):
+                retry = await request(
+                    "POST", upload_path, raw=body, key=retry_key, extra_headers=upload_headers
+                )
+                assert retry.status_code == 201, retry.text
+                assert retry.json() == evidence, (retry.json(), evidence)
+            for retry_key in (upload_key, uuid4()):
+                conflict = await request(
+                    "POST", upload_path, raw=b"changed", key=retry_key, extra_headers=upload_headers
+                )
+                assert conflict.status_code == 409, conflict.text
+            assert await evidence_count() == 1
+            assert (await request("GET", f"/{SOURCE}")).json()["current"][
+                "state"
+            ] == "rights_pending"
             approval = {
                 "allowed_purposes": ["metadata"],
                 "valid_until": (datetime.now(UTC) + timedelta(days=1)).isoformat(),
@@ -257,6 +406,14 @@ async def run():
                 == f"{actors['owner']['user']}:{actors['owner']['member']}"
             )
             assert approved.json()["approved_by"] == str(actors["reviewer"]["user"])
+            assert approved.json()["license_evidence_id"] == evidence["evidence_id"]
+            assert approved.json()["license_digest"] == evidence["digest"]
+            assert (
+                await request(
+                    "POST", upload_path, raw=body, key=upload_key, extra_headers=upload_headers
+                )
+            ).status_code == 409
+            assert await evidence_count() == 1
             assert await counts(admin) == (3, 3, 0)
             # Usage fixture chỉ ghi bằng login ingestion, admin chỉ đọc snapshot theo DB clock.
             async with ingestion() as session, session.begin():
@@ -333,6 +490,8 @@ async def run():
                 == 0
             )
         return {
+            "stream_evidence_boundary_idempotency": True,
+            "evidence_transaction_rollback": True,
             "real_admin_login": True,
             "authenticated_owner_reviewer": True,
             "policy_rows": 3,

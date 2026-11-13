@@ -188,11 +188,12 @@ def test_mutation_dispatch_and_error_mapping():
         http.post(
             path,
             headers=headers,
-            json={"state": "rights_pending", "reason": "Submitted", "evidence_ref": "terms"},
+            json=pending_payload() | {"budget": create_payload()["budget"]},
         ).status_code
         == 201
     )
     assert service.facade.calls[-1][0] == "submit"
+    assert service.facade.calls[-1][2].budget.max_requests == 10
     assert (
         http.post(path, headers=headers, json={"state": "blocked", "reason": "Blocked"}).status_code
         == 201
@@ -418,3 +419,155 @@ def test_observation_outage_is_retryable_and_missing_source_remains_404():
     missing = http.get("/api/v1/research-sources/calendar")
     assert missing.status_code == 404
     assert missing.headers["cache-control"] == "no-store"
+
+
+def test_upload_endpoint_exists_and_returns_no_store_even_for_validation_and_auth():
+    http, service = bare_client()
+    path = "/api/v1/research-sources/calendar/revisions/pending/license-evidence"
+    response = http.post(
+        path,
+        content=b"evidence",
+        headers={"Content-Type": "image/png", "Idempotency-Key": str(uuid4())},
+    )
+    assert response.status_code == 415
+    assert response.headers["cache-control"] == "no-store"
+    for headers in ({}, {"Idempotency-Key": "bad"}):
+        response = http.post(path, content=b"x", headers=headers)
+        assert response.status_code == 422
+        assert response.headers["cache-control"] == "no-store"
+    denied_http, _ = bare_client(actor=identity(Role.OPERATOR))
+    denied = denied_http.post(
+        path, content=b"x", headers={"Content-Type": "text/plain", "Idempotency-Key": str(uuid4())}
+    )
+    assert denied.status_code == 403
+    assert denied.headers["cache-control"] == "no-store"
+    assert service.facade.calls == []
+
+
+def pending_payload():
+    scope = {
+        "source_id": "calendar",
+        "provider": "PROVIDER",
+        "product": "CALENDAR",
+        "venue": "PUBLIC",
+        "contract": "RESEARCH",
+        "symbols": ["BTCUSDT"],
+        "intervals": ["1h"],
+        "data_start": "2026-01-01T00:00:00Z",
+        "data_end": "2027-01-01T00:00:00Z",
+        "allowed_purposes": ["metadata"],
+        "allowed_outputs": ["aggregate_report"],
+        "derived_use": ["aggregate_reporting"],
+        "max_retention_days": None,
+        "attribution": "Nguồn fixture",
+    }
+    return {
+        "state": "rights_pending",
+        "reason": "Submitted",
+        "evidence_ref": "archive:fixture",
+        "license_scope": scope,
+        "attribution": scope["attribution"],
+        **{name: scope[name] for name in ("provider", "product", "venue", "contract")},
+    }
+
+
+def test_pending_schema_rejects_missing_duplicate_mismatched_or_untyped_scope():
+    http, service = bare_client()
+    payload = pending_payload()
+    path = "/api/v1/research-sources/calendar/revisions"
+    headers = {"Idempotency-Key": str(uuid4())}
+    for body in (
+        {"state": "rights_pending", "reason": "Missing"},
+        payload | {"provider": "OTHER"},
+        payload | {"license_scope": payload["license_scope"] | {"symbols": ["BTCUSDT", "BTCUSDT"]}},
+        payload | {"license_scope": payload["license_scope"] | {"symbols": ["*"]}},
+        payload | {"license_scope": payload["license_scope"] | {"max_retention_days": True}},
+        payload | {"license_scope": payload["license_scope"] | {"unexpected": "secret"}},
+    ):
+        assert http.post(path, json=body, headers=headers).status_code == 422
+    assert service.facade.calls == []
+
+
+def test_upload_auth_and_csrf_no_store_with_bare_router():
+    http, service = bare_client()
+    path = "/api/v1/research-sources/calendar/revisions/pending/license-evidence"
+
+    def denied():
+        raise HTTPException(403, "CSRF không hợp lệ.")
+
+    http.app.dependency_overrides[require_csrf] = denied
+    response = http.post(
+        path,
+        content=b"private",
+        headers={"Idempotency-Key": str(uuid4()), "Content-Type": "text/plain"},
+    )
+    assert response.status_code == 403
+    assert response.headers["cache-control"] == "no-store"
+    assert service.facade.calls == []
+
+
+async def test_raw_asgi_disconnect_discards_partial_body_without_evidence():
+    import json
+
+    from tests.unit.test_source_policy_admin import BUDGET, Repository, pending_command
+
+    from trading_bot.application.source_policy_admin import (
+        SourceCreateCommand,
+        SourcePolicyAdminService,
+    )
+
+    repository = Repository()
+    service = SourcePolicyAdminService(repository)
+    actor = identity()
+    facade = service.for_principal(actor.principal)
+    await facade.create_source(
+        SourceCreateCommand(
+            "calendar", "Publisher", "https://example.org/", "GET", "public", BUDGET, "Candidate"
+        ),
+        uuid4(),
+    )
+    pending = await facade.submit_pending("calendar", pending_command("calendar"), uuid4())
+    app = FastAPI()
+    app.include_router(research_source_router)
+    app.state.source_policy_admin_service = service
+    app.dependency_overrides[require_csrf] = lambda: actor
+    messages = iter(
+        [
+            {"type": "http.request", "body": b"partial private evidence", "more_body": True},
+            {"type": "http.disconnect"},
+        ]
+    )
+    responses = []
+
+    async def receive():
+        return next(messages)
+
+    async def send(message):
+        responses.append(message)
+
+    await app(
+        {
+            "type": "http",
+            "http_version": "1.1",
+            "scheme": "http",
+            "method": "POST",
+            "path": (
+                f"/api/v1/research-sources/calendar/revisions/"
+                f"{pending.policy.policy_id}/license-evidence"
+            ),
+            "query_string": b"",
+            "headers": [
+                (b"content-type", b"text/plain"),
+                (b"idempotency-key", str(uuid4()).encode()),
+            ],
+            "server": ("fixture", 80),
+            "client": ("test", 1234),
+            "root_path": "",
+        },
+        receive,
+        send,
+    )
+    assert responses[0]["status"] == 400
+    assert (b"cache-control", b"no-store") in responses[0]["headers"]
+    assert json.loads(responses[1]["body"])["detail"] == "Upload bị gián đoạn."
+    assert repository.evidence == []

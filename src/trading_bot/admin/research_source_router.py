@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
-from typing import Annotated, cast
+from collections.abc import Callable, Coroutine
+from typing import Annotated, Any, cast
 from urllib.parse import urlencode
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from fastapi.routing import APIRoute
 from pydantic import ValidationError
 
 from trading_bot.adapters.database.repositories.source_registry import SourceRegistryConflict
@@ -16,11 +20,16 @@ from trading_bot.admin.research_source_schemas import (
     SourceCreateRequest,
     SourceDetailResponse,
     SourceEntryResponse,
+    SourceLicenseEvidenceResponse,
     SourceRevisionRequest,
     SourceRevisionResponse,
 )
 from trading_bot.admin.web_router import _auth_service, _parse_form, _templates, _verify_form_csrf
-from trading_bot.application.source_policy_admin import PrincipalSourcePolicyAdminService
+from trading_bot.application.source_policy_admin import (
+    LICENSE_EVIDENCE_MEDIA_TYPES,
+    LicenseEvidenceUploadError,
+    PrincipalSourcePolicyAdminService,
+)
 from trading_bot.auth.cookies import read_session_cookie
 from trading_bot.auth.policy import Permission, authorize
 from trading_bot.auth.router import current_identity, require_csrf
@@ -194,6 +203,73 @@ async def approve_revision(
     ) as error:
         raise _map_error(error) from error
     return SourceRevisionResponse.from_domain(revision)
+
+
+class _EvidenceRoute(APIRoute):
+    """Giữ no-store cả lỗi dependency/validation trước khi endpoint chạy."""
+
+    def get_route_handler(self) -> Callable[[Request], Coroutine[Any, Any, Response]]:
+        handler = super().get_route_handler()
+
+        async def no_store(request: Request) -> Response:
+            try:
+                response = await handler(request)
+            except HTTPException as error:
+                response = JSONResponse(
+                    status_code=error.status_code,
+                    content={"detail": error.detail},
+                    headers=error.headers,
+                )
+            except RequestValidationError:
+                response = JSONResponse(
+                    status_code=422, content={"detail": "Dữ liệu upload không hợp lệ."}
+                )
+            except Exception:
+                response = JSONResponse(
+                    status_code=500, content={"detail": "Không thể ghi bằng chứng."}
+                )
+            response.headers["Cache-Control"] = "no-store"
+            return response
+
+        return no_store
+
+
+_evidence_router = APIRouter(route_class=_EvidenceRoute)
+
+
+@_evidence_router.post(
+    "/{source_id}/revisions/{policy_id}/license-evidence",
+    status_code=201,
+    response_model=SourceLicenseEvidenceResponse,
+)
+async def upload_license_evidence(
+    source_id: str,
+    policy_id: str,
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(require_csrf)],
+    idempotency_key: Annotated[UUID, Header(alias="Idempotency-Key")],
+) -> SourceLicenseEvidenceResponse:
+    facade = _facade(request, identity, Permission.RESEARCH_SOURCE_WRITE)
+    media_type = request.headers.get("content-type", "")
+    if media_type not in LICENSE_EVIDENCE_MEDIA_TYPES:
+        raise HTTPException(415, "Loại tài liệu không được hỗ trợ.")
+    try:
+        evidence = await facade.upload_license_evidence(
+            source_id,
+            policy_id,
+            request.stream(),
+            media_type=media_type,
+            content_length=request.headers.get("content-length"),
+            idempotency_key=idempotency_key,
+        )
+    except LicenseEvidenceUploadError as error:
+        raise HTTPException(error.status_code, str(error)) from error
+    except (PermissionError, LookupError, ValueError, SourceRegistryConflict) as error:
+        raise _map_error(error) from error
+    return SourceLicenseEvidenceResponse.from_domain(evidence)
+
+
+router.include_router(_evidence_router)
 
 
 admin_router = APIRouter(prefix="/admin/research-sources", tags=["admin sources"])

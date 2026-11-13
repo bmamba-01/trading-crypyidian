@@ -2,19 +2,23 @@
 
 from __future__ import annotations
 
+import json
 import re
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Literal
 from urllib.parse import urlsplit
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from trading_bot.application.source_policy_admin import (
     SourceApprovalCommand,
     SourceCreateCommand,
+    SourceLicenseEvidence,
     SourceRevisionCommand,
 )
+from trading_bot.domain.research.license_scope import SourceLicenseScope, canonical_scope_json
 from trading_bot.domain.research.source_policy import SourcePolicyState, SourceUsePurpose
 from trading_bot.domain.research.source_registry import (
     SourceBudget,
@@ -121,6 +125,32 @@ class SourceCreateRequest(StrictRequest):
         )
 
 
+class SourceLicenseScopeRequest(StrictRequest):
+    scope_version: Literal["wp06-license-scope-v1"] = "wp06-license-scope-v1"
+    source_id: str
+    provider: str
+    product: str
+    venue: str
+    contract: str
+    symbols: tuple[str, ...]
+    intervals: tuple[str, ...]
+    data_start: datetime
+    data_end: datetime
+    allowed_purposes: tuple[SourceUsePurpose, ...]
+    allowed_outputs: tuple[str, ...]
+    max_retention_days: int | None = Field(strict=True)
+    attribution: str
+    derived_use: tuple[str, ...]
+
+    def to_domain(self) -> SourceLicenseScope:
+        return SourceLicenseScope(**self.model_dump(exclude={"scope_version"}))
+
+    @model_validator(mode="after")
+    def validate_scope(self) -> SourceLicenseScopeRequest:
+        self.to_domain()
+        return self
+
+
 class SourceRevisionRequest(StrictRequest):
     state: Literal["rights_pending", "blocked", "revoked"]
     reason: str = Field(min_length=1, max_length=2048)
@@ -134,6 +164,11 @@ class SourceRevisionRequest(StrictRequest):
     attribution: str | None = Field(default=None, min_length=1, max_length=2048)
     retention_ref: str | None = Field(default=None, min_length=1, max_length=512)
     budget: SourceBudgetRequest | None = None
+    provider: str | None = None
+    product: str | None = None
+    venue: str | None = None
+    contract: str | None = None
+    license_scope: SourceLicenseScopeRequest | None = None
 
     @field_validator("endpoint_url")
     @classmethod
@@ -149,6 +184,18 @@ class SourceRevisionRequest(StrictRequest):
     def disabled_has_only_reason(self) -> SourceRevisionRequest:
         if self.state in {"blocked", "revoked"} and self.model_fields_set - {"state", "reason"}:
             raise ValueError("Policy bị vô hiệu chỉ nhận state và reason.")
+        if self.state == "rights_pending":
+            scope = self.license_scope
+            if (
+                scope is None
+                or not self.evidence_ref
+                or not self.evidence_ref.strip()
+                or any(
+                    getattr(self, name) != getattr(scope, name)
+                    for name in ("provider", "product", "venue", "contract")
+                )
+            ):
+                raise ValueError("Pending cần identity/scope/reference khớp chính xác.")
         return self
 
     def to_command(self) -> SourceRevisionCommand:
@@ -165,6 +212,11 @@ class SourceRevisionRequest(StrictRequest):
             attribution=self.attribution,
             retention_ref=self.retention_ref,
             budget=self.budget.to_domain() if self.budget else None,
+            provider=self.provider,
+            product=self.product,
+            venue=self.venue,
+            contract=self.contract,
+            license_scope=self.license_scope.to_domain() if self.license_scope else None,
         )
 
 
@@ -224,6 +276,14 @@ class SourceRevisionResponse(BaseModel):
     actor_id: str
     reason: str
     approved_by: str | None
+    provider: str | None
+    product: str | None
+    venue: str | None
+    contract: str | None
+    license_scope: SourceLicenseScopeRequest | None
+    license_evidence_id: UUID | None
+    license_digest: str | None
+    license_scope_hash: str | None
 
     @classmethod
     def from_domain(cls, revision: SourcePolicyRevision) -> SourceRevisionResponse:
@@ -248,6 +308,18 @@ class SourceRevisionResponse(BaseModel):
             actor_id=revision.actor_id,
             reason=revision.reason,
             approved_by=revision.approved_by,
+            provider=revision.provider,
+            product=revision.product,
+            venue=revision.venue,
+            contract=revision.contract,
+            license_scope=SourceLicenseScopeRequest.model_validate_json(
+                canonical_scope_json(revision.license_scope)
+            )
+            if revision.license_scope
+            else None,
+            license_evidence_id=revision.license_evidence_id,
+            license_digest=revision.license_digest,
+            license_scope_hash=revision.license_scope_hash,
         )
 
 
@@ -301,4 +373,38 @@ class SourceDetailResponse(SourceEntryResponse):
             current=SourceRevisionResponse.from_domain(entry.current),
             revisions=tuple(SourceRevisionResponse.from_domain(item) for item in entry.revisions),
             quota=SourceQuotaResponse.from_domain(quota) if quota else None,
+        )
+
+
+class SourceLicenseEvidenceResponse(BaseModel):
+    evidence_id: UUID
+    source_id: str
+    policy_id: str
+    evidence_ref: str
+    digest: str
+    byte_count: int
+    media_type: str
+    scope_version: str
+    license_scope: SourceLicenseScopeRequest
+    scope_hash: str
+    actor_id: str
+    created_at: datetime
+
+    @classmethod
+    def from_domain(cls, evidence: SourceLicenseEvidence) -> SourceLicenseEvidenceResponse:
+        return cls(
+            evidence_id=evidence.evidence_id,
+            source_id=evidence.source_id,
+            policy_id=evidence.policy_id,
+            evidence_ref=evidence.evidence_ref,
+            digest=evidence.digest,
+            byte_count=evidence.byte_count,
+            media_type=evidence.media_type,
+            scope_version=evidence.license_scope.scope_version,
+            license_scope=SourceLicenseScopeRequest.model_validate(
+                json.loads(canonical_scope_json(evidence.license_scope))
+            ),
+            scope_hash=evidence.scope_hash,
+            actor_id=evidence.actor_id,
+            created_at=evidence.created_at,
         )

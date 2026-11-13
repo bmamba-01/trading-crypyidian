@@ -187,6 +187,9 @@ class FakeSession:
     async def flush(self) -> None:
         return None
 
+    async def refresh(self, instance: object) -> None:
+        return None
+
     @asynccontextmanager
     async def begin_nested(self):
         yield
@@ -911,3 +914,142 @@ async def test_licensed_revision_round_trip_and_changed_digest_retry_conflicts()
         await SourceRegistryRepository(FakeSession(scalar_results=[row])).append_revision(
             workspace_id=WORKSPACE_ID, revision=replace(candidate, license_digest="b" * 64)
         )
+
+
+@pytest.mark.asyncio
+async def test_append_license_evidence_checks_pending_under_lock_and_idempotency():
+    from trading_bot.application.source_policy_admin import SourceLicenseEvidence
+
+    revision, record = with_evidence(approved(discovered()).current)
+    pending = replace(
+        revision,
+        policy=replace(
+            revision.policy,
+            policy_id=record.policy_id,
+            state=SourcePolicyState.RIGHTS_PENDING,
+            reviewed_at=None,
+            allowed_purposes=frozenset(),
+        ),
+        sequence=2,
+        approved_by=None,
+        license_evidence_id=None,
+        license_digest=None,
+        license_scope_hash=None,
+    )
+    draft = SourceLicenseEvidence(
+        record.id,
+        record.source_id,
+        record.policy_id,
+        record.idempotency_key,
+        record.evidence_ref,
+        record.digest,
+        record.byte_count,
+        record.media_type,
+        revision.license_scope,
+        record.actor_id,
+        NOW,
+    )
+    session = FakeSession(
+        scalar_results=[None, None],
+        rows_results=[
+            [
+                SourcePolicyRevisionRecord.from_domain(WORKSPACE_ID, discovered().current),
+                SourcePolicyRevisionRecord.from_domain(WORKSPACE_ID, pending),
+            ]
+        ],
+    )
+    result = await SourceRegistryRepository(session).append_license_evidence(
+        workspace_id=WORKSPACE_ID, evidence=draft
+    )
+    assert result.digest == draft.digest
+    assert len(session.added) == 1
+    assert session.added[0].canonical_scope == canonical_scope_json(draft.license_scope)
+    assert any("pg_advisory_xact_lock" in sql for sql in session.statements)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("same_key", [True, False])
+@pytest.mark.parametrize("changed", [True, False])
+async def test_evidence_retry_requires_same_payload_for_key_and_pending(same_key, changed):
+    from trading_bot.application.source_policy_admin import SourceLicenseEvidence
+
+    revision, record = with_evidence(approved(discovered()).current)
+    pending = replace(
+        revision,
+        policy=replace(
+            revision.policy,
+            policy_id=record.policy_id,
+            state=SourcePolicyState.RIGHTS_PENDING,
+            reviewed_at=None,
+            allowed_purposes=frozenset(),
+        ),
+        sequence=2,
+        approved_by=None,
+        license_evidence_id=None,
+        license_digest=None,
+        license_scope_hash=None,
+    )
+    draft = SourceLicenseEvidence(
+        uuid4(),
+        record.source_id,
+        record.policy_id,
+        record.idempotency_key if same_key else uuid4(),
+        record.evidence_ref,
+        "b" * 64 if changed else record.digest,
+        record.byte_count,
+        record.media_type,
+        revision.license_scope,
+        record.actor_id,
+        NOW,
+    )
+    session = FakeSession(
+        scalar_results=[record if same_key else None],
+        rows_results=[
+            [
+                SourcePolicyRevisionRecord.from_domain(WORKSPACE_ID, discovered().current),
+                SourcePolicyRevisionRecord.from_domain(WORKSPACE_ID, pending),
+            ],
+            [record],
+        ],
+    )
+    repo = SourceRegistryRepository(session)
+    if changed:
+        with pytest.raises(SourceRegistryConflict, match="payload khác"):
+            await repo.append_license_evidence(workspace_id=WORKSPACE_ID, evidence=draft)
+    else:
+        result = await repo.append_license_evidence(workspace_id=WORKSPACE_ID, evidence=draft)
+        assert result.evidence_id == record.id
+        assert result.digest == record.digest
+    assert session.added == []
+
+
+@pytest.mark.asyncio
+async def test_evidence_append_rejects_policy_changed_while_streaming():
+    from trading_bot.application.source_policy_admin import SourceLicenseEvidence
+
+    revision, record = with_evidence(approved(discovered()).current)
+    draft = SourceLicenseEvidence(
+        record.id,
+        record.source_id,
+        record.policy_id,
+        record.idempotency_key,
+        record.evidence_ref,
+        record.digest,
+        record.byte_count,
+        record.media_type,
+        revision.license_scope,
+        record.actor_id,
+        NOW,
+    )
+    session = FakeSession(
+        rows_results=[
+            [
+                SourcePolicyRevisionRecord.from_domain(WORKSPACE_ID, discovered().current),
+            ]
+        ]
+    )
+    with pytest.raises(SourceRegistryConflict, match="Pending"):
+        await SourceRegistryRepository(session).append_license_evidence(
+            workspace_id=WORKSPACE_ID, evidence=draft
+        )
+    assert session.added == []

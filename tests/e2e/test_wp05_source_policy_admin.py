@@ -91,6 +91,8 @@ def test_policy_admin_authenticated_roles_recovery_quota_and_rls() -> None:
         )
         data: dict[str, Any] = json.loads(result.stdout.strip().splitlines()[-1])
         assert data == {
+            "stream_evidence_boundary_idempotency": True,
+            "evidence_transaction_rollback": True,
             "real_admin_login": True,
             "authenticated_owner_reviewer": True,
             "policy_rows": 3,

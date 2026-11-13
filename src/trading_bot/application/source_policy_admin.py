@@ -4,15 +4,19 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, fields, is_dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from enum import Enum
 from typing import Protocol
-from uuid import UUID
+from uuid import UUID, uuid4
+
+from starlette.requests import ClientDisconnect
 
 from trading_bot.auth.policy import Permission, Principal, authorize
 from trading_bot.auth.service import RECENT_MFA_LIFETIME
+from trading_bot.domain.research.license_scope import SourceLicenseScope, scope_sha256
 from trading_bot.domain.research.source_policy import SourcePolicyState, SourceUsePurpose
 from trading_bot.domain.research.source_registry import (
     SourceBudget,
@@ -20,6 +24,43 @@ from trading_bot.domain.research.source_registry import (
     SourceQuotaSnapshot,
     SourceRegistryEntry,
 )
+
+LICENSE_EVIDENCE_MAX_BYTES = 10 * 1024 * 1024
+LICENSE_EVIDENCE_MEDIA_TYPES = frozenset(
+    {
+        "application/pdf",
+        "text/plain",
+        "text/html",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    }
+)
+
+
+class LicenseEvidenceUploadError(ValueError):
+    """Lỗi upload an toàn, chỉ mang mã HTTP và thông báo chung."""
+
+    def __init__(self, status_code: int, message: str) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
+@dataclass(frozen=True, slots=True)
+class SourceLicenseEvidence:
+    evidence_id: UUID
+    source_id: str
+    policy_id: str
+    idempotency_key: UUID
+    evidence_ref: str
+    digest: str
+    byte_count: int
+    media_type: str
+    license_scope: SourceLicenseScope
+    actor_id: str
+    created_at: datetime
+
+    @property
+    def scope_hash(self) -> str:
+        return scope_sha256(self.license_scope)
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +90,11 @@ class SourceRevisionCommand:
     attribution: str | None = None
     retention_ref: str | None = None
     budget: SourceBudget | None = None
+    provider: str | None = None
+    product: str | None = None
+    venue: str | None = None
+    contract: str | None = None
+    license_scope: SourceLicenseScope | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +110,13 @@ class SourcePolicyAppend(Protocol):
 
 
 class SourcePolicyAdminRepository(Protocol):
+    async def append_license_evidence(
+        self, *, workspace_id: UUID, evidence: SourceLicenseEvidence
+    ) -> SourceLicenseEvidence: ...
+    async def evidence_for_pending(
+        self, *, workspace_id: UUID, source_id: str, policy_id: str
+    ) -> SourceLicenseEvidence | None: ...
+
     async def list_entries(self, *, workspace_id: UUID) -> tuple[SourceRegistryEntry, ...]: ...
     async def get_entry(
         self, *, workspace_id: UUID, source_id: str
@@ -164,6 +217,18 @@ class PrincipalSourcePolicyAdminService:
         self._mutation(Permission.RESEARCH_SOURCE_WRITE)
         if command.state is not SourcePolicyState.RIGHTS_PENDING:
             raise ValueError("Chỉ nhận revision rights_pending.")
+        scope = command.license_scope
+        if (
+            not isinstance(scope, SourceLicenseScope)
+            or not command.evidence_ref
+            or not command.evidence_ref.strip()
+            or scope.source_id != source_id
+            or any(
+                getattr(command, name) != getattr(scope, name)
+                for name in ("provider", "product", "venue", "contract")
+            )
+        ):
+            raise ValueError("Pending cần scope/reference và identity khớp chính xác.")
         return await self._change(source_id, command, idempotency_key)
 
     async def change_disabled_state(
@@ -208,6 +273,11 @@ class PrincipalSourcePolicyAdminService:
             attribution=command.attribution,
             retention_ref=command.retention_ref,
             budget=command.budget,
+            provider=command.provider,
+            product=command.product,
+            venue=command.venue,
+            contract=command.contract,
+            license_scope=command.license_scope,
         ).current
         if existing:
             _assert_same(existing, candidate)
@@ -241,6 +311,20 @@ class PrincipalSourcePolicyAdminService:
             raise ValueError("Pending revision không còn là phiên bản hiện hành.")
         if await self._same_actor(pending.actor_id):
             raise PermissionError("Reviewer phải khác người gửi policy.")
+        evidence = await self._repository.evidence_for_pending(
+            workspace_id=self._principal.workspace_id,
+            source_id=source_id,
+            policy_id=pending_policy_id,
+        )
+        if (
+            evidence is None
+            or evidence.license_scope != pending.license_scope
+            or evidence.evidence_ref != pending.policy.evidence_ref
+            or not command.allowed_purposes.issubset(evidence.license_scope.allowed_purposes)
+        ):
+            raise ValueError("Cần evidence cùng pending scope/reference và purpose phù hợp.")
+        if await self._same_actor(evidence.actor_id):
+            raise PermissionError("Reviewer phải khác người upload evidence.")
         at = existing.created_at if existing else datetime.now(UTC)
         reviewed = existing.policy.reviewed_at if existing else at
         candidate = base.transition(
@@ -254,10 +338,81 @@ class PrincipalSourcePolicyAdminService:
             reviewed_at=reviewed,
             valid_until=command.valid_until,
             approved_by=str(self._principal.user_id),
+            license_scope=evidence.license_scope,
+            license_evidence_id=evidence.evidence_id,
+            license_digest=evidence.digest,
+            license_scope_hash=evidence.scope_hash,
         ).current
         if existing:
             _assert_same(existing, candidate)
         return await self._append(candidate)
+
+    async def upload_license_evidence(
+        self,
+        source_id: str,
+        policy_id: str,
+        stream: AsyncIterator[bytes],
+        *,
+        media_type: str,
+        content_length: str | None,
+        idempotency_key: UUID,
+    ) -> SourceLicenseEvidence:
+        """Băm từng chunk rồi bỏ bytes; chỉ append sau khi luồng hoàn tất."""
+        self._mutation(Permission.RESEARCH_SOURCE_WRITE)
+        _require_key(idempotency_key)
+        if media_type not in LICENSE_EVIDENCE_MEDIA_TYPES:
+            raise LicenseEvidenceUploadError(415, "Loại tài liệu không được hỗ trợ.")
+        length = None
+        if content_length is not None:
+            if not content_length.isascii() or not content_length.isdecimal():
+                raise LicenseEvidenceUploadError(400, "Content-Length không hợp lệ.")
+            # Không chuyển số nguyên quá dài do caller cung cấp.
+            normalized = content_length.lstrip("0") or "0"
+            if len(normalized) > 8 or int(normalized) > LICENSE_EVIDENCE_MAX_BYTES:
+                raise LicenseEvidenceUploadError(413, "Tài liệu vượt 10 MiB.")
+            length = int(normalized)
+        entry = await self._repository.get_entry(
+            workspace_id=self._principal.workspace_id,
+            source_id=source_id,
+        )
+        if entry is None:
+            raise LookupError("Không tìm thấy nguồn.")
+        pending = entry.current
+        if (
+            pending.state is not SourcePolicyState.RIGHTS_PENDING
+            or pending.policy.policy_id != policy_id
+            or pending.license_scope is None
+            or not pending.policy.evidence_ref
+        ):
+            raise ValueError("Pending revision không còn hiện hành hoặc thiếu scope/reference.")
+        digest = hashlib.sha256()
+        count = 0
+        try:
+            async for chunk in stream:
+                count += len(chunk)
+                if count > LICENSE_EVIDENCE_MAX_BYTES:
+                    raise LicenseEvidenceUploadError(413, "Tài liệu vượt 10 MiB.")
+                digest.update(chunk)
+        except ClientDisconnect as error:
+            raise LicenseEvidenceUploadError(400, "Upload bị gián đoạn.") from error
+        if count == 0 or (length is not None and count != length):
+            raise LicenseEvidenceUploadError(400, "Body rỗng hoặc Content-Length không khớp.")
+        return await self._repository.append_license_evidence(
+            workspace_id=self._principal.workspace_id,
+            evidence=SourceLicenseEvidence(
+                uuid4(),
+                source_id,
+                policy_id,
+                idempotency_key,
+                pending.policy.evidence_ref,
+                digest.hexdigest(),
+                count,
+                media_type,
+                pending.license_scope,
+                _actor_id(self._principal),
+                datetime.now(UTC),
+            ),
+        )
 
     async def _find_retry(
         self, entry: SourceRegistryEntry, key: UUID, policy_id: str

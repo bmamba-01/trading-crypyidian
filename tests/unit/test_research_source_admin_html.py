@@ -77,7 +77,7 @@ def test_html_mutation_schema_and_authorization():
     assert service.facade.calls == []
 
 
-def test_html_pending_accepts_policy_budget_and_rejects_direct_verified():
+def test_html_pending_without_typed_scope_and_direct_verified_fail_closed():
     http, service = html_client()
     data = {
         "csrf_token": "html-csrf",
@@ -94,8 +94,8 @@ def test_html_pending_accepts_policy_budget_and_rejects_direct_verified():
         "cost_unit": "USD",
     }
     response = http.post("/admin/research-sources/revision", data=data, follow_redirects=False)
-    assert response.status_code == 303
-    assert service.facade.calls[0][2].budget.max_requests == 20
+    assert response.status_code == 422
+    assert service.facade.calls == []
     before = len(service.facade.calls)
     assert (
         http.post("/admin/research-sources/revision", data=data | {"state": "verified"}).status_code

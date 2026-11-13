@@ -20,6 +20,7 @@ from trading_bot.adapters.database.models import (
     SourceQuotaEventRecord,
     UserMembership,
 )
+from trading_bot.application.source_policy_admin import SourceLicenseEvidence
 from trading_bot.domain.research.license_scope import SourceLicenseScope, canonical_scope_json
 from trading_bot.domain.research.source_policy import (
     SourcePolicyState,
@@ -148,6 +149,101 @@ class SourceRegistryRepository:
         self._session.add(SourcePolicyRevisionRecord.from_domain(workspace_id, canonical_revision))
         await self._session.flush()
         return SourceRegistryAppendResult(canonical_revision, False)
+
+    async def evidence_for_pending(
+        self, *, workspace_id: UUID, source_id: str, policy_id: str
+    ) -> SourceLicenseEvidence | None:
+        """Đọc duy nhất một evidence cho pending; nhiều row là trạng thái bất nhất."""
+        await self._bind_workspace(workspace_id)
+        rows = tuple(
+            (
+                await self._session.scalars(
+                    select(SourceLicenseEvidenceRecord)
+                    .where(
+                        SourceLicenseEvidenceRecord.workspace_id == workspace_id,
+                        SourceLicenseEvidenceRecord.source_id == source_id,
+                        SourceLicenseEvidenceRecord.policy_id == policy_id,
+                    )
+                    .limit(2)
+                )
+            ).all()
+        )
+        if len(rows) > 1:
+            raise SourceRegistryConflict("Pending có nhiều evidence; từ chối duyệt.")
+        return _evidence_to_domain(rows[0]) if rows else None
+
+    async def append_license_evidence(
+        self, *, workspace_id: UUID, evidence: SourceLicenseEvidence
+    ) -> SourceLicenseEvidence:
+        """Khóa key/source, kiểm lại pending rồi chỉ ghi metadata trong transaction caller."""
+        await self._bind_workspace(workspace_id)
+        await self._session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:lock_key, 0))"),
+            {"lock_key": f"research-evidence-key:{workspace_id}:{evidence.idempotency_key.hex}"},
+        )
+        await self._lock_source(workspace_id, evidence.source_id)
+        entry = await self.get_entry(workspace_id=workspace_id, source_id=evidence.source_id)
+        if entry is None:
+            raise LookupError("Không tìm thấy nguồn.")
+        pending = entry.current
+        if (
+            pending.state is not SourcePolicyState.RIGHTS_PENDING
+            or pending.policy.policy_id != evidence.policy_id
+            or pending.license_scope != evidence.license_scope
+            or pending.policy.evidence_ref != evidence.evidence_ref
+        ):
+            raise SourceRegistryConflict("Pending scope/reference không còn khớp.")
+        keyed = await self._session.scalar(
+            select(SourceLicenseEvidenceRecord).where(
+                SourceLicenseEvidenceRecord.workspace_id == workspace_id,
+                SourceLicenseEvidenceRecord.idempotency_key == evidence.idempotency_key,
+            )
+        )
+        existing = (
+            _evidence_to_domain(keyed)
+            if keyed
+            else await self.evidence_for_pending(
+                workspace_id=workspace_id,
+                source_id=evidence.source_id,
+                policy_id=evidence.policy_id,
+            )
+        )
+        if existing is not None:
+            names = (
+                "source_id",
+                "policy_id",
+                "evidence_ref",
+                "digest",
+                "byte_count",
+                "media_type",
+                "license_scope",
+            )
+            if any(getattr(existing, name) != getattr(evidence, name) for name in names):
+                raise SourceRegistryConflict("Evidence đã có payload khác; cần pending mới.")
+            return existing
+        canonical = canonical_scope_json(evidence.license_scope)
+        now = await self.database_clock(workspace_id=workspace_id)
+        row = SourceLicenseEvidenceRecord(
+            id=evidence.evidence_id,
+            workspace_id=workspace_id,
+            source_id=evidence.source_id,
+            policy_id=evidence.policy_id,
+            idempotency_key=evidence.idempotency_key,
+            evidence_ref=evidence.evidence_ref,
+            digest=evidence.digest,
+            byte_count=evidence.byte_count,
+            media_type=evidence.media_type,
+            scope_version=evidence.license_scope.scope_version,
+            license_scope=json.loads(canonical),
+            canonical_scope=canonical,
+            scope_hash=evidence.scope_hash,
+            actor_id=evidence.actor_id,
+            created_at=now,
+        )
+        self._session.add(row)
+        await self._session.flush()
+        await self._session.refresh(row)
+        return _evidence_to_domain(row)
 
     async def get_license_evidence(
         self, *, workspace_id: UUID, source_id: str, evidence_id: UUID
@@ -592,3 +688,22 @@ def _current_usage(
         cost_unit=latest.cost_unit,
     )
     return usage, latest.window_started_at
+
+
+def _evidence_to_domain(row: SourceLicenseEvidenceRecord) -> SourceLicenseEvidence:
+    scope = _scope_from_document(row.license_scope)
+    if scope is None:
+        raise SourceRegistryConflict("Evidence thiếu scope.")
+    return SourceLicenseEvidence(
+        row.id,
+        row.source_id,
+        row.policy_id,
+        row.idempotency_key,
+        row.evidence_ref,
+        row.digest,
+        row.byte_count,
+        row.media_type,
+        scope,
+        row.actor_id,
+        row.created_at,
+    )

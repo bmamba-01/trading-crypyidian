@@ -32,6 +32,17 @@ class Repository:
         self.calls = 0
         self.fail_once = False
         self.memberships = {}
+        self.evidence = []
+
+    async def append_license_evidence(self, *, workspace_id, evidence):
+        self.evidence.append(evidence)
+        return evidence
+
+    async def evidence_for_pending(self, *, workspace_id, source_id, policy_id):
+        return next(
+            (e for e in self.evidence if e.source_id == source_id and e.policy_id == policy_id),
+            None,
+        )
 
     async def list_entries(self, *, workspace_id):
         return tuple(self.entries.values())
@@ -108,7 +119,7 @@ async def test_write_approve_separation_mfa_and_recovery():
 
     pending = await service.for_principal(owner).submit_pending(
         "calendar",
-        SourceRevisionCommand(SourcePolicyState.RIGHTS_PENDING, "Submitted", evidence_ref="terms"),
+        pending_command("calendar"),
         uuid4(),
     )
     with pytest.raises(PermissionError):
@@ -120,6 +131,7 @@ async def test_write_approve_separation_mfa_and_recovery():
             ),
             uuid4(),
         )
+    await upload_fixture(service.for_principal(owner), "calendar", pending)
     approval = await service.for_principal(reviewer).approve_pending(
         "calendar",
         pending.policy.policy_id,
@@ -152,9 +164,7 @@ async def test_pending_retry_payload_membership_and_approval_observer_recovery()
     )
     await service.for_principal(owner).create_source(create, uuid4())
     key = uuid4()
-    command = SourceRevisionCommand(
-        SourcePolicyState.RIGHTS_PENDING, "Submitted", evidence_ref="terms"
-    )
+    command = pending_command("feed")
     repo.fail_once = True
     with pytest.raises(LookupError, match="receipt"):
         await service.for_principal(owner).submit_pending("feed", command, key)
@@ -173,6 +183,7 @@ async def test_pending_retry_payload_membership_and_approval_observer_recovery()
         await service.for_principal(shared_membership).approve_pending(
             "feed", pending.policy.policy_id, approval_command, uuid4()
         )
+    await upload_fixture(service.for_principal(owner), "feed", pending)
     reviewer = principal(Role.ANALYST_REVIEWER)
     approval_key = uuid4()
     repo.fail_once = True
@@ -221,9 +232,7 @@ async def test_retry_rejects_changed_optional_payload_even_when_effective_revisi
     )
     await facade.create_source(create, uuid4())
     key = uuid4()
-    command = SourceRevisionCommand(
-        SourcePolicyState.RIGHTS_PENDING, "Submitted", evidence_ref="terms"
-    )
+    command = pending_command("defaults")
     await facade.submit_pending("defaults", command, key)
     with pytest.raises(ValueError, match="payload khác"):
         await facade.submit_pending("defaults", replace(command, publisher="Publisher"), key)
@@ -278,15 +287,253 @@ async def test_revision_key_reuse_across_sources_conflicts_before_append() -> No
             uuid4(),
         )
     key = uuid4()
-    command = SourceRevisionCommand(
-        SourcePolicyState.RIGHTS_PENDING, "Submitted", evidence_ref="terms"
-    )
+    command = pending_command("first")
     first = await facade.submit_pending("first", command, key)
     count = repo.calls
     with pytest.raises(ValueError, match="payload khác"):
-        await facade.submit_pending("second", command, key)
+        await facade.submit_pending("second", pending_command("second"), key)
     assert repo.calls == count
     assert len(repo.entries["second"].revisions) == 1
     retry = await facade.submit_pending("first", command, key)
     assert retry.policy.policy_id == first.policy.policy_id
     assert repo.calls == count + 1
+
+
+def license_scope(source_id="feed"):
+    from trading_bot.domain.research.license_scope import SourceLicenseScope
+
+    return SourceLicenseScope(
+        source_id=source_id,
+        provider="PROVIDER",
+        product="CALENDAR",
+        venue="PUBLIC",
+        contract="RESEARCH",
+        symbols=("BTCUSDT",),
+        intervals=("1h",),
+        data_start=NOW - timedelta(days=1),
+        data_end=NOW + timedelta(days=1),
+        allowed_purposes=(SourceUsePurpose.METADATA,),
+        allowed_outputs=("aggregate_report",),
+        derived_use=("aggregate_reporting",),
+        attribution="Nguồn fixture",
+        max_retention_days=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_pending_requires_exact_typed_scope_and_preserves_identity():
+    repo = Repository()
+    facade = SourcePolicyAdminService(repo).for_principal(principal())
+    await facade.create_source(
+        SourceCreateCommand(
+            "feed", "Publisher", "https://example.org/", "GET", "public", BUDGET, "Candidate"
+        ),
+        uuid4(),
+    )
+    with pytest.raises(ValueError, match="Pending"):
+        await facade.submit_pending(
+            "feed",
+            SourceRevisionCommand(
+                SourcePolicyState.RIGHTS_PENDING, "Missing scope", evidence_ref="archive:1"
+            ),
+            uuid4(),
+        )
+    scope = license_scope()
+    command = SourceRevisionCommand(
+        SourcePolicyState.RIGHTS_PENDING,
+        "Submit",
+        evidence_ref="archive:1",
+        license_scope=scope,
+        provider=scope.provider,
+        product=scope.product,
+        venue=scope.venue,
+        contract=scope.contract,
+        attribution=scope.attribution,
+    )
+    with pytest.raises(ValueError, match="Pending"):
+        await facade.submit_pending("feed", replace(command, provider="OTHER"), uuid4())
+    pending = await facade.submit_pending("feed", command, uuid4())
+    assert pending.license_scope == scope
+    assert pending.provider == scope.provider
+    disabled = await facade.change_disabled_state(
+        "feed", SourcePolicyState.BLOCKED, "Stop", uuid4()
+    )
+    assert disabled.provider == scope.provider
+
+
+@pytest.mark.asyncio
+async def test_upload_stream_hashes_boundary_and_rejects_without_append():
+    import hashlib
+
+    from starlette.requests import ClientDisconnect
+
+    from trading_bot.application.source_policy_admin import LicenseEvidenceUploadError
+
+    repo = Repository()
+    facade = SourcePolicyAdminService(repo).for_principal(principal())
+    scope = license_scope()
+    await facade.create_source(
+        SourceCreateCommand(
+            "feed", "Publisher", "https://example.org/", "GET", "public", BUDGET, "Candidate"
+        ),
+        uuid4(),
+    )
+    pending = await facade.submit_pending(
+        "feed",
+        SourceRevisionCommand(
+            SourcePolicyState.RIGHTS_PENDING,
+            "Submit",
+            evidence_ref="archive:1",
+            license_scope=scope,
+            provider=scope.provider,
+            product=scope.product,
+            venue=scope.venue,
+            contract=scope.contract,
+            attribution=scope.attribution,
+        ),
+        uuid4(),
+    )
+
+    async def chunks(*values):
+        for value in values:
+            if isinstance(value, Exception):
+                raise value
+            yield value
+
+    for values, length, media, expected in (
+        ((b"",), None, "text/plain", 400),
+        ((b"a",), "bad", "text/plain", 400),
+        ((b"a",), "-1", "text/plain", 400),
+        ((b"a",), "2", "text/plain", 400),
+        ((b"a",), None, "image/png", 415),
+        ((b"a", ClientDisconnect()), None, "text/plain", 400),
+        ((b"a" * (10 * 1024 * 1024), b"b"), "1", "text/plain", 413),
+        ((b"a",), str(10 * 1024 * 1024 + 1), "text/plain", 413),
+    ):
+        with pytest.raises(LicenseEvidenceUploadError) as error:
+            await facade.upload_license_evidence(
+                "feed",
+                pending.policy.policy_id,
+                chunks(*values),
+                media_type=media,
+                content_length=length,
+                idempotency_key=uuid4(),
+            )
+        assert error.value.status_code == expected
+        assert repo.evidence == []
+    body = b"a" * (10 * 1024 * 1024)
+    uploaded = await facade.upload_license_evidence(
+        "feed",
+        pending.policy.policy_id,
+        chunks(body[:123], body[123:]),
+        media_type="text/plain",
+        content_length=None,
+        idempotency_key=uuid4(),
+    )
+    assert uploaded.digest == hashlib.sha256(body).hexdigest()
+    assert uploaded.byte_count == len(body)
+    assert repo.entries["feed"].current.state is SourcePolicyState.RIGHTS_PENDING
+    assert len(repo.evidence) == 1
+
+
+def pending_command(source_id):
+    scope = license_scope(source_id)
+    return SourceRevisionCommand(
+        SourcePolicyState.RIGHTS_PENDING,
+        "Submitted",
+        evidence_ref="terms",
+        license_scope=scope,
+        provider=scope.provider,
+        product=scope.product,
+        venue=scope.venue,
+        contract=scope.contract,
+        attribution=scope.attribution,
+    )
+
+
+async def upload_fixture(facade, source_id, pending):
+    async def chunks():
+        yield b"Fixture license"
+
+    return await facade.upload_license_evidence(
+        source_id,
+        pending.policy.policy_id,
+        chunks(),
+        media_type="text/plain",
+        content_length=None,
+        idempotency_key=uuid4(),
+    )
+
+
+@pytest.mark.asyncio
+async def test_reviewer_cannot_approve_evidence_they_uploaded_for_another_operator():
+    repo = Repository()
+    service = SourcePolicyAdminService(repo)
+    owner, other = principal(), principal()
+    await service.for_principal(owner).create_source(
+        SourceCreateCommand(
+            "feed", "Publisher", "https://example.org/", "GET", "public", BUDGET, "Candidate"
+        ),
+        uuid4(),
+    )
+    pending = await service.for_principal(owner).submit_pending(
+        "feed", pending_command("feed"), uuid4()
+    )
+    await upload_fixture(service.for_principal(other), "feed", pending)
+    with pytest.raises(PermissionError, match="Reviewer"):
+        await service.for_principal(other).approve_pending(
+            "feed",
+            pending.policy.policy_id,
+            SourceApprovalCommand(frozenset({SourceUsePurpose.METADATA}), None, "Duyệt"),
+            uuid4(),
+        )
+
+
+@pytest.mark.asyncio
+async def test_upload_rejects_permissions_and_noncurrent_policy_before_consuming_stream():
+    repo = Repository()
+    owner = principal()
+    service = SourcePolicyAdminService(repo)
+    facade = service.for_principal(owner)
+    await facade.create_source(
+        SourceCreateCommand(
+            "feed", "Publisher", "https://example.org/", "GET", "public", BUDGET, "Candidate"
+        ),
+        uuid4(),
+    )
+    pending = await facade.submit_pending("feed", pending_command("feed"), uuid4())
+    consumed = []
+
+    async def chunks():
+        consumed.append(True)
+        yield b"private evidence"
+
+    for actor in (
+        principal(Role.OPERATOR),
+        principal(Role.ANALYST_REVIEWER),
+        replace(owner, mfa_verified_at=NOW - timedelta(hours=1)),
+    ):
+        with pytest.raises(PermissionError):
+            await service.for_principal(actor).upload_license_evidence(
+                "feed",
+                pending.policy.policy_id,
+                chunks(),
+                media_type="text/plain",
+                content_length=None,
+                idempotency_key=uuid4(),
+            )
+    for source_id, policy_id, error in (
+        ("missing", "pending", LookupError),
+        ("feed", "wrong", ValueError),
+    ):
+        with pytest.raises(error):
+            await facade.upload_license_evidence(
+                source_id,
+                policy_id,
+                chunks(),
+                media_type="text/plain",
+                content_length=None,
+                idempotency_key=uuid4(),
+            )
+    assert consumed == []
+    assert repo.evidence == []
