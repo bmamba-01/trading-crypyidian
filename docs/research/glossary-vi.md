@@ -662,3 +662,12 @@ Thuật ngữ dùng trong [`2026-11-14-feature-survey-and-manager-insights.md`](
 | Counterfactual explanation | Giải thích phản thực tế ("còn thiếu gì") | Thay đổi nhỏ nhất để quyết định đổi khác; với luật ngưỡng là khoảng cách tới ngưỡng, tính chính xác không cần ML. | [Wachter và cộng sự (2017)](https://arxiv.org/abs/1711.00399) |
 | Out-of-distribution (OOD) warning | Cảnh báo ngoài vùng đã kiểm thử | Thị trường hiện tại nằm ở phân vị cực đoan so với dữ liệu đã dùng để kiểm thử chiến lược, nên kết quả kiểm thử có thể không đại diện. | Định nghĩa nội bộ |
 | Quantum-inspired / "Quantum AI" trading | Giao dịch "lượng tử" | Chưa có lợi thế lượng tử được chứng minh trong giao dịch; sản phẩm bán lẻ "Quantum AI" bị cơ quan quản lý cảnh báo lừa đảo. Dự án không dùng thuật ngữ này trong sản phẩm. | [FCA warning](https://www.fca.org.uk/news/warnings/quantum-ai); [CFTC advisory](https://www.cftc.gov/LearnandProtect/AdvisoriesAndArticles/AITradingBots.html) |
+
+## Z. Phân tích đợt chạy (khảo sát 14/11/2026)
+
+| Thuật ngữ | Bản dịch ưu tiên | Giải thích ngắn trong dự án | Tài liệu tham khảo |
+| --- | --- | --- | --- |
+| Run (evaluation run / batch) | Đợt chạy | Khoảng PAPER có mốc đầu/cuối đã chốt hoặc một lượt backtest/replay hoàn tất, gắn release, cấu hình và hồ sơ chi phí đã ghim. | Định nghĩa nội bộ; [kế hoạch §3.5](../superpowers/plans/2026-11-14-feature-survey-and-manager-insights.md) |
+| Run report | Báo cáo đợt chạy | Báo cáo tất định dựng từ dữ liệu đã lưu của một đợt (kết quả, phân rã, chất lượng thực thi, cơ hội bị bỏ); cùng dữ liệu thì cùng hash. | Định nghĩa nội bộ |
+| Research brief | Bản tổng kết nghiên cứu | Dữ liệu có cấu trúc (JSON có schema + tóm tắt sinh từ template) rút ra từ báo cáo đợt chạy để AI research engine đề xuất giả thuyết; mỗi phát hiện có cỡ mẫu và tham chiếu nguồn. Không chứa dữ liệu TEST. | Định nghĩa nội bộ |
+| Paper–backtest divergence | Sai lệch PAPER so với backtest | Chênh lệch kết quả giữa PAPER và backtest cùng release, cùng giai đoạn; lớn thì mô hình fill/chi phí hoặc dữ liệu đang sai. | Định nghĩa nội bộ |

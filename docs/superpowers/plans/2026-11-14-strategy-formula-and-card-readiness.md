@@ -142,6 +142,8 @@ Cỡ: S ≤ 1 ngày, M 2–4 ngày, L ≥ 1 tuần (ước lượng thô, chưa 
 
 **MT-1 · Chỉ số chuyên nghiệp (M–L).** Đường vốn mark-to-market theo nến và drawdown %; phân phối bội số R và chuỗi thua theo R; MFE/MAE; Sharpe/Sortino trên lợi suất ngày, MAR/Calmar; thời gian có vị thế; chi phí so với lãi gộp; trượt giá so với kế hoạch; tách theo chiến lược, hướng, lý do thoát. Hậu kiểm chấm theo quy trình (MFE/MAE, hiệu suất exit) thay vì theo kết quả; `FALSE_BREAKOUT` định nghĩa theo số nến của timeframe chiến lược. *Nghiệm thu:* mỗi chỉ số có công thức trong glossary và test với ledger tất định; thiếu dữ liệu thì hiện "chưa đủ dữ liệu".
 
+**RR-1..RR-3 · Phân tích đợt chạy và tổng kết cho AI research engine.** Chi tiết ở [`2026-11-14-feature-survey-and-manager-insights.md` §3.5](2026-11-14-feature-survey-and-manager-insights.md): báo cáo đợt chạy tất định → research brief có cấu trúc → vòng đề xuất có người duyệt. Phụ thuộc RT-1, MT-1, BT-1.
+
 **OPS-1 · Dữ liệu kiểm thử sạch (S).** Bộ seed thêm lệnh kiểm tra workspace có release/hash không còn trong catalog và báo rõ; hướng dẫn làm lại stack bằng cách xóa volume; E2E tự động cho bộ seed. Đóng giới hạn 5.
 
 ### Giai đoạn song song — giao diện

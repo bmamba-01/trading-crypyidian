@@ -15,6 +15,13 @@
   const closed = panel.querySelector("[data-closed-trades]");
   const link = panel.querySelector("[data-selected-bot-link]");
   const metrics = JSON.parse(document.getElementById("dashboard-live-metrics").textContent);
+  const strategyButton = panel.querySelector("[data-strategy-open]");
+  if (strategyButton) {
+    strategyButton.addEventListener("click", () => {
+      const dialog = document.getElementById(strategyButton.dataset.dialog || "");
+      if (dialog && typeof dialog.showModal === "function") dialog.showModal();
+    });
+  }
   const snapshots = new Map();
   const labels = {
     ACTIVE: "Đang hoạt động", ENABLED: "Đã bật", DISABLED: "Đã tắt",
@@ -57,6 +64,8 @@
     side: "M7 17 17 7M9 7h8v8",
     asset: "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18ZM9 9h6M9 15h6M12 6v12",
     id: "M5 9h14M5 15h14M10 3 8 21M16 3l-2 18",
+    copy: "M9 9h11v11H9zM5 15H4V4h11v1",
+    check: "M20 6 9 17l-5-5",
   };
   const SVG_NS = "http://www.w3.org/2000/svg";
   const icon = (name) => {
@@ -82,6 +91,20 @@
     funding_total: "funding", slippage_total: "slippage",
   };
 
+  // USDT hiển thị bằng biểu tượng (tiết kiệm chỗ); tài sản khác giữ chữ.
+  const assetMark = (asset) => {
+    if (asset === "USDT") {
+      const mark = document.createElement("span");
+      mark.className = "asset-usdt";
+      mark.title = "USDT";
+      mark.setAttribute("aria-label", "USDT");
+      mark.setAttribute("role", "img");
+      mark.textContent = "₮";
+      return mark;
+    }
+    return document.createTextNode(` ${asset}`);
+  };
+
   const node = (tag, text, className) => {
     const element = document.createElement(tag);
     if (text !== undefined) element.textContent = text;
@@ -90,7 +113,21 @@
   };
   const text = (value) => value === null || value === undefined ? "Chưa có dữ liệu" : String(value);
   const label = (value) => labels[value] || "Chưa xác định";
+  // Thời gian rút gọn tới phút ("14/11 06:18 UTC"); giá trị đầy đủ để ở thuộc tính title.
   const utc = (value) => {
+    const date = new Date(value);
+    if (!value || !Number.isFinite(date.getTime())) return "Chưa xác định thời gian";
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${pad(date.getUTCDate())}/${pad(date.getUTCMonth() + 1)} ` +
+      `${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())} UTC`;
+  };
+  const clock = (value) => {
+    const date = new Date(value);
+    return value && Number.isFinite(date.getTime())
+      ? `${date.toISOString().slice(11, 19)} UTC`
+      : "Chưa xác định thời gian";
+  };
+  const utcFull = (value) => {
     const date = new Date(value);
     return value && Number.isFinite(date.getTime())
       ? date.toISOString().replace("T", " ").replace("Z", " UTC")
@@ -100,8 +137,12 @@
     if (value === null || value === undefined) return "Không xác định";
     const raw = String(value);
     if (!/^[+-]?\d+(\.\d+)?$/.test(raw)) return raw;
-    const [integer, fraction] = raw.split(".");
-    return integer.replace(/\B(?=(\d{3})+(?!\d))/g, ".") + (fraction ? `,${fraction}` : "");
+    // Chỉ làm tròn để hiển thị (2 chữ số); số gốc từ ledger không đổi.
+    const rounded = Number(raw).toFixed(2).replace(/\.?0+$/, "");
+    const [integer, fraction] = rounded.split(".");
+    const sign = integer.startsWith("-") ? "-" : integer.startsWith("+") ? "+" : "";
+    const digits = integer.replace(/^[+-]/, "");
+    return sign + digits.replace(/\B(?=(\d{3})+(?!\d))/g, ".") + (fraction ? `,${fraction}` : "");
   };
   const money = (value, asset, signed = false) => {
     const raw = String(value ?? "");
@@ -109,10 +150,50 @@
     const zero = valid && !/[1-9]/.test(raw);
     const tone = !valid ? "unknown" : zero ? "flat" : raw.startsWith("-") ? "negative" : "positive";
     const prefix = signed && tone === "positive" && !raw.startsWith("+") ? "+" : "";
-    const element = node("span", `${prefix}${number(value)} ${asset}`,
-      signed ? `pnl-value pnl-value--${tone}` : "");
+    const element = node("span", `${prefix}${number(value)}`,
+      signed ? `pnl-value pnl-value--${tone} money` : "money");
+    element.append(assetMark(asset));
+    element.title = `${raw} ${asset}`;
     if (signed) element.dataset.pnlTone = tone;
     return element;
+  };
+  const coinChip = (symbol) => window.crypidianCoins
+    ? window.crypidianCoins.chip(symbol)
+    : node("strong", symbol);
+  // Sparkline SVG: lãi/lỗ ròng tích lũy qua các lệnh đã đóng gần nhất (tối đa 10).
+  const sparkline = (trades, asset) => {
+    let running = 0;
+    const points = [0, ...trades.map((trade) => (running += Number(trade.net_pnl) || 0))];
+    const min = Math.min(...points), max = Math.max(...points);
+    const span = max - min || 1, width = 120, height = 36;
+    const coords = points.map((value, index) => [
+      (index / (points.length - 1)) * width,
+      height - 3 - ((value - min) / span) * (height - 6),
+    ]);
+    const tone = running > 0 ? "positive" : running < 0 ? "negative" : "flat";
+    const box = node("div", undefined, `stat stat--spark stat--spark-${tone}`);
+    const svg = document.createElementNS(SVG_NS, "svg");
+    svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+    svg.setAttribute("class", "sparkline");
+    svg.setAttribute("role", "img");
+    svg.setAttribute("aria-label",
+      `Lãi/lỗ ròng tích lũy qua ${trades.length} lệnh gần nhất: ${number(String(running))} ${asset}`);
+    const zeroY = height - 3 - ((0 - min) / span) * (height - 6);
+    const base = document.createElementNS(SVG_NS, "line");
+    base.setAttribute("x1", "0"); base.setAttribute("x2", String(width));
+    base.setAttribute("y1", String(zeroY)); base.setAttribute("y2", String(zeroY));
+    base.setAttribute("class", "sparkline__zero");
+    const area = document.createElementNS(SVG_NS, "path");
+    area.setAttribute("d", `M0 ${zeroY} ` + coords.map(([x, y]) => `L${x.toFixed(1)} ${y.toFixed(1)}`).join(" ") + ` L${width} ${zeroY} Z`);
+    area.setAttribute("class", "sparkline__area");
+    const line = document.createElementNS(SVG_NS, "path");
+    line.setAttribute("d", coords.map(([x, y], i) => `${i ? "L" : "M"}${x.toFixed(1)} ${y.toFixed(1)}`).join(" "));
+    line.setAttribute("class", "sparkline__line");
+    svg.append(base, area, line);
+    const body = node("div", undefined, "stat__body");
+    body.append(node("span", `${trades.length} lệnh gần nhất`, "stat__label"));
+    box.append(svg, body);
+    return box;
   };
   const sideBadge = (side) => {
     const long = side === "LONG";
@@ -122,9 +203,20 @@
   };
   // Mã đầy đủ vẫn nằm trong văn bản (tìm/sao chép được); CSS cắt bớt bằng dấu ba chấm.
   const tradeId = (value) => {
-    const code = node("code", text(value), "trade-id");
-    code.title = text(value);
-    return code;
+    const full = text(value);
+    const wrapper = node("span", undefined, "id-chip");
+    const code = node("code", full.length > 10 ? `${full.slice(0, 8)}…` : full, "trade-id");
+    code.title = full;
+    // Mã đầy đủ vẫn có trong văn bản (cho tìm kiếm và kiểm thử) nhưng ẩn về mặt thị giác.
+    const hidden = node("span", full, "visually-hidden");
+    const copy = node("button", undefined, "copy-btn");
+    copy.type = "button";
+    copy.dataset.copy = full;
+    copy.setAttribute("aria-label", `Sao chép mã ${full}`);
+    copy.title = "Sao chép mã đầy đủ";
+    copy.append(icon("copy"));
+    wrapper.append(code, hidden, copy);
+    return wrapper;
   };
   const pair = (list, heading, value, iconName) => {
     const wrapper = node("div", undefined, "kv");
@@ -144,7 +236,7 @@
       detail.append(node("p", "Chưa có giao dịch PAPER đang mở."));
       return;
     }
-    pair(detail, "Cặp giao dịch", trade.symbol, "symbol");
+    pair(detail, "Cặp giao dịch", coinChip(trade.symbol), "symbol");
     pair(detail, "Hướng vị thế", sideBadge(trade.side), "side");
     pair(detail, "Tài sản định giá", trade.quote_asset, "asset");
     pair(detail, "Mở lúc", utc(trade.opened_at), "time");
@@ -152,7 +244,9 @@
   };
   const render = (snapshot) => {
     title.textContent = text(snapshot.bot.name);
-    observed.textContent = utc(snapshot.observed_at);
+    // Mốc quan sát giữ đến giây (không kèm ngày): người xem cần thấy dữ liệu đổi mỗi 5 giây.
+    observed.textContent = clock(snapshot.observed_at);
+    observed.title = utcFull(snapshot.observed_at);
     observed.dateTime = snapshot.observed_at;
     runtime.replaceChildren();
     pair(runtime, "Trạng thái bot", label(snapshot.bot.status), "status");
@@ -186,6 +280,11 @@
           pair(list, heading, value, METRIC_ICONS[key]);
         }
       }
+      const series = snapshot.recent_closed_trades
+        .filter((trade) => trade.quote_asset === asset)
+        .slice()
+        .sort((a, b) => String(a.closed_at).localeCompare(String(b.closed_at)));
+      if (series.length >= 2) hero.prepend(sparkline(series, asset));
       section.append(hero, list);
       totals.append(section);
     }
@@ -230,10 +329,10 @@
         };
         const when = node("time", utc(trade.closed_at));
         when.dateTime = trade.closed_at;
-        when.title = `Mở lúc ${utc(trade.opened_at)}`;
+        when.title = `Mở lúc ${utcFull(trade.opened_at)} · Đóng lúc ${utcFull(trade.closed_at)}`;
         cell("Đóng lúc", when, "num");
         const instrument = node("span", undefined, "trade-instrument");
-        instrument.append(node("strong", trade.symbol), sideBadge(trade.side));
+        instrument.append(coinChip(trade.symbol), sideBadge(trade.side));
         cell("Cặp · hướng", instrument);
         cell("Lãi/lỗ ròng", money(trade.net_pnl, trade.quote_asset, true), "num num--strong");
         cell("Lãi/lỗ gộp", money(trade.gross_pnl, trade.quote_asset, true), "num");
@@ -248,6 +347,16 @@
     }
     if (snapshot.recent_closed_trades.length === 0) closed.append(node("p", "Chưa có giao dịch PAPER đã đóng trong khoảng báo cáo."));
   };
+  panel.addEventListener("click", async (event) => {
+    const button = event.target.closest(".copy-btn");
+    if (!button) return;
+    try {
+      await navigator.clipboard.writeText(button.dataset.copy || "");
+      window.crypidianToast?.show({ tone: "success", title: "Đã sao chép mã", message: button.dataset.copy, timeout: 2500 });
+    } catch {
+      window.crypidianToast?.show({ tone: "warning", title: "Không sao chép được", message: "Trình duyệt chặn bộ nhớ tạm; chọn mã trong ô và sao chép thủ công." });
+    }
+  });
   const cancel = () => {
     clearTimeout(timer);
     timer = null;
@@ -307,6 +416,12 @@
     for (const item of buttons) item.setAttribute("aria-pressed", String(item === button));
     link.href = `/admin/bots/${encodeURIComponent(selected)}`;
     link.hidden = false;
+    // Nút "Cách ra quyết định" chỉ hiện khi bot có giải thích dựng từ lệnh thật.
+    if (strategyButton) {
+      const dialog = document.getElementById(`strategy-dialog-${selected}`);
+      strategyButton.hidden = !dialog;
+      strategyButton.dataset.dialog = dialog ? dialog.id : "";
+    }
     if (snapshots.has(selected)) render(snapshots.get(selected));
     else {
       title.textContent = button.querySelector("span").textContent;

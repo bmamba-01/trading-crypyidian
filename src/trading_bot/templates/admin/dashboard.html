@@ -105,7 +105,13 @@
       {% else %}<p>Chưa có bot đang bật để theo dõi.</p>{% endfor %}
     </div>
     <section id="dashboard-live-panel" class="dashboard-live-panel" role="region" aria-label="Bot đang theo dõi" aria-busy="false">
-      <h3 data-selected-bot-name>Chưa chọn bot</h3>
+      <div class="live-panel-head">
+        <h3 data-selected-bot-name>Chưa chọn bot</h3>
+        <button type="button" class="icon-btn" data-strategy-open hidden aria-haspopup="dialog">
+          <svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7V16h8v-1.3A7 7 0 0 0 12 2Z"/></svg>
+          <span>Cách ra quyết định</span>
+        </button>
+      </div>
       <p class="dashboard-source">PAPER ledger snapshot · Dữ liệu mô phỏng đã lưu</p>
       <p>Thời điểm quan sát: <time data-observed-at>Chưa có ảnh chụp</time></p>
       <p data-snapshot-status role="status" aria-live="polite" aria-atomic="true">Chọn bot để tải dữ liệu.</p>
@@ -175,7 +181,7 @@
       {% for event in dashboard_chart.events %}
       <li>
         {% set event_pnl_tone = event.net_pnl | pnl_tone %}
-        <strong>{{ event.bot_name }} — {{ event.symbol }} / {{ event.side | label_vi }} — <span class="pnl-value pnl-value--{{ event_pnl_tone }}" data-pnl-tone="{{ event_pnl_tone }}">{% if event_pnl_tone == "positive" %}+{% endif %}{{ event.net_pnl | number_vi }} {{ event.quote_asset }}</span></strong>
+        <strong>{{ event.bot_name }} — {{ event.symbol }} / {{ event.side | label_vi }} — <span class="pnl-value pnl-value--{{ event_pnl_tone }}" data-pnl-tone="{{ event_pnl_tone }}">{% if event_pnl_tone == "positive" %}+{% endif %}{{ event.net_pnl | number2_vi }} {{ event.quote_asset }}</span></strong>
         <dl>
           <div><dt>Vào lúc</dt><dd>{{ event.opened_at | local_time }}</dd></div>
           <div><dt>Đóng lúc</dt><dd>{{ event.closed_at | local_time }}</dd></div>
@@ -272,10 +278,59 @@
 </div>
 </div>
 
+{% for bot_id, explainer in (strategy_explainers or {}).items() %}
+<dialog id="strategy-dialog-{{ bot_id }}" class="glass-dialog" aria-labelledby="strategy-dialog-title-{{ bot_id }}">
+  <form method="dialog" class="glass-dialog__close-form">
+    <button type="submit" class="icon-btn" aria-label="Đóng giải thích chiến lược">
+      <svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M6 6l12 12M18 6 6 18"/></svg>
+    </button>
+  </form>
+  <h2 id="strategy-dialog-title-{{ bot_id }}" class="glass-dialog__title">Cách {{ explainer.name }} ra quyết định</h2>
+  <p class="glass-dialog__lead">Tổng hợp từ các lệnh PAPER trong 30 ngày và mô tả release trong catalog. Không phải lời khuyên đầu tư.</p>
+  {% if explainer.symbols %}
+  <p class="glass-dialog__meta"><span class="glass-dialog__k">Mã giao dịch</span> {% for symbol in explainer.symbols %}<span class="coin-tag" data-coin="{{ symbol }}">{{ symbol }}</span>{% endfor %}</p>
+  {% endif %}
+  {% for release in explainer.releases %}
+  <section class="glass-dialog__section" aria-label="Phương pháp {{ release.name_vi or release.release_id }}">
+    <h3><span class="badge badge-paper-subtle">{{ release.strategy_id or "?" }}</span> {{ release.name_vi or release.release_id }}</h3>
+    {% if release.unknown %}
+    <p role="status">Release <code>{{ release.release_id }}</code> không còn trong catalog hiện tại; chỉ còn dữ liệu đã ghi trong lệnh.</p>
+    {% else %}
+    <ol class="decision-steps">
+      <li><strong>Dữ liệu đầu vào.</strong> Nến đã đóng khung {{ release.timeframe or "chưa khai báo" }}{% if release.features %}; chỉ báo: {{ release.features | join("; ") }}{% endif %}.</li>
+      <li><strong>Quy tắc bắt tín hiệu và thoát lệnh.</strong> {{ release.rule_summary_vi }}</li>
+      <li><strong>Lập kế hoạch lệnh.</strong> Planner tính giá vào, stop, mục tiêu theo ATR và từ chối nếu R:R ròng sau phí dưới 1,0.</li>
+      <li><strong>Kiểm soát rủi ro.</strong> Risk gate kiểm hạn mức lỗ ngày (reset 00:00 UTC), số vị thế, notional và đòn bẩy trước khi giữ ngân sách.</li>
+      <li><strong>Thực thi PAPER.</strong> Khớp mô phỏng ở nến sau với phí và trượt giá bất lợi; không gửi lệnh lên sàn.</li>
+    </ol>
+    <p class="glass-dialog__meta"><span class="glass-dialog__k">Release</span> <code>{{ release.release_id }}</code> · recipe <code>{{ release.recipe_version }}</code> · hash <code>{{ release.content_hash }}</code> · {{ release.status | label_vi }}</p>
+    {% endif %}
+  </section>
+  {% else %}
+  <p role="status">Bot chưa có lệnh trong 30 ngày nên chưa xác định được chiến lược từ dữ liệu thật.</p>
+  {% endfor %}
+  {% if explainer.signals %}
+  <section class="glass-dialog__section" aria-label="Tín hiệu gần nhất">
+    <h3>Tín hiệu gần nhất</h3>
+    <ul class="signal-list">
+      {% for signal in explainer.signals %}
+      <li>
+        <span class="signal-list__head"><strong>{{ signal.symbol }}</strong> · {{ signal.side | label_vi }} · <time>{{ signal.signal_at | local_minute }}</time></span>
+        <span class="signal-list__why">{{ signal.detail_vi or signal.reason_code or "Chưa có giải thích" }}</span>
+        {% if signal.exit_reason %}<span class="signal-list__exit">Đóng: {{ signal.exit_reason | label_vi }}{% if signal.net_pnl is not none %} · {{ signal.net_pnl | number2_vi }} {{ signal.quote_asset }}{% endif %}</span>{% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endif %}
+</dialog>
+{% endfor %}
+
 <script id="dashboard-status-labels" type="application/json">{{ ui_labels_vi | tojson }}</script>
 {% endblock %}
 {% block scripts %}
 <script src="/static/dashboard-realtime.js" defer></script>
+<script src="/static/coins.js" defer></script>
 <script src="/static/dashboard-live.js" defer></script>
 {% if dashboard_chart and dashboard_chart.series %}<script src="/static/vendor/lightweight-charts-5.2.1.standalone.production.js"></script><script src="/static/trade-chart.js" defer></script>{% endif %}
 {% endblock %}

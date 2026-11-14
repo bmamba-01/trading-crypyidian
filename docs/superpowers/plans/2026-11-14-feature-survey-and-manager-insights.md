@@ -118,6 +118,27 @@ Mỗi gói: giá trị cho người quản lý / công sức (S/M/L) / rủi ro 
 
 **PF-1 · Phân bổ rủi ro giữa các chiến lược (M).** Risk parity hoặc trần CVaR giữa H01/H03/H06 bằng tối ưu cổ điển; đây là phần "tối ưu danh mục" mà các thử nghiệm lượng tử nhắm tới, làm bằng máy thường là đủ ở quy mô này. *Phụ thuộc:* BT-1, RISK-1.
 
+### 3.5 Phân tích kết quả theo đợt chạy và bản tổng kết cho AI research engine (RR)
+
+Yêu cầu của owner (14/11/2026): kế hoạch phải có phần phân tích kết quả của một đợt chạy và tổng kết thông tin để đưa vào AI research engine. "Đợt chạy" là một khoảng thời gian PAPER có mốc đầu/cuối đã chốt (ví dụ một tuần) hoặc một lượt backtest/replay đã hoàn tất, gắn với đúng release chiến lược, cấu hình và hồ sơ chi phí đã ghim.
+
+**RR-1 · Báo cáo đợt chạy tất định (M).** Khi một đợt đóng lại, dựng báo cáo chỉ từ dữ liệu đã lưu (ledger, `trade_plan`, hậu kiểm, decision opportunity, `NoTrade`), có hash và phiên bản công thức:
+- Kết quả: PnL ròng, đường vốn và drawdown, phân phối bội số R, tỷ lệ thắng, hệ số lợi nhuận, kỳ vọng sau chi phí, số lệnh và cờ "chưa đủ mẫu".
+- Phân rã: theo chiến lược/release, symbol, hướng, lý do vào, lý do thoát, chế độ thị trường lúc vào (MI-3), khung giờ.
+- Chất lượng thực thi: trượt giá thực so với kế hoạch, chi phí so với lãi gộp (cost drag), funding, MFE/MAE (khi MT-1 có), hiệu suất exit.
+- Cơ hội bị bỏ: thống kê `NoTrade` theo mã lý do và điều kiện "suýt đạt" (MI-2), tín hiệu bị planner/risk gate từ chối (ví dụ `NET_REWARD_RISK_BELOW_MINIMUM`).
+- So sánh: với đợt trước và với backtest cùng release (sai lệch PAPER–backtest).
+
+**RR-2 · Bản tổng kết cho AI research engine (M, sau RR-1).** Từ báo cáo RR-1 sinh một "research brief" có cấu trúc (JSON có schema + tóm tắt tiếng Việt sinh từ template, không để LLM bịa số):
+- Phát hiện có bằng chứng: mỗi phát hiện ghi chỉ số, cỡ mẫu, khoảng tin cậy hoặc cờ "chưa đủ mẫu", và tham chiếu tới trade/opportunity cụ thể.
+- Giả thuyết đề xuất (ví dụ "H03 thua nhiều khi ADX < 18 lúc vào") dưới dạng câu hỏi nghiên cứu, kèm dữ liệu cần thêm để kiểm chứng.
+- Lineage: hash đợt chạy, release, cấu hình, hồ sơ chi phí, phiên bản công thức, phạm vi quyền dữ liệu.
+- Ranh giới: không chứa dữ liệu TEST của WP06; không chứa secret hay thông tin cá nhân; chỉ đợt đã đóng.
+
+**RR-3 · Vòng nghiên cứu có người duyệt (M).** AI research engine đọc brief và đề xuất thay đổi rule (FX-8) hoặc thẻ mới (SC-2) dưới dạng bản nháp; mỗi đề xuất phải qua backtest ngoài mẫu và tiêu chí mục 5 của kế hoạch công thức trước khi owner duyệt. Engine không tự đổi release đang chạy, không tự bật Demo/LIVE.
+
+*Nghiệm thu RR:* hai lần dựng báo cáo cùng đợt cho cùng hash; brief qua kiểm schema; mọi con số trong tóm tắt truy ngược được về bản ghi nguồn; có E2E từ một đợt PAPER seed tới brief. *Phụ thuộc:* RT-1 (đợt chạy thật), MT-1 (chỉ số), BT-1 (so sánh backtest). *Cần owner:* độ dài một đợt mặc định, nơi lưu brief, ai được duyệt đề xuất.
+
 ## 4. Đánh giá "Quantum trading"
 
 | Loại | Thực tế | Dùng gì cho Crypidian |
@@ -145,6 +166,7 @@ DATA-1 (thu dữ liệu, làm ngay vì lịch sử OI/long-short chỉ 30 ngày)
 MI-1 ── MI-2 ── MI-6        (làm song song, chỉ cần dữ liệu sẵn có)
 MI-3, IND-1, IND-2          (S, sau DATA-1 cho dữ liệu thật)
 BT-1 ── MI-4 ── MI-5 ── PF-1
+RT-1 + MT-1 ── RR-1 ── RR-2 ── RR-3 (vòng nghiên cứu có người duyệt)
 IND-3 (sau DATA-1) · IND-4 (sau BT-1, ban đầu chỉ gắn nhãn) · IND-5
 ```
 

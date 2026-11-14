@@ -34,7 +34,9 @@ from trading_bot.admin.presentation import (
     METRICS,
     PNL_METRIC_KEYS,
     label_vi,
+    local_minute,
     local_time,
+    number2_vi,
     number_vi,
     pnl_tone,
 )
@@ -112,6 +114,8 @@ def _templates(request: Request) -> Jinja2Templates:
         label_vi=label_vi,
         local_time=local_time,
         number_vi=number_vi,
+        number2_vi=number2_vi,
+        local_minute=local_minute,
         pnl_tone=pnl_tone,
     )
     templates.env.globals["report_metrics"] = METRICS
@@ -565,6 +569,7 @@ async def dashboard(
             "ready_count": sum(bot.readiness == "READY" for bot in bot_views),
             "dashboard_reports": dashboard_reports,
             "dashboard_chart": _dashboard_performance_chart(dashboard_reports),
+            "strategy_explainers": _strategy_explainers(dashboard_reports),
             "metrics_loaded": metrics_loaded,
             "metrics_message": metrics_message,
             "report_start": report_start,
@@ -800,6 +805,82 @@ async def dashboard_bot_snapshot(
         },
         headers={"Cache-Control": "no-store"},
     )
+
+
+def _strategy_explainers(reports: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Giải thích cách mỗi bot ra quyết định, chỉ từ release đã ghi trong lệnh thật.
+
+    Nguồn: `entry_reason` của các lệnh trong báo cáo 30 ngày (release, mã lý do, giải thích,
+    giá tham chiếu, thời điểm tín hiệu) và metadata của release trong catalog sản phẩm (tên,
+    tóm tắt quy tắc, khung thời gian, chỉ báo). Bot chưa có lệnh thì không suy đoán chiến lược.
+    """
+    from trading_bot.application.strategy_catalog import strategy_registry
+    from trading_bot.application.strategy_market_requirements import (
+        entry_timeframe_for_release,
+        feature_requirements_for_release,
+    )
+
+    registry = strategy_registry()
+    explainers: dict[str, dict[str, Any]] = {}
+    for report in reports:
+        trades = sorted(
+            report.get("trades") or [],
+            key=lambda trade: str(trade.get("opened_at") or ""),
+            reverse=True,
+        )
+        releases: dict[str, dict[str, Any]] = {}
+        signals: list[dict[str, Any]] = []
+        symbols: set[str] = set()
+        for trade in trades:
+            reason = trade.get("entry_reason")
+            reason = reason if isinstance(reason, dict) else {}
+            release_id = str(reason.get("strategy_release_id") or "")
+            symbols.add(str(trade.get("symbol") or ""))
+            if release_id and release_id not in releases:
+                entry: dict[str, Any] = {"release_id": release_id}
+                try:
+                    release = registry.get_release(release_id)
+                except LookupError:
+                    entry["unknown"] = True
+                else:
+                    entry.update(
+                        strategy_id=release.strategy_id,
+                        name_vi=release.name_vi,
+                        rule_summary_vi=release.rule_summary_vi,
+                        status=release.status,
+                        recipe_version=release.recipe_version,
+                        content_hash=release.content_hash[:12],
+                    )
+                entry["timeframe"] = entry_timeframe_for_release(release_id)
+                try:
+                    features = feature_requirements_for_release(release_id)
+                except ValueError:
+                    features = {}
+                entry["features"] = [
+                    f"{timeframe}: {', '.join(names)}" for timeframe, names in features.items()
+                ]
+                releases[release_id] = entry
+            if len(signals) < 5 and reason:
+                signals.append(
+                    {
+                        "symbol": trade.get("symbol"),
+                        "side": trade.get("side"),
+                        "signal_at": reason.get("signal_at") or trade.get("opened_at"),
+                        "reason_code": reason.get("reason_code"),
+                        "detail_vi": reason.get("detail_vi"),
+                        "reference_price": reason.get("reference_price"),
+                        "exit_reason": trade.get("exit_reason"),
+                        "net_pnl": trade.get("net_pnl"),
+                        "quote_asset": trade.get("quote_asset"),
+                    }
+                )
+        explainers[str(report["bot_id"])] = {
+            "name": report.get("name"),
+            "releases": list(releases.values()),
+            "symbols": sorted(symbol for symbol in symbols if symbol),
+            "signals": signals,
+        }
+    return explainers
 
 
 def _dashboard_performance_chart(reports: list[dict[str, Any]]) -> dict[str, Any]:

@@ -319,3 +319,23 @@ def test_dashboard_renders_live_bot_panel_and_performance_section() -> None:
     assert 'id="dashboard-live-metrics" type="application/json"' in html
     assert '<script src="/static/dashboard-live.js" defer></script>' in html
     assert 'id="performance-heading"' in html
+
+
+def test_number2_vi_rounds_only_for_display() -> None:
+    from trading_bot.admin.presentation import number2_vi, number_vi
+
+    assert number2_vi("-269.60640000") == "-269,61"
+    assert number2_vi("1234567.005") == "1.234.567,01"
+    assert number2_vi("13.10") == "13,1"
+    assert number2_vi("0E-8") == "0"
+    assert number2_vi("abc") == "Chưa có dữ liệu"
+    # Bộ lọc gốc vẫn giữ nguyên độ chính xác (hợp đồng MB-06).
+    assert number_vi("-269.60640000") == "-269,60640000"
+
+
+def test_local_minute_drops_seconds_and_uses_vietnam_time() -> None:
+    from trading_bot.admin.presentation import local_minute
+
+    assert local_minute("2026-11-14T06:13:52+00:00") == "14/11 13:13"
+    assert local_minute("not-a-date") == "Chưa có dữ liệu"
+    assert local_minute("2026-11-14T06:13:52") == "Chưa có dữ liệu"
