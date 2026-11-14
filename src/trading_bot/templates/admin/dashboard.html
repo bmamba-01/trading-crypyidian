@@ -2,6 +2,7 @@
 {% block title %}Tổng quan — Crypidian{% endblock %}
 {% block heading %}Tổng quan không gian làm việc{% endblock %}
 {% block content %}
+{% from "admin/_metric_help.html" import help_term, help_icon %}
 <p class="welcome-banner">Xin chào {{ identity.email }}.</p>
 
 <section class="summary-grid dashboard-block" aria-label="Tình trạng không gian làm việc">
@@ -28,19 +29,19 @@
   <h2 class="visually-hidden">Chỉ số hoạt động</h2>
   <div class="kpi-grid">
     <div class="kpi-card" aria-label="Tổng số bot">
-      <span class="kpi-label">Tổng số bot</span>
+      <span class="kpi-label">{{ help_term("bot_count", "Tổng số bot") }}</span>
       <span class="kpi-value" id="kpi-bot-count" data-live-kpi="bot_count">{{ bot_count }}</span>
       <span class="kpi-subtext">Đã cấu hình trong không gian làm việc</span>
     </div>
 
     <div class="kpi-card" aria-label="Bot sẵn sàng">
-      <span class="kpi-label">Bot sẵn sàng</span>
+      <span class="kpi-label">{{ help_term("ready_bot_count", "Bot sẵn sàng") }}</span>
       <span class="kpi-value" id="kpi-ready-count" data-live-kpi="ready_count">{{ ready_count }}</span>
       <span class="kpi-subtext">Trạng thái vận hành ổn định</span>
     </div>
 
     <div class="kpi-card kpi-card-emergency" aria-label="Trạng thái khẩn cấp">
-      <span class="kpi-label">Trạng thái khẩn cấp (Công tắc dừng khẩn cấp)</span>
+      <span class="kpi-label">{{ help_term("workspace_kill_state", "Trạng thái khẩn cấp (Công tắc dừng khẩn cấp)") }}</span>
       <div class="kpi-status-container" id="kpi-kill-status" aria-live="polite">
         {% if workspace.kill_state == "ACTIVE" %}
         <span class="badge badge-success" id="kpi-kill-state">Đang hoạt động</span>
@@ -54,7 +55,7 @@
     </div>
 
     <div class="kpi-card kpi-card-mode" aria-label="Chế độ vận hành">
-      <span class="kpi-label">Chế độ vận hành</span>
+      <span class="kpi-label">{{ help_term("operating_mode", "Chế độ vận hành") }}</span>
       <div class="kpi-mode-container">
         <span class="badge badge-paper">PAPER (Mô phỏng nội bộ)</span>
       </div>
@@ -123,7 +124,14 @@
   <h2 id="performance-heading">Hiệu quả bot trong 30 ngày</h2>
   {% if dashboard_chart and dashboard_chart.series %}
   <p>Đường vốn theo PnL ròng đã thực hiện riêng cho từng bot, chỉ dùng USDT; dấu vào/đóng gắn với thời điểm ledger. Không cộng lẫn tài sản định giá khác.</p>
+  <p id="dashboard-chart-legend" class="chart-ohlc-legend" data-chart-legend>Rê chuột hoặc chạm vào biểu đồ để xem thời điểm và PnL ròng tích lũy của từng bot.</p>
   <div id="dashboard-performance-chart" class="chart-canvas chart-canvas--performance" role="img" aria-label="Đường hiệu suất PnL ròng theo bot, có đánh dấu thời điểm vào và đóng lệnh"></div>
+  <ul class="chart-key" aria-label="Chú thích biểu đồ hiệu suất">
+    <li><span class="chart-key__swatch" aria-hidden="true"><span class="chart-key__line chart-key__line--curve"></span></span>{{ help_term("equity_curve") }}</li>
+    <li><span class="chart-key__swatch" aria-hidden="true"><span class="chart-key__arrow--up">▲</span><span class="chart-key__arrow--down">▼</span></span>{{ help_term("equity_markers") }}</li>
+    <li>{{ help_term("net_pnl", "Cách tính PnL ròng") }}</li>
+  </ul>
+  <p class="chart-key-note">Mỗi bot một đường màu riêng. Thời gian trên trục và trong chú giải theo múi giờ Asia/Ho_Chi_Minh.</p>
   <p id="dashboard-chart-event-detail" class="chart-event-detail" role="status" aria-live="polite">Rê chuột hoặc chạm vào mốc trên biểu đồ để xem thời điểm, chiến thuật, lý do bắt tín hiệu, lời/lỗ và lý do đóng.</p>
   {% if dashboard_chart.events %}
   <details class="chart-event-list">

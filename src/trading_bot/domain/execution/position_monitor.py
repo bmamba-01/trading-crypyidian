@@ -23,17 +23,32 @@ def monitor_position(
     *,
     opposing_signal: bool = False,
     atr: Decimal | None = None,
+    exit_channel_level: Decimal | None = None,
+    exit_feature_value: Decimal | None = None,
+    strategy_bar_closed: bool = True,
 ) -> PositionMonitorResult:
-    """Kiểm tra stop/target trước time/opposing exit, rồi chỉ siết trailing stop.
+    """Kiểm tra stop/target, rồi exit theo kênh, thời gian, feature và tín hiệu ngược.
 
     Nếu cùng nến chạm stop và target, chọn stop trước. Trailing mới tính từ nến
     hiện tại chỉ có hiệu lực cho nến kế tiếp, tránh giả định thứ tự OHLC không có.
+
+    - `exit_channel_level`: mức kênh thoát point-in-time (long: đáy thấp nhất, short: đỉnh cao
+      nhất của `exit_channel_period` nến chiến lược trước đó). Chỉ có hiệu lực khi recipe khai
+      `exit_channel_period`; chạm mức thì thoát như lệnh stop, gap qua mức khớp tại giá mở.
+    - `exit_feature_value`: giá trị point-in-time của `recipe.exit_feature_name`; so với ngưỡng
+      theo toán tử của recipe và thoát tại giá đóng nến.
+    - `strategy_bar_closed`: nến monitor này có khép một nến của timeframe chiến lược hay không.
+      `max_hold_bars` đếm theo nến chiến lược, nên nến thực thi nhỏ hơn (ví dụ 1 phút khi chiến
+      lược chạy 1 giờ) chỉ tăng bộ đếm khi cờ này là True.
+
+    Nơi gọi chỉ truyền hai mức exit khi release của vị thế có hiệu lực các exit đó; `None` giữ
+    nguyên hành vi cũ.
     """
     if position.is_closed or bar.bar_key in position.seen_bar_keys:
         return PositionMonitorResult(position, position.exit_reason, position.exit_reference_price)
     if position.symbol != bar.symbol:
         raise ValueError("Nến monitor phải cùng symbol với vị thế.")
-    bars_held = position.bars_held + 1
+    bars_held = position.bars_held + (1 if strategy_bar_closed else 0)
     seen = (*position.seen_bar_keys, bar.bar_key)
     stop_hit = (
         bar.low <= position.stop_price
@@ -82,6 +97,31 @@ def monitor_position(
         return PositionMonitorResult(closed, "TAKE_PROFIT", gap_price)
 
     recipe = position.recipe
+    if recipe.exit_channel_period is not None and exit_channel_level is not None:
+        if not exit_channel_level.is_finite() or exit_channel_level <= ZERO:
+            raise ValueError("Mức kênh thoát phải hữu hạn và dương.")
+        channel_hit = (
+            bar.low <= exit_channel_level
+            if position.direction == "long"
+            else bar.high >= exit_channel_level
+        )
+        if channel_hit:
+            channel_price = (
+                min(bar.open, exit_channel_level)
+                if position.direction == "long"
+                else max(bar.open, exit_channel_level)
+            )
+            closed = replace(
+                position,
+                quantity=ZERO,
+                protective_stop_quantity=ZERO,
+                bars_held=bars_held,
+                is_closed=True,
+                seen_bar_keys=seen,
+                exit_reason="CHANNEL_EXIT",
+                exit_reference_price=channel_price,
+            )
+            return PositionMonitorResult(closed, "CHANNEL_EXIT", channel_price)
     if bars_held >= recipe.max_hold_bars:
         closed = replace(
             position,
@@ -94,6 +134,31 @@ def monitor_position(
             exit_reference_price=bar.close,
         )
         return PositionMonitorResult(closed, "TIME_STOP", bar.close)
+    if (
+        recipe.exit_feature_name is not None
+        and recipe.exit_feature_threshold is not None
+        and exit_feature_value is not None
+    ):
+        if not exit_feature_value.is_finite():
+            raise ValueError("Giá trị feature thoát phải hữu hạn.")
+        threshold = Decimal(str(recipe.exit_feature_threshold))
+        feature_hit = (
+            exit_feature_value >= threshold
+            if recipe.exit_feature_operator == ">="
+            else exit_feature_value <= threshold
+        )
+        if feature_hit:
+            closed = replace(
+                position,
+                quantity=ZERO,
+                protective_stop_quantity=ZERO,
+                bars_held=bars_held,
+                is_closed=True,
+                seen_bar_keys=seen,
+                exit_reason="FEATURE_EXIT",
+                exit_reference_price=bar.close,
+            )
+            return PositionMonitorResult(closed, "FEATURE_EXIT", bar.close)
     if recipe.opposite_signal_exit and opposing_signal:
         closed = replace(
             position,

@@ -333,3 +333,19 @@ def test_missing_plan_keeps_levels_empty() -> None:
     assert result.entry_analysis.stop_loss_price is None
     assert result.entry_analysis.planned_risk_amount is None
     assert CHECK_EXCESSIVE_LOSS in result.unevaluated_checks
+
+
+def test_estimated_loss_of_the_approved_size_is_the_real_one_r() -> None:
+    """1R là mức lỗ ước tính của khối lượng đã duyệt, không phải trần ngân sách rủi ro."""
+    plan = {**PLAN, "estimated_loss": "80"}
+    # Lỗ 110: chỉ 1,1R theo trần 100 (không sai lệch) nhưng là 1,375R theo 1R thật 80.
+    losing = _ledger_trade(
+        gross_pnl="-100", net_pnl="-110", slippage_total="1", exit_reason="STOP_LOSS"
+    )
+
+    by_budget = evaluate_trade_post_mortem(losing, plan=PLAN)
+    by_real_risk = evaluate_trade_post_mortem(losing, plan=plan)
+
+    assert by_budget.classification == TradeQualityClassification.ACCEPTABLE
+    assert by_real_risk.entry_analysis.planned_risk_amount == Decimal("80")
+    assert by_real_risk.classification == TradeQualityClassification.DEVIANT_EXCESSIVE_LOSS

@@ -3,6 +3,7 @@
 {% block heading %}{{ bot.name }}{% endblock %}
 
 {% block content %}
+{% from "admin/_metric_help.html" import help_term, help_icon %}
 <dl class="u-margin-bottom-1rem bot-status-dl">
   <dt>Trạng thái tài khoản</dt><dd>{{ bot.status | label_vi }} / {{ bot.account_status | label_vi }} / {{ bot.account_mode | label_vi }}</dd>
   <dt>Mức sẵn sàng</dt><dd>{{ bot.readiness | label_vi }}</dd>
@@ -79,9 +80,7 @@
   <div class="trading-metric-grid">
     <div class="trading-metric-card">
       <div class="metric-header">
-        <span class="tooltip-term" data-tooltip="Số giao dịch PAPER đang mở trong ledger tại thời điểm tải trang">
-          Vị Thế Đang Mở <span class="tooltip-icon">ⓘ</span>
-        </span>
+        {{ help_term("open_positions_count", "Vị Thế Đang Mở") }}
         <svg class="u-color-primary svg-icon" viewBox="0 0 24 24"><path d="M18 20V10M12 20V4M6 20v-6"/></svg>
       </div>
       <div class="u-color-primary metric-value tabular-nums" id="kpi-open-positions">{% if metrics %}{{ metrics.open_positions_count }}{% else %}—{% endif %}</div>
@@ -90,9 +89,7 @@
 
     <div class="trading-metric-card">
       <div class="metric-header">
-        <span class="tooltip-term" data-tooltip="Tỷ lệ thắng = (Số lệnh có lãi / Tổng lệnh đã đóng) × 100%, trong 30 ngày">
-          Tỷ Lệ Thắng (Win Rate) <span class="tooltip-icon">ⓘ</span>
-        </span>
+        {{ help_term("win_rate_percent", "Tỷ Lệ Thắng (Win Rate)") }}
         <svg class="u-color-primary svg-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>
       </div>
       <div class="metric-value tabular-nums" id="kpi-win-rate">{% if metrics and metrics.win_rate_percent is not none %}{{ metrics.win_rate_percent | number_vi }}%{% else %}Chưa có dữ liệu{% endif %}</div>
@@ -101,20 +98,16 @@
 
     <div class="trading-metric-card">
       <div class="metric-header">
-        <span class="tooltip-term" data-tooltip="Hệ số lợi nhuận = Tổng lãi gộp / Tổng lỗ gộp của các lệnh đã đóng">
-          Profit Factor <span class="tooltip-icon">ⓘ</span>
-        </span>
+        {{ help_term("profit_factor", "Profit Factor") }}
         <svg class="u-color-primary svg-icon" viewBox="0 0 24 24"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>
       </div>
       <div class="metric-value tabular-nums" id="kpi-profit-factor">{% if metrics and metrics.profit_factor is not none %}{{ metrics.profit_factor | number_vi }}{% else %}Không xác định{% endif %}</div>
-      <div class="metric-sub tabular-nums" id="kpi-expectancy">Kỳ vọng ròng mỗi lệnh: {% if metrics and metrics.expectancy_per_trade is not none %}{{ metrics.expectancy_per_trade | number_vi }} {{ quote }}{% else %}Chưa có dữ liệu{% endif %}</div>
+      <div class="metric-sub tabular-nums" id="kpi-expectancy">{{ help_term("expectancy_per_trade", "Kỳ vọng ròng mỗi lệnh") }}: {% if metrics and metrics.expectancy_per_trade is not none %}{{ metrics.expectancy_per_trade | number_vi }} {{ quote }}{% else %}Chưa có dữ liệu{% endif %}</div>
     </div>
 
     <div class="trading-metric-card">
       <div class="metric-header">
-        <span class="tooltip-term" data-tooltip="Lãi/lỗ ròng đã thực hiện = Lãi gộp − (Phí sàn + Funding + Trượt giá)">
-          Lợi Nhuận Ròng (Net PnL) <span class="tooltip-icon">ⓘ</span>
-        </span>
+        {{ help_term("net_pnl", "Lợi Nhuận Ròng (Net PnL)") }}
         <svg class="u-color-primary svg-icon" viewBox="0 0 24 24"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
       </div>
       <div class="metric-value tabular-nums" id="kpi-net-pnl">
@@ -125,9 +118,7 @@
 
     <div class="trading-metric-card">
       <div class="metric-header">
-        <span class="tooltip-term" data-tooltip="Mức sụt giảm lớn nhất từ đỉnh PnL ròng đã thực hiện trong 30 ngày">
-          Max Drawdown <span class="tooltip-icon">ⓘ</span>
-        </span>
+        {{ help_term("max_drawdown", "Max Drawdown") }}
         <svg class="u-color-hex-f6465d svg-icon" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
       </div>
       <div class="metric-value tabular-nums" id="kpi-max-drawdown">{% if metrics and metrics.max_drawdown is not none %}{{ metrics.max_drawdown | number_vi }} {{ quote }}{% else %}Chưa có dữ liệu{% endif %}</div>
@@ -148,10 +139,13 @@
     </h3>
   </div>
   {% if chart_data.notice %}<p role="status">{{ chart_data.notice }}</p>{% endif %}
-  <div id="trade-chart" class="chart-canvas" role="img" aria-label="Biểu đồ nến {{ chart_data.symbol }} với các mốc vào và thoát lệnh"></div>
+  <p id="trade-chart-legend" class="chart-ohlc-legend" data-chart-legend>Rê chuột hoặc chạm vào nến để xem Mở / Cao / Thấp / Đóng.</p>
+  <div id="trade-chart" class="chart-canvas" role="img" aria-label="Biểu đồ nến {{ chart_data.symbol }} với các mốc vào và thoát lệnh" data-stop-title="{{ metric_help_title('chart_stop_line') }}" data-target-title="{{ metric_help_title('chart_target_line') }}" data-entry-title="{{ metric_help_title('chart_entry_line') }}"></div>
   <div id="trade-chart-event-detail" class="u-margin-top-0-5rem u-padding-0-5rem-0-85rem u-border-radius-0-375rem u-background-bg-surface-subtle u-font-size-0-85rem u-color-text-muted u-border-1px-solid-border-subtle chart-event-detail tabular-nums" role="status" aria-live="polite">
     Rê chuột hoặc chạm vào nến có đánh dấu để đọc thời điểm, giá khớp và lý do vào/đóng lệnh.
   </div>
+  {% set chart_key_timeframe = chart_data.timeframe %}{% set chart_key_entry_line = false %}{% set chart_key_stop = false %}{% set chart_key_target = false %}
+  {% include "admin/_trade_chart_key.html" %}
   <p class="chart-attribution">Biểu đồ sử dụng <a href="https://www.tradingview.com/lightweight-charts/" target="_blank" rel="noopener noreferrer">TradingView Lightweight Charts</a>, theo giấy phép Apache 2.0.</p>
   <script id="trade-chart-data" type="application/json">{{ chart_data | tojson }}</script>
   {% else %}
@@ -174,14 +168,20 @@
   </div>
 
   {% if positions %}
+  <ul class="chart-key metric-key--narrow" aria-label="Chú giải các trường của vị thế">
+    <li>{{ help_term("position_symbol_side", "Cặp / Hướng") }}</li>
+    <li>{{ help_term("position_opened_at", "Mở lúc") }}</li>
+    <li>{{ help_term("quote_asset", "Tài sản định giá") }}</li>
+    <li>{{ help_term("trade_id", "Mã giao dịch") }}</li>
+  </ul>
   <div class="table-wrapper">
     <table class="responsive-table" aria-label="Bảng vị thế đang mở">
       <thead>
         <tr>
-          <th scope="col">Cặp / Hướng</th>
-          <th scope="col">Mở lúc</th>
-          <th scope="col">Tài sản định giá</th>
-          <th scope="col">Mã giao dịch</th>
+          <th scope="col">{{ help_term("position_symbol_side", "Cặp / Hướng") }}</th>
+          <th scope="col">{{ help_term("position_opened_at", "Mở lúc") }}</th>
+          <th scope="col">{{ help_term("quote_asset", "Tài sản định giá") }}</th>
+          <th scope="col">{{ help_term("trade_id", "Mã giao dịch") }}</th>
         </tr>
       </thead>
       <tbody id="open-positions-tbody">
@@ -218,18 +218,34 @@
   </div>
 
   {% if recent_trades %}
+  <ul class="chart-key metric-key--narrow" aria-label="Chú giải các trường của lịch sử lệnh">
+    <li>{{ help_term("trade_closed_at", "Thời gian đóng") }}</li>
+    <li>{{ help_term("trade_quantity", "Khối lượng") }}</li>
+    <li>{{ help_term("trade_entry_price", "Giá vào") }}</li>
+    <li>{{ help_term("trade_exit_price", "Giá ra") }}</li>
+    <li>{{ help_term("net_pnl", "Lợi nhuận ròng") }}</li>
+    <li>{{ help_term("exit_reason", "Lý do đóng") }}</li>
+  </ul>
+  <ul class="chart-key" aria-label="Chú giải nhãn đánh giá thực thi">
+    <li>{{ help_term("total_cost", "Chi phí") }}</li>
+    <li>{{ help_term("execution_quality", "Đánh giá thực thi") }}:</li>
+    <li>{{ help_term("quality_optimal") }}</li>
+    <li>{{ help_term("quality_acceptable") }}</li>
+    <li>{{ help_term("quality_deviant") }}</li>
+    <li>{{ help_term("quality_unverified") }}</li>
+  </ul>
   <div class="table-wrapper">
     <table class="responsive-table" aria-label="Bảng lịch sử khớp lệnh gần đây">
       <thead>
         <tr>
-          <th scope="col">Thời Gian Đóng</th>
-          <th scope="col">Cặp / Hướng</th>
-          <th scope="col">Khối Lượng</th>
-          <th scope="col">Giá Vào</th>
-          <th scope="col">Giá Ra</th>
-          <th scope="col">Lợi Nhuận Ròng</th>
-          <th scope="col">Lý Do Đóng</th>
-          <th scope="col">Đánh Giá Thực Thi</th>
+          <th scope="col">{{ help_term("trade_closed_at", "Thời Gian Đóng") }}</th>
+          <th scope="col">{{ help_term("position_symbol_side", "Cặp / Hướng") }}</th>
+          <th scope="col">{{ help_term("trade_quantity", "Khối Lượng") }}</th>
+          <th scope="col">{{ help_term("trade_entry_price", "Giá Vào") }}</th>
+          <th scope="col">{{ help_term("trade_exit_price", "Giá Ra") }}</th>
+          <th scope="col">{{ help_term("net_pnl", "Lợi Nhuận Ròng") }}</th>
+          <th scope="col">{{ help_term("exit_reason", "Lý Do Đóng") }}</th>
+          <th scope="col">{{ help_term("execution_quality", "Đánh Giá Thực Thi") }}</th>
         </tr>
       </thead>
       <tbody id="recent-trades-tbody">

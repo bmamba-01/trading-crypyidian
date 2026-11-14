@@ -5,6 +5,7 @@
 {% block heading %}Kính hiển vi Soi vết Lịch sử (Microscope Replay){% endblock %}
 
 {% block content %}
+{% from "admin/_metric_help.html" import help_term, help_icon %}
 <section class="page-intro" aria-labelledby="microscope-heading">
   <div class="breadcrumb-nav">
     <a href="/admin/strategy-cards" class="btn btn-secondary btn-sm" aria-label="Quay lại danh sách bản kê chiến lược">
@@ -160,7 +161,7 @@
       <header class="layer-card-header">
         <div class="layer-header-left">
           <span class="layer-badge-tag tag-l0">Tầng L0</span>
-          <h3 id="l0-card-title" class="layer-card-title">Data Hygiene (Độ sạch Dữ liệu)</h3>
+          <h3 id="l0-card-title" class="layer-card-title">{{ help_term("layer_l0_data_hygiene", "Data Hygiene (Độ sạch Dữ liệu)") }}</h3>
         </div>
         <span class="badge badge-status" id="l0-status-badge">
           {% if initial_trace and not initial_trace.is_short_circuited %}
@@ -185,7 +186,7 @@
       <header class="layer-card-header">
         <div class="layer-header-left">
           <span class="layer-badge-tag tag-l1">Tầng L1</span>
-          <h3 id="l1-card-title" class="layer-card-title">Candle Anatomy (Giải phẫu Nến)</h3>
+          <h3 id="l1-card-title" class="layer-card-title">{{ help_term("layer_l1_candle_anatomy", "Candle Anatomy (Giải phẫu Nến)") }}</h3>
         </div>
         <span class="badge badge-status" id="l1-status-badge">
           {% if initial_trace and initial_trace.short_circuit_reason and 'L0' in initial_trace.short_circuit_reason %}
@@ -217,7 +218,7 @@
       <header class="layer-card-header">
         <div class="layer-header-left">
           <span class="layer-badge-tag tag-l2">Tầng L2</span>
-          <h3 id="l2-card-title" class="layer-card-title">Indicators (Chỉ báo Kỹ thuật)</h3>
+          <h3 id="l2-card-title" class="layer-card-title">{{ help_term("layer_l2_indicators", "Indicators (Chỉ báo Kỹ thuật)") }}</h3>
         </div>
         <span class="badge badge-status" id="l2-status-badge">
           {% if initial_trace and initial_trace.short_circuit_reason and 'L0' in initial_trace.short_circuit_reason %}
@@ -249,7 +250,7 @@
       <header class="layer-card-header">
         <div class="layer-header-left">
           <span class="layer-badge-tag tag-l3">Tầng L3</span>
-          <h3 id="l3-card-title" class="layer-card-title">Algorithms (Thuật toán Điểm số)</h3>
+          <h3 id="l3-card-title" class="layer-card-title">{{ help_term("layer_l3_algorithms", "Algorithms (Thuật toán Điểm số)") }}</h3>
         </div>
         <span class="badge badge-status" id="l3-status-badge">
           {% if initial_trace and initial_trace.short_circuit_reason and 'L0' in initial_trace.short_circuit_reason %}
@@ -287,7 +288,7 @@
       <header class="layer-card-header">
         <div class="layer-header-left">
           <span class="layer-badge-tag tag-l4">Tầng L4</span>
-          <h3 id="l4-card-title" class="layer-card-title">Context Gate (Cổng Bối cảnh Thị trường)</h3>
+          <h3 id="l4-card-title" class="layer-card-title">{{ help_term("layer_l4_context_gate", "Context Gate (Cổng Bối cảnh Thị trường)") }}</h3>
         </div>
         <span class="badge badge-status" id="l4-status-badge">
           {% if initial_trace and initial_trace.context_gate_passed %}
@@ -324,7 +325,7 @@
       <header class="layer-card-header">
         <div class="layer-header-left">
           <span class="layer-badge-tag tag-l5">Tầng L5</span>
-          <h3 id="l5-card-title" class="layer-card-title">Strategy Trigger (Ngòi nổ Kích hoạt)</h3>
+          <h3 id="l5-card-title" class="layer-card-title">{{ help_term("layer_l5_trigger", "Strategy Trigger (Ngòi nổ Kích hoạt)") }}</h3>
         </div>
         <span class="badge badge-status" id="l5-status-badge">
           {% if initial_trace and initial_trace.trigger_signal in ['LONG_ENTRY', 'SHORT_ENTRY'] %}
@@ -358,7 +359,7 @@
       <header class="layer-card-header">
         <div class="layer-header-left">
           <span class="layer-badge-tag tag-l6">Tầng L6</span>
-          <h3 id="l6-card-title" class="layer-card-title">Execution Zones & Packaging (Vùng Thực thi)</h3>
+          <h3 id="l6-card-title" class="layer-card-title">{{ help_term("layer_l6_zones", "Execution Zones & Packaging (Vùng Thực thi)") }}</h3>
         </div>
         <span class="badge badge-status" id="l6-status-badge">
           {% if initial_trace and initial_trace.zones %}

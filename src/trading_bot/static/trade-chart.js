@@ -45,6 +45,61 @@
     };
   };
 
+  // Mọi thời điểm trên trục, nhãn con trỏ và chú giải đều theo múi giờ vận hành của dự án.
+  const DISPLAY_TIME_ZONE = "Asia/Ho_Chi_Minh";
+  const timeParts = (options) =>
+    new Intl.DateTimeFormat("vi-VN", { timeZone: DISPLAY_TIME_ZONE, hourCycle: "h23", ...options });
+  const dateTimeFormat = timeParts({
+    hour: "2-digit",
+    minute: "2-digit",
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  });
+  const tickFormats = [
+    timeParts({ year: "numeric" }),
+    timeParts({ month: "2-digit", year: "numeric" }),
+    timeParts({ day: "2-digit", month: "2-digit" }),
+    timeParts({ hour: "2-digit", minute: "2-digit" }),
+    timeParts({ hour: "2-digit", minute: "2-digit", second: "2-digit" }),
+  ];
+  const isTimestamp = (time) => typeof time === "number" && Number.isFinite(time);
+  const formatDateTime = (time) =>
+    isTimestamp(time) ? dateTimeFormat.format(new Date(time * 1000)) : String(time);
+  const formatIsoDateTime = (text) => {
+    const milliseconds = Date.parse(text);
+    return Number.isFinite(milliseconds) ? formatDateTime(milliseconds / 1000) : String(text);
+  };
+  const formatNumber = (value) =>
+    Number(value).toLocaleString("vi-VN", { maximumFractionDigits: 8 });
+  const formatSigned = (value, minimumFractionDigits, maximumFractionDigits) => {
+    const text = Number(value).toLocaleString("vi-VN", {
+      minimumFractionDigits,
+      maximumFractionDigits,
+    });
+    return value > 0 ? `+${text}` : text;
+  };
+  const toneOf = (value) => (value > 0 ? "up" : value < 0 ? "down" : "");
+
+  // Chú giải theo con trỏ: dựng bằng DOM (textContent), không chèn HTML từ dữ liệu.
+  const legendItem = (label, value, tone) => {
+    const item = document.createElement("span");
+    item.className = "chart-ohlc-legend__item";
+    if (label) item.append(`${label} `);
+    const strong = document.createElement("span");
+    strong.className = tone
+      ? `chart-ohlc-legend__value chart-ohlc-legend__value--${tone}`
+      : "chart-ohlc-legend__value";
+    strong.textContent = value;
+    item.append(strong);
+    return item;
+  };
+  const renderLegend = (legend, items) => {
+    if (!legend || items.length === 0) return;
+    legend.replaceChildren(...items);
+    legend.dataset.legendSource = "crosshair";
+  };
+
   const nearestBarTime = (bars, timestamp) => {
     let selected = null;
     let distance = Number.POSITIVE_INFINITY;
@@ -78,14 +133,19 @@
       localization: {
         locale: "vi-VN",
         dateFormat: "dd/MM/yyyy",
-        priceFormatter: (value) =>
-          Number(value).toLocaleString("vi-VN", { maximumFractionDigits: 8 }),
+        priceFormatter: formatNumber,
+        timeFormatter: formatDateTime,
       },
       timeScale: {
         timeVisible: true,
         secondsVisible: false,
         rightOffset: 6,
         borderColor: theme.borderColor,
+        // Trả null với kiểu thời gian không phải timestamp để thư viện dùng định dạng mặc định.
+        tickMarkFormatter: (time, tickMarkType) =>
+          isTimestamp(time) && tickFormats[tickMarkType]
+            ? tickFormats[tickMarkType].format(new Date(time * 1000))
+            : null,
       },
       rightPriceScale: { borderColor: theme.borderColor },
       crosshair: { mode: chartLibrary.CrosshairMode?.Normal ?? 0 },
@@ -150,13 +210,29 @@
               ? "TIME"
               : trade.exit_reason === "OPPOSING_SIGNAL"
                 ? "ĐẢO"
-                : "ĐÓNG";
+                : trade.exit_reason === "CHANNEL_EXIT"
+                  ? "KÊNH"
+                  : trade.exit_reason === "FEATURE_EXIT"
+                    ? "CHỈ BÁO"
+                    : "ĐÓNG";
 
-      // Vẽ đường Stop Loss (SL) và Take Profit (TP) nếu có dữ liệu định lượng
+      // Vẽ đường giá vào, dừng lỗ (SL) và chốt lời (TP) khi hậu kiểm có số liệu; tên đường
+      // lấy từ từ điển chú giải phía máy chủ (thuộc tính data-* của vùng biểu đồ).
       const pm = trade.post_mortem;
       if (pm && pm.entry_analysis) {
+        const entryPrice = Number(pm.entry_analysis.entry_price);
         const slPrice = Number(pm.entry_analysis.stop_loss_price);
         const tpPrice = Number(pm.entry_analysis.take_profit_price);
+        if (entryPrice > 0) {
+          candleSeries.createPriceLine({
+            price: entryPrice,
+            color: "#3861fb",
+            lineWidth: 1,
+            lineStyle: chartLibrary.LineStyle?.Dotted ?? 1,
+            axisLabelVisible: true,
+            title: container.dataset.entryTitle || "Đường giá vào bình quân",
+          });
+        }
         if (slPrice > 0) {
           candleSeries.createPriceLine({
             price: slPrice,
@@ -164,7 +240,7 @@
             lineWidth: 1,
             lineStyle: chartLibrary.LineStyle?.Dashed ?? 2,
             axisLabelVisible: true,
-            title: "🛑 Dừng lỗ (SL)",
+            title: container.dataset.stopTitle || "Đường dừng lỗ (SL)",
           });
         }
         if (tpPrice > 0) {
@@ -174,7 +250,7 @@
             lineWidth: 1,
             lineStyle: chartLibrary.LineStyle?.Dashed ?? 2,
             axisLabelVisible: true,
-            title: "🎯 Chốt lời (TP)",
+            title: container.dataset.targetTitle || "Đường chốt lời (TP)",
           });
         }
       }
@@ -199,8 +275,8 @@
               : "Đóng (chưa rõ)";
         const entryReason = trade.entry_reason || {};
         const explanation = entry
-          ? `Vào lệnh ${trade.symbol} lúc ${fill.occurred_at}; Giá: ${fill.price}; Chiến thuật: ${entryReason.strategy_id || "chưa có dữ liệu"}; Tín hiệu: ${entryReason.detail_vi || "ledger chưa lưu lý do vào lệnh"}.`
-          : `Khớp đóng lệnh ${trade.symbol} lúc ${fill.occurred_at}; Giá: ${fill.price}; Lý do đóng: ${trade.exit_reason || "Chưa rõ"}; PnL ròng: ${trade.net_pnl} ${trade.quote_asset}.`;
+          ? `Vào lệnh ${trade.symbol} lúc ${formatIsoDateTime(fill.occurred_at)}; Giá: ${fill.price}; Chiến thuật: ${entryReason.strategy_id || "chưa có dữ liệu"}; Tín hiệu: ${entryReason.detail_vi || "ledger chưa lưu lý do vào lệnh"}.`
+          : `Khớp đóng lệnh ${trade.symbol} lúc ${formatIsoDateTime(fill.occurred_at)}; Giá: ${fill.price}; Lý do đóng: ${trade.exit_reason || "Chưa rõ"}; PnL ròng: ${trade.net_pnl} ${trade.quote_asset}.`;
         markers.push({
           time,
           position: upward ? "belowBar" : "aboveBar",
@@ -220,13 +296,40 @@
       const eventDetail =
         document.getElementById("trade-chart-event-detail") ||
         document.getElementById("bot-chart-event-detail");
-      if (eventDetail) {
-        chart.subscribeCrosshairMove((parameter) => {
-          if (parameter.time === undefined || parameter.time === null) return;
-          const details = markerDetails.get(Number(parameter.time));
-          if (details?.length) eventDetail.textContent = details.join(" ");
-        });
-      }
+      const legend =
+        document.getElementById("trade-chart-legend") ||
+        document.getElementById("bot-chart-legend");
+      const barsByTime = new Map(bars.map((bar) => [Number(bar.time), bar]));
+      const showBarLegend = (time) => {
+        const bar = barsByTime.get(Number(time));
+        if (!bar) return;
+        const open = Number(bar.open);
+        const close = Number(bar.close);
+        const items = [
+          legendItem("", `${formatDateTime(Number(bar.time))} (${DISPLAY_TIME_ZONE})`),
+          legendItem("Mở", formatNumber(open)),
+          legendItem("Cao", formatNumber(bar.high)),
+          legendItem("Thấp", formatNumber(bar.low)),
+          legendItem("Đóng", formatNumber(close), toneOf(close - open)),
+        ];
+        if (open > 0) {
+          const change = ((close - open) / open) * 100;
+          items.push(
+            legendItem("Thay đổi so với giá mở", `${formatSigned(change, 2, 2)}%`, toneOf(change))
+          );
+        }
+        if (bar.volume !== undefined && bar.volume !== null && Number.isFinite(Number(bar.volume))) {
+          items.push(legendItem("Khối lượng", formatNumber(bar.volume)));
+        }
+        renderLegend(legend, items);
+      };
+      chart.subscribeCrosshairMove((parameter) => {
+        if (parameter.time === undefined || parameter.time === null) return;
+        showBarLegend(parameter.time);
+        if (!eventDetail) return;
+        const details = markerDetails.get(Number(parameter.time));
+        if (details?.length) eventDetail.textContent = details.join(" ");
+      });
       chart.timeScale().fitContent();
       container.dataset.chartReady = "true";
     } catch (_error) {
@@ -248,6 +351,7 @@
       activeDashboardChart = chart;
       const colors = ["#3861fb", "#0ecb81", "#f59e0b", "#a855f7", "#ec4899"];
       const markerDetails = new Map();
+      const lines = [];
       payload.series.forEach((item, index) => {
         const color = colors[index % colors.length];
         const line = chart.addSeries(chartLibrary.LineSeries, {
@@ -257,6 +361,7 @@
           priceLineVisible: false,
         });
         line.setData(item.data);
+        lines.push({ name: item.name, series: line });
         chartLibrary.createSeriesMarkers(line, item.markers || []);
         for (const marker of item.markers || []) {
           if (!marker.title) continue;
@@ -266,13 +371,27 @@
         }
       });
       const eventDetail = document.getElementById("dashboard-chart-event-detail");
-      if (eventDetail) {
-        chart.subscribeCrosshairMove((parameter) => {
-          if (parameter.time === undefined || parameter.time === null) return;
-          const details = markerDetails.get(Number(parameter.time));
-          if (details?.length) eventDetail.textContent = details.join(" ");
-        });
-      }
+      const legend = document.getElementById("dashboard-chart-legend");
+      const quoteAsset = payload.quote_asset || "";
+      chart.subscribeCrosshairMove((parameter) => {
+        if (parameter.time === undefined || parameter.time === null) return;
+        const items = [];
+        for (const { name, series } of lines) {
+          const point = parameter.seriesData?.get(series);
+          if (!point || !Number.isFinite(Number(point.value))) continue;
+          const value = Number(point.value);
+          items.push(
+            legendItem(`${name}: PnL ròng tích lũy`, `${formatSigned(value, 0, 8)} ${quoteAsset}`, toneOf(value))
+          );
+        }
+        if (items.length) {
+          items.unshift(legendItem("", `${formatDateTime(Number(parameter.time))} (${DISPLAY_TIME_ZONE})`));
+          renderLegend(legend, items);
+        }
+        if (!eventDetail) return;
+        const details = markerDetails.get(Number(parameter.time));
+        if (details?.length) eventDetail.textContent = details.join(" ");
+      });
       chart.timeScale().fitContent();
       container.dataset.chartReady = "true";
     } catch (_error) {

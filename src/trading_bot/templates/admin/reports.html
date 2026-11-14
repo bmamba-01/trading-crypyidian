@@ -3,6 +3,7 @@
 {% block heading %}Báo Cáo Hiệu Năng & Phân Tích Giao Dịch{% endblock %}
 
 {% block content %}
+{% from "admin/_metric_help.html" import help_term, help_icon %}
 <!-- Thanh lọc thời gian & phạm vi chuẩn Trading UI -->
 <section class="report-filter-section" aria-label="Bộ lọc báo cáo">
   <form class="report-filter-form" method="get" action="/admin/reports">
@@ -26,22 +27,12 @@
       </div>
 
       <div class="form-group">
-        <label for="start">
-          Bắt đầu
-          <span class="tooltip-term" data-tooltip="Mốc bắt đầu tính theo múi giờ địa phương (ISO-8601)">
-            <span class="tooltip-icon">ⓘ</span>
-          </span>
-        </label>
+        <div class="label-help-row"><label for="start">Bắt đầu</label>{{ help_icon("report_window_start") }}</div>
         <input id="start" name="start" type="text" value="{{ start }}" placeholder="2026-11-01T00:00:00+07:00" required>
       </div>
 
       <div class="form-group">
-        <label for="end">
-          Kết thúc
-          <span class="tooltip-term" data-tooltip="Mốc kết thúc không bao gồm điểm biên">
-            <span class="tooltip-icon">ⓘ</span>
-          </span>
-        </label>
+        <div class="label-help-row"><label for="end">Kết thúc</label>{{ help_icon("report_window_end") }}</div>
         <input id="end" name="end" type="text" value="{{ end }}" placeholder="2026-11-10T23:59:59+07:00" required>
       </div>
 
@@ -87,7 +78,12 @@
 
   {% if report.daily_performance %}
   <section aria-labelledby="daily-performance-heading" class="daily-performance">
-    <h3 id="daily-performance-heading">Lịch lãi/lỗ theo ngày</h3>
+    <h3 id="daily-performance-heading">{{ help_term("daily_pnl_calendar", "Lịch lãi/lỗ theo ngày") }}</h3>
+    <ul class="chart-key" aria-label="Chú giải các trường của lịch lãi/lỗ">
+      <li>{{ help_term("net_pnl", "Lãi/lỗ ròng") }}</li>
+      <li>{{ help_term("closed_trade_count", "Giao dịch đã đóng") }}</li>
+      <li>{{ help_term("daily_trade_outcomes") }}</li>
+    </ul>
     <p>Ngày được tính theo {{ report.daily_performance.timezone }}. Chỉ hiện ngày có giao dịch đã đóng; tài sản định giá được tách riêng.</p>
     {% for asset, days in report.daily_performance.quote_assets.items() %}
     <section aria-label="Lãi lỗ theo ngày bằng {{ asset }}">
@@ -122,9 +118,7 @@
       {% set net_val = totals.net_pnl | float if totals.net_pnl is defined else 0.0 %}
       <div class="trading-metric-card">
         <div class="metric-header">
-          <span class="tooltip-term" data-tooltip="Lợi nhuận ròng thực tế = Lãi gộp - (Phí giao dịch + Phí Funding + Trượt giá)">
-            Lời / Lỗ Ròng (Net PnL) <span class="tooltip-icon">ⓘ</span>
-          </span>
+          {{ help_term("net_pnl", "Lời / Lỗ Ròng (Net PnL)") }}
           <svg class="u-color-hex-0ecb81 svg-icon" viewBox="0 0 24 24"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
         </div>
         <div class="metric-value {% if net_val > 0 %}pnl-positive{% elif net_val < 0 %}pnl-negative{% endif %} tabular-nums">
@@ -138,9 +132,7 @@
       <!-- Card Win Rate -->
       <div class="trading-metric-card">
         <div class="metric-header">
-          <span class="tooltip-term" data-tooltip="Tỷ lệ thắng = (Số lệnh thắng / Tổng lệnh đã đóng) × 100%">
-            Tỷ Lệ Thắng (Win Rate) <span class="tooltip-icon">ⓘ</span>
-          </span>
+          {{ help_term("win_rate_percent", "Tỷ Lệ Thắng (Win Rate)") }}
           <svg class="u-color-primary svg-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>
         </div>
         <div class="u-color-primary metric-value tabular-nums">
@@ -154,9 +146,7 @@
       <!-- Card Profit Factor -->
       <div class="trading-metric-card">
         <div class="metric-header">
-          <span class="tooltip-term" data-tooltip="Hệ số lợi nhuận = Tổng lãi gộp / Tổng lỗ gộp. Giá trị > 1.5 biểu thị chiến lược vượt trội">
-            Profit Factor <span class="tooltip-icon">ⓘ</span>
-          </span>
+          {{ help_term("profit_factor", "Profit Factor") }}
           <svg class="u-color-hex-0ecb81 svg-icon" viewBox="0 0 24 24"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>
         </div>
         <div class="metric-value tabular-nums">
@@ -170,9 +160,7 @@
       <!-- Card Max Drawdown -->
       <div class="trading-metric-card">
         <div class="metric-header">
-          <span class="tooltip-term" data-tooltip="Mức sụt giảm lớn nhất từ đỉnh vốn tích lũy trong kỳ báo cáo">
-            Max Drawdown <span class="tooltip-icon">ⓘ</span>
-          </span>
+          {{ help_term("max_drawdown", "Max Drawdown") }}
           <svg class="u-color-danger svg-icon" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
         </div>
         <div class="u-color-danger metric-value tabular-nums">
@@ -186,9 +174,7 @@
       <!-- Card Holding Time -->
       <div class="trading-metric-card">
         <div class="metric-header">
-          <span class="tooltip-term" data-tooltip="Thời gian nắm giữ vị thế trung bình từ lúc vào lệnh đến khi đóng hoàn toàn">
-            Thời Gian Giữ Lệnh <span class="tooltip-icon">ⓘ</span>
-          </span>
+          {{ help_term("average_holding_seconds", "Thời Gian Giữ Lệnh") }}
           <svg class="u-color-text-muted svg-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
         </div>
         <div class="u-font-size-1-25rem metric-value tabular-nums">
@@ -229,27 +215,18 @@
         </span>
       </h3>
       {% set chart_ea = selected_trade.get("post_mortem", {}).get("entry_analysis", {}) %}
-      {% if chart_ea.stop_loss_price is not none or chart_ea.take_profit_price is not none %}
-      <div class="u-display-flex u-gap-0-75rem u-font-size-0-8rem chart-legend">
-        <span class="u-display-flex u-align-items-center u-gap-0-25rem">
-          <span class="u-display-inline-block u-width-12px u-height-2px u-background-hex-0ecb81 u-border-top-2px-dashed-hex-0ecb81"></span>
-          <span>Mục tiêu chốt lời (TP)</span>
-        </span>
-        <span class="u-display-flex u-align-items-center u-gap-0-25rem">
-          <span class="u-display-inline-block u-width-12px u-height-2px u-background-hex-f6465d u-border-top-2px-dashed-hex-f6465d"></span>
-          <span>Dừng lỗ bảo vệ (SL)</span>
-        </span>
-      </div>
-      {% endif %}
     </div>
 
     <!-- Canvas biểu đồ Lightweight Charts -->
-    <div id="trade-chart" class="chart-canvas" role="img" aria-label="Biểu đồ nến {{ chart_data.symbol }} với các mốc vào và thoát lệnh"></div>
+    <p id="trade-chart-legend" class="chart-ohlc-legend" data-chart-legend>Rê chuột hoặc chạm vào nến để xem Mở / Cao / Thấp / Đóng.</p>
+    <div id="trade-chart" class="chart-canvas" role="img" aria-label="Biểu đồ nến {{ chart_data.symbol }} với các mốc vào và thoát lệnh" data-stop-title="{{ metric_help_title('chart_stop_line') }}" data-target-title="{{ metric_help_title('chart_target_line') }}" data-entry-title="{{ metric_help_title('chart_entry_line') }}"></div>
 
     <!-- Thanh thông báo trạng thái khi di chuột -->
     <div id="trade-chart-event-detail" class="u-margin-top-0-5rem u-padding-0-5rem-0-85rem u-border-radius-0-375rem u-background-bg-surface-subtle u-font-size-0-85rem u-color-text-muted u-border-1px-solid-border-subtle chart-event-detail tabular-nums" role="status" aria-live="polite">
       ℹ️ Rê chuột hoặc chạm vào nến có đánh dấu để đọc giải thích chi tiết khớp lệnh vào / ra.
     </div>
+    {% set chart_key_timeframe = chart_data.timeframe %}{% set chart_key_entry_line = chart_ea.entry_price is not none %}{% set chart_key_stop = chart_ea.stop_loss_price is not none %}{% set chart_key_target = chart_ea.take_profit_price is not none %}
+    {% include "admin/_trade_chart_key.html" %}
 
     <!-- BÓC TÁCH NGUYÊN NHÂN VÀO LỆNH / ĐÓNG LỆNH & QUẢN TRỊ RỦI RO -->
     <div class="trade-reasoning-panel">
@@ -257,13 +234,13 @@
         <h3>
           <span>🧠 Mổ Xẻ Quyết Định Định Lượng & Quản Trị Rủi Ro</span>
           {% if pm.classification == "OPTIMAL" %}
-            <span class="badge-optimal">⭐ THỰC THI TỐI ƯU</span>
+            <span class="badge-optimal">⭐ THỰC THI TỐI ƯU</span>{{ help_icon("quality_optimal") }}
           {% elif pm.is_deviant %}
-            <span class="badge-deviant">⚠️ SAI LỆCH TÍN HIỆU / RỦI RO CAO</span>
+            <span class="badge-deviant">⚠️ SAI LỆCH TÍN HIỆU / RỦI RO CAO</span>{{ help_icon("quality_deviant") }}
           {% elif pm.classification == "UNVERIFIED" %}
-            <span class="u-background-bg-surface-subtle badge">CHƯA ĐỦ DỮ LIỆU ĐỂ ĐÁNH GIÁ</span>
+            <span class="u-background-bg-surface-subtle badge">CHƯA ĐỦ DỮ LIỆU ĐỂ ĐÁNH GIÁ</span>{{ help_icon("quality_unverified") }}
           {% else %}
-            <span class="u-background-bg-surface-subtle badge">CHẤP NHẬN ĐƯỢC</span>
+            <span class="u-background-bg-surface-subtle badge">CHẤP NHẬN ĐƯỢC</span>{{ help_icon("quality_acceptable") }}
           {% endif %}
         </h3>
         <span class="u-font-size-0-85rem text-muted tabular-nums">Mã lệnh: <code>{{ selected_trade.trade_id }}</code></span>
@@ -293,53 +270,41 @@
             </div>
             <div class="reasoning-kv-item">
               <dt>
-                <span class="tooltip-term" data-tooltip="Giá bình quân gia quyền và tổng khối lượng của các fill vào lệnh trong ledger">
-                  Giá vào &amp; khối lượng <span class="tooltip-icon">ⓘ</span>
-                </span>
+                {{ help_term("entry_price_quantity", "Giá vào & khối lượng") }}
               </dt>
               <dd class="tabular-nums">{% if ea.entry_price is not none %}{{ ea.entry_price | number_vi }}{% if ea.entry_quantity is not none %} × {{ ea.entry_quantity | number_vi }}{% endif %}{% else %}<span class="u-color-text-muted u-font-weight-400">Ledger chưa lưu</span>{% endif %}</dd>
             </div>
             <div class="reasoning-kv-item">
-              <dt>Giá tham chiếu & thời điểm tín hiệu</dt>
+              <dt>{{ help_term("reference_price_signal_time", "Giá tham chiếu & thời điểm tín hiệu") }}</dt>
               <dd class="tabular-nums">{% if ea.reference_price is not none or ea.signal_at %}{% if ea.reference_price is not none %}{{ ea.reference_price | number_vi }}{% endif %}{% if ea.signal_at %} lúc {{ ea.signal_at | local_time }}{% endif %}{% else %}<span class="u-color-text-muted u-font-weight-400">Ledger chưa lưu</span>{% endif %}</dd>
             </div>
             <div class="reasoning-kv-item">
               <dt>
-                <span class="tooltip-term" data-tooltip="Đòn bẩy và tỷ lệ rủi ro tài khoản do nguồn sinh tín hiệu ghi lại; không suy diễn khi thiếu">
-                  Đòn bẩy &amp; rủi ro tài khoản <span class="tooltip-icon">ⓘ</span>
-                </span>
+                {{ help_term("leverage", "Đòn bẩy & rủi ro tài khoản") }}
               </dt>
               <dd class="tabular-nums">{% if ea.target_leverage is not none or ea.account_risk_pct is not none %}{% if ea.target_leverage is not none %}{{ ea.target_leverage }}x{% endif %}{% if ea.account_risk_pct is not none %} (Rủi ro: {{ ea.account_risk_pct | number_vi }}%){% endif %}{% else %}<span class="u-color-text-muted u-font-weight-400">Ledger chưa lưu</span>{% endif %}</dd>
             </div>
             <div class="reasoning-kv-item">
               <dt>
-                <span class="tooltip-term" data-tooltip="Tầng L4 Context Gate: thị trường có xu hướng hay đi ngang và thanh khoản quote volume">
-                  L4 Cửa Bối Cảnh (Context Gate) <span class="tooltip-icon">ⓘ</span>
-                </span>
+                {{ help_term("layer_l4_report", "L4 Cửa Bối Cảnh (Context Gate)") }}
               </dt>
               <dd>{% if ea.context_regime %}<span class="u-background-bg-surface-subtle badge">{% if ea.context_gate_passed is sameas true %}ĐẠT{% elif ea.context_gate_passed is sameas false %}KHÔNG ĐẠT{% else %}CHƯA RÕ{% endif %} ({{ ea.context_regime }})</span>{% else %}<span class="u-color-text-muted u-font-weight-400">Ledger chưa lưu</span>{% endif %}</dd>
             </div>
             <div class="reasoning-kv-item">
               <dt>
-                <span class="tooltip-term" data-tooltip="Tầng L5 Signal Trigger: điểm hình học nến rút chân và phá vỡ mức cản then chốt">
-                  L5 Điểm Kích Hoạt (Trigger Score) <span class="tooltip-icon">ⓘ</span>
-                </span>
+                {{ help_term("layer_l5_report", "L5 Điểm Kích Hoạt (Trigger Score)") }}
               </dt>
               <dd class="tabular-nums">{% if ea.rejection_wick_score is not none or ea.breakout_score is not none %}{% if ea.rejection_wick_score is not none %}Rút chân: {{ ea.rejection_wick_score }}/100{% endif %}{% if ea.breakout_score is not none %} Phá vỡ: {{ ea.breakout_score }}/100{% endif %}{% else %}<span class="u-color-text-muted u-font-weight-400">Ledger chưa lưu</span>{% endif %}</dd>
             </div>
             <div class="reasoning-kv-item">
               <dt>
-                <span class="tooltip-term" data-tooltip="Tầng L6 Zones: tỷ lệ Lợi nhuận / Rủi ro kỳ vọng và vùng giá kế hoạch">
-                  L6 Tỷ Lệ R:R & Kế Hoạch Vùng Giá <span class="tooltip-icon">ⓘ</span>
-                </span>
+                {{ help_term("risk_reward_ratio", "L6 Tỷ Lệ R:R & Kế Hoạch Vùng Giá") }}
               </dt>
               <dd class="tabular-nums">{% if ea.risk_reward_ratio is not none or ea.stop_loss_price is not none or ea.take_profit_price is not none %}{% set zone_parts = [] %}{% if ea.risk_reward_ratio is not none %}{% set _ = zone_parts.append("1 : " ~ ("%.2f" | format(ea.risk_reward_ratio | float))) %}{% endif %}{% if ea.stop_loss_price is not none %}{% set _ = zone_parts.append("SL: " ~ (ea.stop_loss_price | number_vi)) %}{% endif %}{% if ea.take_profit_price is not none %}{% set _ = zone_parts.append("TP: " ~ (ea.take_profit_price | number_vi)) %}{% else %}{% set _ = zone_parts.append("không có mục tiêu chốt lời cố định") %}{% endif %}{{ zone_parts | join(" · ") }}{% else %}<span class="u-color-text-muted u-font-weight-400">Ledger chưa lưu</span>{% endif %}</dd>
             </div>
             <div class="reasoning-kv-item">
               <dt>
-                <span class="tooltip-term" data-tooltip="Ngân sách rủi ro của kế hoạch đã được risk gate duyệt; R = lãi/lỗ ròng chia cho ngân sách này">
-                  Ngân sách rủi ro kế hoạch <span class="tooltip-icon">ⓘ</span>
-                </span>
+                {{ help_term("planned_risk_budget", "Ngân sách rủi ro kế hoạch") }}
               </dt>
               <dd class="tabular-nums">{% if ea.planned_risk_amount is not none %}{{ ea.planned_risk_amount | number_vi }} {{ selected_trade.quote_asset }}{% if pm.exit_analysis.net_pnl_r_multiple is not none %} · kết quả {{ "%.2f" | format(pm.exit_analysis.net_pnl_r_multiple | float) }}R{% endif %}{% else %}<span class="u-color-text-muted u-font-weight-400">Ledger chưa lưu</span>{% endif %}</dd>
             </div>
@@ -357,7 +322,7 @@
           </h4>
           <dl class="reasoning-kv-list">
             <div class="reasoning-kv-item">
-              <dt>Lý do đóng vị thế</dt>
+              <dt>{{ help_term("exit_reason", "Lý do đóng vị thế") }}</dt>
               <dd>
                 {% if selected_trade.exit_reason == "TAKE_PROFIT" %}
                   <span class="badge-tp">🎯 CHỐT LỜI (TP HIT)</span>
@@ -367,6 +332,10 @@
                   <span class="u-background-bg-surface-subtle badge">⏱️ HẾT GIỜ GIỮ</span>
                 {% elif selected_trade.exit_reason == "OPPOSING_SIGNAL" %}
                   <span class="u-background-bg-surface-subtle badge">🔄 ĐẢO CHIỀU TÍN HIỆU</span>
+                {% elif selected_trade.exit_reason == "CHANNEL_EXIT" %}
+                  <span class="u-background-bg-surface-subtle badge">THOÁT THEO KÊNH GIÁ</span>
+                {% elif selected_trade.exit_reason == "FEATURE_EXIT" %}
+                  <span class="u-background-bg-surface-subtle badge">THOÁT THEO CHỈ BÁO</span>
                 {% else %}
                   <span class="u-background-bg-surface-subtle badge">{{ selected_trade.exit_reason or "QUẢN TRỊ" }}</span>
                 {% endif %}
@@ -374,34 +343,32 @@
             </div>
             <div class="reasoning-kv-item">
               <dt>
-                <span class="tooltip-term" data-tooltip="Chênh lệch giá khớp thực tế trên sổ lệnh sàn so với giá phát tín hiệu">
-                  Trượt giá thực tế (Slippage) <span class="tooltip-icon">ⓘ</span>
-                </span>
+                {{ help_term("trade_slippage", "Trượt giá thực tế (Slippage)") }}
               </dt>
               <dd class="tabular-nums{% if pm.classification == "DEVIANT_SLIPPAGE" %} u-color-danger u-font-weight-700{% endif %}">
                 {{ selected_trade.slippage_total }} {{ selected_trade.quote_asset }}{% if pm.exit_analysis.slippage_bps is not none %} ({{ "%.2f" | format(pm.exit_analysis.slippage_bps | float) }} bps trên notional vào lệnh){% else %} (chưa tính được bps: thiếu fill vào lệnh){% endif %}{% if pm.exit_analysis.expected_slippage is not none %} · kế hoạch dự trù {{ pm.exit_analysis.expected_slippage | number_vi }} {{ selected_trade.quote_asset }}{% endif %}
               </dd>
             </div>
             <div class="reasoning-kv-item">
-              <dt>Phí giao dịch & Phí Funding</dt>
+              <dt>{{ help_term("trade_fees_funding", "Phí giao dịch & Phí Funding") }}</dt>
               <dd class="tabular-nums">
                 Phí: {{ selected_trade.fee_total }} | Funding: {{ selected_trade.funding_total }} {{ selected_trade.quote_asset }}
               </dd>
             </div>
             <div class="reasoning-kv-item">
-              <dt>Tổng chi phí thực thi</dt>
+              <dt>{{ help_term("total_cost", "Tổng chi phí thực thi") }}</dt>
               <dd class="u-color-danger tabular-nums">
                 -{{ selected_trade.total_cost }} {{ selected_trade.quote_asset }}
               </dd>
             </div>
             <div class="reasoning-kv-item">
-              <dt>Kết quả Lãi/Lỗ ròng</dt>
+              <dt>{{ help_term("net_pnl", "Kết quả Lãi/Lỗ ròng") }}</dt>
               <dd class="u-font-size-1-1rem u-font-weight-700 tabular-nums {% if selected_trade.net_pnl | float > 0 %}pnl-positive{% elif selected_trade.net_pnl | float < 0 %}pnl-negative{% endif %}">
                 {% if selected_trade.net_pnl | float > 0 %}+{% endif %}{{ selected_trade.net_pnl }} {{ selected_trade.quote_asset }}
               </dd>
             </div>
             <div class="u-border-bottom-none reasoning-kv-item">
-              <dt>Thời gian nắm giữ</dt>
+              <dt>{{ help_term("holding_period", "Thời gian nắm giữ") }}</dt>
               <dd class="tabular-nums text-muted">
                 {{ selected_trade.opened_at | local_time }} ➔ {{ selected_trade.closed_at | local_time }}
               </dd>
@@ -409,6 +376,13 @@
           </dl>
         </div>
       </div>
+
+      <ul class="chart-key" aria-label="Chú giải thuật ngữ kế hoạch và hậu kiểm">
+        <li>{{ help_term("stop_loss") }}</li>
+        <li>{{ help_term("take_profit") }}</li>
+        <li>{{ help_term("r_multiple") }}</li>
+        <li>{{ help_term("execution_quality") }}</li>
+      </ul>
 
       <!-- Khối 3: Hộp Hành Động Phản Thực Nghiệm & Đưa Vào Huấn Luyện AI (AI Retraining Ingestion) -->
       <div class="ai-retraining-card">
@@ -458,6 +432,15 @@
       <span class="u-font-size-0-85rem text-muted">Bấm "Biểu đồ" để phóng to nến và mổ xẻ quyết định</span>
     </div>
 
+    <ul class="chart-key" aria-label="Chú giải các trường của danh sách lệnh">
+      <li>{{ help_term("trade_cost_slippage") }}</li>
+      <li>{{ help_term("exit_reason") }}</li>
+      <li>{{ help_term("execution_quality", "Đánh giá lệnh") }}:</li>
+      <li>{{ help_term("quality_optimal") }}</li>
+      <li>{{ help_term("quality_acceptable") }}</li>
+      <li>{{ help_term("quality_deviant") }}</li>
+      <li>{{ help_term("quality_unverified") }}</li>
+    </ul>
     <div class="mobile-trade-list" aria-label="Giao dịch trong kỳ báo cáo">
       {% for trade in report.trades %}
       {% set m_pm = trade.get("post_mortem", {}) %}
@@ -469,7 +452,7 @@
           {% set trade_pnl_tone = trade.net_pnl | pnl_tone %}
           <div><dt>Lời/lỗ ròng</dt><dd class="pnl-value pnl-value--{{ trade_pnl_tone }}" data-pnl-tone="{{ trade_pnl_tone }}">{% if trade_pnl_tone == "positive" %}+{% endif %}{{ trade.net_pnl | number_vi }} {{ trade.quote_asset }}</dd></div>
           <div><dt>Chi phí / trượt giá</dt><dd>{{ trade.total_cost }} (Trượt: {{ trade.slippage_total }})</dd></div>
-          <div><dt>Lý do đóng</dt><dd>{{ {"STOP_LOSS": "Dừng lỗ", "TAKE_PROFIT": "Chốt lời", "TIME_STOP": "Đóng theo thời gian", "OPPOSING_SIGNAL": "Tín hiệu ngược chiều", "FLATTEN_OPERATION": "Đóng theo thao tác quản trị"}.get(trade.exit_reason, trade.exit_reason) if trade.exit_reason else "Chưa có dữ liệu" }}</dd></div>
+          <div><dt>Lý do đóng</dt><dd>{{ {"STOP_LOSS": "Dừng lỗ", "TAKE_PROFIT": "Chốt lời", "TIME_STOP": "Đóng theo thời gian", "OPPOSING_SIGNAL": "Tín hiệu ngược chiều", "CHANNEL_EXIT": "Thoát theo kênh giá", "FEATURE_EXIT": "Thoát theo chỉ báo", "FLATTEN_OPERATION": "Đóng theo thao tác quản trị"}.get(trade.exit_reason, trade.exit_reason) if trade.exit_reason else "Chưa có dữ liệu" }}</dd></div>
           <div><dt>Đánh giá lệnh</dt><dd>{% if m_pm.classification == "OPTIMAL" %}Tối ưu{% elif m_pm.is_deviant %}Sai lệch{% elif m_pm.classification == "UNVERIFIED" %}Chưa đủ dữ liệu{% else %}Chấp nhận{% endif %}</dd></div>
         </dl>
         <form class="chart-select-form" method="get" action="/admin/reports">
@@ -491,12 +474,12 @@
       <table class="u-width-100pct u-border-collapse-collapse u-font-size-0-875rem trade-table">
         <thead>
           <tr class="u-border-bottom-1px-solid-border-main u-background-bg-surface-subtle u-text-align-left">
-            <th class="u-padding-0-75rem">Cặp / Hướng</th>
-            <th class="u-padding-0-75rem">Thời Điểm Đóng</th>
-            <th class="u-padding-0-75rem u-text-align-right">Lời/Lỗ Ròng</th>
-            <th class="u-padding-0-75rem u-text-align-right">Chi Phí / Trượt Giá</th>
-            <th class="u-padding-0-75rem">Lý Do Đóng</th>
-            <th class="u-padding-0-75rem">Đánh Giá Lệnh</th>
+            <th class="u-padding-0-75rem">{{ help_term("position_symbol_side", "Cặp / Hướng") }}</th>
+            <th class="u-padding-0-75rem">{{ help_term("trade_closed_at", "Thời Điểm Đóng") }}</th>
+            <th class="u-padding-0-75rem u-text-align-right">{{ help_term("net_pnl", "Lời/Lỗ Ròng") }}</th>
+            <th class="u-padding-0-75rem u-text-align-right">{{ help_term("trade_cost_slippage", "Chi Phí / Trượt Giá") }}</th>
+            <th class="u-padding-0-75rem">{{ help_term("exit_reason", "Lý Do Đóng") }}</th>
+            <th class="u-padding-0-75rem">{{ help_term("execution_quality", "Đánh Giá Lệnh") }}</th>
             <th class="u-padding-0-75rem u-text-align-center">Thao Tác</th>
           </tr>
         </thead>
@@ -538,6 +521,10 @@
                 <span class="badge-sl">🛑 Dừng lỗ</span>
               {% elif trade.exit_reason == "TIME_STOP" %}
                 <span class="u-background-bg-surface-subtle badge">⏱️ Hết giờ</span>
+              {% elif trade.exit_reason == "CHANNEL_EXIT" %}
+                <span class="u-background-bg-surface-subtle badge">Thoát theo kênh giá</span>
+              {% elif trade.exit_reason == "FEATURE_EXIT" %}
+                <span class="u-background-bg-surface-subtle badge">Thoát theo chỉ báo</span>
               {% else %}
                 <span class="u-background-bg-surface-subtle badge">{{ trade.exit_reason or "Đóng" }}</span>
               {% endif %}

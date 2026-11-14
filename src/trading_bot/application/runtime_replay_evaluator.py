@@ -57,6 +57,11 @@ from trading_bot.domain.risk.planner import (
     PlanRejected,
     TradePlan,
 )
+from trading_bot.domain.risk.risk_windows import (
+    RISK_LOSS_WINDOW_POLICY,
+    RealizedTradePnlEvent,
+    calculate_loss_windows,
+)
 from trading_bot.domain.strategy.contracts import (
     DecisionSnapshot,
     FeatureQuality,
@@ -64,6 +69,7 @@ from trading_bot.domain.strategy.contracts import (
     StrategyCandidate,
 )
 from trading_bot.domain.strategy.registry import StrategyRegistry
+from trading_bot.domain.strategy.rules_v2 import exit_evidence_spec
 
 ZERO = Decimal("0")
 ONE = Decimal("1")
@@ -71,6 +77,24 @@ ONE = Decimal("1")
 
 class ReplayEvaluationContextError(ValueError):
     """Từ chối replay khi thiếu state hoặc lineage đã ghim."""
+
+
+@dataclass(frozen=True, slots=True)
+class ReplayExitEvidence:
+    """Bằng chứng thoát lệnh point-in-time của một recipe tại một execution bar.
+
+    `channel_low`/`channel_high` là đáy thấp nhất/đỉnh cao nhất của N nến chiến lược đã đóng
+    trước khi execution bar mở. `feature_value` chỉ có khi execution bar đóng cùng lúc với
+    một nến chiến lược, vì feature được tính trên nến chiến lược đã đóng.
+    """
+
+    symbol: str
+    bar_key: str
+    recipe_id: str
+    strategy_bar_closed: bool
+    channel_low: Decimal | None = None
+    channel_high: Decimal | None = None
+    feature_value: Decimal | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,6 +116,7 @@ class ReplayEvaluationContext:
     atr_by_symbol: tuple[tuple[str, Decimal], ...] = ()
     atr_by_bar: tuple[tuple[str, str, Decimal], ...] = ()
     opposing_signal_by_bar: tuple[tuple[str, str, bool | None], ...] = ()
+    exit_evidence_by_bar: tuple[ReplayExitEvidence, ...] = ()
 
 
 ContextProvider = Callable[[DecisionSnapshot], ReplayEvaluationContext]
@@ -122,8 +147,14 @@ class ReplayAccountState:
         self._initial_pending_count = context.risk_state.pending_reservation_count
         self._initial_realized_loss_today = context.risk_state.realized_loss_today
         self._initial_realized_loss_rolling = context.risk_state.realized_loss_rolling
+        self._seed_captured_at = context.account.captured_at
         self._closed_pnl: dict[str, Decimal] = {}
+        self._closed_at: dict[str, datetime] = {}
         self._unrealized_pnl: Decimal = ZERO
+
+    def record_close(self, position_id: str, closed_at: datetime) -> None:
+        """Ghi mốc đóng vị thế (giờ đóng của execution bar) để xếp lỗ vào đúng cửa sổ."""
+        self._closed_at.setdefault(position_id, closed_at)
 
     @property
     def unrealized_pnl(self) -> Decimal:
@@ -190,6 +221,8 @@ class ReplayAccountState:
                         unrealized_pnl += pos_unrealized
             elif position is not None and position.is_closed:
                 self._closed_pnl[position.position_id] = position.net_realized_pnl
+                # Vị thế đóng ngoài vòng monitor: lấy mốc đánh giá hiện tại, không lùi về quá khứ.
+                self._closed_at.setdefault(position.position_id, context.evaluated_at)
 
             if (
                 order.status
@@ -210,8 +243,31 @@ class ReplayAccountState:
 
         self._unrealized_pnl = unrealized_pnl
         realized_pnl = sum(self._closed_pnl.values(), ZERO)
-        realized_loss = sum(
-            (-amount for amount in self._closed_pnl.values() if amount < ZERO), ZERO
+        # Lỗ ngày reset lúc 00:00 UTC và lỗ lũy kế trượt 24 giờ, cùng một hàm với runtime.
+        # Trước đây replay cộng dồn mọi khoản lỗ từ đầu kỳ nên chạm trần lỗ ngày rồi không
+        # bao giờ mở lại, làm backtest dài ngày ngừng giao dịch sai.
+        windows = calculate_loss_windows(
+            (
+                RealizedTradePnlEvent(
+                    trade_id=position_id,
+                    closed_at=self._closed_at[position_id],
+                    net_pnl=amount,
+                )
+                for position_id, amount in self._closed_pnl.items()
+            ),
+            as_of=context.evaluated_at,
+            policy=RISK_LOSS_WINDOW_POLICY,
+        )
+        # Lỗ có sẵn trong seed không có mốc từng lệnh: tính vào cửa sổ chứa thời điểm chụp seed.
+        seed_loss_today = (
+            self._initial_realized_loss_today
+            if self._seed_captured_at >= windows.daily_window_start
+            else ZERO
+        )
+        seed_loss_rolling = (
+            self._initial_realized_loss_rolling
+            if self._seed_captured_at >= windows.rolling_window_start
+            else ZERO
         )
         account = replace(
             context.account,
@@ -223,8 +279,8 @@ class ReplayAccountState:
             equity=account.equity,
             available_margin=account.available_margin,
             open_exposures=tuple(open_exposures),
-            realized_loss_today=self._initial_realized_loss_today + realized_loss,
-            realized_loss_rolling=self._initial_realized_loss_rolling + realized_loss,
+            realized_loss_today=seed_loss_today + windows.realized_loss_today,
+            realized_loss_rolling=seed_loss_rolling + windows.realized_loss_rolling,
             open_position_count=open_count,
             pending_reservation_initial_margin=pending_margin,
             pending_reservation_risk=pending_risk,
@@ -815,6 +871,26 @@ class RuntimeReplayEvaluator:
             for _, _, signal in context.opposing_signal_by_bar
         ):
             raise ReplayEvaluationContextError("Opposing signal theo bar phải bool hoặc None.")
+        exit_keys = tuple(
+            (item.symbol, item.bar_key, item.recipe_id) for item in context.exit_evidence_by_bar
+        )
+        if (
+            len(exit_keys) != len(set(exit_keys))
+            or not {(symbol, bar_key) for symbol, bar_key, _ in exit_keys} <= event_keys
+        ):
+            raise ReplayEvaluationContextError(
+                "Bằng chứng thoát theo bar bị trùng hoặc không thuộc event."
+            )
+        for item in context.exit_evidence_by_bar:
+            values = (item.channel_low, item.channel_high, item.feature_value)
+            if any(value is not None and not value.is_finite() for value in values):
+                raise ReplayEvaluationContextError("Bằng chứng thoát theo bar phải hữu hạn.")
+            if (
+                item.channel_low is not None
+                and item.channel_high is not None
+                and item.channel_low > item.channel_high
+            ):
+                raise ReplayEvaluationContextError("Kênh thoát có đáy cao hơn đỉnh.")
 
     def _advance_execution(
         self, context: ReplayEvaluationContext, snapshot: DecisionSnapshot
@@ -825,6 +901,10 @@ class RuntimeReplayEvaluator:
         atr_by_bar = {(symbol, bar_key): atr for symbol, bar_key, atr in context.atr_by_bar}
         opposing_by_bar = {
             (symbol, bar_key): signal for symbol, bar_key, signal in context.opposing_signal_by_bar
+        }
+        exit_evidence = {
+            (item.symbol, item.bar_key, item.recipe_id): item
+            for item in context.exit_evidence_by_bar
         }
         events = sorted(
             context.execution_events,
@@ -844,10 +924,14 @@ class RuntimeReplayEvaluator:
                     continue
                 atr = atr_by_bar.get(event_key, atr_by_symbol.get(event.symbol))
                 opposing_signal = opposing_by_bar.get(event_key, context.opposing_signal)
+                exit_channel_level, exit_feature_value, strategy_bar_closed = (
+                    _exit_evidence_for_position(position, event, exit_evidence)
+                )
                 fixed_exit = _fixed_exit_preempts_optional_context(
                     position,
                     event,
                     opposing_signal,
+                    strategy_bar_closed=strategy_bar_closed,
                 )
                 if (
                     not fixed_exit
@@ -870,7 +954,12 @@ class RuntimeReplayEvaluator:
                     event,
                     opposing_signal=opposing_signal is True,
                     atr=atr,
+                    exit_channel_level=exit_channel_level,
+                    exit_feature_value=exit_feature_value,
+                    strategy_bar_closed=strategy_bar_closed,
                 )
+                if result.position.is_closed and self._account_state is not None:
+                    self._account_state.record_close(result.position.position_id, event.closed_at)
                 if (
                     not result.position.is_closed
                     or result.position.position_id in self._emitted_trades
@@ -916,10 +1005,49 @@ class RuntimeReplayEvaluator:
         return closed_trades[0] if closed_trades else None
 
 
+def _exit_evidence_for_position(
+    position: PaperPosition,
+    event: PaperBar,
+    evidence_by_key: Mapping[tuple[str, str, str], ReplayExitEvidence],
+) -> tuple[Decimal | None, Decimal | None, bool]:
+    """Chọn bằng chứng thoát cho vị thế; recipe không khai báo thì giữ hành vi v1.
+
+    Recipe v2 bắt buộc có bằng chứng tại mọi execution bar: thiếu thì dừng replay thay vì âm
+    thầm bỏ qua điều kiện thoát (đó chính là lỗi của v1).
+    """
+    spec = exit_evidence_spec(position.recipe.recipe_id)
+    if spec is None:
+        return None, None, True
+    evidence = evidence_by_key.get((event.symbol, event.bar_key, position.recipe.recipe_id))
+    if evidence is None:
+        raise ReplayEvaluationContextError(
+            "Thiếu bằng chứng thoát point-in-time cho recipe tại execution bar."
+        )
+    channel_level: Decimal | None = None
+    if spec.channel_period is not None:
+        channel_level = (
+            evidence.channel_low if position.direction == "long" else evidence.channel_high
+        )
+        if channel_level is None:
+            raise ReplayEvaluationContextError(
+                "Thiếu đủ nến chiến lược đã đóng để tính kênh thoát tại execution bar."
+            )
+    feature_value: Decimal | None = None
+    if spec.feature_name is not None and evidence.strategy_bar_closed:
+        feature_value = evidence.feature_value
+        if feature_value is None:
+            raise ReplayEvaluationContextError(
+                "Thiếu feature thoát lệnh tại thời điểm nến chiến lược đóng."
+            )
+    return channel_level, feature_value, evidence.strategy_bar_closed
+
+
 def _fixed_exit_preempts_optional_context(
     position: PaperPosition,
     event: PaperBar,
     opposing_signal: bool | None,
+    *,
+    strategy_bar_closed: bool = True,
 ) -> bool:
     """Nhận biết stop/target/time exit vốn không cần ATR hay tín hiệu đối nghịch."""
     if position.direction == "long":
@@ -928,7 +1056,7 @@ def _fixed_exit_preempts_optional_context(
     else:
         stop_hit = event.high >= position.stop_price
         target_hit = position.target_price is not None and event.low <= position.target_price
-    time_stop_due = position.bars_held + 1 >= position.recipe.max_hold_bars
+    time_stop_due = strategy_bar_closed and position.bars_held + 1 >= position.recipe.max_hold_bars
     opposing_exit = position.recipe.opposite_signal_exit and opposing_signal is True
     return stop_hit or target_hit or time_stop_due or opposing_exit
 

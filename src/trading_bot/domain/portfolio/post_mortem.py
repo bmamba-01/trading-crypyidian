@@ -40,6 +40,8 @@ EXIT_REASON_LABELS_VI = {
     "STOP_LOSS": "Cắt lỗ bảo vệ vốn",
     "TIME_STOP": "Đóng theo thời gian nắm giữ",
     "OPPOSING_SIGNAL": "Tín hiệu kỹ thuật đảo chiều",
+    "CHANNEL_EXIT": "Thoát khi giá chạm biên ngược của kênh Donchian",
+    "FEATURE_EXIT": "Thoát khi chỉ báo hồi về ngưỡng đã định",
     "FLATTEN_OPERATION": "Đóng theo thao tác quản trị khẩn cấp",
 }
 
@@ -299,7 +301,8 @@ def evaluate_trade_post_mortem(
 
     `plan` là kế hoạch đã được risk gate duyệt của chính trade này (`trade_plan.payload`): giá
     stop/mục tiêu, đòn bẩy và ngân sách rủi ro thật. Khi có, nó là nguồn cho SL/TP, đòn bẩy, R:R
-    và cho `planned_risk_amount` nếu nơi gọi không truyền riêng.
+    và cho `planned_risk_amount` nếu nơi gọi không truyền riêng: ưu tiên `estimated_loss` (1R
+    thật của khối lượng đã duyệt), thiếu mới dùng trần `risk_budget`.
 
     Không vi phạm quy tắc nào kiểm được: lỗ ròng → `ACCEPTABLE`, còn lại → `OPTIMAL`. Thiếu PnL
     ròng hoặc không quy tắc nào kiểm được → `UNVERIFIED`.
@@ -350,7 +353,11 @@ def evaluate_trade_post_mortem(
     risk_amount = (
         planned_risk_amount
         if planned_risk_amount and planned_risk_amount > 0
-        else _positive_decimal(plan_values.get("risk_budget"))
+        # 1R thật là mức lỗ ước tính của đúng khối lượng đã duyệt (gồm phí, funding, trượt giá).
+        # `risk_budget` chỉ là trần ngân sách: làm tròn khối lượng xuống khiến 1R thật nhỏ hơn,
+        # nên chia PnL cho trần sẽ báo R đẹp hơn thực tế.
+        else _positive_decimal(plan_values.get("estimated_loss"))
+        or _positive_decimal(plan_values.get("risk_budget"))
     )
 
     slippage_bps = (

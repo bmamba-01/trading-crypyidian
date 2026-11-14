@@ -18,13 +18,14 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from playwright.sync_api import expect, sync_playwright
+from playwright.sync_api import Page, expect, sync_playwright
 
 from tests.e2e.csp_harness import (
     browser_violations,  # noqa: F401 - fixture nạp qua usefixtures
     install_security_headers,
     watch_browser_violations,
 )
+from trading_bot.admin.metric_help import HELP
 from trading_bot.admin.presentation import label_vi, local_time, number_vi, pnl_tone
 from trading_bot.admin.web_router import router as admin_web_router
 from trading_bot.application.learning_post_mortem import LearningPostMortemService
@@ -54,6 +55,48 @@ BOT_ID = UUID("77117cc4-6c7f-407e-8f23-948d740a46c2")
 TRADE_ID = UUID("11223344-5566-7788-99aa-bbccddeeff00")
 
 pytestmark = pytest.mark.usefixtures("browser_violations")
+
+
+def assert_metric_tooltip(page: Page, key: str, *, mode: str) -> None:
+    """Mở chú giải của một chỉ số bằng focus, bấm chuột hoặc chạm rồi đóng bằng Escape.
+
+    Nội dung phải khớp từ điển phía máy chủ; khi tooltip mở, trang không được tràn ngang và
+    tooltip phải nằm trọn trong khung nhìn.
+    """
+    trigger = page.locator(f'button.metric-help[data-metric-help="{key}"]:visible').first
+    trigger.scroll_into_view_if_needed()
+    tooltip_id = trigger.get_attribute("aria-describedby")
+    assert tooltip_id
+    tooltip = page.locator(f"#{tooltip_id}")
+    expect(tooltip).to_have_attribute("role", "tooltip")
+    expect(tooltip).to_be_hidden()
+    expect(trigger).to_have_attribute("aria-expanded", "false")
+
+    if mode == "focus":
+        trigger.focus()
+    elif mode == "click":
+        trigger.click()
+    elif mode == "tap":
+        trigger.tap()
+    else:  # pragma: no cover - lỗi viết test
+        raise AssertionError(mode)
+
+    expect(tooltip).to_be_visible()
+    expect(trigger).to_have_attribute("aria-expanded", "true")
+    entry = HELP[key]
+    expect(tooltip).to_contain_text(entry.title_vi)
+    expect(tooltip).to_contain_text(entry.definition_vi)
+    expect(tooltip).to_contain_text(entry.limits_vi)
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), (key, mode)
+    box = tooltip.bounding_box()
+    viewport = page.viewport_size
+    assert box is not None and viewport is not None
+    assert box["x"] >= 0 and box["x"] + box["width"] <= viewport["width"], (key, mode, box)
+    assert box["y"] >= 0 and box["y"] + box["height"] <= viewport["height"], (key, mode, box)
+
+    page.keyboard.press("Escape")
+    expect(tooltip).to_be_hidden()
+    expect(trigger).to_have_attribute("aria-expanded", "false")
 
 
 class MockRevampAuthService:
@@ -511,17 +554,27 @@ def test_trading_revamp_playwright_desktop_and_mobile(revamp_server_url: str) ->
 
         # 1.3 Kiểm tra Lưới Trading Metric Cards và Tooltips
         assert page.locator("text=Tài Sản Ký Quỹ / Định Giá:").is_visible()
-        assert page.locator("text=Lời / Lỗ Ròng (Net PnL)").is_visible()
-        assert page.locator("text=Tỷ Lệ Thắng (Win Rate)").is_visible()
-        assert page.locator("text=Profit Factor").is_visible()
-        assert page.locator("text=Max Drawdown").is_visible()
-        assert page.locator("text=Thời Gian Giữ Lệnh").first.is_visible()
+        assert page.get_by_role("button", name="Lời / Lỗ Ròng (Net PnL)", exact=True).is_visible()
+        assert page.get_by_role("button", name="Tỷ Lệ Thắng (Win Rate)", exact=True).is_visible()
+        assert page.get_by_role("button", name="Profit Factor", exact=True).is_visible()
+        assert page.get_by_role("button", name="Max Drawdown", exact=True).is_visible()
+        assert page.get_by_role("button", name="Thời Gian Giữ Lệnh", exact=True).is_visible()
 
-        # Kiểm tra Tooltips có đầy đủ thuộc tính data-tooltip
-        tooltips = page.locator(".tooltip-term")
-        assert tooltips.count() >= 4
-        first_tooltip = tooltips.first.get_attribute("data-tooltip")
-        assert first_tooltip is not None and len(first_tooltip) > 5
+        # Chú giải chỉ số: nút thật có aria-describedby, mở bằng bàn phím và chuột, Escape đóng.
+        assert page.locator("[data-tooltip]").count() == 0
+        assert page.locator("button.metric-help").count() >= 20
+        for key in ("win_rate_percent", "profit_factor", "max_drawdown"):
+            assert_metric_tooltip(page, key, mode="focus")
+            assert_metric_tooltip(page, key, mode="click")
+        assert_metric_tooltip(page, "daily_pnl_calendar", mode="focus")
+        assert_metric_tooltip(page, "report_window_start", mode="click")
+        # Tab từ ô nhập kế trước phải đưa focus bàn phím tới nút chú giải.
+        page.locator("#bot_id").focus()
+        page.keyboard.press("Tab")
+        expect(
+            page.locator('button.metric-help[data-metric-help="report_window_start"]')
+        ).to_be_focused()
+        page.keyboard.press("Escape")
 
         # Chụp màn hình trang Báo cáo với Trading Design System
         page.screenshot(
@@ -539,15 +592,65 @@ def test_trading_revamp_playwright_desktop_and_mobile(revamp_server_url: str) ->
         assert page.locator("#trade-chart").is_visible()
         assert page.locator("#trade-chart-event-detail").is_visible()
 
+        # 1.4b Chú thích tĩnh và chú giải theo con trỏ của biểu đồ nến (tiếng Việt)
+        expect(page.locator("#trade-chart")).to_have_attribute("data-chart-ready", "true")
+        chart_key = page.locator(".trade-chart-section .chart-key").first
+        for caption in (
+            "Nến xanh",
+            "Mũi tên vào lệnh",
+            "Mốc đóng lệnh",
+            "Khung thời gian: 1h",
+            "Nguồn nến nội bộ",
+        ):
+            expect(chart_key).to_contain_text(caption)
+        # Ledger không có SL/TP cho giao dịch này nên không được chú thích đường không tồn tại.
+        assert page.locator('[data-metric-help="chart_stop_line"]').count() == 0
+        assert page.locator('[data-metric-help="chart_target_line"]').count() == 0
+        assert_metric_tooltip(page, "chart_entry_marker", mode="focus")
+        assert_metric_tooltip(page, "candle_ohlc", mode="click")
+
+        legend = page.locator("#trade-chart-legend")
+        expect(legend).to_contain_text("Rê chuột hoặc chạm vào nến")
+        page.locator("#trade-chart").scroll_into_view_if_needed()
+        chart_box = page.locator("#trade-chart").bounding_box()
+        assert chart_box is not None
+        plot_y = chart_box["y"] + chart_box["height"] / 2
+        for x_position in range(
+            int(chart_box["x"]) + 40, int(chart_box["x"] + chart_box["width"]) - 80, 12
+        ):
+            page.mouse.move(x_position, plot_y)
+        expect(legend).to_have_attribute("data-legend-source", "crosshair")
+        for caption in (
+            "Mở",
+            "Cao",
+            "Thấp",
+            "Đóng",
+            "Thay đổi so với giá mở",
+            "Khối lượng",
+            "Asia/Ho_Chi_Minh",
+        ):
+            expect(legend).to_contain_text(caption)
+        page.mouse.move(2, 2)
+
         # 1.5 Kiểm tra Thẻ "Mổ Xẻ Quyết Định Định Lượng & Quản Trị Rủi Ro"
         assert page.locator("text=Mổ Xẻ Quyết Định Định Lượng & Quản Trị Rủi Ro").is_visible()
         assert page.locator("text=Vì Sao Vào Vị Thế?").is_visible()
         assert page.locator("text=Vì Sao Thoát Vị Thế?").is_visible()
-        assert page.locator("text=L4 Cửa Bối Cảnh (Context Gate)").is_visible()
-        assert page.locator("text=L5 Điểm Kích Hoạt (Trigger Score)").is_visible()
-        assert page.locator("text=L6 Tỷ Lệ R:R & Kế Hoạch Vùng Giá").is_visible()
-        assert page.locator("text=Trượt giá thực tế (Slippage)").is_visible()
-        assert page.locator("text=Đòn bẩy & rủi ro tài khoản").is_visible()
+        assert page.get_by_role(
+            "button", name="L4 Cửa Bối Cảnh (Context Gate)", exact=True
+        ).is_visible()
+        assert page.get_by_role(
+            "button", name="L5 Điểm Kích Hoạt (Trigger Score)", exact=True
+        ).is_visible()
+        assert page.get_by_role(
+            "button", name="L6 Tỷ Lệ R:R & Kế Hoạch Vùng Giá", exact=True
+        ).is_visible()
+        assert page.get_by_role(
+            "button", name="Trượt giá thực tế (Slippage)", exact=True
+        ).is_visible()
+        assert page.get_by_role(
+            "button", name="Đòn bẩy & rủi ro tài khoản", exact=True
+        ).is_visible()
         # Ledger PAPER không lưu L4–L6, đòn bẩy hay SL/TP: panel phải ghi rõ thay vì tự điền.
         reasoning_panel = page.locator(".trade-reasoning-panel")
         expect(reasoning_panel.get_by_text("Ledger chưa lưu", exact=True).first).to_be_visible()
@@ -609,6 +712,27 @@ def test_trading_revamp_playwright_desktop_and_mobile(revamp_server_url: str) ->
         assert page_m.locator("text=Tài Sản Ký Quỹ / Định Giá:").is_visible()
         assert page_m.locator("#trade-chart").is_visible()
         assert page_m.locator("text=Mổ Xẻ Quyết Định Định Lượng & Quản Trị Rủi Ro").is_visible()
+
+        # Chú giải mở bằng chạm trên di động, không làm tràn ngang ở 390px và 360px
+        assert page_m.evaluate("document.documentElement.scrollWidth <= innerWidth")
+        for key in ("net_pnl", "max_drawdown", "trade_slippage", "chart_exit_marker"):
+            assert_metric_tooltip(page_m, key, mode="tap")
+        tapped = page_m.locator(
+            'button.metric-help[data-metric-help="profit_factor"]:visible'
+        ).first
+        tapped.scroll_into_view_if_needed()
+        tapped.tap()
+        open_tooltip = page_m.locator(f"#{tapped.get_attribute('aria-describedby')}")
+        expect(open_tooltip).to_be_visible()
+        page_m.screenshot(path=str(SCREENSHOTS_DIR / "26_metric_tooltip_mobile.png"))
+        # Chạm ra ngoài phải đóng tooltip đang ghim.
+        page_m.locator("#report-results-heading").tap()
+        expect(open_tooltip).to_be_hidden()
+        page_m.set_viewport_size({"width": 360, "height": 780})
+        assert page_m.evaluate("document.documentElement.scrollWidth <= innerWidth")
+        for key in ("average_holding_seconds", "execution_quality", "slippage_total"):
+            assert_metric_tooltip(page_m, key, mode="tap")
+        page_m.set_viewport_size({"width": 390, "height": 844})
 
         # Chụp screenshots mobile
         page_m.screenshot(
@@ -677,6 +801,17 @@ def test_bot_detail_trading_revamp_playwright_desktop_and_mobile(
         assert page.locator("#kpi-profit-factor").is_visible()
         assert page.locator("#kpi-max-drawdown").is_visible()
         assert page.locator("#bot-trading-data-unavailable").count() == 0
+        for key in ("open_positions_count", "expectancy_per_trade", "trade_entry_price"):
+            assert_metric_tooltip(page, key, mode="focus")
+            assert_metric_tooltip(page, key, mode="click")
+        hovered = page.locator('button.metric-help[data-metric-help="max_drawdown"]:visible').first
+        hovered.hover()
+        hover_tooltip = page.locator(f"#{hovered.get_attribute('aria-describedby')}")
+        expect(hover_tooltip).to_be_visible()
+        expect(hover_tooltip).to_contain_text("mark-to-market")
+        page.screenshot(path=str(SCREENSHOTS_DIR / "27_metric_tooltip_desktop.png"))
+        page.keyboard.press("Escape")
+        expect(hover_tooltip).to_be_hidden()
 
         # 1.4 Biểu đồ nến của giao dịch đã đóng gần nhất được vẽ thật (thư viện từ /static)
         expect(page.locator("#trade-chart")).to_have_attribute("data-chart-ready", "true")
@@ -752,6 +887,13 @@ def test_bot_detail_trading_revamp_playwright_desktop_and_mobile(
         expect(page_m.locator("#trade-chart")).to_have_attribute("data-chart-ready", "true")
         assert page_m.locator("#open-positions-heading").is_visible()
         assert page_m.evaluate("document.documentElement.scrollWidth <= innerWidth")
+        for key in ("win_rate_percent", "max_drawdown", "quality_unverified", "chart_timeframe"):
+            assert_metric_tooltip(page_m, key, mode="tap")
+        page_m.set_viewport_size({"width": 360, "height": 780})
+        assert page_m.evaluate("document.documentElement.scrollWidth <= innerWidth")
+        for key in ("net_pnl", "trade_exit_price"):
+            assert_metric_tooltip(page_m, key, mode="tap")
+        page_m.set_viewport_size({"width": 390, "height": 844})
 
         # Chụp màn hình Mobile
         page_m.screenshot(

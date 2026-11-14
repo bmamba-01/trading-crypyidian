@@ -3,6 +3,7 @@
 {% block head_extra %}<meta name="robots" content="noindex, nofollow">{% endblock %}
 {% block heading %}Chẩn đoán hiệu năng PAPER{% endblock %}
 {% block content %}
+{% from "admin/_metric_help.html" import help_term %}
   <div class="paper-performance-page" id="paper-performance-page">
     <section class="paper-performance-notice" aria-labelledby="paper-performance-notice-title">
       <div class="paper-performance-notice-mark" aria-hidden="true">P</div>
@@ -68,13 +69,13 @@
                       <span class="paper-performance-cohort-status paper-performance-cohort-status--{{ cohort.status }}">{{ "Đủ ngưỡng" if cohort.status == "healthy" else "Suy giảm" if cohort.status == "degraded" else "Chưa kết luận" }}</span>
                     </div>
                     <dl class="paper-performance-metrics">
-                      <div><dt>Outcome đóng</dt><dd>{{ cohort.covered_outcome_count }}</dd></div>
-                      <div><dt>Intent trưởng thành</dt><dd>{{ cohort.eligible_decision_count }}</dd></div>
-                      <div><dt>Độ phủ</dt><dd>{{ (cohort.coverage|float * 100)|round(1) }}%</dd></div>
-                      <div><dt>Brier quan sát / TEST</dt><dd>{{ cohort.observed_brier if cohort.observed_brier is not none else "—" }} / {{ cohort.baseline_brier }}</dd></div>
-                      <div><dt>Δ Brier</dt><dd class="{{ 'paper-performance-negative' if cohort.brier_regression is not none and cohort.brier_regression|float > 0.01 else 'paper-performance-positive' }}">{{ cohort.brier_regression if cohort.brier_regression is not none else "—" }}</dd></div>
-                      <div><dt>Log-loss quan sát / TEST</dt><dd>{{ cohort.observed_log_loss if cohort.observed_log_loss is not none else "—" }} / {{ cohort.baseline_log_loss }}</dd></div>
-                      <div><dt>Δ Log-loss</dt><dd class="{{ 'paper-performance-negative' if cohort.log_loss_regression is not none and cohort.log_loss_regression|float > 0.01 else 'paper-performance-positive' }}">{{ cohort.log_loss_regression if cohort.log_loss_regression is not none else "—" }}</dd></div>
+                      <div><dt>{{ help_term("paper_covered_outcomes", "Outcome đóng") }}</dt><dd>{{ cohort.covered_outcome_count }}</dd></div>
+                      <div><dt>{{ help_term("paper_eligible_decisions", "Intent trưởng thành") }}</dt><dd>{{ cohort.eligible_decision_count }}</dd></div>
+                      <div><dt>{{ help_term("paper_coverage", "Độ phủ") }}</dt><dd>{{ (cohort.coverage|float * 100)|round(1) }}%</dd></div>
+                      <div><dt>{{ help_term("paper_brier", "Brier quan sát / TEST") }}</dt><dd>{{ cohort.observed_brier if cohort.observed_brier is not none else "—" }} / {{ cohort.baseline_brier }}</dd></div>
+                      <div><dt>{{ help_term("paper_brier_delta", "Δ Brier") }}</dt><dd class="{{ 'paper-performance-negative' if cohort.brier_regression is not none and cohort.brier_regression|float > 0.01 else 'paper-performance-positive' }}">{{ cohort.brier_regression if cohort.brier_regression is not none else "—" }}</dd></div>
+                      <div><dt>{{ help_term("paper_log_loss", "Log-loss quan sát / TEST") }}</dt><dd>{{ cohort.observed_log_loss if cohort.observed_log_loss is not none else "—" }} / {{ cohort.baseline_log_loss }}</dd></div>
+                      <div><dt>{{ help_term("paper_log_loss_delta", "Δ Log-loss") }}</dt><dd class="{{ 'paper-performance-negative' if cohort.log_loss_regression is not none and cohort.log_loss_regression|float > 0.01 else 'paper-performance-positive' }}">{{ cohort.log_loss_regression if cohort.log_loss_regression is not none else "—" }}</dd></div>
                     </dl>
                     <div class="paper-performance-coverage" role="img" aria-label="Độ phủ trưởng thành {{ (cohort.coverage|float * 100)|round(1) }} phần trăm; ngưỡng yêu cầu 80 phần trăm">
                       <span data-coverage-percent="{{ [100, cohort.coverage|float * 100]|min }}"></span>

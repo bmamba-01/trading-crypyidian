@@ -144,14 +144,14 @@ def test_planner_builds_decimal_plan_with_adverse_costs_once_and_exchange_steps(
 
 
 def test_planner_reserves_exit_slippage_without_double_counting_entry() -> None:
-    baseline = TradePlanner().plan(_candidate(), _settings(), _account(), (), _costs(), now=NOW)
+    # Recipe trailing không có target nên cổng R:R ròng không can thiệp vào phép kiểm chi phí.
+    candidate = _candidate(recipe=ExitRecipe("exit-trailing-v1", 2, trailing_atr_multiple=3))
+    baseline = TradePlanner().plan(candidate, _settings(), _account(), (), _costs(), now=NOW)
     stressed_costs = _costs(
         entry_slippage_rate=Decimal("0.01"),
         exit_slippage_rate=Decimal("0.01"),
     )
-    stressed = TradePlanner().plan(
-        _candidate(), _settings(), _account(), (), stressed_costs, now=NOW
-    )
+    stressed = TradePlanner().plan(candidate, _settings(), _account(), (), stressed_costs, now=NOW)
 
     assert isinstance(baseline, TradePlan)
     assert isinstance(stressed, TradePlan)
@@ -168,6 +168,37 @@ def test_planner_reserves_exit_slippage_without_double_counting_entry() -> None:
     assert stressed.estimated_loss == expected_loss
     assert stressed.estimated_loss <= stressed.risk_budget
     assert stressed.quantity <= baseline.quantity
+
+
+def test_planner_rejects_target_plan_whose_net_reward_is_below_net_risk() -> None:
+    # Trượt giá 1% đẩy entry lên 101 trong khi stop/target neo theo giá tham chiếu 100:
+    # thưởng gộp 5, rủi ro gộp 5, sau phí và trượt giá thoát R:R ròng chỉ còn khoảng 0,59.
+    costs = _costs(entry_slippage_rate=Decimal("0.01"), exit_slippage_rate=Decimal("0.01"))
+
+    result = TradePlanner().plan(_candidate(), _settings(), _account(), (), costs, now=NOW)
+
+    assert isinstance(result, PlanRejected)
+    assert result.reason_code == "NET_REWARD_RISK_BELOW_MINIMUM"
+    assert "0.59" in result.detail_vi
+
+
+def test_planner_net_reward_risk_gate_uses_costs_on_both_sides() -> None:
+    # Stop 2 ATR, target 2 ATR: R:R gộp đúng 1,0 nhưng chi phí làm R:R ròng < 1 → từ chối.
+    symmetric = _candidate(recipe=ExitRecipe("exit-symmetric-v1", 2, take_profit_atr_multiple=2))
+    free = _costs(
+        entry_fee_rate=Decimal("0"),
+        exit_fee_rate=Decimal("0"),
+        adverse_funding_per_unit=Decimal("0"),
+        entry_slippage_rate=Decimal("0"),
+    )
+
+    with_costs = TradePlanner().plan(symmetric, _settings(), _account(), (), _costs(), now=NOW)
+    without_costs = TradePlanner().plan(symmetric, _settings(), _account(), (), free, now=NOW)
+
+    assert isinstance(with_costs, PlanRejected)
+    assert with_costs.reason_code == "NET_REWARD_RISK_BELOW_MINIMUM"
+    # Không chi phí thì R:R ròng đúng bằng ngưỡng 1,0 và được chấp nhận (so sánh >=).
+    assert isinstance(without_costs, TradePlan)
 
 
 def test_planner_rejects_nonpositive_rounded_stop() -> None:
@@ -251,3 +282,34 @@ def test_planner_reserves_remaining_open_risk_budget_and_rejects_stale_market_da
     )
     assert isinstance(stale, PlanRejected)
     assert stale.reason_code == "MARKET_DATA_STALE"
+
+
+def test_funding_reserve_scales_with_notional_rate_and_expected_periods() -> None:
+    # Recipe trailing để chỉ đo phần dự trù funding, không dính cổng R:R.
+    candidate = _candidate(recipe=ExitRecipe("exit-trailing-v1", 2, trailing_atr_multiple=3))
+    flat = _costs(adverse_funding_per_unit=Decimal("0"))
+    proportional = _costs(
+        adverse_funding_per_unit=Decimal("0"),
+        adverse_funding_rate=Decimal("0.0001"),
+        expected_funding_periods=3,
+    )
+
+    baseline = TradePlanner().plan(candidate, _settings(), _account(), (), flat, now=NOW)
+    reserved = TradePlanner().plan(candidate, _settings(), _account(), (), proportional, now=NOW)
+
+    assert isinstance(baseline, TradePlan)
+    assert isinstance(reserved, TradePlan)
+    multiplier = reserved.exchange_rules.contract_multiplier
+    # Binance: funding = giá trị danh nghĩa × rate, tính cho từng kỳ trong thời gian giữ.
+    per_unit = reserved.entry_price * multiplier * Decimal("0.0001") * 3
+    assert reserved.adverse_funding_cost == reserved.quantity * per_unit
+    assert baseline.adverse_funding_cost == Decimal("0")
+    assert reserved.quantity <= baseline.quantity
+    assert proportional.funding_per_unit(Decimal("0.1"), Decimal("1")) == Decimal("0.00003")
+
+
+def test_cost_model_rejects_invalid_funding_reserve() -> None:
+    with pytest.raises(ValueError, match="Số kỳ funding"):
+        _costs(expected_funding_periods=-1)
+    with pytest.raises(ValueError, match="không âm"):
+        _costs(adverse_funding_rate=Decimal("-0.0001"))

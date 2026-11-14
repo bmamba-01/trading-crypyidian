@@ -282,6 +282,12 @@ class PaperMonitorEvidence:
     atr: Decimal | None
     strategy_settings_version_id: str | None = None
     strategy_parameters: tuple[tuple[str, int], ...] = ()
+    # Evidence cho các exit mà recipe khai báo; provider chỉ điền khi release của vị thế có
+    # hiệu lực exit đó (`application.strategy_exit_evidence`). `None` nghĩa là không áp dụng.
+    exit_channel_level: Decimal | None = None
+    exit_feature_value: Decimal | None = None
+    # Nến monitor có khép một nến của timeframe chiến lược hay không (đơn vị `max_hold_bars`).
+    strategy_bar_closed: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -854,6 +860,9 @@ class PaperRuntimeApplicationService:
                     bar=command.bar,
                     opposing_signal=opposing_signal,
                     atr=evidence.atr,
+                    exit_channel_level=evidence.exit_channel_level,
+                    exit_feature_value=evidence.exit_feature_value,
+                    strategy_bar_closed=evidence.strategy_bar_closed,
                     fencing_token=_account_token(account),
                 )
         except PaperRuntimeApplicationError:

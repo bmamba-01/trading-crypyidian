@@ -573,6 +573,9 @@ class PaperLifecycleCoordinator:
         bar: PaperBar,
         opposing_signal: bool = False,
         atr: Decimal | None = None,
+        exit_channel_level: Decimal | None = None,
+        exit_feature_value: Decimal | None = None,
+        strategy_bar_closed: bool = True,
         account_id: UUID | None = None,
         fencing_token: FencingToken | None = None,
     ) -> PositionLifecycleResult:
@@ -605,6 +608,9 @@ class PaperLifecycleCoordinator:
                 bar=bar,
                 opposing_signal=opposing_signal,
                 atr=atr,
+                exit_channel_level=exit_channel_level,
+                exit_feature_value=exit_feature_value,
+                strategy_bar_closed=strategy_bar_closed,
             )
             snapshot = candidate.export_state()
             append_result = await self._checkpoints.append(
@@ -623,7 +629,13 @@ class PaperLifecycleCoordinator:
         if position.position_id != paper_position_id:
             raise PaperLifecycleConflict("Position ID không khớp snapshot được cung cấp.")
         result = self._gateway.monitor_position(
-            position, bar, opposing_signal=opposing_signal, atr=atr
+            position,
+            bar,
+            opposing_signal=opposing_signal,
+            atr=atr,
+            exit_channel_level=exit_channel_level,
+            exit_feature_value=exit_feature_value,
+            strategy_bar_closed=strategy_bar_closed,
         )
         if result.exit_reason is None:
             if result.position.stop_price != position.stop_price:

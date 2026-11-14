@@ -1617,3 +1617,134 @@ def test_replay_evaluator_mark_to_market_mode() -> None:
     assert len(observed_account) == 1
     # first.snapshot.series[-1] bar close là 102, entry là 100 -> gain = (102 - 100) * 99 = 198
     assert observed_account[0].equity == Decimal("10198.000")
+
+
+def test_replay_loss_windows_reset_at_utc_midnight_and_roll_over_24_hours():
+    from trading_bot.application.runtime_replay_evaluator import ReplayAccountState
+
+    _, seed, _, _, _ = _setup()
+    day = datetime(2026, 10, 22, tzinfo=UTC)
+    seed = replace(
+        seed,
+        account=replace(seed.account, captured_at=day - timedelta(days=2)),
+        risk_state=replace(
+            seed.risk_state,
+            realized_loss_today=Decimal("7"),
+            realized_loss_rolling=Decimal("7"),
+        ),
+    )
+    state = ReplayAccountState(seed)
+    # Lỗ 30 lúc 22:00 hôm trước, lỗ 20 lúc 01:00 và lời 5 lúc 02:00 hôm nay (UTC).
+    state._closed_pnl = {"p1": Decimal("-30"), "p2": Decimal("-20"), "p3": Decimal("5")}
+    state.record_close("p1", day - timedelta(hours=2))
+    state.record_close("p2", day + timedelta(hours=1))
+    state.record_close("p3", day + timedelta(hours=2))
+    gateway = PaperExecutionGateway(
+        PaperExecutionPolicy(
+            version_id="paper-fill-v1",
+            latency=timedelta(0),
+            spread_rate=Decimal("0"),
+            slippage_rate=Decimal("0"),
+            fee_rate=Decimal("0"),
+        )
+    )
+
+    def project(at):
+        _, risk_state, _ = state.project(
+            replace(seed, evaluated_at=at), gateway, {}, candidate_symbol="BTCUSDT"
+        )
+        return risk_state.realized_loss_today, risk_state.realized_loss_rolling
+
+    # 03:00 UTC: ngày mới chỉ tính −20 + 5; cửa sổ 24 giờ vẫn gồm khoản lỗ 22:00 hôm trước.
+    # Lỗ 7 của seed chụp hai ngày trước đã nằm ngoài cả hai cửa sổ.
+    assert project(day + timedelta(hours=3)) == (Decimal("15"), Decimal("45"))
+    # 23:00 UTC: khoản lỗ 22:00 hôm trước đã trượt khỏi cửa sổ 24 giờ.
+    assert project(day + timedelta(hours=23)) == (Decimal("15"), Decimal("15"))
+    # Sang ngày kế tiếp: lỗ ngày reset về 0 dù tổng lỗ từ đầu kỳ vẫn là 45.
+    assert project(day + timedelta(days=1, hours=3)) == (Decimal("0"), Decimal("0"))
+    assert state.realized_pnl == Decimal("-45")
+
+
+def test_replay_closes_v2_position_on_channel_exit_and_fails_closed_without_evidence() -> None:
+    from trading_bot.application.runtime_replay_evaluator import ReplayExitEvidence
+    from trading_bot.domain.strategy.rules_v2 import H03DonchianBreakoutRuleV2
+
+    evaluator, context, observation, gateway, _ = _setup()
+    evaluator(observation.snapshot)
+    intent_id = _first_intent_id(evaluator)
+    entry_time = gateway.order(intent_id).eligible_at + timedelta(seconds=1)
+    gateway.apply_market_event(
+        PaperBar(
+            bar_key="channel-entry",
+            symbol="BTCUSDT",
+            opened_at=entry_time,
+            closed_at=entry_time + timedelta(minutes=1),
+            available_at=entry_time + timedelta(minutes=1),
+            open=Decimal("100"),
+            high=Decimal("101"),
+            low=Decimal("99"),
+            close=Decimal("100"),
+        )
+    )
+    position = gateway.position(intent_id)
+    assert position is not None
+    assert position.direction == "long"
+    # Gắn recipe của release H03 v2 (stop xa, không target) để chỉ kênh thoát quyết định.
+    gateway._positions[intent_id] = replace(
+        position,
+        recipe=H03DonchianBreakoutRuleV2.recipe,
+        stop_price=Decimal("50"),
+        target_price=None,
+    )
+    channel_low = Decimal("99.5")
+    close_time = entry_time + timedelta(minutes=2)
+    exit_bar = PaperBar(
+        bar_key="channel-exit",
+        symbol="BTCUSDT",
+        opened_at=close_time,
+        closed_at=close_time + timedelta(minutes=1),
+        available_at=close_time + timedelta(minutes=1),
+        open=Decimal("100"),
+        high=Decimal("100.5"),
+        low=Decimal("99"),
+        close=Decimal("99.2"),
+    )
+    current = replace(
+        context,
+        evaluated_at=exit_bar.available_at + timedelta(seconds=1),
+        risk_state=replace(
+            context.risk_state,
+            evaluated_at=exit_bar.available_at + timedelta(seconds=1),
+            market_data_as_of=exit_bar.available_at,
+        ),
+        execution_events=(exit_bar,),
+        opposing_signal=None,
+        atr_by_symbol=(("BTCUSDT", Decimal("1")),),
+    )
+    snapshot = replace(observation.snapshot, decision_time=exit_bar.available_at)
+
+    # Recipe v2 không có bằng chứng thoát thì replay dừng, không chạy tiếp như v1.
+    with pytest.raises(ReplayEvaluationContextError, match="bằng chứng thoát"):
+        evaluator._advance_execution(current, snapshot)
+
+    evaluator._seen_events.discard((exit_bar.symbol, exit_bar.bar_key))
+    with_evidence = replace(
+        current,
+        exit_evidence_by_bar=(
+            ReplayExitEvidence(
+                symbol="BTCUSDT",
+                bar_key=exit_bar.bar_key,
+                recipe_id="h03-exit-v2",
+                strategy_bar_closed=False,
+                channel_low=channel_low,
+                channel_high=Decimal("110"),
+            ),
+        ),
+    )
+    evaluator._validate_context(with_evidence, snapshot)
+    trade = evaluator._advance_execution(with_evidence, snapshot)
+
+    closed = gateway.position(intent_id)
+    assert trade is not None
+    assert closed.exit_reason == "CHANNEL_EXIT"
+    assert closed.exit_reference_price == channel_low

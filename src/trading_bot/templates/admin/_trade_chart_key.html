@@ -1,0 +1,17 @@
+{#-
+  Chú thích tĩnh của biểu đồ nến (UI-1). Biến cần có trong ngữ cảnh: `chart_key_timeframe`,
+  `chart_key_entry_line`, `chart_key_stop`, `chart_key_target` (chỉ hiện đường nào thật sự được vẽ).
+-#}
+{% from "admin/_metric_help.html" import help_term %}
+<ul class="chart-key" aria-label="Chú thích biểu đồ nến">
+  <li><span class="chart-key__swatch" aria-hidden="true"><span class="chart-key__candle chart-key__candle--up"></span><span class="chart-key__candle chart-key__candle--down"></span></span>{{ help_term("candle_ohlc", "Nến xanh: đóng ≥ mở · nến đỏ: đóng < mở") }}</li>
+  <li><span class="chart-key__swatch" aria-hidden="true"><span class="chart-key__arrow--up">▲</span><span class="chart-key__arrow--down">▼</span></span>{{ help_term("chart_entry_marker") }}</li>
+  <li><span class="chart-key__swatch" aria-hidden="true"><span class="chart-key__arrow--down">▼</span><span class="chart-key__arrow--up">▲</span></span>{{ help_term("chart_exit_marker") }}</li>
+  {% if chart_key_entry_line %}<li><span class="chart-key__swatch" aria-hidden="true"><span class="chart-key__line chart-key__line--entry"></span></span>{{ help_term("chart_entry_line") }}</li>{% endif %}
+  {% if chart_key_stop %}<li><span class="chart-key__swatch" aria-hidden="true"><span class="chart-key__line chart-key__line--stop"></span></span>{{ help_term("chart_stop_line", "Dừng lỗ bảo vệ (SL)") }}</li>{% endif %}
+  {% if chart_key_target %}<li><span class="chart-key__swatch" aria-hidden="true"><span class="chart-key__line chart-key__line--target"></span></span>{{ help_term("chart_target_line", "Mục tiêu chốt lời (TP)") }}</li>{% endif %}
+  <li>{{ help_term("chart_timeframe", "Khung thời gian: " ~ chart_key_timeframe) }}</li>
+  <li>{{ help_term("candle_volume") }}</li>
+  <li>{{ help_term("chart_candle_source") }}</li>
+</ul>
+<p class="chart-key-note">Thời gian trên trục và trong chú giải theo múi giờ Asia/Ho_Chi_Minh.</p>

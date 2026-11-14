@@ -3007,3 +3007,256 @@ main input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]) { min
 .form-select { --bs-form-select-bg-img: url("/static/icons/chevron-down.svg"); }
 /* Bootstrap mặc định chữ trắng cho .badge; nhãn không có lớp màu riêng phải đọc được trên nền sáng. */
 main .badge { --bs-badge-color: var(--text-main); }
+
+/* ============================================================================
+   UI-1: chú giải chỉ số truy cập được (metric help tooltip).
+   Nút `.metric-help` mở phần tử role="tooltip"; hành vi nằm ở /static/metric-tooltip.js.
+   ============================================================================ */
+.metric-term {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  max-width: 100%;
+}
+/* Giữ lớp `tooltip-term` cho tương thích nhưng tắt tooltip `::after` cũ (không nhận focus/chạm). */
+.metric-term.tooltip-term {
+  gap: 0;
+  border-bottom: 0;
+  cursor: auto;
+}
+.metric-term.tooltip-term:hover::after,
+.metric-term.tooltip-term:focus-visible::after {
+  content: none;
+}
+button.metric-help,
+main button.metric-help {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 0.3rem;
+  min-height: 44px;
+  min-width: 44px;
+  max-width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0.25rem;
+  background: none;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-align: inherit;
+  text-transform: inherit;
+  white-space: inherit;
+  cursor: help;
+}
+button.metric-help:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.metric-help__label {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  text-decoration: underline dotted var(--text-muted);
+  text-underline-offset: 0.22em;
+}
+.metric-help__icon {
+  flex: none;
+  font-size: 0.85em;
+  font-weight: 400;
+  line-height: 1;
+  color: var(--text-muted);
+}
+button.metric-help:hover .metric-help__icon,
+button.metric-help[aria-expanded="true"] .metric-help__icon {
+  color: var(--primary);
+}
+button.metric-help--icon {
+  justify-content: center;
+}
+button.metric-help--icon .metric-help__icon {
+  font-size: 1rem;
+}
+.metric-help__bubble {
+  display: none;
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 1100;
+  box-sizing: border-box;
+  width: max-content;
+  max-width: min(22rem, calc(100vw - 16px));
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--border-main);
+  border-radius: 0.5rem;
+  background: var(--bg-surface);
+  color: var(--text-main);
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.28);
+  font-size: 0.8125rem;
+  font-weight: 400;
+  font-style: normal;
+  line-height: 1.45;
+  letter-spacing: normal;
+  text-align: left;
+  text-transform: none;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  cursor: auto;
+}
+.metric-help__bubble.is-open {
+  display: block;
+}
+/* Dự phòng khi JavaScript tắt: vẫn đọc được chú giải bằng rê chuột hoặc focus bàn phím. */
+html:not(.metric-help-js) .metric-term:hover > .metric-help__bubble,
+html:not(.metric-help-js) .metric-term:focus-within > .metric-help__bubble {
+  display: block;
+  position: absolute;
+  top: 100%;
+  left: 0;
+}
+.metric-help__title {
+  display: block;
+  margin-bottom: 0.25rem;
+  font-size: 0.875rem;
+  font-weight: 700;
+}
+.metric-help__row {
+  display: block;
+  margin-top: 0.3rem;
+}
+.metric-help__tag {
+  font-weight: 600;
+  color: var(--text-muted);
+}
+.label-help-row {
+  display: flex;
+  align-items: center;
+  gap: 0.15rem;
+}
+.label-help-row > label {
+  margin: 0;
+}
+
+/* UI-1: chú giải tĩnh và chú giải theo con trỏ của biểu đồ. */
+.chart-ohlc-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.15rem 0.9rem;
+  min-height: 1.5rem;
+  margin: 0 0 0.5rem;
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.chart-ohlc-legend__item {
+  white-space: nowrap;
+}
+.chart-ohlc-legend__value {
+  font-weight: 600;
+  color: var(--text-main);
+}
+.chart-ohlc-legend__value--up {
+  color: var(--pnl-positive-text);
+}
+.chart-ohlc-legend__value--down {
+  color: var(--pnl-negative-text);
+}
+.chart-key {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 1.1rem;
+  margin: 0.5rem 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+}
+.chart-key > li {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+  max-width: 100%;
+}
+.chart-key__swatch {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-width: 1.25rem;
+  font-size: 0.8rem;
+  line-height: 1;
+}
+.chart-key__candle {
+  display: inline-block;
+  width: 0.45rem;
+  height: 0.9rem;
+  border-radius: 1px;
+}
+.chart-key__candle--up {
+  background: var(--market-up);
+}
+.chart-key__candle--down {
+  background: var(--market-down);
+}
+.chart-key__arrow--up {
+  color: var(--pnl-positive-text);
+}
+.chart-key__arrow--down {
+  color: var(--pnl-negative-text);
+}
+.chart-key__line {
+  display: inline-block;
+  width: 1.25rem;
+  height: 0;
+  border-top: 2px dashed var(--market-flat);
+}
+.chart-key__line--stop {
+  border-top-color: var(--market-down);
+}
+.chart-key__line--target {
+  border-top-color: var(--market-up);
+}
+.chart-key__line--entry {
+  border-top-style: dotted;
+  border-top-color: var(--primary);
+}
+.chart-key__line--curve {
+  height: 2px;
+  border-top: 0;
+  background: var(--primary);
+}
+.chart-key-note {
+  margin: 0.25rem 0 0;
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+}
+/* Chú giải cột chỉ hiện khi tiêu đề bảng bị ẩn ở màn hình hẹp (xem table.responsive-table). */
+.metric-key--narrow {
+  display: none;
+}
+@media (max-width: 768px) {
+  .metric-key--narrow {
+    display: flex;
+  }
+}
+/* Tên tầng trong thẻ chiến lược: cắt chữ bằng dấu ba chấm, biểu tượng chú giải không đè lên chữ. */
+.layer-name {
+  min-width: 0;
+}
+.layer-name .metric-term,
+.layer-name button.metric-help {
+  display: flex;
+  min-width: 0;
+}
+.layer-name .metric-help__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

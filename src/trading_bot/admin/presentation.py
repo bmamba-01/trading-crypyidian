@@ -4,6 +4,12 @@ from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from zoneinfo import ZoneInfo
 
+from trading_bot.admin.metric_help import (
+    metric_help_dom_id,
+    metric_help_or_none,
+    metric_help_title,
+)
+
 MARKET_UP_COLOR = "#0ECB81"
 MARKET_DOWN_COLOR = "#F6465D"
 MARKET_FLAT_COLOR = "#8B98A5"
@@ -64,6 +70,8 @@ LABELS = {
     "TAKE_PROFIT": "Chốt lời",
     "TIME_STOP": "Đóng theo thời gian",
     "OPPOSING_SIGNAL": "Tín hiệu ngược chiều",
+    "CHANNEL_EXIT": "Thoát theo kênh giá",
+    "FEATURE_EXIT": "Thoát theo chỉ báo",
     "FLATTEN_OPERATION": "Đóng theo thao tác quản trị",
     "ORDER": "Lệnh",
     "OPEN_ORDER": "Lệnh mở",
@@ -95,6 +103,13 @@ METRICS = (
     ("slippage_total", "Chi phí trượt giá", True),
     ("max_drawdown", "Mức sụt giảm tối đa đã thực hiện", True),
 )
+
+# Hàm chú giải chỉ số đăng ký làm biến toàn cục Jinja; nội dung nằm ở `admin/metric_help.py`.
+METRIC_HELP_GLOBALS = {
+    "metric_help_lookup": metric_help_or_none,
+    "metric_help_title": metric_help_title,
+    "metric_help_dom_id": metric_help_dom_id,
+}
 
 
 def label_vi(value: object) -> str:

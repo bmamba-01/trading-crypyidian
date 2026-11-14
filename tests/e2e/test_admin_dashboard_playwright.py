@@ -18,13 +18,14 @@ import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import expect, sync_playwright
 
 from tests.e2e.csp_harness import (
     browser_violations,  # noqa: F401 - fixture nạp qua usefixtures
     install_security_headers,
     watch_browser_violations,
 )
+from trading_bot.admin.metric_help import HELP
 from trading_bot.admin.web_router import router as admin_web_router
 from trading_bot.application.bot_reporting import BotReportError
 from trading_bot.auth.policy import Principal, Role
@@ -504,6 +505,34 @@ def admin_server_url() -> Any:
     server.should_exit = True
 
 
+def _assert_metric_tooltip(page: Any, key: str, *, mode: str) -> None:
+    """Mở chú giải KPI bằng focus, bấm hoặc chạm; nội dung khớp từ điển; Escape đóng lại."""
+    trigger = page.locator(f'button.metric-help[data-metric-help="{key}"]:visible').first
+    trigger.scroll_into_view_if_needed()
+    tooltip = page.locator(f"#{trigger.get_attribute('aria-describedby')}")
+    expect(tooltip).to_be_hidden()
+    if mode == "focus":
+        trigger.focus()
+    elif mode == "click":
+        trigger.click()
+    else:
+        trigger.tap()
+    expect(tooltip).to_be_visible()
+    expect(trigger).to_have_attribute("aria-expanded", "true")
+    expect(tooltip).to_contain_text(HELP[key].definition_vi)
+    expect(tooltip).to_contain_text(HELP[key].limits_vi)
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), (key, mode)
+    box = tooltip.bounding_box()
+    viewport = page.viewport_size
+    assert box is not None
+    assert viewport is not None
+    assert box["x"] >= 0, (key, mode, box)
+    assert box["x"] + box["width"] <= viewport["width"], (key, mode, box)
+    page.keyboard.press("Escape")
+    expect(tooltip).to_be_hidden()
+    expect(trigger).to_have_attribute("aria-expanded", "false")
+
+
 def test_admin_dashboard_desktop_and_mobile_workflows(admin_server_url: str) -> None:
     """Kiểm thử toàn diện E2E tất cả các chức năng trên Desktop và Mobile."""
     base_url = admin_server_url
@@ -558,6 +587,11 @@ def test_admin_dashboard_desktop_and_mobile_workflows(admin_server_url: str) -> 
         page.screenshot(path=str(SCREENSHOTS_DIR / "03_dashboard_desktop.png"), full_page=True)
         assert "Chế độ: Mô phỏng (PAPER) nội bộ" in page.content()
         assert "Tổng số bot" in page.content()
+
+        # Chú giải KPI: mở bằng focus bàn phím và bấm chuột, Escape đóng, không tràn ngang
+        for key in ("bot_count", "ready_bot_count", "workspace_kill_state", "operating_mode"):
+            _assert_metric_tooltip(page, key, mode="focus")
+            _assert_metric_tooltip(page, key, mode="click")
 
         # Kiểm tra Live status bar, Pulse dot và Toggle button trên Desktop
         assert page.locator(".live-status-bar").is_visible()
@@ -697,6 +731,11 @@ def test_admin_dashboard_desktop_and_mobile_workflows(admin_server_url: str) -> 
         assert page_m.locator(".live-status-bar").is_visible()
         assert page_m.locator("#toggle-realtime-btn").is_visible()
         assert "Tự động cập nhật 5s" in page_m.content()
+        for key in ("bot_count", "operating_mode"):
+            _assert_metric_tooltip(page_m, key, mode="tap")
+        page_m.set_viewport_size({"width": 360, "height": 780})
+        _assert_metric_tooltip(page_m, "workspace_kill_state", mode="tap")
+        page_m.set_viewport_size({"width": 390, "height": 844})
 
         page_m.get_by_label("Lý do dừng khẩn cấp toàn bộ").fill("Dừng trên mobile")
         page_m.get_by_role("button", name="Dừng mở lệnh mới").click()

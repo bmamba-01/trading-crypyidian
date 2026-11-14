@@ -81,7 +81,10 @@ from trading_bot.domain.risk.circuit_breaker import (
     CircuitBreakerEngine,
     OperationalTelemetry,
 )
-from trading_bot.domain.risk.risk_windows import LossWindowPolicy, calculate_loss_windows
+from trading_bot.domain.risk.risk_windows import (
+    RISK_LOSS_WINDOW_POLICY,
+    calculate_loss_windows,
+)
 from trading_bot.domain.strategy_card.schema import compute_canonical_hash
 from trading_bot.observability.health import build_system_health_snapshot
 
@@ -106,6 +109,10 @@ def _templates(request: Request) -> Jinja2Templates:
     templates.env.globals["report_metrics"] = METRICS
     templates.env.globals["pnl_metric_keys"] = PNL_METRIC_KEYS
     templates.env.globals["ui_labels_vi"] = LABELS
+    # Chú giải chỉ số (UI-1): import cục bộ để thay đổi chỉ nằm trong hàm đăng ký này.
+    from trading_bot.admin.presentation import METRIC_HELP_GLOBALS
+
+    templates.env.globals.update(METRIC_HELP_GLOBALS)
     return templates
 
 
@@ -803,6 +810,8 @@ def _dashboard_performance_chart(reports: list[dict[str, Any]]) -> dict[str, Any
                 "TAKE_PROFIT": "TP",
                 "TIME_STOP": "TIME",
                 "OPPOSING_SIGNAL": "ĐẢO",
+                "CHANNEL_EXIT": "KÊNH",
+                "FEATURE_EXIT": "CHỈ BÁO",
             }.get(trade.get("exit_reason") or "", "ĐÓNG")
             entry_reason = trade.get("entry_reason")
             entry_reason = entry_reason if isinstance(entry_reason, dict) else {}
@@ -857,6 +866,8 @@ def _exit_reason_label_vi(reason: object) -> str:
         "TAKE_PROFIT": "Chốt lời",
         "TIME_STOP": "Đóng theo thời gian",
         "OPPOSING_SIGNAL": "Tín hiệu ngược chiều",
+        "CHANNEL_EXIT": "Thoát theo kênh giá",
+        "FEATURE_EXIT": "Thoát theo chỉ báo",
         "FLATTEN_OPERATION": "Đóng theo thao tác quản trị",
     }
     if not isinstance(reason, str) or not reason:
@@ -2115,7 +2126,7 @@ async def operations_health(
     loss_snapshot = calculate_loss_windows(
         events=[],
         as_of=now_utc,
-        policy=LossWindowPolicy(timezone_name="Asia/Ho_Chi_Minh"),
+        policy=RISK_LOSS_WINDOW_POLICY,
     )
     breaker_snapshot = CircuitBreakerEngine().evaluate(
         OperationalTelemetry(

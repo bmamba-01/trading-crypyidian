@@ -13,6 +13,10 @@ from trading_bot.domain.strategy.rules import (
     H06RangeMeanReversionRule,
     release_content_hash,
 )
+from trading_bot.domain.strategy.rules_v2 import (
+    H03DonchianBreakoutRuleV2,
+    H06RangeMeanReversionRuleV2,
+)
 
 
 class UnknownStrategyReleaseError(LookupError):
@@ -70,6 +74,26 @@ _BUILT_INS: tuple[tuple[Strategy, str, str, str], ...] = (
             "cấm scale-in."
         ),
         "h06-exit-v1",
+    ),
+    (
+        H03DonchianBreakoutRuleV2(),
+        "Phá kênh Donchian (v2)",
+        (
+            "Giá đóng 1h phá đỉnh/đáy 55 nến trước; quote volume lớn hơn median 20 nến trước; "
+            "stop 2 ATR; trailing 3 ATR; thoát khi giá chạm biên ngược của kênh 20 nến 1h; "
+            "tối đa 120 nến 1h."
+        ),
+        "h03-exit-v2",
+    ),
+    (
+        H06RangeMeanReversionRuleV2(),
+        "Hồi quy về trung bình (v2)",
+        (
+            "ADX14 < 18 và ER40 < 0.25; Z20/RSI14 đồng thuận cực trị; lọc blackout và phá biên "
+            "120 nến; stop 1.5 ATR; mục tiêu tối đa 2 ATR; thoát khi Z20 hồi về ±0.2 trên nến "
+            "15 phút đã đóng hoặc sau 16 nến 15 phút; cấm scale-in."
+        ),
+        "h06-exit-v2",
     ),
 )
 
