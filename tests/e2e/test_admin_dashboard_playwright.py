@@ -20,15 +20,20 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from playwright.sync_api import sync_playwright
 
+from tests.e2e.csp_harness import (
+    browser_violations,  # noqa: F401 - fixture nạp qua usefixtures
+    install_security_headers,
+    watch_browser_violations,
+)
 from trading_bot.admin.web_router import router as admin_web_router
+from trading_bot.application.bot_reporting import BotReportError
 from trading_bot.auth.policy import Principal, Role
 from trading_bot.auth.security import LoginRateLimiter
 from trading_bot.auth.service import AuthenticationFailure, AuthIdentity, LoginResult
 from trading_bot.config.settings import AppSettings
 
-SCREENSHOTS_DIR = Path(
-    "/Users/macbook/.gemini/antigravity/brain/4f23167d-60fd-49c3-8248-ddb2b669a2a7/screenshots"
-)
+# Ảnh chụp nằm trong repo để test chạy được trên mọi máy và không ghi ra ngoài dự án.
+SCREENSHOTS_DIR = Path(__file__).resolve().parent / "evidence" / "admin-playwright"
 SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
 
 WORKSPACE_ID = UUID("9b2299f1-a58e-45c7-b0ad-83feb0862510")
@@ -36,6 +41,8 @@ USER_ID = UUID("c3b4a5d6-e7f8-4a9b-0c1d-2e3f4a5b6c7d")
 MEMBERSHIP_ID = UUID("a93c4b18-f76c-4cfb-9bad-9e0aee5ccadc")
 BOT1_ID = UUID("77117cc4-6c7f-407e-8f23-948d740a46c2")
 BOT2_ID = UUID("88228dd5-7d8e-518f-9a34-059e851b57d3")
+
+pytestmark = pytest.mark.usefixtures("browser_violations")
 
 
 @dataclass
@@ -372,6 +379,16 @@ class MockFlattenAllService:
 class MockBotReportingService:
     """Mock reporting service."""
 
+    async def get_dashboard_reports(
+        self, query: Any, principal: Any, *, bot_ids: frozenset[UUID] | None = None
+    ) -> tuple[Any, ...]:
+        """Dashboard đọc thống kê 30 ngày theo lô; mock này không có giao dịch đã đóng."""
+        return ()
+
+    async def get_bot_report(self, query: Any, principal: Any) -> Any:
+        """Mock này không có ledger theo bot; Bot Detail phải hiện trạng thái chưa có dữ liệu."""
+        raise BotReportError(404, "REPORT_NOT_FOUND", "Không có báo cáo cho bot trong test.")
+
     async def report(self, query: Any) -> dict[str, Any]:
         return {
             "workspace_id": str(WORKSPACE_ID),
@@ -464,6 +481,7 @@ def create_test_admin_app() -> FastAPI:
 
     app.mount("/static", StaticFiles(directory="src/trading_bot/static"), name="static")
     app.include_router(admin_web_router)
+    install_security_headers(app)
     return app
 
 
@@ -498,6 +516,7 @@ def test_admin_dashboard_desktop_and_mobile_workflows(admin_server_url: str) -> 
         # ----------------------------------------------------
         context_desktop = browser.new_context(viewport={"width": 1280, "height": 800})
         page = context_desktop.new_page()
+        watch_browser_violations(page)
 
         # 1.1 Login và lỗi đăng nhập
         page.goto(f"{base_url}/admin/login", wait_until="networkidle")
@@ -614,7 +633,7 @@ def test_admin_dashboard_desktop_and_mobile_workflows(admin_server_url: str) -> 
         )
 
         # 1.6 Đóng toàn bộ vị thế
-        page.get_by_role("link", name="Đóng vị thế toàn bộ", exact=True).click()
+        page.get_by_role("link", name="Đóng toàn bộ vị thế", exact=True).click()
         page.wait_for_load_state("networkidle")
         page.get_by_label("Lý do", exact=True).fill("Xem preview các vị thế")
         page.get_by_role("button", name="Xem trước").click()
@@ -662,6 +681,7 @@ def test_admin_dashboard_desktop_and_mobile_workflows(admin_server_url: str) -> 
             has_touch=True,
         )
         page_m = context_mobile.new_page()
+        watch_browser_violations(page_m)
 
         page_m.goto(f"{base_url}/admin/login", wait_until="networkidle")
         page_m.screenshot(path=str(SCREENSHOTS_DIR / "01_login_mobile.png"), full_page=True)
@@ -697,7 +717,7 @@ def test_admin_dashboard_desktop_and_mobile_workflows(admin_server_url: str) -> 
         page_m.wait_for_load_state("networkidle")
         page_m.screenshot(path=str(SCREENSHOTS_DIR / "05_bot_detail_mobile.png"), full_page=True)
 
-        page_m.get_by_role("link", name="Đóng vị thế toàn bộ", exact=True).click()
+        page_m.get_by_role("link", name="Đóng toàn bộ vị thế", exact=True).click()
         page_m.wait_for_load_state("networkidle")
         page_m.get_by_label("Lý do", exact=True).fill("Preview mobile")
         page_m.get_by_role("button", name="Xem trước").click()

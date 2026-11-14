@@ -9,7 +9,7 @@
     <div class="filter-controls-grid">
       <div class="form-group">
         <label for="scope">Phạm vi</label>
-        <select id="scope" name="scope" onchange="toggleBotSelect(this.value)">
+        <select id="scope" name="scope">
           <option value="bot" {% if scope == "bot" %}selected{% endif %}>Một Bot Cụ Thể</option>
           <option value="workspace" {% if scope == "workspace" %}selected{% endif %}>Toàn Không Gian Làm Việc</option>
         </select>
@@ -59,11 +59,11 @@
 
     <!-- Quick Date Filter Presets -->
     <div class="quick-filter-group" aria-label="Chọn nhanh khoảng thời gian">
-      <span class="text-muted" style="font-size: 0.825rem; align-self: center; margin-right: 0.25rem;">Nhanh:</span>
-      <button type="button" class="quick-filter-btn" onclick="setQuickRange('today')">Hôm Nay</button>
-      <button type="button" class="quick-filter-btn" onclick="setQuickRange('7d')">7 Ngày Qua</button>
-      <button type="button" class="quick-filter-btn" onclick="setQuickRange('30d')">30 Ngày Qua</button>
-      <button type="button" class="quick-filter-btn" onclick="setQuickRange('month')">Tháng Này</button>
+      <span class="u-font-size-0-825rem u-align-self-center u-margin-right-0-25rem text-muted">Nhanh:</span>
+      <button type="button" class="quick-filter-btn" data-quick-range="today">Hôm Nay</button>
+      <button type="button" class="quick-filter-btn" data-quick-range="7d">7 Ngày Qua</button>
+      <button type="button" class="quick-filter-btn" data-quick-range="30d">30 Ngày Qua</button>
+      <button type="button" class="quick-filter-btn" data-quick-range="month">Tháng Này</button>
     </div>
   </form>
 </section>
@@ -71,24 +71,49 @@
 {% if report %}
 <section class="report-results" aria-labelledby="report-results-heading">
   <div class="report-header-meta">
-    <h2 id="report-results-heading" style="margin: 0;">
+    <h2 class="u-margin-0" id="report-results-heading">
       Kết Quả Phân Tích — {{ report.scope | label_vi }}
     </h2>
     {% if report.window %}
-      <span class="text-muted tabular-nums" style="font-size: 0.85rem;">
+      <span class="u-font-size-0-85rem text-muted tabular-nums">
         Khoảng: {{ report.window.start | local_time }} ➔ {{ report.window.end | local_time }}
       </span>
     {% endif %}
   </div>
 
-  <div class="authoritative-metrics-block" style="margin-top: 1rem;">
+  <div class="u-margin-top-1rem authoritative-metrics-block">
     {% with totals=report.get("totals", {}) %}{% include "admin/metric_cards.html" %}{% endwith %}
   </div>
 
+  {% if report.daily_performance %}
+  <section aria-labelledby="daily-performance-heading" class="daily-performance">
+    <h3 id="daily-performance-heading">Lịch lãi/lỗ theo ngày</h3>
+    <p>Ngày được tính theo {{ report.daily_performance.timezone }}. Chỉ hiện ngày có giao dịch đã đóng; tài sản định giá được tách riêng.</p>
+    {% for asset, days in report.daily_performance.quote_assets.items() %}
+    <section aria-label="Lãi lỗ theo ngày bằng {{ asset }}">
+      <h4>Tài sản {{ asset }}</h4>
+      <div class="row g-3 daily-performance-grid">
+        {% for day in days %}
+        <article class="col-12 col-sm-6 col-xl-4 daily-performance-card">
+          <h5><time datetime="{{ day.date }}">{{ day.date }}</time></h5>
+          <dl>
+            {% set daily_pnl_tone = day.net_pnl | pnl_tone %}
+            <div><dt>Lãi/lỗ ròng</dt><dd class="pnl-value pnl-value--{{ daily_pnl_tone }}" data-pnl-tone="{{ daily_pnl_tone }}">{% if daily_pnl_tone == "positive" %}+{% endif %}{{ day.net_pnl | number_vi }} {{ asset }}</dd></div>
+            <div><dt>Giao dịch đã đóng</dt><dd>{{ day.closed_trade_count }}</dd></div>
+            <div><dt>Có lãi / thua lỗ / hòa vốn</dt><dd>{{ day.winning_trade_count }} / {{ day.losing_trade_count }} / {{ day.breakeven_trade_count }}</dd></div>
+          </dl>
+        </article>
+        {% else %}<p>Chưa có giao dịch đã đóng trong kỳ báo cáo.</p>{% endfor %}
+      </div>
+    </section>
+    {% endfor %}
+  </section>
+  {% endif %}
+
   <!-- Thống Kê Tổng Quan (Trading Metrics Grid Cards) -->
   {% for asset, totals in report.get("totals", {}).items() %}
-  <div class="trading-metrics-block" style="margin-top: 1rem;">
-    <h3 style="font-size: 1.1rem; margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.4rem;">
+  <div class="u-margin-top-1rem trading-metrics-block">
+    <h3 class="u-font-size-1-1rem u-margin-bottom-0-5rem u-display-flex u-align-items-center u-gap-0-4rem">
       <span>Tài Sản Ký Quỹ / Định Giá: <strong>{{ asset }}</strong></span>
     </h3>
 
@@ -100,7 +125,7 @@
           <span class="tooltip-term" data-tooltip="Lợi nhuận ròng thực tế = Lãi gộp - (Phí giao dịch + Phí Funding + Trượt giá)">
             Lời / Lỗ Ròng (Net PnL) <span class="tooltip-icon">ⓘ</span>
           </span>
-          <svg class="svg-icon" viewBox="0 0 24 24" style="color: #0ecb81;"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+          <svg class="u-color-hex-0ecb81 svg-icon" viewBox="0 0 24 24"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
         </div>
         <div class="metric-value {% if net_val > 0 %}pnl-positive{% elif net_val < 0 %}pnl-negative{% endif %} tabular-nums">
           {% if net_val > 0 %}+{% endif %}{{ totals.net_pnl }} {{ asset }}
@@ -116,9 +141,9 @@
           <span class="tooltip-term" data-tooltip="Tỷ lệ thắng = (Số lệnh thắng / Tổng lệnh đã đóng) × 100%">
             Tỷ Lệ Thắng (Win Rate) <span class="tooltip-icon">ⓘ</span>
           </span>
-          <svg class="svg-icon" viewBox="0 0 24 24" style="color: var(--primary);"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>
+          <svg class="u-color-primary svg-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>
         </div>
-        <div class="metric-value tabular-nums" style="color: var(--primary);">
+        <div class="u-color-primary metric-value tabular-nums">
           {{ totals.win_rate_percent or "0" }}%
         </div>
         <div class="metric-sub tabular-nums">
@@ -132,7 +157,7 @@
           <span class="tooltip-term" data-tooltip="Hệ số lợi nhuận = Tổng lãi gộp / Tổng lỗ gộp. Giá trị > 1.5 biểu thị chiến lược vượt trội">
             Profit Factor <span class="tooltip-icon">ⓘ</span>
           </span>
-          <svg class="svg-icon" viewBox="0 0 24 24" style="color: #0ecb81;"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>
+          <svg class="u-color-hex-0ecb81 svg-icon" viewBox="0 0 24 24"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>
         </div>
         <div class="metric-value tabular-nums">
           {{ totals.profit_factor or "N/A" }}{% if totals.profit_factor %}x{% endif %}
@@ -148,9 +173,9 @@
           <span class="tooltip-term" data-tooltip="Mức sụt giảm lớn nhất từ đỉnh vốn tích lũy trong kỳ báo cáo">
             Max Drawdown <span class="tooltip-icon">ⓘ</span>
           </span>
-          <svg class="svg-icon" viewBox="0 0 24 24" style="color: var(--danger);"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+          <svg class="u-color-danger svg-icon" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
         </div>
-        <div class="metric-value tabular-nums" style="color: var(--danger);">
+        <div class="u-color-danger metric-value tabular-nums">
           -{{ totals.max_drawdown }} {{ asset }}
         </div>
         <div class="metric-sub tabular-nums">
@@ -164,9 +189,9 @@
           <span class="tooltip-term" data-tooltip="Thời gian nắm giữ vị thế trung bình từ lúc vào lệnh đến khi đóng hoàn toàn">
             Thời Gian Giữ Lệnh <span class="tooltip-icon">ⓘ</span>
           </span>
-          <svg class="svg-icon" viewBox="0 0 24 24" style="color: var(--text-muted);"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+          <svg class="u-color-text-muted svg-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
         </div>
-        <div class="metric-value tabular-nums" style="font-size: 1.25rem;">
+        <div class="u-font-size-1-25rem metric-value tabular-nums">
           {% if totals.average_holding_seconds %}
             {% set s = totals.average_holding_seconds | int %}
             {% if s >= 3600 %}
@@ -190,36 +215,39 @@
   {% if chart_data %}
   {% set selected_trade = chart_data.trade %}
   {% set pm = selected_trade.get("post_mortem", {}) %}
-  <section class="trade-chart-section" aria-labelledby="chart-title" style="margin-top: 1.5rem;">
-    <div class="chart-header-row" style="display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.75rem; margin-bottom: 0.75rem;">
-      <h3 id="chart-title" style="margin: 0; display: flex; align-items: center; gap: 0.5rem;">
+  <section class="u-margin-top-1-5rem trade-chart-section" aria-labelledby="chart-title">
+    <div class="u-display-flex u-flex-wrap-wrap u-align-items-center u-justify-content-space-between u-gap-0-75rem u-margin-bottom-0-75rem chart-header-row">
+      <h3 class="u-margin-0 u-display-flex u-align-items-center u-gap-0-5rem" id="chart-title">
         <span>Biểu Đồ Nến Point-In-Time: <strong>{{ chart_data.symbol }}</strong></span>
         {% if selected_trade.side == "LONG" %}
           <span class="badge-long">🟢 LONG</span>
         {% else %}
           <span class="badge-short">🔴 SHORT</span>
         {% endif %}
-        <span class="badge" style="background: var(--bg-surface-subtle); border: 1px solid var(--border-subtle); font-size: 0.8rem;">
+        <span class="u-background-bg-surface-subtle u-border-1px-solid-border-subtle u-font-size-0-8rem badge">
           Khung: {{ chart_data.timeframe }}
         </span>
       </h3>
-      <div class="chart-legend" style="display: flex; gap: 0.75rem; font-size: 0.8rem;">
-        <span style="display: flex; align-items: center; gap: 0.25rem;">
-          <span style="display: inline-block; width: 12px; height: 2px; background: #0ecb81; border-top: 2px dashed #0ecb81;"></span>
+      {% set chart_ea = selected_trade.get("post_mortem", {}).get("entry_analysis", {}) %}
+      {% if chart_ea.stop_loss_price is not none or chart_ea.take_profit_price is not none %}
+      <div class="u-display-flex u-gap-0-75rem u-font-size-0-8rem chart-legend">
+        <span class="u-display-flex u-align-items-center u-gap-0-25rem">
+          <span class="u-display-inline-block u-width-12px u-height-2px u-background-hex-0ecb81 u-border-top-2px-dashed-hex-0ecb81"></span>
           <span>Mục tiêu chốt lời (TP)</span>
         </span>
-        <span style="display: flex; align-items: center; gap: 0.25rem;">
-          <span style="display: inline-block; width: 12px; height: 2px; background: #f6465d; border-top: 2px dashed #f6465d;"></span>
+        <span class="u-display-flex u-align-items-center u-gap-0-25rem">
+          <span class="u-display-inline-block u-width-12px u-height-2px u-background-hex-f6465d u-border-top-2px-dashed-hex-f6465d"></span>
           <span>Dừng lỗ bảo vệ (SL)</span>
         </span>
       </div>
+      {% endif %}
     </div>
 
     <!-- Canvas biểu đồ Lightweight Charts -->
-    <div id="trade-chart" class="chart-canvas" role="img" aria-label="Biểu đồ nến {{ chart_data.symbol }} với các mốc vào và thoát lệnh" style="min-height: 380px; border-radius: 0.5rem; border: 1px solid var(--border-main); background: var(--bg-surface);"></div>
+    <div id="trade-chart" class="chart-canvas" role="img" aria-label="Biểu đồ nến {{ chart_data.symbol }} với các mốc vào và thoát lệnh"></div>
 
     <!-- Thanh thông báo trạng thái khi di chuột -->
-    <div id="trade-chart-event-detail" class="chart-event-detail tabular-nums" role="status" aria-live="polite" style="margin-top: 0.5rem; padding: 0.5rem 0.85rem; border-radius: 0.375rem; background: var(--bg-surface-subtle); font-size: 0.85rem; color: var(--text-muted); border: 1px solid var(--border-subtle);">
+    <div id="trade-chart-event-detail" class="u-margin-top-0-5rem u-padding-0-5rem-0-85rem u-border-radius-0-375rem u-background-bg-surface-subtle u-font-size-0-85rem u-color-text-muted u-border-1px-solid-border-subtle chart-event-detail tabular-nums" role="status" aria-live="polite">
       ℹ️ Rê chuột hoặc chạm vào nến có đánh dấu để đọc giải thích chi tiết khớp lệnh vào / ra.
     </div>
 
@@ -232,11 +260,13 @@
             <span class="badge-optimal">⭐ THỰC THI TỐI ƯU</span>
           {% elif pm.is_deviant %}
             <span class="badge-deviant">⚠️ SAI LỆCH TÍN HIỆU / RỦI RO CAO</span>
+          {% elif pm.classification == "UNVERIFIED" %}
+            <span class="u-background-bg-surface-subtle badge">CHƯA ĐỦ DỮ LIỆU ĐỂ ĐÁNH GIÁ</span>
           {% else %}
-            <span class="badge" style="background: var(--bg-surface-subtle);">CHẤP NHẬN ĐƯỢC</span>
+            <span class="u-background-bg-surface-subtle badge">CHẤP NHẬN ĐƯỢC</span>
           {% endif %}
         </h3>
-        <span class="text-muted tabular-nums" style="font-size: 0.85rem;">Mã lệnh: <code>{{ selected_trade.trade_id }}</code></span>
+        <span class="u-font-size-0-85rem text-muted tabular-nums">Mã lệnh: <code>{{ selected_trade.trade_id }}</code></span>
       </div>
 
       <div class="reasoning-columns">
@@ -256,62 +286,58 @@
                 {% endif %}
               </dd>
             </div>
+            {% set ea = pm.entry_analysis %}
             <div class="reasoning-kv-item">
-              <dt>
-                <span class="tooltip-term" data-tooltip="Mức đòn bẩy tính toán dựa trên biên độ biến động ATR và ngân sách rủi ro 1% tài khoản">
-                  Đòn bẩy đề xuất (Leverage) <span class="tooltip-icon">ⓘ</span>
-                </span>
-              </dt>
-              <dd class="tabular-nums" style="font-weight: 700; color: var(--primary);">
-                {{ pm.entry_analysis.target_leverage or 5 }}x (Rủi ro: {{ pm.entry_analysis.account_risk_pct or "1.0" }}%)
-              </dd>
+              <dt>Chiến thuật</dt>
+              <dd>{% if ea.strategy_id %}{{ ea.strategy_id }}{% if ea.reason_code %} · {{ ea.reason_code }}{% endif %}{% else %}<span class="u-color-text-muted u-font-weight-400">Ledger chưa lưu</span>{% endif %}</dd>
             </div>
             <div class="reasoning-kv-item">
               <dt>
-                <span class="tooltip-term" data-tooltip="Tầng L4 Context Gate: Kiểm tra thị trường có xu hướng hay sideway và thanh khoản quote volume">
+                <span class="tooltip-term" data-tooltip="Giá bình quân gia quyền và tổng khối lượng của các fill vào lệnh trong ledger">
+                  Giá vào & khối lượng <span class="tooltip-icon">ⓘ</span>
+                </span>
+              </dt>
+              <dd class="tabular-nums">{% if ea.entry_price is not none %}{{ ea.entry_price | number_vi }}{% if ea.entry_quantity is not none %} × {{ ea.entry_quantity | number_vi }}{% endif %}{% else %}<span class="u-color-text-muted u-font-weight-400">Ledger chưa lưu</span>{% endif %}</dd>
+            </div>
+            <div class="reasoning-kv-item">
+              <dt>Giá tham chiếu & thời điểm tín hiệu</dt>
+              <dd class="tabular-nums">{% if ea.reference_price is not none or ea.signal_at %}{% if ea.reference_price is not none %}{{ ea.reference_price | number_vi }}{% endif %}{% if ea.signal_at %} lúc {{ ea.signal_at | local_time }}{% endif %}{% else %}<span class="u-color-text-muted u-font-weight-400">Ledger chưa lưu</span>{% endif %}</dd>
+            </div>
+            <div class="reasoning-kv-item">
+              <dt>
+                <span class="tooltip-term" data-tooltip="Đòn bẩy và tỷ lệ rủi ro tài khoản do nguồn sinh tín hiệu ghi lại; không suy diễn khi thiếu">
+                  Đòn bẩy & rủi ro tài khoản <span class="tooltip-icon">ⓘ</span>
+                </span>
+              </dt>
+              <dd class="tabular-nums">{% if ea.target_leverage is not none or ea.account_risk_pct is not none %}{% if ea.target_leverage is not none %}{{ ea.target_leverage }}x{% endif %}{% if ea.account_risk_pct is not none %} (Rủi ro: {{ ea.account_risk_pct | number_vi }}%){% endif %}{% else %}<span class="u-color-text-muted u-font-weight-400">Ledger chưa lưu</span>{% endif %}</dd>
+            </div>
+            <div class="reasoning-kv-item">
+              <dt>
+                <span class="tooltip-term" data-tooltip="Tầng L4 Context Gate: thị trường có xu hướng hay đi ngang và thanh khoản quote volume">
                   L4 Cửa Bối Cảnh (Context Gate) <span class="tooltip-icon">ⓘ</span>
                 </span>
               </dt>
-              <dd>
-                <span class="badge" style="background: rgba(14, 203, 129, 0.15); color: #0ecb81;">
-                  ĐẠT ({{ pm.entry_analysis.context_regime or "TRENDING" }})
-                </span>
-              </dd>
+              <dd>{% if ea.context_regime %}<span class="u-background-bg-surface-subtle badge">{% if ea.context_gate_passed is sameas true %}ĐẠT{% elif ea.context_gate_passed is sameas false %}KHÔNG ĐẠT{% else %}CHƯA RÕ{% endif %} ({{ ea.context_regime }})</span>{% else %}<span class="u-color-text-muted u-font-weight-400">Ledger chưa lưu</span>{% endif %}</dd>
             </div>
             <div class="reasoning-kv-item">
               <dt>
-                <span class="tooltip-term" data-tooltip="Tầng L5 Signal Trigger: Điểm hình học nến rút chân và phá vỡ mức cản then chốt">
+                <span class="tooltip-term" data-tooltip="Tầng L5 Signal Trigger: điểm hình học nến rút chân và phá vỡ mức cản then chốt">
                   L5 Điểm Kích Hoạt (Trigger Score) <span class="tooltip-icon">ⓘ</span>
                 </span>
               </dt>
-              <dd class="tabular-nums">
-                Rút chân: {{ pm.entry_analysis.rejection_wick_score or 80 }}/100 | Phá vỡ: {{ pm.entry_analysis.breakout_score or 85 }}/100
-              </dd>
+              <dd class="tabular-nums">{% if ea.rejection_wick_score is not none or ea.breakout_score is not none %}{% if ea.rejection_wick_score is not none %}Rút chân: {{ ea.rejection_wick_score }}/100{% endif %}{% if ea.breakout_score is not none %} Phá vỡ: {{ ea.breakout_score }}/100{% endif %}{% else %}<span class="u-color-text-muted u-font-weight-400">Ledger chưa lưu</span>{% endif %}</dd>
             </div>
             <div class="reasoning-kv-item">
               <dt>
-                <span class="tooltip-term" data-tooltip="Tầng L6 Zones: Tỷ lệ Lợi nhuận / Rủi ro kỳ vọng">
+                <span class="tooltip-term" data-tooltip="Tầng L6 Zones: tỷ lệ Lợi nhuận / Rủi ro kỳ vọng và vùng giá kế hoạch">
                   L6 Tỷ Lệ R:R & Kế Hoạch Vùng Giá <span class="tooltip-icon">ⓘ</span>
                 </span>
               </dt>
-              <dd>
-                <div class="rr-ratio-bar">
-                  <span class="rr-bar-track" aria-hidden="true">
-                    <span class="rr-bar-risk"></span>
-                    <span class="rr-bar-reward"></span>
-                  </span>
-                  <span class="rr-ratio-label tabular-nums">1 : {{ pm.entry_analysis.risk_reward_ratio or "2.0" }}</span>
-                </div>
-                <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.2rem;" class="tabular-nums">
-                  SL: {{ pm.entry_analysis.stop_loss_price }} | TP: {{ pm.entry_analysis.take_profit_price }}
-                </div>
-              </dd>
+              <dd class="tabular-nums">{% if ea.risk_reward_ratio is not none or ea.stop_loss_price is not none or ea.take_profit_price is not none %}{% if ea.risk_reward_ratio is not none %}1 : {{ ea.risk_reward_ratio | number_vi }}{% endif %}{% if ea.stop_loss_price is not none %} · SL: {{ ea.stop_loss_price | number_vi }}{% endif %}{% if ea.take_profit_price is not none %} · TP: {{ ea.take_profit_price | number_vi }}{% endif %}{% else %}<span class="u-color-text-muted u-font-weight-400">Ledger chưa lưu</span>{% endif %}</dd>
             </div>
-            <div class="reasoning-kv-item" style="border-bottom: none;">
-              <dt>Chiến thuật & Diễn giải</dt>
-              <dd style="max-width: 65%; text-align: right; font-weight: 400; color: var(--text-muted);">
-                {{ pm.entry_analysis.detail_vi or selected_trade.entry_reason.get("detail_vi", "Chiến lược kích hoạt theo tín hiệu đảo chiều nến") }}
-              </dd>
+            <div class="u-border-bottom-none reasoning-kv-item">
+              <dt>Diễn giải tín hiệu</dt>
+              <dd class="u-max-width-65pct u-text-align-right u-font-weight-400 u-color-text-muted">{% if ea.detail_vi %}{{ ea.detail_vi }}{% else %}Ledger chưa lưu lý do vào lệnh cho giao dịch này.{% endif %}</dd>
             </div>
           </dl>
         </div>
@@ -330,11 +356,11 @@
                 {% elif selected_trade.exit_reason == "STOP_LOSS" %}
                   <span class="badge-sl">🛑 CẮT LỖ (SL HIT)</span>
                 {% elif selected_trade.exit_reason == "TIME_STOP" %}
-                  <span class="badge" style="background: var(--bg-surface-subtle);">⏱️ HẾT GIỜ GIỮ</span>
+                  <span class="u-background-bg-surface-subtle badge">⏱️ HẾT GIỜ GIỮ</span>
                 {% elif selected_trade.exit_reason == "OPPOSING_SIGNAL" %}
-                  <span class="badge" style="background: var(--bg-surface-subtle);">🔄 ĐẢO CHIỀU TÍN HIỆU</span>
+                  <span class="u-background-bg-surface-subtle badge">🔄 ĐẢO CHIỀU TÍN HIỆU</span>
                 {% else %}
-                  <span class="badge" style="background: var(--bg-surface-subtle);">{{ selected_trade.exit_reason or "QUẢN TRỊ" }}</span>
+                  <span class="u-background-bg-surface-subtle badge">{{ selected_trade.exit_reason or "QUẢN TRỊ" }}</span>
                 {% endif %}
               </dd>
             </div>
@@ -344,8 +370,8 @@
                   Trượt giá thực tế (Slippage) <span class="tooltip-icon">ⓘ</span>
                 </span>
               </dt>
-              <dd class="tabular-nums" style="{% if pm.exit_analysis.slippage_bps | float > 15 %}color: var(--danger); font-weight: 700;{% endif %}">
-                {{ selected_trade.slippage_total }} {{ selected_trade.quote_asset }} ({{ pm.exit_analysis.slippage_bps or "0" }} bps)
+              <dd class="tabular-nums{% if pm.classification == "DEVIANT_SLIPPAGE" %} u-color-danger u-font-weight-700{% endif %}">
+                {{ selected_trade.slippage_total }} {{ selected_trade.quote_asset }}{% if pm.exit_analysis.slippage_bps is not none %} ({{ "%.2f" | format(pm.exit_analysis.slippage_bps | float) }} bps trên notional vào lệnh){% else %} (chưa tính được bps: thiếu fill vào lệnh){% endif %}
               </dd>
             </div>
             <div class="reasoning-kv-item">
@@ -356,17 +382,17 @@
             </div>
             <div class="reasoning-kv-item">
               <dt>Tổng chi phí thực thi</dt>
-              <dd class="tabular-nums" style="color: var(--danger);">
+              <dd class="u-color-danger tabular-nums">
                 -{{ selected_trade.total_cost }} {{ selected_trade.quote_asset }}
               </dd>
             </div>
             <div class="reasoning-kv-item">
               <dt>Kết quả Lãi/Lỗ ròng</dt>
-              <dd class="tabular-nums {% if selected_trade.net_pnl | float > 0 %}pnl-positive{% elif selected_trade.net_pnl | float < 0 %}pnl-negative{% endif %}" style="font-size: 1.1rem; font-weight: 700;">
+              <dd class="u-font-size-1-1rem u-font-weight-700 tabular-nums {% if selected_trade.net_pnl | float > 0 %}pnl-positive{% elif selected_trade.net_pnl | float < 0 %}pnl-negative{% endif %}">
                 {% if selected_trade.net_pnl | float > 0 %}+{% endif %}{{ selected_trade.net_pnl }} {{ selected_trade.quote_asset }}
               </dd>
             </div>
-            <div class="reasoning-kv-item" style="border-bottom: none;">
+            <div class="u-border-bottom-none reasoning-kv-item">
               <dt>Thời gian nắm giữ</dt>
               <dd class="tabular-nums text-muted">
                 {{ selected_trade.opened_at | local_time }} ➔ {{ selected_trade.closed_at | local_time }}
@@ -384,114 +410,154 @@
           </h4>
           <p>
             {% if pm.is_deviant %}
-              <strong style="color: var(--warning);">Phát hiện ca sai lệch:</strong> {{ pm.deviation_reason }}
-              Hệ thống đề xuất gắn nhãn phản thực nghiệm <code>{{ pm.recommended_counterfactual_action }}</code> kèm trọng số phạt <code>{{ pm.ai_penalty_weight }}x</code>.
+              <strong class="u-color-warning">Phát hiện ca sai lệch:</strong> {{ pm.deviation_reason }}
+              Đề xuất nhãn phản thực nghiệm <code>{{ pm.recommended_counterfactual_action }}</code>{% if pm.ai_penalty_weight is not none %} kèm trọng số phạt <code>{{ pm.ai_penalty_weight }}x</code>{% endif %}.
+            {% elif pm.classification == "UNVERIFIED" %}
+              Chưa đủ dữ liệu để đánh giá chất lượng thực thi của giao dịch này; cần người rà soát xem xét.
             {% else %}
-              Giao dịch này tuân thủ tốt kỷ luật rủi ro. Bạn vẫn có thể đưa vào tập dữ liệu để AI học đối chiếu củng cố.
+              Không quy tắc nào kiểm được phát hiện sai lệch ở giao dịch này.
             {% endif %}
           </p>
+          {% if pm.unevaluated_checks %}
+          <p class="u-font-size-0-8rem u-color-text-muted" id="post-mortem-unevaluated">
+            Chưa kiểm được: {% for check in pm.unevaluated_checks %}{{ {"SLIPPAGE": "trượt giá theo bps (thiếu fill vào lệnh)", "FALSE_BREAKOUT": "phá vỡ giả (thiếu lý do đóng hoặc thời gian giữ lệnh)", "EXCESSIVE_LOSS": "lỗ vượt kế hoạch (ledger chưa lưu ngân sách rủi ro của lệnh)"}.get(check, check) }}{% if not loop.last %}; {% endif %}{% endfor %}.
+          </p>
+          {% endif %}
+          <p class="u-font-size-0-8rem u-color-text-muted">Nhãn chỉ lưu tạm trong phiên chạy để rà soát, chưa đưa vào dữ liệu huấn luyện.</p>
         </div>
         <div class="ai-retraining-action">
-          <button type="button" class="btn-ai-retrain" id="btn-ingest-ai" onclick="ingestTradeToAi('{{ selected_trade.trade_id }}', '{{ selected_trade.bot_id }}', '{{ selected_trade.symbol }}', '{{ selected_trade.side }}', '{{ pm.deviation_reason or '' }}')">
+          <button type="button" class="btn-ai-retrain" id="btn-ingest-ai" data-csrf-token="{{ csrf_token | default('', true) }}" data-trade-id="{{ selected_trade.trade_id }}" data-bot-id="{{ selected_trade.bot_id }}" data-symbol="{{ selected_trade.symbol }}" data-side="{{ selected_trade.side }}" data-reason="{{ pm.deviation_reason or '' }}">
             📥 Đưa Ca Này Vào Dữ Liệu Phạt AI
           </button>
-          <span id="ai-ingest-feedback" style="display: none; font-size: 0.85rem; font-weight: 600; margin-left: 0.5rem; color: #0ecb81;">
-            ✅ Đã tiếp nhận thành công!
+          <span class="u-display-none u-font-size-0-85rem u-font-weight-600 u-margin-left-0-5rem u-color-hex-0ecb81" id="ai-ingest-feedback">
+            ✅ Đã ghi nhận để rà soát (lưu tạm trong phiên chạy)
           </span>
         </div>
       </div>
     </div>
   </section>
+  <p class="chart-attribution">Biểu đồ sử dụng <a href="https://www.tradingview.com/lightweight-charts/" target="_blank" rel="noopener noreferrer">TradingView Lightweight Charts</a>, theo giấy phép Apache 2.0.</p>
   <script id="trade-chart-data" type="application/json">{{ chart_data | tojson }}</script>
   {% endif %}
 
   <!-- BẢNG LỊCH SỬ GIAO DỊCH (Lược bỏ chữ rườm rà, dùng Badges & Quick Action Buttons) -->
   {% if report.scope == "bot" and report.trades %}
-  <section class="trade-history-section" aria-labelledby="trade-list-title" style="margin-top: 2rem;">
-    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
-      <h3 id="trade-list-title" style="margin: 0;">
+  <section class="u-margin-top-2rem trade-history-section" aria-labelledby="trade-list-title">
+    <div class="u-display-flex u-justify-content-space-between u-align-items-center u-margin-bottom-0-75rem">
+      <h3 class="u-margin-0" id="trade-list-title">
         Danh Sách Lệnh Khớp Trong Kỳ ({{ report.trades | length }} giao dịch)
       </h3>
-      <span class="text-muted" style="font-size: 0.85rem;">Bấm "Biểu đồ" để phóng to nến và mổ xẻ quyết định</span>
+      <span class="u-font-size-0-85rem text-muted">Bấm "Biểu đồ" để phóng to nến và mổ xẻ quyết định</span>
     </div>
 
-    <div class="table-responsive" style="border: 1px solid var(--border-subtle); border-radius: 0.5rem; background: var(--bg-surface);">
-      <table class="trade-table" style="width: 100%; border-collapse: collapse; font-size: 0.875rem;">
+    <div class="mobile-trade-list" aria-label="Giao dịch trong kỳ báo cáo">
+      {% for trade in report.trades %}
+      {% set m_pm = trade.get("post_mortem", {}) %}
+      <article class="trade-list-card">
+        <h4>{{ trade.symbol }} / {{ trade.side | label_vi }}</h4>
+        <dl>
+          <div><dt>Mã giao dịch</dt><dd><code>{{ trade.trade_id }}</code></dd></div>
+          <div><dt>Đóng lúc</dt><dd>{{ trade.closed_at | local_time }}</dd></div>
+          {% set trade_pnl_tone = trade.net_pnl | pnl_tone %}
+          <div><dt>Lời/lỗ ròng</dt><dd class="pnl-value pnl-value--{{ trade_pnl_tone }}" data-pnl-tone="{{ trade_pnl_tone }}">{% if trade_pnl_tone == "positive" %}+{% endif %}{{ trade.net_pnl | number_vi }} {{ trade.quote_asset }}</dd></div>
+          <div><dt>Chi phí / trượt giá</dt><dd>{{ trade.total_cost }} (Trượt: {{ trade.slippage_total }})</dd></div>
+          <div><dt>Lý do đóng</dt><dd>{{ {"STOP_LOSS": "Dừng lỗ", "TAKE_PROFIT": "Chốt lời", "TIME_STOP": "Đóng theo thời gian", "OPPOSING_SIGNAL": "Tín hiệu ngược chiều", "FLATTEN_OPERATION": "Đóng theo thao tác quản trị"}.get(trade.exit_reason, trade.exit_reason) if trade.exit_reason else "Chưa có dữ liệu" }}</dd></div>
+          <div><dt>Đánh giá lệnh</dt><dd>{% if m_pm.classification == "OPTIMAL" %}Tối ưu{% elif m_pm.is_deviant %}Sai lệch{% elif m_pm.classification == "UNVERIFIED" %}Chưa đủ dữ liệu{% else %}Chấp nhận{% endif %}</dd></div>
+        </dl>
+        <form class="chart-select-form" method="get" action="/admin/reports">
+          <input type="hidden" name="scope" value="{{ scope }}">
+          <input type="hidden" name="bot_id" value="{{ bot_id }}">
+          <input type="hidden" name="start" value="{{ start }}">
+          <input type="hidden" name="end" value="{{ end }}">
+          <input type="hidden" name="chart_trade_id" value="{{ trade.trade_id }}">
+          <label class="visually-hidden" for="mobile-timeframe-{{ loop.index }}">Khung biểu đồ cho {{ trade.symbol }}</label>
+          <select id="mobile-timeframe-{{ loop.index }}" name="chart_timeframe">
+            {% for timeframe in ["5m", "15m", "1h", "4h", "1d"] %}<option value="{{ timeframe }}" {% if (chart_timeframe or "1h") == timeframe %}selected{% endif %}>{{ timeframe }}</option>{% endfor %}
+          </select>
+          <button type="submit" class="btn btn-secondary">Xem biểu đồ</button>
+        </form>
+      </article>
+      {% endfor %}
+    </div>
+    <div class="u-border-1px-solid-border-subtle u-border-radius-0-5rem u-background-bg-surface desktop-trades table-responsive">
+      <table class="u-width-100pct u-border-collapse-collapse u-font-size-0-875rem trade-table">
         <thead>
-          <tr style="border-bottom: 1px solid var(--border-main); background: var(--bg-surface-subtle); text-align: left;">
-            <th style="padding: 0.75rem;">Cặp / Hướng</th>
-            <th style="padding: 0.75rem;">Thời Điểm Đóng</th>
-            <th style="padding: 0.75rem; text-align: right;">Lời/Lỗ Ròng</th>
-            <th style="padding: 0.75rem; text-align: right;">Chi Phí / Trượt Giá</th>
-            <th style="padding: 0.75rem;">Lý Do Đóng</th>
-            <th style="padding: 0.75rem;">Đánh Giá Lệnh</th>
-            <th style="padding: 0.75rem; text-align: center;">Thao Tác</th>
+          <tr class="u-border-bottom-1px-solid-border-main u-background-bg-surface-subtle u-text-align-left">
+            <th class="u-padding-0-75rem">Cặp / Hướng</th>
+            <th class="u-padding-0-75rem">Thời Điểm Đóng</th>
+            <th class="u-padding-0-75rem u-text-align-right">Lời/Lỗ Ròng</th>
+            <th class="u-padding-0-75rem u-text-align-right">Chi Phí / Trượt Giá</th>
+            <th class="u-padding-0-75rem">Lý Do Đóng</th>
+            <th class="u-padding-0-75rem">Đánh Giá Lệnh</th>
+            <th class="u-padding-0-75rem u-text-align-center">Thao Tác</th>
           </tr>
         </thead>
         <tbody>
           {% for trade in report.trades %}
           {% set t_pm = trade.get("post_mortem", {}) %}
           {% set pnl_num = trade.net_pnl | float %}
-          <tr style="border-bottom: 1px solid var(--border-subtle); transition: background-color 0.15s ease;">
+          <tr class="u-border-bottom-1px-solid-border-subtle u-transition-background-color-0-15s-ease">
             <!-- Cặp / Hướng -->
-            <td style="padding: 0.75rem; font-weight: 600;">
+            <td class="u-padding-0-75rem u-font-weight-600">
               <div>{{ trade.symbol }}</div>
               {% if trade.side == "LONG" %}
-                <span class="badge-long" style="font-size: 0.75rem;">🟢 LONG</span>
+                <span class="u-font-size-0-75rem badge-long">🟢 LONG</span>
               {% else %}
-                <span class="badge-short" style="font-size: 0.75rem;">🔴 SHORT</span>
+                <span class="u-font-size-0-75rem badge-short">🔴 SHORT</span>
               {% endif %}
             </td>
 
             <!-- Thời Điểm Đóng -->
-            <td style="padding: 0.75rem; color: var(--text-muted);" class="tabular-nums">
+            <td class="u-padding-0-75rem u-color-text-muted tabular-nums">
               {{ trade.closed_at | local_time }}
             </td>
 
             <!-- Lời/Lỗ Ròng -->
-            <td style="padding: 0.75rem; text-align: right; font-weight: 700;" class="tabular-nums {% if pnl_num > 0 %}pnl-positive{% elif pnl_num < 0 %}pnl-negative{% endif %}">
+            <td class="u-padding-0-75rem u-text-align-right u-font-weight-700 tabular-nums {% if pnl_num > 0 %}pnl-positive{% elif pnl_num < 0 %}pnl-negative{% endif %}">
               {% if pnl_num > 0 %}+{% endif %}{{ trade.net_pnl }} {{ trade.quote_asset }}
             </td>
 
             <!-- Chi Phí / Trượt Giá -->
-            <td style="padding: 0.75rem; text-align: right; color: var(--text-muted);" class="tabular-nums">
+            <td class="u-padding-0-75rem u-text-align-right u-color-text-muted tabular-nums">
               {{ trade.total_cost }} (Trượt: {{ trade.slippage_total }})
             </td>
 
             <!-- Lý Do Đóng -->
-            <td style="padding: 0.75rem;">
+            <td class="u-padding-0-75rem">
               {% if trade.exit_reason == "TAKE_PROFIT" %}
                 <span class="badge-tp">🎯 Chốt lời</span>
               {% elif trade.exit_reason == "STOP_LOSS" %}
                 <span class="badge-sl">🛑 Dừng lỗ</span>
               {% elif trade.exit_reason == "TIME_STOP" %}
-                <span class="badge" style="background: var(--bg-surface-subtle);">⏱️ Hết giờ</span>
+                <span class="u-background-bg-surface-subtle badge">⏱️ Hết giờ</span>
               {% else %}
-                <span class="badge" style="background: var(--bg-surface-subtle);">{{ trade.exit_reason or "Đóng" }}</span>
+                <span class="u-background-bg-surface-subtle badge">{{ trade.exit_reason or "Đóng" }}</span>
               {% endif %}
             </td>
 
             <!-- Đánh Giá Lệnh & Phân Loại -->
-            <td style="padding: 0.75rem;">
+            <td class="u-padding-0-75rem">
               {% if t_pm.classification == "OPTIMAL" %}
-                <span class="badge-optimal" style="font-size: 0.75rem;">⭐ TỐI ƯU</span>
+                <span class="u-font-size-0-75rem badge-optimal">⭐ TỐI ƯU</span>
               {% elif t_pm.is_deviant %}
-                <span class="badge-deviant" style="font-size: 0.75rem;" title="{{ t_pm.deviation_reason }}">⚠️ SAI LỆCH</span>
+                <span class="u-font-size-0-75rem badge-deviant" title="{{ t_pm.deviation_reason }}">⚠️ SAI LỆCH</span>
+              {% elif t_pm.classification == "UNVERIFIED" %}
+                <span class="u-background-bg-surface-subtle u-font-size-0-75rem badge">CHƯA ĐỦ DỮ LIỆU</span>
               {% else %}
-                <span class="badge" style="background: var(--bg-surface-subtle); font-size: 0.75rem;">CHẤP NHẬN</span>
+                <span class="u-background-bg-surface-subtle u-font-size-0-75rem badge">CHẤP NHẬN</span>
               {% endif %}
             </td>
 
             <!-- Thao Tác -->
-            <td style="padding: 0.75rem; text-align: center;">
-              <form method="get" action="/admin/reports" style="display: inline-block;">
+            <td class="u-padding-0-75rem u-text-align-center">
+              <form class="u-display-inline-block" method="get" action="/admin/reports">
                 <input type="hidden" name="scope" value="{{ scope }}">
                 <input type="hidden" name="bot_id" value="{{ bot_id }}">
                 <input type="hidden" name="start" value="{{ start }}">
                 <input type="hidden" name="end" value="{{ end }}">
                 <input type="hidden" name="chart_trade_id" value="{{ trade.trade_id }}">
                 <input type="hidden" name="chart_timeframe" value="1h">
-                <button type="submit" class="btn btn-secondary" style="padding: 0.25rem 0.6rem; font-size: 0.8rem; min-height: 32px;">
+                <button type="submit" class="btn btn-secondary btn-compact">
                   🔍 Xem Biểu Đồ
                 </button>
               </form>
@@ -505,90 +571,18 @@
   {% endif %}
 
   <!-- Chi Tiết Kỹ Thuật (Thu gọn) -->
-  <details style="margin-top: 2rem; padding: 0.75rem; border: 1px dashed var(--border-main); border-radius: 0.5rem;">
-    <summary style="cursor: pointer; font-weight: 600; color: var(--text-muted);">
+  <details class="u-margin-top-2rem u-padding-0-75rem u-border-1px-dashed-border-main u-border-radius-0-5rem">
+    <summary class="u-cursor-pointer u-font-weight-600 u-color-text-muted">
       ⚙️ Dữ Liệu Kỹ Thuật Canonical (JSON Digest)
     </summary>
-    <pre style="margin-top: 0.75rem; max-height: 300px; overflow-y: auto; font-size: 0.8rem; background: var(--bg-base); padding: 0.75rem; border-radius: 0.375rem;">{{ report | tojson(indent=2) }}</pre>
+    <pre class="u-margin-top-0-75rem u-max-height-300px u-overflow-y-auto u-font-size-0-8rem u-background-bg-base u-padding-0-75rem u-border-radius-0-375rem">{{ report | tojson(indent=2) }}</pre>
   </details>
 </section>
 {% endif %}
 
 <!-- JavaScript tiện ích tương tác -->
-<script>
-  function toggleBotSelect(scopeValue) {
-    const wrap = document.getElementById("bot-select-wrap");
-    if (wrap) {
-      wrap.style.display = scopeValue === "workspace" ? "none" : "block";
-    }
-  }
-
-  function setQuickRange(type) {
-    const now = new Date();
-    let startDate = new Date();
-    if (type === "today") {
-      startDate.setHours(0, 0, 0, 0);
-    } else if (type === "7d") {
-      startDate.setDate(now.getDate() - 7);
-    } else if (type === "30d") {
-      startDate.setDate(now.getDate() - 30);
-    } else if (type === "month") {
-      startDate = new Date(now.getFullYear(), now.getMonth(), 1);
-    }
-
-    const formatISOWithTZ = (d) => {
-      const pad = (n) => String(n).padStart(2, "0");
-      const offsetMinutes = -d.getTimezoneOffset();
-      const sign = offsetMinutes >= 0 ? "+" : "-";
-      const tzHours = pad(Math.floor(Math.abs(offsetMinutes) / 60));
-      const tzMins = pad(Math.abs(offsetMinutes) % 60);
-      return (
-        d.getFullYear() +
-        "-" +
-        pad(d.getMonth() + 1) +
-        "-" +
-        pad(d.getDate()) +
-        "T" +
-        pad(d.getHours()) +
-        ":" +
-        pad(d.getMinutes()) +
-        ":" +
-        pad(d.getSeconds()) +
-        sign +
-        tzHours +
-        ":" +
-        tzMins
-      );
-    };
-
-    document.getElementById("start").value = formatISOWithTZ(startDate);
-    document.getElementById("end").value = formatISOWithTZ(now);
-  }
-
-  async function ingestTradeToAi(tradeId, botId, symbol, side, reason) {
-    const btn = document.getElementById("btn-ingest-ai");
-    const feedback = document.getElementById("ai-ingest-feedback");
-    if (btn) btn.disabled = true;
-    try {
-      const res = await fetch(`/admin/api/trades/${tradeId}/ingest-negative-sample`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ bot_id: botId, symbol: symbol, side: side, reason: reason }),
-      });
-      if (res.ok) {
-        if (btn) btn.style.display = "none";
-        if (feedback) feedback.style.display = "inline-block";
-      } else {
-        alert("Không thể đưa ca sai lệch vào dữ liệu phạt AI lúc này.");
-        if (btn) btn.disabled = false;
-      }
-    } catch (e) {
-      alert("Lỗi kết nối khi gửi yêu cầu.");
-      if (btn) btn.disabled = false;
-    }
-  }
-</script>
-<details style="margin-top: 1.5rem;"><summary>Dữ liệu kỹ thuật JSON</summary><pre>{{ report | tojson(indent=2) }}</pre></details>
+<script src="/static/reports.js" defer></script>
+<details class="u-margin-top-1-5rem"><summary>Dữ liệu kỹ thuật JSON</summary><pre>{{ report | tojson(indent=2) }}</pre></details>
 {% endblock %}
 
 {% block scripts %}

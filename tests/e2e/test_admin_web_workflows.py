@@ -316,7 +316,7 @@ def test_admin_browser_session_navigation_accessibility_and_telegram_link(
         bot_link.press("Enter")
         expect(browser_page).to_have_url(f"{base_url}/admin/bots/{bot_id}")
         expect(
-            browser_page.get_by_role("heading", name=re.compile("main.*a", re.IGNORECASE))
+            browser_page.get_by_role("heading", level=1, name=re.compile("main.*a", re.IGNORECASE))
         ).to_be_visible()
 
         browser_page.get_by_label("Lý do tạm dừng").fill("Kiểm thử thao tác quản trị PAPER")
@@ -328,7 +328,7 @@ def test_admin_browser_session_navigation_accessibility_and_telegram_link(
         ) as pause_response_info:
             browser_page.get_by_role("button", name="Tạm dừng bot").press("Enter")
         assert pause_response_info.value.status == 303
-        expect(browser_page.get_by_text("Tạm dừng", exact=True)).to_be_visible()
+        expect(browser_page.locator("dd").get_by_text("Tạm dừng", exact=True)).to_be_visible()
 
         browser_page.get_by_role("link", name="Đóng toàn bộ vị thế", exact=True).press("Enter")
         expect(
@@ -644,7 +644,9 @@ def test_admin_browser_session_navigation_accessibility_and_telegram_link(
         ) as validate_response_info:
             browser_page.get_by_role("button", name="Kiểm định bản nháp").press("Enter")
         assert validate_response_info.value.status == 303
-        expect(browser_page.get_by_text("Bản nháp đã qua kiểm định.", exact=True)).to_be_visible()
+        expect(
+            browser_page.get_by_role("status").filter(has_text="Bản nháp đã qua kiểm định.")
+        ).to_be_visible()
 
         with browser_page.expect_response(
             lambda response: (
@@ -673,7 +675,9 @@ def test_admin_browser_session_navigation_accessibility_and_telegram_link(
             .locator("xpath=following-sibling::dd[1]")
         )
         expect(entry_state).to_have_text("Tạm dừng")
-        browser_page.get_by_role("link", name="Tổng quan", exact=True).press("Enter")
+        browser_page.get_by_role("navigation", name="Điều hướng chính").get_by_role(
+            "link", name="Tổng quan", exact=True
+        ).press("Enter")
         expect(
             browser_page.get_by_text("Điều khiển không gian làm việc: Đang hoạt động", exact=True)
         ).to_be_visible()
@@ -739,7 +743,7 @@ def test_admin_browser_session_navigation_accessibility_and_telegram_link(
         assert href.startswith("https://t.me/crypidian_test_bot?start=")
         assert "7000002" not in href
         assert session["token"] not in browser_page.content()
-        expect(browser_page.get_by_role("status")).to_be_visible()
+        expect(browser_page.get_by_role("main").get_by_role("status")).to_be_visible()
         assert_responsive(browser_page, "telegram-link")
         assert external_requests == []
     finally:

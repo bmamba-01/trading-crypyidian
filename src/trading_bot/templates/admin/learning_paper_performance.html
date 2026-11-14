@@ -77,7 +77,7 @@
                       <div><dt>Δ Log-loss</dt><dd class="{{ 'paper-performance-negative' if cohort.log_loss_regression is not none and cohort.log_loss_regression|float > 0.01 else 'paper-performance-positive' }}">{{ cohort.log_loss_regression if cohort.log_loss_regression is not none else "—" }}</dd></div>
                     </dl>
                     <div class="paper-performance-coverage" role="img" aria-label="Độ phủ trưởng thành {{ (cohort.coverage|float * 100)|round(1) }} phần trăm; ngưỡng yêu cầu 80 phần trăm">
-                      <span style="width: {{ [100, cohort.coverage|float * 100]|min }}%"></span>
+                      <span data-coverage-percent="{{ [100, cohort.coverage|float * 100]|min }}"></span>
                       <i aria-hidden="true"></i>
                     </div>
                     <p class="paper-performance-support-title">Hỗ trợ theo lớp PnL</p>

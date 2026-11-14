@@ -1,7 +1,11 @@
 """Domain model cho việc mổ xẻ sau giao dịch (Trade Post-Mortem) và phân loại chất lượng thực thi.
 
 Hỗ trợ phân tích nguyên nhân vào/ra lệnh, rủi ro, trượt giá, và đánh dấu
-các ca sai lệch (Deviant trades) để chuyển giao sang hệ thống huấn luyện AI.
+các ca sai lệch (Deviant trades) để người rà soát gắn nhãn cho huấn luyện AI.
+
+Nguyên tắc: hậu kiểm chỉ dùng dữ liệu có trong giao dịch được truyền vào (ledger PAPER
+hoặc nguồn đã ghi rõ). Trường không có nguồn là `None`; quy tắc thiếu dữ liệu đầu vào được
+liệt kê ở `unevaluated_checks` thay vì chạy trên giá trị mặc định.
 """
 # ruff: noqa: E501
 
@@ -9,94 +13,138 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from decimal import Decimal
+from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from typing import Any
 from uuid import UUID
+
+# Ngưỡng vận hành khởi điểm của hậu kiểm. Đây là lựa chọn nội bộ, chưa được nghiên cứu hay
+# backtest xác nhận; đổi ngưỡng phải đi kèm cập nhật tài liệu và test.
+SLIPPAGE_DEVIANT_BPS = Decimal("15")
+FALSE_BREAKOUT_MAX_HOLDING_SECONDS = 900
+EXCESSIVE_LOSS_R_MULTIPLE = Decimal("1.25")
+
+# Tên các quy tắc phát hiện sai lệch; dùng để báo quy tắc nào chưa kiểm được.
+CHECK_SLIPPAGE = "SLIPPAGE"
+CHECK_FALSE_BREAKOUT = "FALSE_BREAKOUT"
+CHECK_EXCESSIVE_LOSS = "EXCESSIVE_LOSS"
+
+_BPS = Decimal("10000")
+
+EXIT_REASON_LABELS_VI = {
+    "TAKE_PROFIT": "Chốt lời theo mục tiêu",
+    "STOP_LOSS": "Cắt lỗ bảo vệ vốn",
+    "TIME_STOP": "Đóng theo thời gian nắm giữ",
+    "OPPOSING_SIGNAL": "Tín hiệu kỹ thuật đảo chiều",
+    "FLATTEN_OPERATION": "Đóng theo thao tác quản trị khẩn cấp",
+}
 
 
 class TradeQualityClassification(StrEnum):
     """Phân loại chất lượng giao dịch sau khi kết thúc."""
 
-    OPTIMAL = "OPTIMAL"  # Giao dịch chuẩn mực, tuân thủ tín hiệu và quản trị rủi ro tốt
-    ACCEPTABLE = "ACCEPTABLE"  # Giao dịch chấp nhận được (thua lỗ kiểm soát trong 1R)
+    OPTIMAL = "OPTIMAL"  # Không lỗ và không vi phạm quy tắc nào kiểm được
+    ACCEPTABLE = "ACCEPTABLE"  # Lỗ nhưng không vi phạm quy tắc nào kiểm được
     DEVIANT_SLIPPAGE = "DEVIANT_SLIPPAGE"  # Sai lệch do trượt giá nghiêm trọng trên sổ lệnh
     DEVIANT_FALSE_BREAKOUT = "DEVIANT_FALSE_BREAKOUT"  # Phá vỡ giả, đảo chiều tức thì quét SL
     DEVIANT_CONTEXT_MISMATCH = (
         "DEVIANT_CONTEXT_MISMATCH"  # Bối cảnh thị trường không phù hợp (Chop/Sideway)
     )
     DEVIANT_EXCESSIVE_LOSS = (
-        "DEVIANT_EXCESSIVE_LOSS"  # Thua lỗ vượt mức kế hoạch rủi ro ban đầu (> 1.2R)
+        "DEVIANT_EXCESSIVE_LOSS"  # Thua lỗ vượt mức kế hoạch rủi ro ban đầu (> 1.25R)
     )
+    UNVERIFIED = "UNVERIFIED"  # Thiếu dữ liệu: không kết luận được chất lượng thực thi
 
 
 @dataclass(frozen=True, slots=True)
 class EntryReasoningBreakdown:
-    """Bóc tách lý do vào vị thế theo các tầng định lượng L4-L6 và tín hiệu tổng hợp."""
+    """Bóc tách lý do vào vị thế; mọi trường không có nguồn đều là `None`.
 
-    strategy_id: str
-    composite_signal: str  # LONG hoặc SHORT
-    target_leverage: int  # Mức đòn bẩy tính toán (vd: 3x, 5x, 10x)
-    account_risk_pct: Decimal  # Tỷ lệ rủi ro tài khoản (vd: 1.0%)
-    context_regime: str  # TRENDING, CHOP, VOLATILE
-    context_gate_passed: bool
-    rejection_wick_score: float  # Điểm nến rút chân (0.0 -> 100.0)
-    breakout_score: float  # Điểm phá vỡ đỉnh/đáy (0.0 -> 100.0)
-    risk_reward_ratio: Decimal  # Tỷ lệ R:R tính toán (vd: 2.0)
-    stop_loss_price: Decimal
-    take_profit_price: Decimal
-    detail_vi: str
+    Ledger PAPER hiện chỉ lưu `strategy_id`, `reason_code`, `detail_vi`, `reference_price` và
+    `signal_at`. Các trường tầng L4–L6 (bối cảnh, điểm kích hoạt, R:R, SL/TP, đòn bẩy) chỉ có
+    giá trị khi nguồn phát sinh candidate thật sự ghi chúng vào `entry_reason`.
+    """
+
+    composite_signal: str  # LONG hoặc SHORT, lấy từ hướng của giao dịch
+    strategy_id: str | None = None
+    reason_code: str | None = None
+    detail_vi: str | None = None
+    reference_price: Decimal | None = None
+    signal_at: str | None = None
+    entry_price: Decimal | None = None  # Giá bình quân gia quyền của các fill vào lệnh
+    entry_quantity: Decimal | None = None
+    target_leverage: int | None = None
+    account_risk_pct: Decimal | None = None
+    context_regime: str | None = None  # TRENDING, CHOP, VOLATILE
+    context_gate_passed: bool | None = None
+    rejection_wick_score: float | None = None  # Điểm nến rút chân (0.0 -> 100.0)
+    breakout_score: float | None = None  # Điểm phá vỡ đỉnh/đáy (0.0 -> 100.0)
+    risk_reward_ratio: Decimal | None = None
+    stop_loss_price: Decimal | None = None
+    take_profit_price: Decimal | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
-            "strategy_id": self.strategy_id,
             "composite_signal": self.composite_signal,
+            "strategy_id": self.strategy_id,
+            "reason_code": self.reason_code,
+            "detail_vi": self.detail_vi,
+            "reference_price": _text(self.reference_price),
+            "signal_at": self.signal_at,
+            "entry_price": _text(self.entry_price),
+            "entry_quantity": _text(self.entry_quantity),
             "target_leverage": self.target_leverage,
-            "account_risk_pct": str(self.account_risk_pct),
+            "account_risk_pct": _text(self.account_risk_pct),
             "context_regime": self.context_regime,
             "context_gate_passed": self.context_gate_passed,
-            "rejection_wick_score": round(self.rejection_wick_score, 1),
-            "breakout_score": round(self.breakout_score, 1),
-            "risk_reward_ratio": str(self.risk_reward_ratio),
-            "stop_loss_price": str(self.stop_loss_price),
-            "take_profit_price": str(self.take_profit_price),
-            "detail_vi": self.detail_vi,
+            "rejection_wick_score": (
+                round(self.rejection_wick_score, 1)
+                if self.rejection_wick_score is not None
+                else None
+            ),
+            "breakout_score": (
+                round(self.breakout_score, 1) if self.breakout_score is not None else None
+            ),
+            "risk_reward_ratio": _text(self.risk_reward_ratio),
+            "stop_loss_price": _text(self.stop_loss_price),
+            "take_profit_price": _text(self.take_profit_price),
         }
 
 
 @dataclass(frozen=True, slots=True)
 class ExitReasoningBreakdown:
-    """Bóc tách lý do thoát vị thế và chi phí thực tế."""
+    """Bóc tách lý do thoát vị thế và chi phí thực tế; thiếu nguồn thì là `None`."""
 
-    exit_reason_code: str  # TAKE_PROFIT, STOP_LOSS, TIME_STOP, OPPOSING_SIGNAL, FLATTEN
-    exit_reason_vi: str  # Giải thích tiếng Việt
-    gross_pnl: Decimal
-    fee_total: Decimal
-    funding_total: Decimal
-    slippage_total: Decimal
-    net_pnl: Decimal
-    pnl_percentage: Decimal
-    holding_duration_seconds: int
-    slippage_bps: Decimal  # Điểm cơ bản trượt giá (Basis points)
+    exit_reason_code: str | None  # TAKE_PROFIT, STOP_LOSS, TIME_STOP, OPPOSING_SIGNAL, FLATTEN
+    exit_reason_vi: str | None  # Giải thích tiếng Việt
+    gross_pnl: Decimal | None
+    fee_total: Decimal | None
+    funding_total: Decimal | None
+    slippage_total: Decimal | None
+    net_pnl: Decimal | None
+    net_pnl_r_multiple: Decimal | None  # PnL ròng / ngân sách rủi ro kế hoạch
+    holding_duration_seconds: int | None
+    slippage_bps: Decimal | None  # Trượt giá / notional vào lệnh, tính bằng điểm cơ bản
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "exit_reason_code": self.exit_reason_code,
             "exit_reason_vi": self.exit_reason_vi,
-            "gross_pnl": str(self.gross_pnl),
-            "fee_total": str(self.fee_total),
-            "funding_total": str(self.funding_total),
-            "slippage_total": str(self.slippage_total),
-            "net_pnl": str(self.net_pnl),
-            "pnl_percentage": str(self.pnl_percentage),
+            "gross_pnl": _text(self.gross_pnl),
+            "fee_total": _text(self.fee_total),
+            "funding_total": _text(self.funding_total),
+            "slippage_total": _text(self.slippage_total),
+            "net_pnl": _text(self.net_pnl),
+            "net_pnl_r_multiple": _text(self.net_pnl_r_multiple),
             "holding_duration_seconds": self.holding_duration_seconds,
-            "slippage_bps": str(self.slippage_bps),
+            "slippage_bps": _text(self.slippage_bps),
         }
 
 
 @dataclass(frozen=True, slots=True)
 class TradePostMortem:
-    """Bản tổng hợp mổ xẻ sau giao dịch kèm phân loại và đề xuất huấn luyện AI."""
+    """Bản tổng hợp mổ xẻ sau giao dịch kèm phân loại và đề xuất cho người rà soát."""
 
     trade_id: UUID
     bot_id: UUID
@@ -107,8 +155,12 @@ class TradePostMortem:
     deviation_reason: str | None
     entry_analysis: EntryReasoningBreakdown
     exit_analysis: ExitReasoningBreakdown
-    recommended_counterfactual_action: str  # ABSTAIN, TIGHTEN_SL, REDUCE_LEVERAGE
-    ai_penalty_weight: Decimal  # Hệ số phạt cho huấn luyện AI (1.0 = bình thường, 2.0 = phạt nặng)
+    # ABSTAIN, TIGHTEN_SL, MAINTAIN_STRATEGY, REINFORCE hoặc REVIEW_REQUIRED
+    recommended_counterfactual_action: str
+    # Hệ số phạt đề xuất; `None` khi chưa đủ dữ liệu để đề xuất.
+    ai_penalty_weight: Decimal | None
+    # Quy tắc phát hiện sai lệch không chạy được vì thiếu dữ liệu đầu vào.
+    unevaluated_checks: tuple[str, ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -122,144 +174,245 @@ class TradePostMortem:
             "entry_analysis": self.entry_analysis.as_dict(),
             "exit_analysis": self.exit_analysis.as_dict(),
             "recommended_counterfactual_action": self.recommended_counterfactual_action,
-            "ai_penalty_weight": str(self.ai_penalty_weight),
+            "ai_penalty_weight": _text(self.ai_penalty_weight),
+            "unevaluated_checks": list(self.unevaluated_checks),
         }
+
+
+def _text(value: Decimal | None) -> str | None:
+    """Chuỗi thập phân không ký hiệu khoa học; giữ `None` để giao diện ghi "chưa có dữ liệu"."""
+    return format(value, "f") if value is not None else None
+
+
+def _decimal(value: object) -> Decimal | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = Decimal(str(value))
+    except InvalidOperation:
+        return None
+    return number if number.is_finite() else None
+
+
+def _positive_decimal(value: object) -> Decimal | None:
+    number = _decimal(value)
+    return number if number is not None and number > 0 else None
+
+
+def _optional_text(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _required_text(trade: Mapping[str, Any], key: str) -> str:
+    text = _optional_text(trade.get(key))
+    if text is None:
+        raise ValueError(f"Giao dịch thiếu trường bắt buộc `{key}` để hậu kiểm.")
+    return text
+
+
+def _required_uuid(trade: Mapping[str, Any], key: str) -> UUID:
+    try:
+        return UUID(_required_text(trade, key))
+    except ValueError as error:
+        raise ValueError(f"Giao dịch thiếu `{key}` hợp lệ để hậu kiểm.") from error
+
+
+def _score(value: object) -> float | None:
+    number = _decimal(value)
+    return float(number) if number is not None else None
+
+
+def _leverage(value: object) -> int | None:
+    number = _positive_decimal(value)
+    return int(number) if number is not None and number == number.to_integral_value() else None
+
+
+def _entry_fill_summary(fills: object) -> tuple[Decimal | None, Decimal | None, Decimal | None]:
+    """Trả (khối lượng, giá bình quân gia quyền, notional) của các fill vào lệnh có đủ số liệu."""
+    quantity = Decimal("0")
+    notional = Decimal("0")
+    if isinstance(fills, list):
+        for fill in fills:
+            if not isinstance(fill, Mapping) or fill.get("role") != "ENTRY":
+                continue
+            fill_quantity = _positive_decimal(fill.get("quantity"))
+            fill_price = _positive_decimal(fill.get("price"))
+            if fill_quantity is None or fill_price is None:
+                continue
+            quantity += fill_quantity
+            notional += fill_quantity * fill_price
+    if quantity <= 0:
+        return None, None, None
+    return quantity, notional / quantity, notional
+
+
+def _first_entry_price(fills: object) -> Decimal | None:
+    """Giá của fill vào lệnh đầu tiên khi ledger không kèm khối lượng."""
+    if isinstance(fills, list):
+        for fill in fills:
+            if isinstance(fill, Mapping) and fill.get("role") == "ENTRY":
+                return _positive_decimal(fill.get("price"))
+    return None
+
+
+def _holding_seconds(trade: Mapping[str, Any]) -> int | None:
+    """Thời gian giữ lệnh: ưu tiên trường đã ghi, sau đó tính từ mốc mở/đóng của ledger."""
+    explicit = _decimal(trade.get("holding_duration_seconds"))
+    if explicit is not None and explicit >= 0:
+        return int(explicit)
+    try:
+        opened_at = datetime.fromisoformat(str(trade["opened_at"]))
+        closed_at = datetime.fromisoformat(str(trade["closed_at"]))
+        seconds = int((closed_at - opened_at).total_seconds())
+    except KeyError, TypeError, ValueError:
+        return None
+    return seconds if seconds >= 0 else None
 
 
 def evaluate_trade_post_mortem(
     trade: Mapping[str, Any],
     *,
-    initial_risk_budget: Decimal = Decimal("100"),
+    planned_risk_amount: Decimal | None = None,
 ) -> TradePostMortem:
-    """Đánh giá toàn diện một giao dịch đã đóng để phân loại chất lượng và đề xuất huấn luyện AI.
+    """Đánh giá một giao dịch đã đóng để phân loại chất lượng và đề xuất cho người rà soát.
 
-    Quy tắc phân loại:
-    1. Nếu trượt giá (slippage) > 0.15% giá trị giao dịch -> DEVIANT_SLIPPAGE.
-    2. Nếu lỗ ròng vượt 1.25R kế hoạch -> DEVIANT_EXCESSIVE_LOSS.
-    3. Nếu đóng STOP_LOSS trong vòng dưới 3 cây nến (thời gian giữ rất ngắn) -> DEVIANT_FALSE_BREAKOUT.
-    4. Nếu net_pnl > 0 hoặc lỗ nhẹ <= 1.0R tuân thủ kỷ luật -> OPTIMAL hoặc ACCEPTABLE.
+    Quy tắc phát hiện sai lệch, theo thứ tự; quy tắc thiếu dữ liệu đầu vào bị bỏ qua và được
+    ghi trong `unevaluated_checks`:
+
+    1. `SLIPPAGE`: trượt giá / notional vào lệnh > 15 bps. Cần fill vào lệnh có giá và khối lượng.
+    2. `FALSE_BREAKOUT`: đóng `STOP_LOSS`, lỗ ròng, giữ lệnh dưới 15 phút. Cần lý do đóng và
+       thời gian giữ lệnh.
+    3. `EXCESSIVE_LOSS`: lỗ ròng vượt 1,25 lần `planned_risk_amount`. Cần ngân sách rủi ro kế
+       hoạch do nơi gọi cung cấp từ nguồn thật; không có giá trị mặc định.
+
+    Không vi phạm quy tắc nào kiểm được: lỗ ròng → `ACCEPTABLE`, còn lại → `OPTIMAL`. Thiếu PnL
+    ròng hoặc không quy tắc nào kiểm được → `UNVERIFIED`.
     """
-    trade_id = UUID(str(trade.get("trade_id")))
-    bot_id = UUID(str(trade.get("bot_id")))
-    symbol = str(trade.get("symbol", "BTCUSDT"))
-    side = str(trade.get("side", "LONG")).upper()
+    trade_id = _required_uuid(trade, "trade_id")
+    bot_id = _required_uuid(trade, "bot_id")
+    symbol = _required_text(trade, "symbol")
+    side = _required_text(trade, "side").upper()
+    quote_asset = _optional_text(trade.get("quote_asset"))
 
-    gross_pnl = Decimal(str(trade.get("gross_pnl", "0")))
-    fee_total = Decimal(str(trade.get("fee_total", "0")))
-    funding_total = Decimal(str(trade.get("funding_total", "0")))
-    slippage_total = Decimal(str(trade.get("slippage_total", "0")))
-    net_pnl = Decimal(str(trade.get("net_pnl", "0")))
+    gross_pnl = _decimal(trade.get("gross_pnl"))
+    fee_total = _decimal(trade.get("fee_total"))
+    funding_total = _decimal(trade.get("funding_total"))
+    slippage_total = _decimal(trade.get("slippage_total"))
+    net_pnl = _decimal(trade.get("net_pnl"))
 
-    exit_reason_code = str(trade.get("exit_reason") or "STOP_LOSS")
-    exit_map = {
-        "TAKE_PROFIT": "Chốt lời theo mục tiêu",
-        "STOP_LOSS": "Cắt lỗ bảo vệ vốn",
-        "TIME_STOP": "Đóng theo thời gian nắm giữ",
-        "OPPOSING_SIGNAL": "Tín hiệu kỹ thuật đảo chiều",
-        "FLATTEN_OPERATION": "Đóng theo thao tác quản trị khẩn cấp",
-    }
-    exit_reason_vi = exit_map.get(exit_reason_code, exit_reason_code)
-
-    entry_reason_dict = trade.get("entry_reason")
-    if not isinstance(entry_reason_dict, dict):
-        entry_reason_dict = {}
-
-    strategy_id = str(entry_reason_dict.get("strategy_id") or "TREND_PULLBACK_V1")
-    detail_vi = str(
-        entry_reason_dict.get("detail_vi")
-        or "Tín hiệu nến rút chân xác nhận bối cảnh có xu hướng trên đường EMA200."
+    exit_reason_code = _optional_text(trade.get("exit_reason"))
+    exit_reason_vi = (
+        EXIT_REASON_LABELS_VI.get(exit_reason_code, exit_reason_code)
+        if exit_reason_code is not None
+        else None
     )
 
-    # Tính toán thông số vào lệnh
-    target_leverage = int(entry_reason_dict.get("target_leverage") or 5)
-    account_risk_pct = Decimal(str(entry_reason_dict.get("account_risk_pct") or "1.0"))
-    context_regime = str(entry_reason_dict.get("context_regime") or "TRENDING")
-    context_gate_passed = bool(entry_reason_dict.get("context_gate_passed", True))
-    rejection_wick_score = float(entry_reason_dict.get("rejection_wick_score") or 78.5)
-    breakout_score = float(entry_reason_dict.get("breakout_score") or 82.0)
-    risk_reward_ratio = Decimal(str(entry_reason_dict.get("risk_reward_ratio") or "2.0"))
+    raw_entry_reason = trade.get("entry_reason")
+    entry_reason: Mapping[str, Any] = (
+        raw_entry_reason if isinstance(raw_entry_reason, Mapping) else {}
+    )
+    gate_passed = entry_reason.get("context_gate_passed")
 
-    # Đọc fills nếu có để tính giá vào và SL/TP
-    fills = trade.get("fills", [])
-    entry_fill_price = Decimal("0")
-    if fills and isinstance(fills, list):
-        for f in fills:
-            if f.get("role") == "ENTRY":
-                entry_fill_price = Decimal(str(f.get("price", "0")))
-                break
+    fills = trade.get("fills")
+    entry_quantity, entry_price, entry_notional = _entry_fill_summary(fills)
+    if entry_price is None:
+        entry_price = _first_entry_price(fills)
 
-    if entry_fill_price == 0:
-        entry_fill_price = Decimal("95000")  # Default placeholder
+    holding_duration = _holding_seconds(trade)
+    risk_amount = planned_risk_amount if planned_risk_amount and planned_risk_amount > 0 else None
 
-    if side == "LONG":
-        stop_loss_price = entry_fill_price * Decimal("0.985")
-        take_profit_price = entry_fill_price * Decimal("1.030")
-    else:
-        stop_loss_price = entry_fill_price * Decimal("1.015")
-        take_profit_price = entry_fill_price * Decimal("0.970")
+    slippage_bps = (
+        slippage_total / entry_notional * _BPS
+        if slippage_total is not None and entry_notional is not None
+        else None
+    )
+    net_pnl_r_multiple = (
+        net_pnl / risk_amount if net_pnl is not None and risk_amount is not None else None
+    )
 
-    # Tính thời gian giữ lệnh
-    holding_duration = int(trade.get("holding_duration_seconds") or 3600)
+    unevaluated: list[str] = []
+    if slippage_bps is None:
+        unevaluated.append(CHECK_SLIPPAGE)
+    if exit_reason_code is None or holding_duration is None or net_pnl is None:
+        unevaluated.append(CHECK_FALSE_BREAKOUT)
+    if net_pnl_r_multiple is None:
+        unevaluated.append(CHECK_EXCESSIVE_LOSS)
+    all_checks_unevaluated = len(unevaluated) == 3
 
-    # Tính toán trượt giá và tỷ lệ PnL
-    slippage_bps = Decimal("0")
-    if entry_fill_price > 0 and slippage_total > 0:
-        slippage_bps = (slippage_total / entry_fill_price) * Decimal("10000")
-
-    pnl_percentage = Decimal("0")
-    if initial_risk_budget > 0:
-        pnl_percentage = (net_pnl / initial_risk_budget) * Decimal("100")
-
-    # Phân loại logic
-    classification = TradeQualityClassification.OPTIMAL
+    classification: TradeQualityClassification
     is_deviant = False
     deviation_reason: str | None = None
-    recommended_action = "MAINTAIN_STRATEGY"
-    ai_penalty_weight = Decimal("1.0")
+    recommended_action: str
+    ai_penalty_weight: Decimal | None
 
-    if slippage_total > Decimal("15.0") or slippage_bps > Decimal("15.0"):
+    if slippage_bps is not None and slippage_bps > SLIPPAGE_DEVIANT_BPS:
         classification = TradeQualityClassification.DEVIANT_SLIPPAGE
         is_deviant = True
-        deviation_reason = "Trượt giá thực tế vượt ngưỡng chấp nhận được (> 15 bps), thanh khoản mỏng tại thời điểm vào."
+        deviation_reason = (
+            f"Trượt giá thực tế {_text(slippage_bps.quantize(Decimal('0.01')))} bps trên notional "
+            f"vào lệnh, vượt ngưỡng {SLIPPAGE_DEVIANT_BPS} bps."
+        )
         recommended_action = "ABSTAIN"
         ai_penalty_weight = Decimal("1.8")
-    elif exit_reason_code == "STOP_LOSS" and holding_duration < 900 and net_pnl < 0:
-        # Bị quét SL trong vòng 15 phút
+    elif (
+        exit_reason_code == "STOP_LOSS"
+        and holding_duration is not None
+        and holding_duration < FALSE_BREAKOUT_MAX_HOLDING_SECONDS
+        and net_pnl is not None
+        and net_pnl < 0
+    ):
         classification = TradeQualityClassification.DEVIANT_FALSE_BREAKOUT
         is_deviant = True
-        deviation_reason = "Bẫy thanh khoản / Phá vỡ giả: Giá đảo chiều quét Stop Loss trong vòng 15 phút sau khi vào."
+        deviation_reason = (
+            "Bẫy thanh khoản / Phá vỡ giả: giá đảo chiều quét Stop Loss sau "
+            f"{holding_duration} giây, dưới ngưỡng {FALSE_BREAKOUT_MAX_HOLDING_SECONDS} giây."
+        )
         recommended_action = "ABSTAIN"
         ai_penalty_weight = Decimal("2.0")
-    elif net_pnl < -(initial_risk_budget * Decimal("1.25")):
+    elif net_pnl_r_multiple is not None and net_pnl_r_multiple < -EXCESSIVE_LOSS_R_MULTIPLE:
         classification = TradeQualityClassification.DEVIANT_EXCESSIVE_LOSS
         is_deviant = True
-        deviation_reason = f"Thua lỗ vượt quá 1.25R ngân sách rủi ro (lỗ {net_pnl} USDT so với kế hoạch {initial_risk_budget} USDT)."
+        unit = f" {quote_asset}" if quote_asset else ""
+        deviation_reason = (
+            f"Thua lỗ vượt quá {EXCESSIVE_LOSS_R_MULTIPLE}R ngân sách rủi ro "
+            f"(lỗ {_text(net_pnl)}{unit} so với kế hoạch {_text(risk_amount)}{unit})."
+        )
         recommended_action = "TIGHTEN_SL"
         ai_penalty_weight = Decimal("2.0")
+    elif net_pnl is None or all_checks_unevaluated:
+        classification = TradeQualityClassification.UNVERIFIED
+        recommended_action = "REVIEW_REQUIRED"
+        ai_penalty_weight = None
     elif net_pnl < 0:
         classification = TradeQualityClassification.ACCEPTABLE
-        deviation_reason = None
         recommended_action = "MAINTAIN_STRATEGY"
         ai_penalty_weight = Decimal("1.0")
     else:
         classification = TradeQualityClassification.OPTIMAL
-        deviation_reason = None
         recommended_action = "REINFORCE"
         ai_penalty_weight = Decimal("0.5")
 
     entry_analysis = EntryReasoningBreakdown(
-        strategy_id=strategy_id,
         composite_signal=side,
-        target_leverage=target_leverage,
-        account_risk_pct=account_risk_pct,
-        context_regime=context_regime,
-        context_gate_passed=context_gate_passed,
-        rejection_wick_score=rejection_wick_score,
-        breakout_score=breakout_score,
-        risk_reward_ratio=risk_reward_ratio,
-        stop_loss_price=stop_loss_price,
-        take_profit_price=take_profit_price,
-        detail_vi=detail_vi,
+        strategy_id=_optional_text(entry_reason.get("strategy_id")),
+        reason_code=_optional_text(entry_reason.get("reason_code")),
+        detail_vi=_optional_text(entry_reason.get("detail_vi")),
+        reference_price=_positive_decimal(entry_reason.get("reference_price")),
+        signal_at=_optional_text(entry_reason.get("signal_at")),
+        entry_price=entry_price,
+        entry_quantity=entry_quantity,
+        target_leverage=_leverage(entry_reason.get("target_leverage")),
+        account_risk_pct=_positive_decimal(entry_reason.get("account_risk_pct")),
+        context_regime=_optional_text(entry_reason.get("context_regime")),
+        context_gate_passed=gate_passed if isinstance(gate_passed, bool) else None,
+        rejection_wick_score=_score(entry_reason.get("rejection_wick_score")),
+        breakout_score=_score(entry_reason.get("breakout_score")),
+        risk_reward_ratio=_positive_decimal(entry_reason.get("risk_reward_ratio")),
+        stop_loss_price=_positive_decimal(entry_reason.get("stop_loss_price")),
+        take_profit_price=_positive_decimal(entry_reason.get("take_profit_price")),
     )
 
     exit_analysis = ExitReasoningBreakdown(
@@ -270,7 +423,7 @@ def evaluate_trade_post_mortem(
         funding_total=funding_total,
         slippage_total=slippage_total,
         net_pnl=net_pnl,
-        pnl_percentage=pnl_percentage,
+        net_pnl_r_multiple=net_pnl_r_multiple,
         holding_duration_seconds=holding_duration,
         slippage_bps=slippage_bps,
     )
@@ -287,4 +440,5 @@ def evaluate_trade_post_mortem(
         exit_analysis=exit_analysis,
         recommended_counterfactual_action=recommended_action,
         ai_penalty_weight=ai_penalty_weight,
+        unevaluated_checks=tuple(unevaluated),
     )

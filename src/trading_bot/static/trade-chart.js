@@ -64,6 +64,9 @@
       autoSize: true,
       height,
       layout: {
+        // Logo ghi công của thư viện tự chèn thẻ <style>, bị CSP chặn. Trang đã có dòng ghi
+        // công kèm liên kết tradingview.com nên được phép tắt logo (tài liệu LayoutOptions).
+        attributionLogo: false,
         background: { color: theme.background },
         textColor: theme.textColor,
         fontFamily: '"Be Vietnam Pro", system-ui, sans-serif',
@@ -196,7 +199,7 @@
               : "Đóng (chưa rõ)";
         const entryReason = trade.entry_reason || {};
         const explanation = entry
-          ? `Vào lệnh ${trade.symbol} lúc ${fill.occurred_at}; Giá: ${fill.price}; Chiến thuật: ${entryReason.strategy_id || "TREND_V1"}; Tín hiệu: ${entryReason.detail_vi || "Mô hình nến xác nhận"}.`
+          ? `Vào lệnh ${trade.symbol} lúc ${fill.occurred_at}; Giá: ${fill.price}; Chiến thuật: ${entryReason.strategy_id || "chưa có dữ liệu"}; Tín hiệu: ${entryReason.detail_vi || "ledger chưa lưu lý do vào lệnh"}.`
           : `Khớp đóng lệnh ${trade.symbol} lúc ${fill.occurred_at}; Giá: ${fill.price}; Lý do đóng: ${trade.exit_reason || "Chưa rõ"}; PnL ròng: ${trade.net_pnl} ${trade.quote_asset}.`;
         markers.push({
           time,

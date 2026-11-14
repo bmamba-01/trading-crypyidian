@@ -6,13 +6,7 @@
     <title>{% block title %}Crypidian{% endblock %}</title>
     <link rel="stylesheet" href="/static/vendor/bootstrap-5.3.8.min.css">
     <link rel="stylesheet" href="/static/admin.css">
-    <script>
-      (function() {
-        const saved = localStorage.getItem("crypidian_theme");
-        const theme = saved || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
-        document.documentElement.setAttribute("data-theme", theme);
-      })();
-    </script>
+    <script src="/static/theme-init.js"></script>
     {% block head_extra %}{% endblock %}
   </head>
   <body>
@@ -35,7 +29,7 @@
           <a href="/admin/learning/paper-performance" {% if request.url.path.startswith("/admin/learning/paper-performance") %}aria-current="page"{% endif %}>Hiệu năng PAPER</a>
           <a href="/admin/learning/splits" {% if request.url.path.startswith("/admin/learning/splits") %}aria-current="page"{% endif %}>Duyệt phân chia dữ liệu</a>
           <a href="/admin/learning/training" {% if request.url.path.startswith("/admin/learning/training") %}aria-current="page"{% endif %}>Huấn luyện</a>
-          <a href="/admin/flatten">Đóng vị thế toàn bộ</a>
+          <a href="/admin/flatten" {% if request.url.path.startswith("/admin/flatten") %}aria-current="page"{% endif %}>Đóng toàn bộ vị thế</a>
           <a href="/admin/telegram" {% if request.url.path.startswith("/admin/telegram") %}aria-current="page"{% endif %}>Telegram</a>
         </nav>
       {% endblock %}
@@ -70,20 +64,7 @@
     <footer role="contentinfo" class="admin-footer">
       <p>Crypidian Admin — Môi trường thử nghiệm an toàn độc lập (PAPER mode)</p>
     </footer>
-    <script>
-      (function() {
-        const toggleBtn = document.getElementById("theme-toggle");
-        if (toggleBtn) {
-          toggleBtn.addEventListener("click", () => {
-            const current = document.documentElement.getAttribute("data-theme") || "dark";
-            const next = current === "dark" ? "light" : "dark";
-            document.documentElement.setAttribute("data-theme", next);
-            localStorage.setItem("crypidian_theme", next);
-            window.dispatchEvent(new CustomEvent("themechange", { detail: { theme: next } }));
-          });
-        }
-      })();
-    </script>
+    <script src="/static/theme-toggle.js" defer></script>
     {% block scripts %}{% endblock %}
   </body>
 </html>

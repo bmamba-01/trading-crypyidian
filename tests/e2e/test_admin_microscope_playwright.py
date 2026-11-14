@@ -31,6 +31,11 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from playwright.sync_api import sync_playwright
 
+from tests.e2e.csp_harness import (
+    browser_violations,  # noqa: F401 - fixture nạp qua usefixtures
+    install_security_headers,
+    watch_browser_violations,
+)
 from trading_bot.admin.strategy_card_service import StrategyCardAdminService
 from trading_bot.admin.web_router import router as admin_web_router
 from trading_bot.application.strategy_pipeline.microscope import MicroscopeReplayService
@@ -39,14 +44,15 @@ from trading_bot.auth.security import LoginRateLimiter
 from trading_bot.auth.service import AuthenticationFailure, AuthIdentity, LoginResult
 from trading_bot.config.settings import AppSettings
 
-SCREENSHOTS_DIR = Path(
-    "/Users/macbook/.gemini/antigravity/brain/4f23167d-60fd-49c3-8248-ddb2b669a2a7/screenshots"
-)
+# Ảnh chụp nằm trong repo để test chạy được trên mọi máy và không ghi ra ngoài dự án.
+SCREENSHOTS_DIR = Path(__file__).resolve().parent / "evidence" / "admin-playwright"
 SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
 
 WORKSPACE_ID = UUID("9b2299f1-a58e-45c7-b0ad-83feb0862510")
 USER_ID = UUID("c3b4a5d6-e7f8-4a9b-0c1d-2e3f4a5b6c7d")
 MEMBERSHIP_ID = UUID("a93c4b18-f76c-4cfb-9bad-9e0aee5ccadc")
+
+pytestmark = pytest.mark.usefixtures("browser_violations")
 
 
 class MockAuthService:
@@ -159,6 +165,7 @@ def create_test_microscope_app() -> FastAPI:
 
     app.mount("/static", StaticFiles(directory="src/trading_bot/static"), name="static")
     app.include_router(admin_web_router)
+    install_security_headers(app)
     return app
 
 
@@ -211,6 +218,7 @@ def test_microscope_desktop_view(microscope_server_url: str) -> None:
             ]
         )
         page = context.new_page()
+        watch_browser_violations(page)
 
         # 1. Truy cập trang Microscope Replay của card Donchian Breakout
         target_url = (
@@ -312,6 +320,7 @@ def test_microscope_mobile_view(microscope_server_url: str) -> None:
             ]
         )
         page = context.new_page()
+        watch_browser_violations(page)
 
         # 1. Truy cập trang Microscope Replay trên mobile
         target_url = (
@@ -373,6 +382,7 @@ def test_navigation_from_cards_to_microscope(microscope_server_url: str) -> None
             ]
         )
         page = context.new_page()
+        watch_browser_violations(page)
 
         # 1. Truy cập trang danh sách Strategy Cards
         page.goto(f"{microscope_server_url}/admin/strategy-cards", wait_until="networkidle")

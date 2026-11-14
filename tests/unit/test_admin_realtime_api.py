@@ -315,7 +315,13 @@ def test_queue_ai_retraining_alias_endpoint() -> None:
     """Endpoint alias POST /admin/api/trades/{trade_id}/queue-ai-retraining hoạt động chuẩn xác."""
     from uuid import uuid4
 
+    from trading_bot.auth.router import require_csrf
+
     client = _create_authenticated_client()
+    # Thay kiểm CSRF bằng danh tính đã xác thực: test này chỉ kiểm hành vi alias.
+    client.app.dependency_overrides[require_csrf] = client.app.dependency_overrides[
+        current_identity
+    ]
     trade_id = uuid4()
     resp = client.post(
         f"/admin/api/trades/{trade_id}/queue-ai-retraining",
@@ -331,3 +337,36 @@ def test_queue_ai_retraining_alias_endpoint() -> None:
     assert data["status"] == "success"
     assert "Đã tiếp nhận ca sai lệch" in data["message"]
     assert data["sample"]["trade_id"] == str(trade_id)
+
+
+def test_queue_ai_retraining_requires_csrf_role_and_bot_id() -> None:
+    """Gắn nhãn ca đổi trạng thái: thiếu CSRF, sai vai trò hoặc thiếu bot đều bị chặn."""
+    from uuid import uuid4
+
+    from trading_bot.auth.router import require_csrf
+
+    client = _create_authenticated_client()
+    url = f"/admin/api/trades/{uuid4()}/queue-ai-retraining"
+    payload = {"bot_id": str(BOT1_ID), "symbol": "BTCUSDT", "side": "LONG"}
+
+    without_csrf = client.post(url, json=payload)
+    assert without_csrf.status_code != 200
+
+    owner = client.app.dependency_overrides[current_identity]()
+    client.app.dependency_overrides[require_csrf] = lambda: owner
+    missing_bot = client.post(url, json={"symbol": "BTCUSDT"})
+    assert missing_bot.status_code == 422
+
+    operator = AuthIdentity(
+        principal=Principal(
+            workspace_id=WORKSPACE,
+            membership_id=MEMBERSHIP,
+            user_id=USER_ID,
+            roles=frozenset({Role.OPERATOR}),
+            mfa_verified_at=datetime.now(UTC),
+        ),
+        email="operator@crypidian.test",
+    )
+    client.app.dependency_overrides[require_csrf] = lambda: operator
+    forbidden = client.post(url, json=payload)
+    assert forbidden.status_code == 403

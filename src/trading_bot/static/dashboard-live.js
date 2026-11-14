@@ -190,6 +190,8 @@
       status.dataset.state = "stale";
     } finally {
       clearTimeout(timeout);
+      // Phản hồi lỗi không được đọc thân; hủy để trình duyệt đóng request thay vì treo chờ.
+      request.abort();
       if (token === generation && !disposed) {
         controller = null;
         panel.setAttribute("aria-busy", "false");

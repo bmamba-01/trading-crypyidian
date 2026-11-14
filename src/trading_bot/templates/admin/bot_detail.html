@@ -3,7 +3,7 @@
 {% block heading %}{{ bot.name }}{% endblock %}
 
 {% block content %}
-<dl class="bot-status-dl" style="margin-bottom: 1rem;">
+<dl class="u-margin-bottom-1rem bot-status-dl">
   <dt>Trạng thái tài khoản</dt><dd>{{ bot.status | label_vi }} / {{ bot.account_status | label_vi }} / {{ bot.account_mode | label_vi }}</dd>
   <dt>Mức sẵn sàng</dt><dd>{{ bot.readiness | label_vi }}</dd>
   <dt>Trạng thái mở vị thế</dt><dd>{{ bot.entry_state | label_vi }}</dd>
@@ -13,17 +13,17 @@
 <!-- Thanh tóm tắt trạng thái Bot & Breadcrumbs -->
 <div class="bot-header-summary">
   <div>
-    <nav aria-label="Đường dẫn trang" style="margin-bottom: 0.35rem; font-size: 0.85rem; color: var(--text-muted);">
+    <nav class="u-margin-bottom-0-35rem u-font-size-0-85rem u-color-text-muted" aria-label="Đường dẫn trang">
       <a href="/admin">Tổng quan</a> &rsaquo;
       <a href="/admin/bots">Danh Sách Bot</a> &rsaquo;
       <span aria-current="page">{{ bot.name }}</span>
     </nav>
-    <div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
-      <h2 style="margin: 0; font-size: 1.35rem; display: flex; align-items: center; gap: 0.4rem;">
-        <svg class="svg-icon" viewBox="0 0 24 24" style="color: var(--primary);"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/></svg>
+    <div class="u-display-flex u-align-items-center u-gap-0-5rem u-flex-wrap-wrap">
+      <h2 class="u-margin-0 u-font-size-1-35rem u-display-flex u-align-items-center u-gap-0-4rem">
+        <svg class="u-color-primary svg-icon" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/></svg>
         <span>{{ bot.name }}</span>
       </h2>
-      <span class="badge" style="background: var(--bg-surface-subtle); border: 1px solid var(--border-subtle); font-size: 0.8rem;">
+      <span class="u-background-bg-surface-subtle u-border-1px-solid-border-subtle u-font-size-0-8rem badge">
         Cặp: <strong>{{ bot.symbol }}</strong>
       </span>
     </div>
@@ -43,11 +43,11 @@
     <span class="badge badge-warning">Mức sẵn sàng: {{ bot.readiness | label_vi }}</span>
 
     {% if bot.entry_allowed %}
-      <span class="badge" style="background: rgba(14, 203, 129, 0.15); color: #0ecb81; font-weight: 600;">
+      <span class="u-background-rgba-14-203-129-0-15 u-color-hex-0ecb81 u-font-weight-600 badge">
         Vào lệnh: Cho phép
       </span>
     {% else %}
-      <span class="badge" style="background: rgba(246, 70, 93, 0.15); color: #f6465d; font-weight: 600;">
+      <span class="u-background-rgba-246-70-93-0-15 u-color-hex-f6465d u-font-weight-600 badge">
         Vào lệnh: Bị chặn
       </span>
     {% endif %}
@@ -68,137 +68,106 @@
   </div>
 </div>
 
-<!-- Lưới Thẻ Chỉ Số Mini (Trading KPI Metric Grid Cards) -->
+<!-- Chỉ số hiệu năng 30 ngày: đọc từ ledger PAPER qua báo cáo bot; thiếu nguồn thì ghi rõ. -->
 <section class="trading-metrics-block" aria-label="Chỉ số hiệu năng bot">
+  {% if not trading_data_available %}
+  <p class="u-padding-1rem u-background-bg-surface u-border-radius-0-5rem u-border-1px-solid-border-subtle u-color-text-muted" role="status" id="bot-trading-data-unavailable">
+    Chưa tải được số liệu giao dịch PAPER của bot này. Hãy kiểm tra quyền xem báo cáo hoặc thử lại sau.
+  </p>
+  {% endif %}
+  {% set quote = metrics.quote_asset if metrics and metrics.quote_asset else "" %}
   <div class="trading-metric-grid">
-    <!-- Card Open Positions -->
     <div class="trading-metric-card">
       <div class="metric-header">
-        <span class="tooltip-term" data-tooltip="Số lượng vị thế giao dịch đang mở tại thời điểm hiện tại">
+        <span class="tooltip-term" data-tooltip="Số giao dịch PAPER đang mở trong ledger tại thời điểm tải trang">
           Vị Thế Đang Mở <span class="tooltip-icon">ⓘ</span>
         </span>
-        <svg class="svg-icon" viewBox="0 0 24 24" style="color: var(--primary);"><path d="M18 20V10M12 20V4M6 20v-6"/></svg>
+        <svg class="u-color-primary svg-icon" viewBox="0 0 24 24"><path d="M18 20V10M12 20V4M6 20v-6"/></svg>
       </div>
-      <div class="metric-value tabular-nums" id="kpi-open-positions" style="color: var(--primary);">
-        {{ metrics.open_positions_count or (positions | length) }}
-      </div>
-      <div class="metric-sub tabular-nums">
-        Trạng thái: {{ bot.entry_state | label_vi }}
-      </div>
+      <div class="u-color-primary metric-value tabular-nums" id="kpi-open-positions">{% if metrics %}{{ metrics.open_positions_count }}{% else %}—{% endif %}</div>
+      <div class="metric-sub tabular-nums">Trạng thái: {{ bot.entry_state | label_vi }}</div>
     </div>
 
-    <!-- Card Win Rate -->
     <div class="trading-metric-card">
       <div class="metric-header">
-        <span class="tooltip-term" data-tooltip="Tỷ lệ thắng = (Số lệnh thắng / Tổng lệnh đã đóng) × 100%">
+        <span class="tooltip-term" data-tooltip="Tỷ lệ thắng = (Số lệnh có lãi / Tổng lệnh đã đóng) × 100%, trong 30 ngày">
           Tỷ Lệ Thắng (Win Rate) <span class="tooltip-icon">ⓘ</span>
         </span>
-        <svg class="svg-icon" viewBox="0 0 24 24" style="color: #0ecb81;"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>
+        <svg class="u-color-primary svg-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>
       </div>
-      <div class="metric-value tabular-nums" id="kpi-win-rate" style="color: #0ecb81;">
-        {{ metrics.win_rate_percent or 0 }}%
-      </div>
-      <div class="metric-sub tabular-nums" id="kpi-closed-trades">
-        Tổng số lệnh đóng: {{ metrics.closed_trade_count or 0 }}
-      </div>
+      <div class="metric-value tabular-nums" id="kpi-win-rate">{% if metrics and metrics.win_rate_percent is not none %}{{ metrics.win_rate_percent | number_vi }}%{% else %}Chưa có dữ liệu{% endif %}</div>
+      <div class="metric-sub tabular-nums" id="kpi-closed-trades">Tổng số lệnh đóng: {% if metrics %}{{ metrics.closed_trade_count }}{% else %}—{% endif %}</div>
     </div>
 
-    <!-- Card Profit Factor -->
     <div class="trading-metric-card">
       <div class="metric-header">
-        <span class="tooltip-term" data-tooltip="Hệ số lợi nhuận = Tổng lãi gộp / Tổng lỗ gộp. Giá trị > 1.5 biểu thị chiến lược sinh lời bền vững">
+        <span class="tooltip-term" data-tooltip="Hệ số lợi nhuận = Tổng lãi gộp / Tổng lỗ gộp của các lệnh đã đóng">
           Profit Factor <span class="tooltip-icon">ⓘ</span>
         </span>
-        <svg class="svg-icon" viewBox="0 0 24 24" style="color: var(--primary);"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>
+        <svg class="u-color-primary svg-icon" viewBox="0 0 24 24"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>
       </div>
-      <div class="metric-value tabular-nums" id="kpi-profit-factor">
-        {{ metrics.profit_factor or "N/A" }}{% if metrics.profit_factor and metrics.profit_factor != "N/A" %}x{% endif %}
-      </div>
-      <div class="metric-sub tabular-nums">
-        Tỷ lệ R:R trung bình: {{ metrics.average_risk_reward or "1 : 2.0" }}
-      </div>
+      <div class="metric-value tabular-nums" id="kpi-profit-factor">{% if metrics and metrics.profit_factor is not none %}{{ metrics.profit_factor | number_vi }}{% else %}Không xác định{% endif %}</div>
+      <div class="metric-sub tabular-nums" id="kpi-expectancy">Kỳ vọng ròng mỗi lệnh: {% if metrics and metrics.expectancy_per_trade is not none %}{{ metrics.expectancy_per_trade | number_vi }} {{ quote }}{% else %}Chưa có dữ liệu{% endif %}</div>
     </div>
 
-    <!-- Card Net PnL -->
     <div class="trading-metric-card">
       <div class="metric-header">
-        <span class="tooltip-term" data-tooltip="Lợi nhuận ròng thực tế = Lãi gộp - (Phí sàn + Funding + Trượt giá)">
+        <span class="tooltip-term" data-tooltip="Lãi/lỗ ròng đã thực hiện = Lãi gộp − (Phí sàn + Funding + Trượt giá)">
           Lợi Nhuận Ròng (Net PnL) <span class="tooltip-icon">ⓘ</span>
         </span>
-        <svg class="svg-icon" viewBox="0 0 24 24" style="color: #0ecb81;"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+        <svg class="u-color-primary svg-icon" viewBox="0 0 24 24"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
       </div>
-      <div class="metric-value tabular-nums pnl-positive" id="kpi-net-pnl">
-        {{ metrics.net_pnl or "+0.00" }} USDT
+      <div class="metric-value tabular-nums" id="kpi-net-pnl">
+        {% if metrics and metrics.net_pnl is not none %}{% set net_tone = metrics.net_pnl | pnl_tone %}<span class="pnl-value pnl-value--{{ net_tone }}" data-pnl-tone="{{ net_tone }}">{% if net_tone == "positive" %}+{% endif %}{{ metrics.net_pnl | number_vi }} {{ quote }}</span>{% else %}Chưa có dữ liệu{% endif %}
       </div>
-      <div class="metric-sub tabular-nums">
-        Tài sản định giá: USDT
-      </div>
+      <div class="metric-sub tabular-nums">Tài sản định giá: {{ quote or "Chưa có dữ liệu" }}{% if metrics and metrics.other_quote_assets %} · còn {{ metrics.other_quote_assets | length }} tài sản khác trong báo cáo{% endif %}</div>
     </div>
 
-    <!-- Card Max Drawdown -->
     <div class="trading-metric-card">
       <div class="metric-header">
-        <span class="tooltip-term" data-tooltip="Mức sụt giảm tài khoản lớn nhất từ đỉnh vốn tích lũy trong kỳ">
+        <span class="tooltip-term" data-tooltip="Mức sụt giảm lớn nhất từ đỉnh PnL ròng đã thực hiện trong 30 ngày">
           Max Drawdown <span class="tooltip-icon">ⓘ</span>
         </span>
-        <svg class="svg-icon" viewBox="0 0 24 24" style="color: #f6465d;"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+        <svg class="u-color-hex-f6465d svg-icon" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
       </div>
-      <div class="metric-value tabular-nums" id="kpi-max-drawdown" style="color: #f6465d;">
-        {{ metrics.max_drawdown or "-0.00" }} USDT
-      </div>
-      <div class="metric-sub tabular-nums">
-        Ngân sách rủi ro: 1.0%/lệnh
-      </div>
+      <div class="metric-value tabular-nums" id="kpi-max-drawdown">{% if metrics and metrics.max_drawdown is not none %}{{ metrics.max_drawdown | number_vi }} {{ quote }}{% else %}Chưa có dữ liệu{% endif %}</div>
+      <div class="metric-sub tabular-nums">Chỉ tính PnL đã thực hiện</div>
     </div>
   </div>
+  <p class="u-font-size-0-8rem u-color-text-muted u-margin-top-0-5rem">Nguồn: ledger PAPER, cửa sổ 30 ngày gần nhất. <a href="/admin/reports">Xem báo cáo đầy đủ</a></p>
 </section>
 
-<!-- BIỂU ĐỒ NẾN TRADINGVIEW LIGHTWEIGHT CHARTS TƯƠNG TÁC -->
-<section class="trade-chart-section" aria-labelledby="bot-chart-heading" style="margin-top: 1.5rem;">
-  <div class="chart-header-row" style="display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.75rem; margin-bottom: 0.75rem;">
-    <h3 id="bot-chart-heading" style="margin: 0; display: flex; align-items: center; gap: 0.5rem; font-size: 1.1rem;">
-      <span>Biểu Đồ Nến Point-In-Time: <strong>{{ chart_data.symbol }}</strong></span>
-      {% if chart_data.side == "LONG" %}
-        <span class="badge-long">🟢 LONG</span>
-      {% else %}
-        <span class="badge-short">🔴 SHORT</span>
-      {% endif %}
-      <span class="badge" style="background: var(--bg-surface-subtle); border: 1px solid var(--border-subtle); font-size: 0.8rem;">
-        Khung: {{ chart_data.timeframe }}
-      </span>
+<!-- Biểu đồ nến của giao dịch đã đóng gần nhất, lấy từ kho nến nội bộ. -->
+<section class="u-margin-top-1-5rem trade-chart-section" aria-labelledby="bot-chart-heading">
+  {% if chart_data %}
+  <div class="u-display-flex u-flex-wrap-wrap u-align-items-center u-justify-content-space-between u-gap-0-75rem u-margin-bottom-0-75rem chart-header-row">
+    <h3 class="u-margin-0 u-display-flex u-flex-wrap-wrap u-align-items-center u-gap-0-5rem u-font-size-1-1rem" id="bot-chart-heading">
+      <span>Biểu đồ giao dịch đã đóng gần nhất: <strong>{{ chart_data.symbol }}</strong></span>
+      {% if chart_data.side == "LONG" %}<span class="badge-long">🟢 LONG</span>{% else %}<span class="badge-short">🔴 SHORT</span>{% endif %}
+      <span class="u-background-bg-surface-subtle u-border-1px-solid-border-subtle u-font-size-0-8rem badge">Khung: {{ chart_data.timeframe }}</span>
     </h3>
-    <div class="chart-legend" style="display: flex; gap: 0.75rem; font-size: 0.8rem;">
-      <span style="display: flex; align-items: center; gap: 0.25rem;">
-        <span style="display: inline-block; width: 12px; height: 2px; background: #0ecb81; border-top: 2px dashed #0ecb81;"></span>
-        <span>Chốt lời (🎯 TP)</span>
-      </span>
-      <span style="display: flex; align-items: center; gap: 0.25rem;">
-        <span style="display: inline-block; width: 12px; height: 2px; background: #f6465d; border-top: 2px dashed #f6465d;"></span>
-        <span>Dừng lỗ (🛑 SL)</span>
-      </span>
-    </div>
   </div>
-
-  <!-- Canvas Lightweight Charts -->
-  <div id="trade-chart" class="chart-canvas" role="img" aria-label="Biểu đồ nến {{ chart_data.symbol }} với các mốc vào và thoát lệnh" style="min-height: 380px; border-radius: 0.5rem; border: 1px solid var(--border-main); background: var(--bg-surface);"></div>
-
-  <!-- Thanh thông báo trạng thái khi di chuột -->
-  <div id="trade-chart-event-detail" class="chart-event-detail tabular-nums" role="status" aria-live="polite" style="margin-top: 0.5rem; padding: 0.5rem 0.85rem; border-radius: 0.375rem; background: var(--bg-surface-subtle); font-size: 0.85rem; color: var(--text-muted); border: 1px solid var(--border-subtle);">
-    ℹ️ Rê chuột hoặc chạm vào nến có đánh dấu để đọc giải thích chi tiết khớp lệnh vào / ra.
+  {% if chart_data.notice %}<p role="status">{{ chart_data.notice }}</p>{% endif %}
+  <div id="trade-chart" class="chart-canvas" role="img" aria-label="Biểu đồ nến {{ chart_data.symbol }} với các mốc vào và thoát lệnh"></div>
+  <div id="trade-chart-event-detail" class="u-margin-top-0-5rem u-padding-0-5rem-0-85rem u-border-radius-0-375rem u-background-bg-surface-subtle u-font-size-0-85rem u-color-text-muted u-border-1px-solid-border-subtle chart-event-detail tabular-nums" role="status" aria-live="polite">
+    Rê chuột hoặc chạm vào nến có đánh dấu để đọc thời điểm, giá khớp và lý do vào/đóng lệnh.
   </div>
-
-  <!-- Dữ liệu nến nhúng an toàn qua JSON Script Tag -->
-  <script id="trade-chart-data" type="application/json">
-    {{ chart_data | tojson | safe }}
-  </script>
+  <p class="chart-attribution">Biểu đồ sử dụng <a href="https://www.tradingview.com/lightweight-charts/" target="_blank" rel="noopener noreferrer">TradingView Lightweight Charts</a>, theo giấy phép Apache 2.0.</p>
+  <script id="trade-chart-data" type="application/json">{{ chart_data | tojson }}</script>
+  {% else %}
+  <h3 class="u-margin-0 u-font-size-1-1rem u-margin-bottom-0-75rem" id="bot-chart-heading">Biểu đồ giao dịch đã đóng gần nhất</h3>
+  <p class="u-padding-1rem u-background-bg-surface u-border-radius-0-5rem u-border-1px-solid-border-subtle u-color-text-muted" role="status" id="bot-chart-empty">
+    Chưa có giao dịch đã đóng kèm dữ liệu nến trong 30 ngày để dựng biểu đồ.
+  </p>
+  {% endif %}
 </section>
 
-<!-- BẢNG VỊ THẾ ĐANG MỞ (OPEN POSITIONS) KÈM REASONING BREAKDOWN -->
-<section class="open-positions-section" aria-labelledby="open-positions-heading" style="margin-top: 1.5rem;">
-  <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.75rem;">
-    <h3 id="open-positions-heading" style="margin: 0; font-size: 1.1rem; display: flex; align-items: center; gap: 0.4rem;">
+<!-- Vị thế đang mở: chỉ gồm trường có trong ledger PAPER. -->
+<section class="u-margin-top-1-5rem open-positions-section" aria-labelledby="open-positions-heading">
+  <div class="u-display-flex u-align-items-center u-justify-content-space-between u-margin-bottom-0-75rem">
+    <h3 class="u-margin-0 u-font-size-1-1rem u-display-flex u-flex-wrap-wrap u-align-items-center u-gap-0-4rem" id="open-positions-heading">
       <span>⚡ Vị Thế Đang Mở (Open Positions)</span>
-      <span class="badge" style="background: var(--bg-surface-subtle); border: 1px solid var(--border-subtle); font-size: 0.8rem;">
+      <span class="u-background-bg-surface-subtle u-border-1px-solid-border-subtle u-font-size-0-8rem badge">
         Số lượng: <strong id="positions-count-badge">{{ positions | length }}</strong>
       </span>
     </h3>
@@ -210,128 +179,45 @@
       <thead>
         <tr>
           <th scope="col">Cặp / Hướng</th>
-          <th scope="col">Khối Lượng</th>
-          <th scope="col">Đòn Bẩy</th>
-          <th scope="col">Giá Vào Lệnh</th>
-          <th scope="col">Giá Tham Chiếu (Mark)</th>
-          <th scope="col">PnL Chưa Chốt</th>
-          <th scope="col">Cắt Lỗ (SL)</th>
-          <th scope="col">Chốt Lời (TP)</th>
+          <th scope="col">Mở lúc</th>
+          <th scope="col">Tài sản định giá</th>
+          <th scope="col">Mã giao dịch</th>
         </tr>
       </thead>
       <tbody id="open-positions-tbody">
         {% for pos in positions %}
         <tr>
-          <td>
+          <td data-label="Cặp / Hướng">
             <strong>{{ pos.symbol }}</strong>
-            {% if pos.side == "LONG" %}
-              <span class="badge-long" style="margin-left: 0.35rem;">🟢 LONG</span>
-            {% else %}
-              <span class="badge-short" style="margin-left: 0.35rem;">🔴 SHORT</span>
-            {% endif %}
+            {% if pos.side == "LONG" %}<span class="u-margin-left-0-35rem badge-long">🟢 LONG</span>{% else %}<span class="u-margin-left-0-35rem badge-short">🔴 SHORT</span>{% endif %}
           </td>
-          <td class="tabular-nums">{{ pos.size }}</td>
-          <td class="tabular-nums" style="font-weight: 700; color: var(--primary);">{{ pos.target_leverage }}</td>
-          <td class="tabular-nums">{{ pos.entry_price }}</td>
-          <td class="tabular-nums" style="font-weight: 600;">{{ pos.mark_price }}</td>
-          <td class="tabular-nums {{ pos.pnl_class }}" style="font-weight: 700;">
-            {{ pos.unrealized_pnl }} ({{ pos.unrealized_pnl_pct }})
-          </td>
-          <td class="tabular-nums" style="color: #f6465d;">🛑 {{ pos.stop_loss }}</td>
-          <td class="tabular-nums" style="color: #0ecb81;">🎯 {{ pos.take_profit }}</td>
+          <td data-label="Mở lúc" class="tabular-nums">{{ pos.opened_at | local_time }}</td>
+          <td data-label="Tài sản định giá">{{ pos.quote_asset }}</td>
+          <td data-label="Mã giao dịch"><code>{{ pos.trade_id }}</code></td>
         </tr>
         {% endfor %}
       </tbody>
     </table>
   </div>
-
-  <!-- Thẻ Mổ Xẻ Tín Hiệu Vào Lệnh của Vị Thế Hiện Tại -->
-  {% for pos in positions %}
-  {% set r = pos.reasoning %}
-  <div class="trade-reasoning-panel" style="margin-top: 1rem; margin-bottom: 1.5rem;">
-    <div class="trade-reasoning-header">
-      <h4 style="margin: 0; display: flex; align-items: center; gap: 0.4rem; font-size: 1rem;">
-        <span>🧠 Vì Sao Kích Hoạt Vị Thế {{ pos.symbol }} ({{ pos.side }} {{ pos.target_leverage }})?</span>
-      </h4>
-      <span class="badge" style="background: rgba(14, 203, 129, 0.15); color: #0ecb81; font-weight: 600;">
-        ĐÃ DUYỆT TÍN HIỆU L4-L6
-      </span>
-    </div>
-    <div class="reasoning-columns">
-      <div class="reasoning-box">
-        <h4><span>🟢 Tín Hiệu & Bối Cảnh Thị Trường</span></h4>
-        <dl class="reasoning-kv-list">
-          <div class="reasoning-kv-item">
-            <dt>Tóm tắt tín hiệu</dt>
-            <dd>{{ r.signal_summary }}</dd>
-          </div>
-          <div class="reasoning-kv-item">
-            <dt>
-              <span class="tooltip-term" data-tooltip="Tầng L4 Context Gate: Phân loại thị trường xu hướng hay sideway và kiểm tra thanh khoản quote volume">
-                L4 Cửa Bối Cảnh (Context Gate) <span class="tooltip-icon">ⓘ</span>
-              </span>
-            </dt>
-            <dd><span class="badge" style="background: rgba(14, 203, 129, 0.15); color: #0ecb81;">ĐẠT: {{ r.l4_regime }}</span></dd>
-          </div>
-          <div class="reasoning-kv-item" style="border-bottom: none;">
-            <dt>Diễn giải kỹ thuật</dt>
-            <dd style="color: var(--text-muted); font-weight: 400;">{{ r.detail_vi }}</dd>
-          </div>
-        </dl>
-      </div>
-
-      <div class="reasoning-box">
-        <h4><span>🎯 Ngòi Nổ & Kế Hoạch Quản Trị Rủi Ro</span></h4>
-        <dl class="reasoning-kv-list">
-          <div class="reasoning-kv-item">
-            <dt>
-              <span class="tooltip-term" data-tooltip="Tầng L5 Signal Trigger: Chấm điểm nến rút chân và phá vỡ mức cản then chốt">
-                L5 Điểm Kích Hoạt (Trigger Score) <span class="tooltip-icon">ⓘ</span>
-              </span>
-            </dt>
-            <dd class="tabular-nums">{{ r.l5_trigger }}</dd>
-          </div>
-          <div class="reasoning-kv-item">
-            <dt>
-              <span class="tooltip-term" data-tooltip="Tầng L6 Execution Zones: Tỷ lệ R:R tính toán từ khoảng cách tới Stop Loss và Take Profit">
-                L6 Vùng Giá & Tỷ Lệ R:R <span class="tooltip-icon">ⓘ</span>
-              </span>
-            </dt>
-            <dd>
-              <div class="rr-ratio-bar">
-                <span class="rr-bar-track" aria-hidden="true">
-                  <span class="rr-bar-risk"></span>
-                  <span class="rr-bar-reward"></span>
-                </span>
-                <span class="rr-ratio-label tabular-nums">Tỷ Lệ R:R: {{ r.l6_risk_reward }}</span>
-              </div>
-            </dd>
-          </div>
-          <div class="reasoning-kv-item" style="border-bottom: none;">
-            <dt>Đòn bẩy & Quản trị vốn</dt>
-            <dd class="tabular-nums" style="color: var(--primary);">Đòn bẩy {{ pos.target_leverage }} · Rủi ro tối đa {{ pos.account_risk_pct }}</dd>
-          </div>
-        </dl>
-      </div>
-    </div>
-  </div>
-  {% endfor %}
-
+  <p class="u-font-size-0-8rem u-color-text-muted u-margin-top-0-5rem">
+    PAPER chưa định giá theo thị trường (mark-to-market) nên chưa có giá tham chiếu và PnL chưa chốt cho vị thế mở.
+  </p>
   {% else %}
-  <p role="status" style="padding: 1rem; background: var(--bg-surface); border-radius: 0.5rem; border: 1px solid var(--border-subtle); color: var(--text-muted);">
-    ℹ️ Bot hiện tại không có vị thế đang mở. Đang liên tục quét tín hiệu L4 Context Gate và L5 Strategy Trigger...
+  <p class="u-padding-1rem u-background-bg-surface u-border-radius-0-5rem u-border-1px-solid-border-subtle u-color-text-muted" role="status">
+    {% if trading_data_available %}Bot hiện không có vị thế PAPER đang mở.{% else %}Chưa có dữ liệu vị thế.{% endif %}
   </p>
   {% endif %}
 </section>
 
-<!-- BẢNG LỊCH SỬ KHỚP LỆNH (RECENT TRADES) & MỔ XẺ CHẤT LƯỢNG ĐƯA VÀO HUẤN LUYỆN AI -->
-<section class="recent-trades-section" aria-labelledby="recent-trades-heading" style="margin-top: 1.5rem;">
-  <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.75rem;">
-    <h3 id="recent-trades-heading" style="margin: 0; font-size: 1.1rem; display: flex; align-items: center; gap: 0.4rem;">
+<!-- Lịch sử lệnh đã đóng gần nhất và hậu kiểm. -->
+<section class="u-margin-top-1-5rem recent-trades-section" aria-labelledby="recent-trades-heading">
+  <div class="u-display-flex u-align-items-center u-justify-content-space-between u-margin-bottom-0-75rem">
+    <h3 class="u-margin-0 u-font-size-1-1rem u-display-flex u-align-items-center u-gap-0-4rem" id="recent-trades-heading">
       <span>📜 Lịch Sử Khớp Lệnh & Mổ Xẻ Sau Giao Dịch</span>
     </h3>
   </div>
 
+  {% if recent_trades %}
   <div class="table-wrapper">
     <table class="responsive-table" aria-label="Bảng lịch sử khớp lệnh gần đây">
       <thead>
@@ -348,65 +234,51 @@
       </thead>
       <tbody id="recent-trades-tbody">
         {% for trade in recent_trades %}
+        {% set trade_tone = trade.net_pnl | pnl_tone %}
         <tr>
-          <td class="tabular-nums">{{ trade.exit_time }}</td>
-          <td>
+          <td data-label="Thời gian đóng" class="tabular-nums">{{ trade.closed_at | local_time }}</td>
+          <td data-label="Cặp / Hướng">
             <strong>{{ trade.symbol }}</strong>
-            {% if trade.side == "LONG" %}
-              <span class="badge-long" style="margin-left: 0.35rem;">🟢 LONG</span>
-            {% else %}
-              <span class="badge-short" style="margin-left: 0.35rem;">🔴 SHORT</span>
-            {% endif %}
+            {% if trade.side == "LONG" %}<span class="u-margin-left-0-35rem badge-long">🟢 LONG</span>{% else %}<span class="u-margin-left-0-35rem badge-short">🔴 SHORT</span>{% endif %}
           </td>
-          <td class="tabular-nums">{{ trade.quantity }}</td>
-          <td class="tabular-nums">{{ trade.entry_price }}</td>
-          <td class="tabular-nums">{{ trade.exit_price }}</td>
-          <td class="tabular-nums {{ trade.pnl_class }}" style="font-weight: 700;">
-            {{ trade.net_pnl }}
+          <td data-label="Khối lượng" class="tabular-nums">{% if trade.quantity is not none %}{{ trade.quantity | number_vi }}{% else %}Chưa có dữ liệu{% endif %}</td>
+          <td data-label="Giá vào" class="tabular-nums">{% if trade.entry_price is not none %}{{ trade.entry_price | number_vi }}{% else %}Chưa có dữ liệu{% endif %}</td>
+          <td data-label="Giá ra" class="tabular-nums">{% if trade.exit_price is not none %}{{ trade.exit_price | number_vi }}{% else %}Chưa có dữ liệu{% endif %}</td>
+          <td data-label="Lợi nhuận ròng" class="tabular-nums">
+            <span class="pnl-value pnl-value--{{ trade_tone }}" data-pnl-tone="{{ trade_tone }}">{% if trade_tone == "positive" %}+{% endif %}{{ trade.net_pnl | number_vi }} {{ trade.quote_asset }}</span>
           </td>
-          <td>
-            {% if trade.exit_reason == "TAKE_PROFIT" %}
-              <span class="badge-tp">🎯 CHỐT LỜI (TP)</span>
-            {% elif trade.exit_reason == "STOP_LOSS" %}
-              <span class="badge-sl">🛑 CẮT LỖ (SL)</span>
-            {% else %}
-              <span class="badge">{{ trade.exit_reason }}</span>
-            {% endif %}
+          <td data-label="Lý do đóng">
+            {% if trade.exit_reason == "TAKE_PROFIT" %}<span class="badge-tp">🎯 CHỐT LỜI (TP)</span>
+            {% elif trade.exit_reason == "STOP_LOSS" %}<span class="badge-sl">🛑 CẮT LỖ (SL)</span>
+            {% else %}<span class="badge">{{ trade.exit_reason_vi }}</span>{% endif %}
           </td>
-          <td>
-            {% if trade.quality == "OPTIMAL" %}
-              <span class="badge-optimal">⭐ TỐI ƯU</span>
-            {% elif trade.is_deviant %}
-              <span class="badge-deviant">⚠️ SAI LỆCH</span>
-            {% else %}
-              <span class="badge">CHẤP NHẬN ĐƯỢC</span>
-            {% endif %}
+          <td data-label="Đánh giá thực thi">
+            {% if trade.quality == "OPTIMAL" %}<span class="badge-optimal">⭐ TỐI ƯU</span>
+            {% elif trade.is_deviant %}<span class="badge-deviant">⚠️ SAI LỆCH</span>
+            {% elif trade.quality == "UNVERIFIED" %}<span class="badge">CHƯA ĐỦ DỮ LIỆU</span>
+            {% else %}<span class="badge">CHẤP NHẬN ĐƯỢC</span>{% endif %}
           </td>
         </tr>
-
-        <!-- Dòng Mổ Xẻ Chi Tiết Post-Mortem & Nút Phạt AI -->
         <tr class="trade-post-mortem-row">
-          <td colspan="8" style="background: var(--bg-surface); padding: 0.85rem 1.25rem; border-bottom: 2px solid var(--border-main);">
-            <div style="display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 0.75rem;">
-              <div style="font-size: 0.85rem; max-width: 75%;">
-                <div><strong>🟢 Vì sao vào:</strong> <span style="color: var(--text-muted);">{{ trade.post_mortem.why_enter }}</span></div>
-                <div style="margin-top: 0.25rem;"><strong>🔴 Vì sao thoát:</strong> <span style="color: var(--text-muted);">{{ trade.post_mortem.why_exit }}</span></div>
-                <div style="margin-top: 0.25rem;"><strong>💸 Chi phí:</strong> <span class="tabular-nums" style="color: var(--text-muted);">{{ trade.post_mortem.cost_breakdown }}</span></div>
-                {% if trade.is_deviant %}
-                  <div style="margin-top: 0.25rem; color: #f59e0b; font-weight: 600;">
-                    ⚠️ Lý do sai lệch: {{ trade.deviant_reason }}
-                  </div>
+          <td class="u-background-bg-surface u-padding-0-85rem-1-25rem u-border-bottom-2px-solid-border-main" colspan="8">
+            <div class="u-display-flex u-flex-wrap-wrap u-justify-content-space-between u-align-items-center u-gap-0-75rem">
+              <div class="u-font-size-0-85rem trade-post-mortem-text">
+                <div><strong>🟢 Vì sao vào:</strong> <span class="u-color-text-muted">{% if trade.entry_detail_vi or trade.strategy_id %}{% if trade.strategy_id %}Chiến thuật {{ trade.strategy_id }}{% endif %}{% if trade.strategy_id and trade.entry_detail_vi %} — {% endif %}{{ trade.entry_detail_vi or "" }}{% else %}Ledger chưa lưu lý do vào lệnh cho giao dịch này.{% endif %}</span></div>
+                <div class="u-margin-top-0-25rem"><strong>🔴 Vì sao thoát:</strong> <span class="u-color-text-muted">{{ trade.exit_reason_vi }}</span></div>
+                <div class="u-margin-top-0-25rem"><strong>💸 Chi phí:</strong> <span class="u-color-text-muted tabular-nums">Phí {{ trade.fee_total | number_vi }} · Funding {{ trade.funding_total | number_vi }} · Trượt giá {{ trade.slippage_total | number_vi }} {{ trade.quote_asset }}</span></div>
+                {% if trade.is_deviant and trade.deviant_reason %}
+                  <div class="u-margin-top-0-25rem u-color-hex-f59e0b u-font-weight-600">⚠️ Lý do sai lệch: {{ trade.deviant_reason }}</div>
                 {% endif %}
               </div>
-
-              <!-- Nút Đưa Ca Này Vào Dữ Liệu Phạt AI -->
               <div>
                 {% if trade.is_deviant %}
-                  <button type="button" class="btn-ai-retrain btn-ingest-ai" data-trade-id="{{ trade.trade_id }}" onclick="ingestNegativeSample('{{ trade.trade_id }}', this)">
+                  <button type="button" class="btn-ai-retrain btn-ingest-ai" data-trade-id="{{ trade.trade_id }}" data-symbol="{{ trade.symbol }}" data-side="{{ trade.side }}" data-reason="{{ trade.deviant_reason or '' }}">
                     📥 Đưa Ca Này Vào Dữ Liệu Phạt AI
                   </button>
+                {% elif trade.quality == "UNVERIFIED" %}
+                  <span class="u-font-size-0-8rem text-muted">Chưa đủ dữ liệu để đánh giá</span>
                 {% else %}
-                  <span class="text-muted" style="font-size: 0.8rem;">Thực thi đạt chuẩn</span>
+                  <span class="u-font-size-0-8rem text-muted">Không phát hiện sai lệch</span>
                 {% endif %}
               </div>
             </div>
@@ -416,6 +288,11 @@
       </tbody>
     </table>
   </div>
+  {% else %}
+  <p class="u-padding-1rem u-background-bg-surface u-border-radius-0-5rem u-border-1px-solid-border-subtle u-color-text-muted" role="status">
+    {% if trading_data_available %}Chưa có giao dịch PAPER đã đóng trong 30 ngày.{% else %}Chưa có dữ liệu lịch sử lệnh.{% endif %}
+  </p>
+  {% endif %}
 </section>
 
 <!-- CÁC KHỐI ĐIỀU KHIỂN & CẤU HÌNH DẠNG CARDS -->
@@ -423,105 +300,107 @@
   <!-- Card 1: Điều Khiển Bot -->
   <section class="bot-section-card" aria-labelledby="bot-control-heading">
     <h2 id="bot-control-heading">⚙️ Điều Khiển Bot</h2>
+    {% if bot.status == "DISABLED" and "owner" in identity.principal.roles %}
     {% if bot.needs_manual_enable %}
-    <p role="alert" style="color: #f6465d; font-size: 0.875rem; background: rgba(246, 70, 93, 0.1); padding: 0.5rem 0.75rem; border-radius: 0.375rem;">
+    <p class="u-color-hex-f6465d u-font-size-0-875rem u-background-rgba-246-70-93-0-1 u-padding-0-5rem-0-75rem u-border-radius-0-375rem" role="alert">
       Bot cần xác nhận an toàn trước khi chạy lại do từng bị flatten thủ công hoặc gặp sự cố tài khoản.
     </p>
+    {% endif %}
     <form method="post" action="/admin/bots/{{ bot.id }}/enable" class="bot-control-form-group">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <label for="enable-reason" style="font-size: 0.85rem; font-weight: 600;">Lý do bật lại bot</label>
-      <input id="enable-reason" name="reason" maxlength="500" required placeholder="Nhập lý do bật lại bot sau đối soát..." style="padding: 0.4rem 0.6rem; font-size: 0.85rem;">
-      <button type="submit" class="btn btn-primary" style="align-self: flex-start;">Bật bot sau đối soát</button>
+      <label class="u-font-size-0-85rem u-font-weight-600" for="enable-reason">Lý do bật lại bot</label>
+      <input class="u-padding-0-4rem-0-6rem u-font-size-0-85rem" id="enable-reason" name="reason" maxlength="500" required placeholder="Nhập lý do bật lại bot sau đối soát...">
+      <button type="submit" class="u-align-self-flex-start btn btn-primary">Bật bot sau đối soát</button>
     </form>
     {% endif %}
 
     <form method="post" action="/admin/bots/{{ bot.id }}/pause" class="bot-control-form-group">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <label for="pause-reason" style="font-size: 0.85rem; font-weight: 600;">Lý do tạm dừng</label>
-      <input id="pause-reason" name="reason" maxlength="500" required placeholder="Nhập lý do tạm dừng bot..." style="padding: 0.4rem 0.6rem; font-size: 0.85rem;">
-      <button type="submit" class="btn btn-warning" style="align-self: flex-start;">Tạm dừng bot</button>
+      <label class="u-font-size-0-85rem u-font-weight-600" for="pause-reason">Lý do tạm dừng</label>
+      <input class="u-padding-0-4rem-0-6rem u-font-size-0-85rem" id="pause-reason" name="reason" maxlength="500" required placeholder="Nhập lý do tạm dừng bot...">
+      <button type="submit" class="u-align-self-flex-start btn btn-warning">Tạm dừng bot</button>
     </form>
 
     <form method="post" action="/admin/bots/{{ bot.id }}/resume" class="bot-control-form-group">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <input type="hidden" name="expected_revision" value="{{ bot.control_revision }}">
-      <label for="resume-reason" style="font-size: 0.85rem; font-weight: 600;">Lý do tiếp tục</label>
-      <input id="resume-reason" name="reason" maxlength="500" required placeholder="Nhập lý do tiếp tục vận hành..." style="padding: 0.4rem 0.6rem; font-size: 0.85rem;">
-      <button type="submit" class="btn btn-success" style="align-self: flex-start;">Tiếp tục bot</button>
+      <label class="u-font-size-0-85rem u-font-weight-600" for="resume-reason">Lý do tiếp tục</label>
+      <input class="u-padding-0-4rem-0-6rem u-font-size-0-85rem" id="resume-reason" name="reason" maxlength="500" required placeholder="Nhập lý do tiếp tục vận hành...">
+      <button type="submit" class="u-align-self-flex-start btn btn-success">Tiếp tục bot</button>
     </form>
 
     <form method="post" action="/admin/bots/{{ bot.id }}/disable" class="bot-control-form-group">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <label for="disable-reason" style="font-size: 0.85rem; font-weight: 600;">Lý do tắt</label>
-      <input id="disable-reason" name="reason" maxlength="500" required placeholder="Nhập lý do tắt bot..." style="padding: 0.4rem 0.6rem; font-size: 0.85rem;">
-      <button type="submit" class="btn btn-danger" style="align-self: flex-start;">Tắt bot</button>
+      <label class="u-font-size-0-85rem u-font-weight-600" for="disable-reason">Lý do tắt</label>
+      <input class="u-padding-0-4rem-0-6rem u-font-size-0-85rem" id="disable-reason" name="reason" maxlength="500" required placeholder="Nhập lý do tắt bot...">
+      <button type="submit" class="u-align-self-flex-start btn btn-danger">Tắt bot</button>
     </form>
   </section>
 
   <!-- Card 2: Nhận Tín Hiệu Qua Telegram -->
   <section class="bot-section-card" aria-labelledby="telegram-signal-heading">
     <h2 id="telegram-signal-heading">📱 Nhận tín hiệu qua Telegram</h2>
-    <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 0.75rem;">
+    <p class="u-font-size-0-85rem u-color-text-muted u-margin-bottom-0-75rem">
       Chế độ này chỉ gửi thông báo khi bot bắt được tín hiệu; không tạo giao dịch PAPER và không gửi lệnh lên sàn.
     </p>
 
     {% if telegram_signal_state is none %}
-      <p role="status" style="font-size: 0.85rem; color: var(--text-muted);">Chức năng đăng ký tín hiệu hiện chưa sẵn sàng.</p>
+      <p class="u-font-size-0-85rem u-color-text-muted" role="status">Chức năng đăng ký tín hiệu hiện chưa sẵn sàng.</p>
     {% elif telegram_signal_state.binding_linked %}
-      <p role="status" style="font-size: 0.85rem; font-weight: 600;">
+      <p class="u-font-size-0-85rem u-font-weight-600" role="status">
         {% if telegram_signal_state.enabled %}
-          <span style="color: #0ecb81;">● Đang nhận thông báo tín hiệu cho bot này.</span>
+          <span class="u-color-hex-0ecb81">● Đang nhận thông báo tín hiệu cho bot này.</span>
         {% else %}
-          <span style="color: var(--text-muted);">○ Chưa đăng ký nhận tín hiệu cho bot này.</span>
+          <span class="u-color-text-muted">○ Chưa đăng ký nhận tín hiệu cho bot này.</span>
         {% endif %}
       </p>
 
       {% if signal_filter_error == "invalid" %}
-        <p role="alert" style="color: #f6465d; font-size: 0.85rem;">
+        <p class="u-color-hex-f6465d u-font-size-0-85rem" role="alert">
           Danh sách bộ lọc không hợp lệ. Hãy kiểm tra mã cặp, khung thời gian, hướng và giới hạn tối đa 100 giá trị.
         </p>
       {% endif %}
 
-      <form method="post" action="/admin/bots/{{ bot.id }}/telegram-signals" style="margin-bottom: 1rem;">
+      <form class="u-margin-bottom-1rem" method="post" action="/admin/bots/{{ bot.id }}/telegram-signals">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <button type="submit" name="enabled" value="{{ 'false' if telegram_signal_state.enabled else 'true' }}" class="btn btn-outline" style="font-size: 0.85rem;">
+        <button type="submit" name="enabled" value="{{ 'false' if telegram_signal_state.enabled else 'true' }}" class="u-font-size-0-85rem btn btn-outline">
           {{ "Tắt thông báo tín hiệu" if telegram_signal_state.enabled else "Bật thông báo tín hiệu" }}
         </button>
       </form>
 
-      <h3 id="telegram-signal-filters-heading" style="font-size: 0.95rem; margin-top: 1rem;">Lọc Tín Hiệu Muốn Nhận</h3>
-      <p id="telegram-signal-filters-help" style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 0.5rem;">
+      <h3 class="u-font-size-0-95rem u-margin-top-1rem" id="telegram-signal-filters-heading">Lọc Tín Hiệu Muốn Nhận</h3>
+      <p class="u-font-size-0-8rem u-color-text-muted u-margin-bottom-0-5rem" id="telegram-signal-filters-help">
         Để trống nghĩa là nhận tất cả. Ngăn cách bằng dấu phẩy; tối đa 100 mục mỗi danh sách.
       </p>
 
-      <form method="post" action="/admin/bots/{{ bot.id }}/telegram-signal-filters" aria-labelledby="telegram-signal-filters-heading" style="display: flex; flex-direction: column; gap: 0.6rem;">
+      <form class="u-display-flex u-flex-direction-column u-gap-0-6rem" method="post" action="/admin/bots/{{ bot.id }}/telegram-signal-filters" aria-labelledby="telegram-signal-filters-heading">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         {% set signal_filters = telegram_signal_state.filters.as_dict() %}
         <div>
-          <label for="signal-filter-symbols" style="font-size: 0.825rem; font-weight: 600;">Cặp giao dịch (ví dụ BTCUSDT)</label>
-          <textarea id="signal-filter-symbols" name="symbols" rows="2" maxlength="12000" aria-describedby="telegram-signal-filters-help" style="width: 100%; font-size: 0.85rem; padding: 0.4rem;">{{ signal_filters.symbols | join(", ") }}</textarea>
+          <label class="u-font-size-0-825rem u-font-weight-600" for="signal-filter-symbols">Cặp giao dịch (ví dụ BTCUSDT)</label>
+          <textarea class="u-width-100pct u-font-size-0-85rem u-padding-0-4rem" id="signal-filter-symbols" name="symbols" rows="2" maxlength="12000" aria-describedby="telegram-signal-filters-help">{{ signal_filters.symbols | join(", ") }}</textarea>
         </div>
         <div>
-          <label for="signal-filter-timeframes" style="font-size: 0.825rem; font-weight: 600;">Khung thời gian (ví dụ 5m, 1h, 4h)</label>
-          <textarea id="signal-filter-timeframes" name="timeframes" rows="2" maxlength="12000" aria-describedby="telegram-signal-filters-help" style="width: 100%; font-size: 0.85rem; padding: 0.4rem;">{{ signal_filters.timeframes | join(", ") }}</textarea>
+          <label class="u-font-size-0-825rem u-font-weight-600" for="signal-filter-timeframes">Khung thời gian (ví dụ 5m, 1h, 4h)</label>
+          <textarea class="u-width-100pct u-font-size-0-85rem u-padding-0-4rem" id="signal-filter-timeframes" name="timeframes" rows="2" maxlength="12000" aria-describedby="telegram-signal-filters-help">{{ signal_filters.timeframes | join(", ") }}</textarea>
         </div>
         <div>
-          <label for="signal-filter-directions" style="font-size: 0.825rem; font-weight: 600;">Hướng giao dịch (LONG hoặc SHORT)</label>
-          <textarea id="signal-filter-directions" name="directions" rows="2" maxlength="12000" aria-describedby="telegram-signal-filters-help" style="width: 100%; font-size: 0.85rem; padding: 0.4rem;">{{ signal_filters.directions | join(", ") }}</textarea>
+          <label class="u-font-size-0-825rem u-font-weight-600" for="signal-filter-directions">Hướng giao dịch (LONG hoặc SHORT)</label>
+          <textarea class="u-width-100pct u-font-size-0-85rem u-padding-0-4rem" id="signal-filter-directions" name="directions" rows="2" maxlength="12000" aria-describedby="telegram-signal-filters-help">{{ signal_filters.directions | join(", ") }}</textarea>
         </div>
         <div>
-          <label for="signal-filter-strategies" style="font-size: 0.825rem; font-weight: 600;">Mã chiến thuật (ví dụ H01)</label>
-          <textarea id="signal-filter-strategies" name="strategy_ids" rows="2" maxlength="12000" aria-describedby="telegram-signal-filters-help" style="width: 100%; font-size: 0.85rem; padding: 0.4rem;">{{ signal_filters.strategy_ids | join(", ") }}</textarea>
+          <label class="u-font-size-0-825rem u-font-weight-600" for="signal-filter-strategies">Mã chiến thuật (ví dụ H01)</label>
+          <textarea class="u-width-100pct u-font-size-0-85rem u-padding-0-4rem" id="signal-filter-strategies" name="strategy_ids" rows="2" maxlength="12000" aria-describedby="telegram-signal-filters-help">{{ signal_filters.strategy_ids | join(", ") }}</textarea>
         </div>
         <div>
-          <label for="signal-filter-setups" style="font-size: 0.825rem; font-weight: 600;">Mã setup (ví dụ H01_BREAKOUT)</label>
-          <textarea id="signal-filter-setups" name="setup_codes" rows="2" maxlength="12000" aria-describedby="telegram-signal-filters-help" style="width: 100%; font-size: 0.85rem; padding: 0.4rem;">{{ signal_filters.setup_codes | join(", ") }}</textarea>
+          <label class="u-font-size-0-825rem u-font-weight-600" for="signal-filter-setups">Mã setup (ví dụ H01_BREAKOUT)</label>
+          <textarea class="u-width-100pct u-font-size-0-85rem u-padding-0-4rem" id="signal-filter-setups" name="setup_codes" rows="2" maxlength="12000" aria-describedby="telegram-signal-filters-help">{{ signal_filters.setup_codes | join(", ") }}</textarea>
         </div>
-        <button type="submit" class="btn btn-secondary" style="align-self: flex-start; font-size: 0.85rem;">Lưu bộ lọc tín hiệu</button>
+        <button type="submit" class="u-align-self-flex-start u-font-size-0-85rem btn btn-secondary">Lưu bộ lọc tín hiệu</button>
       </form>
     {% else %}
-      <p style="font-size: 0.85rem; color: var(--text-muted);">Hãy liên kết Telegram riêng trước khi bật thông báo.</p>
-      <a href="/admin/telegram" class="btn btn-outline" style="font-size: 0.85rem;">Liên kết Telegram</a>
+      <p class="u-font-size-0-85rem u-color-text-muted">Hãy liên kết Telegram riêng trước khi bật thông báo.</p>
+      <a href="/admin/telegram" class="u-font-size-0-85rem btn btn-outline">Liên kết Telegram</a>
     {% endif %}
   </section>
 
@@ -529,16 +408,16 @@
   <section class="bot-section-card" aria-label="Cấu hình chiến lược">
     <h2>📝 Bản Nháp Cấu Hình</h2>
     {% if draft_validation == "valid" %}
-      <p role="status" style="color: #0ecb81; font-size: 0.85rem; font-weight: 600;">✓ Bản nháp đã qua kiểm định.</p>
+      <p class="u-color-hex-0ecb81 u-font-size-0-85rem u-font-weight-600" role="status">✓ Bản nháp đã qua kiểm định.</p>
     {% endif %}
     {% if draft_validation == "invalid" %}
-      <p role="alert" style="color: #f6465d; font-size: 0.85rem; font-weight: 600;">✗ Bản nháp không hợp lệ; xem lỗi qua API cấu hình.</p>
+      <p class="u-color-hex-f6465d u-font-size-0-85rem u-font-weight-600" role="alert">✗ Bản nháp không hợp lệ; xem lỗi qua API cấu hình.</p>
     {% endif %}
 
     {% if config_draft %}
-    <div style="background: var(--bg-surface-subtle); padding: 0.75rem; border-radius: 0.375rem; margin-bottom: 0.75rem; font-size: 0.85rem;">
-      <p style="margin: 0 0 0.5rem 0;">Bản nháp <code>{{ config_draft.id }}</code> — phiên bản {{ config_draft.revision }}</p>
-      <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+    <div class="u-background-bg-surface-subtle u-padding-0-75rem u-border-radius-0-375rem u-margin-bottom-0-75rem u-font-size-0-85rem">
+      <p class="u-margin-0-0-0-5rem-0">Bản nháp <code>{{ config_draft.id }}</code> — phiên bản {{ config_draft.revision }}</p>
+      <div class="u-display-flex u-gap-0-5rem u-flex-wrap-wrap">
         <form method="post" action="/admin/bots/{{ bot.id }}/config-drafts/{{ config_draft.id }}/validate">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <button type="submit" class="btn btn-sm btn-outline">Kiểm định bản nháp</button>
@@ -552,158 +431,18 @@
     </div>
     {% endif %}
 
-    <form method="post" action="/admin/bots/{{ bot.id }}/config-drafts" style="display: flex; flex-direction: column; gap: 0.5rem;">
+    <form class="u-display-flex u-flex-direction-column u-gap-0-5rem" method="post" action="/admin/bots/{{ bot.id }}/config-drafts">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <input type="hidden" name="expected_parent_version_id" value="{{ config_parent_version_id }}">
-      <label for="overlay-json" style="font-size: 0.85rem; font-weight: 600;">Cấu hình bổ sung (JSON)</label>
-      <textarea id="overlay-json" name="overlay_json" rows="8" style="width: 100%; font-family: monospace; font-size: 0.825rem; padding: 0.4rem;" required>{{ config_draft_json }}</textarea>
-      <button type="submit" class="btn btn-secondary" style="align-self: flex-start; font-size: 0.85rem;">Tạo bản nháp</button>
+      <label class="u-font-size-0-85rem u-font-weight-600" for="overlay-json">Cấu hình bổ sung (JSON)</label>
+      <textarea class="u-width-100pct u-font-family-monospace u-font-size-0-825rem u-padding-0-4rem" id="overlay-json" name="overlay_json" rows="8" required>{{ config_draft_json }}</textarea>
+      <button type="submit" class="u-align-self-flex-start u-font-size-0-85rem btn btn-secondary">Tạo bản nháp</button>
     </form>
   </section>
 </div>
 
 <!-- CLIENT JAVASCRIPT: Real-time 5s Polling & AI Retraining Ingestion -->
-<script>
-  "use strict";
-  (() => {
-    let pollingInterval = null;
-    let isPolling = true;
-    let currentFp = null;
-    const botId = "{{ bot.id }}";
-    const pollTime = 5000;
-
-    const pulseDot = document.getElementById("live-pulse-dot");
-    const updatedAt = document.getElementById("live-updated-at");
-    const toggleBtn = document.getElementById("toggle-realtime-btn");
-    const statusMsg = document.getElementById("live-status-msg");
-
-    const fetchRealtime = async () => {
-      try {
-        const url = currentFp ? `/admin/api/bots/${botId}/realtime?fp=${encodeURIComponent(currentFp)}` : `/admin/api/bots/${botId}/realtime`;
-        const res = await fetch(url, { credentials: "same-origin" });
-        if (!res.ok) throw new Error("Mã lỗi: " + res.status);
-        const data = await res.json();
-
-        if (updatedAt) {
-          updatedAt.textContent = data.server_time.vn_time || data.server_time.vn;
-        }
-
-        if (data.status === "unchanged") {
-          if (pulseDot) pulseDot.className = "pulse-dot";
-          if (statusMsg) statusMsg.textContent = "";
-          return;
-        }
-        if (data.fingerprint) {
-          currentFp = data.fingerprint;
-        }
-
-        // Cập nhật các chỉ số KPI nếu có
-        if (data.metrics) {
-          const kpiOpen = document.getElementById("kpi-open-positions");
-          if (kpiOpen) kpiOpen.textContent = data.metrics.open_positions_count ?? (data.positions?.length || 0);
-
-          const kpiWin = document.getElementById("kpi-win-rate");
-          if (kpiWin) kpiWin.textContent = (data.metrics.win_rate_percent ?? 0) + "%";
-
-          const kpiPf = document.getElementById("kpi-profit-factor");
-          if (kpiPf) kpiPf.textContent = (data.metrics.profit_factor ?? "N/A") + (data.metrics.profit_factor && data.metrics.profit_factor !== "N/A" ? "x" : "");
-
-          const kpiPnl = document.getElementById("kpi-net-pnl");
-          if (kpiPnl) kpiPnl.textContent = (data.metrics.net_pnl ?? "+0.00") + " USDT";
-
-          const kpiDd = document.getElementById("kpi-max-drawdown");
-          if (kpiDd) kpiDd.textContent = (data.metrics.max_drawdown ?? "-0.00") + " USDT";
-        }
-
-        if (pulseDot) {
-          pulseDot.className = "pulse-dot";
-        }
-        if (statusMsg) statusMsg.textContent = "";
-      } catch (err) {
-        if (pulseDot) pulseDot.className = "pulse-dot pulse-warning";
-        if (statusMsg) statusMsg.textContent = "Mất kết nối 5s";
-      }
-    };
-
-    const startPolling = () => {
-      if (pollingInterval) clearInterval(pollingInterval);
-      pollingInterval = setInterval(fetchRealtime, pollTime);
-      isPolling = true;
-      if (toggleBtn) {
-        toggleBtn.textContent = "Tạm dừng";
-        toggleBtn.setAttribute("aria-pressed", "true");
-      }
-      if (pulseDot) pulseDot.classList.remove("pulse-paused");
-    };
-
-    const stopPolling = () => {
-      if (pollingInterval) clearInterval(pollingInterval);
-      pollingInterval = null;
-      isPolling = false;
-      if (toggleBtn) {
-        toggleBtn.textContent = "Tiếp tục";
-        toggleBtn.setAttribute("aria-pressed", "false");
-      }
-      if (pulseDot) pulseDot.classList.add("pulse-paused");
-    };
-
-    if (toggleBtn) {
-      toggleBtn.addEventListener("click", () => {
-        if (isPolling) stopPolling();
-        else {
-          fetchRealtime();
-          startPolling();
-        }
-      });
-    }
-
-    // Tự động tạm dừng khi chuyển tab (Page Visibility API)
-    document.addEventListener("visibilitychange", () => {
-      if (document.hidden) {
-        if (pollingInterval) clearInterval(pollingInterval);
-      } else if (isPolling) {
-        fetchRealtime();
-        startPolling();
-      }
-    });
-
-    // Kích hoạt lần đầu
-    fetchRealtime();
-    startPolling();
-  })();
-
-  // Hàm tiếp nhận ca giao dịch vào tập dữ liệu phạt AI
-  window.ingestNegativeSample = async (tradeId, btn) => {
-    if (!btn) return;
-    const origText = btn.innerHTML;
-    btn.disabled = true;
-    btn.innerHTML = "⏳ Đang chuyển giao...";
-
-    try {
-      const res = await fetch(`/admin/api/trades/${tradeId}/ingest-negative-sample`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "same-origin",
-        body: JSON.stringify({
-          bot_id: "{{ bot.id }}",
-          symbol: "{{ bot.symbol }}",
-          reason: "Bẫy thanh khoản và trượt giá sai lệch ngoài giả định.",
-        }),
-      });
-
-      if (!res.ok) throw new Error("Lỗi HTTP: " + res.status);
-      const data = await res.json();
-
-      btn.style.background = "#0ecb81";
-      btn.style.color = "#ffffff";
-      btn.innerHTML = "✅ Đã tiếp nhận vào dữ liệu phạt AI!";
-    } catch (err) {
-      btn.disabled = false;
-      btn.innerHTML = "❌ Lỗi: " + err.message;
-      setTimeout(() => {
-        btn.innerHTML = origText;
-      }, 3000);
-    }
-  };
-</script>
+<script id="bot-detail-config" type="application/json">{{ {"bot_id": bot.id | string, "symbol": bot.symbol | default("", true) | string, "csrf_token": csrf_token} | tojson }}</script>
+<script src="/static/bot-detail.js" defer></script>
+{% if chart_data %}<script src="/static/vendor/lightweight-charts-5.2.1.standalone.production.js"></script><script src="/static/trade-chart.js" defer></script>{% endif %}
 {% endblock %}
