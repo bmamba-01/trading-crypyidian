@@ -47,6 +47,13 @@
 
       <div class="form-actions-inline">
         <button type="submit" class="btn btn-primary">📊 Phân Tích</button>
+        {% if report %}
+        <a
+          class="btn btn-secondary"
+          href="/admin/reports/export.csv?scope={{ scope | urlencode }}&bot_id={{ bot_id | urlencode }}&start={{ start | urlencode }}&end={{ end | urlencode }}"
+          data-testid="export-reports-csv"
+        >⬇ Xuất CSV</a>
+        {% endif %}
       </div>
     </div>
 
