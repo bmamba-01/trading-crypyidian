@@ -147,6 +147,8 @@
   const money = (value, asset, signed = false) => {
     const raw = String(value ?? "");
     const valid = /^[+-]?\d+(\.\d+)?$/.test(raw);
+    // Giá trị không xác định: chữ nhạt, không kèm biểu tượng tài sản hay màu lãi/lỗ.
+    if (!valid) return node("span", "Không xác định", "value-muted");
     const zero = valid && !/[1-9]/.test(raw);
     const tone = !valid ? "unknown" : zero ? "flat" : raw.startsWith("-") ? "negative" : "positive";
     const prefix = signed && tone === "positive" && !raw.startsWith("+") ? "+" : "";

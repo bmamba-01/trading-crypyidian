@@ -4583,3 +4583,77 @@ main button.icon-btn:hover, dialog button.icon-btn:hover { background: var(--gla
 .stat--spark .stat__label { overflow: hidden; text-overflow: ellipsis; }
 .coin-chip__avatar img { width: 100%; height: 100%; display: block; }
 .coin-chip__avatar--image { background: transparent; }
+
+/* ============================================================================
+   UI kit v1 (2026-11-14) — thành phần dùng chung cho mọi trang admin.
+   Tài liệu: docs/design/admin-ui-kit.md. Quy tắc căn chỉnh:
+   - Hàng nhãn–giá trị (.kv): căn giữa theo chiều dọc; nhãn được xuống dòng, giá trị KHÔNG
+     bao giờ ngắt (nowrap) và luôn căn phải; số dùng tabular-nums.
+   - Màu lãi/lỗ trong hàng và ô số: chữ có màu + mũi tên, không nền chip (chip chỉ dùng cho
+     trạng thái/huy hiệu) để mọi giá trị cùng chiều cao và thẳng hàng.
+   ============================================================================ */
+.kv,
+.dashboard-live-panel .kv {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  min-width: 0;
+  min-height: 2.25rem;
+  padding: 0.3rem 0;
+  border-bottom: 1px dashed var(--glass-border);
+}
+.kv dt,
+.dashboard-live-panel .kv dt {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  line-height: 1.3;
+  color: var(--text-muted);
+}
+.kv dt .ico { flex: 0 0 auto; font-size: 0.95rem; }
+.kv dd,
+.dashboard-live-panel .kv dd {
+  flex: 0 0 auto;
+  margin: 0;
+  max-width: 60%;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  line-height: 1.3;
+  text-align: right;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  overflow-wrap: normal;
+  font-variant-numeric: tabular-nums;
+}
+.dashboard-live-panel dl.dashboard-runtime,
+.dashboard-live-panel dl.kv-grid {
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 17rem), 1fr));
+  column-gap: 1.5rem;
+}
+/* Lãi/lỗ trong hàng và ô số: chữ màu + mũi tên, không nền. */
+.kv .pnl-value,
+.stat .pnl-value,
+.trade-table .pnl-value,
+.money.pnl-value {
+  padding: 0;
+  background: none;
+  border-radius: 0;
+  white-space: nowrap;
+}
+.money { display: inline-flex; align-items: center; gap: 0.2rem; line-height: 1; }
+.money .asset-usdt { transform: none; }
+.asset-usdt { flex: 0 0 auto; }
+.value-muted { color: var(--text-muted); font-weight: 500; }
+
+/* Ô số: biểu tượng | (giá trị / nhãn) căn giữa theo chiều dọc; giá trị một dòng. */
+.stat { align-items: center; min-height: 4rem; }
+.stat__body { gap: 0.1rem; align-content: center; }
+.stat__value { display: inline-flex; align-items: center; gap: 0.25rem; white-space: nowrap; line-height: 1.15; }
+.stat__label { line-height: 1.3; }
+.stat > .ico { align-self: center; }
