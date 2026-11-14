@@ -96,7 +96,7 @@ def test_runtime_fencing_takeover_blocks_persisted_candidate() -> None:
         harness.probe("genesis")
         harness.probe("candidate_bot_configs", "migrator")
 
-        result = harness.probe("runtime_fenced_candidate_check", "migrator")
+        result = harness.probe("runtime_fenced_candidate_check")
         assert result["reason"] == "STALE_FENCING_TOKEN", result
         assert result["new_token"] >= 2, result
     finally:

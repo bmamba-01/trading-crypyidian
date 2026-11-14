@@ -1474,10 +1474,16 @@ async def runtime_fenced_candidate_check() -> dict[str, Any]:
     workspace = UUID(_ws()["workspace"])
     bot_id = UUID(_ws()["bots"]["a"])
     account_id = UUID(_ws()["accounts"]["a"])
-    runtime_engine = _engine("crypidian_trading_runtime", pool=8)
+    # Pha chạy trong container `trading-runtime` bằng login thật: gateway scorer WP06 kiểm
+    # `session_user`, nên `SET ROLE` từ login quản trị bị từ chối và job không bao giờ hoàn tất.
+    # Lease ngắn để hết hạn tự nhiên, không cần quyền quản trị để sửa hàng lease.
+    lease_ttl_seconds = 3
+    runtime_engine = _engine(pool=8)
     sessions = async_sessionmaker(runtime_engine, expire_on_commit=False)
     try:
-        async with runtime_app(sessions=sessions, use_real_strategy=True) as app:
+        async with runtime_app(
+            sessions=sessions, ttl=lease_ttl_seconds, tick=2.0, use_real_strategy=True
+        ) as app:
             original_submit = app.state.paper_application.evaluate_and_submit
             captured: list[Any] = []
 
@@ -1517,20 +1523,10 @@ async def runtime_fenced_candidate_check() -> dict[str, Any]:
             if not candidates:
                 raise AssertionError("Worker chưa tạo persisted candidate cho bot A.")
 
-            with _connect() as connection, connection.transaction():
-                connection.execute(
-                    "ALTER TABLE bot_runtime_lease DISABLE TRIGGER bot_runtime_lease_guard"
-                )
-                connection.execute(
-                    "UPDATE bot_runtime_lease SET "
-                    "renewed_at=clock_timestamp()-interval '2 seconds', "
-                    "expires_at=clock_timestamp()-interval '1 second' "
-                    "WHERE workspace_id=%s AND bot_id=%s",
-                    (workspace, bot_id),
-                )
-                connection.execute(
-                    "ALTER TABLE bot_runtime_lease ENABLE TRIGGER bot_runtime_lease_guard"
-                )
+            # Mô phỏng worker bị treo: dừng vòng lặp nền để lease không còn được gia hạn (không
+            # gọi `stop()` vì nó chủ động trả lease), rồi chờ qua TTL để lease hết hạn trong DB.
+            app.state.paper_supervisor._stopping.set()
+            await asyncio.sleep(lease_ttl_seconds + 2)
             async with UnitOfWork(sessions, workspace_id=workspace, bot_id=bot_id) as uow:
                 lease = BotRuntimeLease(uow.session)
                 db_now = await lease.database_now()
