@@ -2,173 +2,273 @@
 
 {% block title %}Quản lý Thẻ Chiến lược (Strategy Cards) — Crypidian Admin{% endblock %}
 
+{% block head_extra %}
+<link rel="stylesheet" href="/static/pages/strategy.css">
+{% endblock %}
+
 {% block heading %}Quản lý Thẻ Chiến lược (Strategy Cards){% endblock %}
 
 {% block content %}
 {% from "admin/_metric_help.html" import help_term, help_icon %}
-<section class="page-intro" aria-labelledby="intro-heading">
-  <h2 id="intro-heading" class="sr-only">Giới thiệu kiến trúc Thẻ Chiến lược</h2>
+{% from "admin/_strategy_layers.html" import strategy_layers, layer_icon, layer_info_button, layer_dialogs %}
+{#- Thẻ dự phòng in-memory (chưa có bản ghi DB) có id "demo-card-N": mã băm và trạng thái do
+    dịch vụ gán giữ chỗ, nên trang phải nói rõ thay vì trình bày như dữ liệu đã kiểm chứng. -#}
+{% set demo = namespace(count=0) %}
+{% for card in cards %}{% if card.id is string and card.id.startswith("demo-card-") %}{% set demo.count = demo.count + 1 %}{% endif %}{% endfor %}
+{% set demo_count = demo.count %}
+<div class="sc-page">
+<section class="page-intro sc-intro" aria-labelledby="intro-heading">
+  <h2 id="intro-heading" class="visually-hidden">Giới thiệu kiến trúc Thẻ Chiến lược</h2>
   <p class="intro-description">
-    Hệ thống bản kê chiến lược dạng khai báo (Declarative Strategy Cards) lấy cảm hứng từ kiến trúc phân tầng
-    <strong>L0 → L6</strong> của QUANTSMART. Đồ thị tính toán DAG được kiểm định tĩnh chống nút chết (Dead Nodes)
-    và ảo giác đồng thuận (Anti-Consensus Illusion) trước khi chuyển sang động cơ thực thi.
+    Thẻ chiến lược khai báo một đồ thị tính toán qua 7 tầng <strong>L0 → L6</strong> (lấy ý tưởng từ QUANTSMART).
+    Mỗi thẻ được kiểm tra tĩnh để phát hiện nút mồ côi (Dead Nodes) trước khi engine chạy; chỉ dùng cho mô phỏng PAPER.
   </p>
+  {% if demo_count %}
+  <p class="sc-note sc-note--warning" role="note">
+    <svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3 2 20h20L12 3Z"/><path d="M12 10v4M12 17h.01"/></svg>
+    <span>{{ demo_count }} thẻ đang hiển thị là <strong>thẻ mẫu dự phòng</strong> chưa lưu trong cơ sở dữ liệu: mã băm và trạng thái kích hoạt của chúng là giá trị giữ chỗ, không phải dữ liệu đã kiểm chứng.</span>
+  </p>
+  {% endif %}
 </section>
 
 <!-- KPI Tổng quan -->
-<section class="kpi-grid" aria-label="Chỉ số tổng quan chiến lược" role="region">
-  <article class="kpi-card" aria-labelledby="kpi-total-title">
-    <span class="kpi-label" id="kpi-total-title">Tổng số chiến lược</span>
-    <span class="kpi-value" aria-label="{{ total_cards }} bản kê chiến lược">{{ total_cards }}</span>
-    <span class="kpi-hint">Đã đóng gói khai báo</span>
+<section class="kpi-grid sc-kpis" aria-label="Chỉ số tổng quan chiến lược" role="region">
+  <article class="kpi-card kpi-card--h" aria-labelledby="kpi-total-title">
+    <span class="kpi-icon kpi-icon--blue" aria-hidden="true"><svg class="ico" viewBox="0 0 24 24" focusable="false"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 9h8M8 13h8M8 17h5"/></svg></span>
+    <div class="kpi-body">
+      <span class="kpi-value" aria-label="{{ total_cards }} bản kê chiến lược">{{ total_cards }}</span>
+      <span class="kpi-label" id="kpi-total-title">Tổng số chiến lược</span>
+    </div>
   </article>
 
-  <article class="kpi-card" aria-labelledby="kpi-active-title">
-    <span class="kpi-label" id="kpi-active-title">Đang kích hoạt</span>
-    <span class="kpi-value kpi-success" aria-label="{{ active_cards_count }} chiến lược đang kích hoạt">{{ active_cards_count }}</span>
-    <span class="kpi-hint">Sẵn sàng nhận tín hiệu</span>
+  <article class="kpi-card kpi-card--h" aria-labelledby="kpi-active-title">
+    <span class="kpi-icon kpi-icon--green" aria-hidden="true"><svg class="ico" viewBox="0 0 24 24" focusable="false"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg></span>
+    <div class="kpi-body">
+      <span class="kpi-value kpi-success" aria-label="{{ active_cards_count }} chiến lược đang kích hoạt">{{ active_cards_count }}</span>
+      <span class="kpi-label" id="kpi-active-title">Đang kích hoạt</span>
+    </div>
   </article>
 
-  <article class="kpi-card" aria-labelledby="kpi-verified-title">
-    <span class="kpi-label" id="kpi-verified-title">Đã kiểm định (Orthogonal)</span>
-    <span class="kpi-value kpi-primary" aria-label="{{ verified_cards_count }} chiến lược đạt chuẩn trực giao">{{ verified_cards_count }}</span>
-    <span class="kpi-hint">Không có nút mồ côi</span>
+  <article class="kpi-card kpi-card--h" aria-labelledby="kpi-verified-title">
+    <span class="kpi-icon kpi-icon--violet" aria-hidden="true"><svg class="ico" viewBox="0 0 24 24" focusable="false"><path d="M12 3 4 6v6c0 4.4 3.4 8.4 8 9 4.6-.6 8-4.6 8-9V6l-8-3Z"/><path d="m9 12 2 2 4-4"/></svg></span>
+    <div class="kpi-body">
+      <span class="kpi-value kpi-primary" aria-label="{{ verified_cards_count }} chiến lược đạt chuẩn trực giao">{{ verified_cards_count }}</span>
+      <span class="kpi-label" id="kpi-verified-title">Đã kiểm định (Orthogonal)</span>
+    </div>
   </article>
 </section>
 
+<div class="sc-tabs" data-tabs>
+  <div class="tabs-bar" role="tablist" aria-label="Khu vực của trang thẻ chiến lược">
+    <button type="button" role="tab" id="tab-cards" aria-controls="panel-cards" aria-selected="true">
+      <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3" y="4" width="8" height="7" rx="1.5"/><rect x="13" y="4" width="8" height="7" rx="1.5"/><rect x="3" y="13" width="8" height="7" rx="1.5"/><rect x="13" y="13" width="8" height="7" rx="1.5"/></svg>
+      Thẻ chiến lược <span class="tabs-bar__count">{{ total_cards }}</span>
+    </button>
+    <button type="button" role="tab" id="tab-layers" aria-controls="panel-layers" aria-selected="false">
+      <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3 13 9 5 9-5"/></svg>
+      Kiến trúc L0–L6
+    </button>
+  </div>
+
+<div role="tabpanel" id="panel-cards" aria-labelledby="tab-cards" tabindex="0">
 <!-- Danh sách các thẻ chiến lược -->
 <section class="cards-section" aria-labelledby="section-cards-heading">
-  <div class="section-header">
+  <div class="section-header sc-section-head">
     <h2 id="section-cards-heading">Danh sách Bản kê Chiến lược trong Workspace</h2>
-    <span class="badge badge-paper-subtle">Cơ chế lưu trữ Append-Only (Bất biến)</span>
+    <span class="badge badge-paper-subtle">Lưu trữ chỉ thêm mới (Append-Only, bất biến)</span>
   </div>
 
   {% if cards %}
-    <div class="strategy-cards-grid" role="list" aria-label="Danh sách các thẻ chiến lược">
+    <div class="strategy-cards-grid sc-grid" role="list" aria-label="Danh sách các thẻ chiến lược">
       {% for card in cards %}
-        <article class="strategy-card-item" role="listitem" aria-labelledby="card-title-{{ loop.index }}">
-          <header class="strategy-card-header">
-            <div class="strategy-header-main">
+        {% set is_demo = card.id is string and card.id.startswith("demo-card-") %}
+        <article class="strategy-card-item sc-card" role="listitem" aria-labelledby="card-title-{{ loop.index }}">
+          <header class="sc-card__head">
+            <div class="sc-card__title-row">
               <h3 id="card-title-{{ loop.index }}" class="strategy-name">{{ card.name }}</h3>
-              <span class="strategy-id-badge" title="Mã định danh chiến lược">{{ card.card_id }}</span>
+              <span class="badge badge-version">v{{ card.version }}</span>
             </div>
-            <div class="strategy-header-meta">
-              <span class="badge badge-version">Phiên bản {{ card.version }}</span>
+            <div class="sc-card__badges">
               {% if card.is_active %}
                 <span class="badge badge-success" aria-label="Trạng thái: Đang hoạt động">
-                  <span class="status-dot dot-green" aria-hidden="true"></span> Đang hoạt động
+                  <span class="status-dot dot-green" aria-hidden="true"></span>Đang hoạt động
                 </span>
               {% else %}
                 <span class="badge badge-neutral" aria-label="Trạng thái: Lưu trữ">
-                  <span class="status-dot dot-gray" aria-hidden="true"></span> Lưu trữ
+                  <span class="status-dot dot-gray" aria-hidden="true"></span>Lưu trữ
                 </span>
               {% endif %}
+              {% if card.is_verified %}
+                <span class="badge badge-success" aria-label="Trạng thái kiểm định: Đã kiểm định (Orthogonal)">
+                  <span class="status-dot dot-green" aria-hidden="true"></span>Đã kiểm định (Orthogonal)
+                </span>
+              {% elif card.has_consensus_warning %}
+                <span class="badge badge-warning" aria-label="Cảnh báo: Tương quan cao phát hiện ảo giác đồng thuận">
+                  <span class="status-dot dot-yellow" aria-hidden="true"></span>Cảnh báo tương quan cao
+                </span>
+              {% elif card.dead_nodes_count > 0 %}
+                <span class="badge badge-danger" aria-label="Cảnh báo: Có {{ card.dead_nodes_count }} nút mồ côi">
+                  <span class="status-dot dot-red" aria-hidden="true"></span>{{ card.dead_nodes_count }} nút mồ côi
+                </span>
+              {% endif %}
+              {% if is_demo %}<span class="badge badge-warning">Thẻ mẫu · chưa lưu DB</span>{% endif %}
             </div>
           </header>
 
-          <div class="strategy-card-body">
-            <!-- Dòng mã băm bất biến và trạng thái kiểm định -->
-            <div class="integrity-row">
-              <div class="hash-wrapper">
-                <span class="hash-label">Băm xác thực (SHA-256):</span>
-                <code class="hash-code" title="{{ card.content_hash }}" tabindex="0" aria-label="Mã băm SHA-256 bất biến">{{ card.short_hash }}</code>
-              </div>
-
-              <div class="verification-wrapper">
-                {% if card.is_verified %}
-                  <span class="badge badge-success" aria-label="Trạng thái kiểm định: Đã kiểm định (Orthogonal)">
-                    <span class="status-dot dot-green" aria-hidden="true"></span> Đã kiểm định (Orthogonal)
-                  </span>
-                {% elif card.has_consensus_warning %}
-                  <span class="badge badge-warning" aria-label="Cảnh báo: Tương quan cao phát hiện ảo giác đồng thuận">
-                    <span class="status-dot dot-yellow" aria-hidden="true"></span> Cảnh báo tương quan cao
-                  </span>
-                {% elif card.dead_nodes_count > 0 %}
-                  <span class="badge badge-danger" aria-label="Cảnh báo: Có {{ card.dead_nodes_count }} nút mồ côi">
-                    <span class="status-dot dot-red" aria-hidden="true"></span> {{ card.dead_nodes_count }} node mồ côi
-                  </span>
-                {% endif %}
-              </div>
+          <dl class="kv-grid sc-kv">
+            <div class="kv">
+              <dt><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 7h16M4 12h16M4 17h10"/></svg>Mã thẻ</dt>
+              <dd class="sc-id">
+                <span class="id-chip">
+                  <code class="strategy-id-badge" title="{{ card.card_id }}">{{ card.card_id }}</code>
+                  <button type="button" class="copy-btn" data-copy="{{ card.card_id }}" aria-label="Sao chép mã thẻ {{ card.card_id }}" title="Sao chép mã thẻ">
+                    <svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>
+                  </button>
+                </span>
+              </dd>
             </div>
-
-            <!-- Bảng phân tầng 7 lớp kiến trúc L0 -> L6 -->
-            <div class="layers-container" aria-label="Phân tầng kiến trúc L0 đến L6">
-              <h4 class="layers-heading">Phân tầng Kiến trúc Đồ thị ({{ card.total_nodes }} nodes, {{ card.total_edges }} edges):</h4>
-              <div class="layers-grid">
-                <div class="layer-pill">
-                  <span class="layer-tag">L0</span>
-                  <span class="layer-name">{{ help_term("layer_l0_data_hygiene", "Data Hygiene") }}</span>
-                  <span class="layer-count">{{ card.layers_breakdown.L0_DATA_HYGIENE }}</span>
-                </div>
-                <div class="layer-pill">
-                  <span class="layer-tag">L1</span>
-                  <span class="layer-name">{{ help_term("layer_l1_candle_anatomy", "Candle Anatomy") }}</span>
-                  <span class="layer-count">{{ card.layers_breakdown.L1_CANDLE_ANATOMY }}</span>
-                </div>
-                <div class="layer-pill">
-                  <span class="layer-tag">L2</span>
-                  <span class="layer-name">{{ help_term("layer_l2_indicators", "Indicators") }}</span>
-                  <span class="layer-count">{{ card.layers_breakdown.L2_INDICATORS }}</span>
-                </div>
-                <div class="layer-pill">
-                  <span class="layer-tag">L3</span>
-                  <span class="layer-name">{{ help_term("layer_l3_algorithms", "Algorithms") }}</span>
-                  <span class="layer-count">{{ card.layers_breakdown.L3_ALGORITHMS }}</span>
-                </div>
-                <div class="layer-pill layer-gate">
-                  <span class="layer-tag">L4</span>
-                  <span class="layer-name">{{ help_term("layer_l4_context_gate", "Context Gate") }}</span>
-                  <span class="layer-count">{{ card.layers_breakdown.L4_CONTEXT_GATE }}</span>
-                </div>
-                <div class="layer-pill layer-trigger">
-                  <span class="layer-tag">L5</span>
-                  <span class="layer-name">{{ help_term("layer_l5_trigger", "Trigger") }}</span>
-                  <span class="layer-count">{{ card.layers_breakdown.L5_STRATEGY_TRIGGER }}</span>
-                </div>
-                <div class="layer-pill layer-zones">
-                  <span class="layer-tag">L6</span>
-                  <span class="layer-name">{{ help_term("layer_l6_zones", "Zones") }}</span>
-                  <span class="layer-count">{{ card.layers_breakdown.L6_ZONES }}</span>
-                </div>
-              </div>
+            <div class="kv">
+              <dt><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 9h16M4 15h16M10 3 8 21M16 3l-2 18"/></svg><span class="hash-label">Băm xác thực (SHA-256)</span></dt>
+              <dd>
+                <span class="id-chip">
+                  <code class="hash-code" title="{{ card.content_hash }}" tabindex="0" aria-label="Mã băm SHA-256 bất biến">{{ card.short_hash }}</code>
+                  <span class="visually-hidden">{{ card.content_hash }}</span>
+                  <button type="button" class="copy-btn" data-copy="{{ card.content_hash }}" aria-label="Sao chép mã băm đầy đủ" title="Sao chép mã băm đầy đủ">
+                    <svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>
+                  </button>
+                </span>
+                {% if is_demo %}<span class="sc-placeholder">giữ chỗ</span>{% endif %}
+              </dd>
             </div>
-
-            <!-- Metadata chi tiết -->
-            <footer class="strategy-meta-footer">
-              <div class="meta-item">
-                <span class="meta-label">Cặp giao dịch:</span>
-                <span class="meta-value">{{ card.target_symbols | join(', ') }}</span>
-              </div>
-              <div class="meta-item">
-                <span class="meta-label">Khung thời gian:</span>
-                <span class="meta-value">{{ card.timeframes | join(', ') }}</span>
-              </div>
-              <div class="meta-item">
-                <span class="meta-label">Tác giả:</span>
-                <span class="meta-value">{{ card.author }}</span>
-              </div>
-              <div class="meta-item">
-                <span class="meta-label">Thời điểm phát hành:</span>
-                <span class="meta-value">{{ card.created_at_formatted }}</span>
-              </div>
-            </footer>
-
-            <!-- Thanh tác vụ chiến lược -->
-            <div class="strategy-card-actions">
-              <a href="/admin/strategy-cards/{{ card.card_id }}/microscope"
-                 class="btn btn-secondary btn-sm btn-microscope"
-                 aria-label="Soi kính hiển vi vết lịch sử cho {{ card.name }}">
-                🔍 Soi kính hiển vi (Microscope)
-              </a>
+            <div class="kv">
+              <dt><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9"/><path d="M9 9h4.5a2 2 0 0 1 0 4H9v-4Zm0 4h5a2 2 0 0 1 0 4H9"/></svg>Cặp giao dịch</dt>
+              <dd class="sc-coins">{% for symbol in card.target_symbols %}<span class="coin-tag" data-coin="{{ symbol }}">{{ symbol }}</span>{% else %}Chưa có dữ liệu{% endfor %}</dd>
             </div>
+            <div class="kv">
+              <dt><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>Khung thời gian</dt>
+              <dd>{{ card.timeframes | join(", ") if card.timeframes else "Chưa có dữ liệu" }}</dd>
+            </div>
+          </dl>
+
+          <!-- Bảng phân tầng 7 lớp kiến trúc L0 -> L6 -->
+          <div class="layers-container sc-layers" aria-label="Phân tầng kiến trúc L0 đến L6">
+            <h4 class="layers-heading">Đồ thị: <span class="sc-num">{{ card.total_nodes }}</span> nút · <span class="sc-num">{{ card.total_edges }}</span> cạnh</h4>
+            <ul class="layers-grid sc-layer-grid">
+              {% for layer in strategy_layers %}
+              {% set count = card.layers_breakdown.get(layer.key, 0) %}
+              <li class="layer-pill sc-layer sc-tone--{{ layer.tone }}{% if not count %} sc-layer--empty{% endif %}">
+                <span class="sc-layer-icon" aria-hidden="true">{{ layer_icon(layer.slug) }}</span>
+                <span class="layer-tag">{{ layer.code }}</span>
+                <span class="layer-name">{{ help_term(layer.help, layer.name_vi) }}</span>
+                <span class="layer-count" aria-label="{{ count }} nút">{{ count }}</span>
+              </li>
+              {% endfor %}
+            </ul>
           </div>
+
+          <!-- Thanh tác vụ chiến lược -->
+          <footer class="strategy-card-actions sc-card__actions">
+            <button type="button" class="icon-btn sc-info-btn" data-dialog-open="card-dialog-{{ loop.index }}" aria-haspopup="dialog" aria-label="Chi tiết thẻ {{ card.name }}">
+              <svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>
+              <span>Chi tiết thẻ</span>
+            </button>
+            <a href="/admin/strategy-cards/{{ card.card_id }}/microscope"
+               class="btn btn-secondary btn-sm btn-microscope"
+               aria-label="Soi kính hiển vi vết lịch sử cho {{ card.name }}">
+              <svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
+              <span>Soi kính hiển vi (Microscope)</span>
+            </a>
+          </footer>
         </article>
+
       {% endfor %}
     </div>
+    {% for card in cards %}
+      {% set is_demo = card.id is string and card.id.startswith("demo-card-") %}
+      {% set created_local = (card.created_at_formatted | replace(" UTC", "+00:00")) | local_minute %}
+        <dialog id="card-dialog-{{ loop.index }}" class="glass-dialog sc-card-dialog" aria-labelledby="card-dialog-title-{{ loop.index }}">
+          <form method="dialog" class="glass-dialog__close-form">
+            <button type="submit" class="icon-btn" aria-label="Đóng chi tiết thẻ">
+              <svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M6 6l12 12M18 6 6 18"/></svg>
+            </button>
+          </form>
+          <h2 id="card-dialog-title-{{ loop.index }}" class="glass-dialog__title">{{ card.name }}</h2>
+          <p class="glass-dialog__lead">Thông tin do dịch vụ quản trị Strategy Card cung cấp. Thẻ chỉ dùng cho mô phỏng PAPER; không phải lời khuyên đầu tư.</p>
+          <dl class="kv-grid sc-dialog-kv">
+            <div class="kv"><dt>Mã thẻ</dt><dd><code>{{ card.card_id }}</code></dd></div>
+            <div class="kv"><dt>Phiên bản</dt><dd>{{ card.version }}</dd></div>
+            <div class="kv"><dt>Trạng thái</dt><dd>{{ "Đang hoạt động" if card.is_active else "Lưu trữ" }}</dd></div>
+            <div class="kv"><dt>Tác giả</dt><dd>{{ card.author }}</dd></div>
+            <div class="kv"><dt>Thời điểm phát hành</dt><dd><time title="{{ card.created_at_formatted }}">{{ card.created_at_formatted if created_local == "Chưa có dữ liệu" else created_local }}</time></dd></div>
+            <div class="kv"><dt>Số nút / cạnh</dt><dd>{{ card.total_nodes }} / {{ card.total_edges }}</dd></div>
+            <div class="kv"><dt>Nút mồ côi</dt><dd>{{ card.dead_nodes | join(", ") if card.dead_nodes else "Không có" }}</dd></div>
+            <div class="kv"><dt>Cảnh báo tương quan</dt><dd>{{ card.consensus_warnings | join("; ") if card.consensus_warnings else "Không có cảnh báo được ghi nhận" }}</dd></div>
+            <div class="kv kv--text">
+              <dt>Mã băm đầy đủ</dt>
+              <dd class="sc-hash-full">
+                <code>{{ card.content_hash }}</code>
+                <button type="button" class="copy-btn" data-copy="{{ card.content_hash }}" aria-label="Sao chép mã băm đầy đủ của {{ card.name }}" title="Sao chép">
+                  <svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>
+                </button>
+              </dd>
+            </div>
+          </dl>
+          {% if is_demo %}
+          <p class="sc-note sc-note--warning" role="note">
+            <svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3 2 20h20L12 3Z"/><path d="M12 10v4M12 17h.01"/></svg>
+            <span>Thẻ mẫu dự phòng (chưa có bản ghi DB): mã băm và trạng thái kích hoạt là giá trị giữ chỗ. Trang Microscope tính mã băm chuẩn hóa thật của nội dung thẻ.</span>
+          </p>
+          {% endif %}
+          <section class="glass-dialog__section" aria-label="Phân tầng của {{ card.name }}">
+            <h3>Số nút theo tầng</h3>
+            <dl class="kv-grid sc-dialog-kv">
+              {% for layer in strategy_layers %}
+              <div class="kv">
+                <dt><span class="sc-layer-icon sc-tone--{{ layer.tone }}" aria-hidden="true">{{ layer_icon(layer.slug) }}</span>{{ layer.code }} · {{ layer.name_vi }}</dt>
+                <dd>{{ card.layers_breakdown.get(layer.key, 0) }}</dd>
+              </div>
+              {% endfor %}
+            </dl>
+          </section>
+          <section class="glass-dialog__section" aria-label="Phạm vi kiểm định">
+            <h3>Kiểm định gồm những gì</h3>
+            <p class="sc-dialog-text">“Đã kiểm định (Orthogonal)” nghĩa là dịch vụ không tìm thấy nút mồ côi và không ghi nhận cảnh báo tương quan cho thẻ này. Ma trận tương quan trực quan (WP-SC.5) chưa hiển thị trên trang này. Kiểm định tĩnh không chứng minh chiến lược có lãi.</p>
+          </section>
+        </dialog>
+    {% endfor %}
   {% else %}
-    <div class="empty-state" role="status">
+    <div class="empty-state sc-empty" role="status">
       <p>Chưa có bản kê chiến lược nào trong không gian làm việc này.</p>
     </div>
   {% endif %}
 </section>
+</div>
+
+<div role="tabpanel" id="panel-layers" aria-labelledby="tab-layers" tabindex="0">
+<section class="sc-architecture" aria-labelledby="architecture-heading">
+  <h2 id="architecture-heading">Bảy tầng của đồ thị chiến lược</h2>
+  <p class="sc-muted">Nến đi lần lượt qua các tầng; tầng L0 hoặc L4 có thể ngắt mạch để các tầng sau không chạy. Chọn “Chi tiết” để xem engine hiện làm gì và hạn chế đã biết.</p>
+  <ol class="sc-arch-list">
+    {% for layer in strategy_layers %}
+    <li class="sc-arch-item sc-tone--{{ layer.tone }}">
+      <span class="sc-layer-icon sc-layer-icon--lg" aria-hidden="true">{{ layer_icon(layer.slug) }}</span>
+      <div class="sc-arch-body">
+        <h3><span class="layer-tag">{{ layer.code }}</span> {{ layer.name_vi }} <span class="sc-en">{{ layer.name_en }}</span></h3>
+        <p>{{ layer.does_vi }}</p>
+      </div>
+      {{ layer_info_button(layer) }}
+    </li>
+    {% endfor %}
+  </ol>
+</section>
+</div>
+</div>
+
+{{ layer_dialogs() }}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/coins.js" defer></script>
+<script src="/static/pages/strategy-ui.js" defer></script>
 {% endblock %}

@@ -1,14 +1,111 @@
 {% extends "admin/base.html" %}
 {% block title %}Thao tác đóng toàn bộ — Crypidian{% endblock %}
+{% block head_extra %}<link rel="stylesheet" href="/static/pages/ops.css">{% endblock %}
 {% block heading %}Trạng thái đóng toàn bộ vị thế mô phỏng{% endblock %}
 {% block content %}
-<p id="operation-status" role="status" aria-live="polite">Thao tác {{ operation.id }}: <strong>{{ operation.status | label_vi }}</strong></p>
-<ul>
-  {% for item in operation["items"] %}
-  <li>{{ item.symbol }} — {{ item.target_type | label_vi }} — {{ item.quantity }} — {{ item.status | label_vi }}{% if item.error_code %} ({{ item.error_code | label_vi }}){% endif %}</li>
-  {% else %}
-  <li>Không có mục cần xử lý.</li>
-  {% endfor %}
-</ul>
-<a href="/admin/flatten">Tạo bản xem trước mới</a>
+{#- Bước 3/3: theo dõi thao tác flatten-all. Trạng thái tổng do worker runtime tính từ trạng thái từng mục
+    (QUEUED/PROCESSING/PARTIAL/BLOCKED/COMPLETED). PARTIAL còn mục PENDING/PROCESSING thì vẫn đang chạy.
+    Vùng `[data-ops-live]` được ops.js tải lại mỗi 5 giây khi thao tác chưa kết thúc. -#}
+{% set items = operation["items"] %}
+{% set total = items | length %}
+{% set done_count = items | selectattr("status", "equalto", "COMPLETED") | list | length %}
+{% set blocked_count = items | selectattr("status", "equalto", "BLOCKED") | list | length %}
+{% set running_count = items | selectattr("status", "equalto", "PROCESSING") | list | length %}
+{% set pending_count = items | selectattr("status", "equalto", "PENDING") | list | length %}
+{% set terminal = operation.status in ["COMPLETED", "BLOCKED"] or (operation.status == "PARTIAL" and running_count + pending_count == 0) %}
+{% set tone = {"COMPLETED": "success", "BLOCKED": "danger", "PARTIAL": "warning"}.get(operation.status, "neutral") %}
+<div class="ops-page">
+  <ol class="ops-steps" aria-label="Các bước đóng toàn bộ vị thế">
+    <li class="ops-step ops-step--done">
+      <span class="ops-step__dot" aria-hidden="true"><svg class="ico" viewBox="0 0 24 24" focusable="false"><path d="M20 6 9 17l-5-5"/></svg></span>
+      <span class="ops-step__text"><span class="ops-step__title">Xem trước</span><span class="ops-step__hint">Đã chụp trạng thái</span></span>
+      <span class="visually-hidden">(đã xong)</span>
+    </li>
+    <li class="ops-step ops-step--done">
+      <span class="ops-step__dot" aria-hidden="true"><svg class="ico" viewBox="0 0 24 24" focusable="false"><path d="M20 6 9 17l-5-5"/></svg></span>
+      <span class="ops-step__text"><span class="ops-step__title">Rà soát</span><span class="ops-step__hint">Đã xác nhận</span></span>
+      <span class="visually-hidden">(đã xong)</span>
+    </li>
+    <li class="ops-step {% if terminal %}ops-step--done{% else %}ops-step--current{% endif %}" aria-current="step">
+      <span class="ops-step__dot" aria-hidden="true">{% if terminal %}<svg class="ico" viewBox="0 0 24 24" focusable="false"><path d="M20 6 9 17l-5-5"/></svg>{% else %}3{% endif %}</span>
+      <span class="ops-step__text"><span class="ops-step__title">Xác nhận</span><span class="ops-step__hint">{% if terminal %}Đã kết thúc{% else %}Đang xử lý{% endif %}</span></span>
+    </li>
+  </ol>
+
+  <section class="glass-card ops-card" aria-labelledby="operation-heading" data-ops-live data-ops-terminal="{{ 'true' if terminal else 'false' }}" data-ops-tone="{{ tone }}">
+    <h2 id="operation-heading" class="visually-hidden">Tiến trình thao tác</h2>
+    <p id="operation-status" class="ops-status" role="status" aria-live="polite"><span class="ops-status__label">Trạng thái thao tác:</span> <strong class="badge badge-{{ tone }}">{{ operation.status | label_vi }}</strong></p>
+
+    <div class="ops-progress">
+      <p class="ops-progress__label"><span>Tiến độ xử lý</span><strong>{{ done_count }}/{{ total }} mục đã hoàn tất</strong></p>
+      <progress class="ops-progress__bar" max="{{ total if total else 1 }}" value="{{ done_count if total else (1 if terminal else 0) }}" aria-label="Tiến độ: {{ done_count }} trên {{ total }} mục đã hoàn tất"></progress>
+      <ul class="ops-progress__legend" aria-label="Số mục theo trạng thái">
+        <li><span class="badge badge-success ops-chip">{{ "COMPLETED" | label_vi }}: {{ done_count }}</span></li>
+        <li><span class="badge badge-neutral ops-chip">{{ "PROCESSING" | label_vi }}: {{ running_count }}</span></li>
+        <li><span class="badge badge-neutral ops-chip">{{ "PENDING" | label_vi }}: {{ pending_count }}</span></li>
+        <li><span class="badge {% if blocked_count %}badge-danger{% else %}badge-neutral{% endif %} ops-chip">{{ "BLOCKED" | label_vi }}: {{ blocked_count }}</span></li>
+      </ul>
+    </div>
+
+    <dl class="kv-grid">
+      <div class="kv">
+        <dt><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 9h16M4 15h16M10 3 8 21M16 3l-2 18"/></svg>Mã thao tác</dt>
+        <dd><span class="id-chip"><code class="trade-id" title="{{ operation.id }}" aria-hidden="true">{{ (operation.id | string)[:8] }}…</code><span class="visually-hidden">{{ operation.id }}</span><button type="button" class="copy-btn" data-ops-copy data-copy="{{ operation.id }}" aria-label="Sao chép mã thao tác đầy đủ" title="Sao chép mã thao tác đầy đủ"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg></button></span></dd>
+      </div>
+      <div class="kv">
+        <dt><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>Tạo lúc</dt>
+        <dd>{% if operation.created_at %}<time datetime="{{ operation.created_at }}" title="{{ operation.created_at | local_time }}">{{ operation.created_at | local_minute }}</time>{% else %}Chưa có dữ liệu{% endif %}</dd>
+      </div>
+    </dl>
+
+    <div class="ops-table-wrap">
+      <table class="ops-table">
+        <caption>Các mục trong thao tác</caption>
+        <thead><tr><th scope="col">Mã giao dịch</th><th scope="col">Loại</th><th scope="col" class="num">Số lượng</th><th scope="col">Trạng thái</th></tr></thead>
+        <tbody>
+          {% for item in items %}
+          {% set item_tone = {"COMPLETED": "success", "BLOCKED": "danger"}.get(item.status, "neutral") %}
+          <tr>
+            <td class="ops-cell-lead" data-label="Mã giao dịch"><span data-coin="{{ item.symbol }}">{{ item.symbol }}</span></td>
+            <td data-label="Loại">{{ item.target_type | label_vi }}</td>
+            <td class="num" data-label="Số lượng">{{ item.quantity | number_vi }}</td>
+            <td data-label="Trạng thái"{% if item.error_code %} class="ops-cell-status--error"{% endif %}>
+              <span class="ops-error-code"><span class="badge badge-{{ item_tone }} ops-chip">{{ item.status | label_vi }}</span>{% if item.error_code %}<span>{{ item.error_code | label_vi }}</span><code>{{ item.error_code }}</code>{% endif %}</span>
+            </td>
+          </tr>
+          {% else %}
+          <tr><td colspan="4" class="ops-cell-empty">Không có mục cần xử lý.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    {% if terminal and blocked_count %}
+    <div class="ops-callout ops-callout--danger">
+      <span class="ops-callout__icon" aria-hidden="true"><svg class="ico" viewBox="0 0 24 24" focusable="false"><path d="M12 3 2 20h20L12 3Z"/><path d="M12 10v4M12 17h.01"/></svg></span>
+      <p class="ops-callout__title">{{ blocked_count }} mục bị chặn chưa được đóng</p>
+      <div class="ops-callout__body"><p>Mục bị chặn không được xử lý lại trong thao tác này. Kiểm tra giá đánh dấu rồi tạo bản xem trước mới cho phần còn lại.</p></div>
+    </div>
+    {% endif %}
+  </section>
+
+  {% if not terminal %}
+  <p class="ops-poll" data-ops-poll-note><span class="pulse-dot" aria-hidden="true"></span><span data-ops-poll-text>Trang tự cập nhật mỗi 5 giây cho tới khi thao tác kết thúc.</span> <a class="ops-link" href="{{ request.url.path }}">Làm mới ngay</a></p>
+  {% endif %}
+
+  <div class="ops-callout ops-callout--info">
+    <span class="ops-callout__icon" aria-hidden="true"><svg class="ico" viewBox="0 0 24 24" focusable="false"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg></span>
+    <p class="ops-callout__title">Bot vẫn ở trạng thái tạm dừng</p>
+    <div class="ops-callout__body"><p>Thao tác không tự tiếp tục bot. Khi đã rà soát xong, bật lại từng bot trong trang <a href="/admin/bots">Bot</a>.</p></div>
+  </div>
+
+  <div class="ops-actions">
+    <a class="ops-link" href="/admin/flatten"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg>Tạo bản xem trước mới</a>
+    <a class="ops-link" href="/admin"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>Về tổng quan</a>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="/static/coins.js" defer></script>
+<script src="/static/pages/ops.js" defer></script>
 {% endblock %}

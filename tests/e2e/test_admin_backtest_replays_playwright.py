@@ -30,6 +30,11 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from playwright.sync_api import expect, sync_playwright
 
+from tests.e2e.csp_harness import (
+    browser_violations,  # noqa: F401 - fixture nạp qua usefixtures
+    install_security_headers,
+    watch_browser_violations,
+)
 from trading_bot.admin.backtest_replay_router import router as backtest_replay_router
 from trading_bot.admin.web_router import router as admin_web_router
 from trading_bot.auth.policy import Principal, Role
@@ -51,6 +56,9 @@ CSRF_TOKEN = "playwright-backtest-csrf-token-123456"
 
 BUNDLE_BTC_HASH = hashlib.sha256(b"wp07c-btcusdt-bundle-dataset").hexdigest()
 BUNDLE_ETH_HASH = hashlib.sha256(b"wp07c-ethusdt-bundle-dataset").hexdigest()
+
+# Mỗi test thất bại nếu trình duyệt báo vi phạm CSP hoặc lỗi JavaScript chưa bắt.
+pytestmark = pytest.mark.usefixtures("browser_violations")
 
 
 @dataclass
@@ -265,6 +273,8 @@ def create_test_backtest_app() -> FastAPI:
     app.mount("/static", StaticFiles(directory="src/trading_bot/static"), name="static")
     app.include_router(backtest_replay_router)
     app.include_router(admin_web_router)
+    # Gắn CSP thật để bắt script/style nội tuyến như khi triển khai.
+    install_security_headers(app)
     return app
 
 
@@ -316,6 +326,7 @@ def test_admin_backtest_replays_desktop_view(backtest_server_url: str) -> None:
             ]
         )
         page = context.new_page()
+        watch_browser_violations(page)
 
         # 1. Mở trang /admin/backtests
         page.goto(f"{backtest_server_url}/admin/backtests", wait_until="networkidle")
@@ -398,6 +409,7 @@ def test_admin_backtest_replays_mobile_view(backtest_server_url: str) -> None:
             ]
         )
         page = context.new_page()
+        watch_browser_violations(page)
 
         # 1. Mở trang /admin/backtests trên mobile
         page.goto(f"{backtest_server_url}/admin/backtests", wait_until="networkidle")

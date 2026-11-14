@@ -235,11 +235,12 @@ def test_bot_detail_html_renders_ledger_metrics_positions_trades_and_chart(
     # KPI lấy từ totals của báo cáo, định dạng số tiếng Việt.
     assert 'id="kpi-open-positions">1<' in html
     assert 'id="kpi-win-rate">75%<' in html
-    assert "Tổng số lệnh đóng: 4" in html
+    assert 'id="kpi-closed-trades">4<' in html
     assert 'id="kpi-profit-factor">3,2<' in html
-    assert "11,875 USDT" in html
-    assert 'data-pnl-tone="positive">+47,5 USDT' in html
-    assert 'id="kpi-max-drawdown">12,25 USDT<' in html
+    # Tiền làm tròn 2 chữ số để hiển thị, số gốc giữ ở title; USDT hiển thị bằng biểu tượng ₮.
+    assert 'title="11.875 USDT">+11,88<span class="asset-usdt"' in html
+    assert 'data-pnl-tone="positive" title="47.5 USDT">+47,5<span class="asset-usdt"' in html
+    assert 'title="12.25 USDT">12,25<span class="asset-usdt"' in html
 
     # Vị thế mở chỉ gồm trường ledger có; ghi rõ chưa mark-to-market.
     assert "SOLUSDT" in html
@@ -252,7 +253,14 @@ def test_bot_detail_html_renders_ledger_metrics_positions_trades_and_chart(
     assert ">3050<" in html
     assert ">3037,5<" in html
     assert "Chiến thuật H03_BREAKOUT — Phá vỡ vùng tích lũy." in html
-    assert "Phí 1,5 · Funding 0,25 · Trượt giá 0,75 USDT" in html
+    assert 'title="1.5 USDT">1,5<span class="asset-usdt"' in html
+    assert 'title="0.25 USDT">0,25<span class="asset-usdt"' in html
+    assert 'title="0.75 USDT">0,75<span class="asset-usdt"' in html
+    # Mã cặp lấy từ ledger (vị thế mở + lệnh đóng), hiển thị bằng chip coin.
+    assert 'data-coin="SOLUSDT"' in html
+    assert 'data-coin="ETHUSDT"' in html
+    assert '<script src="/static/coins.js" defer></script>' in html
+    assert '<link rel="stylesheet" href="/static/pages/bots.css">' in html
 
     # Biểu đồ dùng nến của giao dịch đã đóng gần nhất và nạp thư viện từ /static.
     assert reporting.chart_calls == [(CLOSED_TRADE_ID, "1h")]
@@ -351,3 +359,11 @@ def test_bot_detail_realtime_api_returns_404_for_unknown_bot(
     response = client.get(f"/admin/api/bots/{random_id}/realtime")
     assert response.status_code == 404
     assert response.json()["detail"] == "Không tìm thấy nội dung trong phạm vi được cấp quyền."
+
+
+def test_bot_view_does_not_invent_a_symbol_when_the_bot_has_none() -> None:
+    from trading_bot.admin.web_router import _bot_view
+
+    bot = {"id": "b1", "name": "Bot", "status": "ENABLED", "account": {}}
+    assert _bot_view(bot).symbol is None
+    assert _bot_view({**bot, "symbol": "ETHUSDT"}).symbol == "ETHUSDT"

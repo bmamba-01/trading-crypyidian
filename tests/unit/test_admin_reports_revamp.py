@@ -353,9 +353,10 @@ def test_admin_reports_post_mortem_uses_approved_plan(
     assert "1 : 1.79" in html
     assert "SL: 97,6" in html
     assert "TP: 105,4" in html
-    assert "kế hoạch dự trù 2 USDT" in html
-    assert "100 USDT" in html
+    # Tiền hiển thị 2 chữ số kèm ₮; số đầy đủ (kèm mã tài sản) nằm ở thuộc tính title.
+    assert 'kế hoạch dự trù <span class="money num" title="2 USDT">2' in html
+    assert 'title="100 USDT">100' in html
     assert "kết quả -1.50R" in html
     assert "Mục tiêu chốt lời (TP)" in html
-    assert "SAI LỆCH" in html
+    assert "Sai lệch" in html
     assert 'id="post-mortem-unevaluated"' not in html

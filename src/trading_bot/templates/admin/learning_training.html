@@ -1,109 +1,147 @@
 {% extends "admin/base.html" %}
+{% from "admin/_learning_ui.html" import icon, chip, hash %}
 {% block title %}Huấn luyện mô hình | Crypidian{% endblock %}
 {% block heading %}Hàng đợi huấn luyện{% endblock %}
 {% block head_extra %}
-  <link rel="stylesheet" href="/static/learning-training.css">
+  <link rel="stylesheet" href="/static/pages/learning.css">
 {% endblock %}
 {% block content %}
-  <section class="learning-training-notice" id="learning-training" aria-label="Giới hạn huấn luyện"
+{#- Tông màu/biểu tượng trạng thái phải khớp với bảng tương ứng trong static/learning-training.js. -#}
+{%- set status_tones = {"queued": "neutral", "running": "info", "succeeded": "success", "failed": "danger", "cancelled": "neutral", "rejected": "warning"} -%}
+{%- set status_icons = {"queued": "clock", "running": "activity", "succeeded": "check-circle", "failed": "x-circle", "cancelled": "pause", "rejected": "ban"} -%}
+{%- set job_list = jobs | map(attribute="job") | list -%}
+{%- set active_count = job_list | selectattr("status", "in", ["queued", "running"]) | list | length -%}
+{%- set succeeded_count = job_list | selectattr("status", "equalto", "succeeded") | list | length -%}
+<div class="lx-page">
+  <section class="lx-notice learning-training-notice" id="learning-training" aria-label="Giới hạn huấn luyện"
     data-csrf-token="{{ csrf_token }}">
+    <span class="lx-notice__icon">{{ icon("shield") }}</span>
     <h2>Phạm vi an toàn</h2>
     <p>Quản trị viên chỉ chọn lát dữ liệu (fold) đã được phê duyệt và xem thông tin hạn mức. Tiến trình huấn luyện chỉ nhận mẫu huấn luyện/kiểm định qua cổng dữ liệu sau khi kiểm tra quyền hiện hành; trang này không đọc đặc trưng, nhãn hoặc phần dữ liệu giữ kín (holdout).</p>
     <p><strong>Mô hình mới luôn ở trạng thái ABSTAIN (chưa đưa ra đánh giá).</strong> Xếp lịch không nối mô hình vào bot, không tạo lệnh và không bật LIVE. Bắt đầu hoặc yêu cầu dừng tác vụ cần xác thực nhiều yếu tố (MFA) gần đây.</p>
   </section>
 
-  <section aria-labelledby="learning-training-enqueue-heading">
-    <h2 id="learning-training-enqueue-heading">Xếp lịch huấn luyện</h2>
-    {% if eligible_folds %}
-      <form id="learning-training-form" class="learning-training-form">
-        <div class="learning-training-field">
-          <label for="learning-training-fold">Lát dữ liệu đã duyệt</label>
-          <select id="learning-training-fold" required>
-            {% for fold in eligible_folds %}
-              <option value="{{ loop.index0 }}"
-                data-dataset-id="{{ fold.normalized_dataset_id }}"
-                data-fold-id="{{ fold.fold_id }}">
-                {{ fold.manifest_hash[:12] }} · lát {{ fold.fold_id[:10] }} · huấn luyện {{ fold.training_samples }} / kiểm định {{ fold.validation_samples }} · {{ fold.feature_count }} đặc trưng
-              </option>
-            {% endfor %}
-          </select>
-        </div>
-        <p class="learning-training-budget">Hạn mức do máy chủ tính từ hồ sơ đã lưu; biểu mẫu không nhận số mẫu, số đặc trưng, nhãn hoặc quyền dữ liệu.</p>
-        <button type="submit">Đưa vào hàng đợi</button>
-      </form>
-    {% else %}
-      <p class="learning-training-empty">Chưa có lát dữ liệu nào được duyệt và có hồ sơ hạn mức. Hãy hoàn tất phê duyệt và chuẩn hóa dữ liệu trước.</p>
-    {% endif %}
-    <p id="learning-training-status" role="status" aria-live="polite">{{ jobs|length }} tác vụ trong không gian làm việc.</p>
+  <section class="lx-kpis" aria-label="Tóm tắt hàng đợi" data-training-kpis>
+    <div class="kpi-card kpi-card--h">
+      <span class="kpi-icon kpi-icon--blue">{{ icon("list") }}</span>
+      <div class="kpi-body"><span class="kpi-value" data-training-kpi="total">{{ job_list | length }}</span><span class="kpi-label">Tác vụ gần đây</span></div>
+    </div>
+    <div class="kpi-card kpi-card--h">
+      <span class="kpi-icon kpi-icon--amber">{{ icon("activity") }}</span>
+      <div class="kpi-body"><span class="kpi-value" data-training-kpi="active">{{ active_count }}</span><span class="kpi-label">Đang chờ hoặc đang chạy</span></div>
+    </div>
+    <div class="kpi-card kpi-card--h">
+      <span class="kpi-icon kpi-icon--green">{{ icon("check-circle") }}</span>
+      <div class="kpi-body"><span class="kpi-value" data-training-kpi="succeeded">{{ succeeded_count }}</span><span class="kpi-label">Đã lưu mô hình</span></div>
+    </div>
+    <div class="kpi-card kpi-card--h">
+      <span class="kpi-icon kpi-icon--violet">{{ icon("branch") }}</span>
+      <div class="kpi-body"><span class="kpi-value">{{ eligible_folds | length }}</span><span class="kpi-label">Lát dữ liệu đủ điều kiện</span></div>
+    </div>
   </section>
 
-  <section aria-labelledby="learning-training-jobs-heading">
-    <div class="learning-training-heading">
+  <section class="glass-card lx-card" aria-labelledby="learning-training-enqueue-heading">
+    <div class="lx-section-head">
       <div>
-        <h2 id="learning-training-jobs-heading">Tác vụ gần đây</h2>
-        <p>Trạng thái được làm mới mỗi 5 giây; yêu cầu dừng tác vụ đang chạy sẽ chờ tiến trình con kết thúc trước khi ghi trạng thái cuối.</p>
+        <h2 id="learning-training-enqueue-heading">{{ icon("play") }}Xếp lịch huấn luyện</h2>
+        <p class="learning-training-budget">Hạn mức do máy chủ tính từ hồ sơ đã lưu; biểu mẫu không nhận số mẫu, số đặc trưng, nhãn hoặc quyền dữ liệu.</p>
       </div>
-          <a href="/admin/learning/training">Tải lại trang</a>
     </div>
-    <div id="learning-training-jobs" class="learning-training-jobs">
+    {% if eligible_folds %}
+      <form id="learning-training-form" class="lx-form learning-training-form">
+        <div class="lx-form__row lx-form__row--action">
+          <div class="lx-field learning-training-field">
+            <label for="learning-training-fold">Lát dữ liệu đã duyệt</label>
+            <select id="learning-training-fold" required>
+              {% for fold in eligible_folds %}
+                <option value="{{ loop.index0 }}"
+                  data-dataset-id="{{ fold.normalized_dataset_id }}"
+                  data-fold-id="{{ fold.fold_id }}">
+                  {{ fold.manifest_hash[:12] }} · lát {{ fold.fold_id[:10] }} · huấn luyện {{ fold.training_samples | number2_vi }} / kiểm định {{ fold.validation_samples | number2_vi }} · {{ fold.feature_count }} đặc trưng
+                </option>
+              {% endfor %}
+            </select>
+          </div>
+          <button type="submit" class="btn btn-primary">{{ icon("play") }}Đưa vào hàng đợi</button>
+        </div>
+      </form>
+    {% else %}
+      <p class="lx-empty learning-training-empty">{{ icon("info") }}Chưa có lát dữ liệu nào được duyệt và có hồ sơ hạn mức. Hãy hoàn tất phê duyệt và chuẩn hóa dữ liệu trước.</p>
+    {% endif %}
+    <p id="learning-training-status" class="lx-status" role="status" aria-live="polite">{{ jobs|length }} tác vụ trong không gian làm việc.</p>
+  </section>
+
+  <section class="lx-stack" aria-labelledby="learning-training-jobs-heading">
+    <div class="lx-section-head learning-training-heading">
+      <div>
+        <h2 id="learning-training-jobs-heading">{{ icon("cpu") }}Tác vụ gần đây</h2>
+        <p>Trạng thái được làm mới mỗi 5 giây; yêu cầu dừng tác vụ đang chạy sẽ chờ tiến trình con kết thúc trước khi ghi trạng thái cuối. Hiển thị tối đa 100 tác vụ mới nhất.</p>
+      </div>
+      <a class="lx-link" href="/admin/learning/training">{{ icon("refresh") }}Tải lại trang</a>
+    </div>
+    <div id="learning-training-jobs" class="lx-grid lx-grid--wide learning-training-jobs">
       {% if jobs %}
         {% for item in jobs %}
           {% set job = item.job %}
-          <article class="learning-training-card" data-job-id="{{ job.job_id }}">
-            <header>
-              <div><h3>{{ item.status_label }}</h3><p>{{ item.stage_label }} · {{ job.progress }}%</p></div>
-              <span class="learning-training-state learning-training-state--{{ job.status }}">{{ item.status_label }}</span>
+          <article class="glass-card lx-card learning-training-card" data-job-id="{{ job.job_id }}">
+            <header class="lx-card__head">
+              <div class="lx-card__title"><h3>{{ item.status_label }}</h3><p class="lx-meta"><span>{{ item.stage_label }} · {{ job.progress }}%</span></p></div>
+              <span class="learning-training-state learning-training-state--{{ job.status }}">{{ chip(item.status_label, status_tones.get(job.status, "neutral"), status_icons.get(job.status, "info")) }}</span>
             </header>
-            <progress max="100" value="{{ job.progress }}" aria-label="Tiến độ {{ item.status_label }}">{{ job.progress }}%</progress>
-            <dl>
-              <div><dt>Mã tác vụ</dt><dd>{{ job.job_id }}</dd></div>
-              <div><dt>Mã lượt chạy</dt><dd>{{ job.attempt_id }}</dd></div>
-              <div><dt>Bản kê / lát dữ liệu</dt><dd><code>{{ job.manifest_hash[:12] }} / {{ job.fold_id[:12] }}</code></dd></div>
-              <div><dt>Hạn mức dữ liệu</dt><dd>huấn luyện {{ job.training_samples }} · kiểm định {{ job.validation_samples }} · {{ job.feature_count }} đặc trưng</dd></div>
-              <div><dt>Lượt nhận / thế hệ khóa</dt><dd>{{ job.attempt_count }} / {{ job.lease_generation }}</dd></div>
-              <div><dt>Mã lỗi</dt><dd>{% if job.error_code %}<code>{{ job.error_code }}</code>{% else %}—{% endif %}</dd></div>
+            <progress class="lx-progress" max="100" value="{{ job.progress }}" aria-label="Tiến độ {{ item.status_label }}">{{ job.progress }}%</progress>
+            <dl class="kv-grid kv-grid--1">
+              <div class="kv"><dt>{{ icon("hash") }}Mã tác vụ</dt><dd class="kv-hash">{{ hash(job.job_id, "mã tác vụ") }}</dd></div>
+              <div class="kv"><dt>{{ icon("refresh") }}Mã lượt chạy</dt><dd class="kv-hash">{{ hash(job.attempt_id, "mã lượt chạy") }}</dd></div>
+              <div class="kv"><dt>{{ icon("branch") }}Bản kê / lát dữ liệu</dt><dd><code class="lx-mono">{{ job.manifest_hash[:12] }} / {{ job.fold_id[:12] }}</code></dd></div>
+              <div class="kv"><dt>{{ icon("database") }}Hạn mức dữ liệu</dt><dd>huấn luyện {{ job.training_samples | number2_vi }} · kiểm định {{ job.validation_samples | number2_vi }} · {{ job.feature_count }} đặc trưng</dd></div>
+              <div class="kv"><dt>{{ icon("key") }}Lượt nhận / thế hệ khóa</dt><dd>{{ job.attempt_count }} / {{ job.lease_generation }}</dd></div>
+              <div class="kv"><dt>{{ icon("alert") }}Mã lỗi</dt><dd>{% if job.error_code %}<code class="lx-mono">{{ job.error_code }}</code>{% else %}<span class="value-muted">—</span>{% endif %}</dd></div>
             </dl>
             {% if job.status == 'succeeded' and job.artifact_result %}
               {% set artifact = job.artifact_result %}
-              <section class="learning-training-artifact" aria-label="Kết quả huấn luyện">
-                <h4>Kết quả huấn luyện</h4>
-                <p class="learning-training-artifact-state"><strong>ABSTAIN · Chưa hiệu chuẩn</strong></p>
-                <dl>
-                  <div><dt>Mã artifact</dt><dd>{{ artifact.artifact_id }}</dd></div>
-                  <div><dt>Hash artifact</dt><dd><code>{{ artifact.artifact_hash }}</code></dd></div>
-                  <div><dt>Phiên bản huấn luyện</dt><dd>{{ artifact.trainer_version }}</dd></div>
-                  <div><dt>Phiên bản cấu trúc artifact</dt><dd>{{ artifact.artifact_schema_version }}</dd></div>
+              <section class="lx-artifact learning-training-artifact" aria-label="Kết quả huấn luyện">
+                <div class="lx-card__head">
+                  <h4>{{ icon("layers") }}Kết quả huấn luyện</h4>
+                  <p class="learning-training-artifact-state"><strong class="lx-chip lx-chip--warning">{{ icon("pause") }}<span>ABSTAIN · Chưa hiệu chuẩn</span></strong></p>
+                </div>
+                <dl class="kv-grid kv-grid--1">
+                  <div class="kv"><dt>{{ icon("file") }}Mã artifact</dt><dd class="kv-hash">{{ hash(artifact.artifact_id, "mã artifact") }}</dd></div>
+                  <div class="kv"><dt>{{ icon("key") }}Hash artifact</dt><dd class="kv-hash">{{ hash(artifact.artifact_hash, "hash artifact") }}</dd></div>
+                  <div class="kv"><dt>{{ icon("cpu") }}Phiên bản huấn luyện</dt><dd>{{ artifact.trainer_version }}</dd></div>
+                  <div class="kv"><dt>{{ icon("layers") }}Phiên bản cấu trúc artifact</dt><dd>{{ artifact.artifact_schema_version }}</dd></div>
                 </dl>
-                <details>
+                <details class="glass-card lx-details">
                   <summary>Nguồn gốc dữ liệu và lượt chạy</summary>
-                  <dl>
-                    <div><dt>Mã bộ dữ liệu chuẩn hóa</dt><dd>{{ job.normalized_dataset_id }}</dd></div>
-                    <div><dt>Hash bản kê</dt><dd><code>{{ job.manifest_hash }}</code></dd></div>
-                    <div><dt>Hash kế hoạch phân chia</dt><dd><code>{{ job.fold_plan_hash }}</code></dd></div>
-                    <div><dt>Hash lát dữ liệu</dt><dd><code>{{ job.fold_id }}</code></dd></div>
-                    <div><dt>Hash phê duyệt</dt><dd><code>{{ artifact.approval_hash }}</code></dd></div>
-                    <div><dt>Hash lô huấn luyện</dt><dd><code>{{ artifact.batch_hash }}</code></dd></div>
-                    <div><dt>Hash cấu trúc đặc trưng</dt><dd><code>{{ artifact.feature_schema_hash }}</code></dd></div>
-                    <div><dt>Hash nội dung lượt chạy</dt><dd><code>{{ artifact.attempt_content_hash }}</code></dd></div>
+                  <dl class="kv-grid kv-grid--1">
+                    <div class="kv"><dt>Mã bộ dữ liệu chuẩn hóa</dt><dd class="kv-hash">{{ hash(job.normalized_dataset_id, "mã bộ dữ liệu") }}</dd></div>
+                    <div class="kv"><dt>Hash bản kê</dt><dd class="kv-hash">{{ hash(job.manifest_hash, "hash bản kê") }}</dd></div>
+                    <div class="kv"><dt>Hash kế hoạch phân chia</dt><dd class="kv-hash">{{ hash(job.fold_plan_hash, "hash kế hoạch phân chia") }}</dd></div>
+                    <div class="kv"><dt>Hash lát dữ liệu</dt><dd class="kv-hash">{{ hash(job.fold_id, "hash lát dữ liệu") }}</dd></div>
+                    <div class="kv"><dt>Hash phê duyệt</dt><dd class="kv-hash">{{ hash(artifact.approval_hash, "hash phê duyệt") }}</dd></div>
+                    <div class="kv"><dt>Hash lô huấn luyện</dt><dd class="kv-hash">{{ hash(artifact.batch_hash, "hash lô huấn luyện") }}</dd></div>
+                    <div class="kv"><dt>Hash cấu trúc đặc trưng</dt><dd class="kv-hash">{{ hash(artifact.feature_schema_hash, "hash cấu trúc đặc trưng") }}</dd></div>
+                    <div class="kv"><dt>Hash nội dung lượt chạy</dt><dd class="kv-hash">{{ hash(artifact.attempt_content_hash, "hash nội dung lượt chạy") }}</dd></div>
                   </dl>
                 </details>
-                <p>Biểu mẫu chỉ điền sẵn mã artifact; đăng ký, phê duyệt và kích hoạt cần thao tác riêng của người có quyền.</p>
-                <a href="/admin/learning/models?artifact_id={{ artifact.artifact_id }}">Mở biểu mẫu đăng ký artifact</a>
+                <p class="lx-help">Biểu mẫu chỉ điền sẵn mã artifact; đăng ký, phê duyệt và kích hoạt cần thao tác riêng của người có quyền.</p>
+                <a class="lx-link" href="/admin/learning/models?artifact_id={{ artifact.artifact_id }}">{{ icon("link") }}Mở biểu mẫu đăng ký artifact</a>
               </section>
             {% endif %}
             {% if job.status in ['queued', 'running'] and not job.cancel_requested %}
-              <button type="button" class="button-secondary" data-cancel-job="{{ job.job_id }}">Yêu cầu dừng</button>
-            {% elif job.cancel_requested %}
-              <p class="learning-training-cancel-requested">Đã gửi yêu cầu dừng; chờ tiến trình huấn luyện xác nhận.</p>
+              <div class="lx-form__actions"><button type="button" class="btn btn-secondary" data-cancel-job="{{ job.job_id }}">{{ icon("pause") }}Yêu cầu dừng</button></div>
+            {% elif job.cancel_requested and job.status in ['queued', 'running'] %}
+              <p class="lx-status learning-training-cancel-requested">{{ icon("clock") }}Đã gửi yêu cầu dừng; chờ tiến trình huấn luyện xác nhận.</p>
             {% endif %}
           </article>
         {% endfor %}
       {% else %}
-          <p class="learning-training-empty">Chưa có tác vụ huấn luyện nào trong không gian làm việc này.</p>
+          <p class="lx-empty learning-training-empty">{{ icon("info") }}Chưa có tác vụ huấn luyện nào trong không gian làm việc này.</p>
       {% endif %}
     </div>
   </section>
+</div>
 {% endblock %}
 {% block scripts %}
+  <script src="/static/pages/learning-ui.js" defer></script>
   <script src="/static/learning-training.js" defer></script>
 {% endblock %}

@@ -1,37 +1,147 @@
 {% extends "admin/base.html" %}
 {% block title %}Xác nhận đóng toàn bộ — Crypidian{% endblock %}
+{% block head_extra %}<link rel="stylesheet" href="/static/pages/ops.css">{% endblock %}
 {% block heading %}Rà soát đóng toàn bộ vị thế mô phỏng{% endblock %}
 {% block content %}
-<p>Bản xem trước hết hạn lúc <time datetime="{{ preview.expires_at.isoformat() }}">{{ preview.expires_at | local_time }}</time>.</p>
-<p role="status" aria-live="polite">{{ preview.bot_count }} bot, {{ preview.position_count }} vị thế và {{ preview.open_order_count }} lệnh mở.</p>
-<p>Mã băm bản xem trước: <code>{{ preview.preview_hash }}</code></p>
-<div class="desktop-targets"><table class="table">
-  <caption>Các mục trong ảnh chụp trạng thái</caption>
-  <thead><tr><th scope="col">Bot</th><th scope="col">Loại</th><th scope="col">Mã giao dịch</th><th scope="col">Mã định danh</th><th scope="col">Số lượng</th><th scope="col">Giá đánh dấu</th><th scope="col">Trạng thái</th></tr></thead>
-  <tbody>
-    {% for target in preview.targets %}
-    <tr><td>{{ target.bot_id }}</td><td>{{ target.target_type | label_vi }}</td><td>{{ target.symbol }}</td><td>{{ target.target_id }}</td><td>{{ target.quantity }}</td><td>{{ target.mark_price or "—" }}</td><td>{{ (target.error_code or target.status) | label_vi }}</td></tr>
-    {% else %}
-    <tr><td colspan="7">Không có vị thế hoặc lệnh mở trong ảnh chụp trạng thái.</td></tr>
-    {% endfor %}
-  </tbody>
-</table></div>
-<section class="mobile-targets" aria-label="Các mục trong ảnh chụp trạng thái">
-{% for target in preview.targets %}
-<article><h2>Mục {{ loop.index }} — {{ target.target_type | label_vi }}</h2><dl>
-<dt>Bot</dt><dd>{{ target.bot_id }}</dd><dt>Mã giao dịch</dt><dd>{{ target.symbol }}</dd>
-<dt>Mã định danh</dt><dd>{{ target.target_id }}</dd><dt>Số lượng</dt><dd>{{ target.quantity | number_vi }}</dd>
-<dt>Giá đánh dấu</dt><dd>{{ target.mark_price | number_vi if target.mark_price is not none else "Chưa có dữ liệu" }}</dd>
-<dt>Trạng thái</dt><dd>{{ (target.error_code or target.status) | label_vi }}</dd></dl></article>
-{% else %}<p>Không có vị thế hoặc lệnh mở trong ảnh chụp trạng thái.</p>{% endfor %}
-</section>
-<form method="post" action="/admin/flatten/confirm">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-  <input type="hidden" name="preview_id" value="{{ preview.preview_id }}">
-  <input type="hidden" name="preview_hash" value="{{ preview.preview_hash }}">
-  <input type="hidden" name="idempotency_key" value="{{ idempotency_key }}">
-  <label for="confirm-reason">Lý do xác nhận</label>
-  <input id="confirm-reason" name="reason" value="{{ reason }}" maxlength="500" required>
-  <button type="submit">Xác nhận đóng toàn bộ</button>
-</form>
+{#- Bước 2–3/3: rà soát ảnh chụp trạng thái rồi xác nhận. Mọi số liệu lấy từ FlattenPreviewResult;
+    giá đánh dấu hiển thị 2 chữ số (bản đầy đủ ở `title`), số lượng giữ độ chính xác gốc
+    vì làm tròn số lượng nhỏ (ví dụ 0,003 BTC) sẽ gây hiểu sai trước một thao tác không hoàn tác. -#}
+{% macro short_id(value, label) -%}
+  {%- set full = value | string -%}
+  <span class="id-chip"><code class="trade-id" aria-hidden="true" title="{{ full }}">{% if full | length > 12 %}{{ full[:8] }}…{% else %}{{ full }}{% endif %}</code><span class="visually-hidden">{{ label }} {{ full }}</span></span>
+{%- endmacro %}
+{% macro price(value) -%}
+  {%- set shown = value | number2_vi -%}
+  {%- if not value -%}<span class="value-muted">Chưa có dữ liệu</span>
+  {%- elif shown == "Chưa có dữ liệu" -%}<span title="{{ value }}">{{ value }}</span>
+  {%- else -%}<span title="{{ value }}">{{ shown }}</span>{%- endif -%}
+{%- endmacro %}
+{% set blocked = preview.targets | selectattr("error_code") | list %}
+<div class="ops-page" data-ops-countdown-scope>
+  <ol class="ops-steps" aria-label="Các bước đóng toàn bộ vị thế">
+    <li class="ops-step ops-step--done">
+      <span class="ops-step__dot" aria-hidden="true"><svg class="ico" viewBox="0 0 24 24" focusable="false"><path d="M20 6 9 17l-5-5"/></svg></span>
+      <span class="ops-step__text"><span class="ops-step__title">Xem trước</span><span class="ops-step__hint">Đã chụp trạng thái</span></span>
+      <span class="visually-hidden">(đã xong)</span>
+    </li>
+    <li class="ops-step ops-step--current" aria-current="step">
+      <span class="ops-step__dot" aria-hidden="true">2</span>
+      <span class="ops-step__text"><span class="ops-step__title">Rà soát</span><span class="ops-step__hint">Kiểm từng vị thế/lệnh</span></span>
+    </li>
+    <li class="ops-step">
+      <span class="ops-step__dot" aria-hidden="true">3</span>
+      <span class="ops-step__text"><span class="ops-step__title">Xác nhận</span><span class="ops-step__hint">Theo dõi tiến trình</span></span>
+    </li>
+  </ol>
+
+  <div class="ops-callout ops-callout--warning">
+    <span class="ops-callout__icon" aria-hidden="true"><svg class="ico" viewBox="0 0 24 24" focusable="false"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span>
+    <p class="ops-callout__title">Bản xem trước hết hạn lúc <time datetime="{{ preview.expires_at.isoformat() }}">{{ preview.expires_at | local_time }}</time>.</p>
+    <div class="ops-callout__body">
+      <p><span class="ops-countdown" data-ops-countdown="{{ preview.expires_at.isoformat() }}" data-expired-text="Đã hết hạn">Hiệu lực tối đa 90 giây</span> · Nếu trạng thái thay đổi hoặc quá hạn, máy chủ sẽ từ chối và bạn cần tạo bản xem trước mới.</p>
+    </div>
+  </div>
+  <div class="ops-callout ops-callout--danger" data-ops-expired-notice hidden>
+    <span class="ops-callout__icon" aria-hidden="true"><svg class="ico" viewBox="0 0 24 24" focusable="false"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg></span>
+    <p class="ops-callout__title">Bản xem trước đã hết hạn theo đồng hồ trình duyệt</p>
+    <div class="ops-callout__body"><p>Xác nhận lúc này nhiều khả năng bị từ chối. <a href="/admin/flatten">Tạo bản xem trước mới</a> để chụp lại trạng thái.</p></div>
+  </div>
+
+  <section aria-label="Tóm tắt ảnh chụp trạng thái">
+    <p class="visually-hidden" role="status" aria-live="polite">{{ preview.bot_count }} bot, {{ preview.position_count }} vị thế và {{ preview.open_order_count }} lệnh mở.</p>
+    <div class="stat-strip" aria-hidden="true">
+      <div class="stat">
+        <svg class="ico" viewBox="0 0 24 24" focusable="false"><rect x="4" y="8" width="16" height="12" rx="2"/><path d="M12 8V4M9 17h6"/></svg>
+        <div class="stat__body"><span class="stat__value">{{ preview.bot_count }}</span><span class="stat__label">Bot sẽ tạm dừng</span></div>
+      </div>
+      <div class="stat">
+        <svg class="ico" viewBox="0 0 24 24" focusable="false"><path d="M3 17 9 11l4 4 8-8"/><path d="M15 7h6v6"/></svg>
+        <div class="stat__body"><span class="stat__value">{{ preview.position_count }}</span><span class="stat__label">Vị thế sẽ đóng</span></div>
+      </div>
+      <div class="stat">
+        <svg class="ico" viewBox="0 0 24 24" focusable="false"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
+        <div class="stat__body"><span class="stat__value">{{ preview.open_order_count }}</span><span class="stat__label">Lệnh mở</span></div>
+      </div>
+      <div class="stat {% if blocked %}stat--danger{% else %}stat--ok{% endif %}">
+        <svg class="ico" viewBox="0 0 24 24" focusable="false">{% if blocked %}<path d="M12 3 2 20h20L12 3Z"/><path d="M12 10v4M12 17h.01"/>{% else %}<path d="M20 6 9 17l-5-5"/>{% endif %}</svg>
+        <div class="stat__body"><span class="stat__value">{{ blocked | length }}</span><span class="stat__label">Mục bị chặn</span></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="glass-card ops-card" aria-labelledby="flatten-targets-heading">
+    <div class="ops-card__head">
+      <h2 id="flatten-targets-heading"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M9 10v10"/></svg>Vị thế và lệnh bị ảnh hưởng</h2>
+      <p class="ops-hint">Mã băm bản xem trước:
+        <span class="id-chip"><code class="trade-id" title="{{ preview.preview_hash }}" aria-hidden="true">{{ preview.preview_hash[:8] }}…</code><code class="visually-hidden">{{ preview.preview_hash }}</code><button type="button" class="copy-btn" data-ops-copy data-copy="{{ preview.preview_hash }}" aria-label="Sao chép mã băm đầy đủ" title="Sao chép mã băm đầy đủ"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg></button></span>
+      </p>
+    </div>
+    <div class="ops-table-wrap">
+      <table class="ops-table">
+        <caption>Các mục trong ảnh chụp trạng thái</caption>
+        <thead><tr><th scope="col">Mã giao dịch</th><th scope="col">Loại</th><th scope="col">Bot</th><th scope="col">Mã định danh</th><th scope="col" class="num">Số lượng</th><th scope="col" class="num">Giá đánh dấu</th><th scope="col">Trạng thái</th></tr></thead>
+        <tbody>
+          {% for target in preview.targets %}
+          <tr>
+            <td class="ops-cell-lead" data-label="Mã giao dịch"><span data-coin="{{ target.symbol }}">{{ target.symbol }}</span></td>
+            <td data-label="Loại">{% if target.target_type == "OPEN_ORDER" %}<span class="badge badge-paper-subtle ops-chip"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 6h16M4 12h16M4 18h10"/></svg>{{ target.target_type | label_vi }}</span>{% else %}<span class="badge badge-paper-subtle ops-chip"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 17 9 11l4 4 8-8"/></svg>{{ target.target_type | label_vi }}</span>{% endif %}</td>
+            <td class="ops-cell-code" data-label="Bot">{{ short_id(target.bot_id, "Bot") }}</td>
+            <td class="ops-cell-code" data-label="Mã định danh">{{ short_id(target.target_id, "Mã định danh") }}</td>
+            <td class="num" data-label="Số lượng">{{ target.quantity | number_vi }}</td>
+            <td class="num" data-label="Giá đánh dấu">{{ price(target.mark_price) }}</td>
+            <td data-label="Trạng thái"{% if target.error_code %} class="ops-cell-status--error"{% endif %}>
+              {% if target.error_code %}
+              <span class="ops-error-code"><span class="badge badge-danger ops-chip"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3 2 20h20L12 3Z"/><path d="M12 10v4M12 17h.01"/></svg>Bị chặn</span><span>{{ target.error_code | label_vi }}</span><code>{{ target.error_code }}</code></span>
+              {% else %}
+              <span class="badge badge-neutral ops-chip">{{ target.status | label_vi }}</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% else %}
+          <tr><td colspan="7" class="ops-cell-empty">Không có vị thế hoặc lệnh mở trong ảnh chụp trạng thái.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="glass-card ops-card" aria-labelledby="flatten-confirm-heading">
+    <h2 id="flatten-confirm-heading"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3 2 20h20L12 3Z"/><path d="M12 10v4M12 17h.01"/></svg>Bước 3 — Xác nhận thao tác</h2>
+    <div class="ops-callout ops-callout--danger">
+      <span class="ops-callout__icon" aria-hidden="true"><svg class="ico" viewBox="0 0 24 24" focusable="false"><circle cx="12" cy="12" r="9"/><path d="M9 9l6 6M15 9l-6 6"/></svg></span>
+      <p class="ops-callout__title">Không thể hoàn tác sau khi gửi</p>
+      <div class="ops-callout__body">
+        <ul>
+          <li>Tạm dừng {{ preview.bot_count }} bot trong ảnh chụp; bot không tự tiếp tục.</li>
+          {% if preview.targets %}
+          <li>Đóng {{ preview.position_count }} vị thế và xử lý {{ preview.open_order_count }} lệnh mở theo giá đánh dấu đã chụp (chỉ PAPER, không gửi lệnh lên Binance).</li>
+          {% else %}
+          <li>Không có vị thế hoặc lệnh mở; thao tác chỉ được ghi nhận và tạm dừng bot.</li>
+          {% endif %}
+          {% if blocked %}<li><strong>{{ blocked | length }} mục bị chặn</strong> sẽ không được đóng cho tới khi có giá đánh dấu hợp lệ.</li>{% endif %}
+          <li>Máy chủ từ chối nếu trạng thái đã đổi, bản xem trước hết hạn hoặc MFA đã quá 15 phút.</li>
+        </ul>
+      </div>
+    </div>
+    <form method="post" action="/admin/flatten/confirm" class="ops-form" data-ops-submit-once>
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="preview_id" value="{{ preview.preview_id }}">
+      <input type="hidden" name="preview_hash" value="{{ preview.preview_hash }}">
+      <input type="hidden" name="idempotency_key" value="{{ idempotency_key }}">
+      <label for="confirm-reason">Lý do xác nhận</label>
+      <input id="confirm-reason" name="reason" value="{{ reason }}" maxlength="500" required aria-describedby="confirm-reason-hint">
+      <p id="confirm-reason-hint" class="ops-hint">Điền sẵn từ bước 1; sửa nếu cần. Bấm một lần — gửi lại cùng biểu mẫu dùng cùng khóa chống trùng nên không tạo thao tác thứ hai.</p>
+      <div class="ops-actions">
+        <button type="submit" class="btn btn-danger">
+          <svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9"/><path d="M9 9l6 6M15 9l-6 6"/></svg>Xác nhận đóng toàn bộ
+        </button>
+        <a class="ops-link" href="/admin/flatten"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M15 18l-6-6 6-6"/></svg>Hủy, tạo bản xem trước mới</a>
+      </div>
+    </form>
+  </section>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="/static/coins.js" defer></script>
+<script src="/static/pages/ops.js" defer></script>
 {% endblock %}

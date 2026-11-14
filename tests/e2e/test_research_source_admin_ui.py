@@ -35,6 +35,27 @@ class Repository:
 
     def __init__(self):
         self.entries = {}
+        self.evidence = []
+
+    # Bằng chứng giấy phép (WP06 license evidence) — cùng hợp đồng với fake ở unit test.
+    async def append_license_evidence(self, *, workspace_id, evidence):
+        self.evidence.append(evidence)
+        return evidence
+
+    async def evidence_for_pending(self, *, workspace_id, source_id, policy_id):
+        return next(
+            (e for e in self.evidence if e.source_id == source_id and e.policy_id == policy_id),
+            None,
+        )
+
+    async def evidence_by_id(self, *, workspace_id, source_id, evidence_id):
+        return next(
+            (e for e in self.evidence if e.source_id == source_id and e.evidence_id == evidence_id),
+            None,
+        )
+
+    async def get_quota_snapshot(self, *, workspace_id, source_id):
+        return None
 
     async def list_entries(self, *, workspace_id):
         return tuple(self.entries.values())
@@ -133,6 +154,17 @@ def assert_layout(page):
             assert control.bounding_box()["height"] >= 44
 
 
+def upload_evidence(page: Page, content: bytes) -> None:
+    """Chủ sở hữu tải tài liệu quyền (WP06) để máy chủ tính SHA-256; trang tự tải lại khi xong."""
+    upload = page.get_by_role("form", name="Tải lên bằng chứng quyền")
+    upload.locator("#license-evidence-file").set_input_files(
+        files=[{"name": "terms.txt", "mimeType": "text/plain", "buffer": content}]
+    )
+    with page.expect_navigation():
+        upload.get_by_role("button", name="Tải lên và tính SHA-256").click()
+    expect(page.locator("#license-evidence-digest")).to_have_count(1)
+
+
 @pytest.mark.parametrize(
     ("width", "height", "suffix"), [(390, 844, "mobile"), (1280, 800, "desktop")]
 )
@@ -170,13 +202,34 @@ def test_source_policy_owner_reviewer_flow(browser_page: Page, width, height, su
         pending.get_by_label("Hiển thị", exact=True).check()
         pending.get_by_label("Nghiên cứu kiểm thử lịch sử", exact=True).check()
         pending.locator('[name="valid_until"]').fill("2027-01-01T00:00:00+00:00")
+        # Phạm vi giấy phép (WP06 license scope) là bắt buộc khi gửi duyệt;
+        # provider/product/venue/contract phải là token ASCII viết hoa
+        # (domain/research/license_scope.py).
+        for name, value in {
+            "scope_provider": "OFFLINE_PUBLISHER",
+            "scope_product": "EVENT_CALENDAR",
+            "scope_venue": "OFFLINE",
+            "scope_contract": "NONE",
+            "scope_symbols": "BTCUSDT",
+            "scope_intervals": "1h",
+            "scope_data_start": "2026-01-01T00:00:00+00:00",
+            "scope_data_end": "2026-12-31T00:00:00+00:00",
+            "scope_attribution": "not approved",
+        }.items():
+            pending.locator(f'[name="{name}"]').fill(value)
+        pending.locator('input[name^="scope_output_"]').first.check()
+        pending.locator('input[name^="scope_derived_"]').first.check()
         pending.locator('[name="reason"]').fill("Đề nghị duyệt hai mục đích có thời hạn")
         assert_layout(page)
         pending.get_by_role("button", name="Gửi chờ duyệt").focus()
         page.keyboard.press("Enter")
-        expect(page.locator(".badge")).to_have_text("Chờ duyệt quyền")
+        expect(page.locator("[data-source-state]")).to_have_text("Chờ duyệt quyền")
+        # WP06: chủ sở hữu tải tài liệu quyền để máy chủ tính SHA-256 trước khi reviewer duyệt.
+        upload_evidence(page, b"Offline calendar terms for research display only.")
+        assert len(repository.evidence) == 1
         page.get_by_text("Duyệt quyền độc lập", exact=True).click()
         approval = page.get_by_role("form", name="Duyệt quyền độc lập")
+        approval.locator('[name="license_evidence_id"]').select_option(index=1)
         approval.locator('[name="reason"]').fill("Thử tự duyệt")
         assert_layout(page)
         with page.expect_response(
@@ -196,10 +249,13 @@ def test_source_policy_owner_reviewer_flow(browser_page: Page, width, height, su
         expect(approval.get_by_label("Siêu dữ liệu", exact=True)).not_to_be_checked()
         expect(approval.locator('[name="valid_until"]')).to_have_value("2027-01-01T00:00:00+00:00")
         expect(approval.locator('[name="expiry_action"]')).to_have_value("preserve")
+        approval.locator('[name="license_evidence_id"]').select_option(index=1)
         approval.locator('[name="reason"]').fill("Đã đối chiếu tham chiếu theo quyền được giao")
         approval.get_by_role("button", name="Duyệt quyền", exact=True).click()
-        expect(page.locator(".badge")).to_have_text("Đã duyệt quyền")
-        expect(page.locator(".source-metadata")).to_contain_text("Chưa được duyệt")
+        expect(page.locator("[data-source-state]")).to_have_text("Đã duyệt quyền")
+        # Khối đầu là metadata nguồn; khối sau là phạm vi giấy phép (cũng ẩn ghi công chưa duyệt).
+        for metadata in page.locator(".source-metadata").all():
+            expect(metadata).to_contain_text("Chưa được duyệt")
         assert "not approved" not in page.content()
         assert repository.entries["offline-calendar"].current.attribution == "not approved"
         expect(
@@ -217,7 +273,15 @@ def test_source_policy_owner_reviewer_flow(browser_page: Page, width, height, su
         expect(page.locator(".source-history")).to_contain_text("Hiển thị")
         expect(page.locator(".source-history")).to_contain_text("Nghiên cứu kiểm thử lịch sử")
         expect(page.locator('a[href^="https://example.test"]')).to_have_count(0)
-        expect(page.locator("script")).to_have_count(0)
+        # evidence_ref chứa <script> phải bị escape:
+        # không có script nội tuyến, mọi script là tệp tĩnh.
+        expect(page.locator("script:not([src])")).to_have_count(0)
+        assert all(
+            src.startswith("/static/")
+            for src in page.locator("script[src]").evaluate_all(
+                "els => els.map(e => e.getAttribute('src'))"
+            )
+        )
         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
         for control in page.locator(
             "input:not([type=hidden]),select,textarea,button,summary,nav a"
@@ -242,10 +306,15 @@ def test_source_policy_owner_reviewer_flow(browser_page: Page, width, height, su
         pending.locator('[name="evidence_ref"]').fill("terms-review")
         pending.locator('[name="reason"]').fill("Đề nghị rà soát thời hạn")
         pending.get_by_role("button", name="Gửi chờ duyệt").click()
+        expect(page.locator("[data-source-state]")).to_have_text("Chờ duyệt quyền")
+        # Tham chiếu evidence đổi nên cần tài liệu mới khớp pending hiện hành.
+        upload_evidence(page, b"Terms review: display and backtest research until revoked.")
+        assert len(repository.evidence) == 2
         page.context.add_cookies([{"name": "e2e_actor", "value": "reviewer", "url": url}])
         page.reload()
         page.get_by_text("Duyệt quyền độc lập", exact=True).click()
         approval = page.get_by_role("form", name="Duyệt quyền độc lập")
+        approval.locator('[name="license_evidence_id"]').select_option(index=1)
         expect(approval.locator('[name="expiry_action"]')).to_have_value("preserve")
         approval.get_by_label("Xử lý thời hạn", exact=True).select_option("clear")
         approval.locator('[name="reason"]').fill("Chủ động bỏ thời hạn sau rà soát")

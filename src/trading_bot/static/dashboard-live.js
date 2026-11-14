@@ -193,7 +193,9 @@
     line.setAttribute("class", "sparkline__line");
     svg.append(base, area, line);
     const body = node("div", undefined, "stat__body");
-    body.append(node("span", `${trades.length} lệnh gần nhất`, "stat__label"));
+    const caption = node("span", `${trades.length} lệnh`, "stat__label");
+    caption.title = `Lãi/lỗ ròng tích lũy qua ${trades.length} lệnh gần nhất`;
+    body.append(caption);
     box.append(svg, body);
     return box;
   };
@@ -294,11 +296,11 @@
           const body = node("div", undefined, "stat__body");
           const figure = node("span", undefined, "stat__value");
           figure.append(money(current.toFixed(8), asset));
-          const sub = node("span", undefined, "stat__label");
-          sub.append(document.createTextNode("Tổng vốn · ban đầu "), money(account.initial_equity, asset), document.createTextNode(" · "));
+          const sub = node("span", undefined, "stat__sub");
+          sub.append(document.createTextNode("Ban đầu "), money(account.initial_equity, asset));
           sub.append(node("span", `${change >= 0 ? "+" : ""}${number(change.toFixed(4))}%`,
             `pnl-value pnl-value--${change > 0 ? "positive" : change < 0 ? "negative" : "flat"}`));
-          body.append(figure, sub);
+          body.append(figure, node("span", "Tổng vốn", "stat__label"), sub);
           stat.append(body);
           hero.prepend(stat);
         }

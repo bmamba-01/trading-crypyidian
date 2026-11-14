@@ -1,10 +1,56 @@
 {% extends "admin/base.html" %}
 {% block title %}Mã liên kết Telegram · Crypidian{% endblock %}
+{% block head_extra %}<link rel="stylesheet" href="/static/pages/ops.css">{% endblock %}
 {% block heading %}Mã liên kết đã tạo{% endblock %}
 {% block content %}
-  <p role="status" aria-live="polite">Mã chỉ được hiển thị lần này và hết hạn lúc <time datetime="{{ expires_at.isoformat() }}">{{ expires_at | local_time }}</time>.</p>
-  <p>Mở bot Telegram trong tin nhắn riêng để xác nhận:</p>
-  <p><a href="{{ link_url }}" rel="noreferrer" aria-label="Mở bot Telegram trong tin nhắn riêng">Mở Telegram</a></p>
-  <p>Nếu liên kết bị lộ hoặc hết hạn, hãy tạo mã mới.</p>
-  <a href="/admin/telegram">Quay lại quản lý Telegram</a>
+{#- Deep link chứa mã thô một lần: chỉ nằm trong `href` của liên kết (không in thành chữ),
+    response có Cache-Control: no-store + Referrer-Policy: no-referrer. Nút sao chép đọc `href`
+    tại chỗ, không ghi log và không lưu vào storage của trình duyệt. -#}
+<div class="ops-page">
+  <ol class="ops-steps" aria-label="Các bước liên kết Telegram">
+    <li class="ops-step ops-step--done">
+      <span class="ops-step__dot" aria-hidden="true"><svg class="ico" viewBox="0 0 24 24" focusable="false"><path d="M20 6 9 17l-5-5"/></svg></span>
+      <span class="ops-step__text"><span class="ops-step__title">Tạo mã</span><span class="ops-step__hint">Đã tạo, dùng một lần</span></span>
+      <span class="visually-hidden">(đã xong)</span>
+    </li>
+    <li class="ops-step ops-step--current" aria-current="step">
+      <span class="ops-step__dot" aria-hidden="true">2</span>
+      <span class="ops-step__text"><span class="ops-step__title">Mở Telegram</span><span class="ops-step__hint">Bấm Start trong chat riêng</span></span>
+    </li>
+    <li class="ops-step">
+      <span class="ops-step__dot" aria-hidden="true">3</span>
+      <span class="ops-step__text"><span class="ops-step__title">Xác nhận</span><span class="ops-step__hint">Bấm nút bot gửi</span></span>
+    </li>
+  </ol>
+
+  <section class="glass-card ops-card ops-deeplink" aria-labelledby="telegram-deeplink-heading">
+    <h2 id="telegram-deeplink-heading"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m21 4-18 7 6 2 2 6 3-4 5 4 2-15Z"/><path d="m9 13 8-6"/></svg>Mở bot trong tin nhắn riêng</h2>
+    <p class="ops-deeplink__status" role="status" aria-live="polite">Mã chỉ được hiển thị lần này và hết hạn lúc <time datetime="{{ expires_at.isoformat() }}">{{ expires_at | local_time }}</time>.</p>
+    <p class="ops-hint"><span class="ops-countdown" data-ops-countdown="{{ expires_at.isoformat() }}" data-expired-text="Mã đã hết hạn — hãy tạo mã mới">Hiệu lực tối đa 10 phút</span></p>
+    <p>Mở bot Telegram trong tin nhắn riêng để xác nhận:</p>
+    <div class="ops-actions">
+      <a id="telegram-deep-link" class="btn btn-primary" href="{{ link_url }}" rel="noreferrer" aria-label="Mở bot Telegram trong tin nhắn riêng">
+        <svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m21 4-18 7 6 2 2 6 3-4 5 4 2-15Z"/><path d="m9 13 8-6"/></svg>Mở Telegram
+      </a>
+      <button type="button" class="btn btn-secondary" data-ops-copy data-copy-from="#telegram-deep-link" data-copy-secret data-copy-done="Đã sao chép liên kết">
+        <svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>Sao chép liên kết
+      </button>
+    </div>
+    <p class="ops-hint">Dùng “Sao chép liên kết” khi Telegram nằm trên thiết bị khác: chỉ dán vào trình duyệt/Telegram của chính bạn, không gửi vào nhóm hay chia sẻ cho người khác.</p>
+  </section>
+
+  <div class="ops-callout ops-callout--warning">
+    <span class="ops-callout__icon" aria-hidden="true"><svg class="ico" viewBox="0 0 24 24" focusable="false"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg></span>
+    <p class="ops-callout__title">Giữ bí mật liên kết này</p>
+    <div class="ops-callout__body">
+      <p>Ai mở được liên kết trước bạn có thể gắn tài khoản Telegram của họ vào thành viên này cho tới khi bị thu hồi.</p>
+      <p>Nếu liên kết bị lộ hoặc hết hạn, hãy tạo mã mới.</p>
+    </div>
+  </div>
+
+  <div class="ops-actions">
+    <a class="ops-link" href="/admin/telegram"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M15 18l-6-6 6-6"/></svg>Quay lại quản lý Telegram</a>
+  </div>
+</div>
 {% endblock %}
+{% block scripts %}<script src="/static/pages/ops.js" defer></script>{% endblock %}

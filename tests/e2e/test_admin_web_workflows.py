@@ -772,16 +772,18 @@ PNL_EVIDENCE = ROOT / "tests/e2e/evidence"
 
 def assert_pnl_color_semantics(page: Page) -> None:
     """Kiểm tra dấu hiển thị, màu chữ tương phản và nội dung không phụ thuộc màu."""
-    values = page.locator(".pnl-value[data-pnl-tone]").all()
-    assert values, "Trang không có giá trị lãi/lỗ để kiểm tra màu ngữ nghĩa."
-    for value in values:
-        tone = value.get_attribute("data-pnl-tone")
-        state = value.evaluate(
-            "element => ({"
-            "color: getComputedStyle(element).color, "
-            "text: element.textContent.trim()"
-            "})"
-        )
+    # Đọc tone, màu và chữ trong MỘT lần evaluate: dashboard tự làm mới mỗi 5 giây nên locator
+    # theo vị trí (`.all()` → nth) có thể trỏ sang phần tử khác giữa hai lần đọc.
+    states = page.locator(".pnl-value[data-pnl-tone]").evaluate_all(
+        "elements => elements.map((element) => ({"
+        "tone: element.dataset.pnlTone, "
+        "color: getComputedStyle(element).color, "
+        "text: element.textContent.trim()"
+        "}))"
+    )
+    assert states, "Trang không có giá trị lãi/lỗ để kiểm tra màu ngữ nghĩa."
+    for state in states:
+        tone = state["tone"]
         if tone == "positive":
             assert state["text"].startswith("+"), state
             assert state["color"] == "rgb(8, 122, 85)", state

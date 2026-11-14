@@ -6,8 +6,8 @@
 <div class="dash-head">
   <p class="welcome-banner">Xin chào {{ identity.email }}.</p>
   <section class="summary-grid dashboard-block" aria-label="Tình trạng không gian làm việc">
-    <p>Tổng số bot: {{ bot_count }}</p>
-    <p>Bot sẵn sàng: {{ ready_count }}</p>
+    <p class="summary-dup">Tổng số bot: {{ bot_count }}</p>
+    <p class="summary-dup">Bot sẵn sàng: {{ ready_count }}</p>
     <p>Điều khiển không gian làm việc: {{ workspace.kill_state | label_vi }}</p>
   </section>
   <!-- Thanh trạng thái cập nhật trực tiếp -->
@@ -58,18 +58,18 @@
           <span class="badge badge-warning" id="kpi-kill-state">{{ workspace.kill_state | label_vi }}</span>
           {% endif %}
         </div>
-        <span class="kpi-label">{{ help_term("workspace_kill_state", "Trạng thái khẩn cấp (Công tắc dừng khẩn cấp)") }}</span>
+        <span class="kpi-label">{{ help_term("workspace_kill_state", "Công tắc khẩn cấp") }}</span>
       </div>
-      <span class="kpi-subtext kpi-subtext--keep" id="kpi-workspace-revision" data-live-kpi="revision">Lần thay đổi: {{ workspace.revision }}</span>
+      <span class="kpi-subtext kpi-subtext--keep" id="kpi-workspace-revision" data-live-kpi="revision" title="Lần thay đổi công tắc khẩn cấp">Lần thay đổi: {{ workspace.revision }}</span>
     </div>
 
     <div class="kpi-card kpi-card--h kpi-card-mode" aria-label="Chế độ vận hành">
       <span class="kpi-icon kpi-icon--violet" aria-hidden="true"><svg class="ico" viewBox="0 0 24 24" focusable="false"><path d="M12 3 4 6v6c0 4.4 3.4 8.4 8 9 4.6-.6 8-4.6 8-9V6l-8-3Z"/></svg></span>
       <div class="kpi-body">
         <div class="kpi-mode-container">
-          <span class="badge badge-paper">PAPER (Mô phỏng nội bộ)</span>
+          <span class="badge badge-paper" title="PAPER (Mô phỏng nội bộ)">PAPER (Mô phỏng nội bộ)</span>
         </div>
-        <span class="kpi-label">{{ help_term("operating_mode", "Chế độ vận hành") }}</span>
+        <span class="kpi-label">{{ help_term("operating_mode", "Chế độ") }}</span>
       </div>
       <span class="kpi-subtext">Mô phỏng nội bộ trong cơ sở dữ liệu, không gọi API hay đặt lệnh lên Binance</span>
     </div>

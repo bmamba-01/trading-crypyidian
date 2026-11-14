@@ -1,0 +1,95 @@
+{#-
+  Thành phần dùng chung cho trang Thẻ chiến lược và Microscope: danh mục 7 tầng L0–L6,
+  biểu tượng từng tầng và popup giải thích chi tiết (`<dialog class="glass-dialog">`).
+
+  Nội dung "Engine hiện làm gì" mô tả mã nguồn hiện có; "Hạn chế đã biết" trích kết quả rà mã
+  ngày 14/11/2026 trong docs/superpowers/plans/2026-11-14-strategy-formula-and-card-readiness.md
+  (mục 3.3, gói SC-1). Khi SC-1 sửa engine, cập nhật lại phần hạn chế tương ứng.
+  Định nghĩa/cách đọc/giới hạn lấy từ từ điển chú giải `admin/metric_help.py` (UI-1).
+-#}
+{%- set strategy_layers = [
+  {"code": "L0", "slug": "l0", "key": "L0_DATA_HYGIENE", "help": "layer_l0_data_hygiene",
+   "name_en": "Data Hygiene", "name_vi": "Độ sạch dữ liệu", "tone": "blue",
+   "does_vi": "Kiểm tra hình học nến: High ≥ Low, High ≥ max(Open, Close), Low ≤ min(Open, Close) và giá dương. Nến sai thì ngắt mạch ngay, các tầng sau bị bỏ qua.",
+   "limits_vi": "Engine dùng chuỗi nến đầu tiên của snapshot bất kể khung thời gian của thẻ; chưa có guard nến đã đóng, nến cũ hay thiếu nến như các chiến lược H0x."},
+  {"code": "L1", "slug": "l1", "key": "L1_CANDLE_ANATOMY", "help": "layer_l1_candle_anatomy",
+   "name_en": "Candle Anatomy", "name_vi": "Giải phẫu nến", "tone": "cyan",
+   "does_vi": "Đo tỷ lệ râu trên, râu dưới và thân so với biên độ của chính nến đó.",
+   "limits_vi": "Lực từ chối râu chỉ có bản tăng giá; tỷ lệ tính theo biên độ nến nên một nến doji rất nhỏ vẫn có thể cho tỷ lệ râu cao (khoảng 0,9)."},
+  {"code": "L2", "slug": "l2", "key": "L2_INDICATORS", "help": "layer_l2_indicators",
+   "name_en": "Indicators", "name_vi": "Chỉ báo kỹ thuật", "tone": "violet",
+   "does_vi": "Tính các chỉ báo mà thẻ khai báo, ví dụ ATR hoặc EMA.",
+   "limits_vi": "Nút L2 không phải ATR hiện trả về giá đóng (EMA bằng giá đóng). Trong Microscope chỉ có một nến nên ATR bằng High − Low của nến đó."},
+  {"code": "L3", "slug": "l3", "key": "L3_ALGORITHMS", "help": "layer_l3_algorithms",
+   "name_en": "Algorithms", "name_vi": "Thuật toán điểm số", "tone": "indigo",
+   "does_vi": "Kết hợp giá trị của các tầng trước thành điểm số trung gian.",
+   "limits_vi": "Nút “zscore” hiện là trung bình mọi giá trị đã có, chưa phải z-score thật; điểm số chưa có ý nghĩa thống kê."},
+  {"code": "L4", "slug": "l4", "key": "L4_CONTEXT_GATE", "help": "layer_l4_context_gate",
+   "name_en": "Context Gate", "name_vi": "Cổng bối cảnh", "tone": "amber",
+   "does_vi": "Lọc bối cảnh thị trường (biến động ATR, xu hướng, chặn tin vĩ mô). Nếu cổng chặn (BLOCK), quy trình ngắt mạch: L5 và L6 không chạy.",
+   "limits_vi": "Ngưỡng min_atr so với ATR theo đơn vị giá, chưa chuẩn hóa theo giá; cổng xu hướng hiện luôn cho qua."},
+  {"code": "L5", "slug": "l5", "key": "L5_STRATEGY_TRIGGER", "help": "layer_l5_trigger",
+   "name_en": "Strategy Trigger", "name_vi": "Bộ kích hoạt", "tone": "rose",
+   "does_vi": "Phát tín hiệu LONG hoặc SHORT khi điểm kích hoạt vượt ngưỡng; chỉ chạy khi L4 cho qua.",
+   "limits_vi": "Khi thẻ không khai, ngưỡng mặc định là 0,5 và hướng mặc định là LONG; nhánh crossover hiện luôn kích hoạt."},
+  {"code": "L6", "slug": "l6", "key": "L6_ZONES", "help": "layer_l6_zones",
+   "name_en": "Execution Zones", "name_vi": "Vùng thực thi", "tone": "green",
+   "does_vi": "Tính giá vào, dừng lỗ và chốt lời theo bội số ATR và tỷ lệ R:R, rồi đóng gói thành ứng viên (candidate) có mã SHA-256 tất định.",
+   "limits_vi": "Đọc cứng khóa l2_atr; số nến giữ tối đa (12) và hiệu lực ứng viên (15 phút) đang viết cứng trong bridge, chưa lấy từ thẻ."},
+] -%}
+
+{#- Biểu tượng SVG nét (stroke) cho từng tầng; luôn aria-hidden vì chữ L0…L6 đứng cạnh. -#}
+{%- macro layer_icon(slug) -%}
+<svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+{%- if slug == "l0" -%}<path d="M12 3 4 6v6c0 4.4 3.4 8.4 8 9 4.6-.6 8-4.6 8-9V6l-8-3Z"/><path d="m9 12 2 2 4-4"/>
+{%- elif slug == "l1" -%}<path d="M8 3v4M8 15v6M16 3v2M16 13v8"/><rect x="5.5" y="7" width="5" height="8" rx="1"/><rect x="13.5" y="5" width="5" height="8" rx="1"/>
+{%- elif slug == "l2" -%}<path d="M3 17c3-6 5-6 8-2s5 3 10-6"/><path d="M3 21h18"/>
+{%- elif slug == "l3" -%}<path d="M18 5H7l6 7-6 7h11"/>
+{%- elif slug == "l4" -%}<path d="M3 5h18l-7 8v6l-4 2v-8L3 5Z"/>
+{%- elif slug == "l5" -%}<path d="M13 2 4 14h7l-1 8 9-12h-7l1-8Z"/>
+{%- else -%}<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/>
+{%- endif -%}
+</svg>
+{%- endmacro -%}
+
+{#- Nút mở popup giải thích tầng; `label` là chữ hiển thị, `aria-label` luôn nêu rõ tầng. -#}
+{%- macro layer_info_button(layer, label="Chi tiết") -%}
+<button type="button" class="icon-btn sc-info-btn" data-dialog-open="layer-dialog-{{ layer.slug }}" aria-haspopup="dialog" aria-label="Giải thích tầng {{ layer.code }} {{ layer.name_vi }}">
+  <svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>
+  <span>{{ label }}</span>
+</button>
+{%- endmacro -%}
+
+{#- Bảy popup giải thích tầng; đặt một lần mỗi trang. -#}
+{%- macro layer_dialogs() -%}
+{%- for layer in strategy_layers %}
+{%- set entry = metric_help_lookup(layer.help) if metric_help_lookup is defined else none %}
+<dialog id="layer-dialog-{{ layer.slug }}" class="glass-dialog sc-layer-dialog sc-tone--{{ layer.tone }}" aria-labelledby="layer-dialog-title-{{ layer.slug }}">
+  <form method="dialog" class="glass-dialog__close-form">
+    <button type="submit" class="icon-btn" aria-label="Đóng giải thích tầng {{ layer.code }}">
+      <svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M6 6l12 12M18 6 6 18"/></svg>
+    </button>
+  </form>
+  <h2 id="layer-dialog-title-{{ layer.slug }}" class="glass-dialog__title sc-dialog-title">
+    <span class="sc-layer-icon" aria-hidden="true">{{ layer_icon(layer.slug) }}</span>
+    <span>Tầng {{ layer.code }} — {{ layer.name_vi }} <span class="sc-en">({{ layer.name_en }})</span></span>
+  </h2>
+  {% if entry %}<p class="glass-dialog__lead">{{ entry.definition_vi }}</p>{% endif %}
+  <dl class="kv-grid sc-dialog-kv">
+    {% if entry %}
+    <div class="kv kv--text"><dt>Cách đọc</dt><dd>{{ entry.reading_vi }}</dd></div>
+    <div class="kv kv--text"><dt>Giới hạn khái niệm</dt><dd>{{ entry.limits_vi }}</dd></div>
+    {% endif %}
+    <div class="kv kv--text"><dt>Engine hiện làm gì</dt><dd>{{ layer.does_vi }}</dd></div>
+  </dl>
+  <section class="glass-dialog__section sc-dialog-caveat" aria-label="Hạn chế đã biết của tầng {{ layer.code }}">
+    <h3>
+      <svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3 2 20h20L12 3Z"/><path d="M12 10v4M12 17h.01"/></svg>
+      Hạn chế đã biết
+    </h3>
+    <p>{{ layer.limits_vi }}</p>
+    <p class="glass-dialog__meta">Nguồn: rà mã ngày 14/11/2026, kế hoạch “Độ đúng công thức, chiến lược và Strategy Card” (gói SC-1). Kết quả soi vết không phải bằng chứng hiệu quả giao dịch.</p>
+  </section>
+</dialog>
+{%- endfor %}
+{%- endmacro -%}

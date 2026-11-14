@@ -1,13 +1,42 @@
 {% extends "admin/base.html" %}
 {% block title %}Tạo bot — Crypidian{% endblock %}
 {% block heading %}Tạo tài khoản mô phỏng{% endblock %}
+{% block head_extra %}<link rel="stylesheet" href="/static/pages/bots.css">{% endblock %}
 {% block content %}
-<form method="post" action="/admin/bots/new">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-  <label for="name">Tên bot</label>
-  <input id="name" name="name" type="text" maxlength="120" required autocomplete="off">
-  <label for="max_notional">Giới hạn giá trị danh nghĩa</label>
-  <input id="max_notional" name="max_notional" type="number" min="0.00000001" step="any" required>
-  <button type="submit">Tạo bot mô phỏng</button>
-</form>
+<div class="bot-page bot-create-page">
+  <nav class="bot-breadcrumb" aria-label="Đường dẫn trang">
+    <a href="/admin">Tổng quan</a><span aria-hidden="true">›</span><a href="/admin/bots">Danh sách bot</a><span aria-hidden="true">›</span><span aria-current="page">Tạo bot</span>
+  </nav>
+  <div class="bot-create-grid">
+    <section class="bot-section-card" aria-labelledby="bot-create-form-heading">
+      <h2 id="bot-create-form-heading" class="bot-section-title"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="4" y="8" width="16" height="12" rx="2"/><path d="M12 8V4M9 17h6"/></svg>Thông tin bot PAPER</h2>
+      <form method="post" action="/admin/bots/new" class="bot-filter-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <div class="bot-field">
+          <label for="name">Tên bot</label>
+          <input id="name" name="name" type="text" maxlength="120" required autocomplete="off" aria-describedby="name-help">
+          <p id="name-help" class="bot-field-help">Tối đa 120 ký tự. Gửi lại cùng tên và cùng giới hạn sẽ trả về bot đã có, không tạo trùng.</p>
+        </div>
+        <div class="bot-field">
+          <label for="max_notional">Giới hạn giá trị danh nghĩa</label>
+          <input id="max_notional" name="max_notional" type="number" min="0.00000001" step="any" inputmode="decimal" required aria-describedby="max-notional-help">
+          <p id="max-notional-help" class="bot-field-help">Tổng giá trị danh nghĩa (notional) tối đa mà tài khoản PAPER của bot được phép mở, tính theo tài sản định giá của tài khoản. Phải lớn hơn 0; cấu hình chiến lược sau này chỉ được siết chặt hơn giới hạn này.</p>
+        </div>
+        <div class="bot-create-actions">
+          <button type="submit" class="btn btn-primary">Tạo bot mô phỏng</button>
+          <a href="/admin/bots" class="btn btn-outline">Hủy</a>
+        </div>
+      </form>
+    </section>
+    <aside class="bot-section-card bot-create-aside" aria-labelledby="bot-create-next-heading">
+      <h2 id="bot-create-next-heading" class="bot-section-title">Sau khi tạo</h2>
+      <ol class="bot-steps">
+        <li>Bot được tạo ở trạng thái <strong>Đã tắt</strong>, chỉ dùng tài khoản mô phỏng PAPER; không gọi API hay đặt lệnh lên Binance.</li>
+        <li>Trên trang chi tiết bot, tạo bản nháp cấu hình, kiểm định rồi công bố.</li>
+        <li>Bật bot sau đối soát và nhập lý do; thao tác được ghi nhật ký kiểm toán.</li>
+      </ol>
+      <p class="bot-field-help">Chỉ chủ sở hữu (owner) có xác thực đa yếu tố gần đây được tạo bot.</p>
+    </aside>
+  </div>
+</div>
 {% endblock %}

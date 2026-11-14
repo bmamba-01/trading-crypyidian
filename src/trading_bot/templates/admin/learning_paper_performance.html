@@ -1,119 +1,165 @@
 {% extends "admin/base.html" %}
+{% from "admin/_learning_ui.html" import icon, chip, hash %}
 {% block title %}Hiệu năng PAPER | Crypidian{% endblock %}
-{% block head_extra %}<meta name="robots" content="noindex, nofollow">{% endblock %}
+{% block head_extra %}<meta name="robots" content="noindex, nofollow"><link rel="stylesheet" href="/static/pages/learning.css">{% endblock %}
 {% block heading %}Chẩn đoán hiệu năng PAPER{% endblock %}
 {% block content %}
 {% from "admin/_metric_help.html" import help_term %}
-  <div class="paper-performance-page" id="paper-performance-page">
-    <section class="paper-performance-notice" aria-labelledby="paper-performance-notice-title">
-      <div class="paper-performance-notice-mark" aria-hidden="true">P</div>
-      <div>
-        <h2 id="paper-performance-notice-title">Chỉ số dự báo trên các giao dịch PAPER đã quy kết</h2>
-        <p>Báo cáo so sánh Brier và log-loss với TEST baseline đã đóng băng. Mẫu chỉ gồm lệnh PAPER được duyệt, qua risk gate và đóng trong 30 ngày; kết quả không đại diện cho lệnh không vào hoặc lợi nhuận tương lai.</p>
-        <p class="paper-performance-lock-note">Kết quả chỉ phát cảnh báo chẩn đoán. Báo cáo không tự dừng bot, giữ entry, đổi scorer hay gửi lệnh.</p>
+{#- Tên bot lấy từ danh sách bot PAPER được cấp quyền; báo cáo của bot ngoài danh sách chỉ hiện mã rút gọn. -#}
+{%- set bot_names = {} -%}
+{%- for bot in bot_options %}{% set _ = bot_names.update({bot.id | string: bot.name}) %}{% endfor -%}
+{%- set report_tones = {"healthy": "success", "degraded": "danger", "inconclusive": "warning"} -%}
+{%- set report_icons = {"healthy": "check-circle", "degraded": "trend-down", "inconclusive": "clock"} -%}
+{%- set cohort_labels = {"healthy": "Đủ ngưỡng", "degraded": "Suy giảm", "inconclusive": "Chưa kết luận"} -%}
+{%- set class_labels = {-1: "PnL âm", 0: "PnL bằng 0", 1: "PnL dương"} -%}
+{%- macro metric(value) -%}{% if value is none %}<span class="value-muted">—</span>{% else %}{{ ("%.4f" | format(value | float)) | replace(".", ",") }}{% endif %}{%- endmacro -%}
+{%- macro delta(value) -%}
+  {%- if value is none -%}<span class="value-muted">—</span>
+  {%- else -%}
+    {%- set number = value | float -%}
+    <span class="pnl-value {{ 'lx-tone-up' if number> 0.01 else 'lx-tone-ok' }}">{{ "+" if number> 0 else "" }}{{ ("%.4f" | format(number)) | replace(".", ",") }}</span>
+  {%- endif -%}
+{%- endmacro -%}
+  <div class="lx-page" id="paper-performance-page">
+    <section class="lx-notice lx-notice--info" aria-labelledby="paper-performance-notice-title">
+      <span class="lx-notice__icon">{{ icon("chart") }}</span>
+      <h2 id="paper-performance-notice-title">Chỉ số dự báo trên các giao dịch PAPER đã quy kết</h2>
+      <p>Báo cáo so sánh Brier và log-loss với TEST baseline đã đóng băng. Mẫu chỉ gồm lệnh PAPER được duyệt, qua risk gate và đóng trong 30 ngày; kết quả không đại diện cho lệnh không vào hoặc lợi nhuận tương lai.</p>
+      <p><strong>Kết quả chỉ phát cảnh báo chẩn đoán. Báo cáo không tự dừng bot, giữ entry, đổi scorer hay gửi lệnh.</strong></p>
+    </section>
+
+    <section class="lx-kpis" aria-label="Tóm tắt báo cáo">
+      <div class="kpi-card kpi-card--h">
+        <span class="kpi-icon kpi-icon--blue">{{ icon("file") }}</span>
+        <div class="kpi-body"><span class="kpi-value">{{ reports | length }}</span><span class="kpi-label">Báo cáo gần đây</span></div>
+      </div>
+      <div class="kpi-card kpi-card--h">
+        <span class="kpi-icon kpi-icon--amber">{{ icon("trend-down") }}</span>
+        <div class="kpi-body"><span class="kpi-value">{{ reports | selectattr("status", "equalto", "degraded") | list | length }}</span><span class="kpi-label">Suy giảm cả hai chỉ số</span></div>
+      </div>
+      <div class="kpi-card kpi-card--h">
+        <span class="kpi-icon kpi-icon--violet">{{ icon("clock") }}</span>
+        <div class="kpi-body"><span class="kpi-value">{{ reports | selectattr("status", "equalto", "inconclusive") | list | length }}</span><span class="kpi-label">Thiếu dữ liệu trưởng thành</span></div>
+      </div>
+      <div class="kpi-card kpi-card--h">
+        <span class="kpi-icon kpi-icon--green">{{ icon("check-circle") }}</span>
+        <div class="kpi-body"><span class="kpi-value">{{ reports | selectattr("status", "equalto", "healthy") | list | length }}</span><span class="kpi-label">Trong ngưỡng</span></div>
       </div>
     </section>
 
-    <section class="paper-performance-action" aria-labelledby="paper-performance-action-title">
-      <div>
-        <h2 id="paper-performance-action-title">Tạo đánh giá mới</h2>
-        <p>Hệ thống dùng target và quyền nguồn đang hiện hành, rồi lưu snapshot bất biến theo workspace.</p>
+    <section class="glass-card lx-card" aria-labelledby="paper-performance-action-title">
+      <div class="lx-section-head">
+        <div>
+          <h2 id="paper-performance-action-title">{{ icon("play") }}Tạo đánh giá mới</h2>
+          <p>Hệ thống dùng target và quyền nguồn đang hiện hành, rồi lưu snapshot bất biến theo workspace.</p>
+        </div>
       </div>
       {% if bot_options %}
-        <form id="paper-performance-assess-form"
+        <form id="paper-performance-assess-form" class="lx-form"
           data-csrf-token="{{ csrf_token }}"
           data-endpoint="/api/v1/learning/paper-performance/assess">
-          <label for="paper-performance-bot">Bot PAPER</label>
-          <select id="paper-performance-bot" name="bot_id" required>
-            {% for bot in bot_options %}<option value="{{ bot.id }}">{{ bot.name }}</option>{% endfor %}
-          </select>
-          <button class="btn btn-primary" id="paper-performance-assess" type="submit">Tạo snapshot chẩn đoán</button>
-          <p class="paper-performance-form-status" id="paper-performance-form-status" role="status" aria-live="polite"></p>
+          <div class="lx-form__row lx-form__row--action">
+            <div class="lx-field">
+              <label for="paper-performance-bot">Bot PAPER</label>
+              <select id="paper-performance-bot" name="bot_id" required>
+                {% for bot in bot_options %}<option value="{{ bot.id }}">{{ bot.name }}</option>{% endfor %}
+              </select>
+            </div>
+            <button class="btn btn-primary" id="paper-performance-assess" type="submit">{{ icon("play") }}Tạo snapshot chẩn đoán</button>
+          </div>
+          <p class="lx-status" id="paper-performance-form-status" role="status" aria-live="polite"></p>
         </form>
       {% else %}
-        <p class="paper-performance-empty">Workspace chưa có bot PAPER mà tài khoản này được cấp quyền đọc.</p>
+        <p class="lx-empty">{{ icon("info") }}Workspace chưa có bot PAPER mà tài khoản này được cấp quyền đọc.</p>
       {% endif %}
     </section>
 
-    <section aria-labelledby="paper-performance-history-title">
-      <div class="paper-performance-section-heading">
+    <section class="lx-stack" aria-labelledby="paper-performance-history-title">
+      <div class="lx-section-head">
         <div>
-          <h2 id="paper-performance-history-title">Lịch sử báo cáo</h2>
-          <p>Hai cohort liên tiếp 30 ngày, mỗi cohort trưởng thành đủ 30 ngày trước thời điểm đánh giá.</p>
+          <h2 id="paper-performance-history-title">{{ icon("list") }}Lịch sử báo cáo</h2>
+          <p>Hai cohort liên tiếp 30 ngày, mỗi cohort trưởng thành đủ 30 ngày trước thời điểm đánh giá. Hiển thị tối đa 50 báo cáo mới nhất mà tài khoản được xem.</p>
         </div>
-        <span class="paper-performance-count">{{ reports|length }} báo cáo</span>
       </div>
       {% if reports %}
-        <div class="paper-performance-report-list">
+        <div class="lx-stack">
           {% for report in reports %}
-            <article class="paper-performance-report" aria-labelledby="paper-report-title-{{ loop.index }}">
-              <header class="paper-performance-report-header">
-                <div>
-                  <p class="paper-performance-kicker">Bot {{ report.bot_id|string|truncate(8, True, "") }}</p>
-                  <h3 id="paper-report-title-{{ loop.index }}">{{ report.as_of.strftime("%d/%m/%Y %H:%M UTC") }}</h3>
+            {% set bot_key = report.bot_id | string %}
+            <article class="glass-card lx-card" aria-label="Báo cáo chẩn đoán lúc {{ report.as_of.strftime('%d/%m/%Y %H:%M UTC') }}">
+              <header class="lx-card__head">
+                <div class="lx-card__title">
+                  <h3 id="paper-report-title-{{ loop.index }}">{{ bot_names.get(bot_key, "Bot " ~ bot_key[:8]) }}</h3>
+                  <p class="lx-meta">
+                    <span>{{ icon("clock") }}<time datetime="{{ report.as_of.isoformat() }}" title="{{ report.as_of.strftime('%d/%m/%Y %H:%M UTC') }}">{{ report.as_of.strftime("%d/%m/%Y %H:%M UTC") }}</time></span>
+                    <span>{{ hash(report.bot_id, "mã bot", short=True) }}</span>
+                  </p>
                 </div>
-                <span class="paper-performance-status paper-performance-status--{{ report.status }}">{{ report.status_label }}</span>
+                {{ chip(report.status_label, report_tones.get(report.status, "neutral"), report_icons.get(report.status, "info")) }}
               </header>
-              <p class="paper-performance-selection-note">{{ report.selection_bias_note }}</p>
+              <p class="lx-help">{{ report.selection_bias_note }}</p>
 
-              <div class="paper-performance-cohort-grid">
+              <div class="lx-cohorts">
                 {% for cohort in report.cohorts %}
-                  <section class="paper-performance-cohort" aria-labelledby="paper-cohort-title-{{ report.id }}-{{ loop.index }}">
-                    <div class="paper-performance-cohort-heading">
-                      <div>
-                        <p class="paper-performance-kicker">Cohort {{ loop.index }}</p>
-                        <h4 id="paper-cohort-title-{{ report.id }}-{{ loop.index }}">
-                          {{ cohort.window_start[:10] }} — {{ cohort.window_end[:10] }}
-                        </h4>
+                  {% set coverage_percent = cohort.coverage | float * 100 %}
+                  <section class="lx-cohort" aria-labelledby="paper-cohort-title-{{ report.id }}-{{ loop.index }}">
+                    <div class="lx-card__head">
+                      <div class="lx-card__title">
+                        <span class="lx-meta">Cohort {{ loop.index }}</span>
+                        <h4 id="paper-cohort-title-{{ report.id }}-{{ loop.index }}">{{ icon("calendar") }}{{ cohort.window_start[:10] }} — {{ cohort.window_end[:10] }}</h4>
                       </div>
-                      <span class="paper-performance-cohort-status paper-performance-cohort-status--{{ cohort.status }}">{{ "Đủ ngưỡng" if cohort.status == "healthy" else "Suy giảm" if cohort.status == "degraded" else "Chưa kết luận" }}</span>
+                      {{ chip(cohort_labels.get(cohort.status, "Chưa kết luận"), report_tones.get(cohort.status, "warning"), report_icons.get(cohort.status, "clock")) }}
                     </div>
-                    <dl class="paper-performance-metrics">
-                      <div><dt>{{ help_term("paper_covered_outcomes", "Outcome đóng") }}</dt><dd>{{ cohort.covered_outcome_count }}</dd></div>
-                      <div><dt>{{ help_term("paper_eligible_decisions", "Intent trưởng thành") }}</dt><dd>{{ cohort.eligible_decision_count }}</dd></div>
-                      <div><dt>{{ help_term("paper_coverage", "Độ phủ") }}</dt><dd>{{ (cohort.coverage|float * 100)|round(1) }}%</dd></div>
-                      <div><dt>{{ help_term("paper_brier", "Brier quan sát / TEST") }}</dt><dd>{{ cohort.observed_brier if cohort.observed_brier is not none else "—" }} / {{ cohort.baseline_brier }}</dd></div>
-                      <div><dt>{{ help_term("paper_brier_delta", "Δ Brier") }}</dt><dd class="{{ 'paper-performance-negative' if cohort.brier_regression is not none and cohort.brier_regression|float > 0.01 else 'paper-performance-positive' }}">{{ cohort.brier_regression if cohort.brier_regression is not none else "—" }}</dd></div>
-                      <div><dt>{{ help_term("paper_log_loss", "Log-loss quan sát / TEST") }}</dt><dd>{{ cohort.observed_log_loss if cohort.observed_log_loss is not none else "—" }} / {{ cohort.baseline_log_loss }}</dd></div>
-                      <div><dt>{{ help_term("paper_log_loss_delta", "Δ Log-loss") }}</dt><dd class="{{ 'paper-performance-negative' if cohort.log_loss_regression is not none and cohort.log_loss_regression|float > 0.01 else 'paper-performance-positive' }}">{{ cohort.log_loss_regression if cohort.log_loss_regression is not none else "—" }}</dd></div>
+                    <dl class="kv-grid kv-grid--1">
+                      <div class="kv"><dt>{{ help_term("paper_covered_outcomes", "Outcome đóng") }}</dt><dd>{{ cohort.covered_outcome_count | number2_vi }}</dd></div>
+                      <div class="kv"><dt>{{ help_term("paper_eligible_decisions", "Intent trưởng thành") }}</dt><dd>{{ cohort.eligible_decision_count | number2_vi }}</dd></div>
+                      <div class="kv"><dt>{{ help_term("paper_coverage", "Độ phủ") }}</dt><dd>{{ coverage_percent | number2_vi }}%</dd></div>
+                      <div class="kv"><dt>{{ help_term("paper_brier", "Brier quan sát / TEST") }}</dt><dd>{{ metric(cohort.observed_brier) }} / {{ metric(cohort.baseline_brier) }}</dd></div>
+                      <div class="kv"><dt>{{ help_term("paper_brier_delta", "Δ Brier") }}</dt><dd>{{ delta(cohort.brier_regression) }}</dd></div>
+                      <div class="kv"><dt>{{ help_term("paper_log_loss", "Log-loss quan sát / TEST") }}</dt><dd>{{ metric(cohort.observed_log_loss) }} / {{ metric(cohort.baseline_log_loss) }}</dd></div>
+                      <div class="kv"><dt>{{ help_term("paper_log_loss_delta", "Δ Log-loss") }}</dt><dd>{{ delta(cohort.log_loss_regression) }}</dd></div>
                     </dl>
-                    <div class="paper-performance-coverage" role="img" aria-label="Độ phủ trưởng thành {{ (cohort.coverage|float * 100)|round(1) }} phần trăm; ngưỡng yêu cầu 80 phần trăm">
-                      <span data-coverage-percent="{{ [100, cohort.coverage|float * 100]|min }}"></span>
-                      <i aria-hidden="true"></i>
+                    <div class="lx-bar{% if coverage_percent < 80 %} lx-bar--warn{% endif %}" role="img" aria-label="Độ phủ trưởng thành {{ coverage_percent | number2_vi }} phần trăm; ngưỡng yêu cầu 80 phần trăm">
+                      <span data-fill-percent="{{ [100, coverage_percent] | min }}"></span>
+                      <i class="lx-bar__mark lx-bar__mark--80" aria-hidden="true"></i>
                     </div>
-                    <p class="paper-performance-support-title">Hỗ trợ theo lớp PnL</p>
-                    <ul class="paper-performance-class-support">
+                    <p class="lx-meta">Hỗ trợ theo lớp PnL</p>
+                    <ul class="lx-support">
                       {% for support in cohort.class_support %}
-                        <li><span>{{ "PnL âm" if support["class"] == -1 else "PnL bằng 0" if support["class"] == 0 else "PnL dương" }}</span><strong>{{ support.count }}</strong></li>
+                        <li><span>{{ class_labels.get(support["class"], "Lớp chưa nhận diện") }}</span><strong>{{ support.count | number2_vi }}</strong></li>
                       {% endfor %}
                     </ul>
-                    {% if cohort.reasons %}<p class="paper-performance-reasons">{{ cohort.reasons|join(" · ") }}</p>{% endif %}
+                    {% if cohort.reasons %}<p class="lx-status">{{ icon("info") }}{{ cohort.reasons|join(" · ") }}</p>{% endif %}
                   </section>
                 {% endfor %}
               </div>
 
-              <details class="paper-performance-lineage">
-                <summary>Dấu vết và ngưỡng policy</summary>
-                <dl>
-                  <div><dt>TEST baseline SHA-256</dt><dd><code>{{ report.baseline_report_hash }}</code></dd></div>
-                  <div><dt>Target fingerprint</dt><dd><code>{{ report.target_fingerprint }}</code></dd></div>
-                  <div><dt>Policy</dt><dd><code>{{ report.policy_version }} · {{ report.policy_hash }}</code></dd></div>
-                  <div><dt>Báo cáo SHA-256</dt><dd><code>{{ report.report_hash }}</code></dd></div>
-                  <div><dt>Ngưỡng suy giảm</dt><dd>Δ Brier &gt; 0,01 và Δ log-loss &gt; 0,01 trong cả hai cohort</dd></div>
+              <details class="glass-card lx-details">
+                <summary>{{ icon("hash") }}Dấu vết và ngưỡng policy</summary>
+                <dl class="kv-grid kv-grid--1">
+                  <div class="kv"><dt>TEST baseline SHA-256</dt><dd class="kv-hash">{{ hash(report.baseline_report_hash, "SHA-256 TEST baseline") }}</dd></div>
+                  <div class="kv"><dt>Target fingerprint</dt><dd class="kv-hash">{{ hash(report.target_fingerprint, "target fingerprint") }}</dd></div>
+                  <div class="kv"><dt>Policy</dt><dd><code class="lx-mono">{{ report.policy_version }}</code></dd></div>
+                  <div class="kv"><dt>Hash policy</dt><dd class="kv-hash">{{ hash(report.policy_hash, "hash policy") }}</dd></div>
+                  <div class="kv"><dt>Báo cáo SHA-256</dt><dd class="kv-hash">{{ hash(report.report_hash, "SHA-256 báo cáo") }}</dd></div>
+                  <div class="kv kv--text"><dt>Ngưỡng suy giảm</dt><dd>Δ Brier &gt; 0,01 và Δ log-loss &gt; 0,01 trong cả hai cohort</dd></div>
                 </dl>
               </details>
             </article>
           {% endfor %}
         </div>
       {% else %}
-        <div class="paper-performance-empty-state">
-          <h3>Chưa có snapshot chẩn đoán</h3>
-          <p>Chọn một bot PAPER phía trên để ghi nhận lần đánh giá đầu tiên. Khi chưa đủ dữ liệu trưởng thành, hệ thống sẽ giữ trạng thái “Chưa đủ bằng chứng”.</p>
+        <div class="lx-empty">
+          {{ icon("info") }}
+          <div>
+            <h3>Chưa có snapshot chẩn đoán</h3>
+            <p>Chọn một bot PAPER phía trên để ghi nhận lần đánh giá đầu tiên. Khi chưa đủ dữ liệu trưởng thành, hệ thống sẽ giữ trạng thái “Chưa đủ bằng chứng”.</p>
+          </div>
         </div>
       {% endif %}
     </section>
   </div>
 {% endblock %}
 {% block scripts %}
+  <script src="/static/pages/learning-ui.js" defer></script>
   <script src="/static/admin_learning_paper_performance.js" defer></script>
 {% endblock %}

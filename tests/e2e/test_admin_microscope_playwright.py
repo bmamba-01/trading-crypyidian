@@ -282,9 +282,13 @@ def test_microscope_desktop_view(microscope_server_url: str) -> None:
         assert "KÍCH HOẠT (LONG_ENTRY)" in page.locator("#l5-status-badge").inner_text()
         assert "ĐÃ THIẾT LẬP (ZONES READY)" in page.locator("#l6-status-badge").inner_text()
 
-        # Kiểm tra sự hiện diện của Candidate ID SHA-256
-        candidate_code = page.locator("#candidate-id-val").inner_text().strip()
-        assert len(candidate_code) == 64
+        # Mã ứng viên SHA-256: hiển thị rút gọn, giá trị đầy đủ nằm ở data-value và nút sao chép
+        candidate = page.locator("#candidate-id-val")
+        candidate_full = candidate.get_attribute("data-value") or ""
+        assert len(candidate_full) == 64
+        assert candidate.inner_text().startswith(candidate_full[:8])
+        copy_btn = page.locator(f'button.copy-btn[data-copy="{candidate_full}"]')
+        assert copy_btn.count() == 1
 
         # 7. Chụp screenshot Desktop lưu vào artifacts
         screenshot_path = SCREENSHOTS_DIR / "15_microscope_desktop.png"
@@ -344,10 +348,11 @@ def test_microscope_mobile_view(microscope_server_url: str) -> None:
         assert "KÍCH HOẠT (SHORT_ENTRY)" in page.locator("#l5-status-badge").inner_text()
         assert "ĐÃ THIẾT LẬP (ZONES READY)" in page.locator("#l6-status-badge").inner_text()
 
-        # Kiểm tra hình học giá lệnh SHORT: Stop Loss phải lớn hơn Entry Price
-        entry_val = float(page.locator("#zone-entry-val").inner_text())
-        sl_val = float(page.locator("#zone-sl-val").inner_text())
-        tp_val = float(page.locator("#zone-tp-val").inner_text())
+        # Kiểm tra hình học giá lệnh SHORT: Stop Loss phải lớn hơn Entry Price.
+        # Chữ hiển thị theo định dạng Việt Nam 2 chữ số; giá trị gốc nằm ở data-value.
+        entry_val = float(page.locator("#zone-entry-val").get_attribute("data-value") or "nan")
+        sl_val = float(page.locator("#zone-sl-val").get_attribute("data-value") or "nan")
+        tp_val = float(page.locator("#zone-tp-val").get_attribute("data-value") or "nan")
         assert sl_val > entry_val
         assert tp_val < entry_val
 

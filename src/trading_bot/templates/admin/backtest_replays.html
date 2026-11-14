@@ -2,197 +2,245 @@
 {% block title %}Kiểm thử dữ liệu lịch sử (Backtest) — Crypidian{% endblock %}
 {% block head_extra %}
   {% if active_jobs %}<meta http-equiv="refresh" content="15">{% endif %}
+  <link rel="stylesheet" href="/static/pages/backtests.css">
   <script src="/static/backtest-replay-form.js" defer></script>
 {% endblock %}
 {% block heading %}Kiểm thử dữ liệu lịch sử (Backtest){% endblock %}
 {% block content %}
-  <p>Chạy mô phỏng PAPER từ gói dữ liệu đã lưu. Lượt chạy không gửi lệnh lên Binance. Các chiến thuật hiện có chưa được xác nhận hiệu quả; kết quả mô phỏng không đảm bảo kết quả tương lai.</p>
-  {% if submitted %}<p role="status">Đã đưa yêu cầu kiểm thử vào hàng đợi. Trạng thái sẽ cập nhật tự động.</p>{% endif %}
-  {% if error_message %}<p class="error-summary" role="alert">{{ error_message }}</p>{% endif %}
+{#- Biểu tượng sao chép dùng lại trong bảng. -#}
+{% macro copy_icon() -%}
+<svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>
+{%- endmacro %}
+{#- Mã rút gọn 8 ký tự + nút sao chép; mã đầy đủ vẫn có trong văn bản (ẩn thị giác). -#}
+{% macro short_id(value, label) -%}
+<span class="id-chip"><code title="{{ value }}">{{ value[:8] }}{% if value | length > 8 %}…{% endif %}</code><span class="visually-hidden">{{ value }}</span><button type="button" class="copy-btn" data-copy="{{ value }}" aria-label="Sao chép {{ label }} {{ value }}" title="Sao chép mã đầy đủ">{{ copy_icon() }}</button></span>
+{%- endmacro %}
+{#- Tông màu trạng thái theo nhãn tiếng Việt do router trả về. -#}
+{% set status_tones = {
+  "Đang chờ": "neutral", "Đang chạy": "info", "Đang yêu cầu hủy": "warning",
+  "Đã hủy": "neutral", "Hoàn tất": "success", "Thất bại": "danger",
+} %}
+<div class="bt-page">
+  <p class="bt-intro">Chạy mô phỏng PAPER từ gói dữ liệu đã lưu. Lượt chạy không gửi lệnh lên Binance. Các chiến thuật hiện có chưa được xác nhận hiệu quả; kết quả mô phỏng không đảm bảo kết quả tương lai.</p>
+  {% if submitted %}<p class="bt-alert bt-alert--success" role="status"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M20 6 9 17l-5-5"/></svg><span>Đã đưa yêu cầu kiểm thử vào hàng đợi. Trạng thái sẽ cập nhật tự động.</span></p>{% endif %}
+  {% if error_message %}<p class="error-summary bt-alert bt-alert--danger" role="alert"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3 2 20h20L12 3Z"/><path d="M12 10v4M12 17h.01"/></svg><span>{{ error_message }}</span></p>{% endif %}
 
-  <section aria-labelledby="backtest-submit-heading">
-    <h2 id="backtest-submit-heading">Tạo lượt kiểm thử</h2>
-    <form action="/admin/backtests/submit" method="post" class="backtest-form">
+  <section class="bt-card" aria-labelledby="backtest-submit-heading">
+    <div class="bt-card__head">
+      <h2 id="backtest-submit-heading">
+        <svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M5 3v18l15-9L5 3Z"/></svg>
+        Tạo lượt kiểm thử
+      </h2>
+      <span class="badge badge-paper-subtle">Chỉ PAPER</span>
+    </div>
+    <form action="/admin/backtests/submit" method="post" class="bt-form" data-submit-guard>
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <div class="backtest-form-grid">
-        <div class="backtest-form-field backtest-form-field--wide">
-          <label for="bundle-hash">Gói dữ liệu đã lưu</label>
-          {% if show_bundle_hash_input %}
-            <input id="bundle-hash" name="bundle_hash" type="text" inputmode="text"
-                   minlength="64" maxlength="64" pattern="[0-9a-f]{64}" autocomplete="off"
-                   placeholder="Dán mã gói dữ liệu SHA-256" required aria-describedby="bundle-hash-help">
-            <small id="bundle-hash-help">Gói dữ liệu phải thuộc không gian làm việc này và còn quyền sử dụng hiện hành.</small>
-          {% elif bundle_choices %}
-            <select id="bundle-hash" name="bundle_hash" required aria-describedby="bundle-hash-help">
-              {% for bundle in bundle_choices %}
-                <option value="{{ bundle.bundle_hash }}"
-                        data-intervals='{{ bundle.intervals|tojson }}'
-                        data-summary="{{ bundle.symbol }} · {{ bundle.evaluation_start|compact_local_time }} – {{ bundle.range_end|compact_local_time }} (giờ Việt Nam) · Khung nến: {{ bundle.intervals|join(', ') }}"
-                        {% if bundle.bundle_hash == selected_bundle_hash %}selected{% endif %}>
-                  {{ bundle.symbol }} · {{ bundle.evaluation_start|compact_local_date }}–{{ bundle.range_end|compact_local_date }}
-                  · {{ bundle.intervals|join("/") }}
-                </option>
+      <div class="bt-form__cols">
+        <fieldset class="bt-fieldset">
+          <legend>Dữ liệu và chiến thuật</legend>
+          <div class="bt-field">
+            <label for="bundle-hash">Gói dữ liệu đã lưu</label>
+            {% if show_bundle_hash_input %}
+              <input id="bundle-hash" name="bundle_hash" type="text" inputmode="text"
+                     minlength="64" maxlength="64" pattern="[0-9a-f]{64}" autocomplete="off" spellcheck="false"
+                     placeholder="Dán mã gói dữ liệu SHA-256" required aria-describedby="bundle-hash-help">
+              <small id="bundle-hash-help">Gói dữ liệu phải thuộc không gian làm việc này và còn quyền sử dụng hiện hành.</small>
+            {% elif bundle_choices %}
+              <select id="bundle-hash" name="bundle_hash" required aria-describedby="bundle-hash-help">
+                {% for bundle in bundle_choices %}
+                  <option value="{{ bundle.bundle_hash }}"
+                          data-intervals='{{ bundle.intervals|tojson }}'
+                          data-summary="{{ bundle.symbol }} · {{ bundle.evaluation_start|compact_local_time }} – {{ bundle.range_end|compact_local_time }} (giờ Việt Nam) · Khung nến: {{ bundle.intervals|join(', ') }}"
+                          {% if bundle.bundle_hash == selected_bundle_hash %}selected{% endif %}>
+                    {{ bundle.symbol }} · {{ bundle.evaluation_start|compact_local_date }}–{{ bundle.range_end|compact_local_date }}
+                    · {{ bundle.intervals|join("/") }} · {{ bundle.bundle_hash[:8] }}
+                  </option>
+                {% endfor %}
+              </select>
+              <small id="bundle-hash-help">
+                {% if selected_bundle %}
+                  {{ selected_bundle.symbol }} · {{ selected_bundle.evaluation_start|compact_local_time }} – {{ selected_bundle.range_end|compact_local_time }} (giờ Việt Nam)
+                  · Khung nến: {{ selected_bundle.intervals|join(", ") }}
+                {% else %}Chỉ hiện các gói dữ liệu trong không gian làm việc này.{% endif %}
+              </small>
+            {% else %}
+              <select id="bundle-hash" name="bundle_hash" disabled>
+                <option value="">Chưa có gói dữ liệu</option>
+              </select>
+              <small id="bundle-hash-help">Hãy lưu một gói dữ liệu đủ điều kiện trước khi chạy kiểm thử.</small>
+            {% endif %}
+          </div>
+          <div class="bt-field">
+            <label for="strategy-release">Chiến thuật</label>
+            <select id="strategy-release" name="strategy_release_id" required aria-describedby="strategy-release-help">
+              {% for strategy in strategies %}
+                <option value="{{ strategy.release_id }}">{{ strategy.name_vi }} ({{ strategy.release_id }})</option>
               {% endfor %}
             </select>
-            <small id="bundle-hash-help">
-              {% if selected_bundle %}
-                {{ selected_bundle.symbol }} · {{ selected_bundle.evaluation_start|compact_local_time }} – {{ selected_bundle.range_end|compact_local_time }} (giờ Việt Nam)
-                · Khung nến: {{ selected_bundle.intervals|join(", ") }}
-              {% else %}Chỉ hiện các gói dữ liệu trong không gian làm việc này.{% endif %}
-            </small>
-          {% else %}
-            <select id="bundle-hash" name="bundle_hash" disabled>
-              <option value="">Chưa có gói dữ liệu</option>
+            <small id="strategy-release-help">Chọn một chiến thuật đã đăng ký trong hệ thống.</small>
+          </div>
+          <div class="bt-field">
+            <label for="execution-interval">Khung nến chạy mô phỏng</label>
+            {% if selected_bundle %}
+              <select id="execution-interval" name="execution_interval" required
+                      aria-describedby="execution-interval-help">
+                {% for interval in selected_bundle.intervals %}<option value="{{ interval }}">{{ interval }}</option>{% endfor %}
+              </select>
+            {% else %}
+              <input id="execution-interval" name="execution_interval" type="text" maxlength="12"
+                     value="1h" placeholder="1h" required aria-describedby="execution-interval-help">
+            {% endif %}
+            <small id="execution-interval-help">Chọn khung nến có trong gói dữ liệu.</small>
+          </div>
+          <div class="bt-field">
+            <label for="learning-intent">Mục đích lưu kết quả</label>
+            <select id="learning-intent" name="learning_intent" required aria-describedby="learning-intent-help">
+              <option value="RESEARCH">Kiểm thử thông thường</option>
+              <option value="TRAINING_BASE">Tạo dữ liệu học từ kịch bản BASE</option>
             </select>
-            <small id="bundle-hash-help">Hãy lưu một gói dữ liệu đủ điều kiện trước khi chạy kiểm thử.</small>
-          {% endif %}
-        </div>
-        <div class="backtest-form-field">
-          <label for="strategy-release">Chiến thuật</label>
-          <select id="strategy-release" name="strategy_release_id" required>
-            {% for strategy in strategies %}
-              <option value="{{ strategy.release_id }}">{{ strategy.name_vi }} ({{ strategy.release_id }})</option>
-            {% endfor %}
-          </select>
-          <small>Chọn một chiến thuật đã đăng ký trong hệ thống.</small>
-        </div>
-        <div class="backtest-form-field">
-          <label for="execution-interval">Khung nến chạy mô phỏng</label>
-          {% if selected_bundle %}
-            <select id="execution-interval" name="execution_interval" required
-                    aria-describedby="execution-interval-help">
-              {% for interval in selected_bundle.intervals %}<option value="{{ interval }}">{{ interval }}</option>{% endfor %}
-            </select>
-          {% else %}
-            <input id="execution-interval" name="execution_interval" type="text" maxlength="12"
-                   value="1h" placeholder="1h" required aria-describedby="execution-interval-help">
-          {% endif %}
-          <small id="execution-interval-help">Chọn khung nến có trong gói dữ liệu.</small>
-        </div>
-        <div class="backtest-form-field backtest-form-field--wide">
-          <label for="learning-intent">Mục đích lưu kết quả</label>
-          <select id="learning-intent" name="learning_intent" required>
-            <option value="RESEARCH">Kiểm thử thông thường</option>
-            <option value="TRAINING_BASE">Tạo dữ liệu học từ kịch bản BASE</option>
-          </select>
-          <small>Khi chọn dữ liệu học, intent được ghim trước replay; kết quả bị quarantine, không hiện mã run trong danh sách thông thường. Chỉ luồng builder/evaluator được cấp quyền mới được tiêu thụ dữ liệu sau khi kiểm quyền và split.</small>
-        </div>
-        <div class="backtest-form-field">
-          <label for="starting-equity">Vốn mô phỏng</label>
-          <input id="starting-equity" name="starting_equity" type="number" min="0.01"
-                 step="any" value="{{ default_form.starting_equity }}" required>
-        </div>
-        <div class="backtest-form-field">
-          <label for="risk-fraction">Rủi ro tối đa mỗi lệnh</label>
-          <input id="risk-fraction" name="per_trade_risk_fraction" type="number" min="0.000001"
-                 max="0.05" step="any" value="{{ default_form.per_trade_risk_fraction }}" required
-                 aria-describedby="risk-fraction-help">
-          <small id="risk-fraction-help">Nhập tỷ lệ thập phân, tối đa 0,05 (5%).</small>
-        </div>
-        <div class="backtest-form-field">
-          <label for="fee-rate">Phí mỗi chiều</label>
-          <input id="fee-rate" name="fee_rate" type="number" min="0" step="any"
-                 value="{{ default_form.fee_rate }}" required>
-          <small>Nhập tỷ lệ thập phân, ví dụ 0,001 là 0,1%.</small>
-        </div>
-        <div class="backtest-form-field">
-          <label for="slippage">Trượt giá mô phỏng</label>
-          <input id="slippage" name="slippage_rate" type="number" min="0" step="any"
-                 value="{{ default_form.slippage_rate }}" required>
-          <small>Nhập tỷ lệ thập phân, ví dụ 0,0005 là 0,05%.</small>
-        </div>
-        <div class="backtest-form-field">
-          <label for="seed">Mã tái lập kết quả</label>
-          <input id="seed" name="seed" type="number" min="0" max="2147483647" step="1"
-                 value="{{ default_form.seed }}" required>
-        </div>
+            <small id="learning-intent-help">Khi chọn dữ liệu học, intent được ghim trước replay; kết quả bị quarantine, không hiện mã run trong danh sách thông thường. Chỉ luồng builder/evaluator được cấp quyền mới được tiêu thụ dữ liệu sau khi kiểm quyền và split.</small>
+          </div>
+        </fieldset>
+
+        <fieldset class="bt-fieldset">
+          <legend>Vốn, rủi ro và chi phí</legend>
+          <div class="bt-field-row">
+            <div class="bt-field">
+              <label for="starting-equity">Vốn mô phỏng</label>
+              <input id="starting-equity" name="starting_equity" type="number" min="0.01" inputmode="decimal"
+                     step="any" value="{{ default_form.starting_equity }}" required aria-describedby="starting-equity-help">
+              <small id="starting-equity-help">Theo tài sản định giá của mã trong gói dữ liệu.</small>
+            </div>
+            <div class="bt-field">
+              <label for="risk-fraction">Rủi ro tối đa mỗi lệnh</label>
+              <input id="risk-fraction" name="per_trade_risk_fraction" type="number" min="0.000001" inputmode="decimal"
+                     max="0.05" step="any" value="{{ default_form.per_trade_risk_fraction }}" required
+                     aria-describedby="risk-fraction-help risk-fraction-percent" data-percent-hint="risk-fraction-percent">
+              <small id="risk-fraction-help">Nhập tỷ lệ thập phân, tối đa 0,05 (5%). <output id="risk-fraction-percent" class="bt-percent" for="risk-fraction"></output></small>
+            </div>
+            <div class="bt-field">
+              <label for="fee-rate">Phí mỗi chiều</label>
+              <input id="fee-rate" name="fee_rate" type="number" min="0" step="any" inputmode="decimal"
+                     value="{{ default_form.fee_rate }}" required aria-describedby="fee-rate-help fee-rate-percent" data-percent-hint="fee-rate-percent">
+              <small id="fee-rate-help">Tỷ lệ thập phân, ví dụ 0,001 là 0,1%. <output id="fee-rate-percent" class="bt-percent" for="fee-rate"></output></small>
+            </div>
+            <div class="bt-field">
+              <label for="slippage">Trượt giá mô phỏng</label>
+              <input id="slippage" name="slippage_rate" type="number" min="0" step="any" inputmode="decimal"
+                     value="{{ default_form.slippage_rate }}" required aria-describedby="slippage-help slippage-percent" data-percent-hint="slippage-percent">
+              <small id="slippage-help">Tỷ lệ thập phân, ví dụ 0,0005 là 0,05%. <output id="slippage-percent" class="bt-percent" for="slippage"></output></small>
+            </div>
+            <div class="bt-field">
+              <label for="seed">Mã tái lập kết quả</label>
+              <input id="seed" name="seed" type="number" min="0" max="2147483647" step="1" inputmode="numeric"
+                     value="{{ default_form.seed }}" required aria-describedby="seed-help">
+              <small id="seed-help">Cùng mã và cùng tham số cho cùng kết quả.</small>
+            </div>
+          </div>
+        </fieldset>
       </div>
-      <button type="submit" {% if not show_bundle_hash_input and not bundle_choices %}disabled{% endif %}>Chạy kiểm thử</button>
+      <div class="bt-form__actions">
+        <p class="bt-muted">Hệ thống kiểm lại quyền dữ liệu ngay trước khi chạy và trước khi lưu kết quả.</p>
+        <button type="submit" class="btn btn-primary" {% if not show_bundle_hash_input and not bundle_choices %}disabled{% endif %}>Chạy kiểm thử</button>
+      </div>
     </form>
   </section>
 
-  <section aria-labelledby="backtest-jobs-heading">
-    <div class="backtest-jobs-heading">
-      <h2 id="backtest-jobs-heading">Các lượt chạy trong không gian làm việc</h2>
-      <a href="/admin/backtests">Tải lại danh sách</a>
+  <section class="bt-card" aria-labelledby="backtest-jobs-heading">
+    <div class="bt-card__head backtest-jobs-heading">
+      <h2 id="backtest-jobs-heading">
+        <svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>
+        Các lượt chạy trong không gian làm việc
+        {% if jobs %}<span class="tabs-bar__count">{{ jobs | length }}</span>{% endif %}
+      </h2>
+      <div class="bt-head-tools">
+        {% if active_jobs %}<span class="bt-live" role="status"><span class="pulse-dot" aria-hidden="true"></span>Tự tải lại mỗi 15 giây</span>{% endif %}
+        <a href="/admin/backtests" class="btn btn-secondary btn-sm bt-reload">
+          <svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 5v6h-6"/></svg>
+          <span>Tải lại danh sách</span>
+        </a>
+      </div>
     </div>
     {% if jobs %}
-      <div class="backtest-job-table-wrap" role="region" aria-label="Danh sách kiểm thử" tabindex="0">
-        <table class="backtest-job-table">
-          <caption>Trạng thái các lượt kiểm thử đã gửi</caption>
+      <div class="bt-table-wrap" role="region" aria-label="Danh sách kiểm thử" tabindex="0">
+        <table class="bt-table">
+          <caption class="visually-hidden">Trạng thái các lượt kiểm thử đã gửi</caption>
           <thead>
             <tr>
-              <th scope="col">Tạo lúc</th>
-              <th scope="col">Chiến thuật / khung nến</th>
+              <th scope="col">Lượt chạy</th>
               <th scope="col">Gói dữ liệu</th>
               <th scope="col">Mục đích</th>
               <th scope="col">Trạng thái</th>
-              <th scope="col">Tiến độ</th>
+              <th scope="col" class="num">Tiến độ</th>
               <th scope="col">Kết quả</th>
-              <th scope="col">Thao tác</th>
+              <th scope="col"><span class="visually-hidden">Thao tác</span></th>
             </tr>
           </thead>
           <tbody>
             {% for job in jobs %}
-              <tr data-job-id="{{ job.id }}">
-                <td><time datetime="{{ job.created_at.isoformat() if job.created_at else '' }}">{{ job.created_at_compact }}</time></td>
-                <td>{{ job.strategy_name }} · {{ job.execution_interval }}</td>
-                <td><code>{{ job.bundle_hash_short }}</code></td>
-                <td>{{ job.learning_intent }}</td>
-                <td>
-                  <strong>{{ job.status }}</strong>
-                  {% if job.stage %}<span class="backtest-job-stage">{{ job.stage }}</span>{% endif %}
-                  {% if job.error_code %}<span class="backtest-error-code">Mã lỗi: {{ job.error_code }}</span>{% endif %}
+              {% set bundle_match = namespace(item=none, count=0) %}
+              {% for bundle in bundle_choices %}{% if job.bundle_hash_short and bundle.bundle_hash.startswith(job.bundle_hash_short) %}{% set bundle_match.item = bundle %}{% set bundle_match.count = bundle_match.count + 1 %}{% endif %}{% endfor %}
+              {% set bundle = bundle_match.item if bundle_match.count == 1 else none %}
+              {% set tone = status_tones.get(job.status, "neutral") %}
+              <tr data-job-id="{{ job.id }}" class="bt-row bt-row--{{ tone }}">
+                <td class="bt-cell-run" data-label="Lượt chạy">
+                  <span class="bt-run__title">{{ job.strategy_name }} <span class="bt-interval">{{ job.execution_interval }}</span></span>
+                  <span class="bt-run__meta">
+                    <time datetime="{{ job.created_at.isoformat() if job.created_at else '' }}" title="{{ job.created_at|local_time if job.created_at else 'Chưa xác định' }}">{{ job.created_at_compact }}</time>
+                    <span aria-hidden="true">·</span>
+                    {{ short_id(job.id, "mã lượt") }}
+                  </span>
                 </td>
-                <td>
+                <td class="bt-cell-bundle" data-label="Gói dữ liệu">
+                  {% if bundle %}
+                    <span class="coin-tag" data-coin="{{ bundle.symbol }}">{{ bundle.symbol }}</span>
+                    <span class="bt-bundle">{{ short_id(bundle.bundle_hash, "mã gói dữ liệu") }}</span>
+                  {% else %}
+                    <code class="bt-hash" title="12 ký tự đầu của mã gói dữ liệu">{{ job.bundle_hash_short }}</code>
+                  {% endif %}
+                </td>
+                <td class="bt-cell-intent" data-label="Mục đích">
+                  {% if job.quarantined %}<span class="badge badge-warning">{{ job.learning_intent }}</span>{% else %}{{ job.learning_intent }}{% endif %}
+                </td>
+                <td class="bt-cell-status" data-label="Trạng thái">
+                  <span class="bt-status bt-status--{{ tone }}"><span class="bt-status__dot" aria-hidden="true"></span><strong>{{ job.status }}</strong></span>
+                  {% if job.stage %}<span class="backtest-job-stage bt-stage">{{ job.stage }}</span>{% endif %}
+                  {% if job.error_code %}<span class="backtest-error-code bt-error">Mã lỗi: <code>{{ job.error_code }}</code></span>{% endif %}
+                </td>
+                <td class="bt-cell-progress num" data-label="Tiến độ">
                   <label class="visually-hidden" for="progress-{{ job.id }}">Tiến độ {{ job.progress }}%</label>
-                  <progress id="progress-{{ job.id }}" max="100" value="{{ job.progress }}">{{ job.progress }}%</progress>
-                  <span class="backtest-progress-value">{{ job.progress }}%</span>
+                  <span class="bt-progress">
+                    <progress id="progress-{{ job.id }}" max="100" value="{{ job.progress }}">{{ job.progress }}%</progress>
+                    <span class="backtest-progress-value">{{ job.progress }}%</span>
+                  </span>
                 </td>
-                <td>
+                <td class="bt-cell-result" data-label="Kết quả">
                   {% if job.quarantined %}
-                    Kết quả đang quarantine
+                    <span class="bt-quarantine">Kết quả đang quarantine</span>
                   {% elif job.run_ids %}
-                    {% for run_id in job.run_ids %}<code>{{ run_id }}</code>{% if not loop.last %}<br>{% endif %}{% endfor %}
-                  {% else %}Chưa có{% endif %}
+                    <span class="bt-runs">{% for run_id in job.run_ids %}{{ short_id(run_id, "mã run") }}{% endfor %}</span>
+                  {% else %}<span class="value-muted">Chưa có</span>{% endif %}
                 </td>
-                <td>
+                <td class="bt-cell-action" data-label="Thao tác">
                   {% if job.can_cancel %}
-                    <form action="/admin/backtests/{{ job.id }}/cancel" method="post" class="backtest-cancel-form">
+                    <form action="/admin/backtests/{{ job.id }}/cancel" method="post" class="bt-cancel">
                       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                      <button type="submit" aria-label="Hủy lượt {{ job.id }}">Hủy</button>
+                      <button type="submit" class="btn btn-outline btn-sm" aria-label="Hủy lượt {{ job.id }}">Hủy</button>
                     </form>
-                  {% else %}—{% endif %}
+                  {% else %}<span class="value-muted" aria-hidden="true">—</span>{% endif %}
                 </td>
               </tr>
             {% endfor %}
           </tbody>
         </table>
       </div>
-      <div class="backtest-job-cards">
-        {% for job in jobs %}
-          <article class="backtest-job-card" data-job-id="{{ job.id }}">
-            <h3>{{ job.strategy_name }} · {{ job.execution_interval }}</h3>
-            <dl>
-              <div><dt>Thời điểm tạo</dt><dd>{{ job.created_at|local_time if job.created_at else "—" }}</dd></div>
-              <div><dt>Gói dữ liệu</dt><dd><code>{{ job.bundle_hash_short }}</code></dd></div>
-              <div><dt>Mục đích</dt><dd>{{ job.learning_intent }}</dd></div>
-              <div><dt>Trạng thái</dt><dd><strong>{{ job.status }}</strong>{% if job.stage %} · {{ job.stage }}{% endif %}</dd></div>
-              <div><dt>Tiến độ</dt><dd><progress max="100" value="{{ job.progress }}">{{ job.progress }}%</progress> <span>{{ job.progress }}%</span></dd></div>
-              <div><dt>Kết quả</dt><dd>{% if job.quarantined %}Kết quả đang quarantine{% elif job.run_ids %}{% for run_id in job.run_ids %}<code>{{ run_id }}</code>{% if not loop.last %}, {% endif %}{% endfor %}{% else %}Chưa có{% endif %}</dd></div>
-              {% if job.error_code %}<div><dt>Mã lỗi</dt><dd>{{ job.error_code }}</dd></div>{% endif %}
-            </dl>
-            {% if job.can_cancel %}
-              <form action="/admin/backtests/{{ job.id }}/cancel" method="post" class="backtest-cancel-form">
-                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                <button type="submit" aria-label="Hủy lượt {{ job.id }}">Hủy</button>
-              </form>
-            {% endif %}
-          </article>
-        {% endfor %}
-      </div>
     {% else %}
-      <p class="backtest-empty-state">Chưa có lượt kiểm thử nào. Tạo lượt chạy từ gói dữ liệu đã được lưu.</p>
+      <p class="bt-empty">Chưa có lượt kiểm thử nào. Tạo lượt chạy từ gói dữ liệu đã được lưu.</p>
     {% endif %}
   </section>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="/static/coins.js" defer></script>
+<script src="/static/pages/strategy-ui.js" defer></script>
 {% endblock %}

@@ -2,425 +2,238 @@
 
 {% block title %}Kính hiển vi Soi vết Lịch sử (Microscope Replay) — {{ card.name }} — Crypidian Admin{% endblock %}
 
+{% block head_extra %}
+<link rel="stylesheet" href="/static/pages/strategy.css">
+{% endblock %}
+
 {% block heading %}Kính hiển vi Soi vết Lịch sử (Microscope Replay){% endblock %}
 
 {% block content %}
 {% from "admin/_metric_help.html" import help_term, help_icon %}
-<section class="page-intro" aria-labelledby="microscope-heading">
+{% from "admin/_strategy_layers.html" import strategy_layers, layer_icon, layer_info_button, layer_dialogs %}
+{#- Tiêu đề hiển thị của từng tầng trên thẻ soi (giữ tên tiếng Anh gốc để đối chiếu engine). -#}
+{% set layer_titles = {
+  "l0": "Data Hygiene (Độ sạch Dữ liệu)",
+  "l1": "Candle Anatomy (Giải phẫu Nến)",
+  "l2": "Indicators (Chỉ báo Kỹ thuật)",
+  "l3": "Algorithms (Thuật toán Điểm số)",
+  "l4": "Context Gate (Cổng Bối cảnh Thị trường)",
+  "l5": "Strategy Trigger (Ngòi nổ Kích hoạt)",
+  "l6": "Execution Zones & Packaging (Vùng Thực thi)",
+} %}
+{% set layer_hints = {
+  "l0": "Kiểm tra tính toàn vẹn hình học nến: High ≥ Low, High ≥ max(Open, Close), Low ≤ min(Open, Close), giá dương.",
+  "l1": "Đo tỷ lệ râu trên, râu dưới, thân nến và lực từ chối giá (Wick Rejection).",
+  "l2": "Chỉ báo biến động (ATR) và xu hướng (EMA) mà thẻ khai báo.",
+  "l3": "Chuẩn hóa và kết hợp kết quả các tầng trước thành điểm số.",
+  "l4": "Bộ lọc bối cảnh (xu hướng, ATR tối thiểu/tối đa, chặn tin vĩ mô). Nếu BLOCK thì ngắt mạch: L5 không chạy.",
+  "l5": "Chỉ đánh giá khi L4 cho qua (PASS); tạo tín hiệu vào lệnh LONG/SHORT.",
+  "l6": "Giá vào, dừng lỗ, chốt lời theo bội số ATR và tỷ lệ R:R; đóng gói ứng viên có mã SHA-256 tất định.",
+} %}
+<div class="sc-page mx-page">
+<section class="page-intro sc-intro" aria-labelledby="microscope-heading">
   <div class="breadcrumb-nav">
-    <a href="/admin/strategy-cards" class="btn btn-secondary btn-sm" aria-label="Quay lại danh sách bản kê chiến lược">
-      ← Quay lại danh sách Chiến lược
+    <a href="/admin/strategy-cards" class="btn btn-secondary btn-sm mx-back" aria-label="Quay lại danh sách bản kê chiến lược">
+      <svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M15 18 9 12l6-6"/></svg>
+      <span>Quay lại danh sách Chiến lược</span>
     </a>
   </div>
-  <h2 id="microscope-heading" class="sr-only">Không gian làm việc Soi kính hiển vi Chiến lược</h2>
+  <h2 id="microscope-heading" class="visually-hidden">Không gian làm việc Soi kính hiển vi Chiến lược</h2>
   <p class="intro-description">
-    Không gian làm việc mô phỏng và soi vết nến điểm thời gian lấy cảm hứng từ QUANTSMART Microscope Replay.
-    Toàn bộ quá trình tính toán qua 7 phân tầng <strong>L0 → L6</strong> được mổ xẻ chi tiết,
-    minh bạch từng đầu vào/đầu ra và cơ chế <strong>Ngắt mạch tức thì (Short-Circuit)</strong> tại tầng L4 Context Gate.
+    Đưa <strong>một nến</strong> qua 7 tầng <strong>L0 → L6</strong> của thẻ và xem đầu ra từng nút, kể cả cơ chế
+    <strong>ngắt mạch (Short-Circuit)</strong> tại L0 hoặc L4.
+  </p>
+  <p class="sc-note sc-note--warning" role="note">
+    <svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>
+    <span>Đây là phòng thử một nến: OHLCV lấy từ mẫu có sẵn hoặc do bạn nhập, <strong>không đọc nến lịch sử</strong> trong cơ sở dữ liệu và không tạo lệnh. Chỉ báo nhiều nến (ATR, EMA) vì vậy chỉ là xấp xỉ từ một nến.</span>
   </p>
 </section>
 
 <!-- Thông tin thẻ chiến lược đang soi -->
-<section class="strategy-summary-card" aria-label="Thông tin thẻ chiến lược đang soi" role="region">
-  <div class="summary-main">
-    <div class="summary-title-row">
-      <h3 class="summary-name" id="selected-card-name">{{ card.name }}</h3>
-      <span class="strategy-id-badge" id="selected-card-id">{{ card.card_id }}</span>
-      <span class="badge badge-version">v{{ card.version }}</span>
-    </div>
-    <div class="summary-meta-row">
-      <span class="meta-item"><strong>Tác giả:</strong> {{ card.author }}</span>
-      <span class="meta-item"><strong>Cặp mục tiêu:</strong> {{ card.compatibility.target_symbols | join(', ') }}</span>
-      <span class="meta-item"><strong>Khung thời gian:</strong> {{ card.compatibility.timeframes | join(', ') }}</span>
-    </div>
+<section class="strategy-summary-card mx-summary" aria-label="Thông tin thẻ chiến lược đang soi" role="region">
+  <div class="mx-summary__title">
+    <h2 class="summary-name" id="selected-card-name">{{ card.name }}</h2>
+    <span class="badge badge-version">v{{ card.version }}</span>
   </div>
-  <div class="summary-hash-wrapper">
-    <span class="hash-label">Băm định danh bất biến (SHA-256):</span>
-    <code class="hash-code" id="selected-card-hash" title="{{ card_hash }}">{{ card_hash[:8] }}...{{ card_hash[-6:] }}</code>
-  </div>
+  <dl class="kv-grid sc-kv">
+    <div class="kv">
+      <dt>Mã thẻ</dt>
+      <dd><span class="id-chip"><code class="strategy-id-badge" id="selected-card-id" title="{{ card.card_id }}">{{ card.card_id }}</code><button type="button" class="copy-btn" data-copy="{{ card.card_id }}" aria-label="Sao chép mã thẻ {{ card.card_id }}" title="Sao chép mã thẻ"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg></button></span></dd>
+    </div>
+    <div class="kv">
+      <dt><span class="hash-label">Băm định danh (SHA-256)</span></dt>
+      <dd><span class="id-chip"><code class="hash-code" id="selected-card-hash" title="{{ card_hash }}">{{ card_hash[:8] }}…{{ card_hash[-6:] }}</code><span class="visually-hidden">{{ card_hash }}</span><button type="button" class="copy-btn" data-copy="{{ card_hash }}" aria-label="Sao chép mã băm đầy đủ" title="Sao chép mã băm đầy đủ"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg></button></span></dd>
+    </div>
+    <div class="kv">
+      <dt>Cặp mục tiêu</dt>
+      <dd class="sc-coins">{% for symbol in card.compatibility.target_symbols %}<span class="coin-tag" data-coin="{{ symbol }}">{{ symbol }}</span>{% else %}Chưa có dữ liệu{% endfor %}</dd>
+    </div>
+    <div class="kv"><dt>Khung thời gian</dt><dd>{{ card.compatibility.timeframes | join(", ") if card.compatibility.timeframes else "Chưa có dữ liệu" }}</dd></div>
+    <div class="kv"><dt>Tác giả</dt><dd>{{ card.author }}</dd></div>
+  </dl>
 </section>
 
 <!-- Bộ chọn mẫu nến (Preset Selector) và Form nhập thủ công -->
-<section class="microscope-controls-grid" aria-labelledby="controls-heading">
-  <h2 id="controls-heading" class="sr-only">Bộ chọn mẫu nến và thông số đầu vào</h2>
+<section class="microscope-controls-grid mx-controls" aria-labelledby="controls-heading">
+  <h2 id="controls-heading" class="visually-hidden">Bộ chọn mẫu nến và thông số đầu vào</h2>
 
-  <!-- Cột 1: Mẫu nến điển hình (Presets) -->
-  <article class="controls-card presets-card" aria-labelledby="presets-title">
-    <header class="controls-card-header">
-      <h3 id="presets-title" class="controls-card-title">Mẫu nến Điển hình có sẵn (Presets)</h3>
-      <span class="badge badge-paper-subtle">Kịch bản thử nghiệm nhanh</span>
+  <article class="mx-panel presets-card" aria-labelledby="presets-title">
+    <header class="mx-panel__head">
+      <h3 id="presets-title">
+        <svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M8 3v4M8 15v6M16 3v2M16 13v8"/><rect x="5.5" y="7" width="5" height="8" rx="1"/><rect x="13.5" y="5" width="5" height="8" rx="1"/></svg>
+        Mẫu nến Điển hình có sẵn (Presets)
+      </h3>
+      <span class="badge badge-paper-subtle">Chạy thử nhanh</span>
     </header>
-    <div class="presets-list" role="group" aria-label="Danh sách các kịch bản nến mẫu">
+    <div class="presets-list mx-presets" role="group" aria-label="Danh sách các kịch bản nến mẫu">
       {% for preset in presets %}
         <button type="button"
-                class="preset-item-btn {% if initial_preset and initial_preset.id == preset.id %}preset-active{% endif %}"
+                class="preset-item-btn mx-preset {% if initial_preset and initial_preset.id == preset.id %}preset-active{% endif %}"
                 data-preset-id="{{ preset.id }}"
                 id="btn-preset-{{ loop.index }}"
                 aria-pressed="{% if initial_preset and initial_preset.id == preset.id %}true{% else %}false{% endif %}">
-          <div class="preset-item-header">
+          <span class="preset-item-header">
             <span class="preset-item-title">{{ preset.title }}</span>
-            <span class="preset-action-hint">Nạp kịch bản →</span>
-          </div>
-          <p class="preset-item-desc">{{ preset.description }}</p>
+            <span class="preset-action-hint">Nạp và soi →</span>
+          </span>
+          <span class="preset-item-desc">{{ preset.description }}</span>
         </button>
+      {% else %}
+        <p class="mx-empty">Chưa có mẫu nến.</p>
       {% endfor %}
     </div>
   </article>
 
-  <!-- Cột 2: Form nhập OHLCV điểm thời gian -->
-  <article class="controls-card form-card" aria-labelledby="form-title">
-    <header class="controls-card-header">
-      <h3 id="form-title" class="controls-card-title">Tham số Nến Điểm thời gian (Point-in-Time Bar)</h3>
-      <span class="badge badge-neutral">Tự do tinh chỉnh</span>
+  <article class="mx-panel form-card" aria-labelledby="form-title">
+    <header class="mx-panel__head">
+      <h3 id="form-title">
+        <svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></svg>
+        Tham số Nến Điểm thời gian (Point-in-Time Bar)
+      </h3>
+      <span class="badge badge-neutral">Tự tinh chỉnh</span>
     </header>
-    <form id="microscope-inspect-form" class="inspect-form" aria-label="Biểu mẫu điều chỉnh giá trị nến">
-      <div class="form-grid-inputs">
-        <div class="form-group">
-          <label for="input-open" class="form-label">Giá Mở (Open):</label>
-          <input type="number" step="any" id="input-open" name="open" class="form-input"
+    <form id="microscope-inspect-form" class="inspect-form" aria-label="Biểu mẫu điều chỉnh giá trị nến" novalidate>
+      <div class="mx-inputs">
+        <div class="mx-field">
+          <label for="input-open">Giá mở (Open)</label>
+          <input type="number" step="any" min="0" inputmode="decimal" id="input-open" name="open" class="form-input"
                  value="{{ initial_preset.ohlcv.open if initial_preset else '100.0' }}" required>
         </div>
-        <div class="form-group">
-          <label for="input-high" class="form-label">Giá Cao (High):</label>
-          <input type="number" step="any" id="input-high" name="high" class="form-input"
+        <div class="mx-field">
+          <label for="input-high">Giá cao (High)</label>
+          <input type="number" step="any" min="0" inputmode="decimal" id="input-high" name="high" class="form-input"
                  value="{{ initial_preset.ohlcv.high if initial_preset else '102.0' }}" required>
         </div>
-        <div class="form-group">
-          <label for="input-low" class="form-label">Giá Thấp (Low):</label>
-          <input type="number" step="any" id="input-low" name="low" class="form-input"
+        <div class="mx-field">
+          <label for="input-low">Giá thấp (Low)</label>
+          <input type="number" step="any" min="0" inputmode="decimal" id="input-low" name="low" class="form-input"
                  value="{{ initial_preset.ohlcv.low if initial_preset else '90.0' }}" required>
         </div>
-        <div class="form-group">
-          <label for="input-close" class="form-label">Giá Đóng (Close):</label>
-          <input type="number" step="any" id="input-close" name="close" class="form-input"
+        <div class="mx-field">
+          <label for="input-close">Giá đóng (Close)</label>
+          <input type="number" step="any" min="0" inputmode="decimal" id="input-close" name="close" class="form-input"
                  value="{{ initial_preset.ohlcv.close if initial_preset else '101.0' }}" required>
         </div>
-        <div class="form-group">
-          <label for="input-volume" class="form-label">Khối lượng (Volume):</label>
-          <input type="number" step="any" id="input-volume" name="volume" class="form-input"
+        <div class="mx-field">
+          <label for="input-volume">Khối lượng (Volume)</label>
+          <input type="number" step="any" min="0" inputmode="decimal" id="input-volume" name="volume" class="form-input"
                  value="{{ initial_preset.ohlcv.volume if initial_preset else '150.0' }}" required>
         </div>
-        <div class="form-group">
-          <label for="input-min-atr" class="form-label">Cổng L4 min_atr:</label>
-          <input type="number" step="any" id="input-min-atr" name="min_atr" class="form-input"
+        <div class="mx-field">
+          <label for="input-min-atr">Cổng L4 min_atr</label>
+          <input type="number" step="any" min="0" inputmode="decimal" id="input-min-atr" name="min_atr" class="form-input"
                  value="{{ initial_preset.context.min_atr if initial_preset and initial_preset.context.min_atr else '5.0' }}">
         </div>
-        <div class="form-group">
-          <label for="input-direction" class="form-label">Hướng tín hiệu kỳ vọng:</label>
+        <div class="mx-field">
+          <label for="input-direction">Hướng tín hiệu kỳ vọng</label>
           <select id="input-direction" name="direction" class="form-select">
-            <option value="LONG" {% if initial_preset and initial_preset.context.direction == 'LONG' %}selected{% endif %}>LONG (Mua vào)</option>
-            <option value="SHORT" {% if initial_preset and initial_preset.context.direction == 'SHORT' %}selected{% endif %}>SHORT (Bán khống)</option>
+            <option value="LONG" {% if initial_preset and initial_preset.context.direction == 'LONG' %}selected{% endif %}>LONG (Mua lên)</option>
+            <option value="SHORT" {% if initial_preset and initial_preset.context.direction == 'SHORT' %}selected{% endif %}>SHORT (Bán xuống)</option>
           </select>
         </div>
       </div>
 
-      <div class="form-actions">
+      <div class="form-actions mx-form-actions">
+        <p>min_atr so với ATR theo đơn vị giá của nến; với một nến, ATR = High − Low.</p>
         <button type="submit" id="btn-inspect-submit" class="btn btn-primary btn-inspect">
-          ⚡ Soi vết nến tức thời (Inspect Bar)
+          <svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
+          <span data-inspect-label>Soi vết nến (Inspect Bar)</span>
         </button>
       </div>
     </form>
   </article>
 </section>
 
-<!-- Banner Trạng thái Ngắt mạch / Thông suốt -->
-<section id="pipeline-status-section" class="pipeline-status-container" aria-live="polite" aria-atomic="true">
-  {% if initial_trace %}
-    {% if initial_trace.is_short_circuited %}
-      <div class="alert-banner banner-short-circuit" role="alert" id="status-banner">
-        <div class="banner-icon" aria-hidden="true">🛑</div>
-        <div class="banner-body">
-          <h4 class="banner-heading">NGẮT MẠCH TỨC THÌ (SHORT-CIRCUITED)</h4>
-          <p class="banner-message" id="banner-reason">{{ initial_trace.short_circuit_reason }}</p>
-          <p class="banner-hint">Các tầng tiếp theo bị cô lập an toàn, tuyệt đối không kích hoạt ngòi nổ L5 và không tạo vùng giá L6.</p>
-        </div>
-      </div>
-    {% else %}
-      <div class="alert-banner banner-success" role="status" id="status-banner">
-        <div class="banner-icon" aria-hidden="true">✅</div>
-        <div class="banner-body">
-          <h4 class="banner-heading">QUY TRÌNH THÔNG SUỐT (PIPELINE PASSED)</h4>
-          <p class="banner-message" id="banner-reason">Nến đã vượt qua thành công toàn bộ rào chắn bối cảnh L4 và kích hoạt ngòi nổ tín hiệu.</p>
-          <p class="banner-hint">Đã đóng gói thành công StrategyCandidate với cấu trúc rủi ro hình học L6 Zones.</p>
-        </div>
-      </div>
-    {% endif %}
-  {% endif %}
+<!-- Đường ống 7 tầng: trạng thái tóm tắt, mỗi bước mở popup giải thích -->
+<section class="mx-pipeline" aria-labelledby="pipeline-title">
+  <h2 id="pipeline-title" class="visually-hidden">Trạng thái 7 tầng của lượt soi gần nhất</h2>
+  <ol class="mx-rail" id="pipeline-rail">
+    {% for layer in strategy_layers %}
+    <li class="sc-tone--{{ layer.tone }}" data-rail-layer="{{ layer.slug }}" data-state="idle">
+      <button type="button" class="mx-step" data-dialog-open="layer-dialog-{{ layer.slug }}" aria-haspopup="dialog" aria-label="Giải thích tầng {{ layer.code }} {{ layer.name_vi }}">
+        <span class="sc-layer-icon" aria-hidden="true">{{ layer_icon(layer.slug) }}</span>
+        <span class="mx-step__code">{{ layer.code }}</span>
+        <span class="mx-step__state" data-rail-state>Chưa soi</span>
+      </button>
+    </li>
+    {% endfor %}
+  </ol>
 </section>
+
+<!-- Banner Trạng thái Ngắt mạch / Thông suốt (dựng bởi microscope-replay.js) -->
+<section id="pipeline-status-section" class="pipeline-status-container mx-status" aria-live="polite" aria-atomic="true"></section>
 
 <!-- Trực quan hóa 7 phân tầng kiến trúc L0 → L6 -->
-<section class="layers-inspection-section" aria-labelledby="layers-title">
+<section class="layers-inspection-section mx-layers-section" aria-labelledby="layers-title">
   <div class="section-header">
     <h2 id="layers-title">Hành trình Nến qua 7 Phân tầng Kiến trúc (L0 → L6)</h2>
-    <span class="badge badge-paper-subtle">Nguyên lý QUANTSMART Local-first Quant</span>
+    <span class="badge badge-paper-subtle">Chỉ mô phỏng, không gửi lệnh</span>
   </div>
 
-  <div class="microscope-layers-grid" id="layers-container" role="list" aria-label="Chi tiết dấu vết qua 7 tầng">
-    <!-- Tầng L0: Data Hygiene -->
-    <article class="layer-inspect-card layer-l0" role="listitem" id="card-layer-l0" aria-labelledby="l0-card-title">
-      <header class="layer-card-header">
-        <div class="layer-header-left">
-          <span class="layer-badge-tag tag-l0">Tầng L0</span>
-          <h3 id="l0-card-title" class="layer-card-title">{{ help_term("layer_l0_data_hygiene", "Data Hygiene (Độ sạch Dữ liệu)") }}</h3>
+  <div class="microscope-layers-grid mx-layers" id="layers-container" role="list" aria-label="Chi tiết dấu vết qua 7 tầng">
+    {% for layer in strategy_layers %}
+    <article class="layer-inspect-card mx-layer layer-{{ layer.slug }} sc-tone--{{ layer.tone }}" role="listitem" id="card-layer-{{ layer.slug }}" aria-labelledby="{{ layer.slug }}-card-title" data-state="idle">
+      <header class="mx-layer__head">
+        <div class="mx-layer__title">
+          <span class="sc-layer-icon" aria-hidden="true">{{ layer_icon(layer.slug) }}</span>
+          <div>
+            <span class="layer-badge-tag tag-{{ layer.slug }}">Tầng {{ layer.code }}</span>
+            <h3 id="{{ layer.slug }}-card-title" class="layer-card-title">{{ help_term(layer.help, layer_titles[layer.slug]) }}</h3>
+          </div>
         </div>
-        <span class="badge badge-status" id="l0-status-badge">
-          {% if initial_trace and not initial_trace.is_short_circuited %}
-            <span class="status-dot dot-green" aria-hidden="true"></span> ĐẠT CHUẨN (PASSED)
-          {% elif initial_trace and initial_trace.short_circuit_reason and 'L0' in initial_trace.short_circuit_reason %}
-            <span class="status-dot dot-red" aria-hidden="true"></span> VI PHẠM (FAILED)
-          {% else %}
-            <span class="status-dot dot-green" aria-hidden="true"></span> ĐẠT CHUẨN (PASSED)
-          {% endif %}
-        </span>
+        <div class="mx-layer__tools">
+          <span class="badge badge-status" id="{{ layer.slug }}-status-badge"><span class="status-dot dot-gray" aria-hidden="true"></span>Chưa soi</span>
+          <button type="button" class="icon-btn sc-info-btn" data-dialog-open="layer-dialog-{{ layer.slug }}" aria-haspopup="dialog" aria-label="Giải thích tầng {{ layer.code }} {{ layer.name_vi }}">
+            <svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>
+          </button>
+        </div>
       </header>
-      <div class="layer-card-body">
-        <p class="layer-description">Kiểm tra tính toàn vẹn hình học nến: High ≥ Low, High ≥ max(Open, Close), Low ≤ min(Open, Close), giá dương.</p>
-        <div class="layer-trace-details" id="l0-trace-content">
-          <pre class="trace-pre"><code>{{ initial_trace.layer_traces[0].output if initial_trace and initial_trace.layer_traces else 'OK: Dữ liệu nến sạch sẽ.' }}</code></pre>
-        </div>
-      </div>
+      <p class="layer-description">{{ layer_hints[layer.slug] }}</p>
+      {% if layer.slug == "l0" %}<div class="layer-trace-details mx-trace" id="l0-trace-content"></div>
+      {% elif layer.slug == "l1" %}<div class="anatomy-metrics-grid mx-trace" id="l1-metrics-grid"></div>
+      {% elif layer.slug == "l2" %}<div class="indicators-grid mx-trace" id="l2-metrics-grid"></div>
+      {% elif layer.slug == "l3" %}<div class="algo-details mx-trace" id="l3-trace-content"></div>
+      {% elif layer.slug == "l4" %}<div class="gate-trace-details mx-trace" id="l4-trace-content"></div>
+      {% elif layer.slug == "l5" %}<div class="trigger-trace-details mx-trace" id="l5-trace-content"></div>
+      {% else %}<div class="zones-display-wrapper mx-trace" id="l6-zones-wrapper"></div>
+      {% endif %}
     </article>
-
-    <!-- Tầng L1: Candle Anatomy -->
-    <article class="layer-inspect-card layer-l1" role="listitem" id="card-layer-l1" aria-labelledby="l1-card-title">
-      <header class="layer-card-header">
-        <div class="layer-header-left">
-          <span class="layer-badge-tag tag-l1">Tầng L1</span>
-          <h3 id="l1-card-title" class="layer-card-title">{{ help_term("layer_l1_candle_anatomy", "Candle Anatomy (Giải phẫu Nến)") }}</h3>
-        </div>
-        <span class="badge badge-status" id="l1-status-badge">
-          {% if initial_trace and initial_trace.short_circuit_reason and 'L0' in initial_trace.short_circuit_reason %}
-            <span class="status-dot dot-gray" aria-hidden="true"></span> BỎ QUA (SKIPPED)
-          {% else %}
-            <span class="status-dot dot-green" aria-hidden="true"></span> HOÀN THÀNH (SUCCESS)
-          {% endif %}
-        </span>
-      </header>
-      <div class="layer-card-body">
-        <p class="layer-description">Các khối nguyên tử đo đạc tỷ lệ râu trên, râu dưới, thân nến và lực từ chối giá (Wick Rejection).</p>
-        <div class="anatomy-metrics-grid" id="l1-metrics-grid">
-          {% if initial_trace %}
-            {% for t in initial_trace.layer_traces %}
-              {% if t.layer.value == 'L1_CANDLE_ANATOMY' or t.layer == 'L1_CANDLE_ANATOMY' %}
-                <div class="anatomy-metric-box">
-                  <span class="metric-key">{{ t.node_id }} ({{ t.operation }})</span>
-                  <span class="metric-value">{{ "%.4f"|format(t.output|float) if t.output is not none else 'N/A' }}</span>
-                </div>
-              {% endif %}
-            {% endfor %}
-          {% endif %}
-        </div>
-      </div>
-    </article>
-
-    <!-- Tầng L2: Indicators -->
-    <article class="layer-inspect-card layer-l2" role="listitem" id="card-layer-l2" aria-labelledby="l2-card-title">
-      <header class="layer-card-header">
-        <div class="layer-header-left">
-          <span class="layer-badge-tag tag-l2">Tầng L2</span>
-          <h3 id="l2-card-title" class="layer-card-title">{{ help_term("layer_l2_indicators", "Indicators (Chỉ báo Kỹ thuật)") }}</h3>
-        </div>
-        <span class="badge badge-status" id="l2-status-badge">
-          {% if initial_trace and initial_trace.short_circuit_reason and 'L0' in initial_trace.short_circuit_reason %}
-            <span class="status-dot dot-gray" aria-hidden="true"></span> BỎ QUA (SKIPPED)
-          {% else %}
-            <span class="status-dot dot-green" aria-hidden="true"></span> HOÀN THÀNH (SUCCESS)
-          {% endif %}
-        </span>
-      </header>
-      <div class="layer-card-body">
-        <p class="layer-description">Các phép làm mượt chỉ báo kinh điển đo biên độ biến động (ATR) và đường xu hướng trung bình (EMA).</p>
-        <div class="indicators-grid" id="l2-metrics-grid">
-          {% if initial_trace %}
-            {% for t in initial_trace.layer_traces %}
-              {% if t.layer.value == 'L2_INDICATORS' or t.layer == 'L2_INDICATORS' %}
-                <div class="indicator-item">
-                  <span class="ind-node">{{ t.node_id }}:</span>
-                  <span class="ind-val">{{ "%.2f"|format(t.output|float) if t.output is not none else 'N/A' }}</span>
-                </div>
-              {% endif %}
-            {% endfor %}
-          {% endif %}
-        </div>
-      </div>
-    </article>
-
-    <!-- Tầng L3: Algorithms -->
-    <article class="layer-inspect-card layer-l3" role="listitem" id="card-layer-l3" aria-labelledby="l3-card-title">
-      <header class="layer-card-header">
-        <div class="layer-header-left">
-          <span class="layer-badge-tag tag-l3">Tầng L3</span>
-          <h3 id="l3-card-title" class="layer-card-title">{{ help_term("layer_l3_algorithms", "Algorithms (Thuật toán Điểm số)") }}</h3>
-        </div>
-        <span class="badge badge-status" id="l3-status-badge">
-          {% if initial_trace and initial_trace.short_circuit_reason and 'L0' in initial_trace.short_circuit_reason %}
-            <span class="status-dot dot-gray" aria-hidden="true"></span> BỎ QUA (SKIPPED)
-          {% else %}
-            <span class="status-dot dot-green" aria-hidden="true"></span> HOÀN THÀNH (SUCCESS)
-          {% endif %}
-        </span>
-      </header>
-      <div class="layer-card-body">
-        <p class="layer-description">Chuẩn hóa điểm số lượng hóa thang đo [-1.0, 1.0] và Z-Score đa khung thời gian.</p>
-        <div class="algo-details" id="l3-trace-content">
-          {% set l3_found = false %}
-          {% if initial_trace %}
-            {% for t in initial_trace.layer_traces %}
-              {% if t.layer.value == 'L3_ALGORITHMS' or t.layer == 'L3_ALGORITHMS' %}
-                {% set l3_found = true %}
-                <div class="algo-row">
-                  <span class="algo-label">{{ t.node_id }}:</span>
-                  <span class="algo-score">{{ "%.4f"|format(t.output|float) if t.output is not none else 'N/A' }}</span>
-                </div>
-              {% endif %}
-            {% endfor %}
-          {% endif %}
-          {% if not l3_found %}
-            <p class="text-muted">Chiến lược này không sử dụng nút tính điểm trung gian L3 (Chuyển tiếp trực tiếp L2 → L4).</p>
-          {% endif %}
-        </div>
-      </div>
-    </article>
-
-    <!-- Tầng L4: Context Gate (RÀO CHẮN BẢO VỆ) -->
-    <article class="layer-inspect-card layer-l4 {% if initial_trace and not initial_trace.context_gate_passed %}layer-blocked{% endif %}"
-             role="listitem" id="card-layer-l4" aria-labelledby="l4-card-title">
-      <header class="layer-card-header">
-        <div class="layer-header-left">
-          <span class="layer-badge-tag tag-l4">Tầng L4</span>
-          <h3 id="l4-card-title" class="layer-card-title">{{ help_term("layer_l4_context_gate", "Context Gate (Cổng Bối cảnh Thị trường)") }}</h3>
-        </div>
-        <span class="badge badge-status" id="l4-status-badge">
-          {% if initial_trace and initial_trace.context_gate_passed %}
-            <span class="status-dot dot-green" aria-hidden="true"></span> CHO PHÉP (PASS)
-          {% elif initial_trace and initial_trace.is_short_circuited and 'L0' in initial_trace.short_circuit_reason %}
-            <span class="status-dot dot-gray" aria-hidden="true"></span> BỎ QUA (SKIPPED)
-          {% else %}
-            <span class="status-dot dot-red" aria-hidden="true"></span> CHẶN ĐỨNG (BLOCK)
-          {% endif %}
-        </span>
-      </header>
-      <div class="layer-card-body">
-        <p class="layer-description">
-          Bộ lọc môi trường (Trend, ATR min/max, Macro Blackout).
-          <strong>Cơ chế Short-Circuit:</strong> Nếu BLOCK, lập tức ngắt mạch toàn bộ quy trình, ngòi nổ L5 tuyệt đối không chạy.
-        </p>
-        <div class="gate-trace-details" id="l4-trace-content">
-          {% if initial_trace %}
-            {% for t in initial_trace.layer_traces %}
-              {% if t.layer.value == 'L4_CONTEXT_GATE' or t.layer == 'L4_CONTEXT_GATE' %}
-                <div class="gate-outcome {% if t.status == 'BLOCK' %}outcome-block{% else %}outcome-pass{% endif %}">
-                  <span class="gate-node-name"><strong>Nút kiểm tra:</strong> {{ t.node_id }} ({{ t.operation }})</span>
-                  <div class="gate-output-text">{{ t.output }}</div>
-                </div>
-              {% endif %}
-            {% endfor %}
-          {% endif %}
-        </div>
-      </div>
-    </article>
-
-    <!-- Tầng L5: Strategy Trigger -->
-    <article class="layer-inspect-card layer-l5" role="listitem" id="card-layer-l5" aria-labelledby="l5-card-title">
-      <header class="layer-card-header">
-        <div class="layer-header-left">
-          <span class="layer-badge-tag tag-l5">Tầng L5</span>
-          <h3 id="l5-card-title" class="layer-card-title">{{ help_term("layer_l5_trigger", "Strategy Trigger (Ngòi nổ Kích hoạt)") }}</h3>
-        </div>
-        <span class="badge badge-status" id="l5-status-badge">
-          {% if initial_trace and initial_trace.trigger_signal in ['LONG_ENTRY', 'SHORT_ENTRY'] %}
-            <span class="status-dot dot-green" aria-hidden="true"></span> KÍCH HOẠT ({{ initial_trace.trigger_signal }})
-          {% elif initial_trace and initial_trace.is_short_circuited %}
-            <span class="status-dot dot-gray" aria-hidden="true"></span> BỎ QUA (SKIPPED)
-          {% else %}
-            <span class="status-dot dot-yellow" aria-hidden="true"></span> KHÔNG TÍN HIỆU (NO_SIGNAL)
-          {% endif %}
-        </span>
-      </header>
-      <div class="layer-card-body">
-        <p class="layer-description">Chỉ được phép đánh giá khi Tầng L4 Context Gate đã vượt qua (PASS). Phân tích breakout và tạo tín hiệu vào lệnh.</p>
-        <div class="trigger-trace-details" id="l5-trace-content">
-          {% if initial_trace %}
-            {% for t in initial_trace.layer_traces %}
-              {% if t.layer.value == 'L5_STRATEGY_TRIGGER' or t.layer == 'L5_STRATEGY_TRIGGER' %}
-                <div class="trigger-status-box">
-                  <span class="trigger-node"><strong>Node:</strong> {{ t.node_id }}</span>
-                  <span class="trigger-signal-badge">{{ t.output }}</span>
-                </div>
-              {% endif %}
-            {% endfor %}
-          {% endif %}
-        </div>
-      </div>
-    </article>
-
-    <!-- Tầng L6: Execution Zones & Candidate Packaging -->
-    <article class="layer-inspect-card layer-l6" role="listitem" id="card-layer-l6" aria-labelledby="l6-card-title">
-      <header class="layer-card-header">
-        <div class="layer-header-left">
-          <span class="layer-badge-tag tag-l6">Tầng L6</span>
-          <h3 id="l6-card-title" class="layer-card-title">{{ help_term("layer_l6_zones", "Execution Zones & Packaging (Vùng Thực thi)") }}</h3>
-        </div>
-        <span class="badge badge-status" id="l6-status-badge">
-          {% if initial_trace and initial_trace.zones %}
-            <span class="status-dot dot-green" aria-hidden="true"></span> ĐÃ THIẾT LẬP (ZONES READY)
-          {% elif initial_trace and initial_trace.is_short_circuited %}
-            <span class="status-dot dot-gray" aria-hidden="true"></span> BỎ QUA (SKIPPED)
-          {% else %}
-            <span class="status-dot dot-yellow" aria-hidden="true"></span> CHƯA KÍCH HOẠT
-          {% endif %}
-        </span>
-      </header>
-      <div class="layer-card-body">
-        <p class="layer-description">
-          Xác định tọa độ hình học Entry, Stop Loss và Take Profit dựa trên bội số biến động ATR và tỷ lệ R:R.
-          Đóng gói thành StrategyCandidate mang SHA-256 ID tất định gửi sang Risk Engine.
-        </p>
-
-        <div class="zones-display-wrapper" id="l6-zones-wrapper">
-          {% if initial_trace and initial_trace.zones %}
-            <div class="zones-metrics-row">
-              <div class="zone-box zone-entry">
-                <span class="zone-label">Điểm vào lệnh (Entry):</span>
-                <span class="zone-val" id="zone-entry-val">{{ "%.2f"|format(initial_trace.zones.entry_price|float) }}</span>
-              </div>
-              <div class="zone-box zone-sl">
-                <span class="zone-label">Dừng lỗ ban đầu (Stop Loss):</span>
-                <span class="zone-val" id="zone-sl-val">{{ "%.2f"|format(initial_trace.zones.stop_loss|float) }}</span>
-              </div>
-              <div class="zone-box zone-tp">
-                <span class="zone-label">Chốt lời mục tiêu (Take Profit):</span>
-                <span class="zone-val" id="zone-tp-val">{{ "%.2f"|format(initial_trace.zones.take_profit|float) }}</span>
-              </div>
-              <div class="zone-box zone-rr">
-                <span class="zone-label">Tỷ lệ Risk : Reward:</span>
-                <span class="zone-val" id="zone-rr-val">1 : {{ "%.1f"|format(initial_trace.zones.risk_reward_ratio|float) }}</span>
-              </div>
-            </div>
-
-            <div class="candidate-id-box">
-              <span class="candidate-label">Mã Đề xuất Candidate ID (SHA-256 tất định):</span>
-              <code class="candidate-code" id="candidate-id-val" title="{{ initial_trace.candidate_id }}">
-                {{ initial_trace.candidate_id }}
-              </code>
-            </div>
-          {% else %}
-            <div class="empty-zones-placeholder" id="empty-zones-msg">
-              <p class="text-muted">Chưa có vùng thực thi do quy trình bị ngắt mạch hoặc ngòi nổ không kích hoạt.</p>
-            </div>
-          {% endif %}
-        </div>
-      </div>
-    </article>
+    {% endfor %}
   </div>
+  <noscript><p class="sc-note">Cần bật JavaScript để chạy và hiển thị vết soi từng tầng.</p></noscript>
 </section>
 
-<!-- Dữ liệu kịch bản Presets Client-side an toàn -->
-<script id="presets-data" type="application/json">
-  {{ presets_data | tojson }}
-</script>
+{{ layer_dialogs() }}
+</div>
 
-<!-- Script tương tác Microscope Replay không phụ thuộc thư viện ngoài -->
+<!-- Dữ liệu cho script (không thực thi): mẫu nến, mã thẻ và vết soi ban đầu do máy chủ tính -->
+<script id="presets-data" type="application/json">{{ presets_data | tojson }}</script>
 <script id="microscope-card-id" type="application/json">{{ card.card_id | tojson }}</script>
+{% if initial_trace %}<script id="initial-trace-data" type="application/json">{{ initial_trace.to_dict() | tojson }}</script>{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/coins.js" defer></script>
+<script src="/static/pages/strategy-ui.js" defer></script>
 <script src="/static/microscope-replay.js" defer></script>
 {% endblock %}

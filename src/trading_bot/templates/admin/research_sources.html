@@ -1,5 +1,7 @@
 {% extends "admin/base.html" %}
+{% from "admin/_learning_ui.html" import icon, chip, hash %}
 {% block title %}Nguồn nghiên cứu — Crypidian{% endblock %}
+{% block head_extra %}<link rel="stylesheet" href="/static/pages/learning.css"><link rel="stylesheet" href="/static/pages/research.css">{% endblock %}
 {% block heading %}Nguồn nghiên cứu và quyền sử dụng{% endblock %}
 {% macro hidden(source_id='') %}
 <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -14,17 +16,23 @@
 {% endfor %}
 </fieldset>
 {% if prefix == 'approve' %}
+<div class="lx-field">
 <label for="{{ prefix }}-expiry-action">Xử lý thời hạn</label>
 <select id="{{ prefix }}-expiry-action" name="expiry_action">
 <option value="preserve">Giữ thời hạn của policy chờ duyệt</option>
 <option value="change">Thay đổi sang thời hạn bên dưới</option>
 <option value="clear">Chủ động bỏ thời hạn (không giới hạn)</option>
 </select>
-<p>Để trống ô ngày không xóa thời hạn. Chỉ lựa chọn chủ động bỏ thời hạn mới xóa thời hạn hiện có.</p>
+<p class="lx-help">Để trống ô ngày không xóa thời hạn. Chỉ lựa chọn chủ động bỏ thời hạn mới xóa thời hạn hiện có.</p>
+</div>
 {% endif %}
+<div class="lx-field">
 <label for="{{ prefix }}-expiry">Hết hạn (ISO 8601 có múi giờ, tùy chọn)</label>
-<input id="{{ prefix }}-expiry" name="valid_until" value="{{ detail.current.valid_until.isoformat() if detail.current.valid_until else '' }}" placeholder="2027-01-01T00:00:00+00:00">
+<input id="{{ prefix }}-expiry" name="valid_until" value="{{ detail.current.valid_until.isoformat() if detail.current.valid_until else '' }}" placeholder="2027-01-01T00:00:00+00:00" class="lx-mono">
+</div>
 {% endmacro %}
+{#- Giá trị gốc "not approved" là sentinel lưu trong DB; giao diện hiển thị nhãn tiếng Việt. -#}
+{% macro attribution_label(value) %}{{ 'Chưa được duyệt' if value == 'not approved' else value }}{% endmacro %}
 {% macro scope_checks(prefix, choices) %}
 <fieldset class="source-purpose-options">
 <legend>{{ 'Quyền đầu ra' if prefix == 'scope_output_' else 'Cách sử dụng dữ liệu suy ra' }}</legend>
@@ -34,82 +42,141 @@
 </fieldset>
 {% endmacro %}
 {% block content %}
-<p class="alert alert-info">Chỉ quản lý metadata và policy ngoại tuyến. Không tải dữ liệu nguồn.</p>
-<p class="source-evidence-notice">Evidence tham chiếu do người quản trị cung cấp — chưa được hệ thống xác minh pháp lý</p>
+{#- Chuỗi trạng thái → tông chip; `.badge` chỉ dùng cho trạng thái của nguồn đang xem (E2E dựa vào). -#}
+{% set state_tones = {"discovered": "neutral", "rights_pending": "warning", "verified": "success", "blocked": "danger", "revoked": "danger", "expired": "neutral"} %}
+{% set state_icons = {"discovered": "globe", "rights_pending": "clock", "verified": "check-circle", "blocked": "ban", "revoked": "x-circle", "expired": "calendar"} %}
+<div class="lx-page lx-research">
+<div class="lx-notice lx-notice--info">
+  <span class="lx-notice__icon">{{ icon("database") }}</span>
+  <p><strong>Chỉ quản lý metadata và policy ngoại tuyến. Không tải dữ liệu nguồn.</strong></p>
+  <p class="source-evidence-notice">Evidence tham chiếu do người quản trị cung cấp — chưa được hệ thống xác minh pháp lý</p>
+</div>
+
+<section class="lx-kpis" aria-label="Tóm tắt nguồn">
+  <div class="kpi-card kpi-card--h">
+    <span class="kpi-icon kpi-icon--blue">{{ icon("database") }}</span>
+    <div class="kpi-body"><span class="kpi-value">{{ entries | length }}</span><span class="kpi-label">Nguồn trong workspace</span></div>
+  </div>
+  <div class="kpi-card kpi-card--h">
+    <span class="kpi-icon kpi-icon--green">{{ icon("check-circle") }}</span>
+    <div class="kpi-body"><span class="kpi-value">{{ entries | selectattr("current.state", "equalto", "verified") | list | length }}</span><span class="kpi-label">Đã duyệt quyền</span></div>
+  </div>
+  <div class="kpi-card kpi-card--h">
+    <span class="kpi-icon kpi-icon--amber">{{ icon("clock") }}</span>
+    <div class="kpi-body"><span class="kpi-value">{{ entries | selectattr("current.state", "equalto", "rights_pending") | list | length }}</span><span class="kpi-label">Chờ duyệt quyền</span></div>
+  </div>
+  <div class="kpi-card kpi-card--h">
+    <span class="kpi-icon kpi-icon--violet">{{ icon("ban") }}</span>
+    <div class="kpi-body"><span class="kpi-value">{{ entries | selectattr("current.state", "in", ["blocked", "revoked", "expired"]) | list | length }}</span><span class="kpi-label">Chặn, thu hồi hoặc hết hạn</span></div>
+  </div>
+</section>
+
 <div class="source-console-grid">
-<section aria-labelledby="sources-heading">
-<h2 id="sources-heading">Danh sách nguồn</h2>
+<section class="lx-stack" aria-labelledby="sources-heading">
+<div class="glass-card lx-card">
+<h2 id="sources-heading">{{ icon("list") }}Danh sách nguồn</h2>
 <ul class="bot-list source-list">
-{% for entry in entries %}<li><a href="?source_id={{ entry.source_id | urlencode }}#source-detail">{{ entry.source_id }}</a><span>{{ state_labels[entry.current.state] }}</span></li>
-{% else %}<li>Chưa có nguồn ứng viên.</li>{% endfor %}
+{% for entry in entries %}<li{% if detail and detail.source_id == entry.source_id %} class="is-current"{% endif %}><a href="?source_id={{ entry.source_id | urlencode }}#source-detail"{% if detail and detail.source_id == entry.source_id %} aria-current="page"{% endif %}>{{ entry.source_id }}</a><span class="lx-chip lx-chip--{{ state_tones.get(entry.current.state, 'neutral') }}">{{ icon(state_icons.get(entry.current.state, 'info')) }}<span>{{ state_labels[entry.current.state] }}</span></span></li>
+{% else %}<li class="lx-empty">{{ icon("info") }}Chưa có nguồn ứng viên.</li>{% endfor %}
 </ul>
+</div>
 {% if can_write %}
-<details><summary>Tạo nguồn ứng viên</summary>
-<form method="post" action="/admin/research-sources/create" aria-label="Tạo nguồn ứng viên">
+<details class="glass-card lx-details"><summary>Tạo nguồn ứng viên</summary>
+<form method="post" action="/admin/research-sources/create" aria-label="Tạo nguồn ứng viên" class="lx-form">
 {{ hidden() }}
-{% for name, label, value in [('source_id','Mã nguồn',''),('publisher','Nhà xuất bản',''),('endpoint_url','Địa chỉ HTTPS',''),('access_method','Phương thức truy cập','GET'),('auth_scope','Phạm vi xác thực (không nhập credential)','public'),('attribution','Ghi công','Chưa được duyệt'),('retention_ref','Tham chiếu lưu giữ','metadata-only-pending-review'),('window_seconds','Cửa sổ quota (giây)','3600'),('max_requests','Giới hạn số yêu cầu','10'),('max_bytes','Giới hạn byte','1000'),('max_cost','Giới hạn chi phí','1'),('cost_unit','Đơn vị chi phí','USD'),('reason','Lý do tạo nguồn','')] %}
-<label for="create-{{ name }}">{{ label }}</label><input id="create-{{ name }}" name="{{ name }}" value="{{ value }}" required>
+<div class="lx-form__row">
+{% for name, label, value in [('source_id','Mã nguồn',''),('publisher','Nhà xuất bản',''),('endpoint_url','Địa chỉ HTTPS',''),('access_method','Phương thức truy cập','GET'),('auth_scope','Phạm vi xác thực (không nhập credential)','public'),('attribution','Ghi công','Chưa được duyệt'),('retention_ref','Tham chiếu lưu giữ','metadata-only-pending-review'),('window_seconds','Cửa sổ quota (giây)','3600'),('max_requests','Giới hạn số yêu cầu','10'),('max_bytes','Giới hạn byte','1000'),('max_cost','Giới hạn chi phí','1'),('cost_unit','Đơn vị chi phí','USD')] %}
+<div class="lx-field"><label for="create-{{ name }}">{{ label }}</label><input id="create-{{ name }}" name="{{ name }}" value="{{ value }}" required></div>
 {% endfor %}
-<button type="submit">Tạo nguồn ứng viên</button>
+</div>
+<div class="lx-field"><label for="create-reason">Lý do tạo nguồn</label><input id="create-reason" name="reason" value="" required maxlength="2048"></div>
+<div class="lx-form__actions"><button type="submit" class="btn btn-primary">Tạo nguồn ứng viên</button></div>
 </form></details>
 {% endif %}
 </section>
-<section id="source-detail" aria-labelledby="detail-heading">
+<section id="source-detail" class="lx-stack" aria-labelledby="detail-heading">
+<div class="glass-card lx-card">
+<div class="lx-card__head">
 <h2 id="detail-heading">Chi tiết nguồn{% if detail %}: {{ detail.source_id }}{% endif %}</h2>
+{% if detail %}<span class="badge lx-chip lx-chip--{{ state_tones.get(detail.current.state, 'neutral') }}" data-source-state="{{ detail.current.state }}">{{ icon(state_icons.get(detail.current.state, 'info')) }}{{ state_labels[detail.current.state] }}</span>{% endif %}
+</div>
 {% if detail %}
-<p class="badge text-bg-primary">{{ state_labels[detail.current.state] }}</p>
-<dl class="source-metadata">
-{% for label, value in [('Nhà xuất bản',detail.current.publisher),('Địa chỉ nguồn',detail.current.endpoint_url),('Phương thức truy cập',detail.current.access_method),('Phạm vi xác thực',detail.current.auth_scope),('Evidence tham chiếu',detail.current.evidence_ref or 'Chưa cung cấp'),('Ghi công',detail.current.attribution),('Lưu giữ',detail.current.retention_ref),('Hết hạn',detail.current.valid_until or 'Không đặt thời hạn')] %}
-<div><dt>{{ label }}</dt><dd>{{ value }}</dd></div>{% endfor %}
+<dl class="kv-grid source-metadata">
+{% for ico, label, value in [('user','Nhà xuất bản',detail.current.publisher),('link','Địa chỉ nguồn',detail.current.endpoint_url),('activity','Phương thức truy cập',detail.current.access_method),('key','Phạm vi xác thực',detail.current.auth_scope),('file','Evidence tham chiếu',detail.current.evidence_ref or 'Chưa cung cấp'),('info','Ghi công',attribution_label(detail.current.attribution)),('database','Lưu giữ',detail.current.retention_ref),('calendar','Hết hạn',detail.current.valid_until or 'Không đặt thời hạn')] %}
+<div class="kv kv--text"><dt>{{ icon(ico) }}{{ label }}</dt><dd>{{ value }}</dd></div>{% endfor %}
 </dl>
+{% endif %}
+</div>
+{% if detail %}
+<section class="glass-card lx-card source-quota" aria-labelledby="quota-heading">
+<h3 id="quota-heading">{{ icon("gauge") }}Quota hiện hành</h3>
+{% if detail.quota %}
+{% set q = detail.quota %}
+<div class="lx-quota">
+{% for label, used, limit, unit in [('Số yêu cầu', q.requests_used, q.budget.max_requests, ''), ('Byte', q.bytes_used, q.budget.max_bytes, ''), ('Chi phí', q.cost_used, q.budget.max_cost, ' ' ~ q.budget.cost_unit)] %}
+{% set ratio = ((used | float) / (limit | float) * 100) if (limit | float) > 0 else 0 %}
+<div class="lx-quota__row"><p>{{ label }}: {{ used }} / {{ limit }}{{ unit }}</p><div class="lx-bar{% if ratio >= 80 %} lx-bar--warn{% endif %}" role="img" aria-label="{{ label }} đã dùng {{ ratio | number2_vi }} phần trăm"><span data-fill-percent="{{ [100, ratio] | min }}"></span></div></div>
+{% endfor %}
+</div>
+<p class="lx-meta"><span>{{ icon("clock") }}Cửa sổ bắt đầu: {{ q.window_started_at }}</span><span>Tại: {{ q.as_of }}</span><span>Phiên bản {{ q.policy_sequence }}</span></p>
+{% else %}<p class="lx-empty">{{ icon("info") }}Chưa có snapshot sử dụng quota. Giới hạn policy: {{ detail.current.budget.max_requests }} yêu cầu / {{ detail.current.budget.max_bytes }} byte / {{ detail.current.budget.max_cost }} {{ detail.current.budget.cost_unit }} trong {{ detail.current.budget.window_seconds }} giây.</p>{% endif %}
+</section>
 {% if detail.current.license_scope %}
-<section class="license-scope-card" aria-labelledby="license-scope-heading">
+<section class="glass-card lx-card license-scope-card" aria-labelledby="license-scope-heading">
 <h3 id="license-scope-heading">Phạm vi quyền đã chuẩn hóa</h3>
-<dl class="source-metadata">
+<dl class="kv-grid source-metadata">
 {% set scope = detail.current.license_scope %}
-{% for label, value in [('Nhà cung cấp',scope.provider),('Sản phẩm',scope.product),('Sàn/thị trường',scope.venue),('Loại hợp đồng',scope.contract),('Mã giao dịch',scope.symbols | join(', ')),('Khung thời gian',scope.intervals | join(', ')),('Dữ liệu từ',scope.data_start),('Dữ liệu đến (mốc loại trừ)',scope.data_end),('Giới hạn lưu ngày',scope.max_retention_days if scope.max_retention_days is not none else 'Không giới hạn'),('Ghi công bắt buộc',scope.attribution)] %}
-<div><dt>{{ label }}</dt><dd>{{ value }}</dd></div>{% endfor %}
-<div><dt>Mục đích được cấp</dt><dd>{% for purpose in scope.allowed_purposes %}{{ purpose_labels[purpose.value if purpose.value is defined else purpose] }}{% if not loop.last %}, {% endif %}{% endfor %}</dd></div>
-<div><dt>Quyền đầu ra</dt><dd>{% for value in scope.allowed_outputs %}{{ scope_output_labels[value] }}{% if not loop.last %}, {% endif %}{% endfor %}</dd></div>
-<div><dt>Cách dùng dữ liệu suy ra</dt><dd>{% for value in scope.derived_use %}{{ scope_derived_use_labels[value] }}{% if not loop.last %}, {% endif %}{% endfor %}</dd></div>
+{% for label, value in [('Nhà cung cấp',scope.provider),('Sản phẩm',scope.product),('Sàn/thị trường',scope.venue),('Loại hợp đồng',scope.contract),('Mã giao dịch',scope.symbols | join(', ')),('Khung thời gian',scope.intervals | join(', ')),('Dữ liệu từ',scope.data_start),('Dữ liệu đến (mốc loại trừ)',scope.data_end),('Giới hạn lưu ngày',scope.max_retention_days if scope.max_retention_days is not none else 'Không giới hạn'),('Ghi công bắt buộc',attribution_label(scope.attribution))] %}
+<div class="kv kv--text"><dt>{{ label }}</dt><dd>{{ value }}</dd></div>{% endfor %}
+<div class="kv kv--text"><dt>Mục đích được cấp</dt><dd>{% for purpose in scope.allowed_purposes %}{{ purpose_labels[purpose.value if purpose.value is defined else purpose] }}{% if not loop.last %}, {% endif %}{% endfor %}</dd></div>
+<div class="kv kv--text"><dt>Quyền đầu ra</dt><dd>{% for value in scope.allowed_outputs %}{{ scope_output_labels[value] }}{% if not loop.last %}, {% endif %}{% endfor %}</dd></div>
+<div class="kv kv--text"><dt>Cách dùng dữ liệu suy ra</dt><dd>{% for value in scope.derived_use %}{{ scope_derived_use_labels[value] }}{% if not loop.last %}, {% endif %}{% endfor %}</dd></div>
 </dl>
-<p>Mã phạm vi SHA-256: <code class="source-digest">{{ detail.current.license_scope_hash or (pending_evidence.scope_hash if pending_evidence else 'Chưa có bằng chứng') }}</code></p>
+{% set scope_digest = detail.current.license_scope_hash or (pending_evidence.scope_hash if pending_evidence else '') %}
+<div class="kv"><dt>{{ icon("hash") }}Mã phạm vi SHA-256</dt><dd class="kv-hash">{% if scope_digest %}{{ hash(scope_digest, "mã phạm vi SHA-256") }}{% else %}<span class="value-muted">Chưa có bằng chứng</span>{% endif %}</dd></div>
 </section>
 {% endif %}
 {% if pending_evidence %}
-<section class="license-evidence-card" aria-labelledby="license-evidence-heading">
-<h3 id="license-evidence-heading">Bằng chứng đã nhận</h3>
-<p>SHA-256 của tài liệu: <code class="source-digest" id="license-evidence-digest">{{ pending_evidence.digest }}</code></p>
-<p>Định dạng: {{ pending_evidence.media_type }} · Dung lượng: {{ pending_evidence.byte_count }} byte · Người gửi: {{ pending_evidence.actor_id }}</p>
-<button type="button" class="btn btn-outline-primary" data-copy-digest="license-evidence-digest">Sao chép SHA-256 đầy đủ</button>
+<section class="glass-card lx-card license-evidence-card" aria-labelledby="license-evidence-heading">
+<h3 id="license-evidence-heading">{{ icon("file") }}Bằng chứng đã nhận</h3>
+<dl class="kv-grid kv-grid--1">
+<div class="kv"><dt>{{ icon("hash") }}SHA-256 của tài liệu</dt><dd class="kv-hash"><span class="lx-hash"><code class="lx-hash__text source-digest" id="license-evidence-digest" title="{{ pending_evidence.digest }}">{{ pending_evidence.digest }}</code></span></dd></div>
+<div class="kv"><dt>{{ icon("file") }}Định dạng</dt><dd>{{ pending_evidence.media_type }}</dd></div>
+<div class="kv"><dt>{{ icon("database") }}Dung lượng</dt><dd>{{ pending_evidence.byte_count | number2_vi }} byte</dd></div>
+<div class="kv"><dt>{{ icon("user") }}Người gửi</dt><dd class="kv-hash">{{ hash(pending_evidence.actor_id, "mã người gửi", copy=False) }}</dd></div>
+</dl>
+<div class="lx-form__actions"><button type="button" class="btn btn-outline" data-copy-digest="license-evidence-digest">{{ icon("copy") }}Sao chép SHA-256 đầy đủ</button></div>
 </section>
 {% endif %}
 {% if can_write and detail.current.state == 'rights_pending' %}
-<form id="license-evidence-upload" class="license-evidence-upload" aria-label="Tải lên bằng chứng quyền"
+<form id="license-evidence-upload" class="glass-card lx-card lx-form license-evidence-upload" aria-label="Tải lên bằng chứng quyền"
       data-endpoint="/api/v1/research-sources/{{ detail.source_id | urlencode }}/revisions/{{ detail.current.policy_id | urlencode }}/license-evidence"
       data-csrf="{{ csrf_token }}">
-<h3>Tính mã băm tài liệu quyền</h3>
-<p>Tệp chỉ được truyền để máy chủ tính SHA-256 rồi xóa dữ liệu thô. Tên tệp và nội dung không được lưu.</p>
-<label for="license-evidence-file">Chọn PDF, TXT, HTML hoặc DOCX (tối đa 10 MiB)</label>
-<input id="license-evidence-file" type="file" accept="application/pdf,text/plain,text/html,application/vnd.openxmlformats-officedocument.wordprocessingml.document" required>
-<button class="btn btn-primary" type="submit">Tải lên và tính SHA-256</button>
-<p id="license-evidence-status" role="status" aria-live="polite"></p>
+<h3>{{ icon("upload") }}Tính mã băm tài liệu quyền</h3>
+<p class="lx-help">Tệp chỉ được truyền để máy chủ tính SHA-256 rồi xóa dữ liệu thô. Tên tệp và nội dung không được lưu.</p>
+<div class="lx-form__row lx-form__row--action">
+<div class="lx-field"><label for="license-evidence-file">Chọn PDF, TXT, HTML hoặc DOCX (tối đa 10 MiB)</label>
+<input id="license-evidence-file" type="file" accept="application/pdf,text/plain,text/html,application/vnd.openxmlformats-officedocument.wordprocessingml.document" required></div>
+<button class="btn btn-primary" type="submit">{{ icon("upload") }}Tải lên và tính SHA-256</button>
+</div>
+<p id="license-evidence-status" class="lx-status" role="status" aria-live="polite"></p>
 </form>
 {% endif %}
-<h3>Quota hiện hành</h3>
-{% if detail.quota %}<p>Số yêu cầu: {{ detail.quota.requests_used }} / {{ detail.quota.budget.max_requests }} · Byte: {{ detail.quota.bytes_used }} / {{ detail.quota.budget.max_bytes }} · Chi phí: {{ detail.quota.cost_used }} / {{ detail.quota.budget.max_cost }} {{ detail.quota.budget.cost_unit }}</p><p>Cửa sổ bắt đầu: {{ detail.quota.window_started_at }} · Tại: {{ detail.quota.as_of }} · Phiên bản {{ detail.quota.policy_sequence }}</p>
-{% else %}<p>Chưa có snapshot sử dụng quota. Giới hạn policy: {{ detail.current.budget.max_requests }} yêu cầu / {{ detail.current.budget.max_bytes }} byte / {{ detail.current.budget.max_cost }} {{ detail.current.budget.cost_unit }} trong {{ detail.current.budget.window_seconds }} giây.</p>{% endif %}
-<h3>Lịch sử policy</h3>
-<ol class="source-history">
-{% for revision in detail.revisions | reverse %}<li><article><h4>Phiên bản {{ revision.sequence }} · {{ state_labels[revision.state] }}</h4><dl>
-<dt>Lý do</dt><dd>{{ revision.reason }}</dd><dt>Người gửi</dt><dd>{{ revision.actor_id }}</dd><dt>Người duyệt</dt><dd>{{ revision.approved_by or 'Chưa duyệt' }}</dd><dt>Mã policy</dt><dd>{{ revision.policy_id }}</dd><dt>Hết hạn</dt><dd>{{ revision.valid_until or "Không đặt thời hạn" }}</dd><dt>Thời điểm ghi nhận</dt><dd>{{ revision.created_at }}</dd><dt>Evidence tham chiếu</dt><dd>{{ revision.evidence_ref or 'Chưa cung cấp' }}</dd><dt>Mục đích</dt><dd>{% for purpose in revision.allowed_purposes %}{{ purpose_labels[purpose] }}{% if not loop.last %}, {% endif %}{% else %}Chưa cấp quyền{% endfor %}</dd>
+<section class="glass-card lx-card" aria-labelledby="history-heading">
+<h3 id="history-heading">{{ icon("clock") }}Lịch sử policy</h3>
+<ol class="lx-timeline source-history">
+{% for revision in detail.revisions | reverse %}<li><article><div class="lx-timeline__head"><h4>Phiên bản {{ revision.sequence }} · {{ state_labels[revision.state] }}</h4>{{ chip(state_labels[revision.state], state_tones.get(revision.state, 'neutral'), state_icons.get(revision.state, 'info')) }}</div><dl class="kv-grid">
+<div class="kv kv--text"><dt>Lý do</dt><dd>{{ revision.reason }}</dd></div><div class="kv"><dt>Người gửi</dt><dd><code class="lx-hash__text" title="{{ revision.actor_id }}">{{ revision.actor_id }}</code></dd></div><div class="kv"><dt>Người duyệt</dt><dd>{% if revision.approved_by %}<code class="lx-hash__text" title="{{ revision.approved_by }}">{{ revision.approved_by }}</code>{% else %}<span class="value-muted">Chưa duyệt</span>{% endif %}</dd></div><div class="kv"><dt>Mã policy</dt><dd><code class="lx-hash__text" title="{{ revision.policy_id }}">{{ revision.policy_id }}</code></dd></div><div class="kv kv--text"><dt>Hết hạn</dt><dd>{{ revision.valid_until or "Không đặt thời hạn" }}</dd></div><div class="kv kv--text"><dt>Thời điểm ghi nhận</dt><dd><time datetime="{{ revision.created_at.isoformat() if revision.created_at.isoformat is defined else revision.created_at }}" title="{{ revision.created_at }}">{{ revision.created_at | local_minute }}</time></dd></div><div class="kv kv--text"><dt>Evidence tham chiếu</dt><dd>{{ revision.evidence_ref or 'Chưa cung cấp' }}</dd></div><div class="kv kv--text"><dt>Mục đích</dt><dd>{% for purpose in revision.allowed_purposes %}{{ purpose_labels[purpose] }}{% if not loop.last %}, {% endif %}{% else %}Chưa cấp quyền{% endfor %}</dd></div>
 </dl></article></li>{% endfor %}
 </ol>
+</section>
 {% if can_write %}
-<details><summary>Gửi policy chờ duyệt</summary><form method="post" action="/admin/research-sources/revision" aria-label="Gửi policy chờ duyệt">
+{#- Domain cấm rights_pending → rights_pending (source_registry._TRANSITIONS); form vẫn hiện ở trạng thái
+    chờ duyệt để giữ luồng nộp lại phạm vi sau khi tải bằng chứng — xem đề xuất trong báo cáo WP-05. -#}
+<details class="glass-card lx-details"><summary>Gửi policy chờ duyệt</summary><form method="post" action="/admin/research-sources/revision" aria-label="Gửi policy chờ duyệt" class="lx-form">
 {{ hidden(detail.source_id) }}<input type="hidden" name="state" value="rights_pending">
-<p>Chỉ lưu tham chiếu bên ngoài, digest và phạm vi quyền. Nội dung tài liệu sẽ được băm rồi bỏ ngay sau khi upload.</p>
-<label for="pending-evidence">Tham chiếu kho tài liệu bên ngoài</label><textarea id="pending-evidence" name="evidence_ref" required>{{ detail.current.evidence_ref or '' }}</textarea>
+<p class="lx-help">Chỉ lưu tham chiếu bên ngoài, digest và phạm vi quyền. Nội dung tài liệu sẽ được băm rồi bỏ ngay sau khi upload.</p>
+<div class="lx-field"><label for="pending-evidence">Tham chiếu kho tài liệu bên ngoài</label><textarea id="pending-evidence" name="evidence_ref" required>{{ detail.current.evidence_ref or '' }}</textarea></div>
 {{ purposes('pending') }}
 <div class="license-scope-grid">
 {% for name, label, value in [('provider','Nhà cung cấp',detail.current.provider or ''),('product','Sản phẩm dữ liệu',detail.current.product or ''),('venue','Sàn/thị trường',detail.current.venue or ''),('contract','Loại hợp đồng',detail.current.contract or ''),('symbols','Mã giao dịch, phân tách bằng dấu phẩy',detail.current.license_scope.symbols | join(', ') if detail.current.license_scope else ''),('intervals','Khung thời gian, phân tách bằng dấu phẩy',detail.current.license_scope.intervals | join(', ') if detail.current.license_scope else ''),('data_start','Dữ liệu bắt đầu (ISO 8601 có múi giờ)',detail.current.license_scope.data_start.isoformat() if detail.current.license_scope else ''),('data_end','Dữ liệu kết thúc (ISO 8601 có múi giờ)',detail.current.license_scope.data_end.isoformat() if detail.current.license_scope else ''),('max_retention_days','Số ngày lưu tối đa (để trống nếu không giới hạn)',detail.current.license_scope.max_retention_days if detail.current.license_scope and detail.current.license_scope.max_retention_days is not none else ''),('attribution','Nội dung ghi công bắt buộc',detail.current.license_scope.attribution if detail.current.license_scope else '')] %}
@@ -118,26 +185,33 @@
 </div>
 {{ scope_checks('scope_output_', scope_output_labels) }}
 {{ scope_checks('scope_derived_', scope_derived_use_labels) }}
+<div class="lx-form__row">
 {% for name, label, value in [('window_seconds','Cửa sổ quota (giây)',detail.current.budget.window_seconds),('max_requests','Giới hạn số yêu cầu',detail.current.budget.max_requests),('max_bytes','Giới hạn byte',detail.current.budget.max_bytes),('max_cost','Giới hạn chi phí',detail.current.budget.max_cost),('cost_unit','Đơn vị chi phí',detail.current.budget.cost_unit)] %}
-<label for="pending-{{ name }}">{{ label }}</label><input id="pending-{{ name }}" name="{{ name }}" value="{{ value }}" required>
+<div class="lx-field"><label for="pending-{{ name }}">{{ label }}</label><input id="pending-{{ name }}" name="{{ name }}" value="{{ value }}" required></div>
 {% endfor %}
-<label for="pending-reason">Lý do gửi duyệt</label><textarea id="pending-reason" name="reason" required></textarea>
-<button type="submit">Gửi chờ duyệt</button></form></details>
-<details><summary>Chặn hoặc thu hồi quyền</summary><form method="post" action="/admin/research-sources/revision" aria-label="Chặn hoặc thu hồi quyền">{{ hidden(detail.source_id) }}
-<label for="disable-state">Trạng thái</label><select id="disable-state" name="state"><option value="blocked">Chặn</option><option value="revoked">Thu hồi</option></select>
-<label for="disable-reason">Lý do thay đổi</label><textarea id="disable-reason" name="reason" required></textarea><button type="submit">Lưu thay đổi quyền</button></form></details>
+</div>
+<div class="lx-field"><label for="pending-reason">Lý do gửi duyệt</label><textarea id="pending-reason" name="reason" required maxlength="2048"></textarea></div>
+<div class="lx-form__actions"><button type="submit" class="btn btn-primary">Gửi chờ duyệt</button></div></form></details>
+{#- Chỉ đưa ra chuyển trạng thái domain cho phép: chặn từ discovered/rights_pending/verified, thu hồi từ verified. -#}
+{% if detail.current.state in ['discovered', 'rights_pending', 'verified'] %}
+<details class="glass-card lx-details"><summary>Chặn hoặc thu hồi quyền</summary><form method="post" action="/admin/research-sources/revision" aria-label="Chặn hoặc thu hồi quyền" class="lx-form">{{ hidden(detail.source_id) }}
+<div class="lx-field"><label for="disable-state">Trạng thái</label><select id="disable-state" name="state"><option value="blocked">Chặn</option>{% if detail.current.state == 'verified' %}<option value="revoked">Thu hồi</option>{% endif %}</select></div>
+<div class="lx-field"><label for="disable-reason">Lý do thay đổi</label><textarea id="disable-reason" name="reason" required maxlength="2048"></textarea></div><div class="lx-form__actions"><button type="submit" class="btn btn-danger">Lưu thay đổi quyền</button></div></form></details>
+{% endif %}
 {% endif %}
 {% if can_approve and detail.current.state == 'rights_pending' %}
-<details><summary>Duyệt quyền độc lập</summary><p>Người duyệt phải khác người gửi. Hệ thống kiểm tra lại quyền và MFA ở máy chủ.</p>
-<form method="post" action="/admin/research-sources/approve" aria-label="Duyệt quyền độc lập">{{ hidden(detail.source_id) }}<input type="hidden" name="policy_id" value="{{ detail.current.policy_id }}">
-<label for="approve-evidence">Bằng chứng dùng để duyệt</label><select id="approve-evidence" name="license_evidence_id" required><option value="">Chọn digest và phạm vi khớp</option>{% for evidence in evidence_options %}<option value="{{ evidence.evidence_id }}">{{ evidence.label }} · {{ evidence.scope_hash[:12] }}</option>{% endfor %}</select>
+<details class="glass-card lx-details"><summary>Duyệt quyền độc lập</summary><div class="lx-details__body"><p class="lx-help">Người duyệt phải khác người gửi. Hệ thống kiểm tra lại quyền và MFA ở máy chủ.</p>
+<form method="post" action="/admin/research-sources/approve" aria-label="Duyệt quyền độc lập" class="lx-form">{{ hidden(detail.source_id) }}<input type="hidden" name="policy_id" value="{{ detail.current.policy_id }}">
+<div class="lx-field"><label for="approve-evidence">Bằng chứng dùng để duyệt</label><select id="approve-evidence" name="license_evidence_id" required><option value="">Chọn digest và phạm vi khớp</option>{% for evidence in evidence_options %}<option value="{{ evidence.evidence_id }}">{{ evidence.label }} · {{ evidence.scope_hash[:12] }}</option>{% endfor %}</select></div>
 {{ purposes('approve') }}
-<label for="approve-reason">Lý do duyệt</label><textarea id="approve-reason" name="reason" required></textarea><button type="submit">Duyệt quyền</button></form></details>
+<div class="lx-field"><label for="approve-reason">Lý do duyệt</label><textarea id="approve-reason" name="reason" required maxlength="2048"></textarea></div><div class="lx-form__actions"><button type="submit" class="btn btn-primary">Duyệt quyền</button></div></form></div></details>
 {% endif %}
-{% else %}<p>Chọn một nguồn để xem lịch sử, quyền sử dụng và quota.</p>{% endif %}
+{% else %}<p class="lx-empty">{{ icon("info") }}Chọn một nguồn để xem lịch sử, quyền sử dụng và quota.</p>{% endif %}
 </section>
+</div>
 </div>
 {% endblock %}
 {% block scripts %}
+<script src="/static/pages/learning-ui.js" defer></script>
 <script src="/static/research-sources.js" defer></script>
 {% endblock %}

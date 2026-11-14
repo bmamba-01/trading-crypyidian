@@ -128,6 +128,32 @@ def _templates(request: Request) -> Jinja2Templates:
     return templates
 
 
+# Mã lý do an toàn được phép hiển thị trên trang lỗi (không chứa dữ liệu nội bộ), kèm gợi ý.
+SAFE_ERROR_REASONS: dict[str, str] = {
+    "FLATTEN_PREVIEW_STALE": (
+        "Vị thế hoặc lệnh đã thay đổi sau khi tạo bản xem trước. Tạo bản xem trước mới rồi "
+        "xác nhận lại."
+    ),
+    "FLATTEN_PREVIEW_EXPIRED": (
+        "Bản xem trước đã quá 90 giây. Tạo bản xem trước mới rồi xác nhận lại."
+    ),
+    "FLATTEN_IDEMPOTENCY_KEY_REUSED": (
+        "Bản xem trước này đã được dùng cho một lần xác nhận. Mở trang thao tác vừa tạo hoặc "
+        "tạo bản xem trước mới."
+    ),
+    "RECENT_MFA_REQUIRED": "Cần xác thực MFA gần đây. Đăng nhập lại rồi thử lại.",
+    "CONTROL_PERMISSION_DENIED": "Tài khoản không có quyền thực hiện thao tác này.",
+}
+
+
+class AdminHTTPException(StarletteHTTPException):
+    """Lỗi trang HTML kèm mã lý do an toàn để trang lỗi gợi ý bước tiếp theo đúng."""
+
+    def __init__(self, status_code: int, detail: str, *, reason_code: str) -> None:
+        super().__init__(status_code=status_code, detail=detail)
+        self.reason_code = reason_code if reason_code in SAFE_ERROR_REASONS else None
+
+
 class AdminHTMLRoute(APIRoute):
     """Lỗi của trang HTML giữ mã HTTP và không phản chiếu dữ liệu nội bộ/biểu mẫu."""
 
@@ -170,6 +196,10 @@ class AdminHTMLRoute(APIRoute):
                         "identity": None,
                         "error_message": messages.get(status, "Không thể xử lý yêu cầu này."),
                         "error_status": status,
+                        "error_reason_code": getattr(error, "reason_code", None),
+                        "error_reason_hint": SAFE_ERROR_REASONS.get(
+                            getattr(error, "reason_code", None) or ""
+                        ),
                     },
                     status_code=status,
                     headers=headers,
@@ -195,7 +225,8 @@ class AdminBotView:
     entry_allowed: bool
     control_revision: int
     needs_manual_enable: bool = False
-    symbol: str = "BTCUSDT"
+    # None khi bot không khai báo mã: không tự điền BTCUSDT (dữ liệu bịa).
+    symbol: str | None = None
 
 
 def _admin_service(request: Request) -> BotConfigAdminService:
@@ -474,7 +505,7 @@ def _bot_view(bot: dict[str, Any], runtime: dict[str, Any] | None = None) -> Adm
         entry_allowed=bool(runtime.get("entry_allowed", False)),
         control_revision=int(runtime.get("control_revision", 0)),
         needs_manual_enable=bool(runtime.get("needs_manual_enable", False)),
-        symbol=str(bot.get("symbol") or "BTCUSDT"),
+        symbol=str(bot["symbol"]) if bot.get("symbol") else None,
     )
 
 
@@ -1802,8 +1833,8 @@ async def flatten_confirm_form(
             "FLATTEN_PREVIEW_EXPIRED": 409,
             "FLATTEN_IDEMPOTENCY_KEY_REUSED": 409,
         }.get(error.reason_code, 422)
-        raise HTTPException(
-            status_code=status, detail="Xác nhận flatten-all bị từ chối."
+        raise AdminHTTPException(
+            status, "Xác nhận flatten-all bị từ chối.", reason_code=error.reason_code
         ) from error
     return Response(
         status_code=303, headers={"Location": f"/admin/flatten/operations/{result.operation_id}"}

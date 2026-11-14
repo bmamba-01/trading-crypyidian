@@ -1,147 +1,208 @@
 {% extends "admin/base.html" %}
 {% block title %}{{ bot.name }} · Quản trị Bot · Crypidian{% endblock %}
 {% block heading %}{{ bot.name }}{% endblock %}
+{% block head_extra %}<link rel="stylesheet" href="/static/pages/bots.css">{% endblock %}
 
 {% block content %}
-{% from "admin/_metric_help.html" import help_term, help_icon %}
-<dl class="u-margin-bottom-1rem bot-status-dl">
-  <dt>Trạng thái tài khoản</dt><dd>{{ bot.status | label_vi }} / {{ bot.account_status | label_vi }} / {{ bot.account_mode | label_vi }}</dd>
-  <dt>Mức sẵn sàng</dt><dd>{{ bot.readiness | label_vi }}</dd>
-  <dt>Trạng thái mở vị thế</dt><dd>{{ bot.entry_state | label_vi }}</dd>
-  <dt>Cho phép mở vị thế</dt><dd>{{ "Có" if bot.entry_allowed else "Không" }}</dd>
-</dl>
+{% from "admin/_metric_help.html" import help_term %}
+{#- Biểu tượng nét (phong cách Lucide) dựng bằng SVG nội tuyến; không dùng style/on* để giữ CSP. -#}
+{%- set ICON_PATHS = {
+  "status": "M12 2v10M5.6 5.6a9 9 0 1 0 12.8 0",
+  "ready": "M20 6 9 17l-5-5",
+  "entry": "M5 12h14M13 6l6 6-6 6",
+  "allow": "M12 3 4 6v6c0 4.4 3.4 8.4 8 9 4.6-.6 8-4.6 8-9V6l-8-3Z",
+  "revision": "M4 4v6h6M20 20v-6h-6M5 13a7 7 0 0 0 13 3M19 11A7 7 0 0 0 6 8",
+  "id": "M5 9h14M5 15h14M10 3 8 21M16 3l-2 18",
+  "symbol": "M4 7h16M4 12h16M4 17h16",
+  "pnl": "M3 17l6-6 4 4 8-8M15 7h6v6",
+  "winrate": "M12 3a9 9 0 1 0 9 9h-9V3Z",
+  "factor": "M4 20 20 4M7 7h.01M17 17h.01",
+  "drawdown": "M3 7l6 6 4-4 8 8M15 17h6v-6",
+  "open": "M18 20V10M12 20V4M6 20v-6",
+  "count": "M4 6h16M4 12h16M4 18h10",
+  "asset": "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18ZM9 9h6M9 15h6M12 6v12",
+  "time": "M12 7v5l3 2M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Z",
+  "chart": "M3 3v18h18M7 15l4-4 3 3 5-6",
+  "list": "M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01",
+  "copy": "M9 9h11v11H9zM5 15H4V4h11v1",
+  "side_long": "M7 17 17 7M9 7h8v8",
+  "side_short": "M7 7l10 10M17 9v8H9",
+  "pause": "M10 4H6v16h4zM18 4h-4v16h4z",
+  "play": "M6 4l14 8-14 8z",
+  "power": "M12 2v10M5.6 5.6a9 9 0 1 0 12.8 0",
+  "send": "M22 2 11 13M22 2l-7 20-4-9-9-4 20-7Z",
+  "config": "M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6",
+  "fee": "M6 3h12v18l-3-2-3 2-3-2-3 2V3ZM9 8h6M9 12h6",
+  "funding": "M12 3v18M17 7H9.5a2.5 2.5 0 0 0 0 5h5a2.5 2.5 0 0 1 0 5H7",
+  "slippage": "M3 12c3-4 6 4 9 0s6-4 9 0",
+  "why_in": "M5 12h14M13 6l6 6-6 6",
+  "why_out": "M19 12H5M11 6l-6 6 6 6",
+  "warn": "M12 3 2 20h20L12 3ZM12 10v4M12 17h.01",
+  "flag": "M4 22V4M4 4h13l-2 4 2 4H4"
+} -%}
+{%- macro ico(name) -%}<svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="{{ ICON_PATHS.get(name, ICON_PATHS['list']) }}"/></svg>{%- endmacro -%}
+{#- USDT hiển thị bằng biểu tượng ₮ để tiết kiệm chỗ; tài sản khác giữ mã chữ. -#}
+{%- macro asset_mark(asset) -%}{% if asset == "USDT" %}<span class="asset-usdt" role="img" aria-label="USDT" title="USDT">₮</span>{% elif asset %}<span class="asset-code">{{ asset }}</span>{% endif %}{%- endmacro -%}
+{#- Tiền: làm tròn 2 chữ số để hiển thị, số gốc đầy đủ ở title; thiếu số thì ghi "Chưa có dữ liệu". -#}
+{%- macro money(value, asset, signed=false) -%}
+{%- set tone = value | pnl_tone -%}
+{%- if tone == "unknown" -%}<span class="value-muted">Chưa có dữ liệu</span>
+{%- else -%}<span class="money{% if signed %} pnl-value pnl-value--{{ tone }}{% endif %}"{% if signed %} data-pnl-tone="{{ tone }}"{% endif %} title="{{ value }} {{ asset }}">{% if signed and tone == "positive" %}+{% endif %}{{ value | number2_vi }}{{ asset_mark(asset) }}</span>
+{%- endif -%}
+{%- endmacro -%}
+{#- ID viết tắt 8 ký tự + nút sao chép; giá trị đầy đủ vẫn có trong văn bản (ẩn thị giác). -#}
+{%- macro id_chip(value) -%}
+{%- set full = value | string -%}
+<span class="id-chip"><code class="trade-id" title="{{ full }}">{{ full[:8] ~ "…" if full | length > 10 else full }}</code><span class="visually-hidden">{{ full }}</span><button type="button" class="copy-btn" data-copy="{{ full }}" aria-label="Sao chép mã {{ full }}" title="Sao chép mã đầy đủ">{{ ico("copy") }}</button></span>
+{%- endmacro -%}
+{%- macro side_badge(side) -%}
+{%- if side == "LONG" -%}<span class="side-badge side-badge--long">{{ ico("side_long") }}{{ side | label_vi }}</span>
+{%- elif side == "SHORT" -%}<span class="side-badge side-badge--short">{{ ico("side_short") }}{{ side | label_vi }}</span>
+{%- else -%}<span class="side-badge side-badge--unknown">{{ side | label_vi }}</span>{%- endif -%}
+{%- endmacro -%}
+{#- Màu trạng thái theo mã máy; mã chưa biết dùng màu trung tính và nhãn "Chưa xác định". -#}
+{%- set STATUS_TONES = {
+  "ENABLED": "success", "ACTIVE": "success", "RUNNING": "success", "READY": "success",
+  "PAUSED": "warning", "STARTING": "warning", "STANDBY": "warning", "NOT_READY": "warning", "DEGRADED": "warning",
+  "DISABLED": "danger", "STOPPED": "danger", "RECOVERY_REQUIRED": "danger", "KILLED": "danger", "BLOCKED": "danger"
+} -%}
+{%- macro status_badge(code, prefix="") -%}<span class="badge badge-{{ STATUS_TONES.get(code, 'neutral') }} bot-badge">{{ prefix }}{{ code | label_vi }}</span>{%- endmacro -%}
 
-<!-- Thanh tóm tắt trạng thái Bot & Breadcrumbs -->
-<div class="bot-header-summary">
-  <div>
-    <nav class="u-margin-bottom-0-35rem u-font-size-0-85rem u-color-text-muted" aria-label="Đường dẫn trang">
-      <a href="/admin">Tổng quan</a> &rsaquo;
-      <a href="/admin/bots">Danh Sách Bot</a> &rsaquo;
-      <span aria-current="page">{{ bot.name }}</span>
-    </nav>
-    <div class="u-display-flex u-align-items-center u-gap-0-5rem u-flex-wrap-wrap">
-      <h2 class="u-margin-0 u-font-size-1-35rem u-display-flex u-align-items-center u-gap-0-4rem">
-        <svg class="u-color-primary svg-icon" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/></svg>
-        <span>{{ bot.name }}</span>
-      </h2>
-      <span class="u-background-bg-surface-subtle u-border-1px-solid-border-subtle u-font-size-0-8rem badge">
-        Cặp: <strong>{{ bot.symbol }}</strong>
-      </span>
+{%- set roles = identity.principal.roles -%}
+{%- set is_owner = "owner" in roles -%}
+{%- set can_label_retraining = is_owner or "strategy_admin" in roles or "analyst_reviewer" in roles -%}
+{%- set quote = metrics.quote_asset if metrics and metrics.quote_asset else "" -%}
+{#- Mã giao dịch thật của bot lấy từ vị thế mở và lệnh đã đóng trong ledger (không đoán theo cấu hình). -#}
+{%- set traded = namespace(symbols=[]) -%}
+{%- for item in positions + recent_trades -%}{%- if item.symbol and item.symbol not in traded.symbols -%}{%- set traded.symbols = traded.symbols + [item.symbol] -%}{%- endif -%}{%- endfor -%}
+
+<div class="bot-page">
+<div class="bot-head">
+  <nav class="bot-breadcrumb" aria-label="Đường dẫn trang">
+    <a href="/admin">Tổng quan</a><span aria-hidden="true">›</span><a href="/admin/bots">Danh sách bot</a><span aria-hidden="true">›</span><span aria-current="page">{{ bot.name }}</span>
+  </nav>
+  <!-- Thanh trạng thái cập nhật trực tiếp 5s -->
+  <div class="live-status-bar" role="region" aria-label="Trạng thái cập nhật trực tiếp 5s">
+    <div class="live-status-indicator">
+      <span class="pulse-dot" id="live-pulse-dot" aria-hidden="true"></span>
+      <span class="live-status-title">Tự động cập nhật 5s</span>
+      <span class="live-status-sep" aria-hidden="true">·</span>
+      <span class="live-status-time-wrapper">Cập nhật: <time id="live-updated-at">Đang kết nối...</time></span>
+    </div>
+    <div class="live-status-actions">
+      <span id="live-status-msg" class="live-status-msg" aria-live="polite"></span>
+      <button id="toggle-realtime-btn" type="button" class="btn btn-sm btn-outline" aria-pressed="true">Tạm dừng</button>
     </div>
   </div>
-
-  <div class="bot-header-badges">
-    {% if bot.status == "RUNNING" %}
-      <span class="badge badge-success">● ĐANG CHẠY</span>
-    {% elif bot.status == "PAUSED" %}
-      <span class="badge badge-warning">⏸️ TẠM DỪNG</span>
-    {% else %}
-      <span class="badge badge-danger">🛑 {{ bot.status | label_vi }}</span>
-    {% endif %}
-
-    <span class="badge badge-paper">Chế độ: {{ bot.account_mode | label_vi }} ({{ bot.account_mode }})</span>
-
-    <span class="badge badge-warning">Mức sẵn sàng: {{ bot.readiness | label_vi }}</span>
-
-    {% if bot.entry_allowed %}
-      <span class="u-background-rgba-14-203-129-0-15 u-color-hex-0ecb81 u-font-weight-600 badge">
-        Vào lệnh: Cho phép
-      </span>
-    {% else %}
-      <span class="u-background-rgba-246-70-93-0-15 u-color-hex-f6465d u-font-weight-600 badge">
-        Vào lệnh: Bị chặn
-      </span>
-    {% endif %}
-  </div>
 </div>
 
-<!-- Thanh trạng thái cập nhật trực tiếp 5s (Live Pulse Bar) -->
-<div class="live-status-bar" role="region" aria-label="Trạng thái cập nhật trực tiếp 5s">
-  <div class="live-status-indicator">
-    <span class="pulse-dot" id="live-pulse-dot" aria-hidden="true"></span>
-    <span class="live-status-title">Tự động cập nhật 5s</span>
-    <span class="live-status-sep" aria-hidden="true">·</span>
-    <span class="live-status-time-wrapper">Cập nhật: <time id="live-updated-at">Đang kết nối...</time></span>
+<p id="bot-live-stale" class="bot-notice bot-notice--info" role="status" hidden>
+  <span data-stale-text>Dữ liệu trên trang đã cũ.</span> <a href="/admin/bots/{{ bot.id }}">Tải lại trang</a>
+</p>
+
+<!-- Trạng thái vận hành: hàng nhãn–giá trị, đọc từ BotOperationsService. -->
+<section class="glass-card bot-overview" aria-labelledby="bot-overview-heading">
+  <div class="bot-overview__head">
+    <h2 id="bot-overview-heading" class="bot-section-title">{{ ico("status") }}Trạng thái vận hành</h2>
+    <div class="bot-overview__chips">
+      {{ status_badge(bot.status) }}
+      <span class="badge badge-paper bot-badge">{{ bot.account_mode | label_vi }}</span>
+      {% if bot.entry_allowed %}<span class="badge badge-success bot-badge">Vào lệnh: Cho phép</span>{% else %}<span class="badge badge-danger bot-badge">Vào lệnh: Bị chặn</span>{% endif %}
+    </div>
   </div>
-  <div class="live-status-actions">
-    <span id="live-status-msg" class="live-status-msg" aria-live="polite"></span>
-    <button id="toggle-realtime-btn" type="button" class="btn btn-sm btn-outline" aria-pressed="true">Tạm dừng</button>
-  </div>
-</div>
+  <dl class="kv-grid bot-status-dl">
+    <div class="kv kv--text"><dt>{{ ico("status") }}Trạng thái tài khoản</dt><dd id="bot-state-summary" title="Trạng thái bot / tài khoản / chế độ">{{ bot.status | label_vi }} / {{ bot.account_status | label_vi }} / {{ bot.account_mode | label_vi }}</dd></div>
+    <div class="kv"><dt>{{ ico("ready") }}Mức sẵn sàng</dt><dd id="bot-readiness">{{ bot.readiness | label_vi }}</dd></div>
+    <div class="kv"><dt>{{ ico("entry") }}Trạng thái mở vị thế</dt><dd id="bot-entry-state">{{ bot.entry_state | label_vi }}</dd></div>
+    <div class="kv"><dt>{{ ico("allow") }}Cho phép mở vị thế</dt><dd id="bot-entry-allowed">{{ "Có" if bot.entry_allowed else "Không" }}</dd></div>
+    <div class="kv"><dt>{{ ico("revision") }}Phiên bản điều khiển</dt><dd id="bot-control-revision" class="num">{{ bot.control_revision }}</dd></div>
+    <div class="kv"><dt>{{ ico("id") }}Mã bot</dt><dd>{{ id_chip(bot.id) }}</dd></div>
+    <div class="kv kv--wide"><dt>{{ ico("symbol") }}Mã đã giao dịch (30 ngày)</dt><dd class="bot-symbols">{% for symbol in traded.symbols %}<span data-coin="{{ symbol }}">{{ symbol }}</span>{% else %}<span class="value-muted">Chưa có dữ liệu</span>{% endfor %}</dd></div>
+  </dl>
+</section>
 
 <!-- Chỉ số hiệu năng 30 ngày: đọc từ ledger PAPER qua báo cáo bot; thiếu nguồn thì ghi rõ. -->
-<section class="trading-metrics-block" aria-label="Chỉ số hiệu năng bot">
+<section class="trading-metrics-block bot-kpi" aria-labelledby="bot-kpi-heading">
+  <h2 id="bot-kpi-heading" class="visually-hidden">Chỉ số hiệu năng 30 ngày</h2>
   {% if not trading_data_available %}
-  <p class="u-padding-1rem u-background-bg-surface u-border-radius-0-5rem u-border-1px-solid-border-subtle u-color-text-muted" role="status" id="bot-trading-data-unavailable">
+  <p class="bot-notice" role="status" id="bot-trading-data-unavailable">
     Chưa tải được số liệu giao dịch PAPER của bot này. Hãy kiểm tra quyền xem báo cáo hoặc thử lại sau.
   </p>
   {% endif %}
-  {% set quote = metrics.quote_asset if metrics and metrics.quote_asset else "" %}
-  <div class="trading-metric-grid">
-    <div class="trading-metric-card">
-      <div class="metric-header">
-        {{ help_term("open_positions_count", "Vị Thế Đang Mở") }}
-        <svg class="u-color-primary svg-icon" viewBox="0 0 24 24"><path d="M18 20V10M12 20V4M6 20v-6"/></svg>
+  <div class="bot-kpi-grid">
+    <div class="kpi-card kpi-card--h">
+      <span class="kpi-icon kpi-icon--green" aria-hidden="true">{{ ico("pnl") }}</span>
+      <div class="kpi-body">
+        <span class="kpi-value" id="kpi-net-pnl">{% if metrics and metrics.net_pnl is not none %}{{ money(metrics.net_pnl, quote, signed=true) }}{% else %}<span class="kpi-value--empty">Chưa có dữ liệu</span>{% endif %}</span>
+        <span class="kpi-label">{{ help_term("net_pnl", "Lãi/lỗ ròng") }}</span>
       </div>
-      <div class="u-color-primary metric-value tabular-nums" id="kpi-open-positions">{% if metrics %}{{ metrics.open_positions_count }}{% else %}—{% endif %}</div>
-      <div class="metric-sub tabular-nums">Trạng thái: {{ bot.entry_state | label_vi }}</div>
     </div>
-
-    <div class="trading-metric-card">
-      <div class="metric-header">
-        {{ help_term("win_rate_percent", "Tỷ Lệ Thắng (Win Rate)") }}
-        <svg class="u-color-primary svg-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>
+    <div class="kpi-card kpi-card--h">
+      <span class="kpi-icon kpi-icon--blue" aria-hidden="true">{{ ico("winrate") }}</span>
+      <div class="kpi-body">
+        <span class="kpi-value" id="kpi-win-rate">{% if metrics and metrics.win_rate_percent is not none %}{{ metrics.win_rate_percent | number2_vi }}%{% else %}<span class="kpi-value--empty">Chưa có dữ liệu</span>{% endif %}</span>
+        <span class="kpi-label">{{ help_term("win_rate_percent", "Tỷ lệ thắng") }}</span>
       </div>
-      <div class="metric-value tabular-nums" id="kpi-win-rate">{% if metrics and metrics.win_rate_percent is not none %}{{ metrics.win_rate_percent | number_vi }}%{% else %}Chưa có dữ liệu{% endif %}</div>
-      <div class="metric-sub tabular-nums" id="kpi-closed-trades">Tổng số lệnh đóng: {% if metrics %}{{ metrics.closed_trade_count }}{% else %}—{% endif %}</div>
     </div>
-
-    <div class="trading-metric-card">
-      <div class="metric-header">
-        {{ help_term("profit_factor", "Profit Factor") }}
-        <svg class="u-color-primary svg-icon" viewBox="0 0 24 24"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>
+    <div class="kpi-card kpi-card--h">
+      <span class="kpi-icon kpi-icon--violet" aria-hidden="true">{{ ico("factor") }}</span>
+      <div class="kpi-body">
+        <span class="kpi-value" id="kpi-profit-factor">{% if metrics and metrics.profit_factor is not none %}{{ metrics.profit_factor | number2_vi }}{% else %}<span class="kpi-value--empty">Không xác định</span>{% endif %}</span>
+        <span class="kpi-label">{{ help_term("profit_factor", "Profit Factor") }}</span>
       </div>
-      <div class="metric-value tabular-nums" id="kpi-profit-factor">{% if metrics and metrics.profit_factor is not none %}{{ metrics.profit_factor | number_vi }}{% else %}Không xác định{% endif %}</div>
-      <div class="metric-sub tabular-nums" id="kpi-expectancy">{{ help_term("expectancy_per_trade", "Kỳ vọng ròng mỗi lệnh") }}: {% if metrics and metrics.expectancy_per_trade is not none %}{{ metrics.expectancy_per_trade | number_vi }} {{ quote }}{% else %}Chưa có dữ liệu{% endif %}</div>
     </div>
-
-    <div class="trading-metric-card">
-      <div class="metric-header">
-        {{ help_term("net_pnl", "Lợi Nhuận Ròng (Net PnL)") }}
-        <svg class="u-color-primary svg-icon" viewBox="0 0 24 24"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+    <div class="kpi-card kpi-card--h">
+      <span class="kpi-icon kpi-icon--amber" aria-hidden="true">{{ ico("drawdown") }}</span>
+      <div class="kpi-body">
+        <span class="kpi-value" id="kpi-max-drawdown">{% if metrics and metrics.max_drawdown is not none %}{{ money(metrics.max_drawdown, quote) }}{% else %}<span class="kpi-value--empty">Chưa có dữ liệu</span>{% endif %}</span>
+        <span class="kpi-label">{{ help_term("max_drawdown", "Max Drawdown") }}</span>
       </div>
-      <div class="metric-value tabular-nums" id="kpi-net-pnl">
-        {% if metrics and metrics.net_pnl is not none %}{% set net_tone = metrics.net_pnl | pnl_tone %}<span class="pnl-value pnl-value--{{ net_tone }}" data-pnl-tone="{{ net_tone }}">{% if net_tone == "positive" %}+{% endif %}{{ metrics.net_pnl | number_vi }} {{ quote }}</span>{% else %}Chưa có dữ liệu{% endif %}
-      </div>
-      <div class="metric-sub tabular-nums">Tài sản định giá: {{ quote or "Chưa có dữ liệu" }}{% if metrics and metrics.other_quote_assets %} · còn {{ metrics.other_quote_assets | length }} tài sản khác trong báo cáo{% endif %}</div>
     </div>
-
-    <div class="trading-metric-card">
-      <div class="metric-header">
-        {{ help_term("max_drawdown", "Max Drawdown") }}
-        <svg class="u-color-hex-f6465d svg-icon" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+    <div class="kpi-card kpi-card--h">
+      <span class="kpi-icon kpi-icon--blue" aria-hidden="true">{{ ico("open") }}</span>
+      <div class="kpi-body">
+        <span class="kpi-value" id="kpi-open-positions">{% if metrics %}{{ metrics.open_positions_count }}{% else %}—{% endif %}</span>
+        <span class="kpi-label">{{ help_term("open_positions_count", "Vị thế đang mở") }}</span>
       </div>
-      <div class="metric-value tabular-nums" id="kpi-max-drawdown">{% if metrics and metrics.max_drawdown is not none %}{{ metrics.max_drawdown | number_vi }} {{ quote }}{% else %}Chưa có dữ liệu{% endif %}</div>
-      <div class="metric-sub tabular-nums">Chỉ tính PnL đã thực hiện</div>
+    </div>
+    <div class="kpi-card kpi-card--h">
+      <span class="kpi-icon kpi-icon--green" aria-hidden="true">{{ ico("count") }}</span>
+      <div class="kpi-body">
+        <span class="kpi-value" id="kpi-closed-trades">{% if metrics %}{{ metrics.closed_trade_count }}{% else %}—{% endif %}</span>
+        <span class="kpi-label">Lệnh đã đóng</span>
+      </div>
     </div>
   </div>
-  <p class="u-font-size-0-8rem u-color-text-muted u-margin-top-0-5rem">Nguồn: ledger PAPER, cửa sổ 30 ngày gần nhất. <a href="/admin/reports">Xem báo cáo đầy đủ</a></p>
+  <dl class="kv-grid bot-kpi-extra">
+    <div class="kv"><dt>{{ ico("pnl") }}{{ help_term("expectancy_per_trade", "Kỳ vọng ròng mỗi lệnh") }}</dt><dd id="kpi-expectancy">{% if metrics and metrics.expectancy_per_trade is not none %}{{ money(metrics.expectancy_per_trade, quote, signed=true) }}{% else %}<span class="value-muted">Chưa có dữ liệu</span>{% endif %}</dd></div>
+    <div class="kv"><dt>{{ ico("asset") }}Tài sản định giá</dt><dd>{% if quote %}{{ quote }}{% if metrics.other_quote_assets %} <span class="value-muted">(+{{ metrics.other_quote_assets | length }} tài sản khác trong báo cáo)</span>{% endif %}{% else %}<span class="value-muted">Chưa có dữ liệu</span>{% endif %}</dd></div>
+    <div class="kv"><dt>{{ ico("time") }}Nguồn</dt><dd>Ledger PAPER · 30 ngày</dd></div>
+  </dl>
+  <p class="bot-footnote">Max Drawdown chỉ tính PnL đã thực hiện. Số tiền làm tròn 2 chữ số để hiển thị; rê chuột lên số để xem giá trị gốc. <a href="/admin/reports">Xem báo cáo đầy đủ</a></p>
 </section>
 
+<!-- Giao dịch PAPER: biểu đồ, vị thế mở, lịch sử lệnh trong tab để trang gọn. -->
+<section class="bot-trading" aria-labelledby="bot-trading-heading">
+  <h2 id="bot-trading-heading" class="visually-hidden">Giao dịch PAPER 30 ngày</h2>
+  <div class="bot-tabs" data-tabs>
+    <div class="tabs-bar" role="tablist" aria-label="Khu vực giao dịch của bot">
+      <button type="button" role="tab" id="tab-bot-chart" aria-controls="panel-bot-chart" aria-selected="true">{{ ico("chart") }}Biểu đồ</button>
+      <button type="button" role="tab" id="tab-bot-positions" aria-controls="panel-bot-positions" aria-selected="false">{{ ico("open") }}Vị thế mở <span class="tabs-bar__count" id="positions-count-badge">{{ positions | length }}</span></button>
+      <button type="button" role="tab" id="tab-bot-trades" aria-controls="panel-bot-trades" aria-selected="false">{{ ico("list") }}Lịch sử lệnh <span class="tabs-bar__count">{{ recent_trades | length }}</span></button>
+    </div>
+
+<div role="tabpanel" id="panel-bot-chart" aria-labelledby="tab-bot-chart" tabindex="0">
 <!-- Biểu đồ nến của giao dịch đã đóng gần nhất, lấy từ kho nến nội bộ. -->
-<section class="u-margin-top-1-5rem trade-chart-section" aria-labelledby="bot-chart-heading">
+<section class="glass-card trade-chart-section" aria-labelledby="bot-chart-heading">
   {% if chart_data %}
-  <div class="u-display-flex u-flex-wrap-wrap u-align-items-center u-justify-content-space-between u-gap-0-75rem u-margin-bottom-0-75rem chart-header-row">
-    <h3 class="u-margin-0 u-display-flex u-flex-wrap-wrap u-align-items-center u-gap-0-5rem u-font-size-1-1rem" id="bot-chart-heading">
-      <span>Biểu đồ giao dịch đã đóng gần nhất: <strong>{{ chart_data.symbol }}</strong></span>
-      {% if chart_data.side == "LONG" %}<span class="badge-long">🟢 LONG</span>{% else %}<span class="badge-short">🔴 SHORT</span>{% endif %}
-      <span class="u-background-bg-surface-subtle u-border-1px-solid-border-subtle u-font-size-0-8rem badge">Khung: {{ chart_data.timeframe }}</span>
-    </h3>
+  <div class="bot-panel-head">
+    <h3 id="bot-chart-heading">Giao dịch đã đóng gần nhất: <span data-coin="{{ chart_data.symbol }}">{{ chart_data.symbol }}</span></h3>
+    <div class="bot-panel-head__chips">{{ side_badge(chart_data.side) }}<span class="badge badge-paper-subtle bot-badge">Khung {{ chart_data.timeframe }}</span></div>
   </div>
-  {% if chart_data.notice %}<p role="status">{{ chart_data.notice }}</p>{% endif %}
+  {% if chart_data.notice %}<p class="bot-notice" role="status">{{ chart_data.notice }}</p>{% endif %}
   <p id="trade-chart-legend" class="chart-ohlc-legend" data-chart-legend>Rê chuột hoặc chạm vào nến để xem Mở / Cao / Thấp / Đóng.</p>
   <div id="trade-chart" class="chart-canvas" role="img" aria-label="Biểu đồ nến {{ chart_data.symbol }} với các mốc vào và thoát lệnh" data-stop-title="{{ metric_help_title('chart_stop_line') }}" data-target-title="{{ metric_help_title('chart_target_line') }}" data-entry-title="{{ metric_help_title('chart_entry_line') }}"></div>
-  <div id="trade-chart-event-detail" class="u-margin-top-0-5rem u-padding-0-5rem-0-85rem u-border-radius-0-375rem u-background-bg-surface-subtle u-font-size-0-85rem u-color-text-muted u-border-1px-solid-border-subtle chart-event-detail tabular-nums" role="status" aria-live="polite">
+  <div id="trade-chart-event-detail" class="chart-event-detail bot-chart-detail" role="status" aria-live="polite">
     Rê chuột hoặc chạm vào nến có đánh dấu để đọc thời điểm, giá khớp và lý do vào/đóng lệnh.
   </div>
   {% set chart_key_timeframe = chart_data.timeframe %}{% set chart_key_entry_line = false %}{% set chart_key_stop = false %}{% set chart_key_target = false %}
@@ -149,33 +210,23 @@
   <p class="chart-attribution">Biểu đồ sử dụng <a href="https://www.tradingview.com/lightweight-charts/" target="_blank" rel="noopener noreferrer">TradingView Lightweight Charts</a>, theo giấy phép Apache 2.0.</p>
   <script id="trade-chart-data" type="application/json">{{ chart_data | tojson }}</script>
   {% else %}
-  <h3 class="u-margin-0 u-font-size-1-1rem u-margin-bottom-0-75rem" id="bot-chart-heading">Biểu đồ giao dịch đã đóng gần nhất</h3>
-  <p class="u-padding-1rem u-background-bg-surface u-border-radius-0-5rem u-border-1px-solid-border-subtle u-color-text-muted" role="status" id="bot-chart-empty">
+  <h3 id="bot-chart-heading">Biểu đồ giao dịch đã đóng gần nhất</h3>
+  <p class="bot-empty" role="status" id="bot-chart-empty">
     Chưa có giao dịch đã đóng kèm dữ liệu nến trong 30 ngày để dựng biểu đồ.
   </p>
   {% endif %}
 </section>
+</div>
 
+<div role="tabpanel" id="panel-bot-positions" aria-labelledby="tab-bot-positions" tabindex="0">
 <!-- Vị thế đang mở: chỉ gồm trường có trong ledger PAPER. -->
-<section class="u-margin-top-1-5rem open-positions-section" aria-labelledby="open-positions-heading">
-  <div class="u-display-flex u-align-items-center u-justify-content-space-between u-margin-bottom-0-75rem">
-    <h3 class="u-margin-0 u-font-size-1-1rem u-display-flex u-flex-wrap-wrap u-align-items-center u-gap-0-4rem" id="open-positions-heading">
-      <span>⚡ Vị Thế Đang Mở (Open Positions)</span>
-      <span class="u-background-bg-surface-subtle u-border-1px-solid-border-subtle u-font-size-0-8rem badge">
-        Số lượng: <strong id="positions-count-badge">{{ positions | length }}</strong>
-      </span>
-    </h3>
+<section class="glass-card open-positions-section" aria-labelledby="open-positions-heading">
+  <div class="bot-panel-head">
+    <h3 id="open-positions-heading">Vị thế PAPER đang mở</h3>
   </div>
-
   {% if positions %}
-  <ul class="chart-key metric-key--narrow" aria-label="Chú giải các trường của vị thế">
-    <li>{{ help_term("position_symbol_side", "Cặp / Hướng") }}</li>
-    <li>{{ help_term("position_opened_at", "Mở lúc") }}</li>
-    <li>{{ help_term("quote_asset", "Tài sản định giá") }}</li>
-    <li>{{ help_term("trade_id", "Mã giao dịch") }}</li>
-  </ul>
-  <div class="table-wrapper">
-    <table class="responsive-table" aria-label="Bảng vị thế đang mở">
+  <div class="bot-table-wrap">
+    <table class="bot-table" aria-label="Bảng vị thế đang mở">
       <thead>
         <tr>
           <th scope="col">{{ help_term("position_symbol_side", "Cặp / Hướng") }}</th>
@@ -186,115 +237,101 @@
       </thead>
       <tbody id="open-positions-tbody">
         {% for pos in positions %}
-        <tr>
-          <td data-label="Cặp / Hướng">
-            <strong>{{ pos.symbol }}</strong>
-            {% if pos.side == "LONG" %}<span class="u-margin-left-0-35rem badge-long">🟢 LONG</span>{% else %}<span class="u-margin-left-0-35rem badge-short">🔴 SHORT</span>{% endif %}
-          </td>
-          <td data-label="Mở lúc" class="tabular-nums">{{ pos.opened_at | local_time }}</td>
-          <td data-label="Tài sản định giá">{{ pos.quote_asset }}</td>
-          <td data-label="Mã giao dịch"><code>{{ pos.trade_id }}</code></td>
+        <tr class="bot-table__row">
+          <td data-label="Cặp / Hướng" class="bot-table__lead"><span class="trade-instrument"><span data-coin="{{ pos.symbol }}">{{ pos.symbol }}</span>{{ side_badge(pos.side) }}</span></td>
+          <td data-label="Mở lúc"><time datetime="{{ pos.opened_at }}" title="{{ pos.opened_at | local_time }}">{{ pos.opened_at | local_minute }}</time></td>
+          <td data-label="Tài sản định giá">{{ pos.quote_asset or "Chưa có dữ liệu" }}</td>
+          <td data-label="Mã giao dịch">{{ id_chip(pos.trade_id) }}</td>
         </tr>
         {% endfor %}
       </tbody>
     </table>
   </div>
-  <p class="u-font-size-0-8rem u-color-text-muted u-margin-top-0-5rem">
-    PAPER chưa định giá theo thị trường (mark-to-market) nên chưa có giá tham chiếu và PnL chưa chốt cho vị thế mở.
-  </p>
+  <p class="bot-footnote">PAPER chưa định giá theo thị trường (mark-to-market) nên chưa có giá tham chiếu và PnL chưa chốt cho vị thế mở.</p>
   {% else %}
-  <p class="u-padding-1rem u-background-bg-surface u-border-radius-0-5rem u-border-1px-solid-border-subtle u-color-text-muted" role="status">
+  <p class="bot-empty" role="status">
     {% if trading_data_available %}Bot hiện không có vị thế PAPER đang mở.{% else %}Chưa có dữ liệu vị thế.{% endif %}
   </p>
   {% endif %}
 </section>
+</div>
 
+<div role="tabpanel" id="panel-bot-trades" aria-labelledby="tab-bot-trades" tabindex="0">
 <!-- Lịch sử lệnh đã đóng gần nhất và hậu kiểm. -->
-<section class="u-margin-top-1-5rem recent-trades-section" aria-labelledby="recent-trades-heading">
-  <div class="u-display-flex u-align-items-center u-justify-content-space-between u-margin-bottom-0-75rem">
-    <h3 class="u-margin-0 u-font-size-1-1rem u-display-flex u-align-items-center u-gap-0-4rem" id="recent-trades-heading">
-      <span>📜 Lịch Sử Khớp Lệnh & Mổ Xẻ Sau Giao Dịch</span>
-    </h3>
+<section class="glass-card recent-trades-section" aria-labelledby="recent-trades-heading">
+  <div class="bot-panel-head">
+    <h3 id="recent-trades-heading">Lịch sử khớp lệnh và hậu kiểm</h3>
+    <span class="bot-panel-head__note">Tối đa 10 lệnh gần nhất trong 30 ngày</span>
   </div>
-
   {% if recent_trades %}
-  <ul class="chart-key metric-key--narrow" aria-label="Chú giải các trường của lịch sử lệnh">
-    <li>{{ help_term("trade_closed_at", "Thời gian đóng") }}</li>
-    <li>{{ help_term("trade_quantity", "Khối lượng") }}</li>
-    <li>{{ help_term("trade_entry_price", "Giá vào") }}</li>
-    <li>{{ help_term("trade_exit_price", "Giá ra") }}</li>
-    <li>{{ help_term("net_pnl", "Lợi nhuận ròng") }}</li>
-    <li>{{ help_term("exit_reason", "Lý do đóng") }}</li>
-  </ul>
-  <ul class="chart-key" aria-label="Chú giải nhãn đánh giá thực thi">
-    <li>{{ help_term("total_cost", "Chi phí") }}</li>
-    <li>{{ help_term("execution_quality", "Đánh giá thực thi") }}:</li>
-    <li>{{ help_term("quality_optimal") }}</li>
-    <li>{{ help_term("quality_acceptable") }}</li>
-    <li>{{ help_term("quality_deviant") }}</li>
-    <li>{{ help_term("quality_unverified") }}</li>
-  </ul>
-  <div class="table-wrapper">
-    <table class="responsive-table" aria-label="Bảng lịch sử khớp lệnh gần đây">
+  <details class="bot-legend">
+    <summary>Giải thích các cột và nhãn đánh giá</summary>
+    <ul class="chart-key" aria-label="Chú giải các trường của lịch sử lệnh">
+      <li>{{ help_term("trade_closed_at", "Thời gian đóng") }}</li>
+      <li>{{ help_term("trade_quantity", "Khối lượng") }}</li>
+      <li>{{ help_term("trade_entry_price", "Giá vào") }}</li>
+      <li>{{ help_term("trade_exit_price", "Giá ra") }}</li>
+      <li>{{ help_term("net_pnl", "Lợi nhuận ròng") }}</li>
+      <li>{{ help_term("exit_reason", "Lý do đóng") }}</li>
+      <li>{{ help_term("total_cost", "Chi phí") }}</li>
+    </ul>
+    <ul class="chart-key" aria-label="Chú giải nhãn đánh giá thực thi">
+      <li>{{ help_term("execution_quality", "Đánh giá thực thi") }}:</li>
+      <li>{{ help_term("quality_optimal") }}</li>
+      <li>{{ help_term("quality_acceptable") }}</li>
+      <li>{{ help_term("quality_deviant") }}</li>
+      <li>{{ help_term("quality_unverified") }}</li>
+    </ul>
+  </details>
+  <div class="bot-table-wrap">
+    <table class="bot-table bot-table--trades" aria-label="Bảng lịch sử khớp lệnh gần đây">
       <thead>
         <tr>
-          <th scope="col">{{ help_term("trade_closed_at", "Thời Gian Đóng") }}</th>
+          <th scope="col">{{ help_term("trade_closed_at", "Đóng lúc") }}</th>
           <th scope="col">{{ help_term("position_symbol_side", "Cặp / Hướng") }}</th>
-          <th scope="col">{{ help_term("trade_quantity", "Khối Lượng") }}</th>
-          <th scope="col">{{ help_term("trade_entry_price", "Giá Vào") }}</th>
-          <th scope="col">{{ help_term("trade_exit_price", "Giá Ra") }}</th>
-          <th scope="col">{{ help_term("net_pnl", "Lợi Nhuận Ròng") }}</th>
-          <th scope="col">{{ help_term("exit_reason", "Lý Do Đóng") }}</th>
-          <th scope="col">{{ help_term("execution_quality", "Đánh Giá Thực Thi") }}</th>
+          <th scope="col" class="num">{{ help_term("trade_quantity", "Khối lượng") }}</th>
+          <th scope="col" class="num">{{ help_term("trade_entry_price", "Giá vào") }}</th>
+          <th scope="col" class="num">{{ help_term("trade_exit_price", "Giá ra") }}</th>
+          <th scope="col" class="num">{{ help_term("net_pnl", "Lãi/lỗ ròng") }}</th>
+          <th scope="col">{{ help_term("exit_reason", "Lý do đóng") }}</th>
+          <th scope="col">{{ help_term("execution_quality", "Đánh giá") }}</th>
         </tr>
       </thead>
       <tbody id="recent-trades-tbody">
         {% for trade in recent_trades %}
-        {% set trade_tone = trade.net_pnl | pnl_tone %}
-        <tr>
-          <td data-label="Thời gian đóng" class="tabular-nums">{{ trade.closed_at | local_time }}</td>
-          <td data-label="Cặp / Hướng">
-            <strong>{{ trade.symbol }}</strong>
-            {% if trade.side == "LONG" %}<span class="u-margin-left-0-35rem badge-long">🟢 LONG</span>{% else %}<span class="u-margin-left-0-35rem badge-short">🔴 SHORT</span>{% endif %}
-          </td>
-          <td data-label="Khối lượng" class="tabular-nums">{% if trade.quantity is not none %}{{ trade.quantity | number_vi }}{% else %}Chưa có dữ liệu{% endif %}</td>
-          <td data-label="Giá vào" class="tabular-nums">{% if trade.entry_price is not none %}{{ trade.entry_price | number_vi }}{% else %}Chưa có dữ liệu{% endif %}</td>
-          <td data-label="Giá ra" class="tabular-nums">{% if trade.exit_price is not none %}{{ trade.exit_price | number_vi }}{% else %}Chưa có dữ liệu{% endif %}</td>
-          <td data-label="Lợi nhuận ròng" class="tabular-nums">
-            <span class="pnl-value pnl-value--{{ trade_tone }}" data-pnl-tone="{{ trade_tone }}">{% if trade_tone == "positive" %}+{% endif %}{{ trade.net_pnl | number_vi }} {{ trade.quote_asset }}</span>
-          </td>
-          <td data-label="Lý do đóng">
-            {% if trade.exit_reason == "TAKE_PROFIT" %}<span class="badge-tp">🎯 CHỐT LỜI (TP)</span>
-            {% elif trade.exit_reason == "STOP_LOSS" %}<span class="badge-sl">🛑 CẮT LỖ (SL)</span>
-            {% else %}<span class="badge">{{ trade.exit_reason_vi }}</span>{% endif %}
-          </td>
-          <td data-label="Đánh giá thực thi">
-            {% if trade.quality == "OPTIMAL" %}<span class="badge-optimal">⭐ TỐI ƯU</span>
-            {% elif trade.is_deviant %}<span class="badge-deviant">⚠️ SAI LỆCH</span>
-            {% elif trade.quality == "UNVERIFIED" %}<span class="badge">CHƯA ĐỦ DỮ LIỆU</span>
-            {% else %}<span class="badge">CHẤP NHẬN ĐƯỢC</span>{% endif %}
-          </td>
+        <tr class="bot-table__row bot-table__row--trade">
+          <td data-label="Đóng lúc"><time datetime="{{ trade.closed_at }}" title="{{ trade.closed_at | local_time }}">{{ trade.closed_at | local_minute }}</time></td>
+          <td data-label="Cặp / Hướng" class="bot-table__lead"><span class="trade-instrument"><span data-coin="{{ trade.symbol }}">{{ trade.symbol }}</span>{{ side_badge(trade.side) }}</span></td>
+          <td data-label="Khối lượng" class="num">{% if trade.quantity is not none %}{{ trade.quantity | number_vi }}{% else %}<span class="value-muted">Chưa có dữ liệu</span>{% endif %}</td>
+          <td data-label="Giá vào" class="num">{% if trade.entry_price is not none %}{{ trade.entry_price | number_vi }}{% else %}<span class="value-muted">Chưa có dữ liệu</span>{% endif %}</td>
+          <td data-label="Giá ra" class="num">{% if trade.exit_price is not none %}{{ trade.exit_price | number_vi }}{% else %}<span class="value-muted">Chưa có dữ liệu</span>{% endif %}</td>
+          <td data-label="Lãi/lỗ ròng" class="num num--strong bot-table__pnl">{{ money(trade.net_pnl, trade.quote_asset, signed=true) }}</td>
+          <td data-label="Lý do đóng">{% if trade.exit_reason == "TAKE_PROFIT" %}<span class="badge badge-success bot-badge">{{ trade.exit_reason_vi }}</span>{% elif trade.exit_reason == "STOP_LOSS" %}<span class="badge badge-danger bot-badge">{{ trade.exit_reason_vi }}</span>{% else %}<span class="badge badge-neutral bot-badge">{{ trade.exit_reason_vi }}</span>{% endif %}</td>
+          <td data-label="Đánh giá">{% if trade.quality == "OPTIMAL" %}<span class="badge badge-success bot-badge">Tối ưu</span>{% elif trade.is_deviant %}<span class="badge badge-warning bot-badge">{{ ico("warn") }}Sai lệch</span>{% elif trade.quality == "UNVERIFIED" %}<span class="badge badge-neutral bot-badge">Chưa đủ dữ liệu</span>{% else %}<span class="badge badge-neutral bot-badge">Chấp nhận được</span>{% endif %}</td>
         </tr>
         <tr class="trade-post-mortem-row">
-          <td class="u-background-bg-surface u-padding-0-85rem-1-25rem u-border-bottom-2px-solid-border-main" colspan="8">
-            <div class="u-display-flex u-flex-wrap-wrap u-justify-content-space-between u-align-items-center u-gap-0-75rem">
-              <div class="u-font-size-0-85rem trade-post-mortem-text">
-                <div><strong>🟢 Vì sao vào:</strong> <span class="u-color-text-muted">{% if trade.entry_detail_vi or trade.strategy_id %}{% if trade.strategy_id %}Chiến thuật {{ trade.strategy_id }}{% endif %}{% if trade.strategy_id and trade.entry_detail_vi %} — {% endif %}{{ trade.entry_detail_vi or "" }}{% else %}Ledger chưa lưu lý do vào lệnh cho giao dịch này.{% endif %}</span></div>
-                <div class="u-margin-top-0-25rem"><strong>🔴 Vì sao thoát:</strong> <span class="u-color-text-muted">{{ trade.exit_reason_vi }}</span></div>
-                <div class="u-margin-top-0-25rem"><strong>💸 Chi phí:</strong> <span class="u-color-text-muted tabular-nums">Phí {{ trade.fee_total | number_vi }} · Funding {{ trade.funding_total | number_vi }} · Trượt giá {{ trade.slippage_total | number_vi }} {{ trade.quote_asset }}</span></div>
-                {% if trade.is_deviant and trade.deviant_reason %}
-                  <div class="u-margin-top-0-25rem u-color-hex-f59e0b u-font-weight-600">⚠️ Lý do sai lệch: {{ trade.deviant_reason }}</div>
-                {% endif %}
-              </div>
-              <div>
-                {% if trade.is_deviant %}
-                  <button type="button" class="btn-ai-retrain btn-ingest-ai" data-trade-id="{{ trade.trade_id }}" data-symbol="{{ trade.symbol }}" data-side="{{ trade.side }}" data-reason="{{ trade.deviant_reason or '' }}">
-                    📥 Đưa Ca Này Vào Dữ Liệu Phạt AI
-                  </button>
+          <td colspan="8">
+            <div class="post-mortem">
+              <dl class="post-mortem__reasons">
+                <div><dt>{{ ico("why_in") }}Vì sao vào</dt><dd>{% if trade.entry_detail_vi or trade.strategy_id %}{% if trade.strategy_id %}Chiến thuật {{ trade.strategy_id }}{% endif %}{% if trade.strategy_id and trade.entry_detail_vi %} — {% endif %}{{ trade.entry_detail_vi or "" }}{% else %}<span class="value-muted">Ledger chưa lưu lý do vào lệnh cho giao dịch này.</span>{% endif %}</dd></div>
+                <div><dt>{{ ico("why_out") }}Vì sao thoát</dt><dd>{{ trade.exit_reason_vi }}</dd></div>
+                {% if trade.is_deviant and trade.deviant_reason %}<div class="post-mortem__deviant"><dt>{{ ico("warn") }}Lý do sai lệch</dt><dd>{{ trade.deviant_reason }}</dd></div>{% endif %}
+              </dl>
+              <dl class="post-mortem__costs" aria-label="Chi phí của lệnh">
+                <div class="kv"><dt>{{ ico("fee") }}Phí</dt><dd>{{ money(trade.fee_total, trade.quote_asset) }}</dd></div>
+                <div class="kv"><dt>{{ ico("funding") }}Funding</dt><dd>{{ money(trade.funding_total, trade.quote_asset) }}</dd></div>
+                <div class="kv"><dt>{{ ico("slippage") }}Trượt giá</dt><dd>{{ money(trade.slippage_total, trade.quote_asset) }}</dd></div>
+                <div class="kv"><dt>{{ ico("id") }}Mã giao dịch</dt><dd>{{ id_chip(trade.trade_id) }}</dd></div>
+              </dl>
+              <div class="post-mortem__action">
+                {% if trade.is_deviant and can_label_retraining %}
+                <button type="button" class="btn btn-sm btn-outline btn-ingest-ai" data-trade-id="{{ trade.trade_id }}" data-symbol="{{ trade.symbol }}" data-side="{{ trade.side }}" data-reason="{{ trade.deviant_reason or '' }}">{{ ico("flag") }}<span data-label>Gắn nhãn ca để rà soát huấn luyện</span></button>
+                {% elif trade.is_deviant %}
+                <span class="value-muted">Có sai lệch; vai trò hiện tại không được gắn nhãn huấn luyện.</span>
                 {% elif trade.quality == "UNVERIFIED" %}
-                  <span class="u-font-size-0-8rem text-muted">Chưa đủ dữ liệu để đánh giá</span>
+                <span class="value-muted">Chưa đủ dữ liệu để đánh giá</span>
                 {% else %}
-                  <span class="u-font-size-0-8rem text-muted">Không phát hiện sai lệch</span>
+                <span class="value-muted">Không phát hiện sai lệch</span>
                 {% endif %}
               </div>
             </div>
@@ -305,135 +342,154 @@
     </table>
   </div>
   {% else %}
-  <p class="u-padding-1rem u-background-bg-surface u-border-radius-0-5rem u-border-1px-solid-border-subtle u-color-text-muted" role="status">
+  <p class="bot-empty" role="status">
     {% if trading_data_available %}Chưa có giao dịch PAPER đã đóng trong 30 ngày.{% else %}Chưa có dữ liệu lịch sử lệnh.{% endif %}
   </p>
   {% endif %}
 </section>
+</div>
+  </div>
+</section>
 
-<!-- CÁC KHỐI ĐIỀU KHIỂN & CẤU HÌNH DẠNG CARDS -->
-<div class="bot-cards-grid">
-  <!-- Card 1: Điều Khiển Bot -->
-  <section class="bot-section-card" aria-labelledby="bot-control-heading">
-    <h2 id="bot-control-heading">⚙️ Điều Khiển Bot</h2>
-    {% if bot.status == "DISABLED" and "owner" in identity.principal.roles %}
+<!-- Vận hành: luôn hiển thị (không đặt trong tab) để thao tác nhanh sau khi trang tải lại. -->
+<div class="bot-ops-grid">
+  <section class="bot-section-card bot-ops-card" aria-labelledby="bot-control-heading">
+    <h2 id="bot-control-heading" class="bot-section-title">{{ ico("power") }}Điều khiển bot</h2>
+    <p class="bot-card-help">Mỗi thao tác cần lý do và được ghi nhật ký kiểm toán. Chỉ ảnh hưởng tài khoản PAPER của bot này.</p>
+    {% if bot.status == "DISABLED" and is_owner %}
     {% if bot.needs_manual_enable %}
-    <p class="u-color-hex-f6465d u-font-size-0-875rem u-background-rgba-246-70-93-0-1 u-padding-0-5rem-0-75rem u-border-radius-0-375rem" role="alert">
+    <p class="bot-notice bot-notice--danger" role="alert">
       Bot cần xác nhận an toàn trước khi chạy lại do từng bị flatten thủ công hoặc gặp sự cố tài khoản.
     </p>
     {% endif %}
-    <form method="post" action="/admin/bots/{{ bot.id }}/enable" class="bot-control-form-group">
+    <form method="post" action="/admin/bots/{{ bot.id }}/enable" class="bot-action-form">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <label class="u-font-size-0-85rem u-font-weight-600" for="enable-reason">Lý do bật lại bot</label>
-      <input class="u-padding-0-4rem-0-6rem u-font-size-0-85rem" id="enable-reason" name="reason" maxlength="500" required placeholder="Nhập lý do bật lại bot sau đối soát...">
-      <button type="submit" class="u-align-self-flex-start btn btn-primary">Bật bot sau đối soát</button>
+      <label for="enable-reason">Lý do bật lại bot</label>
+      <div class="bot-action-row">
+        <input id="enable-reason" name="reason" maxlength="500" required placeholder="Nhập lý do bật lại bot sau đối soát..." autocomplete="off">
+        <button type="submit" class="btn btn-primary">{{ ico("play") }}Bật bot sau đối soát</button>
+      </div>
     </form>
     {% endif %}
 
-    <form method="post" action="/admin/bots/{{ bot.id }}/pause" class="bot-control-form-group">
+    <form method="post" action="/admin/bots/{{ bot.id }}/pause" class="bot-action-form">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <label class="u-font-size-0-85rem u-font-weight-600" for="pause-reason">Lý do tạm dừng</label>
-      <input class="u-padding-0-4rem-0-6rem u-font-size-0-85rem" id="pause-reason" name="reason" maxlength="500" required placeholder="Nhập lý do tạm dừng bot...">
-      <button type="submit" class="u-align-self-flex-start btn btn-warning">Tạm dừng bot</button>
+      <label for="pause-reason">Lý do tạm dừng</label>
+      <div class="bot-action-row">
+        <input id="pause-reason" name="reason" maxlength="500" required placeholder="Nhập lý do tạm dừng bot..." autocomplete="off">
+        <button type="submit" class="btn btn-warning">{{ ico("pause") }}Tạm dừng bot</button>
+      </div>
     </form>
 
-    <form method="post" action="/admin/bots/{{ bot.id }}/resume" class="bot-control-form-group">
+    <form method="post" action="/admin/bots/{{ bot.id }}/resume" class="bot-action-form">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <input type="hidden" name="expected_revision" value="{{ bot.control_revision }}">
-      <label class="u-font-size-0-85rem u-font-weight-600" for="resume-reason">Lý do tiếp tục</label>
-      <input class="u-padding-0-4rem-0-6rem u-font-size-0-85rem" id="resume-reason" name="reason" maxlength="500" required placeholder="Nhập lý do tiếp tục vận hành...">
-      <button type="submit" class="u-align-self-flex-start btn btn-success">Tiếp tục bot</button>
+      <label for="resume-reason">Lý do tiếp tục</label>
+      <div class="bot-action-row">
+        <input id="resume-reason" name="reason" maxlength="500" required placeholder="Nhập lý do tiếp tục vận hành..." autocomplete="off">
+        <button type="submit" class="btn btn-success">{{ ico("play") }}Tiếp tục bot</button>
+      </div>
     </form>
 
-    <form method="post" action="/admin/bots/{{ bot.id }}/disable" class="bot-control-form-group">
+    {% if is_owner %}
+    <form method="post" action="/admin/bots/{{ bot.id }}/disable" class="bot-action-form bot-action-form--danger">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <label class="u-font-size-0-85rem u-font-weight-600" for="disable-reason">Lý do tắt</label>
-      <input class="u-padding-0-4rem-0-6rem u-font-size-0-85rem" id="disable-reason" name="reason" maxlength="500" required placeholder="Nhập lý do tắt bot...">
-      <button type="submit" class="u-align-self-flex-start btn btn-danger">Tắt bot</button>
+      <label for="disable-reason">Lý do tắt</label>
+      <div class="bot-action-row">
+        <input id="disable-reason" name="reason" maxlength="500" required placeholder="Nhập lý do tắt bot..." autocomplete="off" aria-describedby="disable-help">
+        <button type="submit" class="btn btn-danger">{{ ico("power") }}Tắt bot</button>
+      </div>
+      <p id="disable-help" class="bot-field-help">Chỉ tắt được khi bot không còn vị thế, lệnh hay ngân sách rủi ro đang giữ.</p>
     </form>
+    {% else %}
+    <p class="bot-field-help">Chỉ chủ sở hữu (owner) được tắt hoặc bật lại bot.</p>
+    {% endif %}
   </section>
 
-  <!-- Card 2: Nhận Tín Hiệu Qua Telegram -->
-  <section class="bot-section-card" aria-labelledby="telegram-signal-heading">
-    <h2 id="telegram-signal-heading">📱 Nhận tín hiệu qua Telegram</h2>
-    <p class="u-font-size-0-85rem u-color-text-muted u-margin-bottom-0-75rem">
+  <section class="bot-section-card bot-ops-card" aria-labelledby="telegram-signal-heading">
+    <h2 id="telegram-signal-heading" class="bot-section-title">{{ ico("send") }}Nhận tín hiệu qua Telegram</h2>
+    <p class="bot-card-help">
       Chế độ này chỉ gửi thông báo khi bot bắt được tín hiệu; không tạo giao dịch PAPER và không gửi lệnh lên sàn.
     </p>
 
     {% if telegram_signal_state is none %}
-      <p class="u-font-size-0-85rem u-color-text-muted" role="status">Chức năng đăng ký tín hiệu hiện chưa sẵn sàng.</p>
+      <p class="bot-empty" role="status">Chức năng đăng ký tín hiệu hiện chưa sẵn sàng.</p>
     {% elif telegram_signal_state.binding_linked %}
-      <p class="u-font-size-0-85rem u-font-weight-600" role="status">
-        {% if telegram_signal_state.enabled %}
-          <span class="u-color-hex-0ecb81">● Đang nhận thông báo tín hiệu cho bot này.</span>
-        {% else %}
-          <span class="u-color-text-muted">○ Chưa đăng ký nhận tín hiệu cho bot này.</span>
-        {% endif %}
-      </p>
+      <div class="bot-toggle-row">
+        <p class="bot-toggle-row__state" role="status">
+          {% if telegram_signal_state.enabled %}
+            <span class="badge badge-success bot-badge">Đang nhận</span> Đang nhận thông báo tín hiệu cho bot này.
+          {% else %}
+            <span class="badge badge-neutral bot-badge">Đã tắt</span> Chưa đăng ký nhận tín hiệu cho bot này.
+          {% endif %}
+        </p>
+        <form method="post" action="/admin/bots/{{ bot.id }}/telegram-signals">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit" name="enabled" value="{{ 'false' if telegram_signal_state.enabled else 'true' }}" class="btn btn-sm btn-outline">
+            {{ "Tắt thông báo tín hiệu" if telegram_signal_state.enabled else "Bật thông báo tín hiệu" }}
+          </button>
+        </form>
+      </div>
 
       {% if signal_filter_error == "invalid" %}
-        <p class="u-color-hex-f6465d u-font-size-0-85rem" role="alert">
+        <p class="bot-notice bot-notice--danger" role="alert">
           Danh sách bộ lọc không hợp lệ. Hãy kiểm tra mã cặp, khung thời gian, hướng và giới hạn tối đa 100 giá trị.
         </p>
       {% endif %}
 
-      <form class="u-margin-bottom-1rem" method="post" action="/admin/bots/{{ bot.id }}/telegram-signals">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <button type="submit" name="enabled" value="{{ 'false' if telegram_signal_state.enabled else 'true' }}" class="u-font-size-0-85rem btn btn-outline">
-          {{ "Tắt thông báo tín hiệu" if telegram_signal_state.enabled else "Bật thông báo tín hiệu" }}
-        </button>
-      </form>
-
-      <h3 class="u-font-size-0-95rem u-margin-top-1rem" id="telegram-signal-filters-heading">Lọc Tín Hiệu Muốn Nhận</h3>
-      <p class="u-font-size-0-8rem u-color-text-muted u-margin-bottom-0-5rem" id="telegram-signal-filters-help">
-        Để trống nghĩa là nhận tất cả. Ngăn cách bằng dấu phẩy; tối đa 100 mục mỗi danh sách.
+      <h3 class="bot-subtitle" id="telegram-signal-filters-heading">Lọc tín hiệu muốn nhận</h3>
+      <p class="bot-field-help" id="telegram-signal-filters-help">
+        Để trống nghĩa là nhận tất cả. Ngăn cách bằng dấu phẩy hoặc xuống dòng; tối đa 100 mục mỗi danh sách.
       </p>
 
-      <form class="u-display-flex u-flex-direction-column u-gap-0-6rem" method="post" action="/admin/bots/{{ bot.id }}/telegram-signal-filters" aria-labelledby="telegram-signal-filters-heading">
+      <form class="bot-filter-form" method="post" action="/admin/bots/{{ bot.id }}/telegram-signal-filters" aria-labelledby="telegram-signal-filters-heading">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         {% set signal_filters = telegram_signal_state.filters.as_dict() %}
-        <div>
-          <label class="u-font-size-0-825rem u-font-weight-600" for="signal-filter-symbols">Cặp giao dịch (ví dụ BTCUSDT)</label>
-          <textarea class="u-width-100pct u-font-size-0-85rem u-padding-0-4rem" id="signal-filter-symbols" name="symbols" rows="2" maxlength="12000" aria-describedby="telegram-signal-filters-help">{{ signal_filters.symbols | join(", ") }}</textarea>
+        <div class="bot-field">
+          <label for="signal-filter-symbols">Cặp giao dịch (ví dụ BTCUSDT)</label>
+          <textarea id="signal-filter-symbols" name="symbols" rows="2" maxlength="12000" aria-describedby="telegram-signal-filters-help">{{ signal_filters.symbols | join(", ") }}</textarea>
         </div>
-        <div>
-          <label class="u-font-size-0-825rem u-font-weight-600" for="signal-filter-timeframes">Khung thời gian (ví dụ 5m, 1h, 4h)</label>
-          <textarea class="u-width-100pct u-font-size-0-85rem u-padding-0-4rem" id="signal-filter-timeframes" name="timeframes" rows="2" maxlength="12000" aria-describedby="telegram-signal-filters-help">{{ signal_filters.timeframes | join(", ") }}</textarea>
+        <div class="bot-field">
+          <label for="signal-filter-timeframes">Khung thời gian (ví dụ 5m, 1h, 4h)</label>
+          <textarea id="signal-filter-timeframes" name="timeframes" rows="2" maxlength="12000" aria-describedby="telegram-signal-filters-help">{{ signal_filters.timeframes | join(", ") }}</textarea>
         </div>
-        <div>
-          <label class="u-font-size-0-825rem u-font-weight-600" for="signal-filter-directions">Hướng giao dịch (LONG hoặc SHORT)</label>
-          <textarea class="u-width-100pct u-font-size-0-85rem u-padding-0-4rem" id="signal-filter-directions" name="directions" rows="2" maxlength="12000" aria-describedby="telegram-signal-filters-help">{{ signal_filters.directions | join(", ") }}</textarea>
+        <div class="bot-field">
+          <label for="signal-filter-directions">Hướng giao dịch (LONG hoặc SHORT)</label>
+          <textarea id="signal-filter-directions" name="directions" rows="2" maxlength="12000" aria-describedby="telegram-signal-filters-help">{{ signal_filters.directions | join(", ") }}</textarea>
         </div>
-        <div>
-          <label class="u-font-size-0-825rem u-font-weight-600" for="signal-filter-strategies">Mã chiến thuật (ví dụ H01)</label>
-          <textarea class="u-width-100pct u-font-size-0-85rem u-padding-0-4rem" id="signal-filter-strategies" name="strategy_ids" rows="2" maxlength="12000" aria-describedby="telegram-signal-filters-help">{{ signal_filters.strategy_ids | join(", ") }}</textarea>
+        <div class="bot-field">
+          <label for="signal-filter-strategies">Mã chiến thuật (ví dụ H01)</label>
+          <textarea id="signal-filter-strategies" name="strategy_ids" rows="2" maxlength="12000" aria-describedby="telegram-signal-filters-help">{{ signal_filters.strategy_ids | join(", ") }}</textarea>
         </div>
-        <div>
-          <label class="u-font-size-0-825rem u-font-weight-600" for="signal-filter-setups">Mã setup (ví dụ H01_BREAKOUT)</label>
-          <textarea class="u-width-100pct u-font-size-0-85rem u-padding-0-4rem" id="signal-filter-setups" name="setup_codes" rows="2" maxlength="12000" aria-describedby="telegram-signal-filters-help">{{ signal_filters.setup_codes | join(", ") }}</textarea>
+        <div class="bot-field">
+          <label for="signal-filter-setups">Mã setup (ví dụ H01_BREAKOUT)</label>
+          <textarea id="signal-filter-setups" name="setup_codes" rows="2" maxlength="12000" aria-describedby="telegram-signal-filters-help">{{ signal_filters.setup_codes | join(", ") }}</textarea>
         </div>
-        <button type="submit" class="u-align-self-flex-start u-font-size-0-85rem btn btn-secondary">Lưu bộ lọc tín hiệu</button>
+        <button type="submit" class="btn btn-secondary bot-filter-form__submit">Lưu bộ lọc tín hiệu</button>
       </form>
     {% else %}
-      <p class="u-font-size-0-85rem u-color-text-muted">Hãy liên kết Telegram riêng trước khi bật thông báo.</p>
-      <a href="/admin/telegram" class="u-font-size-0-85rem btn btn-outline">Liên kết Telegram</a>
+      <p class="bot-empty">Hãy liên kết Telegram riêng trước khi bật thông báo.</p>
+      <a href="/admin/telegram" class="btn btn-sm btn-outline">Liên kết Telegram</a>
     {% endif %}
   </section>
 
-  <!-- Card 3: Cấu Hình Bản Nháp (Config Draft) -->
-  <section class="bot-section-card" aria-label="Cấu hình chiến lược">
-    <h2>📝 Bản Nháp Cấu Hình</h2>
+  <section class="bot-section-card bot-ops-card" aria-label="Cấu hình chiến lược">
+    <h2 class="bot-section-title">{{ ico("config") }}Bản nháp cấu hình</h2>
     {% if draft_validation == "valid" %}
-      <p class="u-color-hex-0ecb81 u-font-size-0-85rem u-font-weight-600" role="status">✓ Bản nháp đã qua kiểm định.</p>
+      <p class="bot-notice bot-notice--success" role="status">Bản nháp đã qua kiểm định.</p>
     {% endif %}
     {% if draft_validation == "invalid" %}
-      <p class="u-color-hex-f6465d u-font-size-0-85rem u-font-weight-600" role="alert">✗ Bản nháp không hợp lệ; xem lỗi qua API cấu hình.</p>
+      <p class="bot-notice bot-notice--danger" role="alert">Bản nháp không hợp lệ; xem lỗi qua API cấu hình.</p>
     {% endif %}
 
+    <dl class="kv-grid bot-config-kv">
+      <div class="kv"><dt>{{ ico("revision") }}Phiên bản đang công bố</dt><dd>{% if config_parent_version_id %}{{ id_chip(config_parent_version_id) }}{% else %}<span class="value-muted">Chưa có cấu hình được công bố</span>{% endif %}</dd></div>
+    </dl>
+
     {% if config_draft %}
-    <div class="u-background-bg-surface-subtle u-padding-0-75rem u-border-radius-0-375rem u-margin-bottom-0-75rem u-font-size-0-85rem">
-      <p class="u-margin-0-0-0-5rem-0">Bản nháp <code>{{ config_draft.id }}</code> — phiên bản {{ config_draft.revision }}</p>
-      <div class="u-display-flex u-gap-0-5rem u-flex-wrap-wrap">
+    <div class="bot-draft">
+      <p class="bot-draft__title">Bản nháp <code class="bot-draft__id" title="{{ config_draft.id }}">{{ config_draft.id }}</code> — phiên bản {{ config_draft.revision }}<button type="button" class="copy-btn" data-copy="{{ config_draft.id }}" aria-label="Sao chép mã bản nháp {{ config_draft.id }}" title="Sao chép mã đầy đủ">{{ ico("copy") }}</button></p>
+      <div class="bot-draft__actions">
         <form method="post" action="/admin/bots/{{ bot.id }}/config-drafts/{{ config_draft.id }}/validate">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <button type="submit" class="btn btn-sm btn-outline">Kiểm định bản nháp</button>
@@ -447,18 +503,31 @@
     </div>
     {% endif %}
 
-    <form class="u-display-flex u-flex-direction-column u-gap-0-5rem" method="post" action="/admin/bots/{{ bot.id }}/config-drafts">
+    <form class="bot-filter-form" method="post" action="/admin/bots/{{ bot.id }}/config-drafts">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <input type="hidden" name="expected_parent_version_id" value="{{ config_parent_version_id }}">
-      <label class="u-font-size-0-85rem u-font-weight-600" for="overlay-json">Cấu hình bổ sung (JSON)</label>
-      <textarea class="u-width-100pct u-font-family-monospace u-font-size-0-825rem u-padding-0-4rem" id="overlay-json" name="overlay_json" rows="8" required>{{ config_draft_json }}</textarea>
-      <button type="submit" class="u-align-self-flex-start u-font-size-0-85rem btn btn-secondary">Tạo bản nháp</button>
+      <div class="bot-field">
+        <label for="overlay-json">Cấu hình bổ sung (JSON)</label>
+        <textarea class="bot-json" id="overlay-json" name="overlay_json" rows="8" required spellcheck="false" aria-describedby="overlay-json-help">{{ config_draft_json }}</textarea>
+        <p id="overlay-json-help" class="bot-field-help">Chỉ nhận khóa trong lược đồ v1: <code>strategy</code>, <code>universe</code>, <code>risk</code>. Giá trị rủi ro chỉ được siết chặt hơn cấu hình gốc.</p>
+      </div>
+      <button type="submit" class="btn btn-secondary bot-filter-form__submit">Tạo bản nháp</button>
     </form>
   </section>
 </div>
+</div>
 
-<!-- CLIENT JAVASCRIPT: Real-time 5s Polling & AI Retraining Ingestion -->
-<script id="bot-detail-config" type="application/json">{{ {"bot_id": bot.id | string, "symbol": bot.symbol | default("", true) | string, "csrf_token": csrf_token} | tojson }}</script>
+<script id="bot-detail-config" type="application/json">{{ {
+  "bot_id": bot.id | string,
+  "csrf_token": csrf_token,
+  "control_revision": bot.control_revision,
+  "open_positions_count": metrics.open_positions_count if metrics else none,
+  "closed_trade_count": metrics.closed_trade_count if metrics else none
+} | tojson }}</script>
+<script id="bot-status-labels" type="application/json">{{ ui_labels_vi | tojson }}</script>
+{% endblock %}
+{% block scripts %}
+<script src="/static/coins.js" defer></script>
 <script src="/static/bot-detail.js" defer></script>
 {% if chart_data %}<script src="/static/vendor/lightweight-charts-5.2.1.standalone.production.js"></script><script src="/static/trade-chart.js" defer></script>{% endif %}
 {% endblock %}

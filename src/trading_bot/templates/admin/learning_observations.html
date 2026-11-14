@@ -1,148 +1,206 @@
 {% extends "admin/base.html" %}
+{% from "admin/_learning_ui.html" import icon, chip %}
 {% block title %}Quan sát mô hình | Crypidian{% endblock %}
-{% block head_extra %}<link rel="stylesheet" href="/static/learning-observations.css">{% endblock %}
+{% block head_extra %}<link rel="stylesheet" href="/static/pages/learning.css">{% endblock %}
 {% block heading %}Quan sát mô hình và chất lượng dữ liệu{% endblock %}
 {% block content %}
-  {% if can_read_models %}<section class="learning-observations-notice" aria-label="Giới hạn của trang quan sát">
-    <h2>Chỉ theo dõi, không tác động giao dịch</h2>
-    <p><strong>Mô hình thử nghiệm đang ở trạng thái ABSTAIN — chưa đánh giá hiệu năng.</strong> Các bản ghi này chỉ phản ánh tình trạng dữ liệu và lineage đã lưu; chúng không xác nhận lợi nhuận hay chất lượng dự đoán.</p>
-    <p>Trang chỉ đọc tối đa 50 dòng metadata trong không gian làm việc hiện tại. Không hiển thị đặc trưng, nhãn, dữ liệu nguồn hoặc nội dung phần kiểm định giữ kín; không có thao tác xếp lịch huấn luyện hay đổi mô hình đang dùng.</p>
-  </section>{% endif %}
+{#- Trang chỉ đọc: không thêm nút (sao chép, chú giải) vào phần quan sát vì người chỉ có quyền đọc
+    phải thấy đúng một nút (đổi giao diện) theo E2E test_learning_observations_admin_ui. -#}
+{%- set group_icons = {"observation": "eye", "assessment": "gauge", "proposal": "refresh"} -%}
+{%- set group_kpi = {"observation": "blue", "assessment": "amber", "proposal": "violet"} -%}
+{%- set use_tabs = can_read_models and can_manage_incidents -%}
+{#- Có sự cố cần xử lý (đề xuất đủ điều kiện hoặc lệnh vào đang bị chặn) thì mở sẵn tab sự cố. -#}
+{%- set incidents_first = use_tabs and (actionable_proposals or open_holds) -%}
+{%- macro vn_time(value) -%}{{ value|local_time|replace('(Asia/Ho_Chi_Minh)', '(giờ Việt Nam (UTC+7))') }}{%- endmacro -%}
 
-  {% if can_read_models %}<p class="learning-observations-count" role="status">Đang hiển thị {{ record_count }} bản ghi gần đây.</p>{% endif %}
-
-  {% if can_manage_incidents %}
-    <section class="learning-incident-panel" aria-labelledby="learning-incident-heading"
+{%- macro incident_panel() -%}
+    <section class="lx-stack learning-incident-panel" aria-labelledby="learning-incident-heading"
       data-learning-incident-panel data-csrf-token="{{ csrf_token }}" data-recent-totp="{{ 'true' if recent_totp else 'false' }}">
-      <header class="learning-incident-panel__intro">
+      <header class="lx-notice learning-incident-panel__intro">
+        <span class="lx-notice__icon">{{ icon("ban") }}</span>
         <h2 id="learning-incident-heading">Sự cố dữ liệu và tạm chặn lệnh vào</h2>
         <p>Việc tạm chặn chỉ ngăn mở lệnh PAPER mới trong không gian làm việc này. Bot vẫn quản lý vị thế đang mở và tiếp tục lệnh bảo vệ để thoát vị thế; hệ thống không tự xác nhận hoặc tự tháo chặn.</p>
       </header>
 
-      <p id="learning-incident-status" class="learning-incident-status" role="status" aria-live="polite" hidden></p>
-      <p id="learning-incident-error" class="learning-incident-error" role="alert" tabindex="-1" hidden></p>
+      <p id="learning-incident-status" class="lx-status learning-incident-status" role="status" aria-live="polite" hidden></p>
+      <p id="learning-incident-error" class="lx-error learning-incident-error" role="alert" tabindex="-1" hidden></p>
 
-      <details class="learning-incident-reauth" {% if not recent_totp %}open{% endif %}>
-        <summary>Xác thực lại bằng mật khẩu và mã bảo mật</summary>
-        <p>Thao tác chặn hoặc tháo chặn yêu cầu mã xác thực còn hiệu lực trong 15 phút. Nếu phiên đã xác thực gần đây, có thể tiếp tục ngay.</p>
-        <form id="learning-incident-reauth-form" data-reauth-form>
-          <label for="learning-incident-password">Mật khẩu tài khoản</label>
-          <input id="learning-incident-password" name="password" type="password" autocomplete="current-password" required>
-          <label for="learning-incident-totp">Mã xác thực 6 chữ số</label>
-          <input id="learning-incident-totp" name="code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" minlength="6" maxlength="6" required>
-          <button type="submit">Xác thực bảo mật</button>
-          <span id="learning-incident-reauth-status" role="status" aria-live="polite"></span>
-        </form>
+      <details class="glass-card lx-details learning-incident-reauth" {% if not recent_totp %}open{% endif %}>
+        <summary>{{ icon("key") }}Xác thực lại bằng mật khẩu và mã bảo mật {% if recent_totp %}{{ chip("MFA còn hiệu lực", "success", "check") }}{% else %}{{ chip("Cần MFA", "warning", "lock") }}{% endif %}</summary>
+        <div class="lx-details__body">
+          <p class="lx-help">Thao tác chặn hoặc tháo chặn yêu cầu mã xác thực còn hiệu lực trong 15 phút. Nếu phiên đã xác thực gần đây, có thể tiếp tục ngay.</p>
+          <form id="learning-incident-reauth-form" class="lx-form" data-reauth-form>
+            <div class="lx-form__row">
+              <div class="lx-field">
+                <label for="learning-incident-password">Mật khẩu tài khoản</label>
+                <input id="learning-incident-password" name="password" type="password" autocomplete="current-password" required>
+              </div>
+              <div class="lx-field">
+                <label for="learning-incident-totp">Mã xác thực 6 chữ số</label>
+                <input id="learning-incident-totp" name="code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" minlength="6" maxlength="6" required class="lx-mono">
+              </div>
+              <button type="submit" class="btn btn-primary">{{ icon("shield") }}Xác thực bảo mật</button>
+            </div>
+            <span id="learning-incident-reauth-status" class="lx-status" role="status" aria-live="polite"></span>
+          </form>
+        </div>
       </details>
 
-      <section aria-labelledby="learning-incident-candidates-heading">
-        <h3 id="learning-incident-candidates-heading">Sự cố có thể xử lý</h3>
+      <section class="lx-stack" aria-labelledby="learning-incident-candidates-heading">
+        <h3 id="learning-incident-candidates-heading">{{ icon("alert") }}Sự cố có thể xử lý</h3>
         {% if actionable_proposals %}
-          <div class="learning-incident-candidates">
+          <div class="lx-grid lx-grid--wide learning-incident-candidates">
             {% for item in actionable_proposals %}
               {% set candidate = item.candidate %}
-              <article class="learning-incident-card learning-incident-card--candidate">
-                <h4>Đề xuất đủ điều kiện theo mô hình và quyền hiện hành</h4>
-                <dl>
-                  <div><dt>Mã đề xuất</dt><dd><code>{{ candidate.proposal_id }}</code></dd></div>
-                  <div><dt>Mã bản đánh giá</dt><dd><code>{{ candidate.assessment_id }}</code></dd></div>
-                  <div><dt>Mã băm bản đánh giá</dt><dd><code>{{ candidate.assessment_hash }}</code></dd></div>
-                  <div><dt>Lý do phát hiện</dt><dd>{{ item.reason_labels|join(' · ') }}</dd></div>
-                  <div><dt>Bản sửa đổi triển khai</dt><dd>{{ candidate.expected_deployment_revision }}</dd></div>
-                  <div><dt>Phiên bản con trỏ mô hình</dt><dd>{{ candidate.expected_active_pointer_version }}</dd></div>
+              <article class="glass-card lx-card lx-incident-card learning-incident-card learning-incident-card--candidate">
+                <div class="lx-card__head">
+                  <h4>Đề xuất đủ điều kiện theo mô hình và quyền hiện hành</h4>
+                  {{ chip("Chờ xác nhận", "warning", "clock") }}
+                </div>
+                <dl class="kv-grid kv-grid--1">
+                  <div class="kv"><dt>{{ icon("hash") }}Mã đề xuất</dt><dd><code class="lx-hash__text" title="{{ candidate.proposal_id }}">{{ candidate.proposal_id }}</code></dd></div>
+                  <div class="kv"><dt>{{ icon("file") }}Mã bản đánh giá</dt><dd><code class="lx-hash__text" title="{{ candidate.assessment_id }}">{{ candidate.assessment_id }}</code></dd></div>
+                  <div class="kv"><dt>{{ icon("key") }}Mã băm bản đánh giá</dt><dd><code class="lx-hash__text" title="{{ candidate.assessment_hash }}">{{ candidate.assessment_hash }}</code></dd></div>
+                  <div class="kv kv--text"><dt>{{ icon("info") }}Lý do phát hiện</dt><dd>{{ item.reason_labels|join(' · ') }}</dd></div>
+                  <div class="kv"><dt>{{ icon("layers") }}Bản sửa đổi triển khai</dt><dd>{{ candidate.expected_deployment_revision }}</dd></div>
+                  <div class="kv"><dt>{{ icon("target") }}Phiên bản con trỏ mô hình</dt><dd>{{ candidate.expected_active_pointer_version }}</dd></div>
                 </dl>
-                <form class="learning-incident-action-form" data-incident-action-form data-action="hold"
+                <form class="lx-form learning-incident-action-form" data-incident-action-form data-action="hold"
                   data-proposal-id="{{ candidate.proposal_id }}" data-assessment-id="{{ candidate.assessment_id }}"
                   data-assessment-hash="{{ candidate.assessment_hash }}" data-expected-revision="{{ candidate.expected_revision }}"
                   data-deployment-revision="{{ candidate.expected_deployment_revision }}"
                   data-pointer-version="{{ candidate.expected_active_pointer_version }}">
-                  <label for="learning-incident-hold-reason-{{ candidate.proposal_id }}">Lý do xác nhận chặn lệnh vào</label>
-                  <textarea id="learning-incident-hold-reason-{{ candidate.proposal_id }}" name="reason" minlength="1" maxlength="500" aria-describedby="learning-incident-hold-help-{{ candidate.proposal_id }} learning-incident-hold-error-{{ candidate.proposal_id }}" required></textarea>
-                  <p id="learning-incident-hold-help-{{ candidate.proposal_id }}">Nhập lý do từ 1 đến 500 ký tự.</p>
-                  <p id="learning-incident-hold-error-{{ candidate.proposal_id }}" class="learning-incident-field-error" data-reason-error role="alert" hidden>Vui lòng nhập lý do từ 1 đến 500 ký tự.</p>
-                  <button type="button" data-incident-submit {% if not recent_totp %}disabled{% endif %}>Xác nhận chặn lệnh vào</button>
+                  <div class="lx-field">
+                    <label for="learning-incident-hold-reason-{{ candidate.proposal_id }}">Lý do xác nhận chặn lệnh vào</label>
+                    <textarea id="learning-incident-hold-reason-{{ candidate.proposal_id }}" name="reason" minlength="1" maxlength="500" aria-describedby="learning-incident-hold-help-{{ candidate.proposal_id }} learning-incident-hold-error-{{ candidate.proposal_id }}" required></textarea>
+                    <p id="learning-incident-hold-help-{{ candidate.proposal_id }}" class="lx-help">Nhập lý do từ 1 đến 500 ký tự.</p>
+                    <p id="learning-incident-hold-error-{{ candidate.proposal_id }}" class="lx-error learning-incident-field-error" data-reason-error role="alert" hidden>Vui lòng nhập lý do từ 1 đến 500 ký tự.</p>
+                  </div>
+                  <div class="lx-form__actions"><button type="button" class="btn btn-danger" data-incident-submit {% if not recent_totp %}disabled{% endif %}>Xác nhận chặn lệnh vào</button></div>
                 </form>
               </article>
             {% endfor %}
           </div>
         {% else %}
-          <p class="learning-incident-empty">Không có đề xuất mới nhất nào đủ điều kiện theo mô hình và quyền hiện hành. Bản đánh giá chưa kết luận, mô hình đã đổi hoặc đề xuất đã được xử lý sẽ không có thao tác chặn lệnh vào.</p>
+          <p class="lx-empty learning-incident-empty">{{ icon("info") }}Không có đề xuất mới nhất nào đủ điều kiện theo mô hình và quyền hiện hành. Bản đánh giá chưa kết luận, mô hình đã đổi hoặc đề xuất đã được xử lý sẽ không có thao tác chặn lệnh vào.</p>
         {% endif %}
       </section>
 
-      <section aria-labelledby="learning-incident-open-heading">
-        <h3 id="learning-incident-open-heading">Lệnh vào đang bị tạm chặn</h3>
+      <section class="lx-stack" aria-labelledby="learning-incident-open-heading">
+        <h3 id="learning-incident-open-heading">{{ icon("lock") }}Lệnh vào đang bị tạm chặn</h3>
         {% if open_holds %}
-          <div class="learning-incident-open-list">
+          <div class="lx-grid lx-grid--wide learning-incident-open-list">
             {% for item in open_holds %}
               {% set event = item.event %}
-              <article class="learning-incident-card learning-incident-card--open">
-                <h4>Lệnh vào đang bị chặn</h4>
-                <p><strong>Mã đề xuất:</strong> <code>{{ event.proposal_id }}</code></p>
-                <p><strong>Lý do đã ghi:</strong> {{ event.reason }}</p>
-                <p><strong>Bản sửa đổi hiện tại:</strong> {{ event.revision }} · <time datetime="{{ event.created_at.isoformat() }}">{{ event.created_at|local_time|replace('(Asia/Ho_Chi_Minh)', '(giờ Việt Nam (UTC+7))') }}</time></p>
-                <form class="learning-incident-action-form" data-incident-action-form data-action="release"
+              <article class="glass-card lx-card lx-incident-card learning-incident-card learning-incident-card--open">
+                <div class="lx-card__head">
+                  <h4>Lệnh vào đang bị chặn</h4>
+                  {{ chip("Đang chặn", "danger", "ban") }}
+                </div>
+                <dl class="kv-grid kv-grid--1">
+                  <div class="kv"><dt>{{ icon("hash") }}Mã đề xuất</dt><dd><code class="lx-hash__text" title="{{ event.proposal_id }}">{{ event.proposal_id }}</code></dd></div>
+                  <div class="kv kv--text"><dt>{{ icon("info") }}Lý do đã ghi</dt><dd>{{ event.reason }}</dd></div>
+                  <div class="kv"><dt>{{ icon("layers") }}Bản sửa đổi hiện tại</dt><dd>{{ event.revision }}</dd></div>
+                  <div class="kv kv--text"><dt>{{ icon("clock") }}Thời điểm</dt><dd><time datetime="{{ event.created_at.isoformat() }}">{{ vn_time(event.created_at) }}</time></dd></div>
+                </dl>
+                <form class="lx-form learning-incident-action-form" data-incident-action-form data-action="release"
                   data-proposal-id="{{ event.proposal_id }}" data-expected-revision="{{ event.revision }}">
-                  <label for="learning-incident-release-reason-{{ event.proposal_id }}">Lý do tháo chặn lệnh vào</label>
-                  <textarea id="learning-incident-release-reason-{{ event.proposal_id }}" name="reason" minlength="1" maxlength="500" aria-describedby="learning-incident-release-help-{{ event.proposal_id }} learning-incident-release-error-{{ event.proposal_id }}" required></textarea>
-                  <p id="learning-incident-release-help-{{ event.proposal_id }}">Nhập lý do từ 1 đến 500 ký tự.</p>
-                  <p id="learning-incident-release-error-{{ event.proposal_id }}" class="learning-incident-field-error" data-reason-error role="alert" hidden>Vui lòng nhập lý do từ 1 đến 500 ký tự.</p>
-                  <button type="button" data-incident-submit {% if not recent_totp %}disabled{% endif %}>Tháo chặn lệnh vào</button>
+                  <div class="lx-field">
+                    <label for="learning-incident-release-reason-{{ event.proposal_id }}">Lý do tháo chặn lệnh vào</label>
+                    <textarea id="learning-incident-release-reason-{{ event.proposal_id }}" name="reason" minlength="1" maxlength="500" aria-describedby="learning-incident-release-help-{{ event.proposal_id }} learning-incident-release-error-{{ event.proposal_id }}" required></textarea>
+                    <p id="learning-incident-release-help-{{ event.proposal_id }}" class="lx-help">Nhập lý do từ 1 đến 500 ký tự.</p>
+                    <p id="learning-incident-release-error-{{ event.proposal_id }}" class="lx-error learning-incident-field-error" data-reason-error role="alert" hidden>Vui lòng nhập lý do từ 1 đến 500 ký tự.</p>
+                  </div>
+                  <div class="lx-form__actions"><button type="button" class="btn btn-primary" data-incident-submit {% if not recent_totp %}disabled{% endif %}>Tháo chặn lệnh vào</button></div>
                 </form>
               </article>
             {% endfor %}
           </div>
         {% else %}
-          <p class="learning-incident-empty">Không có lệnh vào nào đang bị tạm chặn trong không gian làm việc này.</p>
+          <p class="lx-empty learning-incident-empty">{{ icon("check-circle") }}Không có lệnh vào nào đang bị tạm chặn trong không gian làm việc này.</p>
         {% endif %}
       </section>
 
-      <details class="learning-incident-history">
-        <summary>Lịch sử chặn và tháo chặn ({{ incident_events|length }} sự kiện)</summary>
+      <details class="glass-card lx-details learning-incident-history">
+        <summary>{{ icon("list") }}Lịch sử chặn và tháo chặn ({{ incident_events|length }} sự kiện)</summary>
         {% if incident_events %}
-          <div class="learning-incident-history-list">
+          <ol class="lx-timeline learning-incident-history-list">
             {% for item in incident_events %}
               {% set event = item.event %}
-              <article class="learning-incident-history-item">
-                <header><strong>{{ item.action_label }}</strong><time datetime="{{ event.created_at.isoformat() }}">{{ event.created_at|local_time|replace('(Asia/Ho_Chi_Minh)', '(giờ Việt Nam (UTC+7))') }}</time></header>
-                <p><strong>Mã đề xuất:</strong> <code>{{ event.proposal_id }}</code> · bản sửa đổi {{ event.revision }}</p>
-                <p><strong>Người xác nhận:</strong> <code>{{ event.actor_membership_id }}</code></p>
-                <p><strong>Lý do:</strong> {{ event.reason }}</p>
-              </article>
+              <li class="learning-incident-history-item">
+                <div class="lx-timeline__head"><strong>{{ item.action_label }}</strong><span class="lx-meta"><time datetime="{{ event.created_at.isoformat() }}">{{ vn_time(event.created_at) }}</time></span></div>
+                <p class="lx-meta"><span>Mã đề xuất <code class="lx-hash__text" title="{{ event.proposal_id }}">{{ event.proposal_id }}</code></span><span>bản sửa đổi {{ event.revision }}</span></p>
+                <p class="lx-meta"><span>{{ icon("user") }}Người xác nhận <code class="lx-hash__text" title="{{ event.actor_membership_id }}">{{ event.actor_membership_id }}</code></span></p>
+                <p class="lx-timeline__reason"><strong>Lý do:</strong> {{ event.reason }}</p>
+              </li>
             {% endfor %}
-          </div>
-        {% else %}<p class="learning-incident-empty">Chưa có lịch sử sự cố trong không gian làm việc này.</p>{% endif %}
+          </ol>
+        {% else %}<p class="lx-empty learning-incident-empty">{{ icon("info") }}Chưa có lịch sử sự cố trong không gian làm việc này.</p>{% endif %}
       </details>
     </section>
-  {% endif %}
+{%- endmacro -%}
 
-  {% if can_read_models %}<div class="learning-observations-groups">
+{%- macro observation_groups() -%}
+  <div class="lx-stack learning-observations-groups">
     {% for group in groups %}
-      <section aria-labelledby="learning-observations-{{ group.kind }}-heading">
-        <h2 id="learning-observations-{{ group.kind }}-heading">{{ group.title }}</h2>
+      <section class="lx-stack" aria-labelledby="learning-observations-{{ group.kind }}-heading">
+        <h2 id="learning-observations-{{ group.kind }}-heading">{{ icon(group_icons.get(group.kind, "info")) }}{{ group.title }}</h2>
         {% if group.records %}
-          <div class="learning-observations-list">
+          <div class="lx-grid learning-observations-list">
             {% for record in group.records %}
-              <article class="learning-observations-card">
-                <header>
-                  <span class="learning-observations-state learning-observations-state--{{ group.kind }}">{{ record.status }}</span>
-                  <time datetime="{{ record.occurred_at.isoformat() }}">{{ record.occurred_at|local_time|replace('(Asia/Ho_Chi_Minh)', '(giờ Việt Nam (UTC+7))') }}</time>
+              <article class="glass-card lx-card lx-obs-card learning-observations-card">
+                <header class="lx-card__head">
+                  <span class="learning-observations-state learning-observations-state--{{ group.kind }}">{{ chip(record.status, "neutral", group_icons.get(group.kind, "info")) }}</span>
+                  <span class="lx-meta"><time datetime="{{ record.occurred_at.isoformat() }}">{{ vn_time(record.occurred_at) }}</time></span>
                 </header>
-                <p class="learning-observations-id">Mã bản ghi <code>{{ record.record_id }}</code></p>
-                <dl>
+                <p class="lx-meta learning-observations-id"><span>Mã bản ghi <code class="lx-hash__text" title="{{ record.record_id }}">{{ record.record_id }}</code></span></p>
+                <dl class="kv-grid kv-grid--1">
                   {% for label, value in record.fields %}
-                    <div><dt>{{ label }}</dt><dd>{{ value }}</dd></div>
+                    <div class="kv kv--text"><dt>{{ label }}</dt><dd>{{ value }}</dd></div>
                   {% endfor %}
                 </dl>
               </article>
             {% endfor %}
           </div>
         {% else %}
-          <p class="learning-observations-empty">Chưa có {{ group.title|lower }} trong không gian làm việc này.</p>
+          <p class="lx-empty learning-observations-empty">{{ icon("info") }}Chưa có {{ group.title|lower }} trong không gian làm việc này.</p>
         {% endif %}
       </section>
     {% endfor %}
   </div>
+{%- endmacro -%}
+
+<div class="lx-page">
+  {% if can_read_models %}<section class="lx-notice learning-observations-notice" aria-label="Giới hạn của trang quan sát">
+    <span class="lx-notice__icon">{{ icon("eye") }}</span>
+    <h2>Chỉ theo dõi, không tác động giao dịch</h2>
+    <p><strong>Mô hình thử nghiệm đang ở trạng thái ABSTAIN — chưa đánh giá hiệu năng.</strong> Các bản ghi này chỉ phản ánh tình trạng dữ liệu và lineage đã lưu; chúng không xác nhận lợi nhuận hay chất lượng dự đoán.</p>
+    <p>Trang chỉ đọc tối đa 50 dòng metadata (dùng chung cho cả ba nhóm) trong không gian làm việc hiện tại. Không hiển thị đặc trưng, nhãn, dữ liệu nguồn hoặc nội dung phần kiểm định giữ kín; không có thao tác xếp lịch huấn luyện hay đổi mô hình đang dùng.</p>
+  </section>
+
+  <section class="lx-kpis" aria-label="Số bản ghi theo nhóm">
+    {% for group in groups %}
+      <div class="kpi-card kpi-card--h">
+        <span class="kpi-icon kpi-icon--{{ group_kpi.get(group.kind, 'blue') }}">{{ icon(group_icons.get(group.kind, "info")) }}</span>
+        <div class="kpi-body"><span class="kpi-value">{{ group.records | length }}</span><span class="kpi-label">{{ group.title }}</span></div>
+      </div>
+    {% endfor %}
+  </section>
+  <p class="lx-status learning-observations-count" role="status">Đang hiển thị {{ record_count }} bản ghi gần đây.</p>{% endif %}
+
+  {% if use_tabs %}
+    <div class="lx-tabs" data-tabs>
+      <div class="tabs-bar" role="tablist" aria-label="Khu vực của trang quan sát">
+        <button type="button" role="tab" id="tab-observations" aria-controls="panel-observations" aria-selected="{{ 'false' if incidents_first else 'true' }}">{{ icon("eye", "nav-icon") }}Dữ liệu và đề xuất</button>
+        <button type="button" role="tab" id="tab-incidents" aria-controls="panel-incidents" aria-selected="{{ 'true' if incidents_first else 'false' }}">{{ icon("ban", "nav-icon") }}Tạm chặn lệnh vào{% set pending_incidents = (actionable_proposals | length) + (open_holds | length) %}{% if pending_incidents %} <span class="tabs-bar__count">{{ pending_incidents }}</span>{% endif %}</button>
+      </div>
+      <div role="tabpanel" class="lx-panel" id="panel-observations" aria-labelledby="tab-observations" tabindex="0">{{ observation_groups() }}</div>
+      <div role="tabpanel" class="lx-panel" id="panel-incidents" aria-labelledby="tab-incidents" tabindex="0">{{ incident_panel() }}</div>
+    </div>
+  {% else %}
+    {% if can_manage_incidents %}{{ incident_panel() }}{% endif %}
+    {% if can_read_models %}{{ observation_groups() }}{% endif %}
   {% endif %}
+</div>
 {% endblock %}
 {% block scripts %}<script src="/static/learning-incident-holds.js" defer></script>{% endblock %}

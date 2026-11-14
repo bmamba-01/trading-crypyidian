@@ -243,7 +243,9 @@ def test_learning_observations_page_is_read_only_vietnamese_and_responsive(
         assert service.facade.calls == [50]
         assert "workspace_id" not in browser_page.url.split("?", maxsplit=1)[0]
         expect(browser_page.get_by_role("button", name="Chuyển chế độ sáng/tối")).to_be_visible()
-        assert browser_page.get_by_role("button").count() == 1
+        # Trang chỉ đọc: không có nút thao tác trong nội dung chính (nút sao chép mã không tính;
+        # nút của khung trang như "Thu gọn" sidebar nằm ngoài <main>).
+        assert browser_page.locator("main button:not(.copy-btn)").count() == 0
         assert browser_page.locator("form").count() == 0
 
         page_text = browser_page.locator("body").inner_text().lower()

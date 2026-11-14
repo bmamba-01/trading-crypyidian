@@ -1,378 +1,312 @@
 {% extends "admin/base.html" %}
-{% block title %}Báo cáo Hiệu Năng & Phân Tích Giao Dịch — Crypidian{% endblock %}
-{% block heading %}Báo Cáo Hiệu Năng & Phân Tích Giao Dịch{% endblock %}
+{% block title %}Báo cáo hiệu năng & phân tích giao dịch — Crypidian{% endblock %}
+{% block heading %}Báo cáo hiệu năng & phân tích giao dịch{% endblock %}
+{% block head_extra %}<link rel="stylesheet" href="/static/pages/reports.css">{% endblock %}
 
 {% block content %}
 {% from "admin/_metric_help.html" import help_term, help_icon %}
-<!-- Thanh lọc thời gian & phạm vi chuẩn Trading UI -->
-<section class="report-filter-section" aria-label="Bộ lọc báo cáo">
+{#-
+  Trang báo cáo theo UI kit v1 (docs/design/admin-ui-kit.md).
+  Quy ước số: tiền hiển thị làm tròn 2 chữ số (`number2_vi`) kèm bản đầy đủ ở `title`;
+  giá và khối lượng giữ nguyên độ chính xác (`number_vi`) vì làm tròn sẽ sai với mã giá nhỏ;
+  khối "Chỉ số chi tiết" (metric_cards) giữ số đầy đủ để đối soát với ledger.
+-#}
+{%- set ICONS = {
+  "pnl": "M3 17l6-6 4 4 8-8M15 7h6v6",
+  "winrate": "M12 3a9 9 0 1 0 9 9h-9V3Z",
+  "factor": "M4 20 20 4M7 7h.01M17 17h.01",
+  "drawdown": "M3 7l6 6 4-4 8 8M15 17h6v-6",
+  "time": "M12 7v5l3 2M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Z",
+  "calendar": "M4 6h16v14H4zM4 10h16M9 3v4M15 3v4",
+  "list": "M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01",
+  "open": "M12 3v18M3 12h18",
+  "bots": "M4 8h16v12H4zM12 8V4M9 14h.01M15 14h.01",
+  "code": "m8 8-4 4 4 4M16 8l4 4-4 4",
+  "entry": "M5 12h14M13 6l6 6-6 6",
+  "exit": "M19 12H5M11 6l-6 6 6 6",
+  "strategy": "M12 3 3 8l9 5 9-5-9-5ZM3 13l9 5 9-5",
+  "price": "M4 7h16M4 12h10M4 17h7",
+  "signal": "M3 12h4l3-8 4 16 3-8h4",
+  "leverage": "M12 3 4 6v6c0 4.4 3.4 8.4 8 9 4.6-.6 8-4.6 8-9V6l-8-3Z",
+  "layer": "M12 3 3 8l9 5 9-5-9-5Z",
+  "trigger": "M13 2 4 14h7l-1 8 9-12h-7l1-8Z",
+  "zone": "M4 20V10M10 20V4M16 20v-7M22 20H2",
+  "budget": "M6 3h12v18l-3-2-3 2-3-2-3 2V3ZM9 8h6M9 12h6",
+  "note": "M4 7h16M4 12h10M4 17h7",
+  "slippage": "M3 12c3-4 6 4 9 0s6-4 9 0",
+  "fee": "M6 3h12v18l-3-2-3 2-3-2-3 2V3ZM9 8h6M9 12h6",
+  "cost": "M12 3v18M17 7H9.5a2.5 2.5 0 0 0 0 5h5a2.5 2.5 0 0 1 0 5H7",
+  "copy": "M9 9h11v11H9zM5 15H4V4h11v1",
+  "hash": "M5 9h14M5 15h14M10 3 8 21M16 3l-2 18",
+  "close": "M6 6l12 12M18 6 6 18",
+  "chart": "M3 3v18h18M7 15l4-4 3 3 5-6",
+  "search": "M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14ZM20 20l-4-4",
+  "download": "M12 4v11M7 10l5 5 5-5M5 20h14",
+  "ai": "M12 2v4M12 18v4M4.9 4.9l2.8 2.8M16.3 16.3l2.8 2.8M2 12h4M18 12h4",
+  "check": "M20 6 9 17l-5-5",
+  "up": "M7 17 17 7M9 7h8v8",
+  "down": "M7 7l10 10M17 9v8H9",
+  "filter": "M3 5h18l-7 8v6l-4 2v-8L3 5Z",
+} -%}
+{%- macro ico(name) -%}<svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="{{ ICONS.get(name, ICONS.note) }}"/></svg>{%- endmacro -%}
+{#- Biểu tượng tài sản: USDT dùng ₮ (giữ tên đọc được cho trình đọc màn hình), tài sản khác giữ chữ. -#}
+{%- macro asset_mark(asset) -%}{% if asset == "USDT" %}<span class="asset-usdt" role="img" aria-label="USDT" title="USDT">₮</span>{% elif asset %}<span class="asset-code">{{ asset }}</span>{% endif %}{%- endmacro -%}
+{#- Tiền: 2 chữ số để đọc nhanh, bản đầy đủ ở `title`; thiếu dữ liệu thì nói rõ, không ghi 0. -#}
+{%- macro money(value, asset, signed=false) -%}
+{%- if value is none or (value | pnl_tone) == "unknown" -%}<span class="value-muted">Chưa có dữ liệu</span>
+{%- else -%}<span class="money num" title="{{ value | number_vi }} {{ asset }}">{% if signed and (value | pnl_tone) == "positive" %}+{% endif %}{{ value | number2_vi }}{{ asset_mark(asset) }}</span>
+{%- endif -%}
+{%- endmacro -%}
+{#- Lãi/lỗ: chữ màu + mũi tên, dấu +/− giữ nghĩa khi không phân biệt màu. -#}
+{%- macro pnl(value, asset) -%}
+{%- set tone = value | pnl_tone -%}
+<span class="pnl-value pnl-value--{{ tone }} money" data-pnl-tone="{{ tone }}"{% if tone != "unknown" %} title="{{ value | number_vi }} {{ asset }}"{% endif %}>{% if tone == "unknown" %}Chưa có dữ liệu{% else %}{% if tone == "positive" %}+{% endif %}{{ value | number2_vi }}{{ asset_mark(asset) }}{% endif %}</span>
+{%- endmacro -%}
+{#- Mã dài: 8 ký tự đầu + nút sao chép; mã đầy đủ vẫn có trong văn bản (ẩn thị giác). -#}
+{%- macro id_chip(value, label="mã") -%}
+{%- set full = value | string -%}
+<span class="id-chip"><code class="trade-id" title="{{ full }}">{{ full[:8] }}{% if full | length > 10 %}…{% else %}{{ full[8:] }}{% endif %}</code><span class="visually-hidden">{{ full }}</span><button type="button" class="copy-btn" data-copy="{{ full }}" aria-label="Sao chép {{ label }} {{ full }}" title="Sao chép {{ label }} đầy đủ">{{ ico("copy") }}</button></span>
+{%- endmacro -%}
+{#- Thời điểm có năm, rút gọn tới phút; bản đầy đủ (giây + múi giờ) ở `title`. -#}
+{%- macro when(value) -%}
+{%- set full = value | local_time -%}
+{%- if full.startswith("Chưa") -%}<span class="value-muted">{{ full }}</span>{%- else -%}<time datetime="{{ value }}" title="{{ full }}">{{ full[:16] }}</time>{%- endif -%}
+{%- endmacro -%}
+{%- macro when_short(value) -%}
+{%- set full = value | local_time -%}
+{%- if full.startswith("Chưa") -%}<span class="value-muted">{{ full }}</span>{%- else -%}<time datetime="{{ value }}" title="{{ full }}">{{ value | local_minute }}</time>{%- endif -%}
+{%- endmacro -%}
+{#- Thời lượng từ số giây ledger; không có thì ghi rõ. -#}
+{%- macro duration(seconds) -%}
+{%- if seconds is none or seconds == "" -%}<span class="value-muted">Chưa có dữ liệu</span>
+{%- else -%}{%- set s = seconds | int -%}
+{%- if s >= 86400 %}{{ s // 86400 }} ngày {{ (s % 86400) // 3600 }} giờ{% elif s >= 3600 %}{{ s // 3600 }} giờ {{ (s % 3600) // 60 }} phút{% elif s >= 60 %}{{ s // 60 }} phút{% else %}{{ s }} giây{% endif -%}
+{%- endif -%}
+{%- endmacro -%}
+{%- macro side_badge(side) -%}
+<span class="side-badge side-badge--{{ 'long' if side == 'LONG' else ('short' if side == 'SHORT' else 'unknown') }}">{{ ico("up" if side == "LONG" else "down") }}{{ side | label_vi if side in ui_labels_vi else (side or "Chưa xác định") }}</span>
+{%- endmacro -%}
+{%- macro exit_badge(code) -%}
+{%- if not code -%}<span class="value-muted">Chưa có dữ liệu</span>
+{%- else -%}<span class="report-badge report-badge--{{ 'up' if code == 'TAKE_PROFIT' else ('down' if code == 'STOP_LOSS' else 'neutral') }}" title="{{ code }}">{{ code | label_vi if code in ui_labels_vi else code }}</span>
+{%- endif -%}
+{%- endmacro -%}
+{%- macro quality_badge(pm) -%}
+{%- if pm.classification == "OPTIMAL" -%}<span class="report-badge report-badge--up">Tối ưu</span>
+{%- elif pm.is_deviant -%}<span class="report-badge report-badge--down" title="{{ pm.deviation_reason or '' }}">Sai lệch</span>
+{%- elif pm.classification == "UNVERIFIED" -%}<span class="report-badge report-badge--neutral">Chưa đủ dữ liệu</span>
+{%- else -%}<span class="report-badge report-badge--neutral">Chấp nhận</span>
+{%- endif -%}
+{%- endmacro -%}
+{%- macro missing() -%}<span class="value-muted">Ledger chưa lưu</span>{%- endmacro -%}
+
+<div class="report-page">
+<!-- Bộ lọc: một hàng trên màn hình rộng, tự xuống dòng trên màn hình hẹp. -->
+<section class="report-filter glass-card" aria-label="Bộ lọc báo cáo">
   <form class="report-filter-form" method="get" action="/admin/reports">
-    <div class="filter-controls-grid">
-      <div class="form-group">
+    <div class="report-filter__row">
+      <div class="report-field report-field--scope">
         <label for="scope">Phạm vi</label>
         <select id="scope" name="scope">
-          <option value="bot" {% if scope == "bot" %}selected{% endif %}>Một Bot Cụ Thể</option>
-          <option value="workspace" {% if scope == "workspace" %}selected{% endif %}>Toàn Không Gian Làm Việc</option>
+          <option value="bot" {% if scope == "bot" %}selected{% endif %}>Một bot cụ thể</option>
+          <option value="workspace" {% if scope == "workspace" %}selected{% endif %}>Toàn không gian làm việc</option>
         </select>
       </div>
-
-      <div class="form-group" id="bot-select-wrap">
-        <label for="bot_id">Bot Giao Dịch</label>
+      <div class="report-field report-field--bot" id="bot-select-wrap"{% if scope == "workspace" %} hidden{% endif %}>
+        <label for="bot_id">Bot giao dịch</label>
         <select id="bot_id" name="bot_id">
           <option value="">Không chọn bot</option>
           {% for bot in bots %}
-            <option value="{{ bot.id }}" {% if bot_id == bot.id %}selected{% endif %}>{{ bot.name }} ({{ bot.symbol or "BTCUSDT" }})</option>
+            <option value="{{ bot.id }}" {% if bot_id == bot.id %}selected{% endif %}>{{ bot.name }}</option>
           {% endfor %}
         </select>
       </div>
-
-      <div class="form-group">
+      <div class="report-field report-field--time">
         <div class="label-help-row"><label for="start">Bắt đầu</label>{{ help_icon("report_window_start") }}</div>
-        <input id="start" name="start" type="text" value="{{ start }}" placeholder="2026-11-01T00:00:00+07:00" required>
+        <input id="start" name="start" type="text" value="{{ start }}" placeholder="2026-11-01T00:00:00+07:00" required inputmode="text" autocomplete="off" spellcheck="false">
       </div>
-
-      <div class="form-group">
+      <div class="report-field report-field--time">
         <div class="label-help-row"><label for="end">Kết thúc</label>{{ help_icon("report_window_end") }}</div>
-        <input id="end" name="end" type="text" value="{{ end }}" placeholder="2026-11-10T23:59:59+07:00" required>
+        <input id="end" name="end" type="text" value="{{ end }}" placeholder="2026-11-10T23:59:59+07:00" required inputmode="text" autocomplete="off" spellcheck="false">
       </div>
-
-      <div class="form-actions-inline">
-        <button type="submit" class="btn btn-primary">📊 Phân Tích</button>
+      <div class="report-filter__actions">
+        <button type="submit" class="btn btn-primary">{{ ico("chart") }}Phân tích</button>
         {% if report %}
         <a
-          class="btn btn-secondary"
+          class="btn btn-secondary report-export"
           href="/admin/reports/export.csv?scope={{ scope | urlencode }}&bot_id={{ bot_id | urlencode }}&start={{ start | urlencode }}&end={{ end | urlencode }}"
           data-testid="export-reports-csv"
-        >⬇ Xuất CSV</a>
+        >{{ ico("download") }} Xuất CSV</a>
         {% endif %}
       </div>
     </div>
-
-    <!-- Quick Date Filter Presets -->
-    <div class="quick-filter-group" aria-label="Chọn nhanh khoảng thời gian">
-      <span class="u-font-size-0-825rem u-align-self-center u-margin-right-0-25rem text-muted">Nhanh:</span>
-      <button type="button" class="quick-filter-btn" data-quick-range="today">Hôm Nay</button>
-      <button type="button" class="quick-filter-btn" data-quick-range="7d">7 Ngày Qua</button>
-      <button type="button" class="quick-filter-btn" data-quick-range="30d">30 Ngày Qua</button>
-      <button type="button" class="quick-filter-btn" data-quick-range="month">Tháng Này</button>
+    <div class="quick-filter-group" role="group" aria-label="Chọn nhanh khoảng thời gian">
+      <span class="quick-filter-group__label">Nhanh:</span>
+      <button type="button" class="quick-filter-btn" data-quick-range="today">Hôm nay</button>
+      <button type="button" class="quick-filter-btn" data-quick-range="7d">7 ngày qua</button>
+      <button type="button" class="quick-filter-btn" data-quick-range="30d">30 ngày qua</button>
+      <button type="button" class="quick-filter-btn" data-quick-range="month">Tháng này</button>
+      <span class="quick-filter-group__hint">Mốc ISO-8601 có múi giờ; báo cáo tính theo giờ đóng lệnh, không gồm mốc kết thúc.</span>
     </div>
   </form>
 </section>
 
+{% if not report %}
+<section class="report-empty glass-card" aria-label="Chưa có báo cáo">
+  <span class="kpi-icon kpi-icon--blue" aria-hidden="true">{{ ico("filter") }}</span>
+  <p>Chọn phạm vi, bot và khoảng thời gian rồi bấm <strong>Phân tích</strong>. Báo cáo đọc từ ledger PAPER đã đóng; không tự chọn bot hay tự tổng hợp toàn không gian làm việc.</p>
+</section>
+{% endif %}
+
 {% if report %}
+{%- set bot_names = {} -%}
+{%- for bot in bots %}{% set _ = bot_names.update({bot.id: bot.name}) %}{% endfor -%}
+{%- set selected_trade_id = chart_data.trade.trade_id if chart_data and chart_data.trade else none -%}
 <section class="report-results" aria-labelledby="report-results-heading">
-  <div class="report-header-meta">
-    <h2 class="u-margin-0" id="report-results-heading">
-      Kết Quả Phân Tích — {{ report.scope | label_vi }}
-    </h2>
-    {% if report.window %}
-      <span class="u-font-size-0-85rem text-muted tabular-nums">
-        Khoảng: {{ report.window.start | local_time }} ➔ {{ report.window.end | local_time }}
-      </span>
-    {% endif %}
-  </div>
+  <header class="report-head">
+    <h2 id="report-results-heading">Kết quả phân tích — {{ report.scope | label_vi }}{% if report.scope == "bot" and report.bot_id in bot_names %}: {{ bot_names[report.bot_id] }}{% endif %}</h2>
+    <dl class="report-head__meta">
+      {% if report.window %}
+      <div><dt>Khoảng</dt><dd class="num">{{ when(report.window.start) }} → {{ when(report.window.end) }}</dd></div>
+      {% endif %}
+      <div><dt>Chế độ</dt><dd><span class="badge badge-paper-subtle">{{ report.mode or "PAPER" }}</span></dd></div>
+      {% if report.report_hash %}<div><dt>Mã băm báo cáo</dt><dd>{{ id_chip(report.report_hash, "mã băm báo cáo") }}</dd></div>{% endif %}
+    </dl>
+  </header>
 
-  <div class="u-margin-top-1rem authoritative-metrics-block">
-    {% with totals=report.get("totals", {}) %}{% include "admin/metric_cards.html" %}{% endwith %}
-  </div>
-
-  {% if report.daily_performance %}
-  <section aria-labelledby="daily-performance-heading" class="daily-performance">
-    <h3 id="daily-performance-heading">{{ help_term("daily_pnl_calendar", "Lịch lãi/lỗ theo ngày") }}</h3>
-    <ul class="chart-key" aria-label="Chú giải các trường của lịch lãi/lỗ">
-      <li>{{ help_term("net_pnl", "Lãi/lỗ ròng") }}</li>
-      <li>{{ help_term("closed_trade_count", "Giao dịch đã đóng") }}</li>
-      <li>{{ help_term("daily_trade_outcomes") }}</li>
-    </ul>
-    <p>Ngày được tính theo {{ report.daily_performance.timezone }}. Chỉ hiện ngày có giao dịch đã đóng; tài sản định giá được tách riêng.</p>
-    {% for asset, days in report.daily_performance.quote_assets.items() %}
-    <section aria-label="Lãi lỗ theo ngày bằng {{ asset }}">
-      <h4>Tài sản {{ asset }}</h4>
-      <div class="row g-3 daily-performance-grid">
-        {% for day in days %}
-        <article class="col-12 col-sm-6 col-xl-4 daily-performance-card">
-          <h5><time datetime="{{ day.date }}">{{ day.date }}</time></h5>
-          <dl>
-            {% set daily_pnl_tone = day.net_pnl | pnl_tone %}
-            <div><dt>Lãi/lỗ ròng</dt><dd class="pnl-value pnl-value--{{ daily_pnl_tone }}" data-pnl-tone="{{ daily_pnl_tone }}">{% if daily_pnl_tone == "positive" %}+{% endif %}{{ day.net_pnl | number_vi }} {{ asset }}</dd></div>
-            <div><dt>Giao dịch đã đóng</dt><dd>{{ day.closed_trade_count }}</dd></div>
-            <div><dt>Có lãi / thua lỗ / hòa vốn</dt><dd>{{ day.winning_trade_count }} / {{ day.losing_trade_count }} / {{ day.breakeven_trade_count }}</dd></div>
-          </dl>
-        </article>
-        {% else %}<p>Chưa có giao dịch đã đóng trong kỳ báo cáo.</p>{% endfor %}
-      </div>
-    </section>
-    {% endfor %}
-  </section>
-  {% endif %}
-
-  <!-- Thống Kê Tổng Quan (Trading Metrics Grid Cards) -->
+  {#- KPI ngang theo từng tài sản định giá; không cộng lẫn các tài sản. -#}
   {% for asset, totals in report.get("totals", {}).items() %}
-  <div class="u-margin-top-1rem trading-metrics-block">
-    <h3 class="u-font-size-1-1rem u-margin-bottom-0-5rem u-display-flex u-align-items-center u-gap-0-4rem">
-      <span>Tài Sản Ký Quỹ / Định Giá: <strong>{{ asset }}</strong></span>
-    </h3>
-
-    <div class="trading-metric-grid">
-      <!-- Card Net PnL -->
-      {% set net_val = totals.net_pnl | float if totals.net_pnl is defined else 0.0 %}
-      <div class="trading-metric-card">
-        <div class="metric-header">
-          {{ help_term("net_pnl", "Lời / Lỗ Ròng (Net PnL)") }}
-          <svg class="u-color-hex-0ecb81 svg-icon" viewBox="0 0 24 24"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+  <section class="report-asset" aria-label="Tổng quan {{ asset }}">
+    <h3 class="report-asset__title"><span>Tài Sản Ký Quỹ / Định Giá: <strong>{{ asset }}</strong></span><span class="report-asset__count num">{{ totals.closed_trade_count if totals.closed_trade_count is defined else 0 }} lệnh đã đóng</span></h3>
+    <div class="report-kpis">
+      {% set net_tone = totals.net_pnl | pnl_tone %}
+      <div class="kpi-card kpi-card--h report-kpi report-kpi--net">
+        <span class="kpi-icon kpi-icon--{{ 'green' if net_tone == 'positive' else ('amber' if net_tone == 'negative' else 'blue') }}" aria-hidden="true">{{ ico("pnl") }}</span>
+        <div class="kpi-body">
+          <span class="kpi-value">{{ pnl(totals.net_pnl, asset) }}</span>
+          <span class="kpi-label">{{ help_term("net_pnl", "Lời / Lỗ Ròng (Net PnL)") }}</span>
         </div>
-        <div class="metric-value {% if net_val > 0 %}pnl-positive{% elif net_val < 0 %}pnl-negative{% endif %} tabular-nums">
-          {% if net_val > 0 %}+{% endif %}{{ totals.net_pnl }} {{ asset }}
-        </div>
-        <div class="metric-sub tabular-nums">
-          Lãi gộp: {{ totals.gross_pnl }} | Chi phí: {{ totals.total_cost }} {{ asset }}
-        </div>
+        <span class="report-kpi__sub">Gộp {{ money(totals.gross_pnl, asset, true) }} · Chi phí {{ money(totals.total_cost, asset) }}</span>
       </div>
-
-      <!-- Card Win Rate -->
-      <div class="trading-metric-card">
-        <div class="metric-header">
-          {{ help_term("win_rate_percent", "Tỷ Lệ Thắng (Win Rate)") }}
-          <svg class="u-color-primary svg-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>
+      <div class="kpi-card kpi-card--h report-kpi">
+        <span class="kpi-icon kpi-icon--blue" aria-hidden="true">{{ ico("winrate") }}</span>
+        <div class="kpi-body">
+          <span class="kpi-value num">{% if totals.win_rate_percent is defined and totals.win_rate_percent is not none %}{{ totals.win_rate_percent | number2_vi }}%{% else %}<span class="value-muted">Chưa có dữ liệu</span>{% endif %}</span>
+          <span class="kpi-label">{{ help_term("win_rate_percent", "Tỷ Lệ Thắng (Win Rate)") }}</span>
         </div>
-        <div class="u-color-primary metric-value tabular-nums">
-          {{ totals.win_rate_percent or "0" }}%
-        </div>
-        <div class="metric-sub tabular-nums">
-          Thắng: {{ totals.winning_trade_count }} | Thua: {{ totals.losing_trade_count }} | Hòa: {{ totals.breakeven_trade_count }}
-        </div>
+        <span class="report-kpi__sub num">Thắng {{ totals.winning_trade_count if totals.winning_trade_count is defined else "—" }} · Thua {{ totals.losing_trade_count if totals.losing_trade_count is defined else "—" }} · Hòa {{ totals.breakeven_trade_count if totals.breakeven_trade_count is defined else "—" }}</span>
       </div>
-
-      <!-- Card Profit Factor -->
-      <div class="trading-metric-card">
-        <div class="metric-header">
-          {{ help_term("profit_factor", "Profit Factor") }}
-          <svg class="u-color-hex-0ecb81 svg-icon" viewBox="0 0 24 24"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>
+      <div class="kpi-card kpi-card--h report-kpi">
+        <span class="kpi-icon kpi-icon--violet" aria-hidden="true">{{ ico("factor") }}</span>
+        <div class="kpi-body">
+          <span class="kpi-value num">{% if totals.profit_factor is not defined %}<span class="value-muted">Chưa có dữ liệu</span>{% elif totals.profit_factor is none %}<span class="value-muted" title="Không có lệnh lỗ nên hệ số lợi nhuận không xác định">Không xác định</span>{% else %}{{ totals.profit_factor | number2_vi }}×{% endif %}</span>
+          <span class="kpi-label">{{ help_term("profit_factor", "Profit Factor") }}</span>
         </div>
-        <div class="metric-value tabular-nums">
-          {{ totals.profit_factor or "N/A" }}{% if totals.profit_factor %}x{% endif %}
-        </div>
-        <div class="metric-sub tabular-nums">
-          Kỳ vọng/lệnh: {{ totals.expectancy_per_trade or "0" }} {{ asset }}
-        </div>
+        <span class="report-kpi__sub">Kỳ vọng/lệnh {% if totals.expectancy_per_trade is defined and totals.expectancy_per_trade is not none %}{{ money(totals.expectancy_per_trade, asset, true) }}{% else %}<span class="value-muted">chưa có dữ liệu</span>{% endif %}</span>
       </div>
-
-      <!-- Card Max Drawdown -->
-      <div class="trading-metric-card">
-        <div class="metric-header">
-          {{ help_term("max_drawdown", "Max Drawdown") }}
-          <svg class="u-color-danger svg-icon" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+      {% set dd_tone = totals.max_drawdown | pnl_tone %}
+      <div class="kpi-card kpi-card--h report-kpi">
+        <span class="kpi-icon kpi-icon--amber" aria-hidden="true">{{ ico("drawdown") }}</span>
+        <div class="kpi-body">
+          <span class="kpi-value num{% if dd_tone == 'positive' %} report-kpi__value--down{% endif %}">{% if dd_tone == "unknown" %}<span class="value-muted">Chưa có dữ liệu</span>{% else %}<span class="money" title="{{ totals.max_drawdown | number_vi }} {{ asset }}">{% if dd_tone == "positive" %}-{% endif %}{{ totals.max_drawdown | number2_vi }}{{ asset_mark(asset) }}</span>{% endif %}</span>
+          <span class="kpi-label">{{ help_term("max_drawdown", "Max Drawdown") }}</span>
         </div>
-        <div class="u-color-danger metric-value tabular-nums">
-          -{{ totals.max_drawdown }} {{ asset }}
-        </div>
-        <div class="metric-sub tabular-nums">
-          Số lệnh đóng: {{ totals.closed_trade_count }}
-        </div>
+        <span class="report-kpi__sub">Trên PnL đã đóng, theo tiền tuyệt đối</span>
       </div>
-
-      <!-- Card Holding Time -->
-      <div class="trading-metric-card">
-        <div class="metric-header">
-          {{ help_term("average_holding_seconds", "Thời Gian Giữ Lệnh") }}
-          <svg class="u-color-text-muted svg-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+      <div class="kpi-card kpi-card--h report-kpi">
+        <span class="kpi-icon kpi-icon--blue" aria-hidden="true">{{ ico("time") }}</span>
+        <div class="kpi-body">
+          <span class="kpi-value num">{% if totals.average_holding_seconds is defined %}{{ duration(totals.average_holding_seconds) }}{% else %}<span class="value-muted">Chưa có dữ liệu</span>{% endif %}</span>
+          <span class="kpi-label">{{ help_term("average_holding_seconds", "Thời Gian Giữ Lệnh") }}</span>
         </div>
-        <div class="u-font-size-1-25rem metric-value tabular-nums">
-          {% if totals.average_holding_seconds %}
-            {% set s = totals.average_holding_seconds | int %}
-            {% if s >= 3600 %}
-              {{ (s // 3600) }}h {{ ((s % 3600) // 60) }}m
-            {% else %}
-              {{ (s // 60) }} phút
-            {% endif %}
-          {% else %}
-            N/A
-          {% endif %}
-        </div>
-        <div class="metric-sub tabular-nums">
-          Chuỗi thắng max: {{ totals.max_consecutive_wins or 0 }} | Thua max: {{ totals.max_consecutive_losses or 0 }}
-        </div>
+        <span class="report-kpi__sub num">Chuỗi thắng {{ totals.max_consecutive_wins if totals.max_consecutive_wins is defined else "—" }} · chuỗi thua {{ totals.max_consecutive_losses if totals.max_consecutive_losses is defined else "—" }}</span>
       </div>
     </div>
-  </div>
+  </section>
+  {% else %}
+  <p class="report-note" role="status">Chưa có giao dịch đã đóng trong khoảng báo cáo.</p>
   {% endfor %}
 
-  <!-- BIỂU ĐỒ NẾN TRADINGVIEW TƯƠNG TÁC (Khi người dùng chọn xem biểu đồ 1 lệnh) -->
+  <!-- Hậu kiểm một lệnh: biểu đồ nến + mổ xẻ quyết định (chỉ khi người dùng chọn một lệnh). -->
   {% if chart_data %}
   {% set selected_trade = chart_data.trade %}
   {% set pm = selected_trade.get("post_mortem", {}) %}
-  <section class="u-margin-top-1-5rem trade-chart-section" aria-labelledby="chart-title">
-    <div class="u-display-flex u-flex-wrap-wrap u-align-items-center u-justify-content-space-between u-gap-0-75rem u-margin-bottom-0-75rem chart-header-row">
-      <h3 class="u-margin-0 u-display-flex u-align-items-center u-gap-0-5rem" id="chart-title">
-        <span>Biểu Đồ Nến Point-In-Time: <strong>{{ chart_data.symbol }}</strong></span>
-        {% if selected_trade.side == "LONG" %}
-          <span class="badge-long">🟢 LONG</span>
-        {% else %}
-          <span class="badge-short">🔴 SHORT</span>
-        {% endif %}
-        <span class="u-background-bg-surface-subtle u-border-1px-solid-border-subtle u-font-size-0-8rem badge">
-          Khung: {{ chart_data.timeframe }}
-        </span>
+  {% set ea = pm.get("entry_analysis", {}) %}
+  {% set xa = pm.get("exit_analysis", {}) %}
+  {% set chart_ea = ea %}
+  {% set quote = selected_trade.quote_asset %}
+  <section class="trade-chart-section glass-card" aria-labelledby="chart-title">
+    <header class="pm-head">
+      <h3 id="chart-title">
+        {{ ico("chart") }}<span>Biểu đồ nến</span>
+        <span class="coin-tag" data-coin="{{ chart_data.symbol }}">{{ chart_data.symbol }}</span>
+        {{ side_badge(selected_trade.side) }}
+        <span class="report-badge report-badge--neutral">Khung {{ chart_data.timeframe }}</span>
       </h3>
-      {% set chart_ea = selected_trade.get("post_mortem", {}).get("entry_analysis", {}) %}
-    </div>
+      <div class="pm-head__actions">
+        <form class="pm-timeframe" method="get" action="/admin/reports">
+          <input type="hidden" name="scope" value="{{ scope }}">
+          <input type="hidden" name="bot_id" value="{{ bot_id }}">
+          <input type="hidden" name="start" value="{{ start }}">
+          <input type="hidden" name="end" value="{{ end }}">
+          <input type="hidden" name="chart_trade_id" value="{{ selected_trade.trade_id }}">
+          <label class="visually-hidden" for="chart-timeframe-switch">Khung thời gian của biểu đồ</label>
+          <select id="chart-timeframe-switch" name="chart_timeframe">
+            {% for timeframe in ["5m", "15m", "1h", "4h", "1d"] %}<option value="{{ timeframe }}" {% if chart_data.timeframe == timeframe %}selected{% endif %}>{{ timeframe }}</option>{% endfor %}
+          </select>
+          <button type="submit" class="btn btn-secondary">Đổi khung</button>
+        </form>
+        <a class="icon-link" href="/admin/reports?scope={{ scope | urlencode }}&bot_id={{ bot_id | urlencode }}&start={{ start | urlencode }}&end={{ end | urlencode }}">{{ ico("close") }}<span>Đóng biểu đồ</span></a>
+      </div>
+    </header>
+    {% if chart_data.notice %}<p class="report-note" role="status">{{ chart_data.notice }}</p>{% endif %}
 
-    <!-- Canvas biểu đồ Lightweight Charts -->
     <p id="trade-chart-legend" class="chart-ohlc-legend" data-chart-legend>Rê chuột hoặc chạm vào nến để xem Mở / Cao / Thấp / Đóng.</p>
     <div id="trade-chart" class="chart-canvas" role="img" aria-label="Biểu đồ nến {{ chart_data.symbol }} với các mốc vào và thoát lệnh" data-stop-title="{{ metric_help_title('chart_stop_line') }}" data-target-title="{{ metric_help_title('chart_target_line') }}" data-entry-title="{{ metric_help_title('chart_entry_line') }}"></div>
-
-    <!-- Thanh thông báo trạng thái khi di chuột -->
-    <div id="trade-chart-event-detail" class="u-margin-top-0-5rem u-padding-0-5rem-0-85rem u-border-radius-0-375rem u-background-bg-surface-subtle u-font-size-0-85rem u-color-text-muted u-border-1px-solid-border-subtle chart-event-detail tabular-nums" role="status" aria-live="polite">
-      ℹ️ Rê chuột hoặc chạm vào nến có đánh dấu để đọc giải thích chi tiết khớp lệnh vào / ra.
-    </div>
+    <div id="trade-chart-event-detail" class="chart-event-detail" role="status" aria-live="polite">Rê chuột hoặc chạm vào nến có đánh dấu để đọc giải thích chi tiết khớp lệnh vào / ra.</div>
     {% set chart_key_timeframe = chart_data.timeframe %}{% set chart_key_entry_line = chart_ea.entry_price is not none %}{% set chart_key_stop = chart_ea.stop_loss_price is not none %}{% set chart_key_target = chart_ea.take_profit_price is not none %}
     {% include "admin/_trade_chart_key.html" %}
 
-    <!-- BÓC TÁCH NGUYÊN NHÂN VÀO LỆNH / ĐÓNG LỆNH & QUẢN TRỊ RỦI RO -->
+    <!-- Bóc tách nguyên nhân vào/đóng lệnh và quản trị rủi ro: chỉ dữ liệu có nguồn. -->
     <div class="trade-reasoning-panel">
       <div class="trade-reasoning-header">
         <h3>
-          <span>🧠 Mổ Xẻ Quyết Định Định Lượng & Quản Trị Rủi Ro</span>
-          {% if pm.classification == "OPTIMAL" %}
-            <span class="badge-optimal">⭐ THỰC THI TỐI ƯU</span>{{ help_icon("quality_optimal") }}
-          {% elif pm.is_deviant %}
-            <span class="badge-deviant">⚠️ SAI LỆCH TÍN HIỆU / RỦI RO CAO</span>{{ help_icon("quality_deviant") }}
-          {% elif pm.classification == "UNVERIFIED" %}
-            <span class="u-background-bg-surface-subtle badge">CHƯA ĐỦ DỮ LIỆU ĐỂ ĐÁNH GIÁ</span>{{ help_icon("quality_unverified") }}
-          {% else %}
-            <span class="u-background-bg-surface-subtle badge">CHẤP NHẬN ĐƯỢC</span>{{ help_icon("quality_acceptable") }}
-          {% endif %}
+          <span>Mổ Xẻ Quyết Định Định Lượng & Quản Trị Rủi Ro</span>
+          {{ quality_badge(pm) }}
+          {% if pm.classification == "OPTIMAL" %}{{ help_icon("quality_optimal") }}{% elif pm.is_deviant %}{{ help_icon("quality_deviant") }}{% elif pm.classification == "UNVERIFIED" %}{{ help_icon("quality_unverified") }}{% else %}{{ help_icon("quality_acceptable") }}{% endif %}
         </h3>
-        <span class="u-font-size-0-85rem text-muted tabular-nums">Mã lệnh: <code>{{ selected_trade.trade_id }}</code></span>
+        <span class="trade-reasoning-header__id">Mã lệnh {{ id_chip(selected_trade.trade_id, "mã lệnh") }}</span>
       </div>
 
       <div class="reasoning-columns">
-        <!-- Khối 1: Vì sao vào lệnh? (L4 Context Gate + L5 Signal Trigger + L6 Zones) -->
+        <!-- Khối 1: Vì sao vào lệnh? (L4 cửa bối cảnh + L5 kích hoạt + L6 vùng giá) -->
         <div class="reasoning-box">
-          <h4>
-            <span>🟢 Vì Sao Vào Vị Thế? (Tín Hiệu Tổng Hợp)</span>
-          </h4>
-          <dl class="reasoning-kv-list">
-            <div class="reasoning-kv-item">
-              <dt>Tín hiệu & Hướng</dt>
-              <dd>
-                {% if selected_trade.side == "LONG" %}
-                  <span class="badge-long">🟢 MUA / LONG</span>
-                {% else %}
-                  <span class="badge-short">🔴 BÁN / SHORT</span>
-                {% endif %}
-              </dd>
-            </div>
-            {% set ea = pm.entry_analysis %}
-            <div class="reasoning-kv-item">
-              <dt>Chiến thuật</dt>
-              <dd>{% if ea.strategy_id %}{{ ea.strategy_id }}{% if ea.reason_code %} · {{ ea.reason_code }}{% endif %}{% else %}<span class="u-color-text-muted u-font-weight-400">Ledger chưa lưu</span>{% endif %}</dd>
-            </div>
-            <div class="reasoning-kv-item">
-              <dt>
-                {{ help_term("entry_price_quantity", "Giá vào & khối lượng") }}
-              </dt>
-              <dd class="tabular-nums">{% if ea.entry_price is not none %}{{ ea.entry_price | number_vi }}{% if ea.entry_quantity is not none %} × {{ ea.entry_quantity | number_vi }}{% endif %}{% else %}<span class="u-color-text-muted u-font-weight-400">Ledger chưa lưu</span>{% endif %}</dd>
-            </div>
-            <div class="reasoning-kv-item">
-              <dt>{{ help_term("reference_price_signal_time", "Giá tham chiếu & thời điểm tín hiệu") }}</dt>
-              <dd class="tabular-nums">{% if ea.reference_price is not none or ea.signal_at %}{% if ea.reference_price is not none %}{{ ea.reference_price | number_vi }}{% endif %}{% if ea.signal_at %} lúc {{ ea.signal_at | local_time }}{% endif %}{% else %}<span class="u-color-text-muted u-font-weight-400">Ledger chưa lưu</span>{% endif %}</dd>
-            </div>
-            <div class="reasoning-kv-item">
-              <dt>
-                {{ help_term("leverage", "Đòn bẩy & rủi ro tài khoản") }}
-              </dt>
-              <dd class="tabular-nums">{% if ea.target_leverage is not none or ea.account_risk_pct is not none %}{% if ea.target_leverage is not none %}{{ ea.target_leverage }}x{% endif %}{% if ea.account_risk_pct is not none %} (Rủi ro: {{ ea.account_risk_pct | number_vi }}%){% endif %}{% else %}<span class="u-color-text-muted u-font-weight-400">Ledger chưa lưu</span>{% endif %}</dd>
-            </div>
-            <div class="reasoning-kv-item">
-              <dt>
-                {{ help_term("layer_l4_report", "L4 Cửa Bối Cảnh (Context Gate)") }}
-              </dt>
-              <dd>{% if ea.context_regime %}<span class="u-background-bg-surface-subtle badge">{% if ea.context_gate_passed is sameas true %}ĐẠT{% elif ea.context_gate_passed is sameas false %}KHÔNG ĐẠT{% else %}CHƯA RÕ{% endif %} ({{ ea.context_regime }})</span>{% else %}<span class="u-color-text-muted u-font-weight-400">Ledger chưa lưu</span>{% endif %}</dd>
-            </div>
-            <div class="reasoning-kv-item">
-              <dt>
-                {{ help_term("layer_l5_report", "L5 Điểm Kích Hoạt (Trigger Score)") }}
-              </dt>
-              <dd class="tabular-nums">{% if ea.rejection_wick_score is not none or ea.breakout_score is not none %}{% if ea.rejection_wick_score is not none %}Rút chân: {{ ea.rejection_wick_score }}/100{% endif %}{% if ea.breakout_score is not none %} Phá vỡ: {{ ea.breakout_score }}/100{% endif %}{% else %}<span class="u-color-text-muted u-font-weight-400">Ledger chưa lưu</span>{% endif %}</dd>
-            </div>
-            <div class="reasoning-kv-item">
-              <dt>
-                {{ help_term("risk_reward_ratio", "L6 Tỷ Lệ R:R & Kế Hoạch Vùng Giá") }}
-              </dt>
-              <dd class="tabular-nums">{% if ea.risk_reward_ratio is not none or ea.stop_loss_price is not none or ea.take_profit_price is not none %}{% set zone_parts = [] %}{% if ea.risk_reward_ratio is not none %}{% set _ = zone_parts.append("1 : " ~ ("%.2f" | format(ea.risk_reward_ratio | float))) %}{% endif %}{% if ea.stop_loss_price is not none %}{% set _ = zone_parts.append("SL: " ~ (ea.stop_loss_price | number_vi)) %}{% endif %}{% if ea.take_profit_price is not none %}{% set _ = zone_parts.append("TP: " ~ (ea.take_profit_price | number_vi)) %}{% else %}{% set _ = zone_parts.append("không có mục tiêu chốt lời cố định") %}{% endif %}{{ zone_parts | join(" · ") }}{% else %}<span class="u-color-text-muted u-font-weight-400">Ledger chưa lưu</span>{% endif %}</dd>
-            </div>
-            <div class="reasoning-kv-item">
-              <dt>
-                {{ help_term("planned_risk_budget", "Ngân sách rủi ro kế hoạch") }}
-              </dt>
-              <dd class="tabular-nums">{% if ea.planned_risk_amount is not none %}{{ ea.planned_risk_amount | number_vi }} {{ selected_trade.quote_asset }}{% if pm.exit_analysis.net_pnl_r_multiple is not none %} · kết quả {{ "%.2f" | format(pm.exit_analysis.net_pnl_r_multiple | float) }}R{% endif %}{% else %}<span class="u-color-text-muted u-font-weight-400">Ledger chưa lưu</span>{% endif %}</dd>
-            </div>
-            <div class="u-border-bottom-none reasoning-kv-item">
-              <dt>Diễn giải tín hiệu</dt>
-              <dd class="u-max-width-65pct u-text-align-right u-font-weight-400 u-color-text-muted">{% if ea.detail_vi %}{{ ea.detail_vi }}{% else %}Ledger chưa lưu lý do vào lệnh cho giao dịch này.{% endif %}</dd>
-            </div>
+          <h4>{{ ico("entry") }}<span>Vì Sao Vào Vị Thế? (Tín Hiệu Tổng Hợp)</span></h4>
+          <dl class="kv-list">
+            <div class="kv"><dt>{{ ico("signal") }}Tín hiệu & hướng</dt><dd>{{ side_badge(selected_trade.side) }}</dd></div>
+            <div class="kv"><dt>{{ ico("strategy") }}Chiến thuật</dt><dd>{% if ea.strategy_id %}{{ ea.strategy_id }}{% if ea.reason_code %} · {{ ea.reason_code }}{% endif %}{% else %}{{ missing() }}{% endif %}</dd></div>
+            <div class="kv"><dt>{{ ico("price") }}{{ help_term("entry_price_quantity", "Giá vào & khối lượng") }}</dt><dd class="num">{% if ea.entry_price is not none %}{{ ea.entry_price | number_vi }}{% if ea.entry_quantity is not none %} × {{ ea.entry_quantity | number_vi }}{% endif %}{% else %}{{ missing() }}{% endif %}</dd></div>
+            <div class="kv kv--stack"><dt>{{ ico("time") }}{{ help_term("reference_price_signal_time", "Giá tham chiếu & thời điểm tín hiệu") }}</dt><dd class="num">{% if ea.reference_price is not none or ea.signal_at %}{% if ea.reference_price is not none %}{{ ea.reference_price | number_vi }}{% endif %}{% if ea.signal_at %} lúc {{ when(ea.signal_at) }}{% endif %}{% else %}{{ missing() }}{% endif %}</dd></div>
+            <div class="kv"><dt>{{ ico("leverage") }}{{ help_term("leverage", "Đòn bẩy & rủi ro tài khoản") }}</dt><dd class="num">{% if ea.target_leverage is not none or ea.account_risk_pct is not none %}{% if ea.target_leverage is not none %}{{ ea.target_leverage }}x{% endif %}{% if ea.account_risk_pct is not none %} (Rủi ro: {{ ea.account_risk_pct | number_vi }}%){% endif %}{% else %}{{ missing() }}{% endif %}</dd></div>
+            <div class="kv"><dt>{{ ico("layer") }}{{ help_term("layer_l4_report", "L4 Cửa Bối Cảnh (Context Gate)") }}</dt><dd>{% if ea.context_regime %}<span class="report-badge report-badge--{{ 'up' if ea.context_gate_passed is sameas true else ('down' if ea.context_gate_passed is sameas false else 'neutral') }}">{% if ea.context_gate_passed is sameas true %}ĐẠT{% elif ea.context_gate_passed is sameas false %}KHÔNG ĐẠT{% else %}CHƯA RÕ{% endif %} ({{ ea.context_regime }})</span>{% else %}{{ missing() }}{% endif %}</dd></div>
+            <div class="kv"><dt>{{ ico("trigger") }}{{ help_term("layer_l5_report", "L5 Điểm Kích Hoạt (Trigger Score)") }}</dt><dd class="num">{% if ea.rejection_wick_score is not none or ea.breakout_score is not none %}{% if ea.rejection_wick_score is not none %}Rút chân: {{ ea.rejection_wick_score }}/100{% endif %}{% if ea.breakout_score is not none %} Phá vỡ: {{ ea.breakout_score }}/100{% endif %}{% else %}{{ missing() }}{% endif %}</dd></div>
+            <div class="kv kv--stack"><dt>{{ ico("zone") }}{{ help_term("risk_reward_ratio", "L6 Tỷ Lệ R:R & Kế Hoạch Vùng Giá") }}</dt><dd class="num">{% if ea.risk_reward_ratio is not none or ea.stop_loss_price is not none or ea.take_profit_price is not none %}{% set zone_parts = [] %}{% if ea.risk_reward_ratio is not none %}{% set _ = zone_parts.append("1 : " ~ ("%.2f" | format(ea.risk_reward_ratio | float))) %}{% endif %}{% if ea.stop_loss_price is not none %}{% set _ = zone_parts.append("SL: " ~ (ea.stop_loss_price | number_vi)) %}{% endif %}{% if ea.take_profit_price is not none %}{% set _ = zone_parts.append("TP: " ~ (ea.take_profit_price | number_vi)) %}{% else %}{% set _ = zone_parts.append("không có mục tiêu chốt lời cố định") %}{% endif %}{{ zone_parts | join(" · ") }}{% else %}{{ missing() }}{% endif %}</dd></div>
+            <div class="kv"><dt>{{ ico("budget") }}{{ help_term("planned_risk_budget", "Ngân sách rủi ro kế hoạch") }}</dt><dd class="num">{% if ea.planned_risk_amount is not none %}{{ money(ea.planned_risk_amount, quote) }}{% if xa.net_pnl_r_multiple is not none %} · kết quả {{ "%.2f" | format(xa.net_pnl_r_multiple | float) }}R{% endif %}{% else %}{{ missing() }}{% endif %}</dd></div>
+            <div class="kv kv--stack"><dt>{{ ico("note") }}Diễn giải tín hiệu</dt><dd class="kv__text">{% if ea.detail_vi %}{{ ea.detail_vi }}{% else %}Ledger chưa lưu lý do vào lệnh cho giao dịch này.{% endif %}</dd></div>
           </dl>
         </div>
 
-        <!-- Khối 2: Vì sao đóng lệnh? (Lý do thoát & Bóc tách chi phí) -->
+        <!-- Khối 2: Vì sao đóng lệnh? (lý do thoát và bóc tách chi phí) -->
         <div class="reasoning-box">
-          <h4>
-            <span>🔴 Vì Sao Thoát Vị Thế? (Chi Phí & Rủi Ro)</span>
-          </h4>
-          <dl class="reasoning-kv-list">
-            <div class="reasoning-kv-item">
-              <dt>{{ help_term("exit_reason", "Lý do đóng vị thế") }}</dt>
-              <dd>
-                {% if selected_trade.exit_reason == "TAKE_PROFIT" %}
-                  <span class="badge-tp">🎯 CHỐT LỜI (TP HIT)</span>
-                {% elif selected_trade.exit_reason == "STOP_LOSS" %}
-                  <span class="badge-sl">🛑 CẮT LỖ (SL HIT)</span>
-                {% elif selected_trade.exit_reason == "TIME_STOP" %}
-                  <span class="u-background-bg-surface-subtle badge">⏱️ HẾT GIỜ GIỮ</span>
-                {% elif selected_trade.exit_reason == "OPPOSING_SIGNAL" %}
-                  <span class="u-background-bg-surface-subtle badge">🔄 ĐẢO CHIỀU TÍN HIỆU</span>
-                {% elif selected_trade.exit_reason == "CHANNEL_EXIT" %}
-                  <span class="u-background-bg-surface-subtle badge">THOÁT THEO KÊNH GIÁ</span>
-                {% elif selected_trade.exit_reason == "FEATURE_EXIT" %}
-                  <span class="u-background-bg-surface-subtle badge">THOÁT THEO CHỈ BÁO</span>
-                {% else %}
-                  <span class="u-background-bg-surface-subtle badge">{{ selected_trade.exit_reason or "QUẢN TRỊ" }}</span>
-                {% endif %}
-              </dd>
-            </div>
-            <div class="reasoning-kv-item">
-              <dt>
-                {{ help_term("trade_slippage", "Trượt giá thực tế (Slippage)") }}
-              </dt>
-              <dd class="tabular-nums{% if pm.classification == "DEVIANT_SLIPPAGE" %} u-color-danger u-font-weight-700{% endif %}">
-                {{ selected_trade.slippage_total }} {{ selected_trade.quote_asset }}{% if pm.exit_analysis.slippage_bps is not none %} ({{ "%.2f" | format(pm.exit_analysis.slippage_bps | float) }} bps trên notional vào lệnh){% else %} (chưa tính được bps: thiếu fill vào lệnh){% endif %}{% if pm.exit_analysis.expected_slippage is not none %} · kế hoạch dự trù {{ pm.exit_analysis.expected_slippage | number_vi }} {{ selected_trade.quote_asset }}{% endif %}
-              </dd>
-            </div>
-            <div class="reasoning-kv-item">
-              <dt>{{ help_term("trade_fees_funding", "Phí giao dịch & Phí Funding") }}</dt>
-              <dd class="tabular-nums">
-                Phí: {{ selected_trade.fee_total }} | Funding: {{ selected_trade.funding_total }} {{ selected_trade.quote_asset }}
-              </dd>
-            </div>
-            <div class="reasoning-kv-item">
-              <dt>{{ help_term("total_cost", "Tổng chi phí thực thi") }}</dt>
-              <dd class="u-color-danger tabular-nums">
-                -{{ selected_trade.total_cost }} {{ selected_trade.quote_asset }}
-              </dd>
-            </div>
-            <div class="reasoning-kv-item">
-              <dt>{{ help_term("net_pnl", "Kết quả Lãi/Lỗ ròng") }}</dt>
-              <dd class="u-font-size-1-1rem u-font-weight-700 tabular-nums {% if selected_trade.net_pnl | float > 0 %}pnl-positive{% elif selected_trade.net_pnl | float < 0 %}pnl-negative{% endif %}">
-                {% if selected_trade.net_pnl | float > 0 %}+{% endif %}{{ selected_trade.net_pnl }} {{ selected_trade.quote_asset }}
-              </dd>
-            </div>
-            <div class="u-border-bottom-none reasoning-kv-item">
-              <dt>{{ help_term("holding_period", "Thời gian nắm giữ") }}</dt>
-              <dd class="tabular-nums text-muted">
-                {{ selected_trade.opened_at | local_time }} ➔ {{ selected_trade.closed_at | local_time }}
-              </dd>
-            </div>
+          <h4>{{ ico("exit") }}<span>Vì Sao Thoát Vị Thế? (Chi Phí & Rủi Ro)</span></h4>
+          <dl class="kv-list">
+            <div class="kv"><dt>{{ ico("exit") }}{{ help_term("exit_reason", "Lý do đóng vị thế") }}</dt><dd>{{ exit_badge(selected_trade.exit_reason) }}</dd></div>
+            <div class="kv kv--stack"><dt>{{ ico("slippage") }}{{ help_term("trade_slippage", "Trượt giá thực tế (Slippage)") }}</dt><dd class="num{% if pm.classification == 'DEVIANT_SLIPPAGE' %} report-kpi__value--down{% endif %}">{{ money(selected_trade.slippage_total, quote) }}{% if xa.slippage_bps is not none %} ({{ "%.2f" | format(xa.slippage_bps | float) }} bps trên notional vào lệnh){% else %} (chưa tính được bps: thiếu fill vào lệnh){% endif %}{% if xa.expected_slippage is not none %} · kế hoạch dự trù {{ money(xa.expected_slippage, quote) }}{% endif %}</dd></div>
+            <div class="kv"><dt>{{ ico("fee") }}{{ help_term("trade_fees_funding", "Phí giao dịch & Phí Funding") }}</dt><dd class="num">Phí {{ money(selected_trade.fee_total, quote) }} · Funding {{ money(selected_trade.funding_total, quote) }}</dd></div>
+            <div class="kv"><dt>{{ ico("cost") }}{{ help_term("total_cost", "Tổng chi phí thực thi") }}</dt><dd class="num">{{ money(selected_trade.total_cost, quote) }}</dd></div>
+            <div class="kv kv--strong"><dt>{{ ico("pnl") }}{{ help_term("net_pnl", "Kết quả Lãi/Lỗ ròng") }}</dt><dd>{{ pnl(selected_trade.net_pnl, quote) }}</dd></div>
+            <div class="kv"><dt>{{ ico("time") }}{{ help_term("holding_period", "Thời gian nắm giữ") }}</dt><dd class="num">{{ duration(xa.holding_duration_seconds) }}</dd></div>
+            <div class="kv kv--stack"><dt>{{ ico("calendar") }}Mở → đóng</dt><dd class="num">{{ when(selected_trade.opened_at) }} → {{ when(selected_trade.closed_at) }}</dd></div>
           </dl>
         </div>
       </div>
@@ -384,12 +318,10 @@
         <li>{{ help_term("execution_quality") }}</li>
       </ul>
 
-      <!-- Khối 3: Hộp Hành Động Phản Thực Nghiệm & Đưa Vào Huấn Luyện AI (AI Retraining Ingestion) -->
+      <!-- Khối 3: gắn nhãn phản thực nghiệm để người rà soát xem xét (chưa vào dữ liệu huấn luyện). -->
       <div class="ai-retraining-card">
         <div class="ai-retraining-info">
-          <h4>
-            <span>🤖 Huấn Luyện AI Phản Thực Nghiệm (Counterfactual Retraining)</span>
-          </h4>
+          <h4>{{ ico("ai") }}<span>Huấn Luyện AI Phản Thực Nghiệm (Counterfactual Retraining)</span></h4>
           <p>
             {% if pm.is_deviant %}
               <strong class="u-color-warning">Phát hiện ca sai lệch:</strong> {{ pm.deviation_reason }}
@@ -401,19 +333,24 @@
             {% endif %}
           </p>
           {% if pm.unevaluated_checks %}
-          <p class="u-font-size-0-8rem u-color-text-muted" id="post-mortem-unevaluated">
+          <p class="ai-retraining-info__note" id="post-mortem-unevaluated">
             Chưa kiểm được: {% for check in pm.unevaluated_checks %}{{ {"SLIPPAGE": "trượt giá so với kế hoạch (ledger không ghim kế hoạch đã duyệt)", "FALSE_BREAKOUT": "phá vỡ giả (thiếu lý do đóng hoặc thời gian giữ lệnh)", "EXCESSIVE_LOSS": "lỗ vượt kế hoạch (ledger chưa lưu ngân sách rủi ro của lệnh)"}.get(check, check) }}{% if not loop.last %}; {% endif %}{% endfor %}.
           </p>
           {% endif %}
-          <p class="u-font-size-0-8rem u-color-text-muted">Nhãn chỉ lưu tạm trong phiên chạy để rà soát, chưa đưa vào dữ liệu huấn luyện.</p>
+          <p class="ai-retraining-info__note">Nhãn chỉ lưu tạm trong phiên chạy để rà soát, chưa đưa vào dữ liệu huấn luyện.</p>
         </div>
         <div class="ai-retraining-action">
+          {% set can_label = identity is defined and identity and (identity.principal.roles | select("in", ["owner", "strategy_admin", "analyst_reviewer"]) | list) %}
+          {% if can_label %}
           <button type="button" class="btn-ai-retrain" id="btn-ingest-ai" data-csrf-token="{{ csrf_token | default('', true) }}" data-trade-id="{{ selected_trade.trade_id }}" data-bot-id="{{ selected_trade.bot_id }}" data-symbol="{{ selected_trade.symbol }}" data-side="{{ selected_trade.side }}" data-reason="{{ pm.deviation_reason or '' }}">
-            📥 Đưa Ca Này Vào Dữ Liệu Phạt AI
+            {{ ico("ai") }} Đưa Ca Này Vào Dữ Liệu Phạt AI
           </button>
-          <span class="u-display-none u-font-size-0-85rem u-font-weight-600 u-margin-left-0-5rem u-color-hex-0ecb81" id="ai-ingest-feedback">
-            ✅ Đã ghi nhận để rà soát (lưu tạm trong phiên chạy)
-          </span>
+          <span class="ai-ingest-feedback" id="ai-ingest-feedback" role="status" hidden>{{ ico("check") }} Đã ghi nhận để rà soát (lưu tạm trong phiên chạy)</span>
+          {#- Trường của lệnh gửi kèm để máy chủ phân tích đúng ca đang xem (không điền mặc định). -#}
+          <script id="ingest-trade-payload" type="application/json">{% set ingest_payload = {"holding_duration_seconds": xa.get("holding_duration_seconds")} %}{% for key in ["quote_asset", "opened_at", "closed_at", "gross_pnl", "fee_total", "funding_total", "slippage_total", "net_pnl", "exit_reason"] %}{% set _ = ingest_payload.update({key: selected_trade.get(key)}) %}{% endfor %}{{ ingest_payload | tojson }}</script>
+          {% else %}
+          <p class="ai-retraining-info__note" role="note">Vai trò hiện tại không được gắn nhãn ca (cần chủ sở hữu, quản trị chiến lược hoặc người rà soát phân tích).</p>
+          {% endif %}
         </div>
       </div>
     </div>
@@ -422,165 +359,253 @@
   <script id="trade-chart-data" type="application/json">{{ chart_data | tojson }}</script>
   {% endif %}
 
-  <!-- BẢNG LỊCH SỬ GIAO DỊCH (Lược bỏ chữ rườm rà, dùng Badges & Quick Action Buttons) -->
-  {% if report.scope == "bot" and report.trades %}
-  <section class="u-margin-top-2rem trade-history-section" aria-labelledby="trade-list-title">
-    <div class="u-display-flex u-justify-content-space-between u-align-items-center u-margin-bottom-0-75rem">
-      <h3 class="u-margin-0" id="trade-list-title">
-        Danh Sách Lệnh Khớp Trong Kỳ ({{ report.trades | length }} giao dịch)
-      </h3>
-      <span class="u-font-size-0-85rem text-muted">Bấm "Biểu đồ" để phóng to nến và mổ xẻ quyết định</span>
-    </div>
+  <!-- Tóm tắt: chỉ số chi tiết đủ độ chính xác (đối soát) và lịch lãi/lỗ theo ngày. -->
+  <div class="report-summary">
+    <section class="glass-card report-metrics" aria-label="Chỉ số chi tiết">
+      <p class="report-card__hint">{{ ico("list") }} Chỉ số chi tiết · số đầy đủ theo ledger để đối soát</p>
+      {% with totals=report.get("totals", {}) %}{% include "admin/metric_cards.html" %}{% endwith %}
+    </section>
 
-    <ul class="chart-key" aria-label="Chú giải các trường của danh sách lệnh">
-      <li>{{ help_term("trade_cost_slippage") }}</li>
-      <li>{{ help_term("exit_reason") }}</li>
-      <li>{{ help_term("execution_quality", "Đánh giá lệnh") }}:</li>
-      <li>{{ help_term("quality_optimal") }}</li>
-      <li>{{ help_term("quality_acceptable") }}</li>
-      <li>{{ help_term("quality_deviant") }}</li>
-      <li>{{ help_term("quality_unverified") }}</li>
-    </ul>
-    <div class="mobile-trade-list" aria-label="Giao dịch trong kỳ báo cáo">
-      {% for trade in report.trades %}
-      {% set m_pm = trade.get("post_mortem", {}) %}
-      <article class="trade-list-card">
-        <h4>{{ trade.symbol }} / {{ trade.side | label_vi }}</h4>
-        <dl>
-          <div><dt>Mã giao dịch</dt><dd><code>{{ trade.trade_id }}</code></dd></div>
-          <div><dt>Đóng lúc</dt><dd>{{ trade.closed_at | local_time }}</dd></div>
-          {% set trade_pnl_tone = trade.net_pnl | pnl_tone %}
-          <div><dt>Lời/lỗ ròng</dt><dd class="pnl-value pnl-value--{{ trade_pnl_tone }}" data-pnl-tone="{{ trade_pnl_tone }}">{% if trade_pnl_tone == "positive" %}+{% endif %}{{ trade.net_pnl | number_vi }} {{ trade.quote_asset }}</dd></div>
-          <div><dt>Chi phí / trượt giá</dt><dd>{{ trade.total_cost }} (Trượt: {{ trade.slippage_total }})</dd></div>
-          <div><dt>Lý do đóng</dt><dd>{{ {"STOP_LOSS": "Dừng lỗ", "TAKE_PROFIT": "Chốt lời", "TIME_STOP": "Đóng theo thời gian", "OPPOSING_SIGNAL": "Tín hiệu ngược chiều", "CHANNEL_EXIT": "Thoát theo kênh giá", "FEATURE_EXIT": "Thoát theo chỉ báo", "FLATTEN_OPERATION": "Đóng theo thao tác quản trị"}.get(trade.exit_reason, trade.exit_reason) if trade.exit_reason else "Chưa có dữ liệu" }}</dd></div>
-          <div><dt>Đánh giá lệnh</dt><dd>{% if m_pm.classification == "OPTIMAL" %}Tối ưu{% elif m_pm.is_deviant %}Sai lệch{% elif m_pm.classification == "UNVERIFIED" %}Chưa đủ dữ liệu{% else %}Chấp nhận{% endif %}</dd></div>
-        </dl>
-        <form class="chart-select-form" method="get" action="/admin/reports">
-          <input type="hidden" name="scope" value="{{ scope }}">
-          <input type="hidden" name="bot_id" value="{{ bot_id }}">
-          <input type="hidden" name="start" value="{{ start }}">
-          <input type="hidden" name="end" value="{{ end }}">
-          <input type="hidden" name="chart_trade_id" value="{{ trade.trade_id }}">
-          <label class="visually-hidden" for="mobile-timeframe-{{ loop.index }}">Khung biểu đồ cho {{ trade.symbol }}</label>
-          <select id="mobile-timeframe-{{ loop.index }}" name="chart_timeframe">
-            {% for timeframe in ["5m", "15m", "1h", "4h", "1d"] %}<option value="{{ timeframe }}" {% if (chart_timeframe or "1h") == timeframe %}selected{% endif %}>{{ timeframe }}</option>{% endfor %}
-          </select>
-          <button type="submit" class="btn btn-secondary">Xem biểu đồ</button>
-        </form>
-      </article>
+    {% if report.daily_performance %}
+    <section aria-labelledby="daily-performance-heading" class="glass-card daily-performance">
+      <h3 id="daily-performance-heading">{{ help_term("daily_pnl_calendar", "Lịch lãi/lỗ theo ngày") }}</h3>
+      <ul class="chart-key" aria-label="Chú giải các trường của lịch lãi/lỗ">
+        <li>{{ help_term("net_pnl", "Lãi/lỗ ròng") }}</li>
+        <li>{{ help_term("closed_trade_count", "Giao dịch đã đóng") }}</li>
+        <li>{{ help_term("daily_trade_outcomes") }}</li>
+      </ul>
+      <p class="report-card__hint">Ngày theo {{ report.daily_performance.timezone }}. Chỉ hiện ngày có giao dịch đã đóng; mỗi tài sản định giá tách riêng.</p>
+      {% for asset, days in report.daily_performance.quote_assets.items() %}
+      <section aria-label="Lãi lỗ theo ngày bằng {{ asset }}" class="daily-asset">
+        <h4>Tài sản {{ asset }}</h4>
+        <div class="daily-performance-grid">
+          {% for day in days %}
+          {% set daily_pnl_tone = day.net_pnl | pnl_tone %}
+          <article class="daily-performance-card daily-cell daily-cell--{{ daily_pnl_tone }}">
+            <h5><time datetime="{{ day.date }}" title="{{ day.date }}">{{ day.date[8:10] }}/{{ day.date[5:7] }}<span class="daily-cell__year">/{{ day.date[:4] }}</span></time></h5>
+            {#- Nhãn đầy đủ giữ cho trình đọc màn hình; ô lịch chỉ hiện số để gọn. -#}
+            <dl>
+              <div class="daily-cell__pnl"><dt class="visually-hidden">Lãi/lỗ ròng</dt><dd>{{ pnl(day.net_pnl, asset) }}</dd></div>
+              <div><dt class="visually-hidden">Giao dịch đã đóng</dt><dd class="num">{{ day.closed_trade_count }} lệnh</dd></div>
+              <div><dt class="visually-hidden">Có lãi / thua lỗ / hòa vốn</dt><dd class="num" title="Có lãi / thua lỗ / hòa vốn"><span class="daily-cell__win">{{ day.winning_trade_count }}</span>/<span class="daily-cell__loss">{{ day.losing_trade_count }}</span>/{{ day.breakeven_trade_count }}</dd></div>
+            </dl>
+          </article>
+          {% else %}<p class="report-note">Chưa có giao dịch đã đóng trong kỳ báo cáo.</p>{% endfor %}
+        </div>
+      </section>
       {% endfor %}
+    </section>
+    {% endif %}
+  </div>
+
+  <!-- Chi tiết: lệnh đã đóng / đang mở (một bot) hoặc theo bot (toàn không gian làm việc). -->
+  {% set closed_trades = report.get("trades") or [] %}
+  {% set open_trades = report.get("open_trades") or [] %}
+  {% set bot_rows = report.get("bots") or [] %}
+  <div class="report-tabs" data-tabs>
+    <div class="tabs-bar" role="tablist" aria-label="Chi tiết báo cáo">
+      {% if report.scope == "bot" %}
+      <button type="button" role="tab" id="tab-report-closed" aria-controls="panel-report-closed" aria-selected="true">{{ ico("list") }}Lệnh đã đóng <span class="tabs-bar__count">{{ closed_trades | length }}</span></button>
+      <button type="button" role="tab" id="tab-report-open" aria-controls="panel-report-open" aria-selected="false">{{ ico("open") }}Lệnh đang mở <span class="tabs-bar__count">{{ open_trades | length }}</span></button>
+      {% else %}
+      <button type="button" role="tab" id="tab-report-bots" aria-controls="panel-report-bots" aria-selected="true">{{ ico("bots") }}Theo bot <span class="tabs-bar__count">{{ bot_rows | length }}</span></button>
+      {% endif %}
+      <button type="button" role="tab" id="tab-report-raw" aria-controls="panel-report-raw" aria-selected="false">{{ ico("code") }}Đối soát & dữ liệu kỹ thuật</button>
     </div>
-    <div class="u-border-1px-solid-border-subtle u-border-radius-0-5rem u-background-bg-surface desktop-trades table-responsive">
-      <table class="u-width-100pct u-border-collapse-collapse u-font-size-0-875rem trade-table">
-        <thead>
-          <tr class="u-border-bottom-1px-solid-border-main u-background-bg-surface-subtle u-text-align-left">
-            <th class="u-padding-0-75rem">{{ help_term("position_symbol_side", "Cặp / Hướng") }}</th>
-            <th class="u-padding-0-75rem">{{ help_term("trade_closed_at", "Thời Điểm Đóng") }}</th>
-            <th class="u-padding-0-75rem u-text-align-right">{{ help_term("net_pnl", "Lời/Lỗ Ròng") }}</th>
-            <th class="u-padding-0-75rem u-text-align-right">{{ help_term("trade_cost_slippage", "Chi Phí / Trượt Giá") }}</th>
-            <th class="u-padding-0-75rem">{{ help_term("exit_reason", "Lý Do Đóng") }}</th>
-            <th class="u-padding-0-75rem">{{ help_term("execution_quality", "Đánh Giá Lệnh") }}</th>
-            <th class="u-padding-0-75rem u-text-align-center">Thao Tác</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for trade in report.trades %}
-          {% set t_pm = trade.get("post_mortem", {}) %}
-          {% set pnl_num = trade.net_pnl | float %}
-          <tr class="u-border-bottom-1px-solid-border-subtle u-transition-background-color-0-15s-ease">
-            <!-- Cặp / Hướng -->
-            <td class="u-padding-0-75rem u-font-weight-600">
-              <div>{{ trade.symbol }}</div>
-              {% if trade.side == "LONG" %}
-                <span class="u-font-size-0-75rem badge-long">🟢 LONG</span>
-              {% else %}
-                <span class="u-font-size-0-75rem badge-short">🔴 SHORT</span>
-              {% endif %}
-            </td>
 
-            <!-- Thời Điểm Đóng -->
-            <td class="u-padding-0-75rem u-color-text-muted tabular-nums">
-              {{ trade.closed_at | local_time }}
-            </td>
-
-            <!-- Lời/Lỗ Ròng -->
-            <td class="u-padding-0-75rem u-text-align-right u-font-weight-700 tabular-nums {% if pnl_num > 0 %}pnl-positive{% elif pnl_num < 0 %}pnl-negative{% endif %}">
-              {% if pnl_num > 0 %}+{% endif %}{{ trade.net_pnl }} {{ trade.quote_asset }}
-            </td>
-
-            <!-- Chi Phí / Trượt Giá -->
-            <td class="u-padding-0-75rem u-text-align-right u-color-text-muted tabular-nums">
-              {{ trade.total_cost }} (Trượt: {{ trade.slippage_total }})
-            </td>
-
-            <!-- Lý Do Đóng -->
-            <td class="u-padding-0-75rem">
-              {% if trade.exit_reason == "TAKE_PROFIT" %}
-                <span class="badge-tp">🎯 Chốt lời</span>
-              {% elif trade.exit_reason == "STOP_LOSS" %}
-                <span class="badge-sl">🛑 Dừng lỗ</span>
-              {% elif trade.exit_reason == "TIME_STOP" %}
-                <span class="u-background-bg-surface-subtle badge">⏱️ Hết giờ</span>
-              {% elif trade.exit_reason == "CHANNEL_EXIT" %}
-                <span class="u-background-bg-surface-subtle badge">Thoát theo kênh giá</span>
-              {% elif trade.exit_reason == "FEATURE_EXIT" %}
-                <span class="u-background-bg-surface-subtle badge">Thoát theo chỉ báo</span>
-              {% else %}
-                <span class="u-background-bg-surface-subtle badge">{{ trade.exit_reason or "Đóng" }}</span>
-              {% endif %}
-            </td>
-
-            <!-- Đánh Giá Lệnh & Phân Loại -->
-            <td class="u-padding-0-75rem">
-              {% if t_pm.classification == "OPTIMAL" %}
-                <span class="u-font-size-0-75rem badge-optimal">⭐ TỐI ƯU</span>
-              {% elif t_pm.is_deviant %}
-                <span class="u-font-size-0-75rem badge-deviant" title="{{ t_pm.deviation_reason }}">⚠️ SAI LỆCH</span>
-              {% elif t_pm.classification == "UNVERIFIED" %}
-                <span class="u-background-bg-surface-subtle u-font-size-0-75rem badge">CHƯA ĐỦ DỮ LIỆU</span>
-              {% else %}
-                <span class="u-background-bg-surface-subtle u-font-size-0-75rem badge">CHẤP NHẬN</span>
-              {% endif %}
-            </td>
-
-            <!-- Thao Tác -->
-            <td class="u-padding-0-75rem u-text-align-center">
-              <form class="u-display-inline-block" method="get" action="/admin/reports">
-                <input type="hidden" name="scope" value="{{ scope }}">
-                <input type="hidden" name="bot_id" value="{{ bot_id }}">
-                <input type="hidden" name="start" value="{{ start }}">
-                <input type="hidden" name="end" value="{{ end }}">
-                <input type="hidden" name="chart_trade_id" value="{{ trade.trade_id }}">
-                <input type="hidden" name="chart_timeframe" value="1h">
-                <button type="submit" class="btn btn-secondary btn-compact">
-                  🔍 Xem Biểu Đồ
-                </button>
-              </form>
-            </td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
+    {% if report.scope == "bot" %}
+    <div role="tabpanel" id="panel-report-closed" aria-labelledby="tab-report-closed" tabindex="0">
+    <section class="trade-history-section" aria-labelledby="trade-list-title">
+      <div class="report-panel-head">
+        <h3 id="trade-list-title">Danh Sách Lệnh Khớp Trong Kỳ ({{ closed_trades | length }} giao dịch)</h3>
+        <span class="report-card__hint">Bấm "Xem biểu đồ" để mở nến và mổ xẻ quyết định của lệnh.</span>
+      </div>
+      {% if closed_trades %}
+      <ul class="chart-key" aria-label="Chú giải các trường của danh sách lệnh">
+        <li>{{ help_term("trade_cost_slippage") }}</li>
+        <li>{{ help_term("exit_reason") }}</li>
+        <li>{{ help_term("execution_quality", "Đánh giá lệnh") }}:</li>
+        <li>{{ help_term("quality_optimal") }}</li>
+        <li>{{ help_term("quality_acceptable") }}</li>
+        <li>{{ help_term("quality_deviant") }}</li>
+        <li>{{ help_term("quality_unverified") }}</li>
+      </ul>
+      <div class="mobile-trade-list" aria-label="Giao dịch trong kỳ báo cáo">
+        {% for trade in closed_trades %}
+        {% set m_pm = trade.get("post_mortem", {}) %}
+        <article class="trade-list-card{% if trade.trade_id == selected_trade_id %} is-selected{% endif %}">
+          <div class="trade-list-card__head">
+            <h4><span class="coin-tag" data-coin="{{ trade.symbol }}">{{ trade.symbol }}</span> {{ side_badge(trade.side) }}</h4>
+            {{ pnl(trade.net_pnl, trade.quote_asset) }}
+          </div>
+          <dl>
+            <div class="kv"><dt>Đóng lúc</dt><dd class="num">{{ when_short(trade.closed_at) }}</dd></div>
+            <div class="kv"><dt>Chi phí / trượt giá</dt><dd class="num">{{ money(trade.total_cost, trade.quote_asset) }} · {{ money(trade.slippage_total, trade.quote_asset) }}</dd></div>
+            <div class="kv"><dt>Lý do đóng</dt><dd>{{ exit_badge(trade.exit_reason) }}</dd></div>
+            <div class="kv"><dt>Đánh giá lệnh</dt><dd>{{ quality_badge(m_pm) }}</dd></div>
+            <div class="kv"><dt>Mã giao dịch</dt><dd>{{ id_chip(trade.trade_id, "mã giao dịch") }}</dd></div>
+          </dl>
+          <form class="chart-select-form" method="get" action="/admin/reports">
+            <input type="hidden" name="scope" value="{{ scope }}">
+            <input type="hidden" name="bot_id" value="{{ bot_id }}">
+            <input type="hidden" name="start" value="{{ start }}">
+            <input type="hidden" name="end" value="{{ end }}">
+            <input type="hidden" name="chart_trade_id" value="{{ trade.trade_id }}">
+            <label class="visually-hidden" for="mobile-timeframe-{{ loop.index }}">Khung biểu đồ cho {{ trade.symbol }}</label>
+            <select id="mobile-timeframe-{{ loop.index }}" name="chart_timeframe">
+              {% for timeframe in ["5m", "15m", "1h", "4h", "1d"] %}<option value="{{ timeframe }}" {% if (chart_timeframe or "1h") == timeframe %}selected{% endif %}>{{ timeframe }}</option>{% endfor %}
+            </select>
+            <button type="submit" class="btn btn-secondary">Xem biểu đồ</button>
+          </form>
+        </article>
+        {% endfor %}
+      </div>
+      <div class="desktop-trades table-responsive report-table-wrap">
+        <table class="report-table">
+          <thead>
+            <tr>
+              <th scope="col">{{ help_term("position_symbol_side", "Cặp / Hướng") }}</th>
+              <th scope="col">{{ help_term("trade_closed_at", "Thời Điểm Đóng") }}</th>
+              <th scope="col" class="num">{{ help_term("net_pnl", "Lời/Lỗ Ròng") }}</th>
+              <th scope="col" class="num">{{ help_term("trade_cost_slippage", "Chi Phí / Trượt Giá") }}</th>
+              <th scope="col"><span class="report-table__th-pair">{{ help_term("exit_reason", "Lý Do Đóng") }}<span aria-hidden="true">/</span>{{ help_term("execution_quality", "Đánh Giá Lệnh") }}</span></th>
+              <th scope="col" class="report-table__action"><span class="visually-hidden">Thao tác</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for trade in closed_trades %}
+            {% set t_pm = trade.get("post_mortem", {}) %}
+            <tr{% if trade.trade_id == selected_trade_id %} class="is-selected" aria-current="true"{% endif %}>
+              <td><span class="report-instrument"><span class="coin-tag" data-coin="{{ trade.symbol }}">{{ trade.symbol }}</span>{{ side_badge(trade.side) }}</span><span class="report-table__sub">{{ id_chip(trade.trade_id, "mã giao dịch") }}</span></td>
+              <td class="num report-table__time">{{ when_short(trade.closed_at) }}</td>
+              <td class="num">{{ pnl(trade.net_pnl, trade.quote_asset) }}</td>
+              <td class="num report-table__muted">{{ money(trade.total_cost, trade.quote_asset) }}<span class="report-table__sub">trượt {{ money(trade.slippage_total, trade.quote_asset) }}</span></td>
+              <td><span class="report-table__badges">{{ exit_badge(trade.exit_reason) }}{{ quality_badge(t_pm) }}</span></td>
+              <td class="report-table__action">
+                <form method="get" action="/admin/reports">
+                  <input type="hidden" name="scope" value="{{ scope }}">
+                  <input type="hidden" name="bot_id" value="{{ bot_id }}">
+                  <input type="hidden" name="start" value="{{ start }}">
+                  <input type="hidden" name="end" value="{{ end }}">
+                  <input type="hidden" name="chart_trade_id" value="{{ trade.trade_id }}">
+                  <input type="hidden" name="chart_timeframe" value="{{ chart_timeframe or '1h' }}">
+                  <button type="submit" class="btn btn-secondary btn-compact"><span aria-hidden="true">🔍</span> Xem Biểu Đồ</button>
+                </form>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      <p class="report-note" role="status">Chưa có giao dịch đã đóng trong kỳ báo cáo.</p>
+      {% endif %}
+    </section>
     </div>
-  </section>
-  {% endif %}
 
-  <!-- Chi Tiết Kỹ Thuật (Thu gọn) -->
-  <details class="u-margin-top-2rem u-padding-0-75rem u-border-1px-dashed-border-main u-border-radius-0-5rem">
-    <summary class="u-cursor-pointer u-font-weight-600 u-color-text-muted">
-      ⚙️ Dữ Liệu Kỹ Thuật Canonical (JSON Digest)
-    </summary>
-    <pre class="u-margin-top-0-75rem u-max-height-300px u-overflow-y-auto u-font-size-0-8rem u-background-bg-base u-padding-0-75rem u-border-radius-0-375rem">{{ report | tojson(indent=2) }}</pre>
-  </details>
+    <div role="tabpanel" id="panel-report-open" aria-labelledby="tab-report-open" tabindex="0">
+    <section class="report-open-section" aria-labelledby="report-open-heading">
+      <div class="report-panel-head">
+        <h3 id="report-open-heading">Lệnh PAPER đang mở tại mốc kết thúc</h3>
+        <span class="report-card__hint">Chưa có giá đánh dấu (mark-to-market) nên không hiện lãi/lỗ tạm tính.</span>
+      </div>
+      {% if open_trades %}
+      <div class="table-responsive report-table-wrap">
+        <table class="report-table report-table--open">
+          <thead><tr><th scope="col">Cặp / Hướng</th><th scope="col">Mở lúc</th><th scope="col">Tài sản</th><th scope="col">Mã lệnh</th></tr></thead>
+          <tbody>
+            {% for trade in open_trades %}
+            <tr>
+              <td><span class="report-instrument"><span class="coin-tag" data-coin="{{ trade.symbol }}">{{ trade.symbol }}</span>{{ side_badge(trade.side) }}</span></td>
+              <td class="num report-table__time">{{ when_short(trade.opened_at) }}</td>
+              <td>{{ trade.quote_asset }}</td>
+              <td>{{ id_chip(trade.trade_id, "mã giao dịch") }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      <p class="report-note" role="status">Không có lệnh PAPER đang mở tại mốc kết thúc.</p>
+      {% endif %}
+    </section>
+    </div>
+    {% else %}
+    <div role="tabpanel" id="panel-report-bots" aria-labelledby="tab-report-bots" tabindex="0">
+    <section class="report-bots-section" aria-labelledby="report-bots-heading">
+      <div class="report-panel-head">
+        <h3 id="report-bots-heading">Đóng góp theo bot</h3>
+        <span class="report-card__hint">Mỗi hàng là báo cáo của một bot trong cùng khoảng; tổng phía trên đã đối soát với ledger.</span>
+      </div>
+      {% if bot_rows %}
+      <div class="table-responsive report-table-wrap">
+        <table class="report-table report-table--bots">
+          <thead>
+            <tr>
+              <th scope="col">Bot</th>
+              <th scope="col">Tài sản</th>
+              <th scope="col" class="num">Lệnh đóng</th>
+              <th scope="col" class="num">{{ help_term("win_rate_percent", "Tỷ lệ thắng") }}</th>
+              <th scope="col" class="num">{{ help_term("net_pnl", "Lãi/lỗ ròng") }}</th>
+              <th scope="col" class="num">{{ help_term("total_cost", "Chi phí") }}</th>
+              <th scope="col" class="num">{{ help_term("max_drawdown", "Sụt giảm tối đa") }}</th>
+              <th scope="col" class="report-table__action"><span class="visually-hidden">Thao tác</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in bot_rows %}
+            {% for asset, item in (row.totals or {}).items() %}
+            <tr>
+              <td>{% if row.bot_id in bot_names %}<strong>{{ bot_names[row.bot_id] }}</strong>{% else %}{{ id_chip(row.bot_id, "mã bot") }}{% endif %}</td>
+              <td>{{ asset }}</td>
+              <td class="num">{{ item.closed_trade_count }}</td>
+              <td class="num">{% if item.win_rate_percent is defined and item.win_rate_percent is not none %}{{ item.win_rate_percent | number2_vi }}%{% else %}<span class="value-muted">Chưa có dữ liệu</span>{% endif %}</td>
+              <td class="num">{{ pnl(item.net_pnl, asset) }}</td>
+              <td class="num">{{ money(item.total_cost, asset) }}</td>
+              <td class="num">{{ money(item.max_drawdown, asset) }}</td>
+              <td class="report-table__action"><a class="icon-link" href="/admin/reports?scope=bot&bot_id={{ row.bot_id | urlencode }}&start={{ start | urlencode }}&end={{ end | urlencode }}">{{ ico("search") }}<span>Xem báo cáo bot</span></a></td>
+            </tr>
+            {% else %}
+            <tr><td>{% if row.bot_id in bot_names %}<strong>{{ bot_names[row.bot_id] }}</strong>{% else %}{{ id_chip(row.bot_id, "mã bot") }}{% endif %}</td><td colspan="7" class="value-muted">Không có giao dịch đã đóng trong khoảng.</td></tr>
+            {% endfor %}
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      <p class="report-note" role="status">Không có bot nào trong báo cáo tổng.</p>
+      {% endif %}
+    </section>
+    </div>
+    {% endif %}
+
+    <div role="tabpanel" id="panel-report-raw" aria-labelledby="tab-report-raw" tabindex="0">
+    <section class="report-raw-section" aria-labelledby="report-raw-heading">
+      <h3 id="report-raw-heading" class="visually-hidden">Đối soát & dữ liệu kỹ thuật</h3>
+      <dl class="kv-grid report-kv-grid">
+        <div class="kv"><dt>{{ ico("code") }}Phiên bản báo cáo</dt><dd>{{ report.report_version or "Chưa có dữ liệu" }}</dd></div>
+        {% if report.window and report.window.boundary %}<div class="kv"><dt>{{ ico("calendar") }}Biên cửa sổ</dt><dd>{{ report.window.boundary }}</dd></div>{% endif %}
+        {% set reconciliation = report.get("reconciliation") or {} %}
+        {% if reconciliation.bot_count is defined %}<div class="kv"><dt>{{ ico("bots") }}Số bot tổng hợp</dt><dd class="num">{{ reconciliation.bot_count }}</dd></div>{% endif %}
+        {% if reconciliation.closed_trade_rows is defined %}<div class="kv"><dt>{{ ico("list") }}Hàng giao dịch đã đóng</dt><dd class="num">{{ reconciliation.closed_trade_rows }}</dd></div>{% endif %}
+        {% if reconciliation.trade_cost_rows is defined %}<div class="kv"><dt>{{ ico("fee") }}Hàng chi phí đã đối soát</dt><dd class="num">{{ reconciliation.trade_cost_rows }}</dd></div>{% endif %}
+        {% for asset, ledger_row in (reconciliation.ledger or {}).items() %}<div class="kv"><dt>{{ ico("hash") }}Ledger {{ asset }} (lệnh · PnL ròng)</dt><dd class="num">{{ ledger_row.closed_trade_rows }} · {{ ledger_row.net_pnl | number_vi }} {{ asset }}</dd></div>{% endfor %}
+      </dl>
+      <details class="report-raw">
+        <summary>Dữ liệu kỹ thuật JSON</summary>
+        <pre>{{ report | tojson(indent=2) }}</pre>
+      </details>
+    </section>
+    </div>
+  </div>
 </section>
 {% endif %}
-
-<!-- JavaScript tiện ích tương tác -->
-<script src="/static/reports.js" defer></script>
-<details class="u-margin-top-1-5rem"><summary>Dữ liệu kỹ thuật JSON</summary><pre>{{ report | tojson(indent=2) }}</pre></details>
+</div>
 {% endblock %}
 
 {% block scripts %}
+<script src="/static/coins.js" defer></script>
+<script src="/static/reports.js" defer></script>
 {% if chart_data %}
   <script src="/static/vendor/lightweight-charts-5.2.1.standalone.production.js"></script>
   <script src="/static/trade-chart.js" defer></script>

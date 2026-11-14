@@ -1,74 +1,116 @@
 {% extends "admin/base.html" %}
+{% from "admin/_learning_ui.html" import icon, chip, hash %}
 {% block title %}Duyệt phân chia dữ liệu | Crypidian{% endblock %}
+{% block head_extra %}
+  <link rel="stylesheet" href="/static/pages/learning.css">
+{% endblock %}
 {% block heading %}Duyệt phân chia dữ liệu{% endblock %}
 {% block content %}
-  <section class="learning-split-notice" id="learning-splits" aria-label="Giới hạn dữ liệu">
+{#- Mốc ISO 8601 từ preview: hiện tới phút, bản đầy đủ ở title; chỉ ghi "UTC" khi offset là +00:00. -#}
+{%- macro iso(value) -%}{%- set text = value | string -%}<time datetime="{{ text }}" title="{{ text }}">{{ text[:16] | replace("T", " ") }}{% if text.endswith("+00:00") or text.endswith("Z") %} UTC{% endif %}</time>{%- endmacro -%}
+{%- set approved_count = candidates | selectattr("approved_at") | list | length -%}
+<div class="lx-page">
+  <section class="lx-notice learning-split-notice" id="learning-splits" aria-label="Giới hạn dữ liệu">
+    <span class="lx-notice__icon">{{ icon("shield") }}</span>
     <h2>Phê duyệt trước khi niêm phong</h2>
     <p>Candidate được dựng từ giao dịch replay đã lưu và proof quyền huấn luyện hiện hành. Trang chỉ hiển thị số lượng, khoảng thời gian và mã băm; không đọc đặc trưng, nhãn, danh tính sample hoặc dữ liệu giữ kín (holdout).</p>
     <p>Phê duyệt ghim chính xác bản kê, chính sách phân chia và kế hoạch các fold. Cần xác thực MFA gần đây. Builder sẽ kiểm lại quyền trước khi niêm phong; huấn luyện tiếp tục chỉ dùng train/validation của fold đã duyệt.</p>
   </section>
-  <div class="learning-split-heading">
-    <div>
-      <h2>Candidate chờ xem xét</h2>
-      <p>Chỉ phê duyệt khi các khoảng thời gian và cỡ mẫu phù hợp với mục tiêu huấn luyện.</p>
+
+  <section class="lx-kpis" aria-label="Tóm tắt candidate">
+    <div class="kpi-card kpi-card--h">
+      <span class="kpi-icon kpi-icon--blue">{{ icon("branch") }}</span>
+      <div class="kpi-body"><span class="kpi-value">{{ candidates | length }}</span><span class="kpi-label">Candidate gần đây</span></div>
     </div>
-    <a href="/admin/learning/splits">Tải lại</a>
+    <div class="kpi-card kpi-card--h">
+      <span class="kpi-icon kpi-icon--amber">{{ icon("clock") }}</span>
+      <div class="kpi-body"><span class="kpi-value">{{ (candidates | length) - approved_count }}</span><span class="kpi-label">Đang chờ phê duyệt</span></div>
+    </div>
+    <div class="kpi-card kpi-card--h">
+      <span class="kpi-icon kpi-icon--green">{{ icon("check-circle") }}</span>
+      <div class="kpi-body"><span class="kpi-value">{{ approved_count }}</span><span class="kpi-label">Đã phê duyệt</span></div>
+    </div>
+  </section>
+
+  <div class="lx-section-head learning-split-heading">
+    <div>
+      <h2>{{ icon("list") }}Candidate chờ xem xét</h2>
+      <p>Chỉ phê duyệt khi các khoảng thời gian và cỡ mẫu phù hợp với mục tiêu huấn luyện. Hiển thị tối đa 100 candidate mới nhất.</p>
+    </div>
+    <a class="lx-link" href="/admin/learning/splits">{{ icon("refresh") }}Tải lại</a>
   </div>
-  <p id="learning-split-status" role="status" aria-live="polite">{{ candidates|length }} candidate trong không gian làm việc.</p>
-  <section class="learning-split-candidates" data-csrf-token="{{ csrf_token }}" aria-label="Danh sách candidate">
+  <p id="learning-split-status" class="lx-status" role="status" aria-live="polite">{{ candidates|length }} candidate trong không gian làm việc.</p>
+  <section class="lx-stack learning-split-candidates" data-csrf-token="{{ csrf_token }}" aria-label="Danh sách candidate">
     {% if candidates %}
       {% for candidate in candidates %}
         {% set preview = candidate.preview %}
-        <article class="learning-split-card" data-candidate-id="{{ candidate.candidate_id }}">
-          <header>
-            <div>
-              <h3>Candidate từ trial {{ candidate.trial_record_id }}</h3>
-              <p>Tạo lúc {{ candidate.created_at.strftime('%Y-%m-%d %H:%M UTC') }} · cutoff đánh giá {{ candidate.evaluation_cutoff.strftime('%Y-%m-%d %H:%M UTC') }}</p>
+        <article class="glass-card lx-card learning-split-card" data-candidate-id="{{ candidate.candidate_id }}">
+          <header class="lx-card__head">
+            <div class="lx-card__title">
+              <h3>Candidate từ trial <code class="lx-mono" title="{{ candidate.trial_record_id }}">{{ (candidate.trial_record_id | string)[:8] }}</code></h3>
+              <p class="lx-meta">
+                <span>{{ icon("clock") }}Tạo lúc <time datetime="{{ candidate.created_at.isoformat() }}" title="{{ candidate.created_at.strftime('%Y-%m-%d %H:%M UTC') }}">{{ candidate.created_at | local_minute }}</time></span>
+                <span>{{ icon("calendar") }}Cutoff đánh giá <time datetime="{{ candidate.evaluation_cutoff.isoformat() }}">{{ candidate.evaluation_cutoff.strftime('%Y-%m-%d %H:%M UTC') }}</time></span>
+              </p>
             </div>
             {% if candidate.approved_at %}
-              <span class="learning-split-state learning-split-state--approved" data-candidate-state>Đã phê duyệt</span>
+              <span class="lx-chip lx-chip--success learning-split-state learning-split-state--approved">{{ icon("check-circle") }}<span data-candidate-state>Đã phê duyệt</span></span>
             {% else %}
-              <span class="learning-split-state" data-candidate-state>Chờ phê duyệt</span>
+              <span class="lx-chip lx-chip--warning learning-split-state">{{ icon("clock") }}<span data-candidate-state>Chờ phê duyệt</span></span>
             {% endif %}
           </header>
-          <dl class="learning-split-metadata">
-            <div><dt>Khoảng dữ liệu</dt><dd>{{ preview.data_start }} → {{ preview.data_end }}</dd></div>
-            <div><dt>Thị trường</dt><dd>{{ preview.symbols|join(', ') }}</dd></div>
-            <div><dt>Số sample đủ điều kiện</dt><dd>{{ preview.sample_count }}</dd></div>
-            <div><dt>Phát triển / giữ kín</dt><dd>{{ preview.development_count }} / {{ preview.holdout_count }}</dd></div>
-            <div><dt>Loại do thiếu provenance</dt><dd>{{ preview.exclusion_count }}</dd></div>
-            <div><dt>Chính sách</dt><dd><code>{{ candidate.split_policy_version }}</code></dd></div>
-            <div class="learning-split-hash"><dt>Hash bản kê / fold plan</dt><dd><code>{{ candidate.manifest_hash }}</code><br><code>{{ candidate.fold_plan_hash }}</code></dd></div>
+          <dl class="kv-grid learning-split-metadata">
+            <div class="kv kv--text"><dt>{{ icon("calendar") }}Khoảng dữ liệu</dt><dd>{{ iso(preview.data_start) }} → {{ iso(preview.data_end) }}</dd></div>
+            <div class="kv kv--text"><dt>{{ icon("globe") }}Thị trường</dt><dd>{% for symbol in preview.symbols %}<span class="lx-chip lx-chip--neutral">{{ symbol }}</span>{% if not loop.last %} {% endif %}{% endfor %}</dd></div>
+            <div class="kv"><dt>{{ icon("database") }}Số sample đủ điều kiện</dt><dd>{{ preview.sample_count | number2_vi }}</dd></div>
+            <div class="kv"><dt>{{ icon("scale") }}Phát triển / giữ kín</dt><dd>{{ preview.development_count | number2_vi }} / {{ preview.holdout_count | number2_vi }}</dd></div>
+            <div class="kv"><dt>{{ icon("ban") }}Loại do thiếu provenance</dt><dd>{{ preview.exclusion_count | number2_vi }}</dd></div>
+            <div class="kv"><dt>{{ icon("file") }}Chính sách</dt><dd><code class="lx-mono">{{ candidate.split_policy_version }}</code></dd></div>
+            <div class="kv learning-split-hash"><dt>{{ icon("list") }}Hash bản kê</dt><dd class="kv-hash">{{ hash(candidate.manifest_hash, "hash bản kê") }}</dd></div>
+            <div class="kv learning-split-hash"><dt>{{ icon("branch") }}Hash fold plan</dt><dd class="kv-hash">{{ hash(candidate.fold_plan_hash, "hash fold plan") }}</dd></div>
+            <div class="kv"><dt>{{ icon("hash") }}Mã trial</dt><dd class="kv-hash">{{ hash(candidate.trial_record_id, "mã trial") }}</dd></div>
           </dl>
-          <div class="learning-split-folds">
-            <h4>Kế hoạch từng fold</h4>
-            {% for fold in preview.folds %}
-              <section class="learning-split-fold" aria-label="Fold {{ loop.index }}">
-                <h5>Fold {{ loop.index }}</h5>
-                <dl>
-                  <div><dt>Train</dt><dd>{{ fold.train.start }} – {{ fold.train.end }} · {{ fold.train.count }} mẫu</dd></div>
-                  <div><dt>Validation</dt><dd>{{ fold.validation.start }} – {{ fold.validation.end }} · {{ fold.validation.count }} mẫu</dd></div>
-                  <div><dt>Test</dt><dd>{{ fold.test.start }} – {{ fold.test.end }} · {{ fold.test.count }} mẫu</dd></div>
-                </dl>
-              </section>
-            {% endfor %}
+          <div class="lx-stack learning-split-folds">
+            <h4>{{ icon("branch") }}Kế hoạch từng fold</h4>
+            <div class="lx-table-wrap">
+              <table class="lx-table" aria-label="Kế hoạch fold của candidate {{ (candidate.trial_record_id | string)[:8] }}">
+                <thead><tr><th scope="col">Fold</th><th scope="col">Train</th><th scope="col">Validation</th><th scope="col">Test</th></tr></thead>
+                <tbody>
+                  {% for fold in preview.folds %}
+                    <tr class="learning-split-fold">
+                      <th scope="row" data-label="Fold">Fold {{ loop.index }}</th>
+                      <td data-label="Train"><span>{{ iso(fold.train.start) }} – {{ iso(fold.train.end) }}<span class="lx-sub">{{ fold.train.count | number2_vi }} mẫu</span></span></td>
+                      <td data-label="Validation"><span>{{ iso(fold.validation.start) }} – {{ iso(fold.validation.end) }}<span class="lx-sub">{{ fold.validation.count | number2_vi }} mẫu</span></span></td>
+                      <td data-label="Test"><span>{{ iso(fold.test.start) }} – {{ iso(fold.test.end) }}<span class="lx-sub">{{ fold.test.count | number2_vi }} mẫu</span></span></td>
+                    </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
           </div>
           {% if not candidate.approved_at %}
-            <form class="learning-split-approval-form" data-approve-form data-candidate-id="{{ candidate.candidate_id }}">
-              <label for="approval-reason-{{ candidate.candidate_id }}">Lý do phê duyệt</label>
-              <textarea id="approval-reason-{{ candidate.candidate_id }}" name="reason" minlength="12" maxlength="500" required></textarea>
-              <button type="submit">Phê duyệt kế hoạch split</button>
+            <form class="lx-form learning-split-approval-form" data-approve-form data-candidate-id="{{ candidate.candidate_id }}">
+              <div class="lx-form__row lx-form__row--action">
+                <div class="lx-field">
+                  <label for="approval-reason-{{ candidate.candidate_id }}">Lý do phê duyệt</label>
+                  <textarea id="approval-reason-{{ candidate.candidate_id }}" name="reason" minlength="12" maxlength="500" required aria-describedby="approval-help-{{ candidate.candidate_id }}"></textarea>
+                </div>
+                <button type="submit" class="btn btn-primary">{{ icon("check") }}Phê duyệt kế hoạch split</button>
+              </div>
+              <small id="approval-help-{{ candidate.candidate_id }}" class="lx-help">12–500 ký tự có nội dung; cần MFA gần đây. Phê duyệt là bất biến và ghim đúng các hash phía trên.</small>
             </form>
           {% else %}
-            <p class="learning-split-approved-at">Đã phê duyệt lúc {{ candidate.approved_at.strftime('%Y-%m-%d %H:%M UTC') }}. Builder có thể niêm phong sau khi kiểm lại quyền hiện hành.</p>
+            <p class="lx-status learning-split-approved-at">{{ icon("check-circle") }}Đã phê duyệt lúc {{ candidate.approved_at.strftime('%Y-%m-%d %H:%M UTC') }}. Builder có thể niêm phong sau khi kiểm lại quyền hiện hành.</p>
           {% endif %}
         </article>
       {% endfor %}
     {% else %}
-      <p class="learning-split-empty">Chưa có candidate nào. Hãy dùng lệnh builder một lần để tạo preview từ trial đã hoàn tất và có proof quyền TRAINING.</p>
+      <p class="lx-empty learning-split-empty">{{ icon("info") }}Chưa có candidate nào. Hãy dùng lệnh builder một lần để tạo preview từ trial đã hoàn tất và có proof quyền TRAINING.</p>
     {% endif %}
   </section>
+</div>
 {% endblock %}
 {% block scripts %}
+  <script src="/static/pages/learning-ui.js" defer></script>
   <script src="/static/learning-splits.js" defer></script>
 {% endblock %}

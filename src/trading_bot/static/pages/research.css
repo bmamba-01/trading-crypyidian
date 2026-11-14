@@ -1,0 +1,136 @@
+/* ============================================================================
+   Trang Nguồn dữ liệu (WP-05) — UI kit v1. Dùng chung thành phần `lx-` trong
+   /static/pages/learning.css; tệp này chỉ thêm bố cục riêng và trung hòa các màu cố định
+   (#fff, #c4cfda…) của khối "WP-05" cũ trong admin.css để chế độ tối hiển thị đúng.
+   ============================================================================ */
+
+.lx-research .source-console-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1rem;
+  align-items: start;
+}
+@media (min-width: 1024px) {
+  .lx-research .source-console-grid { grid-template-columns: minmax(16rem, 22rem) minmax(0, 1fr); }
+}
+@media (min-width: 1600px) {
+  .lx-research .source-console-grid { grid-template-columns: minmax(18rem, 26rem) minmax(0, 1fr); }
+}
+.lx-research .source-console-grid details { margin-block: 0; border-top: 0; }
+
+/* Banner: bỏ nền vàng cố định của .source-evidence-notice cũ. */
+.lx-research .source-evidence-notice {
+  padding: 0;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  background: none;
+  border: 0;
+}
+
+/* Danh sách nguồn: hàng gọn mã nguồn | chip trạng thái. */
+.lx-research .source-list {
+  display: grid;
+  gap: 0.25rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.lx-research .source-list > li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.25rem 0.5rem;
+  min-width: 0;
+  padding: 0.15rem 0.5rem;
+  border-radius: 0.6rem;
+}
+.lx-research .source-list > li.is-current { background: var(--bg-surface-subtle); }
+.lx-research .source-list > li > a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+}
+.lx-research .source-list > li.lx-empty { justify-content: flex-start; }
+
+/* Thẻ chi tiết/phạm vi/bằng chứng: bỏ nền trắng và viền cố định cũ. */
+.lx-research .source-metadata,
+.lx-research .source-history article,
+.lx-research .license-scope-card,
+.lx-research .license-evidence-card,
+.lx-research .license-evidence-upload {
+  margin: 0;
+  color: var(--text-main);
+}
+.lx-research dl.source-metadata {
+  padding: 0;
+  background: none;
+  border: 0;
+  border-radius: 0;
+}
+@media (min-width: 1024px) {
+  .lx-research dl.source-metadata {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 17rem), 1fr));
+    gap: 0 1.5rem;
+  }
+}
+.lx-research .license-scope-card,
+.lx-research .license-evidence-card,
+.lx-research .license-evidence-upload {
+  padding: 0.85rem 1rem;
+  border-radius: 0.8rem;
+}
+.lx-research .license-evidence-upload button { margin-top: 0; }
+
+/* Lịch sử policy: dòng thời gian, bỏ thẻ trắng lồng nhau. */
+.lx-research .source-history { padding-left: 0; }
+.lx-research .source-history article {
+  display: grid;
+  gap: 0.35rem;
+  padding: 0;
+  background: none;
+  border: 0;
+}
+.lx-research .source-history h4 { font-size: var(--fs-sm); line-height: 1.4; }
+
+/* Quota: nhãn + thanh tỷ lệ cho từng hạn mức. */
+.lx-quota { display: grid; gap: 0.6rem; }
+.lx-quota__row { display: grid; gap: 0.3rem; }
+.lx-quota__row p { font-size: var(--fs-sm); font-variant-numeric: tabular-nums; }
+
+/* Ô chọn mục đích: giữ ô 44px (E2E kiểm ≥ 40px), đổi màu viền về token. */
+.lx-research .source-purpose-options {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 13rem), 1fr));
+  gap: 0 0.75rem;
+  margin: 0;
+  padding: 0.5rem 0.75rem 0.65rem;
+  border: 1px solid var(--glass-border);
+  border-radius: 0.7rem;
+}
+.lx-research .source-purpose-options legend {
+  float: none;
+  width: auto;
+  margin: 0;
+  padding: 0 0.35rem;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--text-muted);
+}
+.lx-research .source-purpose-options label {
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  color: var(--text-main);
+}
+.lx-research .source-purpose-options input { accent-color: var(--primary); }
+.lx-research .license-scope-field label {
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--text-muted);
+}

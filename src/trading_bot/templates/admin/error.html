@@ -1,10 +1,56 @@
 {% extends "admin/base.html" %}
 {% block title %}Không thể hoàn tất yêu cầu — Crypidian{% endblock %}
+{% block head_extra %}<link rel="stylesheet" href="/static/pages/ops.css">{% endblock %}
 {% block heading %}Không thể hoàn tất yêu cầu{% endblock %}
 {% block navigation %}{% endblock %}
 {% block content %}
-<div role="alert" class="error-summary"><p>{{ error_message }}</p></div>
-<p>Mã phản hồi: {{ error_status }}.</p>
-<p>Tải lại trang ban đầu để kiểm tra thông tin và trạng thái mới nhất. Nếu cần, đăng nhập lại và xác thực trước khi thử lại; không gửi lại thao tác khi chưa rõ kết quả.</p>
-<p><a href="/admin">Về tổng quan</a> · <a href="/admin/login">Đăng nhập lại</a></p>
+{#- Trang lỗi chung của Admin Web (AdminHTMLRoute). Ngữ cảnh chỉ có `error_message` (thông điệp an toàn
+    theo mã HTTP) và `error_status`; không có chi tiết nội bộ hay reason code nên gợi ý bước tiếp theo
+    dựa trên mã phản hồi. -#}
+{% set status = error_status | int(0) %}
+{% set warn_like = status in [409, 429, 503] %}
+<div class="ops-page ops-error">
+  <section class="glass-card ops-card" aria-labelledby="error-next-heading">
+    <div class="ops-error__head">
+      <span class="ops-error__icon{% if warn_like %} ops-error__icon--warning{% endif %}" aria-hidden="true">
+        {%- if status in [401, 403] -%}<svg class="ico" viewBox="0 0 24 24" focusable="false"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+        {%- elif status == 404 -%}<svg class="ico" viewBox="0 0 24 24" focusable="false"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        {%- elif status in [409, 429] -%}<svg class="ico" viewBox="0 0 24 24" focusable="false"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg>
+        {%- else -%}<svg class="ico" viewBox="0 0 24 24" focusable="false"><path d="M12 3 2 20h20L12 3Z"/><path d="M12 10v4M12 17h.01"/></svg>
+        {%- endif -%}
+      </span>
+      <div role="alert" class="error-summary"><p>{{ error_message }}</p></div>
+      <span class="badge badge-neutral ops-chip ops-error__code">Mã phản hồi: {{ error_status }}</span>
+      {% if error_reason_code %}<span class="badge badge-neutral ops-chip ops-error__code" data-error-reason>Lý do: <code>{{ error_reason_code }}</code></span>{% endif %}
+    </div>
+
+    <h2 id="error-next-heading">Bước tiếp theo</h2>
+    <ol class="ops-howto">
+      {% if error_reason_hint %}<li><span><strong>{{ error_reason_hint }}</strong></span></li>{% endif %}
+      {% if status == 401 %}
+      <li><span><a href="/admin/login">Đăng nhập lại</a> để tạo phiên mới, sau đó mở lại trang cần thao tác.</span></li>
+      {% elif status == 403 %}
+      <li><span>Nếu vừa gửi biểu mẫu, mã chống giả mạo (CSRF) có thể đã hết hạn: mở lại trang biểu mẫu để lấy mã mới.</span></li>
+      <li><span>Thao tác nhạy cảm (đóng toàn bộ vị thế, liên kết/thu hồi Telegram) cần vai trò chủ sở hữu và MFA trong 15 phút gần nhất: <a href="/admin/login">đăng nhập lại</a> để xác thực MFA.</span></li>
+      {% elif status == 404 %}
+      <li><span>Mục không tồn tại hoặc nằm ngoài phạm vi được cấp quyền. Kiểm tra lại đường dẫn hoặc mở từ danh sách.</span></li>
+      {% elif status == 409 %}
+      <li><span>Dữ liệu đã thay đổi kể từ lúc bạn mở trang (ví dụ bản xem trước đóng vị thế đã hết hạn hoặc ảnh chụp không còn khớp).</span></li>
+      <li><span>Mở lại trang gốc và tạo lại thao tác từ trạng thái mới nhất; với đóng toàn bộ vị thế, hãy <a href="/admin/flatten">tạo bản xem trước mới</a>.</span></li>
+      {% elif status == 422 %}
+      <li><span>Kiểm tra lại thông tin đã nhập (lý do bắt buộc, tối đa 500 ký tự) rồi gửi lại từ trang biểu mẫu.</span></li>
+      {% elif status == 429 %}
+      <li><span>Chờ một lúc rồi thử lại; hệ thống đang giới hạn số lần gửi.</span></li>
+      {% elif status == 503 %}
+      <li><span>Dịch vụ phụ trợ chưa sẵn sàng. Chờ vài phút rồi tải lại; nếu kéo dài, kiểm tra tình trạng dịch vụ.</span></li>
+      {% endif %}
+      <li><span>Tải lại trang ban đầu để kiểm tra thông tin và trạng thái mới nhất. Nếu cần, đăng nhập lại và xác thực trước khi thử lại; không gửi lại thao tác khi chưa rõ kết quả.</span></li>
+    </ol>
+
+    <div class="ops-actions">
+      <a class="btn btn-primary" href="/admin"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>Về tổng quan</a>
+      <a class="btn btn-secondary" href="/admin/login"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><path d="M10 17l5-5-5-5M15 12H3"/></svg>Đăng nhập lại</a>
+    </div>
+  </section>
+</div>
 {% endblock %}

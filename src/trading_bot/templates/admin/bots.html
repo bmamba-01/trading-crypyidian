@@ -1,16 +1,78 @@
 {% extends "admin/base.html" %}
 {% block title %}Bot — Crypidian{% endblock %}
 {% block heading %}Bot trong không gian làm việc{% endblock %}
+{% block head_extra %}<link rel="stylesheet" href="/static/pages/bots.css">{% endblock %}
 {% block content %}
-{% if "owner" in identity.principal.roles %}<p><a href="/admin/bots/new">Tạo bot mô phỏng</a></p>{% endif %}
-<ul class="bot-list">
-  {% for bot in bots %}
-  <li>
-    <a href="/admin/bots/{{ bot.id }}">{{ bot.name }}</a>
-    <span>{{ bot.status | label_vi }} / {{ bot.account_mode | label_vi }} / {{ bot.readiness | label_vi }}</span>
-  </li>
+{%- set STATUS_TONES = {
+  "ENABLED": "success", "ACTIVE": "success", "RUNNING": "success", "READY": "success",
+  "PAUSED": "warning", "STARTING": "warning", "STANDBY": "warning", "NOT_READY": "warning", "DEGRADED": "warning",
+  "DISABLED": "danger", "STOPPED": "danger", "RECOVERY_REQUIRED": "danger", "KILLED": "danger", "BLOCKED": "danger"
+} -%}
+{#- Số đếm tính từ chính danh sách bot đã lọc theo quyền; không cộng dữ liệu ngoài phạm vi. -#}
+{%- set enabled_count = bots | selectattr("status", "in", ["ENABLED", "ACTIVE", "RUNNING"]) | list | length -%}
+{%- set ready_count = bots | selectattr("readiness", "equalto", "READY") | list | length -%}
+{%- set entry_count = bots | selectattr("entry_allowed") | list | length -%}
+<div class="bot-page bot-list-page">
+  <div class="bot-list-head">
+    <p class="bot-card-help">Chỉ hiện bot bạn được cấp quyền xem. Mọi bot đang chạy ở chế độ mô phỏng PAPER.</p>
+    {% if "owner" in identity.principal.roles %}<a href="/admin/bots/new" class="btn btn-primary bot-list-head__cta"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 5v14M5 12h14"/></svg>Tạo bot mô phỏng</a>{% endif %}
+  </div>
+
+  <section class="bot-kpi" aria-label="Tóm tắt danh sách bot">
+    <div class="bot-kpi-grid bot-kpi-grid--4">
+      <div class="kpi-card kpi-card--h">
+        <span class="kpi-icon kpi-icon--blue" aria-hidden="true"><svg class="ico" viewBox="0 0 24 24" focusable="false"><rect x="4" y="8" width="16" height="12" rx="2"/><path d="M12 8V4M9 17h6"/></svg></span>
+        <div class="kpi-body"><span class="kpi-value" id="bots-total">{{ bots | length }}</span><span class="kpi-label">Tổng số bot</span></div>
+      </div>
+      <div class="kpi-card kpi-card--h">
+        <span class="kpi-icon kpi-icon--green" aria-hidden="true"><svg class="ico" viewBox="0 0 24 24" focusable="false"><path d="M12 2v10M5.6 5.6a9 9 0 1 0 12.8 0"/></svg></span>
+        <div class="kpi-body"><span class="kpi-value" id="bots-enabled">{{ enabled_count }}</span><span class="kpi-label">Đang bật</span></div>
+      </div>
+      <div class="kpi-card kpi-card--h">
+        <span class="kpi-icon kpi-icon--violet" aria-hidden="true"><svg class="ico" viewBox="0 0 24 24" focusable="false"><path d="M20 6 9 17l-5-5"/></svg></span>
+        <div class="kpi-body"><span class="kpi-value" id="bots-ready">{{ ready_count }}</span><span class="kpi-label">Sẵn sàng</span></div>
+      </div>
+      <div class="kpi-card kpi-card--h">
+        <span class="kpi-icon kpi-icon--amber" aria-hidden="true"><svg class="ico" viewBox="0 0 24 24" focusable="false"><path d="M5 12h14M13 6l6 6-6 6"/></svg></span>
+        <div class="kpi-body"><span class="kpi-value" id="bots-entry-allowed">{{ entry_count }}</span><span class="kpi-label">Cho phép vào lệnh</span></div>
+      </div>
+    </div>
+  </section>
+
+  {% if bots %}
+  <section class="glass-card bot-list-card" aria-labelledby="bot-list-heading">
+    <h2 id="bot-list-heading" class="visually-hidden">Danh sách bot</h2>
+    <div class="bot-table-wrap">
+      <table class="bot-table bot-table--list bot-list" aria-label="Bảng danh sách bot">
+        <thead>
+          <tr>
+            <th scope="col">Bot</th>
+            <th scope="col">Trạng thái</th>
+            <th scope="col">Chế độ</th>
+            <th scope="col">Mức sẵn sàng</th>
+            <th scope="col">Trạng thái mở vị thế</th>
+            <th scope="col">Vào lệnh</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for bot in bots %}
+          <tr class="bot-table__row" data-bot-id="{{ bot.id }}">
+            <td data-label="Bot" class="bot-table__lead">
+              <span class="bot-name-cell"><a href="/admin/bots/{{ bot.id }}" class="bot-link">{{ bot.name }}</a><code class="trade-id" title="{{ bot.id }}">{{ bot.id[:8] }}…</code></span>
+            </td>
+            <td data-label="Trạng thái"><span class="badge badge-{{ STATUS_TONES.get(bot.status, 'neutral') }} bot-badge">{{ bot.status | label_vi }}</span></td>
+            <td data-label="Chế độ"><span class="badge badge-paper-subtle bot-badge">{{ bot.account_mode | label_vi }}</span></td>
+            <td data-label="Mức sẵn sàng"><span class="badge badge-{{ STATUS_TONES.get(bot.readiness, 'neutral') }} bot-badge">{{ bot.readiness | label_vi }}</span></td>
+            <td data-label="Trạng thái mở vị thế">{{ bot.entry_state | label_vi }}</td>
+            <td data-label="Vào lệnh">{% if bot.entry_allowed %}<span class="status-indicator status-allowed">Cho phép</span>{% else %}<span class="status-indicator status-blocked">Bị chặn</span>{% endif %}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
   {% else %}
-  <li>Chưa có bot được cấp quyền xem.</li>
-  {% endfor %}
-</ul>
+  <p class="bot-empty" role="status">Chưa có bot được cấp quyền xem.{% if "owner" in identity.principal.roles %} Bấm "Tạo bot mô phỏng" để tạo tài khoản PAPER đầu tiên.{% endif %}</p>
+  {% endif %}
+</div>
 {% endblock %}

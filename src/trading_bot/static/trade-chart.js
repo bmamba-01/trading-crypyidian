@@ -413,6 +413,12 @@
     if (activeDashboardChart) applyThemeUpdate(activeDashboardChart);
   });
 
+  // Đổi `data-theme` bằng bất kỳ cách nào (nút gạt, script khác) cũng cập nhật màu biểu đồ.
+  new MutationObserver(() => {
+    if (activeTradeChart) applyThemeUpdate(activeTradeChart);
+    if (activeDashboardChart) applyThemeUpdate(activeDashboardChart);
+  }).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+
   document.addEventListener("DOMContentLoaded", () => {
     chartForTrade();
     dashboardChart();

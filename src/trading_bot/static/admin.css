@@ -4657,3 +4657,132 @@ main button.icon-btn:hover, dialog button.icon-btn:hover { background: var(--gla
 .stat__value { display: inline-flex; align-items: center; gap: 0.25rem; white-space: nowrap; line-height: 1.15; }
 .stat__label { line-height: 1.3; }
 .stat > .ico { align-self: center; }
+
+/* Dashboard vòng 4: KPI thành dải gọn một hàng (biểu tượng | giá trị | nhãn), căn giữa dọc. */
+.dash-head .summary-grid .summary-dup {
+  position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap;
+}
+.dashboard-kpi-section .kpi-grid { gap: 0.5rem; }
+.dashboard-kpi-section .kpi-card--h {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  min-height: 3.5rem;
+  height: 100%;
+  padding: 0.5rem 0.75rem;
+}
+.dashboard-kpi-section .kpi-icon {
+  width: 2.25rem;
+  height: 2.25rem;
+  font-size: 1.05rem;
+  border-radius: 0.65rem;
+  grid-row: auto;
+  flex: 0 0 auto;
+}
+.kpi-card--h .kpi-body {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 0.55rem;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.kpi-card--h .kpi-value { font-size: 1.5rem; line-height: 1; white-space: nowrap; }
+.kpi-card--h .kpi-label { min-width: 0; font-size: var(--fs-xs); line-height: 1.25; }
+.kpi-card--h .kpi-status-container,
+.kpi-card--h .kpi-mode-container { flex: 0 0 auto; }
+.kpi-card--h .badge { white-space: nowrap; font-size: var(--fs-xs); }
+.kpi-card--h .kpi-subtext--keep {
+  flex: 0 0 auto;
+  margin-left: auto;
+  font-size: var(--fs-2xs);
+  white-space: nowrap;
+  color: var(--text-muted);
+}
+@media (max-width: 639.98px) {
+  .dashboard-kpi-section .kpi-card--h { padding: 0.45rem 0.55rem; gap: 0.5rem; }
+  .dashboard-kpi-section .kpi-icon { width: 1.9rem; height: 1.9rem; font-size: 0.9rem; }
+  .kpi-card--h .kpi-body { flex-direction: column; align-items: flex-start; gap: 0.15rem; }
+  .kpi-card--h .kpi-value { font-size: 1.25rem; }
+  .kpi-card--h .kpi-subtext--keep { display: none; }
+}
+
+/* Dải số: giá trị + ₮ không tách dòng; ô Tổng vốn hai dòng gọn. */
+.stat .money, .stat__value .money { flex-wrap: nowrap; white-space: nowrap; }
+.stat--equity .stat__label { flex-wrap: nowrap; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; }
+.stat--equity .stat__label > * { vertical-align: middle; }
+.stat__label { overflow: hidden; text-overflow: ellipsis; }
+.stat { min-height: 3.6rem; padding: 0.45rem 0.65rem; }
+.stat__sub {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: var(--fs-2xs);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.stat__sub .pnl-value { font-size: inherit; }
+/* Ghi đè hướng cột của .kpi-card cũ: KPI xếp ngang, cao vừa nội dung. */
+.dashboard-kpi-section .kpi-card.kpi-card--h {
+  flex-direction: row;
+  justify-content: flex-start;
+  align-items: center;
+  height: auto;
+  min-height: 3.5rem;
+}
+.dashboard-kpi-section .kpi-grid { align-items: stretch; }
+@media (max-width: 1279.98px) { .kpi-card--h .kpi-subtext--keep { display: none; } }
+.dashboard-kpi-section .kpi-grid > .kpi-card { min-width: 0; overflow: hidden; }
+/* Nhãn KPI được xuống dòng (nút chú giải ⓘ luôn bấm được); thẻ không bị nội dung kéo rộng. */
+.kpi-card--h .kpi-label { white-space: normal; }
+/* Link trong sidebar đạt vùng chạm 44px (WCAG 2.5.5). */
+.app-sidebar nav.main-nav a { min-height: 44px; }
+
+/* Dashboard vòng 5: KPI dạng huy hiệu xếp dọc (huy hiệu trên, nhãn dưới) để nhãn không bị ép
+   thành cột một chữ; dải số 7 ô thành lưới đều, sparkline chiếm 2 hàng thay vì ô mồ côi. */
+.dashboard-kpi-section .kpi-card-emergency .kpi-body,
+.dashboard-kpi-section .kpi-card-mode .kpi-body {
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 0.25rem;
+}
+.dashboard-kpi-section .kpi-card-emergency .kpi-label,
+.dashboard-kpi-section .kpi-card-mode .kpi-label { white-space: nowrap; }
+.dashboard-kpi-section .kpi-card--h .badge { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.dashboard-kpi-section .kpi-card--h .kpi-subtext--keep { align-self: center; }
+
+@media (min-width: 640px) {
+  .stat-strip { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .stat-strip > .stat--net_pnl { grid-column: auto; }
+  .stat-strip > .stat--spark { grid-column: 1 / -1; }
+}
+@media (min-width: 1200px) {
+  .stat-strip { grid-template-columns: minmax(0, 1.15fr) repeat(3, minmax(0, 1fr)); }
+  .stat-strip > .stat--spark {
+    grid-column: 1;
+    grid-row: span 2;
+    flex-direction: column;
+    align-items: stretch;
+    justify-content: center;
+    gap: 0.35rem;
+  }
+  .stat-strip > .stat--spark .sparkline { width: 100%; max-width: none; height: 3.6rem; }
+  .stat-strip > .stat--spark .stat__body { flex: 0 0 auto; }
+}
+/* Huy hiệu trong KPI co theo thẻ (cắt bằng dấu ba chấm, đầy đủ ở title) thay vì tràn khỏi thẻ. */
+.dashboard-kpi-section .kpi-card--h .kpi-status-container,
+.dashboard-kpi-section .kpi-card--h .kpi-mode-container { min-width: 0; max-width: 100%; display: flex; }
+.dashboard-kpi-section .kpi-card--h .kpi-status-container .badge,
+.dashboard-kpi-section .kpi-card--h .kpi-mode-container .badge { display: block; min-width: 0; }
+@media (min-width: 640px) and (max-width: 1199.98px) {
+  .stat-strip > .stat--spark .sparkline { max-width: none; width: 100%; }
+}
+/* 640–1279px: thẻ KPI hẹp nên bỏ biểu tượng ở thẻ huy hiệu để chữ huy hiệu hiện đủ. */
+@media (min-width: 640px) and (max-width: 1279.98px) {
+  .dashboard-kpi-section .kpi-card-emergency .kpi-icon,
+  .dashboard-kpi-section .kpi-card-mode .kpi-icon { display: none; }
+  .dashboard-kpi-section .kpi-card-emergency .badge,
+  .dashboard-kpi-section .kpi-card-mode .badge { font-size: var(--fs-2xs); }
+}

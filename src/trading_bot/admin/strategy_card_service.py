@@ -20,7 +20,7 @@ from trading_bot.application.strategy_pipeline.demo_cards import build_default_d
 from trading_bot.auth.policy import Principal
 from trading_bot.domain.strategy_card.graph_verifier import DeadNodeDetector
 from trading_bot.domain.strategy_card.orthogonality import AntiConsensusAnalyzer
-from trading_bot.domain.strategy_card.schema import StrategyCard
+from trading_bot.domain.strategy_card.schema import StrategyCard, compute_canonical_hash
 
 if TYPE_CHECKING:
     pass
@@ -177,14 +177,15 @@ class StrategyCardAdminService:
 
         # Fallback in-memory cho môi trường test hoặc khi chưa nạp DB
         views = []
+        # Thẻ mẫu chưa lưu DB: hash là SHA-256 canonical thật của nội dung thẻ (không bịa) và
+        # không thẻ nào được coi là đang kích hoạt vì chưa có hàng công bố.
         for idx, card in enumerate(self._fallback_cards):
-            content_hash = "a" * 60 + f"{idx:04d}"
             views.append(
                 self._card_to_view(
                     card=card,
                     record_id=f"demo-card-{idx + 1}",
-                    content_hash=content_hash,
-                    is_active=(idx == 0),
+                    content_hash=compute_canonical_hash(card),
+                    is_active=False,
                 )
             )
         return views
