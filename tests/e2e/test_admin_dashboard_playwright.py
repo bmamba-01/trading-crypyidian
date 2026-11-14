@@ -505,6 +505,14 @@ def admin_server_url() -> Any:
     server.should_exit = True
 
 
+def _open_mobile_menu(page: Any) -> None:
+    """Trên màn hình hẹp, điều hướng chính nằm trong ngăn kéo mở bằng nút "Menu"."""
+    menu = page.get_by_role("button", name="Menu")
+    if menu.is_visible():
+        menu.click()
+        expect(page.get_by_role("navigation", name="Điều hướng chính")).to_be_visible()
+
+
 def _assert_metric_tooltip(page: Any, key: str, *, mode: str) -> None:
     """Mở chú giải KPI bằng focus, bấm hoặc chạm; nội dung khớp từ điển; Escape đóng lại."""
     trigger = page.locator(f'button.metric-help[data-metric-help="{key}"]:visible').first
@@ -627,6 +635,8 @@ def test_admin_dashboard_desktop_and_mobile_workflows(admin_server_url: str) -> 
         updated_time = page.locator("#live-updated-at").inner_text()
         assert len(updated_time) >= 5
 
+        # Điều khiển khẩn cấp nằm trong tab riêng; tab được nhớ sau khi form tải lại trang.
+        page.get_by_role("tab", name="Điều khiển khẩn cấp").click()
         page.get_by_label("Lý do dừng khẩn cấp toàn bộ").fill("Thử nghiệm dừng khẩn cấp")
         page.get_by_role("button", name="Dừng mở lệnh mới").click()
         page.wait_for_load_state("networkidle")
@@ -737,6 +747,7 @@ def test_admin_dashboard_desktop_and_mobile_workflows(admin_server_url: str) -> 
         _assert_metric_tooltip(page_m, "workspace_kill_state", mode="tap")
         page_m.set_viewport_size({"width": 390, "height": 844})
 
+        page_m.get_by_role("tab", name="Điều khiển khẩn cấp").click()
         page_m.get_by_label("Lý do dừng khẩn cấp toàn bộ").fill("Dừng trên mobile")
         page_m.get_by_role("button", name="Dừng mở lệnh mới").click()
         page_m.wait_for_load_state("networkidle")
@@ -748,6 +759,7 @@ def test_admin_dashboard_desktop_and_mobile_workflows(admin_server_url: str) -> 
         page_m.get_by_role("button", name="Bỏ dừng khẩn cấp").click()
         page_m.wait_for_load_state("networkidle")
 
+        _open_mobile_menu(page_m)
         page_m.get_by_role("link", name="Bot", exact=True).click()
         page_m.wait_for_load_state("networkidle")
         page_m.screenshot(path=str(SCREENSHOTS_DIR / "04_bots_list_mobile.png"), full_page=True)
@@ -756,6 +768,7 @@ def test_admin_dashboard_desktop_and_mobile_workflows(admin_server_url: str) -> 
         page_m.wait_for_load_state("networkidle")
         page_m.screenshot(path=str(SCREENSHOTS_DIR / "05_bot_detail_mobile.png"), full_page=True)
 
+        _open_mobile_menu(page_m)
         page_m.get_by_role("link", name="Đóng toàn bộ vị thế", exact=True).click()
         page_m.wait_for_load_state("networkidle")
         page_m.get_by_label("Lý do", exact=True).fill("Preview mobile")
@@ -765,10 +778,12 @@ def test_admin_dashboard_desktop_and_mobile_workflows(admin_server_url: str) -> 
             path=str(SCREENSHOTS_DIR / "06_flatten_preview_mobile.png"), full_page=True
         )
 
+        _open_mobile_menu(page_m)
         page_m.get_by_role("link", name="Báo cáo", exact=True).click()
         page_m.wait_for_load_state("networkidle")
         page_m.screenshot(path=str(SCREENSHOTS_DIR / "07_reports_mobile.png"), full_page=True)
 
+        _open_mobile_menu(page_m)
         page_m.get_by_role("link", name="Telegram", exact=True).click()
         page_m.wait_for_load_state("networkidle")
         page_m.screenshot(path=str(SCREENSHOTS_DIR / "08_telegram_mobile.png"), full_page=True)

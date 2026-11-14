@@ -393,6 +393,14 @@
         if (details?.length) eventDetail.textContent = details.join(" ");
       });
       chart.timeScale().fitContent();
+      // Biểu đồ nằm trong tab có thể được dựng khi panel đang ẩn (rộng 0): khi tab hiện ra,
+      // autoSize đổi kích thước nhưng thang thời gian vẫn co về mép phải, nên căn lại.
+      const panel = container.closest('[role="tabpanel"]');
+      if (panel) {
+        panel.addEventListener("tabs:shown", () => {
+          window.requestAnimationFrame(() => chart.timeScale().fitContent());
+        });
+      }
       container.dataset.chartReady = "true";
     } catch (_error) {
       showFallback(container, "Không thể hiển thị biểu đồ hiệu suất lúc này.");

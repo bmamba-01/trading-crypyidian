@@ -1,0 +1,93 @@
+<!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0;background:#030712}canvas{display:block}</style></head>
+<body><canvas id="c" width="2560" height="1600"></canvas>
+<script>
+// Nền trừu tượng cho Admin Web: cực quang mờ + mạng nơ-ron + lưới phối cảnh. Seed cố định.
+const W = 2560, H = 1600, c = document.getElementById("c"), g = c.getContext("2d");
+let seed = 20261114; const rnd = () => (seed = (seed * 1664525 + 1013904223) % 4294967296) / 4294967296;
+
+// 1. Nền navy chuyển sắc.
+let base = g.createLinearGradient(0, 0, W, H);
+base.addColorStop(0, "#040a1c"); base.addColorStop(0.55, "#030712"); base.addColorStop(1, "#050b1f");
+g.fillStyle = base; g.fillRect(0, 0, W, H);
+
+// 2. Cực quang: quầng màu lớn bằng gradient tỏa tròn (mịn, không dùng blur gây gãy cạnh).
+const blob = (x, y, r, rgb, a) => {
+  const rg = g.createRadialGradient(x, y, 0, x, y, r);
+  rg.addColorStop(0, `rgba(${rgb},${a})`); rg.addColorStop(0.45, `rgba(${rgb},${a * 0.45})`);
+  rg.addColorStop(1, `rgba(${rgb},0)`);
+  g.fillStyle = rg; g.fillRect(x - r, y - r, r * 2, r * 2);
+};
+g.globalCompositeOperation = "screen";
+blob(160, 80, 1100, "16,185,129", 0.42);
+blob(2450, 180, 1000, "59,130,246", 0.45);
+blob(2250, 1550, 1150, "139,92,246", 0.40);
+blob(300, 1550, 900, "14,165,233", 0.32);
+blob(1300, -200, 800, "45,212,191", 0.18);
+// Dải cực quang: chuỗi quầng nhỏ dọc theo đường cong.
+for (let t = 0; t <= 1; t += 0.02) {
+  const x = -100 + t * 2800, y = 520 - Math.sin(t * Math.PI) * 220 + Math.sin(t * 9) * 40;
+  blob(x, y, 260, "45,212,191", 0.035);
+  const y2 = 1150 - Math.sin(t * Math.PI * 1.2) * 180;
+  blob(x, y2, 220, "129,140,248", 0.03);
+}
+g.globalCompositeOperation = "source-over";
+
+// 3. Lưới phối cảnh ở đáy, mờ dần lên trên.
+g.save();
+const horizon = 1080, vx = W / 2;
+for (let i = -24; i <= 24; i++) {
+  const xb = vx + i * 150;
+  const lg = g.createLinearGradient(0, horizon, 0, H);
+  lg.addColorStop(0, "rgba(56,189,248,0)"); lg.addColorStop(1, "rgba(56,189,248,0.22)");
+  g.strokeStyle = lg; g.lineWidth = 1.2;
+  g.beginPath(); g.moveTo(vx + i * 8, horizon); g.lineTo(xb * 1.0 + (xb - vx) * 1.6, H); g.stroke();
+}
+for (let k = 1; k <= 12; k++) {
+  const t = Math.pow(k / 12, 2.2), y = horizon + (H - horizon) * t;
+  g.strokeStyle = `rgba(56,189,248,${0.03 + 0.17 * t})`; g.lineWidth = 1;
+  g.beginPath(); g.moveTo(0, y); g.lineTo(W, y); g.stroke();
+}
+g.restore();
+
+// 4. Mạng nơ-ron: điểm sáng nối dây mảnh, dày hơn ở rìa, thưa ở giữa.
+const pts = [];
+for (let i = 0; i < 210; i++) {
+  let x = rnd() * W, y = rnd() * H;
+  const dx = (x - W * 0.55) / W, dy = (y - H * 0.45) / H;
+  if (Math.hypot(dx, dy) < 0.22 && rnd() < 0.8) continue; // chừa vùng giữa
+  pts.push([x, y, 0.6 + rnd() * 1.8]);
+}
+for (let i = 0; i < pts.length; i++) for (let j = i + 1; j < pts.length; j++) {
+  const [x1, y1] = pts[i], [x2, y2] = pts[j], d = Math.hypot(x1 - x2, y1 - y2);
+  if (d < 260) {
+    g.strokeStyle = `rgba(148,197,255,${0.24 * (1 - d / 260)})`; g.lineWidth = 0.9;
+    g.beginPath(); g.moveTo(x1, y1); g.lineTo(x2, y2); g.stroke();
+  }
+}
+for (const [x, y, r] of pts) {
+  const glow = g.createRadialGradient(x, y, 0, x, y, r * 6);
+  glow.addColorStop(0, "rgba(167,243,208,0.55)"); glow.addColorStop(1, "rgba(167,243,208,0)");
+  g.fillStyle = glow; g.beginPath(); g.arc(x, y, r * 6, 0, Math.PI * 2); g.fill();
+  g.fillStyle = "rgba(226,252,239,0.75)"; g.beginPath(); g.arc(x, y, r * 0.7, 0, Math.PI * 2); g.fill();
+}
+
+// 5. Đường giá trừu tượng mờ chạy ngang (gợi ý giao dịch).
+g.strokeStyle = "rgba(34,197,94,0.20)"; g.lineWidth = 2.4; g.beginPath();
+let py = 900;
+for (let x = 0; x <= W; x += 18) { py += (rnd() - 0.48) * 38; py = Math.max(700, Math.min(1050, py)); x ? g.lineTo(x, py) : g.moveTo(x, py); }
+g.stroke();
+
+// 6. Làm tối vùng nội dung (giữa-trái) và viền ngoài để chữ nổi rõ.
+const center = g.createRadialGradient(W * 0.55, H * 0.45, 0, W * 0.55, H * 0.45, W * 0.55);
+center.addColorStop(0, "rgba(2,6,23,0.45)"); center.addColorStop(0.6, "rgba(2,6,23,0.18)"); center.addColorStop(1, "rgba(2,6,23,0)");
+g.fillStyle = center; g.fillRect(0, 0, W, H);
+const vig = g.createRadialGradient(W / 2, H / 2, H * 0.4, W / 2, H / 2, W * 0.75);
+vig.addColorStop(0, "rgba(0,0,0,0)"); vig.addColorStop(1, "rgba(0,0,0,0.30)");
+g.fillStyle = vig; g.fillRect(0, 0, W, H);
+
+// 7. Nhiễu hạt nhẹ để tránh dải màu (banding) khi nén JPEG.
+const img = g.getImageData(0, 0, W, H), dta = img.data;
+for (let i = 0; i < dta.length; i += 4) { const n = (rnd() - 0.5) * 6; dta[i] += n; dta[i + 1] += n; dta[i + 2] += n; }
+g.putImageData(img, 0, 0);
+document.title = "done";
+</script></body></html>

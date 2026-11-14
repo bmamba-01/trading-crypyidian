@@ -280,7 +280,13 @@ def test_admin_browser_session_navigation_accessibility_and_telegram_link(
         expect(
             browser_page.get_by_role("heading", name="Tổng quan không gian làm việc")
         ).to_be_visible()
-        expect(browser_page.get_by_role("navigation", name="Điều hướng chính")).to_be_visible()
+        # Màn hình hẹp: điều hướng chính nằm trong ngăn kéo, chỉ nút "Menu" hiển thị sẵn.
+        menu_button = browser_page.get_by_role("button", name="Menu")
+        if menu_button.is_visible():
+            expect(menu_button).to_have_attribute("aria-expanded", "false")
+            expect(browser_page.locator("nav.main-nav")).to_have_count(1)
+        else:
+            expect(browser_page.get_by_role("navigation", name="Điều hướng chính")).to_be_visible()
         expect(
             browser_page.get_by_role("link", name="Bỏ qua điều hướng, tới nội dung chính")
         ).to_be_attached()
@@ -307,6 +313,7 @@ def test_admin_browser_session_navigation_accessibility_and_telegram_link(
         browser_page.goto(f"{base_url}/admin", wait_until="domcontentloaded")
         assert_font_and_fallback(browser_page)
 
+        _open_mobile_menu(browser_page)
         browser_page.get_by_role("link", name="Bot", exact=True).press("Enter")
         expect(
             browser_page.get_by_role("heading", name="Bot trong không gian làm việc")
@@ -330,6 +337,7 @@ def test_admin_browser_session_navigation_accessibility_and_telegram_link(
         assert pause_response_info.value.status == 303
         expect(browser_page.locator("dd").get_by_text("Tạm dừng", exact=True)).to_be_visible()
 
+        _open_mobile_menu(browser_page)
         browser_page.get_by_role("link", name="Đóng toàn bộ vị thế", exact=True).press("Enter")
         expect(
             browser_page.get_by_role("heading", name="Đóng toàn bộ vị thế mô phỏng")
@@ -435,6 +443,8 @@ def test_admin_browser_session_navigation_accessibility_and_telegram_link(
         expect(
             browser_page.get_by_text("Thống kê hiệu quả chưa sẵn sàng", exact=False)
         ).to_have_count(0)
+        # Thống kê và biểu đồ hiệu suất nằm trong tab "Hiệu suất 30 ngày" của dashboard.
+        browser_page.get_by_role("tab", name="Hiệu suất 30 ngày").click()
         expect(
             browser_page.locator(".asset-report").get_by_role(
                 "heading", name="Tài sản USDT", exact=True
@@ -675,6 +685,7 @@ def test_admin_browser_session_navigation_accessibility_and_telegram_link(
             .locator("xpath=following-sibling::dd[1]")
         )
         expect(entry_state).to_have_text("Tạm dừng")
+        _open_mobile_menu(browser_page)
         browser_page.get_by_role("navigation", name="Điều hướng chính").get_by_role(
             "link", name="Tổng quan", exact=True
         ).press("Enter")
@@ -682,6 +693,7 @@ def test_admin_browser_session_navigation_accessibility_and_telegram_link(
             browser_page.get_by_text("Điều khiển không gian làm việc: Đang hoạt động", exact=True)
         ).to_be_visible()
 
+        _open_mobile_menu(browser_page)
         browser_page.get_by_role("link", name="Telegram", exact=True).press("Enter")
         expect(browser_page.get_by_role("heading", name="Liên kết Telegram")).to_be_visible()
         telegram_page_text = browser_page.locator("body").inner_text()
@@ -779,6 +791,28 @@ def assert_pnl_color_semantics(page: Page) -> None:
             assert state["color"] == "rgb(66, 88, 107)", state
         else:
             raise AssertionError(f"Trạng thái PnL không nhận diện: {tone!r}")
+
+
+# Liệt kê phần tử vượt mép phải mà không nằm trong vùng cuộn riêng (để chẩn đoán tràn ngang).
+_OVERFLOW_DIAGNOSTIC_JS = """() => [...document.querySelectorAll('body *')].filter((e) => {
+  const r = e.getBoundingClientRect();
+  if (r.width === 0 || r.right <= innerWidth + 1) return false;
+  for (let p = e.parentElement; p; p = p.parentElement) {
+    if (getComputedStyle(p).overflowX !== 'visible') return false;
+  }
+  return true;
+}).slice(0, 8).map((e) => {
+  const right = Math.round(e.getBoundingClientRect().right);
+  return `${e.tagName}.${e.className}#${e.id} right=${right} viewport=${innerWidth}`;
+})"""
+
+
+def _open_mobile_menu(page: Page) -> None:
+    """Màn hình hẹp: mở ngăn kéo điều hướng trước khi chọn một mục trong đó."""
+    menu = page.get_by_role("button", name="Menu")
+    if menu.is_visible():
+        menu.click()
+        expect(page.get_by_role("navigation", name="Điều hướng chính")).to_be_visible()
 
 
 def assert_responsive(page: Page, name: str) -> None:
@@ -1138,7 +1172,9 @@ def test_admin_dashboard_live_snapshot_selection_polling_and_stale(
             }"""
         )
         expect(panel.locator("[data-snapshot-status]")).to_contain_text("Đã cập nhật")
-        assert browser_page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+        assert browser_page.evaluate("document.documentElement.scrollWidth <= innerWidth"), (
+            browser_page.evaluate(_OVERFLOW_DIAGNOSTIC_JS)
+        )
         for button in buttons.all():
             assert button.bounding_box()["height"] >= 44
         browser_page.route(

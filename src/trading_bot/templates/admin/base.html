@@ -11,61 +11,96 @@
   </head>
   <body>
     <a class="skip-link" href="#main-content">Bỏ qua điều hướng, tới nội dung chính</a>
-    <header role="banner">
-      <div class="brand-bar">
-        <a href="/admin" aria-label="Crypidian — trang quản trị" class="brand-title">Crypidian</a>
-      </div>
-      {% block navigation %}
+    {% if false %}{% block navigation %}
+      {% set path = request.url.path %}
+      <aside id="app-sidebar" class="app-sidebar" aria-label="Thanh bên">
+        <div class="app-sidebar__head">
+          <a href="/admin" class="app-sidebar__brand" aria-label="Crypidian — trang quản trị">
+            <svg class="app-sidebar__logo" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 17 9 11l4 3 7-8"/><path d="M15 6h5v5"/></svg>
+            <span class="app-sidebar__label app-sidebar__brand-name">Crypidian</span>
+          </a>
+          <button id="sidebar-close" class="app-sidebar__close" type="button">Đóng</button>
+        </div>
         <nav aria-label="Điều hướng chính" class="main-nav">
-          <a href="/admin" {% if request.url.path == "/admin" %}aria-current="page"{% endif %}>Tổng quan</a>
-          <a href="/admin/bots" {% if request.url.path.startswith("/admin/bots") %}aria-current="page"{% endif %}>Bot</a>
-          <a href="/admin/reports" {% if request.url.path.startswith("/admin/reports") %}aria-current="page"{% endif %}>Báo cáo</a>
-          <a href="/admin/backtests" {% if request.url.path.startswith("/admin/backtests") %}aria-current="page"{% endif %}>Kiểm định Backtest</a>
-          <a href="/admin/strategy-cards" {% if request.url.path.startswith("/admin/strategy-cards") %}aria-current="page"{% endif %}>Chiến lược</a>
-          <a href="/admin/research-sources" {% if request.url.path.startswith("/admin/research-sources") %}aria-current="page"{% endif %}>Nguồn dữ liệu</a>
-          <a href="/admin/learning/models" {% if request.url.path.startswith("/admin/learning/models") %}aria-current="page"{% endif %}>Mô hình</a>
-          <a href="/admin/learning/observations" {% if request.url.path.startswith("/admin/learning/observations") %}aria-current="page"{% endif %}>Quan sát mô hình</a>
-          <a href="/admin/learning/scoring" {% if request.url.path.startswith("/admin/learning/scoring") %}aria-current="page"{% endif %}>Chấm điểm</a>
-          <a href="/admin/learning/paper-performance" {% if request.url.path.startswith("/admin/learning/paper-performance") %}aria-current="page"{% endif %}>Hiệu năng PAPER</a>
-          <a href="/admin/learning/splits" {% if request.url.path.startswith("/admin/learning/splits") %}aria-current="page"{% endif %}>Duyệt phân chia dữ liệu</a>
-          <a href="/admin/learning/training" {% if request.url.path.startswith("/admin/learning/training") %}aria-current="page"{% endif %}>Huấn luyện</a>
-          <a href="/admin/flatten" {% if request.url.path.startswith("/admin/flatten") %}aria-current="page"{% endif %}>Đóng toàn bộ vị thế</a>
-          <a href="/admin/telegram" {% if request.url.path.startswith("/admin/telegram") %}aria-current="page"{% endif %}>Telegram</a>
+          <p class="nav-group app-sidebar__label">Vận hành</p>
+          <a href="/admin" title="Tổng quan" {% if path == "/admin" %}aria-current="page"{% endif %}><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg><span class="app-sidebar__label">Tổng quan</span></a>
+          <a href="/admin/bots" title="Bot" {% if path.startswith("/admin/bots") %}aria-current="page"{% endif %}><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="4" y="8" width="16" height="12" rx="2"/><path d="M12 8V4M8 13h.01M16 13h.01M9 17h6"/></svg><span class="app-sidebar__label">Bot</span></a>
+          <a href="/admin/reports" title="Báo cáo" {% if path.startswith("/admin/reports") %}aria-current="page"{% endif %}><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg><span class="app-sidebar__label">Báo cáo</span></a>
+          <a href="/admin/flatten" title="Đóng toàn bộ vị thế" {% if path.startswith("/admin/flatten") %}aria-current="page"{% endif %}><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9"/><path d="M9 9l6 6M15 9l-6 6"/></svg><span class="app-sidebar__label">Đóng toàn bộ vị thế</span></a>
+          <a href="/admin/telegram" title="Telegram" {% if path.startswith("/admin/telegram") %}aria-current="page"{% endif %}><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m21 4-18 7 6 2 2 6 3-4 5 4 2-15Z"/><path d="m9 13 8-6"/></svg><span class="app-sidebar__label">Telegram</span></a>
+
+          <p class="nav-group app-sidebar__label">Chiến lược và dữ liệu</p>
+          <a href="/admin/strategy-cards" title="Chiến lược" {% if path.startswith("/admin/strategy-cards") %}aria-current="page"{% endif %}><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3 3 8l9 5 9-5-9-5Z"/><path d="m3 13 9 5 9-5"/></svg><span class="app-sidebar__label">Chiến lược</span></a>
+          <a href="/admin/backtests" title="Kiểm định Backtest" {% if path.startswith("/admin/backtests") %}aria-current="page"{% endif %}><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5M12 8v4l3 2"/></svg><span class="app-sidebar__label">Kiểm định Backtest</span></a>
+          <a href="/admin/research-sources" title="Nguồn dữ liệu" {% if path.startswith("/admin/research-sources") %}aria-current="page"{% endif %}><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></svg><span class="app-sidebar__label">Nguồn dữ liệu</span></a>
+
+          <p class="nav-group app-sidebar__label">Học máy</p>
+          <a href="/admin/learning/models" title="Mô hình" {% if path.startswith("/admin/learning/models") %}aria-current="page"{% endif %}><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/></svg><span class="app-sidebar__label">Mô hình</span></a>
+          <a href="/admin/learning/observations" title="Quan sát mô hình" {% if path.startswith("/admin/learning/observations") %}aria-current="page"{% endif %}><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg><span class="app-sidebar__label">Quan sát mô hình</span></a>
+          <a href="/admin/learning/scoring" title="Chấm điểm" {% if path.startswith("/admin/learning/scoring") %}aria-current="page"{% endif %}><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m12 3 2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1-4.4-4.3 6.1-.9L12 3Z"/></svg><span class="app-sidebar__label">Chấm điểm</span></a>
+          <a href="/admin/learning/paper-performance" title="Hiệu năng PAPER" {% if path.startswith("/admin/learning/paper-performance") %}aria-current="page"{% endif %}><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 17 9 11l4 4 8-8"/><path d="M15 7h6v6"/></svg><span class="app-sidebar__label">Hiệu năng PAPER</span></a>
+          <a href="/admin/learning/splits" title="Duyệt phân chia dữ liệu" {% if path.startswith("/admin/learning/splits") %}aria-current="page"{% endif %}><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3v18M3 7h6M3 12h6M3 17h6M15 7h6M15 12h6M15 17h6"/></svg><span class="app-sidebar__label">Duyệt phân chia dữ liệu</span></a>
+          <a href="/admin/learning/training" title="Huấn luyện" {% if path.startswith("/admin/learning/training") %}aria-current="page"{% endif %}><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 2v4M12 18v4M4.9 4.9l2.8 2.8M16.3 16.3l2.8 2.8M2 12h4M18 12h4M4.9 19.1l2.8-2.8M16.3 7.7l2.8-2.8"/></svg><span class="app-sidebar__label">Huấn luyện</span></a>
         </nav>
-      {% endblock %}
-      <div class="header-actions">
-        <button id="theme-toggle" class="theme-toggle-btn" type="button" aria-label="Chuyển chế độ sáng/tối" title="Chuyển đổi Light/Dark mode">
-          <span class="theme-icon theme-icon-dark" aria-hidden="true"><svg class="svg-icon" viewBox="0 0 24 24"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg></span>
-          <span class="theme-icon theme-icon-light" aria-hidden="true"><svg class="svg-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg></span>
-          <span class="theme-label visually-hidden">Chuyển giao diện</span>
+        <button id="sidebar-collapse" class="app-sidebar__collapse" type="button" aria-controls="app-sidebar" aria-pressed="false">
+          <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16M15 10l-2 2 2 2"/></svg>
+          <span class="app-sidebar__label" data-collapse-label>Thu gọn</span>
         </button>
-        {% if identity %}
-          <div class="user-info">
-            <span class="user-email" aria-label="Tài khoản đăng nhập">{{ identity.email }}</span>
+      </aside>
+      <div id="sidebar-backdrop" class="app-sidebar__backdrop"></div>
+    {% endblock %}{% endif %}
+    {% set sidebar_html = self.navigation() %}
+    {% set has_sidebar = sidebar_html | trim | length > 0 %}
+    <div class="app-shell{% if not has_sidebar %} app-shell--plain{% endif %}" data-app-shell>
+      {{ sidebar_html }}
+      <div class="app-main">
+        <header role="banner" class="app-topbar">
+          {% if has_sidebar %}
+            <button id="sidebar-open" class="app-topbar__menu" type="button" aria-controls="app-sidebar" aria-expanded="false">
+              <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+              <span>Menu</span>
+            </button>
+          {% else %}
+            <div class="brand-bar">
+              <a href="/admin" aria-label="Crypidian — trang quản trị" class="brand-title">Crypidian</a>
+            </div>
+          {% endif %}
+          <div class="system-mode-banner" role="status" aria-label="Thông báo chế độ vận hành">
+            <div class="mode-badge-wrapper">
+              <span class="badge badge-paper" title="Hệ thống đang chạy mô phỏng nội bộ trong cơ sở dữ liệu — không gọi API hay đặt lệnh lên Binance (theo quyết định ngày 02/11/2026).">Chế độ: Mô phỏng (PAPER) nội bộ</span>
+            </div>
+            <p class="mode-description">
+              Hệ thống đang chạy mô phỏng nội bộ trong cơ sở dữ liệu — không gọi API hay đặt lệnh lên Binance (theo quyết định ngày 02/11/2026).
+            </p>
           </div>
-        {% endif %}
-      </div>
-    </header>
+          <div class="header-actions">
+            {% if identity %}
+              <div class="user-info">
+                <span class="user-email" aria-label="Tài khoản đăng nhập">{{ identity.email }}</span>
+              </div>
+            {% endif %}
+            <button id="theme-toggle" class="theme-toggle-btn" type="button" aria-label="Chuyển chế độ sáng/tối" title="Chuyển đổi Light/Dark mode">
+              <span class="theme-icon theme-icon-dark" aria-hidden="true"><svg class="svg-icon" viewBox="0 0 24 24"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg></span>
+              <span class="theme-icon theme-icon-light" aria-hidden="true"><svg class="svg-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg></span>
+              <span class="theme-label visually-hidden">Chuyển giao diện</span>
+            </button>
+          </div>
+        </header>
 
-    <div class="system-mode-banner" role="status" aria-label="Thông báo chế độ vận hành">
-      <div class="mode-badge-wrapper">
-        <span class="badge badge-paper">Chế độ: Mô phỏng (PAPER) nội bộ</span>
+        <main id="main-content" tabindex="-1">
+          <h1>{% block heading %}{% endblock %}</h1>
+          {% block content %}{% endblock %}
+        </main>
+
+        <footer role="contentinfo" class="admin-footer">
+          <p>Crypidian Admin — Môi trường thử nghiệm an toàn độc lập (PAPER mode)</p>
+        </footer>
       </div>
-      <p class="mode-description">
-        Hệ thống đang chạy mô phỏng nội bộ trong cơ sở dữ liệu — không gọi API hay đặt lệnh lên Binance (theo quyết định ngày 02/11/2026).
-      </p>
     </div>
-
-    <main id="main-content" tabindex="-1">
-      <h1>{% block heading %}{% endblock %}</h1>
-      {% block content %}{% endblock %}
-    </main>
-
-    <footer role="contentinfo" class="admin-footer">
-      <p>Crypidian Admin — Môi trường thử nghiệm an toàn độc lập (PAPER mode)</p>
-    </footer>
+    <script src="/static/app-shell.js" defer></script>
     <script src="/static/theme-toggle.js" defer></script>
     <script src="/static/toast.js" defer></script>
+    <script src="/static/tabs.js" defer></script>
     <script src="/static/metric-tooltip.js" defer></script>
     {% block scripts %}{% endblock %}
   </body>

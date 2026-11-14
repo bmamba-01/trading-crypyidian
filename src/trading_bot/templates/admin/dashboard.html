@@ -3,67 +3,96 @@
 {% block heading %}Tổng quan không gian làm việc{% endblock %}
 {% block content %}
 {% from "admin/_metric_help.html" import help_term, help_icon %}
-<p class="welcome-banner">Xin chào {{ identity.email }}.</p>
-
-<section class="summary-grid dashboard-block" aria-label="Tình trạng không gian làm việc">
-  <p>Tổng số bot: {{ bot_count }}</p>
-  <p>Bot sẵn sàng: {{ ready_count }}</p>
-  <p>Điều khiển không gian làm việc: {{ workspace.kill_state | label_vi }}</p>
-</section>
-
-<!-- Thanh trạng thái cập nhật trực tiếp -->
-<div class="live-status-bar" role="region" aria-label="Trạng thái cập nhật trực tiếp">
-  <div class="live-status-indicator">
-    <span class="pulse-dot" id="live-pulse-dot" aria-hidden="true"></span>
-    <span class="live-status-title">Tự động cập nhật 5s</span>
-    <span class="live-status-sep" aria-hidden="true">·</span>
-    <span class="live-status-time-wrapper">Cập nhật: <time id="live-updated-at">--:--:--</time></span>
-  </div>
-  <div class="live-status-actions">
-    <span id="live-status-msg" class="live-status-msg" aria-live="polite"></span>
-    <button id="toggle-realtime-btn" type="button" class="btn btn-sm btn-outline" aria-pressed="true">Tạm dừng</button>
+<div class="dash-head">
+  <p class="welcome-banner">Xin chào {{ identity.email }}.</p>
+  <section class="summary-grid dashboard-block" aria-label="Tình trạng không gian làm việc">
+    <p>Tổng số bot: {{ bot_count }}</p>
+    <p>Bot sẵn sàng: {{ ready_count }}</p>
+    <p>Điều khiển không gian làm việc: {{ workspace.kill_state | label_vi }}</p>
+  </section>
+  <!-- Thanh trạng thái cập nhật trực tiếp -->
+  <div class="live-status-bar" role="region" aria-label="Trạng thái cập nhật trực tiếp">
+    <div class="live-status-indicator">
+      <span class="pulse-dot" id="live-pulse-dot" aria-hidden="true"></span>
+      <span class="live-status-title">Tự động cập nhật 5s</span>
+      <span class="live-status-sep" aria-hidden="true">·</span>
+      <span class="live-status-time-wrapper">Cập nhật: <time id="live-updated-at">--:--:--</time></span>
+    </div>
+    <div class="live-status-actions">
+      <span id="live-status-msg" class="live-status-msg" aria-live="polite"></span>
+      <button id="toggle-realtime-btn" type="button" class="btn btn-sm btn-outline" aria-pressed="true">Tạm dừng</button>
+    </div>
   </div>
 </div>
 
 <section aria-label="Tình trạng không gian làm việc" class="dashboard-kpi-section">
   <h2 class="visually-hidden">Chỉ số hoạt động</h2>
   <div class="kpi-grid">
-    <div class="kpi-card" aria-label="Tổng số bot">
-      <span class="kpi-label">{{ help_term("bot_count", "Tổng số bot") }}</span>
-      <span class="kpi-value" id="kpi-bot-count" data-live-kpi="bot_count">{{ bot_count }}</span>
+    <div class="kpi-card kpi-card--h" aria-label="Tổng số bot">
+      <span class="kpi-icon kpi-icon--blue" aria-hidden="true"><svg class="ico" viewBox="0 0 24 24" focusable="false"><rect x="4" y="8" width="16" height="12" rx="2"/><path d="M12 8V4M8 13h.01M16 13h.01M9 17h6"/></svg></span>
+      <div class="kpi-body">
+        <span class="kpi-value" id="kpi-bot-count" data-live-kpi="bot_count">{{ bot_count }}</span>
+        <span class="kpi-label">{{ help_term("bot_count", "Tổng số bot") }}</span>
+      </div>
       <span class="kpi-subtext">Đã cấu hình trong không gian làm việc</span>
     </div>
 
-    <div class="kpi-card" aria-label="Bot sẵn sàng">
-      <span class="kpi-label">{{ help_term("ready_bot_count", "Bot sẵn sàng") }}</span>
-      <span class="kpi-value" id="kpi-ready-count" data-live-kpi="ready_count">{{ ready_count }}</span>
+    <div class="kpi-card kpi-card--h" aria-label="Bot sẵn sàng">
+      <span class="kpi-icon kpi-icon--green" aria-hidden="true"><svg class="ico" viewBox="0 0 24 24" focusable="false"><path d="M20 6 9 17l-5-5"/></svg></span>
+      <div class="kpi-body">
+        <span class="kpi-value" id="kpi-ready-count" data-live-kpi="ready_count">{{ ready_count }}</span>
+        <span class="kpi-label">{{ help_term("ready_bot_count", "Bot sẵn sàng") }}</span>
+      </div>
       <span class="kpi-subtext">Trạng thái vận hành ổn định</span>
     </div>
 
-    <div class="kpi-card kpi-card-emergency" aria-label="Trạng thái khẩn cấp">
-      <span class="kpi-label">{{ help_term("workspace_kill_state", "Trạng thái khẩn cấp (Công tắc dừng khẩn cấp)") }}</span>
-      <div class="kpi-status-container" id="kpi-kill-status" aria-live="polite">
-        {% if workspace.kill_state == "ACTIVE" %}
-        <span class="badge badge-success" id="kpi-kill-state">Đang hoạt động</span>
-        {% elif workspace.kill_state == "KILLED" %}
-        <span class="badge badge-danger" id="kpi-kill-state">Đã dừng khẩn cấp</span>
-        {% else %}
-        <span class="badge badge-warning" id="kpi-kill-state">{{ workspace.kill_state | label_vi }}</span>
-        {% endif %}
+    <div class="kpi-card kpi-card--h kpi-card-emergency" aria-label="Trạng thái khẩn cấp">
+      <span class="kpi-icon kpi-icon--amber" aria-hidden="true"><svg class="ico" viewBox="0 0 24 24" focusable="false"><path d="M12 3 2 20h20L12 3Z"/><path d="M12 10v4M12 17h.01"/></svg></span>
+      <div class="kpi-body">
+        <div class="kpi-status-container" id="kpi-kill-status" aria-live="polite">
+          {% if workspace.kill_state == "ACTIVE" %}
+          <span class="badge badge-success" id="kpi-kill-state">Đang hoạt động</span>
+          {% elif workspace.kill_state == "KILLED" %}
+          <span class="badge badge-danger" id="kpi-kill-state">Đã dừng khẩn cấp</span>
+          {% else %}
+          <span class="badge badge-warning" id="kpi-kill-state">{{ workspace.kill_state | label_vi }}</span>
+          {% endif %}
+        </div>
+        <span class="kpi-label">{{ help_term("workspace_kill_state", "Trạng thái khẩn cấp (Công tắc dừng khẩn cấp)") }}</span>
       </div>
-      <span class="kpi-subtext" id="kpi-workspace-revision" data-live-kpi="revision">Lần thay đổi: {{ workspace.revision }}</span>
+      <span class="kpi-subtext kpi-subtext--keep" id="kpi-workspace-revision" data-live-kpi="revision">Lần thay đổi: {{ workspace.revision }}</span>
     </div>
 
-    <div class="kpi-card kpi-card-mode" aria-label="Chế độ vận hành">
-      <span class="kpi-label">{{ help_term("operating_mode", "Chế độ vận hành") }}</span>
-      <div class="kpi-mode-container">
-        <span class="badge badge-paper">PAPER (Mô phỏng nội bộ)</span>
+    <div class="kpi-card kpi-card--h kpi-card-mode" aria-label="Chế độ vận hành">
+      <span class="kpi-icon kpi-icon--violet" aria-hidden="true"><svg class="ico" viewBox="0 0 24 24" focusable="false"><path d="M12 3 4 6v6c0 4.4 3.4 8.4 8 9 4.6-.6 8-4.6 8-9V6l-8-3Z"/></svg></span>
+      <div class="kpi-body">
+        <div class="kpi-mode-container">
+          <span class="badge badge-paper">PAPER (Mô phỏng nội bộ)</span>
+        </div>
+        <span class="kpi-label">{{ help_term("operating_mode", "Chế độ vận hành") }}</span>
       </div>
       <span class="kpi-subtext">Mô phỏng nội bộ trong cơ sở dữ liệu, không gọi API hay đặt lệnh lên Binance</span>
     </div>
   </div>
 </section>
 
+<div class="dashboard-tabs" data-tabs>
+  <div class="tabs-bar" role="tablist" aria-label="Khu vực của trang tổng quan">
+    <button type="button" role="tab" id="tab-live" aria-controls="panel-live" aria-selected="true">
+      <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>Theo dõi trực tiếp
+    </button>
+    <button type="button" role="tab" id="tab-performance" aria-controls="panel-performance" aria-selected="false">
+      <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 17 9 11l4 4 8-8"/><path d="M15 7h6v6"/></svg>Hiệu suất 30 ngày
+    </button>
+    <button type="button" role="tab" id="tab-bots" aria-controls="panel-bots" aria-selected="false">
+      <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="4" y="8" width="16" height="12" rx="2"/><path d="M12 8V4M9 17h6"/></svg>Danh sách bot <span class="tabs-bar__count">{{ bots | length }}</span>
+    </button>
+    <button type="button" role="tab" id="tab-controls" aria-controls="panel-controls" aria-selected="false">
+      <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3 2 20h20L12 3Z"/><path d="M12 10v4M12 17h.01"/></svg>Điều khiển khẩn cấp
+    </button>
+  </div>
+
+<div role="tabpanel" id="panel-live" aria-labelledby="tab-live" tabindex="0">
 <section id="dashboard-live" class="dashboard-live-section" aria-labelledby="dashboard-live-heading">
   <h2 id="dashboard-live-heading">Theo dõi bot và phiên PAPER</h2>
   <p>Chọn một bot đang bật để xem trạng thái vận hành và giao dịch PAPER đã ghi nhận. Tự cập nhật mỗi 5 giây khi trang đang hiển thị.</p>
@@ -101,6 +130,9 @@
   <script id="dashboard-live-metrics" type="application/json">{{ report_metrics | tojson }}</script>
 </section>
 
+</div>
+
+<div role="tabpanel" id="panel-controls" aria-labelledby="tab-controls" tabindex="0">
 <section aria-label="Điều khiển không gian làm việc" class="workspace-controls-section">
   <h2>Điều khiển khẩn cấp toàn không gian làm việc</h2>
   <div class="controls-grid">
@@ -120,6 +152,9 @@
   </div>
 </section>
 
+</div>
+
+<div role="tabpanel" id="panel-performance" aria-labelledby="tab-performance" tabindex="0">
 <section aria-labelledby="performance-heading" class="dashboard-performance-section dashboard-block">
   <h2 id="performance-heading">Hiệu quả bot trong 30 ngày</h2>
   {% if dashboard_chart and dashboard_chart.series %}
@@ -171,6 +206,9 @@
   <p><a href="/admin/reports">Xem báo cáo theo phạm vi được cấp quyền</a></p>
 </section>
 
+</div>
+
+<div role="tabpanel" id="panel-bots" aria-labelledby="tab-bots" tabindex="0">
 <section aria-label="Danh sách bot trong không gian làm việc" class="bot-roster-section">
   <div class="roster-header">
     <h2>Danh sách bot</h2>
@@ -230,6 +268,9 @@
   <p class="empty-roster-msg">Workspace chưa có bot nào.</p>
   {% endif %}
 </section>
+
+</div>
+</div>
 
 <script id="dashboard-status-labels" type="application/json">{{ ui_labels_vi | tojson }}</script>
 {% endblock %}
