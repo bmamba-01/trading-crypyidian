@@ -21,7 +21,10 @@ from uuid import UUID
 
 # Ngưỡng vận hành khởi điểm của hậu kiểm. Đây là lựa chọn nội bộ, chưa được nghiên cứu hay
 # backtest xác nhận; đổi ngưỡng phải đi kèm cập nhật tài liệu và test.
-SLIPPAGE_DEVIANT_BPS = Decimal("15")
+# Trượt giá thực tế bị coi là sai lệch khi vượt bội số này của trượt giá kế hoạch đã dự trù
+# (vào + ra). Mô hình PAPER luôn tính chi phí bất lợi nên so với ngưỡng bps tuyệt đối sẽ gắn
+# nhãn sai lệch cho mọi lệnh; so với kế hoạch mới phản ánh thực thi tệ hơn dự kiến.
+SLIPPAGE_DEVIANT_PLAN_MULTIPLE = Decimal("1.5")
 FALSE_BREAKOUT_MAX_HOLDING_SECONDS = 900
 EXCESSIVE_LOSS_R_MULTIPLE = Decimal("1.25")
 
@@ -83,6 +86,7 @@ class EntryReasoningBreakdown:
     risk_reward_ratio: Decimal | None = None
     stop_loss_price: Decimal | None = None
     take_profit_price: Decimal | None = None
+    planned_risk_amount: Decimal | None = None  # Ngân sách rủi ro của kế hoạch đã duyệt
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -109,6 +113,7 @@ class EntryReasoningBreakdown:
             "risk_reward_ratio": _text(self.risk_reward_ratio),
             "stop_loss_price": _text(self.stop_loss_price),
             "take_profit_price": _text(self.take_profit_price),
+            "planned_risk_amount": _text(self.planned_risk_amount),
         }
 
 
@@ -126,6 +131,7 @@ class ExitReasoningBreakdown:
     net_pnl_r_multiple: Decimal | None  # PnL ròng / ngân sách rủi ro kế hoạch
     holding_duration_seconds: int | None
     slippage_bps: Decimal | None  # Trượt giá / notional vào lệnh, tính bằng điểm cơ bản
+    expected_slippage: Decimal | None = None  # Trượt giá vào + ra mà kế hoạch đã dự trù
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -139,6 +145,7 @@ class ExitReasoningBreakdown:
             "net_pnl_r_multiple": _text(self.net_pnl_r_multiple),
             "holding_duration_seconds": self.holding_duration_seconds,
             "slippage_bps": _text(self.slippage_bps),
+            "expected_slippage": _text(self.expected_slippage),
         }
 
 
@@ -276,17 +283,23 @@ def evaluate_trade_post_mortem(
     trade: Mapping[str, Any],
     *,
     planned_risk_amount: Decimal | None = None,
+    plan: Mapping[str, Any] | None = None,
 ) -> TradePostMortem:
     """Đánh giá một giao dịch đã đóng để phân loại chất lượng và đề xuất cho người rà soát.
 
     Quy tắc phát hiện sai lệch, theo thứ tự; quy tắc thiếu dữ liệu đầu vào bị bỏ qua và được
     ghi trong `unevaluated_checks`:
 
-    1. `SLIPPAGE`: trượt giá / notional vào lệnh > 15 bps. Cần fill vào lệnh có giá và khối lượng.
+    1. `SLIPPAGE`: trượt giá thực tế > 1,5 lần trượt giá kế hoạch đã dự trù cho cả vào và ra
+       (2 × `entry_slippage_cost`). Cần kế hoạch đã duyệt của lệnh; không có ngưỡng tuyệt đối.
     2. `FALSE_BREAKOUT`: đóng `STOP_LOSS`, lỗ ròng, giữ lệnh dưới 15 phút. Cần lý do đóng và
        thời gian giữ lệnh.
     3. `EXCESSIVE_LOSS`: lỗ ròng vượt 1,25 lần `planned_risk_amount`. Cần ngân sách rủi ro kế
        hoạch do nơi gọi cung cấp từ nguồn thật; không có giá trị mặc định.
+
+    `plan` là kế hoạch đã được risk gate duyệt của chính trade này (`trade_plan.payload`): giá
+    stop/mục tiêu, đòn bẩy và ngân sách rủi ro thật. Khi có, nó là nguồn cho SL/TP, đòn bẩy, R:R
+    và cho `planned_risk_amount` nếu nơi gọi không truyền riêng.
 
     Không vi phạm quy tắc nào kiểm được: lỗ ròng → `ACCEPTABLE`, còn lại → `OPTIMAL`. Thiếu PnL
     ròng hoặc không quy tắc nào kiểm được → `UNVERIFIED`.
@@ -322,7 +335,23 @@ def evaluate_trade_post_mortem(
         entry_price = _first_entry_price(fills)
 
     holding_duration = _holding_seconds(trade)
-    risk_amount = planned_risk_amount if planned_risk_amount and planned_risk_amount > 0 else None
+    plan_values: Mapping[str, Any] = plan if isinstance(plan, Mapping) else {}
+    plan_entry = _positive_decimal(plan_values.get("entry_price"))
+    plan_stop = _positive_decimal(plan_values.get("stop_price"))
+    plan_target = _positive_decimal(plan_values.get("target_price"))
+    plan_reward_risk = (
+        abs(plan_target - plan_entry) / abs(plan_entry - plan_stop)
+        if plan_entry is not None
+        and plan_stop is not None
+        and plan_target is not None
+        and plan_entry != plan_stop
+        else None
+    )
+    risk_amount = (
+        planned_risk_amount
+        if planned_risk_amount and planned_risk_amount > 0
+        else _positive_decimal(plan_values.get("risk_budget"))
+    )
 
     slippage_bps = (
         slippage_total / entry_notional * _BPS
@@ -333,8 +362,16 @@ def evaluate_trade_post_mortem(
         net_pnl / risk_amount if net_pnl is not None and risk_amount is not None else None
     )
 
+    planned_entry_slippage = _decimal(plan_values.get("entry_slippage_cost"))
+    expected_slippage = (
+        planned_entry_slippage * 2
+        if planned_entry_slippage is not None and planned_entry_slippage >= 0
+        else None
+    )
+    slippage_checkable = slippage_total is not None and expected_slippage is not None
+
     unevaluated: list[str] = []
-    if slippage_bps is None:
+    if not slippage_checkable:
         unevaluated.append(CHECK_SLIPPAGE)
     if exit_reason_code is None or holding_duration is None or net_pnl is None:
         unevaluated.append(CHECK_FALSE_BREAKOUT)
@@ -348,12 +385,18 @@ def evaluate_trade_post_mortem(
     recommended_action: str
     ai_penalty_weight: Decimal | None
 
-    if slippage_bps is not None and slippage_bps > SLIPPAGE_DEVIANT_BPS:
+    if (
+        slippage_total is not None
+        and expected_slippage is not None
+        and slippage_total > expected_slippage * SLIPPAGE_DEVIANT_PLAN_MULTIPLE
+    ):
         classification = TradeQualityClassification.DEVIANT_SLIPPAGE
         is_deviant = True
+        unit = f" {quote_asset}" if quote_asset else ""
         deviation_reason = (
-            f"Trượt giá thực tế {_text(slippage_bps.quantize(Decimal('0.01')))} bps trên notional "
-            f"vào lệnh, vượt ngưỡng {SLIPPAGE_DEVIANT_BPS} bps."
+            f"Trượt giá thực tế {_text(slippage_total)}{unit} vượt "
+            f"{SLIPPAGE_DEVIANT_PLAN_MULTIPLE} lần mức kế hoạch dự trù "
+            f"({_text(expected_slippage)}{unit} cho cả vào và ra)."
         )
         recommended_action = "ABSTAIN"
         ai_penalty_weight = Decimal("1.8")
@@ -404,15 +447,18 @@ def evaluate_trade_post_mortem(
         signal_at=_optional_text(entry_reason.get("signal_at")),
         entry_price=entry_price,
         entry_quantity=entry_quantity,
-        target_leverage=_leverage(entry_reason.get("target_leverage")),
+        target_leverage=_leverage(plan_values.get("leverage"))
+        or _leverage(entry_reason.get("target_leverage")),
         account_risk_pct=_positive_decimal(entry_reason.get("account_risk_pct")),
         context_regime=_optional_text(entry_reason.get("context_regime")),
         context_gate_passed=gate_passed if isinstance(gate_passed, bool) else None,
         rejection_wick_score=_score(entry_reason.get("rejection_wick_score")),
         breakout_score=_score(entry_reason.get("breakout_score")),
-        risk_reward_ratio=_positive_decimal(entry_reason.get("risk_reward_ratio")),
-        stop_loss_price=_positive_decimal(entry_reason.get("stop_loss_price")),
-        take_profit_price=_positive_decimal(entry_reason.get("take_profit_price")),
+        risk_reward_ratio=plan_reward_risk
+        or _positive_decimal(entry_reason.get("risk_reward_ratio")),
+        stop_loss_price=plan_stop or _positive_decimal(entry_reason.get("stop_loss_price")),
+        take_profit_price=plan_target or _positive_decimal(entry_reason.get("take_profit_price")),
+        planned_risk_amount=risk_amount,
     )
 
     exit_analysis = ExitReasoningBreakdown(
@@ -426,6 +472,7 @@ def evaluate_trade_post_mortem(
         net_pnl_r_multiple=net_pnl_r_multiple,
         holding_duration_seconds=holding_duration,
         slippage_bps=slippage_bps,
+        expected_slippage=expected_slippage,
     )
 
     return TradePostMortem(

@@ -196,6 +196,26 @@ Gợi ý theo WP:
 - Bot B (config PUBLISHED, release `h01-v1` khác root) bị đường entry PAPER legacy từ chối với `PAPER_BOT_STRATEGY_FANOUT_REQUIRED`; candidate persisted từ fan-out MB-05b được chạy qua command riêng theo release bot (xem lưu ý ở mục 2.6). Chỉ bot chưa có config mới dùng root-fallback.
 - Khôi phục config bot về baseline tạo version mới hiệu lực từ thời điểm seed; replay ở mốc trước đó vẫn thấy version cũ (đúng ngữ nghĩa point-in-time).
 
+## 8a. Gieo ledger PAPER từ Strategy Card pipeline
+
+`scripts/seed_pipeline_paper_ledger.py` tạo một workspace PAPER riêng và đưa mẫu Strategy Card L0–L6 qua đường runtime thật: evidence fan-out → `bot_decision` CANDIDATE → TradePlanner → RiskEngine → giữ ngân sách workspace → intent PAPER → fill → position monitor → `trade` + `trade_cost`. Dùng để kiểm thử dashboard, bot detail, báo cáo và panel hậu kiểm với dữ liệu có lineage đầy đủ.
+
+```bash
+uv run python scripts/seed_pipeline_paper_ledger.py --project <tên project Compose> --login-email <email owner local>
+```
+
+- **Thẻ dùng:** thẻ demo `SC-BINANCE-USDM-VOL-BREAKOUT-001` (LONG, bot A) và fixture QA `SC-QA-USDM-WICK-REJECT-SHORT-003` (SHORT, bot B) suy ra từ cùng đồ thị.
+- **Kết quả mặc định:** 5 vòng evidence, mỗi vòng fan-out tới cả hai bot: 9 giao dịch đóng theo `TAKE_PROFIT` / `STOP_LOSS` / `TIME_STOP` và 1 vị thế mở; nến biểu đồ nội bộ 5m và 1h (nguồn `CRYPIDIAN_PIPELINE_FIXTURE`).
+- **Đăng nhập:** tài khoản `--login-email` được thêm làm owner của workspace mới; vì factor TOTP gắn theo workspace, script mã hóa lại cùng khóa TOTP cho workspace đó bên trong container `admin-web`. Dùng slug in ra ở cuối, cùng mật khẩu và mã TOTP.
+- **Tùy chọn:** `--rounds N`, `--debug` (ghi lý do khi không tạo được intent), `--attach-login-only`, `--chart-bars-only` (chạy lại được nhiều lần).
+
+Giới hạn cần biết:
+
+- Release của Strategy Card chỉ được thêm vào `StrategyRegistry` **trong tiến trình probe**. Registry của sản phẩm không chứa chúng, nên `trading-runtime` thật không thể tiếp tục giám sát vị thế mở của workspace này.
+- Mọi mốc thời gian là "bây giờ": position monitor nhận nến 1 phút mô phỏng nên thời điểm đóng nằm vài phút sau lúc chạy (tới khoảng 13 phút với `TIME_STOP`); trước mốc đó báo cáo vẫn tính lệnh là đang mở.
+- Giá quanh 100 theo quy ước của probe MB-05, nến biểu đồ là dao động tất định; đây không phải dữ liệu thị trường và không phải bằng chứng về khả năng sinh lời.
+- Mỗi lần chạy tạo một workspace mới; nhiều bảng là append-only nên dọn dẹp bằng cách xóa volume của stack.
+
 ## 9. Thuật ngữ
 
 Thuật ngữ mới (bộ dữ liệu QA, seed dữ liệu, UUIDv5, chốt an toàn seed, tài khoản kiểm thử, profile Compose) được đề xuất cho `docs/research/glossary-vi.md`; xem thêm [TOTP](../research/glossary-vi.md), [RLS](../research/glossary-vi.md) và [Idempotency key](../research/glossary-vi.md).

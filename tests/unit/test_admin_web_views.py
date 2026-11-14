@@ -393,6 +393,11 @@ def test_admin_report_renders_chart_annotations_and_accessible_fill_table() -> N
                 },
             )()
 
+        async def get_trade_plan_summaries(
+            self, _query: object, _principal: object, *, trade_ids: object
+        ) -> dict[object, dict[str, object]]:
+            return {}
+
         async def get_trade_chart(
             self,
             _query: object,

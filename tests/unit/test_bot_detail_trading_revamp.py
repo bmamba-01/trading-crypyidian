@@ -163,6 +163,11 @@ class StubReportingService:
             }
         )
 
+    async def get_trade_plan_summaries(
+        self, query: object, principal: object, *, trade_ids: object
+    ) -> dict[object, dict[str, object]]:
+        return {}
+
     async def get_trade_chart(
         self, query: object, principal: object, *, trade_id: object, timeframe: str = "1h"
     ) -> dict[str, object]:

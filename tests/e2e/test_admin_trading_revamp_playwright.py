@@ -312,6 +312,12 @@ class MockRevampReportingService:
             end=query.end,
         )
 
+    async def get_trade_plan_summaries(
+        self, query: Any, principal: Any, *, trade_ids: Any
+    ) -> dict[UUID, dict[str, Any]]:
+        """Mock ledger này không ghim kế hoạch đã duyệt cho trade."""
+        return {}
+
     async def get_trade_chart(
         self,
         query: Any,

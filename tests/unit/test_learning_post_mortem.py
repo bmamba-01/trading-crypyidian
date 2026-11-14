@@ -101,33 +101,50 @@ def test_winning_ledger_trade_is_optimal_and_names_the_unevaluated_check() -> No
     assert result.deviation_reason is None
     assert result.recommended_counterfactual_action == "REINFORCE"
     assert result.ai_penalty_weight == Decimal("0.5")
-    assert result.unevaluated_checks == (CHECK_EXCESSIVE_LOSS,)
+    assert result.unevaluated_checks == (CHECK_SLIPPAGE, CHECK_EXCESSIVE_LOSS)
 
 
-def test_slippage_rule_uses_entry_notional_not_entry_price() -> None:
-    # 80 / (0,5 × 90000) × 10000 ≈ 17,8 bps > 15 bps.
+PLAN = {
+    "entry_price": "100.4",
+    "stop_price": "97.6",
+    "target_price": "105.4",
+    "leverage": "5",
+    "risk_budget": "100.0000000000",
+    "entry_slippage_cost": "6.25",
+}
+
+
+def test_slippage_within_planned_budget_is_not_deviant() -> None:
+    """Mô hình PAPER tính trượt giá bất lợi cả vào lẫn ra: đúng mức dự trù thì không sai lệch."""
+    result = evaluate_trade_post_mortem(_ledger_trade(slippage_total="12.5"), plan=PLAN)
+
+    assert result.exit_analysis.expected_slippage == Decimal("12.50")
+    assert result.classification == TradeQualityClassification.OPTIMAL
+    assert result.unevaluated_checks == ()
+
+
+def test_slippage_beyond_one_and_a_half_times_plan_is_deviant() -> None:
     result = evaluate_trade_post_mortem(
-        _ledger_trade(slippage_total="80", net_pnl="-90", gross_pnl="-5", exit_reason="STOP_LOSS")
+        _ledger_trade(slippage_total="19", net_pnl="-90", gross_pnl="-60", exit_reason="STOP_LOSS"),
+        plan=PLAN,
     )
 
     assert result.classification == TradeQualityClassification.DEVIANT_SLIPPAGE
     assert result.is_deviant is True
     assert "Trượt giá" in (result.deviation_reason or "")
+    assert "12.50" in (result.deviation_reason or "")
     assert result.recommended_counterfactual_action == "ABSTAIN"
     assert result.ai_penalty_weight == Decimal("1.8")
 
 
-def test_large_absolute_slippage_on_large_notional_is_not_deviant() -> None:
-    # 25 USDT trên notional 4.500.000 chỉ là ~0,06 bps; ngưỡng tuyệt đối cũ sẽ báo sai lệch.
-    result = evaluate_trade_post_mortem(
-        _ledger_trade(
-            slippage_total="25",
-            fills=[{"role": "ENTRY", "quantity": "50", "price": "90000"}],
-        )
-    )
+def test_slippage_rule_is_unevaluated_without_an_approved_plan() -> None:
+    """Không có kế hoạch thì không có mức dự trù để so; không dùng ngưỡng tuyệt đối."""
+    result = evaluate_trade_post_mortem(_ledger_trade(slippage_total="500"))
 
     assert result.classification == TradeQualityClassification.OPTIMAL
-    assert result.is_deviant is False
+    assert CHECK_SLIPPAGE in result.unevaluated_checks
+    # Chỉ số bps vẫn được tính để hiển thị: 500 / 45000 × 10000.
+    assert result.exit_analysis.slippage_bps is not None
 
 
 def test_false_breakout_rule_uses_real_holding_time() -> None:
@@ -157,7 +174,7 @@ def test_excessive_loss_rule_runs_only_with_planned_risk() -> None:
     with_risk = evaluate_trade_post_mortem(losing, planned_risk_amount=Decimal("100"))
     assert with_risk.classification == TradeQualityClassification.DEVIANT_EXCESSIVE_LOSS
     assert with_risk.exit_analysis.net_pnl_r_multiple == Decimal("-1.5")
-    assert with_risk.unevaluated_checks == ()
+    assert with_risk.unevaluated_checks == (CHECK_SLIPPAGE,)
     assert "USDT" in (with_risk.deviation_reason or "")
 
 
@@ -240,7 +257,7 @@ def test_explicit_sourced_entry_fields_are_passed_through() -> None:
 def test_learning_post_mortem_service_ingestion() -> None:
     service = LearningPostMortemService()
     trade = _ledger_trade(
-        slippage_total="80",
+        closed_at="2026-11-10T01:05:00+00:00",
         gross_pnl="-90",
         net_pnl="-176",
         exit_reason="STOP_LOSS",
@@ -251,7 +268,7 @@ def test_learning_post_mortem_service_ingestion() -> None:
     assert str(sample.trade_id) == trade["trade_id"]
     assert str(sample.bot_id) == trade["bot_id"]
     assert sample.counterfactual_action == "ABSTAIN"
-    assert sample.penalty_weight == "1.8"
+    assert sample.penalty_weight == "2.0"
     assert sample.ingested_by == "OPERATOR_ALICE"
     assert sample.feature_snapshot_id == "feat_snap_123"
 
@@ -282,3 +299,37 @@ def test_ingestion_of_unverified_trade_records_no_penalty_weight() -> None:
 def test_service_does_not_fabricate_training_samples() -> None:
     """Nhãn thủ công không có lineage đặc trưng/nhãn nên không được biến thành DatasetSample."""
     assert not hasattr(LearningPostMortemService, "export_dataset_samples")
+
+
+def test_approved_plan_is_the_source_for_levels_leverage_and_planned_risk() -> None:
+    """Kế hoạch đã duyệt cung cấp SL/TP, đòn bẩy, R:R và ngân sách rủi ro thật của lệnh."""
+    plan = {
+        "entry_price": "100.4",
+        "stop_price": "97.6",
+        "target_price": "105.4",
+        "leverage": "5",
+        "risk_budget": "100.0000000000",
+    }
+    losing = _ledger_trade(gross_pnl="-140", net_pnl="-150", exit_reason="STOP_LOSS")
+
+    result = evaluate_trade_post_mortem(losing, plan=plan)
+    entry = result.entry_analysis
+
+    assert entry.stop_loss_price == Decimal("97.6")
+    assert entry.take_profit_price == Decimal("105.4")
+    assert entry.target_leverage == 5
+    assert entry.planned_risk_amount == Decimal("100.0000000000")
+    # |105,4 − 100,4| / |100,4 − 97,6| = 5 / 2,8
+    assert entry.risk_reward_ratio == Decimal("5.0") / Decimal("2.8")
+    assert result.exit_analysis.net_pnl_r_multiple == Decimal("-1.5")
+    assert result.classification == TradeQualityClassification.DEVIANT_EXCESSIVE_LOSS
+    assert result.unevaluated_checks == (CHECK_SLIPPAGE,)
+    assert result.as_dict()["entry_analysis"]["planned_risk_amount"] == "100.0000000000"
+
+
+def test_missing_plan_keeps_levels_empty() -> None:
+    result = evaluate_trade_post_mortem(_ledger_trade(), plan=None)
+
+    assert result.entry_analysis.stop_loss_price is None
+    assert result.entry_analysis.planned_risk_amount is None
+    assert CHECK_EXCESSIVE_LOSS in result.unevaluated_checks

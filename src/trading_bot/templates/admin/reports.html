@@ -294,7 +294,7 @@
             <div class="reasoning-kv-item">
               <dt>
                 <span class="tooltip-term" data-tooltip="Giá bình quân gia quyền và tổng khối lượng của các fill vào lệnh trong ledger">
-                  Giá vào & khối lượng <span class="tooltip-icon">ⓘ</span>
+                  Giá vào &amp; khối lượng <span class="tooltip-icon">ⓘ</span>
                 </span>
               </dt>
               <dd class="tabular-nums">{% if ea.entry_price is not none %}{{ ea.entry_price | number_vi }}{% if ea.entry_quantity is not none %} × {{ ea.entry_quantity | number_vi }}{% endif %}{% else %}<span class="u-color-text-muted u-font-weight-400">Ledger chưa lưu</span>{% endif %}</dd>
@@ -306,7 +306,7 @@
             <div class="reasoning-kv-item">
               <dt>
                 <span class="tooltip-term" data-tooltip="Đòn bẩy và tỷ lệ rủi ro tài khoản do nguồn sinh tín hiệu ghi lại; không suy diễn khi thiếu">
-                  Đòn bẩy & rủi ro tài khoản <span class="tooltip-icon">ⓘ</span>
+                  Đòn bẩy &amp; rủi ro tài khoản <span class="tooltip-icon">ⓘ</span>
                 </span>
               </dt>
               <dd class="tabular-nums">{% if ea.target_leverage is not none or ea.account_risk_pct is not none %}{% if ea.target_leverage is not none %}{{ ea.target_leverage }}x{% endif %}{% if ea.account_risk_pct is not none %} (Rủi ro: {{ ea.account_risk_pct | number_vi }}%){% endif %}{% else %}<span class="u-color-text-muted u-font-weight-400">Ledger chưa lưu</span>{% endif %}</dd>
@@ -333,7 +333,15 @@
                   L6 Tỷ Lệ R:R & Kế Hoạch Vùng Giá <span class="tooltip-icon">ⓘ</span>
                 </span>
               </dt>
-              <dd class="tabular-nums">{% if ea.risk_reward_ratio is not none or ea.stop_loss_price is not none or ea.take_profit_price is not none %}{% if ea.risk_reward_ratio is not none %}1 : {{ ea.risk_reward_ratio | number_vi }}{% endif %}{% if ea.stop_loss_price is not none %} · SL: {{ ea.stop_loss_price | number_vi }}{% endif %}{% if ea.take_profit_price is not none %} · TP: {{ ea.take_profit_price | number_vi }}{% endif %}{% else %}<span class="u-color-text-muted u-font-weight-400">Ledger chưa lưu</span>{% endif %}</dd>
+              <dd class="tabular-nums">{% if ea.risk_reward_ratio is not none or ea.stop_loss_price is not none or ea.take_profit_price is not none %}{% if ea.risk_reward_ratio is not none %}1 : {{ "%.2f" | format(ea.risk_reward_ratio | float) }}{% endif %}{% if ea.stop_loss_price is not none %} · SL: {{ ea.stop_loss_price | number_vi }}{% endif %}{% if ea.take_profit_price is not none %} · TP: {{ ea.take_profit_price | number_vi }}{% endif %}{% else %}<span class="u-color-text-muted u-font-weight-400">Ledger chưa lưu</span>{% endif %}</dd>
+            </div>
+            <div class="reasoning-kv-item">
+              <dt>
+                <span class="tooltip-term" data-tooltip="Ngân sách rủi ro của kế hoạch đã được risk gate duyệt; R = lãi/lỗ ròng chia cho ngân sách này">
+                  Ngân sách rủi ro kế hoạch <span class="tooltip-icon">ⓘ</span>
+                </span>
+              </dt>
+              <dd class="tabular-nums">{% if ea.planned_risk_amount is not none %}{{ ea.planned_risk_amount | number_vi }} {{ selected_trade.quote_asset }}{% if pm.exit_analysis.net_pnl_r_multiple is not none %} · kết quả {{ "%.2f" | format(pm.exit_analysis.net_pnl_r_multiple | float) }}R{% endif %}{% else %}<span class="u-color-text-muted u-font-weight-400">Ledger chưa lưu</span>{% endif %}</dd>
             </div>
             <div class="u-border-bottom-none reasoning-kv-item">
               <dt>Diễn giải tín hiệu</dt>
@@ -371,7 +379,7 @@
                 </span>
               </dt>
               <dd class="tabular-nums{% if pm.classification == "DEVIANT_SLIPPAGE" %} u-color-danger u-font-weight-700{% endif %}">
-                {{ selected_trade.slippage_total }} {{ selected_trade.quote_asset }}{% if pm.exit_analysis.slippage_bps is not none %} ({{ "%.2f" | format(pm.exit_analysis.slippage_bps | float) }} bps trên notional vào lệnh){% else %} (chưa tính được bps: thiếu fill vào lệnh){% endif %}
+                {{ selected_trade.slippage_total }} {{ selected_trade.quote_asset }}{% if pm.exit_analysis.slippage_bps is not none %} ({{ "%.2f" | format(pm.exit_analysis.slippage_bps | float) }} bps trên notional vào lệnh){% else %} (chưa tính được bps: thiếu fill vào lệnh){% endif %}{% if pm.exit_analysis.expected_slippage is not none %} · kế hoạch dự trù {{ pm.exit_analysis.expected_slippage | number_vi }} {{ selected_trade.quote_asset }}{% endif %}
               </dd>
             </div>
             <div class="reasoning-kv-item">
@@ -420,7 +428,7 @@
           </p>
           {% if pm.unevaluated_checks %}
           <p class="u-font-size-0-8rem u-color-text-muted" id="post-mortem-unevaluated">
-            Chưa kiểm được: {% for check in pm.unevaluated_checks %}{{ {"SLIPPAGE": "trượt giá theo bps (thiếu fill vào lệnh)", "FALSE_BREAKOUT": "phá vỡ giả (thiếu lý do đóng hoặc thời gian giữ lệnh)", "EXCESSIVE_LOSS": "lỗ vượt kế hoạch (ledger chưa lưu ngân sách rủi ro của lệnh)"}.get(check, check) }}{% if not loop.last %}; {% endif %}{% endfor %}.
+            Chưa kiểm được: {% for check in pm.unevaluated_checks %}{{ {"SLIPPAGE": "trượt giá so với kế hoạch (ledger không ghim kế hoạch đã duyệt)", "FALSE_BREAKOUT": "phá vỡ giả (thiếu lý do đóng hoặc thời gian giữ lệnh)", "EXCESSIVE_LOSS": "lỗ vượt kế hoạch (ledger chưa lưu ngân sách rủi ro của lệnh)"}.get(check, check) }}{% if not loop.last %}; {% endif %}{% endfor %}.
           </p>
           {% endif %}
           <p class="u-font-size-0-8rem u-color-text-muted">Nhãn chỉ lưu tạm trong phiên chạy để rà soát, chưa đưa vào dữ liệu huấn luyện.</p>

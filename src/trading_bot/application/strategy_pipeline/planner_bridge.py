@@ -12,7 +12,7 @@ BẢO ĐẢM NGUYÊN TẮC QUANTSMART:
 from __future__ import annotations
 
 from datetime import timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING
 
 from trading_bot.domain.strategy.contracts import StrategyCandidate as ContractCandidate
@@ -41,19 +41,22 @@ class StrategyPipelinePlannerBridge:
     ) -> ContractCandidate:
         """Chuyển đổi PipelineCandidate thành ContractCandidate hoàn chỉnh cho TradePlanner."""
         # 1. Xác định ATR và bội số cho ExitRecipe
-        atr_val = float(pipeline_candidate.metadata.get("atr", "1.0"))
-        if atr_val <= 0:
-            atr_val = 1.0
+        raw_atr = pipeline_candidate.metadata.get("atr")
+        try:
+            atr = Decimal(str(raw_atr))
+        except InvalidOperation as error:
+            raise ValueError("PipelineCandidate thiếu ATR hợp lệ trong metadata.") from error
+        if not atr.is_finite() or atr <= 0:
+            raise ValueError("PipelineCandidate thiếu ATR dương trong metadata.")
+        atr_val = float(atr)
 
-        sl_multiplier = float(
-            abs(pipeline_candidate.entry_price - pipeline_candidate.stop_loss)
-            / Decimal(str(atr_val))
-        )
-        if sl_multiplier <= 0:
-            sl_multiplier = 2.0
-
-        rr_ratio = float(pipeline_candidate.risk_reward_ratio)
-        tp_multiplier = sl_multiplier * rr_ratio if rr_ratio > 0 else sl_multiplier * 2.0
+        stop_distance = abs(pipeline_candidate.entry_price - pipeline_candidate.stop_loss)
+        target_distance = abs(pipeline_candidate.take_profit - pipeline_candidate.entry_price)
+        if stop_distance <= 0 or target_distance <= 0:
+            raise ValueError("Vùng giá L6 phải có khoảng cách stop và mục tiêu dương.")
+        # Bội số ATR lấy trực tiếp từ vùng giá L6 để TradePlanner dựng lại đúng SL/TP của thẻ.
+        sl_multiplier = float(stop_distance / atr)
+        tp_multiplier = float(target_distance / atr)
 
         recipe = ExitRecipe(
             recipe_id=f"recipe_{card.card_id[:8]}",
@@ -101,5 +104,41 @@ class StrategyPipelinePlannerBridge:
             macro_evidence_ids=macro_evidence_ids,
             geometry_version="quantsmart_l0_l6",
             reason_code="QUANTSMART_L6_ZONE_CONFIRMED",
-            detail_vi=f"Khớp toàn bộ điều kiện L0-L6 của Strategy Card '{card.name}'",
+            detail_vi=_detail_vi(pipeline_candidate, card, atr),
         )
+
+
+def _detail_vi(pipeline_candidate: PipelineCandidate, card: StrategyCard, atr: Decimal) -> str:
+    """Diễn giải tín hiệu bằng đúng số liệu pipeline đã tính ở L4, L5 và L6."""
+
+    def number(value: object) -> str:
+        try:
+            text = format(Decimal(str(value)).quantize(Decimal("0.0001")).normalize(), "f")
+        except InvalidOperation:
+            return str(value)
+        return text.replace(".", ",")
+
+    operations = {node.node_id: node.operation for node in card.nodes}
+    gates = [
+        node.operation
+        for node in card.nodes
+        if node.layer.value.startswith("L4") and node.operation
+    ]
+    triggers = ", ".join(
+        operations.get(node_id, node_id) for node_id in pipeline_candidate.evidence_nodes
+    )
+    parts = [f"Strategy Card '{card.name}'"]
+    parts.append(
+        f"L4 {', '.join(gates)} ĐẠT (ATR {number(atr)})"
+        if gates
+        else f"L4 không có cổng (ATR {number(atr)})"
+    )
+    score = pipeline_candidate.metadata.get("trigger_score", pipeline_candidate.confidence)
+    parts.append(f"L5 {triggers or 'ngòi nổ'} điểm {number(score)}")
+    parts.append(
+        f"L6 vào {number(pipeline_candidate.entry_price)}, "
+        f"stop {number(pipeline_candidate.stop_loss)}, "
+        f"mục tiêu {number(pipeline_candidate.take_profit)}, "
+        f"R:R {number(pipeline_candidate.risk_reward_ratio)}"
+    )
+    return "; ".join(parts) + "."

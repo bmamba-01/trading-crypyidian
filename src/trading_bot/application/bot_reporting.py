@@ -15,7 +15,7 @@ Quy tắc chính (WBS MB-06):
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
@@ -148,6 +148,43 @@ class BotReportingService:
             if bot is None:
                 raise _not_found()
             return await self._bot_report(repository, bot, query)
+
+    async def get_trade_plan_summaries(
+        self, query: BotReportQuery, principal: Principal, *, trade_ids: Sequence[UUID]
+    ) -> dict[UUID, dict[str, Any]]:
+        """Kế hoạch đã được risk gate duyệt của các trade trong phạm vi bot được phép xem.
+
+        Dùng cùng kiểm tra workspace/grant như báo cáo bot. Trade mà ledger không ghim kế hoạch
+        không xuất hiện trong kết quả.
+        """
+        if query.scope is not ReportScope.BOT or query.bot_id is None:
+            raise BotReportError(422, "BOT_ID_REQUIRED", "Kế hoạch trade cần scope=bot rõ ràng.")
+        if query.workspace_id != principal.workspace_id:
+            raise _not_found()
+        async with self._unit_of_work(
+            self._sessions,
+            workspace_id=principal.workspace_id,
+            bot_id=query.bot_id,
+            actor_membership_id=principal.membership_id,
+            snapshot_read_only=True,
+        ) as unit:
+            repository = self._repository(unit.session)
+            try:
+                await self._grants(unit.session).require(
+                    principal, bot_id=query.bot_id, permission=BotPermission.REPORT_READ
+                )
+            except PermissionError as error:
+                raise _not_found() from error
+            bot = await repository.get_bot(workspace_id=principal.workspace_id, bot_id=query.bot_id)
+            if bot is None:
+                raise _not_found()
+            plans: dict[UUID, dict[str, Any]] = await repository.load_trade_plans(
+                workspace_id=principal.workspace_id,
+                bot_id=bot.bot_id,
+                account_id=bot.account_id,
+                trade_ids=trade_ids,
+            )
+            return plans
 
     async def get_trade_chart(
         self,

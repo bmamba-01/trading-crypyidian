@@ -984,9 +984,33 @@ def _fill_summary(fills: object, role: str) -> tuple[str | None, str | None]:
     return format(quantity.normalize(), "f"), format((notional / quantity).normalize(), "f")
 
 
-def _recent_trade_view(trade: dict[str, Any]) -> dict[str, Any]:
+async def _approved_trade_plans(
+    service: Any, query: BotReportQuery, principal: Principal, trades: list[dict[str, Any]]
+) -> dict[str, dict[str, Any]]:
+    """Kế hoạch đã duyệt theo `trade_id`; là nguồn thật cho SL/TP, đòn bẩy và chi phí dự trù.
+
+    Lỗi quyền/đọc không làm hỏng trang: thiếu kế hoạch thì hậu kiểm ghi quy tắc "chưa kiểm được".
+    """
+    trade_ids: list[UUID] = []
+    for trade in trades:
+        try:
+            trade_ids.append(UUID(str(trade.get("trade_id"))))
+        except ValueError:
+            continue
+    if not trade_ids:
+        return {}
+    try:
+        plans = await service.get_trade_plan_summaries(query, principal, trade_ids=trade_ids)
+    except BotReportError, HTTPException, SQLAlchemyError:
+        return {}
+    if not isinstance(plans, dict):
+        return {}
+    return {str(trade_id): plan for trade_id, plan in plans.items() if isinstance(plan, dict)}
+
+
+def _recent_trade_view(trade: dict[str, Any], plan: dict[str, Any] | None = None) -> dict[str, Any]:
     """Dựng một dòng lịch sử lệnh cho Bot Detail chỉ từ trường có trong ledger PAPER."""
-    post_mortem = evaluate_trade_post_mortem(trade)
+    post_mortem = evaluate_trade_post_mortem(trade, plan=plan)
     entry_reason = trade.get("entry_reason")
     entry_reason = entry_reason if isinstance(entry_reason, dict) else {}
     quantity, entry_price = _fill_summary(trade.get("fills"), "ENTRY")
@@ -1079,7 +1103,10 @@ async def _get_bot_trading_data(
         key=lambda trade: (str(trade.get("closed_at")), str(trade.get("trade_id"))),
         reverse=True,
     )[:BOT_DETAIL_RECENT_TRADE_LIMIT]
-    recent_trades = [_recent_trade_view(trade) for trade in closed_trades]
+    plans = await _approved_trade_plans(reporting_service, query, principal, closed_trades)
+    recent_trades = [
+        _recent_trade_view(trade, plans.get(str(trade.get("trade_id")))) for trade in closed_trades
+    ]
 
     chart_data: dict[str, Any] | None = None
     if closed_trades:
@@ -1787,8 +1814,13 @@ async def reports(
 
         # Phân tích Post-Mortem và rủi ro cho danh sách trades
         if report and "trades" in report and isinstance(report["trades"], list):
+            plans = (
+                await _approved_trade_plans(service, query, identity.principal, report["trades"])
+                if report_scope is ReportScope.BOT
+                else {}
+            )
             for trade in report["trades"]:
-                pm = evaluate_trade_post_mortem(trade)
+                pm = evaluate_trade_post_mortem(trade, plan=plans.get(str(trade.get("trade_id"))))
                 trade["post_mortem"] = pm.as_dict()
 
         if parsed_chart_trade_id is not None:
@@ -1805,8 +1837,15 @@ async def reports(
                     timeframe=chart_timeframe,
                 )
                 if chart_data and "trade" in chart_data:
-                    pm = evaluate_trade_post_mortem(chart_data["trade"])
+                    # Kế hoạch đã duyệt là nguồn thật cho SL/TP, đòn bẩy và ngân sách rủi ro.
+                    plan = (
+                        await _approved_trade_plans(
+                            service, query, identity.principal, [chart_data["trade"]]
+                        )
+                    ).get(str(parsed_chart_trade_id))
+                    pm = evaluate_trade_post_mortem(chart_data["trade"], plan=plan)
                     chart_data["trade"]["post_mortem"] = pm.as_dict()
+                    chart_data["trade"]["plan"] = plan
             except BotReportError as error:
                 raise HTTPException(
                     status_code=error.status_code,

@@ -276,7 +276,13 @@ class StrategyPipelineEngine:
             evidence_nodes=trigger_result.evidence_nodes,
             zones=zones,
             reasons=(),
-            metadata={"gate_metrics": gate_result.metrics},
+            # ATR dùng dựng vùng giá và điểm ngòi nổ được ghi kèm để cầu nối sang TradePlanner
+            # và bằng chứng vào lệnh dùng đúng giá trị pipeline đã tính, không tự suy lại.
+            metadata={
+                "atr": str(current_atr),
+                "gate_metrics": gate_result.metrics,
+                "trigger_score": str(trigger_result.trigger_score),
+            },
         )
 
         return PipelineExecutionResult(

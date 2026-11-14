@@ -4,7 +4,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from unittest.mock import AsyncMock
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from starlette.testclient import TestClient
@@ -197,6 +197,7 @@ def test_admin_reports_renders_metric_cards_and_post_mortem(
         "bars": [],
         "notice": None,
     }
+    mock_reporting_service.get_trade_plan_summaries.return_value = {}
     chart_response = client.get(
         f"/admin/reports?scope=bot&bot_id={bot_id}&start={start_str}&end={end_str}"
         f"&chart_trade_id={selected['trade_id']}"
@@ -264,3 +265,97 @@ def test_api_ingest_trade_negative_sample(
     assert data["sample"]["trade_id"] == str(trade_id)
     assert data["sample"]["counterfactual_action"] == "ABSTAIN"
     assert len(service.list_ingested_samples()) == 1
+
+
+def test_admin_reports_post_mortem_uses_approved_plan(
+    mock_identity: AuthIdentity,
+) -> None:
+    """Khi ledger ghim kế hoạch đã duyệt, panel hiện SL/TP, đòn bẩy và ngân sách rủi ro thật."""
+    from fastapi import FastAPI
+    from fastapi.templating import Jinja2Templates
+
+    from trading_bot.admin.presentation import label_vi, local_time, number_vi, pnl_tone
+    from trading_bot.admin.web_router import router
+    from trading_bot.auth.router import current_identity
+
+    trade_id = str(uuid4())
+    bot_id = uuid4()
+    now = datetime.now(UTC)
+    trade = {
+        "trade_id": trade_id,
+        "bot_id": str(bot_id),
+        "symbol": "BTCUSDT",
+        "side": "LONG",
+        "quote_asset": "USDT",
+        "opened_at": (now - timedelta(hours=2)).isoformat(),
+        "closed_at": (now - timedelta(hours=1)).isoformat(),
+        "gross_pnl": "-140",
+        "fee_total": "8",
+        "funding_total": "0",
+        "slippage_total": "2",
+        "total_cost": "10",
+        "net_pnl": "-150",
+        "entry_reason": {"strategy_id": "SC-DEMO", "detail_vi": "L4 ĐẠT; L5 điểm 0,77."},
+        "exit_reason": "STOP_LOSS",
+        "fills": [
+            {"role": "ENTRY", "quantity": "31.3", "price": "100.4", "occurred_at": now.isoformat()},
+        ],
+    }
+
+    class _Report:
+        def as_dict(self) -> dict[str, object]:
+            return {"scope": "bot", "totals": {}, "trades": [dict(trade)], "open_trades": []}
+
+    service = AsyncMock()
+    service.get_bot_report.return_value = _Report()
+    service.get_trade_chart.return_value = {
+        "symbol": "BTCUSDT",
+        "side": "LONG",
+        "timeframe": "1h",
+        "trade": dict(trade),
+        "bars": [],
+        "notice": None,
+    }
+    service.get_trade_plan_summaries.return_value = {
+        UUID(trade_id): {
+            "entry_price": "100.4",
+            "stop_price": "97.6",
+            "target_price": "105.4",
+            "leverage": "5",
+            "risk_budget": "100",
+            "entry_slippage_cost": "1",
+        }
+    }
+    admin = AsyncMock()
+    admin.list_bots.return_value = []
+
+    app = FastAPI()
+    templates = Jinja2Templates(directory="src/trading_bot/templates")
+    templates.env.filters.update(
+        label_vi=label_vi, local_time=local_time, number_vi=number_vi, pnl_tone=pnl_tone
+    )
+    app.state.templates = templates
+    app.state.bot_reporting_service = service
+    app.state.bot_admin_service = admin
+    app.include_router(router)
+    app.dependency_overrides[current_identity] = lambda: mock_identity
+
+    start = (now - timedelta(days=1)).isoformat().replace("+", "%2B")
+    end = now.isoformat().replace("+", "%2B")
+    response = TestClient(app).get(
+        f"/admin/reports?scope=bot&bot_id={bot_id}&start={start}&end={end}"
+        f"&chart_trade_id={trade_id}"
+    )
+    assert response.status_code == 200
+    html = response.text
+
+    assert "5x" in html
+    assert "1 : 1.79" in html
+    assert "SL: 97,6" in html
+    assert "TP: 105,4" in html
+    assert "kế hoạch dự trù 2 USDT" in html
+    assert "100 USDT" in html
+    assert "kết quả -1.50R" in html
+    assert "Mục tiêu chốt lời (TP)" in html
+    assert "SAI LỆCH" in html
+    assert 'id="post-mortem-unevaluated"' not in html
