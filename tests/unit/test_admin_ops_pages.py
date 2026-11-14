@@ -67,6 +67,15 @@ class _FlattenPrincipal:
     async def get_operation(self, operation_id: UUID) -> dict[str, Any]:
         return {"id": str(operation_id), **self._operation}
 
+    async def confirm(self, **_kwargs: Any) -> object:
+        # Operation đã commit nhưng một bot không tạm dừng được (lỗi lease).
+        return SimpleNamespace(
+            operation_id=OPERATION_ID,
+            status="QUEUED",
+            created=True,
+            pause_failures=((BOT_ID, "BOT_LEASE_BUSY"),),
+        )
+
 
 class _Flatten:
     def __init__(self, principal: _FlattenPrincipal) -> None:
@@ -328,3 +337,31 @@ def test_flatten_rejection_shows_safe_reason_code_and_hint() -> None:
     # Mã không nằm trong danh sách an toàn không bao giờ được hiển thị.
     assert AdminHTTPException(409, "x", reason_code="SQL_STATE_XX000").reason_code is None
     assert "90 giây" in SAFE_ERROR_REASONS["FLATTEN_PREVIEW_EXPIRED"]
+
+
+def test_flatten_confirm_redirect_and_page_warn_when_bot_pause_failed() -> None:
+    client = _client()
+    response = client.post(
+        "/admin/flatten/confirm",
+        data={
+            "csrf_token": CSRF,
+            "preview_id": "8a000000-0000-0000-0000-000000000001",
+            "preview_hash": "c" * 64,
+            "idempotency_key": "k" * 32,
+            "reason": "Sự cố",
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    # Chỉ số lượng trong URL, không lộ ID bot.
+    assert (
+        response.headers["location"] == f"/admin/flatten/operations/{OPERATION_ID}?pause_failed=1"
+    )
+    assert str(BOT_ID) not in response.headers["location"]
+
+    html = _main(client.get(response.headers["location"]).text)
+    assert 'data-pause-failed="1"' in html
+    assert "1 bot chưa tạm dừng được" in html
+    assert 'href="/admin/bots"' in html
+    # Không có lỗi pause thì không hiện cảnh báo.
+    assert "data-pause-failed" not in client.get(f"/admin/flatten/operations/{OPERATION_ID}").text

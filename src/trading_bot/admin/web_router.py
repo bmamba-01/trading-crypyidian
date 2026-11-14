@@ -15,7 +15,7 @@ from urllib.parse import parse_qs
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
@@ -1119,8 +1119,12 @@ async def create_bot_form(
         body = CreateBotRequest.model_validate(
             {"name": values.get("name"), "max_notional": values.get("max_notional")}
         )
-    except Exception as error:
-        raise HTTPException(status_code=422, detail="Thông tin tạo bot không hợp lệ.") from error
+    except ValidationError as error:
+        fields = {str(item["loc"][0]) for item in error.errors() if item.get("loc")}
+        messages = [CREATE_BOT_FIELD_ERRORS[f] for f in ("name", "max_notional") if f in fields]
+        return _create_bot_form_response(
+            request, identity, values, messages or ["Thông tin tạo bot không hợp lệ."]
+        )
     try:
         bot, _created = await _admin_service(request).create_bot(
             identity.principal,
@@ -1128,8 +1132,48 @@ async def create_bot_form(
             max_notional=Decimal(body.max_notional),
         )
     except BotAdminError as error:
+        if error.status_code in {409, 422}:
+            # Lỗi nghiệp vụ người dùng sửa được: hiện lại form kèm giá trị đã nhập.
+            return _create_bot_form_response(
+                request, identity, values, [error.message], status_code=error.status_code
+            )
         raise HTTPException(status_code=error.status_code, detail=error.message) from error
     return Response(status_code=303, headers={"Location": f"/admin/bots/{bot['id']}"})
+
+
+CREATE_BOT_FIELD_ERRORS = {
+    "name": (
+        "Tên bot bắt đầu bằng chữ hoặc số, chỉ gồm chữ không dấu, số, khoảng trắng, "
+        "dấu chấm, gạch dưới, gạch ngang (tối đa 120 ký tự)."
+    ),
+    "max_notional": "Giới hạn giá trị danh nghĩa phải lớn hơn 0 và là số thập phân hợp lệ.",
+}
+
+
+def _create_bot_form_response(
+    request: Request,
+    identity: AuthIdentity,
+    values: dict[str, str],
+    errors: list[str],
+    *,
+    status_code: int = 422,
+) -> Response:
+    """Hiện lại form tạo bot với lỗi và giá trị đã nhập (Jinja tự escape); giữ CSRF đã gửi."""
+    return _templates(request).TemplateResponse(
+        request=request,
+        name="admin/bot_create.html",
+        status_code=status_code,
+        context={
+            "identity": identity,
+            "csrf_token": values.get("csrf_token", ""),
+            "form_errors": errors,
+            "form_values": {
+                "name": values.get("name", ""),
+                "max_notional": values.get("max_notional", ""),
+            },
+        },
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 BOT_DETAIL_CHART_TIMEFRAME = "1h"
@@ -1836,9 +1880,11 @@ async def flatten_confirm_form(
         raise AdminHTTPException(
             status, "Xác nhận flatten-all bị từ chối.", reason_code=error.reason_code
         ) from error
-    return Response(
-        status_code=303, headers={"Location": f"/admin/flatten/operations/{result.operation_id}"}
-    )
+    location = f"/admin/flatten/operations/{result.operation_id}"
+    if result.pause_failures:
+        # Chỉ truyền số lượng (không ID bot) để trang operation cảnh báo bot chưa tạm dừng.
+        location += f"?pause_failed={len(result.pause_failures)}"
+    return Response(status_code=303, headers={"Location": location})
 
 
 @router.get("/flatten/operations/{operation_id}")
@@ -1846,6 +1892,7 @@ async def flatten_operation_page(
     operation_id: UUID,
     request: Request,
     identity: Annotated[AuthIdentity, Depends(current_identity)],
+    pause_failed: Annotated[int, Query(ge=0, le=1000)] = 0,
 ) -> Response:
     if Role.OWNER not in identity.principal.roles:
         raise HTTPException(status_code=403, detail="Chỉ owner được xem operation flatten.")
@@ -1864,7 +1911,7 @@ async def flatten_operation_page(
     return templates.TemplateResponse(
         request=request,
         name="admin/flatten_operation.html",
-        context={"identity": identity, "operation": operation},
+        context={"identity": identity, "operation": operation, "pause_failed": pause_failed},
         headers={"Cache-Control": "no-store"},
     )
 
@@ -2076,6 +2123,63 @@ async def reports(
     )
 
 
+# Cửa sổ mặc định khi client không gửi thời điểm đóng: khớp trang chi tiết bot (30 ngày).
+RETRAINING_LABEL_DEFAULT_WINDOW = timedelta(days=30)
+
+
+async def _ledger_trade_for_label(
+    request: Request,
+    principal: Principal,
+    bot_id: UUID,
+    trade_id: UUID,
+    closed_at_hint: object,
+) -> dict[str, Any]:
+    """Tìm giao dịch đã đóng trong báo cáo ledger của bot; 404 nếu không có trong ledger."""
+    end = datetime.now(UTC)
+    start = end - RETRAINING_LABEL_DEFAULT_WINDOW
+    if isinstance(closed_at_hint, str) and closed_at_hint:
+        try:
+            closed_at = datetime.fromisoformat(closed_at_hint)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail="closed_at không hợp lệ.") from error
+        if closed_at.tzinfo is None:
+            raise HTTPException(status_code=422, detail="closed_at phải có múi giờ.")
+        # Báo cáo lọc theo giờ đóng trong [start, end): cửa sổ hẹp quanh gợi ý của client.
+        start, end = closed_at - timedelta(seconds=1), closed_at + timedelta(seconds=1)
+    try:
+        report = await _reporting_service(request).get_bot_report(
+            BotReportQuery(
+                workspace_id=principal.workspace_id,
+                bot_id=bot_id,
+                start=start,
+                end=end,
+                scope=ReportScope.BOT,
+            ),
+            principal,
+        )
+    except BotReportError as error:
+        raise HTTPException(status_code=error.status_code, detail=error.message) from error
+    trades = report.as_dict().get("trades", [])
+    trade = next(
+        (row for row in trades if isinstance(row, dict) and row.get("trade_id") == str(trade_id)),
+        None,
+    )
+    if trade is None:
+        raise HTTPException(
+            status_code=404, detail="Không tìm thấy giao dịch đã đóng trong ledger."
+        )
+    return trade
+
+
+def _holding_duration_seconds(trade: dict[str, Any]) -> int | None:
+    try:
+        opened = datetime.fromisoformat(str(trade["opened_at"]))
+        closed = datetime.fromisoformat(str(trade["closed_at"]))
+    except KeyError, ValueError:
+        return None
+    return max(0, int((closed - opened).total_seconds()))
+
+
 @router.post("/api/trades/{trade_id}/ingest-negative-sample")
 async def ingest_trade_negative_sample(
     request: Request,
@@ -2086,8 +2190,9 @@ async def ingest_trade_negative_sample(
 ) -> dict[str, Any]:
     """Gắn nhãn một ca giao dịch sai lệch/thua lỗ để rà soát cho huấn luyện lại.
 
-    Thao tác đổi trạng thái nên bắt buộc CSRF và vai trò được phép rà soát. Bản ghi hiện
-    chỉ nằm trong bộ nhớ tiến trình; chưa nối vào dataset WP06 và mất khi khởi động lại.
+    Thao tác đổi trạng thái nên bắt buộc CSRF và vai trò được phép rà soát. Dữ liệu ca lấy từ
+    ledger PAPER theo `trade_id` (không tin dữ liệu client). Bản ghi hiện chỉ nằm trong bộ nhớ
+    tiến trình; chưa nối vào dataset WP06 và mất khi khởi động lại.
     """
     response.headers["Cache-Control"] = "no-store"
     if not identity.principal.roles & RETRAINING_LABEL_ROLES:
@@ -2101,15 +2206,22 @@ async def ingest_trade_negative_sample(
     if isinstance(parsed_body, dict):
         body = parsed_body
     try:
-        UUID(str(body.get("bot_id")))
+        bot_id = UUID(str(body.get("bot_id")))
     except ValueError as error:
         raise HTTPException(status_code=422, detail="Thiếu mã bot hợp lệ của giao dịch.") from error
     override_reason = reason or body.get("reason")
-    # Chỉ chuyển các trường client thật sự gửi; không điền hướng lệnh, PnL hay lý do đóng mặc định.
-    trade_payload: dict[str, Any] = {"trade_id": str(trade_id), "bot_id": str(body["bot_id"])}
+    # Dữ liệu ca (hướng lệnh, PnL, chi phí, fill, lý do) đọc từ ledger PAPER, không lấy từ client:
+    # client chỉ gửi mã bot, lý do và gợi ý thời điểm đóng để chọn cửa sổ báo cáo.
+    ledger_trade = await _ledger_trade_for_label(
+        request, identity.principal, bot_id, trade_id, body.get("closed_at")
+    )
+    trade_payload: dict[str, Any] = {"trade_id": str(trade_id), "bot_id": str(bot_id)}
     for key in RETRAINING_LABEL_TRADE_FIELDS:
-        if body.get(key) is not None:
-            trade_payload[key] = body[key]
+        if ledger_trade.get(key) is not None:
+            trade_payload[key] = ledger_trade[key]
+    holding = _holding_duration_seconds(ledger_trade)
+    if holding is not None:
+        trade_payload["holding_duration_seconds"] = holding
     try:
         sample = service.ingest_trade_for_ai_retraining(
             trade_payload,
@@ -2343,6 +2455,39 @@ async def operations_health(
     return health_snapshot.to_dict()
 
 
+# Cột CSV khớp khóa thật của dòng trade (`domain/portfolio/reporting.py::_trade_row`). Không có
+# đòn bẩy hay MFE/MAE vì ledger chưa ghi các giá trị này — không xuất cột rỗng gây hiểu nhầm.
+REPORT_CSV_FIELDS: tuple[str, ...] = (
+    "trade_id",
+    "bot_id",
+    "symbol",
+    "side",
+    "quote_asset",
+    "opened_at",
+    "closed_at",
+    "quantity",
+    "entry_price",
+    "exit_price",
+    "gross_pnl",
+    "fee_total",
+    "funding_total",
+    "slippage_total",
+    "total_cost",
+    "net_pnl",
+    "entry_reason",
+    "exit_reason",
+)
+
+
+def _report_csv_row(trade: dict[str, Any]) -> dict[str, Any]:
+    """Một dòng CSV từ dòng trade của báo cáo; giá vào/ra là bình quân gia quyền fill ledger."""
+    entry_quantity, entry_price = _fill_summary(trade.get("fills"), "ENTRY")
+    _exit_quantity, exit_price = _fill_summary(trade.get("fills"), "EXIT")
+    row = {key: trade.get(key) for key in REPORT_CSV_FIELDS}
+    row.update(quantity=entry_quantity, entry_price=entry_price, exit_price=exit_price)
+    return {key: "" if value is None else value for key, value in row.items()}
+
+
 @router.get("/reports/export.csv")
 async def export_reports_csv(
     request: Request,
@@ -2352,7 +2497,7 @@ async def export_reports_csv(
     scope: str = "bot",
     bot_id: str | None = None,
 ) -> Response:
-    """Xuất danh sách giao dịch và chỉ số MFE/MAE ra file CSV an toàn (WB-07D)."""
+    """Xuất giao dịch PAPER đã đóng ra CSV an toàn (WB-07D), chỉ dùng cột có trong ledger."""
     parsed_bot_id: UUID | None = None
     if bot_id and bot_id.strip():
         try:
@@ -2385,27 +2530,14 @@ async def export_reports_csv(
         ) from error
 
     trades = report.get("trades", []) if isinstance(report, dict) else []
-    fieldnames = [
-        "id",
-        "symbol",
-        "side",
-        "leverage",
-        "entry_price",
-        "exit_price",
-        "net_pnl",
-        "mfe_pct",
-        "mae_pct",
-        "entry_reason",
-        "exit_reason",
-        "closed_at",
-    ]
     buffer = io.StringIO()
-    writer = csv.DictWriter(buffer, fieldnames=fieldnames)
+    writer = csv.DictWriter(buffer, fieldnames=REPORT_CSV_FIELDS)
     writer.writeheader()
     for trade in trades:
         if not isinstance(trade, dict):
             continue
-        writer.writerow({key: _sanitize_csv_cell(trade.get(key, "")) for key in fieldnames})
+        row = _report_csv_row(trade)
+        writer.writerow({key: _sanitize_csv_cell(row.get(key, "")) for key in REPORT_CSV_FIELDS})
 
     filename = f"crypidian-report-{report_scope.value}.csv"
     return Response(

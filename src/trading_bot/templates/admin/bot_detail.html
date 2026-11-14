@@ -325,7 +325,7 @@
               </dl>
               <div class="post-mortem__action">
                 {% if trade.is_deviant and can_label_retraining %}
-                <button type="button" class="btn btn-sm btn-outline btn-ingest-ai" data-trade-id="{{ trade.trade_id }}" data-symbol="{{ trade.symbol }}" data-side="{{ trade.side }}" data-reason="{{ trade.deviant_reason or '' }}">{{ ico("flag") }}<span data-label>Gắn nhãn ca để rà soát huấn luyện</span></button>
+                <button type="button" class="btn btn-sm btn-outline btn-ingest-ai" data-trade-id="{{ trade.trade_id }}" data-closed-at="{{ trade.closed_at }}" data-reason="{{ trade.deviant_reason or '' }}">{{ ico("flag") }}<span data-label>Gắn nhãn ca để rà soát huấn luyện</span></button>
                 {% elif trade.is_deviant %}
                 <span class="value-muted">Có sai lệch; vai trò hiện tại không được gắn nhãn huấn luyện.</span>
                 {% elif trade.quality == "UNVERIFIED" %}

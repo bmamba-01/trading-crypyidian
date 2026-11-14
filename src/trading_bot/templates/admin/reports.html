@@ -342,12 +342,11 @@
         <div class="ai-retraining-action">
           {% set can_label = identity is defined and identity and (identity.principal.roles | select("in", ["owner", "strategy_admin", "analyst_reviewer"]) | list) %}
           {% if can_label %}
-          <button type="button" class="btn-ai-retrain" id="btn-ingest-ai" data-csrf-token="{{ csrf_token | default('', true) }}" data-trade-id="{{ selected_trade.trade_id }}" data-bot-id="{{ selected_trade.bot_id }}" data-symbol="{{ selected_trade.symbol }}" data-side="{{ selected_trade.side }}" data-reason="{{ pm.deviation_reason or '' }}">
+          <button type="button" class="btn-ai-retrain" id="btn-ingest-ai" data-csrf-token="{{ csrf_token | default('', true) }}" data-trade-id="{{ selected_trade.trade_id }}" data-bot-id="{{ selected_trade.bot_id }}" data-closed-at="{{ selected_trade.closed_at }}" data-reason="{{ pm.deviation_reason or '' }}">
             {{ ico("ai") }} Đưa Ca Này Vào Dữ Liệu Phạt AI
           </button>
           <span class="ai-ingest-feedback" id="ai-ingest-feedback" role="status" hidden>{{ ico("check") }} Đã ghi nhận để rà soát (lưu tạm trong phiên chạy)</span>
           {#- Trường của lệnh gửi kèm để máy chủ phân tích đúng ca đang xem (không điền mặc định). -#}
-          <script id="ingest-trade-payload" type="application/json">{% set ingest_payload = {"holding_duration_seconds": xa.get("holding_duration_seconds")} %}{% for key in ["quote_asset", "opened_at", "closed_at", "gross_pnl", "fee_total", "funding_total", "slippage_total", "net_pnl", "exit_reason"] %}{% set _ = ingest_payload.update({key: selected_trade.get(key)}) %}{% endfor %}{{ ingest_payload | tojson }}</script>
           {% else %}
           <p class="ai-retraining-info__note" role="note">Vai trò hiện tại không được gắn nhãn ca (cần chủ sở hữu, quản trị chiến lược hoặc người rà soát phân tích).</p>
           {% endif %}

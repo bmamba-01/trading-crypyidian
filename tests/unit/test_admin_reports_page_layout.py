@@ -188,7 +188,7 @@ def test_legacy_totals_do_not_render_fabricated_zero_win_rate() -> None:
     assert kpis.count("Chưa có dữ liệu") >= 3
 
 
-def test_post_mortem_keeps_full_price_precision_and_sends_real_trade_fields() -> None:
+def test_post_mortem_keeps_full_price_precision_and_sends_only_trade_reference() -> None:
     html = _get(
         _client(_identity("analyst_reviewer"), _bot_service(FULL_TOTALS)),
         chart_trade_id=TRADE_ID,
@@ -197,13 +197,12 @@ def test_post_mortem_keeps_full_price_precision_and_sends_real_trade_fields() ->
     # Giá của mã giá nhỏ không được làm tròn 2 chữ số.
     assert "0,000012345 × 0,123456" in html
     assert 'id="btn-ingest-ai"' in html
-    payload_match = re.search(
-        r'<script id="ingest-trade-payload" type="application/json">(.*?)</script>', html
-    )
-    assert payload_match is not None
-    payload = json.loads(payload_match.group(1))
-    assert payload["net_pnl"] == "-59.99"
-    assert payload["exit_reason"] == "STOP_LOSS"
+    # Trang không còn nhúng số liệu ca cho client gửi lại: máy chủ đọc ca từ ledger.
+    assert 'id="ingest-trade-payload"' not in html
+    button = re.search(r'<button[^>]*id="btn-ingest-ai"[^>]*>', html)
+    assert button is not None
+    assert f'data-closed-at="{TRADE["closed_at"]}"' in button.group(0)
+    assert "data-side=" not in button.group(0)
     # Khung hiện tại được chọn sẵn trong bộ đổi khung; có liên kết đóng biểu đồ.
     assert '<option value="15m" selected>15m</option>' in html
     assert "Đóng biểu đồ" in html

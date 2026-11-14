@@ -62,26 +62,14 @@
     }
   });
 
-  // Gắn nhãn ca hậu kiểm: gửi kèm số liệu thật của lệnh đang xem (không điền mặc định).
+  // Gắn nhãn ca hậu kiểm: số liệu ca do máy chủ đọc từ ledger PAPER, không lấy từ trang.
   const ingest = document.getElementById("btn-ingest-ai");
   const feedback = document.getElementById("ai-ingest-feedback");
-  const readPayload = () => {
-    const source = document.getElementById("ingest-trade-payload");
-    if (!source) return {};
-    try {
-      const parsed = JSON.parse(source.textContent || "{}");
-      return parsed && typeof parsed === "object" ? parsed : {};
-    } catch {
-      return {};
-    }
-  };
   if (ingest) {
     ingest.addEventListener("click", async () => {
       const data = ingest.dataset;
-      const body = { bot_id: data.botId, symbol: data.symbol, side: data.side, reason: data.reason || "" };
-      for (const [key, value] of Object.entries(readPayload())) {
-        if (value !== null && value !== undefined && value !== "") body[key] = value;
-      }
+      // Máy chủ đọc số liệu ca từ ledger; chỉ gửi mã bot, gợi ý giờ đóng để chọn cửa sổ và lý do.
+      const body = { bot_id: data.botId, closed_at: data.closedAt || undefined, reason: data.reason || "" };
       ingest.disabled = true;
       ingest.setAttribute("aria-busy", "true");
       try {

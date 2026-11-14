@@ -16,6 +16,7 @@ from trading_bot.adapters.database.repositories.flatten_all import (
     FlattenAllRepository,
     FlattenOperationReceipt,
 )
+from trading_bot.application.bot_runtime_control import BotRuntimeControlError
 from trading_bot.application.outbox import UnitOfWork
 from trading_bot.auth.policy import Principal, Role
 from trading_bot.auth.service import RECENT_MFA_LIFETIME
@@ -53,6 +54,9 @@ class FlattenConfirmResult:
     operation_id: UUID
     status: str
     created: bool
+    # Bot chưa tạm dừng được sau khi operation đã commit: (bot_id, reason code an toàn).
+    # Gửi lại cùng idempotency key sẽ thử pause lại (pause idempotent theo trạng thái đích).
+    pause_failures: tuple[tuple[UUID, str], ...] = ()
 
 
 class FlattenAllService:
@@ -237,12 +241,22 @@ class PrincipalFlattenAll:
                     },
                 )
 
+        # Operation đã commit trước khi pause (pause dùng unit of work theo từng bot). Lỗi pause
+        # một bot không được che operation đã ghi hay bỏ qua các bot sau: ghi nhận rồi báo lại.
+        failures: list[tuple[UUID, str]] = []
         operations = self._service._operations_factory
         if operations is not None:
             principal_operations = operations(principal)
             for bot_id in bot_ids:
-                await principal_operations.pause_bot(bot_id, f"Flatten-all {receipt.operation_id}")
-        return FlattenConfirmResult(receipt.operation_id, receipt.status, receipt.created)
+                try:
+                    await principal_operations.pause_bot(
+                        bot_id, f"Flatten-all {receipt.operation_id}"
+                    )
+                except BotRuntimeControlError as error:
+                    failures.append((bot_id, error.reason_code))
+        return FlattenConfirmResult(
+            receipt.operation_id, receipt.status, receipt.created, tuple(failures)
+        )
 
     async def get_operation(self, operation_id: UUID) -> dict[str, Any]:
         async with self._uow() as uow:

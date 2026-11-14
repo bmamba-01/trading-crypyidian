@@ -572,7 +572,9 @@ class FlattenPrincipalStub:
 
     async def confirm(self, **values: object) -> object:
         self.confirm_calls.append(values)
-        return SimpleNamespace(operation_id=UUID("9a000000-0000-0000-0000-000000000001"))
+        return SimpleNamespace(
+            operation_id=UUID("9a000000-0000-0000-0000-000000000001"), pause_failures=()
+        )
 
     async def get_operation(self, operation_id: UUID) -> dict[str, object]:
         return {"id": str(operation_id), "status": "QUEUED", "items": []}
@@ -699,6 +701,35 @@ def test_create_bot_form_verifies_csrf_then_redirects_to_scoped_detail() -> None
     assert response.headers["Location"] == f"/admin/bots/{BOT_ID}"
     assert admin.created[0][1:] == ("paper-alpha", "1000.25")
     assert auth.verified_tokens == ["csrf-token-test-123"]
+
+
+def test_create_bot_form_rerenders_with_values_and_error_on_invalid_input() -> None:
+    client = _client()
+    admin = CreateBotStub()
+    client.app.state.bot_admin_service = admin
+    client.app.state.auth_service = AuthServiceStub()
+
+    response = client.post(
+        "/admin/bots/new",
+        data={
+            "csrf_token": "csrf-token-test-123",
+            "name": "paper-<b>beta</b>",
+            "max_notional": "-5",
+        },
+        follow_redirects=False,
+    )
+
+    # Hiện lại form (không phải JSON lỗi) để người dùng sửa, giữ giá trị đã nhập đã escape.
+    assert response.status_code == 422
+    assert response.headers["Cache-Control"] == "no-store"
+    assert response.headers["content-type"].startswith("text/html")
+    assert admin.created == []
+    html = response.text
+    assert 'role="alert"' in html
+    assert "Giới hạn giá trị danh nghĩa phải lớn hơn 0" in html
+    assert 'value="paper-&lt;b&gt;beta&lt;/b&gt;"' in html
+    assert 'value="-5"' in html
+    assert 'value="csrf-token-test-123"' in html
 
 
 def test_pause_bot_form_rejects_missing_csrf_before_service_call() -> None:

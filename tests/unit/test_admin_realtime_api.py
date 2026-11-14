@@ -2,6 +2,7 @@
 
 from datetime import UTC, datetime
 from decimal import Decimal
+from types import SimpleNamespace
 from typing import Any
 from uuid import UUID
 
@@ -311,6 +312,91 @@ def test_bot_detail_realtime_api_delta_fingerprint() -> None:
     assert "metrics" not in data2
 
 
+class _LedgerTradeReporting:
+    """Báo cáo bot chỉ có một giao dịch đã đóng trong ledger PAPER."""
+
+    def __init__(self, trade: dict[str, Any]) -> None:
+        self.trade = trade
+        self.queries: list[Any] = []
+
+    async def get_bot_report(self, query: Any, principal: Principal) -> Any:
+        self.queries.append(query)
+        trade = self.trade
+        return SimpleNamespace(as_dict=lambda: {"trades": [trade]})
+
+
+def _ledger_trade(trade_id: Any) -> dict[str, Any]:
+    return {
+        "trade_id": str(trade_id),
+        "bot_id": str(BOT1_ID),
+        "symbol": "BTCUSDT",
+        "side": "SHORT",
+        "quote_asset": "USDT",
+        "opened_at": "2026-11-14T08:00:00+00:00",
+        "closed_at": "2026-11-14T08:10:00+00:00",
+        "gross_pnl": "-40",
+        "fee_total": "2",
+        "funding_total": "0",
+        "slippage_total": "5",
+        "net_pnl": "-47",
+        "exit_reason": "STOP_LOSS",
+        "entry_reason": None,
+        "fills": [],
+        "lineage": {},
+    }
+
+
+def test_retraining_label_uses_ledger_trade_not_client_values() -> None:
+    """Hướng lệnh, PnL và thời gian giữ lệnh lấy từ ledger; số client gửi bị bỏ qua."""
+    from uuid import uuid4
+
+    from trading_bot.auth.router import require_csrf
+
+    client = _create_authenticated_client()
+    client.app.dependency_overrides[require_csrf] = client.app.dependency_overrides[
+        current_identity
+    ]
+    trade_id = uuid4()
+    reporting = _LedgerTradeReporting(_ledger_trade(trade_id))
+    client.app.state.bot_reporting_service = reporting
+    resp = client.post(
+        f"/admin/api/trades/{trade_id}/ingest-negative-sample",
+        json={
+            "bot_id": str(BOT1_ID),
+            "side": "LONG",
+            "net_pnl": "999",
+            "closed_at": "2026-11-14T08:10:00+00:00",
+            "reason": "Trượt giá cao",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    sample = resp.json()["sample"]
+    assert sample["trade_id"] == str(trade_id)
+    assert "999" not in resp.text
+    assert "LONG" not in resp.text
+    # Cửa sổ báo cáo hẹp quanh gợi ý thời điểm đóng, đúng bot của yêu cầu.
+    query = reporting.queries[0]
+    assert query.bot_id == BOT1_ID
+    assert query.start < datetime(2026, 11, 14, 8, 10, tzinfo=UTC) < query.end
+
+
+def test_retraining_label_rejects_trade_missing_from_ledger() -> None:
+    from uuid import uuid4
+
+    from trading_bot.auth.router import require_csrf
+
+    client = _create_authenticated_client()
+    client.app.dependency_overrides[require_csrf] = client.app.dependency_overrides[
+        current_identity
+    ]
+    client.app.state.bot_reporting_service = _LedgerTradeReporting(_ledger_trade(uuid4()))
+    resp = client.post(
+        f"/admin/api/trades/{uuid4()}/ingest-negative-sample",
+        json={"bot_id": str(BOT1_ID), "side": "LONG", "net_pnl": "-10"},
+    )
+    assert resp.status_code == 404
+
+
 def test_queue_ai_retraining_alias_endpoint() -> None:
     """Endpoint alias POST /admin/api/trades/{trade_id}/queue-ai-retraining hoạt động chuẩn xác."""
     from uuid import uuid4
@@ -323,6 +409,7 @@ def test_queue_ai_retraining_alias_endpoint() -> None:
         current_identity
     ]
     trade_id = uuid4()
+    client.app.state.bot_reporting_service = _LedgerTradeReporting(_ledger_trade(trade_id))
     resp = client.post(
         f"/admin/api/trades/{trade_id}/queue-ai-retraining",
         json={

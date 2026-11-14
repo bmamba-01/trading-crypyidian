@@ -179,15 +179,16 @@
         headers: { "Content-Type": "application/json", "X-CSRF-Token": pageConfig.csrf_token },
         credentials: "same-origin",
         body: JSON.stringify({
+          // Số liệu ca do máy chủ đọc từ ledger; giờ đóng chỉ để chọn cửa sổ báo cáo.
           bot_id: botId,
-          symbol: button.dataset.symbol || undefined,
-          side: button.dataset.side || undefined,
+          closed_at: button.dataset.closedAt || undefined,
           reason: button.dataset.reason || undefined,
         }),
       });
       if (!res.ok) {
         const reason =
           res.status === 403 ? "Vai trò hiện tại không được gắn nhãn ca hoặc phiên đã hết hạn."
+          : res.status === 404 ? "Không tìm thấy giao dịch đã đóng trong ledger."
           : res.status === 422 ? "Dữ liệu ca giao dịch không hợp lệ."
           : `Máy chủ trả mã ${res.status}.`;
         throw new Error(reason);

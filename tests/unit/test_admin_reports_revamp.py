@@ -3,7 +3,7 @@
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
 import pytest
@@ -239,19 +239,34 @@ def test_api_ingest_trade_negative_sample(
 
     trade_id = uuid4()
     bot_id = uuid4()
-
-    client = TestClient(app)
-    payload = {
+    # Dữ liệu ca lấy từ ledger PAPER (báo cáo bot), không phải từ thân yêu cầu.
+    ledger_trade = {
+        "trade_id": str(trade_id),
         "bot_id": str(bot_id),
         "symbol": "BTCUSDT",
         "side": "LONG",
+        "quote_asset": "USDT",
+        "opened_at": "2026-11-14T08:00:00+00:00",
+        "closed_at": "2026-11-14T08:10:00+00:00",
         "gross_pnl": "-100.0",
         "fee_total": "2.0",
         "funding_total": "0.5",
         "slippage_total": "25.0",  # Trượt giá nặng
         "net_pnl": "-127.5",
         "exit_reason": "STOP_LOSS",
-        "holding_duration_seconds": 600,
+        "fills": [],
+        "lineage": {},
+    }
+    reporting = MagicMock()
+    reporting.get_bot_report = AsyncMock(
+        return_value=MagicMock(as_dict=MagicMock(return_value={"trades": [ledger_trade]}))
+    )
+    app.state.bot_reporting_service = reporting
+
+    client = TestClient(app)
+    payload = {
+        "bot_id": str(bot_id),
+        "closed_at": "2026-11-14T08:10:00+00:00",
         "reason": "Phát hiện trượt giá cao trên sổ lệnh sàn thực tế",
     }
     response = client.post(

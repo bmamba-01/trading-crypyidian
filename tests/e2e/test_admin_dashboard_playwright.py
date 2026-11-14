@@ -49,6 +49,8 @@ pytestmark = pytest.mark.usefixtures("browser_violations")
 @dataclass
 class ConfirmOperationResult:
     operation_id: UUID
+    # Cùng hợp đồng FlattenConfirmResult: bot chưa tạm dừng được sau commit.
+    pause_failures: tuple[tuple[UUID, str], ...] = ()
 
 
 @dataclass

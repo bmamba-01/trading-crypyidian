@@ -11,6 +11,7 @@ from uuid import UUID
 
 from fastapi.testclient import TestClient
 
+from trading_bot.admin.web_router import REPORT_CSV_FIELDS
 from trading_bot.app import create_app
 from trading_bot.auth.policy import Principal, Role
 from trading_bot.auth.router import current_identity
@@ -66,19 +67,31 @@ class _StubReportingService:
             {
                 "scope": "bot",
                 "trades": [
+                    # Dạng dòng thật của domain/portfolio/reporting.py::_trade_row.
                     {
-                        "id": "trade-001",
+                        "trade_id": "trade-001",
+                        "intent_id": "intent-001",
+                        "bot_id": str(BOT1_ID),
+                        "account_id": "account-001",
                         "symbol": "BTCUSDT",
                         "side": "LONG",
-                        "leverage": 5,
-                        "entry_price": "90000",
-                        "exit_price": "91000",
-                        "net_pnl": "120.50",
-                        "mfe_pct": "1.80",
-                        "mae_pct": "-0.40",
+                        "quote_asset": "USDT",
+                        "opened_at": datetime(2026, 11, 14, 8, 0, tzinfo=UTC).isoformat(),
+                        "closed_at": datetime(2026, 11, 14, 9, 0, tzinfo=UTC).isoformat(),
+                        "gross_pnl": "130.5",
+                        "fee_total": "8",
+                        "funding_total": "0",
+                        "slippage_total": "2",
+                        "total_cost": "10",
+                        "net_pnl": "120.5",
                         "entry_reason": "=CMD|'/C calc'!A0",
                         "exit_reason": "TAKE_PROFIT",
-                        "closed_at": datetime(2026, 11, 14, 9, 0, tzinfo=UTC).isoformat(),
+                        "fills": [
+                            {"role": "ENTRY", "quantity": "0.1", "price": "90000"},
+                            {"role": "ENTRY", "quantity": "0.3", "price": "90400"},
+                            {"role": "EXIT", "quantity": "0.4", "price": "91000"},
+                        ],
+                        "lineage": {"strategy_release_hash": "abc"},
                     }
                 ],
             }
@@ -130,8 +143,8 @@ def test_operations_health_endpoint_returns_redacted_snapshot() -> None:
     assert Decimal(body["loss_windows"]["realized_loss_today"]) >= Decimal("0")
 
 
-def test_reports_csv_export_sanitizes_formula_injection_and_includes_mfe_mae() -> None:
-    """GET /admin/reports/export.csv xuất CSV đầy đủ MFE/MAE và chống formula injection."""
+def test_reports_csv_export_uses_real_trade_keys_and_sanitizes_formula_injection() -> None:
+    """CSV lấy đúng khóa dòng trade (không cột bịa như MFE/MAE) và chống formula injection."""
     client = _build_client()
     resp = client.get(
         "/admin/reports/export.csv",
@@ -148,7 +161,17 @@ def test_reports_csv_export_sanitizes_formula_injection_and_includes_mfe_mae() -
     rows = list(csv.DictReader(io.StringIO(resp.text)))
     assert len(rows) == 1
     assert rows[0]["symbol"] == "BTCUSDT"
-    assert rows[0]["mfe_pct"] == "1.80"
-    assert rows[0]["mae_pct"] == "-0.40"
+    row = rows[0]
+    assert list(row) == list(REPORT_CSV_FIELDS)
+    for fabricated in ("mfe_pct", "mae_pct", "leverage"):
+        assert fabricated not in row
+    assert row["trade_id"] == "trade-001"
+    assert row["quote_asset"] == "USDT"
+    assert row["net_pnl"] == "120.5"
+    assert row["total_cost"] == "10"
+    # Giá vào/ra là bình quân gia quyền theo khối lượng các fill ENTRY/EXIT trong ledger.
+    assert row["entry_price"] == "90300"
+    assert row["exit_price"] == "91000"
+    assert row["quantity"] == "0.4"
     # Công thức nguy hiểm bắt đầu bằng '=' phải được prefix bằng dấu nháy đơn
     assert rows[0]["entry_reason"].startswith("'=CMD")
