@@ -116,7 +116,13 @@ def run_backfill_compose_probe(*, identity_only: bool) -> dict[str, Any]:
             )
             downgrade_output = downgrade.stdout + downgrade.stderr
             assert downgrade.returncode != 0
-            assert "WP07C_REPLAY_JOB_DOWNGRADE_REQUIRES_EMPTY_TABLE" in downgrade_output
+            # Policy verified nay cần license evidence (append-only), nên guard WP06 mới hơn
+            # chặn downgrade trước khi tới guard replay job của WP07C. Cả hai đều là từ chối
+            # hạ schema khi còn dữ liệu; guard WP07C không còn được chạm tới trong luồng này.
+            assert (
+                "WP06_LICENSE_EVIDENCE_DOWNGRADE_BLOCKED" in downgrade_output
+                or "WP07C_REPLAY_JOB_DOWNGRADE_REQUIRES_EMPTY_TABLE" in downgrade_output
+            )
             compose("run", "--rm", "--no-deps", "migrator", "alembic", "check")
         return result
     finally:

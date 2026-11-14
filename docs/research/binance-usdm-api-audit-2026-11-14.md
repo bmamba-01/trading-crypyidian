@@ -38,6 +38,10 @@ Trang reference mới bị cắt sau mục RPI Order Book nên weight của nhó
 | `topLongShortPositionRatio`, `topLongShortAccountRatio`, `globalLongShortAccountRatio`, `takerlongshortRatio`, `basis` | Thiếu | Crowding (H10), flow (H12); chỉ lưu 30 ngày nên cần thu thập liên tục |
 | `symbolAdlRisk`, `insuranceBalance`, `constituents`, `tradingSchedule`, `indexInfo`, `assetIndex` | Thiếu | Rủi ro và lịch phiên TradFi perp |
 
+### Cập nhật 2026-11-14 (vòng 2)
+
+Adapter đã có thêm `get_premium_index`, `get_price_tickers` (v2), `get_book_tickers`, `get_24h_tickers`, `get_funding_info`, `get_long_short_ratio` (ba loại), `get_taker_buy_sell_volume` và `get_kline_flows` (số trade, taker buy volume của nến). Các hàng tương ứng trong bảng trên không còn "Thiếu" ở tầng wrapper; dữ liệu này **chưa** được lưu vào PostgreSQL hay đưa vào feature. Vẫn thiếu: `depth`, `rpiDepth`, `trades`, `aggTrades`, `historicalTrades`, các kline mark/index/premium, `basis`, `symbolAdlRisk`, `tradingSchedule`.
+
 ## Độ phủ WebSocket market stream
 
 Chưa có client WebSocket nào cho market data, và `pyproject.toml` chưa có thư viện WebSocket. Thiếu toàn bộ: `@kline_*`, `@markPrice`, `@aggTrade`, `@bookTicker`, `@depth*`, `@forceOrder`, `!contractInfo`, `!ticker@arr`, `tradingSession`.

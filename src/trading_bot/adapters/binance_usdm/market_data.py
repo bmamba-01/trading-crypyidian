@@ -19,10 +19,18 @@ import httpx2
 from trading_bot.domain.market.ingestion import InstrumentObservation
 from trading_bot.domain.market.models import Instrument, OHLCVBar
 from trading_bot.ports.market_data import (
+    BookTicker,
     ExchangeInstrument,
+    FundingInfo,
     FundingRateObservation,
+    KlineFlow,
+    LongShortRatioObservation,
     MarketDataPage,
     OpenInterestObservation,
+    PremiumIndexObservation,
+    PriceTicker,
+    TakerFlowObservation,
+    Ticker24h,
 )
 
 BINANCE_USDM_BASE_URL = "https://fapi.binance.com"
@@ -135,7 +143,9 @@ class PublicRequestLimiter:
                     calls = self._calls[category]
                     while calls and now - calls[0] >= 300:
                         calls.popleft()
-                    count_limit = {"funding": 500, "oi_history": 1000}.get(category)
+                    count_limit = {"funding": 500, "oi_history": 1000, "futures_data": 1000}.get(
+                        category
+                    )
                     if count_limit is not None and len(calls) >= count_limit:
                         wait_for = max(wait_for, max(0.01, 300 - (now - calls[0])))
                 if wait_for <= 0:
@@ -405,6 +415,175 @@ class BinanceUsdMMarketDataAdapter:
             incomplete_reason=" ".join(incomplete_reasons) or None,
         )
 
+    async def get_premium_index(
+        self, symbol: str | None = None
+    ) -> MarketDataPage[PremiumIndexObservation]:
+        """Mark/index price và funding hiện hành; bỏ symbol để lấy toàn thị trường."""
+        response, values = await self._snapshot(
+            "/fapi/v1/premiumIndex", symbol, single_weight=1, all_weight=10
+        )
+        return _page(
+            response,
+            tuple(_parse_premium_index(value, response.received_at) for value in values),
+        )
+
+    async def get_price_tickers(self, symbol: str | None = None) -> MarketDataPage[PriceTicker]:
+        """Giá khớp gần nhất; dùng v2 vì v1 đã bị Binance đánh dấu deprecated."""
+        response, values = await self._snapshot(
+            "/fapi/v2/ticker/price", symbol, single_weight=1, all_weight=2
+        )
+        return _page(
+            response,
+            tuple(_parse_price_ticker(value, response.received_at) for value in values),
+        )
+
+    async def get_book_tickers(self, symbol: str | None = None) -> MarketDataPage[BookTicker]:
+        """Best bid/ask; sổ chéo (bid >= ask) bị coi là dữ liệu sai."""
+        response, values = await self._snapshot(
+            "/fapi/v1/ticker/bookTicker", symbol, single_weight=2, all_weight=5
+        )
+        return _page(
+            response,
+            tuple(_parse_book_ticker(value, response.received_at) for value in values),
+        )
+
+    async def get_24h_tickers(self, symbol: str | None = None) -> MarketDataPage[Ticker24h]:
+        """Thống kê 24 giờ trượt; lấy toàn thị trường tốn weight 40."""
+        response, values = await self._snapshot(
+            "/fapi/v1/ticker/24hr", symbol, single_weight=1, all_weight=40
+        )
+        return _page(
+            response,
+            tuple(_parse_ticker_24h(value, response.received_at) for value in values),
+        )
+
+    async def get_funding_info(self) -> MarketDataPage[FundingInfo]:
+        """Chu kỳ/biên funding đã điều chỉnh; chung quota 500 lần/5 phút với fundingRate."""
+        response = await self._request_json("/fapi/v1/fundingInfo", weight=0, category="funding")
+        values = _require_list(response.payload, "fundingInfo")
+        return _page(
+            response,
+            tuple(_parse_funding_info(value, response.received_at) for value in values),
+        )
+
+    async def get_long_short_ratio(
+        self,
+        *,
+        symbol: str,
+        kind: str,
+        period: str,
+        start_time: datetime | None = None,
+        end_time: datetime | None = None,
+        limit: int = 30,
+    ) -> MarketDataPage[LongShortRatioObservation]:
+        """Tỷ lệ long/short; sàn chỉ giữ 30 ngày nên phải thu thập định kỳ."""
+        endpoint = _LONG_SHORT_ENDPOINTS.get(kind)
+        if endpoint is None:
+            raise ValueError("kind long/short ratio không được hỗ trợ.")
+        response, values = await self._futures_data(
+            endpoint, symbol=symbol, period=period, start=start_time, end=end_time, limit=limit
+        )
+        records = tuple(
+            _parse_long_short_ratio(
+                value, symbol=symbol, kind=kind, period=period, received_at=response.received_at
+            )
+            for value in values
+        )
+        return _page(response, tuple(sorted(records, key=lambda item: item.observed_at)))
+
+    async def get_taker_buy_sell_volume(
+        self,
+        *,
+        symbol: str,
+        period: str,
+        start_time: datetime | None = None,
+        end_time: datetime | None = None,
+        limit: int = 30,
+    ) -> MarketDataPage[TakerFlowObservation]:
+        """Khối lượng taker mua/bán theo period; sàn chỉ giữ 30 ngày."""
+        response, values = await self._futures_data(
+            "/futures/data/takerlongshortRatio",
+            symbol=symbol,
+            period=period,
+            start=start_time,
+            end=end_time,
+            limit=limit,
+        )
+        records = tuple(
+            _parse_taker_flow(value, symbol=symbol, period=period, received_at=response.received_at)
+            for value in values
+        )
+        return _page(response, tuple(sorted(records, key=lambda item: item.observed_at)))
+
+    async def get_kline_flows(
+        self,
+        *,
+        symbol: str,
+        interval: str,
+        start_time: datetime | None = None,
+        end_time: datetime | None = None,
+        limit: int = 500,
+    ) -> MarketDataPage[KlineFlow]:
+        """Số trade và taker buy volume của nến; cùng endpoint và weight với `get_klines`."""
+        _require_symbol(symbol)
+        if interval not in _KLINE_INTERVALS:
+            raise ValueError("interval không thuộc danh sách Kline USDⓈ-M được hỗ trợ.")
+        _validate_limit(limit, maximum=1500)
+        _validate_range(start_time, end_time)
+        params: dict[str, str | int] = {"symbol": symbol, "interval": interval, "limit": limit}
+        _add_time_params(params, start_time, end_time)
+        response = await self._request_json(
+            "/fapi/v1/klines", params=params, weight=_kline_weight(limit)
+        )
+        values = _require_list(response.payload, "klines")
+        records = tuple(
+            _parse_kline_flow(
+                value, symbol=symbol, interval=interval, received_at=response.received_at
+            )
+            for value in values
+        )
+        complete = len(values) < limit
+        reason = "Phản hồi đạt limit; cần lấy trang kế." if not complete else None
+        return _page(response, records, is_complete=complete, incomplete_reason=reason)
+
+    async def _snapshot(
+        self, endpoint: str, symbol: str | None, *, single_weight: int, all_weight: int
+    ) -> tuple[_RawResponse, list[Any]]:
+        """Gọi endpoint trả object khi có symbol và array khi lấy toàn thị trường."""
+        if symbol is None:
+            response = await self._request_json(endpoint, weight=all_weight)
+            return response, _require_list(response.payload, endpoint)
+        _require_symbol(symbol)
+        response = await self._request_json(
+            endpoint, params={"symbol": symbol}, weight=single_weight
+        )
+        item = _require_mapping(response.payload, endpoint)
+        if item.get("symbol") != symbol:
+            raise MarketDataContractError("Response symbol không khớp request.")
+        return response, [item]
+
+    async def _futures_data(
+        self,
+        endpoint: str,
+        *,
+        symbol: str,
+        period: str,
+        start: datetime | None,
+        end: datetime | None,
+        limit: int,
+    ) -> tuple[_RawResponse, list[Any]]:
+        _require_symbol(symbol)
+        if period not in _OI_PERIODS:
+            raise ValueError("period không thuộc danh sách thống kê futures được hỗ trợ.")
+        _validate_limit(limit, maximum=500)
+        _validate_range(start, end)
+        params: dict[str, str | int] = {"symbol": symbol, "period": period, "limit": limit}
+        _add_time_params(params, start, end)
+        response = await self._request_json(
+            endpoint, params=params, weight=0, category="futures_data"
+        )
+        return response, _require_list(response.payload, endpoint)
+
     async def _request_json(
         self,
         endpoint: str,
@@ -581,6 +760,171 @@ def _parse_open_interest(
         received_at=received_at,
         available_at=received_at,
     )
+
+
+_LONG_SHORT_ENDPOINTS = {
+    "global_account": "/futures/data/globalLongShortAccountRatio",
+    "top_trader_account": "/futures/data/topLongShortAccountRatio",
+    "top_trader_position": "/futures/data/topLongShortPositionRatio",
+}
+
+
+def _event_time(value: Any, name: str, received_at: datetime) -> datetime:
+    observed_at = _from_milliseconds(value, name)
+    if observed_at > received_at:
+        raise MarketDataContractError(f"{name} nằm sau thời điểm nhận dữ liệu.")
+    return observed_at
+
+
+def _optional_decimal(value: Any, name: str) -> Decimal | None:
+    return None if value in (None, "") else _decimal(value, name)
+
+
+def _parse_premium_index(value: Any, received_at: datetime) -> PremiumIndexObservation:
+    item = _require_mapping(value, "premiumIndex")
+    next_funding = item.get("nextFundingTime")
+    # Hợp đồng đang settle/chưa có lịch funding trả nextFundingTime = 0.
+    next_funding_time = (
+        None if next_funding in (None, 0) else _from_milliseconds(next_funding, "nextFundingTime")
+    )
+    return PremiumIndexObservation(
+        symbol=_require_string(item.get("symbol"), "premiumIndex.symbol"),
+        mark_price=_decimal(item.get("markPrice"), "markPrice"),
+        index_price=_decimal(item.get("indexPrice"), "indexPrice"),
+        last_funding_rate=_optional_decimal(item.get("lastFundingRate"), "lastFundingRate"),
+        next_funding_time=next_funding_time,
+        observed_at=_event_time(item.get("time"), "premiumIndex.time", received_at),
+        received_at=received_at,
+        available_at=received_at,
+    )
+
+
+def _parse_price_ticker(value: Any, received_at: datetime) -> PriceTicker:
+    item = _require_mapping(value, "ticker price")
+    return PriceTicker(
+        symbol=_require_string(item.get("symbol"), "ticker.symbol"),
+        price=_decimal(item.get("price"), "price"),
+        observed_at=_event_time(item.get("time"), "ticker.time", received_at),
+        received_at=received_at,
+        available_at=received_at,
+    )
+
+
+def _parse_book_ticker(value: Any, received_at: datetime) -> BookTicker:
+    item = _require_mapping(value, "bookTicker")
+    ticker = BookTicker(
+        symbol=_require_string(item.get("symbol"), "bookTicker.symbol"),
+        bid_price=_decimal(item.get("bidPrice"), "bidPrice"),
+        bid_quantity=_decimal(item.get("bidQty"), "bidQty"),
+        ask_price=_decimal(item.get("askPrice"), "askPrice"),
+        ask_quantity=_decimal(item.get("askQty"), "askQty"),
+        observed_at=_event_time(item.get("time"), "bookTicker.time", received_at),
+        received_at=received_at,
+        available_at=received_at,
+    )
+    # Symbol ngừng giao dịch có thể trả giá 0 cả hai phía; chỉ từ chối sổ chéo thật.
+    if ticker.bid_price > 0 and ticker.ask_price > 0 and ticker.bid_price >= ticker.ask_price:
+        raise MarketDataContractError("bookTicker có bid không thấp hơn ask.")
+    return ticker
+
+
+def _parse_ticker_24h(value: Any, received_at: datetime) -> Ticker24h:
+    item = _require_mapping(value, "ticker 24hr")
+    trade_count = item.get("count")
+    if type(trade_count) is not int or trade_count < 0:
+        raise MarketDataContractError("ticker 24hr count phải là số nguyên không âm.")
+    return Ticker24h(
+        symbol=_require_string(item.get("symbol"), "ticker.symbol"),
+        last_price=_decimal(item.get("lastPrice"), "lastPrice"),
+        price_change_percent=_decimal(item.get("priceChangePercent"), "priceChangePercent"),
+        high_price=_decimal(item.get("highPrice"), "highPrice"),
+        low_price=_decimal(item.get("lowPrice"), "lowPrice"),
+        volume=_decimal(item.get("volume"), "volume"),
+        quote_volume=_decimal(item.get("quoteVolume"), "quoteVolume"),
+        trade_count=trade_count,
+        open_time=_from_milliseconds(item.get("openTime"), "openTime"),
+        close_time=_from_milliseconds(item.get("closeTime"), "closeTime"),
+        received_at=received_at,
+        available_at=received_at,
+    )
+
+
+def _parse_funding_info(value: Any, received_at: datetime) -> FundingInfo:
+    item = _require_mapping(value, "fundingInfo")
+    hours = item.get("fundingIntervalHours")
+    if type(hours) is not int or not 1 <= hours <= 24:
+        raise MarketDataContractError("fundingIntervalHours phải là số nguyên 1..24.")
+    return FundingInfo(
+        symbol=_require_string(item.get("symbol"), "fundingInfo.symbol"),
+        funding_interval_hours=hours,
+        rate_cap=_decimal(item.get("adjustedFundingRateCap"), "adjustedFundingRateCap"),
+        rate_floor=_decimal(item.get("adjustedFundingRateFloor"), "adjustedFundingRateFloor"),
+        received_at=received_at,
+        available_at=received_at,
+    )
+
+
+def _parse_long_short_ratio(
+    value: Any, *, symbol: str, kind: str, period: str, received_at: datetime
+) -> LongShortRatioObservation:
+    item = _require_mapping(value, "long/short ratio")
+    if item.get("symbol") != symbol:
+        raise MarketDataContractError("Long/short ratio symbol không khớp request.")
+    return LongShortRatioObservation(
+        symbol=symbol,
+        kind=kind,
+        period=period,
+        observed_at=_event_time(item.get("timestamp"), "ratio.timestamp", received_at),
+        long_share=_decimal(item.get("longAccount"), "longAccount"),
+        short_share=_decimal(item.get("shortAccount"), "shortAccount"),
+        ratio=_decimal(item.get("longShortRatio"), "longShortRatio"),
+        received_at=received_at,
+        available_at=received_at,
+    )
+
+
+def _parse_taker_flow(
+    value: Any, *, symbol: str, period: str, received_at: datetime
+) -> TakerFlowObservation:
+    item = _require_mapping(value, "taker buy/sell volume")
+    return TakerFlowObservation(
+        symbol=symbol,
+        period=period,
+        observed_at=_event_time(item.get("timestamp"), "taker.timestamp", received_at),
+        buy_volume=_decimal(item.get("buyVol"), "buyVol"),
+        sell_volume=_decimal(item.get("sellVol"), "sellVol"),
+        ratio=_decimal(item.get("buySellRatio"), "buySellRatio"),
+        received_at=received_at,
+        available_at=received_at,
+    )
+
+
+def _parse_kline_flow(
+    value: Any, *, symbol: str, interval: str, received_at: datetime
+) -> KlineFlow:
+    if not isinstance(value, list) or len(value) != 12:
+        raise MarketDataContractError("Kline phải là tuple có đúng 12 trường.")
+    trade_count = value[8]
+    if type(trade_count) is not int or trade_count < 0:
+        raise MarketDataContractError("Kline trade count phải là số nguyên không âm.")
+    close_time = _from_milliseconds(value[6], "close time")
+    flow = KlineFlow(
+        symbol=symbol,
+        timeframe=interval,
+        open_time=_from_milliseconds(value[0], "open time"),
+        close_time=close_time,
+        volume=_decimal(value[5], "volume"),
+        quote_volume=_decimal(value[7], "quote asset volume"),
+        trade_count=trade_count,
+        taker_buy_volume=_decimal(value[9], "taker buy base volume"),
+        taker_buy_quote_volume=_decimal(value[10], "taker buy quote volume"),
+        is_closed=close_time < received_at,
+        received_at=received_at,
+        available_at=received_at,
+    )
+    if not 0 <= flow.taker_buy_volume <= flow.volume:
+        raise MarketDataContractError("Taker buy volume phải nằm trong tổng volume của nến.")
+    return flow
 
 
 def _page(

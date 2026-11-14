@@ -3537,3 +3537,26 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Việc còn mở/rủi ro:** tạo policy `BINANCE_USDM_REST` `PAPER_DEMO` thật (cần bằng chứng điều khoản) trước khi bật; license scope chưa được đối chiếu theo symbol/interval ở rights gate; chưa có metric freshness/gap (WP-07E); một kết nối cho mọi stream, chưa tách khi >200; parser kline vẫn bỏ taker buy volume và số trade; còn thiếu funding/OI/mark/aggTrade/liquidation live; xác minh lại E2E backfill WP07 với yêu cầu license evidence.
 - **Commit/nhánh:** chưa commit; thay đổi nằm trên `claude/binance-api-review-937772` (đã fast-forward lên `dev` `c4d77a0`).
 - **Đã đọc lại mục ghi nhớ sau cập nhật:** có; đối chiếu với output test (3976/9 passed), `git status` và kết quả smoke.
+
+### 2026-11-14 — Mở rộng wrapper Binance (giá, mark, ticker, tỷ lệ) và sửa E2E backfill WP07
+
+- **Mục tiêu và phạm vi:** (1) xác nhận và sửa E2E backfill WP07 đang fail; (2) thêm vào adapter REST các endpoint công khai còn thiếu cho đo đạc/signal. Chỉ tầng wrapper: chưa lưu DB, chưa có feature, chưa có stream mark price/aggTrade/liquidation.
+- **Plan/story liên quan:** Plan 03 WP-03A (capability audit), WP-07B/C; `docs/research/binance-usdm-api-audit-2026-11-14.md` (mục "Cập nhật vòng 2").
+- **Nguồn/tài liệu hiện hành đã xác minh (14/11/2026):** [REST market data](https://developers.binance.com/en/docs/catalog/core-trading-derivatives-trading-usd-s-m-futures/api/rest-api/market-data). Weight dùng trong limiter: premiumIndex 1/10 (một/tất cả), ticker/price v2 1/2, bookTicker 2/5, ticker/24hr 1/40, fundingInfo 0 (chung quota 500 lần/5 phút với fundingRate), thống kê `/futures/data/*` 0 với 1000 lần/5 phút. Weight nhóm ticker và tỷ lệ lấy từ legacy docs; cần đọc lại nếu Binance đổi. Fixture mới được ghi từ phản hồi thật ngày 14/11/2026.
+- **Tool/dependency đã kiểm tra:** không đổi dependency.
+- **Files/modules thay đổi:** `ports/market_data.py` (8 kiểu dữ liệu + `MarketSnapshotPort`), `adapters/binance_usdm/market_data.py` (8 phương thức, parser, quota `futures_data`), `tests/unit/test_binance_market_snapshot_adapter.py`, `tests/e2e/test_market_snapshot_offline.py`, 7 fixture `tests/fixtures/binance_usdm/*.json`, `tests/e2e/probes/wp07_backfill_persistence.py`, `tests/e2e/test_wp07_rest_backfill_persistence.py`, glossary, audit doc.
+- **Quyết định và giả định:**
+  - Thêm `MarketSnapshotPort` riêng thay vì mở rộng `MarketDataPort` để không phá các fake hiện có.
+  - `get_price_tickers` dùng `/fapi/v2/ticker/price` (v1 bị đánh dấu deprecated ở legacy docs).
+  - `get_kline_flows` đọc lại `/fapi/v1/klines` để lấy số trade và taker buy volume mà không đổi `OHLCVBar`/schema `market_bar` (checksum bar và replay bundle phụ thuộc cấu trúc hiện tại). Muốn lưu các cột này cần migration riêng.
+  - Symbol trong response có thể là Unicode (ví dụ ký tự Trung) và `nextFundingTime = 0` → parser chấp nhận, trả `None` cho giờ funding.
+  - bookTicker có bid ≥ ask (khi cả hai > 0) bị từ chối là dữ liệu sai.
+- **Vấn đề phát sinh và nguyên nhân gốc:** E2E `test_wp07_rest_backfill_persistence.py` fail 2/2 trên `dev` (`c4d77a0`) vì probe tạo policy `VERIFIED` không có license evidence, trong khi domain đã bắt buộc từ vòng WP06 license evidence. Sau khi thêm evidence, test downgrade fail tiếp vì guard `WP06_LICENSE_EVIDENCE_DOWNGRADE_BLOCKED` (migration mới hơn) chặn trước guard `WP07C_REPLAY_JOB_DOWNGRADE_REQUIRES_EMPTY_TABLE`.
+- **Cách xử lý/bài học cho lần sau:** probe thêm license scope + `SourceLicenseEvidenceRecord`; assertion downgrade chấp nhận một trong hai guard. **Hệ quả:** guard downgrade riêng của WP07C không còn được E2E này chạm tới. Khi thêm ràng buộc domain mới cần chạy lại mọi probe Compose tạo policy.
+- **Unit test:** `uv run pytest tests/unit tests/e2e/test_market_snapshot_offline.py tests/e2e/test_market_ingestion_offline.py -q` → **3994 passed / 0 skipped** (170.94s). Test snapshot mới có RED (16 failed) trước GREEN.
+- **E2E test:** `uv run pytest tests/e2e/test_wp07_rest_backfill_persistence.py -q` → **2 passed** (80.01s), trước khi sửa là 2 failed. E2E offline snapshot nằm trong lệnh unit ở trên. Chưa chạy lại toàn bộ thư mục `tests/e2e`.
+- **Kiểm chứng thủ công:** gọi Binance thật qua adapter (không key): 946 symbol (806 TRADING: 565 PERPETUAL, 237 TRADIFI_PERPETUAL, 4 quarterly), 806 price/24h/book ticker, 949 premium index, 822 funding info (466 symbol chu kỳ 4 giờ, 354 chu kỳ 8 giờ, 2 chu kỳ 1 giờ), ba loại long/short ratio, taker volume, kline flow và OI của BTCUSDT đều parse được.
+- **Regression/security/data checks:** `ruff format --check`, `ruff check` đạt; `mypy` vẫn chỉ còn lỗi có sẵn ở `observability/health.py:72`. Fixture chỉ chứa dữ liệu thị trường công khai; không có key hay chữ ký.
+- **Việc còn mở/rủi ro:** lưu funding/OI/tỷ lệ/taker flow vào DB theo lịch (sàn chỉ giữ 30 ngày) và đưa vào feature; migration cho taker buy volume/trade count trên `market_bar`; stream `@markPrice`, `@aggTrade`, `@forceOrder` cần bảng lưu mới; `depth`, `aggTrades`, `basis`, kline mark/index chưa có; khôi phục coverage guard downgrade WP07C.
+- **Commit/nhánh:** chưa commit; nhánh `claude/binance-api-review-937772`.
+- **Đã đọc lại mục ghi nhớ sau cập nhật:** có; đối chiếu với output test và `git status`.

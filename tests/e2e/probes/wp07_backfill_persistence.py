@@ -10,7 +10,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import psycopg
 from sqlalchemy import event, func, select, text
@@ -138,6 +138,7 @@ async def _exercise() -> dict[str, Any]:
         create_database_engine,
         database_url_from_secret,
     )
+    from trading_bot.adapters.database.models import SourceLicenseEvidenceRecord
     from trading_bot.adapters.database.models.backtest_entities import (
         BacktestReportRecord,
         BacktestRunRecord,
@@ -189,6 +190,11 @@ async def _exercise() -> dict[str, Any]:
     )
     from trading_bot.application.outbox import UnitOfWork
     from trading_bot.domain.market.models import OHLCVBar
+    from trading_bot.domain.research.license_scope import (
+        SourceLicenseScope,
+        canonical_scope_json,
+        scope_sha256,
+    )
     from trading_bot.domain.research.source_policy import SourcePolicyState, SourceUsePurpose
     from trading_bot.domain.research.source_registry import (
         SourceBudget,
@@ -296,19 +302,48 @@ async def _exercise() -> dict[str, Any]:
         at=NOW - timedelta(days=3),
         reason="Tạo policy quyền fixture cho E2E.",
     )
+    license_scope = SourceLicenseScope(
+        source_id="BINANCE_USDM_REST",
+        provider="BINANCE",
+        product="USDM_KLINES",
+        venue="BINANCE_USDM",
+        contract="FIXTURE",
+        symbols=("BTCUSDT",),
+        intervals=("1m", "1h", "4h"),
+        data_start=NOW - timedelta(days=365),
+        data_end=NOW + timedelta(days=365),
+        allowed_purposes=(SourceUsePurpose.BACKTEST_RESEARCH,),
+        allowed_outputs=("aggregate_report", "derived_features"),
+        derived_use=("aggregate_reporting", "feature_extraction"),
+        attribution="Provider fixture",
+        max_retention_days=None,
+    )
     pending = policy_entry.transition(
         policy_id="BINANCE_USDM_REST:fixture-pending",
         state=SourcePolicyState.RIGHTS_PENDING,
         actor_id="fixture-operator",
         at=NOW - timedelta(days=2),
         reason="Chờ xác minh policy fixture.",
+        evidence_ref="https://example.invalid/test-fixture-terms",
+        provider=license_scope.provider,
+        product=license_scope.product,
+        venue=license_scope.venue,
+        contract=license_scope.contract,
+        license_scope=license_scope,
+        attribution=license_scope.attribution,
     )
+    # Policy verified hiện bắt buộc có license evidence digest và scope đã ghim.
+    license_evidence_id = uuid4()
     verified = pending.transition(
         policy_id="BINANCE_USDM_REST:fixture-verified",
         state=SourcePolicyState.VERIFIED,
         actor_id="fixture-operator",
         at=NOW - timedelta(hours=1),
         reason="Cho phép fixture backtest research.",
+        license_scope=license_scope,
+        license_evidence_id=license_evidence_id,
+        license_digest="a" * 64,
+        license_scope_hash=scope_sha256(license_scope),
         allowed_purposes=frozenset({SourceUsePurpose.BACKTEST_RESEARCH}),
         evidence_ref="https://example.invalid/test-fixture-terms",
         reviewed_at=NOW - timedelta(hours=1),
@@ -320,6 +355,27 @@ async def _exercise() -> dict[str, Any]:
     )
     for revision in policy_history.revisions:
         async with UnitOfWork(sessions, workspace_id=WORKSPACE_ID) as uow:
+            if revision.state is SourcePolicyState.VERIFIED:
+                uow.session.add(
+                    SourceLicenseEvidenceRecord(
+                        id=license_evidence_id,
+                        workspace_id=WORKSPACE_ID,
+                        source_id="BINANCE_USDM_REST",
+                        policy_id=pending.current.policy.policy_id,
+                        idempotency_key=uuid4(),
+                        evidence_ref="https://example.invalid/test-fixture-terms",
+                        digest="a" * 64,
+                        byte_count=123,
+                        media_type="text/plain",
+                        scope_version=license_scope.scope_version,
+                        license_scope=json.loads(canonical_scope_json(license_scope)),
+                        canonical_scope=canonical_scope_json(license_scope),
+                        scope_hash=scope_sha256(license_scope),
+                        actor_id="fixture-operator",
+                        created_at=NOW - timedelta(days=2),
+                    )
+                )
+                await uow.session.flush()
             await SourceRegistryRepository(uow.session).append_revision(
                 workspace_id=WORKSPACE_ID,
                 revision=revision,
