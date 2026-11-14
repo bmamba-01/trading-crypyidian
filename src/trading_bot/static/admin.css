@@ -3260,3 +3260,357 @@ html:not(.metric-help-js) .metric-term:focus-within > .metric-help__bubble {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* ============================================================================
+   Trang đăng nhập (2026-11-14). Hướng thiết kế lấy từ skill ui-ux-pro-max
+   (`--design-system "fintech trading admin console login secure dark"`): nền tối độ
+   tương phản cao, nhấn xanh lá, chữ không chân. Dùng font Be Vietnam Pro tự host thay cho
+   Inter của gợi ý vì CSP chỉ cho tài nguyên cùng nguồn.
+   ============================================================================ */
+main:has(.login-shell) {
+  max-width: 64rem;
+  margin-inline: auto;
+}
+main:has(.login-shell) > h1 {
+  text-align: center;
+  margin-bottom: 1.25rem;
+}
+.login-shell {
+  --login-accent: #22c55e;
+  --login-accent-hover: #16a34a;
+  --login-on-accent: #0f172a;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
+  overflow: hidden;
+  border: 1px solid var(--border-main);
+  border-radius: 1rem;
+  background: var(--bg-surface);
+  box-shadow: 0 24px 48px -24px rgba(15, 23, 42, 0.35);
+}
+@media (min-width: 900px) {
+  .login-shell { grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr); }
+}
+
+/* Panel thương hiệu luôn tối để giữ nhận diện ở cả hai chế độ sáng/tối. */
+.login-brand {
+  position: relative;
+  padding: 2rem 1.75rem;
+  color: #e2e8f0;
+  background:
+    radial-gradient(120% 80% at 0% 0%, rgba(34, 197, 94, 0.18), transparent 60%),
+    linear-gradient(160deg, #0f172a 0%, #020617 100%);
+}
+.login-brand__eyebrow {
+  margin: 0 0 0.75rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #86efac;
+}
+.login-brand__title {
+  margin: 0 0 0.5rem;
+  font-size: 1.5rem;
+  font-weight: 700;
+  line-height: 1.25;
+  color: #f8fafc;
+}
+.login-brand__lead { margin: 0 0 1.5rem; color: #cbd5e1; line-height: 1.5; }
+.login-brand__points { display: grid; gap: 1rem; margin: 0; padding: 0; list-style: none; }
+.login-brand__points li {
+  display: grid;
+  grid-template-columns: 1.5rem minmax(0, 1fr);
+  gap: 0.75rem;
+  align-items: start;
+  line-height: 1.5;
+  color: #cbd5e1;
+}
+.login-brand__points strong { color: #f8fafc; font-weight: 600; }
+.login-brand__icon {
+  width: 1.5rem;
+  height: 1.5rem;
+  fill: none;
+  stroke: #4ade80;
+  stroke-width: 1.75;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.login-card { padding: 2rem 1.75rem; }
+@media (min-width: 900px) {
+  .login-brand, .login-card { padding: 2.5rem; }
+}
+main .login-card__title { margin: 0 0 0.25rem; font-size: 1.25rem; }
+.login-card__hint { margin: 0 0 1.25rem; color: var(--text-muted); font-size: 0.9rem; line-height: 1.5; }
+
+.login-test-mode {
+  display: grid;
+  grid-template-columns: 1.25rem minmax(0, 1fr);
+  gap: 0.6rem;
+  margin-bottom: 1.25rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--warning);
+  border-radius: 0.6rem;
+  background: var(--warning-bg);
+  color: var(--warning-text);
+}
+.login-test-mode p { margin: 0; line-height: 1.5; }
+.login-test-mode code { font-weight: 700; color: inherit; }
+.login-test-mode__icon {
+  width: 1.25rem;
+  height: 1.25rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.login-form { display: grid; gap: 1.1rem; }
+.login-field { display: grid; gap: 0.4rem; min-width: 0; }
+.login-field label { font-weight: 600; color: var(--text-main); }
+.login-field small { color: var(--text-muted); font-size: 0.85rem; line-height: 1.4; }
+.login-field input,
+.login-password input {
+  width: 100%;
+  min-width: 0;
+  padding: 0.7rem 0.85rem;
+  font-size: 1rem;
+  color: var(--text-main);
+  background: var(--bg-base);
+  border: 1px solid var(--border-main);
+  border-radius: 0.6rem;
+  transition: border-color 150ms ease, box-shadow 150ms ease;
+}
+.login-field input:hover { border-color: var(--text-muted); }
+.login-field input:focus-visible,
+.login-field input:focus {
+  /* Giữ outline thật (không chỉ box-shadow) để chế độ tương phản cao vẫn thấy focus. */
+  outline: 2px solid var(--login-accent);
+  outline-offset: 1px;
+  border-color: var(--login-accent);
+}
+.login-field input:user-invalid { border-color: var(--danger); }
+
+.login-password {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.5rem;
+}
+main button.login-password__toggle {
+  min-width: 4.5rem;
+  padding: 0 0.9rem;
+  font-weight: 600;
+  color: var(--text-main);
+  background: var(--bg-surface-subtle);
+  border: 1px solid var(--border-main);
+  border-radius: 0.6rem;
+  cursor: pointer;
+  transition: background-color 150ms ease;
+}
+main button.login-password__toggle:hover { background: var(--border-subtle); }
+main button.login-password__toggle:focus-visible {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.login-field input.login-otp {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 1.35rem;
+  letter-spacing: 0.4em;
+  text-align: center;
+}
+
+.login-remember {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  min-height: 44px;
+}
+main .login-remember input[type="checkbox"] {
+  /* Ô bấm thật 44×44px (WCAG 2.5.5, kiểm trong E2E); phần nhìn thấy là ô vuông 20px vẽ bằng
+     gradient, dấu tích là SVG tự host để tuân thủ CSP (không dùng data: URI). */
+  appearance: none;
+  -webkit-appearance: none;
+  flex: 0 0 44px;
+  width: 44px;
+  height: 44px;
+  min-width: 44px;
+  min-height: 44px;
+  margin: 0 0 0 -12px;
+  border: 0;
+  border-radius: 0.5rem;
+  cursor: pointer;
+  background:
+    linear-gradient(var(--bg-base), var(--bg-base)) center / 16px 16px no-repeat,
+    linear-gradient(var(--text-muted), var(--text-muted)) center / 20px 20px no-repeat;
+}
+main .login-remember input[type="checkbox"]:checked {
+  background:
+    url("/static/icons/check-dark.svg") center / 14px 14px no-repeat,
+    linear-gradient(var(--login-accent), var(--login-accent)) center / 20px 20px no-repeat;
+}
+main .login-remember input[type="checkbox"]:focus-visible {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: -6px;
+}
+.login-remember label { cursor: pointer; line-height: 1.4; }
+
+main button.login-submit {
+  width: 100%;
+  min-height: 48px;
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--login-on-accent);
+  background: var(--login-accent);
+  border: 0;
+  border-radius: 0.6rem;
+  cursor: pointer;
+  transition: background-color 150ms ease, transform 150ms ease;
+}
+main button.login-submit:hover { background: var(--login-accent-hover); }
+main button.login-submit:active { transform: translateY(1px); }
+main button.login-submit:focus-visible {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 3px;
+}
+main button.login-submit:disabled { cursor: progress; opacity: 0.75; }
+
+.login-card .error-summary { margin-bottom: 1.25rem; }
+
+@media (prefers-reduced-motion: reduce) {
+  .login-field input,
+  main button.login-password__toggle,
+  main button.login-submit { transition: none; }
+  main button.login-submit:active { transform: none; }
+}
+
+/* Trang đăng nhập trên màn hình hẹp: form phải thấy ngay khi mở trang. Form lên trước,
+   phần giới thiệu thu gọn xuống dưới; banner PAPER chỉ giữ huy hiệu; chữ và khoảng cách nhỏ. */
+@media (max-width: 899.98px) {
+  body:has(.login-shell) .system-mode-banner {
+    margin-block: 0.5rem;
+    padding: 0.4rem 0.75rem;
+  }
+  body:has(.login-shell) .system-mode-banner .mode-description { display: none; }
+  main:has(.login-shell) { padding-block: 0.5rem 1.5rem; }
+  main:has(.login-shell) > h1 {
+    font-size: 1.35rem;
+    margin-bottom: 0.6rem;
+  }
+  .login-shell { border-radius: 0.85rem; }
+  .login-card { order: 1; padding: 1.1rem 1rem 1.25rem; }
+  .login-brand { order: 2; padding: 1rem; }
+  main .login-card__title { font-size: 1.05rem; }
+  .login-card__hint { margin-bottom: 0.85rem; font-size: 0.8rem; }
+  .login-test-mode { margin-bottom: 0.85rem; padding: 0.5rem 0.75rem; font-size: 0.85rem; }
+  .login-form { gap: 0.75rem; }
+  .login-field { gap: 0.25rem; }
+  .login-field label { font-size: 0.9rem; }
+  .login-field small { font-size: 0.78rem; }
+  .login-field input,
+  .login-password input { padding: 0.55rem 0.75rem; }
+  .login-field input.login-otp { font-size: 1.15rem; }
+  .login-brand__eyebrow { margin-bottom: 0.35rem; font-size: 0.7rem; }
+  .login-brand__title { margin-bottom: 0.6rem; font-size: 1rem; }
+  .login-brand__lead { display: none; }
+  .login-brand__points { gap: 0.5rem; }
+  .login-brand__points li {
+    grid-template-columns: 1.1rem minmax(0, 1fr);
+    gap: 0.5rem;
+    font-size: 0.8rem;
+  }
+  .login-brand__icon { width: 1.1rem; height: 1.1rem; }
+}
+@media (max-width: 899.98px) {
+  /* Dòng gợi ý phụ chỉ hiện trên màn hình rộng; nội dung chính của nhãn vẫn đủ nghĩa. */
+  .login-card__hint,
+  #workspace-slug-help,
+  #totp-code-help { display: none; }
+  main button.login-submit { min-height: 46px; }
+}
+
+/* ============================================================================
+   Toast thông báo dùng chung (static/toast.js). Góc trên phải trên desktop, trên cùng
+   toàn chiều ngang trên di động; không che khung lỗi role="alert" của form.
+   ============================================================================ */
+.toast-region {
+  position: fixed;
+  z-index: 1080;
+  inset: 0.75rem 0.75rem auto auto;
+  display: grid;
+  gap: 0.5rem;
+  width: min(24rem, calc(100vw - 1.5rem));
+  pointer-events: none;
+}
+@media (max-width: 599.98px) {
+  .toast-region { inset: 0.5rem 0.5rem auto 0.5rem; width: auto; }
+}
+.app-toast {
+  --toast-accent: var(--primary);
+  display: grid;
+  grid-template-columns: 1.25rem minmax(0, 1fr) auto;
+  gap: 0.6rem;
+  align-items: start;
+  padding: 0.75rem 0.75rem 0.75rem 0.85rem;
+  color: var(--text-main);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-main);
+  border-left: 4px solid var(--toast-accent);
+  border-radius: 0.65rem;
+  box-shadow: 0 16px 32px -16px rgba(15, 23, 42, 0.45);
+  pointer-events: auto;
+  animation: app-toast-in 200ms ease-out;
+}
+.app-toast--error { --toast-accent: var(--danger); }
+.app-toast--warning { --toast-accent: var(--warning); }
+.app-toast--success { --toast-accent: var(--success); }
+.app-toast__icon {
+  width: 1.25rem;
+  height: 1.25rem;
+  margin-top: 0.1rem;
+  fill: none;
+  stroke: var(--toast-accent);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.app-toast__body { min-width: 0; overflow-wrap: anywhere; }
+.app-toast__title { margin: 0 0 0.15rem; font-weight: 700; font-size: 0.95rem; line-height: 1.35; }
+.app-toast__message { margin: 0; font-size: 0.875rem; line-height: 1.45; color: var(--text-muted); }
+.app-toast__close {
+  min-height: 44px;
+  margin: -0.6rem -0.35rem -0.6rem 0;
+  padding: 0 0.6rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: transparent;
+  border: 0;
+  border-radius: 0.4rem;
+  cursor: pointer;
+}
+.app-toast__close:hover { color: var(--text-main); background: var(--bg-surface-subtle); }
+.app-toast__close:focus-visible { outline: 3px solid var(--focus-ring); outline-offset: -3px; }
+.app-toast--leaving { animation: app-toast-out 160ms ease-in forwards; }
+@keyframes app-toast-in {
+  from { opacity: 0; transform: translateY(-6px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes app-toast-out {
+  to { opacity: 0; transform: translateY(-4px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .app-toast, .app-toast--leaving { animation: none; }
+}
+.error-summary__hint { margin: 0.35rem 0 0; font-size: 0.9rem; }
+.login-card .error-summary {
+  padding: 0.75rem 1rem;
+  color: var(--danger-text);
+  background: var(--danger-bg);
+  border: 1px solid var(--danger);
+  border-radius: 0.6rem;
+}
+.login-card .error-summary p { margin: 0; font-weight: 600; }
+.login-card .error-summary .error-summary__hint { margin-top: 0.35rem; font-weight: 400; }

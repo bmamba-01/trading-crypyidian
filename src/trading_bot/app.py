@@ -118,7 +118,7 @@ from trading_bot.application.strategy_catalog import strategy_registry
 from trading_bot.application.telegram_binding import TelegramBindingService
 from trading_bot.application.telegram_signal_subscription import TelegramSignalSubscriptionService
 from trading_bot.auth.router import router as auth_router
-from trading_bot.auth.security import LoginRateLimiter
+from trading_bot.auth.security import LoginRateLimiter, TestModeTotpManager
 from trading_bot.auth.service import AuthService
 from trading_bot.common.http_security import SecurityHeadersMiddleware, security_headers
 from trading_bot.config.settings import AppSettings
@@ -231,8 +231,16 @@ def create_app(
                 key_file=app_settings.mfa_encryption_key_file,
                 storage_directory=app_settings.mfa_secret_directory,
             )
+        if app_settings.auth_test_totp_enabled:
+            logger.warning(
+                "AUTH_TEST_TOTP_ENABLED: chấp nhận mã xác thực cố định; chỉ cho kiểm thử local."
+            )
         application.state.auth_service = (
-            AuthService(active_session_factory, active_secret_provider)
+            AuthService(
+                active_session_factory,
+                active_secret_provider,
+                totp=TestModeTotpManager() if app_settings.auth_test_totp_enabled else None,
+            )
             if active_session_factory is not None and active_secret_provider is not None
             else None
         )

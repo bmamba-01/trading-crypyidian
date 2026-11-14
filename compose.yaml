@@ -71,6 +71,9 @@ services:
       TRADING_BOT_APP_ENV: local
       TRADING_BOT_TRADING_MODE: PAPER
       TRADING_BOT_PROCESS_ROLE: admin-web
+      # Cờ kiểm thử local: chấp nhận mã xác thực cố định 123456. Mặc định tắt; cấu hình từ chối
+      # bật khi app_env không phải local/test hoặc mode không phải PAPER.
+      TRADING_BOT_AUTH_TEST_TOTP_ENABLED: ${TRADING_BOT_AUTH_TEST_TOTP_ENABLED:-false}
       TRADING_BOT_DATABASE_USER: crypidian_admin_web
       TRADING_BOT_DATABASE_PASSWORD_FILE: /run/secrets/database_admin_web_password
       TRADING_BOT_DATABASE_HOST: postgres

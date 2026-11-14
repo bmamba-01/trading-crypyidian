@@ -65,6 +65,7 @@ from trading_bot.auth.router import (
     require_csrf,
 )
 from trading_bot.auth.schemas import LoginRequest
+from trading_bot.auth.security import TEST_TOTP_CODE
 from trading_bot.auth.service import (
     SESSION_LIFETIME,
     AuthenticationFailure,
@@ -95,6 +96,13 @@ except Exception:  # pragma: no cover
 
 LOGIN_CSRF_COOKIE = "crypidian_login_csrf"
 LOGIN_CSRF_HOST_COOKIE = "__Host-crypidian_login_csrf"
+# Đủ thời gian để mở ứng dụng xác thực hoặc trình quản lý mật khẩu; hết hạn thì trang đăng
+# nhập được hiển thị lại với token mới thay vì trang lỗi.
+LOGIN_CSRF_MAX_AGE_SECONDS = 900
+LOGIN_FORM_EXPIRED_MESSAGE = (
+    "Biểu mẫu đăng nhập đã hết hạn hoặc được mở ở tab khác. Vui lòng nhập lại mật khẩu và mã "
+    "xác thực rồi gửi lại."
+)
 
 
 def _templates(request: Request) -> Jinja2Templates:
@@ -288,7 +296,7 @@ def _set_login_csrf_cookie(response: Response, request: Request, token: str) -> 
     response.set_cookie(
         _login_csrf_cookie_name(request),
         token,
-        max_age=300,
+        max_age=LOGIN_CSRF_MAX_AGE_SECONDS,
         path="/",
         secure=request.app.state.settings.app_env == "production",
         httponly=True,
@@ -306,14 +314,48 @@ def _clear_login_csrf_cookie(response: Response, request: Request) -> None:
     )
 
 
-def _login_page(request: Request, *, error: str | None = None) -> Response:
+# Tiêu đề và gợi ý cụ thể theo loại lỗi. Nội dung lỗi xác thực cố ý không nói trường nào sai
+# để không lộ workspace/email có tồn tại hay không (chống dò tài khoản).
+LOGIN_ERROR_DETAILS: dict[str, tuple[str, str]] = {
+    "invalid": (
+        "Đăng nhập không thành công",
+        "Kiểm tra mã không gian làm việc, email, mật khẩu và mã xác thực. Mỗi mã 6 chữ số chỉ "
+        "dùng được một lần; nếu vừa dùng, chờ mã mới (tối đa 30 giây).",
+    ),
+    "rate_limited": (
+        "Tạm khóa đăng nhập",
+        "Đã thử sai quá nhiều lần. Chờ hết thời gian giới hạn rồi thử lại.",
+    ),
+    "expired": (
+        "Biểu mẫu đã hết hạn",
+        "Trang đã được làm mới; nhập lại mật khẩu và mã xác thực.",
+    ),
+}
+
+
+def _login_page(
+    request: Request,
+    *,
+    error: str | None = None,
+    status_code: int | None = None,
+    error_kind: str = "invalid",
+) -> Response:
     token = secrets.token_urlsafe(32)
     templates = _templates(request)
     page = templates.TemplateResponse(
         request=request,
         name="admin/login.html",
-        context={"identity": None, "csrf_token": token, "error": error},
-        status_code=401 if error else 200,
+        context={
+            "identity": None,
+            "csrf_token": token,
+            "error": error,
+            "error_title": LOGIN_ERROR_DETAILS.get(error_kind, LOGIN_ERROR_DETAILS["invalid"])[0],
+            "error_hint": LOGIN_ERROR_DETAILS.get(error_kind, LOGIN_ERROR_DETAILS["invalid"])[1],
+            "test_totp_code": (
+                TEST_TOTP_CODE if request.app.state.settings.auth_test_totp_enabled else None
+            ),
+        },
+        status_code=status_code or (401 if error else 200),
     )
     page.headers["Cache-Control"] = "no-store"
     _set_login_csrf_cookie(page, request, token)
@@ -336,7 +378,10 @@ async def submit_login(request: Request) -> Response:
     cookie_token = request.cookies.get(_login_csrf_cookie_name(request), "")
     form_token = values.pop("csrf_token", "")
     if not cookie_token or not form_token or not hmac.compare_digest(cookie_token, form_token):
-        raise HTTPException(status_code=403, detail="Biểu mẫu hết hạn hoặc không hợp lệ.")
+        # Không xác thực gì: chỉ trả lại form với token mới để người dùng gửi lại.
+        return _login_page(
+            request, error=LOGIN_FORM_EXPIRED_MESSAGE, status_code=403, error_kind="expired"
+        )
     try:
         credentials = LoginRequest.model_validate(values)
     except ValidationError:
@@ -357,10 +402,13 @@ async def submit_login(request: Request) -> Response:
         if error.status_code >= 500:
             raise
         if error.status_code == 429:
-            message = "Thử lại sau khi hết thời gian giới hạn."
-        else:
-            message = "Thông tin đăng nhập không hợp lệ."
-        return _login_page(request, error=message)
+            return _login_page(
+                request,
+                error="Thử lại sau khi hết thời gian giới hạn.",
+                status_code=429,
+                error_kind="rate_limited",
+            )
+        return _login_page(request, error="Thông tin đăng nhập không hợp lệ.")
     settings = request.app.state.settings
     response = Response(
         status_code=303,
