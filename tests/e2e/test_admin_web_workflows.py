@@ -4,6 +4,7 @@ import json
 import re
 import time
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from urllib.parse import parse_qs, urlencode, urlparse
 
 import pyotp
@@ -1057,6 +1058,12 @@ def test_admin_dashboard_live_snapshot_selection_polling_and_stale(
         snapshot_b = snapshots["b"].json()
         assert snapshot_a["source"] == "PAPER_LEDGER"
         assert snapshot_a["open_trades"][0]["trade_id"] == harness.state["live_open_trade_id"]
+        # Vốn ban đầu đọc qua quyền SELECT theo cột + RLS của admin-web (migration d2e4f6a8b0c1);
+        # thiếu quyền thì snapshot âm thầm trả None, nên E2E phải thấy giá trị thật.
+        for snapshot in (snapshot_a, snapshot_b):
+            assert snapshot["account"] is not None, snapshot.get("account")
+            assert snapshot["account"]["quote_asset"] == "USDT"
+            assert Decimal(snapshot["account"]["initial_equity"]) > 0
         assert (
             snapshot_b["recent_closed_trades"][0]["trade_id"]
             == harness.state["live_closed_trade_id"]

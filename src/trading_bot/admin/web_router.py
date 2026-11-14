@@ -779,6 +779,23 @@ async def dashboard_bot_snapshot(
         key=lambda trade: (trade["closed_at"], trade["trade_id"]),
         reverse=True,
     )[:10]
+    # Vốn ban đầu là phần bổ sung: lỗi đọc không được làm hỏng cả ảnh chụp.
+    account_seed: dict[str, Any] | None = None
+    seed_reader = getattr(_reporting_service(request), "get_account_seed", None)
+    if callable(seed_reader):
+        try:
+            account_seed = await seed_reader(
+                BotReportQuery(
+                    workspace_id=identity.principal.workspace_id,
+                    bot_id=bot_id,
+                    start=report_start,
+                    end=report_end,
+                    scope=ReportScope.BOT,
+                ),
+                identity.principal,
+            )
+        except BotReportError, SQLAlchemyError:
+            account_seed = None
     return JSONResponse(
         {
             "observed_at": datetime.now(UTC).isoformat(),
@@ -789,6 +806,14 @@ async def dashboard_bot_snapshot(
                 "status": runtime.get("status"),
             },
             "runtime": {key: runtime.get(key) for key in runtime_fields},
+            "account": (
+                {
+                    "quote_asset": account_seed["quote_asset"],
+                    "initial_equity": account_seed["initial_equity"],
+                }
+                if account_seed
+                else None
+            ),
             "window": {"start": report_start.isoformat(), "end": report_end.isoformat()},
             "totals": {
                 asset: {key: value for key, value in totals.items() if key in metric_fields}

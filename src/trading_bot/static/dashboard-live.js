@@ -280,6 +280,27 @@
           pair(list, heading, value, METRIC_ICONS[key]);
         }
       }
+      // Tổng vốn: vốn ban đầu của tài khoản PAPER + lãi/lỗ ròng đã chốt trong khoảng báo cáo.
+      const account = snapshot.account;
+      if (account && account.quote_asset === asset && values.net_pnl !== undefined) {
+        const initial = Number(account.initial_equity);
+        const current = initial + Number(values.net_pnl);
+        if (Number.isFinite(initial) && Number.isFinite(current) && initial > 0) {
+          const change = ((current - initial) / initial) * 100;
+          const stat = node("div", undefined, "stat stat--equity");
+          stat.append(icon("asset"));
+          const body = node("div", undefined, "stat__body");
+          const figure = node("span", undefined, "stat__value");
+          figure.append(money(current.toFixed(8), asset));
+          const sub = node("span", undefined, "stat__label");
+          sub.append(document.createTextNode("Tổng vốn · ban đầu "), money(account.initial_equity, asset), document.createTextNode(" · "));
+          sub.append(node("span", `${change >= 0 ? "+" : ""}${number(change.toFixed(4))}%`,
+            `pnl-value pnl-value--${change > 0 ? "positive" : change < 0 ? "negative" : "flat"}`));
+          body.append(figure, sub);
+          stat.append(body);
+          hero.prepend(stat);
+        }
+      }
       const series = snapshot.recent_closed_trades
         .filter((trade) => trade.quote_asset === asset)
         .slice()
@@ -336,7 +357,7 @@
         cell("Cặp · hướng", instrument);
         cell("Lãi/lỗ ròng", money(trade.net_pnl, trade.quote_asset, true), "num num--strong");
         cell("Lãi/lỗ gộp", money(trade.gross_pnl, trade.quote_asset, true), "num");
-        const costs = node("span", `${number(trade.total_cost)} ${trade.quote_asset}`);
+        const costs = money(trade.total_cost, trade.quote_asset);
         costs.title = `Phí ${number(trade.fee_total)} · Tài trợ ${number(trade.funding_total)} · Trượt giá ${number(trade.slippage_total)}`;
         cell("Tổng chi phí", costs, "num");
         cell("Mã giao dịch", tradeId(trade.trade_id));

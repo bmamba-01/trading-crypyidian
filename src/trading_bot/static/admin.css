@@ -4569,3 +4569,15 @@ main button.icon-btn:hover, dialog button.icon-btn:hover { background: var(--gla
   .stat--spark, .stat--net_pnl { grid-column: 1 / -1; }
   .stat--spark .sparkline { width: 100%; max-width: 14rem; }
 }
+.stat--equity > .ico { color: #60a5fa; }
+.stat--equity .stat__label { display: flex; flex-wrap: wrap; align-items: center; gap: 0.2rem; }
+.stat--equity .stat__label .pnl-value { padding: 0 0.3rem; font-size: inherit; }
+@media (min-width: 1200px) {
+  .stat-strip { grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr)); }
+}
+@media (max-width: 639.98px) { .stat--equity { grid-column: 1 / -1; } }
+/* Sparkline co theo ô; nhãn cắt bằng dấu ba chấm thay vì tràn sang ô bên cạnh. */
+.stat--spark { overflow: hidden; }
+.stat--spark .sparkline { width: 100%; min-width: 4rem; max-width: 7.5rem; flex: 1 1 auto; }
+.stat--spark .stat__body { min-width: 0; flex: 0 1 auto; }
+.stat--spark .stat__label { overflow: hidden; text-overflow: ellipsis; }

@@ -186,6 +186,33 @@ class BotReportingService:
             )
             return plans
 
+    async def get_account_seed(
+        self, query: BotReportQuery, principal: Principal
+    ) -> dict[str, Any] | None:
+        """Vốn ban đầu của tài khoản PAPER, cùng kiểm workspace/grant `REPORT_READ` như báo cáo."""
+        if query.scope is not ReportScope.BOT or query.bot_id is None:
+            raise BotReportError(422, "BOT_ID_REQUIRED", "Vốn ban đầu cần scope=bot rõ ràng.")
+        if query.workspace_id != principal.workspace_id:
+            raise _not_found()
+        async with self._unit_of_work(
+            self._sessions,
+            workspace_id=principal.workspace_id,
+            bot_id=query.bot_id,
+            actor_membership_id=principal.membership_id,
+            snapshot_read_only=True,
+        ) as unit:
+            repository = self._repository(unit.session)
+            try:
+                await self._grants(unit.session).require(
+                    principal, bot_id=query.bot_id, permission=BotPermission.REPORT_READ
+                )
+            except PermissionError as error:
+                raise _not_found() from error
+            seed: dict[str, Any] | None = await repository.load_account_seed(
+                workspace_id=principal.workspace_id, bot_id=query.bot_id
+            )
+            return seed
+
     async def get_trade_chart(
         self,
         query: BotReportQuery,

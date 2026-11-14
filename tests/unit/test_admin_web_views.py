@@ -1063,3 +1063,47 @@ def test_dashboard_snapshot_fails_closed_on_reporting_database_failure() -> None
     assert response.headers["Cache-Control"] == "no-store"
     assert response.headers["content-type"].startswith("application/json")
     assert "secret-marker" not in response.text
+
+
+def _snapshot_with_seed(seed_reader: object) -> dict[str, object]:
+    client = _client()
+    reporting = SnapshotReportingStub()
+    reporting.get_account_seed = seed_reader  # type: ignore[attr-defined]
+    client.app.state.bot_reporting_service = reporting
+
+    async def status(bot_id: UUID) -> dict[str, object]:
+        return {"id": str(bot_id), "name": "Bot PAPER", "status": "ENABLED"}
+
+    client.app.state.bot_operations_service.bot_status = status
+    response = client.get(f"/admin/dashboard/bots/{BOT_ID}/snapshot")
+    assert response.status_code == 200, response.text
+    payload: dict[str, object] = response.json()
+    return payload
+
+
+def test_dashboard_snapshot_includes_only_quote_and_initial_equity_of_the_paper_seed() -> None:
+    async def seed(query: object, principal: Principal) -> dict[str, object]:
+        from trading_bot.application.bot_reporting import BotReportQuery, ReportScope
+
+        assert isinstance(query, BotReportQuery)
+        assert query.bot_id == BOT_ID
+        assert query.scope is ReportScope.BOT
+        assert principal.workspace_id == WORKSPACE
+        return {"quote_asset": "USDT", "initial_equity": "10000", "created_at": "private-time"}
+
+    payload = _snapshot_with_seed(seed)
+
+    assert payload["account"] == {"quote_asset": "USDT", "initial_equity": "10000"}
+
+
+def test_dashboard_snapshot_omits_capital_when_seed_is_missing_or_denied() -> None:
+    from trading_bot.application.bot_reporting import BotReportError
+
+    async def missing(query: object, principal: Principal) -> None:
+        return None
+
+    async def denied(query: object, principal: Principal) -> None:
+        raise BotReportError(404, "BOT_NOT_FOUND", "Không tìm thấy.")
+
+    assert _snapshot_with_seed(missing)["account"] is None
+    assert _snapshot_with_seed(denied)["account"] is None
