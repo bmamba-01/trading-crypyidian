@@ -3626,3 +3626,10 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Compose E2E admin sau khi tích hợp tooltip:** `tests/e2e/test_admin_web_workflows.py` → **7 passed/484.56s/0 skipped**.
 - **Chưa chạy:** Compose E2E WP06/WP03/WP05. Chưa có E2E PAPER thật có lệnh đóng bằng `CHANNEL_EXIT`/`FEATURE_EXIT` vì runtime chưa có bên cấp bằng chứng; mới có test tích hợp qua `RuntimeReplayEvaluator` thật.
 - **Readback:** đã đọc lại mục này, đối chiếu diff và output test; số liệu khớp. Không có secret.
+
+### 2026-11-14 — Sửa hai Compose E2E backtest fail sẵn
+
+- **Yêu cầu của owner:** "Có, sửa" cho hai ca fail ghi ở mục trước.
+- **`test_backtest_admin_ui` — hồi quy sản phẩm do merge:** commit `4fd077b` thêm trường "Mục đích lưu kết quả" (`learning_intent`), cột "Mục đích" và trạng thái quarantine vào `backtest_replays.html` + `admin/backtest_replay_router.py`; merge `725c8f1` vào `dev` làm rơi cả ba (và bốn chỗ kiểm trong `tests/unit/test_admin_backtest_replay_views.py`). Hệ quả ngoài test: không tạo được lượt `TRAINING_BASE` từ admin, và mã run của lượt tạo dữ liệu học hiện trong danh sách thông thường thay vì bị ẩn. Đã khôi phục nguyên phần của `4fd077b`, giữ `strategy_registry()` của catalog. Tầng application (`backtest_replay_jobs.py`) không bị ảnh hưởng.
+- **`test_backtest_persistence` — test lỗi thời:** migration `f5a7c9e1b3d6` chuyển quyền INSERT trên `backtest_run`/`trial`/`report` sang role `crypidian_replay_writer`; `crypidian_trainer_worker` chỉ còn SELECT (đã đối chiếu `information_schema.role_table_grants` trên stack review). Probe của test vẫn chạy trong `trainer-worker`. Sửa ở test: chạy trong service `backtest-worker` với `TRADING_BOT_BACKTEST_REPLAY_DATABASE_USER`/`_PASSWORD_FILE`. Không đổi migration hay quyền.
+- **Kiểm chứng:** `tests/unit/test_admin_backtest_replay_views.py` + CSP guard → **92 passed**; `tests/e2e/test_backtest_admin_ui.py tests/e2e/test_admin_backtest_replays_playwright.py` → **3 passed/7.88s**; `tests/e2e/test_backtest_persistence.py` → **1 passed/31.42s**.

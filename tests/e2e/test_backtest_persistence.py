@@ -171,8 +171,11 @@ def test_backtest_run_trial_report_persist_once_and_are_tenant_isolated() -> Non
             async def main():
                 workspace_id = UUID(os.environ['CRYPIDIAN_E2E_WORKSPACE_ID'])
                 url = database_url_from_secret(
-                    username=os.environ['TRADING_BOT_DATABASE_USER'],
-                    password_file=Path(os.environ['TRADING_BOT_DATABASE_PASSWORD_FILE']),
+                    # WP06 chuyển quyền ghi backtest sang role riêng; trainer-worker chỉ còn đọc.
+                    username=os.environ['TRADING_BOT_BACKTEST_REPLAY_DATABASE_USER'],
+                    password_file=Path(
+                        os.environ['TRADING_BOT_BACKTEST_REPLAY_DATABASE_PASSWORD_FILE']
+                    ),
                     host=os.environ.get('TRADING_BOT_DATABASE_HOST', 'postgres'),
                     database=os.environ.get('TRADING_BOT_DATABASE_NAME', 'crypidian'),
                 )
@@ -327,7 +330,7 @@ def test_backtest_run_trial_report_persist_once_and_are_tenant_isolated() -> Non
             "--no-deps",
             "-e",
             f"CRYPIDIAN_E2E_WORKSPACE_ID={workspace_id}",
-            "trainer-worker",
+            "backtest-worker",
             "python",
             "-c",
             probe_code,

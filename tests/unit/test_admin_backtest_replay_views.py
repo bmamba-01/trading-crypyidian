@@ -108,6 +108,9 @@ def test_backtest_replay_page_renders_vietnamese_form_and_job_progress() -> None
     assert 'action="/admin/backtests/submit"' in response.text
     assert 'name="bundle_hash"' in response.text
     assert 'name="execution_interval"' in response.text
+    assert 'name="learning_intent"' in response.text
+    assert "Kết quả đang quarantine" not in response.text
+    assert "intent được ghim trước replay" in response.text
     assert "BTCUSDT" in response.text
     assert "EMA theo xu hướng" in response.text
 
@@ -125,6 +128,7 @@ def test_backtest_replay_submission_checks_csrf_and_builds_typed_request() -> No
         "fee_rate": "0.001",
         "slippage_rate": "0.0005",
         "seed": "7",
+        "learning_intent": "TRAINING_BASE",
     }
 
     response = client.post("/admin/backtests/submit", data=data, follow_redirects=False)
@@ -146,6 +150,7 @@ def test_backtest_replay_submission_checks_csrf_and_builds_typed_request() -> No
     assert request.fee_rate == Decimal("0.001")
     assert request.slippage_rate == Decimal("0.0005")
     assert request.seed == 7
+    assert request.learning_intent == "TRAINING_BASE"
 
 
 def test_backtest_replay_cancel_checks_csrf_and_routes_to_service() -> None:
@@ -180,6 +185,7 @@ def test_backtest_replay_cancel_checks_csrf_and_routes_to_service() -> None:
         {"bundle_hash": "bad", "strategy_release_id": "h01-v1", "execution_interval": "1h"},
         {"bundle_hash": "a" * 64, "strategy_release_id": "unknown", "execution_interval": "1h"},
         {"bundle_hash": "a" * 64, "strategy_release_id": "h01-v1", "execution_interval": ""},
+        {"learning_intent": "TRAINING_AFTER_REPLAY"},
     ],
 )
 def test_backtest_replay_submission_rejects_invalid_fields_before_service(
@@ -246,3 +252,19 @@ def test_backtest_replay_page_does_not_repeat_terminal_status_as_stage() -> None
 
     assert response.status_code == 200
     assert "Đã hủy · Đã hủy" not in response.text
+
+
+def test_learning_intent_replay_hides_run_ids_and_shows_quarantine_status() -> None:
+    client = _client()
+    job = client.app.state.backtest_replay_job_service.jobs[0]
+    job.learning_intent = "TRAINING_BASE"
+    job.result_run_ids = ("opaque-training-run-id",)
+    job.status = "SUCCEEDED"
+    job.stage = "complete"
+
+    response = client.get("/admin/backtests")
+
+    assert response.status_code == 200
+    assert "Tạo dữ liệu học (BASE) · quarantine" in response.text
+    assert "Kết quả đang quarantine" in response.text
+    assert "opaque-training-run-id" not in response.text
