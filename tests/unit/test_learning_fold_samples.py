@@ -243,6 +243,61 @@ def verified_batches(
     return tuple(batches)
 
 
+def verified_batches_with_no_trade(
+    dataset: DatasetManifest, plan: ManifestFoldPlan, *, sample_id: str
+) -> tuple[FoldOutcomeVerificationBatch, ...]:
+    """Tạo batch xác minh hợp lệ nhưng một sample không có trade đã đóng."""
+    samples_by_id = {sample.sample_id: sample for sample in dataset.samples}
+    updated_batches = []
+    for batch in verified_batches(dataset, plan):
+        selection = next(item for item in plan.folds if item.fold_id == batch.fold_id)
+        role_ids = {
+            **dict.fromkeys(selection.train_sample_ids, "train"),
+            **dict.fromkeys(selection.validation_sample_ids, "validation"),
+            **dict.fromkeys(selection.test_sample_ids, "test"),
+        }
+        expectations = tuple(
+            FoldOutcomeExpectation(
+                sample_id=item_id,
+                role=role,
+                outcome_id=samples_by_id[item_id].outcome_id,
+                outcome_hash=samples_by_id[item_id].outcome_hash,
+                outcome_start=samples_by_id[item_id].outcome_start,
+                outcome_end=samples_by_id[item_id].outcome_end,
+            )
+            for item_id, role in sorted(role_ids.items())
+        )
+        request = FoldOutcomeVerificationRequest(
+            workspace_id=dataset.workspace_id,
+            manifest_hash=dataset.content_hash,
+            split_policy_version=dataset.split_policy_version,
+            fold_plan=plan,
+            fold_plan_hash=plan.content_hash,
+            fold_id=batch.fold_id,
+            expected_outcomes=expectations,
+        )
+        target = next((item for item in batch.outcomes if item.sample_id == sample_id), None)
+        if target is None:
+            updated_batches.append(batch)
+            continue
+        target = replace(target, trade_count=0, trades=(), row_hash="0" * 64)
+        target = replace(target, row_hash=persisted_outcome_row_hash(request, target, ()))
+        outcomes = tuple(
+            sorted(
+                (target if item.sample_id == sample_id else item for item in batch.outcomes),
+                key=lambda item: item.sample_id,
+            )
+        )
+        updated_batches.append(
+            replace(
+                batch,
+                outcomes=outcomes,
+                batch_hash=verification_batch_hash(request, outcomes),
+            )
+        )
+    return tuple(updated_batches)
+
+
 def approval_for(dataset: DatasetManifest, plan: ManifestFoldPlan) -> LearningSplitApproval:
     now = datetime.now(UTC)
     return LearningSplitApproval(
@@ -266,7 +321,6 @@ def test_normalized_fold_dataset_keeps_fold_roles_and_excludes_final_holdout() -
         fold_plan=plan,
         verified_batches=verified_batches(dataset, plan),
     )
-
     assert normalized.manifest_hash == dataset.content_hash
     assert {item.sample_id for item in normalized.samples} == {
         "dev-1",
@@ -293,6 +347,23 @@ def test_normalized_fold_dataset_keeps_fold_roles_and_excludes_final_holdout() -
         )
         == "train"
     )
+
+
+def test_normalizer_does_not_turn_no_trade_outcome_into_training_label() -> None:
+    dataset = manifest()
+    plan = fold_plan(dataset)
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            "Outcome không có đúng một trade đã đóng, không được chuẩn hóa thành sample huấn luyện"
+        ),
+    ):
+        build_normalized_learning_dataset(
+            manifest=dataset,
+            fold_plan=plan,
+            verified_batches=verified_batches_with_no_trade(dataset, plan, sample_id="dev-1"),
+        )
 
 
 def test_trainer_fold_batch_contains_exact_train_and_validation_only() -> None:

@@ -143,7 +143,10 @@ def build_normalized_learning_dataset(
             sample = samples_by_id[sample_id]
             trades = trades_by_sample[sample_id]
             if len(trades) != 1:
-                raise ValueError("Normalizer chỉ nhận đúng một trade đã đóng trên mỗi sample.")
+                raise ValueError(
+                    "Outcome không có đúng một trade đã đóng, không được chuẩn hóa "
+                    "thành sample huấn luyện."
+                )
             trade = trades[0]
             if not trade.has_entry_provenance or trade.entry_features_hash is None:
                 raise ValueError("Sample thiếu provenance feature tại entry.")

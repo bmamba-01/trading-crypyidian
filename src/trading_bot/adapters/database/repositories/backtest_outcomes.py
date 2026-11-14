@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import asdict, dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid4
@@ -15,7 +16,10 @@ from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from trading_bot.adapters.database.models.backtest_entities import BacktestTrialRecord
+from trading_bot.adapters.database.models.backtest_entities import (
+    BacktestRunRecord,
+    BacktestTrialRecord,
+)
 from trading_bot.adapters.database.models.backtest_opportunity_entities import (
     BacktestDecisionOpportunityRecord,
 )
@@ -24,17 +28,28 @@ from trading_bot.adapters.database.models.backtest_outcome_entities import (
     BacktestScenarioRecord,
     BacktestTradeOutcomeRecord,
 )
+from trading_bot.adapters.database.models.market_entities import MarketBar
 from trading_bot.adapters.database.repositories.backtests import (
     BacktestAppendResult,
     BacktestRepository,
     BacktestRepositoryConflict,
 )
 from trading_bot.application.backtest import EvaluationReport, ReplayRejected
+from trading_bot.application.backtest_dataset_manifest import (
+    BacktestDatasetManifest,
+    MarketBarIdentityMetadata,
+    backtest_dataset_identity_metadata_hash,
+)
 from trading_bot.application.backtest_dataset_replay_bundle import BacktestDatasetReplayBundle
 from trading_bot.application.backtest_decision_opportunities import ReplayDecisionOpportunity
 from trading_bot.application.backtest_sensitivity import SensitivityRun
-from trading_bot.application.binance_rest_backfill import BackfillRightsEvidence
+from trading_bot.application.binance_rest_backfill import (
+    BackfillRightsEvidence,
+    market_source_for_rights_provider,
+)
 from trading_bot.domain.learning.evaluation import EvaluationTrade
+from trading_bot.domain.learning.source_use_lineage import SourceUseLineage
+from trading_bot.domain.market.models import MarketBarSourceIdentity
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,6 +96,29 @@ class PersistedBacktestTradeOutcomeRows:
 
     rows: tuple[PersistedBacktestTradeOutcome, ...]
     outcomes_hash: str
+
+
+@dataclass(frozen=True, slots=True)
+class BacktestTrainingBundleLineage:
+    """Lineage authoritative của run bundle cùng mọi child và MarketBar ID."""
+
+    bundle_hash: str
+    source_use_lineage: tuple[SourceUseLineage, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.bundle_hash, str) or len(self.bundle_hash) != 64:
+            raise ValueError("bundle_hash phải là SHA-256.")
+        if not self.source_use_lineage or any(
+            type(item) is not SourceUseLineage for item in self.source_use_lineage
+        ):
+            raise ValueError("Bundle lineage cần SourceUseLineage typed không rỗng.")
+        ordered = tuple(sorted(self.source_use_lineage, key=lambda item: item.child_dataset_hash))
+        if ordered != self.source_use_lineage:
+            raise ValueError("Bundle lineage phải sắp xếp theo child hash.")
+        if any(item.bundle_hash != self.bundle_hash for item in ordered):
+            raise ValueError("Bundle lineage child không khớp bundle_hash.")
+        if len({item.child_dataset_hash for item in ordered}) != len(ordered):
+            raise ValueError("Bundle lineage không được lặp child.")
 
 
 class BacktestOutcomeRepository:
@@ -464,6 +502,209 @@ class BacktestOutcomeRepository:
             outcomes_hash=_sha256(_canonical(canonical_values)),
         )
 
+    async def load_training_bundle_lineage(
+        self,
+        *,
+        workspace_id: UUID,
+        trial_record_id: UUID,
+        outcomes: tuple[PersistedBacktestTradeOutcome, ...],
+    ) -> BacktestTrainingBundleLineage:
+        """Lấy bundle từ run/receipt và xác minh manifest/bar identity từng child."""
+        if type(workspace_id) is not UUID or type(trial_record_id) is not UUID or not outcomes:
+            raise ValueError("Cần workspace, trial và outcomes đã nạp để dựng lineage.")
+        trial = await self._session.scalar(
+            select(BacktestTrialRecord).where(
+                BacktestTrialRecord.workspace_id == workspace_id,
+                BacktestTrialRecord.id == trial_record_id,
+            )
+        )
+        if trial is None or trial.workspace_id != workspace_id or trial.id != trial_record_id:
+            raise BacktestRepositoryConflict("Thiếu trial authoritative trong workspace.")
+        run = await self._session.scalar(
+            select(BacktestRunRecord).where(
+                BacktestRunRecord.workspace_id == workspace_id,
+                BacktestRunRecord.id == trial.run_id,
+            )
+        )
+        if (
+            run is None
+            or run.workspace_id != workspace_id
+            or run.id != trial.run_id
+            or run.manifest_hash != trial.manifest_hash
+            or _sha256(run.canonical_manifest) != run.manifest_hash
+            or _canonical(run.manifest) != run.canonical_manifest
+        ):
+            raise BacktestRepositoryConflict("Run/trial manifest không khớp canonical lineage.")
+        persisted_result = await self._session.execute(
+            select(
+                BacktestTradeOutcomeRecord.id,
+                BacktestTradeOutcomeRecord.workspace_id,
+                BacktestTradeOutcomeRecord.run_id,
+                BacktestTradeOutcomeRecord.trial_record_id,
+                BacktestTradeOutcomeRecord.manifest_hash,
+                BacktestTradeOutcomeRecord.ordinal,
+            )
+            .where(
+                BacktestTradeOutcomeRecord.workspace_id == workspace_id,
+                BacktestTradeOutcomeRecord.trial_record_id == trial_record_id,
+            )
+            .order_by(BacktestTradeOutcomeRecord.ordinal)
+        )
+        persisted_outcomes = persisted_result.mappings().all()
+        persisted_by_id = {item["id"]: item for item in persisted_outcomes}
+        expected_by_id = {item.record_id: item for item in outcomes}
+        if len(persisted_by_id) != len(persisted_outcomes) or set(persisted_by_id) != set(
+            expected_by_id
+        ):
+            raise BacktestRepositoryConflict(
+                "Tập outcome đã nạp không khớp đúng mọi trade row persisted của trial."
+            )
+        for record_id, persisted in persisted_by_id.items():
+            expected = expected_by_id[record_id]
+            if any(
+                persisted[name] != getattr(expected, name)
+                for name in (
+                    "workspace_id",
+                    "run_id",
+                    "trial_record_id",
+                    "manifest_hash",
+                    "ordinal",
+                )
+            ):
+                raise BacktestRepositoryConflict(
+                    "Outcome row persisted lệch run/trial/manifest lineage."
+                )
+        if any(
+            row.workspace_id != workspace_id
+            or row.trial_record_id != trial_record_id
+            or row.run_id != run.id
+            or row.manifest_hash != run.manifest_hash
+            for row in outcomes
+        ):
+            raise BacktestRepositoryConflict("Outcome vượt run/trial/manifest lineage.")
+        bundle_hash = run.manifest.get("dataset_hash")
+        if not isinstance(bundle_hash, str) or re.fullmatch(r"[0-9a-f]{64}", bundle_hash) is None:
+            raise BacktestRepositoryConflict("Run không ghim dataset replay bundle.")
+
+        from trading_bot.adapters.database.repositories.backtest_dataset_replay_bundles import (
+            BacktestDatasetReplayBundleRepository,
+        )
+
+        bundle = await BacktestDatasetReplayBundleRepository(self._session).get_by_hash(
+            workspace_id=workspace_id,
+            bundle_hash=bundle_hash,
+        )
+        if (
+            bundle is None
+            or bundle.workspace_id != workspace_id
+            or bundle.bundle_hash != bundle_hash
+        ):
+            raise BacktestRepositoryConflict("Run thiếu bundle canonical trong workspace.")
+        receipts_result = await self._session.scalars(
+            select(BacktestRunDatasetRightsRecord).where(
+                BacktestRunDatasetRightsRecord.workspace_id == workspace_id,
+                BacktestRunDatasetRightsRecord.run_id == run.id,
+            )
+        )
+        receipts = tuple(receipts_result.all())
+        expected_children = {item.dataset_hash: item for item in bundle.components}
+        if (
+            not expected_children
+            or len(expected_children) != len(bundle.components)
+            or len(receipts) != len(expected_children)
+            or {item.child_dataset_hash for item in receipts} != set(expected_children)
+        ):
+            raise BacktestRepositoryConflict("Tập receipt rights không khớp mọi bundle child.")
+        rights_by_child = {}
+        for receipt in receipts:
+            component = expected_children[receipt.child_dataset_hash]
+            _validate_stored_rights_receipt_integrity(receipt)
+            if (
+                receipt.workspace_id != workspace_id
+                or receipt.run_id != run.id
+                or receipt.bundle_hash != bundle_hash
+                or receipt.child_dataset_hash != component.dataset_hash
+                or receipt.interval != component.interval
+                or receipt.provider != bundle.rights_provider
+                or receipt.purpose != bundle.rights_purpose
+                or receipt.policy_fingerprint != bundle.policy_fingerprint
+            ):
+                raise BacktestRepositoryConflict("Receipt rights lệch bundle/provider/policy.")
+            rights_by_child[receipt.child_dataset_hash] = receipt
+
+        from trading_bot.adapters.database.repositories.backtest_dataset_manifests import (
+            BacktestDatasetManifestRepository,
+        )
+
+        lineage = []
+        for component in bundle.components:
+            dataset = await BacktestDatasetManifestRepository(self._session).get_by_hash(
+                workspace_id=workspace_id,
+                dataset_hash=component.dataset_hash,
+            )
+            if (
+                type(dataset) is not BacktestDatasetManifest
+                or not dataset.is_ready
+                or not dataset.has_pinned_source_identities
+                or dataset.rights_workspace_id != workspace_id
+                or dataset.dataset_hash != component.dataset_hash
+                or dataset.interval != component.interval
+                or dataset.symbol != bundle.symbol
+                or dataset.evaluation_start != bundle.evaluation_start
+                or dataset.range_end != bundle.range_end
+                or dataset.bars_content_hash != component.bars_content_hash
+                or dataset.rights_provider != bundle.rights_provider
+                or dataset.rights_purpose != bundle.rights_purpose
+                or dataset.policy_fingerprint != bundle.policy_fingerprint
+            ):
+                raise BacktestRepositoryConflict(
+                    "Child manifest không khớp bundle hoặc thiếu MarketBar identity v4."
+                )
+            right = rights_by_child[component.dataset_hash]
+            source_bars = await _load_child_market_bar_identity_metadata(
+                self._session,
+                workspace_id=workspace_id,
+                dataset=dataset,
+            )
+            observed_identity_hash = backtest_dataset_identity_metadata_hash(
+                source_bars,
+                workspace_id=workspace_id,
+            )
+            if observed_identity_hash != dataset.bar_identity_hash:
+                raise BacktestRepositoryConflict(
+                    "MarketBar UUID/revision set lệch child bar_identity_hash."
+                )
+            lineage.append(
+                SourceUseLineage(
+                    source_id=bundle.rights_provider,
+                    provider=right.provider,
+                    bundle_hash=bundle_hash,
+                    child_dataset_hash=dataset.dataset_hash,
+                    policy_fingerprint=right.policy_fingerprint,
+                    symbol=dataset.symbol,
+                    interval=dataset.interval,
+                    data_start=dataset.warmup_start,
+                    data_end=dataset.range_end,
+                    bar_identity_hash=dataset.bar_identity_hash or "",
+                    market_bar_ids=tuple(
+                        f"market-bar-record:{item.source_identity.record_id}"
+                        for item in sorted(
+                            source_bars,
+                            key=lambda item: (
+                                item.open_time.astimezone(UTC),
+                                item.source,
+                                item.symbol,
+                                item.timeframe,
+                            ),
+                        )
+                    ),
+                )
+            )
+        return BacktestTrainingBundleLineage(
+            bundle_hash=bundle_hash,
+            source_use_lineage=tuple(sorted(lineage, key=lambda item: item.child_dataset_hash)),
+        )
+
     async def load_authorized_evaluation_fold_rows(
         self,
         *,
@@ -662,6 +903,110 @@ async def _append_unique(
         _validate_existing(existing, canonical_attribute, canonical_payload)
         return existing, True
     return row, False
+
+
+async def _load_child_market_bar_identity_metadata(
+    session: AsyncSession,
+    *,
+    workspace_id: UUID,
+    dataset: BacktestDatasetManifest,
+) -> tuple[MarketBarIdentityMetadata, ...]:
+    """Nạp đúng MarketBar ID đã khả dụng tại prepared_at cho một child manifest."""
+    columns = (
+        MarketBar.id,
+        MarketBar.workspace_id,
+        MarketBar.symbol,
+        MarketBar.timeframe,
+        MarketBar.source,
+        MarketBar.logical_key,
+        MarketBar.revision,
+        MarketBar.supersedes_id,
+        MarketBar.checksum,
+        MarketBar.raw_reference_id,
+        MarketBar.open_time,
+        MarketBar.close_time,
+        MarketBar.available_at,
+        MarketBar.is_closed,
+    )
+    try:
+        market_source = market_source_for_rights_provider(dataset.rights_provider)
+    except ValueError as error:
+        raise BacktestRepositoryConflict(
+            "Child provider không ánh xạ được MarketBar source."
+        ) from error
+    result = await session.execute(
+        select(*columns)
+        .where(
+            MarketBar.workspace_id == workspace_id,
+            MarketBar.symbol == dataset.symbol,
+            MarketBar.timeframe == dataset.interval,
+            MarketBar.source == market_source,
+            MarketBar.open_time >= dataset.warmup_start,
+            MarketBar.open_time < dataset.range_end,
+            MarketBar.available_at <= dataset.prepared_at,
+            MarketBar.is_closed.is_(True),
+        )
+        .order_by(MarketBar.open_time, MarketBar.revision.desc())
+    )
+    mappings = result.mappings().all()
+    latest: dict[str, Any] = {}
+    for row in mappings:
+        if (
+            row["workspace_id"] != workspace_id
+            or row["symbol"] != dataset.symbol
+            or row["timeframe"] != dataset.interval
+            or row["source"] != market_source
+            or not dataset.warmup_start <= row["open_time"] < dataset.range_end
+            or row["available_at"] > dataset.prepared_at
+            or row["is_closed"] is not True
+            or not isinstance(row["logical_key"], str)
+        ):
+            raise BacktestRepositoryConflict("MarketBar metadata vượt scope child.")
+        latest.setdefault(row["logical_key"], row)
+    ordered_rows = tuple(
+        sorted(
+            latest.values(),
+            key=lambda row: (
+                row["open_time"].astimezone(UTC),
+                row["source"],
+                row["symbol"],
+                row["timeframe"],
+            ),
+        )
+    )
+    bars = tuple(
+        MarketBarIdentityMetadata(
+            source_identity=MarketBarSourceIdentity(
+                workspace_id=workspace_id,
+                record_id=row["id"],
+                logical_key=row["logical_key"],
+                revision=row["revision"],
+                supersedes_record_id=row["supersedes_id"],
+                checksum=row["checksum"],
+            ),
+            source=row["source"],
+            symbol=row["symbol"],
+            timeframe=row["timeframe"],
+            open_time=row["open_time"],
+            close_time=row["close_time"],
+            available_at=row["available_at"],
+            is_closed=row["is_closed"],
+            raw_reference=(
+                None if row["raw_reference_id"] is None else str(row["raw_reference_id"])
+            ),
+        )
+        for row in ordered_rows
+    )
+    if dataset.expected_bar_count < 1 or len(bars) != dataset.expected_bar_count:
+        raise BacktestRepositoryConflict("MarketBar set không đủ expected child count.")
+    duration = (dataset.range_end - dataset.warmup_start) / dataset.expected_bar_count
+    expected_times = {
+        dataset.warmup_start + duration * index for index in range(dataset.expected_bar_count)
+    }
+    actual_times = {bar.open_time for bar in bars}
+    if len(actual_times) != len(bars) or actual_times != expected_times:
+        raise BacktestRepositoryConflict("MarketBar open_time không khớp exact child grid.")
+    return bars
 
 
 def _validate_existing(row: Any, attribute: str, payload: str) -> None:

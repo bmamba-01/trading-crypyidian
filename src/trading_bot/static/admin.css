@@ -1599,6 +1599,16 @@ th {
 .source-purpose-options legend { font-size: 1rem; font-weight: 600; }
 .source-purpose-options label { display: flex; align-items: center; gap: .75rem; min-height: 44px; padding-block: .25rem; }
 .source-purpose-options input { width: 44px; height: 44px; flex: 0 0 44px; accent-color: #123b5b; }
+.license-scope-card, .license-evidence-card, .license-evidence-upload { min-width: 0; margin-block: 1rem; padding: 1rem; border: 1px solid #c4cfda; border-radius: .6rem; background: #fff; }
+.license-scope-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: .75rem; min-width: 0; }
+.license-scope-field { display: grid; align-content: start; gap: .3rem; min-width: 0; }
+.license-scope-field input, .license-evidence-upload input[type="file"] { box-sizing: border-box; width: 100%; max-width: 100%; min-height: 44px; }
+.license-evidence-upload button { min-height: 44px; margin-top: .5rem; }
+.source-digest { display: block; max-width: 100%; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.license-evidence-card p, .license-evidence-upload p { overflow-wrap: anywhere; }
+@media (min-width: 720px) {
+  .license-scope-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
 
 /* Backtest replay styles */
 .backtest-form { max-width: 64rem; }
@@ -2395,5 +2405,383 @@ th {
 
   #scorer-deployment-submit {
     width: 100%;
+  }
+}
+
+/* WP06 PAPER: số liệu aggregate đọc rõ trên màn nhỏ và giữ màu trạng thái nhất quán. */
+.paper-performance-page {
+  display: grid;
+  gap: 1.25rem;
+  min-width: 0;
+}
+
+.paper-performance-notice,
+.paper-performance-action,
+.paper-performance-report,
+.paper-performance-empty-state {
+  min-width: 0;
+  padding: 1rem;
+  border: 1px solid var(--border-main);
+  border-radius: 0.8rem;
+  background: var(--bg-surface);
+  color: var(--text-main);
+  overflow-wrap: anywhere;
+}
+
+.paper-performance-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.9rem;
+  border-color: var(--paper-border);
+  background: var(--paper-bg);
+  color: var(--paper-text);
+}
+
+:root[data-theme="dark"] .paper-performance-notice {
+  background: rgba(124, 58, 237, 0.14);
+  color: var(--text-main);
+}
+
+.paper-performance-notice h2,
+.paper-performance-action h2,
+.paper-performance-section-heading h2 {
+  margin: 0;
+  font-size: 1.15rem;
+}
+
+.paper-performance-notice p,
+.paper-performance-action p,
+.paper-performance-section-heading p {
+  margin: 0.45rem 0 0;
+}
+
+.paper-performance-notice-mark {
+  display: grid;
+  flex: 0 0 2.5rem;
+  width: 2.5rem;
+  height: 2.5rem;
+  place-items: center;
+  border-radius: 0.7rem;
+  background: var(--paper-accent);
+  color: white;
+  font-weight: 700;
+}
+
+.paper-performance-lock-note {
+  font-weight: 700;
+}
+
+.paper-performance-action {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1.25rem;
+}
+
+#paper-performance-assess-form {
+  display: grid;
+  grid-template-columns: minmax(12rem, 1fr) auto;
+  align-items: end;
+  gap: 0.65rem;
+  width: min(100%, 35rem);
+}
+
+#paper-performance-assess-form label {
+  grid-column: 1 / -1;
+  margin-bottom: -0.5rem;
+  font-weight: 700;
+}
+
+#paper-performance-bot {
+  min-width: 0;
+  min-height: 2.8rem;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--border-main);
+  border-radius: 0.5rem;
+  background: var(--bg-base);
+  color: var(--text-main);
+  font: inherit;
+}
+
+#paper-performance-assess {
+  min-height: 2.8rem;
+  padding: 0.65rem 0.9rem;
+  font: inherit;
+  font-weight: 700;
+}
+
+.paper-performance-form-status {
+  grid-column: 1 / -1;
+  min-height: 1.5rem;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+
+.paper-performance-section-heading,
+.paper-performance-report-header,
+.paper-performance-cohort-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.8rem;
+}
+
+.paper-performance-section-heading {
+  margin-bottom: 0.8rem;
+}
+
+.paper-performance-count,
+.paper-performance-status,
+.paper-performance-cohort-status {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.9rem;
+  padding: 0.2rem 0.65rem;
+  border-radius: 999px;
+  font-size: 0.875rem;
+  font-weight: 700;
+}
+
+.paper-performance-count {
+  background: var(--bg-surface-subtle);
+  color: var(--text-muted);
+}
+
+.paper-performance-status--healthy,
+.paper-performance-cohort-status--healthy {
+  background: var(--pnl-positive-bg);
+  color: var(--pnl-positive-text);
+}
+
+.paper-performance-status--degraded,
+.paper-performance-cohort-status--degraded {
+  background: var(--pnl-negative-bg);
+  color: var(--pnl-negative-text);
+}
+
+.paper-performance-status--inconclusive,
+.paper-performance-cohort-status--inconclusive {
+  background: var(--warning-bg);
+  color: var(--warning-text);
+}
+
+.paper-performance-report-list {
+  display: grid;
+  gap: 1rem;
+}
+
+.paper-performance-report-header h3 {
+  margin: 0.15rem 0 0;
+  font-size: 1.05rem;
+}
+
+.paper-performance-kicker {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.025em;
+  text-transform: uppercase;
+}
+
+.paper-performance-selection-note {
+  margin: 0.9rem 0;
+  color: var(--text-muted);
+  font-size: 0.925rem;
+}
+
+.paper-performance-cohort-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 26rem), 1fr));
+  gap: 0.85rem;
+}
+
+.paper-performance-cohort {
+  min-width: 0;
+  padding: 0.9rem;
+  border: 1px solid var(--border-subtle);
+  border-radius: 0.65rem;
+  background: var(--bg-surface-subtle);
+}
+
+.paper-performance-cohort-heading h4 {
+  margin: 0.2rem 0 0;
+  font-size: 1rem;
+}
+
+.paper-performance-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.55rem;
+  margin: 0.9rem 0 0.55rem;
+}
+
+.paper-performance-metrics > div {
+  min-width: 0;
+  padding: 0.6rem;
+  border: 1px solid var(--border-subtle);
+  border-radius: 0.5rem;
+  background: var(--bg-surface);
+}
+
+.paper-performance-metrics dt {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+}
+
+.paper-performance-metrics dd {
+  margin: 0.2rem 0 0;
+  font-size: 0.94rem;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.paper-performance-negative {
+  color: var(--pnl-negative-text);
+}
+
+.paper-performance-positive {
+  color: var(--pnl-positive-text);
+}
+
+.paper-performance-coverage {
+  position: relative;
+  height: 0.55rem;
+  margin: 0.9rem 0;
+  overflow: visible;
+  border-radius: 999px;
+  background: var(--border-subtle);
+}
+
+.paper-performance-coverage span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--market-up);
+}
+
+.paper-performance-coverage i {
+  position: absolute;
+  top: -0.2rem;
+  left: 80%;
+  height: 0.95rem;
+  border-left: 2px dashed var(--warning);
+}
+
+.paper-performance-support-title {
+  margin: 0 0 0.35rem;
+  font-size: 0.875rem;
+  font-weight: 700;
+}
+
+.paper-performance-class-support {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.4rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.paper-performance-class-support li {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 0.2rem;
+  padding: 0.55rem;
+  border: 1px solid var(--border-subtle);
+  border-radius: 0.45rem;
+  background: var(--bg-surface);
+  font-size: 0.78rem;
+}
+
+.paper-performance-class-support strong {
+  font-size: 1rem;
+}
+
+.paper-performance-reasons {
+  margin: 0.65rem 0 0;
+  color: var(--warning-text);
+  font-size: 0.83rem;
+}
+
+.paper-performance-lineage {
+  margin-top: 0.8rem;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.paper-performance-lineage summary {
+  padding-top: 0.8rem;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.paper-performance-lineage dl {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr));
+  gap: 0.6rem;
+  margin: 0.8rem 0 0;
+}
+
+.paper-performance-lineage dl > div {
+  min-width: 0;
+}
+
+.paper-performance-lineage dt {
+  color: var(--text-muted);
+  font-size: 0.82rem;
+}
+
+.paper-performance-lineage dd {
+  margin: 0.2rem 0 0;
+  overflow-wrap: anywhere;
+}
+
+.paper-performance-lineage code {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.paper-performance-empty,
+.paper-performance-empty-state p {
+  color: var(--text-muted);
+}
+
+.paper-performance-empty-state h3 {
+  margin-top: 0;
+}
+
+@media (max-width: 40rem) {
+  .paper-performance-notice,
+  .paper-performance-action {
+    padding: 0.85rem;
+  }
+
+  .paper-performance-action {
+    display: grid;
+  }
+
+  #paper-performance-assess-form {
+    grid-template-columns: minmax(0, 1fr);
+    width: 100%;
+  }
+
+  #paper-performance-assess-form label,
+  .paper-performance-form-status {
+    grid-column: auto;
+  }
+
+  #paper-performance-assess {
+    width: 100%;
+  }
+
+  .paper-performance-report,
+  .paper-performance-empty-state {
+    padding: 0.8rem;
+  }
+
+  .paper-performance-metrics {
+    grid-template-columns: minmax(0, 1fr);
   }
 }

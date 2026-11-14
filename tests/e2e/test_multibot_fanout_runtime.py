@@ -35,8 +35,9 @@ def test_runtime_fans_out_persisted_candidates_to_bot_specific_paper_intents() -
             intent = intents[bot_id]
             assert intent[1] == release_name, result
             assert intent[2] == decision[3], result
-            assert intent[3] == decision[2], result
-            assert len(intent[4]) == 64, result
+            assert intent[3] == decision[3], result
+            assert intent[4] == decision[2], result
+            assert len(intent[5]) == 64, result
     finally:
         harness.down()
 

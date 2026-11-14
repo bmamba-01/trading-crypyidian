@@ -1,101 +1,148 @@
-"""Quyền TRAINING phải được cấp riêng cho mọi child bundle đã lưu."""
+"""Adapter Python giữ operation và metadata tối thiểu từ SQL rights verifier."""
 
-from datetime import timedelta
-from types import SimpleNamespace
+from datetime import UTC, datetime, timedelta
+from uuid import UUID
 
 import pytest
-from tests.fixtures.runtime_replay import build_h01_dataset_runtime_replay
-from tests.unit.test_binance_rest_backfill_rights import NOW, entry, observed
 
-from trading_bot.domain.research.source_policy import SourceUsePurpose
+from trading_bot.adapters.database.replay_training_rights import (
+    DatabaseReplayTrainingRightsGate,
+    ReplayTrainingOperation,
+    training_scope_digest,
+)
+
+WORKSPACE_ID = UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+BUNDLE_HASH = "1" * 64
+NOW = datetime(2026, 11, 3, 12, tzinfo=UTC)
 
 
-@pytest.fixture
-async def gate_fixture(monkeypatch):
-    from tests.unit.test_candidate_universe_proof import WORKSPACE
+def _row(child_hash: str, **overrides: object) -> dict[str, object]:
+    values: dict[str, object] = {
+        "workspace_id": WORKSPACE_ID,
+        "bundle_hash": BUNDLE_HASH,
+        "child_dataset_hash": child_hash,
+        "interval": "1h",
+        "symbol": "BTCUSDT",
+        "bars_content_hash": "2" * 64,
+        "product": "FUTURES",
+        "venue": "BINANCE",
+        "contract": "USD_M_PERPETUAL",
+        "data_start": NOW - timedelta(days=2),
+        "data_end": NOW - timedelta(days=1),
+        "policy_id": "BINANCE_USDM_REST:verified",
+        "policy_fingerprint": "3" * 64,
+        "bundle_policy_fingerprint": "4" * 64,
+        "current_policy_fingerprint": "3" * 64,
+        "terms_url": "https://example.invalid/terms",
+        "verified_at": NOW - timedelta(days=3),
+        "checked_at": NOW,
+        "valid_until": NOW + timedelta(minutes=5),
+        "license_evidence_id": UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),
+        "evidence_digest": "5" * 64,
+        "license_scope_hash": "6" * 64,
+        "scope_hash": "7" * 64,
+        "purpose": "training",
+        "provider": "BINANCE_USDM_REST",
+    }
+    values.update(overrides)
+    return values
 
-    from trading_bot.adapters.database.replay_training_rights import (
-        DatabaseReplayTrainingRightsGate,
-    )
-    from trading_bot.adapters.database.repositories.backtest_dataset_manifests import (
-        BacktestDatasetManifestRepository,
-    )
-    from trading_bot.adapters.database.repositories.backtest_dataset_replay_bundles import (
-        BacktestDatasetReplayBundleRepository,
-    )
-    from trading_bot.adapters.database.repositories.source_registry import SourceRegistryRepository
-    from trading_bot.application.backtest_dataset_replay_bundle import (
-        BacktestDatasetReplayBundleReference,
-    )
 
-    bundle, _ = build_h01_dataset_runtime_replay(WORKSPACE)
-    state = SimpleNamespace(
-        bundle=bundle,
-        source=observed(entry(purposes=frozenset({SourceUsePurpose.TRAINING}))),
-        now=NOW,
-        missing_child=False,
-    )
+class _Result:
+    def __init__(self, rows: tuple[dict[str, object], ...]) -> None:
+        self._rows = rows
 
-    async def get_bundle(self, **kwargs):
-        return BacktestDatasetReplayBundleReference.from_bundle(state.bundle)
+    def mappings(self) -> _Result:
+        return self
 
-    async def get_child(self, **kwargs):
-        if state.missing_child:
-            return None
-        return next(
-            item.manifest
-            for item in bundle.components
-            if item.manifest.dataset_hash == kwargs["dataset_hash"]
-        )
+    def all(self) -> tuple[dict[str, object], ...]:
+        return self._rows
 
-    async def get_observed(self, **kwargs):
-        return state.source
 
-    async def clock(self, **kwargs):
-        return state.now
+class _Session:
+    def __init__(self, rows: tuple[dict[str, object], ...]) -> None:
+        self.rows = rows
+        self.statement = ""
+        self.parameters: dict[str, object] = {}
 
-    monkeypatch.setattr(BacktestDatasetReplayBundleRepository, "get_by_hash", get_bundle)
-    monkeypatch.setattr(BacktestDatasetManifestRepository, "get_by_hash", get_child)
-    monkeypatch.setattr(SourceRegistryRepository, "get_observed_entry", get_observed)
-    monkeypatch.setattr(SourceRegistryRepository, "database_clock", clock)
-    return DatabaseReplayTrainingRightsGate(object()), state, WORKSPACE
+    async def execute(self, statement, parameters):
+        self.statement = str(statement)
+        self.parameters = parameters
+        return _Result(self.rows)
 
 
 @pytest.mark.asyncio
-async def test_training_gate_issues_exact_scoped_receipt_for_every_child(gate_fixture):
-    gate, state, workspace = gate_fixture
-    receipts = await gate.authorize(workspace_id=workspace, bundle_hash=state.bundle.dataset_hash)
-    assert len(receipts) == len(state.bundle.components) == 2
-    assert {receipt.child_dataset_hash for receipt in receipts} == {
-        item.manifest.dataset_hash for item in state.bundle.components
+async def test_verifier_returns_exact_child_receipts_without_evidence_payload() -> None:
+    session = _Session((_row("a" * 64), _row("b" * 64)))
+    gate = DatabaseReplayTrainingRightsGate(session)  # type: ignore[arg-type]
+
+    receipts = await gate.authorize(
+        workspace_id=WORKSPACE_ID,
+        bundle_hash=BUNDLE_HASH,
+        operation=ReplayTrainingOperation.TRAINING,
+    )
+
+    assert "wp06_authorize_replay_training_bundle" in session.statement
+    assert session.parameters == {
+        "workspace_id": str(WORKSPACE_ID),
+        "bundle_hash": BUNDLE_HASH,
+        "operation": "training",
     }
-    assert all(receipt.purpose is SourceUsePurpose.TRAINING for receipt in receipts)
-    assert all(receipt.checked_at == NOW for receipt in receipts)
-    assert all(receipt.workspace_id == workspace for receipt in receipts)
+    assert {item.child_dataset_hash for item in receipts} == {"a" * 64, "b" * 64}
+    assert all(item.policy_fingerprint == item.current_policy_fingerprint for item in receipts)
+    assert all(item.bundle_policy_fingerprint == "4" * 64 for item in receipts)
+    assert all(item.evidence_digest == "5" * 64 for item in receipts)
+    assert "evidence_body" not in receipts[0].canonical_json
+    assert len(training_scope_digest(receipts)) == 64
+
+
+@pytest.mark.asyncio
+async def test_verifier_receipt_pins_evaluation_operation_separately() -> None:
+    session = _Session((_row("a" * 64),))
+    receipts = await DatabaseReplayTrainingRightsGate(session).authorize(
+        workspace_id=WORKSPACE_ID,
+        bundle_hash=BUNDLE_HASH,
+        operation=ReplayTrainingOperation.EVALUATION,
+    )
+
+    assert session.parameters["operation"] == "evaluation"
+    assert receipts[0].purpose.value == "training"
+    assert receipts[0].operation is ReplayTrainingOperation.EVALUATION
+    assert receipts[0].scope_payload["operation"] == "evaluation"
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "failure", ["research_only", "missing_policy", "expired", "missing_child", "future_observer"]
+    "changed",
+    [
+        {"workspace_id": UUID("cccccccc-cccc-4ccc-8ccc-cccccccccccc")},
+        {"bundle_hash": "8" * 64},
+        {"provider": "UNKNOWN_PROVIDER"},
+        {"purpose": "backtest_research"},
+        {"evidence_digest": "invalid"},
+        {"policy_fingerprint": "9" * 64},
+        {"data_start": NOW + timedelta(days=1)},
+    ],
 )
-async def test_training_gate_refuses_incomplete_or_unlicensed_scope(gate_fixture, failure):
-    gate, state, workspace = gate_fixture
-    if failure == "research_only":
-        state.source = observed(entry())
-    elif failure == "missing_policy":
-        state.source = None
-    elif failure == "expired":
-        state.now = NOW + timedelta(days=5)
-    elif failure == "missing_child":
-        state.missing_child = True
-    else:
-        source = entry(purposes=frozenset({SourceUsePurpose.TRAINING}))
-        state.source = type(observed(source))(
-            source,
-            {
-                revision.policy.policy_id: NOW + timedelta(seconds=1)
-                for revision in source.revisions
-            },
+async def test_gate_rejects_malformed_or_mismatched_verifier_metadata(changed) -> None:
+    row = _row("a" * 64, **changed)
+    session = _Session((row,))
+
+    with pytest.raises((PermissionError, ValueError)):
+        await DatabaseReplayTrainingRightsGate(session).authorize(
+            workspace_id=WORKSPACE_ID,
+            bundle_hash=BUNDLE_HASH,
+            operation=ReplayTrainingOperation.TRAINING,
         )
-    with pytest.raises(PermissionError):
-        await gate.authorize(workspace_id=workspace, bundle_hash=state.bundle.dataset_hash)
+
+
+@pytest.mark.asyncio
+async def test_gate_rejects_duplicate_child_rows() -> None:
+    session = _Session((_row("a" * 64), _row("a" * 64)))
+
+    with pytest.raises(PermissionError, match="child receipt trùng"):
+        await DatabaseReplayTrainingRightsGate(session).authorize(
+            workspace_id=WORKSPACE_ID,
+            bundle_hash=BUNDLE_HASH,
+            operation=ReplayTrainingOperation.TRAINING,
+        )

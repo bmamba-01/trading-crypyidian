@@ -34,6 +34,7 @@ from trading_bot.auth.cookies import read_session_cookie
 from trading_bot.auth.policy import Permission, authorize
 from trading_bot.auth.router import current_identity, require_csrf
 from trading_bot.auth.service import AuthIdentity
+from trading_bot.domain.research.license_scope import scope_sha256
 from trading_bot.domain.research.source_policy import SourcePolicyState
 from trading_bot.domain.research.source_registry import SourcePolicyTransitionError
 
@@ -290,6 +291,42 @@ PURPOSE_LABELS = {
     "backtest_research": "Nghiên cứu kiểm thử lịch sử",
     "paper_demo": "Mô phỏng giao dịch",
 }
+SCOPE_OUTPUT_LABELS = {
+    "derived_features": "Đặc trưng suy ra",
+    "trained_model": "Mô hình đã huấn luyện",
+    "aggregate_report": "Báo cáo tổng hợp",
+    "paper_inference": "Suy luận PAPER",
+}
+SCOPE_DERIVED_USE_LABELS = {
+    "feature_extraction": "Trích xuất đặc trưng",
+    "model_training": "Huấn luyện mô hình",
+    "paper_inference": "Suy luận PAPER",
+    "aggregate_reporting": "Lập báo cáo tổng hợp",
+}
+
+
+def _split_scope_members(value: object, field: str) -> tuple[str, ...]:
+    if not isinstance(value, str):
+        raise HTTPException(422, f"Trường {field} không hợp lệ.")
+    members = tuple(part.strip() for part in value.split(",") if part.strip())
+    if not members:
+        raise HTTPException(422, f"Cần nhập ít nhất một giá trị cho {field}.")
+    return members
+
+
+def _selected_form_values(
+    payload: dict[str, object], prefix: str, choices: dict[str, str]
+) -> tuple[str, ...]:
+    selected: list[str] = []
+    for value in choices:
+        field = f"{prefix}{value}"
+        if field in payload:
+            if payload.pop(field) != "on":
+                raise HTTPException(422, "Lựa chọn phạm vi quyền không hợp lệ.")
+            selected.append(value)
+    if not selected:
+        raise HTTPException(422, "Cần chọn ít nhất một quyền đầu ra và cách sử dụng.")
+    return tuple(selected)
 
 
 @admin_router.get("")
@@ -311,6 +348,43 @@ async def source_console(
     except (PermissionError, LookupError, ValueError, SourceRegistryConflict) as error:
         raise _no_store_error(_map_error(error)) from error
     detail = SourceDetailResponse.from_snapshot(*snapshot) if snapshot else None
+    pending_evidence = None
+    evidence_options: list[dict[str, str]] = []
+    if detail and detail.current.state is SourcePolicyState.RIGHTS_PENDING:
+        try:
+            pending_evidence = await facade.get_pending_license_evidence(
+                detail.source_id, detail.current.policy_id
+            )
+        except (PermissionError, LookupError, ValueError, SourceRegistryConflict) as error:
+            raise _no_store_error(_map_error(error)) from error
+        if pending_evidence is not None:
+            evidence_options.append(
+                {
+                    "evidence_id": str(pending_evidence.evidence_id),
+                    "digest": pending_evidence.digest,
+                    "scope_hash": pending_evidence.scope_hash,
+                    "label": f"Tài liệu hiện tại · {pending_evidence.digest[:12]}",
+                }
+            )
+        elif detail.current.license_scope is not None:
+            current_scope_hash = scope_sha256(detail.current.license_scope.to_domain())
+            for revision in detail.revisions:
+                if (
+                    revision.license_evidence_id is not None
+                    and revision.license_scope_hash == current_scope_hash
+                    and revision.evidence_ref == detail.current.evidence_ref
+                ):
+                    evidence_options.append(
+                        {
+                            "evidence_id": str(revision.license_evidence_id),
+                            "digest": revision.license_digest or "",
+                            "scope_hash": revision.license_scope_hash or "",
+                            "label": (
+                                f"Phiên bản {revision.sequence} · "
+                                f"{(revision.license_digest or '')[:12]}"
+                            ),
+                        }
+                    )
     return _templates(request).TemplateResponse(
         request=request,
         name="admin/research_sources.html",
@@ -324,6 +398,10 @@ async def source_console(
             "can_approve": authorize(identity.principal, Permission.RESEARCH_SOURCE_APPROVE),
             "state_labels": STATE_LABELS,
             "purpose_labels": PURPOSE_LABELS,
+            "scope_output_labels": SCOPE_OUTPUT_LABELS,
+            "scope_derived_use_labels": SCOPE_DERIVED_USE_LABELS,
+            "pending_evidence": pending_evidence,
+            "evidence_options": evidence_options,
         },
         headers={"Cache-Control": "no-store"},
     )
@@ -377,6 +455,46 @@ async def mutate_source_form(
                             raise HTTPException(422, "Lựa chọn mục đích không hợp lệ.")
                         selected.append(purpose)
                 payload["allowed_purposes"] = selected
+            if action == "revision" and payload.get("state") == "rights_pending":
+                retention = payload.pop("scope_max_retention_days", "")
+                if not isinstance(retention, str):
+                    raise HTTPException(422, "Thời hạn lưu trữ không hợp lệ.")
+                if retention and (not retention.isascii() or not retention.isdecimal()):
+                    raise HTTPException(422, "Thời hạn lưu trữ phải là số ngày dương.")
+                scope = {
+                    "scope_version": "wp06-license-scope-v1",
+                    "source_id": source_id,
+                    "provider": payload.pop("scope_provider", ""),
+                    "product": payload.pop("scope_product", ""),
+                    "venue": payload.pop("scope_venue", ""),
+                    "contract": payload.pop("scope_contract", ""),
+                    "symbols": _split_scope_members(
+                        payload.pop("scope_symbols", ""), "mã giao dịch"
+                    ),
+                    "intervals": _split_scope_members(
+                        payload.pop("scope_intervals", ""), "khung thời gian"
+                    ),
+                    "data_start": payload.pop("scope_data_start", ""),
+                    "data_end": payload.pop("scope_data_end", ""),
+                    "allowed_purposes": selected,
+                    "allowed_outputs": _selected_form_values(
+                        payload, "scope_output_", SCOPE_OUTPUT_LABELS
+                    ),
+                    "max_retention_days": int(retention) if retention else None,
+                    "attribution": payload.pop("scope_attribution", ""),
+                    "derived_use": _selected_form_values(
+                        payload, "scope_derived_", SCOPE_DERIVED_USE_LABELS
+                    ),
+                }
+                payload.update(
+                    provider=scope["provider"],
+                    product=scope["product"],
+                    venue=scope["venue"],
+                    contract=scope["contract"],
+                    attribution=scope["attribution"],
+                    retention_ref="metadata-only-license-scope",
+                    license_scope=scope,
+                )
             if action == "approve":
                 policy_id = str(payload.pop("policy_id"))
                 snapshot = await facade.get_source(source_id)

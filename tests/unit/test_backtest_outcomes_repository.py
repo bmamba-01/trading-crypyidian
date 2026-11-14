@@ -12,6 +12,7 @@ from sqlalchemy.dialects import postgresql
 
 from trading_bot.adapters.database.repositories.backtest_outcomes import (
     BacktestOutcomeRepository,
+    PersistedBacktestTradeOutcome,
 )
 from trading_bot.adapters.database.repositories.backtests import BacktestAppendResult
 from trading_bot.application.backtest import EvaluationReport, ReplayManifest, TrialRecord
@@ -631,3 +632,399 @@ async def test_outcome_rejects_malformed_provenance_on_read_and_retry(
         )
     with pytest.raises(BacktestRepositoryConflict):
         await action
+
+
+def _training_bundle_repository_fixture(*, corrupt_bar: bool = False):
+    import json
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    from trading_bot.application.backtest_dataset_manifest import build_backtest_dataset_manifest
+    from trading_bot.application.backtest_dataset_replay import BacktestDatasetReplayInput
+    from trading_bot.application.backtest_dataset_replay_bundle import (
+        BacktestDatasetReplayBundleReference,
+        build_backtest_dataset_replay_bundle,
+    )
+    from trading_bot.application.binance_rest_backfill import (
+        BackfillRightsEvidence,
+        BackfillRightsPurpose,
+        RestBackfillRequest,
+    )
+    from trading_bot.domain.market.models import MarketBarSourceIdentity, OHLCVBar
+
+    start = NOW - timedelta(days=1)
+    evaluation_start = start + timedelta(hours=1)
+    range_end = start + timedelta(hours=2)
+    rights = BackfillRightsEvidence(
+        workspace_id=WORKSPACE_ID,
+        provider="BINANCE_USDM_REST",
+        purpose=BackfillRightsPurpose.BACKTEST_RESEARCH,
+        terms_url="https://example.invalid/terms",
+        policy_fingerprint="e" * 64,
+        verified_at=NOW - timedelta(days=3),
+        checked_at=NOW - timedelta(days=2),
+        valid_until=NOW + timedelta(days=1),
+    )
+    bars = []
+    for index in range(2):
+        opened_at = start + timedelta(hours=index)
+        closed_at = opened_at + timedelta(hours=1) - timedelta(milliseconds=1)
+        checksum = hashlib.sha256(f"bar-{index}".encode()).hexdigest()
+        logical_key = f"BTCUSDT:1h:{opened_at.isoformat()}"
+        identity = MarketBarSourceIdentity(
+            workspace_id=WORKSPACE_ID,
+            record_id=uuid4(),
+            logical_key=logical_key,
+            revision=1,
+            supersedes_record_id=None,
+            checksum=checksum,
+        )
+        bars.append(
+            OHLCVBar(
+                symbol="BTCUSDT",
+                timeframe="1h",
+                open_time=opened_at,
+                close_time=closed_at,
+                event_at=closed_at,
+                received_at=closed_at,
+                available_at=closed_at,
+                open=Decimal("100"),
+                high=Decimal("102"),
+                low=Decimal("99"),
+                close=Decimal("101"),
+                volume=Decimal("1"),
+                is_closed=True,
+                source="BINANCE_USDM_REST_BACKFILL",
+                checksum=checksum,
+                source_identity=identity,
+            )
+        )
+    request = RestBackfillRequest(
+        symbol="BTCUSDT",
+        interval="1h",
+        start=start,
+        end=range_end,
+        purpose=BackfillRightsPurpose.BACKTEST_RESEARCH,
+    )
+    dataset = build_backtest_dataset_manifest(
+        request,
+        evaluation_start=evaluation_start,
+        warmup_bars=1,
+        bars=tuple(bars),
+        rights_evidence=rights,
+        prepared_at=range_end,
+        schema_version=4,
+    )
+    bundle = build_backtest_dataset_replay_bundle(
+        (BacktestDatasetReplayInput(dataset, tuple(bars), rights),)
+    )
+    reference = BacktestDatasetReplayBundleReference.from_bundle(bundle)
+    run_manifest = {"dataset_hash": reference.bundle_hash}
+    canonical_manifest = json.dumps(
+        run_manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    manifest_hash = hashlib.sha256(canonical_manifest.encode()).hexdigest()
+    run_id = uuid4()
+    trial = SimpleNamespace(
+        workspace_id=WORKSPACE_ID,
+        id=TRIAL_RECORD_ID,
+        run_id=run_id,
+        manifest_hash=manifest_hash,
+    )
+    run = SimpleNamespace(
+        workspace_id=WORKSPACE_ID,
+        id=run_id,
+        manifest_hash=manifest_hash,
+        manifest=run_manifest,
+        canonical_manifest=canonical_manifest,
+    )
+    component = reference.components[0]
+    receipt_payload = {
+        "schema_version": 1,
+        "workspace_id": str(WORKSPACE_ID),
+        "run_id": str(run_id),
+        "bundle_hash": reference.bundle_hash,
+        "child_dataset_hash": component.dataset_hash,
+        "interval": component.interval,
+        "provider": reference.rights_provider,
+        "purpose": reference.rights_purpose,
+        "terms_url": rights.terms_url,
+        "policy_fingerprint": rights.policy_fingerprint,
+        "verified_at": rights.verified_at.isoformat(),
+        "checked_at": rights.checked_at.isoformat(),
+        "valid_until": rights.valid_until.isoformat(),
+    }
+    canonical_receipt = json.dumps(
+        receipt_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    receipt = SimpleNamespace(
+        workspace_id=WORKSPACE_ID,
+        run_id=run_id,
+        bundle_hash=reference.bundle_hash,
+        child_dataset_hash=component.dataset_hash,
+        interval=component.interval,
+        provider=reference.rights_provider,
+        purpose=reference.rights_purpose,
+        terms_url=rights.terms_url,
+        policy_fingerprint=rights.policy_fingerprint,
+        verified_at=rights.verified_at,
+        checked_at=rights.checked_at,
+        valid_until=rights.valid_until,
+        evidence_json=receipt_payload,
+        canonical_evidence=canonical_receipt,
+        evidence_hash=hashlib.sha256(canonical_receipt.encode()).hexdigest(),
+    )
+    market_rows = [
+        {
+            "id": bar.source_identity.record_id,
+            "workspace_id": WORKSPACE_ID,
+            "symbol": bar.symbol,
+            "timeframe": bar.timeframe,
+            "source": bar.source,
+            "logical_key": bar.source_identity.logical_key,
+            "revision": bar.source_identity.revision,
+            "supersedes_id": bar.source_identity.supersedes_record_id,
+            "checksum": bar.source_identity.checksum,
+            "raw_reference_id": None,
+            "open_time": bar.open_time,
+            "close_time": bar.close_time,
+            "available_at": bar.available_at,
+            "is_closed": bar.is_closed,
+        }
+        for bar in bars
+    ]
+    if corrupt_bar:
+        market_rows[0] = {**market_rows[0], "checksum": "0" * 64}
+
+    class Session:
+        def __init__(self):
+            self.scalar_values = (trial, run)
+            self.scalar_calls = 0
+            self.rights_receipts = (receipt,)
+            self.outcome_rows = []
+
+        async def scalar(self, statement):
+            value = self.scalar_values[self.scalar_calls]
+            self.scalar_calls += 1
+            return value
+
+        async def scalars(self, statement):
+            return SimpleNamespace(all=lambda: self.rights_receipts)
+
+        async def execute(self, statement):
+            if "backtest_trade_outcome" in str(statement):
+                return SimpleNamespace(
+                    mappings=lambda: SimpleNamespace(all=lambda: self.outcome_rows)
+                )
+            return SimpleNamespace(mappings=lambda: SimpleNamespace(all=lambda: market_rows))
+
+    return Session(), reference, dataset, market_rows, run_id, manifest_hash
+
+
+@pytest.mark.asyncio
+async def test_training_bundle_lineage_joins_all_authoritative_market_bar_ids(monkeypatch) -> None:
+    from trading_bot.adapters.database.repositories.backtest_dataset_manifests import (
+        BacktestDatasetManifestRepository,
+    )
+    from trading_bot.adapters.database.repositories.backtest_dataset_replay_bundles import (
+        BacktestDatasetReplayBundleRepository,
+    )
+
+    session, reference, dataset, market_rows, run_id, manifest_hash = (
+        _training_bundle_repository_fixture()
+    )
+
+    async def get_bundle(self, **kwargs):
+        return reference
+
+    async def get_dataset(self, **kwargs):
+        return dataset
+
+    monkeypatch.setattr(BacktestDatasetReplayBundleRepository, "get_by_hash", get_bundle)
+    monkeypatch.setattr(BacktestDatasetManifestRepository, "get_by_hash", get_dataset)
+    row = PersistedBacktestTradeOutcome(
+        record_id=UUID("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"),
+        workspace_id=WORKSPACE_ID,
+        run_id=run_id,
+        trial_record_id=TRIAL_RECORD_ID,
+        manifest_hash=manifest_hash,
+        ordinal=0,
+        trade_id="trade-1",
+        outcome_hash="1" * 64,
+        canonical_json="{}",
+        trade=_trade(),
+    )
+    session.outcome_rows = [
+        {
+            "id": row.record_id,
+            "workspace_id": row.workspace_id,
+            "run_id": row.run_id,
+            "trial_record_id": row.trial_record_id,
+            "manifest_hash": row.manifest_hash,
+            "ordinal": row.ordinal,
+        }
+    ]
+    lineage = await BacktestOutcomeRepository(session).load_training_bundle_lineage(
+        workspace_id=WORKSPACE_ID,
+        trial_record_id=TRIAL_RECORD_ID,
+        outcomes=(row,),
+    )
+
+    assert lineage.bundle_hash == reference.bundle_hash
+    assert len(lineage.source_use_lineage) == len(reference.components) == 1
+    child = lineage.source_use_lineage[0]
+    assert child.child_dataset_hash == dataset.dataset_hash
+    assert child.policy_fingerprint == reference.policy_fingerprint
+    assert child.market_bar_ids == tuple(f"market-bar-record:{item['id']}" for item in market_rows)
+
+
+@pytest.mark.asyncio
+async def test_training_bundle_lineage_rejects_market_bar_identity_drift(monkeypatch) -> None:
+    from trading_bot.adapters.database.repositories.backtest_dataset_manifests import (
+        BacktestDatasetManifestRepository,
+    )
+    from trading_bot.adapters.database.repositories.backtest_dataset_replay_bundles import (
+        BacktestDatasetReplayBundleRepository,
+    )
+    from trading_bot.adapters.database.repositories.backtests import BacktestRepositoryConflict
+
+    session, reference, dataset, _rows, run_id, manifest_hash = _training_bundle_repository_fixture(
+        corrupt_bar=True
+    )
+
+    async def get_bundle(self, **kwargs):
+        return reference
+
+    async def get_dataset(self, **kwargs):
+        return dataset
+
+    monkeypatch.setattr(BacktestDatasetReplayBundleRepository, "get_by_hash", get_bundle)
+    monkeypatch.setattr(BacktestDatasetManifestRepository, "get_by_hash", get_dataset)
+    row = PersistedBacktestTradeOutcome(
+        record_id=UUID("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"),
+        workspace_id=WORKSPACE_ID,
+        run_id=run_id,
+        trial_record_id=TRIAL_RECORD_ID,
+        manifest_hash=manifest_hash,
+        ordinal=0,
+        trade_id="trade-1",
+        outcome_hash="1" * 64,
+        canonical_json="{}",
+        trade=_trade(),
+    )
+    session.outcome_rows = [
+        {
+            "id": row.record_id,
+            "workspace_id": row.workspace_id,
+            "run_id": row.run_id,
+            "trial_record_id": row.trial_record_id,
+            "manifest_hash": row.manifest_hash,
+            "ordinal": row.ordinal,
+        }
+    ]
+
+    with pytest.raises(BacktestRepositoryConflict, match="MarketBar UUID/revision set"):
+        await BacktestOutcomeRepository(session).load_training_bundle_lineage(
+            workspace_id=WORKSPACE_ID,
+            trial_record_id=TRIAL_RECORD_ID,
+            outcomes=(row,),
+        )
+
+
+@pytest.mark.asyncio
+async def test_training_bundle_lineage_rejects_caller_outcomes_absent_from_persisted_run(
+    monkeypatch,
+) -> None:
+    from trading_bot.adapters.database.repositories.backtest_dataset_manifests import (
+        BacktestDatasetManifestRepository,
+    )
+    from trading_bot.adapters.database.repositories.backtest_dataset_replay_bundles import (
+        BacktestDatasetReplayBundleRepository,
+    )
+    from trading_bot.adapters.database.repositories.backtests import BacktestRepositoryConflict
+
+    session, reference, dataset, _rows, run_id, manifest_hash = (
+        _training_bundle_repository_fixture()
+    )
+
+    async def get_bundle(self, **kwargs):
+        return reference
+
+    async def get_dataset(self, **kwargs):
+        return dataset
+
+    monkeypatch.setattr(BacktestDatasetReplayBundleRepository, "get_by_hash", get_bundle)
+    monkeypatch.setattr(BacktestDatasetManifestRepository, "get_by_hash", get_dataset)
+    row = PersistedBacktestTradeOutcome(
+        record_id=UUID("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"),
+        workspace_id=WORKSPACE_ID,
+        run_id=run_id,
+        trial_record_id=TRIAL_RECORD_ID,
+        manifest_hash=manifest_hash,
+        ordinal=0,
+        trade_id="trade-1",
+        outcome_hash="1" * 64,
+        canonical_json="{}",
+        trade=_trade(),
+    )
+
+    with pytest.raises(BacktestRepositoryConflict, match="outcome đã nạp"):
+        await BacktestOutcomeRepository(session).load_training_bundle_lineage(
+            workspace_id=WORKSPACE_ID,
+            trial_record_id=TRIAL_RECORD_ID,
+            outcomes=(row,),
+        )
+
+
+@pytest.mark.asyncio
+async def test_training_bundle_lineage_rejects_missing_child_rights_receipt(monkeypatch) -> None:
+    from trading_bot.adapters.database.repositories.backtest_dataset_manifests import (
+        BacktestDatasetManifestRepository,
+    )
+    from trading_bot.adapters.database.repositories.backtest_dataset_replay_bundles import (
+        BacktestDatasetReplayBundleRepository,
+    )
+    from trading_bot.adapters.database.repositories.backtests import BacktestRepositoryConflict
+
+    session, reference, dataset, _rows, run_id, manifest_hash = (
+        _training_bundle_repository_fixture()
+    )
+    session.rights_receipts = ()
+
+    async def get_bundle(self, **kwargs):
+        return reference
+
+    async def get_dataset(self, **kwargs):
+        return dataset
+
+    monkeypatch.setattr(BacktestDatasetReplayBundleRepository, "get_by_hash", get_bundle)
+    monkeypatch.setattr(BacktestDatasetManifestRepository, "get_by_hash", get_dataset)
+    row = PersistedBacktestTradeOutcome(
+        record_id=UUID("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"),
+        workspace_id=WORKSPACE_ID,
+        run_id=run_id,
+        trial_record_id=TRIAL_RECORD_ID,
+        manifest_hash=manifest_hash,
+        ordinal=0,
+        trade_id="trade-1",
+        outcome_hash="1" * 64,
+        canonical_json="{}",
+        trade=_trade(),
+    )
+    session.outcome_rows = [
+        {
+            "id": row.record_id,
+            "workspace_id": row.workspace_id,
+            "run_id": row.run_id,
+            "trial_record_id": row.trial_record_id,
+            "manifest_hash": row.manifest_hash,
+            "ordinal": row.ordinal,
+        }
+    ]
+
+    with pytest.raises(BacktestRepositoryConflict, match="Tập receipt rights"):
+        await BacktestOutcomeRepository(session).load_training_bundle_lineage(
+            workspace_id=WORKSPACE_ID,
+            trial_record_id=TRIAL_RECORD_ID,
+            outcomes=(row,),
+        )

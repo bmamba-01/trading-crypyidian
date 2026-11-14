@@ -47,11 +47,20 @@ from trading_bot.application.learning_evaluation import (
     LearningEvaluationRequest,
 )
 from trading_bot.application.learning_evaluation_access import evaluation_access_fingerprint
-from trading_bot.application.learning_fold_plan import build_manifest_fold_plan
+from trading_bot.application.learning_fold_evaluation import (
+    FoldOutcomeVerificationBatch,
+    FoldOutcomeVerificationRequest,
+    PersistedFoldTrade,
+    persisted_outcome_row_hash,
+    persisted_trade_row_hash,
+    verification_batch_hash,
+)
+from trading_bot.application.learning_fold_plan import ManifestFoldPlan, build_manifest_fold_plan
 from trading_bot.application.learning_fold_samples import (
     NormalizedFoldAssignment,
     NormalizedLearningDataset,
     NormalizedLearningSample,
+    build_normalized_learning_dataset,
     normalized_learning_dataset_hash,
 )
 from trading_bot.application.learning_split_approval import (
@@ -311,6 +320,8 @@ def _plan(manifest: DatasetManifest):
 
 
 async def _verify() -> dict[str, object]:
+    from trading_bot.application import learning_evaluation as evaluation_module
+
     engine = _engine()
     sessions = create_session_factory(engine)
     workspace_id = UUID(STATE["workspace_id"])
@@ -331,7 +342,55 @@ async def _verify() -> dict[str, object]:
     if not fingerprint_valid:
         raise AssertionError("Fingerprint SHA-256 không khớp regex PostgreSQL.")
     evaluation_service = LearningEvaluationReportService(sessions)
-    saved = await evaluation_service.evaluate(evaluation_request)
+    captured_batches = []
+    verifier_type = evaluation_module.DatabaseFoldOutcomeVerifier
+
+    class CapturingDatabaseFoldOutcomeVerifier(verifier_type):
+        async def load_verified_fold_outcomes(
+            self, request: FoldOutcomeVerificationRequest
+        ) -> FoldOutcomeVerificationBatch:
+            batch = await super().load_verified_fold_outcomes(request)
+            captured_batches.append((self._manifest, request, batch))
+            return batch
+
+    evaluation_module.DatabaseFoldOutcomeVerifier = CapturingDatabaseFoldOutcomeVerifier
+    try:
+        saved = await evaluation_service.evaluate(evaluation_request)
+    finally:
+        evaluation_module.DatabaseFoldOutcomeVerifier = verifier_type
+
+    normalizer_accepts_database_verified_batch = False
+    normalizer_rejects_no_trade_sample = False
+    normalizer_rejects_multi_trade_sample = False
+    if len(captured_batches) == 1:
+        verified_manifest, verifier_request, verified_batch = captured_batches[0]
+        normalized = build_normalized_learning_dataset(
+            manifest=verified_manifest,
+            fold_plan=verifier_request.fold_plan,
+            verified_batches=(verified_batch,),
+        )
+        normalizer_accepts_database_verified_batch = {
+            sample.sample_id for sample in normalized.samples
+        } == {"train-sample", "validation-sample", "test-sample"}
+        no_trade_batch = _batch_with_trade_count(
+            verifier_request, verified_batch, sample_id="train-sample", trade_count=0
+        )
+        multi_trade_batch = _batch_with_trade_count(
+            verifier_request, verified_batch, sample_id="train-sample", trade_count=2
+        )
+        normalizer_rejects_no_trade_sample = _normalizer_rejects_batch(
+            verified_manifest,
+            verifier_request.fold_plan,
+            no_trade_batch,
+            expected_message="Outcome không có đúng một trade đã đóng",
+        )
+        normalizer_rejects_multi_trade_sample = _normalizer_rejects_batch(
+            verified_manifest,
+            verifier_request.fold_plan,
+            multi_trade_batch,
+            expected_message="Outcome có nhiều trade trên một sample chưa có quy tắc gộp",
+        )
+
     retried = await evaluation_service.evaluate(evaluation_request)
     changed_payload_rejected = False
     try:
@@ -506,6 +565,9 @@ async def _verify() -> dict[str, object]:
         "train_net_pnl": str(evaluated_fold.train.metrics.net_pnl),
         "validation_trade_count": evaluated_fold.validation.metrics.trade_count,
         "test_trade_count": evaluated_fold.test.metrics.trade_count,
+        "normalizer_accepts_database_verified_batch": normalizer_accepts_database_verified_batch,
+        "normalizer_rejects_no_trade_sample": normalizer_rejects_no_trade_sample,
+        "normalizer_rejects_multi_trade_sample": normalizer_rejects_multi_trade_sample,
         "candidate_completeness_verified": report.candidate_completeness_verified,
         "holdout_payload_in_report": "sealed-holdout-sample" in str(report.fold_evaluations),
         "mismatched_workspace_rejected": mismatched_workspace_rejected,
@@ -533,6 +595,72 @@ async def _verify() -> dict[str, object]:
         "evaluator_update_denied": update_denied,
         "evaluator_delete_denied": delete_denied,
     }
+
+
+def _batch_with_trade_count(
+    request: FoldOutcomeVerificationRequest,
+    batch: FoldOutcomeVerificationBatch,
+    *,
+    sample_id: str,
+    trade_count: int,
+) -> FoldOutcomeVerificationBatch:
+    outcomes = []
+    for outcome in batch.outcomes:
+        if outcome.sample_id != sample_id:
+            outcomes.append(outcome)
+            continue
+        trades = outcome.trades
+        changed = replace(outcome, trade_count=trade_count, trades=(), row_hash="0" * 64)
+        if trade_count == 2:
+            if len(trades) != 1:
+                raise AssertionError(
+                    "PostgreSQL verifier phải trả đúng một trade chuẩn cho fixture."
+                )
+            first = trades[0]
+            second = PersistedFoldTrade(
+                ordinal=1,
+                trade=replace(first.trade, trade_id=f"{first.trade.trade_id}-extra"),
+                row_hash="0" * 64,
+            )
+            changed = replace(changed, trades=(first, second))
+            first = replace(
+                first,
+                row_hash=persisted_trade_row_hash(request, changed, first),
+            )
+            second = replace(
+                second,
+                row_hash=persisted_trade_row_hash(request, changed, second),
+            )
+            changed = replace(changed, trades=(first, second))
+        changed = replace(
+            changed,
+            row_hash=persisted_outcome_row_hash(request, changed, changed.trades),
+        )
+        outcomes.append(changed)
+    ordered = tuple(sorted(outcomes, key=lambda item: item.sample_id))
+    return replace(
+        batch,
+        outcomes=ordered,
+        batch_hash=verification_batch_hash(request, ordered),
+    )
+
+
+def _normalizer_rejects_batch(
+    manifest: DatasetManifest,
+    fold_plan: ManifestFoldPlan,
+    batch: FoldOutcomeVerificationBatch,
+    *,
+    expected_message: str,
+) -> bool:
+    try:
+        build_normalized_learning_dataset(
+            manifest=manifest,
+            fold_plan=fold_plan,
+            verified_batches=(batch,),
+        )
+    except ValueError as error:
+        return expected_message in str(error)
+    return False
 
 
 def _folds_for_seed() -> tuple[WalkForwardSplit, ...]:

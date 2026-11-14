@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -17,6 +17,10 @@ from trading_bot.domain.learning.dataset import (
 from trading_bot.domain.learning.labels import (
     OutcomeLabelInput,
     build_outcome_label,
+)
+from trading_bot.domain.learning.source_use_lineage import (
+    SourceUseLineage,
+    source_use_lineage_set_hash,
 )
 from trading_bot.domain.research.source_policy import SourceUsePurpose
 
@@ -73,6 +77,7 @@ def manifest(
     samples: tuple[DatasetSample, ...] | None = None,
     exclusions: tuple[DatasetExclusion, ...] = (),
     manifest_version: str = "dataset-manifest-v1",
+    source_use_lineage: tuple[SourceUseLineage, ...] = (),
 ) -> DatasetManifest:
     return DatasetManifest(
         workspace_id=WORKSPACE_ID,
@@ -95,6 +100,7 @@ def manifest(
         )
         else None,
         manifest_version=manifest_version,
+        source_use_lineage=source_use_lineage,
     )
 
 
@@ -109,6 +115,24 @@ def source_reference(
         policy_sequence=2,
         purpose=SourceUsePurpose.TRAINING,
         rights_hash=rights_hash,
+    )
+
+
+def replay_lineage(bundle_hash: str = "9" * 64) -> tuple[SourceUseLineage, ...]:
+    return (
+        SourceUseLineage(
+            source_id="BINANCE_USDM_REST",
+            provider="BINANCE_USDM_REST",
+            bundle_hash=bundle_hash,
+            child_dataset_hash="a" * 64,
+            policy_fingerprint="b" * 64,
+            symbol="BTCUSDT",
+            interval="1h",
+            data_start=NOW - timedelta(hours=2),
+            data_end=NOW + timedelta(hours=2),
+            bar_identity_hash="c" * 64,
+            market_bar_ids=(f"market-bar-record:{UUID(int=1)}",),
+        ),
     )
 
 
@@ -216,13 +240,110 @@ def test_manifest_v3_rejects_unpaired_or_conflicting_research_lineage() -> None:
             samples=(sample(),),
             manifest_version="dataset-manifest-v3",
         )
-
     with pytest.raises(ValueError, match="conflicting rights"):
         replace(
             sample(),
             source_rights_hashes=(),
             source_revision_refs=(),
             source_references=(source_reference(), source_reference(rights_hash="d" * 64)),
+        )
+
+
+def test_manifest_v4_pins_replay_bundle_for_each_source_dependent_sample() -> None:
+    replay_sample = replace(
+        sample(split=DatasetSplit.DEVELOPMENT),
+        source_rights_hashes=(),
+        source_revision_refs=(),
+        source_replay_bundle_hash="9" * 64,
+        source_use_lineage=replay_lineage(),
+    )
+    original = manifest(
+        samples=(replay_sample,),
+        manifest_version="dataset-manifest-v4",
+    )
+
+    payload = json.loads(original.canonical_json)["samples"][0]
+    assert payload["source_dependent"] is True
+    assert payload["source_replay_bundle_hash"] == "9" * 64
+    assert payload["source_use_lineage"][0]["child_dataset_hash"] == "a" * 64
+    assert "source_references" not in payload
+    restored = DatasetManifest.from_canonical_json(
+        original.canonical_json,
+        expected_content_hash=original.content_hash,
+    )
+    assert restored.samples[0].source_replay_bundle_hash == "9" * 64
+    assert restored.samples[0].source_use_lineage == replay_lineage(
+        restored.samples[0].source_replay_bundle_hash
+    )
+    assert restored == original
+
+
+def test_manifest_v4_rejects_missing_replay_bundle_lineage() -> None:
+    replay_sample = replace(
+        sample(split=DatasetSplit.DEVELOPMENT),
+        source_rights_hashes=(),
+        source_revision_refs=(),
+        source_replay_bundle_hash="9" * 64,
+    )
+    with pytest.raises(ValueError, match="source-use lineage exact"):
+        manifest(
+            samples=(replay_sample,),
+            manifest_version="dataset-manifest-v4",
+        )
+
+
+def test_manifest_v5_stores_large_replay_lineage_once_at_top_level() -> None:
+    lineage = replay_lineage()
+    set_hash = source_use_lineage_set_hash(lineage)
+    samples = tuple(
+        replace(
+            sample(f"replay-{index}", DatasetSplit.DEVELOPMENT),
+            source_rights_hashes=(),
+            source_revision_refs=(),
+            source_replay_bundle_hash="9" * 64,
+            source_use_lineage_set_hash=set_hash,
+        )
+        for index in range(10)
+    )
+    original = manifest(
+        samples=samples,
+        manifest_version="dataset-manifest-v5",
+        source_use_lineage=lineage,
+    )
+
+    payload = json.loads(original.canonical_json)
+    assert len(payload["source_use_lineage"]) == 1
+    assert payload["source_use_lineage"][0]["market_bar_ids"] == list(lineage[0].market_bar_ids)
+    assert all("source_use_lineage" not in item for item in payload["samples"])
+    assert all(item["source_use_lineage_set_hash"] == set_hash for item in payload["samples"])
+    restored = DatasetManifest.from_canonical_json(
+        original.canonical_json,
+        expected_content_hash=original.content_hash,
+    )
+    assert restored.source_use_lineage == lineage
+    assert restored == original
+
+
+def test_manifest_v5_rejects_mismatched_or_missing_shared_lineage_hash() -> None:
+    sample_hash = source_use_lineage_set_hash(replay_lineage())
+    replay_sample = replace(
+        sample(split=DatasetSplit.DEVELOPMENT),
+        source_rights_hashes=(),
+        source_revision_refs=(),
+        source_replay_bundle_hash="9" * 64,
+        source_use_lineage_set_hash=sample_hash,
+    )
+    with pytest.raises(ValueError, match="shared replay lineage"):
+        manifest(
+            samples=(replay_sample,),
+            manifest_version="dataset-manifest-v5",
+            source_use_lineage=replay_lineage("8" * 64),
+        )
+    with pytest.raises(ValueError, match="shared lineage-set hash"):
+        manifest(
+            samples=(replace(replay_sample, source_use_lineage_set_hash=None),),
+            manifest_version="dataset-manifest-v5",
+            source_use_lineage=replay_lineage(),
         )
 
 

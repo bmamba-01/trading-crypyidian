@@ -113,38 +113,7 @@ class LearningTrainingBatchRepository:
             lineage_rows = tuple(lineage_result.all())
         except DBAPIError as error:
             message = str(error.orig).upper()
-            failure_code = next(
-                (
-                    token
-                    for token in (
-                        "WP06_TRAINING_BATCH_CALLER_DENIED",
-                        "WP06_TRAINING_BATCH_WORKSPACE_DENIED",
-                        "WP06_TRAINING_BATCH_ATTEMPT_NOT_FOUND",
-                        "WP06_TRAINING_BATCH_ATTEMPT_NOT_RUNNING",
-                        "WP06_TRAINING_BATCH_ALREADY_CONSUMED",
-                        "WP06_TRAINING_BATCH_SOURCE_RIGHTS_FAIL_CLOSED",
-                        "WP06_SOURCE_TRAINING_RIGHTS_CALLER_DENIED",
-                        "WP06_SOURCE_TRAINING_RIGHTS_WORKSPACE_DENIED",
-                        "WP06_SOURCE_TRAINING_RIGHTS_SCOPE_INVALID",
-                        "WP06_SOURCE_TRAINING_RIGHTS_MANIFEST_MISSING",
-                        "WP06_SOURCE_TRAINING_RIGHTS_LINEAGE_INVALID",
-                        "WP06_SOURCE_TRAINING_RIGHTS_BUILDER_RECEIPT_MISMATCH",
-                        "WP06_SOURCE_TRAINING_RIGHTS_INVALIDATED",
-                        "WP06_SOURCE_TRAINING_RIGHTS_OBSERVATION_MISSING",
-                        "WP06_SOURCE_TRAINING_RIGHTS_POLICY_DENIED",
-                        "WP06_SOURCE_TRAINING_RIGHTS_ITEM_DENIED",
-                        "WP06_TRAINING_BATCH_APPROVAL_MISMATCH",
-                        "WP06_TRAINING_BATCH_DATASET_MISMATCH",
-                        "WP06_TRAINING_BATCH_PROFILE_MISMATCH",
-                        "WP06_TRAINING_BATCH_COUNTS_INVALID",
-                        "WP06_TRAINING_LINEAGE_CALLER_DENIED",
-                        "WP06_TRAINING_LINEAGE_WORKSPACE_DENIED",
-                        "WP06_TRAINING_LINEAGE_RECEIPT_REQUIRED",
-                    )
-                    if token in message
-                ),
-                None,
-            )
+            failure_code = _training_batch_failure_code(message)
             if failure_code is not None:
                 raise LearningTrainingBatchAccessConflict(
                     f"Không thể cấp batch trainer (mã {failure_code})."
@@ -161,6 +130,41 @@ class LearningTrainingBatchRepository:
             raise LearningAttemptConflict(
                 "Batch trainer không khớp attempt hoặc sample hash authoritative."
             ) from error
+
+
+def _training_batch_failure_code(message: str) -> str | None:
+    """Map lỗi của gateway trainer thành mã domain ổn định, không lộ lỗi SQL thô."""
+    known_codes = (
+        "WP06_TRAINING_BATCH_CALLER_DENIED",
+        "WP06_TRAINING_BATCH_WORKSPACE_DENIED",
+        "WP06_TRAINING_BATCH_ATTEMPT_NOT_FOUND",
+        "WP06_TRAINING_BATCH_ATTEMPT_NOT_RUNNING",
+        "WP06_TRAINING_BATCH_ALREADY_CONSUMED",
+        "WP06_TRAINING_BATCH_SOURCE_RIGHTS_FAIL_CLOSED",
+        "WP06_SOURCE_TRAINING_RIGHTS_CALLER_DENIED",
+        "WP06_SOURCE_TRAINING_RIGHTS_WORKSPACE_DENIED",
+        "WP06_SOURCE_TRAINING_RIGHTS_SCOPE_INVALID",
+        "WP06_SOURCE_TRAINING_RIGHTS_MANIFEST_MISSING",
+        "WP06_SOURCE_TRAINING_RIGHTS_LINEAGE_INVALID",
+        "WP06_SOURCE_TRAINING_RIGHTS_BUILDER_RECEIPT_MISMATCH",
+        "WP06_SOURCE_TRAINING_RIGHTS_INVALIDATED",
+        "WP06_SOURCE_TRAINING_RIGHTS_OBSERVATION_MISSING",
+        "WP06_SOURCE_TRAINING_RIGHTS_POLICY_DENIED",
+        "WP06_SOURCE_TRAINING_RIGHTS_ITEM_DENIED",
+        "WP06_TRAINING_BATCH_APPROVAL_MISMATCH",
+        "WP06_TRAINING_BATCH_DATASET_MISMATCH",
+        "WP06_TRAINING_BATCH_PROFILE_MISMATCH",
+        "WP06_TRAINING_BATCH_COUNTS_INVALID",
+        "WP06_TRAINING_LINEAGE_CALLER_DENIED",
+        "WP06_TRAINING_LINEAGE_WORKSPACE_DENIED",
+        "WP06_TRAINING_LINEAGE_RECEIPT_REQUIRED",
+    )
+    for token in known_codes:
+        if token in message:
+            return token
+    if "WP06_TRAINING_REPLAY_" in message:
+        return "WP06_TRAINING_BATCH_SOURCE_RIGHTS_FAIL_CLOSED"
+    return None
 
 
 __all__ = [

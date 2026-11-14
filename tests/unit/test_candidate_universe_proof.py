@@ -81,11 +81,13 @@ async def persisted(monkeypatch):
     from trading_bot.adapters.database.models.backtest_job_entities import BacktestReplayJobRecord
     from trading_bot.adapters.database.replay_training_rights import (
         DatabaseReplayTrainingRightsGate,
+        ReplayTrainingOperation,
         ReplayTrainingRightsReceipt,
     )
     from trading_bot.application.backtest_replay_jobs import BacktestReplayJobSubmission
 
-    async def allowed(self, *, workspace_id, bundle_hash):
+    async def allowed(self, *, workspace_id, bundle_hash, operation):
+        assert operation is ReplayTrainingOperation.TRAINING
         now = datetime(2026, 11, 3, tzinfo=UTC)
         return (
             ReplayTrainingRightsReceipt(
@@ -95,12 +97,24 @@ async def persisted(monkeypatch):
                 interval="1h",
                 symbol="BTCUSDT",
                 bars_content_hash="3" * 64,
+                product="FUTURES",
+                venue="BINANCE",
+                contract="USD_M_PERPETUAL",
+                data_start=now - timedelta(days=2),
+                data_end=now - timedelta(days=1),
                 policy_id="fixture:training",
                 policy_fingerprint="4" * 64,
+                bundle_policy_fingerprint="5" * 64,
+                current_policy_fingerprint="4" * 64,
                 terms_url="https://example.invalid/fixture-training",
                 verified_at=now - timedelta(days=1),
                 checked_at=now,
                 valid_until=now + timedelta(minutes=5),
+                license_evidence_id=UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),
+                evidence_digest="6" * 64,
+                license_scope_hash="7" * 64,
+                scope_hash="8" * 64,
+                operation=operation,
             ),
         )
 
@@ -721,6 +735,7 @@ async def opportunity_persisted(monkeypatch):
     from trading_bot.adapters.database.models.market_entities import MarketBar
     from trading_bot.adapters.database.replay_training_rights import (
         DatabaseReplayTrainingRightsGate,
+        ReplayTrainingOperation,
         ReplayTrainingRightsReceipt,
     )
     from trading_bot.adapters.database.repositories.backtest_dataset_manifests import (
@@ -823,12 +838,24 @@ async def opportunity_persisted(monkeypatch):
                 interval=item.manifest.interval,
                 symbol=source.symbol,
                 bars_content_hash=item.manifest.bars_content_hash,
+                product="FUTURES",
+                venue="BINANCE",
+                contract="USD_M_PERPETUAL",
+                data_start=item.manifest.warmup_start,
+                data_end=item.manifest.range_end,
                 policy_id="fixture:training",
                 policy_fingerprint="4" * 64,
+                bundle_policy_fingerprint=source.policy_fingerprint,
+                current_policy_fingerprint="4" * 64,
                 terms_url="https://example.invalid/training",
                 verified_at=session.clock - timedelta(days=1),
                 checked_at=session.clock,
                 valid_until=session.clock + timedelta(minutes=5),
+                license_evidence_id=UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),
+                evidence_digest="6" * 64,
+                license_scope_hash="7" * 64,
+                scope_hash="8" * 64,
+                operation=ReplayTrainingOperation.TRAINING,
             )
             for item in source.components
         )

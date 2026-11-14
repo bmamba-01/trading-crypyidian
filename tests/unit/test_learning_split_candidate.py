@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from uuid import uuid4
@@ -25,6 +26,7 @@ from trading_bot.domain.learning.evaluation import (
     WalkForwardSplit,
     calculate_entry_features_hash,
 )
+from trading_bot.domain.learning.source_use_lineage import SourceUseLineage
 
 NOW = datetime(2025, 1, 1, tzinfo=UTC)
 
@@ -85,6 +87,29 @@ def _outcomes(workspace_id, trial_id):
 def _candidate():
     workspace_id, trial_id, run_id, report_id, scenario_id, proof_id = (uuid4() for _ in range(6))
     outcomes, membership_digest = _outcomes(workspace_id, trial_id)
+    lineage = (
+        SourceUseLineage(
+            source_id="BINANCE_USDM_REST",
+            provider="BINANCE_USDM_REST",
+            bundle_hash="9" * 64,
+            child_dataset_hash="a" * 64,
+            policy_fingerprint="b" * 64,
+            symbol="BTCUSDT",
+            interval="1h",
+            data_start=datetime(2026, 1, 1, tzinfo=UTC),
+            data_end=datetime(2026, 2, 1, tzinfo=UTC),
+            bar_identity_hash="c" * 64,
+            market_bar_ids=(f"market-bar-record:{uuid4()}",),
+        ),
+    )
+    outcomes = tuple(
+        replace(
+            item,
+            source_replay_bundle_hash="9" * 64,
+            source_use_lineage=lineage,
+        )
+        for item in outcomes
+    )
     proof = CandidateUniverseProof(
         workspace_id=workspace_id,
         run_id=run_id,
@@ -128,7 +153,7 @@ def _candidate():
 def test_candidate_preview_contains_metadata_but_not_sample_or_label_payload() -> None:
     candidate, outcomes, _ = _candidate()
 
-    assert candidate.manifest.manifest_version == "dataset-manifest-v2"
+    assert candidate.manifest.manifest_version == "dataset-manifest-v5"
     assert len(candidate.manifest.samples) == len(outcomes)
     assert candidate.preview_json.count('"holdout_count":2') == 1
     assert "sample_id" not in candidate.preview_json
@@ -138,6 +163,48 @@ def test_candidate_preview_contains_metadata_but_not_sample_or_label_payload() -
     assert candidate.fold_plan.folds[0].train_sample_ids
     assert candidate.fold_plan.folds[0].validation_sample_ids
     assert candidate.fold_plan.folds[0].test_sample_ids
+
+
+def test_candidate_stores_shared_replay_lineage_once_and_hashes_each_sample_reference() -> None:
+    candidate, outcomes, proof = _candidate()
+    bundle_hash = outcomes[0].source_replay_bundle_hash
+
+    rebuilt = build_learning_split_candidate(
+        workspace_id=candidate.workspace_id,
+        trial_record_id=candidate.trial_record_id,
+        proof_record_id=candidate.proof_record_id,
+        proof=proof,
+        outcomes=outcomes,
+        config=candidate.config,
+        as_of=candidate.manifest.as_of,
+    )
+
+    assert rebuilt.manifest.manifest_version == "dataset-manifest-v5"
+    assert all(sample.source_dependent for sample in rebuilt.manifest.samples)
+    assert all(
+        sample.source_replay_bundle_hash == bundle_hash for sample in rebuilt.manifest.samples
+    )
+    assert rebuilt.manifest.source_use_lineage == outcomes[0].source_use_lineage
+    assert all(not sample.source_use_lineage for sample in rebuilt.manifest.samples)
+    assert len({sample.source_use_lineage_set_hash for sample in rebuilt.manifest.samples}) == 1
+
+
+def test_candidate_rejects_missing_replay_bundle_lineage() -> None:
+    candidate, outcomes, proof = _candidate()
+
+    with pytest.raises(ValueError, match="Mọi outcome phải ghim đúng một replay bundle"):
+        build_learning_split_candidate(
+            workspace_id=candidate.workspace_id,
+            trial_record_id=candidate.trial_record_id,
+            proof_record_id=candidate.proof_record_id,
+            proof=proof,
+            outcomes=tuple(
+                replace(item, source_replay_bundle_hash=None, source_use_lineage=())
+                for item in outcomes
+            ),
+            config=candidate.config,
+            as_of=candidate.manifest.as_of,
+        )
 
 
 def test_normalized_candidate_dataset_never_contains_holdout_samples() -> None:

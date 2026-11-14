@@ -58,7 +58,7 @@ def test_postgres_scorer_deployment_governance_and_rights_gate() -> None:
             compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "head")
             heads = compose("run", "--rm", "--no-deps", "migrator", "alembic", "heads")
             assert heads.stdout.count("(head)") == 1, heads.stdout
-            assert "f6b8d0e2a4c7 (head)" in heads.stdout
+            assert "c7e9a1b3d5f8 (head)" in heads.stdout
             check = compose("run", "--rm", "--no-deps", "migrator", "alembic", "check")
             assert "No new upgrade operations detected" in check.stdout + check.stderr
 

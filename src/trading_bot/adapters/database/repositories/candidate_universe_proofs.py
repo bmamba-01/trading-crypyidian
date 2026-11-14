@@ -32,6 +32,7 @@ from trading_bot.adapters.database.models.candidate_universe_entities import (
 from trading_bot.adapters.database.models.market_entities import MarketBar
 from trading_bot.adapters.database.replay_training_rights import (
     DatabaseReplayTrainingRightsGate,
+    ReplayTrainingOperation,
     ReplayTrainingRightsReceipt,
     training_scope_digest,
 )
@@ -225,7 +226,9 @@ class CandidateUniverseProofRepository:
             manifest = DatabaseFoldOutcomeVerifier._validate_run(run, workspace_id=workspace_id)
             await self._require_predeclared_learning_intent(workspace_id, run, manifest)
             receipts = await DatabaseReplayTrainingRightsGate(self._session).authorize(
-                workspace_id=workspace_id, bundle_hash=manifest.dataset_hash
+                workspace_id=workspace_id,
+                bundle_hash=manifest.dataset_hash,
+                operation=ReplayTrainingOperation.TRAINING,
             )
             if not receipts or any(receipt.purpose.value != "training" for receipt in receipts):
                 raise CandidateUniverseProofError("Thiếu receipt TRAINING hiện hành.")
@@ -891,7 +894,9 @@ class CandidateUniverseProofRepository:
         receipts = authorized_receipts
         if receipts is None:
             receipts = await DatabaseReplayTrainingRightsGate(self._session).authorize(
-                workspace_id=workspace_id, bundle_hash=manifest.dataset_hash
+                workspace_id=workspace_id,
+                bundle_hash=manifest.dataset_hash,
+                operation=ReplayTrainingOperation.TRAINING,
             )
         if not receipts:
             raise CandidateUniverseProofError("Gate TRAINING không trả receipt đầy đủ.")

@@ -481,7 +481,9 @@ class PaperRuntimeApplicationService:
                 )
                 if existing is not None:
                     if (
-                        existing.settings_version_id != published.settings_version_id
+                        existing.bot_decision_id
+                        != (bot_decision.decision_id if bot_decision is not None else None)
+                        or existing.settings_version_id != published.settings_version_id
                         or existing.feature_snapshot_id != command.feature_snapshot_id
                         or existing.evidence.get("settings_hash") != published.settings_hash
                         or existing.evidence.get("paper_execution_profile_hash")
@@ -674,6 +676,9 @@ class PaperRuntimeApplicationService:
                     risk_reservation_id=workspace_reservation.reservation_id,
                     quote_asset=profile.quote_asset,
                     evidence=evidence,
+                    bot_decision_id=(
+                        bot_decision.decision_id if bot_decision is not None else None
+                    ),
                     fencing_token=_account_token(account),
                 )
                 return PaperDecisionApplicationResult(

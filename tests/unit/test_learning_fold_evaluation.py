@@ -208,6 +208,35 @@ async def test_evaluator_uses_exact_fold_membership_and_builds_stable_report() -
 
 
 @pytest.mark.asyncio
+async def test_evaluator_rejects_multi_trade_sample_without_aggregation_contract() -> None:
+    class MultiTradeVerifier(FixtureVerifier):
+        async def load_verified_fold_outcomes(
+            self, request: FoldOutcomeVerificationRequest
+        ) -> FoldOutcomeVerificationBatch:
+            batch = await super().load_verified_fold_outcomes(request)
+            outcomes = tuple(
+                replace(item, trade_count=2) if item.sample_id == "train-sample" else item
+                for item in batch.outcomes
+            )
+            return replace(
+                batch,
+                outcomes=outcomes,
+                batch_hash=verification_batch_hash(request, outcomes),
+            )
+
+    with pytest.raises(
+        ValueError,
+        match="Outcome có nhiều trade trên một sample chưa có quy tắc gộp; từ chối đánh giá",
+    ):
+        await build_walk_forward_evaluation_report(
+            dataset_fixture,
+            fold_plan(dataset_fixture),
+            verifier=MultiTradeVerifier(),
+            seed=17,
+        )
+
+
+@pytest.mark.asyncio
 async def test_evaluator_exposes_canonical_diagnostic_payload_without_holdout() -> None:
     holdout = DatasetSample(
         sample_id="sealed-holdout-sample",

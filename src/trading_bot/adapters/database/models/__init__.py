@@ -92,6 +92,12 @@ from trading_bot.adapters.database.models.learning_model_registry_entities impor
     LearningModelRegistryEventRecord,
     LearningModelRegistryRecord,
 )
+from trading_bot.adapters.database.models.learning_paper_performance_entities import (
+    LearningPaperPerformanceReportRecord,
+)
+from trading_bot.adapters.database.models.learning_replay_training_receipt_entities import (
+    LearningReplayTrainingReceiptRecord,
+)
 from trading_bot.adapters.database.models.learning_run_source_rights_entities import (
     LearningRunSourceRightsReceiptRecord,
 )
@@ -185,6 +191,7 @@ from trading_bot.adapters.database.models.venue_entities import (
 
 __all__ = [
     "LearningIncidentHoldEventRecord",
+    "LearningPaperPerformanceReportRecord",
     "CandidateUniverseProofRecord",
     "CandidateTrainingRightsRecord",
     "AccountActivityIncidentRecord",
@@ -249,6 +256,7 @@ __all__ = [
     "LearningModelRegistryEventRecord",
     "LearningModelRegistryRecord",
     "LearningSourceTrainingReceiptRecord",
+    "LearningReplayTrainingReceiptRecord",
     "LearningRunSourceRightsReceiptRecord",
     "ExchangeOrderRecord",
     "FillRecord",

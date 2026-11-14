@@ -311,6 +311,7 @@ async def _current_training_scope_digest(
     """Lấy quyền TRAINING hiện hành cho mọi child của bundle trong transaction."""
     from trading_bot.adapters.database.replay_training_rights import (
         DatabaseReplayTrainingRightsGate,
+        ReplayTrainingOperation,
         training_scope_digest,
     )
 
@@ -318,6 +319,7 @@ async def _current_training_scope_digest(
         receipts = await DatabaseReplayTrainingRightsGate(session).authorize(
             workspace_id=workspace_id,
             bundle_hash=bundle_hash,
+            operation=ReplayTrainingOperation.EVALUATION,
         )
         if not receipts or any(
             item.workspace_id != workspace_id

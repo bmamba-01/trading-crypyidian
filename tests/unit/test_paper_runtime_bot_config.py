@@ -219,6 +219,7 @@ def test_duplicate_intent_from_other_bot_version_conflicts() -> None:
     _FakeUnitOfWork.scalar_results = [
         SimpleNamespace(
             id=uuid4(),
+            bot_decision_id=None,
             risk_decision_id=uuid4(),
             risk_reservation_id=uuid4(),
             settings_version_id=published.settings_version_id,

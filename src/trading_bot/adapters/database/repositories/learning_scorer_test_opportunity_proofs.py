@@ -30,6 +30,7 @@ from trading_bot.adapters.database.models import (
 from trading_bot.adapters.database.replay_training_rights import (
     SOURCE_ID,
     DatabaseReplayTrainingRightsGate,
+    ReplayTrainingOperation,
     ReplayTrainingRightsReceipt,
     training_scope_digest,
 )
@@ -349,6 +350,7 @@ class LearningScorerTestOpportunityProofRepository:
         rights_receipts = await DatabaseReplayTrainingRightsGate(self._session).authorize(
             workspace_id=workspace_id,
             bundle_hash=replay_manifest.dataset_hash,
+            operation=ReplayTrainingOperation.EVALUATION,
         )
         if not rights_receipts or any(
             receipt.purpose.value != "training" for receipt in rights_receipts

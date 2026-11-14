@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from uuid import UUID
 
 from sqlalchemy import func, select, text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from trading_bot.adapters.database.models import (
@@ -18,6 +19,10 @@ from trading_bot.adapters.database.models import (
 )
 from trading_bot.adapters.database.models.learning_source_training_receipt_entities import (
     LearningSourceTrainingReceiptRecord,
+)
+from trading_bot.adapters.database.replay_training_rights import (
+    DatabaseReplayTrainingRightsGate,
+    ReplayTrainingOperation,
 )
 from trading_bot.adapters.database.repositories.dataset_manifest_eligibility import (
     DatasetManifestEligibilityRepository,
@@ -35,6 +40,7 @@ from trading_bot.application.learning_fold_samples import (
 )
 from trading_bot.domain.learning.approval import LearningSplitApproval
 from trading_bot.domain.learning.dataset import DatasetManifest
+from trading_bot.domain.learning.source_use_lineage import source_use_lineage_set_hash
 
 
 class NormalizedLearningDatasetConflict(RuntimeError):
@@ -110,6 +116,11 @@ class LearningFoldSampleRepository:
         if existing is not None:
             await self._verify_existing(existing, dataset, approval)
             await self._verify_source_receipts(existing, rights_evidence)
+            await self._invoke_training_source_receipt_gate(
+                manifest=manifest,
+                normalized_dataset_id=existing.id,
+                fold_plan_hash=fold_plan.content_hash,
+            )
             return NormalizedLearningDatasetWriteResult(existing, True)
 
         record = NormalizedLearningDatasetRecord.from_domain(
@@ -137,17 +148,49 @@ class LearningFoldSampleRepository:
         )
         await self._session.flush()
         rights_evidence = await self._assert_source_eligibility(manifest)
-        self._session.add_all(
-            LearningSourceTrainingReceiptRecord.from_evidence(
-                evidence,
-                normalized_dataset_id=record.id,
-                fold_plan_hash=fold_plan.content_hash,
+        if not _uses_replay_training_scope(manifest):
+            self._session.add_all(
+                LearningSourceTrainingReceiptRecord.from_evidence(
+                    evidence,
+                    normalized_dataset_id=record.id,
+                    fold_plan_hash=fold_plan.content_hash,
+                )
+                for evidence in rights_evidence
             )
-            for evidence in rights_evidence
+            await self._session.flush()
+        await self._invoke_training_source_receipt_gate(
+            manifest=manifest,
+            normalized_dataset_id=record.id,
+            fold_plan_hash=fold_plan.content_hash,
         )
-        await self._session.flush()
         await self._assert_source_eligibility(manifest)
         return NormalizedLearningDatasetWriteResult(record, False)
+
+    async def assert_source_training_eligible(self, *, manifest: DatasetManifest) -> None:
+        """Kiểm quyền hiện hành ngay trước khi Python tạo normalized payload."""
+        await self._assert_source_eligibility(manifest)
+
+    async def _invoke_training_source_receipt_gate(
+        self,
+        *,
+        manifest: DatasetManifest,
+        normalized_dataset_id: UUID,
+        fold_plan_hash: str,
+    ) -> None:
+        """Nhờ DB kiểm manifest/outcome và tự ghi receipt bất biến nếu có replay lineage."""
+        await self._session.execute(
+            text(
+                "SELECT public.wp06_record_replay_training_receipts("
+                "CAST(:workspace_id AS uuid), CAST(:manifest_hash AS text), "
+                "CAST(:normalized_dataset_id AS uuid), CAST(:fold_plan_hash AS text))"
+            ),
+            {
+                "workspace_id": str(manifest.workspace_id),
+                "manifest_hash": manifest.content_hash,
+                "normalized_dataset_id": str(normalized_dataset_id),
+                "fold_plan_hash": fold_plan_hash,
+            },
+        )
 
     async def _assert_source_eligibility(
         self, manifest: DatasetManifest
@@ -181,6 +224,9 @@ class LearningFoldSampleRepository:
                 text("SELECT pg_advisory_xact_lock(hashtextextended(:lock_key, 0))"),
                 {"lock_key": lock_key},
             )
+        if _uses_replay_training_scope(manifest):
+            await self._assert_replay_training_eligibility(manifest)
+            return ()
         gate = DatasetSourceEligibilityGate(
             DatasetManifestEligibilityRepository(self._session),
             SourceItemRepository(self._session),
@@ -194,6 +240,67 @@ class LearningFoldSampleRepository:
             raise NormalizedLearningDatasetConflict(
                 f"Source TRAINING rights bị từ chối ({error.reason_code})."
             ) from None
+
+    async def _assert_replay_training_eligibility(self, manifest: DatasetManifest) -> None:
+        """So sánh v5 shared lineage với rights/policy hiện hành cho mọi child bundle."""
+        samples = tuple(item for item in manifest.samples if item.source_dependent)
+        if not samples or len(samples) != len(manifest.samples):
+            raise NormalizedLearningDatasetConflict(
+                "Manifest v5 replay không được trộn sample source-free."
+            )
+        first = samples[0]
+        bundle_hash = first.source_replay_bundle_hash
+        source_lineage = manifest.source_use_lineage
+        if (
+            bundle_hash is None
+            or not source_lineage
+            or source_use_lineage_set_hash(source_lineage) != first.source_use_lineage_set_hash
+            or any(
+                sample.source_replay_bundle_hash != bundle_hash
+                or sample.source_use_lineage_set_hash != first.source_use_lineage_set_hash
+                or sample.source_use_lineage
+                for sample in samples
+            )
+        ):
+            raise NormalizedLearningDatasetConflict(
+                "Manifest v5 không ghim cùng bundle và shared exact source-use child set."
+            )
+        try:
+            current = await DatabaseReplayTrainingRightsGate(self._session).authorize(
+                workspace_id=manifest.workspace_id,
+                bundle_hash=bundle_hash,
+                operation=ReplayTrainingOperation.TRAINING,
+            )
+        except (PermissionError, ValueError, LookupError) as error:
+            raise NormalizedLearningDatasetConflict(
+                f"Source replay TRAINING rights bị từ chối ({error})."
+            ) from None
+        except DBAPIError as error:
+            if "WP06_TRAINING_REPLAY_" not in str(error):
+                raise
+            raise NormalizedLearningDatasetConflict(
+                "Source replay TRAINING rights bị từ chối bởi verifier cơ sở dữ liệu."
+            ) from None
+        by_child = {item.child_dataset_hash: item for item in current}
+        expected = {item.child_dataset_hash: item for item in source_lineage}
+        if len(by_child) != len(current) or set(by_child) != set(expected):
+            raise NormalizedLearningDatasetConflict(
+                "Current TRAINING scope không bao phủ đúng persisted bundle child set."
+            )
+        for child_hash, lineage in expected.items():
+            receipt = by_child[child_hash]
+            if (
+                receipt.workspace_id != manifest.workspace_id
+                or receipt.bundle_hash != bundle_hash
+                or receipt.child_dataset_hash != child_hash
+                or receipt.provider != lineage.provider
+                or receipt.symbol != lineage.symbol
+                or receipt.interval != lineage.interval
+                or receipt.bars_content_hash == ""
+            ):
+                raise NormalizedLearningDatasetConflict(
+                    "Current TRAINING receipt lệch v5 source-use lineage/policy fingerprint."
+                )
 
     async def _verify_source_receipts(
         self,
@@ -319,6 +426,13 @@ class LearningFoldSampleRepository:
         )
 
 
+def _uses_replay_training_scope(manifest: DatasetManifest) -> bool:
+    """Nhận diện manifest v5 có sample phụ thuộc replay bundle."""
+    return manifest.manifest_version == "dataset-manifest-v5" and any(
+        sample.source_dependent for sample in manifest.samples
+    )
+
+
 def _validate_input(
     manifest: DatasetManifest,
     fold_plan: ManifestFoldPlan,
@@ -400,6 +514,7 @@ async def _source_advisory_lock_keys(
         if sample.source_dependent
         for reference in sample.source_references
     }
+    source_ids.update(lineage.source_id for lineage in manifest.source_use_lineage)
     if not source_ids:
         return ()
     result = await session.execute(

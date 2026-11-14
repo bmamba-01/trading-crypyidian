@@ -1279,9 +1279,7 @@ async def runtime_fanout_to_paper_intents() -> dict[str, Any]:
                             .where(
                                 OrderIntentRecord.workspace_id == workspace,
                                 OrderIntentRecord.account_id == account_id,
-                                OrderIntentRecord.evidence["bot_decision_id"]
-                                .as_string()
-                                .is_not(None),
+                                OrderIntentRecord.bot_decision_id.is_not(None),
                             )
                         )
                     )
@@ -1295,6 +1293,7 @@ async def runtime_fanout_to_paper_intents() -> dict[str, Any]:
                     [
                         str(intent.bot_id),
                         release_name,
+                        str(intent.bot_decision_id),
                         str(intent.evidence.get("bot_decision_id")),
                         intent.evidence.get("bot_candidate_id"),
                         intent.evidence.get("strategy_release_hash"),
@@ -1670,7 +1669,7 @@ async def runtime_account_hard_cap_race() -> dict[str, Any]:
                     .where(
                         OrderIntentRecord.workspace_id == workspace,
                         OrderIntentRecord.account_id == account_id,
-                        OrderIntentRecord.evidence["bot_decision_id"].as_string().is_not(None),
+                        OrderIntentRecord.bot_decision_id.is_not(None),
                     )
                 )
                 reserved_count = await uow.session.scalar(

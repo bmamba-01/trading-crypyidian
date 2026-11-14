@@ -47,7 +47,8 @@ class DatasetManifestRepository:
             raise DatasetManifestConflict("workspace manifest không khớp workspace transaction.")
         await self._bind_workspace(workspace_id)
         if any(sample.source_dependent for sample in manifest.samples) and (
-            manifest.manifest_version != "dataset-manifest-v3"
+            manifest.manifest_version
+            not in {"dataset-manifest-v3", "dataset-manifest-v4", "dataset-manifest-v5"}
         ):
             raise DatasetManifestConflict(
                 "Manifest có source lineage legacy không được lưu làm dataset mới."

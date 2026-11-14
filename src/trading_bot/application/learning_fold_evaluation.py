@@ -364,7 +364,9 @@ def _validate_verification_batch(
         if type(outcome.trade_count) is not int or outcome.trade_count < 0:
             raise ValueError("Persisted outcome trade_count không hợp lệ.")
         if outcome.trade_count > 1:
-            raise ValueError("Lineage outcome chỉ cho phép tối đa một trade trên mỗi sample.")
+            raise ValueError(
+                "Outcome có nhiều trade trên một sample chưa có quy tắc gộp; từ chối đánh giá."
+            )
         if type(outcome.trades) is not tuple or any(
             type(row) is not PersistedFoldTrade for row in outcome.trades
         ):

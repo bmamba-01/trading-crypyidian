@@ -115,7 +115,7 @@ def test_evaluator_uses_one_shot_receipt_before_disclosing_fold_payload() -> Non
             "heads",
         )
         assert heads.stdout.strip().count("(head)") == 1, heads.stdout
-        assert "f6b8d0e2a4c7 (head)" in heads.stdout
+        assert "c7e9a1b3d5f8 (head)" in heads.stdout
         seeded = _compose(
             repository_root,
             project_name,
@@ -164,6 +164,9 @@ def test_evaluator_uses_one_shot_receipt_before_disclosing_fold_payload() -> Non
         assert result["train_net_pnl"] != "0"
         assert result["validation_trade_count"] == 1
         assert result["test_trade_count"] == 1
+        assert result["normalizer_accepts_database_verified_batch"] is True
+        assert result["normalizer_rejects_no_trade_sample"] is True
+        assert result["normalizer_rejects_multi_trade_sample"] is True
         assert result["candidate_completeness_verified"] is False
         assert result["holdout_payload_in_report"] is False
         assert result["mismatched_workspace_rejected"] is True
@@ -315,7 +318,7 @@ def test_evaluator_uses_one_shot_receipt_before_disclosing_fold_payload() -> Non
             "alembic",
             "current",
         )
-        assert "f6b8d0e2a4c7 (head)" in current.stdout
+        assert "c7e9a1b3d5f8 (head)" in current.stdout
     finally:
         subprocess.run(
             [

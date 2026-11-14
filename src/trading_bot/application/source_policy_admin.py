@@ -185,6 +185,27 @@ class PrincipalSourcePolicyAdminService:
             workspace_id=self._principal.workspace_id, source_id=source_id
         )
 
+    async def get_pending_license_evidence(
+        self, source_id: str, policy_id: str
+    ) -> SourceLicenseEvidence | None:
+        """Trả metadata của đúng pending hiện hành, không lộ row hoặc bytes của ledger."""
+        self._read()
+        entry = await self._repository.get_entry(
+            workspace_id=self._principal.workspace_id,
+            source_id=source_id,
+        )
+        if (
+            entry is None
+            or entry.current.state is not SourcePolicyState.RIGHTS_PENDING
+            or entry.current.policy.policy_id != policy_id
+        ):
+            return None
+        return await self._repository.evidence_for_pending(
+            workspace_id=self._principal.workspace_id,
+            source_id=source_id,
+            policy_id=policy_id,
+        )
+
     async def _append(self, revision: SourcePolicyRevision) -> SourcePolicyRevision:
         result = await self._repository.append_revision_and_observe(
             workspace_id=self._principal.workspace_id, revision=revision

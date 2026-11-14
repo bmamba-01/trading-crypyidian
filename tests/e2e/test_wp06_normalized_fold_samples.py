@@ -230,7 +230,7 @@ def test_wp06_normalized_samples_are_append_only_and_builder_only() -> None:
         heads = compose("run", "--rm", "--no-deps", "migrator", "alembic", "heads")
         check = compose("run", "--rm", "--no-deps", "migrator", "alembic", "check")
         assert heads.stdout.count("(head)") == 1
-        assert "f6b8d0e2a4c7 (head)" in heads.stdout
+        assert "c7e9a1b3d5f8 (head)" in heads.stdout
         assert "No new upgrade operations detected" in check.stdout + check.stderr
         compose(
             "run",

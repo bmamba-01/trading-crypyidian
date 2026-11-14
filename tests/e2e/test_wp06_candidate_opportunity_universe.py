@@ -190,7 +190,7 @@ def test_postgres_candidate_opportunity_universe_rights_seal_and_races():
                 )
                 heads = compose("run", "--rm", "--no-deps", "migrator", "alembic", "heads").stdout
                 assert heads.count("(head)") == 1
-                assert "f6b8d0e2a4c7 (head)" in heads
+                assert "c7e9a1b3d5f8 (head)" in heads
                 assert run_probe("post-lifecycle") == {
                     "grant_retained_after_populated_downgrade": True,
                     "metadata_columns": 14,

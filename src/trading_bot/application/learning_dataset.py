@@ -34,6 +34,9 @@ _AUTHORITATIVE_SAMPLE_FIELDS = (
     "label_version",
     "split",
     "source_dependent",
+    "source_replay_bundle_hash",
+    "source_use_lineage_set_hash",
+    "source_use_lineage",
 )
 
 
@@ -78,13 +81,27 @@ class DatasetEvidenceVerification:
         if sample.source_dependent:
             if self.source_training_eligible is None:
                 raise ValueError("Sample phụ thuộc nguồn cần kết quả rights tường minh.")
-            if self.source_training_eligible and not sample.source_references:
+            if (
+                self.source_training_eligible
+                and not sample.source_references
+                and sample.source_replay_bundle_hash is None
+            ):
                 raise ValueError("Rights được phép phải ghim typed source references.")
+            if (
+                self.source_training_eligible
+                and sample.source_replay_bundle_hash is not None
+                and not sample.source_use_lineage
+                and sample.source_use_lineage_set_hash is None
+            ):
+                raise ValueError("Rights replay TRAINING cần exact source-use lineage hash.")
         elif (
             self.source_training_eligible is not None
             or sample.source_rights_hashes
             or sample.source_revision_refs
             or sample.source_references
+            or sample.source_replay_bundle_hash is not None
+            or sample.source_use_lineage_set_hash is not None
+            or sample.source_use_lineage
         ):
             raise ValueError("Sample WP-02 không được mang quyền hoặc lineage nguồn.")
 
@@ -329,12 +346,25 @@ class DatasetManifestBuilder:
         ):
             return "provenance_mismatch"
         if authoritative.source_dependent:
-            if request.manifest_version != "dataset-manifest-v3":
+            if request.manifest_version == "dataset-manifest-v3":
+                if not authoritative.source_references:
+                    return "typed_source_lineage_unverified"
+            elif request.manifest_version == "dataset-manifest-v4":
+                if (
+                    authoritative.source_replay_bundle_hash is None
+                    or not authoritative.source_use_lineage
+                ):
+                    return "replay_bundle_lineage_unverified"
+            elif request.manifest_version == "dataset-manifest-v5":
+                if (
+                    authoritative.source_replay_bundle_hash is None
+                    or authoritative.source_use_lineage_set_hash is None
+                ):
+                    return "replay_bundle_lineage_unverified"
+            else:
                 return "typed_source_lineage_required"
             if evidence.source_training_eligible is not True:
                 return "source_training_not_eligible"
-            if not authoritative.source_references:
-                return "typed_source_lineage_unverified"
         elif evidence.source_training_eligible is not None:
             return "provenance_mismatch"
         return None

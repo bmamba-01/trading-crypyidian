@@ -60,6 +60,7 @@ class PaperLedgerRepository:
         quote_asset: str,
         quantity: Decimal,
         created_at: datetime,
+        bot_decision_id: UUID | None = None,
         evidence: dict[str, Any] | None = None,
     ) -> IntentAppendResult:
         """Lock PAPER account và append intent; cùng idempotency key được nhận lại."""
@@ -77,6 +78,14 @@ class PaperLedgerRepository:
             quantity=quantity,
             created_at=created_at,
         )
+        if bot_decision_id is not None and (
+            type(bot_decision_id) is not UUID or bot_decision_id.int == 0
+        ):
+            raise PaperLedgerConflict("bot_decision_id phải là UUID khác zero hoặc null.")
+        if bot_decision_id is not None and (evidence or {}).get("bot_decision_id") != str(
+            bot_decision_id
+        ):
+            raise PaperLedgerConflict("Typed bot decision phải khớp lineage audit hiện hữu.")
         account = await uow.session.scalar(
             select(TradingAccount)
             .where(
@@ -106,6 +115,7 @@ class PaperLedgerRepository:
             "strategy_release_hash": strategy_release_hash,
             "feature_snapshot_id": feature_snapshot_id,
             "candidate_id": candidate_id,
+            "bot_decision_id": bot_decision_id,
             "risk_decision_id": risk_decision_id,
             "risk_reservation_id": risk_reservation_id,
             "symbol": symbol,

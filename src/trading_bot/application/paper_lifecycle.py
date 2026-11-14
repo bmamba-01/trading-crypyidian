@@ -356,6 +356,7 @@ class PaperLifecycleCoordinator:
         risk_reservation_id: UUID,
         quote_asset: str,
         evidence: dict[str, object],
+        bot_decision_id: UUID | None = None,
         fencing_token: FencingToken | None = None,
     ) -> PaperSubmissionResult:
         """Ghi intent/checkpoint nguyên tử; state ứng viên chỉ công bố sau commit."""
@@ -404,6 +405,7 @@ class PaperLifecycleCoordinator:
             candidate_id=str(plan.candidate_id),
             risk_decision_id=risk_decision_id,
             risk_reservation_id=risk_reservation_id,
+            bot_decision_id=bot_decision_id,
             symbol=plan.symbol,
             side=plan.direction.upper(),
             quote_asset=quote_asset,

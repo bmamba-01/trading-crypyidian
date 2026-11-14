@@ -11,6 +11,10 @@ from enum import StrEnum
 from uuid import UUID
 
 from trading_bot.domain.learning.labels import _sha256, _timestamp
+from trading_bot.domain.learning.source_use_lineage import (
+    SourceUseLineage,
+    source_use_lineage_set_hash,
+)
 from trading_bot.domain.research.source_policy import SourceUsePurpose
 
 _SOURCE_IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
@@ -88,6 +92,9 @@ class DatasetSample:
     source_rights_hashes: tuple[str, ...]
     source_revision_refs: tuple[str, ...]
     source_references: tuple[DatasetSourceReference, ...] = ()
+    source_replay_bundle_hash: str | None = None
+    source_use_lineage_set_hash: str | None = None
+    source_use_lineage: tuple[SourceUseLineage, ...] = ()
 
     def __post_init__(self) -> None:
         for name in ("sample_id", "outcome_id", "label_version"):
@@ -134,8 +141,42 @@ class DatasetSample:
             if previous_hash != item.rights_hash:
                 raise ValueError("Cùng source reference có conflicting rights hash.")
         object.__setattr__(self, "source_references", references)
-        if self.source_dependent and not references and (not rights or not revisions):
+        replay_hash = self.source_replay_bundle_hash
+        if replay_hash is not None:
+            _sha256(replay_hash, "source_replay_bundle_hash")
+        lineage_hash = self.source_use_lineage_set_hash
+        if lineage_hash is not None:
+            _sha256(lineage_hash, "source_use_lineage_set_hash")
+        if (
+            self.source_dependent
+            and not references
+            and (not rights or not revisions)
+            and (replay_hash is None)
+        ):
             raise ValueError("Sample phụ thuộc nguồn phải ghim rights hash và source revision.")
+        if replay_hash is not None and (
+            not self.source_dependent or references or rights or revisions
+        ):
+            raise ValueError("Replay bundle lineage phải là đường source-dependent riêng.")
+        raw_use_lineage = tuple(self.source_use_lineage)
+        if any(type(item) is not SourceUseLineage for item in raw_use_lineage):
+            raise ValueError("source_use_lineage phải chứa SourceUseLineage.")
+        use_lineage = tuple(sorted(raw_use_lineage, key=lambda item: item.child_dataset_hash))
+        if len({item.child_dataset_hash for item in use_lineage}) != len(use_lineage):
+            raise ValueError("source_use_lineage không được có child trùng.")
+        if use_lineage and (
+            replay_hash is None
+            or any(item.bundle_hash != replay_hash for item in use_lineage)
+            or not self.source_dependent
+        ):
+            raise ValueError(
+                "source_use_lineage phải khớp replay bundle và sample phụ thuộc nguồn."
+            )
+        object.__setattr__(self, "source_use_lineage", use_lineage)
+        if lineage_hash is not None and (
+            replay_hash is None or not self.source_dependent or use_lineage
+        ):
+            raise ValueError("Lineage-set hash chỉ hợp lệ cho sample replay source-dependent.")
         if self.source_dependent and references and (rights or revisions):
             if rights != tuple(sorted({item.rights_hash for item in references})):
                 raise ValueError("Rights hash cũ không khớp typed source references.")
@@ -180,6 +221,7 @@ class DatasetManifest:
     holdout_sealed_at: datetime | None
     manifest_version: str = "dataset-manifest-v1"
     retention_policy_ref: str = "unspecified-offline-fixture"
+    source_use_lineage: tuple[SourceUseLineage, ...] = ()
     canonical_json: str = field(init=False)
     content_hash: str = field(init=False)
 
@@ -217,11 +259,26 @@ class DatasetManifest:
             raise ValueError("Dataset không được có sample_id duplicate.")
         if set(sample_ids) & set(excluded_ids):
             raise ValueError("Sample không thể đồng thời hợp lệ và bị loại.")
+        raw_lineage = tuple(self.source_use_lineage)
+        if any(type(item) is not SourceUseLineage for item in raw_lineage):
+            raise ValueError("source_use_lineage manifest phải chứa SourceUseLineage.")
+        lineage = tuple(sorted(raw_lineage, key=lambda item: item.child_dataset_hash))
+        if len({item.child_dataset_hash for item in lineage}) != len(lineage):
+            raise ValueError("source_use_lineage manifest không được lặp child.")
+        object.__setattr__(self, "source_use_lineage", lineage)
         for item in samples:
             if self.manifest_version == "dataset-manifest-v2":
                 if item.split not in {DatasetSplit.DEVELOPMENT, DatasetSplit.HOLDOUT}:
                     raise ValueError("Manifest v2 chỉ nhận split development hoặc holdout.")
-            elif item.split is DatasetSplit.DEVELOPMENT:
+            elif (
+                self.manifest_version
+                not in {
+                    "dataset-manifest-v2",
+                    "dataset-manifest-v4",
+                    "dataset-manifest-v5",
+                }
+                and item.split is DatasetSplit.DEVELOPMENT
+            ):
                 raise ValueError("Split development chỉ được dùng với dataset-manifest-v2.")
             if self.manifest_version == "dataset-manifest-v3":
                 if item.source_dependent and not item.source_references:
@@ -234,6 +291,36 @@ class DatasetManifest:
                     )
             elif item.source_references:
                 raise ValueError("Typed source reference chỉ được lưu trong manifest v3.")
+            if self.manifest_version == "dataset-manifest-v4":
+                if item.source_dependent and item.source_replay_bundle_hash is None:
+                    raise ValueError(
+                        "Manifest v4 cần replay bundle lineage cho sample phụ thuộc nguồn."
+                    )
+                if item.source_dependent and not item.source_use_lineage:
+                    raise ValueError(
+                        "Manifest v4 cần source-use lineage exact cho sample phụ thuộc nguồn."
+                    )
+                if item.source_replay_bundle_hash is not None and not item.source_dependent:
+                    raise ValueError("Replay bundle lineage phải đánh dấu sample phụ thuộc nguồn.")
+            elif self.manifest_version == "dataset-manifest-v5":
+                if item.source_dependent and (
+                    item.source_replay_bundle_hash is None
+                    or item.source_use_lineage_set_hash is None
+                    or item.source_use_lineage
+                ):
+                    raise ValueError("Manifest v5 sample cần bundle và shared lineage-set hash.")
+                if not item.source_dependent and (
+                    item.source_replay_bundle_hash is not None
+                    or item.source_use_lineage_set_hash is not None
+                    or item.source_use_lineage
+                ):
+                    raise ValueError("Sample source-free không được mang replay lineage.")
+            elif (
+                item.source_replay_bundle_hash is not None
+                or item.source_use_lineage_set_hash is not None
+                or item.source_use_lineage
+            ):
+                raise ValueError("Replay bundle lineage cần manifest v4 hoặc v5.")
             if not start <= item.decision_at < end:
                 raise ValueError("Sample decision nằm ngoài data range.")
             if item.decision_at > as_of:
@@ -242,6 +329,25 @@ class DatasetManifest:
                 raise ValueError("Label version của sample không khớp manifest.")
             if item.outcome_end > as_of:
                 raise ValueError("outcome_end của sample không được sau as_of.")
+        if self.manifest_version == "dataset-manifest-v5":
+            dependent = tuple(item for item in samples if item.source_dependent)
+            if dependent:
+                if len(dependent) != len(samples) or not lineage:
+                    raise ValueError("Manifest v5 replay yêu cầu một lineage set cho mọi sample.")
+                expected_lineage_hash = source_use_lineage_set_hash(lineage)
+                bundle_hashes = {item.source_replay_bundle_hash for item in dependent}
+                lineage_hashes = {item.source_use_lineage_set_hash for item in dependent}
+                if (
+                    len(bundle_hashes) != 1
+                    or len(lineage_hashes) != 1
+                    or any(item.bundle_hash not in bundle_hashes for item in lineage)
+                    or lineage_hashes != {expected_lineage_hash}
+                ):
+                    raise ValueError("Manifest v5 samples không ghim đúng shared replay lineage.")
+            elif lineage:
+                raise ValueError("Manifest v5 source-free không được chứa replay lineage.")
+        elif lineage:
+            raise ValueError("Top-level replay lineage chỉ hợp lệ trong manifest v5.")
         object.__setattr__(self, "samples", samples)
         object.__setattr__(self, "exclusions", exclusions)
 
@@ -292,11 +398,19 @@ class DatasetManifest:
                     }
                     for reference in item.source_references
                 ]
+            elif self.manifest_version == "dataset-manifest-v4":
+                sample_payload["source_replay_bundle_hash"] = item.source_replay_bundle_hash
+                sample_payload["source_use_lineage"] = [
+                    lineage.canonical_payload for lineage in item.source_use_lineage
+                ]
+            elif self.manifest_version == "dataset-manifest-v5":
+                sample_payload["source_replay_bundle_hash"] = item.source_replay_bundle_hash
+                sample_payload["source_use_lineage_set_hash"] = item.source_use_lineage_set_hash
             else:
                 sample_payload["source_rights_hashes"] = list(item.source_rights_hashes)
                 sample_payload["source_revision_refs"] = list(item.source_revision_refs)
             samples.append(sample_payload)
-        return {
+        payload: dict[str, object] = {
             "manifest_version": self.manifest_version,
             "workspace_id": str(self.workspace_id),
             "query_hash": self.query_hash,
@@ -318,6 +432,11 @@ class DatasetManifest:
             ),
             "retention_policy_ref": self.retention_policy_ref,
         }
+        if self.manifest_version == "dataset-manifest-v5":
+            payload["source_use_lineage"] = [
+                lineage.canonical_payload for lineage in self.source_use_lineage
+            ]
+        return payload
 
     @classmethod
     def from_canonical_json(
@@ -351,11 +470,19 @@ class DatasetManifest:
             "holdout_sealed_at",
             "retention_policy_ref",
         }
-        if not isinstance(payload, dict) or set(payload) != common_keys:
+        if not isinstance(payload, dict) or frozenset(payload) not in {
+            frozenset(common_keys),
+            frozenset(common_keys | {"source_use_lineage"}),
+        }:
             raise ValueError("canonical manifest có schema không hỗ trợ.")
         manifest_version = payload.get("manifest_version")
         if not isinstance(manifest_version, str) or not manifest_version.strip():
             raise ValueError("manifest_version không hợp lệ.")
+        expected_manifest_keys = common_keys | (
+            {"source_use_lineage"} if manifest_version == "dataset-manifest-v5" else set()
+        )
+        if set(payload) != expected_manifest_keys:
+            raise ValueError("canonical manifest có version/schema không khớp.")
 
         def parse_timestamp(value: object, name: str) -> datetime:
             if not isinstance(value, str):
@@ -400,6 +527,10 @@ class DatasetManifest:
                 lineage_keys = (
                     {"source_references"}
                     if manifest_version == "dataset-manifest-v3"
+                    else {"source_replay_bundle_hash", "source_use_lineage"}
+                    if manifest_version == "dataset-manifest-v4"
+                    else {"source_replay_bundle_hash", "source_use_lineage_set_hash"}
+                    if manifest_version == "dataset-manifest-v5"
                     else legacy_lineage_keys
                 )
                 if set(item) != sample_base_keys | lineage_keys:
@@ -407,6 +538,9 @@ class DatasetManifest:
                 references: tuple[DatasetSourceReference, ...] = ()
                 rights_hashes: tuple[str, ...] = ()
                 revision_refs: tuple[str, ...] = ()
+                replay_bundle_hash: str | None = None
+                lineage_set_hash: str | None = None
+                use_lineage: tuple[SourceUseLineage, ...] = ()
                 if manifest_version == "dataset-manifest-v3":
                     raw_references = item["source_references"]
                     if not isinstance(raw_references, list):
@@ -436,6 +570,17 @@ class DatasetManifest:
                             )
                         )
                     references = tuple(parsed_references)
+                elif manifest_version == "dataset-manifest-v4":
+                    replay_bundle_hash = item["source_replay_bundle_hash"]
+                    raw_use_lineage = item["source_use_lineage"]
+                    if not isinstance(raw_use_lineage, list):
+                        raise ValueError("source_use_lineage phải là danh sách.")
+                    use_lineage = tuple(
+                        SourceUseLineage.from_payload(value) for value in raw_use_lineage
+                    )
+                elif manifest_version == "dataset-manifest-v5":
+                    replay_bundle_hash = item["source_replay_bundle_hash"]
+                    lineage_set_hash = item["source_use_lineage_set_hash"]
                 else:
                     rights_hashes = tuple(item["source_rights_hashes"])
                     revision_refs = tuple(item["source_revision_refs"])
@@ -458,9 +603,18 @@ class DatasetManifest:
                     source_rights_hashes=rights_hashes,
                     source_revision_refs=revision_refs,
                     source_references=references,
+                    source_replay_bundle_hash=replay_bundle_hash,
+                    source_use_lineage_set_hash=lineage_set_hash,
+                    source_use_lineage=use_lineage,
                 )
 
             samples = tuple(parse_sample(item) for item in raw_samples)
+            raw_manifest_lineage = payload.get("source_use_lineage", [])
+            if not isinstance(raw_manifest_lineage, list):
+                raise ValueError("source_use_lineage manifest phải là danh sách.")
+            manifest_lineage = tuple(
+                SourceUseLineage.from_payload(item) for item in raw_manifest_lineage
+            )
             exclusions = tuple(
                 DatasetExclusion(item["sample_id"], tuple(item["reasons"]))
                 for item in raw_exclusions
@@ -490,6 +644,7 @@ class DatasetManifest:
                 else None,
                 manifest_version=payload["manifest_version"],
                 retention_policy_ref=payload["retention_policy_ref"],
+                source_use_lineage=manifest_lineage,
             )
         except (KeyError, TypeError, ValueError) as error:
             raise ValueError("canonical manifest fields are invalid.") from error

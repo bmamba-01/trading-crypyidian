@@ -15,6 +15,7 @@ Kiểm tra:
 
 from __future__ import annotations
 
+import hashlib
 import secrets
 import socket
 import threading
@@ -43,10 +44,12 @@ from trading_bot.admin.presentation import (
 from trading_bot.admin.research_source_router import admin_router as research_source_admin_router
 from trading_bot.admin.research_source_router import router as research_source_router
 from trading_bot.admin.web_router import router as admin_web_router
+from trading_bot.application.source_policy_admin import SourceLicenseEvidence
 from trading_bot.auth.policy import Principal, Role
 from trading_bot.auth.security import LoginRateLimiter
 from trading_bot.auth.service import AuthenticationFailure, AuthIdentity, LoginResult
 from trading_bot.config.settings import AppSettings
+from trading_bot.domain.research.license_scope import SourceLicenseScope
 from trading_bot.domain.research.source_policy import (
     SourcePolicyState,
     SourceUsePurpose,
@@ -68,6 +71,27 @@ USER_ID = UUID("c3b4a5d6-e7f8-4a9b-0c1d-2e3f4a5b6c7d")
 MEMBERSHIP_ID = UUID("a93c4b18-f76c-4cfb-9bad-9e0aee5ccadc")
 
 NOW = datetime.now(UTC)
+UI_SCOPE = SourceLicenseScope(
+    source_id="macro-economic-calendar",
+    provider="FEDERAL_RESERVE",
+    product="ECONOMIC_CALENDAR",
+    venue="CRYPIDIAN",
+    contract="SPOT",
+    symbols=("BTCUSDT",),
+    intervals=("1h",),
+    data_start=datetime(2024, 1, 1, tzinfo=UTC),
+    data_end=datetime(2035, 1, 1, tzinfo=UTC),
+    allowed_purposes=(
+        SourceUsePurpose.METADATA,
+        SourceUsePurpose.BACKTEST_RESEARCH,
+    ),
+    allowed_outputs=("aggregate_report", "derived_features", "trained_model"),
+    max_retention_days=None,
+    attribution="Nguồn fixture chờ duyệt; chỉ dùng để kiểm giao diện.",
+    derived_use=("aggregate_reporting", "feature_extraction", "model_training"),
+)
+MOCK_PENDING_EVIDENCE: dict[str, SourceLicenseEvidence] = {}
+MOCK_PENDING_COMMANDS: list[tuple[str, Any]] = []
 
 # Nguồn 1: Binance Official Research (Đã duyệt / Verified)
 BUDGET_1 = SourceBudget(
@@ -165,6 +189,12 @@ ENTRY_2 = ENTRY_2.transition(
     budget=BUDGET_2,
     evidence_ref="fed-policy-fomc-2026",
     valid_until=NOW + timedelta(days=180),
+    provider=UI_SCOPE.provider,
+    product=UI_SCOPE.product,
+    venue=UI_SCOPE.venue,
+    contract=UI_SCOPE.contract,
+    license_scope=UI_SCOPE,
+    attribution=UI_SCOPE.attribution,
 )
 
 
@@ -247,10 +277,52 @@ class MockPrincipalSourcePolicyAdminFacade:
             return (ENTRY_2, None)
         return None
 
+    async def get_pending_license_evidence(
+        self, source_id: str, policy_id: str
+    ) -> SourceLicenseEvidence | None:
+        if source_id == ENTRY_2.source_id and policy_id == ENTRY_2.current.policy.policy_id:
+            return MOCK_PENDING_EVIDENCE.get(policy_id)
+        return None
+
+    async def upload_license_evidence(
+        self,
+        source_id: str,
+        policy_id: str,
+        stream: Any,
+        *,
+        media_type: str,
+        content_length: str | None,
+        idempotency_key: UUID,
+    ) -> SourceLicenseEvidence:
+        del content_length
+        if source_id != ENTRY_2.source_id or policy_id != ENTRY_2.current.policy.policy_id:
+            raise LookupError("Không tìm thấy policy fixture.")
+        digest = hashlib.sha256()
+        byte_count = 0
+        async for chunk in stream:
+            digest.update(chunk)
+            byte_count += len(chunk)
+        evidence = SourceLicenseEvidence(
+            evidence_id=UUID("b1c2d3e4-f5a6-4789-8abc-def012345678"),
+            source_id=source_id,
+            policy_id=policy_id,
+            idempotency_key=idempotency_key,
+            evidence_ref=ENTRY_2.current.policy.evidence_ref or "",
+            digest=digest.hexdigest(),
+            byte_count=byte_count,
+            media_type=media_type,
+            license_scope=UI_SCOPE,
+            actor_id=str(self.principal.user_id),
+            created_at=datetime.now(UTC),
+        )
+        MOCK_PENDING_EVIDENCE[policy_id] = evidence
+        return evidence
+
     async def create_source(self, command: Any, key: Any) -> Any:
         return ENTRY_1.current
 
     async def submit_pending(self, source_id: str, command: Any, key: Any) -> Any:
+        MOCK_PENDING_COMMANDS.append((source_id, command))
         return ENTRY_2.current
 
     async def change_disabled_state(self, source_id: str, state: Any, reason: str, key: Any) -> Any:
@@ -521,4 +593,93 @@ def test_research_sources_source_selection_flow(sources_server_url: str) -> None
         assert "https://www.federalreserve.gov/feeds" in content
         assert "Đang chờ thẩm định quyền lưu trữ" in content
 
+        browser.close()
+
+
+def test_license_scope_digest_upload_and_review_selection_desktop_mobile(
+    sources_server_url: str,
+) -> None:
+    """Kiểm form quyền typed, raw upload, digest sau reload và bố cục responsive."""
+    MOCK_PENDING_EVIDENCE.clear()
+    MOCK_PENDING_COMMANDS.clear()
+    cookie_value = f"{WORKSPACE_ID}:valid_test_token_sources"
+    file_bytes = b"private synthetic license body that must not be rendered"
+    expected_digest = hashlib.sha256(file_bytes).hexdigest()
+    evidence_id = "b1c2d3e4-f5a6-4789-8abc-def012345678"
+    evidence_dir = Path(__file__).parent / "evidence"
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        for name, width, height in (
+            ("desktop", 1280, 800),
+            ("mobile", 390, 844),
+        ):
+            context = browser.new_context(
+                viewport={"width": width, "height": height},
+                is_mobile=width < 500,
+                has_touch=width < 500,
+                color_scheme="light",
+            )
+            context.add_cookies(
+                [
+                    {
+                        "name": "crypidian_session",
+                        "value": cookie_value,
+                        "domain": "127.0.0.1",
+                        "path": "/",
+                        "httpOnly": True,
+                        "sameSite": "Lax",
+                    }
+                ]
+            )
+            page = context.new_page()
+            page.goto(
+                f"{sources_server_url}/admin/research-sources?source_id=macro-economic-calendar",
+                wait_until="networkidle",
+            )
+
+            assert page.locator("html").get_attribute("lang") == "vi"
+            assert page.get_by_text("Phạm vi quyền đã chuẩn hóa", exact=True).is_visible()
+            assert page.locator("#scope-provider").input_value() == UI_SCOPE.provider
+            assert page.locator("#scope-symbols").input_value() == "BTCUSDT"
+            upload_form = page.get_by_role("form", name="Tải lên bằng chứng quyền")
+            assert upload_form.count() == 1
+            upload_form.locator('input[type="file"]').set_input_files(
+                {
+                    "name": "contract-private.txt",
+                    "mimeType": "text/plain",
+                    "buffer": file_bytes,
+                }
+            )
+            upload_form.get_by_role("button", name="Tải lên và tính SHA-256").click()
+            page.get_by_text(expected_digest, exact=True).wait_for(state="visible", timeout=5000)
+            page.reload(wait_until="networkidle")
+            page.get_by_text(expected_digest, exact=True).wait_for(state="visible", timeout=5000)
+            assert "contract-private.txt" not in page.content()
+            assert file_bytes.decode() not in page.content()
+
+            evidence_select = page.get_by_label("Bằng chứng dùng để duyệt")
+            assert evidence_select.locator(f'option[value="{evidence_id}"]').count() == 1
+            page.locator("details summary:has-text('Duyệt quyền độc lập')").click()
+            evidence_select.select_option(evidence_id)
+            assert page.get_by_role("button", name="Sao chép SHA-256 đầy đủ").is_visible()
+            page.locator("details summary:has-text('Gửi policy chờ duyệt')").click()
+            pending_form = page.get_by_role("form", name="Gửi policy chờ duyệt")
+            pending_form.locator("#pending-reason").fill("Kiểm thử gửi scope đã chuẩn hóa")
+            pending_form.get_by_role("button", name="Gửi chờ duyệt").click()
+            page.wait_for_load_state("networkidle")
+            submitted_source, submitted = MOCK_PENDING_COMMANDS[-1]
+            assert submitted_source == ENTRY_2.source_id
+            assert submitted.license_scope.symbols == UI_SCOPE.symbols
+            assert submitted.license_scope.intervals == UI_SCOPE.intervals
+            assert submitted.license_scope.allowed_outputs == UI_SCOPE.allowed_outputs
+            assert submitted.license_scope.derived_use == UI_SCOPE.derived_use
+            assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+
+            page.screenshot(
+                path=str(evidence_dir / f"wp06-license-evidence-{name}.png"),
+                full_page=True,
+            )
+            context.close()
         browser.close()

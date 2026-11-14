@@ -48,6 +48,20 @@ class OrderIntentRecord(UuidPrimaryKey, CreatedAt, Base):
             ["bot_instance.workspace_id", "bot_instance.id", "bot_instance.trading_account_id"],
             name="fk_order_intent_bot_account",
         ),
+        ForeignKeyConstraint(
+            ["workspace_id", "bot_id", "bot_decision_id"],
+            ["bot_decision.workspace_id", "bot_decision.bot_id", "bot_decision.id"],
+            ondelete="RESTRICT",
+            name="fk_order_intent_bot_decision",
+        ),
+        Index(
+            "uq_order_intent_bot_decision",
+            "workspace_id",
+            "bot_id",
+            "bot_decision_id",
+            unique=True,
+            postgresql_where=text("bot_decision_id IS NOT NULL"),
+        ),
         Index("ix_order_intent_bot_scope", "workspace_id", "bot_id", "account_id"),
         UniqueConstraint("workspace_id", "id", name="uq_order_intent_workspace_id"),
         UniqueConstraint(
@@ -122,6 +136,7 @@ class OrderIntentRecord(UuidPrimaryKey, CreatedAt, Base):
     strategy_release_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     feature_snapshot_id: Mapped[str] = mapped_column(String(64), nullable=False)
     candidate_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    bot_decision_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True)
     risk_decision_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     risk_reservation_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     symbol: Mapped[str] = mapped_column(String(64), nullable=False)

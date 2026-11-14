@@ -324,6 +324,7 @@ def test_persisted_candidate_runs_bot_release_and_preserves_bot_lineage() -> Non
     assert result.submission.duplicate is False
     assert counters.cycles == counters.reserves == counters.submissions == 1
     assert counters.cycle_kwargs["bot_config"].strategy.release_id == "h03-v1"
+    assert counters.submit_kwargs["bot_decision_id"] == decision.decision_id
     assert callback_state.submitted_evidence["bot_decision_id"] == str(decision.decision_id)
     assert callback_state.submitted_evidence["bot_decision_hash"] == decision.decision_hash
     assert callback_state.submitted_evidence["bot_candidate_id"] == decision.candidate_id
@@ -751,6 +752,7 @@ def test_duplicate_decision_returns_hydrated_order_without_repeating_risk_or_sub
     )
     existing = SimpleNamespace(
         id=uuid4(),
+        bot_decision_id=None,
         risk_decision_id=uuid4(),
         risk_reservation_id=uuid4(),
         settings_version_id=published.settings_version_id,
@@ -787,6 +789,7 @@ def test_retry_with_same_idempotency_key_but_different_evaluation_time_conflicts
     )
     existing = SimpleNamespace(
         id=uuid4(),
+        bot_decision_id=None,
         risk_decision_id=uuid4(),
         risk_reservation_id=uuid4(),
         settings_version_id=published.settings_version_id,

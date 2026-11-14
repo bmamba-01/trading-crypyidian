@@ -166,7 +166,12 @@ def build_manifest_fold_plan(
         raise ValueError("split policy của manifest không khớp phiên bản được yêu cầu.")
     if any(type(sample) is not DatasetSample for sample in manifest.samples):
         raise ValueError("Manifest thiếu sample lineage authoritative hợp lệ.")
-    if any(sample.source_dependent and not sample.source_references for sample in manifest.samples):
+    if any(
+        sample.source_dependent
+        and not sample.source_references
+        and sample.source_replay_bundle_hash is None
+        for sample in manifest.samples
+    ):
         raise ValueError(
             "Manifest có lineage nguồn cũ chưa ghép cặp; không thể dùng trong đánh giá fold."
         )
@@ -215,7 +220,11 @@ def build_manifest_fold_plan(
         for lineage in lineages:
             sample = samples_by_id[lineage.sample_id]
             role = _sample_role(sample, fold)
-            if manifest.manifest_version == "dataset-manifest-v2":
+            if manifest.manifest_version in {
+                "dataset-manifest-v2",
+                "dataset-manifest-v4",
+                "dataset-manifest-v5",
+            }:
                 if role is not None:
                     if sample.split is DatasetSplit.HOLDOUT:
                         raise ValueError(

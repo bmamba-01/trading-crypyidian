@@ -34,6 +34,7 @@ SETTINGS_ID = UUID("cccccccc-cccc-4ccc-8ccc-cccccccccccc")
 RELEASE_ID = UUID("dddddddd-dddd-4ddd-8ddd-dddddddddddd")
 RISK_DECISION_ID = UUID("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee")
 RISK_RESERVATION_ID = UUID("ffffffff-ffff-4fff-8fff-ffffffffffff")
+BOT_DECISION_ID = UUID("12121212-1212-4212-8212-121212121212")
 NOW = datetime(2026, 10, 22, tzinfo=UTC)
 
 
@@ -70,6 +71,26 @@ def test_paper_ledger_models_have_tenant_lineage_and_exact_state_checks() -> Non
     assert "status = 'OPEN'" in trade_checks
     assert "closed_at IS NULL" in trade_checks
     assert TradeRecord.__table__.c.quote_asset.type.length == 16
+    assert OrderIntentRecord.__table__.c.bot_decision_id.nullable is True
+    attribution_fk = next(
+        constraint
+        for constraint in OrderIntentRecord.__table__.foreign_key_constraints
+        if constraint.name == "fk_order_intent_bot_decision"
+    )
+    assert {element.parent.name for element in attribution_fk.elements} == {
+        "workspace_id",
+        "bot_id",
+        "bot_decision_id",
+    }
+    unique_decision_indexes = [
+        index
+        for index in OrderIntentRecord.__table__.indexes
+        if index.name == "uq_order_intent_bot_decision"
+    ]
+    assert len(unique_decision_indexes) == 1
+    assert unique_decision_indexes[0].unique is True
+    partial_predicate = unique_decision_indexes[0].dialect_options["postgresql"]["where"]
+    assert "bot_decision_id IS NOT NULL" in str(partial_predicate)
 
 
 def _check_sql(model: type) -> str:
@@ -306,7 +327,13 @@ async def test_intent_create_and_exact_retry_preserve_lineage_and_exchange_order
             "release_content_hash": "b" * 64,
         }
     )
-    result = await PaperLedgerRepository().create_intent(uow, **_intent_args())  # type: ignore[arg-type]
+    result = await PaperLedgerRepository().create_intent(
+        uow,
+        **_intent_args(
+            bot_decision_id=BOT_DECISION_ID,
+            evidence={"bar_keys": ["bar-1"], "bot_decision_id": str(BOT_DECISION_ID)},
+        ),
+    )  # type: ignore[arg-type]
     assert not result.duplicate
     intent = next(row for row in uow.session.added if isinstance(row, OrderIntentRecord))
     order = next(row for row in uow.session.added if isinstance(row, ExchangeOrderRecord))
@@ -316,6 +343,7 @@ async def test_intent_create_and_exact_retry_preserve_lineage_and_exchange_order
     assert intent.quote_asset == "USDT"
     assert intent.risk_decision_id == RISK_DECISION_ID
     assert intent.risk_reservation_id == RISK_RESERVATION_ID
+    assert intent.bot_decision_id == BOT_DECISION_ID
     assert order.intent_id == result.intent_id
     assert order.status == "NEW"
     assert len(uow.events) == 1
@@ -337,15 +365,38 @@ async def test_intent_retry_rejects_changed_evidence_or_creation_time() -> None:
         },
         created_at=NOW,
         evidence={"bar_keys": ["bar-1"]},
+        bot_decision_id=None,
     )
     for override in (
         {"evidence": {"bar_keys": ["changed"]}},
         {"created_at": NOW + timedelta(seconds=1)},
+        {
+            "bot_decision_id": BOT_DECISION_ID,
+            "evidence": {
+                "bar_keys": ["bar-1"],
+                "bot_decision_id": str(BOT_DECISION_ID),
+            },
+        },
     ):
         with pytest.raises(PaperLedgerConflict, match="payload"):
             await PaperLedgerRepository().create_intent(
                 FakeUow(existing_intent=existing), **_intent_args(**override)
             )  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_typed_bot_decision_requires_matching_audit_id() -> None:
+    uow = FakeUow()
+    with pytest.raises(PaperLedgerConflict, match="khớp lineage audit"):
+        await PaperLedgerRepository().create_intent(
+            uow,
+            **_intent_args(
+                bot_decision_id=BOT_DECISION_ID,
+                evidence={"bar_keys": ["bar-1"], "bot_decision_id": str(uuid4())},
+            ),
+        )  # type: ignore[arg-type]
+    assert not uow.session.added
+    assert not uow.events
 
 
 @pytest.mark.asyncio

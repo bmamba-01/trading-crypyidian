@@ -24,6 +24,10 @@ from trading_bot.domain.learning.dataset import (
     DatasetSplit,
 )
 from trading_bot.domain.learning.evaluation import EvaluationTrade, WalkForwardSplit
+from trading_bot.domain.learning.source_use_lineage import (
+    SourceUseLineage,
+    source_use_lineage_set_hash,
+)
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -49,6 +53,31 @@ class LearningCandidateOutcome:
     ordinal: int
     outcome_hash: str
     trade: EvaluationTrade
+    source_replay_bundle_hash: str | None = None
+    source_use_lineage: tuple[SourceUseLineage, ...] = ()
+
+    def __post_init__(self) -> None:
+        value = self.source_replay_bundle_hash
+        if value is not None and (
+            not isinstance(value, str)
+            or len(value) != 64
+            or any(character not in "0123456789abcdef" for character in value)
+        ):
+            raise ValueError("source_replay_bundle_hash phải là SHA-256 hoặc null.")
+        lineage = tuple(self.source_use_lineage)
+        if any(type(item) is not SourceUseLineage for item in lineage):
+            raise ValueError("source_use_lineage cần SourceUseLineage typed.")
+        if lineage != tuple(sorted(lineage, key=lambda item: item.child_dataset_hash)):
+            raise ValueError("source_use_lineage phải sắp xếp theo child hash.")
+        if len({item.child_dataset_hash for item in lineage}) != len(lineage):
+            raise ValueError("source_use_lineage không được lặp child.")
+        if value is None and lineage:
+            raise ValueError("Source-use lineage không được tồn tại khi thiếu bundle.")
+        if value is not None and (
+            not lineage or any(item.bundle_hash != value for item in lineage)
+        ):
+            raise ValueError("Source-use lineage phải khớp bundle và không rỗng.")
+        object.__setattr__(self, "source_use_lineage", lineage)
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,6 +215,17 @@ def build_learning_split_candidate(
     row_ids = tuple(item.record_id for item in ordered)
     if len(set(row_ids)) != len(row_ids):
         raise ValueError("Outcome record ID bị lặp.")
+    bundle_hashes = {item.source_replay_bundle_hash for item in ordered}
+    if None in bundle_hashes or len(bundle_hashes) != 1:
+        raise ValueError("Mọi outcome phải ghim đúng một replay bundle authoritative.")
+    source_replay_bundle_hash = next(iter(bundle_hashes))
+    assert isinstance(source_replay_bundle_hash, str)
+    lineage_values = {item.source_use_lineage for item in ordered}
+    if len(lineage_values) != 1:
+        raise ValueError("Mọi outcome phải ghim cùng exact source-use child lineage.")
+    source_use_lineage = next(iter(lineage_values))
+    if not source_use_lineage:
+        raise ValueError("Mọi outcome cần source-use lineage không rỗng.")
 
     members: list[dict[str, object]] = []
     accepted: list[tuple[LearningCandidateOutcome, DatasetSample]] = []
@@ -239,9 +279,11 @@ def build_learning_split_candidate(
             label_value=value,
             label_version=LABEL_VERSION,
             split=split,
-            source_dependent=False,
+            source_dependent=True,
             source_rights_hashes=(),
             source_revision_refs=(),
+            source_replay_bundle_hash=item.source_replay_bundle_hash,
+            source_use_lineage_set_hash=source_use_lineage_set_hash(source_use_lineage),
         )
         accepted.append((item, sample))
         schemas.add(trade.entry_feature_schema_hash)
@@ -287,8 +329,9 @@ def build_learning_split_candidate(
         samples=sample_values,
         exclusions=tuple(exclusions),
         holdout_sealed_at=as_of,
-        manifest_version="dataset-manifest-v2",
+        manifest_version="dataset-manifest-v5",
         retention_policy_ref=RETENTION_POLICY_REF,
+        source_use_lineage=source_use_lineage,
     )
     plan = build_manifest_fold_plan(
         manifest,
@@ -442,6 +485,13 @@ class LearningSplitCandidateBuilderService:
                 workspace_id=workspace_id,
                 trial_record_id=trial_record_id,
             )
+            training_lineage = await BacktestOutcomeRepository(
+                session
+            ).load_training_bundle_lineage(
+                workspace_id=workspace_id,
+                trial_record_id=trial_record_id,
+                outcomes=persisted.rows,
+            )
             outcomes = tuple(
                 LearningCandidateOutcome(
                     workspace_id=row.workspace_id,
@@ -450,6 +500,8 @@ class LearningSplitCandidateBuilderService:
                     ordinal=row.ordinal,
                     outcome_hash=row.outcome_hash,
                     trade=row.trade,
+                    source_replay_bundle_hash=training_lineage.bundle_hash,
+                    source_use_lineage=training_lineage.source_use_lineage,
                 )
                 for row in persisted.rows
             )
@@ -493,7 +545,6 @@ class LearningSplitCandidateBuilderService:
         from sqlalchemy import select, text
 
         from trading_bot.adapters.database.models import NormalizedLearningDatasetRecord
-        from trading_bot.adapters.database.replay_training_rights import SOURCE_ID
         from trading_bot.adapters.database.repositories.backtest_outcomes import (
             BacktestOutcomeRepository,
         )
@@ -542,7 +593,9 @@ class LearningSplitCandidateBuilderService:
                 for sample in candidate.manifest.samples
                 for reference in sample.source_references
             }
-            source_ids.add(SOURCE_ID)
+            source_ids.update(
+                lineage.source_id for lineage in candidate.manifest.source_use_lineage
+            )
             ordered_source_ids = await session.execute(
                 text(
                     "SELECT DISTINCT source_id "
@@ -571,6 +624,13 @@ class LearningSplitCandidateBuilderService:
                 workspace_id=workspace_id,
                 trial_record_id=candidate.trial_record_id,
             )
+            training_lineage = await BacktestOutcomeRepository(
+                session
+            ).load_training_bundle_lineage(
+                workspace_id=workspace_id,
+                trial_record_id=candidate.trial_record_id,
+                outcomes=persisted.rows,
+            )
             outcomes = tuple(
                 LearningCandidateOutcome(
                     workspace_id=row.workspace_id,
@@ -579,6 +639,8 @@ class LearningSplitCandidateBuilderService:
                     ordinal=row.ordinal,
                     outcome_hash=row.outcome_hash,
                     trade=row.trade,
+                    source_replay_bundle_hash=training_lineage.bundle_hash,
+                    source_use_lineage=training_lineage.source_use_lineage,
                 )
                 for row in persisted.rows
             )
@@ -605,11 +667,13 @@ class LearningSplitCandidateBuilderService:
                 folds=candidate.config.folds,
                 evaluation_cutoff=candidate.config.evaluation_cutoff,
             )
+            fold_samples = LearningFoldSampleRepository(session)
+            await fold_samples.assert_source_training_eligible(manifest=candidate.manifest)
             normalized = build_normalized_candidate_dataset(
                 candidate=candidate,
                 outcomes=outcomes,
             )
-            write = await LearningFoldSampleRepository(session).append_normalized_dataset(
+            write = await fold_samples.append_normalized_dataset(
                 manifest=candidate.manifest,
                 fold_plan=candidate.fold_plan,
                 approval=approval,
