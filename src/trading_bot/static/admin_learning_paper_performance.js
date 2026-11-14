@@ -33,3 +33,9 @@
     }
   });
 })();
+
+// Độ rộng thanh độ phủ đặt qua CSSOM vì CSP bỏ qua thuộc tính style nội tuyến.
+document.querySelectorAll("[data-coverage-percent]").forEach((bar) => {
+  const percent = Number.parseFloat(bar.dataset.coveragePercent);
+  bar.style.width = `${Number.isFinite(percent) ? Math.max(0, Math.min(100, percent)) : 0}%`;
+});

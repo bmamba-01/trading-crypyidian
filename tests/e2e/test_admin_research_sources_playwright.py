@@ -61,9 +61,8 @@ from trading_bot.domain.research.source_registry import (
     SourceUsage,
 )
 
-SCREENSHOTS_DIR = Path(
-    "/Users/macbook/.gemini/antigravity/brain/4f23167d-60fd-49c3-8248-ddb2b669a2a7/screenshots"
-)
+# Ảnh chụp nằm trong repo để test chạy được trên mọi máy và không ghi ra ngoài dự án.
+SCREENSHOTS_DIR = Path(__file__).resolve().parent / "evidence" / "admin-playwright"
 SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
 
 WORKSPACE_ID = UUID("9b2299f1-a58e-45c7-b0ad-83feb0862510")

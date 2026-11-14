@@ -18,8 +18,13 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import expect, sync_playwright
 
+from tests.e2e.csp_harness import (
+    browser_violations,  # noqa: F401 - fixture nạp qua usefixtures
+    install_security_headers,
+    watch_browser_violations,
+)
 from trading_bot.admin.presentation import label_vi, local_time, number_vi, pnl_tone
 from trading_bot.admin.web_router import router as admin_web_router
 from trading_bot.application.learning_post_mortem import LearningPostMortemService
@@ -38,9 +43,8 @@ from trading_bot.domain.portfolio.reporting import (
     build_bot_report,
 )
 
-SCREENSHOTS_DIR = Path(
-    "/Users/macbook/.gemini/antigravity/brain/4f23167d-60fd-49c3-8248-ddb2b669a2a7/screenshots"
-)
+# Ảnh chụp nằm trong repo để test chạy được trên mọi máy và không ghi ra ngoài dự án.
+SCREENSHOTS_DIR = Path(__file__).resolve().parent / "evidence" / "admin-playwright"
 SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
 
 WORKSPACE_ID = UUID("9b2299f1-a58e-45c7-b0ad-83feb0862510")
@@ -48,6 +52,8 @@ USER_ID = UUID("c3b4a5d6-e7f8-4a9b-0c1d-2e3f4a5b6c7d")
 MEMBERSHIP_ID = UUID("a93c4b18-f76c-4cfb-9bad-9e0aee5ccadc")
 BOT_ID = UUID("77117cc4-6c7f-407e-8f23-948d740a46c2")
 TRADE_ID = UUID("11223344-5566-7788-99aa-bbccddeeff00")
+
+pytestmark = pytest.mark.usefixtures("browser_violations")
 
 
 class MockRevampAuthService:
@@ -136,6 +142,12 @@ class MockRevampReportingService:
 
     def __init__(self) -> None:
         self.trade_id = TRADE_ID
+
+    async def get_dashboard_reports(
+        self, query: Any, principal: Any, *, bot_ids: frozenset[UUID] | None = None
+    ) -> tuple[Any, ...]:
+        """Dashboard đọc thống kê 30 ngày theo lô; mock này không có giao dịch đã đóng."""
+        return ()
 
     async def get_bot_report(self, query: Any, principal: Principal) -> Any:
         now = datetime.now(UTC)
@@ -410,6 +422,7 @@ def create_revamp_test_app() -> FastAPI:
 
     app.mount("/static", StaticFiles(directory="src/trading_bot/static"), name="static")
     app.include_router(admin_web_router)
+    install_security_headers(app)
     return app
 
 
@@ -442,6 +455,7 @@ def test_trading_revamp_playwright_desktop_and_mobile(revamp_server_url: str) ->
         # =========================================================================
         desktop_ctx = browser.new_context(viewport={"width": 1280, "height": 800})
         page = desktop_ctx.new_page()
+        watch_browser_violations(page)
 
         # Đăng nhập
         page.goto(f"{base_url}/admin/login", wait_until="networkidle")
@@ -527,7 +541,14 @@ def test_trading_revamp_playwright_desktop_and_mobile(revamp_server_url: str) ->
         assert page.locator("text=L5 Điểm Kích Hoạt (Trigger Score)").is_visible()
         assert page.locator("text=L6 Tỷ Lệ R:R & Kế Hoạch Vùng Giá").is_visible()
         assert page.locator("text=Trượt giá thực tế (Slippage)").is_visible()
-        assert page.locator("text=Đòn bẩy đề xuất (Leverage)").is_visible()
+        assert page.locator("text=Đòn bẩy & rủi ro tài khoản").is_visible()
+        # Ledger PAPER không lưu L4–L6, đòn bẩy hay SL/TP: panel phải ghi rõ thay vì tự điền.
+        reasoning_panel = page.locator(".trade-reasoning-panel")
+        expect(reasoning_panel.get_by_text("Ledger chưa lưu", exact=True).first).to_be_visible()
+        for fabricated in ("5x (Rủi ro: 1.0%)", "78.5/100", "82.0/100", "ĐẠT (TRENDING)"):
+            assert reasoning_panel.get_by_text(fabricated).count() == 0
+        expect(page.locator("#post-mortem-unevaluated")).to_contain_text("lỗ vượt kế hoạch")
+        assert page.get_by_text("Mục tiêu chốt lời (TP)").count() == 0
 
         # 1.6 Kiểm tra Thao tác "Đưa Ca Này Vào Dữ Liệu Phạt AI"
         ingest_btn = page.locator("#btn-ingest-ai")
@@ -536,7 +557,7 @@ def test_trading_revamp_playwright_desktop_and_mobile(revamp_server_url: str) ->
 
         # Xác minh phản hồi thành công tức thì
         page.wait_for_selector("#ai-ingest-feedback", state="visible", timeout=5000)
-        assert "Đã tiếp nhận thành công!" in page.locator("#ai-ingest-feedback").inner_text()
+        assert "Đã ghi nhận để rà soát" in page.locator("#ai-ingest-feedback").inner_text()
 
         # Chụp màn hình biểu đồ và phân tích quyết định
         page.screenshot(
@@ -555,6 +576,7 @@ def test_trading_revamp_playwright_desktop_and_mobile(revamp_server_url: str) ->
             has_touch=True,
         )
         page_m = mobile_ctx.new_page()
+        watch_browser_violations(page_m)
 
         # Đăng nhập mobile
         page_m.goto(f"{base_url}/admin/login", wait_until="networkidle")
@@ -605,6 +627,7 @@ def test_bot_detail_trading_revamp_playwright_desktop_and_mobile(
         # =========================================================================
         desktop_ctx = browser.new_context(viewport={"width": 1280, "height": 800})
         page = desktop_ctx.new_page()
+        watch_browser_violations(page)
 
         # Đăng nhập
         page.goto(f"{base_url}/admin/login", wait_until="networkidle")
@@ -622,7 +645,7 @@ def test_bot_detail_trading_revamp_playwright_desktop_and_mobile(
         assert page.locator("text=Binance BTC Trend Pullback H01").first.is_visible()
         assert page.locator("text=BTCUSDT").first.is_visible()
         assert page.locator("text=● ĐANG CHẠY").is_visible()
-        assert page.locator("text=Chế độ: PAPER").is_visible()
+        assert page.get_by_text("Chế độ: Mô phỏng (PAPER)", exact=True).is_visible()
 
         # 1.2 Kiểm tra Live Status Bar 5s
         assert page.locator(".live-status-bar").is_visible()
@@ -637,35 +660,41 @@ def test_bot_detail_trading_revamp_playwright_desktop_and_mobile(
         toggle_btn.click()
         assert toggle_btn.inner_text() == "Tạm dừng"
 
-        # 1.3 Kiểm tra Lưới Thẻ Chỉ Số KPI Trading
-        assert page.locator("#kpi-open-positions").is_visible()
-        assert page.locator("#kpi-win-rate").is_visible()
+        # 1.3 KPI đọc từ báo cáo ledger của mock (1 lệnh thắng, lãi ròng 373,5 USDT)
+        expect(page.locator("#kpi-open-positions")).to_have_text("0")
+        expect(page.locator("#kpi-win-rate")).to_have_text("100%")
+        expect(page.locator("#kpi-closed-trades")).to_have_text("Tổng số lệnh đóng: 1")
+        expect(page.locator("#kpi-net-pnl")).to_contain_text("+373,5 USDT")
+        expect(page.locator("#kpi-net-pnl .pnl-value")).to_have_attribute(
+            "data-pnl-tone", "positive"
+        )
         assert page.locator("#kpi-profit-factor").is_visible()
-        assert page.locator("#kpi-net-pnl").is_visible()
         assert page.locator("#kpi-max-drawdown").is_visible()
+        assert page.locator("#bot-trading-data-unavailable").count() == 0
 
-        # 1.4 Kiểm tra Biểu đồ nến Lightweight Charts
-        assert page.locator("#trade-chart").is_visible()
+        # 1.4 Biểu đồ nến của giao dịch đã đóng gần nhất được vẽ thật (thư viện từ /static)
+        expect(page.locator("#trade-chart")).to_have_attribute("data-chart-ready", "true")
+        chart_box = page.locator("#trade-chart").bounding_box()
+        assert chart_box is not None and chart_box["height"] >= 300
         assert page.locator("#trade-chart-event-detail").is_visible()
-        assert page.locator("text=Chốt lời (🎯 TP)").is_visible()
-        assert page.locator("text=Dừng lỗ (🛑 SL)").is_visible()
 
-        # 1.5 Kiểm tra Bảng Vị Thế Đang Mở và Thẻ Reasoning L4-L6
+        # 1.5 Vị thế mở: mock không có lệnh đang mở nên phải hiện trạng thái rỗng trung thực
         assert page.locator("#open-positions-heading").is_visible()
-        assert page.locator("text=Khối Lượng").first.is_visible()
-        assert page.locator("text=Đòn Bẩy").first.is_visible()
-        assert page.locator("text=Giá Vào Lệnh").first.is_visible()
-        assert page.locator("text=L4 Cửa Bối Cảnh (Context Gate)").first.is_visible()
-        assert page.locator("text=L5 Điểm Kích Hoạt (Trigger Score)").first.is_visible()
-        assert page.locator("text=L6 Vùng Giá & Tỷ Lệ R:R").first.is_visible()
+        expect(page.locator("#positions-count-badge")).to_have_text("0")
+        assert page.get_by_text("Bot hiện không có vị thế PAPER đang mở.").is_visible()
+        for fabricated in ("0.050 BTC", "ĐÃ DUYỆT TÍN HIỆU L4-L6", "TREND_HAMMER_V2"):
+            assert page.get_by_text(fabricated).count() == 0
 
-        # 1.6 Kiểm tra lịch sử giao dịch và điều kiện tiếp nhận phản hồi
+        # 1.6 Lịch sử lệnh: khối lượng và giá lấy từ fills của ledger
         assert page.locator("#recent-trades-heading").is_visible()
+        recent_rows = page.locator("#recent-trades-tbody")
+        expect(recent_rows).to_contain_text("BTCUSDT")
+        expect(recent_rows).to_contain_text("94960")
         assert page.locator("text=Vì sao vào:").first.is_visible()
         assert page.locator("text=Vì sao thoát:").first.is_visible()
         ai_btn = page.locator(".btn-ingest-ai").first
         assert ai_btn.count() == 0
-        assert page.get_by_text("Thực thi đạt chuẩn").is_visible()
+        assert page.get_by_text("Không phát hiện sai lệch").is_visible()
 
         # Chụp màn hình Desktop Light Theme
         page.screenshot(
@@ -673,8 +702,14 @@ def test_bot_detail_trading_revamp_playwright_desktop_and_mobile(
             full_page=True,
         )
 
-        # Chuyển sang Dark Theme và chụp
-        page.evaluate("() => document.documentElement.setAttribute('data-theme', 'dark')")
+        # Chuyển chủ đề bằng nút thật: xác nhận theme-toggle.js chạy được dưới CSP
+        before_theme = page.locator("html").get_attribute("data-theme")
+        page.locator("#theme-toggle").click()
+        after_theme = page.locator("html").get_attribute("data-theme")
+        assert {before_theme, after_theme} == {"light", "dark"}
+        if after_theme != "dark":
+            page.locator("#theme-toggle").click()
+        expect(page.locator("html")).to_have_attribute("data-theme", "dark")
         page.screenshot(
             path=str(SCREENSHOTS_DIR / "24_bot_detail_dark_desktop.png"),
             full_page=True,
@@ -691,6 +726,7 @@ def test_bot_detail_trading_revamp_playwright_desktop_and_mobile(
             has_touch=True,
         )
         page_m = mobile_ctx.new_page()
+        watch_browser_violations(page_m)
 
         # Đăng nhập mobile
         page_m.goto(f"{base_url}/admin/login", wait_until="networkidle")
@@ -707,8 +743,9 @@ def test_bot_detail_trading_revamp_playwright_desktop_and_mobile(
         # Xác nhận hiển thị responsive trên mobile
         assert page_m.locator("text=Binance BTC Trend Pullback H01").first.is_visible()
         assert page_m.locator(".live-status-bar").is_visible()
-        assert page_m.locator("#trade-chart").is_visible()
+        expect(page_m.locator("#trade-chart")).to_have_attribute("data-chart-ready", "true")
         assert page_m.locator("#open-positions-heading").is_visible()
+        assert page_m.evaluate("document.documentElement.scrollWidth <= innerWidth")
 
         # Chụp màn hình Mobile
         page_m.screenshot(

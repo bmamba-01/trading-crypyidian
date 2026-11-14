@@ -89,119 +89,248 @@ def test_app(mock_identity: AuthIdentity) -> tuple[FastAPI, uuid4]:
     return app, bot_id
 
 
-def test_bot_detail_html_renders_trading_revamp(test_app: tuple[FastAPI, uuid4]) -> None:
-    app, bot_id = test_app
-    client = TestClient(app)
+CLOSED_TRADE_ID = "11111111-2222-4333-8444-555555555555"
+OPEN_TRADE_ID = "66666666-7777-4888-8999-aaaaaaaaaaaa"
 
-    response = client.get(f"/admin/bots/{bot_id}")
+
+class StubBotReport:
+    def __init__(self, payload: dict[str, object]) -> None:
+        self._payload = payload
+
+    def as_dict(self) -> dict[str, object]:
+        return self._payload
+
+
+class StubReportingService:
+    """Trả báo cáo ledger PAPER cố định để kiểm tra Bot Detail đọc đúng nguồn."""
+
+    def __init__(self, *, bars: list[dict[str, object]] | None = None) -> None:
+        self.bars = (
+            bars
+            if bars is not None
+            else [{"time": 1_763_000_000, "open": 100, "high": 110, "low": 95, "close": 105}]
+        )
+        self.chart_calls: list[tuple[str, str]] = []
+
+    def _trade(self, bot_id: object) -> dict[str, object]:
+        return {
+            "trade_id": CLOSED_TRADE_ID,
+            "bot_id": str(bot_id),
+            "symbol": "ETHUSDT",
+            "side": "SHORT",
+            "quote_asset": "USDT",
+            "opened_at": "2026-11-10T01:00:00+00:00",
+            "closed_at": "2026-11-10T03:00:00+00:00",
+            "gross_pnl": "50",
+            "fee_total": "1.5",
+            "funding_total": "0.25",
+            "slippage_total": "0.75",
+            "total_cost": "2.5",
+            "net_pnl": "47.5",
+            "entry_reason": {"strategy_id": "H03_BREAKOUT", "detail_vi": "Phá vỡ vùng tích lũy."},
+            "exit_reason": "TAKE_PROFIT",
+            "fills": [
+                {"role": "ENTRY", "quantity": "2", "price": "3000"},
+                {"role": "ENTRY", "quantity": "2", "price": "3100"},
+                {"role": "EXIT", "quantity": "4", "price": "3037.5"},
+            ],
+        }
+
+    async def get_bot_report(self, query: object, principal: object) -> StubBotReport:
+        bot_id = query.bot_id  # type: ignore[attr-defined]
+        return StubBotReport(
+            {
+                "totals": {
+                    "USDT": {
+                        "closed_trade_count": 4,
+                        "win_rate_percent": "75",
+                        "profit_factor": "3.2",
+                        "expectancy_per_trade": "11.875",
+                        "net_pnl": "47.5",
+                        "max_drawdown": "12.25",
+                    }
+                },
+                "trades": [self._trade(bot_id)],
+                "open_trades": [
+                    {
+                        "trade_id": OPEN_TRADE_ID,
+                        "symbol": "SOLUSDT",
+                        "side": "LONG",
+                        "quote_asset": "USDT",
+                        "opened_at": "2026-11-12T05:00:00+00:00",
+                    }
+                ],
+            }
+        )
+
+    async def get_trade_chart(
+        self, query: object, principal: object, *, trade_id: object, timeframe: str = "1h"
+    ) -> dict[str, object]:
+        self.chart_calls.append((str(trade_id), timeframe))
+        return {
+            "symbol": "ETHUSDT",
+            "side": "SHORT",
+            "timeframe": timeframe,
+            "trade": self._trade(query.bot_id),  # type: ignore[attr-defined]
+            "bars": self.bars,
+            "notice": None,
+        }
+
+
+FABRICATED_SAMPLE_VALUES = (
+    "66.7",
+    "320.50",
+    "0.050 BTC",
+    "3,391.00",
+    "67,250.00",
+    "TREND_HAMMER_V2",
+    "Pinbar",
+    "c1a2b3c4-d5e6-4f7a-8b9c-0d1e2f3a4b5c",
+    "ĐÃ DUYỆT TÍN HIỆU L4-L6",
+)
+
+
+def test_bot_detail_without_reporting_source_shows_empty_states_not_sample_numbers(
+    test_app: tuple[FastAPI, uuid4],
+) -> None:
+    """Không có nguồn ledger thì trang phải nói rõ là chưa có dữ liệu, không dựng số mẫu."""
+    app, bot_id = test_app
+    response = TestClient(app).get(f"/admin/bots/{bot_id}")
     assert response.status_code == 200
     html = response.text
 
-    # 1. Tiêu đề và Header Bot
     assert "Bot Alpha Momentum" in html
-    assert "BTCUSDT" in html
-    assert "ĐANG CHẠY" in html
-    assert "PAPER" in html
-
-    # 2. Thanh cập nhật trực tiếp 5s
     assert 'class="live-status-bar"' in html
-    assert 'id="live-pulse-dot"' in html
-    assert 'id="live-updated-at"' in html
-    assert "Tự động cập nhật 5s" in html
     assert 'id="toggle-realtime-btn"' in html
-
-    # 3. Lưới Thẻ Chỉ Số KPI Trading
-    assert 'id="kpi-open-positions"' in html
-    assert 'id="kpi-win-rate"' in html
-    assert 'id="kpi-profit-factor"' in html
-    assert 'id="kpi-net-pnl"' in html
-    assert 'id="kpi-max-drawdown"' in html
-
-    # 4. Biểu đồ nến TradingView Lightweight Charts
-    assert 'id="trade-chart"' in html
-    assert 'id="trade-chart-data"' in html
-    assert 'id="trade-chart-event-detail"' in html
-    assert "Chốt lời (🎯 TP)" in html
-    assert "Dừng lỗ (🛑 SL)" in html
-
-    # 5. Bảng Vị Thế Đang Mở và Reasoning L4-L6
-    assert 'id="open-positions-heading"' in html
-    assert "Khối Lượng" in html
-    assert "Đòn Bẩy" in html
-    assert "Giá Vào Lệnh" in html
-    assert "L4 Cửa Bối Cảnh (Context Gate)" in html
-    assert "L5 Điểm Kích Hoạt (Trigger Score)" in html
-    assert "Tỷ Lệ R:R" in html
-
-    # 6. Bảng Lịch Sử Khớp Lệnh & Nút 1-click Tiếp Nhận Phạt AI
-    assert 'id="recent-trades-heading"' in html
-    assert "Vì sao vào:" in html
-    assert "Vì sao thoát:" in html
-    assert "Chi phí:" in html
-    assert "📥 Đưa Ca Này Vào Dữ Liệu Phạt AI" in html
-
-    # 7. Các Form Điều Khiển Bot
+    assert 'id="bot-trading-data-unavailable"' in html
+    assert 'id="bot-chart-empty"' in html
+    assert 'id="trade-chart"' not in html
+    assert 'id="trade-chart-data"' not in html
+    assert "Chưa có dữ liệu vị thế." in html
+    assert "Chưa có dữ liệu lịch sử lệnh." in html
+    for sample in FABRICATED_SAMPLE_VALUES:
+        assert sample not in html
+    # Các khối điều khiển vẫn hoạt động độc lập với nguồn báo cáo.
     assert f'action="/admin/bots/{bot_id}/pause"' in html
     assert f'action="/admin/bots/{bot_id}/resume"' in html
     assert f'action="/admin/bots/{bot_id}/disable"' in html
 
 
-def test_bot_detail_realtime_api_returns_structured_trading_data(
+def test_bot_detail_html_renders_ledger_metrics_positions_trades_and_chart(
     test_app: tuple[FastAPI, uuid4],
 ) -> None:
     app, bot_id = test_app
-    client = TestClient(app)
+    reporting = StubReportingService()
+    app.state.bot_reporting_service = reporting
+    response = TestClient(app).get(f"/admin/bots/{bot_id}")
+    assert response.status_code == 200
+    html = response.text
 
-    response = client.get(f"/admin/api/bots/{bot_id}/realtime")
+    assert 'id="bot-trading-data-unavailable"' not in html
+    # KPI lấy từ totals của báo cáo, định dạng số tiếng Việt.
+    assert 'id="kpi-open-positions">1<' in html
+    assert 'id="kpi-win-rate">75%<' in html
+    assert "Tổng số lệnh đóng: 4" in html
+    assert 'id="kpi-profit-factor">3,2<' in html
+    assert "11,875 USDT" in html
+    assert 'data-pnl-tone="positive">+47,5 USDT' in html
+    assert 'id="kpi-max-drawdown">12,25 USDT<' in html
+
+    # Vị thế mở chỉ gồm trường ledger có; ghi rõ chưa mark-to-market.
+    assert "SOLUSDT" in html
+    assert OPEN_TRADE_ID in html
+    assert "chưa có giá tham chiếu và PnL chưa chốt" in html
+
+    # Lệnh đã đóng: khối lượng và giá bình quân tính từ fills, lý do từ ledger.
+    assert "ETHUSDT" in html
+    assert ">4<" in html
+    assert ">3050<" in html
+    assert ">3037,5<" in html
+    assert "Chiến thuật H03_BREAKOUT — Phá vỡ vùng tích lũy." in html
+    assert "Phí 1,5 · Funding 0,25 · Trượt giá 0,75 USDT" in html
+
+    # Biểu đồ dùng nến của giao dịch đã đóng gần nhất và nạp thư viện từ /static.
+    assert reporting.chart_calls == [(CLOSED_TRADE_ID, "1h")]
+    assert 'id="trade-chart"' in html
+    assert 'id="trade-chart-data" type="application/json"' in html
+    assert "/static/vendor/lightweight-charts-5.2.1.standalone.production.js" in html
+    assert '<script src="/static/trade-chart.js" defer></script>' in html
+    for sample in FABRICATED_SAMPLE_VALUES:
+        assert sample not in html
+
+
+def test_bot_detail_hides_chart_when_candle_store_has_no_bars(
+    test_app: tuple[FastAPI, uuid4],
+) -> None:
+    app, bot_id = test_app
+    app.state.bot_reporting_service = StubReportingService(bars=[])
+    html = TestClient(app).get(f"/admin/bots/{bot_id}").text
+
+    assert 'id="bot-chart-empty"' in html
+    assert 'id="trade-chart"' not in html
+    assert "ETHUSDT" in html
+
+
+def test_bot_detail_realtime_api_returns_ledger_backed_trading_data(
+    test_app: tuple[FastAPI, uuid4],
+) -> None:
+    app, bot_id = test_app
+    app.state.bot_reporting_service = StubReportingService()
+    response = TestClient(app).get(f"/admin/api/bots/{bot_id}/realtime")
     assert response.status_code == 200
     data = response.json()
 
-    # Kiểm tra các khối cấu trúc dữ liệu JSON cốt lõi
-    assert "server_time" in data
+    assert data["status"] == "updated"
     assert "vn" in data["server_time"]
     assert "vn_time" in data["server_time"]
-
-    assert "bot" in data
     assert data["bot"]["id"] == str(bot_id)
     assert data["bot"]["name"] == "Bot Alpha Momentum"
     assert data["bot"]["status"] == "RUNNING"
     assert data["bot"]["symbol"] == "BTCUSDT"
 
-    assert "metrics" in data
-    metrics = data["metrics"]
-    assert "open_positions_count" in metrics
-    assert "win_rate_percent" in metrics
-    assert "profit_factor" in metrics
-    assert "net_pnl" in metrics
-
-    assert "positions" in data
-    assert isinstance(data["positions"], list)
-    assert len(data["positions"]) > 0
-    pos = data["positions"][0]
-    assert pos["symbol"] == "BTCUSDT"
-    assert pos["side"] == "LONG"
-    assert "target_leverage" in pos
-    assert "reasoning" in pos
-    assert "l4_regime" in pos["reasoning"]
-    assert "l5_trigger" in pos["reasoning"]
-    assert "l6_risk_reward" in pos["reasoning"]
-
-    assert "recent_trades" in data
-    assert isinstance(data["recent_trades"], list)
-    assert len(data["recent_trades"]) > 0
+    assert data["data_available"] is True
+    assert data["metrics"] == {
+        "quote_asset": "USDT",
+        "other_quote_assets": [],
+        "open_positions_count": 1,
+        "closed_trade_count": 4,
+        "win_rate_percent": "75",
+        "profit_factor": "3.2",
+        "expectancy_per_trade": "11.875",
+        "net_pnl": "47.5",
+        "max_drawdown": "12.25",
+    }
+    assert data["positions"] == [
+        {
+            "trade_id": OPEN_TRADE_ID,
+            "symbol": "SOLUSDT",
+            "side": "LONG",
+            "quote_asset": "USDT",
+            "opened_at": "2026-11-12T05:00:00+00:00",
+        }
+    ]
     trade = data["recent_trades"][0]
-    assert "trade_id" in trade
-    assert "quality" in trade
-    assert "post_mortem" in trade
-    assert "why_enter" in trade["post_mortem"]
-    assert "why_exit" in trade["post_mortem"]
+    assert trade["trade_id"] == CLOSED_TRADE_ID
+    assert trade["quantity"] == "4"
+    assert trade["entry_price"] == "3050"
+    assert trade["exit_price"] == "3037.5"
+    assert trade["strategy_id"] == "H03_BREAKOUT"
+    assert trade["exit_reason"] == "TAKE_PROFIT"
+    assert data["chart_data"]["symbol"] == "ETHUSDT"
+    assert data["chart_data"]["bars"]
 
-    assert "chart_data" in data
-    chart = data["chart_data"]
-    assert chart["symbol"] == "BTCUSDT"
-    assert "bars" in chart
-    assert len(chart["bars"]) > 0
-    assert "trade" in chart
+
+def test_bot_detail_realtime_api_without_reporting_source_returns_empty_state(
+    test_app: tuple[FastAPI, uuid4],
+) -> None:
+    app, bot_id = test_app
+    data = TestClient(app).get(f"/admin/api/bots/{bot_id}/realtime").json()
+
+    assert data["data_available"] is False
+    assert data["metrics"] is None
+    assert data["positions"] == []
+    assert data["recent_trades"] == []
+    assert data["chart_data"] is None
 
 
 def test_bot_detail_realtime_api_returns_404_for_unknown_bot(

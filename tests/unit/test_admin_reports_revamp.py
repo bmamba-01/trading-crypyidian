@@ -1,5 +1,6 @@
 """Unit tests cho revamp báo cáo, theme và API AI Retraining Ingestion."""
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from unittest.mock import AsyncMock
@@ -9,6 +10,7 @@ import pytest
 from starlette.testclient import TestClient
 
 from trading_bot.application.learning_post_mortem import LearningPostMortemService
+from trading_bot.auth.policy import Role
 from trading_bot.auth.service import AuthIdentity, Principal
 from trading_bot.domain.portfolio.reporting import (
     BotLedgerSnapshot,
@@ -184,6 +186,31 @@ def test_admin_reports_renders_metric_cards_and_post_mortem(
     assert "quick-filter-group" in html
     assert "Danh Sách Lệnh Khớp Trong Kỳ" in html
 
+    # Chọn một giao dịch để mở panel hậu kiểm: chỉ hiện dữ liệu ledger, không tự điền L4–L6.
+    report_payload = mock_report.as_dict()
+    selected = report_payload["trades"][0]
+    mock_reporting_service.get_trade_chart.return_value = {
+        "symbol": selected["symbol"],
+        "side": selected["side"],
+        "timeframe": "1h",
+        "trade": selected,
+        "bars": [],
+        "notice": None,
+    }
+    chart_response = client.get(
+        f"/admin/reports?scope=bot&bot_id={bot_id}&start={start_str}&end={end_str}"
+        f"&chart_trade_id={selected['trade_id']}"
+    )
+    assert chart_response.status_code == 200
+    chart_html = chart_response.text
+    assert "Mổ Xẻ Quyết Định Định Lượng" in chart_html
+    assert "Ledger chưa lưu" in chart_html
+    assert 'id="post-mortem-unevaluated"' in chart_html
+    assert "lỗ vượt kế hoạch" in chart_html
+    for fabricated in ("5x (Rủi ro", "78.5/100", "82.0/100", "ĐẠT (TRENDING)", "1 : 2.0"):
+        assert fabricated not in chart_html
+    assert "Mục tiêu chốt lời (TP)" not in chart_html
+
 
 def test_api_ingest_trade_negative_sample(
     mock_identity: AuthIdentity,
@@ -199,9 +226,15 @@ def test_api_ingest_trade_negative_sample(
     app.state.learning_post_mortem_service = service
     app.include_router(router)
 
-    from trading_bot.auth.router import current_identity
+    from trading_bot.auth.router import current_identity, require_csrf
 
     app.dependency_overrides[current_identity] = lambda: mock_identity
+    # Kiểm CSRF được thay bằng danh tính đã xác thực; hành vi chặn có test riêng.
+    reviewer = replace(
+        mock_identity,
+        principal=replace(mock_identity.principal, roles=frozenset({Role.ANALYST_REVIEWER})),
+    )
+    app.dependency_overrides[require_csrf] = lambda: reviewer
 
     trade_id = uuid4()
     bot_id = uuid4()
