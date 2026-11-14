@@ -3598,3 +3598,11 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Kiểm chứng:** test riêng → **1 passed/25.13s**; `PYTHONPATH=. uv run pytest tests/e2e/test_multibot_fanout_runtime.py -q --tb=short` → **9 passed/187.93s/0 skipped**. Cùng với lượt trước (`test_multibot_runtime_restart.py`, `test_admin_web_workflows.py` đạt), ba bộ này hiện không còn ca fail.
 - **Ghi nhận:** mọi pha E2E khác còn dùng `-c role=` từ login quản trị để chạy code runtime có scorer sẽ gặp cùng lỗi; chưa rà toàn bộ.
 - **Readback:** đã đọc lại, đối chiếu output và diff; khớp. Không có secret.
+
+### 2026-11-14 — Kế hoạch độ đúng công thức, chiến lược, Strategy Card và tooltip
+
+- **Yêu cầu của owner:** lập kế hoạch sửa năm giới hạn còn lại sau khi Strategy Card vào catalog; đánh giá chiến lược/công thức từ góc nhìn trader chuyên nghiệp; tooltip tiếng Việt cho các chỉ số trên biểu đồ.
+- **Sản phẩm:** `docs/superpowers/plans/2026-11-14-strategy-formula-and-card-readiness.md` (đề xuất, chưa code). Dựa trên một lượt rà read-only công thức/chiến lược (không chạy Docker/E2E) và kiểm kê tooltip.
+- **Phát hiện đã tự kiểm lại trong code trước khi ghi vào kế hoạch:** `exit_channel_period` (H03) và `exit_feature_name` (H06) không có nơi tiêu thụ ngoài `recipes.py`; `apply_funding_event` không có nơi gọi; release của Strategy Card không có trong `FEATURES_BY_RELEASE`/`ENTRY_TIMEFRAME_BY_RELEASE` nên builder snapshot thật và replay từ chối nó (hiện chỉ bộ seed cấp snapshot cho thẻ). Các phát hiện còn lại lấy từ bản rà, có `file:line`, chưa được tự kiểm từng dòng.
+- **Chưa làm trong vòng này:** chưa tra tài liệu Binance USDⓈ-M (funding, maintenance margin, phí, filter, kiểu giá kích hoạt stop); kế hoạch ghi rõ phải tra khi triển khai FX-3/FX-6/FX-7. Chưa thêm 18 thuật ngữ mới vào glossary; đó là gói FX-0 đầu tiên của kế hoạch.
+- **Tám quyết định cần owner** liệt kê ở mục 6 của kế hoạch.
