@@ -30,6 +30,7 @@ Một trader có thể xem từng quyết định/vị thế trên chart respons
 
 1. Subscription tường minh theo private chat và bot; allowlist symbol, timeframe, hướng, strategy ID và setup/reason code; danh sách rỗng nghĩa là mọi giá trị. `/start` liên kết chat, `/stop` hủy ngay; cài quiet hours/timezone, cooldown và giới hạn số tín hiệu/ngày.
 2. Producer rà soát market stream dùng nến đã đóng, dữ liệu point-in-time và feature quality gate để phát `SharedSignalEvidence`; fan-out chạy strategy đã publish theo từng bot.
+   **Live ingest (14/11/2026):** `ingestion-worker` có thể thu nến đóng qua WebSocket `/market` và lấp gap bằng REST, ghi `market_bar` nguồn `BINANCE_USDM` sau rights gate `PAPER_DEMO`; bật bằng `TRADING_BOT_INGESTION_LIVE_SYMBOLS` (mặc định tắt). Funding, OI, mark price, aggTrade và liquidation live còn mở.
 3. Candidate chỉ được phát sau BotDecision pipeline, không ghi `OrderIntent`, `FillRecord`, `TradeRecord` hoặc reservation. Market-signal producer và Telegram sender tách process/DB role khỏi PAPER runtime; producer chỉ đọc nến đã lưu và ghi evidence/decision/outbox, sender chỉ đọc candidate/subscription và ghi delivery.
 4. Event/outbox có decision ID, setup identity, freshness/expiry/invalidation và dedupe; worker rate-limited, retry/dead-letter và receipt/audit.
 5. Telegram Bot API sender dùng token từ secret file/provider; redaction, HTTPS, message length/escaping và xử lý 429 `retry_after`.

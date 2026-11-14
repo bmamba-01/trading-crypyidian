@@ -290,6 +290,11 @@ services:
       # Worker này chỉ xử lý một workspace; thay UUID mẫu bằng workspace đã provision.
       TRADING_BOT_INGESTION_WORKSPACE_ID: ${TRADING_BOT_INGESTION_WORKSPACE_ID:-00000000-0000-0000-0000-000000000000}
       TRADING_BOT_INGESTION_WORKER_TICK_SECONDS: ${TRADING_BOT_INGESTION_WORKER_TICK_SECONDS:-5}
+      # Thu nến live công khai qua WebSocket; để trống SYMBOLS là tắt. Ví dụ: BTCUSDT,ETHUSDT.
+      # Cần policy BINANCE_USDM_REST đã verified với mục đích PAPER_DEMO, nếu không worker từ chối ghi.
+      TRADING_BOT_INGESTION_LIVE_SYMBOLS: ${TRADING_BOT_INGESTION_LIVE_SYMBOLS:-}
+      TRADING_BOT_INGESTION_LIVE_TIMEFRAMES: ${TRADING_BOT_INGESTION_LIVE_TIMEFRAMES:-15m,1h,4h}
+      TRADING_BOT_INGESTION_LIVE_WARMUP_BARS: ${TRADING_BOT_INGESTION_LIVE_WARMUP_BARS:-300}
       TRADING_BOT_DATABASE_USER: crypidian_ingestion_worker
       TRADING_BOT_DATABASE_PASSWORD_FILE: /run/secrets/database_ingestion_worker_password
     profiles: ["paper"]

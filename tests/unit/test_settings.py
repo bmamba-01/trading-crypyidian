@@ -433,3 +433,51 @@ def test_learning_shadow_observer_workspace_is_confined_to_its_process_role() ->
             process_role="admin-web",
             learning_shadow_observer_workspace_id=UUID("66666666-6666-4666-8666-666666666666"),
         )
+
+
+def test_live_ingestion_is_disabled_by_default_and_builds_sorted_subscriptions() -> None:
+    workspace_id = UUID("22222222-2222-2222-2222-222222222222")
+    default = AppSettings(process_role="ingestion-worker", ingestion_workspace_id=workspace_id)
+    enabled = AppSettings(
+        process_role="ingestion-worker",
+        ingestion_workspace_id=workspace_id,
+        ingestion_live_symbols=" ETHUSDT,BTCUSDT ",
+        ingestion_live_timeframes="1h,15m",
+    )
+
+    assert default.ingestion_live_subscriptions == ()
+    assert enabled.ingestion_live_subscriptions == (
+        ("BTCUSDT", "15m"),
+        ("BTCUSDT", "1h"),
+        ("ETHUSDT", "15m"),
+        ("ETHUSDT", "1h"),
+    )
+
+
+@pytest.mark.parametrize(
+    ("symbols", "timeframes"),
+    [
+        ("btcusdt", "15m"),
+        ("BTC/USDT", "15m"),
+        ("BTCUSDT,BTCUSDT", "15m"),
+        ("BTCUSDT", "7m"),
+        ("BTCUSDT", "1M"),
+        ("BTCUSDT", ""),
+        (",".join(f"COIN{index}USDT" for index in range(101)), "15m,1h,4h"),
+    ],
+)
+def test_live_ingestion_rejects_invalid_symbols_or_timeframes(
+    symbols: str, timeframes: str
+) -> None:
+    with pytest.raises(ValidationError, match="ingestion_live"):
+        AppSettings(
+            process_role="ingestion-worker",
+            ingestion_workspace_id=UUID("22222222-2222-2222-2222-222222222222"),
+            ingestion_live_symbols=symbols,
+            ingestion_live_timeframes=timeframes,
+        )
+
+
+def test_other_process_roles_reject_live_ingestion_symbols() -> None:
+    with pytest.raises(ValidationError, match="ingestion_live_symbols"):
+        AppSettings(process_role="admin-web", ingestion_live_symbols="BTCUSDT")
