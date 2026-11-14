@@ -68,6 +68,8 @@ def run_live_ingestion_compose_probe() -> dict[str, Any]:
         compose("up", "--detach", "--wait", "--wait-timeout", "180", "postgres")
         compose("run", "--rm", "--no-deps", "db-provisioner")
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "head")
+        # Model ORM và migration của ba bảng sự kiện phải khớp nhau.
+        compose("run", "--rm", "--no-deps", "migrator", "alembic", "check")
         result = compose(
             "run",
             "--rm",
@@ -121,5 +123,13 @@ def test_live_klines_reach_market_store_through_rights_gate_and_ingestion_role()
         "other_workspace_sees_nothing": True,
         "stream_uses_market_route": True,
         "public_requests_only": True,
+        "event_session_outcome": "DISCONNECTED",
+        # 2 mẫu mark price (2 phút), 1 lệnh thanh lý, 3 bucket trong đó 1 bucket đầy đủ.
+        "event_rows_mark_liquidation_flow_complete": [2, 1, 3, 1],
+        "event_worker_written": 6,
+        "event_replay_adds_nothing": True,
+        "complete_flow_bucket": True,
+        "events_hidden_from_other_workspace": True,
+        "events_append_only": True,
         "exchange_info_requests": 1,
     }

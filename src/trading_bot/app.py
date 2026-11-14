@@ -363,6 +363,7 @@ def create_app(
         rights_worker_task: asyncio.Task[None] | None = None
         live_market_runtime: Any | None = None
         live_market_task: asyncio.Task[None] | None = None
+        live_event_task: asyncio.Task[None] | None = None
         signal_worker_task: asyncio.Task[None] | None = None
         market_signal_worker_task: asyncio.Task[None] | None = None
         training_supervisor_task: asyncio.Task[None] | None = None
@@ -403,12 +404,23 @@ def create_app(
                     workspace_id=workspace_id,
                     subscriptions=live_subscriptions,
                     warmup_bars=app_settings.ingestion_live_warmup_bars,
+                    events=app_settings.ingestion_live_event_kinds,
+                    mark_price_interval_seconds=(
+                        app_settings.ingestion_live_mark_price_interval_seconds
+                    ),
                 )
                 application.state.live_market_worker = live_market_runtime.worker
                 live_market_task = asyncio.create_task(
                     live_market_runtime.worker.run(stopping), name="live-market-ingestion-worker"
                 )
                 application.state.live_market_task = live_market_task
+                live_event_worker = getattr(live_market_runtime, "event_worker", None)
+                if live_event_worker is not None:
+                    application.state.live_event_worker = live_event_worker
+                    live_event_task = asyncio.create_task(
+                        live_event_worker.run(stopping), name="live-market-event-worker"
+                    )
+                    application.state.live_event_task = live_event_task
         elif app_settings.process_role == "trainer-worker":
             if active_session_factory is None:
                 raise RuntimeError("trainer-worker cần database session factory.")
@@ -501,6 +513,9 @@ def create_app(
             if live_market_task is not None:
                 with contextlib.suppress(asyncio.CancelledError, TimeoutError):
                     await asyncio.wait_for(live_market_task, timeout=10)
+            if live_event_task is not None:
+                with contextlib.suppress(asyncio.CancelledError, TimeoutError):
+                    await asyncio.wait_for(live_event_task, timeout=10)
             if live_market_runtime is not None:
                 await live_market_runtime.aclose()
             if signal_worker_task is not None:
@@ -632,6 +647,16 @@ def create_app(
                     or live_task.done()
                 ):
                     pending.append("live_market_ingestion")
+            if app_settings.ingestion_live_event_kinds:
+                event_worker = getattr(app.state, "live_event_worker", None)
+                event_task = getattr(app.state, "live_event_task", None)
+                if (
+                    event_worker is None
+                    or not getattr(event_worker, "is_healthy", False)
+                    or event_task is None
+                    or event_task.done()
+                ):
+                    pending.append("live_market_events")
             if pending:
                 return JSONResponse(
                     status_code=503,

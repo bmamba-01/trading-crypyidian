@@ -1,0 +1,5 @@
+{
+  "agg_trade": {"stream":"btcusdt@aggTrade","data":{"e":"aggTrade","E":1794668807070,"a":3522214828,"s":"BTCUSDT","p":"65804.10","q":"0.002","nq":"0.002","f":8271022680,"l":8271022681,"T":1794668806920,"m":false,"st":1}},
+  "mark_price": {"stream":"btcusdt@markPrice@1s","data":{"e":"markPriceUpdate","E":1794668808000,"s":"BTCUSDT","p":"65812.20000000","ap":"65812.20000000","P":"65969.91549650","i":"65836.28782609","r":"0.00003251","T":1794672000000,"st":1}},
+  "liquidation": {"stream":"kavausdt@forceOrder","data":{"e":"forceOrder","E":1794668823085,"o":{"s":"KAVAUSDT","S":"SELL","o":"LIMIT","f":"IOC","q":"18163.6","p":"0.030830","ap":"0.031261","X":"FILLED","l":"6921.2","z":"18163.6","T":1794668822078,"ps":"KAVAUSDT","st":1}}}
+}

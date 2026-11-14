@@ -481,3 +481,37 @@ def test_live_ingestion_rejects_invalid_symbols_or_timeframes(
 def test_other_process_roles_reject_live_ingestion_symbols() -> None:
     with pytest.raises(ValidationError, match="ingestion_live_symbols"):
         AppSettings(process_role="admin-web", ingestion_live_symbols="BTCUSDT")
+
+
+def test_live_event_streams_are_off_by_default_and_ordered_when_enabled() -> None:
+    workspace_id = UUID("22222222-2222-2222-2222-222222222222")
+    default = AppSettings(
+        process_role="ingestion-worker",
+        ingestion_workspace_id=workspace_id,
+        ingestion_live_symbols="BTCUSDT",
+    )
+    enabled = AppSettings(
+        process_role="ingestion-worker",
+        ingestion_workspace_id=workspace_id,
+        ingestion_live_symbols="BTCUSDT",
+        ingestion_live_events="trade_flow, mark_price",
+    )
+
+    assert default.ingestion_live_event_kinds == ()
+    assert enabled.ingestion_live_event_kinds == ("mark_price", "trade_flow")
+
+
+@pytest.mark.parametrize(
+    ("symbols", "events"),
+    [("BTCUSDT", "depth"), ("BTCUSDT", "mark_price,mark_price"), ("", "mark_price")],
+)
+def test_live_event_streams_reject_unknown_duplicate_or_symbolless_config(
+    symbols: str, events: str
+) -> None:
+    with pytest.raises(ValidationError, match="ingestion_live_events"):
+        AppSettings(
+            process_role="ingestion-worker",
+            ingestion_workspace_id=UUID("22222222-2222-2222-2222-222222222222"),
+            ingestion_live_symbols=symbols,
+            ingestion_live_events=events,
+        )

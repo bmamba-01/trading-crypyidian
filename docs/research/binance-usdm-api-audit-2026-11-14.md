@@ -42,9 +42,13 @@ Trang reference mới bị cắt sau mục RPI Order Book nên weight của nhó
 
 Adapter đã có thêm `get_premium_index`, `get_price_tickers` (v2), `get_book_tickers`, `get_24h_tickers`, `get_funding_info`, `get_long_short_ratio` (ba loại), `get_taker_buy_sell_volume` và `get_kline_flows` (số trade, taker buy volume của nến). Các hàng tương ứng trong bảng trên không còn "Thiếu" ở tầng wrapper; dữ liệu này **chưa** được lưu vào PostgreSQL hay đưa vào feature. Vẫn thiếu: `depth`, `rpiDepth`, `trades`, `aggTrades`, `historicalTrades`, các kline mark/index/premium, `basis`, `symbolAdlRisk`, `tradingSchedule`.
 
+### Cập nhật 2026-11-14 (vòng 3)
+
+Wrapper REST có thêm `get_order_book` (ảnh chụp L2), `get_aggregate_trades`, `get_basis`, `get_reference_price_klines` (mark/index). Còn thiếu ở wrapper: `rpiDepth`, `trades`, `historicalTrades`, `premiumIndexKlines`, `continuousKlines`, `symbolAdlRisk`, `insuranceBalance`, `constituents`, `tradingSchedule`, `indexInfo`, `assetIndex`.
+
 ## Độ phủ WebSocket market stream
 
-Chưa có client WebSocket nào cho market data, và `pyproject.toml` chưa có thư viện WebSocket. Thiếu toàn bộ: `@kline_*`, `@markPrice`, `@aggTrade`, `@bookTicker`, `@depth*`, `@forceOrder`, `!contractInfo`, `!ticker@arr`, `tradingSession`.
+**Cập nhật vòng 3:** đã có client cho `@kline_*`, `@markPrice@1s`, `@forceOrder`, `@aggTrade` trên route `/market`; còn thiếu `@bookTicker`, `@depth*`, `!contractInfo`, `!ticker@arr`, `tradingSession`. Nội dung dưới đây mô tả trạng thái tại commit `c4d77a0`. Chưa có client WebSocket nào cho market data, và `pyproject.toml` chưa có thư viện WebSocket. Thiếu toàn bộ: `@kline_*`, `@markPrice`, `@aggTrade`, `@bookTicker`, `@depth*`, `@forceOrder`, `!contractInfo`, `!ticker@arr`, `tradingSession`.
 `@forceOrder` là nguồn duy nhất cho dữ liệu thanh lý (liquidation) vì REST không còn endpoint công khai; từ 2026-04-14 stream chỉ đẩy lệnh lớn nhất mỗi 1000 ms.
 
 ## Lệch so với tài liệu hiện hành
@@ -69,7 +73,7 @@ Wrapper đủ cho backfill nến của H01, H03, H06 (chỉ cần OHLCV 15m/1h/4
 ## Việc đề xuất theo thứ tự
 
 1. ~~Worker ingest live: nến đóng qua `/market` `@kline_*` kèm REST lấp khoảng trống, ghi `market_bar` nguồn `BINANCE_USDM`.~~ Đã làm ngày 2026-11-14 (`market_stream.py`, `live_kline_ingestion.py`, `live_market_ingestion_worker.py`); mặc định tắt, bật bằng `TRADING_BOT_INGESTION_LIVE_SYMBOLS`.
-2. Giữ cột taker buy và số trade của kline; thêm `premiumIndex`, `fundingInfo`, `ticker/24hr`, `bookTicker`.
+2. Giữ cột taker buy và số trade của kline (chưa: cần migration `market_bar`); ~~thêm `premiumIndex`, `fundingInfo`, `ticker/24hr`, `bookTicker`~~ đã có ở wrapper.
 3. Thu thập định kỳ OI, funding, tỷ lệ long/short, taker ratio, basis vì sàn chỉ giữ 30 ngày.
-4. Stream `@markPrice`, `@forceOrder`, `@aggTrade`; L2 depth chỉ khi làm H14.
+4. ~~Stream `@markPrice`, `@forceOrder`, `@aggTrade`~~ đã làm ngày 2026-11-14 (bảng `market_mark_price`, `market_liquidation`, `market_trade_flow`); L2 diff-depth chỉ khi làm H14.
 5. Mô hình hóa route `/public` `/market` `/private` trong allowlist WebSocket.

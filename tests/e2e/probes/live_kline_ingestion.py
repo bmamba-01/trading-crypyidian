@@ -14,7 +14,8 @@ from uuid import UUID, uuid4
 import httpx2
 import psycopg
 from httpx2.websockets import ASGIWebSocketTransport
-from sqlalchemy import event, func, select
+from sqlalchemy import event, func, select, text
+from sqlalchemy.exc import DBAPIError
 
 STATE = json.loads(os.environ["LIVE_INGEST_STATE"])
 WORKSPACE_ID = UUID(STATE["workspace_id"])
@@ -100,6 +101,76 @@ def _stream_message(open_time: datetime, *, closed: bool) -> str:
     )
 
 
+def _mark_message(at: datetime) -> str:
+    return json.dumps(
+        {
+            "stream": "btcusdt@markPrice@1s",
+            "data": {
+                "e": "markPriceUpdate",
+                "E": _ms(at),
+                "s": "BTCUSDT",
+                "p": "100.50000000",
+                "ap": "100.50000000",
+                "P": "100.60000000",
+                "i": "100.40000000",
+                "r": "0.00010000",
+                "T": _ms(M + timedelta(hours=8)),
+                "st": 1,
+            },
+        }
+    )
+
+
+def _liquidation_message(at: datetime) -> str:
+    return json.dumps(
+        {
+            "stream": "btcusdt@forceOrder",
+            "data": {
+                "e": "forceOrder",
+                "E": _ms(at) + 5,
+                "o": {
+                    "s": "BTCUSDT",
+                    "S": "SELL",
+                    "o": "LIMIT",
+                    "f": "IOC",
+                    "q": "0.500",
+                    "p": "99.00",
+                    "ap": "99.50",
+                    "X": "FILLED",
+                    "l": "0.500",
+                    "z": "0.500",
+                    "T": _ms(at),
+                    "ps": "BTCUSDT",
+                    "st": 1,
+                },
+            },
+        }
+    )
+
+
+def _agg_message(aggregate_id: int, at: datetime) -> str:
+    return json.dumps(
+        {
+            "stream": "btcusdt@aggTrade",
+            "data": {
+                "e": "aggTrade",
+                "E": _ms(at) + 5,
+                "a": aggregate_id,
+                "s": "BTCUSDT",
+                "p": "100.00",
+                "q": "0.500",
+                "nq": "0.500",
+                "f": aggregate_id * 10,
+                "l": aggregate_id * 10,
+                "T": _ms(at),
+                # id chẵn là taker mua, id lẻ là taker bán.
+                "m": aggregate_id % 2 == 1,
+                "st": 1,
+            },
+        }
+    )
+
+
 class FakeBinance:
     """Giả lập REST và WebSocket công khai; ghi lại mọi request để kiểm tra không có credential."""
 
@@ -143,6 +214,7 @@ async def _exercise() -> dict[str, Any]:
 
     from trading_bot.adapters.binance_usdm.market_data import BinanceUsdMMarketDataAdapter
     from trading_bot.adapters.binance_usdm.market_stream import (
+        BinanceUsdMEventStream,
         BinanceUsdMKlineStream,
         KlineStreamDisconnected,
     )
@@ -157,6 +229,9 @@ async def _exercise() -> dict[str, Any]:
     from trading_bot.adapters.database.models.market_entities import (
         MarketBar,
         MarketInstrument,
+        MarketLiquidation,
+        MarketMarkPrice,
+        MarketTradeFlow,
     )
     from trading_bot.adapters.database.repositories.source_registry import SourceRegistryRepository
     from trading_bot.application.live_kline_ingestion import (
@@ -164,6 +239,7 @@ async def _exercise() -> dict[str, Any]:
         LiveKlineSubscription,
     )
     from trading_bot.application.live_kline_ingestion_composition import workspace_transactions
+    from trading_bot.application.live_market_events import LiveMarketEventService
     from trading_bot.application.market_signal_composition import _latest_bar_rows
     from trading_bot.application.outbox import UnitOfWork
     from trading_bot.domain.research.license_scope import (
@@ -173,7 +249,10 @@ async def _exercise() -> dict[str, Any]:
     )
     from trading_bot.domain.research.source_policy import SourcePolicyState, SourceUsePurpose
     from trading_bot.domain.research.source_registry import SourceBudget, SourceRegistryEntry
-    from trading_bot.workers.live_market_ingestion_worker import LiveMarketIngestionWorker
+    from trading_bot.workers.live_market_ingestion_worker import (
+        LiveMarketEventWorker,
+        LiveMarketIngestionWorker,
+    )
 
     url = database_url_from_secret(
         username=os.environ["TRADING_BOT_DATABASE_USER"],
@@ -392,6 +471,86 @@ async def _exercise() -> dict[str, Any]:
     )
     after_replay = await counts(admin_sessions, WORKSPACE_ID)
 
+    # 6. Stream sự kiện: mark price lấy mẫu mỗi phút, mọi lệnh thanh lý, dòng lệnh theo bucket.
+    event_service = LiveMarketEventService(
+        workspace_id=WORKSPACE_ID,
+        transactions=workspace_transactions(worker_sessions, workspace_id=WORKSPACE_ID),
+    )
+    event_worker = LiveMarketEventWorker(
+        service=event_service,
+        stream_factory=lambda: BinanceUsdMEventStream(
+            symbols=("BTCUSDT",),
+            kinds=("mark_price", "liquidation", "trade_flow"),
+            client=stream_client,
+            clock=lambda: clock["now"],
+        ),
+        symbols=("BTCUSDT",),
+        now=lambda: clock["now"],
+        mark_price_interval_seconds=60,
+        flush_seconds=0,
+    )
+    event_messages = [
+        _mark_message(M + timedelta(seconds=1)),
+        _mark_message(M + timedelta(seconds=2)),
+        _liquidation_message(M + timedelta(seconds=5)),
+        _agg_message(100, M + timedelta(seconds=10)),
+        _mark_message(M + timedelta(seconds=61)),
+        _agg_message(101, M + timedelta(seconds=65)),
+        _agg_message(102, M + timedelta(seconds=70)),
+        _agg_message(103, M + timedelta(seconds=125)),
+    ]
+
+    async def event_session() -> str:
+        clock["now"] = M + timedelta(minutes=3)
+        binance.stream_messages = event_messages
+        try:
+            await event_worker.run_session()
+        except KlineStreamDisconnected:
+            return "DISCONNECTED"
+        return "ENDED"
+
+    async def event_counts(sessions: Any, workspace_id: UUID) -> tuple[int, int, int, int]:
+        async with UnitOfWork(sessions, workspace_id=workspace_id) as uow:
+            totals = []
+            for model in (MarketMarkPrice, MarketLiquidation, MarketTradeFlow):
+                totals.append(
+                    await uow.session.scalar(
+                        select(func.count())
+                        .select_from(model)
+                        .where(model.workspace_id == workspace_id)
+                    )
+                )
+            complete = await uow.session.scalar(
+                select(func.count())
+                .select_from(MarketTradeFlow)
+                .where(
+                    MarketTradeFlow.workspace_id == workspace_id,
+                    MarketTradeFlow.is_complete.is_(True),
+                )
+            )
+        return (*(int(total or 0) for total in totals), int(complete or 0))
+
+    event_outcome = await event_session()
+    events_first = await event_counts(admin_sessions, WORKSPACE_ID)
+    events_written_first = event_worker.events_written
+    await event_session()
+    events_replayed = await event_counts(admin_sessions, WORKSPACE_ID)
+    events_other_workspace = await event_counts(worker_sessions, OTHER_WORKSPACE_ID)
+    async with UnitOfWork(admin_sessions, workspace_id=WORKSPACE_ID) as uow:
+        complete_flow = await uow.session.scalar(
+            select(MarketTradeFlow).where(
+                MarketTradeFlow.workspace_id == WORKSPACE_ID,
+                MarketTradeFlow.is_complete.is_(True),
+            )
+        )
+    events_append_only = False
+    try:
+        async with UnitOfWork(worker_sessions, workspace_id=WORKSPACE_ID) as uow:
+            await uow.session.execute(text("UPDATE market_liquidation SET status = 'EDITED'"))
+    except DBAPIError:
+        # Role ingestion không có quyền UPDATE; trigger append-only là lớp chặn thứ hai.
+        events_append_only = True
+
     as_of = M + 5 * INTERVAL + timedelta(seconds=3)
     async with UnitOfWork(admin_sessions, workspace_id=WORKSPACE_ID) as uow:
         rows = (
@@ -442,13 +601,27 @@ async def _exercise() -> dict[str, Any]:
         and {row.source for row in scanner_rows} == {"BINANCE_USDM"},
         "other_workspace_sees_nothing": other_counts == (0, 0, 0),
         "stream_uses_market_route": set(binance.stream_paths)
-        == {"/market/stream?streams=btcusdt@kline_1m"},
+        == {
+            "/market/stream?streams=btcusdt@kline_1m",
+            "/market/stream?streams=btcusdt@markPrice@1s/btcusdt@forceOrder/btcusdt@aggTrade",
+        },
         "public_requests_only": all(
             request.method == "GET"
             and not any(marker in request.headers for marker in secret_markers)
             and "signature" not in request.url.params
             for request in binance.rest_requests
         ),
+        "event_session_outcome": event_outcome,
+        "event_rows_mark_liquidation_flow_complete": list(events_first),
+        "event_worker_written": events_written_first,
+        "event_replay_adds_nothing": events_replayed == events_first,
+        "complete_flow_bucket": complete_flow is not None
+        and complete_flow.bucket_start == M + timedelta(minutes=1)
+        and complete_flow.trade_count == 2
+        and complete_flow.buy_quantity == Decimal("0.5")
+        and complete_flow.sell_quantity == Decimal("0.5"),
+        "events_hidden_from_other_workspace": events_other_workspace == (0, 0, 0, 0),
+        "events_append_only": events_append_only,
         "exchange_info_requests": sum(
             request.url.path == "/fapi/v1/exchangeInfo" for request in binance.rest_requests
         ),

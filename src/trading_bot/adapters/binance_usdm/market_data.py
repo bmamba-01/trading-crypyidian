@@ -19,6 +19,8 @@ import httpx2
 from trading_bot.domain.market.ingestion import InstrumentObservation
 from trading_bot.domain.market.models import Instrument, OHLCVBar
 from trading_bot.ports.market_data import (
+    AggregateTrade,
+    BasisObservation,
     BookTicker,
     ExchangeInstrument,
     FundingInfo,
@@ -27,8 +29,10 @@ from trading_bot.ports.market_data import (
     LongShortRatioObservation,
     MarketDataPage,
     OpenInterestObservation,
+    OrderBookSnapshot,
     PremiumIndexObservation,
     PriceTicker,
+    ReferencePriceBar,
     TakerFlowObservation,
     Ticker24h,
 )
@@ -546,6 +550,126 @@ class BinanceUsdMMarketDataAdapter:
         reason = "Phản hồi đạt limit; cần lấy trang kế." if not complete else None
         return _page(response, records, is_complete=complete, incomplete_reason=reason)
 
+    async def get_order_book(
+        self, symbol: str, *, limit: int = 100
+    ) -> MarketDataPage[OrderBookSnapshot]:
+        """Ảnh chụp L2; chỉ là một thời điểm, không thay cho diff-depth stream có sequence."""
+        _require_symbol(symbol)
+        weight = _DEPTH_WEIGHTS.get(limit)
+        if weight is None or isinstance(limit, bool):
+            raise ValueError("limit depth phải là một trong 5, 10, 20, 50, 100, 500, 1000.")
+        response = await self._request_json(
+            "/fapi/v1/depth", params={"symbol": symbol, "limit": limit}, weight=weight
+        )
+        return _page(response, (_parse_order_book(response.payload, symbol, response.received_at),))
+
+    async def get_aggregate_trades(
+        self,
+        *,
+        symbol: str,
+        from_id: int | None = None,
+        start_time: datetime | None = None,
+        end_time: datetime | None = None,
+        limit: int = 500,
+    ) -> MarketDataPage[AggregateTrade]:
+        """Aggregate trades; sàn chỉ giữ 48 giờ và cửa sổ start–end phải dưới 1 giờ."""
+        _require_symbol(symbol)
+        _validate_limit(limit, maximum=1000)
+        _validate_range(start_time, end_time)
+        if from_id is not None and (start_time is not None or end_time is not None):
+            raise ValueError("from_id không dùng cùng start_time/end_time.")
+        if from_id is not None and (isinstance(from_id, bool) or from_id < 0):
+            raise ValueError("from_id phải là số nguyên không âm.")
+        if start_time is not None and end_time is not None and end_time - start_time >= _HOUR:
+            raise ValueError("Cửa sổ aggTrades phải ngắn hơn 1 giờ.")
+        params: dict[str, str | int] = {"symbol": symbol, "limit": limit}
+        if from_id is not None:
+            params["fromId"] = from_id
+        _add_time_params(params, start_time, end_time)
+        response = await self._request_json("/fapi/v1/aggTrades", params=params, weight=20)
+        values = _require_list(response.payload, "aggTrades")
+        records = tuple(
+            _parse_aggregate_trade(value, symbol, response.received_at) for value in values
+        )
+        complete = len(values) < limit
+        reason = "Phản hồi đạt limit; lấy tiếp bằng from_id kế tiếp." if not complete else None
+        return _page(response, records, is_complete=complete, incomplete_reason=reason)
+
+    async def get_basis(
+        self,
+        *,
+        pair: str,
+        period: str,
+        contract_type: str = "PERPETUAL",
+        start_time: datetime | None = None,
+        end_time: datetime | None = None,
+        limit: int = 30,
+    ) -> MarketDataPage[BasisObservation]:
+        """Basis futures − index theo period; sàn chỉ giữ 30 ngày."""
+        _require_symbol(pair)
+        if contract_type not in _BASIS_CONTRACT_TYPES:
+            raise ValueError("contract_type basis không được hỗ trợ.")
+        if period not in _OI_PERIODS:
+            raise ValueError("period không thuộc danh sách thống kê futures được hỗ trợ.")
+        _validate_limit(limit, maximum=500)
+        _validate_range(start_time, end_time)
+        params: dict[str, str | int] = {
+            "pair": pair,
+            "contractType": contract_type,
+            "period": period,
+            "limit": limit,
+        }
+        _add_time_params(params, start_time, end_time)
+        response = await self._request_json(
+            "/futures/data/basis", params=params, weight=0, category="futures_data"
+        )
+        values = _require_list(response.payload, "basis")
+        records = tuple(
+            _parse_basis(
+                value,
+                pair=pair,
+                contract_type=contract_type,
+                period=period,
+                received_at=response.received_at,
+            )
+            for value in values
+        )
+        return _page(response, tuple(sorted(records, key=lambda item: item.observed_at)))
+
+    async def get_reference_price_klines(
+        self,
+        *,
+        symbol: str,
+        kind: str,
+        interval: str,
+        start_time: datetime | None = None,
+        end_time: datetime | None = None,
+        limit: int = 500,
+    ) -> MarketDataPage[ReferencePriceBar]:
+        """Nến mark price (theo symbol) hoặc index price (theo pair)."""
+        _require_symbol(symbol)
+        route = _REFERENCE_KLINE_ROUTES.get(kind)
+        if route is None:
+            raise ValueError("kind nến tham chiếu phải là mark hoặc index.")
+        if interval not in _KLINE_INTERVALS:
+            raise ValueError("interval không thuộc danh sách Kline USDⓈ-M được hỗ trợ.")
+        _validate_limit(limit, maximum=1500)
+        _validate_range(start_time, end_time)
+        endpoint, key = route
+        params: dict[str, str | int] = {key: symbol, "interval": interval, "limit": limit}
+        _add_time_params(params, start_time, end_time)
+        response = await self._request_json(endpoint, params=params, weight=_kline_weight(limit))
+        values = _require_list(response.payload, endpoint)
+        records = tuple(
+            _parse_reference_bar(
+                value, symbol=symbol, kind=kind, interval=interval, received_at=response.received_at
+            )
+            for value in values
+        )
+        complete = len(values) < limit
+        reason = "Phản hồi đạt limit; cần lấy trang kế." if not complete else None
+        return _page(response, records, is_complete=complete, incomplete_reason=reason)
+
     async def _snapshot(
         self, endpoint: str, symbol: str | None, *, single_weight: int, all_weight: int
     ) -> tuple[_RawResponse, list[Any]]:
@@ -925,6 +1049,125 @@ def _parse_kline_flow(
     if not 0 <= flow.taker_buy_volume <= flow.volume:
         raise MarketDataContractError("Taker buy volume phải nằm trong tổng volume của nến.")
     return flow
+
+
+_DEPTH_WEIGHTS = {5: 2, 10: 2, 20: 2, 50: 2, 100: 5, 500: 10, 1000: 20}
+_HOUR = timedelta(hours=1)
+_BASIS_CONTRACT_TYPES = frozenset({"PERPETUAL", "CURRENT_QUARTER", "NEXT_QUARTER"})
+_REFERENCE_KLINE_ROUTES = {
+    "mark": ("/fapi/v1/markPriceKlines", "symbol"),
+    "index": ("/fapi/v1/indexPriceKlines", "pair"),
+}
+
+
+def _parse_levels(
+    value: Any, name: str, *, descending: bool
+) -> tuple[tuple[Decimal, Decimal], ...]:
+    levels: list[tuple[Decimal, Decimal]] = []
+    for raw in _require_list(value, name):
+        if not isinstance(raw, list) or len(raw) != 2:
+            raise MarketDataContractError(f"{name} phải gồm các cặp [giá, khối lượng].")
+        price, quantity = _decimal(raw[0], f"{name}.price"), _decimal(raw[1], f"{name}.qty")
+        if price <= 0 or quantity < 0:
+            raise MarketDataContractError(f"{name} có giá hoặc khối lượng không hợp lệ.")
+        if levels and ((price >= levels[-1][0]) if descending else (price <= levels[-1][0])):
+            raise MarketDataContractError(f"{name} không được sắp theo đúng thứ tự giá.")
+        levels.append((price, quantity))
+    return tuple(levels)
+
+
+def _parse_order_book(value: Any, symbol: str, received_at: datetime) -> OrderBookSnapshot:
+    item = _require_mapping(value, "depth")
+    last_update_id = item.get("lastUpdateId")
+    if type(last_update_id) is not int or last_update_id < 0:
+        raise MarketDataContractError("lastUpdateId phải là số nguyên không âm.")
+    bids = _parse_levels(item.get("bids"), "bids", descending=True)
+    asks = _parse_levels(item.get("asks"), "asks", descending=False)
+    if bids and asks and bids[0][0] >= asks[0][0]:
+        raise MarketDataContractError("Sổ lệnh có best bid không thấp hơn best ask.")
+    return OrderBookSnapshot(
+        symbol=symbol,
+        last_update_id=last_update_id,
+        bids=bids,
+        asks=asks,
+        observed_at=_event_time(item.get("E"), "depth.E", received_at),
+        received_at=received_at,
+        available_at=received_at,
+    )
+
+
+def _non_negative_int(value: Any, name: str) -> int:
+    if type(value) is not int or value < 0:
+        raise MarketDataContractError(f"{name} phải là số nguyên không âm.")
+    return value
+
+
+def _parse_aggregate_trade(value: Any, symbol: str, received_at: datetime) -> AggregateTrade:
+    item = _require_mapping(value, "aggTrade")
+    identifiers = tuple(_non_negative_int(item.get(key), f"aggTrade.{key}") for key in "afl")
+    buyer_is_maker = item.get("m")
+    if type(buyer_is_maker) is not bool:
+        raise MarketDataContractError("aggTrade.m phải là boolean.")
+    price, quantity = _decimal(item.get("p"), "aggTrade.p"), _decimal(item.get("q"), "aggTrade.q")
+    if price <= 0 or quantity <= 0 or identifiers[1] > identifiers[2]:
+        raise MarketDataContractError("aggTrade có giá, khối lượng hoặc dải trade id sai.")
+    return AggregateTrade(
+        symbol=symbol,
+        aggregate_id=identifiers[0],
+        price=price,
+        quantity=quantity,
+        first_trade_id=identifiers[1],
+        last_trade_id=identifiers[2],
+        trade_time=_event_time(item.get("T"), "aggTrade.T", received_at),
+        buyer_is_maker=buyer_is_maker,
+        received_at=received_at,
+        available_at=received_at,
+    )
+
+
+def _parse_basis(
+    value: Any, *, pair: str, contract_type: str, period: str, received_at: datetime
+) -> BasisObservation:
+    item = _require_mapping(value, "basis")
+    if item.get("pair") != pair or item.get("contractType") != contract_type:
+        raise MarketDataContractError("Basis response không khớp pair/contractType của request.")
+    return BasisObservation(
+        pair=pair,
+        contract_type=contract_type,
+        period=period,
+        observed_at=_event_time(item.get("timestamp"), "basis.timestamp", received_at),
+        futures_price=_decimal(item.get("futuresPrice"), "futuresPrice"),
+        index_price=_decimal(item.get("indexPrice"), "indexPrice"),
+        basis=_decimal(item.get("basis"), "basis"),
+        basis_rate=_decimal(item.get("basisRate"), "basisRate"),
+        received_at=received_at,
+        available_at=received_at,
+    )
+
+
+def _parse_reference_bar(
+    value: Any, *, symbol: str, kind: str, interval: str, received_at: datetime
+) -> ReferencePriceBar:
+    if not isinstance(value, list) or len(value) != 12:
+        raise MarketDataContractError("Kline phải là tuple có đúng 12 trường.")
+    close_time = _from_milliseconds(value[6], "close time")
+    bar = ReferencePriceBar(
+        symbol=symbol,
+        timeframe=interval,
+        kind=kind,
+        open_time=_from_milliseconds(value[0], "open time"),
+        close_time=close_time,
+        open=_decimal(value[1], "open"),
+        high=_decimal(value[2], "high"),
+        low=_decimal(value[3], "low"),
+        close=_decimal(value[4], "close"),
+        is_closed=close_time < received_at,
+        received_at=received_at,
+        available_at=received_at,
+    )
+    if bar.low <= 0 or bar.high < max(bar.open, bar.close) or bar.low > min(bar.open, bar.close):
+        raise MarketDataContractError("Nến tham chiếu không thỏa quan hệ OHLC.")
+    return bar
 
 
 def _page(

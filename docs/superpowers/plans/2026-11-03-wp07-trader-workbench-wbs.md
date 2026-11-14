@@ -30,7 +30,24 @@ Một trader có thể xem từng quyết định/vị thế trên chart respons
 
 1. Subscription tường minh theo private chat và bot; allowlist symbol, timeframe, hướng, strategy ID và setup/reason code; danh sách rỗng nghĩa là mọi giá trị. `/start` liên kết chat, `/stop` hủy ngay; cài quiet hours/timezone, cooldown và giới hạn số tín hiệu/ngày.
 2. Producer rà soát market stream dùng nến đã đóng, dữ liệu point-in-time và feature quality gate để phát `SharedSignalEvidence`; fan-out chạy strategy đã publish theo từng bot.
-   **Live ingest (14/11/2026):** `ingestion-worker` có thể thu nến đóng qua WebSocket `/market` và lấp gap bằng REST, ghi `market_bar` nguồn `BINANCE_USDM` sau rights gate `PAPER_DEMO`; bật bằng `TRADING_BOT_INGESTION_LIVE_SYMBOLS` (mặc định tắt). Funding, OI, mark price, aggTrade và liquidation live còn mở.
+   **Live ingest (14/11/2026):** `ingestion-worker` có thể thu nến đóng qua WebSocket `/market` và lấp gap bằng REST, ghi `market_bar` nguồn `BINANCE_USDM` sau rights gate `PAPER_DEMO`; bật bằng `TRADING_BOT_INGESTION_LIVE_SYMBOLS` (mặc định tắt).
+   **Live market data — trạng thái 14/11/2026:**
+
+   | Hạng mục | Trạng thái | Ghi chú |
+   |---|---|---|
+   | Nến đóng qua stream + REST lấp gap → `market_bar` | Xong | `TRADING_BOT_INGESTION_LIVE_SYMBOLS`, `..._TIMEFRAMES` |
+   | Mark/index price + funding dự kiến → `market_mark_price` | Xong | Lấy mẫu theo `..._LIVE_MARK_PRICE_INTERVAL_SECONDS` (mặc định 60) |
+   | Lệnh thanh lý → `market_liquidation` | Xong | Sàn chỉ đẩy lệnh lớn nhất mỗi giây/symbol; chưa quan sát lệnh thật cho symbol đã bật |
+   | Dòng lệnh taker theo phút → `market_trade_flow` | Xong | Gộp từ `@aggTrade`; `is_complete` phân biệt bucket bị cắt |
+   | Wrapper REST: giá, ticker, book ticker, premium index, funding info, long/short, taker ratio, kline flow, depth, aggTrades, basis, kline mark/index | Xong | Chỉ tầng adapter |
+   | Lưu định kỳ OI, funding đã chốt, long/short, taker ratio, basis vào DB | Chưa | Sàn giữ 30 ngày; cần poller + bảng |
+   | Feature/strategy dùng dữ liệu mới (H10, H12, H13) | Chưa | Cần hợp đồng feature point-in-time và backtest |
+   | Diff-depth L2 có sequence (H14) | Chưa | Mới có ảnh chụp `depth` qua REST |
+   | Taker buy volume/trade count trên `market_bar` | Chưa | Cần migration; hiện đọc qua `get_kline_flows` |
+   | Metric freshness/gap, cảnh báo (WP-07E) | Chưa | Readiness đã có `live_market_ingestion`, `live_market_events` |
+   | Policy `BINANCE_USDM_REST` mục đích `PAPER_DEMO` cho workspace thật | Chưa | Điều kiện để bật live ingest |
+
+   Bật stream sự kiện bằng `TRADING_BOT_INGESTION_LIVE_EVENTS=mark_price,liquidation,trade_flow` (mặc định tắt).
 3. Candidate chỉ được phát sau BotDecision pipeline, không ghi `OrderIntent`, `FillRecord`, `TradeRecord` hoặc reservation. Market-signal producer và Telegram sender tách process/DB role khỏi PAPER runtime; producer chỉ đọc nến đã lưu và ghi evidence/decision/outbox, sender chỉ đọc candidate/subscription và ghi delivery.
 4. Event/outbox có decision ID, setup identity, freshness/expiry/invalidation và dedupe; worker rate-limited, retry/dead-letter và receipt/audit.
 5. Telegram Bot API sender dùng token từ secret file/provider; redaction, HTTPS, message length/escaping và xử lý 429 `retry_after`.

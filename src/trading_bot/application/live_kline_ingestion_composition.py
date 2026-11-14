@@ -5,8 +5,8 @@ Composition này không nhận API key và không có cổng thực thi lệnh.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Sequence
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Callable, Sequence
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 from uuid import UUID
 
@@ -14,30 +14,33 @@ import httpx2
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from trading_bot.adapters.binance_usdm.market_data import BinanceUsdMMarketDataAdapter
-from trading_bot.adapters.binance_usdm.market_stream import BinanceUsdMKlineStream
+from trading_bot.adapters.binance_usdm.market_stream import (
+    BinanceUsdMEventStream,
+    BinanceUsdMKlineStream,
+)
 from trading_bot.adapters.database.repositories.market_data import MarketDataRepository
 from trading_bot.adapters.database.repositories.source_registry import SourceRegistryRepository
-from trading_bot.application.binance_rest_backfill import BackfillRightsGate
 from trading_bot.application.binance_rest_backfill_rights import SourceRegistryBackfillRightsGate
 from trading_bot.application.live_kline_ingestion import (
     LiveKlineIngestionService,
-    LiveKlineRepository,
     LiveKlineSubscription,
-    LiveKlineTransaction,
-    TransactionFactory,
 )
+from trading_bot.application.live_market_events import LiveMarketEventService
 from trading_bot.application.outbox import UnitOfWork
-from trading_bot.workers.live_market_ingestion_worker import LiveMarketIngestionWorker
+from trading_bot.workers.live_market_ingestion_worker import (
+    LiveMarketEventWorker,
+    LiveMarketIngestionWorker,
+)
 
 
 @dataclass(frozen=True, slots=True)
 class _Transaction:
-    market: LiveKlineRepository
-    rights: BackfillRightsGate
+    market: MarketDataRepository
+    rights: SourceRegistryBackfillRightsGate
 
 
 class LiveMarketIngestionRuntime:
-    """Giữ worker cùng các client mạng để lifespan đóng đúng thứ tự."""
+    """Giữ các worker cùng client mạng để lifespan đóng đúng thứ tự."""
 
     def __init__(
         self,
@@ -45,8 +48,10 @@ class LiveMarketIngestionRuntime:
         worker: LiveMarketIngestionWorker,
         market_data: BinanceUsdMMarketDataAdapter,
         stream_client: httpx2.AsyncClient,
+        event_worker: LiveMarketEventWorker | None = None,
     ) -> None:
         self.worker = worker
+        self.event_worker = event_worker
         self._market_data = market_data
         self._stream_client = stream_client
 
@@ -57,11 +62,11 @@ class LiveMarketIngestionRuntime:
 
 def workspace_transactions(
     sessions: async_sessionmaker[AsyncSession], *, workspace_id: UUID
-) -> TransactionFactory:
+) -> Callable[[], AbstractAsyncContextManager[_Transaction]]:
     """Tạo factory transaction: kho market và rights gate dùng chung một Unit of Work."""
 
     @asynccontextmanager
-    async def transactions() -> AsyncIterator[LiveKlineTransaction]:
+    async def transactions() -> AsyncIterator[_Transaction]:
         async with UnitOfWork(sessions, workspace_id=workspace_id) as uow:
             yield _Transaction(
                 market=MarketDataRepository(uow.session),
@@ -80,6 +85,8 @@ def build_live_market_ingestion(
     workspace_id: UUID,
     subscriptions: Sequence[tuple[str, str]],
     warmup_bars: int,
+    events: Sequence[str] = (),
+    mark_price_interval_seconds: int = 60,
 ) -> LiveMarketIngestionRuntime:
     """Dựng runtime mặc định cho ingestion-worker; chỉ gọi khi live ingest được bật."""
     typed = tuple(LiveKlineSubscription(symbol, interval) for symbol, interval in subscriptions)
@@ -91,11 +98,11 @@ def build_live_market_ingestion(
         auth=None,
         headers={"User-Agent": "Crypidian/0.1"},
     )
-
+    transactions = workspace_transactions(session_factory, workspace_id=workspace_id)
     service = LiveKlineIngestionService(
         workspace_id=workspace_id,
         market_data=market_data,
-        transactions=workspace_transactions(session_factory, workspace_id=workspace_id),
+        transactions=transactions,
         warmup_bars=warmup_bars,
     )
     worker = LiveMarketIngestionWorker(
@@ -106,6 +113,21 @@ def build_live_market_ingestion(
         ),
         subscriptions=typed,
     )
+    event_worker: LiveMarketEventWorker | None = None
+    if events:
+        symbols = tuple(sorted({symbol for symbol, _ in subscriptions}))
+        kinds = tuple(events)
+        event_worker = LiveMarketEventWorker(
+            service=LiveMarketEventService(workspace_id=workspace_id, transactions=transactions),
+            stream_factory=lambda: BinanceUsdMEventStream(
+                symbols=symbols, kinds=kinds, client=stream_client
+            ),
+            symbols=symbols,
+            mark_price_interval_seconds=mark_price_interval_seconds,
+        )
     return LiveMarketIngestionRuntime(
-        worker=worker, market_data=market_data, stream_client=stream_client
+        worker=worker,
+        market_data=market_data,
+        stream_client=stream_client,
+        event_worker=event_worker,
     )

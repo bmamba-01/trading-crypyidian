@@ -399,3 +399,70 @@ def test_ingestion_lifespan_keeps_live_market_worker_off_by_default() -> None:
         assert client.get("/health/ready").json() == {"status": "ready"}
 
     assert live_calls == []
+
+
+def test_ingestion_lifespan_starts_event_worker_and_gates_readiness_on_it() -> None:
+    started = Event()
+    stopped = Event()
+    live_calls: list[dict[str, object]] = []
+
+    class _RightsWorker:
+        last_tick_succeeded = True
+
+        async def run(self, stopping: object) -> None:
+            await stopping.wait()  # type: ignore[attr-defined]
+
+    class _KlineWorker:
+        is_healthy = True
+
+        async def run(self, stopping: object) -> None:
+            await stopping.wait()  # type: ignore[attr-defined]
+
+    class _EventWorker:
+        is_healthy = False
+
+        async def run(self, stopping: object) -> None:
+            started.set()
+            await stopping.wait()  # type: ignore[attr-defined]
+            stopped.set()
+
+    class _LiveRuntime:
+        worker = _KlineWorker()
+        event_worker = _EventWorker()
+
+        async def aclose(self) -> None:
+            return None
+
+    def make_live(**kwargs: object) -> _LiveRuntime:
+        live_calls.append(kwargs)
+        return _LiveRuntime()
+
+    async def database_ready() -> bool:
+        return True
+
+    app = create_app(
+        AppSettings(
+            process_role="ingestion-worker",
+            ingestion_workspace_id=uuid4(),
+            ingestion_live_symbols="BTCUSDT",
+            ingestion_live_events="liquidation,mark_price",
+            ingestion_live_mark_price_interval_seconds=30,
+        ),
+        session_factory=object(),  # type: ignore[arg-type]
+        rights_worker_factory=lambda **_: _RightsWorker(),
+        live_market_ingestion_factory=make_live,
+        database_probe=database_ready,
+    )
+
+    with TestClient(app) as client:
+        assert started.wait(timeout=1)
+        assert client.get("/health/ready").json() == {
+            "status": "not_ready",
+            "pending": ["live_market_events"],
+        }
+        _LiveRuntime.event_worker.is_healthy = True
+        assert client.get("/health/ready").json() == {"status": "ready"}
+
+    assert stopped.wait(timeout=1)
+    assert live_calls[0]["events"] == ("mark_price", "liquidation")
+    assert live_calls[0]["mark_price_interval_seconds"] == 30
