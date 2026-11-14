@@ -38,6 +38,7 @@ from trading_bot.application.runtime_risk_profile import (
     RuntimeRiskProfile,
     load_risk_profile,
 )
+from trading_bot.application.strategy_catalog import strategy_registry
 from trading_bot.config.bot_settings import (
     RISK_FIELDS,
     BotConfigOverlay,
@@ -49,11 +50,10 @@ from trading_bot.domain.risk.planner import RiskLimits
 from trading_bot.domain.risk.workspace_budget import effective_bot_open_risk_fraction
 from trading_bot.domain.strategy.contracts import StrategySelection
 from trading_bot.domain.strategy.registry import (
-    StrategyRegistry,
-    UnknownStrategyReleaseError,
+    StrategyRelease as RegisteredRelease,
 )
 from trading_bot.domain.strategy.registry import (
-    StrategyRelease as RegisteredRelease,
+    UnknownStrategyReleaseError,
 )
 
 EFFECTIVE_CONFIG_SCHEMA = "effective-bot-config-v1"
@@ -198,7 +198,7 @@ def validate_bot_overlay(
         account=account,
         root_risk_profile=root_risk_profile,
         strategy_releases=strategy_releases,
-        registry=registry or StrategyRegistry(),
+        registry=registry or strategy_registry(),
     ).issues
 
 
@@ -238,7 +238,7 @@ def resolve_effective_bot_config(
         account=account,
         root_risk_profile=root_risk_profile,
         strategy_releases=strategy_releases,
-        registry=registry or StrategyRegistry(),
+        registry=registry or strategy_registry(),
         # Overlay đã publish hợp lệ; root/profile siết sau đó -> kẹp cap bot thay vì unresolvable.
         strict_open_risk_caps=False,
     )

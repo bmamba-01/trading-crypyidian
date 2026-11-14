@@ -8,11 +8,12 @@ from decimal import Decimal
 
 import pytest
 
-from trading_bot.admin.strategy_card_service import build_default_demo_cards
+from trading_bot.application.strategy_catalog import PRODUCT_CARD_IDS, strategy_registry
 from trading_bot.application.strategy_pipeline.card_strategy import (
     StrategyCardStrategy,
     strategy_card_release_id,
 )
+from trading_bot.application.strategy_pipeline.demo_cards import build_default_demo_cards
 from trading_bot.application.strategy_pipeline.pipeline_engine import (
     StrategyCandidate as PipelineCandidate,
 )
@@ -22,6 +23,7 @@ from trading_bot.application.strategy_pipeline.planner_bridge import (
 from trading_bot.domain.market.models import OHLCVBar
 from trading_bot.domain.strategy.contracts import (
     DecisionSnapshot,
+    FeatureObservation,
     MarketSeries,
     NoTrade,
     StrategyCandidate,
@@ -32,7 +34,9 @@ from trading_bot.domain.strategy.registry import StrategyRegistry
 DECIDED_AT = datetime(2026, 11, 14, 5, 0, tzinfo=UTC)
 
 
-def _snapshot(opened: str, high: str, low: str, close: str) -> DecisionSnapshot:
+def _snapshot(
+    opened: str, high: str, low: str, close: str, *, atr_14: float | None = 1.3
+) -> DecisionSnapshot:
     bar = OHLCVBar(
         symbol="BTCUSDT",
         timeframe="1h",
@@ -53,7 +57,20 @@ def _snapshot(opened: str, high: str, low: str, close: str) -> DecisionSnapshot:
         decision_time=DECIDED_AT,
         snapshot_id="snapshot-1",
         series=(MarketSeries(timeframe="1h", bars=(bar,)),),
-        features=(),
+        features=(
+            (
+                FeatureObservation(
+                    feature_id="1h:atr_14:snapshot-1",
+                    name="atr_14",
+                    timeframe="1h",
+                    value=atr_14,
+                    previous_value=None,
+                    available_at=DECIDED_AT,
+                ),
+            )
+            if atr_14 is not None
+            else ()
+        ),
         macro_evidence_ids=("macro-1",),
     )
 
@@ -100,7 +117,8 @@ def test_hammer_bar_yields_long_candidate_with_pipeline_zones() -> None:
     assert result.snapshot_id == "snapshot-1"
     assert result.direction == "long"
     assert result.reference_price == Decimal("100.2")
-    # ATR một nến = high − low = 1,3; L6 đặt stop 2 ATR và mục tiêu theo R:R 2,0.
+    # ATR lấy từ feature đã quản trị `atr_14` (1,3); L6 đặt stop 2 ATR, mục tiêu theo R:R 2,0.
+    assert result.evidence_feature_ids == ("1h:atr_14:snapshot-1", "l5_trigger")
     assert result.atr_value == pytest.approx(1.3)
     assert result.recipe.stop_atr_multiple == pytest.approx(2.0)
     assert result.recipe.take_profit_atr_multiple == pytest.approx(4.0)
@@ -141,10 +159,54 @@ def test_invalid_bar_returns_data_hygiene_no_trade() -> None:
     assert result.code == "STRATEGY_CARD_DATA_HYGIENE_FAILED"
 
 
-def test_card_release_is_not_part_of_the_default_registry() -> None:
-    """Strategy Card chỉ vào đường quyết định khi có chủ đích đăng ký; mặc định thì không."""
+def test_single_bar_atr_is_rejected_on_the_decision_path() -> None:
+    """Không có feature ATR lẫn đủ lịch sử nến thì thẻ không được sinh candidate."""
+    strategy = _strategy()
+    result = strategy.evaluate(
+        _snapshot("100.0", "100.3", "99.0", "100.2", atr_14=None), _selection(strategy)
+    )
+
+    assert isinstance(result, NoTrade)
+    assert result.code == "STRATEGY_CARD_INDICATOR_WARMUP"
+    assert result.missing_features == ("l2_atr",)
+
+
+def test_bare_registry_has_only_built_in_rules() -> None:
     releases = {release.release_id for release in StrategyRegistry().list_releases()}
     assert _strategy().release_id not in releases
+
+
+def test_product_catalog_registers_listed_cards_with_stable_hashes() -> None:
+    registry = strategy_registry()
+    strategy = _strategy()
+
+    assert PRODUCT_CARD_IDS == ("SC-BINANCE-USDM-VOL-BREAKOUT-001",)
+    release = registry.get_release(strategy.release_id)
+    assert release.strategy_id == strategy.strategy_id
+    assert release.status == "EXPERIMENTAL_UNVALIDATED"
+    assert release.content_hash == strategy.content_hash
+    assert strategy_registry().get_release(strategy.release_id).content_hash == release.content_hash
+    # Rule dựng sẵn giữ nguyên ID và hash khi có thêm release của thẻ.
+    for built_in in StrategyRegistry().list_releases():
+        assert registry.get_release(built_in.release_id).content_hash == built_in.content_hash
+    selection = StrategySelection(
+        settings_version_id="settings-7", active_release_ids=(strategy.release_id,), published=True
+    )
+    resolved = registry.resolve(strategy.release_id, selection)
+    assert (
+        resolved.evaluate(
+            _snapshot("100.0", "100.3", "99.0", "100.2"), selection
+        ).strategy_release_id
+        == strategy.release_id
+    )
+
+
+def test_registry_rejects_duplicate_release_ids() -> None:
+    strategy = _strategy()
+    rule = (strategy, "Thẻ", "Tóm tắt", "recipe-v1")
+
+    with pytest.raises(ValueError, match="trùng"):
+        StrategyRegistry(extra_rules=(rule, rule))
 
 
 def test_bridge_requires_pipeline_atr_instead_of_assuming_one() -> None:

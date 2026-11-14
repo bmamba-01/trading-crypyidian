@@ -204,16 +204,17 @@ Gợi ý theo WP:
 uv run python scripts/seed_pipeline_paper_ledger.py --project <tên project Compose> --login-email <email owner local>
 ```
 
-- **Thẻ dùng:** thẻ demo `SC-BINANCE-USDM-VOL-BREAKOUT-001` (LONG, bot A) và fixture QA `SC-QA-USDM-WICK-REJECT-SHORT-003` (SHORT, bot B) suy ra từ cùng đồ thị.
-- **Kết quả mặc định:** 5 vòng evidence, mỗi vòng fan-out tới cả hai bot: 9 giao dịch đóng theo `TAKE_PROFIT` / `STOP_LOSS` / `TIME_STOP` và 1 vị thế mở; nến biểu đồ nội bộ 5m và 1h (nguồn `CRYPIDIAN_PIPELINE_FIXTURE`).
+- **Chiến lược dùng:** bot A chọn release `sc-binance-usdm-vol-breakout-001-v1.0.0` của Strategy Card (từ catalog sản phẩm `application.strategy_catalog`); bot B chọn rule dựng sẵn `h03-v1`.
+- **Kết quả mặc định:** 5 vòng evidence, mỗi vòng fan-out tới cả hai bot. Bot A: 2 `TAKE_PROFIT`, 1 `STOP_LOSS`, 1 `TIME_STOP`, 1 vị thế mở. Bot B: 4 `STOP_LOSS`, 1 vị thế mở (recipe H03 dùng trailing stop, không có mục tiêu chốt lời cố định). Nến biểu đồ nội bộ 5m và 1h (nguồn `CRYPIDIAN_PIPELINE_FIXTURE`).
 - **Đăng nhập:** tài khoản `--login-email` được thêm làm owner của workspace mới; vì factor TOTP gắn theo workspace, script mã hóa lại cùng khóa TOTP cho workspace đó bên trong container `admin-web`. Dùng slug in ra ở cuối, cùng mật khẩu và mã TOTP.
 - **Tùy chọn:** `--rounds N`, `--debug` (ghi lý do khi không tạo được intent), `--attach-login-only`, `--chart-bars-only` (chạy lại được nhiều lần).
+- **Cho runtime thật giám sát workspace vừa gieo:** `docker compose -p <project> --profile paper run --detach --no-deps --env TRADING_BOT_RUNTIME_WORKSPACE_ID=<workspace_id> trading-runtime`; `/health/ready` phải báo `paper_accounts.ready = 2`, `recovery_required = 0`.
 
 Giới hạn cần biết:
 
-- Release của Strategy Card chỉ được thêm vào `StrategyRegistry` **trong tiến trình probe**. Registry của sản phẩm không chứa chúng, nên `trading-runtime` thật không thể tiếp tục giám sát vị thế mở của workspace này.
 - Mọi mốc thời gian là "bây giờ": position monitor nhận nến 1 phút mô phỏng nên thời điểm đóng nằm vài phút sau lúc chạy (tới khoảng 13 phút với `TIME_STOP`); trước mốc đó báo cáo vẫn tính lệnh là đang mở.
 - Giá quanh 100 theo quy ước của probe MB-05, nến biểu đồ là dao động tất định; đây không phải dữ liệu thị trường và không phải bằng chứng về khả năng sinh lời.
+- Runtime thật chưa có nguồn nến/dispatcher (`market_dispatch: not_configured`), nên nó giữ lease và khôi phục vị thế nhưng không tự đóng/mở lệnh.
 - Mỗi lần chạy tạo một workspace mới; nhiều bảng là append-only nên dọn dẹp bằng cách xóa volume của stack.
 
 ## 9. Thuật ngữ

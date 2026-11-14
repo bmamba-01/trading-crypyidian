@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
 
@@ -77,10 +77,17 @@ _BUILT_INS: tuple[tuple[Strategy, str, str, str], ...] = (
 class StrategyRegistry:
     """Tra cứu các rule thuần; không lưu trạng thái hoặc công bố cấu hình."""
 
-    def __init__(self) -> None:
+    def __init__(self, extra_rules: Sequence[tuple[Strategy, str, str, str]] = ()) -> None:
+        """`extra_rules` là các release bổ sung do tầng application liệt kê tường minh.
+
+        Mỗi phần tử gồm (rule, tên tiếng Việt, tóm tắt rule, phiên bản recipe). Release trùng
+        ID với rule dựng sẵn bị từ chối để một ID không bao giờ trỏ tới hai nội dung.
+        """
         rules: dict[str, Strategy] = {}
         releases: dict[str, StrategyRelease] = {}
-        for rule, name_vi, formula, recipe_version in _BUILT_INS:
+        for rule, name_vi, formula, recipe_version in (*_BUILT_INS, *extra_rules):
+            if rule.release_id in rules:
+                raise ValueError(f"Release chiến lược bị trùng: {rule.release_id}")
             digest = release_content_hash(rule)
             rules[rule.release_id] = rule
             releases[rule.release_id] = StrategyRelease(

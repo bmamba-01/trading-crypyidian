@@ -7,75 +7,24 @@ cuối `tests/e2e/probes/multibot_runtime.py` (ngay trước `_main()`), nên m�
 Đường đi được kiểm: Strategy Card → `StrategyPipelineEngine` (L0–L6) → `StrategyCardStrategy` →
 evidence fan-out → `bot_decision` CANDIDATE → TradePlanner → RiskEngine → giữ ngân sách workspace →
 intent PAPER → fill → position monitor (TAKE_PROFIT / STOP_LOSS / TIME_STOP) → trade + trade_cost.
-Chỉ có một phần mang tính kiểm thử: release của thẻ được thêm vào `StrategyRegistry` TRONG TIẾN
-TRÌNH PROBE. Registry mặc định của sản phẩm không chứa release của Strategy Card.
+Release của thẻ đến từ catalog của sản phẩm (`application.strategy_catalog`), nên runtime thật
+nhận diện được release và hash ghim trên vị thế. Bot A dùng release của thẻ, bot B dùng H03.
 
 Dữ liệu là mô phỏng PAPER: không gọi Binance, giá quanh 100 theo quy ước của probe gốc, và không
 phải bằng chứng về khả năng sinh lời.
 """
 # ruff: noqa: F821  — các tên của probe gốc chỉ tồn tại sau khi ghép mã nguồn.
 
-PIPELINE_SHORT_CARD_ID = "SC-QA-USDM-WICK-REJECT-SHORT-003"
-PIPELINE_CANDIDATE_VALIDITY = timedelta(hours=12)
-# Hình dạng nến tín hiệu (open, high, low, close) cho từng hướng; ATR một nến = high − low.
+# Nến tín hiệu (open, high, low, close) cho thẻ LONG: búa có râu dưới dài, đóng gần đỉnh.
 # Giá phải nằm trên bước giá 0,1 của instrument, nếu không RiskEngine từ chối kế hoạch.
-PIPELINE_SIGNAL_BARS = {
-    "long": ("100.0", "100.3", "99.0", "100.2"),  # búa: râu dưới dài, đóng gần đỉnh
-    "short": ("100.0", "101.0", "99.7", "99.8"),  # sao băng: râu trên dài, đóng gần đáy
-}
+PIPELINE_SIGNAL_BAR = ("100.0", "100.3", "99.0", "100.2")
 
 
-def _pipeline_cards() -> dict[str, Any]:
-    """Thẻ LONG là thẻ demo của sản phẩm; thẻ SHORT là fixture QA suy ra từ cùng đồ thị."""
-    from dataclasses import replace
+def _pipeline_card_strategy() -> Any:
+    """Release Strategy Card của sản phẩm (đúng rule mà runtime thật dùng)."""
+    from trading_bot.application.strategy_catalog import strategy_card_rules
 
-    from trading_bot.admin.strategy_card_service import build_default_demo_cards
-
-    long_card = build_default_demo_cards()[0]
-    short_nodes = []
-    for node in long_card.nodes:
-        if node.node_id == "l1_wick":
-            node = replace(node, operation="upper_wick_ratio")
-        elif node.node_id == "l5_trigger":
-            node = replace(node, parameters={"direction": "SHORT"})
-        short_nodes.append(node)
-    short_card = long_card.model_copy(
-        update={
-            "card_id": PIPELINE_SHORT_CARD_ID,
-            "name": "QA Wick Rejection Short",
-            "nodes": short_nodes,
-        }
-    )
-    return {"long": long_card, "short": short_card}
-
-
-def _pipeline_strategies() -> dict[str, Any]:
-    from trading_bot.application.strategy_pipeline.card_strategy import StrategyCardStrategy
-
-    return {
-        direction: StrategyCardStrategy(card, candidate_validity=PIPELINE_CANDIDATE_VALIDITY)
-        for direction, card in _pipeline_cards().items()
-    }
-
-
-def _install_card_registry() -> dict[str, Any]:
-    """Thêm release của thẻ vào registry của riêng tiến trình probe (không đổi sản phẩm)."""
-    from trading_bot.domain.strategy import registry as registry_module
-
-    strategies = _pipeline_strategies()
-    known = {rule.release_id for rule, *_ in registry_module._BUILT_INS}
-    additions = tuple(
-        (
-            strategy,
-            strategy.card.name,
-            "Strategy Card L0–L6 qua StrategyPipelineEngine; vùng giá L6 theo bội số ATR.",
-            "strategy-card-bridge-v1",
-        )
-        for strategy in strategies.values()
-        if strategy.release_id not in known
-    )
-    registry_module._BUILT_INS = (*registry_module._BUILT_INS, *additions)
-    return strategies
+    return strategy_card_rules()[0][0]
 
 
 _base_strategy_snapshot = _strategy_snapshot
@@ -85,11 +34,11 @@ def _strategy_snapshot(release_id: str, snapshot_id: str, decision_time: datetim
     """Với release của thẻ, thay nến cuối bằng nến tín hiệu để pipeline đánh giá L1–L6."""
     from dataclasses import replace
 
-    direction = STATE.get("pipeline_release_directions", {}).get(release_id)
-    if direction is None:
+    if release_id != STATE.get("pipeline_card_release"):
         return _base_strategy_snapshot(release_id, snapshot_id, decision_time)
+    # Giữ chuỗi nến và feature `atr_14` của snapshot H03; chỉ đổi hình dạng nến tín hiệu.
     snapshot = _base_strategy_snapshot(RELEASE, snapshot_id, decision_time)
-    opened, high, low, close = (Decimal(value) for value in PIPELINE_SIGNAL_BARS[direction])
+    opened, high, low, close = (Decimal(value) for value in PIPELINE_SIGNAL_BAR)
     series = snapshot.series[0]
     signal_bar = replace(series.bars[-1], open=opened, high=high, low=low, close=close)
     return replace(
@@ -102,7 +51,7 @@ def pipeline_seed_setup() -> dict[str, Any]:
     """Workspace PAPER mới + release/cấu hình bot của thẻ + quyền owner cho tài khoản đăng nhập."""
     from trading_bot.config.bot_settings import BotConfigOverlay, canonical_overlay, overlay_hash
 
-    strategies = _install_card_registry()
+    strategy = _pipeline_card_strategy()
     seeded = seed()
     STATE.update(seeded)
     ws = _ws()
@@ -114,7 +63,7 @@ def pipeline_seed_setup() -> dict[str, Any]:
             "UPDATE workspace SET name=%s, slug=%s WHERE id=%s",
             ("Crypidian Pipeline Demo", slug, workspace),
         )
-        for key, label in (("a", "pipeline-long"), ("b", "pipeline-short"), ("c", "idle")):
+        for key, label in (("a", "strategy-card"), ("b", "h03-donchian"), ("c", "idle")):
             connection.execute(
                 "UPDATE trading_account SET name=%s WHERE id=%s",
                 (f"Bot {label}", UUID(ws["accounts"][key])),
@@ -147,24 +96,23 @@ def pipeline_seed_setup() -> dict[str, Any]:
             "WHERE workspace_id=%s AND id=%s",
             (workspace, root_id),
         ).fetchone()
-        releases: dict[str, str] = {}
+        _insert(
+            connection,
+            "strategy_release",
+            id=uuid4(),
+            workspace_id=workspace,
+            name=strategy.release_id,
+            version=1,
+            status="PUBLISHED",
+            recipe=Jsonb(strategy.recipe_manifest),
+            content_hash=strategy.content_hash,
+        )
         config_ids: dict[str, str] = {}
-        for key, direction in (("a", "long"), ("b", "short")):
-            strategy = strategies[direction]
-            _insert(
-                connection,
-                "strategy_release",
-                id=uuid4(),
-                workspace_id=workspace,
-                name=strategy.release_id,
-                version=1,
-                status="PUBLISHED",
-                recipe=Jsonb(strategy.recipe_manifest),
-                content_hash=strategy.content_hash,
-            )
+        # Bot A chọn release của Strategy Card; bot B chọn rule dựng sẵn H03 (đã có hàng release).
+        for key, release_id in (("a", strategy.release_id), ("b", RELEASE)):
             overlay = canonical_overlay(
                 BotConfigOverlay.model_validate(
-                    {"schema_version": 1, "strategy": {"release_id": strategy.release_id}}
+                    {"schema_version": 1, "strategy": {"release_id": release_id}}
                 )
             )
             config_id = uuid4()
@@ -191,10 +139,9 @@ def pipeline_seed_setup() -> dict[str, Any]:
                 "published_at=%s, effective_at=%s WHERE workspace_id=%s AND id=%s",
                 (owner, _at(-600), _at(-600), workspace, config_id),
             )
-            releases[strategy.release_id] = direction
             config_ids[key] = str(config_id)
     return seeded | {
-        "pipeline_release_directions": releases,
+        "pipeline_card_release": strategy.release_id,
         "pipeline_config_ids": config_ids,
         "pipeline_workspace_slug": slug,
     }
@@ -239,7 +186,9 @@ async def _pipeline_fill(
     return outcome
 
 
-def _exit_bars(scenario: str, side: str, stop: Decimal, target: Decimal, start: datetime) -> Any:
+def _exit_bars(
+    scenario: str, side: str, stop: Decimal, target: Decimal | None, start: datetime
+) -> Any:
     """Sinh nến 1 phút sau khi vào lệnh để position monitor tự kết luận lý do đóng."""
     from trading_bot.domain.execution.paper import PaperBar
 
@@ -262,6 +211,8 @@ def _exit_bars(scenario: str, side: str, stop: Decimal, target: Decimal, start: 
         # Đi ngang trong biên độ hẹp cho tới khi vượt `max_hold_bars` của recipe.
         return [bar(index, *quiet) for index in range(1, 40)]
     hit_target = scenario == "TAKE_PROFIT"
+    if hit_target and target is None:
+        raise AssertionError("Kịch bản TAKE_PROFIT cần recipe có mục tiêu chốt lời.")
     level = target if hit_target else stop
     upward = (side == "LONG") == hit_target
     if upward:
@@ -295,7 +246,6 @@ async def pipeline_seed_trades() -> dict[str, Any]:
         build_shared_signal_evidence,
     )
 
-    _install_card_registry()
     workspace = UUID(_ws()["workspace"])
     engine = _engine(pool=8)
     sessions = async_sessionmaker(engine, expire_on_commit=False)
@@ -438,7 +388,7 @@ async def pipeline_seed_trades() -> dict[str, Any]:
                             scenario,
                             intent.side,
                             Decimal(payload["stop_price"]),
-                            Decimal(payload["target_price"]),
+                            Decimal(payload["target_price"]) if payload["target_price"] else None,
                             datetime.fromisoformat(filled["filled_bar_opened_at"]),
                         ):
                             result = await app.state.paper_application.monitor_position(

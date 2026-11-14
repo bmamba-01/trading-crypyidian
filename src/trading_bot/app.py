@@ -114,6 +114,7 @@ from trading_bot.application.source_policy_admin import (
     SourcePolicyAdminRepository,
     SourcePolicyAdminService,
 )
+from trading_bot.application.strategy_catalog import strategy_registry
 from trading_bot.application.telegram_binding import TelegramBindingService
 from trading_bot.application.telegram_signal_subscription import TelegramSignalSubscriptionService
 from trading_bot.auth.router import router as auth_router
@@ -986,7 +987,6 @@ def _runtime_job_processor(
         BotEvidenceDispatcher,
         SignalEvidenceFanOutConsumer,
     )
-    from trading_bot.domain.strategy.registry import StrategyRegistry
 
     decision_contexts = EffectiveBotDecisionContextProvider(
         sessions,
@@ -1003,7 +1003,7 @@ def _runtime_job_processor(
     )
     dispatcher = BotEvidenceDispatcher(
         store,
-        strategies=StrategyRegistry(),
+        strategies=strategy_registry(),
         snapshots=decision_snapshot_provider,
     )
     consumer = SignalEvidenceFanOutConsumer(

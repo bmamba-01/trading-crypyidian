@@ -85,6 +85,7 @@ from trading_bot.application.paper_lifecycle import (
     PositionLifecycleResult,
 )
 from trading_bot.application.paper_runtime_bootstrap import PaperRuntimeAccount
+from trading_bot.application.strategy_catalog import strategy_registry
 from trading_bot.application.workspace_risk import (
     ReservationRequest,
     WorkspaceRiskCoordinator,
@@ -116,7 +117,6 @@ from trading_bot.domain.risk.planner import (
 from trading_bot.domain.risk.reservations import ReservationConflict, ReservationReleaseReason
 from trading_bot.domain.risk.workspace_budget import BudgetConflictError
 from trading_bot.domain.strategy.contracts import DecisionSnapshot, NoTrade, StrategySelection
-from trading_bot.domain.strategy.registry import StrategyRegistry
 
 # Mã fence nghĩa là process không còn là writer hiện hành của bot: hạ bot về STANDBY.
 LEASE_LOSS_REASONS = frozenset(
@@ -436,7 +436,7 @@ class PaperRuntimeApplicationService:
                         raise PaperRuntimeApplicationError("BOT_DECISION_CONFIG_MISMATCH")
                     try:
                         release_hash = (
-                            StrategyRegistry()
+                            strategy_registry()
                             .get_release(bot_config.strategy.release_id)
                             .content_hash
                         )
@@ -490,7 +490,7 @@ class PaperRuntimeApplicationService:
                         != profile.profile_hash
                         or existing.evidence.get("evaluated_at") != command.evaluated_at.isoformat()
                         or existing.evidence.get("strategy_release_hash")
-                        != StrategyRegistry()
+                        != strategy_registry()
                         .get_release(
                             bot_config.strategy.release_id
                             if bot_decision is not None and bot_config is not None
@@ -640,7 +640,7 @@ class PaperRuntimeApplicationService:
                     {
                         "settings_hash": published.settings_hash,
                         "paper_execution_profile_hash": profile.profile_hash,
-                        "strategy_release_hash": StrategyRegistry()
+                        "strategy_release_hash": strategy_registry()
                         .get_release(
                             bot_config.strategy.release_id
                             if bot_decision is not None and bot_config is not None
@@ -1521,7 +1521,7 @@ class PaperRuntimeApplicationService:
         if release is None or release.content_hash != release_hash:
             return invalid_pin
         try:
-            registered = StrategyRegistry().get_release(release.name)
+            registered = strategy_registry().get_release(release.name)
         except KeyError:
             return invalid_pin
         if registered.content_hash != release_hash:
@@ -1621,7 +1621,7 @@ class PaperRuntimeApplicationService:
         ):
             return False
         try:
-            registered = StrategyRegistry().get_release(pinned_strategy_release_name)
+            registered = strategy_registry().get_release(pinned_strategy_release_name)
         except KeyError:
             return False
         return (
@@ -1641,7 +1641,7 @@ class PaperRuntimeApplicationService:
         """Resolve el UUID từ release đã publish trong workspace, không từ caller."""
         release_name = release_name or published.settings.strategy.default_release
         try:
-            expected_hash = StrategyRegistry().get_release(release_name).content_hash
+            expected_hash = strategy_registry().get_release(release_name).content_hash
         except KeyError:
             raise PaperRuntimeApplicationError("PAPER_STRATEGY_RELEASE_NOT_PUBLISHED") from None
         result = await uow.session.scalars(
@@ -1783,9 +1783,8 @@ class PaperRuntimeApplicationService:
     def _make_decision_cycle(gateway: Any) -> PaperDecisionCycle:
         from trading_bot.domain.risk.engine import RiskEngine
         from trading_bot.domain.risk.planner import TradePlanner
-        from trading_bot.domain.strategy.registry import StrategyRegistry
 
-        return PaperDecisionCycle(StrategyRegistry(), TradePlanner(), RiskEngine(), gateway)
+        return PaperDecisionCycle(strategy_registry(), TradePlanner(), RiskEngine(), gateway)
 
 
 def _flatten_mark_failure_code(
@@ -1829,7 +1828,7 @@ def _context_for_bot_release(
     context: PaperDecisionContext, *, release_id: str
 ) -> PaperDecisionContext:
     """Gắn release bot đã resolve vào planner context giữ nguyên root version."""
-    release_hash = StrategyRegistry().get_release(release_id).content_hash
+    release_hash = strategy_registry().get_release(release_id).content_hash
     hashes = dict(context.planner_settings.release_content_hashes)
     hashes[release_id] = release_hash
     changes = {

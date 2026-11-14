@@ -333,7 +333,7 @@
                   L6 Tỷ Lệ R:R & Kế Hoạch Vùng Giá <span class="tooltip-icon">ⓘ</span>
                 </span>
               </dt>
-              <dd class="tabular-nums">{% if ea.risk_reward_ratio is not none or ea.stop_loss_price is not none or ea.take_profit_price is not none %}{% if ea.risk_reward_ratio is not none %}1 : {{ "%.2f" | format(ea.risk_reward_ratio | float) }}{% endif %}{% if ea.stop_loss_price is not none %} · SL: {{ ea.stop_loss_price | number_vi }}{% endif %}{% if ea.take_profit_price is not none %} · TP: {{ ea.take_profit_price | number_vi }}{% endif %}{% else %}<span class="u-color-text-muted u-font-weight-400">Ledger chưa lưu</span>{% endif %}</dd>
+              <dd class="tabular-nums">{% if ea.risk_reward_ratio is not none or ea.stop_loss_price is not none or ea.take_profit_price is not none %}{% set zone_parts = [] %}{% if ea.risk_reward_ratio is not none %}{% set _ = zone_parts.append("1 : " ~ ("%.2f" | format(ea.risk_reward_ratio | float))) %}{% endif %}{% if ea.stop_loss_price is not none %}{% set _ = zone_parts.append("SL: " ~ (ea.stop_loss_price | number_vi)) %}{% endif %}{% if ea.take_profit_price is not none %}{% set _ = zone_parts.append("TP: " ~ (ea.take_profit_price | number_vi)) %}{% else %}{% set _ = zone_parts.append("không có mục tiêu chốt lời cố định") %}{% endif %}{{ zone_parts | join(" · ") }}{% else %}<span class="u-color-text-muted u-font-weight-400">Ledger chưa lưu</span>{% endif %}</dd>
             </div>
             <div class="reasoning-kv-item">
               <dt>

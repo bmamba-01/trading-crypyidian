@@ -19,11 +19,11 @@ from trading_bot.admin.web_router import (
     _verify_form_csrf,
 )
 from trading_bot.application.backtest_replay_jobs import BacktestReplayJobSubmission
+from trading_bot.application.strategy_catalog import strategy_registry
 from trading_bot.auth.cookies import read_session_cookie
 from trading_bot.auth.policy import Role
 from trading_bot.auth.router import current_identity
 from trading_bot.auth.service import AuthIdentity
-from trading_bot.domain.strategy.registry import StrategyRegistry
 
 router = APIRouter(prefix="/admin/backtests", tags=["admin web"], route_class=AdminHTMLRoute)
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -91,7 +91,7 @@ def _submission(values: dict[str, str]) -> BacktestReplayJobSubmission:
     bundle_hash = values.get("bundle_hash", "").strip()
     strategy_release_id = values.get("strategy_release_id", "").strip()
     execution_interval = values.get("execution_interval", "").strip()
-    known_releases = {release.release_id for release in StrategyRegistry().list_releases()}
+    known_releases = {release.release_id for release in strategy_registry().list_releases()}
     try:
         seed = int(values.get("seed", ""))
     except ValueError as error:
@@ -132,7 +132,7 @@ def _job_view(job: Any) -> BacktestJobView:
         stage_label = ""
     release_id = str(getattr(job, "strategy_release_id", ""))
     release = next(
-        (item for item in StrategyRegistry().list_releases() if item.release_id == release_id),
+        (item for item in strategy_registry().list_releases() if item.release_id == release_id),
         None,
     )
     raw_progress = getattr(job, "progress", 0)
@@ -230,7 +230,7 @@ async def backtest_replay_page(
             "show_bundle_hash_input": not callable(list_bundles),
             "selected_bundle_hash": selected_bundle_hash,
             "selected_bundle": selected_bundle,
-            "strategies": StrategyRegistry().list_releases(),
+            "strategies": strategy_registry().list_releases(),
             "active_jobs": active_jobs,
             "error_message": (
                 "Không thể tạo lượt kiểm thử. Kiểm tra gói dữ liệu và các giá trị đã nhập."

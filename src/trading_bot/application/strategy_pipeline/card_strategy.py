@@ -5,8 +5,8 @@ này chạy `StrategyPipelineEngine` trên `DecisionSnapshot`, rồi dùng `Stra
 để đóng gói candidate. Nó chỉ sinh `StrategyCandidate`/`NoTrade`; plan, thẩm định rủi ro và lệnh
 PAPER vẫn do TradePlanner, RiskEngine và gateway quyết định.
 
-Adapter CHƯA được đăng ký trong `StrategyRegistry` mặc định: Strategy Card chỉ vào đường quyết
-định khi một registry có chủ đích đưa release của thẻ vào (hiện là bộ seed ledger kiểm thử).
+Release của thẻ chỉ vào đường quyết định qua `application.strategy_catalog.strategy_registry()`,
+nơi liệt kê tường minh các thẻ được phép; registry không tham số chỉ có rule dựng sẵn H0x.
 """
 
 from __future__ import annotations
@@ -15,7 +15,11 @@ from dataclasses import dataclass, field, replace
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
-from trading_bot.application.strategy_pipeline.pipeline_engine import StrategyPipelineEngine
+from trading_bot.application.strategy_pipeline.pipeline_engine import (
+    ATR_SOURCE_SINGLE_BAR,
+    PIPELINE_ENGINE_VERSION,
+    StrategyPipelineEngine,
+)
 from trading_bot.application.strategy_pipeline.planner_bridge import StrategyPipelinePlannerBridge
 from trading_bot.domain.strategy.contracts import NoTrade, StrategyCandidate
 from trading_bot.domain.strategy.rules import release_content_hash
@@ -39,21 +43,20 @@ def strategy_card_release_id(card: StrategyCard) -> str:
     return f"{card.card_id.lower()}-v{card.version}"
 
 
-@dataclass(frozen=True)
+@dataclass(eq=False)
 class StrategyCardStrategy:
     """Một phiên bản Strategy Card đóng vai rule chiến lược có release và hash riêng."""
 
     card: StrategyCard
     candidate_validity: timedelta = DEFAULT_CANDIDATE_VALIDITY
     engine: StrategyPipelineEngine = field(default_factory=StrategyPipelineEngine, compare=False)
+    # Hai định danh là thuộc tính thường để khớp hợp đồng `Strategy`; suy ra từ thẻ khi khởi tạo.
+    strategy_id: str = field(init=False)
+    release_id: str = field(init=False)
 
-    @property
-    def strategy_id(self) -> str:
-        return self.card.card_id
-
-    @property
-    def release_id(self) -> str:
-        return strategy_card_release_id(self.card)
+    def __post_init__(self) -> None:
+        self.strategy_id = self.card.card_id
+        self.release_id = strategy_card_release_id(self.card)
 
     @property
     def recipe_manifest(self) -> dict[str, Any]:
@@ -62,6 +65,7 @@ class StrategyCardStrategy:
             "card_id": self.card.card_id,
             "card_version": self.card.version,
             "card_canonical_hash": compute_canonical_hash(self.card),
+            "pipeline_engine_version": PIPELINE_ENGINE_VERSION,
         }
 
     @property
@@ -82,6 +86,20 @@ class StrategyCardStrategy:
                 ),
                 gate_details=tuple(result.reasons),
             )
+        sources = result.candidate.metadata.get("indicator_sources", {})
+        if ATR_SOURCE_SINGLE_BAR in sources.values():
+            # Đường quyết định không chấp nhận ATR suy từ một nến: cần feature đã quản trị hoặc
+            # đủ lịch sử nến theo chu kỳ thẻ khai báo.
+            return NoTrade(
+                strategy_id=self.strategy_id,
+                code="STRATEGY_CARD_INDICATOR_WARMUP",
+                detail_vi="Chưa đủ feature hoặc lịch sử nến để tính chỉ báo của Strategy Card.",
+                missing_features=tuple(
+                    sorted(
+                        node for node, source in sources.items() if source == ATR_SOURCE_SINGLE_BAR
+                    )
+                ),
+            )
         candidate = StrategyPipelinePlannerBridge.to_contract_candidate(
             result.candidate,
             self.card,
@@ -90,8 +108,11 @@ class StrategyCardStrategy:
             macro_evidence_ids=snapshot.macro_evidence_ids,
             valid_duration=self.candidate_validity,
         )
+        feature_ids = tuple(result.candidate.metadata.get("indicator_feature_ids", ()))
         return replace(
             candidate,
             strategy_release_id=self.release_id,
             release_content_hash=self.content_hash,
+            # Bằng chứng gồm node ngòi nổ và các feature đã quản trị mà pipeline thật sự dùng.
+            evidence_feature_ids=tuple(sorted({*candidate.evidence_feature_ids, *feature_ids})),
         )

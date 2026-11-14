@@ -1,8 +1,8 @@
 """Gieo ledger PAPER kiểm thử bằng cách chạy mẫu Strategy Card L0–L6 qua đường runtime thật.
 
 Chỉ dùng cho stack Docker Compose local ở chế độ PAPER. Script không gọi Binance, không tạo
-lệnh sàn và không đổi registry chiến lược của sản phẩm; release của Strategy Card chỉ tồn tại
-trong tiến trình probe (xem `tests/e2e/probes/pipeline_paper_seed.py`).
+lệnh sàn. Release của Strategy Card lấy từ catalog của sản phẩm
+(`trading_bot.application.strategy_catalog`); xem `tests/e2e/probes/pipeline_paper_seed.py`.
 
 Ví dụ (stack đang chạy với `-p crypidian-review`):
 
@@ -32,13 +32,15 @@ PROBE_BOOTSTRAP = (
     "os.environ.update(MB05B_PHASE=p['phase'],MB05B_STATE=json.dumps(p.get('state',{})));"
     "exec(compile(p['code'],'multibot_runtime.py','exec'),{'__name__':'__main__'})"
 )
-# Mỗi vòng là một evidence được fan-out tới cả hai bot: A dùng thẻ LONG, B dùng thẻ SHORT.
+# Mỗi vòng là một evidence được fan-out tới cả hai bot: A dùng Strategy Card, B dùng H03.
+# Recipe của H03 dùng trailing stop, không có mục tiêu chốt lời và giữ tối đa 120 nến, nên bot B
+# chỉ có kịch bản cắt lỗ và một vị thế để mở.
 DEFAULT_ROUNDS: tuple[dict[str, str], ...] = (
     {"a": "TAKE_PROFIT", "b": "STOP_LOSS"},
-    {"a": "STOP_LOSS", "b": "TAKE_PROFIT"},
-    {"a": "TIME_STOP", "b": "TAKE_PROFIT"},
-    {"a": "TAKE_PROFIT", "b": "TIME_STOP"},
-    {"a": "OPEN", "b": "STOP_LOSS"},
+    {"a": "STOP_LOSS", "b": "STOP_LOSS"},
+    {"a": "TIME_STOP", "b": "STOP_LOSS"},
+    {"a": "TAKE_PROFIT", "b": "STOP_LOSS"},
+    {"a": "OPEN", "b": "OPEN"},
 )
 
 
@@ -146,7 +148,7 @@ def main() -> None:
         "workspace_slug": state["pipeline_workspace_slug"],
         "workspace_id": workspace["workspace"],
         "bots": workspace["bots"],
-        "releases": state["pipeline_release_directions"],
+        "card_release": state["pipeline_card_release"],
         "chart_bars": bars["pipeline_chart_bars"],
         "trades": trades["pipeline_trades"],
     }

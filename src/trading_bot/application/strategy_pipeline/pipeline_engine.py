@@ -52,6 +52,13 @@ if TYPE_CHECKING:
     from trading_bot.domain.strategy.contracts import DecisionSnapshot
 
 
+# Phiên bản ngữ nghĩa của engine; đổi cách tính một tầng thì tăng giá trị này để hash release
+# của mọi Strategy Card đổi theo.
+PIPELINE_ENGINE_VERSION = "l0-l6-v2"
+# Nguồn ATR khi không có feature đã quản trị lẫn đủ lịch sử nến: chỉ là biên độ của một nến.
+ATR_SOURCE_SINGLE_BAR = "single_bar_range"
+
+
 def compute_candidate_id(
     strategy_card_id: str,
     content_hash: str,
@@ -165,9 +172,14 @@ class StrategyPipelineEngine:
         # TẦNG L2: INDICATORS
         # -------------------------------------------------------------------
         l2_nodes = [n for n in card.nodes if n.layer == CompositionLayer.L2_INDICATORS]
+        indicator_sources: dict[str, str] = {}
+        indicator_feature_ids: list[str] = []
         for node in l2_nodes:
-            val = self._compute_l2_node(node, bar, node_values)
+            val, source, feature_id = self._compute_l2_node(node, bar, snapshot)
             node_values[node.node_id] = val
+            indicator_sources[node.node_id] = source
+            if feature_id is not None:
+                indicator_feature_ids.append(feature_id)
 
         # -------------------------------------------------------------------
         # TẦNG L3: ALGORITHMS / QUANTITATIVE COMPOSITES
@@ -227,10 +239,15 @@ class StrategyPipelineEngine:
 
         if l6_nodes:
             params = l6_nodes[0].parameters
-            if "sl_multiplier" in params:
-                sl_multiplier = Decimal(str(params["sl_multiplier"]))
-            if "rr_ratio" in params:
-                rr_ratio = Decimal(str(params["rr_ratio"]))
+            # Chấp nhận cả tên tham số của thẻ đã phát hành (`risk_reward`, `stop_atr_multiple`).
+            for key in ("sl_multiplier", "stop_atr_multiple"):
+                if key in params:
+                    sl_multiplier = Decimal(str(params[key]))
+                    break
+            for key in ("rr_ratio", "risk_reward"):
+                if key in params:
+                    rr_ratio = Decimal(str(params[key]))
+                    break
 
         # Lấy ATR từ node L2 nếu có, hoặc tính trực tiếp biên độ nến
         current_atr = Decimal(str(node_values.get("l2_atr", str(bar.high - bar.low))))
@@ -282,6 +299,8 @@ class StrategyPipelineEngine:
                 "atr": str(current_atr),
                 "gate_metrics": gate_result.metrics,
                 "trigger_score": str(trigger_result.trigger_score),
+                "indicator_sources": indicator_sources,
+                "indicator_feature_ids": tuple(indicator_feature_ids),
             },
         )
 
@@ -324,16 +343,41 @@ class StrategyPipelineEngine:
         self,
         node: Any,
         bar: OHLCVBar,
-        _node_values: dict[str, Any],
-    ) -> Decimal:
-        """Tính toán chỉ báo L2 (ATR, EMA, v.v.)."""
+        snapshot: DecisionSnapshot,
+    ) -> tuple[Decimal, str, str | None]:
+        """Tính chỉ báo L2; trả (giá trị, nguồn, feature_id đã dùng nếu có).
+
+        ATR ưu tiên feature đã quản trị trong snapshot (`atr_<period>` cùng timeframe), sau đó
+        tới trung bình true range của `period` nến gần nhất. Chỉ khi thiếu cả hai mới dùng biên
+        độ một nến và gắn nguồn `single_bar_range` để nơi gọi quyết định có chấp nhận hay không.
+        """
         op = node.operation.lower()
         if "atr" in op or "true_range" in op:
-            # Biên độ thực sự của nến hiện tại
-            return bar.high - bar.low
-        if "ema" in op or "sma" in op:
-            return bar.close
-        return bar.close
+            period = int(node.parameters.get("period", 14))
+            timeframe = snapshot.series[0].timeframe
+            name = f"atr_{period}"
+            for feature in snapshot.features:
+                if (
+                    feature.name == name
+                    and feature.timeframe == timeframe
+                    and feature.value is not None
+                    and feature.value > 0
+                ):
+                    return Decimal(str(feature.value)), f"feature:{name}", feature.feature_id
+            bars = snapshot.series[0].bars
+            if len(bars) > period:
+                window = bars[-(period + 1) :]
+                ranges = [
+                    max(
+                        current.high - current.low,
+                        abs(current.high - previous.close),
+                        abs(current.low - previous.close),
+                    )
+                    for previous, current in zip(window, window[1:], strict=False)
+                ]
+                return sum(ranges, Decimal("0")) / Decimal(len(ranges)), f"bars:{period}", None
+            return bar.high - bar.low, ATR_SOURCE_SINGLE_BAR, None
+        return bar.close, "last_close", None
 
     def _compute_l3_node(
         self,
