@@ -4581,3 +4581,5 @@ main button.icon-btn:hover, dialog button.icon-btn:hover { background: var(--gla
 .stat--spark .sparkline { width: 100%; min-width: 4rem; max-width: 7.5rem; flex: 1 1 auto; }
 .stat--spark .stat__body { min-width: 0; flex: 0 1 auto; }
 .stat--spark .stat__label { overflow: hidden; text-overflow: ellipsis; }
+.coin-chip__avatar img { width: 100%; height: 100%; display: block; }
+.coin-chip__avatar--image { background: transparent; }

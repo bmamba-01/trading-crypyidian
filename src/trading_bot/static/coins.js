@@ -2,8 +2,10 @@
 //
 // Danh mục `/static/data/binance-usdm-perpetual-usdt.json` lấy từ exchangeInfo công khai
 // (perpetual, đang giao dịch, quote USDT; xem trường `source`, `fetched_at`). Biểu tượng là
-// chữ cái đầu trên nền màu tính từ mã (không tải ảnh ngoài vì CSP và quyền sử dụng).
+// chữ cái đầu trên nền màu tính từ mã khi chưa có icon tự host.
 // Mã không có trong danh mục vẫn hiển thị, kèm ghi chú "ngoài danh mục perpetual USDT".
+// Icon thật: /static/coins/*.svg từ cryptocurrency-icons@0.18.1 (CC0-1.0), xem LICENSE kèm theo;
+// nếu ảnh lỗi thì quay về chữ cái.
 (() => {
   "use strict";
 
@@ -24,6 +26,20 @@
     const name = entry && entry.name ? entry.name : null;
     const label = chip.querySelector(".coin-chip__name");
     if (label) label.textContent = name || "";
+    // Icon thật (cryptocurrency-icons, CC0) chỉ cho mã đã xác định danh tính; còn lại giữ chữ cái.
+    const avatar = chip.querySelector(".coin-chip__avatar");
+    if (entry && entry.icon && avatar && !avatar.querySelector("img")) {
+      const image = document.createElement("img");
+      image.src = `/static/coins/${encodeURIComponent(entry.icon)}.svg`;
+      image.alt = "";
+      image.width = 22;
+      image.height = 22;
+      image.decoding = "async";
+      image.addEventListener("error", () => image.remove());
+      image.addEventListener("load", () => avatar.classList.add("coin-chip__avatar--image"));
+      avatar.textContent = "";
+      avatar.append(image);
+    }
     chip.title = entry
       ? `${symbol} · ${name || entry.base} · Binance USDⓈ-M perpetual`
       : catalog
