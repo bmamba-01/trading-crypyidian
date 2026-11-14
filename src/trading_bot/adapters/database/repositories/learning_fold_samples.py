@@ -178,6 +178,8 @@ class LearningFoldSampleRepository:
         fold_plan_hash: str,
     ) -> None:
         """Nhờ DB kiểm manifest/outcome và tự ghi receipt bất biến nếu có replay lineage."""
+        if not _uses_replay_training_scope(manifest):
+            return
         await self._session.execute(
             text(
                 "SELECT public.wp06_record_replay_training_receipts("

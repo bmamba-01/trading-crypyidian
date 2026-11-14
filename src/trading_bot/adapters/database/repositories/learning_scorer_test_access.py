@@ -166,6 +166,52 @@ class LearningScorerTestAccessRepository:
                     )
                 },
             )
+            current_scope_digest = await _current_training_scope_digest(
+                session,
+                workspace_id=receipt.workspace_id,
+                bundle_hash=receipt_row.bundle_hash,
+            )
+            try:
+                current_result = await session.execute(
+                    text(
+                        "SELECT * FROM public.wp06_open_scorer_test_access_receipt("
+                        "target_workspace => CAST(:workspace_id AS uuid), "
+                        "target_evaluation_run_id => CAST(:evaluation_run_id AS uuid), "
+                        "target_attempt_id => CAST(:attempt_id AS uuid), "
+                        "target_normalized_dataset_id => CAST(:normalized_dataset_id AS uuid), "
+                        "target_proof_id => CAST(:proof_id AS uuid), "
+                        "target_scorer_artifact_hash => CAST(:scorer_artifact_hash AS text), "
+                        "target_policy_hash => CAST(:policy_hash AS text), "
+                        "target_request_fingerprint => CAST(:request_fingerprint AS text), "
+                        "target_training_scope_digest => CAST(:training_scope_digest AS text))"
+                    ),
+                    {
+                        "workspace_id": str(receipt_row.workspace_id),
+                        "evaluation_run_id": str(receipt_row.evaluation_run_id),
+                        "attempt_id": str(receipt_row.attempt_id),
+                        "normalized_dataset_id": str(receipt_row.normalized_dataset_id),
+                        "proof_id": str(receipt_row.proof_id),
+                        "scorer_artifact_hash": receipt_row.scorer_artifact_hash,
+                        "policy_hash": receipt_row.policy_hash,
+                        "request_fingerprint": request_fingerprint,
+                        "training_scope_digest": current_scope_digest,
+                    },
+                )
+                refreshed_receipt = _receipt_from_mapping(
+                    cast(Mapping[str, Any], current_result.mappings().one()),
+                    workspace_id=receipt.workspace_id,
+                )
+                self._validate_receipt_row(
+                    receipt_row,
+                    refreshed_receipt,
+                    request_fingerprint,
+                )
+            except DBAPIError as error:
+                _raise_access_error(error)
+            if refreshed_receipt != receipt:
+                raise ScorerTestEvaluationAccessConflict(
+                    "Receipt TEST thay đổi giữa lần kiểm quyền và lần đọc report."
+                )
             existing = await _get_report_for_receipt(
                 session,
                 workspace_id=receipt.workspace_id,
@@ -178,11 +224,6 @@ class LearningScorerTestAccessRepository:
                     )
                 stored = _stored_report(existing, is_duplicate=True)
             else:
-                current_scope_digest = await _current_training_scope_digest(
-                    session,
-                    workspace_id=receipt.workspace_id,
-                    bundle_hash=receipt_row.bundle_hash,
-                )
                 try:
                     result = await session.execute(
                         text(
@@ -273,7 +314,7 @@ class LearningScorerTestAccessRepository:
 
 
 class LearningScorerTestEvaluationReportRepository:
-    """Đọc lại report metadata để retry không mở lại payload TEST."""
+    """Đọc report đã lưu sau khi kiểm lại quyền nguồn hiện hành."""
 
     def __init__(self, sessions: async_sessionmaker[AsyncSession]) -> None:
         self._sessions = sessions
@@ -289,13 +330,27 @@ class LearningScorerTestEvaluationReportRepository:
         async with UnitOfWork(
             self._sessions,
             workspace_id=workspace_id,
-            snapshot_read_only=True,
         ) as uow:
-            row = await uow.session.scalar(
-                select(LearningScorerTestEvaluationReportRecord).where(
-                    LearningScorerTestEvaluationReportRecord.workspace_id == workspace_id,
-                    LearningScorerTestEvaluationReportRecord.evaluation_run_id == evaluation_run_id,
+            session = uow.session
+            report = LearningScorerTestEvaluationReportRecord
+            report_id = await session.scalar(
+                select(report.id).where(
+                    report.workspace_id == workspace_id,
+                    report.evaluation_run_id == evaluation_run_id,
                 )
+            )
+            if report_id is None:
+                return None
+            await session.execute(
+                text(
+                    "SELECT public.wp06_recheck_scorer_test_report_source_rights("
+                    "target_workspace => CAST(:workspace_id AS uuid), "
+                    "target_report_id => CAST(:report_id AS uuid))"
+                ),
+                {"workspace_id": str(workspace_id), "report_id": str(report_id)},
+            )
+            row = await session.scalar(
+                select(report).where(report.workspace_id == workspace_id, report.id == report_id)
             )
             if row is None:
                 return None

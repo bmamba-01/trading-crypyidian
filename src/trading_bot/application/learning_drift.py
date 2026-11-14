@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Callable
-from dataclasses import dataclass
-from datetime import timedelta
+from dataclasses import dataclass, replace
+from datetime import datetime, timedelta
 from uuid import UUID, uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -14,10 +16,7 @@ from trading_bot.adapters.database.repositories.learning_drift import (
     LearningDriftPersistenceResult,
     LearningDriftRepository,
 )
-from trading_bot.adapters.database.repositories.learning_shadow import (
-    LearningShadowRepository,
-    PaperSourceRightsReceipt,
-)
+from trading_bot.adapters.database.repositories.learning_shadow import LearningShadowRepository
 from trading_bot.application.outbox import UnitOfWork
 from trading_bot.domain.learning.drift import (
     DriftAssessmentStatus,
@@ -38,6 +37,10 @@ class LearningDriftIdempotencyConflict(RuntimeError):
 
 class LearningDriftTimestampConflict(RuntimeError):
     """Transaction timestamp cũ hơn observation đang thuộc cohort."""
+
+
+class LearningDriftMembershipConflict(RuntimeError):
+    """Exact observation/source member set đổi trước khi khóa workspace fence."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,17 +94,40 @@ class LearningDriftApplication:
             repository = self._repository_factory(uow.session)
             shadow_repository = self._shadow_repository_factory(uow.session)
 
-            # Lấy shared source lock trước cohort lock theo thứ tự observer 7A.
-            rights_receipt = await shadow_repository.current_paper_rights(
+            await repository.lock_registry_entry(
                 workspace_id=workspace_id,
-                source_id="BINANCE_USDM_REST",
+                registry_id=challenger_registry_id,
             )
-
-            await repository.lock_cohort(
+            initial_at = await repository.transaction_timestamp(workspace_id=workspace_id)
+            initial_members = await repository.list_cohort(
+                workspace_id=workspace_id,
+                registry_id=challenger_registry_id,
+                revision=challenger_revision,
+                window_start=initial_at - timedelta(days=policy.observation_window_days),
+                window_end=initial_at,
+            )
+            # Không lưu cohort rỗng vì ledger không có cột ghim scope được yêu cầu.
+            if not initial_members:
+                return None
+            _validate_members(
+                members=initial_members,
                 workspace_id=workspace_id,
                 registry_id=challenger_registry_id,
                 revision=challenger_revision,
             )
+            initial_members = await _load_member_source_ids(
+                shadow_repository=shadow_repository,
+                workspace_id=workspace_id,
+                members=initial_members,
+            )
+            source_ids = tuple(
+                sorted({source_id for member in initial_members for source_id in member.source_ids})
+            )
+            await shadow_repository.lock_source_ids(
+                workspace_id=workspace_id,
+                source_ids=source_ids,
+            )
+            await shadow_repository.lock_member_set(workspace_id=workspace_id)
             created_at = await repository.transaction_timestamp(workspace_id=workspace_id)
             members = await repository.list_cohort(
                 workspace_id=workspace_id,
@@ -110,18 +136,38 @@ class LearningDriftApplication:
                 window_start=created_at - timedelta(days=policy.observation_window_days),
                 window_end=created_at,
             )
-            # Không lưu cohort rỗng vì ledger không có cột ghim scope được yêu cầu.
-            if not members:
-                return None
             _validate_members(
                 members=members,
                 workspace_id=workspace_id,
                 registry_id=challenger_registry_id,
                 revision=challenger_revision,
-                rights_receipt=rights_receipt,
             )
+            members = await _load_member_source_ids(
+                shadow_repository=shadow_repository,
+                workspace_id=workspace_id,
+                members=members,
+            )
+            if _member_source_identity(members) != _member_source_identity(initial_members):
+                raise LearningDriftMembershipConflict(
+                    "Exact cohort/source member set đổi khi lấy khóa; cần thử lại."
+                )
             membership_digest = LearningDriftRepository.membership_digest(
                 tuple(member.observation.observation_id for member in members)
+            )
+            checked_at = await shadow_repository.authorization_clock(workspace_id=workspace_id)
+            members = await _authorize_members_current_scope(
+                repository=repository,
+                workspace_id=workspace_id,
+                members=members,
+                checked_at=checked_at,
+            )
+            source_rights_digest = _source_rights_digest(members)
+            effective_observations = tuple(
+                replace(
+                    member.observation,
+                    rights_eligible=member.current_rights_eligible is True,
+                )
+                for member in members
             )
             idempotency_key = LearningDriftRepository.assessment_idempotency_key(
                 workspace_id=workspace_id,
@@ -129,6 +175,7 @@ class LearningDriftApplication:
                 revision=challenger_revision,
                 policy_version=policy.policy_version,
                 membership_digest=membership_digest,
+                source_rights_digest=source_rights_digest,
             )
             existing = await repository.find_assessment(
                 workspace_id=workspace_id,
@@ -142,6 +189,7 @@ class LearningDriftApplication:
                     revision=challenger_revision,
                     policy_version=policy.policy_version,
                     membership_digest=membership_digest,
+                    source_rights_digest=source_rights_digest,
                 )
                 return LearningDriftRun(
                     assessment=existing.assessment,
@@ -157,8 +205,9 @@ class LearningDriftApplication:
                 workspace_id=workspace_id,
                 assessment_id=uuid4(),
                 policy=policy,
-                observations=tuple(member.observation for member in members),
+                observations=effective_observations,
                 created_at=created_at,
+                source_rights_digest=source_rights_digest,
             )
             if assessment.membership_digest != membership_digest:
                 raise LearningDriftIdempotencyConflict("Domain digest không khớp cohort đã khóa.")
@@ -187,6 +236,7 @@ class LearningDriftApplication:
                 revision=challenger_revision,
                 policy_version=policy.policy_version,
                 membership_digest=membership_digest,
+                source_rights_digest=source_rights_digest,
             )
             return LearningDriftRun(
                 assessment=result.assessment,
@@ -201,7 +251,6 @@ def _validate_members(
     workspace_id: UUID,
     registry_id: UUID,
     revision: int,
-    rights_receipt: PaperSourceRightsReceipt | None,
 ) -> None:
     if type(members) is not tuple or any(
         type(member) is not LearningDriftCohortMember for member in members
@@ -215,12 +264,8 @@ def _validate_members(
             or observation.challenger_revision != revision
         ):
             raise PermissionError("Repository trả observation ngoài cohort đã khóa.")
-        if observation.rights_eligible and (
-            rights_receipt is None or member.rights_fingerprint != rights_receipt.fingerprint
-        ):
-            raise LearningDriftRightsConflict(
-                "receipt quyền hiện hành thiếu hoặc không khớp observation đủ quyền trong cohort."
-            )
+        if member.incumbent_decision_id is not None and member.incumbent_decision_id.int == 0:
+            raise PermissionError("Repository trả incumbent decision ID không hợp lệ.")
 
 
 def _validate_existing(
@@ -231,12 +276,14 @@ def _validate_existing(
     revision: int,
     policy_version: str,
     membership_digest: str,
+    source_rights_digest: str,
 ) -> None:
     assessment = existing.assessment
     if (
         assessment.workspace_id != workspace_id
         or assessment.policy_version != policy_version
         or assessment.membership_digest != membership_digest
+        or assessment.source_rights_digest != source_rights_digest
         or assessment.member_ids != tuple(sorted(assessment.member_ids, key=str))
         or assessment.member_count != len(assessment.member_ids)
         or assessment.cohort_registry_id != registry_id
@@ -247,6 +294,93 @@ def _validate_existing(
         raise LearningDriftIdempotencyConflict(
             "Assessment tìm thấy không khớp policy hoặc membership cohort hiện hành."
         )
+
+
+async def _load_member_source_ids(
+    *,
+    shadow_repository: LearningShadowRepository,
+    workspace_id: UUID,
+    members: tuple[LearningDriftCohortMember, ...],
+) -> tuple[LearningDriftCohortMember, ...]:
+    resolved: list[LearningDriftCohortMember] = []
+    for member in members:
+        decision_id = member.incumbent_decision_id
+        source_ids = (
+            await shadow_repository.decision_source_ids(
+                workspace_id=workspace_id,
+                decision_id=decision_id,
+            )
+            if decision_id is not None
+            else ()
+        )
+        resolved.append(replace(member, source_ids=source_ids))
+    return tuple(resolved)
+
+
+async def _authorize_members_current_scope(
+    *,
+    repository: LearningDriftRepository,
+    workspace_id: UUID,
+    members: tuple[LearningDriftCohortMember, ...],
+    checked_at: datetime,
+) -> tuple[LearningDriftCohortMember, ...]:
+    authorized: list[LearningDriftCohortMember] = []
+    for member in members:
+        decision_id = member.incumbent_decision_id
+        fingerprint = (
+            await repository.authorize_current_source_scope(
+                workspace_id=workspace_id,
+                decision_id=decision_id,
+                checked_at=checked_at,
+            )
+            if decision_id is not None and member.source_ids
+            else None
+        )
+        authorized.append(
+            replace(
+                member,
+                current_rights_eligible=(
+                    fingerprint is not None and member.observation.rights_eligible
+                ),
+                current_rights_fingerprint=(
+                    fingerprint
+                    if fingerprint is not None and member.observation.rights_eligible
+                    else None
+                ),
+            )
+        )
+    return tuple(authorized)
+
+
+def _member_source_identity(
+    members: tuple[LearningDriftCohortMember, ...],
+) -> tuple[tuple[UUID, UUID | None, tuple[str, ...]], ...]:
+    return tuple(
+        (
+            member.observation.observation_id,
+            member.incumbent_decision_id,
+            member.source_ids,
+        )
+        for member in members
+    )
+
+
+def _source_rights_digest(members: tuple[LearningDriftCohortMember, ...]) -> str:
+    document = [
+        {
+            "decision_id": (
+                str(member.incumbent_decision_id)
+                if member.incumbent_decision_id is not None
+                else None
+            ),
+            "observation_id": str(member.observation.observation_id),
+            "source_ids": list(member.source_ids),
+            "source_scope_fingerprint": member.current_rights_fingerprint,
+        }
+        for member in sorted(members, key=lambda row: str(row.observation.observation_id))
+    ]
+    canonical = json.dumps(document, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _validate_scope(workspace_id: UUID, registry_id: UUID, revision: int) -> None:
@@ -260,6 +394,7 @@ def _validate_scope(workspace_id: UUID, registry_id: UUID, revision: int) -> Non
 __all__ = [
     "LearningDriftApplication",
     "LearningDriftIdempotencyConflict",
+    "LearningDriftMembershipConflict",
     "LearningDriftRightsConflict",
     "LearningDriftRun",
     "LearningDriftTimestampConflict",

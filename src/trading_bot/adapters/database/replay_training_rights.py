@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import StrEnum
 from typing import Any
@@ -22,10 +22,11 @@ _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 
 
 class ReplayTrainingOperation(StrEnum):
-    """Operation TRAINING cần được kiểm quyền riêng theo đầu ra được phép."""
+    """Operation dùng source cần được kiểm riêng theo đầu ra được phép."""
 
     TRAINING = "training"
     EVALUATION = "evaluation"
+    CANDIDATE_TEST_PROOF = "candidate_test_proof"
 
 
 @dataclass(frozen=True, slots=True)
@@ -249,3 +250,18 @@ def training_scope_digest(receipts: tuple[ReplayTrainingRightsReceipt, ...]) -> 
             ]
         )
     )
+
+
+def candidate_test_proof_scope_digest(
+    receipts: tuple[ReplayTrainingRightsReceipt, ...],
+) -> str:
+    """Giữ digest legacy của TEST proof, vẫn giữ operation mới trong receipt/audit."""
+    if not receipts or any(
+        receipt.operation is not ReplayTrainingOperation.CANDIDATE_TEST_PROOF
+        for receipt in receipts
+    ):
+        raise ValueError("Digest TEST proof chỉ nhận receipt CANDIDATE_TEST_PROOF.")
+    legacy_receipts = tuple(
+        replace(receipt, operation=ReplayTrainingOperation.EVALUATION) for receipt in receipts
+    )
+    return training_scope_digest(legacy_receipts)

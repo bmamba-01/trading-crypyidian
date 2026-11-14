@@ -178,11 +178,15 @@ class Harness:
     append_error: Exception | None = None
     existing_report: object | None = None
     existing_receipt: object | None = None
+    rights_recheck_error: Exception | None = None
     consumed_run: bool = False
 
     def __post_init__(self) -> None:
         self.units: list[FakeUnitOfWork] = []
         self.access_calls: list[dict[str, object]] = []
+        self.rights_recheck_calls: list[dict[str, object]] = []
+        self.report_identity_calls: list[dict[str, object]] = []
+        self.report_payload_calls: list[dict[str, object]] = []
         self.evaluator_calls: list[dict[str, object]] = []
         self.write_calls: list[dict[str, object]] = []
         self.append_calls: list[dict[str, object]] = []
@@ -242,6 +246,11 @@ def install_harness(monkeypatch: pytest.MonkeyPatch, harness: Harness) -> None:
         async def get_for_run(self, **_kwargs):
             return harness.existing_receipt
 
+        async def recheck_current_source_rights(self, **kwargs):
+            harness.rights_recheck_calls.append({"session": self.session, **kwargs})
+            if harness.rights_recheck_error:
+                raise harness.rights_recheck_error
+
     class FakeVerifier:
         def __init__(self, session: object, **kwargs: object) -> None:
             self.session = session
@@ -251,7 +260,24 @@ def install_harness(monkeypatch: pytest.MonkeyPatch, harness: Harness) -> None:
         def __init__(self, session: object) -> None:
             self.session = session
 
-        async def get_by_idempotency_key(self, **_kwargs):
+        async def get_identity_by_idempotency_key(self, **kwargs):
+            harness.report_identity_calls.append({"session": self.session, **kwargs})
+            if harness.existing_report is None:
+                return None
+            existing = harness.existing_report
+            return SimpleNamespace(
+                id=existing.id,
+                idempotency_key=existing.idempotency_key,
+                report_hash=existing.report_hash,
+                manifest_hash=existing.manifest_hash,
+                fold_plan_hash=existing.fold_plan_hash,
+                split_policy_version=existing.split_policy_version,
+                evaluation_cutoff=existing.evaluation_cutoff,
+                seed=existing.seed,
+            )
+
+        async def get_by_idempotency_key(self, **kwargs):
+            harness.report_payload_calls.append({"session": self.session, **kwargs})
             return harness.existing_report
 
         async def append(self, **kwargs):
@@ -348,7 +374,7 @@ async def test_service_rejects_source_dependent_manifest_before_payload_disclosu
 
 
 @pytest.mark.asyncio
-async def test_service_retry_returns_persisted_report_without_reopening_access(
+async def test_service_retry_rechecks_current_rights_before_returning_persisted_report(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     evaluation_request = request()
@@ -358,8 +384,11 @@ async def test_service_retry_returns_persisted_report_without_reopening_access(
         idempotency_key=evaluation_request.idempotency_key,
         canonical_report=report.canonical_json,
         report_hash=report.report_hash,
+        manifest_hash=report.manifest_hash,
         fold_plan_hash=report.fold_plan_hash,
         split_policy_version=report.split_policy_version,
+        evaluation_cutoff=report.evaluation_cutoff,
+        seed=report.seed,
     )
     receipt = SimpleNamespace(
         request_fingerprint=evaluation_access_fingerprint(evaluation_request),
@@ -379,6 +408,61 @@ async def test_service_retry_returns_persisted_report_without_reopening_access(
     assert result.record_id == existing.id
     assert result.is_duplicate is True
     assert harness.access_calls == []
+    assert len(harness.report_identity_calls) == 1
+    assert harness.rights_recheck_calls == [
+        {
+            "session": harness.units[0].session,
+            "workspace_id": evaluation_request.workspace_id,
+            "evaluation_run_id": evaluation_request.idempotency_key,
+            "request_fingerprint": evaluation_access_fingerprint(evaluation_request),
+        }
+    ]
+    assert len(harness.report_payload_calls) == 1
+    assert harness.rights_recheck_calls[0]["session"] is harness.report_payload_calls[0]["session"]
+    assert harness.evaluator_calls == []
+    assert harness.append_calls == []
+
+
+@pytest.mark.asyncio
+async def test_service_retry_denies_persisted_report_when_current_rights_are_revoked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    evaluation_request = request()
+    report = _report_for(evaluation_request)
+    existing = SimpleNamespace(
+        id=uuid4(),
+        idempotency_key=evaluation_request.idempotency_key,
+        canonical_report=report.canonical_json,
+        report_hash=report.report_hash,
+        manifest_hash=report.manifest_hash,
+        fold_plan_hash=report.fold_plan_hash,
+        split_policy_version=report.split_policy_version,
+        evaluation_cutoff=report.evaluation_cutoff,
+        seed=report.seed,
+    )
+    receipt = SimpleNamespace(
+        request_fingerprint=evaluation_access_fingerprint(evaluation_request),
+        manifest_hash=evaluation_request.manifest_hash,
+        evaluation_run_id=evaluation_request.idempotency_key,
+        purpose="diagnostic-evaluation",
+        actor_principal="crypidian_learning_evaluator",
+        fold_plan_hash=report.fold_plan_hash,
+        split_policy_version=report.split_policy_version,
+    )
+    harness = Harness(
+        manifest(),
+        existing_report=existing,
+        existing_receipt=receipt,
+        rights_recheck_error=LearningEvaluationAccessConflict("current source rights revoked"),
+    )
+    install_harness(monkeypatch, harness)
+
+    with pytest.raises(LearningEvaluationAccessConflict, match="rights revoked"):
+        await LearningEvaluationReportService(object()).evaluate(evaluation_request)
+
+    assert len(harness.rights_recheck_calls) == 1
+    assert len(harness.report_identity_calls) == 1
+    assert harness.report_payload_calls == []
     assert harness.evaluator_calls == []
     assert harness.append_calls == []
 

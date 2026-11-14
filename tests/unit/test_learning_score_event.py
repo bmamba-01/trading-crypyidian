@@ -32,6 +32,7 @@ def _event(**overrides: object) -> LearningScoreEvent:
         "timeframe_snapshot_ids": (("1h", "8" * 64),),
         "source_event_digests": (("1h", "9" * 64),),
         "source_rights_fingerprint": "a" * 64,
+        "decision_source_rights_fingerprint": "b" * 64,
         "mode": ScorerDeploymentMode.SHADOW,
         "deployment_event_id": UUID("dddddddd-dddd-4ddd-8ddd-dddddddddddd"),
         "deployment_revision": 2,
@@ -95,6 +96,19 @@ def test_same_score_idempotency_key_with_changed_pointer_changes_event_hash() ->
 
     assert changed.idempotency_key == original.idempotency_key
     assert changed.event_hash != original.event_hash
+
+
+def test_score_event_binds_decision_scope_fingerprint_to_ordered_lineage() -> None:
+    original = _event()
+    changed = _event(source_event_digests=(("1h", "8" * 64),))
+
+    assert original.decision_scope_fingerprint != changed.decision_scope_fingerprint
+    assert json.loads(original.canonical_json)["decision_scope_fingerprint"] == (
+        original.decision_scope_fingerprint
+    )
+    assert json.loads(original.canonical_json)["decision_source_rights_fingerprint"] == (
+        original.decision_source_rights_fingerprint
+    )
 
 
 def test_score_event_rejects_incomplete_distribution_and_ineligible_gate() -> None:

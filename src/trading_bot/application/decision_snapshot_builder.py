@@ -89,6 +89,7 @@ def build_decision_snapshot_from_bars(
     features: list[FeatureObservation] = []
     feature_contracts: list[dict[str, object]] = []
     feature_snapshot_payloads: list[dict[str, object]] = []
+    feature_snapshots: list[FeatureSnapshot] = []
     source_lineage: list[dict[str, object]] = []
     timeframe_lineage: list[DecisionSnapshotTimeframeLineage] = []
 
@@ -130,6 +131,7 @@ def build_decision_snapshot_from_bars(
             timeframe=timeframe,
             computed_at=decision_time,
         )
+        feature_snapshots.append(feature_snapshot)
         previous_snapshot = (
             FeatureCalculator(settings).calculate(
                 MarketSnapshot(as_of=decision_time, bars=visible_bars[:-1]),
@@ -319,6 +321,7 @@ def build_decision_snapshot_from_bars(
         macro_is_fresh=macro_is_fresh,
         timeframe_lineage=tuple(timeframe_lineage),
         freshness_as_of=series_quality_as_of.astimezone(UTC),
+        feature_snapshots=tuple(feature_snapshots),
     )
 
 

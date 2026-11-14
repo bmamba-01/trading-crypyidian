@@ -18,7 +18,7 @@ PROBE_BOOTSTRAP = (
     "exec(compile(p['code'],'wp06_shadow_drift_persistence.py','exec'),{'__name__':'__main__'})"
 )
 PREVIOUS_HEAD = "d2b4c6e8f0a1"
-CURRENT_HEAD = "c7e9a1b3d5f8"
+CURRENT_HEAD = "e2f4a6c8b0d7"
 
 
 def test_shadow_drift_postgres_append_only_rls_rights_and_empty_downgrade() -> None:
@@ -107,12 +107,13 @@ def test_shadow_drift_postgres_append_only_rls_rights_and_empty_downgrade() -> N
             "bounded_cutoffs_and_expiry": True,
             "empty_assessment_rejected": True,
             "assessment_rows_scoped_per_workspace": True,
+            "assessment_rls_fixture_cleaned": True,
             "drift_policy_rejected": True,
-            "cross_workspace_insert_denied": True,
+            "cross_workspace_insert_denied_by_member_scope_guard": True,
             "unscoped_read_denied": True,
             "observer_role_least_privilege": True,
             "observer_sensitive_columns_denied": True,
-            "admin_select_only": True,
+            "admin_direct_select_denied": True,
             "rights_hash_helper_execute_denied": True,
             "rights_receipt_helper_execute_allowed": True,
             "rights_receipt_fails_closed": True,
@@ -212,6 +213,17 @@ def test_populated_coverage_v1_ledger_survives_bounded_window_upgrade() -> None:
         assert legacy["policy_version"] == "coverage-v1"
         assert "observation_window_days" in legacy
         assert legacy.pop("observation_window_days") is None
+        assert legacy.pop("source_rights_digest") is None
+        observation = after["rows"]["learning_shadow_observation"][0][0]
+        assert observation.pop("source_scope_fingerprint") is None
+        member = after["rows"]["learning_drift_assessment_member"][0][0]
+        for column in (
+            "current_rights_eligible",
+            "current_rights_fingerprint",
+            "current_source_ids",
+            "current_eligible",
+        ):
+            assert member.pop(column) is None
         assert after["rows"] == before["rows"]
     finally:
         subprocess.run(

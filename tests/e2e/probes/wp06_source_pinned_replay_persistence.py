@@ -13,6 +13,7 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 from sqlalchemy import select, text
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from trading_bot.adapters.database.engine import (
     create_database_engine,
@@ -48,9 +49,11 @@ from trading_bot.application.outbox import UnitOfWork
 from trading_bot.domain.market.ingestion import MarketRecordVersion, MarketStream
 from trading_bot.domain.research.source_policy import SourcePolicyState, SourceUsePurpose
 from trading_bot.domain.research.source_registry import SourceBudget, SourceRegistryEntry
+from trading_bot.workers.research_rights_worker import ResearchRightsMaintenanceWorker
 
 sys.path.insert(0, "/e2e-tests")
 from fixtures.runtime_replay import build_h03_source_pinned_dataset_replay
+from fixtures.wp06_qa_license import licensed_qa_source_fixture
 
 WORKSPACE_ID = UUID(os.environ["CRYPIDIAN_E2E_WORKSPACE_ID"])
 
@@ -130,57 +133,102 @@ async def run_probe(*, scorer_seed: bool = False) -> dict[str, object]:
             )
         )
     policy_now = datetime.now(UTC)
-    rights_history = (
-        SourceRegistryEntry.discover(
-            source_id=CRYPIDIAN_FIRST_PARTY_QA,
-            publisher="Crypidian Repository QA Fixture",
-            endpoint_url=CRYPIDIAN_FIRST_PARTY_QA_EVIDENCE_REF,
-            access_method="GET",
-            auth_scope="repo-owned synthetic QA data; no exchange account",
-            budget=SourceBudget(
-                window=timedelta(hours=1),
-                max_requests=100,
-                max_bytes=1024,
-                max_cost=Decimal("0"),
-                cost_unit="USD",
-            ),
-            actor_id="fixture-operator",
-            at=policy_now - timedelta(minutes=3),
-            reason="Đăng ký fixture synthetic first-party trong workspace Compose tạm.",
-        )
-        .transition(
-            policy_id=f"{CRYPIDIAN_FIRST_PARTY_QA}:source-pinned-pending",
-            state=SourcePolicyState.RIGHTS_PENDING,
-            actor_id="fixture-operator",
-            at=policy_now - timedelta(minutes=2),
-            reason="Ghi nhận nguồn QA đang chờ review trong test workspace.",
-        )
-        .transition(
-            policy_id=f"{CRYPIDIAN_FIRST_PARTY_QA}:source-pinned-training",
-            state=SourcePolicyState.VERIFIED,
-            actor_id="fixture-operator",
-            at=policy_now - timedelta(minutes=1),
-            reason="Chỉ cấp mục đích nghiên cứu và TRAINING cho fixture first-party.",
-            allowed_purposes=frozenset(
-                {SourceUsePurpose.BACKTEST_RESEARCH, SourceUsePurpose.TRAINING}
-            ),
-            evidence_ref=CRYPIDIAN_FIRST_PARTY_QA_EVIDENCE_REF,
-            reviewed_at=policy_now - timedelta(minutes=1),
-            valid_until=policy_now + timedelta(days=7),
-            approved_by="fixture-reviewer",
-        )
-    )
-    for revision in rights_history.revisions:
-        async with UnitOfWork(sessions, workspace_id=WORKSPACE_ID) as uow:
-            await SourceRegistryRepository(uow.session).append_revision(
-                workspace_id=WORKSPACE_ID, revision=revision
-            )
-        async with UnitOfWork(sessions, workspace_id=WORKSPACE_ID) as uow:
-            await SourceRegistryRepository(uow.session).finalize_policy(
-                workspace_id=WORKSPACE_ID,
+    with licensed_qa_source_fixture():
+        rights_history = (
+            SourceRegistryEntry.discover(
                 source_id=CRYPIDIAN_FIRST_PARTY_QA,
-                policy_id=revision.policy.policy_id,
+                publisher="Crypidian Repository QA Fixture",
+                endpoint_url=CRYPIDIAN_FIRST_PARTY_QA_EVIDENCE_REF,
+                access_method="GET",
+                auth_scope="repo-owned synthetic QA data; no exchange account",
+                budget=SourceBudget(
+                    window=timedelta(hours=1),
+                    max_requests=100,
+                    max_bytes=1024,
+                    max_cost=Decimal("0"),
+                    cost_unit="USD",
+                ),
+                actor_id="fixture-operator",
+                at=policy_now - timedelta(minutes=3),
+                reason="Đăng ký fixture synthetic first-party trong workspace Compose tạm.",
             )
+            .transition(
+                policy_id=f"{CRYPIDIAN_FIRST_PARTY_QA}:source-pinned-pending",
+                state=SourcePolicyState.RIGHTS_PENDING,
+                actor_id="fixture-operator",
+                at=policy_now - timedelta(minutes=2),
+                reason="Ghi nhận nguồn QA đang chờ review trong test workspace.",
+            )
+            .transition(
+                policy_id=f"{CRYPIDIAN_FIRST_PARTY_QA}:source-pinned-training",
+                state=SourcePolicyState.VERIFIED,
+                actor_id="fixture-operator",
+                at=policy_now - timedelta(minutes=1),
+                reason="Chỉ cấp mục đích nghiên cứu và TRAINING cho fixture first-party.",
+                allowed_purposes=frozenset(
+                    {SourceUsePurpose.BACKTEST_RESEARCH, SourceUsePurpose.TRAINING}
+                ),
+                evidence_ref=CRYPIDIAN_FIRST_PARTY_QA_EVIDENCE_REF,
+                reviewed_at=policy_now - timedelta(minutes=1),
+                valid_until=policy_now + timedelta(days=7),
+                approved_by="fixture-reviewer",
+            )
+        )
+        for revision in rights_history.revisions:
+            async with UnitOfWork(sessions, workspace_id=WORKSPACE_ID) as uow:
+                await SourceRegistryRepository(uow.session).append_revision(
+                    workspace_id=WORKSPACE_ID, revision=revision
+                )
+            async with UnitOfWork(sessions, workspace_id=WORKSPACE_ID) as uow:
+                await SourceRegistryRepository(uow.session).finalize_policy(
+                    workspace_id=WORKSPACE_ID,
+                    source_id=CRYPIDIAN_FIRST_PARTY_QA,
+                    policy_id=revision.policy.policy_id,
+                )
+    # Tiêu thụ các thay đổi quyền trước khi verifier cấp phép replay cho QA source.
+    worker_url = database_url_from_secret(
+        username=os.environ["TRADING_BOT_DATABASE_USER"],
+        password_file=Path(os.environ["TRADING_BOT_DATABASE_PASSWORD_FILE"]),
+        host="postgres",
+        database="crypidian",
+    )
+    worker_engine = create_async_engine(
+        worker_url,
+        connect_args={
+            "options": "-c timezone=UTC -c role=crypidian_ingestion_worker",
+        },
+    )
+    worker_sessions = async_sessionmaker(worker_engine, expire_on_commit=False)
+    try:
+        result = await ResearchRightsMaintenanceWorker(
+            session_factory=worker_sessions,
+            workspace_id=WORKSPACE_ID,
+            worker_id="wp06-source-pinned-qa-rights",
+        ).run_once()
+        if result.rights_batch.failed or result.rights_batch.dead_lettered:
+            raise AssertionError("Rights outbox consumer không xử lý được fixture QA.")
+    finally:
+        await worker_engine.dispose()
+    async with sessions() as session, session.begin():
+        await session.execute(
+            text("SELECT set_config('app.workspace_id', :workspace, true)"),
+            {"workspace": str(WORKSPACE_ID)},
+        )
+        pending_rights_events = await session.scalar(
+            text(
+                "SELECT count(*) FROM public.outbox_event AS event "
+                "WHERE event.workspace_id=:workspace "
+                "AND event.event_type='research.rights_changed.v1' "
+                "AND event.payload->>'source_id'=:source "
+                "AND NOT EXISTS (SELECT 1 FROM public.consumer_receipt AS receipt "
+                "WHERE receipt.workspace_id=event.workspace_id "
+                "AND receipt.outbox_event_id=event.id "
+                "AND receipt.consumer_name='wp06.dataset-rights-eligibility.v1')"
+            ),
+            {"workspace": WORKSPACE_ID, "source": CRYPIDIAN_FIRST_PARTY_QA},
+        )
+        if pending_rights_events:
+            raise AssertionError("Fixture QA còn rights event chưa được ghi receipt.")
     async with UnitOfWork(sessions, workspace_id=WORKSPACE_ID) as uow:
         qa_rights = await SourceRegistryBackfillRightsGate(
             workspace_id=WORKSPACE_ID,
@@ -406,11 +454,35 @@ async def run_probe(*, scorer_seed: bool = False) -> dict[str, object]:
             },
         }
 
-    proof_service = CandidateUniverseProofService(sessions)
-    proof = await proof_service.build_decision_opportunity(
+    await engine.dispose()
+    return {
+        "bars": len(identity_ids),
+        "bundle_round_trip": stored_bundle.bundle_hash == bundle.dataset_hash,
+        "closed_trades": len(replay.trade_outcomes),
+        "linked_outcomes": linked_outcomes,
+        "opportunities": len(replay.opportunities),
+        "source_ids_exact": True,
+        "bundle_hash": bundle.dataset_hash,
+        "trial_record_id": str(trial_record_id),
+    }
+
+
+async def run_base_proof(trial_record_id: UUID, bundle_hash: str) -> dict[str, object]:
+    """Chạy quyền ghi proof dưới principal builder riêng sau khi seed đã commit."""
+    engine = create_database_engine(
+        database_url_from_secret(
+            username=os.environ["TRADING_BOT_DATABASE_USER"],
+            password_file=Path(os.environ["TRADING_BOT_DATABASE_PASSWORD_FILE"]),
+            host="postgres",
+            database="crypidian",
+        )
+    )
+    sessions = create_session_factory(engine)
+    service = CandidateUniverseProofService(sessions)
+    proof = await service.build_decision_opportunity(
         workspace_id=WORKSPACE_ID, trial_record_id=trial_record_id
     )
-    retry = await proof_service.build_decision_opportunity(
+    retry = await service.build_decision_opportunity(
         workspace_id=WORKSPACE_ID, trial_record_id=trial_record_id
     )
     async with UnitOfWork(sessions, workspace_id=WORKSPACE_ID) as uow:
@@ -418,23 +490,28 @@ async def run_probe(*, scorer_seed: bool = False) -> dict[str, object]:
             text("SELECT count(*) FROM candidate_training_rights WHERE proof_id=:proof_id"),
             {"proof_id": proof.record_id},
         )
-    if receipt_count != len(bundle.components):
+        bundle = await uow.session.scalar(
+            select(BacktestDatasetReplayBundleRecord).where(
+                BacktestDatasetReplayBundleRecord.workspace_id == WORKSPACE_ID,
+                BacktestDatasetReplayBundleRecord.bundle_hash == bundle_hash,
+            )
+        )
+        if bundle is None:
+            raise AssertionError("Bundle replay không còn sau seed.")
+        child_count = len(bundle.to_reference().components)
+    if receipt_count != child_count:
         raise AssertionError("Proof chưa có receipt hiện hành cho mọi child manifest.")
     await engine.dispose()
     return {
-        "bars": len(identity_ids),
         "base_opportunity_complete": proof.proof.completeness_verified,
-        "bundle_round_trip": stored_bundle.bundle_hash == bundle.dataset_hash,
-        "closed_trades": len(replay.trade_outcomes),
-        "linked_outcomes": linked_outcomes,
-        "opportunities": proof.proof.opportunity_count,
         "proof_retry_idempotent": retry.duplicate and retry.record_id == proof.record_id,
-        "source_ids_exact": True,
         "training_receipts": receipt_count,
     }
 
 
 if __name__ == "__main__":
-    print(
-        json.dumps(asyncio.run(run_probe(scorer_seed="--scorer-seed" in sys.argv)), sort_keys=True)
-    )
+    if len(sys.argv) == 4 and sys.argv[1] == "base-proof":
+        output = asyncio.run(run_base_proof(UUID(sys.argv[2]), sys.argv[3]))
+    else:
+        output = asyncio.run(run_probe(scorer_seed="--scorer-seed" in sys.argv))
+    print(json.dumps(output, sort_keys=True))

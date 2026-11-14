@@ -187,6 +187,8 @@ def test_missing_evidence_or_low_sample_is_inconclusive(
     assert reason in result.reason_codes
     assert result.snapshot_coverage_rate is None
     assert result.quality_rate is None
+    if reason is DriftReason.RIGHTS_UNVERIFIED:
+        assert result.abstention_rate is None
 
 
 def test_only_data_quality_thresholds_can_detect_drift() -> None:
@@ -289,3 +291,19 @@ def test_bounded_policy_uses_database_as_of_as_window_end() -> None:
     assert result.window_end == NOW + timedelta(hours=1)
     assert result.window_start == NOW
     assert result.performance_status is DriftAssessmentStatus.INCONCLUSIVE
+
+
+def test_current_rights_digest_is_pinned_in_assessment_content_hash() -> None:
+    baseline = assess_learning_drift(
+        workspace_id=WORKSPACE_ID,
+        assessment_id=uuid4(),
+        policy=_policy(),
+        observations=tuple(_observation(index) for index in range(3)),
+        created_at=NOW + timedelta(hours=1),
+        source_rights_digest="a" * 64,
+    )
+    changed = replace(baseline, source_rights_digest="b" * 64)
+
+    assert baseline.source_rights_digest == "a" * 64
+    assert '"source_rights_digest":"' + ("a" * 64) + '"' in baseline.canonical_json
+    assert baseline.content_hash != changed.content_hash

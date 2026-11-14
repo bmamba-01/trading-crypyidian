@@ -36,7 +36,9 @@ class _UnusedSessionFactory:
 
 
 def test_scorer_activation_fails_closed_until_authoritative_rights_gateway_exists() -> None:
-    facade = ScorerDeploymentService(_UnusedSessionFactory()).for_principal(_principal())
+    facade = ScorerDeploymentService(
+        _UnusedSessionFactory(), active_modes_enabled=True
+    ).for_principal(_principal())
 
     with pytest.raises(RuntimeError, match="rights gateway"):
         asyncio.run(
@@ -52,7 +54,9 @@ def test_scorer_activation_fails_closed_until_authoritative_rights_gateway_exist
 
 
 def test_active_service_requires_selected_persisted_report_before_database_access() -> None:
-    facade = ScorerDeploymentService(_UnusedSessionFactory()).for_principal(_principal())
+    facade = ScorerDeploymentService(
+        _UnusedSessionFactory(), active_modes_enabled=True
+    ).for_principal(_principal())
 
     with pytest.raises(ValueError, match="evaluation_report_id đã lưu"):
         asyncio.run(
@@ -63,6 +67,27 @@ def test_active_service_requires_selected_persisted_report_before_database_acces
                 expected_deployment_revision=2,
                 idempotency_key=uuid4(),
                 reason="Chỉ dùng report đã lưu, không nhận ngưỡng từ caller.",
+            )
+        )
+
+
+def test_active_service_keeps_modes_locked_by_default_even_with_configured_rights_gateway() -> None:
+    policy_provider = ConfiguredScorerRuntimePolicyProvider(_policy())
+    facade = ScorerDeploymentService(
+        _UnusedSessionFactory(),
+        policy_provider=policy_provider,
+        active_modes_enabled=False,
+    ).for_principal(_principal())
+
+    with pytest.raises(RuntimeError, match="đang khóa"):
+        asyncio.run(
+            facade.set_mode(
+                mode=ScorerDeploymentMode.SHADOW,
+                evaluation_report_id=uuid4(),
+                expected_pointer_version=0,
+                expected_deployment_revision=0,
+                idempotency_key=uuid4(),
+                reason="Active modes remain locked pending an explicit environment rollout.",
             )
         )
 
@@ -101,6 +126,7 @@ def test_active_service_forwards_exact_report_id_and_cas_to_authoritative_reposi
     facade = ScorerDeploymentService(
         object(),
         policy_provider=policy_provider,  # type: ignore[arg-type]
+        active_modes_enabled=True,
     ).for_principal(_principal())
 
     result = asyncio.run(

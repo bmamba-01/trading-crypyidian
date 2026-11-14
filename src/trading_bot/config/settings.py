@@ -77,6 +77,9 @@ class AppSettings(BaseSettings):
     signal_worker_max_candidate_age_seconds: int = Field(default=7200, ge=5, le=14_400)
     signal_worker_max_attempts: int = Field(default=5, ge=1, le=20)
 
+    # SHADOW/PAPER_GATE mặc định khóa đồng thời ở admin và runtime.
+    scorer_active_modes_enabled: bool = False
+
     # Chính sách TEST scorer phải có version/hash giống hệt report và deployment được ghim.
     scorer_test_policy_version: str = Field(
         default="wp06-scorer-test-v1", min_length=1, max_length=120

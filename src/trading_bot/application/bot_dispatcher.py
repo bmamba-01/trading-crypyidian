@@ -13,7 +13,7 @@ import hashlib
 import json
 import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Any, Protocol
@@ -36,7 +36,9 @@ from trading_bot.domain.strategy.registry import StrategyRegistry, UnknownStrate
 
 EVIDENCE_RECORDED_EVENT = "signal.evidence.recorded.v1"
 BOT_DECISION_SCHEMA_VERSION = "crypidian-bot-decision-v1"
-BOT_DECISION_CONTEXT_SCHEMA_VERSION = "crypidian-bot-decision-context-v1"
+BOT_DECISION_CONTEXT_SCHEMA_VERSION = "crypidian-bot-decision-context-v2"
+LEGACY_BOT_DECISION_CONTEXT_SCHEMA_VERSION = "crypidian-bot-decision-context-v1"
+DEFAULT_MAX_BARS_PER_STREAM = 256
 # Namespace cố định cho UUID tất định của job/decision/outbox event; đổi sẽ đổi mọi ID.
 BOT_DECISION_NAMESPACE = UUID("8f1d6c2e-4b7a-5e93-a0c5-71d2e94b3f60")
 _SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
@@ -73,6 +75,12 @@ class BotDecisionContext:
     symbols: tuple[str, ...]
     effective_at: datetime
     strategy_parameters: tuple[tuple[str, int], ...] = ()
+    max_bars_per_stream: int = DEFAULT_MAX_BARS_PER_STREAM
+    context_schema_version: str = field(
+        default=BOT_DECISION_CONTEXT_SCHEMA_VERSION,
+        repr=False,
+        compare=False,
+    )
 
     def __post_init__(self) -> None:
         for name in (
@@ -89,6 +97,21 @@ class BotDecisionContext:
                 raise ValueError(f"{name} phải là SHA-256 hex chữ thường.")
         if not self.strategy_release_id.strip():
             raise ValueError("strategy_release_id không được để trống.")
+        if self.context_schema_version not in {
+            LEGACY_BOT_DECISION_CONTEXT_SCHEMA_VERSION,
+            BOT_DECISION_CONTEXT_SCHEMA_VERSION,
+        }:
+            raise ValueError("Schema version của bot decision context không được hỗ trợ.")
+        if (
+            isinstance(self.max_bars_per_stream, bool)
+            or not isinstance(self.max_bars_per_stream, int)
+            or not 200 <= self.max_bars_per_stream <= 2000
+            or (
+                self.context_schema_version == LEGACY_BOT_DECISION_CONTEXT_SCHEMA_VERSION
+                and self.max_bars_per_stream != DEFAULT_MAX_BARS_PER_STREAM
+            )
+        ):
+            raise ValueError("max_bars_per_stream phải nằm trong [200, 2000].")
         symbols = tuple(self.symbols)
         if not symbols or len(set(symbols)) != len(symbols) or any(not s.strip() for s in symbols):
             raise ValueError("symbols của bot phải không rỗng và không trùng.")
@@ -114,7 +137,7 @@ class BotDecisionContext:
 
     def canonical_payload(self) -> dict[str, Any]:
         """Payload canonical để ghim context vào job và tính hash."""
-        return {
+        payload: dict[str, Any] = {
             "account_id": str(self.account_id),
             "bot_config_hash": self.bot_config_hash,
             "bot_config_version_id": str(self.bot_config_version_id),
@@ -122,12 +145,15 @@ class BotDecisionContext:
             "effective_at": _utc_iso(self.effective_at),
             "root_settings_hash": self.root_settings_hash,
             "root_settings_version_id": str(self.root_settings_version_id),
-            "schema_version": BOT_DECISION_CONTEXT_SCHEMA_VERSION,
+            "schema_version": self.context_schema_version,
             "strategy_parameters": [[key, value] for key, value in self.strategy_parameters],
             "strategy_release_id": self.strategy_release_id,
             "symbols": list(self.symbols),
             "workspace_id": str(self.workspace_id),
         }
+        if self.context_schema_version == BOT_DECISION_CONTEXT_SCHEMA_VERSION:
+            payload["max_bars_per_stream"] = self.max_bars_per_stream
+        return payload
 
     @property
     def context_hash(self) -> str:
@@ -137,8 +163,21 @@ class BotDecisionContext:
     @classmethod
     def from_payload(cls, payload: Mapping[str, Any]) -> BotDecisionContext:
         """Khôi phục context từ payload canonical đã lưu."""
-        if payload.get("schema_version") != BOT_DECISION_CONTEXT_SCHEMA_VERSION:
+        schema_version = payload.get("schema_version")
+        if schema_version not in {
+            LEGACY_BOT_DECISION_CONTEXT_SCHEMA_VERSION,
+            BOT_DECISION_CONTEXT_SCHEMA_VERSION,
+        }:
             raise ValueError("Schema version của bot decision context không được hỗ trợ.")
+        if schema_version == LEGACY_BOT_DECISION_CONTEXT_SCHEMA_VERSION:
+            if "max_bars_per_stream" in payload:
+                raise ValueError("Context v1 không được có max_bars_per_stream.")
+            max_bars_per_stream = DEFAULT_MAX_BARS_PER_STREAM
+        else:
+            raw_max_bars_per_stream = payload.get("max_bars_per_stream")
+            if type(raw_max_bars_per_stream) is not int:
+                raise ValueError("Context v2 cần max_bars_per_stream nguyên.")
+            max_bars_per_stream = raw_max_bars_per_stream
         return cls(
             workspace_id=UUID(payload["workspace_id"]),
             bot_id=UUID(payload["bot_id"]),
@@ -153,6 +192,8 @@ class BotDecisionContext:
             strategy_parameters=tuple(
                 (str(key), int(value)) for key, value in payload["strategy_parameters"]
             ),
+            max_bars_per_stream=max_bars_per_stream,
+            context_schema_version=schema_version,
         )
 
 

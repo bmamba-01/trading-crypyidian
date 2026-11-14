@@ -341,6 +341,16 @@ def test_scorer_evaluation_policy_environment_change_changes_immutable_hash(
     assert changed_hash != default_hash
 
 
+def test_scorer_active_modes_are_locked_by_default_and_share_environment_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert AppSettings().scorer_active_modes_enabled is False
+
+    monkeypatch.setenv("TRADING_BOT_SCORER_ACTIVE_MODES_ENABLED", "true")
+
+    assert AppSettings().scorer_active_modes_enabled is True
+
+
 def test_scorer_evaluation_policy_rejects_out_of_range_environment_flags(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

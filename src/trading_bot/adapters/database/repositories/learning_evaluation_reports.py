@@ -6,6 +6,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy import select, text
@@ -28,6 +29,20 @@ class LearningEvaluationReportConflict(RuntimeError):
 class LearningEvaluationReportWriteResult:
     record: LearningEvaluationReportRecord
     is_duplicate: bool
+
+
+@dataclass(frozen=True, slots=True)
+class LearningEvaluationReportIdentity:
+    """Định danh report đủ để kiểm quyền trước khi đọc payload canonical."""
+
+    id: UUID
+    idempotency_key: UUID
+    report_hash: str
+    manifest_hash: str
+    fold_plan_hash: str
+    split_policy_version: str
+    evaluation_cutoff: datetime
+    seed: int
 
 
 class LearningEvaluationReportRepository:
@@ -104,6 +119,35 @@ class LearningEvaluationReportRepository:
         if record is not None:
             self.validate_record(record)
         return record
+
+    async def get_identity_by_idempotency_key(
+        self,
+        *,
+        workspace_id: UUID,
+        idempotency_key: UUID,
+    ) -> LearningEvaluationReportIdentity | None:
+        """Đọc metadata nhận diện trước; không nạp JSON hoặc canonical report."""
+        self._validate_identifiers(workspace_id, idempotency_key)
+        await self._bind_workspace(workspace_id)
+        result = await self._session.execute(
+            select(
+                LearningEvaluationReportRecord.id,
+                LearningEvaluationReportRecord.idempotency_key,
+                LearningEvaluationReportRecord.report_hash,
+                LearningEvaluationReportRecord.manifest_hash,
+                LearningEvaluationReportRecord.fold_plan_hash,
+                LearningEvaluationReportRecord.split_policy_version,
+                LearningEvaluationReportRecord.evaluation_cutoff,
+                LearningEvaluationReportRecord.seed,
+            ).where(
+                LearningEvaluationReportRecord.workspace_id == workspace_id,
+                LearningEvaluationReportRecord.idempotency_key == idempotency_key,
+            )
+        )
+        row = result.mappings().one_or_none()
+        if row is None:
+            return None
+        return LearningEvaluationReportIdentity(**dict(row))
 
     @classmethod
     def assert_same_request(

@@ -274,6 +274,29 @@ class LearningShadowRepository:
         ).params(workspace_id=workspace_id, decision_id=decision_id)
 
     @staticmethod
+    def source_ids_statement(*, workspace_id: UUID, decision_id: UUID) -> Select[Any]:
+        """Lấy provider IDs đã suy từ decision-bar ledger để khóa theo thứ tự chung."""
+        return select(
+            func.public.wp06_shadow_drift_decision_source_ids(
+                bindparam("workspace_id", type_=BotDecisionRecord.workspace_id.type),
+                bindparam("decision_id", type_=BotDecisionRecord.id.type),
+            )
+        ).params(workspace_id=workspace_id, decision_id=decision_id)
+
+    @staticmethod
+    def scope_fingerprint_statement(
+        *, workspace_id: UUID, decision_id: UUID, checked_at: datetime
+    ) -> Select[Any]:
+        """Kiểm quyền hiện hành theo PAPER inference trên lineage decision/bar chính xác."""
+        return select(
+            func.public.wp06_authorize_shadow_inference_source_scope(
+                bindparam("workspace_id", type_=BotDecisionRecord.workspace_id.type),
+                bindparam("decision_id", type_=BotDecisionRecord.id.type),
+                bindparam("checked_at"),
+            )
+        ).params(workspace_id=workspace_id, decision_id=decision_id, checked_at=checked_at)
+
+    @staticmethod
     def database_clock_statement() -> Select[Any]:
         """Lấy thời điểm bắt đầu transaction để trigger DB xác nhận timestamp."""
         return select(func.transaction_timestamp())
@@ -301,6 +324,27 @@ class LearningShadowRepository:
             {"lock_key": f"learning-model-registry:{workspace_id}:active-pointer"},
         )
 
+    async def lock_registry_entries(
+        self, *, workspace_id: UUID, registry_ids: tuple[UUID, ...]
+    ) -> None:
+        """Khóa challenger entries đã sắp xếp trước source locks và member fence."""
+        await self._bind_workspace(workspace_id)
+        if type(registry_ids) is not tuple or registry_ids != tuple(
+            sorted(set(registry_ids), key=str)
+        ):
+            raise ValueError("registry_ids phải là tuple UUID duy nhất, đã sắp xếp.")
+        for registry_id in registry_ids:
+            if type(registry_id) is not UUID or registry_id.int == 0:
+                raise ValueError("registry_id phải là UUID khác zero.")
+            await self._session.execute(
+                text("SELECT pg_advisory_xact_lock(hashtextextended(:lock_key, 0))"),
+                {
+                    "lock_key": (
+                        f"learning-model-registry:{workspace_id}:registry-entry:{registry_id}"
+                    )
+                },
+            )
+
     async def decision_source_rights_supported(
         self, *, workspace_id: UUID, decision_id: UUID
     ) -> bool:
@@ -314,6 +358,66 @@ class LearningShadowRepository:
             )
         )
         return value is True
+
+    async def decision_source_ids(
+        self, *, workspace_id: UUID, decision_id: UUID
+    ) -> tuple[str, ...]:
+        """Trả tập provider ID; thiếu hoặc sai lineage không được suy từ receipt cũ."""
+        await self._bind_workspace(workspace_id)
+        if type(decision_id) is not UUID or decision_id.int == 0:
+            raise ValueError("decision_id phải là UUID khác zero.")
+        values = await self._session.scalar(
+            self.source_ids_statement(workspace_id=workspace_id, decision_id=decision_id)
+        )
+        if not isinstance(values, (list, tuple)) or not values:
+            return ()
+        if any(not isinstance(value, str) or not value.strip() for value in values):
+            return ()
+        result = tuple(values)
+        if result != tuple(sorted(set(result))):
+            return ()
+        return result
+
+    async def lock_source_ids(self, *, workspace_id: UUID, source_ids: tuple[str, ...]) -> None:
+        """Khóa mọi source theo thứ tự tăng dần trước member-set fence."""
+        await self._bind_workspace(workspace_id)
+        if type(source_ids) is not tuple or source_ids != tuple(sorted(set(source_ids))):
+            raise ValueError("source_ids phải là tuple duy nhất, đã sắp xếp.")
+        for source_id in source_ids:
+            if not isinstance(source_id, str) or not source_id.strip():
+                raise ValueError("source_id không hợp lệ.")
+            await self._session.execute(
+                text("SELECT pg_advisory_xact_lock(hashtextextended(:lock_key, 0))"),
+                {"lock_key": f"research-source:{workspace_id}:{source_id}"},
+            )
+
+    async def lock_member_set(self, *, workspace_id: UUID) -> None:
+        """Khóa tập member toàn workspace bằng fence dùng chung cho các observer."""
+        await self._bind_workspace(workspace_id)
+        await self._session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:lock_key, 0))"),
+            {"lock_key": f"wp06-learning-observation-member-set:{workspace_id}"},
+        )
+
+    async def authorize_inference_source_scope(
+        self, *, workspace_id: UUID, decision_id: UUID, checked_at: datetime
+    ) -> str | None:
+        """Trả fingerprint exact-scope; rights denial/lineage thiếu được coi là ineligible."""
+        await self._bind_workspace(workspace_id)
+        if type(decision_id) is not UUID or decision_id.int == 0:
+            raise ValueError("decision_id phải là UUID khác zero.")
+        if not _is_aware(checked_at):
+            raise ValueError("checked_at phải có timezone.")
+        value = await self._session.scalar(
+            self.scope_fingerprint_statement(
+                workspace_id=workspace_id,
+                decision_id=decision_id,
+                checked_at=checked_at,
+            )
+        )
+        if not isinstance(value, str) or _SHA256.fullmatch(value) is None:
+            return None
+        return value
 
     async def current_paper_rights(
         self,
@@ -354,6 +458,14 @@ class LearningShadowRepository:
         value = await self._session.scalar(self.database_clock_statement())
         if not isinstance(value, datetime) or not _is_aware(value):
             raise RuntimeError("Database transaction_timestamp() thiếu timezone.")
+        return value.astimezone(UTC)
+
+    async def authorization_clock(self, *, workspace_id: UUID) -> datetime:
+        """Lấy wall clock mới sau khi các advisory locks đã được giữ."""
+        await self._bind_workspace(workspace_id)
+        value = await self._session.scalar(select(func.clock_timestamp()))
+        if not isinstance(value, datetime) or not _is_aware(value):
+            raise RuntimeError("Database clock_timestamp() thiếu timezone.")
         return value.astimezone(UTC)
 
     async def append(self, *, observation: ShadowObservation) -> ShadowObservationAppendResult:
@@ -536,6 +648,7 @@ def _record_from_observation(observation: ShadowObservation) -> LearningShadowOb
         schema_compatible=observation.schema_compatible,
         rights_eligible=observation.rights_eligible,
         rights_fingerprint=observation.rights_fingerprint,
+        source_scope_fingerprint=observation.source_scope_fingerprint,
         rights_source_id=observation.rights_source_id,
         rights_policy_id=observation.rights_policy_id,
         rights_policy_sequence=observation.rights_policy_sequence,
@@ -599,6 +712,7 @@ def _observation_from_record(record: LearningShadowObservationRecord) -> ShadowO
         rights_policy_id=record.rights_policy_id,
         rights_policy_sequence=record.rights_policy_sequence,
         rights_known_at=record.rights_known_at,
+        source_scope_fingerprint=record.source_scope_fingerprint,
         challenger_reason=ShadowAbstainReason(record.challenger_reason),
         observed_at=record.observed_at,
     )

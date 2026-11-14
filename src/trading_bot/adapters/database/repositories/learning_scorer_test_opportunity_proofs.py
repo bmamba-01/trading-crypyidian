@@ -32,6 +32,7 @@ from trading_bot.adapters.database.replay_training_rights import (
     DatabaseReplayTrainingRightsGate,
     ReplayTrainingOperation,
     ReplayTrainingRightsReceipt,
+    candidate_test_proof_scope_digest,
     training_scope_digest,
 )
 from trading_bot.adapters.database.repositories.candidate_universe_proofs import (
@@ -350,7 +351,7 @@ class LearningScorerTestOpportunityProofRepository:
         rights_receipts = await DatabaseReplayTrainingRightsGate(self._session).authorize(
             workspace_id=workspace_id,
             bundle_hash=replay_manifest.dataset_hash,
-            operation=ReplayTrainingOperation.EVALUATION,
+            operation=ReplayTrainingOperation.CANDIDATE_TEST_PROOF,
         )
         if not rights_receipts or any(
             receipt.purpose.value != "training" for receipt in rights_receipts
@@ -420,13 +421,9 @@ class LearningScorerTestOpportunityProofRepository:
         )
 
         membership_digest = _membership_digest(samples, test_outcome_rows)
-        source_scope_hash = digest(
-            canonical(
-                {
-                    "identity_scope_hash": identity_scope_hash,
-                    "training_rights_scope_hash": training_scope_digest(rights_receipts),
-                }
-            )
+        source_scope_hash = self._source_scope_hash(
+            identity_scope_hash=identity_scope_hash,
+            rights_receipts=rights_receipts,
         )
         proof = ScorerTestOpportunityProof(
             record_id=uuid4(),
@@ -452,6 +449,32 @@ class LearningScorerTestOpportunityProofRepository:
         if proof.candidate_count != len(candidate_ids):
             raise ValueError("Candidate inventory TEST có duplicate hoặc count sai.")
         return proof, rights_receipts
+
+    @staticmethod
+    def _source_scope_hash(
+        *,
+        identity_scope_hash: str,
+        rights_receipts: tuple[ReplayTrainingRightsReceipt, ...],
+    ) -> str:
+        """Giữ proof hash cũ dù authorization tách riêng operation ghi TEST proof."""
+        if not rights_receipts:
+            raise ValueError("TEST proof cần rights receipt cho mọi child bundle.")
+        operations = {receipt.operation for receipt in rights_receipts}
+        if operations == {ReplayTrainingOperation.EVALUATION}:
+            # Hỗ trợ dựng lại đúng proof đã persist trước khi thêm operation riêng.
+            rights_digest = training_scope_digest(rights_receipts)
+        elif operations == {ReplayTrainingOperation.CANDIDATE_TEST_PROOF}:
+            rights_digest = candidate_test_proof_scope_digest(rights_receipts)
+        else:
+            raise ValueError("TEST proof nhận operation rights không đồng nhất.")
+        return digest(
+            canonical(
+                {
+                    "identity_scope_hash": identity_scope_hash,
+                    "training_rights_scope_hash": rights_digest,
+                }
+            )
+        )
 
     async def _verify_approved_base_proofs(
         self,

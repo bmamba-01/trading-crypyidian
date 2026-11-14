@@ -364,6 +364,73 @@ async def run(phase):
                     )
                     for signature in FUNCTION_SIGNATURES
                 }
+        if phase == "license-gateway-attributes":
+            signatures = (
+                "public.wp06_recheck_scorer_current_rights(uuid,uuid)",
+                "public.wp06_verify_scorer_deployment_rights(uuid,uuid,uuid)",
+            )
+            async with sessions() as session:
+                return {
+                    signature: dict(
+                        (
+                            await session.execute(
+                                text(
+                                    "SELECT pg_catalog.pg_get_userbyid(proowner) AS owner, "
+                                    "prosecdef AS security_definer, proconfig AS settings, "
+                                    "ARRAY(SELECT acl::text FROM pg_catalog.unnest(proacl) acl "
+                                    "ORDER BY acl::text) AS acl FROM pg_catalog.pg_proc "
+                                    "WHERE oid=CAST(:signature AS regprocedure)"
+                                ),
+                                {"signature": signature},
+                            )
+                        )
+                        .mappings()
+                        .one()
+                    )
+                    for signature in signatures
+                }
+        if phase == "scope-checker-attributes":
+            signature = (
+                "public.wp06_check_replay_training_scope("
+                "uuid,text,jsonb,uuid,text,text,uuid,boolean)"
+            )
+            roles = (
+                "crypidian_scorer_deployment_rights_reader",
+                "crypidian_learning_source_rights_reader",
+                "crypidian_learning_batch_reader",
+                "crypidian_admin_web",
+                "crypidian_trading_runtime",
+                "crypidian_market_signal_worker",
+                "crypidian_app",
+                "crypidian_learning_evaluator",
+                "crypidian_candidate_builder",
+                "crypidian_trainer_worker",
+            )
+            async with sessions() as session:
+                metadata = dict(
+                    (
+                        await session.execute(
+                            text(
+                                "SELECT pg_catalog.pg_get_userbyid(proowner) AS owner, "
+                                "prosecdef AS security_definer, proconfig AS settings, "
+                                "ARRAY(SELECT acl::text FROM pg_catalog.unnest(proacl) acl "
+                                "ORDER BY acl::text) AS acl FROM pg_catalog.pg_proc "
+                                "WHERE oid=CAST(:signature AS regprocedure)"
+                            ),
+                            {"signature": signature},
+                        )
+                    )
+                    .mappings()
+                    .one()
+                )
+                privileges = {
+                    role: await session.scalar(
+                        text("SELECT has_function_privilege(:role,:signature,'EXECUTE')"),
+                        {"role": role, "signature": signature},
+                    )
+                    for role in roles
+                }
+            return {**metadata, "privileges": privileges}
         if phase == "migration-body-guard":
             await _verify_migration_body_guards(engine)
             return {"altered_function_bodies_rejected": True}
@@ -467,7 +534,15 @@ async def run(phase):
             }
         if phase == "proof":
             assert role == "crypidian_candidate_builder"
-            from trading_bot.adapters.database.models import LearningScorerArtifactRecord
+            from trading_bot.adapters.database.models import (
+                LearningScorerArtifactRecord,
+                LearningScorerTestOpportunityProofRecord,
+            )
+            from trading_bot.adapters.database.replay_training_rights import (
+                ReplayTrainingOperation,
+                candidate_test_proof_scope_digest,
+                training_scope_digest,
+            )
             from trading_bot.adapters.database.repositories.candidate_universe_proofs import (
                 CandidateUniverseProofRepository,
             )
@@ -546,14 +621,33 @@ async def run(phase):
                 assert approved_base.proof.content_hash == STATE["approved_base_proof_hash"]
                 assert base.record_id != approved_base.record_id
                 assert base.proof.content_hash != approved_base.proof.content_hash
-                result = await LearningScorerTestOpportunityProofRepository(
-                    unit.session
-                ).build_and_append(
+                proof_repository = LearningScorerTestOpportunityProofRepository(unit.session)
+                legacy_proof, builder_receipts = await proof_repository._build_authoritative_proof(
+                    workspace_id=WORKSPACE,
+                    evaluation_run_id=UUID(STATE["evaluation_run_id"]),
+                    attempt_id=UUID(STATE["attempt_id"]),
+                )
+                legacy_receipts = tuple(
+                    replace(receipt, operation=ReplayTrainingOperation.EVALUATION)
+                    for receipt in builder_receipts
+                )
+                assert candidate_test_proof_scope_digest(builder_receipts) == training_scope_digest(
+                    legacy_receipts
+                )
+                preexisting_legacy_row = LearningScorerTestOpportunityProofRecord.from_proof(
+                    legacy_proof
+                )
+                unit.session.add(preexisting_legacy_row)
+                await unit.session.flush()
+                result = await proof_repository.build_and_append(
                     workspace_id=WORKSPACE,
                     evaluation_run_id=UUID(STATE["evaluation_run_id"]),
                     attempt_id=UUID(STATE["attempt_id"]),
                 )
                 proof = result.proof
+                assert result.is_duplicate
+                assert result.record.id == preexisting_legacy_row.id
+                assert result.record.proof_hash == preexisting_legacy_row.proof_hash
                 assert proof.completeness_verified
                 assert (
                     proof.source_gap_count
@@ -568,12 +662,6 @@ async def run(phase):
                     == proof.candidate_count + proof.no_candidate_count
                 )
                 assert proof.bundle_hash == STATE["bundle_hash"]
-                from sqlalchemy.exc import DBAPIError
-
-                from trading_bot.adapters.database.models import (
-                    LearningScorerTestOpportunityProofRecord,
-                )
-
                 for invalid_hash in ("a" * 63, "g" * 64):
                     invalid_row = LearningScorerTestOpportunityProofRecord.from_proof(proof)
                     invalid_row.id = uuid4()
@@ -617,9 +705,13 @@ async def run(phase):
                 assert repeated.record.id == result.record.id
                 assert repeated.record.proof_hash == result.record.proof_hash
             return {
+                "legacy_test_proof_retry_preserved": True,
                 "test_proof": json.loads(proof.canonical_json),
                 "test_proof_id": str(result.record.id),
                 "test_proof_hash": proof.content_hash,
+                "test_proof_scope_hashes": sorted(
+                    receipt.scope_hash for receipt in builder_receipts
+                ),
                 "scorer_artifact_id": str(scorer_row.id),
                 "expected_test_events": proof.expected_opportunity_count,
                 "test_candidates": proof.candidate_count,
@@ -628,9 +720,118 @@ async def run(phase):
         if phase == "evaluate":
             assert role == "crypidian_learning_evaluator"
             return await evaluate(sessions)
+        if phase == "training-scope-digest":
+            assert role == "crypidian_candidate_builder"
+            from trading_bot.adapters.database.replay_training_rights import (
+                DatabaseReplayTrainingRightsGate,
+                ReplayTrainingOperation,
+                training_scope_digest,
+            )
+
+            async with UnitOfWork(sessions, workspace_id=WORKSPACE) as unit:
+                receipts = await DatabaseReplayTrainingRightsGate(unit.session).authorize(
+                    workspace_id=WORKSPACE,
+                    bundle_hash=STATE["bundle_hash"],
+                    operation=ReplayTrainingOperation.TRAINING,
+                )
+            assert receipts
+            assert all(
+                receipt.operation is ReplayTrainingOperation.TRAINING
+                and receipt.policy_fingerprint == receipt.current_policy_fingerprint
+                for receipt in receipts
+            )
+            return {
+                "candidate_training_scope_digest": training_scope_digest(receipts),
+                "candidate_training_receipt_count": len(receipts),
+                "candidate_training_child_hashes": sorted(
+                    receipt.child_dataset_hash for receipt in receipts
+                ),
+            }
+        if phase == "evaluation-scope-digest":
+            assert role == "crypidian_learning_evaluator"
+            from trading_bot.adapters.database.replay_training_rights import (
+                DatabaseReplayTrainingRightsGate,
+                ReplayTrainingOperation,
+                training_scope_digest,
+            )
+
+            async with UnitOfWork(sessions, workspace_id=WORKSPACE) as unit:
+                receipts = await DatabaseReplayTrainingRightsGate(unit.session).authorize(
+                    workspace_id=WORKSPACE,
+                    bundle_hash=STATE["bundle_hash"],
+                    operation=ReplayTrainingOperation.EVALUATION,
+                )
+            assert receipts
+            assert all(
+                receipt.operation is ReplayTrainingOperation.EVALUATION
+                and receipt.purpose.value == "training"
+                for receipt in receipts
+            )
+            return {
+                "candidate_evaluation_scope_digest": training_scope_digest(receipts),
+                "candidate_evaluation_receipt_count": len(receipts),
+            }
+        if phase in ("builder-evaluation-denied", "evaluator-builder-proof-denied"):
+            from trading_bot.adapters.database.replay_training_rights import (
+                DatabaseReplayTrainingRightsGate,
+                ReplayTrainingOperation,
+            )
+
+            denied_operation = (
+                ReplayTrainingOperation.EVALUATION
+                if phase == "builder-evaluation-denied"
+                else ReplayTrainingOperation.CANDIDATE_TEST_PROOF
+            )
+            expected_role = (
+                "crypidian_candidate_builder"
+                if phase == "builder-evaluation-denied"
+                else "crypidian_learning_evaluator"
+            )
+            assert role == expected_role
+            try:
+                async with UnitOfWork(sessions, workspace_id=WORKSPACE) as unit:
+                    await DatabaseReplayTrainingRightsGate(unit.session).authorize(
+                        workspace_id=WORKSPACE,
+                        bundle_hash=STATE["bundle_hash"],
+                        operation=denied_operation,
+                    )
+            except DBAPIError as error:
+                if (
+                    error.orig.sqlstate != "P0001"
+                    or error.orig.diag.message_primary
+                    != "WP06_TRAINING_REPLAY_BUNDLE_CALLER_DENIED"
+                ):
+                    raise
+            else:
+                raise AssertionError("Bundle verifier phải từ chối operation/role sai.")
+            return {phase.replace("-", "_"): True}
         if phase == "current-rights":
-            assert role == "crypidian_admin"
+            assert role == "crypidian_admin_web"
             return await verify_current_rights(sessions)
+        if phase == "current-rights-scope-restored-stale":
+            assert role == "crypidian_admin_web"
+            return await verify_restored_scope_keeps_test_receipt_stale(sessions)
+        if phase == "training-gate-migrator-denied":
+            assert role == "crypidian_admin"
+            return await verify_migrator_training_gate_denied(sessions)
+        if phase == "current-rights-scope-narrow":
+            assert role == "crypidian_admin_web"
+            return await append_current_source_scope_revision(sessions, narrow=True)
+        if phase == "current-rights-scope-restore":
+            assert role == "crypidian_admin_web"
+            return await append_current_source_scope_revision(sessions, narrow=False)
+        if phase == "current-rights-e2e-role-grant":
+            assert role == "crypidian_admin"
+            return await grant_e2e_current_rights_role(sessions)
+        if phase == "current-rights-scope-denied":
+            assert role == "crypidian_admin_web"
+            return await verify_narrowed_source_scope_denied(sessions)
+        if phase == "current-rights-e2e-role-revoke":
+            assert role == "crypidian_admin"
+            return await revoke_e2e_current_rights_role(sessions)
+        if phase == "rights-outbox":
+            assert role == "crypidian_ingestion_worker"
+            return await process_rights_outbox(sessions)
         if phase == "deployment-market-signal-worker":
             assert role == "crypidian_market_signal_worker"
             return await verify_market_signal_worker_deployment_rights(sessions)
@@ -652,6 +853,10 @@ async def evaluate(sessions):
     from sqlalchemy.exc import DBAPIError
 
     from trading_bot.adapters.database.models import LearningScorerArtifactRecord
+    from trading_bot.adapters.database.replay_training_rights import (
+        DatabaseReplayTrainingRightsGate,
+        ReplayTrainingOperation,
+    )
     from trading_bot.adapters.database.repositories.learning_scorer_artifacts import (
         LearningScorerArtifactRepository,
     )
@@ -672,7 +877,7 @@ async def evaluate(sessions):
         ScorerTestOpportunityProof,
     )
     from trading_bot.application.learning_scorer_test_service import (
-        ScorerTestEvaluationReportConflict,
+        ScorerTestEvaluationAccessConflict,
         ScorerTestEvaluationRequest,
         ScorerTestEvaluationService,
         scorer_test_evaluation_request_fingerprint,
@@ -689,6 +894,17 @@ async def evaluate(sessions):
             raise
     else:
         raise AssertionError("Evaluator không được đọc trực tiếp TEST payload.")
+
+    async with UnitOfWork(sessions, workspace_id=WORKSPACE) as unit:
+        evaluator_receipts = await DatabaseReplayTrainingRightsGate(unit.session).authorize(
+            workspace_id=WORKSPACE,
+            bundle_hash=STATE["bundle_hash"],
+            operation=ReplayTrainingOperation.EVALUATION,
+        )
+    assert (
+        sorted(receipt.scope_hash for receipt in evaluator_receipts)
+        == STATE["test_proof_scope_hashes"]
+    )
 
     async with UnitOfWork(sessions, workspace_id=WORKSPACE) as unit:
         definitions = {}
@@ -881,7 +1097,7 @@ async def evaluate(sessions):
         await service.evaluate(
             replace(request, evaluated_at=request.evaluated_at + timedelta(seconds=1))
         )
-    except ScorerTestEvaluationReportConflict:
+    except ScorerTestEvaluationAccessConflict:
         pass
     else:
         raise AssertionError("Đổi fingerprint phải bị từ chối.")
@@ -940,6 +1156,7 @@ async def evaluate(sessions):
         "safe_report_retry": True,
         "changed_request_rejected": True,
         "exact_scope": True,
+        "candidate_test_proof_scope_matches_evaluation": True,
         "current_training_rights_bound": True,
         "metadata_only_report": True,
         "report_status": report.status,
@@ -960,15 +1177,12 @@ async def verify_current_rights(sessions):
     """Kiểm gateway trong PostgreSQL bằng fixture TEST có source reference thật."""
     import hashlib
 
-    from trading_bot.adapters.database.replay_training_rights import (
-        DatabaseReplayTrainingRightsGate,
-        training_scope_digest,
-    )
     from trading_bot.adapters.database.repositories.source_registry import (
         SourceRegistryRepository,
     )
     from trading_bot.domain.research.source_registry import (
         normalize_source_cost,
+        source_rights_canonical_json,
         source_rights_hash,
     )
 
@@ -1065,44 +1279,93 @@ async def verify_current_rights(sessions):
         assert entry is not None
         revision = entry.revisions[-1]
         policy = revision.policy
-        sql_policy_fingerprint = await session.scalar(
-            text(
-                "SELECT public.wp06_scorer_source_policy_fingerprint("
-                ":source_id,:sequence,:policy_id,:state,CAST(:purposes AS jsonb),"
-                ":evidence_ref,:reviewed_at,:valid_until,:approved_by,:publisher,"
-                ":endpoint_url,:access_method,:auth_scope,:attribution,:retention_ref,"
-                ":window_seconds,:max_requests,:max_bytes,CAST(:max_cost AS numeric),:cost_unit)"
-            ),
-            {
-                "source_id": policy.source_id,
-                "sequence": revision.sequence,
-                "policy_id": policy.policy_id,
-                "state": policy.state.value,
-                "purposes": json.dumps(
-                    sorted(purpose.value for purpose in policy.allowed_purposes)
+        fingerprint_and_payload = (
+            await session.execute(
+                text(
+                    """
+                    SELECT public.wp06_license_source_policy_fingerprint(policy),
+                           public.wp06_license_canonical_json(pg_catalog.jsonb_build_object(
+                               'access_method', policy.access_method,
+                               'allowed_purposes', (
+                                   SELECT COALESCE(pg_catalog.jsonb_agg(
+                                       purpose.value ORDER BY purpose.value COLLATE \"C\"),
+                                       '[]'::jsonb)
+                                     FROM pg_catalog.jsonb_array_elements_text(
+                                         policy.allowed_purposes) AS purpose(value)
+                               ),
+                               'approved_by', policy.approved_by,
+                               'attribution', policy.attribution,
+                               'auth_scope', policy.auth_scope,
+                               'budget', pg_catalog.jsonb_build_object(
+                                   'cost_unit', policy.quota_cost_unit,
+                                   'max_bytes', policy.quota_max_bytes,
+                                   'max_cost', public.wp06_scorer_decimal_python_text(
+                                       policy.quota_max_cost),
+                                   'max_requests', policy.quota_max_requests,
+                                   'window', pg_catalog.jsonb_build_array(
+                                       pg_catalog.div(policy.quota_window_seconds, 86400),
+                                       pg_catalog.mod(policy.quota_window_seconds, 86400), 0
+                                   )
+                               ),
+                               'endpoint_url', policy.endpoint_url,
+                               'evidence_ref', policy.evidence_ref,
+                               'license_digest', policy.license_digest,
+                               'license_evidence_id', policy.license_evidence_id::text,
+                               'license_scope_hash', policy.license_scope_hash,
+                               'policy_id', policy.policy_id,
+                               'publisher', policy.publisher,
+                               'retention_ref', policy.retention_ref,
+                               'reviewed_at', public.wp06_canonical_utc_timestamp_json(
+                                   policy.reviewed_at),
+                               'sequence', policy.sequence,
+                               'source_id', policy.source_id,
+                               'state', policy.state,
+                               'valid_until', public.wp06_canonical_utc_timestamp_json(
+                                   policy.valid_until)
+                           ))
+                      FROM public.source_policy_revision AS policy
+                     WHERE policy.workspace_id=:workspace
+                       AND policy.source_id=:source_id
+                       AND policy.sequence=:sequence
+                       AND policy.policy_id=:policy_id
+                    """
                 ),
-                "evidence_ref": policy.evidence_ref,
-                "reviewed_at": policy.reviewed_at,
-                "valid_until": policy.valid_until,
-                "approved_by": revision.approved_by,
-                "publisher": revision.publisher,
-                "endpoint_url": revision.endpoint_url,
-                "access_method": revision.access_method,
-                "auth_scope": revision.auth_scope,
-                "attribution": revision.attribution,
-                "retention_ref": revision.retention_ref,
-                "window_seconds": int(revision.budget.window.total_seconds()),
-                "max_requests": revision.budget.max_requests,
-                "max_bytes": revision.budget.max_bytes,
-                "max_cost": str(revision.budget.max_cost),
-                "cost_unit": revision.budget.cost_unit,
-            },
-        )
+                {
+                    "workspace": WORKSPACE,
+                    "source_id": policy.source_id,
+                    "sequence": revision.sequence,
+                    "policy_id": policy.policy_id,
+                },
+            )
+        ).one()
+        sql_policy_fingerprint, sql_policy_canonical = fingerprint_and_payload
         expected_policy_fingerprint = source_rights_hash(revision)
+        expected_policy_canonical = source_rights_canonical_json(revision)
+        assert sql_policy_canonical == expected_policy_canonical, (
+            sql_policy_canonical,
+            expected_policy_canonical,
+        )
         assert sql_policy_fingerprint == expected_policy_fingerprint, (
             sql_policy_fingerprint,
             expected_policy_fingerprint,
         )
+
+        legacy_revision = next(item for item in entry.revisions if item.license_evidence_id is None)
+        legacy_policy_fingerprint = await session.scalar(
+            text(
+                "SELECT public.wp06_license_source_policy_fingerprint(policy) "
+                "FROM public.source_policy_revision AS policy "
+                "WHERE policy.workspace_id=:workspace AND policy.source_id=:source_id "
+                "AND policy.sequence=:sequence AND policy.policy_id=:policy_id"
+            ),
+            {
+                "workspace": WORKSPACE,
+                "source_id": legacy_revision.policy.source_id,
+                "sequence": legacy_revision.sequence,
+                "policy_id": legacy_revision.policy.policy_id,
+            },
+        )
+        assert legacy_policy_fingerprint == source_rights_hash(legacy_revision)
 
         decimal_fixtures = (
             "1230.0",
@@ -1315,11 +1578,7 @@ async def verify_current_rights(sessions):
             )
             expected_digests[fold_role] = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
-        async with UnitOfWork(sessions, workspace_id=WORKSPACE) as training_rights_unit:
-            receipts = await DatabaseReplayTrainingRightsGate(
-                training_rights_unit.session
-            ).authorize(workspace_id=WORKSPACE, bundle_hash=STATE["bundle_hash"])
-            expected_training_scope_digest = training_scope_digest(receipts)
+        expected_training_scope_digest = STATE["candidate_evaluation_scope_digest"]
 
         counts_before = tuple(
             (
@@ -1353,6 +1612,118 @@ async def verify_current_rights(sessions):
             )
         ).one()
         assert tuple(permissions) == (False, True, True, False, True, False), tuple(permissions)
+        scope_permissions = (
+            await session.execute(
+                text(
+                    "SELECT session_user,current_user,"
+                    "has_function_privilege(current_user,"
+                    "'public.wp06_check_replay_training_scope(uuid,text,jsonb,uuid,text,text,uuid,boolean)',"
+                    "'EXECUTE'),"
+                    "has_function_privilege('crypidian_app',"
+                    "'public.wp06_check_replay_training_scope(uuid,text,jsonb,uuid,text,text,uuid,boolean)',"
+                    "'EXECUTE'),"
+                    "has_function_privilege('crypidian_learning_evaluator',"
+                    "'public.wp06_check_replay_training_scope(uuid,text,jsonb,uuid,text,text,uuid,boolean)',"
+                    "'EXECUTE'),"
+                    "has_table_privilege(current_user,'public.learning_replay_training_receipt',"
+                    "'SELECT')"
+                )
+            )
+        ).one()
+        assert tuple(scope_permissions) == (
+            "crypidian_admin_web",
+            "crypidian_scorer_deployment_rights_reader",
+            True,
+            False,
+            False,
+            False,
+        ), tuple(scope_permissions)
+        v5_manifest = (
+            (
+                await session.execute(
+                    text(
+                        "SELECT artifact.manifest_hash,artifact.normalized_dataset_id,"
+                        "artifact.fold_plan_hash,manifest.id AS manifest_id,manifest.manifest "
+                        "FROM public.learning_scorer_artifact AS artifact "
+                        "JOIN public.dataset_manifest AS manifest "
+                        "ON manifest.workspace_id=artifact.workspace_id "
+                        "AND manifest.manifest_hash=artifact.manifest_hash "
+                        "WHERE artifact.workspace_id=:workspace "
+                        "AND artifact.id=CAST(:artifact_id AS uuid)"
+                    ),
+                    {"workspace": WORKSPACE, "artifact_id": str(artifact_id)},
+                )
+            )
+            .mappings()
+            .one()
+        )
+        canonical_manifest = v5_manifest["manifest"]
+        assert canonical_manifest["manifest_version"] == "dataset-manifest-v5"
+        assert canonical_manifest["source_use_lineage"]
+        indexed_source_ref_count = await session.scalar(
+            text(
+                "SELECT count(*) FROM public.dataset_manifest_source_ref "
+                "WHERE workspace_id=:workspace AND manifest_id=:manifest_id"
+            ),
+            {"workspace": WORKSPACE, "manifest_id": v5_manifest["manifest_id"]},
+        )
+        assert indexed_source_ref_count == 0
+        scope_check_sql = text(
+            "SELECT public.wp06_check_replay_training_scope("
+            "CAST(:workspace AS uuid),:manifest_hash,CAST(:manifest AS jsonb),"
+            "CAST(:dataset_id AS uuid),:fold_plan_hash,'deployment_recheck',"
+            "CAST(:access_id AS uuid),false)"
+        )
+        scope_check_params = {
+            "workspace": str(WORKSPACE),
+            "manifest_hash": v5_manifest["manifest_hash"],
+            "manifest": json.dumps(
+                canonical_manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            ),
+            "dataset_id": str(v5_manifest["normalized_dataset_id"]),
+            "fold_plan_hash": v5_manifest["fold_plan_hash"],
+            "access_id": STATE["evaluation_run_id"],
+        }
+        await session.execute(scope_check_sql, scope_check_params)
+        forged_manifest = dict(canonical_manifest)
+        forged_lineage = [dict(value) for value in canonical_manifest["source_use_lineage"]]
+        forged_lineage[0]["source_id"] = forged_lineage[0]["source_id"] + "_FORGED"
+        forged_manifest["source_use_lineage"] = forged_lineage
+        forged_params = {
+            **scope_check_params,
+            "manifest": json.dumps(
+                forged_manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            ),
+        }
+        try:
+            async with session.begin_nested():
+                await session.execute(scope_check_sql, forged_params)
+        except DBAPIError as error:
+            if (
+                error.orig.sqlstate != "P0001"
+                or error.orig.diag.message_primary
+                != "WP06_TRAINING_REPLAY_MANIFEST_CANONICAL_MISMATCH"
+            ):
+                raise
+            v5_forged_lineage_denied = True
+        else:
+            raise AssertionError("V5 source lineage caller forgery must be rejected.")
+        try:
+            async with session.begin_nested():
+                await session.execute(
+                    scope_check_sql,
+                    {**scope_check_params, "fold_plan_hash": "f" * 64},
+                )
+        except DBAPIError as error:
+            if (
+                error.orig.sqlstate != "P0001"
+                or error.orig.diag.message_primary
+                != "WP06_TRAINING_REPLAY_NORMALIZED_DATASET_MISMATCH"
+            ):
+                raise
+            v5_wrong_scope_denied = True
+        else:
+            raise AssertionError("V5 scope mismatch must be rejected.")
         bundle_diagnostics = (
             (
                 await session.execute(
@@ -1496,6 +1867,11 @@ async def verify_current_rights(sessions):
             value for key, value in child_diagnostics.items() if key != "child_count"
         ):
             raise AssertionError(f"bundle child field mismatch flags: {dict(child_diagnostics)}")
+
+        # Các scope check ở trên giữ advisory source lock đến hết transaction đọc.
+        # Kết thúc transaction đó trước khi mô phỏng writer độc lập giữ cùng lock.
+        await session.commit()
+        assert not session.in_transaction(), "Transaction kiểm tra scope phải kết thúc trước race."
         resolution_started = asyncio.Event()
 
         async def resolve_current_rights_in_new_transaction():
@@ -1528,6 +1904,11 @@ async def verify_current_rights(sessions):
         assert pending_resolution is not None
         writer_first_rights = await asyncio.wait_for(pending_resolution, timeout=10)
         assert writer_first_rights["training_scope_digest"] == expected_training_scope_digest
+        await session.execute(
+            text("SELECT set_config('app.workspace_id',CAST(:workspace AS text),true)"),
+            {"workspace": str(WORKSPACE)},
+        )
+        await session.execute(text("SET LOCAL ROLE crypidian_scorer_deployment_rights_reader"))
         rights_result = await session.execute(
             text(
                 "SELECT * FROM public.wp06_recheck_scorer_current_rights("
@@ -1596,6 +1977,17 @@ async def verify_current_rights(sessions):
         assert counts_after == counts_before, "Rights verifier must not consume or append receipts."
     return {
         "current_rights_verified": True,
+        "v5_replay_scope_verified": True,
+        "v5_forged_lineage_denied": v5_forged_lineage_denied,
+        "v5_wrong_scope_denied": v5_wrong_scope_denied,
+        "v5_manifest_index_empty": indexed_source_ref_count == 0,
+        "scope_checker_privilege_constrained": tuple(scope_permissions)[2:]
+        == (
+            True,
+            False,
+            False,
+            False,
+        ),
         "c4_writer_first_verified": True,
         "c4_resolver_first_verified": True,
         "exact_train_validation_membership_verified": True,
@@ -1607,6 +1999,270 @@ async def verify_current_rights(sessions):
         "no_test_receipt_mutation": True,
         "rights_integrity_counts": [int(value) for value in counts_after],
     }
+
+
+async def verify_restored_scope_keeps_test_receipt_stale(sessions):
+    """Policy đã phục hồi không làm mới receipt TEST được ghi theo policy cũ."""
+    async with UnitOfWork(sessions, workspace_id=WORKSPACE) as unit:
+        session = unit.session
+        identity = (await session.execute(text("SELECT session_user,current_user"))).one()
+        assert tuple(identity) == ("crypidian_admin_web", "crypidian_admin_web")
+        await session.execute(text("SET LOCAL ROLE crypidian_scorer_deployment_rights_reader"))
+        try:
+            async with session.begin_nested():
+                await session.execute(
+                    text(
+                        "SELECT * FROM public.wp06_recheck_scorer_current_rights("
+                        "CAST(:workspace AS uuid),CAST(:artifact_id AS uuid))"
+                    ),
+                    {
+                        "workspace": str(WORKSPACE),
+                        "artifact_id": STATE["scorer_artifact_id"],
+                    },
+                )
+        except DBAPIError as error:
+            if (
+                error.orig.sqlstate != "P0001"
+                or error.orig.diag.message_primary != "WP06_SCORER_RIGHTS_TEST_RECEIPT_STALE"
+            ):
+                raise AssertionError(
+                    "Receipt TEST cũ phải bị từ chối sau khi policy đổi."
+                ) from error
+        else:
+            raise AssertionError("Policy phục hồi không được làm mới receipt TEST bất biến.")
+    return {"restored_scope_keeps_old_test_receipt_stale": True}
+
+
+async def append_current_source_scope_revision(sessions, *, narrow: bool):
+    """Thu hẹp rồi phục hồi policy qua đúng ledger append-only của registry."""
+    from trading_bot.adapters.database.repositories.source_registry import (
+        SourceRegistryRepository,
+    )
+    from trading_bot.application.source_policy_admin import SourceLicenseEvidence
+    from trading_bot.domain.research.license_scope import scope_sha256
+    from trading_bot.domain.research.source_policy import SourcePolicyState, SourceUsePurpose
+
+    source_id = "CRYPIDIAN_FIRST_PARTY_QA"
+    policy_ids: tuple[str, ...]
+    policy_sequence: int
+    scope_hash: str
+    async with UnitOfWork(sessions, workspace_id=WORKSPACE) as unit:
+        repository = SourceRegistryRepository(unit.session)
+        entry = await repository.get_entry(workspace_id=WORKSPACE, source_id=source_id)
+        assert entry is not None
+        if narrow:
+            original_scope = entry.current.license_scope
+            assert original_scope is not None
+            desired_scope = replace(
+                original_scope,
+                allowed_outputs=tuple(
+                    output for output in original_scope.allowed_outputs if output != "trained_model"
+                ),
+                derived_use=tuple(
+                    derived for derived in original_scope.derived_use if derived != "model_training"
+                ),
+            )
+            assert "trained_model" not in desired_scope.allowed_outputs
+            assert "model_training" not in desired_scope.derived_use
+            assert "aggregate_report" in desired_scope.allowed_outputs
+            assert "aggregate_reporting" in desired_scope.derived_use
+        else:
+            desired_scope = next(
+                revision.license_scope
+                for revision in reversed(entry.revisions[:-2])
+                if revision.state is SourcePolicyState.VERIFIED
+                and revision.license_scope is not None
+                and "trained_model" in revision.license_scope.allowed_outputs
+                and "model_training" in revision.license_scope.derived_use
+                and "aggregate_report" in revision.license_scope.allowed_outputs
+                and "aggregate_reporting" in revision.license_scope.derived_use
+            )
+
+        now = await repository.database_clock(workspace_id=WORKSPACE)
+        token = uuid4().hex
+        pending_policy_id = f"{source_id}:wp06-v5-scope:{token}:pending"
+        pending_entry = entry.transition(
+            policy_id=pending_policy_id,
+            state=SourcePolicyState.RIGHTS_PENDING,
+            actor_id=f"wp06-v5-scope-requester-{token}",
+            at=now,
+            reason="E2E kiểm tra quyền current-policy",
+            evidence_ref=entry.current.policy.evidence_ref,
+            license_scope=desired_scope,
+            attribution=desired_scope.attribution,
+        )
+        await repository.append_revision(workspace_id=WORKSPACE, revision=pending_entry.current)
+        evidence_id = uuid4()
+        evidence_payload = f"wp06-v5-license-scope:{token}".encode()
+        evidence_digest = hashlib.sha256(evidence_payload).hexdigest()
+        evidence = SourceLicenseEvidence(
+            evidence_id=evidence_id,
+            source_id=source_id,
+            policy_id=pending_policy_id,
+            idempotency_key=uuid4(),
+            evidence_ref=entry.current.policy.evidence_ref,
+            digest=evidence_digest,
+            byte_count=len(evidence_payload),
+            media_type="text/plain",
+            license_scope=desired_scope,
+            actor_id=f"wp06-v5-scope-evidence-{token}",
+            created_at=now,
+        )
+        await repository.append_license_evidence(workspace_id=WORKSPACE, evidence=evidence)
+        pending = await repository.get_entry(workspace_id=WORKSPACE, source_id=source_id)
+        assert pending is not None
+        assert pending.current.policy.policy_id == pending_policy_id
+        review_at = await repository.database_clock(workspace_id=WORKSPACE)
+        verified = pending.transition(
+            policy_id=f"{source_id}:wp06-v5-scope:{token}:verified",
+            state=SourcePolicyState.VERIFIED,
+            actor_id=pending.current.actor_id,
+            at=review_at,
+            reason="E2E phê duyệt rights current-policy",
+            allowed_purposes=frozenset({SourceUsePurpose.TRAINING}),
+            evidence_ref=pending.current.policy.evidence_ref,
+            reviewed_at=review_at,
+            valid_until=entry.current.policy.valid_until,
+            approved_by=f"wp06-v5-scope-reviewer-{token}",
+            license_scope=desired_scope,
+            license_evidence_id=evidence.evidence_id,
+            license_digest=evidence.digest,
+            license_scope_hash=evidence.scope_hash,
+            attribution=desired_scope.attribution,
+        )
+        result = await repository.append_revision(workspace_id=WORKSPACE, revision=verified.current)
+        policy_ids = (pending.current.policy.policy_id, verified.current.policy.policy_id)
+        policy_sequence = result.revision.sequence
+        scope_hash = scope_sha256(desired_scope)
+
+    for policy_id in policy_ids:
+        async with UnitOfWork(sessions, workspace_id=WORKSPACE) as observer:
+            await SourceRegistryRepository(observer.session).finalize_policy(
+                workspace_id=WORKSPACE,
+                source_id=source_id,
+                policy_id=policy_id,
+            )
+    return {
+        "current_source_scope_narrowed": narrow,
+        "current_source_policy_sequence": policy_sequence,
+        "current_source_scope_hash": scope_hash,
+    }
+
+
+async def process_rights_outbox(sessions):
+    """Xử lý rights events bằng đúng ingestion-worker trước mỗi lần recheck."""
+    from trading_bot.application.dataset_rights_invalidation import DatasetRightsChangeConsumer
+
+    async with UnitOfWork(sessions, workspace_id=WORKSPACE) as unit:
+        worker_session = await unit.session.scalar(text("SELECT session_user"))
+        assert worker_session == "crypidian_ingestion_worker"
+        now = await unit.session.scalar(text("SELECT clock_timestamp()"))
+        result = await DatasetRightsChangeConsumer(unit.session).process_batch(
+            workspace_id=WORKSPACE,
+            worker_id="wp06-v5-current-rights-e2e",
+            now=now,
+            batch_size=100,
+            max_attempts=8,
+        )
+        assert result.claimed >= 2, result
+        assert result.processed == result.claimed, result
+        assert result.failed == 0, result
+        assert result.dead_lettered == 0, result
+        return {
+            "rights_outbox_processed": True,
+            "rights_outbox_claimed": result.claimed,
+            "rights_outbox_invalidated": result.invalidated_references,
+        }
+
+
+async def verify_migrator_training_gate_denied(sessions):
+    """Xác nhận migrator không có quyền cấp TRAINING replay receipt."""
+    from trading_bot.adapters.database.replay_training_rights import (
+        DatabaseReplayTrainingRightsGate,
+        ReplayTrainingOperation,
+    )
+
+    async with UnitOfWork(sessions, workspace_id=WORKSPACE) as unit:
+        session = unit.session
+        assert await session.scalar(text("SELECT session_user")) == "crypidian_admin"
+        try:
+            await DatabaseReplayTrainingRightsGate(session).authorize(
+                workspace_id=WORKSPACE,
+                bundle_hash=STATE["bundle_hash"],
+                operation=ReplayTrainingOperation.TRAINING,
+            )
+        except DBAPIError as error:
+            if (
+                error.orig.sqlstate != "P0001"
+                or error.orig.diag.message_primary != "WP06_TRAINING_REPLAY_BUNDLE_CALLER_DENIED"
+            ):
+                raise
+        else:
+            raise AssertionError("Migrator không được cấp TRAINING replay receipt.")
+    return {"migrator_training_authorization_denied": True}
+
+
+async def grant_e2e_current_rights_role(sessions):
+    """Tạm mô phỏng quyền nội bộ của gateway trong DB E2E disposable."""
+    async with UnitOfWork(sessions, workspace_id=WORKSPACE) as unit:
+        session = unit.session
+        member = await session.scalar(
+            text(
+                "SELECT pg_catalog.pg_has_role('crypidian_admin_web',"
+                "'crypidian_scorer_deployment_rights_reader','MEMBER')"
+            )
+        )
+        assert member is False
+        await session.execute(
+            text("GRANT crypidian_scorer_deployment_rights_reader TO crypidian_admin_web")
+        )
+    return {"current_rights_e2e_role_granted": True}
+
+
+async def verify_narrowed_source_scope_denied(sessions):
+    """Chứng minh admin-web current-rights gateway áp dụng scope hiện hành."""
+    async with UnitOfWork(sessions, workspace_id=WORKSPACE) as unit:
+        session = unit.session
+        assert await session.scalar(text("SELECT session_user")) == "crypidian_admin_web"
+        await session.execute(text("SET LOCAL ROLE crypidian_scorer_deployment_rights_reader"))
+        try:
+            async with session.begin_nested():
+                await session.execute(
+                    text(
+                        "SELECT * FROM public.wp06_recheck_scorer_current_rights("
+                        "CAST(:workspace AS uuid),CAST(:artifact_id AS uuid))"
+                    ),
+                    {
+                        "workspace": str(WORKSPACE),
+                        "artifact_id": STATE["scorer_artifact_id"],
+                    },
+                )
+        except DBAPIError as error:
+            if (
+                error.orig.sqlstate != "P0001"
+                or error.orig.diag.message_primary != "WP06_TRAINING_REPLAY_SCOPE_NOT_COVERED"
+            ):
+                raise
+        else:
+            raise AssertionError("Thu hẹp license scope phải chặn scorer rights recheck.")
+    return {"narrowed_current_scope_denied": True}
+
+
+async def revoke_e2e_current_rights_role(sessions):
+    """Thu hồi membership chỉ dùng để mô phỏng gateway trong test DB."""
+    async with UnitOfWork(sessions, workspace_id=WORKSPACE) as unit:
+        session = unit.session
+        await session.execute(
+            text("REVOKE crypidian_scorer_deployment_rights_reader FROM crypidian_admin_web")
+        )
+        member = await session.scalar(
+            text(
+                "SELECT pg_catalog.pg_has_role('crypidian_admin_web',"
+                "'crypidian_scorer_deployment_rights_reader','MEMBER')"
+            )
+        )
+        assert member is False
+    return {"current_rights_e2e_role_revoked": True}
 
 
 async def verify_manifest_source_ref_fence_v3(sessions):

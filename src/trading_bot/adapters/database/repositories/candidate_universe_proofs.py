@@ -8,7 +8,7 @@ from datetime import datetime
 from uuid import UUID, uuid4
 
 from sqlalchemy import RowMapping, select, text
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from trading_bot.adapters.database.learning_fold_outcome_verifier import (
@@ -225,10 +225,8 @@ class CandidateUniverseProofRepository:
                 raise CandidateUniverseProofError("Trial thiếu run authoritative.")
             manifest = DatabaseFoldOutcomeVerifier._validate_run(run, workspace_id=workspace_id)
             await self._require_predeclared_learning_intent(workspace_id, run, manifest)
-            receipts = await DatabaseReplayTrainingRightsGate(self._session).authorize(
-                workspace_id=workspace_id,
-                bundle_hash=manifest.dataset_hash,
-                operation=ReplayTrainingOperation.TRAINING,
+            receipts = await self._authorize_training_rights(
+                workspace_id=workspace_id, bundle_hash=manifest.dataset_hash
             )
             if not receipts or any(receipt.purpose.value != "training" for receipt in receipts):
                 raise CandidateUniverseProofError("Thiếu receipt TRAINING hiện hành.")
@@ -327,6 +325,30 @@ class CandidateUniverseProofRepository:
             return CandidateDecisionOpportunityProofResult(existing.id, proof, True)
         await self._require_current_lease(receipts)
         return CandidateDecisionOpportunityProofResult(row.id, proof, False)
+
+    async def _authorize_training_rights(
+        self, *, workspace_id: UUID, bundle_hash: str
+    ) -> tuple[ReplayTrainingRightsReceipt, ...]:
+        """Chuyển lỗi rights SQL đã nhận diện thành lỗi nghiệp vụ fail-closed."""
+        try:
+            return await DatabaseReplayTrainingRightsGate(self._session).authorize(
+                workspace_id=workspace_id,
+                bundle_hash=bundle_hash,
+                operation=ReplayTrainingOperation.TRAINING,
+            )
+        except DBAPIError as error:
+            message = str(error.orig).upper()
+            if not any(
+                marker in message
+                for marker in (
+                    "WP06_TRAINING_REPLAY_",
+                    "WP06_SOURCE_TRAINING_RIGHTS_",
+                )
+            ):
+                raise
+            raise CandidateUniverseProofError(
+                "TRAINING rights hiện hành bị verifier cơ sở dữ liệu từ chối."
+            ) from None
 
     @staticmethod
     def _validate_decision_record(
@@ -893,10 +915,8 @@ class CandidateUniverseProofRepository:
         await self._require_predeclared_learning_intent(workspace_id, run, manifest)
         receipts = authorized_receipts
         if receipts is None:
-            receipts = await DatabaseReplayTrainingRightsGate(self._session).authorize(
-                workspace_id=workspace_id,
-                bundle_hash=manifest.dataset_hash,
-                operation=ReplayTrainingOperation.TRAINING,
+            receipts = await self._authorize_training_rights(
+                workspace_id=workspace_id, bundle_hash=manifest.dataset_hash
             )
         if not receipts:
             raise CandidateUniverseProofError("Gate TRAINING không trả receipt đầy đủ.")

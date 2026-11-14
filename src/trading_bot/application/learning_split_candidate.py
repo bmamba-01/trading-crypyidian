@@ -220,12 +220,12 @@ def build_learning_split_candidate(
         raise ValueError("Mọi outcome phải ghim đúng một replay bundle authoritative.")
     source_replay_bundle_hash = next(iter(bundle_hashes))
     assert isinstance(source_replay_bundle_hash, str)
-    lineage_values = {item.source_use_lineage for item in ordered}
-    if len(lineage_values) != 1:
+    source_use_lineage = ordered[0].source_use_lineage
+    if any(item.source_use_lineage != source_use_lineage for item in ordered[1:]):
         raise ValueError("Mọi outcome phải ghim cùng exact source-use child lineage.")
-    source_use_lineage = next(iter(lineage_values))
     if not source_use_lineage:
         raise ValueError("Mọi outcome cần source-use lineage không rỗng.")
+    source_use_lineage_hash = source_use_lineage_set_hash(source_use_lineage)
 
     members: list[dict[str, object]] = []
     accepted: list[tuple[LearningCandidateOutcome, DatasetSample]] = []
@@ -283,7 +283,7 @@ def build_learning_split_candidate(
             source_rights_hashes=(),
             source_revision_refs=(),
             source_replay_bundle_hash=item.source_replay_bundle_hash,
-            source_use_lineage_set_hash=source_use_lineage_set_hash(source_use_lineage),
+            source_use_lineage_set_hash=source_use_lineage_hash,
         )
         accepted.append((item, sample))
         schemas.add(trade.entry_feature_schema_hash)

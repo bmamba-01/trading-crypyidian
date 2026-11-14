@@ -25,6 +25,7 @@ from trading_bot.application.bot_decision_contexts import (
     _count_open_incidents,
 )
 from trading_bot.application.bot_dispatcher import (
+    DEFAULT_MAX_BARS_PER_STREAM,
     BotDecisionContext,
     BotEvidenceDispatcher,
     SignalEvidenceFanOutConsumer,
@@ -52,7 +53,7 @@ from trading_bot.domain.market.models import MarketBarSourceIdentity, MarketSnap
 from trading_bot.domain.strategy.contracts import DecisionSnapshot
 from trading_bot.domain.strategy.registry import StrategyRegistry
 
-_MAX_BARS_PER_STREAM = 256
+_MAX_BARS_PER_STREAM = DEFAULT_MAX_BARS_PER_STREAM
 _LIVE_BAR_SOURCE = "BINANCE_USDM"
 _BACKFILL_BAR_SOURCE = "BINANCE_USDM_REST_BACKFILL"
 
@@ -66,7 +67,11 @@ class PostgresClosedMarketObservationSource(QualifiedMarketObservationSource):
         *,
         max_bars_per_stream: int = _MAX_BARS_PER_STREAM,
     ) -> None:
-        if not 200 <= max_bars_per_stream <= 2000:
+        if (
+            isinstance(max_bars_per_stream, bool)
+            or not isinstance(max_bars_per_stream, int)
+            or not 200 <= max_bars_per_stream <= 2000
+        ):
             raise ValueError("max_bars_per_stream phải chứa warm-up 200 nến và không quá 2000.")
         self._sessions = sessions
         self._max_bars_per_stream = max_bars_per_stream
@@ -152,6 +157,11 @@ class PostgresMarketDecisionSnapshotProvider:
             max_bars_per_stream=max_bars_per_stream,
         )
 
+    @property
+    def max_bars_per_stream(self) -> int:
+        """Limit provider để context/job mới ghim vào payload canonical."""
+        return self._source._max_bars_per_stream
+
     async def snapshot_for(
         self,
         *,
@@ -181,25 +191,26 @@ class PostgresMarketDecisionSnapshotProvider:
                 as_of=evidence_cutoff,
                 symbols=(evidence.symbol,),
                 timeframes=tuple(requirements),
-                max_bars_per_stream=self._source._max_bars_per_stream,
+                max_bars_per_stream=context.max_bars_per_stream,
             )
-        grouped = _group_bars(rows)
-        return build_decision_snapshot_from_bars(
-            workspace_id=context.workspace_id,
-            symbol=evidence.symbol,
-            strategy_release_id=context.strategy_release_id,
-            decision_time=evidence_cutoff,
-            series_quality_as_of=evaluated_at,
-            bars_by_timeframe={
-                timeframe: tuple(
-                    _to_bar(row) for row in grouped.get((evidence.symbol, timeframe), ())
-                )
-                for timeframe in requirements
-            },
-            # Signal-only chỉ đưa strategy qua bộ lọc; không đọc PAPER position hay tạo lệnh.
-            position_is_flat=True,
-            source_identity_required=True,
-        )
+            grouped = _group_bars(rows)
+            snapshot = build_decision_snapshot_from_bars(
+                workspace_id=context.workspace_id,
+                symbol=evidence.symbol,
+                strategy_release_id=context.strategy_release_id,
+                decision_time=evidence_cutoff,
+                series_quality_as_of=evaluated_at,
+                bars_by_timeframe={
+                    timeframe: tuple(
+                        _to_bar(row) for row in grouped.get((evidence.symbol, timeframe), ())
+                    )
+                    for timeframe in requirements
+                },
+                # Signal-only chỉ đưa strategy qua bộ lọc; không đọc PAPER position hay tạo lệnh.
+                position_is_flat=True,
+                source_identity_required=True,
+            )
+            return snapshot
 
 
 class SignalRuntimeGate:
@@ -233,12 +244,14 @@ def build_market_signal_scanner(
     max_observation_age: timedelta,
     signal_validity: timedelta,
     scorer_policy_provider: ScorerRuntimePolicyProvider | None = None,
+    max_bars_per_stream: int = _MAX_BARS_PER_STREAM,
 ) -> _MarketSignalPipeline:
     """Lắp source/context/dispatcher signal-only, không phụ thuộc PAPER supervisor."""
     contexts = EffectiveBotDecisionContextProvider(
         sessions,
         runtime_gate=SignalRuntimeGate(),
         exclusion_recorder=SignalExclusionRecorder(),
+        max_bars_per_stream=max_bars_per_stream,
     )
     store = PostgresSignalDecisionStore(
         sessions,
@@ -247,10 +260,16 @@ def build_market_signal_scanner(
     dispatcher = BotEvidenceDispatcher(
         store,
         strategies=StrategyRegistry(),
-        snapshots=PostgresMarketDecisionSnapshotProvider(sessions),
+        snapshots=PostgresMarketDecisionSnapshotProvider(
+            sessions,
+            max_bars_per_stream=max_bars_per_stream,
+        ),
     )
     scanner = MarketSignalScanner(
-        PostgresClosedMarketObservationSource(sessions),
+        PostgresClosedMarketObservationSource(
+            sessions,
+            max_bars_per_stream=max_bars_per_stream,
+        ),
         contexts,
         dispatcher,
         max_observation_age=max_observation_age,

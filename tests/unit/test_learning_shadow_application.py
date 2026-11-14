@@ -101,6 +101,8 @@ class _FakeRepository:
         self.source = _source(schema_compatible=False)
         self.rights: PaperSourceRightsReceipt | None = None
         self.supported = False
+        self.scope_fingerprint: str | None = None
+        self.source_ids = ("BINANCE_USDM_REST",)
         self.appended: list[ShadowObservation] = []
         self.duplicate = False
         self.clock = NOW + timedelta(seconds=3)
@@ -109,6 +111,13 @@ class _FakeRepository:
     async def lock_active_pointer(self, *, workspace_id: UUID) -> None:
         self.calls.append("pointer_lock")
         assert workspace_id == WORKSPACE_ID
+
+    async def lock_registry_entries(
+        self, *, workspace_id: UUID, registry_ids: tuple[UUID, ...]
+    ) -> None:
+        self.calls.append("registry_lock")
+        assert workspace_id == WORKSPACE_ID
+        assert registry_ids == (self.source.challenger_model.registry_id,)
 
     async def current_paper_rights(
         self, *, workspace_id: UUID, source_id: str = "BINANCE_USDM_REST"
@@ -132,6 +141,37 @@ class _FakeRepository:
         assert workspace_id == WORKSPACE_ID
         assert decision_id == self.source.incumbent_decision.decision_id
         return self.supported
+
+    async def decision_source_ids(
+        self, *, workspace_id: UUID, decision_id: UUID
+    ) -> tuple[str, ...]:
+        self.calls.append("source_ids")
+        assert workspace_id == WORKSPACE_ID
+        assert decision_id == self.source.incumbent_decision.decision_id
+        return self.source_ids
+
+    async def lock_source_ids(self, *, workspace_id: UUID, source_ids: tuple[str, ...]) -> None:
+        self.calls.append("source_locks")
+        assert workspace_id == WORKSPACE_ID
+        assert source_ids == self.source_ids
+
+    async def lock_member_set(self, *, workspace_id: UUID) -> None:
+        self.calls.append("member_set_lock")
+        assert workspace_id == WORKSPACE_ID
+
+    async def authorization_clock(self, *, workspace_id: UUID) -> datetime:
+        self.calls.append("authorization_clock")
+        assert workspace_id == WORKSPACE_ID
+        return NOW + timedelta(seconds=2)
+
+    async def authorize_inference_source_scope(
+        self, *, workspace_id: UUID, decision_id: UUID, checked_at: datetime
+    ) -> str | None:
+        self.calls.append("exact_scope")
+        assert workspace_id == WORKSPACE_ID
+        assert decision_id == self.source.incumbent_decision.decision_id
+        assert checked_at == NOW + timedelta(seconds=2)
+        return self.scope_fingerprint
 
     async def database_clock(self, *, workspace_id: UUID) -> datetime:
         self.calls.append("clock")
@@ -186,9 +226,14 @@ async def test_observer_persists_only_abstain_and_rights_failure_has_precedence(
     repository = _FakeRepository.instances[-1]
     assert repository.calls == [
         "pointer_lock",
-        "rights",
         "list",
-        "source_support",
+        "registry_lock",
+        "source_ids",
+        "source_locks",
+        "member_set_lock",
+        "list",
+        "authorization_clock",
+        "exact_scope",
         "clock",
         "append",
     ]
@@ -206,6 +251,7 @@ async def test_observer_pins_current_rights_and_emits_schema_abstain_when_eligib
             super().__init__(session)
             self.rights = _rights()
             self.supported = True
+            self.scope_fingerprint = "8" * 64
 
     application = LearningShadowApplication(
         object(),
@@ -219,6 +265,7 @@ async def test_observer_pins_current_rights_and_emits_schema_abstain_when_eligib
     assert observation.challenger_reason is ShadowAbstainReason.FEATURE_SCHEMA_MISMATCH
     assert observation.rights_eligible is True
     assert observation.rights_fingerprint == "9" * 64
+    assert observation.source_scope_fingerprint == "8" * 64
     assert observation.rights_policy_sequence == 5
     assert observation.rights_known_at == NOW + timedelta(seconds=2)
     assert observation.observed_at == NOW + timedelta(seconds=3)
@@ -235,6 +282,7 @@ async def test_compatible_artifact_still_abstains_without_calibration() -> None:
             self.source = _source(schema_compatible=True)
             self.rights = _rights()
             self.supported = True
+            self.scope_fingerprint = "8" * 64
 
     application = LearningShadowApplication(
         object(),
@@ -248,6 +296,7 @@ async def test_compatible_artifact_still_abstains_without_calibration() -> None:
     assert observation.schema_compatible is True
     assert observation.rights_eligible is True
     assert observation.challenger_reason is ShadowAbstainReason.UNCALIBRATED_SCORE
+    assert observation.source_scope_fingerprint == "8" * 64
     assert not hasattr(observation, "probability")
     assert not hasattr(observation, "confidence")
 

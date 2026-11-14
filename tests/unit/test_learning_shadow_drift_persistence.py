@@ -101,6 +101,13 @@ def test_shadow_drift_membership_and_idempotency_are_exact() -> None:
     assert "membership_digest" in assessment.c
 
 
+def test_unresolved_current_source_scope_uses_sql_null() -> None:
+    current_source_ids = LearningDriftAssessmentMemberRecord.__table__.c.current_source_ids
+
+    assert current_source_ids.nullable
+    assert current_source_ids.type.none_as_null is True
+
+
 def test_drift_assessment_pins_one_challenger_cohort_or_empty_scope() -> None:
     assessment = LearningDriftAssessmentRecord.__table__
 

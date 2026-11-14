@@ -151,6 +151,55 @@ class LearningEvaluationAccessRepository:
             )
         )
 
+    async def recheck_current_source_rights(
+        self,
+        *,
+        workspace_id: UUID,
+        evaluation_run_id: UUID,
+        request_fingerprint: str,
+    ) -> None:
+        """Kiểm lại lineage/report đang lưu trước khi trả report đã tính."""
+        if type(workspace_id) is not UUID or type(evaluation_run_id) is not UUID:
+            raise ValueError("Workspace và evaluation run phải là UUID.")
+        if not _is_sha256(request_fingerprint):
+            raise ValueError("Request fingerprint phải là SHA-256.")
+        try:
+            await self._session.execute(
+                text(
+                    "SELECT public.wp06_recheck_learning_evaluation_report_rights("
+                    "target_workspace => CAST(:workspace_id AS uuid), "
+                    "target_evaluation_run_id => CAST(:evaluation_run_id AS uuid), "
+                    "target_request_fingerprint => CAST(:request_fingerprint AS text))"
+                ),
+                {
+                    "workspace_id": str(workspace_id),
+                    "evaluation_run_id": str(evaluation_run_id),
+                    "request_fingerprint": request_fingerprint,
+                },
+            )
+        except DBAPIError as error:
+            message = str(error.orig).upper()
+            failure_code = next(
+                (
+                    token
+                    for token in (
+                        "WP06_EVALUATION_REPORT_RIGHTS_DENIED",
+                        "WP06_SOURCE_TRAINING_RIGHTS_CALLER_DENIED",
+                        "WP06_SOURCE_TRAINING_RIGHTS_WORKSPACE_DENIED",
+                        "WP06_SOURCE_TRAINING_RIGHTS_SCOPE_INVALID",
+                        "WP06_SOURCE_TRAINING_RIGHTS_MANIFEST_CANONICAL_MISMATCH",
+                        "WP06_TRAINING_REPLAY_",
+                    )
+                    if token in message
+                ),
+                None,
+            )
+            if failure_code is not None:
+                raise LearningEvaluationAccessConflict(
+                    f"Không thể trả report vì quyền nguồn hiện hành không hợp lệ ({failure_code})."
+                ) from None
+            raise
+
 
 def _is_sha256(value: object) -> bool:
     return (

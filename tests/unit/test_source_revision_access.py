@@ -11,6 +11,7 @@ from trading_bot.domain.research.source_policy import (
 from trading_bot.domain.research.source_registry import (
     SourceBudget,
     SourceRegistryEntry,
+    source_rights_canonical_json,
     source_rights_hash,
 )
 from trading_bot.domain.research.source_revision_access import (
@@ -286,6 +287,25 @@ def test_rights_fingerprint_binds_each_evidence_component() -> None:
     assert source_rights_hash(replace(revision, license_digest="b" * 64)) != fingerprint
     assert source_rights_hash(replace(revision, license_evidence_id=uuid4())) != fingerprint
     assert fingerprint != source_rights_hash(source_registry().current)
+
+
+def test_license_rights_canonical_payload_keeps_evidence_typed_and_hashable() -> None:
+    import hashlib
+    import json
+
+    revision = licensed_revision()
+    canonical = source_rights_canonical_json(revision)
+    payload = json.loads(canonical)
+
+    assert payload["license_evidence_id"] == str(revision.license_evidence_id)
+    assert payload["license_digest"] == revision.license_digest
+    assert payload["license_scope_hash"] == revision.license_scope_hash
+    assert payload["allowed_purposes"] == sorted(
+        purpose.value for purpose in revision.policy.allowed_purposes
+    )
+    assert payload["budget"]["window"] == [0, 3600, 0]
+    assert all(type(part) is int for part in payload["budget"]["window"])
+    assert hashlib.sha256(canonical.encode("utf-8")).hexdigest() == source_rights_hash(revision)
 
 
 @pytest.mark.parametrize(

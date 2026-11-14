@@ -24,6 +24,7 @@ from tests.unit.test_bot_dispatcher import (
 )
 from tests.unit.test_learning_score_event import _event as _score_event
 
+import trading_bot.adapters.database.repositories.bot_decisions as bot_decisions_module
 from trading_bot.adapters.database.models import (
     Base,
     BotDecisionJobRecord,
@@ -33,6 +34,9 @@ from trading_bot.adapters.database.models import (
 )
 from trading_bot.adapters.database.models.learning_score_event_entities import (
     LearningScoreEventRecord,
+)
+from trading_bot.adapters.database.repositories.bot_decision_source_bars import (
+    BotDecisionSourceBarConflict,
 )
 from trading_bot.adapters.database.repositories.bot_decisions import (
     BotDecisionRepository,
@@ -54,6 +58,7 @@ from trading_bot.application.bot_dispatcher import (
     evaluate_bot_decision,
 )
 from trading_bot.application.outbox import OutboxRepository
+from trading_bot.domain.strategy.contracts import DecisionSnapshot
 from trading_bot.domain.strategy.registry import StrategyRegistry
 
 
@@ -620,13 +625,21 @@ async def test_store_pending_job_is_evaluated_outside_lock_then_completed_once()
     assert write.committed is True
 
 
-async def test_store_commits_score_event_with_bot_decision_and_job_atomically() -> None:
+async def test_store_commits_score_event_with_bot_decision_and_job_atomically(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     job = _job()
     incumbent = await _decision(job)
     payload = incumbent.canonical_payload()
     payload["decision_snapshot_id"] = "5" * 64
     decision = BotDecision.from_payload(payload, _hash(payload))
-    snapshot = SimpleNamespace(snapshot_id="5" * 64, decision_time=decision.evaluated_at)
+    snapshot = DecisionSnapshot(
+        symbol="BTCUSDT",
+        decision_time=decision.evaluated_at,
+        snapshot_id="5" * 64,
+        series=(),
+        features=(),
+    )
     vector = SimpleNamespace(
         snapshot_id="5" * 64,
         vector_hash="6" * 64,
@@ -657,6 +670,7 @@ async def test_store_commits_score_event_with_bot_decision_and_job_atomically() 
     write = FakeSession([SimpleNamespace(id=BOT_A), record, None, None])
     sessions = FakeSessions(read, write)
     resolver_sessions: list[FakeSession] = []
+    lineage_calls: list[tuple[object, BotDecision, DecisionSnapshot]] = []
 
     async def evaluate(_evidence: object, _pending: BotDecisionJob) -> BotDecisionEvaluation:
         return evaluation
@@ -673,6 +687,12 @@ async def test_store_commits_score_event_with_bot_decision_and_job_atomically() 
             decision_snapshot_id=snapshot.snapshot_id,
         )
 
+    async def append_source_bars(session, actual_decision, actual_snapshot):
+        lineage_calls.append((session, actual_decision, actual_snapshot))
+        return ()
+
+    monkeypatch.setattr(bot_decisions_module, "append_decision_source_bars", append_source_bars)
+
     store = PostgresSignalDecisionStore(
         sessions,
         score_candidate=score_candidate,  # type: ignore[arg-type]
@@ -681,6 +701,7 @@ async def test_store_commits_score_event_with_bot_decision_and_job_atomically() 
     assert await store.complete_job(job, evaluate) == decision
 
     assert resolver_sessions == [write]
+    assert lineage_calls == [(write, decision, snapshot)]
     assert [type(row) for row in write.added] == [BotDecisionRecord, LearningScoreEventRecord]
     assert record.status == "COMPLETED"
     assert record.completed_at is not None
@@ -688,13 +709,23 @@ async def test_store_commits_score_event_with_bot_decision_and_job_atomically() 
     assert write.committed is True
 
 
-async def test_score_event_failure_rolls_back_decision_and_leaves_job_pending() -> None:
+@pytest.mark.parametrize("failure_stage", ["source_lineage", "score_event"])
+async def test_score_event_or_source_lineage_failure_rolls_back_decision_and_leaves_job_pending(
+    failure_stage: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     job = _job()
     incumbent = await _decision(job)
     payload = incumbent.canonical_payload()
     payload["decision_snapshot_id"] = "5" * 64
     decision = BotDecision.from_payload(payload, _hash(payload))
-    snapshot = SimpleNamespace(snapshot_id="5" * 64, decision_time=decision.evaluated_at)
+    snapshot = DecisionSnapshot(
+        symbol="BTCUSDT",
+        decision_time=decision.evaluated_at,
+        snapshot_id="5" * 64,
+        series=(),
+        features=(),
+    )
     vector = SimpleNamespace(
         snapshot_id="5" * 64,
         vector_hash="6" * 64,
@@ -724,7 +755,11 @@ async def test_score_event_failure_rolls_back_decision_and_leaves_job_pending() 
     record = _job_row(job)
     write = FakeSession(
         [SimpleNamespace(id=BOT_A), record, None, None, None],
-        flush_error=IntegrityError("insert score event", {}, RuntimeError("trigger denied")),
+        flush_error=(
+            IntegrityError("insert score event", {}, RuntimeError("trigger denied"))
+            if failure_stage == "score_event"
+            else None
+        ),
         flush_error_at=2,
     )
 
@@ -740,6 +775,13 @@ async def test_score_event_failure_rolls_back_decision_and_leaves_job_pending() 
             decision_snapshot_id=snapshot.snapshot_id,
         )
 
+    async def append_source_bars(_session, _decision, _snapshot):
+        if failure_stage == "source_lineage":
+            raise BotDecisionSourceBarConflict("MarketBar metadata mismatch.")
+        return ()
+
+    monkeypatch.setattr(bot_decisions_module, "append_decision_source_bars", append_source_bars)
+
     store = PostgresSignalDecisionStore(
         FakeSessions(read, write),
         score_candidate=score_candidate,  # type: ignore[arg-type]
@@ -752,6 +794,151 @@ async def test_score_event_failure_rolls_back_decision_and_leaves_job_pending() 
     assert record.completed_at is None
     assert write.rolled_back is True
     assert write.added == []
+
+
+async def test_missing_source_lineage_keeps_metadata_abstain_without_score_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    job = _job()
+    incumbent = await _decision(job)
+    payload = incumbent.canonical_payload()
+    payload["status"] = "ABSTAIN"
+    payload["reason_code"] = "SCORER_SOURCE_LINEAGE_MISSING"
+    payload["detail_vi"] = "Không dùng scorer vì thiếu lineage nến nguồn đã xác minh."
+    payload["candidate"] = None
+    payload["gate_details"] = ["SCORER_SOURCE_LINEAGE_MISSING"]
+    abstain = BotDecision.from_payload(payload, _hash(payload))
+    snapshot = DecisionSnapshot(
+        symbol="BTCUSDT",
+        decision_time=abstain.evaluated_at,
+        snapshot_id=abstain.decision_snapshot_id or "5" * 64,
+        series=(),
+        features=(),
+    )
+    vector = SimpleNamespace(
+        snapshot_id=snapshot.snapshot_id,
+        vector_hash="6" * 64,
+        workspace_id=abstain.workspace_id,
+        strategy_release_id=abstain.strategy_release_id,
+        strategy_release_content_hash=abstain.strategy_release_hash,
+        decision_time=snapshot.decision_time,
+    )
+    evaluation = BotDecisionEvaluation(
+        decision=incumbent,
+        snapshot=snapshot,
+        candidate_id=incumbent.candidate_id,
+        vector=vector,  # type: ignore[arg-type]
+    )
+    commit = BotDecisionScoringCommit(
+        decision=abstain,
+        score_event=None,
+        incumbent_decision=incumbent,
+        vector_hash=vector.vector_hash,
+        decision_snapshot_id=snapshot.snapshot_id,
+    )
+    read = FakeSession([SimpleNamespace(id=BOT_A), _job_row(job), _evidence_row(_evidence())])
+    record = _job_row(job)
+    write = FakeSession([SimpleNamespace(id=BOT_A), record, None, None])
+
+    async def evaluate(_evidence: object, _pending: BotDecisionJob) -> BotDecisionEvaluation:
+        return evaluation
+
+    async def score_candidate(_session, _job, _captured, _decision):
+        return commit
+
+    async def append_missing_lineage(_session, _decision, _snapshot):
+        raise BotDecisionSourceBarConflict("DecisionSnapshot thiếu timeframe source bars.")
+
+    monkeypatch.setattr(
+        bot_decisions_module,
+        "append_decision_source_bars",
+        append_missing_lineage,
+    )
+    store = PostgresSignalDecisionStore(
+        FakeSessions(read, write),
+        score_candidate=score_candidate,  # type: ignore[arg-type]
+    )
+
+    result = await store.complete_job(job, evaluate)
+
+    assert result.status.value == "ABSTAIN"
+    assert result.reason_code == "SCORER_SOURCE_LINEAGE_MISSING"
+    assert result.candidate_json is None
+    assert [type(row) for row in write.added] == [BotDecisionRecord]
+    assert all(not isinstance(row, LearningScoreEventRecord) for row in write.added)
+    assert record.status == "COMPLETED"
+    assert write.committed is True
+
+
+async def test_missing_vector_abstain_still_appends_valid_decision_source_lineage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    job = _job()
+    incumbent = await _decision(job)
+    incumbent_payload = incumbent.canonical_payload()
+    incumbent_payload["decision_snapshot_id"] = "5" * 64
+    incumbent = BotDecision.from_payload(incumbent_payload, _hash(incumbent_payload))
+    abstain_payload = incumbent.canonical_payload()
+    abstain_payload["status"] = "ABSTAIN"
+    abstain_payload["reason_code"] = "SCORER_VECTOR_MISSING"
+    abstain_payload["detail_vi"] = "Không dùng scorer vì thiếu vector canonical."
+    abstain_payload["candidate"] = None
+    abstain_payload["gate_details"] = ["SCORER_VECTOR_MISSING"]
+    abstain = BotDecision.from_payload(abstain_payload, _hash(abstain_payload))
+    snapshot = DecisionSnapshot(
+        symbol="BTCUSDT",
+        decision_time=incumbent.evaluated_at,
+        snapshot_id="5" * 64,
+        series=(),
+        features=(),
+    )
+    evaluation = BotDecisionEvaluation(
+        decision=incumbent,
+        snapshot=snapshot,
+        candidate_id=incumbent.candidate_id,
+        vector=None,
+    )
+    commit = BotDecisionScoringCommit(
+        decision=abstain,
+        score_event=None,
+        incumbent_decision=incumbent,
+        vector_hash=hashlib.sha256(b"SCORER_VECTOR_MISSING").hexdigest(),
+        decision_snapshot_id=snapshot.snapshot_id,
+    )
+    read = FakeSession([SimpleNamespace(id=BOT_A), _job_row(job), _evidence_row(_evidence())])
+    record = _job_row(job)
+    write = FakeSession([SimpleNamespace(id=BOT_A), record, None, None])
+    lineage_calls: list[tuple[BotDecision, DecisionSnapshot]] = []
+
+    async def evaluate(_evidence: object, _pending: BotDecisionJob) -> BotDecisionEvaluation:
+        return evaluation
+
+    async def score_candidate(_session, _job, _captured, _decision):
+        return commit
+
+    async def append_source_bars(_session, decision, decision_snapshot):
+        lineage_calls.append((decision, decision_snapshot))
+        return ()
+
+    monkeypatch.setattr(
+        bot_decisions_module,
+        "append_decision_source_bars",
+        append_source_bars,
+    )
+    store = PostgresSignalDecisionStore(
+        FakeSessions(read, write),
+        score_candidate=score_candidate,  # type: ignore[arg-type]
+    )
+
+    result = await store.complete_job(job, evaluate)
+
+    assert result.reason_code == "SCORER_VECTOR_MISSING"
+    assert result.candidate_json is None
+    assert lineage_calls == [(abstain, snapshot)]
+    assert [type(row) for row in write.added] == [BotDecisionRecord]
+    assert all(not isinstance(row, LearningScoreEventRecord) for row in write.added)
+    assert record.status == "COMPLETED"
+    assert write.committed is True
 
 
 async def test_store_job_completed_concurrently_returns_stored_decision() -> None:

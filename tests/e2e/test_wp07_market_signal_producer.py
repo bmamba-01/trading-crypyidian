@@ -44,7 +44,9 @@ def test_closed_usdm_fixture_creates_one_candidate_delivery_without_execution() 
         "compose.yaml",
     ]
 
-    def compose(*args: str, stdin: str | None = None) -> subprocess.CompletedProcess[str]:
+    def compose(
+        *args: str, stdin: str | None = None, success: bool = True
+    ) -> subprocess.CompletedProcess[str]:
         result = subprocess.run(
             base + list(args),
             cwd=root,
@@ -56,7 +58,11 @@ def test_closed_usdm_fixture_creates_one_candidate_delivery_without_execution() 
             errors="replace",
             timeout=300,
         )
-        assert result.returncode == 0, (args, result.stdout[-5000:], result.stderr[-5000:])
+        assert (result.returncode == 0) is success, (
+            args,
+            result.stdout[-5000:],
+            result.stderr[-5000:],
+        )
         return result
 
     probe = (root / "tests/e2e/probes/wp07_market_signal_producer.py").read_text(encoding="utf-8")
@@ -100,8 +106,8 @@ def test_closed_usdm_fixture_creates_one_candidate_delivery_without_execution() 
         assert lines, (phase, result.stderr[-3000:])
         return cast(dict[str, Any], json.loads(lines[-1]))
 
-    def migrate(*args: str) -> None:
-        compose("run", "--rm", "--no-deps", "migrator", "alembic", *args)
+    def migrate(*args: str, success: bool = True) -> subprocess.CompletedProcess[str]:
+        return compose("run", "--rm", "--no-deps", "migrator", "alembic", *args, success=success)
 
     image_created = ensure_image_available(root, image)
     try:
@@ -143,6 +149,20 @@ def test_closed_usdm_fixture_creates_one_candidate_delivery_without_execution() 
         assert verified["producer_has_no_execution_or_delivery_privilege"] is True
         assert verified["delivery_has_no_market_or_evidence_write_privilege"] is True
         assert verified["live_source_preferred_over_backfill"] is True
+        assert verified["decision_source_bar_count"] > 0
+        assert verified["decision_source_timeframes"] == 2
+        assert verified["baseline_decision_source_lineage_complete"] is True
+        assert verified["decision_source_bar_acl_append_only"] is True
+        assert verified["decision_source_bar_rls_forced"] is True
+        assert verified["decision_source_event_mismatch_denied"] is True
+        assert verified["decision_source_cross_workspace_denied"] is True
+        assert verified["decision_source_old_revision_denied"] is True
+        assert verified["decision_source_bar_trigger_append_only"] is True
+
+        downgrade = migrate("downgrade", "c7e9a1b3d5f8", success=False)
+        assert "WP06_SOURCE_BAR_DOWNGRADE_NONEMPTY" in downgrade.stderr
+        current = migrate("current")
+        assert "e2f4a6c8b0d7" in current.stdout
     finally:
         subprocess.run(
             [*base, "down", "--volumes", "--remove-orphans"],

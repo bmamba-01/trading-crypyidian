@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from types import SimpleNamespace
@@ -108,6 +109,58 @@ def test_proof_record_keeps_only_canonical_hashed_inventory_and_exact_scope() ->
     assert "candidate_id_hash" in record.canonical_proof
     assert "test-private" not in record.canonical_proof
     repository_type.validate_record(record)
+
+
+@pytest.mark.asyncio
+async def test_repository_preserves_legacy_evaluation_proof_hash_for_new_builder_operation() -> (
+    None
+):
+    from tests.unit.test_replay_training_rights import (
+        BUNDLE_HASH,
+        WORKSPACE_ID,
+        _row,
+        _Session,
+    )
+
+    from trading_bot.adapters.database.replay_training_rights import (
+        DatabaseReplayTrainingRightsGate,
+        ReplayTrainingOperation,
+    )
+    from trading_bot.adapters.database.repositories.learning_scorer_test_opportunity_proofs import (
+        LearningScorerTestOpportunityProofRepository,
+    )
+
+    legacy_receipts = await DatabaseReplayTrainingRightsGate(
+        _Session((_row("a" * 64),))  # type: ignore[arg-type]
+    ).authorize(
+        workspace_id=WORKSPACE_ID,
+        bundle_hash=BUNDLE_HASH,
+        operation=ReplayTrainingOperation.EVALUATION,
+    )
+    builder_receipts = await DatabaseReplayTrainingRightsGate(
+        _Session((_row("a" * 64),))  # type: ignore[arg-type]
+    ).authorize(
+        workspace_id=WORKSPACE_ID,
+        bundle_hash=BUNDLE_HASH,
+        operation=ReplayTrainingOperation.CANDIDATE_TEST_PROOF,
+    )
+    identity_scope_hash = hashlib.sha256(b"identity scope").hexdigest()
+
+    legacy_source_scope_hash = LearningScorerTestOpportunityProofRepository._source_scope_hash(
+        identity_scope_hash=identity_scope_hash,
+        rights_receipts=legacy_receipts,
+    )
+    builder_source_scope_hash = LearningScorerTestOpportunityProofRepository._source_scope_hash(
+        identity_scope_hash=identity_scope_hash,
+        rights_receipts=builder_receipts,
+    )
+    legacy_proof = replace(_proof(), source_scope_hash=legacy_source_scope_hash)
+    builder_retry = replace(legacy_proof, source_scope_hash=builder_source_scope_hash)
+
+    assert builder_receipts[0].operation is ReplayTrainingOperation.CANDIDATE_TEST_PROOF
+    assert legacy_source_scope_hash == builder_source_scope_hash
+    assert builder_retry.canonical_json == legacy_proof.canonical_json
+    assert builder_retry.content_hash == legacy_proof.content_hash
 
 
 def test_proof_record_rejects_denormalized_scope_tampering() -> None:

@@ -67,6 +67,7 @@ from trading_bot.adapters.database.repositories.learning_training_artifacts impo
     LearningTrainingArtifactRepository,
 )
 from trading_bot.adapters.database.repositories.learning_training_batches import (
+    LearningTrainingBatchAccessConflict,
     LearningTrainingBatchRepository,
 )
 from trading_bot.adapters.database.repositories.learning_training_jobs import (
@@ -324,52 +325,56 @@ async def _source_admin_seed() -> dict[str, object]:
         )
         session.add(UserMembership(id=membership_id, workspace_id=workspace_id, user_id=user_id))
 
-    source_id = f"wp06-source-{workspace_id.hex[:12]}"
-    entry = SourceRegistryEntry.discover(
-        source_id=source_id,
-        publisher="Nhà xuất bản giả lập",
-        endpoint_url="https://example.invalid/wp06/source",
-        access_method="GET",
-        auth_scope="fixture-only",
-        actor_id="fixture-policy-author",
-        at=now,
-        reason="Nguồn giả lập cho kiểm tra quyền WP06.",
-        budget=SourceBudget(
-            window=timedelta(hours=1),
-            max_requests=10,
-            max_bytes=4096,
-            max_cost=Decimal(0),
-            cost_unit="USD",
-        ),
-    )
-    entry = entry.transition(
-        policy_id=f"{source_id}:policy:pending",
-        state=SourcePolicyState.RIGHTS_PENDING,
-        actor_id="fixture-policy-author",
-        at=now,
-        reason="Chờ reviewer xác minh quyền.",
-    )
-    entry = entry.transition(
-        policy_id=f"{source_id}:policy:verified",
-        state=SourcePolicyState.VERIFIED,
-        actor_id="fixture-policy-author",
-        approved_by="fixture-policy-reviewer",
-        at=now,
-        reviewed_at=now,
-        evidence_ref="https://example.invalid/wp06/training-terms",
-        allowed_purposes=frozenset({SourceUsePurpose.TRAINING}),
-        reason="Reviewer fixture cấp riêng mục đích training.",
-    )
-    observer = PostCommitSourceObserver(sessions)
-    current = None
-    for revision in entry.revisions:
-        result, progress = await observer.append_policy(
-            workspace_id=workspace_id,
-            revision=revision,
+    sys.path.insert(0, "/e2e-tests")
+    from fixtures.wp06_qa_license import QA_EVIDENCE_REF, QA_PROVIDER, licensed_qa_source_fixture
+
+    source_id = QA_PROVIDER
+    with licensed_qa_source_fixture():
+        entry = SourceRegistryEntry.discover(
+            source_id=source_id,
+            publisher="Crypidian Repository QA Fixture",
+            endpoint_url=QA_EVIDENCE_REF,
+            access_method="GET",
+            auth_scope="synthetic first-party QA data only",
+            actor_id="fixture-policy-author",
+            at=now,
+            reason="Đăng ký fixture synthetic QA chỉ dùng để kiểm thử quyền.",
+            budget=SourceBudget(
+                window=timedelta(hours=1),
+                max_requests=10,
+                max_bytes=4096,
+                max_cost=Decimal(0),
+                cost_unit="USD",
+            ),
         )
-        assert progress.complete
-        if revision.state is SourcePolicyState.VERIFIED:
-            current = result.revision
+        entry = entry.transition(
+            policy_id=f"{source_id}:policy:pending",
+            state=SourcePolicyState.RIGHTS_PENDING,
+            actor_id="fixture-policy-author",
+            at=now,
+            reason="Chờ reviewer xác minh quyền fixture QA.",
+        )
+        entry = entry.transition(
+            policy_id=f"{source_id}:policy:verified",
+            state=SourcePolicyState.VERIFIED,
+            actor_id="fixture-policy-author",
+            approved_by="fixture-policy-reviewer",
+            at=now,
+            reviewed_at=now,
+            evidence_ref=QA_EVIDENCE_REF,
+            allowed_purposes=frozenset({SourceUsePurpose.TRAINING}),
+            reason="Fixture QA giới hạn quyền vào mục đích training.",
+        )
+        observer = PostCommitSourceObserver(sessions)
+        current = None
+        for revision in entry.revisions:
+            result, progress = await observer.append_policy(
+                workspace_id=workspace_id,
+                revision=revision,
+            )
+            assert progress.complete
+            if revision.state is SourcePolicyState.VERIFIED:
+                current = result.revision
     assert current is not None
     await engine.dispose()
     return {
@@ -591,6 +596,111 @@ async def _source_training_claim() -> dict[str, object]:
         assert all(sample.role in {"train", "validation"} for sample in batch.samples)
     await engine.dispose()
     return {"training_access_opened": True, "batch_committed": True}
+
+
+async def _source_training_legacy_lineage_denied() -> dict[str, object]:
+    """Kiểm tra claim fail-closed cho manifest v3 còn source_references."""
+    workspace_id = UUID(os.environ["WP06_SOURCE_WORKSPACE_ID"])
+    attempt_id = UUID(os.environ["WP06_ATTEMPT_ID"])
+    engine = _engine()
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    async with UnitOfWork(sessions, workspace_id=workspace_id) as unit:
+        claim_denied = False
+        failure_code = "WP06_TRAINING_BATCH_SOURCE_RIGHTS_FAIL_CLOSED"
+        try:
+            async with unit.session.begin_nested():
+                await LearningTrainingBatchRepository(unit.session).claim_batch(
+                    workspace_id=workspace_id,
+                    attempt_id=attempt_id,
+                )
+        except LearningTrainingBatchAccessConflict as error:
+            claim_denied = failure_code in str(error)
+        else:
+            raise AssertionError("Manifest v3 source_references phải bị từ chối.")
+        assert claim_denied, failure_code
+    await engine.dispose()
+    return {
+        "legacy_v3_source_lineage_denied": True,
+        "normalized_failure_code": failure_code,
+    }
+
+
+async def _source_training_legacy_ledger_verify() -> dict[str, object]:
+    """Xác nhận denial không ghi receipt, chuyển trạng thái hay tạo artifact."""
+    workspace_id = UUID(os.environ["WP06_SOURCE_WORKSPACE_ID"])
+    attempt_id = UUID(os.environ["WP06_ATTEMPT_ID"])
+    engine = _engine()
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    async with UnitOfWork(sessions, workspace_id=workspace_id) as unit:
+        attempt = await unit.session.scalar(
+            select(LearningTrainingAttemptRecord).where(
+                LearningTrainingAttemptRecord.workspace_id == workspace_id,
+                LearningTrainingAttemptRecord.id == attempt_id,
+            )
+        )
+        assert attempt is not None
+        manifest = await unit.session.scalar(
+            select(DatasetManifestRecord).where(
+                DatasetManifestRecord.workspace_id == workspace_id,
+                DatasetManifestRecord.manifest_hash == attempt.manifest_hash,
+            )
+        )
+        assert manifest is not None
+        assert manifest.manifest["manifest_version"] == "dataset-manifest-v3"
+        assert any(
+            sample.get("source_dependent") is True and sample.get("source_references")
+            for sample in manifest.manifest["samples"]
+        )
+        events = tuple(
+            (
+                await unit.session.scalars(
+                    select(LearningAttemptEventRecord)
+                    .where(
+                        LearningAttemptEventRecord.workspace_id == workspace_id,
+                        LearningAttemptEventRecord.attempt_id == attempt_id,
+                    )
+                    .order_by(LearningAttemptEventRecord.sequence)
+                )
+            ).all()
+        )
+        assert len(events) == 1
+        assert events[0].state == LearningAttemptState.QUEUED.value
+        assert (
+            await unit.session.scalar(
+                select(func.count())
+                .select_from(LearningTrainingAccessReceiptRecord)
+                .where(
+                    LearningTrainingAccessReceiptRecord.workspace_id == workspace_id,
+                    LearningTrainingAccessReceiptRecord.attempt_id == attempt_id,
+                )
+            )
+            == 0
+        )
+        assert (
+            await unit.session.scalar(
+                select(func.count())
+                .select_from(LearningRunSourceRightsReceiptRecord)
+                .where(
+                    LearningRunSourceRightsReceiptRecord.workspace_id == workspace_id,
+                    LearningRunSourceRightsReceiptRecord.access_kind == "training",
+                    LearningRunSourceRightsReceiptRecord.access_id == attempt_id,
+                )
+            )
+            == 0
+        )
+        assert (
+            await unit.session.scalar(
+                select(func.count())
+                .select_from(LearningTrainingArtifactRecord)
+                .where(
+                    LearningTrainingArtifactRecord.workspace_id == workspace_id,
+                    LearningTrainingArtifactRecord.attempt_id == attempt_id,
+                )
+            )
+            == 0
+        )
+    await engine.dispose()
+    return {"training_disclosure_ledgers_unchanged": True}
 
 
 async def _source_run_rights_verify() -> dict[str, object]:
@@ -2535,6 +2645,10 @@ async def main() -> None:
         result = await _source_evaluation_open()
     elif PHASE == "source-training-claim":
         result = await _source_training_claim()
+    elif PHASE == "source-training-legacy-lineage-denied":
+        result = await _source_training_legacy_lineage_denied()
+    elif PHASE == "source-training-legacy-ledger-verify":
+        result = await _source_training_legacy_ledger_verify()
     elif PHASE == "source-run-rights-verify":
         result = await _source_run_rights_verify()
     elif PHASE == "source-run-rights-immutable":

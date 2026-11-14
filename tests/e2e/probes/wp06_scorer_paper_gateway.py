@@ -42,7 +42,9 @@ async def main() -> dict[str, bool]:
                     {"workspace": workspace_id, "attempt": attempt_id},
                 )
             ).one()
-            assert artifact.state == "abstain", "Fixture chỉ là artifact chẩn đoán, chưa eligible"
+            assert artifact.state in {"abstain", "ready_for_evaluation"}, (
+                "Artifact chỉ dùng làm đầu vào kiểm quyền; report mới quyết định eligibility"
+            )
 
             async def snapshot():
                 pointer = (
@@ -65,6 +67,9 @@ async def main() -> dict[str, bool]:
                 return pointer, count
 
             before = await snapshot()
+            missing_report_id = uuid4()
+            report_id_leaked = False
+            detail_leaked = False
             try:
                 async with unit.session.begin_nested():
                     await unit.session.execute(
@@ -72,23 +77,33 @@ async def main() -> dict[str, bool]:
                             "SELECT * FROM public.wp06_verify_scorer_deployment_rights("
                             ":workspace,:artifact,:report)"
                         ),
-                        {"workspace": workspace_id, "artifact": artifact.id, "report": uuid4()},
+                        {
+                            "workspace": workspace_id,
+                            "artifact": artifact.id,
+                            "report": missing_report_id,
+                        },
                     )
             except DBAPIError as error:
-                if "WP06_SCORER_PAPER_SOURCE_RIGHTS_DENIED" not in str(error.orig):
+                primary = getattr(error.orig.diag, "message_primary", str(error.orig))
+                detail = getattr(error.orig.diag, "message_detail", None)
+                if primary != "WP06_SCORER_DEPLOYMENT_QA_SOURCE_DENIED":
                     raise AssertionError(
-                        "Gateway thật phải chặn canonical source thiếu PAPER_DEMO "
-                        "trước lookup report; không chấp nhận denial từ gate khác: "
-                        + str(error.orig)
+                        "Gateway thật phải chặn source QA "
+                        "trước lookup report; không chấp nhận denial từ gate khác: " + primary
                     ) from error
+                report_id_leaked = str(missing_report_id) in str(error.orig)
+                detail_leaked = detail is not None
             else:
                 raise AssertionError("Gateway không được cấp eligibility cho fixture chẩn đoán")
+            assert not report_id_leaked
+            assert not detail_leaked, "Denial không được trả dữ liệu report/member"
             assert await snapshot() == before, "Denial không được đổi pointer hoặc event ledger"
         return {
             "real_gateway_paper_rights_denied": True,
             "pointer_and_event_ledger_unchanged": True,
             "diagnostic_artifact_only": True,
             "positive_rights_evidence": False,
+            "denial_returned_no_report_or_member_data": True,
         }
     finally:
         await engine.dispose()

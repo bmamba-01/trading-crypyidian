@@ -12,7 +12,11 @@ from enum import StrEnum
 from typing import Protocol
 from uuid import UUID
 
-from trading_bot.domain.market.feature_snapshot import DataFreshness, MarketRegime
+from trading_bot.domain.market.feature_snapshot import (
+    DataFreshness,
+    FeatureSnapshot,
+    MarketRegime,
+)
 from trading_bot.domain.market.models import OHLCVBar
 from trading_bot.domain.strategy.recipes import ExitRecipe
 
@@ -237,9 +241,25 @@ class DecisionSnapshot:
     # Rỗng chỉ để giữ tương thích với snapshot legacy không đủ điều kiện training.
     timeframe_lineage: tuple[DecisionSnapshotTimeframeLineage, ...] = ()
     freshness_as_of: datetime | None = None
+    feature_snapshots: tuple[FeatureSnapshot, ...] = ()
+
+    @property
+    def workspace_id(self) -> UUID | None:
+        """Trả workspace duy nhất của snapshot khi mọi child lineage cùng scope."""
+        workspace_ids = {
+            *(item.workspace_id for item in self.timeframe_lineage),
+            *(item.workspace_id for item in self.feature_snapshots),
+        }
+        return next(iter(workspace_ids)) if len(workspace_ids) == 1 else None
 
     def __post_init__(self) -> None:
-        for name in ("series", "features", "macro_evidence_ids", "timeframe_lineage"):
+        for name in (
+            "series",
+            "features",
+            "macro_evidence_ids",
+            "timeframe_lineage",
+            "feature_snapshots",
+        ):
             object.__setattr__(self, name, _immutable_tuple(getattr(self, name), name))
         if not self.symbol.strip():
             raise ValueError("symbol không được để trống.")
@@ -270,6 +290,25 @@ class DecisionSnapshot:
                 raise ValueError("Timeframe lineage phải cùng symbol với snapshot.")
             if any(item.freshness_as_of != self.freshness_as_of for item in self.timeframe_lineage):
                 raise ValueError("Timeframe lineage phải khớp freshness_as_of của snapshot.")
+            if self.feature_snapshots:
+                if len(self.feature_snapshots) != len(self.timeframe_lineage):
+                    raise ValueError("FeatureSnapshot phải đủ cho mọi timeframe lineage.")
+                for feature_snapshot, lineage in zip(
+                    self.feature_snapshots, self.timeframe_lineage, strict=True
+                ):
+                    if (
+                        type(feature_snapshot) is not FeatureSnapshot
+                        or feature_snapshot.snapshot_id != lineage.feature_snapshot_id
+                        or feature_snapshot.workspace_id != lineage.workspace_id
+                        or feature_snapshot.symbol != lineage.symbol
+                        or feature_snapshot.timeframe != lineage.timeframe
+                        or feature_snapshot.as_of != self.decision_time
+                        or feature_snapshot.computed_at != self.decision_time
+                        or feature_snapshot.input_event_ids != lineage.source_event_ids
+                    ):
+                        raise ValueError(
+                            "FeatureSnapshot phải trùng ID, cutoff và source event lineage."
+                        )
         keys = [(item.name, item.timeframe) for item in self.features]
         if len(keys) != len(set(keys)):
             raise ValueError("feature key bị lặp trong snapshot.")

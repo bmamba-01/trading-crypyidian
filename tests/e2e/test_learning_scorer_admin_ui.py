@@ -461,7 +461,7 @@ def test_scorer_admin_is_locked_responsive_and_uses_cas_disable(
         _stop_app(server, thread, listener)
 
 
-def test_eligible_mode_request_binds_displayed_report_and_surfaces_server_gate(
+def test_active_mode_lock_prevents_request_even_with_eligible_report(
     browser_page: Page,
 ) -> None:
     report_id = UUID("ad2d5800-f3e7-4e57-9818-3a64ae69a9a6")
@@ -497,46 +497,45 @@ def test_eligible_mode_request_binds_displayed_report_and_surfaces_server_gate(
                 route.continue_() if route.request.url.startswith(app_url + "/") else route.abort()
             ),
         )
-        browser_page.route(
-            f"{app_url}/api/v1/learning-scorer/deployment",
-            lambda route: route.fulfill(
-                status=409,
-                headers={"cache-control": "no-store"},
-                content_type="application/json",
-                body='{"detail":"Quyền hiện hành chưa đáp ứng điều kiện deployment."}',
-            ),
-        )
         response = browser_page.goto(f"{app_url}/admin/learning/scoring", wait_until="load")
         assert response is not None
         assert response.status == 200
-        expect(browser_page.locator("#scorer-mode option[value='SHADOW']")).to_be_enabled()
+        expect(browser_page.locator("#scorer-mode option[value='SHADOW']")).to_be_disabled()
+        expect(browser_page.locator("#scorer-mode option[value='PAPER_GATE']")).to_be_disabled()
         assert browser_page.locator("#scorer-deployment-form").get_attribute(
             "data-evaluation-report-id"
         ) == str(report_id)
-        browser_page.get_by_label("Chế độ muốn áp dụng").select_option("SHADOW")
-        browser_page.get_by_label("Lý do thay đổi").fill(
-            "Đánh giá SHADOW sau khi kiểm định TEST đạt điều kiện."
+        expect(browser_page.locator("#scorer-deployment-submit")).to_be_disabled()
+        submit_result = browser_page.evaluate(
+            """() => {
+              const requests = [];
+              window.fetch = (...args) => {
+                requests.push(args[0]);
+                return Promise.resolve(new Response("{}", {
+                  status: 200,
+                  headers: {"content-type": "application/json"}
+                }));
+              };
+              const select = document.querySelector("#scorer-mode");
+              const reason = document.querySelector("#scorer-deployment-reason");
+              reason.disabled = false;
+              reason.value = "Đánh giá SHADOW sau khi kiểm định TEST đạt điều kiện.";
+              reason.dispatchEvent(new Event("input", {bubbles: true}));
+              select.value = "SHADOW";
+              select.dispatchEvent(new Event("change", {bubbles: true}));
+              document.querySelector("#scorer-deployment-form").dispatchEvent(
+                new Event("submit", {bubbles: true, cancelable: true})
+              );
+              return {
+                requests,
+                submitDisabled: document.querySelector("#scorer-deployment-submit").disabled
+              };
+            }"""
         )
-        with browser_page.expect_request(
-            lambda request: (
-                request.method == "POST"
-                and request.url.endswith("/api/v1/learning-scorer/deployment")
-            )
-        ) as active_request:
-            browser_page.get_by_role("button", name="Gửi yêu cầu bật chế độ").click()
-        request = active_request.value
-        assert request.headers["x-csrf-token"] == "playwright-scorer-csrf-token"
-        assert UUID(request.headers["idempotency-key"])
-        assert request.post_data_json == {
-            "mode": "SHADOW",
-            "evaluation_report_id": str(report_id),
-            "expected_pointer_version": 4,
-            "expected_deployment_revision": 0,
-            "reason": "Đánh giá SHADOW sau khi kiểm định TEST đạt điều kiện.",
-        }
-        expect(browser_page.get_by_role("alert")).to_have_text(
-            "Quyền hiện hành chưa đáp ứng điều kiện deployment."
-        )
+        assert submit_result == {"requests": [], "submitDisabled": True}
+        expect(browser_page.locator("#scorer-deployment-submit")).to_be_disabled()
+        expect(browser_page.get_by_role("alert")).to_be_hidden()
         assert service.facade.snapshot.mode is ScorerDeploymentMode.DISABLED
+        assert service.facade.calls == []
     finally:
         _stop_app(server, thread, listener)

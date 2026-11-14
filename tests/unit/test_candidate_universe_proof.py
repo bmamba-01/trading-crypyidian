@@ -414,6 +414,31 @@ async def test_denied_training_rights_stops_before_report_or_outcome_reads(persi
 
 
 @pytest.mark.asyncio
+async def test_sql_training_rights_denial_maps_to_candidate_proof_error(persisted, monkeypatch):
+    from sqlalchemy.exc import DBAPIError
+
+    from trading_bot.adapters.database.replay_training_rights import (
+        DatabaseReplayTrainingRightsGate,
+    )
+    from trading_bot.adapters.database.repositories.candidate_universe_proofs import (
+        CandidateUniverseProofError,
+    )
+
+    async def denied(self, **kwargs):
+        raise DBAPIError(
+            "SELECT * FROM public.wp06_authorize_replay_training_bundle(...) ",
+            kwargs,
+            RuntimeError("WP06_TRAINING_REPLAY_CURRENT_POLICY_DENIED"),
+            False,
+        )
+
+    monkeypatch.setattr(DatabaseReplayTrainingRightsGate, "authorize", denied)
+
+    with pytest.raises(CandidateUniverseProofError, match="TRAINING rights"):
+        await build(persisted)
+
+
+@pytest.mark.asyncio
 async def test_membership_digest_binds_record_uuid_hash_ordinal_and_reason(persisted):
     from trading_bot.application.candidate_universe_proof import canonical, digest
 

@@ -225,7 +225,10 @@ async def runtime_replay_snapshots(monkeypatch: pytest.MonkeyPatch) -> tuple[Dec
         _market_row(bar) for timeframe in ("1h", "4h") for bar in bars_by_timeframe[timeframe]
     )
 
-    async def latest_rows(_session: object, **_kwargs: object) -> tuple[SimpleNamespace, ...]:
+    seen_limits: list[object] = []
+
+    async def latest_rows(_session: object, **kwargs: object) -> tuple[SimpleNamespace, ...]:
+        seen_limits.append(kwargs["max_bars_per_stream"])
         return rows
 
     monkeypatch.setattr(market_signal_composition, "UnitOfWork", _FakeUnitOfWork)
@@ -236,9 +239,17 @@ async def runtime_replay_snapshots(monkeypatch: pytest.MonkeyPatch) -> tuple[Dec
             symbol="BTCUSDT",
             observed_at=evaluation_time,
         ),
-        context=SimpleNamespace(workspace_id=WORKSPACE_ID, strategy_release_id="h01-v1"),
+        context=SimpleNamespace(
+            workspace_id=WORKSPACE_ID,
+            strategy_release_id="h01-v1",
+            max_bars_per_stream=1200,
+        ),
         evaluated_at=evaluation_time,
     )
+    assert {item.snapshot_id for item in runtime.feature_snapshots} == {
+        item.feature_snapshot_id for item in runtime.timeframe_lineage
+    }
+    assert seen_limits == [1200]
     return runtime, replay
 
 
@@ -465,20 +476,11 @@ def test_vector_builder_rejects_tampered_source_lineage_with_original_snapshot_i
         source_event_ids=source_event_ids,
         source_event_digest=digest,
     )
-    tampered = replace(
-        snapshot,
-        timeframe_lineage=(changed_lineage, *snapshot.timeframe_lineage[1:]),
-    )
-
-    with pytest.raises(LearningFeatureVectorBuildError) as raised:
-        build_learning_feature_vector(
-            tampered,
-            strategy_release_id="h01-v1",
-            strategy_release_content_hash=RELEASE_HASH,
+    with pytest.raises(ValueError, match="FeatureSnapshot phải trùng ID, cutoff"):
+        replace(
+            snapshot,
+            timeframe_lineage=(changed_lineage, *snapshot.timeframe_lineage[1:]),
         )
-
-    assert raised.value.reason_code.value == "SNAPSHOT_CONTENT_MISMATCH"
-    assert tampered.snapshot_id == snapshot.snapshot_id
 
 
 def test_vector_builder_rejects_freshness_cutoff_tampering_with_original_snapshot_id(

@@ -384,6 +384,35 @@ def _seed_bars(
             volume=Decimal("100"),
             is_closed=True,
         )
+        if h1 and index == 10:
+            _insert(
+                connection,
+                "market_bar",
+                id=_id("bar-1h-10-revision-2"),
+                workspace_id=WORKSPACE,
+                instrument_id=INSTRUMENT,
+                symbol="BTCUSDT",
+                timeframe="1h",
+                source="BINANCE_USDM",
+                logical_key=f"BTCUSDT:{timeframe}:{opened.isoformat()}",
+                idempotency_key="wp07-market-signal:1h:10:revision-2",
+                revision=2,
+                checksum="c" * 64,
+                supersedes_id=bar_id,
+                raw_reference_id=None,
+                source_cursor="fixture:1h:10:revision-2",
+                open_time=opened,
+                close_time=closed,
+                event_at=closed,
+                received_at=closed + timedelta(seconds=1),
+                available_at=closed + timedelta(milliseconds=1500),
+                open=Decimal(str(open_price)),
+                high=Decimal(str(high)),
+                low=Decimal(str(low)),
+                close=Decimal(str(close)),
+                volume=Decimal("100"),
+                is_closed=True,
+            )
         if index == count - 1:
             latest = (bar_id, opened, closed, close)
     if h1:
@@ -641,6 +670,224 @@ def _verify() -> dict[str, Any]:
         ).fetchone()
         assert decision_snapshot is not None
         assert STATE["backfill_shadow_id"] not in decision_snapshot[0]
+        source_lineage = connection.execute(
+            """SELECT decision.id, decision.payload->>'decision_snapshot_id',
+                      count(source_bar.id)::integer,
+                      count(DISTINCT source_bar.timeframe)::integer,
+                      min(source_bar.snapshot_timeframe_count),
+                      max(source_bar.snapshot_timeframe_count),
+                      count(*) FILTER (WHERE source_bar.decision_snapshot_id
+                          IS DISTINCT FROM decision.payload->>'decision_snapshot_id')::integer,
+                      count(*) FILTER (WHERE market_bar.id IS NULL)::integer
+                 FROM bot_decision AS decision
+                 JOIN bot_decision_source_bar AS source_bar
+                   ON source_bar.workspace_id=decision.workspace_id
+                  AND source_bar.bot_id=decision.bot_id
+                  AND source_bar.bot_decision_id=decision.id
+                 LEFT JOIN market_bar
+                   ON market_bar.workspace_id=source_bar.workspace_id
+                  AND market_bar.id=source_bar.market_bar_id
+                WHERE decision.workspace_id=%s AND decision.status='CANDIDATE'
+                GROUP BY decision.id""",
+            (WORKSPACE,),
+        ).fetchone()
+        assert source_lineage is not None
+        (
+            decision_id,
+            decision_snapshot_id,
+            bar_count,
+            timeframe_count,
+            min_timeframes,
+            max_timeframes,
+            snapshot_mismatches,
+            missing_bars,
+        ) = source_lineage
+        assert isinstance(decision_snapshot_id, str)
+        assert len(decision_snapshot_id) == 64
+        source_groups = connection.execute(
+            """SELECT count(*)::integer,
+                      count(*) FILTER (WHERE actual_count <> expected_count
+                          OR min_ordinal <> 0 OR max_ordinal <> actual_count - 1
+                          OR digest_count <> 1)::integer
+                 FROM (
+                    SELECT timeframe, count(*)::integer AS actual_count,
+                           min(ordinal) AS min_ordinal, max(ordinal) AS max_ordinal,
+                           min(timeframe_bar_count) AS expected_count,
+                           count(DISTINCT source_event_digest)::integer AS digest_count
+                      FROM bot_decision_source_bar
+                     WHERE workspace_id=%s AND bot_decision_id=%s
+                     GROUP BY timeframe
+                 ) AS groups_by_timeframe""",
+            (WORKSPACE, decision_id),
+        ).fetchone()
+        assert source_groups == (timeframe_count, 0), source_groups
+        score_event_count = int(
+            connection.execute(
+                "SELECT count(*) FROM learning_score_event "
+                "WHERE workspace_id=%s AND bot_decision_id=%s",
+                (WORKSPACE, decision_id),
+            ).fetchone()[0]
+        )
+        assert bar_count > 0
+        assert timeframe_count == min_timeframes == max_timeframes
+        assert snapshot_mismatches == 0
+        assert missing_bars == 0
+        assert score_event_count == 0
+        for privilege, expected in (
+            ("SELECT", True),
+            ("INSERT", True),
+            ("UPDATE", False),
+            ("DELETE", False),
+            ("TRUNCATE", False),
+        ):
+            actual = connection.execute(
+                "SELECT has_table_privilege('crypidian_market_signal_worker', "
+                "'bot_decision_source_bar', %s)",
+                (privilege,),
+            ).fetchone()[0]
+            assert actual is expected, (privilege, actual)
+        rls = connection.execute(
+            "SELECT relrowsecurity AND relforcerowsecurity FROM pg_class "
+            "WHERE oid='bot_decision_source_bar'::regclass"
+        ).fetchone()
+        assert rls == (True,)
+        selected_revision = connection.execute(
+            """SELECT source_bar.id, source_bar.workspace_id, source_bar.bot_id,
+                      source_bar.bot_decision_id, source_bar.decision_snapshot_id,
+                      source_bar.timeframe, source_bar.feature_snapshot_id,
+                      source_bar.source_event_digest, source_bar.ordinal,
+                      source_bar.timeframe_bar_count, source_bar.snapshot_timeframe_count,
+                      current_bar.id, current_bar.supersedes_id
+                 FROM bot_decision_source_bar AS source_bar
+                 JOIN market_bar AS current_bar
+                   ON current_bar.workspace_id=source_bar.workspace_id
+                  AND current_bar.id=source_bar.market_bar_id
+                WHERE source_bar.workspace_id=%s AND source_bar.bot_decision_id=%s
+                  AND current_bar.revision=2
+                LIMIT 1""",
+            (WORKSPACE, decision_id),
+        ).fetchone()
+        assert selected_revision is not None
+        from trading_bot.application.backtest_dataset_manifest import MarketBarIdentityMetadata
+        from trading_bot.application.decision_snapshot_builder import (
+            canonical_market_bar_metadata_event_id,
+        )
+        from trading_bot.domain.market.models import MarketBarSourceIdentity
+
+        old_bar = connection.execute(
+            """SELECT id, workspace_id, logical_key, revision, supersedes_id,
+                      checksum, raw_reference_id, source, symbol, timeframe,
+                      open_time, close_time, available_at, is_closed
+                 FROM market_bar WHERE workspace_id=%s AND id=%s""",
+            (WORKSPACE, selected_revision[12]),
+        ).fetchone()
+        assert old_bar is not None
+
+        def identity_metadata(row: tuple[object, ...]) -> MarketBarIdentityMetadata:
+            return MarketBarIdentityMetadata(
+                source_identity=MarketBarSourceIdentity(
+                    workspace_id=row[1],
+                    record_id=row[0],
+                    logical_key=row[2],
+                    revision=row[3],
+                    supersedes_record_id=row[4],
+                    checksum=row[5],
+                ),
+                source=row[7],
+                symbol=row[8],
+                timeframe=row[9],
+                open_time=row[10],
+                close_time=row[11],
+                available_at=row[12],
+                is_closed=row[13],
+                raw_reference=None if row[6] is None else str(row[6]),
+            )
+
+        old_metadata = identity_metadata(old_bar)
+        old_event_id = canonical_market_bar_metadata_event_id(
+            old_metadata,
+            workspace_id=WORKSPACE,
+        )
+        current_bar = connection.execute(
+            """SELECT id, workspace_id, logical_key, revision, supersedes_id,
+                      checksum, raw_reference_id, source, symbol, timeframe,
+                      open_time, close_time, available_at, is_closed
+                 FROM market_bar WHERE workspace_id=%s AND id=%s""",
+            (WORKSPACE, selected_revision[11]),
+        ).fetchone()
+        assert current_bar is not None
+        current_event_id = canonical_market_bar_metadata_event_id(
+            identity_metadata(current_bar),
+            workspace_id=WORKSPACE,
+        )
+        connection.execute(
+            "SELECT set_config('app.workspace_id', %s, false), set_config('app.bot_id', %s, false)",
+            (str(WORKSPACE), str(selected_revision[2])),
+        )
+
+        def expect_insert_denied(values: tuple[object, ...], marker: str) -> None:
+            try:
+                connection.execute(
+                    """INSERT INTO bot_decision_source_bar
+                       (id, workspace_id, bot_id, bot_decision_id, decision_snapshot_id,
+                        timeframe, feature_snapshot_id, market_bar_id, source_event_id,
+                        source_event_digest, ordinal, timeframe_bar_count,
+                        snapshot_timeframe_count)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                    values,
+                )
+            except Exception as error:
+                message = getattr(getattr(error, "diag", None), "message_primary", "")
+                assert marker in message, (marker, message)
+                return
+            raise AssertionError(f"INSERT đáng lẽ phải bị từ chối: {marker}")
+
+        base_link = (
+            selected_revision[1],
+            selected_revision[2],
+            selected_revision[3],
+            selected_revision[4],
+            selected_revision[5],
+            selected_revision[6],
+            selected_revision[11],
+            current_event_id,
+            selected_revision[7],
+            selected_revision[8],
+            selected_revision[9],
+            selected_revision[10],
+        )
+        expect_insert_denied(
+            (uuid4(), *base_link[:7], "market-bar:" + "0" * 64, *base_link[8:]),
+            "WP06_SOURCE_BAR_PARENT_TRANSACTION_MISMATCH",
+        )
+        expect_insert_denied(
+            (uuid4(), uuid4(), *base_link[1:]),
+            "WP06_SOURCE_BAR_PARENT_TRANSACTION_MISMATCH",
+        )
+        expect_insert_denied(
+            (uuid4(), *base_link[:6], old_bar[0], old_event_id, *base_link[8:]),
+            "WP06_SOURCE_BAR_PARENT_TRANSACTION_MISMATCH",
+        )
+
+        for statement in (
+            "UPDATE bot_decision_source_bar SET source_event_id=source_event_id WHERE id=%s",
+            "DELETE FROM bot_decision_source_bar WHERE id=%s",
+        ):
+            try:
+                connection.execute(statement, (selected_revision[0],))
+            except Exception as error:
+                message = getattr(getattr(error, "diag", None), "message_primary", "")
+                assert "WP06_SOURCE_BAR_APPEND_ONLY" in message, message
+            else:
+                raise AssertionError("Ledger source bar phải append-only.")
+        final_bar_count = int(
+            connection.execute(
+                "SELECT count(*) FROM bot_decision_source_bar "
+                "WHERE workspace_id=%s AND bot_decision_id=%s",
+                (WORKSPACE, decision_id),
+            ).fetchone()[0]
+        )
+        assert final_bar_count == bar_count
         return {
             "candidates": candidate_count,
             "sent_receipts": sent_count,
@@ -651,6 +898,15 @@ def _verify() -> dict[str, Any]:
             "live_source_preferred_over_backfill": True,
             "producer_has_no_execution_or_delivery_privilege": True,
             "delivery_has_no_market_or_evidence_write_privilege": True,
+            "decision_source_bar_count": bar_count,
+            "decision_source_timeframes": timeframe_count,
+            "baseline_decision_source_lineage_complete": True,
+            "decision_source_bar_acl_append_only": True,
+            "decision_source_bar_rls_forced": True,
+            "decision_source_event_mismatch_denied": True,
+            "decision_source_cross_workspace_denied": True,
+            "decision_source_old_revision_denied": True,
+            "decision_source_bar_trigger_append_only": True,
         }
 
 

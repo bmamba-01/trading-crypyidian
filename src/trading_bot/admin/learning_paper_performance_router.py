@@ -111,9 +111,14 @@ async def assess_learning_paper_performance(
     except LookupError as error:
         raise _http_error(409, "Chưa có scorer target hiện hành đủ căn cứ để đánh giá.") from error
     except SQLAlchemyError as error:
+        if _is_current_paper_performance_conflict(error):
+            raise _http_error(
+                409,
+                "Target, quyền dữ liệu hoặc tập quyết định PAPER đã đổi; chưa ghi báo cáo mới.",
+            ) from error
         raise _http_error(
-            409,
-            "Target, quyền dữ liệu hoặc baseline đã đổi; chưa ghi báo cáo mới.",
+            503,
+            "Dịch vụ dữ liệu chẩn đoán PAPER tạm thời không sẵn sàng.",
         ) from error
     except (RuntimeError, ValueError) as error:
         raise _http_error(409, "Chưa thể tạo báo cáo PAPER an toàn.") from error
@@ -136,6 +141,21 @@ def _performance_service(request: Request) -> LearningPaperPerformanceService:
 
 def _http_error(status: int, detail: str) -> HTTPException:
     return HTTPException(status_code=status, detail=detail, headers={"Cache-Control": "no-store"})
+
+
+def _is_current_paper_performance_conflict(error: SQLAlchemyError) -> bool:
+    original = getattr(error, "orig", None)
+    marker = getattr(getattr(original, "diag", None), "message_primary", None)
+    return marker in {
+        "WP06_PAPER_PERFORMANCE_ACTIVE_TARGET_REQUIRED",
+        "WP06_PAPER_PERFORMANCE_CURRENT_RIGHTS_DENIED",
+        "WP06_PAPER_PERFORMANCE_MEMBER_SET_CHANGED",
+        "WP06_PAPER_PERFORMANCE_MEMBERSHIP_MISSING",
+        "WP06_PAPER_PERFORMANCE_SOURCE_LINEAGE_MISSING",
+        "WP06_PAPER_PERFORMANCE_SOURCE_PROVIDER_UNKNOWN",
+        "WP06_PAPER_PERFORMANCE_SOURCE_QA_DENIED",
+        "WP06_PAPER_PERFORMANCE_SOURCE_SCOPE_DENIED",
+    }
 
 
 def _response(summary: PaperPerformanceReportSummary) -> PaperPerformanceReportResponse:
