@@ -3493,3 +3493,19 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
   - Lint/Format: `ruff check` và `ruff format --check` trên toàn bộ 10 file mới/sửa đổi đều đạt.
   - Glossary: bổ sung `Loss window semantics` và `Log redaction / secret canary` vào `docs/research/glossary-vi.md`.
 - **Việc còn mở:** Đồng bộ lại selector cũ trong 2 test E2E (`test_bot_detail_trading_revamp_playwright_desktop_and_mobile`, `test_admin_web_workflows.py`); hoàn thiện OPS07C/D/E (incident drill, backup/restore RPO/RTO, supply-chain SBOM); WP-03 Demo run và WP-06 non-QA dataset vẫn chờ API key/license từ người dùng.
+
+
+### 2026-11-14 — Đồng bộ Playwright Bot Detail & Triển khai OPS07C/OPS07D (Backup Drill + Supply Chain Audit)
+
+- **Đồng bộ Playwright E2E:** Kiểm tra và cập nhật selector trong `tests/e2e/test_admin_trading_revamp_playwright.py` (`test_bot_detail_trading_revamp_playwright_desktop_and_mobile`) từ `"Chế độ: PAPER"` thành `page.get_by_text("Chế độ: Mô phỏng (PAPER)", exact=True)` để khớp nhãn Việt hóa trong `bot_detail.html` (`label_vi("PAPER") = "Mô phỏng"`). Chạy `.venv/bin/pytest tests/e2e/test_admin_trading_revamp_playwright.py -v` → **2 passed in 12.59s** (Desktop & Mobile).
+- **OPS07C — Backup, Restore Drill cô lập & RPO/RTO (`src/trading_bot/observability/backup_drill.py`):**
+  - Cài đặt `create_backup_manifest` (tạo SHA-256 checksum, kiểm tra secret canary để từ chối plain secret trong backup) và `execute_isolated_restore_drill` (chặn phục hồi lên `production`/`prod`/`live`, kiểm tra checksum phát hiện corruption, đo `rpo_seconds` và `rto_seconds` đối chiếu SLA).
+  - Unit test `tests/unit/test_backup_restore_drill.py`: **2 passed**.
+- **OPS07D — Supply Chain SBOM & Egress Isolation (`src/trading_bot/observability/supply_chain.py`):**
+  - Cài đặt `audit_sbom_file` kiểm chứng `docs/implementation/sbom.cdx.json` theo chuẩn CycloneDX và đảm bảo mọi dependency đều ghim phiên bản; cài đặt `verify_egress_isolation` chặn các vai trò `admin-web`, `trainer`, `research` kết nối tới host sàn giao dịch.
+  - Unit test `tests/unit/test_supply_chain_sbom.py`: **2 passed**.
+- **Kiểm chứng & tài liệu:**
+  - Bộ unit test tổng hợp (`test_backup_restore_drill.py`, `test_supply_chain_sbom.py`, `test_risk_windows.py`, `test_observability_redaction.py`, `test_circuit_breaker.py`, `test_observability_health.py`, `test_admin_operations_health_and_csv.py`): **16 passed / 0 skipped**.
+  - `ruff check` và `ruff format --check` trên tất cả file mới/sửa đổi đều đạt.
+  - Glossary bổ sung `RPO / RTO` và `SBOM (Software Bill of Materials)`; `project-status.md` cập nhật trạng thái **OPS07A–D**.
+- **Việc còn mở:** `tests/e2e/test_admin_web_workflows.py` (legacy Compose test kiểm tra `dashboard_reports` và `button[data-dashboard-bot]`) vẫn cần rà soát lại đồng bộ với thiết kế dashboard revamp; Demo readiness dossier (WP-07E), WP-03 Demo API key và WP-06 non-QA dataset vẫn chờ cấu hình/dữ liệu từ người dùng.

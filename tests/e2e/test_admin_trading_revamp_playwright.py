@@ -622,7 +622,7 @@ def test_bot_detail_trading_revamp_playwright_desktop_and_mobile(
         assert page.locator("text=Binance BTC Trend Pullback H01").first.is_visible()
         assert page.locator("text=BTCUSDT").first.is_visible()
         assert page.locator("text=● ĐANG CHẠY").is_visible()
-        assert page.locator("text=Chế độ: PAPER").is_visible()
+        assert page.get_by_text("Chế độ: Mô phỏng (PAPER)", exact=True).is_visible()
 
         # 1.2 Kiểm tra Live Status Bar 5s
         assert page.locator(".live-status-bar").is_visible()
