@@ -9,6 +9,8 @@ from types import MappingProxyType
 
 from trading_bot.domain.market.feature_snapshot import FeatureSettings
 
+# Release ID của thẻ `SC-BINANCE-USDM-VOL-BREAKOUT-001` v1.0.0 (strategy_card_release_id).
+CARD_VOL_BREAKOUT_RELEASE = "sc-binance-usdm-vol-breakout-001-v1.0.0"
 FEATURE_CODE_HASH = hashlib.sha256(b"crypidian-market-signal-features-v1").hexdigest()
 TIMEFRAME_INTERVALS = MappingProxyType(
     {
@@ -46,6 +48,9 @@ FEATURES_BY_RELEASE: Mapping[str, Mapping[str, tuple[str, ...]]] = MappingProxyT
                 )
             }
         ),
+        # SIG-2 / G4: Strategy Card sản phẩm (application/strategy_catalog.py). Engine L0–L6 đánh
+        # giá trên chuỗi đầu tiên của snapshot và ưu tiên ATR đã quản trị cùng timeframe.
+        CARD_VOL_BREAKOUT_RELEASE: MappingProxyType({"1h": ("atr_14",)}),
     }
 )
 ENTRY_TIMEFRAME_BY_RELEASE = MappingProxyType(
@@ -55,6 +60,7 @@ ENTRY_TIMEFRAME_BY_RELEASE = MappingProxyType(
         "h06-v1": "15m",
         "h03-v2": "1h",
         "h06-v2": "15m",
+        CARD_VOL_BREAKOUT_RELEASE: "1h",
     }
 )
 

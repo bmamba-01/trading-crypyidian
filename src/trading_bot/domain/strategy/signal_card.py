@@ -69,7 +69,7 @@ def validate_price_ladder(
 def _invalidation(recipe: Mapping[str, Any], stop: Decimal, expires_at: str | None) -> list[str]:
     lines = [f"Giá chạm SL {stop.normalize():f} (dừng lỗ theo recipe/kế hoạch)."]
     if expires_at:
-        lines.append(f"Tín hiệu hết hạn nếu chưa vào lệnh trước {expires_at}.")
+        lines.append("Tín hiệu hết hạn nếu chưa vào lệnh trước mốc hết hạn ghi ở đầu thẻ.")
     if recipe.get("trailing_atr_multiple"):
         lines.append(f"Dời stop theo trailing {recipe['trailing_atr_multiple']}×ATR khi có lãi.")
     if recipe.get("opposite_signal_exit"):

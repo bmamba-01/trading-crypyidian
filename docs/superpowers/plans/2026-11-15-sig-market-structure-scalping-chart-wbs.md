@@ -75,6 +75,8 @@ Mọi feature có `formula_version`, chạy được tăng dần, và có `confi
 
 **Acceptance:** H06 15m và một card chạy hết đường snapshot → decision trên fixture; khung không hỗ trợ báo lỗi tiếng Việt có mã lý do.
 
+**Đã triển khai (15/11/2026):** G4 sửa — `CARD_VOL_BREAKOUT_RELEASE` (`sc-binance-usdm-vol-breakout-001-v1.0.0`) khai báo khung vào 1h + `atr_14` trong `strategy_market_requirements`, khớp release trong `strategy_registry()` (test). Khung 1m/3m/5m/30m cho runtime vẫn chưa mở.
+
 ### SIG-3 — Hợp đồng tín hiệu v2: vùng vào, thang chốt lời, điều kiện mất hiệu lực (mở rộng MI-1, MI-2, SC-1)
 
 1. `StrategyCandidate` v2 (giữ v1 đọc được): `entry_zone_low/high`, `stop_price`, `targets[]` (giá + tỷ lệ chốt), `setup_id`, `invalidation[]` có cấu trúc, `expires_at`, `checklist[]` (`condition_key`, `actual`, `threshold`, `operator`, `passed` — chính là MI-1), `confidence_tier` + `calibrated_probability` (nullable).

@@ -3916,3 +3916,30 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
   - Thẻ trong Telegram.
   - Checklist cho Strategy Card.
   - Chưa có candidate thật từ dữ liệu Binance vì runtime chưa có market dispatch (RT-1).
+
+### 2026-11-15 — RT-1 lát 1: tín hiệu thật từ nến Binance (signal-only)
+
+- **Yêu cầu của owner:** chọn "Live signals (RT-1)".
+- **Khảo sát (sub-agent):**
+  - `market-signal-worker` đã đọc nguồn `BINANCE_USDM` và `BINANCE_USDM_REST_BACKFILL`, tính feature, ghi evidence → decision theo bot (idempotent mỗi nến đóng). Telegram tự gửi CANDIDATE.
+  - PAPER tự vào/đóng lệnh còn thiếu:
+    - (1) `PaperDecisionContextProvider` thật, gồm `snapshot_for`, `load_context`, `load_monitor_evidence`;
+    - (2) vòng lặp đưa nến vào `apply_entry_event`/`monitor_position`/`expire_reservations`;
+    - (3) giá mark chỉ đọc nguồn `BINANCE_USDM` (`workspace_settings.market_data.venue`), không đọc backfill;
+    - (4) `market_dispatch` trong readiness là chuỗi cứng.
+  - H06 luôn ABSTAIN vì không có lịch macro.
+  - Producer chỉ hỗ trợ 15m/1h/4h. Mọi lỗ trong cửa sổ 256 nến làm chuỗi không dùng được.
+- **Làm:**
+  - Bật `market-signal-worker` (profile `signal-producer`) cho workspace của owner trên stack local.
+  - Sửa G4: khai báo `CARD_VOL_BREAKOUT_RELEASE` → 1h + `atr_14`, kèm test `tests/unit/test_strategy_market_requirements_cards.py`. Trước đó job của bot strategy-card nằm PENDING vì producer bỏ qua release không có yêu cầu.
+  - Dòng "hết hạn" trong thẻ không còn in ISO thô.
+- **Kết quả thật:**
+  - Nến 1h 10:00 và 11:00 UTC BTCUSDT tạo evidence + decision cho cả hai bot: H03 `H03_NO_BREAKOUT` và card `STRATEGY_CARD_NO_TRIGGER`.
+  - Decision H03 có checklist thật (đóng 65561,7; kênh 61956,3–70290; quote volume dưới median), hiển thị ở "Quyết định mới nhất" trên `/admin/chart`.
+  - Chưa có CANDIDATE nên Telegram chưa gửi gì; ABSTAIN không gửi theo thiết kế.
+- **Kiểm chứng:**
+  - Unit `tests/unit` **4287 passed/131.43s**; ruff, format, mypy (393 file) đạt.
+  - Compose E2E `test_wp07_market_signal_producer.py` **1 passed/28.66s**.
+  - Ghi chú: E2E producer seed nến nguồn `BINANCE_USDM`; chuỗi chỉ-backfill mới được chứng minh trên stack local, chưa có E2E riêng.
+- **Còn mở (RT-1 lát 2, PAPER tự giao dịch):** các thiếu sót (1)–(4) ở trên, lịch macro cho H06, khung 1m/5m cho runtime, xử lý job PENDING của bot không khớp.
+- **Vận hành local:** biến bật producer là `TRADING_BOT_MARKET_SIGNAL_WORKSPACE_ID` với `--profile signal-producer`. Khởi động lại stack mà không có biến/profile này thì producer không chạy.
