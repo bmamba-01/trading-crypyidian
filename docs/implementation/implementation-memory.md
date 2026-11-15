@@ -4314,3 +4314,23 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Kiểm chứng:**
   - Unit **4466 passed/137.81s** (thêm `tests/unit/test_v2_release_selection.py` 7 test: chọn v2 → candidate v2 đúng hash registry; chỉ chọn v1 → NOT_SELECTED; chưa publish → UNPUBLISHED; resolve qua registry như runtime).
   - E2E `test_wp07_market_signal_producer` + `test_multibot_decision` **2 passed/74.54s**.
+
+### 2026-11-16 — Khảo sát hiện trạng nguồn tin và "AI phân tích"; lập WBS AI-1..5
+
+- **Owner nhận xét:** thu thập đa nguồn (MXH, blog, báo chí, news) và đưa kết quả chạy vào AI phân tích mới sơ bộ, chưa rõ luồng.
+- **Khảo sát (2 agent Explore, đối chiếu file:dòng):**
+  - **WP-05:** không có adapter nguồn tin nào (`adapters/sources/__init__.py` 1 dòng); không lịch vĩ mô nên H06 luôn `H06_MACRO_UNKNOWN`. Registry/quota/rights/kho item có code + test fixture (`example.invalid`) nhưng không có nguồn tin được duyệt. Không NLP/sentiment, không chiến lược nào đọc tin.
+  - **WP-06:** pipeline đủ khâu, nhưng chỉ chạy QA/synthetic.
+    - Trainer: logistic regression 3 lớp Python thuần `cpu-logistic-v1`.
+    - TEST: 9 mẫu → `INCONCLUSIVE`.
+    - D8 cấm QA source; SHADOW/PAPER_GATE khóa; thiếu quyền TRAINING.
+    - Nhãn post-mortem chỉ ở dict RAM (`learning_post_mortem.py:60`).
+    - `learning-evaluator` hỏng (module `cli.learning_evaluation` không tồn tại).
+  - **Không có tích hợp LLM nào** trong code.
+- **Lập WBS:** `docs/superpowers/plans/2026-11-16-ai-analysis-and-research-pipeline-wbs.md`.
+  - AI-1: Run Report tất định.
+  - AI-2: AI Analyst bằng Claude API, JSON có `evidence_refs`, validator số liệu.
+  - AI-3: đề xuất → backtest → owner publish.
+  - AI-4: nguồn tin S1.
+  - AI-5: mở khóa WP-06 bằng quyền TRAINING nội bộ.
+- **Quyết định chờ owner:** model/ngân sách Claude API; nguồn tin lát đầu; cấp TRAINING; đề xuất AI chỉ là gợi ý.
