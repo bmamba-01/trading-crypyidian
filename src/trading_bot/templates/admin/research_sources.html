@@ -12,7 +12,7 @@
 <fieldset class="source-purpose-options">
 <legend>Mục đích sử dụng (có thể chọn nhiều)</legend>
 {% for value, label in purpose_labels.items() %}
-<label for="{{ prefix }}-purpose-{{ value }}"><input type="checkbox" id="{{ prefix }}-purpose-{{ value }}" name="purpose_{{ value }}" {% if value in detail.current.allowed_purposes %}checked{% endif %}> <span>{{ label }}</span></label>
+<label for="{{ prefix }}-purpose-{{ value }}" class="switch-row"><span>{{ label }}</span> <input type="checkbox" class="ios-switch" role="switch" id="{{ prefix }}-purpose-{{ value }}" name="purpose_{{ value }}" {% if value in detail.current.allowed_purposes %}checked{% endif %}></label>
 {% endfor %}
 </fieldset>
 {% if prefix == 'approve' %}
@@ -37,7 +37,7 @@
 <fieldset class="source-purpose-options">
 <legend>{{ 'Quyền đầu ra' if prefix == 'scope_output_' else 'Cách sử dụng dữ liệu suy ra' }}</legend>
 {% for value, label in choices.items() %}
-<label for="{{ prefix }}{{ value }}"><input type="checkbox" id="{{ prefix }}{{ value }}" name="{{ prefix }}{{ value }}" {% if detail.current.license_scope and value in (detail.current.license_scope.allowed_outputs if prefix == 'scope_output_' else detail.current.license_scope.derived_use) %}checked{% endif %}> <span>{{ label }}</span></label>
+<label for="{{ prefix }}{{ value }}" class="switch-row"><span>{{ label }}</span> <input type="checkbox" class="ios-switch" role="switch" id="{{ prefix }}{{ value }}" name="{{ prefix }}{{ value }}" {% if detail.current.license_scope and value in (detail.current.license_scope.allowed_outputs if prefix == 'scope_output_' else detail.current.license_scope.derived_use) %}checked{% endif %}></label>
 {% endfor %}
 </fieldset>
 {% endmacro %}

@@ -5,6 +5,8 @@
   if (!(bundleSelect instanceof HTMLSelectElement) || !(intervalSelect instanceof HTMLSelectElement)) {
     return;
   }
+  // Chưa có gói dữ liệu: giữ danh sách khung nến chuẩn do máy chủ dựng, không xóa trống.
+  if (bundleSelect.disabled) return;
 
   const updateIntervals = () => {
     const selected = bundleSelect.selectedOptions.item(0);

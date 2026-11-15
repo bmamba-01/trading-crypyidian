@@ -72,7 +72,7 @@ def test_backtest_page_renders_one_dom_entry_per_job_with_copy_controls() -> Non
     assert html.count('data-job-id="e647a8d0-775d-4b44-8cbe-6ff2a558ca57"') == 1
     assert "backtest-job-card" not in html
     assert 'data-copy="e647a8d0-775d-4b44-8cbe-6ff2a558ca57"' in html
-    assert 'data-percent-hint="risk-fraction-percent"' in html
+    assert '<select id="risk-fraction" name="per_trade_risk_fraction"' in html
     assert "data-submit-guard" in html
     # Khớp gói dữ liệu theo tiền tố mã: hiện mã coin của gói thay vì chỉ 12 ký tự hash.
     assert 'data-coin="BTCUSDT"' in html

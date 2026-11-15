@@ -4,6 +4,8 @@
 {% block head_extra %}<link rel="stylesheet" href="/static/pages/bots.css">{% endblock %}
 
 {% block content %}
+{#- Option dùng chung cho select/multi-select; `data-name`/`data-icon` là tên và biểu tượng coin cho Tom Select. -#}
+{% macro choice_options(choices) %}{% for choice in choices %}<option value="{{ choice.value }}"{% for key, value in (choice.data or {}).items() %} data-{{ key }}="{{ value }}"{% endfor %}{% if choice.selected %} selected{% endif %}>{{ choice.label }}</option>{% endfor %}{% endmacro %}
 {% from "admin/_metric_help.html" import help_term %}
 {#- Biểu tượng nét (phong cách Lucide) dựng bằng SVG nội tuyến; không dùng style/on* để giữ CSP. -#}
 {%- set ICON_PATHS = {
@@ -91,7 +93,7 @@
     </div>
     <div class="live-status-actions">
       <span id="live-status-msg" class="live-status-msg" aria-live="polite"></span>
-      <button id="toggle-realtime-btn" type="button" class="btn btn-sm btn-outline" aria-pressed="true">Tạm dừng</button>
+      <button id="toggle-realtime-btn" type="button" class="switch-control switch-control--compact" role="switch" aria-checked="true"><span class="ios-switch" aria-hidden="true"></span><span class="visually-hidden">Tự động cập nhật mỗi 5 giây</span></button>
     </div>
   </div>
 </div>
@@ -415,21 +417,17 @@
     {% if telegram_signal_state is none %}
       <p class="bot-empty" role="status">Chức năng đăng ký tín hiệu hiện chưa sẵn sàng.</p>
     {% elif telegram_signal_state.binding_linked %}
-      <div class="bot-toggle-row">
-        <p class="bot-toggle-row__state" role="status">
-          {% if telegram_signal_state.enabled %}
-            <span class="badge badge-success bot-badge">Đang nhận</span> Đang nhận thông báo tín hiệu cho bot này.
-          {% else %}
-            <span class="badge badge-neutral bot-badge">Đã tắt</span> Chưa đăng ký nhận tín hiệu cho bot này.
-          {% endif %}
+      {#- Công tắc kiểu iOS: mỗi lần bấm gửi trạng thái ngược lại; máy chủ ghi rồi tải lại trang. -#}
+      <form method="post" action="/admin/bots/{{ bot.id }}/telegram-signals" class="bot-toggle-row">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" name="enabled" value="{{ 'false' if telegram_signal_state.enabled else 'true' }}" class="switch-control" role="switch" aria-checked="{{ 'true' if telegram_signal_state.enabled else 'false' }}" aria-describedby="telegram-signal-state">
+          <span class="switch-control__label">Nhận thông báo tín hiệu</span>
+          <span class="ios-switch" aria-hidden="true"></span>
+        </button>
+        <p class="bot-toggle-row__state" id="telegram-signal-state" role="status">
+          {% if telegram_signal_state.enabled %}Đang nhận thông báo tín hiệu cho bot này.{% else %}Chưa đăng ký nhận tín hiệu cho bot này.{% endif %}
         </p>
-        <form method="post" action="/admin/bots/{{ bot.id }}/telegram-signals">
-          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-          <button type="submit" name="enabled" value="{{ 'false' if telegram_signal_state.enabled else 'true' }}" class="btn btn-sm btn-outline">
-            {{ "Tắt thông báo tín hiệu" if telegram_signal_state.enabled else "Bật thông báo tín hiệu" }}
-          </button>
-        </form>
-      </div>
+      </form>
 
       {% if signal_filter_error == "invalid" %}
         <p class="bot-notice bot-notice--danger" role="alert">
@@ -439,31 +437,33 @@
 
       <h3 class="bot-subtitle" id="telegram-signal-filters-heading">Lọc tín hiệu muốn nhận</h3>
       <p class="bot-field-help" id="telegram-signal-filters-help">
-        Để trống nghĩa là nhận tất cả. Ngăn cách bằng dấu phẩy hoặc xuống dòng; tối đa 100 mục mỗi danh sách.
+        Chọn từ danh sách; gõ để tìm nhanh. Để trống nghĩa là nhận tất cả; tối đa 100 mục mỗi danh sách.
       </p>
 
       <form class="bot-filter-form" method="post" action="/admin/bots/{{ bot.id }}/telegram-signal-filters" aria-labelledby="telegram-signal-filters-heading">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        {% set signal_filters = telegram_signal_state.filters.as_dict() %}
+        {% set choices = signal_filter_choices %}
         <div class="bot-field">
-          <label for="signal-filter-symbols">Cặp giao dịch (ví dụ BTCUSDT)</label>
-          <textarea id="signal-filter-symbols" name="symbols" rows="2" maxlength="12000" aria-describedby="telegram-signal-filters-help">{{ signal_filters.symbols | join(", ") }}</textarea>
+          <label for="signal-filter-symbols">Cặp giao dịch</label>
+          <select id="signal-filter-symbols" name="symbols" multiple data-multiselect="coins" data-placeholder="Tất cả cặp — gõ để tìm, ví dụ BTC" aria-describedby="telegram-signal-filters-help">{{ choice_options(choices.symbols) }}</select>
+        </div>
+        <div class="bot-field-grid">
+          <div class="bot-field">
+            <label for="signal-filter-timeframes">Khung thời gian</label>
+            <select id="signal-filter-timeframes" name="timeframes" multiple data-multiselect data-placeholder="Tất cả khung" aria-describedby="telegram-signal-filters-help">{{ choice_options(choices.timeframes) }}</select>
+          </div>
+          <div class="bot-field">
+            <label for="signal-filter-directions">Hướng giao dịch</label>
+            <select id="signal-filter-directions" name="directions" multiple data-multiselect data-placeholder="Cả hai hướng" aria-describedby="telegram-signal-filters-help">{{ choice_options(choices.directions) }}</select>
+          </div>
         </div>
         <div class="bot-field">
-          <label for="signal-filter-timeframes">Khung thời gian (ví dụ 5m, 1h, 4h)</label>
-          <textarea id="signal-filter-timeframes" name="timeframes" rows="2" maxlength="12000" aria-describedby="telegram-signal-filters-help">{{ signal_filters.timeframes | join(", ") }}</textarea>
+          <label for="signal-filter-strategies">Chiến thuật</label>
+          <select id="signal-filter-strategies" name="strategy_ids" multiple data-multiselect data-placeholder="Tất cả chiến thuật" aria-describedby="telegram-signal-filters-help">{{ choice_options(choices.strategy_ids) }}</select>
         </div>
         <div class="bot-field">
-          <label for="signal-filter-directions">Hướng giao dịch (LONG hoặc SHORT)</label>
-          <textarea id="signal-filter-directions" name="directions" rows="2" maxlength="12000" aria-describedby="telegram-signal-filters-help">{{ signal_filters.directions | join(", ") }}</textarea>
-        </div>
-        <div class="bot-field">
-          <label for="signal-filter-strategies">Mã chiến thuật (ví dụ H01)</label>
-          <textarea id="signal-filter-strategies" name="strategy_ids" rows="2" maxlength="12000" aria-describedby="telegram-signal-filters-help">{{ signal_filters.strategy_ids | join(", ") }}</textarea>
-        </div>
-        <div class="bot-field">
-          <label for="signal-filter-setups">Mã setup (ví dụ H01_BREAKOUT)</label>
-          <textarea id="signal-filter-setups" name="setup_codes" rows="2" maxlength="12000" aria-describedby="telegram-signal-filters-help">{{ signal_filters.setup_codes | join(", ") }}</textarea>
+          <label for="signal-filter-setups">Mã setup</label>
+          <select id="signal-filter-setups" name="setup_codes" multiple data-multiselect data-placeholder="Tất cả setup" aria-describedby="telegram-signal-filters-help">{{ choice_options(choices.setup_codes) }}</select>
         </div>
         <button type="submit" class="btn btn-secondary bot-filter-form__submit">Lưu bộ lọc tín hiệu</button>
       </form>
@@ -503,16 +503,54 @@
     </div>
     {% endif %}
 
-    <form class="bot-filter-form" method="post" action="/admin/bots/{{ bot.id }}/config-drafts">
+    {% set overlay = overlay_form %}
+    <form class="bot-filter-form bot-overlay-form" method="post" action="/admin/bots/{{ bot.id }}/config-drafts" aria-describedby="overlay-form-help">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <input type="hidden" name="expected_parent_version_id" value="{{ config_parent_version_id }}">
+      <p id="overlay-form-help" class="bot-field-help">Mục để "Kế thừa cấu hình gốc" sẽ không ghi đè. Giá trị rủi ro chỉ được siết chặt hơn cấu hình gốc; máy chủ kiểm lại khi kiểm định bản nháp.</p>
       <div class="bot-field">
-        <label for="overlay-json">Cấu hình bổ sung (JSON)</label>
-        <textarea class="bot-json" id="overlay-json" name="overlay_json" rows="8" required spellcheck="false" aria-describedby="overlay-json-help">{{ config_draft_json }}</textarea>
-        <p id="overlay-json-help" class="bot-field-help">Chỉ nhận khóa trong lược đồ v1: <code>strategy</code>, <code>universe</code>, <code>risk</code>. Giá trị rủi ro chỉ được siết chặt hơn cấu hình gốc.</p>
+        <label for="overlay-strategy-release">Chiến thuật</label>
+        <select id="overlay-strategy-release" name="strategy_release_id">{{ choice_options(overlay.releases) }}</select>
+        {% if overlay.has_parameters %}<p class="bot-field-help">Bản hiện tại có tham số chiến lược riêng; tạo bản nháp bằng JSON nâng cao để giữ chúng.</p>{% endif %}
       </div>
+      <div class="bot-field">
+        <label for="overlay-universe-symbols">Cặp giao dịch theo dõi</label>
+        <select id="overlay-universe-symbols" name="universe_symbols" multiple data-multiselect="coins" data-placeholder="Kế thừa cấu hình gốc — gõ để tìm" aria-describedby="overlay-symbols-help">{{ choice_options(overlay.symbols) }}</select>
+        <p id="overlay-symbols-help" class="bot-field-help">{% if overlay.root_limited %}Chỉ hiện các cặp có trong cấu hình gốc.{% else %}Chưa đọc được cấu hình gốc: đang hiện toàn bộ danh mục perpetual USDT; cặp ngoài cấu hình gốc sẽ bị từ chối khi kiểm định.{% endif %}</p>
+      </div>
+      <div class="bot-field">
+        <label for="overlay-universe-timeframes">Khung thời gian</label>
+        <select id="overlay-universe-timeframes" name="universe_timeframes" multiple data-multiselect data-placeholder="Kế thừa cấu hình gốc">{{ choice_options(overlay.timeframes) }}</select>
+      </div>
+      <fieldset class="bot-risk-fieldset">
+        <legend>Giới hạn rủi ro</legend>
+        <div class="bot-field-grid">
+          {% for field in overlay.risk %}
+          <div class="bot-field">
+            <label for="overlay-risk-{{ field.name }}">{{ field.label }}</label>
+            <select id="overlay-risk-{{ field.name }}" name="risk_{{ field.name }}" aria-describedby="overlay-risk-{{ field.name }}-help">{{ choice_options(field.choices) }}</select>
+            <p id="overlay-risk-{{ field.name }}-help" class="bot-field-help">{{ field.help_vi }}</p>
+          </div>
+          {% endfor %}
+        </div>
+      </fieldset>
       <button type="submit" class="btn btn-secondary bot-filter-form__submit">Tạo bản nháp</button>
     </form>
+
+    <details class="bot-advanced" id="overlay-json-advanced">
+      <summary>JSON nâng cao</summary>
+      <form class="bot-filter-form" method="post" action="/admin/bots/{{ bot.id }}/config-drafts">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="expected_parent_version_id" value="{{ config_parent_version_id }}">
+        <input type="hidden" name="overlay_source" value="json">
+        <div class="bot-field">
+          <label for="overlay-json">Cấu hình bổ sung (JSON)</label>
+          <textarea class="bot-json" id="overlay-json" name="overlay_json" rows="8" required spellcheck="false" aria-describedby="overlay-json-help">{{ config_draft_json }}</textarea>
+          <p id="overlay-json-help" class="bot-field-help">Dành cho tham số chiến lược riêng. Chỉ nhận khóa trong lược đồ v1: <code>strategy</code>, <code>universe</code>, <code>risk</code>.</p>
+        </div>
+        <button type="submit" class="btn btn-outline bot-filter-form__submit">Tạo bản nháp từ JSON</button>
+      </form>
+    </details>
   </section>
 </div>
 </div>

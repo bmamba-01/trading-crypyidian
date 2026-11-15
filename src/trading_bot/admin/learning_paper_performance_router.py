@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from typing import Annotated, Any, cast
 from uuid import UUID
 
@@ -26,6 +27,17 @@ from trading_bot.auth.router import current_identity, require_csrf
 from trading_bot.auth.service import AuthenticationFailure, AuthIdentity
 
 router = APIRouter(tags=["learning PAPER performance"])
+
+
+def paper_bot_options(bots: Sequence[Mapping[str, Any]]) -> tuple[dict[str, str], ...]:
+    """Lọc bot PAPER từ dữ liệu `serialize_bot` (chế độ nằm ở ``account.mode``)."""
+    options: list[dict[str, str]] = []
+    for item in bots:
+        account = item.get("account")
+        mode = account.get("mode") if isinstance(account, Mapping) else None
+        if mode == "PAPER":
+            options.append({"id": str(item["id"]), "name": str(item.get("name") or item["id"])})
+    return tuple(options)
 
 
 @router.get("/admin/learning/paper-performance")
@@ -58,11 +70,7 @@ async def learning_paper_performance_page(
             detail="Chưa thể đọc báo cáo PAPER an toàn.",
             headers={"Cache-Control": "no-store"},
         ) from error
-    bot_options = tuple(
-        {"id": str(item["id"]), "name": str(item.get("name") or item["id"])}
-        for item in bots
-        if item.get("account_mode") == "PAPER"
-    )
+    bot_options = paper_bot_options(bots)
     return _templates(request).TemplateResponse(
         request=request,
         name="admin/learning_paper_performance.html",

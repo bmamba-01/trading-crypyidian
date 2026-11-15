@@ -4,6 +4,7 @@ Kiểm các hợp đồng trình bày: không bịa mã cặp, màu trạng thá
 cho vai trò được phép, CSS riêng của trang nạp qua head_extra và trạng thái rỗng trung thực.
 """
 
+import re
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -82,7 +83,8 @@ def test_bot_detail_status_tone_follows_machine_code_and_no_fabricated_symbol() 
     assert '<span class="badge badge-success bot-badge">Đã bật</span>' in html
     assert 'badge-danger bot-badge">Đã bật' not in html
     # Không có lệnh/vị thế thì mục mã đã giao dịch ghi "Chưa có dữ liệu", không đoán BTCUSDT.
-    assert "BTCUSDT" not in html
+    # Danh mục coin trong các ô chọn (bộ lọc, cấu hình) là lựa chọn, không phải mã của bot.
+    assert "BTCUSDT" not in re.sub(r"<select\b.*?</select>", "", html, flags=re.S)
     assert 'class="kv kv--wide"' in html
     # Hàng nhãn–giá trị giữ nguyên chữ mà E2E Compose dựa vào.
     assert ">Đã bật / Đang hoạt động / Mô phỏng</dd>" in html

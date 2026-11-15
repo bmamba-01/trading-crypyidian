@@ -349,7 +349,8 @@ def test_admin_backtest_replays_desktop_view(backtest_server_url: str) -> None:
         interval_select = page.locator('select[name="execution_interval"]')
         expect(interval_select).to_be_visible()
 
-        equity_input = page.locator('input[name="starting_equity"]')
+        # Vốn mô phỏng chọn từ mốc có sẵn (select), mặc định 10.000.
+        equity_input = page.locator('select[name="starting_equity"]')
         expect(equity_input).to_be_visible()
         expect(equity_input).to_have_value("10000")
 

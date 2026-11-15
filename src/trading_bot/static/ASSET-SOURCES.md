@@ -8,6 +8,8 @@ Kiểm tra nguồn chính thức ngày **2026-11-02**. Ứng dụng chỉ tải 
 
 Phiên bản thư mục nguồn Google Fonts được đối chiếu: `c13390277dfb1fcc7415d84ef7ef9cfc1e52f8c1`. Tệp TTF gốc tương ứng: `BeVietnamPro-Regular.ttf`, `BeVietnamPro-SemiBold.ttf`, `BeVietnamPro-Bold.ttf` tại `https://raw.githubusercontent.com/google/fonts/c13390277dfb1fcc7415d84ef7ef9cfc1e52f8c1/ofl/bevietnampro/`. Công cụ chuyển đổi: FontTools với hỗ trợ WOFF2/Brotli (lệnh và phiên bản trong báo cáo UI).
 
+- Tom Select **2.6.2** (kiểm 2026-11-15; owner đồng ý tải trong phiên làm việc ngày này): gói npm chính thức https://registry.npmjs.org/tom-select/-/tom-select-2.6.2.tgz , integrity `sha512-eiXIkk82XzzUTOVQDFpy+ZGejuqdTvMukyUyeZBQaKnqW42UoTiTZnrod/eX0rkqJEc4rZY9DZ3zdjV07i29wQ==` (khớp `npm view tom-select@2.6.2 dist.integrity`); mã nguồn https://github.com/orchidjs/tom-select ; tài liệu https://tom-select.js.org/ . Apache-2.0; giữ `vendor/tom-select-LICENSE.txt`. Chỉ lấy ba tệp nguyên bản, không sửa: `dist/js/tom-select.complete.min.js`, `dist/css/tom-select.min.css` (bản nền, không có ảnh `data:` nên hợp CSP; giao diện sáng/tối do `admin.css` tự định nghĩa) và `LICENSE`. Chọn 2.6.2 (phát hành 2026-07-07) thay vì 2.7.0 (2026-11-07) để dùng bản đã ổn định lâu hơn.
+
 ## SHA-256 các tệp được đóng gói
 
 - `fonts/METADATA.pb`: `2ef4a8f6b3a18698c70d2e3adf0cf45debc71a4220941ccdf8280db7d1d567f4`.
@@ -20,6 +22,9 @@ Phiên bản thư mục nguồn Google Fonts được đối chiếu: `c13390277
 - `vendor/lightweight-charts-5.2.1.standalone.production.js`: `e21cc5caa0226ef30bd8549c50b9ef926615f2a4ee6b4e486353477a55f598cf`.
 - `vendor/lightweight-charts-LICENSE.txt`: `70c9d5382506dd184465425c08a99ad9bd6d9ac1313c252968ba0b585e5ef823`.
 - `vendor/lightweight-charts-NOTICE.txt`: `f76c6afab94884448f0426e30d6e9d555ca7247894cd3484e477d2f87513036e`.
+- `vendor/tom-select-2.6.2.complete.min.js`: `8f9d7d3420e938c2c9817818b56df43ea46feae5bf1f5a2e828863c034df0e37`.
+- `vendor/tom-select-2.6.2.min.css`: `073f20ac5a65dce1787c544acfc1da210f534815e2b3a6218a80bb8c51125b47`.
+- `vendor/tom-select-LICENSE.txt`: `f15dc64ea1f373c8af0ee7c020064360497addf335c9c2bcf27c3a6f56a6f0bd`.
 
 ## Tài sản tự tạo của dự án
 

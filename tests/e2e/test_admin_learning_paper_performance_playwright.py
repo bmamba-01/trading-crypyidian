@@ -121,7 +121,7 @@ class _PerformanceService:
 
 class _BotAdminService:
     async def list_bots(self, _principal: Principal):
-        return [{"id": str(BOT_ID), "name": "Bot PAPER chính", "account_mode": "PAPER"}]
+        return [{"id": str(BOT_ID), "name": "Bot PAPER chính", "account": {"mode": "PAPER"}}]
 
 
 def _serve_app() -> tuple[str, uvicorn.Server, threading.Thread, socket.socket, FastAPI]:

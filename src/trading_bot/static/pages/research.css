@@ -104,7 +104,7 @@
 .lx-quota__row { display: grid; gap: 0.3rem; }
 .lx-quota__row p { font-size: var(--fs-sm); font-variant-numeric: tabular-nums; }
 
-/* Ô chọn mục đích: giữ ô 44px (E2E kiểm ≥ 40px), đổi màu viền về token. */
+/* Mục đích/phạm vi là công tắc kiểu iOS (vùng chạm cao 44px, E2E kiểm ≥ 40px); viền theo token. */
 .lx-research .source-purpose-options {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(100%, 13rem), 1fr));
@@ -128,7 +128,7 @@
   font-weight: 500;
   color: var(--text-main);
 }
-.lx-research .source-purpose-options input { accent-color: var(--primary); }
+.lx-research .source-purpose-options input.ios-switch { width: 51px; height: 44px; flex: 0 0 51px; accent-color: initial; }
 .lx-research .license-scope-field label {
   font-size: var(--fs-xs);
   font-weight: 600;

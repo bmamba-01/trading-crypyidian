@@ -507,6 +507,8 @@ def test_dashboard_performance_chart_marks_entries_and_exits_without_mixing_asse
     assert markers[0]["color"] == "#0ECB81"
     assert markers[1]["color"] == "#0ECB81"
     assert "PnL ròng 12.5 USDT" in markers[1]["title"]
+    # Nhãn trên biểu đồ làm tròn 2 chữ số theo định dạng Việt Nam; số đầy đủ ở title.
+    assert markers[1]["text"] == "TP +12,5 USDT"
     assert "lúc 2026-11-01T11:00:00+00:00" in markers[1]["title"]
     assert "Chốt lời" in markers[1]["title"]
     assert chart["events"][0]["strategy_id"] == "h03-v1"

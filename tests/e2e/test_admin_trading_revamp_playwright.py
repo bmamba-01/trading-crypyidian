@@ -789,11 +789,12 @@ def test_bot_detail_trading_revamp_playwright_desktop_and_mobile(
         toggle_btn = page.locator("#toggle-realtime-btn")
         assert toggle_btn.is_visible()
 
-        # Tương tác với nút Tạm dừng / Tiếp tục cập nhật 5s
+        # Công tắc tự động cập nhật 5s (kiểu iOS): tắt rồi bật lại.
+        expect(toggle_btn).to_have_attribute("role", "switch")
         toggle_btn.click()
-        assert toggle_btn.inner_text() == "Tiếp tục"
+        expect(toggle_btn).to_have_attribute("aria-checked", "false")
         toggle_btn.click()
-        assert toggle_btn.inner_text() == "Tạm dừng"
+        expect(toggle_btn).to_have_attribute("aria-checked", "true")
 
         # 1.3 KPI đọc từ báo cáo ledger của mock (1 lệnh thắng, lãi ròng 373,5 USDT)
         expect(page.locator("#kpi-open-positions")).to_have_text("0")

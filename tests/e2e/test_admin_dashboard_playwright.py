@@ -616,21 +616,20 @@ def test_admin_dashboard_desktop_and_mobile_workflows(admin_server_url: str) -> 
             page.locator(f'tr[data-bot-id="{BOT1_ID}"] [data-bot-field="readiness"]').inner_text()
             == "Suy giảm"
         )
-        toggle_btn = page.locator("#toggle-realtime-btn")
-        assert toggle_btn.is_visible()
-        assert toggle_btn.get_attribute("aria-pressed") == "true"
-        assert toggle_btn.inner_text() == "Tạm dừng"
+        # Công tắc kiểu iOS: bật = đang tự động cập nhật.
+        toggle_btn = page.get_by_role("switch", name="Tự động cập nhật mỗi 5 giây")
+        expect(toggle_btn).to_be_visible()
+        expect(toggle_btn).to_have_attribute("aria-checked", "true")
+        assert toggle_btn.bounding_box()["height"] >= 44
 
-        # Thao tác Tạm dừng cập nhật
+        # Tắt công tắc: dừng cập nhật
         toggle_btn.click()
-        assert toggle_btn.get_attribute("aria-pressed") == "false"
-        assert toggle_btn.inner_text() == "Tiếp tục"
+        expect(toggle_btn).to_have_attribute("aria-checked", "false")
         assert "Đã tạm dừng tự động cập nhật" in page.content()
 
-        # Thao tác Tiếp tục cập nhật và kiểm tra đồng bộ thời gian từ API
+        # Bật lại và kiểm tra đồng bộ thời gian từ API
         toggle_btn.click()
-        assert toggle_btn.get_attribute("aria-pressed") == "true"
-        assert toggle_btn.inner_text() == "Tạm dừng"
+        expect(toggle_btn).to_have_attribute("aria-checked", "true")
         page.wait_for_function(
             "document.getElementById('live-updated-at').textContent !== '--:--:--'"
         )

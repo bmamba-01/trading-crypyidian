@@ -23,7 +23,7 @@ import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import expect, sync_playwright
 
 from trading_bot.admin.web_router import router as admin_web_router
 from trading_bot.application.telegram_signal_subscription import TelegramSignalSubscriptionState
@@ -93,6 +93,12 @@ class MockAuthService:
     async def issue_csrf_token(self, cookie_value: str | None) -> str:
         return self.csrf_token
 
+    async def verify_csrf(self, cookie_value: str | None, token: str | None) -> None:
+        if not cookie_value or cookie_value not in self.sessions:
+            raise AuthenticationFailure(401, "Chưa xác thực.")
+        if not token or token != self.csrf_token:
+            raise AuthenticationFailure(403, "Token CSRF không hợp lệ.")
+
 
 class MockTelegramSignalService:
     def __init__(self) -> None:
@@ -112,6 +118,22 @@ class MockTelegramSignalService:
     async def get_state(
         self, principal: Principal, *, bot_id: UUID
     ) -> TelegramSignalSubscriptionState:
+        return self.state
+
+    async def set_filters(
+        self, principal: Principal, *, bot_id: UUID, filters: TelegramSignalFilters
+    ) -> TelegramSignalSubscriptionState:
+        self.state = TelegramSignalSubscriptionState(
+            bot_id=bot_id, enabled=self.state.enabled, binding_linked=True, filters=filters
+        )
+        return self.state
+
+    async def set_enabled(
+        self, principal: Principal, *, bot_id: UUID, enabled: bool
+    ) -> TelegramSignalSubscriptionState:
+        self.state = TelegramSignalSubscriptionState(
+            bot_id=bot_id, enabled=enabled, binding_linked=True, filters=self.state.filters
+        )
         return self.state
 
 
@@ -224,12 +246,53 @@ def test_telegram_signals_desktop_view(app_server: str) -> None:
         assert heading.is_visible()
         assert "Nhận tín hiệu qua Telegram" in heading.text_content()
 
-        # Xác thực các trường bộ lọc
-        assert page.locator("#signal-filter-symbols").is_visible()
-        assert page.locator("#signal-filter-timeframes").is_visible()
-        assert page.locator("#signal-filter-directions").is_visible()
-        assert page.locator("#signal-filter-strategies").is_visible()
-        assert page.locator("#signal-filter-setups").is_visible()
+        # Các bộ lọc là multi-select dựng sẵn (Tom Select), điền sẵn giá trị đã lưu.
+        for select_id in (
+            "signal-filter-symbols",
+            "signal-filter-timeframes",
+            "signal-filter-directions",
+            "signal-filter-strategies",
+            "signal-filter-setups",
+        ):
+            expect(page.locator(f"#{select_id}-ts-control")).to_be_visible()
+        symbols = page.locator("#signal-filter-symbols + .ts-wrapper")
+        expect(symbols.locator(".item")).to_have_count(2)
+        # Giá trị đã lưu nhưng ngoài danh mục setup vẫn được giữ.
+        expect(page.locator("#signal-filter-setups + .ts-wrapper .item")).to_contain_text(
+            "H01_BREAKOUT"
+        )
+
+        # Công tắc nhận thông báo (kiểu iOS) đang bật; bấm để tắt, máy chủ lưu rồi tải lại.
+        switch = page.get_by_role("switch", name="Nhận thông báo tín hiệu")
+        expect(switch).to_have_attribute("aria-checked", "true")
+        switch.click()
+        page.wait_for_load_state("networkidle")
+        expect(page.get_by_role("switch", name="Nhận thông báo tín hiệu")).to_have_attribute(
+            "aria-checked", "false"
+        )
+
+        # Gõ để tìm và chọn thêm SOLUSDT, bỏ ETHUSDT, rồi lưu: máy chủ nhận nhiều giá trị.
+        page.locator("#signal-filter-symbols-ts-control").fill("SOL")
+        page.locator(".ts-dropdown .option[data-value='SOLUSDT']").click()
+        page.locator(
+            "#signal-filter-symbols + .ts-wrapper .item[data-value='ETHUSDT'] .remove"
+        ).click()
+        page.keyboard.press("Escape")
+        page.get_by_role("button", name="Lưu bộ lọc tín hiệu").click()
+        page.wait_for_load_state("networkidle")
+        items = page.locator("#signal-filter-symbols + .ts-wrapper .item")
+        expect(items).to_have_count(2)
+        assert items.evaluate_all("els => els.map(e => e.dataset.value)") == ["BTCUSDT", "SOLUSDT"]
+        icons = items.evaluate_all(
+            "els => els.map(e => [e.querySelector('img')?.getAttribute('src'),"
+            " e.querySelector('.ts-coin__code')?.textContent])"
+        )
+        # Biểu tượng tự host cho mã đã biết (BTC, SOL) lấy từ data-icon của option.
+        assert icons == [
+            ["/static/coins/btc.svg", "BTCUSDT"],
+            ["/static/coins/sol.svg", "SOLUSDT"],
+        ]
+        assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
 
         # Chụp màn hình Desktop
         page.screenshot(

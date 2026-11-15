@@ -34,7 +34,7 @@
     </div>
     <div class="live-status-actions">
       <span id="live-status-msg" class="live-status-msg" aria-live="polite"></span>
-      <button id="toggle-realtime-btn" type="button" class="btn btn-sm btn-outline" aria-pressed="true">Tạm dừng</button>
+      <button id="toggle-realtime-btn" type="button" class="switch-control switch-control--compact" role="switch" aria-checked="true"><span class="ios-switch" aria-hidden="true"></span><span class="visually-hidden">Tự động cập nhật mỗi 5 giây</span></button>
     </div>
   </div>
 </div>
@@ -216,7 +216,7 @@
   <p>Từ {{ report_start | local_time }} đến {{ report_end | local_time }}; không gồm mốc kết thúc. Chỉ bot có quyền xem báo cáo; số liệu tiền tệ theo từng tài sản.</p>
   {% for report in dashboard_reports %}
   <article class="bot-report"><h3>{{ report.name }}</h3>
-  {% with totals=report.totals %}{% include "admin/metric_cards.html" %}{% endwith %}</article>
+  {% with totals=report.totals, rounded=True %}{% include "admin/metric_cards.html" %}{% endwith %}</article>
   {% endfor %}
   {% elif metrics_loaded %}
   <p role="status">Chưa có bot đang hoạt động được cấp quyền xem báo cáo.</p>

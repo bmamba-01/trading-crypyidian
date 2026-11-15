@@ -199,9 +199,11 @@ def test_backtest_jobs_single_dom_copy_and_percent_hint(backtest_url: str) -> No
         first = page.locator("[data-job-id]").first
         expect(first.locator("button.copy-btn").first).to_be_visible()
         expect(first).to_contain_text("BTCUSDT")
-        expect(page.locator("#risk-fraction-percent")).to_have_text("= 1%")
-        page.fill("#risk-fraction", "0.025")
-        expect(page.locator("#risk-fraction-percent")).to_have_text("= 2,5%")
+        # Tham số rủi ro chọn từ danh sách; nhãn hiển thị phần trăm, giá trị gửi là số thập phân.
+        expect(page.locator("#risk-fraction option:checked")).to_have_text("1%")
+        page.select_option("#risk-fraction", "0.025")
+        expect(page.locator("#risk-fraction option:checked")).to_have_text("2,5%")
+        expect(page.locator("#risk-fraction")).to_have_value("0.025")
         succeeded = page.locator('[data-job-id="22222222-2222-2222-2222-222222222222"]')
         expect(succeeded.locator('button.copy-btn[data-copy="run-btc-oct2026-001"]')).to_have_count(
             1

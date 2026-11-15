@@ -685,3 +685,12 @@ Thuật ngữ dùng trong [`2026-11-14-feature-survey-and-manager-insights.md`](
 | Run report | Báo cáo đợt chạy | Báo cáo tất định dựng từ dữ liệu đã lưu của một đợt (kết quả, phân rã, chất lượng thực thi, cơ hội bị bỏ); cùng dữ liệu thì cùng hash. | Định nghĩa nội bộ |
 | Research brief | Bản tổng kết nghiên cứu | Dữ liệu có cấu trúc (JSON có schema + tóm tắt sinh từ template) rút ra từ báo cáo đợt chạy để AI research engine đề xuất giả thuyết; mỗi phát hiện có cỡ mẫu và tham chiếu nguồn. Không chứa dữ liệu TEST. | Định nghĩa nội bộ |
 | Paper–backtest divergence | Sai lệch PAPER so với backtest | Chênh lệch kết quả giữa PAPER và backtest cùng release, cùng giai đoạn; lớn thì mô hình fill/chi phí hoặc dữ liệu đang sai. | Định nghĩa nội bộ |
+
+## AA. Điều khiển biểu mẫu trên Admin Web (15/11/2026)
+
+| Thuật ngữ | Bản dịch ưu tiên | Giải thích ngắn trong dự án | Tài liệu tham khảo |
+| --- | --- | --- | --- |
+| Toggle switch (iOS-style switch) | Công tắc bật/tắt (kiểu iOS) | Điều khiển hai trạng thái có hiệu lực ngay (ghi nhớ đăng nhập, giao diện tối, tự động cập nhật, nhận thông báo Telegram, mục đích/phạm vi quyền dữ liệu). Rãnh 51×31px, nút tròn trượt trái/phải; trạng thái không chỉ truyền đạt bằng màu. Ngữ nghĩa trợ năng là `role="switch"` với `aria-checked`. Thao tác có kiểm toán và cần lý do (tạm dừng, tắt bot, dừng khẩn cấp) vẫn là biểu mẫu riêng, không phải công tắc. | [Apple HIG — Toggles](https://developer.apple.com/design/human-interface-guidelines/toggles); [WAI-ARIA APG — Switch](https://www.w3.org/WAI/ARIA/apg/patterns/switch/) (chưa mở lại trong vòng này; trang W3C từng trả 403 cho trình tải tự động) |
+| Multi-select | Ô chọn nhiều | Danh sách chọn nhiều giá trị có ô gõ để lọc và nút bỏ từng mục; dùng cho bộ lọc tín hiệu Telegram và danh sách coin/khung thời gian trong cấu hình bot. Máy chủ chỉ nhận trường lặp ở các trường được khai báo là nhiều giá trị. | [Tom Select](https://tom-select.js.org/) 2.6.2 (tự host, Apache-2.0; nguồn ở `src/trading_bot/static/ASSET-SOURCES.md`) |
+| Preset choice | Mốc chọn sẵn | Giá trị cấu hình chọn từ danh sách mốc (vốn, tỷ lệ rủi ro, phí, trượt giá, giới hạn danh nghĩa) thay vì gõ tay; nhãn hiển thị phần trăm/số có ngăn nghìn, giá trị gửi lên vẫn là số thập phân và máy chủ vẫn kiểm giới hạn. | Định nghĩa nội bộ; `src/trading_bot/admin/form_choices.py` |
+| Inherit (overlay) | Kế thừa cấu hình gốc | Lựa chọn rỗng trong ô chọn của bản nháp cấu hình bot: trường đó không ghi vào overlay nên bot dùng giá trị của cấu hình gốc. | Định nghĩa nội bộ; lược đồ `BotConfigOverlay` |

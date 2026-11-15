@@ -11,6 +11,14 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from starlette.responses import RedirectResponse
 
+from trading_bot.admin.form_choices import (
+    BACKTEST_EQUITY_PRESETS,
+    BACKTEST_FEE_PRESETS,
+    BACKTEST_RISK_PRESETS,
+    BACKTEST_SLIPPAGE_PRESETS,
+    preset_choices,
+    timeframe_choices,
+)
 from trading_bot.admin.web_router import (
     AdminHTMLRoute,
     _auth_service,
@@ -262,6 +270,18 @@ async def backtest_replay_page(
                 "fee_rate": "0.001",
                 "slippage_rate": "0.0005",
                 "seed": "7",
+            },
+            # Tham số chọn từ mốc có sẵn thay vì gõ tay; máy chủ vẫn kiểm giới hạn khi gửi.
+            "form_choices": {
+                "starting_equity": preset_choices(BACKTEST_EQUITY_PRESETS, "10000"),
+                "per_trade_risk_fraction": preset_choices(
+                    BACKTEST_RISK_PRESETS, "0.01", formatter="percent"
+                ),
+                "fee_rate": preset_choices(BACKTEST_FEE_PRESETS, "0.001", formatter="percent"),
+                "slippage_rate": preset_choices(
+                    BACKTEST_SLIPPAGE_PRESETS, "0.0005", formatter="percent"
+                ),
+                "execution_interval": timeframe_choices(("1h",)),
             },
         },
         headers={"Cache-Control": "no-store"},

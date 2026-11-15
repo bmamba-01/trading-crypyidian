@@ -633,14 +633,17 @@ def test_admin_browser_session_navigation_accessibility_and_telegram_link(
         browser_page.goto(f"{base_url}/admin/bots/{bot_id}", wait_until="networkidle")
         expect(browser_page.get_by_text("Đã tắt / Đã tắt / Mô phỏng", exact=True)).to_be_visible()
 
-        browser_page.get_by_label("Cấu hình bổ sung (JSON)").fill('{"schema_version": 1}')
+        # Bản nháp tạo từ ô chọn (UI kit v1.1): để mọi mục "Kế thừa cấu hình gốc" cho overlay
+        # rỗng {"schema_version": 1}; JSON chỉ còn trong mục "JSON nâng cao" thu gọn.
+        expect(browser_page.locator("#overlay-strategy-release")).to_have_value("")
+        expect(browser_page.get_by_label("Cấu hình bổ sung (JSON)")).to_be_hidden()
         with browser_page.expect_response(
             lambda response: (
                 response.request.method == "POST"
                 and response.url.endswith(f"/admin/bots/{bot_id}/config-drafts")
             )
         ) as draft_response_info:
-            browser_page.get_by_role("button", name="Tạo bản nháp").press("Enter")
+            browser_page.get_by_role("button", name="Tạo bản nháp", exact=True).press("Enter")
         assert draft_response_info.value.status == 303
         expect(
             browser_page.get_by_text(re.compile(r"Bản nháp [0-9a-f-]+ — phiên bản 1"))

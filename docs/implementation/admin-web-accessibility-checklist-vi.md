@@ -18,5 +18,7 @@ Dùng với Chromium ở chế độ phóng đại 200% và chỉ bàn phím. Đ
 - [ ] Chú giải chỉ số (UI-1): mỗi nhãn chỉ số là một nút `.metric-help` nhận focus bằng Tab, có `aria-describedby` trỏ tới `role="tooltip"` và `aria-expanded` đúng trạng thái; mở được bằng rê chuột, focus và chạm; Escape, bấm ra ngoài hoặc rời focus đều đóng; tooltip nằm trọn trong khung nhìn ở 360px và không làm trang cuộn ngang.
 - [ ] Nội dung chú giải khớp từ điển `src/trading_bot/admin/metric_help.py` (định nghĩa, cách tính, cách đọc, giới hạn) và đọc được ở cả giao diện sáng lẫn tối; ở màn hình hẹp, bảng ẩn tiêu đề cột phải có hàng chú giải thay thế.
 - [ ] Biểu đồ: chú thích tĩnh (nến, mốc vào/đóng, đường giá, khung thời gian, nguồn nến) hiển thị bằng chữ; chú giải theo con trỏ hiện Mở / Cao / Thấp / Đóng, % thay đổi và thời gian theo `Asia/Ho_Chi_Minh`; thông tin không chỉ truyền đạt bằng màu.
+- [ ] Công tắc kiểu iOS (UI kit v1.1): trình đọc màn hình đọc vai trò "công tắc" và trạng thái bật/tắt; Space/Enter đổi trạng thái; vị trí nút tròn (trái/phải) cho biết trạng thái, không chỉ dựa vào màu; tôn trọng `prefers-reduced-motion`.
+- [ ] Multi-select (Tom Select): nhãn liên kết với ô gõ tìm; mũi tên lên/xuống, Enter, Backspace và Escape hoạt động; nút bỏ từng mục có tên accessible; danh sách thả xuống đọc được ở cả giao diện sáng và tối, không bị cắt ở 360px.
 
 Kết quả kiểm tra và người thực hiện cần được ghi vào implementation memory trước khi nghiệm thu Task 7.

@@ -130,8 +130,8 @@
   const setToggle = (polling) => {
     isPolling = polling;
     if (toggleBtn) {
-      toggleBtn.textContent = polling ? "Tạm dừng" : "Tiếp tục";
-      toggleBtn.setAttribute("aria-pressed", polling ? "true" : "false");
+      // Công tắc kiểu iOS: bật = đang tự động cập nhật.
+      toggleBtn.setAttribute("aria-checked", polling ? "true" : "false");
     }
     if (pulseDot) pulseDot.classList.toggle("pulse-paused", !polling);
   };

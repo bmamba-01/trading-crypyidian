@@ -1,4 +1,4 @@
-# Admin UI kit (v1, 2026-11-14)
+# Admin UI kit (v1.1, 2026-11-15)
 
 Chuẩn giao diện chung cho mọi trang Admin Web sau đợt revamp. Trang mẫu đã làm theo chuẩn này: **Tổng quan** (`templates/admin/dashboard.html`, `static/dashboard-live.js`). Quyết định thiết kế gốc: [`design-system/crypidian-admin/pages/admin-shell-glass.md`](../../design-system/crypidian-admin/pages/admin-shell-glass.md).
 
@@ -43,6 +43,9 @@ Chuẩn giao diện chung cho mọi trang Admin Web sau đợt revamp. Trang m�
 | Popup | `<dialog class="glass-dialog">` + `showModal()`; nút đóng là `form[method=dialog]` | Dùng cho giải thích chi tiết, không cho thao tác nguy hiểm. |
 | Nút biểu tượng | `button.icon-btn` | Có chữ hoặc `aria-label`. |
 | Khối thu gọn | `<details class="glass-card">` + `<summary>` | Cho thông tin phụ (lineage, JSON, giải thích dài). |
+| Công tắc bật/tắt (v1.1) | `input[type=checkbox].ios-switch[role=switch]` trong `label.switch-row` (nhãn trái, công tắc phải), hoặc `button.switch-control[role=switch][aria-checked]` chứa `span.ios-switch` | Kiểu iOS: rãnh 51×31px, ô bấm input cao 44px. Dùng cho mọi lựa chọn hai trạng thái có hiệu lực ngay. Thao tác có lý do/kiểm toán (tạm dừng, tắt bot, dừng khẩn cấp) giữ dạng form + nút. JS chỉ đổi `aria-checked`. |
+| Ô chọn thay ô gõ (v1.1) | `<select>` với mốc từ `admin/form_choices.py` | Trường cấu hình chọn từ danh sách; nhãn hiển thị %/số có ngăn nghìn, giá trị gửi là số thập phân. Option rỗng "Kế thừa cấu hình gốc" khi trường là tùy chọn. Máy chủ vẫn kiểm giới hạn. |
+| Multi-select (v1.1) | `<select multiple data-multiselect>`; danh sách coin `data-multiselect="coins"` với `data-name`/`data-icon` trên option | Tom Select 2.6.2 tự host (`static/form-controls.js`). Form gửi trường lặp; route khai báo `multi_value_fields` khi gọi `_parse_form`. Giá trị đã lưu ngoài danh mục vẫn hiện, đánh dấu "(ngoài danh mục)". `select[data-searchable]` cho chọn một có tìm kiếm. |
 
 ## 5. Căn chỉnh
 

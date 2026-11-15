@@ -1,13 +1,22 @@
-// Nút chuyển chủ đề sáng/tối; phát sự kiện `themechange` cho biểu đồ.
+// Công tắc sáng/tối kiểu iOS: bật = giao diện tối; phát sự kiện `themechange` cho biểu đồ.
 (function() {
   const toggleBtn = document.getElementById("theme-toggle");
-  if (toggleBtn) {
-    toggleBtn.addEventListener("click", () => {
-      const current = document.documentElement.getAttribute("data-theme") || "dark";
-      const next = current === "dark" ? "light" : "dark";
-      document.documentElement.setAttribute("data-theme", next);
+  if (!toggleBtn) return;
+  const sync = () => {
+    const current = document.documentElement.getAttribute("data-theme") || "dark";
+    toggleBtn.setAttribute("aria-checked", current === "dark" ? "true" : "false");
+  };
+  sync();
+  toggleBtn.addEventListener("click", () => {
+    const current = document.documentElement.getAttribute("data-theme") || "dark";
+    const next = current === "dark" ? "light" : "dark";
+    document.documentElement.setAttribute("data-theme", next);
+    try {
       localStorage.setItem("crypidian_theme", next);
-      window.dispatchEvent(new CustomEvent("themechange", { detail: { theme: next } }));
-    });
-  }
+    } catch (error) {
+      // Trình duyệt chặn lưu trữ: vẫn đổi giao diện cho phiên hiện tại.
+    }
+    sync();
+    window.dispatchEvent(new CustomEvent("themechange", { detail: { theme: next } }));
+  });
 })();

@@ -3,6 +3,7 @@
   trang báo cáo). Giữ `number_vi` (không làm tròn) vì đây là số để đối soát với ledger; lớp
   `.asset-report` và tiêu đề "Tài sản <mã>" là hợp đồng của E2E. Mỗi hàng `.metric-item` là một
   cặp nhãn–giá trị; trang báo cáo trình bày thành lưới `.kv` qua `static/pages/reports.css`.
+  Đặt `rounded=True` khi nhúng vào dashboard: hiển thị làm tròn 2 chữ số, số đầy đủ ở `title`.
 -#}
 {% from "admin/_metric_help.html" import help_term, help_icon %}
 {% for asset, values in totals.items() %}
@@ -12,17 +13,19 @@
 {% for key, title, monetary in report_metrics %}
 <div class="col-12 col-md-6 col-xl-4 metric-item metric-item--{{ key }}">
   <dt>{{ help_term(key, title) }}</dt>
-  {% if key in pnl_metric_keys %}{% set tone = values.get(key) | pnl_tone %}
+  {% if key in pnl_metric_keys and values.get(key) is none %}
+  <dd class="metric-item__value">Chưa có dữ liệu</dd>
+  {% elif key in pnl_metric_keys %}{% set tone = values.get(key) | pnl_tone %}
   <dd class="pnl-value pnl-value--{{ tone }}" data-pnl-tone="{{ tone }}" title="{{ values.get(key) | number_vi }}{% if monetary %} {{ asset }}{% endif %}">
-    {% if tone == "positive" %}+{% endif %}{{ values[key] | number_vi }}{% if monetary %} {{ asset }}{% endif %}
+    {% if tone == "positive" %}+{% endif %}{{ (values[key] | number2_vi) if rounded else (values[key] | number_vi) }}{% if monetary %} {{ asset }}{% endif %}
   </dd>
   {% else %}
-  <dd class="metric-item__value">
+  <dd class="metric-item__value"{% if rounded and values.get(key) is not none %} title="{{ values[key] | number_vi }}{% if monetary %} {{ asset }}{% endif %}"{% endif %}>
     {% if key in values %}
       {% if values[key] is none %}
         Không xác định
       {% else %}
-        {{ values[key] | number_vi }}{% if monetary %} {{ asset }}{% endif %}
+        {{ (values[key] | number2_vi) if rounded else (values[key] | number_vi) }}{% if monetary %} {{ asset }}{% endif %}
       {% endif %}
     {% else %}
       Chưa có dữ liệu

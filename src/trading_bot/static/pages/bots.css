@@ -374,7 +374,9 @@
 .bot-page .bot-action-form .bot-field-help { margin: 0; }
 .bot-page .bot-ops-card input,
 .bot-page .bot-ops-card textarea,
-.bot-create-page input {
+.bot-page .bot-ops-card select,
+.bot-create-page input,
+.bot-create-page select {
   padding: 0.45rem 0.65rem;
   font-size: var(--fs-sm);
   border-radius: 0.5rem;
@@ -467,3 +469,38 @@
 }
 /* Ô trạng thái ghép (bot / tài khoản / chế độ) cần cột rộng hơn để nhãn không bị ép 3 dòng. */
 .bot-page dl.bot-status-dl { grid-template-columns: repeat(auto-fill, minmax(min(100%, 19rem), 1fr)); }
+
+/* Bản nháp cấu hình và bộ lọc tín hiệu: ô chọn xếp lưới, nhóm rủi ro có viền, JSON nâng cao thu gọn. */
+.bot-page .bot-field-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 13rem), 1fr));
+  gap: 0.55rem 0.75rem;
+}
+.bot-page .bot-risk-fieldset {
+  min-width: 0;
+  margin: 0.25rem 0 0;
+  padding: 0.5rem 0.75rem 0.65rem;
+  border: 1px solid var(--glass-border, var(--border-main));
+  border-radius: 0.7rem;
+}
+.bot-page .bot-risk-fieldset legend {
+  float: none;
+  width: auto;
+  margin: 0;
+  padding: 0 0.35rem;
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  color: var(--text-muted);
+}
+.bot-page .bot-advanced { margin-top: 0.6rem; border-top: 1px solid var(--border-subtle); padding-top: 0.4rem; }
+.bot-page .bot-advanced > summary {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.bot-page .bot-advanced[open] > summary { color: var(--text-main); }
+.bot-page .bot-toggle-row .switch-control { flex: 1 1 auto; justify-content: space-between; }

@@ -271,7 +271,7 @@ def test_dashboard_renders_live_status_bar_and_pulse_elements() -> None:
     assert 'id="live-pulse-dot"' in html
     assert 'id="live-updated-at"' in html
     assert 'id="toggle-realtime-btn"' in html
-    assert 'aria-pressed="true"' in html
+    assert 'role="switch" aria-checked="true"' in html
     assert "Tự động cập nhật 5s" in html
 
     # IDs và data attributes phục vụ cập nhật DOM

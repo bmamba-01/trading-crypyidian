@@ -16,6 +16,7 @@
 | Runtime | `pydantic-settings` | 2.16.0 | MIT | Đọc và kiểm tra cấu hình có kiểu; [release](https://github.com/pydantic/pydantic-settings/releases/tag/v2.16.0). |
 | Runtime | `pyotp` | 2.10.0 | MIT | Tạo URI và xác minh TOTP theo RFC 6238; [tài liệu](https://pyauth.github.io/pyotp/), [PyPI release](https://pypi.org/project/PyOTP/2.10.0/). |
 | Runtime | `uvicorn` | 0.54.0 | BSD-3-Clause | ASGI server cho FastAPI; [release notes](https://github.com/Kludex/uvicorn/blob/main/docs/release-notes.md). |
+| Giao diện (tự host) | Tom Select | 2.6.2 | Apache-2.0 | Multi-select/select có tìm kiếm cho Admin Web; tệp nguyên bản trong `src/trading_bot/static/vendor/`, nguồn và SHA-256 ở `src/trading_bot/static/ASSET-SOURCES.md`; [tài liệu](https://tom-select.js.org/). Không nằm trong `uv.lock`/SBOM Python (tài sản tĩnh, cùng cách với Bootstrap CSS và Lightweight Charts). |
 | Build | `uv_build` | 0.13.4 | MIT | Build package Python; [uv build backend](https://docs.astral.sh/uv/concepts/build-backend/). |
 | Test | `pytest` | `>=9.1,<10` | MIT | Unit/E2E test; bản giải quyết cụ thể nằm trong lock. |
 | Test | `pytest-asyncio` | `>=1.4,<2` | Apache-2.0 | Hỗ trợ test bất đồng bộ cho repository/worker. |

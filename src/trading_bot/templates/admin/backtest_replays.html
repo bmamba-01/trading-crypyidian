@@ -87,8 +87,8 @@
                 {% for interval in selected_bundle.intervals %}<option value="{{ interval }}">{{ interval }}</option>{% endfor %}
               </select>
             {% else %}
-              <input id="execution-interval" name="execution_interval" type="text" maxlength="12"
-                     value="1h" placeholder="1h" required aria-describedby="execution-interval-help">
+              <select id="execution-interval" name="execution_interval" required
+                      aria-describedby="execution-interval-help">{% for choice in form_choices.execution_interval %}<option value="{{ choice.value }}"{% if choice.selected %} selected{% endif %}>{{ choice.label }}</option>{% endfor %}</select>
             {% endif %}
             <small id="execution-interval-help">Chọn khung nến có trong gói dữ liệu.</small>
           </div>
@@ -107,28 +107,24 @@
           <div class="bt-field-row">
             <div class="bt-field">
               <label for="starting-equity">Vốn mô phỏng</label>
-              <input id="starting-equity" name="starting_equity" type="number" min="0.01" inputmode="decimal"
-                     step="any" value="{{ default_form.starting_equity }}" required aria-describedby="starting-equity-help">
+              <select id="starting-equity" name="starting_equity" required aria-describedby="starting-equity-help">{% for choice in form_choices.starting_equity %}<option value="{{ choice.value }}"{% if choice.selected %} selected{% endif %}>{{ choice.label }}</option>{% endfor %}</select>
               <small id="starting-equity-help">Theo tài sản định giá của mã trong gói dữ liệu.</small>
             </div>
             <div class="bt-field">
               <label for="risk-fraction">Rủi ro tối đa mỗi lệnh</label>
-              <input id="risk-fraction" name="per_trade_risk_fraction" type="number" min="0.000001" inputmode="decimal"
-                     max="0.05" step="any" value="{{ default_form.per_trade_risk_fraction }}" required
-                     aria-describedby="risk-fraction-help risk-fraction-percent" data-percent-hint="risk-fraction-percent">
-              <small id="risk-fraction-help">Nhập tỷ lệ thập phân, tối đa 0,05 (5%). <output id="risk-fraction-percent" class="bt-percent" for="risk-fraction"></output></small>
+              <select id="risk-fraction" name="per_trade_risk_fraction" required
+                      aria-describedby="risk-fraction-help">{% for choice in form_choices.per_trade_risk_fraction %}<option value="{{ choice.value }}"{% if choice.selected %} selected{% endif %}>{{ choice.label }}</option>{% endfor %}</select>
+              <small id="risk-fraction-help">Phần vốn chấp nhận mất cho một lệnh, tối đa 5%.</small>
             </div>
             <div class="bt-field">
               <label for="fee-rate">Phí mỗi chiều</label>
-              <input id="fee-rate" name="fee_rate" type="number" min="0" step="any" inputmode="decimal"
-                     value="{{ default_form.fee_rate }}" required aria-describedby="fee-rate-help fee-rate-percent" data-percent-hint="fee-rate-percent">
-              <small id="fee-rate-help">Tỷ lệ thập phân, ví dụ 0,001 là 0,1%. <output id="fee-rate-percent" class="bt-percent" for="fee-rate"></output></small>
+              <select id="fee-rate" name="fee_rate" required aria-describedby="fee-rate-help">{% for choice in form_choices.fee_rate %}<option value="{{ choice.value }}"{% if choice.selected %} selected{% endif %}>{{ choice.label }}</option>{% endfor %}</select>
+              <small id="fee-rate-help">Phí giao dịch mỗi chiều vào/ra.</small>
             </div>
             <div class="bt-field">
               <label for="slippage">Trượt giá mô phỏng</label>
-              <input id="slippage" name="slippage_rate" type="number" min="0" step="any" inputmode="decimal"
-                     value="{{ default_form.slippage_rate }}" required aria-describedby="slippage-help slippage-percent" data-percent-hint="slippage-percent">
-              <small id="slippage-help">Tỷ lệ thập phân, ví dụ 0,0005 là 0,05%. <output id="slippage-percent" class="bt-percent" for="slippage"></output></small>
+              <select id="slippage" name="slippage_rate" required aria-describedby="slippage-help">{% for choice in form_choices.slippage_rate %}<option value="{{ choice.value }}"{% if choice.selected %} selected{% endif %}>{{ choice.label }}</option>{% endfor %}</select>
+              <small id="slippage-help">Chênh lệch giá khớp giả định so với giá tham chiếu.</small>
             </div>
             <div class="bt-field">
               <label for="seed">Mã tái lập kết quả</label>

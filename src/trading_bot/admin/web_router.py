@@ -26,6 +26,18 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from trading_bot.admin.bot_schemas import CreateBotRequest
 from trading_bot.admin.bot_service import BotAdminError, BotConfigAdminService
+from trading_bot.admin.form_choices import (
+    BOT_MAX_NOTIONAL_PRESETS,
+    RISK_FIELD_SPECS,
+    coin_choices,
+    direction_choices,
+    preset_choices,
+    release_choices,
+    risk_fields,
+    setup_code_choices,
+    strategy_id_choices,
+    timeframe_choices,
+)
 from trading_bot.admin.presentation import (
     LABELS,
     MARKET_DOWN_COLOR,
@@ -459,8 +471,17 @@ async def submit_login(request: Request) -> Response:
     return response
 
 
-async def _parse_form(request: Request, *, max_bytes: int = 16_384) -> dict[str, str]:
-    """Đọc form urlencoded giới hạn kích thước, từ chối field trùng để tránh nhập nhằng."""
+async def _parse_form(
+    request: Request,
+    *,
+    max_bytes: int = 16_384,
+    multi_value_fields: frozenset[str] = frozenset(),
+) -> dict[str, str]:
+    """Đọc form urlencoded giới hạn kích thước, từ chối field trùng để tránh nhập nhằng.
+
+    Chỉ các trường trong `multi_value_fields` (multi-select) được lặp; giá trị được nối bằng
+    xuống dòng để bộ phân tích danh sách hiện có xử lý như trước.
+    """
     if (
         request.headers.get("content-type", "").split(";", 1)[0]
         != "application/x-www-form-urlencoded"
@@ -473,9 +494,12 @@ async def _parse_form(request: Request, *, max_bytes: int = 16_384) -> dict[str,
         values = parse_qs(raw.decode("utf-8"), keep_blank_values=True, strict_parsing=True)
     except (UnicodeDecodeError, ValueError) as error:
         raise HTTPException(status_code=400, detail="Form không hợp lệ.") from error
-    if any(len(items) != 1 for items in values.values()):
+    if any(len(items) != 1 for key, items in values.items() if key not in multi_value_fields):
         raise HTTPException(status_code=422, detail="Form có trường lặp.")
-    return {key: items[0] for key, items in values.items()}
+    return {
+        key: "\n".join(items) if key in multi_value_fields else items[0]
+        for key, items in values.items()
+    }
 
 
 async def _verify_form_csrf(request: Request, values: dict[str, str]) -> None:
@@ -1080,7 +1104,7 @@ def _dashboard_performance_chart(reports: list[dict[str, Any]]) -> dict[str, Any
                     ),
                     "text": f"Vào {trade['symbol']}"
                     if is_entry
-                    else f"{exit_label} {net_pnl:+} USDT",
+                    else f"{exit_label} {'+' if net_pnl > 0 else ''}{number2_vi(net_pnl)} USDT",
                     "title": (
                         f"Vào {trade['symbol']} theo {trade['side']}; "
                         f"thời điểm {occurred_at.isoformat()}; chiến thuật {strategy_id}; "
@@ -1161,9 +1185,18 @@ async def create_bot_page(
     return templates.TemplateResponse(
         request=request,
         name="admin/bot_create.html",
-        context={"identity": identity, "csrf_token": csrf_token},
+        context={
+            "identity": identity,
+            "csrf_token": csrf_token,
+            "max_notional_choices": _max_notional_choices("10000"),
+        },
         headers={"Cache-Control": "no-store"},
     )
+
+
+def _max_notional_choices(selected: str) -> object:
+    """Mốc giới hạn danh nghĩa cho form tạo bot; giá trị lạ đã gửi vẫn được giữ để sửa."""
+    return preset_choices(BOT_MAX_NOTIONAL_PRESETS, selected, formatter="number")
 
 
 @router.post("/bots/new")
@@ -1230,6 +1263,7 @@ def _create_bot_form_response(
                 "name": values.get("name", ""),
                 "max_notional": values.get("max_notional", ""),
             },
+            "max_notional_choices": _max_notional_choices(values.get("max_notional", "")),
         },
         headers={"Cache-Control": "no-store"},
     )
@@ -1513,6 +1547,66 @@ async def bot_detail_realtime(
     }
 
 
+async def _root_universe(request: Request, principal: Principal) -> dict[str, Any]:
+    """Universe và release mặc định của cấu hình gốc để giới hạn ô chọn overlay.
+
+    Không đọc được (thiếu service, chưa có cấu hình, lỗi DB) thì trả rỗng: ô chọn dùng danh mục
+    đầy đủ và máy chủ vẫn từ chối overlay vượt cấu hình gốc khi kiểm định.
+    """
+    service = getattr(request.app.state, "settings_admin_service", None)
+    if service is None:
+        return {}
+    try:
+        current = await service.get_current(principal)
+    except SQLAlchemyError, PermissionError, LookupError, TypeError, ValueError:
+        return {}
+    settings = (current or {}).get("settings") or {}
+    market = settings.get("market_data") or {}
+    strategy = settings.get("strategy") or {}
+    return {
+        "symbols": tuple(str(item) for item in market.get("symbols") or ()),
+        "timeframes": tuple(str(item) for item in market.get("timeframes") or ()),
+        "default_release": str(strategy.get("default_release") or ""),
+    }
+
+
+def _signal_filter_choices(signal_state: Any) -> dict[str, Any] | None:
+    """Danh sách chọn cho bộ lọc tín hiệu Telegram, đánh dấu giá trị đã lưu."""
+    filters = getattr(signal_state, "filters", None)
+    if filters is None:
+        return None
+    saved = filters.as_dict()
+    return {
+        "symbols": coin_choices(saved["symbols"]),
+        "timeframes": timeframe_choices(saved["timeframes"]),
+        "directions": direction_choices(saved["directions"]),
+        "strategy_ids": strategy_id_choices(saved["strategy_ids"]),
+        "setup_codes": setup_code_choices(saved["setup_codes"]),
+    }
+
+
+def _overlay_form_choices(overlay: dict[str, Any], root: dict[str, Any]) -> dict[str, Any]:
+    """Ô chọn cho bản nháp overlay, điền sẵn theo bản nháp hoặc bản đang công bố."""
+    strategy = overlay.get("strategy") or {}
+    universe = overlay.get("universe") or {}
+    root_symbols = root.get("symbols") or None
+    root_timeframes = root.get("timeframes") or None
+    default_release = root.get("default_release") or ""
+    inherit = (
+        f"Kế thừa cấu hình gốc ({default_release})" if default_release else "Kế thừa cấu hình gốc"
+    )
+    return {
+        "releases": release_choices(str(strategy.get("release_id") or ""), inherit_label=inherit),
+        "symbols": coin_choices(tuple(universe.get("symbols") or ()), only=root_symbols),
+        "timeframes": timeframe_choices(
+            tuple(universe.get("timeframes") or ()), only=root_timeframes
+        ),
+        "risk": risk_fields(dict(overlay.get("risk") or {})),
+        "root_limited": bool(root_symbols),
+        "has_parameters": bool(strategy.get("parameters")),
+    }
+
+
 @router.get("/bots/{bot_id}")
 async def bot_detail(
     bot_id: UUID,
@@ -1552,6 +1646,8 @@ async def bot_detail(
     versions = bot.get("versions", [])
     published = next((item for item in versions if item.get("status") == "PUBLISHED"), None)
     draft = next((item for item in versions if item.get("status") == "DRAFT"), None)
+    root_universe = await _root_universe(request, identity.principal)
+    current_overlay = dict((draft or published or {}).get("overlay") or {})
     return templates.TemplateResponse(
         request=request,
         name="admin/bot_detail.html",
@@ -1567,6 +1663,8 @@ async def bot_detail(
             "draft_validation": draft_validation,
             "signal_filter_error": signal_filter_error,
             "telegram_signal_state": signal_state,
+            "signal_filter_choices": _signal_filter_choices(signal_state),
+            "overlay_form": _overlay_form_choices(current_overlay, root_universe),
             "trading_data_available": trading_data["data_available"],
             "metrics": trading_data["metrics"],
             "positions": trading_data["positions"],
@@ -1613,7 +1711,7 @@ async def set_bot_telegram_signal_filters_form(
     identity: Annotated[AuthIdentity, Depends(current_identity)],
 ) -> Response:
     """Lưu allowlist signal của chính thành viên; không kích hoạt giao dịch."""
-    values = await _parse_form(request, max_bytes=65_536)
+    values = await _parse_form(request, max_bytes=65_536, multi_value_fields=SIGNAL_FILTER_FIELDS)
     await _verify_form_csrf(request, values)
     try:
         filters = TelegramSignalFilters(
@@ -1647,6 +1745,12 @@ async def set_bot_telegram_signal_filters_form(
     )
 
 
+SIGNAL_FILTER_FIELDS = frozenset(
+    {"symbols", "timeframes", "directions", "strategy_ids", "setup_codes"}
+)
+OVERLAY_MULTI_FIELDS = frozenset({"universe_symbols", "universe_timeframes"})
+
+
 def _parse_filter_values(raw: str) -> tuple[str, ...]:
     """Nhận danh sách tối đa 100 giá trị, ngăn cách bằng dấu phẩy hoặc dòng mới."""
     values = tuple(value.strip() for value in re.split(r"[,\r\n]+", raw) if value.strip())
@@ -1661,10 +1765,14 @@ async def create_config_draft_form(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(current_identity)],
 ) -> Response:
-    values = await _parse_form(request)
+    values = await _parse_form(request, multi_value_fields=OVERLAY_MULTI_FIELDS)
     await _verify_form_csrf(request, values)
     try:
-        overlay = BotConfigOverlay.model_validate(json.loads(values.get("overlay_json", "")))
+        if values.get("overlay_source") == "json":
+            payload = json.loads(values.get("overlay_json", ""))
+        else:
+            payload = _overlay_from_form(values)
+        overlay = BotConfigOverlay.model_validate(payload)
         parent_id_value = values.get("expected_parent_version_id", "").strip()
         parent_id = UUID(parent_id_value) if parent_id_value else None
     except (ValueError, TypeError) as error:
@@ -1681,6 +1789,35 @@ async def create_config_draft_form(
     except BotAdminError as error:
         raise HTTPException(status_code=error.status_code, detail=error.message) from error
     return Response(status_code=303, headers={"Location": f"/admin/bots/{bot_id}"})
+
+
+def _overlay_from_form(values: dict[str, str]) -> dict[str, Any]:
+    """Dựng overlay v1 từ ô chọn; ô để "Kế thừa" (rỗng) không được đưa vào overlay."""
+    overlay: dict[str, Any] = {"schema_version": 1}
+    release_id = values.get("strategy_release_id", "").strip()
+    if release_id:
+        overlay["strategy"] = {"release_id": release_id}
+    universe: dict[str, Any] = {}
+    for field, key in (("universe_symbols", "symbols"), ("universe_timeframes", "timeframes")):
+        items = _parse_filter_values(values.get(field, ""))
+        if items:
+            universe[key] = list(items)
+    if universe:
+        overlay["universe"] = universe
+    risk: dict[str, Any] = {}
+    for name, *_rest in RISK_FIELD_SPECS:
+        raw = values.get(f"risk_{name}", "").strip()
+        if not raw:
+            continue
+        if name == "max_positions":
+            if not raw.isdigit():
+                raise ValueError("Số vị thế tối đa phải là số nguyên dương.")
+            risk[name] = int(raw)
+        else:
+            risk[name] = raw
+    if risk:
+        overlay["risk"] = risk
+    return overlay
 
 
 @router.post("/bots/{bot_id}/config-drafts/{draft_id}/validate")

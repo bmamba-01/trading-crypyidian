@@ -199,8 +199,8 @@
       pulseDot.className = 'pulse-dot';
     }
     if (toggleBtn) {
-      toggleBtn.setAttribute('aria-pressed', 'true');
-      toggleBtn.textContent = 'Tạm dừng';
+      // Công tắc kiểu iOS: bật = đang tự động cập nhật.
+      toggleBtn.setAttribute('aria-checked', 'true');
     }
     if (statusMsgEl) {
       statusMsgEl.textContent = '';
@@ -218,8 +218,7 @@
       pulseDot.className = 'pulse-dot pulse-paused';
     }
     if (toggleBtn) {
-      toggleBtn.setAttribute('aria-pressed', 'false');
-      toggleBtn.textContent = 'Tiếp tục';
+      toggleBtn.setAttribute('aria-checked', 'false');
     }
     if (statusMsgEl) {
       statusMsgEl.textContent = 'Đã tạm dừng tự động cập nhật';
