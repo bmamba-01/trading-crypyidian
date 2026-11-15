@@ -63,6 +63,10 @@ class AppSettings(BaseSettings):
     # phải ngắn hơn TTL để kịp gia hạn trước khi hết hạn.
     runtime_lease_ttl_seconds: int = Field(default=30, ge=3, le=300)
     runtime_supervisor_tick_seconds: float = Field(default=5.0, gt=0, le=60)
+    # RT-1 lát 2: trading-runtime PAPER tự nhận CANDIDATE và đưa nến đóng đã lưu vào lifecycle
+    # (khớp entry, theo dõi stop/target, hết hạn reservation). Mặc định tắt; chỉ PAPER, không gọi
+    # API sàn nào (chỉ đọc `market_bar` đã persist).
+    runtime_market_dispatch_enabled: bool = False
     ingestion_worker_tick_seconds: float = Field(default=5.0, gt=0, le=300)
     # SIG-0: collector nến công khai Binance trong ingestion-worker (owner duyệt 15/11/2026 cho
     # PAPER nội bộ). Mặc định tắt; khi bật vẫn phải có policy PAPER_DEMO hợp lệ trong registry.
@@ -201,6 +205,12 @@ class AppSettings(BaseSettings):
         elif self.runtime_workspace_id is not None:
             raise ValueError(
                 "runtime_workspace_id chỉ được cấu hình cho process_role trading-runtime."
+            )
+        if self.runtime_market_dispatch_enabled and (
+            self.process_role != "trading-runtime" or self.trading_mode != "PAPER"
+        ):
+            raise ValueError(
+                "runtime_market_dispatch_enabled chỉ dành cho trading-runtime ở chế độ PAPER."
             )
         return self
 

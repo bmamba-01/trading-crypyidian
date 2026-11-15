@@ -62,9 +62,10 @@ _STATE_QUERY = text(
     "|| mark.revision::text || ':' || mark.checksum "
     "FROM public.trade t JOIN LATERAL (SELECT mb.id, mb.revision, mb.checksum "
     "FROM public.market_bar mb WHERE mb.workspace_id = t.workspace_id AND mb.symbol = t.symbol "
-    "AND mb.is_closed AND mb.source = :mark_source AND mb.timeframe = ANY(:mark_timeframes) "
+    "AND mb.is_closed AND mb.source = ANY(:mark_sources) AND mb.timeframe = ANY(:mark_timeframes) "
     "AND mb.close_time <= :as_of AND mb.available_at <= :as_of "
-    "ORDER BY mb.close_time DESC, mb.available_at DESC, mb.revision DESC LIMIT 1) mark ON true "
+    "ORDER BY mb.close_time DESC, (mb.source = :mark_source) DESC, mb.available_at DESC, "
+    "mb.revision DESC LIMIT 1) mark ON true "
     "WHERE t.workspace_id = :workspace_id AND t.mode = 'PAPER' AND t.status = 'OPEN' "
     "AND t.opened_at <= :as_of), provenance AS (SELECT bot_id, account_id, "
     "array_agg(source_ref ORDER BY source_ref) AS source_refs FROM source_rows "
@@ -150,6 +151,8 @@ class AccountEquityRepository:
                 "as_of": as_of,
                 "max_mark_age_seconds": mark_age_seconds(max_mark_age),
                 "mark_source": mark_policy.source,
+                # Provenance phải chọn cùng nến với hàm SQL (live trước, rồi REST backfill).
+                "mark_sources": list(mark_policy.sources),
                 "mark_timeframes": list(mark_policy.timeframes),
             },
         )

@@ -137,8 +137,11 @@ async def test_snapshot_uses_shared_sql_state_and_round_trips_domain_lineage() -
         "as_of": NOW,
         "max_mark_age_seconds": 60,
         "mark_source": "BINANCE_USDM",
+        # RT-1 lát 2: provenance chọn mark cùng thứ tự nguồn với hàm SQL.
+        "mark_sources": ["BINANCE_USDM", "BINANCE_USDM_REST_BACKFILL"],
         "mark_timeframes": ["1m", "1h"],
     }
+    assert "(mb.source = :mark_source) DESC" in statement
 
 
 @pytest.mark.asyncio

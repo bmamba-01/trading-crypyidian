@@ -276,12 +276,22 @@ class AccountScopeInput:
             )
 
 
+# RT-1 lát 2: nguồn dự phòng (fallback) cho mark theo venue. Nến REST backfill của collector
+# SIG-0 là cùng dữ liệu kline đã đóng của Binance USDⓈ-M, chỉ khác đường thu; chỉ dùng khi không
+# có nến live cùng `close_time`. Hàm SQL `workspace_account_risk_state` (migration
+# `f1b3d5e7a9c2`) mã hóa đúng bảng này; unit test đối chiếu hai nơi.
+MARK_SOURCE_FALLBACKS: dict[str, tuple[str, ...]] = {
+    "BINANCE_USDM": ("BINANCE_USDM_REST_BACKFILL",),
+}
+
+
 @dataclass(frozen=True, slots=True)
 class MarkPolicy:
     """Nguồn và timeframe nến được phép làm giá mark (fix round 2, I2).
 
     Lấy từ root settings (`market_data.venue`, `market_data.timeframes`); SQL chỉ xét nến đóng
     đúng nguồn/timeframe, tươi khi `as_of − close_time ≤ max_mark_age` và đúng độ dài danh định.
+    `source` là nguồn ưu tiên; `sources` thêm nguồn dự phòng của venue (RT-1 lát 2).
     """
 
     source: str
@@ -293,6 +303,11 @@ class MarkPolicy:
             len(self.timeframes) > 0 and len(set(self.timeframes)) == len(self.timeframes),
             BudgetReasonCode.LINEAGE_INVALID,
         )
+
+    @property
+    def sources(self) -> tuple[str, ...]:
+        """Nguồn được phép theo thứ tự ưu tiên: venue live trước, rồi nguồn dự phòng."""
+        return (self.source, *MARK_SOURCE_FALLBACKS.get(self.source, ()))
 
 
 @dataclass(frozen=True, slots=True)
