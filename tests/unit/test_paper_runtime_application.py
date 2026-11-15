@@ -234,7 +234,10 @@ def test_runtime_worker_submits_only_persisted_candidate_decisions() -> None:
     ]
 
 
-def test_persisted_candidate_runs_bot_release_and_preserves_bot_lineage() -> None:
+@pytest.mark.parametrize("position_is_flat", [True, False])
+def test_persisted_candidate_runs_bot_release_and_preserves_bot_lineage(
+    position_is_flat: bool,
+) -> None:
     from tests.unit.test_bot_dispatcher import (
         FixtureSnapshots,
         _dispatcher,
@@ -279,6 +282,9 @@ def test_persisted_candidate_runs_bot_release_and_preserves_bot_lineage() -> Non
     decision = asyncio.run(dispatcher.dispatch_evidence(evidence, [bot_context], evaluated_at))[0]
     assert decision.status.value == "CANDIDATE"
     counters.candidate_id_override = decision.candidate_id
+    # RT-1 lát 2: context phải tái lập đúng DecisionSnapshot mà strategy đã đánh giá.
+    context.snapshot.snapshot_id = decision.decision_snapshot_id
+    context.snapshot.position_is_flat = position_is_flat
 
     service._bot_config_loader = lambda **_: asyncio.sleep(0, result=config)
     _FakeUnitOfWork.scalar_results = [
@@ -320,6 +326,12 @@ def test_persisted_candidate_runs_bot_release_and_preserves_bot_lineage() -> Non
         )
     )
 
+    if not position_is_flat:
+        # RT-1 lát 2: account còn vị thế/lệnh sống trên symbol → không đánh giá, không ghi gì.
+        assert result.submission is None
+        assert result.entry_block_reason == "POSITION_NOT_FLAT"
+        assert counters.cycles == counters.reserves == counters.submissions == 0
+        return
     assert result.submission is not None
     assert result.submission.duplicate is False
     assert counters.cycles == counters.reserves == counters.submissions == 1

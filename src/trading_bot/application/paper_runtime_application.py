@@ -13,7 +13,7 @@ from typing import Any, Protocol, cast
 from uuid import UUID
 
 from pydantic import ValidationError
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -145,6 +145,9 @@ class PaperDecisionCommand:
     account_id: UUID
     feature_snapshot_id: str
     evaluated_at: datetime
+    # RT-1 lát 2: decision bot đã lưu mà command này phục vụ (None ở đường feature snapshot cũ).
+    # Context provider dùng để nạp evidence/cutoff; không tham gia idempotency key.
+    bot_decision_id: UUID | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -419,8 +422,16 @@ class PaperRuntimeApplicationService:
                         account_id=command.account_id,
                         feature_snapshot_id=bot_decision.feature_snapshot_id,
                         evaluated_at=bot_decision.evaluated_at,
+                        bot_decision_id=bot_decision.decision_id,
                     )
                 assert isinstance(command, PaperDecisionCommand)
+                # Snapshot strategy đã đánh giá có ID riêng (content hash) với producer thật;
+                # snapshot tổng hợp/cũ dùng chính feature snapshot ID nên hai giá trị trùng nhau.
+                expected_snapshot_id = (
+                    bot_decision.decision_snapshot_id
+                    if bot_decision is not None and bot_decision.decision_snapshot_id
+                    else command.feature_snapshot_id
+                )
                 published, profile = await self._load_published_profile(
                     uow, account=account, as_of=command.evaluated_at
                 )
@@ -545,6 +556,15 @@ class PaperRuntimeApplicationService:
                     context = _context_for_bot_release(
                         context, release_id=bot_config.strategy.release_id
                     )
+                if (
+                    bot_decision is not None
+                    and getattr(context.snapshot, "position_is_flat", None) is False
+                ):
+                    # RT-1 lát 2: account đã có vị thế/lệnh sống trên symbol tại thời điểm quyết
+                    # định → không vào thêm (không pyramiding); candidate giữ nguyên, không ghi gì.
+                    return PaperDecisionApplicationResult(
+                        decision=None, entry_block_reason="POSITION_NOT_FLAT"
+                    )
                 self._validate_context(
                     context,
                     command=command,
@@ -556,6 +576,7 @@ class PaperRuntimeApplicationService:
                         if bot_decision is not None and bot_config is not None
                         else published.settings.strategy.default_release
                     ),
+                    expected_snapshot_id=expected_snapshot_id,
                 )
                 cycle = self._decision_cycle_factory(account.gateway)
                 decision = await cycle.prepare_published_with_risk_profile(
@@ -605,6 +626,7 @@ class PaperRuntimeApplicationService:
                     expected_candidate_id=(
                         bot_decision.candidate_id if bot_decision is not None else None
                     ),
+                    expected_snapshot_id=expected_snapshot_id,
                 )
                 risk_repository = self._risk_repository_factory(uow.session)
                 evaluation = await risk_repository.record_evaluation(
@@ -1007,7 +1029,7 @@ class PaperRuntimeApplicationService:
                             .where(
                                 MarketBar.workspace_id == self._workspace_id,
                                 MarketBar.symbol == item.symbol,
-                                MarketBar.source == mark_policy.source,
+                                MarketBar.source.in_(mark_policy.sources),
                                 MarketBar.timeframe.in_(mark_policy.timeframes),
                                 MarketBar.is_closed.is_(True),
                                 MarketBar.close_time <= now,
@@ -1015,6 +1037,8 @@ class PaperRuntimeApplicationService:
                             )
                             .order_by(
                                 MarketBar.close_time.desc(),
+                                # Cùng close_time: nến live trước nến REST backfill (RT-1 lát 2).
+                                case((MarketBar.source == mark_policy.source, 0), else_=1),
                                 MarketBar.available_at.desc(),
                                 MarketBar.revision.desc(),
                             )
@@ -1683,11 +1707,12 @@ class PaperRuntimeApplicationService:
         published: PublishedWorkspaceSettings,
         profile: ResolvedPaperExecutionProfile,
         strategy_release_id: str | None = None,
+        expected_snapshot_id: str | None = None,
     ) -> None:
         runtime_account_id = str(account.account_id)
         settings_version_id = str(published.settings_version_id)
         if (
-            context.snapshot.snapshot_id != command.feature_snapshot_id
+            context.snapshot.snapshot_id != (expected_snapshot_id or command.feature_snapshot_id)
             or context.planner_settings.workspace_id != str(published.workspace_id)
             or context.planner_settings.settings_version_id != settings_version_id
             or context.planner_settings.settings_hash != published.settings_hash
@@ -1740,6 +1765,7 @@ class PaperRuntimeApplicationService:
         profile: ResolvedPaperExecutionProfile,
         strategy_release_id: str,
         expected_candidate_id: str | None = None,
+        expected_snapshot_id: str | None = None,
     ) -> None:
         plan = decision.plan
         risk_decision = decision.risk_decision
@@ -1755,7 +1781,7 @@ class PaperRuntimeApplicationService:
             or plan.settings_version_id != str(published.settings_version_id)
             or plan.settings_hash != published.settings_hash
             or plan.risk_profile_version_id != str(published.settings.risk.profile_version_id)
-            or plan.snapshot_id != command.feature_snapshot_id
+            or plan.snapshot_id != (expected_snapshot_id or command.feature_snapshot_id)
             or plan.symbol != context.snapshot.symbol
             or plan.strategy_release_id != release_id
             or plan.release_content_hash
@@ -1770,7 +1796,7 @@ class PaperRuntimeApplicationService:
             or risk_decision.settings_version_id != str(published.settings_version_id)
             or risk_decision.risk_profile_version_id
             != str(published.settings.risk.profile_version_id)
-            or risk_decision.snapshot_id != command.feature_snapshot_id
+            or risk_decision.snapshot_id != (expected_snapshot_id or command.feature_snapshot_id)
             or risk_decision.release_content_hash != plan.release_content_hash
         ):
             raise PaperRuntimeApplicationError("PAPER_DECISION_RESULT_MISMATCH")

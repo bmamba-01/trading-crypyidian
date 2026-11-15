@@ -234,6 +234,8 @@ services:
       TRADING_BOT_PROCESS_ROLE: trading-runtime
       # UUID deployment scope; thay bằng workspace đã được provision trước khi chạy runtime.
       TRADING_BOT_RUNTIME_WORKSPACE_ID: ${TRADING_BOT_RUNTIME_WORKSPACE_ID:-00000000-0000-0000-0000-000000000000}
+      # RT-1 lát 2: PAPER tự nhận candidate và đưa nến đã lưu vào lifecycle; mặc định tắt.
+      TRADING_BOT_RUNTIME_MARKET_DISPATCH_ENABLED: ${TRADING_BOT_RUNTIME_MARKET_DISPATCH_ENABLED:-false}
       TRADING_BOT_DATABASE_USER: crypidian_trading_runtime
       TRADING_BOT_DATABASE_PASSWORD_FILE: /run/secrets/database_trading_runtime_password
     profiles: ["paper"]

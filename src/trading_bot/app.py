@@ -776,7 +776,8 @@ def create_app(
                     "paper_runtime_error_code": error_code,
                 },
             )
-        return {
+        dispatch_state, dispatch_detail = _market_dispatch_status(app)
+        body: dict[str, Any] = {
             "status": registry.status() if registry is not None else "degraded",
             "workspace_control": (
                 registry.workspace_control() if registry is not None else "active"
@@ -784,10 +785,13 @@ def create_app(
             "paper_accounts": summary,
             "execution_capabilities": {
                 "paper_recovery": "ready",
-                "market_dispatch": "not_configured",
+                "market_dispatch": dispatch_state,
                 "exchange_execution": "disabled",
             },
         }
+        if dispatch_detail is not None:
+            body["market_dispatch"] = dispatch_detail
+        return body
 
     return app
 
@@ -872,6 +876,7 @@ async def _start_paper_runtime(
     state.paper_application = None
     state.paper_registry = None
     state.paper_supervisor = None
+    state.paper_market_loop = None
     state.paper_accounts = {}
     state.paper_account_readiness = {}
     state.paper_runtime_error_code = "PAPER_BOOTSTRAP_NOT_RUN"
@@ -995,6 +1000,10 @@ async def _wire_paper_runtime(
     _record_bootstrap_result(state, result)
     if not result.ready:
         return None
+    market_dispatch = app_settings.runtime_market_dispatch_enabled
+    if context_provider_factory is None and market_dispatch:
+        # RT-1 lát 2: provider thật chỉ đọc dữ liệu đã persist (không gọi API sàn).
+        context_provider_factory = _postgres_context_provider
     try:
         context_provider = (
             context_provider_factory(
@@ -1034,6 +1043,16 @@ async def _wire_paper_runtime(
         application=paper_application,
         scorer_policy_provider=_configured_scorer_policy_provider(app_settings),
     )
+    if market_dispatch:
+        from trading_bot.application.paper_market_event_loop import PaperMarketEventLoop
+
+        market_loop = PaperMarketEventLoop(
+            application=paper_application,
+            sessions=session_factory,
+            workspace_id=result.workspace_id,
+        )
+        state.paper_market_loop = market_loop
+        job_processor = _with_market_loop(job_processor, market_loop)
     supervisor = supervisor_builder(
         registry=registry,
         application=paper_application,
@@ -1048,6 +1067,39 @@ async def _wire_paper_runtime(
     # Tick đầu chạy đồng bộ: áp control đã có và xác minh activity trước khi nhận command.
     await supervisor.tick_once()
     return supervisor
+
+
+def _postgres_context_provider(**kwargs: Any) -> Any:
+    from trading_bot.application.paper_market_context import (
+        PostgresPaperDecisionContextProvider,
+    )
+
+    return PostgresPaperDecisionContextProvider(
+        kwargs["sessions"], workspace_id=kwargs["workspace_id"]
+    )
+
+
+def _with_market_loop(
+    job_processor: Callable[..., Any] | None, market_loop: Any
+) -> Callable[..., Any]:
+    """Submit candidate rồi luôn chạy vòng nến; lỗi submit không chặn theo dõi vị thế."""
+
+    async def process(account_id: Any, now: Any) -> Any:
+        try:
+            return await job_processor(account_id, now) if job_processor is not None else None
+        finally:
+            await market_loop.run_for_account(account_id)
+
+    return process
+
+
+def _market_dispatch_status(app: FastAPI) -> tuple[str, dict[str, Any] | None]:
+    """Trạng thái RT-1 lát 2 cho readiness; chỉ bộ đếm, không có dữ liệu nhạy cảm."""
+    loop = getattr(app.state, "paper_market_loop", None)
+    if loop is None:
+        return "not_configured", None
+    detail: dict[str, Any] = loop.status()
+    return str(detail["state"]), detail
 
 
 def _runtime_job_processor(

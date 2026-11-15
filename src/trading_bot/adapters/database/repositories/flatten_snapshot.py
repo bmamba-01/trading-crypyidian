@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 
 from trading_bot.adapters.database.bot_scope import bind_account_bot
 from trading_bot.adapters.database.models.bot_entities import BotInstance
@@ -205,7 +205,7 @@ class PostgresFlattenSnapshotProvider:
             .where(
                 MarketBar.workspace_id == uow.workspace_id,
                 MarketBar.symbol == symbol,
-                MarketBar.source == policy.source,
+                MarketBar.source.in_(policy.sources),
                 MarketBar.timeframe.in_(policy.timeframes),
                 MarketBar.is_closed.is_(True),
                 MarketBar.close_time <= as_of,
@@ -213,6 +213,8 @@ class PostgresFlattenSnapshotProvider:
             )
             .order_by(
                 MarketBar.close_time.desc(),
+                # Cùng close_time: nến live trước nến REST backfill (RT-1 lát 2).
+                case((MarketBar.source == policy.source, 0), else_=1),
                 MarketBar.available_at.desc(),
                 MarketBar.revision.desc(),
             )

@@ -169,37 +169,88 @@ class PostgresMarketDecisionSnapshotProvider:
         if evidence_cutoff > evaluated_at:
             raise ValueError("Evidence cutoff không được sau evaluated_at.")
         try:
-            requirements = feature_requirements_for_release(context.strategy_release_id)
+            feature_requirements_for_release(context.strategy_release_id)
         except ValueError as error:
             raise ValueError(
                 "Strategy release chưa được hỗ trợ bởi market snapshot provider."
             ) from error
         async with UnitOfWork(self._source._sessions, workspace_id=context.workspace_id) as uow:
-            rows = await _latest_bar_rows(
+            return await build_market_decision_snapshot(
                 uow.session,
                 workspace_id=context.workspace_id,
-                as_of=evidence_cutoff,
-                symbols=(evidence.symbol,),
-                timeframes=tuple(requirements),
+                symbol=evidence.symbol,
+                strategy_release_id=context.strategy_release_id,
+                decision_time=evidence_cutoff,
+                series_quality_as_of=evaluated_at,
+                # Signal-only chỉ đưa strategy qua bộ lọc; không đọc PAPER position hay tạo lệnh.
+                position_is_flat=True,
                 max_bars_per_stream=self._source._max_bars_per_stream,
             )
-        grouped = _group_bars(rows)
-        return build_decision_snapshot_from_bars(
-            workspace_id=context.workspace_id,
-            symbol=evidence.symbol,
-            strategy_release_id=context.strategy_release_id,
-            decision_time=evidence_cutoff,
-            series_quality_as_of=evaluated_at,
-            bars_by_timeframe={
-                timeframe: tuple(
-                    _to_bar(row) for row in grouped.get((evidence.symbol, timeframe), ())
-                )
-                for timeframe in requirements
-            },
-            # Signal-only chỉ đưa strategy qua bộ lọc; không đọc PAPER position hay tạo lệnh.
-            position_is_flat=True,
-            source_identity_required=True,
-        )
+
+
+async def build_market_decision_snapshot(
+    session: AsyncSession,
+    *,
+    workspace_id: UUID,
+    symbol: str,
+    strategy_release_id: str,
+    decision_time: datetime,
+    series_quality_as_of: datetime,
+    position_is_flat: bool | None,
+    max_bars_per_stream: int = _MAX_BARS_PER_STREAM,
+) -> DecisionSnapshot:
+    """Dựng DecisionSnapshot từ nến đóng đã lưu (live ưu tiên, rồi REST backfill).
+
+    Dùng chung cho producer signal-only và context provider PAPER (RT-1 lát 2) để cùng input
+    luôn cho cùng `snapshot_id`; chỉ `position_is_flat` do caller quyết định.
+    """
+    _validate_as_of(decision_time)
+    _validate_as_of(series_quality_as_of)
+    requirements = feature_requirements_for_release(strategy_release_id)
+    rows = await _latest_bar_rows(
+        session,
+        workspace_id=workspace_id,
+        as_of=decision_time,
+        symbols=(symbol,),
+        timeframes=tuple(requirements),
+        max_bars_per_stream=max_bars_per_stream,
+    )
+    grouped = _group_bars(rows)
+    return build_decision_snapshot_from_bars(
+        workspace_id=workspace_id,
+        symbol=symbol,
+        strategy_release_id=strategy_release_id,
+        decision_time=decision_time,
+        series_quality_as_of=series_quality_as_of,
+        bars_by_timeframe={
+            timeframe: tuple(_to_bar(row) for row in grouped.get((symbol, timeframe), ()))
+            for timeframe in requirements
+        },
+        position_is_flat=position_is_flat,
+        source_identity_required=True,
+    )
+
+
+async def load_closed_market_bars(
+    session: AsyncSession,
+    *,
+    workspace_id: UUID,
+    symbol: str,
+    timeframe: str,
+    as_of: datetime,
+    max_bars: int = _MAX_BARS_PER_STREAM,
+) -> tuple[OHLCVBar, ...]:
+    """Tối đa `max_bars` nến đóng mới nhất đã khả dụng tại `as_of`, tăng dần theo open_time."""
+    _validate_as_of(as_of)
+    rows = await _latest_bar_rows(
+        session,
+        workspace_id=workspace_id,
+        as_of=as_of,
+        symbols=(symbol,),
+        timeframes=(timeframe,),
+        max_bars_per_stream=max_bars,
+    )
+    return tuple(_to_bar(row) for row in _group_bars(rows).get((symbol, timeframe), ()))
 
 
 class SignalRuntimeGate:

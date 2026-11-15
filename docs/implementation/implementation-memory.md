@@ -4197,3 +4197,82 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Bài học:** đổi thứ tự chuỗi migration khi merge làm lệch mọi DB đã chạy chuỗi cũ. Lần sau khi hai nhánh cùng thêm migration từ một cha, ưu tiên migration merge của Alembic (hai cha) thay vì nối tuyến tính, hoặc kiểm và vá mọi DB local đang dùng ngay lúc merge.
 - **Việc mở:** nhánh SIG có commit mới `3253646` (RT-1 lát 2, migration `f1b3d5e7a9c2`) chưa vào `dev`.
 - **Readback:** đã đọc lại mục này; không có secret (mật khẩu DB chỉ đọc từ tệp, không in).
+
+### 2026-11-15 — RT-1 lát 2: PAPER tự giao dịch từ quyết định thật
+
+- **Mục tiêu:** `trading-runtime` (chỉ PAPER) nhận CANDIDATE của `market-signal-worker`, vào lệnh, khớp ở nến kế, theo dõi stop/target tới khi đóng, chỉ từ dữ liệu đã persist; không gọi sàn; không đụng SHADOW/PAPER_GATE/Demo/LIVE; không sửa `domain/strategy/rules.py`.
+- **File mới:**
+  - `application/paper_market_context.py`: `PostgresPaperDecisionContextProvider` (`snapshot_for`, `load_context`, `load_monitor_evidence`), `position_is_flat_at`, `exchange_rules_from_instrument`, `effective_leverage`, `strategy_bar_closed`.
+  - `application/paper_market_event_loop.py`: `PaperMarketEventLoop` (entry → monitor → `expire_reservations`), `closed_bars_after`, bar key `"{source}:{symbol}:{tf}:{open_time_iso}"`.
+  - `migrations/versions/f1b3d5e7a9c2_rt1_mark_source_fallback.py` (head mới, nối sau `e3a5c7e9f1b4`).
+  - Test: `tests/unit/test_rt1_paper_market_dispatch.py`, `tests/e2e/test_rt1_paper_market_loop.py` + probe `tests/e2e/probes/rt1_paper_market_loop.py`.
+- **File sửa:** `app.py` (wiring + readiness), `config/settings.py` (`runtime_market_dispatch_enabled`), `compose.yaml` (env `TRADING_BOT_RUNTIME_MARKET_DISPATCH_ENABLED`, mặc định `false`), `application/market_signal_composition.py` (tách `build_market_decision_snapshot`, `load_closed_market_bars`), `application/paper_runtime_application.py` (`PaperDecisionCommand.bot_decision_id`, snapshot ID kỳ vọng, `POSITION_NOT_FLAT`, mark flatten), `domain/risk/workspace_budget.py` (`MARK_SOURCE_FALLBACKS`, `MarkPolicy.sources`), `adapters/database/repositories/account_equity.py` và `flatten_snapshot.py` (mark live trước rồi REST). Các E2E kiểm head `e3a5c7e9f1b4 (head)` đổi sang `f1b3d5e7a9c2 (head)`; `tests/unit/test_sig0_taker_flow.py` kiểm chuỗi head mới.
+- **Quyết định:**
+  - **Snapshot ID:** producer thật lưu `decision_snapshot_id` = content hash của DecisionSnapshot, khác `feature_snapshot_id` của evidence (FK của `order_intent`). Trước đây `_validate_context`/`_validate_prepared_decision` buộc snapshot ID = feature snapshot ID nên candidate thật không bao giờ submit được (chỉ snapshot tổng hợp của probe khớp). Nay đường bot-decision so với `decision_snapshot_id` (fallback feature snapshot ID; snapshot tổng hợp có hai ID trùng nên test cũ không đổi). Provider dựng lại snapshot bằng đúng hàm của producer (cutoff `observed_at`, freshness `evaluated_at`) nên ID trùng khi account phẳng.
+  - **Phẳng theo thời điểm:** không phẳng nếu có trade OPEN/đóng sau `evaluated_at`, hoặc intent ACCEPTED/PARTIALLY_FILLED/UNKNOWN/tạo sau `evaluated_at`. Không phẳng thì `evaluate_and_submit` trả `entry_block_reason=POSITION_NOT_FLAT`, không ghi gì (candidate trễ không thể chồng thời gian lên vị thế đã có).
+  - **Đòn bẩy:** settings không có trường leverage; dùng trần `max_leverage` hiệu lực (bot overlay đã siết, nếu không thì risk profile). Thiếu/không dương → `PAPER_LEVERAGE_UNAVAILABLE`.
+  - **ExchangeRules:** tick/step/min notional từ `market_instrument` (nguồn `BINANCE_USDM`, `available_at ≤ evaluated_at`, phải `TRADING`); multiplier 1; max notional = min(`max_notional`, `max_symbol_notional`, `trading_account.max_notional`); max quantity = floor(max notional / giá đóng entry gần nhất, theo step).
+  - **Vốn/rủi ro:** `load_paper_equity_snapshot` tại `evaluated_at` (unknown → `PAPER_EQUITY_UNKNOWN`); `available_margin` = vốn − initial margin của trade mở; reservation đang giữ qua `_active_totals`; lỗ ngày/trượt qua `calculate_loss_windows` + `RISK_LOSS_WINDOW_POLICY` (UTC). CostModel lấy từ execution profile như cũ.
+  - **Monitor:** ATR 14 của entry timeframe tính bằng `FeatureCalculator` từ nến đóng trước lúc nến monitor mở; kênh/feature thoát cho recipe v2; `strategy_bar_closed` theo khung chiến lược (cả v1, để `max_hold_bars` đếm nến 1h chứ không đếm phút). `opposing_signal` luôn False (giới hạn, chỉ ảnh hưởng H01). Macro để unknown → H06 tiếp tục abstain.
+  - **Event loop:** khung execution = `1m` nếu root `market_data.timeframes` có `1m`, ngược lại entry timeframe; không trộn khung. Con trỏ = `max(event_at)` checkpoint cùng `event_scope`, ghi cùng transaction với fill/exit nên restart không áp trùng. Chỉ nến `is_closed`, `close_time ≤ now`, `available_at ≤ now` (đồng hồ DB). Lỗi từng intent chỉ tăng bộ đếm; submit candidate lỗi vẫn chạy vòng nến (`_with_market_loop`).
+  - **Mark:** migration `CREATE OR REPLACE` hàm `workspace_account_risk_state` (giữ chữ ký/owner/grant), nhận thêm `BINANCE_USDM_REST_BACKFILL` khi `p_mark_source='BINANCE_USDM'`; cùng `close_time` thì live trước. Provenance SQL Python, mark flatten và preview flatten dùng `MarkPolicy.sources`. Unit test đối chiếu bảng trong SQL với `MARK_SOURCE_FALLBACKS`. Lưu ý: đây là giá đóng kline, không phải mark price của sàn.
+  - **Readiness:** `execution_capabilities.market_dispatch` = `not_configured` | `starting` | `running` | `degraded`; khi bật có thêm khóa `market_dispatch` (lần tick cuối, bộ đếm, mã lỗi cuối, không có secret).
+- **Lỗi và nguyên nhân gốc:**
+  - Unit `test_persisted_candidate_runs_bot_release_and_preserves_bot_lineage` dựa trên hợp đồng cũ (context snapshot ID = feature ID, giả candidate ID qua override). Sửa test theo hợp đồng mới (snapshot ID = `decision_snapshot_id`) và tham số hóa thêm nhánh `POSITION_NOT_FLAT`. Fake dùng `SimpleNamespace` nên đọc `position_is_flat` qua `getattr`.
+  - E2E lần 1: intent nằm ACCEPTED vì gateway đặt `eligible_at = max(eligible_after, submitted_at) + 5s latency`; nến 1m seed trước `evaluated_at` của producer nên đúng là không được khớp. Sửa probe: thêm nến 1m bắt đầu ở phút tròn sau `evaluated_at + 5s` và chờ đồng hồ thật cho nến đóng (khoảng 4 phút).
+  - E2E lần 2: biến `base` (lệnh compose) bị ghi đè bởi mốc nến nên khối `finally` không down được project; đã down thủ công đúng project `crypidian-rt1-paper-e2e-66ee048f03` và đổi tên biến.
+  - E2E lần 3: mã thoát của domain là `STOP_LOSS`, không phải `STOP`; sửa assertion.
+- **Command và kết quả:** xem mục "Kiểm chứng RT-1 lát 2" ngay dưới.
+- **Rủi ro còn mở:** `opposing_signal` luôn False (H01); chưa có lịch macro (H06); funding chưa tự ghi; candidate kẹt `POSITION_NOT_FLAT` được đọc lại mỗi tick tới khi hết hạn (rẻ, không ghi); ATR tính lại từ nến mỗi khi nến chiến lược mới đóng (có cache LRU 64); một vị thế cùng tick có thể xử lý tối đa 500 nến; equity/exposure trong `load_context` lấy trade đang OPEN tại lúc chạy (bảo thủ); E2E cần chờ đồng hồ thật khoảng 4–5 phút.
+- **Kiểm chứng RT-1 lát 2 (15/11/2026):**
+  - `PYTHONPATH=. uv run pytest tests/unit -q -p no:cacheprovider` → **4315 passed** (~130 s); mới: `tests/unit/test_rt1_paper_market_dispatch.py` 27 test + tham số `POSITION_NOT_FLAT`.
+  - `uv run ruff check src tests scripts migrations` → All checks passed; `uv run ruff format --check …` → 985 files already formatted; `uv run mypy src/trading_bot` → Success (395 file).
+  - `PYTHONPATH=. uv run pytest tests/e2e/test_rt1_paper_market_loop.py -q -p no:cacheprovider` → **1 passed / 323.34 s**. Chuỗi: head `f1b3d5e7a9c2`, `alembic check` sạch, producer thật tạo 1 CANDIDATE từ nến chỉ-REST, runtime với provider/loop production submit → khớp ở nến 1m đầu sau `eligible_at` (fill nguồn REST) → vốn có vị thế mở `known` nhờ mark REST → rerun không ghi thêm → nến chạm stop đóng trade (`STOP_LOSS`, `net_pnl = gross − cost`, reservation `TRANSFERRED`), nến sau stop không dùng, rerun idempotent, socket Python không có kết nối nào, `venue_order_intent` = 0, `exchange_order` chỉ một hàng gương PAPER (không có ID lệnh sàn).
+  - Regression: `tests/e2e/test_wp07_market_signal_producer.py test_multibot_decision.py test_multibot_fanout_runtime.py test_multibot_runtime_control.py test_flatten_worker_lifecycle.py test_workspace_risk_real_paths.py` → **13 passed, 2 failed / 377.07 s**. Hai test lỗi (`test_multibot_runtime_control.py::test_pause_kill_resume_permissions_exits_and_ruling_27_race`, `test_workspace_risk_real_paths.py::test_workspace_risk_caps_hold_through_real_runtime_admin_and_ledger_paths`) cùng `LEARNING_INCIDENT_HOLD_UNAVAILABLE` ở `_enforce_entry_gate` trong pha `race` của probe (migrator `-c role=`), trước mọi code mới. Chạy lại đúng hai test trên worktree tạm của `HEAD` chưa sửa → **2 failed** cùng mã lỗi ⇒ lỗi có sẵn, không do vòng này; chưa điều tra nguyên nhân (việc mở).
+  - Không chạy Playwright nên không có PNG evidence bị sinh lại. Các Compose project test đã down (`crypidian-review`, `crypidian-merge-review` không bị đụng).
+- **Bật trên Compose:** đặt `TRADING_BOT_RUNTIME_MARKET_DISPATCH_ENABLED=true` cùng `TRADING_BOT_RUNTIME_WORKSPACE_ID=<workspace>` cho service `trading-runtime` (profile `paper`); producer cần `TRADING_BOT_MARKET_SIGNAL_WORKSPACE_ID` + profile `signal-producer`; collector SIG-0 trong `ingestion-worker`. Muốn khớp bằng nến 1m thì root settings `market_data.timeframes` phải có `1m`.
+- **Việc kế tiếp:** điều tra `LEARNING_INCIDENT_HOLD_UNAVAILABLE` trong pha race của probe multibot; opposing signal cho H01; lịch macro cho H06; funding tự ghi; E2E chuyên cho nhánh `PAPER_EQUITY_UNKNOWN`/instrument thiếu.
+
+### 2026-11-15 — Sự cố khi bật RT-1 lát 2 trên stack local và chốt liên tục nến
+
+- **Bối cảnh:**
+  - Sub-agent đã triển khai RT-1 lát 2 (xem mục ngay trên). Người tích hợp chạy lại unit **4315 passed**, ruff/format/mypy sạch, review thay đổi `paper_runtime_application.py` (đổi `expected_snapshot_id` chỉ ở đường bot decision, vẫn kiểm `candidate_id`; chặn khi chưa phẳng vị thế; mark ưu tiên nguồn live).
+  - Bật trên stack `crypidian-review` (migration `f1b3d5e7a9c2`). Phải dừng (`docker stop`, không xóa) container `crypidian-review-trading-runtime-run-ec1144b1ad27`: một runtime chạy tay từ 14/11 cho cùng workspace, code cũ, đang giữ lease hai bot.
+- **Sự cố:**
+  - Tick đầu xử lý 587 sự kiện monitor và đóng hai trade seed LONG BTCUSDT mở 14/11 trên nến fixture/seed giá ~101.
+  - Hai trade bị đóng bằng nến REST Binance thật (~65.000), ghi `net_pnl` +1.394.273,31 và +1.422.809,25 USDT vào ledger PAPER local.
+  - Ledger append-only nên không sửa; đây là dữ liệu dev local, không phải giao dịch thật.
+  - Đã tắt dispatch ngay (`TRADING_BOT_RUNTIME_MARKET_DISPATCH_ENABLED=false`) và xác nhận không còn trade OPEN.
+- **Nguyên nhân gốc:**
+  - Vòng sự kiện chọn nến theo symbol/khung từ mọi nguồn được phép (live ưu tiên, rồi REST), tính từ con trỏ checkpoint cũ của vị thế.
+  - Vị thế seed có checkpoint trên nến 1m seed `BINANCE_USDM` (giá phẳng 100) tới 14/11. Nến kế tiếp là nến REST thật, cách một khoảng trống và giá lệch ~640 lần.
+  - Không có kiểm tính liên tục nên khoảng trống và đổi nguồn được coi như diễn biến giá.
+- **Sửa (`application/paper_market_event_loop.py`):**
+  - `continuous_prefix` + `closed_bar_before`: mỗi nến dùng cho entry/monitor phải nối đúng một nhịp sau nến đã lưu liền trước; giá mở không lệch quá `MAX_BAR_OPEN_JUMP` = 20% so với giá đóng liền trước.
+  - Thiếu nến liền trước cũng là vi phạm.
+  - Vi phạm thì dừng scope (vị thế giữ nguyên, không khớp/đóng), tăng `discontinuities`, `last_error_code` = `PAPER_MARKET_GAP`/`PAPER_MARKET_DISCONTINUITY`, readiness `market_dispatch` = `degraded` (bám tới khi restart) để người vận hành xử lý (flatten thủ công nếu cần).
+  - Test mới tái hiện đúng 101 → 65.000.
+  - Test kịch bản cũ và probe E2E bổ sung nến lịch sử liền trước (dữ liệu collector thật luôn có).
+- **Kiểm chứng:**
+  - Unit **4318 passed/110.51s**; mypy sạch.
+  - Compose E2E `tests/e2e/test_rt1_paper_market_loop.py`: lần đầu fail đúng do chốt (`degraded`, probe thiếu nến 1m trước `minute_base`), sau khi thêm nến lịch sử **1 passed/337.31s**.
+- **Bài học:** trước khi bật tự động đóng/mở lệnh trên dữ liệu có sẵn, phải kiểm vị thế đang mở và nguồn/khoảng trống dữ liệu của chúng. Kiểm thử bằng fixture liên tục không bắt được lỗi trộn nguồn.
+- **Còn mở:**
+  - Ghim nguồn nến theo vị thế (hiện dựa vào chốt giá/khoảng trống).
+  - Hai trade có PnL sai còn trong ledger local; muốn sạch thì reset dữ liệu stack dev, cần owner quyết.
+  - `test_multibot_runtime_control.py::…ruling_27_race` và `test_workspace_risk_real_paths.py` fail `LEARNING_INCIDENT_HOLD_UNAVAILABLE`, sub-agent xác nhận fail giống hệt trên HEAD sạch, chưa điều tra.
+- **Sau khi bật lại (15/11/2026 ~12:53 UTC):**
+  - Lần bật lại đầu tiên chạy image **cũ**: service `trading-runtime` không có bước `build`, image dùng chung `crypidian-app:local` chỉ được build qua `admin-web`. Phát hiện vì readiness thiếu trường `discontinuities`.
+  - Đã tắt dispatch, `docker compose build admin-web`, xác nhận `continuous_prefix` có trong image, rồi `--force-recreate` các service.
+  - **Luôn build lại image dùng chung trước khi khởi động lại runtime.**
+- **Trạng thái stack local hiện tại:**
+  - `market_dispatch: running`, `discontinuities: 0`, không lỗi, không trade OPEN.
+  - Bot Strategy Card READY.
+  - Bot H03 `RECOVERY_REQUIRED` / `PAPER_RECOVERY_CONFLICT` từ 12:37 UTC (ngay sau sự cố), runtime chặn entry của bot này (fail-closed). Chưa điều tra; không sửa tay ledger.
+
+### 2026-11-15 — Merge commit RT-1 lát 2 (`3253646`) của nhánh SIG vào `dev`
+
+- **Yêu cầu của owner:** "Merge và push dev" sau khi vá DB `crypidian-review`.
+- **Merge:** `claude/project-progress-review-wp07-d70431` @ `3253646` (PAPER tự giao dịch từ nến đã lưu: context provider, vòng sự kiện nến, mark nguồn REST, migration `f1b3d5e7a9c2`). Chỉ xung đột tài liệu: glossary — mục mới của RT-1 cũng đặt nhãn **AB** trùng mục điều khiển biểu mẫu → đổi thành **AD** (thứ tự AA SIG, AB biểu mẫu, AC CK, AD RT-1); `project-status.md` lấy dòng mới của SIG (head `f1b3d5e7a9c2`, nguồn nến/market dispatch); memory giữ cả hai. Không có xung đột mã nguồn; Alembic một head `f1b3d5e7a9c2` (nối sau `e3a5c7e9f1b4`). Worktree SIG còn thay đổi chưa commit (`paper_recovery.py` và test) của phiên khác — không nằm trong lần merge này.
+- **Kiểm chứng:** unit **4465 passed/128.54s**; ruff, format, mypy **405 files**. Playwright trang chart, dashboard, trang bot đạt. Compose E2E `test_rt1_paper_market_loop.py`, `test_live_kline_ingestion_persistence.py`, `test_wp07_rest_backfill_persistence.py`, `test_wp06_split_approval.py`, `test_admin_web_workflows.py` → **12 passed/975.66s**, 0 skip (đồng hồ host/Docker khớp).
+- **Readback:** đã đọc lại mục này; không có secret.
