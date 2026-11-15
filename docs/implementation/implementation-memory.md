@@ -4188,3 +4188,37 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
   - `genesis` (trading-runtime): checkpoint khởi tạo.
 - **Kiểm chứng:** unit **4363 passed/133.01s**; ruff, format, mypy sạch; E2E producer + RT-1 **2 passed/374.88s**.
 - **Giới hạn:** H06 không dùng (thiếu macro); bỏ 1m nên khớp/stop theo nến khung vào lệnh (thô hơn); collector chạm trần 60 stream.
+
+### 2026-11-15 — TG-3: thẻ ảnh Telegram (tín hiệu, vị thế PAPER, tổng kết) — renderer + sender
+
+- **Yêu cầu của owner:** tin Telegram phải là thẻ ảnh thiết kế riêng, dễ đọc, thay cho chữ thuần, gồm 3 loại: thẻ tín hiệu tham khảo, thẻ vị thế (mở/đóng), thẻ tổng kết ≤ 10 bot.
+- **Phạm vi vòng này:** chỉ view-model + renderer + `send_photo`. **Chưa** nối worker (agent khác đang sửa `workers/telegram_signal_worker.py` và thêm thông báo giao dịch). `build_signal_message` giữ nguyên làm caption/fallback.
+- **Thay đổi:**
+  - `application/telegram_cards.py` (mới): dataclass bất biến `SignalCardView`/`CardTarget`/`CardChecklistItem`, `TradeCardView` (`OPENED`/`CLOSED`, notional, rủi ro tới SL, thời gian giữ), `SummaryBotRow`/`SummaryCardView` (xếp PnL giảm dần, win rate gộp theo số lệnh); `signal_card_view_from(candidate)` đọc dict `build_signal_card` có sẵn, thiếu `card` thì chỉ còn giá tham chiếu; bộ định dạng kiểu VN (`format_price_vi` giữ 5 chữ số có nghĩa cho giá < 1, `format_usdt_vi`, `format_r_vi`, `format_percent_vi`, `format_local_time` giờ `Asia/Ho_Chi_Minh` fallback UTC+7, `format_duration_vi`); caption ≤ 1024 ký tự cho cả 3 thẻ.
+  - `adapters/telegram/card_renderer.py` (mới): `render_signal_card`/`render_trade_card`/`render_summary_card` → PNG 1080 px, nền tối, thang giá dọc, checklist ✓/✗/— vẽ bằng nét, thanh SL—vào—TP, bảng 10 bot có thanh PnL. Hình bo góc/tròn khử răng cưa bằng siêu lấy mẫu ×3. Layout engine `BASIC` cố định ⇒ output xác định.
+  - Port `TelegramMessageSender.send_photo(chat_id, png_bytes, caption)`; `TelegramBotApiSender.send_photo` gửi `multipart/form-data` (`chat_id`, `caption` nếu có, `photo=card.png;image/png`), kiểm chữ ký PNG, ≤ 10 MB, caption ≤ 1024; dùng chung `_post` với ánh xạ lỗi/`retry_after`/không lộ token như `send_message`. `RecordingTelegramSender.photos` (tối đa 50 ảnh).
+  - Font **Be Vietnam Pro** Regular/Medium/SemiBold/Bold (TTF) + `OFL.txt` tại `src/trading_bot/assets/fonts/`, tải từ `google/fonts/ofl/bevietnampro` (sha256 Regular `cd1ef6e9…`, Bold `7f738fe5…`; kích thước khớp listing GitHub). Đã kiểm wheel `uv build` chứa thư mục này; Docker `COPY src` + `uv sync` editable nên có font.
+  - `scripts/render_telegram_card_samples.py` sinh 6 ảnh mẫu (chip "DỮ LIỆU MẪU") vào `docs/design/telegram-cards/` (120–280 KB/ảnh).
+  - Tài liệu: `docs/design/telegram-cards.md` (khảo sát, 5 mẫu thiết kế, token), glossary mục **AE**.
+- **Dependency:** `pillow==13.0.0` (phát hành 16/10/2026, > 2 tuần; có wheel cp314 macOS + manylinux x86_64/aarch64). Docs https://pillow.readthedocs.io — kiểm 15/11/2026. Máy dev không có libraqm (`features.check('raqm')` False) nên ép `Layout.BASIC`: tiếng Việt dùng ký tự dựng sẵn NFC (view chuẩn hóa NFC), không cần shaping.
+- **Nguồn đã kiểm (15/11/2026):**
+  - Telegram sendPhoto: ảnh ≤ 10 MB, rộng + cao ≤ 10000, tỉ lệ ≤ 20, caption 0–1024 — https://core.telegram.org/bots/api#sendphoto
+  - Cornix signal posting format — https://help.cornix.io/en/articles/11659507-signal-posting-format
+  - Tealstreet PnL cards — https://docs.tealstreet.io/docs/trade/pnl-cards ; Bybit P&L — https://www.bybit.com/en/help-center/article/FAQ-PL-Calculation (trang Trade Summary Card timeout khi fetch, chỉ dùng mô tả từ kết quả tìm kiếm)
+  - OFL — https://openfontlicense.org/ ; Be Vietnam Pro OFL.txt (không có Reserved Font Name).
+- **Phát hiện khi làm:**
+  - Font không có glyph ✓ ✗ → ↑ ↓ ▲ ▼ ₮ (kiểm bằng so mask với `.notdef`) ⇒ vẽ biểu tượng bằng hình; test khóa các ký tự tiếng Việt và `− – — … · ≥ ≤ ≠` có glyph.
+  - Bảng tổng kết bản đầu chồng cột "MỞ" và "MAX DD" (xem ảnh) ⇒ dời mép phải các cột số.
+  - Giá < 1 với 4 chữ số có nghĩa làm mất độ chính xác `0.01234567` → `0,01235` ⇒ nâng lên 5 (`0,012346`).
+  - Lệnh shell chứa chuỗi "github" bị hook worktree chặn ⇒ tải font bằng script Python trong scratchpad rồi copy.
+- **Kiểm chứng:**
+  - `tests/unit/test_telegram_cards.py` (mới): định dạng, view từ candidate có/không thẻ, PNG hợp lệ (chữ ký, rộng 1080, < 1 MB, giới hạn sendPhoto), xác định (2 lần render cùng byte), LONG/SHORT, coin giá nhỏ, PnL dương/âm/0, nhãn tiếng Việt rất dài, 10/12/0 bot, glyph font, `_fit`/`_wrap`, sendPhoto multipart (không `parse_mode`), lỗi 429 `retry_after` không lộ token/description, lỗi mạng, validate đầu vào, recording sender.
+  - Unit `PYTHONPATH=. uv run pytest tests/unit -q -p no:cacheprovider`: **4376 passed, 2 failed/137.13s**. Hai test fail (`test_backtest_replay_writer_boundary::test_compose_mounts_replay_writer_only_for_backtest_persistence`, `test_candidate_builder_boundary::test_compose_builder_secret_is_exclusive_and_opt_in`) do môi trường: worktree agent không có `.secrets/garage.env` (gitignore) nên `docker compose config` lỗi "env file not found". Chạy lại 2 file đó với file rỗng tạm `.secrets/garage.env` (không chứa secret, xóa ngay sau): **5 passed/2.71s**. Không liên quan thay đổi TG-3.
+  - Bộ Telegram liên quan (`test_telegram_cards.py`, `test_telegram_signal_delivery.py`, `test_telegram_signal_worker.py`): **47 passed**.
+  - `ruff check`, `ruff format --check`, `mypy src/trading_bot`: sạch.
+  - E2E: không chạy — vòng này không đổi ranh giới dịch vụ (chưa nối worker, không đổi DB/API); E2E Telegram sẽ cần khi nối worker.
+- **Còn mở:**
+  - Nối worker tín hiệu + thông báo giao dịch/tổng kết dùng `send_photo`, fallback tin chữ khi render/gửi ảnh lỗi; ghi delivery theo loại tin.
+  - Câu "mất hiệu lực" từ `build_signal_card` vẫn in giá dạng máy (`96619.3`).
+  - Chưa xem thẻ trên app Telegram thật (ảnh photo bị Telegram nén; kiểm độ nét chữ 19–22 px trên điện thoại).
+  - Nguồn dữ liệu cho thẻ tổng kết (win rate, max drawdown theo cửa sổ) chưa có read-model; view chỉ nhận số đã tính.

@@ -10,6 +10,8 @@ class RecordingTelegramSender:
         self._messages: deque[tuple[int, str]] = deque(maxlen=capacity)
         self.confirmations: deque[tuple[int, str, str]] = deque(maxlen=capacity)
         self.callback_answers: deque[tuple[str, str]] = deque(maxlen=capacity)
+        # Ảnh thẻ TG-3: (chat_id, PNG, caption); giữ ít hơn tin chữ vì mỗi ảnh ~100–300 KB.
+        self.photos: deque[tuple[int, bytes, str]] = deque(maxlen=max(1, min(capacity, 50)))
 
     @property
     def messages(self) -> list[tuple[int, str]]:
@@ -23,3 +25,6 @@ class RecordingTelegramSender:
 
     async def answer_callback(self, callback_id: str, text: str) -> None:
         self.callback_answers.append((callback_id, text))
+
+    async def send_photo(self, chat_id: int, png_bytes: bytes, caption: str) -> None:
+        self.photos.append((chat_id, bytes(png_bytes), caption))
