@@ -4364,3 +4364,14 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Còn mở:** link Microscope cho bot; TP1–3; kéo chuột giữa.
 - **Bài học:** probe đọc dữ liệu bằng role admin-web phải đặt `actor_membership_id` như service; thêm luôn khẳng định "không membership → 0 hàng" để test chứng minh RLS thay vì chỉ đi đường vui.
 - **Readback:** đã đọc lại mục này; không có secret.
+
+### 2026-11-16 — Push CK-7 và CK-8: công cụ vẽ, bộ lớp, nhiều khung (CK-8 chưa commit)
+
+- **Yêu cầu của owner:** "Push, làm CK-8" → push `origin/dev` fast-forward `3e6c080..7260de6` (CK-7), xác nhận bằng `git ls-remote`.
+- **Quyết định tạm:** owner chưa chốt #4 (lưu bản vẽ DB) và #8 (Lightweight Charts 5.3.0) → làm giai đoạn 1: chỉ `localStorage`, giữ 5.2.1, không tải gói mới.
+- **Đã làm:** `static/chart-drawings.js`, `static/chart-multi.js`, API nội bộ `window.CrypidianChart` trong `market-chart.js`, panel lớp nhóm + bộ lớp + đếm lớp, giá trị EMA/VWAP ở chú giải con trỏ; template thanh vẽ (ẩn khi < 768px hoặc `pointer: coarse`), ô nhiều khung; CSS. Glossary mục **AK**; WBS CK mục CK-8; `project-status.md`.
+- **Lỗi gặp và sửa:** Playwright vẽ trendline ra 0 hình. Soi bằng phiên Playwright riêng (ghi sự kiện `subscribeClick`/`subscribeDblClick`): khi nhấp lần hai nhanh ở vị trí khác, Lightweight Charts 5.2.1 **không phát cả click lẫn dblClick** → người dùng bấm nhanh cũng mất điểm. Sửa: công cụ vẽ nghe sự kiện `click` DOM của khung chart (bỏ thao tác kéo > 4px và vùng trục giá); nhấp đúp không đặt lại vùng nhìn khi đang dùng công cụ vẽ. Nhãn Fibonacci in 8 chữ số → 2 chữ số với giá ≥ 1.
+- **Kiểm chứng:** unit **4546 passed/131.51s**; ruff/format sạch; mypy **412 files** sạch. Playwright trang chart **1 passed/22.2s**: vẽ 4 loại, lưu `localStorage` có time/price, hoàn tác/làm lại, nam châm bắt đúng một giá OHLC, chọn + Delete, khóa chặn vẽ, tải lại còn đủ hình; bộ lớp "Tối giản" → "Lớp 4/19"; 2 khung → khung 4H có nến; thanh vẽ ẩn ở 360/390px, hiện ở ≥ 768px. Ảnh `ck8-drawings-desktop.png`, `ck8-multi-chart-desktop.png` đã xem. Không đổi DB.
+- **Bài học:** sự kiện click của Lightweight Charts không đủ tin cho thao tác nhiều điểm; với tương tác người dùng nên nghe sự kiện DOM và tự quy đổi toạ độ.
+- **Còn mở:** lưu bản vẽ vào DB (owner #4); kéo sửa điểm hình đã vẽ; khung phụ chỉ nến + EMA; chưa đo hiệu năng 4 khung ở 1440px; CK-8 chưa commit.
+- **Readback:** đã đọc lại mục này; không có secret.

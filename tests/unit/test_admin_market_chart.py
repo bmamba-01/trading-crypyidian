@@ -587,3 +587,26 @@ def test_bar_decision_api_validates_bar_time_and_returns_decision() -> None:
     assert client.get(f"{base}&time={at}&timeframe=2h").status_code == 422
     denied = _client(_Reporting([], BotReportError(404, "REPORT_NOT_FOUND", "x")))
     assert denied.get(f"{base}&time={at}").status_code == 404
+
+
+def test_chart_page_has_drawing_toolbar_layer_presets_and_multi_chart() -> None:
+    html = (
+        _client(_Reporting(_bars(200, start=START, step=timedelta(minutes=5))))
+        .get("/admin/chart?timeframe=5m")
+        .text
+    )
+    assert "data-draw-toolbar" in html
+    for tool in ("trendline", "hline", "ray", "rect", "fib", "text"):
+        assert f'data-draw-tool="{tool}"' in html
+    for toggle in ("magnet", "lock", "hide"):
+        assert f'data-draw-toggle="{toggle}"' in html
+    assert "data-layer-preset" in html
+    assert 'value="minimal"' in html
+    assert html.count('class="mc-layer-group"') == 4
+    assert "data-multi-count" in html
+    assert 'data-timeframes="1m,5m,1h"' in html
+    assert "/static/chart-drawings.js" in html
+    assert "/static/chart-multi.js" in html
+    assert ' style="' not in html
+    inline = re.findall(r"<script(?![^>]*\bsrc=)(?![^>]*application/json)[^>]*>", html)
+    assert inline == []

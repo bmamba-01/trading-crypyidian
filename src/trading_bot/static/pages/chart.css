@@ -332,3 +332,24 @@
 .mc-bar-analysis__head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.4rem; }
 .mc-bar-analysis__head h3 { margin: 0; font-size: 0.92rem; }
 .mc-bar-analysis p { margin: 0; font-size: 0.84rem; }
+
+/* ---------- CK-8: công cụ vẽ, panel lớp, nhiều khung ---------- */
+.mc-draw-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.3rem; }
+.mc-draw-toolbar [aria-pressed="true"] { background: var(--accent, #f0b90b); color: #111827; border-color: transparent; }
+.mc-draw-text { min-height: 44px; width: 9rem; }
+/* Điện thoại / con trỏ thô: chỉ xem bản vẽ. */
+@media (max-width: 767px), (pointer: coarse) {
+  .mc-draw-toolbar { display: none; }
+}
+.mc-layer-count { font-weight: 600; opacity: 0.75; margin-left: 0.3rem; }
+.mc-layer-presets { display: flex; align-items: center; gap: 0.5rem; flex: 1 1 100%; font-size: 0.82rem; font-weight: 600; }
+.mc-layer-presets select { min-height: 44px; }
+.mc-layer-group { display: flex; flex-wrap: wrap; align-items: center; gap: 0.15rem 0.6rem; flex: 1 1 100%; }
+.mc-layer-group__title { flex: 1 1 100%; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; opacity: 0.6; }
+.mc-multi-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; font-size: 0.82rem; font-weight: 600; }
+.mc-multi-controls select { min-height: 44px; }
+.mc-multi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr)); gap: 0.5rem; }
+.mc-multi-grid[hidden] { display: none; }
+.mc-multi-cell { border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.3)); border-radius: 0.5rem; overflow: hidden; min-width: 0; }
+.mc-multi-cell__title { margin: 0; padding: 0.25rem 0.5rem; font-size: 0.78rem; font-weight: 700; }
+.mc-multi-cell__chart { height: 260px; width: 100%; }

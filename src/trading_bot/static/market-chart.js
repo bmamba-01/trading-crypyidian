@@ -995,8 +995,43 @@
         /* bỏ qua khi không ghi được localStorage */
       }
       applyLayers();
+      updateLayerCount();
     });
   }
+
+  // CK-8: đếm "Lớp a/b" và bộ lớp dựng sẵn (preset); chọn preset rồi đổi tay → "Tự chọn".
+  const LAYER_PRESETS = {
+    ict: ["structure", "levels", "sessions", "ict_zones", "equal_levels", "killzones", "signal", "paper", "quote"],
+    volume: ["vwap", "profile", "tpo", "profile_levels", "vsa", "signal", "paper", "quote"],
+    minimal: ["ema", "signal", "paper", "quote"],
+  };
+  const layerCount = document.querySelector("[data-layer-count]");
+  const presetSelect = document.querySelector("[data-layer-preset]");
+  const updateLayerCount = () => {
+    if (layerCount) {
+      layerCount.textContent = `Lớp ${layerInputs.filter((el) => el.checked).length}/${layerInputs.length}`;
+    }
+  };
+  presetSelect?.addEventListener("change", () => {
+    const preset = presetSelect.value;
+    if (!preset) return;
+    for (const input of layerInputs) {
+      const on =
+        preset === "default" ? input.dataset.default === "on" : LAYER_PRESETS[preset].includes(input.dataset.layer);
+      if (input.checked !== on) {
+        input.checked = on;
+        input.dispatchEvent(new Event("change"));
+      }
+    }
+    presetSelect.value = preset;
+    updateLayerCount();
+  });
+  for (const input of layerInputs) {
+    input.addEventListener("input", () => {
+      if (presetSelect) presetSelect.value = "";
+    });
+  }
+  updateLayerCount();
 
   // Chú giải OHLC + khối lượng theo con trỏ.
   const legend = document.getElementById("mc-legend");
@@ -1017,6 +1052,15 @@
     // Nhãn VSA bằng chữ để không chỉ dựa vào màu (CK-5).
     const vsa = (payload.vsa || []).find((item) => item.time === param.time);
     if (vsa) parts.push(`VSA: ${vsa.label}`);
+    // CK-8: giá trị chỉ báo đang bật tại con trỏ.
+    for (const [series, label, key] of [
+      [ema20, "EMA20", "ema"],
+      [ema50, "EMA50", "ema"],
+      [vwap, "VWAP", "vwap"],
+    ]) {
+      const point = param.seriesData.get(series);
+      if (layerOn(key) && point && point.value !== undefined) parts.push(`${label} ${fmtNumber(point.value, 2)}`);
+    }
     legend.textContent = parts.join(" · ");
   });
 
@@ -1051,7 +1095,11 @@
   for (const button of document.querySelectorAll("[data-chart-action]")) {
     button.addEventListener("click", () => actions[button.dataset.chartAction]?.());
   }
-  container.addEventListener("dblclick", () => actions.reset());
+  container.addEventListener("dblclick", () => {
+    // Đang dùng công cụ vẽ thì nhấp đúp là đặt điểm, không đặt lại vùng nhìn (CK-8).
+    if (window.CrypidianChart?.isDrawing?.()) return;
+    actions.reset();
+  });
   container.addEventListener("keydown", (event) => {
     // Không chặn phím có tổ hợp (trợ năng, phím tắt trình duyệt) và phím Tab.
     if (event.ctrlKey || event.metaKey || event.altKey) return;
@@ -1198,6 +1246,49 @@
     showFallback("Biểu đồ gặp lỗi khi vẽ; dữ liệu sự kiện bên dưới vẫn dùng được.");
     return;
   }
+
+  // CK-8: API nội bộ cho chart-drawings.js và lưới nhiều khung (cùng trang, không phải API công khai).
+  const timeForLogical = (logical) => {
+    const n = barTimes.length;
+    if (n === 0) return null;
+    if (logical <= 0) return Math.round(barTimes[0] + logical * intervalSeconds);
+    if (logical >= n - 1) return Math.round(barTimes[n - 1] + (logical - (n - 1)) * intervalSeconds);
+    const lo = Math.floor(logical);
+    return Math.round(barTimes[lo] + (logical - lo) * (barTimes[lo + 1] - barTimes[lo]));
+  };
+  window.CrypidianChart = {
+    LWC,
+    chart,
+    candles,
+    container,
+    palette,
+    CanvasPrimitive,
+    fmtNumber,
+    fmtTime,
+    symbol: container.dataset.symbol,
+    timeframe: container.dataset.timeframe,
+    botId: container.dataset.botId,
+    xForTime: (time) => {
+      const logical = logicalForTime(time);
+      return logical === null ? null : chart.timeScale().logicalToCoordinate(logical);
+    },
+    timeForX: (x) => {
+      const logical = chart.timeScale().coordinateToLogical(x);
+      return logical === null ? null : timeForLogical(logical);
+    },
+    // Nến chứa thời điểm ``time`` (để nam châm bắt OHLC).
+    barAt: (time) => {
+      let found = null;
+      for (const bar of payload.bars) {
+        if (bar.time <= time) found = bar;
+        else break;
+      }
+      return found;
+    },
+    bars: () => payload.bars,
+    layerOn,
+  };
+  document.dispatchEvent(new CustomEvent("mc:chart-ready"));
 
   // Polling 5 giây khi tab hiển thị; dừng hẳn khi mất quyền.
   const botId = container.dataset.botId;

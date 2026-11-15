@@ -829,3 +829,13 @@ Khái niệm VSA và ZigZag đã định nghĩa ở mục AC; mục này ghi tê
 | Unrealized PnL (UPnL) | Lãi/lỗ chưa thực hiện | (mark − giá vào trung bình) × khối lượng, đảo dấu với vị thế bán; chưa trừ phí thoát và funding (có thêm bản đã trừ phí vào lệnh). Như Binance, dùng mark price; mark cũ/thiếu thì dùng giá hiện tại và ghi nguồn. | [Binance — Mark price và PnL](https://www.binance.com/en/support/faq/detail/360033525271) (kiểm 15/11/2026) |
 | R multiple (open position) | Bội số R của vị thế mở | UPnL chia rủi ro ban đầu = \|giá vào − SL của kế hoạch đã duyệt\| × khối lượng. | Định nghĩa nội bộ (`domain/portfolio/position_overlay.py`) |
 | Bar analysis (context menu) | Phân tích tại nến | Chuột phải (máy tính) hoặc nhấn giữ 0,6 giây (điện thoại) trên nến → quyết định của bot được đánh giá khi nến đó đóng (`evaluated_at` trong `(mở nến, đóng nến]`), checklist và cổng kiểm soát; chỉ quyết định khớp hash. | Định nghĩa nội bộ |
+
+## AK. Công cụ vẽ, bộ lớp và nhiều khung (CK-8, 16/11/2026)
+
+| Thuật ngữ (EN) | Tiếng Việt | Định nghĩa và giới hạn | Nguồn |
+|---|---|---|---|
+| Drawing tools (trendline, horizontal line, ray, rectangle, text, Fibonacci) | Công cụ vẽ (đường xu hướng, đường ngang, tia, hình chữ nhật, văn bản, Fibonacci) | Hình do người xem tự vẽ để ghi chú; không ảnh hưởng tín hiệu/chiến lược. Lưu theo mã trong `localStorage` của trình duyệt (giai đoạn 1), toạ độ là thời gian UTC + giá nên đổi khung vẫn đúng chỗ. | [Lightweight Charts — Plugins/primitives](https://tradingview.github.io/lightweight-charts/docs/plugins/intro) |
+| Fibonacci retracement | Fibonacci thoái lui | Các mức 0; 23,6; 38,2; 50; 61,8; 78,6; 100% giữa điểm đầu (100%) và điểm cuối (0%) của nhịp được vẽ; là quy ước tham khảo, không có cơ sở dự báo được kiểm định. | [Investopedia — Fibonacci retracement](https://www.investopedia.com/terms/f/fibonacciretracement.asp) |
+| Magnet (snap to OHLC) | Nam châm (bắt giá OHLC) | Điểm vẽ được kéo về giá Mở/Cao/Thấp/Đóng gần nhất của nến tại vị trí nhấp và về đúng mốc mở nến. | Định nghĩa nội bộ |
+| Layer preset | Bộ lớp dựng sẵn | Tổ hợp công tắc lớp: Mặc định, ICT, Volume, Tối giản; đổi tay một công tắc thì bộ lớp chuyển về "Tự chọn". | Định nghĩa nội bộ |
+| Multi-timeframe grid | Lưới nhiều khung | 2 hoặc 4 chart cùng mã (khung lớn hơn trước, rồi khung nhỏ hơn) đồng bộ con trỏ (nến chứa thời điểm) và vùng thời gian với chart chính. | Định nghĩa nội bộ |

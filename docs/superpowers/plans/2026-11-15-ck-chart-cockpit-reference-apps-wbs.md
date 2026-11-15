@@ -1,6 +1,6 @@
 # WBS CK — Buồng lái biểu đồ (chart cockpit) theo hai app tham chiếu
 
-**Ngày:** 2026-11-15 · **Trạng thái:** CK-0 đã làm; CK-1…CK-7 đã làm phần lõi (15/11/2026, xem cuối từng mục, còn mở ghi rõ); CK-8…CK-13 là kế hoạch · **Chế độ:** PAPER/replay; chỉ dữ liệu thị trường công khai; không route order, không bật SHADOW/PAPER_GATE/Demo/LIVE. <br>
+**Ngày:** 2026-11-15 · **Trạng thái:** CK-0 đã làm; CK-1…CK-8 đã làm phần lõi (15–16/11/2026, xem cuối từng mục, còn mở ghi rõ); CK-9…CK-13 là kế hoạch · **Chế độ:** PAPER/replay; chỉ dữ liệu thị trường công khai; không route order, không bật SHADOW/PAPER_GATE/Demo/LIVE. <br>
 **Đầu vào:** hai ảnh owner gửi ngày 15/11/2026 — (1) "XAUUSD Research Desk 3.3.0" (MT5, ICT + VSA); (2) một app quét/auto crypto trên Bybit (WLFI/USDT, Green Flag, MA34×89). <br>
 **Xây trên:** [WBS SIG](./2026-11-15-sig-market-structure-scalping-chart-wbs.md) (đang ở nhánh `claude/project-progress-review-wp07-d70431`, **chưa vào `dev`**), [UI kit v1.1](../../design/admin-ui-kit.md), ingest live Binance (`docs/research/binance-usdm-api-audit-2026-11-14.md`), [khảo sát 14/11](./2026-11-14-feature-survey-and-manager-insights.md).
 
@@ -254,7 +254,7 @@ Ký hiệu: **D** = đã có trên `dev`; **S** = đã làm lát đầu trên nh
 
 **Acceptance:** UPnL khớp ledger + mark price trong fixture; phím tắt có trên desktop, không chặn thao tác trợ năng; mobile dùng nhấn giữ.
 
-**Đã làm (15/11/2026):** `domain/portfolio/position_overlay.py` (`ck7-position-v1`): giá vào trung bình theo fill ENTRY, UPnL theo mark (mark cũ → giá hiện tại kèm nguồn), UPnL sau phí vào, R theo SL kế hoạch. `BotReportRepository.open_positions` (trade OPEN + fill ENTRY + kế hoạch đã duyệt + STOP_UPDATED mới nhất) đi cùng overview polling 2 giây; chart vẽ đường "PAPER LONG/SHORT · UPnL … (xR)", SL/TP PAPER, marker "PAPER đã khớp · giá" ở nến khớp; công tắc "Vị thế PAPER (tắt = ẩn)". `GET /admin/api/chart/decision` + `get_decision_at` (REPORT_READ, khớp hash, cửa sổ nến đóng); chuột phải / nhấn giữ 0,6 giây mở "Phân tích tại nến". Thanh điều khiển −/+/Về đầu/Đặt lại/→ Live, phím `+ − Home End 0` khi chart được focus (không chặn tổ hợp phím), nhấp đúp đặt lại, cỡ S/M/L lưu `localStorage` (try/catch), hộp gợi ý phím tắt.
+**Đã làm (15/11/2026, commit `7260de6`, đã push `dev`):** `domain/portfolio/position_overlay.py` (`ck7-position-v1`): giá vào trung bình theo fill ENTRY, UPnL theo mark (mark cũ → giá hiện tại kèm nguồn), UPnL sau phí vào, R theo SL kế hoạch. `BotReportRepository.open_positions` (trade OPEN + fill ENTRY + kế hoạch đã duyệt + STOP_UPDATED mới nhất) đi cùng overview polling 2 giây; chart vẽ đường "PAPER LONG/SHORT · UPnL … (xR)", SL/TP PAPER, marker "PAPER đã khớp · giá" ở nến khớp; công tắc "Vị thế PAPER (tắt = ẩn)". `GET /admin/api/chart/decision` + `get_decision_at` (REPORT_READ, khớp hash, cửa sổ nến đóng); chuột phải / nhấn giữ 0,6 giây mở "Phân tích tại nến". Thanh điều khiển −/+/Về đầu/Đặt lại/→ Live, phím `+ − Home End 0` khi chart được focus (không chặn tổ hợp phím), nhấp đúp đặt lại, cỡ S/M/L lưu `localStorage` (try/catch), hộp gợi ý phím tắt.
 **Còn mở:** link Microscope (hiện chỉ có cho Strategy Card, chưa có cho bot); TP1–3 (chờ SIG-3 có nhiều TP); kéo bằng chuột giữa (Lightweight Charts đã hỗ trợ kéo chuột trái); đã kiểm trên PostgreSQL thật bằng role admin-web trong Compose E2E RT-1 (pha `web_read`, gồm RLS cần membership).
 
 ### CK-8 — Công cụ vẽ, quản lý lớp và nhiều chart
@@ -265,6 +265,10 @@ Ký hiệu: **D** = đã có trên `dev`; **S** = đã làm lát đầu trên nh
 4. **Nhiều chart**: lưới 2 hoặc 4 khung cùng mã, đồng bộ con trỏ và thời gian.
 
 **Acceptance:** vẽ/lưu/tải lại đúng tọa độ (thời gian + giá) khi đổi khung; không script/style nội tuyến; nhiều chart vẫn mượt ở 1440px; mobile chỉ xem bản vẽ.
+
+**Đã làm (16/11/2026, chưa commit) — giai đoạn 1:** `static/chart-drawings.js` (tự viết bằng primitive, không gói bên thứ ba, không chép mã ví dụ nên không cần header Apache): con trỏ chọn hình (Esc bỏ chọn, Delete xóa), trendline, đường ngang, tia, hình chữ nhật, Fibonacci (7 mức), văn bản (ô nhập nội dung, tối đa 120 ký tự), nam châm OHLC, khóa, ẩn tất cả, hoàn tác/làm lại (Ctrl/Cmd+Z, tối đa 50 bước), xóa (hình đang chọn hoặc xác nhận xóa tất cả). Lưu `localStorage` khóa `crypidian.chartDrawings.v1.<mã>` (không theo khung), kiểm cấu trúc khi tải (loại hình hợp lệ, số hữu hạn, giá > 0, tối đa 200 hình). Màn < 768px hoặc con trỏ thô: ẩn thanh vẽ, chỉ xem. `market-chart.js` mở API nội bộ `window.CrypidianChart` (toạ độ thời gian↔x, nến tại thời điểm). Panel lớp nhóm 4 loại, bộ lớp Mặc định/ICT/Volume/Tối giản, đếm "Lớp a/b"; chú giải con trỏ thêm EMA20/EMA50/VWAP. `static/chart-multi.js`: lưới 2/4 khung (khung lớn hơn trước), đồng bộ con trỏ và vùng thời gian, làm mới 30 giây, nhớ lựa chọn.
+**Quyết định owner chưa chốt:** #4 lưu bản vẽ vào DB (giai đoạn 2, bảng `chart_drawing` RLS) — hiện chỉ trình duyệt, đổi máy/trình duyệt sẽ không thấy bản vẽ; #8 nâng Lightweight Charts 5.3.0 — vẫn 5.2.1.
+**Còn mở:** kéo sửa điểm của hình đã vẽ; khung phụ chỉ có nến + EMA; chưa đo hiệu năng ở 1440px với 4 khung bằng số liệu.
 
 ### CK-9 — Dock dưới chart và thanh trạng thái
 

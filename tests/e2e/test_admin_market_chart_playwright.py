@@ -156,7 +156,7 @@ class _Reporting:
         self.setup_calls: list[dict[str, Any]] = []
 
     async def list_market_series(self, principal: Principal, *, bot_id: UUID) -> dict:
-        return {"BTCUSDT": ["5m"], "ETHUSDT": ["1h"]}
+        return {"BTCUSDT": ["5m", "4h"], "ETHUSDT": ["1h"]}
 
     async def get_latest_signal(self, principal: Principal, *, bot_id: UUID) -> dict:
         return SIGNAL_VIEW
@@ -473,6 +473,78 @@ def test_market_chart_renders_overlays_polls_and_is_responsive(server_url: str) 
         page.locator("[data-bar-analysis-close]").click()
         expect(analysis).to_be_hidden()
 
+        # CK-8: công cụ vẽ — vẽ, lưu theo mã (time + giá), hoàn tác/làm lại, xóa, khóa, nam châm.
+        page.evaluate("() => window.localStorage.removeItem('crypidian.chartDrawings.v1.BTCUSDT')")
+        page.reload(wait_until="networkidle")
+        box = chart.bounding_box()
+        count = page.locator("[data-draw-count]")
+        expect(count).to_have_text("0 hình vẽ")
+        page.locator('[data-draw-tool="trendline"]').click()
+        chart.click(position={"x": box["width"] * 0.3, "y": box["height"] * 0.3})
+        chart.click(position={"x": box["width"] * 0.6, "y": box["height"] * 0.5})
+        expect(count).to_have_text("1 hình vẽ")
+        stored = page.evaluate(
+            "() => JSON.parse(localStorage.getItem('crypidian.chartDrawings.v1.BTCUSDT'))"
+        )
+        assert stored[0]["type"] == "trendline"
+        assert all(p["time"] > 0 and p["price"] > 0 for p in stored[0]["points"])
+        page.locator('[data-draw-action="undo"]').click()
+        expect(count).to_have_text("0 hình vẽ")
+        page.locator('[data-draw-action="redo"]').click()
+        expect(count).to_have_text("1 hình vẽ")
+        # Nam châm: điểm đường ngang bắt đúng một giá OHLC của nến.
+        page.locator('[data-draw-toggle="magnet"]').click()
+        page.locator('[data-draw-tool="hline"]').click()
+        chart.click(position={"x": box["width"] * 0.5, "y": box["height"] * 0.4})
+        expect(count).to_have_text("2 hình vẽ")
+        snapped = page.evaluate(
+            "() => JSON.parse(localStorage.getItem('crypidian.chartDrawings.v1.BTCUSDT'))[1]"
+        )
+        bar = next(b for b in _bars() if b["time"] == snapped["points"][0]["time"])
+        assert snapped["points"][0]["price"] in {bar["open"], bar["high"], bar["low"], bar["close"]}
+        page.locator('[data-draw-toggle="magnet"]').click()
+        page.locator('[data-draw-tool="rect"]').click()
+        chart.click(position={"x": box["width"] * 0.2, "y": box["height"] * 0.6})
+        chart.click(position={"x": box["width"] * 0.35, "y": box["height"] * 0.75})
+        page.locator('[data-draw-tool="fib"]').click()
+        chart.click(position={"x": box["width"] * 0.4, "y": box["height"] * 0.2})
+        chart.click(position={"x": box["width"] * 0.55, "y": box["height"] * 0.7})
+        expect(count).to_have_text("4 hình vẽ")
+        chart.screenshot(path=str(SCREENSHOTS_DIR / "ck8-drawings-desktop.png"))
+        # Chọn hình chữ nhật bằng con trỏ rồi Delete.
+        page.locator('[data-draw-tool="cursor"]').click()
+        chart.click(position={"x": box["width"] * 0.27, "y": box["height"] * 0.68})
+        page.keyboard.press("Delete")
+        expect(count).to_have_text("3 hình vẽ")
+        # Khóa: nhấp không tạo thêm hình.
+        page.locator('[data-draw-toggle="lock"]').click()
+        page.locator('[data-draw-tool="hline"]').click()
+        chart.click(position={"x": box["width"] * 0.5, "y": box["height"] * 0.2})
+        expect(count).to_have_text("3 hình vẽ")
+        page.locator('[data-draw-toggle="lock"]').click()
+        page.reload(wait_until="networkidle")
+        expect(page.locator("[data-draw-count]")).to_have_text("3 hình vẽ")
+
+        # CK-8: preset lớp và đếm "Lớp a/b".
+        total = page.locator("[data-layer]").count()
+        page.locator("[data-layer-preset]").select_option("minimal")
+        expect(page.locator("[data-layer-count]")).to_have_text(f"Lớp 4/{total}")
+        page.locator("[data-layer-preset]").select_option("default")
+        expect(page.locator('[data-layer="killzones"]')).not_to_be_checked()
+        expect(page.locator('[data-layer="ict_zones"]')).to_be_checked()
+
+        # CK-8: nhiều khung — 2 khung → thêm khung 4H, có nến.
+        page.locator("[data-multi-count]").select_option("2")
+        cells = page.locator(".mc-multi-cell")
+        expect(cells).to_have_count(1)
+        expect(cells.first).to_have_attribute("data-timeframe", "4h")
+        expect(cells.first).to_have_attribute("data-bars", re.compile(r"^[1-9]\d*$"))
+        page.locator("[data-multi-grid]").screenshot(
+            path=str(SCREENSHOTS_DIR / "ck8-multi-chart-desktop.png")
+        )
+        page.locator("[data-multi-count]").select_option("1")
+        expect(cells).to_have_count(0)
+
         # Thẻ tín hiệu SIG-3: hướng, SL, checklist và quyết định không vào lệnh gần nhất.
         signal = page.locator("[data-signal-card]")
         expect(signal).to_contain_text("BÁN")
@@ -508,6 +580,11 @@ def test_market_chart_renders_overlays_polls_and_is_responsive(server_url: str) 
             page.set_viewport_size({"width": width, "height": 860})
             page.wait_for_timeout(250)
             _assert_no_horizontal_overflow(page, f"{width}px")
+            # CK-8: điện thoại chỉ xem bản vẽ (ẩn thanh công cụ vẽ).
+            if width < 768:
+                expect(page.locator("[data-draw-toolbar]")).to_be_hidden()
+            else:
+                expect(page.locator("[data-draw-toolbar]")).to_be_visible()
             strip_box = page.locator("#mc-live-strip").bounding_box()
             assert strip_box is not None
             assert strip_box["x"] + strip_box["width"] <= width + 1, f"dải thông số @ {width}px"

@@ -61,10 +61,32 @@
       {% endfor %}
     </nav>
     {% endif %}
+    {#- CK-8: panel lớp nhóm theo loại, preset và đếm "Lớp a/b". -#}
+    {% set LAYER_GROUPS = [
+      ("Giá và chỉ báo", ["ema", "vwap", "zigzag", "rsi", "macd"]),
+      ("Cấu trúc và ICT", ["structure", "trendlines", "levels", "sessions", "ict_zones", "equal_levels", "killzones"]),
+      ("Khối lượng", ["profile", "tpo", "profile_levels", "vsa"]),
+      ("Giao dịch", ["signal", "paper", "quote"]),
+    ] %}
     <fieldset class="mc-layers">
-      <legend>Lớp hiển thị</legend>
-      {% for key, label, default_on in LAYERS %}
-      <label class="mc-layer switch-row"><span>{{ label }}</span><input type="checkbox" class="ios-switch" role="switch" data-layer="{{ key }}" {% if default_on %}checked{% endif %}></label>
+      <legend>Lớp hiển thị <span class="mc-layer-count" data-layer-count>—</span></legend>
+      <div class="mc-layer-presets">
+        <label for="mc-layer-preset">Bộ lớp</label>
+        <select id="mc-layer-preset" data-layer-preset>
+          <option value="">Tự chọn</option>
+          <option value="default">Mặc định</option>
+          <option value="ict">ICT</option>
+          <option value="volume">Volume</option>
+          <option value="minimal">Tối giản</option>
+        </select>
+      </div>
+      {% for group_label, keys in LAYER_GROUPS %}
+      <div class="mc-layer-group" role="group" aria-label="{{ group_label }}">
+        <span class="mc-layer-group__title">{{ group_label }}</span>
+        {% for key, label, default_on in LAYERS if key in keys %}
+        <label class="mc-layer switch-row"><span>{{ label }}</span><input type="checkbox" class="ios-switch" role="switch" data-layer="{{ key }}" data-default="{{ 'on' if default_on else 'off' }}" {% if default_on %}checked{% endif %}></label>
+        {% endfor %}
+      </div>
       {% endfor %}
     </fieldset>
     {% endif %}
@@ -157,6 +179,25 @@
         </ul>
       </details>
     </div>
+    {#- CK-8: công cụ vẽ (lưu trong trình duyệt theo mã). Ẩn trên điện thoại: chỉ xem bản vẽ. -#}
+    <div class="mc-draw-toolbar" role="toolbar" aria-label="Công cụ vẽ" data-draw-toolbar>
+      <button type="button" class="btn btn-secondary mc-control" data-draw-tool="cursor" aria-pressed="true" title="Chọn hình (Esc bỏ chọn, Delete xóa)">Con trỏ</button>
+      <button type="button" class="btn btn-secondary mc-control" data-draw-tool="trendline" aria-pressed="false">Trendline</button>
+      <button type="button" class="btn btn-secondary mc-control" data-draw-tool="hline" aria-pressed="false">Đường ngang</button>
+      <button type="button" class="btn btn-secondary mc-control" data-draw-tool="ray" aria-pressed="false">Tia</button>
+      <button type="button" class="btn btn-secondary mc-control" data-draw-tool="rect" aria-pressed="false">Hình chữ nhật</button>
+      <button type="button" class="btn btn-secondary mc-control" data-draw-tool="fib" aria-pressed="false">Fibonacci</button>
+      <button type="button" class="btn btn-secondary mc-control" data-draw-tool="text" aria-pressed="false">Văn bản</button>
+      <label class="visually-hidden" for="mc-draw-text">Nội dung văn bản</label>
+      <input id="mc-draw-text" class="mc-draw-text" type="text" maxlength="120" value="Ghi chú" data-draw-text>
+      <button type="button" class="btn btn-secondary mc-control" data-draw-toggle="magnet" aria-pressed="false" title="Bắt điểm vào giá Mở/Cao/Thấp/Đóng gần nhất">Nam châm</button>
+      <button type="button" class="btn btn-secondary mc-control" data-draw-toggle="lock" aria-pressed="false">Khóa</button>
+      <button type="button" class="btn btn-secondary mc-control" data-draw-toggle="hide" aria-pressed="false">Ẩn hình vẽ</button>
+      <button type="button" class="btn btn-secondary mc-control" data-draw-action="undo" title="Hoàn tác (Ctrl/Cmd+Z)">Hoàn tác</button>
+      <button type="button" class="btn btn-secondary mc-control" data-draw-action="redo" title="Làm lại (Ctrl/Cmd+Shift+Z)">Làm lại</button>
+      <button type="button" class="btn btn-secondary mc-control" data-draw-action="delete" title="Xóa hình đang chọn; không chọn thì hỏi xóa tất cả">Xóa</button>
+      <span class="sc-meta" data-draw-count>0 hình vẽ</span>
+    </div>
     <div id="market-chart" class="mc-canvas" tabindex="0" role="img" aria-label="Biểu đồ nến {{ chart_payload.symbol }} khung {{ timeframe }} với cấu trúc thị trường, phiên và volume profile" data-bot-id="{{ selected_bot.id }}" data-symbol="{{ selected_symbol }}" data-timeframe="{{ timeframe }}"></div>
     <section id="mc-bar-analysis" class="mc-bar-analysis" hidden aria-live="polite" aria-labelledby="mc-bar-analysis-title">
       <header class="mc-bar-analysis__head">
@@ -165,6 +206,17 @@
       </header>
       <div data-bar-analysis-body></div>
     </section>
+    {#- CK-8: lưới nhiều khung cùng mã, đồng bộ con trỏ và thời gian với chart chính. -#}
+    <div class="mc-multi-controls">
+      <label for="mc-multi-count">Nhiều khung</label>
+      <select id="mc-multi-count" data-multi-count>
+        <option value="1">1 khung</option>
+        <option value="2">2 khung</option>
+        <option value="4">4 khung</option>
+      </select>
+      <span class="sc-meta">Khung phụ lấy từ các khung có nến đã lưu: {{ available_timeframes | join(", ") | upper }}</span>
+    </div>
+    <div class="mc-multi-grid" data-multi-grid data-timeframes="{{ available_timeframes | join(',') }}" hidden></div>
     <div id="market-chart-rsi" class="mc-subpane" hidden aria-label="RSI 14"></div>
     <div id="market-chart-macd" class="mc-subpane" hidden aria-label="MACD 12/26/9"></div>
     <ul class="mc-key" aria-label="Chú giải">
@@ -339,5 +391,7 @@
   <script src="/static/vendor/lightweight-charts-5.2.1.standalone.production.js"></script>
   <script src="/static/market-chart.js" defer></script>
   <script src="/static/market-overview.js" defer></script>
+  <script src="/static/chart-drawings.js" defer></script>
+  <script src="/static/chart-multi.js" defer></script>
 {% endif %}
 {% endblock %}
