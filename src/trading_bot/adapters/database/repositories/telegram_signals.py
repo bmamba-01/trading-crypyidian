@@ -561,7 +561,22 @@ def _candidate_from_decision(
         reason_code=str(payload["reason_code"]),
         detail_vi=str(payload["detail_vi"]),
         invalidation=None,
+        card=_signal_card(payload, decision),
     )
+
+
+def _signal_card(payload: dict[str, Any], decision: BotDecision) -> dict[str, Any] | None:
+    """Thẻ tín hiệu SIG-3 từ candidate + checklist của quyết định đã xác minh hash."""
+    from trading_bot.domain.strategy.signal_card import SignalCardError, build_signal_card
+
+    checklist: list[Any] = []
+    if decision.checklist_json is not None:
+        checklist = list(json.loads(decision.checklist_json).get("items") or [])
+    try:
+        return build_signal_card(payload, checklist=checklist)
+    except SignalCardError, KeyError, TypeError, ValueError:
+        # Không đủ dữ liệu hoặc thang giá sai hướng: không gửi thẻ, chỉ gửi phần cơ bản.
+        return None
 
 
 def _verified_decision(row: Any, *, prefixed: bool = False) -> BotDecision:

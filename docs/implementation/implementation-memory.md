@@ -4071,3 +4071,21 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
   - Compose E2E **9 passed/188.82s**: 4 test incident hold (admin UI, admin, runtime, schema), `test_db_role_least_privilege`, `test_multibot_runtime_control`, `test_workspace_risk_real_paths`. PNG evidence bị ghi đè đã khôi phục.
   - Unit **4320 passed/124.09s**; ruff, format, mypy sạch.
   - DB local hạ/nâng lại lên `b2d4f6a8c0e3` với bản cuối (guard có EXECUTE compact json, owner hàm guard = role mới).
+
+### 2026-11-15 — TG-1 lát 1: thẻ tín hiệu trong tin Telegram; sửa test flaky `test_retraining_label_uses_ledger_trade_not_client_values`
+
+- **Yêu cầu của owner:** "Sau đó tiếp tục công việc tiếp theo đi" (sau khi merge PR #1). Chọn TG-1, vì tin Telegram chưa có SL/TP/R, checklist và điều kiện mất hiệu lực, trong khi thẻ trên Admin đã có.
+- **Thay đổi:**
+  - `TelegramSignalCandidate.card` (tùy chọn, `compare=False`).
+  - `adapters/database/repositories/telegram_signals.py::_signal_card` dựng thẻ bằng `build_signal_card`, từ `candidate_json` + `checklist_json` của `BotDecision` đã xác minh hash. Bắt `SignalCardError`/`KeyError`/`TypeError`/`ValueError` và trả `None`, khi đó tin chỉ có phần cơ bản.
+  - `build_signal_message` thêm khối "— THẺ TÍN HIỆU (PAPER) —":
+    - giá kiểu VN (`68.000,25`), R một chữ số thập phân;
+    - checklist tối đa 8 dòng;
+    - "Mất hiệu lực khi", "Độ tin cậy: Chưa hiệu chuẩn (chưa hiện %)";
+    - dòng cuối luôn là "PAPER · mô phỏng nội bộ, không phải khuyến nghị đầu tư.".
+  - Mọi dòng cũ giữ nguyên.
+- **Lỗi gặp khi chạy unit:** `tests/unit/test_admin_realtime_api.py::test_retraining_label_uses_ledger_trade_not_client_values` fail 1 lần trong bộ đầy đủ, đạt khi chạy riêng 3 lần.
+  - **Nguyên nhân:** test kiểm `"999" not in resp.text`, nhưng response có `sample_id`/`trade_id` UUID ngẫu nhiên và `created_at` có micro giây, nên tình cờ chứa "999" (xác suất ~1%).
+  - **Sửa:** kiểm trên giá trị trường (`original_signal == "SHORT"`, không trường nào bằng "999"). Không phải lỗi sản phẩm.
+- **Kiểm chứng:** unit **4324 passed/124.18s** (thêm 4 test TG-1); ruff, format, mypy sạch; E2E Compose `test_wp07_telegram_signal.py` + `test_wp07_market_signal_producer.py` **2 passed/49.50s**.
+- **Còn mở:** reply cập nhật vào tin gốc, R:R ròng từng TP, rủi ro % vốn trong tin, TG-2 chống spam; ledger local còn 2 trade PnL sai (cần owner quyết reset dữ liệu dev).

@@ -134,3 +134,87 @@ async def test_bot_api_sender_rejects_bad_chat_and_non_json_success() -> None:
             await sender.send_message(123, "hello")
     finally:
         await sender.aclose()
+
+
+def _card() -> dict[str, object]:
+    from trading_bot.domain.strategy.signal_card import build_signal_card
+
+    return build_signal_card(
+        {
+            "symbol": "BTCUSDT",
+            "direction": "long",
+            "strategy_id": "H03",
+            "strategy_release_id": "h03-donchian-v1",
+            "reason_code": "DONCHIAN_BREAKOUT_CONFIRMED",
+            "signal_at": "2026-11-03T06:00:00+00:00",
+            "expires_at": "2026-11-03T06:05:00+00:00",
+            "reference_price": "68000.25",
+            "atr_value": 400,
+            "recipe": {"stop_atr_multiple": 2, "take_profit_atr_multiple": 3},
+        },
+        checklist=[
+            {
+                "key": "donchian_breakout",
+                "label_vi": "Giá đóng phá kênh Donchian 55 nến (1h)",
+                "actual": "đóng 68000.25",
+                "operator": ">",
+                "threshold": "67900",
+                "passed": True,
+            },
+            {
+                "key": "volume_above_median",
+                "label_vi": "Quote volume > median 20 nến trước",
+                "actual": "thiếu dữ liệu",
+                "operator": ">",
+                "threshold": "—",
+                "passed": None,
+            },
+        ],
+    )
+
+
+def test_signal_message_includes_card_ladder_checklist_and_paper_label() -> None:
+    message = build_signal_message(_candidate(card=_card()))
+
+    assert "— THẺ TÍN HIỆU (PAPER) —" in message
+    assert "Vùng vào: 68.000,25" in message
+    assert "Cắt lỗ (SL): 67.200,25" in message
+    assert "Mục tiêu recipe: 69.200,25 (1,5R)" in message
+    assert "Mốc 1R (tham chiếu): 68.800,25 (1,0R)" in message
+    assert "Điều kiện (1/2 đạt):" in message
+    assert "✓ Giá đóng phá kênh Donchian 55 nến (1h)" in message
+    assert "— Quote volume > median 20 nến trước: thiếu dữ liệu" in message
+    assert "Mất hiệu lực khi:" in message
+    assert "Độ tin cậy: Chưa hiệu chuẩn" in message
+    assert message.rstrip().endswith("không phải khuyến nghị đầu tư.")
+    assert len(message) <= 4096
+
+
+def test_signal_message_without_card_keeps_basic_lines_only() -> None:
+    message = build_signal_message(_candidate())
+
+    assert "THẺ TÍN HIỆU" not in message
+    assert "PAPER · mô phỏng nội bộ" in message
+
+
+def test_card_checklist_is_truncated_to_keep_message_short() -> None:
+    card = _card()
+    item = card["checklist"][0]  # type: ignore[index]
+    card["checklist"] = [dict(item, label_vi=f"Điều kiện {i}") for i in range(30)]
+    message = build_signal_message(_candidate(card=card))
+
+    assert "Điều kiện 7:" in message
+    assert "Điều kiện 8:" not in message
+
+
+def test_repository_builds_card_from_verified_decision_checklist() -> None:
+    from tests.unit.test_sig3_signal_card import _decision_for
+
+    from trading_bot.adapters.database.repositories.telegram_signals import _signal_card
+
+    decision = _decision_for("h01-v1")
+    card = _signal_card(json.loads(decision.candidate_json), decision)
+    assert card is not None
+    assert card["checklist_total"] == card["checklist_passed"] > 0
+    broken = dict(json.loads(decision.candidate_json), atr_value="không phải số")
+    assert _signal_card(broken, decision) is None

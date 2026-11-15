@@ -147,6 +147,9 @@ Mọi feature có `formula_version`, chạy được tăng dần, và có `confi
 
 **Acceptance:** tin và thẻ truy ngược được về decision/feature snapshot; filter Telegram hiện có (symbol/khung/hướng/strategy/setup) áp được cho setup mới.
 
+- **Đã làm 15/11/2026 — TG-1 lát 1:** tin Telegram thêm khối "THẺ TÍN HIỆU (PAPER)" dựng bằng cùng `build_signal_card` với Admin, từ candidate + checklist của quyết định **đã xác minh hash**: vùng vào, SL, mục tiêu recipe và mốc 1R/2R/3R tham chiếu (R thô, chưa trừ phí), checklist ✓/✗/— có giá trị thật và ngưỡng (tối đa 8 dòng), "Mất hiệu lực khi", "Độ tin cậy: Chưa hiệu chuẩn", dòng cuối "PAPER · mô phỏng nội bộ, không phải khuyến nghị đầu tư." Thẻ không dựng được (dữ liệu cũ, thang giá sai hướng) thì chỉ gửi phần cơ bản.
+- **Chưa làm (TG-1/TG-2):** reply cập nhật vào tin gốc, R:R ròng từng TP, rủi ro % vốn, chống spam (gộp, cooldown, giới hạn tin/giờ).
+
 ### SIG-9 — Dải biến động dự kiến (tùy chọn, ưu tiên thấp)
 
 Bootstrap lợi suất lịch sử theo chế độ để hiện "khoảng giá có thể đi trong 4 giờ" (dải phân vị), ghi rõ **không phải dự báo hướng**. Chỉ làm sau SIG-5; không dùng làm điều kiện vào lệnh.
