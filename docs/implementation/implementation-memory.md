@@ -4304,3 +4304,13 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
   - Sửa: `compose.yaml` cho phép đổi file secret qua `TRADING_BOT_TELEGRAM_BOT_TOKEN_SECRET_FILE`; `tests/e2e/conftest.py` (session autouse) trỏ biến này tới `.secrets/e2e_telegram_bot_token` rỗng.
   - Chạy lại **4 passed/159.50s**.
 - **Runtime log:** candidate cũ được đánh giá lại mỗi tick tới khi hết hạn nên log "không thành lệnh" ngập (1.380 dòng/15 phút). Giờ chỉ log một lần mỗi (decision, lý do), bộ nhớ ≤ 4.096 khóa. Test `test_rejected_candidate_logged_once_and_error_does_not_block_others`. **Còn mở:** việc đánh giá lại mỗi tick vẫn tốn CPU; nên ghi receipt từ chối để bỏ qua.
+
+### 2026-11-16 — Sửa H03-v2/H06-v2 không bao giờ ra tín hiệu
+
+- **Yêu cầu của owner:** "Có, sửa v2".
+- **Lỗi (phát hiện 15/11):** `rules._selected` kiểm `"<strategy>-v1" in active_release_ids`. Runtime và bot config dựng selection `(release_id,)`, nên chọn `h03-v2`/`h06-v2` luôn ra `*_NOT_SELECTED`. Ngược lại, khi chỉ chọn v1 thì rule v2 lại được coi là đã chọn.
+- **Sửa:** `rules_v2._v1_selection`. Rule v2 kiểm đúng `release_id` của chính nó, rồi chạy rule vào lệnh v1 với selection đã thêm `<strategy>-v1`. Candidate vẫn mang `strategy_release_id` và hash của v2.
+- Không sửa `rules.py` để giữ hash release v1 đang ghim. **Hash v2 đổi** vì nguồn `rules_v2.py` đổi. Chấp nhận được: v2 chưa từng ra tín hiệu, workspace local không ghim v2, không test/E2E nào ghim hash v2. Workspace nào đã PUBLISHED `strategy_release` v2 với hash cũ phải phát hành lại (hash lệch → `BOT_DECISION_RELEASE_MISMATCH`).
+- **Kiểm chứng:**
+  - Unit **4466 passed/137.81s** (thêm `tests/unit/test_v2_release_selection.py` 7 test: chọn v2 → candidate v2 đúng hash registry; chỉ chọn v1 → NOT_SELECTED; chưa publish → UNPUBLISHED; resolve qua registry như runtime).
+  - E2E `test_wp07_market_signal_producer` + `test_multibot_decision` **2 passed/74.54s**.
