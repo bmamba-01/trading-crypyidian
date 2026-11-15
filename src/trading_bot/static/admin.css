@@ -3838,8 +3838,8 @@ body {
 
 /* Desktop: sidebar cố định, có thể thu thành dải biểu tượng. */
 @media (min-width: 1024px) {
-  .app-shell:not(.app-shell--plain) { padding-left: var(--shell-sidebar-w); transition: padding-left 200ms ease; }
-  .app-sidebar { width: var(--shell-sidebar-w); transform: none; box-shadow: none; }
+  .app-shell:not(.app-shell--plain) { padding-left: var(--shell-sidebar-w); transition: none; }
+  .app-sidebar { width: var(--shell-sidebar-w); transform: none; box-shadow: none; transition: none; }
   .app-sidebar__close, .app-sidebar__backdrop, .app-topbar__menu { display: none !important; }
   .app-sidebar__collapse { display: flex; }
   .app-shell.app-shell--collapsed:not(.app-shell--plain) { padding-left: var(--shell-sidebar-w-collapsed); }
@@ -4860,14 +4860,3 @@ main button.icon-btn:hover, dialog button.icon-btn:hover { background: var(--gla
   align-items: center;
   gap: 0.75rem;
 }
-
-/* === Dải sức khỏe vận hành trên dashboard (gộp từ nhánh nối operations health, 15/11/2026) === */
-.ops-health-strip {
-  display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem 0.75rem;
-  margin-top: 0.5rem; padding: 0.5rem 0.75rem; font-size: var(--fs-sm); min-width: 0;
-  border-radius: 0.8rem;
-}
-.ops-health-strip .ico { width: 1.1rem; height: 1.1rem; flex: 0 0 auto; }
-.ops-health-strip__label { font-weight: 600; }
-.ops-health-strip__entry { font-variant-numeric: tabular-nums; white-space: nowrap; }
-.ops-health-strip__note { flex: 1 1 16rem; min-width: 0; color: var(--text-muted); font-size: var(--fs-xs); }

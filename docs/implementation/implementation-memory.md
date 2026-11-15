@@ -3866,6 +3866,36 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Còn mở sau merge:** nhánh `codex/wp06-runtime-resolver` (15 migration WP06, đang merge dở trong worktree riêng) phải nối lại trên head `d2e4f6a8b0c1`; các khoản nợ giao diện ghi ở mục revamp 14/11 (checklist trợ năng, tooltip vùng tổng, nền chế độ sáng, các trang chưa có).
 - **Readback:** đã đọc lại mục này, đối chiếu output lệnh; không có secret.
 
+
+### 2026-11-15 — Đồng bộ `operations_health` lên Dashboard UI kit v1 & sửa CSS tokens Dark Mode
+
+- **Bối cảnh:** Tích hợp sạch lên nền `origin/dev@8347e8b` (đã có UI kit v1 trên toàn bộ các trang Admin và nối sẵn `get_dashboard_reports` cho thống kê 30 ngày).
+- **Thay đổi thực hiện:**
+  - `src/trading_bot/admin/web_router.py`: trích xuất `_build_operations_health_data` dùng chung cho `dashboard()`, `dashboard_realtime()` và `operations_health()`, tránh trùng lặp logic và nối dữ liệu thật của `CircuitBreakerEngine` + `LossWindowSnapshot` xuống Dashboard.
+  - `src/trading_bot/templates/admin/dashboard.html`: bổ sung thẻ `.kpi-card--h` cho **Cầu dao rủi ro** (`#kpi-ops-health`, `#kpi-ops-health-sub`) đồng chuẩn UI kit v1.
+  - `src/trading_bot/static/admin.css`: thay thế 6 vùng màu nền/viền trắng hardcode (`#fff`, `#fff5d6`, `#c4cfda`) của Research Sources và Backtest Replays sang CSS tokens chuẩn (`--bg-surface`, `--border-main`, `--warning-bg`, `--warning-text`) để hiển thị đồng bộ trên cả Light & Dark Mode.
+- **Kiểm chứng:**
+  - `uv run ruff check` & `uv run ruff format --check` trên `web_router.py`: đạt.
+  - Admin unit tests (`test_admin_operations_health_and_csv.py`, `test_admin_mobile_ui.py`, `test_admin_realtime_api.py`, `test_admin_dashboard_ui.py`, `test_admin_reports_revamp.py`): **48 passed in 4.20s / 0 skipped**.
+  - Playwright & Health E2E (19 tests phủ Desktop & Mobile trên Dashboard, Reports, Bot Detail, Bot Pages UI kit Light/Dark, Strategy Cards, Microscope, Research Sources, Backtest Replays, Telegram Signals, Health): **19 passed in 90.58s / 0 skipped**.
+
+### 2026-11-15 — Kiểm tra thực tế bằng Vision trên ảnh chụp Playwright & sửa 3 lỗi bố cục/hiển thị
+
+- **Mục tiêu:** Mở trực tiếp toàn bộ ảnh chụp màn hình thực tế (`tests/e2e/evidence/admin-playwright/*.png`) bằng vision (`read_file`) trên cả Desktop (`1280x800` & `1440x900`) và Mobile (`390x844`) để đo đạc độ căn chỉnh thực tế.
+- **Phát hiện qua Vision & Nguyên nhân gốc rễ:**
+  1. **Sidebar đè lên `<main>` ở viewport Desktop `1280x800` khi chụp `full_page=True` hoặc khi đánh giá lại media query:** Trong `admin.css` dòng 3840, `.app-shell:not(.app-shell--plain)` đặt `transition: padding-left 200ms ease`. Khi Chromium chạy `Page.captureScreenshot(captureBeyondViewport=True)` (hoặc khi viewport vừa khớp `@media (min-width: 1024px)`), `padding-left` bắt đầu chuyển động từ `0px` lên `248px` trong `200ms` trong khi `.app-sidebar` (`position: fixed`) hiện ngay tại `x=0..248px`, làm sidebar che khuất ~248px bên trái của mọi trang ở `1280x800`.
+  2. **Thẻ KPI thứ 5 (`Cầu dao rủi ro`) bị rớt lẻ dòng trong `.kpi-grid`:** `.kpi-grid` trên Dashboard được thiết kế cho 4 cột trên Desktop (`repeat(4, minmax(0, 1fr))`) và 2 cột trên Mobile (`repeat(2, minmax(0, 1fr))`). Thêm thẻ thứ 5 vào `.kpi-grid` làm thẻ thứ 5 rơi lẻ loi xuống dòng thứ hai (`4 + 1` trên Desktop, `2 + 2 + 1` trên Mobile) và bị cắt chữ `"Ổn định (CLOS..."` trên Mobile.
+  3. **Bảng `Các lượt chạy trong không gian làm việc` trên trang Backtest (`17_backtests_desktop.png`):** Nút `Hủy` ở cột ngoài cùng bên phải bị lẹm mất ~6px viền phải ở độ phân giải `1280x800` do tổng bề rộng 7 cột (`min-width: 52rem`, `.bt-cell-run { min-width: 12rem }`, `progress { width: 6.5rem }`) nhỉnh hơn vùng chứa ~8px.
+- **Cách sửa:**
+  - `src/trading_bot/static/admin.css`: đặt `transition: none` cho `.app-shell:not(.app-shell--plain)` và `.app-sidebar` trong `@media (min-width: 1024px)` để `padding-left: var(--shell-sidebar-w)` (`248px`) áp dụng tức thì, loại bỏ hoàn toàn hiện tượng sidebar đè lên `<main>`.
+  - `src/trading_bot/templates/admin/dashboard.html`: chuyển chỉ báo **Cầu dao rủi ro** (`#kpi-ops-health`, `#kpi-ops-health-sub`) lên thanh pill `.summary-grid` ở `.dash-head` cạnh `Điều khiển không gian làm việc`, trả `.kpi-grid` về đúng **4 thẻ KPI** cân đối tuyệt đối (`1x4` trên Desktop, `2x2` trên Mobile).
+  - `src/trading_bot/static/pages/backtests.css`: tinh chỉnh padding ngang của `.bt-table th/td` (`0.4rem`), `.bt-cell-run` (`min-width: 10rem`) và `.bt-progress progress` (`width: 5rem`) để toàn bộ 7 cột và nút `Hủy` hiển thị trọn vẹn trong khung ở `1280x800`.
+- **Kiểm chứng lại bằng Vision & Test:**
+  - Chạy lại bộ 18 bài Playwright E2E (`test_admin_dashboard_playwright.py`, `test_admin_trading_revamp_playwright.py`, `test_admin_strategy_cards_playwright.py`, `test_admin_microscope_playwright.py`, `test_admin_research_sources_playwright.py`, `test_admin_backtest_replays_playwright.py`, `test_admin_telegram_signals_playwright.py`): **18 passed in 93.71s**.
+  - Mở lại toàn bộ ảnh chụp màn hình mới (`03_dashboard_desktop.png`, `02_dashboard_mobile.png`, `21_reports_trading_revamp_desktop.png`, `14_strategy_cards_desktop.png`, `15_microscope_desktop.png`, `16_research_sources_desktop.png`, `17_backtests_desktop.png`, `09_flatten_preview_desktop.png`, `12_telegram_bindings_desktop.png`, `18_telegram_signals_desktop.png`) bằng `read_file` (vision): xác nhận bằng mắt 100% không còn sidebar đè chữ, lưới KPI 4 cột cân đối, nút `Hủy` trang Backtest hiển thị đầy đủ.
+  - Unit tests (`uv run pytest tests/unit -k "admin" -q`): **520 passed in 14.27s**. `ruff check src tests` và `ruff format --check src tests` đạt.
+- **Readback:** đã đọc lại mục này và xác nhận chính xác.
+
 ### 2026-11-15 — Đồng nhất Design System Admin UI & Nối dữ liệu thật lên Dashboard
 
 - **Nối dữ liệu thật lên Dashboard (`src/trading_bot/admin/web_router.py`, `src/trading_bot/templates/admin/dashboard.html`):**
@@ -3901,3 +3931,17 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Lượt unit cuối trước commit:** `uv run pytest tests/unit -q` → **4333 passed/119.83s**. Một lượt ngay trước đó, chạy chung lệnh với `docker compose down` của stack rà soát, báo `42 errors in 10.08s`; hai lượt chạy lại liền sau đều không lỗi. Chưa xác định nguyên nhân (chưa lưu output của lượt lỗi), ghi nhận là chưa điều tra xong.
 - **Ảnh `tests/e2e/evidence/*.png`** bị Playwright sinh lại khi chạy test; đã khôi phục về bản đã commit, không đưa vào commit merge.
 - **Readback:** đã đọc lại mục này, đối chiếu output; không có secret.
+
+### 2026-11-15 — Gộp tiếp hai commit song song trên `origin/dev` (`2a438cf`, `9d92e0c`) trước khi push
+
+- **Bối cảnh:** khi push commit merge `59533ac`, `origin/dev` đã có thêm hai commit từ một phiên khác làm cùng việc trên nền UI kit v1: `2a438cf` (nối `operations_health` lên dashboard, token hóa màu) và `9d92e0c` (bỏ transition sidebar desktop, đưa chỉ báo cầu dao lên thanh `.summary-grid`, thu bảng Backtest). Push bị từ chối (non-fast-forward); không force-push.
+- **Cách gộp để không trùng chức năng:**
+  - `web_router.py`: lấy nguyên bản `origin/dev` (helper `_build_operations_health_data` giống hệt về logic). Bỏ helper `_fetch_30d_workspace_metrics` của `047689c` vì chỉ là refactor của đoạn realtime, không đổi hành vi.
+  - `dashboard.html`: lấy bản `origin/dev` (chỉ báo "Cầu dao rủi ro" dạng pill ở đầu trang, lưới KPI giữ 4 thẻ) và **bỏ dải sức khỏe tôi thêm ở mục trước** vì trùng `id="kpi-ops-health"`/`kpi-ops-health-sub`. Sửa ba điểm trên pill: thẻ `<span id="kpi-ops-health-sub">` chưa đóng; bỏ "Lỗ ngày: … USDT" (snapshot tính với `events=[]`, luôn bằng 0); mã trạng thái cầu dao (`CLOSED`…) chuyển vào `title` thay vì hiện cạnh chữ "Ổn định". `title` của pill ghi rõ lỗ ngày và độ trễ dữ liệu chưa nối vào cầu dao.
+  - `dashboard-realtime.js`: giữ đoạn cập nhật huy hiệu và cổng vào lệnh mỗi lần poll (bản `origin/dev` chưa có JS cho pill).
+  - `admin.css`: bỏ khối `.ops-health-strip`; giữ sửa `.btn-microscope` và khối utility của `047689c`; nhận sửa transition sidebar và token hóa từ `origin/dev`. `pages/backtests.css` lấy từ `origin/dev`.
+- **Lỗi tự gây và cách sửa:** script cắt chuỗi lần đầu tìm `"  {% endif %}\n"` nên khớp nhầm dòng `{% endif %}` lồng bên trong và ghi tệp trước khi assert, để lại mảnh markup thừa; 13 unit test dashboard fail ngay. Sửa bằng cách lấy lại `dashboard.html` từ `origin/dev` rồi áp đúng một thay thế có kiểm (`assert` trước khi ghi).
+- **Kiểm chứng bản gộp cuối:** `uv run pytest tests/unit -q` → **4333 passed/123.22s**; ruff check/format, mypy **394 files**, `node --check`, `git diff --check` đạt; Playwright in-process 16 tệp chạy riêng → **54 passed**; đã xem ảnh `03_dashboard_desktop.png`, `02_dashboard_mobile.png`, `17_backtests_desktop.png` do Playwright sinh trên bản gộp (pill hiện "Ổn định", KPI 4 cột/2×2, nút Hủy không bị cắt). Kết quả Compose E2E ghi ở dòng dưới.
+- **Compose E2E bản gộp cuối:** `test_admin_web_workflows.py` + `test_backtest_admin_ui.py` lượt 1 → **5 passed, 3 failed/447.85s**. Ba ca fail đều là `401 "Mã xác thực không hợp lệ"` ở `bootstrap/verify` và `POST /admin/login`. Nguyên nhân đã đo: đồng hồ máy ảo Docker nhanh hơn máy chủ **41 giây** (`date -u +%s` trong container so với host), vượt cửa sổ TOTP 30 giây; test sinh mã ở host, server kiểm trong container. Sau khi chạy `hwclock -s` trong container `--privileged`, hai đồng hồ khớp tới giây; chạy lại → **8 passed/531.76s**, 0 skip. Không sửa mã nguồn. Việc mở: E2E nên kiểm lệch đồng hồ host/Docker trước khi chạy và báo rõ thay vì fail ở TOTP.
+- **Ảnh `tests/e2e/evidence/**`** do test sinh lại đã khôi phục về bản đã commit trước khi commit.
+- **Readback:** đã đọc lại hai mục 15/11 về merge, đối chiếu output; không có secret.
