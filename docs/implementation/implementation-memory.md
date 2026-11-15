@@ -4144,3 +4144,24 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
   - Trang health admin vẫn dựng `CircuitBreakerEngine` với telemetry giả, cần nối số liệu ledger thật hoặc gỡ.
   - UI bot detail chưa hiện trạng thái breaker/drawdown và hướng dẫn mở lại.
   - Ledger local có 2 trade lãi sai (~+2,8 triệu USDT) nên cả đỉnh lẫn vốn hiện tại local bị thổi phồng: breaker local không ngắt, nhưng phải lỗ ~10% của số vốn ảo đó mới ngắt, tức gần như không bao giờ, cho tới khi owner quyết reset dữ liệu dev.
+
+### 2026-11-15 — Reset ledger PAPER dev của workspace local `c486b52b…`
+
+- **Yêu cầu của owner:** "reset lại dữ liệu dev đi. dữ liệu test không có vấn đề gì cả."
+- **Lý do:** 2 trade PnL sai (+1.394.273 và +1.422.809 USDT) từ sự cố nến đứt quãng làm lệch dashboard và thổi phồng đỉnh vốn của breaker FX-2.
+- **Phạm vi:**
+  - Chỉ xóa ledger PAPER của workspace: `trade_cost` 40, `position_event` 27, `fill` 20, `trade` 10, `exchange_order` 10, `paper_execution_checkpoint` 765, `order_intent` 10, `risk_reservation` 10, `risk_decision` 20, `trade_plan` 10, `outbox_event` `paper.*` PENDING 67.
+  - Giữ nguyên account/seed, user/role/MFA, cấu hình bot/rủi ro, Telegram, nến thu thập, quyết định tín hiệu (`bot_decision`), consumer receipt, audit.
+- **Cách làm:**
+  - Sao lưu `pg_dump --data-only` các bảng liên quan vào `.secrets/backups/paper-ledger-before-reset-2026-11-15.sql` (80 MB, chmod 600, git ignore).
+  - Dừng `trading-runtime`.
+  - Một transaction superuser với `SET LOCAL session_replication_role = replica` (bỏ trigger append-only/immutable). Cuối transaction duyệt mọi FK trỏ tới các bảng đã xóa, raise nếu còn dòng mồ côi; kết quả 0.
+- **Lỗi gặp:** runtime khởi động lại báo `RECOVERY_REQUIRED`/`PAPER_RECOVERY_CONFLICT` cho cả 2 bot.
+  - Nguyên nhân: đã xóa cả checkpoint **genesis** (`mb05b-genesis:<account>`, revision 1), mà `hydrate_account` cần ("Không có checkpoint PAPER để hydrate").
+  - Sửa: khôi phục nguyên văn 2 dòng genesis từ bản sao lưu (COPY trong transaction replica), khởi động lại.
+  - **Bài học:** reset ledger PAPER phải giữ checkpoint genesis của từng account.
+- **Kết quả:**
+  - Runtime READY 2/2, market dispatch running.
+  - Vốn theo bot (đọc bot-scoped như runtime): seed 10.000, realized 0, equity 10.000, 0 vị thế mở.
+  - Đọc vốn không có `app.bot_id` trả seed None do RLS. Đó là đúng thiết kế, không phải lỗi.
+- **Còn mở:** account thứ ba `10eddc3e…` (không có bot READY) không có checkpoint genesis trong bản sao lưu nên không bị ảnh hưởng; `bot_decision` cũ vẫn còn (không dispatch lại vì đã hết hạn).
