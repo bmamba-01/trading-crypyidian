@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import os
+import sys
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -77,6 +78,15 @@ from trading_bot.domain.research.source_policy import SourcePolicyState, SourceU
 from trading_bot.domain.research.source_registry import SourceBudget, SourceRegistryEntry
 from trading_bot.domain.strategy.registry import StrategyRegistry
 
+sys.path.insert(0, "/e2e-tests")
+from e2e.probes.source_license_fixture import (  # noqa: E402
+    append_fixture_license_evidence,
+    consume_rights_events,
+    fixture_license_scope,
+    pending_license_kwargs,
+    verified_license_kwargs,
+)
+
 PHASE = {"name": "initialization"}
 STATE = json.loads(os.environ["WP06_UNIVERSE_STATE"])
 WORKSPACE = UUID(STATE["workspace_id"])
@@ -85,6 +95,9 @@ NOW = datetime.fromisoformat(STATE["now"]).astimezone(UTC)
 END = NOW.replace(hour=NOW.hour // 4 * 4, minute=0, second=0, microsecond=0) - timedelta(hours=4)
 SOURCE = "BINANCE_USDM_REST_BACKFILL"
 MEMBERSHIP = uuid5(WORKSPACE, "membership")
+# Pending và VERIFIED phải cùng reference/scope với dòng license evidence.
+LICENSE_REF = "https://example.invalid/task4-license"
+LICENSE_SCOPE = fixture_license_scope("BINANCE_USDM_REST")
 
 
 def pool(role):
@@ -127,6 +140,9 @@ async def must_deny(session, operation, marker=None, sqlstate=None, exact_marker
 
 async def finalize(sessions, revision):
     async with UnitOfWork(sessions, workspace_id=WORKSPACE) as uow:
+        await append_fixture_license_evidence(
+            uow.session, workspace_id=WORKSPACE, revision=revision
+        )
         await SourceRegistryRepository(uow.session).append_revision(
             workspace_id=WORKSPACE, revision=revision
         )
@@ -136,6 +152,7 @@ async def finalize(sessions, revision):
             source_id="BINANCE_USDM_REST",
             policy_id=revision.policy.policy_id,
         )
+    await consume_rights_events(sessions, workspace_id=WORKSPACE)
 
 
 async def transition(sessions, state, suffix, purposes=None, ttl=timedelta(days=1)):
@@ -150,10 +167,12 @@ async def transition(sessions, state, suffix, purposes=None, ttl=timedelta(days=
         "at": now,
         "reason": "Kiểm quyền nguồn cho fixture Task4.",
     }
+    if state is SourcePolicyState.RIGHTS_PENDING:
+        arguments.update(pending_license_kwargs(LICENSE_SCOPE, LICENSE_REF))
     if state is SourcePolicyState.VERIFIED:
         arguments.update(
+            verified_license_kwargs(LICENSE_SCOPE, LICENSE_REF, uuid4()),
             allowed_purposes=purposes,
-            evidence_ref="https://example.invalid/task4-training",
             reviewed_at=now,
             valid_until=now + ttl,
             approved_by="fixture-reviewer",
@@ -281,6 +300,7 @@ async def seed_source(sessions):
         actor_id="fixture-operator",
         at=NOW - timedelta(days=2),
         reason="Chờ duyệt fixture.",
+        **pending_license_kwargs(LICENSE_SCOPE, LICENSE_REF),
     )
     history = history.transition(
         policy_id="Task4:research",
@@ -289,7 +309,7 @@ async def seed_source(sessions):
         at=NOW - timedelta(hours=1),
         reason="Chỉ BACKTEST_RESEARCH.",
         allowed_purposes=frozenset({SourceUsePurpose.BACKTEST_RESEARCH}),
-        evidence_ref="https://example.invalid/task4-research",
+        **verified_license_kwargs(LICENSE_SCOPE, LICENSE_REF, uuid4()),
         reviewed_at=NOW - timedelta(hours=1),
         valid_until=NOW + timedelta(days=1),
         approved_by="fixture-reviewer",
@@ -957,15 +977,14 @@ async def scanner_negatives(admin, writer, builder, item, source_gap_case):
     ):
         await expect_proof_denied(builder, item)
     checks.append("ordinal_with_other_child_gap")
+    # Từ gate TRAINING exact-scope (migration b7d9f1a3c5e8, 14/11/2026) PostgreSQL đếm lại
+    # tập MarketBar của từng child; thiếu một nến khả dụng là từ chối quyền ngay
+    # (WP06_TRAINING_REPLAY_MARKET_BAR_SET_MISMATCH) thay vì tạo proof chẩn đoán thiếu nguồn.
     async with damaged_fixture(
         admin, "market_bar", one_hour, "available_at", NOW + timedelta(days=1)
     ):
-        result = await CandidateUniverseProofService(builder).build_decision_opportunity(
-            workspace_id=WORKSPACE, trial_record_id=source_gap_case.receipt.trial_record_id
-        )
-        assert result.proof.completeness_verified is False
-        assert result.proof.opportunity_count == 4
-    checks.append("missing_source_diagnostic")
+        await expect_proof_denied(builder, source_gap_case)
+    checks.append("missing_source_denied")
     return checks
 
 
@@ -1061,6 +1080,7 @@ async def source_lock_race(admin, admin_engine, builder, item):
                     actor_id="fixture-operator",
                     at=now,
                     reason="Kiểm source lock tới proof commit.",
+                    **pending_license_kwargs(LICENSE_SCOPE, LICENSE_REF),
                 )
                 await registry.append_revision(workspace_id=WORKSPACE, revision=pending.current)
 

@@ -78,6 +78,8 @@ def test_postgres_candidate_opportunity_universe_rights_seal_and_races():
                             + f":/run/secrets/{secret}:ro",
                         ]
                     )
+                # Mount tests read-only để probe dùng chung fixture license evidence.
+                mounts.extend(["--volume", f"{root / 'tests'}:/e2e-tests:ro"])
                 result = compose(
                     "run",
                     "--rm",
@@ -161,7 +163,7 @@ def test_postgres_candidate_opportunity_universe_rights_seal_and_races():
                     "source_timeframe",
                     "not_base",
                     "ordinal_with_other_child_gap",
-                    "missing_source_diagnostic",
+                    "missing_source_denied",
                 ]
                 assert set(result["race_pids"]) == {"writer_first", "proof_first", "source_policy"}
                 for pids in result["race_pids"].values():
@@ -179,9 +181,12 @@ def test_postgres_candidate_opportunity_universe_rights_seal_and_races():
                     allowed_failure=True,
                 )
                 assert downgrade.returncode != 0
+                # Từ WP06 license evidence (13/11/2026) fixture policy có evidence, nên guard
+                # của migration license (nằm trên opportunity trong chuỗi downgrade) chặn
+                # trước; guard opportunity được kiểm tĩnh ở
+                # tests/unit/test_replay_writer_migration.py.
                 assert (
-                    "WP06_OPPORTUNITY_DOWNGRADE_REQUIRES_EMPTY_V2"
-                    in downgrade.stdout + downgrade.stderr
+                    "WP06_LICENSE_EVIDENCE_DOWNGRADE_BLOCKED" in downgrade.stdout + downgrade.stderr
                 )
                 compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "head")
                 assert (

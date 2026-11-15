@@ -11,14 +11,18 @@ from urllib.parse import urlsplit
 from uuid import UUID
 
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from trading_bot.application.binance_rest_backfill import BACKTEST_RIGHTS_PROVIDERS
 from trading_bot.application.candidate_universe_proof import canonical, digest
+from trading_bot.domain.learning.dataset import DatasetManifest
+from trading_bot.domain.learning.source_use_lineage import source_use_lineage_set_hash
 from trading_bot.domain.research.source_policy import SourceUsePurpose
 
 SOURCE_ID = "BINANCE_USDM_REST"
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
+_DENIAL_TOKEN = re.compile(r"WP06_TRAINING_REPLAY_[A-Z_]+")
 
 
 class ReplayTrainingOperation(StrEnum):
@@ -163,18 +167,26 @@ class DatabaseReplayTrainingRightsGate:
             raise ValueError("Workspace/bundle hash không hợp lệ.")
         if not isinstance(operation, ReplayTrainingOperation):
             raise ValueError("Replay rights gate cần operation TRAINING tường minh.")
-        result = await self._session.execute(
-            text(
-                "SELECT * FROM public.wp06_authorize_replay_training_bundle("
-                "CAST(:workspace_id AS uuid), CAST(:bundle_hash AS text), "
-                "CAST(:operation AS text))"
-            ),
-            {
-                "workspace_id": str(workspace_id),
-                "bundle_hash": bundle_hash,
-                "operation": operation.value,
-            },
-        )
+        try:
+            result = await self._session.execute(
+                text(
+                    "SELECT * FROM public.wp06_authorize_replay_training_bundle("
+                    "CAST(:workspace_id AS uuid), CAST(:bundle_hash AS text), "
+                    "CAST(:operation AS text))"
+                ),
+                {
+                    "workspace_id": str(workspace_id),
+                    "bundle_hash": bundle_hash,
+                    "operation": operation.value,
+                },
+            )
+        except DBAPIError as error:
+            # Verifier SQL từ chối bằng RAISE EXCEPTION; giữ hợp đồng cũ của gate là
+            # PermissionError với token ổn định, không lộ SQL/parameters thô cho caller.
+            token = _DENIAL_TOKEN.search(str(error.orig))
+            if token is None:
+                raise
+            raise PermissionError(token.group(0)) from None
         rows = tuple(result.mappings().all())
         if not rows:
             raise PermissionError("Verifier không cấp current TRAINING scope cho bundle.")
@@ -192,6 +204,58 @@ class DatabaseReplayTrainingRightsGate:
         ):
             raise PermissionError("Verifier trả receipt vượt bundle/workspace/operation.")
         return receipts
+
+
+class DatabaseReplayEvaluationRightsGate:
+    """Gate quyền sống cho evaluator với manifest v5 ghim lineage replay bundle.
+
+    Gọi verifier SQL với operation EVALUATION (chỉ login evaluator được phép) và đòi
+    tập child hiện hành khớp đúng `source_use_lineage` đã seal; manifest phụ thuộc nguồn
+    kiểu cũ (source-item `source_references`) bị từ chối vì không có lineage có kiểu.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def assert_eligible(self, *, workspace_id: UUID, manifest: DatasetManifest) -> None:
+        """Từ chối bằng PermissionError khi quyền hiện hành không bao phủ đúng lineage."""
+        if manifest.workspace_id != workspace_id:
+            raise PermissionError("Manifest không thuộc workspace evaluator.")
+        dependent = tuple(sample for sample in manifest.samples if sample.source_dependent)
+        if not dependent:
+            return
+        lineage = manifest.source_use_lineage
+        bundle_hashes = {sample.source_replay_bundle_hash for sample in dependent}
+        lineage_hashes = {sample.source_use_lineage_set_hash for sample in dependent}
+        if manifest.manifest_version != "dataset-manifest-v5" or not lineage:
+            raise PermissionError("Manifest phụ thuộc nguồn cần lineage replay v5.")
+        if (
+            len(bundle_hashes) != 1
+            or None in bundle_hashes
+            or lineage_hashes != {source_use_lineage_set_hash(lineage)}
+        ):
+            raise PermissionError("Sample v5 không ghim cùng bundle và lineage set.")
+        bundle_hash = next(iter(bundle_hashes))
+        assert bundle_hash is not None
+        receipts = await DatabaseReplayTrainingRightsGate(self._session).authorize(
+            workspace_id=workspace_id,
+            bundle_hash=bundle_hash,
+            operation=ReplayTrainingOperation.EVALUATION,
+        )
+        expected = {item.child_dataset_hash: item for item in lineage}
+        by_child = {item.child_dataset_hash: item for item in receipts}
+        if len(by_child) != len(receipts) or set(by_child) != set(expected):
+            raise PermissionError("Quyền hiện hành không bao phủ đúng child set của manifest.")
+        for child_hash, item in expected.items():
+            receipt = by_child[child_hash]
+            if (
+                receipt.workspace_id != workspace_id
+                or receipt.bundle_hash != bundle_hash
+                or receipt.provider != item.provider
+                or receipt.symbol != item.symbol
+                or receipt.interval != item.interval
+            ):
+                raise PermissionError("Receipt hiện hành lệch lineage nguồn của manifest.")
 
 
 def _receipt_from_authorized_row(

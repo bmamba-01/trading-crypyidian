@@ -135,7 +135,11 @@ def test_postgres_scorer_deployment_governance_and_rights_gate() -> None:
                 allowed_failure=True,
             )
             assert downgrade.returncode != 0
-            assert "WP06_SCORING_DEPLOYMENT_POPULATED_DOWNGRADE_DENIED" in (
+            # Từ WP06 license evidence (13/11/2026) fixture paper rights phải ghi evidence,
+            # nên guard của migration license (nằm trên scorer trong chuỗi downgrade) chặn
+            # trước; guard scorer được kiểm tĩnh ở
+            # tests/unit/test_learning_scoring_deployment_persistence.py.
+            assert "WP06_LICENSE_EVIDENCE_DOWNGRADE_BLOCKED" in (
                 downgrade.stdout + downgrade.stderr
             )
             compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "head")

@@ -44,6 +44,16 @@ def test_database_candidate_proof_and_training_rights_boundaries():
             "WP06_STATE",
             "--volume",
             f"{root / 'tests'}:/e2e-tests:ro",
+            # Migrator điều phối nhưng build proof bằng login builder thật.
+            *(
+                [
+                    "--volume",
+                    f"{root / '.secrets/database_candidate_builder_password'}"
+                    ":/run/secrets/database_candidate_builder_password:ro",
+                ]
+                if role == "migrator"
+                else []
+            ),
             role,
             "python",
             probe,
@@ -260,8 +270,12 @@ def test_database_candidate_proof_and_training_rights_boundaries():
             timeout=300,
         )
         assert downgrade.returncode != 0
+        # Từ migration b7d9f1a3c5e8 (14/11/2026) proof builder ghi receipt replay TRAINING,
+        # nên guard của migration đó (nằm trên split candidate trong chuỗi downgrade) chặn
+        # trước; guard split candidate được kiểm tĩnh ở
+        # tests/unit/test_learning_split_candidate_manifest_insert_migration.py.
         assert (
-            "WP06_SPLIT_CANDIDATE_DOWNGRADE_REQUIRES_EMPTY_TABLE"
+            "WP06_REPLAY_TRAINING_RECEIPT_POPULATED_DOWNGRADE_DENIED"
             in downgrade.stdout + downgrade.stderr
         )
         current = _compose(

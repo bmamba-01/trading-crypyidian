@@ -20,10 +20,6 @@ from trading_bot.adapters.database.engine import (
     create_session_factory,
     database_url_from_secret,
 )
-from trading_bot.adapters.database.models import (
-    BacktestDatasetManifestRecord,
-    BacktestDatasetReplayBundleRecord,
-)
 from trading_bot.adapters.database.repositories.backtest_outcomes import BacktestOutcomeRepository
 from trading_bot.adapters.database.repositories.candidate_universe_proofs import (
     CandidateUniverseProofError,
@@ -37,10 +33,20 @@ from trading_bot.domain.learning.evaluation import EvaluationTrade, calculate_en
 from trading_bot.domain.research.source_policy import SourcePolicyState, SourceUsePurpose
 
 sys.path.insert(0, "/e2e-tests")
+from e2e.probes.source_license_fixture import (
+    append_fixture_license_evidence,
+    consume_rights_events,
+    fixture_license_scope,
+    pending_license_kwargs,
+    verified_license_kwargs,
+)
 from fixtures.runtime_replay import build_h01_dataset_runtime_replay
 
 WORKSPACE = UUID(os.environ["CRYPIDIAN_E2E_WORKSPACE_ID"])
 STATE = json.loads(os.environ.get("WP06_STATE", "{}"))
+# Pending và VERIFIED phải cùng reference/scope với dòng license evidence.
+LICENSE_REF = "https://example.invalid/fixture-license"
+LICENSE_SCOPE = fixture_license_scope("BINANCE_USDM_REST")
 
 
 def engine_and_sessions():
@@ -55,23 +61,280 @@ def engine_and_sessions():
     return engine, create_session_factory(engine)
 
 
+def builder_engine_and_sessions():
+    """Login thật của candidate builder; gate replay TRAINING kiểm `session_user`."""
+    engine = create_database_engine(
+        database_url_from_secret(
+            username="crypidian_candidate_builder",
+            password_file=Path("/run/secrets/database_candidate_builder_password"),
+            host="postgres",
+            database="crypidian",
+        )
+    )
+    return engine, create_session_factory(engine)
+
+
+async def seed_research_policy(sessions):
+    """Policy BINANCE_USDM_REST chỉ BACKTEST_RESEARCH, có license evidence và đã qua consumer."""
+    from trading_bot.domain.research.source_registry import SourceBudget, SourceRegistryEntry
+
+    now = datetime.now(UTC)
+    history = (
+        SourceRegistryEntry.discover(
+            source_id="BINANCE_USDM_REST",
+            publisher="Fixture",
+            endpoint_url="https://example.invalid/bars",
+            access_method="GET",
+            auth_scope="synthetic fixture",
+            budget=SourceBudget(
+                window=timedelta(hours=1),
+                max_requests=100,
+                max_bytes=1024,
+                max_cost=Decimal("0"),
+                cost_unit="USD",
+            ),
+            actor_id="fixture-operator",
+            at=now - timedelta(days=3),
+            reason="Tạo nguồn synthetic fixture.",
+        )
+        .transition(
+            policy_id="BINANCE_USDM_REST:proof-pending",
+            state=SourcePolicyState.RIGHTS_PENDING,
+            actor_id="fixture-operator",
+            at=now - timedelta(days=2),
+            reason="Chờ xác minh.",
+            **pending_license_kwargs(LICENSE_SCOPE, LICENSE_REF),
+        )
+        .transition(
+            policy_id="BINANCE_USDM_REST:proof-research",
+            state=SourcePolicyState.VERIFIED,
+            actor_id="fixture-operator",
+            at=now - timedelta(days=1),
+            reason="Chỉ cho phép BACKTEST_RESEARCH.",
+            allowed_purposes=frozenset({SourceUsePurpose.BACKTEST_RESEARCH}),
+            **verified_license_kwargs(LICENSE_SCOPE, LICENSE_REF, uuid4()),
+            reviewed_at=now - timedelta(days=1),
+            valid_until=now + timedelta(days=1),
+            approved_by="fixture-reviewer",
+        )
+    )
+    # Fixture policy gốc có purpose research và thời gian cố định; DB observer dùng clock thật.
+    for revision in history.revisions:
+        async with UnitOfWork(sessions, workspace_id=WORKSPACE) as uow:
+            await append_fixture_license_evidence(
+                uow.session, workspace_id=WORKSPACE, revision=revision
+            )
+            await SourceRegistryRepository(uow.session).append_revision(
+                workspace_id=WORKSPACE, revision=revision
+            )
+        async with UnitOfWork(sessions, workspace_id=WORKSPACE) as uow:
+            await SourceRegistryRepository(uow.session).finalize_policy(
+                workspace_id=WORKSPACE,
+                source_id="BINANCE_USDM_REST",
+                policy_id=revision.policy.policy_id,
+            )
+    await consume_rights_events(sessions, workspace_id=WORKSPACE)
+
+
+async def seed_persisted_bundle(sessions):
+    """Persist nến synthetic H01 rồi dựng manifest v4/bundle qua rights gate + loader thật."""
+    import hashlib
+
+    from trading_bot.adapters.database.models.market_entities import (
+        MarketBar,
+        MarketInstrument,
+        MarketRawReference,
+    )
+    from trading_bot.adapters.database.repositories.backtest_dataset_manifests import (
+        BacktestDatasetManifestRepository,
+    )
+    from trading_bot.adapters.database.repositories.backtest_dataset_replay_bundles import (
+        BacktestDatasetReplayBundleRepository,
+    )
+    from trading_bot.adapters.database.repositories.market_data import MarketDataRepository
+    from trading_bot.application.backtest_dataset_manifest import build_backtest_dataset_manifest
+    from trading_bot.application.backtest_dataset_replay import BacktestDatasetReplayLoader
+    from trading_bot.application.backtest_dataset_replay_bundle import (
+        build_backtest_dataset_replay_bundle,
+    )
+    from trading_bot.application.binance_rest_backfill import (
+        BackfillRightsPurpose,
+        RestBackfillRequest,
+    )
+    from trading_bot.application.binance_rest_backfill_rights import (
+        SourceRegistryBackfillRightsGate,
+    )
+
+    # Cùng khung thời gian/giá với fixture H01 synthetic để config split cố định vẫn đúng.
+    start = datetime(2026, 11, 3, tzinfo=UTC)
+    evaluation_start = start + timedelta(hours=4)
+    range_end = start + timedelta(hours=8)
+    source = "BINANCE_USDM_REST_BACKFILL"
+    frames = (("1h", timedelta(hours=1), 8, 4), ("4h", timedelta(hours=4), 2, 1))
+    instrument = uuid4()
+    raw = uuid4()
+    async with UnitOfWork(sessions, workspace_id=WORKSPACE) as uow:
+        uow.session.add(
+            MarketInstrument(
+                id=instrument,
+                workspace_id=WORKSPACE,
+                source="BINANCE_USDM",
+                idempotency_key="proof-instrument",
+                symbol="BTCUSDT",
+                base_asset="BTC",
+                quote_asset="USDT",
+                tick_size=Decimal("0.1"),
+                quantity_step=Decimal("0.001"),
+                min_notional=Decimal("5"),
+                status="TRADING",
+                revision=1,
+                checksum="a" * 64,
+                event_at=start,
+                received_at=start,
+                available_at=start,
+            )
+        )
+        uow.session.add(
+            MarketRawReference(
+                id=raw,
+                workspace_id=WORKSPACE,
+                source=source,
+                idempotency_key="proof-raw",
+                object_key="fixture/candidate-proof",
+                checksum="b" * 64,
+                byte_length=0,
+                content_type="application/json",
+            )
+        )
+        await uow.session.flush()
+        for timeframe, interval, count, _ in frames:
+            for index in range(count):
+                opened = start + interval * index
+                closed = opened + interval - timedelta(milliseconds=1)
+                cursor = f"synthetic:{timeframe}:{opened.isoformat()}"
+                price = Decimal(100 + index)
+                uow.session.add(
+                    MarketBar(
+                        id=uuid4(),
+                        workspace_id=WORKSPACE,
+                        instrument_id=instrument,
+                        symbol="BTCUSDT",
+                        timeframe=timeframe,
+                        source=source,
+                        logical_key=f"{timeframe}:{opened.isoformat()}",
+                        idempotency_key=cursor,
+                        revision=1,
+                        checksum=hashlib.sha256(cursor.encode()).hexdigest(),
+                        raw_reference_id=raw,
+                        source_cursor=cursor,
+                        open_time=opened,
+                        close_time=closed,
+                        event_at=closed,
+                        received_at=closed,
+                        available_at=closed,
+                        open=price,
+                        high=price + Decimal("2"),
+                        low=price - Decimal("1"),
+                        close=price + Decimal("1"),
+                        volume=Decimal("1"),
+                        quote_volume=Decimal("100"),
+                        is_closed=True,
+                    )
+                )
+    now = datetime.now(UTC)
+    async with UnitOfWork(sessions, workspace_id=WORKSPACE) as uow:
+        manifests = BacktestDatasetManifestRepository(uow.session)
+        gate = SourceRegistryBackfillRightsGate(
+            workspace_id=WORKSPACE, repository=SourceRegistryRepository(uow.session)
+        )
+        market = MarketDataRepository(uow.session)
+        inputs = []
+        for timeframe, _, _, warmup_bars in frames:
+            request = RestBackfillRequest(
+                symbol="BTCUSDT",
+                interval=timeframe,
+                start=start,
+                end=range_end,
+                purpose=BackfillRightsPurpose.BACKTEST_RESEARCH,
+            )
+            bars = await market.list_bars(
+                workspace_id=WORKSPACE,
+                symbol="BTCUSDT",
+                timeframe=timeframe,
+                start=start,
+                end=range_end,
+                as_of=now,
+                closed_only=True,
+                source=source,
+            )
+            manifest = build_backtest_dataset_manifest(
+                request,
+                evaluation_start=evaluation_start,
+                warmup_bars=warmup_bars,
+                bars=bars,
+                rights_evidence=await gate.authorize(request=request, now=now),
+                prepared_at=now,
+                schema_version=4,
+            )
+            await manifests.append(workspace_id=WORKSPACE, manifest=manifest)
+            inputs.append(
+                await BacktestDatasetReplayLoader(
+                    repository=manifests, rights_gate=gate, market_data=market
+                ).load_for_replay(
+                    workspace_id=WORKSPACE, dataset_hash=manifest.dataset_hash, now=now
+                )
+            )
+        bundle = build_backtest_dataset_replay_bundle(tuple(inputs))
+        await BacktestDatasetReplayBundleRepository(uow.session).append(
+            workspace_id=WORKSPACE, bundle=bundle
+        )
+    return bundle
+
+
 async def seed():
     import json
 
     from trading_bot.adapters.database.models.backtest_job_entities import BacktestReplayJobRecord
-    from trading_bot.application.backtest_dataset_replay_bundle import (
-        BacktestDatasetReplayBundleReference,
-    )
     from trading_bot.application.backtest_replay_jobs import BacktestReplayJobSubmission
-    from trading_bot.domain.research.source_registry import SourceBudget, SourceRegistryEntry
     from trading_bot.domain.strategy.contracts import DecisionSnapshot
 
     engine, sessions = engine_and_sessions()
     membership_id = uuid4()
     account_id = uuid4()
     job_ids = tuple(uuid4() for _ in range(7))
+    async with sessions() as session, session.begin():
+        await session.execute(
+            text(
+                "INSERT INTO workspace (id,name,slug,mode,status) VALUES (:id,'Proof "
+                "E2E',:slug,'PAPER','ACTIVE')"
+            ),
+            {"id": WORKSPACE, "slug": f"proof-{WORKSPACE}"},
+        )
+        await session.execute(
+            text("SELECT set_config('app.workspace_id', :workspace, true)"),
+            {"workspace": str(WORKSPACE)},
+        )
+        await session.execute(
+            text(
+                "INSERT INTO user_account(id,email_normalized,password_hash,status) "
+                "VALUES (:id,:email,'fixture','ACTIVE')"
+            ),
+            {"id": account_id, "email": f"{account_id}@example.test"},
+        )
+        await session.execute(
+            text(
+                "INSERT INTO user_membership(id,workspace_id,user_id,status) "
+                "VALUES (:id,:workspace,:user_id,'ACTIVE')"
+            ),
+            {"id": membership_id, "workspace": WORKSPACE, "user_id": account_id},
+        )
+    await seed_research_policy(sessions)
+    # Gate TRAINING (b7d9f1a3c5e8) đếm lại MarketBar và child manifest v4 thật, nên bundle
+    # phải dựng từ nến đã persist qua rights gate + loader như luồng backfill sản phẩm.
+    bundle = await seed_persisted_bundle(sessions)
     bundle, comparison = build_h01_dataset_runtime_replay(
         WORKSPACE,
+        bundle=bundle,
         scenarios=(SensitivityScenario("base", "BASE"),),
         learning_intent="TRAINING_BASE",
         learning_job_id=str(job_ids[0]),
@@ -111,43 +374,9 @@ async def seed():
     trial_ids = []
     async with sessions() as session, session.begin():
         await session.execute(
-            text(
-                "INSERT INTO workspace (id,name,slug,mode,status) VALUES (:id,'Proof "
-                "E2E',:slug,'PAPER','ACTIVE')"
-            ),
-            {"id": WORKSPACE, "slug": f"proof-{WORKSPACE}"},
-        )
-        await session.execute(
             text("SELECT set_config('app.workspace_id', :workspace, true)"),
             {"workspace": str(WORKSPACE)},
         )
-        await session.execute(
-            text(
-                "INSERT INTO user_account(id,email_normalized,password_hash,status) "
-                "VALUES (:id,:email,'fixture','ACTIVE')"
-            ),
-            {"id": account_id, "email": f"{account_id}@example.test"},
-        )
-        await session.execute(
-            text(
-                "INSERT INTO user_membership(id,workspace_id,user_id,status) "
-                "VALUES (:id,:workspace,:user_id,'ACTIVE')"
-            ),
-            {"id": membership_id, "workspace": WORKSPACE, "user_id": account_id},
-        )
-        for component in bundle.components:
-            session.add(
-                BacktestDatasetManifestRecord.from_manifest(
-                    workspace_id=WORKSPACE, manifest=component.manifest
-                )
-            )
-        session.add(
-            BacktestDatasetReplayBundleRecord.from_reference(
-                workspace_id=WORKSPACE,
-                reference=BacktestDatasetReplayBundleReference.from_bundle(bundle),
-            )
-        )
-        await session.flush()
         for index in range(7):
             learning_job_id = job_ids[index]
             trial_manifest = replace(manifest, seed=index, learning_job_id=str(learning_job_id))
@@ -238,57 +467,6 @@ async def seed():
             job.lease_until = None
             job.result_run_ids = [str(receipt.run_id)]
             trial_ids.append(str(receipt.trial_record_id))
-    now = datetime.now(UTC)
-    history = (
-        SourceRegistryEntry.discover(
-            source_id="BINANCE_USDM_REST",
-            publisher="Fixture",
-            endpoint_url="https://example.invalid/bars",
-            access_method="GET",
-            auth_scope="synthetic fixture",
-            budget=SourceBudget(
-                window=timedelta(hours=1),
-                max_requests=100,
-                max_bytes=1024,
-                max_cost=Decimal("0"),
-                cost_unit="USD",
-            ),
-            actor_id="fixture-operator",
-            at=now - timedelta(days=3),
-            reason="Tạo nguồn synthetic fixture.",
-        )
-        .transition(
-            policy_id="BINANCE_USDM_REST:proof-pending",
-            state=SourcePolicyState.RIGHTS_PENDING,
-            actor_id="fixture-operator",
-            at=now - timedelta(days=2),
-            reason="Chờ xác minh.",
-        )
-        .transition(
-            policy_id="BINANCE_USDM_REST:proof-research",
-            state=SourcePolicyState.VERIFIED,
-            actor_id="fixture-operator",
-            at=now - timedelta(days=1),
-            reason="Chỉ cho phép BACKTEST_RESEARCH.",
-            allowed_purposes=frozenset({SourceUsePurpose.BACKTEST_RESEARCH}),
-            evidence_ref="https://example.invalid/fixture-research",
-            reviewed_at=now - timedelta(days=1),
-            valid_until=now + timedelta(days=1),
-            approved_by="fixture-reviewer",
-        )
-    )
-    # Fixture policy gốc có purpose research và thời gian cố định; DB observer dùng clock thật.
-    for revision in history.revisions:
-        async with UnitOfWork(sessions, workspace_id=WORKSPACE) as uow:
-            await SourceRegistryRepository(uow.session).append_revision(
-                workspace_id=WORKSPACE, revision=revision
-            )
-        async with UnitOfWork(sessions, workspace_id=WORKSPACE) as uow:
-            await SourceRegistryRepository(uow.session).finalize_policy(
-                workspace_id=WORKSPACE,
-                source_id="BINANCE_USDM_REST",
-                policy_id=revision.policy.policy_id,
-            )
     await engine.dispose()
     return {
         "trial_ids": trial_ids,
@@ -309,6 +487,7 @@ async def grant_training():
             actor_id="fixture-operator",
             at=now,
             reason="Xét lại purpose TRAINING riêng.",
+            **pending_license_kwargs(LICENSE_SCOPE, LICENSE_REF),
         )
         await registry.append_revision(workspace_id=WORKSPACE, revision=pending.current)
     async with UnitOfWork(sessions, workspace_id=WORKSPACE) as uow:
@@ -328,10 +507,13 @@ async def grant_training():
             at=now,
             reason="Cấp TRAINING riêng cho fixture synthetic.",
             allowed_purposes=frozenset({SourceUsePurpose.TRAINING}),
-            evidence_ref="https://example.invalid/fixture-training",
+            **verified_license_kwargs(LICENSE_SCOPE, LICENSE_REF, uuid4()),
             reviewed_at=now,
             valid_until=now + timedelta(days=1),
             approved_by="fixture-reviewer",
+        )
+        await append_fixture_license_evidence(
+            uow.session, workspace_id=WORKSPACE, revision=updated.current
         )
         await registry.append_revision(workspace_id=WORKSPACE, revision=updated.current)
     async with UnitOfWork(sessions, workspace_id=WORKSPACE) as uow:
@@ -340,6 +522,7 @@ async def grant_training():
             source_id="BINANCE_USDM_REST",
             policy_id=updated.current.policy.policy_id,
         )
+    await consume_rights_events(sessions, workspace_id=WORKSPACE)
     await engine.dispose()
     return {"training_granted": True}
 
@@ -439,8 +622,11 @@ async def assert_product_mutation_acl(sessions):
 
 
 async def verify():
+    # Migrator điều phối writer/fixture; proof chỉ được build bằng login builder thật vì
+    # `wp06_authorize_replay_training_bundle` từ chối session_user khác.
     engine, sessions = engine_and_sessions()
-    service = CandidateUniverseProofService(sessions)
+    builder_engine, builder_sessions = builder_engine_and_sessions()
+    service = CandidateUniverseProofService(builder_sessions)
     trial = UUID(STATE["trial_ids"][0])
     first = await service.build(workspace_id=WORKSPACE, trial_record_id=trial)
     retry = await service.build(workspace_id=WORKSPACE, trial_record_id=trial)
@@ -555,7 +741,7 @@ async def verify():
     async with UnitOfWork(sessions, workspace_id=WORKSPACE) as writer:
         await insert_extra(writer.session, trial_three)
         proof_task = await start_and_confirm_lock_wait(
-            engine,
+            builder_engine,
             sessions,
             "wp06_lock_candidate_trial",
             lambda: service.build(workspace_id=WORKSPACE, trial_record_id=trial_three),
@@ -574,6 +760,7 @@ async def verify():
             )
             == 0
         )
+    await builder_engine.dispose()
     await engine.dispose()
     return {
         "counts": [1, 1, 0],
@@ -700,7 +887,9 @@ async def security():
             raise AssertionError("RLS WITH CHECK cho phép tenant khác.")
     # Quyền nguồn bị serialize theo workspace/source tới khi proof commit.
     trial_four = UUID(STATE["trial_ids"][3])
-    service = CandidateUniverseProofService(sessions)
+    # Proof chạy bằng login builder thật; writer policy vẫn dưới migrator.
+    builder_engine, builder_sessions = builder_engine_and_sessions()
+    service = CandidateUniverseProofService(builder_sessions)
     gate_passed = asyncio.Event()
     release_scan = asyncio.Event()
     original = BacktestOutcomeRepository.load_trade_outcome_rows
@@ -755,7 +944,7 @@ async def security():
     def trace(connection, cursor, statement, parameters, context, executemany):
         statements.append(statement)
 
-    event.listen(engine.sync_engine, "before_cursor_execute", trace)
+    event.listen(builder_engine.sync_engine, "before_cursor_execute", trace)
     try:
         async with UnitOfWork(sessions, workspace_id=WORKSPACE) as writer:
             registry = SourceRegistryRepository(writer.session)
@@ -772,7 +961,7 @@ async def security():
             )
             await registry.append_revision(workspace_id=WORKSPACE, revision=pending.current)
             waiting_proof = await start_and_confirm_lock_wait(
-                engine,
+                builder_engine,
                 sessions,
                 "pg_advisory_xact_lock",
                 lambda: service.build(workspace_id=WORKSPACE, trial_record_id=trial_five),
@@ -789,7 +978,8 @@ async def security():
         ):
             raise AssertionError("Đã đọc payload sau khi policy mất TRAINING.")
     finally:
-        event.remove(engine.sync_engine, "before_cursor_execute", trace)
+        event.remove(builder_engine.sync_engine, "before_cursor_execute", trace)
+    await builder_engine.dispose()
     async with sessions() as session, session.begin():
         if await session.scalar(
             text("SELECT count(*) FROM candidate_universe_proof WHERE trial_record_id=:trial"),
