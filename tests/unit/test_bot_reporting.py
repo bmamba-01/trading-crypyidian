@@ -996,6 +996,35 @@ async def test_repository_live_quote_and_mark_queries_are_workspace_scoped() -> 
     assert all("INSERT" not in s and "UPDATE" not in s for s in session.statements)
 
 
+@pytest.mark.asyncio
+async def test_repository_open_positions_and_decisions_between_are_bot_scoped() -> None:
+    session = RecordingSession()
+    repository = BotReportRepository(session)  # type: ignore[arg-type]
+
+    assert await repository.open_positions(workspace_id=W1, bot_id=BOT_A, symbol="BTCUSDT") == []
+    assert (
+        await repository.bot_decisions_between(workspace_id=W1, bot_id=BOT_A, start=START, end=END)
+        == []
+    )
+    trades_sql, decisions_sql = session.statements[-2:]
+    for fragment in (
+        "trade.workspace_id =",
+        "trade.bot_id =",
+        "trade.symbol =",
+        "trade.status =",
+    ):
+        assert fragment in trades_sql, fragment
+    for fragment in (
+        "bot_decision.workspace_id =",
+        "bot_decision.bot_id =",
+        "bot_decision.evaluated_at >",
+        "bot_decision.evaluated_at <=",
+        "LIMIT",
+    ):
+        assert fragment in decisions_sql, fragment
+    assert all("INSERT" not in s and "UPDATE" not in s for s in session.statements)
+
+
 class TransactionLogSession:
     """Session giả ghi thứ tự BEGIN/câu lệnh để kiểm tra snapshot được đặt trước truy vấn."""
 
@@ -1117,6 +1146,14 @@ class FakeRepository:
             f"market_bars:{kwargs['symbol']}:{kwargs['timeframe']}:{kwargs['source']}"
         )
         return [{"time": 1, "open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0, "volume": 1.0}]
+
+    async def open_positions(self, **kwargs: Any) -> list[dict[str, Any]]:
+        STORE.calls.append(f"market_positions:{kwargs['symbol']}")
+        return []
+
+    async def bot_decisions_between(self, **kwargs: Any) -> list[dict[str, Any]]:
+        STORE.calls.append(f"decisions_between:{kwargs['start'].isoformat()}")
+        return []
 
     async def latest_bot_decisions(self, **kwargs: Any) -> list[dict[str, Any]]:
         STORE.calls.append(f"decisions:{kwargs['bot_id']}")
@@ -1326,6 +1363,23 @@ async def test_market_overview_requires_report_read_and_reads_one_snapshot(
     assert overview["candle"]["price_source"] == "last_close"
     with pytest.raises(BotReportError):
         await reporting.get_market_overview(actor, bot_id=bot_id, symbol="BTCUSDT", timeframe="2h")
+
+
+@pytest.mark.asyncio
+async def test_decision_at_bar_requires_report_read_and_uses_bar_close_window() -> None:
+    bar_open = datetime(2026, 11, 15, 10, 0, tzinfo=UTC)
+    assert (
+        await service().get_decision_at(
+            ANALYST, bot_id=BOT_A, bar_open=bar_open, interval=timedelta(minutes=5)
+        )
+        is None
+    )
+    assert f"decisions_between:{bar_open.isoformat()}" in STORE.calls
+    with pytest.raises(BotReportError) as caught:
+        await service().get_decision_at(
+            OPERATOR, bot_id=BOT_A, bar_open=bar_open, interval=timedelta(minutes=5)
+        )
+    assert caught.value.status_code == 404
 
 
 @pytest.mark.asyncio

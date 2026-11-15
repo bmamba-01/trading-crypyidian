@@ -688,6 +688,21 @@
         });
       }
     }
+    if (layerOn("paper") && liveOverview && liveOverview.positions) {
+      // CK-7: chú thích "PAPER đã khớp · giá" tại nến chứa thời điểm khớp đầu tiên.
+      for (const position of liveOverview.positions) {
+        const filled = Date.parse(position.filled_at) / 1000;
+        const barTime = [...barTimes].reverse().find((time) => time <= filled);
+        if (barTime === undefined) continue;
+        list.push({
+          time: barTime,
+          position: position.side === "LONG" ? "belowBar" : "aboveBar",
+          color: position.side === "LONG" ? c.up : c.down,
+          shape: position.side === "LONG" ? "arrowUp" : "arrowDown",
+          text: `PAPER đã khớp · ${fmtNumber(position.fill_price)}`,
+        });
+      }
+    }
     if (layerOn("levels")) {
       for (const level of p.levels) {
         if (level.state !== "rejected" || level.event_time === null) continue;
@@ -848,9 +863,39 @@
       });
     }
   };
+  // CK-7: vị thế PAPER đang mở — đường entry/SL/TP, nhãn UPnL theo mark price.
+  let positionLines = [];
+  const drawPositions = () => {
+    for (const line of positionLines) candles.removePriceLine(line);
+    positionLines = [];
+    const positions = (liveOverview && liveOverview.positions) || [];
+    if (!layerOn("paper")) return;
+    const c = palette();
+    for (const position of positions) {
+      const pnl =
+        position.upnl === null
+          ? "UPnL chưa có giá"
+          : `UPnL ${position.upnl >= 0 ? "+" : ""}${fmtNumber(position.upnl, 2)} ${position.quote_asset || ""}${
+              position.r_multiple === null ? "" : ` (${fmtNumber(position.r_multiple, 2)}R)`
+            }`;
+      const add = (price, color, title, style) => {
+        if (price === null || price === undefined) return;
+        positionLines.push(
+          candles.createPriceLine({ price, color, title, lineWidth: 2, lineStyle: style, axisLabelVisible: true })
+        );
+      };
+      add(position.entry_price, c.flat, `PAPER ${position.side} · ${pnl}`, 0);
+      add(position.stop, c.down, "SL PAPER", 0);
+      add(position.target, c.up, "TP PAPER", 0);
+    }
+  };
   document.addEventListener("mc:overview", (event) => {
+    const before = JSON.stringify(((liveOverview && liveOverview.positions) || []).map((p) => p.trade_id));
     liveOverview = event.detail;
     drawQuote();
+    drawPositions();
+    const after = JSON.stringify((liveOverview.positions || []).map((p) => p.trade_id));
+    if (before !== after) markers.setMarkers(buildMarkers(payload));
   });
   document.addEventListener("mc:clock", (event) => {
     clockText = event.detail.text || "";
@@ -882,6 +927,7 @@
     zigzagLine.set(p.zigzag || null, layerOn("zigzag"));
     drawSignal(p);
     drawQuote();
+    drawPositions();
     ema20.applyOptions({ visible: layerOn("ema") });
     ema50.applyOptions({ visible: layerOn("ema") });
     vwap.applyOptions({ visible: layerOn("vwap") });
@@ -973,6 +1019,169 @@
     if (vsa) parts.push(`VSA: ${vsa.label}`);
     legend.textContent = parts.join(" · ");
   });
+
+  // ---- CK-7: điều khiển vùng nhìn, phím tắt, cỡ chart ----
+  const timeScale = chart.timeScale();
+  const visibleBars = () => Math.min(barTimes.length, window.innerWidth < 640 ? 90 : 180);
+  const actions = {
+    "zoom-in": () => {
+      const range = timeScale.getVisibleLogicalRange();
+      if (!range) return;
+      const span = (range.to - range.from) * 0.8;
+      timeScale.setVisibleLogicalRange({ from: range.to - Math.max(span, 10), to: range.to });
+    },
+    "zoom-out": () => {
+      const range = timeScale.getVisibleLogicalRange();
+      if (!range) return;
+      const span = (range.to - range.from) * 1.25;
+      timeScale.setVisibleLogicalRange({ from: range.to - span, to: range.to });
+    },
+    home: () => {
+      const range = timeScale.getVisibleLogicalRange();
+      const span = range ? range.to - range.from : visibleBars();
+      timeScale.setVisibleLogicalRange({ from: -2, to: span - 2 });
+    },
+    live: () => timeScale.scrollToRealTime(),
+    reset: () =>
+      timeScale.setVisibleLogicalRange({
+        from: barTimes.length - visibleBars(),
+        to: barTimes.length + 6,
+      }),
+  };
+  for (const button of document.querySelectorAll("[data-chart-action]")) {
+    button.addEventListener("click", () => actions[button.dataset.chartAction]?.());
+  }
+  container.addEventListener("dblclick", () => actions.reset());
+  container.addEventListener("keydown", (event) => {
+    // Không chặn phím có tổ hợp (trợ năng, phím tắt trình duyệt) và phím Tab.
+    if (event.ctrlKey || event.metaKey || event.altKey) return;
+    const key = { "+": "zoom-in", "=": "zoom-in", "-": "zoom-out", Home: "home", End: "live", 0: "reset" }[event.key];
+    if (!key) return;
+    event.preventDefault();
+    actions[key]();
+  });
+
+  const SIZE_KEY = "crypidian.marketChart.size";
+  const sizeSelect = document.querySelector("[data-chart-size]");
+  const applySize = (size) => {
+    container.classList.toggle("mc-canvas--s", size === "s");
+    container.classList.toggle("mc-canvas--l", size === "l");
+  };
+  if (sizeSelect) {
+    try {
+      const saved = window.localStorage.getItem(SIZE_KEY);
+      if (saved && ["s", "m", "l"].includes(saved)) sizeSelect.value = saved;
+    } catch {
+      /* bỏ qua khi không đọc được localStorage */
+    }
+    applySize(sizeSelect.value);
+    sizeSelect.addEventListener("change", () => {
+      applySize(sizeSelect.value);
+      try {
+        window.localStorage.setItem(SIZE_KEY, sizeSelect.value);
+      } catch {
+        /* bỏ qua khi không ghi được localStorage */
+      }
+    });
+  }
+
+  // ---- CK-7: phân tích tại nến (chuột phải / nhấn giữ) ----
+  const analysis = document.getElementById("mc-bar-analysis");
+  const analysisBody = analysis?.querySelector("[data-bar-analysis-body]");
+  const STATUS_VI = { CANDIDATE: "Ra tín hiệu", ABSTAIN: "Không vào lệnh", VETO: "Bị chặn" };
+  const renderAnalysis = (time, decision, message) => {
+    if (!analysis || !analysisBody) return;
+    analysis.hidden = false;
+    setText("[data-bar-analysis-time]", fmtTime(time));
+    const nodes = [];
+    const para = (text, className) => {
+      const p = document.createElement("p");
+      if (className) p.className = className;
+      p.textContent = text;
+      return p;
+    };
+    if (message) {
+      nodes.push(para(message));
+    } else if (!decision) {
+      nodes.push(para("Bot không có quyết định nào được đánh giá khi nến này đóng (hoặc dữ liệu không khớp hash)."));
+    } else {
+      nodes.push(
+        para(
+          `${STATUS_VI[decision.status] || decision.status} · ${decision.reason_code} — ${decision.detail_vi}`,
+          "mc-bar-analysis__summary"
+        )
+      );
+      const list = document.createElement("ul");
+      list.className = "sc-checklist";
+      for (const item of decision.checklist || []) {
+        const li = document.createElement("li");
+        const state = item.passed === true ? "pass" : item.passed === false ? "fail" : "na";
+        li.className = `sc-check sc-check--${state}`;
+        const mark = document.createElement("span");
+        mark.className = "sc-check__mark";
+        mark.setAttribute("aria-hidden", "true");
+        mark.textContent = state === "pass" ? "✓" : state === "fail" ? "✗" : "—";
+        const label = document.createElement("span");
+        label.className = "sc-check__label";
+        label.textContent = `${item.label_vi} (${state === "pass" ? "đạt" : state === "fail" ? "không đạt" : "chưa xác định"})`;
+        const value = document.createElement("span");
+        value.className = "sc-check__value";
+        value.textContent = `${item.actual} · cần ${item.operator} ${item.threshold}`;
+        li.append(mark, label, value);
+        list.append(li);
+      }
+      if (list.children.length) nodes.push(list);
+      else nodes.push(para("Quyết định này được tạo trước khi có checklist (SIG-3)."));
+      for (const gate of decision.gate_details || []) nodes.push(para(`Cổng kiểm soát: ${gate}`));
+    }
+    analysisBody.replaceChildren(...nodes);
+  };
+  analysis?.querySelector("[data-bar-analysis-close]")?.addEventListener("click", () => {
+    analysis.hidden = true;
+    container.focus();
+  });
+  const analyzeAt = async (clientX) => {
+    const rect = container.getBoundingClientRect();
+    const time = timeScale.coordinateToTime(clientX - rect.left);
+    if (typeof time !== "number") return;
+    const params = new URLSearchParams({
+      bot_id: container.dataset.botId,
+      timeframe: container.dataset.timeframe,
+      time: String(time),
+    });
+    renderAnalysis(time, null, "Đang tải quyết định tại nến…");
+    try {
+      const response = await fetch(`/admin/api/chart/decision?${params.toString()}`, {
+        credentials: "same-origin",
+        headers: { Accept: "application/json" },
+      });
+      if (!response.ok) {
+        renderAnalysis(time, null, "Không đọc được quyết định tại nến này (thiếu quyền hoặc lỗi máy chủ).");
+        return;
+      }
+      const body = await response.json();
+      renderAnalysis(time, body.decision, null);
+    } catch {
+      renderAnalysis(time, null, "Lỗi mạng khi tải quyết định tại nến.");
+    }
+  };
+  container.addEventListener("contextmenu", (event) => {
+    event.preventDefault();
+    analyzeAt(event.clientX);
+  });
+  let pressTimer = null;
+  container.addEventListener(
+    "touchstart",
+    (event) => {
+      if (event.touches.length !== 1) return;
+      const x = event.touches[0].clientX;
+      pressTimer = window.setTimeout(() => analyzeAt(x), 600);
+    },
+    { passive: true }
+  );
+  for (const name of ["touchmove", "touchend", "touchcancel"]) {
+    container.addEventListener(name, () => window.clearTimeout(pressTimer), { passive: true });
+  }
 
   // Đổi theme: cập nhật màu chart.
   new MutationObserver(() => {

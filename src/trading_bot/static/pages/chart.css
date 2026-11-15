@@ -302,3 +302,33 @@
   border-radius: 0.3rem;
   background: rgba(14, 165, 233, 0.18);
 }
+
+/* ---------- CK-7: điều khiển chart, cỡ, phân tích tại nến ---------- */
+.mc-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 0.35rem; }
+.mc-control { min-height: 44px; min-width: 44px; padding: 0 0.7rem; }
+.mc-size { font-size: 0.82rem; font-weight: 600; margin-left: 0.4rem; }
+.mc-controls select { min-height: 44px; }
+.mc-shortcuts { font-size: 0.8rem; }
+.mc-shortcuts summary { min-height: 44px; display: inline-flex; align-items: center; cursor: pointer; padding: 0 0.4rem; }
+.mc-shortcuts ul { margin: 0.2rem 0 0; padding-left: 1.1rem; display: grid; gap: 0.2rem; }
+.mc-shortcuts kbd {
+  font: inherit;
+  font-weight: 700;
+  padding: 0 0.3rem;
+  border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.4));
+  border-radius: 0.25rem;
+}
+.mc-canvas:focus-visible { outline: 2px solid var(--accent, #f0b90b); outline-offset: 2px; }
+.mc-canvas--s { height: 320px; }
+.mc-canvas--l { height: 640px; }
+.mc-bar-analysis {
+  border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.3));
+  border-radius: 0.6rem;
+  padding: 0.55rem 0.7rem;
+  display: grid;
+  gap: 0.4rem;
+}
+.mc-bar-analysis[hidden] { display: none; }
+.mc-bar-analysis__head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.4rem; }
+.mc-bar-analysis__head h3 { margin: 0; font-size: 0.92rem; }
+.mc-bar-analysis p { margin: 0; font-size: 0.84rem; }

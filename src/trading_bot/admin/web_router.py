@@ -2713,6 +2713,40 @@ async def market_overview_api(
     return {"status": "ok"} | overview
 
 
+@router.get("/api/chart/decision")
+async def market_bar_decision_api(
+    request: Request,
+    response: Response,
+    identity: Annotated[AuthIdentity, Depends(current_identity)],
+    bot_id: UUID,
+    time: Annotated[int, Query(ge=0)],
+    timeframe: str = MARKET_CHART_DEFAULT_TIMEFRAME,
+) -> dict[str, Any]:
+    """Phân tích tại nến (CK-7): quyết định của bot được đánh giá khi nến ``time`` đóng."""
+    response.headers["Cache-Control"] = "no-store"
+    if timeframe not in MARKET_CHART_INTERVAL_SECONDS:
+        raise HTTPException(status_code=422, detail="Khung biểu đồ không được hỗ trợ.")
+    interval = MARKET_CHART_INTERVAL_SECONDS[timeframe]
+    if time % interval:
+        raise HTTPException(status_code=422, detail="Thời điểm không trùng mốc mở nến.")
+    bar_open = datetime.fromtimestamp(time, UTC)
+    try:
+        decision = await _reporting_service(request).get_decision_at(
+            identity.principal,
+            bot_id=bot_id,
+            bar_open=bar_open,
+            interval=timedelta(seconds=interval),
+        )
+    except BotReportError as error:
+        raise _report_http_error(error) from error
+    return {
+        "status": "ok",
+        "bar_open": bar_open.isoformat(),
+        "timeframe": timeframe,
+        "decision": decision,
+    }
+
+
 @router.get("/api/strategy-cards")
 async def strategy_cards_api(
     request: Request,

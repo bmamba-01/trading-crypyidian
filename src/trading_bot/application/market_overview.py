@@ -25,6 +25,7 @@ from trading_bot.domain.market.overview import (
     mtf_consensus,
     timeframe_trend,
 )
+from trading_bot.domain.portfolio.position_overlay import position_overlay
 
 # Thứ tự = thứ tự hiển thị; khung đầu tiên có dữ liệu là khung chính của phép đồng thuận.
 MTF_ROLES: tuple[tuple[str, str], ...] = (
@@ -166,6 +167,7 @@ def build_market_overview(
     bars_by_timeframe: Mapping[str, Sequence[Mapping[str, Any]]],
     quote: Mapping[str, Any] | None,
     mark: Mapping[str, Any] | None,
+    positions: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
     """JSON cho dải thông số (CK-1) và ma trận đa khung (CK-2) của một mã."""
     if now.tzinfo is None:
@@ -245,10 +247,24 @@ def build_market_overview(
     primary = next((cell.timeframe for cell in cells if cell.bar_count), MTF_ROLES[0][0])
     consensus = mtf_consensus(cells, primary=primary)
 
+    # CK-7: UPnL vị thế PAPER theo mark price còn mới, nếu không thì theo giá hiện tại kèm nguồn.
+    if mark_view is not None and not mark_view["stale"] and mark is not None:
+        upnl_price: Decimal | None = Decimal(str(mark["mark_price"]))
+        upnl_source: str | None = "mark"
+    elif price is not None:
+        upnl_price, upnl_source = Decimal(str(price)), source
+    else:
+        upnl_price, upnl_source = None, None
+    position_views = [
+        position_overlay(item, mark_price=upnl_price, mark_source=upnl_source)
+        for item in positions
+        if item.get("entry_fills")
+    ]
     return {
         "symbol": symbol,
         "timeframe": timeframe,
         "generated_at": now.astimezone(UTC).isoformat(),
+        "positions": position_views,
         "formula_versions": {"overview": OVERVIEW_FORMULA_VERSION, "mtf": MTF_FORMULA_VERSION},
         "quote": quote_view,
         "mark": mark_view,

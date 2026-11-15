@@ -1,6 +1,6 @@
 # WBS CK — Buồng lái biểu đồ (chart cockpit) theo hai app tham chiếu
 
-**Ngày:** 2026-11-15 · **Trạng thái:** CK-0 đã làm; CK-1…CK-6 đã làm phần lõi (15/11/2026, xem cuối từng mục, còn mở ghi rõ); CK-7…CK-13 là kế hoạch · **Chế độ:** PAPER/replay; chỉ dữ liệu thị trường công khai; không route order, không bật SHADOW/PAPER_GATE/Demo/LIVE. <br>
+**Ngày:** 2026-11-15 · **Trạng thái:** CK-0 đã làm; CK-1…CK-7 đã làm phần lõi (15/11/2026, xem cuối từng mục, còn mở ghi rõ); CK-8…CK-13 là kế hoạch · **Chế độ:** PAPER/replay; chỉ dữ liệu thị trường công khai; không route order, không bật SHADOW/PAPER_GATE/Demo/LIVE. <br>
 **Đầu vào:** hai ảnh owner gửi ngày 15/11/2026 — (1) "XAUUSD Research Desk 3.3.0" (MT5, ICT + VSA); (2) một app quét/auto crypto trên Bybit (WLFI/USDT, Green Flag, MA34×89). <br>
 **Xây trên:** [WBS SIG](./2026-11-15-sig-market-structure-scalping-chart-wbs.md) (đang ở nhánh `claude/project-progress-review-wp07-d70431`, **chưa vào `dev`**), [UI kit v1.1](../../design/admin-ui-kit.md), ingest live Binance (`docs/research/binance-usdm-api-audit-2026-11-14.md`), [khảo sát 14/11](./2026-11-14-feature-survey-and-manager-insights.md).
 
@@ -242,7 +242,7 @@ Ký hiệu: **D** = đã có trên `dev`; **S** = đã làm lát đầu trên nh
 
 **Acceptance:** setup với quy tắc k/n chuyển trạng thái đúng trên fixture; "còn thiếu" khớp điều kiện chưa đạt đầu tiên theo thứ tự ưu tiên; hash quyết định cũ không đổi.
 
-**Đã làm (15/11/2026, chưa commit):** `domain/strategy/setup_progress.py` (`ck6-setup-v1`): phân loại bắt buộc/cộng điểm ở **tầng hiển thị** (payload và hash quyết định không đổi), bắt buộc H01/H03/H06 = điều kiện thị trường của rule theo thứ tự ưu tiên, cộng điểm = killzone (CK-3), cách funding > 10 phút (mark CK-1), tin tức (chưa có lịch → "chưa xác định"); trạng thái Đủ điều kiện / Chưa đủ / Mất hiệu lực / Chưa có quyết định; "Còn thiếu: …" kèm giá trị và ngưỡng; thời điểm đạt. `build_setup_progress` chỉ dùng quyết định khớp hash. `BotReportingService.get_setup_board` (REPORT_READ từng bot, bot thiếu quyền bị bỏ lặng lẽ). `/admin/chart` có "Bảng Entry" cho các bot giao dịch mã đang xem (hoặc chưa ghim mã) và ô chọn "Ghim kịch bản lên chart" thay thẻ đang vẽ. Không có nút đặt lệnh.
+**Đã làm (15/11/2026, commit `3e6c080`, đã push `dev`):** `domain/strategy/setup_progress.py` (`ck6-setup-v1`): phân loại bắt buộc/cộng điểm ở **tầng hiển thị** (payload và hash quyết định không đổi), bắt buộc H01/H03/H06 = điều kiện thị trường của rule theo thứ tự ưu tiên, cộng điểm = killzone (CK-3), cách funding > 10 phút (mark CK-1), tin tức (chưa có lịch → "chưa xác định"); trạng thái Đủ điều kiện / Chưa đủ / Mất hiệu lực / Chưa có quyết định; "Còn thiếu: …" kèm giá trị và ngưỡng; thời điểm đạt. `build_setup_progress` chỉ dùng quyết định khớp hash. `BotReportingService.get_setup_board` (REPORT_READ từng bot, bot thiếu quyền bị bỏ lặng lẽ). `/admin/chart` có "Bảng Entry" cho các bot giao dịch mã đang xem (hoặc chưa ghim mã) và ô chọn "Ghim kịch bản lên chart" thay thẻ đang vẽ. Không có nút đặt lệnh.
 **Lệch/còn mở:** `bonus_k` = 0 (cộng điểm chỉ tham khảo) cho tới khi owner chọn k và đưa điều kiện vào rule qua backtest; điều kiện tin tức chờ CK-10; bảng chưa tự cập nhật theo polling (tải lại trang); "giá/thời điểm cần" của MI-2 mới có giá trị và ngưỡng, chưa ước tính giá cần đạt.
 
 ### CK-7 — Lớp vị thế và tương tác chart
@@ -253,6 +253,9 @@ Ký hiệu: **D** = đã có trên `dev`; **S** = đã làm lát đầu trên nh
 4. Kích thước chart S/M/L (lưu `localStorage` bọc try/catch).
 
 **Acceptance:** UPnL khớp ledger + mark price trong fixture; phím tắt có trên desktop, không chặn thao tác trợ năng; mobile dùng nhấn giữ.
+
+**Đã làm (15/11/2026):** `domain/portfolio/position_overlay.py` (`ck7-position-v1`): giá vào trung bình theo fill ENTRY, UPnL theo mark (mark cũ → giá hiện tại kèm nguồn), UPnL sau phí vào, R theo SL kế hoạch. `BotReportRepository.open_positions` (trade OPEN + fill ENTRY + kế hoạch đã duyệt + STOP_UPDATED mới nhất) đi cùng overview polling 2 giây; chart vẽ đường "PAPER LONG/SHORT · UPnL … (xR)", SL/TP PAPER, marker "PAPER đã khớp · giá" ở nến khớp; công tắc "Vị thế PAPER (tắt = ẩn)". `GET /admin/api/chart/decision` + `get_decision_at` (REPORT_READ, khớp hash, cửa sổ nến đóng); chuột phải / nhấn giữ 0,6 giây mở "Phân tích tại nến". Thanh điều khiển −/+/Về đầu/Đặt lại/→ Live, phím `+ − Home End 0` khi chart được focus (không chặn tổ hợp phím), nhấp đúp đặt lại, cỡ S/M/L lưu `localStorage` (try/catch), hộp gợi ý phím tắt.
+**Còn mở:** link Microscope (hiện chỉ có cho Strategy Card, chưa có cho bot); TP1–3 (chờ SIG-3 có nhiều TP); kéo bằng chuột giữa (Lightweight Charts đã hỗ trợ kéo chuột trái); đã kiểm trên PostgreSQL thật bằng role admin-web trong Compose E2E RT-1 (pha `web_read`, gồm RLS cần membership).
 
 ### CK-8 — Công cụ vẽ, quản lý lớp và nhiều chart
 

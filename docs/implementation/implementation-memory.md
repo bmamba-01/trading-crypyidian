@@ -4336,7 +4336,7 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Còn mở:** tô thân nến theo VSA; chỉnh ngưỡng ZigZag trên giao diện.
 - **Readback:** đã đọc lại mục này; không có secret.
 
-### 2026-11-15 — CK-6: Bảng Entry (tiến độ setup k/n) trên `/admin/chart` (chưa commit)
+### 2026-11-15 — CK-6: Bảng Entry (tiến độ setup k/n) trên `/admin/chart` (commit `3e6c080`)
 
 - **Yêu cầu của owner:** "Commit, làm CK-6" → commit CK-5 `cffd37c` (local), rồi làm CK-6.
 - **Quyết định thiết kế:** checklist SIG-3 nằm trong payload quyết định đã băm hash, nên **không** thêm trường "bắt buộc/cộng điểm" vào `ChecklistItem`; phân loại đặt ở `domain/strategy/setup_progress.py` và áp khi đọc → hash quyết định cũ và mới đều không đổi (acceptance CK-6). Điều kiện cộng điểm chưa có trong rule nên `bonus_k = 0`: trạng thái "Đủ điều kiện" vẫn khớp quyết định CANDIDATE của rule, không mâu thuẫn với ledger.
@@ -4347,5 +4347,20 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
   - Glossary mục **AI**; WBS CK mục CK-6; `project-status.md`.
 - **Lỗi gặp và sửa:** Jinja hiểu `setup.items` là phương thức `dict.items` → `TypeError` khi render; đổi khóa thành `conditions`. Khoảng cách funding hiện "3841 phút" → định dạng giờ/phút.
 - **Kiểm chứng:** `tests/unit/test_ck6_setup_progress.py` 7 passed (gồm quyết định thật có hash, hàng bị sửa tay bị bỏ, payload không đổi sau khi đọc); test service quyền; unit toàn bộ **4538 passed/131.66s**; ruff/format sạch; mypy **411 files** sạch. Playwright trang chart **1 passed**, ảnh `ck6-entry-board-desktop.png` đã xem. Không đổi DB.
-- **Còn mở:** chọn k và đưa điều kiện cộng điểm vào rule (cần owner + backtest); lịch tin tức (CK-10); bảng tự cập nhật theo polling; ước tính "giá cần đạt" (MI-2); CK-3…CK-6 chưa push.
+- **Còn mở:** chọn k và đưa điều kiện cộng điểm vào rule (cần owner + backtest); lịch tin tức (CK-10); bảng tự cập nhật theo polling; ước tính "giá cần đạt" (MI-2).
+- **Readback:** đã đọc lại mục này; không có secret.
+
+### 2026-11-15 — Push CK-3…CK-6 và CK-7: vị thế PAPER, phân tích tại nến, điều khiển chart
+
+- **Yêu cầu của owner:** "commit push và làm tiếp ck-7 luôn" → commit CK-6 `3e6c080`; push `origin/dev` fast-forward `72a3b58..3e6c080` (gồm CK-3 `a310357`, CK-4 `cdb634d`, CK-5 `cffd37c`, CK-6 `3e6c080`; remote `bmamba-01/trading-crypyidian`, xác nhận bằng `git ls-remote`). Trước push: unit 4538 passed, Playwright chart đạt; không đổi DB nên không chạy lại Compose E2E.
+- **CK-7 đã làm:**
+  - Domain `position_overlay.py` (`ck7-position-v1`) và `BotReportRepository.open_positions`, `bot_decisions_between`; `get_market_overview` thêm vị thế của bot đang chọn; `build_market_overview(..., positions=...)` tính UPnL theo mark còn mới (≤ 180 giây) nếu không theo giá hiện tại.
+  - `BotReportingService.get_decision_at` + `GET /admin/api/chart/decision` (thời điểm phải trùng mốc mở nến, cửa sổ `(mở, mở + khung]`).
+  - `market-chart.js`: `drawPositions` (price line entry/SL/TP), marker khớp lệnh, thanh điều khiển, phím tắt trên chart có focus (bỏ qua Ctrl/Meta/Alt), nhấp đúp, cỡ S/M/L bằng lớp CSS (không style nội tuyến), chuột phải/nhấn giữ → bảng "Phân tích tại nến" dựng bằng DOM API (không innerHTML).
+  - Glossary mục **AJ**; WBS CK mục CK-7; `project-status.md`.
+- **Lỗi gặp và sửa:** chèn `drawPositions()` bằng thay chuỗi trúng lời gọi `drawQuote()` đầu tiên (trong listener) thay vì `applyLayers` → gọi 2 lần ở listener, thiếu ở applyLayers; phát hiện bằng grep, sửa theo chỉ số dòng. Kỳ vọng R trong Playwright ban đầu sai (chia cho 4 thay vì rủi ro/đơn vị 2,5).
+- **Kiểm chứng:** unit **4545 passed/128.79s**; ruff/format sạch; mypy **412 files** sạch. Playwright trang chart **1 passed** (UPnL = 3, R = 0,6 theo mark; 5 nút + 5 phím; cỡ S cao 320px và nhớ sau tải lại; chuột phải mở phân tích có checklist; ảnh `ck7-paper-position-desktop.png`, `ck7-bar-analysis-desktop.png` đã xem).
+- **Kiểm trên PostgreSQL thật (owner yêu cầu "Kiểm E2E rồi commit"):** thêm pha `web_read` (service `admin-web`, role `crypidian_admin_web`) vào `tests/e2e/probes/rt1_paper_market_loop.py`. Lần chạy đầu **fail**: 0 vị thế dù ledger có trade OPEN. Nguyên nhân: RLS `bot_member_isolation` của admin-web chỉ cho thấy hàng khi phiên có `app.membership_id` của thành viên ACTIVE (owner/strategy_admin/risk_admin hoặc có bot grant); probe chưa truyền `actor_membership_id` (service thật luôn truyền) → lỗi dựng test, không phải lỗi code. Sửa probe truyền membership owner và thêm khẳng định đọc **không** có membership phải ra 0 hàng. Lần hai `test_rt1_paper_market_loop.py` **1 passed/320.66s**: 1 vị thế LONG, 1 fill, có SL kế hoạch, SL < giá vào, UPnL = khối lượng × 1, quyết định tại nến CANDIDATE khớp hash, sau khi đóng bằng stop không còn vị thế mở. Đồng hồ host/Docker khớp.
+- **Còn mở:** link Microscope cho bot; TP1–3; kéo chuột giữa.
+- **Bài học:** probe đọc dữ liệu bằng role admin-web phải đặt `actor_membership_id` như service; thêm luôn khẳng định "không membership → 0 hàng" để test chứng minh RLS thay vì chỉ đi đường vui.
 - **Readback:** đã đọc lại mục này; không có secret.

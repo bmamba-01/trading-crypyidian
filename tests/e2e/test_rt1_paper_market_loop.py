@@ -31,6 +31,7 @@ SERVICES = {
     "produce": "market-signal-worker",
     "runtime": "trading-runtime",
     "mark_check": "trading-runtime",
+    "web_read": "admin-web",
     "add_minutes": "migrator",
     "add_stop_bar": "migrator",
     "verify": "migrator",
@@ -141,6 +142,22 @@ def test_rest_candles_drive_paper_entry_fill_and_stop_exit_idempotently() -> Non
         marked = run("mark_check")
         assert marked == {"known": True, "reason": None, "open_positions": 1, "mark_refs": 1}
 
+        # CK-7: admin-web đọc đúng vị thế mở (fill, SL kế hoạch, UPnL) và quyết định tại nến.
+        opened = run("web_read")
+        assert opened["role"] == "crypidian_admin_web"
+        assert opened["positions"] == [
+            {
+                "side": opened["positions"][0]["side"],
+                "fills": 1,
+                "has_initial_stop": True,
+                "stop_below_entry": True,
+                "upnl_matches_quantity": True,
+            }
+        ], opened
+        assert opened["decision_status"] == "CANDIDATE"
+        assert opened["decision_rows"] >= 1
+        assert opened["hidden_without_membership"] == 0  # RLS admin-web cần membership
+
         # Chạy lại không có nến mới: không ghi thêm gì.
         before = run("verify")
         again = run("runtime")
@@ -161,6 +178,7 @@ def test_rest_candles_drive_paper_entry_fill_and_stop_exit_idempotently() -> Non
             "fills": ["ENTRY", "EXIT"],
         }
         final = run("verify")
+        assert run("web_read")["positions"] == []  # đã đóng bằng stop → không còn vị thế mở
         rerun = run("runtime")
         assert rerun["ledger"] == closed["ledger"]
         assert run("verify") == final

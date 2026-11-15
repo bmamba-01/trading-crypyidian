@@ -207,6 +207,7 @@ class _Reporting:
         self.calls: list[dict[str, Any]] = []
         self.overview_calls: list[dict[str, Any]] = []
         self.setup_calls: list[dict[str, Any]] = []
+        self.decision_calls: list[dict[str, Any]] = []
 
     async def list_market_series(self, principal: Principal, *, bot_id: UUID) -> dict:
         if self.error is not None:
@@ -221,6 +222,12 @@ class _Reporting:
         if self.error is not None:
             raise self.error
         return self.bars
+
+    async def get_decision_at(self, principal: Principal, **kwargs: Any) -> dict | None:
+        self.decision_calls.append(kwargs)
+        if self.error is not None:
+            raise self.error
+        return SIGNAL_VIEW["latest_decision"] if kwargs["bar_open"].minute == 0 else None
 
     async def get_setup_board(self, principal: Principal, **kwargs: Any) -> list[dict]:
         """Bảng Entry giả: một setup H01 chưa đủ (thiếu ADX) cho bot đầu tiên."""
@@ -563,3 +570,20 @@ def test_chart_page_renders_entry_board_with_missing_condition_and_bonus() -> No
     assert "cộng điểm" in html
     assert "Chưa đủ" in html
     assert ' style="' not in html
+
+
+def test_bar_decision_api_validates_bar_time_and_returns_decision() -> None:
+    reporting = _Reporting([])
+    client = _client(reporting)
+    at = int(datetime(2026, 11, 16, 9, 0, tzinfo=UTC).timestamp())
+    base = f"/admin/api/chart/decision?bot_id={BOT_ID}&timeframe=5m"
+    found = client.get(f"{base}&time={at}")
+    assert found.status_code == 200
+    assert found.headers["cache-control"] == "no-store"
+    assert found.json()["decision"]["reason_code"] == "H01_ADX_BELOW_20"
+    assert reporting.decision_calls[0]["interval"] == timedelta(minutes=5)
+    assert client.get(f"{base}&time={at + 300}").json()["decision"] is None
+    assert client.get(f"{base}&time={at + 7}").status_code == 422  # không trùng mốc nến
+    assert client.get(f"{base}&time={at}&timeframe=2h").status_code == 422
+    denied = _client(_Reporting([], BotReportError(404, "REPORT_NOT_FOUND", "x")))
+    assert denied.get(f"{base}&time={at}").status_code == 404

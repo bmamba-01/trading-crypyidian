@@ -6,6 +6,8 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
+import pytest
+
 from trading_bot.application.market_overview import MTF_ROLES, build_market_overview
 
 NOW = datetime(2026, 11, 15, 15, 7, 30, tzinfo=UTC)
@@ -132,3 +134,39 @@ def test_overview_lists_open_killzones_in_new_york_time() -> None:
     # 09:50–10:10 đang mở.
     keys = [item["key"] for item in _overview()["killzones"]]
     assert keys == ["macro_0950", "silver_bullet_am"]
+
+
+def test_overview_positions_use_fresh_mark_for_upnl() -> None:
+    position = {
+        "trade_id": "t1",
+        "symbol": "BTCUSDT",
+        "side": "LONG",
+        "quote_asset": "USDT",
+        "entry_fills": [
+            {
+                "price": Decimal("95000"),
+                "quantity": Decimal("0.01"),
+                "fee": Decimal("0.38"),
+                "occurred_at": NOW - timedelta(hours=1),
+            },
+        ],
+        "initial_stop": Decimal("94000"),
+        "current_stop": None,
+        "target": Decimal("98000"),
+    }
+    data = _overview(positions=[position])
+    (view,) = data["positions"]
+    assert view["mark_source"] == "mark"
+    assert view["upnl"] == pytest.approx((96001.0 - 95000.0) * 0.01)
+    # Mark cũ → dùng giá giữa bid/ask, ghi rõ nguồn.
+    stale_mark = _overview(
+        positions=[position],
+        mark={
+            "mark_price": Decimal("1"),
+            "index_price": Decimal("1"),
+            "funding_rate": None,
+            "next_funding_time": None,
+            "event_at": NOW - timedelta(minutes=10),
+        },
+    )
+    assert stale_mark["positions"][0]["mark_source"] == "quote_mid"

@@ -25,6 +25,7 @@
   ("equal_levels", "EQH/EQL · ITH/ITL", true),
   ("killzones", "Killzone ICT (giờ NY)", false),
   ("signal", "Thẻ tín hiệu (SL/TP)", true),
+  ("paper", "Vị thế PAPER (tắt = ẩn)", true),
   ("quote", "Bid/Ask trực tiếp", true),
   ("rsi", "RSI 14", false),
   ("macd", "MACD", false),
@@ -132,7 +133,38 @@
       </dl>
     </header>
     <p id="mc-legend" class="chart-ohlc-legend" data-chart-legend>Rê chuột hoặc chạm vào nến để xem Mở / Cao / Thấp / Đóng và khối lượng.</p>
-    <div id="market-chart" class="mc-canvas" role="img" aria-label="Biểu đồ nến {{ chart_payload.symbol }} khung {{ timeframe }} với cấu trúc thị trường, phiên và volume profile" data-bot-id="{{ selected_bot.id }}" data-symbol="{{ selected_symbol }}" data-timeframe="{{ timeframe }}"></div>
+    {#- CK-7: điều khiển vùng nhìn, cỡ chart và phím tắt (chart nhận phím khi được focus). -#}
+    <div class="mc-controls" role="toolbar" aria-label="Điều khiển biểu đồ">
+      <button type="button" class="btn btn-secondary mc-control" data-chart-action="zoom-out" title="Thu nhỏ (phím −)" aria-label="Thu nhỏ">−</button>
+      <button type="button" class="btn btn-secondary mc-control" data-chart-action="zoom-in" title="Phóng to (phím +)" aria-label="Phóng to">+</button>
+      <button type="button" class="btn btn-secondary mc-control" data-chart-action="home" title="Về nến đầu (Home)">Về đầu</button>
+      <button type="button" class="btn btn-secondary mc-control" data-chart-action="reset" title="Đặt lại vùng nhìn (phím 0 hoặc nhấp đúp)">Đặt lại</button>
+      <button type="button" class="btn btn-secondary mc-control" data-chart-action="live" title="Về nến mới nhất (End)">→ Live</button>
+      <label class="mc-size" for="mc-chart-size">Cỡ</label>
+      <select id="mc-chart-size" data-chart-size>
+        <option value="s">S</option>
+        <option value="m" selected>M</option>
+        <option value="l">L</option>
+      </select>
+      <details class="mc-shortcuts">
+        <summary>Phím tắt</summary>
+        <ul>
+          <li><kbd>+</kbd> / <kbd>−</kbd>: phóng to / thu nhỏ</li>
+          <li><kbd>Home</kbd>: về nến đầu · <kbd>End</kbd>: về nến mới nhất</li>
+          <li><kbd>0</kbd> hoặc nhấp đúp: đặt lại vùng nhìn</li>
+          <li>Chuột phải (máy tính) hoặc nhấn giữ (điện thoại) trên nến: phân tích tại nến</li>
+          <li>Phím chỉ hoạt động khi biểu đồ đang được chọn (Tab tới biểu đồ).</li>
+        </ul>
+      </details>
+    </div>
+    <div id="market-chart" class="mc-canvas" tabindex="0" role="img" aria-label="Biểu đồ nến {{ chart_payload.symbol }} khung {{ timeframe }} với cấu trúc thị trường, phiên và volume profile" data-bot-id="{{ selected_bot.id }}" data-symbol="{{ selected_symbol }}" data-timeframe="{{ timeframe }}"></div>
+    <section id="mc-bar-analysis" class="mc-bar-analysis" hidden aria-live="polite" aria-labelledby="mc-bar-analysis-title">
+      <header class="mc-bar-analysis__head">
+        <h3 id="mc-bar-analysis-title">Phân tích tại nến <span data-bar-analysis-time></span></h3>
+        <button type="button" class="btn btn-secondary mc-control" data-bar-analysis-close>Đóng</button>
+      </header>
+      <div data-bar-analysis-body></div>
+    </section>
     <div id="market-chart-rsi" class="mc-subpane" hidden aria-label="RSI 14"></div>
     <div id="market-chart-macd" class="mc-subpane" hidden aria-label="MACD 12/26/9"></div>
     <ul class="mc-key" aria-label="Chú giải">

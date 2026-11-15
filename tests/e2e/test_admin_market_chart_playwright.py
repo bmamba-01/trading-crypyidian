@@ -165,6 +165,9 @@ class _Reporting:
         self.calls += 1
         return self.bars if kwargs["symbol"] == "BTCUSDT" else []
 
+    async def get_decision_at(self, principal: Principal, **kwargs: Any) -> dict | None:
+        return SIGNAL_VIEW["latest_decision"]
+
     async def get_setup_board(self, principal: Principal, **kwargs: Any) -> list[dict]:
         """Bảng Entry giả: một setup H01 chưa đủ (thiếu ADX) cho bot đầu tiên."""
         self.setup_calls.append(kwargs)
@@ -254,6 +257,27 @@ class _Reporting:
             }
             if has_bars
             else None,
+            positions=[
+                {
+                    "trade_id": "paper-1",
+                    "symbol": kwargs["symbol"],
+                    "side": "LONG",
+                    "quote_asset": "USDT",
+                    "entry_fills": [
+                        {
+                            "price": last_close - Decimal("1.5"),
+                            "quantity": Decimal("2"),
+                            "fee": Decimal("0.08"),
+                            "occurred_at": OVERVIEW_NOW - timedelta(minutes=47),
+                        }
+                    ],
+                    "initial_stop": last_close - Decimal("4"),
+                    "current_stop": None,
+                    "target": last_close + Decimal("3"),
+                }
+            ]
+            if has_bars
+            else [],
         )
 
 
@@ -414,6 +438,40 @@ def test_market_chart_renders_overlays_polls_and_is_responsive(server_url: str) 
         pin.select_option("0")
         board.screenshot(path=str(SCREENSHOTS_DIR / "ck6-entry-board-desktop.png"))
         pin.select_option("")
+
+        # CK-7: vị thế PAPER (UPnL theo mark), điều khiển, phím tắt, cỡ, phân tích tại nến.
+        overview_json = page.evaluate(
+            "() => JSON.parse(document.getElementById('market-overview-data').textContent)"
+        )
+        (position,) = overview_json["positions"]
+        assert position["mark_source"] == "mark"
+        assert position["upnl"] == pytest.approx(1.5 * 2)  # mark = giá đóng cuối, vào thấp 1,5
+        assert position["r_multiple"] == pytest.approx(1.5 / 2.5)  # rủi ro/đơn vị = 2,5
+        expect(page.locator('[data-layer="paper"]')).to_be_checked()
+        chart = page.locator("#market-chart")
+        for action in ("zoom-in", "zoom-out", "home", "reset", "live"):
+            page.locator(f'[data-chart-action="{action}"]').click()
+        chart.focus()
+        for key in ("+", "-", "Home", "End", "0"):
+            page.keyboard.press(key)
+        page.locator("[data-chart-size]").select_option("s")
+        expect(chart).to_have_class(re.compile(r"mc-canvas--s"))
+        assert chart.bounding_box()["height"] == pytest.approx(320, abs=2)
+        page.reload(wait_until="networkidle")
+        expect(page.locator("[data-chart-size]")).to_have_value("s")
+        page.locator("[data-chart-size]").select_option("m")
+        box = chart.bounding_box()
+        chart.click(button="right", position={"x": box["width"] * 0.6, "y": box["height"] / 2})
+        analysis = page.locator("#mc-bar-analysis")
+        expect(analysis).to_be_visible()
+        expect(analysis).to_contain_text("Không vào lệnh · H01_ADX_BELOW_20")
+        expect(analysis).to_contain_text("ADX14 1h đủ mạnh (không đạt)")
+        page.locator("#market-chart").screenshot(
+            path=str(SCREENSHOTS_DIR / "ck7-paper-position-desktop.png")
+        )
+        analysis.screenshot(path=str(SCREENSHOTS_DIR / "ck7-bar-analysis-desktop.png"))
+        page.locator("[data-bar-analysis-close]").click()
+        expect(analysis).to_be_hidden()
 
         # Thẻ tín hiệu SIG-3: hướng, SL, checklist và quyết định không vào lệnh gần nhất.
         signal = page.locator("[data-signal-card]")

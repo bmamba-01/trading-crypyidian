@@ -433,6 +433,47 @@ class BotReportingService:
             )
         return build_latest_signal_view(rows)
 
+    async def get_decision_at(
+        self,
+        principal: Principal,
+        *,
+        bot_id: UUID,
+        bar_open: datetime,
+        interval: timedelta,
+    ) -> dict[str, Any] | None:
+        """Quyết định của bot đánh giá tại nến ``[bar_open, bar_open + interval)`` (CK-7).
+
+        Quyết định được đánh giá khi nến đóng nên cửa sổ là ``(bar_open, bar_open + interval]``.
+        Chỉ trả quyết định khớp hash; ``None`` khi bot không đánh giá ở nến đó.
+        """
+        async with self._unit_of_work(
+            self._sessions,
+            workspace_id=principal.workspace_id,
+            bot_id=bot_id,
+            actor_membership_id=principal.membership_id,
+            snapshot_read_only=True,
+        ) as unit:
+            repository = self._repository(unit.session)
+            try:
+                await self._grants(unit.session).require(
+                    principal, bot_id=bot_id, permission=BotPermission.REPORT_READ
+                )
+            except PermissionError as error:
+                raise _not_found() from error
+            if await repository.get_bot(workspace_id=principal.workspace_id, bot_id=bot_id) is None:
+                raise _not_found()
+            rows: list[dict[str, Any]] = await repository.bot_decisions_between(
+                workspace_id=principal.workspace_id,
+                bot_id=bot_id,
+                start=bar_open,
+                end=bar_open + interval,
+            )
+        view = build_latest_signal_view(rows)
+        latest: dict[str, Any] | None = view["latest_decision"]
+        if latest is not None:
+            latest["unverified_decisions"] = view["unverified_decisions"]
+        return latest
+
     async def get_setup_board(
         self,
         principal: Principal,
@@ -634,6 +675,9 @@ class BotReportingService:
             mark = await repository.latest_mark_price(
                 workspace_id=principal.workspace_id, symbol=symbol, as_of=instant
             )
+            positions = await repository.open_positions(
+                workspace_id=principal.workspace_id, bot_id=bot_id, symbol=symbol
+            )
         return build_market_overview(
             symbol=symbol,
             timeframe=timeframe,
@@ -641,6 +685,7 @@ class BotReportingService:
             bars_by_timeframe=bars_by_timeframe,
             quote=quote,
             mark=mark,
+            positions=positions,
         )
 
     async def get_dashboard_reports(

@@ -372,6 +372,104 @@ class BotReportRepository:
         )
         return [f"{symbol}|{timeframe}|{source}" for symbol, timeframe, source in rows.all()]
 
+    async def open_positions(
+        self, *, workspace_id: UUID, bot_id: UUID, symbol: str
+    ) -> list[dict[str, Any]]:
+        """Vị thế PAPER đang mở (CK-7): fill ENTRY, SL/TP của kế hoạch đã duyệt, SL đã dời."""
+        trades = await self._scalars(
+            select(TradeRecord)
+            .where(
+                TradeRecord.workspace_id == workspace_id,
+                TradeRecord.bot_id == bot_id,
+                TradeRecord.symbol == symbol,
+                TradeRecord.status == "OPEN",
+            )
+            .order_by(TradeRecord.opened_at)
+        )
+        if not trades:
+            return []
+        intent_ids = [trade.intent_id for trade in trades]
+        fills = await self._scalars(
+            select(FillRecord)
+            .where(
+                FillRecord.workspace_id == workspace_id,
+                FillRecord.bot_id == bot_id,
+                FillRecord.intent_id.in_(intent_ids),
+                FillRecord.fill_role == "ENTRY",
+            )
+            .order_by(FillRecord.occurred_at)
+        )
+        stops = await self._scalars(
+            select(PositionEventRecord)
+            .where(
+                PositionEventRecord.workspace_id == workspace_id,
+                PositionEventRecord.bot_id == bot_id,
+                PositionEventRecord.intent_id.in_(intent_ids),
+                PositionEventRecord.event_type == "STOP_UPDATED",
+            )
+            .order_by(PositionEventRecord.occurred_at)
+        )
+        plans = await self._scalars(
+            select(TradePlanRecord).where(
+                TradePlanRecord.workspace_id == workspace_id,
+                TradePlanRecord.bot_id == bot_id,
+                TradePlanRecord.payload["candidate_id"].astext.in_(
+                    [trade.candidate_id for trade in trades]
+                ),
+            )
+        )
+        plan_by_candidate = {str(plan.payload.get("candidate_id")): plan.payload for plan in plans}
+        latest_stop: dict[UUID, Any] = {}
+        for event in stops:
+            if event.payload.get("stop_price") is not None:
+                latest_stop[event.intent_id] = Decimal(str(event.payload["stop_price"]))
+        output: list[dict[str, Any]] = []
+        for trade in trades:
+            plan = plan_by_candidate.get(trade.candidate_id) or {}
+            output.append(
+                {
+                    "trade_id": str(trade.id),
+                    "symbol": trade.symbol,
+                    "side": trade.side,
+                    "quote_asset": trade.quote_asset,
+                    "entry_fills": [
+                        {
+                            "price": fill.price,
+                            "quantity": fill.quantity,
+                            "fee": fill.fee_amount,
+                            "occurred_at": fill.occurred_at,
+                        }
+                        for fill in fills
+                        if fill.intent_id == trade.intent_id
+                    ],
+                    "initial_stop": (
+                        Decimal(str(plan["stop_price"])) if plan.get("stop_price") else None
+                    ),
+                    "current_stop": latest_stop.get(trade.intent_id),
+                    "target": (
+                        Decimal(str(plan["target_price"])) if plan.get("target_price") else None
+                    ),
+                }
+            )
+        return output
+
+    async def bot_decisions_between(
+        self, *, workspace_id: UUID, bot_id: UUID, start: datetime, end: datetime
+    ) -> list[dict[str, Any]]:
+        """Quyết định của bot có ``start < evaluated_at <= end`` (CK-7, phân tích tại nến)."""
+        rows = await self._scalars(
+            select(BotDecisionRecord)
+            .where(
+                BotDecisionRecord.workspace_id == workspace_id,
+                BotDecisionRecord.bot_id == bot_id,
+                BotDecisionRecord.evaluated_at > start,
+                BotDecisionRecord.evaluated_at <= end,
+            )
+            .order_by(BotDecisionRecord.evaluated_at.desc(), BotDecisionRecord.created_at.desc())
+            .limit(5)
+        )
+        return [{"payload": dict(row.payload), "decision_hash": row.decision_hash} for row in rows]
+
     async def latest_live_quote(self, *, workspace_id: UUID, symbol: str) -> dict[str, Any] | None:
         """Giá mua/bán tốt nhất mới nhất (CK-1) của symbol; ``None`` khi stream chưa ghi."""
         row = (

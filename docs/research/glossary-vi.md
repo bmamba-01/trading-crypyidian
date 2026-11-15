@@ -821,3 +821,11 @@ Khái niệm VSA và ZigZag đã định nghĩa ở mục AC; mục này ghi tê
 | Missing condition | Điều kiện còn thiếu | Điều kiện bắt buộc đầu tiên chưa đạt theo thứ tự ưu tiên của rule, kèm giá trị hiện tại và ngưỡng; điều kiện thiếu dữ liệu ghi "chưa xác định". | Định nghĩa nội bộ |
 | Condition achieved time | Thời điểm đạt điều kiện | Quyết định cũ nhất trong chuỗi liên tục các quyết định gần nhất mà điều kiện đều đạt. | Định nghĩa nội bộ |
 | Funding window | Khoảng cấm quanh funding | ±10 phút quanh `nextFundingTime` của mẫu mark price mới nhất; điều kiện cộng điểm "cách mốc funding hơn 10 phút". | [Binance — Mark Price Stream](https://developers.binance.com/docs/derivatives/usds-margined-futures/websocket-market-streams/Mark-Price-Stream) (kiểm 15/11/2026) |
+
+## AJ. Lớp vị thế PAPER và tương tác chart (CK-7, 15/11/2026)
+
+| Thuật ngữ (EN) | Tiếng Việt | Định nghĩa và giới hạn | Nguồn |
+|---|---|---|---|
+| Unrealized PnL (UPnL) | Lãi/lỗ chưa thực hiện | (mark − giá vào trung bình) × khối lượng, đảo dấu với vị thế bán; chưa trừ phí thoát và funding (có thêm bản đã trừ phí vào lệnh). Như Binance, dùng mark price; mark cũ/thiếu thì dùng giá hiện tại và ghi nguồn. | [Binance — Mark price và PnL](https://www.binance.com/en/support/faq/detail/360033525271) (kiểm 15/11/2026) |
+| R multiple (open position) | Bội số R của vị thế mở | UPnL chia rủi ro ban đầu = \|giá vào − SL của kế hoạch đã duyệt\| × khối lượng. | Định nghĩa nội bộ (`domain/portfolio/position_overlay.py`) |
+| Bar analysis (context menu) | Phân tích tại nến | Chuột phải (máy tính) hoặc nhấn giữ 0,6 giây (điện thoại) trên nến → quyết định của bot được đánh giá khi nến đó đóng (`evaluated_at` trong `(mở nến, đóng nến]`), checklist và cổng kiểm soát; chỉ quyết định khớp hash. | Định nghĩa nội bộ |

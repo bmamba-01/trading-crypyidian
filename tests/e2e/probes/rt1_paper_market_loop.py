@@ -28,6 +28,7 @@ from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 import psycopg
 from psycopg import sql
 from psycopg.types.json import Jsonb
+from sqlalchemy import text
 
 STATE = json.loads(os.environ["RT1_STATE"])
 WORKSPACE = UUID(STATE["workspace_id"])
@@ -573,6 +574,66 @@ async def mark_check() -> dict[str, Any]:
     }
 
 
+async def web_read() -> dict[str, Any]:
+    """CK-7: admin-web (role thật, RLS thật) đọc vị thế mở và quyết định tại nến cho chart."""
+    from trading_bot.adapters.database.repositories.bot_reports import BotReportRepository
+    from trading_bot.application.bot_reporting import build_latest_signal_view
+    from trading_bot.application.outbox import UnitOfWork
+    from trading_bot.domain.portfolio.position_overlay import position_overlay
+
+    bot_id = UUID(STATE["bot_id"])
+    engine, sessions = _sessions()
+    try:
+        # Như BotReportingService: RLS của admin-web yêu cầu membership đang hoạt động có quyền.
+        async with UnitOfWork(
+            sessions,
+            workspace_id=WORKSPACE,
+            bot_id=bot_id,
+            actor_membership_id=MEMBERSHIP,
+            snapshot_read_only=True,
+        ) as uow:
+            repository = BotReportRepository(uow.session)
+            positions = await repository.open_positions(
+                workspace_id=WORKSPACE, bot_id=bot_id, symbol="BTCUSDT"
+            )
+            decisions = await repository.bot_decisions_between(
+                workspace_id=WORKSPACE,
+                bot_id=bot_id,
+                start=LAST_CLOSE - timedelta(hours=2),
+                end=NOW + timedelta(minutes=30),
+            )
+            role = await uow.session.scalar(text("SELECT current_user"))
+        async with UnitOfWork(
+            sessions, workspace_id=WORKSPACE, bot_id=bot_id, snapshot_read_only=True
+        ) as uow:
+            hidden = await BotReportRepository(uow.session).open_positions(
+                workspace_id=WORKSPACE, bot_id=bot_id, symbol="BTCUSDT"
+            )
+    finally:
+        await engine.dispose()
+    latest = build_latest_signal_view(decisions)["latest_decision"]
+    views = []
+    for position in positions:
+        entry = position["entry_fills"][0]["price"]
+        views.append(position_overlay(position, mark_price=entry + 1, mark_source="mark"))
+    return {
+        "role": role,
+        "positions": [
+            {
+                "side": view["side"],
+                "fills": len(position["entry_fills"]),
+                "has_initial_stop": view["initial_stop"] is not None,
+                "stop_below_entry": view["side"] != "LONG" or view["stop"] < view["entry_price"],
+                "upnl_matches_quantity": abs(view["upnl"] - view["quantity"]) < 1e-9,
+            }
+            for position, view in zip(positions, views, strict=True)
+        ],
+        "decision_status": None if latest is None else latest["status"],
+        "decision_rows": len(decisions),
+        "hidden_without_membership": len(hidden),
+    }
+
+
 def add_minutes() -> dict[str, Any]:
     """Ba nến 1m bình thường bắt đầu ở phút tròn đầu tiên sau `evaluated_at + 5s` của candidate."""
     with _connect() as connection, connection.transaction():
@@ -698,6 +759,8 @@ elif phase == "runtime":
     output = asyncio.run(runtime())
 elif phase == "mark_check":
     output = asyncio.run(mark_check())
+elif phase == "web_read":
+    output = asyncio.run(web_read())
 elif phase == "add_minutes":
     output = add_minutes()
 elif phase == "add_stop_bar":
