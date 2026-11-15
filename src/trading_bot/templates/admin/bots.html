@@ -2,15 +2,28 @@
 {% block title %}Bot — Crypidian{% endblock %}
 {% block heading %}Bot trong không gian làm việc{% endblock %}
 {% block content %}
-{% if "owner" in identity.principal.roles %}<p><a href="/admin/bots/new">Tạo bot mô phỏng</a></p>{% endif %}
-<ul class="bot-list">
-  {% for bot in bots %}
-  <li>
-    <a href="/admin/bots/{{ bot.id }}">{{ bot.name }}</a>
-    <span>{{ bot.status | label_vi }} / {{ bot.account_mode | label_vi }} / {{ bot.readiness | label_vi }}</span>
-  </li>
-  {% else %}
-  <li>Chưa có bot được cấp quyền xem.</li>
-  {% endfor %}
-</ul>
+<section class="section-card" aria-label="Quản lý danh sách bot">
+  <div class="roster-header" style="margin-bottom: 1rem;">
+    <h2>Danh sách bot PAPER</h2>
+    {% if "owner" in identity.principal.roles %}
+      <a href="/admin/bots/new" class="btn btn-primary">+ Tạo bot mô phỏng</a>
+    {% endif %}
+  </div>
+  <ul class="bot-list item-list-cards">
+    {% for bot in bots %}
+    <li>
+      <div>
+        <a href="/admin/bots/{{ bot.id }}" class="bot-link"><strong>{{ bot.name }}</strong></a>
+      </div>
+      <div class="inline-actions" style="margin-top: 0;">
+        <span class="badge badge-neutral">{{ bot.status | label_vi }}</span>
+        <span class="badge badge-paper-subtle">{{ bot.account_mode | label_vi }}</span>
+        <span class="badge {{ 'badge-success' if bot.readiness == 'READY' else 'badge-warning' }}">{{ bot.readiness | label_vi }}</span>
+      </div>
+    </li>
+    {% else %}
+    <li>Chưa có bot được cấp quyền xem.</li>
+    {% endfor %}
+  </ul>
+</section>
 {% endblock %}

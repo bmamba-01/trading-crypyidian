@@ -3589,3 +3589,18 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Việc còn mở/rủi ro:** xem bảng trạng thái trong WBS WP-07B. Thêm: stream thanh lý chỉ đẩy lệnh lớn nhất mỗi giây nên tổng thanh lý bị thiếu; `market_trade_flow` chưa có luồng lấp gap từ REST `aggTrades`; một kết nối cho mọi stream sự kiện; chưa có chính sách retention cho ba bảng mới; sửa/định đoạt `test_db_role_least_privilege`.
 - **Commit/nhánh:** chưa commit; nhánh `claude/binance-api-review-937772`.
 - **Đã đọc lại mục ghi nhớ sau cập nhật:** có; đối chiếu với output test, smoke và `git status`.
+
+
+### 2026-11-15 — Đồng nhất Design System Admin UI & Nối dữ liệu thật lên Dashboard
+
+- **Nối dữ liệu thật lên Dashboard (`src/trading_bot/admin/web_router.py`, `src/trading_bot/templates/admin/dashboard.html`):**
+  - Trích xuất 2 helper dùng chung `_build_operations_health_data` và `_fetch_30d_workspace_metrics` để loại bỏ trùng lặp giữa `dashboard()`, `dashboard_realtime()` và `operations_health()`.
+  - `GET /admin` và `GET /admin/api/dashboard/realtime` giờ nạp dữ liệu thật từ `BotReportingService` (tổng lệnh đóng, tỷ lệ thắng, PnL ròng 30 ngày) và `CircuitBreakerEngine` + `LossWindowSnapshot` (trạng thái sức khỏe, cổng vào lệnh, lỗ ngày).
+  - `dashboard.html` hiển thị thẻ **Sức khỏe & Cầu dao rủi ro** cùng lưới KPI **Hiệu quả bot trong 30 ngày** và cập nhật live mỗi 5s qua JS `applyRealtimeUpdate(data)` bằng `textContent`.
+- **Đồng nhất Design System Light/Dark Mode (`src/trading_bot/static/admin.css` & 8 template con):**
+  - Thay thế toàn bộ 6 vùng màu nền/viền trắng hardcode (`#fff`, `#fff5d6`, `#c4cfda`) của Research Sources và Backtest Replays trong `admin.css` bằng CSS tokens chuẩn (`--bg-surface`, `--border-main`, `--warning-bg`, `--warning-text`) để hiển thị đồng bộ trên cả Light & Dark Mode.
+  - Bổ sung utility classes dùng chung (`.section-card`, `.form-stack`, `.inline-actions`, `.item-list-cards`) và chuẩn hóa giao diện cho `bots.html`, `bot_create.html`, `flatten.html`, `flatten_preview.html`, `flatten_operation.html`, `telegram_bindings.html`, `telegram_link_created.html`, `error.html`.
+- **Kiểm chứng sau chỉnh sửa cuối:**
+  - `uv run pytest tests/unit -q --tb=short` → **4.045 passed in 105.85s / 0 failed / 0 skipped** (bao gồm `test_admin_mobile_ui.py` 21 passed và `test_admin_operations_health_and_csv.py` 3 passed).
+  - Playwright & Health E2E (`test_admin_dashboard_playwright.py`, `test_admin_trading_revamp_playwright.py`, `test_admin_strategy_cards_playwright.py`, `test_admin_microscope_playwright.py`, `test_admin_research_sources_playwright.py`, `test_admin_backtest_replays_playwright.py`, `test_admin_telegram_signals_playwright.py`, `test_health_endpoint.py`) → **18 passed in 66.67s / 0 failed / 0 skipped** trên cả Desktop và Mobile.
+  - `ruff check` và `ruff format --check` đạt.

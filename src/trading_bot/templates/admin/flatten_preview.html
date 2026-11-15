@@ -2,36 +2,80 @@
 {% block title %}Xác nhận đóng toàn bộ — Crypidian{% endblock %}
 {% block heading %}Rà soát đóng toàn bộ vị thế mô phỏng{% endblock %}
 {% block content %}
-<p>Bản xem trước hết hạn lúc <time datetime="{{ preview.expires_at.isoformat() }}">{{ preview.expires_at | local_time }}</time>.</p>
-<p role="status" aria-live="polite">{{ preview.bot_count }} bot, {{ preview.position_count }} vị thế và {{ preview.open_order_count }} lệnh mở.</p>
-<p>Mã băm bản xem trước: <code>{{ preview.preview_hash }}</code></p>
-<div class="desktop-targets"><table class="table">
-  <caption>Các mục trong ảnh chụp trạng thái</caption>
-  <thead><tr><th scope="col">Bot</th><th scope="col">Loại</th><th scope="col">Mã giao dịch</th><th scope="col">Mã định danh</th><th scope="col">Số lượng</th><th scope="col">Giá đánh dấu</th><th scope="col">Trạng thái</th></tr></thead>
-  <tbody>
-    {% for target in preview.targets %}
-    <tr><td>{{ target.bot_id }}</td><td>{{ target.target_type | label_vi }}</td><td>{{ target.symbol }}</td><td>{{ target.target_id }}</td><td>{{ target.quantity }}</td><td>{{ target.mark_price or "—" }}</td><td>{{ (target.error_code or target.status) | label_vi }}</td></tr>
-    {% else %}
-    <tr><td colspan="7">Không có vị thế hoặc lệnh mở trong ảnh chụp trạng thái.</td></tr>
-    {% endfor %}
-  </tbody>
-</table></div>
-<section class="mobile-targets" aria-label="Các mục trong ảnh chụp trạng thái">
-{% for target in preview.targets %}
-<article><h2>Mục {{ loop.index }} — {{ target.target_type | label_vi }}</h2><dl>
-<dt>Bot</dt><dd>{{ target.bot_id }}</dd><dt>Mã giao dịch</dt><dd>{{ target.symbol }}</dd>
-<dt>Mã định danh</dt><dd>{{ target.target_id }}</dd><dt>Số lượng</dt><dd>{{ target.quantity | number_vi }}</dd>
-<dt>Giá đánh dấu</dt><dd>{{ target.mark_price | number_vi if target.mark_price is not none else "Chưa có dữ liệu" }}</dd>
-<dt>Trạng thái</dt><dd>{{ (target.error_code or target.status) | label_vi }}</dd></dl></article>
-{% else %}<p>Không có vị thế hoặc lệnh mở trong ảnh chụp trạng thái.</p>{% endfor %}
+<section class="section-card" aria-label="Thông tin bản xem trước">
+  <p>Bản xem trước hết hạn lúc <time datetime="{{ preview.expires_at.isoformat() }}">{{ preview.expires_at | local_time }}</time>.</p>
+  <p role="status" aria-live="polite">
+    <span class="badge badge-warning">{{ preview.bot_count }} bot, {{ preview.position_count }} vị thế và {{ preview.open_order_count }} lệnh mở.</span>
+  </p>
+  <p>Mã băm bản xem trước: <code>{{ preview.preview_hash }}</code></p>
 </section>
-<form method="post" action="/admin/flatten/confirm">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-  <input type="hidden" name="preview_id" value="{{ preview.preview_id }}">
-  <input type="hidden" name="preview_hash" value="{{ preview.preview_hash }}">
-  <input type="hidden" name="idempotency_key" value="{{ idempotency_key }}">
-  <label for="confirm-reason">Lý do xác nhận</label>
-  <input id="confirm-reason" name="reason" value="{{ reason }}" maxlength="500" required>
-  <button type="submit">Xác nhận đóng toàn bộ</button>
-</form>
+
+<section class="section-card" aria-label="Danh sách mục tiêu cần đóng">
+  <div class="desktop-targets table-wrapper">
+    <table class="responsive-table table">
+      <caption>Các mục trong ảnh chụp trạng thái</caption>
+      <thead>
+        <tr>
+          <th scope="col">Bot</th>
+          <th scope="col">Loại</th>
+          <th scope="col">Mã giao dịch</th>
+          <th scope="col">Mã định danh</th>
+          <th scope="col">Số lượng</th>
+          <th scope="col">Giá đánh dấu</th>
+          <th scope="col">Trạng thái</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for target in preview.targets %}
+        <tr>
+          <td>{{ target.bot_id }}</td>
+          <td>{{ target.target_type | label_vi }}</td>
+          <td><strong>{{ target.symbol }}</strong></td>
+          <td><code>{{ target.target_id }}</code></td>
+          <td>{{ target.quantity }}</td>
+          <td>{{ target.mark_price or "—" }}</td>
+          <td><span class="badge badge-neutral">{{ (target.error_code or target.status) | label_vi }}</span></td>
+        </tr>
+        {% else %}
+        <tr><td colspan="7">Không có vị thế hoặc lệnh mở trong ảnh chụp trạng thái.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <section class="mobile-targets" aria-label="Các mục trong ảnh chụp trạng thái">
+    {% for target in preview.targets %}
+    <article class="section-card">
+      <h2>Mục {{ loop.index }} — {{ target.target_type | label_vi }}</h2>
+      <dl>
+        <dt>Bot</dt><dd>{{ target.bot_id }}</dd>
+        <dt>Mã giao dịch</dt><dd>{{ target.symbol }}</dd>
+        <dt>Mã định danh</dt><dd>{{ target.target_id }}</dd>
+        <dt>Số lượng</dt><dd>{{ target.quantity | number_vi }}</dd>
+        <dt>Giá đánh dấu</dt><dd>{{ target.mark_price | number_vi if target.mark_price is not none else "Chưa có dữ liệu" }}</dd>
+        <dt>Trạng thái</dt><dd>{{ (target.error_code or target.status) | label_vi }}</dd>
+      </dl>
+    </article>
+    {% else %}
+    <p>Không có vị thế hoặc lệnh mở trong ảnh chụp trạng thái.</p>
+    {% endfor %}
+  </section>
+</section>
+
+<section class="section-card" aria-label="Xác nhận thực thi đóng toàn bộ">
+  <form method="post" action="/admin/flatten/confirm" class="form-stack">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="preview_id" value="{{ preview.preview_id }}">
+    <input type="hidden" name="preview_hash" value="{{ preview.preview_hash }}">
+    <input type="hidden" name="idempotency_key" value="{{ idempotency_key }}">
+    <div class="form-field">
+      <label for="confirm-reason">Lý do xác nhận</label>
+      <input id="confirm-reason" name="reason" value="{{ reason }}" maxlength="500" required>
+    </div>
+    <div class="inline-actions">
+      <button type="submit" class="btn btn-danger">Xác nhận đóng toàn bộ</button>
+      <a href="/admin/flatten" class="btn btn-outline">Hủy</a>
+    </div>
+  </form>
+</section>
 {% endblock %}

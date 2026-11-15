@@ -2,11 +2,18 @@
 {% block title %}Đóng toàn bộ vị thế — Crypidian{% endblock %}
 {% block heading %}Đóng toàn bộ vị thế mô phỏng{% endblock %}
 {% block content %}
-<p>Xem trước các vị thế và lệnh mô phỏng đang mở. Xác nhận yêu cầu chủ sở hữu và xác thực đa yếu tố gần đây.</p>
-<form method="post" action="/admin/flatten/preview">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-  <label for="flatten-reason">Lý do</label>
-  <textarea id="flatten-reason" name="reason" maxlength="500" required></textarea>
-  <button type="submit">Xem trước</button>
-</form>
+<section class="section-card" aria-label="Khởi tạo bản xem trước đóng vị thế">
+  <h2>Kiểm tra trước khi đóng toàn bộ vị thế</h2>
+  <p class="text-muted">Xem trước các vị thế và lệnh mô phỏng đang mở. Xác nhận yêu cầu chủ sở hữu và xác thực đa yếu tố gần đây.</p>
+  <form method="post" action="/admin/flatten/preview" class="form-stack">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="form-field">
+      <label for="flatten-reason">Lý do</label>
+      <textarea id="flatten-reason" name="reason" maxlength="500" rows="3" required></textarea>
+    </div>
+    <div class="inline-actions">
+      <button type="submit" class="btn btn-primary">Xem trước</button>
+    </div>
+  </form>
+</section>
 {% endblock %}

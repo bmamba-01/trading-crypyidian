@@ -2,13 +2,22 @@
 {% block title %}Thao tác đóng toàn bộ — Crypidian{% endblock %}
 {% block heading %}Trạng thái đóng toàn bộ vị thế mô phỏng{% endblock %}
 {% block content %}
-<p id="operation-status" role="status" aria-live="polite">Thao tác {{ operation.id }}: <strong>{{ operation.status | label_vi }}</strong></p>
-<ul>
-  {% for item in operation["items"] %}
-  <li>{{ item.symbol }} — {{ item.target_type | label_vi }} — {{ item.quantity }} — {{ item.status | label_vi }}{% if item.error_code %} ({{ item.error_code | label_vi }}){% endif %}</li>
-  {% else %}
-  <li>Không có mục cần xử lý.</li>
-  {% endfor %}
-</ul>
-<a href="/admin/flatten">Tạo bản xem trước mới</a>
+<section class="section-card" aria-label="Kết quả thao tác đóng toàn bộ">
+  <p id="operation-status" role="status" aria-live="polite">
+    Thao tác {{ operation.id }}: <span class="badge badge-neutral"><strong>{{ operation.status | label_vi }}</strong></span>
+  </p>
+  <ul class="item-list-cards">
+    {% for item in operation["items"] %}
+    <li>
+      <span><strong>{{ item.symbol }}</strong> — {{ item.target_type | label_vi }} — {{ item.quantity }}</span>
+      <span class="badge badge-neutral">{{ item.status | label_vi }}{% if item.error_code %} ({{ item.error_code | label_vi }}){% endif %}</span>
+    </li>
+    {% else %}
+    <li>Không có mục cần xử lý.</li>
+    {% endfor %}
+  </ul>
+  <div class="inline-actions">
+    <a href="/admin/flatten" class="btn btn-outline">Tạo bản xem trước mới</a>
+  </div>
+</section>
 {% endblock %}

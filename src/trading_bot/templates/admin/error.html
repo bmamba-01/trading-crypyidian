@@ -3,8 +3,13 @@
 {% block heading %}Không thể hoàn tất yêu cầu{% endblock %}
 {% block navigation %}{% endblock %}
 {% block content %}
-<div role="alert" class="error-summary"><p>{{ error_message }}</p></div>
-<p>Mã phản hồi: {{ error_status }}.</p>
-<p>Tải lại trang ban đầu để kiểm tra thông tin và trạng thái mới nhất. Nếu cần, đăng nhập lại và xác thực trước khi thử lại; không gửi lại thao tác khi chưa rõ kết quả.</p>
-<p><a href="/admin">Về tổng quan</a> · <a href="/admin/login">Đăng nhập lại</a></p>
+<section class="section-card" aria-label="Thông tin lỗi hệ thống">
+  <div role="alert" class="error-summary"><p>{{ error_message }}</p></div>
+  <p><span class="badge badge-danger">Mã phản hồi: {{ error_status }}</span></p>
+  <p class="text-muted">Tải lại trang ban đầu để kiểm tra thông tin và trạng thái mới nhất. Nếu cần, đăng nhập lại và xác thực trước khi thử lại; không gửi lại thao tác khi chưa rõ kết quả.</p>
+  <div class="inline-actions">
+    <a href="/admin" class="btn btn-primary">Về tổng quan</a>
+    <a href="/admin/login" class="btn btn-outline">Đăng nhập lại</a>
+  </div>
+</section>
 {% endblock %}

@@ -2,12 +2,22 @@
 {% block title %}Tạo bot — Crypidian{% endblock %}
 {% block heading %}Tạo tài khoản mô phỏng{% endblock %}
 {% block content %}
-<form method="post" action="/admin/bots/new">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-  <label for="name">Tên bot</label>
-  <input id="name" name="name" type="text" maxlength="120" required autocomplete="off">
-  <label for="max_notional">Giới hạn giá trị danh nghĩa</label>
-  <input id="max_notional" name="max_notional" type="number" min="0.00000001" step="any" required>
-  <button type="submit">Tạo bot mô phỏng</button>
-</form>
+<section class="section-card" aria-label="Biểu mẫu tạo bot mô phỏng">
+  <h2>Thông số khởi tạo bot PAPER</h2>
+  <form method="post" action="/admin/bots/new" class="form-stack">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="form-field">
+      <label for="name">Tên bot</label>
+      <input id="name" name="name" type="text" maxlength="120" required autocomplete="off">
+    </div>
+    <div class="form-field">
+      <label for="max_notional">Giới hạn giá trị danh nghĩa</label>
+      <input id="max_notional" name="max_notional" type="number" min="0.00000001" step="any" required>
+    </div>
+    <div class="inline-actions">
+      <button type="submit" class="btn btn-primary">Tạo bot mô phỏng</button>
+      <a href="/admin/bots" class="btn btn-outline">Quay lại</a>
+    </div>
+  </form>
+</section>
 {% endblock %}

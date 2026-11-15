@@ -60,6 +60,24 @@
       </div>
       <span class="kpi-subtext">Mô phỏng nội bộ trong cơ sở dữ liệu, không gọi API hay đặt lệnh lên Binance</span>
     </div>
+
+    {% if operations_health is defined and operations_health %}
+    <div class="kpi-card" aria-label="Sức khỏe hệ thống và cầu dao rủi ro">
+      <span class="kpi-label">Sức khỏe &amp; Cầu dao rủi ro</span>
+      <div class="kpi-status-container">
+        {% if operations_health.status == "HEALTHY" %}
+        <span class="badge badge-success" id="kpi-ops-health">Ổn định ({{ operations_health.breaker.state }})</span>
+        {% elif operations_health.status == "DEGRADED" %}
+        <span class="badge badge-warning" id="kpi-ops-health">Chờ xác nhận ({{ operations_health.breaker.state }})</span>
+        {% else %}
+        <span class="badge badge-danger" id="kpi-ops-health">Đã ngắt mạch ({{ operations_health.breaker.state }})</span>
+        {% endif %}
+      </div>
+      <span class="kpi-subtext" id="kpi-ops-health-sub">
+        Vào lệnh: {{ "Cho phép" if operations_health.breaker.entry_allowed else "Bị chặn" }} · Lỗ ngày: {{ operations_health.loss_windows.realized_loss_today }} USDT
+      </span>
+    </div>
+    {% endif %}
   </div>
 </section>
 
@@ -90,12 +108,29 @@
   <article class="bot-report"><h3>{{ report.name }}</h3>
   {% with totals=report.totals %}{% include "admin/metric_cards.html" %}{% endwith %}</article>
   {% endfor %}
-  {% elif metrics_loaded %}
-  <p role="status">Chưa có bot đang hoạt động được cấp quyền xem báo cáo.</p>
+  {% elif metrics_loaded and metrics_summary is defined %}
+  <p class="text-muted" style="margin-bottom: 0.75rem;">Từ {{ report_start | local_time }} đến {{ report_end | local_time }} (dữ liệu sổ cái PAPER thật trong không gian làm việc).</p>
+  <div class="kpi-grid">
+    <div class="kpi-card">
+      <span class="kpi-label">Tổng lệnh đã đóng</span>
+      <span class="kpi-value" id="kpi-30d-closed">{{ metrics_summary.total_closed_trades }}</span>
+      <span class="kpi-subtext">Trong 30 ngày gần nhất</span>
+    </div>
+    <div class="kpi-card">
+      <span class="kpi-label">Tỷ lệ thắng</span>
+      <span class="kpi-value" id="kpi-30d-winrate">{{ metrics_summary.win_rate }}%</span>
+      <span class="kpi-subtext">Số lệnh thắng: {{ metrics_summary.total_won_trades }}</span>
+    </div>
+    <div class="kpi-card">
+      <span class="kpi-label">PnL ròng 30 ngày</span>
+      <span class="kpi-value" id="kpi-30d-pnl">{{ metrics_summary.net_pnl | number_vi }}</span>
+      <span class="kpi-subtext">Tổng hợp theo tài sản báo cáo</span>
+    </div>
+  </div>
   {% else %}
   <p role="status">Thống kê hiệu quả chưa sẵn sàng. {{ metrics_message | default("Hãy kiểm tra quyền xem báo cáo hoặc thử lại sau.") }}</p>
   {% endif %}
-  <p><a href="/admin/reports">Xem báo cáo theo phạm vi được cấp quyền</a></p>
+  <p style="margin-top: 0.75rem;"><a href="/admin/reports" class="btn btn-sm btn-outline">Xem báo cáo theo phạm vi được cấp quyền</a></p>
 </section>
 
 <section aria-label="Danh sách bot trong không gian làm việc" class="bot-roster-section">
@@ -264,6 +299,41 @@
           }
         }
       });
+    }
+
+    // 5. Cập nhật trạng thái Sức khỏe & Cầu dao rủi ro
+    if (data.operations_health && data.operations_health.breaker) {
+      var opsHealthEl = document.getElementById('kpi-ops-health');
+      var opsHealthSubEl = document.getElementById('kpi-ops-health-sub');
+      var st = data.operations_health.status;
+      var br = data.operations_health.breaker;
+      if (opsHealthEl) {
+        if (st === 'HEALTHY') {
+          opsHealthEl.textContent = 'Ổn định (' + br.state + ')';
+          opsHealthEl.className = 'badge badge-success';
+        } else if (st === 'DEGRADED') {
+          opsHealthEl.textContent = 'Chờ xác nhận (' + br.state + ')';
+          opsHealthEl.className = 'badge badge-warning';
+        } else {
+          opsHealthEl.textContent = 'Đã ngắt mạch (' + br.state + ')';
+          opsHealthEl.className = 'badge badge-danger';
+        }
+      }
+      if (opsHealthSubEl && data.operations_health.loss_windows) {
+        opsHealthSubEl.textContent =
+          'Vào lệnh: ' + (br.entry_allowed ? 'Cho phép' : 'Bị chặn') +
+          ' · Lỗ ngày: ' + data.operations_health.loss_windows.realized_loss_today + ' USDT';
+      }
+    }
+
+    // 6. Cập nhật tóm tắt hiệu quả 30 ngày
+    if (data.metrics && typeof data.metrics.total_closed_trades !== 'undefined') {
+      var elClosed = document.getElementById('kpi-30d-closed');
+      var elWinrate = document.getElementById('kpi-30d-winrate');
+      var elPnl = document.getElementById('kpi-30d-pnl');
+      if (elClosed) elClosed.textContent = String(data.metrics.total_closed_trades);
+      if (elWinrate) elWinrate.textContent = String(data.metrics.win_rate) + '%';
+      if (elPnl) elPnl.textContent = String(data.metrics.net_pnl);
     }
 
     // Phục hồi trạng thái kết nối bình thường nếu trước đó có lỗi
