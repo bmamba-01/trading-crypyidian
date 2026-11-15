@@ -318,6 +318,63 @@ class BotReportRepository:
             for row in selected.values()
         ]
 
+    async def list_market_series(self, *, workspace_id: UUID, as_of: datetime) -> list[str]:
+        """Các cặp ``SYMBOL|timeframe`` có nến đã đóng trong kho nội bộ của workspace."""
+        rows = await self._session.execute(
+            select(MarketBar.symbol, MarketBar.timeframe)
+            .where(
+                MarketBar.workspace_id == workspace_id,
+                MarketBar.available_at <= as_of,
+                MarketBar.is_closed.is_(True),
+            )
+            .group_by(MarketBar.symbol, MarketBar.timeframe)
+            .order_by(MarketBar.symbol, MarketBar.timeframe)
+        )
+        return [f"{symbol}|{timeframe}" for symbol, timeframe in rows.all()]
+
+    async def load_recent_bars(
+        self,
+        *,
+        workspace_id: UUID,
+        symbol: str,
+        timeframe: str,
+        as_of: datetime,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        """Đọc ``limit`` nến đã đóng gần nhất (khả dụng tại as_of), giữ bản sửa mới nhất.
+
+        Đọc dư gấp đôi để bù các bản sửa (revision) trùng ``open_time`` rồi cắt lại; kết quả
+        sắp tăng dần theo thời gian. Bảng nến chưa có cột taker buy (SIG-0) nên không trả trường
+        đó — tầng dựng chart tự ẩn lớp áp lực mua/bán.
+        """
+        rows = await self._scalars(
+            select(MarketBar)
+            .where(
+                MarketBar.workspace_id == workspace_id,
+                MarketBar.symbol == symbol,
+                MarketBar.timeframe == timeframe,
+                MarketBar.available_at <= as_of,
+                MarketBar.is_closed.is_(True),
+            )
+            .order_by(MarketBar.open_time.desc(), MarketBar.revision.desc())
+            .limit(limit * 2)
+        )
+        selected: dict[datetime, MarketBar] = {}
+        for row in rows:
+            selected.setdefault(row.open_time, row)
+        latest = sorted(selected.values(), key=lambda row: row.open_time)[-limit:]
+        return [
+            {
+                "time": int(row.open_time.timestamp()),
+                "open": float(row.open),
+                "high": float(row.high),
+                "low": float(row.low),
+                "close": float(row.close),
+                "volume": float(row.volume),
+            }
+            for row in latest
+        ]
+
     async def workspace_closed_totals(
         self, *, workspace_id: UUID, start: datetime, end: datetime
     ) -> dict[str, tuple[int, Decimal]]:

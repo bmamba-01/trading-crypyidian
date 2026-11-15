@@ -3766,3 +3766,34 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **File đổi:** mới `docs/research/signal-scalping-chart-research-2026-11-15.md`, `docs/superpowers/plans/2026-11-15-sig-market-structure-scalping-chart-wbs.md`; glossary thêm mục AA (22 thuật ngữ); `project-status.md` thêm dòng 15/11; khảo sát 14/11 thêm ghi chú trỏ tới WBS SIG.
 - **Kiểm chứng:** chỉ đổi tài liệu, không đổi mã/test. Script kiểm link tương đối + anchor trên 4 tài liệu: mọi link/anchor mới đều hợp lệ; phát hiện 13 link **có từ trước** trong glossary trỏ file không tồn tại (`2026-11-01-wp07-signal-wbs.md`, `2026-11-01-wp07-backtest-replay-wbs.md`, `.superpowers/sdd/.../task-3-report.md`, `../plans/2026-11-09-...`) — chưa sửa, ghi vào việc còn mở. Unit đọc docs `tests/unit/test_admin_metric_help.py` + `tests/unit/test_wp06_first_party_qa_dataset.py`: **94 passed/2.29s**. Không chạy E2E vì không có ranh giới runtime nào thay đổi.
 - **Còn mở:** sửa 13 link hỏng có sẵn trong glossary; xác nhận bảng phí trực tiếp và header giấy phép từng script; đọc đầy đủ Wen et al. 2022; đo trượt giá PAPER; bổ sung H18–H20 vào `strategies-2026.md` khi bắt đầu SIG-4; 6 quyết định owner trong WBS SIG (giữ quyết định #1 quyền dữ liệu từ 14/11).
+
+### 2026-11-15 — SIG-1 + SIG-7 lát 1: thư viện cấu trúc/phiên/khối lượng và trang `/admin/chart` kiểu TradingView
+
+- **Yêu cầu của owner:** chọn "SIG-1 + SIG-7 chart" sau khi duyệt WBS SIG.
+- **Domain (SIG-1, cài clean-room, không chép mã Pine):** `domain/market/structure.py` (swing đã xác nhận qua `geometry.find_confirmed_pivots`, HH/HL/LH/LL, BOS/CHoCH bằng giá đóng, trendline tự động theo ATR, trạng thái cấu trúc); `domain/market/sessions.py` (phiên Tokyo/London/New York theo `zoneinfo`, PDH/PDL, máy trạng thái armed/rejected/accepted/expired); `domain/market/volume_profile.py` (delta/CVD từ taker buy, profile, POC, VA 70%, E/Eref); `features.macd`.
+- **Ứng dụng/Router (SIG-7):** `application/market_chart.py` dựng JSON từ chính các hàm trên; `BotReportingService.list_market_series` + `get_market_bars` kiểm `bot:report:read` và bot tồn tại trong UoW chỉ đọc; repository `list_market_series`, `load_recent_bars` (đọc `limit` nến mới nhất, giữ revision mới nhất). Trang `GET /admin/chart`, API `GET /admin/api/chart` (polling 5 giây, `fp` → `unchanged`). Template `admin/market_chart.html`, `static/market-chart.js`, `static/pages/chart.css`, link sidebar trong `base.html`.
+- **Quyết định:**
+  - Giữ Lightweight Charts 5.2.1 đang tự host (đã kiểm bundle có `attachPrimitive`, `createSeriesMarkers`, `useMediaCoordinateSpace`); không tải 5.3.0 trong vòng này.
+  - `attributionLogo: false` + chân trang ghi công/NOTICE.
+  - Bot chưa có trường symbol (mã nằm trong overlay/cấu hình gốc) → trang chọn bot để phân quyền, rồi chọn mã **có nến đã lưu** trong workspace; không suy đoán mã.
+  - Taker buy chưa được lưu (SIG-0) → lớp mua/bán, CVD ẩn kèm ghi chú; volume tô theo chiều nến.
+  - Phiên/mức/profile chỉ hiện ở khung ≤ 1h.
+- **Lỗi gặp và nguyên nhân:**
+  - Bot trong DB local không có `symbol` → trang báo "chưa có bot" ở lần thử đầu. Sửa bằng cách lấy danh sách mã từ `market_bar`.
+  - Checkbox lớp hiển thị cao 44px vì `admin.css` đặt `min-height/min-width: 2.75rem` cho mọi input. Sửa trong `pages/chart.css`; vùng chạm 44px do nhãn đảm nhận.
+  - Mobile: select bị ép và nút khung giãn lệch. Sửa bằng grid.
+  - Nhãn mức bị viết thường cả "tokyo" do `.lower()`. Chỉ hạ chữ cái đầu.
+  - Định dạng giờ `vi-VN` ra "15-11". Sửa bằng ghép `formatToParts` thành "HH:mm dd/MM".
+  - Script chụp đăng nhập lần 2 bị 401 vì dùng lại mã TOTP. Dùng một phiên cho hai viewport.
+  - Test volume profile kỳ vọng sai: ngưỡng 2·Eref không thể đạt khi Eref ≥ 0,5. Đã sửa dữ liệu test và ghi phép tính trong comment.
+- **Kiểm chứng:**
+  - Unit `tests/unit` **4231 passed/130.77s** (trước khi thêm test service/repository). Sau đó `test_bot_reporting.py` + `test_admin_market_chart.py` **83 passed**. Riêng `test_sig1_market_features.py` 15 test: streaming = batch, DST tháng 3/7, sweep/accepted/expired, CVD không bịa.
+  - Ruff, format (968 file), mypy (389 file) đạt; `node --check` đạt.
+  - Playwright in-process: `test_admin_market_chart_playwright.py` mới (CSP thật, vẽ canvas, RSI/MACD, nhớ lớp sau reload, polling trả `unchanged`, 360–1280px không tràn, vùng chạm ≥ 44px) cùng trading-revamp, dashboard, login, strategy-backtest UI kit và `test_admin_web_views.py`: **63 passed/111.79s**.
+  - Compose E2E `tests/e2e/test_admin_web_workflows.py` **7 passed/568.53s**. PNG evidence bị ghi đè đã khôi phục bằng `git checkout -- tests/e2e/evidence/`.
+  - Stack local `crypidian-review` (PostgreSQL thật, nến seed BTCUSDT 1m/5m/1h): trang 200, không lỗi console, không tràn ở 1440/390px, sáng/tối đều xem ảnh.
+- **Còn mở:**
+  - SIG-0 (lưu taker buy, collector).
+  - Phần chưa làm của SIG-1/SIG-7 đã liệt kê trong WBS SIG.
+  - Dữ liệu seed local là nến tổng hợp (1m giá phẳng 100), nên chart local không phản ánh thị trường thật.
+  - Sidebar đè nội dung trong ảnh `full_page` của Playwright là lỗi chụp đã biết.

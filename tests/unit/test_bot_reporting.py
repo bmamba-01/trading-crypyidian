@@ -926,6 +926,40 @@ async def test_repository_chart_bars_use_workspace_symbol_timeframe_and_asof() -
     assert "UPDATE" not in sql
 
 
+@pytest.mark.asyncio
+async def test_repository_market_chart_queries_are_workspace_scoped_and_read_only() -> None:
+    session = RecordingSession()
+    repository = BotReportRepository(session)  # type: ignore[arg-type]
+
+    assert await repository.list_market_series(workspace_id=W1, as_of=END) == []
+    assert (
+        await repository.load_recent_bars(
+            workspace_id=W1, symbol="BTCUSDT", timeframe="5m", as_of=END, limit=600
+        )
+        == []
+    )
+
+    series_sql, bars_sql = session.statements[-2:]
+    for fragment in (
+        "market_bar.workspace_id =",
+        "market_bar.available_at <=",
+        "market_bar.is_closed IS true",
+        "GROUP BY market_bar.symbol, market_bar.timeframe",
+    ):
+        assert fragment in series_sql, fragment
+    for fragment in (
+        "market_bar.workspace_id =",
+        "market_bar.symbol =",
+        "market_bar.timeframe =",
+        "market_bar.available_at <=",
+        "market_bar.is_closed IS true",
+        "ORDER BY market_bar.open_time DESC, market_bar.revision DESC",
+        "LIMIT",
+    ):
+        assert fragment in bars_sql, fragment
+    assert all("INSERT" not in s and "UPDATE" not in s for s in session.statements)
+
+
 class TransactionLogSession:
     """Session giả ghi thứ tự BEGIN/câu lệnh để kiểm tra snapshot được đặt trước truy vấn."""
 
@@ -1031,6 +1065,14 @@ class FakeRepository:
         return STORE.snapshots.get(kwargs["bot_id"]) or snapshot(
             [], bot_id=kwargs["bot_id"], account_id=kwargs["account_id"]
         )
+
+    async def list_market_series(self, **kwargs: Any) -> list[str]:
+        STORE.calls.append("market_series")
+        return ["BTCUSDT|5m", "BTCUSDT|1h", "BTCUSDT|2h", "ETHUSDT|1m"]
+
+    async def load_recent_bars(self, **kwargs: Any) -> list[dict[str, Any]]:
+        STORE.calls.append(f"market_bars:{kwargs['symbol']}:{kwargs['timeframe']}")
+        return [{"time": 1, "open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0, "volume": 1.0}]
 
     async def workspace_closed_totals(self, **kwargs: Any) -> dict[str, tuple[int, Decimal]]:
         STORE.calls.append("ledger_totals")
@@ -1152,6 +1194,57 @@ async def test_bot_report_authorization_matrix(
         bot_reporting.NOT_FOUND_MESSAGE,
     )
     assert not any(call.startswith("ledger:") for call in STORE.calls)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("actor", "bot_id", "allowed"),
+    [
+        (OWNER, BOT_A, True),
+        (ANALYST, BOT_A, True),
+        (ANALYST, BOT_B, False),
+        (OPERATOR, BOT_A, False),  # thiếu grant bot:report:read
+        (OWNER, uuid4(), False),  # bot không tồn tại
+        (OWNER, BOT_X, False),  # bot thuộc workspace khác
+    ],
+)
+async def test_market_chart_data_requires_report_read_on_existing_bot(
+    actor: Principal, bot_id: UUID, allowed: bool
+) -> None:
+    reporting = service()
+    if allowed:
+        series = await reporting.list_market_series(actor, bot_id=bot_id)
+        # Khung ngoài danh sách chart (2h) bị bỏ; khung sắp theo thứ tự thời lượng.
+        assert series == {"BTCUSDT": ["5m", "1h"], "ETHUSDT": ["1m"]}
+        bars = await reporting.get_market_bars(
+            actor, bot_id=bot_id, symbol="BTCUSDT", timeframe="5m", limit=600
+        )
+        assert len(bars) == 1
+        assert STORE.units[-1]["snapshot_read_only"] is True
+        return
+    for call in (
+        reporting.list_market_series(actor, bot_id=bot_id),
+        reporting.get_market_bars(
+            actor, bot_id=bot_id, symbol="BTCUSDT", timeframe="5m", limit=600
+        ),
+    ):
+        with pytest.raises(BotReportError) as caught:
+            await call
+        assert caught.value.status_code == 404
+    assert not any(c.startswith("market") for c in STORE.calls)
+
+
+@pytest.mark.asyncio
+async def test_market_bars_reject_unsupported_timeframe_and_limit() -> None:
+    for kwargs in ({"timeframe": "2h", "limit": 10}, {"timeframe": "5m", "limit": 5000}):
+        with pytest.raises(BotReportError) as caught:
+            await service().get_market_bars(
+                OWNER,
+                bot_id=BOT_A,
+                symbol="BTCUSDT",
+                **kwargs,  # type: ignore[arg-type]
+            )
+        assert caught.value.status_code == 422
 
 
 @pytest.mark.asyncio

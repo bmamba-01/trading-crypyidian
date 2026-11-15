@@ -26,6 +26,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from trading_bot.adapters.database.repositories.bot_grants import BotGrantRepository
 from trading_bot.adapters.database.repositories.bot_reports import BotReportRepository
+from trading_bot.application.market_chart import (
+    MARKET_CHART_INTERVAL_SECONDS,
+    MARKET_CHART_MAX_LIMIT,
+)
 from trading_bot.application.outbox import UnitOfWork
 from trading_bot.auth.bot_policy import (
     WORKSPACE_BOT_ROLES,
@@ -284,6 +288,85 @@ class BotReportingService:
             "bars": bars,
             "notice": chart_notice,
         }
+
+    async def list_market_series(
+        self, principal: Principal, *, bot_id: UUID
+    ) -> dict[str, list[str]]:
+        """Symbol → các khung có nến đã đóng trong workspace, sau khi kiểm ``REPORT_READ``.
+
+        Nến thị trường là dữ liệu chung của workspace; chart yêu cầu người xem có quyền đọc
+        báo cáo của ít nhất bot đang chọn để không mở dữ liệu cho người ngoài phạm vi bot.
+        """
+        async with self._unit_of_work(
+            self._sessions,
+            workspace_id=principal.workspace_id,
+            bot_id=bot_id,
+            actor_membership_id=principal.membership_id,
+            snapshot_read_only=True,
+        ) as unit:
+            repository = self._repository(unit.session)
+            try:
+                await self._grants(unit.session).require(
+                    principal, bot_id=bot_id, permission=BotPermission.REPORT_READ
+                )
+            except PermissionError as error:
+                raise _not_found() from error
+            if await repository.get_bot(workspace_id=principal.workspace_id, bot_id=bot_id) is None:
+                raise _not_found()
+            pairs: list[str] = await repository.list_market_series(
+                workspace_id=principal.workspace_id, as_of=datetime.now(UTC)
+            )
+        series: dict[str, list[str]] = {}
+        for pair in pairs:
+            symbol, timeframe = pair.split("|", 1)
+            if timeframe in MARKET_CHART_INTERVAL_SECONDS:
+                series.setdefault(symbol, []).append(timeframe)
+        order = list(MARKET_CHART_INTERVAL_SECONDS)
+        return {symbol: sorted(frames, key=order.index) for symbol, frames in series.items()}
+
+    async def get_market_bars(
+        self,
+        principal: Principal,
+        *,
+        bot_id: UUID,
+        symbol: str,
+        timeframe: str,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        """Nến đã đóng gần nhất của một symbol cho chart thị trường (SIG-7).
+
+        Dùng cùng kiểm workspace/grant ``REPORT_READ`` như báo cáo, theo bot đang chọn.
+        """
+        if timeframe not in MARKET_CHART_INTERVAL_SECONDS:
+            raise BotReportError(
+                422, "CHART_TIMEFRAME_UNSUPPORTED", "Khung biểu đồ không được hỗ trợ."
+            )
+        if not 1 <= limit <= MARKET_CHART_MAX_LIMIT:
+            raise BotReportError(422, "CHART_LIMIT_INVALID", "Số nến yêu cầu không hợp lệ.")
+        async with self._unit_of_work(
+            self._sessions,
+            workspace_id=principal.workspace_id,
+            bot_id=bot_id,
+            actor_membership_id=principal.membership_id,
+            snapshot_read_only=True,
+        ) as unit:
+            repository = self._repository(unit.session)
+            try:
+                await self._grants(unit.session).require(
+                    principal, bot_id=bot_id, permission=BotPermission.REPORT_READ
+                )
+            except PermissionError as error:
+                raise _not_found() from error
+            if await repository.get_bot(workspace_id=principal.workspace_id, bot_id=bot_id) is None:
+                raise _not_found()
+            bars: list[dict[str, Any]] = await repository.load_recent_bars(
+                workspace_id=principal.workspace_id,
+                symbol=symbol,
+                timeframe=timeframe,
+                as_of=datetime.now(UTC),
+                limit=limit,
+            )
+            return bars
 
     async def get_dashboard_reports(
         self,

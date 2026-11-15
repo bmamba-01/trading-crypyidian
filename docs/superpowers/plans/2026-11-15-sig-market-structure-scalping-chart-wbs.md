@@ -1,6 +1,6 @@
 # WBS SIG — Cấu trúc thị trường, thanh khoản phiên, áp lực mua/bán, scalping và chart kiểu TradingView
 
-**Ngày:** 2026-11-15 · **Trạng thái:** kế hoạch, chưa triển khai · **Chế độ:** PAPER/replay; chỉ dữ liệu thị trường công khai; không route order, không bật SHADOW/PAPER_GATE/Demo/LIVE. <br>
+**Ngày:** 2026-11-15 · **Trạng thái:** SIG-1 và SIG-7 đã triển khai lát đầu (15/11/2026); các gói khác là kế hoạch · **Chế độ:** PAPER/replay; chỉ dữ liệu thị trường công khai; không route order, không bật SHADOW/PAPER_GATE/Demo/LIVE. <br>
 **Nghiên cứu nền:** [đối chiếu tín hiệu, 3 chỉ báo, scalping, chart](../../research/signal-scalping-chart-research-2026-11-15.md). <br>
 **Mở rộng từ:** [khảo sát 14/11](./2026-11-14-feature-survey-and-manager-insights.md) (DATA-1, IND-1, IND-2, IND-4, MI-1, MI-6, TG-1), [kế hoạch công thức + Strategy Card](./2026-11-14-strategy-formula-and-card-readiness.md) (BT-1, SC-1), [WBS Trader Workbench](./2026-11-03-wp07-trader-workbench-wbs.md) (WB07A chart, WB07B Telegram), [WP-SC](./2026-11-05-wp-sc-strategy-card-wbs.md), [WP06](./2026-11-01-wp06-learning-wbs.md) (hiệu chuẩn).
 
@@ -49,6 +49,13 @@ Mọi feature có `formula_version`, chạy được tăng dần, và có `confi
 5. Golden dataset nhỏ tính tay cho từng feature; test property "streaming = batch"; test DST (tuần đổi giờ London/New York lệch nhau); test bar thiếu taker buy.
 
 **Acceptance:** không feature nào đổi giá trị lịch sử khi thêm nến mới (trừ bản developing được đánh dấu); `feature_snapshot` lưu hash công thức; glossary mục AA có định nghĩa và nguồn.
+
+**Đã triển khai (15/11/2026, lát 1):**
+- `domain/market/structure.py` (`sig1-structure-v1`, `sig1-trendline-v1`): swing đã xác nhận tái dùng `geometry.find_confirmed_pivots`, nhãn HH/HL/LH/LL, máy trạng thái BOS/CHoCH bằng giá đóng (kiểm phá trước, nạp swing xác nhận sau trong cùng nến), trendline tự động (dung sai 0,3 ATR, vô hiệu 0,5 ATR, bị thay khi có line mới cùng phía), trạng thái cấu trúc theo dấu độ dốc.
+- `domain/market/sessions.py` (`sig1-session-v1`, `sig1-liquidity-v1`): phiên Tokyo/London/New York theo `zoneinfo` (DST theo từng thị trường), đỉnh/đáy phiên, PDH/PDL theo ngày UTC đã đóng, máy trạng thái armed → rejected (quét)/accepted → expired; chỉ phiên/ngày `complete` mới sinh mức.
+- `domain/market/volume_profile.py` (`sig1-volume-profile-v1`): delta/CVD từ taker buy (thiếu → `None`, không ước lượng), volume profile N bin, POC, Value Area 70%, mua/bán theo bin, E/Eref và phân loại mất cân bằng.
+- `domain/market/features.py`: thêm `macd` (12/26/9).
+- **Chưa làm trong lát này:** PWH/PWL, đỉnh/đáy bằng nhau, độ rộng phiên theo phân vị và base rate kèm n, lookback pivot thích ứng theo ATR, anchored VWAP, OBV, ghi feature mới vào `feature_snapshot` (chưa có chiến lược nào dùng — thuộc SIG-2/SIG-4), golden dataset từ dữ liệu thật.
 
 ### SIG-2 — Runtime đa khung ngắn và sửa đường snapshot cho card (mở rộng RT-1, SC-1)
 
@@ -104,6 +111,13 @@ Mọi feature có `formula_version`, chạy được tăng dần, và có `confi
 6. Mobile 360px: ẩn volume profile hoặc thu hẹp, vùng chạm ≥ 44px, danh sách sự kiện thay hover; Playwright `assert_responsive` 360–1280.
 
 **Acceptance:** không inline script/style; marker/mức khớp feature snapshot; chart lỗi/thiếu dữ liệu taker buy hiện ghi chú rõ thay vì vẽ số 0.
+
+**Đã triển khai (15/11/2026, lát 1):**
+- Trang `/admin/chart` (sidebar "Biểu đồ thị trường") + API `GET /admin/api/chart` (polling 5 giây, `fp` → `unchanged`, `no-store`). Chọn bot (quyền `bot:report:read` trên bot đó, bot phải tồn tại) rồi chọn **mã có nến đã lưu** trong workspace; khung chưa có nến hiện mờ. Bot hiện chưa có trường symbol riêng nên không suy mã từ bot.
+- `application/market_chart.py` dựng JSON bằng đúng mã SIG-1: nến, volume tô theo delta (hoặc theo chiều nến khi thiếu taker), EMA20/50, VWAP ngày UTC, RSI14, MACD, CVD (khi có taker), swing/BOS/CHoCH, trendline, phiên, mức thanh khoản, volume profile ngày UTC trước và ngày đang hình thành; phiên/mức/profile ẩn ở khung ≥ 4h kèm ghi chú.
+- `static/market-chart.js`: Lightweight Charts **5.2.1** (giữ bản đang tự host; API primitive/marker/pane đủ dùng, chưa cần tải bản 5.3.0), 4 primitive tự vẽ (hộp phiên, mức thanh khoản có dấu ✕ khi bị quét, trendline, volume profile mua/bán + POC/VA), marker swing/BOS/CHoCH/"Quét", pane phụ RSI/MACD đồng bộ vùng nhìn, bật/tắt lớp nhớ trong `localStorage` (bọc try/catch), danh sách sự kiện thay hover, đổi theme sáng/tối.
+- `attributionLogo: false` + chân trang ghi công TradingView và link NOTICE tự host; không script/style nội tuyến.
+- **Chưa làm:** nâng 5.3.0, entry zone/SL/TP1–3 trên chart (cần SIG-3), tái dùng trên bot detail/report, cập nhật nến cuối bằng `update()` thay vì `setData()` toàn bộ, profile neo theo phiên thay vì ngày UTC.
 
 ### SIG-8 — Thẻ tín hiệu và Telegram (mở rộng TG-1, TG-2, MI-6, WB07B)
 
