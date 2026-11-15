@@ -91,6 +91,8 @@ class AppSettings(BaseSettings):
     # TG-2: chống spam theo subscription — cooldown tín hiệu trùng và trần số tin/60 phút.
     signal_worker_cooldown_minutes: int = Field(default=90, ge=0, le=1440)
     signal_worker_max_messages_per_hour: int = Field(default=6, ge=1, le=60)
+    # TG-3: gửi tín hiệu/kết quả/tổng kết dạng ảnh thẻ (PNG + caption); False = văn bản thuần.
+    telegram_card_images_enabled: bool = True
     # TG-3 (quyết định owner 15/11/2026): signal-worker gửi kết quả trade PAPER (mở/đóng) tới
     # subscription đã bật và tin tổng hợp định kỳ. Chỉ đọc ledger PAPER, không phát lệnh.
     telegram_trade_results_enabled: bool = True

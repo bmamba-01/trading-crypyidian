@@ -21,12 +21,22 @@ from trading_bot.adapters.telegram.bot_api_sender import TelegramApiError
 from trading_bot.application.outbox import UnitOfWork, retry_delay_seconds
 from trading_bot.application.telegram_signals import (
     SignalThrottlePolicy,
+    TelegramSignalCandidate,
     build_signal_message,
     is_candidate_deliverable,
 )
 from trading_bot.ports.telegram import TelegramMessageSender
 
 logger = logging.getLogger(__name__)
+
+SignalSend = Callable[[TelegramMessageSender, int, TelegramSignalCandidate], Awaitable[None]]
+
+
+async def send_signal_text(
+    sender: TelegramMessageSender, chat_id: int, candidate: TelegramSignalCandidate
+) -> None:
+    """Gửi tín hiệu dạng văn bản thuần (mặc định; cũng là dự phòng của ảnh thẻ)."""
+    await sender.send_message(chat_id, build_signal_message(candidate))
 
 
 class ChatPacerPort(Protocol):
@@ -57,6 +67,7 @@ class TelegramSignalDeliveryWorker:
         max_attempts: int = 5,
         batch_size: int = 100,
         throttle: SignalThrottlePolicy | None = None,
+        signal_send: SignalSend | None = None,
         now: Callable[[], datetime] | None = None,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         unit_of_work: Callable[..., UnitOfWork] = UnitOfWork,
@@ -79,6 +90,8 @@ class TelegramSignalDeliveryWorker:
         self._max_attempts = max_attempts
         self._batch_size = batch_size
         self._throttle = throttle or SignalThrottlePolicy()
+        # TG-3: app truyền bộ gửi ảnh thẻ; mặc định gửi văn bản thuần như trước.
+        self._signal_send = signal_send or send_signal_text
         self._now = now or (lambda: datetime.now(UTC))
         self._sleep = sleep
         self._unit_of_work = unit_of_work
@@ -177,9 +190,7 @@ class TelegramSignalDeliveryWorker:
                     await self._mark_expired(claim)
                     continue
                 try:
-                    await self._sender.send_message(
-                        claim.chat_id, build_signal_message(claim.candidate)
-                    )
+                    await self._signal_send(self._sender, claim.chat_id, claim.candidate)
                 except TelegramApiError as error:
                     await self._mark_failed(claim, error.code, error.retry_after)
                 except Exception as error:

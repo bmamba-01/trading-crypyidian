@@ -444,6 +444,21 @@ def create_app(
             pacer_kwargs: dict[str, Any] = (
                 {"pacer": chat_pacer} if signal_worker_factory is None else {}
             )
+            # TG-3: ảnh thẻ (PNG + caption) cho tín hiệu, kết quả và tổng kết; dự phòng văn bản.
+            card_senders: dict[str, dict[str, Any]] = {"signal": {}, "trade": {}}
+            if app_settings.telegram_card_images_enabled:
+                from trading_bot.adapters.telegram.card_delivery import (
+                    send_paper_report_card,
+                    send_signal_card,
+                    send_trade_result_card,
+                )
+
+                if signal_worker_factory is None:
+                    card_senders["signal"] = {"signal_send": send_signal_card}
+                card_senders["trade"] = {
+                    "trade_result_send": send_trade_result_card,
+                    "paper_report_send": send_paper_report_card,
+                }
             signal_worker = worker_factory(
                 session_factory=active_session_factory,
                 workspace_id=workspace_id,
@@ -459,6 +474,7 @@ def create_app(
                     max_per_hour=app_settings.signal_worker_max_messages_per_hour,
                 ),
                 **pacer_kwargs,
+                **card_senders["signal"],
             )
             application.state.telegram_signal_worker = signal_worker
             signal_worker_task = asyncio.create_task(
@@ -482,6 +498,7 @@ def create_app(
                     ),
                     max_attempts=app_settings.signal_worker_max_attempts,
                     pacer=chat_pacer,
+                    **card_senders["trade"],
                 )
                 application.state.telegram_trade_result_worker = trade_result_worker
                 trade_result_worker_task = asyncio.create_task(
@@ -1173,6 +1190,10 @@ def _runtime_job_processor(
     return process_pending
 
 
+# Khóa (decision, lý do) đã log "không thành lệnh"; dict giữ thứ tự để bỏ khóa cũ nhất.
+_LOGGED_CANDIDATE_REJECTIONS: dict[tuple[Any, ...], None] = {}
+
+
 async def _submit_bot_candidates(application: Any, decisions: Any) -> tuple[Any, ...]:
     """Chuyển candidate đã lưu thành PAPER command riêng; abstain/veto không đặt lệnh."""
     from trading_bot.application.bot_dispatcher import BotDecisionStatus
@@ -1202,6 +1223,19 @@ async def _submit_bot_candidates(application: Any, decisions: Any) -> tuple[Any,
             cycle = getattr(result, "decision", None)
             risk = getattr(cycle, "risk_decision", None)
             plan = getattr(cycle, "plan", None)
+            # Candidate chưa submit được đánh giá lại mỗi tick tới khi hết hạn; chỉ log một lần
+            # cho mỗi (decision, lý do) để không ngập log (15/11: 1.380 dòng/15 phút).
+            log_key = (
+                decision.decision_id,
+                getattr(result, "entry_block_reason", None),
+                getattr(plan, "reason_code", None),
+                getattr(risk, "reason_code", None),
+            )
+            if log_key in _LOGGED_CANDIDATE_REJECTIONS:
+                continue
+            _LOGGED_CANDIDATE_REJECTIONS[log_key] = None
+            while len(_LOGGED_CANDIDATE_REJECTIONS) > 4096:
+                _LOGGED_CANDIDATE_REJECTIONS.pop(next(iter(_LOGGED_CANDIDATE_REJECTIONS)))
             logger.warning(
                 "PAPER candidate không thành lệnh; decision_id=%s entry_block=%s outcome=%s "
                 "strategy=%s risk=%s plan=%s",

@@ -1421,3 +1421,49 @@ def test_db_trigger_stale_token_is_mapped_and_demotes_account() -> None:
     assert _FakeUnitOfWork.instances[0].rolled_back is True
     assert lease_lost == [(command.account_id, "STALE_FENCING_TOKEN")]
     assert not service.is_available_for(command.account_id)
+
+
+def test_rejected_candidate_logged_once_and_error_does_not_block_others(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """15/11/2026: candidate không thành lệnh được log một lần; lỗi một candidate không chặn bot."""
+    from trading_bot.app import _submit_bot_candidates
+    from trading_bot.application.bot_dispatcher import BotDecisionStatus
+
+    stale, broken, good = uuid4(), uuid4(), uuid4()
+    account_id = uuid4()
+
+    class Application:
+        def __init__(self) -> None:
+            self.commands: list[PaperBotDecisionCommand] = []
+
+        async def evaluate_and_submit(self, command: PaperBotDecisionCommand) -> object:
+            self.commands.append(command)
+            if command.bot_decision_id == broken:
+                raise PaperRuntimeApplicationError("BOT_DECISION_CONFIG_MISMATCH")
+            if command.bot_decision_id == stale:
+                return SimpleNamespace(
+                    submission=None,
+                    duplicate=False,
+                    entry_block_reason=None,
+                    decision=SimpleNamespace(
+                        outcome=SimpleNamespace(value="PLAN_REJECTED"),
+                        strategy_result=None,
+                        risk_decision=None,
+                        plan=SimpleNamespace(reason_code="MARKET_DATA_STALE"),
+                    ),
+                )
+            return SimpleNamespace(submission=object(), duplicate=False)
+
+    decisions = tuple(
+        SimpleNamespace(status=BotDecisionStatus.CANDIDATE, decision_id=item, account_id=account_id)
+        for item in (broken, stale, good)
+    )
+    application = Application()
+    with caplog.at_level("WARNING"):
+        for _ in range(3):
+            asyncio.run(_submit_bot_candidates(application, decisions))
+    assert [command.bot_decision_id for command in application.commands].count(good) == 3
+    stale_logs = [record for record in caplog.records if "MARKET_DATA_STALE" in record.getMessage()]
+    assert len(stale_logs) == 1
+    assert any("BOT_DECISION_CONFIG_MISMATCH" in record.getMessage() for record in caplog.records)

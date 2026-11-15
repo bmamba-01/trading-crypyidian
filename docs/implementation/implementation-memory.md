@@ -4278,3 +4278,29 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
   - Tổng hợp giả định một quote asset (USDT); nhiều quote asset thì hiển thị "USDT" và cộng thẳng.
   - `/report` liệt kê bot người dùng được `bot:report:read`, còn tin định kỳ liệt kê bot mà chat đã bật subscription — hai tập có thể khác nhau.
   - Admin Web chưa có màn xem `telegram_trade_notification`/`telegram_paper_report_delivery`.
+
+### 2026-11-15 — Nối ảnh thẻ Telegram vào 3 luồng gửi (tín hiệu, kết quả, tổng kết)
+
+- **Yêu cầu của owner:** tin Telegram dạng ảnh/card có style dễ quan sát. Agent renderer (merge `3e447e1`) và agent TG-3 kết quả/tổng kết (merge `ae9c7c7`, migration `d5f7b9c1e3a6`) đã merge vào nhánh.
+  - Xung đột merge chỉ ở memory và glossary: cả hai agent cùng đặt mục "AE". Đã giữ cả hai và đổi mục TG-3 thành **AF**.
+- **Nối:**
+  - `adapters/telegram/card_delivery.py` gồm `send_signal_card`, `send_trade_result_card`, `send_paper_report_card`: vẽ PNG + caption → `send_photo`.
+  - Lỗi vẽ (ValueError/TypeError/KeyError/ArithmeticError/OSError) → gửi văn bản cũ. `TelegramApiError` không bị nuốt, worker vẫn retry/FAILED.
+  - Worker tín hiệu có tham số `signal_send` (mặc định văn bản).
+  - `app.py` truyền bộ gửi thẻ khi `telegram_card_images_enabled` (mặc định True); với worker tín hiệu chỉ truyền khi không dùng factory test.
+- **Ánh xạ:**
+  - Thẻ trade lấy chiến lược/khung từ tên bot đợt thử ("T04 H03 1h · …").
+  - Thẻ tổng kết dùng số liệu lũy kế (lệnh đóng, thắng, PnL) + vị thế mở. `max_drawdown` của báo cáo là USDT nên quy đổi phân số theo vốn seed **10.000** (giả định đợt thử).
+- **Sửa nhỏ:** dòng "Giá chạm SL …" trong thẻ dùng giá kiểu VN (`_price_vi`: 96.619,3) thay `96619.3`.
+- **Local:** DB lên `d5f7b9c1e3a6`, image có Pillow 13.0.0. Worker kết quả `not_ready` ~1 phút đầu cho tới khi tick đầu xong (bình thường).
+- **Kiểm chứng:** unit **4458 passed/119.15s** (thêm `test_telegram_card_delivery.py` 5 test + test worker inject).
+- **Còn mở:**
+  - Mang release/khung thật vào `TradeResultSource` thay vì đoán từ tên bot.
+  - Max drawdown theo vốn thật của từng account.
+  - Chưa xem ảnh trên điện thoại (Telegram nén ảnh).
+  - Bot cũ "strategy-card" còn 1 trade BTC OPEN không được theo dõi.
+- **E2E (15/11, sau merge TG-3 + ảnh thẻ):** `test_wp07_telegram_signal`, `test_wp07_market_signal_producer`, `test_rt1_paper_market_loop` (gồm TG-3), `test_db_role_least_privilege` **6 passed**. `test_bot_control_api_telegram` lần đầu **2 failed**:
+  - Nguyên nhân: compose mount `./.secrets/telegram_bot_token` của worktree. File này là **token thật** của stack local, nên E2E dùng `TelegramBotApiSender` thật và gửi request lên Telegram với chat giả. Không phải lỗi code mới; là lỗ hổng cách ly.
+  - Sửa: `compose.yaml` cho phép đổi file secret qua `TRADING_BOT_TELEGRAM_BOT_TOKEN_SECRET_FILE`; `tests/e2e/conftest.py` (session autouse) trỏ biến này tới `.secrets/e2e_telegram_bot_token` rỗng.
+  - Chạy lại **4 passed/159.50s**.
+- **Runtime log:** candidate cũ được đánh giá lại mỗi tick tới khi hết hạn nên log "không thành lệnh" ngập (1.380 dòng/15 phút). Giờ chỉ log một lần mỗi (decision, lý do), bộ nhớ ≤ 4.096 khóa. Test `test_rejected_candidate_logged_once_and_error_does_not_block_others`. **Còn mở:** việc đánh giá lại mỗi tick vẫn tốn CPU; nên ghi receipt từ chối để bỏ qua.
