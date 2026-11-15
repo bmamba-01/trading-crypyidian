@@ -642,6 +642,40 @@ async def breaker() -> dict[str, Any]:
     }
 
 
+async def run_report() -> dict[str, Any]:
+    """AI-1: Run Report tất định từ ledger thật của bot RT-1 (role admin của migrator)."""
+    from trading_bot.application.run_report import load_run_report
+
+    engine, sessions = _sessions()
+    try:
+        first = await load_run_report(
+            sessions,
+            workspace_id=WORKSPACE,
+            start=NOW - timedelta(days=3),
+            end=NOW + timedelta(days=1),
+            run_label="rt1-e2e",
+        )
+        second = await load_run_report(
+            sessions,
+            workspace_id=WORKSPACE,
+            start=NOW - timedelta(days=3),
+            end=NOW + timedelta(days=1),
+            run_label="rt1-e2e",
+        )
+    finally:
+        await engine.dispose()
+    [bot] = [item for item in first.payload["bots"] if item["bot_id"] == STATE["bot_id"]]
+    return {
+        "deterministic": first.report_hash == second.report_hash,
+        "closed_trades": bot["performance"]["closed_trades"],
+        "r_mean": bot["performance"]["r_multiple"]["mean"],
+        "mae_mean": bot["performance"]["mae_r"]["mean"],
+        "candidates": bot["funnel"]["candidates"],
+        "candidates_with_intent": bot["funnel"]["candidates_with_intent"],
+        "exit_reasons": bot["performance"]["exit_reasons"],
+    }
+
+
 def pause_resume() -> dict[str, Any]:
     """Owner tạm dừng rồi tiếp tục bot (bản ghi append-only như luồng resume có MFA)."""
     with _connect() as connection, connection.transaction():
@@ -942,6 +976,8 @@ elif phase == "mark_check":
     output = asyncio.run(mark_check())
 elif phase == "breaker":
     output = asyncio.run(breaker())
+elif phase == "run_report":
+    output = asyncio.run(run_report())
 elif phase == "pause_resume":
     output = pause_resume()
 elif phase == "add_minutes":

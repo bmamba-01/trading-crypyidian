@@ -128,3 +128,44 @@ Dataset có quyền TRAINING ─► [AI-5] WP-06 scorer (logistic) ─► SHADOW
 5. **AI-5** (sau quyết định #3).
 
 AI-1 và AI-4 có thể chạy song song.
+
+## 5. Quyết định owner (16/11/2026)
+
+1. **AI engine:** không gọi API trả phí trực tiếp. Dùng các CLI/desktop agent đã cài trên máy (Claude Code CLI / Claude Desktop, OpenAI Codex CLI, Google Antigravity), sau này có thể chạy trên máy ảo. Mỗi chủ đề phân tích là một session được lưu lại; "huấn luyện" là tích lũy ngữ cảnh ngay trên các session đó. Nghiên cứu cách gọi headless/lưu session: `docs/research/ai-cli-agent-engine-2026-11-16.md`.
+2. **Nguồn tin:** toàn bộ tin tức công khai từ các trang uy tín, đặc biệt là rà X và các thread cộng đồng chia sẻ chỉ báo, lịch phát hành và update của **mọi coin trong danh sách Futures**. Nghiên cứu nguồn và điều khoản: `docs/research/news-social-sources-2026-11-16.md`.
+3. **TRAINING:** **đồng ý** cấp mục đích TRAINING nội bộ cho dữ liệu Binance công khai và ledger PAPER của hệ thống. Vẫn phải ghi policy/evidence qua Source Registry.
+4. **Đề xuất của AI:** chỉ là gợi ý; bắt buộc backtest trước, owner tự publish.
+
+Owner yêu cầu: triển khai AI-1 ngay, đồng thời nghiên cứu các bước sau.
+
+## 6. Tiến độ 16/11/2026
+
+- **AI-1 lát 1 — đã triển khai:**
+  - `domain/portfolio/run_report.py` (`ai1-run-report-v1`, JSON tất định + SHA-256), `application/run_report.py` (loader chỉ đọc) và CLI `python -m trading_bot.cli.run_report`.
+  - Nội dung: cấu hình bot; phễu quyết định (tách `SYMBOL_OUT_OF_BOT_UNIVERSE`); tín hiệu → lệnh; hiệu suất từ `bot-report.v2`; R-multiple, MAE/MFE; theo coin; nhóm theo họ chiến lược/khung; xếp hạng; cảnh báo mẫu nhỏ.
+  - Đã chạy trên ledger thật của đợt 10 bot.
+  - **Còn mở:**
+    - lưu report bền (bảng bất biến) cùng role đọc báo cáo riêng (CLI hiện chạy bằng role admin migrator vì RLS admin-web cần actor);
+    - lưu bền lý do từ chối plan/risk của candidate (hiện chỉ có trong log runtime);
+    - lịch tự sinh report.
+- **AI-2 — nghiên cứu xong** (`docs/research/ai-cli-agent-engine-2026-11-16.md`):
+  - Claude Code CLI (`-p`, `--output-format json`, `--json-schema`, `--session-id/--resume`) làm engine chính.
+  - Codex CLI (`codex exec --output-schema`, `exec resume`) làm dự phòng.
+  - Antigravity CLI (`agy`) sau khi cài.
+  - Bỏ Gemini CLI vì đã ngừng cho tài khoản free/Pro/Ultra.
+  - Các binary nằm trong app bundle, không có trên PATH, nên đường dẫn phải lấy từ config.
+  - "Huấn luyện trên session" thực tế là tích lũy ngữ cảnh qua resume, file knowledge có owner duyệt và tóm tắt định kỳ. **Không phải fine-tune model.**
+  - Điều khoản: subscription Claude dành cho dùng cá nhân thông thường; job định kỳ quy mô lớn nên dùng API key. Đây là câu hỏi cho owner.
+- **AI-4 — nghiên cứu xong** (`docs/research/news-social-sources-2026-11-16.md`):
+  - **Điều khoản bên thứ ba ưu tiên hơn quyền TRAINING nội bộ.** Cointelegraph/The Block/TradingView/Telegram/Discord/Reddit cấm hoặc hạn chế AI/ML; X cấm huấn luyện foundation model. Mặc định không cấp `training` cho X.
+  - **S1 (làm ngay, hợp lệ):**
+    - lịch vĩ mô chính thức BLS/BEA/FOMC (public domain), mở khóa H06;
+    - phái sinh công khai Binance (funding, OI, long/short; lưu snapshot theo giờ vì chỉ giữ 30 ngày, giới hạn 1.000 request/5 phút);
+    - diff `exchangeInfo` để phát hiện listing/delisting;
+    - CoinGecko Demo để map coin → website/X/GitHub.
+  - **S2:**
+    - X API pay-per-use: khoảng 0,005 USD/bài; danh sách tài khoản chính thức theo coin + từ khóa sự kiện; ước tính khoảng 375–675 USD/tháng, có trần chi;
+    - CryptoPanic API;
+    - Tokenomist (lịch unlock, trả phí);
+    - kênh thông báo Binance (cần API key chỉ đọc, owner phải duyệt).
+  - **Tránh:** scraping X và bên bán lại dữ liệu X.

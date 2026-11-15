@@ -4334,3 +4334,30 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
   - AI-4: nguồn tin S1.
   - AI-5: mở khóa WP-06 bằng quyền TRAINING nội bộ.
 - **Quyết định chờ owner:** model/ngân sách Claude API; nguồn tin lát đầu; cấp TRAINING; đề xuất AI chỉ là gợi ý.
+
+### 2026-11-16 — AI-1 Run Report tất định + nghiên cứu AI-2 (CLI agent) và AI-4 (nguồn tin)
+
+- **Quyết định owner:**
+  - (1) AI engine là CLI/desktop agent trên máy (Claude CLI/Desktop, Codex, Antigravity), session lưu lại và "huấn luyện" trên session;
+  - (2) nguồn: toàn bộ tin công khai uy tín, đặc biệt X và thread cộng đồng (chỉ báo, lịch phát hành, update) cho mọi coin Futures;
+  - (3) đồng ý TRAINING nội bộ;
+  - (4) đề xuất AI chỉ là gợi ý, phải backtest trước.
+  - Đã ghi vào WBS mục 5.
+- **AI-1 đã làm:**
+  - `domain/portfolio/run_report.py` (`ai1-run-report-v1`, canonical JSON + SHA-256).
+  - `application/run_report.py`: loader chỉ đọc. Mỗi bot một UoW có bot_id. Nguồn: `bot-report.v2`; quyết định theo trạng thái/lý do; candidate → intent qua `evidence.bot_decision_id`; 1R = `risk_reservation.reserved_risk`; MAE/MFE từ nến đã đóng, ưu tiên 1m rồi khung chiến lược.
+  - CLI `trading_bot.cli.run_report`.
+  - Tách `SYMBOL_OUT_OF_BOT_UNIVERSE` khỏi lý do bỏ qua: producer đánh giá mọi coin root cho mọi bot nên loại này chiếm khoảng 80% quyết định.
+  - Cảnh báo `data_quality`: < 20 lệnh đóng; candidate chưa thành lệnh mà lý do chưa lưu bền.
+- **Lỗi khi làm:**
+  - (1) Chạy CLI bằng role admin-web trả 0 bot: RLS admin-web cần actor membership. Tạm chạy bằng migrator (admin); còn mở role đọc báo cáo riêng.
+  - (2) E2E: ruff PT018 chặn trước test; merge TG-3 đổi bảng SERVICES nên phase `run_report` bị thiếu (KeyError).
+  - (3) MAE None vì lệnh RT-1 ngắn hơn một nến 1h chưa đóng. Sửa: ưu tiên nến 1m; vẫn không dùng nến chưa đóng tại thời điểm thoát (tránh dùng giá sau khi thoát).
+- **Chạy thật:** 10 bot đợt thử, cửa sổ 2 giờ. Ra phễu quyết định, nhóm H03 (7 bot, 22 candidate), CARD, H01; chưa có lệnh đóng.
+- **Kiểm chứng:**
+  - Unit **4471 passed/131.85s** (thêm `tests/unit/test_ai1_run_report.py` 5 test; chạy trước khi thêm fallback 1m).
+  - E2E RT-1 thêm phase `run_report` **1 passed/344.86s**.
+- **Nghiên cứu (agent):**
+  - `docs/research/ai-cli-agent-engine-2026-11-16.md`: Claude Code chính, Codex dự phòng, `agy` sau; Gemini CLI ngừng. Binary trong app bundle, không có trên PATH. Không fine-tune được, chỉ tích lũy ngữ cảnh. Subscription cá nhân có rủi ro điều khoản với job định kỳ.
+  - `docs/research/news-social-sources-2026-11-16.md`: điều khoản bên thứ ba ưu tiên hơn TRAINING nội bộ. S1: BLS/BEA/FOMC, phái sinh Binance, diff exchangeInfo, CoinGecko map. S2: X pay-per-use khoảng 0,005 USD/bài, CryptoPanic, Tokenomist. Tránh scraping.
+- **Câu hỏi owner còn mở:** API key hay subscription cho job định kỳ; tần suất phân tích/ngày; topic theo bot hay họ chiến lược; ngân sách X/tháng; duyệt API key Binance chỉ đọc cho kênh thông báo; ai duyệt map coin → X/GitHub.

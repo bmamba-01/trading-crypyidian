@@ -37,6 +37,7 @@ SERVICES = {
     "verify": "migrator",
     "breaker": "trading-runtime",
     "pause_resume": "migrator",
+    "run_report": "migrator",
     "tg_seed": "migrator",
     "tg_results": "telegram-signal-worker",
     "tg_verify": "migrator",
@@ -201,6 +202,15 @@ def test_rest_candles_drive_paper_entry_fill_and_stop_exit_idempotently() -> Non
             "notifications": [["CLOSED", "SENT", 1, True], ["OPENED", "SENT", 1, True]],
             "reports": [["SENT", 1, True, "4:00:00"]],
         }
+
+        # AI-1: Run Report tất định từ ledger thật (lệnh lỗ chạm stop → R âm, có MAE).
+        report = run("run_report")
+        assert report["deterministic"] is True, report
+        assert report["closed_trades"] == 1, report
+        assert report["r_mean"] is not None, report
+        assert Decimal(report["r_mean"]) < 0, report
+        assert report["mae_mean"] is not None, report
+        assert report["candidates"] == report["candidates_with_intent"] == 1, report
 
         # FX-2: ngắt mạch drawdown đo bằng role runtime trên ledger thật.
         before = run("breaker")
