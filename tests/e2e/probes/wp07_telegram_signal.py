@@ -178,6 +178,13 @@ with psycopg.connect(
             "WHERE conrelid='telegram_signal_delivery'::regclass AND contype='c' "
             "AND position('FILTERED' in pg_get_constraintdef(oid)) > 0)",
         )
+        # TG-2: delivery bị chống spam ghi SUPPRESSED (migration c3e5a7b9d1f4).
+        assert _scalar(
+            connection,
+            "SELECT EXISTS (SELECT 1 FROM pg_constraint "
+            "WHERE conrelid='telegram_signal_delivery'::regclass AND contype='c' "
+            "AND position('SUPPRESSED' in pg_get_constraintdef(oid)) > 0)",
+        )
         role_state = connection.execute(
             "SELECT rolcanlogin, rolsuper, rolbypassrls, rolinherit, "
             "pg_has_role(current_user, 'crypidian_app', 'MEMBER') "

@@ -203,7 +203,8 @@ class TelegramSignalDelivery(UuidPrimaryKey, CreatedAt, Base):
             ondelete="CASCADE",
         ),
         CheckConstraint(
-            "status IN ('PENDING', 'PROCESSING', 'SENT', 'EXPIRED', 'DEAD', 'FILTERED')",
+            "status IN ('PENDING', 'PROCESSING', 'SENT', 'EXPIRED', 'DEAD', 'FILTERED', "
+            "'SUPPRESSED')",
             name="telegram_signal_delivery_status_valid",
         ),
         CheckConstraint("attempts >= 0", name="telegram_signal_delivery_attempts_nonnegative"),
@@ -216,6 +217,13 @@ class TelegramSignalDelivery(UuidPrimaryKey, CreatedAt, Base):
             "workspace_id",
             "status",
             "available_at",
+        ),
+        # TG-2: đọc lịch sử tin của subscription khi chống spam (migration c3e5a7b9d1f4).
+        Index(
+            "ix_telegram_signal_delivery_subscription_sent",
+            "workspace_id",
+            "subscription_id",
+            "sent_at",
         ),
     )
 

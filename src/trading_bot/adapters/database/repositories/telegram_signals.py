@@ -9,7 +9,7 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import and_, or_, select, update
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -22,7 +22,14 @@ from trading_bot.adapters.database.models import (
     UserMembership,
 )
 from trading_bot.application.bot_dispatcher import BotDecision
-from trading_bot.application.telegram_signals import TelegramSignalCandidate, TelegramSignalFilters
+from trading_bot.application.telegram_signals import (
+    RecentSignalDelivery,
+    SignalThrottlePolicy,
+    TelegramSignalCandidate,
+    TelegramSignalFilters,
+    signal_dedup_key,
+    throttle_reason,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,6 +50,8 @@ class SignalDeliveryClaim:
     chat_id: int
     candidate: TelegramSignalCandidate
     filtered: bool = False
+    # TG-2: mã lý do khi delivery bị chặn chống spam (SUPPRESSED); None nếu không bị chặn.
+    suppressed_reason: str | None = None
 
 
 class TelegramSignalRepository:
@@ -297,6 +306,7 @@ class TelegramSignalRepository:
         now: datetime,
         lease_duration: timedelta,
         max_attempts: int,
+        throttle: SignalThrottlePolicy | None = None,
     ) -> SignalDeliveryClaim | None:
         query = (
             select(
@@ -412,6 +422,31 @@ class TelegramSignalRepository:
                 candidate=candidate,
                 filtered=True,
             )
+        if throttle is not None:
+            reason = await self._throttle_reason(
+                workspace_id=workspace_id,
+                bot_id=bot_id,
+                delivery=delivery,
+                candidate=candidate,
+                now=now,
+                policy=throttle,
+            )
+            if reason is not None:
+                delivery.status = "SUPPRESSED"
+                delivery.last_error_code = reason
+                delivery.lease_owner = None
+                delivery.lease_expires_at = None
+                return SignalDeliveryClaim(
+                    delivery_id=delivery.id,
+                    subscription_id=delivery.subscription_id,
+                    bot_id=delivery.bot_id,
+                    decision_id=candidate.decision_id,
+                    attempts=delivery.attempts,
+                    chat_id=chat_id,
+                    candidate=candidate,
+                    filtered=True,
+                    suppressed_reason=reason,
+                )
         delivery.status = "PROCESSING"
         delivery.attempts += 1
         delivery.lease_owner = worker_id
@@ -425,6 +460,70 @@ class TelegramSignalRepository:
             chat_id=chat_id,
             candidate=candidate,
         )
+
+    async def _throttle_reason(
+        self,
+        *,
+        workspace_id: UUID,
+        bot_id: UUID,
+        delivery: TelegramSignalDelivery,
+        candidate: TelegramSignalCandidate,
+        now: datetime,
+        policy: SignalThrottlePolicy,
+    ) -> str | None:
+        """TG-2: chặn tin trùng/quá giới hạn của cùng subscription.
+
+        Khóa advisory theo subscription trong transaction claim tuần tự hóa các replica, nên hai
+        worker không cùng vượt qua kiểm tra. Lịch sử gồm tin đã SENT trong cửa sổ và tin đang
+        PROCESSING còn lease (đang gửi, tính như đã gửi).
+        """
+        await self._session.execute(
+            select(
+                func.pg_advisory_xact_lock(
+                    func.hashtextextended(f"telegram-signal-throttle:{delivery.subscription_id}", 0)
+                )
+            )
+        )
+        since = now - policy.lookback
+        rows = await self._session.execute(
+            select(
+                TelegramSignalDelivery.status,
+                TelegramSignalDelivery.sent_at,
+                BotDecisionRecord.payload,
+            )
+            .join(
+                BotDecisionRecord,
+                and_(
+                    BotDecisionRecord.workspace_id == TelegramSignalDelivery.workspace_id,
+                    BotDecisionRecord.id == TelegramSignalDelivery.decision_id,
+                    BotDecisionRecord.bot_id == TelegramSignalDelivery.bot_id,
+                ),
+            )
+            .where(
+                TelegramSignalDelivery.workspace_id == workspace_id,
+                TelegramSignalDelivery.bot_id == bot_id,
+                TelegramSignalDelivery.subscription_id == delivery.subscription_id,
+                TelegramSignalDelivery.id != delivery.id,
+                or_(
+                    and_(
+                        TelegramSignalDelivery.status == "SENT",
+                        TelegramSignalDelivery.sent_at >= since,
+                    ),
+                    and_(
+                        TelegramSignalDelivery.status == "PROCESSING",
+                        TelegramSignalDelivery.lease_expires_at > now,
+                    ),
+                ),
+            )
+        )
+        recent: list[RecentSignalDelivery] = []
+        for status, sent_at, payload in rows:
+            key = _payload_dedup_key(payload)
+            if key is None:
+                continue
+            at = sent_at if status == "SENT" and isinstance(sent_at, datetime) else now
+            recent.append(RecentSignalDelivery(key, at))
+        return throttle_reason(candidate, recent, now=now, policy=policy)
 
     async def mark_sent(
         self,
@@ -599,3 +698,21 @@ def _verified_decision(row: Any, *, prefixed: bool = False) -> BotDecision:
     ):
         raise ValueError("Candidate columns không khớp payload/hash quyết định.")
     return decision
+
+
+def _payload_dedup_key(payload: Any) -> str | None:
+    """Khóa gộp từ payload quyết định đã lưu; payload lạ thì bỏ qua (không chặn vì nó)."""
+    if isinstance(payload, str):
+        payload = json.loads(payload)
+    candidate = payload.get("candidate") if isinstance(payload, dict) else None
+    if not isinstance(candidate, dict):
+        return None
+    try:
+        return signal_dedup_key(
+            symbol=str(candidate["symbol"]),
+            direction=str(candidate["direction"]),
+            strategy_id=str(candidate["strategy_id"]),
+            strategy_release_id=str(candidate["strategy_release_id"]),
+        )
+    except KeyError:
+        return None

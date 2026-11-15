@@ -117,6 +117,7 @@ from trading_bot.application.source_policy_admin import (
 from trading_bot.application.strategy_catalog import strategy_registry
 from trading_bot.application.telegram_binding import TelegramBindingService
 from trading_bot.application.telegram_signal_subscription import TelegramSignalSubscriptionService
+from trading_bot.application.telegram_signals import SignalThrottlePolicy
 from trading_bot.auth.router import router as auth_router
 from trading_bot.auth.security import LoginRateLimiter, TestModeTotpManager
 from trading_bot.auth.service import AuthService
@@ -442,6 +443,10 @@ def create_app(
                     seconds=app_settings.signal_worker_max_candidate_age_seconds
                 ),
                 max_attempts=app_settings.signal_worker_max_attempts,
+                throttle=SignalThrottlePolicy(
+                    cooldown=timedelta(minutes=app_settings.signal_worker_cooldown_minutes),
+                    max_per_hour=app_settings.signal_worker_max_messages_per_hour,
+                ),
             )
             application.state.telegram_signal_worker = signal_worker
             signal_worker_task = asyncio.create_task(

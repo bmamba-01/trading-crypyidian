@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -242,3 +242,75 @@ def build_signal_message(candidate: TelegramSignalCandidate) -> str:
     if len(message) > 4096:
         raise ValueError("Nội dung tín hiệu vượt giới hạn Telegram.")
     return message
+
+
+# --- TG-2: chống spam -----------------------------------------------------------------------
+
+SUPPRESSED_COOLDOWN = "SIGNAL_COOLDOWN_DUPLICATE"
+SUPPRESSED_HOURLY_CAP = "SIGNAL_HOURLY_CAP"
+_HOUR = timedelta(hours=1)
+
+
+@dataclass(frozen=True, slots=True)
+class SignalThrottlePolicy:
+    """Giới hạn tin cho mỗi subscription (một bot → một chat).
+
+    - ``cooldown``: không gửi lại cùng mã + hướng + chiến lược + release trong khoảng này
+      (gộp tín hiệu trùng khi rule lặp lại trên các nến liên tiếp).
+    - ``max_per_hour``: tối đa số tin trong 60 phút trượt; tin vượt bị ghi ``SUPPRESSED``.
+    """
+
+    cooldown: timedelta = timedelta(minutes=90)
+    max_per_hour: int = 6
+
+    def __post_init__(self) -> None:
+        if not timedelta(0) <= self.cooldown <= timedelta(hours=24):
+            raise ValueError("Cooldown tín hiệu phải trong 0–24 giờ.")
+        if not 1 <= self.max_per_hour <= 60:
+            raise ValueError("Giới hạn tin/giờ phải trong 1–60.")
+
+    @property
+    def lookback(self) -> timedelta:
+        """Khoảng lịch sử cần đọc để quyết định."""
+        return max(self.cooldown, _HOUR)
+
+
+@dataclass(frozen=True, slots=True)
+class RecentSignalDelivery:
+    """Một tin đã gửi hoặc đang gửi của cùng subscription: khóa gộp và thời điểm."""
+
+    dedup_key: str
+    at: datetime
+
+
+def signal_dedup_key(
+    *, symbol: str, direction: str, strategy_id: str, strategy_release_id: str
+) -> str:
+    """Khóa gộp tín hiệu trùng; timeframe đã nằm trong release nên không lặp lại."""
+    return f"{symbol.upper()}|{direction.upper()}|{strategy_id}|{strategy_release_id}"
+
+
+def candidate_dedup_key(candidate: TelegramSignalCandidate) -> str:
+    return signal_dedup_key(
+        symbol=candidate.symbol,
+        direction=candidate.direction,
+        strategy_id=candidate.strategy_id,
+        strategy_release_id=candidate.strategy_release_id,
+    )
+
+
+def throttle_reason(
+    candidate: TelegramSignalCandidate,
+    recent: Iterable[RecentSignalDelivery],
+    *,
+    now: datetime,
+    policy: SignalThrottlePolicy,
+) -> str | None:
+    """Mã lý do chặn tin (None = được gửi). Trùng được kiểm trước giới hạn giờ."""
+    key = candidate_dedup_key(candidate)
+    history = list(recent)
+    if any(item.dedup_key == key and now - item.at < policy.cooldown for item in history):
+        return SUPPRESSED_COOLDOWN
+    if sum(1 for item in history if now - item.at < _HOUR) >= policy.max_per_hour:
+        return SUPPRESSED_HOURLY_CAP
+    return None

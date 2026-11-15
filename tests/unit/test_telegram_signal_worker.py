@@ -282,3 +282,23 @@ def test_signal_worker_process_exposes_only_liveness_and_readiness_routes() -> N
         "/health/live",
         "/health/ready",
     }
+
+
+@pytest.mark.asyncio
+async def test_worker_passes_throttle_policy_and_skips_suppressed_claim() -> None:
+    from trading_bot.application.telegram_signals import SignalThrottlePolicy
+
+    repository = FakeRepository(candidate=_candidate(), claim_filtered=True)
+    captured: dict[str, object] = {}
+    original = repository.claim_one
+
+    async def claim_one(**kwargs: object) -> SignalDeliveryClaim | None:
+        captured.update(kwargs)
+        return await original(**kwargs)
+
+    repository.claim_one = claim_one  # type: ignore[method-assign]
+    sender = FakeSender()
+
+    assert await _worker(repository, sender).tick() == 0
+    assert sender.messages == []
+    assert captured["throttle"] == SignalThrottlePolicy()

@@ -4089,3 +4089,26 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
   - **Sửa:** kiểm trên giá trị trường (`original_signal == "SHORT"`, không trường nào bằng "999"). Không phải lỗi sản phẩm.
 - **Kiểm chứng:** unit **4324 passed/124.18s** (thêm 4 test TG-1); ruff, format, mypy sạch; E2E Compose `test_wp07_telegram_signal.py` + `test_wp07_market_signal_producer.py` **2 passed/49.50s**.
 - **Còn mở:** reply cập nhật vào tin gốc, R:R ròng từng TP, rủi ro % vốn trong tin, TG-2 chống spam; ledger local còn 2 trade PnL sai (cần owner quyết reset dữ liệu dev).
+
+### 2026-11-15 — TG-2 lát 1: chống spam tin tín hiệu Telegram (gộp trùng, cooldown, trần tin/giờ)
+
+- **Yêu cầu của owner:** "Yes, do TG-2".
+- **Thiết kế:**
+  - Kiểm ở `TelegramSignalRepository.claim_one`, cùng transaction với kiểm filter. Advisory xact lock `hashtextextended('telegram-signal-throttle:<subscription>')` tuần tự hóa các replica nên hai worker không cùng vượt kiểm tra.
+  - Lịch sử gồm tin `SENT` trong `max(cooldown, 1h)` và tin `PROCESSING` còn lease (tính như đã gửi). Khóa gộp lấy từ `bot_decision.payload.candidate`: symbol|direction|strategy_id|strategy_release_id.
+  - Logic thuần `throttle_reason` + `SignalThrottlePolicy` ở `application/telegram_signals.py`. Trùng được ưu tiên trước trần giờ.
+  - Bị chặn → `SUPPRESSED`, mã `SIGNAL_COOLDOWN_DUPLICATE`/`SIGNAL_HOURLY_CAP`; worker bỏ qua như FILTERED.
+  - Settings `signal_worker_cooldown_minutes` (90, 0–1440) và `signal_worker_max_messages_per_hour` (6, 1–60).
+  - **Phạm vi theo subscription** (một bot → một chat), vì RLS của `crypidian_signal_worker` theo `app.bot_id`. Trần theo chat xuyên bot cần policy workspace-level, chưa làm.
+  - Không cần grant mới: worker đã có UPDATE `status`/`last_error_code`; `pg_advisory_xact_lock` thuộc PUBLIC.
+- **Migration `c3e5a7b9d1f4`** (sau `b2d4f6a8c0e3`): thay CHECK trạng thái thêm `SUPPRESSED`, index `(workspace_id, subscription_id, sent_at)` (khai báo cả trong model). Downgrade đổi SUPPRESSED → FILTERED.
+- **Lỗi khi làm:**
+  - (1) Bản đầu `DROP CONSTRAINT telegram_signal_delivery_status_valid` lỗi trong E2E: tên thật do naming convention là `ck_telegram_signal_delivery_telegram_signal_delivery_st_4a75` (cắt + hash). Đã kiểm trên DB local. Sửa: khối `DO` tìm constraint theo `conrelid` + định nghĩa chứa `status`/`FILTERED`, giữ nguyên tên.
+  - (2) `alembic check` báo index mới thiếu trong model. Đã thêm `Index` vào `TelegramSignalDelivery`.
+- **Nguồn:** Telegram Bot FAQ — mỗi chat không quá ~1 tin/giây, nhóm 20 tin/phút, broadcast ~30 tin/giây (https://core.telegram.org/bots/faq, kiểm 15/11/2026). Trần 6 tin/giờ là chính sách chống làm phiền của sản phẩm, không phải giới hạn kỹ thuật.
+- **Kiểm chứng:**
+  - Unit **4337 passed/132.43s**: thêm `tests/unit/test_telegram_signal_throttle.py` và test worker truyền policy và bỏ qua claim bị chặn.
+  - ruff, format, mypy sạch.
+  - E2E Compose `test_db_role_least_privilege.py` + `test_wp06_learning_incident_entry_hold_schema.py` (head mới) **2 passed/68.94s**; `test_wp07_market_signal_producer.py` (thêm phase `throttle` chạy bằng role signal-worker thật: duplicate → cooldown, trần 1 → cap, trần 2 → cho qua, constraint có SUPPRESSED) + `test_wp07_telegram_signal.py` (ACL kiểm SUPPRESSED): **2 passed/55.09s**.
+  - Head đổi sang `c3e5a7b9d1f4` trong 15 file test.
+- **Còn mở:** trần theo chat xuyên bot, giờ yên lặng, đếm tin bị chặn trên Admin, reply cập nhật tin gốc.

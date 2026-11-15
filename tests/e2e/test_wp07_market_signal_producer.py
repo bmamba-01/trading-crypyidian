@@ -83,6 +83,7 @@ def test_closed_usdm_fixture_creates_one_candidate_delivery_without_execution() 
             "produce": "market-signal-worker",
             "prepare_filter_change": "migrator",
             "deliver": "telegram-signal-worker",
+            "throttle": "telegram-signal-worker",
             "verify": "migrator",
         }[phase]
         result = compose(
@@ -131,6 +132,14 @@ def test_closed_usdm_fixture_creates_one_candidate_delivery_without_execution() 
             "messages": 0,
             "recipient_chat_ids": [],
             "message_contains_reference_only": True,
+        }
+
+        # TG-2: tín hiệu trùng vừa gửi bị chặn cooldown; trần 1 tin/giờ chặn; trần 2 cho qua.
+        assert run_probe("throttle") == {
+            "duplicate": "SIGNAL_COOLDOWN_DUPLICATE",
+            "hourly_cap": "SIGNAL_HOURLY_CAP",
+            "allowed": None,
+            "suppressed_allowed": True,
         }
 
         verified = run_probe("verify")

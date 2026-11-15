@@ -19,6 +19,7 @@ from trading_bot.adapters.database.repositories.telegram_signals import (
 from trading_bot.adapters.telegram.bot_api_sender import TelegramApiError
 from trading_bot.application.outbox import UnitOfWork, retry_delay_seconds
 from trading_bot.application.telegram_signals import (
+    SignalThrottlePolicy,
     build_signal_message,
     is_candidate_deliverable,
 )
@@ -46,6 +47,7 @@ class TelegramSignalDeliveryWorker:
         lease_duration: timedelta = timedelta(seconds=45),
         max_attempts: int = 5,
         batch_size: int = 100,
+        throttle: SignalThrottlePolicy | None = None,
         now: Callable[[], datetime] | None = None,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         unit_of_work: Callable[..., UnitOfWork] = UnitOfWork,
@@ -66,6 +68,7 @@ class TelegramSignalDeliveryWorker:
         self._lease_duration = lease_duration
         self._max_attempts = max_attempts
         self._batch_size = batch_size
+        self._throttle = throttle or SignalThrottlePolicy()
         self._now = now or (lambda: datetime.now(UTC))
         self._sleep = sleep
         self._unit_of_work = unit_of_work
@@ -139,8 +142,8 @@ class TelegramSignalDeliveryWorker:
                 claim = await self._claim_one(bot_id, now)
                 if claim is None:
                     break
-                # claim_one đã đối chiếu lại bộ lọc hiện hành trong cùng transaction và
-                # ghi receipt FILTERED; không cấp lease hoặc gửi candidate cũ tới chat.
+                # claim_one đã đối chiếu lại bộ lọc hiện hành và chống spam (TG-2) trong cùng
+                # transaction, ghi receipt FILTERED/SUPPRESSED; không cấp lease hay gửi tới chat.
                 if claim.filtered:
                     continue
                 if not is_candidate_deliverable(
@@ -186,6 +189,7 @@ class TelegramSignalDeliveryWorker:
                 now=now,
                 lease_duration=self._lease_duration,
                 max_attempts=self._max_attempts,
+                throttle=self._throttle,
             )
 
     async def _mark_sent(self, claim: SignalDeliveryClaim) -> None:
