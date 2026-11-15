@@ -3837,8 +3837,8 @@ body {
 
 /* Desktop: sidebar cố định, có thể thu thành dải biểu tượng. */
 @media (min-width: 1024px) {
-  .app-shell:not(.app-shell--plain) { padding-left: var(--shell-sidebar-w); transition: padding-left 200ms ease; }
-  .app-sidebar { width: var(--shell-sidebar-w); transform: none; box-shadow: none; }
+  .app-shell:not(.app-shell--plain) { padding-left: var(--shell-sidebar-w); transition: none; }
+  .app-sidebar { width: var(--shell-sidebar-w); transform: none; box-shadow: none; transition: none; }
   .app-sidebar__close, .app-sidebar__backdrop, .app-topbar__menu { display: none !important; }
   .app-sidebar__collapse { display: flex; }
   .app-shell.app-shell--collapsed:not(.app-shell--plain) { padding-left: var(--shell-sidebar-w-collapsed); }

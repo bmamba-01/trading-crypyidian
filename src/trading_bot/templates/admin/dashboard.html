@@ -9,6 +9,19 @@
     <p class="summary-dup">Tổng số bot: {{ bot_count }}</p>
     <p class="summary-dup">Bot sẵn sàng: {{ ready_count }}</p>
     <p>Điều khiển không gian làm việc: {{ workspace.kill_state | label_vi }}</p>
+    {% if operations_health is defined and operations_health %}
+    <p aria-label="Sức khỏe hệ thống và cầu dao rủi ro">
+      Cầu dao rủi ro:
+      {% if operations_health.status == "HEALTHY" %}
+      <span class="badge badge-success" id="kpi-ops-health">Ổn định ({{ operations_health.breaker.state }})</span>
+      {% elif operations_health.status == "DEGRADED" %}
+      <span class="badge badge-warning" id="kpi-ops-health">Chờ xác nhận ({{ operations_health.breaker.state }})</span>
+      {% else %}
+      <span class="badge badge-danger" id="kpi-ops-health">Đã ngắt mạch ({{ operations_health.breaker.state }})</span>
+      {% endif %}
+      <span class="visually-hidden" id="kpi-ops-health-sub">Vào lệnh: {{ "Cho phép" if operations_health.breaker.entry_allowed else "Bị chặn" }} · Lỗ ngày: {{ operations_health.loss_windows.realized_loss_today }} USDT</span>
+    </p>
+    {% endif %}
   </section>
   <!-- Thanh trạng thái cập nhật trực tiếp -->
   <div class="live-status-bar" role="region" aria-label="Trạng thái cập nhật trực tiếp">
@@ -73,25 +86,6 @@
       </div>
       <span class="kpi-subtext">Mô phỏng nội bộ trong cơ sở dữ liệu, không gọi API hay đặt lệnh lên Binance</span>
     </div>
-
-    {% if operations_health is defined and operations_health %}
-    <div class="kpi-card kpi-card--h" aria-label="Sức khỏe hệ thống và cầu dao rủi ro">
-      <span class="kpi-icon kpi-icon--emerald" aria-hidden="true"><svg class="ico" viewBox="0 0 24 24" focusable="false"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></span>
-      <div class="kpi-body">
-        <div class="kpi-status-container">
-          {% if operations_health.status == "HEALTHY" %}
-          <span class="badge badge-success" id="kpi-ops-health">Ổn định ({{ operations_health.breaker.state }})</span>
-          {% elif operations_health.status == "DEGRADED" %}
-          <span class="badge badge-warning" id="kpi-ops-health">Chờ xác nhận ({{ operations_health.breaker.state }})</span>
-          {% else %}
-          <span class="badge badge-danger" id="kpi-ops-health">Đã ngắt mạch ({{ operations_health.breaker.state }})</span>
-          {% endif %}
-        </div>
-        <span class="kpi-label">Cầu dao rủi ro</span>
-      </div>
-      <span class="kpi-subtext" id="kpi-ops-health-sub">Vào lệnh: {{ "Cho phép" if operations_health.breaker.entry_allowed else "Bị chặn" }} · Lỗ ngày: {{ operations_health.loss_windows.realized_loss_today }} USDT</span>
-    </div>
-    {% endif %}
   </div>
 </section>
 
