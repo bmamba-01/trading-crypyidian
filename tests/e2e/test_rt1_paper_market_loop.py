@@ -15,6 +15,7 @@ import sys
 import time
 import uuid
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, cast
 
@@ -34,6 +35,8 @@ SERVICES = {
     "add_minutes": "migrator",
     "add_stop_bar": "migrator",
     "verify": "migrator",
+    "breaker": "trading-runtime",
+    "pause_resume": "migrator",
 }
 
 
@@ -165,13 +168,28 @@ def test_rest_candles_drive_paper_entry_fill_and_stop_exit_idempotently() -> Non
         assert rerun["ledger"] == closed["ledger"]
         assert run("verify") == final
 
+        # FX-2: ngắt mạch drawdown đo bằng role runtime trên ledger thật.
+        before = run("breaker")
+        assert before["baseline_at"] is None, before
+        assert Decimal(before["actual_peak"]) == Decimal(before["seed"]), before  # lệnh lỗ
+        assert before["actual_tripped"] is False, before
+        assert before["stressed_tripped"] is True, before  # vốn = 89% đỉnh ⇒ sụt 11%
+        resumed = run("pause_resume")
+        after = run("breaker")
+        assert after["baseline_at"] == resumed["resumed_at"], (after, resumed)
+        # Sau "Tiếp tục", đỉnh tính lại từ vốn đã chốt tại mốc (seed + lỗ đã chốt).
+        assert Decimal(after["actual_peak"]) == Decimal(before["seed"]) + Decimal(
+            before["realized"]
+        ), after
+        assert after["actual_tripped"] is False, after
+
         assert final["decisions"] == ["CANDIDATE"]
         assert final["intents"] == [
             {
                 "status": "FILLED",
                 "full": True,
                 "feature_snapshot_id_len": 64,
-                "context_provider": "rt1-postgres-paper-context-v1",
+                "context_provider": "rt1-postgres-paper-context-v2",
                 "has_bot_decision": True,
             }
         ]

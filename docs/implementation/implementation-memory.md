@@ -4112,3 +4112,35 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
   - E2E Compose `test_db_role_least_privilege.py` + `test_wp06_learning_incident_entry_hold_schema.py` (head mới) **2 passed/68.94s**; `test_wp07_market_signal_producer.py` (thêm phase `throttle` chạy bằng role signal-worker thật: duplicate → cooldown, trần 1 → cap, trần 2 → cho qua, constraint có SUPPRESSED) + `test_wp07_telegram_signal.py` (ACL kiểm SUPPRESSED): **2 passed/55.09s**.
   - Head đổi sang `c3e5a7b9d1f4` trong 15 file test.
 - **Còn mở:** trần theo chat xuyên bot, giờ yên lặng, đếm tin bị chặn trên Admin, reply cập nhật tin gốc.
+
+### 2026-11-15 — FX-2: cổng lỗ xấu nhất và ngắt mạch drawdown PAPER
+
+- **Yêu cầu của owner:** "ok" cho đề xuất làm nhóm "độ đúng giao dịch PAPER", bắt đầu từ lỗ ngày + circuit breaker.
+- **Quyết định owner (AskUserQuestion 15/11):** ngưỡng drawdown **10%** từ đỉnh; mở lại **bằng tay** bởi người duyệt.
+- **Kiểm kê trước khi code:**
+  - Runtime **đã** nạp lỗ ngày/rolling từ ledger từ RT-1 lát 2 (`paper_market_context._loss_windows`). Dòng "còn mở" trong status đã cũ.
+  - RiskEngine chỉ so lỗ **đã chốt** với ngưỡng.
+  - `CircuitBreakerEngine` chỉ chạy ở trang health admin, với telemetry giả (`events=[]`, drawdown 0, feed age 0), in-memory, không nối runtime.
+- **Thay đổi:**
+  - `RiskEngine`: sau check lỗ đã chốt, thêm `DAILY_LOSS_CAP_WOULD_BREACH`/`ROLLING_LOSS_CAP_WOULD_BREACH` khi lỗ đã chốt + `open_risk` (exposure mở + reservation đang giữ) + `plan.estimated_loss` > ngưỡng (FX-2 "tính cả rủi ro đang mở và rủi ro lệnh mới").
+  - `RiskState.drawdown_breaker_tripped` (mặc định False) → `CIRCUIT_BREAKER_DRAWDOWN`. Check đặt trước kiểm giá/khối lượng.
+  - Module mới `domain/risk/drawdown_breaker.py` (`fx2-drawdown-v1`):
+    - đỉnh = vốn đã chốt (seed + Σ net_pnl trade CLOSED) kể từ mốc;
+    - vốn hiện tại = vốn mark-to-market của ledger;
+    - ngắt khi `(đỉnh − hiện tại)/đỉnh ≥ 0,10`.
+  - **Mốc mở lại = bản ghi `ENABLED` mới nhất của bot trong `bot_runtime_control`** (append-only; resume đã bắt buộc quyền riêng + MFA gần đây + lý do + expected_revision). Owner mở lại bằng tạm dừng → tiếp tục. Không cần bảng hay grant mới; runtime role đọc được (E2E xác nhận).
+  - Context provider gọi `_drawdown_breaker`; thiếu seed thì `PAPER_EQUITY_UNKNOWN`. Evidence intent thêm `drawdown_*`; `CONTEXT_PROVIDER_VERSION` → `rt1-postgres-paper-context-v2`.
+- **Test:**
+  - Unit mới `tests/unit/test_fx2_loss_gate_and_drawdown_breaker.py`.
+  - `test_runtime_replay_evaluator::…rejects_cap` cũ fail vì check mới chặn trước (fixture lỗ ngày nhỏ hơn rủi ro 2 vị thế). Đây là hành vi mới đúng; nâng ngưỡng lỗ trong `capped_settings` để test vẫn kiểm trần vị thế.
+  - E2E RT-1 thêm phase `breaker` (role trading-runtime) và `pause_resume`:
+    - trước resume: baseline None, đỉnh = seed (lệnh lỗ), vốn 89% đỉnh ⇒ ngắt;
+    - sau resume: baseline = `changed_at` resume, đỉnh = seed + realized. **1 passed/292.57s**.
+  - Unit **4348 passed/130.42s**; ruff, format, mypy sạch.
+- **Nguồn:** Freqtrade MaxDrawdown protection (chế độ equity) https://www.freqtrade.io/en/stable/plugins/ — kiểm 15/11/2026. Investopedia chặn fetch tự động nên không dùng.
+- **Giới hạn / còn mở:**
+  - Replay/backtest chưa áp breaker.
+  - Cổng lỗ xấu nhất không tính gap vượt SL.
+  - Trang health admin vẫn dựng `CircuitBreakerEngine` với telemetry giả, cần nối số liệu ledger thật hoặc gỡ.
+  - UI bot detail chưa hiện trạng thái breaker/drawdown và hướng dẫn mở lại.
+  - Ledger local có 2 trade lãi sai (~+2,8 triệu USDT) nên cả đỉnh lẫn vốn hiện tại local bị thổi phồng: breaker local không ngắt, nhưng phải lỗ ~10% của số vốn ảo đó mới ngắt, tức gần như không bao giờ, cho tới khi owner quyết reset dữ liệu dev.

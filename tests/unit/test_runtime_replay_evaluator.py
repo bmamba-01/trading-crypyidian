@@ -492,6 +492,9 @@ def test_replay_account_state_counts_two_simultaneous_positions_and_risk_rejects
             context.planner_settings.limits,
             max_positions=1,
             max_aggregate_open_risk=Decimal("100000"),
+            # Nâng ngưỡng lỗ để test chỉ kiểm trần vị thế (FX-2 chặn lỗ xấu nhất ở bước trước).
+            max_daily_loss=Decimal("100000"),
+            max_rolling_loss=Decimal("100000"),
         ),
     )
     from trading_bot.domain.risk.engine import RiskEngine

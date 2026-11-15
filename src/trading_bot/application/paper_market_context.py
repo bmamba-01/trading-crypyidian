@@ -13,6 +13,9 @@
 - AccountSnapshot/RiskState: vốn từ `AccountEquityRepository.load_paper_equity_snapshot` (unknown
   → `PAPER_EQUITY_UNKNOWN`), lỗ ngày/trượt từ `calculate_loss_windows` (chính sách UTC đã ghim),
   exposure mở + reservation đang giữ như runtime thật.
+- Ngắt mạch drawdown (FX-2, v2): đỉnh vốn đã chốt kể từ lần "Tiếp tục" bot gần nhất trong
+  `bot_runtime_control` (resume cần MFA + lý do) so với vốn mark-to-market hiện tại; ≥ 10% thì
+  `RiskState.drawdown_breaker_tripped` và RiskEngine từ chối NEW_ENTRY (thoát lệnh không bị chặn).
 - CostModel không nằm ở đây: application dùng `ResolvedPaperExecutionProfile.cost_model`.
 - Monitor evidence: ATR (`atr_14`) của entry timeframe tính bằng `FeatureCalculator` từ nến đã
   đóng trước khi nến monitor mở; mức kênh/feature thoát cho recipe v2. `opposing_signal` luôn False
@@ -30,6 +33,7 @@ from uuid import UUID
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from trading_bot.adapters.database.models.bot_runtime_entities import BotRuntimeControlRecord
 from trading_bot.adapters.database.models.entities import TradingAccount
 from trading_bot.adapters.database.models.market_entities import MarketInstrument
 from trading_bot.adapters.database.models.paper_entities import OrderIntentRecord, TradeRecord
@@ -68,6 +72,11 @@ from trading_bot.application.strategy_market_requirements import (
 from trading_bot.application.workspace_risk import mark_policy_from
 from trading_bot.domain.market.feature_snapshot import FeatureCalculator
 from trading_bot.domain.market.models import MarketSnapshot, OHLCVBar
+from trading_bot.domain.risk.drawdown_breaker import (
+    ClosedTradePnl,
+    DrawdownBreakerState,
+    evaluate_drawdown_breaker,
+)
 from trading_bot.domain.risk.engine import RiskState
 from trading_bot.domain.risk.planner import (
     AccountSnapshot,
@@ -83,7 +92,7 @@ from trading_bot.domain.risk.risk_windows import (
 from trading_bot.domain.strategy.contracts import DecisionSnapshot
 from trading_bot.domain.strategy.rules_v2 import exit_evidence_spec
 
-CONTEXT_PROVIDER_VERSION = "rt1-postgres-paper-context-v1"
+CONTEXT_PROVIDER_VERSION = "rt1-postgres-paper-context-v2"  # v2: ngắt mạch drawdown FX-2
 INSTRUMENT_SOURCE = "BINANCE_USDM"
 # Trạng thái intent còn có thể khớp hoặc chưa rõ: account không được coi là phẳng.
 LIVE_INTENT_STATUSES = ("ACCEPTED", "PARTIALLY_FILLED", "UNKNOWN")
@@ -364,6 +373,13 @@ class PostgresPaperDecisionContextProvider:
             workspace_id=workspace_id, account_id=account.account_id, symbol=evidence.symbol
         )
         losses = await self._loss_windows(session, account, as_of=evaluated_at)
+        breaker = await self._drawdown_breaker(
+            session,
+            account,
+            as_of=evaluated_at,
+            equity=equity.equity_amount,
+            seed=equity.seed_capital,
+        )
         available_margin = max(Decimal("0"), equity.equity_amount - open_margin)
         workspace = str(workspace_id)
         version = str(published.settings_version_id)
@@ -408,6 +424,7 @@ class PostgresPaperDecisionContextProvider:
             pending_reservation_count=totals.count,
             pending_reservation_notional=totals.notional,
             pending_symbol_reservation_notional=totals.symbol_notional,
+            drawdown_breaker_tripped=breaker.tripped,
         )
         return PaperDecisionContext(
             snapshot=snapshot,
@@ -426,6 +443,7 @@ class PostgresPaperDecisionContextProvider:
                 "leverage_source": "effective_max_leverage",
                 "loss_window_timezone": losses.timezone_name,
                 "market_data_as_of": market_data_as_of.isoformat(),
+                **breaker.evidence(),
             },
         )
 
@@ -609,6 +627,51 @@ class PostgresPaperDecisionContextProvider:
             if closed_at is not None
         ]
         return calculate_loss_windows(events, as_of=as_of, policy=RISK_LOSS_WINDOW_POLICY)
+
+    async def _drawdown_breaker(
+        self,
+        session: AsyncSession,
+        account: Any,
+        *,
+        as_of: datetime,
+        equity: Decimal,
+        seed: Decimal | None,
+    ) -> DrawdownBreakerState:
+        """Đo drawdown từ ledger; thiếu seed thì fail-closed như vốn unknown."""
+        if seed is None or seed <= 0:
+            raise PaperRuntimeApplicationError("PAPER_EQUITY_UNKNOWN")
+        baseline_at = await session.scalar(
+            select(BotRuntimeControlRecord.changed_at)
+            .where(
+                BotRuntimeControlRecord.workspace_id == self._workspace_id,
+                BotRuntimeControlRecord.bot_id == account.bot_id,
+                BotRuntimeControlRecord.entry_state == "ENABLED",
+                BotRuntimeControlRecord.changed_at <= as_of,
+            )
+            .order_by(BotRuntimeControlRecord.changed_at.desc())
+            .limit(1)
+        )
+        rows = (
+            await session.execute(
+                select(TradeRecord.closed_at, TradeRecord.net_pnl).where(
+                    TradeRecord.workspace_id == self._workspace_id,
+                    TradeRecord.account_id == account.account_id,
+                    TradeRecord.status == "CLOSED",
+                    TradeRecord.closed_at <= as_of,
+                )
+            )
+        ).all()
+        trades = [
+            ClosedTradePnl(closed_at, Decimal(net_pnl))
+            for closed_at, net_pnl in rows
+            if closed_at is not None and net_pnl is not None
+        ]
+        return evaluate_drawdown_breaker(
+            seed_equity=seed,
+            closed_trades=trades,
+            current_equity=equity,
+            baseline_at=baseline_at,
+        )
 
     async def _feature_at(
         self,

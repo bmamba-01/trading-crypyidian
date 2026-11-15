@@ -573,6 +573,102 @@ async def mark_check() -> dict[str, Any]:
     }
 
 
+async def breaker() -> dict[str, Any]:
+    """FX-2: đo drawdown bằng role trading-runtime thật (đọc trade + bot_runtime_control)."""
+    from decimal import Decimal
+    from types import SimpleNamespace
+
+    from sqlalchemy import func, select
+
+    from trading_bot.adapters.database.repositories.account_equity import AccountEquityRepository
+    from trading_bot.adapters.database.repositories.workspace_settings import (
+        WorkspaceSettingsRepository,
+    )
+    from trading_bot.application.outbox import UnitOfWork
+    from trading_bot.application.paper_market_context import PostgresPaperDecisionContextProvider
+    from trading_bot.application.workspace_risk import mark_policy_from
+
+    engine, sessions = _sessions()
+    bot_id = UUID(STATE["bot_id"])
+    try:
+        async with UnitOfWork(sessions, workspace_id=WORKSPACE, bot_id=bot_id) as uow:
+            now = (await uow.session.scalar(select(func.clock_timestamp()))).astimezone(UTC)
+            published = await WorkspaceSettingsRepository(uow.session).load_effective_config(
+                workspace_id=WORKSPACE
+            )
+            equity = await AccountEquityRepository(uow.session).load_paper_equity_snapshot(
+                workspace_id=WORKSPACE,
+                bot_id=bot_id,
+                account_id=ACCOUNT,
+                as_of=now,
+                max_equity_age=timedelta(seconds=3600),
+                max_mark_age=timedelta(seconds=3600),
+                mark_policy=mark_policy_from(published.settings),
+            )
+            assert equity.known, equity.unknown_reason
+            assert equity.seed_capital is not None
+            provider = PostgresPaperDecisionContextProvider(sessions, workspace_id=WORKSPACE)
+            account = SimpleNamespace(account_id=ACCOUNT, bot_id=bot_id)
+            actual = await provider._drawdown_breaker(
+                uow.session,
+                account,
+                as_of=now,
+                equity=equity.equity_amount,
+                seed=equity.seed_capital,
+            )
+            stressed = await provider._drawdown_breaker(
+                uow.session,
+                account,
+                as_of=now,
+                equity=actual.peak_equity * Decimal("0.89"),
+                seed=equity.seed_capital,
+            )
+    finally:
+        await engine.dispose()
+    return {
+        "seed": str(equity.seed_capital),
+        "realized": str(equity.cumulative_realized_pnl),
+        "actual_peak": str(actual.peak_equity),
+        "actual_tripped": actual.tripped,
+        "stressed_tripped": stressed.tripped,
+        "baseline_at": actual.baseline_at.isoformat() if actual.baseline_at else None,
+    }
+
+
+def pause_resume() -> dict[str, Any]:
+    """Owner tạm dừng rồi tiếp tục bot (bản ghi append-only như luồng resume có MFA)."""
+    with _connect() as connection, connection.transaction():
+        bot_id = UUID(STATE["bot_id"])
+        latest = connection.execute(
+            "SELECT coalesce(max(revision), 0) FROM bot_runtime_control "
+            "WHERE workspace_id=%s AND bot_id=%s",
+            (WORKSPACE, bot_id),
+        ).fetchone()[0]
+        for offset, state_name, code in (
+            (1, "PAUSED", "OPERATOR_PAUSE"),
+            (2, "ENABLED", "OPERATOR_RESUME"),
+        ):
+            _insert(
+                connection,
+                "bot_runtime_control",
+                workspace_id=WORKSPACE,
+                bot_id=bot_id,
+                account_id=ACCOUNT,
+                revision=latest + offset,
+                entry_state=state_name,
+                reason_code=code,
+                reason_text="E2E FX-2: mở lại sau ngắt mạch drawdown",
+                changed_by=MEMBERSHIP,
+                correlation_id=uuid4(),
+            )
+        resumed_at = connection.execute(
+            "SELECT changed_at FROM bot_runtime_control WHERE workspace_id=%s AND bot_id=%s "
+            "AND revision=%s",
+            (WORKSPACE, bot_id, latest + 2),
+        ).fetchone()[0]
+    return {"resumed_at": resumed_at.astimezone(UTC).isoformat()}
+
+
 def add_minutes() -> dict[str, Any]:
     """Ba nến 1m bình thường bắt đầu ở phút tròn đầu tiên sau `evaluated_at + 5s` của candidate."""
     with _connect() as connection, connection.transaction():
@@ -698,6 +794,10 @@ elif phase == "runtime":
     output = asyncio.run(runtime())
 elif phase == "mark_check":
     output = asyncio.run(mark_check())
+elif phase == "breaker":
+    output = asyncio.run(breaker())
+elif phase == "pause_resume":
+    output = pause_resume()
 elif phase == "add_minutes":
     output = add_minutes()
 elif phase == "add_stop_bar":
