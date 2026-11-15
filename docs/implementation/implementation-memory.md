@@ -4032,3 +4032,19 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
   - Build lại image dùng chung, recreate: hai bot **READY**, `market_dispatch: running`, `discontinuities: 0`.
   - Compose E2E `test_multibot_runtime_restart.py` + `test_rt1_paper_market_loop.py` **2 passed/324.66s**.
 - **Còn mở:** hai trade có PnL sai từ sự cố vẫn trong ledger local (dữ liệu dev); 2 E2E `LEARNING_INCIDENT_HOLD_UNAVAILABLE` có sẵn chưa điều tra.
+
+### 2026-11-15 — Hai E2E runtime fail `LEARNING_INCIDENT_HOLD_UNAVAILABLE`: lỗi harness `SET ROLE`
+
+- **Yêu cầu của owner:** "Investigate failing E2Es".
+- **Test bị ảnh hưởng:** `tests/e2e/test_multibot_runtime_control.py::test_pause_kill_resume_permissions_exits_and_ruling_27_race` và `tests/e2e/test_workspace_risk_real_paths.py`. Cả hai fail giống hệt trên HEAD sạch, không do RT-1.
+- **Nguyên nhân gốc:**
+  - Phase race (`race`, `mb04_publish_race`) chạy trong container `migrator`, đăng nhập bằng `crypidian_admin` rồi `SET ROLE crypidian_trading_runtime` qua `-c role=`.
+  - Hàm `public.wp06_learning_incident_hold_active` (migration `f5b7d9e1a3c6`, 12/11) kiểm `session_user IN ('crypidian_trading_runtime','crypidian_admin_web')`. Với `SET ROLE`, `session_user` vẫn là `crypidian_admin`, nên hàm raise `WP06_INCIDENT_WORKSPACE_DENIED`, repository đổi thành `LearningIncidentHoldUnavailable`, entry gate báo `LEARNING_INCIDENT_HOLD_UNAVAILABLE`.
+  - Tái hiện trực tiếp trên PostgreSQL: `session_user=crypidian_admin`, `current_user=crypidian_trading_runtime`, rồi lỗi trên.
+  - Sản phẩm đúng: runtime thật đăng nhập bằng role của nó (stack local READY, E2E RT-1 chạy phase runtime trong container `trading-runtime` nên đạt).
+- **Sửa (chỉ harness test):**
+  - `tests/e2e/probes/multibot_runtime.py::_engine(role)` đăng nhập thật bằng role khi container có secret `/run/secrets/database_<role>_password`, nếu không mới `SET ROLE`.
+  - Hai phase race chạy trong service `db-provisioner` (đã mount secret của mọi role).
+  - Không đổi hàm DB: kiểm `session_user` là chủ ý để `SET ROLE` từ user khác không vượt được ranh giới.
+- **Kiểm chứng:** Compose E2E hai test **2 passed/85.96s**; ruff, format sạch.
+- **Còn mở:** các probe khác dùng `-c role=` (wp05/wp06/wp03) chưa gọi hàm này nên không bị ảnh hưởng hiện tại; `tests/e2e/test_db_role_least_privilege.py` vẫn fail vì owner 5 hàm SECURITY DEFINER WP06 (đã ghi trước, chưa xử lý).
