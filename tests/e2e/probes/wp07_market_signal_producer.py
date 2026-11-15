@@ -21,6 +21,7 @@ SUBSCRIPTION = UUID(STATE["subscription_id"])
 ACCOUNT = UUID(STATE["account_id"])
 ROOT_SETTINGS = UUID(STATE["root_settings_id"])
 RISK_PROFILE = UUID(STATE["risk_profile_id"])
+TG3_SIGNAL_WORKER_LEDGER_READS = frozenset({"fill", "position_event", "trade", "risk_reservation"})
 BOT_CONFIG = UUID(STATE["bot_config_id"])
 INSTRUMENT = UUID(STATE["instrument_id"])
 NOW = datetime.fromisoformat(STATE["now"]).astimezone(UTC)
@@ -675,10 +676,20 @@ def _verify() -> dict[str, Any]:
                         (role, table, privilege),
                     ).fetchone()[0], (role, table, privilege)
                     if privilege in ("SELECT", "INSERT", "UPDATE"):
-                        assert not connection.execute(
-                            "SELECT has_any_column_privilege(%s, %s, %s)",
-                            (role, table, privilege),
-                        ).fetchone()[0], (role, table, privilege)
+                        # TG-3 (migration d5f7b9c1e3a6): signal-worker chỉ được SELECT theo cột
+                        # trên ledger PAPER để dựng tin kết quả; mọi quyền ghi vẫn bị cấm.
+                        tg3_read = (
+                            role == "crypidian_signal_worker"
+                            and privilege == "SELECT"
+                            and table in TG3_SIGNAL_WORKER_LEDGER_READS
+                        )
+                        assert (
+                            connection.execute(
+                                "SELECT has_any_column_privilege(%s, %s, %s)",
+                                (role, table, privilege),
+                            ).fetchone()[0]
+                            is tg3_read
+                        ), (role, table, privilege)
         assert not connection.execute(
             "SELECT has_table_privilege('crypidian_signal_worker', 'market_bar', 'SELECT')"
         ).fetchone()[0]

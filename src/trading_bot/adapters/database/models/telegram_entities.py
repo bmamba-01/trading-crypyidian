@@ -242,6 +242,137 @@ class TelegramSignalDelivery(UuidPrimaryKey, CreatedAt, Base):
     last_error_code: Mapped[str | None] = mapped_column(String(120), nullable=True)
 
 
+class TelegramTradeNotification(UuidPrimaryKey, CreatedAt, Base):
+    """TG-3: delivery idempotent của một thông báo kết quả trade PAPER tới một subscription.
+
+    Khóa ``(workspace_id, subscription_id, trade_id, kind)`` bảo đảm mỗi sự kiện mở/đóng của một
+    trade chỉ có một hàng cho mỗi chat; chạy lại worker không tạo tin trùng. Không FK tới
+    ``trade`` để thao tác reset ledger PAPER dev không bị chặn (migration d5f7b9c1e3a6).
+    """
+
+    __tablename__ = "telegram_trade_notification"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "id", name="uq_telegram_trade_notification_workspace_id"),
+        UniqueConstraint(
+            "workspace_id",
+            "subscription_id",
+            "trade_id",
+            "kind",
+            name="uq_telegram_trade_notification_event",
+        ),
+        ForeignKeyConstraint(
+            ["workspace_id", "bot_id", "subscription_id"],
+            [
+                "telegram_signal_subscription.workspace_id",
+                "telegram_signal_subscription.bot_id",
+                "telegram_signal_subscription.id",
+            ],
+            ondelete="CASCADE",
+            name="fk_telegram_trade_notification_subscription",
+        ),
+        CheckConstraint(
+            "kind IN ('OPENED', 'CLOSED')", name="telegram_trade_notification_kind_valid"
+        ),
+        CheckConstraint(
+            "status IN ('PENDING', 'PROCESSING', 'SENT', 'DEAD', 'FILTERED')",
+            name="telegram_trade_notification_status_valid",
+        ),
+        CheckConstraint("attempts >= 0", name="telegram_trade_notification_attempts_nonnegative"),
+        CheckConstraint(
+            "(status = 'SENT') = (sent_at IS NOT NULL)",
+            name="telegram_trade_notification_sent_consistent",
+        ),
+        Index(
+            "ix_telegram_trade_notification_ready",
+            "workspace_id",
+            "bot_id",
+            "status",
+            "available_at",
+        ),
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    bot_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    subscription_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    trade_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="PENDING", server_default=text("'PENDING'")
+    )
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    available_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+    lease_owner: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(120), nullable=True)
+
+
+class TelegramPaperReportDelivery(UuidPrimaryKey, CreatedAt, Base):
+    """TG-3: delivery idempotent của tin tổng hợp PAPER định kỳ cho một chat trong một cửa sổ.
+
+    Khóa ``(workspace_id, telegram_chat_id, window_start)``: một chat nhận đúng một tin tổng hợp
+    cho mỗi cửa sổ, kể cả khi chat theo dõi nhiều bot hoặc worker khởi động lại.
+    """
+
+    __tablename__ = "telegram_paper_report_delivery"
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id", "id", name="uq_telegram_paper_report_delivery_workspace_id"
+        ),
+        UniqueConstraint(
+            "workspace_id",
+            "telegram_chat_id",
+            "window_start",
+            name="uq_telegram_paper_report_delivery_window",
+        ),
+        ForeignKeyConstraint(
+            ["workspace_id"],
+            ["workspace.id"],
+            ondelete="CASCADE",
+            name="fk_telegram_paper_report_delivery_workspace",
+        ),
+        CheckConstraint("telegram_chat_id > 0", name="telegram_paper_report_chat_id_positive"),
+        CheckConstraint("window_end > window_start", name="telegram_paper_report_window_valid"),
+        CheckConstraint(
+            "status IN ('PENDING', 'PROCESSING', 'SENT', 'DEAD', 'FILTERED')",
+            name="telegram_paper_report_status_valid",
+        ),
+        CheckConstraint("attempts >= 0", name="telegram_paper_report_attempts_nonnegative"),
+        CheckConstraint(
+            "(status = 'SENT') = (sent_at IS NOT NULL)",
+            name="telegram_paper_report_sent_consistent",
+        ),
+        Index(
+            "ix_telegram_paper_report_delivery_ready",
+            "workspace_id",
+            "status",
+            "available_at",
+        ),
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    telegram_chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    window_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    window_end: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="PENDING", server_default=text("'PENDING'")
+    )
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    available_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+    lease_owner: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(120), nullable=True)
+
+
 # Tên bí danh chuẩn hóa tương thích ngược
 TelegramSignalSubscriptionRecord = TelegramSignalSubscription
 TelegramSignalDeliveryRecord = TelegramSignalDelivery

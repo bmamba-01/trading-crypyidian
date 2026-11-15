@@ -91,6 +91,13 @@ class AppSettings(BaseSettings):
     # TG-2: chống spam theo subscription — cooldown tín hiệu trùng và trần số tin/60 phút.
     signal_worker_cooldown_minutes: int = Field(default=90, ge=0, le=1440)
     signal_worker_max_messages_per_hour: int = Field(default=6, ge=1, le=60)
+    # TG-3 (quyết định owner 15/11/2026): signal-worker gửi kết quả trade PAPER (mở/đóng) tới
+    # subscription đã bật và tin tổng hợp định kỳ. Chỉ đọc ledger PAPER, không phát lệnh.
+    telegram_trade_results_enabled: bool = True
+    # Chỉ báo sự kiện ghi trong khoảng này (tránh dội tin lịch sử khi mới bật/khởi động lại).
+    telegram_trade_result_max_age_minutes: int = Field(default=60, ge=1, le=1440)
+    # Chu kỳ tin tổng hợp so sánh các bot; 0 = tắt. Tối thiểu 15 phút để tránh spam.
+    telegram_report_interval_minutes: int = Field(default=240, ge=0, le=10_080)
 
     # Chính sách TEST scorer phải có version/hash giống hệt report và deployment được ghim.
     scorer_test_policy_version: str = Field(
@@ -249,6 +256,8 @@ class AppSettings(BaseSettings):
                 raise ValueError("signal-worker cần telegram_bot_token_file từ secret file.")
         elif self.signal_workspace_id is not None:
             raise ValueError("signal_workspace_id chỉ dành cho process_role signal-worker.")
+        if 0 < self.telegram_report_interval_minutes < 15:
+            raise ValueError("telegram_report_interval_minutes phải là 0 (tắt) hoặc ≥ 15 phút.")
         return self
 
     @model_validator(mode="after")

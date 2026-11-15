@@ -7,6 +7,7 @@ import logging
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
+from typing import Protocol
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -26,6 +27,14 @@ from trading_bot.application.telegram_signals import (
 from trading_bot.ports.telegram import TelegramMessageSender
 
 logger = logging.getLogger(__name__)
+
+
+class ChatPacerPort(Protocol):
+    """Giãn cách tin theo chat dùng chung giữa các worker (xem ``ChatPacer`` của TG-3)."""
+
+    async def wait(self, chat_id: int) -> None: ...
+
+    def mark_sent(self, chat_id: int) -> None: ...
 
 
 class TelegramSignalDeliveryWorker:
@@ -52,6 +61,7 @@ class TelegramSignalDeliveryWorker:
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         unit_of_work: Callable[..., UnitOfWork] = UnitOfWork,
         repository: Callable[[AsyncSession], TelegramSignalRepository] = TelegramSignalRepository,
+        pacer: ChatPacerPort | None = None,
     ) -> None:
         if not worker_id.strip() or not 0.1 <= tick_seconds <= 300:
             raise ValueError("Thông số Telegram signal worker không hợp lệ.")
@@ -73,6 +83,8 @@ class TelegramSignalDeliveryWorker:
         self._sleep = sleep
         self._unit_of_work = unit_of_work
         self._repository = repository
+        # TG-3: pacer dùng chung với worker kết quả PAPER để giãn cách tin mỗi chat ≥ 1,1 giây.
+        self._pacer = pacer
         self.last_tick_succeeded = False
         self.last_tick_at: datetime | None = None
         self.last_error_code: str | None = None
@@ -175,6 +187,8 @@ class TelegramSignalDeliveryWorker:
                 else:
                     await self._mark_sent(claim)
                     self._last_sent_by_chat[claim.chat_id] = self._now()
+                    if self._pacer is not None:
+                        self._pacer.mark_sent(claim.chat_id)
                     sent += 1
         return sent
 
@@ -249,6 +263,9 @@ class TelegramSignalDeliveryWorker:
             )
 
     async def _pace_chat(self, chat_id: int) -> None:
+        if self._pacer is not None:
+            await self._pacer.wait(chat_id)
+            return
         now = self._now()
         elapsed = (now - self._last_sent_by_chat[chat_id]).total_seconds()
         if elapsed < 1.1:

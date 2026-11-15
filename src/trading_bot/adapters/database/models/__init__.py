@@ -180,8 +180,10 @@ from trading_bot.adapters.database.models.strategy_card_entities import Strategy
 from trading_bot.adapters.database.models.telegram_entities import (
     TelegramBindingChallenge,
     TelegramLinkRequest,
+    TelegramPaperReportDelivery,
     TelegramSignalDelivery,
     TelegramSignalSubscription,
+    TelegramTradeNotification,
     TelegramUpdateReceipt,
 )
 from trading_bot.adapters.database.models.venue_entities import (
@@ -293,6 +295,8 @@ __all__ = [
     "TelegramBindingChallenge",
     "TelegramLinkRequest",
     "TelegramSignalDelivery",
+    "TelegramTradeNotification",
+    "TelegramPaperReportDelivery",
     "TelegramSignalSubscription",
     "TelegramUpdateReceipt",
     "TradingAccount",
