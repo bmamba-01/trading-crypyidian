@@ -530,8 +530,29 @@
     );
   };
 
+  // Thẻ tín hiệu (SIG-3): đường giá SL/mục tiêu và dải vùng vào; xoá rồi vẽ lại mỗi lần render.
+  let signalLines = [];
+  const drawSignal = (p) => {
+    for (const line of signalLines) candles.removePriceLine(line);
+    signalLines = [];
+    const card = p.signal_card;
+    if (!card || !layerOn("signal")) return;
+    const c = palette();
+    const add = (price, color, title, style) =>
+      signalLines.push(
+        candles.createPriceLine({ price, color, title, lineWidth: 1, lineStyle: style, axisLabelVisible: true })
+      );
+    add(card.stop, c.down, "SL", 0);
+    add(card.entry_zone.low, c.flat, "Vào", 2);
+    if (card.entry_zone.high !== card.entry_zone.low) add(card.entry_zone.high, c.flat, "Vào", 2);
+    for (const target of card.targets) {
+      add(target.price, target.source === "recipe" ? c.up : `${c.up}99`, target.source === "recipe" ? "TP" : `${target.r_multiple}R`, target.source === "recipe" ? 0 : 3);
+    }
+  };
+
   const applyLayers = () => {
     const p = payload;
+    drawSignal(p);
     ema20.applyOptions({ visible: layerOn("ema") });
     ema50.applyOptions({ visible: layerOn("ema") });
     vwap.applyOptions({ visible: layerOn("vwap") });

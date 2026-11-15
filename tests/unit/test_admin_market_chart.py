@@ -103,6 +103,72 @@ def test_payload_hides_sessions_on_4h_and_handles_empty() -> None:
     assert empty["notices"]
 
 
+SIGNAL_VIEW = {
+    "latest_decision": {
+        "decision_id": "d1",
+        "status": "ABSTAIN",
+        "reason_code": "H01_ADX_BELOW_20",
+        "detail_vi": "ADX14 1h phải đạt tối thiểu 20.",
+        "evaluated_at": "2026-11-16T10:00:00+00:00",
+        "strategy_release_id": "h01-v1",
+        "gate_details": [],
+        "checklist": [
+            {
+                "key": "adx",
+                "label_vi": "ADX14 1h đủ mạnh",
+                "actual": "12",
+                "operator": ">=",
+                "threshold": "20",
+                "passed": False,
+            },
+        ],
+    },
+    "card": {
+        "card_version": "sig3-card-v1",
+        "symbol": "BTCUSDT",
+        "direction": "short",
+        "strategy_id": "H06",
+        "strategy_release_id": "h06-v1",
+        "reason_code": "H06_SHORT_ENTRY",
+        "signal_at": "2026-11-16T09:00:00+00:00",
+        "expires_at": "2026-11-16T09:15:00+00:00",
+        "reference_price": 101.0,
+        "entry_zone": {"low": 100.9, "high": 101.0},
+        "stop": 104.0,
+        "risk_per_unit": 3.1,
+        "targets": [
+            {
+                "label": "Mốc 1R (tham chiếu)",
+                "price": 97.8,
+                "r_multiple": 1.0,
+                "source": "r_ladder",
+            },
+            {"label": "Mục tiêu recipe", "price": 97.0, "r_multiple": 1.26, "source": "recipe"},
+        ],
+        "plan_source": "approved_plan",
+        "checklist": [
+            {
+                "key": "extreme",
+                "label_vi": "Z20 và RSI14 cùng vượt ngưỡng",
+                "actual": "Z20 2.3",
+                "operator": "vượt",
+                "threshold": "Z > 2",
+                "passed": True,
+            },
+        ],
+        "checklist_passed": 1,
+        "checklist_total": 1,
+        "invalidation": ["Giá chạm SL 104 (dừng lỗ theo recipe/kế hoạch)."],
+        "confidence": {"tier": "uncalibrated", "label": "Chưa hiệu chuẩn"},
+        "decision_id": "d0",
+        "evaluated_at": "2026-11-16T09:00:01+00:00",
+        "is_expired": False,
+    },
+    "card_error": None,
+    "unverified_decisions": 0,
+}
+
+
 class _AdminService:
     def __init__(self) -> None:
         self.bots = [
@@ -140,6 +206,9 @@ class _Reporting:
         if self.error is not None:
             raise self.error
         return self.series
+
+    async def get_latest_signal(self, principal: Principal, *, bot_id: UUID) -> dict:
+        return SIGNAL_VIEW
 
     async def get_market_bars(self, principal: Principal, **kwargs: Any) -> list[dict]:
         self.calls.append(kwargs)
@@ -239,3 +308,15 @@ def test_chart_api_maps_report_permission_error_and_validates_input() -> None:
     assert client.get(f"{base}&symbol=BTC-USDT").status_code == 422
     assert client.get(f"{base}&symbol=BTCUSDT&limit=5").status_code == 422
     assert client.get(f"{base}&symbol=BTCUSDT&timeframe=2h").status_code == 422
+
+
+def test_chart_page_shows_signal_card_checklist_and_overlay_payload() -> None:
+    reporting = _Reporting(_bars(200, start=START, step=timedelta(minutes=5)))
+    html = _client(reporting).get("/admin/chart?timeframe=5m").text
+    assert "Thẻ tín hiệu gần nhất" in html
+    assert "BÁN" in html
+    assert "Chưa hiệu chuẩn" in html
+    assert "Quyết định mới nhất: không vào lệnh" in html
+    assert "H01_ADX_BELOW_20" in html
+    data = _embedded_payload(html)
+    assert data["signal_card"]["stop"] == 104.0

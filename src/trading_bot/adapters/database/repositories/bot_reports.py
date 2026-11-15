@@ -318,6 +318,41 @@ class BotReportRepository:
             for row in selected.values()
         ]
 
+    async def latest_bot_decisions(
+        self, *, workspace_id: UUID, bot_id: UUID, limit: int = 5
+    ) -> list[dict[str, Any]]:
+        """Các quyết định gần nhất của bot (payload + hash để tầng service xác minh) kèm kế hoạch
+        đã được risk gate duyệt của candidate (nếu có) — dùng cho thẻ tín hiệu SIG-3."""
+        rows = await self._scalars(
+            select(BotDecisionRecord)
+            .where(
+                BotDecisionRecord.workspace_id == workspace_id,
+                BotDecisionRecord.bot_id == bot_id,
+            )
+            .order_by(BotDecisionRecord.evaluated_at.desc(), BotDecisionRecord.created_at.desc())
+            .limit(limit)
+        )
+        candidate_ids = sorted({row.candidate_id for row in rows if row.candidate_id})
+        plans: dict[str, dict[str, Any]] = {}
+        if candidate_ids:
+            plan_rows = await self._scalars(
+                select(TradePlanRecord).where(
+                    TradePlanRecord.workspace_id == workspace_id,
+                    TradePlanRecord.bot_id == bot_id,
+                    TradePlanRecord.payload["candidate_id"].astext.in_(candidate_ids),
+                )
+            )
+            for plan in plan_rows:
+                plans[str(plan.payload.get("candidate_id"))] = dict(plan.payload)
+        return [
+            {
+                "payload": dict(row.payload),
+                "decision_hash": row.decision_hash,
+                "plan": plans.get(row.candidate_id or ""),
+            }
+            for row in rows
+        ]
+
     async def list_market_series(self, *, workspace_id: UUID, as_of: datetime) -> list[str]:
         """Các bộ ``SYMBOL|timeframe|source`` có nến đã đóng trong kho nội bộ của workspace."""
         rows = await self._session.execute(

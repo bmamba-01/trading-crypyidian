@@ -65,6 +65,72 @@ def _bars() -> list[dict[str, Any]]:
     return output
 
 
+SIGNAL_VIEW = {
+    "latest_decision": {
+        "decision_id": "d1",
+        "status": "ABSTAIN",
+        "reason_code": "H01_ADX_BELOW_20",
+        "detail_vi": "ADX14 1h phải đạt tối thiểu 20.",
+        "evaluated_at": "2026-11-16T10:00:00+00:00",
+        "strategy_release_id": "h01-v1",
+        "gate_details": [],
+        "checklist": [
+            {
+                "key": "adx",
+                "label_vi": "ADX14 1h đủ mạnh",
+                "actual": "12",
+                "operator": ">=",
+                "threshold": "20",
+                "passed": False,
+            },
+        ],
+    },
+    "card": {
+        "card_version": "sig3-card-v1",
+        "symbol": "BTCUSDT",
+        "direction": "short",
+        "strategy_id": "H06",
+        "strategy_release_id": "h06-v1",
+        "reason_code": "H06_SHORT_ENTRY",
+        "signal_at": "2026-11-16T09:00:00+00:00",
+        "expires_at": "2026-11-16T09:15:00+00:00",
+        "reference_price": 101.0,
+        "entry_zone": {"low": 100.9, "high": 101.0},
+        "stop": 104.0,
+        "risk_per_unit": 3.1,
+        "targets": [
+            {
+                "label": "Mốc 1R (tham chiếu)",
+                "price": 97.8,
+                "r_multiple": 1.0,
+                "source": "r_ladder",
+            },
+            {"label": "Mục tiêu recipe", "price": 97.0, "r_multiple": 1.26, "source": "recipe"},
+        ],
+        "plan_source": "approved_plan",
+        "checklist": [
+            {
+                "key": "extreme",
+                "label_vi": "Z20 và RSI14 cùng vượt ngưỡng",
+                "actual": "Z20 2.3",
+                "operator": "vượt",
+                "threshold": "Z > 2",
+                "passed": True,
+            },
+        ],
+        "checklist_passed": 1,
+        "checklist_total": 1,
+        "invalidation": ["Giá chạm SL 104 (dừng lỗ theo recipe/kế hoạch)."],
+        "confidence": {"tier": "uncalibrated", "label": "Chưa hiệu chuẩn"},
+        "decision_id": "d0",
+        "evaluated_at": "2026-11-16T09:00:01+00:00",
+        "is_expired": False,
+    },
+    "card_error": None,
+    "unverified_decisions": 0,
+}
+
+
 class _AdminService:
     async def list_bots(self, principal: Principal) -> list[dict[str, Any]]:
         return [
@@ -84,6 +150,9 @@ class _Reporting:
 
     async def list_market_series(self, principal: Principal, *, bot_id: UUID) -> dict:
         return {"BTCUSDT": ["5m"], "ETHUSDT": ["1h"]}
+
+    async def get_latest_signal(self, principal: Principal, *, bot_id: UUID) -> dict:
+        return SIGNAL_VIEW
 
     async def get_market_bars(self, principal: Principal, **kwargs: Any) -> list[dict]:
         self.calls += 1
@@ -173,6 +242,13 @@ def test_market_chart_renders_overlays_polls_and_is_responsive(server_url: str) 
         expect(page.locator(".mc-attribution a").first).to_have_attribute(
             "href", "https://www.tradingview.com/"
         )
+
+        # Thẻ tín hiệu SIG-3: hướng, SL, checklist và quyết định không vào lệnh gần nhất.
+        signal = page.locator("[data-signal-card]")
+        expect(signal).to_contain_text("BÁN")
+        expect(signal.locator(".sc-level--stop")).to_contain_text("104")
+        expect(signal.locator(".sc-check--fail").first).to_contain_text("ADX14")
+        expect(signal).to_contain_text("Chưa hiệu chuẩn")
 
         # Bật RSI/MACD → hai pane phụ hiện; lựa chọn được nhớ sau khi tải lại.
         expect(page.locator("#market-chart-rsi")).to_be_hidden()

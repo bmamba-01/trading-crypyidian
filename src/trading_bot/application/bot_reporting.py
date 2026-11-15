@@ -15,7 +15,7 @@ Quy tắc chính (WBS MB-06):
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
@@ -83,6 +83,68 @@ def preferred_market_source(sources: Sequence[str]) -> str:
         if source in sources:
             return source
     return sorted(sources)[0]
+
+
+def build_latest_signal_view(
+    rows: Sequence[Mapping[str, Any]], *, now: datetime | None = None
+) -> dict[str, Any]:
+    """Dựng dữ liệu thẻ tín hiệu; quyết định không qua kiểm hash bị bỏ (không hiển thị).
+
+    ``card.is_expired`` đúng khi đã qua ``expires_at`` của candidate: thẻ vẫn hiện để giải thích
+    nhưng không được vẽ lên chart như mức giá đang hiệu lực.
+    """
+    instant = now or datetime.now(UTC)
+    from trading_bot.application.bot_dispatcher import BotDecision
+    from trading_bot.domain.strategy.signal_card import SignalCardError, build_signal_card
+
+    verified: list[tuple[dict[str, Any], dict[str, Any] | None]] = []
+    rejected = 0
+    for row in rows:
+        try:
+            BotDecision.from_payload(row["payload"], row["decision_hash"])
+        except KeyError, TypeError, ValueError:
+            rejected += 1
+            continue
+        verified.append((dict(row["payload"]), row.get("plan")))
+
+    def summary(payload: Mapping[str, Any]) -> dict[str, Any]:
+        checklist = payload.get("checklist") or {}
+        return {
+            "decision_id": payload.get("decision_id"),
+            "status": payload.get("status"),
+            "reason_code": payload.get("reason_code"),
+            "detail_vi": payload.get("detail_vi"),
+            "evaluated_at": payload.get("evaluated_at"),
+            "strategy_release_id": payload.get("strategy_release_id"),
+            "gate_details": list(payload.get("gate_details") or []),
+            "checklist": list(checklist.get("items") or []),
+        }
+
+    latest = summary(verified[0][0]) if verified else None
+    card: dict[str, Any] | None = None
+    card_error: str | None = None
+    for payload, plan in verified:
+        candidate = payload.get("candidate")
+        if not candidate:
+            continue
+        checklist = (payload.get("checklist") or {}).get("items") or []
+        try:
+            card = build_signal_card(candidate, checklist=checklist, plan=plan)
+            card["decision_id"] = payload.get("decision_id")
+            card["evaluated_at"] = payload.get("evaluated_at")
+            try:
+                card["is_expired"] = datetime.fromisoformat(str(card["expires_at"])) <= instant
+            except ValueError:
+                card["is_expired"] = True
+        except SignalCardError as error:
+            card_error = str(error)
+        break
+    return {
+        "latest_decision": latest,
+        "card": card,
+        "card_error": card_error,
+        "unverified_decisions": rejected,
+    }
 
 
 class ReportScope(StrEnum):
@@ -301,6 +363,31 @@ class BotReportingService:
             "bars": bars,
             "notice": chart_notice,
         }
+
+    async def get_latest_signal(self, principal: Principal, *, bot_id: UUID) -> dict[str, Any]:
+        """Thẻ tín hiệu (SIG-3) từ quyết định CANDIDATE gần nhất đã xác minh hash, cùng quyết định
+        gần nhất (có thể là không vào lệnh) và checklist của nó. Kiểm ``REPORT_READ`` như báo cáo.
+        """
+        async with self._unit_of_work(
+            self._sessions,
+            workspace_id=principal.workspace_id,
+            bot_id=bot_id,
+            actor_membership_id=principal.membership_id,
+            snapshot_read_only=True,
+        ) as unit:
+            repository = self._repository(unit.session)
+            try:
+                await self._grants(unit.session).require(
+                    principal, bot_id=bot_id, permission=BotPermission.REPORT_READ
+                )
+            except PermissionError as error:
+                raise _not_found() from error
+            if await repository.get_bot(workspace_id=principal.workspace_id, bot_id=bot_id) is None:
+                raise _not_found()
+            rows: list[dict[str, Any]] = await repository.latest_bot_decisions(
+                workspace_id=principal.workspace_id, bot_id=bot_id, limit=20
+            )
+        return build_latest_signal_view(rows)
 
     async def list_market_series(
         self, principal: Principal, *, bot_id: UUID

@@ -2348,6 +2348,7 @@ async def market_chart_page(
     series: dict[str, list[str]] = {}
     selected_symbol: str | None = None
     payload: dict[str, Any] | None = None
+    signal_view: dict[str, Any] | None = None
     if selected is not None:
         service = _reporting_service(request)
         try:
@@ -2373,6 +2374,11 @@ async def market_chart_page(
                 payload = build_market_chart_payload(
                     symbol=selected_symbol, timeframe=timeframe, bars=bars
                 )
+            signal_view = await service.get_latest_signal(
+                identity.principal, bot_id=UUID(selected.id)
+            )
+            if payload is not None:
+                payload["signal_card"] = _card_for_symbol(signal_view, selected_symbol)
         except BotReportError as error:
             raise _report_http_error(error) from error
     return _templates(request).TemplateResponse(
@@ -2388,9 +2394,20 @@ async def market_chart_page(
             "timeframe": timeframe,
             "timeframes": list(MARKET_CHART_INTERVAL_SECONDS),
             "chart_payload": payload,
+            "signal_view": signal_view,
         },
         headers={"Cache-Control": "no-store"},
     )
+
+
+def _card_for_symbol(
+    signal_view: dict[str, Any] | None, symbol: str | None
+) -> dict[str, Any] | None:
+    """Chỉ vẽ thẻ lên chart khi tín hiệu cùng mã đang xem và còn hiệu lực."""
+    card: dict[str, Any] | None = (signal_view or {}).get("card")
+    if not card or card.get("symbol") != symbol or card.get("is_expired", True):
+        return None
+    return card
 
 
 @router.get("/api/chart")
@@ -2424,9 +2441,15 @@ async def market_chart_api(
     fingerprint = chart_fingerprint(chart_symbol, timeframe, bars)
     if fp is not None and fp == fingerprint:
         return {"status": "unchanged", "fingerprint": fingerprint}
-    return {"status": "ok"} | build_market_chart_payload(
-        symbol=chart_symbol, timeframe=timeframe, bars=bars
-    )
+    payload = build_market_chart_payload(symbol=chart_symbol, timeframe=timeframe, bars=bars)
+    try:
+        signal_view = await _reporting_service(request).get_latest_signal(
+            identity.principal, bot_id=bot_id
+        )
+    except BotReportError as error:
+        raise _report_http_error(error) from error
+    payload["signal_card"] = _card_for_symbol(signal_view, chart_symbol)
+    return {"status": "ok"} | payload
 
 
 @router.get("/api/strategy-cards")

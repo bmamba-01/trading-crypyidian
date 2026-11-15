@@ -3882,3 +3882,37 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
   - CVD đã có trong payload nhưng chart chưa có pane hiển thị.
   - Dữ liệu seed cũ `BINANCE_USDM` (giá phẳng) vẫn trong DB; chart đã ưu tiên nguồn REST nên không trộn.
   - Biến môi trường bật collector chỉ đặt khi chạy lệnh `docker compose up`; khởi động lại stack mà không đặt biến thì collector tắt (mặc định).
+
+### 2026-11-15 — SIG-3 lát 1: checklist có cấu trúc và thẻ tín hiệu (chỉ hiển thị)
+
+- **Yêu cầu của owner:** chọn "SIG-3 signal card".
+- **Khảo sát (sub-agent):**
+  - Chỉ kết luận rule được lưu (`bot_decision.payload`: candidate, `detail_vi`, `gate_details` dạng chuỗi). Không lưu giá trị điều kiện, net R:R hay chi phí.
+  - `TradePlan` một target. Không có hàm net R dùng chung.
+  - Telegram chưa có SL/TP.
+- **Quyết định thiết kế:**
+  - (1) Checklist ở module riêng `domain/strategy/checklists.py`, không sửa `rules.py`, vì `release_content_hash` băm toàn bộ mã nguồn module rules: sửa sẽ đổi hash mọi release đang ghim (vị thế/quyết định). Thay vào đó có test parity với rule.
+  - (2) `BotDecision.checklist_json` mặc định None, khóa `checklist` chỉ thêm vào payload khi có, nên hash quyết định cũ không đổi và schema giữ `crypidian-bot-decision-v1`.
+  - (3) Thẻ chỉ dựng từ dữ liệu đã lưu và đã xác minh hash (`BotDecision.from_payload`). Kế hoạch lấy từ `trade_plan.payload.candidate_id`.
+  - (4) R là bội số thô, ghi rõ. Không hiện % tin cậy khi chưa có SIG-6.
+  - (5) Thẻ hết hạn vẫn hiện để giải thích nhưng không vẽ lên chart. Lý do: DB local có candidate H03 seed ngày 14/11 giá ~101 trong khi nến thật ~65.000.
+- **File:**
+  - Mới: `domain/strategy/checklists.py`, `domain/strategy/signal_card.py`, `tests/unit/test_sig3_signal_card.py`.
+  - Sửa: `application/bot_dispatcher.py`, `application/bot_reporting.py` (`get_latest_signal`, `build_latest_signal_view`), `adapters/database/repositories/bot_reports.py` (`latest_bot_decisions`), `admin/web_router.py`, `templates/admin/market_chart.html`, `static/market-chart.js`, `static/pages/chart.css`, test chart unit/E2E.
+- **Lỗi/điều chỉnh:**
+  - Dòng điều kiện không đạt hiển thị "12 >= 20" đọc như mệnh đề sai, nên đổi thành "12 · cần >= 20".
+  - Mobile: lưới mức giá đổi sang 2 cột.
+  - Script chụp gặp 401 do dùng lại mã TOTP trong cùng cửa sổ (chống replay); chạy lại thì đạt.
+- **Kiểm chứng:**
+  - Unit `tests/unit` **4286 passed/121.94s**: parity 14 kịch bản, payload checklist round-trip hash, ABSTAIN giữ điều kiện fail, view bỏ hàng bị sửa, thẻ LONG/SHORT, thang giá sai phía bị chặn (ví dụ ảnh tham khảo), hết hạn không vẽ.
+  - Ruff, mypy (393 file), `node --check` đạt.
+  - Playwright `test_admin_market_chart_playwright.py` + `test_admin_trading_revamp_playwright.py` **4 passed/50.30s**.
+  - Compose E2E `test_multibot_decision.py` + `test_wp07_market_signal_producer.py` **2 passed/74.81s**: PostgreSQL nhận payload có `checklist`.
+  - Stack local: thẻ H03 từ dữ liệu seed hiển thị với kế hoạch đã duyệt; desktop/mobile không lỗi console.
+- **Còn mở:**
+  - Nhiều TP + chốt từng phần PAPER.
+  - `planner_bridge` giữ confidence/R:R.
+  - Net R:R từng mục tiêu.
+  - Thẻ trong Telegram.
+  - Checklist cho Strategy Card.
+  - Chưa có candidate thật từ dữ liệu Binance vì runtime chưa có market dispatch (RT-1).

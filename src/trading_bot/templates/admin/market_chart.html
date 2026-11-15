@@ -17,6 +17,7 @@
   ("structure", "Swing, BOS/CHoCH", true),
   ("trendlines", "Trendline", true),
   ("profile", "Volume profile", true),
+  ("signal", "Thẻ tín hiệu (SL/TP)", true),
   ("rsi", "RSI 14", false),
   ("macd", "MACD", false),
 ] %}
@@ -87,6 +88,65 @@
     <ul class="mc-notices" data-mc-notices>
       {% for notice in chart_payload.notices %}<li>{{ notice }}</li>{% endfor %}
     </ul>
+  </section>
+
+  {% set card = signal_view.card if signal_view else none %}
+  {% set latest = signal_view.latest_decision if signal_view else none %}
+  {%- macro price(value) -%}{{ value | number2_vi if value >= 1 else value | round(8) | number_vi }}{%- endmacro -%}
+  {%- macro check_rows(items) -%}
+  <ul class="sc-checklist">
+    {% for item in items %}
+    <li class="sc-check sc-check--{{ 'pass' if item.passed is sameas true else ('fail' if item.passed is sameas false else 'na') }}">
+      <span class="sc-check__mark" aria-hidden="true">{{ '✓' if item.passed is sameas true else ('✗' if item.passed is sameas false else '—') }}</span>
+      <span class="sc-check__label">{{ item.label_vi }}<span class="visually-hidden">: {{ 'đạt' if item.passed is sameas true else ('không đạt' if item.passed is sameas false else 'chưa xác định') }}</span></span>
+      <span class="sc-check__value">{{ item.actual }} <span class="sc-check__op">· cần {{ item.operator }}</span> {{ item.threshold }}</span>
+    </li>
+    {% endfor %}
+  </ul>
+  {%- endmacro -%}
+  <section class="glass-card sc-card" aria-labelledby="sc-title" data-signal-card>
+    <header class="sc-head">
+      <h2 id="sc-title">Thẻ tín hiệu gần nhất</h2>
+      <span class="badge badge-neutral">PAPER · không phải khuyến nghị đầu tư</span>
+    </header>
+    {% if card %}
+    <div class="sc-summary">
+      <span class="sc-direction sc-direction--{{ card.direction }}">{{ 'MUA' if card.direction == 'long' else 'BÁN' }}</span>
+      <span class="coin-tag" data-coin="{{ card.symbol }}">{{ card.symbol }}</span>
+      <span class="sc-meta">{{ card.strategy_release_id }} · tín hiệu {{ card.signal_at | local_minute }} · hết hạn {{ card.expires_at | local_minute }}</span>
+      <span class="badge badge-neutral" title="Chưa có mô hình hiệu chuẩn (SIG-6) nên không hiện phần trăm">Độ tin cậy: {{ card.confidence.label }}</span>
+      {% if card.is_expired %}<span class="badge badge-neutral sc-expired" data-signal-expired>Đã hết hạn — không vẽ lên chart</span>{% endif %}
+    </div>
+    <dl class="sc-levels">
+      <div class="sc-level"><dt>Vùng vào</dt><dd>{{ price(card.entry_zone.low) }}{% if card.entry_zone.high != card.entry_zone.low %} – {{ price(card.entry_zone.high) }}{% endif %}</dd></div>
+      <div class="sc-level sc-level--stop"><dt>Cắt lỗ (SL)</dt><dd>{{ price(card.stop) }}</dd></div>
+      {% for target in card.targets %}
+      <div class="sc-level sc-level--{{ 'recipe' if target.source == 'recipe' else 'ladder' }}"><dt>{{ target.label }}</dt><dd>{{ price(target.price) }} <span class="sc-r">{{ target.r_multiple | number2_vi }}R</span></dd></div>
+      {% endfor %}
+    </dl>
+    <p class="sc-note">{% if card.plan_source == 'approved_plan' %}Vùng vào, SL và mục tiêu recipe lấy từ kế hoạch đã qua risk gate.{% else %}Chưa có kế hoạch đã duyệt cho tín hiệu này: SL và mục tiêu tính từ recipe (giá tham chiếu ± ATR).{% endif %} R là bội số thô chưa trừ phí; planner chặn R:R ròng &lt; 1,0. Mốc 1R/2R/3R chỉ để tham chiếu, PAPER chưa chốt lời từng phần.</p>
+    <div class="sc-columns">
+      <div>
+        <h3>Điều kiện ({{ card.checklist_passed }}/{{ card.checklist_total }} đạt)</h3>
+        {% if card.checklist %}{{ check_rows(card.checklist) }}{% else %}<p class="sc-empty">Quyết định này được tạo trước khi có checklist (SIG-3); chỉ còn lý do: {{ card.reason_code }}.</p>{% endif %}
+      </div>
+      <div>
+        <h3>Mất hiệu lực khi</h3>
+        <ul class="sc-invalidation">{% for line in card.invalidation %}<li>{{ line }}</li>{% endfor %}</ul>
+      </div>
+    </div>
+    {% elif signal_view and signal_view.card_error %}
+    <p class="sc-empty" role="alert">Tín hiệu gần nhất có dữ liệu giá không hợp lệ nên không hiển thị: {{ signal_view.card_error }}</p>
+    {% else %}
+    <p class="sc-empty">Bot chưa có tín hiệu (candidate) nào trong các quyết định gần nhất.</p>
+    {% endif %}
+    {% if latest and latest.status != 'CANDIDATE' %}
+    <div class="sc-latest">
+      <h3>Quyết định mới nhất: không vào lệnh</h3>
+      <p><code>{{ latest.reason_code }}</code> — {{ latest.detail_vi }} <span class="sc-meta">({{ latest.evaluated_at | local_minute }})</span></p>
+      {% if latest.checklist %}{{ check_rows(latest.checklist) }}{% endif %}
+    </div>
+    {% endif %}
   </section>
 
   <section class="glass-card mc-events" aria-labelledby="mc-events-title">

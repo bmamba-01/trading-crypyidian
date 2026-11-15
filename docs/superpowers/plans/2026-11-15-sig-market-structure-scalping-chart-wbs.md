@@ -1,6 +1,6 @@
 # WBS SIG — Cấu trúc thị trường, thanh khoản phiên, áp lực mua/bán, scalping và chart kiểu TradingView
 
-**Ngày:** 2026-11-15 · **Trạng thái:** SIG-0 (phần lưu trữ), SIG-1 và SIG-7 đã triển khai lát đầu (15/11/2026); các gói khác là kế hoạch · **Chế độ:** PAPER/replay; chỉ dữ liệu thị trường công khai; không route order, không bật SHADOW/PAPER_GATE/Demo/LIVE. <br>
+**Ngày:** 2026-11-15 · **Trạng thái:** SIG-0 (lưu trữ + collector), SIG-1, SIG-3 (lát hiển thị) và SIG-7 đã triển khai lát đầu (15/11/2026); các gói khác là kế hoạch · **Chế độ:** PAPER/replay; chỉ dữ liệu thị trường công khai; không route order, không bật SHADOW/PAPER_GATE/Demo/LIVE. <br>
 **Nghiên cứu nền:** [đối chiếu tín hiệu, 3 chỉ báo, scalping, chart](../../research/signal-scalping-chart-research-2026-11-15.md). <br>
 **Mở rộng từ:** [khảo sát 14/11](./2026-11-14-feature-survey-and-manager-insights.md) (DATA-1, IND-1, IND-2, IND-4, MI-1, MI-6, TG-1), [kế hoạch công thức + Strategy Card](./2026-11-14-strategy-formula-and-card-readiness.md) (BT-1, SC-1), [WBS Trader Workbench](./2026-11-03-wp07-trader-workbench-wbs.md) (WB07A chart, WB07B Telegram), [WP-SC](./2026-11-05-wp-sc-strategy-card-wbs.md), [WP06](./2026-11-01-wp06-learning-wbs.md) (hiệu chuẩn).
 
@@ -83,6 +83,14 @@ Mọi feature có `formula_version`, chạy được tăng dần, và có `confi
 4. Sửa G6: `TradePlan` nhiều target; R:R ròng tính cho từng TP sau phí; PAPER monitor chốt từng phần + dời SL về hòa vốn sau TP1 (tùy recipe), ghi ledger từng phần.
 
 **Acceptance:** replay cùng dữ liệu cho cùng hash; partial exit reconcile với ledger; báo cáo và CSV dùng dữ liệu từng phần đúng.
+
+**Đã triển khai (15/11/2026, lát 1 — chỉ hiển thị, không đổi planner/ledger/thực thi):**
+- `domain/strategy/checklists.py` (`sig3-checklist-v1`): checklist có cấu trúc (key, nhãn, giá trị thực, phép so, ngưỡng, đạt/không/—) cho H01/H03/H06. Đặt **ngoài** `rules.py` vì `release_content_hash` băm mã nguồn module rules — sửa rules sẽ đổi danh tính mọi release đang ghim. Test parity: rule ra candidate ⇔ mọi điều kiện đạt (14 kịch bản).
+- `BotDecision.checklist_json` + khóa `checklist` trong payload quyết định (cả CANDIDATE lẫn ABSTAIN), chỉ thêm khi có giá trị nên hash quyết định cũ không đổi; lỗi checklist không làm hỏng quyết định của rule.
+- `domain/strategy/signal_card.py` (`sig3-card-v1`): vùng vào (tham chiếu → giá vào kế hoạch), SL, mục tiêu recipe + mốc 1R/2R/3R tham chiếu với R thô, mất hiệu lực từ recipe, độ tin cậy "Chưa hiệu chuẩn"; `validate_price_ladder` chặn SL/TP sai phía (ví dụ lệnh bán có TP3 trên vùng vào).
+- `BotReportingService.get_latest_signal` (REPORT_READ, bot tồn tại) đọc 20 quyết định gần nhất, chỉ dùng quyết định qua kiểm hash, ghép kế hoạch đã duyệt theo `candidate_id`; thẻ hết hạn được đánh dấu và không vẽ lên chart.
+- Trang `/admin/chart`: khối "Thẻ tín hiệu gần nhất" + "Quyết định mới nhất: không vào lệnh" kèm checklist; lớp "Thẻ tín hiệu (SL/TP)" vẽ đường giá SL/vào/TP khi tín hiệu cùng mã và còn hiệu lực.
+- **Chưa làm (lát sau):** `TradePlan` nhiều target và chốt từng phần trong PAPER (G6), giữ confidence/R:R/zone của card qua `planner_bridge` (G5), net R:R từng mục tiêu (cần tách công thức planner thành hàm dùng chung), thẻ trong tin Telegram (TG-1), checklist cho Strategy Card L0–L6.
 
 ### SIG-4 — Họ chiến lược scalping H18–H20 (mới; chỉ PAPER, `EXPERIMENTAL_UNVALIDATED`)
 
