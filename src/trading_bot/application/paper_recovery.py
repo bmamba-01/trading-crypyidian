@@ -203,9 +203,14 @@ def verify_paper_ledger_consistency(
             raise PaperRecoveryConflict("Position/trade costs không khớp fill và cost ledger.")
 
         expected_events: dict[str, tuple[str, Decimal]] = {}
+        # Các khối lượng vị thế từng mở (sau mỗi fill vào và mỗi lần giảm còn dương). Sự kiện dời
+        # stop ghi khối lượng đang mở tại thời điểm dời, nên phải khớp một trong các mức này —
+        # không phải khối lượng hiện tại: vị thế đã đóng có quantity 0 (lỗi phát hiện 15/11/2026).
+        open_quantities: set[Decimal] = set()
         cumulative = Decimal(0)
         for index, fill in enumerate(order_fills):
             cumulative += Decimal(fill["quantity"])
+            open_quantities.add(cumulative)
             expected_events[f"entry-fill:{fill['fill_id']}"] = (
                 "OPENED" if index == 0 else "INCREASED",
                 cumulative,
@@ -213,6 +218,8 @@ def verify_paper_ledger_consistency(
         remaining_after = entry_quantity
         for fill in exit_fills:
             remaining_after -= Decimal(fill["quantity"])
+            if remaining_after > 0:
+                open_quantities.add(remaining_after)
             expected_events[f"exit-fill:{fill['fill_id']}"] = (
                 "CLOSED" if remaining_after == 0 else "REDUCED",
                 remaining_after,
@@ -231,7 +238,12 @@ def verify_paper_ledger_consistency(
                 raise PaperRecoveryConflict("Position event quantity/type lệch fill ledger.")
         for event in stop_events.values():
             if (
-                event.quantity != Decimal(position["quantity"])
+                not stop_event_quantity_valid(
+                    event.quantity,
+                    open_quantities=open_quantities,
+                    current_quantity=Decimal(position["quantity"]),
+                    position_closed=bool(position.get("is_closed")),
+                )
                 or event.payload.get("bar_key") not in position["seen_bar_keys"]
                 or not event.payload.get("stop_price")
             ):
@@ -285,3 +297,22 @@ def _intent_lineage(intent: Any) -> dict[str, Any]:
     if isinstance(profile_hash, str) and profile_hash:
         lineage["paper_execution_profile_hash"] = profile_hash
     return lineage
+
+
+def stop_event_quantity_valid(
+    quantity: Decimal,
+    *,
+    open_quantities: set[Decimal],
+    current_quantity: Decimal,
+    position_closed: bool,
+) -> bool:
+    """Khối lượng của sự kiện dời stop có khớp một mức vị thế từng mở hay không.
+
+    Vị thế còn mở: chấp nhận mức hiện tại hoặc mức trước một lần giảm. Vị thế đã đóng
+    (quantity 0): chỉ chấp nhận mức từng mở > 0 — sự kiện dời stop không bao giờ có quantity 0.
+    """
+    if quantity <= 0:
+        return False
+    if not position_closed and quantity == current_quantity:
+        return True
+    return quantity in open_quantities

@@ -4015,3 +4015,20 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
   - `market_dispatch: running`, `discontinuities: 0`, không lỗi, không trade OPEN.
   - Bot Strategy Card READY.
   - Bot H03 `RECOVERY_REQUIRED` / `PAPER_RECOVERY_CONFLICT` từ 12:37 UTC (ngay sau sự cố), runtime chặn entry của bot này (fail-closed). Chưa điều tra; không sửa tay ledger.
+
+### 2026-11-15 — Điều tra H03 `PAPER_RECOVERY_CONFLICT`: lỗi đối soát STOP_UPDATED của vị thế đã đóng
+
+- **Yêu cầu của owner:** "Yes, investigate H03".
+- **Chẩn đoán (chỉ đọc):** chạy lại `PaperCheckpointRepository.verify_ledger_consistency` trong container runtime (cùng role DB/RLS, transaction rollback). Checkpoint revision 490 báo `STOP_UPDATED event không khớp position snapshot`.
+  - Vị thế `paper:…22c076cb…` đã đóng nên snapshot có `quantity 0.000`, nhưng 7 sự kiện STOP_UPDATED (trailing) ghi `quantity 21.76` lúc còn mở.
+  - `application/paper_recovery.py` so `event.quantity` với quantity **hiện tại**, nên mọi vị thế đã đóng từng dời trailing stop đều làm hydrate thất bại.
+  - Đây là lỗi tiềm ẩn từ WP-02E, lộ ra lần đầu khi runtime theo dõi nhiều nến có trailing rồi restart (sau sự cố bật RT-1).
+- **Sửa:**
+  - Thêm `stop_event_quantity_valid`: quantity của STOP_UPDATED phải > 0 và thuộc tập mức vị thế từng mở (sau mỗi fill vào, sau mỗi lần giảm còn dương); vị thế còn mở chấp nhận mức hiện tại. Không nới thành vô điều kiện: mức chưa từng mở hoặc 0 vẫn bị từ chối.
+  - Điều kiện `bar_key ∈ seen_bar_keys` giữ nguyên.
+- **Kiểm chứng:**
+  - Unit `tests/unit/test_paper_recovery_verifier.py` + `test_trade_ledger.py` **19 passed**; toàn bộ `tests/unit` **4319 passed/123.97s**; ruff, mypy sạch.
+  - Chẩn đoán với verifier đã sửa trên dữ liệu thật: **CONSISTENT**.
+  - Build lại image dùng chung, recreate: hai bot **READY**, `market_dispatch: running`, `discontinuities: 0`.
+  - Compose E2E `test_multibot_runtime_restart.py` + `test_rt1_paper_market_loop.py` **2 passed/324.66s**.
+- **Còn mở:** hai trade có PnL sai từ sự cố vẫn trong ledger local (dữ liệu dev); 2 E2E `LEARNING_INCIDENT_HOLD_UNAVAILABLE` có sẵn chưa điều tra.
