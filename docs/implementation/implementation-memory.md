@@ -3865,3 +3865,16 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Chưa chạy trong vòng này:** 11 tệp Compose E2E WP06 còn lại có ghim head; `test_db_role_least_privilege.py` (đã biết fail do owner 5 hàm SECURITY DEFINER của WP06); chưa xem giao diện bằng mắt trên trình duyệt sau merge.
 - **Còn mở sau merge:** nhánh `codex/wp06-runtime-resolver` (15 migration WP06, đang merge dở trong worktree riêng) phải nối lại trên head `d2e4f6a8b0c1`; các khoản nợ giao diện ghi ở mục revamp 14/11 (checklist trợ năng, tooltip vùng tổng, nền chế độ sáng, các trang chưa có).
 - **Readback:** đã đọc lại mục này, đối chiếu output lệnh; không có secret.
+
+
+### 2026-11-15 — Đồng bộ `operations_health` lên Dashboard UI kit v1 & sửa CSS tokens Dark Mode
+
+- **Bối cảnh:** Tích hợp sạch lên nền `origin/dev@8347e8b` (đã có UI kit v1 trên toàn bộ các trang Admin và nối sẵn `get_dashboard_reports` cho thống kê 30 ngày).
+- **Thay đổi thực hiện:**
+  - `src/trading_bot/admin/web_router.py`: trích xuất `_build_operations_health_data` dùng chung cho `dashboard()`, `dashboard_realtime()` và `operations_health()`, tránh trùng lặp logic và nối dữ liệu thật của `CircuitBreakerEngine` + `LossWindowSnapshot` xuống Dashboard.
+  - `src/trading_bot/templates/admin/dashboard.html`: bổ sung thẻ `.kpi-card--h` cho **Cầu dao rủi ro** (`#kpi-ops-health`, `#kpi-ops-health-sub`) đồng chuẩn UI kit v1.
+  - `src/trading_bot/static/admin.css`: thay thế 6 vùng màu nền/viền trắng hardcode (`#fff`, `#fff5d6`, `#c4cfda`) của Research Sources và Backtest Replays sang CSS tokens chuẩn (`--bg-surface`, `--border-main`, `--warning-bg`, `--warning-text`) để hiển thị đồng bộ trên cả Light & Dark Mode.
+- **Kiểm chứng:**
+  - `uv run ruff check` & `uv run ruff format --check` trên `web_router.py`: đạt.
+  - Admin unit tests (`test_admin_operations_health_and_csv.py`, `test_admin_mobile_ui.py`, `test_admin_realtime_api.py`, `test_admin_dashboard_ui.py`, `test_admin_reports_revamp.py`): **48 passed in 4.20s / 0 skipped**.
+  - Playwright & Health E2E (19 tests phủ Desktop & Mobile trên Dashboard, Reports, Bot Detail, Bot Pages UI kit Light/Dark, Strategy Cards, Microscope, Research Sources, Backtest Replays, Telegram Signals, Health): **19 passed in 90.58s / 0 skipped**.
