@@ -3965,3 +3965,13 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Còn mở:** checklist trợ năng thủ công (thêm 2 mục cho công tắc và multi-select); ô gõ tìm của multi-select xuống dòng dưới các mục đã chọn (cao hơn cần thiết nhưng không tràn); trang nguồn dữ liệu không có nguồn trên stack local nên công tắc mục đích/phạm vi chỉ được kiểm qua Playwright; 42 lỗi unit thoáng qua lượt trước chưa tái hiện được (3 lượt sau đều đạt).
 - **Compose E2E:** `test_admin_web_workflows.py` + `test_backtest_admin_ui.py` lượt 1 → **3 passed, 5 failed/574.28s**: cả 5 viewport dừng ở `get_by_label("Cấu hình bổ sung (JSON)").fill(...)` vì ô JSON nay nằm trong `<details>` "JSON nâng cao" thu gọn (thay đổi giao diện hợp lệ). Sửa test: tạo bản nháp bằng form ô chọn để mọi mục "Kế thừa" (overlay `{"schema_version": 1}` như trước), kiểm ô JSON đang ẩn, bấm nút "Tạo bản nháp" với `exact=True`. Đồng hồ host/Docker khớp (kiểm trước khi chạy). Lượt 2 → **8 passed/548.18s**, 0 skip.
 - **Readback:** đã đọc lại mục 15/11 về công tắc/ô chọn/multi-select, đối chiếu output; không có secret.
+
+### 2026-11-15 — Plan buồng lái biểu đồ (CK) từ hai app tham chiếu owner gửi
+
+- **Yêu cầu của owner:** quan sát kỹ hai ảnh (XAUUSD Research Desk trên MT5 kiểu ICT/VSA; app quét/auto crypto trên Bybit) để viết plan dựng chart đầy đủ thông tin và tìm tính năng, chỉ số, tín hiệu tương đồng có thể nối vào hệ thống.
+- **Sản phẩm:** `docs/superpowers/plans/2026-11-15-ck-chart-cockpit-reference-apps-wbs.md` — bảng phân tích từng vùng của hai ảnh, đối chiếu với `dev` và nhánh SIG, bố cục đích (desktop + mobile), WBS CK-0…CK-13, API, thứ tự, kiểm thử, 8 quyết định owner, rủi ro, nguồn. Glossary thêm mục **AC** (đặt AC vì nhánh SIG đã dùng nhãn AA và `dev` cũng có AA → xung đột khi merge, ghi ở CK-0).
+- **Phát hiện quan trọng:** nhánh `claude/project-progress-review-wp07-d70431` (8 commit hôm nay, chưa vào `dev`) đã có trang `/admin/chart`, cấu trúc/phiên/volume profile, checklist và thẻ tín hiệu (WBS SIG). Plan CK xây **trên** SIG, không làm lại; CK-0 là merge nhánh này trước.
+- **Không đưa vào:** đặt lệnh 1 chạm, AUTO TRADE REAL, số dư/IP tài khoản sàn, START/STOP 1 chạm, "độ tin cậy %" chưa hiệu chuẩn, nạp CSV dữ liệu ngoài.
+- **Nguồn:** tra web 15/11/2026 cho FVG/IFVG/BPR/OB, killzone/Silver Bullet/macro, TPO/nPOC, VSA, plugin vẽ Lightweight Charts. Đều là nhà cung cấp chỉ báo/trang đào tạo, không phải tài liệu gốc ICT hay sách Tom Williams; các nguồn mâu thuẫn ở giờ killzone NY AM và cách kích hoạt IFVG → plan chốt quy ước dự án và ghi rõ. "HoanLe VSA" và "Spike & Ledge" không tìm được định nghĩa kiểm chứng → không sao chép, cần owner mô tả.
+- **Chưa làm:** không code, không chạy test (chỉ tài liệu). Chưa commit.
+- **Readback:** đã đọc lại mục này; không có secret.

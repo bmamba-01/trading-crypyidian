@@ -694,3 +694,27 @@ Thuật ngữ dùng trong [`2026-11-14-feature-survey-and-manager-insights.md`](
 | Multi-select | Ô chọn nhiều | Danh sách chọn nhiều giá trị có ô gõ để lọc và nút bỏ từng mục; dùng cho bộ lọc tín hiệu Telegram và danh sách coin/khung thời gian trong cấu hình bot. Máy chủ chỉ nhận trường lặp ở các trường được khai báo là nhiều giá trị. | [Tom Select](https://tom-select.js.org/) 2.6.2 (tự host, Apache-2.0; nguồn ở `src/trading_bot/static/ASSET-SOURCES.md`) |
 | Preset choice | Mốc chọn sẵn | Giá trị cấu hình chọn từ danh sách mốc (vốn, tỷ lệ rủi ro, phí, trượt giá, giới hạn danh nghĩa) thay vì gõ tay; nhãn hiển thị phần trăm/số có ngăn nghìn, giá trị gửi lên vẫn là số thập phân và máy chủ vẫn kiểm giới hạn. | Định nghĩa nội bộ; `src/trading_bot/admin/form_choices.py` |
 | Inherit (overlay) | Kế thừa cấu hình gốc | Lựa chọn rỗng trong ô chọn của bản nháp cấu hình bot: trường đó không ghi vào overlay nên bot dùng giá trị của cấu hình gốc. | Định nghĩa nội bộ; lược đồ `BotConfigOverlay` |
+
+## AC. Buồng lái biểu đồ, ICT và VSA (kế hoạch CK, 15/11/2026)
+
+Định nghĩa ICT/VSA khác nhau giữa các nguồn; dự án dùng **quy ước cố định** ghi trong [WBS CK](../superpowers/plans/2026-11-15-ck-chart-cockpit-reference-apps-wbs.md). Nguồn bên dưới là nhà cung cấp chỉ báo/trang đào tạo, không phải tài liệu gốc.
+
+| Thuật ngữ | Bản dịch ưu tiên | Giải thích ngắn trong dự án | Tài liệu tham khảo |
+| --- | --- | --- | --- |
+| Killzone (ICT) | Khung giờ hoạt động mạnh | Cửa sổ giờ New York (đổi theo DST): Asia 20:00–00:00, London 02:00–05:00, NY AM 07:00–10:00, NY PM 13:30–16:00 theo quy ước dự án; nguồn khác dùng giờ khác. | [LuxAlgo — Killzones](https://www.luxalgo.com/library/concept/killzones/); [Backtrex](https://backtrex.com/en/blog/ict-killzone-session-times-complete-schedule) |
+| Silver Bullet / Macro (ICT) | Cửa sổ Silver Bullet / cửa sổ macro | Một giờ 03:00–04:00, 10:00–11:00, 14:00–15:00 giờ NY; macro là cửa sổ ngắn như 09:50–10:10. Chỉ dùng làm điều kiện thời điểm. | [LuxAlgo — Silver Bullet](https://www.luxalgo.com/library/concept/silver-bullet.md) |
+| Fair Value Gap (FVG) | Khoảng trống giá trị hợp lý | Ba nến liên tiếp có `low[t] > high[t−2]` (tăng) hoặc `high[t] < low[t−2]` (giảm); xác nhận khi nến t đóng. | [TradeZella](https://www.tradezella.com/learning-items/key-ict-concepts) |
+| Inverse FVG (IFVG) | FVG đảo vai trò | FVG bị giá **đóng cửa** xuyên qua và đổi chiều tác dụng (quy ước dự án; có nguồn dùng râu). | [TradingFinder BPR/FVG/IFVG](https://www.tradingview.com/script/UBIzzw2R-ICT-Balanced-Price-Range-TradingFinder-BPR-FVG-IFVG) |
+| Balanced Price Range (BPR) | Vùng giá cân bằng | Phần giao của hai FVG ngược chiều gần nhau; hướng theo FVG xuất hiện sau. | [LuxAlgo — BPR](https://www.luxalgo.com/library/concept/balanced-price-range/) |
+| Order block (OB) | Khối lệnh | Nến ngược chiều cuối cùng trước nhịp đi tạo BOS đã xác nhận; vô hiệu khi đóng cửa xuyên vùng. | [LuxAlgo — ICT Concepts](https://in.tradingview.com/script/ib4uqBJx-ICT-Concepts-LuxAlgo/) |
+| Premium / discount (position in range) | Vùng đắt / rẻ (vị trí trong biên) | (giá − đáy biên)/(đỉnh biên − đáy biên) × 100%, biên là cặp swing xác nhận gần nhất của khung chính; > 50% là vùng đắt. | Định nghĩa nội bộ |
+| ITH / ITL (intermediate-term high/low) | Đỉnh/đáy trung hạn | Swing được hai swing ngắn hạn hai bên xác nhận; dùng cho điều kiện BOS khung nhỏ. | Định nghĩa nội bộ theo cách dùng ICT |
+| Invalidation level | Mức vô hiệu xu hướng | Giá đóng cửa vượt mức này thì trạng thái xu hướng của khung đổi (đáy swing xác nhận gần nhất với xu hướng tăng). | Định nghĩa nội bộ |
+| TPO profile (Time Price Opportunity) | Hồ sơ giá theo thời gian | Mỗi khối 30 phút ghi các mức giá đã chạm; POC TPO là mức có nhiều khối nhất, Value Area ~70% số TPO; có thể khác volume POC. | [TradingView — TPO](https://in.tradingview.com/support/solutions/43000713306-time-price-opportunity-tpo-indicator/); [CQG — MPVA](https://help.cqg.com/cqgic/25/Documents/marketprofilevalueareasmpva.htm) |
+| Naked POC (nPOC) | POC chưa bị chạm lại | POC của phiên đã đóng mà giá chưa quay lại; xóa khi giá chạm. | [LuxAlgo — TPO levels/NPOC](https://www.luxalgo.com/library/indicator/e6y9zmfW-tpo-levels-with-poor-h-l-single-prints-npocs/) |
+| Volume Spread Analysis (VSA) | Phân tích khối lượng – độ rộng nến | Đọc cung/cầu từ độ rộng nến, giá đóng và volume (Tom Williams, dựa trên Wyckoff). Nhãn: không có cầu, không có cung, cao trào mua/bán, khối lượng chặn, upthrust, kiểm tra cung; ngưỡng theo phân vị, khóa trước backtest. | [LuxAlgo — VSA](https://www.luxalgo.com/library/concept/volume-spread-analysis.md); [LuxAlgo — No demand/No supply](https://www.luxalgo.com/library/concept/no-demand-no-supply-bars/) |
+| ZigZag (confirmed) | Đường ZigZag đã xác nhận | Nối các pivot đã xác nhận; đoạn cuối chưa chốt vẽ nét đứt để không "vẽ lại" quá khứ. | Định nghĩa nội bộ; `domain/strategy/geometry.py` |
+| HTF filter (block / warn) | Bộ lọc khung lớn (chặn / cảnh báo) | Chặn hoặc chỉ cảnh báo tín hiệu ngược xu hướng khung lớn. | Định nghĩa nội bộ |
+| Required vs bonus condition (k-of-n) | Điều kiện bắt buộc / cộng điểm (k trên n) | Setup đủ khi mọi điều kiện bắt buộc đạt và ít nhất k trên n điều kiện cộng điểm đạt. | Định nghĩa nội bộ |
+| Bid / ask / spread | Giá mua tốt nhất / giá bán tốt nhất / chênh lệch | Lấy từ stream `@bookTicker` (route `/public`) hoặc REST `ticker/bookTicker` của Binance USDⓈ-M. | [Binance USDⓈ-M market data](https://developers.binance.com/docs/derivatives/usds-margined-futures/market-data/rest-api) |
+
