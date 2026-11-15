@@ -33,3 +33,4 @@
     }
   });
 })();
+// Thanh độ phủ (`data-fill-percent`) do /static/pages/learning-ui.js đặt độ rộng qua CSSOM.

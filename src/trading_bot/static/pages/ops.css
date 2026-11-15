@@ -1,0 +1,422 @@
+/* ============================================================================
+   Nhóm trang Vận hành (2026-11-14): Đóng toàn bộ vị thế, Telegram, trang lỗi.
+   Theo chuẩn docs/design/admin-ui-kit.md (UI kit v1). Chỉ dùng token đã có trong
+   admin.css nên tự đổi theo giao diện sáng/tối. Không style nội tuyến (CSP).
+   Nạp qua {% block head_extra %} của từng template trong nhóm.
+   ============================================================================ */
+
+.ops-page {
+  display: grid;
+  gap: 1rem;
+  min-width: 0;
+  max-width: 82rem;
+}
+.ops-page > * { min-width: 0; }
+.ops-lead { margin: 0; max-width: 62rem; font-size: var(--fs-md); color: var(--text-muted); }
+.ops-hint { margin: 0; font-size: var(--fs-xs); line-height: 1.45; color: var(--text-muted); }
+
+/* Thẻ kính dùng chung trong nhóm trang. */
+.ops-card { min-width: 0; padding: 0.85rem 1rem 1rem; border-radius: 0.8rem; }
+.ops-card > h2,
+.ops-card__head > h2 {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0 0 0.65rem;
+  font-size: var(--fs-lg);
+  line-height: 1.3;
+}
+.ops-card > h2 .ico,
+.ops-card__head > h2 .ico { flex: 0 0 auto; font-size: 1.1rem; color: var(--text-muted); }
+.ops-card__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+  margin-bottom: 0.65rem;
+}
+.ops-card__head > h2 { margin: 0; }
+.ops-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr));
+  gap: 1rem;
+  align-items: start;
+}
+@media (min-width: 1100px) {
+  .ops-grid--form { grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); }
+}
+
+/* Chỉ báo bước (stepper) — "Bước 2/3" cho luồng đóng toàn bộ vị thế. */
+.ops-steps {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.ops-step {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  min-width: 0;
+  padding: 0.55rem 0.7rem;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: 0.8rem;
+}
+.ops-step__dot {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 1.9rem;
+  height: 1.9rem;
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  border: 2px solid var(--border-main);
+  border-radius: 999px;
+}
+.ops-step__dot .ico { font-size: 0.95rem; }
+.ops-step__text { display: grid; min-width: 0; line-height: 1.25; }
+.ops-step__title { font-weight: 600; color: inherit; }
+.ops-step__hint { font-size: var(--fs-2xs); color: var(--text-muted); }
+.ops-step--done { color: var(--text-main); }
+.ops-step--done .ops-step__dot { color: var(--success-text); background: var(--success-bg); border-color: var(--success); }
+.ops-step--current { color: var(--text-main); border-color: var(--primary); }
+.ops-step--current .ops-step__dot { color: var(--primary-contrast); background: var(--primary); border-color: var(--primary); }
+@media (max-width: 599.98px) {
+  .ops-steps { gap: 0.35rem; }
+  .ops-step { flex-direction: column; align-items: center; gap: 0.3rem; padding: 0.45rem 0.3rem; text-align: center; }
+  .ops-step__hint { display: none; }
+  .ops-step__title { font-size: var(--fs-xs); }
+}
+
+/* Khung cảnh báo: biểu tượng | (tiêu đề + nội dung). */
+.ops-callout {
+  display: grid;
+  grid-template-columns: 2.25rem minmax(0, 1fr);
+  align-items: start;
+  gap: 0.2rem 0.75rem;
+  min-width: 0;
+  padding: 0.8rem 1rem;
+  color: var(--text-main);
+  border: 1px solid var(--glass-border);
+  border-left-width: 4px;
+  border-radius: 0.8rem;
+  background: var(--glass-bg);
+}
+.ops-callout__icon {
+  display: inline-grid;
+  place-items: center;
+  width: 2.25rem;
+  height: 2.25rem;
+  font-size: 1.15rem;
+  border-radius: 0.65rem;
+  grid-row: span 2;
+}
+.ops-callout__title { margin: 0; font-size: var(--fs-md); font-weight: 700; line-height: 1.35; }
+.ops-callout__body { min-width: 0; font-size: var(--fs-sm); line-height: 1.5; }
+.ops-callout__body > p { margin: 0 0 0.35rem; }
+.ops-callout__body > p:last-child,
+.ops-callout__body > ul:last-child { margin-bottom: 0; }
+.ops-callout__body ul { margin: 0.25rem 0 0.35rem; padding-left: 1.1rem; }
+.ops-callout__body li { margin: 0.15rem 0; }
+.ops-callout--danger { background: var(--danger-bg); border-color: var(--danger); }
+.ops-callout--danger .ops-callout__icon { color: var(--danger-contrast); background: var(--danger); }
+.ops-callout--danger .ops-callout__title { color: var(--danger-text); }
+.ops-callout--warning { background: var(--warning-bg); border-color: var(--warning); }
+.ops-callout--warning .ops-callout__icon { color: #1f1300; background: var(--warning); }
+.ops-callout--warning .ops-callout__title { color: var(--warning-text); }
+.ops-callout--info { border-left-color: var(--primary); }
+.ops-callout--info .ops-callout__icon { color: #60a5fa; background: rgba(59, 130, 246, 0.14); }
+.ops-callout--success { background: var(--success-bg); border-color: var(--success); }
+.ops-callout--success .ops-callout__icon { color: #fff; background: var(--success); }
+.ops-callout--success .ops-callout__title { color: var(--success-text); }
+.ops-callout[hidden] { display: none; }
+
+/* Hàng nhãn–giá trị theo UI kit (.kv đã định nghĩa trong admin.css). */
+.ops-page dl.kv-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 16rem), 1fr));
+  gap: 0 1.5rem;
+  margin: 0;
+}
+.ops-page .kv dt .ico { color: var(--text-muted); }
+.ops-page .kv dd { display: inline-flex; align-items: center; justify-content: flex-end; gap: 0.35rem; }
+.ops-page .kv dd .badge { white-space: nowrap; }
+
+/* Dải số cho 3–4 chỉ số (ghi đè lưới 5 cột của dashboard). */
+.ops-page .stat-strip { grid-template-columns: repeat(auto-fit, minmax(min(100%, 10rem), 1fr)); margin: 0; }
+.ops-page .stat > .ico { color: var(--text-muted); }
+.ops-page .stat--danger > .ico { color: var(--danger); }
+.ops-page .stat--warning > .ico { color: var(--warning); }
+.ops-page .stat--ok > .ico { color: var(--success); }
+
+/* Chip trạng thái: huy hiệu + biểu tượng, chữ không ngắt. */
+.ops-chip { gap: 0.3rem; white-space: nowrap; font-size: var(--fs-xs); padding: 0.28rem 0.6rem; }
+main .ops-chip { white-space: nowrap; }
+.ops-chip .ico { font-size: 0.85rem; }
+.ops-chip[hidden] { display: none; }
+
+/* Đồng hồ đếm ngược hết hạn bản xem trước / mã liên kết. */
+.ops-countdown { font-variant-numeric: tabular-nums; font-weight: 700; white-space: nowrap; }
+.ops-countdown.is-urgent { color: var(--warning-text); }
+.ops-countdown.is-expired { color: var(--danger-text); }
+
+/* Mã băm/ID rút gọn: dùng .id-chip/.copy-btn của UI kit; chỉ chỉnh font cho mã dài. */
+.ops-page .id-chip code { font-size: var(--fs-xs); }
+.ops-page .trade-id { color: var(--text-main); }
+
+/* Biểu mẫu thao tác. */
+.ops-form { display: grid; gap: 0.45rem; min-width: 0; margin: 0; }
+.ops-form label { font-size: var(--fs-sm); font-weight: 600; color: var(--text-main); }
+.ops-form textarea { min-height: 6rem; resize: vertical; }
+.ops-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem 0.9rem;
+  margin-top: 0.35rem;
+}
+.ops-page .btn { gap: 0.45rem; }
+.ops-actions .btn .ico { font-size: 1.05rem; }
+.ops-link { display: inline-flex; align-items: center; gap: 0.35rem; min-height: 44px; font-weight: 600; }
+.ops-link .ico { font-size: 1rem; }
+.btn.btn-danger-outline {
+  color: var(--danger-text);
+  background: transparent;
+  border-color: var(--danger);
+}
+.btn.btn-danger-outline:hover { color: var(--danger-contrast); background: var(--danger); }
+.btn[disabled], .btn[aria-disabled="true"] { opacity: 0.6; cursor: not-allowed; }
+
+/* Hướng dẫn từng bước có số thứ tự tròn. */
+.ops-howto { display: grid; gap: 0.6rem; margin: 0; padding: 0; list-style: none; counter-reset: ops-howto; }
+.ops-howto > li {
+  display: grid;
+  grid-template-columns: 1.75rem minmax(0, 1fr);
+  align-items: start;
+  gap: 0.65rem;
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+  counter-increment: ops-howto;
+}
+.ops-howto > li::before {
+  content: counter(ops-howto);
+  display: inline-grid;
+  place-items: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  color: var(--text-main);
+  background: var(--bg-surface-subtle);
+  border: 1px solid var(--glass-border);
+  border-radius: 999px;
+}
+.ops-howto strong { color: var(--text-main); }
+
+/* Bảng mục bị ảnh hưởng: bảng gọn trên màn rộng, thẻ nhãn–giá trị trên di động. */
+.ops-table-wrap { min-width: 0; overflow-x: auto; border-radius: 0.8rem; }
+.ops-table { width: 100%; border-collapse: collapse; font-size: var(--fs-sm); }
+.ops-table caption {
+  padding: 0.7rem 0.85rem 0.45rem;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  text-align: left;
+  color: var(--text-muted);
+  caption-side: top;
+}
+.ops-table th {
+  padding: 0.45rem 0.75rem;
+  font-size: var(--fs-2xs);
+  font-weight: 600;
+  text-align: left;
+  white-space: nowrap;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--glass-border);
+}
+.ops-table td {
+  padding: 0.55rem 0.75rem;
+  vertical-align: middle;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.ops-table tbody tr:last-child td { border-bottom: 0; }
+.ops-table tbody tr:hover { background: var(--bg-surface-subtle); }
+.ops-table .num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.ops-table th.num { text-align: right; }
+.ops-table .ops-cell-code code { font-size: var(--fs-xs); color: var(--text-muted); white-space: nowrap; }
+.ops-table .ops-cell-empty { padding: 1rem 0.85rem; color: var(--text-muted); text-align: left; }
+.ops-table .ops-cell-sub { display: block; font-size: var(--fs-2xs); color: var(--text-muted); }
+.ops-error-code { display: inline-flex; align-items: center; gap: 0.25rem 0.4rem; flex-wrap: wrap; justify-content: flex-start; }
+.ops-card > .ops-callout { margin-bottom: 0.85rem; }
+.ops-error-code code { font-size: var(--fs-2xs); color: var(--danger-text); }
+@media (max-width: 767.98px) {
+  .ops-table thead { display: none; }
+  .ops-table, .ops-table tbody, .ops-table tr, .ops-table td { display: block; }
+  .ops-table caption { display: block; }
+  .ops-table tbody tr { padding: 0.6rem 0.85rem; border-bottom: 1px solid var(--border-subtle); }
+  .ops-table tbody tr:last-child { border-bottom: 0; }
+  .ops-table td {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    min-height: 2rem;
+    padding: 0.2rem 0;
+    border: 0;
+    text-align: right;
+  }
+  .ops-table td::before {
+    content: attr(data-label);
+    flex: 1 1 auto;
+    min-width: 0;
+    font-size: var(--fs-xs);
+    font-weight: 500;
+    color: var(--text-muted);
+    text-align: left;
+  }
+  .ops-table td.ops-cell-lead { padding-bottom: 0.35rem; }
+  .ops-table td.ops-cell-lead::before { content: none; }
+  .ops-table td.ops-cell-empty::before { content: none; }
+  .ops-table td.num { white-space: nowrap; }
+  /* Trạng thái có mã lỗi dài: nhãn cột một dòng riêng, nội dung căn phải bên dưới. */
+  .ops-table td.ops-cell-status--error { flex-wrap: wrap; }
+  .ops-table td.ops-cell-status--error::before { flex-basis: 100%; }
+  .ops-table td.ops-cell-status--error .ops-error-code { flex: 1 1 100%; justify-content: flex-end; text-align: right; }
+}
+
+/* Thanh tiến trình thao tác (phần tử <progress> gốc, có nhãn văn bản kèm theo). */
+.ops-progress { display: grid; gap: 0.45rem; margin: 0.75rem 0 0.25rem; }
+.ops-progress__label {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.25rem 1rem;
+  margin: 0;
+  font-size: var(--fs-sm);
+}
+.ops-progress + .kv-grid { margin-top: 0.5rem; }
+.ops-card .kv-grid + .ops-table-wrap { margin-top: 0.75rem; }
+.ops-progress__label strong { font-variant-numeric: tabular-nums; }
+.ops-progress__bar {
+  width: 100%;
+  height: 0.6rem;
+  overflow: hidden;
+  color: var(--success);
+  background: var(--bg-surface-subtle);
+  border: 0;
+  border-radius: 999px;
+  appearance: none;
+  -webkit-appearance: none;
+}
+.ops-progress__bar::-webkit-progress-bar { background: var(--bg-surface-subtle); border-radius: 999px; }
+.ops-progress__bar::-webkit-progress-value { background: var(--success); border-radius: 999px; }
+.ops-progress__bar::-moz-progress-bar { background: var(--success); border-radius: 999px; }
+.ops-progress__legend { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0; padding: 0; list-style: none; }
+
+/* Dòng trạng thái thao tác (#operation-status). */
+.ops-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  margin: 0;
+  font-size: var(--fs-md);
+}
+.ops-status__label { color: var(--text-muted); font-size: var(--fs-sm); }
+.ops-status .badge { font-size: var(--fs-sm); padding: 0.35rem 0.75rem; }
+.ops-poll {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 0.75rem;
+  margin: 0.5rem 0 0;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+.ops-poll .pulse-dot { flex: 0 0 auto; }
+
+/* Danh sách liên kết Telegram. */
+.ops-bindings { display: grid; gap: 0.75rem; margin: 0; padding: 0; list-style: none; }
+.ops-binding {
+  display: grid;
+  gap: 0.6rem;
+  min-width: 0;
+  padding: 0.75rem 0.85rem;
+  background: var(--bg-surface-subtle);
+  border: 1px solid var(--glass-border);
+  border-radius: 0.7rem;
+}
+.ops-binding__head { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem 0.6rem; min-width: 0; }
+.ops-binding__who { display: inline-flex; align-items: center; gap: 0.35rem; min-width: 0; font-size: var(--fs-sm); font-weight: 600; }
+.ops-binding__meta { margin-left: auto; font-size: var(--fs-xs); color: var(--text-muted); white-space: nowrap; }
+.ops-binding__form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.35rem 0.6rem;
+  margin: 0;
+}
+.ops-binding__form label { font-size: var(--fs-xs); font-weight: 600; color: var(--text-muted); }
+@media (min-width: 640px) {
+  .ops-binding__form { grid-template-columns: minmax(0, 1fr) auto; align-items: end; }
+  .ops-binding__form label { grid-column: 1 / -1; }
+}
+.ops-empty {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin: 0;
+  padding: 0.9rem 1rem;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  background: var(--bg-surface-subtle);
+  border: 1px dashed var(--glass-border);
+  border-radius: 0.7rem;
+}
+.ops-empty .ico { flex: 0 0 auto; font-size: 1.15rem; }
+
+/* Trang mã liên kết đã tạo. */
+.ops-deeplink { display: grid; gap: 0.75rem; }
+.ops-deeplink > p { margin: 0; }
+.ops-deeplink > p:not(.ops-hint) { font-size: var(--fs-sm); line-height: 1.5; }
+.ops-deeplink > h2 { margin-bottom: 0; }
+
+/* Trang lỗi gọn. */
+.ops-error { max-width: 44rem; }
+.ops-error__head { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
+.ops-error__icon {
+  display: inline-grid;
+  place-items: center;
+  width: 2.75rem;
+  height: 2.75rem;
+  font-size: 1.35rem;
+  border-radius: 0.8rem;
+  color: var(--danger-contrast);
+  background: var(--danger);
+}
+.ops-error__icon--warning { color: #1f1300; background: var(--warning); }
+.ops-error .error-summary {
+  flex: 1 1 16rem;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  color: var(--text-main);
+  background: none;
+  border: 0;
+}
+.ops-error .error-summary p { margin: 0; font-size: var(--fs-md); font-weight: 600; line-height: 1.4; }
+.ops-error__code { font-variant-numeric: tabular-nums; }
+.ops-error h2 { margin: 1rem 0 0.5rem; font-size: var(--fs-md); }
+.ops-error__note { margin: 0.75rem 0 0; font-size: var(--fs-sm); color: var(--text-muted); }
+
+@media (prefers-reduced-motion: reduce) {
+  .ops-progress__bar::-webkit-progress-value { transition: none; }
+}
+.ops-error .ops-actions { margin-top: 1rem; }
+.ops-card .kv-grid + .ops-hint { margin-top: 0.6rem; }

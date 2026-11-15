@@ -1,103 +1,167 @@
 {% extends "admin/base.html" %}
+{% from "admin/_learning_ui.html" import icon, chip, hash %}
 {% block title %}Registry mô hình | Crypidian{% endblock %}
 {% block head_extra %}
-  <link rel="stylesheet" href="/static/learning-model-registry.css">
+  <link rel="stylesheet" href="/static/pages/learning.css">
 {% endblock %}
 {% block heading %}Quản lý mô hình học{% endblock %}
 {% block content %}
-  <section class="learning-registry-notice" id="learning-registry" aria-label="Giới hạn vận hành"
+{%- set state_tones = {"draft": "neutral", "evaluated": "warning", "rejected": "danger", "paper_active": "success", "retired": "neutral"} -%}
+{%- set state_icons = {"draft": "file", "evaluated": "clock", "rejected": "x-circle", "paper_active": "check-circle", "retired": "pause"} -%}
+{%- set pending_count = entries | selectattr("entry.state.value", "equalto", "evaluated") | list | length -%}
+<div class="lx-page">
+  <section class="lx-notice learning-registry-notice" id="learning-registry" aria-label="Giới hạn vận hành"
     data-csrf-token="{{ csrf_token }}"
     data-pointer-version="{{ active_pointer.version }}"
     data-pointer-id="{{ active_pointer.registry_id or '' }}">
+    <span class="lx-notice__icon">{{ icon("shield") }}</span>
     <h2>Chế độ an toàn hiện tại</h2>
     <p><strong>Chưa nối bộ chấm điểm vào bot.</strong> Artifact hiện được đánh dấu chưa hiệu chỉnh; hệ thống giữ trạng thái ABSTAIN và trang này không thể gửi lệnh giao dịch.</p>
-    <dl class="learning-registry-pointer">
-      <div><dt>Con trỏ PAPER</dt><dd>{% if active_pointer.registry_id %}{{ active_pointer.registry_id }}{% else %}Chưa chọn mô hình{% endif %}</dd></div>
-      <div><dt>Phiên bản con trỏ</dt><dd>{{ active_pointer.version }}</dd></div>
-    </dl>
+    <p>Mọi thao tác ghi (đăng ký, duyệt, chọn cho PAPER, từ chối, ngừng, khôi phục) cần quyền quản lý và xác thực đa yếu tố (MFA) gần đây; máy chủ kiểm lại khi nhận yêu cầu.</p>
   </section>
 
-  <section aria-labelledby="learning-registry-register-heading">
-    <h2 id="learning-registry-register-heading">Đăng ký artifact</h2>
-    <p>Chỉ thêm metadata artifact bất biến vào registry. Cần quyền quản lý; thao tác duyệt và chọn PAPER yêu cầu MFA gần đây.</p>
-    <form class="learning-registry-register" id="learning-registry-register">
-      <div class="learning-registry-field">
+  <section class="lx-kpis" aria-label="Tóm tắt registry">
+    <div class="kpi-card kpi-card--h">
+      <span class="kpi-icon kpi-icon--blue">{{ icon("layers") }}</span>
+      <div class="kpi-body"><span class="kpi-value">{{ entries | length }}</span><span class="kpi-label">Phiên bản trong workspace</span></div>
+    </div>
+    <div class="kpi-card kpi-card--h">
+      <span class="kpi-icon kpi-icon--amber">{{ icon("clock") }}</span>
+      <div class="kpi-body"><span class="kpi-value">{{ pending_count }}</span><span class="kpi-label">Đã đánh giá, chờ quyết định</span></div>
+    </div>
+    <div class="kpi-card kpi-card--h">
+      <span class="kpi-icon kpi-icon--green">{{ icon("target") }}</span>
+      <div class="kpi-body">
+        <span class="kpi-value kpi-value--text">{% if active_pointer.registry_id %}<code class="lx-mono" title="{{ active_pointer.registry_id }}">{{ (active_pointer.registry_id | string)[:8] }}</code>{% else %}Chưa chọn mô hình{% endif %}</span>
+        <span class="kpi-label">Con trỏ PAPER</span>
+      </div>
+    </div>
+    <div class="kpi-card kpi-card--h">
+      <span class="kpi-icon kpi-icon--violet">{{ icon("hash") }}</span>
+      <div class="kpi-body"><span class="kpi-value">{{ active_pointer.version }}</span><span class="kpi-label">Phiên bản con trỏ</span></div>
+    </div>
+  </section>
+
+  <section class="glass-card lx-card lx-registry-register" aria-labelledby="learning-registry-register-heading">
+    <div class="lx-section-head">
+      <div>
+        <h2 id="learning-registry-register-heading">{{ icon("upload") }}Đăng ký artifact</h2>
+        <p>Chỉ thêm metadata artifact bất biến vào registry; không tải nội dung mô hình hay dữ liệu.</p>
+      </div>
+    </div>
+    <form class="lx-form learning-registry-register" id="learning-registry-register">
+      <div class="lx-field">
         <label for="artifact-id">Mã artifact</label>
-        <input id="artifact-id" name="artifact_id" value="{{ artifact_id or '' }}" autocomplete="off" required pattern="[0-9a-fA-F-]{36}" aria-describedby="artifact-id-help">
-        <small id="artifact-id-help">Dán UUID artifact đã hoàn tất huấn luyện.</small>
+        <input id="artifact-id" name="artifact_id" value="{{ artifact_id or '' }}" autocomplete="off" required pattern="[0-9a-fA-F-]{36}" aria-describedby="artifact-id-help" class="lx-mono">
+        <small id="artifact-id-help" class="lx-help">Dán UUID artifact đã hoàn tất huấn luyện.</small>
       </div>
-      <div class="learning-registry-field learning-registry-field--wide">
+      <div class="lx-field">
         <label for="register-reason">Lý do đăng ký</label>
-        <textarea id="register-reason" name="reason" minlength="12" maxlength="500" required></textarea>
+        <textarea id="register-reason" name="reason" minlength="12" maxlength="500" required aria-describedby="register-reason-help"></textarea>
+        <small id="register-reason-help" class="lx-help">12–500 ký tự, lưu cùng sự kiện quản trị.</small>
       </div>
-      <button type="submit">Đăng ký artifact</button>
+      <div class="lx-field">
+        <button type="submit" class="btn btn-primary">{{ icon("upload") }}Đăng ký artifact</button>
+        <small class="lx-help" aria-hidden="true">&nbsp;</small>
+      </div>
     </form>
   </section>
 
-  <section aria-labelledby="learning-registry-entries-heading">
-    <div class="learning-registry-heading">
+  <section class="lx-stack" aria-labelledby="learning-registry-entries-heading">
+    <div class="lx-section-head">
       <div>
-        <h2 id="learning-registry-entries-heading">Các phiên bản trong workspace</h2>
-        <p>Danh sách chỉ hiển thị hash và thông tin quản trị; không hiển thị feature, nhãn hoặc dữ liệu holdout.</p>
+        <h2 id="learning-registry-entries-heading">{{ icon("layers") }}Các phiên bản trong workspace</h2>
+        <p>Chỉ hiển thị hash và thông tin quản trị; không hiển thị feature, nhãn hoặc dữ liệu holdout.</p>
       </div>
-      <a href="/admin/learning/models">Tải lại danh sách</a>
+      <a class="lx-link" href="/admin/learning/models">{{ icon("refresh") }}Tải lại danh sách</a>
     </div>
-    <p id="learning-registry-status" role="status" aria-live="polite">{{ entries|length }} phiên bản mô hình.</p>
+    <p id="learning-registry-status" class="lx-status" role="status" aria-live="polite">{{ entries|length }} phiên bản mô hình.</p>
     {% if entries %}
-      <div class="learning-registry-list">
+      <div class="lx-stack learning-registry-list">
         {% for item in entries %}
           {% set entry = item.entry %}
-          <article class="learning-registry-card" data-registry-id="{{ entry.id }}" data-revision="{{ entry.revision }}">
-            <header>
-              <div><h3>{{ item.state_label }}</h3><p>Phiên bản {{ entry.revision }} · tạo {{ entry.created_at.strftime('%d/%m/%Y %H:%M UTC') }}</p></div>
-              <span class="learning-registry-state learning-registry-state--{{ entry.state.value }}">{{ item.state_label }}</span>
+          {% set state = entry.state.value %}
+          {% set history = events_by_entry[entry.id] %}
+          {% set approved = history | selectattr("event.action.value", "equalto", "approve") | list | length > 0 %}
+          {% set was_active = history | selectattr("event.to_state.value", "equalto", "paper_active") | list | length > 0 %}
+          <article class="glass-card lx-card learning-registry-card" data-registry-id="{{ entry.id }}" data-revision="{{ entry.revision }}">
+            <header class="lx-card__head">
+              <div class="lx-card__title">
+                <h3>{{ item.state_label }}</h3>
+                <p class="lx-meta"><span>Phiên bản {{ entry.revision }} · tạo {{ entry.created_at.strftime('%d/%m/%Y %H:%M UTC') }}</span></p>
+              </div>
+              <div class="lx-card__chips">
+                <span class="learning-registry-state learning-registry-state--{{ state }}">{{ chip(item.state_label, state_tones.get(state, "neutral"), state_icons.get(state, "info")) }}</span>
+                {% if approved %}{{ chip("Đã có phê duyệt", "success", "check") }}{% endif %}
+                {% if active_pointer.registry_id and active_pointer.registry_id == entry.id %}{{ chip("Đang được con trỏ chọn", "paper", "target") }}{% endif %}
+              </div>
             </header>
-            <dl class="learning-registry-metadata">
-              <div><dt>Mã registry</dt><dd>{{ entry.id }}</dd></div>
-              <div><dt>Mã artifact</dt><dd>{{ entry.artifact_id }}</dd></div>
-              <div><dt>Hash artifact</dt><dd><code>{{ entry.artifact_hash[:16] }}…</code></dd></div>
-              <div><dt>Hash manifest</dt><dd><code>{{ entry.manifest_hash[:16] }}…</code></dd></div>
-              <div><dt>Hash fold plan</dt><dd><code>{{ entry.fold_plan_hash[:16] }}…</code></dd></div>
-              <div><dt>Báo cáo đánh giá</dt><dd>{% if entry.evaluation_report_id %}{{ entry.evaluation_report_id }}{% else %}Chưa gắn{% endif %}</dd></div>
+            <dl class="kv-grid learning-registry-metadata">
+              <div class="kv"><dt>{{ icon("hash") }}Mã registry</dt><dd class="kv-hash">{{ hash(entry.id, "mã registry") }}</dd></div>
+              <div class="kv"><dt>{{ icon("file") }}Mã artifact</dt><dd class="kv-hash">{{ hash(entry.artifact_id, "mã artifact") }}</dd></div>
+              <div class="kv"><dt>{{ icon("key") }}Hash artifact</dt><dd class="kv-hash">{{ hash(entry.artifact_hash, "hash artifact") }}</dd></div>
+              <div class="kv"><dt>{{ icon("list") }}Hash manifest</dt><dd class="kv-hash">{{ hash(entry.manifest_hash, "hash manifest") }}</dd></div>
+              <div class="kv"><dt>{{ icon("branch") }}Hash fold plan</dt><dd class="kv-hash">{{ hash(entry.fold_plan_hash, "hash fold plan") }}</dd></div>
+              <div class="kv"><dt>{{ icon("chart") }}Báo cáo đánh giá</dt><dd{% if entry.evaluation_report_id %} class="kv-hash"{% endif %}>{% if entry.evaluation_report_id %}{{ hash(entry.evaluation_report_id, "mã báo cáo đánh giá") }}{% else %}<span class="value-muted">Chưa gắn</span>{% endif %}</dd></div>
             </dl>
+
             <section class="learning-registry-history" aria-labelledby="history-{{ entry.id }}">
-              <h3 id="history-{{ entry.id }}">Lịch sử thay đổi</h3>
-              <p>Chỉ đọc thông tin quản trị theo workspace hiện tại, theo thứ tự ghi nhận.</p>
-              {% for item in events_by_entry[entry.id] %}
-                {% set event = item.event %}
-                <article class="learning-registry-card">
-                  <h4>{{ event.sequence }} · {{ item.action_label }}</h4>
-                  <p>{{ item.from_label }} → {{ item.to_label }}</p>
-                  <dl class="learning-registry-metadata">
-                    <div><dt>Người thực hiện (mã thành viên)</dt><dd>{{ event.actor_membership_id }}</dd></div>
-                    <div><dt>Thời điểm ghi nhận</dt><dd><time datetime="{{ event.created_at.isoformat() }}">{{ event.created_at.strftime('%d/%m/%Y %H:%M UTC') }}</time></dd></div>
-                    <div><dt>Mã lý do</dt><dd>{{ event.reason_code }}</dd></div>
-                    <div><dt>Xác thực đa yếu tố (MFA)</dt><dd>{% if event.mfa_verified_at %}Đã xác thực MFA · {{ event.mfa_verified_at.strftime('%d/%m/%Y %H:%M UTC') }}{% else %}Chưa xác thực MFA{% endif %}</dd></div>
-                  </dl>
-                  <p><strong>Lý do:</strong> {{ event.reason }}</p>
-                </article>
+              <h4 id="history-{{ entry.id }}">{{ icon("clock") }}Lịch sử thay đổi</h4>
+              <p class="lx-help">Chỉ đọc thông tin quản trị theo workspace hiện tại, theo thứ tự ghi nhận.</p>
+              {% if history %}
+                <ol class="lx-timeline">
+                  {% for log in history %}
+                    {% set event = log.event %}
+                    <li>
+                      <div class="lx-timeline__head">
+                        <strong>{{ event.sequence }} · {{ log.action_label }}</strong>
+                        <span class="lx-meta"><time datetime="{{ event.created_at.isoformat() }}">{{ event.created_at.strftime('%d/%m/%Y %H:%M UTC') }}</time></span>
+                      </div>
+                      <p class="lx-meta"><span>{{ log.from_label }} → {{ log.to_label }}</span></p>
+                      <dl class="kv-grid learning-registry-metadata">
+                        <div class="kv"><dt>{{ icon("user") }}Người thực hiện (mã thành viên)</dt><dd class="kv-hash">{{ hash(event.actor_membership_id, "mã thành viên") }}</dd></div>
+                        <div class="kv"><dt>{{ icon("hash") }}Mã lý do</dt><dd><code class="lx-mono">{{ event.reason_code }}</code></dd></div>
+                        <div class="kv kv--text"><dt>{{ icon("shield") }}Xác thực đa yếu tố (MFA)</dt><dd>{% if event.mfa_verified_at %}{{ chip("Đã xác thực MFA · " ~ event.mfa_verified_at.strftime('%d/%m/%Y %H:%M UTC'), "success", "check") }}{% else %}{{ chip("Chưa xác thực MFA", "neutral", "minus") }}{% endif %}</dd></div>
+                      </dl>
+                      <p class="lx-timeline__reason"><strong>Lý do:</strong> {{ event.reason }}</p>
+                    </li>
+                  {% endfor %}
+                </ol>
               {% else %}
-                <p>Chưa có sự kiện trong lịch sử.</p>
-              {% endfor %}
+                <p class="lx-empty">{{ icon("info") }}Chưa có sự kiện trong lịch sử.</p>
+              {% endif %}
             </section>
-            <details class="learning-registry-actions">
-              <summary>Thao tác quản trị</summary>
-              <label for="reason-{{ entry.id }}">Lý do thao tác</label>
-              <textarea id="reason-{{ entry.id }}" data-action-reason minlength="12" maxlength="500" placeholder="Ghi rõ căn cứ và quyết định" required></textarea>
-              <div class="learning-registry-buttons">
-                {% if entry.state.value == 'evaluated' %}
-                  <button type="button" data-action="approve">Duyệt mô hình</button>
-                  <button type="button" data-action="activate">Chọn cho PAPER</button>
-                  <button type="button" class="button-secondary" data-action="reject">Từ chối</button>
-                {% elif entry.state.value == 'draft' %}
-                  <button type="button" class="button-secondary" data-action="reject">Từ chối</button>
-                {% elif entry.state.value == 'retired' %}
-                  <button type="button" data-action="rollback">Khôi phục PAPER</button>
-                {% elif entry.state.value != 'paper_active' %}
-                  <button type="button" class="button-secondary" data-action="retire">Ngừng sử dụng</button>
-                {% endif %}
-                {% if entry.state.value != 'paper_active' and entry.state.value != 'retired' %}
-                  <button type="button" class="button-secondary" data-action="retire">Ngừng sử dụng</button>
+
+            <details class="glass-card lx-details learning-registry-actions">
+              <summary>{{ icon("key") }}Thao tác quản trị</summary>
+              <div class="lx-details__body lx-form">
+                <div class="lx-field">
+                  <label for="reason-{{ entry.id }}">Lý do thao tác</label>
+                  <textarea id="reason-{{ entry.id }}" data-action-reason minlength="12" maxlength="500" placeholder="Ghi rõ căn cứ và quyết định" required aria-describedby="reason-help-{{ entry.id }}"></textarea>
+                  <small id="reason-help-{{ entry.id }}" class="lx-help">12–500 ký tự (không tính khoảng trắng đầu/cuối). Thao tác cần MFA gần đây.</small>
+                </div>
+                <div class="lx-actions-buttons learning-registry-buttons">
+                  {% if state == 'evaluated' %}
+                    <button type="button" class="btn btn-outline" data-action="approve">{{ icon("check") }}Duyệt mô hình</button>
+                    {% if approved %}
+                      <button type="button" class="btn btn-primary" data-action="activate">{{ icon("target") }}Chọn cho PAPER</button>
+                    {% endif %}
+                    <button type="button" class="btn btn-secondary" data-action="reject">{{ icon("x-circle") }}Từ chối</button>
+                  {% elif state == 'draft' %}
+                    <button type="button" class="btn btn-secondary" data-action="reject">{{ icon("x-circle") }}Từ chối</button>
+                  {% elif state == 'retired' and approved and was_active %}
+                    <button type="button" class="btn btn-primary" data-action="rollback">{{ icon("undo") }}Khôi phục PAPER</button>
+                  {% endif %}
+                  {% if state != 'paper_active' and state != 'retired' %}
+                    <button type="button" class="btn btn-secondary" data-action="retire">{{ icon("pause") }}Ngừng sử dụng</button>
+                  {% endif %}
+                </div>
+                {% if state == 'evaluated' and not approved %}
+                  <p class="lx-help">Cần duyệt mô hình trước khi chọn cho PAPER.</p>
+                {% elif state == 'paper_active' %}
+                  <p class="lx-help">Mô hình đang được con trỏ PAPER chọn nên không thể ngừng trực tiếp; hãy chọn một mô hình đã duyệt khác để thay thế.</p>
+                {% elif state == 'retired' and not (approved and was_active) %}
+                  <p class="lx-help">Chỉ khôi phục được mô hình đã duyệt và từng được chọn cho PAPER.</p>
                 {% endif %}
               </div>
             </details>
@@ -105,10 +169,12 @@
         {% endfor %}
       </div>
     {% else %}
-      <p class="learning-registry-empty">Chưa có artifact nào trong registry của workspace này.</p>
+      <p class="lx-empty learning-registry-empty">{{ icon("info") }}Chưa có artifact nào trong registry của workspace này.</p>
     {% endif %}
   </section>
+</div>
 {% endblock %}
 {% block scripts %}
+  <script src="/static/pages/learning-ui.js" defer></script>
   <script src="/static/learning-model-registry.js" defer></script>
 {% endblock %}

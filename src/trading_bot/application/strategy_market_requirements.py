@@ -23,7 +23,19 @@ FEATURES_BY_RELEASE: Mapping[str, Mapping[str, tuple[str, ...]]] = MappingProxyT
             {"1h": ("ema_20", "ema_80", "adx_14", "atr_14"), "4h": ("ema_200",)}
         ),
         "h03-v1": MappingProxyType({"1h": ("atr_14",)}),
+        "h03-v2": MappingProxyType({"1h": ("atr_14",)}),
         "h06-v1": MappingProxyType(
+            {
+                "15m": (
+                    "adx_14",
+                    "efficiency_ratio_40",
+                    "zscore_20",
+                    "rsi_14",
+                    "atr_14",
+                )
+            }
+        ),
+        "h06-v2": MappingProxyType(
             {
                 "15m": (
                     "adx_14",
@@ -41,6 +53,8 @@ ENTRY_TIMEFRAME_BY_RELEASE = MappingProxyType(
         "h01-v1": "1h",
         "h03-v1": "1h",
         "h06-v1": "15m",
+        "h03-v2": "1h",
+        "h06-v2": "15m",
     }
 )
 

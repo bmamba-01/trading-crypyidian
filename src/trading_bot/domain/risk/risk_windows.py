@@ -31,6 +31,12 @@ class LossWindowPolicy:
             raise ValueError("rolling_window phải lớn hơn 0.")
 
 
+# Quyết định của chủ sở hữu (2026-11-14): giới hạn lỗ ngày reset lúc 00:00 UTC, trùng ngày
+# giao dịch của sàn; lỗ lũy kế trượt 24 giờ. Mọi cổng rủi ro (runtime, replay, health) dùng
+# đúng chính sách này. Múi giờ Asia/Ho_Chi_Minh chỉ dùng để hiển thị.
+RISK_LOSS_WINDOW_POLICY = LossWindowPolicy()
+
+
 @dataclass(frozen=True, slots=True)
 class RealizedTradePnlEvent:
     """Sự kiện lời/lỗ đã chốt của một giao dịch tại thời điểm đóng."""

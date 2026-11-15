@@ -379,7 +379,12 @@ class MicroscopeReplayService:
         # -------------------------------------------------------------------
         l2_nodes = [n for n in card.nodes if n.layer == CompositionLayer.L2_INDICATORS]
         for node in l2_nodes:
-            val = self._engine._compute_l2_node(node, bar, node_values)
+            # Microscope soi đúng một nến nên ATR ở đây là biên độ của nến đó; đường quyết định
+            # thật dùng feature đã quản trị hoặc lịch sử nến (xem `StrategyPipelineEngine`).
+            operation = node.operation.lower()
+            val = (
+                bar.high - bar.low if "atr" in operation or "true_range" in operation else bar.close
+            )
             node_values[node.node_id] = val
             layer_traces.append(
                 LayerTrace(

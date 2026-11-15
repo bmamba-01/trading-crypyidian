@@ -15,5 +15,8 @@ Dùng với Chromium ở chế độ phóng đại 200% và chỉ bàn phím. Đ
 - [ ] Chuyển động tùy chọn được giảm khi bật `prefers-reduced-motion`.
 - [ ] Nội dung nhạy cảm không bị cache; dữ liệu không đáng tin được escape; token/session không xuất hiện trong văn bản trang hoặc log.
 - [ ] Thao tác thay đổi dữ liệu được bảo vệ CSRF và lỗi có thông báo hữu ích, giữ được ngữ cảnh để sửa.
+- [ ] Chú giải chỉ số (UI-1): mỗi nhãn chỉ số là một nút `.metric-help` nhận focus bằng Tab, có `aria-describedby` trỏ tới `role="tooltip"` và `aria-expanded` đúng trạng thái; mở được bằng rê chuột, focus và chạm; Escape, bấm ra ngoài hoặc rời focus đều đóng; tooltip nằm trọn trong khung nhìn ở 360px và không làm trang cuộn ngang.
+- [ ] Nội dung chú giải khớp từ điển `src/trading_bot/admin/metric_help.py` (định nghĩa, cách tính, cách đọc, giới hạn) và đọc được ở cả giao diện sáng lẫn tối; ở màn hình hẹp, bảng ẩn tiêu đề cột phải có hàng chú giải thay thế.
+- [ ] Biểu đồ: chú thích tĩnh (nến, mốc vào/đóng, đường giá, khung thời gian, nguồn nến) hiển thị bằng chữ; chú giải theo con trỏ hiện Mở / Cao / Thấp / Đóng, % thay đổi và thời gian theo `Asia/Ho_Chi_Minh`; thông tin không chỉ truyền đạt bằng màu.
 
 Kết quả kiểm tra và người thực hiện cần được ghi vào implementation memory trước khi nghiệm thu Task 7.

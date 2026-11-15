@@ -12,6 +12,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
+from trading_bot.application.bot_runtime_control import BotRuntimeControlError
 from trading_bot.application.flatten_all import FlattenAllError, FlattenAllService
 from trading_bot.auth.policy import Principal, Role
 from trading_bot.domain.execution.flatten_all import (
@@ -262,3 +263,44 @@ def test_snapshot_provider_failure_has_stable_fail_closed_error() -> None:
 
     assert error.value.reason_code == "FLATTEN_SNAPSHOT_UNAVAILABLE"
     assert "database internals" not in str(error.value)
+
+
+class FailingPauseOperations(PauseOperations):
+    """Pause lỗi lần đầu (ví dụ bot đang bị khóa lease), thành công khi thử lại."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.failures_left = 1
+
+    async def pause_bot(self, bot_id: UUID, _reason: str) -> None:
+        if self.failures_left:
+            self.failures_left -= 1
+            raise BotRuntimeControlError("BOT_LEASE_BUSY")
+        self.paused.append(bot_id)
+
+
+def test_pause_failure_after_commit_is_reported_not_raised_and_replay_retries() -> None:
+    service, store, _pause = _service(_snapshot())
+    failing = FailingPauseOperations()
+    service._operations_factory = lambda _principal: failing  # type: ignore[attr-defined]
+    ops = service.for_principal(_principal())
+    preview = _run(ops.create_preview("Sự cố vận hành"))
+    args = {
+        "preview_id": preview.preview_id,
+        "preview_hash": preview.preview_hash,
+        "idempotency_key": "flatten-1",
+        "reason": "Sự cố vận hành",
+    }
+
+    # Operation đã commit: không được ném lỗi khiến người dùng tưởng flatten thất bại.
+    first = _run(ops.confirm(**args))
+    assert first.created is True
+    assert len(store["operations"]) == 1
+    assert first.pause_failures == ((BOT, "BOT_LEASE_BUSY"),)
+    assert failing.paused == []
+
+    # Gửi lại cùng idempotency key: cùng operation, pause được thử lại và thành công.
+    second = _run(ops.confirm(**args))
+    assert second.operation_id == first.operation_id
+    assert second.pause_failures == ()
+    assert failing.paused == [BOT]

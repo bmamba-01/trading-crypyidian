@@ -113,6 +113,43 @@ def test_context_provider_passes_only_latest_available_opposing_signal() -> None
     assert second.opposing_signal_by_bar[-1][2] is False
 
 
+def test_context_provider_emits_point_in_time_exit_evidence_for_v2_recipes() -> None:
+    source, observations = _observations_with_atr()
+    provider = BacktestDatasetReplayContextProvider(
+        source,
+        observations,
+        seed=_seed_for_bundle(source),
+        execution_interval="1m",
+    )
+    hourly = next(item for item in source.components if item.manifest.interval == "1h").bars
+
+    provider(observations[0].snapshot)
+    second = provider(observations[1].snapshot)
+
+    # Bundle không có nến 15m nên chỉ recipe H03 v2 (khung 1h) nhận bằng chứng.
+    assert {item.recipe_id for item in second.exit_evidence_by_bar} == {"h03-exit-v2"}
+    assert len(second.exit_evidence_by_bar) == len(second.execution_events)
+    events = {event.bar_key: event for event in second.execution_events}
+    for evidence in second.exit_evidence_by_bar:
+        event = events[evidence.bar_key]
+        known = sorted(
+            (bar for bar in hourly if bar.close_time <= event.opened_at),
+            key=lambda bar: bar.close_time,
+        )
+        if len(known) < 20:
+            assert evidence.channel_low is None
+            assert evidence.channel_high is None
+        else:
+            # Kênh chỉ gồm 20 nến 1h đóng trước khi execution bar mở: không nhìn trước.
+            assert evidence.channel_low == min(bar.low for bar in known[-20:])
+            assert evidence.channel_high == max(bar.high for bar in known[-20:])
+        assert evidence.strategy_bar_closed is (
+            event.closed_at in {bar.close_time for bar in hourly}
+        )
+    # Trong 60 nến 1 phút giữa hai quyết định 1h chỉ có đúng một nến đóng cùng nến 1h.
+    assert sum(item.strategy_bar_closed for item in second.exit_evidence_by_bar) == 1
+
+
 def test_context_provider_rejects_nonflat_seed_and_out_of_order_observation() -> None:
     source, observations = _observations_with_atr()
     seed = _seed_for_bundle(source)

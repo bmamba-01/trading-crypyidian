@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, cast
 
 from trading_bot.domain.risk.circuit_breaker import BreakerState, CircuitBreakerSnapshot
 from trading_bot.domain.risk.risk_windows import LossWindowSnapshot
@@ -69,7 +69,8 @@ class SystemHealthSnapshot:
             },
             "metadata": self.metadata,
         }
-        return redact_value(raw)
+        # `redact_value` trả Any vì xử lý đệ quy mọi kiểu; đầu vào Mapping luôn cho dict.
+        return cast("dict[str, Any]", redact_value(raw))
 
 
 def build_system_health_snapshot(

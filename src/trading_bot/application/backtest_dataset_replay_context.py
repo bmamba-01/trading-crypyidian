@@ -21,6 +21,7 @@ from trading_bot.application.backtest_sensitivity import SensitivityScenario
 from trading_bot.application.paper_decision_cycle import PaperDecisionCycle
 from trading_bot.application.runtime_replay_evaluator import (
     ReplayEvaluationContext,
+    ReplayExitEvidence,
     RuntimePaperReplayComparison,
     RuntimeReplayEvaluator,
     run_runtime_paper_replay,
@@ -31,6 +32,7 @@ from trading_bot.domain.risk.engine import RiskDecision, RiskEngine
 from trading_bot.domain.risk.planner import TradePlanner
 from trading_bot.domain.strategy.contracts import DecisionSnapshot, FeatureQuality
 from trading_bot.domain.strategy.registry import StrategyRegistry
+from trading_bot.domain.strategy.rules_v2 import EXIT_EVIDENCE_BY_RECIPE, ExitEvidenceSpec
 
 OpposingSignalProvider = Callable[[PaperBar, ReplayObservation | None], bool | None]
 ContextSeedFactory = Callable[[SensitivityScenario, ReplayManifest], ReplayEvaluationContext]
@@ -66,7 +68,12 @@ class BacktestDatasetReplayContextProvider:
             raise BacktestReplayContextBuildError("Cần bundle replay đã kiểm rights/hash.")
         if type(seed) is not ReplayEvaluationContext:
             raise BacktestReplayContextBuildError("Cần ReplayEvaluationContext seed tường minh.")
-        if seed.execution_events or seed.atr_by_bar or seed.opposing_signal_by_bar:
+        if (
+            seed.execution_events
+            or seed.atr_by_bar
+            or seed.opposing_signal_by_bar
+            or seed.exit_evidence_by_bar
+        ):
             raise BacktestReplayContextBuildError("Seed không được chứa execution event phát sẵn.")
         if not execution_interval.strip():
             raise BacktestReplayContextBuildError("execution_interval không được để trống.")
@@ -174,6 +181,20 @@ class BacktestDatasetReplayContextProvider:
                 key=lambda item: (item.available_at, item.opened_at, item.bar_key),
             )
         )
+        # Nến chiến lược đã đóng theo từng timeframe, dùng cho bằng chứng thoát của recipe v2.
+        self._strategy_bars = {
+            item.manifest.interval: tuple(
+                sorted(
+                    (bar for bar in item.bars if bar.is_closed),
+                    key=lambda bar: (bar.close_time, bar.open_time),
+                )
+            )
+            for item in bundle.components
+        }
+        self._strategy_close_times = {
+            interval: frozenset(bar.close_time for bar in interval_bars)
+            for interval, interval_bars in self._strategy_bars.items()
+        }
         self._bundle = bundle
         self._observations = tuple(usable)
         self._execution_bars = bars
@@ -227,6 +248,12 @@ class BacktestDatasetReplayContextProvider:
             for event in events
             if self._opposing_signal_provider is not None
         )
+        exit_evidence_by_bar = tuple(
+            evidence
+            for event in events
+            for recipe_id, spec in EXIT_EVIDENCE_BY_RECIPE.items()
+            if (evidence := self._exit_evidence_at(event, recipe_id, spec)) is not None
+        )
         evaluated_at = decision_time + self._evaluated_at_offset
         risk_state = replace(
             self._seed.risk_state,
@@ -242,11 +269,64 @@ class BacktestDatasetReplayContextProvider:
             atr_by_symbol=(),
             atr_by_bar=atr_by_bar,
             opposing_signal_by_bar=opposing_by_bar,
+            exit_evidence_by_bar=exit_evidence_by_bar,
             reserve_risk=_reserve_in_memory,
         )
         self._last_decision_time = decision_time
         self._next_observation += 1
         return context
+
+    def _exit_evidence_at(
+        self, event: PaperBar, recipe_id: str, spec: ExitEvidenceSpec
+    ) -> ReplayExitEvidence | None:
+        """Dựng bằng chứng thoát chỉ từ nến/feature đã biết tại execution bar.
+
+        Bundle thiếu khung chiến lược của recipe thì không phát bằng chứng; evaluator sẽ dừng
+        nếu thật sự có vị thế dùng recipe đó, thay vì tự resample nến.
+        """
+        strategy_bars = self._strategy_bars.get(spec.timeframe)
+        if strategy_bars is None:
+            return None
+        channel_low: Decimal | None = None
+        channel_high: Decimal | None = None
+        if spec.channel_period is not None:
+            # Chỉ dùng nến chiến lược đóng trước khi execution bar mở: mức kênh phải biết
+            # trước khi giá của bar này diễn ra, nếu không là nhìn trước tương lai.
+            known = [
+                bar
+                for bar in strategy_bars
+                if bar.close_time <= event.opened_at and bar.available_at <= event.available_at
+            ]
+            if len(known) >= spec.channel_period:
+                window = known[-spec.channel_period :]
+                channel_low = min(bar.low for bar in window)
+                channel_high = max(bar.high for bar in window)
+        strategy_bar_closed = event.closed_at in self._strategy_close_times[spec.timeframe]
+        feature_value: Decimal | None = None
+        if spec.feature_name is not None and strategy_bar_closed:
+            observation = _latest_observation_at(self._observations, event)
+            if observation is not None:
+                ready = [
+                    feature
+                    for feature in observation.snapshot.features
+                    if feature.name == spec.feature_name
+                    and feature.timeframe == spec.timeframe
+                    and feature.quality is FeatureQuality.READY
+                    and feature.value is not None
+                    and feature.available_at <= event.available_at
+                ]
+                if ready:
+                    selected = max(ready, key=lambda item: (item.available_at, item.feature_id))
+                    feature_value = Decimal(str(selected.value))
+        return ReplayExitEvidence(
+            symbol=event.symbol,
+            bar_key=event.bar_key,
+            recipe_id=recipe_id,
+            strategy_bar_closed=strategy_bar_closed,
+            channel_low=channel_low,
+            channel_high=channel_high,
+            feature_value=feature_value,
+        )
 
 
 @dataclass(frozen=True, slots=True)

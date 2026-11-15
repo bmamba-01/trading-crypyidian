@@ -15,7 +15,7 @@ from urllib.parse import parse_qs
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
@@ -34,7 +34,9 @@ from trading_bot.admin.presentation import (
     METRICS,
     PNL_METRIC_KEYS,
     label_vi,
+    local_minute,
     local_time,
+    number2_vi,
     number_vi,
     pnl_tone,
 )
@@ -62,8 +64,10 @@ from trading_bot.auth.router import (
     client_address,
     current_identity,
     get_rate_limiter,
+    require_csrf,
 )
 from trading_bot.auth.schemas import LoginRequest
+from trading_bot.auth.security import TEST_TOTP_CODE
 from trading_bot.auth.service import (
     SESSION_LIFETIME,
     AuthenticationFailure,
@@ -80,7 +84,10 @@ from trading_bot.domain.risk.circuit_breaker import (
     CircuitBreakerEngine,
     OperationalTelemetry,
 )
-from trading_bot.domain.risk.risk_windows import LossWindowPolicy, calculate_loss_windows
+from trading_bot.domain.risk.risk_windows import (
+    RISK_LOSS_WINDOW_POLICY,
+    calculate_loss_windows,
+)
 from trading_bot.domain.strategy_card.schema import compute_canonical_hash
 from trading_bot.observability.health import build_system_health_snapshot
 
@@ -91,6 +98,13 @@ except Exception:  # pragma: no cover
 
 LOGIN_CSRF_COOKIE = "crypidian_login_csrf"
 LOGIN_CSRF_HOST_COOKIE = "__Host-crypidian_login_csrf"
+# Đủ thời gian để mở ứng dụng xác thực hoặc trình quản lý mật khẩu; hết hạn thì trang đăng
+# nhập được hiển thị lại với token mới thay vì trang lỗi.
+LOGIN_CSRF_MAX_AGE_SECONDS = 900
+LOGIN_FORM_EXPIRED_MESSAGE = (
+    "Biểu mẫu đăng nhập đã hết hạn hoặc được mở ở tab khác. Vui lòng nhập lại mật khẩu và mã "
+    "xác thực rồi gửi lại."
+)
 
 
 def _templates(request: Request) -> Jinja2Templates:
@@ -100,12 +114,44 @@ def _templates(request: Request) -> Jinja2Templates:
         label_vi=label_vi,
         local_time=local_time,
         number_vi=number_vi,
+        number2_vi=number2_vi,
+        local_minute=local_minute,
         pnl_tone=pnl_tone,
     )
     templates.env.globals["report_metrics"] = METRICS
     templates.env.globals["pnl_metric_keys"] = PNL_METRIC_KEYS
     templates.env.globals["ui_labels_vi"] = LABELS
+    # Chú giải chỉ số (UI-1): import cục bộ để thay đổi chỉ nằm trong hàm đăng ký này.
+    from trading_bot.admin.presentation import METRIC_HELP_GLOBALS
+
+    templates.env.globals.update(METRIC_HELP_GLOBALS)
     return templates
+
+
+# Mã lý do an toàn được phép hiển thị trên trang lỗi (không chứa dữ liệu nội bộ), kèm gợi ý.
+SAFE_ERROR_REASONS: dict[str, str] = {
+    "FLATTEN_PREVIEW_STALE": (
+        "Vị thế hoặc lệnh đã thay đổi sau khi tạo bản xem trước. Tạo bản xem trước mới rồi "
+        "xác nhận lại."
+    ),
+    "FLATTEN_PREVIEW_EXPIRED": (
+        "Bản xem trước đã quá 90 giây. Tạo bản xem trước mới rồi xác nhận lại."
+    ),
+    "FLATTEN_IDEMPOTENCY_KEY_REUSED": (
+        "Bản xem trước này đã được dùng cho một lần xác nhận. Mở trang thao tác vừa tạo hoặc "
+        "tạo bản xem trước mới."
+    ),
+    "RECENT_MFA_REQUIRED": "Cần xác thực MFA gần đây. Đăng nhập lại rồi thử lại.",
+    "CONTROL_PERMISSION_DENIED": "Tài khoản không có quyền thực hiện thao tác này.",
+}
+
+
+class AdminHTTPException(StarletteHTTPException):
+    """Lỗi trang HTML kèm mã lý do an toàn để trang lỗi gợi ý bước tiếp theo đúng."""
+
+    def __init__(self, status_code: int, detail: str, *, reason_code: str) -> None:
+        super().__init__(status_code=status_code, detail=detail)
+        self.reason_code = reason_code if reason_code in SAFE_ERROR_REASONS else None
 
 
 class AdminHTMLRoute(APIRoute):
@@ -150,6 +196,10 @@ class AdminHTMLRoute(APIRoute):
                         "identity": None,
                         "error_message": messages.get(status, "Không thể xử lý yêu cầu này."),
                         "error_status": status,
+                        "error_reason_code": getattr(error, "reason_code", None),
+                        "error_reason_hint": SAFE_ERROR_REASONS.get(
+                            getattr(error, "reason_code", None) or ""
+                        ),
                     },
                     status_code=status,
                     headers=headers,
@@ -175,7 +225,8 @@ class AdminBotView:
     entry_allowed: bool
     control_revision: int
     needs_manual_enable: bool = False
-    symbol: str = "BTCUSDT"
+    # None khi bot không khai báo mã: không tự điền BTCUSDT (dữ liệu bịa).
+    symbol: str | None = None
 
 
 def _admin_service(request: Request) -> BotConfigAdminService:
@@ -280,7 +331,7 @@ def _set_login_csrf_cookie(response: Response, request: Request, token: str) -> 
     response.set_cookie(
         _login_csrf_cookie_name(request),
         token,
-        max_age=300,
+        max_age=LOGIN_CSRF_MAX_AGE_SECONDS,
         path="/",
         secure=request.app.state.settings.app_env == "production",
         httponly=True,
@@ -298,14 +349,48 @@ def _clear_login_csrf_cookie(response: Response, request: Request) -> None:
     )
 
 
-def _login_page(request: Request, *, error: str | None = None) -> Response:
+# Tiêu đề và gợi ý cụ thể theo loại lỗi. Nội dung lỗi xác thực cố ý không nói trường nào sai
+# để không lộ workspace/email có tồn tại hay không (chống dò tài khoản).
+LOGIN_ERROR_DETAILS: dict[str, tuple[str, str]] = {
+    "invalid": (
+        "Đăng nhập không thành công",
+        "Kiểm tra mã không gian làm việc, email, mật khẩu và mã xác thực. Mỗi mã 6 chữ số chỉ "
+        "dùng được một lần; nếu vừa dùng, chờ mã mới (tối đa 30 giây).",
+    ),
+    "rate_limited": (
+        "Tạm khóa đăng nhập",
+        "Đã thử sai quá nhiều lần. Chờ hết thời gian giới hạn rồi thử lại.",
+    ),
+    "expired": (
+        "Biểu mẫu đã hết hạn",
+        "Trang đã được làm mới; nhập lại mật khẩu và mã xác thực.",
+    ),
+}
+
+
+def _login_page(
+    request: Request,
+    *,
+    error: str | None = None,
+    status_code: int | None = None,
+    error_kind: str = "invalid",
+) -> Response:
     token = secrets.token_urlsafe(32)
     templates = _templates(request)
     page = templates.TemplateResponse(
         request=request,
         name="admin/login.html",
-        context={"identity": None, "csrf_token": token, "error": error},
-        status_code=401 if error else 200,
+        context={
+            "identity": None,
+            "csrf_token": token,
+            "error": error,
+            "error_title": LOGIN_ERROR_DETAILS.get(error_kind, LOGIN_ERROR_DETAILS["invalid"])[0],
+            "error_hint": LOGIN_ERROR_DETAILS.get(error_kind, LOGIN_ERROR_DETAILS["invalid"])[1],
+            "test_totp_code": (
+                TEST_TOTP_CODE if request.app.state.settings.auth_test_totp_enabled else None
+            ),
+        },
+        status_code=status_code or (401 if error else 200),
     )
     page.headers["Cache-Control"] = "no-store"
     _set_login_csrf_cookie(page, request, token)
@@ -328,7 +413,10 @@ async def submit_login(request: Request) -> Response:
     cookie_token = request.cookies.get(_login_csrf_cookie_name(request), "")
     form_token = values.pop("csrf_token", "")
     if not cookie_token or not form_token or not hmac.compare_digest(cookie_token, form_token):
-        raise HTTPException(status_code=403, detail="Biểu mẫu hết hạn hoặc không hợp lệ.")
+        # Không xác thực gì: chỉ trả lại form với token mới để người dùng gửi lại.
+        return _login_page(
+            request, error=LOGIN_FORM_EXPIRED_MESSAGE, status_code=403, error_kind="expired"
+        )
     try:
         credentials = LoginRequest.model_validate(values)
     except ValidationError:
@@ -349,10 +437,13 @@ async def submit_login(request: Request) -> Response:
         if error.status_code >= 500:
             raise
         if error.status_code == 429:
-            message = "Thử lại sau khi hết thời gian giới hạn."
-        else:
-            message = "Thông tin đăng nhập không hợp lệ."
-        return _login_page(request, error=message)
+            return _login_page(
+                request,
+                error="Thử lại sau khi hết thời gian giới hạn.",
+                status_code=429,
+                error_kind="rate_limited",
+            )
+        return _login_page(request, error="Thông tin đăng nhập không hợp lệ.")
     settings = request.app.state.settings
     response = Response(
         status_code=303,
@@ -414,7 +505,7 @@ def _bot_view(bot: dict[str, Any], runtime: dict[str, Any] | None = None) -> Adm
         entry_allowed=bool(runtime.get("entry_allowed", False)),
         control_revision=int(runtime.get("control_revision", 0)),
         needs_manual_enable=bool(runtime.get("needs_manual_enable", False)),
-        symbol=str(bot.get("symbol") or "BTCUSDT"),
+        symbol=str(bot["symbol"]) if bot.get("symbol") else None,
     )
 
 
@@ -464,6 +555,40 @@ async def dashboard(
         raise HTTPException(status_code=error.status_code, detail=error.message) from error
     runtime_by_id = {str(item["id"]): item for item in runtime}
     bot_views = [_bot_view(bot, runtime_by_id.get(str(bot["id"]))) for bot in bots]
+    # Thống kê 30 ngày và biểu đồ hiệu suất đọc từ ledger PAPER; chỉ gồm bot đang bật mà
+    # principal có quyền xem báo cáo. Lỗi quyền/báo cáo không làm hỏng phần điều khiển.
+    report_end = datetime.now(UTC)
+    report_start = report_end - timedelta(days=30)
+    dashboard_reports: list[dict[str, Any]] = []
+    metrics_loaded = False
+    metrics_message = "Hãy thử lại sau hoặc xem báo cáo từng bot."
+    active_bots = {bot.id: bot for bot in bot_views if bot.status in {"ENABLED", "ACTIVE"}}
+    try:
+        reports = await _reporting_service(request).get_dashboard_reports(
+            BotReportQuery(
+                workspace_id=principal.workspace_id,
+                bot_id=None,
+                start=report_start,
+                end=report_end,
+            ),
+            principal,
+            bot_ids=frozenset(UUID(bot_id) for bot_id in active_bots),
+        )
+        for report in reports:
+            if str(report.bot_id) not in active_bots:
+                continue
+            payload = report.as_dict()
+            dashboard_reports.append(
+                {
+                    "name": active_bots[str(report.bot_id)].name,
+                    "bot_id": str(report.bot_id),
+                    "totals": payload["totals"],
+                    "trades": payload["trades"],
+                }
+            )
+        metrics_loaded = True
+    except BotReportError, HTTPException:
+        dashboard_reports = []
     templates = _templates(request)
     return templates.TemplateResponse(
         request=request,
@@ -473,6 +598,13 @@ async def dashboard(
             "bots": bot_views,
             "bot_count": len(bot_views),
             "ready_count": sum(bot.readiness == "READY" for bot in bot_views),
+            "dashboard_reports": dashboard_reports,
+            "dashboard_chart": _dashboard_performance_chart(dashboard_reports),
+            "strategy_explainers": _strategy_explainers(dashboard_reports),
+            "metrics_loaded": metrics_loaded,
+            "metrics_message": metrics_message,
+            "report_start": report_start,
+            "report_end": report_end,
             "workspace": workspace,
             "csrf_token": csrf_token,
         },
@@ -678,6 +810,23 @@ async def dashboard_bot_snapshot(
         key=lambda trade: (trade["closed_at"], trade["trade_id"]),
         reverse=True,
     )[:10]
+    # Vốn ban đầu là phần bổ sung: lỗi đọc không được làm hỏng cả ảnh chụp.
+    account_seed: dict[str, Any] | None = None
+    seed_reader = getattr(_reporting_service(request), "get_account_seed", None)
+    if callable(seed_reader):
+        try:
+            account_seed = await seed_reader(
+                BotReportQuery(
+                    workspace_id=identity.principal.workspace_id,
+                    bot_id=bot_id,
+                    start=report_start,
+                    end=report_end,
+                    scope=ReportScope.BOT,
+                ),
+                identity.principal,
+            )
+        except BotReportError, SQLAlchemyError:
+            account_seed = None
     return JSONResponse(
         {
             "observed_at": datetime.now(UTC).isoformat(),
@@ -688,6 +837,14 @@ async def dashboard_bot_snapshot(
                 "status": runtime.get("status"),
             },
             "runtime": {key: runtime.get(key) for key in runtime_fields},
+            "account": (
+                {
+                    "quote_asset": account_seed["quote_asset"],
+                    "initial_equity": account_seed["initial_equity"],
+                }
+                if account_seed
+                else None
+            ),
             "window": {"start": report_start.isoformat(), "end": report_end.isoformat()},
             "totals": {
                 asset: {key: value for key, value in totals.items() if key in metric_fields}
@@ -704,6 +861,82 @@ async def dashboard_bot_snapshot(
         },
         headers={"Cache-Control": "no-store"},
     )
+
+
+def _strategy_explainers(reports: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Giải thích cách mỗi bot ra quyết định, chỉ từ release đã ghi trong lệnh thật.
+
+    Nguồn: `entry_reason` của các lệnh trong báo cáo 30 ngày (release, mã lý do, giải thích,
+    giá tham chiếu, thời điểm tín hiệu) và metadata của release trong catalog sản phẩm (tên,
+    tóm tắt quy tắc, khung thời gian, chỉ báo). Bot chưa có lệnh thì không suy đoán chiến lược.
+    """
+    from trading_bot.application.strategy_catalog import strategy_registry
+    from trading_bot.application.strategy_market_requirements import (
+        entry_timeframe_for_release,
+        feature_requirements_for_release,
+    )
+
+    registry = strategy_registry()
+    explainers: dict[str, dict[str, Any]] = {}
+    for report in reports:
+        trades = sorted(
+            report.get("trades") or [],
+            key=lambda trade: str(trade.get("opened_at") or ""),
+            reverse=True,
+        )
+        releases: dict[str, dict[str, Any]] = {}
+        signals: list[dict[str, Any]] = []
+        symbols: set[str] = set()
+        for trade in trades:
+            reason = trade.get("entry_reason")
+            reason = reason if isinstance(reason, dict) else {}
+            release_id = str(reason.get("strategy_release_id") or "")
+            symbols.add(str(trade.get("symbol") or ""))
+            if release_id and release_id not in releases:
+                entry: dict[str, Any] = {"release_id": release_id}
+                try:
+                    release = registry.get_release(release_id)
+                except LookupError:
+                    entry["unknown"] = True
+                else:
+                    entry.update(
+                        strategy_id=release.strategy_id,
+                        name_vi=release.name_vi,
+                        rule_summary_vi=release.rule_summary_vi,
+                        status=release.status,
+                        recipe_version=release.recipe_version,
+                        content_hash=release.content_hash[:12],
+                    )
+                entry["timeframe"] = entry_timeframe_for_release(release_id)
+                try:
+                    features = feature_requirements_for_release(release_id)
+                except ValueError:
+                    features = {}
+                entry["features"] = [
+                    f"{timeframe}: {', '.join(names)}" for timeframe, names in features.items()
+                ]
+                releases[release_id] = entry
+            if len(signals) < 5 and reason:
+                signals.append(
+                    {
+                        "symbol": trade.get("symbol"),
+                        "side": trade.get("side"),
+                        "signal_at": reason.get("signal_at") or trade.get("opened_at"),
+                        "reason_code": reason.get("reason_code"),
+                        "detail_vi": reason.get("detail_vi"),
+                        "reference_price": reason.get("reference_price"),
+                        "exit_reason": trade.get("exit_reason"),
+                        "net_pnl": trade.get("net_pnl"),
+                        "quote_asset": trade.get("quote_asset"),
+                    }
+                )
+        explainers[str(report["bot_id"])] = {
+            "name": report.get("name"),
+            "releases": list(releases.values()),
+            "symbols": sorted(symbol for symbol in symbols if symbol),
+            "signals": signals,
+        }
+    return explainers
 
 
 def _dashboard_performance_chart(reports: list[dict[str, Any]]) -> dict[str, Any]:
@@ -762,6 +995,8 @@ def _dashboard_performance_chart(reports: list[dict[str, Any]]) -> dict[str, Any
                 "TAKE_PROFIT": "TP",
                 "TIME_STOP": "TIME",
                 "OPPOSING_SIGNAL": "ĐẢO",
+                "CHANNEL_EXIT": "KÊNH",
+                "FEATURE_EXIT": "CHỈ BÁO",
             }.get(trade.get("exit_reason") or "", "ĐÓNG")
             entry_reason = trade.get("entry_reason")
             entry_reason = entry_reason if isinstance(entry_reason, dict) else {}
@@ -816,6 +1051,8 @@ def _exit_reason_label_vi(reason: object) -> str:
         "TAKE_PROFIT": "Chốt lời",
         "TIME_STOP": "Đóng theo thời gian",
         "OPPOSING_SIGNAL": "Tín hiệu ngược chiều",
+        "CHANNEL_EXIT": "Thoát theo kênh giá",
+        "FEATURE_EXIT": "Thoát theo chỉ báo",
         "FLATTEN_OPERATION": "Đóng theo thao tác quản trị",
     }
     if not isinstance(reason, str) or not reason:
@@ -882,8 +1119,12 @@ async def create_bot_form(
         body = CreateBotRequest.model_validate(
             {"name": values.get("name"), "max_notional": values.get("max_notional")}
         )
-    except Exception as error:
-        raise HTTPException(status_code=422, detail="Thông tin tạo bot không hợp lệ.") from error
+    except ValidationError as error:
+        fields = {str(item["loc"][0]) for item in error.errors() if item.get("loc")}
+        messages = [CREATE_BOT_FIELD_ERRORS[f] for f in ("name", "max_notional") if f in fields]
+        return _create_bot_form_response(
+            request, identity, values, messages or ["Thông tin tạo bot không hợp lệ."]
+        )
     try:
         bot, _created = await _admin_service(request).create_bot(
             identity.principal,
@@ -891,257 +1132,238 @@ async def create_bot_form(
             max_notional=Decimal(body.max_notional),
         )
     except BotAdminError as error:
+        if error.status_code in {409, 422}:
+            # Lỗi nghiệp vụ người dùng sửa được: hiện lại form kèm giá trị đã nhập.
+            return _create_bot_form_response(
+                request, identity, values, [error.message], status_code=error.status_code
+            )
         raise HTTPException(status_code=error.status_code, detail=error.message) from error
     return Response(status_code=303, headers={"Location": f"/admin/bots/{bot['id']}"})
 
 
-def _generate_synthetic_chart_bars(now_utc: datetime, count: int = 24) -> list[dict[str, Any]]:
-    """Tạo chuỗi nến mẫu point-in-time OHLCV phục vụ biểu đồ TradingView."""
-    base_price = 66800.0
-    bars: list[dict[str, Any]] = []
-    current_time = int((now_utc - timedelta(hours=count)).timestamp() // 3600 * 3600)
-    for i in range(count):
-        delta = 120.0 * (1 if (i % 3 != 0) else -1)
-        open_p = round(base_price, 2)
-        close_p = round(base_price + delta, 2)
-        high_p = round(max(open_p, close_p) + 60.0, 2)
-        low_p = round(min(open_p, close_p) - 50.0, 2)
-        volume = round(15.5 + (i * 1.2), 3)
-        bars.append(
-            {
-                "time": current_time + (i * 3600),
-                "open": open_p,
-                "high": high_p,
-                "low": low_p,
-                "close": close_p,
-                "volume": volume,
-            }
-        )
-        base_price = close_p
-    return bars
+CREATE_BOT_FIELD_ERRORS = {
+    "name": (
+        "Tên bot bắt đầu bằng chữ hoặc số, chỉ gồm chữ không dấu, số, khoảng trắng, "
+        "dấu chấm, gạch dưới, gạch ngang (tối đa 120 ký tự)."
+    ),
+    "max_notional": "Giới hạn giá trị danh nghĩa phải lớn hơn 0 và là số thập phân hợp lệ.",
+}
+
+
+def _create_bot_form_response(
+    request: Request,
+    identity: AuthIdentity,
+    values: dict[str, str],
+    errors: list[str],
+    *,
+    status_code: int = 422,
+) -> Response:
+    """Hiện lại form tạo bot với lỗi và giá trị đã nhập (Jinja tự escape); giữ CSRF đã gửi."""
+    return _templates(request).TemplateResponse(
+        request=request,
+        name="admin/bot_create.html",
+        status_code=status_code,
+        context={
+            "identity": identity,
+            "csrf_token": values.get("csrf_token", ""),
+            "form_errors": errors,
+            "form_values": {
+                "name": values.get("name", ""),
+                "max_notional": values.get("max_notional", ""),
+            },
+        },
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+BOT_DETAIL_CHART_TIMEFRAME = "1h"
+# Vai trò được gắn nhãn ca giao dịch cho rà soát huấn luyện lại.
+RETRAINING_LABEL_ROLES = frozenset({Role.OWNER, Role.STRATEGY_ADMIN, Role.ANALYST_REVIEWER})
+RETRAINING_LABEL_TRADE_FIELDS = (
+    "symbol",
+    "side",
+    "quote_asset",
+    "opened_at",
+    "closed_at",
+    "gross_pnl",
+    "fee_total",
+    "funding_total",
+    "slippage_total",
+    "net_pnl",
+    "exit_reason",
+    "holding_duration_seconds",
+    "entry_reason",
+    "fills",
+    "lineage",
+)
+BOT_DETAIL_RECENT_TRADE_LIMIT = 10
+
+
+def _fill_summary(fills: object, role: str) -> tuple[str | None, str | None]:
+    """Trả (khối lượng, giá bình quân gia quyền) của các fill theo vai trò, lấy từ ledger.
+
+    Không có fill hợp lệ thì trả `None` để giao diện ghi "chưa có dữ liệu" thay vì số 0.
+    """
+    quantity = Decimal("0")
+    notional = Decimal("0")
+    if isinstance(fills, list):
+        for fill in fills:
+            if not isinstance(fill, dict) or fill.get("role") != role:
+                continue
+            try:
+                fill_quantity = Decimal(str(fill.get("quantity")))
+                fill_price = Decimal(str(fill.get("price")))
+            except InvalidOperation:
+                continue
+            if not fill_quantity.is_finite() or not fill_price.is_finite() or fill_quantity <= 0:
+                continue
+            quantity += fill_quantity
+            notional += fill_quantity * fill_price
+    if quantity <= 0:
+        return None, None
+    return format(quantity.normalize(), "f"), format((notional / quantity).normalize(), "f")
+
+
+async def _approved_trade_plans(
+    service: Any, query: BotReportQuery, principal: Principal, trades: list[dict[str, Any]]
+) -> dict[str, dict[str, Any]]:
+    """Kế hoạch đã duyệt theo `trade_id`; là nguồn thật cho SL/TP, đòn bẩy và chi phí dự trù.
+
+    Lỗi quyền/đọc không làm hỏng trang: thiếu kế hoạch thì hậu kiểm ghi quy tắc "chưa kiểm được".
+    """
+    trade_ids: list[UUID] = []
+    for trade in trades:
+        try:
+            trade_ids.append(UUID(str(trade.get("trade_id"))))
+        except ValueError:
+            continue
+    if not trade_ids:
+        return {}
+    try:
+        plans = await service.get_trade_plan_summaries(query, principal, trade_ids=trade_ids)
+    except BotReportError, HTTPException, SQLAlchemyError:
+        return {}
+    if not isinstance(plans, dict):
+        return {}
+    return {str(trade_id): plan for trade_id, plan in plans.items() if isinstance(plan, dict)}
+
+
+def _recent_trade_view(trade: dict[str, Any], plan: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Dựng một dòng lịch sử lệnh cho Bot Detail chỉ từ trường có trong ledger PAPER."""
+    post_mortem = evaluate_trade_post_mortem(trade, plan=plan)
+    entry_reason = trade.get("entry_reason")
+    entry_reason = entry_reason if isinstance(entry_reason, dict) else {}
+    quantity, entry_price = _fill_summary(trade.get("fills"), "ENTRY")
+    _exit_quantity, exit_price = _fill_summary(trade.get("fills"), "EXIT")
+    quote_asset = str(trade.get("quote_asset") or "")
+    return {
+        "trade_id": str(trade.get("trade_id")),
+        "symbol": str(trade.get("symbol") or ""),
+        "side": str(trade.get("side") or ""),
+        "quote_asset": quote_asset,
+        "quantity": quantity,
+        "entry_price": entry_price,
+        "exit_price": exit_price,
+        "net_pnl": trade.get("net_pnl"),
+        "closed_at": trade.get("closed_at"),
+        "exit_reason": trade.get("exit_reason"),
+        "exit_reason_vi": _exit_reason_label_vi(trade.get("exit_reason")),
+        "strategy_id": entry_reason.get("strategy_id"),
+        "entry_detail_vi": entry_reason.get("detail_vi"),
+        "fee_total": trade.get("fee_total"),
+        "funding_total": trade.get("funding_total"),
+        "slippage_total": trade.get("slippage_total"),
+        "quality": post_mortem.classification.value,
+        "is_deviant": post_mortem.is_deviant,
+        "deviant_reason": post_mortem.deviation_reason,
+    }
 
 
 async def _get_bot_trading_data(
     request: Request,
     principal: Principal,
     bot_id: UUID,
-    bot_dict: dict[str, Any],
-    runtime: dict[str, Any],
 ) -> dict[str, Any]:
-    """Tổng hợp dữ liệu trading, chỉ số KPI, vị thế mở và biểu đồ nến cho Bot Detail view."""
-    now_utc = datetime.now(UTC)
-    now_vn = now_utc.astimezone(VN_TZ)
-    symbol = str(bot_dict.get("symbol") or "BTCUSDT")
+    """Tổng hợp chỉ số, vị thế mở, lệnh gần đây và nến cho Bot Detail từ ledger PAPER.
 
-    metrics: dict[str, Any] = {
-        "open_positions_count": 1 if runtime.get("entry_state") == "POSITION_OPEN" else 1,
-        "win_rate_percent": 66.7,
-        "profit_factor": "2.25",
-        "net_pnl": "+320.50",
-        "average_risk_reward": "1 : 2.18",
-        "closed_trade_count": 6,
-        "max_drawdown": "-85.00",
+    Mọi giá trị đều đọc từ báo cáo bot 30 ngày và kho nến nội bộ. Khi chưa có nguồn hoặc
+    principal không có quyền báo cáo, hàm trả trạng thái rỗng; không dựng số liệu mẫu.
+    PAPER chưa có mark-to-market nên vị thế mở không có giá tham chiếu hay PnL chưa chốt.
+    """
+    empty: dict[str, Any] = {
+        "data_available": False,
+        "metrics": None,
+        "positions": [],
+        "recent_trades": [],
+        "chart_data": None,
     }
-
-    positions: list[dict[str, Any]] = [
-        {
-            "symbol": symbol,
-            "side": "LONG",
-            "size": "0.050 BTC",
-            "notional": "3,391.00 USDT",
-            "entry_price": "67,250.00",
-            "mark_price": "67,820.00",
-            "unrealized_pnl": "+28.50 USDT",
-            "unrealized_pnl_pct": "+2.12%",
-            "pnl_class": "pnl-positive",
-            "target_leverage": "5x",
-            "account_risk_pct": "1.0%",
-            "stop_loss": "66,400.00",
-            "take_profit": "69,100.00",
-            "reasoning": {
-                "signal_summary": "🟢 LONG 5x — Pinbar từ chối giá tại EMA 50",
-                "l4_regime": "TRENDING (Thanh khoản Quote > $15M/h)",
-                "l5_trigger": "Rút chân dưới: 84/100, Phá vỡ: 80/100",
-                "l6_risk_reward": "1 : 2.18 (SL: 66,400.00 | TP: 69,100.00)",
-                "detail_vi": "Mô hình nến Hammer xác nhận lực mua tại vùng hỗ trợ kỹ thuật.",
-            },
-        }
-    ]
-
-    recent_trades: list[dict[str, Any]] = [
-        {
-            "trade_id": "c1a2b3c4-d5e6-4f7a-8b9c-0d1e2f3a4b5c",
-            "symbol": symbol,
-            "side": "LONG",
-            "quantity": "0.050",
-            "entry_price": "66,500.00",
-            "exit_price": "68,200.00",
-            "net_pnl": "+85.00 USDT",
-            "pnl_class": "pnl-positive",
-            "exit_time": (now_vn - timedelta(hours=3)).strftime("%d/%m/%Y %H:%M:%S"),
-            "exit_reason": "TAKE_PROFIT",
-            "quality": "OPTIMAL",
-            "quality_label": "⭐ Thực Thi Tối Ưu",
-            "is_deviant": False,
-            "post_mortem": {
-                "why_enter": (
-                    "L4 bối cảnh TRENDING; L5 nến rút chân 88/100; "
-                    "L6 kỳ vọng R:R 1:2.0; Đòn bẩy 5x."
-                ),
-                "why_exit": "Đạt ngưỡng chốt lời Take Profit (TP Hit) tại 68,200.00.",
-                "cost_breakdown": (
-                    "Phí sàn: 1.20 USDT | Funding: 0.15 USDT | Trượt giá: 1.2 bps (thấp)."
-                ),
-            },
-        },
-        {
-            "trade_id": "d2e3f4a5-b6c7-4d8e-9f0a-1b2c3d4e5f6a",
-            "symbol": symbol,
-            "side": "SHORT",
-            "quantity": "0.040",
-            "entry_price": "68,000.00",
-            "exit_price": "68,650.00",
-            "net_pnl": "-26.00 USDT",
-            "pnl_class": "pnl-negative",
-            "exit_time": (now_vn - timedelta(hours=8)).strftime("%d/%m/%Y %H:%M:%S"),
-            "exit_reason": "STOP_LOSS",
-            "quality": "DEVIANT",
-            "quality_label": "⚠️ Sai Lệch Tín Hiệu / Bẫy Thanh Khoản",
-            "is_deviant": True,
-            "deviant_reason": "Bẫy thanh khoản False Breakout và trượt giá cao (16.8 bps).",
-            "post_mortem": {
-                "why_enter": (
-                    "L4 bối cảnh CHOP nhẹ; L5 tín hiệu phá vỡ giả nến quét đỉnh; Đòn bẩy 5x."
-                ),
-                "why_exit": "Dừng lỗ bảo vệ (SL Hit) tại 68,650.00 do giá quay đầu mạnh.",
-                "cost_breakdown": (
-                    "Phí sàn: 0.95 USDT | Funding: 0.10 USDT | "
-                    "Trượt giá: 16.8 bps (cao bất thường)."
-                ),
-            },
-        },
-    ]
-
     reporting_service = getattr(request.app.state, "bot_reporting_service", None)
-    if reporting_service is not None:
-        try:
-            query = BotReportQuery(
-                workspace_id=principal.workspace_id,
-                bot_id=bot_id,
-                start=now_utc - timedelta(days=30),
-                end=now_utc,
-                scope=ReportScope.BOT,
-            )
-            bot_report = await reporting_service.get_bot_report(query, principal)
-            rep_dict = bot_report.as_dict()
-            if "totals" in rep_dict and rep_dict["totals"]:
-                first_asset_totals = next(iter(rep_dict["totals"].values()))
-                closed_count = int(first_asset_totals.get("closed_trade_count", 0))
-                win_count = int(first_asset_totals.get("winning_trade_count", 0))
-                metrics["closed_trade_count"] = closed_count
-                metrics["win_rate_percent"] = (
-                    round(win_count / closed_count * 100, 1) if closed_count > 0 else 0.0
-                )
-                metrics["net_pnl"] = str(first_asset_totals.get("net_pnl", "0"))
-                metrics["profit_factor"] = str(first_asset_totals.get("profit_factor", "N/A"))
-                metrics["max_drawdown"] = f"-{first_asset_totals.get('max_drawdown', '0')}"
+    if reporting_service is None:
+        return empty
+    now_utc = datetime.now(UTC)
+    query = BotReportQuery(
+        workspace_id=principal.workspace_id,
+        bot_id=bot_id,
+        start=now_utc - timedelta(days=30),
+        end=now_utc,
+        scope=ReportScope.BOT,
+    )
+    try:
+        report = (await reporting_service.get_bot_report(query, principal)).as_dict()
+    except BotReportError, HTTPException, SQLAlchemyError:
+        return empty
 
-            if "trades" in rep_dict and isinstance(rep_dict["trades"], list) and rep_dict["trades"]:
-                real_trades = []
-                for tr in rep_dict["trades"][:10]:
-                    pm = evaluate_trade_post_mortem(tr)
-                    net_val = Decimal(str(tr.get("net_pnl", "0")))
-                    real_trades.append(
-                        {
-                            "trade_id": str(tr.get("trade_id")),
-                            "symbol": str(tr.get("symbol", symbol)),
-                            "side": str(tr.get("side", "LONG")),
-                            "quantity": str(tr.get("quantity", "0")),
-                            "entry_price": str(tr.get("entry_price", "0")),
-                            "exit_price": str(tr.get("exit_price", "0")),
-                            "net_pnl": f"{tr.get('net_pnl', '0')} {tr.get('quote_asset', 'USDT')}",
-                            "pnl_class": "pnl-positive"
-                            if net_val > 0
-                            else "pnl-negative"
-                            if net_val < 0
-                            else "pnl-neutral",
-                            "exit_time": str(tr.get("closed_at", "")),
-                            "exit_reason": str(tr.get("exit_reason", "")),
-                            "quality": pm.classification.value,
-                            "quality_label": "⭐ Thực Thi Tối Ưu"
-                            if pm.classification.value == "OPTIMAL"
-                            else "⚠️ Sai Lệch Tín Hiệu / Rủi Ro Cao"
-                            if pm.is_deviant
-                            else "Chấp Nhận Được",
-                            "is_deviant": pm.is_deviant,
-                            "deviant_reason": pm.deviation_reason,
-                            "post_mortem": {
-                                "why_enter": pm.entry_analysis.detail_vi,
-                                "why_exit": (
-                                    f"Lý do thoát: {tr.get('exit_reason')}. "
-                                    f"Trượt giá: {pm.exit_analysis.slippage_bps} bps."
-                                ),
-                                "cost_breakdown": (
-                                    f"Phí: {tr.get('fee_total', '0')} | "
-                                    f"Funding: {tr.get('funding_total', '0')} | "
-                                    f"Trượt giá: {pm.exit_analysis.slippage_bps} bps"
-                                ),
-                            },
-                        }
-                    )
-                recent_trades = real_trades
-        except Exception:
-            pass
-
-    bars = _generate_synthetic_chart_bars(now_utc, count=24)
-    chart_data: dict[str, Any] = {
-        "symbol": symbol,
-        "side": "LONG",
-        "timeframe": "1h",
-        "quote_asset": "USDT",
-        "bars": bars,
-        "trade": {
-            "trade_id": recent_trades[0]["trade_id"]
-            if recent_trades
-            else "c1a2b3c4-d5e6-4f7a-8b9c-0d1e2f3a4b5c",
-            "symbol": symbol,
-            "side": "LONG",
-            "net_pnl": "+85.00",
-            "quote_asset": "USDT",
-            "exit_reason": "TAKE_PROFIT",
-            "entry_reason": {
-                "strategy_id": "TREND_HAMMER_V2",
-                "detail_vi": "Nến Pinbar từ chối giá tại hỗ trợ EMA 50",
-            },
-            "post_mortem": {
-                "entry_analysis": {
-                    "stop_loss_price": 66400.0,
-                    "take_profit_price": 69100.0,
-                    "target_leverage": 5,
-                    "account_risk_pct": "1.0",
-                    "risk_reward_ratio": "2.18",
-                }
-            },
-            "fills": [
-                {
-                    "occurred_at": (now_utc - timedelta(hours=18)).isoformat(),
-                    "role": "ENTRY",
-                    "price": 66500.0,
-                    "quantity": 0.05,
-                    "position_event_type": "OPENED",
-                },
-                {
-                    "occurred_at": (now_utc - timedelta(hours=3)).isoformat(),
-                    "role": "EXIT",
-                    "price": 68200.0,
-                    "quantity": 0.05,
-                    "position_event_type": "CLOSED",
-                },
-            ],
-        },
+    totals_by_asset = report.get("totals") or {}
+    quote_asset = "USDT" if "USDT" in totals_by_asset else next(iter(sorted(totals_by_asset)), None)
+    totals = totals_by_asset.get(quote_asset, {}) if quote_asset is not None else {}
+    open_trades = [trade for trade in report.get("open_trades") or [] if isinstance(trade, dict)]
+    metrics: dict[str, Any] = {
+        "quote_asset": quote_asset,
+        "other_quote_assets": sorted(asset for asset in totals_by_asset if asset != quote_asset),
+        "open_positions_count": len(open_trades),
+        "closed_trade_count": totals.get("closed_trade_count", 0),
+        "win_rate_percent": totals.get("win_rate_percent"),
+        "profit_factor": totals.get("profit_factor"),
+        "expectancy_per_trade": totals.get("expectancy_per_trade"),
+        "net_pnl": totals.get("net_pnl"),
+        "max_drawdown": totals.get("max_drawdown"),
     }
+    positions = [
+        {
+            "trade_id": str(trade.get("trade_id")),
+            "symbol": str(trade.get("symbol") or ""),
+            "side": str(trade.get("side") or ""),
+            "quote_asset": str(trade.get("quote_asset") or ""),
+            "opened_at": trade.get("opened_at"),
+        }
+        for trade in open_trades
+    ]
+    closed_trades = sorted(
+        (trade for trade in report.get("trades") or [] if isinstance(trade, dict)),
+        key=lambda trade: (str(trade.get("closed_at")), str(trade.get("trade_id"))),
+        reverse=True,
+    )[:BOT_DETAIL_RECENT_TRADE_LIMIT]
+    plans = await _approved_trade_plans(reporting_service, query, principal, closed_trades)
+    recent_trades = [
+        _recent_trade_view(trade, plans.get(str(trade.get("trade_id")))) for trade in closed_trades
+    ]
 
+    chart_data: dict[str, Any] | None = None
+    if closed_trades:
+        try:
+            chart = await reporting_service.get_trade_chart(
+                query,
+                principal,
+                trade_id=UUID(str(closed_trades[0]["trade_id"])),
+                timeframe=BOT_DETAIL_CHART_TIMEFRAME,
+            )
+        except BotReportError, HTTPException, SQLAlchemyError, KeyError, ValueError:
+            chart = None
+        # Chỉ vẽ khi kho nến nội bộ thật sự có dữ liệu cho giao dịch gần nhất.
+        if chart and chart.get("bars"):
+            chart_data = chart
     return {
+        "data_available": True,
         "metrics": metrics,
         "positions": positions,
         "recent_trades": recent_trades,
@@ -1201,7 +1423,7 @@ async def bot_detail_realtime(
             "bot_id": str(bot_id),
         }
 
-    trading_data = await _get_bot_trading_data(request, identity.principal, bot_id, bot, runtime)
+    trading_data = await _get_bot_trading_data(request, identity.principal, bot_id)
 
     return {
         "status": "updated",
@@ -1224,6 +1446,7 @@ async def bot_detail_realtime(
             "needs_manual_enable": bot_view.needs_manual_enable,
             "symbol": bot_view.symbol,
         },
+        "data_available": trading_data["data_available"],
         "metrics": trading_data["metrics"],
         "positions": trading_data["positions"],
         "recent_trades": trading_data["recent_trades"],
@@ -1264,7 +1487,7 @@ async def bot_detail(
         raise HTTPException(status_code=404, detail=str(error)) from error
 
     bot_view = _bot_view(bot, runtime)
-    trading_data = await _get_bot_trading_data(request, identity.principal, bot_id, bot, runtime)
+    trading_data = await _get_bot_trading_data(request, identity.principal, bot_id)
 
     templates = _templates(request)
     versions = bot.get("versions", [])
@@ -1285,6 +1508,7 @@ async def bot_detail(
             "draft_validation": draft_validation,
             "signal_filter_error": signal_filter_error,
             "telegram_signal_state": signal_state,
+            "trading_data_available": trading_data["data_available"],
             "metrics": trading_data["metrics"],
             "positions": trading_data["positions"],
             "recent_trades": trading_data["recent_trades"],
@@ -1653,12 +1877,14 @@ async def flatten_confirm_form(
             "FLATTEN_PREVIEW_EXPIRED": 409,
             "FLATTEN_IDEMPOTENCY_KEY_REUSED": 409,
         }.get(error.reason_code, 422)
-        raise HTTPException(
-            status_code=status, detail="Xác nhận flatten-all bị từ chối."
+        raise AdminHTTPException(
+            status, "Xác nhận flatten-all bị từ chối.", reason_code=error.reason_code
         ) from error
-    return Response(
-        status_code=303, headers={"Location": f"/admin/flatten/operations/{result.operation_id}"}
-    )
+    location = f"/admin/flatten/operations/{result.operation_id}"
+    if result.pause_failures:
+        # Chỉ truyền số lượng (không ID bot) để trang operation cảnh báo bot chưa tạm dừng.
+        location += f"?pause_failed={len(result.pause_failures)}"
+    return Response(status_code=303, headers={"Location": location})
 
 
 @router.get("/flatten/operations/{operation_id}")
@@ -1666,6 +1892,7 @@ async def flatten_operation_page(
     operation_id: UUID,
     request: Request,
     identity: Annotated[AuthIdentity, Depends(current_identity)],
+    pause_failed: Annotated[int, Query(ge=0, le=1000)] = 0,
 ) -> Response:
     if Role.OWNER not in identity.principal.roles:
         raise HTTPException(status_code=403, detail="Chỉ owner được xem operation flatten.")
@@ -1684,7 +1911,7 @@ async def flatten_operation_page(
     return templates.TemplateResponse(
         request=request,
         name="admin/flatten_operation.html",
-        context={"identity": identity, "operation": operation},
+        context={"identity": identity, "operation": operation, "pause_failed": pause_failed},
         headers={"Cache-Control": "no-store"},
     )
 
@@ -1830,8 +2057,13 @@ async def reports(
 
         # Phân tích Post-Mortem và rủi ro cho danh sách trades
         if report and "trades" in report and isinstance(report["trades"], list):
+            plans = (
+                await _approved_trade_plans(service, query, identity.principal, report["trades"])
+                if report_scope is ReportScope.BOT
+                else {}
+            )
             for trade in report["trades"]:
-                pm = evaluate_trade_post_mortem(trade)
+                pm = evaluate_trade_post_mortem(trade, plan=plans.get(str(trade.get("trade_id"))))
                 trade["post_mortem"] = pm.as_dict()
 
         if parsed_chart_trade_id is not None:
@@ -1848,8 +2080,15 @@ async def reports(
                     timeframe=chart_timeframe,
                 )
                 if chart_data and "trade" in chart_data:
-                    pm = evaluate_trade_post_mortem(chart_data["trade"])
+                    # Kế hoạch đã duyệt là nguồn thật cho SL/TP, đòn bẩy và ngân sách rủi ro.
+                    plan = (
+                        await _approved_trade_plans(
+                            service, query, identity.principal, [chart_data["trade"]]
+                        )
+                    ).get(str(parsed_chart_trade_id))
+                    pm = evaluate_trade_post_mortem(chart_data["trade"], plan=plan)
                     chart_data["trade"]["post_mortem"] = pm.as_dict()
+                    chart_data["trade"]["plan"] = plan
             except BotReportError as error:
                 raise HTTPException(
                     status_code=error.status_code,
@@ -1859,12 +2098,18 @@ async def reports(
         bots = await _admin_service(request).list_bots(identity.principal)
     except BotAdminError as error:
         raise HTTPException(status_code=error.status_code, detail=error.message) from error
+    # Token CSRF chỉ cần cho nút gắn nhãn ca sai lệch; thiếu token thì nút bị máy chủ từ chối.
+    try:
+        csrf_token = await _auth_service(request).issue_csrf_token(read_session_cookie(request))
+    except AuthenticationFailure, HTTPException:
+        csrf_token = ""
     templates = _templates(request)
     return templates.TemplateResponse(
         request=request,
         name="admin/reports.html",
         context={
             "identity": identity,
+            "csrf_token": csrf_token,
             "bots": [_bot_view(bot) for bot in bots],
             "report": report,
             "chart_data": chart_data,
@@ -1878,45 +2123,121 @@ async def reports(
     )
 
 
+# Cửa sổ mặc định khi client không gửi thời điểm đóng: khớp trang chi tiết bot (30 ngày).
+RETRAINING_LABEL_DEFAULT_WINDOW = timedelta(days=30)
+
+
+async def _ledger_trade_for_label(
+    request: Request,
+    principal: Principal,
+    bot_id: UUID,
+    trade_id: UUID,
+    closed_at_hint: object,
+) -> dict[str, Any]:
+    """Tìm giao dịch đã đóng trong báo cáo ledger của bot; 404 nếu không có trong ledger."""
+    end = datetime.now(UTC)
+    start = end - RETRAINING_LABEL_DEFAULT_WINDOW
+    if isinstance(closed_at_hint, str) and closed_at_hint:
+        try:
+            closed_at = datetime.fromisoformat(closed_at_hint)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail="closed_at không hợp lệ.") from error
+        if closed_at.tzinfo is None:
+            raise HTTPException(status_code=422, detail="closed_at phải có múi giờ.")
+        # Báo cáo lọc theo giờ đóng trong [start, end): cửa sổ hẹp quanh gợi ý của client.
+        start, end = closed_at - timedelta(seconds=1), closed_at + timedelta(seconds=1)
+    try:
+        report = await _reporting_service(request).get_bot_report(
+            BotReportQuery(
+                workspace_id=principal.workspace_id,
+                bot_id=bot_id,
+                start=start,
+                end=end,
+                scope=ReportScope.BOT,
+            ),
+            principal,
+        )
+    except BotReportError as error:
+        raise HTTPException(status_code=error.status_code, detail=error.message) from error
+    trades = report.as_dict().get("trades", [])
+    trade = next(
+        (row for row in trades if isinstance(row, dict) and row.get("trade_id") == str(trade_id)),
+        None,
+    )
+    if trade is None:
+        raise HTTPException(
+            status_code=404, detail="Không tìm thấy giao dịch đã đóng trong ledger."
+        )
+    return trade
+
+
+def _holding_duration_seconds(trade: dict[str, Any]) -> int | None:
+    try:
+        opened = datetime.fromisoformat(str(trade["opened_at"]))
+        closed = datetime.fromisoformat(str(trade["closed_at"]))
+    except KeyError, ValueError:
+        return None
+    return max(0, int((closed - opened).total_seconds()))
+
+
 @router.post("/api/trades/{trade_id}/ingest-negative-sample")
 async def ingest_trade_negative_sample(
     request: Request,
     response: Response,
     trade_id: UUID,
-    identity: Annotated[AuthIdentity, Depends(current_identity)],
+    identity: Annotated[AuthIdentity, Depends(require_csrf)],
     reason: str | None = None,
 ) -> dict[str, Any]:
-    """Gắn nhãn và đưa ca giao dịch sai lệch/thua lỗ vào tập dữ liệu phạt AI
-    cho các chu kỳ huấn luyện lại.
+    """Gắn nhãn một ca giao dịch sai lệch/thua lỗ để rà soát cho huấn luyện lại.
+
+    Thao tác đổi trạng thái nên bắt buộc CSRF và vai trò được phép rà soát. Dữ liệu ca lấy từ
+    ledger PAPER theo `trade_id` (không tin dữ liệu client). Bản ghi hiện chỉ nằm trong bộ nhớ
+    tiến trình; chưa nối vào dataset WP06 và mất khi khởi động lại.
     """
     response.headers["Cache-Control"] = "no-store"
+    if not identity.principal.roles & RETRAINING_LABEL_ROLES:
+        raise HTTPException(status_code=403, detail="Vai trò hiện tại không được gắn nhãn ca.")
     service = _learning_post_mortem_service(request)
     body: dict[str, Any] = {}
     try:
-        body = await request.json()
-    except Exception:
-        pass
+        parsed_body = await request.json()
+    except ValueError:
+        parsed_body = {}
+    if isinstance(parsed_body, dict):
+        body = parsed_body
+    try:
+        bot_id = UUID(str(body.get("bot_id")))
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail="Thiếu mã bot hợp lệ của giao dịch.") from error
     override_reason = reason or body.get("reason")
-    sample = service.ingest_trade_for_ai_retraining(
-        {
-            "trade_id": str(trade_id),
-            "bot_id": body.get("bot_id", str(uuid4())),
-            "symbol": body.get("symbol", "BTCUSDT"),
-            "side": body.get("side", "LONG"),
-            "gross_pnl": body.get("gross_pnl", "0"),
-            "fee_total": body.get("fee_total", "0"),
-            "funding_total": body.get("funding_total", "0"),
-            "slippage_total": body.get("slippage_total", "0"),
-            "net_pnl": body.get("net_pnl", "0"),
-            "exit_reason": body.get("exit_reason", "STOP_LOSS"),
-            "holding_duration_seconds": body.get("holding_duration_seconds", 300),
-        },
-        override_reason=override_reason,
-        ingested_by=identity.email,
+    # Dữ liệu ca (hướng lệnh, PnL, chi phí, fill, lý do) đọc từ ledger PAPER, không lấy từ client:
+    # client chỉ gửi mã bot, lý do và gợi ý thời điểm đóng để chọn cửa sổ báo cáo.
+    ledger_trade = await _ledger_trade_for_label(
+        request, identity.principal, bot_id, trade_id, body.get("closed_at")
     )
+    trade_payload: dict[str, Any] = {"trade_id": str(trade_id), "bot_id": str(bot_id)}
+    for key in RETRAINING_LABEL_TRADE_FIELDS:
+        if ledger_trade.get(key) is not None:
+            trade_payload[key] = ledger_trade[key]
+    holding = _holding_duration_seconds(ledger_trade)
+    if holding is not None:
+        trade_payload["holding_duration_seconds"] = holding
+    try:
+        sample = service.ingest_trade_for_ai_retraining(
+            trade_payload,
+            override_reason=override_reason,
+            ingested_by=identity.email,
+        )
+    except ValueError as error:
+        raise HTTPException(
+            status_code=422, detail="Thiếu cặp giao dịch hoặc hướng lệnh của ca cần gắn nhãn."
+        ) from error
     return {
         "status": "success",
-        "message": "Đã tiếp nhận ca sai lệch vào dữ liệu phạt huấn luyện AI thành công.",
+        "message": (
+            "Đã tiếp nhận ca sai lệch để rà soát; nhãn chỉ lưu tạm trong phiên chạy, "
+            "chưa vào dữ liệu huấn luyện."
+        ),
         "sample": sample.as_dict(),
     }
 
@@ -1926,7 +2247,7 @@ async def queue_trade_ai_retraining(
     request: Request,
     response: Response,
     trade_id: UUID,
-    identity: Annotated[AuthIdentity, Depends(current_identity)],
+    identity: Annotated[AuthIdentity, Depends(require_csrf)],
     reason: str | None = None,
 ) -> dict[str, Any]:
     """Gắn nhãn và đưa ca giao dịch sai lệch vào hàng đợi huấn luyện lại AI (alias)."""
@@ -2102,7 +2423,7 @@ async def operations_health(
     loss_snapshot = calculate_loss_windows(
         events=[],
         as_of=now_utc,
-        policy=LossWindowPolicy(timezone_name="Asia/Ho_Chi_Minh"),
+        policy=RISK_LOSS_WINDOW_POLICY,
     )
     breaker_snapshot = CircuitBreakerEngine().evaluate(
         OperationalTelemetry(
@@ -2134,6 +2455,39 @@ async def operations_health(
     return health_snapshot.to_dict()
 
 
+# Cột CSV khớp khóa thật của dòng trade (`domain/portfolio/reporting.py::_trade_row`). Không có
+# đòn bẩy hay MFE/MAE vì ledger chưa ghi các giá trị này — không xuất cột rỗng gây hiểu nhầm.
+REPORT_CSV_FIELDS: tuple[str, ...] = (
+    "trade_id",
+    "bot_id",
+    "symbol",
+    "side",
+    "quote_asset",
+    "opened_at",
+    "closed_at",
+    "quantity",
+    "entry_price",
+    "exit_price",
+    "gross_pnl",
+    "fee_total",
+    "funding_total",
+    "slippage_total",
+    "total_cost",
+    "net_pnl",
+    "entry_reason",
+    "exit_reason",
+)
+
+
+def _report_csv_row(trade: dict[str, Any]) -> dict[str, Any]:
+    """Một dòng CSV từ dòng trade của báo cáo; giá vào/ra là bình quân gia quyền fill ledger."""
+    entry_quantity, entry_price = _fill_summary(trade.get("fills"), "ENTRY")
+    _exit_quantity, exit_price = _fill_summary(trade.get("fills"), "EXIT")
+    row = {key: trade.get(key) for key in REPORT_CSV_FIELDS}
+    row.update(quantity=entry_quantity, entry_price=entry_price, exit_price=exit_price)
+    return {key: "" if value is None else value for key, value in row.items()}
+
+
 @router.get("/reports/export.csv")
 async def export_reports_csv(
     request: Request,
@@ -2143,7 +2497,7 @@ async def export_reports_csv(
     scope: str = "bot",
     bot_id: str | None = None,
 ) -> Response:
-    """Xuất danh sách giao dịch và chỉ số MFE/MAE ra file CSV an toàn (WB-07D)."""
+    """Xuất giao dịch PAPER đã đóng ra CSV an toàn (WB-07D), chỉ dùng cột có trong ledger."""
     parsed_bot_id: UUID | None = None
     if bot_id and bot_id.strip():
         try:
@@ -2176,27 +2530,14 @@ async def export_reports_csv(
         ) from error
 
     trades = report.get("trades", []) if isinstance(report, dict) else []
-    fieldnames = [
-        "id",
-        "symbol",
-        "side",
-        "leverage",
-        "entry_price",
-        "exit_price",
-        "net_pnl",
-        "mfe_pct",
-        "mae_pct",
-        "entry_reason",
-        "exit_reason",
-        "closed_at",
-    ]
     buffer = io.StringIO()
-    writer = csv.DictWriter(buffer, fieldnames=fieldnames)
+    writer = csv.DictWriter(buffer, fieldnames=REPORT_CSV_FIELDS)
     writer.writeheader()
     for trade in trades:
         if not isinstance(trade, dict):
             continue
-        writer.writerow({key: _sanitize_csv_cell(trade.get(key, "")) for key in fieldnames})
+        row = _report_csv_row(trade)
+        writer.writerow({key: _sanitize_csv_cell(row.get(key, "")) for key in REPORT_CSV_FIELDS})
 
     filename = f"crypidian-report-{report_scope.value}.csv"
     return Response(

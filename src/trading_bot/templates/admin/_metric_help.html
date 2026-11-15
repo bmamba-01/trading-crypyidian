@@ -1,0 +1,29 @@
+{#-
+  Thành phần chú giải chỉ số dùng chung (UI-1). Nội dung lấy từ `admin/metric_help.py`;
+  hành vi (rê chuột, focus, chạm, Escape) nằm ở `/static/metric-tooltip.js`.
+  Khóa không có trong từ điển chỉ hiển thị nhãn, không dựng nút hay tooltip rỗng.
+  Không đặt `help_term`/`help_icon` bên trong <label>, <a> hoặc <button>.
+-#}
+{%- macro _help_bubble(entry, tip_id) -%}
+<span class="metric-help__bubble" role="tooltip" id="{{ tip_id }}"><strong class="metric-help__title">{{ entry.title_vi }}</strong><span class="metric-help__row">{{ entry.definition_vi }}</span>{% if entry.formula_vi %}<span class="metric-help__row"><span class="metric-help__tag">Cách tính:</span> {{ entry.formula_vi }}</span>{% endif %}<span class="metric-help__row"><span class="metric-help__tag">Cách đọc:</span> {{ entry.reading_vi }}</span><span class="metric-help__row"><span class="metric-help__tag">Giới hạn:</span> {{ entry.limits_vi }}</span></span>
+{%- endmacro -%}
+
+{#- Cả nhãn là nút mở chú giải; `label` để giữ nguyên chữ đang hiển thị của trang. -#}
+{%- macro help_term(key, label=none) -%}
+{%- set entry = metric_help_lookup(key) if metric_help_lookup is defined else none -%}
+{%- if entry -%}
+{%- set tip_id = metric_help_dom_id() -%}
+<span class="metric-term tooltip-term"><button type="button" class="metric-help" data-metric-help="{{ key }}" aria-describedby="{{ tip_id }}" aria-expanded="false"><span class="metric-help__label">{{ label if label is not none else entry.title_vi }}</span><span class="metric-help__icon" aria-hidden="true">ⓘ</span></button>{{ _help_bubble(entry, tip_id) }}</span>
+{%- else -%}
+<span class="metric-term" data-metric-help-missing="{{ key }}">{{ label if label is not none else key }}</span>
+{%- endif -%}
+{%- endmacro -%}
+
+{#- Nút chỉ có biểu tượng, đặt cạnh một nhãn đã có sẵn (ví dụ <label> của ô nhập). -#}
+{%- macro help_icon(key) -%}
+{%- set entry = metric_help_lookup(key) if metric_help_lookup is defined else none -%}
+{%- if entry -%}
+{%- set tip_id = metric_help_dom_id() -%}
+<span class="metric-term tooltip-term"><button type="button" class="metric-help metric-help--icon" data-metric-help="{{ key }}" aria-label="Giải thích: {{ entry.title_vi }}" aria-describedby="{{ tip_id }}" aria-expanded="false"><span class="metric-help__icon" aria-hidden="true">ⓘ</span></button>{{ _help_bubble(entry, tip_id) }}</span>
+{%- endif -%}
+{%- endmacro -%}

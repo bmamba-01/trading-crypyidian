@@ -1,12 +1,84 @@
 {% extends "admin/base.html" %}
 {% block title %}Đóng toàn bộ vị thế — Crypidian{% endblock %}
+{% block head_extra %}<link rel="stylesheet" href="/static/pages/ops.css">{% endblock %}
 {% block heading %}Đóng toàn bộ vị thế mô phỏng{% endblock %}
 {% block content %}
-<p>Xem trước các vị thế và lệnh mô phỏng đang mở. Xác nhận yêu cầu chủ sở hữu và xác thực đa yếu tố gần đây.</p>
-<form method="post" action="/admin/flatten/preview">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-  <label for="flatten-reason">Lý do</label>
-  <textarea id="flatten-reason" name="reason" maxlength="500" required></textarea>
-  <button type="submit">Xem trước</button>
-</form>
+{#- Bước 1/3 của luồng flatten-all PAPER: nhập lý do để tạo bản xem trước (snapshot có hạn 90 giây).
+    Quyền owner + MFA gần đây do service kiểm phía máy chủ; giao diện chỉ nhắc trước để tránh điền form vô ích. -#}
+<div class="ops-page">
+  <p class="ops-lead">Xem trước các vị thế và lệnh mô phỏng đang mở. Xác nhận yêu cầu chủ sở hữu và xác thực đa yếu tố gần đây.</p>
+
+  <ol class="ops-steps" aria-label="Các bước đóng toàn bộ vị thế">
+    <li class="ops-step ops-step--current" aria-current="step">
+      <span class="ops-step__dot" aria-hidden="true">1</span>
+      <span class="ops-step__text"><span class="ops-step__title">Xem trước</span><span class="ops-step__hint">Nhập lý do, chụp trạng thái</span></span>
+    </li>
+    <li class="ops-step">
+      <span class="ops-step__dot" aria-hidden="true">2</span>
+      <span class="ops-step__text"><span class="ops-step__title">Rà soát</span><span class="ops-step__hint">Kiểm từng vị thế/lệnh</span></span>
+    </li>
+    <li class="ops-step">
+      <span class="ops-step__dot" aria-hidden="true">3</span>
+      <span class="ops-step__text"><span class="ops-step__title">Xác nhận</span><span class="ops-step__hint">Theo dõi tiến trình</span></span>
+    </li>
+  </ol>
+
+  <div class="ops-callout ops-callout--danger">
+    <span class="ops-callout__icon" aria-hidden="true"><svg class="ico" viewBox="0 0 24 24" focusable="false"><path d="M12 3 2 20h20L12 3Z"/><path d="M12 10v4M12 17h.01"/></svg></span>
+    <p class="ops-callout__title">Thao tác không hoàn tác</p>
+    <div class="ops-callout__body">
+      <p>Sau khi xác nhận ở bước 3, hệ thống tạm dừng mọi bot trong ảnh chụp trạng thái và đóng các vị thế, lệnh mô phỏng (PAPER) đang mở. Vị thế đã đóng không mở lại được và bot không tự tiếp tục.</p>
+      <p>Bước này chỉ tạo bản xem trước, chưa thay đổi gì.</p>
+    </div>
+  </div>
+
+  <div class="ops-grid ops-grid--form">
+    <section class="glass-card ops-card" aria-labelledby="flatten-form-heading">
+      <h2 id="flatten-form-heading"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>Tạo bản xem trước</h2>
+      <form method="post" action="/admin/flatten/preview" class="ops-form" data-ops-submit-once>
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <label for="flatten-reason">Lý do</label>
+        <textarea id="flatten-reason" name="reason" maxlength="500" required aria-describedby="flatten-reason-hint"></textarea>
+        <p id="flatten-reason-hint" class="ops-hint">Bắt buộc, tối đa 500 ký tự. Lý do được ghi vào nhật ký kiểm toán cùng mã băm ảnh chụp.</p>
+        <div class="ops-actions">
+          <button type="submit" class="btn btn-primary">
+            <svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>Xem trước
+          </button>
+        </div>
+      </form>
+    </section>
+
+    <section class="glass-card ops-card" aria-labelledby="flatten-requirements-heading">
+      <h2 id="flatten-requirements-heading"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3 4 6v6c0 4.4 3.4 8.4 8 9 4.6-.6 8-4.6 8-9V6l-8-3Z"/><path d="m9 12 2 2 4-4"/></svg>Điều kiện thực hiện</h2>
+      <dl class="kv-grid">
+        <div class="kv">
+          <dt><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg>Vai trò</dt>
+          <dd><span class="badge badge-success ops-chip">Chủ sở hữu</span></dd>
+        </div>
+        {% set mfa_at = identity.principal.mfa_verified_at if identity and identity.principal else none %}
+        <div class="kv">
+          <dt><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>MFA lần cuối</dt>
+          <dd>{% if mfa_at %}<time datetime="{{ mfa_at.isoformat() }}" title="{{ mfa_at | local_time }}">{{ mfa_at | local_minute }}</time>{% else %}Chưa có dữ liệu{% endif %}</dd>
+        </div>
+        {% if mfa_at %}
+        {#- 900 giây = RECENT_MFA_LIFETIME (auth/policy.py). Ước lượng theo đồng hồ trình duyệt; máy chủ vẫn là nơi quyết định. -#}
+        <div class="kv">
+          <dt><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>Cửa sổ MFA 15 phút</dt>
+          <dd><span class="badge badge-neutral ops-chip" data-ops-mfa-at="{{ mfa_at.isoformat() }}" data-ops-mfa-window="900">Đối chiếu giờ MFA lần cuối</span></dd>
+        </div>
+        {% endif %}
+        <div class="kv">
+          <dt><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg>Bản xem trước có hiệu lực</dt>
+          <dd>90 giây</dd>
+        </div>
+        <div class="kv">
+          <dt><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/></svg>Phạm vi</dt>
+          <dd>PAPER nội bộ</dd>
+        </div>
+      </dl>
+      <p class="ops-hint">Nếu MFA đã quá 15 phút, <a href="/admin/login">đăng nhập lại</a> trước khi tạo bản xem trước để tránh bị từ chối ở bước xác nhận.</p>
+    </section>
+  </div>
+</div>
 {% endblock %}
+{% block scripts %}<script src="/static/pages/ops.js" defer></script>{% endblock %}

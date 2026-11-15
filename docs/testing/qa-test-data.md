@@ -196,6 +196,27 @@ Gợi ý theo WP:
 - Bot B (config PUBLISHED, release `h01-v1` khác root) bị đường entry PAPER legacy từ chối với `PAPER_BOT_STRATEGY_FANOUT_REQUIRED`; candidate persisted từ fan-out MB-05b được chạy qua command riêng theo release bot (xem lưu ý ở mục 2.6). Chỉ bot chưa có config mới dùng root-fallback.
 - Khôi phục config bot về baseline tạo version mới hiệu lực từ thời điểm seed; replay ở mốc trước đó vẫn thấy version cũ (đúng ngữ nghĩa point-in-time).
 
+## 8a. Gieo ledger PAPER từ Strategy Card pipeline
+
+`scripts/seed_pipeline_paper_ledger.py` tạo một workspace PAPER riêng và đưa mẫu Strategy Card L0–L6 qua đường runtime thật: evidence fan-out → `bot_decision` CANDIDATE → TradePlanner → RiskEngine → giữ ngân sách workspace → intent PAPER → fill → position monitor → `trade` + `trade_cost`. Dùng để kiểm thử dashboard, bot detail, báo cáo và panel hậu kiểm với dữ liệu có lineage đầy đủ.
+
+```bash
+uv run python scripts/seed_pipeline_paper_ledger.py --project <tên project Compose> --login-email <email owner local>
+```
+
+- **Chiến lược dùng:** bot A chọn release `sc-binance-usdm-vol-breakout-001-v1.0.0` của Strategy Card (từ catalog sản phẩm `application.strategy_catalog`); bot B chọn rule dựng sẵn `h03-v1`.
+- **Kết quả mặc định:** 5 vòng evidence, mỗi vòng fan-out tới cả hai bot. Bot A: 2 `TAKE_PROFIT`, 1 `STOP_LOSS`, 1 `TIME_STOP`, 1 vị thế mở. Bot B: 4 `STOP_LOSS`, 1 vị thế mở (recipe H03 dùng trailing stop, không có mục tiêu chốt lời cố định). Nến biểu đồ nội bộ 5m và 1h (nguồn `CRYPIDIAN_PIPELINE_FIXTURE`).
+- **Đăng nhập:** tài khoản `--login-email` được thêm làm owner của workspace mới; vì factor TOTP gắn theo workspace, script mã hóa lại cùng khóa TOTP cho workspace đó bên trong container `admin-web`. Dùng slug in ra ở cuối, cùng mật khẩu và mã TOTP.
+- **Tùy chọn:** `--rounds N`, `--debug` (ghi lý do khi không tạo được intent), `--attach-login-only`, `--chart-bars-only` (chạy lại được nhiều lần).
+- **Cho runtime thật giám sát workspace vừa gieo:** `docker compose -p <project> --profile paper run --detach --no-deps --env TRADING_BOT_RUNTIME_WORKSPACE_ID=<workspace_id> trading-runtime`; `/health/ready` phải báo `paper_accounts.ready = 2`, `recovery_required = 0`.
+
+Giới hạn cần biết:
+
+- Mọi mốc thời gian là "bây giờ": position monitor nhận nến 1 phút mô phỏng nên thời điểm đóng nằm vài phút sau lúc chạy (tới khoảng 13 phút với `TIME_STOP`); trước mốc đó báo cáo vẫn tính lệnh là đang mở.
+- Giá quanh 100 theo quy ước của probe MB-05, nến biểu đồ là dao động tất định; đây không phải dữ liệu thị trường và không phải bằng chứng về khả năng sinh lời.
+- Runtime thật chưa có nguồn nến/dispatcher (`market_dispatch: not_configured`), nên nó giữ lease và khôi phục vị thế nhưng không tự đóng/mở lệnh.
+- Mỗi lần chạy tạo một workspace mới; nhiều bảng là append-only nên dọn dẹp bằng cách xóa volume của stack.
+
 ## 9. Thuật ngữ
 
 Thuật ngữ mới (bộ dữ liệu QA, seed dữ liệu, UUIDv5, chốt an toàn seed, tài khoản kiểm thử, profile Compose) được đề xuất cho `docs/research/glossary-vi.md`; xem thêm [TOTP](../research/glossary-vi.md), [RLS](../research/glossary-vi.md) và [Idempotency key](../research/glossary-vi.md).

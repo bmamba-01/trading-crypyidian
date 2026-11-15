@@ -138,8 +138,8 @@ def _seed_workspace(connection: psycopg.Connection, name: str, fraction: str) ->
         canonical_settings,
         settings_hash,
     )
+    from trading_bot.application.strategy_catalog import strategy_registry
     from trading_bot.config.workspace_settings import WorkspaceSettings
-    from trading_bot.domain.strategy.registry import StrategyRegistry
 
     t0 = datetime.fromisoformat(STATE["t0"])
     workspace = uuid4()
@@ -255,7 +255,7 @@ def _seed_workspace(connection: psycopg.Connection, name: str, fraction: str) ->
         version=1,
         status="PUBLISHED",
         recipe=Jsonb({}),
-        content_hash=StrategyRegistry().get_release(RELEASE).content_hash,
+        content_hash=strategy_registry().get_release(RELEASE).content_hash,
     )
     accounts: dict[str, str] = {}
     bots: dict[str, str] = {}
@@ -472,15 +472,15 @@ class _StubStrategy:
         self.release_id = release_id
 
     def evaluate(self, snapshot: Any, selection: Any) -> Any:
+        from trading_bot.application.strategy_catalog import strategy_registry
         from trading_bot.domain.strategy.contracts import StrategyCandidate
         from trading_bot.domain.strategy.recipes import ExitRecipe
-        from trading_bot.domain.strategy.registry import StrategyRegistry
 
         decided = snapshot.decision_time
         return StrategyCandidate(
             strategy_id="H03",
             strategy_release_id=self.release_id,
-            release_content_hash=StrategyRegistry().get_release(self.release_id).content_hash,
+            release_content_hash=strategy_registry().get_release(self.release_id).content_hash,
             settings_version_id=selection.settings_version_id,
             snapshot_id=snapshot.snapshot_id,
             symbol=snapshot.symbol,
@@ -502,9 +502,9 @@ class _StubStrategy:
 
 class _StubRegistry:
     def get_release(self, release_id: str) -> Any:
-        from trading_bot.domain.strategy.registry import StrategyRegistry
+        from trading_bot.application.strategy_catalog import strategy_registry
 
-        return StrategyRegistry().get_release(release_id)
+        return strategy_registry().get_release(release_id)
 
     def resolve(self, release_id: str, selection: Any) -> _StubStrategy:
         del selection
@@ -649,6 +649,7 @@ class SyntheticContextProvider:
         )
         from trading_bot.application.paper_runtime_application import PaperDecisionContext
         from trading_bot.application.runtime_risk_profile import load_risk_profile
+        from trading_bot.application.strategy_catalog import strategy_registry
         from trading_bot.domain.risk.engine import RiskState
         from trading_bot.domain.risk.planner import (
             AccountSnapshot,
@@ -656,7 +657,6 @@ class SyntheticContextProvider:
             OpenExposure,
             PlannerSettings,
         )
-        from trading_bot.domain.strategy.registry import StrategyRegistry
 
         published = published_settings
         workspace = str(published.workspace_id)
@@ -697,7 +697,7 @@ class SyntheticContextProvider:
             ),
             limits=profile.limits,
             release_content_hashes=(
-                (release, StrategyRegistry().get_release(release).content_hash),
+                (release, strategy_registry().get_release(release).content_hash),
             ),
             settings_hash=published.settings_hash,
         )
@@ -782,7 +782,7 @@ class SyntheticContextProvider:
         **_: Any,
     ) -> Any:
         from trading_bot.application.paper_runtime_application import PaperMonitorEvidence
-        from trading_bot.domain.strategy.registry import StrategyRegistry
+        from trading_bot.application.strategy_catalog import strategy_registry
 
         release = pinned_strategy_release_name or RELEASE
         return PaperMonitorEvidence(
@@ -793,7 +793,7 @@ class SyntheticContextProvider:
             available_at=command.bar.opened_at - timedelta(seconds=1),
             strategy_release_name=release,
             strategy_release_hash=pinned_strategy_release_hash
-            or StrategyRegistry().get_release(release).content_hash,
+            or strategy_registry().get_release(release).content_hash,
             opposing_signal=False,
             atr=Decimal("2"),
             strategy_settings_version_id=pinned_strategy_settings_version_id,
@@ -1109,8 +1109,8 @@ async def runtime_restart_setup() -> dict[str, Any]:
 
 def seed_candidate_bot_configs() -> dict[str, Any]:
     """Tạo config PAPER riêng: bot A dùng h01, bot B dùng h03, root vẫn là h03."""
+    from trading_bot.application.strategy_catalog import strategy_registry
     from trading_bot.config.bot_settings import BotConfigOverlay, canonical_overlay, overlay_hash
-    from trading_bot.domain.strategy.registry import StrategyRegistry
 
     workspace = UUID(_ws()["workspace"])
     root_id = UUID(_ws()["settings_version_id"])
@@ -1123,7 +1123,7 @@ def seed_candidate_bot_configs() -> dict[str, Any]:
         if root is None:
             raise AssertionError("Thiếu root settings cho test fan-out PAPER.")
         root_hash, owner = root
-        registry = StrategyRegistry()
+        registry = strategy_registry()
         release_id = uuid4()
         _insert(
             connection,
@@ -1474,10 +1474,16 @@ async def runtime_fenced_candidate_check() -> dict[str, Any]:
     workspace = UUID(_ws()["workspace"])
     bot_id = UUID(_ws()["bots"]["a"])
     account_id = UUID(_ws()["accounts"]["a"])
-    runtime_engine = _engine("crypidian_trading_runtime", pool=8)
+    # Pha chạy trong container `trading-runtime` bằng login thật: gateway scorer WP06 kiểm
+    # `session_user`, nên `SET ROLE` từ login quản trị bị từ chối và job không bao giờ hoàn tất.
+    # Lease ngắn để hết hạn tự nhiên, không cần quyền quản trị để sửa hàng lease.
+    lease_ttl_seconds = 3
+    runtime_engine = _engine(pool=8)
     sessions = async_sessionmaker(runtime_engine, expire_on_commit=False)
     try:
-        async with runtime_app(sessions=sessions, use_real_strategy=True) as app:
+        async with runtime_app(
+            sessions=sessions, ttl=lease_ttl_seconds, tick=2.0, use_real_strategy=True
+        ) as app:
             original_submit = app.state.paper_application.evaluate_and_submit
             captured: list[Any] = []
 
@@ -1517,20 +1523,10 @@ async def runtime_fenced_candidate_check() -> dict[str, Any]:
             if not candidates:
                 raise AssertionError("Worker chưa tạo persisted candidate cho bot A.")
 
-            with _connect() as connection, connection.transaction():
-                connection.execute(
-                    "ALTER TABLE bot_runtime_lease DISABLE TRIGGER bot_runtime_lease_guard"
-                )
-                connection.execute(
-                    "UPDATE bot_runtime_lease SET "
-                    "renewed_at=clock_timestamp()-interval '2 seconds', "
-                    "expires_at=clock_timestamp()-interval '1 second' "
-                    "WHERE workspace_id=%s AND bot_id=%s",
-                    (workspace, bot_id),
-                )
-                connection.execute(
-                    "ALTER TABLE bot_runtime_lease ENABLE TRIGGER bot_runtime_lease_guard"
-                )
+            # Mô phỏng worker bị treo: dừng vòng lặp nền để lease không còn được gia hạn (không
+            # gọi `stop()` vì nó chủ động trả lease), rồi chờ qua TTL để lease hết hạn trong DB.
+            app.state.paper_supervisor._stopping.set()
+            await asyncio.sleep(lease_ttl_seconds + 2)
             async with UnitOfWork(sessions, workspace_id=workspace, bot_id=bot_id) as uow:
                 lease = BotRuntimeLease(uow.session)
                 db_now = await lease.database_now()

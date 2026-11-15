@@ -18,8 +18,8 @@ from trading_bot.adapters.database.repositories.backtest_replay_jobs import (
     BacktestReplayJobRepository,
 )
 from trading_bot.application.outbox import UnitOfWork
+from trading_bot.application.strategy_catalog import strategy_registry
 from trading_bot.auth.policy import Principal, Role
-from trading_bot.domain.strategy.registry import StrategyRegistry
 
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 
@@ -45,7 +45,7 @@ class BacktestReplayJobSubmission:
             raise ValueError("Cần chọn bản phát hành chiến lược.")
         if not isinstance(self.execution_interval, str) or not self.execution_interval.strip():
             raise ValueError("Cần chọn khung thời gian khớp PAPER.")
-        StrategyRegistry().get_release(self.strategy_release_id)
+        strategy_registry().get_release(self.strategy_release_id)
         for name in ("starting_equity", "per_trade_risk_fraction", "fee_rate", "slippage_rate"):
             value = getattr(self, name)
             if not isinstance(value, Decimal) or not value.is_finite():

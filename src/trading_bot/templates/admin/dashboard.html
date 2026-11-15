@@ -2,67 +2,143 @@
 {% block title %}Tổng quan — Crypidian{% endblock %}
 {% block heading %}Tổng quan không gian làm việc{% endblock %}
 {% block content %}
-<p class="welcome-banner">Xin chào {{ identity.email }}.</p>
-
-<section class="summary-grid" aria-label="Tình trạng không gian làm việc" style="margin-bottom: 1rem;">
-  <p>Tổng số bot: {{ bot_count }}</p>
-  <p>Bot sẵn sàng: {{ ready_count }}</p>
-  <p>Điều khiển không gian làm việc: {{ workspace.kill_state | label_vi }}</p>
-</section>
-
-<!-- Thanh trạng thái cập nhật trực tiếp -->
-<div class="live-status-bar" role="region" aria-label="Trạng thái cập nhật trực tiếp">
-  <div class="live-status-indicator">
-    <span class="pulse-dot" id="live-pulse-dot" aria-hidden="true"></span>
-    <span class="live-status-title">Tự động cập nhật 5s</span>
-    <span class="live-status-sep" aria-hidden="true">·</span>
-    <span class="live-status-time-wrapper">Cập nhật: <time id="live-updated-at">--:--:--</time></span>
-  </div>
-  <div class="live-status-actions">
-    <span id="live-status-msg" class="live-status-msg" aria-live="polite"></span>
-    <button id="toggle-realtime-btn" type="button" class="btn btn-sm btn-outline" aria-pressed="true">Tạm dừng</button>
+{% from "admin/_metric_help.html" import help_term, help_icon %}
+<div class="dash-head">
+  <p class="welcome-banner">Xin chào {{ identity.email }}.</p>
+  <section class="summary-grid dashboard-block" aria-label="Tình trạng không gian làm việc">
+    <p class="summary-dup">Tổng số bot: {{ bot_count }}</p>
+    <p class="summary-dup">Bot sẵn sàng: {{ ready_count }}</p>
+    <p>Điều khiển không gian làm việc: {{ workspace.kill_state | label_vi }}</p>
+  </section>
+  <!-- Thanh trạng thái cập nhật trực tiếp -->
+  <div class="live-status-bar" role="region" aria-label="Trạng thái cập nhật trực tiếp">
+    <div class="live-status-indicator">
+      <span class="pulse-dot" id="live-pulse-dot" aria-hidden="true"></span>
+      <span class="live-status-title">Tự động cập nhật 5s</span>
+      <span class="live-status-sep" aria-hidden="true">·</span>
+      <span class="live-status-time-wrapper">Cập nhật: <time id="live-updated-at">--:--:--</time></span>
+    </div>
+    <div class="live-status-actions">
+      <span id="live-status-msg" class="live-status-msg" aria-live="polite"></span>
+      <button id="toggle-realtime-btn" type="button" class="btn btn-sm btn-outline" aria-pressed="true">Tạm dừng</button>
+    </div>
   </div>
 </div>
 
 <section aria-label="Tình trạng không gian làm việc" class="dashboard-kpi-section">
   <h2 class="visually-hidden">Chỉ số hoạt động</h2>
   <div class="kpi-grid">
-    <div class="kpi-card" aria-label="Tổng số bot">
-      <span class="kpi-label">Tổng số bot</span>
-      <span class="kpi-value" id="kpi-bot-count" data-live-kpi="bot_count">{{ bot_count }}</span>
+    <div class="kpi-card kpi-card--h" aria-label="Tổng số bot">
+      <span class="kpi-icon kpi-icon--blue" aria-hidden="true"><svg class="ico" viewBox="0 0 24 24" focusable="false"><rect x="4" y="8" width="16" height="12" rx="2"/><path d="M12 8V4M8 13h.01M16 13h.01M9 17h6"/></svg></span>
+      <div class="kpi-body">
+        <span class="kpi-value" id="kpi-bot-count" data-live-kpi="bot_count">{{ bot_count }}</span>
+        <span class="kpi-label">{{ help_term("bot_count", "Tổng số bot") }}</span>
+      </div>
       <span class="kpi-subtext">Đã cấu hình trong không gian làm việc</span>
     </div>
 
-    <div class="kpi-card" aria-label="Bot sẵn sàng">
-      <span class="kpi-label">Bot sẵn sàng</span>
-      <span class="kpi-value" id="kpi-ready-count" data-live-kpi="ready_count">{{ ready_count }}</span>
+    <div class="kpi-card kpi-card--h" aria-label="Bot sẵn sàng">
+      <span class="kpi-icon kpi-icon--green" aria-hidden="true"><svg class="ico" viewBox="0 0 24 24" focusable="false"><path d="M20 6 9 17l-5-5"/></svg></span>
+      <div class="kpi-body">
+        <span class="kpi-value" id="kpi-ready-count" data-live-kpi="ready_count">{{ ready_count }}</span>
+        <span class="kpi-label">{{ help_term("ready_bot_count", "Bot sẵn sàng") }}</span>
+      </div>
       <span class="kpi-subtext">Trạng thái vận hành ổn định</span>
     </div>
 
-    <div class="kpi-card kpi-card-emergency" aria-label="Trạng thái khẩn cấp">
-      <span class="kpi-label">Trạng thái khẩn cấp (Công tắc dừng khẩn cấp)</span>
-      <div class="kpi-status-container" id="kpi-kill-status" aria-live="polite">
-        {% if workspace.kill_state == "ACTIVE" %}
-        <span class="badge badge-success" id="kpi-kill-state">Đang hoạt động</span>
-        {% elif workspace.kill_state == "KILLED" %}
-        <span class="badge badge-danger" id="kpi-kill-state">Đã dừng khẩn cấp</span>
-        {% else %}
-        <span class="badge badge-warning" id="kpi-kill-state">{{ workspace.kill_state | label_vi }}</span>
-        {% endif %}
+    <div class="kpi-card kpi-card--h kpi-card-emergency" aria-label="Trạng thái khẩn cấp">
+      <span class="kpi-icon kpi-icon--amber" aria-hidden="true"><svg class="ico" viewBox="0 0 24 24" focusable="false"><path d="M12 3 2 20h20L12 3Z"/><path d="M12 10v4M12 17h.01"/></svg></span>
+      <div class="kpi-body">
+        <div class="kpi-status-container" id="kpi-kill-status" aria-live="polite">
+          {% if workspace.kill_state == "ACTIVE" %}
+          <span class="badge badge-success" id="kpi-kill-state">Đang hoạt động</span>
+          {% elif workspace.kill_state == "KILLED" %}
+          <span class="badge badge-danger" id="kpi-kill-state">Đã dừng khẩn cấp</span>
+          {% else %}
+          <span class="badge badge-warning" id="kpi-kill-state">{{ workspace.kill_state | label_vi }}</span>
+          {% endif %}
+        </div>
+        <span class="kpi-label">{{ help_term("workspace_kill_state", "Công tắc khẩn cấp") }}</span>
       </div>
-      <span class="kpi-subtext" id="kpi-workspace-revision" data-live-kpi="revision">Lần thay đổi: {{ workspace.revision }}</span>
+      <span class="kpi-subtext kpi-subtext--keep" id="kpi-workspace-revision" data-live-kpi="revision" title="Lần thay đổi công tắc khẩn cấp">Lần thay đổi: {{ workspace.revision }}</span>
     </div>
 
-    <div class="kpi-card kpi-card-mode" aria-label="Chế độ vận hành">
-      <span class="kpi-label">Chế độ vận hành</span>
-      <div class="kpi-mode-container">
-        <span class="badge badge-paper">PAPER (Mô phỏng nội bộ)</span>
+    <div class="kpi-card kpi-card--h kpi-card-mode" aria-label="Chế độ vận hành">
+      <span class="kpi-icon kpi-icon--violet" aria-hidden="true"><svg class="ico" viewBox="0 0 24 24" focusable="false"><path d="M12 3 4 6v6c0 4.4 3.4 8.4 8 9 4.6-.6 8-4.6 8-9V6l-8-3Z"/></svg></span>
+      <div class="kpi-body">
+        <div class="kpi-mode-container">
+          <span class="badge badge-paper" title="PAPER (Mô phỏng nội bộ)">PAPER (Mô phỏng nội bộ)</span>
+        </div>
+        <span class="kpi-label">{{ help_term("operating_mode", "Chế độ") }}</span>
       </div>
       <span class="kpi-subtext">Mô phỏng nội bộ trong cơ sở dữ liệu, không gọi API hay đặt lệnh lên Binance</span>
     </div>
   </div>
 </section>
 
+<div class="dashboard-tabs" data-tabs>
+  <div class="tabs-bar" role="tablist" aria-label="Khu vực của trang tổng quan">
+    <button type="button" role="tab" id="tab-live" aria-controls="panel-live" aria-selected="true">
+      <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>Theo dõi trực tiếp
+    </button>
+    <button type="button" role="tab" id="tab-performance" aria-controls="panel-performance" aria-selected="false">
+      <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 17 9 11l4 4 8-8"/><path d="M15 7h6v6"/></svg>Hiệu suất 30 ngày
+    </button>
+    <button type="button" role="tab" id="tab-bots" aria-controls="panel-bots" aria-selected="false">
+      <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="4" y="8" width="16" height="12" rx="2"/><path d="M12 8V4M9 17h6"/></svg>Danh sách bot <span class="tabs-bar__count">{{ bots | length }}</span>
+    </button>
+    <button type="button" role="tab" id="tab-controls" aria-controls="panel-controls" aria-selected="false">
+      <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3 2 20h20L12 3Z"/><path d="M12 10v4M12 17h.01"/></svg>Điều khiển khẩn cấp
+    </button>
+  </div>
+
+<div role="tabpanel" id="panel-live" aria-labelledby="tab-live" tabindex="0">
+<section id="dashboard-live" class="dashboard-live-section" aria-labelledby="dashboard-live-heading">
+  <h2 id="dashboard-live-heading">Theo dõi bot và phiên PAPER</h2>
+  <p>Chọn một bot đang bật để xem trạng thái vận hành và giao dịch PAPER đã ghi nhận. Tự cập nhật mỗi 5 giây khi trang đang hiển thị.</p>
+  <div class="dashboard-live-layout">
+    <div class="dashboard-bot-picker" role="group" aria-label="Chọn bot đang theo dõi">
+      {% for bot in bots if bot.status in ["ENABLED", "ACTIVE"] %}
+      <button type="button" data-dashboard-bot="{{ bot.id }}" aria-pressed="false" aria-controls="dashboard-live-panel">
+        <span>{{ bot.name }}</span><small>{{ bot.status | label_vi }} · {{ bot.readiness | label_vi }}</small>
+      </button>
+      {% else %}<p>Chưa có bot đang bật để theo dõi.</p>{% endfor %}
+    </div>
+    <section id="dashboard-live-panel" class="dashboard-live-panel" role="region" aria-label="Bot đang theo dõi" aria-busy="false">
+      <div class="live-panel-head">
+        <h3 data-selected-bot-name>Chưa chọn bot</h3>
+        <button type="button" class="icon-btn" data-strategy-open hidden aria-haspopup="dialog">
+          <svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7V16h8v-1.3A7 7 0 0 0 12 2Z"/></svg>
+          <span>Cách ra quyết định</span>
+        </button>
+      </div>
+      <p class="dashboard-source">PAPER ledger snapshot · Dữ liệu mô phỏng đã lưu</p>
+      <p>Thời điểm quan sát: <time data-observed-at>Chưa có ảnh chụp</time></p>
+      <p data-snapshot-status role="status" aria-live="polite" aria-atomic="true">Chọn bot để tải dữ liệu.</p>
+      <dl class="dashboard-runtime" data-runtime></dl>
+      <div data-totals></div>
+      <section aria-labelledby="dashboard-open-heading">
+        <h4 id="dashboard-open-heading">Phiên PAPER đang mở</h4>
+        <p>Mỗi phiên là một giao dịch PAPER đang mở trong ledger.</p>
+        <label for="dashboard-open-trade">Phiên PAPER đang mở</label>
+        <select id="dashboard-open-trade" disabled><option value="">Chưa có phiên đang mở</option></select>
+        <dl class="dashboard-runtime" data-open-trade-detail></dl>
+      </section>
+      <section aria-labelledby="dashboard-closed-heading">
+        <h4 id="dashboard-closed-heading">Giao dịch PAPER đã đóng gần nhất</h4>
+        <p>Tối đa 10 giao dịch trong 30 ngày; lãi/lỗ và chi phí giữ riêng từng tài sản.</p>
+        <div class="dashboard-closed-trades" data-closed-trades></div>
+      </section>
+      <a data-selected-bot-link hidden>Xem trang bot</a>
+    </section>
+  </div>
+  <noscript><p>Cần bật JavaScript để chọn bot và cập nhật ảnh chụp. Các báo cáo phía dưới vẫn xem được.</p></noscript>
+  <script id="dashboard-live-metrics" type="application/json">{{ report_metrics | tojson }}</script>
+</section>
+
+</div>
+
+<div role="tabpanel" id="panel-controls" aria-labelledby="tab-controls" tabindex="0">
 <section aria-label="Điều khiển không gian làm việc" class="workspace-controls-section">
   <h2>Điều khiển khẩn cấp toàn không gian làm việc</h2>
   <div class="controls-grid">
@@ -82,8 +158,46 @@
   </div>
 </section>
 
-<section aria-labelledby="performance-heading" class="dashboard-performance-section" style="margin-bottom: 1.5rem;">
+</div>
+
+<div role="tabpanel" id="panel-performance" aria-labelledby="tab-performance" tabindex="0">
+<section aria-labelledby="performance-heading" class="dashboard-performance-section dashboard-block">
   <h2 id="performance-heading">Hiệu quả bot trong 30 ngày</h2>
+  {% if dashboard_chart and dashboard_chart.series %}
+  <p>Đường vốn theo PnL ròng đã thực hiện riêng cho từng bot, chỉ dùng USDT; dấu vào/đóng gắn với thời điểm ledger. Không cộng lẫn tài sản định giá khác.</p>
+  <p id="dashboard-chart-legend" class="chart-ohlc-legend" data-chart-legend>Rê chuột hoặc chạm vào biểu đồ để xem thời điểm và PnL ròng tích lũy của từng bot.</p>
+  <div id="dashboard-performance-chart" class="chart-canvas chart-canvas--performance" role="img" aria-label="Đường hiệu suất PnL ròng theo bot, có đánh dấu thời điểm vào và đóng lệnh"></div>
+  <ul class="chart-key" aria-label="Chú thích biểu đồ hiệu suất">
+    <li><span class="chart-key__swatch" aria-hidden="true"><span class="chart-key__line chart-key__line--curve"></span></span>{{ help_term("equity_curve") }}</li>
+    <li><span class="chart-key__swatch" aria-hidden="true"><span class="chart-key__arrow--up">▲</span><span class="chart-key__arrow--down">▼</span></span>{{ help_term("equity_markers") }}</li>
+    <li>{{ help_term("net_pnl", "Cách tính PnL ròng") }}</li>
+  </ul>
+  <p class="chart-key-note">Mỗi bot một đường màu riêng. Thời gian trên trục và trong chú giải theo múi giờ Asia/Ho_Chi_Minh.</p>
+  <p id="dashboard-chart-event-detail" class="chart-event-detail" role="status" aria-live="polite">Rê chuột hoặc chạm vào mốc trên biểu đồ để xem thời điểm, chiến thuật, lý do bắt tín hiệu, lời/lỗ và lý do đóng.</p>
+  {% if dashboard_chart.events %}
+  <details class="chart-event-list">
+    <summary>Chi tiết {{ dashboard_chart.events | length }} giao dịch USDT gần nhất trên biểu đồ</summary>
+    <ol>
+      {% for event in dashboard_chart.events %}
+      <li>
+        {% set event_pnl_tone = event.net_pnl | pnl_tone %}
+        <strong>{{ event.bot_name }} — {{ event.symbol }} / {{ event.side | label_vi }} — <span class="pnl-value pnl-value--{{ event_pnl_tone }}" data-pnl-tone="{{ event_pnl_tone }}">{% if event_pnl_tone == "positive" %}+{% endif %}{{ event.net_pnl | number2_vi }} {{ event.quote_asset }}</span></strong>
+        <dl>
+          <div><dt>Vào lúc</dt><dd>{{ event.opened_at | local_time }}</dd></div>
+          <div><dt>Đóng lúc</dt><dd>{{ event.closed_at | local_time }}</dd></div>
+          <div><dt>Chiến thuật</dt><dd>{{ event.strategy_id }}</dd></div>
+          <div><dt>Vì sao bắt tín hiệu</dt><dd>{{ event.entry_detail_vi }}</dd></div>
+          <div><dt>Vì sao đóng</dt><dd>{{ event.exit_reason_vi }}</dd></div>
+          <div><dt>Mã giao dịch</dt><dd><code>{{ event.trade_id }}</code></dd></div>
+        </dl>
+      </li>
+      {% endfor %}
+    </ol>
+  </details>
+  {% endif %}
+  <p class="chart-attribution">Biểu đồ sử dụng <a href="https://www.tradingview.com/lightweight-charts/" target="_blank" rel="noopener noreferrer">TradingView Lightweight Charts</a>, theo giấy phép Apache 2.0.</p>
+  <script id="dashboard-chart-data" type="application/json">{{ dashboard_chart | tojson }}</script>
+  {% else %}<p role="status">Chưa có giao dịch USDT đã đóng trong 30 ngày để dựng biểu đồ hiệu suất.</p>{% endif %}
   {% if dashboard_reports is defined and dashboard_reports %}
   <p>Từ {{ report_start | local_time }} đến {{ report_end | local_time }}; không gồm mốc kết thúc. Chỉ bot có quyền xem báo cáo; số liệu tiền tệ theo từng tài sản.</p>
   {% for report in dashboard_reports %}
@@ -98,6 +212,9 @@
   <p><a href="/admin/reports">Xem báo cáo theo phạm vi được cấp quyền</a></p>
 </section>
 
+</div>
+
+<div role="tabpanel" id="panel-bots" aria-labelledby="tab-bots" tabindex="0">
 <section aria-label="Danh sách bot trong không gian làm việc" class="bot-roster-section">
   <div class="roster-header">
     <h2>Danh sách bot</h2>
@@ -158,230 +275,62 @@
   {% endif %}
 </section>
 
-<!-- Vanilla JavaScript cập nhật Real-time tự động mỗi 5s -->
-<script>
-(function() {
-  'use strict';
+</div>
+</div>
 
-  var pollIntervalMs = 5000;
-  var timerId = null;
-  var isPaused = false;
-  var isFetching = false;
-  var currentDashboardFp = null;
+{% for bot_id, explainer in (strategy_explainers or {}).items() %}
+<dialog id="strategy-dialog-{{ bot_id }}" class="glass-dialog" aria-labelledby="strategy-dialog-title-{{ bot_id }}">
+  <form method="dialog" class="glass-dialog__close-form">
+    <button type="submit" class="icon-btn" aria-label="Đóng giải thích chiến lược">
+      <svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M6 6l12 12M18 6 6 18"/></svg>
+    </button>
+  </form>
+  <h2 id="strategy-dialog-title-{{ bot_id }}" class="glass-dialog__title">Cách {{ explainer.name }} ra quyết định</h2>
+  <p class="glass-dialog__lead">Tổng hợp từ các lệnh PAPER trong 30 ngày và mô tả release trong catalog. Không phải lời khuyên đầu tư.</p>
+  {% if explainer.symbols %}
+  <p class="glass-dialog__meta"><span class="glass-dialog__k">Mã giao dịch</span> {% for symbol in explainer.symbols %}<span class="coin-tag" data-coin="{{ symbol }}">{{ symbol }}</span>{% endfor %}</p>
+  {% endif %}
+  {% for release in explainer.releases %}
+  <section class="glass-dialog__section" aria-label="Phương pháp {{ release.name_vi or release.release_id }}">
+    <h3><span class="badge badge-paper-subtle">{{ release.strategy_id or "?" }}</span> {{ release.name_vi or release.release_id }}</h3>
+    {% if release.unknown %}
+    <p role="status">Release <code>{{ release.release_id }}</code> không còn trong catalog hiện tại; chỉ còn dữ liệu đã ghi trong lệnh.</p>
+    {% else %}
+    <ol class="decision-steps">
+      <li><strong>Dữ liệu đầu vào.</strong> Nến đã đóng khung {{ release.timeframe or "chưa khai báo" }}{% if release.features %}; chỉ báo: {{ release.features | join("; ") }}{% endif %}.</li>
+      <li><strong>Quy tắc bắt tín hiệu và thoát lệnh.</strong> {{ release.rule_summary_vi }}</li>
+      <li><strong>Lập kế hoạch lệnh.</strong> Planner tính giá vào, stop, mục tiêu theo ATR và từ chối nếu R:R ròng sau phí dưới 1,0.</li>
+      <li><strong>Kiểm soát rủi ro.</strong> Risk gate kiểm hạn mức lỗ ngày (reset 00:00 UTC), số vị thế, notional và đòn bẩy trước khi giữ ngân sách.</li>
+      <li><strong>Thực thi PAPER.</strong> Khớp mô phỏng ở nến sau với phí và trượt giá bất lợi; không gửi lệnh lên sàn.</li>
+    </ol>
+    <p class="glass-dialog__meta"><span class="glass-dialog__k">Release</span> <code>{{ release.release_id }}</code> · recipe <code>{{ release.recipe_version }}</code> · hash <code>{{ release.content_hash }}</code> · {{ release.status | label_vi }}</p>
+    {% endif %}
+  </section>
+  {% else %}
+  <p role="status">Bot chưa có lệnh trong 30 ngày nên chưa xác định được chiến lược từ dữ liệu thật.</p>
+  {% endfor %}
+  {% if explainer.signals %}
+  <section class="glass-dialog__section" aria-label="Tín hiệu gần nhất">
+    <h3>Tín hiệu gần nhất</h3>
+    <ul class="signal-list">
+      {% for signal in explainer.signals %}
+      <li>
+        <span class="signal-list__head"><strong>{{ signal.symbol }}</strong> · {{ signal.side | label_vi }} · <time>{{ signal.signal_at | local_minute }}</time></span>
+        <span class="signal-list__why">{{ signal.detail_vi or signal.reason_code or "Chưa có giải thích" }}</span>
+        {% if signal.exit_reason %}<span class="signal-list__exit">Đóng: {{ signal.exit_reason | label_vi }}{% if signal.net_pnl is not none %} · {{ signal.net_pnl | number2_vi }} {{ signal.quote_asset }}{% endif %}</span>{% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endif %}
+</dialog>
+{% endfor %}
 
-  var toggleBtn = document.getElementById('toggle-realtime-btn');
-  var pulseDot = document.getElementById('live-pulse-dot');
-  var timeEl = document.getElementById('live-updated-at');
-  var statusMsgEl = document.getElementById('live-status-msg');
-  var kpiBotCount = document.getElementById('kpi-bot-count');
-  var kpiReadyCount = document.getElementById('kpi-ready-count');
-  var kpiKillStatus = document.getElementById('kpi-kill-status');
-  var kpiKillState = document.getElementById('kpi-kill-state');
-  var kpiRevision = document.getElementById('kpi-workspace-revision');
-  var releaseRevisionInput = document.getElementById('workspace-release-revision');
-  var statusLabels = {{ ui_labels_vi | tojson }};
-
-  function labelVi(value) {
-    var key = String(value || '');
-    return Object.prototype.hasOwnProperty.call(statusLabels, key)
-      ? statusLabels[key]
-      : 'Chưa xác định';
-  }
-
-  function updateDashboard(data) {
-    if (!data) return;
-
-    // 1. Cập nhật thời gian
-    if (data.server_time && data.server_time.vn_time) {
-      if (timeEl) {
-        timeEl.textContent = data.server_time.vn_time;
-        timeEl.setAttribute('datetime', data.server_time.iso || '');
-      }
-    }
-
-    if (data.status === 'unchanged') {
-      if (pulseDot) {
-        pulseDot.className = 'pulse-dot';
-      }
-      return;
-    }
-    if (data.fingerprint) {
-      currentDashboardFp = data.fingerprint;
-    }
-
-    // 2. Cập nhật KPI số lượng bot
-    if (typeof data.bot_count === 'number' && kpiBotCount) {
-      kpiBotCount.textContent = String(data.bot_count);
-    }
-    if (typeof data.ready_count === 'number' && kpiReadyCount) {
-      kpiReadyCount.textContent = String(data.ready_count);
-    }
-
-    // 3. Cập nhật Workspace kill status
-    if (data.workspace && kpiKillStatus && kpiKillState) {
-      var killState = data.workspace.kill_state;
-      var killLabel = labelVi(killState);
-      var killClass = 'badge badge-warning';
-      if (killState === 'ACTIVE') {
-        killLabel = 'Đang hoạt động';
-        killClass = 'badge badge-success';
-      } else if (killState === 'KILLED') {
-        killLabel = 'Đã dừng khẩn cấp';
-        killClass = 'badge badge-danger';
-      }
-      kpiKillState.textContent = killLabel;
-      kpiKillState.className = killClass;
-
-      if (typeof data.workspace.revision !== 'undefined') {
-        if (kpiRevision) {
-          kpiRevision.textContent = 'Lần thay đổi: ' + data.workspace.revision;
-        }
-        if (releaseRevisionInput) {
-          releaseRevisionInput.value = String(data.workspace.revision);
-        }
-      }
-    }
-
-    // 4. Cập nhật danh sách bot
-    if (Array.isArray(data.bots)) {
-      data.bots.forEach(function(bot) {
-        if (!bot || !bot.id) return;
-        var row = document.querySelector('tr[data-bot-id="' + bot.id + '"]');
-        if (row) {
-          var statusEl = row.querySelector('[data-bot-field="status"]');
-          if (statusEl && bot.status) {
-            statusEl.textContent = labelVi(bot.status);
-          }
-          var readinessEl = row.querySelector('[data-bot-field="readiness"]');
-          if (readinessEl && bot.readiness) {
-            readinessEl.textContent = labelVi(bot.readiness);
-            readinessEl.className = 'badge ' + (bot.readiness === 'READY' ? 'badge-success' : 'badge-warning');
-          }
-          var entryEl = row.querySelector('[data-bot-field="entry"]');
-          if (entryEl && typeof bot.entry_allowed === 'boolean') {
-            entryEl.textContent = bot.entry_allowed ? 'Cho phép' : 'Chặn';
-            entryEl.className = 'status-indicator ' + (bot.entry_allowed ? 'status-allowed' : 'status-blocked');
-          }
-        }
-      });
-    }
-
-    // Phục hồi trạng thái kết nối bình thường nếu trước đó có lỗi
-    if (statusMsgEl) {
-      statusMsgEl.textContent = '';
-      statusMsgEl.className = 'live-status-msg';
-    }
-    if (pulseDot) {
-      pulseDot.className = 'pulse-dot';
-    }
-  }
-
-  function fetchDashboardData() {
-    if (isPaused || isFetching) return;
-    isFetching = true;
-
-    var url = currentDashboardFp ? '/admin/api/dashboard/realtime?fp=' + encodeURIComponent(currentDashboardFp) : '/admin/api/dashboard/realtime';
-    fetch(url, {
-      method: 'GET',
-      headers: {
-        'Accept': 'application/json'
-      },
-      cache: 'no-store'
-    })
-    .then(function(response) {
-      if (response.status === 401) {
-        stopPolling();
-        if (toggleBtn) {
-          toggleBtn.disabled = true;
-        }
-        if (pulseDot) {
-          pulseDot.className = 'pulse-dot pulse-error';
-        }
-        if (statusMsgEl) {
-          statusMsgEl.textContent = 'Phiên đăng nhập đã hết hạn. Vui lòng tải lại trang.';
-          statusMsgEl.className = 'live-status-msg live-msg-error';
-        }
-        return null;
-      }
-      if (!response.ok) {
-        throw new Error('HTTP ' + response.status);
-      }
-      return response.json();
-    })
-    .then(function(data) {
-      if (data) {
-        updateDashboard(data);
-      }
-    })
-    .catch(function(err) {
-      if (pulseDot) {
-        pulseDot.className = 'pulse-dot pulse-warning';
-      }
-      if (statusMsgEl) {
-        statusMsgEl.textContent = 'Mất kết nối — Đang thử lại...';
-        statusMsgEl.className = 'live-status-msg live-msg-warning';
-      }
-    })
-    .finally(function() {
-      isFetching = false;
-    });
-  }
-
-  function startPolling() {
-    isPaused = false;
-    if (timerId) clearInterval(timerId);
-    timerId = setInterval(fetchDashboardData, pollIntervalMs);
-    if (pulseDot) {
-      pulseDot.className = 'pulse-dot';
-    }
-    if (toggleBtn) {
-      toggleBtn.setAttribute('aria-pressed', 'true');
-      toggleBtn.textContent = 'Tạm dừng';
-    }
-    if (statusMsgEl) {
-      statusMsgEl.textContent = '';
-      statusMsgEl.className = 'live-status-msg';
-    }
-  }
-
-  function stopPolling() {
-    isPaused = true;
-    if (timerId) {
-      clearInterval(timerId);
-      timerId = null;
-    }
-    if (pulseDot) {
-      pulseDot.className = 'pulse-dot pulse-paused';
-    }
-    if (toggleBtn) {
-      toggleBtn.setAttribute('aria-pressed', 'false');
-      toggleBtn.textContent = 'Tiếp tục';
-    }
-    if (statusMsgEl) {
-      statusMsgEl.textContent = 'Đã tạm dừng tự động cập nhật';
-      statusMsgEl.className = 'live-status-msg';
-    }
-  }
-
-  if (toggleBtn) {
-    toggleBtn.addEventListener('click', function() {
-      if (isPaused) {
-        startPolling();
-        fetchDashboardData();
-      } else {
-        stopPolling();
-      }
-    });
-  }
-
-  window.addEventListener('beforeunload', function() {
-    if (timerId) clearInterval(timerId);
-  });
-
-  // Khởi động chu kỳ polling
-  startPolling();
-  // Gọi lần đầu để cập nhật thời gian
-  fetchDashboardData();
-})();
-</script>
+<script id="dashboard-status-labels" type="application/json">{{ ui_labels_vi | tojson }}</script>
+{% endblock %}
+{% block scripts %}
+<script src="/static/dashboard-realtime.js" defer></script>
+<script src="/static/coins.js" defer></script>
+<script src="/static/dashboard-live.js" defer></script>
+{% if dashboard_chart and dashboard_chart.series %}<script src="/static/vendor/lightweight-charts-5.2.1.standalone.production.js"></script><script src="/static/trade-chart.js" defer></script>{% endif %}
 {% endblock %}

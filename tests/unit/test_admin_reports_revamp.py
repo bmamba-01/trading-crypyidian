@@ -1,14 +1,16 @@
 """Unit tests cho revamp báo cáo, theme và API AI Retraining Ingestion."""
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from unittest.mock import AsyncMock
-from uuid import uuid4
+from unittest.mock import AsyncMock, MagicMock
+from uuid import UUID, uuid4
 
 import pytest
 from starlette.testclient import TestClient
 
 from trading_bot.application.learning_post_mortem import LearningPostMortemService
+from trading_bot.auth.policy import Role
 from trading_bot.auth.service import AuthIdentity, Principal
 from trading_bot.domain.portfolio.reporting import (
     BotLedgerSnapshot,
@@ -184,6 +186,32 @@ def test_admin_reports_renders_metric_cards_and_post_mortem(
     assert "quick-filter-group" in html
     assert "Danh Sách Lệnh Khớp Trong Kỳ" in html
 
+    # Chọn một giao dịch để mở panel hậu kiểm: chỉ hiện dữ liệu ledger, không tự điền L4–L6.
+    report_payload = mock_report.as_dict()
+    selected = report_payload["trades"][0]
+    mock_reporting_service.get_trade_chart.return_value = {
+        "symbol": selected["symbol"],
+        "side": selected["side"],
+        "timeframe": "1h",
+        "trade": selected,
+        "bars": [],
+        "notice": None,
+    }
+    mock_reporting_service.get_trade_plan_summaries.return_value = {}
+    chart_response = client.get(
+        f"/admin/reports?scope=bot&bot_id={bot_id}&start={start_str}&end={end_str}"
+        f"&chart_trade_id={selected['trade_id']}"
+    )
+    assert chart_response.status_code == 200
+    chart_html = chart_response.text
+    assert "Mổ Xẻ Quyết Định Định Lượng" in chart_html
+    assert "Ledger chưa lưu" in chart_html
+    assert 'id="post-mortem-unevaluated"' in chart_html
+    assert "lỗ vượt kế hoạch" in chart_html
+    for fabricated in ("5x (Rủi ro", "78.5/100", "82.0/100", "ĐẠT (TRENDING)", "1 : 2.0"):
+        assert fabricated not in chart_html
+    assert "Mục tiêu chốt lời (TP)" not in chart_html
+
 
 def test_api_ingest_trade_negative_sample(
     mock_identity: AuthIdentity,
@@ -199,25 +227,46 @@ def test_api_ingest_trade_negative_sample(
     app.state.learning_post_mortem_service = service
     app.include_router(router)
 
-    from trading_bot.auth.router import current_identity
+    from trading_bot.auth.router import current_identity, require_csrf
 
     app.dependency_overrides[current_identity] = lambda: mock_identity
+    # Kiểm CSRF được thay bằng danh tính đã xác thực; hành vi chặn có test riêng.
+    reviewer = replace(
+        mock_identity,
+        principal=replace(mock_identity.principal, roles=frozenset({Role.ANALYST_REVIEWER})),
+    )
+    app.dependency_overrides[require_csrf] = lambda: reviewer
 
     trade_id = uuid4()
     bot_id = uuid4()
-
-    client = TestClient(app)
-    payload = {
+    # Dữ liệu ca lấy từ ledger PAPER (báo cáo bot), không phải từ thân yêu cầu.
+    ledger_trade = {
+        "trade_id": str(trade_id),
         "bot_id": str(bot_id),
         "symbol": "BTCUSDT",
         "side": "LONG",
+        "quote_asset": "USDT",
+        "opened_at": "2026-11-14T08:00:00+00:00",
+        "closed_at": "2026-11-14T08:10:00+00:00",
         "gross_pnl": "-100.0",
         "fee_total": "2.0",
         "funding_total": "0.5",
         "slippage_total": "25.0",  # Trượt giá nặng
         "net_pnl": "-127.5",
         "exit_reason": "STOP_LOSS",
-        "holding_duration_seconds": 600,
+        "fills": [],
+        "lineage": {},
+    }
+    reporting = MagicMock()
+    reporting.get_bot_report = AsyncMock(
+        return_value=MagicMock(as_dict=MagicMock(return_value={"trades": [ledger_trade]}))
+    )
+    app.state.bot_reporting_service = reporting
+
+    client = TestClient(app)
+    payload = {
+        "bot_id": str(bot_id),
+        "closed_at": "2026-11-14T08:10:00+00:00",
         "reason": "Phát hiện trượt giá cao trên sổ lệnh sàn thực tế",
     }
     response = client.post(
@@ -231,3 +280,98 @@ def test_api_ingest_trade_negative_sample(
     assert data["sample"]["trade_id"] == str(trade_id)
     assert data["sample"]["counterfactual_action"] == "ABSTAIN"
     assert len(service.list_ingested_samples()) == 1
+
+
+def test_admin_reports_post_mortem_uses_approved_plan(
+    mock_identity: AuthIdentity,
+) -> None:
+    """Khi ledger ghim kế hoạch đã duyệt, panel hiện SL/TP, đòn bẩy và ngân sách rủi ro thật."""
+    from fastapi import FastAPI
+    from fastapi.templating import Jinja2Templates
+
+    from trading_bot.admin.presentation import label_vi, local_time, number_vi, pnl_tone
+    from trading_bot.admin.web_router import router
+    from trading_bot.auth.router import current_identity
+
+    trade_id = str(uuid4())
+    bot_id = uuid4()
+    now = datetime.now(UTC)
+    trade = {
+        "trade_id": trade_id,
+        "bot_id": str(bot_id),
+        "symbol": "BTCUSDT",
+        "side": "LONG",
+        "quote_asset": "USDT",
+        "opened_at": (now - timedelta(hours=2)).isoformat(),
+        "closed_at": (now - timedelta(hours=1)).isoformat(),
+        "gross_pnl": "-140",
+        "fee_total": "8",
+        "funding_total": "0",
+        "slippage_total": "2",
+        "total_cost": "10",
+        "net_pnl": "-150",
+        "entry_reason": {"strategy_id": "SC-DEMO", "detail_vi": "L4 ĐẠT; L5 điểm 0,77."},
+        "exit_reason": "STOP_LOSS",
+        "fills": [
+            {"role": "ENTRY", "quantity": "31.3", "price": "100.4", "occurred_at": now.isoformat()},
+        ],
+    }
+
+    class _Report:
+        def as_dict(self) -> dict[str, object]:
+            return {"scope": "bot", "totals": {}, "trades": [dict(trade)], "open_trades": []}
+
+    service = AsyncMock()
+    service.get_bot_report.return_value = _Report()
+    service.get_trade_chart.return_value = {
+        "symbol": "BTCUSDT",
+        "side": "LONG",
+        "timeframe": "1h",
+        "trade": dict(trade),
+        "bars": [],
+        "notice": None,
+    }
+    service.get_trade_plan_summaries.return_value = {
+        UUID(trade_id): {
+            "entry_price": "100.4",
+            "stop_price": "97.6",
+            "target_price": "105.4",
+            "leverage": "5",
+            "risk_budget": "100",
+            "entry_slippage_cost": "1",
+        }
+    }
+    admin = AsyncMock()
+    admin.list_bots.return_value = []
+
+    app = FastAPI()
+    templates = Jinja2Templates(directory="src/trading_bot/templates")
+    templates.env.filters.update(
+        label_vi=label_vi, local_time=local_time, number_vi=number_vi, pnl_tone=pnl_tone
+    )
+    app.state.templates = templates
+    app.state.bot_reporting_service = service
+    app.state.bot_admin_service = admin
+    app.include_router(router)
+    app.dependency_overrides[current_identity] = lambda: mock_identity
+
+    start = (now - timedelta(days=1)).isoformat().replace("+", "%2B")
+    end = now.isoformat().replace("+", "%2B")
+    response = TestClient(app).get(
+        f"/admin/reports?scope=bot&bot_id={bot_id}&start={start}&end={end}"
+        f"&chart_trade_id={trade_id}"
+    )
+    assert response.status_code == 200
+    html = response.text
+
+    assert "5x" in html
+    assert "1 : 1.79" in html
+    assert "SL: 97,6" in html
+    assert "TP: 105,4" in html
+    # Tiền hiển thị 2 chữ số kèm ₮; số đầy đủ (kèm mã tài sản) nằm ở thuộc tính title.
+    assert 'kế hoạch dự trù <span class="money num" title="2 USDT">2' in html
+    assert 'title="100 USDT">100' in html
+    assert "kết quả -1.50R" in html
+    assert "Mục tiêu chốt lời (TP)" in html
+    assert "Sai lệch" in html
+    assert 'id="post-mortem-unevaluated"' not in html

@@ -10,6 +10,7 @@ Bao gồm:
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -286,6 +287,55 @@ def test_dashboard_renders_live_status_bar_and_pulse_elements() -> None:
     assert "unpkg." not in html
     assert "jsdelivr." not in html
 
-    # Có script gọi polling endpoint
-    assert "/admin/api/dashboard/realtime" in html
-    assert "pollIntervalMs = 5000" in html or "5000" in html
+    # Script polling nằm ở tệp tĩnh cùng origin để CSP `default-src 'self'` không chặn.
+    assert '<script src="/static/dashboard-realtime.js" defer></script>' in html
+    realtime_js = Path("src/trading_bot/static/dashboard-realtime.js").read_text(encoding="utf-8")
+    assert "/admin/api/dashboard/realtime" in realtime_js
+    assert "pollIntervalMs = 5000" in realtime_js
+
+
+def test_dashboard_has_no_inline_executable_script_or_style() -> None:
+    """CSP `default-src 'self'` chặn script/style nội tuyến; dashboard chỉ dùng tệp tĩnh."""
+    html = _create_test_client().get("/admin").text
+    main = html[html.index('<main id="main-content"') : html.index("</main>")]
+
+    inline_scripts = re.findall(r"<script(?![^>]*\bsrc=)([^>]*)>", html[html.index("</main>") :])
+    inline_scripts += re.findall(r"<script(?![^>]*\bsrc=)([^>]*)>", main)
+    # Khối dữ liệu JSON không được thực thi nên CSP không chặn; base.html còn script chủ đề
+    # nội tuyến, theo dõi riêng ở việc dọn CSP toàn admin.
+    executable = [attrs for attrs in inline_scripts if 'type="application/json"' not in attrs]
+    assert executable in ([], [""])
+    assert " style=" not in main
+
+
+def test_dashboard_renders_live_bot_panel_and_performance_section() -> None:
+    """WP-07A: dashboard giữ panel theo dõi bot/phiên PAPER đã được duyệt."""
+    html = _create_test_client().get("/admin").text
+
+    assert 'id="dashboard-live"' in html
+    assert 'id="dashboard-live-panel"' in html
+    assert 'role="region" aria-label="Bot đang theo dõi"' in html
+    assert 'id="dashboard-open-trade"' in html
+    assert 'id="dashboard-live-metrics" type="application/json"' in html
+    assert '<script src="/static/dashboard-live.js" defer></script>' in html
+    assert 'id="performance-heading"' in html
+
+
+def test_number2_vi_rounds_only_for_display() -> None:
+    from trading_bot.admin.presentation import number2_vi, number_vi
+
+    assert number2_vi("-269.60640000") == "-269,61"
+    assert number2_vi("1234567.005") == "1.234.567,01"
+    assert number2_vi("13.10") == "13,1"
+    assert number2_vi("0E-8") == "0"
+    assert number2_vi("abc") == "Chưa có dữ liệu"
+    # Bộ lọc gốc vẫn giữ nguyên độ chính xác (hợp đồng MB-06).
+    assert number_vi("-269.60640000") == "-269,60640000"
+
+
+def test_local_minute_drops_seconds_and_uses_vietnam_time() -> None:
+    from trading_bot.admin.presentation import local_minute
+
+    assert local_minute("2026-11-14T06:13:52+00:00") == "14/11 13:13"
+    assert local_minute("not-a-date") == "Chưa có dữ liệu"
+    assert local_minute("2026-11-14T06:13:52") == "Chưa có dữ liệu"

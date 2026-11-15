@@ -20,3 +20,7 @@ Phiên bản thư mục nguồn Google Fonts được đối chiếu: `c13390277
 - `vendor/lightweight-charts-5.2.1.standalone.production.js`: `e21cc5caa0226ef30bd8549c50b9ef926615f2a4ee6b4e486353477a55f598cf`.
 - `vendor/lightweight-charts-LICENSE.txt`: `70c9d5382506dd184465425c08a99ad9bd6d9ac1313c252968ba0b585e5ef823`.
 - `vendor/lightweight-charts-NOTICE.txt`: `f76c6afab94884448f0426e30d6e9d555ca7247894cd3484e477d2f87513036e`.
+
+## Tài sản tự tạo của dự án
+
+- `icons/chevron-down.svg`: mũi tên ô chọn do dự án tự vẽ (không lấy từ bên thứ ba), thay ảnh `data:` nhúng trong Bootstrap vì CSP `default-src 'self'` chặn nguồn `data:`.

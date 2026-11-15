@@ -1,0 +1,33 @@
+# Bật Telegram cho stack local để kiểm thử thật với bot của chính owner.
+#
+# Dùng kèm compose.yaml:
+#   docker compose -p <project> -f compose.yaml -f compose.telegram-local.yaml \
+#     --profile paper --profile signal up -d
+#
+# Biến môi trường bắt buộc (không có giá trị mặc định để tránh bật nhầm workspace):
+#   TRADING_BOT_TELEGRAM_WORKSPACE_ID  workspace nhận lệnh /start và gửi tín hiệu
+#   TRADING_BOT_TELEGRAM_BOT_USERNAME  username của bot (không có @)
+#
+# Secret (gitignored, chmod 600): .secrets/telegram_bot_token và
+# .secrets/telegram_webhook_secret (32–256 ký tự A-Za-z0-9_-).
+#
+# Máy local không có HTTPS công khai cho webhook, nên `scripts/telegram_local_relay.py`
+# lấy update bằng getUpdates rồi chuyển tới webhook của admin-web trên 127.0.0.1.
+# Chỉ chế độ PAPER; không có lệnh nào gửi tới sàn.
+
+services:
+  admin-web:
+    environment:
+      TRADING_BOT_TELEGRAM_WORKSPACE_ID: ${TRADING_BOT_TELEGRAM_WORKSPACE_ID:?Cần workspace cho Telegram}
+      TRADING_BOT_TELEGRAM_BOT_USERNAME: ${TRADING_BOT_TELEGRAM_BOT_USERNAME:?Cần username của bot}
+      TRADING_BOT_TELEGRAM_WEBHOOK_SECRET_FILE: /run/secrets/telegram_webhook_secret
+    secrets:
+      - telegram_webhook_secret
+
+  telegram-signal-worker:
+    environment:
+      TRADING_BOT_SIGNAL_WORKSPACE_ID: ${TRADING_BOT_TELEGRAM_WORKSPACE_ID:?Cần workspace cho Telegram}
+
+secrets:
+  telegram_webhook_secret:
+    file: ./.secrets/telegram_webhook_secret

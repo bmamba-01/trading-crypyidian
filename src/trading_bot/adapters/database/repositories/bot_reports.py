@@ -17,6 +17,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from trading_bot.adapters.database.models import BotInstance
+from trading_bot.adapters.database.models.entities import PaperAccountSeed
 from trading_bot.adapters.database.models.market_entities import MarketBar
 from trading_bot.adapters.database.models.paper_entities import (
     FillRecord,
@@ -25,6 +26,7 @@ from trading_bot.adapters.database.models.paper_entities import (
     TradeCostRecord,
     TradeRecord,
 )
+from trading_bot.adapters.database.models.risk_entities import TradePlanRecord
 from trading_bot.adapters.database.models.signal_entities import BotDecisionRecord
 from trading_bot.domain.portfolio.reporting import (
     INTENT_LINEAGE_KEYS,
@@ -188,6 +190,92 @@ class BotReportRepository:
             [_fill(row) for row in fills],
             [_position_event(row) for row in position_events],
         )
+
+    async def load_account_seed(self, *, workspace_id: UUID, bot_id: UUID) -> dict[str, Any] | None:
+        """Vốn ban đầu của tài khoản PAPER của bot (bất biến, một hàng cho mỗi tài khoản).
+
+        Chỉ chọn các cột admin-web được cấp SELECT (migration `d2e4f6a8b0c1`); dòng được lọc bởi
+        RLS `bot_member_isolation`. Không có hàng thì trả None để nơi gọi ghi "chưa có dữ liệu".
+        """
+        result = await self._session.execute(
+            select(
+                PaperAccountSeed.quote_asset,
+                PaperAccountSeed.initial_equity,
+                PaperAccountSeed.created_at,
+            )
+            .where(
+                PaperAccountSeed.workspace_id == workspace_id,
+                PaperAccountSeed.bot_id == bot_id,
+            )
+            .order_by(PaperAccountSeed.created_at.desc())
+            .limit(1)
+        )
+        row = result.first()
+        if row is None:
+            return None
+        return {
+            "quote_asset": row.quote_asset,
+            "initial_equity": str(row.initial_equity),
+            "created_at": row.created_at.isoformat(),
+        }
+
+    async def load_trade_plans(
+        self, *, workspace_id: UUID, bot_id: UUID, account_id: UUID, trade_ids: Sequence[UUID]
+    ) -> dict[UUID, dict[str, Any]]:
+        """Đọc kế hoạch đã được risk gate duyệt của các trade (giá, đòn bẩy, chi phí dự trù).
+
+        Kế hoạch được ghim qua `trade.lineage.plan_hash`. Trade thiếu hash hoặc thiếu hàng kế
+        hoạch không có mặt trong kết quả, để nơi gọi ghi "chưa có dữ liệu" thay vì suy diễn.
+        """
+        if not trade_ids:
+            return {}
+        trades = await self._scalars(
+            select(TradeRecord).where(
+                TradeRecord.workspace_id == workspace_id,
+                TradeRecord.bot_id == bot_id,
+                TradeRecord.account_id == account_id,
+                TradeRecord.id.in_(list(trade_ids)),
+            )
+        )
+        hashes = {
+            trade.id: trade.lineage["plan_hash"]
+            for trade in trades
+            if isinstance((trade.lineage or {}).get("plan_hash"), str)
+        }
+        if not hashes:
+            return {}
+        plans = await self._scalars(
+            select(TradePlanRecord).where(
+                TradePlanRecord.workspace_id == workspace_id,
+                TradePlanRecord.bot_id == bot_id,
+                TradePlanRecord.account_id == account_id,
+                TradePlanRecord.plan_hash.in_(sorted(set(hashes.values()))),
+            )
+        )
+        fields = (
+            "entry_reference_price",
+            "entry_price",
+            "stop_price",
+            "target_price",
+            "quantity",
+            "notional",
+            "leverage",
+            "initial_margin",
+            "risk_budget",
+            "estimated_loss",
+            "entry_slippage_cost",
+        )
+        by_hash = {
+            plan.plan_hash: {key: plan.payload.get(key) for key in fields}
+            | {"plan_hash": plan.plan_hash}
+            for plan in plans
+            if isinstance(plan.payload, dict)
+        }
+        return {
+            trade_id: by_hash[plan_hash]
+            for trade_id, plan_hash in hashes.items()
+            if plan_hash in by_hash
+        }
 
     async def load_trade_bars(
         self,

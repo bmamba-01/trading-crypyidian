@@ -1,8 +1,14 @@
 """Nhãn và định dạng tiếng Việt; không đổi mã máy hoặc tính lại số liệu báo cáo."""
 
 from datetime import datetime
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from zoneinfo import ZoneInfo
+
+from trading_bot.admin.metric_help import (
+    metric_help_dom_id,
+    metric_help_or_none,
+    metric_help_title,
+)
 
 MARKET_UP_COLOR = "#0ECB81"
 MARKET_DOWN_COLOR = "#F6465D"
@@ -58,12 +64,15 @@ LABELS = {
     "POSITION": "Vị thế",
     "ENTRY": "Vào vị thế",
     "EXIT": "Đóng vị thế",
+    "EXPERIMENTAL_UNVALIDATED": "Thử nghiệm, chưa kiểm định",
     "LONG": "Mua lên",
     "SHORT": "Bán xuống",
     "STOP_LOSS": "Dừng lỗ",
     "TAKE_PROFIT": "Chốt lời",
     "TIME_STOP": "Đóng theo thời gian",
     "OPPOSING_SIGNAL": "Tín hiệu ngược chiều",
+    "CHANNEL_EXIT": "Thoát theo kênh giá",
+    "FEATURE_EXIT": "Thoát theo chỉ báo",
     "FLATTEN_OPERATION": "Đóng theo thao tác quản trị",
     "ORDER": "Lệnh",
     "OPEN_ORDER": "Lệnh mở",
@@ -96,6 +105,13 @@ METRICS = (
     ("max_drawdown", "Mức sụt giảm tối đa đã thực hiện", True),
 )
 
+# Hàm chú giải chỉ số đăng ký làm biến toàn cục Jinja; nội dung nằm ở `admin/metric_help.py`.
+METRIC_HELP_GLOBALS = {
+    "metric_help_lookup": metric_help_or_none,
+    "metric_help_title": metric_help_title,
+    "metric_help_dom_id": metric_help_dom_id,
+}
+
 
 def label_vi(value: object) -> str:
     """Mã chưa nhận biết không được trình bày như trạng thái đã xác minh."""
@@ -124,6 +140,36 @@ def number_vi(value: object) -> str:
         return format(number, "f").replace(".", ",")
     except InvalidOperation, ValueError:
         return "Chưa có dữ liệu"
+
+
+def local_minute(value: object) -> str:
+    """Thời điểm rút gọn tới phút theo giờ Việt Nam, ví dụ "14/11 13:13"."""
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        try:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except ValueError:
+            return "Chưa có dữ liệu"
+    if parsed.tzinfo is None:
+        return "Chưa có dữ liệu"
+    return parsed.astimezone(ZoneInfo("Asia/Ho_Chi_Minh")).strftime("%d/%m %H:%M")
+
+
+def number2_vi(value: object) -> str:
+    """Chỉ để hiển thị gọn: làm tròn 2 chữ số (nửa lên), phân cách nghìn bằng dấu chấm.
+
+    Số gốc từ ledger không đổi; trang nào cần độ chính xác đầy đủ dùng `number_vi`.
+    """
+    try:
+        number = Decimal(str(value))
+        if not number.is_finite():
+            return "Chưa có dữ liệu"
+    except InvalidOperation, ValueError:
+        return "Chưa có dữ liệu"
+    rounded = number.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    text = f"{rounded:,.2f}".rstrip("0").rstrip(".")
+    return text.replace(",", "\u00a0").replace(".", ",").replace("\u00a0", ".")
 
 
 def pnl_tone(value: object) -> str:

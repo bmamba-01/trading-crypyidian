@@ -18,8 +18,14 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import Page, expect, sync_playwright
 
+from tests.e2e.csp_harness import (
+    browser_violations,  # noqa: F401 - fixture nạp qua usefixtures
+    install_security_headers,
+    watch_browser_violations,
+)
+from trading_bot.admin.metric_help import HELP
 from trading_bot.admin.presentation import label_vi, local_time, number_vi, pnl_tone
 from trading_bot.admin.web_router import router as admin_web_router
 from trading_bot.application.learning_post_mortem import LearningPostMortemService
@@ -38,9 +44,8 @@ from trading_bot.domain.portfolio.reporting import (
     build_bot_report,
 )
 
-SCREENSHOTS_DIR = Path(
-    "/Users/macbook/.gemini/antigravity/brain/4f23167d-60fd-49c3-8248-ddb2b669a2a7/screenshots"
-)
+# Ảnh chụp nằm trong repo để test chạy được trên mọi máy và không ghi ra ngoài dự án.
+SCREENSHOTS_DIR = Path(__file__).resolve().parent / "evidence" / "admin-playwright"
 SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
 
 WORKSPACE_ID = UUID("9b2299f1-a58e-45c7-b0ad-83feb0862510")
@@ -48,6 +53,50 @@ USER_ID = UUID("c3b4a5d6-e7f8-4a9b-0c1d-2e3f4a5b6c7d")
 MEMBERSHIP_ID = UUID("a93c4b18-f76c-4cfb-9bad-9e0aee5ccadc")
 BOT_ID = UUID("77117cc4-6c7f-407e-8f23-948d740a46c2")
 TRADE_ID = UUID("11223344-5566-7788-99aa-bbccddeeff00")
+
+pytestmark = pytest.mark.usefixtures("browser_violations")
+
+
+def assert_metric_tooltip(page: Page, key: str, *, mode: str) -> None:
+    """Mở chú giải của một chỉ số bằng focus, bấm chuột hoặc chạm rồi đóng bằng Escape.
+
+    Nội dung phải khớp từ điển phía máy chủ; khi tooltip mở, trang không được tràn ngang và
+    tooltip phải nằm trọn trong khung nhìn.
+    """
+    trigger = page.locator(f'button.metric-help[data-metric-help="{key}"]:visible').first
+    trigger.scroll_into_view_if_needed()
+    tooltip_id = trigger.get_attribute("aria-describedby")
+    assert tooltip_id
+    tooltip = page.locator(f"#{tooltip_id}")
+    expect(tooltip).to_have_attribute("role", "tooltip")
+    expect(tooltip).to_be_hidden()
+    expect(trigger).to_have_attribute("aria-expanded", "false")
+
+    if mode == "focus":
+        trigger.focus()
+    elif mode == "click":
+        trigger.click()
+    elif mode == "tap":
+        trigger.tap()
+    else:  # pragma: no cover - lỗi viết test
+        raise AssertionError(mode)
+
+    expect(tooltip).to_be_visible()
+    expect(trigger).to_have_attribute("aria-expanded", "true")
+    entry = HELP[key]
+    expect(tooltip).to_contain_text(entry.title_vi)
+    expect(tooltip).to_contain_text(entry.definition_vi)
+    expect(tooltip).to_contain_text(entry.limits_vi)
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), (key, mode)
+    box = tooltip.bounding_box()
+    viewport = page.viewport_size
+    assert box is not None and viewport is not None
+    assert box["x"] >= 0 and box["x"] + box["width"] <= viewport["width"], (key, mode, box)
+    assert box["y"] >= 0 and box["y"] + box["height"] <= viewport["height"], (key, mode, box)
+
+    page.keyboard.press("Escape")
+    expect(tooltip).to_be_hidden()
+    expect(trigger).to_have_attribute("aria-expanded", "false")
 
 
 class MockRevampAuthService:
@@ -136,6 +185,12 @@ class MockRevampReportingService:
 
     def __init__(self) -> None:
         self.trade_id = TRADE_ID
+
+    async def get_dashboard_reports(
+        self, query: Any, principal: Any, *, bot_ids: frozenset[UUID] | None = None
+    ) -> tuple[Any, ...]:
+        """Dashboard đọc thống kê 30 ngày theo lô; mock này không có giao dịch đã đóng."""
+        return ()
 
     async def get_bot_report(self, query: Any, principal: Principal) -> Any:
         now = datetime.now(UTC)
@@ -300,6 +355,12 @@ class MockRevampReportingService:
             end=query.end,
         )
 
+    async def get_trade_plan_summaries(
+        self, query: Any, principal: Any, *, trade_ids: Any
+    ) -> dict[UUID, dict[str, Any]]:
+        """Mock ledger này không ghim kế hoạch đã duyệt cho trade."""
+        return {}
+
     async def get_trade_chart(
         self,
         query: Any,
@@ -410,6 +471,7 @@ def create_revamp_test_app() -> FastAPI:
 
     app.mount("/static", StaticFiles(directory="src/trading_bot/static"), name="static")
     app.include_router(admin_web_router)
+    install_security_headers(app)
     return app
 
 
@@ -442,6 +504,7 @@ def test_trading_revamp_playwright_desktop_and_mobile(revamp_server_url: str) ->
         # =========================================================================
         desktop_ctx = browser.new_context(viewport={"width": 1280, "height": 800})
         page = desktop_ctx.new_page()
+        watch_browser_violations(page)
 
         # Đăng nhập
         page.goto(f"{base_url}/admin/login", wait_until="networkidle")
@@ -473,7 +536,7 @@ def test_trading_revamp_playwright_desktop_and_mobile(revamp_server_url: str) ->
         page.goto(f"{base_url}/admin/reports", wait_until="networkidle")
 
         # Kiểm tra các nút Quick Filter Presets
-        assert page.locator("button:has-text('Hôm Nay')").is_visible()
+        assert page.locator("button:has-text('Hôm nay')").is_visible()
         assert page.locator("button:has-text('7 Ngày Qua')").is_visible()
         assert page.locator("button:has-text('30 Ngày Qua')").is_visible()
 
@@ -484,24 +547,34 @@ def test_trading_revamp_playwright_desktop_and_mobile(revamp_server_url: str) ->
         assert len(start_val) >= 19
         assert len(end_val) >= 19
 
-        # Chọn Bot và nhấn Phân Tích
+        # Chọn bot và nhấn Phân tích
         page.locator("#bot_id").select_option(str(BOT_ID))
-        page.locator("button:has-text('📊 Phân Tích')").click()
+        page.locator("button:has-text('Phân tích')").click()
         page.wait_for_load_state("networkidle")
 
         # 1.3 Kiểm tra Lưới Trading Metric Cards và Tooltips
         assert page.locator("text=Tài Sản Ký Quỹ / Định Giá:").is_visible()
-        assert page.locator("text=Lời / Lỗ Ròng (Net PnL)").is_visible()
-        assert page.locator("text=Tỷ Lệ Thắng (Win Rate)").is_visible()
-        assert page.locator("text=Profit Factor").is_visible()
-        assert page.locator("text=Max Drawdown").is_visible()
-        assert page.locator("text=Thời Gian Giữ Lệnh").first.is_visible()
+        assert page.get_by_role("button", name="Lời / Lỗ Ròng (Net PnL)", exact=True).is_visible()
+        assert page.get_by_role("button", name="Tỷ Lệ Thắng (Win Rate)", exact=True).is_visible()
+        assert page.get_by_role("button", name="Profit Factor", exact=True).is_visible()
+        assert page.get_by_role("button", name="Max Drawdown", exact=True).is_visible()
+        assert page.get_by_role("button", name="Thời Gian Giữ Lệnh", exact=True).is_visible()
 
-        # Kiểm tra Tooltips có đầy đủ thuộc tính data-tooltip
-        tooltips = page.locator(".tooltip-term")
-        assert tooltips.count() >= 4
-        first_tooltip = tooltips.first.get_attribute("data-tooltip")
-        assert first_tooltip is not None and len(first_tooltip) > 5
+        # Chú giải chỉ số: nút thật có aria-describedby, mở bằng bàn phím và chuột, Escape đóng.
+        assert page.locator("[data-tooltip]").count() == 0
+        assert page.locator("button.metric-help").count() >= 20
+        for key in ("win_rate_percent", "profit_factor", "max_drawdown"):
+            assert_metric_tooltip(page, key, mode="focus")
+            assert_metric_tooltip(page, key, mode="click")
+        assert_metric_tooltip(page, "daily_pnl_calendar", mode="focus")
+        assert_metric_tooltip(page, "report_window_start", mode="click")
+        # Tab từ ô nhập kế trước phải đưa focus bàn phím tới nút chú giải.
+        page.locator("#bot_id").focus()
+        page.keyboard.press("Tab")
+        expect(
+            page.locator('button.metric-help[data-metric-help="report_window_start"]')
+        ).to_be_focused()
+        page.keyboard.press("Escape")
 
         # Chụp màn hình trang Báo cáo với Trading Design System
         page.screenshot(
@@ -519,15 +592,72 @@ def test_trading_revamp_playwright_desktop_and_mobile(revamp_server_url: str) ->
         assert page.locator("#trade-chart").is_visible()
         assert page.locator("#trade-chart-event-detail").is_visible()
 
+        # 1.4b Chú thích tĩnh và chú giải theo con trỏ của biểu đồ nến (tiếng Việt)
+        expect(page.locator("#trade-chart")).to_have_attribute("data-chart-ready", "true")
+        chart_key = page.locator(".trade-chart-section .chart-key").first
+        for caption in (
+            "Nến xanh",
+            "Mũi tên vào lệnh",
+            "Mốc đóng lệnh",
+            "Khung thời gian: 1h",
+            "Nguồn nến nội bộ",
+        ):
+            expect(chart_key).to_contain_text(caption)
+        # Ledger không có SL/TP cho giao dịch này nên không được chú thích đường không tồn tại.
+        assert page.locator('[data-metric-help="chart_stop_line"]').count() == 0
+        assert page.locator('[data-metric-help="chart_target_line"]').count() == 0
+        assert_metric_tooltip(page, "chart_entry_marker", mode="focus")
+        assert_metric_tooltip(page, "candle_ohlc", mode="click")
+
+        legend = page.locator("#trade-chart-legend")
+        expect(legend).to_contain_text("Rê chuột hoặc chạm vào nến")
+        page.locator("#trade-chart").scroll_into_view_if_needed()
+        chart_box = page.locator("#trade-chart").bounding_box()
+        assert chart_box is not None
+        plot_y = chart_box["y"] + chart_box["height"] / 2
+        for x_position in range(
+            int(chart_box["x"]) + 40, int(chart_box["x"] + chart_box["width"]) - 80, 12
+        ):
+            page.mouse.move(x_position, plot_y)
+        expect(legend).to_have_attribute("data-legend-source", "crosshair")
+        for caption in (
+            "Mở",
+            "Cao",
+            "Thấp",
+            "Đóng",
+            "Thay đổi so với giá mở",
+            "Khối lượng",
+            "Asia/Ho_Chi_Minh",
+        ):
+            expect(legend).to_contain_text(caption)
+        page.mouse.move(2, 2)
+
         # 1.5 Kiểm tra Thẻ "Mổ Xẻ Quyết Định Định Lượng & Quản Trị Rủi Ro"
         assert page.locator("text=Mổ Xẻ Quyết Định Định Lượng & Quản Trị Rủi Ro").is_visible()
         assert page.locator("text=Vì Sao Vào Vị Thế?").is_visible()
         assert page.locator("text=Vì Sao Thoát Vị Thế?").is_visible()
-        assert page.locator("text=L4 Cửa Bối Cảnh (Context Gate)").is_visible()
-        assert page.locator("text=L5 Điểm Kích Hoạt (Trigger Score)").is_visible()
-        assert page.locator("text=L6 Tỷ Lệ R:R & Kế Hoạch Vùng Giá").is_visible()
-        assert page.locator("text=Trượt giá thực tế (Slippage)").is_visible()
-        assert page.locator("text=Đòn bẩy đề xuất (Leverage)").is_visible()
+        assert page.get_by_role(
+            "button", name="L4 Cửa Bối Cảnh (Context Gate)", exact=True
+        ).is_visible()
+        assert page.get_by_role(
+            "button", name="L5 Điểm Kích Hoạt (Trigger Score)", exact=True
+        ).is_visible()
+        assert page.get_by_role(
+            "button", name="L6 Tỷ Lệ R:R & Kế Hoạch Vùng Giá", exact=True
+        ).is_visible()
+        assert page.get_by_role(
+            "button", name="Trượt giá thực tế (Slippage)", exact=True
+        ).is_visible()
+        assert page.get_by_role(
+            "button", name="Đòn bẩy & rủi ro tài khoản", exact=True
+        ).is_visible()
+        # Ledger PAPER không lưu L4–L6, đòn bẩy hay SL/TP: panel phải ghi rõ thay vì tự điền.
+        reasoning_panel = page.locator(".trade-reasoning-panel")
+        expect(reasoning_panel.get_by_text("Ledger chưa lưu", exact=True).first).to_be_visible()
+        for fabricated in ("5x (Rủi ro: 1.0%)", "78.5/100", "82.0/100", "ĐẠT (TRENDING)"):
+            assert reasoning_panel.get_by_text(fabricated).count() == 0
+        expect(page.locator("#post-mortem-unevaluated")).to_contain_text("lỗ vượt kế hoạch")
+        assert page.get_by_text("Mục tiêu chốt lời (TP)").count() == 0
 
         # 1.6 Kiểm tra Thao tác "Đưa Ca Này Vào Dữ Liệu Phạt AI"
         ingest_btn = page.locator("#btn-ingest-ai")
@@ -536,7 +666,7 @@ def test_trading_revamp_playwright_desktop_and_mobile(revamp_server_url: str) ->
 
         # Xác minh phản hồi thành công tức thì
         page.wait_for_selector("#ai-ingest-feedback", state="visible", timeout=5000)
-        assert "Đã tiếp nhận thành công!" in page.locator("#ai-ingest-feedback").inner_text()
+        assert "Đã ghi nhận để rà soát" in page.locator("#ai-ingest-feedback").inner_text()
 
         # Chụp màn hình biểu đồ và phân tích quyết định
         page.screenshot(
@@ -555,6 +685,7 @@ def test_trading_revamp_playwright_desktop_and_mobile(revamp_server_url: str) ->
             has_touch=True,
         )
         page_m = mobile_ctx.new_page()
+        watch_browser_violations(page_m)
 
         # Đăng nhập mobile
         page_m.goto(f"{base_url}/admin/login", wait_until="networkidle")
@@ -582,6 +713,27 @@ def test_trading_revamp_playwright_desktop_and_mobile(revamp_server_url: str) ->
         assert page_m.locator("#trade-chart").is_visible()
         assert page_m.locator("text=Mổ Xẻ Quyết Định Định Lượng & Quản Trị Rủi Ro").is_visible()
 
+        # Chú giải mở bằng chạm trên di động, không làm tràn ngang ở 390px và 360px
+        assert page_m.evaluate("document.documentElement.scrollWidth <= innerWidth")
+        for key in ("net_pnl", "max_drawdown", "trade_slippage", "chart_exit_marker"):
+            assert_metric_tooltip(page_m, key, mode="tap")
+        tapped = page_m.locator(
+            'button.metric-help[data-metric-help="profit_factor"]:visible'
+        ).first
+        tapped.scroll_into_view_if_needed()
+        tapped.tap()
+        open_tooltip = page_m.locator(f"#{tapped.get_attribute('aria-describedby')}")
+        expect(open_tooltip).to_be_visible()
+        page_m.screenshot(path=str(SCREENSHOTS_DIR / "26_metric_tooltip_mobile.png"))
+        # Chạm ra ngoài phải đóng tooltip đang ghim.
+        page_m.locator("#report-results-heading").tap()
+        expect(open_tooltip).to_be_hidden()
+        page_m.set_viewport_size({"width": 360, "height": 780})
+        assert page_m.evaluate("document.documentElement.scrollWidth <= innerWidth")
+        for key in ("average_holding_seconds", "execution_quality", "slippage_total"):
+            assert_metric_tooltip(page_m, key, mode="tap")
+        page_m.set_viewport_size({"width": 390, "height": 844})
+
         # Chụp screenshots mobile
         page_m.screenshot(
             path=str(SCREENSHOTS_DIR / "16_trading_revamp_mobile.png"), full_page=True
@@ -605,6 +757,7 @@ def test_bot_detail_trading_revamp_playwright_desktop_and_mobile(
         # =========================================================================
         desktop_ctx = browser.new_context(viewport={"width": 1280, "height": 800})
         page = desktop_ctx.new_page()
+        watch_browser_violations(page)
 
         # Đăng nhập
         page.goto(f"{base_url}/admin/login", wait_until="networkidle")
@@ -621,8 +774,13 @@ def test_bot_detail_trading_revamp_playwright_desktop_and_mobile(
         # 1.1 Kiểm tra Header Bot và Badges
         assert page.locator("text=Binance BTC Trend Pullback H01").first.is_visible()
         assert page.locator("text=BTCUSDT").first.is_visible()
-        assert page.locator("text=● ĐANG CHẠY").is_visible()
-        assert page.get_by_text("Chế độ: Mô phỏng (PAPER)", exact=True).is_visible()
+        # Huy hiệu trạng thái theo mã máy (RUNNING → "Đang xử lý", tô màu thành công) và chế độ PAPER.
+        overview = page.locator(".bot-overview")
+        expect(overview.locator(".badge-success", has_text="Đang xử lý")).to_be_visible()
+        expect(overview.locator(".badge-paper")).to_have_text("Mô phỏng")
+        expect(page.locator("#bot-state-summary")).to_have_text(
+            "Đang xử lý / Đang hoạt động / Mô phỏng"
+        )
 
         # 1.2 Kiểm tra Live Status Bar 5s
         assert page.locator(".live-status-bar").is_visible()
@@ -637,35 +795,66 @@ def test_bot_detail_trading_revamp_playwright_desktop_and_mobile(
         toggle_btn.click()
         assert toggle_btn.inner_text() == "Tạm dừng"
 
-        # 1.3 Kiểm tra Lưới Thẻ Chỉ Số KPI Trading
-        assert page.locator("#kpi-open-positions").is_visible()
-        assert page.locator("#kpi-win-rate").is_visible()
+        # 1.3 KPI đọc từ báo cáo ledger của mock (1 lệnh thắng, lãi ròng 373,5 USDT)
+        expect(page.locator("#kpi-open-positions")).to_have_text("0")
+        expect(page.locator("#kpi-win-rate")).to_have_text("100%")
+        expect(page.locator("#kpi-closed-trades")).to_have_text("1")
+        # Tiền làm tròn 2 chữ số, USDT bằng biểu tượng ₮ có nhãn trợ năng.
+        expect(page.locator("#kpi-net-pnl")).to_contain_text("+373,5")
+        expect(page.locator("#kpi-net-pnl .asset-usdt")).to_have_attribute("aria-label", "USDT")
+        expect(page.locator("#kpi-net-pnl .pnl-value")).to_have_attribute(
+            "data-pnl-tone", "positive"
+        )
         assert page.locator("#kpi-profit-factor").is_visible()
-        assert page.locator("#kpi-net-pnl").is_visible()
         assert page.locator("#kpi-max-drawdown").is_visible()
+        assert page.locator("#bot-trading-data-unavailable").count() == 0
+        for key in ("open_positions_count", "expectancy_per_trade"):
+            assert_metric_tooltip(page, key, mode="focus")
+            assert_metric_tooltip(page, key, mode="click")
+        hovered = page.locator('button.metric-help[data-metric-help="max_drawdown"]:visible').first
+        hovered.hover()
+        hover_tooltip = page.locator(f"#{hovered.get_attribute('aria-describedby')}")
+        expect(hover_tooltip).to_be_visible()
+        expect(hover_tooltip).to_contain_text("mark-to-market")
+        page.screenshot(path=str(SCREENSHOTS_DIR / "27_metric_tooltip_desktop.png"))
+        page.keyboard.press("Escape")
+        expect(hover_tooltip).to_be_hidden()
 
-        # 1.4 Kiểm tra Biểu đồ nến Lightweight Charts
-        assert page.locator("#trade-chart").is_visible()
+        # 1.4 Biểu đồ nến của giao dịch đã đóng gần nhất được vẽ thật (thư viện từ /static)
+        expect(page.locator("#trade-chart")).to_have_attribute("data-chart-ready", "true")
+        chart_box = page.locator("#trade-chart").bounding_box()
+        assert chart_box is not None and chart_box["height"] >= 300
         assert page.locator("#trade-chart-event-detail").is_visible()
-        assert page.locator("text=Chốt lời (🎯 TP)").is_visible()
-        assert page.locator("text=Dừng lỗ (🛑 SL)").is_visible()
 
-        # 1.5 Kiểm tra Bảng Vị Thế Đang Mở và Thẻ Reasoning L4-L6
+        # 1.5 Vị thế mở (tab riêng): mock không có lệnh đang mở nên phải hiện trạng thái rỗng trung thực
+        assert page.locator("#open-positions-heading").is_hidden()
+        page.get_by_role("tab", name="Vị thế mở").click()
+        expect(page.locator("#tab-bot-positions")).to_have_attribute("aria-selected", "true")
         assert page.locator("#open-positions-heading").is_visible()
-        assert page.locator("text=Khối Lượng").first.is_visible()
-        assert page.locator("text=Đòn Bẩy").first.is_visible()
-        assert page.locator("text=Giá Vào Lệnh").first.is_visible()
-        assert page.locator("text=L4 Cửa Bối Cảnh (Context Gate)").first.is_visible()
-        assert page.locator("text=L5 Điểm Kích Hoạt (Trigger Score)").first.is_visible()
-        assert page.locator("text=L6 Vùng Giá & Tỷ Lệ R:R").first.is_visible()
+        assert page.locator("#trade-chart").is_hidden()
+        expect(page.locator("#positions-count-badge")).to_have_text("0")
+        assert page.get_by_text("Bot hiện không có vị thế PAPER đang mở.").is_visible()
+        for fabricated in ("0.050 BTC", "ĐÃ DUYỆT TÍN HIỆU L4-L6", "TREND_HAMMER_V2"):
+            assert page.get_by_text(fabricated).count() == 0
 
-        # 1.6 Kiểm tra lịch sử giao dịch và điều kiện tiếp nhận phản hồi
+        # 1.6 Lịch sử lệnh (tab, phím mũi tên theo WAI-ARIA): khối lượng và giá lấy từ fills
+        page.locator("#tab-bot-positions").focus()
+        page.keyboard.press("ArrowRight")
+        page.keyboard.press("Enter")
+        expect(page.locator("#tab-bot-trades")).to_have_attribute("aria-selected", "true")
         assert page.locator("#recent-trades-heading").is_visible()
-        assert page.locator("text=Vì sao vào:").first.is_visible()
-        assert page.locator("text=Vì sao thoát:").first.is_visible()
+        recent_rows = page.locator("#recent-trades-tbody")
+        expect(recent_rows).to_contain_text("BTCUSDT")
+        expect(recent_rows).to_contain_text("94960")
+        expect(recent_rows.locator(".coin-chip").first).to_be_visible()
+        expect(recent_rows.locator(".side-badge--long").first).to_be_visible()
+        assert page.get_by_text("Vì sao vào", exact=True).first.is_visible()
+        assert page.get_by_text("Vì sao thoát", exact=True).first.is_visible()
+        assert_metric_tooltip(page, "trade_entry_price", mode="focus")
+        assert_metric_tooltip(page, "trade_entry_price", mode="click")
         ai_btn = page.locator(".btn-ingest-ai").first
         assert ai_btn.count() == 0
-        assert page.get_by_text("Thực thi đạt chuẩn").is_visible()
+        assert page.get_by_text("Không phát hiện sai lệch").is_visible()
 
         # Chụp màn hình Desktop Light Theme
         page.screenshot(
@@ -673,8 +862,14 @@ def test_bot_detail_trading_revamp_playwright_desktop_and_mobile(
             full_page=True,
         )
 
-        # Chuyển sang Dark Theme và chụp
-        page.evaluate("() => document.documentElement.setAttribute('data-theme', 'dark')")
+        # Chuyển chủ đề bằng nút thật: xác nhận theme-toggle.js chạy được dưới CSP
+        before_theme = page.locator("html").get_attribute("data-theme")
+        page.locator("#theme-toggle").click()
+        after_theme = page.locator("html").get_attribute("data-theme")
+        assert {before_theme, after_theme} == {"light", "dark"}
+        if after_theme != "dark":
+            page.locator("#theme-toggle").click()
+        expect(page.locator("html")).to_have_attribute("data-theme", "dark")
         page.screenshot(
             path=str(SCREENSHOTS_DIR / "24_bot_detail_dark_desktop.png"),
             full_page=True,
@@ -691,6 +886,7 @@ def test_bot_detail_trading_revamp_playwright_desktop_and_mobile(
             has_touch=True,
         )
         page_m = mobile_ctx.new_page()
+        watch_browser_violations(page_m)
 
         # Đăng nhập mobile
         page_m.goto(f"{base_url}/admin/login", wait_until="networkidle")
@@ -707,8 +903,20 @@ def test_bot_detail_trading_revamp_playwright_desktop_and_mobile(
         # Xác nhận hiển thị responsive trên mobile
         assert page_m.locator("text=Binance BTC Trend Pullback H01").first.is_visible()
         assert page_m.locator(".live-status-bar").is_visible()
-        assert page_m.locator("#trade-chart").is_visible()
+        expect(page_m.locator("#trade-chart")).to_have_attribute("data-chart-ready", "true")
+        assert page_m.evaluate("document.documentElement.scrollWidth <= innerWidth")
+        for key in ("win_rate_percent", "max_drawdown", "chart_timeframe"):
+            assert_metric_tooltip(page_m, key, mode="tap")
+        page_m.get_by_role("tab", name="Vị thế mở").tap()
         assert page_m.locator("#open-positions-heading").is_visible()
+        page_m.get_by_role("tab", name="Lịch sử lệnh").tap()
+        page_m.locator(".bot-legend > summary").tap()
+        assert_metric_tooltip(page_m, "quality_unverified", mode="tap")
+        page_m.set_viewport_size({"width": 360, "height": 780})
+        assert page_m.evaluate("document.documentElement.scrollWidth <= innerWidth")
+        for key in ("net_pnl", "trade_exit_price"):
+            assert_metric_tooltip(page_m, key, mode="tap")
+        page_m.set_viewport_size({"width": 390, "height": 844})
 
         # Chụp màn hình Mobile
         page_m.screenshot(
@@ -717,4 +925,105 @@ def test_bot_detail_trading_revamp_playwright_desktop_and_mobile(
         )
 
         mobile_ctx.close()
+        browser.close()
+
+
+BOT_PAGE_WIDTHS = (360, 390, 768, 1024, 1280, 1440, 2000)
+
+
+def assert_bot_page_layout(page: Page, name: str, width: int) -> None:
+    """Không tràn ngang, mọi điều khiển hiển thị cao ≥ 44px và giá trị .kv không bị ngắt dòng."""
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), (name, width)
+    for element in page.locator("input:not([type=hidden]), select, textarea, button").all():
+        if element.is_visible():
+            bounds = element.bounding_box()
+            assert bounds is not None
+            assert bounds["height"] >= 44, (name, width, bounds)
+    # Giá trị trong hàng nhãn–giá trị nằm trên một dòng (trừ hàng rộng chứa nhiều chip).
+    wrapped = page.evaluate(
+        """() => [...document.querySelectorAll('.bot-page .kv:not(.kv--wide) > dd')]
+            .filter(dd => dd.offsetParent !== null && !dd.closest('.kv--text'))
+            .filter(dd => dd.getClientRects().length > 1
+                || dd.getBoundingClientRect().height > 2.2 * parseFloat(getComputedStyle(dd).fontSize) + 12)
+            .map(dd => dd.textContent.trim())"""
+    )
+    assert wrapped == [], (name, width, wrapped)
+
+
+def test_bot_pages_ui_kit_responsive_light_dark(revamp_server_url: str) -> None:
+    """Danh sách bot, tạo bot, chi tiết bot ở 360→2000px, sáng/tối; chụp ảnh để rà căn chỉnh."""
+    base_url = revamp_server_url
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        # Giảm chuyển động: sidebar không chạy hiệu ứng khi đổi kích thước nên ảnh/đo ổn định.
+        context = browser.new_context(
+            viewport={"width": 1280, "height": 900}, reduced_motion="reduce"
+        )
+        page = context.new_page()
+        watch_browser_violations(page)
+        page.goto(f"{base_url}/admin/login", wait_until="networkidle")
+        page.get_by_label("Mã không gian làm việc").fill("demo-workspace")
+        page.get_by_label("Địa chỉ thư điện tử").fill("admin@crypidian.io")
+        page.get_by_label("Mật khẩu").fill("correct_password")
+        page.get_by_label("Mã xác thực 6 chữ số").fill("123456")
+        page.get_by_role("button", name="Đăng nhập").click()
+        page.wait_for_load_state("networkidle")
+
+        # Danh sách bot: KPI đếm từ dữ liệu đã lọc quyền, liên kết tên bot tới trang chi tiết.
+        page.goto(f"{base_url}/admin/bots", wait_until="networkidle")
+        expect(page.locator("#bots-total")).to_have_text("1")
+        expect(page.get_by_role("link", name="Binance BTC Trend Pullback H01")).to_be_visible()
+        expect(page.get_by_role("link", name="Tạo bot mô phỏng")).to_be_visible()
+
+        pages = (
+            ("bots", "/admin/bots"),
+            ("bot_create", "/admin/bots/new"),
+            ("bot_detail", f"/admin/bots/{BOT_ID}"),
+        )
+        for theme in ("light", "dark"):
+            for name, path in pages:
+                page.goto(f"{base_url}{path}", wait_until="networkidle")
+                page.evaluate(
+                    "theme => document.documentElement.setAttribute('data-theme', theme)", theme
+                )
+                for width in BOT_PAGE_WIDTHS:
+                    page.set_viewport_size({"width": width, "height": 900})
+                    page.evaluate(
+                        """() => new Promise(resolve =>
+                            requestAnimationFrame(() => requestAnimationFrame(resolve)))"""
+                    )
+                    assert_bot_page_layout(page, f"{name}-{theme}", width)
+                    if name == "bot_detail":
+                        # Chip coin được nâng cấp từ [data-coin] bởi coins.js.
+                        assert page.locator("[data-coin]").count() == 0
+                        expect(page.locator(".bot-overview .coin-chip").first).to_be_visible()
+                    # Giá trị bị cắt bằng dấu ba chấm (tràn ô) là lỗi căn chỉnh.
+                    clipped = page.evaluate(
+                        """() => [...document.querySelectorAll('.bot-page .kv > dd')]
+                            .filter(dd => dd.offsetParent !== null && dd.scrollWidth > dd.clientWidth + 1)
+                            .map(dd => dd.textContent.trim())"""
+                    )
+                    assert clipped == [], (name, theme, width, clipped)
+                    if width in (390, 1440) or (theme == "light" and width in (360, 768, 2000)):
+                        # Đưa chuột ra khỏi sidebar để ảnh không chụp trạng thái rê chuột.
+                        page.mouse.move(width - 4, 880)
+                        page.screenshot(
+                            path=str(SCREENSHOTS_DIR / f"40_{name}_{theme}_{width}.png"),
+                            full_page=True,
+                        )
+                if name == "bot_detail":
+                    # Tab lịch sử lệnh ở 1440 và 390 để rà bảng/thẻ hậu kiểm.
+                    for width in (1440, 390):
+                        page.set_viewport_size({"width": width, "height": 900})
+                        page.locator("#tab-bot-trades").click()
+                        assert_bot_page_layout(page, f"{name}-trades-{theme}", width)
+                        page.mouse.move(width - 4, 880)
+                        page.wait_for_timeout(150)
+                        # Ảnh khung nhìn (ảnh phần tử bỏ sót lớp kính mờ ở giao diện tối).
+                        page.locator("#tab-bot-trades").scroll_into_view_if_needed()
+                        page.screenshot(
+                            path=str(SCREENSHOTS_DIR / f"41_bot_trades_{theme}_{width}.png")
+                        )
+                    page.locator("#tab-bot-chart").click()
+        context.close()
         browser.close()

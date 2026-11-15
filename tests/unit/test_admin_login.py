@@ -118,3 +118,54 @@ class _AuthStub:
             ),
             email="owner@example.test",
         )
+
+
+def test_login_form_supports_password_managers_and_remembers_only_non_secret_fields() -> None:
+    client = TestClient(create_app(AppSettings(app_env="test")))
+
+    page = client.get("/admin/login").text
+
+    # Trình quản lý mật khẩu (Google Password Manager, iCloud Keychain…) nhận diện cặp
+    # username/current-password; mã một lần dùng one-time-code để tự điền từ SMS/ứng dụng.
+    assert 'autocomplete="username"' in page
+    assert 'autocomplete="current-password"' in page
+    assert 'autocomplete="one-time-code"' in page
+    assert 'autocomplete="off"' not in page
+    assert "/static/login.js" in page
+    assert 'id="remember-login"' in page
+    script = client.get("/static/login.js").text
+    # Chỉ lưu mã workspace và email; mật khẩu và mã xác thực không bao giờ vào localStorage.
+    assert "localStorage" in script
+    assert "password" not in script.split("REMEMBERED_FIELDS", 1)[1].split("]", 1)[0]
+    assert "workspace-slug" in script
+    assert "email" in script
+
+
+def test_expired_login_form_is_shown_again_with_a_fresh_token_without_authenticating() -> None:
+    app = create_app(AppSettings(app_env="test"))
+    service = _AuthStub()
+    app.state.auth_service = service
+    client = TestClient(app)
+    page = client.get("/admin/login")
+    old_token = page.text.split('name="csrf_token" value="', 1)[1].split('"', 1)[0]
+    # Cookie hết hạn (ví dụ để trang mở quá lâu): trình duyệt không còn gửi cookie.
+    client.cookies.clear()
+
+    response = client.post(
+        "/admin/login",
+        data={
+            "workspace_slug": "paper-workspace",
+            "email": "owner@example.test",
+            "password": "a long owner password for test",
+            "code": "123456",
+            "csrf_token": old_token,
+        },
+    )
+
+    assert response.status_code == 403
+    assert service.calls == 0
+    assert "Biểu mẫu đăng nhập đã hết hạn" in response.text
+    assert 'role="alert"' in response.text
+    new_token = response.text.split('name="csrf_token" value="', 1)[1].split('"', 1)[0]
+    assert new_token != old_token
+    assert response.cookies.get("crypidian_login_csrf") == new_token

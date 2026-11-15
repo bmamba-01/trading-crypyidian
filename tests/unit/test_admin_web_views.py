@@ -393,6 +393,11 @@ def test_admin_report_renders_chart_annotations_and_accessible_fill_table() -> N
                 },
             )()
 
+        async def get_trade_plan_summaries(
+            self, _query: object, _principal: object, *, trade_ids: object
+        ) -> dict[object, dict[str, object]]:
+            return {}
+
         async def get_trade_chart(
             self,
             _query: object,
@@ -567,7 +572,9 @@ class FlattenPrincipalStub:
 
     async def confirm(self, **values: object) -> object:
         self.confirm_calls.append(values)
-        return SimpleNamespace(operation_id=UUID("9a000000-0000-0000-0000-000000000001"))
+        return SimpleNamespace(
+            operation_id=UUID("9a000000-0000-0000-0000-000000000001"), pause_failures=()
+        )
 
     async def get_operation(self, operation_id: UUID) -> dict[str, object]:
         return {"id": str(operation_id), "status": "QUEUED", "items": []}
@@ -694,6 +701,35 @@ def test_create_bot_form_verifies_csrf_then_redirects_to_scoped_detail() -> None
     assert response.headers["Location"] == f"/admin/bots/{BOT_ID}"
     assert admin.created[0][1:] == ("paper-alpha", "1000.25")
     assert auth.verified_tokens == ["csrf-token-test-123"]
+
+
+def test_create_bot_form_rerenders_with_values_and_error_on_invalid_input() -> None:
+    client = _client()
+    admin = CreateBotStub()
+    client.app.state.bot_admin_service = admin
+    client.app.state.auth_service = AuthServiceStub()
+
+    response = client.post(
+        "/admin/bots/new",
+        data={
+            "csrf_token": "csrf-token-test-123",
+            "name": "paper-<b>beta</b>",
+            "max_notional": "-5",
+        },
+        follow_redirects=False,
+    )
+
+    # Hiện lại form (không phải JSON lỗi) để người dùng sửa, giữ giá trị đã nhập đã escape.
+    assert response.status_code == 422
+    assert response.headers["Cache-Control"] == "no-store"
+    assert response.headers["content-type"].startswith("text/html")
+    assert admin.created == []
+    html = response.text
+    assert 'role="alert"' in html
+    assert "Giới hạn giá trị danh nghĩa phải lớn hơn 0" in html
+    assert 'value="paper-&lt;b&gt;beta&lt;/b&gt;"' in html
+    assert 'value="-5"' in html
+    assert 'value="csrf-token-test-123"' in html
 
 
 def test_pause_bot_form_rejects_missing_csrf_before_service_call() -> None:
@@ -1058,3 +1094,47 @@ def test_dashboard_snapshot_fails_closed_on_reporting_database_failure() -> None
     assert response.headers["Cache-Control"] == "no-store"
     assert response.headers["content-type"].startswith("application/json")
     assert "secret-marker" not in response.text
+
+
+def _snapshot_with_seed(seed_reader: object) -> dict[str, object]:
+    client = _client()
+    reporting = SnapshotReportingStub()
+    reporting.get_account_seed = seed_reader  # type: ignore[attr-defined]
+    client.app.state.bot_reporting_service = reporting
+
+    async def status(bot_id: UUID) -> dict[str, object]:
+        return {"id": str(bot_id), "name": "Bot PAPER", "status": "ENABLED"}
+
+    client.app.state.bot_operations_service.bot_status = status
+    response = client.get(f"/admin/dashboard/bots/{BOT_ID}/snapshot")
+    assert response.status_code == 200, response.text
+    payload: dict[str, object] = response.json()
+    return payload
+
+
+def test_dashboard_snapshot_includes_only_quote_and_initial_equity_of_the_paper_seed() -> None:
+    async def seed(query: object, principal: Principal) -> dict[str, object]:
+        from trading_bot.application.bot_reporting import BotReportQuery, ReportScope
+
+        assert isinstance(query, BotReportQuery)
+        assert query.bot_id == BOT_ID
+        assert query.scope is ReportScope.BOT
+        assert principal.workspace_id == WORKSPACE
+        return {"quote_asset": "USDT", "initial_equity": "10000", "created_at": "private-time"}
+
+    payload = _snapshot_with_seed(seed)
+
+    assert payload["account"] == {"quote_asset": "USDT", "initial_equity": "10000"}
+
+
+def test_dashboard_snapshot_omits_capital_when_seed_is_missing_or_denied() -> None:
+    from trading_bot.application.bot_reporting import BotReportError
+
+    async def missing(query: object, principal: Principal) -> None:
+        return None
+
+    async def denied(query: object, principal: Principal) -> None:
+        raise BotReportError(404, "BOT_NOT_FOUND", "Không tìm thấy.")
+
+    assert _snapshot_with_seed(missing)["account"] is None
+    assert _snapshot_with_seed(denied)["account"] is None

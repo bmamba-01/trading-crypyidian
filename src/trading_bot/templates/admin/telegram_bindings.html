@@ -1,35 +1,89 @@
 {% extends "admin/base.html" %}
 {% block title %}Liên kết Telegram · Crypidian{% endblock %}
+{% block head_extra %}<link rel="stylesheet" href="/static/pages/ops.css">{% endblock %}
 {% block heading %}Liên kết Telegram{% endblock %}
 {% block content %}
-  <section aria-labelledby="telegram-link-heading">
-    <h2 id="telegram-link-heading">Tạo liên kết một lần</h2>
-    <p id="telegram-link-help">Mã chỉ dùng trong tin nhắn riêng, hết hạn sau tối đa 10 phút và cần xác nhận trên Telegram.</p>
-    <form method="post" action="/admin/telegram/link">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <label for="link-reason">Lý do</label>
-      <input id="link-reason" name="reason" minlength="1" maxlength="500" required aria-describedby="telegram-link-help">
-      <button type="submit">Tạo mã liên kết</button>
-    </form>
-  </section>
-  <section aria-labelledby="telegram-bindings-heading">
-    <h2 id="telegram-bindings-heading">Liên kết đang hoạt động</h2>
+{#- MB-07b: tạo mã liên kết một lần và thu hồi binding. Service chỉ trả binding đang hoạt động
+    (membership_id, created_at); trang không đọc/hiển thị định danh tài khoản Telegram. -#}
+{% set mfa_at = identity.principal.mfa_verified_at if identity and identity.principal else none %}
+{% set my_membership = (identity.principal.membership_id | string) if identity and identity.principal else "" %}
+<div class="ops-page">
+  <p class="ops-lead">Liên kết tài khoản Telegram cá nhân với thành viên không gian làm việc để nhận tín hiệu PAPER và dùng lệnh điều khiển trong tin nhắn riêng với bot.</p>
+
+  <div class="ops-grid ops-grid--form">
+    <section class="glass-card ops-card" aria-labelledby="telegram-link-heading">
+      <h2 id="telegram-link-heading"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M10 14a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1"/><path d="M14 10a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1"/></svg>Tạo liên kết một lần</h2>
+      <form method="post" action="/admin/telegram/link" class="ops-form" data-ops-submit-once>
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <label for="link-reason">Lý do</label>
+        <input id="link-reason" name="reason" minlength="1" maxlength="500" required aria-describedby="telegram-link-help">
+        <p id="telegram-link-help" class="ops-hint">Mã chỉ dùng trong tin nhắn riêng, hết hạn sau tối đa 10 phút và cần xác nhận trên Telegram.</p>
+        <div class="ops-actions">
+          <button type="submit" class="btn btn-primary">
+            <svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 5v14M5 12h14"/></svg>Tạo mã liên kết
+          </button>
+        </div>
+      </form>
+    </section>
+
+    <section class="glass-card ops-card" aria-labelledby="telegram-howto-heading">
+      <h2 id="telegram-howto-heading"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m21 4-18 7 6 2 2 6 3-4 5 4 2-15Z"/><path d="m9 13 8-6"/></svg>Cách liên kết</h2>
+      <ol class="ops-howto">
+        <li><span>Nhập lý do và bấm <strong>Tạo mã liên kết</strong>. Cần vai trò chủ sở hữu và MFA trong 15 phút gần nhất.</span></li>
+        <li><span>Ở trang kế tiếp, bấm <strong>Mở Telegram</strong> trên thiết bị đã đăng nhập Telegram; bot mở trong tin nhắn riêng.</span></li>
+        <li><span>Bấm <strong>Start</strong> rồi xác nhận theo nút bot gửi. Mã chỉ dùng được một lần.</span></li>
+        <li><span>Quay lại trang này và tải lại để thấy liên kết trong danh sách đang hoạt động.</span></li>
+      </ol>
+      <dl class="kv-grid">
+        <div class="kv">
+          <dt><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>MFA lần cuối</dt>
+          <dd>{% if mfa_at %}<time datetime="{{ mfa_at.isoformat() }}" title="{{ mfa_at | local_time }}">{{ mfa_at | local_minute }}</time>{% else %}Chưa có dữ liệu{% endif %}</dd>
+        </div>
+        {% if mfa_at %}
+        {#- 900 giây = RECENT_MFA_TTL (application/telegram_binding.py). Ước lượng theo đồng hồ trình duyệt. -#}
+        <div class="kv">
+          <dt><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>Cửa sổ MFA 15 phút</dt>
+          <dd><span class="badge badge-neutral ops-chip" data-ops-mfa-at="{{ mfa_at.isoformat() }}" data-ops-mfa-window="900">Đối chiếu giờ MFA lần cuối</span></dd>
+        </div>
+        {% endif %}
+      </dl>
+    </section>
+  </div>
+
+  <section class="glass-card ops-card" aria-labelledby="telegram-bindings-heading">
+    <div class="ops-card__head">
+      <h2 id="telegram-bindings-heading"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="9" cy="8" r="4"/><path d="M2 21a7 7 0 0 1 14 0"/><path d="m16 11 2 2 4-4"/></svg>Liên kết đang hoạt động</h2>
+      <span class="badge badge-neutral ops-chip">{{ bindings | length }} liên kết</span>
+    </div>
     {% if bindings %}
-      <ul>
+      <ul class="ops-bindings">
       {% for binding in bindings %}
-        <li>
-          Thành viên <code>{{ binding.membership_id }}</code>, tạo lúc {{ binding.created_at | local_time }}
-          <form method="post" action="/admin/telegram/revoke/{{ binding.membership_id }}">
+        {% set member = binding.membership_id | string %}
+        <li class="ops-binding">
+          <div class="ops-binding__head">
+            <span class="badge badge-success ops-chip"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M20 6 9 17l-5-5"/></svg>Đang hoạt động</span>
+            <span class="ops-binding__who">Thành viên
+              <span class="id-chip"><code class="trade-id" title="{{ member }}" aria-hidden="true">{{ member[:8] }}…</code><code class="visually-hidden">{{ binding.membership_id }}</code><button type="button" class="copy-btn" data-ops-copy data-copy="{{ member }}" aria-label="Sao chép mã thành viên đầy đủ" title="Sao chép mã thành viên đầy đủ"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg></button></span>
+            </span>
+            {% if member == my_membership %}<span class="badge badge-paper-subtle ops-chip">Tài khoản của bạn</span>{% endif %}
+            <span class="ops-binding__meta">Liên kết lúc <time title="{{ binding.created_at | local_time }}">{{ binding.created_at | local_minute }}</time></span>
+          </div>
+          <form method="post" action="/admin/telegram/revoke/{{ binding.membership_id }}" class="ops-binding__form" data-ops-submit-once>
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <label for="revoke-reason-{{ loop.index }}">Lý do thu hồi</label>
-            <input id="revoke-reason-{{ loop.index }}" name="reason" maxlength="500" required>
-            <button type="submit">Thu hồi</button>
+            <input id="revoke-reason-{{ loop.index }}" name="reason" maxlength="500" required aria-describedby="revoke-hint">
+            <button type="submit" class="btn btn-danger-outline">
+              <svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M18 6 6 18M6 6l12 12"/></svg>Thu hồi
+            </button>
           </form>
         </li>
       {% endfor %}
       </ul>
+      <p id="revoke-hint" class="ops-hint">Sau khi thu hồi, lệnh điều khiển từ tài khoản Telegram đó bị từ chối và tín hiệu mới không còn được xếp gửi tới đó. Muốn dùng lại phải tạo mã liên kết mới.</p>
     {% else %}
-      <p>Chưa có liên kết hoạt động.</p>
+      <p class="ops-empty"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M10 14a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1"/><path d="M14 10a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1"/><path d="M3 3l18 18"/></svg>Chưa có liên kết hoạt động.</p>
     {% endif %}
   </section>
+</div>
 {% endblock %}
+{% block scripts %}<script src="/static/pages/ops.js" defer></script>{% endblock %}

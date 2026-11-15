@@ -25,6 +25,7 @@ from trading_bot.application.runtime_replay_evaluator import (
     ReplayEvaluationContext,
     RuntimePaperReplayComparison,
 )
+from trading_bot.application.strategy_catalog import strategy_registry
 from trading_bot.application.strategy_market_requirements import (
     FEATURE_CODE_HASH,
     TIMEFRAME_INTERVALS,
@@ -46,7 +47,6 @@ from trading_bot.domain.risk.planner import (
     PlannerSettings,
     RiskLimits,
 )
-from trading_bot.domain.strategy.registry import StrategyRegistry
 
 
 class ReplayExecutor(Protocol):
@@ -102,7 +102,7 @@ def build_backtest_replay_plan(
     điều kiện đó chưa biết. H03 không ước lượng quote volume bị thiếu; rule sẽ abstain.
     """
     _validate_request_scope(workspace_id, job_id, bundle, submission)
-    registry = StrategyRegistry()
+    registry = strategy_registry()
     release = registry.get_release(submission.strategy_release_id)
     try:
         requirements = feature_requirements_for_release(release.release_id)

@@ -71,6 +71,26 @@ class TotpManager:
         return None
 
 
+# Mã xác thực cố định cho chế độ kiểm thử local (cờ `auth_test_totp_enabled`).
+TEST_TOTP_CODE = "123456"
+
+
+class TestModeTotpManager(TotpManager):
+    """TOTP cho stack kiểm thử local: chấp nhận thêm mã cố định `123456`.
+
+    Chỉ được tạo khi cấu hình đã kiểm `app_env` local/test và mode PAPER. Mã thật vẫn hợp lệ.
+    Mã cố định ứng với chu kỳ 30 giây hiện hành, nên cơ chế chống dùng lại theo counter vẫn
+    áp dụng: hai lần đăng nhập bằng mã cố định trong cùng một chu kỳ, lần sau bị từ chối.
+    """
+
+    def matching_counter(
+        self, secret: str, code: str, at: datetime, *, valid_window: int
+    ) -> int | None:
+        if code == TEST_TOTP_CODE and at.tzinfo is not None:
+            return int(at.astimezone(UTC).timestamp()) // pyotp.TOTP(secret).interval
+        return super().matching_counter(secret, code, at, valid_window=valid_window)
+
+
 class _SlidingWindowCounter:
     """Đếm lỗi theo khóa trong cửa sổ trượt; gọi khi đã giữ lock của limiter."""
 

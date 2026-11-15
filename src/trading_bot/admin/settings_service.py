@@ -28,6 +28,7 @@ from trading_bot.application.runtime_risk_profile import (
     RiskProfileRuntimeError,
     risk_limits_from_profile,
 )
+from trading_bot.application.strategy_catalog import strategy_registry
 from trading_bot.application.workspace_risk import assess_risk_capacity
 from trading_bot.auth.bot_policy import WORKSPACE_BOT_ROLES
 from trading_bot.auth.policy import Permission, Principal, authorize
@@ -35,7 +36,7 @@ from trading_bot.auth.service import RECENT_MFA_LIFETIME
 from trading_bot.config.workspace_settings import WorkspaceSettings
 from trading_bot.domain.events import EventEnvelope
 from trading_bot.domain.risk.workspace_budget import CapacityStatus
-from trading_bot.domain.strategy.registry import StrategyRegistry, UnknownStrategyReleaseError
+from trading_bot.domain.strategy.registry import UnknownStrategyReleaseError
 
 _SECRET_KEY = re.compile(r"(?:secret|token|password|credential|api[_-]?key|cookie)", re.I)
 
@@ -154,7 +155,7 @@ class SettingsAdminService:
             except Exception as error:
                 return {"valid": False, "errors": _validation_errors(error), "warnings": []}
             try:
-                StrategyRegistry().get_release(settings.strategy.default_release)
+                strategy_registry().get_release(settings.strategy.default_release)
             except UnknownStrategyReleaseError:
                 return {
                     "valid": False,
@@ -214,7 +215,7 @@ class SettingsAdminService:
                 raise SettingsAdminError(409, "Bản nháp không còn ở trạng thái có thể publish.")
             settings = WorkspaceSettings.model_validate(record.settings_json)
             try:
-                StrategyRegistry().get_release(settings.strategy.default_release)
+                strategy_registry().get_release(settings.strategy.default_release)
             except UnknownStrategyReleaseError as error:
                 raise SettingsAdminError(
                     422, "Strategy release không tồn tại trong registry hiện hành."

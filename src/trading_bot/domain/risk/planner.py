@@ -14,6 +14,10 @@ from trading_bot.domain.strategy.contracts import StrategyCandidate
 from trading_bot.domain.strategy.recipes import ExitRecipe
 
 ZERO = Decimal("0")
+# Quyết định của chủ sở hữu (2026-11-14): không vào lệnh có mục tiêu chốt lời mà lợi nhuận ròng
+# kỳ vọng tại target nhỏ hơn mức lỗ ròng tại stop. Recipe không có target (trailing stop) không
+# áp dụng vì phần thưởng không xác định trước.
+MIN_NET_REWARD_TO_RISK = Decimal("1.0")
 
 
 def _aware(value: datetime, name: str) -> None:
@@ -208,16 +212,24 @@ class CostModel:
     adverse_funding_per_unit: Decimal
     entry_slippage_rate: Decimal
     exit_slippage_rate: Decimal = ZERO
+    # Funding bất lợi dự trù theo đúng công thức của sàn: notional × tỷ lệ mỗi kỳ × số kỳ dự
+    # kiến trong thời gian giữ lệnh. Khác `adverse_funding_per_unit` (số tuyệt đối trên một đơn
+    # vị, bóp khối lượng vô lý với coin giá nhỏ), khoản này tỷ lệ với giá của symbol.
+    adverse_funding_rate: Decimal = ZERO
+    expected_funding_periods: int = 0
 
     def __post_init__(self) -> None:
         if not self.version_id.strip():
             raise ValueError("Cost model cần version.")
+        if type(self.expected_funding_periods) is not int or self.expected_funding_periods < 0:
+            raise ValueError("Số kỳ funding dự kiến phải là số nguyên không âm.")
         values = (
             self.entry_fee_rate,
             self.exit_fee_rate,
             self.adverse_funding_per_unit,
             self.entry_slippage_rate,
             self.exit_slippage_rate,
+            self.adverse_funding_rate,
         )
         if any(
             not isinstance(value, Decimal) or not value.is_finite() or value < ZERO
@@ -226,6 +238,18 @@ class CostModel:
             raise ValueError("Chi phí phải là Decimal hữu hạn không âm.")
         if self.entry_slippage_rate >= Decimal("1") or self.exit_slippage_rate >= Decimal("1"):
             raise ValueError("Tỷ lệ slippage phải nhỏ hơn 1.")
+        if self.adverse_funding_rate >= Decimal("1"):
+            raise ValueError("Tỷ lệ funding mỗi kỳ phải nhỏ hơn 1.")
+
+    def funding_per_unit(self, entry_price: Decimal, contract_multiplier: Decimal) -> Decimal:
+        """Funding bất lợi dự trù cho một đơn vị: phần tuyệt đối cộng phần theo notional."""
+        return (
+            self.adverse_funding_per_unit
+            + entry_price
+            * contract_multiplier
+            * self.adverse_funding_rate
+            * self.expected_funding_periods
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -481,6 +505,31 @@ class TradePlanner:
         entry_fee = entry * multiplier * cost_model.entry_fee_rate
         exit_fee = stop * multiplier * cost_model.exit_fee_rate
         slippage_cost = abs(entry - reference) * multiplier
+        funding_per_unit = cost_model.funding_per_unit(entry, multiplier)
+        if target is not None:
+            # R:R ròng trên một đơn vị: lợi nhuận tại target và lỗ tại stop đều đã trừ phí hai
+            # chiều, funding bất lợi và trượt giá lúc thoát. Entry đã gồm trượt giá vào lệnh.
+            common_cost = entry_fee + funding_per_unit
+            net_reward = (
+                abs(target - entry) * multiplier
+                - common_cost
+                - target * multiplier * (cost_model.exit_fee_rate + cost_model.exit_slippage_rate)
+            )
+            net_risk = (
+                abs(entry - stop) * multiplier
+                + common_cost
+                + exit_fee
+                + stop * multiplier * cost_model.exit_slippage_rate
+            )
+            if net_reward < net_risk * MIN_NET_REWARD_TO_RISK:
+                ratio = (net_reward / net_risk).quantize(Decimal("0.01"))
+                return self._reject(
+                    "NET_REWARD_RISK_BELOW_MINIMUM",
+                    f"R:R ròng sau chi phí là {ratio}, thấp hơn mức tối thiểu "
+                    f"{MIN_NET_REWARD_TO_RISK}.",
+                    settings,
+                    candidate,
+                )
         sizing = size_position(
             RiskSizingInput(
                 equity=account_snapshot.equity,
@@ -492,7 +541,7 @@ class TradePlanner:
                 contract_multiplier=multiplier,
                 entry_fee_per_unit=entry_fee,
                 exit_fee_per_unit=exit_fee,
-                adverse_funding_per_unit=cost_model.adverse_funding_per_unit,
+                adverse_funding_per_unit=funding_per_unit,
                 slippage_stress_per_unit=(stop * cost_model.exit_slippage_rate * multiplier),
                 quantity_step=exchange.quantity_step,
                 min_notional=exchange.min_notional,
@@ -517,7 +566,7 @@ class TradePlanner:
             size=sizing,
             entry_fee=entry_fee,
             exit_fee=exit_fee,
-            funding=cost_model.adverse_funding_per_unit,
+            funding=funding_per_unit,
             slippage=slippage_cost,
         )
 

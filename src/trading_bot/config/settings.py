@@ -86,6 +86,8 @@ class AppSettings(BaseSettings):
     # Stream sự kiện bổ sung: mark_price, liquidation, trade_flow; để trống là chỉ thu nến.
     ingestion_live_events: str = ""
     ingestion_live_mark_price_interval_seconds: int = Field(default=60, ge=1, le=3600)
+    # Cờ kiểm thử: chấp nhận mã xác thực cố định 123456 (chỉ local/test + PAPER, mặc định tắt).
+    auth_test_totp_enabled: bool = False
     mfa_encryption_key_file: Path | None = None
     mfa_secret_directory: Path | None = None
     bootstrap_token_file: Path | None = None
@@ -159,6 +161,17 @@ class AppSettings(BaseSettings):
             raise ValueError(
                 "scorer_test_policy_minimum_sample_count phải >= 3 lần "
                 "scorer_test_policy_minimum_class_support."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_auth_test_totp(self) -> AppSettings:
+        """Mã xác thực cố định là lối tắt MFA: cấm tuyệt đối ngoài local/test và PAPER."""
+        if self.auth_test_totp_enabled and (
+            self.app_env not in {"local", "test"} or self.trading_mode != "PAPER"
+        ):
+            raise ValueError(
+                "Chế độ kiểm thử mã xác thực chỉ bật được khi app_env là local/test và mode PAPER."
             )
         return self
 

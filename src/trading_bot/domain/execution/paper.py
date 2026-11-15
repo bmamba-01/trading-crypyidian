@@ -10,6 +10,7 @@ from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
+from trading_bot.domain.execution.funding import FundingSettlement, funding_cashflow
 from trading_bot.domain.risk.planner import TradePlan
 from trading_bot.domain.strategy.recipes import ExitRecipe
 
@@ -426,6 +427,9 @@ class PaperExecutionGateway:
         *,
         opposing_signal: bool = False,
         atr: Decimal | None = None,
+        exit_channel_level: Decimal | None = None,
+        exit_feature_value: Decimal | None = None,
+        strategy_bar_closed: bool = True,
     ) -> PositionMonitorResult:
         """Theo dõi stop/target/trailing và thời điểm; pause entry không áp dụng ở đây."""
         from trading_bot.domain.execution.position_monitor import (
@@ -437,7 +441,15 @@ class PaperExecutionGateway:
         current = self._positions.get(position.intent_id, position)
         if current.is_closed and bar.bar_key in current.seen_bar_keys:
             return PositionMonitorResult(current, current.exit_reason, current.exit_reference_price)
-        result = monitor_position(current, bar, opposing_signal=opposing_signal, atr=atr)
+        result = monitor_position(
+            current,
+            bar,
+            opposing_signal=opposing_signal,
+            atr=atr,
+            exit_channel_level=exit_channel_level,
+            exit_feature_value=exit_feature_value,
+            strategy_bar_closed=strategy_bar_closed,
+        )
         if result.exit_reason is None or result.exit_reference_price is None:
             self._positions[position.intent_id] = result.position
             return result
@@ -476,6 +488,25 @@ class PaperExecutionGateway:
         )
         self._positions[position.intent_id] = updated
         return updated
+
+    def apply_funding_settlement(
+        self, position_id: str, settlement: FundingSettlement
+    ) -> PaperPosition:
+        """Ghi một kỳ funding đã công bố cho vị thế còn mở tại mốc funding.
+
+        Nơi gọi chịu trách nhiệm chỉ truyền vị thế đã mở trước `funding_time` và chưa đóng
+        tại mốc đó; gateway tính dòng tiền theo mark price của kỳ và ghi idempotent.
+        """
+        position = self._get_position(position_id)
+        if position.symbol != settlement.symbol:
+            raise IntentConflict("Funding settlement khác symbol của vị thế.")
+        amount = funding_cashflow(
+            direction=position.direction,
+            quantity=position.quantity,
+            contract_multiplier=position.contract_multiplier,
+            settlement=settlement,
+        )
+        return self.apply_funding_event(position_id, settlement.event_id, amount)
 
     def close_position(
         self,

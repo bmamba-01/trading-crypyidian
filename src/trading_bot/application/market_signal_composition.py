@@ -41,6 +41,7 @@ from trading_bot.application.market_signal_scanner import (
 )
 from trading_bot.application.outbox import UnitOfWork
 from trading_bot.application.scorer_runtime_policy import ScorerRuntimePolicyProvider
+from trading_bot.application.strategy_catalog import strategy_registry
 from trading_bot.application.strategy_market_requirements import (
     TIMEFRAME_INTERVALS,
     feature_requirements_for_release,
@@ -50,7 +51,6 @@ from trading_bot.domain.execution.runtime_control import BotEntryState, Workspac
 from trading_bot.domain.market.feature_snapshot import FeatureCalculator
 from trading_bot.domain.market.models import MarketBarSourceIdentity, MarketSnapshot, OHLCVBar
 from trading_bot.domain.strategy.contracts import DecisionSnapshot
-from trading_bot.domain.strategy.registry import StrategyRegistry
 
 _MAX_BARS_PER_STREAM = 256
 _LIVE_BAR_SOURCE = "BINANCE_USDM"
@@ -246,7 +246,7 @@ def build_market_signal_scanner(
     )
     dispatcher = BotEvidenceDispatcher(
         store,
-        strategies=StrategyRegistry(),
+        strategies=strategy_registry(),
         snapshots=PostgresMarketDecisionSnapshotProvider(sessions),
     )
     scanner = MarketSignalScanner(

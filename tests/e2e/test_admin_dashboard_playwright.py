@@ -18,17 +18,23 @@ import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import expect, sync_playwright
 
+from tests.e2e.csp_harness import (
+    browser_violations,  # noqa: F401 - fixture nạp qua usefixtures
+    install_security_headers,
+    watch_browser_violations,
+)
+from trading_bot.admin.metric_help import HELP
 from trading_bot.admin.web_router import router as admin_web_router
+from trading_bot.application.bot_reporting import BotReportError
 from trading_bot.auth.policy import Principal, Role
 from trading_bot.auth.security import LoginRateLimiter
 from trading_bot.auth.service import AuthenticationFailure, AuthIdentity, LoginResult
 from trading_bot.config.settings import AppSettings
 
-SCREENSHOTS_DIR = Path(
-    "/Users/macbook/.gemini/antigravity/brain/4f23167d-60fd-49c3-8248-ddb2b669a2a7/screenshots"
-)
+# Ảnh chụp nằm trong repo để test chạy được trên mọi máy và không ghi ra ngoài dự án.
+SCREENSHOTS_DIR = Path(__file__).resolve().parent / "evidence" / "admin-playwright"
 SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
 
 WORKSPACE_ID = UUID("9b2299f1-a58e-45c7-b0ad-83feb0862510")
@@ -37,10 +43,14 @@ MEMBERSHIP_ID = UUID("a93c4b18-f76c-4cfb-9bad-9e0aee5ccadc")
 BOT1_ID = UUID("77117cc4-6c7f-407e-8f23-948d740a46c2")
 BOT2_ID = UUID("88228dd5-7d8e-518f-9a34-059e851b57d3")
 
+pytestmark = pytest.mark.usefixtures("browser_violations")
+
 
 @dataclass
 class ConfirmOperationResult:
     operation_id: UUID
+    # Cùng hợp đồng FlattenConfirmResult: bot chưa tạm dừng được sau commit.
+    pause_failures: tuple[tuple[UUID, str], ...] = ()
 
 
 @dataclass
@@ -372,6 +382,16 @@ class MockFlattenAllService:
 class MockBotReportingService:
     """Mock reporting service."""
 
+    async def get_dashboard_reports(
+        self, query: Any, principal: Any, *, bot_ids: frozenset[UUID] | None = None
+    ) -> tuple[Any, ...]:
+        """Dashboard đọc thống kê 30 ngày theo lô; mock này không có giao dịch đã đóng."""
+        return ()
+
+    async def get_bot_report(self, query: Any, principal: Any) -> Any:
+        """Mock này không có ledger theo bot; Bot Detail phải hiện trạng thái chưa có dữ liệu."""
+        raise BotReportError(404, "REPORT_NOT_FOUND", "Không có báo cáo cho bot trong test.")
+
     async def report(self, query: Any) -> dict[str, Any]:
         return {
             "workspace_id": str(WORKSPACE_ID),
@@ -464,6 +484,7 @@ def create_test_admin_app() -> FastAPI:
 
     app.mount("/static", StaticFiles(directory="src/trading_bot/static"), name="static")
     app.include_router(admin_web_router)
+    install_security_headers(app)
     return app
 
 
@@ -486,6 +507,42 @@ def admin_server_url() -> Any:
     server.should_exit = True
 
 
+def _open_mobile_menu(page: Any) -> None:
+    """Trên màn hình hẹp, điều hướng chính nằm trong ngăn kéo mở bằng nút "Menu"."""
+    menu = page.get_by_role("button", name="Menu")
+    if menu.is_visible():
+        menu.click()
+        expect(page.get_by_role("navigation", name="Điều hướng chính")).to_be_visible()
+
+
+def _assert_metric_tooltip(page: Any, key: str, *, mode: str) -> None:
+    """Mở chú giải KPI bằng focus, bấm hoặc chạm; nội dung khớp từ điển; Escape đóng lại."""
+    trigger = page.locator(f'button.metric-help[data-metric-help="{key}"]:visible').first
+    trigger.scroll_into_view_if_needed()
+    tooltip = page.locator(f"#{trigger.get_attribute('aria-describedby')}")
+    expect(tooltip).to_be_hidden()
+    if mode == "focus":
+        trigger.focus()
+    elif mode == "click":
+        trigger.click()
+    else:
+        trigger.tap()
+    expect(tooltip).to_be_visible()
+    expect(trigger).to_have_attribute("aria-expanded", "true")
+    expect(tooltip).to_contain_text(HELP[key].definition_vi)
+    expect(tooltip).to_contain_text(HELP[key].limits_vi)
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), (key, mode)
+    box = tooltip.bounding_box()
+    viewport = page.viewport_size
+    assert box is not None
+    assert viewport is not None
+    assert box["x"] >= 0, (key, mode, box)
+    assert box["x"] + box["width"] <= viewport["width"], (key, mode, box)
+    page.keyboard.press("Escape")
+    expect(tooltip).to_be_hidden()
+    expect(trigger).to_have_attribute("aria-expanded", "false")
+
+
 def test_admin_dashboard_desktop_and_mobile_workflows(admin_server_url: str) -> None:
     """Kiểm thử toàn diện E2E tất cả các chức năng trên Desktop và Mobile."""
     base_url = admin_server_url
@@ -498,6 +555,7 @@ def test_admin_dashboard_desktop_and_mobile_workflows(admin_server_url: str) -> 
         # ----------------------------------------------------
         context_desktop = browser.new_context(viewport={"width": 1280, "height": 800})
         page = context_desktop.new_page()
+        watch_browser_violations(page)
 
         # 1.1 Login và lỗi đăng nhập
         page.goto(f"{base_url}/admin/login", wait_until="networkidle")
@@ -540,6 +598,11 @@ def test_admin_dashboard_desktop_and_mobile_workflows(admin_server_url: str) -> 
         assert "Chế độ: Mô phỏng (PAPER) nội bộ" in page.content()
         assert "Tổng số bot" in page.content()
 
+        # Chú giải KPI: mở bằng focus bàn phím và bấm chuột, Escape đóng, không tràn ngang
+        for key in ("bot_count", "ready_bot_count", "workspace_kill_state", "operating_mode"):
+            _assert_metric_tooltip(page, key, mode="focus")
+            _assert_metric_tooltip(page, key, mode="click")
+
         # Kiểm tra Live status bar, Pulse dot và Toggle button trên Desktop
         assert page.locator(".live-status-bar").is_visible()
         assert page.locator("#live-pulse-dot").is_visible()
@@ -574,6 +637,8 @@ def test_admin_dashboard_desktop_and_mobile_workflows(admin_server_url: str) -> 
         updated_time = page.locator("#live-updated-at").inner_text()
         assert len(updated_time) >= 5
 
+        # Điều khiển khẩn cấp nằm trong tab riêng; tab được nhớ sau khi form tải lại trang.
+        page.get_by_role("tab", name="Điều khiển khẩn cấp").click()
         page.get_by_label("Lý do dừng khẩn cấp toàn bộ").fill("Thử nghiệm dừng khẩn cấp")
         page.get_by_role("button", name="Dừng mở lệnh mới").click()
         page.wait_for_load_state("networkidle")
@@ -614,7 +679,7 @@ def test_admin_dashboard_desktop_and_mobile_workflows(admin_server_url: str) -> 
         )
 
         # 1.6 Đóng toàn bộ vị thế
-        page.get_by_role("link", name="Đóng vị thế toàn bộ", exact=True).click()
+        page.get_by_role("link", name="Đóng toàn bộ vị thế", exact=True).click()
         page.wait_for_load_state("networkidle")
         page.get_by_label("Lý do", exact=True).fill("Xem preview các vị thế")
         page.get_by_role("button", name="Xem trước").click()
@@ -662,6 +727,7 @@ def test_admin_dashboard_desktop_and_mobile_workflows(admin_server_url: str) -> 
             has_touch=True,
         )
         page_m = context_mobile.new_page()
+        watch_browser_violations(page_m)
 
         page_m.goto(f"{base_url}/admin/login", wait_until="networkidle")
         page_m.screenshot(path=str(SCREENSHOTS_DIR / "01_login_mobile.png"), full_page=True)
@@ -677,7 +743,13 @@ def test_admin_dashboard_desktop_and_mobile_workflows(admin_server_url: str) -> 
         assert page_m.locator(".live-status-bar").is_visible()
         assert page_m.locator("#toggle-realtime-btn").is_visible()
         assert "Tự động cập nhật 5s" in page_m.content()
+        for key in ("bot_count", "operating_mode"):
+            _assert_metric_tooltip(page_m, key, mode="tap")
+        page_m.set_viewport_size({"width": 360, "height": 780})
+        _assert_metric_tooltip(page_m, "workspace_kill_state", mode="tap")
+        page_m.set_viewport_size({"width": 390, "height": 844})
 
+        page_m.get_by_role("tab", name="Điều khiển khẩn cấp").click()
         page_m.get_by_label("Lý do dừng khẩn cấp toàn bộ").fill("Dừng trên mobile")
         page_m.get_by_role("button", name="Dừng mở lệnh mới").click()
         page_m.wait_for_load_state("networkidle")
@@ -689,6 +761,7 @@ def test_admin_dashboard_desktop_and_mobile_workflows(admin_server_url: str) -> 
         page_m.get_by_role("button", name="Bỏ dừng khẩn cấp").click()
         page_m.wait_for_load_state("networkidle")
 
+        _open_mobile_menu(page_m)
         page_m.get_by_role("link", name="Bot", exact=True).click()
         page_m.wait_for_load_state("networkidle")
         page_m.screenshot(path=str(SCREENSHOTS_DIR / "04_bots_list_mobile.png"), full_page=True)
@@ -697,7 +770,8 @@ def test_admin_dashboard_desktop_and_mobile_workflows(admin_server_url: str) -> 
         page_m.wait_for_load_state("networkidle")
         page_m.screenshot(path=str(SCREENSHOTS_DIR / "05_bot_detail_mobile.png"), full_page=True)
 
-        page_m.get_by_role("link", name="Đóng vị thế toàn bộ", exact=True).click()
+        _open_mobile_menu(page_m)
+        page_m.get_by_role("link", name="Đóng toàn bộ vị thế", exact=True).click()
         page_m.wait_for_load_state("networkidle")
         page_m.get_by_label("Lý do", exact=True).fill("Preview mobile")
         page_m.get_by_role("button", name="Xem trước").click()
@@ -706,10 +780,12 @@ def test_admin_dashboard_desktop_and_mobile_workflows(admin_server_url: str) -> 
             path=str(SCREENSHOTS_DIR / "06_flatten_preview_mobile.png"), full_page=True
         )
 
+        _open_mobile_menu(page_m)
         page_m.get_by_role("link", name="Báo cáo", exact=True).click()
         page_m.wait_for_load_state("networkidle")
         page_m.screenshot(path=str(SCREENSHOTS_DIR / "07_reports_mobile.png"), full_page=True)
 
+        _open_mobile_menu(page_m)
         page_m.get_by_role("link", name="Telegram", exact=True).click()
         page_m.wait_for_load_state("networkidle")
         page_m.screenshot(path=str(SCREENSHOTS_DIR / "08_telegram_mobile.png"), full_page=True)

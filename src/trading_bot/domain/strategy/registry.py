@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
 
@@ -12,6 +12,10 @@ from trading_bot.domain.strategy.rules import (
     H03DonchianBreakoutRule,
     H06RangeMeanReversionRule,
     release_content_hash,
+)
+from trading_bot.domain.strategy.rules_v2 import (
+    H03DonchianBreakoutRuleV2,
+    H06RangeMeanReversionRuleV2,
 )
 
 
@@ -71,16 +75,43 @@ _BUILT_INS: tuple[tuple[Strategy, str, str, str], ...] = (
         ),
         "h06-exit-v1",
     ),
+    (
+        H03DonchianBreakoutRuleV2(),
+        "Phá kênh Donchian (v2)",
+        (
+            "Giá đóng 1h phá đỉnh/đáy 55 nến trước; quote volume lớn hơn median 20 nến trước; "
+            "stop 2 ATR; trailing 3 ATR; thoát khi giá chạm biên ngược của kênh 20 nến 1h; "
+            "tối đa 120 nến 1h."
+        ),
+        "h03-exit-v2",
+    ),
+    (
+        H06RangeMeanReversionRuleV2(),
+        "Hồi quy về trung bình (v2)",
+        (
+            "ADX14 < 18 và ER40 < 0.25; Z20/RSI14 đồng thuận cực trị; lọc blackout và phá biên "
+            "120 nến; stop 1.5 ATR; mục tiêu tối đa 2 ATR; thoát khi Z20 hồi về ±0.2 trên nến "
+            "15 phút đã đóng hoặc sau 16 nến 15 phút; cấm scale-in."
+        ),
+        "h06-exit-v2",
+    ),
 )
 
 
 class StrategyRegistry:
     """Tra cứu các rule thuần; không lưu trạng thái hoặc công bố cấu hình."""
 
-    def __init__(self) -> None:
+    def __init__(self, extra_rules: Sequence[tuple[Strategy, str, str, str]] = ()) -> None:
+        """`extra_rules` là các release bổ sung do tầng application liệt kê tường minh.
+
+        Mỗi phần tử gồm (rule, tên tiếng Việt, tóm tắt rule, phiên bản recipe). Release trùng
+        ID với rule dựng sẵn bị từ chối để một ID không bao giờ trỏ tới hai nội dung.
+        """
         rules: dict[str, Strategy] = {}
         releases: dict[str, StrategyRelease] = {}
-        for rule, name_vi, formula, recipe_version in _BUILT_INS:
+        for rule, name_vi, formula, recipe_version in (*_BUILT_INS, *extra_rules):
+            if rule.release_id in rules:
+                raise ValueError(f"Release chiến lược bị trùng: {rule.release_id}")
             digest = release_content_hash(rule)
             rules[rule.release_id] = rule
             releases[rule.release_id] = StrategyRelease(

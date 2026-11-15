@@ -19,11 +19,11 @@ from trading_bot.admin.web_router import (
     _verify_form_csrf,
 )
 from trading_bot.application.backtest_replay_jobs import BacktestReplayJobSubmission
+from trading_bot.application.strategy_catalog import strategy_registry
 from trading_bot.auth.cookies import read_session_cookie
 from trading_bot.auth.policy import Role
 from trading_bot.auth.router import current_identity
 from trading_bot.auth.service import AuthIdentity
-from trading_bot.domain.strategy.registry import StrategyRegistry
 
 router = APIRouter(prefix="/admin/backtests", tags=["admin web"], route_class=AdminHTMLRoute)
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -58,6 +58,8 @@ class BacktestJobView:
     bundle_hash_short: str
     strategy_name: str
     execution_interval: str
+    learning_intent: str
+    quarantined: bool
     created_at: Any
     created_at_compact: str
     error_code: str | None
@@ -91,7 +93,7 @@ def _submission(values: dict[str, str]) -> BacktestReplayJobSubmission:
     bundle_hash = values.get("bundle_hash", "").strip()
     strategy_release_id = values.get("strategy_release_id", "").strip()
     execution_interval = values.get("execution_interval", "").strip()
-    known_releases = {release.release_id for release in StrategyRegistry().list_releases()}
+    known_releases = {release.release_id for release in strategy_registry().list_releases()}
     try:
         seed = int(values.get("seed", ""))
     except ValueError as error:
@@ -116,6 +118,7 @@ def _submission(values: dict[str, str]) -> BacktestReplayJobSubmission:
         fee_rate=_decimal(values, "fee_rate"),
         slippage_rate=_decimal(values, "slippage_rate"),
         seed=seed,
+        learning_intent=values.get("learning_intent", "RESEARCH").strip(),
     )
 
 
@@ -132,7 +135,7 @@ def _job_view(job: Any) -> BacktestJobView:
         stage_label = ""
     release_id = str(getattr(job, "strategy_release_id", ""))
     release = next(
-        (item for item in StrategyRegistry().list_releases() if item.release_id == release_id),
+        (item for item in strategy_registry().list_releases() if item.release_id == release_id),
         None,
     )
     raw_progress = getattr(job, "progress", 0)
@@ -140,7 +143,12 @@ def _job_view(job: Any) -> BacktestJobView:
     error_code = getattr(job, "error_code", None)
     if error_code is not None and re.fullmatch(r"[A-Z0-9_]{1,80}", str(error_code)) is None:
         error_code = "BACKTEST_FAILED"
-    result_run_ids = tuple(str(value) for value in getattr(job, "result_run_ids", ()))
+    # Kết quả của lượt tạo dữ liệu học bị quarantine: không lộ mã run ở danh sách thông thường.
+    learning_intent = str(getattr(job, "learning_intent", "RESEARCH"))
+    quarantined = learning_intent != "RESEARCH"
+    result_run_ids = (
+        () if quarantined else tuple(str(value) for value in getattr(job, "result_run_ids", ()))
+    )
     created_at = getattr(job, "created_at", None)
     created_at_compact = (
         created_at.astimezone(ZoneInfo("Asia/Ho_Chi_Minh")).strftime("%d/%m/%y %H:%M")
@@ -157,6 +165,16 @@ def _job_view(job: Any) -> BacktestJobView:
         bundle_hash_short=str(getattr(job, "bundle_hash", ""))[:12],
         strategy_name=release.name_vi if release else "Không xác định",
         execution_interval=str(getattr(job, "execution_interval", "")),
+        learning_intent=(
+            "Kiểm thử thường"
+            if not quarantined
+            else (
+                "Tạo dữ liệu học (BASE) · quarantine"
+                if learning_intent == "TRAINING_BASE"
+                else "Mục đích chưa nhận diện · quarantine"
+            )
+        ),
+        quarantined=quarantined,
         created_at=created_at,
         created_at_compact=created_at_compact,
         error_code=str(error_code) if error_code else None,
@@ -230,7 +248,7 @@ async def backtest_replay_page(
             "show_bundle_hash_input": not callable(list_bundles),
             "selected_bundle_hash": selected_bundle_hash,
             "selected_bundle": selected_bundle,
-            "strategies": StrategyRegistry().list_releases(),
+            "strategies": strategy_registry().list_releases(),
             "active_jobs": active_jobs,
             "error_message": (
                 "Không thể tạo lượt kiểm thử. Kiểm tra gói dữ liệu và các giá trị đã nhập."
