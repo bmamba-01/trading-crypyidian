@@ -105,6 +105,10 @@
         macro: dark ? "rgba(244,114,182,0.12)" : "rgba(236,72,153,0.10)",
       },
       equalLevel: dark ? "#E2E8F0" : "#334155",
+      // CK-5: ZigZag và nhóm VSA (không dùng xanh/đỏ để khỏi lẫn với nến tăng/giảm).
+      zigzag: dark ? "#C4B5FD" : "#6D28D9",
+      vsaStrength: "#2563EB",
+      vsaWeakness: "#EA580C",
       // CK-4: TPO dùng màu lam để phân biệt với volume profile (xám/xanh-đỏ).
       tpo: dark ? "rgba(96,165,250,0.40)" : "rgba(37,99,235,0.28)",
       tpoPoc: dark ? "#93C5FD" : "#1D4ED8",
@@ -487,6 +491,46 @@
     }
   }
 
+  // CK-5: ZigZag — nét liền qua các điểm đã chốt; nét đứt từ điểm chốt cuối tới pivot chưa
+  // chốt và tới giá đóng nến cuối, kèm chữ "chưa chốt".
+  class ZigZagLine extends CanvasPrimitive {
+    draw(ctx) {
+      const zig = this.data;
+      if (!zig) return;
+      const colors = palette();
+      const toXY = (point) => {
+        const x = this.x(point.time);
+        const y = this.y(point.price);
+        return x === null || y === null ? null : [x, y];
+      };
+      const finals = zig.points.map(toXY).filter((v) => v !== null);
+      ctx.strokeStyle = colors.zigzag;
+      ctx.lineWidth = 1.6;
+      if (finals.length > 1) {
+        ctx.beginPath();
+        ctx.moveTo(finals[0][0], finals[0][1]);
+        for (const [x, y] of finals.slice(1)) ctx.lineTo(x, y);
+        ctx.stroke();
+      }
+      const tail = [zig.points[zig.points.length - 1], zig.pending, zig.last]
+        .filter(Boolean)
+        .map(toXY)
+        .filter((v) => v !== null);
+      if (tail.length > 1) {
+        ctx.setLineDash([5, 4]);
+        ctx.beginPath();
+        ctx.moveTo(tail[0][0], tail[0][1]);
+        for (const [x, y] of tail.slice(1)) ctx.lineTo(x, y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        const [lx, ly] = tail[tail.length - 2];
+        ctx.fillStyle = colors.zigzag;
+        ctx.font = '600 9px "Be Vietnam Pro", system-ui, sans-serif';
+        ctx.fillText("chưa chốt", lx + 4, ly - 4);
+      }
+    }
+  }
+
   // ---- Dựng chart ----
   const colors = palette();
   const chart = LWC.createChart(container, chartOptions(460));
@@ -529,6 +573,7 @@
   const equalLevels = new EqualLevels("top");
   const tpoProfiles = new TpoProfiles("bottom");
   const profileLevels = new ProfileLevels("top");
+  const zigzagLine = new ZigZagLine("top");
   for (const primitive of [
     killzones,
     sessions,
@@ -539,6 +584,7 @@
     profileLevels,
     equalLevels,
     trendlines,
+    zigzagLine,
   ]) {
     candles.attachPrimitive(primitive);
   }
@@ -794,8 +840,29 @@
     if (liveLine) liveLine.applyOptions({ title: clockText });
   });
 
+  // Volume mặc định tô theo delta (hoặc chiều nến); bật lớp VSA thì nến có nhãn VSA tô theo
+  // nhóm: lam = dấu hiệu sức mạnh (phía cầu), cam = dấu hiệu yếu (phía cung), nến khác mờ đi.
+  const paintVolume = (p) => {
+    const c = palette();
+    const vsaOn = layerOn("vsa");
+    const groups = new Map((p.vsa || []).map((item) => [item.time, item.group]));
+    volume.setData(
+      p.volume.map((item) => {
+        const group = vsaOn ? groups.get(item.time) : undefined;
+        let color =
+          item.tone === "up" ? `${c.up}66` : item.tone === "down" ? `${c.down}66` : `${c.flat}66`;
+        if (group === "strength") color = c.vsaStrength;
+        else if (group === "weakness") color = c.vsaWeakness;
+        else if (vsaOn) color = `${c.flat}33`;
+        return { time: item.time, value: item.value, color };
+      })
+    );
+  };
+
   const applyLayers = () => {
     const p = payload;
+    paintVolume(p);
+    zigzagLine.set(p.zigzag || null, layerOn("zigzag"));
     drawSignal(p);
     drawQuote();
     ema20.applyOptions({ visible: layerOn("ema") });
@@ -829,14 +896,7 @@
     intervalSeconds = barTimes.length > 1 ? barTimes[1] - barTimes[0] : 60;
     const c = palette();
     candles.setData(p.bars);
-    volume.setData(
-      p.volume.map((item) => ({
-        time: item.time,
-        value: item.value,
-        color:
-          item.tone === "up" ? `${c.up}66` : item.tone === "down" ? `${c.down}66` : `${c.flat}66`,
-      }))
-    );
+    paintVolume(p);
     ema20.setData(p.lines.ema_20 || []);
     ema50.setData(p.lines.ema_50 || []);
     vwap.setData(p.lines.session_vwap || []);
@@ -891,6 +951,9 @@
     ];
     if (vol) parts.push(`KL ${fmtNumber(vol.value, 3)}`);
     if (vol && vol.delta !== null && vol.delta !== undefined) parts.push(`Delta ${fmtNumber(vol.delta, 3)}`);
+    // Nhãn VSA bằng chữ để không chỉ dựa vào màu (CK-5).
+    const vsa = (payload.vsa || []).find((item) => item.time === param.time);
+    if (vsa) parts.push(`VSA: ${vsa.label}`);
     legend.textContent = parts.join(" · ");
   });
 

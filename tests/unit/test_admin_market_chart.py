@@ -463,3 +463,25 @@ def test_payload_without_tpo_above_30m() -> None:
     payload = build_market_chart_payload(symbol="BTCUSDT", timeframe="1h", bars=bars)
     assert all(profile["tpo"] is None for profile in payload["volume_profiles"])
     assert all(not level["kind"].endswith("tpo") for level in payload["profile_levels"])
+
+
+def test_payload_has_vsa_labels_and_non_repainting_zigzag() -> None:
+    bars = _bars(400, start=START, step=timedelta(minutes=5))
+    payload = build_market_chart_payload(symbol="BTCUSDT", timeframe="5m", bars=bars)
+    assert payload["formula_versions"]["vsa"] == "ck5-vsa-v1"
+    assert payload["formula_versions"]["zigzag"] == "ck5-zigzag-v1"
+    times = {bar["time"] for bar in bars}
+    for item in payload["vsa"]:
+        assert item["time"] in times
+        assert item["group"] in {"strength", "weakness"}
+        assert item["label"]
+    zig = payload["zigzag"]
+    assert len(zig["points"]) >= 2
+    kinds = [point["kind"] for point in zig["points"]]
+    assert all(a != b for a, b in zip(kinds, kinds[1:], strict=False))  # đỉnh/đáy xen kẽ
+    # Điểm đã chốt không đổi khi có thêm nến (streaming = batch).
+    shorter = build_market_chart_payload(symbol="BTCUSDT", timeframe="5m", bars=bars[:300])
+    final_cut = bars[299]["time"]
+    assert [p for p in shorter["zigzag"]["points"] if p["final_time"] <= final_cut] == [
+        p for p in zig["points"] if p["final_time"] <= final_cut
+    ]

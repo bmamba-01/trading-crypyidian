@@ -331,6 +331,15 @@ def test_market_chart_renders_overlays_polls_and_is_responsive(server_url: str) 
         )
         page.locator('[data-layer="tpo"]').uncheck()
 
+        # CK-5: ZigZag mặc định bật; VSA tô volume khi bật (mặc định theo delta).
+        expect(page.locator('[data-layer="zigzag"]')).to_be_checked()
+        expect(page.locator('[data-layer="vsa"]')).not_to_be_checked()
+        page.locator('[data-layer="vsa"]').check()
+        page.locator("#market-chart").screenshot(
+            path=str(SCREENSHOTS_DIR / "ck5-zigzag-vsa-desktop.png")
+        )
+        page.locator('[data-layer="vsa"]').uncheck()
+
         # Thẻ tín hiệu SIG-3: hướng, SL, checklist và quyết định không vào lệnh gần nhất.
         signal = page.locator("[data-signal-card]")
         expect(signal).to_contain_text("BÁN")

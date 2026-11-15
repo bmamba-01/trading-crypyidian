@@ -16,6 +16,8 @@
   ("levels", "Mức thanh khoản", true),
   ("structure", "Swing, BOS/CHoCH", true),
   ("trendlines", "Trendline", true),
+  ("zigzag", "ZigZag (pivot đã chốt)", true),
+  ("vsa", "Tô volume theo VSA", false),
   ("profile", "Volume profile", true),
   ("tpo", "TPO profile (khối 30 phút)", false),
   ("profile_levels", "nPOC · VAH/VAL ngày trước", true),
@@ -143,6 +145,8 @@
       <li><span class="mc-swatch mc-swatch--equal" aria-hidden="true"></span>Đỉnh/đáy bằng nhau (EQH/EQL)</li>
       <li><span class="mc-swatch mc-swatch--tpo" aria-hidden="true"></span>TPO (thời gian giá ở lại; POC TPO có thể khác POC khối lượng)</li>
       <li><span class="mc-swatch mc-swatch--npoc" aria-hidden="true"></span>nPOC: POC ngày đã đóng giá chưa quay lại</li>
+      <li><span class="mc-swatch mc-swatch--zigzag" aria-hidden="true"></span>ZigZag (nét đứt: chưa chốt)</li>
+      <li><span class="mc-swatch mc-swatch--vsa-strength" aria-hidden="true"></span><span class="mc-swatch mc-swatch--vsa-weakness" aria-hidden="true"></span>VSA khi bật: lam = dấu hiệu sức mạnh, cam = dấu hiệu yếu (rê chuột để xem tên nhãn)</li>
     </ul>
     <ul class="mc-notices" data-mc-notices>
       {% for notice in chart_payload.notices %}<li>{{ notice }}</li>{% endfor %}

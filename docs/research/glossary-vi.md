@@ -795,3 +795,17 @@ TPO profile và naked POC đã có định nghĩa chung ở mục AC; mục này
 | TPO block (30-minute period) | Khối TPO 30 phút | Khối 30 phút neo mốc UTC; nến ≤ 30 phút được gộp theo khối, mỗi khối tính một TPO cho mỗi hàng giá nó chạm (chạm đúng cạnh hàng không tính). Nến > 30 phút không dựng được TPO. | [CQG — Market Profile](https://help.cqg.com/cqgic/25/Documents/marketprofilevalueareasmpva.htm) |
 | TPO POC / TPO value area | POC TPO / vùng giá trị TPO | Hàng có nhiều TPO nhất (hòa → gần giữa biên); vùng giá trị mở rộng từ POC tới 70% tổng TPO. Đo *thời gian* giá ở lại, nên có thể khác POC khối lượng. | [TradingView — TPO](https://in.tradingview.com/support/solutions/43000713306-time-price-opportunity-tpo-indicator/) |
 | Previous-day VAH / VAL | Cạnh trên / cạnh dưới vùng giá trị ngày trước | Từ volume profile của ngày UTC đã đóng đủ nến gần nhất; vẽ tới nến cuối như đường tham chiếu, có cờ đã chạm. | [CQG — Market Profile](https://help.cqg.com/cqgic/25/Documents/marketprofilevalueareasmpva.htm) |
+
+## AH. Nhãn nến VSA và ZigZag không vẽ lại (CK-5, 15/11/2026)
+
+Khái niệm VSA và ZigZag đã định nghĩa ở mục AC; mục này ghi tên nhãn và quy ước (`ck5-vsa-v1`, `ck5-zigzag-v1`).
+
+| Thuật ngữ (EN) | Tiếng Việt | Định nghĩa và giới hạn | Nguồn |
+|---|---|---|---|
+| Buying / selling climax | Cao trào mua / cao trào bán | Đỉnh (đáy) mới của 20 nến, khối lượng ≥ phân vị 90%, độ rộng ≥ 80%; cao trào mua đóng không quá 70% thân trên, cao trào bán đóng từ 30% trở lên. | [LuxAlgo — VSA](https://www.luxalgo.com/library/concept/volume-spread-analysis.md) |
+| Upthrust | Đẩy lên thất bại | Đỉnh mới nhưng đóng ở 30% dưới của nến, khối lượng ≥ phân vị 60%. | [LuxAlgo — VSA](https://www.luxalgo.com/library/concept/volume-spread-analysis.md) |
+| Stopping volume | Khối lượng chặn | Nến giảm, khối lượng ≥ phân vị 80%, đóng ở nửa trên — lực mua hấp thụ lực bán. | [LuxAlgo — VSA](https://www.luxalgo.com/library/concept/volume-spread-analysis.md) |
+| No demand / no supply | Không có cầu / không có cung | Nến tăng (giảm) độ rộng ≤ phân vị 30%, khối lượng thấp hơn cả hai nến trước. | [LuxAlgo — No demand/No supply](https://www.luxalgo.com/library/concept/no-demand-no-supply-bars/) |
+| Test (supply test) | Kiểm tra cung | Đáy thấp hơn nến trước, độ rộng ≤ phân vị 40%, đóng nửa trên, khối lượng thấp hơn hai nến trước. | [LuxAlgo — VSA](https://www.luxalgo.com/library/concept/volume-spread-analysis.md) |
+| Percentile rank (VSA window) | Hạng phân vị trong cửa sổ | Tỷ lệ trong 20 nến **trước** có giá trị nhỏ hơn hẳn nến đang xét (0–1); không dùng nến tương lai. | Định nghĩa nội bộ |
+| Finalized ZigZag point | Điểm ZigZag đã chốt | Pivot ứng viên được chốt khi một swing ngược chiều đã xác nhận cách nó ≥ 2×ATR14; điểm chốt không đổi khi có thêm nến (streaming = batch). | Định nghĩa nội bộ (`domain/market/vsa.py`) |

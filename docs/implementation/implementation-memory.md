@@ -4310,7 +4310,7 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Còn mở:** OB đa khung; macro xx:50–xx:10 do owner chọn; bảng giờ killzone chỉnh trên Admin; panel danh sách vùng.
 - **Readback:** đã đọc lại mục này; không có secret.
 
-### 2026-11-15 — CK-4: TPO profile, nPOC và VAH/VAL ngày trước (chưa commit)
+### 2026-11-15 — CK-4: TPO profile, nPOC và VAH/VAL ngày trước (commit `cdb634d`, chưa push)
 
 - **Yêu cầu của owner:** "Commit, làm CK-4" → commit CK-3 `a310357` (local, chưa push), rồi làm CK-4.
 - **Đã làm:**
@@ -4320,5 +4320,18 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
   - Glossary mục **AG**; WBS CK mục CK-4; `project-status.md`.
 - **Điều chỉnh sau khi xem ảnh:** VAH/VAL ban đầu bị cắt ở lần chạm đầu nên gần như không thấy → đổi thành đường tham chiếu kéo tới nến cuối (chỉ nPOC mới biến mất khi bị chạm). Fixture Playwright dạng sin nên mọi POC đều đã bị chạm (không có nPOC) — đúng theo định nghĩa; unit test kiểm nPOC bằng dữ liệu có xu hướng.
 - **Kiểm chứng:** `tests/unit/test_ck4_tpo.py` 5 passed; unit toàn bộ **4516 passed/127.30s**; ruff/format sạch; mypy **409 files** sạch. Playwright trang chart **1 passed**, ảnh `ck4-tpo-npoc-desktop.png` đã xem (cột TPO, đường VAH). Không đổi DB.
-- **Còn mở:** TPO theo phiên (đang theo ngày UTC); danh sách mức trong tab "Mức giá" (CK-10); chưa commit, CK-3 + CK-4 chưa push.
+- **Còn mở:** TPO theo phiên (đang theo ngày UTC); danh sách mức trong tab "Mức giá" (CK-10).
+- **Readback:** đã đọc lại mục này; không có secret.
+
+### 2026-11-15 — CK-5: nhãn nến VSA và ZigZag không vẽ lại (chưa commit)
+
+- **Yêu cầu của owner:** "Commit, làm CK-5" → commit CK-4 `cdb634d` (local), rồi làm CK-5.
+- **Đã làm:**
+  - Domain `vsa.py`: `vsa_labels` so mỗi nến với 20 nến **trước** (hạng phân vị độ rộng/khối lượng, vị trí đóng, đỉnh/đáy mới, khối lượng thấp hơn hai nến trước); thứ tự ưu tiên cao trào mua → cao trào bán → upthrust → khối lượng chặn → kiểm tra cung → không có cầu → không có cung. Không sao chép bộ màu "HoanLe VSA".
+  - `zigzag`: duyệt swing theo `confirmed_index`, ứng viên được chốt khi swing ngược chiều đã xác nhận cách ≥ ngưỡng (2×ATR14 mặc định hoặc %); thiếu ATR thì chưa chốt. Streaming = batch đúng theo cấu trúc thuật toán và có test cả domain lẫn payload (300 vs 400 nến).
+  - Payload `vsa`, `zigzag`; `market-chart.js` thêm `ZigZagLine`, `paintVolume` (VSA tùy chọn), tên nhãn VSA trong chú giải OHLC; 2 công tắc mới; chú giải màu.
+  - Glossary mục **AH**; WBS CK mục CK-5; `project-status.md`.
+- **Kiểm chứng:** `tests/unit/test_ck5_vsa_zigzag.py` 12 passed; unit toàn bộ **4529 passed/131.39s**; ruff/format sạch; mypy **410 files** sạch. Playwright trang chart **1 passed**; ảnh `ck5-zigzag-vsa-desktop.png` đã xem (ZigZag liền + đoạn "chưa chốt" nét đứt, cột volume lam/cam). Không đổi DB.
+- **Ghi chú quy trình:** test payload VSA/ZigZag được thêm cùng lệnh với code nên không quan sát pha RED riêng cho phần payload (domain có RED do module chưa tồn tại).
+- **Còn mở:** tô thân nến theo VSA; chỉnh ngưỡng ZigZag trên giao diện; CK-3/CK-4/CK-5 chưa push.
 - **Readback:** đã đọc lại mục này; không có secret.

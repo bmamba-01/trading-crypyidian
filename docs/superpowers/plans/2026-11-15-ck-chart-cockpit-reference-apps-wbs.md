@@ -1,6 +1,6 @@
 # WBS CK — Buồng lái biểu đồ (chart cockpit) theo hai app tham chiếu
 
-**Ngày:** 2026-11-15 · **Trạng thái:** CK-0 đã làm; CK-1…CK-4 đã làm phần lõi (15/11/2026, xem cuối từng mục, còn mở ghi rõ); CK-5…CK-13 là kế hoạch · **Chế độ:** PAPER/replay; chỉ dữ liệu thị trường công khai; không route order, không bật SHADOW/PAPER_GATE/Demo/LIVE. <br>
+**Ngày:** 2026-11-15 · **Trạng thái:** CK-0 đã làm; CK-1…CK-5 đã làm phần lõi (15/11/2026, xem cuối từng mục, còn mở ghi rõ); CK-6…CK-13 là kế hoạch · **Chế độ:** PAPER/replay; chỉ dữ liệu thị trường công khai; không route order, không bật SHADOW/PAPER_GATE/Demo/LIVE. <br>
 **Đầu vào:** hai ảnh owner gửi ngày 15/11/2026 — (1) "XAUUSD Research Desk 3.3.0" (MT5, ICT + VSA); (2) một app quét/auto crypto trên Bybit (WLFI/USDT, Green Flag, MA34×89). <br>
 **Xây trên:** [WBS SIG](./2026-11-15-sig-market-structure-scalping-chart-wbs.md) (đang ở nhánh `claude/project-progress-review-wp07-d70431`, **chưa vào `dev`**), [UI kit v1.1](../../design/admin-ui-kit.md), ingest live Binance (`docs/research/binance-usdm-api-audit-2026-11-14.md`), [khảo sát 14/11](./2026-11-14-feature-survey-and-manager-insights.md).
 
@@ -217,7 +217,7 @@ Ký hiệu: **D** = đã có trên `dev`; **S** = đã làm lát đầu trên nh
 
 **Acceptance:** TPO tính tay trên fixture 2 phiên; nPOC biến mất đúng nến chạm; ghi rõ TPO POC và volume POC có thể khác nhau.
 
-**Đã làm (15/11/2026, chưa commit):** `domain/market/tpo.py` (`ck4-tpo-v1`): `tpo_profile` (khối 30 phút UTC, 24 hàng hoặc `row_size`, POC/VA 70%), `naked_levels`. Payload: mỗi volume profile ngày có thêm `tpo`; `profile_levels` = nPOC khối lượng + nPOC TPO của tối đa 5 ngày UTC đã đóng đủ nến (bỏ ngay khi bị chạm) và VAH/VAL khối lượng của ngày đã đóng gần nhất (kéo tới nến cuối). Chart: lớp "TPO profile" (mặc định tắt, cột lam bám mép phải ngày, POC TPO nét chấm) và "nPOC · VAH/VAL ngày trước" (mặc định bật); chú giải ghi TPO POC có thể khác POC khối lượng. Golden test tay: 4 khối → POC 11,5, VA 11–13; gộp nến 5m theo khối; nPOC biến mất đúng nến chạm.
+**Đã làm (15/11/2026, commit `cdb634d`):** `domain/market/tpo.py` (`ck4-tpo-v1`): `tpo_profile` (khối 30 phút UTC, 24 hàng hoặc `row_size`, POC/VA 70%), `naked_levels`. Payload: mỗi volume profile ngày có thêm `tpo`; `profile_levels` = nPOC khối lượng + nPOC TPO của tối đa 5 ngày UTC đã đóng đủ nến (bỏ ngay khi bị chạm) và VAH/VAL khối lượng của ngày đã đóng gần nhất (kéo tới nến cuối). Chart: lớp "TPO profile" (mặc định tắt, cột lam bám mép phải ngày, POC TPO nét chấm) và "nPOC · VAH/VAL ngày trước" (mặc định bật); chú giải ghi TPO POC có thể khác POC khối lượng. Golden test tay: 4 khối → POC 11,5, VA 11–13; gộp nến 5m theo khối; nPOC biến mất đúng nến chạm.
 **Lệch so với kế hoạch:** dùng ngày UTC (giống volume profile hiện có) thay vì từng phiên; danh sách mức trong tab "Mức giá" để CK-10.
 
 ### CK-5 — Phân loại nến VSA và ZigZag
@@ -227,6 +227,9 @@ Ký hiệu: **D** = đã có trên `dev`; **S** = đã làm lát đầu trên nh
 3. **ZigZag** dựng từ pivot đã xác nhận (không vẽ lại quá khứ); đoạn cuối chưa xác nhận vẽ nét đứt và ghi rõ "chưa chốt"; tham số % hoặc theo ATR.
 
 **Acceptance:** golden dataset cho từng nhãn VSA; ZigZag "streaming = batch" cho phần đã xác nhận.
+
+**Đã làm (15/11/2026, chưa commit):** `domain/market/vsa.py`: `vsa_labels` (`ck5-vsa-v1`, cửa sổ 20 nến trước, 7 nhãn theo thứ tự ưu tiên ghi trong docstring) và `zigzag` (`ck5-zigzag-v1`, ngưỡng 2×ATR14 hoặc %, điểm chốt theo `final_index`). Payload `vsa` (nến có nhãn + nhóm sức mạnh/yếu) và `zigzag` (điểm chốt, pivot chưa chốt, giá cuối). Chart: lớp "ZigZag (pivot đã chốt)" bật mặc định (nét đứt + chữ "chưa chốt" cho đoạn cuối), lớp "Tô volume theo VSA" tắt mặc định (lam = sức mạnh, cam = yếu, nến khác mờ); chú giải OHLC khi rê/chạm ghi tên nhãn VSA. Golden test tay cho 7 nhãn + nến không nhãn; test streaming = batch cho ZigZag (domain và payload).
+**Còn mở:** chưa tô màu thân nến theo VSA (chỉ volume); ngưỡng ZigZag chưa chỉnh được trên giao diện.
 
 ### CK-6 — Bảng Entry: nhiều setup, tiến độ k/n, điều kiện còn thiếu
 

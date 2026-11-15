@@ -50,6 +50,14 @@ from trading_bot.domain.market.volume_profile import (
     cumulative_delta,
     volume_profile,
 )
+from trading_bot.domain.market.vsa import (
+    VSA_FORMULA_VERSION,
+    VSA_LABELS_VI,
+    VSA_STRENGTH,
+    ZIGZAG_FORMULA_VERSION,
+    vsa_labels,
+    zigzag,
+)
 
 CHART_VERSION = "sig7-market-chart-v1"
 MARKET_CHART_INTERVAL_SECONDS: dict[str, int] = {
@@ -71,6 +79,8 @@ SWING_RIGHT_BARS = 3
 PROFILE_BINS = 24
 # CK-4: số ngày UTC đã đóng gần nhất được xét POC "trần" (nPOC).
 NAKED_POC_DAYS = 5
+# CK-5: nhịp ZigZag tối thiểu = 2 × ATR14 tại nến xác nhận swing ngược chiều.
+ZIGZAG_MIN_MOVE_ATR = 2.0
 # CK-3: dải killzone chỉ vẽ ở khung ≤ 15 phút (khung lớn hơn chỉ còn 1–3 nến mỗi cửa sổ) và
 # trong 3 ngày gần nhất; số vùng vẽ có trần để chart mượt trên mobile.
 KILLZONE_MAX_INTERVAL_SECONDS = 900
@@ -394,6 +404,8 @@ def build_market_chart_payload(
             "ict": ICT_FORMULA_VERSION,
             "killzone_table": KILLZONE_TABLE_VERSION,
             "tpo": TPO_FORMULA_VERSION,
+            "vsa": VSA_FORMULA_VERSION,
+            "zigzag": ZIGZAG_FORMULA_VERSION,
         },
         "bars": [],
         "volume": [],
@@ -405,6 +417,8 @@ def build_market_chart_payload(
         "levels": [],
         "volume_profiles": [],
         "profile_levels": [],
+        "vsa": [],
+        "zigzag": {"points": [], "pending": None},
         "ict": {
             "killzones": [],
             "zones": [],
@@ -544,6 +558,34 @@ def build_market_chart_payload(
         for line in lines.lines[-8:]
     ]
     payload["notices"].append(NOTICE_STRUCTURE_DELAY.format(right=SWING_RIGHT_BARS))
+    payload["vsa"] = [
+        {
+            "time": times[index],
+            "key": label,
+            "label": VSA_LABELS_VI[label],
+            "group": "strength" if label in VSA_STRENGTH else "weakness",
+        }
+        for index, label in enumerate(vsa_labels(highs, lows, closes, volumes))
+        if label is not None
+    ]
+    zig = zigzag(structure.swings, atr_values, min_move_atr=ZIGZAG_MIN_MOVE_ATR)
+    payload["zigzag"] = {
+        "points": [
+            {
+                "kind": point.kind,
+                "time": times[point.index],
+                "price": point.price,
+                "final_time": times[point.final_index],
+            }
+            for point in zig.points
+        ],
+        "pending": (
+            {"kind": zig.pending.kind, "time": times[zig.pending.index], "price": zig.pending.price}
+            if zig.pending is not None
+            else None
+        ),
+        "last": {"time": times[-1], "price": closes[-1]},
+    }
     payload["ict"] = _ict_payload(
         times=times,
         open_times=open_times,
