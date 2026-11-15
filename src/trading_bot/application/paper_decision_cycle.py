@@ -47,6 +47,10 @@ class DecisionCycleOutcome(StrEnum):
     PAPER_INTENT_CREATED = "PAPER_INTENT_CREATED"
 
 
+# Release nhận tham số bot (H03 lookback). Phải khớp `bot_config_resolver._PARAMETERIZED_RELEASES`.
+PARAMETERIZED_RELEASES = frozenset({"h03-v1", "h03-v3-15m", "h03-v3-1h", "h03-v3-4h"})
+
+
 def strategy_selection_from_published_settings(
     settings: WorkspaceSettings,
     *,
@@ -70,7 +74,7 @@ def strategy_selection_for_release(
     settings_version_id: str,
 ) -> StrategySelection:
     """Dựng selection đã publish cho một release; dùng chung cho root settings và bot config."""
-    if parameters and release_id != "h03-v1":
+    if parameters and release_id not in PARAMETERIZED_RELEASES:
         raise ValueError(f"Strategy '{release_id}' chưa hỗ trợ tham số trong runtime.")
     if not isinstance(parameters, Mapping):
         raise ValueError("strategy.parameters phải là một object có khóa và giá trị hợp lệ.")

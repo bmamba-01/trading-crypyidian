@@ -17,6 +17,7 @@ from statistics import median
 from typing import Any
 
 from trading_bot.domain.strategy.contracts import DecisionSnapshot, StrategySelection
+from trading_bot.domain.strategy.rules_v3 import H03_V3_TIMEFRAMES
 
 CHECKLIST_VERSION = "sig3-checklist-v1"
 
@@ -126,16 +127,18 @@ def _h01(snapshot: DecisionSnapshot, settings: StrategySelection) -> tuple[Check
     return tuple(items)
 
 
-def _h03(snapshot: DecisionSnapshot, settings: StrategySelection) -> tuple[ChecklistItem, ...]:
+def _h03(
+    snapshot: DecisionSnapshot, settings: StrategySelection, timeframe: str = "1h"
+) -> tuple[ChecklistItem, ...]:
     parameters = dict(settings.parameters)
     lookback = parameters.get("donchian_lookback", 55)
     volume_lookback = parameters.get("volume_median_lookback", 20)
-    series = snapshot.get_series("1h")
+    series = snapshot.get_series(timeframe)
     if series is None or len(series.bars) < lookback + 1:
         return (
             ChecklistItem(
                 "donchian_breakout",
-                f"Giá đóng phá kênh Donchian {lookback} nến (1h)",
+                f"Giá đóng phá kênh Donchian {lookback} nến ({timeframe})",
                 "thiếu dữ liệu",
                 "phá",
                 "—",
@@ -150,7 +153,7 @@ def _h03(snapshot: DecisionSnapshot, settings: StrategySelection) -> tuple[Check
     items = [
         ChecklistItem(
             "donchian_breakout",
-            f"Giá đóng phá kênh Donchian {lookback} nến (1h)",
+            f"Giá đóng phá kênh Donchian {lookback} nến ({timeframe})",
             f"đóng {_fmt(current.close, 2)}; kênh {_fmt(low, 2)} – {_fmt(high, 2)}",
             ">" if broke_up else "<" if broke_down else "ngoài kênh",
             _fmt(high, 2) if not broke_down else _fmt(low, 2),
@@ -263,6 +266,10 @@ def strategy_checklist(
     release_id: str, snapshot: DecisionSnapshot, settings: StrategySelection
 ) -> tuple[ChecklistItem, ...]:
     """Checklist cho release ``h01-*``/``h03-*``/``h06-*``; release khác trả rỗng."""
+    # H03 v3: mỗi release một khung vào lệnh (15m/1h/4h) — checklist đọc đúng khung đó.
+    v3_timeframe = H03_V3_TIMEFRAMES.get(release_id)
+    if v3_timeframe is not None:
+        return _h03(snapshot, settings, v3_timeframe)
     builder = _BUILDERS.get(release_id.split("-", 1)[0].upper())
     if builder is None:
         return ()

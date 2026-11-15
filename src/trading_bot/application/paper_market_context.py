@@ -90,7 +90,7 @@ from trading_bot.domain.risk.risk_windows import (
     calculate_loss_windows,
 )
 from trading_bot.domain.strategy.contracts import DecisionSnapshot
-from trading_bot.domain.strategy.rules_v2 import exit_evidence_spec
+from trading_bot.domain.strategy.rules_v3 import exit_evidence_spec
 
 CONTEXT_PROVIDER_VERSION = "rt1-postgres-paper-context-v2"  # v2: ngắt mạch drawdown FX-2
 INSTRUMENT_SOURCE = "BINANCE_USDM"

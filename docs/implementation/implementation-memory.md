@@ -4165,3 +4165,26 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
   - Vốn theo bot (đọc bot-scoped như runtime): seed 10.000, realized 0, equity 10.000, 0 vị thế mở.
   - Đọc vốn không có `app.bot_id` trả seed None do RLS. Đó là đúng thiết kế, không phải lỗi.
 - **Còn mở:** account thứ ba `10eddc3e…` (không có bot READY) không có checkpoint genesis trong bản sao lưu nên không bị ảnh hưởng; `bot_decision` cũ vẫn còn (không dispatch lại vì đã hết hạn).
+
+### 2026-11-15 — H03 v3 (khung 15m/1h/4h) và script đợt thử 10 bot / 20 coin
+
+- **Yêu cầu của owner:** bốc ngẫu nhiên 20 coin Binance USDⓈ-M để theo dõi và gửi tín hiệu Telegram; 10 bot với tham số, số coin và khung nến ngẫu nhiên; kết quả gửi Telegram.
+- **Quyết định (AskUserQuestion):** mở H03 chọn 15m/1h/4h; chọn coin ngẫu nhiên có lọc thanh khoản; Telegram nhận tin mở/đóng lệnh + tổng kết định kỳ.
+- **Yêu cầu bổ sung giữa chừng:** tin dạng ảnh/card có style. Đang giao agent riêng (worktree) làm renderer PNG + `send_photo`; agent khác làm thông báo kết quả giao dịch + tổng kết 4 giờ + `/report`.
+- **Thiết kế H03 v3:**
+  - Mỗi khung một release (`h03-v3-15m/1h/4h`, module mới `domain/strategy/rules_v3.py`) vì mọi đường runtime/replay/admin lấy khung theo `release_id`.
+  - Hash release cũ không đổi.
+  - Thoát như v2 (kênh 20 nến cùng khung, recipe `h03-exit-v3-<tf>`, `exit_evidence_spec` mới ở rules_v3 tra v3 trước rồi v2; 2 call site đổi import).
+  - Tham số `donchian_lookback`/`volume_median_lookback` cho phép ở v3 (`bot_config_resolver._PARAMETERIZED_RELEASES` + `paper_decision_cycle.PARAMETERIZED_RELEASES`).
+  - Checklist H03 đọc đúng khung theo release.
+- **Lỗi có sẵn phát hiện:** `rules._selected` đòi `"h03-v1"`/`"h06-v1"` trong `active_release_ids`. Runtime dựng selection `(release_id,)`, nên **H03-v2 và H06-v2 luôn trả `*_NOT_SELECTED`**: chưa bao giờ ra tín hiệu khi được chọn. Đã tái hiện bằng rule thật.
+  - Không sửa trong lát này vì sửa `rules.py`/`rules_v2.py` đổi hash release đang ghim.
+  - v3 tự kiểm `self.release_id`.
+  - **Còn mở:** phát hành lại v2 (hoặc v2.1) với kiểm chọn đúng.
+- **Script `scripts/seed_signal_test_bots.py`:**
+  - `plan` (máy dev): đọc `/fapi/v1/exchangeInfo` + `/fapi/v1/ticker/24hr` công khai; lọc USDT perpetual TRADING, quote volume 24h ≥ 20 triệu, **mã ASCII** (Binance có mã `牛来USDT` mà collector/bot config từ chối); bốc 20 coin bằng `random.Random(20261115)`.
+  - Kế hoạch ở `docs/implementation/signal-test-plan.json`: 89 coin đủ điều kiện ngày 15/11/2026.
+  - `apply` (migrator): root v2 với 20 coin và khung 15m/1h/4h (bỏ 1m để vừa trần collector 60 stream; khung execution = khung vào lệnh); release; 10 account/bot/seed 10.000/config/subscription; tắt bot cũ.
+  - `genesis` (trading-runtime): checkpoint khởi tạo.
+- **Kiểm chứng:** unit **4363 passed/133.01s**; ruff, format, mypy sạch; E2E producer + RT-1 **2 passed/374.88s**.
+- **Giới hạn:** H06 không dùng (thiếu macro); bỏ 1m nên khớp/stop theo nến khung vào lệnh (thô hơn); collector chạm trần 60 stream.

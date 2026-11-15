@@ -69,7 +69,7 @@ from trading_bot.domain.strategy.contracts import (
     StrategyCandidate,
 )
 from trading_bot.domain.strategy.registry import StrategyRegistry
-from trading_bot.domain.strategy.rules_v2 import exit_evidence_spec
+from trading_bot.domain.strategy.rules_v3 import exit_evidence_spec
 
 ZERO = Decimal("0")
 ONE = Decimal("1")
