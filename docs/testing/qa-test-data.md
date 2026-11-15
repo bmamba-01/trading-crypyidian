@@ -220,3 +220,15 @@ Giới hạn cần biết:
 ## 9. Thuật ngữ
 
 Thuật ngữ mới (bộ dữ liệu QA, seed dữ liệu, UUIDv5, chốt an toàn seed, tài khoản kiểm thử, profile Compose) được đề xuất cho `docs/research/glossary-vi.md`; xem thêm [TOTP](../research/glossary-vi.md), [RLS](../research/glossary-vi.md) và [Idempotency key](../research/glossary-vi.md).
+
+## Người duyệt local cho workspace dev (SIG-0, 15/11/2026)
+
+Duyệt policy Source Registry bắt buộc người duyệt **khác** người gửi; stack local chỉ có một owner và chưa có quản lý thành viên (US-04). `scripts/seed_local_reviewer.py` tạo một thành viên `analyst_reviewer` trong workspace local đã có, tái dùng các bước của QA seed (băm mật khẩu, TOTP qua `LocalMfaSecretProvider`):
+
+```bash
+uv run python scripts/seed_local_reviewer.py seed --workspace-slug <slug-workspace-local>
+```
+
+- Chỉ chạy được khi container `qa-seed` ở `local`/`test` + `PAPER` và workspace ở chế độ PAPER.
+- Credential tạo một lần trong `.secrets/local_reviewer.json` (quyền 600, bắt buộc git ignore); không in ra stdout/log. Chạy lại là idempotent (ID UUIDv5 theo workspace + email).
+- Chỉ dùng cho dữ liệu dev; môi trường thật phải mời thành viên thật khi US-04 có.

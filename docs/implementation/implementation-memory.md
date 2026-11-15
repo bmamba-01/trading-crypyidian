@@ -3855,3 +3855,30 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
   - Policy `BINANCE_USDM_REST`/PAPER_DEMO cần người duyệt độc lập (self-approve 403). Stack local chỉ có một owner, quản lý thành viên (US-04) chưa có.
   - Runbook bật chạy ghi trong WBS SIG-0.
 - **Còn mở:** Vision parser, manifest v5, aggTrades, ghi `ingestion_gap`, xung đột khi backfill `feed_delay > 0` trùng khoảng, WebSocket.
+
+### 2026-11-15 — Bật collector SIG-0 trên stack local với người duyệt local
+
+- **Yêu cầu của owner:** chọn "Seed local reviewer".
+- **Làm:**
+  - Thêm `scripts/seed_local_reviewer.py` (seed trên máy dev → `apply` trong container `qa-seed`). Script tái dùng `_ensure_user/_ensure_row/_ensure_role_bindings/_ensure_mfa` của `scripts/qa_seed_layers.py`, ID UUIDv5 theo workspace + email. Credential ở `.secrets/local_reviewer.json` (600, kiểm `git check-ignore`) và không in ra. Có unit test `tests/unit/test_seed_local_reviewer.py`.
+  - Tạo `local.reviewer@example.test` (`analyst_reviewer`) trong workspace của owner (`c486b52b-…`).
+  - Qua UI "Nguồn dữ liệu" (Playwright script trong scratchpad, đọc credential từ tệp):
+    - Owner tạo nguồn `BINANCE_USDM_REST` với quota 100000 request/giờ, 500 MB.
+    - Owner gửi policy PAPER demo + phạm vi giấy phép + bằng chứng là bản ghi quyết định owner (ghi rõ không phải giấy phép Binance; tham chiếu https://www.binance.com/en/terms).
+    - Reviewer duyệt (303).
+  - Khởi động `ingestion-worker` với `TRADING_BOT_INGESTION_WORKSPACE_ID` của owner và `TRADING_BOT_MARKET_COLLECTOR_ENABLED=true`.
+- **Lỗi gặp:**
+  - Lần chạy script đầu không tạo được nguồn, nguyên nhân chưa xác định chắc. Lần sau, với quota thực tế, trả 303.
+  - Selector mục đích phải là `purpose_paper_demo` (giá trị enum viết thường), không phải `PAPER_DEMO`.
+- **Kết quả thật (Binance công khai):**
+  - 10 luồng × 1000 nến, `taker_buy_base_volume` có ở 100% nến thu.
+  - Tick sau thu thêm nến 1m (1000 → 1001, mốc 10:09 UTC lúc 10:11 UTC).
+  - Readiness `{"market_collector":{"state":"ok","streams":10,"rights_denied":0,"errors":0}}`.
+  - `/admin/chart` BTCUSDT 5m hiển thị nguồn "Binance USDⓈ-M · REST công khai", volume tô theo delta, profile mua/bán, phiên/PDL/quét, BOS/CHoCH; 1440/390px không lỗi console, không tràn.
+- **Kiểm chứng:**
+  - Unit **4263 passed/126.16s**; ruff, format (975 file), mypy đạt.
+  - Không đổi code runtime trong vòng này nên không chạy lại Compose E2E (vòng trước: backfill/collector 2 passed).
+- **Còn mở:**
+  - CVD đã có trong payload nhưng chart chưa có pane hiển thị.
+  - Dữ liệu seed cũ `BINANCE_USDM` (giá phẳng) vẫn trong DB; chart đã ưu tiên nguồn REST nên không trộn.
+  - Biến môi trường bật collector chỉ đặt khi chạy lệnh `docker compose up`; khởi động lại stack mà không đặt biến thì collector tắt (mặc định).
