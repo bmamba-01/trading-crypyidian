@@ -318,6 +318,104 @@ class BotReportRepository:
             for row in selected.values()
         ]
 
+    async def latest_bot_decisions(
+        self, *, workspace_id: UUID, bot_id: UUID, limit: int = 5
+    ) -> list[dict[str, Any]]:
+        """Các quyết định gần nhất của bot (payload + hash để tầng service xác minh) kèm kế hoạch
+        đã được risk gate duyệt của candidate (nếu có) — dùng cho thẻ tín hiệu SIG-3."""
+        rows = await self._scalars(
+            select(BotDecisionRecord)
+            .where(
+                BotDecisionRecord.workspace_id == workspace_id,
+                BotDecisionRecord.bot_id == bot_id,
+            )
+            .order_by(BotDecisionRecord.evaluated_at.desc(), BotDecisionRecord.created_at.desc())
+            .limit(limit)
+        )
+        candidate_ids = sorted({row.candidate_id for row in rows if row.candidate_id})
+        plans: dict[str, dict[str, Any]] = {}
+        if candidate_ids:
+            plan_rows = await self._scalars(
+                select(TradePlanRecord).where(
+                    TradePlanRecord.workspace_id == workspace_id,
+                    TradePlanRecord.bot_id == bot_id,
+                    TradePlanRecord.payload["candidate_id"].astext.in_(candidate_ids),
+                )
+            )
+            for plan in plan_rows:
+                plans[str(plan.payload.get("candidate_id"))] = dict(plan.payload)
+        return [
+            {
+                "payload": dict(row.payload),
+                "decision_hash": row.decision_hash,
+                "plan": plans.get(row.candidate_id or ""),
+            }
+            for row in rows
+        ]
+
+    async def list_market_series(self, *, workspace_id: UUID, as_of: datetime) -> list[str]:
+        """Các bộ ``SYMBOL|timeframe|source`` có nến đã đóng trong kho nội bộ của workspace."""
+        rows = await self._session.execute(
+            select(MarketBar.symbol, MarketBar.timeframe, MarketBar.source)
+            .where(
+                MarketBar.workspace_id == workspace_id,
+                MarketBar.available_at <= as_of,
+                MarketBar.is_closed.is_(True),
+            )
+            .group_by(MarketBar.symbol, MarketBar.timeframe, MarketBar.source)
+            .order_by(MarketBar.symbol, MarketBar.timeframe, MarketBar.source)
+        )
+        return [f"{symbol}|{timeframe}|{source}" for symbol, timeframe, source in rows.all()]
+
+    async def load_recent_bars(
+        self,
+        *,
+        workspace_id: UUID,
+        symbol: str,
+        timeframe: str,
+        as_of: datetime,
+        limit: int,
+        source: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Đọc ``limit`` nến đã đóng gần nhất (khả dụng tại as_of), giữ bản sửa mới nhất.
+
+        Đọc dư gấp đôi để bù các bản sửa (revision) trùng ``open_time`` rồi cắt lại; kết quả
+        sắp tăng dần theo thời gian. ``taker_buy_volume`` (SIG-0) là ``None`` khi nến chưa có
+        trường này — tầng dựng chart tự ẩn lớp áp lực mua/bán thay vì ước lượng.
+        """
+        rows = await self._scalars(
+            select(MarketBar)
+            .where(
+                MarketBar.workspace_id == workspace_id,
+                MarketBar.symbol == symbol,
+                MarketBar.timeframe == timeframe,
+                MarketBar.available_at <= as_of,
+                MarketBar.is_closed.is_(True),
+                *([MarketBar.source == source] if source is not None else []),
+            )
+            .order_by(MarketBar.open_time.desc(), MarketBar.revision.desc())
+            .limit(limit * 2)
+        )
+        selected: dict[datetime, MarketBar] = {}
+        for row in rows:
+            selected.setdefault(row.open_time, row)
+        latest = sorted(selected.values(), key=lambda row: row.open_time)[-limit:]
+        return [
+            {
+                "time": int(row.open_time.timestamp()),
+                "open": float(row.open),
+                "high": float(row.high),
+                "low": float(row.low),
+                "close": float(row.close),
+                "volume": float(row.volume),
+                "taker_buy_volume": (
+                    None if row.taker_buy_base_volume is None else float(row.taker_buy_base_volume)
+                ),
+                "source": row.source,
+            }
+            for row in latest
+        ]
+
     async def workspace_closed_totals(
         self, *, workspace_id: UUID, start: datetime, end: datetime
     ) -> dict[str, tuple[int, Decimal]]:

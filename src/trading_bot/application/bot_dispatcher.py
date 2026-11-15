@@ -26,6 +26,11 @@ from trading_bot.application.learning_feature_vector import (
 from trading_bot.application.paper_decision_cycle import strategy_selection_for_release
 from trading_bot.domain.learning.feature_vector import LearningFeatureVector
 from trading_bot.domain.market.signal_evidence import SharedSignalEvidence
+from trading_bot.domain.strategy.checklists import (
+    CHECKLIST_VERSION,
+    ChecklistItem,
+    strategy_checklist,
+)
 from trading_bot.domain.strategy.contracts import (
     DecisionSnapshot,
     NoTrade,
@@ -366,6 +371,10 @@ class BotDecision:
     gate_details: tuple[str, ...]
     idempotency_key: str
     decision_hash: str
+    # SIG-3: checklist điều kiện có cấu trúc (JSON canonical); None với quyết định cũ hoặc
+    # release không có checklist. Chỉ thêm khóa ``checklist`` vào payload khi có giá trị nên hash
+    # của quyết định cũ không đổi.
+    checklist_json: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.status, BotDecisionStatus):
@@ -427,6 +436,9 @@ class BotDecision:
             gate_details=tuple(payload["gate_details"]),
             idempotency_key=payload["idempotency_key"],
             decision_hash=decision_hash,
+            checklist_json=(
+                None if payload.get("checklist") is None else _canonical_json(payload["checklist"])
+            ),
         )
 
 
@@ -813,6 +825,11 @@ async def evaluate_bot_decision(
     result = strategies.resolve(context.strategy_release_id, selection).evaluate(
         snapshot, selection
     )
+    try:
+        # Chỉ để diễn giải (SIG-3); lỗi checklist không được làm hỏng quyết định của rule.
+        draft.checklist = strategy_checklist(context.strategy_release_id, snapshot, selection)
+    except Exception:  # noqa: BLE001
+        draft.checklist = ()
     if isinstance(result, NoTrade):
         return draft.build(
             BotDecisionStatus.ABSTAIN,
@@ -923,6 +940,7 @@ class _DecisionDraft:
         self._job = job
         self.strategy_release_hash: str | None = None
         self.decision_snapshot_id: str | None = None
+        self.checklist: tuple[ChecklistItem, ...] = ()
 
     def build(
         self,
@@ -963,6 +981,16 @@ class _DecisionDraft:
             else _canonical_json(_candidate_payload(candidate)),
             "gate_details": tuple(gate_details),
             "idempotency_key": key,
+            "checklist_json": (
+                _canonical_json(
+                    {
+                        "version": CHECKLIST_VERSION,
+                        "items": [item.as_dict() for item in self.checklist],
+                    }
+                )
+                if self.checklist
+                else None
+            ),
         }
         return BotDecision(**values, decision_hash=_hash(_decision_payload(values)))
 
@@ -971,7 +999,7 @@ def _decision_payload(values: Mapping[str, Any]) -> dict[str, Any]:
     """Payload canonical của quyết định từ giá trị trường (bỏ qua decision_hash)."""
     candidate_json = values["candidate_json"]
     model_release = values["model_release_id"]
-    return {
+    payload: dict[str, Any] = {
         "account_id": str(values["account_id"]),
         "bot_config_hash": values["bot_config_hash"],
         "bot_config_version_id": str(values["bot_config_version_id"]),
@@ -998,6 +1026,10 @@ def _decision_payload(values: Mapping[str, Any]) -> dict[str, Any]:
         "strategy_release_id": values["strategy_release_id"],
         "workspace_id": str(values["workspace_id"]),
     }
+    checklist_json = values.get("checklist_json")
+    if checklist_json is not None:
+        payload["checklist"] = json.loads(checklist_json)
+    return payload
 
 
 def _validate_scope(evidence: SharedSignalEvidence, bots: Sequence[BotDecisionContext]) -> None:

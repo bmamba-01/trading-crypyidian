@@ -2,7 +2,7 @@
 //
 // - `select[data-multiselect]`: chọn nhiều có tìm kiếm, mỗi mục có nút bỏ chọn.
 //   `data-multiselect="coins"` hiện biểu tượng và tên coin từ `data-icon`/`data-name` của option.
-// - `select[data-searchable]`: chọn một có tìm kiếm cho danh sách dài.
+// - `select[data-searchable]`: chọn một có tìm kiếm; `data-searchable="coins"` hiện biểu tượng coin.
 //
 // Thẻ `<select>` gốc vẫn nằm trong form và được gửi như bình thường, nên trang vẫn dùng được khi
 // script không chạy. Nội dung option dựng bằng DOM (textContent), không chèn chuỗi HTML.
@@ -57,7 +57,7 @@
   const enhance = (select) => {
     if (select.tomselect) return;
     const multiple = select.multiple;
-    const coins = select.dataset.multiselect === "coins";
+    const coins = select.dataset.multiselect === "coins" || select.dataset.searchable === "coins";
     const render = {
       no_results: () => textBlock("no-results", "Không có lựa chọn phù hợp"),
     };

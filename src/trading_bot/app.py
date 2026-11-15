@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -373,6 +373,7 @@ def create_app(
         live_market_runtime: Any | None = None
         live_market_task: asyncio.Task[None] | None = None
         live_event_task: asyncio.Task[None] | None = None
+        market_collector_task: asyncio.Task[None] | None = None
         signal_worker_task: asyncio.Task[None] | None = None
         market_signal_worker_task: asyncio.Task[None] | None = None
         training_supervisor_task: asyncio.Task[None] | None = None
@@ -430,6 +431,14 @@ def create_app(
                         live_event_worker.run(stopping), name="live-market-event-worker"
                     )
                     application.state.live_event_task = live_event_task
+            if app_settings.market_collector_enabled:
+                market_collector_task = _start_market_collector(
+                    application,
+                    app_settings=app_settings,
+                    session_factory=active_session_factory,
+                    workspace_id=workspace_id,
+                    stopping=stopping,
+                )
         elif app_settings.process_role == "trainer-worker":
             if active_session_factory is None:
                 raise RuntimeError("trainer-worker cần database session factory.")
@@ -527,6 +536,12 @@ def create_app(
                     await asyncio.wait_for(live_event_task, timeout=10)
             if live_market_runtime is not None:
                 await live_market_runtime.aclose()
+            if market_collector_task is not None:
+                with contextlib.suppress(asyncio.CancelledError, TimeoutError):
+                    await asyncio.wait_for(market_collector_task, timeout=10)
+                adapter = getattr(application.state, "market_collector_adapter", None)
+                if adapter is not None:
+                    await adapter.aclose()
             if signal_worker_task is not None:
                 with contextlib.suppress(asyncio.CancelledError, TimeoutError):
                     await asyncio.wait_for(signal_worker_task, timeout=10)
@@ -666,11 +681,17 @@ def create_app(
                     or event_task.done()
                 ):
                     pending.append("live_market_events")
+            collector_status = _market_collector_status(app)
+            if collector_status is not None and collector_status["state"] == "stopped":
+                pending.append("market_collector")
             if pending:
                 return JSONResponse(
                     status_code=503,
                     content={"status": "not_ready", "pending": sorted(pending)},
                 )
+            if collector_status is not None:
+                # Thiếu quyền nguồn hoặc lỗi luồng chỉ là degraded: rights worker vẫn phục vụ.
+                return {"status": "ready", "market_collector": collector_status}
             return {"status": "ready"}
         if signal_role:
             pending = []
@@ -1128,3 +1149,60 @@ def _default_supervisor(**kwargs: Any) -> BotRuntimeSupervisor:
 
 
 app = create_app()
+
+
+def _start_market_collector(
+    application: FastAPI,
+    *,
+    app_settings: AppSettings,
+    session_factory: Any,
+    workspace_id: UUID,
+    stopping: asyncio.Event,
+) -> asyncio.Task[None]:
+    """SIG-0: thu nến công khai Binance cho PAPER nội bộ; chỉ dữ liệu thị trường, không API key."""
+    from trading_bot.adapters.binance_usdm.market_data import BinanceUsdMMarketDataAdapter
+    from trading_bot.application.market_bar_collector import (
+        MarketBarCollector,
+        parse_collector_streams,
+    )
+    from trading_bot.workers.market_bar_collector_worker import (
+        MarketBarCollectorWorker,
+        database_collector_scope,
+    )
+
+    adapter = BinanceUsdMMarketDataAdapter()
+    application.state.market_collector_adapter = adapter
+    collector = MarketBarCollector(
+        workspace_id=workspace_id,
+        streams=parse_collector_streams(app_settings.market_collector_streams),
+        market_data=adapter,
+        session_scope=database_collector_scope(session_factory, workspace_id),
+        initial_bars=app_settings.market_collector_initial_bars,
+    )
+    worker = MarketBarCollectorWorker(
+        collector=collector, tick_seconds=app_settings.market_collector_tick_seconds
+    )
+    application.state.market_collector = worker
+    task = asyncio.create_task(worker.run(stopping), name="market-bar-collector")
+    application.state.market_collector_task = task
+    return task
+
+
+def _market_collector_status(app: FastAPI) -> dict[str, Any] | None:
+    """Bộ đếm trạng thái collector cho readiness; không chứa chi tiết policy hay payload."""
+    worker = getattr(app.state, "market_collector", None)
+    if worker is None:
+        return None
+    task = getattr(app.state, "market_collector_task", None)
+    tick = worker.last_tick
+    if task is None or task.done():
+        return {"state": "stopped"}
+    if tick is None:
+        return {"state": "starting"}
+    statuses = [result.status for result in tick.results]
+    return {
+        "state": "ok" if tick.succeeded else "degraded",
+        "streams": len(statuses),
+        "rights_denied": statuses.count("rights_denied"),
+        "errors": statuses.count("error"),
+    }

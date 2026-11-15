@@ -686,7 +686,41 @@ Thuật ngữ dùng trong [`2026-11-14-feature-survey-and-manager-insights.md`](
 | Research brief | Bản tổng kết nghiên cứu | Dữ liệu có cấu trúc (JSON có schema + tóm tắt sinh từ template) rút ra từ báo cáo đợt chạy để AI research engine đề xuất giả thuyết; mỗi phát hiện có cỡ mẫu và tham chiếu nguồn. Không chứa dữ liệu TEST. | Định nghĩa nội bộ |
 | Paper–backtest divergence | Sai lệch PAPER so với backtest | Chênh lệch kết quả giữa PAPER và backtest cùng release, cùng giai đoạn; lớn thì mô hình fill/chi phí hoặc dữ liệu đang sai. | Định nghĩa nội bộ |
 
-## AA. Điều khiển biểu mẫu trên Admin Web (15/11/2026)
+## AA. Cấu trúc thị trường, phiên, thanh khoản và scalping (15/11/2026)
+
+Thuật ngữ dùng trong [nghiên cứu đối chiếu tín hiệu/scalping/chart](./signal-scalping-chart-research-2026-11-15.md) và [WBS SIG](../superpowers/plans/2026-11-15-sig-market-structure-scalping-chart-wbs.md). Nguồn truy cập 15/11/2026. Các khái niệm đã có ở mục Y (BOS, CHoCH, swing đã xác nhận, liquidity sweep, CVD, volume profile/POC, hiệu chuẩn) không lặp lại.
+
+| Thuật ngữ | Bản dịch ưu tiên | Giải thích ngắn trong dự án | Tài liệu tham khảo |
+| --- | --- | --- | --- |
+| Scalping | Lướt sóng siêu ngắn | Giữ lệnh vài phút tới khoảng một giờ trên khung M1–M15, mục tiêu 1–2R. Chi phí giao dịch chiếm tỷ lệ lớn so với biên độ nên phải có cổng chi phí cứng. | [Binance FAQ phí futures](https://www.binance.com/en/support/faq/360033544231) |
+| Break-even win rate | Tỷ lệ thắng hòa vốn | Tỷ lệ thắng tối thiểu để kỳ vọng sau phí bằng 0: lỗ ròng khi thua / (lãi ròng khi thắng + lỗ ròng khi thua), tính theo R sau phí. | Định nghĩa nội bộ; [nghiên cứu §4](./signal-scalping-chart-research-2026-11-15.md#4-bằng-chứng-cho-scalping) |
+| Round-trip cost | Chi phí khứ hồi | Phí vào + phí ra + trượt giá hai chiều, tính theo % giá; scalping yêu cầu stop ≥ 3× chi phí này. | Như trên |
+| Maker / taker, post-only | Bên tạo / bên lấy thanh khoản, lệnh chỉ tạo thanh khoản | Lệnh limit nằm chờ trên sổ là maker (phí thấp hơn); lệnh khớp ngay là taker. Post-only bị hủy nếu sẽ khớp ngay. PAPER mô phỏng maker chỉ khớp khi giá đi xuyên mức. | [Binance FAQ phí futures](https://www.binance.com/en/support/faq/360033544231) |
+| Trading session (Asia/Tokyo, London, New York) | Phiên giao dịch (Á/Tokyo, London, New York) | Khoảng giờ theo timezone IANA của từng thị trường, đổi sang UTC theo từng ngày để xử lý DST. Phiên ảnh hưởng biến động/khối lượng, không quyết định hướng. | [Session Liquidity Architecture](https://www.tradingview.com/script/TVsSOe65/) · [Eross et al. 2019](https://econpapers.repec.org/RePEc:eee:riibaf:v:49:y:2019:i:c:p:71-81) |
+| PDH / PDL, PWH / PWL | Đỉnh/đáy ngày trước, đỉnh/đáy tuần trước | Mức thanh khoản tham chiếu theo ngày/tuần UTC đã đóng. | Định nghĩa nội bộ |
+| Equal highs / equal lows | Đỉnh bằng nhau / đáy bằng nhau | ≥ 2 pivot đã xác nhận có giá chênh ≤ k·ATR; vùng tập trung stop. k là tham số dễ quá khớp. | Định nghĩa nội bộ theo SMC |
+| Liquidity level state (armed / swept / rejected / accepted / expired) | Trạng thái mức thanh khoản (sẵn sàng / bị quét / bị từ chối / được chấp nhận / hết hạn) | Máy trạng thái của một mức: sẵn sàng khi phiên đóng; bị quét khi nến xác nhận vượt mức; từ chối nếu đóng quay lại, chấp nhận nếu đóng ngoài; hết hạn khi phiên cùng loại kế tiếp mở. | [Session Liquidity Architecture](https://www.tradingview.com/script/TVsSOe65/) |
+| Auto trendline | Đường xu hướng tự động | Nối 2 pivot cùng phía đã xác nhận; loại khi pivot cũ vượt line quá dung sai theo ATR; vô hiệu khi giá đóng cửa vượt line quá ngưỡng ATR. | [Auto Trendlines & Market Structure MTF](https://www.tradingview.com/script/YhyU49QG-Auto-Trendlines-Market-Structure-MTF/) |
+| Multi-timeframe (MTF) confirmation | Xác nhận đa khung | Dùng trạng thái của khung lớn hơn chỉ từ nến khung lớn **đã đóng** (lùi 1 nến) để không nhìn trước. | [TradingView: Repainting](https://www.tradingview.com/pine-script-docs/concepts/repainting/) |
+| Taker buy volume | Khối lượng mua chủ động | Trường `[9]`/`[10]` của kline USDⓈ-M: phần khối lượng mà bên lấy thanh khoản là bên mua. Delta nến = 2·taker buy − volume. | [Binance Kline docs](https://developers.binance.com/docs/derivatives/usds-margined-futures/market-data/rest-api/Kline-Candlestick-Data) |
+| Volume imbalance (E, Eref) | Độ mất cân bằng khối lượng | E = \|mua − bán\| / (mua + bán) cho một bin giá; Eref là tỷ lệ tổng của cả profile. Bin E ≥ 2·Eref là mất cân bằng cao, E ≤ Eref/2 là thấp. | [Volume Pressure Atlas](https://kr.tradingview.com/script/w7Biyqnb-Volume-Pressure-Atlas-MQLSoftware/) |
+| Value Area (VA, 70%) | Vùng giá trị | Dải giá chứa 70% khối lượng của profile, mở rộng từ POC sang bin kề lớn hơn. VAH/VAL là hai biên. | [TradingView: Volume Profile](https://www.tradingview.com/support/solutions/43000502040-volume-profile-indicators-basic-concepts/) |
+| Developing profile | Profile đang hình thành | Profile của phiên chưa đóng, chỉ tính tới nến t−1; giá trị thay đổi theo thời gian nên phải đánh dấu riêng, không trộn với profile đã chốt. | Như trên |
+| Order flow imbalance (OFI) | Mất cân bằng dòng lệnh | Thay đổi khối lượng ở giá mua/bán tốt nhất; liên hệ tuyến tính **đồng thời** với biến động giá ngắn hạn. | [Cont, Kukanov & Stoikov 2014](https://arxiv.org/abs/1011.6402) |
+| VPIN | Xác suất giao dịch có thông tin theo khối lượng | Ước lượng độc hại của dòng lệnh theo thùng khối lượng; còn tranh luận về sức dự báo. Chưa đưa vào sản phẩm. | [Easley et al. 2024](https://stoye.economics.cornell.edu/docs/Easley_ssrn-4814346.pdf) |
+| Entry zone | Vùng vào lệnh | Khoảng giá (thấp–cao) chấp nhận vào lệnh thay vì một giá; lệnh chưa khớp hết hạn sau N nến. | Định nghĩa nội bộ (SIG-3) |
+| Take-profit ladder (TP1/TP2/TP3) | Thang chốt lời | Nhiều mức chốt lời kèm tỷ lệ đóng từng phần; thứ tự giá phải đúng theo hướng lệnh (bán: SL > vùng vào > TP1 > TP2 > TP3). | Định nghĩa nội bộ (SIG-3) |
+| Brier score / reliability diagram | Điểm Brier / biểu đồ độ tin cậy | Brier = trung bình (p − kết quả)²; reliability diagram so xác suất dự báo với tần suất thực theo bin. Dùng để quyết định có được hiện % độ tin cậy hay không. | [Guo et al. 2017](https://arxiv.org/abs/1706.04599) |
+| Confluence voting / effective independent sources | Bỏ phiếu đồng thuận / số nguồn độc lập hiệu dụng | Đếm điều kiện đồng thuận dễ thổi phồng khi các điều kiện tương quan; dự án trừ tương quan (`AntiConsensusAnalyzer`) trước khi hiện "x/y nguồn". | [Anti-consensus illusion](#r-kiến-trúc-module-định-lượng-và-thiết-kế-chiến-lược-dạng-khai-báo-quantsmart-synthesis) |
+| Clean-room reimplementation | Cài đặt lại độc lập | Viết lại thuật toán từ mô tả công khai, không chép hay dịch máy mã nguồn gốc, để tôn trọng giấy phép (ví dụ MPL-2.0 của script TradingView). | [TradingView script publishing rules](https://www.tradingview.com/support/solutions/43000590599-script-publishing-rules/) |
+| Series / pane primitive (Lightweight Charts) | Thành phần vẽ tùy biến của chart | API plugin của Lightweight Charts v5 để tự vẽ hình (hộp phiên, volume profile, trendline) theo tọa độ giá/thời gian. | [Plugin examples](https://tradingview.github.io/lightweight-charts/plugin-examples/) |
+| Market data collector | Bộ thu nến thị trường | Worker định kỳ tải nến đã đóng từ API dữ liệu công khai của sàn, ghi kèm cursor để tiếp tục mà không trùng; mọi lần tải phải qua kiểm quyền nguồn (Source Registry) trước khi gọi mạng. | [Binance Kline docs](https://developers.binance.com/docs/derivatives/usds-margined-futures/market-data/rest-api/Kline-Candlestick-Data) · [WBS SIG-0](../superpowers/plans/2026-11-15-sig-market-structure-scalping-chart-wbs.md) |
+| Fail-closed | Mặc định từ chối | Khi thiếu hoặc không kiểm được điều kiện (quyền, dữ liệu), hệ thống dừng thao tác thay vì tiếp tục; collector thiếu policy thì không tải. | Định nghĩa nội bộ |
+| Signal card | Thẻ tín hiệu | Bản trình bày một candidate: hướng, vùng vào, SL, mục tiêu (recipe + mốc R tham chiếu), checklist điều kiện, điều kiện mất hiệu lực và độ tin cậy (chỉ khi đã hiệu chuẩn). Không phải lệnh hay khuyến nghị đầu tư. | [WBS SIG-3](../superpowers/plans/2026-11-15-sig-market-structure-scalping-chart-wbs.md) |
+| Decision checklist | Checklist điều kiện quyết định | Danh sách điều kiện của rule với giá trị thực, phép so, ngưỡng và kết quả; dùng để giải thích vì sao vào hoặc không vào lệnh (MI-1). Phải khớp (parity) với kết luận của rule. | Như trên |
+| R-multiple (gross) | Bội số R thô | Khoảng cách tới mục tiêu chia cho khoảng cách vào–SL, chưa trừ phí/trượt giá; khác R:R ròng do planner tính sau chi phí. | Như trên |
+
+## AB. Điều khiển biểu mẫu trên Admin Web (15/11/2026)
 
 | Thuật ngữ | Bản dịch ưu tiên | Giải thích ngắn trong dự án | Tài liệu tham khảo |
 | --- | --- | --- | --- |
@@ -717,4 +751,3 @@ Thuật ngữ dùng trong [`2026-11-14-feature-survey-and-manager-insights.md`](
 | HTF filter (block / warn) | Bộ lọc khung lớn (chặn / cảnh báo) | Chặn hoặc chỉ cảnh báo tín hiệu ngược xu hướng khung lớn. | Định nghĩa nội bộ |
 | Required vs bonus condition (k-of-n) | Điều kiện bắt buộc / cộng điểm (k trên n) | Setup đủ khi mọi điều kiện bắt buộc đạt và ít nhất k trên n điều kiện cộng điểm đạt. | Định nghĩa nội bộ |
 | Bid / ask / spread | Giá mua tốt nhất / giá bán tốt nhất / chênh lệch | Lấy từ stream `@bookTicker` (route `/public`) hoặc REST `ticker/bookTicker` của Binance USDⓈ-M. | [Binance USDⓈ-M market data](https://developers.binance.com/docs/derivatives/usds-margined-futures/market-data/rest-api) |
-

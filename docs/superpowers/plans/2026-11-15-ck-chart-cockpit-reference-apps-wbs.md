@@ -1,6 +1,6 @@
 # WBS CK — Buồng lái biểu đồ (chart cockpit) theo hai app tham chiếu
 
-**Ngày:** 2026-11-15 · **Trạng thái:** kế hoạch, chưa có dòng code nào của gói CK · **Chế độ:** PAPER/replay; chỉ dữ liệu thị trường công khai; không route order, không bật SHADOW/PAPER_GATE/Demo/LIVE. <br>
+**Ngày:** 2026-11-15 · **Trạng thái:** CK-0 đã làm (15/11/2026, xem cuối mục CK-0); CK-1…CK-13 là kế hoạch · **Chế độ:** PAPER/replay; chỉ dữ liệu thị trường công khai; không route order, không bật SHADOW/PAPER_GATE/Demo/LIVE. <br>
 **Đầu vào:** hai ảnh owner gửi ngày 15/11/2026 — (1) "XAUUSD Research Desk 3.3.0" (MT5, ICT + VSA); (2) một app quét/auto crypto trên Bybit (WLFI/USDT, Green Flag, MA34×89). <br>
 **Xây trên:** [WBS SIG](./2026-11-15-sig-market-structure-scalping-chart-wbs.md) (đang ở nhánh `claude/project-progress-review-wp07-d70431`, **chưa vào `dev`**), [UI kit v1.1](../../design/admin-ui-kit.md), ingest live Binance (`docs/research/binance-usdm-api-audit-2026-11-14.md`), [khảo sát 14/11](./2026-11-14-feature-survey-and-manager-insights.md).
 
@@ -156,6 +156,8 @@ Ký hiệu: **D** = đã có trên `dev`; **S** = đã làm lát đầu trên nh
 2. Chuyển các ô cấu hình của `/admin/chart` sang UI kit v1.1 (multi-select coin, công tắc lớp).
 
 **Acceptance:** một Alembic head; unit + Playwright + Compose E2E admin và chart đạt. **Phụ thuộc:** owner duyệt merge.
+
+**Đã làm (15/11/2026):** merge `claude/project-progress-review-wp07-d70431` @ `261c2ea` vào nhánh làm việc. Xung đột 8 tệp: `compose.yaml`, `app.py`, `settings.py` giữ **cả hai** (ingest live WebSocket của `dev` và collector REST SIG-0 chạy song song, nguồn khác nhau); probe/test backfill WP07 lấy bản SIG (cùng sửa một lỗi, bản SIG thêm PAPER_DEMO cho collector); tài liệu giữ cả hai. Glossary: mục SIG giữ nhãn **AA** (tài liệu SIG tham chiếu), mục điều khiển biểu mẫu đổi thành **AB**, mục CK là **AC**. Alembic một head `e3a5c7e9f1b4` (migration SIG nối sau `d2e4f6a8b0c1` sẵn có). `/admin/chart` theo UI kit v1.1: 10 lớp hiển thị là công tắc kiểu iOS (nhãn trái, công tắc phải), ô chọn mã là Tom Select có biểu tượng coin (`data-searchable="coins"`), ô chọn một của Tom Select giữ trên một hàng. Ô chọn bot giữ native vì test vùng chạm đo trực tiếp `#mc-bot`.
 
 ### CK-1 — Dải thông số thị trường trực tiếp
 

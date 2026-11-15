@@ -824,6 +824,9 @@ def _parse_kline(
             close=_decimal(value[4], "close"),
             volume=_decimal(value[5], "volume"),
             quote_volume=_decimal(value[7], "quote asset volume"),
+            trade_count=_trade_count(value[8]),
+            taker_buy_base_volume=_decimal(value[9], "taker buy base asset volume"),
+            taker_buy_quote_volume=_decimal(value[10], "taker buy quote asset volume"),
             is_closed=close_time < received_at,
             source="BINANCE_USDM",
             source_cursor=str(value[0]),
@@ -833,6 +836,21 @@ def _parse_kline(
         if isinstance(error, MarketDataContractError):
             raise
         raise MarketDataContractError("Kline có trường hoặc giá trị không hợp lệ.") from error
+
+
+def _trade_count(value: Any) -> int:
+    """Số giao dịch của kline ([8]) là số nguyên không âm; chuỗi số cũng được chấp nhận."""
+    if isinstance(value, bool):
+        raise MarketDataContractError("number of trades phải là số nguyên.")
+    if isinstance(value, int):
+        count = value
+    elif isinstance(value, str) and value.isdigit():
+        count = int(value)
+    else:
+        raise MarketDataContractError("number of trades phải là số nguyên.")
+    if count < 0:
+        raise MarketDataContractError("number of trades không được âm.")
+    return count
 
 
 def _parse_funding(value: Any, *, symbol: str, received_at: datetime) -> FundingRateObservation:

@@ -1,0 +1,169 @@
+/* ============================================================================
+   Trang Biểu đồ thị trường (/admin/chart) — SIG-7, theo UI kit v1 (docs/design/admin-ui-kit.md).
+   Nạp qua {% block head_extra %} của templates/admin/market_chart.html, sau admin.css.
+   Mọi lớp nằm dưới `.mc-page`. Không style nội tuyến (CSP): màu ô chú giải đặt bằng lớp.
+   ============================================================================ */
+
+.mc-page { display: grid; gap: 0.75rem; min-width: 0; }
+.mc-page > * { min-width: 0; }
+
+/* ---------- Thanh công cụ ---------- */
+.mc-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem 1rem;
+  padding: 0.7rem 0.85rem;
+  border-radius: 0.8rem;
+}
+.mc-toolbar__select { display: flex; align-items: center; gap: 0.5rem; margin: 0; flex: 1 1 18rem; min-width: 0; }
+.mc-toolbar__select label { font-weight: 600; white-space: nowrap; }
+.mc-toolbar__select select { min-height: 44px; min-width: 0; flex: 1 1 8rem; max-width: 18rem; }
+.mc-toolbar__select .btn { min-height: 44px; }
+
+.mc-timeframes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  padding: 0.2rem;
+  border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.3));
+  border-radius: 0.6rem;
+}
+.mc-timeframe {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0 0.55rem;
+  border-radius: 0.45rem;
+  font-weight: 600;
+  font-size: 0.82rem;
+  font-variant-numeric: tabular-nums;
+  color: inherit;
+  text-decoration: none;
+}
+.mc-timeframe:hover { background: rgba(148, 163, 184, 0.14); }
+.mc-timeframe.is-empty { opacity: 0.45; }
+.mc-timeframe.is-active { background: var(--accent, #f0b90b); color: #111827; }
+.mc-timeframe:focus-visible { outline: 2px solid var(--accent, #f0b90b); outline-offset: 2px; }
+
+.mc-layers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.15rem 0.6rem;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  flex: 1 1 100%;
+}
+.mc-layers legend {
+  float: left;
+  margin-right: 0.4rem;
+  padding: 0;
+  font-size: 0.78rem;
+  font-weight: 600;
+  line-height: 44px;
+  opacity: 0.75;
+}
+/* Mỗi lớp là công tắc kiểu iOS (UI kit v1.1): nhãn trái, công tắc phải, vùng chạm 44px. */
+.mc-layer { display: inline-flex; align-items: center; gap: 0.5rem; min-height: 44px; cursor: pointer; font-size: 0.85rem; padding-right: 0.5rem; }
+.mc-page .mc-toolbar__select .ts-wrapper { min-width: 9rem; }
+
+/* ---------- Khối chart ---------- */
+.mc-chart-card { padding: 0.75rem 0.85rem; border-radius: 0.8rem; display: grid; gap: 0.5rem; }
+.mc-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem 1rem; }
+.mc-head h2 { display: flex; flex-wrap: wrap; align-items: center; gap: 0.45rem; margin: 0; font-size: 1.05rem; }
+.mc-head__tf { font-variant-numeric: tabular-nums; opacity: 0.8; font-weight: 600; }
+
+.mc-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, auto));
+  gap: 0.25rem 1.1rem;
+  margin: 0;
+}
+.mc-summary > div { min-width: 0; }
+.mc-summary dt { font-size: 0.72rem; opacity: 0.7; white-space: nowrap; }
+.mc-summary dd { margin: 0; font-weight: 600; font-size: 0.85rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.mc-canvas { height: 460px; width: 100%; border-radius: 0.6rem; overflow: hidden; }
+.mc-subpane { height: 140px; width: 100%; border-radius: 0.5rem; overflow: hidden; }
+.mc-subpane[hidden] { display: none; }
+
+.mc-key { display: flex; flex-wrap: wrap; gap: 0.25rem 1rem; margin: 0; padding: 0; list-style: none; font-size: 0.78rem; opacity: 0.85; }
+.mc-key li { display: inline-flex; align-items: center; gap: 0.35rem; }
+.mc-swatch { display: inline-block; width: 0.85rem; height: 0.6rem; border-radius: 2px; }
+.mc-swatch--asia { background: rgba(240, 185, 11, 0.45); }
+.mc-swatch--london { background: rgba(59, 130, 246, 0.45); }
+.mc-swatch--new_york { background: rgba(168, 85, 247, 0.45); }
+.mc-swatch--level { height: 0; border-top: 2px dashed #f6465d; border-radius: 0; }
+.mc-swatch--poc { height: 0; border-top: 2px solid #f0b90b; border-radius: 0; }
+
+.mc-notices { margin: 0; padding-left: 1.1rem; font-size: 0.78rem; opacity: 0.8; display: grid; gap: 0.2rem; }
+
+/* ---------- Danh sách sự kiện ---------- */
+.mc-events { padding: 0.75rem 0.85rem; border-radius: 0.8rem; }
+.mc-events h2 { margin: 0 0 0.2rem; font-size: 1rem; }
+.mc-events__hint { margin: 0 0 0.5rem; font-size: 0.78rem; opacity: 0.7; }
+.mc-event-list { margin: 0; padding-left: 1.2rem; display: grid; gap: 0.3rem; font-size: 0.86rem; }
+.mc-event-list time { font-variant-numeric: tabular-nums; font-weight: 600; white-space: nowrap; }
+
+.mc-empty { padding: 1rem; border-radius: 0.8rem; }
+.mc-attribution { margin: 0; font-size: 0.74rem; opacity: 0.7; }
+
+@media (max-width: 1023px) {
+  .mc-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 639px) {
+  .mc-toolbar { padding: 0.6rem; }
+  .mc-toolbar__select {
+    flex-basis: 100%;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+  }
+  .mc-toolbar__select select { max-width: none; width: 100%; }
+  .mc-toolbar__select .btn { grid-column: 1 / -1; }
+  .mc-timeframes { width: 100%; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .mc-timeframe { min-width: 0; }
+  .mc-canvas { height: 360px; }
+  .mc-chart-card { padding: 0.6rem; }
+}
+
+/* ---------- Thẻ tín hiệu (SIG-3) ---------- */
+.sc-card { padding: 0.75rem 0.85rem; border-radius: 0.8rem; display: grid; gap: 0.6rem; }
+.sc-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.4rem 1rem; }
+.sc-head h2 { margin: 0; font-size: 1rem; }
+.sc-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem 0.6rem; }
+.sc-direction { font-weight: 800; font-size: 1.35rem; letter-spacing: 0.02em; }
+.sc-direction--long { color: var(--pnl-positive-text, #0b8a5a); }
+.sc-direction--short { color: var(--pnl-negative-text, #c7354b); }
+.sc-meta { font-size: 0.8rem; opacity: 0.75; }
+.sc-levels { display: grid; grid-template-columns: repeat(auto-fill, minmax(10.5rem, 1fr)); gap: 0.4rem; margin: 0; }
+.sc-level { border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.3)); border-radius: 0.55rem; padding: 0.4rem 0.55rem; min-width: 0; }
+.sc-level dt { font-size: 0.72rem; opacity: 0.75; }
+.sc-level dd { margin: 0; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.sc-level--stop dd { color: var(--pnl-negative-text, #c7354b); }
+.sc-level--recipe dd { color: var(--pnl-positive-text, #0b8a5a); }
+.sc-r { font-size: 0.75rem; font-weight: 600; opacity: 0.75; margin-left: 0.25rem; }
+.sc-note, .sc-empty { margin: 0; font-size: 0.8rem; opacity: 0.8; }
+.sc-columns { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 0.8rem; }
+.sc-columns h3, .sc-latest h3 { margin: 0 0 0.3rem; font-size: 0.88rem; }
+.sc-checklist, .sc-invalidation { margin: 0; padding: 0; list-style: none; display: grid; gap: 0.3rem; font-size: 0.84rem; }
+.sc-invalidation { padding-left: 1.1rem; list-style: disc; }
+.sc-check { display: grid; grid-template-columns: 1.2rem minmax(0, 1fr) auto; gap: 0.4rem; align-items: baseline; }
+.sc-check__mark { font-weight: 800; text-align: center; }
+.sc-check--pass .sc-check__mark { color: var(--pnl-positive-text, #0b8a5a); }
+.sc-check--fail .sc-check__mark { color: var(--pnl-negative-text, #c7354b); }
+.sc-check--na .sc-check__mark { opacity: 0.5; }
+.sc-check__value { font-variant-numeric: tabular-nums; font-size: 0.78rem; opacity: 0.85; text-align: right; }
+.sc-check__op { opacity: 0.7; }
+.sc-latest { border-top: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.3)); padding-top: 0.5rem; }
+.sc-latest p { margin: 0 0 0.3rem; font-size: 0.84rem; }
+@media (max-width: 767px) {
+  .sc-columns { grid-template-columns: 1fr; }
+  .sc-levels { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .sc-check { grid-template-columns: 1.2rem minmax(0, 1fr); }
+  .sc-check__value { grid-column: 2; text-align: left; }
+}

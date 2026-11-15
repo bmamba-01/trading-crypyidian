@@ -3975,3 +3975,209 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Nguồn:** tra web 15/11/2026 cho FVG/IFVG/BPR/OB, killzone/Silver Bullet/macro, TPO/nPOC, VSA, plugin vẽ Lightweight Charts. Đều là nhà cung cấp chỉ báo/trang đào tạo, không phải tài liệu gốc ICT hay sách Tom Williams; các nguồn mâu thuẫn ở giờ killzone NY AM và cách kích hoạt IFVG → plan chốt quy ước dự án và ghi rõ. "HoanLe VSA" và "Spike & Ledge" không tìm được định nghĩa kiểm chứng → không sao chép, cần owner mô tả.
 - **Chưa làm:** không code, không chạy test (chỉ tài liệu). Chưa commit.
 - **Readback:** đã đọc lại mục này; không có secret.
+### 2026-11-15 — Đối chiếu tín hiệu kiểu radarastro, 3 chỉ báo TradingView, scalping và chart; lập WBS SIG (chỉ tài liệu)
+
+- **Yêu cầu của owner:** đối chiếu ảnh app tín hiệu (SCALPING/SWING/DCA, vùng vào, SL, TP1–3, R:R, độ tin cậy, "3/6 nguồn đồng thuận") và 3 chỉ báo TradingView (Auto Trendlines & Market Structure MTF, Session Liquidity Architecture, Volume Pressure Atlas) với hệ thống; tìm chart miễn phí giống TradingView hiển thị chỉ báo và dùng chính các chỉ báo đó để ra tín hiệu; nghiên cứu mở rộng phương pháp, thêm scalping; lên plan và WP mới.
+- **Cách làm:** 3 sub-agent song song — kiểm kê code (chỉ đọc), research chart, research chỉ báo/scalping; người tích hợp đọc WBS/status/glossary và viết tài liệu.
+- **Kết quả kiểm kê code (bằng chứng file:line trong WBS SIG mục "Phát hiện"):** parser kline bỏ `[8]/[9]/[10]` (số giao dịch, taker buy base/quote) và `market_bar` không có cột; không có collector nến trực tiếp; runtime chỉ 15m/1h/4h; card release thiếu trong `FEATURES_BY_RELEASE` nên `feature_requirements_for_release` ném lỗi trên đường snapshot; `planner_bridge` bỏ confidence/R:R/zone; `TradePlan` một target; `AntiConsensusAnalyzer` khởi tạo nhưng không gọi; `geometry.py` có pivot nhưng không dùng; không có MACD/OBV/delta/CVD/BOS/CHoCH/trendline/phiên/sweep/volume profile. Lightweight Charts 5.2.1 đã tự host. Nhãn WP-07 bị dùng cho hai phạm vi (OPS07 và Trader Workbench WB07) → họ gói mới đặt tên `SIG-n` để tránh va chạm.
+- **Nguồn mới đã kiểm (15/11/2026):** Lightweight Charts 5.3.0 (npm 10/11/2026, Apache-2.0, ví dụ plugin volume profile/rectangle/trendline, gói session-highlighting 1.0.0 ngày 13/11/2026); TradingView Advanced Charts FAQ (chỉ web công khai) và widget FAQ (chỉ dữ liệu TradingView); KLineChart 10.1.0; ECharts 6.1.0; trang mô tả 3 script TradingView + quy định xuất bản script (MPL-2.0 mặc định); Binance kline docs (trường taker buy), FAQ phí futures (VIP0 maker 0,02%/taker 0,05%, cập nhật 01/05/2026, ghi là ví dụ), thông báo funding; Cont–Kukanov–Stoikov 2014, arXiv 2602.00776, Easley et al. 2024, Eross et al. 2019. URL đầy đủ ở `docs/research/signal-scalping-chart-research-2026-11-15.md` §9.
+- **Quyết định/giả định:**
+  - Giữ Lightweight Charts, nâng 5.3.0 ở SIG-7; đặt `attributionLogo: false` + chân trang attribution tĩnh vì logo chèn `<style>` bị CSP chặn và gắn `utm_source` chứa hostname/path admin.
+  - Cài lại clean-room 3 chỉ báo, không chép mã Pine.
+  - Phiên dùng `zoneinfo` (DST), không cứng giờ UTC; phiên là bộ lọc biến động, không đoán hướng.
+  - Scalping chỉ PAPER, giả thuyết H18–H20 `EXPERIMENTAL_UNVALIDATED`; stop ≥ 3× chi phí khứ hồi; ưu tiên maker mô phỏng bảo thủ.
+  - "Độ tin cậy %" chỉ hiện khi đã hiệu chuẩn (Brier/reliability); trước đó chỉ hạng. Đếm nguồn đồng thuận trừ tương quan.
+  - Ảnh tham khảo có lỗi: lệnh BÁN nhưng TP3 nằm trên vùng vào → SIG-3 thêm kiểm thứ tự giá theo hướng.
+- **File đổi:** mới `docs/research/signal-scalping-chart-research-2026-11-15.md`, `docs/superpowers/plans/2026-11-15-sig-market-structure-scalping-chart-wbs.md`; glossary thêm mục AA (22 thuật ngữ); `project-status.md` thêm dòng 15/11; khảo sát 14/11 thêm ghi chú trỏ tới WBS SIG.
+- **Kiểm chứng:** chỉ đổi tài liệu, không đổi mã/test. Script kiểm link tương đối + anchor trên 4 tài liệu: mọi link/anchor mới đều hợp lệ; phát hiện 13 link **có từ trước** trong glossary trỏ file không tồn tại (`2026-11-01-wp07-signal-wbs.md`, `2026-11-01-wp07-backtest-replay-wbs.md`, `.superpowers/sdd/.../task-3-report.md`, `../plans/2026-11-09-...`) — chưa sửa, ghi vào việc còn mở. Unit đọc docs `tests/unit/test_admin_metric_help.py` + `tests/unit/test_wp06_first_party_qa_dataset.py`: **94 passed/2.29s**. Không chạy E2E vì không có ranh giới runtime nào thay đổi.
+- **Còn mở:** sửa 13 link hỏng có sẵn trong glossary; xác nhận bảng phí trực tiếp và header giấy phép từng script; đọc đầy đủ Wen et al. 2022; đo trượt giá PAPER; bổ sung H18–H20 vào `strategies-2026.md` khi bắt đầu SIG-4; 6 quyết định owner trong WBS SIG (giữ quyết định #1 quyền dữ liệu từ 14/11).
+
+### 2026-11-15 — SIG-1 + SIG-7 lát 1: thư viện cấu trúc/phiên/khối lượng và trang `/admin/chart` kiểu TradingView
+
+- **Yêu cầu của owner:** chọn "SIG-1 + SIG-7 chart" sau khi duyệt WBS SIG.
+- **Domain (SIG-1, cài clean-room, không chép mã Pine):** `domain/market/structure.py` (swing đã xác nhận qua `geometry.find_confirmed_pivots`, HH/HL/LH/LL, BOS/CHoCH bằng giá đóng, trendline tự động theo ATR, trạng thái cấu trúc); `domain/market/sessions.py` (phiên Tokyo/London/New York theo `zoneinfo`, PDH/PDL, máy trạng thái armed/rejected/accepted/expired); `domain/market/volume_profile.py` (delta/CVD từ taker buy, profile, POC, VA 70%, E/Eref); `features.macd`.
+- **Ứng dụng/Router (SIG-7):** `application/market_chart.py` dựng JSON từ chính các hàm trên; `BotReportingService.list_market_series` + `get_market_bars` kiểm `bot:report:read` và bot tồn tại trong UoW chỉ đọc; repository `list_market_series`, `load_recent_bars` (đọc `limit` nến mới nhất, giữ revision mới nhất). Trang `GET /admin/chart`, API `GET /admin/api/chart` (polling 5 giây, `fp` → `unchanged`). Template `admin/market_chart.html`, `static/market-chart.js`, `static/pages/chart.css`, link sidebar trong `base.html`.
+- **Quyết định:**
+  - Giữ Lightweight Charts 5.2.1 đang tự host (đã kiểm bundle có `attachPrimitive`, `createSeriesMarkers`, `useMediaCoordinateSpace`); không tải 5.3.0 trong vòng này.
+  - `attributionLogo: false` + chân trang ghi công/NOTICE.
+  - Bot chưa có trường symbol (mã nằm trong overlay/cấu hình gốc) → trang chọn bot để phân quyền, rồi chọn mã **có nến đã lưu** trong workspace; không suy đoán mã.
+  - Taker buy chưa được lưu (SIG-0) → lớp mua/bán, CVD ẩn kèm ghi chú; volume tô theo chiều nến.
+  - Phiên/mức/profile chỉ hiện ở khung ≤ 1h.
+- **Lỗi gặp và nguyên nhân:**
+  - Bot trong DB local không có `symbol` → trang báo "chưa có bot" ở lần thử đầu. Sửa bằng cách lấy danh sách mã từ `market_bar`.
+  - Checkbox lớp hiển thị cao 44px vì `admin.css` đặt `min-height/min-width: 2.75rem` cho mọi input. Sửa trong `pages/chart.css`; vùng chạm 44px do nhãn đảm nhận.
+  - Mobile: select bị ép và nút khung giãn lệch. Sửa bằng grid.
+  - Nhãn mức bị viết thường cả "tokyo" do `.lower()`. Chỉ hạ chữ cái đầu.
+  - Định dạng giờ `vi-VN` ra "15-11". Sửa bằng ghép `formatToParts` thành "HH:mm dd/MM".
+  - Script chụp đăng nhập lần 2 bị 401 vì dùng lại mã TOTP. Dùng một phiên cho hai viewport.
+  - Test volume profile kỳ vọng sai: ngưỡng 2·Eref không thể đạt khi Eref ≥ 0,5. Đã sửa dữ liệu test và ghi phép tính trong comment.
+- **Kiểm chứng:**
+  - Unit `tests/unit` **4231 passed/130.77s** (trước khi thêm test service/repository). Sau đó `test_bot_reporting.py` + `test_admin_market_chart.py` **83 passed**. Riêng `test_sig1_market_features.py` 15 test: streaming = batch, DST tháng 3/7, sweep/accepted/expired, CVD không bịa.
+  - Ruff, format (968 file), mypy (389 file) đạt; `node --check` đạt.
+  - Playwright in-process: `test_admin_market_chart_playwright.py` mới (CSP thật, vẽ canvas, RSI/MACD, nhớ lớp sau reload, polling trả `unchanged`, 360–1280px không tràn, vùng chạm ≥ 44px) cùng trading-revamp, dashboard, login, strategy-backtest UI kit và `test_admin_web_views.py`: **63 passed/111.79s**.
+  - Compose E2E `tests/e2e/test_admin_web_workflows.py` **7 passed/568.53s**. PNG evidence bị ghi đè đã khôi phục bằng `git checkout -- tests/e2e/evidence/`.
+  - Stack local `crypidian-review` (PostgreSQL thật, nến seed BTCUSDT 1m/5m/1h): trang 200, không lỗi console, không tràn ở 1440/390px, sáng/tối đều xem ảnh.
+- **Còn mở:**
+  - SIG-0 (lưu taker buy, collector).
+  - Phần chưa làm của SIG-1/SIG-7 đã liệt kê trong WBS SIG.
+  - Dữ liệu seed local là nến tổng hợp (1m giá phẳng 100), nên chart local không phản ánh thị trường thật.
+  - Sidebar đè nội dung trong ảnh `full_page` của Playwright là lỗi chụp đã biết.
+
+### 2026-11-15 — SIG-0: lưu số giao dịch và taker buy của kline (lớp lưu trữ)
+
+- **Yêu cầu của owner:** chọn "SIG-0 taker buy data".
+- **Phạm vi đã làm:**
+  - Migration `e3a5c7e9f1b4_sig0_market_bar_taker_flow.py` (down `d2e4f6a8b0c1`): 3 cột nullable, 3 CHECK, downgrade có guard.
+  - ORM `MarketBar` (+ `BigInteger`).
+  - `OHLCVBar.trade_count/taker_buy_base_volume/taker_buy_quote_volume` có kiểm biên.
+  - `_parse_kline` + `_trade_count` (REST).
+  - `binance_rest_backfill` chép trường.
+  - `_bar_content_checksum` chỉ thêm khóa khi có giá trị.
+  - `MarketDataRepository.append_bar/_to_domain_bar`.
+  - `bot_reports.load_recent_bars` trả `taker_buy_volume` cho chart.
+  - Head Alembic trong 14 tệp E2E/probe đổi sang `e3a5c7e9f1b4`.
+- **Quyết định:**
+  - Không ước lượng: nến cũ giữ NULL.
+  - Tên CHECK trong migration theo tiền lệ `quote_volume` (tên gốc); ORM có tiền tố naming convention `ck_market_bar_`.
+  - Chưa đưa trường taker vào bar hash của manifest (v3/v4 không đổi). Cần manifest v5 trước khi chiến lược dùng taker trong replay.
+  - Không dựng collector trực tiếp vì quyết định owner #1 (quyền dữ liệu PAPER) và #2 (symbol/khung) chưa có.
+- **Lỗi có sẵn phát hiện và đã sửa:**
+  - `tests/e2e/test_wp07_rest_backfill_persistence.py` (2 test) **đã hỏng trên HEAD trước SIG-0** (kiểm bằng worktree sạch `7bef1d9`): `ValueError: Policy verified mới cần license evidence digest và scope.` Nguyên nhân: từ WP06 license evidence (13/11) policy VERIFIED mới bắt buộc license scope + bằng chứng, probe vẫn seed policy cũ. Sửa probe `wp07_backfill_persistence.py`: thêm `SourceLicenseScope` (BINANCE_USDM_REST/FIXTURE, BTCUSDT 1m/1h/4h, BACKTEST_RESEARCH), pending có identity/scope, VERIFIED kèm evidence id/digest/scope_hash, và ghi `SourceLicenseEvidenceRecord` trước revision VERIFIED (theo mẫu probe WP05).
+  - Hệ quả: downgrade tới `b1d3f5a7c9e2` giờ bị guard `WP06_LICENSE_EVIDENCE_DOWNGRADE_BLOCKED` chặn trước guard WP07C (nằm dưới trong chuỗi). E2E đổi kỳ vọng sang guard WP06; guard WP07C được kiểm tĩnh bằng unit `test_wp07c_replay_job_downgrade_guard_still_present`.
+  - E2E kiểm guard SIG-0 trước. Để dọn cột SIG-0, test tạm `DISABLE TRIGGER USER` của `market_bar` (bảng append-only) trong một transaction rồi bật lại. Chỉ dùng cho dữ liệu fixture.
+- **Kiểm chứng:**
+  - Unit `tests/unit` **4252 passed/122.09s** (13 test mới trong `test_sig0_taker_flow.py`: head duy nhất qua đồ thị revision, SQL upgrade/downgrade, ORM khớp tên ràng buộc, parser giữ Decimal và từ chối giá trị sai, domain chặn taker > volume, repository ghi/đọc/NULL, checksum bar cũ không đổi).
+  - Ruff, format (970 file), mypy (389 file) đạt.
+  - Compose E2E `test_wp07_rest_backfill_persistence.py` **2 passed/44.47s**: taker lưu và đọc lại trên PostgreSQL, `alembic check` đạt, guard SIG-0 chặn downgrade.
+  - Compose E2E head `test_wp06_scorer_receipt_projection.py` **1 passed/25.07s**.
+  - Stack local migrate lên `e3a5c7e9f1b4`: 3475 nến đều NULL taker; `/admin/chart` 200, không lỗi console.
+- **Còn mở:**
+  - Parser Vision.
+  - Manifest v5.
+  - Collector/aggTrades (chờ owner).
+  - Các E2E khác có assert head chưa chạy lại trong vòng này (chỉ đổi chuỗi revision); `test_db_role_least_privilege` vẫn hỏng như ghi nhận trước.
+
+### 2026-11-15 — SIG-0 collector nến công khai Binance cho PAPER nội bộ
+
+- **Quyết định owner:** trả lời "Yes, build collector" cho câu hỏi "May the bot store Binance public market data for internal PAPER use?" (15/11/2026). Đây là quyết định #1. Với quyết định #2 (symbol/khung) dùng mặc định đề xuất BTCUSDT/ETHUSDT × 1m/5m/15m/1h/4h, cấu hình được.
+- **Thiết kế:**
+  - `MarketBarCollector` chạy trong `ingestion-worker`, đã có mạng `source_egress` và quyền ghi `market_bar`/`ingestion_cursor`. Bật bằng cờ, chỉ cho PAPER.
+  - Tái dùng `BinanceRestBackfillRunner` với purpose `PAPER_DEMO`, nên rights gate Source Registry chạy trước request.
+  - Instrument tra/ghi sau khi đã có nến. Cursor riêng theo luồng, chỉ tiến tới sau nến cuối thực nhận.
+  - `make_backfill_bar_version` công khai để collector và backfill cùng khóa idempotency.
+  - Readiness có `market_collector`.
+  - Chart chọn một nguồn theo ưu tiên (`preferred_market_source`) và gắn nhãn nguồn/ghi chú "dữ liệu mẫu", vì DB local có nến seed `BINANCE_USDM` (giá phẳng) và `CRYPIDIAN_PIPELINE_FIXTURE`.
+- **Lỗi thật E2E phát hiện:**
+  - Runner từ chối trang REST có `received_at` sau `now`. Adapter thật đóng dấu thời điểm nhận phản hồi, tức luôn sau đầu tick, nên collector chạy thật sẽ luôn lỗi. Unit test không bắt được vì fake dùng mốc cố định.
+  - Sửa bằng `PAGE_RECEIPT_ALLOWANCE` 60 giây cho mốc kiểm hợp lệ (khoảng request vẫn tính từ đầu tick), kèm unit test tái hiện.
+  - Probe thu hồi policy giữa kịch bản, nên bước collector phải đặt trước đoạn thu hồi.
+- **Kiểm chứng:**
+  - Unit `tests/unit` **4260 passed/126.22s**, gồm 8 test collector: luồng/biên đóng nến, lần đầu với PAPER_DEMO, không gọi mạng khi đã đủ, thiếu quyền không gọi Binance/không ghi, nến cuối chưa phát hành được lấy lượt sau, lỗi một luồng không chặn luồng khác, trạng thái readiness, cấu hình chỉ cho PAPER ingestion-worker, trang nhận sau đầu tick.
+  - Ruff, format (973 file), mypy (391 file) đạt.
+  - Compose E2E `test_wp07_rest_backfill_persistence.py` **2 passed/42.25s**: collector qua rights gate và repository PostgreSQL thật ghi 6 nến 5m có taker; lượt hai không tải trùng; workspace không có policy bị `rights_denied` trước khi gọi mạng; guard downgrade SIG-0 và `alembic check` vẫn đạt.
+  - `docker compose -f compose.yaml --profile paper config` hợp lệ.
+- **Chưa chạy thật với Binance:**
+  - Policy `BINANCE_USDM_REST`/PAPER_DEMO cần người duyệt độc lập (self-approve 403). Stack local chỉ có một owner, quản lý thành viên (US-04) chưa có.
+  - Runbook bật chạy ghi trong WBS SIG-0.
+- **Còn mở:** Vision parser, manifest v5, aggTrades, ghi `ingestion_gap`, xung đột khi backfill `feed_delay > 0` trùng khoảng, WebSocket.
+
+### 2026-11-15 — Bật collector SIG-0 trên stack local với người duyệt local
+
+- **Yêu cầu của owner:** chọn "Seed local reviewer".
+- **Làm:**
+  - Thêm `scripts/seed_local_reviewer.py` (seed trên máy dev → `apply` trong container `qa-seed`). Script tái dùng `_ensure_user/_ensure_row/_ensure_role_bindings/_ensure_mfa` của `scripts/qa_seed_layers.py`, ID UUIDv5 theo workspace + email. Credential ở `.secrets/local_reviewer.json` (600, kiểm `git check-ignore`) và không in ra. Có unit test `tests/unit/test_seed_local_reviewer.py`.
+  - Tạo `local.reviewer@example.test` (`analyst_reviewer`) trong workspace của owner (`c486b52b-…`).
+  - Qua UI "Nguồn dữ liệu" (Playwright script trong scratchpad, đọc credential từ tệp):
+    - Owner tạo nguồn `BINANCE_USDM_REST` với quota 100000 request/giờ, 500 MB.
+    - Owner gửi policy PAPER demo + phạm vi giấy phép + bằng chứng là bản ghi quyết định owner (ghi rõ không phải giấy phép Binance; tham chiếu https://www.binance.com/en/terms).
+    - Reviewer duyệt (303).
+  - Khởi động `ingestion-worker` với `TRADING_BOT_INGESTION_WORKSPACE_ID` của owner và `TRADING_BOT_MARKET_COLLECTOR_ENABLED=true`.
+- **Lỗi gặp:**
+  - Lần chạy script đầu không tạo được nguồn, nguyên nhân chưa xác định chắc. Lần sau, với quota thực tế, trả 303.
+  - Selector mục đích phải là `purpose_paper_demo` (giá trị enum viết thường), không phải `PAPER_DEMO`.
+- **Kết quả thật (Binance công khai):**
+  - 10 luồng × 1000 nến, `taker_buy_base_volume` có ở 100% nến thu.
+  - Tick sau thu thêm nến 1m (1000 → 1001, mốc 10:09 UTC lúc 10:11 UTC).
+  - Readiness `{"market_collector":{"state":"ok","streams":10,"rights_denied":0,"errors":0}}`.
+  - `/admin/chart` BTCUSDT 5m hiển thị nguồn "Binance USDⓈ-M · REST công khai", volume tô theo delta, profile mua/bán, phiên/PDL/quét, BOS/CHoCH; 1440/390px không lỗi console, không tràn.
+- **Kiểm chứng:**
+  - Unit **4263 passed/126.16s**; ruff, format (975 file), mypy đạt.
+  - Không đổi code runtime trong vòng này nên không chạy lại Compose E2E (vòng trước: backfill/collector 2 passed).
+- **Còn mở:**
+  - CVD đã có trong payload nhưng chart chưa có pane hiển thị.
+  - Dữ liệu seed cũ `BINANCE_USDM` (giá phẳng) vẫn trong DB; chart đã ưu tiên nguồn REST nên không trộn.
+  - Biến môi trường bật collector chỉ đặt khi chạy lệnh `docker compose up`; khởi động lại stack mà không đặt biến thì collector tắt (mặc định).
+
+### 2026-11-15 — SIG-3 lát 1: checklist có cấu trúc và thẻ tín hiệu (chỉ hiển thị)
+
+- **Yêu cầu của owner:** chọn "SIG-3 signal card".
+- **Khảo sát (sub-agent):**
+  - Chỉ kết luận rule được lưu (`bot_decision.payload`: candidate, `detail_vi`, `gate_details` dạng chuỗi). Không lưu giá trị điều kiện, net R:R hay chi phí.
+  - `TradePlan` một target. Không có hàm net R dùng chung.
+  - Telegram chưa có SL/TP.
+- **Quyết định thiết kế:**
+  - (1) Checklist ở module riêng `domain/strategy/checklists.py`, không sửa `rules.py`, vì `release_content_hash` băm toàn bộ mã nguồn module rules: sửa sẽ đổi hash mọi release đang ghim (vị thế/quyết định). Thay vào đó có test parity với rule.
+  - (2) `BotDecision.checklist_json` mặc định None, khóa `checklist` chỉ thêm vào payload khi có, nên hash quyết định cũ không đổi và schema giữ `crypidian-bot-decision-v1`.
+  - (3) Thẻ chỉ dựng từ dữ liệu đã lưu và đã xác minh hash (`BotDecision.from_payload`). Kế hoạch lấy từ `trade_plan.payload.candidate_id`.
+  - (4) R là bội số thô, ghi rõ. Không hiện % tin cậy khi chưa có SIG-6.
+  - (5) Thẻ hết hạn vẫn hiện để giải thích nhưng không vẽ lên chart. Lý do: DB local có candidate H03 seed ngày 14/11 giá ~101 trong khi nến thật ~65.000.
+- **File:**
+  - Mới: `domain/strategy/checklists.py`, `domain/strategy/signal_card.py`, `tests/unit/test_sig3_signal_card.py`.
+  - Sửa: `application/bot_dispatcher.py`, `application/bot_reporting.py` (`get_latest_signal`, `build_latest_signal_view`), `adapters/database/repositories/bot_reports.py` (`latest_bot_decisions`), `admin/web_router.py`, `templates/admin/market_chart.html`, `static/market-chart.js`, `static/pages/chart.css`, test chart unit/E2E.
+- **Lỗi/điều chỉnh:**
+  - Dòng điều kiện không đạt hiển thị "12 >= 20" đọc như mệnh đề sai, nên đổi thành "12 · cần >= 20".
+  - Mobile: lưới mức giá đổi sang 2 cột.
+  - Script chụp gặp 401 do dùng lại mã TOTP trong cùng cửa sổ (chống replay); chạy lại thì đạt.
+- **Kiểm chứng:**
+  - Unit `tests/unit` **4286 passed/121.94s**: parity 14 kịch bản, payload checklist round-trip hash, ABSTAIN giữ điều kiện fail, view bỏ hàng bị sửa, thẻ LONG/SHORT, thang giá sai phía bị chặn (ví dụ ảnh tham khảo), hết hạn không vẽ.
+  - Ruff, mypy (393 file), `node --check` đạt.
+  - Playwright `test_admin_market_chart_playwright.py` + `test_admin_trading_revamp_playwright.py` **4 passed/50.30s**.
+  - Compose E2E `test_multibot_decision.py` + `test_wp07_market_signal_producer.py` **2 passed/74.81s**: PostgreSQL nhận payload có `checklist`.
+  - Stack local: thẻ H03 từ dữ liệu seed hiển thị với kế hoạch đã duyệt; desktop/mobile không lỗi console.
+- **Còn mở:**
+  - Nhiều TP + chốt từng phần PAPER.
+  - `planner_bridge` giữ confidence/R:R.
+  - Net R:R từng mục tiêu.
+  - Thẻ trong Telegram.
+  - Checklist cho Strategy Card.
+  - Chưa có candidate thật từ dữ liệu Binance vì runtime chưa có market dispatch (RT-1).
+
+### 2026-11-15 — RT-1 lát 1: tín hiệu thật từ nến Binance (signal-only)
+
+- **Yêu cầu của owner:** chọn "Live signals (RT-1)".
+- **Khảo sát (sub-agent):**
+  - `market-signal-worker` đã đọc nguồn `BINANCE_USDM` và `BINANCE_USDM_REST_BACKFILL`, tính feature, ghi evidence → decision theo bot (idempotent mỗi nến đóng). Telegram tự gửi CANDIDATE.
+  - PAPER tự vào/đóng lệnh còn thiếu:
+    - (1) `PaperDecisionContextProvider` thật, gồm `snapshot_for`, `load_context`, `load_monitor_evidence`;
+    - (2) vòng lặp đưa nến vào `apply_entry_event`/`monitor_position`/`expire_reservations`;
+    - (3) giá mark chỉ đọc nguồn `BINANCE_USDM` (`workspace_settings.market_data.venue`), không đọc backfill;
+    - (4) `market_dispatch` trong readiness là chuỗi cứng.
+  - H06 luôn ABSTAIN vì không có lịch macro.
+  - Producer chỉ hỗ trợ 15m/1h/4h. Mọi lỗ trong cửa sổ 256 nến làm chuỗi không dùng được.
+- **Làm:**
+  - Bật `market-signal-worker` (profile `signal-producer`) cho workspace của owner trên stack local.
+  - Sửa G4: khai báo `CARD_VOL_BREAKOUT_RELEASE` → 1h + `atr_14`, kèm test `tests/unit/test_strategy_market_requirements_cards.py`. Trước đó job của bot strategy-card nằm PENDING vì producer bỏ qua release không có yêu cầu.
+  - Dòng "hết hạn" trong thẻ không còn in ISO thô.
+- **Kết quả thật:**
+  - Nến 1h 10:00 và 11:00 UTC BTCUSDT tạo evidence + decision cho cả hai bot: H03 `H03_NO_BREAKOUT` và card `STRATEGY_CARD_NO_TRIGGER`.
+  - Decision H03 có checklist thật (đóng 65561,7; kênh 61956,3–70290; quote volume dưới median), hiển thị ở "Quyết định mới nhất" trên `/admin/chart`.
+  - Chưa có CANDIDATE nên Telegram chưa gửi gì; ABSTAIN không gửi theo thiết kế.
+- **Kiểm chứng:**
+  - Unit `tests/unit` **4287 passed/131.43s**; ruff, format, mypy (393 file) đạt.
+  - Compose E2E `test_wp07_market_signal_producer.py` **1 passed/28.66s**.
+  - Ghi chú: E2E producer seed nến nguồn `BINANCE_USDM`; chuỗi chỉ-backfill mới được chứng minh trên stack local, chưa có E2E riêng.
+- **Còn mở (RT-1 lát 2, PAPER tự giao dịch):** các thiếu sót (1)–(4) ở trên, lịch macro cho H06, khung 1m/5m cho runtime, xử lý job PENDING của bot không khớp.
+- **Vận hành local:** biến bật producer là `TRADING_BOT_MARKET_SIGNAL_WORKSPACE_ID` với `--profile signal-producer`. Khởi động lại stack mà không có biến/profile này thì producer không chạy.
+
+### 2026-11-15 — CK-0: merge nhánh SIG vào `dev` và đưa `/admin/chart` theo UI kit v1.1
+
+- **Yêu cầu của owner:** "Làm CK-0" (bước đầu của [WBS CK](../superpowers/plans/2026-11-15-ck-chart-cockpit-reference-apps-wbs.md): merge nhánh `claude/project-progress-review-wp07-d70431` vào `dev`, chuyển ô cấu hình trang chart sang UI kit v1.1).
+- **Merge:** nhánh SIG @ `261c2ea` (8 commit: collector nến REST + taker buy, `/admin/chart`, cấu trúc/phiên/volume profile, checklist, thẻ tín hiệu, RT-1) vào nhánh làm việc sau commit plan CK `e78db7d`. Xung đột 8 tệp:
+  - `compose.yaml`, `src/trading_bot/app.py`, `src/trading_bot/config/settings.py`: giữ **cả hai** — ingest live WebSocket của `dev` (`TRADING_BOT_INGESTION_LIVE_*`, nguồn `BINANCE_USDM`) và collector REST SIG-0 (`TRADING_BOT_MARKET_COLLECTOR_*`, cursor `BINANCE_USDM_REST_COLLECTOR`) chạy song song, đều mặc định tắt; readiness có cả `live_market_ingestion`/`live_market_events` và `market_collector`. **Việc mở:** hai đường thu nến trùng chức năng cho khung đã đóng; cần chọn một nguồn chính cho chart/runtime khi bật cả hai.
+  - `tests/e2e/probes/wp07_backfill_persistence.py`, `tests/e2e/test_wp07_rest_backfill_persistence.py`: hai phía cùng sửa lỗi "policy verified cần license evidence"; lấy bản SIG (thêm PAPER_DEMO cho collector).
+  - Tài liệu (memory, project-status, glossary): giữ cả hai. Glossary: SIG giữ **AA** (tài liệu SIG tham chiếu "mục AA"), mục điều khiển biểu mẫu đổi thành **AB**, CK là **AC**.
+- **Alembic:** một head `e3a5c7e9f1b4` (migration SIG nối sau `d2e4f6a8b0c1`), không cần sửa migration; 20 tham chiếu head trong test đã là `e3a5c7e9f1b4` từ nhánh SIG.
+- **`/admin/chart` theo UI kit v1.1:** 10 lớp hiển thị thành công tắc kiểu iOS (`label.mc-layer.switch-row`, `input.ios-switch[role=switch]`, giữ `data-layer` cho JS/E2E); bỏ quy tắc CSS thu nhỏ checkbox; ô chọn mã dùng Tom Select có biểu tượng coin (`data-searchable="coins"`, router truyền `symbol_choices` từ `coin_choices(only=series)`); `form-controls.js` nhận cả `data-searchable="coins"`. Ô chọn bot giữ native vì E2E đo vùng chạm trực tiếp `#mc-bot`. Sửa thêm: ô chọn một của Tom Select bị cao gấp đôi (ô gõ tìm xuống dòng) → giữ mục và ô gõ trên một hàng.
+- **Kiểm chứng:** unit **4434 passed/121.69s** (thêm 1 test trang chart); ruff, format, mypy **403 files**; `node --check`. Playwright in-process 17 tệp (gồm `test_admin_market_chart_playwright.py`) đều đạt khi chạy riêng. Compose E2E `test_live_kline_ingestion_persistence.py`, `test_wp07_rest_backfill_persistence.py`, `test_wp07_rest_backfill.py`, `test_wp06_split_approval.py`, `test_backtest_admin_ui.py`, `test_admin_web_workflows.py` → **13 passed/628.50s**, 0 skip (đồng hồ host/Docker khớp trước khi chạy). Đã xem ảnh trang chart sáng/tối và mobile: công tắc lớp, ô chọn mã có biểu tượng, chart với phiên, mức thanh khoản, BOS, SL/vào lệnh, RSI/MACD.
+- **Chưa chạy:** `test_db_role_least_privilege.py` (lỗi đã biết từ WP06), 11 tệp Compose E2E WP06 còn lại, các Compose E2E riêng của SIG ngoài danh sách trên.
+- **Readback:** đã đọc lại mục này, đối chiếu output; không có secret.

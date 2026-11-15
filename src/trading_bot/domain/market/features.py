@@ -280,6 +280,34 @@ def zscore(values: Sequence[float], window: int) -> FeatureSeries:
     return tuple(output)
 
 
+def macd(
+    close: Sequence[float], fast: int = 12, slow: int = 26, signal: int = 9
+) -> tuple[FeatureSeries, FeatureSeries, FeatureSeries]:
+    """Tính MACD = EMA(fast) − EMA(slow), đường tín hiệu EMA(signal) của MACD và histogram.
+
+    Đường tín hiệu bắt đầu từ mẫu MACD đầu tiên có giá trị (seed SMA như ``ema``), nên các
+    mẫu chưa đủ dữ liệu là ``None``. Cần ``slow + signal − 1`` mẫu để có histogram đầu tiên.
+    """
+    if _period_value(fast) >= _period_value(slow):
+        raise ValueError("fast phải nhỏ hơn slow")
+    _period_value(signal)
+    fast_line = ema(close, fast)
+    slow_line = ema(close, slow)
+    macd_line: list[float | None] = [
+        None if f is None or s is None else f - s for f, s in zip(fast_line, slow_line, strict=True)
+    ]
+    start = next((i for i, value in enumerate(macd_line) if value is not None), len(macd_line))
+    tail = [value for value in macd_line[start:] if value is not None]
+    signal_tail = ema(tail, signal) if tail else ()
+    padding: list[float | None] = [None] * start
+    signal_line: list[float | None] = padding + list(signal_tail)
+    histogram: list[float | None] = [
+        None if m is None or s is None else m - s
+        for m, s in zip(macd_line, signal_line, strict=True)
+    ]
+    return tuple(macd_line), tuple(signal_line), tuple(histogram)
+
+
 def vwap(price: Sequence[float], volume: Sequence[float]) -> FeatureSeries:
     """Tính VWAP tích lũy cho đúng một session được truyền vào.
 

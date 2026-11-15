@@ -116,6 +116,9 @@ class FixtureKlineProvider:
             close=Decimal("101"),
             volume=Decimal("1.5"),
             quote_volume=Decimal("151.5"),
+            trade_count=12,
+            taker_buy_base_volume=Decimal("0.9"),
+            taker_buy_quote_volume=Decimal("90.9"),
             is_closed=True,
             source="BINANCE_USDM",
             source_cursor=f"fixture:{expected.isoformat()}",
@@ -138,7 +141,6 @@ async def _exercise() -> dict[str, Any]:
         create_database_engine,
         database_url_from_secret,
     )
-    from trading_bot.adapters.database.models import SourceLicenseEvidenceRecord
     from trading_bot.adapters.database.models.backtest_entities import (
         BacktestReportRecord,
         BacktestRunRecord,
@@ -151,6 +153,9 @@ async def _exercise() -> dict[str, Any]:
     )
     from trading_bot.adapters.database.models.market_entities import IngestionCursor as CursorRow
     from trading_bot.adapters.database.models.market_entities import MarketBar
+    from trading_bot.adapters.database.models.source_license_evidence_entities import (
+        SourceLicenseEvidenceRecord,
+    )
     from trading_bot.adapters.database.repositories.backtest_dataset_manifests import (
         BacktestDatasetManifestRepository,
     )
@@ -302,22 +307,25 @@ async def _exercise() -> dict[str, Any]:
         at=NOW - timedelta(days=3),
         reason="Tạo policy quyền fixture cho E2E.",
     )
+    # Từ WP06 (13/11/2026) policy VERIFIED mới phải kèm license scope + bằng chứng đã lưu
+    # (digest/scope_hash); fixture dùng tài liệu giả, không phải giấy phép thật.
     license_scope = SourceLicenseScope(
         source_id="BINANCE_USDM_REST",
-        provider="BINANCE",
+        provider="FIXTURE",
         product="USDM_KLINES",
-        venue="BINANCE_USDM",
-        contract="FIXTURE",
+        venue="PUBLIC",
+        contract="RESEARCH",
         symbols=("BTCUSDT",),
-        intervals=("1m", "1h", "4h"),
-        data_start=NOW - timedelta(days=365),
-        data_end=NOW + timedelta(days=365),
-        allowed_purposes=(SourceUsePurpose.BACKTEST_RESEARCH,),
+        intervals=("1m", "5m", "1h", "4h"),
+        data_start=NOW - timedelta(days=3650),
+        data_end=NOW + timedelta(days=3650),
+        allowed_purposes=(SourceUsePurpose.BACKTEST_RESEARCH, SourceUsePurpose.PAPER_DEMO),
         allowed_outputs=("aggregate_report", "derived_features"),
         derived_use=("aggregate_reporting", "feature_extraction"),
         attribution="Provider fixture",
         max_retention_days=None,
     )
+    license_evidence_id = uuid4()
     pending = policy_entry.transition(
         policy_id="BINANCE_USDM_REST:fixture-pending",
         state=SourcePolicyState.RIGHTS_PENDING,
@@ -332,8 +340,6 @@ async def _exercise() -> dict[str, Any]:
         license_scope=license_scope,
         attribution=license_scope.attribution,
     )
-    # Policy verified hiện bắt buộc có license evidence digest và scope đã ghim.
-    license_evidence_id = uuid4()
     verified = pending.transition(
         policy_id="BINANCE_USDM_REST:fixture-verified",
         state=SourcePolicyState.VERIFIED,
@@ -344,7 +350,10 @@ async def _exercise() -> dict[str, Any]:
         license_evidence_id=license_evidence_id,
         license_digest="a" * 64,
         license_scope_hash=scope_sha256(license_scope),
-        allowed_purposes=frozenset({SourceUsePurpose.BACKTEST_RESEARCH}),
+        # PAPER_DEMO cho collector SIG-0 (owner duyệt 15/11/2026: dữ liệu công khai, PAPER nội bộ).
+        allowed_purposes=frozenset(
+            {SourceUsePurpose.BACKTEST_RESEARCH, SourceUsePurpose.PAPER_DEMO}
+        ),
         evidence_ref="https://example.invalid/test-fixture-terms",
         reviewed_at=NOW - timedelta(hours=1),
         valid_until=NOW + timedelta(days=1),
@@ -361,18 +370,18 @@ async def _exercise() -> dict[str, Any]:
                         id=license_evidence_id,
                         workspace_id=WORKSPACE_ID,
                         source_id="BINANCE_USDM_REST",
-                        policy_id=pending.current.policy.policy_id,
+                        policy_id="BINANCE_USDM_REST:fixture-pending",
                         idempotency_key=uuid4(),
                         evidence_ref="https://example.invalid/test-fixture-terms",
                         digest="a" * 64,
-                        byte_count=123,
+                        byte_count=64,
                         media_type="text/plain",
                         scope_version=license_scope.scope_version,
                         license_scope=json.loads(canonical_scope_json(license_scope)),
                         canonical_scope=canonical_scope_json(license_scope),
                         scope_hash=scope_sha256(license_scope),
                         actor_id="fixture-operator",
-                        created_at=NOW - timedelta(days=2),
+                        created_at=NOW - timedelta(hours=2),
                     )
                 )
                 await uow.session.flush()
@@ -1255,6 +1264,97 @@ async def _exercise() -> dict[str, Any]:
     except psycopg.Error as error:
         immutable_error = str(error)
 
+    # --- SIG-0: collector nến PAPER_DEMO qua rights gate + repository thật ---
+    from trading_bot.application.market_bar_collector import (
+        COLLECTOR_CURSOR_SOURCE,
+        MarketBarCollector,
+        parse_collector_streams,
+    )
+    from trading_bot.ports.market_data import MarketDataPage
+    from trading_bot.workers.market_bar_collector_worker import database_collector_scope
+
+    class CollectorFixtureProvider:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def get_exchange_info(self):
+            raise AssertionError("Instrument đã seed; collector không được gọi exchangeInfo.")
+
+        async def get_klines(self, *, symbol, interval, start_time, end_time, limit):
+            self.calls += 1
+            received = datetime.now(UTC)
+            bars = []
+            cursor = start_time
+            while cursor <= end_time and len(bars) < limit:
+                close_time = cursor + timedelta(minutes=5) - timedelta(milliseconds=1)
+                bars.append(
+                    OHLCVBar(
+                        symbol=symbol,
+                        timeframe=interval,
+                        open_time=cursor,
+                        close_time=close_time,
+                        event_at=close_time,
+                        received_at=received,
+                        available_at=received,
+                        open=Decimal("100"),
+                        high=Decimal("102"),
+                        low=Decimal("99"),
+                        close=Decimal("101"),
+                        volume=Decimal("8"),
+                        quote_volume=Decimal("808"),
+                        trade_count=40,
+                        taker_buy_base_volume=Decimal("5"),
+                        taker_buy_quote_volume=Decimal("505"),
+                        is_closed=True,
+                        source="BINANCE_USDM",
+                    )
+                )
+                cursor += timedelta(minutes=5)
+            payload = f"collector:{start_time.isoformat()}:{len(bars)}".encode()
+            return MarketDataPage(
+                records=tuple(bars),
+                raw_payload=payload,
+                checksum=hashlib.sha256(payload).hexdigest(),
+                received_at=received,
+                available_at=received,
+                is_complete=len(bars) < limit,
+            )
+
+    collector_provider = CollectorFixtureProvider()
+
+    def collector_for(workspace_id):
+        return MarketBarCollector(
+            workspace_id=workspace_id,
+            streams=parse_collector_streams("BTCUSDT:5m"),
+            market_data=collector_provider,
+            session_scope=database_collector_scope(sessions, workspace_id),
+            initial_bars=6,
+        )
+
+    collector_first = await collector_for(WORKSPACE_ID).collect_once(datetime.now(UTC))
+    collector_second = await collector_for(WORKSPACE_ID).collect_once(datetime.now(UTC))
+    calls_after_owner = collector_provider.calls
+    unlicensed_workspace = UUID(int=WORKSPACE_ID.int + 1)
+    collector_denied = await collector_for(unlicensed_workspace).collect_once(datetime.now(UTC))
+    async with UnitOfWork(sessions, workspace_id=WORKSPACE_ID) as uow:
+        collected_rows = (
+            await uow.session.execute(
+                select(
+                    MarketBar.taker_buy_base_volume, MarketBar.trade_count, MarketBar.source
+                ).where(
+                    MarketBar.workspace_id == WORKSPACE_ID,
+                    MarketBar.timeframe == "5m",
+                )
+            )
+        ).all()
+        collector_cursor = await uow.session.scalar(
+            select(CursorRow.covered_until).where(
+                CursorRow.workspace_id == WORKSPACE_ID,
+                CursorRow.source == COLLECTOR_CURSOR_SOURCE,
+                CursorRow.timeframe == "5m",
+            )
+        )
+
     async with UnitOfWork(sessions, workspace_id=WORKSPACE_ID) as uow:
         revoked_observation = await SourceRegistryRepository(uow.session).get_observed_entry(
             workspace_id=WORKSPACE_ID,
@@ -1429,6 +1529,18 @@ async def _exercise() -> dict[str, Any]:
     await engine.dispose()
     await admin_engine.dispose()
     return {
+        "collector_paper_demo_collected": collector_first.succeeded
+        and collector_first.results[0].bars == 6
+        and len(collected_rows) == 6
+        and all(row == (Decimal("5"), 40, "BINANCE_USDM_REST_BACKFILL") for row in collected_rows)
+        and collector_cursor is not None,
+        "collector_second_tick_without_new_bar_skips_network": (
+            collector_second.results[0].status in {"up_to_date", "collected"}
+            and calls_after_owner <= 2
+        ),
+        "collector_without_policy_denied_before_network": collector_denied.results[0].status
+        == "rights_denied"
+        and collector_provider.calls == calls_after_owner,
         "seeded": True,
         "rollback_left_no_market_rows": bars_after_rollback == 0 and cursors_after_rollback == 0,
         "committed_bars": first_count,
@@ -1443,6 +1555,11 @@ async def _exercise() -> dict[str, Any]:
         and dataset_manifest.coverage_ratio == 1.0,
         "quote_volume_persisted": tuple(bar.quote_volume for bar in bars_after_commit)
         == (Decimal("151.5"), Decimal("151.5")),
+        "taker_flow_persisted": tuple(
+            (bar.trade_count, bar.taker_buy_base_volume, bar.taker_buy_quote_volume)
+            for bar in bars_after_commit
+        )
+        == ((12, Decimal("0.9"), Decimal("90.9")),) * 2,
         "backtest_manifest_persisted": first_manifest.record.dataset_hash
         == dataset_manifest.dataset_hash
         and loaded_manifest == dataset_manifest,

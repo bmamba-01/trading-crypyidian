@@ -167,6 +167,14 @@ def _make_version(*, workspace_id: UUID, bar: OHLCVBar) -> tuple[OHLCVBar, Marke
     )
 
 
+def make_backfill_bar_version(
+    *, workspace_id: UUID, bar: OHLCVBar
+) -> tuple[OHLCVBar, MarketRecordVersion]:
+    """Khóa idempotency/record id xác định cho nến REST; collector SIG-0 dùng chung để nến trùng
+    giữa backfill và thu liên tục được nhận là DUPLICATE thay vì xung đột."""
+    return _make_version(workspace_id=workspace_id, bar=bar)
+
+
 def _bar_content_checksum(bar: OHLCVBar) -> str:
     payload = {
         "source": bar.source,
@@ -185,5 +193,12 @@ def _bar_content_checksum(bar: OHLCVBar) -> str:
         "quote_volume": None if bar.quote_volume is None else str(bar.quote_volume),
         "source_cursor": bar.source_cursor,
     }
+    # SIG-0: chỉ thêm khóa khi có giá trị để checksum của bar cũ (không có taker) không đổi.
+    if bar.trade_count is not None:
+        payload["trade_count"] = str(bar.trade_count)
+    for key in ("taker_buy_base_volume", "taker_buy_quote_volume"):
+        value = getattr(bar, key)
+        if value is not None:
+            payload[key] = str(value)
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()

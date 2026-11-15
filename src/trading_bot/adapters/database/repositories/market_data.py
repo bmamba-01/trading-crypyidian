@@ -208,6 +208,10 @@ class MarketDataRepository:
         }
         if bar.quote_volume is not None:
             bar_kwargs["quote_volume"] = bar.quote_volume
+        for optional in ("trade_count", "taker_buy_base_volume", "taker_buy_quote_volume"):
+            value = getattr(bar, optional)
+            if value is not None:
+                bar_kwargs[optional] = value
         row = MarketBar(**bar_kwargs)
         duplicate = await self._insert_or_get_duplicate(
             row=row,
@@ -843,6 +847,9 @@ def _to_domain_bar(row: MarketBar) -> OHLCVBar:
         close=row.close,
         volume=row.volume,
         quote_volume=row.__dict__.get("quote_volume"),
+        trade_count=row.__dict__.get("trade_count"),
+        taker_buy_base_volume=row.__dict__.get("taker_buy_base_volume"),
+        taker_buy_quote_volume=row.__dict__.get("taker_buy_quote_volume"),
         is_closed=row.is_closed,
         source=row.source,
         source_cursor=row.source_cursor,

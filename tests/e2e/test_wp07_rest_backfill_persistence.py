@@ -95,6 +95,46 @@ def run_backfill_compose_probe(*, identity_only: bool) -> dict[str, Any]:
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "check")
         result = run_probe()
         if not identity_only:
+
+            def downgrade_to(target: str) -> str:
+                attempt = subprocess.run(
+                    [*base, "run", "--rm", "--no-deps", "migrator", "alembic", "downgrade", target],
+                    cwd=root,
+                    env=environment,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=300,
+                )
+                assert attempt.returncode != 0
+                return attempt.stdout + attempt.stderr
+
+            # SIG-0: bar có taker buy chặn downgrade của migration e3a5c7e9f1b4.
+            assert "SIG0_MARKET_BAR_TAKER_FLOW_DOWNGRADE_REQUIRES_EMPTY_COLUMNS" in downgrade_to(
+                "d2e4f6a8b0c1"
+            )
+            compose("run", "--rm", "--no-deps", "migrator", "alembic", "check")
+            # Xóa riêng các cột SIG-0 để kiểm tiếp guard WP07C phía dưới chuỗi migration.
+            cleared = compose(
+                "exec",
+                "--no-TTY",
+                "postgres",
+                "psql",
+                "-U",
+                "crypidian_admin",
+                "-d",
+                "crypidian",
+                "-Atc",
+                # market_bar append-only bằng trigger; chỉ fixture E2E tạm tắt trigger người dùng
+                # trong một transaction để dọn cột SIG-0 rồi bật lại ngay.
+                "BEGIN; ALTER TABLE public.market_bar DISABLE TRIGGER USER; "
+                "UPDATE public.market_bar SET trade_count = NULL, taker_buy_base_volume = NULL, "
+                "taker_buy_quote_volume = NULL WHERE trade_count IS NOT NULL; "
+                "ALTER TABLE public.market_bar ENABLE TRIGGER USER; COMMIT;",
+            )
+            # 2 nến backfill + 6 nến collector SIG-0 có trường taker.
+            assert "UPDATE 8" in cleared.stdout
             downgrade = subprocess.run(
                 base
                 + [
@@ -116,13 +156,10 @@ def run_backfill_compose_probe(*, identity_only: bool) -> dict[str, Any]:
             )
             downgrade_output = downgrade.stdout + downgrade.stderr
             assert downgrade.returncode != 0
-            # Policy verified nay cần license evidence (append-only), nên guard WP06 mới hơn
-            # chặn downgrade trước khi tới guard replay job của WP07C. Cả hai đều là từ chối
-            # hạ schema khi còn dữ liệu; guard WP07C không còn được chạm tới trong luồng này.
-            assert (
-                "WP06_LICENSE_EVIDENCE_DOWNGRADE_BLOCKED" in downgrade_output
-                or "WP07C_REPLAY_JOB_DOWNGRADE_REQUIRES_EMPTY_TABLE" in downgrade_output
-            )
+            # Từ WP06 (13/11/2026) seed phải có license evidence, nên guard của migration bằng
+            # chứng license (nằm trên WP07C trong chuỗi downgrade) chặn trước; guard WP07C được
+            # kiểm tĩnh trong tests/unit/test_sig0_taker_flow.py.
+            assert "WP06_LICENSE_EVIDENCE_DOWNGRADE_BLOCKED" in downgrade_output
             compose("run", "--rm", "--no-deps", "migrator", "alembic", "check")
         return result
     finally:
@@ -151,6 +188,9 @@ def test_backfill_bars_and_cursor_commit_or_rollback_as_one_transaction() -> Non
     result = run_backfill_compose_probe(identity_only=False)
 
     assert result == {
+        "collector_paper_demo_collected": True,
+        "collector_second_tick_without_new_bar_skips_network": True,
+        "collector_without_policy_denied_before_network": True,
         "seeded": True,
         "rollback_left_no_market_rows": True,
         "committed_bars": 2,
@@ -158,6 +198,7 @@ def test_backfill_bars_and_cursor_commit_or_rollback_as_one_transaction() -> Non
         "resume_added_no_duplicates": True,
         "backtest_manifest_ready": True,
         "quote_volume_persisted": True,
+        "taker_flow_persisted": True,
         "backtest_manifest_persisted": True,
         "backtest_manifest_duplicate_retry": True,
         "backtest_manifest_current_rights_allows_replay": True,

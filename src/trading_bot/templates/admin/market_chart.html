@@ -1,0 +1,171 @@
+{% extends "admin/base.html" %}
+{% block title %}Biểu đồ thị trường — Crypidian{% endblock %}
+{% block heading %}Biểu đồ thị trường{% endblock %}
+{% block head_extra %}<link rel="stylesheet" href="/static/pages/chart.css">{% endblock %}
+
+{% block content %}
+{#-
+  SIG-7: chart kiểu TradingView. Mọi lớp phủ (cấu trúc, phiên, mức thanh khoản, trendline,
+  volume profile, chỉ báo) do máy chủ tính bằng cùng mã feature SIG-1; trình duyệt chỉ vẽ.
+  Dữ liệu ban đầu nhúng dạng JSON (CSP không cho script nội tuyến), sau đó polling 5 giây.
+-#}
+{% set LAYERS = [
+  ("ema", "EMA 20/50", true),
+  ("vwap", "VWAP ngày", true),
+  ("sessions", "Phiên Á/Âu/Mỹ", true),
+  ("levels", "Mức thanh khoản", true),
+  ("structure", "Swing, BOS/CHoCH", true),
+  ("trendlines", "Trendline", true),
+  ("profile", "Volume profile", true),
+  ("signal", "Thẻ tín hiệu (SL/TP)", true),
+  ("rsi", "RSI 14", false),
+  ("macd", "MACD", false),
+] %}
+<div class="mc-page">
+  <section class="glass-card mc-toolbar" aria-label="Chọn bot, khung và lớp hiển thị">
+    {% if bots %}
+    <form class="mc-toolbar__select" method="get" action="/admin/chart">
+      <label for="mc-bot">Bot</label>
+      <select id="mc-bot" name="bot_id">
+        {% for bot in bots %}<option value="{{ bot.id }}" {% if selected_bot and bot.id == selected_bot.id %}selected{% endif %}>{{ bot.name }}</option>{% endfor %}
+      </select>
+      {% if series %}
+      <label for="mc-symbol">Mã</label>
+      {#- Ô chọn mã có tìm kiếm và biểu tượng coin (UI kit v1.1); chỉ liệt kê mã có nến đã lưu. -#}
+      <select id="mc-symbol" name="symbol" data-searchable="coins">
+        {% for choice in symbol_choices %}<option value="{{ choice.value }}"{% for key, value in (choice.data or {}).items() %} data-{{ key }}="{{ value }}"{% endfor %}{% if choice.selected %} selected{% endif %}>{{ choice.value }}</option>{% endfor %}
+      </select>
+      {% endif %}
+      <input type="hidden" name="timeframe" value="{{ timeframe }}">
+      <button type="submit" class="btn btn-secondary">Xem</button>
+    </form>
+    {% if selected_symbol %}
+    <nav class="mc-timeframes" aria-label="Khung thời gian">
+      {% for item in timeframes %}
+      {% set has_data = item in available_timeframes %}
+      <a href="/admin/chart?bot_id={{ selected_bot.id | urlencode }}&symbol={{ selected_symbol | urlencode }}&timeframe={{ item | urlencode }}" class="mc-timeframe{% if item == timeframe %} is-active{% endif %}{% if not has_data %} is-empty{% endif %}" {% if item == timeframe %}aria-current="true"{% endif %} title="{% if has_data %}Có nến đã lưu{% else %}Chưa có nến đã lưu cho khung này{% endif %}">{{ item | upper }}</a>
+      {% endfor %}
+    </nav>
+    {% endif %}
+    <fieldset class="mc-layers">
+      <legend>Lớp hiển thị</legend>
+      {% for key, label, default_on in LAYERS %}
+      <label class="mc-layer switch-row"><span>{{ label }}</span><input type="checkbox" class="ios-switch" role="switch" data-layer="{{ key }}" {% if default_on %}checked{% endif %}></label>
+      {% endfor %}
+    </fieldset>
+    {% endif %}
+  </section>
+
+  {% if not bots %}
+  <section class="glass-card mc-empty" role="status">
+    <p>Chưa có bot nào bạn được quyền xem. <a href="/admin/bots">Mở danh sách bot</a>.</p>
+  </section>
+  {% elif not selected_symbol %}
+  <section class="glass-card mc-empty" role="status">
+    <p>Kho dữ liệu nội bộ chưa có nến đã đóng nào cho workspace này. Biểu đồ chỉ hiển thị dữ liệu đã lưu; cần thu nến thị trường (gói DATA-1/SIG-0) trước.</p>
+  </section>
+  {% elif chart_payload %}
+  <section class="glass-card mc-chart-card" aria-labelledby="mc-title">
+    <header class="mc-head">
+      <h2 id="mc-title"><span class="coin-tag" data-coin="{{ chart_payload.symbol }}">{{ chart_payload.symbol }}</span><span class="mc-head__tf">{{ timeframe | upper }}</span><span class="badge badge-neutral" title="Chỉ đọc dữ liệu đã lưu; không gửi lệnh">PAPER · chỉ xem</span><span class="badge badge-neutral mc-source" title="Nguồn nến đang hiển thị" data-mc-source>{{ chart_payload.source_label or "—" }}</span></h2>
+      <dl class="mc-summary" data-mc-summary>
+        <div><dt>Xu hướng cấu trúc</dt><dd data-mc-trend>—</dd></div>
+        <div><dt>Trạng thái trendline</dt><dd data-mc-state>—</dd></div>
+        <div><dt>Quét thanh khoản gần nhất</dt><dd data-mc-sweep>—</dd></div>
+        <div><dt>Cập nhật</dt><dd data-mc-updated>—</dd></div>
+      </dl>
+    </header>
+    <p id="mc-legend" class="chart-ohlc-legend" data-chart-legend>Rê chuột hoặc chạm vào nến để xem Mở / Cao / Thấp / Đóng và khối lượng.</p>
+    <div id="market-chart" class="mc-canvas" role="img" aria-label="Biểu đồ nến {{ chart_payload.symbol }} khung {{ timeframe }} với cấu trúc thị trường, phiên và volume profile" data-bot-id="{{ selected_bot.id }}" data-symbol="{{ selected_symbol }}" data-timeframe="{{ timeframe }}"></div>
+    <div id="market-chart-rsi" class="mc-subpane" hidden aria-label="RSI 14"></div>
+    <div id="market-chart-macd" class="mc-subpane" hidden aria-label="MACD 12/26/9"></div>
+    <ul class="mc-key" aria-label="Chú giải">
+      <li><span class="mc-swatch mc-swatch--asia" aria-hidden="true"></span>Phiên Á</li>
+      <li><span class="mc-swatch mc-swatch--london" aria-hidden="true"></span>Phiên London</li>
+      <li><span class="mc-swatch mc-swatch--new_york" aria-hidden="true"></span>Phiên New York</li>
+      <li><span class="mc-swatch mc-swatch--level" aria-hidden="true"></span>Mức thanh khoản (nét đứt: còn chờ; ✕: đã bị quét)</li>
+      <li><span class="mc-swatch mc-swatch--poc" aria-hidden="true"></span>POC · vùng giá trị 70%</li>
+    </ul>
+    <ul class="mc-notices" data-mc-notices>
+      {% for notice in chart_payload.notices %}<li>{{ notice }}</li>{% endfor %}
+    </ul>
+  </section>
+
+  {% set card = signal_view.card if signal_view else none %}
+  {% set latest = signal_view.latest_decision if signal_view else none %}
+  {%- macro price(value) -%}{{ value | number2_vi if value >= 1 else value | round(8) | number_vi }}{%- endmacro -%}
+  {%- macro check_rows(items) -%}
+  <ul class="sc-checklist">
+    {% for item in items %}
+    <li class="sc-check sc-check--{{ 'pass' if item.passed is sameas true else ('fail' if item.passed is sameas false else 'na') }}">
+      <span class="sc-check__mark" aria-hidden="true">{{ '✓' if item.passed is sameas true else ('✗' if item.passed is sameas false else '—') }}</span>
+      <span class="sc-check__label">{{ item.label_vi }}<span class="visually-hidden">: {{ 'đạt' if item.passed is sameas true else ('không đạt' if item.passed is sameas false else 'chưa xác định') }}</span></span>
+      <span class="sc-check__value">{{ item.actual }} <span class="sc-check__op">· cần {{ item.operator }}</span> {{ item.threshold }}</span>
+    </li>
+    {% endfor %}
+  </ul>
+  {%- endmacro -%}
+  <section class="glass-card sc-card" aria-labelledby="sc-title" data-signal-card>
+    <header class="sc-head">
+      <h2 id="sc-title">Thẻ tín hiệu gần nhất</h2>
+      <span class="badge badge-neutral">PAPER · không phải khuyến nghị đầu tư</span>
+    </header>
+    {% if card %}
+    <div class="sc-summary">
+      <span class="sc-direction sc-direction--{{ card.direction }}">{{ 'MUA' if card.direction == 'long' else 'BÁN' }}</span>
+      <span class="coin-tag" data-coin="{{ card.symbol }}">{{ card.symbol }}</span>
+      <span class="sc-meta">{{ card.strategy_release_id }} · tín hiệu {{ card.signal_at | local_minute }} · hết hạn {{ card.expires_at | local_minute }}</span>
+      <span class="badge badge-neutral" title="Chưa có mô hình hiệu chuẩn (SIG-6) nên không hiện phần trăm">Độ tin cậy: {{ card.confidence.label }}</span>
+      {% if card.is_expired %}<span class="badge badge-neutral sc-expired" data-signal-expired>Đã hết hạn — không vẽ lên chart</span>{% endif %}
+    </div>
+    <dl class="sc-levels">
+      <div class="sc-level"><dt>Vùng vào</dt><dd>{{ price(card.entry_zone.low) }}{% if card.entry_zone.high != card.entry_zone.low %} – {{ price(card.entry_zone.high) }}{% endif %}</dd></div>
+      <div class="sc-level sc-level--stop"><dt>Cắt lỗ (SL)</dt><dd>{{ price(card.stop) }}</dd></div>
+      {% for target in card.targets %}
+      <div class="sc-level sc-level--{{ 'recipe' if target.source == 'recipe' else 'ladder' }}"><dt>{{ target.label }}</dt><dd>{{ price(target.price) }} <span class="sc-r">{{ target.r_multiple | number2_vi }}R</span></dd></div>
+      {% endfor %}
+    </dl>
+    <p class="sc-note">{% if card.plan_source == 'approved_plan' %}Vùng vào, SL và mục tiêu recipe lấy từ kế hoạch đã qua risk gate.{% else %}Chưa có kế hoạch đã duyệt cho tín hiệu này: SL và mục tiêu tính từ recipe (giá tham chiếu ± ATR).{% endif %} R là bội số thô chưa trừ phí; planner chặn R:R ròng &lt; 1,0. Mốc 1R/2R/3R chỉ để tham chiếu, PAPER chưa chốt lời từng phần.</p>
+    <div class="sc-columns">
+      <div>
+        <h3>Điều kiện ({{ card.checklist_passed }}/{{ card.checklist_total }} đạt)</h3>
+        {% if card.checklist %}{{ check_rows(card.checklist) }}{% else %}<p class="sc-empty">Quyết định này được tạo trước khi có checklist (SIG-3); chỉ còn lý do: {{ card.reason_code }}.</p>{% endif %}
+      </div>
+      <div>
+        <h3>Mất hiệu lực khi</h3>
+        <ul class="sc-invalidation">{% for line in card.invalidation %}<li>{{ line }}</li>{% endfor %}</ul>
+      </div>
+    </div>
+    {% elif signal_view and signal_view.card_error %}
+    <p class="sc-empty" role="alert">Tín hiệu gần nhất có dữ liệu giá không hợp lệ nên không hiển thị: {{ signal_view.card_error }}</p>
+    {% else %}
+    <p class="sc-empty">Bot chưa có tín hiệu (candidate) nào trong các quyết định gần nhất.</p>
+    {% endif %}
+    {% if latest and latest.status != 'CANDIDATE' %}
+    <div class="sc-latest">
+      <h3>Quyết định mới nhất: không vào lệnh</h3>
+      <p><code>{{ latest.reason_code }}</code> — {{ latest.detail_vi }} <span class="sc-meta">({{ latest.evaluated_at | local_minute }})</span></p>
+      {% if latest.checklist %}{{ check_rows(latest.checklist) }}{% endif %}
+    </div>
+    {% endif %}
+  </section>
+
+  <section class="glass-card mc-events" aria-labelledby="mc-events-title">
+    <h2 id="mc-events-title">Sự kiện gần nhất</h2>
+    <p class="mc-events__hint">Danh sách thay thế cho thao tác rê chuột; thời gian theo giờ Việt Nam.</p>
+    <ol class="mc-event-list" data-mc-events></ol>
+  </section>
+  <script id="market-chart-data" type="application/json">{{ chart_payload | tojson }}</script>
+  {% endif %}
+
+  <p class="mc-attribution">Biểu đồ dùng <a href="https://www.tradingview.com/" rel="noopener noreferrer">TradingView Lightweight Charts™</a> — © TradingView, Inc. (<a href="/static/vendor/lightweight-charts-NOTICE.txt">NOTICE</a>, giấy phép Apache-2.0). Chỉ báo do Crypidian tự tính từ nến đã đóng trong kho nội bộ; không phải khuyến nghị đầu tư.</p>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/coins.js" defer></script>
+{% if chart_payload %}
+  <script src="/static/vendor/lightweight-charts-5.2.1.standalone.production.js"></script>
+  <script src="/static/market-chart.js" defer></script>
+{% endif %}
+{% endblock %}

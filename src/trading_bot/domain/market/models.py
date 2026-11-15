@@ -89,6 +89,10 @@ class OHLCVBar:
     volume: Decimal
     is_closed: bool
     quote_volume: Decimal | None = None
+    # SIG-0: trường kline [8]/[9]/[10]; None khi nguồn không cung cấp (không ước lượng).
+    trade_count: int | None = None
+    taker_buy_base_volume: Decimal | None = None
+    taker_buy_quote_volume: Decimal | None = None
     source: str = ""
     source_cursor: str | None = None
     checksum: str | None = None
@@ -116,6 +120,22 @@ class OHLCVBar:
             _require_decimal(self.quote_volume, "quote_volume")
             if self.quote_volume < 0:
                 raise ValueError("quote_volume không được âm.")
+        if self.trade_count is not None and (
+            isinstance(self.trade_count, bool)
+            or not isinstance(self.trade_count, int)
+            or self.trade_count < 0
+        ):
+            raise ValueError("trade_count phải là số nguyên không âm.")
+        if self.taker_buy_base_volume is not None:
+            _require_decimal(self.taker_buy_base_volume, "taker_buy_base_volume")
+            if not 0 <= self.taker_buy_base_volume <= self.volume:
+                raise ValueError("taker_buy_base_volume phải nằm trong [0, volume].")
+        if self.taker_buy_quote_volume is not None:
+            _require_decimal(self.taker_buy_quote_volume, "taker_buy_quote_volume")
+            if self.taker_buy_quote_volume < 0 or (
+                self.quote_volume is not None and self.taker_buy_quote_volume > self.quote_volume
+            ):
+                raise ValueError("taker_buy_quote_volume phải nằm trong [0, quote_volume].")
         if self.high < max(self.open, self.close) or self.low > min(self.open, self.close):
             raise ValueError("Giá OHLC không thỏa quan hệ high/low.")
         if self.high < self.low:

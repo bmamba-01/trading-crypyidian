@@ -418,3 +418,25 @@ def test_metric_without_value_does_not_append_asset_suffix() -> None:
     )
     assert "Chưa có dữ liệu USDT" not in html
     assert "Chưa có dữ liệu" in html
+
+
+# --- CK-0: trang biểu đồ thị trường theo UI kit v1.1 ---
+
+
+def test_market_chart_layers_are_switches_and_symbol_is_searchable_coin_select() -> None:
+    html = _template("market_chart.html")
+    assert re.search(
+        r'<label class="mc-layer switch-row"><span>\{\{ label \}\}</span>'
+        r'<input type="checkbox" class="ios-switch" role="switch" data-layer=',
+        html,
+    )
+    symbol = re.search(r'<select id="mc-symbol"[^>]*>', html)
+    assert symbol is not None
+    assert 'data-searchable="coins"' in symbol.group(0)
+    assert "symbol_choices" in html
+
+    css = (STATIC / "pages" / "chart.css").read_text(encoding="utf-8")
+    assert '.mc-layer input[type="checkbox"]' not in css
+
+    script = (STATIC / "form-controls.js").read_text(encoding="utf-8")
+    assert 'select.dataset.searchable === "coins"' in script

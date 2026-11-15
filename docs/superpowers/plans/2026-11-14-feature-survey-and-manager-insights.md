@@ -160,6 +160,8 @@ Yêu cầu của owner (14/11/2026): kế hoạch phải có phần phân tích 
 
 ## 6. Thứ tự đề xuất
 
+> **Cập nhật 15/11/2026:** DATA-1, IND-1, IND-2, IND-4, MI-1, MI-6, TG-1/TG-2 được mở rộng và phân rã chi tiết trong [WBS SIG](./2026-11-15-sig-market-structure-scalping-chart-wbs.md) (thêm scalping H18–H20, thẻ tín hiệu, chart kiểu TradingView).
+
 ```text
 DATA-1 (thu dữ liệu, làm ngay vì lịch sử OI/long-short chỉ 30 ngày)
   └─ RT-1 (dispatcher PAPER) ── TG-1/TG-2 (tín hiệu thật có diễn giải)

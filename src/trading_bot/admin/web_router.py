@@ -64,6 +64,13 @@ from trading_bot.application.bot_reporting import (
 from trading_bot.application.bot_runtime_control import BotRuntimeControlError
 from trading_bot.application.flatten_all import FlattenAllError, FlattenAllService
 from trading_bot.application.learning_post_mortem import LearningPostMortemService
+from trading_bot.application.market_chart import (
+    MARKET_CHART_DEFAULT_LIMIT,
+    MARKET_CHART_INTERVAL_SECONDS,
+    MARKET_CHART_MAX_LIMIT,
+    build_market_chart_payload,
+    chart_fingerprint,
+)
 from trading_bot.application.strategy_pipeline.microscope import MicroscopeReplayService
 from trading_bot.application.telegram_signal_subscription import (
     TelegramSignalSubscriptionError,
@@ -2479,6 +2486,169 @@ async def strategy_cards_page(
         },
         headers={"Cache-Control": "no-store"},
     )
+
+
+MARKET_CHART_DEFAULT_TIMEFRAME = "5m"
+_CHART_SYMBOL_PATTERN = re.compile(r"[A-Z0-9_]{2,32}")
+
+
+def _chart_symbol(value: str | None) -> str | None:
+    """Symbol hợp lệ theo quy ước cấu hình (chữ hoa/số/gạch dưới) hoặc ``None``."""
+    if value is None or not value.strip():
+        return None
+    symbol = value.strip().upper()
+    if not _CHART_SYMBOL_PATTERN.fullmatch(symbol):
+        raise HTTPException(status_code=422, detail="Mã giao dịch (symbol) không hợp lệ.")
+    return symbol
+
+
+def _report_http_error(error: BotReportError) -> HTTPException:
+    return HTTPException(
+        status_code=error.status_code,
+        detail={"code": error.code, "message": error.message},
+    )
+
+
+@router.get("/chart")
+async def market_chart_page(
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(current_identity)],
+    bot_id: str | None = None,
+    symbol: str | None = None,
+    timeframe: str = MARKET_CHART_DEFAULT_TIMEFRAME,
+) -> Response:
+    """Chart thị trường kiểu TradingView (SIG-7) từ nến đã lưu; chỉ đọc, không gửi lệnh.
+
+    Quyền xem theo bot đang chọn (``REPORT_READ``); danh sách mã/khung là những gì thực sự
+    có nến đã đóng trong kho nội bộ của workspace — không liệt kê mã không có dữ liệu.
+    """
+    if timeframe not in MARKET_CHART_INTERVAL_SECONDS:
+        raise HTTPException(status_code=422, detail="Khung biểu đồ không được hỗ trợ.")
+    requested_symbol = _chart_symbol(symbol)
+    try:
+        bots = await _admin_service(request).list_bots(identity.principal)
+    except BotAdminError as error:
+        raise HTTPException(status_code=error.status_code, detail=error.message) from error
+    bot_views = [_bot_view(bot) for bot in bots]
+    selected: AdminBotView | None = None
+    if bot_id and bot_id.strip():
+        try:
+            parsed = UUID(bot_id)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail="bot_id phải là UUID hợp lệ.") from error
+        selected = next((view for view in bot_views if view.id == str(parsed)), None)
+        if selected is None:
+            raise HTTPException(status_code=404, detail="Không tìm thấy bot.")
+    elif bot_views:
+        selected = bot_views[0]
+    series: dict[str, list[str]] = {}
+    selected_symbol: str | None = None
+    payload: dict[str, Any] | None = None
+    signal_view: dict[str, Any] | None = None
+    if selected is not None:
+        service = _reporting_service(request)
+        try:
+            series = await service.list_market_series(identity.principal, bot_id=UUID(selected.id))
+            if requested_symbol is not None:
+                if requested_symbol not in series:
+                    raise HTTPException(
+                        status_code=404, detail="Chưa có nến đã lưu cho mã giao dịch này."
+                    )
+                selected_symbol = requested_symbol
+            elif selected.symbol and selected.symbol in series:
+                selected_symbol = selected.symbol
+            elif series:
+                selected_symbol = next(iter(series))
+            if selected_symbol is not None:
+                bars = await service.get_market_bars(
+                    identity.principal,
+                    bot_id=UUID(selected.id),
+                    symbol=selected_symbol,
+                    timeframe=timeframe,
+                    limit=MARKET_CHART_DEFAULT_LIMIT,
+                )
+                payload = build_market_chart_payload(
+                    symbol=selected_symbol, timeframe=timeframe, bars=bars
+                )
+            signal_view = await service.get_latest_signal(
+                identity.principal, bot_id=UUID(selected.id)
+            )
+            if payload is not None:
+                payload["signal_card"] = _card_for_symbol(signal_view, selected_symbol)
+        except BotReportError as error:
+            raise _report_http_error(error) from error
+    return _templates(request).TemplateResponse(
+        request=request,
+        name="admin/market_chart.html",
+        context={
+            "identity": identity,
+            "bots": bot_views,
+            "selected_bot": selected,
+            "series": series,
+            "symbol_choices": coin_choices(
+                (selected_symbol,) if selected_symbol else (), only=tuple(series)
+            ),
+            "selected_symbol": selected_symbol,
+            "available_timeframes": series.get(selected_symbol or "", []),
+            "timeframe": timeframe,
+            "timeframes": list(MARKET_CHART_INTERVAL_SECONDS),
+            "chart_payload": payload,
+            "signal_view": signal_view,
+        },
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+def _card_for_symbol(
+    signal_view: dict[str, Any] | None, symbol: str | None
+) -> dict[str, Any] | None:
+    """Chỉ vẽ thẻ lên chart khi tín hiệu cùng mã đang xem và còn hiệu lực."""
+    card: dict[str, Any] | None = (signal_view or {}).get("card")
+    if not card or card.get("symbol") != symbol or card.get("is_expired", True):
+        return None
+    return card
+
+
+@router.get("/api/chart")
+async def market_chart_api(
+    request: Request,
+    response: Response,
+    identity: Annotated[AuthIdentity, Depends(current_identity)],
+    bot_id: UUID,
+    symbol: str,
+    timeframe: str = MARKET_CHART_DEFAULT_TIMEFRAME,
+    limit: Annotated[int, Query(ge=50, le=MARKET_CHART_MAX_LIMIT)] = MARKET_CHART_DEFAULT_LIMIT,
+    fp: str | None = None,
+) -> dict[str, Any]:
+    """JSON chart cho polling 5 giây; ``fp`` trùng thì chỉ trả ``status: unchanged``."""
+    response.headers["Cache-Control"] = "no-store"
+    if timeframe not in MARKET_CHART_INTERVAL_SECONDS:
+        raise HTTPException(status_code=422, detail="Khung biểu đồ không được hỗ trợ.")
+    chart_symbol = _chart_symbol(symbol)
+    if chart_symbol is None:
+        raise HTTPException(status_code=422, detail="Thiếu mã giao dịch (symbol).")
+    try:
+        bars = await _reporting_service(request).get_market_bars(
+            identity.principal,
+            bot_id=bot_id,
+            symbol=chart_symbol,
+            timeframe=timeframe,
+            limit=limit,
+        )
+    except BotReportError as error:
+        raise _report_http_error(error) from error
+    fingerprint = chart_fingerprint(chart_symbol, timeframe, bars)
+    if fp is not None and fp == fingerprint:
+        return {"status": "unchanged", "fingerprint": fingerprint}
+    payload = build_market_chart_payload(symbol=chart_symbol, timeframe=timeframe, bars=bars)
+    try:
+        signal_view = await _reporting_service(request).get_latest_signal(
+            identity.principal, bot_id=bot_id
+        )
+    except BotReportError as error:
+        raise _report_http_error(error) from error
+    payload["signal_card"] = _card_for_symbol(signal_view, chart_symbol)
+    return {"status": "ok"} | payload
 
 
 @router.get("/api/strategy-cards")
