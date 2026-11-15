@@ -105,6 +105,11 @@
         macro: dark ? "rgba(244,114,182,0.12)" : "rgba(236,72,153,0.10)",
       },
       equalLevel: dark ? "#E2E8F0" : "#334155",
+      // CK-4: TPO dùng màu lam để phân biệt với volume profile (xám/xanh-đỏ).
+      tpo: dark ? "rgba(96,165,250,0.40)" : "rgba(37,99,235,0.28)",
+      tpoPoc: dark ? "#93C5FD" : "#1D4ED8",
+      npoc: "#F0B90B",
+      valueLine: dark ? "rgba(226,232,240,0.7)" : "rgba(51,65,85,0.7)",
     };
   };
 
@@ -416,6 +421,72 @@
     }
   }
 
+  // CK-4: TPO — cột phản chiếu bám mép phải của ngày, song song với volume profile bên trái.
+  class TpoProfiles extends CanvasPrimitive {
+    draw(ctx, size) {
+      const colors = palette();
+      const maxWidth = Math.min(size.width * 0.18, 150);
+      for (const profile of this.data) {
+        const tpo = profile.tpo;
+        if (!tpo) continue;
+        const xStart = this.x(profile.start);
+        const xEnd = this.x(profile.end + intervalSeconds);
+        if (xStart === null || xEnd === null) continue;
+        const span = Math.max(xEnd - xStart, 8);
+        const width = Math.min(span * 0.45, maxWidth);
+        const peak = Math.max(...tpo.rows.map((row) => row.count), 0);
+        if (peak <= 0) continue;
+        ctx.fillStyle = colors.tpo;
+        for (const row of tpo.rows) {
+          if (row.count <= 0) continue;
+          const yTop = this.y(row.high);
+          const yBottom = this.y(row.low);
+          if (yTop === null || yBottom === null) continue;
+          const w = (row.count / peak) * width;
+          ctx.fillRect(xEnd - w, yTop, w, Math.max(yBottom - yTop - 1, 1));
+        }
+        const yPoc = this.y(tpo.poc);
+        if (yPoc !== null) {
+          ctx.strokeStyle = colors.tpoPoc;
+          ctx.lineWidth = 1.5;
+          ctx.setLineDash([2, 2]);
+          ctx.beginPath();
+          ctx.moveTo(xEnd - width, yPoc);
+          ctx.lineTo(xEnd, yPoc);
+          ctx.stroke();
+          ctx.setLineDash([]);
+        }
+      }
+    }
+  }
+
+  // CK-4: POC "trần" (vàng, nét đứt) và VAH/VAL ngày trước (xám) kéo tới nến cuối.
+  class ProfileLevels extends CanvasPrimitive {
+    draw(ctx) {
+      const colors = palette();
+      ctx.font = '600 9px "Be Vietnam Pro", system-ui, sans-serif';
+      for (const level of this.data) {
+        const x1 = this.x(level.start_time);
+        const x2 = this.x(level.end_time);
+        const y = this.y(level.price);
+        if ([x1, x2, y].some((v) => v === null)) continue;
+        const naked = level.kind.startsWith("npoc");
+        const color = naked ? (level.kind === "npoc_tpo" ? colors.tpoPoc : colors.npoc) : colors.valueLine;
+        ctx.strokeStyle = color;
+        ctx.fillStyle = color;
+        ctx.lineWidth = 1;
+        ctx.setLineDash(naked ? [6, 3] : [3, 3]);
+        ctx.beginPath();
+        ctx.moveTo(x1, y);
+        ctx.lineTo(Math.max(x2, x1 + 1), y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        // Nhãn bám mép trái vùng nhìn để vẫn đọc được khi điểm đầu đã cuộn khỏi khung.
+        ctx.fillText(level.label, Math.max(x1, 0) + 3, y - 3);
+      }
+    }
+  }
+
   // ---- Dựng chart ----
   const colors = palette();
   const chart = LWC.createChart(container, chartOptions(460));
@@ -456,7 +527,19 @@
   const killzones = new KillzoneBands("bottom");
   const ictZones = new IctZones("bottom");
   const equalLevels = new EqualLevels("top");
-  for (const primitive of [killzones, sessions, profiles, ictZones, levels, equalLevels, trendlines]) {
+  const tpoProfiles = new TpoProfiles("bottom");
+  const profileLevels = new ProfileLevels("top");
+  for (const primitive of [
+    killzones,
+    sessions,
+    profiles,
+    tpoProfiles,
+    ictZones,
+    levels,
+    profileLevels,
+    equalLevels,
+    trendlines,
+  ]) {
     candles.attachPrimitive(primitive);
   }
 
@@ -722,6 +805,8 @@
     levels.set(p.levels, layerOn("levels"));
     trendlines.set(p.trendlines, layerOn("trendlines"));
     profiles.set(p.volume_profiles, layerOn("profile"));
+    tpoProfiles.set(p.volume_profiles || [], layerOn("tpo"));
+    profileLevels.set(p.profile_levels || [], layerOn("profile_levels"));
     const ict = p.ict || { killzones: [], zones: [], equal_levels: [] };
     killzones.set(ict.killzones, layerOn("killzones"));
     ictZones.set(ict.zones, layerOn("ict_zones"));

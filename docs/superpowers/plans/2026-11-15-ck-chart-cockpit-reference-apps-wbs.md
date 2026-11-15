@@ -1,6 +1,6 @@
 # WBS CK — Buồng lái biểu đồ (chart cockpit) theo hai app tham chiếu
 
-**Ngày:** 2026-11-15 · **Trạng thái:** CK-0 đã làm; CK-1, CK-2, CK-3 đã làm phần lõi (15/11/2026, xem cuối từng mục, còn mở ghi rõ); CK-4…CK-13 là kế hoạch · **Chế độ:** PAPER/replay; chỉ dữ liệu thị trường công khai; không route order, không bật SHADOW/PAPER_GATE/Demo/LIVE. <br>
+**Ngày:** 2026-11-15 · **Trạng thái:** CK-0 đã làm; CK-1…CK-4 đã làm phần lõi (15/11/2026, xem cuối từng mục, còn mở ghi rõ); CK-5…CK-13 là kế hoạch · **Chế độ:** PAPER/replay; chỉ dữ liệu thị trường công khai; không route order, không bật SHADOW/PAPER_GATE/Demo/LIVE. <br>
 **Đầu vào:** hai ảnh owner gửi ngày 15/11/2026 — (1) "XAUUSD Research Desk 3.3.0" (MT5, ICT + VSA); (2) một app quét/auto crypto trên Bybit (WLFI/USDT, Green Flag, MA34×89). <br>
 **Xây trên:** [WBS SIG](./2026-11-15-sig-market-structure-scalping-chart-wbs.md) (đang ở nhánh `claude/project-progress-review-wp07-d70431`, **chưa vào `dev`**), [UI kit v1.1](../../design/admin-ui-kit.md), ingest live Binance (`docs/research/binance-usdm-api-audit-2026-11-14.md`), [khảo sát 14/11](./2026-11-14-feature-survey-and-manager-insights.md).
 
@@ -205,7 +205,7 @@ Ký hiệu: **D** = đã có trên `dev`; **S** = đã làm lát đầu trên nh
 
 **Acceptance:** golden dataset tay cho mỗi loại; vùng không xuất hiện trước `confirmed_at`; test DST tuần London/New York đổi giờ lệch nhau; giới hạn số vùng vẽ để chart mượt trên mobile.
 
-**Đã làm (15/11/2026, chưa commit):** `domain/market/ict.py` (`ck3-ict-v1`, bảng giờ `ck3-killzone-v1`): `killzone_windows`/`active_killzones` theo `America/New_York` (cửa sổ Á qua nửa đêm), `fair_value_gaps` (lọc khe < 0,1×ATR; chạm/lấp/đảo vai IFVG bằng giá đóng cửa/mất hiệu lực), `balanced_price_ranges`, `order_blocks` (nến ngược chiều cuối tại/trước cực trị nhịp hồi giữa swing bị phá và nến phá; dùng cả BOS và CHoCH), `equal_levels` (≤ 0,1×ATR, không nến nào vượt mức giữa hai swing, ghi nến quét), `intermediate_swings`. Mỗi vùng có `confirmed_index` và `state_at(i)`. Payload chart khối `ict` (killzone chỉ ở khung ≤ 15m, 3 ngày gần nhất; tối đa 12 FVG, 8 OB, 4 BPR, ưu tiên vùng còn hiệu lực); chart có 3 công tắc mới (FVG·OB·BPR, EQH/EQL·ITH/ITL, Killzone mặc định tắt), ô "Vùng ICT còn hiệu lực", sự kiện xác nhận vùng/quét EQH-EQL; dải thông số hiện chip killzone đang mở.
+**Đã làm (15/11/2026, commit `a310357`):** `domain/market/ict.py` (`ck3-ict-v1`, bảng giờ `ck3-killzone-v1`): `killzone_windows`/`active_killzones` theo `America/New_York` (cửa sổ Á qua nửa đêm), `fair_value_gaps` (lọc khe < 0,1×ATR; chạm/lấp/đảo vai IFVG bằng giá đóng cửa/mất hiệu lực), `balanced_price_ranges`, `order_blocks` (nến ngược chiều cuối tại/trước cực trị nhịp hồi giữa swing bị phá và nến phá; dùng cả BOS và CHoCH), `equal_levels` (≤ 0,1×ATR, không nến nào vượt mức giữa hai swing, ghi nến quét), `intermediate_swings`. Mỗi vùng có `confirmed_index` và `state_at(i)`. Payload chart khối `ict` (killzone chỉ ở khung ≤ 15m, 3 ngày gần nhất; tối đa 12 FVG, 8 OB, 4 BPR, ưu tiên vùng còn hiệu lực); chart có 3 công tắc mới (FVG·OB·BPR, EQH/EQL·ITH/ITL, Killzone mặc định tắt), ô "Vùng ICT còn hiệu lực", sự kiện xác nhận vùng/quét EQH-EQL; dải thông số hiện chip killzone đang mở.
 **Quyết định owner #2 (§11) chưa chốt:** đang dùng quy ước ghi ở mục này làm mặc định (chỉ mô tả/gắn nhãn, không vào lệnh); đổi quy ước thì đổi `ICT_FORMULA_VERSION`/`KILLZONE_TABLE_VERSION`.
 **Còn mở:** OB đa khung (khung đang xem + một khung lớn hơn); cửa sổ macro xx:50–xx:10 do owner chọn (mới có 09:50–10:10); bảng giờ killzone đang là hằng số có version, chưa là cấu hình sửa được trên Admin; panel "Vùng (n)" dạng danh sách (mới có số đếm + danh sách sự kiện).
 
@@ -216,6 +216,9 @@ Ký hiệu: **D** = đã có trên `dev`; **S** = đã làm lát đầu trên nh
 3. VAH/VAL của phiên trước dưới dạng đường; danh sách vào tab "Mức giá".
 
 **Acceptance:** TPO tính tay trên fixture 2 phiên; nPOC biến mất đúng nến chạm; ghi rõ TPO POC và volume POC có thể khác nhau.
+
+**Đã làm (15/11/2026, chưa commit):** `domain/market/tpo.py` (`ck4-tpo-v1`): `tpo_profile` (khối 30 phút UTC, 24 hàng hoặc `row_size`, POC/VA 70%), `naked_levels`. Payload: mỗi volume profile ngày có thêm `tpo`; `profile_levels` = nPOC khối lượng + nPOC TPO của tối đa 5 ngày UTC đã đóng đủ nến (bỏ ngay khi bị chạm) và VAH/VAL khối lượng của ngày đã đóng gần nhất (kéo tới nến cuối). Chart: lớp "TPO profile" (mặc định tắt, cột lam bám mép phải ngày, POC TPO nét chấm) và "nPOC · VAH/VAL ngày trước" (mặc định bật); chú giải ghi TPO POC có thể khác POC khối lượng. Golden test tay: 4 khối → POC 11,5, VA 11–13; gộp nến 5m theo khối; nPOC biến mất đúng nến chạm.
+**Lệch so với kế hoạch:** dùng ngày UTC (giống volume profile hiện có) thay vì từng phiên; danh sách mức trong tab "Mức giá" để CK-10.
 
 ### CK-5 — Phân loại nến VSA và ZigZag
 

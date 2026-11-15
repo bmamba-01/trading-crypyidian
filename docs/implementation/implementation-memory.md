@@ -4296,7 +4296,7 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Commit/push:** owner yêu cầu "Chạy E2E, commit, push dev"; commit `72a3b58` fast-forward `origin/dev` `7e7daee..72a3b58` (remote `bmamba-01/trading-crypyidian`, xác nhận bằng `git ls-remote`). Dòng memory này sửa sau push, đi kèm commit kế tiếp.
 - **Readback:** đã đọc lại mục này; không có secret.
 
-### 2026-11-15 — CK-3: lớp ICT/SMC trên `/admin/chart` (chưa commit)
+### 2026-11-15 — CK-3: lớp ICT/SMC trên `/admin/chart` (commit `a310357`, chưa push)
 
 - **Yêu cầu của owner:** "tiếp tục đi nào tôi thấy còn rất nhiều chức năng đã lên từ việc nghiên cứu các app khác nhưng chưa triển khai" → làm gói kế tiếp của WBS CK là CK-3.
 - **Quyết định tạm (cần owner xác nhận, §11 #2):** dùng quy ước ICT ghi trong WBS CK làm mặc định vì lớp này chỉ mô tả/gắn nhãn, không vào lệnh. Mọi tham số nằm trong `domain/market/ict.py` có version (`ck3-ict-v1`, `ck3-killzone-v1`).
@@ -4307,5 +4307,18 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
   - Glossary mục **AF**; WBS CK mục CK-3; `project-status.md`.
 - **Lỗi gặp và sửa:** test golden ban đầu kỳ vọng trạng thái cuối "inverted" trong khi IFVG đã mất hiệu lực ở nến sau → trạng thái là trạng thái mới nhất, thêm `state_at` để kiểm từng nến; ngưỡng ATR 10 vẫn giữ khe 1,5 (0,15 ≥ 0,1) → test dùng ATR 20. Ruff cấm tên biến `O` (E741) → đổi tên hằng test.
 - **Kiểm chứng:** `tests/unit/test_ck3_ict.py` 10 passed; unit toàn bộ **4509 passed/129.90s**; ruff/format sạch; mypy **408 files** sạch. Playwright `test_admin_market_chart_playwright.py` **1 passed** (số vùng, công tắc killzone mặc định tắt, chip killzone; ảnh `ck3-ict-layer-desktop.png` đã xem: dải killzone, hộp FVG/OB, đường EQH/EQL hiển thị đúng). Không đổi DB nên không cần Compose E2E mới.
-- **Còn mở:** OB đa khung; macro xx:50–xx:10 do owner chọn; bảng giờ killzone chỉnh trên Admin; panel danh sách vùng; chưa commit.
+- **Còn mở:** OB đa khung; macro xx:50–xx:10 do owner chọn; bảng giờ killzone chỉnh trên Admin; panel danh sách vùng.
+- **Readback:** đã đọc lại mục này; không có secret.
+
+### 2026-11-15 — CK-4: TPO profile, nPOC và VAH/VAL ngày trước (chưa commit)
+
+- **Yêu cầu của owner:** "Commit, làm CK-4" → commit CK-3 `a310357` (local, chưa push), rồi làm CK-4.
+- **Đã làm:**
+  - Domain `tpo.py` (`ck4-tpo-v1`): khối 30 phút neo UTC (nến ≤ 30m gộp theo khối; > 30m báo lỗi), giao mở giữa biên khối và hàng giá, POC hòa → gần giữa biên, VA 70%; `naked_levels` trả nến chạm đầu tiên.
+  - `market_chart.py`: `volume_profiles[*].tpo` (khung ≤ 30m), `profile_levels` (nPOC khối lượng/TPO của ≤ 5 ngày UTC đã đóng **đủ nến** — ngày đầu dữ liệu thiếu nến bị bỏ; VAH/VAL ngày đã đóng gần nhất).
+  - `market-chart.js`: primitive `TpoProfiles` (cột lam bám mép phải ngày), `ProfileLevels` (nPOC vàng/lam nét đứt, VAH/VAL xám; nhãn bám mép trái vùng nhìn); công tắc "TPO profile" (tắt) và "nPOC · VAH/VAL ngày trước" (bật).
+  - Glossary mục **AG**; WBS CK mục CK-4; `project-status.md`.
+- **Điều chỉnh sau khi xem ảnh:** VAH/VAL ban đầu bị cắt ở lần chạm đầu nên gần như không thấy → đổi thành đường tham chiếu kéo tới nến cuối (chỉ nPOC mới biến mất khi bị chạm). Fixture Playwright dạng sin nên mọi POC đều đã bị chạm (không có nPOC) — đúng theo định nghĩa; unit test kiểm nPOC bằng dữ liệu có xu hướng.
+- **Kiểm chứng:** `tests/unit/test_ck4_tpo.py` 5 passed; unit toàn bộ **4516 passed/127.30s**; ruff/format sạch; mypy **409 files** sạch. Playwright trang chart **1 passed**, ảnh `ck4-tpo-npoc-desktop.png` đã xem (cột TPO, đường VAH). Không đổi DB.
+- **Còn mở:** TPO theo phiên (đang theo ngày UTC); danh sách mức trong tab "Mức giá" (CK-10); chưa commit, CK-3 + CK-4 chưa push.
 - **Readback:** đã đọc lại mục này; không có secret.

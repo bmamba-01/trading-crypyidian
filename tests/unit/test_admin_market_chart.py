@@ -432,3 +432,34 @@ def test_payload_hides_killzones_above_15m_but_keeps_zones() -> None:
     payload = build_market_chart_payload(symbol="BTCUSDT", timeframe="1h", bars=bars)
     assert payload["ict"]["killzones"] == []
     assert any(z["kind"] == "fvg" for z in payload["ict"]["zones"])
+
+
+def test_payload_has_tpo_profile_naked_pocs_and_previous_value_area() -> None:
+    bars = _bars(600, start=START, step=timedelta(minutes=5))  # 16/11, 17/11 đủ ngày + 2 giờ 18/11
+    payload = build_market_chart_payload(symbol="BTCUSDT", timeframe="5m", bars=bars)
+    assert payload["formula_versions"]["tpo"] == "ck4-tpo-v1"
+    for profile in payload["volume_profiles"]:
+        tpo = profile["tpo"]
+        assert tpo is not None
+        assert tpo["val"] <= tpo["poc"] <= tpo["vah"]
+        assert sum(row["count"] for row in tpo["rows"]) == tpo["total"]
+    levels = payload["profile_levels"]
+    kinds = {level["kind"] for level in levels}
+    assert {"vah", "val"} <= kinds
+    previous_day_end = int(datetime(2026, 11, 18, tzinfo=UTC).timestamp())
+    for level in levels:
+        assert level["start_time"] >= int(datetime(2026, 11, 17, tzinfo=UTC).timestamp())
+        if level["kind"].startswith("npoc"):
+            # Mức trần: không nến nào sau khi phiên đóng chạm tới giá.
+            later = [bar for bar in bars if bar["time"] >= level["start_time"]]
+            assert all(not (bar["low"] <= level["price"] <= bar["high"]) for bar in later)
+        else:
+            assert level["start_time"] == previous_day_end
+            assert level["end_time"] == bars[-1]["time"] + 300
+
+
+def test_payload_without_tpo_above_30m() -> None:
+    bars = _bars(200, start=START, step=timedelta(hours=1))
+    payload = build_market_chart_payload(symbol="BTCUSDT", timeframe="1h", bars=bars)
+    assert all(profile["tpo"] is None for profile in payload["volume_profiles"])
+    assert all(not level["kind"].endswith("tpo") for level in payload["profile_levels"])

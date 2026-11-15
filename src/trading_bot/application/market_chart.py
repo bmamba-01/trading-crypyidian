@@ -37,6 +37,13 @@ from trading_bot.domain.market.structure import (
     market_structure,
     structure_state,
 )
+from trading_bot.domain.market.tpo import (
+    TPO_BLOCK,
+    TPO_FORMULA_VERSION,
+    TpoProfile,
+    naked_levels,
+    tpo_profile,
+)
 from trading_bot.domain.market.volume_profile import (
     VOLUME_PROFILE_FORMULA_VERSION,
     VolumeProfile,
@@ -62,6 +69,8 @@ MARKET_CHART_MAX_LIMIT = 1000
 SWING_LEFT_BARS = 3
 SWING_RIGHT_BARS = 3
 PROFILE_BINS = 24
+# CK-4: số ngày UTC đã đóng gần nhất được xét POC "trần" (nPOC).
+NAKED_POC_DAYS = 5
 # CK-3: dải killzone chỉ vẽ ở khung ≤ 15 phút (khung lớn hơn chỉ còn 1–3 nến mỗi cửa sổ) và
 # trong 3 ngày gần nhất; số vùng vẽ có trần để chart mượt trên mobile.
 KILLZONE_MAX_INTERVAL_SECONDS = 900
@@ -263,6 +272,91 @@ def _ict_payload(
     }
 
 
+def _tpo_payload(profile: TpoProfile | None) -> dict[str, Any] | None:
+    if profile is None:
+        return None
+    return {
+        "poc": profile.poc_price,
+        "vah": profile.value_area_high,
+        "val": profile.value_area_low,
+        "total": profile.total_tpo,
+        "blocks": profile.block_count,
+        "rows": [
+            {"low": row.price_low, "high": row.price_high, "count": row.count}
+            for row in profile.rows
+        ],
+    }
+
+
+def _profile_levels(
+    *,
+    times: Sequence[int],
+    open_times: Sequence[datetime],
+    highs: Sequence[float],
+    lows: Sequence[float],
+    volumes: Sequence[float],
+    interval: timedelta,
+) -> list[dict[str, Any]]:
+    """CK-4: POC "trần" (khối lượng và TPO) của các ngày UTC đã đóng đủ nến, cùng VAH/VAL
+    khối lượng của ngày đã đóng gần nhất. Mức trần bị bỏ ngay khi có nến chạm giá."""
+    last_close = int((open_times[-1] + interval).timestamp())
+    days: dict[Any, list[int]] = {}
+    for index, moment in enumerate(open_times):
+        days.setdefault(moment.date(), []).append(index)
+    complete: list[tuple[Any, list[int], int]] = []
+    for day, members in days.items():
+        day_start = datetime.combine(day, datetime.min.time(), tzinfo=UTC)
+        day_end = day_start + timedelta(days=1)
+        covered = (
+            open_times[members[0]] == day_start and open_times[members[-1]] + interval == day_end
+        )
+        after = members[-1] + 1 if members[-1] + 1 < len(open_times) else None
+        if covered and after is not None:
+            complete.append((day, members, after))
+    output: list[dict[str, Any]] = []
+    for position, (day, members, armed) in enumerate(complete[-NAKED_POC_DAYS:]):
+        is_latest = position == len(complete[-NAKED_POC_DAYS:]) - 1
+        label_day = day.strftime("%d/%m")
+        profile = volume_profile(
+            [highs[i] for i in members],
+            [lows[i] for i in members],
+            [volumes[i] for i in members],
+            bins=PROFILE_BINS,
+        )
+        candidates: list[tuple[str, str, float]] = []
+        if profile is not None:
+            candidates.append(("npoc_volume", f"nPOC {label_day}", profile.poc_price))
+            if is_latest:
+                candidates.append(("vah", "VAH ngày trước", profile.value_area_high))
+                candidates.append(("val", "VAL ngày trước", profile.value_area_low))
+        if interval <= TPO_BLOCK:
+            tpo = tpo_profile(
+                [open_times[i] for i in members],
+                [highs[i] for i in members],
+                [lows[i] for i in members],
+                interval,
+                rows=PROFILE_BINS,
+            )
+            if tpo is not None:
+                candidates.append(("npoc_tpo", f"nPOC TPO {label_day}", tpo.poc_price))
+        touched = naked_levels([(price, armed) for _, _, price in candidates], highs, lows)
+        for (kind, label, price), hit in zip(candidates, touched, strict=True):
+            if kind.startswith("npoc") and hit is not None:
+                continue  # đã bị chạm → không còn là POC trần
+            output.append(
+                {
+                    "kind": kind,
+                    "label": label,
+                    "price": price,
+                    "start_time": times[armed],
+                    # VAH/VAL là đường tham chiếu: luôn kéo tới nến cuối, chỉ ghi đã chạm hay chưa.
+                    "end_time": last_close,
+                    "touched": hit is not None,
+                }
+            )
+    return output
+
+
 def chart_fingerprint(symbol: str, timeframe: str, bars: Sequence[Mapping[str, Any]]) -> str:
     """Dấu vân tay rẻ cho polling: đổi khi có nến mới hoặc nến cuối bị sửa."""
     last = bars[-1] if bars else {}
@@ -299,6 +393,7 @@ def build_market_chart_payload(
             "volume_profile": VOLUME_PROFILE_FORMULA_VERSION,
             "ict": ICT_FORMULA_VERSION,
             "killzone_table": KILLZONE_TABLE_VERSION,
+            "tpo": TPO_FORMULA_VERSION,
         },
         "bars": [],
         "volume": [],
@@ -309,6 +404,7 @@ def build_market_chart_payload(
         "sessions": [],
         "levels": [],
         "volume_profiles": [],
+        "profile_levels": [],
         "ict": {
             "killzones": [],
             "zones": [],
@@ -528,7 +624,28 @@ def build_market_chart_payload(
                 complete=complete,
             )
             if item is not None:
+                item["tpo"] = (
+                    _tpo_payload(
+                        tpo_profile(
+                            [open_times[i] for i in members],
+                            [highs[i] for i in members],
+                            [lows[i] for i in members],
+                            interval,
+                            rows=PROFILE_BINS,
+                        )
+                    )
+                    if interval <= TPO_BLOCK
+                    else None
+                )
                 profiles.append(item)
+        payload["profile_levels"] = _profile_levels(
+            times=times,
+            open_times=open_times,
+            highs=highs,
+            lows=lows,
+            volumes=volumes,
+            interval=interval,
+        )
     payload["volume_profiles"] = profiles
     if not has_taker:
         payload["notices"].append(NOTICE_NO_TAKER)

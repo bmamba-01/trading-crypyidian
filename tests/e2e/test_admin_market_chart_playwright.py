@@ -322,6 +322,15 @@ def test_market_chart_renders_overlays_polls_and_is_responsive(server_url: str) 
         )
         page.locator('[data-layer="killzones"]').uncheck()
 
+        # CK-4: TPO mặc định tắt; nPOC/VAH-VAL mặc định bật.
+        expect(page.locator('[data-layer="tpo"]')).not_to_be_checked()
+        expect(page.locator('[data-layer="profile_levels"]')).to_be_checked()
+        page.locator('[data-layer="tpo"]').check()
+        page.locator("#market-chart").screenshot(
+            path=str(SCREENSHOTS_DIR / "ck4-tpo-npoc-desktop.png")
+        )
+        page.locator('[data-layer="tpo"]').uncheck()
+
         # Thẻ tín hiệu SIG-3: hướng, SL, checklist và quyết định không vào lệnh gần nhất.
         signal = page.locator("[data-signal-card]")
         expect(signal).to_contain_text("BÁN")

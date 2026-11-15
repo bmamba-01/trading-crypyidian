@@ -17,6 +17,8 @@
   ("structure", "Swing, BOS/CHoCH", true),
   ("trendlines", "Trendline", true),
   ("profile", "Volume profile", true),
+  ("tpo", "TPO profile (khối 30 phút)", false),
+  ("profile_levels", "nPOC · VAH/VAL ngày trước", true),
   ("ict_zones", "FVG · OB · BPR", true),
   ("equal_levels", "EQH/EQL · ITH/ITL", true),
   ("killzones", "Killzone ICT (giờ NY)", false),
@@ -139,6 +141,8 @@
       <li><span class="mc-swatch mc-swatch--poc" aria-hidden="true"></span>POC · vùng giá trị 70%</li>
       <li><span class="mc-swatch mc-swatch--zone-bull" aria-hidden="true"></span><span class="mc-swatch mc-swatch--zone-bear" aria-hidden="true"></span>FVG / OB / BPR (viền đứt: IFVG đã đảo vai; mờ: đã lấp hoặc mất hiệu lực)</li>
       <li><span class="mc-swatch mc-swatch--equal" aria-hidden="true"></span>Đỉnh/đáy bằng nhau (EQH/EQL)</li>
+      <li><span class="mc-swatch mc-swatch--tpo" aria-hidden="true"></span>TPO (thời gian giá ở lại; POC TPO có thể khác POC khối lượng)</li>
+      <li><span class="mc-swatch mc-swatch--npoc" aria-hidden="true"></span>nPOC: POC ngày đã đóng giá chưa quay lại</li>
     </ul>
     <ul class="mc-notices" data-mc-notices>
       {% for notice in chart_payload.notices %}<li>{{ notice }}</li>{% endfor %}

@@ -785,3 +785,13 @@ Các khái niệm FVG/IFVG/BPR/OB/killzone/ITH-ITL đã định nghĩa ở mục
 | FVG fill (partial / full) | Lấp khe một phần / lấp đầy | Một phần: râu vào vùng; đầy: râu chạm cạnh xa. FVG lấp đầy mà chưa đảo vai thì ngừng vẽ kéo dài. | [TradeZella](https://www.tradezella.com/learning-items/key-ict-concepts) |
 | Zone confirmation time | Thời điểm xác nhận vùng | Nến đóng mà tại đó vùng mới biết được (FVG: nến thứ ba; OB: nến phá cấu trúc; EQH/EQL: swing thứ hai được xác nhận). Chart và mọi phép tính không dùng vùng trước mốc này. | Định nghĩa nội bộ |
 | Killzone table version | Phiên bản bảng giờ killzone | `ck3-killzone-v1`: Asia 20:00–00:00, London 02:00–05:00, NY AM 07:00–10:00, NY PM 13:30–16:00; Silver Bullet 03–04, 10–11, 14–15; macro 09:50–10:10 (giờ New York, theo DST). Đổi giờ phải đổi version. | [LuxAlgo — Killzones](https://www.luxalgo.com/library/concept/killzones/) |
+
+## AG. TPO và POC "trần" (CK-4, 15/11/2026)
+
+TPO profile và naked POC đã có định nghĩa chung ở mục AC; mục này ghi quy ước tính của dự án (`ck4-tpo-v1`).
+
+| Thuật ngữ (EN) | Tiếng Việt | Định nghĩa và giới hạn | Nguồn |
+|---|---|---|---|
+| TPO block (30-minute period) | Khối TPO 30 phút | Khối 30 phút neo mốc UTC; nến ≤ 30 phút được gộp theo khối, mỗi khối tính một TPO cho mỗi hàng giá nó chạm (chạm đúng cạnh hàng không tính). Nến > 30 phút không dựng được TPO. | [CQG — Market Profile](https://help.cqg.com/cqgic/25/Documents/marketprofilevalueareasmpva.htm) |
+| TPO POC / TPO value area | POC TPO / vùng giá trị TPO | Hàng có nhiều TPO nhất (hòa → gần giữa biên); vùng giá trị mở rộng từ POC tới 70% tổng TPO. Đo *thời gian* giá ở lại, nên có thể khác POC khối lượng. | [TradingView — TPO](https://in.tradingview.com/support/solutions/43000713306-time-price-opportunity-tpo-indicator/) |
+| Previous-day VAH / VAL | Cạnh trên / cạnh dưới vùng giá trị ngày trước | Từ volume profile của ngày UTC đã đóng đủ nến gần nhất; vẽ tới nến cuối như đường tham chiếu, có cờ đã chạm. | [CQG — Market Profile](https://help.cqg.com/cqgic/25/Documents/marketprofilevalueareasmpva.htm) |
