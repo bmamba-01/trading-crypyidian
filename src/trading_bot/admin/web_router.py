@@ -2545,6 +2545,7 @@ async def market_chart_page(
     selected_symbol: str | None = None
     payload: dict[str, Any] | None = None
     signal_view: dict[str, Any] | None = None
+    overview: dict[str, Any] | None = None
     if selected is not None:
         service = _reporting_service(request)
         try:
@@ -2575,6 +2576,13 @@ async def market_chart_page(
             )
             if payload is not None:
                 payload["signal_card"] = _card_for_symbol(signal_view, selected_symbol)
+            if selected_symbol is not None:
+                overview = await service.get_market_overview(
+                    identity.principal,
+                    bot_id=UUID(selected.id),
+                    symbol=selected_symbol,
+                    timeframe=timeframe,
+                )
         except BotReportError as error:
             raise _report_http_error(error) from error
     return _templates(request).TemplateResponse(
@@ -2594,6 +2602,7 @@ async def market_chart_page(
             "timeframes": list(MARKET_CHART_INTERVAL_SECONDS),
             "chart_payload": payload,
             "signal_view": signal_view,
+            "overview": overview,
         },
         headers={"Cache-Control": "no-store"},
     )
@@ -2649,6 +2658,31 @@ async def market_chart_api(
         raise _report_http_error(error) from error
     payload["signal_card"] = _card_for_symbol(signal_view, chart_symbol)
     return {"status": "ok"} | payload
+
+
+@router.get("/api/chart/overview")
+async def market_overview_api(
+    request: Request,
+    response: Response,
+    identity: Annotated[AuthIdentity, Depends(current_identity)],
+    bot_id: UUID,
+    symbol: str,
+    timeframe: str = MARKET_CHART_DEFAULT_TIMEFRAME,
+) -> dict[str, Any]:
+    """Dải thông số (CK-1) + ma trận đa khung (CK-2) cho polling ~2 giây; chỉ đọc."""
+    response.headers["Cache-Control"] = "no-store"
+    if timeframe not in MARKET_CHART_INTERVAL_SECONDS:
+        raise HTTPException(status_code=422, detail="Khung biểu đồ không được hỗ trợ.")
+    chart_symbol = _chart_symbol(symbol)
+    if chart_symbol is None:
+        raise HTTPException(status_code=422, detail="Thiếu mã giao dịch (symbol).")
+    try:
+        overview = await _reporting_service(request).get_market_overview(
+            identity.principal, bot_id=bot_id, symbol=chart_symbol, timeframe=timeframe
+        )
+    except BotReportError as error:
+        raise _report_http_error(error) from error
+    return {"status": "ok"} | overview
 
 
 @router.get("/api/strategy-cards")

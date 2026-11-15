@@ -373,6 +373,7 @@ def create_app(
         live_market_runtime: Any | None = None
         live_market_task: asyncio.Task[None] | None = None
         live_event_task: asyncio.Task[None] | None = None
+        live_quote_task: asyncio.Task[None] | None = None
         market_collector_task: asyncio.Task[None] | None = None
         signal_worker_task: asyncio.Task[None] | None = None
         market_signal_worker_task: asyncio.Task[None] | None = None
@@ -418,6 +419,7 @@ def create_app(
                     mark_price_interval_seconds=(
                         app_settings.ingestion_live_mark_price_interval_seconds
                     ),
+                    quote_interval_seconds=app_settings.ingestion_live_quote_interval_seconds,
                 )
                 application.state.live_market_worker = live_market_runtime.worker
                 live_market_task = asyncio.create_task(
@@ -431,6 +433,14 @@ def create_app(
                         live_event_worker.run(stopping), name="live-market-event-worker"
                     )
                     application.state.live_event_task = live_event_task
+                live_quote_worker = getattr(live_market_runtime, "quote_worker", None)
+                if live_quote_worker is not None:
+                    # CK-1: giá mua/bán tốt nhất (route /public), ghi đè bảng giá trực tiếp.
+                    application.state.live_quote_worker = live_quote_worker
+                    live_quote_task = asyncio.create_task(
+                        live_quote_worker.run(stopping), name="live-market-quote-worker"
+                    )
+                    application.state.live_quote_task = live_quote_task
             if app_settings.market_collector_enabled:
                 market_collector_task = _start_market_collector(
                     application,
@@ -534,6 +544,9 @@ def create_app(
             if live_event_task is not None:
                 with contextlib.suppress(asyncio.CancelledError, TimeoutError):
                     await asyncio.wait_for(live_event_task, timeout=10)
+            if live_quote_task is not None:
+                with contextlib.suppress(asyncio.CancelledError, TimeoutError):
+                    await asyncio.wait_for(live_quote_task, timeout=10)
             if live_market_runtime is not None:
                 await live_market_runtime.aclose()
             if market_collector_task is not None:
@@ -671,7 +684,18 @@ def create_app(
                     or live_task.done()
                 ):
                     pending.append("live_market_ingestion")
-            if app_settings.ingestion_live_event_kinds:
+            live_kinds = app_settings.ingestion_live_event_kinds
+            if "book_ticker" in live_kinds:
+                quote_worker = getattr(app.state, "live_quote_worker", None)
+                quote_task = getattr(app.state, "live_quote_task", None)
+                if (
+                    quote_worker is None
+                    or not getattr(quote_worker, "is_healthy", False)
+                    or quote_task is None
+                    or quote_task.done()
+                ):
+                    pending.append("live_market_quotes")
+            if any(kind != "book_ticker" for kind in live_kinds):
                 event_worker = getattr(app.state, "live_event_worker", None)
                 event_task = getattr(app.state, "live_event_task", None)
                 if (

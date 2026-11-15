@@ -121,6 +121,25 @@ def _mark_message(at: datetime) -> str:
     )
 
 
+def _book_message(at: datetime, *, update_id: int, bid: str, ask: str) -> str:
+    return json.dumps(
+        {
+            "stream": "btcusdt@bookTicker",
+            "data": {
+                "e": "bookTicker",
+                "u": update_id,
+                "E": _ms(at),
+                "T": _ms(at),
+                "s": "BTCUSDT",
+                "b": bid,
+                "B": "1.500",
+                "a": ask,
+                "A": "2.250",
+            },
+        }
+    )
+
+
 def _liquidation_message(at: datetime) -> str:
     return json.dumps(
         {
@@ -230,9 +249,11 @@ async def _exercise() -> dict[str, Any]:
         MarketBar,
         MarketInstrument,
         MarketLiquidation,
+        MarketLiveQuote,
         MarketMarkPrice,
         MarketTradeFlow,
     )
+    from trading_bot.adapters.database.repositories.bot_reports import BotReportRepository
     from trading_bot.adapters.database.repositories.source_registry import SourceRegistryRepository
     from trading_bot.application.live_kline_ingestion import (
         LiveKlineIngestionService,
@@ -252,6 +273,7 @@ async def _exercise() -> dict[str, Any]:
     from trading_bot.workers.live_market_ingestion_worker import (
         LiveMarketEventWorker,
         LiveMarketIngestionWorker,
+        LiveQuoteWorker,
     )
 
     url = database_url_from_secret(
@@ -270,6 +292,14 @@ async def _exercise() -> dict[str, Any]:
         connection.exec_driver_sql(f"SET LOCAL ROLE {INGESTION_ROLE}")
 
     worker_sessions = async_sessionmaker(worker_engine, expire_on_commit=False)
+    # Admin-web (CK-1) chỉ đọc bảng giá trực tiếp và mẫu mark price bằng role của nó.
+    web_engine = create_database_engine(url)
+
+    @event.listens_for(web_engine.sync_engine, "begin")
+    def _use_admin_web_role(connection: Any) -> None:
+        connection.exec_driver_sql("SET LOCAL ROLE crypidian_admin_web")
+
+    web_sessions = async_sessionmaker(web_engine, expire_on_commit=False)
 
     _seed_workspaces()
     binance = FakeBinance()
@@ -551,6 +581,77 @@ async def _exercise() -> dict[str, Any]:
         # Role ingestion không có quyền UPDATE; trigger append-only là lớp chặn thứ hai.
         events_append_only = True
 
+    # 7. CK-1: bookTicker trên route /public → một dòng giá trực tiếp, chỉ nhận update_id mới hơn.
+    quote_worker = LiveQuoteWorker(
+        service=event_service,
+        stream_factory=lambda: BinanceUsdMEventStream(
+            symbols=("BTCUSDT",),
+            kinds=("book_ticker",),
+            client=stream_client,
+            clock=lambda: clock["now"],
+        ),
+        symbols=("BTCUSDT",),
+        now=lambda: clock["now"],
+        interval_seconds=2.0,
+        monotonic=lambda: 0.0,
+    )
+
+    async def quote_session(messages: list[str]) -> str:
+        clock["now"] = M + timedelta(minutes=3)
+        binance.stream_messages = messages
+        try:
+            await quote_worker.run_session()
+        except Exception as error:  # noqa: BLE001 - probe chỉ ghi lại loại kết thúc phiên
+            return type(error).__name__
+        return "ENDED"
+
+    async def quote_rows(sessions: Any, workspace_id: UUID) -> list[tuple[int, str, str]]:
+        async with UnitOfWork(sessions, workspace_id=workspace_id) as uow:
+            found = (
+                await uow.session.scalars(
+                    select(MarketLiveQuote).where(MarketLiveQuote.workspace_id == workspace_id)
+                )
+            ).all()
+        return [(row.update_id, str(row.bid_price), str(row.ask_price)) for row in found]
+
+    quote_outcome = await quote_session(
+        [
+            _book_message(M + timedelta(minutes=2), update_id=5, bid="100.10", ask="100.20"),
+            _book_message(
+                M + timedelta(minutes=2, seconds=1), update_id=7, bid="100.30", ask="100.40"
+            ),
+        ]
+    )
+    quotes_first = await quote_rows(admin_sessions, WORKSPACE_ID)
+    # Phát lại bản cũ hơn (u=6) không được ghi đè bản u=7.
+    await quote_session(
+        [_book_message(M + timedelta(minutes=2, seconds=2), update_id=6, bid="99.00", ask="99.10")]
+    )
+    quotes_after_stale = await quote_rows(admin_sessions, WORKSPACE_ID)
+    quotes_other_workspace = await quote_rows(worker_sessions, OTHER_WORKSPACE_ID)
+    quote_delete_denied = False
+    try:
+        async with UnitOfWork(worker_sessions, workspace_id=WORKSPACE_ID) as uow:
+            await uow.session.execute(text("DELETE FROM market_live_quote"))
+    except DBAPIError:
+        quote_delete_denied = True
+    async with UnitOfWork(web_sessions, workspace_id=WORKSPACE_ID) as uow:
+        web_reports = BotReportRepository(uow.session)
+        web_quote = await web_reports.latest_live_quote(workspace_id=WORKSPACE_ID, symbol="BTCUSDT")
+        web_mark = await web_reports.latest_mark_price(
+            workspace_id=WORKSPACE_ID, symbol="BTCUSDT", as_of=REAL_NOW + timedelta(minutes=1)
+        )
+    async with UnitOfWork(web_sessions, workspace_id=OTHER_WORKSPACE_ID) as uow:
+        web_other = await BotReportRepository(uow.session).latest_live_quote(
+            workspace_id=WORKSPACE_ID, symbol="BTCUSDT"
+        )
+    web_write_denied = False
+    try:
+        async with UnitOfWork(web_sessions, workspace_id=WORKSPACE_ID) as uow:
+            await uow.session.execute(text("UPDATE market_live_quote SET update_id = 999"))
+    except DBAPIError:
+        web_write_denied = True
+
     as_of = M + 5 * INTERVAL + timedelta(seconds=3)
     async with UnitOfWork(admin_sessions, workspace_id=WORKSPACE_ID) as uow:
         rows = (
@@ -578,6 +679,7 @@ async def _exercise() -> dict[str, Any]:
     await stream_client.__aexit__(None, None, None)
     await market_data.aclose()
     await worker_engine.dispose()
+    await web_engine.dispose()
     await admin_engine.dispose()
 
     secret_markers = ("x-mbx-apikey", "authorization")
@@ -600,7 +702,9 @@ async def _exercise() -> dict[str, Any]:
         "scanner_reads_live_bars": len(scanner_rows) == len(rows)
         and {row.source for row in scanner_rows} == {"BINANCE_USDM"},
         "other_workspace_sees_nothing": other_counts == (0, 0, 0),
-        "stream_uses_market_route": set(binance.stream_paths)
+        "stream_uses_market_route": {
+            path for path in binance.stream_paths if "/public/" not in path
+        }
         == {
             "/market/stream?streams=btcusdt@kline_1m",
             "/market/stream?streams=btcusdt@markPrice@1s/btcusdt@forceOrder/btcusdt@aggTrade",
@@ -622,6 +726,19 @@ async def _exercise() -> dict[str, Any]:
         and complete_flow.sell_quantity == Decimal("0.5"),
         "events_hidden_from_other_workspace": events_other_workspace == (0, 0, 0, 0),
         "events_append_only": events_append_only,
+        "quote_session_outcome": quote_outcome,
+        "quote_rows_after_stream": quotes_first,
+        "quote_stale_update_ignored": quotes_after_stale == quotes_first,
+        "quote_hidden_from_other_workspace": quotes_other_workspace == [],
+        "quote_delete_denied_for_ingestion": quote_delete_denied,
+        "quote_stream_uses_public_route": "/public/stream?streams=btcusdt@bookTicker"
+        in binance.stream_paths,
+        "admin_web_reads_quote_and_mark": web_quote is not None
+        and web_quote["bid_price"] == Decimal("100.30")
+        and web_mark is not None
+        and web_mark["mark_price"] == Decimal("100.5"),
+        "admin_web_quote_rls_isolated": web_other is None,
+        "admin_web_cannot_write_quote": web_write_denied,
         "exchange_info_requests": sum(
             request.url.path == "/fapi/v1/exchangeInfo" for request in binance.rest_requests
         ),

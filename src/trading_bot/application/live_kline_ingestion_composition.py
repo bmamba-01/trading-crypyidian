@@ -30,7 +30,11 @@ from trading_bot.application.outbox import UnitOfWork
 from trading_bot.workers.live_market_ingestion_worker import (
     LiveMarketEventWorker,
     LiveMarketIngestionWorker,
+    LiveQuoteWorker,
 )
+
+# Loại stream đi route /public (kết nối riêng), phần còn lại dùng route /market.
+QUOTE_EVENT_KIND = "book_ticker"
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,9 +53,11 @@ class LiveMarketIngestionRuntime:
         market_data: BinanceUsdMMarketDataAdapter,
         stream_client: httpx2.AsyncClient,
         event_worker: LiveMarketEventWorker | None = None,
+        quote_worker: LiveQuoteWorker | None = None,
     ) -> None:
         self.worker = worker
         self.event_worker = event_worker
+        self.quote_worker = quote_worker
         self._market_data = market_data
         self._stream_client = stream_client
 
@@ -87,6 +93,7 @@ def build_live_market_ingestion(
     warmup_bars: int,
     events: Sequence[str] = (),
     mark_price_interval_seconds: int = 60,
+    quote_interval_seconds: float = 2.0,
 ) -> LiveMarketIngestionRuntime:
     """Dựng runtime mặc định cho ingestion-worker; chỉ gọi khi live ingest được bật."""
     typed = tuple(LiveKlineSubscription(symbol, interval) for symbol, interval in subscriptions)
@@ -114,9 +121,19 @@ def build_live_market_ingestion(
         subscriptions=typed,
     )
     event_worker: LiveMarketEventWorker | None = None
-    if events:
-        symbols = tuple(sorted({symbol for symbol, _ in subscriptions}))
-        kinds = tuple(events)
+    quote_worker: LiveQuoteWorker | None = None
+    symbols = tuple(sorted({symbol for symbol, _ in subscriptions}))
+    if QUOTE_EVENT_KIND in events:
+        quote_worker = LiveQuoteWorker(
+            service=LiveMarketEventService(workspace_id=workspace_id, transactions=transactions),
+            stream_factory=lambda: BinanceUsdMEventStream(
+                symbols=symbols, kinds=(QUOTE_EVENT_KIND,), client=stream_client
+            ),
+            symbols=symbols,
+            interval_seconds=quote_interval_seconds,
+        )
+    kinds = tuple(kind for kind in events if kind != QUOTE_EVENT_KIND)
+    if kinds:
         event_worker = LiveMarketEventWorker(
             service=LiveMarketEventService(workspace_id=workspace_id, transactions=transactions),
             stream_factory=lambda: BinanceUsdMEventStream(
@@ -130,4 +147,5 @@ def build_live_market_ingestion(
         market_data=market_data,
         stream_client=stream_client,
         event_worker=event_worker,
+        quote_worker=quote_worker,
     )

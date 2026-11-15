@@ -68,7 +68,7 @@ def run_live_ingestion_compose_probe() -> dict[str, Any]:
         compose("up", "--detach", "--wait", "--wait-timeout", "180", "postgres")
         compose("run", "--rm", "--no-deps", "db-provisioner")
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "head")
-        # Model ORM và migration của ba bảng sự kiện phải khớp nhau.
+        # Model ORM và migration của các bảng sự kiện và bảng giá trực tiếp phải khớp nhau.
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "check")
         result = compose(
             "run",
@@ -131,5 +131,15 @@ def test_live_klines_reach_market_store_through_rights_gate_and_ingestion_role()
         "complete_flow_bucket": True,
         "events_hidden_from_other_workspace": True,
         "events_append_only": True,
+        # CK-1: bookTicker → một dòng/instrument, giữ bản update_id lớn nhất.
+        "quote_session_outcome": "KlineStreamDisconnected",
+        "quote_rows_after_stream": [[7, "100.300000000000000000", "100.400000000000000000"]],
+        "quote_stale_update_ignored": True,
+        "quote_hidden_from_other_workspace": True,
+        "quote_delete_denied_for_ingestion": True,
+        "quote_stream_uses_public_route": True,
+        "admin_web_reads_quote_and_mark": True,
+        "admin_web_quote_rls_isolated": True,
+        "admin_web_cannot_write_quote": True,
         "exchange_info_requests": 1,
     }

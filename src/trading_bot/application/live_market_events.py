@@ -19,7 +19,11 @@ from trading_bot.application.binance_rest_backfill import (
     RestBackfillRequest,
 )
 from trading_bot.application.live_kline_ingestion import LIVE_BAR_SOURCE, LiveIngestionError
-from trading_bot.domain.market.stream_events import LiquidationEvent, MarkPriceEvent
+from trading_bot.domain.market.stream_events import (
+    BookTickerEvent,
+    LiquidationEvent,
+    MarkPriceEvent,
+)
 from trading_bot.domain.market.trade_flow import TradeFlowBucket
 
 LiveMarketRecord = MarkPriceEvent | LiquidationEvent | TradeFlowBucket
@@ -65,6 +69,15 @@ class LiveMarketEventRepository(Protocol):
         bucket: TradeFlowBucket,
     ) -> bool: ...
 
+    async def upsert_live_quote(
+        self,
+        *,
+        workspace_id: UUID,
+        instrument_id: UUID,
+        source: str,
+        event: BookTickerEvent,
+    ) -> bool: ...
+
 
 class LiveMarketEventTransaction(Protocol):
     @property
@@ -108,6 +121,33 @@ class LiveMarketEventService:
                     await self._authorize(transaction, symbol, instant)
                     instruments[symbol] = await self._instrument_id(transaction, symbol, instant)
                 written += await self._append(transaction, instruments[symbol], record)
+        return written
+
+    async def upsert_quotes(self, events: Sequence[BookTickerEvent], *, now: datetime) -> int:
+        """Ghi giá mua/bán mới nhất mỗi symbol (bảng giá trực tiếp, cập nhật tại chỗ).
+
+        Chỉ giữ bản có ``update_id`` lớn nhất của mỗi symbol trong lô; repository bỏ qua bản cũ
+        hơn bản đang lưu. Vẫn qua rights gate ``PAPER_DEMO`` như mọi dữ liệu live khác.
+        """
+        latest: dict[str, BookTickerEvent] = {}
+        for event in events:
+            current = latest.get(event.symbol)
+            if current is None or event.update_id > current.update_id:
+                latest[event.symbol] = event
+        if not latest:
+            return 0
+        instant = _as_utc(now)
+        written = 0
+        async with self._transactions() as transaction:
+            for symbol, event in sorted(latest.items()):
+                await self._authorize(transaction, symbol, instant)
+                instrument_id = await self._instrument_id(transaction, symbol, instant)
+                written += await transaction.market.upsert_live_quote(
+                    workspace_id=self._workspace_id,
+                    instrument_id=instrument_id,
+                    source=LIVE_BAR_SOURCE,
+                    event=event,
+                )
         return written
 
     async def _append(

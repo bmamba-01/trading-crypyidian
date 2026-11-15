@@ -840,6 +840,9 @@ class RecordingSession:
             def scalars(self) -> Any:
                 return self
 
+            def scalar_one_or_none(self) -> Any:
+                return None
+
         return _Result()
 
     async def scalars(self, statement: Any) -> Any:
@@ -966,6 +969,33 @@ async def test_repository_market_chart_queries_are_workspace_scoped_and_read_onl
     assert all("INSERT" not in s and "UPDATE" not in s for s in session.statements)
 
 
+@pytest.mark.asyncio
+async def test_repository_live_quote_and_mark_queries_are_workspace_scoped() -> None:
+    session = RecordingSession()
+    repository = BotReportRepository(session)  # type: ignore[arg-type]
+
+    assert await repository.latest_live_quote(workspace_id=W1, symbol="BTCUSDT") is None
+    assert await repository.latest_mark_price(workspace_id=W1, symbol="BTCUSDT", as_of=END) is None
+
+    quote_sql, mark_sql = session.statements[-2:]
+    for fragment in (
+        "market_live_quote.workspace_id =",
+        "market_live_quote.symbol =",
+        "ORDER BY market_live_quote.event_at DESC",
+        "LIMIT",
+    ):
+        assert fragment in quote_sql, fragment
+    for fragment in (
+        "JOIN market_instrument ON market_instrument.workspace_id = market_mark_price.workspace_id",
+        "market_mark_price.workspace_id =",
+        "market_instrument.symbol =",
+        "market_mark_price.available_at <=",
+        "ORDER BY market_mark_price.event_at DESC",
+    ):
+        assert fragment in mark_sql, fragment
+    assert all("INSERT" not in s and "UPDATE" not in s for s in session.statements)
+
+
 class TransactionLogSession:
     """Session giả ghi thứ tự BEGIN/câu lệnh để kiểm tra snapshot được đặt trước truy vấn."""
 
@@ -1087,6 +1117,14 @@ class FakeRepository:
             f"market_bars:{kwargs['symbol']}:{kwargs['timeframe']}:{kwargs['source']}"
         )
         return [{"time": 1, "open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0, "volume": 1.0}]
+
+    async def latest_live_quote(self, **kwargs: Any) -> dict[str, Any] | None:
+        STORE.calls.append(f"market_quote:{kwargs['symbol']}")
+        return None
+
+    async def latest_mark_price(self, **kwargs: Any) -> dict[str, Any] | None:
+        STORE.calls.append(f"market_mark:{kwargs['symbol']}")
+        return None
 
     async def workspace_closed_totals(self, **kwargs: Any) -> dict[str, tuple[int, Decimal]]:
         STORE.calls.append("ledger_totals")
@@ -1248,6 +1286,42 @@ async def test_market_chart_data_requires_report_read_on_existing_bot(
             await call
         assert caught.value.status_code == 404
     assert not any(c.startswith("market") for c in STORE.calls)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("actor", "bot_id", "allowed"),
+    [(OWNER, BOT_A, True), (ANALYST, BOT_A, True), (OPERATOR, BOT_A, False), (OWNER, BOT_X, False)],
+)
+async def test_market_overview_requires_report_read_and_reads_one_snapshot(
+    actor: Principal, bot_id: UUID, allowed: bool
+) -> None:
+    reporting = service()
+    if not allowed:
+        with pytest.raises(BotReportError) as caught:
+            await reporting.get_market_overview(
+                actor, bot_id=bot_id, symbol="BTCUSDT", timeframe="5m"
+            )
+        assert caught.value.status_code == 404
+        assert not any(c.startswith("market") for c in STORE.calls)
+        return
+    overview = await reporting.get_market_overview(
+        actor, bot_id=bot_id, symbol="BTCUSDT", timeframe="5m"
+    )
+    # Chỉ đọc các khung thực sự có nến; 5m ưu tiên nguồn REST thật, 1h chỉ có nguồn mẫu.
+    bar_calls = [c for c in STORE.calls if c.startswith("market_bars:")]
+    assert bar_calls == [
+        "market_bars:BTCUSDT:5m:BINANCE_USDM_REST_BACKFILL",
+        "market_bars:BTCUSDT:1h:CRYPIDIAN_PIPELINE_FIXTURE",
+    ]
+    assert "market_quote:BTCUSDT" in STORE.calls
+    assert "market_mark:BTCUSDT" in STORE.calls
+    assert STORE.calls.count("uow") == 1
+    assert STORE.units[-1]["snapshot_read_only"] is True
+    assert overview["quote"] is None
+    assert overview["candle"]["price_source"] == "last_close"
+    with pytest.raises(BotReportError):
+        await reporting.get_market_overview(actor, bot_id=bot_id, symbol="BTCUSDT", timeframe="2h")
 
 
 @pytest.mark.asyncio

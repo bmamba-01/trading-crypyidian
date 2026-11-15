@@ -68,4 +68,26 @@ class AggTradeEvent:
         return self.price * self.quantity
 
 
-MarketStreamEvent = MarkPriceEvent | LiquidationEvent | AggTradeEvent
+@dataclass(frozen=True, slots=True)
+class BookTickerEvent:
+    """Giá mua/bán tốt nhất (không gồm lệnh RPI) tại một thời điểm; ``bid <= ask``."""
+
+    symbol: str
+    update_id: int
+    bid_price: Decimal
+    bid_quantity: Decimal
+    ask_price: Decimal
+    ask_quantity: Decimal
+    event_at: datetime
+    received_at: datetime
+
+    @property
+    def spread(self) -> Decimal:
+        return self.ask_price - self.bid_price
+
+    @property
+    def mid(self) -> Decimal:
+        return (self.bid_price + self.ask_price) / 2
+
+
+MarketStreamEvent = MarkPriceEvent | LiquidationEvent | AggTradeEvent | BookTickerEvent

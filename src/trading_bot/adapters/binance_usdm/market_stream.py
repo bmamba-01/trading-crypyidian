@@ -22,6 +22,7 @@ from trading_bot.adapters.binance_usdm.market_data import (
 from trading_bot.domain.market.models import OHLCVBar
 from trading_bot.domain.market.stream_events import (
     AggTradeEvent,
+    BookTickerEvent,
     LiquidationEvent,
     MarketStreamEvent,
     MarkPriceEvent,
@@ -133,17 +134,28 @@ _EVENT_STREAM_SUFFIXES = {
     "mark_price": "markPrice@1s",
     "liquidation": "forceOrder",
     "trade_flow": "aggTrade",
+    "book_ticker": "bookTicker",
+}
+# Từ 2026-03-05 Binance tách route: bookTicker/depth ở `/public`, còn mark price, thanh lý,
+# aggTrade, kline ở `/market` (Important WebSocket Change Notice, kiểm 15/11/2026).
+_EVENT_ROUTES = {
+    "mark_price": "market",
+    "liquidation": "market",
+    "trade_flow": "market",
+    "book_ticker": "public",
 }
 _LIQUIDATION_SIDES = frozenset({"BUY", "SELL"})
 
 
-def _stream_url(base_url: str, names: Sequence[str]) -> str:
+def _stream_url(base_url: str, names: Sequence[str], route: str = "market") -> str:
     parts = urlsplit(base_url)
     if parts.scheme != "wss" or not parts.netloc or parts.path not in {"", "/"} or parts.query:
         raise ValueError("base_url stream phải là origin wss không kèm path hoặc query.")
     if not 1 <= len(names) <= MAX_STREAMS_PER_CONNECTION:
         raise ValueError("Số stream mỗi kết nối phải nằm trong 1..1024.")
-    return f"wss://{parts.netloc}/market/stream?streams={'/'.join(names)}"
+    if route not in {"market", "public"}:
+        raise ValueError("route stream không hợp lệ.")
+    return f"wss://{parts.netloc}/{route}/stream?streams={'/'.join(names)}"
 
 
 def build_event_stream_names(symbols: Sequence[str], kinds: Sequence[str]) -> tuple[str, ...]:
@@ -229,6 +241,26 @@ def parse_market_event_message(message: str, *, received_at: datetime) -> Market
             ):
                 raise MarketDataContractError("Lệnh thanh lý có giá hoặc khối lượng sai.")
             return liquidation
+        if event_type == "bookTicker":
+            symbol = _event_symbol(data["s"], stream_name, "bookTicker")
+            update_id = data["u"]
+            if type(update_id) is not int or update_id < 0:
+                raise MarketDataContractError("bookTicker có update id sai.")
+            event_at, instant = _causal(_from_milliseconds(data["E"], "E"), instant)
+            bid, ask = _decimal(data["b"], "b"), _decimal(data["a"], "a")
+            bid_quantity, ask_quantity = _decimal(data["B"], "B"), _decimal(data["A"], "A")
+            if bid <= 0 or ask <= 0 or bid > ask or bid_quantity < 0 or ask_quantity < 0:
+                raise MarketDataContractError("bookTicker có giá hoặc khối lượng sai.")
+            return BookTickerEvent(
+                symbol=symbol,
+                update_id=update_id,
+                bid_price=bid,
+                bid_quantity=bid_quantity,
+                ask_price=ask,
+                ask_quantity=ask_quantity,
+                event_at=event_at,
+                received_at=instant,
+            )
         if event_type == "aggTrade":
             symbol = _event_symbol(data["s"], stream_name, "aggTrade")
             identifiers = (data["a"], data["f"], data["l"])
@@ -313,7 +345,7 @@ class BinanceUsdMKlineStream:
 
 
 class BinanceUsdMEventStream:
-    """Một phiên stream mark price, thanh lý và aggregate trade trên route `/market`."""
+    """Một phiên stream sự kiện; mỗi kết nối chỉ một route (`/market` hoặc `/public`)."""
 
     def __init__(
         self,
@@ -327,11 +359,23 @@ class BinanceUsdMEventStream:
     ) -> None:
         if not 0 < idle_timeout_seconds <= 600:
             raise ValueError("idle_timeout_seconds phải nằm trong (0, 600].")
-        self._url = _stream_url(base_url, build_event_stream_names(symbols, kinds))
+        routes = {_EVENT_ROUTES.get(kind) for kind in kinds}
+        if len(routes) != 1:
+            raise ValueError(
+                "Mỗi kết nối chỉ được dùng một route; tách bookTicker (/public) riêng."
+            )
+        self._url = _stream_url(
+            base_url, build_event_stream_names(symbols, kinds), route=str(routes.pop())
+        )
         self._symbols = frozenset(symbols)
         self._client = client
         self._clock = clock
         self._idle_timeout_seconds = idle_timeout_seconds
+
+    @property
+    def url(self) -> str:
+        """URL combined stream đã dựng (không chứa bí mật; chỉ dữ liệu công khai)."""
+        return self._url
 
     def events(self) -> AsyncGenerator[MarketStreamEvent]:
         """Phát sự kiện đã chuẩn hóa cho tới khi kết nối kết thúc."""

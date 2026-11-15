@@ -13,6 +13,7 @@ import threading
 import time
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -32,6 +33,7 @@ from tests.e2e.csp_harness import (
 from tests.e2e.test_admin_trading_revamp_playwright import MockRevampAuthService
 from trading_bot.admin.presentation import label_vi, local_time, number_vi, pnl_tone
 from trading_bot.admin.web_router import router as admin_web_router
+from trading_bot.application.market_overview import build_market_overview
 from trading_bot.auth.policy import Principal
 from trading_bot.auth.security import LoginRateLimiter
 from trading_bot.config.settings import AppSettings
@@ -40,6 +42,8 @@ SCREENSHOTS_DIR = Path(__file__).resolve().parent / "evidence" / "admin-playwrig
 SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
 BOT_ID = UUID("77117cc4-6c7f-407e-8f23-948d740a46c2")
 START = datetime(2026, 11, 16, 0, 0, tzinfo=UTC)
+# Thời điểm cố định ngay sau nến 5m cuối cùng của dữ liệu mẫu (576 nến = 2 ngày).
+OVERVIEW_NOW = START + timedelta(days=2, minutes=2, seconds=30)
 
 pytestmark = pytest.mark.usefixtures("browser_violations")
 
@@ -147,6 +151,7 @@ class _Reporting:
     def __init__(self) -> None:
         self.bars = _bars()
         self.calls = 0
+        self.overview_calls = 0
 
     async def list_market_series(self, principal: Principal, *, bot_id: UUID) -> dict:
         return {"BTCUSDT": ["5m"], "ETHUSDT": ["1h"]}
@@ -157,6 +162,37 @@ class _Reporting:
     async def get_market_bars(self, principal: Principal, **kwargs: Any) -> list[dict]:
         self.calls += 1
         return self.bars if kwargs["symbol"] == "BTCUSDT" else []
+
+    async def get_market_overview(self, principal: Principal, **kwargs: Any) -> dict:
+        """Giá bid nhích 0,01 mỗi lần gọi để kiểm polling cập nhật dải thông số."""
+        self.overview_calls += 1
+        last_close = Decimal(str(round(self.bars[-1]["close"], 2)))
+        bid = last_close + Decimal("0.01") * self.overview_calls
+        has_bars = kwargs["symbol"] == "BTCUSDT"
+        return build_market_overview(
+            symbol=kwargs["symbol"],
+            timeframe=kwargs["timeframe"],
+            now=OVERVIEW_NOW,
+            bars_by_timeframe={"5m": self.bars} if has_bars else {},
+            quote={
+                "bid_price": bid,
+                "ask_price": bid + Decimal("0.02"),
+                "bid_quantity": Decimal("3"),
+                "ask_quantity": Decimal("4"),
+                "event_at": OVERVIEW_NOW - timedelta(seconds=1),
+            }
+            if has_bars
+            else None,
+            mark={
+                "mark_price": last_close,
+                "index_price": last_close,
+                "funding_rate": Decimal("0.0001"),
+                "next_funding_time": datetime(2026, 11, 18, 8, 0, tzinfo=UTC),
+                "event_at": OVERVIEW_NOW - timedelta(seconds=2),
+            }
+            if has_bars
+            else None,
+        )
 
 
 def _app() -> FastAPI:
@@ -243,6 +279,38 @@ def test_market_chart_renders_overlays_polls_and_is_responsive(server_url: str) 
             "href", "https://www.tradingview.com/"
         )
 
+        # CK-1: dải thông số trực tiếp — bid/ask, đếm ngược nến chạy, mark/funding, phiên.
+        strip = page.locator("#mc-live-strip")
+        expect(strip).to_be_visible()
+        expect(strip.locator("[data-ov-price-source]")).to_have_text("giữa bid/ask")
+        expect(strip.locator("[data-ov-bid]")).to_have_text(re.compile(r"^\d{2,3},\d{1,2}$"))
+        expect(strip.locator("[data-ov-funding]")).to_have_text("0,0100%")
+        first_clock = strip.locator("[data-ov-candle-left]").inner_text()
+        assert re.fullmatch(r"\d{2}:\d{2}", first_clock), first_clock
+        page.wait_for_timeout(1300)
+        assert strip.locator("[data-ov-candle-left]").inner_text() != first_clock
+        expect(strip.locator("[data-ov-notices] li")).to_have_count(0)
+        # Polling ~2 giây trả số mới và JS cập nhật bid.
+        with page.expect_response(
+            lambda r: "/admin/api/chart/overview?" in r.url, timeout=6000
+        ) as overview_polled:
+            pass
+        assert overview_polled.value.status == 200
+        assert overview_polled.value.headers["cache-control"] == "no-store"
+        latest_bid = overview_polled.value.json()["quote"]["bid"]
+        expect(strip.locator("[data-ov-bid]")).to_have_text(
+            f"{latest_bid:.2f}".rstrip("0").replace(".", ",")
+        )
+
+        # CK-2: ma trận đa khung — 4 vai trò theo thứ tự, khung thiếu dữ liệu ghi rõ.
+        matrix = page.locator("#mc-mtf-matrix")
+        rows = matrix.locator("tbody tr")
+        expect(rows).to_have_count(4)
+        expect(rows.nth(0)).to_contain_text("Xu hướng chính")
+        expect(rows.nth(0)).to_contain_text("Chưa có nến 4H đã đóng trong kho dữ liệu.")
+        expect(rows.nth(3)).to_contain_text("Thời điểm")
+        expect(matrix.locator(".is-primary")).to_contain_text("5M")
+
         # Thẻ tín hiệu SIG-3: hướng, SL, checklist và quyết định không vào lệnh gần nhất.
         signal = page.locator("[data-signal-card]")
         expect(signal).to_contain_text("BÁN")
@@ -278,11 +346,21 @@ def test_market_chart_renders_overlays_polls_and_is_responsive(server_url: str) 
             page.set_viewport_size({"width": width, "height": 860})
             page.wait_for_timeout(250)
             _assert_no_horizontal_overflow(page, f"{width}px")
+            strip_box = page.locator("#mc-live-strip").bounding_box()
+            assert strip_box is not None
+            assert strip_box["x"] + strip_box["width"] <= width + 1, f"dải thông số @ {width}px"
             for selector in (".mc-timeframe", ".mc-layer", "#mc-bot"):
                 height = page.locator(selector).first.bounding_box()["height"]
                 assert height >= 43.5, f"{selector} @ {width}px cao {height}"
         page.screenshot(
             path=str(SCREENSHOTS_DIR / "sig7-market-chart-mobile-dark.png"), full_page=True
+        )
+        page.set_viewport_size({"width": 1280, "height": 900})
+        page.locator("#mc-live-strip").screenshot(
+            path=str(SCREENSHOTS_DIR / "ck1-live-strip-desktop.png")
+        )
+        page.locator("#mc-mtf-matrix").screenshot(
+            path=str(SCREENSHOTS_DIR / "ck2-mtf-matrix-desktop.png")
         )
 
         # Mã không có nến ở khung chọn → chart vẫn mở, hiện ghi chú thay vì vẽ số liệu bịa.

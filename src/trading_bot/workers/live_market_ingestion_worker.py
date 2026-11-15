@@ -22,6 +22,8 @@ from trading_bot.application.live_market_events import LiveMarketRecord
 from trading_bot.domain.market.models import OHLCVBar
 from trading_bot.domain.market.stream_events import (
     AggTradeEvent,
+    BookTickerEvent,
+    LiquidationEvent,
     MarketStreamEvent,
     MarkPriceEvent,
 )
@@ -203,8 +205,9 @@ class LiveMarketEventWorker:
                             buffer.append(event)
                         # Mark price tới đều mỗi giây nên dùng làm nhịp đóng bucket yên lặng.
                         buffer.extend(aggregator.flush(self._now()))
-                    else:
+                    elif isinstance(event, LiquidationEvent):
                         buffer.append(event)
+                    # BookTickerEvent đi đường LiveQuoteWorker riêng (route /public), bỏ qua ở đây.
                     if buffer and self._monotonic() - last_write >= self._flush_seconds:
                         await self._write(buffer)
                         last_write = self._monotonic()
@@ -225,6 +228,83 @@ class LiveMarketEventWorker:
         batch = list(buffer)
         buffer.clear()
         self.events_written += await self._service.write(batch, now=self._now())
+        self.last_event_at = self._now()
+
+
+class LiveQuoteService(Protocol):
+    """Ghi giá mua/bán mới nhất; trả số symbol đã cập nhật."""
+
+    async def ensure_ready(self, symbols: Sequence[str], *, now: datetime) -> None: ...
+
+    async def upsert_quotes(self, events: Sequence[BookTickerEvent], *, now: datetime) -> int: ...
+
+
+class LiveQuoteWorker:
+    """Đọc bookTicker (route `/public`), giữ giá mới nhất mỗi symbol và ghi theo nhịp.
+
+    bookTicker cập nhật theo thời gian thực (rất dày với mã thanh khoản cao); worker chỉ ghi
+    bản mới nhất mỗi ``interval_seconds`` để bảng giá trực tiếp không tạo tải ghi lớn.
+    """
+
+    def __init__(
+        self,
+        *,
+        service: LiveQuoteService,
+        stream_factory: Callable[[], MarketEventStream],
+        symbols: Sequence[str],
+        now: Callable[[], datetime] | None = None,
+        interval_seconds: float = 2.0,
+        reconnect_seconds: float = 5.0,
+        monotonic: Callable[[], float] = time.monotonic,
+    ) -> None:
+        if not symbols or len(set(symbols)) != len(symbols):
+            raise ValueError("symbols phải khác rỗng và không trùng lặp.")
+        if not 0.5 <= interval_seconds <= 60 or not 0 < reconnect_seconds <= 300:
+            raise ValueError("interval_seconds hoặc reconnect_seconds không hợp lệ.")
+        self._service = service
+        self._stream_factory = stream_factory
+        self._symbols = tuple(symbols)
+        self._now = now or (lambda: datetime.now(UTC))
+        self._interval = interval_seconds
+        self._reconnect_seconds = reconnect_seconds
+        self._monotonic = monotonic
+        self.is_healthy = False
+        self.last_error_code: str | None = None
+        self.last_event_at: datetime | None = None
+        self.quotes_written = 0
+
+    async def run_session(self) -> None:
+        await self._service.ensure_ready(self._symbols, now=self._now())
+        self.is_healthy = True
+        self.last_error_code = None
+        pending: dict[str, BookTickerEvent] = {}
+        last_write = self._monotonic()
+        try:
+            async with contextlib.aclosing(self._stream_factory().events()) as events:
+                async for event in events:
+                    if not isinstance(event, BookTickerEvent):
+                        raise ValueError("Stream giá trực tiếp trả sự kiện không phải bookTicker.")
+                    pending[event.symbol] = event
+                    if self._monotonic() - last_write >= self._interval:
+                        await self._write(pending)
+                        last_write = self._monotonic()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # Giữ giá cuối cùng đã nhận trước khi rớt kết nối.
+            with contextlib.suppress(Exception):
+                await self._write(pending)
+            raise
+
+    async def run(self, stopping: asyncio.Event) -> None:
+        await _run_reconnecting(self, stopping, name="live-market-quote-session")
+
+    async def _write(self, pending: dict[str, BookTickerEvent]) -> None:
+        if not pending:
+            return
+        batch = list(pending.values())
+        pending.clear()
+        self.quotes_written += await self._service.upsert_quotes(batch, now=self._now())
         self.last_event_at = self._now()
 
 

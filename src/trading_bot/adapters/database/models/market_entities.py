@@ -12,11 +12,13 @@ from sqlalchemy import (
     Index,
     Integer,
     Numeric,
+    PrimaryKeyConstraint,
     String,
     Text,
     UniqueConstraint,
     Uuid,
 )
+from sqlalchemy import text as sql_text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from trading_bot.adapters.database.models.base import Base, CreatedAt, UuidPrimaryKey
@@ -521,3 +523,43 @@ class MarketTradeFlow(UuidPrimaryKey, CreatedAt, Base):
     first_aggregate_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     last_aggregate_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     is_complete: Mapped[bool] = mapped_column(nullable=False)
+
+
+class MarketLiveQuote(Base):
+    """Giá mua/bán tốt nhất mới nhất mỗi (workspace, nguồn, instrument); cập nhật tại chỗ.
+
+    Bảng hiển thị cho buồng lái biểu đồ (CK-1), không phải dữ liệu point-in-time: chiến lược và
+    backtest không đọc bảng này.
+    """
+
+    __tablename__ = "market_live_quote"
+    __table_args__ = (
+        PrimaryKeyConstraint("workspace_id", "source", "instrument_id"),
+        ForeignKeyConstraint(["workspace_id"], ["workspace.id"], ondelete="CASCADE"),
+        ForeignKeyConstraint(
+            ["workspace_id", "instrument_id"],
+            ["market_instrument.workspace_id", "market_instrument.id"],
+        ),
+        CheckConstraint(
+            "bid_price > 0 AND ask_price >= bid_price AND bid_quantity >= 0 "
+            "AND ask_quantity >= 0 AND update_id >= 0",
+            name="market_live_quote_values_valid",
+        ),
+        CheckConstraint("event_at <= received_at", name="market_live_quote_timestamps_causal"),
+        Index("ix_market_live_quote_symbol", "workspace_id", "symbol"),
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    source: Mapped[str] = mapped_column(String(80), nullable=False)
+    instrument_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+    update_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    bid_price: Mapped[Decimal] = mapped_column(_MARKET_VALUE, nullable=False)
+    bid_quantity: Mapped[Decimal] = mapped_column(_MARKET_VALUE, nullable=False)
+    ask_price: Mapped[Decimal] = mapped_column(_MARKET_VALUE, nullable=False)
+    ask_quantity: Mapped[Decimal] = mapped_column(_MARKET_VALUE, nullable=False)
+    event_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=sql_text("now()")
+    )

@@ -167,3 +167,78 @@
   .sc-check { grid-template-columns: 1.2rem minmax(0, 1fr); }
   .sc-check__value { grid-column: 2; text-align: left; }
 }
+
+/* ---------- CK-1: dải thông số trực tiếp ---------- */
+.mc-live {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(10.5rem, 1fr));
+  gap: 0.5rem 0.9rem;
+  padding: 0.7rem 0.85rem;
+  border-radius: 0.8rem;
+}
+.mc-live__item { display: grid; gap: 0.1rem; min-width: 0; align-content: start; }
+.mc-live__label { font-size: 0.72rem; opacity: 0.7; white-space: nowrap; }
+.mc-live__value {
+  font-weight: 700;
+  font-size: 0.98rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mc-live__item--price .mc-live__value { font-size: 1.25rem; }
+.mc-live__sub { font-size: 0.74rem; opacity: 0.8; font-variant-numeric: tabular-nums; }
+.mc-live__clock { font-variant-numeric: tabular-nums; }
+.mc-live__warn { color: var(--danger-text, #991b1b); }
+.mc-live .is-up { color: var(--pnl-positive-text, #0b8a5a); }
+.mc-live .is-down { color: var(--pnl-negative-text, #c7354b); }
+.mc-live .is-stale { color: var(--danger-text, #991b1b); font-weight: 600; }
+.mc-live__notices {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding-left: 1.1rem;
+  font-size: 0.76rem;
+  opacity: 0.8;
+}
+.mc-live__notices:empty { display: none; }
+.mc-live__arrows { display: flex; flex-wrap: wrap; gap: 0.3rem; }
+.mc-arrow { display: inline-flex; align-items: center; gap: 0.15rem; font-weight: 700; }
+.mc-arrow abbr { text-decoration: none; font-size: 0.7rem; opacity: 0.75; font-weight: 600; }
+.mc-arrow--up { color: var(--pnl-positive-text, #0b8a5a); }
+.mc-arrow--down { color: var(--pnl-negative-text, #c7354b); }
+.mc-arrow--range { color: var(--accent, #f0b90b); }
+.mc-arrow--unknown { opacity: 0.5; }
+.mc-session-chip {
+  display: inline-block;
+  margin-right: 0.25rem;
+  padding: 0 0.4rem;
+  border-radius: 0.4rem;
+  font-size: 0.8rem;
+}
+.mc-session-chip--asia { background: rgba(240, 185, 11, 0.25); }
+.mc-session-chip--london { background: rgba(59, 130, 246, 0.25); }
+.mc-session-chip--new_york { background: rgba(168, 85, 247, 0.25); }
+
+/* ---------- CK-2: ma trận xu hướng đa khung ---------- */
+.mc-mtf { padding: 0.75rem 0.85rem; border-radius: 0.8rem; display: grid; gap: 0.5rem; }
+.mc-mtf__head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.4rem 1rem; }
+.mc-mtf__head h2 { margin: 0; font-size: 1rem; }
+.mc-mtf__table { width: 100%; border-collapse: collapse; font-size: 0.84rem; }
+.mc-mtf__table th, .mc-mtf__table td {
+  padding: 0.45rem 0.55rem;
+  text-align: left;
+  border-bottom: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.3));
+  vertical-align: top;
+}
+.mc-mtf__table thead th { font-size: 0.72rem; font-weight: 600; opacity: 0.75; white-space: nowrap; }
+.mc-mtf__table tbody th { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.mc-mtf__row.is-primary { background: rgba(240, 185, 11, 0.08); }
+.mc-mtf__primary {
+  font-size: 0.68rem;
+  font-weight: 600;
+  padding: 0 0.3rem;
+  border-radius: 0.3rem;
+  background: var(--accent, #f0b90b);
+  color: #111827;
+}
+.mc-mtf__note { margin: 0; font-size: 0.78rem; opacity: 0.8; }

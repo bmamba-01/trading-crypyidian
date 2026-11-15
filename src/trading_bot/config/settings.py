@@ -34,7 +34,7 @@ _LIVE_TIMEFRAMES = frozenset(
 )
 # Giữ dưới trần 1024 stream/kết nối của Binance và giới hạn tải REST lúc warm-up.
 _MAX_LIVE_STREAMS = 200
-_LIVE_EVENT_ORDER = ("mark_price", "liquidation", "trade_flow")
+_LIVE_EVENT_ORDER = ("mark_price", "liquidation", "trade_flow", "book_ticker")
 _LIVE_EVENT_KINDS = frozenset(_LIVE_EVENT_ORDER)
 
 
@@ -87,9 +87,11 @@ class AppSettings(BaseSettings):
     ingestion_live_symbols: str = ""
     ingestion_live_timeframes: str = "15m,1h,4h"
     ingestion_live_warmup_bars: int = Field(default=300, ge=200, le=1500)
-    # Stream sự kiện bổ sung: mark_price, liquidation, trade_flow; để trống là chỉ thu nến.
+    # Stream bổ sung: mark_price, liquidation, trade_flow, book_ticker; trống là chỉ thu nến.
     ingestion_live_events: str = ""
     ingestion_live_mark_price_interval_seconds: int = Field(default=60, ge=1, le=3600)
+    # CK-1: nhịp ghi giá mua/bán tốt nhất (bookTicker, route /public) vào bảng giá trực tiếp.
+    ingestion_live_quote_interval_seconds: float = Field(default=2.0, ge=0.5, le=60)
     # SIG-0: collector nến công khai Binance trong ingestion-worker (owner duyệt 15/11/2026 cho
     # PAPER nội bộ). Mặc định tắt; khi bật vẫn phải có policy PAPER_DEMO hợp lệ trong registry.
     market_collector_enabled: bool = False

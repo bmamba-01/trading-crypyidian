@@ -482,6 +482,82 @@ class BotReportingService:
             )
             return bars
 
+    async def get_market_overview(
+        self,
+        principal: Principal,
+        *,
+        bot_id: UUID,
+        symbol: str,
+        timeframe: str,
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Dải thông số (CK-1) và ma trận đa khung (CK-2) của một symbol, chỉ đọc.
+
+        Cùng kiểm ``REPORT_READ`` theo bot đang chọn như chart; mọi SELECT trong một snapshot
+        để giá trực tiếp, mark và nến các khung cùng thời điểm đọc.
+        """
+        from trading_bot.application.market_overview import (
+            MTF_ROLES,
+            OVERVIEW_BAR_LIMIT,
+            build_market_overview,
+        )
+
+        if timeframe not in MARKET_CHART_INTERVAL_SECONDS:
+            raise BotReportError(
+                422, "CHART_TIMEFRAME_UNSUPPORTED", "Khung biểu đồ không được hỗ trợ."
+            )
+        instant = now or datetime.now(UTC)
+        frames = [timeframe, *(frame for frame, _ in MTF_ROLES if frame != timeframe)]
+        async with self._unit_of_work(
+            self._sessions,
+            workspace_id=principal.workspace_id,
+            bot_id=bot_id,
+            actor_membership_id=principal.membership_id,
+            snapshot_read_only=True,
+        ) as unit:
+            repository = self._repository(unit.session)
+            try:
+                await self._grants(unit.session).require(
+                    principal, bot_id=bot_id, permission=BotPermission.REPORT_READ
+                )
+            except PermissionError as error:
+                raise _not_found() from error
+            if await repository.get_bot(workspace_id=principal.workspace_id, bot_id=bot_id) is None:
+                raise _not_found()
+            sources: dict[str, list[str]] = {}
+            for pair in await repository.list_market_series(
+                workspace_id=principal.workspace_id, as_of=instant
+            ):
+                pair_symbol, pair_frame, pair_source = pair.split("|", 2)
+                if pair_symbol == symbol:
+                    sources.setdefault(pair_frame, []).append(pair_source)
+            bars_by_timeframe: dict[str, list[dict[str, Any]]] = {}
+            for frame in frames:
+                if frame not in sources:
+                    continue
+                bars_by_timeframe[frame] = await repository.load_recent_bars(
+                    workspace_id=principal.workspace_id,
+                    symbol=symbol,
+                    timeframe=frame,
+                    as_of=instant,
+                    limit=OVERVIEW_BAR_LIMIT,
+                    source=preferred_market_source(sources[frame]),
+                )
+            quote = await repository.latest_live_quote(
+                workspace_id=principal.workspace_id, symbol=symbol
+            )
+            mark = await repository.latest_mark_price(
+                workspace_id=principal.workspace_id, symbol=symbol, as_of=instant
+            )
+        return build_market_overview(
+            symbol=symbol,
+            timeframe=timeframe,
+            now=instant,
+            bars_by_timeframe=bars_by_timeframe,
+            quote=quote,
+            mark=mark,
+        )
+
     async def get_dashboard_reports(
         self,
         query: BotReportQuery,

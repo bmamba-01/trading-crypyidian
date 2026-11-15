@@ -6,6 +6,7 @@ import json
 import math
 import re
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -18,6 +19,7 @@ from trading_bot.application.market_chart import (
     NOTICE_SESSIONS_HIDDEN,
     build_market_chart_payload,
 )
+from trading_bot.application.market_overview import build_market_overview
 from trading_bot.auth.policy import Principal, Role
 from trading_bot.auth.router import current_identity
 from trading_bot.auth.service import AuthIdentity
@@ -28,6 +30,7 @@ BOT_ID = UUID("77117cc4-6c7f-407e-8f23-948d740a46c2")
 OTHER_BOT = UUID("88228dd5-7d8e-418f-9a34-059e851b57d3")
 MEMBERSHIP = UUID("a93c4b18-f76c-4cfb-9bad-9e0aee5ccadc")
 USER_ID = UUID("d33fa90f-697d-43bd-8b8f-0a89f3e97f57")
+OVERVIEW_NOW = datetime(2026, 11, 16, 9, 2, 30, tzinfo=UTC)
 
 
 def _bars(count: int, *, start: datetime, step: timedelta, taker: bool = False) -> list[dict]:
@@ -201,6 +204,7 @@ class _Reporting:
         self.error = error
         self.series = series if series is not None else {"BTCUSDT": ["1m", "5m", "1h"]}
         self.calls: list[dict[str, Any]] = []
+        self.overview_calls: list[dict[str, Any]] = []
 
     async def list_market_series(self, principal: Principal, *, bot_id: UUID) -> dict:
         if self.error is not None:
@@ -215,6 +219,25 @@ class _Reporting:
         if self.error is not None:
             raise self.error
         return self.bars
+
+    async def get_market_overview(self, principal: Principal, **kwargs: Any) -> dict:
+        self.overview_calls.append(kwargs)
+        if self.error is not None:
+            raise self.error
+        return build_market_overview(
+            symbol=kwargs["symbol"],
+            timeframe=kwargs["timeframe"],
+            now=OVERVIEW_NOW,
+            bars_by_timeframe={kwargs["timeframe"]: self.bars},
+            quote={
+                "bid_price": Decimal("100.10"),
+                "ask_price": Decimal("100.30"),
+                "bid_quantity": Decimal("1"),
+                "ask_quantity": Decimal("2"),
+                "event_at": OVERVIEW_NOW - timedelta(seconds=1),
+            },
+            mark=None,
+        )
 
 
 def _client(reporting: _Reporting) -> TestClient:
@@ -320,3 +343,37 @@ def test_chart_page_shows_signal_card_checklist_and_overlay_payload() -> None:
     assert "H01_ADX_BELOW_20" in html
     data = _embedded_payload(html)
     assert data["signal_card"]["stop"] == 104.0
+
+
+def test_chart_page_renders_live_header_and_mtf_matrix() -> None:
+    reporting = _Reporting(_bars(200, start=START, step=timedelta(minutes=5)))
+    html = _client(reporting).get("/admin/chart?timeframe=5m").text
+    assert reporting.overview_calls == [{"bot_id": BOT_ID, "symbol": "BTCUSDT", "timeframe": "5m"}]
+    assert 'id="mc-live-strip"' in html
+    assert 'data-overview-url="/admin/api/chart/overview?' in html
+    # Bid / ask (định dạng VI) hiện sẵn khi tải trang.
+    assert "100,1" in html
+    assert "100,3" in html
+    assert 'id="mc-mtf-matrix"' in html
+    for role in ("Xu hướng chính", "Xác nhận", "Động lượng", "Thời điểm"):
+        assert role in html
+    assert "Chưa có nến 4H đã đóng trong kho dữ liệu." in html
+    assert ' style="' not in html
+
+
+def test_overview_api_is_no_store_and_maps_errors() -> None:
+    client = _client(_Reporting(_bars(120, start=START, step=timedelta(minutes=5))))
+    url = f"/admin/api/chart/overview?bot_id={BOT_ID}&symbol=BTCUSDT&timeframe=5m"
+    response = client.get(url)
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    body = response.json()
+    assert body["status"] == "ok"
+    assert body["quote"]["bid"] == 100.10
+    assert [cell["timeframe"] for cell in body["mtf"]["cells"]] == ["4h", "1h", "15m", "5m"]
+    assert client.get(f"/admin/api/chart/overview?bot_id={BOT_ID}").status_code == 422
+    assert client.get(f"{url.replace('5m', '2h')}").status_code == 422
+    denied = _client(
+        _Reporting([], BotReportError(404, "REPORT_NOT_FOUND", "Không tìm thấy báo cáo bot."))
+    )
+    assert denied.get(url).status_code == 404

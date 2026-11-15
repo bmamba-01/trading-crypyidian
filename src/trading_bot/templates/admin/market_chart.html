@@ -18,9 +18,15 @@
   ("trendlines", "Trendline", true),
   ("profile", "Volume profile", true),
   ("signal", "Thẻ tín hiệu (SL/TP)", true),
+  ("quote", "Bid/Ask trực tiếp", true),
   ("rsi", "RSI 14", false),
   ("macd", "MACD", false),
 ] %}
+{%- macro ov_price(value) -%}{% if value is none %}—{% elif value >= 1 %}{{ value | number2_vi }}{% else %}{{ value | round(8) | number_vi }}{% endif %}{%- endmacro -%}
+{%- macro ov_clock(seconds) -%}{% if seconds is none %}—{% else %}{% set h = seconds // 3600 %}{% set m = (seconds % 3600) // 60 %}{% set sec = seconds % 60 %}{% if h %}{{ h }}:{{ '%02d' | format(m) }}{% else %}{{ '%02d' | format(m) }}{% endif %}:{{ '%02d' | format(sec) }}{% endif %}{%- endmacro -%}
+{% set OV_SOURCE = {"quote_mid": "giữa bid/ask", "mark": "mark price", "last_close": "giá đóng nến gần nhất"} %}
+{% set OV_ZONE = {"premium": "Vùng đắt (premium)", "discount": "Vùng rẻ (discount)", "equilibrium": "Cân bằng"} %}
+{% set OV_ARROW = {"up": "▲", "down": "▼", "range": "◆", "unknown": "·"} %}
 <div class="mc-page">
   <section class="glass-card mc-toolbar" aria-label="Chọn bot, khung và lớp hiển thị">
     {% if bots %}
@@ -65,6 +71,48 @@
     <p>Kho dữ liệu nội bộ chưa có nến đã đóng nào cho workspace này. Biểu đồ chỉ hiển thị dữ liệu đã lưu; cần thu nến thị trường (gói DATA-1/SIG-0) trước.</p>
   </section>
   {% elif chart_payload %}
+  {% if overview %}
+  {% set q = overview.quote %}{% set c = overview.candle %}{% set mk = overview.mark %}{% set d = overview.day %}{% set cons = overview.mtf.consensus %}
+  {#- CK-1: dải thông số trực tiếp; JS (market-overview.js) polling ~2 giây và đếm ngược mỗi giây. -#}
+  <section id="mc-live-strip" class="glass-card mc-live" aria-label="Thông số trực tiếp {{ overview.symbol }}" data-overview-url="/admin/api/chart/overview?bot_id={{ selected_bot.id | urlencode }}&symbol={{ overview.symbol | urlencode }}&timeframe={{ timeframe | urlencode }}">
+    <div class="mc-live__item mc-live__item--price">
+      <span class="mc-live__label">Giá hiện tại</span>
+      <span class="mc-live__value" data-ov-price>{{ ov_price(c.price) }}</span>
+      <span class="mc-live__sub"><span data-ov-change class="{% if c.change_pct is not none and c.change_pct > 0 %}is-up{% elif c.change_pct is not none and c.change_pct < 0 %}is-down{% endif %}">{% if c.change_pct is not none %}{{ '%+.2f' | format(c.change_pct) | replace('.', ',') }}%{% else %}—{% endif %}</span> · <span data-ov-price-source>{{ OV_SOURCE[c.price_source] }}</span></span>
+    </div>
+    <div class="mc-live__item">
+      <span class="mc-live__label">Bid / Ask</span>
+      <span class="mc-live__value"><span class="is-up" data-ov-bid>{{ ov_price(q.bid) if q else '—' }}</span> / <span class="is-down" data-ov-ask>{{ ov_price(q.ask) if q else '—' }}</span></span>
+      <span class="mc-live__sub">Spread <span data-ov-spread>{{ ov_price(q.spread) if q else '—' }}</span>{% if q and q.spread_bps is not none %} (<span data-ov-spread-bps>{{ q.spread_bps | round(2) | number_vi }}</span> bps){% endif %} · <span data-ov-quote-age class="{% if q and q.stale %}is-stale{% endif %}">{% if q %}{{ q.age_seconds }} giây trước{% else %}chưa có stream{% endif %}</span></span>
+    </div>
+    <div class="mc-live__item">
+      <span class="mc-live__label">Nến {{ c.timeframe | upper }} đóng sau</span>
+      <span class="mc-live__value mc-live__clock" data-ov-candle-left data-seconds="{{ c.seconds_left }}">{{ ov_clock(c.seconds_left) }}</span>
+      <span class="mc-live__sub">Mở {{ c.open_at | local_minute }}</span>
+    </div>
+    <div class="mc-live__item mc-live__item--mtf">
+      <span class="mc-live__label">Đồng thuận đa khung</span>
+      <span class="mc-live__value mc-live__arrows" data-ov-arrows>{% for cell in overview.mtf.cells %}<span class="mc-arrow mc-arrow--{{ cell.trend }}" title="{{ cell.timeframe | upper }}: {{ cell.label }}"><abbr>{{ cell.timeframe | upper }}</abbr>{{ OV_ARROW[cell.trend] }}</span>{% endfor %}</span>
+      <span class="mc-live__sub" data-ov-consensus>{{ cons.label }}</span>
+    </div>
+    <div class="mc-live__item">
+      <span class="mc-live__label">Phiên đang chạy</span>
+      <span class="mc-live__value" data-ov-sessions>{% for item in overview.sessions %}<span class="mc-session-chip mc-session-chip--{{ item.key }}">{{ item.label }}</span>{% else %}Ngoài phiên chính{% endfor %}</span>
+      <span class="mc-live__sub">Giờ địa phương từng sàn, theo DST</span>
+    </div>
+    <div class="mc-live__item">
+      <span class="mc-live__label">Biên ngày (UTC)</span>
+      <span class="mc-live__value"><span data-ov-day-high>{{ ov_price(d.high) if d else '—' }}</span> – <span data-ov-day-low>{{ ov_price(d.low) if d else '—' }}</span></span>
+      <span class="mc-live__sub">PDH <span data-ov-pdh>{{ ov_price(d.previous_high) if d else '—' }}</span> · PDL <span data-ov-pdl>{{ ov_price(d.previous_low) if d else '—' }}</span>{% if d and not d.previous_complete %} <span class="mc-live__warn" title="Ngày trước chưa đủ nến trong kho">(thiếu nến)</span>{% endif %}</span>
+    </div>
+    <div class="mc-live__item">
+      <span class="mc-live__label">Mark · Funding</span>
+      <span class="mc-live__value"><span data-ov-mark>{{ ov_price(mk.mark_price) if mk else '—' }}</span> · <span data-ov-funding>{% if mk and mk.funding_rate_pct is not none %}{{ '%.4f' | format(mk.funding_rate_pct) | replace('.', ',') }}%{% else %}—{% endif %}</span></span>
+      <span class="mc-live__sub">Funding sau <span class="mc-live__clock" data-ov-funding-left {% if mk and mk.funding_seconds_left is not none %}data-seconds="{{ mk.funding_seconds_left }}"{% endif %}>{{ ov_clock(mk.funding_seconds_left) if mk else '—' }}</span></span>
+    </div>
+    <ul class="mc-live__notices" data-ov-notices>{% for notice in overview.notices %}<li>{{ notice }}</li>{% endfor %}</ul>
+  </section>
+  {% endif %}
   <section class="glass-card mc-chart-card" aria-labelledby="mc-title">
     <header class="mc-head">
       <h2 id="mc-title"><span class="coin-tag" data-coin="{{ chart_payload.symbol }}">{{ chart_payload.symbol }}</span><span class="mc-head__tf">{{ timeframe | upper }}</span><span class="badge badge-neutral" title="Chỉ đọc dữ liệu đã lưu; không gửi lệnh">PAPER · chỉ xem</span><span class="badge badge-neutral mc-source" title="Nguồn nến đang hiển thị" data-mc-source>{{ chart_payload.source_label or "—" }}</span></h2>
@@ -90,6 +138,34 @@
       {% for notice in chart_payload.notices %}<li>{{ notice }}</li>{% endfor %}
     </ul>
   </section>
+
+  {% if overview %}
+  {#- CK-2: ma trận xu hướng đa khung — cấu trúc swing đã xác nhận, mức vô hiệu, vị trí trong biên. -#}
+  <section id="mc-mtf-matrix" class="glass-card mc-mtf" aria-labelledby="mc-mtf-title">
+    <header class="mc-mtf__head">
+      <h2 id="mc-mtf-title">Xu hướng đa khung</h2>
+      <span class="badge badge-neutral" title="Phiên bản công thức">{{ overview.formula_versions.mtf }}</span>
+    </header>
+    <div class="table-wrapper">
+      <table class="mc-mtf__table">
+        <thead><tr><th scope="col">Khung</th><th scope="col">Vai trò</th><th scope="col">Xu hướng</th><th scope="col">Vị trí trong biên</th><th scope="col">Phá vỡ gần nhất</th><th scope="col">Điều kiện giữ xu hướng</th></tr></thead>
+        <tbody data-ov-mtf-rows>
+          {% for cell in overview.mtf.cells %}
+          <tr class="mc-mtf__row mc-mtf__row--{{ cell.trend }}{% if cell.timeframe == cons.primary %} is-primary{% endif %}">
+            <th scope="row">{{ cell.timeframe | upper }}{% if cell.timeframe == cons.primary %} <span class="mc-mtf__primary">chính</span>{% endif %}</th>
+            <td>{{ cell.role }}</td>
+            <td><span class="mc-arrow mc-arrow--{{ cell.trend }}">{{ OV_ARROW[cell.trend] }}</span> {{ cell.label }}</td>
+            <td>{% if cell.position_pct is not none %}{{ cell.position_pct | round(0) | int }}% · {{ OV_ZONE[cell.zone] }}{% else %}—{% endif %}</td>
+            <td>{% if cell.last_break %}{{ cell.last_break.kind | upper }} {{ 'tăng' if cell.last_break.direction == 'bullish' else 'giảm' }} tại {{ ov_price(cell.last_break.level) }}{% else %}—{% endif %}</td>
+            <td>{{ cell.statement }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <p class="mc-mtf__note" data-ov-consensus-note>{{ cons.label }}. Xu hướng tính từ swing đã xác nhận (3 nến mỗi bên) trên nến đã đóng; không phải khuyến nghị đầu tư.</p>
+  </section>
+  {% endif %}
 
   {% set card = signal_view.card if signal_view else none %}
   {% set latest = signal_view.latest_decision if signal_view else none %}
@@ -156,6 +232,7 @@
     <ol class="mc-event-list" data-mc-events></ol>
   </section>
   <script id="market-chart-data" type="application/json">{{ chart_payload | tojson }}</script>
+  {% if overview %}<script id="market-overview-data" type="application/json">{{ overview | tojson }}</script>{% endif %}
   {% endif %}
 
   <p class="mc-attribution">Biểu đồ dùng <a href="https://www.tradingview.com/" rel="noopener noreferrer">TradingView Lightweight Charts™</a> — © TradingView, Inc. (<a href="/static/vendor/lightweight-charts-NOTICE.txt">NOTICE</a>, giấy phép Apache-2.0). Chỉ báo do Crypidian tự tính từ nến đã đóng trong kho nội bộ; không phải khuyến nghị đầu tư.</p>
@@ -167,5 +244,6 @@
 {% if chart_payload %}
   <script src="/static/vendor/lightweight-charts-5.2.1.standalone.production.js"></script>
   <script src="/static/market-chart.js" defer></script>
+  <script src="/static/market-overview.js" defer></script>
 {% endif %}
 {% endblock %}

@@ -1,6 +1,6 @@
 # WBS CK — Buồng lái biểu đồ (chart cockpit) theo hai app tham chiếu
 
-**Ngày:** 2026-11-15 · **Trạng thái:** CK-0 đã làm (15/11/2026, xem cuối mục CK-0); CK-1…CK-13 là kế hoạch · **Chế độ:** PAPER/replay; chỉ dữ liệu thị trường công khai; không route order, không bật SHADOW/PAPER_GATE/Demo/LIVE. <br>
+**Ngày:** 2026-11-15 · **Trạng thái:** CK-0 đã làm; CK-1 và CK-2 đã làm phần lõi (15/11/2026, xem cuối từng mục, còn mở ghi rõ); CK-3…CK-13 là kế hoạch · **Chế độ:** PAPER/replay; chỉ dữ liệu thị trường công khai; không route order, không bật SHADOW/PAPER_GATE/Demo/LIVE. <br>
 **Đầu vào:** hai ảnh owner gửi ngày 15/11/2026 — (1) "XAUUSD Research Desk 3.3.0" (MT5, ICT + VSA); (2) một app quét/auto crypto trên Bybit (WLFI/USDT, Green Flag, MA34×89). <br>
 **Xây trên:** [WBS SIG](./2026-11-15-sig-market-structure-scalping-chart-wbs.md) (đang ở nhánh `claude/project-progress-review-wp07-d70431`, **chưa vào `dev`**), [UI kit v1.1](../../design/admin-ui-kit.md), ingest live Binance (`docs/research/binance-usdm-api-audit-2026-11-14.md`), [khảo sát 14/11](./2026-11-14-feature-survey-and-manager-insights.md).
 
@@ -86,10 +86,10 @@ Ký hiệu: **D** = đã có trên `dev`; **S** = đã làm lát đầu trên nh
 | Collector nến + taker buy | S | `market_bar_collector.py` | CK-0 |
 | Nến live qua WebSocket `/market`, mark price, thanh lý, dòng lệnh taker | D | `market_stream.py`, `live_market_ingestion_worker.py` (phiên này) | CK-1 dùng lại |
 | REST bookTicker, premiumIndex (mark/index/funding kế tiếp), 24h ticker, long/short, basis, depth | D (wrapper) | `adapters/binance_usdm/market_data.py` | CK-1, CK-11 |
-| Bid/Ask trực tiếp (stream `@bookTicker`) | — | Stream nằm ở route `/public`; mới có REST | CK-1 |
-| Đếm ngược đóng nến, đếm ngược funding | — | Tính từ `open_time + interval`, `nextFundingTime` | CK-1 |
-| Điểm xu hướng đa khung + mức vô hiệu + vai trò khung | — | Cấu trúc swing có ở S; chưa có tổng hợp đa khung | CK-2 |
-| Vùng đắt/rẻ (premium/discount) | — | — | CK-2 |
+| Bid/Ask trực tiếp (stream `@bookTicker`) | S | `LiveQuoteWorker` route `/public` → bảng `market_live_quote` | CK-1 |
+| Đếm ngược đóng nến, đếm ngược funding | S | `domain/market/overview.py` `candle_clock`; `nextFundingTime` của mẫu mark | CK-1 |
+| Điểm xu hướng đa khung + mức vô hiệu + vai trò khung | S (vai trò cố định) | `timeframe_trend`, `mtf_consensus`; ma trận trên `/admin/chart` | CK-2 |
+| Vùng đắt/rẻ (premium/discount) | S | `position_pct`/`zone` từng khung | CK-2 |
 | Killzone ICT, Silver Bullet, macro | — | S chỉ có phiên Tokyo/London/NY | CK-3 |
 | FVG, IFVG, BPR, Order Block | — | grep 0 kết quả | CK-3 |
 | Đỉnh/đáy bằng nhau, ITH/ITL | — (backlog SIG-1) | — | CK-3 |
@@ -169,6 +169,13 @@ Ký hiệu: **D** = đã có trên `dev`; **S** = đã làm lát đầu trên nh
 
 **Acceptance:** số trên dải khớp dữ liệu nguồn trong fixture; thiếu stream thì hiện rõ nguồn dự phòng; đếm ngược đúng ở khung 1m/5m/1h/4h kể cả qua mốc ngày UTC.
 
+**Đã làm (15/11/2026, chưa commit):**
+- Stream `<symbol>@bookTicker` trên route `/public` (kiểm tài liệu Binance 15/11/2026); một kết nối chỉ một route. `LiveQuoteWorker` giữ giá mới nhất trong bộ nhớ, ghi mỗi 2 giây (`TRADING_BOT_INGESTION_LIVE_QUOTE_INTERVAL_SECONDS`, 0,5–60) và ghi nốt khi rớt kết nối; bật bằng `book_ticker` trong `TRADING_BOT_INGESTION_LIVE_EVENTS`. Readiness `live_market_quotes`.
+- Migration `a7c9e1b3d5f6`: bảng `market_live_quote` một dòng/(workspace, nguồn, instrument), upsert chỉ nhận `update_id` lớn hơn, RLS bắt buộc; ingestion SELECT/INSERT/UPDATE (không DELETE), admin-web/runtime/market-signal chỉ đọc; admin-web thêm quyền đọc `market_mark_price`.
+- `GET /admin/api/chart/overview` (no-store, polling 2 giây, kiểm `REPORT_READ` như chart, một snapshot đọc). Dải thông số: giá hiện tại + nguồn, bid/ask/spread (bps) + tuổi giá, đếm ngược nến, đồng thuận đa khung, phiên đang chạy, biên ngày UTC + PDH/PDL, mark + funding + đếm ngược. Chart vẽ đường Bid/Ask (lớp "Bid/Ask trực tiếp") và nhãn đếm ngược trên trục giá.
+- **Lệch so với kế hoạch:** API riêng `/api/chart/overview` thay vì khối `header` trong `/api/chart` (polling nhanh không kéo theo 600 nến). Không dùng REST `ticker/bookTicker` làm dự phòng: thiếu/cũ stream thì giá hiện tại lùi về mark (≤ 180 giây) rồi giá đóng nến, kèm nhãn nguồn và ghi chú. Đếm ngược chạy bằng đồng hồ trình duyệt giữa hai lần polling và đồng bộ lại theo `seconds_left` của máy chủ mỗi 2 giây.
+- **Còn mở:** % thay đổi so với giá mở nến hiện tại (đang so với giá đóng nến đã đóng gần nhất); stream chưa bật trên stack local `crypidian-review`.
+
 ### CK-2 — Ma trận xu hướng đa khung, mức vô hiệu và vùng đắt/rẻ
 
 1. Trạng thái xu hướng mỗi khung (H4/H1/M15/M5, cấu hình được): TĂNG/GIẢM/ĐI NGANG từ chuỗi swing HH/HL/LH/LL và BOS/CHoCH gần nhất của SIG-1, chỉ dùng nến khung lớn đã đóng.
@@ -180,6 +187,9 @@ Ký hiệu: **D** = đã có trên `dev`; **S** = đã làm lát đầu trên nh
 7. **Bộ lọc khung lớn** cho setup: ô chọn Chặn / Chỉ cảnh báo / Tắt. Cần quyết định owner vì overlay bot v1 cấm trường lạ (đổi lược đồ v2 hoặc để trong tham số chiến lược).
 
 **Acceptance:** golden dataset tay cho 3 kịch bản (đồng thuận, lệch, đi ngang); mức vô hiệu đổi đúng khi có swing mới; test "streaming = batch".
+
+**Đã làm (15/11/2026, chưa commit):** `timeframe_trend` (xu hướng theo BOS cuối của swing xác nhận 3 nến mỗi bên, tối thiểu 20 nến đã đóng; mức vô hiệu; biên = cặp swing gần nhất; vị trí %/vùng đắt-rẻ; phá vỡ gần nhất) và `mtf_consensus` (`ck2-mtf-v1`). Ma trận 4 vai trò trên `/admin/chart` (4H xu hướng chính, 1H xác nhận, 15M động lượng, 5M thời điểm) kèm câu "1H giữ TĂNG khi chưa đóng cửa dưới X"; khung thiếu nến ghi rõ, khung chính = khung đầu tiên có dữ liệu. Golden test tay: tăng, giảm (đối xứng), thiếu dữ liệu, đồng thuận 1/2.
+**Còn mở:** vai trò khung đang cố định (chưa khai báo theo setup); chưa có golden "đi ngang" và test "streaming = batch"; chip % thay đổi theo nến khung lớn (mục 6); bộ lọc khung lớn (mục 7) chờ owner quyết định lược đồ.
 
 ### CK-3 — Lớp ICT/SMC: killzone, FVG/IFVG/BPR, order block, đỉnh/đáy bằng nhau
 

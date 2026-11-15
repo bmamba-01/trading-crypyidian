@@ -10,7 +10,7 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -26,6 +26,7 @@ from trading_bot.adapters.database.models import (
     MarketFunding,
     MarketInstrument,
     MarketLiquidation,
+    MarketLiveQuote,
     MarketMarkPrice,
     MarketOpenInterest,
     MarketRawReference,
@@ -42,7 +43,11 @@ from trading_bot.domain.market.ingestion import (
     assess_ingestion_range,
 )
 from trading_bot.domain.market.models import MarketBarSourceIdentity, OHLCVBar
-from trading_bot.domain.market.stream_events import LiquidationEvent, MarkPriceEvent
+from trading_bot.domain.market.stream_events import (
+    BookTickerEvent,
+    LiquidationEvent,
+    MarkPriceEvent,
+)
 from trading_bot.domain.market.trade_flow import TradeFlowBucket
 
 
@@ -650,6 +655,47 @@ class MarketDataRepository:
             last_aggregate_id=bucket.last_aggregate_id,
             is_complete=bucket.is_complete,
         )
+
+    async def upsert_live_quote(
+        self,
+        *,
+        workspace_id: UUID,
+        instrument_id: UUID,
+        source: str,
+        event: BookTickerEvent,
+    ) -> bool:
+        """Ghi đè giá mua/bán hiện tại; bản có ``update_id`` không mới hơn bị bỏ qua.
+
+        Thứ tự tăng của ``update_id`` (order book update id của sàn) bảo đảm giá cũ đến muộn sau
+        khi nối lại kết nối không ghi đè giá mới hơn.
+        """
+        values = {
+            "workspace_id": workspace_id,
+            "source": source,
+            "instrument_id": instrument_id,
+            "symbol": event.symbol,
+            "update_id": event.update_id,
+            "bid_price": event.bid_price,
+            "bid_quantity": event.bid_quantity,
+            "ask_price": event.ask_price,
+            "ask_quantity": event.ask_quantity,
+            "event_at": event.event_at,
+            "received_at": event.received_at,
+        }
+        insert_statement = postgresql_insert(MarketLiveQuote).values(**values)
+        statement = insert_statement.on_conflict_do_update(
+            index_elements=["workspace_id", "source", "instrument_id"],
+            set_={
+                **{
+                    key: insert_statement.excluded[key]
+                    for key in values
+                    if key not in {"workspace_id", "source", "instrument_id"}
+                },
+                "updated_at": func.now(),
+            },
+            where=MarketLiveQuote.update_id < insert_statement.excluded.update_id,
+        ).returning(MarketLiveQuote.update_id)
+        return await self._session.scalar(statement) is not None
 
     async def _insert_event(self, model: Any, **values: Any) -> bool:
         if not str(values["idempotency_key"]).strip():

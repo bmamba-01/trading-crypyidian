@@ -18,7 +18,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from trading_bot.adapters.database.models import BotInstance
 from trading_bot.adapters.database.models.entities import PaperAccountSeed
-from trading_bot.adapters.database.models.market_entities import MarketBar
+from trading_bot.adapters.database.models.market_entities import (
+    MarketBar,
+    MarketInstrument,
+    MarketLiveQuote,
+    MarketMarkPrice,
+)
 from trading_bot.adapters.database.models.paper_entities import (
     FillRecord,
     OrderIntentRecord,
@@ -366,6 +371,61 @@ class BotReportRepository:
             .order_by(MarketBar.symbol, MarketBar.timeframe, MarketBar.source)
         )
         return [f"{symbol}|{timeframe}|{source}" for symbol, timeframe, source in rows.all()]
+
+    async def latest_live_quote(self, *, workspace_id: UUID, symbol: str) -> dict[str, Any] | None:
+        """Giá mua/bán tốt nhất mới nhất (CK-1) của symbol; ``None`` khi stream chưa ghi."""
+        row = (
+            await self._session.execute(
+                select(MarketLiveQuote)
+                .where(
+                    MarketLiveQuote.workspace_id == workspace_id, MarketLiveQuote.symbol == symbol
+                )
+                .order_by(MarketLiveQuote.event_at.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            return None
+        return {
+            "source": row.source,
+            "bid_price": row.bid_price,
+            "bid_quantity": row.bid_quantity,
+            "ask_price": row.ask_price,
+            "ask_quantity": row.ask_quantity,
+            "event_at": row.event_at,
+        }
+
+    async def latest_mark_price(
+        self, *, workspace_id: UUID, symbol: str, as_of: datetime
+    ) -> dict[str, Any] | None:
+        """Mẫu mark/index/funding mới nhất đã khả dụng tại ``as_of`` của symbol."""
+        row = (
+            await self._session.execute(
+                select(MarketMarkPrice)
+                .join(
+                    MarketInstrument,
+                    (MarketInstrument.workspace_id == MarketMarkPrice.workspace_id)
+                    & (MarketInstrument.id == MarketMarkPrice.instrument_id),
+                )
+                .where(
+                    MarketMarkPrice.workspace_id == workspace_id,
+                    MarketInstrument.symbol == symbol,
+                    MarketMarkPrice.available_at <= as_of,
+                )
+                .order_by(MarketMarkPrice.event_at.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            return None
+        return {
+            "source": row.source,
+            "mark_price": row.mark_price,
+            "index_price": row.index_price,
+            "funding_rate": row.funding_rate,
+            "next_funding_time": row.next_funding_time,
+            "event_at": row.event_at,
+        }
 
     async def load_recent_bars(
         self,

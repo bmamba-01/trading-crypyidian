@@ -550,9 +550,54 @@
     }
   };
 
+  // CK-1: đường bid/ask trực tiếp và giá hiện tại kèm đếm ngược đóng nến (market-overview.js
+  // phát sự kiện). Chỉ vẽ khi giá còn mới; giá cũ/thiếu thì không vẽ để tránh hiểu nhầm.
+  let quoteLines = [];
+  let liveLine = null;
+  let liveOverview = null;
+  let clockText = "";
+  const drawQuote = () => {
+    for (const line of quoteLines) candles.removePriceLine(line);
+    quoteLines = [];
+    if (liveLine) candles.removePriceLine(liveLine);
+    liveLine = null;
+    const o = liveOverview;
+    if (!o || !layerOn("quote")) return;
+    const c = palette();
+    if (o.quote && !o.quote.stale) {
+      for (const [value, color, title] of [
+        [o.quote.bid, c.up, "Bid"],
+        [o.quote.ask, c.down, "Ask"],
+      ]) {
+        quoteLines.push(
+          candles.createPriceLine({ price: value, color, title, lineWidth: 1, lineStyle: 1, axisLabelVisible: true })
+        );
+      }
+    }
+    if (o.candle && o.candle.price !== null && o.candle.price_source !== "last_close") {
+      liveLine = candles.createPriceLine({
+        price: o.candle.price,
+        color: c.flat,
+        title: clockText,
+        lineWidth: 1,
+        lineStyle: 3,
+        axisLabelVisible: true,
+      });
+    }
+  };
+  document.addEventListener("mc:overview", (event) => {
+    liveOverview = event.detail;
+    drawQuote();
+  });
+  document.addEventListener("mc:clock", (event) => {
+    clockText = event.detail.text || "";
+    if (liveLine) liveLine.applyOptions({ title: clockText });
+  });
+
   const applyLayers = () => {
     const p = payload;
     drawSignal(p);
+    drawQuote();
     ema20.applyOptions({ visible: layerOn("ema") });
     ema50.applyOptions({ visible: layerOn("ema") });
     vwap.applyOptions({ visible: layerOn("vwap") });
