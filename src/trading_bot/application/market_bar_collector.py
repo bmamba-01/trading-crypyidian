@@ -193,12 +193,21 @@ class MarketBarCollector:
     def streams(self) -> tuple[CollectorStream, ...]:
         return self._streams
 
-    async def collect_once(self, now: datetime) -> CollectorTick:
-        """Một lượt thu cho mọi luồng; lỗi một luồng không chặn luồng khác."""
+    async def collect_once(
+        self, now: datetime, *, clock: Callable[[], datetime] | None = None
+    ) -> CollectorTick:
+        """Một lượt thu cho mọi luồng; lỗi một luồng không chặn luồng khác.
+
+        ``clock`` (nếu có) cấp mốc thời gian **riêng cho từng luồng**. Với nhiều luồng nạp bù
+        (ví dụ 20 coin × 3 khung), luồng xử lý sau nhận trang muộn hơn đầu tick quá
+        ``PAGE_RECEIPT_ALLOWANCE`` và bị chặn "thời điểm nhận trong tương lai" nếu dùng chung
+        một ``now`` (sự cố 15/11/2026: 34/60 luồng lỗi).
+        """
         results: list[StreamResult] = []
         for stream in self._streams:
+            stream_now = clock() if clock is not None else now
             try:
-                results.append(await self._collect_stream(stream, now))
+                results.append(await self._collect_stream(stream, stream_now))
             except PermissionError as error:
                 # Thiếu/hết hạn quyền: không tải. Không log chi tiết policy.
                 results.append(

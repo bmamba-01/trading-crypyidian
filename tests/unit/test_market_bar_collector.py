@@ -324,3 +324,45 @@ def test_page_received_after_tick_start_is_accepted() -> None:
 
     tick = asyncio.run(_collector(LateReceipt(), FakeMarket(), AllowGate()).collect_once(NOW))
     assert tick.results[0].status == "collected"
+
+
+def test_each_stream_uses_fresh_clock_when_tick_is_slow() -> None:
+    """Sự cố 15/11: luồng sau nhận trang > 60 giây sau đầu tick; clock theo luồng phải chấp nhận."""
+
+    class SlowReceipt(FakeBinance):
+        """Mỗi lượt gọi API mất 40 giây; độ trễ cộng dồn qua các luồng của cùng tick."""
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.elapsed = timedelta(0)
+
+        def clock(self) -> datetime:
+            return NOW + self.elapsed
+
+        async def get_klines(self, **kwargs: Any) -> MarketDataPage[OHLCVBar]:
+            page = await super().get_klines(**kwargs)
+            self.elapsed += timedelta(seconds=40)
+            received = NOW + self.elapsed
+            return MarketDataPage(
+                records=page.records,
+                raw_payload=page.raw_payload,
+                checksum=page.checksum,
+                received_at=received,
+                available_at=received,
+                is_complete=page.is_complete,
+            )
+
+    streams = "BTCUSDT:1m,5m"
+    slow = SlowReceipt()
+    shared = asyncio.run(
+        _collector(slow, FakeMarket(), AllowGate(), streams=streams).collect_once(NOW)
+    )
+    # Một `now` cho cả tick: luồng thứ hai nhận trang 80 giây sau đầu tick (> 60 giây) bị chặn.
+    assert [result.status for result in shared.results] == ["collected", "error"]
+    slow = SlowReceipt()
+    fresh = asyncio.run(
+        _collector(slow, FakeMarket(), AllowGate(), streams=streams).collect_once(
+            NOW, clock=slow.clock
+        )
+    )
+    assert [result.status for result in fresh.results] == ["collected"] * 2

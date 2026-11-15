@@ -4222,3 +4222,18 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
   - Câu "mất hiệu lực" từ `build_signal_card` vẫn in giá dạng máy (`96619.3`).
   - Chưa xem thẻ trên app Telegram thật (ảnh photo bị Telegram nén; kiểm độ nét chữ 19–22 px trên điện thoại).
   - Nguồn dữ liệu cho thẻ tổng kết (win rate, max drawdown theo cửa sổ) chưa có read-model; view chỉ nhận số đã tính.
+
+### 2026-11-15 — Áp đợt thử 10 bot lên stack local; sửa collector lỗi 34/60 luồng
+
+- **Áp dụng:**
+  - `uv run python scripts/seed_signal_test_bots.py apply` tạo root settings v2 (20 coin, 15m/1h/4h), release `h03-v3-*`/`h01-v1`, 10 bot T01–T10 (seed 10.000, config đã publish, subscription Telegram, genesis) và tắt 2 bot cũ (`171b2071…`, `1a7e8df6…`).
+  - Runtime READY **10/10**.
+- **Lỗi khi áp:**
+  - (1) Mã exec từ stdin không có `__file__` → `ROOT` dùng `globals().get`.
+  - (2) Container migrator không đặt `TRADING_BOT_APP_ENV` → chỉ chặn khi biến có giá trị khác local/test (vẫn bắt buộc workspace PAPER).
+- **Lỗi collector:** `degraded`, 34/60 luồng `RestBackfillError`, đúng các coin xếp sau theo thứ tự chữ cái.
+  - Nguyên nhân: `collect_once(now)` dùng **một** mốc cho cả tick. Nạp bù 60 luồng × 1.000 nến tuần tự nên trang của luồng sau có `received_at` > `now + PAGE_RECEIPT_ALLOWANCE` (60 giây), bị chặn "Trang REST có thời điểm nhận trong tương lai".
+  - Sửa: `collect_once(now, clock=...)` lấy mốc riêng từng luồng; worker truyền `clock`.
+  - Test `test_each_stream_uses_fresh_clock_when_tick_is_slow` mô phỏng mỗi request 40 giây: dùng chung `now` → luồng 2 lỗi; dùng clock → đều thu được.
+- **Kết quả sau sửa:** collector ok 60/60, 0 lỗi; mỗi coin ~1.000 nến 15m/1h, ≥985 nến 4h.
+- **Kiểm chứng:** unit **4394 passed/132.00s**.

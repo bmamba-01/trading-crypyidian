@@ -32,7 +32,8 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-ROOT = Path(__file__).resolve().parents[1]
+# Trong container, mã được exec từ stdin nên không có `__file__`.
+ROOT = Path(globals().get("__file__", "/app/x/x")).resolve().parents[1]
 BINANCE_FAPI = "https://fapi.binance.com"
 DEFAULT_WORKSPACE = "c486b52b-912a-446f-aeed-99685c06cad6"
 TIMEFRAMES = ("15m", "1h", "4h")
@@ -238,7 +239,8 @@ def _container_apply(state: dict[str, Any]) -> dict[str, Any]:
     from trading_bot.config.bot_settings import BotConfigOverlay, canonical_overlay, overlay_hash
     from trading_bot.config.workspace_settings import WorkspaceSettings
 
-    if os.environ.get("TRADING_BOT_APP_ENV") not in {"local", "test"}:
+    # Container migrator không đặt APP_ENV; chặn khi được đặt khác local/test (staging/prod).
+    if os.environ.get("TRADING_BOT_APP_ENV", "local") not in {"local", "test"}:
         raise SystemExit("Chỉ chạy ở môi trường local/test.")
     workspace = UUID(state["workspace_id"])
     plan = state["plan"]
