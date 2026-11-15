@@ -12,6 +12,10 @@ Dữ liệu chỉ có nguồn `BINANCE_USDM_REST_BACKFILL` (như collector SIG-0
 - `mark_check` (trading-runtime): vốn account có vị thế mở phải `known` chỉ với mark REST.
 - `add_stop_bar` (migrator): nến 1m chạm stop.
 - `verify` (migrator): đối soát ledger.
+- `tg_seed` (migrator): binding Telegram đã xác minh + subscription bật cho bot (TG-3).
+- `tg_results` (telegram-signal-worker): worker kết quả PAPER thật dưới role signal-worker gửi
+  qua sender ghi nhớ; chạy lại và khởi động lại không gửi trùng; kiểm quyền cột/RLS.
+- `tg_verify` (migrator): trạng thái delivery ledger TG-3.
 """
 
 import asyncio
@@ -47,6 +51,9 @@ ROOT_SETTINGS = _id("root-settings")
 RISK_PROFILE = _id("risk-profile")
 BOT_CONFIG = _id("bot-config")
 INSTRUMENT = _id("instrument")
+TELEGRAM_BINDING = _id("telegram-binding")
+TELEGRAM_SUBSCRIPTION = _id("telegram-subscription")
+TELEGRAM_CHAT = 777000111
 
 
 def _password() -> str:
@@ -783,6 +790,145 @@ def verify() -> dict[str, Any]:
     }
 
 
+def tg_seed() -> dict[str, Any]:
+    """TG-3: chủ workspace liên kết Telegram và bật nhận tin cho bot RT1 (lọc BTCUSDT)."""
+    bot_id = UUID(STATE["bot_id"])
+    with _connect() as connection, connection.transaction():
+        _insert(
+            connection,
+            "telegram_binding",
+            id=TELEGRAM_BINDING,
+            workspace_id=WORKSPACE,
+            membership_id=MEMBERSHIP,
+            telegram_user_id=str(TELEGRAM_CHAT),
+            verified_at=datetime.now(UTC),
+            revoked_at=None,
+        )
+        _insert(
+            connection,
+            "telegram_signal_subscription",
+            id=TELEGRAM_SUBSCRIPTION,
+            workspace_id=WORKSPACE,
+            membership_id=MEMBERSHIP,
+            bot_id=bot_id,
+            telegram_binding_id=TELEGRAM_BINDING,
+            telegram_chat_id=TELEGRAM_CHAT,
+            enabled=True,
+            symbols=Jsonb(["BTCUSDT"]),
+        )
+    return {"tg_seeded": True}
+
+
+async def tg_results() -> dict[str, Any]:
+    """TG-3: worker kết quả PAPER thật dưới role signal-worker, gửi tới sender ghi nhớ."""
+    from trading_bot.adapters.telegram.recording_sender import RecordingTelegramSender
+    from trading_bot.workers.telegram_trade_result_worker import TelegramTradeResultWorker
+
+    engine, sessions = _sessions()
+
+    def worker(name: str, sender: Any) -> Any:
+        return TelegramTradeResultWorker(
+            session_factory=sessions,
+            workspace_id=WORKSPACE,
+            sender=sender,
+            worker_id=name,
+            max_event_age=timedelta(minutes=60),
+            report_interval=timedelta(hours=4),
+        )
+
+    try:
+        first_sender = RecordingTelegramSender()
+        first = worker("rt1-tg3-a", first_sender)
+        sent_first = await first.tick()
+        sent_again = await first.tick()
+        restart_sender = RecordingTelegramSender()
+        sent_restart = await worker("rt1-tg3-b", restart_sender).tick()
+    finally:
+        await engine.dispose()
+    texts = [text for _, text in first_sender.messages]
+    closes = [text for text in texts if "Đóng lệnh PAPER" in text]
+    opens = [text for text in texts if "Mở vị thế PAPER" in text]
+    summaries = [text for text in texts if text.startswith("TỔNG HỢP KẾT QUẢ PAPER")]
+    close_text = closes[0] if len(closes) == 1 else ""
+    bot_id = UUID(STATE["bot_id"])
+    with _connect() as connection:
+
+        def scalar(query: str, params: tuple[Any, ...] = ()) -> Any:
+            row = connection.execute(query, params).fetchone()
+            assert row is not None
+            return row[0]
+
+        privileges = {
+            "trade_table_select": scalar(
+                "SELECT has_table_privilege(current_user, 'trade', 'SELECT')"
+            ),
+            "trade_net_pnl_select": scalar(
+                "SELECT has_column_privilege(current_user, 'trade', 'net_pnl', 'SELECT')"
+            ),
+            "trade_lineage_select": scalar(
+                "SELECT has_column_privilege(current_user, 'trade', 'lineage', 'SELECT')"
+            ),
+            "trade_any_update": scalar(
+                "SELECT has_any_column_privilege(current_user, 'trade', 'UPDATE')"
+            ),
+            "fill_any_insert": scalar(
+                "SELECT has_any_column_privilege(current_user, 'fill', 'INSERT')"
+            ),
+            "order_intent_any_select": scalar(
+                "SELECT has_any_column_privilege(current_user, 'order_intent', 'SELECT')"
+            ),
+        }
+        connection.execute(
+            "SELECT set_config('app.workspace_id', %s, false), set_config('app.bot_id', %s, false)",
+            (str(WORKSPACE), str(bot_id)),
+        )
+        visible_own = scalar("SELECT count(id) FROM trade WHERE workspace_id=%s", (WORKSPACE,))
+        connection.execute("SELECT set_config('app.bot_id', %s, false)", (str(uuid4()),))
+        visible_other = scalar("SELECT count(id) FROM trade WHERE workspace_id=%s", (WORKSPACE,))
+        try:
+            connection.execute("SELECT lineage FROM trade LIMIT 1")
+            lineage_denied = False
+        except psycopg.errors.InsufficientPrivilege:
+            lineage_denied = True
+    return {
+        "sent": [sent_first, sent_again, sent_restart],
+        "recipients": sorted({chat for chat, _ in first_sender.messages}),
+        "restart_messages": len(restart_sender.messages),
+        "opens": len(opens),
+        "closes": len(closes),
+        "summaries": len(summaries),
+        "close_header": close_text.splitlines()[0] if close_text else None,
+        "close_reason": "Lý do thoát: Chạm dừng lỗ (SL) (STOP_LOSS)" in close_text,
+        "close_loss_pnl": "PnL ròng (sau phí): -" in close_text,
+        "close_r_negative": "Bội số R: -" in close_text,
+        "summary_lists_bot": bool(summaries) and "1. " in summaries[0],
+        "max_length": max((len(text) for text in texts), default=0),
+        "privileges": privileges,
+        "rls": {"own_bot": int(visible_own), "other_bot": int(visible_other)},
+        "lineage_denied": lineage_denied,
+    }
+
+
+def tg_verify() -> dict[str, Any]:
+    with _connect() as connection:
+        notifications = connection.execute(
+            "SELECT kind, status, attempts, telegram_chat_id = %s FROM telegram_trade_notification "
+            "JOIN telegram_signal_subscription s ON s.workspace_id = "
+            "telegram_trade_notification.workspace_id AND s.id = subscription_id "
+            "WHERE telegram_trade_notification.workspace_id=%s ORDER BY kind",
+            (TELEGRAM_CHAT, WORKSPACE),
+        ).fetchall()
+        reports = connection.execute(
+            "SELECT status, attempts, telegram_chat_id, window_end - window_start "
+            "FROM telegram_paper_report_delivery WHERE workspace_id=%s",
+            (WORKSPACE,),
+        ).fetchall()
+    return {
+        "notifications": [list(row) for row in notifications],
+        "reports": [[row[0], row[1], row[2] == TELEGRAM_CHAT, str(row[3])] for row in reports],
+    }
+
+
 phase = os.environ["RT1_PHASE"]
 if phase == "seed":
     output = seed()
@@ -804,6 +950,12 @@ elif phase == "add_stop_bar":
     output = add_stop_bar()
 elif phase == "verify":
     output = verify()
+elif phase == "tg_seed":
+    output = tg_seed()
+elif phase == "tg_results":
+    output = asyncio.run(tg_results())
+elif phase == "tg_verify":
+    output = tg_verify()
 else:
     raise AssertionError(phase)
 print(json.dumps(output, default=str))

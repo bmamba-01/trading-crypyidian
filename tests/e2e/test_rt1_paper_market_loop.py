@@ -37,6 +37,9 @@ SERVICES = {
     "verify": "migrator",
     "breaker": "trading-runtime",
     "pause_resume": "migrator",
+    "tg_seed": "migrator",
+    "tg_results": "telegram-signal-worker",
+    "tg_verify": "migrator",
 }
 
 
@@ -64,6 +67,8 @@ def test_rest_candles_drive_paper_entry_fill_and_stop_exit_idempotently() -> Non
         "paper",
         "--profile",
         "signal-producer",
+        "--profile",
+        "signal",
         "--project-name",
         project,
         "-f",
@@ -114,7 +119,7 @@ def test_rest_candles_drive_paper_entry_fill_and_stop_exit_idempotently() -> Non
         compose("run", "--rm", "--no-deps", "db-provisioner")
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "head")
         heads = compose("run", "--rm", "--no-deps", "migrator", "alembic", "heads")
-        assert "c3e5a7b9d1f4 (head)" in heads.stdout
+        assert "d5f7b9c1e3a6 (head)" in heads.stdout
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "check")
         state.update(run("seed"))
         assert run("genesis") == {"genesis": True}
@@ -167,6 +172,35 @@ def test_rest_candles_drive_paper_entry_fill_and_stop_exit_idempotently() -> Non
         rerun = run("runtime")
         assert rerun["ledger"] == closed["ledger"]
         assert run("verify") == final
+
+        # TG-3: trade PAPER đã đóng → đúng một tin kết quả (và một tin mở, một tin tổng hợp) tới
+        # sender ghi nhớ, dưới role signal-worker thật; chạy lại/khởi động lại không gửi trùng.
+        assert run("tg_seed") == {"tg_seeded": True}
+        results = run("tg_results")
+        assert results["sent"] == [3, 0, 0], results
+        assert results["restart_messages"] == 0, results
+        assert results["recipients"] == [777000111], results
+        assert (results["opens"], results["closes"], results["summaries"]) == (1, 1, 1), results
+        assert results["close_header"] == "KẾT QUẢ PAPER — KHÔNG PHẢI LỆNH THẬT", results
+        assert results["close_reason"] is True, results
+        assert results["close_loss_pnl"] is True, results
+        assert results["close_r_negative"] is True, results
+        assert results["summary_lists_bot"] is True, results
+        assert 0 < results["max_length"] <= 4096, results
+        assert results["privileges"] == {
+            "trade_table_select": False,
+            "trade_net_pnl_select": True,
+            "trade_lineage_select": False,
+            "trade_any_update": False,
+            "fill_any_insert": False,
+            "order_intent_any_select": False,
+        }, results
+        assert results["rls"] == {"own_bot": 1, "other_bot": 0}, results
+        assert results["lineage_denied"] is True, results
+        assert run("tg_verify") == {
+            "notifications": [["CLOSED", "SENT", 1, True], ["OPENED", "SENT", 1, True]],
+            "reports": [["SENT", 1, True, "4:00:00"]],
+        }
 
         # FX-2: ngắt mạch drawdown đo bằng role runtime trên ledger thật.
         before = run("breaker")

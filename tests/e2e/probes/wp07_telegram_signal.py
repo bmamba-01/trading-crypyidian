@@ -212,6 +212,48 @@ with psycopg.connect(
                     "SELECT has_table_privilege(current_user, %s, %s)",
                     (table, privilege),
                 ), (table, privilege)
+        # TG-3 (migration d5f7b9c1e3a6): chỉ SELECT theo cột ledger PAPER cần cho tin kết quả,
+        # ghi delivery ledger riêng; không có quyền mức bảng hay quyền ghi ledger nào.
+        for table, column in (
+            ("trade", "net_pnl"),
+            ("fill", "price"),
+            ("position_event", "payload"),
+            ("risk_reservation", "reserved_risk"),
+            ("bot_instance", "name"),
+            ("telegram_trade_notification", "status"),
+        ):
+            assert _scalar(
+                connection,
+                "SELECT has_column_privilege(current_user, %s, %s, 'SELECT')",
+                (table, column),
+            ), (table, column)
+        for table, column in (
+            ("trade", "lineage"),
+            ("trade", "gross_pnl"),
+            ("fill", "lineage"),
+            ("risk_reservation", "reserved_notional"),
+        ):
+            assert not _scalar(
+                connection,
+                "SELECT has_column_privilege(current_user, %s, %s, 'SELECT')",
+                (table, column),
+            ), (table, column)
+        for table in ("trade", "fill", "position_event", "risk_reservation", "bot_instance"):
+            for privilege in ("INSERT", "UPDATE"):
+                assert not _scalar(
+                    connection,
+                    "SELECT has_any_column_privilege(current_user, %s, %s)",
+                    (table, privilege),
+                ), (table, privilege)
+        for table in ("telegram_trade_notification", "telegram_paper_report_delivery"):
+            assert _scalar(
+                connection,
+                "SELECT has_column_privilege(current_user, %s, 'status', 'UPDATE')",
+                (table,),
+            ), table
+            assert not _scalar(
+                connection, "SELECT has_table_privilege(current_user, %s, 'DELETE')", (table,)
+            ), table
         result = {"signal_scope_grants": True, "order_privileges": False}
     else:
         raise AssertionError(phase)

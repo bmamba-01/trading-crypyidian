@@ -116,6 +116,7 @@ from trading_bot.application.source_policy_admin import (
 )
 from trading_bot.application.strategy_catalog import strategy_registry
 from trading_bot.application.telegram_binding import TelegramBindingService
+from trading_bot.application.telegram_paper_report import TelegramPaperReportService
 from trading_bot.application.telegram_signal_subscription import TelegramSignalSubscriptionService
 from trading_bot.application.telegram_signals import SignalThrottlePolicy
 from trading_bot.auth.router import router as auth_router
@@ -136,6 +137,10 @@ from trading_bot.workers.learning_training_worker import LearningTrainingAttempt
 from trading_bot.workers.market_signal_producer import MarketSignalProducerWorker
 from trading_bot.workers.research_rights_worker import ResearchRightsMaintenanceWorker
 from trading_bot.workers.telegram_signal_worker import TelegramSignalDeliveryWorker
+from trading_bot.workers.telegram_trade_result_worker import (
+    ChatPacer,
+    TelegramTradeResultWorker,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -369,6 +374,7 @@ def create_app(
         rights_worker_task: asyncio.Task[None] | None = None
         market_collector_task: asyncio.Task[None] | None = None
         signal_worker_task: asyncio.Task[None] | None = None
+        trade_result_worker_task: asyncio.Task[None] | None = None
         market_signal_worker_task: asyncio.Task[None] | None = None
         training_supervisor_task: asyncio.Task[None] | None = None
         if app_settings.process_role == "trading-runtime":
@@ -433,6 +439,11 @@ def create_app(
             if workspace_id is None:
                 raise RuntimeError("signal-worker cần signal_workspace_id.")
             worker_factory = signal_worker_factory or TelegramSignalDeliveryWorker
+            # TG-3: một pacer cho cả tin tín hiệu và kết quả PAPER để mỗi chat cách ≥ 1,1 giây.
+            chat_pacer = ChatPacer()
+            pacer_kwargs: dict[str, Any] = (
+                {"pacer": chat_pacer} if signal_worker_factory is None else {}
+            )
             signal_worker = worker_factory(
                 session_factory=active_session_factory,
                 workspace_id=workspace_id,
@@ -447,12 +458,36 @@ def create_app(
                     cooldown=timedelta(minutes=app_settings.signal_worker_cooldown_minutes),
                     max_per_hour=app_settings.signal_worker_max_messages_per_hour,
                 ),
+                **pacer_kwargs,
             )
             application.state.telegram_signal_worker = signal_worker
             signal_worker_task = asyncio.create_task(
                 signal_worker.run(stopping), name="telegram-signal-delivery-worker"
             )
             application.state.telegram_signal_worker_task = signal_worker_task
+            report_minutes = app_settings.telegram_report_interval_minutes
+            if app_settings.telegram_trade_results_enabled or report_minutes > 0:
+                trade_result_worker = TelegramTradeResultWorker(
+                    session_factory=active_session_factory,
+                    workspace_id=workspace_id,
+                    sender=telegram_sender,
+                    worker_id=f"telegram-trade-result-{uuid4().hex}",
+                    tick_seconds=app_settings.signal_worker_tick_seconds,
+                    trade_results_enabled=app_settings.telegram_trade_results_enabled,
+                    max_event_age=timedelta(
+                        minutes=app_settings.telegram_trade_result_max_age_minutes
+                    ),
+                    report_interval=(
+                        timedelta(minutes=report_minutes) if report_minutes > 0 else None
+                    ),
+                    max_attempts=app_settings.signal_worker_max_attempts,
+                    pacer=chat_pacer,
+                )
+                application.state.telegram_trade_result_worker = trade_result_worker
+                trade_result_worker_task = asyncio.create_task(
+                    trade_result_worker.run(stopping), name="telegram-trade-result-worker"
+                )
+                application.state.telegram_trade_result_worker_task = trade_result_worker_task
         elif app_settings.process_role == "market-signal-worker":
             if active_session_factory is None:
                 raise RuntimeError("market-signal-worker cần database session factory.")
@@ -509,6 +544,9 @@ def create_app(
             if signal_worker_task is not None:
                 with contextlib.suppress(asyncio.CancelledError, TimeoutError):
                     await asyncio.wait_for(signal_worker_task, timeout=10)
+            if trade_result_worker_task is not None:
+                with contextlib.suppress(asyncio.CancelledError, TimeoutError):
+                    await asyncio.wait_for(trade_result_worker_task, timeout=10)
             if market_signal_worker_task is not None:
                 with contextlib.suppress(asyncio.CancelledError, TimeoutError):
                     await asyncio.wait_for(market_signal_worker_task, timeout=10)
@@ -651,6 +689,15 @@ def create_app(
                 or worker_task.done()
             ):
                 pending.append("telegram_signal_worker")
+            trade_worker = getattr(app.state, "telegram_trade_result_worker", None)
+            if trade_worker is not None:
+                trade_task = getattr(app.state, "telegram_trade_result_worker_task", None)
+                if (
+                    not getattr(trade_worker, "last_tick_succeeded", False)
+                    or trade_task is None
+                    or trade_task.done()
+                ):
+                    pending.append("telegram_trade_result_worker")
             if pending:
                 return JSONResponse(
                     status_code=503,
@@ -782,8 +829,24 @@ def _build_telegram_webhook(
         workspace_id=settings.telegram_workspace_id,
         secret=load_webhook_secret(settings.telegram_webhook_secret_file),
         store=DatabaseTelegramStore(sessions),
-        handler=BotCommandHandler(state.bot_operations_service),
+        handler=BotCommandHandler(
+            state.bot_operations_service,
+            paper_report=_build_paper_report(settings, state),
+        ),
         sender=state.telegram_sender,
+    )
+
+
+def _build_paper_report(settings: AppSettings, state: Any) -> TelegramPaperReportService | None:
+    """TG-3: `/report` dùng BotReportingService (kiểm `bot:report:read`) cùng chu kỳ tổng hợp."""
+    reporting = getattr(state, "bot_reporting_service", None)
+    if reporting is None:
+        return None
+    minutes = settings.telegram_report_interval_minutes or 240
+    return TelegramPaperReportService(
+        reporting=reporting,
+        operations=state.bot_operations_service,
+        interval=timedelta(minutes=minutes),
     )
 
 
