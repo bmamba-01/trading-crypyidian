@@ -1118,6 +1118,10 @@ class FakeRepository:
         )
         return [{"time": 1, "open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0, "volume": 1.0}]
 
+    async def latest_bot_decisions(self, **kwargs: Any) -> list[dict[str, Any]]:
+        STORE.calls.append(f"decisions:{kwargs['bot_id']}")
+        return []
+
     async def latest_live_quote(self, **kwargs: Any) -> dict[str, Any] | None:
         STORE.calls.append(f"market_quote:{kwargs['symbol']}")
         return None
@@ -1322,6 +1326,17 @@ async def test_market_overview_requires_report_read_and_reads_one_snapshot(
     assert overview["candle"]["price_source"] == "last_close"
     with pytest.raises(BotReportError):
         await reporting.get_market_overview(actor, bot_id=bot_id, symbol="BTCUSDT", timeframe="2h")
+
+
+@pytest.mark.asyncio
+async def test_setup_board_skips_bots_without_report_read() -> None:
+    board = await service().get_setup_board(
+        ANALYST, bots=[(BOT_A, "Bot A"), (BOT_B, "Bot B"), (uuid4(), "Không tồn tại")], bonus=[]
+    )
+    # Analyst chỉ có bot:report:read trên A → chỉ A xuất hiện, B và bot lạ bị bỏ lặng lẽ.
+    assert [item["bot_name"] for item in board] == ["Bot A"]
+    assert board[0]["status"] == "no_data"
+    assert [c for c in STORE.calls if c.startswith("decisions:")] == [f"decisions:{BOT_A}"]
 
 
 @pytest.mark.asyncio

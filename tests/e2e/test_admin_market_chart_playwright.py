@@ -37,6 +37,7 @@ from trading_bot.application.market_overview import build_market_overview
 from trading_bot.auth.policy import Principal
 from trading_bot.auth.security import LoginRateLimiter
 from trading_bot.config.settings import AppSettings
+from trading_bot.domain.strategy.setup_progress import setup_progress
 
 SCREENSHOTS_DIR = Path(__file__).resolve().parent / "evidence" / "admin-playwright"
 SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -152,6 +153,7 @@ class _Reporting:
         self.bars = _bars()
         self.calls = 0
         self.overview_calls = 0
+        self.setup_calls: list[dict[str, Any]] = []
 
     async def list_market_series(self, principal: Principal, *, bot_id: UUID) -> dict:
         return {"BTCUSDT": ["5m"], "ETHUSDT": ["1h"]}
@@ -162,6 +164,66 @@ class _Reporting:
     async def get_market_bars(self, principal: Principal, **kwargs: Any) -> list[dict]:
         self.calls += 1
         return self.bars if kwargs["symbol"] == "BTCUSDT" else []
+
+    async def get_setup_board(self, principal: Principal, **kwargs: Any) -> list[dict]:
+        """Bảng Entry giả: một setup H01 chưa đủ (thiếu ADX) cho bot đầu tiên."""
+        self.setup_calls.append(kwargs)
+        now = datetime(2026, 11, 16, 10, 0, tzinfo=UTC)
+        decisions = [
+            {
+                "evaluated_at": (now - timedelta(hours=hours)).isoformat(),
+                "status": "ABSTAIN",
+                "reason_code": "H01_ADX_BELOW_20",
+                "detail_vi": "ADX14 1h phải đạt tối thiểu 20.",
+                "checklist": [
+                    {
+                        "key": "ema_cross",
+                        "label_vi": "EMA20 vừa cắt EMA80 (1h)",
+                        "actual": "cắt",
+                        "operator": "cắt",
+                        "threshold": "đổi phía",
+                        "passed": True,
+                    },
+                    {
+                        "key": "htf_trend",
+                        "label_vi": "Giá đóng 4h cùng phía EMA200",
+                        "actual": "trên",
+                        "operator": "cùng phía",
+                        "threshold": "EMA200",
+                        "passed": True,
+                    },
+                    {
+                        "key": "adx",
+                        "label_vi": "ADX14 1h đủ mạnh",
+                        "actual": "12",
+                        "operator": ">=",
+                        "threshold": "20",
+                        "passed": False,
+                    },
+                ],
+                "candidate": None,
+            }
+            for hours in (0, 1)
+        ]
+        bots = kwargs["bots"]
+        return (
+            [
+                {
+                    "bot_id": str(bots[0][0]),
+                    "bot_name": bots[0][1],
+                    "card": dict(SIGNAL_VIEW["card"], stop=105.5),
+                    "unverified_decisions": 0,
+                }
+                | setup_progress(
+                    strategy_release_id="h01-v1",
+                    decisions=decisions,
+                    bonus=kwargs["bonus"],
+                    now=now,
+                )
+            ]
+            if bots
+            else []
+        )
 
     async def get_market_overview(self, principal: Principal, **kwargs: Any) -> dict:
         """Giá bid nhích 0,01 mỗi lần gọi để kiểm polling cập nhật dải thông số."""
@@ -339,6 +401,19 @@ def test_market_chart_renders_overlays_polls_and_is_responsive(server_url: str) 
             path=str(SCREENSHOTS_DIR / "ck5-zigzag-vsa-desktop.png")
         )
         page.locator('[data-layer="vsa"]').uncheck()
+
+        # CK-6: bảng Entry — tiến độ k/n, còn thiếu, ghim kịch bản lên chart.
+        board = page.locator("#mc-entry-board")
+        expect(board).to_contain_text("Bắt buộc 2/3")
+        expect(board).to_contain_text("Còn thiếu: ADX14 1h đủ mạnh")
+        expect(board.locator("[data-setup-status]").first).to_have_attribute(
+            "data-setup-status", "not_ready"
+        )
+        pin = page.locator("[data-setup-pin]")
+        expect(pin.locator("option")).to_have_count(2)
+        pin.select_option("0")
+        board.screenshot(path=str(SCREENSHOTS_DIR / "ck6-entry-board-desktop.png"))
+        pin.select_option("")
 
         # Thẻ tín hiệu SIG-3: hướng, SL, checklist và quyết định không vào lệnh gần nhất.
         signal = page.locator("[data-signal-card]")

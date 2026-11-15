@@ -147,6 +147,50 @@ def build_latest_signal_view(
     }
 
 
+def build_setup_progress(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    bonus: Sequence[Mapping[str, Any]],
+    now: datetime,
+) -> dict[str, Any]:
+    """Tiến độ setup k/n (CK-6) từ các quyết định đã xác minh hash, mới nhất trước.
+
+    Chỉ đọc payload đã lưu; không ghi lại và không đổi hash. Kèm thẻ tín hiệu của candidate gần
+    nhất (nếu có) để có thể ghim kịch bản lên chart.
+    """
+    from trading_bot.application.bot_dispatcher import BotDecision
+    from trading_bot.domain.strategy.setup_progress import setup_progress
+
+    verified: list[dict[str, Any]] = []
+    rejected = 0
+    release_id: str | None = None
+    for row in rows:
+        try:
+            BotDecision.from_payload(row["payload"], row["decision_hash"])
+        except KeyError, TypeError, ValueError:
+            rejected += 1
+            continue
+        payload = row["payload"]
+        release_id = release_id or str(payload.get("strategy_release_id") or "")
+        verified.append(
+            {
+                "evaluated_at": payload.get("evaluated_at"),
+                "status": payload.get("status"),
+                "reason_code": payload.get("reason_code"),
+                "detail_vi": payload.get("detail_vi"),
+                "checklist": list((payload.get("checklist") or {}).get("items") or []),
+                "candidate": payload.get("candidate"),
+            }
+        )
+    progress = setup_progress(
+        strategy_release_id=release_id or "—", decisions=verified, bonus=bonus, now=now
+    )
+    progress["unverified_decisions"] = rejected
+    card = build_latest_signal_view(rows, now=now)["card"]
+    progress["card"] = card if card and not card.get("is_expired", True) else None
+    return progress
+
+
 class ReportScope(StrEnum):
     BOT = "bot"
     WORKSPACE = "workspace"
@@ -388,6 +432,47 @@ class BotReportingService:
                 workspace_id=principal.workspace_id, bot_id=bot_id, limit=20
             )
         return build_latest_signal_view(rows)
+
+    async def get_setup_board(
+        self,
+        principal: Principal,
+        *,
+        bots: Sequence[tuple[UUID, str]],
+        bonus: Sequence[Mapping[str, Any]],
+        now: datetime | None = None,
+    ) -> list[dict[str, Any]]:
+        """Bảng Entry (CK-6): tiến độ setup của các bot người xem có ``REPORT_READ``.
+
+        Bot thiếu quyền hoặc không tồn tại bị bỏ qua lặng lẽ (không lộ sự tồn tại).
+        """
+        instant = now or datetime.now(UTC)
+        board: list[dict[str, Any]] = []
+        for bot_id, bot_name in bots:
+            async with self._unit_of_work(
+                self._sessions,
+                workspace_id=principal.workspace_id,
+                bot_id=bot_id,
+                actor_membership_id=principal.membership_id,
+                snapshot_read_only=True,
+            ) as unit:
+                repository = self._repository(unit.session)
+                try:
+                    await self._grants(unit.session).require(
+                        principal, bot_id=bot_id, permission=BotPermission.REPORT_READ
+                    )
+                except PermissionError:
+                    continue
+                if (
+                    await repository.get_bot(workspace_id=principal.workspace_id, bot_id=bot_id)
+                    is None
+                ):
+                    continue
+                rows: list[dict[str, Any]] = await repository.latest_bot_decisions(
+                    workspace_id=principal.workspace_id, bot_id=bot_id, limit=20
+                )
+            progress = build_setup_progress(rows, bonus=bonus, now=instant)
+            board.append({"bot_id": str(bot_id), "bot_name": bot_name} | progress)
+        return board
 
     async def list_market_series(
         self, principal: Principal, *, bot_id: UUID

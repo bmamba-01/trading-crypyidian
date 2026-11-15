@@ -1,6 +1,6 @@
 # WBS CK — Buồng lái biểu đồ (chart cockpit) theo hai app tham chiếu
 
-**Ngày:** 2026-11-15 · **Trạng thái:** CK-0 đã làm; CK-1…CK-5 đã làm phần lõi (15/11/2026, xem cuối từng mục, còn mở ghi rõ); CK-6…CK-13 là kế hoạch · **Chế độ:** PAPER/replay; chỉ dữ liệu thị trường công khai; không route order, không bật SHADOW/PAPER_GATE/Demo/LIVE. <br>
+**Ngày:** 2026-11-15 · **Trạng thái:** CK-0 đã làm; CK-1…CK-6 đã làm phần lõi (15/11/2026, xem cuối từng mục, còn mở ghi rõ); CK-7…CK-13 là kế hoạch · **Chế độ:** PAPER/replay; chỉ dữ liệu thị trường công khai; không route order, không bật SHADOW/PAPER_GATE/Demo/LIVE. <br>
 **Đầu vào:** hai ảnh owner gửi ngày 15/11/2026 — (1) "XAUUSD Research Desk 3.3.0" (MT5, ICT + VSA); (2) một app quét/auto crypto trên Bybit (WLFI/USDT, Green Flag, MA34×89). <br>
 **Xây trên:** [WBS SIG](./2026-11-15-sig-market-structure-scalping-chart-wbs.md) (đang ở nhánh `claude/project-progress-review-wp07-d70431`, **chưa vào `dev`**), [UI kit v1.1](../../design/admin-ui-kit.md), ingest live Binance (`docs/research/binance-usdm-api-audit-2026-11-14.md`), [khảo sát 14/11](./2026-11-14-feature-survey-and-manager-insights.md).
 
@@ -228,7 +228,7 @@ Ký hiệu: **D** = đã có trên `dev`; **S** = đã làm lát đầu trên nh
 
 **Acceptance:** golden dataset cho từng nhãn VSA; ZigZag "streaming = batch" cho phần đã xác nhận.
 
-**Đã làm (15/11/2026, chưa commit):** `domain/market/vsa.py`: `vsa_labels` (`ck5-vsa-v1`, cửa sổ 20 nến trước, 7 nhãn theo thứ tự ưu tiên ghi trong docstring) và `zigzag` (`ck5-zigzag-v1`, ngưỡng 2×ATR14 hoặc %, điểm chốt theo `final_index`). Payload `vsa` (nến có nhãn + nhóm sức mạnh/yếu) và `zigzag` (điểm chốt, pivot chưa chốt, giá cuối). Chart: lớp "ZigZag (pivot đã chốt)" bật mặc định (nét đứt + chữ "chưa chốt" cho đoạn cuối), lớp "Tô volume theo VSA" tắt mặc định (lam = sức mạnh, cam = yếu, nến khác mờ); chú giải OHLC khi rê/chạm ghi tên nhãn VSA. Golden test tay cho 7 nhãn + nến không nhãn; test streaming = batch cho ZigZag (domain và payload).
+**Đã làm (15/11/2026, commit `cffd37c`):** `domain/market/vsa.py`: `vsa_labels` (`ck5-vsa-v1`, cửa sổ 20 nến trước, 7 nhãn theo thứ tự ưu tiên ghi trong docstring) và `zigzag` (`ck5-zigzag-v1`, ngưỡng 2×ATR14 hoặc %, điểm chốt theo `final_index`). Payload `vsa` (nến có nhãn + nhóm sức mạnh/yếu) và `zigzag` (điểm chốt, pivot chưa chốt, giá cuối). Chart: lớp "ZigZag (pivot đã chốt)" bật mặc định (nét đứt + chữ "chưa chốt" cho đoạn cuối), lớp "Tô volume theo VSA" tắt mặc định (lam = sức mạnh, cam = yếu, nến khác mờ); chú giải OHLC khi rê/chạm ghi tên nhãn VSA. Golden test tay cho 7 nhãn + nến không nhãn; test streaming = batch cho ZigZag (domain và payload).
 **Còn mở:** chưa tô màu thân nến theo VSA (chỉ volume); ngưỡng ZigZag chưa chỉnh được trên giao diện.
 
 ### CK-6 — Bảng Entry: nhiều setup, tiến độ k/n, điều kiện còn thiếu
@@ -241,6 +241,9 @@ Ký hiệu: **D** = đã có trên `dev`; **S** = đã làm lát đầu trên nh
 6. Không có nút đặt lệnh; khi đủ điều kiện, quyết định vẫn đi qua planner/risk gate như hiện tại.
 
 **Acceptance:** setup với quy tắc k/n chuyển trạng thái đúng trên fixture; "còn thiếu" khớp điều kiện chưa đạt đầu tiên theo thứ tự ưu tiên; hash quyết định cũ không đổi.
+
+**Đã làm (15/11/2026, chưa commit):** `domain/strategy/setup_progress.py` (`ck6-setup-v1`): phân loại bắt buộc/cộng điểm ở **tầng hiển thị** (payload và hash quyết định không đổi), bắt buộc H01/H03/H06 = điều kiện thị trường của rule theo thứ tự ưu tiên, cộng điểm = killzone (CK-3), cách funding > 10 phút (mark CK-1), tin tức (chưa có lịch → "chưa xác định"); trạng thái Đủ điều kiện / Chưa đủ / Mất hiệu lực / Chưa có quyết định; "Còn thiếu: …" kèm giá trị và ngưỡng; thời điểm đạt. `build_setup_progress` chỉ dùng quyết định khớp hash. `BotReportingService.get_setup_board` (REPORT_READ từng bot, bot thiếu quyền bị bỏ lặng lẽ). `/admin/chart` có "Bảng Entry" cho các bot giao dịch mã đang xem (hoặc chưa ghim mã) và ô chọn "Ghim kịch bản lên chart" thay thẻ đang vẽ. Không có nút đặt lệnh.
+**Lệch/còn mở:** `bonus_k` = 0 (cộng điểm chỉ tham khảo) cho tới khi owner chọn k và đưa điều kiện vào rule qua backtest; điều kiện tin tức chờ CK-10; bảng chưa tự cập nhật theo polling (tải lại trang); "giá/thời điểm cần" của MI-2 mới có giá trị và ngưỡng, chưa ước tính giá cần đạt.
 
 ### CK-7 — Lớp vị thế và tương tác chart
 

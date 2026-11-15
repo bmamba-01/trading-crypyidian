@@ -24,6 +24,7 @@ from trading_bot.auth.policy import Principal, Role
 from trading_bot.auth.router import current_identity
 from trading_bot.auth.service import AuthIdentity
 from trading_bot.config.settings import AppSettings
+from trading_bot.domain.strategy.setup_progress import setup_progress
 
 WORKSPACE = UUID("9b2299f1-a58e-45c7-b0ad-83feb0862510")
 BOT_ID = UUID("77117cc4-6c7f-407e-8f23-948d740a46c2")
@@ -205,6 +206,7 @@ class _Reporting:
         self.series = series if series is not None else {"BTCUSDT": ["1m", "5m", "1h"]}
         self.calls: list[dict[str, Any]] = []
         self.overview_calls: list[dict[str, Any]] = []
+        self.setup_calls: list[dict[str, Any]] = []
 
     async def list_market_series(self, principal: Principal, *, bot_id: UUID) -> dict:
         if self.error is not None:
@@ -219,6 +221,66 @@ class _Reporting:
         if self.error is not None:
             raise self.error
         return self.bars
+
+    async def get_setup_board(self, principal: Principal, **kwargs: Any) -> list[dict]:
+        """Bảng Entry giả: một setup H01 chưa đủ (thiếu ADX) cho bot đầu tiên."""
+        self.setup_calls.append(kwargs)
+        now = datetime(2026, 11, 16, 10, 0, tzinfo=UTC)
+        decisions = [
+            {
+                "evaluated_at": (now - timedelta(hours=hours)).isoformat(),
+                "status": "ABSTAIN",
+                "reason_code": "H01_ADX_BELOW_20",
+                "detail_vi": "ADX14 1h phải đạt tối thiểu 20.",
+                "checklist": [
+                    {
+                        "key": "ema_cross",
+                        "label_vi": "EMA20 vừa cắt EMA80 (1h)",
+                        "actual": "cắt",
+                        "operator": "cắt",
+                        "threshold": "đổi phía",
+                        "passed": True,
+                    },
+                    {
+                        "key": "htf_trend",
+                        "label_vi": "Giá đóng 4h cùng phía EMA200",
+                        "actual": "trên",
+                        "operator": "cùng phía",
+                        "threshold": "EMA200",
+                        "passed": True,
+                    },
+                    {
+                        "key": "adx",
+                        "label_vi": "ADX14 1h đủ mạnh",
+                        "actual": "12",
+                        "operator": ">=",
+                        "threshold": "20",
+                        "passed": False,
+                    },
+                ],
+                "candidate": None,
+            }
+            for hours in (0, 1)
+        ]
+        bots = kwargs["bots"]
+        return (
+            [
+                {
+                    "bot_id": str(bots[0][0]),
+                    "bot_name": bots[0][1],
+                    "card": None,
+                    "unverified_decisions": 0,
+                }
+                | setup_progress(
+                    strategy_release_id="h01-v1",
+                    decisions=decisions,
+                    bonus=kwargs["bonus"],
+                    now=now,
+                )
+            ]
+            if bots
+            else []
+        )
 
     async def get_market_overview(self, principal: Principal, **kwargs: Any) -> dict:
         self.overview_calls.append(kwargs)
@@ -485,3 +547,19 @@ def test_payload_has_vsa_labels_and_non_repainting_zigzag() -> None:
     assert [p for p in shorter["zigzag"]["points"] if p["final_time"] <= final_cut] == [
         p for p in zig["points"] if p["final_time"] <= final_cut
     ]
+
+
+def test_chart_page_renders_entry_board_with_missing_condition_and_bonus() -> None:
+    reporting = _Reporting(_bars(200, start=START, step=timedelta(minutes=5)))
+    html = _client(reporting).get("/admin/chart?timeframe=5m").text
+    call = reporting.setup_calls[0]
+    # Bot không ghim mã (symbol None) vẫn được xét; điều kiện cộng điểm tính sẵn.
+    assert [name for _, name in call["bots"]] == ["Bot BTC", "Bot khác"]
+    assert [item["key"] for item in call["bonus"]] == ["killzone", "funding_clear", "news"]
+    assert 'id="mc-entry-board"' in html
+    assert "Bắt buộc <strong>2/3</strong>" in html
+    assert "Còn thiếu: ADX14 1h đủ mạnh — hiện 12, cần &gt;= 20" in html
+    assert "đạt từ" in html
+    assert "cộng điểm" in html
+    assert "Chưa đủ" in html
+    assert ' style="' not in html

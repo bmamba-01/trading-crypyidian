@@ -809,3 +809,15 @@ Khái niệm VSA và ZigZag đã định nghĩa ở mục AC; mục này ghi tê
 | Test (supply test) | Kiểm tra cung | Đáy thấp hơn nến trước, độ rộng ≤ phân vị 40%, đóng nửa trên, khối lượng thấp hơn hai nến trước. | [LuxAlgo — VSA](https://www.luxalgo.com/library/concept/volume-spread-analysis.md) |
 | Percentile rank (VSA window) | Hạng phân vị trong cửa sổ | Tỷ lệ trong 20 nến **trước** có giá trị nhỏ hơn hẳn nến đang xét (0–1); không dùng nến tương lai. | Định nghĩa nội bộ |
 | Finalized ZigZag point | Điểm ZigZag đã chốt | Pivot ứng viên được chốt khi một swing ngược chiều đã xác nhận cách nó ≥ 2×ATR14; điểm chốt không đổi khi có thêm nến (streaming = batch). | Định nghĩa nội bộ (`domain/market/vsa.py`) |
+
+## AI. Bảng Entry và tiến độ setup (CK-6, 15/11/2026)
+
+"Required vs bonus condition (k-of-n)" đã định nghĩa ở mục AC; mục này ghi quy ước `ck6-setup-v1`.
+
+| Thuật ngữ (EN) | Tiếng Việt | Định nghĩa và giới hạn | Nguồn |
+|---|---|---|---|
+| Setup progress | Tiến độ setup | "Bắt buộc x/n" = số điều kiện thị trường của rule đã đạt trong quyết định gần nhất; "Cộng điểm x/n" = điều kiện ngữ cảnh (killzone, cách funding, lịch tin) tính lúc xem. Chỉ diễn giải, không vào lệnh. | Định nghĩa nội bộ (`domain/strategy/setup_progress.py`) |
+| Setup status (ready / not ready / expired) | Trạng thái setup (đủ điều kiện / chưa đủ / mất hiệu lực) | Đủ = quyết định gần nhất là CANDIDATE còn hạn và đủ k cộng điểm (k = 0 cho tới khi owner chọn); mất hiệu lực = CANDIDATE đã quá `expires_at`. | Định nghĩa nội bộ |
+| Missing condition | Điều kiện còn thiếu | Điều kiện bắt buộc đầu tiên chưa đạt theo thứ tự ưu tiên của rule, kèm giá trị hiện tại và ngưỡng; điều kiện thiếu dữ liệu ghi "chưa xác định". | Định nghĩa nội bộ |
+| Condition achieved time | Thời điểm đạt điều kiện | Quyết định cũ nhất trong chuỗi liên tục các quyết định gần nhất mà điều kiện đều đạt. | Định nghĩa nội bộ |
+| Funding window | Khoảng cấm quanh funding | ±10 phút quanh `nextFundingTime` của mẫu mark price mới nhất; điều kiện cộng điểm "cách mốc funding hơn 10 phút". | [Binance — Mark Price Stream](https://developers.binance.com/docs/derivatives/usds-margined-futures/websocket-market-streams/Mark-Price-Stream) (kiểm 15/11/2026) |

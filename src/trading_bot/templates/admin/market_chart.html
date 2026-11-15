@@ -181,6 +181,54 @@
   </section>
   {% endif %}
 
+  {#- CK-6: bảng Entry — tiến độ k/n của từng setup, điều kiện còn thiếu, thời điểm đạt. Chỉ xem. -#}
+  <section id="mc-entry-board" class="glass-card mc-entry" aria-labelledby="mc-entry-title">
+    <header class="mc-entry__head">
+      <h2 id="mc-entry-title">Bảng Entry · {{ selected_symbol }}</h2>
+      {% if setup_cards %}
+      <label class="mc-entry__pin">Ghim kịch bản lên chart
+        <select id="mc-setup-pin" data-setup-pin>
+          <option value="">Thẻ của bot đang chọn</option>
+          {% for item in setup_cards %}<option value="{{ loop.index0 }}">{{ item.bot_name }} · {{ item.label }}</option>{% endfor %}
+        </select>
+      </label>
+      {% endif %}
+    </header>
+    {% if setups %}
+    <div class="mc-entry__grid">
+      {% for setup in setups %}
+      <article class="mc-setup mc-setup--{{ setup.status }}" data-setup-status="{{ setup.status }}">
+        <header class="mc-setup__head">
+          <h3>{{ setup.bot_name }} <span class="mc-setup__strategy">{{ setup.strategy_id }} · {{ setup.label }}</span></h3>
+          <span class="mc-setup__status">{{ setup.status_label }}</span>
+        </header>
+        <p class="mc-setup__progress">
+          <span>Bắt buộc <strong>{{ setup.required.passed }}/{{ setup.required.total }}</strong></span>
+          <span>Cộng điểm <strong>{{ setup.bonus.passed }}/{{ setup.bonus.total }}</strong>{% if setup.bonus.k %} (cần ≥ {{ setup.bonus.k }}){% endif %}</span>
+          {% if setup.direction %}<span class="sc-direction sc-direction--{{ setup.direction }}">{{ 'MUA' if setup.direction == 'long' else 'BÁN' }}</span>{% endif %}
+          {% if setup.evaluated_at %}<span class="sc-meta">quyết định {{ setup.evaluated_at | local_minute }}</span>{% endif %}
+        </p>
+        {% if setup.missing %}<p class="mc-setup__missing">{{ setup.missing }}</p>{% endif %}
+        <ul class="sc-checklist">
+          {% for item in setup.conditions %}
+          <li class="sc-check sc-check--{{ 'pass' if item.passed is sameas true else ('fail' if item.passed is sameas false else 'na') }}">
+            <span class="sc-check__mark" aria-hidden="true">{{ '✓' if item.passed is sameas true else ('✗' if item.passed is sameas false else '—') }}</span>
+            <span class="sc-check__label">{% if item.kind == 'bonus' %}<span class="mc-setup__bonus">cộng điểm</span> {% endif %}{{ item.label_vi }}<span class="visually-hidden">: {{ 'đạt' if item.passed is sameas true else ('không đạt' if item.passed is sameas false else 'chưa xác định') }}</span>{% if item.achieved_at %} <span class="sc-meta">· đạt từ {{ item.achieved_at | local_minute }}</span>{% endif %}</span>
+            <span class="sc-check__value">{{ item.actual }} <span class="sc-check__op">· cần {{ item.operator }}</span> {{ item.threshold }}</span>
+          </li>
+          {% endfor %}
+        </ul>
+        {% if setup.unverified_decisions %}<p class="sc-meta">Bỏ qua {{ setup.unverified_decisions }} quyết định không khớp hash.</p>{% endif %}
+      </article>
+      {% endfor %}
+    </div>
+    <p class="mc-mtf__note">Điều kiện bắt buộc lấy từ checklist quyết định gần nhất của bot (nến đã đóng); điều kiện cộng điểm tính lúc tải trang và chưa nằm trong rule (k = 0). Không có nút đặt lệnh: khi đủ điều kiện, quyết định vẫn đi qua planner và risk gate.</p>
+    {% else %}
+    <p class="sc-empty">Chưa có bot nào bạn được xem báo cáo đang giao dịch {{ selected_symbol }}.</p>
+    {% endif %}
+  </section>
+  {% if setup_cards %}<script id="market-setups-data" type="application/json">{{ setup_cards | tojson }}</script>{% endif %}
+
   {% set card = signal_view.card if signal_view else none %}
   {% set latest = signal_view.latest_decision if signal_view else none %}
   {%- macro price(value) -%}{{ value | number2_vi if value >= 1 else value | round(8) | number_vi }}{%- endmacro -%}

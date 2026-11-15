@@ -778,10 +778,27 @@
 
   // Thẻ tín hiệu (SIG-3): đường giá SL/mục tiêu và dải vùng vào; xoá rồi vẽ lại mỗi lần render.
   let signalLines = [];
+  // CK-6: kịch bản được ghim từ bảng Entry thay cho thẻ của bot đang chọn.
+  let pinnedCard = null;
+  const pinSelect = document.querySelector("[data-setup-pin]");
+  const setupCardsNode = document.getElementById("market-setups-data");
+  if (pinSelect && setupCardsNode) {
+    let setupCards = [];
+    try {
+      setupCards = JSON.parse(setupCardsNode.textContent || "[]");
+    } catch {
+      setupCards = [];
+    }
+    pinSelect.addEventListener("change", () => {
+      const chosen = setupCards[Number(pinSelect.value)];
+      pinnedCard = pinSelect.value === "" || !chosen ? null : chosen.card;
+      drawSignal(payload);
+    });
+  }
   const drawSignal = (p) => {
     for (const line of signalLines) candles.removePriceLine(line);
     signalLines = [];
-    const card = p.signal_card;
+    const card = pinnedCard || p.signal_card;
     if (!card || !layerOn("signal")) return;
     const c = palette();
     const add = (price, color, title, style) =>

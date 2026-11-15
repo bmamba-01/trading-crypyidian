@@ -4323,7 +4323,7 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Còn mở:** TPO theo phiên (đang theo ngày UTC); danh sách mức trong tab "Mức giá" (CK-10).
 - **Readback:** đã đọc lại mục này; không có secret.
 
-### 2026-11-15 — CK-5: nhãn nến VSA và ZigZag không vẽ lại (chưa commit)
+### 2026-11-15 — CK-5: nhãn nến VSA và ZigZag không vẽ lại (commit `cffd37c`, chưa push)
 
 - **Yêu cầu của owner:** "Commit, làm CK-5" → commit CK-4 `cdb634d` (local), rồi làm CK-5.
 - **Đã làm:**
@@ -4333,5 +4333,19 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
   - Glossary mục **AH**; WBS CK mục CK-5; `project-status.md`.
 - **Kiểm chứng:** `tests/unit/test_ck5_vsa_zigzag.py` 12 passed; unit toàn bộ **4529 passed/131.39s**; ruff/format sạch; mypy **410 files** sạch. Playwright trang chart **1 passed**; ảnh `ck5-zigzag-vsa-desktop.png` đã xem (ZigZag liền + đoạn "chưa chốt" nét đứt, cột volume lam/cam). Không đổi DB.
 - **Ghi chú quy trình:** test payload VSA/ZigZag được thêm cùng lệnh với code nên không quan sát pha RED riêng cho phần payload (domain có RED do module chưa tồn tại).
-- **Còn mở:** tô thân nến theo VSA; chỉnh ngưỡng ZigZag trên giao diện; CK-3/CK-4/CK-5 chưa push.
+- **Còn mở:** tô thân nến theo VSA; chỉnh ngưỡng ZigZag trên giao diện.
+- **Readback:** đã đọc lại mục này; không có secret.
+
+### 2026-11-15 — CK-6: Bảng Entry (tiến độ setup k/n) trên `/admin/chart` (chưa commit)
+
+- **Yêu cầu của owner:** "Commit, làm CK-6" → commit CK-5 `cffd37c` (local), rồi làm CK-6.
+- **Quyết định thiết kế:** checklist SIG-3 nằm trong payload quyết định đã băm hash, nên **không** thêm trường "bắt buộc/cộng điểm" vào `ChecklistItem`; phân loại đặt ở `domain/strategy/setup_progress.py` và áp khi đọc → hash quyết định cũ và mới đều không đổi (acceptance CK-6). Điều kiện cộng điểm chưa có trong rule nên `bonus_k = 0`: trạng thái "Đủ điều kiện" vẫn khớp quyết định CANDIDATE của rule, không mâu thuẫn với ledger.
+- **Đã làm:**
+  - Domain: `SETUP_RULES` H01/H03/H06, `context_conditions` (killzone đang mở theo `active_killzones`, cách funding > 10 phút từ mark CK-1, tin tức `None`), `setup_progress` (trạng thái, x/n, còn thiếu theo thứ tự ưu tiên, thời điểm đạt theo chuỗi quyết định liên tục).
+  - `bot_reporting.build_setup_progress` (bỏ quyết định lệch hash, kèm thẻ candidate còn hạn) và `BotReportingService.get_setup_board` (REPORT_READ từng bot; thiếu quyền/không tồn tại → bỏ lặng lẽ).
+  - Router: bảng Entry cho bot có `symbol` = mã đang xem hoặc chưa ghim mã; `_next_funding` lấy từ overview. Template "Bảng Entry", JSON `market-setups-data`, ô chọn ghim kịch bản; `market-chart.js` dùng `pinnedCard` thay `signal_card` khi ghim.
+  - Glossary mục **AI**; WBS CK mục CK-6; `project-status.md`.
+- **Lỗi gặp và sửa:** Jinja hiểu `setup.items` là phương thức `dict.items` → `TypeError` khi render; đổi khóa thành `conditions`. Khoảng cách funding hiện "3841 phút" → định dạng giờ/phút.
+- **Kiểm chứng:** `tests/unit/test_ck6_setup_progress.py` 7 passed (gồm quyết định thật có hash, hàng bị sửa tay bị bỏ, payload không đổi sau khi đọc); test service quyền; unit toàn bộ **4538 passed/131.66s**; ruff/format sạch; mypy **411 files** sạch. Playwright trang chart **1 passed**, ảnh `ck6-entry-board-desktop.png` đã xem. Không đổi DB.
+- **Còn mở:** chọn k và đưa điều kiện cộng điểm vào rule (cần owner + backtest); lịch tin tức (CK-10); bảng tự cập nhật theo polling; ước tính "giá cần đạt" (MI-2); CK-3…CK-6 chưa push.
 - **Readback:** đã đọc lại mục này; không có secret.

@@ -107,6 +107,7 @@ from trading_bot.domain.risk.risk_windows import (
     RISK_LOSS_WINDOW_POLICY,
     calculate_loss_windows,
 )
+from trading_bot.domain.strategy.setup_progress import context_conditions
 from trading_bot.domain.strategy_card.schema import compute_canonical_hash
 from trading_bot.observability.health import build_system_health_snapshot
 
@@ -2546,6 +2547,7 @@ async def market_chart_page(
     payload: dict[str, Any] | None = None
     signal_view: dict[str, Any] | None = None
     overview: dict[str, Any] | None = None
+    setups: list[dict[str, Any]] = []
     if selected is not None:
         service = _reporting_service(request)
         try:
@@ -2583,6 +2585,19 @@ async def market_chart_page(
                     symbol=selected_symbol,
                     timeframe=timeframe,
                 )
+                # CK-6: bảng Entry — setup của các bot giao dịch mã này (hoặc chưa ghim mã).
+                setups = await service.get_setup_board(
+                    identity.principal,
+                    bots=[
+                        (UUID(view.id), view.name)
+                        for view in bot_views
+                        if view.symbol in (None, selected_symbol)
+                    ],
+                    bonus=context_conditions(
+                        datetime.now(UTC),
+                        next_funding_time=_next_funding(overview),
+                    ),
+                )
         except BotReportError as error:
             raise _report_http_error(error) from error
     return _templates(request).TemplateResponse(
@@ -2603,9 +2618,22 @@ async def market_chart_page(
             "chart_payload": payload,
             "signal_view": signal_view,
             "overview": overview,
+            "setups": setups,
+            "setup_cards": [
+                {"bot_name": item["bot_name"], "label": item["label"], "card": item["card"]}
+                for item in setups
+                if item.get("card") and item["card"].get("symbol") == selected_symbol
+            ],
         },
         headers={"Cache-Control": "no-store"},
     )
+
+
+def _next_funding(overview: dict[str, Any] | None) -> datetime | None:
+    """Mốc funding kế tiếp từ khối mark của overview (CK-1); ``None`` khi chưa có mark."""
+    mark = (overview or {}).get("mark") or {}
+    raw = mark.get("next_funding_time")
+    return datetime.fromisoformat(raw) if raw else None
 
 
 def _card_for_symbol(
