@@ -175,3 +175,14 @@ def test_reports_csv_export_uses_real_trade_keys_and_sanitizes_formula_injection
     assert row["quantity"] == "0.4"
     # Công thức nguy hiểm bắt đầu bằng '=' phải được prefix bằng dấu nháy đơn
     assert rows[0]["entry_reason"].startswith("'=CMD")
+
+
+def test_dashboard_realtime_includes_operations_health() -> None:
+    """GET /admin/api/dashboard/realtime trả về kèm operations_health thật cho UI."""
+    client = _build_client()
+    resp = client.get("/admin/api/dashboard/realtime")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["operations_health"]["status"] == "HEALTHY"
+    assert body["operations_health"]["breaker"]["state"] == "CLOSED"
+    assert "realized_loss_today" in body["operations_health"]["loss_windows"]

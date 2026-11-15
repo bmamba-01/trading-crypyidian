@@ -339,3 +339,17 @@ def test_local_minute_drops_seconds_and_uses_vietnam_time() -> None:
     assert local_minute("2026-11-14T06:13:52+00:00") == "14/11 13:13"
     assert local_minute("not-a-date") == "Chưa có dữ liệu"
     assert local_minute("2026-11-14T06:13:52") == "Chưa có dữ liệu"
+
+
+def test_dashboard_exposes_operations_health_strip_updated_by_external_script() -> None:
+    """Dải sức khỏe vận hành có id cho JS realtime, không hiện lỗ ngày chưa nối dữ liệu."""
+    root = Path(__file__).parents[2] / "src" / "trading_bot"
+    template = (root / "templates" / "admin" / "dashboard.html").read_text(encoding="utf-8")
+    realtime_js = (root / "static" / "dashboard-realtime.js").read_text(encoding="utf-8")
+
+    assert 'id="kpi-ops-health"' in template
+    assert 'id="kpi-ops-health-sub"' in template
+    assert "chưa nối vào cầu dao" in template
+    assert "realized_loss_today" not in template
+    assert "data.operations_health" in realtime_js
+    assert "kpi-ops-health" in realtime_js

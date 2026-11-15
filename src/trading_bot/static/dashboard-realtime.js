@@ -106,6 +106,30 @@
       });
     }
 
+    // 5. Cập nhật sức khỏe vận hành và cầu dao rủi ro
+    if (data.operations_health && data.operations_health.breaker) {
+      var opsHealthEl = document.getElementById('kpi-ops-health');
+      var opsHealthSubEl = document.getElementById('kpi-ops-health-sub');
+      var opsStatus = data.operations_health.status;
+      var breaker = data.operations_health.breaker;
+      if (opsHealthEl) {
+        if (opsStatus === 'HEALTHY') {
+          opsHealthEl.textContent = 'Ổn định';
+          opsHealthEl.className = 'badge badge-success';
+        } else if (opsStatus === 'DEGRADED') {
+          opsHealthEl.textContent = 'Chờ xác nhận';
+          opsHealthEl.className = 'badge badge-warning';
+        } else {
+          opsHealthEl.textContent = 'Đã ngắt mạch';
+          opsHealthEl.className = 'badge badge-danger';
+        }
+        opsHealthEl.setAttribute('title', 'Trạng thái cầu dao: ' + String(breaker.state || ''));
+      }
+      if (opsHealthSubEl) {
+        opsHealthSubEl.textContent = 'Vào lệnh: ' + (breaker.entry_allowed ? 'Cho phép' : 'Bị chặn');
+      }
+    }
+
     // Phục hồi trạng thái kết nối bình thường nếu trước đó có lỗi
     if (statusMsgEl) {
       statusMsgEl.textContent = '';

@@ -532,6 +532,101 @@ def _control_error(error: BotRuntimeControlError) -> HTTPException:
     )
 
 
+def _build_operations_health_data(
+    *,
+    workspace_id: str,
+    runtime: list[dict[str, Any]],
+    workspace: dict[str, Any],
+    correlation_id: str,
+    now_utc: datetime,
+) -> dict[str, Any]:
+    """Tổng hợp ảnh chụp sức khỏe vận hành thật từ runtime và workspace hiện hành."""
+    total_api_errors = sum(int(item.get("error_count", 0) or 0) for item in runtime)
+    loss_snapshot = calculate_loss_windows(
+        events=[],
+        as_of=now_utc,
+        policy=RISK_LOSS_WINDOW_POLICY,
+    )
+    breaker_snapshot = CircuitBreakerEngine().evaluate(
+        OperationalTelemetry(
+            evaluated_at=now_utc,
+            feed_age_seconds=0,
+            daily_loss=loss_snapshot.realized_loss_today,
+            drawdown_pct=Decimal("0"),
+            consecutive_api_errors=total_api_errors,
+            outbox_lag_seconds=0,
+            clock_skew_ms=0,
+            unprotected_exposure_count=0,
+            reconciliation_discrepancy_count=0,
+            unknown_order_count=0,
+        )
+    )
+    health_snapshot = build_system_health_snapshot(
+        service_name="crypidian-admin",
+        environment="PAPER",
+        correlation_id=correlation_id,
+        breaker=breaker_snapshot,
+        loss_windows=loss_snapshot,
+        metadata={
+            "workspace_id": workspace_id,
+            "kill_state": str(workspace.get("kill_state", "ACTIVE")),
+            "runtime_bot_count": len(runtime),
+        },
+        evaluated_at=now_utc,
+    )
+    return health_snapshot.to_dict()
+
+
+async def _fetch_30d_workspace_metrics(
+    request: Request,
+    principal: Principal,
+    now_utc: datetime,
+) -> tuple[bool, dict[str, Any]]:
+    """Nạp thống kê hiệu quả 30 ngày thật từ BotReportingService (nếu khả dụng)."""
+    reporting_service = getattr(request.app.state, "bot_reporting_service", None)
+    if reporting_service is None:
+        return False, {}
+    try:
+        query = BotReportQuery(
+            workspace_id=principal.workspace_id,
+            bot_id=None,
+            start=now_utc - timedelta(days=30),
+            end=now_utc,
+            mode=REPORT_MODE,
+            report_version=REPORT_VERSION,
+            scope=ReportScope.WORKSPACE,
+        )
+        report = await reporting_service.get_workspace_report(query, principal)
+        total_closed = 0
+        total_won = 0
+        net_pnl = Decimal("0")
+        totals_raw: dict[str, Any] = {}
+        if hasattr(report, "totals") and isinstance(report.totals, dict):
+            totals_raw = report.totals
+        elif hasattr(report, "as_dict"):
+            report_dict = report.as_dict()
+            if isinstance(report_dict.get("totals"), dict):
+                totals_raw = report_dict["totals"]
+        for item in totals_raw.values():
+            if isinstance(item, dict):
+                total_closed += int(item.get("closed_trade_count", 0))
+                total_won += int(item.get("winning_trade_count", 0))
+                net_pnl += Decimal(str(item.get("net_pnl", "0")))
+            else:
+                total_closed += int(getattr(item, "closed_trade_count", 0))
+                total_won += int(getattr(item, "winning_trade_count", 0))
+                net_pnl += getattr(item, "net_pnl", Decimal("0"))
+        win_rate = round(float(total_won / total_closed * 100), 2) if total_closed > 0 else 0.0
+        return True, {
+            "total_closed_trades": total_closed,
+            "total_won_trades": total_won,
+            "net_pnl": str(net_pnl),
+            "win_rate": win_rate,
+        }
+    except Exception:
+        return False, {}
+
+
 @router.get("")
 async def dashboard(
     request: Request,
@@ -541,6 +636,7 @@ async def dashboard(
     """Hiển thị trang tổng quan quản trị cho thành viên có phiên hợp lệ."""
     response.headers["Cache-Control"] = "no-store"
     principal = identity.principal
+    now_utc = datetime.now(UTC)
     try:
         bots = await _admin_service(request).list_bots(principal)
         operations = _operations(request, identity)
@@ -589,6 +685,14 @@ async def dashboard(
         metrics_loaded = True
     except BotReportError, HTTPException:
         dashboard_reports = []
+    # Ảnh chụp sức khỏe vận hành dùng chung với `/admin/api/operations/health`.
+    operations_health_data = _build_operations_health_data(
+        workspace_id=str(principal.workspace_id),
+        runtime=runtime,
+        workspace=workspace,
+        correlation_id=f"dash-{uuid4().hex[:10]}",
+        now_utc=now_utc,
+    )
     templates = _templates(request)
     return templates.TemplateResponse(
         request=request,
@@ -607,6 +711,7 @@ async def dashboard(
             "report_end": report_end,
             "workspace": workspace,
             "csrf_token": csrf_token,
+            "operations_health": operations_health_data,
         },
         headers={"Cache-Control": "no-store"},
     )
@@ -667,57 +772,22 @@ async def dashboard_realtime(
             "ready_count": sum(bot.readiness == "READY" for bot in bot_views),
         }
 
-    # Thu thập tóm tắt hiệu suất nếu service báo cáo khả dụng
+    # Thu thập tóm tắt hiệu suất thật và sức khỏe vận hành
+    metrics_loaded, metrics_full = await _fetch_30d_workspace_metrics(request, principal, now_utc)
     metrics: dict[str, Any] = {}
-    reporting_service = getattr(request.app.state, "bot_reporting_service", None)
-    if reporting_service is not None:
-        try:
-            query = BotReportQuery(
-                workspace_id=principal.workspace_id,
-                bot_id=None,
-                start=now_utc - timedelta(days=30),
-                end=now_utc,
-                mode=REPORT_MODE,
-                report_version=REPORT_VERSION,
-                scope=ReportScope.WORKSPACE,
-            )
-            report = await reporting_service.get_workspace_report(query, principal)
-            if hasattr(report, "totals") and isinstance(report.totals, dict):
-                total_closed = 0
-                total_won = 0
-                net_pnl = Decimal("0")
-                for item in report.totals.values():
-                    total_closed += getattr(item, "closed_trade_count", 0)
-                    total_won += getattr(item, "winning_trade_count", 0)
-                    net_pnl += getattr(item, "net_pnl", Decimal("0"))
-                win_rate = (
-                    round(float(total_won / total_closed * 100), 2) if total_closed > 0 else 0.0
-                )
-                metrics = {
-                    "total_closed_trades": total_closed,
-                    "net_pnl": str(net_pnl),
-                    "win_rate": win_rate,
-                }
-            elif hasattr(report, "as_dict"):
-                report_dict = report.as_dict()
-                if "totals" in report_dict and isinstance(report_dict["totals"], dict):
-                    total_closed = 0
-                    total_won = 0
-                    net_pnl = Decimal("0")
-                    for item in report_dict["totals"].values():
-                        total_closed += int(item.get("closed_trade_count", 0))
-                        total_won += int(item.get("winning_trade_count", 0))
-                        net_pnl += Decimal(str(item.get("net_pnl", "0")))
-                    win_rate = (
-                        round(float(total_won / total_closed * 100), 2) if total_closed > 0 else 0.0
-                    )
-                    metrics = {
-                        "total_closed_trades": total_closed,
-                        "net_pnl": str(net_pnl),
-                        "win_rate": win_rate,
-                    }
-        except Exception:
-            metrics = {}
+    if metrics_loaded:
+        metrics = {
+            "total_closed_trades": metrics_full["total_closed_trades"],
+            "net_pnl": metrics_full["net_pnl"],
+            "win_rate": metrics_full["win_rate"],
+        }
+    operations_health_data = _build_operations_health_data(
+        workspace_id=str(principal.workspace_id),
+        runtime=runtime,
+        workspace=workspace,
+        correlation_id=f"rt-{uuid4().hex[:10]}",
+        now_utc=now_utc,
+    )
 
     return {
         "status": "updated",
@@ -743,6 +813,7 @@ async def dashboard_realtime(
             for b in bot_views
         ],
         "metrics": metrics,
+        "operations_health": operations_health_data,
     }
 
 
@@ -2419,40 +2490,13 @@ async def operations_health(
     except BotAdminError as error:
         raise HTTPException(status_code=error.status_code, detail=error.message) from error
 
-    total_api_errors = sum(int(item.get("error_count", 0) or 0) for item in runtime)
-    loss_snapshot = calculate_loss_windows(
-        events=[],
-        as_of=now_utc,
-        policy=RISK_LOSS_WINDOW_POLICY,
-    )
-    breaker_snapshot = CircuitBreakerEngine().evaluate(
-        OperationalTelemetry(
-            evaluated_at=now_utc,
-            feed_age_seconds=0,
-            daily_loss=loss_snapshot.realized_loss_today,
-            drawdown_pct=Decimal("0"),
-            consecutive_api_errors=total_api_errors,
-            outbox_lag_seconds=0,
-            clock_skew_ms=0,
-            unprotected_exposure_count=0,
-            reconciliation_discrepancy_count=0,
-            unknown_order_count=0,
-        )
-    )
-    health_snapshot = build_system_health_snapshot(
-        service_name="crypidian-admin",
-        environment="PAPER",
+    return _build_operations_health_data(
+        workspace_id=str(identity.principal.workspace_id),
+        runtime=runtime,
+        workspace=workspace,
         correlation_id=correlation_id,
-        breaker=breaker_snapshot,
-        loss_windows=loss_snapshot,
-        metadata={
-            "workspace_id": str(identity.principal.workspace_id),
-            "kill_state": str(workspace.get("kill_state", "ACTIVE")),
-            "runtime_bot_count": len(runtime),
-        },
-        evaluated_at=now_utc,
+        now_utc=now_utc,
     )
-    return health_snapshot.to_dict()
 
 
 # Cột CSV khớp khóa thật của dòng trade (`domain/portfolio/reporting.py::_trade_row`). Không có

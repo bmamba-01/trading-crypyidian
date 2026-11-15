@@ -74,6 +74,22 @@
       <span class="kpi-subtext">Mô phỏng nội bộ trong cơ sở dữ liệu, không gọi API hay đặt lệnh lên Binance</span>
     </div>
   </div>
+  {% if operations_health is defined and operations_health %}
+  {#- Sức khỏe vận hành: cùng dữ liệu với /admin/api/operations/health; cập nhật qua dashboard-realtime.js. -#}
+  <div class="ops-health-strip glass-card" role="group" aria-label="Sức khỏe hệ thống và cầu dao rủi ro">
+    <svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>
+    <span class="ops-health-strip__label">Sức khỏe &amp; cầu dao rủi ro</span>
+    {% if operations_health.status == "HEALTHY" %}
+    <span class="badge badge-success" id="kpi-ops-health" title="Trạng thái cầu dao: {{ operations_health.breaker.state }}">Ổn định</span>
+    {% elif operations_health.status == "DEGRADED" %}
+    <span class="badge badge-warning" id="kpi-ops-health" title="Trạng thái cầu dao: {{ operations_health.breaker.state }}">Chờ xác nhận</span>
+    {% else %}
+    <span class="badge badge-danger" id="kpi-ops-health" title="Trạng thái cầu dao: {{ operations_health.breaker.state }}">Đã ngắt mạch</span>
+    {% endif %}
+    <span class="ops-health-strip__entry" id="kpi-ops-health-sub">Vào lệnh: {{ "Cho phép" if operations_health.breaker.entry_allowed else "Bị chặn" }}</span>
+    <span class="ops-health-strip__note">Hiện chỉ tính số lỗi runtime; lỗ ngày và độ trễ dữ liệu chưa nối vào cầu dao.</span>
+  </div>
+  {% endif %}
 </section>
 
 <div class="dashboard-tabs" data-tabs>
