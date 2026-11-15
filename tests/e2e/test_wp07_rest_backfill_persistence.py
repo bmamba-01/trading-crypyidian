@@ -133,7 +133,8 @@ def run_backfill_compose_probe(*, identity_only: bool) -> dict[str, Any]:
                 "taker_buy_quote_volume = NULL WHERE trade_count IS NOT NULL; "
                 "ALTER TABLE public.market_bar ENABLE TRIGGER USER; COMMIT;",
             )
-            assert "UPDATE 2" in cleared.stdout
+            # 2 nến backfill + 6 nến collector SIG-0 có trường taker.
+            assert "UPDATE 8" in cleared.stdout
             downgrade = subprocess.run(
                 base
                 + [
@@ -187,6 +188,9 @@ def test_backfill_bars_and_cursor_commit_or_rollback_as_one_transaction() -> Non
     result = run_backfill_compose_probe(identity_only=False)
 
     assert result == {
+        "collector_paper_demo_collected": True,
+        "collector_second_tick_without_new_bar_skips_network": True,
+        "collector_without_policy_denied_before_network": True,
         "seeded": True,
         "rollback_left_no_market_rows": True,
         "committed_bars": 2,

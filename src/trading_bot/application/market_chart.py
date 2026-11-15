@@ -63,6 +63,18 @@ NOTICE_STRUCTURE_DELAY = (
 )
 
 
+REAL_MARKET_SOURCES = frozenset({"BINANCE_USDM_REST_BACKFILL", "BINANCE_USDM"})
+
+
+def market_source_label(source: str) -> str:
+    """Nhãn tiếng Việt cho nguồn nến hiển thị trên chart."""
+    if source == "BINANCE_USDM_REST_BACKFILL":
+        return "Binance USDⓈ-M · REST công khai"
+    if source == "BINANCE_USDM":
+        return "Binance USDⓈ-M"
+    return f"Dữ liệu mẫu ({source})" if source else "—"
+
+
 def _series(times: Sequence[int], values: Sequence[float | None]) -> list[dict[str, float]]:
     return [
         {"time": time, "value": round(value, 10)}
@@ -190,6 +202,13 @@ def build_market_chart_payload(
     has_taker = all(value is not None for value in takers)
     open_times = [datetime.fromtimestamp(time, UTC) for time in times]
 
+    source = str(bars[-1].get("source") or "")
+    payload["source"] = source or None
+    payload["source_label"] = market_source_label(source)
+    if source and source not in REAL_MARKET_SOURCES:
+        payload["notices"].append(
+            f"Nến từ nguồn {source} là dữ liệu mẫu/kiểm thử, không phải giá thị trường thật."
+        )
     payload["bars"] = [
         {"time": t, "open": o, "high": h, "low": lo, "close": c}
         for t, o, h, lo, c in zip(times, opens, highs, lows, closes, strict=True)

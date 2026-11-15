@@ -319,18 +319,18 @@ class BotReportRepository:
         ]
 
     async def list_market_series(self, *, workspace_id: UUID, as_of: datetime) -> list[str]:
-        """Các cặp ``SYMBOL|timeframe`` có nến đã đóng trong kho nội bộ của workspace."""
+        """Các bộ ``SYMBOL|timeframe|source`` có nến đã đóng trong kho nội bộ của workspace."""
         rows = await self._session.execute(
-            select(MarketBar.symbol, MarketBar.timeframe)
+            select(MarketBar.symbol, MarketBar.timeframe, MarketBar.source)
             .where(
                 MarketBar.workspace_id == workspace_id,
                 MarketBar.available_at <= as_of,
                 MarketBar.is_closed.is_(True),
             )
-            .group_by(MarketBar.symbol, MarketBar.timeframe)
-            .order_by(MarketBar.symbol, MarketBar.timeframe)
+            .group_by(MarketBar.symbol, MarketBar.timeframe, MarketBar.source)
+            .order_by(MarketBar.symbol, MarketBar.timeframe, MarketBar.source)
         )
-        return [f"{symbol}|{timeframe}" for symbol, timeframe in rows.all()]
+        return [f"{symbol}|{timeframe}|{source}" for symbol, timeframe, source in rows.all()]
 
     async def load_recent_bars(
         self,
@@ -340,6 +340,7 @@ class BotReportRepository:
         timeframe: str,
         as_of: datetime,
         limit: int,
+        source: str | None = None,
     ) -> list[dict[str, Any]]:
         """Đọc ``limit`` nến đã đóng gần nhất (khả dụng tại as_of), giữ bản sửa mới nhất.
 
@@ -355,6 +356,7 @@ class BotReportRepository:
                 MarketBar.timeframe == timeframe,
                 MarketBar.available_at <= as_of,
                 MarketBar.is_closed.is_(True),
+                *([MarketBar.source == source] if source is not None else []),
             )
             .order_by(MarketBar.open_time.desc(), MarketBar.revision.desc())
             .limit(limit * 2)
@@ -374,6 +376,7 @@ class BotReportRepository:
                 "taker_buy_volume": (
                     None if row.taker_buy_base_volume is None else float(row.taker_buy_base_volume)
                 ),
+                "source": row.source,
             }
             for row in latest
         ]

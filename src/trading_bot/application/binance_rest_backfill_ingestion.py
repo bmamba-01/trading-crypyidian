@@ -167,6 +167,14 @@ def _make_version(*, workspace_id: UUID, bar: OHLCVBar) -> tuple[OHLCVBar, Marke
     )
 
 
+def make_backfill_bar_version(
+    *, workspace_id: UUID, bar: OHLCVBar
+) -> tuple[OHLCVBar, MarketRecordVersion]:
+    """Khóa idempotency/record id xác định cho nến REST; collector SIG-0 dùng chung để nến trùng
+    giữa backfill và thu liên tục được nhận là DUPLICATE thay vì xung đột."""
+    return _make_version(workspace_id=workspace_id, bar=bar)
+
+
 def _bar_content_checksum(bar: OHLCVBar) -> str:
     payload = {
         "source": bar.source,

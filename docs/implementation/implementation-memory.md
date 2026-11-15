@@ -3831,3 +3831,27 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
   - Manifest v5.
   - Collector/aggTrades (chờ owner).
   - Các E2E khác có assert head chưa chạy lại trong vòng này (chỉ đổi chuỗi revision); `test_db_role_least_privilege` vẫn hỏng như ghi nhận trước.
+
+### 2026-11-15 — SIG-0 collector nến công khai Binance cho PAPER nội bộ
+
+- **Quyết định owner:** trả lời "Yes, build collector" cho câu hỏi "May the bot store Binance public market data for internal PAPER use?" (15/11/2026). Đây là quyết định #1. Với quyết định #2 (symbol/khung) dùng mặc định đề xuất BTCUSDT/ETHUSDT × 1m/5m/15m/1h/4h, cấu hình được.
+- **Thiết kế:**
+  - `MarketBarCollector` chạy trong `ingestion-worker`, đã có mạng `source_egress` và quyền ghi `market_bar`/`ingestion_cursor`. Bật bằng cờ, chỉ cho PAPER.
+  - Tái dùng `BinanceRestBackfillRunner` với purpose `PAPER_DEMO`, nên rights gate Source Registry chạy trước request.
+  - Instrument tra/ghi sau khi đã có nến. Cursor riêng theo luồng, chỉ tiến tới sau nến cuối thực nhận.
+  - `make_backfill_bar_version` công khai để collector và backfill cùng khóa idempotency.
+  - Readiness có `market_collector`.
+  - Chart chọn một nguồn theo ưu tiên (`preferred_market_source`) và gắn nhãn nguồn/ghi chú "dữ liệu mẫu", vì DB local có nến seed `BINANCE_USDM` (giá phẳng) và `CRYPIDIAN_PIPELINE_FIXTURE`.
+- **Lỗi thật E2E phát hiện:**
+  - Runner từ chối trang REST có `received_at` sau `now`. Adapter thật đóng dấu thời điểm nhận phản hồi, tức luôn sau đầu tick, nên collector chạy thật sẽ luôn lỗi. Unit test không bắt được vì fake dùng mốc cố định.
+  - Sửa bằng `PAGE_RECEIPT_ALLOWANCE` 60 giây cho mốc kiểm hợp lệ (khoảng request vẫn tính từ đầu tick), kèm unit test tái hiện.
+  - Probe thu hồi policy giữa kịch bản, nên bước collector phải đặt trước đoạn thu hồi.
+- **Kiểm chứng:**
+  - Unit `tests/unit` **4260 passed/126.22s**, gồm 8 test collector: luồng/biên đóng nến, lần đầu với PAPER_DEMO, không gọi mạng khi đã đủ, thiếu quyền không gọi Binance/không ghi, nến cuối chưa phát hành được lấy lượt sau, lỗi một luồng không chặn luồng khác, trạng thái readiness, cấu hình chỉ cho PAPER ingestion-worker, trang nhận sau đầu tick.
+  - Ruff, format (973 file), mypy (391 file) đạt.
+  - Compose E2E `test_wp07_rest_backfill_persistence.py` **2 passed/42.25s**: collector qua rights gate và repository PostgreSQL thật ghi 6 nến 5m có taker; lượt hai không tải trùng; workspace không có policy bị `rights_denied` trước khi gọi mạng; guard downgrade SIG-0 và `alembic check` vẫn đạt.
+  - `docker compose -f compose.yaml --profile paper config` hợp lệ.
+- **Chưa chạy thật với Binance:**
+  - Policy `BINANCE_USDM_REST`/PAPER_DEMO cần người duyệt độc lập (self-approve 403). Stack local chỉ có một owner, quản lý thành viên (US-04) chưa có.
+  - Runbook bật chạy ghi trong WBS SIG-0.
+- **Còn mở:** Vision parser, manifest v5, aggTrades, ghi `ingestion_gap`, xung đột khi backfill `feed_delay > 0` trùng khoảng, WebSocket.

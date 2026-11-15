@@ -72,6 +72,19 @@ CHART_INTERVAL_SECONDS = {
 }
 
 
+# Nguồn nến ưu tiên cho chart: REST công khai Binance (backfill/collector SIG-0) rồi tới nguồn
+# Binance khác; nguồn mẫu/kiểm thử chỉ dùng khi không có nguồn thật.
+MARKET_SOURCE_PRIORITY = ("BINANCE_USDM_REST_BACKFILL", "BINANCE_USDM")
+
+
+def preferred_market_source(sources: Sequence[str]) -> str:
+    """Chọn một nguồn theo thứ tự ưu tiên; nguồn ngoài danh sách xếp theo tên cho ổn định."""
+    for source in MARKET_SOURCE_PRIORITY:
+        if source in sources:
+            return source
+    return sorted(sources)[0]
+
+
 class ReportScope(StrEnum):
     BOT = "bot"
     WORKSPACE = "workspace"
@@ -318,9 +331,12 @@ class BotReportingService:
             )
         series: dict[str, list[str]] = {}
         for pair in pairs:
-            symbol, timeframe = pair.split("|", 1)
-            if timeframe in MARKET_CHART_INTERVAL_SECONDS:
-                series.setdefault(symbol, []).append(timeframe)
+            symbol, timeframe, _source = pair.split("|", 2)
+            frames = (
+                series.setdefault(symbol, []) if timeframe in MARKET_CHART_INTERVAL_SECONDS else []
+            )
+            if timeframe in MARKET_CHART_INTERVAL_SECONDS and timeframe not in frames:
+                frames.append(timeframe)
         order = list(MARKET_CHART_INTERVAL_SECONDS)
         return {symbol: sorted(frames, key=order.index) for symbol, frames in series.items()}
 
@@ -359,12 +375,23 @@ class BotReportingService:
                 raise _not_found() from error
             if await repository.get_bot(workspace_id=principal.workspace_id, bot_id=bot_id) is None:
                 raise _not_found()
+            # Một chart chỉ đọc một nguồn để không trộn nến thật với dữ liệu mẫu/kiểm thử.
+            sources = [
+                pair.split("|", 2)[2]
+                for pair in await repository.list_market_series(
+                    workspace_id=principal.workspace_id, as_of=datetime.now(UTC)
+                )
+                if pair.split("|", 2)[:2] == [symbol, timeframe]
+            ]
+            if not sources:
+                return []
             bars: list[dict[str, Any]] = await repository.load_recent_bars(
                 workspace_id=principal.workspace_id,
                 symbol=symbol,
                 timeframe=timeframe,
                 as_of=datetime.now(UTC),
                 limit=limit,
+                source=preferred_market_source(sources),
             )
             return bars
 

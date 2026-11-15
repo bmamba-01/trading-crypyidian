@@ -293,6 +293,11 @@ services:
       # Worker này chỉ xử lý một workspace; thay UUID mẫu bằng workspace đã provision.
       TRADING_BOT_INGESTION_WORKSPACE_ID: ${TRADING_BOT_INGESTION_WORKSPACE_ID:-00000000-0000-0000-0000-000000000000}
       TRADING_BOT_INGESTION_WORKER_TICK_SECONDS: ${TRADING_BOT_INGESTION_WORKER_TICK_SECONDS:-5}
+      # SIG-0: thu nến công khai Binance (owner duyệt 15/11/2026 cho PAPER nội bộ). Mặc định tắt;
+      # khi bật vẫn cần policy BINANCE_USDM_REST mục đích PAPER_DEMO trong Source Registry.
+      TRADING_BOT_MARKET_COLLECTOR_ENABLED: ${TRADING_BOT_MARKET_COLLECTOR_ENABLED:-false}
+      TRADING_BOT_MARKET_COLLECTOR_STREAMS: ${TRADING_BOT_MARKET_COLLECTOR_STREAMS:-BTCUSDT:1m,5m,15m,1h,4h;ETHUSDT:1m,5m,15m,1h,4h}
+      TRADING_BOT_MARKET_COLLECTOR_TICK_SECONDS: ${TRADING_BOT_MARKET_COLLECTOR_TICK_SECONDS:-30}
       TRADING_BOT_DATABASE_USER: crypidian_ingestion_worker
       TRADING_BOT_DATABASE_PASSWORD_FILE: /run/secrets/database_ingestion_worker_password
     profiles: ["paper"]

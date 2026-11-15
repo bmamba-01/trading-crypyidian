@@ -65,7 +65,7 @@
   {% elif chart_payload %}
   <section class="glass-card mc-chart-card" aria-labelledby="mc-title">
     <header class="mc-head">
-      <h2 id="mc-title"><span class="coin-tag" data-coin="{{ chart_payload.symbol }}">{{ chart_payload.symbol }}</span><span class="mc-head__tf">{{ timeframe | upper }}</span><span class="badge badge-neutral" title="Chỉ đọc dữ liệu đã lưu; không gửi lệnh">PAPER · chỉ xem</span></h2>
+      <h2 id="mc-title"><span class="coin-tag" data-coin="{{ chart_payload.symbol }}">{{ chart_payload.symbol }}</span><span class="mc-head__tf">{{ timeframe | upper }}</span><span class="badge badge-neutral" title="Chỉ đọc dữ liệu đã lưu; không gửi lệnh">PAPER · chỉ xem</span><span class="badge badge-neutral mc-source" title="Nguồn nến đang hiển thị" data-mc-source>{{ chart_payload.source_label or "—" }}</span></h2>
       <dl class="mc-summary" data-mc-summary>
         <div><dt>Xu hướng cấu trúc</dt><dd data-mc-trend>—</dd></div>
         <div><dt>Trạng thái trendline</dt><dd data-mc-state>—</dd></div>

@@ -934,7 +934,12 @@ async def test_repository_market_chart_queries_are_workspace_scoped_and_read_onl
     assert await repository.list_market_series(workspace_id=W1, as_of=END) == []
     assert (
         await repository.load_recent_bars(
-            workspace_id=W1, symbol="BTCUSDT", timeframe="5m", as_of=END, limit=600
+            workspace_id=W1,
+            symbol="BTCUSDT",
+            timeframe="5m",
+            as_of=END,
+            limit=600,
+            source="BINANCE_USDM_REST_BACKFILL",
         )
         == []
     )
@@ -944,7 +949,7 @@ async def test_repository_market_chart_queries_are_workspace_scoped_and_read_onl
         "market_bar.workspace_id =",
         "market_bar.available_at <=",
         "market_bar.is_closed IS true",
-        "GROUP BY market_bar.symbol, market_bar.timeframe",
+        "GROUP BY market_bar.symbol, market_bar.timeframe, market_bar.source",
     ):
         assert fragment in series_sql, fragment
     for fragment in (
@@ -953,6 +958,7 @@ async def test_repository_market_chart_queries_are_workspace_scoped_and_read_onl
         "market_bar.timeframe =",
         "market_bar.available_at <=",
         "market_bar.is_closed IS true",
+        "market_bar.source =",
         "ORDER BY market_bar.open_time DESC, market_bar.revision DESC",
         "LIMIT",
     ):
@@ -1068,10 +1074,18 @@ class FakeRepository:
 
     async def list_market_series(self, **kwargs: Any) -> list[str]:
         STORE.calls.append("market_series")
-        return ["BTCUSDT|5m", "BTCUSDT|1h", "BTCUSDT|2h", "ETHUSDT|1m"]
+        return [
+            "BTCUSDT|5m|BINANCE_USDM_REST_BACKFILL",
+            "BTCUSDT|5m|CRYPIDIAN_PIPELINE_FIXTURE",
+            "BTCUSDT|1h|CRYPIDIAN_PIPELINE_FIXTURE",
+            "BTCUSDT|2h|BINANCE_USDM",
+            "ETHUSDT|1m|BINANCE_USDM",
+        ]
 
     async def load_recent_bars(self, **kwargs: Any) -> list[dict[str, Any]]:
-        STORE.calls.append(f"market_bars:{kwargs['symbol']}:{kwargs['timeframe']}")
+        STORE.calls.append(
+            f"market_bars:{kwargs['symbol']}:{kwargs['timeframe']}:{kwargs['source']}"
+        )
         return [{"time": 1, "open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0, "volume": 1.0}]
 
     async def workspace_closed_totals(self, **kwargs: Any) -> dict[str, tuple[int, Decimal]]:
@@ -1220,6 +1234,8 @@ async def test_market_chart_data_requires_report_read_on_existing_bot(
             actor, bot_id=bot_id, symbol="BTCUSDT", timeframe="5m", limit=600
         )
         assert len(bars) == 1
+        # Có cả nguồn thật và nguồn mẫu cho BTCUSDT 5m → chỉ đọc nguồn REST công khai.
+        assert STORE.calls[-2] == "market_bars:BTCUSDT:5m:BINANCE_USDM_REST_BACKFILL"
         assert STORE.units[-1]["snapshot_read_only"] is True
         return
     for call in (

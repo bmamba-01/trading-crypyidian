@@ -64,6 +64,12 @@ class AppSettings(BaseSettings):
     runtime_lease_ttl_seconds: int = Field(default=30, ge=3, le=300)
     runtime_supervisor_tick_seconds: float = Field(default=5.0, gt=0, le=60)
     ingestion_worker_tick_seconds: float = Field(default=5.0, gt=0, le=300)
+    # SIG-0: collector nến công khai Binance trong ingestion-worker (owner duyệt 15/11/2026 cho
+    # PAPER nội bộ). Mặc định tắt; khi bật vẫn phải có policy PAPER_DEMO hợp lệ trong registry.
+    market_collector_enabled: bool = False
+    market_collector_streams: str = "BTCUSDT:1m,5m,15m,1h,4h;ETHUSDT:1m,5m,15m,1h,4h"
+    market_collector_tick_seconds: float = Field(default=30.0, ge=5, le=600)
+    market_collector_initial_bars: int = Field(default=1000, ge=1, le=15000)
     # Cờ kiểm thử: chấp nhận mã xác thực cố định 123456 (chỉ local/test + PAPER, mặc định tắt).
     auth_test_totp_enabled: bool = False
     mfa_encryption_key_file: Path | None = None
@@ -210,6 +216,14 @@ class AppSettings(BaseSettings):
             raise ValueError(
                 "ingestion_workspace_id chỉ được cấu hình cho process_role ingestion-worker."
             )
+        if self.market_collector_enabled:
+            if self.process_role != "ingestion-worker":
+                raise ValueError("market collector chỉ chạy trong process_role ingestion-worker.")
+            if self.trading_mode != "PAPER":
+                raise ValueError("market collector SIG-0 chỉ được duyệt cho chế độ PAPER.")
+            from trading_bot.application.market_bar_collector import parse_collector_streams
+
+            parse_collector_streams(self.market_collector_streams)
         return self
 
     @model_validator(mode="after")

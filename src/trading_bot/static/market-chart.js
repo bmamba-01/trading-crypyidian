@@ -578,6 +578,7 @@
     const lastSweep = [...p.levels]
       .filter((level) => level.state === "rejected")
       .sort((a, b) => b.event_time - a.event_time)[0];
+    setText("[data-mc-source]", p.source_label || "—");
     setText("[data-mc-trend]", TREND_VI[p.structure.trend] || "Chưa xác định");
     setText("[data-mc-state]", STATE_VI[p.structure.state] || "—");
     setText(
