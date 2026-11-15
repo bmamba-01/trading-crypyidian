@@ -23,7 +23,7 @@ def connect():
 
 with connect() as connection:
     heads = connection.execute("SELECT version_num FROM alembic_version").fetchall()
-    assert heads == [("f1b3d5e7a9c2",)]
+    assert heads == [("b2d4f6a8c0e3",)]
     connection.execute(
         "SELECT set_config('app.workspace_id', %s, true)",
         (str(workspace_id),),

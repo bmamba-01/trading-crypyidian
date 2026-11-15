@@ -301,6 +301,10 @@ DEFINER_OWNERS = {
     "crypidian_scorer_deployment_rights_reader",
     "crypidian_learning_model_registry_guard",
     "crypidian_learning_shadow_integrity_guard",
+    # WP06 incident entry hold (f5b7d9e1a3c6 + b2d4f6a8c0e3) và paper performance (c7e9a1b3d5f8).
+    "crypidian_learning_incident_guard",
+    "crypidian_learning_incident_reader",
+    "crypidian_learning_paper_performance_evaluator",
     "crypidian_risk_aggregator",
     "crypidian_source_expiry_scanner",
     "crypidian_source_rights_emitter",

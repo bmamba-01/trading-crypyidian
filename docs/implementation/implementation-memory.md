@@ -4048,3 +4048,26 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
   - Không đổi hàm DB: kiểm `session_user` là chủ ý để `SET ROLE` từ user khác không vượt được ranh giới.
 - **Kiểm chứng:** Compose E2E hai test **2 passed/85.96s**; ruff, format sạch.
 - **Còn mở:** các probe khác dùng `-c role=` (wp05/wp06/wp03) chưa gọi hàm này nên không bị ảnh hưởng hiện tại; `tests/e2e/test_db_role_least_privilege.py` vẫn fail vì owner 5 hàm SECURITY DEFINER WP06 (đã ghi trước, chưa xử lý).
+
+### 2026-11-15 — Sửa `test_db_role_least_privilege`: 3 hàm SECURITY DEFINER WP06 do `crypidian_admin` sở hữu
+
+- **Yêu cầu của owner:** "Yes, fix it".
+- **Lỗi E2E:** 5 hàm `definer owner` ngoài allowlist.
+  - (a) `wp06_learning_incident_guard()`, `wp06_lock_learning_incident_scope(uuid,uuid)`, `wp06_learning_incident_eligible_target(uuid,uuid)` do **`crypidian_admin`** sở hữu: role đăng nhập, superuser, bỏ qua RLS. Migration `f5b7d9e1a3c6` quên `ALTER FUNCTION … OWNER`, nên các hàm SECURITY DEFINER chạy với toàn quyền admin. **Lỗ hổng thật.**
+  - (b) `wp06_learning_incident_hold_active` (owner `crypidian_learning_incident_reader`) và `wp06_aggregate_paper_performance` (owner `crypidian_learning_paper_performance_evaluator`) đúng mẫu NOLOGIN, chỉ thiếu trong allowlist của probe.
+- **Sửa:**
+  - Migration `b2d4f6a8c0e3` (sau `f1b3d5e7a9c2`) tạo role `crypidian_learning_incident_guard` (NOLOGIN, NOSUPERUSER, NOBYPASSRLS, NOINHERIT), sau đó:
+    - SELECT + policy `wp06_incident_guard_read` theo `app.workspace_id` trên 9 bảng mà ba hàm đọc;
+    - EXECUTE trên các hàm được gọi (`wp06_resolve_scorer_runtime_target`, `wp06_lock_learning_shadow_cohort`, `wp06_canonical_utc_timestamp_json`, `wp06_learning_incident_canonical`, `wp06_compact_canonical_json`);
+    - đổi owner ba hàm, cấp lại EXECUTE gốc (chỉ `crypidian_admin_web`);
+    - downgrade đảo ngược đầy đủ.
+  - Kiểm caller `session_user` trong hàm giữ nguyên.
+  - Probe least-privilege thêm 3 owner hợp lệ.
+  - Head đổi sang `b2d4f6a8c0e3` trong unit/E2E.
+- **Lỗi khi sửa:** bản đầu thiếu EXECUTE `wp06_compact_canonical_json(json)`, do hàm SQL `wp06_learning_incident_canonical` gọi tiếp dưới quyền owner mới. E2E admin incident báo "DB từ chối event incident"; trên HEAD sạch thì đạt.
+  - Bắt được lỗi PostgreSQL `permission denied for function wp06_compact_canonical_json` bằng cách đọc log postgres của project E2E trong lúc test chạy.
+  - `WP06_INCIDENT_TARGET_STALE` trong log là ca âm có chủ đích của test.
+- **Kiểm chứng:**
+  - Compose E2E **9 passed/188.82s**: 4 test incident hold (admin UI, admin, runtime, schema), `test_db_role_least_privilege`, `test_multibot_runtime_control`, `test_workspace_risk_real_paths`. PNG evidence bị ghi đè đã khôi phục.
+  - Unit **4320 passed/124.09s**; ruff, format, mypy sạch.
+  - DB local hạ/nâng lại lên `b2d4f6a8c0e3` với bản cuối (guard có EXECUTE compact json, owner hàm guard = role mới).

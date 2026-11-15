@@ -111,7 +111,7 @@ def test_rest_candles_drive_paper_entry_fill_and_stop_exit_idempotently() -> Non
         compose("run", "--rm", "--no-deps", "db-provisioner")
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "head")
         heads = compose("run", "--rm", "--no-deps", "migrator", "alembic", "heads")
-        assert "f1b3d5e7a9c2 (head)" in heads.stdout
+        assert "b2d4f6a8c0e3 (head)" in heads.stdout
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "check")
         state.update(run("seed"))
         assert run("genesis") == {"genesis": True}
