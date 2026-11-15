@@ -5,6 +5,7 @@ from decimal import Decimal
 from uuid import UUID
 
 from sqlalchemy import (
+    BigInteger,
     CheckConstraint,
     DateTime,
     ForeignKeyConstraint,
@@ -140,6 +141,19 @@ class MarketBar(UuidPrimaryKey, CreatedAt, Base):
             "quote_volume IS NULL OR quote_volume >= 0",
             name="market_bar_quote_volume_nonnegative",
         ),
+        CheckConstraint(
+            "trade_count IS NULL OR trade_count >= 0", name="market_bar_trade_count_nonnegative"
+        ),
+        CheckConstraint(
+            "taker_buy_base_volume IS NULL OR "
+            "(taker_buy_base_volume >= 0 AND taker_buy_base_volume <= volume)",
+            name="market_bar_taker_buy_base_within_volume",
+        ),
+        CheckConstraint(
+            "taker_buy_quote_volume IS NULL OR (taker_buy_quote_volume >= 0 AND "
+            "(quote_volume IS NULL OR taker_buy_quote_volume <= quote_volume))",
+            name="market_bar_taker_buy_quote_within_quote_volume",
+        ),
         Index(
             "ix_market_bar_asof", "workspace_id", "symbol", "timeframe", "open_time", "available_at"
         ),
@@ -169,6 +183,10 @@ class MarketBar(UuidPrimaryKey, CreatedAt, Base):
     close: Mapped[Decimal] = mapped_column(_MARKET_VALUE, nullable=False)
     volume: Mapped[Decimal] = mapped_column(_MARKET_VALUE, nullable=False)
     quote_volume: Mapped[Decimal | None] = mapped_column(_MARKET_VALUE, nullable=True)
+    # SIG-0: trường kline [8]/[9]/[10]; NULL với dữ liệu cũ hoặc nguồn không cung cấp.
+    trade_count: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    taker_buy_base_volume: Mapped[Decimal | None] = mapped_column(_MARKET_VALUE, nullable=True)
+    taker_buy_quote_volume: Mapped[Decimal | None] = mapped_column(_MARKET_VALUE, nullable=True)
     is_closed: Mapped[bool] = mapped_column(nullable=False)
 
 

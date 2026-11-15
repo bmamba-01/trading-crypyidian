@@ -10,7 +10,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import psycopg
 from sqlalchemy import event, func, select, text
@@ -116,6 +116,9 @@ class FixtureKlineProvider:
             close=Decimal("101"),
             volume=Decimal("1.5"),
             quote_volume=Decimal("151.5"),
+            trade_count=12,
+            taker_buy_base_volume=Decimal("0.9"),
+            taker_buy_quote_volume=Decimal("90.9"),
             is_closed=True,
             source="BINANCE_USDM",
             source_cursor=f"fixture:{expected.isoformat()}",
@@ -150,6 +153,9 @@ async def _exercise() -> dict[str, Any]:
     )
     from trading_bot.adapters.database.models.market_entities import IngestionCursor as CursorRow
     from trading_bot.adapters.database.models.market_entities import MarketBar
+    from trading_bot.adapters.database.models.source_license_evidence_entities import (
+        SourceLicenseEvidenceRecord,
+    )
     from trading_bot.adapters.database.repositories.backtest_dataset_manifests import (
         BacktestDatasetManifestRepository,
     )
@@ -189,6 +195,11 @@ async def _exercise() -> dict[str, Any]:
     )
     from trading_bot.application.outbox import UnitOfWork
     from trading_bot.domain.market.models import OHLCVBar
+    from trading_bot.domain.research.license_scope import (
+        SourceLicenseScope,
+        canonical_scope_json,
+        scope_sha256,
+    )
     from trading_bot.domain.research.source_policy import SourcePolicyState, SourceUsePurpose
     from trading_bot.domain.research.source_registry import (
         SourceBudget,
@@ -296,12 +307,38 @@ async def _exercise() -> dict[str, Any]:
         at=NOW - timedelta(days=3),
         reason="Tạo policy quyền fixture cho E2E.",
     )
+    # Từ WP06 (13/11/2026) policy VERIFIED mới phải kèm license scope + bằng chứng đã lưu
+    # (digest/scope_hash); fixture dùng tài liệu giả, không phải giấy phép thật.
+    license_scope = SourceLicenseScope(
+        source_id="BINANCE_USDM_REST",
+        provider="FIXTURE",
+        product="USDM_KLINES",
+        venue="PUBLIC",
+        contract="RESEARCH",
+        symbols=("BTCUSDT",),
+        intervals=("1m", "1h", "4h"),
+        data_start=NOW - timedelta(days=3650),
+        data_end=NOW + timedelta(days=3650),
+        allowed_purposes=(SourceUsePurpose.BACKTEST_RESEARCH,),
+        allowed_outputs=("aggregate_report", "derived_features"),
+        derived_use=("aggregate_reporting", "feature_extraction"),
+        attribution="Provider fixture",
+        max_retention_days=None,
+    )
+    license_evidence_id = uuid4()
     pending = policy_entry.transition(
         policy_id="BINANCE_USDM_REST:fixture-pending",
         state=SourcePolicyState.RIGHTS_PENDING,
         actor_id="fixture-operator",
         at=NOW - timedelta(days=2),
         reason="Chờ xác minh policy fixture.",
+        evidence_ref="https://example.invalid/test-fixture-terms",
+        provider=license_scope.provider,
+        product=license_scope.product,
+        venue=license_scope.venue,
+        contract=license_scope.contract,
+        license_scope=license_scope,
+        attribution=license_scope.attribution,
     )
     verified = pending.transition(
         policy_id="BINANCE_USDM_REST:fixture-verified",
@@ -309,6 +346,10 @@ async def _exercise() -> dict[str, Any]:
         actor_id="fixture-operator",
         at=NOW - timedelta(hours=1),
         reason="Cho phép fixture backtest research.",
+        license_scope=license_scope,
+        license_evidence_id=license_evidence_id,
+        license_digest="a" * 64,
+        license_scope_hash=scope_sha256(license_scope),
         allowed_purposes=frozenset({SourceUsePurpose.BACKTEST_RESEARCH}),
         evidence_ref="https://example.invalid/test-fixture-terms",
         reviewed_at=NOW - timedelta(hours=1),
@@ -320,6 +361,27 @@ async def _exercise() -> dict[str, Any]:
     )
     for revision in policy_history.revisions:
         async with UnitOfWork(sessions, workspace_id=WORKSPACE_ID) as uow:
+            if revision.state is SourcePolicyState.VERIFIED:
+                uow.session.add(
+                    SourceLicenseEvidenceRecord(
+                        id=license_evidence_id,
+                        workspace_id=WORKSPACE_ID,
+                        source_id="BINANCE_USDM_REST",
+                        policy_id="BINANCE_USDM_REST:fixture-pending",
+                        idempotency_key=uuid4(),
+                        evidence_ref="https://example.invalid/test-fixture-terms",
+                        digest="a" * 64,
+                        byte_count=64,
+                        media_type="text/plain",
+                        scope_version=license_scope.scope_version,
+                        license_scope=json.loads(canonical_scope_json(license_scope)),
+                        canonical_scope=canonical_scope_json(license_scope),
+                        scope_hash=scope_sha256(license_scope),
+                        actor_id="fixture-operator",
+                        created_at=NOW - timedelta(hours=2),
+                    )
+                )
+                await uow.session.flush()
             await SourceRegistryRepository(uow.session).append_revision(
                 workspace_id=WORKSPACE_ID,
                 revision=revision,
@@ -1387,6 +1449,11 @@ async def _exercise() -> dict[str, Any]:
         and dataset_manifest.coverage_ratio == 1.0,
         "quote_volume_persisted": tuple(bar.quote_volume for bar in bars_after_commit)
         == (Decimal("151.5"), Decimal("151.5")),
+        "taker_flow_persisted": tuple(
+            (bar.trade_count, bar.taker_buy_base_volume, bar.taker_buy_quote_volume)
+            for bar in bars_after_commit
+        )
+        == ((12, Decimal("0.9"), Decimal("90.9")),) * 2,
         "backtest_manifest_persisted": first_manifest.record.dataset_hash
         == dataset_manifest.dataset_hash
         and loaded_manifest == dataset_manifest,

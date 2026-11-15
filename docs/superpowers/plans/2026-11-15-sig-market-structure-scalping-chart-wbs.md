@@ -1,6 +1,6 @@
 # WBS SIG — Cấu trúc thị trường, thanh khoản phiên, áp lực mua/bán, scalping và chart kiểu TradingView
 
-**Ngày:** 2026-11-15 · **Trạng thái:** SIG-1 và SIG-7 đã triển khai lát đầu (15/11/2026); các gói khác là kế hoạch · **Chế độ:** PAPER/replay; chỉ dữ liệu thị trường công khai; không route order, không bật SHADOW/PAPER_GATE/Demo/LIVE. <br>
+**Ngày:** 2026-11-15 · **Trạng thái:** SIG-0 (phần lưu trữ), SIG-1 và SIG-7 đã triển khai lát đầu (15/11/2026); các gói khác là kế hoạch · **Chế độ:** PAPER/replay; chỉ dữ liệu thị trường công khai; không route order, không bật SHADOW/PAPER_GATE/Demo/LIVE. <br>
 **Nghiên cứu nền:** [đối chiếu tín hiệu, 3 chỉ báo, scalping, chart](../../research/signal-scalping-chart-research-2026-11-15.md). <br>
 **Mở rộng từ:** [khảo sát 14/11](./2026-11-14-feature-survey-and-manager-insights.md) (DATA-1, IND-1, IND-2, IND-4, MI-1, MI-6, TG-1), [kế hoạch công thức + Strategy Card](./2026-11-14-strategy-formula-and-card-readiness.md) (BT-1, SC-1), [WBS Trader Workbench](./2026-11-03-wp07-trader-workbench-wbs.md) (WB07A chart, WB07B Telegram), [WP-SC](./2026-11-05-wp-sc-strategy-card-wbs.md), [WP06](./2026-11-01-wp06-learning-wbs.md) (hiệu chuẩn).
 
@@ -37,6 +37,12 @@ Họ mã mới `SIG-n` (tránh va chạm nhãn WP-07: Plan 07 = OPS07, Trader Wo
 4. (Tùy chọn, sau quyết định owner) aggTrades cuộn có retention giới hạn cho delta theo giá; REST chỉ giữ 48 giờ.
 
 **Acceptance:** fixture REST có taker buy → DB → snapshot giữ nguyên Decimal; bar cũ NULL không làm feature delta "bịa" giá trị (feature trả thiếu dữ liệu); E2E collector fixture → bar → cursor → resume không trùng. **Phụ thuộc:** quyết định owner #1 (quyền dữ liệu PAPER nội bộ), #2 (symbol/khung).
+
+**Đã triển khai (15/11/2026, mục 1–2 cho REST):**
+- Migration `e3a5c7e9f1b4` (head mới, sau `d2e4f6a8b0c1`): `market_bar.trade_count BIGINT`, `taker_buy_base_volume`, `taker_buy_quote_volume NUMERIC(38,18)` nullable; CHECK không âm, taker base ≤ volume, taker quote ≤ quote volume; downgrade raise `SIG0_MARKET_BAR_TAKER_FLOW_DOWNGRADE_REQUIRES_EMPTY_COLUMNS` khi đã có giá trị rồi mới drop.
+- `OHLCVBar` thêm 3 trường tùy chọn có kiểm biên; `_parse_kline` REST đọc `[8]/[9]/[10]` (lỗi định dạng → `MarketDataContractError`); REST backfill chép sang bar; `MarketDataRepository` ghi/đọc; checksum nội dung bar backfill chỉ thêm khóa khi có giá trị nên bar cũ giữ nguyên checksum.
+- Chart (`load_recent_bars`) trả `taker_buy_volume` → lớp delta/CVD/profile mua-bán tự bật khi nến có dữ liệu.
+- **Chưa làm:** parser Binance Vision (CSV archive; checksum archive hiện hành không đổi), manifest v5 ghim trường taker vào bar hash (cần trước khi chiến lược SIG-4 dùng taker), collector nến trực tiếp và aggTrades (chờ quyết định owner #1/#2 về quyền dữ liệu/symbol). Nến đang có trong DB vẫn NULL; chỉ backfill REST có rights evidence hợp lệ mới ghi taker.
 
 ### SIG-1 — Thư viện feature cấu trúc/phiên/khối lượng không nhìn trước (mở rộng IND-1, IND-2, IND-4, FX-6)
 

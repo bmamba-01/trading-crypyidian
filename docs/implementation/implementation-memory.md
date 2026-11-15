@@ -3797,3 +3797,37 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
   - Phần chưa làm của SIG-1/SIG-7 đã liệt kê trong WBS SIG.
   - Dữ liệu seed local là nến tổng hợp (1m giá phẳng 100), nên chart local không phản ánh thị trường thật.
   - Sidebar đè nội dung trong ảnh `full_page` của Playwright là lỗi chụp đã biết.
+
+### 2026-11-15 — SIG-0: lưu số giao dịch và taker buy của kline (lớp lưu trữ)
+
+- **Yêu cầu của owner:** chọn "SIG-0 taker buy data".
+- **Phạm vi đã làm:**
+  - Migration `e3a5c7e9f1b4_sig0_market_bar_taker_flow.py` (down `d2e4f6a8b0c1`): 3 cột nullable, 3 CHECK, downgrade có guard.
+  - ORM `MarketBar` (+ `BigInteger`).
+  - `OHLCVBar.trade_count/taker_buy_base_volume/taker_buy_quote_volume` có kiểm biên.
+  - `_parse_kline` + `_trade_count` (REST).
+  - `binance_rest_backfill` chép trường.
+  - `_bar_content_checksum` chỉ thêm khóa khi có giá trị.
+  - `MarketDataRepository.append_bar/_to_domain_bar`.
+  - `bot_reports.load_recent_bars` trả `taker_buy_volume` cho chart.
+  - Head Alembic trong 14 tệp E2E/probe đổi sang `e3a5c7e9f1b4`.
+- **Quyết định:**
+  - Không ước lượng: nến cũ giữ NULL.
+  - Tên CHECK trong migration theo tiền lệ `quote_volume` (tên gốc); ORM có tiền tố naming convention `ck_market_bar_`.
+  - Chưa đưa trường taker vào bar hash của manifest (v3/v4 không đổi). Cần manifest v5 trước khi chiến lược dùng taker trong replay.
+  - Không dựng collector trực tiếp vì quyết định owner #1 (quyền dữ liệu PAPER) và #2 (symbol/khung) chưa có.
+- **Lỗi có sẵn phát hiện và đã sửa:**
+  - `tests/e2e/test_wp07_rest_backfill_persistence.py` (2 test) **đã hỏng trên HEAD trước SIG-0** (kiểm bằng worktree sạch `7bef1d9`): `ValueError: Policy verified mới cần license evidence digest và scope.` Nguyên nhân: từ WP06 license evidence (13/11) policy VERIFIED mới bắt buộc license scope + bằng chứng, probe vẫn seed policy cũ. Sửa probe `wp07_backfill_persistence.py`: thêm `SourceLicenseScope` (BINANCE_USDM_REST/FIXTURE, BTCUSDT 1m/1h/4h, BACKTEST_RESEARCH), pending có identity/scope, VERIFIED kèm evidence id/digest/scope_hash, và ghi `SourceLicenseEvidenceRecord` trước revision VERIFIED (theo mẫu probe WP05).
+  - Hệ quả: downgrade tới `b1d3f5a7c9e2` giờ bị guard `WP06_LICENSE_EVIDENCE_DOWNGRADE_BLOCKED` chặn trước guard WP07C (nằm dưới trong chuỗi). E2E đổi kỳ vọng sang guard WP06; guard WP07C được kiểm tĩnh bằng unit `test_wp07c_replay_job_downgrade_guard_still_present`.
+  - E2E kiểm guard SIG-0 trước. Để dọn cột SIG-0, test tạm `DISABLE TRIGGER USER` của `market_bar` (bảng append-only) trong một transaction rồi bật lại. Chỉ dùng cho dữ liệu fixture.
+- **Kiểm chứng:**
+  - Unit `tests/unit` **4252 passed/122.09s** (13 test mới trong `test_sig0_taker_flow.py`: head duy nhất qua đồ thị revision, SQL upgrade/downgrade, ORM khớp tên ràng buộc, parser giữ Decimal và từ chối giá trị sai, domain chặn taker > volume, repository ghi/đọc/NULL, checksum bar cũ không đổi).
+  - Ruff, format (970 file), mypy (389 file) đạt.
+  - Compose E2E `test_wp07_rest_backfill_persistence.py` **2 passed/44.47s**: taker lưu và đọc lại trên PostgreSQL, `alembic check` đạt, guard SIG-0 chặn downgrade.
+  - Compose E2E head `test_wp06_scorer_receipt_projection.py` **1 passed/25.07s**.
+  - Stack local migrate lên `e3a5c7e9f1b4`: 3475 nến đều NULL taker; `/admin/chart` 200, không lỗi console.
+- **Còn mở:**
+  - Parser Vision.
+  - Manifest v5.
+  - Collector/aggTrades (chờ owner).
+  - Các E2E khác có assert head chưa chạy lại trong vòng này (chỉ đổi chuỗi revision); `test_db_role_least_privilege` vẫn hỏng như ghi nhận trước.

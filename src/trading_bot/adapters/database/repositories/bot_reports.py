@@ -344,8 +344,8 @@ class BotReportRepository:
         """Đọc ``limit`` nến đã đóng gần nhất (khả dụng tại as_of), giữ bản sửa mới nhất.
 
         Đọc dư gấp đôi để bù các bản sửa (revision) trùng ``open_time`` rồi cắt lại; kết quả
-        sắp tăng dần theo thời gian. Bảng nến chưa có cột taker buy (SIG-0) nên không trả trường
-        đó — tầng dựng chart tự ẩn lớp áp lực mua/bán.
+        sắp tăng dần theo thời gian. ``taker_buy_volume`` (SIG-0) là ``None`` khi nến chưa có
+        trường này — tầng dựng chart tự ẩn lớp áp lực mua/bán thay vì ước lượng.
         """
         rows = await self._scalars(
             select(MarketBar)
@@ -371,6 +371,9 @@ class BotReportRepository:
                 "low": float(row.low),
                 "close": float(row.close),
                 "volume": float(row.volume),
+                "taker_buy_volume": (
+                    None if row.taker_buy_base_volume is None else float(row.taker_buy_base_volume)
+                ),
             }
             for row in latest
         ]
