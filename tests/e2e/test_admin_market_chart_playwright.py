@@ -311,6 +311,17 @@ def test_market_chart_renders_overlays_polls_and_is_responsive(server_url: str) 
         expect(rows.nth(3)).to_contain_text("Thời điểm")
         expect(matrix.locator(".is-primary")).to_contain_text("5M")
 
+        # CK-3: lớp ICT — số vùng còn hiệu lực, công tắc killzone (mặc định tắt), chip killzone.
+        expect(page.locator("[data-mc-ict-count]")).to_have_text(re.compile(r"^\d+$"))
+        expect(page.locator('[data-layer="ict_zones"]')).to_be_checked()
+        expect(page.locator('[data-layer="killzones"]')).not_to_be_checked()
+        page.locator('[data-layer="killzones"]').check()
+        expect(strip.locator("[data-ov-killzones]")).not_to_be_empty()
+        page.locator("#market-chart").screenshot(
+            path=str(SCREENSHOTS_DIR / "ck3-ict-layer-desktop.png")
+        )
+        page.locator('[data-layer="killzones"]').uncheck()
+
         # Thẻ tín hiệu SIG-3: hướng, SL, checklist và quyết định không vào lệnh gần nhất.
         signal = page.locator("[data-signal-card]")
         expect(signal).to_contain_text("BÁN")

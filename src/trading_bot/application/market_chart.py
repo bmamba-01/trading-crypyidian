@@ -13,6 +13,17 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from trading_bot.domain.market.features import atr, ema, macd, rsi, vwap
+from trading_bot.domain.market.ict import (
+    ICT_FORMULA_VERSION,
+    KILLZONE_TABLE_VERSION,
+    PriceZone,
+    balanced_price_ranges,
+    equal_levels,
+    fair_value_gaps,
+    intermediate_swings,
+    killzone_windows,
+    order_blocks,
+)
 from trading_bot.domain.market.sessions import (
     LIQUIDITY_FORMULA_VERSION,
     SESSION_FORMULA_VERSION,
@@ -51,6 +62,20 @@ MARKET_CHART_MAX_LIMIT = 1000
 SWING_LEFT_BARS = 3
 SWING_RIGHT_BARS = 3
 PROFILE_BINS = 24
+# CK-3: dải killzone chỉ vẽ ở khung ≤ 15 phút (khung lớn hơn chỉ còn 1–3 nến mỗi cửa sổ) và
+# trong 3 ngày gần nhất; số vùng vẽ có trần để chart mượt trên mobile.
+KILLZONE_MAX_INTERVAL_SECONDS = 900
+KILLZONE_LOOKBACK = timedelta(days=3)
+ICT_ZONE_LIMITS = {"fvg": 12, "order_block": 8, "bpr": 4}
+ICT_LIVE_STATES = frozenset({"active", "partial", "inverted"})
+ZONE_LABELS_VI = {
+    ("fvg", "bullish"): "FVG tăng",
+    ("fvg", "bearish"): "FVG giảm",
+    ("order_block", "bullish"): "OB tăng",
+    ("order_block", "bearish"): "OB giảm",
+    ("bpr", "bullish"): "BPR tăng",
+    ("bpr", "bearish"): "BPR giảm",
+}
 
 NOTICE_NO_TAKER = (
     "Chưa có dữ liệu khối lượng mua chủ động (taker buy) cho các nến này nên lớp áp lực "
@@ -137,6 +162,107 @@ def _profile_payload(
     }
 
 
+def _zone_payload(zone: PriceZone, times: Sequence[int], last_close: int) -> dict[str, Any]:
+    """Vùng ngừng kéo dài khi mất hiệu lực, hoặc khi FVG bị lấp đầy mà chưa đảo vai."""
+    state = zone.state
+    ended = zone.invalidated_index
+    if ended is None and state == "filled":
+        ended = zone.filled_index
+    label = ZONE_LABELS_VI[(zone.kind, zone.direction)]
+    if state == "inverted":
+        # FVG tăng bị đóng cửa xuyên xuống trở thành kháng cự (IFVG giảm) và ngược lại.
+        label = "IFVG giảm" if zone.direction == "bullish" else "IFVG tăng"
+    return {
+        "kind": zone.kind,
+        "direction": zone.direction,
+        "label": label,
+        "top": zone.top,
+        "bottom": zone.bottom,
+        "start_time": times[zone.created_index],
+        "confirmed_time": times[zone.confirmed_index],
+        "end_time": times[ended] if ended is not None else last_close,
+        "state": state,
+        "touched_time": (
+            times[zone.first_touch_index] if zone.first_touch_index is not None else None
+        ),
+    }
+
+
+def _ict_payload(
+    *,
+    times: Sequence[int],
+    open_times: Sequence[datetime],
+    opens: Sequence[float],
+    highs: Sequence[float],
+    lows: Sequence[float],
+    closes: Sequence[float],
+    atr_values: Sequence[float | None],
+    structure_swings: Sequence[Any],
+    structure_breaks: Sequence[Any],
+    interval: timedelta,
+) -> dict[str, Any]:
+    """Lớp ICT/SMC (CK-3) đã giới hạn số vùng; ưu tiên vùng còn hiệu lực, rồi vùng mới nhất."""
+    last_close_at = open_times[-1] + interval
+    last_close = int(last_close_at.timestamp())
+    killzones: list[dict[str, Any]] = []
+    if interval.total_seconds() <= KILLZONE_MAX_INTERVAL_SECONDS:
+        window_start = max(open_times[0], last_close_at - KILLZONE_LOOKBACK)
+        killzones = [
+            {
+                "key": item.key,
+                "label": item.label_vi,
+                "kind": item.kind,
+                "start": int(item.open_at.timestamp()),
+                "end": int(item.close_at.timestamp()),
+            }
+            for item in killzone_windows(window_start, last_close_at)
+        ]
+    gaps = fair_value_gaps(opens, highs, lows, closes, atr_values=atr_values)
+    groups: dict[str, tuple[PriceZone, ...]] = {
+        "fvg": gaps,
+        "order_block": order_blocks(opens, highs, lows, closes, structure_breaks),
+        "bpr": balanced_price_ranges(gaps, closes),
+    }
+    zones: list[dict[str, Any]] = []
+    for kind, items in groups.items():
+        ranked = sorted(
+            items,
+            key=lambda zone: (zone.state in ICT_LIVE_STATES, zone.confirmed_index),
+            reverse=True,
+        )[: ICT_ZONE_LIMITS[kind]]
+        zones.extend(_zone_payload(zone, times, last_close) for zone in ranked)
+    zones.sort(key=lambda item: item["confirmed_time"])
+    levels = [
+        {
+            "side": level.side,
+            "label": "Đỉnh bằng nhau (EQH)" if level.side == "high" else "Đáy bằng nhau (EQL)",
+            "price": level.price,
+            "start_time": times[level.swing_indices[0]],
+            "confirmed_time": times[level.confirmed_index],
+            "end_time": times[level.swept_index] if level.swept_index is not None else last_close,
+            "swept": level.swept_index is not None,
+        }
+        for level in equal_levels(structure_swings, highs, lows, atr_values)
+    ][-6:]
+    swings = [
+        {
+            "kind": item.kind,
+            "label": "ITH" if item.kind == "high" else "ITL",
+            "time": times[item.index],
+            "confirmed_time": times[item.confirmed_index],
+            "price": item.price,
+        }
+        for item in intermediate_swings(structure_swings)
+    ][-8:]
+    return {
+        "killzones": killzones,
+        "zones": zones,
+        "equal_levels": levels,
+        "intermediate_swings": swings,
+        "counts": {"active": sum(1 for item in zones if item["state"] in ICT_LIVE_STATES)},
+    }
+
+
 def chart_fingerprint(symbol: str, timeframe: str, bars: Sequence[Mapping[str, Any]]) -> str:
     """Dấu vân tay rẻ cho polling: đổi khi có nến mới hoặc nến cuối bị sửa."""
     last = bars[-1] if bars else {}
@@ -171,6 +297,8 @@ def build_market_chart_payload(
             "session": SESSION_FORMULA_VERSION,
             "liquidity": LIQUIDITY_FORMULA_VERSION,
             "volume_profile": VOLUME_PROFILE_FORMULA_VERSION,
+            "ict": ICT_FORMULA_VERSION,
+            "killzone_table": KILLZONE_TABLE_VERSION,
         },
         "bars": [],
         "volume": [],
@@ -181,6 +309,13 @@ def build_market_chart_payload(
         "sessions": [],
         "levels": [],
         "volume_profiles": [],
+        "ict": {
+            "killzones": [],
+            "zones": [],
+            "equal_levels": [],
+            "intermediate_swings": [],
+            "counts": {"active": 0},
+        },
         "notices": [],
     }
     if not bars:
@@ -313,6 +448,18 @@ def build_market_chart_payload(
         for line in lines.lines[-8:]
     ]
     payload["notices"].append(NOTICE_STRUCTURE_DELAY.format(right=SWING_RIGHT_BARS))
+    payload["ict"] = _ict_payload(
+        times=times,
+        open_times=open_times,
+        opens=opens,
+        highs=highs,
+        lows=lows,
+        closes=closes,
+        atr_values=atr_values,
+        structure_swings=structure.swings,
+        structure_breaks=structure.breaks,
+        interval=interval,
+    )
 
     if interval_seconds <= SESSION_MAX_INTERVAL_SECONDS:
         last_close = int((open_times[-1] + interval).timestamp())

@@ -17,6 +17,9 @@
   ("structure", "Swing, BOS/CHoCH", true),
   ("trendlines", "Trendline", true),
   ("profile", "Volume profile", true),
+  ("ict_zones", "FVG · OB · BPR", true),
+  ("equal_levels", "EQH/EQL · ITH/ITL", true),
+  ("killzones", "Killzone ICT (giờ NY)", false),
   ("signal", "Thẻ tín hiệu (SL/TP)", true),
   ("quote", "Bid/Ask trực tiếp", true),
   ("rsi", "RSI 14", false),
@@ -98,7 +101,7 @@
     <div class="mc-live__item">
       <span class="mc-live__label">Phiên đang chạy</span>
       <span class="mc-live__value" data-ov-sessions>{% for item in overview.sessions %}<span class="mc-session-chip mc-session-chip--{{ item.key }}">{{ item.label }}</span>{% else %}Ngoài phiên chính{% endfor %}</span>
-      <span class="mc-live__sub">Giờ địa phương từng sàn, theo DST</span>
+      <span class="mc-live__sub" data-ov-killzones>{% for item in overview.killzones %}<span class="mc-kz-chip mc-kz-chip--{{ item.kind }}">{{ item.label }}</span>{% else %}Ngoài killzone ICT{% endfor %}</span>
     </div>
     <div class="mc-live__item">
       <span class="mc-live__label">Biên ngày (UTC)</span>
@@ -120,6 +123,7 @@
         <div><dt>Xu hướng cấu trúc</dt><dd data-mc-trend>—</dd></div>
         <div><dt>Trạng thái trendline</dt><dd data-mc-state>—</dd></div>
         <div><dt>Quét thanh khoản gần nhất</dt><dd data-mc-sweep>—</dd></div>
+        <div><dt>Vùng ICT còn hiệu lực</dt><dd data-mc-ict-count>{{ chart_payload.ict.counts.active }}</dd></div>
         <div><dt>Cập nhật</dt><dd data-mc-updated>—</dd></div>
       </dl>
     </header>
@@ -133,6 +137,8 @@
       <li><span class="mc-swatch mc-swatch--new_york" aria-hidden="true"></span>Phiên New York</li>
       <li><span class="mc-swatch mc-swatch--level" aria-hidden="true"></span>Mức thanh khoản (nét đứt: còn chờ; ✕: đã bị quét)</li>
       <li><span class="mc-swatch mc-swatch--poc" aria-hidden="true"></span>POC · vùng giá trị 70%</li>
+      <li><span class="mc-swatch mc-swatch--zone-bull" aria-hidden="true"></span><span class="mc-swatch mc-swatch--zone-bear" aria-hidden="true"></span>FVG / OB / BPR (viền đứt: IFVG đã đảo vai; mờ: đã lấp hoặc mất hiệu lực)</li>
+      <li><span class="mc-swatch mc-swatch--equal" aria-hidden="true"></span>Đỉnh/đáy bằng nhau (EQH/EQL)</li>
     </ul>
     <ul class="mc-notices" data-mc-notices>
       {% for notice in chart_payload.notices %}<li>{{ notice }}</li>{% endfor %}

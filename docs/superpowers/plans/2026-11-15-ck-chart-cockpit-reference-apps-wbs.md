@@ -1,6 +1,6 @@
 # WBS CK — Buồng lái biểu đồ (chart cockpit) theo hai app tham chiếu
 
-**Ngày:** 2026-11-15 · **Trạng thái:** CK-0 đã làm; CK-1 và CK-2 đã làm phần lõi (15/11/2026, xem cuối từng mục, còn mở ghi rõ); CK-3…CK-13 là kế hoạch · **Chế độ:** PAPER/replay; chỉ dữ liệu thị trường công khai; không route order, không bật SHADOW/PAPER_GATE/Demo/LIVE. <br>
+**Ngày:** 2026-11-15 · **Trạng thái:** CK-0 đã làm; CK-1, CK-2, CK-3 đã làm phần lõi (15/11/2026, xem cuối từng mục, còn mở ghi rõ); CK-4…CK-13 là kế hoạch · **Chế độ:** PAPER/replay; chỉ dữ liệu thị trường công khai; không route order, không bật SHADOW/PAPER_GATE/Demo/LIVE. <br>
 **Đầu vào:** hai ảnh owner gửi ngày 15/11/2026 — (1) "XAUUSD Research Desk 3.3.0" (MT5, ICT + VSA); (2) một app quét/auto crypto trên Bybit (WLFI/USDT, Green Flag, MA34×89). <br>
 **Xây trên:** [WBS SIG](./2026-11-15-sig-market-structure-scalping-chart-wbs.md) (đang ở nhánh `claude/project-progress-review-wp07-d70431`, **chưa vào `dev`**), [UI kit v1.1](../../design/admin-ui-kit.md), ingest live Binance (`docs/research/binance-usdm-api-audit-2026-11-14.md`), [khảo sát 14/11](./2026-11-14-feature-survey-and-manager-insights.md).
 
@@ -169,7 +169,7 @@ Ký hiệu: **D** = đã có trên `dev`; **S** = đã làm lát đầu trên nh
 
 **Acceptance:** số trên dải khớp dữ liệu nguồn trong fixture; thiếu stream thì hiện rõ nguồn dự phòng; đếm ngược đúng ở khung 1m/5m/1h/4h kể cả qua mốc ngày UTC.
 
-**Đã làm (15/11/2026, chưa commit):**
+**Đã làm (15/11/2026, commit `72a3b58`):**
 - Stream `<symbol>@bookTicker` trên route `/public` (kiểm tài liệu Binance 15/11/2026); một kết nối chỉ một route. `LiveQuoteWorker` giữ giá mới nhất trong bộ nhớ, ghi mỗi 2 giây (`TRADING_BOT_INGESTION_LIVE_QUOTE_INTERVAL_SECONDS`, 0,5–60) và ghi nốt khi rớt kết nối; bật bằng `book_ticker` trong `TRADING_BOT_INGESTION_LIVE_EVENTS`. Readiness `live_market_quotes`.
 - Migration `a7c9e1b3d5f6`: bảng `market_live_quote` một dòng/(workspace, nguồn, instrument), upsert chỉ nhận `update_id` lớn hơn, RLS bắt buộc; ingestion SELECT/INSERT/UPDATE (không DELETE), admin-web/runtime/market-signal chỉ đọc; admin-web thêm quyền đọc `market_mark_price`.
 - `GET /admin/api/chart/overview` (no-store, polling 2 giây, kiểm `REPORT_READ` như chart, một snapshot đọc). Dải thông số: giá hiện tại + nguồn, bid/ask/spread (bps) + tuổi giá, đếm ngược nến, đồng thuận đa khung, phiên đang chạy, biên ngày UTC + PDH/PDL, mark + funding + đếm ngược. Chart vẽ đường Bid/Ask (lớp "Bid/Ask trực tiếp") và nhãn đếm ngược trên trục giá.
@@ -188,7 +188,7 @@ Ký hiệu: **D** = đã có trên `dev`; **S** = đã làm lát đầu trên nh
 
 **Acceptance:** golden dataset tay cho 3 kịch bản (đồng thuận, lệch, đi ngang); mức vô hiệu đổi đúng khi có swing mới; test "streaming = batch".
 
-**Đã làm (15/11/2026, chưa commit):** `timeframe_trend` (xu hướng theo BOS cuối của swing xác nhận 3 nến mỗi bên, tối thiểu 20 nến đã đóng; mức vô hiệu; biên = cặp swing gần nhất; vị trí %/vùng đắt-rẻ; phá vỡ gần nhất) và `mtf_consensus` (`ck2-mtf-v1`). Ma trận 4 vai trò trên `/admin/chart` (4H xu hướng chính, 1H xác nhận, 15M động lượng, 5M thời điểm) kèm câu "1H giữ TĂNG khi chưa đóng cửa dưới X"; khung thiếu nến ghi rõ, khung chính = khung đầu tiên có dữ liệu. Golden test tay: tăng, giảm (đối xứng), thiếu dữ liệu, đồng thuận 1/2.
+**Đã làm (15/11/2026, commit `72a3b58`):** `timeframe_trend` (xu hướng theo BOS cuối của swing xác nhận 3 nến mỗi bên, tối thiểu 20 nến đã đóng; mức vô hiệu; biên = cặp swing gần nhất; vị trí %/vùng đắt-rẻ; phá vỡ gần nhất) và `mtf_consensus` (`ck2-mtf-v1`). Ma trận 4 vai trò trên `/admin/chart` (4H xu hướng chính, 1H xác nhận, 15M động lượng, 5M thời điểm) kèm câu "1H giữ TĂNG khi chưa đóng cửa dưới X"; khung thiếu nến ghi rõ, khung chính = khung đầu tiên có dữ liệu. Golden test tay: tăng, giảm (đối xứng), thiếu dữ liệu, đồng thuận 1/2.
 **Còn mở:** vai trò khung đang cố định (chưa khai báo theo setup); chưa có golden "đi ngang" và test "streaming = batch"; chip % thay đổi theo nến khung lớn (mục 6); bộ lọc khung lớn (mục 7) chờ owner quyết định lược đồ.
 
 ### CK-3 — Lớp ICT/SMC: killzone, FVG/IFVG/BPR, order block, đỉnh/đáy bằng nhau
@@ -204,6 +204,10 @@ Ký hiệu: **D** = đã có trên `dev`; **S** = đã làm lát đầu trên nh
 7. Mỗi vùng có `created_at`, `confirmed_at`, `invalidated_at`, khung, trạng thái; panel "Vùng (n)" đếm vùng còn hiệu lực.
 
 **Acceptance:** golden dataset tay cho mỗi loại; vùng không xuất hiện trước `confirmed_at`; test DST tuần London/New York đổi giờ lệch nhau; giới hạn số vùng vẽ để chart mượt trên mobile.
+
+**Đã làm (15/11/2026, chưa commit):** `domain/market/ict.py` (`ck3-ict-v1`, bảng giờ `ck3-killzone-v1`): `killzone_windows`/`active_killzones` theo `America/New_York` (cửa sổ Á qua nửa đêm), `fair_value_gaps` (lọc khe < 0,1×ATR; chạm/lấp/đảo vai IFVG bằng giá đóng cửa/mất hiệu lực), `balanced_price_ranges`, `order_blocks` (nến ngược chiều cuối tại/trước cực trị nhịp hồi giữa swing bị phá và nến phá; dùng cả BOS và CHoCH), `equal_levels` (≤ 0,1×ATR, không nến nào vượt mức giữa hai swing, ghi nến quét), `intermediate_swings`. Mỗi vùng có `confirmed_index` và `state_at(i)`. Payload chart khối `ict` (killzone chỉ ở khung ≤ 15m, 3 ngày gần nhất; tối đa 12 FVG, 8 OB, 4 BPR, ưu tiên vùng còn hiệu lực); chart có 3 công tắc mới (FVG·OB·BPR, EQH/EQL·ITH/ITL, Killzone mặc định tắt), ô "Vùng ICT còn hiệu lực", sự kiện xác nhận vùng/quét EQH-EQL; dải thông số hiện chip killzone đang mở.
+**Quyết định owner #2 (§11) chưa chốt:** đang dùng quy ước ghi ở mục này làm mặc định (chỉ mô tả/gắn nhãn, không vào lệnh); đổi quy ước thì đổi `ICT_FORMULA_VERSION`/`KILLZONE_TABLE_VERSION`.
+**Còn mở:** OB đa khung (khung đang xem + một khung lớn hơn); cửa sổ macro xx:50–xx:10 do owner chọn (mới có 09:50–10:10); bảng giờ killzone đang là hằng số có version, chưa là cấu hình sửa được trên Admin; panel "Vùng (n)" dạng danh sách (mới có số đếm + danh sách sự kiện).
 
 ### CK-4 — Profile mở rộng: TPO và POC "trần" (nPOC)
 

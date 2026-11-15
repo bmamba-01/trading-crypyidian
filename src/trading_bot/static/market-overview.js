@@ -123,6 +123,22 @@
         );
       }
     }
+    const kz = q("[data-ov-killzones]");
+    if (kz) {
+      const open = o.killzones || [];
+      if (open.length === 0) {
+        kz.textContent = "Ngoài killzone ICT";
+      } else {
+        kz.replaceChildren(
+          ...open.map((item) => {
+            const chip = document.createElement("span");
+            chip.className = `mc-kz-chip mc-kz-chip--${item.kind}`;
+            chip.textContent = item.label;
+            return chip;
+          })
+        );
+      }
+    }
     setText("[data-ov-day-high]", day ? price(day.high) : "—");
     setText("[data-ov-day-low]", day ? price(day.low) : "—");
     setText("[data-ov-pdh]", day ? price(day.previous_high) : "—");

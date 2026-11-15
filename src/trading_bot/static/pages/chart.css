@@ -242,3 +242,18 @@
   color: #111827;
 }
 .mc-mtf__note { margin: 0; font-size: 0.78rem; opacity: 0.8; }
+
+/* ---------- CK-3: lớp ICT ---------- */
+.mc-swatch--zone-bull { background: rgba(14, 203, 129, 0.35); border: 1px solid rgba(14, 203, 129, 0.85); }
+.mc-swatch--zone-bear { background: rgba(246, 70, 93, 0.3); border: 1px solid rgba(246, 70, 93, 0.85); margin-left: -0.2rem; }
+.mc-swatch--equal { height: 0; border-top: 2px dotted currentColor; border-radius: 0; }
+.mc-kz-chip {
+  display: inline-block;
+  margin-right: 0.25rem;
+  padding: 0 0.35rem;
+  border-radius: 0.35rem;
+  font-weight: 600;
+  background: rgba(100, 116, 139, 0.18);
+}
+.mc-kz-chip--silver_bullet { background: rgba(14, 165, 233, 0.2); }
+.mc-kz-chip--macro { background: rgba(236, 72, 153, 0.18); }

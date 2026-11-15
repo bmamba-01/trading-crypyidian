@@ -13,6 +13,7 @@ from decimal import Decimal
 from typing import Any
 
 from trading_bot.application.market_chart import MARKET_CHART_INTERVAL_SECONDS
+from trading_bot.domain.market.ict import active_killzones
 from trading_bot.domain.market.overview import (
     MTF_FORMULA_VERSION,
     OVERVIEW_FORMULA_VERSION,
@@ -260,6 +261,15 @@ def build_market_overview(
                 "close_at": item.close_at.isoformat(),
             }
             for item in active_sessions(now)
+        ],
+        "killzones": [
+            {
+                "key": item.key,
+                "label": item.label_vi,
+                "kind": item.kind,
+                "close_at": item.close_at.isoformat(),
+            }
+            for item in active_killzones(now)
         ],
         "mtf": {
             "cells": payload_cells,

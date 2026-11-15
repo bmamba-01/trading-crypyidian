@@ -377,3 +377,58 @@ def test_overview_api_is_no_store_and_maps_errors() -> None:
         _Reporting([], BotReportError(404, "REPORT_NOT_FOUND", "Không tìm thấy báo cáo bot."))
     )
     assert denied.get(url).status_code == 404
+
+
+def _with_gap(bars: list[dict]) -> list[dict]:
+    """Chèn nhịp tăng mạnh 3 nến để tạo FVG tăng rõ ở cuối dữ liệu."""
+    last = bars[-1]
+    step = bars[-1]["time"] - bars[-2]["time"]
+    price = last["close"]
+    extra = []
+    for offset, (open_, close) in enumerate(
+        [(price, price + 3), (price + 3, price + 9), (price + 9, price + 10)], start=1
+    ):
+        extra.append(
+            {
+                "time": last["time"] + step * offset,
+                "open": open_,
+                "high": close + 0.2,
+                "low": open_ - 0.2,
+                "close": close,
+                "volume": 12.0,
+            }
+        )
+    return bars + extra
+
+
+def test_payload_has_ict_layer_with_killzones_zones_and_counts() -> None:
+    bars = _with_gap(_bars(300, start=START, step=timedelta(minutes=5)))
+    payload = build_market_chart_payload(symbol="BTCUSDT", timeframe="5m", bars=bars)
+    ict = payload["ict"]
+    assert payload["formula_versions"]["ict"] == "ck3-ict-v1"
+    assert payload["formula_versions"]["killzone_table"] == "ck3-killzone-v1"
+    # 5m: có dải killzone trong khoảng dữ liệu, tối đa 3 ngày gần nhất.
+    assert ict["killzones"]
+    first_bar, last_bar = bars[0]["time"], bars[-1]["time"] + 300
+    assert all(first_bar <= item["end"] and item["start"] <= last_bar for item in ict["killzones"])
+    assert {item["kind"] for item in ict["killzones"]} <= {"killzone", "silver_bullet", "macro"}
+    # FVG tăng ở nhịp cuối: chưa bị chạm, xác nhận đúng nến thứ ba.
+    fvg = [z for z in ict["zones"] if z["kind"] == "fvg" and z["direction"] == "bullish"]
+    newest = max(fvg, key=lambda z: z["confirmed_time"])
+    assert newest["confirmed_time"] == bars[-1]["time"]
+    assert newest["start_time"] == bars[-3]["time"]
+    assert newest["state"] == "active"
+    assert newest["label"] == "FVG tăng"
+    # Mọi vùng trong payload đều đã được xác nhận trước nến cuối, không vùng nào "tương lai".
+    assert all(z["confirmed_time"] <= bars[-1]["time"] for z in ict["zones"])
+    assert ict["counts"]["active"] == sum(
+        1 for z in ict["zones"] if z["state"] in {"active", "partial", "inverted"}
+    )
+    assert len(ict["zones"]) <= 24
+
+
+def test_payload_hides_killzones_above_15m_but_keeps_zones() -> None:
+    bars = _with_gap(_bars(200, start=START, step=timedelta(hours=1)))
+    payload = build_market_chart_payload(symbol="BTCUSDT", timeframe="1h", bars=bars)
+    assert payload["ict"]["killzones"] == []
+    assert any(z["kind"] == "fvg" for z in payload["ict"]["zones"])

@@ -125,3 +125,10 @@ def test_day_range_uses_live_price_and_hourly_bars() -> None:
     assert day["high"] >= 96000.2  # giá trực tiếp vượt mọi nến mẫu
     assert day["previous_high"] is not None
     assert day["previous_complete"] is True
+
+
+def test_overview_lists_open_killzones_in_new_york_time() -> None:
+    # 15:07:30 UTC ngày 15/11 = 10:07:30 EST → NY AM đã đóng (07–10), Silver Bullet sáng và macro
+    # 09:50–10:10 đang mở.
+    keys = [item["key"] for item in _overview()["killzones"]]
+    assert keys == ["macro_0950", "silver_bullet_am"]

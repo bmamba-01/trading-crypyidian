@@ -94,6 +94,17 @@
       profileSell: "rgba(246,70,93,0.45)",
       poc: "#F0B90B",
       valueArea: dark ? "rgba(240,185,11,0.07)" : "rgba(240,185,11,0.08)",
+      // CK-3: vùng ICT dùng màu tăng/giảm nhạt; killzone là dải dọc rất nhạt.
+      zoneBull: dark ? "rgba(14,203,129,0.16)" : "rgba(14,203,129,0.14)",
+      zoneBear: dark ? "rgba(246,70,93,0.16)" : "rgba(246,70,93,0.13)",
+      zoneBullLine: "rgba(14,203,129,0.85)",
+      zoneBearLine: "rgba(246,70,93,0.85)",
+      killzone: {
+        killzone: dark ? "rgba(148,163,184,0.07)" : "rgba(100,116,139,0.07)",
+        silver_bullet: dark ? "rgba(56,189,248,0.10)" : "rgba(14,165,233,0.09)",
+        macro: dark ? "rgba(244,114,182,0.12)" : "rgba(236,72,153,0.10)",
+      },
+      equalLevel: dark ? "#E2E8F0" : "#334155",
     };
   };
 
@@ -326,6 +337,85 @@
     }
   }
 
+  // CK-3: dải killzone theo giờ New York — phủ toàn bộ chiều cao pane, nhãn ở mép trên.
+  class KillzoneBands extends CanvasPrimitive {
+    draw(ctx, size) {
+      const colors = palette();
+      ctx.font = '600 9px "Be Vietnam Pro", system-ui, sans-serif';
+      for (const item of this.data) {
+        const x1 = this.x(item.start);
+        const x2 = this.x(item.end);
+        if (x1 === null || x2 === null || x2 < 0 || x1 > size.width) continue;
+        ctx.fillStyle = colors.killzone[item.kind] || colors.killzone.killzone;
+        ctx.fillRect(x1, 0, Math.max(x2 - x1, 1), size.height);
+        if (x2 - Math.max(x1, 0) > 60 && item.kind !== "macro") {
+          ctx.fillStyle = colors.sessionText;
+          ctx.fillText(item.label, Math.max(x1, 0) + 3, 10);
+        }
+      }
+    }
+  }
+
+  // CK-3: FVG / IFVG / BPR / order block. Vùng còn hiệu lực kéo tới nến cuối; vùng đã lấp hoặc
+  // mất hiệu lực vẽ mờ và dừng ở nến kết thúc. IFVG viền nét đứt (đã đảo vai).
+  class IctZones extends CanvasPrimitive {
+    draw(ctx) {
+      const colors = palette();
+      ctx.font = '600 9px "Be Vietnam Pro", system-ui, sans-serif';
+      for (const zone of this.data) {
+        const x1 = this.x(zone.start_time);
+        const x2 = this.x(zone.end_time);
+        const yTop = this.y(zone.top);
+        const yBottom = this.y(zone.bottom);
+        if ([x1, x2, yTop, yBottom].some((v) => v === null)) continue;
+        // Sau khi đảo vai, màu theo vai trò mới (FVG tăng bị xuyên xuống → kháng cự).
+        const bullish = zone.state === "inverted" ? zone.direction === "bearish" : zone.direction === "bullish";
+        const live = ["active", "partial", "inverted"].includes(zone.state);
+        ctx.globalAlpha = live ? 1 : 0.4;
+        ctx.fillStyle = bullish ? colors.zoneBull : colors.zoneBear;
+        const width = Math.max(x2 - x1, 2);
+        const height = Math.max(yBottom - yTop, 1);
+        ctx.fillRect(x1, yTop, width, height);
+        ctx.strokeStyle = bullish ? colors.zoneBullLine : colors.zoneBearLine;
+        ctx.lineWidth = zone.kind === "order_block" ? 1.2 : 0.8;
+        ctx.setLineDash(zone.state === "inverted" ? [4, 3] : zone.kind === "bpr" ? [2, 2] : []);
+        ctx.strokeRect(x1, yTop, width, height);
+        ctx.setLineDash([]);
+        if (live && width > 34) {
+          ctx.fillStyle = ctx.strokeStyle;
+          ctx.fillText(zone.label, x1 + 3, yTop + Math.min(height - 2, 10));
+        }
+        ctx.globalAlpha = 1;
+      }
+    }
+  }
+
+  // CK-3: đỉnh/đáy bằng nhau (EQH/EQL) — đường chấm, kết thúc ở nến quét.
+  class EqualLevels extends CanvasPrimitive {
+    draw(ctx) {
+      const colors = palette();
+      ctx.font = '600 9px "Be Vietnam Pro", system-ui, sans-serif';
+      for (const level of this.data) {
+        const x1 = this.x(level.start_time);
+        const x2 = this.x(level.end_time);
+        const y = this.y(level.price);
+        if ([x1, x2, y].some((v) => v === null)) continue;
+        ctx.strokeStyle = colors.equalLevel;
+        ctx.fillStyle = colors.equalLevel;
+        ctx.globalAlpha = level.swept ? 0.4 : 0.85;
+        ctx.lineWidth = 1;
+        ctx.setLineDash([1, 3]);
+        ctx.beginPath();
+        ctx.moveTo(x1, y);
+        ctx.lineTo(Math.max(x2, x1 + 1), y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillText(level.side === "high" ? "EQH" : "EQL", x1 + 2, y + (level.side === "high" ? -3 : 10));
+        ctx.globalAlpha = 1;
+      }
+    }
+  }
+
   // ---- Dựng chart ----
   const colors = palette();
   const chart = LWC.createChart(container, chartOptions(460));
@@ -363,7 +453,12 @@
   const levels = new LiquidityLevels("top");
   const trendlines = new Trendlines("top");
   const profiles = new VolumeProfiles("bottom");
-  for (const primitive of [sessions, profiles, levels, trendlines]) candles.attachPrimitive(primitive);
+  const killzones = new KillzoneBands("bottom");
+  const ictZones = new IctZones("bottom");
+  const equalLevels = new EqualLevels("top");
+  for (const primitive of [killzones, sessions, profiles, ictZones, levels, equalLevels, trendlines]) {
+    candles.attachPrimitive(primitive);
+  }
 
   // Pane phụ RSI/MACD là chart riêng, đồng bộ vùng nhìn theo chỉ số logic.
   const subCharts = [];
@@ -452,6 +547,18 @@
         });
       }
     }
+    if (layerOn("equal_levels") && p.ict) {
+      for (const swing of p.ict.intermediate_swings) {
+        list.push({
+          time: swing.time,
+          position: swing.kind === "high" ? "aboveBar" : "belowBar",
+          color: c.flat,
+          shape: "square",
+          size: 0.3,
+          text: swing.label,
+        });
+      }
+    }
     if (layerOn("levels")) {
       for (const level of p.levels) {
         if (level.state !== "rejected" || level.event_time === null) continue;
@@ -498,6 +605,16 @@
             level.state === "rejected"
               ? `Quét thanh khoản ${level.label} ${fmtNumber(level.price)} rồi đóng cửa quay lại`
               : `Giá đóng cửa vượt và giữ ngoài ${level.label} ${fmtNumber(level.price)}`,
+        })),
+      ...((p.ict && p.ict.zones) || []).map((zone) => ({
+        time: zone.confirmed_time,
+        text: `${zone.kind === "fvg" ? (zone.direction === "bullish" ? "FVG tăng" : "FVG giảm") : zone.label} xác nhận: vùng ${fmtNumber(zone.bottom)} – ${fmtNumber(zone.top)}`,
+      })),
+      ...((p.ict && p.ict.equal_levels) || [])
+        .filter((level) => level.swept)
+        .map((level) => ({
+          time: level.end_time,
+          text: `Quét ${level.label} ${fmtNumber(level.price)}`,
         })),
     ]
       .sort((a, b) => b.time - a.time)
@@ -605,6 +722,10 @@
     levels.set(p.levels, layerOn("levels"));
     trendlines.set(p.trendlines, layerOn("trendlines"));
     profiles.set(p.volume_profiles, layerOn("profile"));
+    const ict = p.ict || { killzones: [], zones: [], equal_levels: [] };
+    killzones.set(ict.killzones, layerOn("killzones"));
+    ictZones.set(ict.zones, layerOn("ict_zones"));
+    equalLevels.set(ict.equal_levels, layerOn("equal_levels"));
     markers.setMarkers(buildMarkers(p));
     if (rsiPane) rsiPane.element.hidden = !layerOn("rsi");
     if (macdPane) macdPane.element.hidden = !layerOn("macd");
@@ -652,6 +773,7 @@
       lastSweep ? `${lastSweep.label} · ${fmtTime(lastSweep.event_time)}` : "Chưa có"
     );
     setText("[data-mc-updated]", fmtTime(Date.parse(p.generated_at) / 1000));
+    setText("[data-mc-ict-count]", p.ict ? String(p.ict.counts.active) : "—");
     renderEvents(p);
     renderNotices(p);
   };

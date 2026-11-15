@@ -774,3 +774,14 @@ Thuật ngữ dùng trong [nghiên cứu đối chiếu tín hiệu/scalping/cha
 | Day range (UTC) / PDH-PDL | Biên ngày UTC / đỉnh-đáy ngày trước | Đỉnh/đáy từ nến đã đóng của ngày UTC hiện tại cộng giá trực tiếp; PDH/PDL lấy ngày UTC trước, đánh dấu "thiếu nến" nếu kho không đủ nến phủ trọn ngày đó. | Định nghĩa nội bộ (`domain/market/overview.py`) |
 | Multi-timeframe (MTF) trend matrix | Ma trận xu hướng đa khung | Bốn vai trò cố định: 4H xu hướng chính, 1H xác nhận, 15M động lượng, 5M thời điểm. Mỗi ô là xu hướng theo BOS cuối cùng của swing đã xác nhận (3 nến mỗi bên, ≥ 20 nến đã đóng), mức vô hiệu, vị trí trong biên và phá vỡ gần nhất; khung thiếu nến ghi "chưa đủ dữ liệu", không đoán. | Định nghĩa nội bộ (`ck2-mtf-v1`); khái niệm top-down analysis: [Investopedia — Multiple time frame analysis](https://www.investopedia.com/articles/trading/07/timeframes.asp) |
 | MTF consensus (aligned / known) | Đồng thuận đa khung (cùng chiều / có xu hướng) | Khung chính = khung đầu tiên có dữ liệu theo thứ tự vai trò; "x/y" = số khung có xu hướng cùng chiều khung chính trên số khung có xu hướng xác định. Chỉ mô tả, chưa phải bộ lọc HTF của chiến lược (CK-6). | Định nghĩa nội bộ |
+
+## AF. Lớp ICT trên chart (CK-3, 15/11/2026)
+
+Các khái niệm FVG/IFVG/BPR/OB/killzone/ITH-ITL đã định nghĩa ở mục AC; mục này chỉ thêm thuật ngữ trạng thái dùng trên chart (`ck3-ict-v1`).
+
+| Thuật ngữ (EN) | Tiếng Việt | Định nghĩa và giới hạn | Nguồn |
+|---|---|---|---|
+| Mitigation (zone touch) | Giá quay lại chạm vùng | Lần đầu râu nến chạm cạnh gần của FVG/OB sau khi vùng được xác nhận; FVG chuyển trạng thái "chạm một phần". | [LuxAlgo — Mitigation](https://www.luxalgo.com/library/concept/mitigation-block/) |
+| FVG fill (partial / full) | Lấp khe một phần / lấp đầy | Một phần: râu vào vùng; đầy: râu chạm cạnh xa. FVG lấp đầy mà chưa đảo vai thì ngừng vẽ kéo dài. | [TradeZella](https://www.tradezella.com/learning-items/key-ict-concepts) |
+| Zone confirmation time | Thời điểm xác nhận vùng | Nến đóng mà tại đó vùng mới biết được (FVG: nến thứ ba; OB: nến phá cấu trúc; EQH/EQL: swing thứ hai được xác nhận). Chart và mọi phép tính không dùng vùng trước mốc này. | Định nghĩa nội bộ |
+| Killzone table version | Phiên bản bảng giờ killzone | `ck3-killzone-v1`: Asia 20:00–00:00, London 02:00–05:00, NY AM 07:00–10:00, NY PM 13:30–16:00; Silver Bullet 03–04, 10–11, 14–15; macro 09:50–10:10 (giờ New York, theo DST). Đổi giờ phải đổi version. | [LuxAlgo — Killzones](https://www.luxalgo.com/library/concept/killzones/) |
