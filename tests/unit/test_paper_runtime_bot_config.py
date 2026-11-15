@@ -441,3 +441,54 @@ async def test_risk_profile_cycle_replaces_limits_and_selection_with_bot_config(
     )
     assert rejected.outcome is DecisionCycleOutcome.NO_TRADE
     assert rejected.strategy_result.code == "BOT_CONFIG_SCOPE_MISMATCH"
+
+
+class _PassedScope(Exception):
+    """Sentinel: decision cycle đã qua bước kiểm phạm vi thị trường."""
+
+
+def _scope_result(
+    monkeypatch: pytest.MonkeyPatch, release_id: str, observed: tuple[str, ...]
+) -> Any:
+    from trading_bot.domain.strategy.contracts import StrategySelection
+
+    def passed(*_args: object, **_kwargs: object) -> Any:
+        raise _PassedScope
+
+    monkeypatch.setattr(paper_decision_cycle, "strategy_selection_from_published_settings", passed)
+    world = World()
+    published = world.root
+    cycle = PaperDecisionCycle(StrategyRegistry(), None, None, None)  # type: ignore[arg-type]
+    planner = SimpleNamespace(
+        workspace_id=str(published.workspace_id),
+        settings_version_id=str(published.settings_version_id),
+        settings_hash=published.settings_hash,
+    )
+    return cycle.prepare_published(
+        published_settings=published,
+        snapshot=SimpleNamespace(  # type: ignore[arg-type]
+            symbol="BTCUSDT", series=tuple(SimpleNamespace(timeframe=tf) for tf in observed)
+        ),
+        evaluated_at=NOW,
+        planner_settings=planner,  # type: ignore[arg-type]
+        account=None,  # type: ignore[arg-type]
+        risk_state=None,  # type: ignore[arg-type]
+        open_exposures=(),
+        cost_model=None,  # type: ignore[arg-type]
+        selection_override=StrategySelection(
+            str(published.settings_version_id), (release_id,), True
+        ),
+    )
+
+
+def test_bot_release_entry_timeframe_replaces_root_entry_in_scope_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """15/11/2026: bot H03 v3 4h chỉ có chuỗi 4h không được bị loại vì root vào lệnh 1h."""
+    with pytest.raises(_PassedScope):
+        _scope_result(monkeypatch, "h03-v3-4h", ("4h",))
+    missing = _scope_result(monkeypatch, "h03-v3-4h", ("1h",))
+    assert missing.strategy_result.code == "MARKET_SCOPE_MISMATCH"
+    # Release dùng khung root (h03-v1 = 1h) giữ hành vi cũ.
+    root_release = _scope_result(monkeypatch, "h03-v1", ("4h",))
+    assert root_release.strategy_result.code == "MARKET_SCOPE_MISMATCH"

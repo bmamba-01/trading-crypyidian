@@ -1118,14 +1118,37 @@ async def _submit_bot_candidates(application: Any, decisions: Any) -> tuple[Any,
     for decision in decisions:
         if decision.status is not BotDecisionStatus.CANDIDATE:
             continue
-        results.append(
-            await application.evaluate_and_submit(
+        try:
+            result = await application.evaluate_and_submit(
                 PaperBotDecisionCommand(
                     account_id=decision.account_id,
                     bot_decision_id=decision.decision_id,
                 )
             )
-        )
+        except Exception as error:
+            # Một candidate lỗi không được chặn candidate khác của bot; ghi mã để vận hành thấy.
+            logger.warning(
+                "PAPER candidate không submit được; decision_id=%s reason_code=%s",
+                decision.decision_id,
+                getattr(error, "reason_code", type(error).__name__),
+            )
+            continue
+        results.append(result)
+        if getattr(result, "submission", None) is None and not getattr(result, "duplicate", False):
+            # Quan sát (15/11/2026): candidate bị từ chối "êm" trước đây không để lại dấu vết.
+            cycle = getattr(result, "decision", None)
+            risk = getattr(cycle, "risk_decision", None)
+            plan = getattr(cycle, "plan", None)
+            logger.warning(
+                "PAPER candidate không thành lệnh; decision_id=%s entry_block=%s outcome=%s "
+                "strategy=%s risk=%s plan=%s",
+                decision.decision_id,
+                getattr(result, "entry_block_reason", None),
+                getattr(getattr(cycle, "outcome", None), "value", None),
+                getattr(getattr(cycle, "strategy_result", None), "code", None),
+                getattr(risk, "reason_code", None),
+                getattr(plan, "reason_code", None),
+            )
     return tuple(results)
 
 

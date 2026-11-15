@@ -198,11 +198,24 @@ class PaperDecisionCycle:
         configured_symbols = set(published_settings.settings.market_data.symbols)
         configured_timeframes = set(published_settings.settings.market_data.timeframes)
         observed_timeframes = {series.timeframe for series in snapshot.series}
+        # Khung vào lệnh: theo release của bot nếu bot chọn release riêng (H03 v3 15m/4h, H06
+        # 15m); release không khai báo khung thì dùng khung root. Trước 15/11/2026 luôn dùng khung
+        # root nên bot khác khung root bị loại oan với MARKET_SCOPE_MISMATCH.
+        entry_timeframe: str = published_settings.settings.strategy.entry_timeframe
+        if selection_override is not None and selection_override.active_release_ids:
+            from trading_bot.application.strategy_market_requirements import (
+                entry_timeframe_for_release,
+            )
+
+            entry_timeframe = (
+                entry_timeframe_for_release(selection_override.active_release_ids[0])
+                or entry_timeframe
+            )
         if (
             snapshot.symbol not in configured_symbols
             or not observed_timeframes
             or not observed_timeframes.issubset(configured_timeframes)
-            or published_settings.settings.strategy.entry_timeframe not in observed_timeframes
+            or entry_timeframe not in observed_timeframes
         ):
             no_trade = NoTrade(
                 strategy_id=published_settings.settings.strategy.default_release,

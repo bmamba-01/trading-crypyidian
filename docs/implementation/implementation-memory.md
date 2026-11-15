@@ -4237,3 +4237,15 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
   - Test `test_each_stream_uses_fresh_clock_when_tick_is_slow` mô phỏng mỗi request 40 giây: dùng chung `now` → luồng 2 lỗi; dùng clock → đều thu được.
 - **Kết quả sau sửa:** collector ok 60/60, 0 lỗi; mỗi coin ~1.000 nến 15m/1h, ≥985 nến 4h.
 - **Kiểm chứng:** unit **4394 passed/132.00s**.
+
+### 2026-11-15 — Runtime: tín hiệu bot khác khung root bị loại oan; log tín hiệu không thành lệnh
+
+- **Triệu chứng:** 10 bot mới ra 16 CANDIDATE nhưng không có order intent/risk decision nào; supervisor không log lỗi.
+- **Chẩn đoán:**
+  - `_submit_bot_candidates` bỏ qua kết quả không submit, không để lại dấu vết.
+  - Thêm log WARNING "PAPER candidate không thành lệnh" (entry_block/outcome/strategy/risk/plan), và bắt lỗi theo từng candidate để một candidate lỗi không chặn candidate khác.
+  - Log cho thấy hai lý do:
+    - (1) `PLAN_REJECTED MARKET_DATA_STALE`: **đúng thiết kế**. Candidate sinh lúc nạp bù 28–31 phút sau khi nến đóng nên dữ liệu quá `max_data_age` 300 giây.
+    - (2) `NO_TRADE MARKET_SCOPE_MISMATCH`: **lỗi**. `prepare_published` bắt buộc snapshot chứa `root.strategy.entry_timeframe` (1h), nên bot H03 v3 4h/15m (snapshot chỉ có khung của release) luôn bị loại.
+- **Sửa:** khung vào lệnh trong kiểm phạm vi lấy theo release của bot (`entry_timeframe_for_release`); release không khai báo thì dùng khung root. Test `test_bot_release_entry_timeframe_replaces_root_entry_in_scope_check`. Sau sửa: chỉ còn `MARKET_DATA_STALE` (đúng).
+- **Còn mở:** bot cũ "strategy-card" (account `1a7e8df6…`, đã tắt) còn 1 trade BTCUSDT OPEN từ 16:00 không được theo dõi (account DISABLED không được runtime bootstrap). Đây là dữ liệu dev; cần đóng tay hoặc bật lại bot ở chế độ tạm dừng nếu muốn kết thúc vị thế.
