@@ -168,7 +168,7 @@ Dữ liệu: REST kline công khai Binance USDⓈ-M, 2026-05-01 → 2026-11-01 (
 
 **Acceptance:** không có con số % nào hiển thị khi chưa có báo cáo hiệu chuẩn; test xác nhận hai điều kiện tương quan cao bị gộp.
 
-**Đã triển khai lát 1 (16/11/2026, chưa commit) — mục 4 (sửa G7) + kiểm mục 3:**
+**Đã triển khai lát 1 (16/11/2026, commit `cd123a7`) — mục 4 (sửa G7) + kiểm mục 3:**
 
 - `StrategyPipelineEngine.numeric_node_series`: chuỗi đầu ra L1–L3 theo từng nến, cùng công thức `execute` (tách `_l2_from_bars` dùng chung, không đổi `PIPELINE_ENGINE_VERSION` vì ngữ nghĩa giữ nguyên), không nhìn trước, bỏ nến vi phạm L0 ở mọi node.
 - `application/strategy_pipeline/consensus.py` (`sig6-consensus-v1`): `card_consensus` gọi `AntiConsensusAnalyzer` (|r Pearson| ≥ 0,85), số **điều kiện độc lập** = số nhóm liên thông của đồ thị tương quan cao; < 50 nến hợp lệ → `insufficient_data` (không coi là trực giao).
