@@ -326,6 +326,28 @@ class _Reporting:
         )
 
 
+class _Scanner:
+    """Bộ quét giả dùng hàm quét thật trên nến mẫu 5m giả làm 1h (đủ 21 ngày nếu nhân 12)."""
+
+    async def scan(self, principal: Principal, **kwargs: Any) -> dict:
+        from trading_bot.domain.market.scanner import scan_markets
+
+        hourly = [
+            dict(bar, time=int(START.timestamp()) + index * 3600)
+            for index, bar in enumerate(_bars())
+        ]
+        result = scan_markets(
+            {"BTCUSDT": hourly, "ETHUSDT": hourly[-30:]},
+            timeframe="1h",
+            now=datetime.fromtimestamp(hourly[-1]["time"] + 3600, UTC),
+            criteria=kwargs["criteria"],
+        )
+        return result | {"generated_at": START.isoformat(), "summary": "đạt 1/2 mã"}
+
+    async def recent_runs(self, principal: Principal, **kwargs: Any) -> list[dict]:
+        return []
+
+
 def _app() -> FastAPI:
     app = FastAPI(title="Crypidian market chart E2E")
     app.state.settings = AppSettings(app_env="local")
@@ -340,6 +362,7 @@ def _app() -> FastAPI:
     app.state.auth_service = MockRevampAuthService()
     app.state.bot_admin_service = _AdminService()
     app.state.bot_reporting_service = _Reporting()
+    app.state.market_scanner_service = _Scanner()
     app.mount("/static", StaticFiles(directory="src/trading_bot/static"), name="static")
     app.include_router(admin_web_router)
     install_security_headers(app)
@@ -708,5 +731,41 @@ def test_market_chart_renders_overlays_polls_and_is_responsive(server_url: str) 
         # Mã không có nến ở khung chọn → chart vẫn mở, hiện ghi chú thay vì vẽ số liệu bịa.
         page.goto(f"{server_url}/admin/chart?symbol=ETHUSDT&timeframe=5m", wait_until="networkidle")
         expect(page.locator("[data-mc-notices]")).to_contain_text("Chưa có nến đã đóng")
+        context.close()
+        browser.close()
+
+
+def test_scanner_page_watchlist_is_saved_in_browser(server_url: str) -> None:
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        context = browser.new_context(viewport={"width": 1280, "height": 900})
+        page = context.new_page()
+        watch_browser_violations(page)
+        _login(page, server_url)
+        page.goto(f"{server_url}/admin/scanner?timeframe=1h&min_volume=0", wait_until="networkidle")
+        expect(page.locator('[data-scan-row="BTCUSDT"]').first).to_be_visible()
+        # ETHUSDT thiếu 21 ngày: không vào bảng xếp hạng, có trong danh sách loại kèm lý do.
+        expect(page.locator('[data-scan-row="ETHUSDT"]')).to_have_count(0)
+        expect(page.locator('section[aria-labelledby="scan-excluded"]')).to_contain_text(
+            "ETHUSDT — Thiếu dữ liệu 21 ngày"
+        )
+        # Tom Select: gõ để tìm rồi chọn BTCUSDT.
+        page.locator(".ts-control input").first.fill("BTC")
+        page.locator(".ts-dropdown .option[data-value='BTCUSDT']").click()
+        rows = page.locator("[data-watchlist-rows] li")
+        expect(rows).to_have_count(1)
+        expect(rows.first).to_contain_text("BTCUSDT")
+        expect(rows.first).to_contain_text("7 ngày")
+        page.reload(wait_until="networkidle")
+        expect(page.locator("[data-watchlist-rows] li").first).to_contain_text("BTCUSDT")
+        # Chip của Tom Select cũng hiện mã đã lưu sau khi tải lại.
+        expect(page.locator(".ts-control .item[data-value='BTCUSDT']")).to_have_count(1)
+        page.locator(".mc-page").screenshot(path=str(SCREENSHOTS_DIR / "ck11-scanner-desktop.png"))
+        page.set_viewport_size({"width": 390, "height": 860})
+        page.wait_for_timeout(250)
+        overflow = page.evaluate(
+            "() => document.documentElement.scrollWidth - document.documentElement.clientWidth"
+        )
+        assert overflow <= 1, f"390px: tràn ngang {overflow}px"
         context.close()
         browser.close()

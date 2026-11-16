@@ -1,0 +1,112 @@
+{% extends "admin/base.html" %}
+{% block title %}Bộ quét thị trường — Crypidian{% endblock %}
+{% block heading %}Bộ quét thị trường{% endblock %}
+{% block head_extra %}<link rel="stylesheet" href="/static/pages/chart.css">{% endblock %}
+
+{%- macro money(value) -%}{{ value | round(0) | int | number2_vi if value is not none else "—" }}{%- endmacro -%}
+{%- macro pct(value) -%}{% if value is none %}—{% else %}{{ '%+.2f' | format(value) | replace('.', ',') }}%{% endif %}{%- endmacro -%}
+{%- macro scan_table(rows, metric) -%}
+<div class="table-wrapper"><table class="mc-dock__table">
+  <thead><tr><th scope="col">Mã</th><th scope="col">Giá đóng</th><th scope="col">7 ngày</th><th scope="col">Biên 21 ngày</th><th scope="col">Quote 24h</th></tr></thead>
+  <tbody>
+    {% for row in rows %}
+    <tr data-scan-row="{{ row.symbol }}">
+      <th scope="row"><a href="/admin/chart?symbol={{ row.symbol | urlencode }}&timeframe=1h">{{ row.symbol }}</a></th>
+      <td>{{ row.close | number2_vi }}</td>
+      <td class="{{ 'is-up' if row.change_7d_pct >= 0 else 'is-down' }}">{{ pct(row.change_7d_pct) }}</td>
+      <td>{{ (row.range_21d_pct | round(2) | number_vi) ~ '%' if row.range_21d_pct is not none else '—' }}</td>
+      <td>{{ money(row.quote_volume_24h) }}{% if row.quote_volume_estimated %} <span class="sc-meta" title="Nến thiếu quote volume: ước tính bằng khối lượng × giá đóng">(ước tính)</span>{% endif %}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="5">Không có mã nào đạt tiêu chí.</td></tr>
+    {% endfor %}
+  </tbody>
+</table></div>
+{%- endmacro -%}
+
+{% block content %}
+{#- CK-11 giai đoạn 1: quét các mã đã có nến trong kho nội bộ; không gọi API sàn (không ký, không REST). -#}
+<div class="mc-page">
+  <section class="glass-card mc-calendar" aria-labelledby="scan-form-title">
+    <h2 id="scan-form-title">Tiêu chí</h2>
+    <form method="get" action="/admin/scanner" class="mc-calendar__form" data-scan-form>
+      <label>Khung tính
+        <select name="timeframe">
+          {% for item in ["1h", "4h", "1d"] %}<option value="{{ item }}" {% if item == timeframe %}selected{% endif %}>{{ item | upper }}</option>{% endfor %}
+        </select>
+      </label>
+      <label>Thanh khoản tối thiểu (quote 24h)
+        <select name="min_volume">
+          {% for value in volume_choices %}<option value="{{ value }}" {% if value == criteria.min_quote_volume_24h %}selected{% endif %}>{% if value %}≥ {{ value | number2_vi }}{% else %}Không lọc{% endif %}</option>{% endfor %}
+        </select>
+      </label>
+      <label>Biên 21 ngày từ
+        <select name="range_min">
+          {% for value in range_min_choices %}<option value="{{ value }}" {% if value == criteria.range_min_pct %}selected{% endif %}>{{ value }}%</option>{% endfor %}
+        </select>
+      </label>
+      <label>đến
+        <select name="range_max">
+          {% for value in range_max_choices %}<option value="{{ value }}" {% if value == criteria.range_max_pct %}selected{% endif %}>{% if value >= 1000 %}Không giới hạn{% else %}{{ value }}%{% endif %}</option>{% endfor %}
+        </select>
+      </label>
+      <div class="mc-calendar__actions">
+        <button type="submit" class="btn btn-secondary">Xem kết quả</button>
+        <button type="submit" class="btn btn-primary" formmethod="post" formaction="/admin/scanner">Chạy quét và ghi nhật ký</button>
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      </div>
+    </form>
+    <p class="sc-note" data-scan-summary>{{ result.summary }} · tính lúc {{ result.generated_at | local_minute }} · nguồn: nến đã lưu trong kho nội bộ (Binance USDⓈ-M công khai), không gọi API sàn.{% if logged %} <strong>Đã ghi nhật ký lượt quét.</strong>{% endif %}</p>
+  </section>
+
+  <section class="glass-card mc-calendar" aria-labelledby="scan-movers">
+    <h2 id="scan-movers">Biến động tuần lớn nhất (có thanh khoản)</h2>
+    {{ scan_table(result.movers_7d, "change") }}
+  </section>
+  <section class="glass-card mc-calendar" aria-labelledby="scan-range">
+    <h2 id="scan-range">Biên 21 ngày rộng nhất trong khoảng đã chọn</h2>
+    {{ scan_table(result.top_range_21d, "range") }}
+  </section>
+  <section class="glass-card mc-calendar" aria-labelledby="scan-volume">
+    <h2 id="scan-volume">Thanh khoản 24h cao nhất</h2>
+    {{ scan_table(result.top_volume, "volume") }}
+  </section>
+
+  <section class="glass-card mc-calendar" aria-labelledby="scan-watch">
+    <h2 id="scan-watch">Watchlist của bạn</h2>
+    <label for="scan-watchlist">Mã theo dõi (lưu trên trình duyệt này)</label>
+    <select id="scan-watchlist" multiple data-multiselect="coins" data-watchlist data-placeholder="Gõ để tìm, ví dụ BTC">
+      {% for choice in watch_choices %}<option value="{{ choice.value }}"{% for key, value in (choice.data or {}).items() %} data-{{ key }}="{{ value }}"{% endfor %}>{{ choice.label }}</option>{% endfor %}
+    </select>
+    <ul class="mc-calendar-list" data-watchlist-rows><li>Chưa chọn mã nào.</li></ul>
+  </section>
+
+  <section class="glass-card mc-calendar" aria-labelledby="scan-excluded">
+    <h2 id="scan-excluded">Mã bị loại ({{ result.excluded | length }})</h2>
+    {% if result.excluded %}
+    <ul class="mc-calendar-list">
+      {% for row in result.excluded %}<li><strong>{{ row.symbol }}</strong> — {{ row.reason }}</li>{% endfor %}
+    </ul>
+    {% else %}
+    <p class="sc-empty">Không có mã nào bị loại.</p>
+    {% endif %}
+  </section>
+
+  <section class="glass-card mc-calendar" aria-labelledby="scan-log">
+    <h2 id="scan-log">Nhật ký quét</h2>
+    {% if runs %}
+    <ol class="mc-event-list">
+      {% for run in runs %}<li><time datetime="{{ run.occurred_at }}">{{ run.occurred_at | local_minute }}</time> — {{ run.summary }} <span class="sc-meta">(hash {{ (run.result_hash or "")[:12] }})</span></li>{% endfor %}
+    </ol>
+    {% else %}
+    <p class="sc-empty">Chưa có lượt quét nào được ghi.</p>
+    {% endif %}
+  </section>
+  <script id="scanner-data" type="application/json">{{ {"rows": result.rows, "excluded": result.excluded} | tojson }}</script>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/coins.js" defer></script>
+<script src="/static/scanner.js" defer></script>
+{% endblock %}

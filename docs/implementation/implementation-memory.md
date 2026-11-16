@@ -4386,7 +4386,7 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Lệch acceptance:** chưa đọc readiness ingestion-worker (số sự kiện, ngắt/kết nối lại) — cần kênh mới (ví dụ heartbeat trong DB); không so với REST sàn.
 - **Readback:** đã đọc lại mục này; không có secret.
 
-### 2026-11-16 — Push CK-9 và CK-10: cột phân tích, lịch sự kiện nội bộ (CK-10 chưa commit)
+### 2026-11-16 — Push CK-9 và CK-10: cột phân tích, lịch sự kiện nội bộ (CK-10 commit `7fc02b2`, đã push)
 
 - **Yêu cầu của owner:** "Push, làm CK-10" → push `origin/dev` fast-forward `0f5ac1b..e74815f` (CK-9, xác nhận `git ls-remote`), rồi làm CK-10.
 - **Tra cứu trước khi làm (agent Explore):** chưa có lịch vĩ mô nào — H06 luôn ABSTAIN vì không ai truyền `macro_blackout`; chưa có module tường thuật MI-6; báo cáo có win rate/expectancy theo tiền nhưng không có phân phối R (R/lệnh chỉ ở `post_mortem.py`); trạng thái scorer có sẵn qua `GET /api/v1/learning-scorer/deployment` (theo workspace).
@@ -4396,4 +4396,14 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Chưa chạy lại:** các Compose E2E WP06 chỉ đổi chuỗi head (5 test đã biết lỗi có sẵn do probe license evidence, đang sửa ở nhánh khác).
 - **Còn mở:** dòng thời gian "tín hiệu/khớp PAPER"; thống kê theo setup và phân phối R; nối lịch vào rule H06 (cần owner + backtest); nguồn tin ngoài (WP05).
 - **Lưu ý merge:** phiên WP06 khác có migration riêng (`c2e4a6b8d0f1`, nhánh `claude/gifted-joliot-781c1f`); khi merge vào `dev` sẽ thành 2 head Alembic với `b8d0f2a4c6e8` → cần migration merge hoặc nối lại `down_revision`.
+- **Readback:** đã đọc lại mục này; không có secret.
+
+### 2026-11-16 — Push CK-10 và CK-11: bộ quét thị trường (CK-11 chưa commit)
+
+- **Yêu cầu của owner:** "Commit, push, CK-11" → commit CK-10 `7fc02b2`, push `origin/dev` fast-forward `e74815f..7fc02b2` (xác nhận `git ls-remote`). Đã nhắn phiên WP06 "Sửa E2E source-pinned replay" rằng migration `b8d0f2a4c6e8` lên `dev` cũng nối sau `a7c9e1b3d5f6` → migration `c2e4a6b8d0f1` của họ cần nối lại `down_revision` khi rebase (chưa xác nhận đã đọc).
+- **Quyết định giai đoạn 1:** admin-web không gọi mạng sàn → bộ quét chỉ trên mã đã có nến trong kho; watchlist cá nhân lưu trình duyệt; nhật ký quét dùng `audit_event` (`market_scan.run`), không thêm bảng.
+- **Đã làm:** `domain/market/scanner.py`, `application/market_scanner.py`, trang `/admin/scanner` + `static/scanner.js` + link sidebar; `load_recent_bars` trả thêm `quote_volume`; `app.state.market_scanner_service`. Glossary mục **AN**; WBS CK mục CK-11; `project-status.md`.
+- **Lỗi gặp và sửa:** mốc "7 ngày trước" ban đầu lấy nến **mở** trước mốc → thay đổi tuần sai; sửa thành giá đóng của nến **đã đóng** tại mốc (và fixture đúng 7 nến mới). Watchlist lưu đúng nhưng chip Tom Select không hiện sau tải lại vì `option.selected` đặt sau khi Tom Select khởi tạo → `select.tomselect.setValue(saved, true)`. Kiểm tra Playwright "ETHUSDT xuất hiện 1 lần" sai vì mã còn nằm trong ô chọn watchlist → kiểm theo dòng xếp hạng và danh sách loại.
+- **Kiểm chứng:** `tests/unit/test_ck11_market_scanner.py` 4 passed (tất định khi đảo thứ tự đầu vào, lọc thanh khoản, loại thiếu dữ liệu/cũ, service ghi nhật ký chỉ khi chạy); unit toàn bộ **4579 passed/129.52s**; ruff/format sạch; mypy **422 files** sạch. Playwright `test_admin_market_chart_playwright.py` **2 passed** (trang quét, Tom Select chọn mã, lưu sau tải lại, không tràn 390px; ảnh `ck11-scanner-desktop.png` đã xem). Compose E2E `test_rt1_paper_market_loop.py` thêm pha `scanner` (role admin-web): quét 4h thật đạt BTCUSDT, 1h bị loại "Thiếu dữ liệu 21 ngày", tất định, 1 lượt nhật ký khớp tóm tắt — **1 passed/323.29s**. Sau E2E chỉ sắp lại import (ruff), không đổi logic.
+- **Còn mở:** worker thu 24h ticker toàn sàn để quét ngoài danh sách đang thu (cần quyền dữ liệu); market cap/FDV (owner #6, WP05); đồng bộ watchlist giữa máy.
 - **Readback:** đã đọc lại mục này; không có secret.

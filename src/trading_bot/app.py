@@ -100,6 +100,7 @@ from trading_bot.application.learning_training_admin import LearningTrainingAdmi
 from trading_bot.application.live_kline_ingestion_composition import (
     build_live_market_ingestion,
 )
+from trading_bot.application.market_scanner import MarketScannerService
 from trading_bot.application.market_signal_composition import build_market_signal_scanner
 from trading_bot.application.paper_runtime_application import (
     PaperBotDecisionCommand,
@@ -271,6 +272,11 @@ def create_app(
         )
         application.state.bot_reporting_service = (
             BotReportingService(active_session_factory)
+            if active_session_factory is not None
+            else None
+        )
+        application.state.market_scanner_service = (
+            MarketScannerService(active_session_factory)
             if active_session_factory is not None
             else None
         )

@@ -765,6 +765,40 @@ async def calendar() -> dict[str, Any]:
     }
 
 
+async def scanner() -> dict[str, Any]:
+    """CK-11: bộ quét đọc nến 4h đã lưu bằng role admin-web và ghi nhật ký vào audit_event."""
+    from trading_bot.application.market_scanner import MarketScannerService
+    from trading_bot.auth.policy import Principal, Role
+    from trading_bot.domain.market.scanner import ScanCriteria
+
+    owner = Principal(
+        user_id=_id("owner"),
+        membership_id=MEMBERSHIP,
+        workspace_id=WORKSPACE,
+        roles=frozenset({Role.OWNER}),
+        mfa_verified_at=NOW,
+    )
+    engine, sessions = _sessions()
+    try:
+        service = MarketScannerService(sessions)
+        criteria = ScanCriteria(min_quote_volume_24h=0.0)
+        first = await service.scan(owner, timeframe="4h", criteria=criteria, record=True)
+        again = await service.scan(owner, timeframe="4h", criteria=criteria, now=None)
+        hourly = await service.scan(owner, timeframe="1h", criteria=criteria)
+        runs = await service.recent_runs(owner)
+    finally:
+        await engine.dispose()
+    return {
+        "universe": first["universe"],
+        "passed_4h": [row["symbol"] for row in first["rows"]],
+        "deterministic": [row["symbol"] for row in first["movers_7d"]]
+        == [row["symbol"] for row in again["movers_7d"]],
+        "excluded_1h": [row["reason"].split(":")[0] for row in hourly["excluded"]],
+        "runs": len(runs),
+        "run_summary_matches": bool(runs) and runs[0]["summary"] == first["summary"],
+    }
+
+
 def add_minutes() -> dict[str, Any]:
     """Ba nến 1m bình thường bắt đầu ở phút tròn đầu tiên sau `evaluated_at + 5s` của candidate."""
     with _connect() as connection, connection.transaction():
@@ -894,6 +928,8 @@ elif phase == "web_read":
     output = asyncio.run(web_read())
 elif phase == "calendar":
     output = asyncio.run(calendar())
+elif phase == "scanner":
+    output = asyncio.run(scanner())
 elif phase == "add_minutes":
     output = add_minutes()
 elif phase == "add_stop_bar":

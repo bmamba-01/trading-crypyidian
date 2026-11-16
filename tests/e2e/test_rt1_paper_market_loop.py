@@ -33,6 +33,7 @@ SERVICES = {
     "mark_check": "trading-runtime",
     "web_read": "admin-web",
     "calendar": "admin-web",
+    "scanner": "admin-web",
     "add_minutes": "migrator",
     "add_stop_bar": "migrator",
     "verify": "migrator",
@@ -116,6 +117,16 @@ def test_rest_candles_drive_paper_entry_fill_and_stop_exit_idempotently() -> Non
         assert "b8d0f2a4c6e8 (head)" in heads.stdout
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "check")
         state.update(run("seed"))
+        # CK-11: bộ quét đọc nến 4h thật (đủ 21 ngày), 1h thiếu 21 ngày bị loại kèm lý do;
+        # lượt quét ghi audit_event và hiện trong nhật ký.
+        assert run("scanner") == {
+            "universe": 1,
+            "passed_4h": ["BTCUSDT"],
+            "deterministic": True,
+            "excluded_1h": ["Thiếu dữ liệu 21 ngày để tính biên và thay đổi tuần."],
+            "runs": 1,
+            "run_summary_matches": True,
+        }
         # CK-10: lịch sự kiện bằng role admin-web — audit đủ 3 thao tác, xóa mềm, RLS.
         assert run("calendar") == {
             "role": "crypidian_admin_web",

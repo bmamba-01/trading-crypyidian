@@ -615,6 +615,7 @@ class BotReportRepository:
                 "taker_buy_volume": (
                     None if row.taker_buy_base_volume is None else float(row.taker_buy_base_volume)
                 ),
+                "quote_volume": None if row.quote_volume is None else float(row.quote_volume),
                 "source": row.source,
             }
             for row in latest

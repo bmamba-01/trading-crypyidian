@@ -1,6 +1,6 @@
 # WBS CK — Buồng lái biểu đồ (chart cockpit) theo hai app tham chiếu
 
-**Ngày:** 2026-11-15 · **Trạng thái:** CK-0 đã làm; CK-1…CK-10 đã làm phần lõi (15–16/11/2026, xem cuối từng mục, còn mở ghi rõ); CK-11…CK-13 là kế hoạch · **Chế độ:** PAPER/replay; chỉ dữ liệu thị trường công khai; không route order, không bật SHADOW/PAPER_GATE/Demo/LIVE. <br>
+**Ngày:** 2026-11-15 · **Trạng thái:** CK-0 đã làm; CK-1…CK-11 đã làm phần lõi (15–16/11/2026, xem cuối từng mục, còn mở ghi rõ); CK-12, CK-13 là kế hoạch · **Chế độ:** PAPER/replay; chỉ dữ liệu thị trường công khai; không route order, không bật SHADOW/PAPER_GATE/Demo/LIVE. <br>
 **Đầu vào:** hai ảnh owner gửi ngày 15/11/2026 — (1) "XAUUSD Research Desk 3.3.0" (MT5, ICT + VSA); (2) một app quét/auto crypto trên Bybit (WLFI/USDT, Green Flag, MA34×89). <br>
 **Xây trên:** [WBS SIG](./2026-11-15-sig-market-structure-scalping-chart-wbs.md) (đang ở nhánh `claude/project-progress-review-wp07-d70431`, **chưa vào `dev`**), [UI kit v1.1](../../design/admin-ui-kit.md), ingest live Binance (`docs/research/binance-usdm-api-audit-2026-11-14.md`), [khảo sát 14/11](./2026-11-14-feature-survey-and-manager-insights.md).
 
@@ -293,7 +293,7 @@ Ký hiệu: **D** = đã có trên `dev`; **S** = đã làm lát đầu trên nh
 
 **Acceptance:** câu nhận định truy ngược được về sự kiện nguồn; lịch nội bộ có audit khi thêm/sửa/xóa; điều kiện "Tin tức" của CK-6 dùng đúng lịch này.
 
-**Đã làm (16/11/2026, chưa commit):**
+**Đã làm (16/11/2026, commit `7fc02b2`, đã push `dev`):**
 - **Nhận định:** `application/market_narrative.py` (`ck10-narrative-v1`) — câu theo mẫu, mỗi câu kèm `source` (loại + thời điểm), thiếu dữ liệu nói rõ.
 - **Mức giá:** `application/market_levels.py` (`ck10-levels-v1`) — mức thanh khoản còn chờ, nPOC/VAH/VAL, vùng ICT còn hiệu lực (cạnh gần giá), EQH/EQL chưa quét; khoảng cách %; bấm để cuộn chart tới thời điểm mức xuất hiện.
 - **Tin & Lịch:** migration `b8d0f2a4c6e8` bảng `economic_event` (RLS, admin-web SELECT/INSERT/UPDATE, không DELETE → xóa mềm), `EconomicCalendarService` (đọc `workspace:read`, ghi `settings:write`, `audit_event` cùng transaction), trang `/admin/calendar` (form CSRF, lý do bắt buộc, chọn múi giờ), điều kiện "Tin tức" của bảng Entry dùng lịch này (±30 phút tin tác động cao); tab hiện sự kiện sắp tới + đếm ngược funding.
@@ -310,6 +310,10 @@ Ký hiệu: **D** = đã có trên `dev`; **S** = đã làm lát đầu trên nh
 4. Nhật ký quét: mỗi lượt ghi tiêu chí, số mã đạt, thời điểm.
 
 **Acceptance:** cùng dữ liệu đầu vào cho cùng danh sách; mã thiếu dữ liệu bị loại kèm lý do; không gọi API ký.
+
+**Đã làm (16/11/2026, chưa commit) — giai đoạn 1:** `domain/market/scanner.py` (`ck11-scanner-v1`, tất định), `application/market_scanner.py` (`workspace:read`, chọn nguồn nến ưu tiên, ghi `audit_event` `market_scan.run` khi bấm chạy, nhật ký 10 lượt gần nhất), trang `/admin/scanner` (tiêu chí bằng ô chọn: khung 1h/4h/1d, ngưỡng quote 24h, khoảng biên 21 ngày; 3 bảng xếp hạng có link mở chart; mã bị loại kèm lý do; watchlist cá nhân bằng multi-select coin lưu trình duyệt; nhật ký quét), link sidebar "Bộ quét thị trường". Nến đọc từ kho thêm trường `quote_volume`.
+**Lệch so với kế hoạch:** chưa dùng REST 24h ticker/kline 1d của toàn sàn — chỉ quét các mã đã có nến trong kho (collector SIG-0/ingest live), không gọi mạng từ admin-web; watchlist cá nhân lưu trình duyệt (chưa đồng bộ giữa máy); nhật ký dùng `audit_event` thay bảng riêng.
+**Còn mở:** worker thu 24h ticker toàn sàn (cần quyền dữ liệu PAPER_DEMO cho nguồn ticker) để quét ngoài danh sách đang thu; market cap/FDV (nguồn ngoài, WP05, owner #6).
 
 ### CK-12 — Bảng giám sát bot trên mã đang xem
 

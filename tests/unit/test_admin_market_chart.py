@@ -790,3 +790,65 @@ def test_calendar_page_lists_events_and_validates_form() -> None:
     for field, value in (("event_tz", "Mars/Base"), ("reason", "x"), ("impact", "HUGE")):
         bad = client.post("/admin/calendar", data=form | {field: value}, follow_redirects=False)
         assert bad.status_code == 422, field
+
+
+class _Scanner:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def scan(self, principal: Principal, **kwargs: Any) -> dict:
+        from trading_bot.domain.market.scanner import scan_markets
+
+        self.calls.append(kwargs)
+        bars = _bars(600, start=START, step=timedelta(hours=1))
+        result = scan_markets(
+            {"BTCUSDT": bars, "NEWUSDT": bars[-24:]},
+            timeframe=kwargs["timeframe"],
+            now=datetime.fromtimestamp(bars[-1]["time"] + 3600, UTC),
+            criteria=kwargs["criteria"],
+        )
+        return result | {"generated_at": "2026-11-16T10:00:00+00:00", "summary": "đạt 1/2 mã"}
+
+    async def recent_runs(self, principal: Principal, **kwargs: Any) -> list[dict]:
+        return [
+            {
+                "occurred_at": "2026-11-16T10:00:00+00:00",
+                "summary": "đạt 1/2 mã",
+                "result_hash": "a" * 64,
+            }
+        ]
+
+
+def test_scanner_page_validates_criteria_and_records_on_post() -> None:
+    client = _client(_Reporting([]))
+    scanner = _Scanner()
+    client.app.state.market_scanner_service = scanner  # type: ignore[attr-defined]
+    client.app.state.auth_service = _Auth()  # type: ignore[attr-defined]
+    page = client.get("/admin/scanner?timeframe=1h&min_volume=0&range_min=0&range_max=1000")
+    assert page.status_code == 200
+    html = page.text
+    assert 'data-scan-row="BTCUSDT"' in html
+    assert "NEWUSDT</strong> — Thiếu dữ liệu" in html
+    assert 'data-multiselect="coins"' in html
+    assert "Nhật ký quét" in html
+    assert "đạt 1/2 mã" in html
+    assert ' style="' not in html
+    assert scanner.calls[0].get("record") is None
+    for bad in ("timeframe=5m", "min_volume=123", "range_min=40&range_max=20"):
+        assert client.get(f"/admin/scanner?{bad}").status_code == 422, bad
+    posted = client.post(
+        "/admin/scanner",
+        data={
+            "csrf_token": "csrf-ok",
+            "timeframe": "1h",
+            "min_volume": "0",
+            "range_min": "0",
+            "range_max": "1000",
+        },
+        follow_redirects=False,
+    )
+    assert posted.status_code == 303
+    assert posted.headers["location"].endswith("logged=1")
+    assert scanner.calls[-1]["record"] is True
+    refused = client.post("/admin/scanner", data={"timeframe": "1h"}, follow_redirects=False)
+    assert refused.status_code == 403

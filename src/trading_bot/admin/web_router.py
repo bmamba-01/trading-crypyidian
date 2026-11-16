@@ -7,6 +7,7 @@ import io
 import json
 import re
 import secrets
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, timezone, tzinfo
 from decimal import Decimal, InvalidOperation
@@ -77,6 +78,7 @@ from trading_bot.application.market_chart import (
 )
 from trading_bot.application.market_levels import price_levels
 from trading_bot.application.market_narrative import market_narrative
+from trading_bot.application.market_scanner import MarketScannerError, MarketScannerService
 from trading_bot.application.strategy_pipeline.microscope import MicroscopeReplayService
 from trading_bot.application.telegram_signal_subscription import (
     TelegramSignalSubscriptionError,
@@ -101,6 +103,7 @@ from trading_bot.auth.service import (
 )
 from trading_bot.config.bot_settings import BotConfigOverlay
 from trading_bot.domain.market.economic_calendar import IMPACT_LABELS_VI, EconomicEventInput
+from trading_bot.domain.market.scanner import SCAN_INTERVALS, ScanCriteria
 from trading_bot.domain.portfolio.post_mortem import evaluate_trade_post_mortem
 from trading_bot.domain.portfolio.reporting import (
     REPORT_MODE,
@@ -3021,6 +3024,109 @@ async def economic_calendar_delete(
     except EconomicCalendarError as error:
         raise _calendar_http_error(error) from error
     return _calendar_redirect()
+
+
+SCANNER_VOLUME_CHOICES = (0, 1_000_000, 5_000_000, 10_000_000, 50_000_000, 100_000_000)
+SCANNER_RANGE_MIN_CHOICES = (0, 5, 10, 20, 30)
+SCANNER_RANGE_MAX_CHOICES = (20, 40, 60, 100, 1000)
+
+
+def _scanner_service(request: Request) -> MarketScannerService:
+    service = cast(
+        MarketScannerService | None, getattr(request.app.state, "market_scanner_service", None)
+    )
+    if service is None:
+        raise HTTPException(status_code=503, detail="Bộ quét chưa sẵn sàng.")
+    return service
+
+
+def _scanner_params(values: Mapping[str, str]) -> tuple[str, ScanCriteria]:
+    """Tiêu chí chỉ nhận giá trị trong danh sách chọn (không nhập tự do)."""
+    timeframe = values.get("timeframe", "4h")
+    try:
+        volume = int(values.get("min_volume", "1000000"))
+        range_min = int(values.get("range_min", "0"))
+        range_max = int(values.get("range_max", "1000"))
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail="Tiêu chí quét không hợp lệ.") from error
+    if (
+        timeframe not in SCAN_INTERVALS
+        or volume not in SCANNER_VOLUME_CHOICES
+        or range_min not in SCANNER_RANGE_MIN_CHOICES
+        or range_max not in SCANNER_RANGE_MAX_CHOICES
+        or range_min >= range_max
+    ):
+        raise HTTPException(status_code=422, detail="Tiêu chí quét không hợp lệ.")
+    return timeframe, ScanCriteria(
+        min_quote_volume_24h=float(volume),
+        range_min_pct=float(range_min),
+        range_max_pct=float(range_max),
+    )
+
+
+@router.get("/scanner")
+async def market_scanner_page(
+    request: Request, identity: Annotated[AuthIdentity, Depends(current_identity)]
+) -> Response:
+    """Bộ quét thị trường (CK-11) trên nến đã lưu; chỉ xem, không gọi mạng sàn."""
+    timeframe, criteria = _scanner_params(dict(request.query_params))
+    service = _scanner_service(request)
+    try:
+        result = await service.scan(identity.principal, timeframe=timeframe, criteria=criteria)
+        runs = await service.recent_runs(identity.principal)
+    except MarketScannerError as error:
+        raise HTTPException(status_code=error.status_code, detail=error.message) from error
+    csrf_token = await _auth_service(request).issue_csrf_token(read_session_cookie(request))
+    symbols = [row["symbol"] for row in result["rows"]] + [
+        row["symbol"] for row in result["excluded"]
+    ]
+    return _templates(request).TemplateResponse(
+        request=request,
+        name="admin/market_scanner.html",
+        context={
+            "identity": identity,
+            "csrf_token": csrf_token,
+            "result": result,
+            "runs": runs,
+            "timeframe": timeframe,
+            "criteria": criteria,
+            "volume_choices": SCANNER_VOLUME_CHOICES,
+            "range_min_choices": SCANNER_RANGE_MIN_CHOICES,
+            "range_max_choices": SCANNER_RANGE_MAX_CHOICES,
+            "watch_choices": coin_choices((), only=tuple(sorted(set(symbols)))),
+            "logged": request.query_params.get("logged") == "1",
+        },
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.post("/scanner")
+async def market_scanner_run(
+    request: Request, identity: Annotated[AuthIdentity, Depends(current_identity)]
+) -> Response:
+    """Chạy quét và ghi nhật ký (audit) rồi quay về trang kết quả với cùng tiêu chí."""
+    values = await _parse_form(request)
+    await _verify_form_csrf(request, values)
+    timeframe, criteria = _scanner_params(values)
+    try:
+        await _scanner_service(request).scan(
+            identity.principal, timeframe=timeframe, criteria=criteria, record=True
+        )
+    except MarketScannerError as error:
+        raise HTTPException(status_code=error.status_code, detail=error.message) from error
+    query = urlencode(
+        {
+            "timeframe": timeframe,
+            "min_volume": int(criteria.min_quote_volume_24h),
+            "range_min": int(criteria.range_min_pct),
+            "range_max": int(criteria.range_max_pct),
+            "logged": 1,
+        }
+    )
+    return Response(
+        status_code=303,
+        headers={"Location": f"/admin/scanner?{query}", "Cache-Control": "no-store"},
+    )
 
 
 @router.get("/api/strategy-cards")

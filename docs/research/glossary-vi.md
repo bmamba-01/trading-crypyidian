@@ -859,3 +859,14 @@ Khái niệm VSA và ZigZag đã định nghĩa ở mục AC; mục này ghi tê
 | News window | Khoảng cấm quanh tin | ±30 phút quanh sự kiện tác động cao; điều kiện cộng điểm "Tin tức" của bảng Entry không đạt trong khoảng này; lịch trống ±7 ngày → "chưa xác định". | Định nghĩa nội bộ |
 | Breakeven win rate | Tỷ lệ thắng hòa vốn | Lỗ TB / (lãi TB + lỗ TB) sau phí: tỷ lệ thắng tối thiểu để kỳ vọng ≥ 0 với cặp lãi/lỗ trung bình hiện có. | [Investopedia — Expectancy/Win rate](https://www.investopedia.com/terms/w/win-loss-ratio.asp) |
 | Expectancy (per trade, net) | Kỳ vọng mỗi lệnh (ròng) | PnL ròng trung bình mỗi lệnh đã đóng (đã trừ phí, trượt giá, funding); dưới 30 lệnh gắn cờ chưa đủ mẫu. | Định nghĩa nội bộ (`ck10-stats-v1`) |
+
+## AN. Bộ quét thị trường và watchlist (CK-11, 16/11/2026)
+
+| Thuật ngữ (EN) | Tiếng Việt | Định nghĩa và giới hạn | Nguồn |
+|---|---|---|---|
+| Market scanner | Bộ quét thị trường | Xếp hạng các mã đã có nến trong kho nội bộ theo biến động 7 ngày, biên 21 ngày và thanh khoản 24h; không gọi API sàn. Mã thiếu dữ liệu 21 ngày, dữ liệu cũ hoặc dưới ngưỡng thanh khoản bị loại kèm lý do. Kết quả tất định (sắp theo chỉ số rồi tên mã). | Định nghĩa nội bộ (`ck11-scanner-v1`) |
+| Quote volume (24h) | Khối lượng quote 24 giờ | Tổng giá trị giao dịch tính bằng đồng định giá (USDT) trong 24 giờ; lấy trường `quote_volume` của nến, thiếu thì ước tính khối lượng × giá đóng (ghi "ước tính"). | [Binance Kline/Candlestick data](https://developers.binance.com/docs/derivatives/usds-margined-futures/market-data/rest-api/Kline-Candlestick-Data) (kiểm 16/11/2026) |
+| 21-day range | Biên 21 ngày | (đỉnh cao nhất − đáy thấp nhất trong 21 ngày) / giá đóng mới nhất × 100%. | Định nghĩa nội bộ |
+| Weekly change | Biến động tuần | Giá đóng mới nhất so với giá đóng của nến đã đóng tại mốc 7 ngày trước. | Định nghĩa nội bộ |
+| Personal watchlist | Watchlist cá nhân | Danh sách mã người xem tự chọn (multi-select), lưu trong trình duyệt (giai đoạn 1); khác watchlist workspace có phiên bản (`watchlist_version`). | Định nghĩa nội bộ |
+| Scan log | Nhật ký quét | Mỗi lần bấm "Chạy quét và ghi nhật ký" ghi một `audit_event` (`market_scan.run`) với tiêu chí, số mã đạt và hash danh sách kết quả. | Định nghĩa nội bộ |
