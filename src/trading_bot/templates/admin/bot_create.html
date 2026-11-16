@@ -11,7 +11,7 @@
     <section class="bot-section-card" aria-labelledby="bot-create-form-heading">
       <h2 id="bot-create-form-heading" class="bot-section-title"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="4" y="8" width="16" height="12" rx="2"/><path d="M12 8V4M9 17h6"/></svg>Thông tin bot PAPER</h2>
       {% if form_errors %}
-      <div class="error-summary" role="alert" aria-labelledby="bot-create-error-heading">
+      <div class="error-summary" role="alert" aria-labelledby="bot-create-error-heading" data-toast-mirrored data-toast-tone="error" data-toast-title="Chưa thể tạo bot" data-toast-message="{{ form_errors | join('; ') }}">
         <p id="bot-create-error-heading"><strong>Chưa tạo được bot. Kiểm tra lại:</strong></p>
         <ul>{% for message in form_errors %}<li>{{ message }}</li>{% endfor %}</ul>
       </div>

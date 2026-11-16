@@ -37,6 +37,12 @@
         errorSummary.hidden = false;
         errorSummary.textContent = "Báo cáo hiện hành thiếu mã định danh. Hãy tải lại trang sau khi báo cáo được lưu.";
         errorSummary.focus();
+        window.crypidianToast?.show({
+          tone: "warning",
+          title: "Thiếu mã báo cáo",
+          message: "Hãy tải lại trang để đồng bộ báo cáo mới nhất.",
+          mirrored: true,
+        });
         return;
       }
       body.evaluation_report_id = form.dataset.evaluationReportId;
@@ -69,12 +75,23 @@
         throw new Error(message || "Máy chủ chưa thể xử lý yêu cầu scorer.");
       }
       status.textContent = "Máy chủ đã ghi nhận sự kiện đổi chế độ scorer.";
+      window.crypidianToast?.flash({
+        tone: "success",
+        title: "Đã cập nhật chế độ chấm điểm",
+        message: "Sự kiện điều phối scorer đã được lưu.",
+      });
       window.location.reload();
     } catch (error) {
       errorSummary.hidden = false;
       errorSummary.textContent = error.message;
       errorSummary.focus();
       status.textContent = "Yêu cầu chưa được ghi nhận.";
+      window.crypidianToast?.show({
+        tone: "error",
+        title: "Chưa đổi được chế độ chấm điểm",
+        message: error.message,
+        mirrored: true,
+      });
       refreshSubmitState();
     }
   });

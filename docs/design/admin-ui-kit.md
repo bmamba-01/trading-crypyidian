@@ -60,3 +60,19 @@ Chuẩn giao diện chung cho mọi trang Admin Web sau đợt revamp. Trang m�
 - Playwright in-process (CSP thật): các file `tests/e2e/test_admin_*_playwright.py` liên quan.
 - Compose E2E (`tests/e2e/test_admin_web_workflows.py`) do người tích hợp chạy cuối, vì dùng chung image Docker.
 - `uv run ruff check src tests`, `uv run ruff format --check src tests`, `uv run mypy src/trading_bot`, `node --check` cho JS sửa.
+
+## 5. Component dùng chung bổ sung (UI Kit v1.2 — 2026-11-16)
+
+1. **Chủ đề Sáng/Tối đồng bộ hệ điều hành (`static/theme-init.js` + `static/theme-toggle.js`)**:
+   - Lắng nghe thay đổi `prefers-color-scheme: dark` khi chưa khóa `localStorage.crypidian_theme`, đồng bộ `data-theme`, `aria-checked` và phát sự kiện `themechange` cho biểu đồ.
+   - Nút chính và nút nguy hiểm (`.btn-primary`, `.btn-danger`) dùng `--primary-contrast` / `--danger-contrast` màu trắng `#ffffff` đạt tương phản >= 4.5:1 ở cả Light và Dark Mode; thêm `.btn-danger-outline`.
+   - Thanh `.app-topbar` và `.tabs-bar` dùng nền bán đục `--glass-bg-strong` / `color-mix(in srgb, var(--bg-base) 88%, transparent)` tránh chữ xuyên qua khi cuộn trang.
+2. **Popup / Hộp thoại dùng chung (`static/dialog.js` + `.glass-dialog`)**:
+   - Hỗ trợ `[data-dialog-open="<id>"]`, `[data-dialog-close]`, đóng khi bấm vào nền mờ (`::backdrop`), và khôi phục focus về nút mở sau khi đóng.
+   - Cung cấp `window.crypidianDialog.openDetail({ title, lead, rows, rawText, trigger })` cho hộp thoại chi tiết/JSON dùng chung (không `innerHTML`, tuân thủ CSP).
+3. **Thông báo nổi Toast (`static/toast.js` + `.app-toast`)**:
+   - Đẩy xuống dưới `.app-topbar` khi trang có App Shell, dùng kính mờ `--glass-bg-strong`, nút đóng chạm >= 44px.
+   - Hỗ trợ `window.crypidianToast.flash(options)` (qua `sessionStorage`) cho thao tác fetch + `reload()`, và `[data-toast-message][data-toast-mirrored]` cho banner kết quả từ server (`bot_create`, `bot_detail`, `backtest_replays`, `flatten_operation`, `login`).
+4. **Cảnh báo & Biểu mẫu thống nhất (`.ui-alert`, `.error-summary`, `.field-error`, `select`, `input[type="file"]`)**:
+   - Chuẩn `.ui-alert` với 4 biến thể `--info`, `--success`, `--warning`, `--danger` và `.error-summary` dùng biến CSS tương thích Light + Dark.
+   - Tự động gắn mũi tên `/static/icons/chevron-down.svg` cho mọi `select:not([multiple]):not([size])`, tạo dáng `input[type="file"]::file-selector-button`, trạng thái `[aria-invalid="true"]`, `[aria-busy="true"]`, giữ focus outline rõ ràng theo WCAG.

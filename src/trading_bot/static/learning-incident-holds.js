@@ -43,11 +43,22 @@
       setFreshMfa();
       reauthStatus.textContent = "Đã xác thực. Có thể xác nhận thao tác chặn hoặc tháo chặn trong 15 phút.";
       reauthForm.reset();
+      window.crypidianToast?.show({
+        tone: "success",
+        title: "Xác thực TOTP thành công",
+        message: "Đã mở khóa thao tác xử lý sự cố trong 15 phút.",
+      });
     } catch (requestError) {
       error.textContent = requestError.message;
       error.hidden = false;
       error.focus();
       reauthStatus.textContent = "Yêu cầu xác thực chưa thành công.";
+      window.crypidianToast?.show({
+        tone: "error",
+        title: "Xác thực bảo mật thất bại",
+        message: requestError.message,
+        mirrored: true,
+      });
     } finally {
       submit.disabled = false;
     }
@@ -63,6 +74,12 @@
         fieldError.hidden = false;
         reasonField.setAttribute("aria-invalid", "true");
         reasonField.focus();
+        window.crypidianToast?.show({
+          tone: "warning",
+          title: "Cần nhập lý do thao tác",
+          message: "Độ dài hợp lệ từ 1 đến 500 ký tự.",
+          mirrored: true,
+        });
         return;
       }
       fieldError.hidden = true;
@@ -86,6 +103,7 @@
         form.dataset.idempotencyKey = crypto.randomUUID();
       }
       button.disabled = true;
+      button.setAttribute("aria-busy", "true");
       error.hidden = true;
       status.hidden = false;
       status.textContent = action === "hold" ? "Đang xác nhận chặn lệnh vào." : "Đang tháo chặn lệnh vào.";
@@ -107,13 +125,26 @@
         status.textContent = action === "hold"
           ? "Đã ghi nhận thao tác chặn. Lệnh vào mới sẽ bị ngăn sau khi giao dịch hiện tại hoàn tất."
           : "Đã ghi nhận thao tác tháo chặn. Trạng thái lệnh vào đã được cập nhật.";
+        window.crypidianToast?.show({
+          tone: action === "hold" ? "warning" : "success",
+          title: action === "hold" ? "Lệnh chặn đã kích hoạt" : "Đã mở lại lệnh vào",
+          message: "Quyết định quản trị sự cố đã được lưu.",
+        });
         window.setTimeout(() => window.location.reload(), 900);
       } catch (requestError) {
         error.textContent = requestError.message;
         error.hidden = false;
         error.focus();
         status.textContent = "Thao tác chưa được ghi nhận.";
+        window.crypidianToast?.show({
+          tone: "error",
+          title: "Thao tác sự cố thất bại",
+          message: requestError.message,
+          mirrored: true,
+        });
         button.disabled = panel.dataset.recentTotp !== "true";
+      } finally {
+        button.removeAttribute("aria-busy");
       }
     });
   });

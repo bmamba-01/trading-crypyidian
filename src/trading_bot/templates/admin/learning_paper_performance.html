@@ -68,6 +68,7 @@
             <button class="btn btn-primary" id="paper-performance-assess" type="submit">{{ icon("play") }}Tạo snapshot chẩn đoán</button>
           </div>
           <p class="lx-status" id="paper-performance-form-status" role="status" aria-live="polite"></p>
+          <p class="lx-error" id="paper-performance-form-error" role="alert" tabindex="-1" hidden></p>
         </form>
       {% else %}
         <p class="lx-empty">{{ icon("info") }}Workspace chưa có bot PAPER mà tài khoản này được cấp quyền đọc.</p>

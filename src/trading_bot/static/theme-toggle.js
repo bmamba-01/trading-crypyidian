@@ -7,6 +7,7 @@
     toggleBtn.setAttribute("aria-checked", current === "dark" ? "true" : "false");
   };
   sync();
+  window.addEventListener("themechange", sync);
   toggleBtn.addEventListener("click", () => {
     const current = document.documentElement.getAttribute("data-theme") || "dark";
     const next = current === "dark" ? "light" : "dark";

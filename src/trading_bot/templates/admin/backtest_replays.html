@@ -22,8 +22,8 @@
 } %}
 <div class="bt-page">
   <p class="bt-intro">Chạy mô phỏng PAPER từ gói dữ liệu đã lưu. Lượt chạy không gửi lệnh lên Binance. Các chiến thuật hiện có chưa được xác nhận hiệu quả; kết quả mô phỏng không đảm bảo kết quả tương lai.</p>
-  {% if submitted %}<p class="bt-alert bt-alert--success" role="status"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M20 6 9 17l-5-5"/></svg><span>Đã đưa yêu cầu kiểm thử vào hàng đợi. Trạng thái sẽ cập nhật tự động.</span></p>{% endif %}
-  {% if error_message %}<p class="error-summary bt-alert bt-alert--danger" role="alert"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3 2 20h20L12 3Z"/><path d="M12 10v4M12 17h.01"/></svg><span>{{ error_message }}</span></p>{% endif %}
+  {% if submitted %}<p class="bt-alert bt-alert--success" role="status" data-toast-mirrored data-toast-tone="success" data-toast-title="Đã đưa kiểm thử vào hàng đợi" data-toast-message="Trạng thái sẽ cập nhật tự động."><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M20 6 9 17l-5-5"/></svg><span>Đã đưa yêu cầu kiểm thử vào hàng đợi. Trạng thái sẽ cập nhật tự động.</span></p>{% endif %}
+  {% if error_message %}<p class="error-summary bt-alert bt-alert--danger" role="alert" data-toast-mirrored data-toast-tone="error" data-toast-title="Chưa thể gửi kiểm thử" data-toast-message="{{ error_message }}"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3 2 20h20L12 3Z"/><path d="M12 10v4M12 17h.01"/></svg><span>{{ error_message }}</span></p>{% endif %}
 
   <section class="bt-card" aria-labelledby="backtest-submit-heading">
     <div class="bt-card__head">

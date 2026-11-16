@@ -24,17 +24,32 @@
     const candidateId = form.dataset.candidateId;
     const reasonField = form.querySelector("textarea[name=reason]");
     const button = form.querySelector("button[type=submit]");
+    const errBox = document.getElementById("learning-split-error");
+    if (errBox) {
+      errBox.textContent = "";
+      errBox.hidden = true;
+    }
     const reason = reasonField?.value.trim();
     // `minlength` của trình duyệt đếm cả khoảng trắng; máy chủ yêu cầu ≥ 12 ký tự sau khi cắt.
     if (reasonField) {
-      reasonField.setCustomValidity(
-        (reason || "").length < 12 ? "Lý do cần ít nhất 12 ký tự có nội dung." : "",
-      );
+      const tooShort = (reason || "").length < 12;
+      reasonField.setCustomValidity(tooShort ? "Lý do cần ít nhất 12 ký tự có nội dung." : "");
+      if (tooShort) {
+        reasonField.setAttribute("aria-invalid", "true");
+        window.crypidianToast?.show({
+          tone: "warning",
+          title: "Lý do phê duyệt chưa đủ",
+          message: "Hãy nhập tối thiểu 12 ký tự giải thích căn cứ phê duyệt.",
+        });
+      } else {
+        reasonField.removeAttribute("aria-invalid");
+      }
       if (!reasonField.reportValidity()) return;
     }
     if (!candidateId || !reason || !csrfToken) return;
     form.dataset.idempotencyKey ||= crypto.randomUUID();
     button.disabled = true;
+    button.setAttribute("aria-busy", "true");
     status.textContent = "Đang ghi nhận phê duyệt bất biến.";
     try {
       const response = await fetch(
@@ -66,9 +81,27 @@
       notice.textContent = `Đã phê duyệt lúc ${new Date(payload.approved_at).toLocaleString("vi-VN")}. Builder có thể niêm phong sau khi kiểm lại quyền hiện hành.`;
       form.replaceWith(notice);
       status.textContent = "Approval đã được ghi; mọi lần dùng dữ liệu vẫn kiểm quyền hiện hành.";
+      window.crypidianToast?.show({
+        tone: "success",
+        title: "Đã phê duyệt phân chia dữ liệu",
+        message: "Bản ghi phê duyệt bất biến đã được lưu.",
+      });
     } catch (error) {
-      status.textContent = error.message;
+      status.textContent = "Phê duyệt chưa được ghi nhận.";
+      if (errBox) {
+        errBox.textContent = error.message;
+        errBox.hidden = false;
+        errBox.focus();
+      }
+      window.crypidianToast?.show({
+        tone: "error",
+        title: "Chưa thể phê duyệt split",
+        message: error.message,
+        mirrored: Boolean(errBox),
+      });
       button.disabled = false;
+    } finally {
+      button.removeAttribute("aria-busy");
     }
   });
 })();

@@ -33,7 +33,7 @@
   </ol>
 
   {% if pause_failed %}
-  <div class="ops-callout ops-callout--warning" role="alert" data-pause-failed="{{ pause_failed }}">
+  <div class="ops-callout ops-callout--warning" role="alert" data-pause-failed="{{ pause_failed }}" data-toast-mirrored data-toast-tone="warning" data-toast-title="Một số bot chưa tạm dừng được" data-toast-message="Đã ghi lệnh đóng vị thế nhưng {{ pause_failed }} bot chưa tạm dừng được.">
     <span class="ops-callout__icon" aria-hidden="true"><svg class="ico" viewBox="0 0 24 24" focusable="false"><path d="M12 3 2 20h20L12 3Z"/><path d="M12 10v4M12 17h.01"/></svg></span>
     <p class="ops-callout__title">Đã ghi lệnh đóng vị thế nhưng {{ pause_failed }} bot chưa tạm dừng được</p>
     <div class="ops-callout__body"><p>Bot đó vẫn có thể mở vị thế mới. Mở <a href="/admin/bots">danh sách bot</a> và tạm dừng thủ công bot còn "Cho phép mở vị thế".</p></div>

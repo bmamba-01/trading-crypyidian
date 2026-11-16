@@ -3,9 +3,15 @@
   if (!form) return;
   const button = document.getElementById("paper-performance-assess");
   const status = document.getElementById("paper-performance-form-status");
+  const errorBox = document.getElementById("paper-performance-form-error");
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     button.disabled = true;
+    button.setAttribute("aria-busy", "true");
+    if (errorBox) {
+      errorBox.hidden = true;
+      errorBox.textContent = "";
+    }
     status.textContent = "Đang kiểm tra quyền hiện hành và tính các chỉ số…";
     try {
       const response = await fetch(form.dataset.endpoint, {
@@ -26,10 +32,29 @@
           : "Chưa thể tạo snapshot. Hãy thử lại sau.");
       }
       status.textContent = "Đã lưu snapshot chẩn đoán.";
+      window.crypidianToast?.flash({
+        tone: "success",
+        title: "Snapshot chẩn đoán đã sẵn sàng",
+        message: "Các chỉ số hiệu năng PAPER vừa được cập nhật.",
+      });
       window.location.reload();
     } catch (error) {
-      status.textContent = error instanceof Error ? error.message : "Yêu cầu chưa hoàn tất.";
+      const message = error instanceof Error ? error.message : "Yêu cầu chưa hoàn tất.";
+      status.textContent = "Yêu cầu chưa hoàn tất.";
+      if (errorBox) {
+        errorBox.textContent = message;
+        errorBox.hidden = false;
+        errorBox.focus();
+      }
+      window.crypidianToast?.show({
+        tone: "error",
+        title: "Chưa tạo được snapshot",
+        message,
+        mirrored: Boolean(errorBox),
+      });
       button.disabled = false;
+    } finally {
+      button.removeAttribute("aria-busy");
     }
   });
 })();

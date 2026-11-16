@@ -346,15 +346,20 @@
   .lx-form__row--action { grid-template-columns: minmax(0, 1fr); }
 }
 .lx-form__actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
+.lx-field--action { justify-content: flex-end; align-self: end; }
 .lx-help { font-size: var(--fs-xs); line-height: 1.45; color: var(--text-muted); }
 .lx-error {
-  padding: 0.55rem 0.75rem;
+  padding: 0.7rem 0.9rem;
   font-size: var(--fs-sm);
+  font-weight: 600;
   color: var(--danger-text);
   background: var(--danger-bg);
-  border-radius: 0.55rem;
+  border: 1px solid color-mix(in srgb, var(--danger) 42%, transparent);
+  border-left: 4px solid var(--danger);
+  border-radius: 0.65rem;
 }
-.lx-error:empty { display: none; }
+.lx-error:empty,
+.lx-error[hidden] { display: none; }
 .lx-status {
   display: flex;
   align-items: center;

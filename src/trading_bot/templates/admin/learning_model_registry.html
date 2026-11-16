@@ -60,9 +60,8 @@
         <textarea id="register-reason" name="reason" minlength="12" maxlength="500" required aria-describedby="register-reason-help"></textarea>
         <small id="register-reason-help" class="lx-help">12–500 ký tự, lưu cùng sự kiện quản trị.</small>
       </div>
-      <div class="lx-field">
+      <div class="lx-field lx-field--action">
         <button type="submit" class="btn btn-primary">{{ icon("upload") }}Đăng ký artifact</button>
-        <small class="lx-help" aria-hidden="true">&nbsp;</small>
       </div>
     </form>
   </section>
@@ -76,6 +75,7 @@
       <a class="lx-link" href="/admin/learning/models">{{ icon("refresh") }}Tải lại danh sách</a>
     </div>
     <p id="learning-registry-status" class="lx-status" role="status" aria-live="polite">{{ entries|length }} phiên bản mô hình.</p>
+    <p id="learning-registry-error" class="lx-error" role="alert" tabindex="-1" hidden></p>
     {% if entries %}
       <div class="lx-stack learning-registry-list">
         {% for item in entries %}
@@ -146,9 +146,9 @@
                     {% if approved %}
                       <button type="button" class="btn btn-primary" data-action="activate">{{ icon("target") }}Chọn cho PAPER</button>
                     {% endif %}
-                    <button type="button" class="btn btn-secondary" data-action="reject">{{ icon("x-circle") }}Từ chối</button>
+                    <button type="button" class="btn btn-danger-outline" data-action="reject">{{ icon("x-circle") }}Từ chối</button>
                   {% elif state == 'draft' %}
-                    <button type="button" class="btn btn-secondary" data-action="reject">{{ icon("x-circle") }}Từ chối</button>
+                    <button type="button" class="btn btn-danger-outline" data-action="reject">{{ icon("x-circle") }}Từ chối</button>
                   {% elif state == 'retired' and approved and was_active %}
                     <button type="button" class="btn btn-primary" data-action="rollback">{{ icon("undo") }}Khôi phục PAPER</button>
                   {% endif %}

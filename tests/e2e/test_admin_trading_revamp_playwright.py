@@ -583,7 +583,7 @@ def test_trading_revamp_playwright_desktop_and_mobile(revamp_server_url: str) ->
         )
 
         # 1.4 Kiểm tra Danh sách Lệnh và Bấm "Xem Biểu Đồ"
-        view_chart_btn = page.locator("button:has-text('🔍 Xem Biểu Đồ')").first
+        view_chart_btn = page.get_by_role("button", name="Xem Biểu Đồ").first
         assert view_chart_btn.is_visible()
         view_chart_btn.click()
         page.wait_for_load_state("networkidle")

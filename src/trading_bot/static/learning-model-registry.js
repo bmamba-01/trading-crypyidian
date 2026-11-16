@@ -65,9 +65,26 @@
         reason: String(values.get("reason") || "").trim(),
       });
       status.textContent = "Đã đăng ký artifact. Đang tải lại danh sách.";
+      window.crypidianToast?.flash({
+        tone: "success",
+        title: "Đăng ký hoàn tất",
+        message: "Đã lưu artifact vào sổ đăng ký.",
+      });
       window.location.reload();
     } catch (error) {
       status.textContent = error.message;
+      const errBox = document.getElementById("learning-registry-error");
+      if (errBox) {
+        errBox.textContent = error.message;
+        errBox.hidden = false;
+        errBox.focus();
+      }
+      window.crypidianToast?.show({
+        tone: "error",
+        title: "Không đăng ký được artifact",
+        message: error.message,
+        mirrored: Boolean(errBox),
+      });
     }
   });
 
@@ -75,9 +92,27 @@
     button.addEventListener("click", async () => {
       const card = button.closest("[data-registry-id]");
       const reason = card?.querySelector("[data-action-reason]");
-      if (!card || !reason || !validTrimmed(reason)) return;
+      const errBox = document.getElementById("learning-registry-error");
+      if (errBox) {
+        errBox.hidden = true;
+        errBox.textContent = "";
+      }
+      if (!card || !reason) return;
+      if (!validTrimmed(reason)) {
+        reason.setAttribute("aria-invalid", "true");
+        reason.focus();
+        window.crypidianToast?.show({
+          tone: "warning",
+          title: "Cần nhập lý do thao tác",
+          message: "Hãy nhập lý do tối thiểu theo quy định trước khi xác nhận.",
+          mirrored: Boolean(errBox),
+        });
+        return;
+      }
+      reason.removeAttribute("aria-invalid");
       status.textContent = "Đang gửi thao tác quản trị.";
       button.disabled = true;
+      button.setAttribute("aria-busy", "true");
       const registryId = card.dataset.registryId;
       const action = button.dataset.action;
       const body = {
@@ -92,10 +127,28 @@
       try {
         await request(`${apiRoot}/${registryId}/${action}`, body);
         status.textContent = "Đã ghi nhận quyết định. Đang tải lại danh sách.";
+        window.crypidianToast?.flash({
+          tone: "success",
+          title: "Đã cập nhật trạng thái mô hình",
+          message: "Quyết định quản trị đã được ghi nhận.",
+        });
         window.location.reload();
       } catch (error) {
-        status.textContent = error.message;
+        status.textContent = "Thao tác chưa hoàn tất.";
+        if (errBox) {
+          errBox.textContent = error.message;
+          errBox.hidden = false;
+          errBox.focus();
+        }
+        window.crypidianToast?.show({
+          tone: "error",
+          title: "Thao tác mô hình chưa hoàn tất",
+          message: error.message,
+          mirrored: Boolean(errBox),
+        });
         button.disabled = false;
+      } finally {
+        button.removeAttribute("aria-busy");
       }
     });
   });

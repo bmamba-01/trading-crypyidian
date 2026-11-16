@@ -254,7 +254,13 @@
       const option = select?.selectedOptions[0];
       if (!option?.dataset.datasetId || !option.dataset.foldId) return;
       const submit = form.querySelector("button[type=submit]");
+      const errorBox = document.getElementById("learning-training-error");
+      if (errorBox) {
+        errorBox.hidden = true;
+        errorBox.textContent = "";
+      }
       submit.disabled = true;
+      submit.setAttribute("aria-busy", "true");
       status.textContent = "Đang đưa tác vụ vào hàng đợi.";
       try {
         const result = await send(apiRoot, {
@@ -264,11 +270,30 @@
         status.textContent = result.status === "rejected"
           ? "Yêu cầu đã được ghi nhận nhưng vượt hạn mức máy chủ."
           : "Đã đưa tác vụ huấn luyện vào hàng đợi.";
+        window.crypidianToast?.show({
+          tone: result.status === "rejected" ? "warning" : "success",
+          title: result.status === "rejected" ? "Vượt hạn mức hàng đợi" : "Đã xếp hàng huấn luyện",
+          message: result.status === "rejected"
+            ? "Tạm thời chưa thể chạy thêm tác vụ mới."
+            : "Tiến trình huấn luyện đã được tiếp nhận.",
+        });
         await refresh();
       } catch (error) {
-        status.textContent = error.message;
+        status.textContent = "Không thể gửi tác vụ huấn luyện.";
+        if (errorBox) {
+          errorBox.textContent = error.message;
+          errorBox.hidden = false;
+          errorBox.focus();
+        }
+        window.crypidianToast?.show({
+          tone: "error",
+          title: "Không gửi được tác vụ",
+          message: error.message,
+          mirrored: Boolean(errorBox),
+        });
       } finally {
         submit.disabled = false;
+        submit.removeAttribute("aria-busy");
       }
     });
   }
@@ -276,15 +301,38 @@
   jobsRoot.addEventListener("click", async (event) => {
     const button = event.target.closest("[data-cancel-job]");
     if (!button) return;
+    const errorBox = document.getElementById("learning-training-error");
+    if (errorBox) {
+      errorBox.hidden = true;
+      errorBox.textContent = "";
+    }
     button.disabled = true;
+    button.setAttribute("aria-busy", "true");
     status.textContent = "Đang gửi yêu cầu dừng.";
     try {
       await send(`${apiRoot}/${button.dataset.cancelJob}/cancel`, {});
       status.textContent = "Đã gửi yêu cầu dừng cho tiến trình huấn luyện.";
+      window.crypidianToast?.show({
+        tone: "info",
+        title: "Đã tiếp nhận lệnh dừng",
+        message: "Tác vụ sẽ dừng ở điểm kiểm soát an toàn.",
+      });
       await refresh();
     } catch (error) {
-      status.textContent = error.message;
+      status.textContent = "Chưa gửi được yêu cầu dừng.";
+      if (errorBox) {
+        errorBox.textContent = error.message;
+        errorBox.hidden = false;
+        errorBox.focus();
+      }
+      window.crypidianToast?.show({
+        tone: "error",
+        title: "Chưa dừng được tác vụ",
+        message: error.message,
+        mirrored: Boolean(errorBox),
+      });
       button.disabled = false;
+      button.removeAttribute("aria-busy");
     }
   });
 

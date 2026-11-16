@@ -18,7 +18,7 @@
     const target = event.target instanceof Element ? event.target : null;
     if (!target) return;
 
-    const opener = target.closest("[data-dialog-open]");
+    const opener = !window.crypidianDialog && target.closest("[data-dialog-open]");
     if (opener) {
       const dialog = document.getElementById(opener.getAttribute("data-dialog-open") || "");
       if (dialog instanceof HTMLDialogElement && !dialog.open) dialog.showModal();
@@ -41,18 +41,20 @@
     }
   });
 
-  // Bấm vào nền mờ (ngoài khung hộp thoại) thì đóng; bấm trong nội dung thì giữ nguyên.
-  for (const dialog of document.querySelectorAll("dialog.glass-dialog")) {
-    dialog.addEventListener("click", (event) => {
-      if (event.target !== dialog) return;
-      const box = dialog.getBoundingClientRect();
-      const inside =
-        event.clientX >= box.left &&
-        event.clientX <= box.right &&
-        event.clientY >= box.top &&
-        event.clientY <= box.bottom;
-      if (!inside) dialog.close();
-    });
+  // Bấm vào nền mờ (ngoài khung hộp thoại) thì đóng; nếu đã có dialog.js toàn cục thì không lặp lại.
+  if (!window.crypidianDialog) {
+    for (const dialog of document.querySelectorAll("dialog.glass-dialog")) {
+      dialog.addEventListener("click", (event) => {
+        if (event.target !== dialog) return;
+        const box = dialog.getBoundingClientRect();
+        const inside =
+          event.clientX >= box.left &&
+          event.clientX <= box.right &&
+          event.clientY >= box.top &&
+          event.clientY <= box.bottom;
+        if (!inside) dialog.close();
+      });
+    }
   }
 
   // Tỷ lệ thập phân → phần trăm theo định dạng Việt Nam (0,01 → "= 1%").

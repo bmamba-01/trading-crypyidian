@@ -107,9 +107,28 @@
     if (latest) dismiss(latest);
   });
 
-  window.crypidianToast = { show, dismiss };
+  const FLASH_KEY = "crypidian.flash_toast";
+
+  const flash = (options) => {
+    try {
+      window.sessionStorage.setItem(FLASH_KEY, JSON.stringify(options || {}));
+    } catch {
+      // Trình duyệt chặn sessionStorage: bỏ qua nhẹ nhàng.
+    }
+  };
+
+  window.crypidianToast = { show, dismiss, flash };
 
   const fromServer = () => {
+    try {
+      const pending = window.sessionStorage.getItem(FLASH_KEY);
+      if (pending) {
+        window.sessionStorage.removeItem(FLASH_KEY);
+        show(JSON.parse(pending));
+      }
+    } catch {
+      // Dữ liệu flash toast không hợp lệ hoặc bị chặn: bỏ qua.
+    }
     for (const source of document.querySelectorAll("[data-toast-message]")) {
       show({
         tone: source.dataset.toastTone,

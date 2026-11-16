@@ -430,7 +430,7 @@
       </form>
 
       {% if signal_filter_error == "invalid" %}
-        <p class="bot-notice bot-notice--danger" role="alert">
+        <p class="bot-notice bot-notice--danger" role="alert" data-toast-mirrored data-toast-tone="error" data-toast-title="Bộ lọc tín hiệu không hợp lệ" data-toast-message="Hãy kiểm tra mã cặp, khung thời gian, hướng và giới hạn tối đa 100 giá trị.">
           Danh sách bộ lọc không hợp lệ. Hãy kiểm tra mã cặp, khung thời gian, hướng và giới hạn tối đa 100 giá trị.
         </p>
       {% endif %}
@@ -476,10 +476,10 @@
   <section class="bot-section-card bot-ops-card" aria-label="Cấu hình chiến lược">
     <h2 class="bot-section-title">{{ ico("config") }}Bản nháp cấu hình</h2>
     {% if draft_validation == "valid" %}
-      <p class="bot-notice bot-notice--success" role="status">Bản nháp đã qua kiểm định.</p>
+      <p class="bot-notice bot-notice--success" role="status" data-toast-mirrored data-toast-tone="success" data-toast-title="Bản nháp hợp lệ" data-toast-message="Bản nháp cấu hình đã qua kiểm định.">Bản nháp đã qua kiểm định.</p>
     {% endif %}
     {% if draft_validation == "invalid" %}
-      <p class="bot-notice bot-notice--danger" role="alert">Bản nháp không hợp lệ; xem lỗi qua API cấu hình.</p>
+      <p class="bot-notice bot-notice--danger" role="alert" data-toast-mirrored data-toast-tone="error" data-toast-title="Bản nháp không hợp lệ" data-toast-message="Kiểm tra lỗi cấu hình qua API hoặc chỉnh sửa thông số.">Bản nháp không hợp lệ; xem lỗi qua API cấu hình.</p>
     {% endif %}
 
     <dl class="kv-grid bot-config-kv">

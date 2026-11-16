@@ -19,7 +19,11 @@
   if (strategyButton) {
     strategyButton.addEventListener("click", () => {
       const dialog = document.getElementById(strategyButton.dataset.dialog || "");
-      if (dialog && typeof dialog.showModal === "function") dialog.showModal();
+      if (window.crypidianDialog && typeof window.crypidianDialog.open === "function") {
+        window.crypidianDialog.open(dialog, strategyButton);
+      } else if (dialog && typeof dialog.showModal === "function") {
+        dialog.showModal();
+      }
     });
   }
   const snapshots = new Map();

@@ -45,8 +45,8 @@
 }
 .mc-timeframe:hover { background: rgba(148, 163, 184, 0.14); }
 .mc-timeframe.is-empty { opacity: 0.45; }
-.mc-timeframe.is-active { background: var(--accent, #f0b90b); color: #111827; }
-.mc-timeframe:focus-visible { outline: 2px solid var(--accent, #f0b90b); outline-offset: 2px; }
+.mc-timeframe.is-active { background: var(--primary); border-color: var(--primary); color: var(--primary-contrast); }
+.mc-timeframe:focus-visible { outline: 3px solid var(--focus-ring); outline-offset: 2px; }
 
 .mc-layers {
   display: flex;
@@ -58,12 +58,10 @@
   flex: 1 1 100%;
 }
 .mc-layers legend {
-  float: left;
-  margin-right: 0.4rem;
+  margin: 0 0.45rem 0 0;
   padding: 0;
   font-size: 0.78rem;
   font-weight: 600;
-  line-height: 44px;
   opacity: 0.75;
 }
 /* Mỗi lớp là công tắc kiểu iOS (UI kit v1.1): nhãn trái, công tắc phải, vùng chạm 44px. */
@@ -97,7 +95,7 @@
 .mc-swatch--london { background: rgba(59, 130, 246, 0.45); }
 .mc-swatch--new_york { background: rgba(168, 85, 247, 0.45); }
 .mc-swatch--level { height: 0; border-top: 2px dashed #f6465d; border-radius: 0; }
-.mc-swatch--poc { height: 0; border-top: 2px solid #f0b90b; border-radius: 0; }
+.mc-swatch--poc { height: 0; border-top: 2px solid var(--warning); border-radius: 0; }
 
 .mc-notices { margin: 0; padding-left: 1.1rem; font-size: 0.78rem; opacity: 0.8; display: grid; gap: 0.2rem; }
 
