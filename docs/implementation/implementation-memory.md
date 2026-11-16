@@ -4502,7 +4502,7 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Việc kế tiếp:** hợp nhất `dev` ↔ `main` (ticket `OPS-BRANCH-SYNC`), cập nhật `project-status.md` theo các phát hiện trên, rồi re-sync tracker; tùy chọn chạy `@itsaplan/runner` nếu owner muốn giao ticket cho agent ngoài.
 - **Readback:** đã đọc lại mục này và đối chiếu với output đối soát, log import và diff tài liệu.
 
-### 2026-11-16 — SIG-5 lát 1: bộ máy kiểm định scalping (chưa commit)
+### 2026-11-16 — SIG-5 lát 1: bộ máy kiểm định scalping (commit `3e61239`)
 
 - **Phạm vi:** `domain/portfolio/scalping_validation.py`, `application/scalping_validation.py`, `scripts/sig5_scalping_validation.py`, cửa sổ `max_bars_per_timeframe` trong `build_backtest_dataset_replay_observations`/`run_backtest_dataset_runtime_replay`, `PRODUCER_MAX_BARS_PER_STREAM` (market_signal_composition), `PaperExecutionGateway.positions()` (chỉ đọc). Tài liệu: WBS SIG-5 "Đã triển khai lát 1", glossary mục AR.
 - **Quyết định:** tiêu chí #5 khóa trong mã (`sig5-paper-criterion-v1`) trước khi chạy dữ liệu thật; walk-forward cho rule tham số khóa = khối thời gian + embargo 1 giờ, mọi khối ngoài mẫu; R = PnL ròng / rủi ro ban đầu theo stop của lệnh; trượt giá cơ sở 0,02%/lần khớp là giả định dự án (owner đổi được — đổi = lượt thử mới); chỉ provider `BINANCE_USDM_REST` được allowlist cho backtest nên dữ liệu thật phải lấy qua REST kline công khai.
@@ -4512,7 +4512,7 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Còn mở:** chạy trên dữ liệu thật BTCUSDT/ETHUSDT (cần owner cho phép tải ~6 tháng M5+M15 qua REST công khai và xác nhận quyền dùng cho nghiên cứu); execution 1m; lưu báo cáo vào DB + màn admin; CK-13.
 
 
-### 2026-11-16 — SIG-5 lát 2: chạy dữ liệu thật, sự cố tải máy và replay theo đoạn (chưa commit)
+### 2026-11-16 — SIG-5 lát 2: chạy dữ liệu thật, sự cố tải máy và replay theo đoạn (commit `3e61239`)
 
 - **Yêu cầu:** "Cho phép tải" (tải ~6 tháng M5+M15 BTCUSDT/ETHUSDT qua REST kline công khai, không khóa API) → chạy kiểm định; sau đó "Kiểm tra … máy đang nặng quá" → "Dừng, chạy lại nhẹ hơn".
 - **Dữ liệu:** `fetch` 2026-05-01→2026-11-01 vào scratchpad (không vào repo): mỗi mã 52 992 nến 5m + 17 664 nến 15m, không khe hở/trùng/OHLC sai, đủ taker buy. Quy cách `GET /fapi/v1/exchangeInfo` công khai kiểm 16/11/2026: BTCUSDT tick 0,1 / bước 0,001 / notional tối thiểu 50; ETHUSDT tick 0,01 / bước 0,001 / notional 20 (`EXCHANGE_RULES` trong script).
@@ -4527,3 +4527,4 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Câu hỏi mở:** H19 ETH có ~1 ứng viên/tháng nhưng 6 tháng 0 lệnh — chưa xác định bị chặn ở risk planner (cost/notional) hay khớp lệnh.
 - **Điều tra E2E RT1 (16/11/2026):** `market_dispatch` thành `degraded` khi `last_tick_succeeded` sai (lỗi trong lượt) hoặc `discontinuities` > 0 (nến 1m không liên tục) — `PaperMarketEventLoop.status`. Lượt thất bại trước chạy đúng lúc 6 tiến trình SIG-5 làm máy quá tải (swap 38,8/40 GB, tải ~19/10 nhân); test dùng nến 1m theo đồng hồ thật nên nhạy với độ trễ. Chạy lại khi máy nhẹ: **2/2 lần đạt** (333 s, 307 s). Thông báo cũ bị pytest cắt nên không biết `last_error_code` → assert nay in readiness dạng JSON đầy đủ để lần sau thấy mã lỗi. Kết luận: phụ thuộc tải máy, không thấy lỗi code; nếu tái diễn khi máy nhẹ thì đọc `last_error_code`/`discontinuities` từ thông báo mới.
 - **Còn mở:** quyết định owner về hướng tiếp (lượt thử mới với tham số/thiết kế khác, cửa sổ PDH, execution 1m, limit maker); lưu báo cáo DB/admin; CK-13 (SIG-5 không có setup đạt).
+- **Commit & push:** "Commit, push dev" → commit SIG-5 lát 1+2; push đầu bị từ chối vì `dev` remote đã có `22fc91d` (Design System UI) và `70e9584` (It's a Plan) từ luồng khác → không force, `git rebase origin/dev`; xung đột chỉ ở memory và glossary (cả hai bên nối mục mới ở cuối) → giữ cả hai (glossary: AR SIG-5 trước AS It's a Plan). Bài học: dòng 3922 memory có sẵn chuỗi dấu xung đột trong nội dung → giải theo số dòng khối xung đột, không quét cả file. Sau rebase: unit 4629 passed, ruff/mypy sạch; `git push origin HEAD:dev`, `git ls-remote` xác nhận `refs/heads/dev = 3e61239`. E2E trước commit: RT1 2/2 đạt (sau điều tra), SIG-4 + WP07 backfill/persist-fence đạt ở lượt trước (các thay đổi sau đó chỉ ở runner kiểm định/CLI, không có E2E dùng).
