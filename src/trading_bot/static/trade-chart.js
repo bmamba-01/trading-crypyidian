@@ -214,7 +214,9 @@
                   ? "KÊNH"
                   : trade.exit_reason === "FEATURE_EXIT"
                     ? "CHỈ BÁO"
-                    : "ĐÓNG";
+                    : trade.exit_reason === "DELIST_EXIT"
+                      ? "GỠ"
+                      : "ĐÓNG";
 
       // Vẽ đường giá vào, dừng lỗ (SL) và chốt lời (TP) khi hậu kiểm có số liệu; tên đường
       // lấy từ từ điển chú giải phía máy chủ (thuộc tính data-* của vùng biểu đồ).

@@ -43,6 +43,7 @@ EXIT_REASON_LABELS_VI = {
     "CHANNEL_EXIT": "Thoát khi giá chạm biên ngược của kênh Donchian",
     "FEATURE_EXIT": "Thoát khi chỉ báo hồi về ngưỡng đã định",
     "FLATTEN_OPERATION": "Đóng theo thao tác quản trị khẩn cấp",
+    "DELIST_EXIT": "Đóng trước khi Binance gỡ hợp đồng",
 }
 
 

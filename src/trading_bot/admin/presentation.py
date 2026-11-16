@@ -74,6 +74,7 @@ LABELS = {
     "CHANNEL_EXIT": "Thoát theo kênh giá",
     "FEATURE_EXIT": "Thoát theo chỉ báo",
     "FLATTEN_OPERATION": "Đóng theo thao tác quản trị",
+    "DELIST_EXIT": "Đóng trước khi Binance gỡ hợp đồng",
     "ORDER": "Lệnh",
     "OPEN_ORDER": "Lệnh mở",
     "CLOSE_POSITION": "Đóng vị thế",

@@ -1111,7 +1111,11 @@ async def listings_write() -> dict[str, Any]:
 
 async def listings_read() -> dict[str, Any]:
     """AI-4 lát 3: runtime (role thật) đọc lần kiểm point-in-time và phát hiện lịch gỡ ZEC."""
-    from trading_bot.application.listings_state import load_listing_fetches, symbol_entry_block
+    from trading_bot.application.listings_state import (
+        delist_exit_reason,
+        load_listing_fetches,
+        symbol_entry_block,
+    )
     from trading_bot.application.outbox import UnitOfWork
     from trading_bot.domain.research.listings import listings_digest
 
@@ -1138,6 +1142,17 @@ async def listings_read() -> dict[str, Any]:
                     uow.session, workspace_id=WORKSPACE, symbol=symbol, as_of=at
                 )
                 blocks[label] = block.reason_code if block else None
+            # Đóng vị thế trước giờ gỡ (20/11 08:00 UTC): chỉ trong vòng 24 giờ trước giờ gỡ.
+            exits = {}
+            for label, symbol, at in (
+                ("zec_far", "ZECUSDT", after),
+                ("zec_within_24h", "ZECUSDT", datetime(2026, 11, 19, 9, tzinfo=UTC)),
+                ("c0_within", "C0USDT", datetime(2026, 11, 19, 9, tzinfo=UTC)),
+                ("unlisted", "NOPEUSDT", after),
+            ):
+                exits[label] = await delist_exit_reason(
+                    uow.session, workspace_id=WORKSPACE, symbol=symbol, as_of=at
+                )
     finally:
         await engine.dispose()
     digest = listings_digest(fetches, after, last_checked_at=checked, watch_symbols=["ZECUSDT"])
@@ -1157,6 +1172,7 @@ async def listings_read() -> dict[str, Any]:
         "before_at_risk": before["watched_at_risk"],
         "admin_web_insert": bool(admin_insert),
         "blocks": blocks,
+        "exits": exits,
     }
 
 

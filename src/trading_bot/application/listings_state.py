@@ -64,6 +64,7 @@ class EntryBlock:
     symbol: str
     reason_code: str
     detail_vi: str
+    delist_at: datetime | None = None
 
 
 _SYMBOL_ENTRY = text(
@@ -105,6 +106,7 @@ async def symbol_entry_block(
             symbol,
             "SYMBOL_DELIST_SCHEDULED",
             f"Binance đã lên lịch gỡ hợp đồng lúc {entry.delivery_at.isoformat()}.",
+            entry.delivery_at,
         )
     if entry.status != "TRADING":
         return EntryBlock(
@@ -115,4 +117,36 @@ async def symbol_entry_block(
     return None
 
 
-__all__ = ["EntryBlock", "load_listing_fetches", "symbol_entry_block"]
+# Đóng vị thế khi nến đóng trong vòng 24 giờ trước giờ gỡ: thanh khoản thường xấu đi gần hạn và
+# Binance tự tất toán lúc gỡ. Lựa chọn vận hành khởi điểm, chưa được nghiên cứu tối ưu.
+DELIST_EXIT_LEAD = timedelta(hours=24)
+DELIST_EXIT_REASON = "DELIST_EXIT"
+
+
+async def delist_exit_reason(
+    session: AsyncSession,
+    *,
+    workspace_id: UUID,
+    symbol: str,
+    as_of: datetime,
+    lead: timedelta = DELIST_EXIT_LEAD,
+) -> str | None:
+    """``DELIST_EXIT`` khi lần kiểm gần nhất ≤ ``as_of`` cho thấy hợp đồng sẽ bị gỡ trong ``lead``
+    (hoặc đã không còn TRADING/biến mất); ngược lại ``None``. Không có dữ liệu → không ép đóng."""
+    block = await symbol_entry_block(session, workspace_id=workspace_id, symbol=symbol, as_of=as_of)
+    if block is None:
+        return None
+    if block.reason_code != "SYMBOL_DELIST_SCHEDULED":
+        return DELIST_EXIT_REASON
+    assert block.delist_at is not None
+    return DELIST_EXIT_REASON if as_of >= block.delist_at - lead else None
+
+
+__all__ = [
+    "DELIST_EXIT_LEAD",
+    "DELIST_EXIT_REASON",
+    "EntryBlock",
+    "delist_exit_reason",
+    "load_listing_fetches",
+    "symbol_entry_block",
+]

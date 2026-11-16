@@ -1006,6 +1006,7 @@ def _dashboard_performance_chart(reports: list[dict[str, Any]]) -> dict[str, Any
                 "OPPOSING_SIGNAL": "ĐẢO",
                 "CHANNEL_EXIT": "KÊNH",
                 "FEATURE_EXIT": "CHỈ BÁO",
+                "DELIST_EXIT": "GỠ",
             }.get(trade.get("exit_reason") or "", "ĐÓNG")
             entry_reason = trade.get("entry_reason")
             entry_reason = entry_reason if isinstance(entry_reason, dict) else {}
@@ -1063,6 +1064,7 @@ def _exit_reason_label_vi(reason: object) -> str:
         "CHANNEL_EXIT": "Thoát theo kênh giá",
         "FEATURE_EXIT": "Thoát theo chỉ báo",
         "FLATTEN_OPERATION": "Đóng theo thao tác quản trị",
+        "DELIST_EXIT": "Đóng trước khi Binance gỡ hợp đồng",
     }
     if not isinstance(reason, str) or not reason:
         return "Chưa có dữ liệu"

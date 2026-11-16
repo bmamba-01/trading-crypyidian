@@ -44,6 +44,7 @@ EXIT_REASON_VI: dict[str, str] = {
     "PROTECTIVE_EXIT": "Thoát bảo vệ",
     "REDUCE_ONLY": "Giảm vị thế (reduce-only)",
     "FLATTEN_OPERATION": "Đóng toàn bộ theo thao tác vận hành",
+    "DELIST_EXIT": "Đóng trước khi Binance gỡ hợp đồng",
 }
 
 

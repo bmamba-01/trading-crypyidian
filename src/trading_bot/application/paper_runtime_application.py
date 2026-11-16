@@ -65,6 +65,7 @@ from trading_bot.application.bot_config_resolver import (
     load_effective_bot_config,
 )
 from trading_bot.application.bot_dispatcher import BotDecision, BotDecisionStatus
+from trading_bot.application.listings_state import delist_exit_reason
 from trading_bot.application.outbox import AfterCommitCallbackError, UnitOfWork
 from trading_bot.application.paper_decision_cycle import (
     DecisionCycleOutcome,
@@ -886,6 +887,13 @@ class PaperRuntimeApplicationService:
                     exit_feature_value=evidence.exit_feature_value,
                     strategy_bar_closed=evidence.strategy_bar_closed,
                     fencing_token=_account_token(account),
+                    # AI-4 lát 3: đóng trước khi Binance gỡ hợp đồng (point-in-time theo nến).
+                    forced_exit_reason=await delist_exit_reason(
+                        uow.session,
+                        workspace_id=self._workspace_id,
+                        symbol=command.bar.symbol,
+                        as_of=command.bar.closed_at,
+                    ),
                 )
         except PaperRuntimeApplicationError:
             raise

@@ -279,6 +279,12 @@ def test_rest_candles_drive_paper_entry_fill_and_stop_exit_idempotently() -> Non
                 "unlisted_after": "SYMBOL_NOT_LISTED",
                 "no_data": None,
             },
+            "exits": {
+                "zec_far": None,
+                "zec_within_24h": "DELIST_EXIT",
+                "c0_within": None,
+                "unlisted": "DELIST_EXIT",
+            },
         }
 
         # FX-2: ngắt mạch drawdown đo bằng role runtime trên ledger thật.
