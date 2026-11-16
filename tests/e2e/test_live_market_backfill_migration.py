@@ -82,8 +82,10 @@ def test_backfill_recreates_live_market_tables_for_main_lineage_database() -> No
     try:
         compose("up", "--detach", "--wait", "--wait-timeout", "180", "postgres")
         compose("run", "--rm", "--no-deps", "db-provisioner")
-        alembic("upgrade", "head")
-        assert "d8f1b3a5c7e9 (head)" in alembic("heads").stdout
+        # Dừng ở 7707d82de246: các migration WP06 phía trên (c2e4a6b8d0f1, d4f6a8b0c2e4) rewrite
+        # hàm có ghim hash preimage nên không chạy lại được sau khi stamp lùi; chúng được áp sau.
+        alembic("upgrade", "7707d82de246")
+        assert "d4f6a8b0c2e4 (head)" in alembic("heads").stdout
 
         # DB theo main: đã qua revision gộp nhưng chưa từng có ba bảng của b4d6. Hạ các revision
         # sau 7707d82de246 trước (vd cột analyst_run.context của CRY-384) để stamp lùi khớp schema.
@@ -91,8 +93,8 @@ def test_backfill_recreates_live_market_tables_for_main_lineage_database() -> No
         drop(TABLES)
         alembic("stamp", "c1fec3af85ea")
         assert sql("SELECT count(*) FROM pg_class WHERE relname IN " + str(TABLES)) == "0"
-        alembic("upgrade", "head")
-        assert "d8f1b3a5c7e9 (head)" in alembic("current").stdout
+        alembic("upgrade", "7707d82de246")
+        assert "7707d82de246" in alembic("current").stdout
         assert (
             sql(
                 "SELECT count(*) FROM pg_class WHERE relrowsecurity AND relforcerowsecurity "
@@ -116,6 +118,8 @@ def test_backfill_recreates_live_market_tables_for_main_lineage_database() -> No
             )
             == "t"
         )
+        alembic("upgrade", "head")
+        assert "d4f6a8b0c2e4 (head)" in alembic("current").stdout
         check = alembic("check")
         assert "No new upgrade operations detected" in check.stdout + check.stderr
 
