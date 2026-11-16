@@ -55,6 +55,7 @@ from trading_bot.admin.presentation import (
     pnl_tone,
 )
 from trading_bot.admin.strategy_card_service import StrategyCardAdminService
+from trading_bot.application.analyst_review import AnalystReviewError, AnalystReviewService
 from trading_bot.application.bot_lifecycle_guard import BotNotFlatError
 from trading_bot.application.bot_operations import BotOperationsService, PrincipalBotOperations
 from trading_bot.application.bot_reporting import (
@@ -2980,6 +2981,63 @@ async def market_chart_history_api(
         "trades": trades,
         "csv_url": f"/admin/reports/export.csv?{csv_query}",
     }
+
+
+def _analyst_review(request: Request) -> AnalystReviewService:
+    service = cast(
+        AnalystReviewService | None, getattr(request.app.state, "analyst_review_service", None)
+    )
+    if service is None:
+        raise HTTPException(status_code=503, detail="Trang phân tích AI chưa sẵn sàng.")
+    return service
+
+
+@router.get("/ai-analyses")
+async def ai_analyses_page(
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(current_identity)],
+    topic: str | None = None,
+    valid: str | None = None,
+) -> Response:
+    """CRY-383: danh sách lượt AI Analyst (chỉ đọc), lọc theo chủ đề và kết quả validator."""
+    valid_filter = {"yes": True, "no": False}.get(valid or "")
+    try:
+        data = await _analyst_review(request).list_runs(
+            identity.principal, topic=topic or None, valid=valid_filter
+        )
+    except AnalystReviewError as error:
+        raise HTTPException(status_code=error.status_code, detail=error.message) from error
+    return _templates(request).TemplateResponse(
+        request=request,
+        name="admin/ai_analyses.html",
+        context={
+            "identity": identity,
+            "runs": data["runs"],
+            "topics": data["topics"],
+            "topic": topic or "",
+            "valid": valid or "",
+        },
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.get("/ai-analyses/{run_id}")
+async def ai_analysis_detail(
+    request: Request,
+    run_id: UUID,
+    identity: Annotated[AuthIdentity, Depends(current_identity)],
+) -> Response:
+    """CRY-383: một lượt AI Analyst — đầu ra, lỗi validator, bối cảnh, backtest đề xuất."""
+    try:
+        run = await _analyst_review(request).get_run(identity.principal, run_id)
+    except AnalystReviewError as error:
+        raise HTTPException(status_code=error.status_code, detail=error.message) from error
+    return _templates(request).TemplateResponse(
+        request=request,
+        name="admin/ai_analysis_detail.html",
+        context={"identity": identity, "run": run},
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 def _calendar_service(request: Request) -> EconomicCalendarService:

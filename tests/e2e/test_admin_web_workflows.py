@@ -127,6 +127,7 @@ def ai3_proposal_seed():
     bot_id = UUID(workspace["bots"]["a"])
     run_id = uuid4()
     backtest_id = uuid4()
+    proposal_changes = [{"field": "risk.per_trade_risk_fraction", "to": "0.001"}]
     with _connect() as connection, connection.transaction():
         head = connection.execute(
             "SELECT overlay_json FROM bot_config_version WHERE workspace_id=%s AND bot_id=%s "
@@ -134,14 +135,42 @@ def ai3_proposal_seed():
             (workspace_id, bot_id),
         ).fetchone()
         assert head is not None, "Bot cần cấu hình đã publish."
+        # CRY-383: đầu ra + bối cảnh để trang "Phân tích AI" hiển thị.
+        output = {
+            "summary": "Nhóm H03 có 12 lệnh đóng, chưa đủ để kết luận.",
+            "confidence": "low",
+            "findings": [{"statement": "T01 có 12 lệnh đóng.",
+                          "evidence_refs": ["/bots/0/performance/closed_trades"]}],
+            "hypotheses": [{"statement": "Rủi ro mỗi lệnh có thể quá cao.",
+                            "how_to_test": "Backtest rủi ro 0.001.", "evidence_refs": ["/bots/0"]}],
+            "proposals": [{"bot_name": "e2e", "changes": proposal_changes,
+                           "rationale": "Giảm drawdown.", "risk": "Lợi nhuận giảm.",
+                           "evidence_refs": ["/bots/0"]}],
+        }
+        context = {
+            "macro_calendar": {"horizon_days": 7, "state": {"blackout": False}, "upcoming": [
+                {"vn_date": "17/11", "vn_time": "20:30", "label_vi": "Doanh số bán lẻ"}]},
+            "listings": {"watched_at_risk": [
+                {"symbol": "ZECUSDT", "status": "TRADING", "delist_at_vn": "20/11 15:00"}]},
+        }
         connection.execute(
             "INSERT INTO analyst_run (id, workspace_id, topic_key, engine, resumed, "
             "run_report_hash, input_sha256, prompt_version, output_version, usage, exit_code, "
-            "raw_stdout, validation_errors, valid) VALUES (%s,%s,'family:H03','fake',FALSE,"
-            "%s,%s,'ai2-prompt-v2','analyst_output.v2','{}'::jsonb,0,'{}','[]'::jsonb,TRUE)",
-            (run_id, workspace_id, "a" * 64, "b" * 64),
+            "raw_stdout, structured_output, validation_errors, valid, cost_usd, context) VALUES "
+            "(%s,%s,'family:H03','fake',FALSE,%s,%s,'ai2-prompt-v5','analyst_output.v2',"
+            "'{}'::jsonb,0,'{}',%s::jsonb,'[]'::jsonb,TRUE,0.125,%s::jsonb)",
+            (run_id, workspace_id, "a" * 64, "b" * 64, _json.dumps(output), _json.dumps(context)),
         )
-        proposal = {"changes": [{"field": "risk.per_trade_risk_fraction", "to": "0.001"}]}
+        # Một lượt bị loại để kiểm bộ lọc và danh sách lỗi validator.
+        connection.execute(
+            "INSERT INTO analyst_run (id, workspace_id, topic_key, engine, resumed, "
+            "run_report_hash, input_sha256, prompt_version, output_version, usage, exit_code, "
+            "raw_stdout, validation_errors, valid) VALUES (%s,%s,'family:H01','fake',TRUE,"
+            "%s,%s,'ai2-prompt-v5','analyst_output.v2','{}'::jsonb,0,'{}',%s::jsonb,FALSE)",
+            (uuid4(), workspace_id, "a" * 64, "c" * 64,
+             _json.dumps(["findings[0]: số '9' không khớp trường được trích"])),
+        )
+        proposal = {"changes": proposal_changes}
         result = {
             "verdict": "BETTER",
             "bot_name": "e2e",
@@ -160,7 +189,7 @@ def ai3_proposal_seed():
                 _json.dumps(proposal), _json.dumps(result),
             ),
         )
-    return {"ai3_backtest_id": str(backtest_id)}
+    return {"ai3_backtest_id": str(backtest_id), "ai_run_id": str(run_id)}
 PHASES["ai3_proposal_seed"] = ai3_proposal_seed
 
 def ai3_draft_inspect():
@@ -769,6 +798,31 @@ def test_admin_browser_session_navigation_accessibility_and_telegram_link(
             "latest_status": "DRAFT",
             "latest_risk_fraction": "0.001",
         }
+        # CRY-383: trang "Phân tích AI" — danh sách, bộ lọc, chi tiết lượt và backtest đề xuất.
+        _open_mobile_menu(browser_page)
+        browser_page.get_by_role("navigation", name="Điều hướng chính").get_by_role(
+            "link", name="Phân tích AI", exact=True
+        ).press("Enter")
+        expect(browser_page.get_by_role("heading", name="Các lượt phân tích")).to_be_visible()
+        runs = browser_page.get_by_role("table", name="Danh sách lượt phân tích AI")
+        expect(runs.get_by_text("family:H03")).to_be_visible()
+        expect(runs.get_by_text("Bị loại (1 lỗi)")).to_be_visible()
+        browser_page.get_by_label("Kết quả kiểm tra").select_option("yes")
+        browser_page.get_by_role("button", name="Lọc").press("Enter")
+        expect(runs.get_by_text("family:H01")).to_have_count(0)
+        runs.get_by_role("link", name="Xem chi tiết").first.press("Enter")
+        expect(browser_page.get_by_role("heading", name="Nhận định (1)")).to_be_visible()
+        expect(browser_page.get_by_text("T01 có 12 lệnh đóng.")).to_be_visible()
+        expect(browser_page.get_by_text("/bots/0/performance/closed_trades")).to_be_visible()
+        backtests = browser_page.get_by_role("table", name="Kết quả backtest đề xuất")
+        expect(backtests.get_by_text("Tốt hơn")).to_be_visible()
+        expect(browser_page.get_by_text("17/11 20:30 · Doanh số bán lẻ")).to_be_visible()
+        expect(
+            browser_page.get_by_text("ZECUSDT: TRADING — gỡ 20/11 15:00 (giờ VN)")
+        ).to_be_visible()
+        assert browser_page.evaluate(
+            "document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1"
+        ), "Trang chi tiết phân tích AI bị tràn ngang."
         _open_mobile_menu(browser_page)
         browser_page.get_by_role("navigation", name="Điều hướng chính").get_by_role(
             "link", name="Tổng quan", exact=True

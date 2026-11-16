@@ -1,0 +1,22 @@
+/* CRY-383: trang Phân tích AI (danh sách lượt và chi tiết). Dùng token màu chung của admin.css. */
+.ai-page { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1rem; min-width: 0; }
+/* Con của grid mặc định min-width:auto: bảng rộng sẽ kéo cột tràn khung (E2E 1024px phát hiện). */
+.ai-page > * { min-width: 0; }
+.ai-page .table-wrapper { overflow-x: auto; }
+.ai-page code { overflow-wrap: anywhere; }
+.ai-filters { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: end; }
+.ai-filters label { display: grid; gap: 0.25rem; font-size: 0.875rem; color: var(--text-muted); }
+.ai-summary { max-width: 46ch; overflow-wrap: anywhere; }
+.ai-meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); gap: 0.5rem 1rem; margin: 0; }
+.ai-meta dt { font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.03em; }
+.ai-meta dd { margin: 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.ai-list { margin: 0; padding-left: 1.1rem; display: grid; gap: 0.6rem; }
+.ai-list li { overflow-wrap: anywhere; }
+.ai-refs { display: flex; flex-wrap: wrap; gap: 0.25rem; margin-top: 0.25rem; }
+.ai-refs code, .ai-hash { font-size: 0.75rem; color: var(--text-muted); overflow-wrap: anywhere; }
+.ai-errors li { color: var(--danger-text, #c7354b); }
+.ai-note { color: var(--text-muted); font-size: 0.875rem; margin: 0.25rem 0 0; }
+.ai-num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+@media (max-width: 768px) { .ai-summary { max-width: none; } }
+.ai-page h3 { font-size: 1rem; font-weight: 600; margin: 1.25rem 0 0.5rem; }
+.ai-page h3:first-of-type { margin-top: 0.5rem; }

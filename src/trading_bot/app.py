@@ -75,6 +75,7 @@ from trading_bot.admin.telegram_binding_router import router as telegram_binding
 from trading_bot.admin.telegram_signal_router import router as telegram_signal_router
 from trading_bot.admin.web_router import router as admin_web_router
 from trading_bot.application.account_activity_guard import AccountActivityGuard
+from trading_bot.application.analyst_review import AnalystReviewService
 from trading_bot.application.backtest_replay_jobs import BacktestReplayJobService
 from trading_bot.application.bot_operations import BotOperationsService
 from trading_bot.application.bot_reporting import BotReportingService
@@ -289,6 +290,11 @@ def create_app(
         )
         application.state.economic_calendar_service = (
             EconomicCalendarService(active_session_factory)
+            if active_session_factory is not None
+            else None
+        )
+        application.state.analyst_review_service = (
+            AnalystReviewService(active_session_factory)
             if active_session_factory is not None
             else None
         )
