@@ -933,7 +933,22 @@ async def evaluate(sessions):
     ):
         assert getattr(report, name) == getattr(proof, name)
     assert report.scorer_artifact_hash == scorer.artifact_hash
+    # Digest scope EVALUATION hiện hành tính bằng gate Python dưới login evaluator thật;
+    # phase current-rights (migrator) đối chiếu với digest recheck SQL dựng lại (d4f6a8b0c2e4).
+    from trading_bot.adapters.database.replay_training_rights import (
+        DatabaseReplayTrainingRightsGate,
+        ReplayTrainingOperation,
+        training_scope_digest,
+    )
+
+    async with UnitOfWork(sessions, workspace_id=WORKSPACE) as rights_unit:
+        evaluation_receipts = await DatabaseReplayTrainingRightsGate(rights_unit.session).authorize(
+            workspace_id=WORKSPACE,
+            bundle_hash=STATE["bundle_hash"],
+            operation=ReplayTrainingOperation.EVALUATION,
+        )
     return {
+        "evaluation_training_scope_digest": training_scope_digest(evaluation_receipts),
         "receipt_committed_before_payload": True,
         "atomic_rollback": True,
         "one_consumption_one_report": True,
@@ -960,10 +975,6 @@ async def verify_current_rights(sessions):
     """Kiểm gateway trong PostgreSQL bằng fixture TEST có source reference thật."""
     import hashlib
 
-    from trading_bot.adapters.database.replay_training_rights import (
-        DatabaseReplayTrainingRightsGate,
-        training_scope_digest,
-    )
     from trading_bot.adapters.database.repositories.source_registry import (
         SourceRegistryRepository,
     )
@@ -1334,11 +1345,8 @@ async def verify_current_rights(sessions):
             )
             expected_digests[fold_role] = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
-        async with UnitOfWork(sessions, workspace_id=WORKSPACE) as training_rights_unit:
-            receipts = await DatabaseReplayTrainingRightsGate(
-                training_rights_unit.session
-            ).authorize(workspace_id=WORKSPACE, bundle_hash=STATE["bundle_hash"])
-            expected_training_scope_digest = training_scope_digest(receipts)
+        # Gate replay chỉ nhận login builder/evaluator; digest Python lấy từ phase evaluate.
+        expected_training_scope_digest = STATE["evaluation_training_scope_digest"]
 
         counts_before = tuple(
             (

@@ -74,8 +74,10 @@ def test_migration_is_the_single_head_after_previous_head() -> None:
     heads = [revision for revision in graph if revision not in parents]
     # RT-1 lát 2 nối migration mark fallback ngay sau SIG-0. Sau đó hai nhánh tách ra: dev (CK-1
     # bảng giá trực tiếp, CK-10 lịch kinh tế) và main (AI-3/AI-4); revision gộp CRY-88 nối lại
-    # thành một head. WP06 nối migration caller EVALUATION của scorer TEST proof sau đó.
-    assert heads == ["c2e4a6b8d0f1"]
+    # thành một head. WP06 nối migration caller EVALUATION của scorer TEST proof sau đó, rồi
+    # lát B (scorer recheck đọc manifest v5).
+    assert heads == ["d4f6a8b0c2e4"]
+    assert graph["d4f6a8b0c2e4"] == "c2e4a6b8d0f1"
     assert graph["c2e4a6b8d0f1"] == "7707d82de246"
     assert graph["7707d82de246"] == "c1fec3af85ea"  # bù bảng live market b4d6 (CRY-88)
     assert graph["c1fec3af85ea"] == ("645ed2998ab1", "b8d0f2a4c6e8")

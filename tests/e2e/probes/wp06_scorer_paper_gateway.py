@@ -1,11 +1,8 @@
 """Gọi gateway thật bằng artifact chẩn đoán; fixture không chứng minh quyền sản phẩm.
 
-Từ gate TRAINING exact-scope (b7d9f1a3c5e8) không còn đường sản phẩm nào đưa artifact đã
-train tới `WP06_SCORER_PAPER_SOURCE_RIGHTS_DENIED`: manifest source-item v1–v3 bị chặn
-trước khi train, còn manifest replay v4/v5 bị `wp06_scorer_manifest_source_refs` (chỉ nhận
-v1–v3) từ chối bằng `WP06_SCORER_RIGHTS_MANIFEST_MISSING`. Probe nhận mã từ chối kỳ vọng
-qua `WP06_EXPECTED_DENIAL` và khẳng định không ledger deployment/score event nào đổi.
-Phase `ledger` (chạy bằng migrator) kiểm workspace chưa có artifact/deployment/score event.
+Probe nhận mã từ chối kỳ vọng qua `WP06_EXPECTED_DENIAL` (mặc định gate PAPER) và khẳng
+định pointer/event ledger không đổi. Phase `ledger` (chạy bằng migrator) đếm artifact,
+score event, deployment event và pointer khác `DISABLED` của workspace.
 """
 
 from __future__ import annotations
@@ -122,7 +119,7 @@ async def main() -> dict[str, bool]:
             except DBAPIError as error:
                 if expected not in str(error.orig):
                     raise AssertionError(
-                        f"Gateway thật phải chặn bằng {expected} trước lookup report; "
+                        f"Gateway thật phải chặn bằng {expected}; "
                         "không chấp nhận denial từ gate khác: " + str(error.orig)
                     ) from error
             else:

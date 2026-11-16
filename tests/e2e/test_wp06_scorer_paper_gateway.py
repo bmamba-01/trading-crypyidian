@@ -1,16 +1,17 @@
 """Compose fail-closed cho wiring gateway PAPER của scorer đã train.
 
-Từ gate TRAINING exact-scope (`b7d9f1a3c5e8`, 14/11/2026) không còn đường sản phẩm nào
-đưa artifact đã train tới `WP06_SCORER_PAPER_SOURCE_RIGHTS_DENIED`:
+- Manifest source-item WP05 (v1–v3) với canonical source TRAINING-only bị chặn trước khi
+  train (`WP06_TRAINING_REPLAY_LEGACY_LINEAGE_DENIED`), nên không có artifact/deployment.
+- Manifest replay v5 (QA) train được; từ lát B (`d4f6a8b0c2e4`) gateway đọc được lineage v5
+  (không còn `MANIFEST_MISSING`). Artifact chưa có TEST proof/report nên preflight PAPER không
+  có canonical source để kiểm và gateway từ chối `WP06_SCORER_DEPLOYMENT_REPORT_NOT_FOUND`,
+  không đổi pointer/event/score. Đường có proof + report (QA bị
+  `WP06_SCORER_DEPLOYMENT_QA_SOURCE_DENIED`) do phase deployment của
+  `test_wp06_source_pinned_replay_persistence.py[source-linked-test]` phủ.
 
-- manifest source-item WP05 (v1–v3) với canonical source TRAINING-only bị chặn trước khi
-  train (`WP06_TRAINING_REPLAY_LEGACY_LINEAGE_DENIED`), nên không có artifact/deployment;
-- manifest replay v5 (QA) train được, nhưng `wp06_scorer_manifest_source_refs` chỉ nhận
-  v1–v3 nên gateway từ chối bằng `WP06_SCORER_RIGHTS_MANIFEST_MISSING` trước mọi kiểm tra
-  purpose, không đổi pointer/event/score event.
-
-Bản thân gate PAPER (`wp06_require_scorer_paper_source_rights`) vẫn được kiểm trực tiếp
-trong `wp06_scorer_paper_rights.py` của E2E scorer deployment.
+Fixture chỉ có nguồn QA nên chưa có đường sản phẩm tới `WP06_SCORER_PAPER_SOURCE_RIGHTS_DENIED`
+cho artifact đã train; bản thân gate PAPER (`wp06_require_scorer_paper_source_rights`) vẫn
+được kiểm trực tiếp trong `wp06_scorer_paper_rights.py` của E2E scorer deployment.
 """
 
 from __future__ import annotations
@@ -113,7 +114,7 @@ def test_real_deployment_gateway_fails_closed_for_trained_and_legacy_sources() -
         ) == {"receipt_unchanged": True, "normalized_sample_count_unchanged": True}
         assert ledger(manifest["workspace_id"]) == EMPTY_LEDGER
 
-        # 2) Replay QA manifest v5 train thật; gateway từ chối trước kiểm tra purpose PAPER.
+        # 2) Replay QA manifest v5 train thật, chưa có TEST report: gateway từ chối.
         state = run_json(
             "migrator",
             "/e2e-tests/e2e/probes/wp06_source_pinned_replay_persistence.py",
@@ -142,7 +143,7 @@ def test_real_deployment_gateway_fails_closed_for_trained_and_legacy_sources() -
             values={
                 "WP06_WORKSPACE_ID": replay_workspace,
                 "WP06_ATTEMPT_ID": state["attempt_id"],
-                "WP06_EXPECTED_DENIAL": "WP06_SCORER_RIGHTS_MANIFEST_MISSING",
+                "WP06_EXPECTED_DENIAL": "WP06_SCORER_DEPLOYMENT_REPORT_NOT_FOUND",
             },
         )
         assert denied == {
