@@ -583,6 +583,8 @@ class AnalysisCardView:
     macro_events: tuple[str, ...] = ()
     macro_horizon_days: int = 0
     macro_blackout: bool = False
+    # Niêm yết (AI-4 lát 3): coin trong danh mục bot bị Binance lên lịch gỡ/không còn TRADING.
+    listing_alerts: tuple[str, ...] = ()
 
     @property
     def confidence_vi(self) -> str:
@@ -637,10 +639,36 @@ def analysis_card_view_from(
         ),
         report_hash=str(report.get("report_hash", "")),
         **_macro_fields(report.get("macro_calendar")),
+        listing_alerts=_listing_alerts(report.get("listings")),
     )
 
 
 MAX_MACRO_EVENTS = 5
+_LISTING_STATUS_VI = {
+    "MISSING": "không còn trong danh sách hợp đồng",
+    "SETTLING": "đã ngừng giao dịch (đang tất toán)",
+    "PENDING_TRADING": "chưa mở giao dịch",
+    "TRADING_HALT": "tạm dừng giao dịch",
+    "TRADING_CANCEL_ONLY": "chỉ cho hủy lệnh",
+}
+
+
+def _listing_alerts(listings: object) -> tuple[str, ...]:
+    if not isinstance(listings, Mapping):
+        return ()
+    alerts = []
+    for item in listings.get("watched_at_risk") or ():
+        if not isinstance(item, Mapping):
+            continue
+        status = str(item.get("status"))
+        when = item.get("delist_at_vn")
+        text = (
+            f"{item.get('symbol')}: Binance lên lịch gỡ lúc {when} (giờ VN)"
+            if status == "TRADING" and when
+            else f"{item.get('symbol')}: {_LISTING_STATUS_VI.get(status, status)}"
+        )
+        alerts.append(clean_text(text, limit=120))
+    return tuple(alerts[:MAX_MACRO_EVENTS])
 
 
 def _macro_fields(macro: object) -> dict[str, Any]:
@@ -671,6 +699,8 @@ def analysis_card_caption(view: AnalysisCardView) -> str:
     ]
     if view.proposals:
         lines.append(f"{len(view.proposals)} đề xuất để backtest (không tự áp).")
+    if view.listing_alerts:
+        lines.append(f"CẢNH BÁO niêm yết: {view.listing_alerts[0]}")
     if view.macro_blackout:
         lines.append("Đang trong khoảng cấm vào lệnh quanh sự kiện vĩ mô.")
     if view.macro_events:

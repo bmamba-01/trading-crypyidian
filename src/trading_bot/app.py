@@ -375,6 +375,7 @@ def create_app(
         market_collector_task: asyncio.Task[None] | None = None
         macro_calendar_task: asyncio.Task[None] | None = None
         derivatives_task: asyncio.Task[None] | None = None
+        listings_task: asyncio.Task[None] | None = None
         signal_worker_task: asyncio.Task[None] | None = None
         trade_result_worker_task: asyncio.Task[None] | None = None
         market_signal_worker_task: asyncio.Task[None] | None = None
@@ -426,6 +427,13 @@ def create_app(
                 derivatives_task = _start_derivatives_collector(
                     application,
                     app_settings=app_settings,
+                    session_factory=active_session_factory,
+                    workspace_id=workspace_id,
+                    stopping=stopping,
+                )
+            if app_settings.listings_collector_enabled:
+                listings_task = _start_listings_collector(
+                    application,
                     session_factory=active_session_factory,
                     workspace_id=workspace_id,
                     stopping=stopping,
@@ -587,6 +595,12 @@ def create_app(
                 derivatives_fetcher = getattr(application.state, "derivatives_fetcher", None)
                 if derivatives_fetcher is not None:
                     await derivatives_fetcher.aclose()
+            if listings_task is not None:
+                with contextlib.suppress(asyncio.CancelledError, TimeoutError):
+                    await asyncio.wait_for(listings_task, timeout=10)
+                listings_fetcher = getattr(application.state, "listings_fetcher", None)
+                if listings_fetcher is not None:
+                    await listings_fetcher.aclose()
             if signal_worker_task is not None:
                 with contextlib.suppress(asyncio.CancelledError, TimeoutError):
                     await asyncio.wait_for(signal_worker_task, timeout=10)
@@ -1465,6 +1479,41 @@ def _start_derivatives_collector(
         run_derivatives_collector(collector, stopping, on_tick=remember), name="derivatives"
     )
     application.state.derivatives_task = task
+    return task
+
+
+def _start_listings_collector(
+    application: FastAPI,
+    *,
+    session_factory: Any,
+    workspace_id: UUID,
+    stopping: asyncio.Event,
+) -> asyncio.Task[None]:
+    """AI-4 lát 3: kiểm exchangeInfo Binance để phát hiện niêm yết/gỡ; cần policy PAPER_DEMO."""
+    from trading_bot.adapters.sources.binance_derivatives_http import (
+        BinanceDerivativesHttpFetcher,
+    )
+    from trading_bot.application.listings_collector import (
+        ListingsCollector,
+        run_listings_collector,
+    )
+    from trading_bot.workers.listings_worker import database_listings_store_scope
+
+    fetcher = BinanceDerivativesHttpFetcher()
+    application.state.listings_fetcher = fetcher
+    collector = ListingsCollector(
+        workspace_id=workspace_id,
+        fetcher=fetcher,
+        store_scope=database_listings_store_scope(session_factory, workspace_id),
+    )
+
+    def remember(result: Any) -> None:
+        application.state.listings_last = result.status
+
+    task = asyncio.create_task(
+        run_listings_collector(collector, stopping, on_tick=remember), name="listings"
+    )
+    application.state.listings_task = task
     return task
 
 

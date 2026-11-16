@@ -1131,6 +1131,14 @@ def render_analysis_card(view: AnalysisCardView) -> bytes:
             P.up,
             max_lines=2,
         )
+    if view.listing_alerts:
+        _bullet_panel(
+            canvas,
+            "Cảnh báo niêm yết Binance",
+            "dữ liệu exchangeInfo, không phải AI",
+            [(text, None) for text in view.listing_alerts],
+            P.down,
+        )
     if view.macro_events:
         title = (
             f"Lịch vĩ mô {view.macro_horizon_days} ngày tới (giờ VN)"

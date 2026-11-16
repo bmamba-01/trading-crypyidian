@@ -1035,6 +1035,117 @@ async def derivatives_read() -> dict[str, Any]:
     }
 
 
+def _listing_symbols(zec_delivery: int) -> list[dict[str, Any]]:
+    far = 4133404800000
+    rows = [
+        {
+            "symbol": f"C{i}USDT",
+            "status": "TRADING",
+            "contractType": "PERPETUAL",
+            "quoteAsset": "USDT",
+            "deliveryDate": far,
+            "onboardDate": 1569398400000,
+        }
+        for i in range(10)
+    ]
+    rows.append(
+        {
+            "symbol": "ZECUSDT",
+            "status": "TRADING",
+            "contractType": "PERPETUAL",
+            "quoteAsset": "USDT",
+            "deliveryDate": zec_delivery,
+            "onboardDate": 1569398400000,
+        }
+    )
+    return rows  # fmt: skip
+
+
+LISTING_AT = datetime(2026, 11, 16, 9, tzinfo=UTC)
+
+
+async def listings_write() -> dict[str, Any]:
+    """AI-4 lát 3: ingestion-worker (role thật) ghi 2 lần kiểm exchangeInfo; không UPDATE/DELETE."""
+    from sqlalchemy import delete, update
+    from sqlalchemy.exc import DBAPIError
+
+    from trading_bot.adapters.database.models import ListingSnapshotRecord
+    from trading_bot.domain.research.listings import entries_hash, parse_exchange_info
+    from trading_bot.workers.listings_worker import database_listings_store_scope
+
+    engine, sessions = _sessions()
+    try:
+        scope = database_listings_store_scope(sessions, WORKSPACE)
+        for offset, delivery in ((0, 4133404800000), (1, 1795161600000)):
+            entries = parse_exchange_info({"symbols": _listing_symbols(delivery)})
+            async with scope() as store:
+                await store.insert(
+                    {
+                        "id": uuid4(),
+                        "workspace_id": WORKSPACE,
+                        "fetched_at": LISTING_AT + timedelta(hours=offset),
+                        "policy_fingerprint": "c" * 64,
+                        "entries_sha256": entries_hash(entries),
+                        "entry_count": len(entries),
+                        "changed": True,
+                        "entries": [e.payload() for e in entries],
+                    }
+                )
+        async with scope() as store:
+            last = await store.last_check()
+        denied = []
+        for statement in (
+            update(ListingSnapshotRecord).values(entry_count=1),
+            delete(ListingSnapshotRecord),
+        ):
+            try:
+                async with scope() as store:
+                    await store._session.execute(statement)
+                denied.append(False)
+            except DBAPIError:
+                denied.append(True)
+    finally:
+        await engine.dispose()
+    return {"last": last[0].isoformat() if last else None, "update_delete_denied": denied}
+
+
+async def listings_read() -> dict[str, Any]:
+    """AI-4 lát 3: runtime (role thật) đọc lần kiểm point-in-time và phát hiện lịch gỡ ZEC."""
+    from trading_bot.application.listings_state import load_listing_fetches
+    from trading_bot.application.outbox import UnitOfWork
+    from trading_bot.domain.research.listings import listings_digest
+
+    engine, sessions = _sessions()
+    try:
+        async with UnitOfWork(sessions, workspace_id=WORKSPACE) as uow:
+            after = LISTING_AT + timedelta(hours=2)
+            fetches, checked = await load_listing_fetches(
+                uow.session, workspace_id=WORKSPACE, as_of=after
+            )
+            early, early_checked = await load_listing_fetches(
+                uow.session, workspace_id=WORKSPACE, as_of=LISTING_AT + timedelta(minutes=30)
+            )
+    finally:
+        await engine.dispose()
+    digest = listings_digest(fetches, after, last_checked_at=checked, watch_symbols=["ZECUSDT"])
+    before = listings_digest(
+        early,
+        LISTING_AT + timedelta(minutes=30),
+        last_checked_at=early_checked,
+        watch_symbols=["ZECUSDT"],
+    )
+    with _connect() as connection:
+        admin_insert = connection.execute(
+            "SELECT has_table_privilege('crypidian_admin_web', 'listing_snapshot', 'INSERT')"
+        ).fetchone()[0]
+    return {
+        "at_risk": [(r["symbol"], r["delist_at_vn"]) for r in digest["watched_at_risk"]],
+        "changes": [(c["kind"], c["symbol"]) for c in digest["recent_changes"]],
+        "before_at_risk": before["watched_at_risk"],
+        "admin_web_insert": bool(admin_insert),
+    }
+
+
 async def outcome() -> dict[str, Any]:
     """16/11/2026: runtime (role thật) lưu lý do candidate, idempotent, RLS theo bot."""
     from sqlalchemy import func, select, text
@@ -1406,6 +1517,10 @@ elif phase == "derivatives_write":
     output = asyncio.run(derivatives_write())
 elif phase == "derivatives_read":
     output = asyncio.run(derivatives_read())
+elif phase == "listings_write":
+    output = asyncio.run(listings_write())
+elif phase == "listings_read":
+    output = asyncio.run(listings_read())
 elif phase == "outcome":
     output = asyncio.run(outcome())
 elif phase == "run_report":

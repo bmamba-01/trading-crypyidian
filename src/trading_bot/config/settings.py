@@ -80,6 +80,8 @@ class AppSettings(BaseSettings):
     # AI-4 lát 2: ảnh chụp phái sinh công khai Binance (funding, OI, long/short, taker) theo giờ cho
     # các symbol của market_collector_streams. Mặc định tắt; cần policy PAPER_DEMO của nguồn.
     derivatives_collector_enabled: bool = False
+    # AI-4 lát 3: kiểm exchangeInfo Binance mỗi 30 phút để phát hiện niêm yết/gỡ hợp đồng.
+    listings_collector_enabled: bool = False
     # Cờ kiểm thử: chấp nhận mã xác thực cố định 123456 (chỉ local/test + PAPER, mặc định tắt).
     auth_test_totp_enabled: bool = False
     mfa_encryption_key_file: Path | None = None
@@ -248,6 +250,8 @@ class AppSettings(BaseSettings):
             raise ValueError("macro calendar chỉ chạy trong process_role ingestion-worker.")
         if self.derivatives_collector_enabled and self.process_role != "ingestion-worker":
             raise ValueError("derivatives collector chỉ chạy trong process_role ingestion-worker.")
+        if self.listings_collector_enabled and self.process_role != "ingestion-worker":
+            raise ValueError("listings collector chỉ chạy trong process_role ingestion-worker.")
         if self.market_collector_enabled:
             if self.process_role != "ingestion-worker":
                 raise ValueError("market collector chỉ chạy trong process_role ingestion-worker.")

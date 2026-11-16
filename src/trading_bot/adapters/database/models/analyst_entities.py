@@ -223,3 +223,30 @@ class DerivativesSnapshotRecord(UuidPrimaryKey, CreatedAt, Base):
     top_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     taker_buy_sell_ratio: Mapped[Decimal | None] = mapped_column(_STAT, nullable=True)
     taker_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ListingSnapshotRecord(UuidPrimaryKey, CreatedAt, Base):
+    """Một lần kiểm ``exchangeInfo`` (AI-4 lát 3); ``entries`` chỉ lưu khi nội dung đổi."""
+
+    __tablename__ = "listing_snapshot"
+    __table_args__ = (
+        CheckConstraint(
+            "entries_sha256 ~ '^[0-9a-f]{64}$' AND policy_fingerprint ~ '^[0-9a-f]{64}$'",
+            name="listing_snapshot_hash_sha256",
+        ),
+        CheckConstraint(
+            "changed = (entries IS NOT NULL) AND entry_count > 0",
+            name="listing_snapshot_entries_iff_changed",
+        ),
+        Index("ix_listing_snapshot_asof", "workspace_id", "fetched_at"),
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("workspace.id", ondelete="CASCADE"), nullable=False
+    )
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    policy_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    entries_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    entry_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    changed: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    entries: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB, nullable=True)

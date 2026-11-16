@@ -30,9 +30,10 @@ from zoneinfo import ZoneInfo
 from trading_bot.domain.portfolio.run_report import group_sections
 
 ANALYST_OUTPUT_VERSION = "analyst_output.v2"
-PROMPT_VERSION = "ai2-prompt-v4"
+PROMPT_VERSION = "ai2-prompt-v5"
 MACRO_KEY = "macro_calendar"
 DERIVATIVES_KEY = "derivatives"
+LISTINGS_KEY = "listings"
 
 # AI-3: trường đề xuất được phép (đường dẫn trong overlay cấu hình bot) và miền giá trị. Chỉ các
 # trường này mới chạy backtest tự động được; tên khác → validator loại.
@@ -421,7 +422,7 @@ def topic_report(report: Mapping[str, Any], family: str) -> dict[str, Any]:
                 if any(w.startswith(name) for name in names)
             ],
         },
-        **{key: report[key] for key in (MACRO_KEY, DERIVATIVES_KEY) if key in report},
+        **{key: report[key] for key in (MACRO_KEY, DERIVATIVES_KEY, LISTINGS_KEY) if key in report},
     }
 
 
@@ -459,6 +460,12 @@ def build_prompt(report: Mapping[str, Any], *, knowledge: str = "", resumed: boo
         "taker_buy_sell_ratio (khối lượng mua/bán chủ động). Chép nguyên văn số đã làm tròn sẵn, "
         "trích /derivatives/symbols/<i>/<trường>. Đây là bối cảnh thị trường, chưa chiến lược nào "
         "dùng để vào lệnh: chỉ được nêu như giả thuyết cần kiểm, không coi là nguyên nhân lãi/lỗ.\n"
+        "8. listings (nếu có) là thay đổi danh sách hợp đồng Binance: watched_at_risk là coin "
+        "trong danh mục bot đã bị lên lịch gỡ hoặc không còn TRADING (delist_at_vn là giờ gỡ, "
+        "giờ VN); "
+        "recent_changes là thay đổi phát hiện trong 24 giờ. Nếu watched_at_risk khác rỗng, phải "
+        "nêu trong findings kèm evidence_refs /listings/watched_at_risk/<i> và nói rõ rủi ro; "
+        "không tạo proposal cho việc này (chưa có trường đổi danh mục). Không suy đoán lý do gỡ.\n"
     )
     memory = (
         f"\nKiến thức đã tích lũy (owner đã duyệt):\n{knowledge.strip()}\n" if knowledge else ""

@@ -1,4 +1,4 @@
-"""Tải dữ liệu phái sinh công khai Binance USDⓈ-M (AI-4 lát 2). Chỉ GET endpoint công khai cố định.
+"""Tải dữ liệu công khai Binance USDⓈ-M (AI-4 lát 2–3). Chỉ GET endpoint công khai cố định.
 
 Không API key, không endpoint giao dịch/tài khoản. Request ``/futures/data`` (weight 0, 1000/5
 phút/IP) được giãn cách ``pause_seconds``; HTTP 418/429 ném ``BinanceThrottled`` để collector dừng
@@ -53,13 +53,13 @@ class BinanceDerivativesHttpFetcher:
     async def aclose(self) -> None:
         await self._client.aclose()
 
-    async def _get(self, path: str, params: dict[str, Any]) -> Any:
+    async def _get(self, path: str, params: dict[str, Any], *, max_bytes: int = _MAX_BYTES) -> Any:
         response = await self._client.get(path, params=params)
         if response.status_code in {418, 429}:
             raise BinanceThrottled(f"{path}: HTTP {response.status_code}")
         if response.status_code != 200:
             raise RuntimeError(f"{path}: HTTP {response.status_code}")
-        if len(response.content) > _MAX_BYTES:
+        if len(response.content) > max_bytes:
             raise RuntimeError(f"{path}: phản hồi quá lớn")
         return response.json()
 
@@ -74,6 +74,10 @@ class BinanceDerivativesHttpFetcher:
                 path, {"symbol": symbol, "period": STATS_PERIOD, "limit": limit}
             )
         return raw
+
+    async def fetch_exchange_info(self) -> Any:
+        """AI-4 lát 3: ``exchangeInfo`` đầy đủ (weight 1, ~1,2 MB ngày 16/11/2026)."""
+        return await self._get("/fapi/v1/exchangeInfo", {}, max_bytes=8_000_000)
 
 
 __all__ = ["BASE_URL", "BinanceDerivativesHttpFetcher", "BinanceThrottled"]

@@ -585,13 +585,18 @@ async def _container(phase: str, state: dict[str, Any]) -> dict[str, Any]:
             # AI-4: lịch vĩ mô sắp tới làm bối cảnh; ngoài report_hash (Run Report giữ tất định),
             # nằm trong prompt nên được input_sha256 phủ; dựng lại được từ macro_calendar_fetch.
             from trading_bot.application.derivatives_state import load_derivatives_snapshots
+            from trading_bot.application.listings_state import load_listing_fetches
             from trading_bot.application.macro_calendar_state import load_macro_fetches
             from trading_bot.domain.research.derivatives import derivatives_digest
+            from trading_bot.domain.research.listings import listings_digest
             from trading_bot.domain.research.macro_calendar import macro_digest
 
             async with UnitOfWork(sessions, workspace_id=workspace) as uow:
                 fetches = await load_macro_fetches(uow.session, workspace_id=workspace, as_of=end)
                 snapshots = await load_derivatives_snapshots(
+                    uow.session, workspace_id=workspace, as_of=end
+                )
+                listing_fetches, last_checked = await load_listing_fetches(
                     uow.session, workspace_id=workspace, as_of=end
                 )
             payload["macro_calendar"] = macro_digest(fetches, end)
@@ -601,6 +606,18 @@ async def _container(phase: str, state: dict[str, Any]) -> dict[str, Any]:
             ]
             payload["derivatives"] = derivatives_digest(
                 snapshots, end, priority_symbols=list(dict.fromkeys(traded))
+            )
+            # AI-4 lát 3: coin trong danh mục bot bị lên lịch gỡ/đổi trạng thái trên Binance.
+            universe = [
+                symbol
+                for bot in payload.get("bots", [])
+                for symbol in ((bot.get("config") or {}).get("universe") or ())
+            ]
+            payload["listings"] = listings_digest(
+                listing_fetches,
+                end,
+                last_checked_at=last_checked,
+                watch_symbols=list(dict.fromkeys([*traded, *universe])),
             )
             return payload
         if phase == "sessions":

@@ -42,6 +42,8 @@ SERVICES = {
     "macro_read": "trading-runtime",
     "derivatives_write": "ingestion-worker",
     "derivatives_read": "trading-runtime",
+    "listings_write": "ingestion-worker",
+    "listings_read": "trading-runtime",
     "run_report": "migrator",
     "analyst": "migrator",
     "tg_seed": "migrator",
@@ -126,7 +128,7 @@ def test_rest_candles_drive_paper_entry_fill_and_stop_exit_idempotently() -> Non
         compose("run", "--rm", "--no-deps", "db-provisioner")
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "head")
         heads = compose("run", "--rm", "--no-deps", "migrator", "alembic", "heads")
-        assert "00912d59476e (head)" in heads.stdout
+        assert "645ed2998ab1 (head)" in heads.stdout
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "check")
         state.update(run("seed"))
         assert run("genesis") == {"genesis": True}
@@ -260,6 +262,15 @@ def test_rest_candles_drive_paper_entry_fill_and_stop_exit_idempotently() -> Non
             "oi_change": "10.00",
             "before_collect": 0,
             "other_workspace": 0,
+            "admin_web_insert": False,
+        }
+        # AI-4 lát 3: lần kiểm exchangeInfo append-only; lịch gỡ chỉ thấy sau lần kiểm phát hiện.
+        listed = run("listings_write")
+        assert listed["update_delete_denied"] == [True, True], listed
+        assert run("listings_read") == {
+            "at_risk": [["ZECUSDT", "20/11 15:00"]],
+            "changes": [["DELIST_SCHEDULED", "ZECUSDT"]],
+            "before_at_risk": [],
             "admin_web_insert": False,
         }
 
