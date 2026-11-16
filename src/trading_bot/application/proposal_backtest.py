@@ -52,15 +52,25 @@ from trading_bot.application.strategy_market_requirements import (
     feature_requirements_for_release,
 )
 from trading_bot.domain.market.models import OHLCVBar
+from trading_bot.domain.portfolio.portfolio_backtest import (
+    PortfolioLimits,
+    PortfolioResult,
+    PortfolioTrade,
+    simulate_portfolio,
+    trades_with_symbol_equity,
+)
 
-PROPOSAL_BACKTEST_VERSION = "ai3-proposal-backtest-v1"
+# v2 (CRY-386): thêm mô phỏng danh mục nhiều coin; max_positions/max_leverage kiểm được.
+PROPOSAL_BACKTEST_VERSION = "ai3-proposal-backtest-v2"
 MIN_TRADES_FOR_VERDICT = 10
 DEFAULT_RISK_FRACTION = Decimal("0.005")
 STARTING_EQUITY = Decimal("10000")
 FEE_RATE = Decimal("0.0005")
 SLIPPAGE_RATE = Decimal("0.0005")
 WARMUP_BARS = 220
-UNSUPPORTED_REPLAY_FIELDS = frozenset({"risk.max_positions", "risk.max_leverage"})
+# CRY-386: hai trường này giờ kiểm được bằng mô phỏng danh mục; tập rỗng giữ tương thích API.
+PORTFOLIO_FIELDS = frozenset({"risk.max_positions", "risk.max_leverage"})
+UNSUPPORTED_REPLAY_FIELDS: frozenset[str] = frozenset()
 _NAMESPACE = UUID("6f1d0c52-5b3e-4c1e-9a8e-3c0f5a7d2b91")
 
 _INTERVALS = {
@@ -149,6 +159,8 @@ class SymbolResult:
     gross_loss: Decimal
     net_pnl: Decimal
     max_drawdown: Decimal
+    # Lệnh đã đóng (cho mô phỏng danh mục); không đưa vào payload.
+    portfolio_trades: tuple[PortfolioTrade, ...] = ()
 
     def payload(self) -> dict[str, Any]:
         return {
@@ -228,6 +240,11 @@ def compare(baseline: ArmMetrics, variant: ArmMetrics) -> tuple[str, list[str]]:
 
 def symbol_result(symbol: str, report: EvaluationReport, trades: Sequence[Any]) -> SymbolResult:
     nets = [trade.net_pnl for trade in trades]
+    portfolio_trades = trades_with_symbol_equity(
+        symbol,
+        ((t.opened_at, t.closed_at, t.net_pnl, t.exposure) for t in trades),
+        STARTING_EQUITY,
+    )
     return SymbolResult(
         symbol=symbol,
         trades=report.trade_count,
@@ -236,7 +253,58 @@ def symbol_result(symbol: str, report: EvaluationReport, trades: Sequence[Any]) 
         gross_loss=-sum((value for value in nets if value < 0), Decimal(0)),
         net_pnl=report.net_pnl,
         max_drawdown=report.max_drawdown,
+        portfolio_trades=tuple(portfolio_trades),
     )
+
+
+def portfolio_limits(risk: Mapping[str, Any]) -> PortfolioLimits:
+    """Trần danh mục từ khối ``risk`` của cấu hình bot (thiếu → 1 vị thế, 1x)."""
+    positions = risk.get("max_positions")
+    leverage = risk.get("max_leverage")
+    return PortfolioLimits(
+        max_positions=int(str(positions)) if positions not in (None, "") else 1,
+        max_leverage=Decimal(str(leverage)) if leverage not in (None, "") else Decimal(1),
+    )
+
+
+def limits_for_proposal(
+    bot_config: Mapping[str, Any], changes: Sequence[Mapping[str, Any]]
+) -> tuple[PortfolioLimits, PortfolioLimits]:
+    risk = dict(bot_config.get("risk") or {})
+    variant = apply_proposal({"risk": risk}, changes)
+    return portfolio_limits(risk), portfolio_limits(variant.get("risk") or {})
+
+
+def portfolio_metrics(result: PortfolioResult) -> ArmMetrics:
+    trades = result.taken
+    return ArmMetrics(
+        symbols=result.symbols,
+        trades=trades,
+        wins=result.wins,
+        win_rate=(Decimal(result.wins) / Decimal(trades)).quantize(Decimal("0.0001"))
+        if trades
+        else None,
+        profit_factor=(result.gross_profit / result.gross_loss).quantize(Decimal("0.01"))
+        if result.gross_loss > 0
+        else None,
+        net_pnl=result.net_pnl.quantize(Decimal("0.01")),
+        max_drawdown=result.max_drawdown.quantize(Decimal("0.01")),
+    )
+
+
+def run_portfolio(results: Sequence[SymbolResult], limits: PortfolioLimits) -> PortfolioResult:
+    trades = [trade for item in results for trade in item.portfolio_trades]
+    return simulate_portfolio(trades, starting_equity=STARTING_EQUITY, limits=limits)
+
+
+def _portfolio_payload(result: PortfolioResult, limits: PortfolioLimits) -> dict[str, Any]:
+    return {
+        **portfolio_metrics(result).payload(),
+        **limits.payload(),
+        "skipped_max_positions": result.skipped_positions,
+        "skipped_leverage": result.skipped_leverage,
+        "peak_open_positions": result.peak_open_positions,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -290,6 +358,9 @@ class ProposalBacktestResult:
     skipped_symbols: tuple[tuple[str, str], ...]
     window: tuple[str, str] | None
     per_symbol: tuple[tuple[SymbolResult, SymbolResult], ...] = field(default=())
+    # CRY-386: danh mục chung vốn cho từng bản; ``comparison_basis`` = cơ sở của kết luận.
+    portfolio: dict[str, Any] | None = None
+    comparison_basis: str = "per_symbol"
 
     def payload(self) -> dict[str, Any]:
         return {
@@ -307,13 +378,19 @@ class ProposalBacktestResult:
             "per_symbol": [
                 {"baseline": b.payload(), "variant": v.payload()} for b, v in self.per_symbol
             ],
+            "comparison_basis": self.comparison_basis,
+            "portfolio": self.portfolio,
             "assumptions": {
                 "starting_equity_per_symbol": str(STARTING_EQUITY),
+                "portfolio_starting_equity": str(STARTING_EQUITY),
                 "fee_rate": str(FEE_RATE),
                 "slippage_rate": str(SLIPPAGE_RATE),
-                "leverage": "1",
-                "max_positions": 1,
+                "per_trade_leverage": "1",
                 "fill": "giá mở nến kế tiếp của khung vào lệnh",
+                "portfolio_model": (
+                    "gộp lệnh replay từng coin trên vốn chung; trần vị thế/đòn bẩy bỏ lệnh mới; "
+                    "lệnh bị bỏ không sinh lại tín hiệu thay thế"
+                ),
             },
         }
 
@@ -325,10 +402,15 @@ def backtest_proposal(
     changes: Sequence[Mapping[str, Any]],
     bundles: Mapping[str, BacktestDatasetReplayBundle | str],
 ) -> ProposalBacktestResult:
-    """So sánh baseline/variant trên cùng bundle mỗi coin; ``str`` = lý do coin bị loại."""
+    """So sánh baseline/variant trên cùng bundle mỗi coin; ``str`` = lý do coin bị loại.
+
+    Đổi trần danh mục (``max_positions``/``max_leverage``) → kết luận theo mô phỏng danh mục chung
+    vốn; ngược lại kết luận theo tổng từng coin như trước, danh mục kèm để tham khảo.
+    """
     baseline_arm, variant_arm, unsupported = arms_for_proposal(bot_config, changes)
-    if baseline_arm == variant_arm:
-        # Chỉ đổi trường replay không mô phỏng được → hai bản giống hệt, chạy là vô nghĩa.
+    base_limits, var_limits = limits_for_proposal(bot_config, changes)
+    portfolio_change = base_limits != var_limits
+    if baseline_arm == variant_arm and not portfolio_change:
         empty = aggregate([])
         return ProposalBacktestResult(
             bot_name=bot_name,
@@ -337,15 +419,12 @@ def backtest_proposal(
             baseline=empty,
             variant=empty,
             verdict="UNSUPPORTED",
-            notes=(
-                "Đề xuất chỉ đổi trường replay một coin/1 vị thế không mô phỏng được: "
-                + ", ".join(unsupported or ("(không đổi gì)",))
-                + ". Cần backtest danh mục nhiều coin (chưa có).",
-            ),
+            notes=("Đề xuất không thay đổi gì so với cấu hình hiện tại.",),
             unsupported_fields=unsupported,
             skipped_symbols=(),
             window=None,
         )
+    same_arm = baseline_arm == variant_arm
     skipped: list[tuple[str, str]] = []
     pairs: list[tuple[SymbolResult, SymbolResult]] = []
     windows: list[tuple[datetime, datetime]] = []
@@ -355,20 +434,37 @@ def backtest_proposal(
             skipped.append((symbol, bundle))
             continue
         try:
-            pairs.append((run_arm(bundle, baseline_arm), run_arm(bundle, variant_arm)))
+            base = run_arm(bundle, baseline_arm)
+            # Chỉ đổi trần danh mục: lệnh từng coin giống hệt, không replay lần hai.
+            pairs.append((base, base if same_arm else run_arm(bundle, variant_arm)))
         except ValueError as error:
             skipped.append((symbol, str(error)[:160]))
             continue
         windows.append((bundle.evaluation_start, bundle.range_end))
-    baseline = aggregate([b for b, _ in pairs])
-    variant = aggregate([v for _, v in pairs])
+    base_portfolio = run_portfolio([b for b, _ in pairs], base_limits)
+    var_portfolio = run_portfolio([v for _, v in pairs], var_limits)
+    portfolio = {
+        "baseline": _portfolio_payload(base_portfolio, base_limits),
+        "variant": _portfolio_payload(var_portfolio, var_limits),
+    }
+    if portfolio_change:
+        baseline = portfolio_metrics(base_portfolio)
+        variant = portfolio_metrics(var_portfolio)
+    else:
+        baseline = aggregate([b for b, _ in pairs])
+        variant = aggregate([v for _, v in pairs])
     verdict, notes = compare(baseline, variant)
     if not pairs:
         verdict = "INCONCLUSIVE"
         notes = ["Không coin nào chạy được backtest."]
-    if unsupported:
+    if portfolio_change and pairs:
         notes.append(
-            "Không kiểm được trong replay một coin/1 vị thế: " + ", ".join(unsupported) + "."
+            "Đo trên danh mục chung vốn "
+            f"({base_limits.max_positions}→{var_limits.max_positions} vị thế, "
+            f"{base_limits.max_leverage}x→{var_limits.max_leverage}x): bỏ "
+            f"{base_portfolio.skipped_positions + base_portfolio.skipped_leverage}→"
+            f"{var_portfolio.skipped_positions + var_portfolio.skipped_leverage} lệnh vì trần. "
+            "Xấp xỉ: lệnh bị bỏ không sinh lại tín hiệu thay thế; mỗi lệnh vẫn ≤ 1x vốn."
         )
     window = (
         (min(w[0] for w in windows).isoformat(), max(w[1] for w in windows).isoformat())
@@ -387,6 +483,8 @@ def backtest_proposal(
         skipped_symbols=tuple(skipped),
         window=window,
         per_symbol=tuple(pairs),
+        portfolio=portfolio,
+        comparison_basis="portfolio" if portfolio_change else "per_symbol",
     )
 
 
@@ -410,6 +508,17 @@ def draft_overlay_from_backtest(
         raise ValueError(
             "Cấu hình bot đã đổi so với bản gốc đã backtest; cần backtest lại trước khi áp."
         )
+    stored = ((result.get("portfolio") or {}).get("baseline")) or {}
+    head_risk = head_overlay.get("risk") or {}
+    for key, cast in (("max_positions", int), ("max_leverage", Decimal)):
+        if (
+            key in head_risk
+            and key in stored
+            and cast(str(head_risk[key])) != cast(str(stored[key]))
+        ):
+            raise ValueError(
+                "Cấu hình bot đã đổi so với bản gốc đã backtest; cần backtest lại trước khi áp."
+            )
     changes = proposal.get("changes") or []
     if not changes:
         raise ValueError("Đề xuất không có thay đổi.")

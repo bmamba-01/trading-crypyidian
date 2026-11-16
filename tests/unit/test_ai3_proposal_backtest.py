@@ -117,7 +117,7 @@ def _bundle(symbol: str, series, timeframes=("1h",)):
     )
 
 
-def test_arms_apply_changes_and_flag_unsupported_fields() -> None:
+def test_arms_apply_changes_portfolio_fields_now_supported() -> None:
     changes = [
         {"field": "strategy.parameters.donchian_lookback", "to": "40"},
         {"field": "risk.per_trade_risk_fraction", "to": "0.003"},
@@ -129,7 +129,8 @@ def test_arms_apply_changes_and_flag_unsupported_fields() -> None:
     assert variant.parameters == (("donchian_lookback", 40), ("volume_median_lookback", 20))
     assert baseline.per_trade_risk_fraction == Decimal("0.005")
     assert variant.per_trade_risk_fraction == Decimal("0.003")
-    assert unsupported == ("risk.max_positions",)
+    # CRY-386: max_positions kiểm được bằng danh mục, không còn "unsupported".
+    assert unsupported == ()
 
     _, switched, _ = arms_for_proposal(
         H03_CONFIG, [{"field": "strategy.release_id", "to": "h01-v1"}]
@@ -258,13 +259,58 @@ def test_backtest_card_uses_only_replay_numbers() -> None:
     assert render_backtest_card(empty).startswith(b"\x89PNG")
 
 
-def test_unsupported_only_proposal_is_not_replayed() -> None:
+def test_no_change_proposal_is_not_replayed_and_portfolio_change_is() -> None:
     result = backtest_proposal(
         bot_name="T06",
         bot_config=H03_CONFIG,
-        changes=[{"field": "risk.max_positions", "to": "2"}],
+        changes=[{"field": "risk.per_trade_risk_fraction", "to": "0.005"}],
         bundles={"AAAUSDT": "không được dùng"},
     )
     assert result.verdict == "UNSUPPORTED"
     assert result.skipped_symbols == ()
-    assert "risk.max_positions" in result.notes[0]
+    portfolio_only = backtest_proposal(
+        bot_name="T06",
+        bot_config=H03_CONFIG,
+        changes=[{"field": "risk.max_positions", "to": "3"}],
+        bundles={"AAAUSDT": "thiếu nến"},
+    )
+    # CRY-386: đổi trần danh mục giờ được chạy (ở đây không coin nào có dữ liệu).
+    assert portfolio_only.comparison_basis == "portfolio"
+    assert portfolio_only.verdict == "INCONCLUSIVE"
+    assert portfolio_only.skipped_symbols == (("AAAUSDT", "thiếu nến"),)
+
+
+def test_portfolio_change_runs_replay_once_and_compares_on_portfolio(monkeypatch) -> None:
+    from trading_bot.application import proposal_backtest as module
+
+    series = {
+        ("AAAUSDT", "1h"): _bars("AAAUSDT", "1h", 320),
+        ("BBBUSDT", "1h"): _bars("BBBUSDT", "1h", 320),
+    }
+    bundles = {s: _bundle(s, series) for s in ("AAAUSDT", "BBBUSDT")}
+    calls: list[str] = []
+    real = module.run_arm
+
+    def counting(bundle, arm, **kwargs):
+        calls.append(bundle.symbol)
+        return real(bundle, arm, **kwargs)
+
+    monkeypatch.setattr(module, "run_arm", counting)
+    config = {**H03_CONFIG, "risk": {"per_trade_risk_fraction": "0.005", "max_positions": 1}}
+    result = backtest_proposal(
+        bot_name="T06",
+        bot_config=config,
+        changes=[{"field": "risk.max_positions", "to": "2"}],
+        bundles=bundles,
+    )
+    assert calls == ["AAAUSDT", "BBBUSDT"]  # mỗi coin replay đúng một lần
+    payload = result.payload()
+    assert payload["comparison_basis"] == "portfolio"
+    assert payload["version"] == "ai3-proposal-backtest-v2"
+    base, variant = payload["portfolio"]["baseline"], payload["portfolio"]["variant"]
+    assert (base["max_positions"], variant["max_positions"]) == (1, 2)
+    # Hai coin cùng chuỗi giá → tín hiệu trùng giờ: trần 1 vị thế phải bỏ lệnh, trần 2 thì không.
+    assert base["skipped_max_positions"] > 0
+    assert variant["skipped_max_positions"] < base["skipped_max_positions"]
+    assert result.variant.trades > result.baseline.trades
+    assert any("danh mục chung vốn" in note for note in result.notes)
