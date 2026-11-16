@@ -441,6 +441,7 @@ class PaperExecutionGateway:
         exit_channel_level: Decimal | None = None,
         exit_feature_value: Decimal | None = None,
         strategy_bar_closed: bool = True,
+        forced_exit_reason: str | None = None,
     ) -> PositionMonitorResult:
         """Theo dõi stop/target/trailing và thời điểm; pause entry không áp dụng ở đây."""
         from trading_bot.domain.execution.position_monitor import (
@@ -460,6 +461,7 @@ class PaperExecutionGateway:
             exit_channel_level=exit_channel_level,
             exit_feature_value=exit_feature_value,
             strategy_bar_closed=strategy_bar_closed,
+            forced_exit_reason=forced_exit_reason,
         )
         if result.partial_exit is not None:
             # SIG-3 lát 2: chốt lời một phần — khóa idempotency theo chỉ số mục tiêu để không

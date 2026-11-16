@@ -610,3 +610,39 @@ def test_cycle_does_not_allow_plan_reject_to_fall_through_to_execution() -> None
     assert result.outcome is DecisionCycleOutcome.PLAN_REJECTED
     assert isinstance(result.plan, PlanRejected)
     assert result.order is None
+
+
+def test_delist_entry_block_rejects_candidate_before_planner() -> None:
+    from trading_bot.application.listings_state import EntryBlock
+
+    snapshot, now, planner_settings, account, state, costs = _inputs()
+    evaluated_at = now + timedelta(seconds=1)
+    state = replace(state, evaluated_at=evaluated_at)
+    gateway = PaperExecutionGateway(
+        PaperExecutionPolicy("paper-fill-v1", timedelta(0), Decimal(0), Decimal(0), Decimal(0))
+    )
+    cycle = PaperDecisionCycle(StrategyRegistry(), TradePlanner(), RiskEngine(), gateway)
+    kwargs = {
+        "snapshot": snapshot,
+        "evaluated_at": evaluated_at,
+        "release_id": "h01-v1",
+        "selection": StrategySelection("settings-v1", ("h01-v1",), published=True),
+        "planner_settings": planner_settings,
+        "account": account,
+        "risk_state": state,
+        "open_exposures": (),
+        "cost_model": costs,
+    }
+    block = EntryBlock(snapshot.symbol, "SYMBOL_DELIST_SCHEDULED", "Binance đã lên lịch gỡ.")
+    blocked = cycle.prepare(**kwargs, entry_block=block)  # type: ignore[arg-type]
+    assert blocked.outcome is DecisionCycleOutcome.PLAN_REJECTED
+    assert isinstance(blocked.strategy_result, StrategyCandidate)
+    assert blocked.plan is not None
+    assert blocked.plan.reason_code == "SYMBOL_DELIST_SCHEDULED"
+    assert blocked.risk_decision is None
+    # Chặn của symbol khác không ảnh hưởng; không chặn thì đi tiếp tới risk như cũ.
+    other = replace(block, symbol="OTHERUSDT")
+    assert cycle.prepare(**kwargs, entry_block=other).outcome is (  # type: ignore[arg-type]
+        DecisionCycleOutcome.RISK_APPROVED
+    )
+    assert cycle.prepare(**kwargs).outcome is DecisionCycleOutcome.RISK_APPROVED  # type: ignore[arg-type]

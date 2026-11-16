@@ -380,6 +380,13 @@ async def test_risk_profile_cycle_replaces_limits_and_selection_with_bot_config(
         return world.risk_profile
 
     monkeypatch.setattr(paper_decision_cycle, "load_risk_profile", fake_profile)
+    block = object()
+
+    async def fake_block(_session: Any, **_: Any) -> Any:
+        return block
+
+    monkeypatch.setattr(paper_decision_cycle, "symbol_entry_block", fake_block)
+    snapshot = SimpleNamespace(symbol="BTCUSDT")
     cycle = PaperDecisionCycle(StrategyRegistry(), None, None, None)  # type: ignore[arg-type]
 
     def capture(**kwargs: Any) -> str:
@@ -410,7 +417,7 @@ async def test_risk_profile_cycle_replaces_limits_and_selection_with_bot_config(
     result = await cycle.prepare_published_with_risk_profile(
         session=None,  # type: ignore[arg-type]
         published_settings=world.root,
-        snapshot=None,  # type: ignore[arg-type]
+        snapshot=snapshot,  # type: ignore[arg-type]
         evaluated_at=NOW,
         planner_settings=planner,  # type: ignore[arg-type]
         account=None,  # type: ignore[arg-type]
@@ -425,12 +432,14 @@ async def test_risk_profile_cycle_replaces_limits_and_selection_with_bot_config(
     assert captured["planner_settings"].limits.per_trade_risk_fraction == Decimal("0.005")
     assert captured["selection_override"].parameters == (("donchian_lookback", 60),)
     assert captured["allowed_symbols"] == config.symbols
+    # AI-4 lát 3: kết quả tra niêm yết được chuyển tới bước chuẩn bị lệnh.
+    assert captured["entry_block"] is block
 
     mismatched = replace(config, settings_version_id=uuid4())
     rejected = await cycle.prepare_published_with_risk_profile(
         session=None,  # type: ignore[arg-type]
         published_settings=world.root,
-        snapshot=None,  # type: ignore[arg-type]
+        snapshot=snapshot,  # type: ignore[arg-type]
         evaluated_at=NOW,
         planner_settings=planner,  # type: ignore[arg-type]
         account=None,  # type: ignore[arg-type]
@@ -441,3 +450,54 @@ async def test_risk_profile_cycle_replaces_limits_and_selection_with_bot_config(
     )
     assert rejected.outcome is DecisionCycleOutcome.NO_TRADE
     assert rejected.strategy_result.code == "BOT_CONFIG_SCOPE_MISMATCH"
+
+
+class _PassedScope(Exception):
+    """Sentinel: decision cycle đã qua bước kiểm phạm vi thị trường."""
+
+
+def _scope_result(
+    monkeypatch: pytest.MonkeyPatch, release_id: str, observed: tuple[str, ...]
+) -> Any:
+    from trading_bot.domain.strategy.contracts import StrategySelection
+
+    def passed(*_args: object, **_kwargs: object) -> Any:
+        raise _PassedScope
+
+    monkeypatch.setattr(paper_decision_cycle, "strategy_selection_from_published_settings", passed)
+    world = World()
+    published = world.root
+    cycle = PaperDecisionCycle(StrategyRegistry(), None, None, None)  # type: ignore[arg-type]
+    planner = SimpleNamespace(
+        workspace_id=str(published.workspace_id),
+        settings_version_id=str(published.settings_version_id),
+        settings_hash=published.settings_hash,
+    )
+    return cycle.prepare_published(
+        published_settings=published,
+        snapshot=SimpleNamespace(  # type: ignore[arg-type]
+            symbol="BTCUSDT", series=tuple(SimpleNamespace(timeframe=tf) for tf in observed)
+        ),
+        evaluated_at=NOW,
+        planner_settings=planner,  # type: ignore[arg-type]
+        account=None,  # type: ignore[arg-type]
+        risk_state=None,  # type: ignore[arg-type]
+        open_exposures=(),
+        cost_model=None,  # type: ignore[arg-type]
+        selection_override=StrategySelection(
+            str(published.settings_version_id), (release_id,), True
+        ),
+    )
+
+
+def test_bot_release_entry_timeframe_replaces_root_entry_in_scope_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """15/11/2026: bot H03 v3 4h chỉ có chuỗi 4h không được bị loại vì root vào lệnh 1h."""
+    with pytest.raises(_PassedScope):
+        _scope_result(monkeypatch, "h03-v3-4h", ("4h",))
+    missing = _scope_result(monkeypatch, "h03-v3-4h", ("1h",))
+    assert missing.strategy_result.code == "MARKET_SCOPE_MISMATCH"
+    # Release dùng khung root (h03-v1 = 1h) giữ hành vi cũ.
+    root_release = _scope_result(monkeypatch, "h03-v1", ("4h",))
+    assert root_release.strategy_result.code == "MARKET_SCOPE_MISMATCH"

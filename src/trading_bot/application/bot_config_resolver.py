@@ -59,7 +59,7 @@ from trading_bot.domain.strategy.registry import (
 EFFECTIVE_CONFIG_SCHEMA = "effective-bot-config-v1"
 # Venue lưu ở TradingAccount (chữ thường) và ở root settings (chữ hoa) phải chỉ cùng một sàn.
 _ACCOUNT_VENUES = {"BINANCE_USDM": "binance_usdm"}
-_PARAMETERIZED_RELEASES = frozenset({"h03-v1"})
+_PARAMETERIZED_RELEASES = frozenset({"h03-v1", "h03-v3-15m", "h03-v3-1h", "h03-v3-4h"})
 
 
 class ReleaseCatalog(Protocol):

@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from trading_bot.application.listings_state import EntryBlock, symbol_entry_block
 from trading_bot.application.runtime_risk_profile import load_risk_profile
 from trading_bot.config.workspace_settings import PublishedWorkspaceSettings, WorkspaceSettings
 from trading_bot.domain.execution.paper import PaperExecutionGateway, PaperOrderIntent
@@ -48,6 +49,10 @@ class DecisionCycleOutcome(StrEnum):
     PAPER_INTENT_CREATED = "PAPER_INTENT_CREATED"
 
 
+# Release nhận tham số bot (H03 lookback). Phải khớp `bot_config_resolver._PARAMETERIZED_RELEASES`.
+PARAMETERIZED_RELEASES = frozenset({"h03-v1", "h03-v3-15m", "h03-v3-1h", "h03-v3-4h"})
+
+
 def strategy_selection_from_published_settings(
     settings: WorkspaceSettings,
     *,
@@ -71,7 +76,7 @@ def strategy_selection_for_release(
     settings_version_id: str,
 ) -> StrategySelection:
     """Dựng selection đã publish cho một release; dùng chung cho root settings và bot config."""
-    if parameters and release_id != "h03-v1":
+    if parameters and release_id not in PARAMETERIZED_RELEASES:
         raise ValueError(f"Strategy '{release_id}' chưa hỗ trợ tham số trong runtime.")
     if not isinstance(parameters, Mapping):
         raise ValueError("strategy.parameters phải là một object có khóa và giá trị hợp lệ.")
@@ -162,6 +167,7 @@ class PaperDecisionCycle:
         selection_override: StrategySelection | None = None,
         allowed_symbols: tuple[str, ...] | None = None,
         allowed_timeframes: tuple[str, ...] | None = None,
+        entry_block: EntryBlock | None = None,
     ) -> DecisionCycleResult:
         """Chuẩn bị quyết định từ root settings mà chưa gửi PAPER intent.
 
@@ -195,11 +201,24 @@ class PaperDecisionCycle:
         configured_symbols = set(published_settings.settings.market_data.symbols)
         configured_timeframes = set(published_settings.settings.market_data.timeframes)
         observed_timeframes = {series.timeframe for series in snapshot.series}
+        # Khung vào lệnh: theo release của bot nếu bot chọn release riêng (H03 v3 15m/4h, H06
+        # 15m); release không khai báo khung thì dùng khung root. Trước 15/11/2026 luôn dùng khung
+        # root nên bot khác khung root bị loại oan với MARKET_SCOPE_MISMATCH.
+        entry_timeframe: str = published_settings.settings.strategy.entry_timeframe
+        if selection_override is not None and selection_override.active_release_ids:
+            from trading_bot.application.strategy_market_requirements import (
+                entry_timeframe_for_release,
+            )
+
+            entry_timeframe = (
+                entry_timeframe_for_release(selection_override.active_release_ids[0])
+                or entry_timeframe
+            )
         if (
             snapshot.symbol not in configured_symbols
             or not observed_timeframes
             or not observed_timeframes.issubset(configured_timeframes)
-            or published_settings.settings.strategy.entry_timeframe not in observed_timeframes
+            or entry_timeframe not in observed_timeframes
         ):
             no_trade = NoTrade(
                 strategy_id=published_settings.settings.strategy.default_release,
@@ -267,6 +286,7 @@ class PaperDecisionCycle:
             risk_state=risk_state,
             open_exposures=open_exposures,
             cost_model=cost_model,
+            entry_block=entry_block,
         )
 
     async def prepare_published_with_risk_profile(
@@ -290,6 +310,13 @@ class PaperDecisionCycle:
             profile_id=published_settings.settings.risk.profile_version_id,
         )
         effective_planner = profile.apply_to(planner_settings)
+        # AI-4 lát 3: coin bị Binance lên lịch gỡ/không còn TRADING thì không mở vị thế mới.
+        entry_block = await symbol_entry_block(
+            session,
+            workspace_id=published_settings.workspace_id,
+            symbol=snapshot.symbol,
+            as_of=evaluated_at,
+        )
         if bot_config is None:
             return self.prepare_published(
                 published_settings=published_settings,
@@ -300,6 +327,7 @@ class PaperDecisionCycle:
                 risk_state=risk_state,
                 open_exposures=open_exposures,
                 cost_model=cost_model,
+                entry_block=entry_block,
             )
         if (
             bot_config.workspace_id != published_settings.workspace_id
@@ -326,6 +354,7 @@ class PaperDecisionCycle:
             selection_override=bot_config.strategy_selection(),
             allowed_symbols=bot_config.symbols,
             allowed_timeframes=bot_config.timeframes,
+            entry_block=entry_block,
         )
 
     def prepare(
@@ -340,6 +369,7 @@ class PaperDecisionCycle:
         risk_state: RiskState,
         open_exposures: tuple[OpenExposure, ...],
         cost_model: CostModel,
+        entry_block: EntryBlock | None = None,
     ) -> DecisionCycleResult:
         """Đánh giá strategy, plan và risk mà chưa tạo PAPER intent."""
         if (
@@ -374,6 +404,18 @@ class PaperDecisionCycle:
                 candidate_id=strategy_result.candidate_id,
             )
 
+        if entry_block is not None and entry_block.symbol == strategy_result.symbol:
+            return DecisionCycleResult(
+                DecisionCycleOutcome.PLAN_REJECTED,
+                strategy_result,
+                plan=PlanRejected(
+                    entry_block.reason_code,
+                    entry_block.detail_vi,
+                    planner_settings.settings_version_id,
+                    strategy_result.strategy_release_id,
+                ),
+                strategy_invoked=True,
+            )
         plan = self._planner.plan(
             strategy_result,
             planner_settings,

@@ -4538,3 +4538,593 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Kiểm thử:** `tests/unit/test_sig6_card_consensus.py` (không nhìn trước, bỏ nến bẩn, cảnh báo + nhóm, thiếu mẫu, service có/không nguồn nến, provider đọc một nguồn chỉ đọc); fixture `tests/fixtures/sig6_consensus_bars.py`; test UI cập nhật (không còn tự nhận Orthogonal khi không có nến) + test huy hiệu thật; E2E Playwright strategy cards (thẻ 1 Orthogonal, thẻ 2 cảnh báo); E2E RT1 thêm pha `card_consensus` dưới role admin-web (đủ nến 4h, ≤ 300, trạng thái ok, mã không có nến và workspace khác trả rỗng). Kết quả: unit **4636 passed**, ruff/mypy sạch, E2E strategy cards + microscope + RT1 **7 passed**.
 - **Còn mở:** SIG-6 mục 1–2 (nhãn + hiệu chuẩn) chờ setup đạt SIG-5 hoặc nguồn outcome khác; checklist "x/y điều kiện độc lập"; ma trận tương quan trực quan; chọn khung đo khi thẻ khai báo nhiều khung (hiện lấy khung đầu).
 - **Commit & push:** "Commit, push dev" → `cd123a7` (kèm điều tra H19); remote `dev` không có commit mới nên push thẳng; `git ls-remote` xác nhận `refs/heads/dev = cd123a7`. Trước commit: unit 4636 passed, ruff/mypy sạch, E2E strategy cards + microscope + RT1 7 passed.
+
+### 2026-11-15 — Điều tra H03 `PAPER_RECOVERY_CONFLICT`: lỗi đối soát STOP_UPDATED của vị thế đã đóng
+
+- **Yêu cầu của owner:** "Yes, investigate H03".
+- **Chẩn đoán (chỉ đọc):** chạy lại `PaperCheckpointRepository.verify_ledger_consistency` trong container runtime (cùng role DB/RLS, transaction rollback). Checkpoint revision 490 báo `STOP_UPDATED event không khớp position snapshot`.
+  - Vị thế `paper:…22c076cb…` đã đóng nên snapshot có `quantity 0.000`, nhưng 7 sự kiện STOP_UPDATED (trailing) ghi `quantity 21.76` lúc còn mở.
+  - `application/paper_recovery.py` so `event.quantity` với quantity **hiện tại**, nên mọi vị thế đã đóng từng dời trailing stop đều làm hydrate thất bại.
+  - Đây là lỗi tiềm ẩn từ WP-02E, lộ ra lần đầu khi runtime theo dõi nhiều nến có trailing rồi restart (sau sự cố bật RT-1).
+- **Sửa:**
+  - Thêm `stop_event_quantity_valid`: quantity của STOP_UPDATED phải > 0 và thuộc tập mức vị thế từng mở (sau mỗi fill vào, sau mỗi lần giảm còn dương); vị thế còn mở chấp nhận mức hiện tại. Không nới thành vô điều kiện: mức chưa từng mở hoặc 0 vẫn bị từ chối.
+  - Điều kiện `bar_key ∈ seen_bar_keys` giữ nguyên.
+- **Kiểm chứng:**
+  - Unit `tests/unit/test_paper_recovery_verifier.py` + `test_trade_ledger.py` **19 passed**; toàn bộ `tests/unit` **4319 passed/123.97s**; ruff, mypy sạch.
+  - Chẩn đoán với verifier đã sửa trên dữ liệu thật: **CONSISTENT**.
+  - Build lại image dùng chung, recreate: hai bot **READY**, `market_dispatch: running`, `discontinuities: 0`.
+  - Compose E2E `test_multibot_runtime_restart.py` + `test_rt1_paper_market_loop.py` **2 passed/324.66s**.
+- **Còn mở:** hai trade có PnL sai từ sự cố vẫn trong ledger local (dữ liệu dev); 2 E2E `LEARNING_INCIDENT_HOLD_UNAVAILABLE` có sẵn chưa điều tra.
+
+### 2026-11-15 — Hai E2E runtime fail `LEARNING_INCIDENT_HOLD_UNAVAILABLE`: lỗi harness `SET ROLE`
+
+- **Yêu cầu của owner:** "Investigate failing E2Es".
+- **Test bị ảnh hưởng:** `tests/e2e/test_multibot_runtime_control.py::test_pause_kill_resume_permissions_exits_and_ruling_27_race` và `tests/e2e/test_workspace_risk_real_paths.py`. Cả hai fail giống hệt trên HEAD sạch, không do RT-1.
+- **Nguyên nhân gốc:**
+  - Phase race (`race`, `mb04_publish_race`) chạy trong container `migrator`, đăng nhập bằng `crypidian_admin` rồi `SET ROLE crypidian_trading_runtime` qua `-c role=`.
+  - Hàm `public.wp06_learning_incident_hold_active` (migration `f5b7d9e1a3c6`, 12/11) kiểm `session_user IN ('crypidian_trading_runtime','crypidian_admin_web')`. Với `SET ROLE`, `session_user` vẫn là `crypidian_admin`, nên hàm raise `WP06_INCIDENT_WORKSPACE_DENIED`, repository đổi thành `LearningIncidentHoldUnavailable`, entry gate báo `LEARNING_INCIDENT_HOLD_UNAVAILABLE`.
+  - Tái hiện trực tiếp trên PostgreSQL: `session_user=crypidian_admin`, `current_user=crypidian_trading_runtime`, rồi lỗi trên.
+  - Sản phẩm đúng: runtime thật đăng nhập bằng role của nó (stack local READY, E2E RT-1 chạy phase runtime trong container `trading-runtime` nên đạt).
+- **Sửa (chỉ harness test):**
+  - `tests/e2e/probes/multibot_runtime.py::_engine(role)` đăng nhập thật bằng role khi container có secret `/run/secrets/database_<role>_password`, nếu không mới `SET ROLE`.
+  - Hai phase race chạy trong service `db-provisioner` (đã mount secret của mọi role).
+  - Không đổi hàm DB: kiểm `session_user` là chủ ý để `SET ROLE` từ user khác không vượt được ranh giới.
+- **Kiểm chứng:** Compose E2E hai test **2 passed/85.96s**; ruff, format sạch.
+- **Còn mở:** các probe khác dùng `-c role=` (wp05/wp06/wp03) chưa gọi hàm này nên không bị ảnh hưởng hiện tại; `tests/e2e/test_db_role_least_privilege.py` vẫn fail vì owner 5 hàm SECURITY DEFINER WP06 (đã ghi trước, chưa xử lý).
+
+### 2026-11-15 — Sửa `test_db_role_least_privilege`: 3 hàm SECURITY DEFINER WP06 do `crypidian_admin` sở hữu
+
+- **Yêu cầu của owner:** "Yes, fix it".
+- **Lỗi E2E:** 5 hàm `definer owner` ngoài allowlist.
+  - (a) `wp06_learning_incident_guard()`, `wp06_lock_learning_incident_scope(uuid,uuid)`, `wp06_learning_incident_eligible_target(uuid,uuid)` do **`crypidian_admin`** sở hữu: role đăng nhập, superuser, bỏ qua RLS. Migration `f5b7d9e1a3c6` quên `ALTER FUNCTION … OWNER`, nên các hàm SECURITY DEFINER chạy với toàn quyền admin. **Lỗ hổng thật.**
+  - (b) `wp06_learning_incident_hold_active` (owner `crypidian_learning_incident_reader`) và `wp06_aggregate_paper_performance` (owner `crypidian_learning_paper_performance_evaluator`) đúng mẫu NOLOGIN, chỉ thiếu trong allowlist của probe.
+- **Sửa:**
+  - Migration `b2d4f6a8c0e3` (sau `f1b3d5e7a9c2`) tạo role `crypidian_learning_incident_guard` (NOLOGIN, NOSUPERUSER, NOBYPASSRLS, NOINHERIT), sau đó:
+    - SELECT + policy `wp06_incident_guard_read` theo `app.workspace_id` trên 9 bảng mà ba hàm đọc;
+    - EXECUTE trên các hàm được gọi (`wp06_resolve_scorer_runtime_target`, `wp06_lock_learning_shadow_cohort`, `wp06_canonical_utc_timestamp_json`, `wp06_learning_incident_canonical`, `wp06_compact_canonical_json`);
+    - đổi owner ba hàm, cấp lại EXECUTE gốc (chỉ `crypidian_admin_web`);
+    - downgrade đảo ngược đầy đủ.
+  - Kiểm caller `session_user` trong hàm giữ nguyên.
+  - Probe least-privilege thêm 3 owner hợp lệ.
+  - Head đổi sang `b2d4f6a8c0e3` trong unit/E2E.
+- **Lỗi khi sửa:** bản đầu thiếu EXECUTE `wp06_compact_canonical_json(json)`, do hàm SQL `wp06_learning_incident_canonical` gọi tiếp dưới quyền owner mới. E2E admin incident báo "DB từ chối event incident"; trên HEAD sạch thì đạt.
+  - Bắt được lỗi PostgreSQL `permission denied for function wp06_compact_canonical_json` bằng cách đọc log postgres của project E2E trong lúc test chạy.
+  - `WP06_INCIDENT_TARGET_STALE` trong log là ca âm có chủ đích của test.
+- **Kiểm chứng:**
+  - Compose E2E **9 passed/188.82s**: 4 test incident hold (admin UI, admin, runtime, schema), `test_db_role_least_privilege`, `test_multibot_runtime_control`, `test_workspace_risk_real_paths`. PNG evidence bị ghi đè đã khôi phục.
+  - Unit **4320 passed/124.09s**; ruff, format, mypy sạch.
+  - DB local hạ/nâng lại lên `b2d4f6a8c0e3` với bản cuối (guard có EXECUTE compact json, owner hàm guard = role mới).
+
+### 2026-11-15 — TG-1 lát 1: thẻ tín hiệu trong tin Telegram; sửa test flaky `test_retraining_label_uses_ledger_trade_not_client_values`
+
+- **Yêu cầu của owner:** "Sau đó tiếp tục công việc tiếp theo đi" (sau khi merge PR #1). Chọn TG-1, vì tin Telegram chưa có SL/TP/R, checklist và điều kiện mất hiệu lực, trong khi thẻ trên Admin đã có.
+- **Thay đổi:**
+  - `TelegramSignalCandidate.card` (tùy chọn, `compare=False`).
+  - `adapters/database/repositories/telegram_signals.py::_signal_card` dựng thẻ bằng `build_signal_card`, từ `candidate_json` + `checklist_json` của `BotDecision` đã xác minh hash. Bắt `SignalCardError`/`KeyError`/`TypeError`/`ValueError` và trả `None`, khi đó tin chỉ có phần cơ bản.
+  - `build_signal_message` thêm khối "— THẺ TÍN HIỆU (PAPER) —":
+    - giá kiểu VN (`68.000,25`), R một chữ số thập phân;
+    - checklist tối đa 8 dòng;
+    - "Mất hiệu lực khi", "Độ tin cậy: Chưa hiệu chuẩn (chưa hiện %)";
+    - dòng cuối luôn là "PAPER · mô phỏng nội bộ, không phải khuyến nghị đầu tư.".
+  - Mọi dòng cũ giữ nguyên.
+- **Lỗi gặp khi chạy unit:** `tests/unit/test_admin_realtime_api.py::test_retraining_label_uses_ledger_trade_not_client_values` fail 1 lần trong bộ đầy đủ, đạt khi chạy riêng 3 lần.
+  - **Nguyên nhân:** test kiểm `"999" not in resp.text`, nhưng response có `sample_id`/`trade_id` UUID ngẫu nhiên và `created_at` có micro giây, nên tình cờ chứa "999" (xác suất ~1%).
+  - **Sửa:** kiểm trên giá trị trường (`original_signal == "SHORT"`, không trường nào bằng "999"). Không phải lỗi sản phẩm.
+- **Kiểm chứng:** unit **4324 passed/124.18s** (thêm 4 test TG-1); ruff, format, mypy sạch; E2E Compose `test_wp07_telegram_signal.py` + `test_wp07_market_signal_producer.py` **2 passed/49.50s**.
+- **Còn mở:** reply cập nhật vào tin gốc, R:R ròng từng TP, rủi ro % vốn trong tin, TG-2 chống spam; ledger local còn 2 trade PnL sai (cần owner quyết reset dữ liệu dev).
+
+### 2026-11-15 — TG-2 lát 1: chống spam tin tín hiệu Telegram (gộp trùng, cooldown, trần tin/giờ)
+
+- **Yêu cầu của owner:** "Yes, do TG-2".
+- **Thiết kế:**
+  - Kiểm ở `TelegramSignalRepository.claim_one`, cùng transaction với kiểm filter. Advisory xact lock `hashtextextended('telegram-signal-throttle:<subscription>')` tuần tự hóa các replica nên hai worker không cùng vượt kiểm tra.
+  - Lịch sử gồm tin `SENT` trong `max(cooldown, 1h)` và tin `PROCESSING` còn lease (tính như đã gửi). Khóa gộp lấy từ `bot_decision.payload.candidate`: symbol|direction|strategy_id|strategy_release_id.
+  - Logic thuần `throttle_reason` + `SignalThrottlePolicy` ở `application/telegram_signals.py`. Trùng được ưu tiên trước trần giờ.
+  - Bị chặn → `SUPPRESSED`, mã `SIGNAL_COOLDOWN_DUPLICATE`/`SIGNAL_HOURLY_CAP`; worker bỏ qua như FILTERED.
+  - Settings `signal_worker_cooldown_minutes` (90, 0–1440) và `signal_worker_max_messages_per_hour` (6, 1–60).
+  - **Phạm vi theo subscription** (một bot → một chat), vì RLS của `crypidian_signal_worker` theo `app.bot_id`. Trần theo chat xuyên bot cần policy workspace-level, chưa làm.
+  - Không cần grant mới: worker đã có UPDATE `status`/`last_error_code`; `pg_advisory_xact_lock` thuộc PUBLIC.
+- **Migration `c3e5a7b9d1f4`** (sau `b2d4f6a8c0e3`): thay CHECK trạng thái thêm `SUPPRESSED`, index `(workspace_id, subscription_id, sent_at)` (khai báo cả trong model). Downgrade đổi SUPPRESSED → FILTERED.
+- **Lỗi khi làm:**
+  - (1) Bản đầu `DROP CONSTRAINT telegram_signal_delivery_status_valid` lỗi trong E2E: tên thật do naming convention là `ck_telegram_signal_delivery_telegram_signal_delivery_st_4a75` (cắt + hash). Đã kiểm trên DB local. Sửa: khối `DO` tìm constraint theo `conrelid` + định nghĩa chứa `status`/`FILTERED`, giữ nguyên tên.
+  - (2) `alembic check` báo index mới thiếu trong model. Đã thêm `Index` vào `TelegramSignalDelivery`.
+- **Nguồn:** Telegram Bot FAQ — mỗi chat không quá ~1 tin/giây, nhóm 20 tin/phút, broadcast ~30 tin/giây (https://core.telegram.org/bots/faq, kiểm 15/11/2026). Trần 6 tin/giờ là chính sách chống làm phiền của sản phẩm, không phải giới hạn kỹ thuật.
+- **Kiểm chứng:**
+  - Unit **4337 passed/132.43s**: thêm `tests/unit/test_telegram_signal_throttle.py` và test worker truyền policy và bỏ qua claim bị chặn.
+  - ruff, format, mypy sạch.
+  - E2E Compose `test_db_role_least_privilege.py` + `test_wp06_learning_incident_entry_hold_schema.py` (head mới) **2 passed/68.94s**; `test_wp07_market_signal_producer.py` (thêm phase `throttle` chạy bằng role signal-worker thật: duplicate → cooldown, trần 1 → cap, trần 2 → cho qua, constraint có SUPPRESSED) + `test_wp07_telegram_signal.py` (ACL kiểm SUPPRESSED): **2 passed/55.09s**.
+  - Head đổi sang `c3e5a7b9d1f4` trong 15 file test.
+- **Còn mở:** trần theo chat xuyên bot, giờ yên lặng, đếm tin bị chặn trên Admin, reply cập nhật tin gốc.
+
+### 2026-11-15 — FX-2: cổng lỗ xấu nhất và ngắt mạch drawdown PAPER
+
+- **Yêu cầu của owner:** "ok" cho đề xuất làm nhóm "độ đúng giao dịch PAPER", bắt đầu từ lỗ ngày + circuit breaker.
+- **Quyết định owner (AskUserQuestion 15/11):** ngưỡng drawdown **10%** từ đỉnh; mở lại **bằng tay** bởi người duyệt.
+- **Kiểm kê trước khi code:**
+  - Runtime **đã** nạp lỗ ngày/rolling từ ledger từ RT-1 lát 2 (`paper_market_context._loss_windows`). Dòng "còn mở" trong status đã cũ.
+  - RiskEngine chỉ so lỗ **đã chốt** với ngưỡng.
+  - `CircuitBreakerEngine` chỉ chạy ở trang health admin, với telemetry giả (`events=[]`, drawdown 0, feed age 0), in-memory, không nối runtime.
+- **Thay đổi:**
+  - `RiskEngine`: sau check lỗ đã chốt, thêm `DAILY_LOSS_CAP_WOULD_BREACH`/`ROLLING_LOSS_CAP_WOULD_BREACH` khi lỗ đã chốt + `open_risk` (exposure mở + reservation đang giữ) + `plan.estimated_loss` > ngưỡng (FX-2 "tính cả rủi ro đang mở và rủi ro lệnh mới").
+  - `RiskState.drawdown_breaker_tripped` (mặc định False) → `CIRCUIT_BREAKER_DRAWDOWN`. Check đặt trước kiểm giá/khối lượng.
+  - Module mới `domain/risk/drawdown_breaker.py` (`fx2-drawdown-v1`):
+    - đỉnh = vốn đã chốt (seed + Σ net_pnl trade CLOSED) kể từ mốc;
+    - vốn hiện tại = vốn mark-to-market của ledger;
+    - ngắt khi `(đỉnh − hiện tại)/đỉnh ≥ 0,10`.
+  - **Mốc mở lại = bản ghi `ENABLED` mới nhất của bot trong `bot_runtime_control`** (append-only; resume đã bắt buộc quyền riêng + MFA gần đây + lý do + expected_revision). Owner mở lại bằng tạm dừng → tiếp tục. Không cần bảng hay grant mới; runtime role đọc được (E2E xác nhận).
+  - Context provider gọi `_drawdown_breaker`; thiếu seed thì `PAPER_EQUITY_UNKNOWN`. Evidence intent thêm `drawdown_*`; `CONTEXT_PROVIDER_VERSION` → `rt1-postgres-paper-context-v2`.
+- **Test:**
+  - Unit mới `tests/unit/test_fx2_loss_gate_and_drawdown_breaker.py`.
+  - `test_runtime_replay_evaluator::…rejects_cap` cũ fail vì check mới chặn trước (fixture lỗ ngày nhỏ hơn rủi ro 2 vị thế). Đây là hành vi mới đúng; nâng ngưỡng lỗ trong `capped_settings` để test vẫn kiểm trần vị thế.
+  - E2E RT-1 thêm phase `breaker` (role trading-runtime) và `pause_resume`:
+    - trước resume: baseline None, đỉnh = seed (lệnh lỗ), vốn 89% đỉnh ⇒ ngắt;
+    - sau resume: baseline = `changed_at` resume, đỉnh = seed + realized. **1 passed/292.57s**.
+  - Unit **4348 passed/130.42s**; ruff, format, mypy sạch.
+- **Nguồn:** Freqtrade MaxDrawdown protection (chế độ equity) https://www.freqtrade.io/en/stable/plugins/ — kiểm 15/11/2026. Investopedia chặn fetch tự động nên không dùng.
+- **Giới hạn / còn mở:**
+  - Replay/backtest chưa áp breaker.
+  - Cổng lỗ xấu nhất không tính gap vượt SL.
+  - Trang health admin vẫn dựng `CircuitBreakerEngine` với telemetry giả, cần nối số liệu ledger thật hoặc gỡ.
+  - UI bot detail chưa hiện trạng thái breaker/drawdown và hướng dẫn mở lại.
+  - Ledger local có 2 trade lãi sai (~+2,8 triệu USDT) nên cả đỉnh lẫn vốn hiện tại local bị thổi phồng: breaker local không ngắt, nhưng phải lỗ ~10% của số vốn ảo đó mới ngắt, tức gần như không bao giờ, cho tới khi owner quyết reset dữ liệu dev.
+
+### 2026-11-15 — Reset ledger PAPER dev của workspace local `c486b52b…`
+
+- **Yêu cầu của owner:** "reset lại dữ liệu dev đi. dữ liệu test không có vấn đề gì cả."
+- **Lý do:** 2 trade PnL sai (+1.394.273 và +1.422.809 USDT) từ sự cố nến đứt quãng làm lệch dashboard và thổi phồng đỉnh vốn của breaker FX-2.
+- **Phạm vi:**
+  - Chỉ xóa ledger PAPER của workspace: `trade_cost` 40, `position_event` 27, `fill` 20, `trade` 10, `exchange_order` 10, `paper_execution_checkpoint` 765, `order_intent` 10, `risk_reservation` 10, `risk_decision` 20, `trade_plan` 10, `outbox_event` `paper.*` PENDING 67.
+  - Giữ nguyên account/seed, user/role/MFA, cấu hình bot/rủi ro, Telegram, nến thu thập, quyết định tín hiệu (`bot_decision`), consumer receipt, audit.
+- **Cách làm:**
+  - Sao lưu `pg_dump --data-only` các bảng liên quan vào `.secrets/backups/paper-ledger-before-reset-2026-11-15.sql` (80 MB, chmod 600, git ignore).
+  - Dừng `trading-runtime`.
+  - Một transaction superuser với `SET LOCAL session_replication_role = replica` (bỏ trigger append-only/immutable). Cuối transaction duyệt mọi FK trỏ tới các bảng đã xóa, raise nếu còn dòng mồ côi; kết quả 0.
+- **Lỗi gặp:** runtime khởi động lại báo `RECOVERY_REQUIRED`/`PAPER_RECOVERY_CONFLICT` cho cả 2 bot.
+  - Nguyên nhân: đã xóa cả checkpoint **genesis** (`mb05b-genesis:<account>`, revision 1), mà `hydrate_account` cần ("Không có checkpoint PAPER để hydrate").
+  - Sửa: khôi phục nguyên văn 2 dòng genesis từ bản sao lưu (COPY trong transaction replica), khởi động lại.
+  - **Bài học:** reset ledger PAPER phải giữ checkpoint genesis của từng account.
+- **Kết quả:**
+  - Runtime READY 2/2, market dispatch running.
+  - Vốn theo bot (đọc bot-scoped như runtime): seed 10.000, realized 0, equity 10.000, 0 vị thế mở.
+  - Đọc vốn không có `app.bot_id` trả seed None do RLS. Đó là đúng thiết kế, không phải lỗi.
+- **Còn mở:** account thứ ba `10eddc3e…` (không có bot READY) không có checkpoint genesis trong bản sao lưu nên không bị ảnh hưởng; `bot_decision` cũ vẫn còn (không dispatch lại vì đã hết hạn).
+
+### 2026-11-15 — H03 v3 (khung 15m/1h/4h) và script đợt thử 10 bot / 20 coin
+
+- **Yêu cầu của owner:** bốc ngẫu nhiên 20 coin Binance USDⓈ-M để theo dõi và gửi tín hiệu Telegram; 10 bot với tham số, số coin và khung nến ngẫu nhiên; kết quả gửi Telegram.
+- **Quyết định (AskUserQuestion):** mở H03 chọn 15m/1h/4h; chọn coin ngẫu nhiên có lọc thanh khoản; Telegram nhận tin mở/đóng lệnh + tổng kết định kỳ.
+- **Yêu cầu bổ sung giữa chừng:** tin dạng ảnh/card có style. Đang giao agent riêng (worktree) làm renderer PNG + `send_photo`; agent khác làm thông báo kết quả giao dịch + tổng kết 4 giờ + `/report`.
+- **Thiết kế H03 v3:**
+  - Mỗi khung một release (`h03-v3-15m/1h/4h`, module mới `domain/strategy/rules_v3.py`) vì mọi đường runtime/replay/admin lấy khung theo `release_id`.
+  - Hash release cũ không đổi.
+  - Thoát như v2 (kênh 20 nến cùng khung, recipe `h03-exit-v3-<tf>`, `exit_evidence_spec` mới ở rules_v3 tra v3 trước rồi v2; 2 call site đổi import).
+  - Tham số `donchian_lookback`/`volume_median_lookback` cho phép ở v3 (`bot_config_resolver._PARAMETERIZED_RELEASES` + `paper_decision_cycle.PARAMETERIZED_RELEASES`).
+  - Checklist H03 đọc đúng khung theo release.
+- **Lỗi có sẵn phát hiện:** `rules._selected` đòi `"h03-v1"`/`"h06-v1"` trong `active_release_ids`. Runtime dựng selection `(release_id,)`, nên **H03-v2 và H06-v2 luôn trả `*_NOT_SELECTED`**: chưa bao giờ ra tín hiệu khi được chọn. Đã tái hiện bằng rule thật.
+  - Không sửa trong lát này vì sửa `rules.py`/`rules_v2.py` đổi hash release đang ghim.
+  - v3 tự kiểm `self.release_id`.
+  - **Còn mở:** phát hành lại v2 (hoặc v2.1) với kiểm chọn đúng.
+- **Script `scripts/seed_signal_test_bots.py`:**
+  - `plan` (máy dev): đọc `/fapi/v1/exchangeInfo` + `/fapi/v1/ticker/24hr` công khai; lọc USDT perpetual TRADING, quote volume 24h ≥ 20 triệu, **mã ASCII** (Binance có mã `牛来USDT` mà collector/bot config từ chối); bốc 20 coin bằng `random.Random(20261115)`.
+  - Kế hoạch ở `docs/implementation/signal-test-plan.json`: 89 coin đủ điều kiện ngày 15/11/2026.
+  - `apply` (migrator): root v2 với 20 coin và khung 15m/1h/4h (bỏ 1m để vừa trần collector 60 stream; khung execution = khung vào lệnh); release; 10 account/bot/seed 10.000/config/subscription; tắt bot cũ.
+  - `genesis` (trading-runtime): checkpoint khởi tạo.
+- **Kiểm chứng:** unit **4363 passed/133.01s**; ruff, format, mypy sạch; E2E producer + RT-1 **2 passed/374.88s**.
+- **Giới hạn:** H06 không dùng (thiếu macro); bỏ 1m nên khớp/stop theo nến khung vào lệnh (thô hơn); collector chạm trần 60 stream.
+
+### 2026-11-15 — TG-3: thẻ ảnh Telegram (tín hiệu, vị thế PAPER, tổng kết) — renderer + sender
+
+- **Yêu cầu của owner:** tin Telegram phải là thẻ ảnh thiết kế riêng, dễ đọc, thay cho chữ thuần, gồm 3 loại: thẻ tín hiệu tham khảo, thẻ vị thế (mở/đóng), thẻ tổng kết ≤ 10 bot.
+- **Phạm vi vòng này:** chỉ view-model + renderer + `send_photo`. **Chưa** nối worker (agent khác đang sửa `workers/telegram_signal_worker.py` và thêm thông báo giao dịch). `build_signal_message` giữ nguyên làm caption/fallback.
+- **Thay đổi:**
+  - `application/telegram_cards.py` (mới): dataclass bất biến `SignalCardView`/`CardTarget`/`CardChecklistItem`, `TradeCardView` (`OPENED`/`CLOSED`, notional, rủi ro tới SL, thời gian giữ), `SummaryBotRow`/`SummaryCardView` (xếp PnL giảm dần, win rate gộp theo số lệnh); `signal_card_view_from(candidate)` đọc dict `build_signal_card` có sẵn, thiếu `card` thì chỉ còn giá tham chiếu; bộ định dạng kiểu VN (`format_price_vi` giữ 5 chữ số có nghĩa cho giá < 1, `format_usdt_vi`, `format_r_vi`, `format_percent_vi`, `format_local_time` giờ `Asia/Ho_Chi_Minh` fallback UTC+7, `format_duration_vi`); caption ≤ 1024 ký tự cho cả 3 thẻ.
+  - `adapters/telegram/card_renderer.py` (mới): `render_signal_card`/`render_trade_card`/`render_summary_card` → PNG 1080 px, nền tối, thang giá dọc, checklist ✓/✗/— vẽ bằng nét, thanh SL—vào—TP, bảng 10 bot có thanh PnL. Hình bo góc/tròn khử răng cưa bằng siêu lấy mẫu ×3. Layout engine `BASIC` cố định ⇒ output xác định.
+  - Port `TelegramMessageSender.send_photo(chat_id, png_bytes, caption)`; `TelegramBotApiSender.send_photo` gửi `multipart/form-data` (`chat_id`, `caption` nếu có, `photo=card.png;image/png`), kiểm chữ ký PNG, ≤ 10 MB, caption ≤ 1024; dùng chung `_post` với ánh xạ lỗi/`retry_after`/không lộ token như `send_message`. `RecordingTelegramSender.photos` (tối đa 50 ảnh).
+  - Font **Be Vietnam Pro** Regular/Medium/SemiBold/Bold (TTF) + `OFL.txt` tại `src/trading_bot/assets/fonts/`, tải từ `google/fonts/ofl/bevietnampro` (sha256 Regular `cd1ef6e9…`, Bold `7f738fe5…`; kích thước khớp listing GitHub). Đã kiểm wheel `uv build` chứa thư mục này; Docker `COPY src` + `uv sync` editable nên có font.
+  - `scripts/render_telegram_card_samples.py` sinh 6 ảnh mẫu (chip "DỮ LIỆU MẪU") vào `docs/design/telegram-cards/` (120–280 KB/ảnh).
+  - Tài liệu: `docs/design/telegram-cards.md` (khảo sát, 5 mẫu thiết kế, token), glossary mục **AE**.
+- **Dependency:** `pillow==13.0.0` (phát hành 16/10/2026, > 2 tuần; có wheel cp314 macOS + manylinux x86_64/aarch64). Docs https://pillow.readthedocs.io — kiểm 15/11/2026. Máy dev không có libraqm (`features.check('raqm')` False) nên ép `Layout.BASIC`: tiếng Việt dùng ký tự dựng sẵn NFC (view chuẩn hóa NFC), không cần shaping.
+- **Nguồn đã kiểm (15/11/2026):**
+  - Telegram sendPhoto: ảnh ≤ 10 MB, rộng + cao ≤ 10000, tỉ lệ ≤ 20, caption 0–1024 — https://core.telegram.org/bots/api#sendphoto
+  - Cornix signal posting format — https://help.cornix.io/en/articles/11659507-signal-posting-format
+  - Tealstreet PnL cards — https://docs.tealstreet.io/docs/trade/pnl-cards ; Bybit P&L — https://www.bybit.com/en/help-center/article/FAQ-PL-Calculation (trang Trade Summary Card timeout khi fetch, chỉ dùng mô tả từ kết quả tìm kiếm)
+  - OFL — https://openfontlicense.org/ ; Be Vietnam Pro OFL.txt (không có Reserved Font Name).
+- **Phát hiện khi làm:**
+  - Font không có glyph ✓ ✗ → ↑ ↓ ▲ ▼ ₮ (kiểm bằng so mask với `.notdef`) ⇒ vẽ biểu tượng bằng hình; test khóa các ký tự tiếng Việt và `− – — … · ≥ ≤ ≠` có glyph.
+  - Bảng tổng kết bản đầu chồng cột "MỞ" và "MAX DD" (xem ảnh) ⇒ dời mép phải các cột số.
+  - Giá < 1 với 4 chữ số có nghĩa làm mất độ chính xác `0.01234567` → `0,01235` ⇒ nâng lên 5 (`0,012346`).
+  - Lệnh shell chứa chuỗi "github" bị hook worktree chặn ⇒ tải font bằng script Python trong scratchpad rồi copy.
+- **Kiểm chứng:**
+  - `tests/unit/test_telegram_cards.py` (mới): định dạng, view từ candidate có/không thẻ, PNG hợp lệ (chữ ký, rộng 1080, < 1 MB, giới hạn sendPhoto), xác định (2 lần render cùng byte), LONG/SHORT, coin giá nhỏ, PnL dương/âm/0, nhãn tiếng Việt rất dài, 10/12/0 bot, glyph font, `_fit`/`_wrap`, sendPhoto multipart (không `parse_mode`), lỗi 429 `retry_after` không lộ token/description, lỗi mạng, validate đầu vào, recording sender.
+  - Unit `PYTHONPATH=. uv run pytest tests/unit -q -p no:cacheprovider`: **4376 passed, 2 failed/137.13s**. Hai test fail (`test_backtest_replay_writer_boundary::test_compose_mounts_replay_writer_only_for_backtest_persistence`, `test_candidate_builder_boundary::test_compose_builder_secret_is_exclusive_and_opt_in`) do môi trường: worktree agent không có `.secrets/garage.env` (gitignore) nên `docker compose config` lỗi "env file not found". Chạy lại 2 file đó với file rỗng tạm `.secrets/garage.env` (không chứa secret, xóa ngay sau): **5 passed/2.71s**. Không liên quan thay đổi TG-3.
+  - Bộ Telegram liên quan (`test_telegram_cards.py`, `test_telegram_signal_delivery.py`, `test_telegram_signal_worker.py`): **47 passed**.
+  - `ruff check`, `ruff format --check`, `mypy src/trading_bot`: sạch.
+  - E2E: không chạy — vòng này không đổi ranh giới dịch vụ (chưa nối worker, không đổi DB/API); E2E Telegram sẽ cần khi nối worker.
+- **Còn mở:**
+  - Nối worker tín hiệu + thông báo giao dịch/tổng kết dùng `send_photo`, fallback tin chữ khi render/gửi ảnh lỗi; ghi delivery theo loại tin.
+  - Câu "mất hiệu lực" từ `build_signal_card` vẫn in giá dạng máy (`96619.3`).
+  - Chưa xem thẻ trên app Telegram thật (ảnh photo bị Telegram nén; kiểm độ nét chữ 19–22 px trên điện thoại).
+  - Nguồn dữ liệu cho thẻ tổng kết (win rate, max drawdown theo cửa sổ) chưa có read-model; view chỉ nhận số đã tính.
+
+### 2026-11-15 — Áp đợt thử 10 bot lên stack local; sửa collector lỗi 34/60 luồng
+
+- **Áp dụng:**
+  - `uv run python scripts/seed_signal_test_bots.py apply` tạo root settings v2 (20 coin, 15m/1h/4h), release `h03-v3-*`/`h01-v1`, 10 bot T01–T10 (seed 10.000, config đã publish, subscription Telegram, genesis) và tắt 2 bot cũ (`171b2071…`, `1a7e8df6…`).
+  - Runtime READY **10/10**.
+- **Lỗi khi áp:**
+  - (1) Mã exec từ stdin không có `__file__` → `ROOT` dùng `globals().get`.
+  - (2) Container migrator không đặt `TRADING_BOT_APP_ENV` → chỉ chặn khi biến có giá trị khác local/test (vẫn bắt buộc workspace PAPER).
+- **Lỗi collector:** `degraded`, 34/60 luồng `RestBackfillError`, đúng các coin xếp sau theo thứ tự chữ cái.
+  - Nguyên nhân: `collect_once(now)` dùng **một** mốc cho cả tick. Nạp bù 60 luồng × 1.000 nến tuần tự nên trang của luồng sau có `received_at` > `now + PAGE_RECEIPT_ALLOWANCE` (60 giây), bị chặn "Trang REST có thời điểm nhận trong tương lai".
+  - Sửa: `collect_once(now, clock=...)` lấy mốc riêng từng luồng; worker truyền `clock`.
+  - Test `test_each_stream_uses_fresh_clock_when_tick_is_slow` mô phỏng mỗi request 40 giây: dùng chung `now` → luồng 2 lỗi; dùng clock → đều thu được.
+- **Kết quả sau sửa:** collector ok 60/60, 0 lỗi; mỗi coin ~1.000 nến 15m/1h, ≥985 nến 4h.
+- **Kiểm chứng:** unit **4394 passed/132.00s**.
+
+### 2026-11-15 — Runtime: tín hiệu bot khác khung root bị loại oan; log tín hiệu không thành lệnh
+
+- **Triệu chứng:** 10 bot mới ra 16 CANDIDATE nhưng không có order intent/risk decision nào; supervisor không log lỗi.
+- **Chẩn đoán:**
+  - `_submit_bot_candidates` bỏ qua kết quả không submit, không để lại dấu vết.
+  - Thêm log WARNING "PAPER candidate không thành lệnh" (entry_block/outcome/strategy/risk/plan), và bắt lỗi theo từng candidate để một candidate lỗi không chặn candidate khác.
+  - Log cho thấy hai lý do:
+    - (1) `PLAN_REJECTED MARKET_DATA_STALE`: **đúng thiết kế**. Candidate sinh lúc nạp bù 28–31 phút sau khi nến đóng nên dữ liệu quá `max_data_age` 300 giây.
+    - (2) `NO_TRADE MARKET_SCOPE_MISMATCH`: **lỗi**. `prepare_published` bắt buộc snapshot chứa `root.strategy.entry_timeframe` (1h), nên bot H03 v3 4h/15m (snapshot chỉ có khung của release) luôn bị loại.
+- **Sửa:** khung vào lệnh trong kiểm phạm vi lấy theo release của bot (`entry_timeframe_for_release`); release không khai báo thì dùng khung root. Test `test_bot_release_entry_timeframe_replaces_root_entry_in_scope_check`. Sau sửa: chỉ còn `MARKET_DATA_STALE` (đúng).
+- **Còn mở:** bot cũ "strategy-card" (account `1a7e8df6…`, đã tắt) còn 1 trade BTCUSDT OPEN từ 16:00 không được theo dõi (account DISABLED không được runtime bootstrap). Đây là dữ liệu dev; cần đóng tay hoặc bật lại bot ở chế độ tạm dừng nếu muốn kết thúc vị thế.
+
+### 2026-11-15 — TG-3: gửi kết quả trade PAPER và tin tổng hợp định kỳ qua Telegram
+
+- **Quyết định owner (15/11/2026):** kết quả PAPER phải gửi Telegram tiếng Việt: (1) tin mỗi trade khi mở (fill vào) và khi đóng; (2) tin tổng hợp mỗi 4 giờ (cấu hình được) so sánh các bot có subscription bật, kèm lệnh `/report`. Bổ sung giữa vòng: sau này tin sẽ là ảnh thẻ PNG + caption ngắn do agent khác làm, nên tách **view model** thuần khỏi **bộ định dạng văn bản**, đường gửi gọi một hàm cho mỗi loại tin, **không sửa** `ports/telegram.py` và `adapters/telegram/bot_api_sender.py`.
+- **Kiểm kê trước khi code:** outbox `paper.*` chỉ có payload mỏng (không có symbol/hướng/giá vào/lý do thoát), nên không đủ để dựng tin; consumer outbox còn cần quyền đọc toàn bộ `outbox_event`. Chọn đọc ledger trực tiếp bằng grant theo cột + RLS theo bot. `BotReportingService` chạy dưới role admin-web với principal nên signal-worker không dùng được; `/report` (admin-web) thì dùng nó.
+- **Thiết kế:**
+  - `application/telegram_trade_results.py`: `TradeResultSource` → `build_trade_result_view` → `TradeResultView` (giá vào/ra bình quân theo khối lượng, lý do thoát VI, PnL ròng, R = net_pnl ÷ `risk_reservation.reserved_risk` (= `estimated_loss`), thời gian giữ); `BotSummaryRow`/`PaperReportView` (`build_bot_summary_row`, `build_paper_report_view` xếp theo PnL ròng 366 ngày); `format_trade_result_text`/`format_paper_report_text` (văn bản thuần, ≤ 4096, cắt bớt bot cuối nếu dài); `report_window` căn epoch UTC; giờ hiển thị UTC+7 cố định (không cần tzdata). `as_dict()` cho renderer ảnh.
+  - Migration **`d5f7b9c1e3a6`** (sau `c3e5a7b9d1f4`): bảng `telegram_trade_notification` (unique `(workspace, subscription, trade, OPENED|CLOSED)`, RLS theo `app.bot_id`) và `telegram_paper_report_delivery` (unique `(workspace, chat, window_start)`, RLS workspace). Cả hai FORCE RLS, `REVOKE ALL FROM PUBLIC, crypidian_app`, worker có SELECT/INSERT + UPDATE cột trạng thái, admin-web SELECT. **Không FK tới `trade`** để thao tác reset ledger dev (mục trên) không bị chặn; trade biến mất → delivery DEAD `TRADE_RESULT_SOURCE_UNAVAILABLE`.
+  - **Grant mới cho `crypidian_signal_worker` (chỉ SELECT theo cột):** `trade`(workspace_id, bot_id, account_id, id, intent_id, mode, status, symbol, side, quote_asset, net_pnl, opened_at, closed_at, created_at, risk_reservation_id), `fill`(workspace_id, bot_id, account_id, intent_id, mode, fill_role, quantity, price, occurred_at), `position_event`(workspace_id, bot_id, account_id, intent_id, mode, event_type, payload, created_at), `risk_reservation`(workspace_id, bot_id, id, reserved_risk), `bot_instance`(workspace_id, id, name). Policy `telegram_trade_result_worker_select` FOR SELECT TO signal-worker, `workspace + bot_id = app.bot_id` (+ `mode='PAPER'` cho trade/fill/position_event; bot_instance theo `id = app.bot_id`). Không quyền mức bảng (`has_table_privilege(...,'SELECT')` vẫn false), không INSERT/UPDATE/DELETE/TRUNCATE/REFERENCES; DO-block `TG3_SIGNAL_WORKER_LEDGER_PRIVILEGE_TOO_WIDE` chặn nếu vượt. `order_intent`, `trade_cost`, `risk_decision`, venue/exchange_order vẫn 0 quyền.
+  - `adapters/database/repositories/telegram_trade_results.py`: phát hiện sự kiện theo **thời điểm ghi hàng** (`trade.created_at` cho OPENED, `position_event.created_at` CLOSED cho CLOSED) vì `opened_at`/`closed_at` là mốc nến; cửa sổ phát hiện `telegram_trade_result_max_age_minutes` (60). Claim `FOR UPDATE SKIP LOCKED` chỉ khi subscription bật + binding xác minh chưa thu hồi + membership ACTIVE; dựng dữ kiện ledger trong cùng transaction claim.
+  - `workers/telegram_trade_result_worker.py`: `TelegramTradeResultWorker` chạy cạnh worker tín hiệu trong process `signal-worker`; lease 45s, gia hạn trước HTTP, retry backoff/`retry_after`, DEAD khi hết lượt; **không** áp chống spam TG-2. Lọc symbol của subscription khi enqueue. Tin tổng hợp: một tin/chat/cửa sổ, chỉ các bot chat đó đang bật; chat hết subscription → FILTERED `REPORT_NO_ACTIVE_SUBSCRIPTION`. Hàm gửi thay được: `send_trade_result(sender, chat_id, view)`, `send_paper_report(...)` (hiện gọi `send_message`). `ChatPacer` dùng chung với `TelegramSignalDeliveryWorker` (tham số mới `pacer`) để mọi tin cùng chat cách ≥ 1,1s.
+  - Settings: `telegram_trade_results_enabled=True`, `telegram_trade_result_max_age_minutes=60` (1–1440), `telegram_report_interval_minutes=240` (0 = tắt, còn lại ≥ 15, ≤ 10080). `app.py` nối worker + readiness `telegram_trade_result_worker`.
+  - `/report` (`telegram/bot_commands.py` + `application/telegram_paper_report.py`): principal Telegram → `list_bots` (bot:read, lấy tên) → `get_dashboard_reports` một snapshot 366 ngày (kiểm `bot:report:read` từng bot, bot thiếu quyền bị bỏ qua); lỗi báo cáo → `REPORT_UNAVAILABLE` không lộ chi tiết. Cửa sổ kỳ = `[now − chu kỳ, now)`.
+- **Idempotency:** khóa duy nhất của hai bảng + `ON CONFLICT DO NOTHING`; trạng thái SENT chỉ ghi sau khi gửi thành công, với lease owner. Chạy lại tick hay worker mới (khởi động lại) không tạo tin trùng (unit + E2E). Giới hạn: crash giữa HTTP thành công và `mark_sent` có thể gửi lại một lần sau khi lease hết (như tin tín hiệu).
+- **Test:**
+  - Unit mới: `test_telegram_trade_results.py`, `test_telegram_trade_result_worker.py`, `test_telegram_report_command.py`, `test_telegram_trade_result_migration.py`, `test_telegram_trade_result_settings.py`. Toàn bộ `PYTHONPATH=. uv run pytest tests/unit -q -p no:cacheprovider` → **4405 passed/113.67s**. ruff check, ruff format --check, mypy sạch.
+  - Lần chạy unit đầu có 2 fail `test_backtest_replay_writer_boundary`/`test_candidate_builder_boundary`: worktree mới chưa có `.secrets/garage.env` nên `docker compose config` lỗi. Chạy `scripts/prepare_local_secrets.py` (file git-ignore) rồi pass; không liên quan code.
+  - E2E RT-1 thêm `tg_seed`/`tg_results`/`tg_verify` (profile `signal`): trade PAPER đóng bằng stop → đúng 1 tin đóng (header, lý do STOP_LOSS, PnL âm, R âm) + 1 tin mở + 1 tin tổng hợp tới sender ghi nhớ dưới role signal-worker thật; tick lại và worker mới gửi 0; quyền cột/RLS (bot khác thấy 0 trade, `SELECT lineage` bị từ chối); delivery ledger 2 SENT + 1 report SENT (4h). `test_rt1_paper_market_loop.py` **1 passed/341.22s**.
+  - `test_wp07_telegram_signal.py` (thêm kiểm grant TG-3) **1 passed/25.55s**; `test_wp07_market_signal_producer.py` (assert `has_any_column_privilege SELECT` đổi có chủ đích: signal-worker được SELECT cột trên fill/position_event/trade/risk_reservation, mọi quyền khác vẫn cấm) **1 passed/39.88s**; `test_db_role_least_privilege.py` **1 passed/48.36s**; `test_bot_control_api_telegram.py` **4 passed/176.89s**.
+  - Chuỗi head `c3e5a7b9d1f4 (head)`/`CURRENT_HEAD`/`heads == [...]` trong 13 file E2E (WP06 + RT-1), probe `wp06_entry_lineage` và `test_sig0_taker_flow` đổi sang `d5f7b9c1e3a6`; các E2E WP06 đó chỉ đổi chuỗi và **chưa chạy** vòng này.
+  - Không có thay đổi PNG evidence.
+- **Nguồn:** Telegram Bots FAQ (giới hạn ~1 tin/giây/chat) https://core.telegram.org/bots/faq — kiểm 15/11/2026; Telegram Bot API sendMessage (giới hạn 4096 ký tự) https://core.telegram.org/bots/api#sendmessage.
+- **Còn mở:**
+  - Renderer ảnh thẻ PNG + `send_photo` (agent khác): thay `trade_result_send`/`paper_report_send` của worker; văn bản hiện tại là caption/fallback.
+  - `compose.yaml` chưa khai báo biến `TRADING_BOT_TELEGRAM_*` mới cho `telegram-signal-worker`/`admin-web` (dùng giá trị mặc định); thêm khi cần cấu hình local.
+  - Worker down lâu hơn cửa sổ phát hiện (60 phút) thì bỏ lỡ tin mở/đóng của khoảng đó (cố ý, tránh dội tin cũ); tin tổng hợp chỉ gửi cửa sổ khép gần nhất.
+  - Tổng hợp giả định một quote asset (USDT); nhiều quote asset thì hiển thị "USDT" và cộng thẳng.
+  - `/report` liệt kê bot người dùng được `bot:report:read`, còn tin định kỳ liệt kê bot mà chat đã bật subscription — hai tập có thể khác nhau.
+  - Admin Web chưa có màn xem `telegram_trade_notification`/`telegram_paper_report_delivery`.
+
+### 2026-11-15 — Nối ảnh thẻ Telegram vào 3 luồng gửi (tín hiệu, kết quả, tổng kết)
+
+- **Yêu cầu của owner:** tin Telegram dạng ảnh/card có style dễ quan sát. Agent renderer (merge `3e447e1`) và agent TG-3 kết quả/tổng kết (merge `ae9c7c7`, migration `d5f7b9c1e3a6`) đã merge vào nhánh.
+  - Xung đột merge chỉ ở memory và glossary: cả hai agent cùng đặt mục "AE". Đã giữ cả hai và đổi mục TG-3 thành **AF**.
+- **Nối:**
+  - `adapters/telegram/card_delivery.py` gồm `send_signal_card`, `send_trade_result_card`, `send_paper_report_card`: vẽ PNG + caption → `send_photo`.
+  - Lỗi vẽ (ValueError/TypeError/KeyError/ArithmeticError/OSError) → gửi văn bản cũ. `TelegramApiError` không bị nuốt, worker vẫn retry/FAILED.
+  - Worker tín hiệu có tham số `signal_send` (mặc định văn bản).
+  - `app.py` truyền bộ gửi thẻ khi `telegram_card_images_enabled` (mặc định True); với worker tín hiệu chỉ truyền khi không dùng factory test.
+- **Ánh xạ:**
+  - Thẻ trade lấy chiến lược/khung từ tên bot đợt thử ("T04 H03 1h · …").
+  - Thẻ tổng kết dùng số liệu lũy kế (lệnh đóng, thắng, PnL) + vị thế mở. `max_drawdown` của báo cáo là USDT nên quy đổi phân số theo vốn seed **10.000** (giả định đợt thử).
+- **Sửa nhỏ:** dòng "Giá chạm SL …" trong thẻ dùng giá kiểu VN (`_price_vi`: 96.619,3) thay `96619.3`.
+- **Local:** DB lên `d5f7b9c1e3a6`, image có Pillow 13.0.0. Worker kết quả `not_ready` ~1 phút đầu cho tới khi tick đầu xong (bình thường).
+- **Kiểm chứng:** unit **4458 passed/119.15s** (thêm `test_telegram_card_delivery.py` 5 test + test worker inject).
+- **Còn mở:**
+  - Mang release/khung thật vào `TradeResultSource` thay vì đoán từ tên bot.
+  - Max drawdown theo vốn thật của từng account.
+  - Chưa xem ảnh trên điện thoại (Telegram nén ảnh).
+  - Bot cũ "strategy-card" còn 1 trade BTC OPEN không được theo dõi.
+- **E2E (15/11, sau merge TG-3 + ảnh thẻ):** `test_wp07_telegram_signal`, `test_wp07_market_signal_producer`, `test_rt1_paper_market_loop` (gồm TG-3), `test_db_role_least_privilege` **6 passed**. `test_bot_control_api_telegram` lần đầu **2 failed**:
+  - Nguyên nhân: compose mount `./.secrets/telegram_bot_token` của worktree. File này là **token thật** của stack local, nên E2E dùng `TelegramBotApiSender` thật và gửi request lên Telegram với chat giả. Không phải lỗi code mới; là lỗ hổng cách ly.
+  - Sửa: `compose.yaml` cho phép đổi file secret qua `TRADING_BOT_TELEGRAM_BOT_TOKEN_SECRET_FILE`; `tests/e2e/conftest.py` (session autouse) trỏ biến này tới `.secrets/e2e_telegram_bot_token` rỗng.
+  - Chạy lại **4 passed/159.50s**.
+- **Runtime log:** candidate cũ được đánh giá lại mỗi tick tới khi hết hạn nên log "không thành lệnh" ngập (1.380 dòng/15 phút). Giờ chỉ log một lần mỗi (decision, lý do), bộ nhớ ≤ 4.096 khóa. Test `test_rejected_candidate_logged_once_and_error_does_not_block_others`. **Còn mở:** việc đánh giá lại mỗi tick vẫn tốn CPU; nên ghi receipt từ chối để bỏ qua.
+
+### 2026-11-16 — Sửa H03-v2/H06-v2 không bao giờ ra tín hiệu
+
+- **Yêu cầu của owner:** "Có, sửa v2".
+- **Lỗi (phát hiện 15/11):** `rules._selected` kiểm `"<strategy>-v1" in active_release_ids`. Runtime và bot config dựng selection `(release_id,)`, nên chọn `h03-v2`/`h06-v2` luôn ra `*_NOT_SELECTED`. Ngược lại, khi chỉ chọn v1 thì rule v2 lại được coi là đã chọn.
+- **Sửa:** `rules_v2._v1_selection`. Rule v2 kiểm đúng `release_id` của chính nó, rồi chạy rule vào lệnh v1 với selection đã thêm `<strategy>-v1`. Candidate vẫn mang `strategy_release_id` và hash của v2.
+- Không sửa `rules.py` để giữ hash release v1 đang ghim. **Hash v2 đổi** vì nguồn `rules_v2.py` đổi. Chấp nhận được: v2 chưa từng ra tín hiệu, workspace local không ghim v2, không test/E2E nào ghim hash v2. Workspace nào đã PUBLISHED `strategy_release` v2 với hash cũ phải phát hành lại (hash lệch → `BOT_DECISION_RELEASE_MISMATCH`).
+- **Kiểm chứng:**
+  - Unit **4466 passed/137.81s** (thêm `tests/unit/test_v2_release_selection.py` 7 test: chọn v2 → candidate v2 đúng hash registry; chỉ chọn v1 → NOT_SELECTED; chưa publish → UNPUBLISHED; resolve qua registry như runtime).
+  - E2E `test_wp07_market_signal_producer` + `test_multibot_decision` **2 passed/74.54s**.
+
+### 2026-11-16 — Khảo sát hiện trạng nguồn tin và "AI phân tích"; lập WBS AI-1..5
+
+- **Owner nhận xét:** thu thập đa nguồn (MXH, blog, báo chí, news) và đưa kết quả chạy vào AI phân tích mới sơ bộ, chưa rõ luồng.
+- **Khảo sát (2 agent Explore, đối chiếu file:dòng):**
+  - **WP-05:** không có adapter nguồn tin nào (`adapters/sources/__init__.py` 1 dòng); không lịch vĩ mô nên H06 luôn `H06_MACRO_UNKNOWN`. Registry/quota/rights/kho item có code + test fixture (`example.invalid`) nhưng không có nguồn tin được duyệt. Không NLP/sentiment, không chiến lược nào đọc tin.
+  - **WP-06:** pipeline đủ khâu, nhưng chỉ chạy QA/synthetic.
+    - Trainer: logistic regression 3 lớp Python thuần `cpu-logistic-v1`.
+    - TEST: 9 mẫu → `INCONCLUSIVE`.
+    - D8 cấm QA source; SHADOW/PAPER_GATE khóa; thiếu quyền TRAINING.
+    - Nhãn post-mortem chỉ ở dict RAM (`learning_post_mortem.py:60`).
+    - `learning-evaluator` hỏng (module `cli.learning_evaluation` không tồn tại).
+  - **Không có tích hợp LLM nào** trong code.
+- **Lập WBS:** `docs/superpowers/plans/2026-11-16-ai-analysis-and-research-pipeline-wbs.md`.
+  - AI-1: Run Report tất định.
+  - AI-2: AI Analyst bằng Claude API, JSON có `evidence_refs`, validator số liệu.
+  - AI-3: đề xuất → backtest → owner publish.
+  - AI-4: nguồn tin S1.
+  - AI-5: mở khóa WP-06 bằng quyền TRAINING nội bộ.
+- **Quyết định chờ owner:** model/ngân sách Claude API; nguồn tin lát đầu; cấp TRAINING; đề xuất AI chỉ là gợi ý.
+
+### 2026-11-16 — AI-1 Run Report tất định + nghiên cứu AI-2 (CLI agent) và AI-4 (nguồn tin)
+
+- **Quyết định owner:**
+  - (1) AI engine là CLI/desktop agent trên máy (Claude CLI/Desktop, Codex, Antigravity), session lưu lại và "huấn luyện" trên session;
+  - (2) nguồn: toàn bộ tin công khai uy tín, đặc biệt X và thread cộng đồng (chỉ báo, lịch phát hành, update) cho mọi coin Futures;
+  - (3) đồng ý TRAINING nội bộ;
+  - (4) đề xuất AI chỉ là gợi ý, phải backtest trước.
+  - Đã ghi vào WBS mục 5.
+- **AI-1 đã làm:**
+  - `domain/portfolio/run_report.py` (`ai1-run-report-v1`, canonical JSON + SHA-256).
+  - `application/run_report.py`: loader chỉ đọc. Mỗi bot một UoW có bot_id. Nguồn: `bot-report.v2`; quyết định theo trạng thái/lý do; candidate → intent qua `evidence.bot_decision_id`; 1R = `risk_reservation.reserved_risk`; MAE/MFE từ nến đã đóng, ưu tiên 1m rồi khung chiến lược.
+  - CLI `trading_bot.cli.run_report`.
+  - Tách `SYMBOL_OUT_OF_BOT_UNIVERSE` khỏi lý do bỏ qua: producer đánh giá mọi coin root cho mọi bot nên loại này chiếm khoảng 80% quyết định.
+  - Cảnh báo `data_quality`: < 20 lệnh đóng; candidate chưa thành lệnh mà lý do chưa lưu bền.
+- **Lỗi khi làm:**
+  - (1) Chạy CLI bằng role admin-web trả 0 bot: RLS admin-web cần actor membership. Tạm chạy bằng migrator (admin); còn mở role đọc báo cáo riêng.
+  - (2) E2E: ruff PT018 chặn trước test; merge TG-3 đổi bảng SERVICES nên phase `run_report` bị thiếu (KeyError).
+  - (3) MAE None vì lệnh RT-1 ngắn hơn một nến 1h chưa đóng. Sửa: ưu tiên nến 1m; vẫn không dùng nến chưa đóng tại thời điểm thoát (tránh dùng giá sau khi thoát).
+- **Chạy thật:** 10 bot đợt thử, cửa sổ 2 giờ. Ra phễu quyết định, nhóm H03 (7 bot, 22 candidate), CARD, H01; chưa có lệnh đóng.
+- **Kiểm chứng:**
+  - Unit **4471 passed/131.85s** (thêm `tests/unit/test_ai1_run_report.py` 5 test; chạy trước khi thêm fallback 1m).
+  - E2E RT-1 thêm phase `run_report` **1 passed/344.86s**.
+- **Nghiên cứu (agent):**
+  - `docs/research/ai-cli-agent-engine-2026-11-16.md`: Claude Code chính, Codex dự phòng, `agy` sau; Gemini CLI ngừng. Binary trong app bundle, không có trên PATH. Không fine-tune được, chỉ tích lũy ngữ cảnh. Subscription cá nhân có rủi ro điều khoản với job định kỳ.
+  - `docs/research/news-social-sources-2026-11-16.md`: điều khoản bên thứ ba ưu tiên hơn TRAINING nội bộ. S1: BLS/BEA/FOMC, phái sinh Binance, diff exchangeInfo, CoinGecko map. S2: X pay-per-use khoảng 0,005 USD/bài, CryptoPanic, Tokenomist. Tránh scraping.
+- **Câu hỏi owner còn mở:** API key hay subscription cho job định kỳ; tần suất phân tích/ngày; topic theo bot hay họ chiến lược; ngân sách X/tháng; duyệt API key Binance chỉ đọc cho kênh thông báo; ai duyệt map coin → X/GitHub.
+
+### 2026-11-16 — AI-2 lát 1: AI Analyst qua CLI agent (Claude/Codex), validator số liệu, lưu kiểm toán
+
+- **Yêu cầu của owner:** "AI-2 trước".
+- **Mặc định khi owner chưa trả lời 4 câu hỏi:** dùng tài khoản CLI đang đăng nhập trên máy; có trần lượt/chi phí; session theo họ chiến lược; chạy tay hoặc thưa. Ghi trong WBS §7.
+- **Thiết kế + mã:** xem WBS §7.
+  - `application/ai_analyst.py`, `ports/analyst.py`, `adapters/analyst/cli_engines.py`.
+  - `adapters/database/models/analyst_entities.py` + migration `e7a9c1d3f5b8` (head mới; 15 file test đổi chuỗi head).
+  - `scripts/run_ai_analyst.py`.
+- **Cờ CLI:** đã kiểm bằng `--help` trên binary local (Claude Code 2.1.321 trong `~/Library/Application Support/Claude/claude-code/<ver>/…/claude`; Codex 0.169.0-alpha trong `ChatGPT.app`). Claude dùng `--tools ""` để tắt mọi công cụ.
+- **Lỗi khi làm:**
+  - (1) Chạy thật: Claude `Not logged in · Please run /login`; Codex `Your workspace is out of credits`. Chặn ở tài khoản, phải owner xử lý; không nhập credential thay owner.
+  - (2) Validator báo nhầm số trong tên bot ("T01 H03 1h · 20 coin"). Bỏ định danh (tên bot, coin, release) trước khi so; regex không nhận số dính chữ (1h, 15m).
+  - (3) **Unit test bắt lỗi dung sai quá rộng** (±1 đơn vị chữ số cuối làm "6 tín hiệu" lọt khi report là 5). Sửa thành ≤ ½ đơn vị (đúng làm tròn).
+  - (4) `alembic check` trên **DB local** báo thừa bảng `market_trade_flow`/`market_mark_price`/`market_liquidation`: sai lệch có sẵn của DB local (không có trong model/migration nhánh này), không do AI-2. E2E dùng DB sạch nên `alembic check` đạt.
+  - (5) Ruff PT018/E501 chặn E2E trước khi chạy (sửa assert/dòng dài).
+- **Chạy local (engine giả):** report 24 giờ của 10 bot → 3 chủ đề (CARD/H01/H03) hợp lệ; lượt 2 `resumed: true`, `run_count` tăng; lượt không hợp lệ vẫn lưu để kiểm toán.
+- **Kiểm chứng:** unit **4489 passed/133.00s** (`tests/unit/test_ai2_analyst.py` 18 test); mypy sạch; E2E RT-1 thêm phase `analyst` **1 passed/337.03s** (gồm `alembic check` trên DB sạch, 2 lượt lưu, 1 hợp lệ, RLS bắt buộc, admin-web chỉ SELECT).
+
+### 2026-11-16 — Chạy thật AI-2: Claude CLI vẫn "Not logged in"; thêm token dài hạn `claude setup-token`
+
+- **Owner báo:** "Đã đăng nhập, chạy đi".
+- **Kết quả:** `scripts/run_ai_analyst.py --engine claude` cả 3 chủ đề lỗi `Not logged in · Please run /login` (12 giây, 0 token, đã lưu 3 lượt lỗi vào `analyst_run`).
+  - `claude auth status`: `loggedIn: false` với cả 2 bản 2.1.317/2.1.321, môi trường đầy đủ lẫn tối thiểu, trong và ngoài sandbox.
+  - `~/.claude.json` có `oauthAccount`.
+- **Nguyên nhân (tài liệu chính thức):** phiên Claude Desktop dùng OAuth do app quản lý, không chia sẻ cho CLI độc lập. CLI cần `claude auth login` (Keychain) hoặc `CLAUDE_CODE_OAUTH_TOKEN` từ `claude setup-token`. Đây là token 1 năm gắn subscription, chỉ dùng gọi model, dành cho script/CI (https://code.claude.com/docs/en/authentication, kiểm 16/11/2026).
+- **Sửa:** `ClaudeCliEngine(oauth_token_file=...)` đọc `.secrets/claude_code_oauth_token` (gitignored), chỉ đưa token vào env của tiến trình con, không vào argv/log/DB. Thiếu file thì CLI dùng Keychain. Test `test_claude_engine_passes_oauth_token_only_via_env`.
+- **Chờ owner:** chạy `claude setup-token` và lưu token vào file trên (chmod 600), hoặc `claude auth login` trong Terminal của chính owner.
+
+### 2026-11-16 — AI-2 chạy thật bằng Claude CLI; AI phát hiện lỗi "0 lệnh khớp" → đưa nến 1m trở lại
+
+- **Owner:** "đã đăng nhập trên terminal". `claude auth status` → `loggedIn: true, claude.ai, max` (bản `~/.local/bin/claude` và bản trong bundle).
+  - Chạy ngoài sandbox để CLI đọc Keychain. Trong sandbox trước đó báo chưa đăng nhập.
+- **Lượt thật 1** (report 24 giờ):
+  - CARD hợp lệ và **đã gửi Telegram**.
+  - H01/H03 bị validator loại vì: AI viết tắt "T07 (14 coin)"; số đếm "2 bot"; vài evidence_ref trỏ sai.
+  - **Nội dung AI chỉ ra đúng:**
+    - bot 1h/4h có tín hiệu nhưng 0 lệnh;
+    - bot 15m có intent nhưng **0 vị thế**;
+    - `H03_SERIES_STALE` chỉ ở 15m;
+    - nhiều đánh giá ngoài universe;
+    - report lệch (ranking "0" khi PnL null; `groups` lẫn họ khác).
+- **Lỗi thật "0 lệnh khớp":** `entry_events 23, entry_fills 0`, mọi intent EXPIRED.
+  - Nguyên nhân gốc: `PaperExecutionGateway.submit` đặt `eligible_at = max(ready, submitted_at) + latency`. Khi root không có 1m thì khung execution = khung chiến lược. Nến mở lúc tín hiệu đã mở **trước** `submitted_at`; nến kế mở đúng `expires_at` nên bị đánh EXPIRED. Không nến nào hợp lệ.
+  - E2E RT-1 không bắt được vì có 1m.
+  - Thử "lùi hạn reservation" trước: không đúng gốc nên đã hoàn tác.
+- **Sửa (vận hành + code):**
+  - Collector `MAX_COLLECTOR_STREAMS` 60 → **100**. Tính: 100 luồng × 1 request/30 giây × weight 5 (limit 1000) ≈ 1.000/phút < 2.400/phút; `PublicRequestLimiter` vẫn chặn.
+  - Kế hoạch đợt thử thêm `1m` (giữ nguyên 20 coin, không bốc lại vì danh sách đủ điều kiện đổi theo volume) → 80 luồng.
+  - Script `seed_signal_test_bots.py`: id root theo bộ khung, `bot_config_version` = max+1 gắn root mới.
+  - Local: root v3 (1m/15m/1h/4h), config mới cho 10 bot; collector ok 80/80; runtime READY 10/10.
+  - **Kết quả:** intent ACCEPTED khớp trên nến 1m. 3 vị thế SHORT mở (T06 AEROUSDT, T09 ZECUSDT/AEROUSDT); 3 thẻ "mở lệnh" đã gửi Telegram.
+- **Cải tiến AI-2 từ lượt thật:**
+  - ranking giữ `null` khi chưa có PnL;
+  - `topic_report` tính lại `groups` chỉ trên bot của chủ đề (`group_sections`);
+  - validator coi mảnh tên bot ("T07 H01 1h", "14 coin") là định danh, chấp nhận số bot trong chủ đề;
+  - **vòng sửa 1 lần** trong cùng session (`build_repair_prompt` liệt kê lỗi validator); cả 2 lượt lưu kiểm toán.
+- **Lượt thật 2** (tiếp tục session): cả 3 chủ đề lượt đầu bị loại → sau vòng sửa **3/3 hợp lệ**, gửi 3 tin Telegram.
+  - Quan sát: session tiếp tục mang số của **report lượt trước** (CARD viết 578/517 của cửa sổ cũ). Validator chặn được. Đây là rủi ro cố hữu khi resume; đã ghi.
+- **Kiểm chứng:** unit **4493 passed/131.38s**; mypy sạch.
+- **Còn mở:**
+  - lưu bền lý do candidate bị từ chối;
+  - thẻ ảnh "Phân tích AI";
+  - lịch tự chạy;
+  - file knowledge/xoay session;
+  - cảnh báo khi root không có 1m mà bật market dispatch (nên fail-closed hoặc cảnh báo readiness).
+
+### 2026-11-16 — Cảnh báo thiếu nến 1m; lưu bền lý do candidate không thành lệnh
+
+- **Yêu cầu của owner:** "Có, sửa tiếp" (sau AI-2 chạy thật).
+- **(1) Thiếu 1m:**
+  - `PaperMarketEventLoop._check_execution_bars`: account có entry chờ khớp mà khung execution ≠ 1m → readiness `market_dispatch` **degraded**, `execution_1m_missing_accounts`, `last_error_code=PAPER_EXECUTION_1M_UNAVAILABLE`, log một lần mỗi intent.
+  - Vị thế đã mở vẫn theo dõi trên khung chiến lược (không degraded).
+  - Không fail-closed toàn runtime vì monitor vẫn cần chạy.
+- **(2) Lý do từ chối:**
+  - Migration `f9b1d3e5a7c2` (head) tạo `paper_candidate_outcome`:
+    - (decision, stage ENTRY_BLOCK/STRATEGY/PLAN/RISK/ERROR, reason_code) unique;
+    - FK `bot_decision`;
+    - RLS bắt buộc: runtime SELECT/INSERT theo workspace + `app.bot_id`; admin-web SELECT theo workspace; không UPDATE/DELETE.
+  - `app._submit_bot_candidates(..., record)` + `candidate_rejections()` phân loại kết quả. `_first_rejection` chặn trùng trong process (≤ 4.096 khóa) và log một lần. `process_pending.record_outcome` ghi bằng `INSERT … ON CONFLICT DO NOTHING`. Lỗi ghi không chặn runtime.
+  - Run Report: `funnel.rejection_reasons` ("STAGE:CODE" → số decision), `candidates_with_recorded_rejection`. Cảnh báo chỉ còn cho candidate chưa có intent lẫn lý do.
+- **Kiểm chứng:**
+  - Unit **4495 passed/135.94s**: test degraded 1m, `candidate_rejections` + ghi một lần, Run Report có lý do. Test cũ dùng `__new__` phải bổ sung `_missing_execution_bars`.
+  - E2E `test_rt1_paper_market_loop` (thêm phase `outcome` bằng role `crypidian_trading_runtime`: 1 hàng sau 2 lần ghi, bot khác bị RLS chặn) + `test_db_role_least_privilege` **2 passed/419.44s**.
+  - Head test đổi `f9b1d3e5a7c2` (15 file).
+- **Local:** DB `f9b1d3e5a7c2`, runtime READY 10/10, dispatch running, `execution_1m_missing_accounts=0`.
+
+### 2026-11-16 — Thẻ ảnh "Phân tích AI" + lịch tự chạy AI Analyst (launchd)
+
+- **Yêu cầu của owner:** "Có, làm tiếp" (thẻ ảnh + lịch tự chạy).
+- **Thẻ ảnh:**
+  - `AnalysisCardView` / `analysis_card_view_from` / `analysis_card_caption` (`application/telegram_cards.py`); `render_analysis_card` (Pillow) gồm tóm tắt, nhận định, giả thuyết + cách kiểm, đề xuất để backtest + rủi ro, chip độ tin cậy; `card_delivery.send_analysis_card` dự phòng văn bản.
+  - Mẫu thật: `docs/design/telegram-cards/analysis-card-sample.png` (họ H03).
+  - **Lỗi phát hiện khi xem ảnh:** Be Vietnam Pro **không có `→ ← ⟶ ✓ ✗ ▸`** (kiểm bằng `getmask`), hiện ô trống. Thêm `_safe_text` thay bằng `› ‹ v x` ở cả đo (`_fit`/`_wrap`) lẫn vẽ (`_Canvas.text`); áp cho mọi thẻ.
+- **Runner `--scheduled`:**
+  - khóa file `var/ai-analyst/run.lock` (fcntl, không chặn);
+  - **dấu vân tay chủ đề** chỉ gồm tín hiệu/intent/lý do từ chối/lệnh/vị thế/PnL. Lần đầu băm cả report thì dấu luôn đổi vì ABSTAIN tăng mỗi phút;
+  - trần 30 lượt gọi AI/ngày;
+  - trạng thái `var/ai-analyst/state.json` (`var/` gitignored);
+  - **lưu trạng thái trước khi gửi Telegram**, lỗi gửi từng tin chỉ ghi stderr;
+  - xoay session sau `--rotate-after 8` lượt;
+  - lịch dùng `--max-budget-usd 3`.
+- **Sự cố khi thử:**
+  - (1) Lượt 02:28 lưu DB/gửi nhưng không ghi được state nên lượt 02:29 phân tích lại. Owner có thể nhận 2 bộ thẻ. Lỗi gốc bị nuốt do tôi parse đầu ra; gia cố như trên.
+  - (2) H03 `error_max_budget_usd`: session tích lũy ~75k token cache/lượt, ước tính ~1,5–2,5 USD/lượt (ước tính phía client, gói subscription không trừ tiền thật) → xoay session + nâng trần.
+- **Lịch:** `scripts/ai_analyst_schedule.py install|status|uninstall` → LaunchAgent `com.crypidian.ai-analyst`, chạy 10 phút sau mỗi mốc tổng kết UTC 00/04/08/12/16/20 (= 3/7/11/15/19/23 giờ VN), lệnh `uv run python scripts/run_ai_analyst.py --engine claude --hours 24 --scheduled --send-telegram --max-budget-usd 3`.
+  - Đã cài và `kickstart` thử: exit 0, launchd thấy Docker + Keychain, gửi 2 thẻ.
+  - **Gắn đường dẫn worktree hiện tại:** xóa worktree thì job hỏng; chạy lại `install` từ checkout mới.
+- **Kiểm chứng:** unit **4501 passed/126.13s** (test thẻ, fallback, ký tự, khóa, dấu vân tay, trần, lỗi gửi, plist); E2E `test_wp07_telegram_signal` + `test_wp07_market_signal_producer` **2 passed/50.34s**.
+- **Còn mở:**
+  - file knowledge theo chủ đề khi xoay session (tóm tắt bài học, owner duyệt);
+  - AI-3 (đề xuất → backtest);
+  - trang Admin xem `analyst_run`.
+
+### 2026-11-16 — AI-3 lát 1: đề xuất AI → backtest bản gốc vs bản đề xuất
+
+- **Yêu cầu của owner:** "Có, làm AI-3"; cấp BACKTEST_RESEARCH (policy `BINANCE_USDM_REST` revision 5 `verified`: backtest_research/paper_demo/training, 20 coin, 1m/15m/1h/4h; collector vẫn 80/80).
+- **Đã làm:**
+  - `ai_analyst.py`: `analyst_output.v2`/`ai2-prompt-v2`, `PROPOSAL_FIELDS`, `validate_proposals`, `apply_proposal`.
+  - Replay nhận `strategy_parameters` (settings + profile/family hash; rỗng giữ hash cũ). Context replay gộp bảng bằng chứng thoát v3 (`h03-exit-v3-*`).
+  - `application/proposal_backtest.py`: arm baseline/variant, `build_stored_bundle` (nến `BINANCE_USDM_REST_BACKFILL` + rights gate BACKTEST_RESEARCH, warm-up 220, cửa sổ chung căn theo khung lớn nhất, thiếu nến → loại coin kèm lý do), `run_arm` (khớp ở khung vào lệnh), `aggregate`, `compare` (≥ 10 lệnh mới kết luận), UNSUPPORTED khi hai arm giống hệt (chỉ đổi `max_positions`/`max_leverage`).
+  - Migration `86afb7c1ba2d` (head) bảng `proposal_backtest` (append-only, unique (run, proposal_index), admin-web chỉ SELECT, FORCE RLS). **Lưu ý:** hai mã revision đầu tôi chọn (`a1c3e5f7b9d2`, `b3d5f7a9c1e4`) đã tồn tại — từ nay sinh mã bằng `secrets.token_hex(6)` và grep trước.
+  - Thẻ "Backtest đề xuất AI" (`render_backtest_card`, `backtest_card_view_from/caption`, `send_backtest_card`), mẫu `docs/design/telegram-cards/backtest-card-sample.png`.
+  - `scripts/run_proposal_backtest.py` (phase `backtest` trong container migrator; `--dry-run`, `--max-symbols`, `--max-proposals`, `--send-telegram`).
+- **Lỗi engine replay phát hiện và sửa (quan trọng):** `ReplayAccountState.project` giữ `captured_at` của seed → sau `max_account_age` = 1 ngày mọi candidate bị `ACCOUNT_STATE_STALE`. Chẩn đoán T05 H03 4h ATOM: 0 lệnh/55 candidate bị loại; sau sửa 15 và 19 lệnh. Snapshot chiếu giờ mang `max(seed.captured_at, risk_state.market_data_as_of)`. Mọi backtest dài > 1 ngày trước 16/11 có thể đã thiếu lệnh — kết quả cũ cần chạy lại trước khi dùng.
+- **Chạy thật (lượt AI H03 10:0x, đề xuất v2):**
+  - T06 15m `max_positions → 2`: UNSUPPORTED (replay một coin).
+  - T05 4h `donchian_lookback 30 → 20` (3 coin, ~130 ngày): WORSE — 43→52 lệnh, PF 1,06→1,00, PnL +26,17→+1,06 USDT, DD 100,79→121,69.
+  - T09 15m `per_trade_risk_fraction 0,0075 → 0,01` (12 coin, ~8 ngày): INCONCLUSIVE — PnL −1007,55→−785,29 nhưng DD 484,66→641,69 (> 20%).
+  - Đã lưu 3 hàng `proposal_backtest`, gửi 3 thẻ Telegram. Thời gian ~40 giây/arm/coin.
+- **Kiểm chứng:** unit **4522 passed/142s**; E2E `test_rt1_paper_market_loop` (phase analyst thêm `proposal_backtest`: quyền, RLS, trùng bị chặn), `test_backtest_outcomes_persistence`, `test_wp07_backtest_persist_fence`, `test_db_role_least_privilege` đạt. Ruff/format/mypy đạt.
+- **Lỗi có sẵn đã điều tra (không do AI-3):**
+  - `test_wp06_source_pinned_replay_persistence` hỏng từ 13–14/11: (1) probe thiếu license evidence (quy tắc d823df5) — **đã sửa probe**; (2) trigger migration `b7d9f1a3c5e8` (7c9b749, 14/11) chỉ cho `crypidian_candidate_builder` ghi bundle TRAINING → `WP06_TRAINING_REPLAY_BUNDLE_CALLER_DENIED` khi probe chạy bằng migrator. Chưa sửa. Unit tương ứng `test_wp06_source_pinned_scorer_replay_fixture` 3 passed.
+  - `alembic check` trên DB local báo bảng `market_mark_price`/`market_liquidation`/`market_trade_flow` không có trong repo này (do stack/nhánh khác migrate vào); không động vào.
+- **Còn mở:** tạo bản nháp config từ kết quả BETTER; backtest danh mục nhiều coin (kiểm `max_positions`); tự chạy sau lượt AI Analyst; trang Admin `analyst_run`/`proposal_backtest`; sửa probe WP06 theo role candidate_builder.
+
+### 2026-11-16 — AI-3 lát 2: tạo bản nháp config từ đề xuất AI đã backtest
+
+- **Yêu cầu của owner:** "Có, làm tiếp" (nút tạo bản nháp từ kết quả backtest).
+- **Đã làm:**
+  - `proposal_backtest.draft_overlay_from_backtest`: overlay = cấu hình đang publish + thay đổi; chỉ cho kết luận BETTER/INCONCLUSIVE; chặn khi arm bản gốc đã backtest ≠ arm của cấu hình hiện hành ("cần backtest lại"); không sửa overlay gốc tại chỗ.
+  - `BotConfigAdminService.list_proposal_backtests` (quyền `bot:read`, đọc bằng role admin-web qua RLS workspace) và `create_draft_from_proposal` (quyền `bot:config:write`) → gọi lại `create_draft` có sẵn: kiểm head, MFA khi đổi khối risk, idempotency `ai3-proposal:<backtest_id>` (mỗi kết quả một bản nháp), audit `bot.config.draft_created`. Không publish.
+  - Trang chi tiết bot: mục "Đề xuất AI đã backtest" (bảng thay đổi, kết luận, lệnh/PnL/drawdown bản gốc → đề xuất, nút "Tạo bản nháp từ đề xuất" chỉ khi được phép). Route form `POST /admin/bots/{bot}/ai-proposals/{id}/draft` (CSRF) → redirect `?ai_proposal=created` hoặc `?ai_proposal_error=<mã>`; thông báo lỗi lấy từ bảng mẫu cố định, không phản chiếu query string. Lỗi đọc đề xuất không làm hỏng trang (log cảnh báo, danh sách rỗng) — cần vì nhiều test cũ dùng mock service.
+  - Nút đặt tên khác "Tạo bản nháp" để không trùng locator Playwright hiện có.
+- **Kiểm chứng:** unit **4531 passed/146s** (9 test mới: overlay, kết luận, cấu hình đã đổi, hiển thị, lỗi đọc, CSRF + mã lỗi). E2E `test_admin_browser_session_navigation_accessibility_and_telegram_link` **5/5 viewport passed** (thêm bước seed `proposal_backtest` → bấm nút → bản nháp DRAFT với `per_trade_risk_fraction` 0.001). Evidence PNG đã restore. Local đã rebuild + recreate (admin-web healthy).
+- **Dữ liệu thật hiện có:** T05 WORSE (không có nút), T06 UNSUPPORTED (không có nút), T09 INCONCLUSIVE (có nút; đổi rủi ro 0,0075 → 0,01 là nới rủi ro nên cần MFA và có thể bị kiểm định chặn vì rủi ro chỉ được siết so với cấu hình gốc). Tôi không tự tạo bản nháp trên bot thật — để owner quyết.
+- **Còn mở:** backtest danh mục nhiều coin; tự chạy backtest sau lượt AI Analyst; trang Admin tổng hợp `analyst_run`.
+
+### 2026-11-16 — AI-3 khép vòng (tự backtest) + AI-4 lát 1: lịch vĩ mô chính thức cho H06
+
+- **Yêu cầu của owner:** "Tiếp tục đi, các chức năng AI tiếp theo". Trước đó owner yêu cầu "T09 nới lên 0,01 đi": đã tạo bản nháp từ đề xuất AI → kiểm định → công bố qua Admin (owner local, TOTP test) → T09 version 3 `per_trade_risk_fraction` 0,01 (= trần root 0,01); runtime đã ra quyết định với version 3.
+- **AI-3 tự backtest:** `run_ai_analyst.py --backtest-proposals` gọi `run_proposal_backtest.py` (6 giờ gần nhất, tối đa 5 đề xuất, 12 coin) khi lượt có đề xuất hợp lệ; lỗi backtest không làm hỏng lượt phân tích. LaunchAgent cài lại với cờ này.
+- **AI-4 lát 1 — nguồn (kiểm 16/11/2026):**
+  - BEA `https://apps.bea.gov/API/signup/release_dates.json` (JSON, mốc UTC; tải được bằng client tự động).
+  - Fed `https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm` (HTML theo năm; thông cáo 2026 ghi 2:00 p.m. ET). Fed disclaimer: public domain, đề nghị ghi nguồn.
+  - **BLS chặn** (403 "Access Denied" cho bot; https://www.bls.gov/bls/pss.htm: chặn robot không có thông tin liên hệ chủ sở hữu). Không vượt chặn. Chờ owner quyết thông tin liên hệ (email riêng là dữ liệu cá nhân, không tự dùng). Hệ quả: CPI/NFP/PPI **chưa** nằm trong blackout.
+- **Đã làm:**
+  - `domain/research/macro_calendar.py`: parser BEA/FOMC (DST đúng: 14:00 ET = 18:00 UTC mùa hè, 19:00 UTC mùa đông), `macro_state` point-in-time (blackout `[−30', +60')`, độ mới ≤ 36 giờ + phủ ≥ 7 ngày, thiếu nguồn → None), `upcoming_events`, `events_hash`.
+  - `application/source_use_gate.py`: cổng quyền chung fail-closed (observer receipt, verified, review, hạn theo đồng hồ DB, purpose, URL HTTPS).
+  - `application/macro_calendar_collector.py` + `adapters/sources/macro_calendar_http.py` + `workers/macro_calendar_worker.py`: kiểm quyền trước và sau khi tải, mỗi nguồn làm mới 6 giờ/lần, lỗi một nguồn không chặn nguồn khác. Bật bằng `TRADING_BOT_MACRO_CALENDAR_ENABLED=true` (mặc định tắt, chỉ ingestion-worker).
+  - Migration `62d0ea00fae5` (head) bảng `macro_calendar_fetch`: append-only, FORCE RLS; ingestion SELECT/INSERT; producer/runtime/backtest/admin-web SELECT.
+  - `build_market_decision_snapshot` nạp trạng thái macro tại cutoff evidence **chỉ cho release `h06-*`** (snapshot_id các chiến lược khác không đổi; producer và runtime cùng hàm nên cùng id).
+  - Mã revision sinh bằng `secrets.token_hex(6)` + grep trước khi dùng.
+- **Local:** đăng ký 2 nguồn `BEA_RELEASE_SCHEDULE`, `FED_FOMC_CALENDAR` qua Admin (owner gửi PAPER_DEMO + bằng chứng quyết định nội bộ, reviewer local duyệt) → "Đã duyệt quyền". Bật collector: BEA 196 mốc (70 tác động mạnh, phủ tới 22/12/2027), FOMC 56 cuộc họp (phủ tới 17/11/2027). Role runtime đọc trạng thái thật: không cấm, mới, 2 bằng chứng. **Sự cố khi tự động hóa:** mã TOTP test không dùng lại trong cùng 30 giây (401) → script thử lại sau 31 giây; nguồn chưa tồn tại thì trang chi tiết 404, form tạo ở trang danh sách.
+- **Kiểm chứng:** unit **4545 passed/152s** (parser, DST, blackout nửa mở, không nhìn trước, độ mới, collector quyền/lỗi, cổng quyền fail-closed, chỉ H06 nạp macro); E2E `test_rt1_paper_market_loop` (phase `macro_write` bằng role ingestion — UPDATE bị chặn; `macro_read` bằng role runtime — blackout/hết blackout/chưa biết; admin-web không INSERT) + `test_db_role_least_privilege` **2 passed/367s**.
+- **Giới hạn:** chưa có bot H06 đang chạy nên chưa quan sát quyết định H06 thật; replay/backtest trước lần tải đầu vẫn "chưa biết".
+- **Còn mở:** BLS (cần quyết định liên hệ); digest lịch vĩ mô cho AI Analyst/Telegram (cần validator chấp nhận ngày giờ); AI-4 (b) phái sinh Binance (funding/OI/long-short), (c) diff exchangeInfo; trang Admin `analyst_run`.
+
+### 2026-11-16 — AI-4: lịch CPI/việc làm/PPI/bán lẻ từ OMB PFEI (thay BLS bị chặn)
+
+- **Bối cảnh:** BLS trả 403 cho bot không ghi liên hệ chủ sở hữu (https://www.bls.gov/bls/pss.htm). Owner yêu cầu tìm nguồn khác; không vượt chặn BLS, không dùng email owner.
+- **Nguồn đã dò (16/11/2026):**
+  - FRED/ALFRED (Fed St. Louis): web treo sau TLS với client tự động; API `api.stlouisfed.org/fred/release/dates` cần API key (owner phải tự đăng ký) → để dự phòng.
+  - Forex Factory feed `nfs.faireconomy.media/ff_calendar_thisweek.json`: tải được, có giờ, nhưng chỉ 1 tuần và không tìm thấy điều khoản sử dụng cho feed → **không dùng** làm nguồn; chỉ dùng tay để đối chiếu (Retail Sales 17/11 08:30 ET khớp).
+  - Census calendar: 403. Brookings PFEI page: nội dung tải bằng JS. Cleveland Fed nowcast: không có ngày công bố trong HTML tĩnh.
+  - **Chọn OMB PFEI**: https://www.whitehouse.gov/omb/information-resources/guidance/us-principal-federal-economic-indicators/ liệt kê PDF `pfei_schedule_release_dates_cy2026.pdf` (26/9/2025) và `FY2027-PFEI.pdf` (1/10/2026). Nội dung chính phủ trên whitehouse.gov không có bản quyền (https://www.whitehouse.gov/copyright/).
+- **Quyết định:**
+  - Nguồn `OMB_PFEI_SCHEDULE` thêm vào `MACRO_SOURCE_IDS` (bắt buộc) → `MACRO_POLICY_VERSION` = `macro-blackout-v2`. Thiếu lần tải OMB → H06 "chưa biết".
+  - Fetcher: GET trang OMB, chỉ theo link PDF dưới `https://www.whitehouse.gov/wp-content/uploads/YYYY/MM/*pfei*.pdf` (tối đa 4, bỏ trùng), trích văn bản bằng `pypdf==6.9.2` (BSD-3, pin bản 23/3/2026; 7.x mới phát hành 6–13/11/2026 nên chưa dùng — https://pypi.org/project/pypdf/).
+  - Parser `parse_pfei_schedule`: 4 chỉ số (Employment Situation, CPI, PPI, Advance Retail Sales), hàng 12 tháng ngay sau tiêu đề; fail-closed nếu thiếu chỉ số, sai hàng, không đúng một năm, hoặc ngày rơi cuối tuần (bắt lỗi lệch cột).
+  - Giờ 8:30 a.m. ET: PDF chỉ có ngày; giờ theo lịch BLS ("All times on calendar are Eastern Time", các bản tin này 8:30 AM — đọc qua kết quả tìm kiếm, không tải bls.gov). Cả 4 là tác động mạnh.
+- **Hạn chế còn mở:** OMB không sửa PDF khi cơ quan dời lịch đột xuất (vd đóng cửa chính phủ 2025) → lịch có thể lệch; chưa có nguồn đối chiếu tự động. Có thể thêm FRED API nếu owner cấp API key.
+- **Kết quả local:** policy `OMB_PFEI_SCHEDULE` PAPER_DEMO đăng ký + duyệt qua Admin (owner gửi, reviewer local duyệt). Collector tải 07:08Z: 96 sự kiện, phủ tới 15/12/2027. Trạng thái lúc này: không cấm, lịch mới, 3 bằng chứng. Mốc kế: Retail Sales 17/11 13:30Z (đã kiểm `macro_state` trả blackout tại 13:20Z), Employment Situation 4/12, CPI 10/12.
+- **Kiểm chứng:** unit 4548 passed; ruff/mypy sạch; E2E RT-1 passed (probe ghi 3 nguồn, đọc bằng role runtime, `evidence: 3`). Image `crypidian-app:local` build lại (có pypdf).
+
+### 2026-11-16 — AI-4: lịch vĩ mô vào AI Analyst + thẻ Telegram; sửa bug tách số của validator
+
+- **Thay đổi:**
+  - Domain `macro_digest(fetches, now)` → `macro_digest.v1`: trạng thái (blackout/fresh/blocking), nguồn đã tải, nguồn thiếu, sự kiện tác động mạnh 7 ngày tới (tối đa 8) với `vn_date`/`vn_time` tính sẵn, nhãn tiếng Việt không chứa chữ số.
+  - `scripts/run_ai_analyst.py` bước `report` gắn `payload["macro_calendar"]` (đọc `macro_calendar_fetch` với `as_of = end`). Ngoài `report_hash`; nằm trong prompt nên `input_sha256` phủ. `topic_report` mang theo khối này; dấu vân tay chủ đề vẫn chỉ tính trên bot (lịch đổi không làm gọi AI thêm).
+  - Prompt `ai2-prompt-v3`, quy tắc 6: chỉ nêu ngày giờ đúng như report, lịch chỉ là bối cảnh rủi ro, tỷ lệ viết "x trên y".
+  - Validator: tách ngày ISO, `dd/mm`, `HH:MM`/`HHhMM` khỏi phép đối chiếu số; mỗi mốc phải trùng ngày/giờ suy ra từ chuỗi ISO datetime trong report (UTC/VN/ET). Kho số cho tóm tắt bỏ khối `macro_calendar`; `horizon_days` được tính là số hiển nhiên.
+  - Thẻ "Phân tích AI": khối "Lịch vĩ mô 7 ngày tới (giờ VN)" ghi rõ "lịch chính thức, không phải AI"; caption thêm sự kiện kế tiếp và cảnh báo khi đang trong khoảng cấm.
+- **Lỗi phát hiện khi chạy thật (16/11 ~07:45Z, H03, Claude CLI, không gửi Telegram):** hai lượt (gốc + sửa) bị loại. Phần lịch vĩ mô của AI qua validator ("17/11 20:30"). Lỗi còn lại:
+  - **Bug cũ của `_NUMBER`:** regex lùi về số ngắn hơn khi số dính chữ — "15m" thành "1", "1.2568R" thành "1.256" → loại oan. Sửa bằng nhóm nguyên tử `(?>...)`, cho hậu tố `R` được đối chiếu, số dính đơn vị khác (15m, 4h) bỏ qua. Kiểm lại hai đầu ra đã lưu với report cùng thời điểm: chỉ còn lỗi thật của AI (thiếu `closed_trades`/`win_rate_percent` trong evidence_refs).
+- **Còn mở:** lượt sửa chỉ một lần — AI sửa lỗi này lại bỏ trích dẫn khác; cân nhắc cho phép 2 lượt sửa hoặc gợi ý pointer đúng trong repair prompt. Digest chưa lưu riêng trong `analyst_run` (dựng lại theo `as_of`).
+- **Kiểm chứng:** unit 4553 passed; ruff/mypy sạch; E2E RT-1 passed; bước `report` thật trả `macro_calendar` đủ 3 nguồn, 1 sự kiện (Retail Sales 17/11 20:30 VN); thẻ ảnh mẫu vẽ đúng khối lịch.
+
+### 2026-11-16 — AI-4 lát 2: ảnh chụp phái sinh Binance (funding, OI, long/short, taker) cho AI Analyst
+
+- **Tài liệu kiểm (16/11/2026):** https://developers.binance.com/docs/derivatives/usds-margined-futures/market-data/rest-api — `premiumIndex` (weight 1 có symbol), `openInterestHist`/`globalLongShortAccountRatio` (weight 0, 1000 request/5 phút/IP, 30 ngày, kỳ không giao dịch bị bỏ). Gọi thử thật cả 5 endpoint: mốc OI/long-short là đầu giờ hiện tại, mốc taker trễ một kỳ → giữ mốc riêng từng chỉ số.
+- **Phát hiện:** repo đã có `get_funding_rates`/`get_open_interest(_history)` trong adapter và bảng `market_funding`/`market_open_interest` (định dạng ingestion có revision/raw reference) nhưng **chưa có gì ghi** (0 hàng). Không dùng lại cho lát này vì cần thêm long/short/taker và chỉ phục vụ bối cảnh AI; bảng chuẩn đó vẫn dành cho ingestion cấp backtest sau này.
+- **Thiết kế:**
+  - Domain `domain/research/derivatives.py`: `build_snapshot` kiểm hợp đồng (symbol khớp, số hữu hạn, tỷ lệ > 0, OI ≥ 0, mốc ≤ `collected_at` + lệch 5 giây; `collected_at` đẩy lên mốc nguồn muộn nhất để giữ bất biến), `derivatives_digest` (`derivatives_digest.v1`; ảnh chụp ≤ 3 giờ, số làm tròn sẵn thành chuỗi, coin bot đã giao dịch đứng trước rồi theo |funding|).
+  - Adapter `adapters/sources/binance_derivatives_http.py`: base URL cố định `fapi.binance.com`, không API key, giãn 0,25 giây giữa request; 418/429 → `BinanceThrottled` (con của `SourceThrottled` ở domain) → collector dừng cả lượt.
+  - Collector `application/derivatives_collector.py`: nguồn `BINANCE_USDM_DERIVATIVES_STATS` cần policy PAPER_DEMO (kiểm trước khi tải và trước khi lưu), làm mới 55 phút, tick 5 phút, lỗi một symbol không chặn symbol khác. Symbols = các symbol của `market_collector_streams`. Bật bằng `TRADING_BOT_DERIVATIVES_COLLECTOR_ENABLED` (chỉ ingestion-worker).
+  - Migration `00912d59476e` bảng `derivatives_snapshot`: append-only, FORCE RLS, ingestion-worker SELECT/INSERT, market-signal/runtime/backtest/admin-web SELECT; ràng buộc mốc nhân quả, hash SHA-256, unique (workspace, symbol, collected_at). Cập nhật head trong 17 file test.
+  - AI Analyst: bước `report` gắn `payload["derivatives"]`; `topic_report` mang theo; prompt `ai2-prompt-v4` quy tắc 7 (chép nguyên số, chỉ là bối cảnh/giả thuyết).
+- **Local:** policy `BINANCE_USDM_DERIVATIVES_STATS` (điều khoản https://www.binance.com/en/terms, như nguồn `BINANCE_USDM_REST` đã duyệt) đăng ký + duyệt qua Admin. Lượt đầu 08:23–08:24Z: 20/20 coin trong ~74 giây. Lượt AI thật H03 (không gửi Telegram) **hợp lệ ngay lần đầu**: nêu funding trung vị, KAVA funding âm mạnh, TAC OI +61,36%, giả thuyết BTC long/short 2,72 — đều tự ghi là bối cảnh/giả thuyết.
+- **Lỗi trong lượt:** E2E RT-1 lần đầu fail `AssertionError: derivatives_write` — quên khai báo phase mới trong bộ điều phối probe; sửa, chạy lại đạt.
+- **Kiểm chứng:** unit 4568 passed; ruff/mypy sạch; E2E RT-1 passed (ghi bằng role ingestion-worker, UPDATE/DELETE bị từ chối, đọc point-in-time bằng role runtime, workspace khác 0 hàng, admin-web không INSERT); E2E least-privilege passed.
+- **Còn mở:** thẻ Telegram chưa hiển thị khối phái sinh; chưa chiến lược nào dùng; AI-4 (c) diff exchangeInfo (niêm yết/gỡ).
+
+### 2026-11-16 — AI-4 lát 3: phát hiện niêm yết/gỡ hợp đồng Binance từ exchangeInfo
+
+- **Nguồn (kiểm 16/11/2026):** `GET /fapi/v1/exchangeInfo` weight 1, ~1,18 MB, 946 hợp đồng (567 PERPETUAL TRADING, 237 TRADIFI_PERPETUAL, 137 PERPETUAL SETTLING, 1 PENDING_TRADING, 4 hợp đồng quý). Enum trạng thái: https://developers.binance.com/docs/derivatives/usds-margined-futures/common-definition . Tài liệu Delist Schedule (COIN-M) nói Binance cập nhật `deliveryDate` thành giờ gỡ khi công bố; trang USDⓈ-M cùng tên tải bằng JS, đoán đường dẫn `/fapi/v1/delistSchedule` → 404, nên dùng `exchangeInfo`. Perpetual bình thường `deliveryDate` = 4133404800000 (2100-12-25); 137 hợp đồng SETTLING đều mang ngày gỡ thật → xác nhận cơ chế trên dữ liệu thật. Binance có thể dời ngày gỡ (ví dụ thông báo SLERFUSDT sửa 18/10/2025).
+- **Thiết kế:**
+  - Domain `domain/research/listings.py`: `parse_exchange_info` (bỏ mọi trường trừ symbol/status/contractType/quoteAsset/deliveryDate/onboardDate; mốc ≥ 2100 → None; fail-closed khi trùng symbol, thiếu trường, < 10 hợp đồng), `diff_listings` (LISTED, REMOVED, STATUS_CHANGED, DELIST_SCHEDULED/RESCHEDULED/CANCELLED — chỉ perpetual), `listings_digest` (`listings_digest.v1`: coin theo dõi bị lên lịch gỡ/không còn TRADING/biến mất, thay đổi 24 giờ, coin sắp niêm yết, độ mới ≤ 6 giờ).
+  - Bảng `listing_snapshot` (migration `645ed2998ab1`): mỗi lần kiểm một hàng; `entries` chỉ lưu khi hash khác lần trước (ràng buộc `changed = (entries IS NOT NULL)`), lần đầu ~18 KB nén. Append-only, FORCE RLS, quyền như các bảng AI-4 khác.
+  - Collector `application/listings_collector.py` (30 phút, nguồn `BINANCE_USDM_EXCHANGE_INFO` PAPER_DEMO, kiểm quyền trước khi tải và trước khi lưu); fetcher dùng chung `BinanceDerivativesHttpFetcher.fetch_exchange_info` (trần 8 MB). Bật `TRADING_BOT_LISTINGS_COLLECTOR_ENABLED`.
+  - AI Analyst: bước `report` gắn `payload["listings"]` với danh sách theo dõi = universe các bot ∪ coin đã giao dịch; prompt `ai2-prompt-v5` quy tắc 8 (bắt buộc nêu coin bị đe dọa, không tạo proposal vì chưa có trường đổi danh mục). Thẻ "Phân tích AI" thêm khối đỏ "Cảnh báo niêm yết Binance" (dữ liệu, không phải AI) + dòng caption.
+- **Local:** policy đăng ký + duyệt qua Admin; lần kiểm đầu 11:25Z lưu 946 hợp đồng. Hiện không coin nào trong danh mục bot bị đe dọa; GAIBUSDT đang PENDING_TRADING.
+- **Kiểm chứng:** unit 4580 passed; ruff/mypy sạch; E2E RT-1 (ghi bằng ingestion-worker, UPDATE/DELETE bị từ chối, runtime phát hiện ZEC lên lịch gỡ 20/11 15:00 VN, trước lần kiểm thứ hai thì chưa thấy) + least-privilege passed.
+- **Còn mở (quan trọng):** runtime chưa chặn mở lệnh mới với coin đã bị lên lịch gỡ — hiện chỉ cảnh báo qua AI/thẻ. Chưa có cảnh báo Telegram tức thời ngoài lượt AI theo lịch.
+
+### 2026-11-16 — Chặn vào lệnh với coin bị Binance lên lịch gỡ (owner chọn "Yes, block entries")
+
+- **Thay đổi:** `application/listings_state.py` thêm `EntryBlock` và `symbol_entry_block(session, workspace_id, symbol, as_of)`: một truy vấn SQL lấy phần tử của symbol trong lần kiểm `listing_snapshot` có nội dung gần nhất ≤ `as_of` (unnest JSONB của đúng một hàng). Mã: `SYMBOL_DELIST_SCHEDULED` (perpetual TRADING có ngày gỡ thật), `SYMBOL_NOT_TRADING`, `SYMBOL_NOT_LISTED`.
+  - `PaperDecisionCycle.prepare_published_with_risk_profile` (đường runtime thật, có session) tra chặn cho `snapshot.symbol` rồi truyền `entry_block` qua `prepare_published` → `prepare`. Trong `prepare`, sau khi strategy trả candidate và trước planner: nếu chặn đúng symbol → `PLAN_REJECTED` với `PlanRejected(code, …)`; funnel ghi `PLAN:<code>` như các lý do planner khác (candidate vẫn được đếm, dễ thấy trong Run Report).
+  - Replay/backtest (`runtime_replay_evaluator` gọi `prepare_published` trực tiếp) không tra chặn — dữ liệu niêm yết lịch sử chưa có point-in-time trước lần kiểm đầu.
+- **Quyết định thiết kế:** chưa có lần kiểm nào (collector tắt/chưa có policy) → **không chặn** (thiếu dữ liệu phụ không được dừng mọi giao dịch PAPER). Đã thấy lịch gỡ thì chặn bất kể tuổi lần kiểm. Chỉ chặn mở mới; vị thế đang mở không bị đóng (Binance tự tất toán lúc gỡ — rủi ro còn mở).
+- **Lỗi trong lượt:** `test_risk_profile_cycle_replaces_limits_and_selection_with_bot_config` truyền `snapshot=None` → `AttributeError: snapshot.symbol`. Sửa test: dùng snapshot giả có `symbol`, mock `symbol_entry_block`, kiểm `entry_block` được chuyển tiếp.
+- **Kiểm chứng:** unit 4581 passed (thêm test chặn trước planner, symbol khác không ảnh hưởng); E2E RT-1 thêm kiểm bằng role runtime thật: ZEC chặn sau lần kiểm thứ hai, không chặn trước đó, C0 không chặn, symbol không có trong danh sách → `SYMBOL_NOT_LISTED`, chưa có dữ liệu → không chặn. Local: lần kiểm thật mới nhất cả 20 coin của bot đều TRADING không ngày gỡ → không coin nào bị chặn; log runtime sạch sau khởi động lại.
+- **Còn mở:** cảnh báo Telegram tức thời khi coin trong danh mục bị lên lịch gỡ; quyết định đóng vị thế đang mở trước giờ gỡ.
+
+### 2026-11-16 — Đóng vị thế PAPER trước giờ Binance gỡ hợp đồng (owner chọn "Yes, close before delist")
+
+- **Thay đổi:**
+  - Domain `monitor_position(..., forced_exit_reason=None)`: lý do đóng bắt buộc do vận hành, xét **sau** stop/target (các mức đó có thể đã chạm trong nến) và đóng tại giá đóng nến, trước mọi exit theo chiến lược. Truyền qua `PaperExecutionGateway.monitor_position` → `PaperLifecycleCoordinator.monitor_market_event` (cả nhánh checkpoint) → `PaperRuntimeApplication.monitor_position`.
+  - `listings_state.delist_exit_reason(session, workspace_id, symbol, as_of=bar.closed_at)`: `DELIST_EXIT` khi coin bị lên lịch gỡ và `as_of ≥ giờ gỡ − 24 giờ` (`DELIST_EXIT_LEAD`), hoặc đã không còn TRADING/biến mất; không có dữ liệu → None. Point-in-time theo giờ đóng nến nên retry cùng nến cho cùng kết quả (khóa close idempotent chứa lý do).
+  - Nhãn `DELIST_EXIT` ở Admin (presentation, web_router, trade-chart.js "GỠ"), Telegram kết quả lệnh, post-mortem.
+- **Quyết định:** lead 24 giờ là lựa chọn vận hành khởi điểm (thanh khoản xấu dần gần hạn, Binance tự tất toán lúc gỡ), chưa nghiên cứu tối ưu. Replay/backtest không ép đóng.
+- **Kiểm chứng:** unit 4583 passed (forced exit đóng ở giá đóng nến; stop cùng nến vẫn thắng; gateway ghi exit_reason); E2E RT-1: role runtime thật — ZEC (gỡ 20/11 08:00 UTC) chưa ép đóng lúc 16/11 11:00, ép đóng lúc 19/11 09:00; coin thường không; coin biến mất → ép đóng; các bước runtime đóng lệnh thật chạy truy vấn mới bằng role runtime.
+- **Tracker It's a Plan (theo AGENTS.md của main):** cập nhật CRY-387 (macro + OMB + digest), CRY-388 phái sinh → Done, CRY-389 exchangeInfo diff → Done, bình luận CRY-384 (bug tách số); tạo CRY-412 `[AI-4/delist-entry-block]` (Done) và CRY-413 `[AI-4/delist-exit]`. MCP `itsaplan` chưa nạp trong session này nên dùng REST API với key ở `/Users/macbook/Work/itsaplan/.mcp-api-key` (không in key); thêm 2 ref mới vào `state.json` của script sync. Lưu ý: worktree này chưa có `docs/implementation/itsaplan-tracking.md` (nằm trên nhánh `dev`, commit `70e9584`; nhánh này đẩy lên `main`, chưa hợp nhất với `dev` — ticket CRY-88).

@@ -55,6 +55,7 @@ CLOSE_SETTLE = timedelta(seconds=3)
 # Runner từ chối trang "nhận trong tương lai" so với mốc ``now`` truyền vào, nên mốc kiểm hợp lệ
 # là đầu tick + khoảng cho phép tải. Khoảng request vẫn tính từ đầu tick nên chỉ gồm nến đã đóng.
 PAGE_RECEIPT_ALLOWANCE = timedelta(seconds=60)
+MAX_COLLECTOR_STREAMS = 100
 _SYMBOL = re.compile(r"[A-Z0-9]{3,32}")
 
 
@@ -87,8 +88,12 @@ def parse_collector_streams(value: str) -> tuple[CollectorStream, ...]:
                 streams.append(stream)
     if not streams:
         raise ValueError("Cấu hình collector không có luồng nào.")
-    if len(streams) > 60:
-        raise ValueError("Collector tối đa 60 luồng để giữ trong hạn mức request.")
+    # 100 luồng × 1 request/tick (30 giây) × weight 5 (limit 1000) ≈ 1.000 weight/phút, dưới
+    # hạn mức 2.400/phút của Binance USDⓈ-M (bộ giới hạn request vẫn chặn khi vượt).
+    if len(streams) > MAX_COLLECTOR_STREAMS:
+        raise ValueError(
+            f"Collector tối đa {MAX_COLLECTOR_STREAMS} luồng để giữ trong hạn mức request."
+        )
     return tuple(streams)
 
 
@@ -193,12 +198,21 @@ class MarketBarCollector:
     def streams(self) -> tuple[CollectorStream, ...]:
         return self._streams
 
-    async def collect_once(self, now: datetime) -> CollectorTick:
-        """Một lượt thu cho mọi luồng; lỗi một luồng không chặn luồng khác."""
+    async def collect_once(
+        self, now: datetime, *, clock: Callable[[], datetime] | None = None
+    ) -> CollectorTick:
+        """Một lượt thu cho mọi luồng; lỗi một luồng không chặn luồng khác.
+
+        ``clock`` (nếu có) cấp mốc thời gian **riêng cho từng luồng**. Với nhiều luồng nạp bù
+        (ví dụ 20 coin × 3 khung), luồng xử lý sau nhận trang muộn hơn đầu tick quá
+        ``PAGE_RECEIPT_ALLOWANCE`` và bị chặn "thời điểm nhận trong tương lai" nếu dùng chung
+        một ``now`` (sự cố 15/11/2026: 34/60 luồng lỗi).
+        """
         results: list[StreamResult] = []
         for stream in self._streams:
+            stream_now = clock() if clock is not None else now
             try:
-                results.append(await self._collect_stream(stream, now))
+                results.append(await self._collect_stream(stream, stream_now))
             except PermissionError as error:
                 # Thiếu/hết hạn quyền: không tải. Không log chi tiết policy.
                 results.append(

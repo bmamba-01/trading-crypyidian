@@ -122,7 +122,9 @@ from trading_bot.application.source_policy_admin import (
 from trading_bot.application.strategy_card_bars import PostgresCardBarsProvider
 from trading_bot.application.strategy_catalog import strategy_registry
 from trading_bot.application.telegram_binding import TelegramBindingService
+from trading_bot.application.telegram_paper_report import TelegramPaperReportService
 from trading_bot.application.telegram_signal_subscription import TelegramSignalSubscriptionService
+from trading_bot.application.telegram_signals import SignalThrottlePolicy
 from trading_bot.auth.router import router as auth_router
 from trading_bot.auth.security import LoginRateLimiter, TestModeTotpManager
 from trading_bot.auth.service import AuthService
@@ -141,6 +143,10 @@ from trading_bot.workers.learning_training_worker import LearningTrainingAttempt
 from trading_bot.workers.market_signal_producer import MarketSignalProducerWorker
 from trading_bot.workers.research_rights_worker import ResearchRightsMaintenanceWorker
 from trading_bot.workers.telegram_signal_worker import TelegramSignalDeliveryWorker
+from trading_bot.workers.telegram_trade_result_worker import (
+    ChatPacer,
+    TelegramTradeResultWorker,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -391,7 +397,11 @@ def create_app(
         live_event_task: asyncio.Task[None] | None = None
         live_quote_task: asyncio.Task[None] | None = None
         market_collector_task: asyncio.Task[None] | None = None
+        macro_calendar_task: asyncio.Task[None] | None = None
+        derivatives_task: asyncio.Task[None] | None = None
+        listings_task: asyncio.Task[None] | None = None
         signal_worker_task: asyncio.Task[None] | None = None
+        trade_result_worker_task: asyncio.Task[None] | None = None
         market_signal_worker_task: asyncio.Task[None] | None = None
         training_supervisor_task: asyncio.Task[None] | None = None
         if app_settings.process_role == "trading-runtime":
@@ -465,6 +475,28 @@ def create_app(
                     workspace_id=workspace_id,
                     stopping=stopping,
                 )
+            if app_settings.macro_calendar_enabled:
+                macro_calendar_task = _start_macro_calendar_collector(
+                    application,
+                    session_factory=active_session_factory,
+                    workspace_id=workspace_id,
+                    stopping=stopping,
+                )
+            if app_settings.derivatives_collector_enabled:
+                derivatives_task = _start_derivatives_collector(
+                    application,
+                    app_settings=app_settings,
+                    session_factory=active_session_factory,
+                    workspace_id=workspace_id,
+                    stopping=stopping,
+                )
+            if app_settings.listings_collector_enabled:
+                listings_task = _start_listings_collector(
+                    application,
+                    session_factory=active_session_factory,
+                    workspace_id=workspace_id,
+                    stopping=stopping,
+                )
         elif app_settings.process_role == "trainer-worker":
             if active_session_factory is None:
                 raise RuntimeError("trainer-worker cần database session factory.")
@@ -491,6 +523,26 @@ def create_app(
             if workspace_id is None:
                 raise RuntimeError("signal-worker cần signal_workspace_id.")
             worker_factory = signal_worker_factory or TelegramSignalDeliveryWorker
+            # TG-3: một pacer cho cả tin tín hiệu và kết quả PAPER để mỗi chat cách ≥ 1,1 giây.
+            chat_pacer = ChatPacer()
+            pacer_kwargs: dict[str, Any] = (
+                {"pacer": chat_pacer} if signal_worker_factory is None else {}
+            )
+            # TG-3: ảnh thẻ (PNG + caption) cho tín hiệu, kết quả và tổng kết; dự phòng văn bản.
+            card_senders: dict[str, dict[str, Any]] = {"signal": {}, "trade": {}}
+            if app_settings.telegram_card_images_enabled:
+                from trading_bot.adapters.telegram.card_delivery import (
+                    send_paper_report_card,
+                    send_signal_card,
+                    send_trade_result_card,
+                )
+
+                if signal_worker_factory is None:
+                    card_senders["signal"] = {"signal_send": send_signal_card}
+                card_senders["trade"] = {
+                    "trade_result_send": send_trade_result_card,
+                    "paper_report_send": send_paper_report_card,
+                }
             signal_worker = worker_factory(
                 session_factory=active_session_factory,
                 workspace_id=workspace_id,
@@ -501,12 +553,42 @@ def create_app(
                     seconds=app_settings.signal_worker_max_candidate_age_seconds
                 ),
                 max_attempts=app_settings.signal_worker_max_attempts,
+                throttle=SignalThrottlePolicy(
+                    cooldown=timedelta(minutes=app_settings.signal_worker_cooldown_minutes),
+                    max_per_hour=app_settings.signal_worker_max_messages_per_hour,
+                ),
+                **pacer_kwargs,
+                **card_senders["signal"],
             )
             application.state.telegram_signal_worker = signal_worker
             signal_worker_task = asyncio.create_task(
                 signal_worker.run(stopping), name="telegram-signal-delivery-worker"
             )
             application.state.telegram_signal_worker_task = signal_worker_task
+            report_minutes = app_settings.telegram_report_interval_minutes
+            if app_settings.telegram_trade_results_enabled or report_minutes > 0:
+                trade_result_worker = TelegramTradeResultWorker(
+                    session_factory=active_session_factory,
+                    workspace_id=workspace_id,
+                    sender=telegram_sender,
+                    worker_id=f"telegram-trade-result-{uuid4().hex}",
+                    tick_seconds=app_settings.signal_worker_tick_seconds,
+                    trade_results_enabled=app_settings.telegram_trade_results_enabled,
+                    max_event_age=timedelta(
+                        minutes=app_settings.telegram_trade_result_max_age_minutes
+                    ),
+                    report_interval=(
+                        timedelta(minutes=report_minutes) if report_minutes > 0 else None
+                    ),
+                    max_attempts=app_settings.signal_worker_max_attempts,
+                    pacer=chat_pacer,
+                    **card_senders["trade"],
+                )
+                application.state.telegram_trade_result_worker = trade_result_worker
+                trade_result_worker_task = asyncio.create_task(
+                    trade_result_worker.run(stopping), name="telegram-trade-result-worker"
+                )
+                application.state.telegram_trade_result_worker_task = trade_result_worker_task
         elif app_settings.process_role == "market-signal-worker":
             if active_session_factory is None:
                 raise RuntimeError("market-signal-worker cần database session factory.")
@@ -571,9 +653,30 @@ def create_app(
                 adapter = getattr(application.state, "market_collector_adapter", None)
                 if adapter is not None:
                     await adapter.aclose()
+            if macro_calendar_task is not None:
+                with contextlib.suppress(asyncio.CancelledError, TimeoutError):
+                    await asyncio.wait_for(macro_calendar_task, timeout=10)
+                fetcher = getattr(application.state, "macro_calendar_fetcher", None)
+                if fetcher is not None:
+                    await fetcher.aclose()
+            if derivatives_task is not None:
+                with contextlib.suppress(asyncio.CancelledError, TimeoutError):
+                    await asyncio.wait_for(derivatives_task, timeout=10)
+                derivatives_fetcher = getattr(application.state, "derivatives_fetcher", None)
+                if derivatives_fetcher is not None:
+                    await derivatives_fetcher.aclose()
+            if listings_task is not None:
+                with contextlib.suppress(asyncio.CancelledError, TimeoutError):
+                    await asyncio.wait_for(listings_task, timeout=10)
+                listings_fetcher = getattr(application.state, "listings_fetcher", None)
+                if listings_fetcher is not None:
+                    await listings_fetcher.aclose()
             if signal_worker_task is not None:
                 with contextlib.suppress(asyncio.CancelledError, TimeoutError):
                     await asyncio.wait_for(signal_worker_task, timeout=10)
+            if trade_result_worker_task is not None:
+                with contextlib.suppress(asyncio.CancelledError, TimeoutError):
+                    await asyncio.wait_for(trade_result_worker_task, timeout=10)
             if market_signal_worker_task is not None:
                 with contextlib.suppress(asyncio.CancelledError, TimeoutError):
                     await asyncio.wait_for(market_signal_worker_task, timeout=10)
@@ -747,6 +850,15 @@ def create_app(
                 or worker_task.done()
             ):
                 pending.append("telegram_signal_worker")
+            trade_worker = getattr(app.state, "telegram_trade_result_worker", None)
+            if trade_worker is not None:
+                trade_task = getattr(app.state, "telegram_trade_result_worker_task", None)
+                if (
+                    not getattr(trade_worker, "last_tick_succeeded", False)
+                    or trade_task is None
+                    or trade_task.done()
+                ):
+                    pending.append("telegram_trade_result_worker")
             if pending:
                 return JSONResponse(
                     status_code=503,
@@ -878,8 +990,24 @@ def _build_telegram_webhook(
         workspace_id=settings.telegram_workspace_id,
         secret=load_webhook_secret(settings.telegram_webhook_secret_file),
         store=DatabaseTelegramStore(sessions),
-        handler=BotCommandHandler(state.bot_operations_service),
+        handler=BotCommandHandler(
+            state.bot_operations_service,
+            paper_report=_build_paper_report(settings, state),
+        ),
         sender=state.telegram_sender,
+    )
+
+
+def _build_paper_report(settings: AppSettings, state: Any) -> TelegramPaperReportService | None:
+    """TG-3: `/report` dùng BotReportingService (kiểm `bot:report:read`) cùng chu kỳ tổng hợp."""
+    reporting = getattr(state, "bot_reporting_service", None)
+    if reporting is None:
+        return None
+    minutes = settings.telegram_report_interval_minutes or 240
+    return TelegramPaperReportService(
+        reporting=reporting,
+        operations=state.bot_operations_service,
+        interval=timedelta(minutes=minutes),
     )
 
 
@@ -1201,28 +1329,127 @@ def _runtime_job_processor(
         pending_candidates = await store.pending_candidate_decisions(
             workspace_id=workspace_id, account_id=account_id, now=now
         )
-        return await _submit_bot_candidates(application, pending_candidates)
+        return await _submit_bot_candidates(application, pending_candidates, record_outcome)
+
+    async def record_outcome(decision: Any, stage: str, reason_code: str) -> None:
+        """Lưu (decision, giai đoạn, lý do) vào paper_candidate_outcome; trùng thì bỏ qua."""
+        from sqlalchemy.dialects.postgresql import insert
+
+        from trading_bot.adapters.database.models import PaperCandidateOutcomeRecord
+        from trading_bot.application.outbox import UnitOfWork
+
+        async with UnitOfWork(sessions, workspace_id=workspace_id, bot_id=decision.bot_id) as uow:
+            await uow.session.execute(
+                insert(PaperCandidateOutcomeRecord)
+                .values(
+                    id=uuid4(),
+                    workspace_id=workspace_id,
+                    bot_id=decision.bot_id,
+                    account_id=decision.account_id,
+                    decision_id=decision.decision_id,
+                    stage=stage,
+                    reason_code=reason_code[:120],
+                )
+                .on_conflict_do_nothing(constraint="uq_paper_candidate_outcome")
+            )
 
     return process_pending
 
 
-async def _submit_bot_candidates(application: Any, decisions: Any) -> tuple[Any, ...]:
-    """Chuyển candidate đã lưu thành PAPER command riêng; abstain/veto không đặt lệnh."""
+# Khóa (decision, lý do) đã log "không thành lệnh"; dict giữ thứ tự để bỏ khóa cũ nhất.
+_LOGGED_CANDIDATE_REJECTIONS: dict[tuple[Any, ...], None] = {}
+
+
+CandidateRecorder = Callable[[Any, str, str], Awaitable[None]]
+
+
+def candidate_rejections(result: Any) -> list[tuple[str, str]]:
+    """(giai đoạn, mã lý do) khiến candidate không thành lệnh; rỗng nếu đã submit/trùng."""
+    if getattr(result, "submission", None) is not None or getattr(result, "duplicate", False):
+        return []
+    reasons: list[tuple[str, str]] = []
+    block = getattr(result, "entry_block_reason", None)
+    if block:
+        reasons.append(("ENTRY_BLOCK", str(block)))
+    cycle = getattr(result, "decision", None)
+    risk = getattr(cycle, "risk_decision", None)
+    if risk is not None and not getattr(risk, "approved", True):
+        reasons.append(("RISK", str(getattr(risk, "reason_code", "RISK_REJECTED"))))
+    plan_code = getattr(getattr(cycle, "plan", None), "reason_code", None)
+    if plan_code:
+        reasons.append(("PLAN", str(plan_code)))
+    strategy_code = getattr(getattr(cycle, "strategy_result", None), "code", None)
+    outcome = getattr(getattr(cycle, "outcome", None), "value", None)
+    if outcome == "NO_TRADE" and strategy_code:
+        reasons.append(("STRATEGY", str(strategy_code)))
+    if not reasons:
+        reasons.append(("ERROR", str(outcome or "NOT_SUBMITTED")))
+    return reasons
+
+
+async def _submit_bot_candidates(
+    application: Any, decisions: Any, record: CandidateRecorder | None = None
+) -> tuple[Any, ...]:
+    """Chuyển candidate đã lưu thành PAPER command riêng; abstain/veto không đặt lệnh.
+
+    Candidate không thành lệnh: log một lần cho mỗi (decision, lý do) và gọi ``record`` để lưu
+    bền vào ``paper_candidate_outcome`` (16/11/2026) cho Run Report/AI Analyst phân tích.
+    """
     from trading_bot.application.bot_dispatcher import BotDecisionStatus
 
     results = []
     for decision in decisions:
         if decision.status is not BotDecisionStatus.CANDIDATE:
             continue
-        results.append(
-            await application.evaluate_and_submit(
+        try:
+            result = await application.evaluate_and_submit(
                 PaperBotDecisionCommand(
                     account_id=decision.account_id,
                     bot_decision_id=decision.decision_id,
                 )
             )
-        )
+        except Exception as error:
+            # Một candidate lỗi không được chặn candidate khác của bot; ghi mã để vận hành thấy.
+            code = str(getattr(error, "reason_code", type(error).__name__))
+            if await _first_rejection(decision, (("ERROR", code),), record):
+                logger.warning(
+                    "PAPER candidate không submit được; decision_id=%s reason_code=%s",
+                    decision.decision_id,
+                    code,
+                )
+            continue
+        results.append(result)
+        reasons = candidate_rejections(result)
+        if reasons and await _first_rejection(decision, tuple(reasons), record):
+            logger.warning(
+                "PAPER candidate không thành lệnh; decision_id=%s reasons=%s",
+                decision.decision_id,
+                ",".join(f"{stage}:{code}" for stage, code in reasons),
+            )
     return tuple(results)
+
+
+async def _first_rejection(
+    decision: Any, reasons: tuple[tuple[str, str], ...], record: CandidateRecorder | None
+) -> bool:
+    """True khi (decision, lý do) mới gặp lần đầu trong process: log + lưu bền một lần.
+
+    Candidate chưa submit được đánh giá lại mỗi tick tới khi hết hạn (15/11: 1.380 dòng log/15
+    phút) nên phải chặn trùng; DB còn ràng buộc unique để restart không ghi lặp.
+    """
+    key = (decision.decision_id, reasons)
+    if key in _LOGGED_CANDIDATE_REJECTIONS:
+        return False
+    _LOGGED_CANDIDATE_REJECTIONS[key] = None
+    while len(_LOGGED_CANDIDATE_REJECTIONS) > 4096:
+        _LOGGED_CANDIDATE_REJECTIONS.pop(next(iter(_LOGGED_CANDIDATE_REJECTIONS)))
+    if record is not None:
+        for stage, code in reasons:
+            try:
+                await record(decision, stage, code)
+            except Exception as error:  # noqa: BLE001 - lưu lý do không được chặn runtime
+                logger.warning("Không lưu được lý do candidate; error=%s", type(error).__name__)
+    return True
 
 
 def _default_supervisor(**kwargs: Any) -> BotRuntimeSupervisor:
@@ -1277,6 +1504,117 @@ def _start_market_collector(
     application.state.market_collector = worker
     task = asyncio.create_task(worker.run(stopping), name="market-bar-collector")
     application.state.market_collector_task = task
+    return task
+
+
+def _start_macro_calendar_collector(
+    application: FastAPI,
+    *,
+    session_factory: Any,
+    workspace_id: UUID,
+    stopping: asyncio.Event,
+) -> asyncio.Task[None]:
+    """AI-4: lịch công bố vĩ mô BEA/FOMC cho H06; cần policy PAPER_DEMO của từng nguồn."""
+    from trading_bot.adapters.sources.macro_calendar_http import MacroCalendarHttpFetcher
+    from trading_bot.application.macro_calendar_collector import (
+        MacroCalendarCollector,
+        run_macro_collector,
+    )
+    from trading_bot.workers.macro_calendar_worker import database_macro_store_scope
+
+    fetcher = MacroCalendarHttpFetcher()
+    application.state.macro_calendar_fetcher = fetcher
+    collector = MacroCalendarCollector(
+        workspace_id=workspace_id,
+        fetcher=fetcher,
+        store_scope=database_macro_store_scope(session_factory, workspace_id),
+    )
+
+    def remember(results: Any) -> None:
+        application.state.macro_calendar_last = {r.source_id: r.status for r in results}
+
+    task = asyncio.create_task(
+        run_macro_collector(collector, stopping, on_tick=remember), name="macro-calendar"
+    )
+    application.state.macro_calendar_task = task
+    return task
+
+
+def _start_derivatives_collector(
+    application: FastAPI,
+    *,
+    app_settings: AppSettings,
+    session_factory: Any,
+    workspace_id: UUID,
+    stopping: asyncio.Event,
+) -> asyncio.Task[None]:
+    """AI-4 lát 2: ảnh chụp phái sinh Binance theo giờ; cần policy PAPER_DEMO của nguồn."""
+    from trading_bot.adapters.sources.binance_derivatives_http import (
+        BinanceDerivativesHttpFetcher,
+    )
+    from trading_bot.application.derivatives_collector import (
+        DerivativesCollector,
+        run_derivatives_collector,
+    )
+    from trading_bot.application.market_bar_collector import parse_collector_streams
+    from trading_bot.workers.derivatives_worker import database_derivatives_store_scope
+
+    symbols = tuple(
+        dict.fromkeys(
+            s.symbol for s in parse_collector_streams(app_settings.market_collector_streams)
+        )
+    )
+    fetcher = BinanceDerivativesHttpFetcher()
+    application.state.derivatives_fetcher = fetcher
+    collector = DerivativesCollector(
+        workspace_id=workspace_id,
+        symbols=symbols,
+        fetcher=fetcher,
+        store_scope=database_derivatives_store_scope(session_factory, workspace_id),
+    )
+
+    def remember(result: Any) -> None:
+        application.state.derivatives_last = result.status
+
+    task = asyncio.create_task(
+        run_derivatives_collector(collector, stopping, on_tick=remember), name="derivatives"
+    )
+    application.state.derivatives_task = task
+    return task
+
+
+def _start_listings_collector(
+    application: FastAPI,
+    *,
+    session_factory: Any,
+    workspace_id: UUID,
+    stopping: asyncio.Event,
+) -> asyncio.Task[None]:
+    """AI-4 lát 3: kiểm exchangeInfo Binance để phát hiện niêm yết/gỡ; cần policy PAPER_DEMO."""
+    from trading_bot.adapters.sources.binance_derivatives_http import (
+        BinanceDerivativesHttpFetcher,
+    )
+    from trading_bot.application.listings_collector import (
+        ListingsCollector,
+        run_listings_collector,
+    )
+    from trading_bot.workers.listings_worker import database_listings_store_scope
+
+    fetcher = BinanceDerivativesHttpFetcher()
+    application.state.listings_fetcher = fetcher
+    collector = ListingsCollector(
+        workspace_id=workspace_id,
+        fetcher=fetcher,
+        store_scope=database_listings_store_scope(session_factory, workspace_id),
+    )
+
+    def remember(result: Any) -> None:
+        application.state.listings_last = result.status
+
+    task = asyncio.create_task(
+        run_listings_collector(collector, stopping, on_tick=remember), name="listings"
+    )
+    application.state.listings_task = task
     return task
 
 

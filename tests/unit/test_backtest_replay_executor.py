@@ -221,3 +221,30 @@ def test_h03_missing_quote_volume_does_not_create_a_trade() -> None:
     comparison = plan.executor(source, plan.manifest)
     assert comparison.is_complete
     assert comparison.runs[0].sensitivity_run.result.trade_count == 0
+
+
+def test_strategy_parameters_pin_profile_and_family_hash() -> None:
+    """AI-3: tham số H03 vào profile/family hash; không tham số thì hash giữ như cũ."""
+    source = bundle(timeframes=("1m", "1h"))
+    base = _submission(source, release="h03-v3-1h")
+    variant = replace(base, strategy_parameters=(("donchian_lookback", 30),))
+    other = replace(base, strategy_parameters=(("donchian_lookback", 40),))
+
+    plan_base = build_backtest_replay_plan(source.workspace_id, JOB_ID, source, base)
+    plan_variant = build_backtest_replay_plan(source.workspace_id, JOB_ID, source, variant)
+    plan_other = build_backtest_replay_plan(source.workspace_id, JOB_ID, source, other)
+
+    hashes = {plan.manifest.parameter_family_hash for plan in (plan_base, plan_variant, plan_other)}
+    assert len(hashes) == 3
+    assert plan_base.manifest.settings_version_id != plan_variant.manifest.settings_version_id
+    again = build_backtest_replay_plan(source.workspace_id, JOB_ID, source, variant)
+    assert again.manifest == plan_variant.manifest
+
+
+def test_submission_rejects_unknown_strategy_parameter() -> None:
+    source = bundle(timeframes=("1m", "1h"))
+    with pytest.raises(ValueError, match="not_a_parameter|tham số"):
+        replace(
+            _submission(source, release="h03-v3-1h"),
+            strategy_parameters=(("not_a_parameter", 5),),
+        )

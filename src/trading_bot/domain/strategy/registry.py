@@ -17,6 +17,11 @@ from trading_bot.domain.strategy.rules_v2 import (
     H03DonchianBreakoutRuleV2,
     H06RangeMeanReversionRuleV2,
 )
+from trading_bot.domain.strategy.rules_v3 import (
+    H03DonchianBreakoutRuleV3H1,
+    H03DonchianBreakoutRuleV3H4,
+    H03DonchianBreakoutRuleV3M15,
+)
 
 
 class UnknownStrategyReleaseError(LookupError):
@@ -94,6 +99,36 @@ _BUILT_INS: tuple[tuple[Strategy, str, str, str], ...] = (
             "15 phút đã đóng hoặc sau 16 nến 15 phút; cấm scale-in."
         ),
         "h06-exit-v2",
+    ),
+    (
+        H03DonchianBreakoutRuleV3M15(),
+        "Phá kênh Donchian (v3, 15m)",
+        (
+            "Giá đóng nến 15 phút phá đỉnh/đáy kênh Donchian (mặc định 55 nến, chỉnh theo bot); "
+            "quote volume lớn hơn median (mặc định 20 nến); stop 2 ATR; trailing 3 ATR; thoát "
+            "khi giá chạm biên ngược kênh 20 nến cùng khung; tối đa 120 nến 15 phút."
+        ),
+        "h03-exit-v3-15m",
+    ),
+    (
+        H03DonchianBreakoutRuleV3H1(),
+        "Phá kênh Donchian (v3, 1h)",
+        (
+            "Giá đóng nến 1 giờ phá đỉnh/đáy kênh Donchian (mặc định 55 nến, chỉnh theo bot); "
+            "quote volume lớn hơn median (mặc định 20 nến); stop 2 ATR; trailing 3 ATR; thoát "
+            "khi giá chạm biên ngược kênh 20 nến cùng khung; tối đa 120 nến 1 giờ."
+        ),
+        "h03-exit-v3-1h",
+    ),
+    (
+        H03DonchianBreakoutRuleV3H4(),
+        "Phá kênh Donchian (v3, 4h)",
+        (
+            "Giá đóng nến 4 giờ phá đỉnh/đáy kênh Donchian (mặc định 55 nến, chỉnh theo bot); "
+            "quote volume lớn hơn median (mặc định 20 nến); stop 2 ATR; trailing 3 ATR; thoát "
+            "khi giá chạm biên ngược kênh 20 nến cùng khung; tối đa 120 nến 4 giờ."
+        ),
+        "h03-exit-v3-4h",
     ),
 )
 

@@ -13,8 +13,8 @@ pha qua `MB05B_STATE` (JSON). Mỗi pha chạy đúng container/role của nó:
   MB-04, ledger, checkpoint, fencing là code thật).
 - các pha `admin_*` (admin-web): `BotRuntimeControlService`, `BotLifecycleGuard`, resolution
   incident dưới role `crypidian_admin_web` thật.
-- `race` (migrator, `-c role=` theo từng engine): entry/fill của runtime đua với pause/kill của
-  admin trong cùng process để có barrier (ruling 27).
+- `race` (db-provisioner, đăng nhập thật bằng role runtime/admin-web): entry/fill của runtime
+  đua với pause/kill của admin trong cùng process để có barrier (ruling 27).
 - `inspect` (migrator): đọc DB bỏ qua RLS để kiểm audit/lease/state/ledger.
 """
 
@@ -77,7 +77,21 @@ def _url(user: str | None = None) -> URL:
     )
 
 
+def _role_secret(role: str) -> Path:
+    return Path("/run/secrets") / f"database_{role.removeprefix('crypidian_')}_password"
+
+
 def _engine(role: str | None = None, pool: int = 5) -> AsyncEngine:
+    """Engine theo role. Khi container có secret của role (service `db-provisioner`), đăng nhập
+    thật bằng role đó như production; nếu không thì `SET ROLE` qua `-c role=`.
+
+    Hàm DB WP06 `wp06_learning_incident_hold_active` kiểm `session_user` (user đăng nhập), nên
+    `SET ROLE` từ user migrator bị từ chối `WP06_INCIDENT_WORKSPACE_DENIED` → entry gate báo
+    `LEARNING_INCIDENT_HOLD_UNAVAILABLE` (nguyên nhân 2 E2E race fail từ 12/11/2026).
+    """
+    if role and _role_secret(role).exists():
+        url = _url(role).set(password=_role_secret(role).read_text().strip())
+        return create_async_engine(url, pool_size=pool)
     connect_args = {"options": f"-c role={role}"} if role else {}
     return create_async_engine(_url(), pool_size=pool, connect_args=connect_args)
 

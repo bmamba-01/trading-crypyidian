@@ -1,0 +1,306 @@
+{
+  "seed": 20261115,
+  "coins": [
+    "AAVEUSDT",
+    "AEROUSDT",
+    "ARIAUSDT",
+    "ATOMUSDT",
+    "BTCUSDT",
+    "BTWUSDT",
+    "CRVUSDT",
+    "DASHUSDT",
+    "DODOXUSDT",
+    "ETHUSDT",
+    "ICPUSDT",
+    "KAVAUSDT",
+    "PENGUUSDT",
+    "PUMPUSDT",
+    "SOPHUSDT",
+    "TACUSDT",
+    "VIRTUALUSDT",
+    "WLDUSDT",
+    "XMRUSDT",
+    "ZECUSDT"
+  ],
+  "timeframes": [
+    "1m",
+    "15m",
+    "1h",
+    "4h"
+  ],
+  "bots": [
+    {
+      "key": "T01",
+      "name": "T01 H03 1h · 20 coin",
+      "release_id": "h03-v3-1h",
+      "timeframe": "1h",
+      "symbols": [
+        "AAVEUSDT",
+        "AEROUSDT",
+        "ARIAUSDT",
+        "ATOMUSDT",
+        "BTCUSDT",
+        "BTWUSDT",
+        "CRVUSDT",
+        "DASHUSDT",
+        "DODOXUSDT",
+        "ETHUSDT",
+        "ICPUSDT",
+        "KAVAUSDT",
+        "PENGUUSDT",
+        "PUMPUSDT",
+        "SOPHUSDT",
+        "TACUSDT",
+        "VIRTUALUSDT",
+        "WLDUSDT",
+        "XMRUSDT",
+        "ZECUSDT"
+      ],
+      "parameters": {
+        "donchian_lookback": 90,
+        "volume_median_lookback": 30
+      },
+      "risk": {
+        "per_trade_risk_fraction": "0.005",
+        "max_positions": 6,
+        "max_leverage": "2"
+      }
+    },
+    {
+      "key": "T02",
+      "name": "T02 H03 15m · 10 coin",
+      "release_id": "h03-v3-15m",
+      "timeframe": "15m",
+      "symbols": [
+        "AAVEUSDT",
+        "ARIAUSDT",
+        "ATOMUSDT",
+        "BTCUSDT",
+        "DODOXUSDT",
+        "ETHUSDT",
+        "ICPUSDT",
+        "KAVAUSDT",
+        "PUMPUSDT",
+        "ZECUSDT"
+      ],
+      "parameters": {
+        "donchian_lookback": 40,
+        "volume_median_lookback": 20
+      },
+      "risk": {
+        "per_trade_risk_fraction": "0.003",
+        "max_positions": 5,
+        "max_leverage": "3"
+      }
+    },
+    {
+      "key": "T03",
+      "name": "T03 CARD 1h · 13 coin",
+      "release_id": "sc-binance-usdm-vol-breakout-001-v1.0.0",
+      "timeframe": "1h",
+      "symbols": [
+        "AEROUSDT",
+        "BTCUSDT",
+        "BTWUSDT",
+        "DASHUSDT",
+        "DODOXUSDT",
+        "ICPUSDT",
+        "PENGUUSDT",
+        "PUMPUSDT",
+        "SOPHUSDT",
+        "VIRTUALUSDT",
+        "WLDUSDT",
+        "XMRUSDT",
+        "ZECUSDT"
+      ],
+      "parameters": {},
+      "risk": {
+        "per_trade_risk_fraction": "0.01",
+        "max_positions": 4,
+        "max_leverage": "2"
+      }
+    },
+    {
+      "key": "T04",
+      "name": "T04 H03 1h · 4 coin",
+      "release_id": "h03-v3-1h",
+      "timeframe": "1h",
+      "symbols": [
+        "BTCUSDT",
+        "BTWUSDT",
+        "PUMPUSDT",
+        "SOPHUSDT"
+      ],
+      "parameters": {
+        "donchian_lookback": 30,
+        "volume_median_lookback": 15
+      },
+      "risk": {
+        "per_trade_risk_fraction": "0.01",
+        "max_positions": 3,
+        "max_leverage": "5"
+      }
+    },
+    {
+      "key": "T05",
+      "name": "T05 H03 4h · 3 coin",
+      "release_id": "h03-v3-4h",
+      "timeframe": "4h",
+      "symbols": [
+        "ATOMUSDT",
+        "DODOXUSDT",
+        "PUMPUSDT"
+      ],
+      "parameters": {
+        "donchian_lookback": 30,
+        "volume_median_lookback": 30
+      },
+      "risk": {
+        "per_trade_risk_fraction": "0.002",
+        "max_positions": 6,
+        "max_leverage": "2"
+      }
+    },
+    {
+      "key": "T06",
+      "name": "T06 H03 15m · 20 coin",
+      "release_id": "h03-v3-15m",
+      "timeframe": "15m",
+      "symbols": [
+        "AAVEUSDT",
+        "AEROUSDT",
+        "ARIAUSDT",
+        "ATOMUSDT",
+        "BTCUSDT",
+        "BTWUSDT",
+        "CRVUSDT",
+        "DASHUSDT",
+        "DODOXUSDT",
+        "ETHUSDT",
+        "ICPUSDT",
+        "KAVAUSDT",
+        "PENGUUSDT",
+        "PUMPUSDT",
+        "SOPHUSDT",
+        "TACUSDT",
+        "VIRTUALUSDT",
+        "WLDUSDT",
+        "XMRUSDT",
+        "ZECUSDT"
+      ],
+      "parameters": {
+        "donchian_lookback": 90,
+        "volume_median_lookback": 10
+      },
+      "risk": {
+        "per_trade_risk_fraction": "0.01",
+        "max_positions": 1,
+        "max_leverage": "5"
+      }
+    },
+    {
+      "key": "T07",
+      "name": "T07 H01 1h · 14 coin",
+      "release_id": "h01-v1",
+      "timeframe": "1h",
+      "symbols": [
+        "AAVEUSDT",
+        "ARIAUSDT",
+        "ATOMUSDT",
+        "BTCUSDT",
+        "CRVUSDT",
+        "DASHUSDT",
+        "ETHUSDT",
+        "KAVAUSDT",
+        "PENGUUSDT",
+        "TACUSDT",
+        "VIRTUALUSDT",
+        "WLDUSDT",
+        "XMRUSDT",
+        "ZECUSDT"
+      ],
+      "parameters": {},
+      "risk": {
+        "per_trade_risk_fraction": "0.002",
+        "max_positions": 4,
+        "max_leverage": "4"
+      }
+    },
+    {
+      "key": "T08",
+      "name": "T08 H03 4h · 9 coin",
+      "release_id": "h03-v3-4h",
+      "timeframe": "4h",
+      "symbols": [
+        "AEROUSDT",
+        "ARIAUSDT",
+        "BTCUSDT",
+        "BTWUSDT",
+        "DASHUSDT",
+        "DODOXUSDT",
+        "KAVAUSDT",
+        "SOPHUSDT",
+        "XMRUSDT"
+      ],
+      "parameters": {
+        "donchian_lookback": 30,
+        "volume_median_lookback": 15
+      },
+      "risk": {
+        "per_trade_risk_fraction": "0.002",
+        "max_positions": 3,
+        "max_leverage": "3"
+      }
+    },
+    {
+      "key": "T09",
+      "name": "T09 H03 15m · 12 coin",
+      "release_id": "h03-v3-15m",
+      "timeframe": "15m",
+      "symbols": [
+        "AEROUSDT",
+        "ARIAUSDT",
+        "CRVUSDT",
+        "DASHUSDT",
+        "DODOXUSDT",
+        "ETHUSDT",
+        "PUMPUSDT",
+        "SOPHUSDT",
+        "TACUSDT",
+        "WLDUSDT",
+        "XMRUSDT",
+        "ZECUSDT"
+      ],
+      "parameters": {
+        "donchian_lookback": 30,
+        "volume_median_lookback": 20
+      },
+      "risk": {
+        "per_trade_risk_fraction": "0.0075",
+        "max_positions": 5,
+        "max_leverage": "4"
+      }
+    },
+    {
+      "key": "T10",
+      "name": "T10 H01 1h · 4 coin",
+      "release_id": "h01-v1",
+      "timeframe": "1h",
+      "symbols": [
+        "AEROUSDT",
+        "DASHUSDT",
+        "ICPUSDT",
+        "XMRUSDT"
+      ],
+      "parameters": {},
+      "risk": {
+        "per_trade_risk_fraction": "0.003",
+        "max_positions": 3,
+        "max_leverage": "5"
+      }
+    }
+  ],
+  "eligible_count": 89,
+  "min_quote_volume": "20000000",
+  "collector_streams": "AAVEUSDT:1m,15m,1h,4h;AEROUSDT:1m,15m,1h,4h;ARIAUSDT:1m,15m,1h,4h;ATOMUSDT:1m,15m,1h,4h;BTCUSDT:1m,15m,1h,4h;BTWUSDT:1m,15m,1h,4h;CRVUSDT:1m,15m,1h,4h;DASHUSDT:1m,15m,1h,4h;DODOXUSDT:1m,15m,1h,4h;ETHUSDT:1m,15m,1h,4h;ICPUSDT:1m,15m,1h,4h;KAVAUSDT:1m,15m,1h,4h;PENGUUSDT:1m,15m,1h,4h;PUMPUSDT:1m,15m,1h,4h;SOPHUSDT:1m,15m,1h,4h;TACUSDT:1m,15m,1h,4h;VIRTUALUSDT:1m,15m,1h,4h;WLDUSDT:1m,15m,1h,4h;XMRUSDT:1m,15m,1h,4h;ZECUSDT:1m,15m,1h,4h"
+}

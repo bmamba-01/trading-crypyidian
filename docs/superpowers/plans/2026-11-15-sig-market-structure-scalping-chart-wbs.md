@@ -204,6 +204,10 @@ Dữ liệu: REST kline công khai Binance USDⓈ-M, 2026-05-01 → 2026-11-01 (
 
 **Acceptance:** tin và thẻ truy ngược được về decision/feature snapshot; filter Telegram hiện có (symbol/khung/hướng/strategy/setup) áp được cho setup mới.
 
+- **Đã làm 15/11/2026 — TG-1 lát 1:** tin Telegram thêm khối "THẺ TÍN HIỆU (PAPER)" dựng bằng cùng `build_signal_card` với Admin, từ candidate + checklist của quyết định **đã xác minh hash**: vùng vào, SL, mục tiêu recipe và mốc 1R/2R/3R tham chiếu (R thô, chưa trừ phí), checklist ✓/✗/— có giá trị thật và ngưỡng (tối đa 8 dòng), "Mất hiệu lực khi", "Độ tin cậy: Chưa hiệu chuẩn", dòng cuối "PAPER · mô phỏng nội bộ, không phải khuyến nghị đầu tư." Thẻ không dựng được (dữ liệu cũ, thang giá sai hướng) thì chỉ gửi phần cơ bản.
+- **Đã làm 15/11/2026 — TG-2 lát 1:** chống spam theo subscription (một bot → một chat) trong transaction claim, tuần tự hóa bằng advisory lock theo subscription: gộp tín hiệu trùng (cùng mã + hướng + chiến lược + release) trong cooldown (mặc định 90 phút, `TRADING_BOT_SIGNAL_WORKER_COOLDOWN_MINUTES`), trần tin/60 phút trượt (mặc định 6, `TRADING_BOT_SIGNAL_WORKER_MAX_MESSAGES_PER_HOUR`). Delivery bị chặn ghi `SUPPRESSED` + mã lý do (migration `c3e5a7b9d1f4`).
+- **Chưa làm (TG-1/TG-2):** reply cập nhật vào tin gốc, R:R ròng từng TP, rủi ro % vốn; trần tin theo **chat** xuyên nhiều bot (RLS worker hiện theo bot), giờ yên lặng, hiển thị số tin bị chặn trên Admin.
+
 ### SIG-9 — Dải biến động dự kiến (tùy chọn, ưu tiên thấp)
 
 Bootstrap lợi suất lịch sử theo chế độ để hiện "khoảng giá có thể đi trong 4 giờ" (dải phân vị), ghi rõ **không phải dự báo hướng**. Chỉ làm sau SIG-5; không dùng làm điều kiện vào lệnh.

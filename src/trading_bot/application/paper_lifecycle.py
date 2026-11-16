@@ -578,6 +578,7 @@ class PaperLifecycleCoordinator:
         strategy_bar_closed: bool = True,
         account_id: UUID | None = None,
         fencing_token: FencingToken | None = None,
+        forced_exit_reason: str | None = None,
     ) -> PositionLifecycleResult:
         """Monitor stop/target/trailing và ghi EXIT fill, transition, đóng trade.
 
@@ -611,6 +612,7 @@ class PaperLifecycleCoordinator:
                 exit_channel_level=exit_channel_level,
                 exit_feature_value=exit_feature_value,
                 strategy_bar_closed=strategy_bar_closed,
+                forced_exit_reason=forced_exit_reason,
             )
             snapshot = candidate.export_state()
             append_result = await self._checkpoints.append(
@@ -636,6 +638,7 @@ class PaperLifecycleCoordinator:
             exit_channel_level=exit_channel_level,
             exit_feature_value=exit_feature_value,
             strategy_bar_closed=strategy_bar_closed,
+            forced_exit_reason=forced_exit_reason,
         )
         if result.partial_exit is not None:
             # SIG-3 lát 2: chốt lời một phần. Gateway đã đóng phần này với khóa theo chỉ số mục

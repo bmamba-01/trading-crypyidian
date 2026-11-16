@@ -42,6 +42,9 @@ class RiskState:
     pending_reservation_count: int = 0
     pending_reservation_notional: Decimal = ZERO
     pending_symbol_reservation_notional: Decimal = ZERO
+    # FX-2: ngắt mạch drawdown PAPER do context provider đo từ ledger (domain/risk/
+    # drawdown_breaker.py). Replay/backtest để mặc định False (chưa áp breaker).
+    drawdown_breaker_tripped: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -225,6 +228,11 @@ class RiskEngine:
             or state.pending_reservation_count < 0
         ):
             return reject("RISK_STATE_INVALID", "Snapshot risk chứa giá trị âm hoặc không hữu hạn.")
+        if state.drawdown_breaker_tripped:
+            return reject(
+                "CIRCUIT_BREAKER_DRAWDOWN",
+                "Ngắt mạch: vốn sụt từ đỉnh chạm ngưỡng; tạm dừng rồi tiếp tục bot (MFA).",
+            )
         exchange = settings.exchange
         prices = (plan.entry_reference_price, plan.entry_price, plan.stop_price) + (
             (plan.target_price,) if plan.target_price is not None else ()
@@ -282,6 +290,18 @@ class RiskEngine:
             return reject("DAILY_LOSS_CAP_REACHED", "Đã chạm giới hạn lỗ ngày.")
         if state.realized_loss_rolling >= limits.max_rolling_loss:
             return reject("ROLLING_LOSS_CAP_REACHED", "Đã chạm giới hạn lỗ rolling.")
+        # FX-2: lỗ xấu nhất nếu mọi lệnh đang mở/đang giữ chỗ và lệnh mới cùng chạm SL.
+        worst_case = open_risk + plan.estimated_loss
+        if state.realized_loss_today + worst_case > limits.max_daily_loss:
+            return reject(
+                "DAILY_LOSS_CAP_WOULD_BREACH",
+                "Lỗ đã chốt hôm nay cộng rủi ro đang mở và lệnh mới có thể vượt giới hạn lỗ ngày.",
+            )
+        if state.realized_loss_rolling + worst_case > limits.max_rolling_loss:
+            return reject(
+                "ROLLING_LOSS_CAP_WOULD_BREACH",
+                "Lỗ rolling cộng rủi ro đang mở và lệnh mới có thể vượt giới hạn lỗ rolling.",
+            )
         if state.open_position_count + state.pending_reservation_count + 1 > limits.max_positions:
             return reject("MAX_POSITIONS_REACHED", "Đã đạt số vị thế tối đa.")
         total_notional = (

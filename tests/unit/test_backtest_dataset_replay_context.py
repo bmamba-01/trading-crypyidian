@@ -126,11 +126,24 @@ def test_context_provider_emits_point_in_time_exit_evidence_for_v2_recipes() -> 
     provider(observations[0].snapshot)
     second = provider(observations[1].snapshot)
 
-    # Bundle không có nến 15m nên chỉ recipe H03 v2 (khung 1h) nhận bằng chứng.
-    assert {item.recipe_id for item in second.exit_evidence_by_bar} == {"h03-exit-v2"}
-    assert len(second.exit_evidence_by_bar) == len(second.execution_events)
+    # Bundle có nến 1h/4h, không có 15m: recipe khung 1h (H03 v2, v3-1h) và v3-4h nhận bằng
+    # chứng; H06 v2 và H03 v3-15m (khung 15m) thì không.
+    recipes = {item.recipe_id for item in second.exit_evidence_by_bar}
+    assert recipes == {"h03-exit-v2", "h03-exit-v3-1h", "h03-exit-v3-4h"}
+    assert len(second.exit_evidence_by_bar) == 3 * len(second.execution_events)
     events = {event.bar_key: event for event in second.execution_events}
-    for evidence in second.exit_evidence_by_bar:
+    v2_items = [e for e in second.exit_evidence_by_bar if e.recipe_id == "h03-exit-v2"]
+    v3_items = {
+        e.bar_key: e for e in second.exit_evidence_by_bar if e.recipe_id == "h03-exit-v3-1h"
+    }
+    for evidence in v2_items:
+        # Cùng khung + cùng kỳ kênh → mức kênh v3-1h trùng v2 ở mọi bar.
+        twin = v3_items[evidence.bar_key]
+        assert (twin.channel_low, twin.channel_high) == (
+            evidence.channel_low,
+            evidence.channel_high,
+        )
+    for evidence in v2_items:
         event = events[evidence.bar_key]
         known = sorted(
             (bar for bar in hourly if bar.close_time <= event.opened_at),
@@ -147,7 +160,8 @@ def test_context_provider_emits_point_in_time_exit_evidence_for_v2_recipes() -> 
             event.closed_at in {bar.close_time for bar in hourly}
         )
     # Trong 60 nến 1 phút giữa hai quyết định 1h chỉ có đúng một nến đóng cùng nến 1h.
-    assert sum(item.strategy_bar_closed for item in second.exit_evidence_by_bar) == 1
+    assert sum(item.strategy_bar_closed for item in v2_items) == 1
+    assert sum(item.strategy_bar_closed for item in v3_items.values()) == 1
 
 
 def test_context_provider_rejects_nonflat_seed_and_out_of_order_observation() -> None:

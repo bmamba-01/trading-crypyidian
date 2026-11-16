@@ -15,6 +15,7 @@ import sys
 import time
 import uuid
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, cast
 
@@ -38,6 +39,20 @@ SERVICES = {
     "add_minutes": "migrator",
     "add_stop_bar": "migrator",
     "verify": "migrator",
+    "breaker": "trading-runtime",
+    "pause_resume": "migrator",
+    "outcome": "trading-runtime",
+    "macro_write": "ingestion-worker",
+    "macro_read": "trading-runtime",
+    "derivatives_write": "ingestion-worker",
+    "derivatives_read": "trading-runtime",
+    "listings_write": "ingestion-worker",
+    "listings_read": "trading-runtime",
+    "run_report": "migrator",
+    "analyst": "migrator",
+    "tg_seed": "migrator",
+    "tg_results": "telegram-signal-worker",
+    "tg_verify": "migrator",
 }
 
 
@@ -65,6 +80,8 @@ def test_rest_candles_drive_paper_entry_fill_and_stop_exit_idempotently() -> Non
         "paper",
         "--profile",
         "signal-producer",
+        "--profile",
+        "signal",
         "--project-name",
         project,
         "-f",
@@ -115,7 +132,7 @@ def test_rest_candles_drive_paper_entry_fill_and_stop_exit_idempotently() -> Non
         compose("run", "--rm", "--no-deps", "db-provisioner")
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "head")
         heads = compose("run", "--rm", "--no-deps", "migrator", "alembic", "heads")
-        assert "b8d0f2a4c6e8 (head)" in heads.stdout
+        assert "c1fec3af85ea (head)" in heads.stdout
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "check")
         state.update(run("seed"))
         # CK-11: bộ quét đọc nến 4h thật (đủ 21 ngày), 1h thiếu 21 ngày bị loại kèm lý do;
@@ -232,13 +249,133 @@ def test_rest_candles_drive_paper_entry_fill_and_stop_exit_idempotently() -> Non
         assert rerun["ledger"] == closed["ledger"]
         assert run("verify") == final
 
+        # TG-3: trade PAPER đã đóng → đúng một tin kết quả (và một tin mở, một tin tổng hợp) tới
+        # sender ghi nhớ, dưới role signal-worker thật; chạy lại/khởi động lại không gửi trùng.
+        assert run("tg_seed") == {"tg_seeded": True}
+        results = run("tg_results")
+        assert results["sent"] == [3, 0, 0], results
+        assert results["restart_messages"] == 0, results
+        assert results["recipients"] == [777000111], results
+        assert (results["opens"], results["closes"], results["summaries"]) == (1, 1, 1), results
+        assert results["close_header"] == "KẾT QUẢ PAPER — KHÔNG PHẢI LỆNH THẬT", results
+        assert results["close_reason"] is True, results
+        assert results["close_loss_pnl"] is True, results
+        assert results["close_r_negative"] is True, results
+        assert results["summary_lists_bot"] is True, results
+        assert 0 < results["max_length"] <= 4096, results
+        assert results["privileges"] == {
+            "trade_table_select": False,
+            "trade_net_pnl_select": True,
+            "trade_lineage_select": False,
+            "trade_any_update": False,
+            "fill_any_insert": False,
+            "order_intent_any_select": False,
+        }, results
+        assert results["rls"] == {"own_bot": 1, "other_bot": 0}, results
+        assert results["lineage_denied"] is True, results
+        assert run("tg_verify") == {
+            "notifications": [["CLOSED", "SENT", 1, True], ["OPENED", "SENT", 1, True]],
+            "reports": [["SENT", 1, True, "4:00:00"]],
+        }
+
+        # Lý do candidate lưu bền bằng role runtime thật: idempotent và chặn bot khác (RLS).
+        assert run("outcome") == {
+            "rows": 1,
+            "user": "crypidian_trading_runtime",
+            "other_bot_denied": True,
+        }
+
+        # AI-1: Run Report tất định từ ledger thật (lệnh lỗ chạm stop → R âm, có MAE).
+        report = run("run_report")
+        assert report["deterministic"] is True, report
+        assert report["closed_trades"] == 1, report
+        assert report["r_mean"] is not None, report
+        assert Decimal(report["r_mean"]) < 0, report
+        assert report["mae_mean"] is not None, report
+        assert report["candidates"] == report["candidates_with_intent"] == 1, report
+
+        # AI-2: kết quả hợp lệ và kết quả bịa số đều được lưu để kiểm toán; chỉ một hợp lệ.
+        assert run("analyst") == {
+            "runs": 2,
+            "valid_runs": 1,
+            "admin_web_select": True,
+            "admin_web_insert": False,
+            "forced_rls": True,
+            # AI-3: kết quả backtest đề xuất chỉ admin_web đọc; runtime không thấy; trùng bị chặn.
+            "backtest_admin_web_select": True,
+            "backtest_admin_web_insert": False,
+            "backtest_runtime_select": False,
+            "backtest_forced_rls": True,
+            "backtests": 1,
+            "backtest_duplicate_rejected": True,
+        }
+
+        # AI-4: ingestion ghi lịch vĩ mô (append-only), runtime đọc trạng thái point-in-time.
+        assert run("macro_write") == {"written": 3, "update_denied": True}
+        assert run("macro_read") == {
+            "during_blackout": True,
+            "during_fresh": True,
+            "evidence": 3,
+            "after_blackout": False,
+            "before_fetch_unknown": True,
+            "admin_web_insert": False,
+        }
+        # AI-4 lát 2: ảnh chụp phái sinh append-only, đọc point-in-time bằng role runtime.
+        written = run("derivatives_write")
+        assert written["written"] == 2, written
+        assert written["update_delete_denied"] == [True, True], written
+        assert run("derivatives_read") == {
+            "symbols": ["ETHUSDT", "BTCUSDT"],
+            "oi_change": "10.00",
+            "before_collect": 0,
+            "other_workspace": 0,
+            "admin_web_insert": False,
+        }
+        # AI-4 lát 3: lần kiểm exchangeInfo append-only; lịch gỡ chỉ thấy sau lần kiểm phát hiện.
+        listed = run("listings_write")
+        assert listed["update_delete_denied"] == [True, True], listed
+        assert run("listings_read") == {
+            "at_risk": [["ZECUSDT", "20/11 15:00"]],
+            "changes": [["DELIST_SCHEDULED", "ZECUSDT"]],
+            "before_at_risk": [],
+            "admin_web_insert": False,
+            "blocks": {
+                "zec_after": "SYMBOL_DELIST_SCHEDULED",
+                "zec_before": None,
+                "c0_after": None,
+                "unlisted_after": "SYMBOL_NOT_LISTED",
+                "no_data": None,
+            },
+            "exits": {
+                "zec_far": None,
+                "zec_within_24h": "DELIST_EXIT",
+                "c0_within": None,
+                "unlisted": "DELIST_EXIT",
+            },
+        }
+
+        # FX-2: ngắt mạch drawdown đo bằng role runtime trên ledger thật.
+        before = run("breaker")
+        assert before["baseline_at"] is None, before
+        assert Decimal(before["actual_peak"]) == Decimal(before["seed"]), before  # lệnh lỗ
+        assert before["actual_tripped"] is False, before
+        assert before["stressed_tripped"] is True, before  # vốn = 89% đỉnh ⇒ sụt 11%
+        resumed = run("pause_resume")
+        after = run("breaker")
+        assert after["baseline_at"] == resumed["resumed_at"], (after, resumed)
+        # Sau "Tiếp tục", đỉnh tính lại từ vốn đã chốt tại mốc (seed + lỗ đã chốt).
+        assert Decimal(after["actual_peak"]) == Decimal(before["seed"]) + Decimal(
+            before["realized"]
+        ), after
+        assert after["actual_tripped"] is False, after
+
         assert final["decisions"] == ["CANDIDATE"]
         assert final["intents"] == [
             {
                 "status": "FILLED",
                 "full": True,
                 "feature_snapshot_id_len": 64,
-                "context_provider": "rt1-postgres-paper-context-v1",
+                "context_provider": "rt1-postgres-paper-context-v2",
                 "has_bot_decision": True,
             }
         ]

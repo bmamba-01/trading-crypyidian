@@ -372,7 +372,10 @@ def test_retraining_label_uses_ledger_trade_not_client_values() -> None:
     assert resp.status_code == 200, resp.text
     sample = resp.json()["sample"]
     assert sample["trade_id"] == str(trade_id)
-    assert "999" not in resp.text
+    # Kiểm trên giá trị trường, không trên toàn văn bản: UUID ngẫu nhiên và micro giây của
+    # created_at có thể tình cờ chứa "999" làm test lỗi ngẫu nhiên.
+    assert sample["original_signal"] == "SHORT"
+    assert "999" not in {str(value) for value in sample.values()}
     assert "LONG" not in resp.text
     # Cửa sổ báo cáo hẹp quanh gợi ý thời điểm đóng, đúng bot của yêu cầu.
     query = reporting.queries[0]

@@ -661,9 +661,41 @@ def test_status_is_degraded_after_discontinuity() -> None:
     from trading_bot.application.paper_market_event_loop import MarketDispatchCounters
 
     loop.counters = MarketDispatchCounters(discontinuities=1)
+    loop._missing_execution_bars = set()
     loop.last_tick_at = datetime(2026, 11, 15, tzinfo=UTC)
     loop.last_tick_succeeded = True
     loop.last_error_code = "PAPER_MARKET_DISCONTINUITY"
     status = loop.status()
     assert status["state"] == "degraded"
     assert status["discontinuities"] == 1
+
+
+def test_pending_entry_without_1m_bars_marks_dispatch_degraded() -> None:
+    """16/11/2026: thiếu nến 1m → lệnh không bao giờ khớp; readiness phải báo rõ, không im lặng."""
+    from trading_bot.application.paper_market_event_loop import PaperMarketEventLoop
+
+    loop = PaperMarketEventLoop(application=object(), sessions=None, workspace_id=uuid4())
+    account = uuid4()
+
+    def scope(timeframe: str, pending: bool) -> _Scope:
+        return _Scope(
+            intent_id=uuid4(),
+            paper_intent_id="p",
+            symbol="AEROUSDT",
+            timeframe=timeframe,
+            feature_snapshot_id="f" * 64,
+            trade_id=None,
+            entry_pending=pending,
+            cursor=None,
+        )
+
+    loop.last_tick_at = NOW
+    loop.last_tick_succeeded = True
+    loop._check_execution_bars(account, (scope("15m", True),))
+    status = loop.status()
+    assert status["state"] == "degraded"
+    assert status["execution_1m_missing_accounts"] == 1
+    assert status["last_error_code"] == "PAPER_EXECUTION_1M_UNAVAILABLE"
+    # Vị thế đã mở theo dõi trên khung chiến lược không làm degraded; có 1m thì hết cảnh báo.
+    loop._check_execution_bars(account, (scope("15m", False), scope("1m", True)))
+    assert loop.status()["state"] == "running"

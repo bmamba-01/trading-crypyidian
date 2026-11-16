@@ -282,3 +282,49 @@ def test_signal_worker_process_exposes_only_liveness_and_readiness_routes() -> N
         "/health/live",
         "/health/ready",
     }
+
+
+@pytest.mark.asyncio
+async def test_worker_passes_throttle_policy_and_skips_suppressed_claim() -> None:
+    from trading_bot.application.telegram_signals import SignalThrottlePolicy
+
+    repository = FakeRepository(candidate=_candidate(), claim_filtered=True)
+    captured: dict[str, object] = {}
+    original = repository.claim_one
+
+    async def claim_one(**kwargs: object) -> SignalDeliveryClaim | None:
+        captured.update(kwargs)
+        return await original(**kwargs)
+
+    repository.claim_one = claim_one  # type: ignore[method-assign]
+    sender = FakeSender()
+
+    assert await _worker(repository, sender).tick() == 0
+    assert sender.messages == []
+    assert captured["throttle"] == SignalThrottlePolicy()
+
+
+@pytest.mark.asyncio
+async def test_worker_uses_injected_signal_sender_for_image_cards() -> None:
+    repository = FakeRepository(candidate=_candidate())
+    sender = FakeSender()
+    sent: list[tuple[int, object]] = []
+
+    async def card_send(_sender: object, chat_id: int, candidate: object) -> None:
+        sent.append((chat_id, candidate))
+
+    worker = TelegramSignalDeliveryWorker(
+        session_factory=object(),  # type: ignore[arg-type]
+        workspace_id=WORKSPACE,
+        sender=cast(TelegramMessageSender, sender),
+        worker_id="test-signal-worker",
+        now=lambda: NOW,
+        sleep=lambda _seconds: _no_sleep(),
+        unit_of_work=cast(Any, FakeUow),
+        repository=cast(Any, lambda _session: repository),
+        signal_send=card_send,
+    )
+    assert await worker.tick() == 1
+    assert sent == [(987654321, repository.candidate)]
+    assert sender.messages == []
+    assert repository.sent == [DELIVERY]

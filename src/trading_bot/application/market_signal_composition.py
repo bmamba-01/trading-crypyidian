@@ -33,6 +33,7 @@ from trading_bot.application.decision_snapshot_builder import (
     build_decision_snapshot_from_bars,
     quote_volumes_for_bars,
 )
+from trading_bot.application.macro_calendar_state import load_macro_state, release_uses_macro
 from trading_bot.application.market_signal_scanner import (
     MarketSignalObservation,
     MarketSignalScanner,
@@ -51,6 +52,7 @@ from trading_bot.application.strategy_market_requirements import (
 from trading_bot.domain.execution.runtime_control import BotEntryState, WorkspaceKillState
 from trading_bot.domain.market.feature_snapshot import FeatureCalculator
 from trading_bot.domain.market.models import MarketBarSourceIdentity, MarketSnapshot, OHLCVBar
+from trading_bot.domain.research.macro_calendar import UNKNOWN_MACRO
 from trading_bot.domain.strategy.contracts import DecisionSnapshot
 
 _MAX_BARS_PER_STREAM = 256
@@ -223,6 +225,13 @@ async def build_market_decision_snapshot(
         max_bars_per_stream=max_bars_per_stream,
     )
     grouped = _group_bars(rows)
+    # AI-4: chỉ release cần lịch vĩ mô (H06) mới nạp trạng thái macro tại cutoff evidence; producer
+    # và runtime cùng gọi hàm này nên cùng snapshot_id. Thiếu lịch → None → H06 abstain.
+    macro = UNKNOWN_MACRO
+    if release_uses_macro(strategy_release_id):
+        macro = await load_macro_state(
+            session, workspace_id=workspace_id, decision_time=decision_time
+        )
     return build_decision_snapshot_from_bars(
         workspace_id=workspace_id,
         symbol=symbol,
@@ -234,6 +243,10 @@ async def build_market_decision_snapshot(
             for timeframe in requirements
         },
         position_is_flat=position_is_flat,
+        macro_blackout=macro.blackout,
+        macro_evidence_ids=macro.evidence_ids,
+        macro_evidence_available_at=macro.evidence_available_at,
+        macro_is_fresh=macro.is_fresh,
         source_identity_required=True,
     )
 

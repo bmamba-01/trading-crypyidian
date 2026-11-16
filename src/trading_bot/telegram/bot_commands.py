@@ -1,7 +1,8 @@
 """Lệnh Telegram điều khiển bot (MB-07a, ruling 35–36; SEC-22/23/38).
 
-Chỉ hỗ trợ `/bots`, `/bot status <id>`, `/bot pause <id>`, `/bot resume <id>`. Mọi thao tác đi qua
-`BotOperationsService` (cùng service với Admin API); module này không mở kết nối/transaction DB.
+Chỉ hỗ trợ `/bots`, `/bot status <id>`, `/bot pause <id>`, `/bot resume <id>` và `/report` (TG-3,
+tổng hợp kết quả PAPER chỉ đọc). Mọi thao tác đi qua `BotOperationsService`/`BotReportingService`
+(cùng service với Admin API); module này không mở kết nối/transaction DB.
 
 - Lệnh đổi trạng thái luôn cần ID bot đầy đủ; thiếu ID → `BOT_TARGET_AMBIGUOUS` hoặc
   `BOT_TARGET_REQUIRED` kèm danh sách ID bot người dùng được đọc. ID lạ/sai định dạng →
@@ -16,6 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
+from typing import Protocol
 from uuid import UUID
 
 from trading_bot.application.bot_lifecycle_guard import BotNotFlatError
@@ -24,7 +26,12 @@ from trading_bot.application.bot_operations import (
     BotRuntimeStatus,
     PrincipalBotOperations,
 )
+from trading_bot.application.bot_reporting import BotReportError
 from trading_bot.application.bot_runtime_control import BotRuntimeControlError
+from trading_bot.application.telegram_trade_results import (
+    PaperReportView,
+    format_paper_report_text,
+)
 from trading_bot.auth.policy import Principal, Role
 
 # Không có step-up qua Telegram: thời điểm MFA không bao giờ "gần đây" (ruling 35).
@@ -41,6 +48,13 @@ class BotCommand(StrEnum):
     STATUS = "status"
     PAUSE = "pause"
     RESUME = "resume"
+    REPORT = "report"
+
+
+class PaperReportProvider(Protocol):
+    """Nguồn tin tổng hợp PAPER đã kiểm quyền theo principal (``TelegramPaperReportService``)."""
+
+    async def build_view(self, principal: Principal) -> PaperReportView: ...
 
 
 class BotCommandParseError(ValueError):
@@ -95,6 +109,10 @@ def parse_bot_command(text: str) -> ParsedBotCommand:
         if args:
             raise BotCommandParseError("TELEGRAM_COMMAND_INVALID")
         return ParsedBotCommand(BotCommand.LIST, None)
+    if name == "report":
+        if args:
+            raise BotCommandParseError("TELEGRAM_COMMAND_INVALID")
+        return ParsedBotCommand(BotCommand.REPORT, None)
     if name != "bot":
         raise BotCommandParseError("TELEGRAM_COMMAND_NOT_ALLOWED")
     if not args:
@@ -124,9 +142,11 @@ _REJECT_MESSAGES = {
     "CONTROL_PERMISSION_DENIED": "Không đủ quyền cho thao tác này.",
     "RUNTIME_CONTROL_UNAVAILABLE": "Control plane tạm thời không phản hồi; hãy thử lại.",
     "TELEGRAM_COMMAND_NOT_ALLOWED": (
-        "Lệnh này không được phép qua Telegram. Hỗ trợ: /bots, /bot status|pause|resume <id>."
+        "Lệnh này không được phép qua Telegram. "
+        "Hỗ trợ: /bots, /report, /bot status|pause|resume <id>."
     ),
-    "TELEGRAM_COMMAND_INVALID": "Cú pháp: /bots hoặc /bot status|pause|resume <id>.",
+    "TELEGRAM_COMMAND_INVALID": "Cú pháp: /bots, /report hoặc /bot status|pause|resume <id>.",
+    "REPORT_UNAVAILABLE": "Chưa lấy được tổng hợp PAPER; hãy thử lại hoặc xem Admin Web.",
 }
 
 
@@ -156,8 +176,13 @@ def _parse_target(bot_id: UUID | str | None) -> UUID | None:
 class BotCommandHandler:
     """Thực thi lệnh đã phân tích bằng service vận hành dùng chung."""
 
-    def __init__(self, operations: BotOperationsService) -> None:
+    def __init__(
+        self,
+        operations: BotOperationsService,
+        paper_report: PaperReportProvider | None = None,
+    ) -> None:
         self._operations = operations
+        self._paper_report = paper_report
 
     async def handle_bot_command(
         self, principal: Principal, command: BotCommand, bot_id: UUID | str | None
@@ -169,6 +194,8 @@ class BotCommandHandler:
                 ids = tuple(str(item.bot_id) for item in bots)
                 lines = [_status_line(item) for item in bots] or ["Không có bot nào bạn được xem."]
                 return BotCommandResult(True, "OK", "\n".join(lines), ids)
+            if command is BotCommand.REPORT:
+                return await self._report(principal)
             target = _parse_target(bot_id)
             if bot_id is not None and target is None:
                 return reject("BOT_NOT_FOUND")
@@ -187,6 +214,17 @@ class BotCommandHandler:
             result = reject(error.reason_code)
             target = _parse_target(bot_id)
             return BotCommandResult(False, result.code, result.message, (), target)
+
+    async def _report(self, principal: Principal) -> BotCommandResult:
+        """Tổng hợp PAPER chỉ đọc; lỗi báo cáo không lộ chi tiết, chỉ trả mã ổn định."""
+        if self._paper_report is None:
+            return reject("REPORT_UNAVAILABLE")
+        try:
+            view = await self._paper_report.build_view(principal)
+        except BotReportError, PermissionError, ValueError:
+            return reject("REPORT_UNAVAILABLE")
+        ids = tuple(str(row.bot_id) for row in view.rows)
+        return BotCommandResult(True, "OK", format_paper_report_text(view), ids)
 
     @staticmethod
     async def _execute(

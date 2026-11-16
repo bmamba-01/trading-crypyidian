@@ -47,7 +47,7 @@ def test_workspace_risk_caps_hold_through_real_runtime_admin_and_ledger_paths() 
 
         paths = harness.probe("mb04_runtime_paths")
         print("paths", json.dumps(paths), harness.last_stderr)
-        race = harness.probe("mb04_publish_race", "migrator")
+        race = harness.probe("mb04_publish_race", "db-provisioner")
         print("race", json.dumps(race), harness.last_stderr)
         inspected = {name: harness.inspect(name) for name in ("c1", "c2", "c3a", "c3b", "race5")}
         print("inspect", json.dumps(inspected))

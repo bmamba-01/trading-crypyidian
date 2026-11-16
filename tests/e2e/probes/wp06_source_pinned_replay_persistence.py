@@ -28,6 +28,9 @@ from trading_bot.adapters.database.models import (
     MarketInstrument,
 )
 from trading_bot.adapters.database.models.backtest_job_entities import BacktestReplayJobRecord
+from trading_bot.adapters.database.models.source_license_evidence_entities import (
+    SourceLicenseEvidenceRecord,
+)
 from trading_bot.adapters.database.repositories.backtest_outcomes import BacktestOutcomeRepository
 from trading_bot.adapters.database.repositories.market_data import MarketDataRepository
 from trading_bot.adapters.database.repositories.source_registry import SourceRegistryRepository
@@ -46,6 +49,11 @@ from trading_bot.application.first_party_qa_dataset import (
 )
 from trading_bot.application.outbox import UnitOfWork
 from trading_bot.domain.market.ingestion import MarketRecordVersion, MarketStream
+from trading_bot.domain.research.license_scope import (
+    SourceLicenseScope,
+    canonical_scope_json,
+    scope_sha256,
+)
 from trading_bot.domain.research.source_policy import SourcePolicyState, SourceUsePurpose
 from trading_bot.domain.research.source_registry import SourceBudget, SourceRegistryEntry
 
@@ -130,6 +138,25 @@ async def run_probe(*, scorer_seed: bool = False) -> dict[str, object]:
             )
         )
     policy_now = datetime.now(UTC)
+    # Từ WP06 (13/11/2026, d823df5) policy VERIFIED mới phải kèm license scope + bằng chứng đã lưu
+    # (digest/scope_hash). Probe viết trước quy tắc đó nên lỗi khi seed; sửa 16/11/2026 (AI-3).
+    license_scope = SourceLicenseScope(
+        source_id=CRYPIDIAN_FIRST_PARTY_QA,
+        provider="CRYPIDIAN",
+        product="QA_SYNTHETIC_KLINES",
+        venue="FIRST_PARTY",
+        contract="RESEARCH",
+        symbols=("BTCUSDT",),
+        intervals=("1m", "5m", "15m", "1h", "4h"),
+        data_start=policy_now - timedelta(days=3650),
+        data_end=policy_now + timedelta(days=3650),
+        allowed_purposes=(SourceUsePurpose.BACKTEST_RESEARCH, SourceUsePurpose.TRAINING),
+        allowed_outputs=("aggregate_report", "derived_features"),
+        derived_use=("aggregate_reporting", "feature_extraction"),
+        attribution="Crypidian QA fixture",
+        max_retention_days=None,
+    )
+    license_evidence_id = uuid4()
     rights_history = (
         SourceRegistryEntry.discover(
             source_id=CRYPIDIAN_FIRST_PARTY_QA,
@@ -154,6 +181,13 @@ async def run_probe(*, scorer_seed: bool = False) -> dict[str, object]:
             actor_id="fixture-operator",
             at=policy_now - timedelta(minutes=2),
             reason="Ghi nhận nguồn QA đang chờ review trong test workspace.",
+            evidence_ref=CRYPIDIAN_FIRST_PARTY_QA_EVIDENCE_REF,
+            provider=license_scope.provider,
+            product=license_scope.product,
+            venue=license_scope.venue,
+            contract=license_scope.contract,
+            license_scope=license_scope,
+            attribution=license_scope.attribution,
         )
         .transition(
             policy_id=f"{CRYPIDIAN_FIRST_PARTY_QA}:source-pinned-training",
@@ -161,6 +195,10 @@ async def run_probe(*, scorer_seed: bool = False) -> dict[str, object]:
             actor_id="fixture-operator",
             at=policy_now - timedelta(minutes=1),
             reason="Chỉ cấp mục đích nghiên cứu và TRAINING cho fixture first-party.",
+            license_scope=license_scope,
+            license_evidence_id=license_evidence_id,
+            license_digest="a" * 64,
+            license_scope_hash=scope_sha256(license_scope),
             allowed_purposes=frozenset(
                 {SourceUsePurpose.BACKTEST_RESEARCH, SourceUsePurpose.TRAINING}
             ),
@@ -172,6 +210,27 @@ async def run_probe(*, scorer_seed: bool = False) -> dict[str, object]:
     )
     for revision in rights_history.revisions:
         async with UnitOfWork(sessions, workspace_id=WORKSPACE_ID) as uow:
+            if revision.state is SourcePolicyState.VERIFIED:
+                uow.session.add(
+                    SourceLicenseEvidenceRecord(
+                        id=license_evidence_id,
+                        workspace_id=WORKSPACE_ID,
+                        source_id=CRYPIDIAN_FIRST_PARTY_QA,
+                        policy_id=f"{CRYPIDIAN_FIRST_PARTY_QA}:source-pinned-pending",
+                        idempotency_key=uuid4(),
+                        evidence_ref=CRYPIDIAN_FIRST_PARTY_QA_EVIDENCE_REF,
+                        digest="a" * 64,
+                        byte_count=64,
+                        media_type="text/plain",
+                        scope_version=license_scope.scope_version,
+                        license_scope=json.loads(canonical_scope_json(license_scope)),
+                        canonical_scope=canonical_scope_json(license_scope),
+                        scope_hash=scope_sha256(license_scope),
+                        actor_id="fixture-operator",
+                        created_at=policy_now - timedelta(minutes=2),
+                    )
+                )
+                await uow.session.flush()
             await SourceRegistryRepository(uow.session).append_revision(
                 workspace_id=WORKSPACE_ID, revision=revision
             )

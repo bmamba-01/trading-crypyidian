@@ -25,6 +25,9 @@ def test_registry_exposes_stable_experimental_versions_and_hashes() -> None:
         "h01-v1",
         "h03-v1",
         "h03-v2",
+        "h03-v3-15m",
+        "h03-v3-1h",
+        "h03-v3-4h",
         "h06-v1",
         "h06-v2",
     ]

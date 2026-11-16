@@ -98,6 +98,14 @@ class AppSettings(BaseSettings):
     market_collector_streams: str = "BTCUSDT:1m,5m,15m,1h,4h;ETHUSDT:1m,5m,15m,1h,4h"
     market_collector_tick_seconds: float = Field(default=30.0, ge=5, le=600)
     market_collector_initial_bars: int = Field(default=1000, ge=1, le=15000)
+    # AI-4: lịch công bố vĩ mô chính thức (BEA, FOMC) cho H06, trong ingestion-worker. Mặc định
+    # tắt; khi bật mỗi nguồn vẫn cần policy Source Registry cấp PAPER_DEMO.
+    macro_calendar_enabled: bool = False
+    # AI-4 lát 2: ảnh chụp phái sinh công khai Binance (funding, OI, long/short, taker) theo giờ cho
+    # các symbol của market_collector_streams. Mặc định tắt; cần policy PAPER_DEMO của nguồn.
+    derivatives_collector_enabled: bool = False
+    # AI-4 lát 3: kiểm exchangeInfo Binance mỗi 30 phút để phát hiện niêm yết/gỡ hợp đồng.
+    listings_collector_enabled: bool = False
     # Cờ kiểm thử: chấp nhận mã xác thực cố định 123456 (chỉ local/test + PAPER, mặc định tắt).
     auth_test_totp_enabled: bool = False
     mfa_encryption_key_file: Path | None = None
@@ -112,6 +120,18 @@ class AppSettings(BaseSettings):
     signal_worker_tick_seconds: float = Field(default=5.0, gt=0, le=300)
     signal_worker_max_candidate_age_seconds: int = Field(default=7200, ge=5, le=14_400)
     signal_worker_max_attempts: int = Field(default=5, ge=1, le=20)
+    # TG-2: chống spam theo subscription — cooldown tín hiệu trùng và trần số tin/60 phút.
+    signal_worker_cooldown_minutes: int = Field(default=90, ge=0, le=1440)
+    signal_worker_max_messages_per_hour: int = Field(default=6, ge=1, le=60)
+    # TG-3: gửi tín hiệu/kết quả/tổng kết dạng ảnh thẻ (PNG + caption); False = văn bản thuần.
+    telegram_card_images_enabled: bool = True
+    # TG-3 (quyết định owner 15/11/2026): signal-worker gửi kết quả trade PAPER (mở/đóng) tới
+    # subscription đã bật và tin tổng hợp định kỳ. Chỉ đọc ledger PAPER, không phát lệnh.
+    telegram_trade_results_enabled: bool = True
+    # Chỉ báo sự kiện ghi trong khoảng này (tránh dội tin lịch sử khi mới bật/khởi động lại).
+    telegram_trade_result_max_age_minutes: int = Field(default=60, ge=1, le=1440)
+    # Chu kỳ tin tổng hợp so sánh các bot; 0 = tắt. Tối thiểu 15 phút để tránh spam.
+    telegram_report_interval_minutes: int = Field(default=240, ge=0, le=10_080)
 
     # Chính sách TEST scorer phải có version/hash giống hệt report và deployment được ghim.
     scorer_test_policy_version: str = Field(
@@ -250,6 +270,12 @@ class AppSettings(BaseSettings):
             raise ValueError(
                 "ingestion_workspace_id chỉ được cấu hình cho process_role ingestion-worker."
             )
+        if self.macro_calendar_enabled and self.process_role != "ingestion-worker":
+            raise ValueError("macro calendar chỉ chạy trong process_role ingestion-worker.")
+        if self.derivatives_collector_enabled and self.process_role != "ingestion-worker":
+            raise ValueError("derivatives collector chỉ chạy trong process_role ingestion-worker.")
+        if self.listings_collector_enabled and self.process_role != "ingestion-worker":
+            raise ValueError("listings collector chỉ chạy trong process_role ingestion-worker.")
         if self.market_collector_enabled:
             if self.process_role != "ingestion-worker":
                 raise ValueError("market collector chỉ chạy trong process_role ingestion-worker.")
@@ -317,6 +343,8 @@ class AppSettings(BaseSettings):
                 raise ValueError("signal-worker cần telegram_bot_token_file từ secret file.")
         elif self.signal_workspace_id is not None:
             raise ValueError("signal_workspace_id chỉ dành cho process_role signal-worker.")
+        if 0 < self.telegram_report_interval_minutes < 15:
+            raise ValueError("telegram_report_interval_minutes phải là 0 (tắt) hoặc ≥ 15 phút.")
         return self
 
     @model_validator(mode="after")

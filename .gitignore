@@ -18,3 +18,6 @@ build/
 
 # Ảnh chụp Playwright sinh lại mỗi lần chạy test admin (không phải bằng chứng nghiệm thu đã duyệt).
 tests/e2e/evidence/admin-playwright/
+
+# Trạng thái cục bộ của job AI Analyst trên host (khóa chạy, dấu vân tay chủ đề, đếm lượt/ngày).
+var/

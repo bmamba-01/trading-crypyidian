@@ -473,6 +473,59 @@
     {% endif %}
   </section>
 
+  <section class="bot-section-card bot-ops-card" aria-label="Đề xuất AI đã backtest" id="ai-proposals">
+    <h2 class="bot-section-title">{{ ico("config") }}Đề xuất AI đã backtest</h2>
+    <p class="bot-field-help">Gợi ý của AI Analyst, đã chạy thử bản gốc và bản đề xuất trên cùng nến đã lưu (1x, 1 vị thế/coin, có phí + trượt giá). Không tự áp vào bot: bấm "Tạo bản nháp" rồi kiểm định và công bố như bản nháp thường (đổi khối rủi ro cần MFA).</p>
+    {% if ai_proposal_status == "created" %}
+      <p class="bot-notice bot-notice--success" role="status">Đã tạo bản nháp từ đề xuất AI. Kiểm định rồi công bố ở mục "Bản nháp cấu hình".</p>
+    {% endif %}
+    {% if ai_proposal_error %}
+      <p class="bot-notice bot-notice--danger" role="alert">{{ ai_proposal_error }}</p>
+    {% endif %}
+    {% if ai_proposals %}
+    <div class="bot-table-wrap">
+      <table class="bot-table" aria-label="Bảng đề xuất AI đã backtest">
+        <thead>
+          <tr>
+            <th scope="col">Thay đổi</th>
+            <th scope="col">Kết luận</th>
+            <th scope="col">Số lệnh</th>
+            <th scope="col">PnL ròng (USDT)</th>
+            <th scope="col">Drawdown/coin</th>
+            <th scope="col"><span class="sr-only">Thao tác</span></th>
+          </tr>
+        </thead>
+        <tbody>
+        {% for item in ai_proposals %}
+          <tr class="bot-table__row">
+            <td data-label="Thay đổi" class="bot-table__lead">
+              {% for change in item.changes %}<code>{{ change.field }} → {{ change.to }}</code>{% if not loop.last %}<br>{% endif %}{% endfor %}
+              {% if item.notes %}<br><span class="value-muted">{{ item.notes | join(" ") }}</span>{% endif %}
+            </td>
+            <td data-label="Kết luận">{{ {"BETTER": "Tốt hơn", "WORSE": "Kém hơn", "INCONCLUSIVE": "Chưa kết luận", "UNSUPPORTED": "Không backtest được"}.get(item.verdict, item.verdict) }}</td>
+            <td data-label="Số lệnh">{{ item.baseline.trades if item.baseline.trades is defined else "—" }} → {{ item.variant.trades if item.variant.trades is defined else "—" }}</td>
+            <td data-label="PnL ròng (USDT)">{{ item.baseline.net_pnl or "—" }} → {{ item.variant.net_pnl or "—" }}</td>
+            <td data-label="Drawdown/coin">{{ item.baseline.max_drawdown or "—" }} → {{ item.variant.max_drawdown or "—" }}</td>
+            <td data-label="Thao tác">
+              {% if item.draftable %}
+              <form method="post" action="/admin/bots/{{ bot.id }}/ai-proposals/{{ item.id }}/draft">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <button type="submit" class="btn btn-sm btn-outline">Tạo bản nháp từ đề xuất</button>
+              </form>
+              {% else %}
+              <span class="value-muted">Không áp dụng</span>
+              {% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+      <p class="bot-empty">Chưa có đề xuất AI nào được backtest cho bot này.</p>
+    {% endif %}
+  </section>
+
   <section class="bot-section-card bot-ops-card" aria-label="Cấu hình chiến lược">
     <h2 class="bot-section-title">{{ ico("config") }}Bản nháp cấu hình</h2>
     {% if draft_validation == "valid" %}

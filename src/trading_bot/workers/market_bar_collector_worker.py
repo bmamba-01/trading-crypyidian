@@ -69,7 +69,7 @@ class MarketBarCollectorWorker:
         self.last_tick_at: datetime | None = None
 
     async def run_once(self) -> CollectorTick:
-        tick = await self._collector.collect_once(self._clock())
+        tick = await self._collector.collect_once(self._clock(), clock=self._clock)
         self.last_tick = tick
         self.last_tick_at = self._clock()
         collected = sum(result.bars for result in tick.results)

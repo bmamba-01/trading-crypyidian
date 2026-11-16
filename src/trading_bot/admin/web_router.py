@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import io
 import json
+import logging
 import re
 import secrets
 from collections.abc import Mapping
@@ -239,6 +240,7 @@ class AdminHTMLRoute(APIRoute):
         return handle
 
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin", tags=["admin web"], route_class=AdminHTMLRoute)
 
 
@@ -1099,6 +1101,7 @@ def _dashboard_performance_chart(reports: list[dict[str, Any]]) -> dict[str, Any
                 "OPPOSING_SIGNAL": "ĐẢO",
                 "CHANNEL_EXIT": "KÊNH",
                 "FEATURE_EXIT": "CHỈ BÁO",
+                "DELIST_EXIT": "GỠ",
             }.get(trade.get("exit_reason") or "", "ĐÓNG")
             entry_reason = trade.get("entry_reason")
             entry_reason = entry_reason if isinstance(entry_reason, dict) else {}
@@ -1156,6 +1159,7 @@ def _exit_reason_label_vi(reason: object) -> str:
         "CHANNEL_EXIT": "Thoát theo kênh giá",
         "FEATURE_EXIT": "Thoát theo chỉ báo",
         "FLATTEN_OPERATION": "Đóng theo thao tác quản trị",
+        "DELIST_EXIT": "Đóng trước khi Binance gỡ hợp đồng",
     }
     if not isinstance(reason, str) or not reason:
         return "Chưa có dữ liệu"
@@ -1634,11 +1638,14 @@ async def bot_detail(
     identity: Annotated[AuthIdentity, Depends(current_identity)],
     draft_validation: str | None = None,
     signal_filter_error: str | None = None,
+    ai_proposal: str | None = None,
+    ai_proposal_error: str | None = None,
 ) -> Response:
     """Chi tiết bot; service dùng cùng lỗi 404 cho bot không tồn tại/ngoài grant."""
     response.headers["Cache-Control"] = "no-store"
     try:
         bot = await _admin_service(request).get_bot(identity.principal, bot_id=bot_id)
+        ai_proposals = await _ai_proposals(request, identity, bot_id)
         runtime = _runtime_dict(await _operations(request, identity).bot_status(bot_id))
         csrf_token = await _auth_service(request).issue_csrf_token(read_session_cookie(request))
         signal_service = getattr(request.app.state, "telegram_signal_subscription_service", None)
@@ -1681,6 +1688,10 @@ async def bot_detail(
             else '{\n  "schema_version": 1\n}',
             "draft_validation": draft_validation,
             "signal_filter_error": signal_filter_error,
+            "ai_proposals": ai_proposals,
+            "ai_proposal_status": "created" if ai_proposal == "created" else None,
+            # Chỉ hiển thị lỗi mẫu đã biết (tránh chèn văn bản tùy ý qua query string).
+            "ai_proposal_error": _AI_PROPOSAL_ERRORS.get(ai_proposal_error or ""),
             "telegram_signal_state": signal_state,
             "signal_filter_choices": _signal_filter_choices(signal_state),
             "overlay_form": _overlay_form_choices(current_overlay, root_universe),
@@ -1837,6 +1848,74 @@ def _overlay_from_form(values: dict[str, str]) -> dict[str, Any]:
     if risk:
         overlay["risk"] = risk
     return overlay
+
+
+async def _ai_proposals(
+    request: Request, identity: AuthIdentity, bot_id: UUID
+) -> list[dict[str, Any]]:
+    """Mục phụ "Đề xuất AI đã backtest": lỗi đọc không được làm hỏng trang chi tiết bot."""
+    try:
+        rows = await _admin_service(request).list_proposal_backtests(
+            identity.principal, bot_id=bot_id
+        )
+    except Exception as error:  # noqa: BLE001
+        logger.warning("Không đọc được đề xuất AI của bot. error=%s", type(error).__name__)
+        return []
+    return rows if isinstance(rows, list) else []
+
+
+_AI_PROPOSAL_ERRORS = {
+    "stale": "Cấu hình bot đã đổi so với bản gốc đã backtest; cần backtest lại trước khi áp.",
+    "verdict": "Kết luận backtest không cho phép tạo bản nháp (kém hơn hoặc không backtest được).",
+    "mfa": "Đề xuất đổi khối rủi ro: cần xác thực MFA gần đây rồi thử lại.",
+    "permission": "Không đủ quyền tạo bản nháp cho bot này.",
+    "conflict": "Không tạo được bản nháp (đã có bản nháp hoặc cấu hình vừa đổi). Tải lại trang.",
+    "invalid": "Cấu hình đề xuất không hợp lệ với lược đồ hoặc giới hạn rủi ro gốc.",
+    "missing": "Không tìm thấy kết quả backtest đề xuất.",
+}
+
+
+def _ai_proposal_error_code(error: BotAdminError) -> str:
+    message = error.message
+    if error.status_code == 404:
+        return "missing"
+    if "MFA" in message:
+        return "mfa"
+    if error.status_code == 403:
+        return "permission"
+    if "backtest lại" in message:
+        return "stale"
+    if "Kết luận" in message:
+        return "verdict"
+    if error.status_code == 422 or error.errors:
+        return "invalid"
+    return "conflict"
+
+
+@router.post("/bots/{bot_id}/ai-proposals/{backtest_id}/draft")
+async def create_draft_from_ai_proposal_form(
+    bot_id: UUID,
+    backtest_id: UUID,
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(current_identity)],
+) -> Response:
+    """AI-3: tạo bản nháp từ đề xuất AI đã backtest; owner vẫn kiểm định + công bố (MFA)."""
+    values = await _parse_form(request)
+    await _verify_form_csrf(request, values)
+    try:
+        await _admin_service(request).create_draft_from_proposal(
+            identity.principal, bot_id=bot_id, backtest_id=backtest_id
+        )
+    except BotAdminError as error:
+        code = _ai_proposal_error_code(error)
+        return Response(
+            status_code=303,
+            headers={"Location": f"/admin/bots/{bot_id}?ai_proposal_error={code}#ai-proposals"},
+        )
+    return Response(
+        status_code=303,
+        headers={"Location": f"/admin/bots/{bot_id}?ai_proposal=created#ai-proposals"},
+    )
 
 
 @router.post("/bots/{bot_id}/config-drafts/{draft_id}/validate")

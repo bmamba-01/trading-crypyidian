@@ -21,6 +21,7 @@ SUBSCRIPTION = UUID(STATE["subscription_id"])
 ACCOUNT = UUID(STATE["account_id"])
 ROOT_SETTINGS = UUID(STATE["root_settings_id"])
 RISK_PROFILE = UUID(STATE["risk_profile_id"])
+TG3_SIGNAL_WORKER_LEDGER_READS = frozenset({"fill", "position_event", "trade", "risk_reservation"})
 BOT_CONFIG = UUID(STATE["bot_config_id"])
 INSTRUMENT = UUID(STATE["instrument_id"])
 NOW = datetime.fromisoformat(STATE["now"]).astimezone(UTC)
@@ -531,6 +532,80 @@ def _deliver() -> dict[str, Any]:
         asyncio.run(engine.dispose())
 
 
+def _throttle() -> dict[str, Any]:
+    """TG-2: kiểm chống spam trên PostgreSQL thật bằng role signal-worker (RLS, advisory lock)."""
+    import asyncio
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    from sqlalchemy import text
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from trading_bot.adapters.database.engine import (
+        create_database_engine,
+        database_url_from_secret,
+    )
+    from trading_bot.adapters.database.repositories.telegram_signals import (
+        TelegramSignalRepository,
+    )
+    from trading_bot.application.telegram_signals import SignalThrottlePolicy
+
+    engine = create_database_engine(
+        database_url_from_secret(
+            username=os.environ["TRADING_BOT_DATABASE_USER"],
+            password_file=Path(os.environ["TRADING_BOT_DATABASE_PASSWORD_FILE"]),
+            host="postgres",
+            database="crypidian",
+        )
+    )
+    bot_id = UUID(STATE["bot_id"])
+
+    async def run() -> dict[str, Any]:
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        reasons: dict[str, str | None] = {}
+        async with sessions() as session, session.begin():
+            await session.execute(
+                text(
+                    "SELECT set_config('app.workspace_id', :w, true), "
+                    "set_config('app.bot_id', :b, true)"
+                ),
+                {"w": str(WORKSPACE), "b": str(bot_id)},
+            )
+            repository = TelegramSignalRepository(session)
+            candidates = await repository.recent_candidates(
+                workspace_id=WORKSPACE, bot_id=bot_id, created_after=NOW - timedelta(days=30)
+            )
+            assert len(candidates) == 1, candidates
+            # Delivery giả định thứ hai của cùng subscription cho cùng tín hiệu (chưa lưu).
+            pending = SimpleNamespace(id=uuid4(), subscription_id=SUBSCRIPTION)
+            cases = {
+                "duplicate": SignalThrottlePolicy(),
+                "hourly_cap": SignalThrottlePolicy(cooldown=timedelta(0), max_per_hour=1),
+                "allowed": SignalThrottlePolicy(cooldown=timedelta(0), max_per_hour=2),
+            }
+            for name, policy in cases.items():
+                reasons[name] = await repository._throttle_reason(
+                    workspace_id=WORKSPACE,
+                    bot_id=bot_id,
+                    delivery=pending,  # type: ignore[arg-type]
+                    candidate=candidates[0],
+                    now=datetime.now(UTC),
+                    policy=policy,
+                )
+            constraint = await session.scalar(
+                text(
+                    "SELECT string_agg(pg_get_constraintdef(oid), ' ') FROM pg_constraint "
+                    "WHERE conrelid = 'telegram_signal_delivery'::regclass AND contype = 'c'"
+                )
+            )
+        return {**reasons, "suppressed_allowed": "SUPPRESSED" in str(constraint)}
+
+    try:
+        return asyncio.run(run())
+    finally:
+        asyncio.run(engine.dispose())
+
+
 def _prepare_filter_change() -> dict[str, Any]:
     with _connect() as connection:
         decision_id = connection.execute(
@@ -601,10 +676,20 @@ def _verify() -> dict[str, Any]:
                         (role, table, privilege),
                     ).fetchone()[0], (role, table, privilege)
                     if privilege in ("SELECT", "INSERT", "UPDATE"):
-                        assert not connection.execute(
-                            "SELECT has_any_column_privilege(%s, %s, %s)",
-                            (role, table, privilege),
-                        ).fetchone()[0], (role, table, privilege)
+                        # TG-3 (migration d5f7b9c1e3a6): signal-worker chỉ được SELECT theo cột
+                        # trên ledger PAPER để dựng tin kết quả; mọi quyền ghi vẫn bị cấm.
+                        tg3_read = (
+                            role == "crypidian_signal_worker"
+                            and privilege == "SELECT"
+                            and table in TG3_SIGNAL_WORKER_LEDGER_READS
+                        )
+                        assert (
+                            connection.execute(
+                                "SELECT has_any_column_privilege(%s, %s, %s)",
+                                (role, table, privilege),
+                            ).fetchone()[0]
+                            is tg3_read
+                        ), (role, table, privilege)
         assert not connection.execute(
             "SELECT has_table_privilege('crypidian_signal_worker', 'market_bar', 'SELECT')"
         ).fetchone()[0]
@@ -665,6 +750,8 @@ with _connect() as connection:
         result = _prepare_filter_change()
     elif phase == "deliver":
         result = _deliver()
+    elif phase == "throttle":
+        result = _throttle()
     elif phase == "verify":
         result = _verify()
     else:

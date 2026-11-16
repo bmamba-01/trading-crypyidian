@@ -14,13 +14,20 @@ hash của mọi release v1 đang được ghim trong DB.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import MappingProxyType
 
+from trading_bot.domain.strategy.contracts import (
+    DecisionSnapshot,
+    NoTrade,
+    StrategyCandidate,
+    StrategySelection,
+)
 from trading_bot.domain.strategy.recipes import ExitRecipe
 from trading_bot.domain.strategy.rules import (
     H03DonchianBreakoutRule,
     H06RangeMeanReversionRule,
+    _no,
 )
 
 # SHA-256 của `rules.py` tại thời điểm phát hành v2. Rule vào lệnh của v2 kế thừa từ file đó,
@@ -52,6 +59,27 @@ def exit_evidence_spec(recipe_id: str) -> ExitEvidenceSpec | None:
     return EXIT_EVIDENCE_BY_RECIPE.get(recipe_id)
 
 
+def _v1_selection(
+    release_id: str, strategy_id: str, settings: StrategySelection
+) -> StrategySelection | NoTrade:
+    """Kiểm v2 được chọn rồi quy selection về v1 để chạy lại đúng rule vào lệnh của v1.
+
+    Sửa 16/11/2026: `rules._selected` đòi "<strategy>-v1" trong selection, mà runtime dựng
+    selection `(release_id,)` nên v2 luôn trả `*_NOT_SELECTED` (chưa từng ra tín hiệu). Ngược
+    lại khi chỉ chọn v1, rule v2 không được coi là đã chọn.
+    """
+    if settings.published and release_id not in settings.active_release_ids:
+        return _no(
+            strategy_id,
+            f"{strategy_id}_NOT_SELECTED",
+            "Bản phát hành chiến lược không nằm trong cấu hình đang chọn.",
+        )
+    base = f"{strategy_id.lower()}-v1"
+    if base in settings.active_release_ids:
+        return settings
+    return replace(settings, active_release_ids=(*settings.active_release_ids, base))
+
+
 class H03DonchianBreakoutRuleV2(H03DonchianBreakoutRule):
     """H03 v2: vào lệnh như v1, thoát thêm theo kênh Donchian ngược chiều 20 nến 1h."""
 
@@ -60,6 +88,14 @@ class H03DonchianBreakoutRuleV2(H03DonchianBreakoutRule):
     recipe = ExitRecipe(
         "h03-exit-v2", 2.0, trailing_atr_multiple=3.0, max_hold_bars=120, exit_channel_period=20
     )
+
+    def evaluate(
+        self, snapshot: DecisionSnapshot, settings: StrategySelection
+    ) -> StrategyCandidate | NoTrade:
+        selection = _v1_selection(self.release_id, self.strategy_id, settings)
+        if isinstance(selection, NoTrade):
+            return selection
+        return super().evaluate(snapshot, selection)
 
 
 class H06RangeMeanReversionRuleV2(H06RangeMeanReversionRule):
@@ -79,3 +115,11 @@ class H06RangeMeanReversionRuleV2(H06RangeMeanReversionRule):
         ("short_exit", ("<=", 0.2)),
         ("allow_scale_in", False),
     )
+
+    def evaluate(
+        self, snapshot: DecisionSnapshot, settings: StrategySelection
+    ) -> StrategyCandidate | NoTrade:
+        selection = _v1_selection(self.release_id, self.strategy_id, settings)
+        if isinstance(selection, NoTrade):
+            return selection
+        return super().evaluate(snapshot, selection)
