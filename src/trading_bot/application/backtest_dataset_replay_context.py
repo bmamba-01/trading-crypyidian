@@ -396,12 +396,14 @@ def run_backtest_dataset_runtime_replay(
     runner: BacktestRunner | None = None,
     progress_callback: Callable[[int, int], None] | None = None,
     cancel_requested: Callable[[], bool] | None = None,
+    max_bars_per_timeframe: int | None = None,
 ) -> RuntimePaperReplayComparison:
     """Chạy bundle đã kiểm quyền qua snapshot builder và PAPER runtime evaluator."""
     _validate_manifest_bundle(bundle, manifest)
     observations = build_backtest_dataset_replay_observations(
         bundle,
         strategy_release_id=manifest.strategy_release_id,
+        max_bars_per_timeframe=max_bars_per_timeframe,
     )
     evaluator_factory = BacktestDatasetRuntimeEvaluatorFactory(
         bundle=bundle,

@@ -899,6 +899,17 @@ Các khái niệm đã có (liquidity sweep, VWAP, retest, BOS, delta nến, fun
 | Round-trip cost gate | Cổng chi phí khứ hồi | Khoảng stop phải ≥ 3 × (phí vào + phí ra) ước tính; với VIP0 taker 0,05% hai chiều là 0,3% giá. | Mức phí theo quyết định owner #4 (16/11/2026); [Binance — Fee rate](https://www.binance.com/en/fee/futureFee) tải động, kiểm 16/11/2026 không đọc được bảng số → cần owner xác nhận lại trên trang khi đăng nhập. [TradingView — VWAP](https://www.tradingview.com/support/solutions/43000502018-volume-weighted-average-price-vwap/) kiểm 16/11/2026 (có dải độ lệch chuẩn). |
 | Session filter (London/New York) | Bộ lọc phiên London/New York | Chỉ nhận tín hiệu khi giờ đóng nến nằm trong giờ mở cửa địa phương của London hoặc New York (tự theo giờ mùa hè). | Định nghĩa nội bộ (`sig1-session-v1`) |
 
+## AR. Kiểm định scalping (SIG-5, 16/11/2026)
+
+Các khái niệm đã có (walk-forward validation, embargo, expectancy, breakeven win rate) không lặp lại; dưới đây là cách dự án áp chúng cho rule tham số khóa.
+
+| Thuật ngữ (EN) | Tiếng Việt | Định nghĩa và giới hạn | Nguồn |
+|---|---|---|---|
+| Walk-forward fold (fixed-parameter rule) | Khối walk-forward cho rule tham số khóa | Cửa sổ đánh giá chia thành các khối liền nhau theo thời gian, mỗi khối mở sau embargo; tham số rule khóa trước khi chạy nên mọi khối là ngoài mẫu — chia khối để xem độ ổn định, không để chọn tham số. | [Bailey, Borwein, López de Prado, Zhu — The Probability of Backtest Overfitting (SSRN 2326253)](https://papers.ssrn.com/abstract=2326253) (kiểm 16/11/2026); định nghĩa nội bộ (`sig5-validation-v1`) |
+| R multiple (net) | Bội số R ròng | PnL ròng của lệnh chia cho rủi ro ban đầu = \|giá vào thực tế − stop ban đầu\| × khối lượng × hệ số hợp đồng. | [CrossTrade — R-Multiple](https://crosstrade.io/learn/performance-metrics/r-multiple) (khái niệm do Van Tharp phổ biến; R cố định theo stop ban đầu; kiểm 16/11/2026) |
+| Cost stress scenario | Kịch bản chi phí xấu | Chạy lại cùng dữ liệu với trượt giá ×2 và chỉ khớp taker; setup chỉ được đề xuất PAPER khi kỳ vọng ròng ngoài mẫu vẫn dương ở kịch bản này. | Quyết định owner #5 (16/11/2026) |
+| Producer bar window | Cửa sổ nến của producer | Producer live chỉ nạp 256 nến gần nhất mỗi khung; replay SIG-5 dùng cùng cửa sổ để đặc trưng khớp PAPER live. | Định nghĩa nội bộ (`PRODUCER_MAX_BARS_PER_STREAM`) |
+
 ## AS. Theo dõi tiến độ dự án và agent trên It's a Plan (16/11/2026)
 
 | Thuật ngữ | Bản dịch ưu tiên | Giải thích ngắn trong dự án | Tài liệu tham khảo |

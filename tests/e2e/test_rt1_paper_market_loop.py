@@ -160,7 +160,7 @@ def test_rest_candles_drive_paper_entry_fill_and_stop_exit_idempotently() -> Non
             "paper_recovery": "ready",
             "market_dispatch": "running",
             "exchange_execution": "disabled",
-        }, first["readiness"]
+        }, json.dumps(first["readiness"], default=str)  # chuỗi JSON: pytest không cắt chi tiết
         dispatch = first["readiness"]["market_dispatch"]
         assert dispatch["errors"] == 0, dispatch
         assert first["ledger"] == {"intents": ["FILLED"], "trades": ["OPEN"], "fills": ["ENTRY"]}

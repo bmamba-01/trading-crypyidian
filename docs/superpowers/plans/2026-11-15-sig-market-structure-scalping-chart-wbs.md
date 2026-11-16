@@ -131,6 +131,33 @@ Mọi feature có `formula_version`, chạy được tăng dần, và có `confi
 
 **Acceptance:** cùng bundle → cùng hash báo cáo; tiêu chí bật PAPER được owner duyệt trước khi chạy (tránh chọn sau khi thấy kết quả).
 
+**Đã triển khai lát 1 (16/11/2026, chưa commit) — bộ máy kiểm định; chưa có kết luận trên dữ liệu thật:**
+
+- `domain/portfolio/scalping_validation.py` (`sig5-validation-v1`): `ScalpTrade` (R ròng = PnL ròng / rủi ro ban đầu), `walk_forward_folds` (khối liền nhau + embargo), `setup_report` (n, n ngoài mẫu, tỷ lệ thắng so với hòa vốn, kỳ vọng ròng và theo R, phân phối R, theo phiên/giờ UTC, theo fold, cờ chưa đủ mẫu, `report_hash` không phụ thuộc thứ tự), `paper_enable_verdict` (`sig5-paper-criterion-v1` = quyết định #5: ≥ 200 lệnh ngoài mẫu **và** kỳ vọng ròng > 0 ở kịch bản xấu; chỉ là đề xuất).
+- `application/scalping_validation.py` (`sig5-costs-v1`): replay PAPER từng release qua `run_backtest_dataset_runtime_replay` ở kịch bản gốc (taker VIP0 0,05%, trượt giá cơ sở 0,02% — **giả định dự án**, chưa đo từ sổ lệnh) và xấu (trượt giá ×2, chỉ taker); planner nhận cùng chi phí; `validate_release` trả báo cáo + kết luận + `validation_hash`; `build_research_bundle` dựng bundle 5m/15m từ nến REST đã lưu.
+- Replay dùng **cửa sổ 256 nến như producer** (`max_bars_per_timeframe`, mặc định `None` giữ hành vi BT-1): trước đây replay thấy toàn bộ lịch sử → đặc trưng lệch live và O(n²) theo độ dài dữ liệu. Đo trên dữ liệu thật: 20–45 ms/quan sát (chủ yếu tính feature snapshot); 1 tháng M5 ≈ 7 phút, 760 MB. Dựng observation cả 6 tháng một lần tốn > 3,8 GB/tiến trình → dùng `validate_release_chunks` (replay đoạn 30 ngày, mỗi đoạn tự mang warmup 72 h, gộp lệnh rồi mới chia fold) và CLI `--chunk-days`.
+- `scripts/sig5_scalping_validation.py`: `fetch` (REST kline công khai, không khóa — **chỉ chạy khi owner đồng ý tải**) và `validate` (chỉ đọc file cục bộ, ghi JSON + bảng tóm tắt).
+- Test: `tests/unit/test_sig5_scalping_validation.py` (fold/embargo, công thức báo cáo, hash, kết luận, runner trên bundle replay, cửa sổ observation, CLI offline).
+**Lượt chạy dữ liệu thật đầu tiên (16/11/2026) — kết luận theo `sig5-paper-criterion-v1`: KHÔNG đề xuất bật PAPER cho setup nào.**
+
+Dữ liệu: REST kline công khai Binance USDⓈ-M, 2026-05-01 → 2026-11-01 (tải 16/11/2026), 5m + 15m; đánh giá từ 2026-05-04 (warmup 72 h), 4 fold walk-forward, embargo 60 phút, đoạn replay 30 ngày, vốn 10 000 USDT, rủi ro 0,5%/lệnh. Kịch bản xấu = trượt giá 0,04%/lần khớp + taker 0,05%.
+
+| Release × mã | n ngoài mẫu (xấu) | Thắng | Hòa vốn | Kỳ vọng R (gốc / xấu) | Kỳ vọng ròng xấu (USDT/lệnh) | Lý do | `validation_hash` (16 ký tự đầu) |
+|---|---|---|---|---|---|---|---|
+| h18-v1 BTCUSDT | 0 | — | — | — | — | thiếu mẫu, kỳ vọng không dương | d1b007724744e4e4 |
+| h18-v1 ETHUSDT | 3 | 33,3% | 58,3% | −0,70 / −0,54 | −21,42 | thiếu mẫu, kỳ vọng âm | ea6059043729a69e |
+| h19-v1 BTCUSDT | 0 | — | — | — | — | thiếu mẫu, kỳ vọng không dương | 947286559988080c |
+| h19-v1 ETHUSDT | 0 | — | — | — | — | thiếu mẫu, kỳ vọng không dương | 7bd37f73e34e5348 |
+| h20-v1 BTCUSDT | 116 | 25,0% | 48,1% | −0,25 / −0,25 | −10,51 | thiếu mẫu, kỳ vọng âm | c49a83d3c8e9e95e |
+| h20-v1 ETHUSDT | 163 | 30,1% | 55,7% | −0,26 / −0,29 | −11,79 | thiếu mẫu, kỳ vọng âm | 172d518f03f8e095 |
+
+- H20 âm ổn định ở **cả 4 fold** (BTC −0,11…−0,35R; ETH −0,18…−0,36R) và mọi phiên (New York tệ nhất ≈ −0,31/−0,35R); không lệnh nào đạt ≥ 2R (phân phối dồn ở −1R…0 — dừng hòa vốn/hết thời gian giữ). Phí ≈ 1/2 khoản lỗ ròng (BTC: phí 579 / lỗ 1 219 USDT) → âm cả trước phí.
+- H18/H19 gần như không phát tín hiệu: 1 tháng BTC H18 chỉ ~14 lần quét-lấy lại trong phiên, 13 lần bị loại vì delta chưa đảo; H19 ETH 1 ứng viên/tháng (2 944 lần loại vì không đi ngang ADX/ER, 1 048 vì chưa lệch 2σ VWAP) nhưng 6 tháng vẫn 0 lệnh — **chưa điều tra** ứng viên bị chặn ở rủi ro/khớp lệnh.
+- Cửa sổ 256 nến 5m (~21 h, giống producer) không chứa trọn ngày UTC trước → PDH/PDL của H18 là đỉnh/đáy **một phần** ngày. Replay ↔ live vẫn khớp, nhưng ngữ nghĩa mức sai; sửa (cửa sổ ≥ 2 ngày hoặc nguồn mức ngày riêng) = đổi producer + release H18 mới → cần owner quyết.
+- Đổi tham số rule sau khi xem kết quả này là **lượt thử mới** (trial mới), không phải sửa lượt này.
+
+- **Lệch so với mô tả:** khớp trên nến 5m (chưa dùng 1m làm execution); "chỉ taker" trùng kịch bản gốc vì lát này chưa có limit maker; chưa ghi báo cáo vào DB/admin; chưa chạy trên dữ liệu thật (cần owner cho phép tải và xác nhận quyền dùng dữ liệu REST cho nghiên cứu).
+
 ### SIG-6 — Độ tin cậy có hiệu chuẩn và đồng thuận không trùng lặp (mở rộng WP06 calibration, MI-5)
 
 1. Nhãn: P(chạm TP1 trước SL trong H nến) từ outcome đã lưu, theo setup.

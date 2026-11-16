@@ -414,6 +414,10 @@ class PaperExecutionGateway:
         """Trả snapshot vị thế đang gắn với order intent."""
         return self._positions.get(intent_id)
 
+    def positions(self) -> tuple[PaperPosition, ...]:
+        """Mọi vị thế (mở và đã đóng) theo intent ID, chỉ đọc — cho báo cáo kiểm định SIG-5."""
+        return tuple(self._positions[key] for key in sorted(self._positions))
+
     def open_orders(self) -> tuple[PaperOrderIntent, ...]:
         """Order còn hiệu lực trên account (ACCEPTED/PARTIALLY_FILLED/UNKNOWN), chỉ đọc."""
         live = {OrderStatus.ACCEPTED, OrderStatus.PARTIALLY_FILLED, OrderStatus.UNKNOWN}

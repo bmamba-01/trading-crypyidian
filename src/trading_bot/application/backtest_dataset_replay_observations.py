@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from bisect import bisect_right
 from collections.abc import Callable
 from datetime import UTC, datetime
 
@@ -28,12 +29,19 @@ def build_backtest_dataset_replay_observations(
     *,
     strategy_release_id: str,
     position_is_flat_at: Callable[[datetime], bool | None] | None = None,
+    max_bars_per_timeframe: int | None = None,
 ) -> tuple[ReplayObservation, ...]:
     """Tạo snapshot ở từng nến entry đã đóng và khả dụng trong evaluation window.
 
     Mỗi timeframe chỉ thấy bars có `close_time` và `available_at` không sau
     decision time. Builder không tự tạo position-state hoặc macro evidence.
+
+    `max_bars_per_timeframe` (SIG-5) giới hạn mỗi khung ở N nến đã thấy gần nhất — cùng cửa sổ
+    producer production (`PRODUCER_MAX_BARS_PER_STREAM`) để replay khớp đặc trưng live và chạy
+    tuyến tính theo độ dài dữ liệu. `None` giữ hành vi BT-1 (toàn bộ lịch sử).
     """
+    if max_bars_per_timeframe is not None and max_bars_per_timeframe < 1:
+        raise ReplayObservationBuildError("max_bars_per_timeframe phải dương.")
     if not isinstance(bundle, BacktestDatasetReplayBundle):
         raise ReplayObservationBuildError("Cần BacktestDatasetReplayBundle đã kiểm định.")
     if any(bar.available_at < bar.close_time for item in bundle.components for bar in item.bars):
@@ -73,6 +81,26 @@ def build_backtest_dataset_replay_observations(
             "Nến quyết định available sau range_end; cần mở rộng evaluation window."
         )
 
+    # Nến đã đóng sắp theo mốc khả dụng (close/available đều không sau decision time); cắt cửa
+    # sổ bằng bisect thay vì lọc lại toàn bộ chuỗi ở mỗi quyết định.
+    ordered = {
+        timeframe: sorted(
+            (bar for bar in components[timeframe].bars if bar.is_closed),
+            key=lambda bar: (max(bar.close_time, bar.available_at), bar.open_time),
+        )
+        for timeframe in requirements
+    }
+    visible_keys = {
+        timeframe: [max(bar.close_time, bar.available_at) for bar in bars]
+        for timeframe, bars in ordered.items()
+    }
+
+    def _window(timeframe: str, moment: datetime) -> tuple[OHLCVBar, ...]:
+        if max_bars_per_timeframe is None:
+            return components[timeframe].bars
+        end = bisect_right(visible_keys[timeframe], moment)
+        return tuple(ordered[timeframe][max(0, end - max_bars_per_timeframe) : end])
+
     observations: list[ReplayObservation] = []
     source_identity_pinned = all(
         components[timeframe].manifest.has_pinned_source_identities for timeframe in requirements
@@ -94,7 +122,9 @@ def build_backtest_dataset_replay_observations(
             strategy_release_id=strategy_release_id,
             decision_time=decision_time,
             series_quality_as_of=decision_time,
-            bars_by_timeframe={timeframe: components[timeframe].bars for timeframe in requirements},
+            bars_by_timeframe={
+                timeframe: _window(timeframe, decision_time) for timeframe in requirements
+            },
             position_is_flat=position_is_flat,
             source_identity_required=source_identity_pinned,
             legacy_identity_namespace=(None if source_identity_pinned else bundle.dataset_hash),
