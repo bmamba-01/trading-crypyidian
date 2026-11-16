@@ -823,6 +823,51 @@ async def scanner() -> dict[str, Any]:
     }
 
 
+async def card_consensus_phase() -> dict[str, Any]:
+    """SIG-6: nguồn nến của cảnh báo đồng thuận đọc market_bar bằng role admin-web (RLS)."""
+    from sqlalchemy import text
+
+    from trading_bot.application.strategy_card_bars import PostgresCardBarsProvider
+    from trading_bot.application.strategy_pipeline.consensus import card_consensus
+    from trading_bot.application.strategy_pipeline.demo_cards import build_default_demo_cards
+    from trading_bot.auth.policy import Principal, Role
+
+    owner = Principal(
+        user_id=_id("owner"),
+        membership_id=MEMBERSHIP,
+        workspace_id=WORKSPACE,
+        roles=frozenset({Role.OWNER}),
+        mfa_verified_at=NOW,
+    )
+    outsider = Principal(
+        user_id=_id("outsider"),
+        membership_id=_id("outsider-membership"),
+        workspace_id=_id("other-workspace"),
+        roles=frozenset({Role.OWNER}),
+        mfa_verified_at=NOW,
+    )
+    engine, sessions = _sessions()
+    try:
+        async with sessions() as session:
+            role = await session.scalar(text("SELECT current_user"))
+        provider = PostgresCardBarsProvider(sessions)
+        bars = await provider(owner, "BTCUSDT", "4h")
+        missing = await provider(owner, "SOLUSDT", "4h")
+        foreign = await provider(outsider, "BTCUSDT", "4h")
+    finally:
+        await engine.dispose()
+    summary = card_consensus(build_default_demo_cards()[0], bars)
+    return {
+        "role": role,
+        "enough_bars": len(bars) >= 50,
+        "within_limit": len(bars) <= 300,
+        "positive_prices": all(bar.low > 0 for bar in bars),
+        "status": summary.status,
+        "missing": len(missing),
+        "other_workspace": len(foreign),
+    }
+
+
 def add_minutes() -> dict[str, Any]:
     """Ba nến 1m bình thường bắt đầu ở phút tròn đầu tiên sau `evaluated_at + 5s` của candidate."""
     with _connect() as connection, connection.transaction():
@@ -954,6 +999,8 @@ elif phase == "calendar":
     output = asyncio.run(calendar())
 elif phase == "scanner":
     output = asyncio.run(scanner())
+elif phase == "card_consensus":
+    output = asyncio.run(card_consensus_phase())
 elif phase == "add_minutes":
     output = add_minutes()
 elif phase == "add_stop_bar":

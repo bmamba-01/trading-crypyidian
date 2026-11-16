@@ -152,7 +152,7 @@ Dữ liệu: REST kline công khai Binance USDⓈ-M, 2026-05-01 → 2026-11-01 (
 | h20-v1 ETHUSDT | 163 | 30,1% | 55,7% | −0,26 / −0,29 | −11,79 | thiếu mẫu, kỳ vọng âm | 172d518f03f8e095 |
 
 - H20 âm ổn định ở **cả 4 fold** (BTC −0,11…−0,35R; ETH −0,18…−0,36R) và mọi phiên (New York tệ nhất ≈ −0,31/−0,35R); không lệnh nào đạt ≥ 2R (phân phối dồn ở −1R…0 — dừng hòa vốn/hết thời gian giữ). Phí ≈ 1/2 khoản lỗ ròng (BTC: phí 579 / lỗ 1 219 USDT) → âm cả trước phí.
-- H18/H19 gần như không phát tín hiệu: 1 tháng BTC H18 chỉ ~14 lần quét-lấy lại trong phiên, 13 lần bị loại vì delta chưa đảo; H19 ETH 1 ứng viên/tháng (2 944 lần loại vì không đi ngang ADX/ER, 1 048 vì chưa lệch 2σ VWAP) nhưng 6 tháng vẫn 0 lệnh — **chưa điều tra** ứng viên bị chặn ở rủi ro/khớp lệnh.
+- H18/H19 gần như không phát tín hiệu: 1 tháng BTC H18 chỉ ~14 lần quét-lấy lại trong phiên, 13 lần bị loại vì delta chưa đảo; H19 ETH 1 ứng viên/tháng (2 944 lần loại vì không đi ngang ADX/ER, 1 048 vì chưa lệch 2σ VWAP) nhưng 6 tháng vẫn 0 lệnh — planner loại `NET_REWARD_RISK_BELOW_MINIMUM` (R:R ròng thang 1R/2R sau phí 0,96/0,91 < 1,0; stop hẹp).
 - Cửa sổ 256 nến 5m (~21 h, giống producer) không chứa trọn ngày UTC trước → PDH/PDL của H18 là đỉnh/đáy **một phần** ngày. Replay ↔ live vẫn khớp, nhưng ngữ nghĩa mức sai; sửa (cửa sổ ≥ 2 ngày hoặc nguồn mức ngày riêng) = đổi producer + release H18 mới → cần owner quyết.
 - Đổi tham số rule sau khi xem kết quả này là **lượt thử mới** (trial mới), không phải sửa lượt này.
 
@@ -167,6 +167,16 @@ Dữ liệu: REST kline công khai Binance USDⓈ-M, 2026-05-01 → 2026-11-01 (
 5. Không bật SHADOW/PAPER_GATE; đây chỉ là hiển thị/xếp hạng.
 
 **Acceptance:** không có con số % nào hiển thị khi chưa có báo cáo hiệu chuẩn; test xác nhận hai điều kiện tương quan cao bị gộp.
+
+**Đã triển khai lát 1 (16/11/2026, chưa commit) — mục 4 (sửa G7) + kiểm mục 3:**
+
+- `StrategyPipelineEngine.numeric_node_series`: chuỗi đầu ra L1–L3 theo từng nến, cùng công thức `execute` (tách `_l2_from_bars` dùng chung, không đổi `PIPELINE_ENGINE_VERSION` vì ngữ nghĩa giữ nguyên), không nhìn trước, bỏ nến vi phạm L0 ở mọi node.
+- `application/strategy_pipeline/consensus.py` (`sig6-consensus-v1`): `card_consensus` gọi `AntiConsensusAnalyzer` (|r Pearson| ≥ 0,85), số **điều kiện độc lập** = số nhóm liên thông của đồ thị tương quan cao; < 50 nến hợp lệ → `insufficient_data` (không coi là trực giao).
+- `StrategyCardAdminService(bars_provider=…)`: bỏ `has_consensus_warning = False` gán cứng; đo trên mã/khung đầu tiên thẻ khai báo, tối đa 300 nến đã đóng. `PostgresCardBarsProvider` đọc `market_bar` của workspace (phiên chỉ đọc, RLS, một nguồn như chart/bộ quét; không gọi mạng sàn), nối trong `create_app`.
+- Giao diện: huy hiệu "Đã kiểm định (Orthogonal)" chỉ khi đo được và không có cặp tương quan cao; thiếu nến → "Chưa đủ dữ liệu tương quan"; KPI chỉ đếm thẻ đo được trực giao; hộp chi tiết hiện "x/y điều kiện độc lập · n nến · mã · khung".
+- Thẻ mẫu `MEAN-REVERT-002`: L3 `zscore_normalizer` (trung bình các node, giá đóng cửa áp đảo) gần trùng L2 (trả giá đóng cửa) → cảnh báo, 3/4 điều kiện độc lập — đúng loại "đồng thuận giả" G7 cần bắt.
+- Mục 3 đã đạt từ trước: thẻ tín hiệu chỉ hiện "Chưa hiệu chuẩn", Telegram không gửi độ tin cậy.
+- **Chưa làm:** nhãn hiệu chuẩn (mục 1–2) — chưa có setup scalping đạt SIG-5 nên chưa có outcome để hiệu chuẩn; checklist H01/H03/H06 chưa có "x/y điều kiện độc lập" (cần chuỗi điểm điều kiện theo lịch sử); ma trận tương quan trực quan.
 
 ### SIG-7 — Chart kiểu TradingView (mở rộng WB07A)
 

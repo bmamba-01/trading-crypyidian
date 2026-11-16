@@ -34,6 +34,7 @@ SERVICES = {
     "web_read": "admin-web",
     "calendar": "admin-web",
     "scanner": "admin-web",
+    "card_consensus": "admin-web",
     "add_minutes": "migrator",
     "add_stop_bar": "migrator",
     "verify": "migrator",
@@ -126,6 +127,17 @@ def test_rest_candles_drive_paper_entry_fill_and_stop_exit_idempotently() -> Non
             "excluded_1h": ["Thiếu dữ liệu 21 ngày để tính biên và thay đổi tuần."],
             "runs": 1,
             "run_summary_matches": True,
+        }
+        # SIG-6: cảnh báo đồng thuận đo trên nến đã lưu, đọc bằng role admin-web qua RLS; mã
+        # không có nến và workspace khác trả rỗng (không bịa dữ liệu, không rò workspace).
+        assert run("card_consensus") == {
+            "role": "crypidian_admin_web",
+            "enough_bars": True,
+            "within_limit": True,
+            "positive_prices": True,
+            "status": "ok",
+            "missing": 0,
+            "other_workspace": 0,
         }
         # CK-10: lịch sự kiện bằng role admin-web — audit đủ 3 thao tác, xóa mềm, RLS.
         assert run("calendar") == {

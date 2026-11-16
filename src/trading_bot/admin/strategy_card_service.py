@@ -7,6 +7,7 @@ phục vụ giao diện Admin Web và REST API.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
@@ -16,14 +17,21 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from trading_bot.adapters.database.repositories.strategy_card_repository import (
     StrategyCardRepository,
 )
+from trading_bot.application.strategy_pipeline.consensus import (
+    ConsensusSummary,
+    PriceBar,
+    card_consensus,
+)
 from trading_bot.application.strategy_pipeline.demo_cards import build_default_demo_cards
 from trading_bot.auth.policy import Principal
 from trading_bot.domain.strategy_card.graph_verifier import DeadNodeDetector
-from trading_bot.domain.strategy_card.orthogonality import AntiConsensusAnalyzer
 from trading_bot.domain.strategy_card.schema import StrategyCard, compute_canonical_hash
 
 if TYPE_CHECKING:
     pass
+
+# Nguồn nến đã đóng (tăng dần) cho phân tích đồng thuận: (principal, symbol, timeframe) → nến.
+CardBarsProvider = Callable[[Principal, str, str], Awaitable[Sequence[PriceBar]]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,6 +54,11 @@ class StrategyCardView:
     dead_nodes: tuple[str, ...]
     has_consensus_warning: bool
     consensus_warnings: tuple[str, ...]
+    consensus_status: str
+    consensus_sample_size: int
+    independent_conditions: int | None
+    total_conditions: int
+    consensus_scope: str
     target_symbols: tuple[str, ...]
     timeframes: tuple[str, ...]
     is_verified: bool
@@ -69,6 +82,11 @@ class StrategyCardView:
             "dead_nodes": list(self.dead_nodes),
             "has_consensus_warning": self.has_consensus_warning,
             "consensus_warnings": list(self.consensus_warnings),
+            "consensus_status": self.consensus_status,
+            "consensus_sample_size": self.consensus_sample_size,
+            "independent_conditions": self.independent_conditions,
+            "total_conditions": self.total_conditions,
+            "consensus_scope": self.consensus_scope,
             "target_symbols": list(self.target_symbols),
             "timeframes": list(self.timeframes),
             "is_verified": self.is_verified,
@@ -82,10 +100,11 @@ class StrategyCardAdminService:
         self,
         session_factory: async_sessionmaker[AsyncSession] | None = None,
         in_memory_cards: list[StrategyCard] | None = None,
+        bars_provider: CardBarsProvider | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._dead_node_detector = DeadNodeDetector()
-        self._anti_consensus_analyzer = AntiConsensusAnalyzer()
+        self._bars_provider = bars_provider
         self._fallback_cards: list[StrategyCard] = (
             in_memory_cards if in_memory_cards is not None else build_default_demo_cards()
         )
@@ -96,6 +115,8 @@ class StrategyCardAdminService:
         record_id: str,
         content_hash: str,
         is_active: bool,
+        consensus: ConsensusSummary,
+        consensus_scope: str,
     ) -> StrategyCardView:
         """Phân tích cấu trúc đồ thị và sinh đối tượng hiển thị an toàn."""
         # 1. Thống kê số lượng node ở từng phân tầng L0 -> L6
@@ -117,10 +138,10 @@ class StrategyCardAdminService:
         report = self._dead_node_detector.verify(card.nodes, card.edges)
         dead_nodes = tuple(report.dead_nodes)
 
-        # 3. Phân tích trực giao & cảnh báo tương quan ảo giác đồng thuận
-        # Mặc định trực giao an toàn trừ khi phát hiện dấu hiệu cảnh báo trong report
-        has_consensus_warning = False
-        consensus_warnings: tuple[str, ...] = ()
+        # 3. Đồng thuận giả (G7): đo trên chuỗi đầu ra node thật; thiếu nến = "chưa đủ dữ liệu",
+        # không mặc định là trực giao.
+        has_consensus_warning = consensus.status == "warning"
+        consensus_warnings = consensus.warnings
 
         is_verified = (len(dead_nodes) == 0) and (not has_consensus_warning)
         if len(content_hash) >= 14:
@@ -150,10 +171,28 @@ class StrategyCardAdminService:
             dead_nodes=dead_nodes,
             has_consensus_warning=has_consensus_warning,
             consensus_warnings=consensus_warnings,
+            consensus_status=consensus.status,
+            consensus_sample_size=consensus.sample_size,
+            independent_conditions=consensus.independent_conditions,
+            total_conditions=consensus.total_conditions,
+            consensus_scope=consensus_scope,
             target_symbols=tuple(card.compatibility.target_symbols),
             timeframes=tuple(card.compatibility.timeframes),
             is_verified=is_verified,
         )
+
+    async def _consensus(
+        self, principal: Principal, card: StrategyCard
+    ) -> tuple[ConsensusSummary, str]:
+        """Đo đồng thuận giả trên mã/khung đầu tiên card khai báo, từ nến đã lưu nội bộ."""
+        symbols, timeframes = card.compatibility.target_symbols, card.compatibility.timeframes
+        if not symbols or not timeframes:
+            return card_consensus(card, []), "—"
+        symbol, timeframe = symbols[0], timeframes[0]
+        bars: Sequence[PriceBar] = ()
+        if self._bars_provider is not None:
+            bars = await self._bars_provider(principal, symbol, timeframe)
+        return card_consensus(card, bars), f"{symbol} · {timeframe}"
 
     async def list_strategy_cards(self, principal: Principal) -> list[StrategyCardView]:
         """Liệt kê danh sách các Strategy Card trong workspace của principal."""
@@ -165,12 +204,15 @@ class StrategyCardAdminService:
                     views: list[StrategyCardView] = []
                     for rec in records:
                         card = rec.to_domain()
+                        consensus, scope = await self._consensus(principal, card)
                         views.append(
                             self._card_to_view(
                                 card=card,
                                 record_id=str(rec.id),
                                 content_hash=rec.content_hash,
                                 is_active=rec.is_active,
+                                consensus=consensus,
+                                consensus_scope=scope,
                             )
                         )
                     return views
@@ -180,12 +222,15 @@ class StrategyCardAdminService:
         # Thẻ mẫu chưa lưu DB: hash là SHA-256 canonical thật của nội dung thẻ (không bịa) và
         # không thẻ nào được coi là đang kích hoạt vì chưa có hàng công bố.
         for idx, card in enumerate(self._fallback_cards):
+            consensus, scope = await self._consensus(principal, card)
             views.append(
                 self._card_to_view(
                     card=card,
                     record_id=f"demo-card-{idx + 1}",
                     content_hash=compute_canonical_hash(card),
                     is_active=False,
+                    consensus=consensus,
+                    consensus_scope=scope,
                 )
             )
         return views

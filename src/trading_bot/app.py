@@ -119,6 +119,7 @@ from trading_bot.application.source_policy_admin import (
     SourcePolicyAdminRepository,
     SourcePolicyAdminService,
 )
+from trading_bot.application.strategy_card_bars import PostgresCardBarsProvider
 from trading_bot.application.strategy_catalog import strategy_registry
 from trading_bot.application.telegram_binding import TelegramBindingService
 from trading_bot.application.telegram_signal_subscription import TelegramSignalSubscriptionService
@@ -296,7 +297,10 @@ def create_app(
             else None
         )
         application.state.strategy_card_service = (
-            StrategyCardAdminService(active_session_factory)
+            StrategyCardAdminService(
+                active_session_factory,
+                bars_provider=PostgresCardBarsProvider(active_session_factory),
+            )
             if active_session_factory is not None
             else StrategyCardAdminService()
         )

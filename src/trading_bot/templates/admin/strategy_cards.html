@@ -98,9 +98,13 @@
                   <span class="status-dot dot-gray" aria-hidden="true"></span>Lưu trữ
                 </span>
               {% endif %}
-              {% if card.is_verified %}
+              {% if card.is_verified and card.consensus_status == "ok" %}
                 <span class="badge badge-success" aria-label="Trạng thái kiểm định: Đã kiểm định (Orthogonal)">
                   <span class="status-dot dot-green" aria-hidden="true"></span>Đã kiểm định (Orthogonal)
+                </span>
+              {% elif card.is_verified %}
+                <span class="badge badge-neutral" aria-label="Cấu trúc hợp lệ nhưng chưa đủ dữ liệu để đo tương quan">
+                  <span class="status-dot dot-gray" aria-hidden="true"></span>Chưa đủ dữ liệu tương quan
                 </span>
               {% elif card.has_consensus_warning %}
                 <span class="badge badge-warning" aria-label="Cảnh báo: Tương quan cao phát hiện ảo giác đồng thuận">
@@ -202,7 +206,8 @@
             <div class="kv"><dt>Thời điểm phát hành</dt><dd><time title="{{ card.created_at_formatted }}">{{ card.created_at_formatted if created_local == "Chưa có dữ liệu" else created_local }}</time></dd></div>
             <div class="kv"><dt>Số nút / cạnh</dt><dd>{{ card.total_nodes }} / {{ card.total_edges }}</dd></div>
             <div class="kv"><dt>Nút mồ côi</dt><dd>{{ card.dead_nodes | join(", ") if card.dead_nodes else "Không có" }}</dd></div>
-            <div class="kv"><dt>Cảnh báo tương quan</dt><dd>{{ card.consensus_warnings | join("; ") if card.consensus_warnings else "Không có cảnh báo được ghi nhận" }}</dd></div>
+            <div class="kv"><dt>Điều kiện độc lập</dt><dd>{% if card.consensus_status == "insufficient_data" %}Chưa đủ dữ liệu ({{ card.consensus_sample_size }} nến hợp lệ, cần ≥ 50) · {{ card.consensus_scope }}{% else %}{{ card.independent_conditions }}/{{ card.total_conditions }} điều kiện độc lập · {{ card.consensus_sample_size }} nến · {{ card.consensus_scope }}{% endif %}</dd></div>
+            <div class="kv"><dt>Cảnh báo tương quan</dt><dd>{{ card.consensus_warnings | join("; ") if card.consensus_warnings else ("Chưa đo được (thiếu nến đã lưu)" if card.consensus_status == "insufficient_data" else "Không có cặp điều kiện tương quan cao") }}</dd></div>
             <div class="kv kv--text">
               <dt>Mã băm đầy đủ</dt>
               <dd class="sc-hash-full">
@@ -232,7 +237,7 @@
           </section>
           <section class="glass-dialog__section" aria-label="Phạm vi kiểm định">
             <h3>Kiểm định gồm những gì</h3>
-            <p class="sc-dialog-text">“Đã kiểm định (Orthogonal)” nghĩa là dịch vụ không tìm thấy nút mồ côi và không ghi nhận cảnh báo tương quan cho thẻ này. Ma trận tương quan trực quan (WP-SC.5) chưa hiển thị trên trang này. Kiểm định tĩnh không chứng minh chiến lược có lãi.</p>
+            <p class="sc-dialog-text">“Đã kiểm định (Orthogonal)” nghĩa là không có nút mồ côi và không cặp điều kiện L1–L3 nào có |r Pearson| ≥ 0,85 trên tối đa 300 nến đã đóng đã lưu của mã/khung đầu tiên thẻ khai báo. Thiếu nến (dưới 50) hiện “Chưa đủ dữ liệu tương quan” — không được coi là trực giao. Ma trận tương quan trực quan (WP-SC.5) chưa hiển thị trên trang này. Kiểm định tĩnh không chứng minh chiến lược có lãi.</p>
           </section>
         </dialog>
     {% endfor %}

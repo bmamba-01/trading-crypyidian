@@ -18,10 +18,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from trading_bot.application.strategy_pipeline.context_gate import (
     ContextGateEvaluator,
@@ -57,6 +58,28 @@ if TYPE_CHECKING:
 PIPELINE_ENGINE_VERSION = "l0-l6-v2"
 # Nguồn ATR khi không có feature đã quản trị lẫn đủ lịch sử nến: chỉ là biên độ của một nến.
 ATR_SOURCE_SINGLE_BAR = "single_bar_range"
+# Tầng có đầu ra số theo từng nến (dùng cho phân tích đồng thuận giả SIG-6).
+NUMERIC_LAYERS = (
+    CompositionLayer.L1_CANDLE_ANATOMY,
+    CompositionLayer.L2_INDICATORS,
+    CompositionLayer.L3_ALGORITHMS,
+)
+
+
+class PriceBarLike(Protocol):
+    """Tối thiểu một nến cần cho L0–L3: OHLC dạng Decimal (``OHLCVBar`` thỏa mãn)."""
+
+    @property
+    def open(self) -> Decimal: ...
+
+    @property
+    def high(self) -> Decimal: ...
+
+    @property
+    def low(self) -> Decimal: ...
+
+    @property
+    def close(self) -> Decimal: ...
 
 
 def compute_candidate_id(
@@ -313,7 +336,35 @@ class StrategyPipelineEngine:
             node_values=node_values,
         )
 
-    def _check_data_hygiene(self, bar: OHLCVBar) -> str | None:
+    def numeric_node_series(
+        self, card: StrategyCard, bars: Sequence[PriceBarLike]
+    ) -> dict[str, list[float]]:
+        """Chuỗi đầu ra L1–L3 theo từng nến, cùng công thức với ``execute``.
+
+        Giá trị tại nến ``i`` chỉ dùng nến ``0..i`` (không nhìn trước). Nến vi phạm L0 bị bỏ ở
+        mọi node để các chuỗi cùng độ dài. L2 không có feature snapshot nên ATR lấy từ nến
+        (``execute`` cũng dùng nhánh này khi snapshot không có feature ``atr_<period>``).
+        """
+        nodes = [node for node in card.nodes if node.layer in NUMERIC_LAYERS]
+        series: dict[str, list[float]] = {node.node_id: [] for node in nodes}
+        for index, bar in enumerate(bars):
+            if self._check_data_hygiene(bar) is not None:
+                continue
+            values: dict[str, Any] = {}
+            for node in nodes:
+                if node.layer == CompositionLayer.L1_CANDLE_ANATOMY:
+                    values[node.node_id] = self._compute_l1_node(node.operation, bar)
+            for node in nodes:
+                if node.layer == CompositionLayer.L2_INDICATORS:
+                    values[node.node_id] = self._l2_from_bars(node, bar, bars[: index + 1])[0]
+            for node in nodes:
+                if node.layer == CompositionLayer.L3_ALGORITHMS:
+                    values[node.node_id] = self._compute_l3_node(node, values)
+            for node_id, items in series.items():
+                items.append(float(values[node_id]))
+        return series
+
+    def _check_data_hygiene(self, bar: PriceBarLike) -> str | None:
         """Kiểm tra độ sạch của nến L0: High >= Low, High >= max(O,C), Low <= min(O,C)."""
         if bar.high < bar.low:
             return f"Nến vi phạm High < Low (High={bar.high}, Low={bar.low})"
@@ -325,7 +376,7 @@ class StrategyPipelineEngine:
             return "Giá Open/Close phải là số dương"
         return None
 
-    def _compute_l1_node(self, operation: str, bar: OHLCVBar) -> Decimal:
+    def _compute_l1_node(self, operation: str, bar: PriceBarLike) -> Decimal:
         """Tính toán khối nguyên tử giải phẫu nến L1."""
         op = operation.lower()
         if "lower_wick" in op:
@@ -364,7 +415,15 @@ class StrategyPipelineEngine:
                     and feature.value > 0
                 ):
                     return Decimal(str(feature.value)), f"feature:{name}", feature.feature_id
-            bars = snapshot.series[0].bars
+        return self._l2_from_bars(node, bar, snapshot.series[0].bars)
+
+    def _l2_from_bars(
+        self, node: Any, bar: PriceBarLike, bars: Sequence[PriceBarLike]
+    ) -> tuple[Decimal, str, str | None]:
+        """Nhánh L2 chỉ từ nến (``bars`` kết thúc tại ``bar``): ATR từ true range hoặc giá đóng."""
+        op = node.operation.lower()
+        if "atr" in op or "true_range" in op:
+            period = int(node.parameters.get("period", 14))
             if len(bars) > period:
                 window = bars[-(period + 1) :]
                 ranges = [

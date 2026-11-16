@@ -2494,7 +2494,9 @@ async def strategy_cards_page(
             "cards": cards,
             "total_cards": len(cards),
             "active_cards_count": sum(1 for c in cards if c.is_active),
-            "verified_cards_count": sum(1 for c in cards if c.is_verified),
+            "verified_cards_count": sum(
+                1 for c in cards if c.is_verified and c.consensus_status == "ok"
+            ),
         },
         headers={"Cache-Control": "no-store"},
     )
