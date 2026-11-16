@@ -1,6 +1,7 @@
 from trading_bot.adapters.database.models.analyst_entities import (
     AnalystRunRecord,
     AnalystSessionRecord,
+    MacroCalendarFetchRecord,
     PaperCandidateOutcomeRecord,
     ProposalBacktestRecord,
 )
@@ -201,6 +202,7 @@ __all__ = [
     "AnalystRunRecord",
     "AnalystSessionRecord",
     "PaperCandidateOutcomeRecord",
+    "MacroCalendarFetchRecord",
     "ProposalBacktestRecord",
     "LearningIncidentHoldEventRecord",
     "LearningPaperPerformanceReportRecord",

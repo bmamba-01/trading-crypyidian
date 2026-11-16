@@ -408,6 +408,7 @@ def test_schedule_plist_runs_scheduled_mode_after_each_summary() -> None:
     command = str(plist["ProgramArguments"][2])  # type: ignore[index]
     assert "--scheduled" in command
     assert "--send-telegram" in command
+    assert "--backtest-proposals" in command
     assert "CRYPIDIAN_CLAUDE_BIN='/Users/x/.local/bin/claude'" in command
     slots = list(plist["StartCalendarInterval"])  # type: ignore[call-overload]
     assert len(slots) == 6
@@ -501,3 +502,36 @@ def test_apply_proposal_builds_new_overlay() -> None:
     assert overlay["strategy"]["parameters"]["donchian_lookback"] == 90  # không đổi bản gốc
     to_h01 = apply_proposal(overlay, [{"field": "strategy.release_id", "to": "h01-v1"}])
     assert to_h01["strategy"] == {"release_id": "h01-v1", "parameters": {}}
+
+
+def test_backtest_hook_runs_only_when_valid_proposals_exist() -> None:
+    from types import SimpleNamespace
+
+    from scripts import run_ai_analyst as runner
+
+    calls: list[list[str]] = []
+
+    def fake_run(command: list[str], **_: object) -> SimpleNamespace:
+        calls.append(command)
+        return SimpleNamespace(returncode=0, stderr="")
+
+    no_proposals = [{"valid": True, "structured_output": {"proposals": []}}]
+    invalid_only = [{"valid": False, "structured_output": {"proposals": [{"x": 1}]}}]
+    assert runner.backtest_proposals(no_proposals, "p", send=True, runner=fake_run) is None
+    assert runner.backtest_proposals(invalid_only, "p", send=True, runner=fake_run) is None
+    assert calls == []
+
+    records = [{"valid": True, "structured_output": {"proposals": [{"a": 1}, {"b": 2}]}}]
+    result = runner.backtest_proposals(records, "crypidian-review", send=True, runner=fake_run)
+    assert result == {"proposals": 2, "exit_code": 0}
+    command = calls[0]
+    assert command[1].endswith("scripts/run_proposal_backtest.py")
+    assert command[command.index("--max-proposals") + 1] == "2"
+    assert "--send-telegram" in command
+
+    def failing(command: list[str], **_: object) -> SimpleNamespace:
+        return SimpleNamespace(returncode=1, stderr="boom")
+
+    # Lỗi backtest không ném ra ngoài: lượt phân tích đã lưu/gửi vẫn hoàn tất.
+    failed = runner.backtest_proposals(records, "p", send=False, runner=failing)
+    assert failed == {"proposals": 2, "exit_code": 1}

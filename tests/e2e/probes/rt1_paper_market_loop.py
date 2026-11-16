@@ -835,6 +835,101 @@ async def analyst() -> dict[str, Any]:
     }
 
 
+MACRO_EVENT_AT = datetime(2026, 11, 25, 13, 30, tzinfo=UTC)
+
+
+async def macro_write() -> dict[str, Any]:
+    """AI-4: ingestion-worker (role thật) ghi lần tải lịch vĩ mô; không được UPDATE/DELETE."""
+    from sqlalchemy import update
+    from sqlalchemy.exc import DBAPIError
+
+    from trading_bot.adapters.database.models import MacroCalendarFetchRecord
+    from trading_bot.domain.research.macro_calendar import (
+        BEA_SOURCE_ID,
+        FOMC_SOURCE_ID,
+        MacroEvent,
+        events_hash,
+    )
+    from trading_bot.workers.macro_calendar_worker import database_macro_store_scope
+
+    engine, sessions = _sessions()
+    fetched_at = MACRO_EVENT_AT - timedelta(hours=6)
+    try:
+        scope = database_macro_store_scope(sessions, WORKSPACE)
+        far = MACRO_EVENT_AT + timedelta(days=30)
+        for source, events in (
+            (
+                BEA_SOURCE_ID,
+                [
+                    MacroEvent(BEA_SOURCE_ID, "gdp", "GDP", MACRO_EVENT_AT, True),
+                    MacroEvent(BEA_SOURCE_ID, "gdp2", "GDP", far, True),
+                ],
+            ),
+            (FOMC_SOURCE_ID, [MacroEvent(FOMC_SOURCE_ID, "fomc", "FOMC", far, True)]),
+        ):
+            async with scope() as store:
+                await store.insert(
+                    {
+                        "id": uuid4(),
+                        "workspace_id": WORKSPACE,
+                        "source_id": source,
+                        "fetched_at": fetched_at,
+                        "source_url": "https://example.invalid/macro",
+                        "policy_fingerprint": "d" * 64,
+                        "events_sha256": events_hash(events),
+                        "event_count": len(events),
+                        "coverage_end": far,
+                        "events": [event.payload() for event in events],
+                    }
+                )
+        update_denied = False
+        try:
+            async with scope() as store:
+                await store._session.execute(update(MacroCalendarFetchRecord).values(event_count=0))
+        except DBAPIError:
+            update_denied = True
+    finally:
+        await engine.dispose()
+    return {"written": 2, "update_denied": update_denied}
+
+
+async def macro_read() -> dict[str, Any]:
+    """AI-4: runtime (role thật) đọc trạng thái macro point-in-time."""
+    from trading_bot.application.macro_calendar_state import load_macro_state
+    from trading_bot.application.outbox import UnitOfWork
+
+    engine, sessions = _sessions()
+    try:
+        async with UnitOfWork(sessions, workspace_id=WORKSPACE) as uow:
+            during = await load_macro_state(
+                uow.session, workspace_id=WORKSPACE, decision_time=MACRO_EVENT_AT
+            )
+            clear = await load_macro_state(
+                uow.session,
+                workspace_id=WORKSPACE,
+                decision_time=MACRO_EVENT_AT + timedelta(hours=2),
+            )
+            before_fetch = await load_macro_state(
+                uow.session,
+                workspace_id=WORKSPACE,
+                decision_time=MACRO_EVENT_AT - timedelta(hours=7),
+            )
+    finally:
+        await engine.dispose()
+    with _connect() as connection:
+        admin_insert = connection.execute(
+            "SELECT has_table_privilege('crypidian_admin_web', 'macro_calendar_fetch', 'INSERT')"
+        ).fetchone()[0]
+    return {
+        "during_blackout": during.blackout,
+        "during_fresh": during.is_fresh,
+        "evidence": len(during.evidence_ids),
+        "after_blackout": clear.blackout,
+        "before_fetch_unknown": before_fetch.blackout is None,
+        "admin_web_insert": bool(admin_insert),
+    }
+
+
 async def outcome() -> dict[str, Any]:
     """16/11/2026: runtime (role thật) lưu lý do candidate, idempotent, RLS theo bot."""
     from sqlalchemy import func, select, text
@@ -1198,6 +1293,10 @@ elif phase == "breaker":
     output = asyncio.run(breaker())
 elif phase == "analyst":
     output = asyncio.run(analyst())
+elif phase == "macro_write":
+    output = asyncio.run(macro_write())
+elif phase == "macro_read":
+    output = asyncio.run(macro_read())
 elif phase == "outcome":
     output = asyncio.run(outcome())
 elif phase == "run_report":

@@ -38,6 +38,8 @@ SERVICES = {
     "breaker": "trading-runtime",
     "pause_resume": "migrator",
     "outcome": "trading-runtime",
+    "macro_write": "ingestion-worker",
+    "macro_read": "trading-runtime",
     "run_report": "migrator",
     "analyst": "migrator",
     "tg_seed": "migrator",
@@ -122,7 +124,7 @@ def test_rest_candles_drive_paper_entry_fill_and_stop_exit_idempotently() -> Non
         compose("run", "--rm", "--no-deps", "db-provisioner")
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "head")
         heads = compose("run", "--rm", "--no-deps", "migrator", "alembic", "heads")
-        assert "86afb7c1ba2d (head)" in heads.stdout
+        assert "62d0ea00fae5 (head)" in heads.stdout
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "check")
         state.update(run("seed"))
         assert run("genesis") == {"genesis": True}
@@ -235,6 +237,17 @@ def test_rest_candles_drive_paper_entry_fill_and_stop_exit_idempotently() -> Non
             "backtest_forced_rls": True,
             "backtests": 1,
             "backtest_duplicate_rejected": True,
+        }
+
+        # AI-4: ingestion ghi lịch vĩ mô (append-only), runtime đọc trạng thái point-in-time.
+        assert run("macro_write") == {"written": 2, "update_denied": True}
+        assert run("macro_read") == {
+            "during_blackout": True,
+            "during_fresh": True,
+            "evidence": 2,
+            "after_blackout": False,
+            "before_fetch_unknown": True,
+            "admin_web_insert": False,
         }
 
         # FX-2: ngắt mạch drawdown đo bằng role runtime trên ledger thật.

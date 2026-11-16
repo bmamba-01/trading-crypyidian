@@ -211,3 +211,9 @@ Owner yêu cầu: triển khai AI-1 ngay, đồng thời nghiên cứu các bư�
   - backtest danh mục nhiều coin để kiểm `max_positions`;
   - chạy tự động sau mỗi lượt AI Analyst;
   - trang Admin xem `analyst_run` + `proposal_backtest`.
+
+## 9. AI-4 lát 1 — lịch vĩ mô chính thức (16/11/2026)
+
+- **Xong:** BEA + FOMC thu thật qua Source Registry (PAPER_DEMO, đã duyệt), bảng `macro_calendar_fetch` point-in-time, H06 nhận `macro_blackout`/bằng chứng/độ mới thay vì luôn `MACRO_UNKNOWN`. AI-3 tự backtest sau lượt AI theo lịch.
+- **Chặn:** BLS cần thông tin liên hệ của chủ bot (quyết định owner).
+- **Tiếp theo:** digest lịch vĩ mô cho AI/Telegram; (b) phái sinh Binance; (c) diff exchangeInfo (listing/delisting).

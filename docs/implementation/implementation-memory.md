@@ -4508,3 +4508,23 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Kiểm chứng:** unit **4531 passed/146s** (9 test mới: overlay, kết luận, cấu hình đã đổi, hiển thị, lỗi đọc, CSRF + mã lỗi). E2E `test_admin_browser_session_navigation_accessibility_and_telegram_link` **5/5 viewport passed** (thêm bước seed `proposal_backtest` → bấm nút → bản nháp DRAFT với `per_trade_risk_fraction` 0.001). Evidence PNG đã restore. Local đã rebuild + recreate (admin-web healthy).
 - **Dữ liệu thật hiện có:** T05 WORSE (không có nút), T06 UNSUPPORTED (không có nút), T09 INCONCLUSIVE (có nút; đổi rủi ro 0,0075 → 0,01 là nới rủi ro nên cần MFA và có thể bị kiểm định chặn vì rủi ro chỉ được siết so với cấu hình gốc). Tôi không tự tạo bản nháp trên bot thật — để owner quyết.
 - **Còn mở:** backtest danh mục nhiều coin; tự chạy backtest sau lượt AI Analyst; trang Admin tổng hợp `analyst_run`.
+
+### 2026-11-16 — AI-3 khép vòng (tự backtest) + AI-4 lát 1: lịch vĩ mô chính thức cho H06
+
+- **Yêu cầu của owner:** "Tiếp tục đi, các chức năng AI tiếp theo". Trước đó owner yêu cầu "T09 nới lên 0,01 đi": đã tạo bản nháp từ đề xuất AI → kiểm định → công bố qua Admin (owner local, TOTP test) → T09 version 3 `per_trade_risk_fraction` 0,01 (= trần root 0,01); runtime đã ra quyết định với version 3.
+- **AI-3 tự backtest:** `run_ai_analyst.py --backtest-proposals` gọi `run_proposal_backtest.py` (6 giờ gần nhất, tối đa 5 đề xuất, 12 coin) khi lượt có đề xuất hợp lệ; lỗi backtest không làm hỏng lượt phân tích. LaunchAgent cài lại với cờ này.
+- **AI-4 lát 1 — nguồn (kiểm 16/11/2026):**
+  - BEA `https://apps.bea.gov/API/signup/release_dates.json` (JSON, mốc UTC; tải được bằng client tự động).
+  - Fed `https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm` (HTML theo năm; thông cáo 2026 ghi 2:00 p.m. ET). Fed disclaimer: public domain, đề nghị ghi nguồn.
+  - **BLS chặn** (403 "Access Denied" cho bot; https://www.bls.gov/bls/pss.htm: chặn robot không có thông tin liên hệ chủ sở hữu). Không vượt chặn. Chờ owner quyết thông tin liên hệ (email riêng là dữ liệu cá nhân, không tự dùng). Hệ quả: CPI/NFP/PPI **chưa** nằm trong blackout.
+- **Đã làm:**
+  - `domain/research/macro_calendar.py`: parser BEA/FOMC (DST đúng: 14:00 ET = 18:00 UTC mùa hè, 19:00 UTC mùa đông), `macro_state` point-in-time (blackout `[−30', +60')`, độ mới ≤ 36 giờ + phủ ≥ 7 ngày, thiếu nguồn → None), `upcoming_events`, `events_hash`.
+  - `application/source_use_gate.py`: cổng quyền chung fail-closed (observer receipt, verified, review, hạn theo đồng hồ DB, purpose, URL HTTPS).
+  - `application/macro_calendar_collector.py` + `adapters/sources/macro_calendar_http.py` + `workers/macro_calendar_worker.py`: kiểm quyền trước và sau khi tải, mỗi nguồn làm mới 6 giờ/lần, lỗi một nguồn không chặn nguồn khác. Bật bằng `TRADING_BOT_MACRO_CALENDAR_ENABLED=true` (mặc định tắt, chỉ ingestion-worker).
+  - Migration `62d0ea00fae5` (head) bảng `macro_calendar_fetch`: append-only, FORCE RLS; ingestion SELECT/INSERT; producer/runtime/backtest/admin-web SELECT.
+  - `build_market_decision_snapshot` nạp trạng thái macro tại cutoff evidence **chỉ cho release `h06-*`** (snapshot_id các chiến lược khác không đổi; producer và runtime cùng hàm nên cùng id).
+  - Mã revision sinh bằng `secrets.token_hex(6)` + grep trước khi dùng.
+- **Local:** đăng ký 2 nguồn `BEA_RELEASE_SCHEDULE`, `FED_FOMC_CALENDAR` qua Admin (owner gửi PAPER_DEMO + bằng chứng quyết định nội bộ, reviewer local duyệt) → "Đã duyệt quyền". Bật collector: BEA 196 mốc (70 tác động mạnh, phủ tới 22/12/2027), FOMC 56 cuộc họp (phủ tới 17/11/2027). Role runtime đọc trạng thái thật: không cấm, mới, 2 bằng chứng. **Sự cố khi tự động hóa:** mã TOTP test không dùng lại trong cùng 30 giây (401) → script thử lại sau 31 giây; nguồn chưa tồn tại thì trang chi tiết 404, form tạo ở trang danh sách.
+- **Kiểm chứng:** unit **4545 passed/152s** (parser, DST, blackout nửa mở, không nhìn trước, độ mới, collector quyền/lỗi, cổng quyền fail-closed, chỉ H06 nạp macro); E2E `test_rt1_paper_market_loop` (phase `macro_write` bằng role ingestion — UPDATE bị chặn; `macro_read` bằng role runtime — blackout/hết blackout/chưa biết; admin-web không INSERT) + `test_db_role_least_privilege` **2 passed/367s**.
+- **Giới hạn:** chưa có bot H06 đang chạy nên chưa quan sát quyết định H06 thật; replay/backtest trước lần tải đầu vẫn "chưa biết".
+- **Còn mở:** BLS (cần quyết định liên hệ); digest lịch vĩ mô cho AI Analyst/Telegram (cần validator chấp nhận ngày giờ); AI-4 (b) phái sinh Binance (funding/OI/long-short), (c) diff exchangeInfo; trang Admin `analyst_run`.

@@ -357,6 +357,42 @@ def send_telegram(
     return asyncio.run(run())
 
 
+def backtest_proposals(
+    records: list[dict[str, Any]],
+    project: str,
+    *,
+    send: bool,
+    runner: Any = subprocess.run,
+    max_symbols: int = 12,
+) -> dict[str, Any] | None:
+    """AI-3: chạy ``run_proposal_backtest.py`` khi lượt này có đề xuất hợp lệ.
+
+    Lỗi backtest chỉ ghi lại, không làm hỏng lượt phân tích (kết quả AI đã lưu và gửi trước đó).
+    """
+    proposals = sum(
+        len((r.get("structured_output") or {}).get("proposals") or [])
+        for r in records
+        if r.get("valid")
+    )
+    if proposals == 0:
+        return None
+    command = [
+        sys.executable,
+        str(ROOT / "scripts" / "run_proposal_backtest.py"),
+        "--project", project,
+        "--hours", "6",
+        "--max-proposals", str(min(proposals, 5)),
+        "--max-symbols", str(max_symbols),
+    ]  # fmt: skip
+    if send:
+        command.append("--send-telegram")
+    done = runner(command, cwd=ROOT, capture_output=True, text=True, timeout=7200)
+    if done.returncode != 0:
+        print(f"Backtest đề xuất lỗi (mã {done.returncode}).", file=sys.stderr)
+        print(done.stderr[-2000:], file=sys.stderr)
+    return {"proposals": proposals, "exit_code": done.returncode}
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--engine", choices=("claude", "codex", "fake"), default="claude")
@@ -381,6 +417,11 @@ def main(argv: list[str] | None = None) -> int:
         "--rotate-after", type=int, default=8, help="Mở session mới sau N lượt của một chủ đề."
     )
     parser.add_argument("--state-dir", type=Path, default=STATE_DIR)
+    parser.add_argument(
+        "--backtest-proposals",
+        action="store_true",
+        help="AI-3: sau khi lưu, backtest đề xuất mới (bản gốc vs bản đề xuất) và gửi thẻ.",
+    )
     args = parser.parse_args(argv)
     if "live" in args.project.lower() or "prod" in args.project.lower():
         raise SystemExit("Script chỉ dành cho stack local PAPER.")
@@ -457,6 +498,11 @@ def _run(args: argparse.Namespace, *, local_state: Path | None) -> int:
         save_state(local_state, {"fingerprints": fingerprints, "calls": calls})
     if records and args.send_telegram:
         sent = send_telegram(records, stored["chats"])
+    backtest = (
+        backtest_proposals(records, args.project, send=args.send_telegram)
+        if args.backtest_proposals
+        else None
+    )
     summary = [
         {
             "topic": r["topic_key"],
@@ -471,7 +517,12 @@ def _run(args: argparse.Namespace, *, local_state: Path | None) -> int:
     ]
     print(
         json.dumps(
-            {"report_hash": report["report_hash"], "runs": summary, "telegram_sent": sent},
+            {
+                "report_hash": report["report_hash"],
+                "runs": summary,
+                "telegram_sent": sent,
+                "proposal_backtest": backtest,
+            },
             ensure_ascii=False,
             indent=2,
         )

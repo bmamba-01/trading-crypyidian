@@ -373,6 +373,7 @@ def create_app(
         supervisor_task: asyncio.Task[None] | None = None
         rights_worker_task: asyncio.Task[None] | None = None
         market_collector_task: asyncio.Task[None] | None = None
+        macro_calendar_task: asyncio.Task[None] | None = None
         signal_worker_task: asyncio.Task[None] | None = None
         trade_result_worker_task: asyncio.Task[None] | None = None
         market_signal_worker_task: asyncio.Task[None] | None = None
@@ -409,6 +410,13 @@ def create_app(
                 market_collector_task = _start_market_collector(
                     application,
                     app_settings=app_settings,
+                    session_factory=active_session_factory,
+                    workspace_id=workspace_id,
+                    stopping=stopping,
+                )
+            if app_settings.macro_calendar_enabled:
+                macro_calendar_task = _start_macro_calendar_collector(
+                    application,
                     session_factory=active_session_factory,
                     workspace_id=workspace_id,
                     stopping=stopping,
@@ -558,6 +566,12 @@ def create_app(
                 adapter = getattr(application.state, "market_collector_adapter", None)
                 if adapter is not None:
                     await adapter.aclose()
+            if macro_calendar_task is not None:
+                with contextlib.suppress(asyncio.CancelledError, TimeoutError):
+                    await asyncio.wait_for(macro_calendar_task, timeout=10)
+                fetcher = getattr(application.state, "macro_calendar_fetcher", None)
+                if fetcher is not None:
+                    await fetcher.aclose()
             if signal_worker_task is not None:
                 with contextlib.suppress(asyncio.CancelledError, TimeoutError):
                     await asyncio.wait_for(signal_worker_task, timeout=10)
@@ -1360,6 +1374,39 @@ def _start_market_collector(
     application.state.market_collector = worker
     task = asyncio.create_task(worker.run(stopping), name="market-bar-collector")
     application.state.market_collector_task = task
+    return task
+
+
+def _start_macro_calendar_collector(
+    application: FastAPI,
+    *,
+    session_factory: Any,
+    workspace_id: UUID,
+    stopping: asyncio.Event,
+) -> asyncio.Task[None]:
+    """AI-4: lịch công bố vĩ mô BEA/FOMC cho H06; cần policy PAPER_DEMO của từng nguồn."""
+    from trading_bot.adapters.sources.macro_calendar_http import MacroCalendarHttpFetcher
+    from trading_bot.application.macro_calendar_collector import (
+        MacroCalendarCollector,
+        run_macro_collector,
+    )
+    from trading_bot.workers.macro_calendar_worker import database_macro_store_scope
+
+    fetcher = MacroCalendarHttpFetcher()
+    application.state.macro_calendar_fetcher = fetcher
+    collector = MacroCalendarCollector(
+        workspace_id=workspace_id,
+        fetcher=fetcher,
+        store_scope=database_macro_store_scope(session_factory, workspace_id),
+    )
+
+    def remember(results: Any) -> None:
+        application.state.macro_calendar_last = {r.source_id: r.status for r in results}
+
+    task = asyncio.create_task(
+        run_macro_collector(collector, stopping, on_tick=remember), name="macro-calendar"
+    )
+    application.state.macro_calendar_task = task
     return task
 
 

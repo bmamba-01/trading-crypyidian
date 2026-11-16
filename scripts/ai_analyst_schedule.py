@@ -3,7 +3,7 @@
 Owner yêu cầu 16/11/2026: phân tích AI tự chạy sau mỗi bản tổng kết 4 giờ. Tổng kết theo mốc UTC
 00/04/08/12/16/20 giờ; job chạy **10 phút sau mỗi mốc** bằng chế độ ``--scheduled`` của
 ``scripts/run_ai_analyst.py`` (khóa chạy, bỏ qua chủ đề không đổi, trần lượt gọi AI/ngày) và gửi
-thẻ "Phân tích AI" lên Telegram.
+thẻ "Phân tích AI" lên Telegram; có đề xuất mới thì backtest luôn (AI-3) và gửi thẻ so sánh.
 
 Chạy trên host vì đăng nhập Claude CLI nằm trong Keychain của người dùng. Lệnh:
 
@@ -45,7 +45,7 @@ def build_plist(*, uv: str, claude: str | None, engine: str = "claude") -> dict[
         f"cd {_quote(str(ROOT))} && "
         + (f"CRYPIDIAN_CLAUDE_BIN={_quote(claude)} " if claude else "")
         + f"{_quote(uv)} run python scripts/run_ai_analyst.py --engine {engine} --hours 24 "
-        "--scheduled --send-telegram --max-budget-usd 3"
+        "--scheduled --send-telegram --max-budget-usd 3 --backtest-proposals"
     )
     return {
         "Label": LABEL,

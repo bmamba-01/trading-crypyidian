@@ -144,3 +144,29 @@ class ProposalBacktestRecord(UuidPrimaryKey, CreatedAt, Base):
     result: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     verdict: Mapped[str] = mapped_column(String(16), nullable=False)
     version: Mapped[str] = mapped_column(String(40), nullable=False)
+
+
+class MacroCalendarFetchRecord(UuidPrimaryKey, CreatedAt, Base):
+    """Một lần tải lịch công bố vĩ mô chính thức (AI-4): danh sách sự kiện bất biến + hash."""
+
+    __tablename__ = "macro_calendar_fetch"
+    __table_args__ = (
+        CheckConstraint("event_count >= 0", name="macro_calendar_fetch_count_nonnegative"),
+        CheckConstraint(
+            "events_sha256 ~ '^[0-9a-f]{64}$' AND policy_fingerprint ~ '^[0-9a-f]{64}$'",
+            name="macro_calendar_fetch_hash_sha256",
+        ),
+        Index("ix_macro_calendar_fetch_asof", "workspace_id", "source_id", "fetched_at"),
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("workspace.id", ondelete="CASCADE"), nullable=False
+    )
+    source_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    source_url: Mapped[str] = mapped_column(String(300), nullable=False)
+    policy_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    events_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    event_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    coverage_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    events: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False)
