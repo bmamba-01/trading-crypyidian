@@ -1751,3 +1751,42 @@ def test_replay_closes_v2_position_on_channel_exit_and_fails_closed_without_evid
     assert trade is not None
     assert closed.exit_reason == "CHANNEL_EXIT"
     assert closed.exit_reference_price == channel_low
+
+
+def test_replay_account_snapshot_is_captured_at_each_decision_not_at_seed():
+    """Replay dài ngày: snapshot chiếu ra mang mốc lượt hiện tại, không bị coi là cũ sau 1 ngày."""
+    from trading_bot.application.runtime_replay_evaluator import ReplayAccountState
+
+    _, seed, _, _, _ = _setup()
+    state = ReplayAccountState(seed)
+    gateway = PaperExecutionGateway(
+        PaperExecutionPolicy(
+            version_id="paper-fill-v1",
+            latency=timedelta(0),
+            spread_rate=Decimal("0"),
+            slippage_rate=Decimal("0"),
+            fee_rate=Decimal("0"),
+        )
+    )
+    later = seed.account.captured_at + timedelta(days=5)
+    context = replace(
+        seed,
+        evaluated_at=later + timedelta(seconds=1),
+        risk_state=replace(
+            seed.risk_state, evaluated_at=later + timedelta(seconds=1), market_data_as_of=later
+        ),
+    )
+    account, risk_state, _ = state.project(context, gateway, {}, candidate_symbol="BTCUSDT")
+    assert account.captured_at == later
+    assert risk_state.account_captured_at == later
+    assert risk_state.evaluated_at - risk_state.account_captured_at < timedelta(days=1)
+
+    # Mốc thị trường cũ hơn seed (fixture) thì giữ mốc seed, không lùi về quá khứ.
+    stale = replace(
+        seed,
+        risk_state=replace(
+            seed.risk_state, market_data_as_of=seed.account.captured_at - timedelta(hours=1)
+        ),
+    )
+    account, _, _ = state.project(stale, gateway, {}, candidate_symbol="BTCUSDT")
+    assert account.captured_at == seed.account.captured_at

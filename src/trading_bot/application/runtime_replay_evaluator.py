@@ -269,13 +269,20 @@ class ReplayAccountState:
             if self._seed_captured_at >= windows.rolling_window_start
             else ZERO
         )
+        # Snapshot tài khoản replay được dựng lại hoàn toàn từ gateway tại lượt này, nên mốc chụp
+        # là mốc dữ liệu thị trường của lượt (không muộn hơn decision_time). Trước 16/11/2026 mốc
+        # giữ nguyên lúc seed: sau ``max_account_age`` (1 ngày) mọi candidate bị loại
+        # ACCOUNT_STATE_STALE nên backtest dài ngày gần như không có lệnh (phát hiện ở AI-3).
+        captured_at = max(context.account.captured_at, context.risk_state.market_data_as_of)
         account = replace(
             context.account,
+            captured_at=captured_at,
             equity=self._initial_equity + realized_pnl + unrealized_pnl,
             available_margin=self._initial_margin - allocated_margin,
         )
         risk_state = replace(
             context.risk_state,
+            account_captured_at=captured_at,
             equity=account.equity,
             available_margin=account.available_margin,
             open_exposures=tuple(open_exposures),

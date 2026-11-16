@@ -112,3 +112,35 @@ class PaperCandidateOutcomeRecord(UuidPrimaryKey, CreatedAt, Base):
     decision_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     stage: Mapped[str] = mapped_column(String(16), nullable=False)
     reason_code: Mapped[str] = mapped_column(String(120), nullable=False)
+
+
+class ProposalBacktestRecord(UuidPrimaryKey, CreatedAt, Base):
+    """Kết quả backtest một đề xuất AI (AI-3): chỉ số bản gốc/bản đề xuất (append-only)."""
+
+    __tablename__ = "proposal_backtest"
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id", "analyst_run_id", "proposal_index", name="uq_proposal_backtest_ref"
+        ),
+        CheckConstraint(
+            "verdict IN ('BETTER', 'WORSE', 'INCONCLUSIVE', 'UNSUPPORTED')",
+            name="proposal_backtest_verdict_valid",
+        ),
+        CheckConstraint("proposal_index >= 0", name="proposal_backtest_index_nonnegative"),
+        Index("ix_proposal_backtest_created", "workspace_id", "created_at"),
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("workspace.id", ondelete="CASCADE"), nullable=False
+    )
+    analyst_run_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("analyst_run.id", ondelete="CASCADE"), nullable=False
+    )
+    proposal_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    topic_key: Mapped[str] = mapped_column(String(120), nullable=False)
+    bot_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True)
+    bot_name: Mapped[str] = mapped_column(String(160), nullable=False)
+    proposal: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    result: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    verdict: Mapped[str] = mapped_column(String(16), nullable=False)
+    version: Mapped[str] = mapped_column(String(40), nullable=False)

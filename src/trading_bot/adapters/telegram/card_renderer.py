@@ -34,6 +34,7 @@ from trading_bot.application.telegram_cards import (
     MAX_CARD_TARGETS,
     MAX_SUMMARY_ROWS,
     AnalysisCardView,
+    BacktestCardView,
     SignalCardView,
     SummaryBotRow,
     SummaryCardView,
@@ -1133,6 +1134,92 @@ def render_analysis_card(view: AnalysisCardView) -> bytes:
     _footer(
         canvas,
         f"Report {view.report_hash[:12]} · PAPER, không phải khuyến nghị đầu tư.",
+        "crypidian",
+    )
+    return _png(canvas.crop())
+
+
+# --- Thẻ backtest đề xuất AI (AI-3) -------------------------------------------------------------
+
+
+def render_backtest_card(view: BacktestCardView) -> bytes:
+    """Thẻ "Backtest đề xuất AI" (PNG): bảng bản gốc vs bản đề xuất trên cùng dữ liệu."""
+    canvas = _Canvas()
+    mood = {"BETTER": P.up, "WORSE": P.down}.get(view.verdict, P.warn)
+    _top_glow(canvas, mood)
+    _brand_row(canvas, sample=view.sample)
+    _disclaimer_strip(canvas, "BACKTEST ĐỀ XUẤT AI — KHÔNG TỰ ÁP VÀO BOT")
+    title_font = _font("Bold", 40)
+    canvas.text(
+        (_PAD, canvas.y + 26),
+        _fit(view.bot_name, title_font, CARD_WIDTH - 2 * _PAD - 300),
+        title_font,
+        P.text,
+    )
+    canvas.chip(
+        CARD_WIDTH - _PAD,
+        canvas.y + 28,
+        view.verdict_vi,
+        _font("Bold", 22),
+        mood,
+        _tint(mood, 0.2),
+        align="right",
+    )
+    sub_font = _font("Medium", 23)
+    subtitle = (
+        f"Dữ liệu {format_local_time(view.window_start)} – {format_local_time(view.window_end)}"
+        " (giờ VN)"
+        if view.window_start and view.window_end
+        else "Không có cửa sổ dữ liệu chạy được"
+    )
+    canvas.text(
+        (_PAD, canvas.y + 80), _fit(subtitle, sub_font, CARD_WIDTH - 2 * _PAD), sub_font, P.muted
+    )
+    canvas.y += 124
+    change_font = _font("SemiBold", 26)
+    change_lines = _wrap(view.changes or "—", change_font, CARD_WIDTH - 2 * _PAD - 2 * _INNER, 3)
+
+    def change_body(y0: int) -> None:
+        for index, line in enumerate(change_lines):
+            canvas.text((_PAD + _INNER, y0 + 18 + index * 38), line, change_font, P.accent)
+
+    _panel(canvas, "Thay đổi đề xuất", None, len(change_lines) * 38 + 8, change_body)
+    rows = view.rows()
+    row_height = 58
+    label_font = _font("Medium", 24)
+    value_font = _font("SemiBold", 26)
+    head_font = _font("SemiBold", 21)
+    col_base = CARD_WIDTH - _PAD - _INNER - 300
+    col_var = CARD_WIDTH - _PAD - _INNER
+
+    def table_body(y0: int) -> None:
+        canvas.text((col_base, y0 + 14), "BẢN GỐC", head_font, P.muted, anchor="rm")
+        canvas.text((col_var, y0 + 14), "ĐỀ XUẤT", head_font, P.muted, anchor="rm")
+        for index, (label, base, var) in enumerate(rows):
+            cy = y0 + 64 + index * row_height
+            if index % 2 == 0:
+                canvas.rounded(
+                    (_PAD + 12, cy - 26, CARD_WIDTH - _PAD - 12, cy + 26), 12, P.surface_alt
+                )
+            canvas.text((_PAD + _INNER, cy), label, label_font, P.muted, anchor="lm")
+            canvas.text((col_base, cy), base, value_font, P.text, anchor="rm")
+            canvas.text((col_var, cy), var, value_font, P.text, anchor="rm")
+
+    _panel(
+        canvas,
+        "So sánh trên cùng dữ liệu",
+        "1x, 1 vị thế/coin, có phí + trượt giá",
+        40 + len(rows) * row_height,
+        table_body,
+    )
+    notes = list(view.notes)
+    if view.skipped:
+        notes.append(f"{view.skipped} coin bị loại (thiếu nến hoặc không đủ dữ liệu).")
+    if notes:
+        _bullet_panel(canvas, "Ghi chú", None, [(text, None) for text in notes], P.warn)
+    _footer(
+        canvas,
+        "Áp dụng: bản nháp config → publish trên Admin (MFA). PAPER.",
         "crypidian",
     )
     return _png(canvas.crop())

@@ -33,6 +33,7 @@ from trading_bot.domain.risk.planner import TradePlanner
 from trading_bot.domain.strategy.contracts import DecisionSnapshot, FeatureQuality
 from trading_bot.domain.strategy.registry import StrategyRegistry
 from trading_bot.domain.strategy.rules_v2 import EXIT_EVIDENCE_BY_RECIPE, ExitEvidenceSpec
+from trading_bot.domain.strategy.rules_v3 import EXIT_EVIDENCE_BY_RECIPE_V3
 
 OpposingSignalProvider = Callable[[PaperBar, ReplayObservation | None], bool | None]
 ContextSeedFactory = Callable[[SensitivityScenario, ReplayManifest], ReplayEvaluationContext]
@@ -40,6 +41,9 @@ GatewayFactory = Callable[[SensitivityScenario, ReplayManifest], PaperExecutionG
 OpposingSignalProviderFactory = Callable[
     [SensitivityScenario, ReplayManifest], OpposingSignalProvider | None
 ]
+
+
+_EXIT_EVIDENCE_ALL = {**EXIT_EVIDENCE_BY_RECIPE, **EXIT_EVIDENCE_BY_RECIPE_V3}
 
 
 class BacktestReplayContextBuildError(ValueError):
@@ -251,7 +255,9 @@ class BacktestDatasetReplayContextProvider:
         exit_evidence_by_bar = tuple(
             evidence
             for event in events
-            for recipe_id, spec in EXIT_EVIDENCE_BY_RECIPE.items()
+            # AI-3 16/11/2026: gộp bảng v3 (h03-v3-*), trước đây chỉ có v2 nên thoát lệnh H03-v3
+            # trong replay thiếu bằng chứng kênh Donchian.
+            for recipe_id, spec in _EXIT_EVIDENCE_ALL.items()
             if (evidence := self._exit_evidence_at(event, recipe_id, spec)) is not None
         )
         evaluated_at = decision_time + self._evaluated_at_offset

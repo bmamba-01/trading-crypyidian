@@ -679,8 +679,13 @@ async def run_report() -> dict[str, Any]:
 async def analyst() -> dict[str, Any]:
     """AI-2: report → engine giả → validator → lưu analyst_run/session (role admin migrator)."""
     from sqlalchemy import func, select
+    from sqlalchemy.exc import IntegrityError
 
-    from trading_bot.adapters.database.models import AnalystRunRecord, AnalystSessionRecord
+    from trading_bot.adapters.database.models import (
+        AnalystRunRecord,
+        AnalystSessionRecord,
+        ProposalBacktestRecord,
+    )
     from trading_bot.application.ai_analyst import (
         ANALYST_OUTPUT_VERSION,
         PROMPT_VERSION,
@@ -690,6 +695,12 @@ async def analyst() -> dict[str, Any]:
         validate_analysis,
     )
     from trading_bot.application.outbox import UnitOfWork
+    from trading_bot.application.proposal_backtest import (
+        PROPOSAL_BACKTEST_VERSION,
+        BacktestArm,
+        ProposalBacktestResult,
+        aggregate,
+    )
     from trading_bot.application.run_report import load_run_report
 
     engine, sessions = _sessions()
@@ -759,13 +770,55 @@ async def analyst() -> dict[str, Any]:
             total = await uow.session.scalar(
                 select(func.count()).where(AnalystRunRecord.workspace_id == WORKSPACE)
             )
+            valid_run_id = await uow.session.scalar(
+                select(AnalystRunRecord.id).where(
+                    AnalystRunRecord.workspace_id == WORKSPACE, AnalystRunRecord.valid.is_(True)
+                )
+            )
+        # AI-3: lưu kết quả backtest đề xuất gắn với lượt phân tích hợp lệ; trùng đề xuất bị chặn.
+        result = ProposalBacktestResult(
+            bot_name="e2e",
+            baseline_arm=BacktestArm("h03-v3-1h", (("donchian_lookback", 20),), Decimal("0.005")),
+            variant_arm=BacktestArm("h03-v3-1h", (("donchian_lookback", 40),), Decimal("0.005")),
+            baseline=aggregate([]),
+            variant=aggregate([]),
+            verdict="INCONCLUSIVE",
+            notes=("e2e",),
+            unsupported_fields=(),
+            skipped_symbols=(),
+            window=None,
+        )
+        record = {
+            "workspace_id": WORKSPACE,
+            "analyst_run_id": valid_run_id,
+            "proposal_index": 0,
+            "topic_key": f"family:{family}",
+            "bot_name": "e2e",
+            "proposal": {"changes": []},
+            "result": result.payload(),
+            "verdict": result.verdict,
+            "version": PROPOSAL_BACKTEST_VERSION,
+        }
+        async with UnitOfWork(sessions, workspace_id=WORKSPACE) as uow:
+            uow.session.add(ProposalBacktestRecord(**record))
+        duplicate_rejected = False
+        try:
+            async with UnitOfWork(sessions, workspace_id=WORKSPACE) as uow:
+                uow.session.add(ProposalBacktestRecord(**record))
+        except IntegrityError:
+            duplicate_rejected = True
     finally:
         await engine.dispose()
     with _connect() as connection:
         admin_web_can_select = connection.execute(
             "SELECT has_table_privilege('crypidian_admin_web', 'analyst_run', 'SELECT'), "
             "has_table_privilege('crypidian_admin_web', 'analyst_run', 'INSERT'), "
-            "(SELECT relforcerowsecurity FROM pg_class WHERE relname = 'analyst_run')"
+            "(SELECT relforcerowsecurity FROM pg_class WHERE relname = 'analyst_run'), "
+            "has_table_privilege('crypidian_admin_web', 'proposal_backtest', 'SELECT'), "
+            "has_table_privilege('crypidian_admin_web', 'proposal_backtest', 'INSERT'), "
+            "has_table_privilege('crypidian_trading_runtime', 'proposal_backtest', 'SELECT'), "
+            "(SELECT relforcerowsecurity FROM pg_class WHERE relname = 'proposal_backtest'), "
+            "(SELECT count(*) FROM proposal_backtest)"
         ).fetchone()
     return {
         "runs": int(total or 0),
@@ -773,6 +826,12 @@ async def analyst() -> dict[str, Any]:
         "admin_web_select": bool(admin_web_can_select[0]),
         "admin_web_insert": bool(admin_web_can_select[1]),
         "forced_rls": bool(admin_web_can_select[2]),
+        "backtest_admin_web_select": bool(admin_web_can_select[3]),
+        "backtest_admin_web_insert": bool(admin_web_can_select[4]),
+        "backtest_runtime_select": bool(admin_web_can_select[5]),
+        "backtest_forced_rls": bool(admin_web_can_select[6]),
+        "backtests": int(admin_web_can_select[7]),
+        "backtest_duplicate_rejected": duplicate_rejected,
     }
 
 

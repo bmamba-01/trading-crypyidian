@@ -448,3 +448,56 @@ def test_fingerprint_ignores_abstain_growth_but_tracks_trades() -> None:
     traded = copy.deepcopy(topic)
     traded["bots"][0]["performance"]["closed_trades"] = 3
     assert runner.topic_fingerprint(traded) != base
+
+
+def _proposal(bot: str, field: str, to: str) -> dict[str, Any]:
+    return {
+        "bot_name": bot,
+        "rationale": "Ít lệnh.",
+        "evidence_refs": ["/bots/0/funnel/candidates"],
+        "changes": [{"field": field, "to": to}],
+        "risk": "Nhiễu hơn.",
+    }
+
+
+@pytest.mark.parametrize(
+    ("bot", "field", "to", "ok"),
+    [
+        ("T01 H03 1h · 20 coin", "strategy.parameters.donchian_lookback", "40", True),
+        ("T01 H03 1h · 20 coin", "strategy.parameters.donchian_lookback", "10", False),
+        ("T01 H03 1h · 20 coin", "strategy.parameters.donchian_lookback", "20 / 30", False),
+        ("T07 H01 1h · 14 coin", "strategy.parameters.donchian_lookback", "40", False),
+        ("T07 H01 1h · 14 coin", "risk.per_trade_risk_fraction", "0.005", True),
+        ("T07 H01 1h · 14 coin", "risk.per_trade_risk_fraction", "0.05", False),
+        ("T07 H01 1h · 14 coin", "strategy.release_id", "h03-v3-15m", True),
+        ("T07 H01 1h · 14 coin", "strategy.release_id", "h06-v1", False),
+        ("T99 không có", "risk.max_positions", "2", False),
+        ("T01 H03 1h · 20 coin", "universe.symbols", "BTCUSDT", False),
+    ],
+)
+def test_proposals_must_be_backtestable(bot: str, field: str, to: str, ok: bool) -> None:
+    output = _output("Có 5 tín hiệu.", ["/bots/0/funnel/candidates"])
+    output["proposals"] = [_proposal(bot, field, to)]
+    assert validate_analysis(output, REPORT).ok is ok
+
+
+def test_apply_proposal_builds_new_overlay() -> None:
+    from trading_bot.application.ai_analyst import apply_proposal
+
+    overlay = {
+        "schema_version": 1,
+        "strategy": {"release_id": "h03-v3-1h", "parameters": {"donchian_lookback": 90}},
+        "risk": {"per_trade_risk_fraction": "0.002"},
+    }
+    changed = apply_proposal(
+        overlay,
+        [
+            {"field": "strategy.parameters.donchian_lookback", "to": "40"},
+            {"field": "risk.per_trade_risk_fraction", "to": "0,005"},
+        ],
+    )
+    assert changed["strategy"]["parameters"]["donchian_lookback"] == 40
+    assert changed["risk"]["per_trade_risk_fraction"] == "0.005"
+    assert overlay["strategy"]["parameters"]["donchian_lookback"] == 90  # không đổi bản gốc
+    to_h01 = apply_proposal(overlay, [{"field": "strategy.release_id", "to": "h01-v1"}])
+    assert to_h01["strategy"] == {"release_id": "h01-v1", "parameters": {}}

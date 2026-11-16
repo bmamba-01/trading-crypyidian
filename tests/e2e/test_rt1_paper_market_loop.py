@@ -122,7 +122,7 @@ def test_rest_candles_drive_paper_entry_fill_and_stop_exit_idempotently() -> Non
         compose("run", "--rm", "--no-deps", "db-provisioner")
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "head")
         heads = compose("run", "--rm", "--no-deps", "migrator", "alembic", "heads")
-        assert "f9b1d3e5a7c2 (head)" in heads.stdout
+        assert "86afb7c1ba2d (head)" in heads.stdout
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "check")
         state.update(run("seed"))
         assert run("genesis") == {"genesis": True}
@@ -228,6 +228,13 @@ def test_rest_candles_drive_paper_entry_fill_and_stop_exit_idempotently() -> Non
             "admin_web_select": True,
             "admin_web_insert": False,
             "forced_rls": True,
+            # AI-3: kết quả backtest đề xuất chỉ admin_web đọc; runtime không thấy; trùng bị chặn.
+            "backtest_admin_web_select": True,
+            "backtest_admin_web_insert": False,
+            "backtest_runtime_select": False,
+            "backtest_forced_rls": True,
+            "backtests": 1,
+            "backtest_duplicate_rejected": True,
         }
 
         # FX-2: ngắt mạch drawdown đo bằng role runtime trên ledger thật.

@@ -21,6 +21,7 @@ from typing import Any
 
 from trading_bot.adapters.telegram.card_renderer import (
     render_analysis_card,
+    render_backtest_card,
     render_signal_card,
     render_summary_card,
     render_trade_card,
@@ -31,6 +32,8 @@ from trading_bot.application.telegram_cards import (
     TradeCardView,
     analysis_card_caption,
     analysis_card_view_from,
+    backtest_card_caption,
+    backtest_card_view_from,
     signal_card_caption,
     signal_card_view_from,
     summary_card_caption,
@@ -179,8 +182,27 @@ async def send_analysis_card(
     await sender.send_photo(chat_id, png, caption)
 
 
+async def send_backtest_card(
+    sender: TelegramMessageSender,
+    chat_id: int,
+    proposal: Mapping[str, Any],
+    result: Mapping[str, Any],
+) -> None:
+    """Thẻ "Backtest đề xuất AI"; dự phòng caption văn bản khi vẽ lỗi."""
+    view = backtest_card_view_from(proposal, result)
+    caption = backtest_card_caption(view)
+    try:
+        png = render_backtest_card(view)
+    except _RENDER_ERRORS as error:
+        logger.warning("Không vẽ được thẻ backtest; gửi văn bản. error=%s", type(error).__name__)
+        await sender.send_message(chat_id, caption)
+        return
+    await sender.send_photo(chat_id, png, caption)
+
+
 __all__ = [
     "send_analysis_card",
+    "send_backtest_card",
     "send_paper_report_card",
     "send_signal_card",
     "send_trade_result_card",

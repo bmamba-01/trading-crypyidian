@@ -194,3 +194,20 @@ Owner yêu cầu: triển khai AI-1 ngay, đồng thời nghiên cứu các bư�
   - file knowledge theo chủ đề + xoay vòng session trước mốc 30 ngày;
   - trang Admin xem `analyst_run`;
   - AI-3 (đề xuất → backtest).
+
+## 8. AI-3 lát 1 — đề xuất → backtest (16/11/2026)
+
+- **Owner:** "Có, làm AI-3"; cấp quyền BACKTEST_RESEARCH cho nguồn Binance REST (policy revision 5, cùng `paper_demo` + `training`).
+- **Đã làm:**
+  - Schema `analyst_output.v2` / prompt `ai2-prompt-v2`: `changes.field` chỉ nhận `PROPOSAL_FIELDS` (lookback H03, release, rủi ro mỗi lệnh, số vị thế, đòn bẩy) trong khoảng cố định; `validate_proposals` loại bot lạ, trường lạ, giá trị ngoài khoảng; `apply_proposal` tạo overlay mới (không ghi DB).
+  - Replay nhận tham số chiến lược (`BacktestReplayJobSubmission.strategy_parameters` → settings `strategy.parameters`, profile/family hash; job cũ không tham số giữ hash cũ).
+  - Sửa replay: bằng chứng thoát H03-v3 (`h03-exit-v3-*`) và **snapshot tài khoản replay mang mốc của từng lượt** (trước đó backtest > 1 ngày bị `ACCOUNT_STATE_STALE` gần như toàn bộ).
+  - `application/proposal_backtest.py`: bản gốc vs bản đề xuất trên cùng bundle nến đã lưu mỗi coin, gộp chỉ số, kết luận thận trọng (`MIN_TRADES_FOR_VERDICT = 10`).
+  - Bảng `proposal_backtest` (migration `86afb7c1ba2d`, append-only, admin-web chỉ SELECT; mỗi đề xuất một lần).
+  - Thẻ Telegram "Backtest đề xuất AI" + `scripts/run_proposal_backtest.py` (`--dry-run`, `--max-symbols`, `--send-telegram`).
+- **Giới hạn đã biết:** replay một coin, 1 vị thế, 1x → `risk.max_positions`/`risk.max_leverage` là UNSUPPORTED; khớp ở giá mở nến kế tiếp của khung vào lệnh (nến 1m chỉ có ~1,5 ngày); cửa sổ theo dữ liệu đã backfill (15m ≈ 8 ngày, 1h ≈ 32 ngày, 4h ≈ 130 ngày sau warm-up); không phải kiểm định thống kê.
+- **Còn mở:**
+  - nút "Tạo bản nháp config" từ kết quả BETTER (owner publish bằng MFA);
+  - backtest danh mục nhiều coin để kiểm `max_positions`;
+  - chạy tự động sau mỗi lượt AI Analyst;
+  - trang Admin xem `analyst_run` + `proposal_backtest`.

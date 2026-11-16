@@ -4474,3 +4474,25 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
   - file knowledge theo chủ đề khi xoay session (tóm tắt bài học, owner duyệt);
   - AI-3 (đề xuất → backtest);
   - trang Admin xem `analyst_run`.
+
+### 2026-11-16 — AI-3 lát 1: đề xuất AI → backtest bản gốc vs bản đề xuất
+
+- **Yêu cầu của owner:** "Có, làm AI-3"; cấp BACKTEST_RESEARCH (policy `BINANCE_USDM_REST` revision 5 `verified`: backtest_research/paper_demo/training, 20 coin, 1m/15m/1h/4h; collector vẫn 80/80).
+- **Đã làm:**
+  - `ai_analyst.py`: `analyst_output.v2`/`ai2-prompt-v2`, `PROPOSAL_FIELDS`, `validate_proposals`, `apply_proposal`.
+  - Replay nhận `strategy_parameters` (settings + profile/family hash; rỗng giữ hash cũ). Context replay gộp bảng bằng chứng thoát v3 (`h03-exit-v3-*`).
+  - `application/proposal_backtest.py`: arm baseline/variant, `build_stored_bundle` (nến `BINANCE_USDM_REST_BACKFILL` + rights gate BACKTEST_RESEARCH, warm-up 220, cửa sổ chung căn theo khung lớn nhất, thiếu nến → loại coin kèm lý do), `run_arm` (khớp ở khung vào lệnh), `aggregate`, `compare` (≥ 10 lệnh mới kết luận), UNSUPPORTED khi hai arm giống hệt (chỉ đổi `max_positions`/`max_leverage`).
+  - Migration `86afb7c1ba2d` (head) bảng `proposal_backtest` (append-only, unique (run, proposal_index), admin-web chỉ SELECT, FORCE RLS). **Lưu ý:** hai mã revision đầu tôi chọn (`a1c3e5f7b9d2`, `b3d5f7a9c1e4`) đã tồn tại — từ nay sinh mã bằng `secrets.token_hex(6)` và grep trước.
+  - Thẻ "Backtest đề xuất AI" (`render_backtest_card`, `backtest_card_view_from/caption`, `send_backtest_card`), mẫu `docs/design/telegram-cards/backtest-card-sample.png`.
+  - `scripts/run_proposal_backtest.py` (phase `backtest` trong container migrator; `--dry-run`, `--max-symbols`, `--max-proposals`, `--send-telegram`).
+- **Lỗi engine replay phát hiện và sửa (quan trọng):** `ReplayAccountState.project` giữ `captured_at` của seed → sau `max_account_age` = 1 ngày mọi candidate bị `ACCOUNT_STATE_STALE`. Chẩn đoán T05 H03 4h ATOM: 0 lệnh/55 candidate bị loại; sau sửa 15 và 19 lệnh. Snapshot chiếu giờ mang `max(seed.captured_at, risk_state.market_data_as_of)`. Mọi backtest dài > 1 ngày trước 16/11 có thể đã thiếu lệnh — kết quả cũ cần chạy lại trước khi dùng.
+- **Chạy thật (lượt AI H03 10:0x, đề xuất v2):**
+  - T06 15m `max_positions → 2`: UNSUPPORTED (replay một coin).
+  - T05 4h `donchian_lookback 30 → 20` (3 coin, ~130 ngày): WORSE — 43→52 lệnh, PF 1,06→1,00, PnL +26,17→+1,06 USDT, DD 100,79→121,69.
+  - T09 15m `per_trade_risk_fraction 0,0075 → 0,01` (12 coin, ~8 ngày): INCONCLUSIVE — PnL −1007,55→−785,29 nhưng DD 484,66→641,69 (> 20%).
+  - Đã lưu 3 hàng `proposal_backtest`, gửi 3 thẻ Telegram. Thời gian ~40 giây/arm/coin.
+- **Kiểm chứng:** unit **4522 passed/142s**; E2E `test_rt1_paper_market_loop` (phase analyst thêm `proposal_backtest`: quyền, RLS, trùng bị chặn), `test_backtest_outcomes_persistence`, `test_wp07_backtest_persist_fence`, `test_db_role_least_privilege` đạt. Ruff/format/mypy đạt.
+- **Lỗi có sẵn đã điều tra (không do AI-3):**
+  - `test_wp06_source_pinned_replay_persistence` hỏng từ 13–14/11: (1) probe thiếu license evidence (quy tắc d823df5) — **đã sửa probe**; (2) trigger migration `b7d9f1a3c5e8` (7c9b749, 14/11) chỉ cho `crypidian_candidate_builder` ghi bundle TRAINING → `WP06_TRAINING_REPLAY_BUNDLE_CALLER_DENIED` khi probe chạy bằng migrator. Chưa sửa. Unit tương ứng `test_wp06_source_pinned_scorer_replay_fixture` 3 passed.
+  - `alembic check` trên DB local báo bảng `market_mark_price`/`market_liquidation`/`market_trade_flow` không có trong repo này (do stack/nhánh khác migrate vào); không động vào.
+- **Còn mở:** tạo bản nháp config từ kết quả BETTER; backtest danh mục nhiều coin (kiểm `max_positions`); tự chạy sau lượt AI Analyst; trang Admin `analyst_run`/`proposal_backtest`; sửa probe WP06 theo role candidate_builder.

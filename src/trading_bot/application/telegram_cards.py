@@ -646,3 +646,108 @@ def analysis_card_caption(view: AnalysisCardView) -> str:
         lines.append(f"{len(view.proposals)} đề xuất để backtest (không tự áp).")
     lines.append(f"Report {view.report_hash[:12]} · số liệu đã đối chiếu với Run Report.")
     return _fit_caption(lines)
+
+
+# --- Thẻ backtest đề xuất AI (AI-3) -------------------------------------------------------------
+
+_VERDICT_VI = {
+    "BETTER": "Bản đề xuất tốt hơn",
+    "WORSE": "Bản đề xuất kém hơn",
+    "INCONCLUSIVE": "Chưa kết luận",
+    "UNSUPPORTED": "Không backtest được",
+}
+
+
+@dataclass(frozen=True, slots=True)
+class BacktestCardView:
+    """So sánh bản gốc/bản đề xuất của một đề xuất AI trên cùng dữ liệu nến đã lưu."""
+
+    bot_name: str
+    verdict: str
+    changes: str
+    baseline: Mapping[str, object]
+    variant: Mapping[str, object]
+    window_start: datetime | None
+    window_end: datetime | None
+    notes: tuple[str, ...] = ()
+    skipped: int = 0
+    sample: bool = False
+
+    @property
+    def verdict_vi(self) -> str:
+        return _VERDICT_VI.get(self.verdict, self.verdict)
+
+    def rows(self) -> list[tuple[str, str, str]]:
+        """(chỉ số, bản gốc, bản đề xuất) đã định dạng."""
+
+        def ratio(value: object) -> str:
+            return "—" if value is None else format_percent_vi(value)
+
+        def pf(value: object) -> str:
+            return "—" if value is None else format_number_vi(value, decimals=2)
+
+        base, var = self.baseline, self.variant
+        return [
+            ("Coin đã chạy", str(base.get("symbols", 0)), str(var.get("symbols", 0))),
+            ("Số lệnh", str(base.get("trades", 0)), str(var.get("trades", 0))),
+            ("Tỷ lệ thắng", ratio(base.get("win_rate")), ratio(var.get("win_rate"))),
+            ("Profit factor", pf(base.get("profit_factor")), pf(var.get("profit_factor"))),
+            (
+                "PnL ròng",
+                format_usdt_vi(base.get("net_pnl", "0"), signed=True),
+                format_usdt_vi(var.get("net_pnl", "0"), signed=True),
+            ),
+            (
+                "Drawdown lớn nhất/coin",
+                format_usdt_vi(base.get("max_drawdown", "0")),
+                format_usdt_vi(var.get("max_drawdown", "0")),
+            ),
+        ]
+
+
+def backtest_card_view_from(
+    proposal: Mapping[str, object], result: Mapping[str, object]
+) -> BacktestCardView:
+    """Payload ``proposal_backtest`` → view thẻ; không thêm số nào ngoài kết quả replay."""
+
+    def seq(value: object) -> Sequence[object]:
+        return value if isinstance(value, Sequence) and not isinstance(value, str) else ()
+
+    def mapping(value: object) -> Mapping[str, object]:
+        return value if isinstance(value, Mapping) else {}
+
+    window = seq(result.get("window"))
+    changes = seq(proposal.get("changes"))
+    notes = seq(result.get("notes"))
+    return BacktestCardView(
+        bot_name=clean_text(str(result.get("bot_name", "")), limit=80),
+        verdict=str(result.get("verdict", "INCONCLUSIVE")),
+        changes=clean_text(
+            ", ".join(
+                f"{change.get('field')} → {change.get('to')}"
+                for change in changes
+                if isinstance(change, Mapping)
+            ),
+            limit=200,
+        ),
+        baseline=mapping(result.get("baseline")),
+        variant=mapping(result.get("variant")),
+        window_start=datetime.fromisoformat(str(window[0])) if len(window) == 2 else None,
+        window_end=datetime.fromisoformat(str(window[1])) if len(window) == 2 else None,
+        notes=tuple(clean_text(str(note), limit=200) for note in notes[:MAX_ANALYSIS_ITEMS]),
+        skipped=len(seq(result.get("skipped_symbols"))),
+    )
+
+
+def backtest_card_caption(view: BacktestCardView) -> str:
+    """Caption ngắn kèm ảnh thẻ backtest đề xuất."""
+    rows = {label: (base, var) for label, base, var in view.rows()}
+    lines = [
+        "BACKTEST ĐỀ XUẤT AI (PAPER) — KHÔNG TỰ ÁP VÀO BOT",
+        f"{view.bot_name}: {view.changes}",
+        f"Kết luận: {view.verdict_vi}",
+        f"Số lệnh {rows['Số lệnh'][0]} → {rows['Số lệnh'][1]}; "
+        f"PnL ròng {rows['PnL ròng'][0]} → {rows['PnL ròng'][1]}",
+        "Muốn áp dụng: tạo bản nháp config rồi publish trên Admin (MFA).",
+    ]
+    return _fit_caption(lines)

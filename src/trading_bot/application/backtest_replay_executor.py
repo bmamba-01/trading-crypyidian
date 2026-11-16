@@ -154,6 +154,10 @@ def build_backtest_replay_plan(
         "adverse_funding_per_unit": "0",
         "exchange_rules_version": "paper-generic-increments-v1",
     }
+    strategy_parameters = dict(sorted(submission.strategy_parameters))
+    if strategy_parameters:
+        # Chỉ thêm khi có tham số: hash profile của job cũ (không tham số) giữ nguyên.
+        profile_payload["strategy_parameters"] = strategy_parameters
     profile_hash = _hash(profile_payload)
     settings_version_id = uuid5(job_id, f"settings:{profile_hash}")
     risk_profile_version_id = uuid5(job_id, f"risk:{profile_hash}")
@@ -185,7 +189,7 @@ def build_backtest_replay_plan(
     parameter_family_hash = _hash(
         {
             "profile_hash": profile_hash,
-            "strategy_parameters": {},
+            "strategy_parameters": strategy_parameters,
         }
     )
     manifest = ReplayManifest(
@@ -342,7 +346,7 @@ def _build_context_seed(
         "features": {"formula_version": FEATURE_CODE_HASH, "sessions_timezone": "UTC"},
         "strategy": {
             "default_release": release_id,
-            "parameters": {},
+            "parameters": dict(sorted(submission.strategy_parameters)),
             "entry_timeframe": entry_timeframe,
             "confirmation_timeframe": confirmation_timeframe,
         },
