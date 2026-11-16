@@ -390,6 +390,32 @@ def backtest_proposal(
     )
 
 
+DRAFTABLE_VERDICTS = frozenset({"BETTER", "INCONCLUSIVE"})
+
+
+def draft_overlay_from_backtest(
+    head_overlay: Mapping[str, Any],
+    proposal: Mapping[str, Any],
+    result: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Overlay bản nháp = overlay đang publish + thay đổi đề xuất, chỉ khi còn khớp backtest.
+
+    Chặn khi kết luận WORSE/UNSUPPORTED, hoặc cấu hình bot đã đổi so với bản gốc đã backtest
+    (kết quả không còn áp dụng; cần backtest lại). Owner vẫn phải validate + publish (MFA).
+    """
+    verdict = str(result.get("verdict", ""))
+    if verdict not in DRAFTABLE_VERDICTS:
+        raise ValueError(f"Kết luận {verdict or 'không rõ'}: không tạo bản nháp từ đề xuất này.")
+    if arm_from_overlay(head_overlay).payload() != result.get("baseline_arm"):
+        raise ValueError(
+            "Cấu hình bot đã đổi so với bản gốc đã backtest; cần backtest lại trước khi áp."
+        )
+    changes = proposal.get("changes") or []
+    if not changes:
+        raise ValueError("Đề xuất không có thay đổi.")
+    return apply_proposal(head_overlay, changes)
+
+
 # ---------------------------------------------------------------------------
 # Dựng bundle từ nến đã lưu (trong Unit of Work của caller)
 # ---------------------------------------------------------------------------
@@ -501,6 +527,7 @@ async def build_stored_bundle(
 
 __all__ = [
     "MIN_TRADES_FOR_VERDICT",
+    "DRAFTABLE_VERDICTS",
     "PROPOSAL_BACKTEST_VERSION",
     "ArmMetrics",
     "BacktestArm",
@@ -512,6 +539,7 @@ __all__ = [
     "backtest_proposal",
     "build_stored_bundle",
     "compare",
+    "draft_overlay_from_backtest",
     "required_timeframes",
     "run_arm",
 ]

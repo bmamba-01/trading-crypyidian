@@ -115,6 +115,65 @@ def mb07b_ui_report_grant():
             permission="bot:report:read", granted_by=UUID(workspace["members"]["owner"]))
     return {"granted": True}
 PHASES["mb07b_ui_report_grant"] = mb07b_ui_report_grant
+
+def ai3_proposal_seed():
+    # AI-3: kết quả backtest đề xuất AI cho bot "a", bản gốc khớp cấu hình đang publish.
+    import json as _json
+
+    from trading_bot.application.proposal_backtest import arm_from_overlay
+
+    workspace = _ws("main")
+    workspace_id = UUID(workspace["workspace"])
+    bot_id = UUID(workspace["bots"]["a"])
+    run_id = uuid4()
+    backtest_id = uuid4()
+    with _connect() as connection, connection.transaction():
+        head = connection.execute(
+            "SELECT overlay_json FROM bot_config_version WHERE workspace_id=%s AND bot_id=%s "
+            "AND status='PUBLISHED' ORDER BY version DESC LIMIT 1",
+            (workspace_id, bot_id),
+        ).fetchone()
+        assert head is not None, "Bot cần cấu hình đã publish."
+        connection.execute(
+            "INSERT INTO analyst_run (id, workspace_id, topic_key, engine, resumed, "
+            "run_report_hash, input_sha256, prompt_version, output_version, usage, exit_code, "
+            "raw_stdout, validation_errors, valid) VALUES (%s,%s,'family:H03','fake',FALSE,"
+            "%s,%s,'ai2-prompt-v2','analyst_output.v2','{}'::jsonb,0,'{}','[]'::jsonb,TRUE)",
+            (run_id, workspace_id, "a" * 64, "b" * 64),
+        )
+        proposal = {"changes": [{"field": "risk.per_trade_risk_fraction", "to": "0.001"}]}
+        result = {
+            "verdict": "BETTER",
+            "bot_name": "e2e",
+            "baseline_arm": arm_from_overlay(head[0]).payload(),
+            "baseline": {"trades": 12, "net_pnl": "-5.00", "max_drawdown": "9.00"},
+            "variant": {"trades": 12, "net_pnl": "-1.00", "max_drawdown": "2.00"},
+            "notes": [],
+        }
+        connection.execute(
+            "INSERT INTO proposal_backtest (id, workspace_id, analyst_run_id, proposal_index, "
+            "topic_key, bot_id, bot_name, proposal, result, verdict, version) VALUES "
+            "(%s,%s,%s,0,'family:H03',%s,'e2e',%s::jsonb,%s::jsonb,'BETTER',"
+            "'ai3-proposal-backtest-v1')",
+            (
+                backtest_id, workspace_id, run_id, bot_id,
+                _json.dumps(proposal), _json.dumps(result),
+            ),
+        )
+    return {"ai3_backtest_id": str(backtest_id)}
+PHASES["ai3_proposal_seed"] = ai3_proposal_seed
+
+def ai3_draft_inspect():
+    workspace = _ws("main")
+    with _connect() as connection:
+        rows = connection.execute(
+            "SELECT status, overlay_json->'risk'->>'per_trade_risk_fraction' "
+            "FROM bot_config_version WHERE workspace_id=%s AND bot_id=%s "
+            "ORDER BY version DESC LIMIT 1",
+            (UUID(workspace["workspace"]), UUID(workspace["bots"]["a"])),
+        ).fetchone()
+    return {"latest_status": rows[0], "latest_risk_fraction": rows[1]}
+PHASES["ai3_draft_inspect"] = ai3_draft_inspect
 """
 
 
@@ -686,6 +745,27 @@ def test_admin_browser_session_navigation_accessibility_and_telegram_link(
             .locator("xpath=following-sibling::dd[1]")
         )
         expect(entry_state).to_have_text("Tạm dừng")
+
+        # AI-3: đề xuất AI đã backtest → owner bấm tạo bản nháp; không tự publish.
+        harness.probe("ai3_proposal_seed", "migrator")
+        browser_page.goto(f"{base_url}/admin/bots/{bot_id}", wait_until="networkidle")
+        proposals = browser_page.get_by_role("region", name="Đề xuất AI đã backtest")
+        expect(proposals.get_by_text("risk.per_trade_risk_fraction → 0.001")).to_be_visible()
+        with browser_page.expect_response(
+            lambda response: response.request.method == "POST" and "/ai-proposals/" in response.url
+        ) as ai_draft_info:
+            proposals.get_by_role("button", name="Tạo bản nháp từ đề xuất").press("Enter")
+        assert ai_draft_info.value.status == 303
+        expect(
+            browser_page.get_by_role("status").filter(has_text="Đã tạo bản nháp từ đề xuất AI")
+        ).to_be_visible()
+        expect(
+            browser_page.get_by_text(re.compile(r"Bản nháp [0-9a-f-]+ — phiên bản 1"))
+        ).to_be_visible()
+        assert harness.probe("ai3_draft_inspect", "migrator") == {
+            "latest_status": "DRAFT",
+            "latest_risk_fraction": "0.001",
+        }
         _open_mobile_menu(browser_page)
         browser_page.get_by_role("navigation", name="Điều hướng chính").get_by_role(
             "link", name="Tổng quan", exact=True

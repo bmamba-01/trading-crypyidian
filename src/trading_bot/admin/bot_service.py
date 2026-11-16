@@ -503,6 +503,95 @@ class BotConfigAdminService:
             _enqueue_version(unit, "bot.config.rolled_back", published)
             return serialize_bot_version(published)
 
+    # --- Đề xuất AI đã backtest (AI-3) ------------------------------------------------------
+
+    async def list_proposal_backtests(
+        self, principal: Principal, *, bot_id: UUID, limit: int = 10
+    ) -> list[dict[str, Any]]:
+        """Kết quả backtest đề xuất AI của bot, mới nhất trước (chỉ đọc)."""
+        from sqlalchemy import select
+
+        from trading_bot.adapters.database.models import ProposalBacktestRecord
+        from trading_bot.application.proposal_backtest import DRAFTABLE_VERDICTS
+
+        async with self._uow(principal, bot_id=bot_id) as unit:
+            await self._require(unit, principal, bot_id, BotPermission.READ)
+            rows = await unit.session.scalars(
+                select(ProposalBacktestRecord)
+                .where(
+                    ProposalBacktestRecord.workspace_id == principal.workspace_id,
+                    ProposalBacktestRecord.bot_id == bot_id,
+                )
+                .order_by(ProposalBacktestRecord.created_at.desc())
+                .limit(limit)
+            )
+            return [
+                {
+                    "id": str(row.id),
+                    "created_at": row.created_at,
+                    "verdict": row.verdict,
+                    "changes": list(row.proposal.get("changes") or []),
+                    "rationale": str(row.proposal.get("rationale") or ""),
+                    "baseline": dict(row.result.get("baseline") or {}),
+                    "variant": dict(row.result.get("variant") or {}),
+                    "notes": list(row.result.get("notes") or []),
+                    "window": row.result.get("window"),
+                    "draftable": row.verdict in DRAFTABLE_VERDICTS,
+                }
+                for row in rows.all()
+            ]
+
+    async def create_draft_from_proposal(
+        self,
+        principal: Principal,
+        *,
+        bot_id: UUID,
+        backtest_id: UUID,
+        request_id: UUID | None = None,
+    ) -> dict[str, Any]:
+        """Bản nháp = cấu hình đang publish + thay đổi AI đã backtest; không tự publish.
+
+        Kết quả backtest phải còn khớp cấu hình hiện hành (nếu không phải backtest lại). Quyền,
+        idempotency (mỗi kết quả một bản nháp) và MFA khi đổi khối risk đi qua ``create_draft``.
+        """
+        from sqlalchemy import select
+
+        from trading_bot.adapters.database.models import ProposalBacktestRecord
+        from trading_bot.application.proposal_backtest import draft_overlay_from_backtest
+
+        async with self._uow(principal, bot_id=bot_id) as unit:
+            await self._require(unit, principal, bot_id, BotPermission.CONFIG_WRITE)
+            record = await unit.session.scalar(
+                select(ProposalBacktestRecord).where(
+                    ProposalBacktestRecord.workspace_id == principal.workspace_id,
+                    ProposalBacktestRecord.bot_id == bot_id,
+                    ProposalBacktestRecord.id == backtest_id,
+                )
+            )
+            if record is None:
+                raise BotAdminError(404, "Không tìm thấy kết quả backtest đề xuất của bot này.")
+            head = await BotConfigVersionRepository(unit.session).get_head(
+                workspace_id=principal.workspace_id, bot_id=bot_id
+            )
+            if head is None:
+                raise BotAdminError(409, "Bot chưa có cấu hình đã publish.")
+            try:
+                payload = draft_overlay_from_backtest(
+                    head.overlay_json, record.proposal, record.result
+                )
+                overlay = BotConfigOverlay.model_validate(payload)
+            except (ValueError, ValidationError) as error:
+                raise BotAdminError(409, str(error).splitlines()[0][:300]) from error
+            parent_id = head.id
+        return await self.create_draft(
+            principal,
+            bot_id=bot_id,
+            overlay=overlay,
+            expected_parent_version_id=parent_id,
+            idempotency_key=f"ai3-proposal:{backtest_id}",
+            request_id=request_id,
+        )
+
     # --- Helpers ----------------------------------------------------------------------------
 
     def _uow(

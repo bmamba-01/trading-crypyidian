@@ -207,7 +207,7 @@ Owner yêu cầu: triển khai AI-1 ngay, đồng thời nghiên cứu các bư�
   - Thẻ Telegram "Backtest đề xuất AI" + `scripts/run_proposal_backtest.py` (`--dry-run`, `--max-symbols`, `--send-telegram`).
 - **Giới hạn đã biết:** replay một coin, 1 vị thế, 1x → `risk.max_positions`/`risk.max_leverage` là UNSUPPORTED; khớp ở giá mở nến kế tiếp của khung vào lệnh (nến 1m chỉ có ~1,5 ngày); cửa sổ theo dữ liệu đã backfill (15m ≈ 8 ngày, 1h ≈ 32 ngày, 4h ≈ 130 ngày sau warm-up); không phải kiểm định thống kê.
 - **Còn mở:**
-  - nút "Tạo bản nháp config" từ kết quả BETTER (owner publish bằng MFA);
+  - ~~nút "Tạo bản nháp config"~~ — **xong lát 2 (16/11):** mục "Đề xuất AI đã backtest" trên trang chi tiết bot, tạo DRAFT cho kết luận BETTER/INCONCLUSIVE nếu cấu hình chưa đổi; owner kiểm định + công bố (MFA khi đổi rủi ro);
   - backtest danh mục nhiều coin để kiểm `max_positions`;
   - chạy tự động sau mỗi lượt AI Analyst;
   - trang Admin xem `analyst_run` + `proposal_backtest`.
