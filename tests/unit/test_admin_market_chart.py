@@ -663,7 +663,8 @@ def test_dock_and_validate_apis() -> None:
     html = client.get("/admin/chart?timeframe=5m").text
     assert "data-statusbar" in html
     assert "data-validate" in html
-    assert html.count('role="tab"') == 4
+    assert html.count("data-dock-tab=") == 4
+    assert html.count("data-insight-tab=") == 5
     assert "data-mc-events" in html
     assert "/static/chart-dock.js" in html
     validate = client.get(f"/admin/api/chart/validate?bot_id={BOT_ID}&symbol=BTCUSDT&timeframe=5m")
@@ -688,3 +689,104 @@ def test_dock_and_validate_apis() -> None:
         == 422
     )
     assert client.get(f"/admin/api/chart/validate?bot_id={BOT_ID}&symbol=x y").status_code == 422
+
+
+def test_chart_page_renders_insights_panel() -> None:
+    html = (
+        _client(_Reporting(_bars(200, start=START, step=timedelta(minutes=5))))
+        .get("/admin/chart?timeframe=5m")
+        .text
+    )
+    assert "data-insights" in html
+    assert "Cấu trúc 5M" in html  # câu nhận định theo mẫu
+    assert 'data-source-kind="structure_break"' in html
+    assert "data-level-time=" in html
+    # Lịch chưa sẵn sàng trong app test (không có DB) → nói rõ, không đoán.
+    assert "Không đọc được lịch sự kiện nội bộ." in html
+    assert "Số lệnh (90 ngày)" in html  # thống kê từ lịch sử lệnh đã đóng
+    assert "chưa đủ mẫu" in html
+    assert "/static/chart-insights.js" in html
+    assert ' style="' not in html
+
+
+class _Calendar:
+    def __init__(self) -> None:
+        self.created: list[Any] = []
+
+    async def list_between(self, principal: Principal, **kwargs: Any) -> list[dict]:
+        return [
+            {
+                "id": "3f1b8c2e-1111-4a5b-8c9d-000000000001",
+                "title": "CPI Mỹ",
+                "region": "US",
+                "impact": "HIGH",
+                "event_at": "2026-11-18T13:30:00+00:00",
+                "note": None,
+                "revision": 1,
+            }
+        ]
+
+    async def around(self, principal: Principal, **kwargs: Any) -> list[dict]:
+        return await self.list_between(principal)
+
+    async def create(self, principal: Principal, data: Any, **kwargs: Any) -> dict:
+        self.created.append((data, kwargs))
+        return {}
+
+
+class _Auth:
+    async def issue_csrf_token(self, session_cookie: Any) -> str:
+        return "csrf-ok"
+
+    async def verify_csrf(self, session_cookie: Any, token: Any) -> None:
+        from trading_bot.auth.service import AuthenticationFailure
+
+        if token != "csrf-ok":
+            raise AuthenticationFailure(403, "CSRF không hợp lệ.")
+
+
+def test_calendar_page_lists_events_and_validates_form() -> None:
+    client = _client(_Reporting([]))
+    calendar = _Calendar()
+    client.app.state.economic_calendar_service = calendar  # type: ignore[attr-defined]
+    client.app.state.auth_service = _Auth()  # type: ignore[attr-defined]
+    page = client.get("/admin/calendar")
+    assert page.status_code == 200
+    assert "CPI Mỹ" in page.text
+    assert 'name="csrf_token"' in page.text
+    assert 'name="reason"' in page.text
+    assert ' style="' not in page.text
+    # Thiếu CSRF hợp lệ → không ghi.
+    denied = client.post(
+        "/admin/calendar",
+        data={
+            "title": "FOMC",
+            "region": "US",
+            "impact": "HIGH",
+            "event_local": "2026-11-19T02:00",
+            "event_tz": "Asia/Ho_Chi_Minh",
+            "reason": "Thêm",
+        },
+        follow_redirects=False,
+    )
+    assert denied.status_code == 403
+    assert calendar.created == []
+    form = {
+        "csrf_token": "csrf-ok",
+        "title": "FOMC",
+        "region": "us",
+        "impact": "HIGH",
+        "event_local": "2026-11-19T02:00",
+        "event_tz": "Asia/Ho_Chi_Minh",
+        "reason": "Lịch Fed",
+    }
+    created = client.post("/admin/calendar", data=form, follow_redirects=False)
+    assert created.status_code == 303
+    data, kwargs = calendar.created[0]
+    # 02:00 giờ Việt Nam = 19:00 UTC ngày hôm trước; khu vực chuẩn hóa chữ hoa.
+    assert data.event_at == datetime(2026, 11, 18, 19, 0, tzinfo=UTC)
+    assert data.region == "US"
+    assert kwargs["reason"] == "Lịch Fed"
+    for field, value in (("event_tz", "Mars/Base"), ("reason", "x"), ("impact", "HUGE")):
+        bad = client.post("/admin/calendar", data=form | {field: value}, follow_redirects=False)
+        assert bad.status_code == 422, field

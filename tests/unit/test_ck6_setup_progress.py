@@ -184,3 +184,20 @@ def test_build_setup_progress_uses_only_hash_verified_decisions() -> None:
     )
     assert ready["status"] == "ready"
     assert ready["card"]["direction"] == "long"
+
+
+def test_news_condition_uses_internal_calendar_when_available() -> None:
+    cpi = {
+        "title": "CPI Mỹ",
+        "region": "US",
+        "impact": "HIGH",
+        "event_at": (NOW + timedelta(minutes=15)).isoformat(),
+    }
+    items = {
+        item["key"]: item
+        for item in context_conditions(NOW, next_funding_time=None, calendar_events=[cpi])
+    }
+    assert items["news"]["passed"] is False
+    assert "CPI Mỹ" in items["news"]["actual"]
+    unread = {item["key"]: item for item in context_conditions(NOW, next_funding_time=None)}
+    assert unread["news"]["passed"] is None

@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
+from trading_bot.domain.market.economic_calendar import news_condition
 from trading_bot.domain.market.ict import active_killzones
 
 SETUP_FORMULA_VERSION = "ck6-setup-v1"
@@ -66,9 +67,15 @@ def _condition(
 
 
 def context_conditions(
-    now: datetime, *, next_funding_time: datetime | None
+    now: datetime,
+    *,
+    next_funding_time: datetime | None,
+    calendar_events: Sequence[Mapping[str, Any]] | None = None,
 ) -> tuple[dict[str, Any], ...]:
-    """Điều kiện cộng điểm tính tại ``now``: killzone, cách mốc funding, lịch tin tức."""
+    """Điều kiện cộng điểm tính tại ``now``: killzone, cách mốc funding, lịch tin tức (CK-10).
+
+    ``calendar_events`` = None nghĩa là không đọc được lịch nội bộ → "chưa xác định".
+    """
     if now.tzinfo is None:
         raise ValueError("now phải có timezone")
     windows = active_killzones(now)
@@ -100,13 +107,17 @@ def context_conditions(
             "10 phút",
             gap > FUNDING_WINDOW,
         )
-    news = _condition(
-        "news",
-        "Không có tin tác động cao trong ±30 phút",
-        "chưa có lịch sự kiện nội bộ (CK-10)",
-        "không có",
-        "tin tác động cao",
-        None,
+    news = (
+        news_condition(calendar_events, now=now)
+        if calendar_events is not None
+        else _condition(
+            "news",
+            "Không có tin tác động cao trong ±30 phút",
+            "không đọc được lịch sự kiện nội bộ",
+            "không có",
+            "tin tác động cao (lịch nội bộ)",
+            None,
+        )
     )
     return (killzone, funding, news)
 

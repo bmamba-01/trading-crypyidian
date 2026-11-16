@@ -143,6 +143,7 @@
     <ul class="mc-live__notices" data-ov-notices>{% for notice in overview.notices %}<li>{{ notice }}</li>{% endfor %}</ul>
   </section>
   {% endif %}
+  <div class="mc-main">
   <section class="glass-card mc-chart-card" aria-labelledby="mc-title">
     <header class="mc-head">
       <h2 id="mc-title"><span class="coin-tag" data-coin="{{ chart_payload.symbol }}">{{ chart_payload.symbol }}</span><span class="mc-head__tf">{{ timeframe | upper }}</span><span class="badge badge-neutral" title="Chỉ đọc dữ liệu đã lưu; không gửi lệnh">PAPER · chỉ xem</span><span class="badge badge-neutral mc-source" title="Nguồn nến đang hiển thị" data-mc-source>{{ chart_payload.source_label or "—" }}</span></h2>
@@ -250,6 +251,81 @@
       {% for notice in chart_payload.notices %}<li>{{ notice }}</li>{% endfor %}
     </ul>
   </section>
+  {#- CK-10: cột phân tích — Nhận định, Mức giá, Tin & Lịch, Thống kê, AI. Chỉ xem. -#}
+  {% if insights %}
+  <aside class="glass-card mc-insights" aria-label="Phân tích" data-insights>
+    <div class="mc-dock__tabs" role="tablist" aria-label="Phân tích">
+      <button type="button" role="tab" id="mc-itab-narrative" aria-controls="mc-ipanel-narrative" aria-selected="true" data-insight-tab="narrative">Nhận định</button>
+      <button type="button" role="tab" id="mc-itab-levels" aria-controls="mc-ipanel-levels" aria-selected="false" tabindex="-1" data-insight-tab="levels">Mức giá <span class="mc-dock__count">{{ insights.levels | length }}</span></button>
+      <button type="button" role="tab" id="mc-itab-calendar" aria-controls="mc-ipanel-calendar" aria-selected="false" tabindex="-1" data-insight-tab="calendar">Tin &amp; Lịch</button>
+      <button type="button" role="tab" id="mc-itab-stats" aria-controls="mc-ipanel-stats" aria-selected="false" tabindex="-1" data-insight-tab="stats">Thống kê</button>
+      <button type="button" role="tab" id="mc-itab-ai" aria-controls="mc-ipanel-ai" aria-selected="false" tabindex="-1" data-insight-tab="ai">AI</button>
+    </div>
+    <div id="mc-ipanel-narrative" role="tabpanel" aria-labelledby="mc-itab-narrative" data-insight-panel="narrative">
+      <ul class="mc-narrative">
+        {% for sentence in insights.narrative %}
+        <li data-source-kind="{{ sentence.source.kind }}">{{ sentence.text }}</li>
+        {% endfor %}
+      </ul>
+      <p class="sc-note">Câu ghép theo mẫu từ sự kiện đã tính (cấu trúc, quét thanh khoản, VWAP, đa khung, phiên, funding); không dùng AI sinh nội dung. Không phải khuyến nghị đầu tư.</p>
+    </div>
+    <div id="mc-ipanel-levels" role="tabpanel" aria-labelledby="mc-itab-levels" data-insight-panel="levels" hidden>
+      {% if insights.levels %}
+      <ul class="mc-levels">
+        {% for level in insights.levels %}
+        <li>
+          <button type="button" class="mc-level-item" data-level-time="{{ level.time or '' }}" data-level-price="{{ level.price }}" title="Cuộn biểu đồ tới mức này">
+            <span class="mc-level-item__label">{{ level.label }}</span>
+            <span class="mc-level-item__price">{{ ov_price(level.price) }}</span>
+            <span class="mc-level-item__dist {{ 'is-up' if level.side == 'above' else 'is-down' }}">{% if level.distance_pct is not none %}{{ '%+.2f' | format(level.distance_pct) | replace('.', ',') }}%{% else %}—{% endif %}</span>
+          </button>
+        </li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <p class="sc-empty">Chưa có mức còn hiệu lực trong vùng dữ liệu.</p>
+      {% endif %}
+    </div>
+    <div id="mc-ipanel-calendar" role="tabpanel" aria-labelledby="mc-itab-calendar" data-insight-panel="calendar" hidden>
+      {% if overview and overview.mark and overview.mark.funding_seconds_left is not none %}
+      <p class="mc-calendar-funding">Funding kế tiếp sau <strong class="mc-live__clock" data-insight-funding>{{ ov_clock(overview.mark.funding_seconds_left) }}</strong> · {{ overview.mark.next_funding_time | local_minute }}</p>
+      {% endif %}
+      {% if not insights.calendar_available %}
+      <p class="sc-empty">Không đọc được lịch sự kiện nội bộ.</p>
+      {% elif insights.calendar %}
+      <ul class="mc-calendar-list">
+        {% for event in insights.calendar %}
+        <li><span class="mc-impact mc-impact--{{ event.impact | lower }}">{{ {"HIGH": "Cao", "MEDIUM": "TB", "LOW": "Thấp"}[event.impact] }}</span> <strong>{{ event.event_at | local_minute }}</strong> {{ event.title }} <span class="sc-meta">({{ event.region }})</span></li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <p class="sc-empty">Chưa có sự kiện sắp tới trong lịch nội bộ.</p>
+      {% endif %}
+      <p class="sc-note"><a href="/admin/calendar">Mở lịch sự kiện</a> để thêm FOMC, CPI…; tin tác động cao trong ±30 phút làm điều kiện "Tin tức" của bảng Entry không đạt.</p>
+    </div>
+    <div id="mc-ipanel-stats" role="tabpanel" aria-labelledby="mc-itab-stats" data-insight-panel="stats" hidden>
+      {% set st = insights.statistics %}
+      {% if st.n %}
+      <dl class="mc-stats">
+        <div><dt>Số lệnh (90 ngày)</dt><dd>{{ st.n }}</dd></div>
+        <div><dt>Tỷ lệ thắng</dt><dd>{{ (st.win_rate * 100) | round(1) | number_vi }}%</dd></div>
+        <div><dt>Tỷ lệ hòa vốn</dt><dd>{% if st.breakeven_win_rate is not none %}{{ (st.breakeven_win_rate * 100) | round(1) | number_vi }}%{% else %}—{% endif %}</dd></div>
+        <div><dt>Kỳ vọng / lệnh (sau phí)</dt><dd class="{{ 'is-up' if st.expectancy >= 0 else 'is-down' }}">{{ st.expectancy | number2_vi }} {{ st.quote_asset }}</dd></div>
+        <div><dt>Profit factor</dt><dd>{{ st.profit_factor | number2_vi if st.profit_factor is not none else '—' }}</dd></div>
+        <div><dt>Tổng PnL ròng</dt><dd>{{ st.total_net | number2_vi }} {{ st.quote_asset }}</dd></div>
+      </dl>
+      <p class="sc-note">{% if st.edge == 'above_breakeven' %}Tỷ lệ thắng đang trên ngưỡng hòa vốn.{% else %}Tỷ lệ thắng đang dưới ngưỡng hòa vốn.{% endif %}{% if st.sample_warning %} Mới {{ st.n }} lệnh — chưa đủ mẫu (cần ≥ 30) để kết luận.{% endif %} {% if st.r_count %}{% else %}Chưa có phân phối R (lệnh trong báo cáo chưa kèm rủi ro kế hoạch).{% endif %}</p>
+      {% else %}
+      <p class="sc-empty">Bot chưa có lệnh PAPER đã đóng trên {{ selected_symbol }} trong 90 ngày.</p>
+      {% endif %}
+    </div>
+    <div id="mc-ipanel-ai" role="tabpanel" aria-labelledby="mc-itab-ai" data-insight-panel="ai" hidden>
+      <dl class="mc-stats" data-ai-status><div><dt>Trạng thái scorer</dt><dd>Chọn tab để tải.</dd></div></dl>
+      <p class="sc-note">Chỉ xem; đổi chế độ scorer ở trang Mô hình (cần MFA). Khi scorer từ chối chấm điểm (ABSTAIN), bot giữ quyết định theo rule.</p>
+    </div>
+  </aside>
+  {% endif %}
+  </div>
 
   {% if overview %}
   {#- CK-2: ma trận xu hướng đa khung — cấu trúc swing đã xác nhận, mức vô hiệu, vị trí trong biên. -#}
@@ -441,5 +517,6 @@
   <script src="/static/chart-drawings.js" defer></script>
   <script src="/static/chart-multi.js" defer></script>
   <script src="/static/chart-dock.js" defer></script>
+  <script src="/static/chart-insights.js" defer></script>
 {% endif %}
 {% endblock %}

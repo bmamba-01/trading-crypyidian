@@ -674,6 +674,97 @@ async def web_read() -> dict[str, Any]:
     }
 
 
+async def calendar() -> dict[str, Any]:
+    """CK-10: lịch sự kiện bằng role admin-web thật — audit, xóa mềm, không DELETE, RLS."""
+    from sqlalchemy.exc import DBAPIError
+
+    from trading_bot.application.economic_calendar import EconomicCalendarService
+    from trading_bot.application.outbox import UnitOfWork
+    from trading_bot.auth.policy import Principal, Role
+    from trading_bot.domain.market.economic_calendar import EconomicEventInput
+
+    owner = Principal(
+        user_id=_id("owner"),
+        membership_id=MEMBERSHIP,
+        workspace_id=WORKSPACE,
+        roles=frozenset({Role.OWNER}),
+        mfa_verified_at=NOW,
+    )
+    engine, sessions = _sessions()
+    try:
+        service = EconomicCalendarService(sessions)
+        cpi = EconomicEventInput.parse(
+            title="CPI Mỹ",
+            region="US",
+            impact="HIGH",
+            event_at=(NOW + timedelta(hours=2)).isoformat(),
+            note=None,
+        )
+        created = await service.create(owner, cpi, reason="E2E thêm")
+        event_id = UUID(created["id"])
+        listed = await service.around(owner, now=NOW)
+        await service.update(
+            owner,
+            event_id,
+            EconomicEventInput.parse(
+                title="CPI Mỹ (lõi)",
+                region="US",
+                impact="HIGH",
+                event_at=(NOW + timedelta(hours=2)).isoformat(),
+                note="đã sửa",
+            ),
+            reason="E2E sửa",
+        )
+        updated = await service.around(owner, now=NOW)
+        await service.delete(owner, event_id, reason="E2E xóa")
+        after_delete = await service.around(owner, now=NOW)
+        async with UnitOfWork(
+            sessions, workspace_id=WORKSPACE, actor_membership_id=MEMBERSHIP
+        ) as uow:
+            audits = (
+                (
+                    await uow.session.execute(
+                        text(
+                            "SELECT action FROM audit_event "
+                            "WHERE target_id = :id ORDER BY occurred_at"
+                        ),
+                        {"id": event_id},
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            kept = await uow.session.scalar(
+                text(
+                    "SELECT count(*) FROM economic_event WHERE id = :id AND deleted_at IS NOT NULL"
+                ),
+                {"id": event_id},
+            )
+        delete_denied = False
+        try:
+            async with UnitOfWork(sessions, workspace_id=WORKSPACE) as uow:
+                await uow.session.execute(text("DELETE FROM economic_event"))
+        except DBAPIError:
+            delete_denied = True
+        async with UnitOfWork(sessions, workspace_id=uuid4()) as uow:
+            foreign = await uow.session.scalar(text("SELECT count(*) FROM economic_event"))
+        role = None
+        async with UnitOfWork(sessions, workspace_id=WORKSPACE) as uow:
+            role = await uow.session.scalar(text("SELECT current_user"))
+    finally:
+        await engine.dispose()
+    return {
+        "role": role,
+        "listed_titles": [item["title"] for item in listed],
+        "updated_titles": [item["title"] for item in updated],
+        "after_delete": len(after_delete),
+        "audit_actions": list(audits),
+        "soft_deleted_rows": int(kept or 0),
+        "delete_denied": delete_denied,
+        "other_workspace_rows": int(foreign or 0),
+    }
+
+
 def add_minutes() -> dict[str, Any]:
     """Ba nến 1m bình thường bắt đầu ở phút tròn đầu tiên sau `evaluated_at + 5s` của candidate."""
     with _connect() as connection, connection.transaction():
@@ -801,6 +892,8 @@ elif phase == "mark_check":
     output = asyncio.run(mark_check())
 elif phase == "web_read":
     output = asyncio.run(web_read())
+elif phase == "calendar":
+    output = asyncio.run(calendar())
 elif phase == "add_minutes":
     output = add_minutes()
 elif phase == "add_stop_bar":

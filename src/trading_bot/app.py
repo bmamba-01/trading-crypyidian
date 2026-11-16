@@ -80,6 +80,7 @@ from trading_bot.application.bot_operations import BotOperationsService
 from trading_bot.application.bot_reporting import BotReportingService
 from trading_bot.application.bot_runtime_registry import BotRuntimeRegistry
 from trading_bot.application.bot_runtime_supervisor import BotRuntimeSupervisor
+from trading_bot.application.economic_calendar import EconomicCalendarService
 from trading_bot.application.flatten_all import FlattenAllService
 from trading_bot.application.learning_incident_entry_hold import (
     LearningIncidentEntryHoldService,
@@ -270,6 +271,11 @@ def create_app(
         )
         application.state.bot_reporting_service = (
             BotReportingService(active_session_factory)
+            if active_session_factory is not None
+            else None
+        )
+        application.state.economic_calendar_service = (
+            EconomicCalendarService(active_session_factory)
             if active_session_factory is not None
             else None
         )

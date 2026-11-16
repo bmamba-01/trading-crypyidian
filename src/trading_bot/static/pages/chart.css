@@ -406,3 +406,62 @@
   font-size: 0.72rem;
   background: rgba(148, 163, 184, 0.22);
 }
+
+/* ---------- CK-10: lịch sự kiện và cột phân tích ---------- */
+.mc-calendar { padding: 0.75rem 0.85rem; border-radius: 0.8rem; display: grid; gap: 0.5rem; }
+.mc-calendar h2 { margin: 0; font-size: 1rem; }
+.mc-calendar__form { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr)); gap: 0.6rem; }
+.mc-calendar__form label { display: grid; gap: 0.25rem; font-size: 0.82rem; font-weight: 600; }
+.mc-calendar__form input, .mc-calendar__form select { min-height: 44px; }
+.mc-calendar__wide { grid-column: 1 / -1; }
+.mc-calendar__actions { display: flex; gap: 0.5rem; grid-column: 1 / -1; }
+.mc-calendar__ops { display: flex; flex-wrap: wrap; gap: 0.3rem; align-items: center; }
+.mc-calendar__delete { display: inline-flex; gap: 0.3rem; align-items: center; margin: 0; }
+.mc-calendar__delete input { min-height: 44px; width: 9rem; }
+.mc-impact { display: inline-block; padding: 0 0.4rem; border-radius: 0.35rem; font-weight: 700; font-size: 0.76rem; }
+.mc-impact--high { background: var(--danger-bg, #fee2e2); color: var(--danger-text, #991b1b); }
+.mc-impact--medium { background: rgba(240, 185, 11, 0.2); }
+.mc-impact--low { background: rgba(148, 163, 184, 0.2); }
+.mc-main { display: grid; gap: 0.75rem; min-width: 0; }
+.mc-main > * { min-width: 0; }
+@media (min-width: 1280px) {
+  .mc-main { grid-template-columns: minmax(0, 1fr) 22rem; align-items: start; }
+  .mc-insights { position: sticky; top: 0.75rem; }
+}
+.mc-insights { padding: 0.6rem 0.75rem 0.75rem; border-radius: 0.8rem; display: grid; gap: 0.5rem; }
+.mc-insights [role="tabpanel"] { min-width: 0; }
+.mc-narrative { margin: 0; padding-left: 1.1rem; display: grid; gap: 0.35rem; font-size: 0.86rem; }
+.mc-levels { margin: 0; padding: 0; list-style: none; display: grid; gap: 0.2rem; }
+.mc-level-item {
+  width: 100%;
+  min-height: 44px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto 4.5rem;
+  gap: 0.5rem;
+  align-items: center;
+  padding: 0 0.5rem;
+  border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.25));
+  border-radius: 0.45rem;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 0.82rem;
+  text-align: left;
+  cursor: pointer;
+}
+.mc-level-item:hover { background: rgba(148, 163, 184, 0.12); }
+.mc-level-item:focus-visible { outline: 2px solid var(--accent, #f0b90b); outline-offset: 1px; }
+.mc-level-item__label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mc-level-item__price, .mc-level-item__dist { font-variant-numeric: tabular-nums; text-align: right; }
+.mc-level-item .is-up { color: var(--pnl-positive-text, #0b8a5a); }
+.mc-level-item .is-down { color: var(--pnl-negative-text, #c7354b); }
+.mc-calendar-list { margin: 0; padding-left: 1rem; display: grid; gap: 0.3rem; font-size: 0.84rem; }
+.mc-calendar-funding { margin: 0; font-size: 0.86rem; }
+.mc-stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.4rem; margin: 0; }
+.mc-stats > div { border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.25)); border-radius: 0.45rem; padding: 0.35rem 0.5rem; min-width: 0; }
+.mc-stats dt { font-size: 0.72rem; opacity: 0.75; }
+.mc-stats dd { margin: 0; font-weight: 700; font-variant-numeric: tabular-nums; }
+.mc-stats .is-up { color: var(--pnl-positive-text, #0b8a5a); }
+.mc-stats .is-down { color: var(--pnl-negative-text, #c7354b); }
+/* Ô chọn trong thanh điều khiển chart giữ bề rộng theo nội dung (không giãn cả hàng). */
+.mc-controls select, .mc-multi-controls select, .mc-layer-presets select { width: auto; flex: 0 0 auto; }

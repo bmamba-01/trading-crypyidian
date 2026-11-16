@@ -622,6 +622,32 @@ def test_market_chart_renders_overlays_polls_and_is_responsive(server_url: str) 
         dock.locator('[data-dock-tab="positions"]').click()
         dock.screenshot(path=str(SCREENSHOTS_DIR / "ck9-dock-desktop.png"))
 
+        # CK-10: cột phân tích — nhận định có nguồn, mức giá cuộn chart, thống kê, AI chỉ đọc.
+        insights = page.locator("[data-insights]")
+        expect(insights.locator("[data-source-kind]").first).to_contain_text("Cấu trúc 5M")
+        insights.locator('[data-insight-tab="narrative"]').press("ArrowRight")
+        expect(insights.locator('[data-insight-tab="levels"]')).to_have_attribute(
+            "aria-selected", "true"
+        )
+        level = insights.locator("[data-level-time]").first
+        expect(level).to_be_visible()
+        chart.focus()
+        page.keyboard.press("End")
+        level.click()
+        expect(chart).to_be_focused()
+        insights.locator('[data-insight-tab="calendar"]').click()
+        expect(insights).to_contain_text("Không đọc được lịch sự kiện nội bộ.")
+        insights.locator('[data-insight-tab="stats"]').click()
+        expect(insights).to_contain_text("Số lệnh (90 ngày)")
+        insights.locator('[data-insight-tab="ai"]').click()
+        expect(insights.locator("[data-ai-status]")).to_contain_text("Chưa đọc được trạng thái")
+        insights.locator('[data-insight-tab="narrative"]').click()
+        page.wait_for_timeout(300)  # chờ hiệu ứng đổi viền tab (0,15 giây) trước khi chụp
+        page.screenshot(path=str(SCREENSHOTS_DIR / "ck10-insights-desktop.png"))
+        box_chart = chart.bounding_box()
+        box_insights = insights.bounding_box()
+        assert box_insights["x"] > box_chart["x"] + box_chart["width"] - 1  # cột phải ở 1280px
+
         # Thẻ tín hiệu SIG-3: hướng, SL, checklist và quyết định không vào lệnh gần nhất.
         signal = page.locator("[data-signal-card]")
         expect(signal).to_contain_text("BÁN")

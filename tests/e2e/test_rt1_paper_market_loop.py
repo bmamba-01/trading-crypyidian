@@ -32,6 +32,7 @@ SERVICES = {
     "runtime": "trading-runtime",
     "mark_check": "trading-runtime",
     "web_read": "admin-web",
+    "calendar": "admin-web",
     "add_minutes": "migrator",
     "add_stop_bar": "migrator",
     "verify": "migrator",
@@ -112,9 +113,24 @@ def test_rest_candles_drive_paper_entry_fill_and_stop_exit_idempotently() -> Non
         compose("run", "--rm", "--no-deps", "db-provisioner")
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "head")
         heads = compose("run", "--rm", "--no-deps", "migrator", "alembic", "heads")
-        assert "a7c9e1b3d5f6 (head)" in heads.stdout
+        assert "b8d0f2a4c6e8 (head)" in heads.stdout
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "check")
         state.update(run("seed"))
+        # CK-10: lịch sự kiện bằng role admin-web — audit đủ 3 thao tác, xóa mềm, RLS.
+        assert run("calendar") == {
+            "role": "crypidian_admin_web",
+            "listed_titles": ["CPI Mỹ"],
+            "updated_titles": ["CPI Mỹ (lõi)"],
+            "after_delete": 0,
+            "audit_actions": [
+                "economic_event.create",
+                "economic_event.update",
+                "economic_event.delete",
+            ],
+            "soft_deleted_rows": 1,
+            "delete_denied": True,
+            "other_workspace_rows": 0,
+        }
         assert run("genesis") == {"genesis": True}
 
         produced = run("produce")

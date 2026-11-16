@@ -62,6 +62,10 @@ from trading_bot.application.bot_reporting import (
     ReportScope,
 )
 from trading_bot.application.bot_runtime_control import BotRuntimeControlError
+from trading_bot.application.economic_calendar import (
+    EconomicCalendarError,
+    EconomicCalendarService,
+)
 from trading_bot.application.flatten_all import FlattenAllError, FlattenAllService
 from trading_bot.application.learning_post_mortem import LearningPostMortemService
 from trading_bot.application.market_chart import (
@@ -71,13 +75,15 @@ from trading_bot.application.market_chart import (
     build_market_chart_payload,
     chart_fingerprint,
 )
+from trading_bot.application.market_levels import price_levels
+from trading_bot.application.market_narrative import market_narrative
 from trading_bot.application.strategy_pipeline.microscope import MicroscopeReplayService
 from trading_bot.application.telegram_signal_subscription import (
     TelegramSignalSubscriptionError,
 )
 from trading_bot.application.telegram_signals import TelegramSignalFilters
 from trading_bot.auth.cookies import read_session_cookie, set_session_cookie
-from trading_bot.auth.policy import Principal, Role
+from trading_bot.auth.policy import Permission, Principal, Role, authorize
 from trading_bot.auth.router import (
     authenticate_login,
     client_address,
@@ -94,11 +100,13 @@ from trading_bot.auth.service import (
     AuthService,
 )
 from trading_bot.config.bot_settings import BotConfigOverlay
+from trading_bot.domain.market.economic_calendar import IMPACT_LABELS_VI, EconomicEventInput
 from trading_bot.domain.portfolio.post_mortem import evaluate_trade_post_mortem
 from trading_bot.domain.portfolio.reporting import (
     REPORT_MODE,
     REPORT_VERSION,
 )
+from trading_bot.domain.portfolio.setup_statistics import trade_statistics
 from trading_bot.domain.risk.circuit_breaker import (
     CircuitBreakerEngine,
     OperationalTelemetry,
@@ -2548,6 +2556,7 @@ async def market_chart_page(
     signal_view: dict[str, Any] | None = None
     overview: dict[str, Any] | None = None
     setups: list[dict[str, Any]] = []
+    insights: dict[str, Any] | None = None
     if selected is not None:
         service = _reporting_service(request)
         try:
@@ -2586,6 +2595,7 @@ async def market_chart_page(
                     timeframe=timeframe,
                 )
                 # CK-6: bảng Entry — setup của các bot giao dịch mã này (hoặc chưa ghim mã).
+                calendar_events = await _calendar_events(request, identity.principal)
                 setups = await service.get_setup_board(
                     identity.principal,
                     bots=[
@@ -2596,8 +2606,32 @@ async def market_chart_page(
                     bonus=context_conditions(
                         datetime.now(UTC),
                         next_funding_time=_next_funding(overview),
+                        calendar_events=calendar_events,
                     ),
                 )
+                # CK-10: cột phân tích — nhận định, mức giá, lịch, thống kê lệnh đã đóng.
+                insights = {
+                    "narrative": market_narrative(payload or {}, overview),
+                    "levels": price_levels(
+                        payload or {},
+                        current_price=((overview or {}).get("candle") or {}).get("price"),
+                    )[:20],
+                    "calendar": [
+                        event
+                        for event in calendar_events or []
+                        if datetime.fromisoformat(event["event_at"]) >= datetime.now(UTC)
+                    ][:10],
+                    "calendar_available": calendar_events is not None,
+                    "statistics": trade_statistics(
+                        await service.get_trade_history(
+                            identity.principal,
+                            bot_id=UUID(selected.id),
+                            symbol=selected_symbol,
+                            start=datetime.now(UTC) - STATISTICS_WINDOW,
+                            end=datetime.now(UTC),
+                        )
+                    ),
+                }
         except BotReportError as error:
             raise _report_http_error(error) from error
     return _templates(request).TemplateResponse(
@@ -2619,6 +2653,7 @@ async def market_chart_page(
             "signal_view": signal_view,
             "overview": overview,
             "setups": setups,
+            "insights": insights,
             "setup_cards": [
                 {"bot_name": item["bot_name"], "label": item["label"], "card": item["card"]}
                 for item in setups
@@ -2627,6 +2662,21 @@ async def market_chart_page(
         },
         headers={"Cache-Control": "no-store"},
     )
+
+
+STATISTICS_WINDOW = timedelta(days=90)
+
+
+async def _calendar_events(request: Request, principal: Principal) -> list[dict[str, Any]] | None:
+    """Lịch nội bộ ±7 ngày; ``None`` khi dịch vụ lịch chưa sẵn sàng hoặc không đọc được."""
+    service = getattr(request.app.state, "economic_calendar_service", None)
+    if service is None:
+        return None
+    try:
+        events: list[dict[str, Any]] = await service.around(principal, now=datetime.now(UTC))
+    except EconomicCalendarError:
+        return None
+    return events
 
 
 def _next_funding(overview: dict[str, Any] | None) -> datetime | None:
@@ -2829,6 +2879,148 @@ async def market_chart_history_api(
         "trades": trades,
         "csv_url": f"/admin/reports/export.csv?{csv_query}",
     }
+
+
+def _calendar_service(request: Request) -> EconomicCalendarService:
+    service = cast(
+        EconomicCalendarService | None,
+        getattr(request.app.state, "economic_calendar_service", None),
+    )
+    if service is None:
+        raise HTTPException(status_code=503, detail="Lịch sự kiện chưa sẵn sàng.")
+    return service
+
+
+def _calendar_http_error(error: EconomicCalendarError) -> HTTPException:
+    return HTTPException(status_code=error.status_code, detail=error.message)
+
+
+@router.get("/calendar")
+async def economic_calendar_page(
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(current_identity)],
+    edit: UUID | None = None,
+) -> Response:
+    """Lịch sự kiện kinh tế do owner nhập (CK-10): 30 ngày tới và 7 ngày qua."""
+    now = datetime.now(UTC)
+    try:
+        events = await _calendar_service(request).list_between(
+            identity.principal, start=now - timedelta(days=7), end=now + timedelta(days=30)
+        )
+    except EconomicCalendarError as error:
+        raise _calendar_http_error(error) from error
+    csrf_token = await _auth_service(request).issue_csrf_token(read_session_cookie(request))
+    editing = next((event for event in events if event["id"] == str(edit)), None) if edit else None
+    return _templates(request).TemplateResponse(
+        request=request,
+        name="admin/economic_calendar.html",
+        context={
+            "identity": identity,
+            "csrf_token": csrf_token,
+            "events": events,
+            "editing": editing,
+            "can_write": authorize(identity.principal, Permission.SETTINGS_WRITE),
+            "impacts": [(key, IMPACT_LABELS_VI[key]) for key in ("HIGH", "MEDIUM", "LOW")],
+            "timezones": CALENDAR_TIMEZONES,
+            "editing_local": (
+                datetime.fromisoformat(editing["event_at"])
+                .astimezone(ZoneInfo("Asia/Ho_Chi_Minh"))
+                .strftime("%Y-%m-%dT%H:%M")
+                if editing
+                else ""
+            ),
+            "now": now,
+        },
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+CALENDAR_TIMEZONES = {
+    "Asia/Ho_Chi_Minh": "Giờ Việt Nam (UTC+7)",
+    "America/New_York": "Giờ New York (theo DST)",
+    "UTC": "UTC",
+}
+
+
+def _calendar_input(values: dict[str, str]) -> EconomicEventInput:
+    """Ghép ô ``datetime-local`` (không múi giờ) với múi giờ đã chọn thành thời điểm có múi giờ."""
+    zone_name = values.get("event_tz", "")
+    if zone_name not in CALENDAR_TIMEZONES:
+        raise HTTPException(status_code=422, detail="Múi giờ không hợp lệ.")
+    try:
+        local = datetime.fromisoformat(values.get("event_local", "").strip())
+        if local.tzinfo is not None:
+            raise ValueError("Thời điểm nhập không được kèm múi giờ.")
+        moment = local.replace(tzinfo=ZoneInfo(zone_name))
+        return EconomicEventInput.parse(
+            title=values.get("title", ""),
+            region=values.get("region", ""),
+            impact=values.get("impact", ""),
+            event_at=moment.isoformat(),
+            note=values.get("note"),
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+def _calendar_redirect() -> Response:
+    return Response(
+        status_code=303, headers={"Location": "/admin/calendar", "Cache-Control": "no-store"}
+    )
+
+
+def _calendar_reason(values: dict[str, str]) -> str:
+    reason = values.get("reason", "").strip()
+    if not 3 <= len(reason) <= 300:
+        raise HTTPException(status_code=422, detail="Lý do thay đổi cần 3–300 ký tự.")
+    return reason
+
+
+@router.post("/calendar")
+async def economic_calendar_create(
+    request: Request, identity: Annotated[AuthIdentity, Depends(current_identity)]
+) -> Response:
+    values = await _parse_form(request)
+    await _verify_form_csrf(request, values)
+    data = _calendar_input(values)
+    try:
+        await _calendar_service(request).create(
+            identity.principal, data, reason=_calendar_reason(values)
+        )
+    except EconomicCalendarError as error:
+        raise _calendar_http_error(error) from error
+    return _calendar_redirect()
+
+
+@router.post("/calendar/{event_id}")
+async def economic_calendar_update(
+    event_id: UUID, request: Request, identity: Annotated[AuthIdentity, Depends(current_identity)]
+) -> Response:
+    values = await _parse_form(request)
+    await _verify_form_csrf(request, values)
+    data = _calendar_input(values)
+    try:
+        await _calendar_service(request).update(
+            identity.principal, event_id, data, reason=_calendar_reason(values)
+        )
+    except EconomicCalendarError as error:
+        raise _calendar_http_error(error) from error
+    return _calendar_redirect()
+
+
+@router.post("/calendar/{event_id}/delete")
+async def economic_calendar_delete(
+    event_id: UUID, request: Request, identity: Annotated[AuthIdentity, Depends(current_identity)]
+) -> Response:
+    values = await _parse_form(request)
+    await _verify_form_csrf(request, values)
+    try:
+        await _calendar_service(request).delete(
+            identity.principal, event_id, reason=_calendar_reason(values)
+        )
+    except EconomicCalendarError as error:
+        raise _calendar_http_error(error) from error
+    return _calendar_redirect()
 
 
 @router.get("/api/strategy-cards")

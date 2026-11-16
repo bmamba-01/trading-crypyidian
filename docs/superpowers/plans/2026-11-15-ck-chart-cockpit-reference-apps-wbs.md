@@ -1,6 +1,6 @@
 # WBS CK — Buồng lái biểu đồ (chart cockpit) theo hai app tham chiếu
 
-**Ngày:** 2026-11-15 · **Trạng thái:** CK-0 đã làm; CK-1…CK-9 đã làm phần lõi (15–16/11/2026, xem cuối từng mục, còn mở ghi rõ); CK-10…CK-13 là kế hoạch · **Chế độ:** PAPER/replay; chỉ dữ liệu thị trường công khai; không route order, không bật SHADOW/PAPER_GATE/Demo/LIVE. <br>
+**Ngày:** 2026-11-15 · **Trạng thái:** CK-0 đã làm; CK-1…CK-10 đã làm phần lõi (15–16/11/2026, xem cuối từng mục, còn mở ghi rõ); CK-11…CK-13 là kế hoạch · **Chế độ:** PAPER/replay; chỉ dữ liệu thị trường công khai; không route order, không bật SHADOW/PAPER_GATE/Demo/LIVE. <br>
 **Đầu vào:** hai ảnh owner gửi ngày 15/11/2026 — (1) "XAUUSD Research Desk 3.3.0" (MT5, ICT + VSA); (2) một app quét/auto crypto trên Bybit (WLFI/USDT, Green Flag, MA34×89). <br>
 **Xây trên:** [WBS SIG](./2026-11-15-sig-market-structure-scalping-chart-wbs.md) (đang ở nhánh `claude/project-progress-review-wp07-d70431`, **chưa vào `dev`**), [UI kit v1.1](../../design/admin-ui-kit.md), ingest live Binance (`docs/research/binance-usdm-api-audit-2026-11-14.md`), [khảo sát 14/11](./2026-11-14-feature-survey-and-manager-insights.md).
 
@@ -292,6 +292,15 @@ Ký hiệu: **D** = đã có trên `dev`; **S** = đã làm lát đầu trên nh
 6. **AI**: chỉ đọc trạng thái scorer (ABSTAIN/khóa), không có thao tác.
 
 **Acceptance:** câu nhận định truy ngược được về sự kiện nguồn; lịch nội bộ có audit khi thêm/sửa/xóa; điều kiện "Tin tức" của CK-6 dùng đúng lịch này.
+
+**Đã làm (16/11/2026, chưa commit):**
+- **Nhận định:** `application/market_narrative.py` (`ck10-narrative-v1`) — câu theo mẫu, mỗi câu kèm `source` (loại + thời điểm), thiếu dữ liệu nói rõ.
+- **Mức giá:** `application/market_levels.py` (`ck10-levels-v1`) — mức thanh khoản còn chờ, nPOC/VAH/VAL, vùng ICT còn hiệu lực (cạnh gần giá), EQH/EQL chưa quét; khoảng cách %; bấm để cuộn chart tới thời điểm mức xuất hiện.
+- **Tin & Lịch:** migration `b8d0f2a4c6e8` bảng `economic_event` (RLS, admin-web SELECT/INSERT/UPDATE, không DELETE → xóa mềm), `EconomicCalendarService` (đọc `workspace:read`, ghi `settings:write`, `audit_event` cùng transaction), trang `/admin/calendar` (form CSRF, lý do bắt buộc, chọn múi giờ), điều kiện "Tin tức" của bảng Entry dùng lịch này (±30 phút tin tác động cao); tab hiện sự kiện sắp tới + đếm ngược funding.
+- **Thống kê:** `domain/portfolio/setup_statistics.py` (`ck10-stats-v1`) — lệnh đã đóng 90 ngày của bot trên mã: n, tỷ lệ thắng, tỷ lệ hòa vốn, kỳ vọng ròng, profit factor, cờ "chưa đủ mẫu" (< 30).
+- **AI:** đọc `GET /api/v1/learning-scorer/deployment` sẵn có (chế độ, sức khỏe, dùng được khi chạy), không có thao tác.
+- Bố cục: chart và cột phân tích hai cột từ 1280px, xếp dọc ở màn hẹp.
+**Lệch/còn mở:** Sự kiện vẫn ở dock (CK-9), chưa thêm "tín hiệu/khớp PAPER" vào dòng thời gian; thống kê theo bot + mã (chưa tách theo setup) và chưa có phân phối R vì dòng lệnh trong báo cáo chưa kèm rủi ro kế hoạch; lịch chưa nối vào rule H06 (`macro_blackout`) — cần quyết định + backtest; giai đoạn 2 nguồn tin ngoài chờ quyền WP05.
 
 ### CK-11 — Bộ quét thị trường và watchlist
 

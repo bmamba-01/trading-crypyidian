@@ -1,0 +1,75 @@
+{% extends "admin/base.html" %}
+{% block title %}Lịch sự kiện — Crypidian{% endblock %}
+{% block heading %}Lịch sự kiện kinh tế{% endblock %}
+{% block head_extra %}<link rel="stylesheet" href="/static/pages/chart.css">{% endblock %}
+
+{% block content %}
+{#- CK-10 giai đoạn 1: lịch do owner nhập (FOMC, CPI…). Mọi thêm/sửa/xóa ghi nhật ký kiểm toán. -#}
+<div class="mc-page">
+  <section class="glass-card mc-calendar" aria-labelledby="cal-intro">
+    <h2 id="cal-intro">Lịch nội bộ</h2>
+    <p class="sc-note">Dùng cho tab "Tin &amp; Lịch" trên biểu đồ và điều kiện cộng điểm "Không có tin tác động cao trong ±30 phút" của bảng Entry. Chưa nối vào rule giao dịch. Giờ hiển thị theo giờ Việt Nam.</p>
+  </section>
+
+  {% if can_write %}
+  <section class="glass-card mc-calendar" aria-labelledby="cal-form-title">
+    <h2 id="cal-form-title">{% if editing %}Sửa sự kiện{% else %}Thêm sự kiện{% endif %}</h2>
+    <form method="post" action="/admin/calendar{% if editing %}/{{ editing.id }}{% endif %}" class="mc-calendar__form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label>Tên sự kiện <input type="text" name="title" maxlength="160" required value="{{ editing.title if editing else '' }}"></label>
+      <label>Khu vực <input type="text" name="region" maxlength="16" required pattern="[A-Za-z]{2,16}" value="{{ editing.region if editing else 'US' }}"></label>
+      <label>Mức tác động
+        <select name="impact">
+          {% for key, label in impacts %}<option value="{{ key }}" {% if editing and editing.impact == key %}selected{% endif %}>{{ label }}</option>{% endfor %}
+        </select>
+      </label>
+      <label>Thời điểm <input type="datetime-local" name="event_local" required value="{{ editing_local }}"></label>
+      <label>Múi giờ
+        <select name="event_tz">
+          {% for key, label in timezones.items() %}<option value="{{ key }}">{{ label }}</option>{% endfor %}
+        </select>
+      </label>
+      <label class="mc-calendar__wide">Ghi chú <input type="text" name="note" maxlength="500" value="{{ editing.note or '' if editing else '' }}"></label>
+      <label class="mc-calendar__wide">Lý do thay đổi (ghi vào nhật ký kiểm toán) <input type="text" name="reason" minlength="3" maxlength="300" required></label>
+      <div class="mc-calendar__actions">
+        <button type="submit" class="btn btn-primary">{% if editing %}Lưu thay đổi{% else %}Thêm sự kiện{% endif %}</button>
+        {% if editing %}<a class="btn btn-secondary" href="/admin/calendar">Hủy</a>{% endif %}
+      </div>
+    </form>
+  </section>
+  {% endif %}
+
+  <section class="glass-card mc-calendar" aria-labelledby="cal-list-title">
+    <h2 id="cal-list-title">7 ngày qua và 30 ngày tới ({{ events | length }})</h2>
+    {% if events %}
+    <div class="table-wrapper"><table class="mc-dock__table">
+      <thead><tr><th scope="col">Thời điểm</th><th scope="col">Sự kiện</th><th scope="col">Khu vực</th><th scope="col">Tác động</th><th scope="col">Ghi chú</th>{% if can_write %}<th scope="col">Thao tác</th>{% endif %}</tr></thead>
+      <tbody>
+        {% for event in events %}
+        <tr class="mc-calendar__row mc-calendar__row--{{ event.impact | lower }}">
+          <td>{{ event.event_at | local_minute }}</td>
+          <td>{{ event.title }}</td>
+          <td>{{ event.region }}</td>
+          <td><span class="mc-impact mc-impact--{{ event.impact | lower }}">{{ dict(impacts)[event.impact] }}</span></td>
+          <td>{{ event.note or "—" }}</td>
+          {% if can_write %}
+          <td class="mc-calendar__ops">
+            <a class="btn btn-secondary mc-control" href="/admin/calendar?edit={{ event.id }}">Sửa</a>
+            <form method="post" action="/admin/calendar/{{ event.id }}/delete" class="mc-calendar__delete">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <label class="visually-hidden" for="del-{{ event.id }}">Lý do xóa</label>
+              <input id="del-{{ event.id }}" type="text" name="reason" minlength="3" maxlength="300" required placeholder="Lý do xóa">
+              <button type="submit" class="btn btn-danger mc-control">Xóa</button>
+            </form>
+          </td>
+          {% endif %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table></div>
+    {% else %}
+    <p class="sc-empty">Chưa có sự kiện nào trong khoảng này.</p>
+    {% endif %}
+  </section>
+</div>
+{% endblock %}

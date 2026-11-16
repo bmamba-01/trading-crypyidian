@@ -28,6 +28,7 @@ from trading_bot.adapters.database.models.bot_runtime_entities import (
     BotRuntimeStateRecord,
     WorkspaceRuntimeControlRecord,
 )
+from trading_bot.adapters.database.models.calendar_entities import EconomicEventRecord
 from trading_bot.adapters.database.models.candidate_universe_entities import (
     CandidateTrainingRightsRecord,
     CandidateUniverseProofRecord,
@@ -194,6 +195,7 @@ from trading_bot.adapters.database.models.venue_entities import (
 )
 
 __all__ = [
+    "EconomicEventRecord",
     "LearningIncidentHoldEventRecord",
     "LearningPaperPerformanceReportRecord",
     "CandidateUniverseProofRecord",

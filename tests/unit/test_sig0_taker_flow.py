@@ -74,7 +74,8 @@ def test_migration_is_the_single_head_after_previous_head() -> None:
     heads = [revision for revision in graph if revision not in parents]
     # RT-1 lát 2 nối migration mark fallback ngay sau SIG-0, CK-1 nối bảng giá trực tiếp sau đó;
     # chuỗi vẫn một head.
-    assert heads == ["a7c9e1b3d5f6"]
+    assert heads == ["b8d0f2a4c6e8"]
+    assert graph["b8d0f2a4c6e8"] == "a7c9e1b3d5f6"
     assert graph["a7c9e1b3d5f6"] == "f1b3d5e7a9c2"
     assert graph["f1b3d5e7a9c2"] == "e3a5c7e9f1b4"
     assert graph["e3a5c7e9f1b4"] == "d2e4f6a8b0c1"

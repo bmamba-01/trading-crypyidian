@@ -849,3 +849,13 @@ Khái niệm VSA và ZigZag đã định nghĩa ở mục AC; mục này ghi tê
 | Ingestion gap (open) | Khoảng trống ingest chưa lấp | Hàng `ingestion_gap` có `resolved_at` rỗng: worker đã phát hiện thiếu nến nhưng chưa backfill xong. | `adapters/database/models/market_entities.py` |
 | Bar revision | Bản sửa nến | Cùng mốc mở nến có nhiều bản ghi do sàn/ingest sửa lại; chart dùng bản mới nhất, nút kiểm dữ liệu đếm số mốc có bản sửa. | Định nghĩa nội bộ |
 | Data validation (chart) | Kiểm dữ liệu chart | Kiểm nến đang xem: thiếu nến, mốc trùng, OHLC sai (thấp > min(mở, đóng) hoặc cao < max(mở, đóng)), khối lượng âm, taker buy vượt khối lượng, nến chưa đóng, chuỗi trễ > 2 khung, khoảng trống ingest. Không so với REST của sàn. | Định nghĩa nội bộ (`ck9-quality-v1`) |
+
+## AM. Cột phân tích và lịch sự kiện nội bộ (CK-10, 16/11/2026)
+
+| Thuật ngữ (EN) | Tiếng Việt | Định nghĩa và giới hạn | Nguồn |
+|---|---|---|---|
+| Template narrative | Nhận định theo mẫu | Câu ghép từ sự kiện đã tính (BOS/CHoCH, quét thanh khoản, VWAP, đồng thuận đa khung, phiên/killzone, funding, vùng ICT), mỗi câu kèm `source` để truy ngược; không dùng LLM, không tự sinh số. | Định nghĩa nội bộ (`ck10-narrative-v1`) |
+| Economic calendar (internal) | Lịch sự kiện kinh tế nội bộ | Sự kiện do owner nhập (tên, khu vực, mức tác động Thấp/Trung bình/Cao, thời điểm có múi giờ, ghi chú); thêm/sửa/xóa mềm ghi `audit_event` kèm lý do. Chưa nối vào rule H06 (`macro_blackout`). | Định nghĩa nội bộ (`ck10-calendar-v1`) |
+| News window | Khoảng cấm quanh tin | ±30 phút quanh sự kiện tác động cao; điều kiện cộng điểm "Tin tức" của bảng Entry không đạt trong khoảng này; lịch trống ±7 ngày → "chưa xác định". | Định nghĩa nội bộ |
+| Breakeven win rate | Tỷ lệ thắng hòa vốn | Lỗ TB / (lãi TB + lỗ TB) sau phí: tỷ lệ thắng tối thiểu để kỳ vọng ≥ 0 với cặp lãi/lỗ trung bình hiện có. | [Investopedia — Expectancy/Win rate](https://www.investopedia.com/terms/w/win-loss-ratio.asp) |
+| Expectancy (per trade, net) | Kỳ vọng mỗi lệnh (ròng) | PnL ròng trung bình mỗi lệnh đã đóng (đã trừ phí, trượt giá, funding); dưới 30 lệnh gắn cờ chưa đủ mẫu. | Định nghĩa nội bộ (`ck10-stats-v1`) |
