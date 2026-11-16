@@ -18,6 +18,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from enum import StrEnum
 from typing import Any
 from uuid import UUID
@@ -53,6 +54,7 @@ from trading_bot.domain.portfolio.reporting import (
     build_bot_report,
     build_workspace_report,
 )
+from trading_bot.domain.strategy.setup_progress import monitor_verdict
 
 __all__ = [
     "MAX_REPORT_WINDOW",
@@ -234,8 +236,10 @@ class BotReportingService:
         unit_of_work: Callable[..., Any] = UnitOfWork,
         repository: Callable[[Any], Any] = BotReportRepository,
         grants: Callable[[Any], Any] = BotGrantRepository,
+        bot_config_loader: Callable[..., Any] | None = None,
     ) -> None:
         self._sessions = sessions
+        self._bot_config_loader = bot_config_loader
         self._unit_of_work = unit_of_work
         self._repository = repository
         self._grants = grants
@@ -671,9 +675,70 @@ class BotReportingService:
                 rows: list[dict[str, Any]] = await repository.latest_bot_decisions(
                     workspace_id=principal.workspace_id, bot_id=bot_id, limit=20
                 )
+                protection = await self._bot_protection(
+                    unit.session, repository, principal=principal, bot_id=bot_id, now=instant
+                )
             progress = build_setup_progress(rows, bonus=bonus, now=instant)
-            board.append({"bot_id": str(bot_id), "bot_name": bot_name} | progress)
+            board.append(
+                {"bot_id": str(bot_id), "bot_name": bot_name, "protection": protection}
+                | progress
+                | {"verdict": monitor_verdict(progress)}
+            )
         return board
+
+    async def _bot_protection(
+        self,
+        session: Any,
+        repository: Any,
+        *,
+        principal: Principal,
+        bot_id: UUID,
+        now: datetime,
+    ) -> dict[str, Any]:
+        """Bảo vệ vốn (CK-12): chỗ chạy và lỗ ròng hôm nay/24 giờ so với giới hạn hiệu lực."""
+        from trading_bot.application.bot_config_resolver import (
+            BotConfigResolutionError,
+            load_effective_bot_config,
+        )
+
+        loader = self._bot_config_loader or load_effective_bot_config
+        from trading_bot.domain.risk.protection_view import protection_view
+
+        bot = await repository.get_bot(workspace_id=principal.workspace_id, bot_id=bot_id)
+        limits = None
+        limits_note: str | None = None
+        try:
+            config = await loader(
+                session, workspace_id=principal.workspace_id, account_id=bot.account_id, as_of=now
+            )
+        except BotConfigResolutionError as error:
+            limits_note = f"Không đọc được giới hạn rủi ro ({error})."
+        else:
+            if config is None:
+                limits_note = "Bot chưa publish cấu hình nên chưa có giới hạn hiệu lực."
+            else:
+                limits = config.risk_limits
+        day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        today = await repository.closed_net_since(
+            workspace_id=principal.workspace_id, bot_id=bot_id, since=day_start
+        )
+        rolling = await repository.closed_net_since(
+            workspace_id=principal.workspace_id, bot_id=bot_id, since=now - timedelta(hours=24)
+        )
+        asset = next(iter(sorted({*today, *rolling})), "USDT")
+        view = protection_view(
+            open_positions=await repository.count_open_trades(
+                workspace_id=principal.workspace_id, bot_id=bot_id
+            ),
+            max_positions=limits.max_positions if limits else None,
+            net_today=today.get(asset, Decimal(0)),
+            net_24h=rolling.get(asset, Decimal(0)),
+            max_daily_loss=limits.max_daily_loss if limits else None,
+            max_rolling_loss=limits.max_rolling_loss if limits else None,
+            quote_asset=asset,
+        )
+        view["note"] = limits_note
+        return view
 
     async def list_market_series(
         self, principal: Principal, *, bot_id: UUID

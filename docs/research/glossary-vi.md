@@ -870,3 +870,11 @@ Khái niệm VSA và ZigZag đã định nghĩa ở mục AC; mục này ghi tê
 | Weekly change | Biến động tuần | Giá đóng mới nhất so với giá đóng của nến đã đóng tại mốc 7 ngày trước. | Định nghĩa nội bộ |
 | Personal watchlist | Watchlist cá nhân | Danh sách mã người xem tự chọn (multi-select), lưu trong trình duyệt (giai đoạn 1); khác watchlist workspace có phiên bản (`watchlist_version`). | Định nghĩa nội bộ |
 | Scan log | Nhật ký quét | Mỗi lần bấm "Chạy quét và ghi nhật ký" ghi một `audit_event` (`market_scan.run`) với tiêu chí, số mã đạt và hash danh sách kết quả. | Định nghĩa nội bộ |
+
+## AO. Bảng giám sát bot trên mã đang xem (CK-12, 16/11/2026)
+
+| Thuật ngữ (EN) | Tiếng Việt | Định nghĩa và giới hạn | Nguồn |
+|---|---|---|---|
+| Position slots | Chỗ chạy | Số lệnh PAPER đang mở của bot (mọi mã, từ ledger) / `max_positions` của cấu hình hiệu lực; bằng nhau là "đã đủ", planner không mở thêm. | `domain/risk/planner.py` (`RiskLimits.max_positions`) |
+| Realised net loss (today / 24h) | Lỗ ròng đã thực hiện (hôm nay / 24 giờ) | Phần âm của tổng PnL ròng các lệnh đã đóng từ 00:00 UTC hôm nay / trong 24 giờ trượt, so với `max_daily_loss` / `max_rolling_loss`; ≥ 80% cảnh báo, ≥ 100% vượt. Bảng chỉ mô tả; chặn lệnh vẫn do risk engine. | Định nghĩa nội bộ (`ck12-protection-v1`) |
+| Monitor verdict | Kết luận giám sát | Câu ngắn từ tiến độ setup (CK-6): "Chờ tín hiệu: x/n điều kiện bắt buộc", "Đủ điều kiện MUA/BÁN", "Tín hiệu … đã hết hạn". | Định nghĩa nội bộ |

@@ -25,6 +25,7 @@ from trading_bot.auth.router import current_identity
 from trading_bot.auth.service import AuthIdentity
 from trading_bot.config.settings import AppSettings
 from trading_bot.domain.market.chart_quality import inspect_chart_bars
+from trading_bot.domain.risk.protection_view import protection_view
 from trading_bot.domain.strategy.setup_progress import setup_progress
 
 WORKSPACE = UUID("9b2299f1-a58e-45c7-b0ad-83feb0862510")
@@ -322,6 +323,17 @@ class _Reporting:
                     "bot_name": bots[0][1],
                     "card": None,
                     "unverified_decisions": 0,
+                    "verdict": "Chờ tín hiệu: 2/3 điều kiện bắt buộc",
+                    "protection": protection_view(
+                        open_positions=3,
+                        max_positions=3,
+                        net_today=Decimal("-45"),
+                        net_24h=Decimal("-45"),
+                        max_daily_loss=Decimal("50"),
+                        max_rolling_loss=Decimal("100"),
+                        quote_asset="USDT",
+                    )
+                    | {"note": None},
                 }
                 | setup_progress(
                     strategy_release_id="h01-v1",
@@ -852,3 +864,19 @@ def test_scanner_page_validates_criteria_and_records_on_post() -> None:
     assert scanner.calls[-1]["record"] is True
     refused = client.post("/admin/scanner", data={"timeframe": "1h"}, follow_redirects=False)
     assert refused.status_code == 403
+
+
+def test_entry_board_shows_bot_monitor_with_protection() -> None:
+    html = (
+        _client(_Reporting(_bars(200, start=START, step=timedelta(minutes=5))))
+        .get("/admin/chart?timeframe=5m")
+        .text
+    )
+    assert "Chờ tín hiệu: 2/3 điều kiện bắt buộc" in html
+    assert "data-monitor-slots>3/3 · đã đủ" in html
+    assert "mc-monitor--warning" in html  # lỗ hôm nay 45/50 = 90%
+    assert "Trang bot (tạm dừng/tiếp tục có lý do)" in html
+    # Không có nút tạm dừng/tiếp tục một chạm trên bảng giám sát.
+    assert (
+        'action="/admin/bots/' not in html.split("data-bot-monitor", 1)[1].split("</article>", 1)[0]
+    )

@@ -184,6 +184,10 @@ def test_rest_candles_drive_paper_entry_fill_and_stop_exit_idempotently() -> Non
         assert opened["decision_status"] == "CANDIDATE"
         assert opened["decision_rows"] >= 1
         assert opened["hidden_without_membership"] == 0  # RLS admin-web cần membership
+        # CK-12: chỗ chạy khớp ledger (1 lệnh mở / max_positions 2), giới hạn từ cấu hình hiệu lực.
+        assert opened["monitor_slots"] == "1/2", opened
+        assert (opened["monitor_daily_limit"], opened["monitor_rolling_limit"]) == (200.0, 500.0)
+        assert opened["monitor_note"] is None
         # CK-9: admin-web đếm đúng nến có bản sửa và khoảng trống ingest chưa lấp.
         assert opened["revised_1h_bars"] == 1
         assert opened["open_gaps_1h"] == 1
@@ -208,7 +212,10 @@ def test_rest_candles_drive_paper_entry_fill_and_stop_exit_idempotently() -> Non
             "fills": ["ENTRY", "EXIT"],
         }
         final = run("verify")
-        assert run("web_read")["positions"] == []  # đã đóng bằng stop → không còn vị thế mở
+        closed_read = run("web_read")
+        assert closed_read["positions"] == []  # đã đóng bằng stop → không còn vị thế mở
+        assert closed_read["monitor_slots"] == "0/2"
+        assert closed_read["monitor_daily_loss_positive"] is True  # lệnh lỗ vừa đóng được tính
         rerun = run("runtime")
         assert rerun["ledger"] == closed["ledger"]
         assert run("verify") == final

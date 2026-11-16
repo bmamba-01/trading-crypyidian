@@ -471,6 +471,35 @@ class BotReportRepository:
         )
         return [{"payload": dict(row.payload), "decision_hash": row.decision_hash} for row in rows]
 
+    async def count_open_trades(self, *, workspace_id: UUID, bot_id: UUID) -> int:
+        """Số lệnh PAPER đang mở của bot trên mọi mã (chỗ chạy, CK-12)."""
+        count = await self._session.scalar(
+            select(func.count())
+            .select_from(TradeRecord)
+            .where(
+                TradeRecord.workspace_id == workspace_id,
+                TradeRecord.bot_id == bot_id,
+                TradeRecord.status == "OPEN",
+            )
+        )
+        return int(count or 0)
+
+    async def closed_net_since(
+        self, *, workspace_id: UUID, bot_id: UUID, since: datetime
+    ) -> dict[str, Decimal]:
+        """Tổng PnL ròng các lệnh đã đóng từ ``since`` theo đồng định giá (CK-12)."""
+        rows = await self._session.execute(
+            select(TradeRecord.quote_asset, func.sum(TradeRecord.net_pnl))
+            .where(
+                TradeRecord.workspace_id == workspace_id,
+                TradeRecord.bot_id == bot_id,
+                TradeRecord.status == "CLOSED",
+                TradeRecord.closed_at >= since,
+            )
+            .group_by(TradeRecord.quote_asset)
+        )
+        return {str(asset): Decimal(str(total or 0)) for asset, total in rows.all()}
+
     async def bar_revision_count(
         self, *, workspace_id: UUID, symbol: str, timeframe: str, source: str, since: datetime
     ) -> int:

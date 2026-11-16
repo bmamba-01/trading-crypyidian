@@ -2612,6 +2612,9 @@ async def market_chart_page(
                         calendar_events=calendar_events,
                     ),
                 )
+                # CK-12: trạng thái vận hành từng bot (cùng nguồn với trang chi tiết bot).
+                for item in setups:
+                    item["runtime"] = await _runtime_status(request, identity, UUID(item["bot_id"]))
                 # CK-10: cột phân tích — nhận định, mức giá, lịch, thống kê lệnh đã đóng.
                 insights = {
                     "narrative": market_narrative(payload or {}, overview),
@@ -2668,6 +2671,20 @@ async def market_chart_page(
 
 
 STATISTICS_WINDOW = timedelta(days=90)
+
+
+async def _runtime_status(
+    request: Request, identity: AuthIdentity, bot_id: UUID
+) -> dict[str, Any] | None:
+    """Trạng thái vận hành của bot cho bảng giám sát (CK-12); ``None`` khi không đọc được."""
+    service = getattr(request.app.state, "bot_operations_service", None)
+    if service is None:
+        return None
+    try:
+        status = await service.for_principal(identity.principal).bot_status(bot_id)
+    except Exception:  # noqa: BLE001 - bảng giám sát chỉ đọc, lỗi một bot không làm hỏng trang
+        return None
+    return dict(status.as_dict())
 
 
 async def _calendar_events(request: Request, principal: Principal) -> list[dict[str, Any]] | None:

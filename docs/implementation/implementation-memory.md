@@ -4398,7 +4398,7 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Lưu ý merge:** phiên WP06 khác có migration riêng (`c2e4a6b8d0f1`, nhánh `claude/gifted-joliot-781c1f`); khi merge vào `dev` sẽ thành 2 head Alembic với `b8d0f2a4c6e8` → cần migration merge hoặc nối lại `down_revision`.
 - **Readback:** đã đọc lại mục này; không có secret.
 
-### 2026-11-16 — Push CK-10 và CK-11: bộ quét thị trường (CK-11 chưa commit)
+### 2026-11-16 — Push CK-10 và CK-11: bộ quét thị trường (CK-11 commit `79a1b2f`, đã push)
 
 - **Yêu cầu của owner:** "Commit, push, CK-11" → commit CK-10 `7fc02b2`, push `origin/dev` fast-forward `e74815f..7fc02b2` (xác nhận `git ls-remote`). Đã nhắn phiên WP06 "Sửa E2E source-pinned replay" rằng migration `b8d0f2a4c6e8` lên `dev` cũng nối sau `a7c9e1b3d5f6` → migration `c2e4a6b8d0f1` của họ cần nối lại `down_revision` khi rebase (chưa xác nhận đã đọc).
 - **Quyết định giai đoạn 1:** admin-web không gọi mạng sàn → bộ quét chỉ trên mã đã có nến trong kho; watchlist cá nhân lưu trình duyệt; nhật ký quét dùng `audit_event` (`market_scan.run`), không thêm bảng.
@@ -4406,4 +4406,15 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Lỗi gặp và sửa:** mốc "7 ngày trước" ban đầu lấy nến **mở** trước mốc → thay đổi tuần sai; sửa thành giá đóng của nến **đã đóng** tại mốc (và fixture đúng 7 nến mới). Watchlist lưu đúng nhưng chip Tom Select không hiện sau tải lại vì `option.selected` đặt sau khi Tom Select khởi tạo → `select.tomselect.setValue(saved, true)`. Kiểm tra Playwright "ETHUSDT xuất hiện 1 lần" sai vì mã còn nằm trong ô chọn watchlist → kiểm theo dòng xếp hạng và danh sách loại.
 - **Kiểm chứng:** `tests/unit/test_ck11_market_scanner.py` 4 passed (tất định khi đảo thứ tự đầu vào, lọc thanh khoản, loại thiếu dữ liệu/cũ, service ghi nhật ký chỉ khi chạy); unit toàn bộ **4579 passed/129.52s**; ruff/format sạch; mypy **422 files** sạch. Playwright `test_admin_market_chart_playwright.py` **2 passed** (trang quét, Tom Select chọn mã, lưu sau tải lại, không tràn 390px; ảnh `ck11-scanner-desktop.png` đã xem). Compose E2E `test_rt1_paper_market_loop.py` thêm pha `scanner` (role admin-web): quét 4h thật đạt BTCUSDT, 1h bị loại "Thiếu dữ liệu 21 ngày", tất định, 1 lượt nhật ký khớp tóm tắt — **1 passed/323.29s**. Sau E2E chỉ sắp lại import (ruff), không đổi logic.
 - **Còn mở:** worker thu 24h ticker toàn sàn để quét ngoài danh sách đang thu (cần quyền dữ liệu); market cap/FDV (owner #6, WP05); đồng bộ watchlist giữa máy.
+- **Readback:** đã đọc lại mục này; không có secret.
+
+### 2026-11-16 — Push CK-11 và CK-12: bảng giám sát bot trên mã đang xem
+
+- **Yêu cầu của owner:** "Commit, push, CK-12" → commit CK-11 `79a1b2f`, push `origin/dev` fast-forward `7fc02b2..79a1b2f` (xác nhận `git ls-remote`).
+- **Tra cứu (agent Explore):** `BotOperationsService.bot_status` trả `entry_state`, `readiness`, `workspace_kill_state`, `entry_allowed` (không có lease/heartbeat/tick cuối); `max_positions`/`max_daily_loss`/`max_rolling_loss` hiệu lực qua `load_effective_bot_config` (chưa admin-web nào dùng); "cầu dao rủi ro" trên dashboard tính `calculate_loss_windows(events=[])` nên là số giả → **không** dùng lại; số lệnh mở theo bot chỉ có qua báo cáo.
+- **Đã làm:** `domain/risk/protection_view.py` (`ck12-protection-v1`), `monitor_verdict` trong `setup_progress.py`; repository `count_open_trades`, `closed_net_since`; `BotReportingService._bot_protection` (resolver tiêm được qua `bot_config_loader` để test), `get_setup_board` thêm `protection` + `verdict`; router gắn `runtime` từ `bot_status` (lỗi một bot → None, không hỏng trang); template thẻ setup thành bảng giám sát (không nút một chạm, link sang trang bot và chart của bot). Glossary mục **AO**; WBS CK; `project-status.md`.
+- **Lỗi gặp và sửa:** session giả (`object()`) trong unit không chạy được resolver thật → tiêm hàm nạp cấu hình; trang bot không có mục nhật ký riêng → link "nhật ký" trỏ về chart của bot (dock). Test kết luận ban đầu dùng mẹo `replace` khó đọc → viết lại.
+- **Kiểm chứng:** `tests/unit/test_ck12_bot_protection.py` 3 passed; unit toàn bộ **4584 passed/135.15s**; ruff/format sạch; mypy **423 files** sạch. Playwright 2 passed (kết luận + chỗ chạy trên bảng Entry). Compose E2E `test_rt1_paper_market_loop.py`: pha `web_read` gọi `get_setup_board` thật bằng role admin-web → chỗ chạy **"1/2"** khi có lệnh mở, **"0/2"** sau khi đóng bằng stop, giới hạn 200/500 từ cấu hình hiệu lực, lỗ ngày > 0 sau lệnh lỗ — **1 passed/360.90s**. Sau E2E chỉ viết lại gọn `monitor_verdict` (cùng hành vi, unit đạt).
+- **Ghi chú môi trường:** trong lúc chạy thấy container `crypidian-rt1-paper-e2e-15f88ae85d-*` của một lượt E2E khác (nhiều khả năng phiên WP06 chạy song song) — không can thiệp.
+- **Còn mở:** lỗ ngày theo múi giờ cấu hình rủi ro (đang UTC); cầu dao rủi ro dùng dữ liệu thật trên dashboard; lease/heartbeat runtime trong `BotRuntimeStatus`.
 - **Readback:** đã đọc lại mục này; không có secret.

@@ -201,3 +201,26 @@ def test_news_condition_uses_internal_calendar_when_available() -> None:
     assert "CPI Mỹ" in items["news"]["actual"]
     unread = {item["key"]: item for item in context_conditions(NOW, next_funding_time=None)}
     assert unread["news"]["passed"] is None
+
+
+def test_monitor_verdict_summarises_progress() -> None:
+    from trading_bot.domain.strategy.setup_progress import monitor_verdict
+
+    base = {"required": {"passed": 2, "total": 3}, "bonus": {"passed": 1, "total": 3, "k": 0}}
+    assert monitor_verdict(base | {"status": "not_ready", "direction": None}) == (
+        "Chờ tín hiệu: 2/3 điều kiện bắt buộc"
+    )
+    ready = base | {"status": "ready", "direction": "long", "required": {"passed": 3, "total": 3}}
+    assert monitor_verdict(ready) == "Đủ điều kiện MUA (3/3 bắt buộc, cộng điểm 1/3)"
+    assert monitor_verdict(base | {"status": "expired", "direction": "short"}) == (
+        "Tín hiệu BÁN đã hết hạn"
+    )
+    assert monitor_verdict(base | {"status": "no_data", "direction": None}) == (
+        "Chưa có quyết định nào"
+    )
+    with_k = base | {
+        "status": "not_ready",
+        "direction": "long",
+        "bonus": {"passed": 1, "total": 3, "k": 2},
+    }
+    assert monitor_verdict(with_k) == "Chờ MUA: 2/3 điều kiện bắt buộc (cần ≥ 2/3 cộng điểm)"

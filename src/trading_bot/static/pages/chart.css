@@ -465,3 +465,14 @@
 .mc-stats .is-down { color: var(--pnl-negative-text, #c7354b); }
 /* Ô chọn trong thanh điều khiển chart giữ bề rộng theo nội dung (không giãn cả hàng). */
 .mc-controls select, .mc-multi-controls select, .mc-layer-presets select { width: auto; flex: 0 0 auto; }
+
+/* ---------- CK-12: giám sát bot ---------- */
+.mc-setup__verdict { margin: 0; font-weight: 700; font-size: 0.9rem; }
+.mc-monitor { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 9.5rem), 1fr)); gap: 0.35rem; margin: 0; }
+.mc-monitor > div { border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.25)); border-radius: 0.45rem; padding: 0.3rem 0.5rem; min-width: 0; }
+.mc-monitor dt { font-size: 0.7rem; opacity: 0.75; }
+.mc-monitor dd { margin: 0; font-weight: 700; font-size: 0.82rem; font-variant-numeric: tabular-nums; }
+.mc-monitor--warning, .mc-monitor--full { border-color: rgba(240, 185, 11, 0.7); background: rgba(240, 185, 11, 0.08); }
+.mc-monitor--breached { border-color: var(--danger, #dc2626); background: var(--danger-bg, #fee2e2); }
+.mc-monitor--unknown dd { opacity: 0.7; }
+.mc-setup__links { margin: 0; font-size: 0.8rem; }

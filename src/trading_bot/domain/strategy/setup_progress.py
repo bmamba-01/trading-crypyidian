@@ -219,3 +219,23 @@ def setup_progress(
             )
     result["status_label"] = STATUS_LABELS_VI[result["status"]]
     return result
+
+
+def monitor_verdict(progress: Mapping[str, Any]) -> str:
+    """Câu kết luận ngắn cho bảng giám sát bot (CK-12) từ kết quả ``setup_progress``."""
+    required = progress["required"]
+    bonus = progress["bonus"]
+    side = {"long": "MUA", "short": "BÁN"}.get(str(progress.get("direction")))
+    side_text = f" {side}" if side else ""
+    status = progress["status"]
+    counts = f"{required['passed']}/{required['total']}"
+    if status == "no_data":
+        return "Chưa có quyết định nào"
+    if status == "expired":
+        return f"Tín hiệu{side_text} đã hết hạn"
+    if status == "ready":
+        bonus_text = f"cộng điểm {bonus['passed']}/{bonus['total']}"
+        return f"Đủ điều kiện{side_text} ({counts} bắt buộc, {bonus_text})"
+    waiting = f"Chờ{side_text}" if side else "Chờ tín hiệu"
+    need = f" (cần ≥ {bonus['k']}/{bonus['total']} cộng điểm)" if bonus.get("k") else ""
+    return f"{waiting}: {counts} điều kiện bắt buộc{need}"

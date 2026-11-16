@@ -1182,6 +1182,13 @@ class FakeRepository:
         STORE.calls.append(f"decisions_between:{kwargs['start'].isoformat()}")
         return []
 
+    async def count_open_trades(self, **kwargs: Any) -> int:
+        STORE.calls.append(f"open_count:{kwargs['bot_id']}")
+        return 1
+
+    async def closed_net_since(self, **kwargs: Any) -> dict[str, Decimal]:
+        return {"USDT": Decimal("-12")}
+
     async def latest_bot_decisions(self, **kwargs: Any) -> list[dict[str, Any]]:
         STORE.calls.append(f"decisions:{kwargs['bot_id']}")
         return []
@@ -1269,12 +1276,17 @@ def reset_store() -> Store:
     return STORE
 
 
+async def _no_published_config(*args: Any, **kwargs: Any) -> None:
+    return None
+
+
 def service() -> BotReportingService:
     return BotReportingService(
         object(),  # type: ignore[arg-type]
         unit_of_work=FakeUnitOfWork,
         repository=FakeRepository,
         grants=StoreGrants,
+        bot_config_loader=_no_published_config,
     )
 
 
@@ -1443,6 +1455,13 @@ async def test_setup_board_skips_bots_without_report_read() -> None:
     # Analyst chỉ có bot:report:read trên A → chỉ A xuất hiện, B và bot lạ bị bỏ lặng lẽ.
     assert [item["bot_name"] for item in board] == ["Bot A"]
     assert board[0]["status"] == "no_data"
+    assert board[0]["verdict"] == "Chưa có quyết định nào"
+    protection = board[0]["protection"]
+    assert protection["slots"]["used"] == 1
+    assert protection["daily"]["loss"] == 12.0
+    # Session giả không có cấu hình bot → giới hạn "unknown" kèm ghi chú, không đoán.
+    assert protection["daily"]["state"] == "unknown"
+    assert protection["note"]
     assert [c for c in STORE.calls if c.startswith("decisions:")] == [f"decisions:{BOT_A}"]
 
 

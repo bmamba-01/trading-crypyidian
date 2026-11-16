@@ -649,6 +649,25 @@ async def web_read() -> dict[str, Any]:
             )
     finally:
         await engine.dispose()
+    # CK-12: bảng giám sát bot qua service thật (giới hạn từ cấu hình hiệu lực, chỗ chạy từ ledger).
+    from trading_bot.application.bot_reporting import BotReportingService
+    from trading_bot.auth.policy import Principal, Role
+
+    owner = Principal(
+        user_id=_id("owner"),
+        membership_id=MEMBERSHIP,
+        workspace_id=WORKSPACE,
+        roles=frozenset({Role.OWNER}),
+        mfa_verified_at=NOW,
+    )
+    engine, sessions = _sessions()
+    try:
+        (board,) = await BotReportingService(sessions).get_setup_board(
+            owner, bots=[(bot_id, "RT1 bot")], bonus=[]
+        )
+    finally:
+        await engine.dispose()
+    protection = board["protection"]
     latest = build_latest_signal_view(decisions)["latest_decision"]
     views = []
     for position in positions:
@@ -669,6 +688,11 @@ async def web_read() -> dict[str, Any]:
         "decision_status": None if latest is None else latest["status"],
         "decision_rows": len(decisions),
         "hidden_without_membership": len(hidden),
+        "monitor_slots": protection["slots"]["label"],
+        "monitor_daily_limit": protection["daily"]["limit"],
+        "monitor_rolling_limit": protection["rolling"]["limit"],
+        "monitor_daily_loss_positive": protection["daily"]["loss"] > 0,
+        "monitor_note": protection["note"],
         "revised_1h_bars": revised,
         "open_gaps_1h": len(gaps),
     }

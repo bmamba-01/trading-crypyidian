@@ -38,6 +38,7 @@ from trading_bot.auth.policy import Principal
 from trading_bot.auth.security import LoginRateLimiter
 from trading_bot.config.settings import AppSettings
 from trading_bot.domain.market.chart_quality import inspect_chart_bars
+from trading_bot.domain.risk.protection_view import protection_view
 from trading_bot.domain.strategy.setup_progress import setup_progress
 
 SCREENSHOTS_DIR = Path(__file__).resolve().parent / "evidence" / "admin-playwright"
@@ -261,6 +262,17 @@ class _Reporting:
                     "bot_name": bots[0][1],
                     "card": dict(SIGNAL_VIEW["card"], stop=105.5),
                     "unverified_decisions": 0,
+                    "verdict": "Chờ tín hiệu: 2/3 điều kiện bắt buộc",
+                    "protection": protection_view(
+                        open_positions=1,
+                        max_positions=3,
+                        net_today=Decimal("-10"),
+                        net_24h=Decimal("-10"),
+                        max_daily_loss=Decimal("50"),
+                        max_rolling_loss=Decimal("100"),
+                        quote_asset="USDT",
+                    )
+                    | {"note": None},
                 }
                 | setup_progress(
                     strategy_release_id="h01-v1",
@@ -500,6 +512,11 @@ def test_market_chart_renders_overlays_polls_and_is_responsive(server_url: str) 
         board = page.locator("#mc-entry-board")
         expect(board).to_contain_text("Bắt buộc 2/3")
         expect(board).to_contain_text("Còn thiếu: ADX14 1h đủ mạnh")
+        # CK-12: giám sát bot — kết luận và chỗ chạy.
+        expect(board.locator("[data-setup-verdict]")).to_have_text(
+            "Chờ tín hiệu: 2/3 điều kiện bắt buộc"
+        )
+        expect(board.locator("[data-monitor-slots]")).to_have_text("1/3")
         expect(board.locator("[data-setup-status]").first).to_have_attribute(
             "data-setup-status", "not_ready"
         )

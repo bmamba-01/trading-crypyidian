@@ -1,6 +1,6 @@
 # WBS CK — Buồng lái biểu đồ (chart cockpit) theo hai app tham chiếu
 
-**Ngày:** 2026-11-15 · **Trạng thái:** CK-0 đã làm; CK-1…CK-11 đã làm phần lõi (15–16/11/2026, xem cuối từng mục, còn mở ghi rõ); CK-12, CK-13 là kế hoạch · **Chế độ:** PAPER/replay; chỉ dữ liệu thị trường công khai; không route order, không bật SHADOW/PAPER_GATE/Demo/LIVE. <br>
+**Ngày:** 2026-11-15 · **Trạng thái:** CK-0 đã làm; CK-1…CK-12 đã làm phần lõi (15–16/11/2026, xem cuối từng mục, còn mở ghi rõ); CK-13 là kế hoạch (cần SIG-5 và mô tả của owner) · **Chế độ:** PAPER/replay; chỉ dữ liệu thị trường công khai; không route order, không bật SHADOW/PAPER_GATE/Demo/LIVE. <br>
 **Đầu vào:** hai ảnh owner gửi ngày 15/11/2026 — (1) "XAUUSD Research Desk 3.3.0" (MT5, ICT + VSA); (2) một app quét/auto crypto trên Bybit (WLFI/USDT, Green Flag, MA34×89). <br>
 **Xây trên:** [WBS SIG](./2026-11-15-sig-market-structure-scalping-chart-wbs.md) (đang ở nhánh `claude/project-progress-review-wp07-d70431`, **chưa vào `dev`**), [UI kit v1.1](../../design/admin-ui-kit.md), ingest live Binance (`docs/research/binance-usdm-api-audit-2026-11-14.md`), [khảo sát 14/11](./2026-11-14-feature-survey-and-manager-insights.md).
 
@@ -311,7 +311,7 @@ Ký hiệu: **D** = đã có trên `dev`; **S** = đã làm lát đầu trên nh
 
 **Acceptance:** cùng dữ liệu đầu vào cho cùng danh sách; mã thiếu dữ liệu bị loại kèm lý do; không gọi API ký.
 
-**Đã làm (16/11/2026, chưa commit) — giai đoạn 1:** `domain/market/scanner.py` (`ck11-scanner-v1`, tất định), `application/market_scanner.py` (`workspace:read`, chọn nguồn nến ưu tiên, ghi `audit_event` `market_scan.run` khi bấm chạy, nhật ký 10 lượt gần nhất), trang `/admin/scanner` (tiêu chí bằng ô chọn: khung 1h/4h/1d, ngưỡng quote 24h, khoảng biên 21 ngày; 3 bảng xếp hạng có link mở chart; mã bị loại kèm lý do; watchlist cá nhân bằng multi-select coin lưu trình duyệt; nhật ký quét), link sidebar "Bộ quét thị trường". Nến đọc từ kho thêm trường `quote_volume`.
+**Đã làm (16/11/2026, commit `79a1b2f`, đã push `dev`) — giai đoạn 1:** `domain/market/scanner.py` (`ck11-scanner-v1`, tất định), `application/market_scanner.py` (`workspace:read`, chọn nguồn nến ưu tiên, ghi `audit_event` `market_scan.run` khi bấm chạy, nhật ký 10 lượt gần nhất), trang `/admin/scanner` (tiêu chí bằng ô chọn: khung 1h/4h/1d, ngưỡng quote 24h, khoảng biên 21 ngày; 3 bảng xếp hạng có link mở chart; mã bị loại kèm lý do; watchlist cá nhân bằng multi-select coin lưu trình duyệt; nhật ký quét), link sidebar "Bộ quét thị trường". Nến đọc từ kho thêm trường `quote_volume`.
 **Lệch so với kế hoạch:** chưa dùng REST 24h ticker/kline 1d của toàn sàn — chỉ quét các mã đã có nến trong kho (collector SIG-0/ingest live), không gọi mạng từ admin-web; watchlist cá nhân lưu trình duyệt (chưa đồng bộ giữa máy); nhật ký dùng `audit_event` thay bảng riêng.
 **Còn mở:** worker thu 24h ticker toàn sàn (cần quyền dữ liệu PAPER_DEMO cho nguồn ticker) để quét ngoài danh sách đang thu; market cap/FDV (nguồn ngoài, WP05, owner #6).
 
@@ -322,6 +322,9 @@ Ký hiệu: **D** = đã có trên `dev`; **S** = đã làm lát đầu trên nh
 3. Tạm dừng/tiếp tục dẫn tới form có lý do ở trang bot (không nút 1 chạm).
 
 **Acceptance:** chỉ hiện bot người dùng có quyền; số chỗ chạy khớp ledger.
+
+**Đã làm (16/11/2026):** mở rộng thẻ setup của Bảng Entry (CK-6) thành bảng giám sát: kết luận `monitor_verdict`, trạng thái vận hành từ `BotOperationsService.bot_status` (entry, workspace kill, cho phép vào lệnh), bảo vệ vốn `domain/risk/protection_view.py` (`ck12-protection-v1`): chỗ chạy = lệnh mở trong ledger / `max_positions` hiệu lực (`load_effective_bot_config`), lỗ ròng hôm nay (UTC) và 24 giờ so với `max_daily_loss`/`max_rolling_loss`; thiếu cấu hình publish → "unknown" kèm ghi chú. Lối tắt sang trang bot (form tạm dừng/tiếp tục có lý do), không có nút một chạm. Compose E2E RT-1: chỗ chạy "1/2" khi có lệnh mở, "0/2" sau khi đóng, giới hạn 200/500 từ cấu hình hiệu lực.
+**Lệch/còn mở:** không dùng "cầu dao rủi ro" của dashboard vì hiện tính trên dữ liệu rỗng (giá trị giả); lỗ ngày tính theo UTC (chưa theo múi giờ cấu hình rủi ro của workspace); chưa có lease/heartbeat/lần tick cuối của runtime (BotRuntimeStatus không có trường này).
 
 ### CK-13 — Giả thuyết chiến lược lấy cảm hứng từ hai app (chỉ PAPER, sau SIG-5)
 

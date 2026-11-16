@@ -382,6 +382,17 @@
           {% if setup.direction %}<span class="sc-direction sc-direction--{{ setup.direction }}">{{ 'MUA' if setup.direction == 'long' else 'BÁN' }}</span>{% endif %}
           {% if setup.evaluated_at %}<span class="sc-meta">quyết định {{ setup.evaluated_at | local_minute }}</span>{% endif %}
         </p>
+        {#- CK-12: giám sát bot — kết luận, trạng thái vận hành, bảo vệ vốn, lối tắt (không nút 1 chạm). -#}
+        <p class="mc-setup__verdict" data-setup-verdict>{{ setup.verdict }}</p>
+        <dl class="mc-monitor" data-bot-monitor>
+          <div><dt>Vận hành</dt><dd>{% if setup.runtime %}{{ setup.runtime.entry_state | label_vi }}{% if setup.runtime.workspace_kill_state != "ACTIVE" %} · workspace {{ setup.runtime.workspace_kill_state | label_vi }}{% endif %} · {{ "cho phép vào lệnh" if setup.runtime.entry_allowed else "không vào lệnh mới" }}{% else %}Chưa đọc được{% endif %}</dd></div>
+          {% set pr = setup.protection %}
+          <div class="mc-monitor--{{ pr.slots.state }}"><dt>Chỗ chạy</dt><dd data-monitor-slots>{{ pr.slots.label }}{% if pr.slots.state == "full" %} · đã đủ{% endif %}</dd></div>
+          <div class="mc-monitor--{{ pr.daily.state }}"><dt>Lỗ ròng hôm nay (UTC)</dt><dd>{{ pr.daily.loss | number2_vi }}{% if pr.daily.limit is not none %} / {{ pr.daily.limit | number2_vi }} {{ pr.quote_asset }} ({{ pr.daily.used_pct | round(0) | int }}%){% else %} {{ pr.quote_asset }}{% endif %}</dd></div>
+          <div class="mc-monitor--{{ pr.rolling.state }}"><dt>Lỗ ròng 24 giờ</dt><dd>{{ pr.rolling.loss | number2_vi }}{% if pr.rolling.limit is not none %} / {{ pr.rolling.limit | number2_vi }} {{ pr.quote_asset }} ({{ pr.rolling.used_pct | round(0) | int }}%){% else %} {{ pr.quote_asset }}{% endif %}</dd></div>
+        </dl>
+        {% if pr.note %}<p class="sc-meta">{{ pr.note }}</p>{% endif %}
+        <p class="mc-setup__links"><a href="/admin/bots/{{ setup.bot_id }}">Trang bot (tạm dừng/tiếp tục có lý do)</a> · <a href="/admin/chart?bot_id={{ setup.bot_id | urlencode }}&symbol={{ selected_symbol | urlencode }}&timeframe={{ timeframe | urlencode }}">Xem bot này trên chart (dock "Nhật ký quyết định")</a></p>
         {% if setup.missing %}<p class="mc-setup__missing">{{ setup.missing }}</p>{% endif %}
         <ul class="sc-checklist">
           {% for item in setup.conditions %}
