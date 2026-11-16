@@ -29,6 +29,7 @@ from trading_bot.adapters.database.repositories.bot_reports import BotReportRepo
 from trading_bot.application.market_chart import (
     MARKET_CHART_INTERVAL_SECONDS,
     MARKET_CHART_MAX_LIMIT,
+    market_source_label,
 )
 from trading_bot.application.outbox import UnitOfWork
 from trading_bot.auth.bot_policy import (
@@ -474,6 +475,165 @@ class BotReportingService:
             latest["unverified_decisions"] = view["unverified_decisions"]
         return latest
 
+    async def validate_chart(
+        self,
+        principal: Principal,
+        *,
+        bot_id: UUID,
+        symbol: str,
+        timeframe: str,
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Nút "Kiểm dữ liệu" (CK-9): kiểm tối đa ``MARKET_CHART_MAX_LIMIT`` nến đang xem."""
+        from trading_bot.domain.market.chart_quality import inspect_chart_bars
+
+        if timeframe not in MARKET_CHART_INTERVAL_SECONDS:
+            raise BotReportError(
+                422, "CHART_TIMEFRAME_UNSUPPORTED", "Khung biểu đồ không được hỗ trợ."
+            )
+        instant = now or datetime.now(UTC)
+        async with self._unit_of_work(
+            self._sessions,
+            workspace_id=principal.workspace_id,
+            bot_id=bot_id,
+            actor_membership_id=principal.membership_id,
+            snapshot_read_only=True,
+        ) as unit:
+            repository = self._repository(unit.session)
+            try:
+                await self._grants(unit.session).require(
+                    principal, bot_id=bot_id, permission=BotPermission.REPORT_READ
+                )
+            except PermissionError as error:
+                raise _not_found() from error
+            if await repository.get_bot(workspace_id=principal.workspace_id, bot_id=bot_id) is None:
+                raise _not_found()
+            sources = [
+                pair.split("|", 2)[2]
+                for pair in await repository.list_market_series(
+                    workspace_id=principal.workspace_id, as_of=instant
+                )
+                if pair.split("|", 2)[:2] == [symbol, timeframe]
+            ]
+            source = preferred_market_source(sources) if sources else None
+            bars: list[dict[str, Any]] = []
+            revised = 0
+            if source is not None:
+                bars = await repository.load_recent_bars(
+                    workspace_id=principal.workspace_id,
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    as_of=instant,
+                    limit=MARKET_CHART_MAX_LIMIT,
+                    source=source,
+                )
+                if bars:
+                    revised = await repository.bar_revision_count(
+                        workspace_id=principal.workspace_id,
+                        symbol=symbol,
+                        timeframe=timeframe,
+                        source=source,
+                        since=datetime.fromtimestamp(int(bars[0]["time"]), UTC),
+                    )
+            gaps = await repository.open_ingestion_gaps(
+                workspace_id=principal.workspace_id, symbol=symbol, timeframe=timeframe
+            )
+        report = inspect_chart_bars(
+            bars,
+            interval_seconds=MARKET_CHART_INTERVAL_SECONDS[timeframe],
+            now=instant,
+            revised_bars=revised,
+        )
+        report["source"] = source
+        report["source_label"] = market_source_label(source) if source else "—"
+        report["open_ingestion_gaps"] = gaps
+        if gaps:
+            report["ok"] = False
+            report["summary"] += f" Có {len(gaps)} khoảng trống ingest chưa lấp."
+        return report
+
+    async def get_decision_log(
+        self, principal: Principal, *, bot_id: UUID, limit: int = 20
+    ) -> dict[str, Any]:
+        """Nhật ký quyết định (CK-9): các quyết định gần nhất đã khớp hash, mới nhất trước."""
+        from trading_bot.application.bot_dispatcher import BotDecision
+
+        async with self._unit_of_work(
+            self._sessions,
+            workspace_id=principal.workspace_id,
+            bot_id=bot_id,
+            actor_membership_id=principal.membership_id,
+            snapshot_read_only=True,
+        ) as unit:
+            repository = self._repository(unit.session)
+            try:
+                await self._grants(unit.session).require(
+                    principal, bot_id=bot_id, permission=BotPermission.REPORT_READ
+                )
+            except PermissionError as error:
+                raise _not_found() from error
+            if await repository.get_bot(workspace_id=principal.workspace_id, bot_id=bot_id) is None:
+                raise _not_found()
+            rows: list[dict[str, Any]] = await repository.latest_bot_decisions(
+                workspace_id=principal.workspace_id, bot_id=bot_id, limit=limit
+            )
+        items: list[dict[str, Any]] = []
+        rejected = 0
+        for row in rows:
+            try:
+                BotDecision.from_payload(row["payload"], row["decision_hash"])
+            except KeyError, TypeError, ValueError:
+                rejected += 1
+                continue
+            payload = row["payload"]
+            candidate = payload.get("candidate") or {}
+            items.append(
+                {
+                    "evaluated_at": payload.get("evaluated_at"),
+                    "status": payload.get("status"),
+                    "reason_code": payload.get("reason_code"),
+                    "detail_vi": payload.get("detail_vi"),
+                    "direction": candidate.get("direction"),
+                    "strategy_release_id": payload.get("strategy_release_id"),
+                }
+            )
+        return {"decisions": items, "unverified_decisions": rejected}
+
+    async def get_trade_history(
+        self,
+        principal: Principal,
+        *,
+        bot_id: UUID,
+        symbol: str,
+        start: datetime,
+        end: datetime,
+    ) -> list[dict[str, Any]]:
+        """Lịch sử lệnh PAPER đã đóng của bot cho mã đang xem (CK-9), lấy từ báo cáo ledger."""
+        report = await self.get_bot_report(
+            BotReportQuery(
+                workspace_id=principal.workspace_id, bot_id=bot_id, start=start, end=end
+            ),
+            principal,
+        )
+        return [
+            {
+                key: trade.get(key)
+                for key in (
+                    "trade_id",
+                    "symbol",
+                    "side",
+                    "quote_asset",
+                    "opened_at",
+                    "closed_at",
+                    "net_pnl",
+                    "total_cost",
+                    "exit_reason",
+                )
+            }
+            for trade in report.as_dict().get("trades", [])
+            if trade.get("symbol") == symbol
+        ]
+
     async def get_setup_board(
         self,
         principal: Principal,
@@ -678,6 +838,9 @@ class BotReportingService:
             positions = await repository.open_positions(
                 workspace_id=principal.workspace_id, bot_id=bot_id, symbol=symbol
             )
+            open_gaps = await repository.open_ingestion_gaps(
+                workspace_id=principal.workspace_id, symbol=symbol, timeframe=timeframe
+            )
         return build_market_overview(
             symbol=symbol,
             timeframe=timeframe,
@@ -686,6 +849,12 @@ class BotReportingService:
             quote=quote,
             mark=mark,
             positions=positions,
+            open_gaps=open_gaps,
+            source_label=(
+                market_source_label(preferred_market_source(sources[timeframe]))
+                if timeframe in sources
+                else "—"
+            ),
         )
 
     async def get_dashboard_reports(

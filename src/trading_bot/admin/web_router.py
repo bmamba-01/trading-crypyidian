@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, timezone, tzinfo
 from decimal import Decimal, InvalidOperation
 from typing import Annotated, Any, cast
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlencode
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
@@ -2744,6 +2744,90 @@ async def market_bar_decision_api(
         "bar_open": bar_open.isoformat(),
         "timeframe": timeframe,
         "decision": decision,
+    }
+
+
+@router.get("/api/chart/validate")
+async def market_chart_validate_api(
+    request: Request,
+    response: Response,
+    identity: Annotated[AuthIdentity, Depends(current_identity)],
+    bot_id: UUID,
+    symbol: str,
+    timeframe: str = MARKET_CHART_DEFAULT_TIMEFRAME,
+) -> dict[str, Any]:
+    """Nút "Kiểm dữ liệu" (CK-9): thiếu nến, trùng, OHLC sai, trễ, khoảng trống ingest."""
+    response.headers["Cache-Control"] = "no-store"
+    if timeframe not in MARKET_CHART_INTERVAL_SECONDS:
+        raise HTTPException(status_code=422, detail="Khung biểu đồ không được hỗ trợ.")
+    chart_symbol = _chart_symbol(symbol)
+    if chart_symbol is None:
+        raise HTTPException(status_code=422, detail="Thiếu mã giao dịch (symbol).")
+    try:
+        report = await _reporting_service(request).validate_chart(
+            identity.principal, bot_id=bot_id, symbol=chart_symbol, timeframe=timeframe
+        )
+    except BotReportError as error:
+        raise _report_http_error(error) from error
+    return {"status": "ok"} | report
+
+
+@router.get("/api/chart/decisions")
+async def market_chart_decisions_api(
+    request: Request,
+    response: Response,
+    identity: Annotated[AuthIdentity, Depends(current_identity)],
+    bot_id: UUID,
+) -> dict[str, Any]:
+    """Nhật ký quyết định của bot (CK-9), chỉ quyết định khớp hash."""
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        log = await _reporting_service(request).get_decision_log(identity.principal, bot_id=bot_id)
+    except BotReportError as error:
+        raise _report_http_error(error) from error
+    return {"status": "ok"} | log
+
+
+_HISTORY_PERIODS = {"today": None, "7d": timedelta(days=7), "30d": timedelta(days=30)}
+
+
+@router.get("/api/chart/history")
+async def market_chart_history_api(
+    request: Request,
+    response: Response,
+    identity: Annotated[AuthIdentity, Depends(current_identity)],
+    bot_id: UUID,
+    symbol: str,
+    period: str = "7d",
+) -> dict[str, Any]:
+    """Lịch sử lệnh PAPER đã đóng của mã đang xem (CK-9) kèm link xuất CSV có sẵn."""
+    response.headers["Cache-Control"] = "no-store"
+    if period not in _HISTORY_PERIODS:
+        raise HTTPException(status_code=422, detail="Kỳ lịch sử chỉ nhận today, 7d hoặc 30d.")
+    chart_symbol = _chart_symbol(symbol)
+    if chart_symbol is None:
+        raise HTTPException(status_code=422, detail="Thiếu mã giao dịch (symbol).")
+    end = datetime.now(UTC)
+    window = _HISTORY_PERIODS[period]
+    start = (
+        end.replace(hour=0, minute=0, second=0, microsecond=0) if window is None else end - window
+    )
+    try:
+        trades = await _reporting_service(request).get_trade_history(
+            identity.principal, bot_id=bot_id, symbol=chart_symbol, start=start, end=end
+        )
+    except BotReportError as error:
+        raise _report_http_error(error) from error
+    csv_query = urlencode(
+        {"start": start.isoformat(), "end": end.isoformat(), "scope": "bot", "bot_id": str(bot_id)}
+    )
+    return {
+        "status": "ok",
+        "period": period,
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "trades": trades,
+        "csv_url": f"/admin/reports/export.csv?{csv_query}",
     }
 
 

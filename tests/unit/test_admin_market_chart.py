@@ -24,6 +24,7 @@ from trading_bot.auth.policy import Principal, Role
 from trading_bot.auth.router import current_identity
 from trading_bot.auth.service import AuthIdentity
 from trading_bot.config.settings import AppSettings
+from trading_bot.domain.market.chart_quality import inspect_chart_bars
 from trading_bot.domain.strategy.setup_progress import setup_progress
 
 WORKSPACE = UUID("9b2299f1-a58e-45c7-b0ad-83feb0862510")
@@ -208,6 +209,7 @@ class _Reporting:
         self.overview_calls: list[dict[str, Any]] = []
         self.setup_calls: list[dict[str, Any]] = []
         self.decision_calls: list[dict[str, Any]] = []
+        self.history_calls: list[dict[str, Any]] = []
 
     async def list_market_series(self, principal: Principal, *, bot_id: UUID) -> dict:
         if self.error is not None:
@@ -228,6 +230,49 @@ class _Reporting:
         if self.error is not None:
             raise self.error
         return SIGNAL_VIEW["latest_decision"] if kwargs["bar_open"].minute == 0 else None
+
+    async def validate_chart(self, principal: Principal, **kwargs: Any) -> dict:
+        """Kiểm dữ liệu thật trên nến mẫu đã bị khoét 3 nến (acceptance CK-9)."""
+        holed = [bar for index, bar in enumerate(self.bars) if index not in (100, 101, 102)]
+        report = inspect_chart_bars(
+            holed, interval_seconds=300, now=datetime.fromtimestamp(holed[-1]["time"] + 300, UTC)
+        )
+        return report | {
+            "source": "BINANCE_USDM_REST_BACKFILL",
+            "source_label": "Binance USDⓈ-M · REST công khai",
+            "open_ingestion_gaps": [],
+        }
+
+    async def get_decision_log(self, principal: Principal, **kwargs: Any) -> dict:
+        return {
+            "decisions": [
+                {
+                    "evaluated_at": "2026-11-16T10:00:00+00:00",
+                    "status": "ABSTAIN",
+                    "reason_code": "H01_ADX_BELOW_20",
+                    "detail_vi": "ADX14 1h phải đạt tối thiểu 20.",
+                    "direction": None,
+                    "strategy_release_id": "h01-v1",
+                }
+            ],
+            "unverified_decisions": 1,
+        }
+
+    async def get_trade_history(self, principal: Principal, **kwargs: Any) -> list[dict]:
+        self.history_calls.append(kwargs)
+        return [
+            {
+                "trade_id": "t1",
+                "symbol": kwargs["symbol"],
+                "side": "LONG",
+                "quote_asset": "USDT",
+                "opened_at": "2026-11-16T08:00:00+00:00",
+                "closed_at": "2026-11-16T09:00:00+00:00",
+                "net_pnl": "-1.25",
+                "total_cost": "0.20",
+                "exit_reason": "STOP_LOSS",
+            }
+        ]
 
     async def get_setup_board(self, principal: Principal, **kwargs: Any) -> list[dict]:
         """Bảng Entry giả: một setup H01 chưa đủ (thiếu ADX) cho bot đầu tiên."""
@@ -610,3 +655,36 @@ def test_chart_page_has_drawing_toolbar_layer_presets_and_multi_chart() -> None:
     assert ' style="' not in html
     inline = re.findall(r"<script(?![^>]*\bsrc=)(?![^>]*application/json)[^>]*>", html)
     assert inline == []
+
+
+def test_dock_and_validate_apis() -> None:
+    reporting = _Reporting(_bars(200, start=START, step=timedelta(minutes=5)))
+    client = _client(reporting)
+    html = client.get("/admin/chart?timeframe=5m").text
+    assert "data-statusbar" in html
+    assert "data-validate" in html
+    assert html.count('role="tab"') == 4
+    assert "data-mc-events" in html
+    assert "/static/chart-dock.js" in html
+    validate = client.get(f"/admin/api/chart/validate?bot_id={BOT_ID}&symbol=BTCUSDT&timeframe=5m")
+    assert validate.status_code == 200
+    assert validate.headers["cache-control"] == "no-store"
+    body = validate.json()
+    assert body["missing_bars"] == 3
+    assert body["ok"] is False
+    decisions = client.get(f"/admin/api/chart/decisions?bot_id={BOT_ID}").json()
+    assert decisions["unverified_decisions"] == 1
+    history = client.get(f"/admin/api/chart/history?bot_id={BOT_ID}&symbol=BTCUSDT&period=today")
+    assert history.status_code == 200
+    data = history.json()
+    assert data["trades"][0]["exit_reason"] == "STOP_LOSS"
+    assert data["csv_url"].startswith("/admin/reports/export.csv?start=")
+    assert f"bot_id={BOT_ID}" in data["csv_url"]
+    start = datetime.fromisoformat(data["start"])
+    assert (start.hour, start.minute) == (0, 0)  # hôm nay = từ 00:00 UTC
+    assert reporting.history_calls[0]["symbol"] == "BTCUSDT"
+    assert (
+        client.get(f"/admin/api/chart/history?bot_id={BOT_ID}&symbol=BTCUSDT&period=1y").status_code
+        == 422
+    )
+    assert client.get(f"/admin/api/chart/validate?bot_id={BOT_ID}&symbol=x y").status_code == 422

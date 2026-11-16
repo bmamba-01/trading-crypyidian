@@ -13,6 +13,7 @@ from decimal import Decimal
 from typing import Any
 
 from trading_bot.application.market_chart import MARKET_CHART_INTERVAL_SECONDS
+from trading_bot.domain.market.chart_quality import data_status
 from trading_bot.domain.market.ict import active_killzones
 from trading_bot.domain.market.overview import (
     MTF_FORMULA_VERSION,
@@ -168,6 +169,8 @@ def build_market_overview(
     quote: Mapping[str, Any] | None,
     mark: Mapping[str, Any] | None,
     positions: Sequence[Mapping[str, Any]] = (),
+    open_gaps: Sequence[Mapping[str, Any]] = (),
+    source_label: str = "—",
 ) -> dict[str, Any]:
     """JSON cho dải thông số (CK-1) và ma trận đa khung (CK-2) của một mã."""
     if now.tzinfo is None:
@@ -265,6 +268,14 @@ def build_market_overview(
         "timeframe": timeframe,
         "generated_at": now.astimezone(UTC).isoformat(),
         "positions": position_views,
+        # CK-9: thanh trạng thái dữ liệu của khung đang xem.
+        "data_status": data_status(
+            selected,
+            interval_seconds=MARKET_CHART_INTERVAL_SECONDS[timeframe],
+            now=now,
+            source_label=source_label,
+            open_gaps=open_gaps,
+        ),
         "formula_versions": {"overview": OVERVIEW_FORMULA_VERSION, "mtf": MTF_FORMULA_VERSION},
         "quote": quote_view,
         "mark": mark_view,

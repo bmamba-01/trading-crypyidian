@@ -839,3 +839,13 @@ Khái niệm VSA và ZigZag đã định nghĩa ở mục AC; mục này ghi tê
 | Magnet (snap to OHLC) | Nam châm (bắt giá OHLC) | Điểm vẽ được kéo về giá Mở/Cao/Thấp/Đóng gần nhất của nến tại vị trí nhấp và về đúng mốc mở nến. | Định nghĩa nội bộ |
 | Layer preset | Bộ lớp dựng sẵn | Tổ hợp công tắc lớp: Mặc định, ICT, Volume, Tối giản; đổi tay một công tắc thì bộ lớp chuyển về "Tự chọn". | Định nghĩa nội bộ |
 | Multi-timeframe grid | Lưới nhiều khung | 2 hoặc 4 chart cùng mã (khung lớn hơn trước, rồi khung nhỏ hơn) đồng bộ con trỏ (nến chứa thời điểm) và vùng thời gian với chart chính. | Định nghĩa nội bộ |
+
+## AL. Dock giao dịch, thanh trạng thái và kiểm dữ liệu (CK-9, 16/11/2026)
+
+| Thuật ngữ (EN) | Tiếng Việt | Định nghĩa và giới hạn | Nguồn |
+|---|---|---|---|
+| Trading dock | Dock giao dịch | Khung tab dưới chart: Vị thế PAPER (cập nhật 2 giây), Lịch sử lệnh đã đóng (hôm nay/7/30 ngày, xuất CSV qua `/admin/reports/export.csv`), Nhật ký quyết định (khớp hash), Sự kiện cấu trúc. | Định nghĩa nội bộ |
+| Data delay (estimated) | Độ trễ dữ liệu (ước tính) | Thời gian từ lúc nến cuối trong kho đóng tới hiện tại; lớn hơn một khung nghĩa là thiếu ít nhất một nến. Không phải độ trễ mạng của stream. | Định nghĩa nội bộ (`domain/market/chart_quality.py`) |
+| Ingestion gap (open) | Khoảng trống ingest chưa lấp | Hàng `ingestion_gap` có `resolved_at` rỗng: worker đã phát hiện thiếu nến nhưng chưa backfill xong. | `adapters/database/models/market_entities.py` |
+| Bar revision | Bản sửa nến | Cùng mốc mở nến có nhiều bản ghi do sàn/ingest sửa lại; chart dùng bản mới nhất, nút kiểm dữ liệu đếm số mốc có bản sửa. | Định nghĩa nội bộ |
+| Data validation (chart) | Kiểm dữ liệu chart | Kiểm nến đang xem: thiếu nến, mốc trùng, OHLC sai (thấp > min(mở, đóng) hoặc cao < max(mở, đóng)), khối lượng âm, taker buy vượt khối lượng, nến chưa đóng, chuỗi trễ > 2 khung, khoảng trống ingest. Không so với REST của sàn. | Định nghĩa nội bộ (`ck9-quality-v1`) |

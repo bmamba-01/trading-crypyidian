@@ -4365,7 +4365,7 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Bài học:** probe đọc dữ liệu bằng role admin-web phải đặt `actor_membership_id` như service; thêm luôn khẳng định "không membership → 0 hàng" để test chứng minh RLS thay vì chỉ đi đường vui.
 - **Readback:** đã đọc lại mục này; không có secret.
 
-### 2026-11-16 — Push CK-7 và CK-8: công cụ vẽ, bộ lớp, nhiều khung (CK-8 chưa commit)
+### 2026-11-16 — Push CK-7 và CK-8: công cụ vẽ, bộ lớp, nhiều khung (CK-8 commit `0f5ac1b`, đã push)
 
 - **Yêu cầu của owner:** "Push, làm CK-8" → push `origin/dev` fast-forward `3e6c080..7260de6` (CK-7), xác nhận bằng `git ls-remote`.
 - **Quyết định tạm:** owner chưa chốt #4 (lưu bản vẽ DB) và #8 (Lightweight Charts 5.3.0) → làm giai đoạn 1: chỉ `localStorage`, giữ 5.2.1, không tải gói mới.
@@ -4373,5 +4373,15 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Lỗi gặp và sửa:** Playwright vẽ trendline ra 0 hình. Soi bằng phiên Playwright riêng (ghi sự kiện `subscribeClick`/`subscribeDblClick`): khi nhấp lần hai nhanh ở vị trí khác, Lightweight Charts 5.2.1 **không phát cả click lẫn dblClick** → người dùng bấm nhanh cũng mất điểm. Sửa: công cụ vẽ nghe sự kiện `click` DOM của khung chart (bỏ thao tác kéo > 4px và vùng trục giá); nhấp đúp không đặt lại vùng nhìn khi đang dùng công cụ vẽ. Nhãn Fibonacci in 8 chữ số → 2 chữ số với giá ≥ 1.
 - **Kiểm chứng:** unit **4546 passed/131.51s**; ruff/format sạch; mypy **412 files** sạch. Playwright trang chart **1 passed/22.2s**: vẽ 4 loại, lưu `localStorage` có time/price, hoàn tác/làm lại, nam châm bắt đúng một giá OHLC, chọn + Delete, khóa chặn vẽ, tải lại còn đủ hình; bộ lớp "Tối giản" → "Lớp 4/19"; 2 khung → khung 4H có nến; thanh vẽ ẩn ở 360/390px, hiện ở ≥ 768px. Ảnh `ck8-drawings-desktop.png`, `ck8-multi-chart-desktop.png` đã xem. Không đổi DB.
 - **Bài học:** sự kiện click của Lightweight Charts không đủ tin cho thao tác nhiều điểm; với tương tác người dùng nên nghe sự kiện DOM và tự quy đổi toạ độ.
-- **Còn mở:** lưu bản vẽ vào DB (owner #4); kéo sửa điểm hình đã vẽ; khung phụ chỉ nến + EMA; chưa đo hiệu năng 4 khung ở 1440px; CK-8 chưa commit.
+- **Còn mở:** lưu bản vẽ vào DB (owner #4); kéo sửa điểm hình đã vẽ; khung phụ chỉ nến + EMA; chưa đo hiệu năng 4 khung ở 1440px.
+- **Readback:** đã đọc lại mục này; không có secret.
+
+### 2026-11-16 — CK-9: dock dưới chart, thanh trạng thái, kiểm dữ liệu
+
+- **Yêu cầu của owner:** "Commit, push, CK-9" → commit CK-8 `0f5ac1b`, push `origin/dev` fast-forward `7260de6..0f5ac1b` (xác nhận `git ls-remote`), rồi làm CK-9.
+- **Đã làm:** `domain/market/chart_quality.py` (`inspect_chart_bars`, `data_status`); repository `bar_revision_count`, `open_ingestion_gaps` (admin-web đọc `ingestion_gap` qua role `crypidian_app`); service `validate_chart`, `get_decision_log`, `get_trade_history` (lọc theo mã từ báo cáo ledger); overview có `data_status`; 3 API mới no-store; `static/chart-dock.js` (tab ARIA, vị thế trực tiếp, lịch sử + link CSV có sẵn, nhật ký, thanh trạng thái, kiểm dữ liệu); khối "Sự kiện gần nhất" chuyển vào tab Sự kiện. Glossary mục **AL**; WBS CK mục CK-9; `project-status.md`.
+- **Lỗi gặp và sửa:** test golden đặt "to" của khoảng thiếu là mốc kết thúc thay vì mốc mở của nến thiếu cuối → sửa test theo quy ước mốc mở. Playwright báo tràn ngang 354px ở 360px: bảng dock là con của grid nên giãn theo nội dung → `min-width: 0` cho con của dock và cuộn ngang trong `.table-wrapper`. Ảnh chụp cho thấy "Vị thế PAPER1" dính số và "Nguồn —" khi overview chưa có nhãn nguồn → thêm nhãn tròn cho số đếm, giữ nhãn nguồn của chart khi overview trả "—".
+- **Kiểm chứng:** `tests/unit/test_ck9_chart_quality.py` 4 passed; unit toàn bộ **4554 passed/130.21s**; ruff/format sạch; mypy **413 files** sạch. Playwright trang chart **1 passed/24.2s** (thanh trạng thái 576 nến, kiểm dữ liệu báo "thiếu 3 nến", 4 tab, lịch sử có link CSV, mũi tên chuyển tab, không tràn ngang 360–1280px). Ảnh `ck9-statusbar-desktop.png`, `ck9-dock-desktop.png` đã xem. Không đổi schema DB.
+- **Kiểm trên PostgreSQL thật (owner: "Kiểm E2E rồi commit"):** probe RT-1 seed thêm một bản sửa revision 2 (cùng giá) cho nến 1h cũ nhất và một `ingestion_gap` chưa lấp; pha `web_read` (role `crypidian_admin_web`, có membership) đọc `bar_revision_count` = 1 và `open_ingestion_gaps` = 1. `test_rt1_paper_market_loop.py` **1 passed/333.69s** (lệch giờ host/Docker 1 giây); luồng RT-1 không đổi kết quả vì bản sửa cùng giá.
+- **Lệch acceptance:** chưa đọc readiness ingestion-worker (số sự kiện, ngắt/kết nối lại) — cần kênh mới (ví dụ heartbeat trong DB); không so với REST sàn.
 - **Readback:** đã đọc lại mục này; không có secret.

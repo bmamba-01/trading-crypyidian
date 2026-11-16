@@ -353,3 +353,56 @@
 .mc-multi-cell { border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.3)); border-radius: 0.5rem; overflow: hidden; min-width: 0; }
 .mc-multi-cell__title { margin: 0; padding: 0.25rem 0.5rem; font-size: 0.78rem; font-weight: 700; }
 .mc-multi-cell__chart { height: 260px; width: 100%; }
+
+/* ---------- CK-9: thanh trạng thái, kiểm dữ liệu, dock ---------- */
+.mc-statusbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.2rem 1rem;
+  font-size: 0.76rem;
+  padding: 0.3rem 0;
+  border-top: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.3));
+}
+.mc-statusbar strong { font-variant-numeric: tabular-nums; }
+.mc-statusbar .is-stale { color: var(--danger-text, #991b1b); }
+.mc-validate { border-radius: 0.5rem; padding: 0.45rem 0.6rem; font-size: 0.84rem; }
+.mc-validate[hidden] { display: none; }
+.mc-validate p { margin: 0 0 0.25rem; font-weight: 600; }
+.mc-validate ul { margin: 0; padding-left: 1.1rem; }
+.mc-validate.is-ok { background: var(--success-bg, #dcfce7); color: var(--success-text, #166534); }
+.mc-validate.is-bad { background: var(--danger-bg, #fee2e2); color: var(--danger-text, #991b1b); }
+.mc-dock { padding: 0.6rem 0.85rem 0.75rem; border-radius: 0.8rem; display: grid; gap: 0.5rem; }
+.mc-dock__tabs { display: flex; flex-wrap: wrap; gap: 0.25rem; border-bottom: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.3)); }
+.mc-dock__tabs [role="tab"] {
+  min-height: 44px;
+  padding: 0 0.8rem;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.mc-dock__tabs [role="tab"][aria-selected="true"] { border-bottom-color: var(--accent, #f0b90b); }
+.mc-dock__tabs [role="tab"]:focus-visible { outline: 2px solid var(--accent, #f0b90b); outline-offset: -2px; }
+.mc-dock__filters { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; font-size: 0.82rem; font-weight: 600; margin-bottom: 0.4rem; }
+.mc-dock__filters select { min-height: 44px; }
+.mc-dock__table { width: 100%; border-collapse: collapse; font-size: 0.82rem; font-variant-numeric: tabular-nums; }
+.mc-dock__table th, .mc-dock__table td { padding: 0.35rem 0.5rem; text-align: left; border-bottom: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.25)); white-space: nowrap; }
+.mc-dock__table .is-up { color: var(--pnl-positive-text, #0b8a5a); }
+.mc-dock__table .is-down { color: var(--pnl-negative-text, #c7354b); }
+/* Bảng trong dock không được nới rộng trang ở màn hẹp: cuộn ngang trong khung bảng. */
+.mc-dock > *,
+.mc-dock [role="tabpanel"] { min-width: 0; }
+.mc-dock .table-wrapper { max-width: 100%; overflow-x: auto; }
+.mc-dock__count {
+  display: inline-block;
+  min-width: 1.4rem;
+  margin-left: 0.3rem;
+  padding: 0 0.35rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  background: rgba(148, 163, 184, 0.22);
+}

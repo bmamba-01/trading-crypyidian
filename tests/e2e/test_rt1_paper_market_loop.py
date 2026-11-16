@@ -157,6 +157,9 @@ def test_rest_candles_drive_paper_entry_fill_and_stop_exit_idempotently() -> Non
         assert opened["decision_status"] == "CANDIDATE"
         assert opened["decision_rows"] >= 1
         assert opened["hidden_without_membership"] == 0  # RLS admin-web cần membership
+        # CK-9: admin-web đếm đúng nến có bản sửa và khoảng trống ingest chưa lấp.
+        assert opened["revised_1h_bars"] == 1
+        assert opened["open_gaps_1h"] == 1
 
         # Chạy lại không có nến mới: không ghi thêm gì.
         before = run("verify")

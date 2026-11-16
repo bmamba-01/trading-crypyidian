@@ -37,6 +37,7 @@ from trading_bot.application.market_overview import build_market_overview
 from trading_bot.auth.policy import Principal
 from trading_bot.auth.security import LoginRateLimiter
 from trading_bot.config.settings import AppSettings
+from trading_bot.domain.market.chart_quality import inspect_chart_bars
 from trading_bot.domain.strategy.setup_progress import setup_progress
 
 SCREENSHOTS_DIR = Path(__file__).resolve().parent / "evidence" / "admin-playwright"
@@ -154,6 +155,7 @@ class _Reporting:
         self.calls = 0
         self.overview_calls = 0
         self.setup_calls: list[dict[str, Any]] = []
+        self.history_calls: list[dict[str, Any]] = []
 
     async def list_market_series(self, principal: Principal, *, bot_id: UUID) -> dict:
         return {"BTCUSDT": ["5m", "4h"], "ETHUSDT": ["1h"]}
@@ -167,6 +169,49 @@ class _Reporting:
 
     async def get_decision_at(self, principal: Principal, **kwargs: Any) -> dict | None:
         return SIGNAL_VIEW["latest_decision"]
+
+    async def validate_chart(self, principal: Principal, **kwargs: Any) -> dict:
+        """Kiểm dữ liệu thật trên nến mẫu đã bị khoét 3 nến (acceptance CK-9)."""
+        holed = [bar for index, bar in enumerate(self.bars) if index not in (100, 101, 102)]
+        report = inspect_chart_bars(
+            holed, interval_seconds=300, now=datetime.fromtimestamp(holed[-1]["time"] + 300, UTC)
+        )
+        return report | {
+            "source": "BINANCE_USDM_REST_BACKFILL",
+            "source_label": "Binance USDⓈ-M · REST công khai",
+            "open_ingestion_gaps": [],
+        }
+
+    async def get_decision_log(self, principal: Principal, **kwargs: Any) -> dict:
+        return {
+            "decisions": [
+                {
+                    "evaluated_at": "2026-11-16T10:00:00+00:00",
+                    "status": "ABSTAIN",
+                    "reason_code": "H01_ADX_BELOW_20",
+                    "detail_vi": "ADX14 1h phải đạt tối thiểu 20.",
+                    "direction": None,
+                    "strategy_release_id": "h01-v1",
+                }
+            ],
+            "unverified_decisions": 1,
+        }
+
+    async def get_trade_history(self, principal: Principal, **kwargs: Any) -> list[dict]:
+        self.history_calls.append(kwargs)
+        return [
+            {
+                "trade_id": "t1",
+                "symbol": kwargs["symbol"],
+                "side": "LONG",
+                "quote_asset": "USDT",
+                "opened_at": "2026-11-16T08:00:00+00:00",
+                "closed_at": "2026-11-16T09:00:00+00:00",
+                "net_pnl": "-1.25",
+                "total_cost": "0.20",
+                "exit_reason": "STOP_LOSS",
+            }
+        ]
 
     async def get_setup_board(self, principal: Principal, **kwargs: Any) -> list[dict]:
         """Bảng Entry giả: một setup H01 chưa đủ (thiếu ADX) cho bot đầu tiên."""
@@ -358,7 +403,9 @@ def test_market_chart_renders_overlays_polls_and_is_responsive(server_url: str) 
             re.compile(r"^\d{2}:\d{2} \d{2}/\d{2}$")
         )
         events = page.locator("[data-mc-events] li")
-        expect(events.first).to_contain_text(re.compile(r"BOS|CHoCH|Quét"))
+        expect(events.first).to_contain_text(
+            re.compile(r"BOS|CHoCH|Quét|FVG|OB"), use_inner_text=False
+        )
         # Có taker buy → không còn ghi chú thiếu dữ liệu áp lực mua/bán.
         expect(page.locator("[data-mc-notices]")).not_to_contain_text("taker buy")
         expect(page.locator(".mc-attribution a").first).to_have_attribute(
@@ -544,6 +591,36 @@ def test_market_chart_renders_overlays_polls_and_is_responsive(server_url: str) 
         )
         page.locator("[data-multi-count]").select_option("1")
         expect(cells).to_have_count(0)
+
+        # CK-9: thanh trạng thái, kiểm dữ liệu (phát hiện lỗ 3 nến), dock 4 tab.
+        statusbar = page.locator("[data-statusbar]")
+        expect(statusbar.locator("[data-sb-bars]")).to_have_text("576")
+        expect(statusbar.locator("[data-sb-quote]")).to_contain_text("trước")
+        expect(statusbar.locator("[data-sb-layers]")).to_have_text(re.compile(r"^\d+$"))
+        statusbar.locator("[data-validate]").click()
+        result = page.locator("[data-validate-result]")
+        expect(result).to_contain_text("thiếu 3 nến")
+        expect(result).to_have_class(re.compile(r"is-bad"))
+        dock = page.locator("[data-dock]")
+        expect(dock.locator('[data-dock-count="positions"]')).to_have_text("1")
+        expect(dock.locator("[data-dock-positions] tr")).to_have_count(1)
+        expect(dock.locator("[data-dock-positions]")).to_contain_text("MUA")
+        dock.locator('[data-dock-tab="history"]').click()
+        expect(dock.locator("[data-dock-history]")).to_contain_text("Cắt lỗ")
+        expect(dock.locator("[data-history-csv]")).to_have_attribute(
+            "href", re.compile(r"^/admin/reports/export\.csv\?start=")
+        )
+        dock.locator('[data-dock-tab="history"]').press("ArrowRight")
+        expect(dock.locator('[data-dock-tab="decisions"]')).to_have_attribute(
+            "aria-selected", "true"
+        )
+        expect(dock.locator("[data-dock-decisions]")).to_contain_text("Không vào lệnh")
+        expect(dock.locator("[data-dock-decisions]")).to_contain_text("không khớp hash")
+        dock.locator('[data-dock-tab="events"]').click()
+        expect(dock.locator("[data-mc-events] li").first).to_be_visible()
+        statusbar.screenshot(path=str(SCREENSHOTS_DIR / "ck9-statusbar-desktop.png"))
+        dock.locator('[data-dock-tab="positions"]').click()
+        dock.screenshot(path=str(SCREENSHOTS_DIR / "ck9-dock-desktop.png"))
 
         # Thẻ tín hiệu SIG-3: hướng, SL, checklist và quyết định không vào lệnh gần nhất.
         signal = page.locator("[data-signal-card]")

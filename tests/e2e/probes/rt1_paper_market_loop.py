@@ -401,6 +401,34 @@ def seed() -> dict[str, Any]:
         )
         last_close = _history(connection, "1h", 206)
         _history(connection, "4h", 205)
+        # CK-9: một bản sửa (revision 2, cùng giá) cho nến 1h cũ nhất và một khoảng trống ingest
+        # chưa lấp, để kiểm truy vấn bản sửa/khoảng trống của admin-web trên PostgreSQL thật.
+        connection.execute(
+            """
+            INSERT INTO market_bar (id, workspace_id, instrument_id, symbol, timeframe, source,
+                logical_key, idempotency_key, revision, checksum, supersedes_id, raw_reference_id,
+                source_cursor, open_time, close_time, event_at, received_at, available_at,
+                open, high, low, close, volume, is_closed)
+            SELECT %s, workspace_id, instrument_id, symbol, timeframe, source, logical_key,
+                idempotency_key || ':rev2', 2, md5(checksum) || md5(checksum), id, raw_reference_id,
+                source_cursor || ':rev2', open_time, close_time, event_at, received_at,
+                available_at + interval '1 second', open, high, low, close, volume, is_closed
+            FROM market_bar WHERE id = %s
+            """,
+            (_id("bar-1h-0-rev2"), _id("bar-1h-0")),
+        )
+        _insert(
+            connection,
+            "ingestion_gap",
+            workspace_id=WORKSPACE,
+            source=SOURCE,
+            symbol="BTCUSDT",
+            timeframe="1h",
+            gap_start=LAST_CLOSE - timedelta(days=30),
+            gap_end=LAST_CLOSE - timedelta(days=29),
+            detected_at=LAST_CLOSE - timedelta(days=29),
+            resolved_at=None,
+        )
     return {"bot_id": str(bot_id), "last_h1_close": last_close}
 
 
@@ -602,6 +630,16 @@ async def web_read() -> dict[str, Any]:
                 start=LAST_CLOSE - timedelta(hours=2),
                 end=NOW + timedelta(minutes=30),
             )
+            revised = await repository.bar_revision_count(
+                workspace_id=WORKSPACE,
+                symbol="BTCUSDT",
+                timeframe="1h",
+                source=SOURCE,
+                since=LAST_CLOSE - timedelta(days=60),
+            )
+            gaps = await repository.open_ingestion_gaps(
+                workspace_id=WORKSPACE, symbol="BTCUSDT", timeframe="1h"
+            )
             role = await uow.session.scalar(text("SELECT current_user"))
         async with UnitOfWork(
             sessions, workspace_id=WORKSPACE, bot_id=bot_id, snapshot_read_only=True
@@ -631,6 +669,8 @@ async def web_read() -> dict[str, Any]:
         "decision_status": None if latest is None else latest["status"],
         "decision_rows": len(decisions),
         "hidden_without_membership": len(hidden),
+        "revised_1h_bars": revised,
+        "open_gaps_1h": len(gaps),
     }
 
 

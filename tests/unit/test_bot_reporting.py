@@ -1025,6 +1025,25 @@ async def test_repository_open_positions_and_decisions_between_are_bot_scoped() 
     assert all("INSERT" not in s and "UPDATE" not in s for s in session.statements)
 
 
+@pytest.mark.asyncio
+async def test_repository_quality_queries_are_workspace_scoped_and_read_only() -> None:
+    session = RecordingSession()
+    repository = BotReportRepository(session)  # type: ignore[arg-type]
+    assert (
+        await repository.open_ingestion_gaps(workspace_id=W1, symbol="BTCUSDT", timeframe="5m")
+        == []
+    )
+    gaps_sql = session.statements[-1]
+    for fragment in (
+        "ingestion_gap.workspace_id =",
+        "ingestion_gap.symbol =",
+        "ingestion_gap.timeframe =",
+        "ingestion_gap.resolved_at IS NULL",
+    ):
+        assert fragment in gaps_sql, fragment
+    assert all("INSERT" not in s and "UPDATE" not in s for s in session.statements)
+
+
 class TransactionLogSession:
     """Session giả ghi thứ tự BEGIN/câu lệnh để kiểm tra snapshot được đặt trước truy vấn."""
 
@@ -1146,6 +1165,14 @@ class FakeRepository:
             f"market_bars:{kwargs['symbol']}:{kwargs['timeframe']}:{kwargs['source']}"
         )
         return [{"time": 1, "open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0, "volume": 1.0}]
+
+    async def open_ingestion_gaps(self, **kwargs: Any) -> list[dict[str, Any]]:
+        STORE.calls.append(f"market_gaps:{kwargs['timeframe']}")
+        return []
+
+    async def bar_revision_count(self, **kwargs: Any) -> int:
+        STORE.calls.append(f"market_revisions:{kwargs['timeframe']}")
+        return 0
 
     async def open_positions(self, **kwargs: Any) -> list[dict[str, Any]]:
         STORE.calls.append(f"market_positions:{kwargs['symbol']}")
@@ -1380,6 +1407,32 @@ async def test_decision_at_bar_requires_report_read_and_uses_bar_close_window() 
             OPERATOR, bot_id=BOT_A, bar_open=bar_open, interval=timedelta(minutes=5)
         )
     assert caught.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_validate_chart_and_decision_log_require_report_read() -> None:
+    report = await service().validate_chart(ANALYST, bot_id=BOT_A, symbol="BTCUSDT", timeframe="5m")
+    assert report["source"] == "BINANCE_USDM_REST_BACKFILL"
+    assert report["checked"] == 1
+    assert "market_revisions:5m" in STORE.calls
+    assert "market_gaps:5m" in STORE.calls
+    log = await service().get_decision_log(ANALYST, bot_id=BOT_A)
+    assert log == {"decisions": [], "unverified_decisions": 0}
+    for call in (
+        service().validate_chart(OPERATOR, bot_id=BOT_A, symbol="BTCUSDT", timeframe="5m"),
+        service().get_decision_log(OPERATOR, bot_id=BOT_A),
+    ):
+        with pytest.raises(BotReportError) as caught:
+            await call
+        assert caught.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_trade_history_filters_symbol_from_bot_report() -> None:
+    trades = await service().get_trade_history(
+        ANALYST, bot_id=BOT_A, symbol="NOPEUSDT", start=START, end=END
+    )
+    assert trades == []
 
 
 @pytest.mark.asyncio

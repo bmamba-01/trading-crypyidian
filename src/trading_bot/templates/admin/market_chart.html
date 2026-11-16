@@ -199,6 +199,20 @@
       <span class="sc-meta" data-draw-count>0 hình vẽ</span>
     </div>
     <div id="market-chart" class="mc-canvas" tabindex="0" role="img" aria-label="Biểu đồ nến {{ chart_payload.symbol }} khung {{ timeframe }} với cấu trúc thị trường, phiên và volume profile" data-bot-id="{{ selected_bot.id }}" data-symbol="{{ selected_symbol }}" data-timeframe="{{ timeframe }}"></div>
+    {#- CK-9: thanh trạng thái dữ liệu (cập nhật cùng overview 2 giây) và nút kiểm dữ liệu. -#}
+    {% set ds = overview.data_status if overview else none %}
+    <div class="mc-statusbar" role="status" aria-label="Trạng thái dữ liệu" data-statusbar>
+      <span>Nguồn <strong data-sb-source>{{ ds.source_label if ds and ds.source_label != "—" else chart_payload.source_label or "—" }}</strong></span>
+      <span>Nến <strong data-sb-bars>{{ ds.bar_count if ds else chart_payload.bars | length }}</strong></span>
+      <span>Đóng gần nhất <strong data-sb-last>{{ ds.last_close_at | local_minute if ds and ds.last_close_at else "—" }}</strong></span>
+      <span>Trễ <strong data-sb-delay>—</strong></span>
+      <span>Bid/Ask <strong data-sb-quote>—</strong></span>
+      <span>Mark <strong data-sb-mark>—</strong></span>
+      <span>Khoảng trống ingest <strong data-sb-gaps>{{ ds.open_gaps if ds else "—" }}</strong></span>
+      <span>Lớp bật <strong data-sb-layers>—</strong></span>
+      <button type="button" class="btn btn-secondary mc-control" data-validate>Kiểm dữ liệu</button>
+    </div>
+    <div class="mc-validate" data-validate-result hidden aria-live="polite"></div>
     <section id="mc-bar-analysis" class="mc-bar-analysis" hidden aria-live="polite" aria-labelledby="mc-bar-analysis-title">
       <header class="mc-bar-analysis__head">
         <h3 id="mc-bar-analysis-title">Phân tích tại nến <span data-bar-analysis-time></span></h3>
@@ -372,10 +386,43 @@
     {% endif %}
   </section>
 
-  <section class="glass-card mc-events" aria-labelledby="mc-events-title">
-    <h2 id="mc-events-title">Sự kiện gần nhất</h2>
+  {#- CK-9: dock dưới chart — Vị thế PAPER, Lịch sử, Nhật ký quyết định, Sự kiện. -#}
+  <section class="glass-card mc-dock" aria-label="Dock giao dịch" data-dock data-bot-id="{{ selected_bot.id }}" data-symbol="{{ selected_symbol }}">
+    <div class="mc-dock__tabs" role="tablist" aria-label="Dock giao dịch">
+      <button type="button" role="tab" id="mc-tab-positions" aria-controls="mc-panel-positions" aria-selected="true" data-dock-tab="positions">Vị thế PAPER <span class="mc-dock__count" data-dock-count="positions">0</span></button>
+      <button type="button" role="tab" id="mc-tab-history" aria-controls="mc-panel-history" aria-selected="false" tabindex="-1" data-dock-tab="history">Lịch sử</button>
+      <button type="button" role="tab" id="mc-tab-decisions" aria-controls="mc-panel-decisions" aria-selected="false" tabindex="-1" data-dock-tab="decisions">Nhật ký quyết định</button>
+      <button type="button" role="tab" id="mc-tab-events" aria-controls="mc-panel-events" aria-selected="false" tabindex="-1" data-dock-tab="events">Sự kiện</button>
+    </div>
+    <div id="mc-panel-positions" role="tabpanel" aria-labelledby="mc-tab-positions" data-dock-panel="positions">
+      <div class="table-wrapper"><table class="mc-dock__table">
+        <thead><tr><th scope="col">Chiều</th><th scope="col">Giá vào</th><th scope="col">Khối lượng</th><th scope="col">SL</th><th scope="col">TP</th><th scope="col">Mark</th><th scope="col">UPnL</th><th scope="col">R</th><th scope="col">Khớp lúc</th></tr></thead>
+        <tbody data-dock-positions><tr><td colspan="9">Không có vị thế PAPER đang mở cho {{ selected_symbol }}.</td></tr></tbody>
+      </table></div>
+    </div>
+    <div id="mc-panel-history" role="tabpanel" aria-labelledby="mc-tab-history" data-dock-panel="history" hidden>
+      <div class="mc-dock__filters">
+        <label for="mc-history-period">Kỳ</label>
+        <select id="mc-history-period" data-history-period>
+          <option value="today">Hôm nay (UTC)</option>
+          <option value="7d" selected>7 ngày</option>
+          <option value="30d">30 ngày</option>
+        </select>
+        <a class="btn btn-secondary mc-control" data-history-csv href="#">Xuất CSV</a>
+      </div>
+      <div class="table-wrapper"><table class="mc-dock__table">
+        <thead><tr><th scope="col">Chiều</th><th scope="col">Mở</th><th scope="col">Đóng</th><th scope="col">Lý do thoát</th><th scope="col">Chi phí</th><th scope="col">PnL ròng</th></tr></thead>
+        <tbody data-dock-history><tr><td colspan="6">Chọn tab để tải lịch sử.</td></tr></tbody>
+      </table></div>
+    </div>
+    <div id="mc-panel-decisions" role="tabpanel" aria-labelledby="mc-tab-decisions" data-dock-panel="decisions" hidden>
+      <ol class="mc-event-list" data-dock-decisions><li>Chọn tab để tải nhật ký.</li></ol>
+    </div>
+    <div id="mc-panel-events" role="tabpanel" aria-labelledby="mc-tab-events" data-dock-panel="events" hidden>
+    <h3 class="visually-hidden">Sự kiện gần nhất</h3>
     <p class="mc-events__hint">Danh sách thay thế cho thao tác rê chuột; thời gian theo giờ Việt Nam.</p>
     <ol class="mc-event-list" data-mc-events></ol>
+  </div>
   </section>
   <script id="market-chart-data" type="application/json">{{ chart_payload | tojson }}</script>
   {% if overview %}<script id="market-overview-data" type="application/json">{{ overview | tojson }}</script>{% endif %}
@@ -393,5 +440,6 @@
   <script src="/static/market-overview.js" defer></script>
   <script src="/static/chart-drawings.js" defer></script>
   <script src="/static/chart-multi.js" defer></script>
+  <script src="/static/chart-dock.js" defer></script>
 {% endif %}
 {% endblock %}

@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from trading_bot.adapters.database.models import BotInstance
 from trading_bot.adapters.database.models.entities import PaperAccountSeed
 from trading_bot.adapters.database.models.market_entities import (
+    IngestionGap,
     MarketBar,
     MarketInstrument,
     MarketLiveQuote,
@@ -469,6 +470,51 @@ class BotReportRepository:
             .limit(5)
         )
         return [{"payload": dict(row.payload), "decision_hash": row.decision_hash} for row in rows]
+
+    async def bar_revision_count(
+        self, *, workspace_id: UUID, symbol: str, timeframe: str, source: str, since: datetime
+    ) -> int:
+        """Số mốc nến (từ ``since``) có hơn một bản ghi — nến đã được sàn/ingest sửa lại (CK-9)."""
+        revised = (
+            select(MarketBar.open_time)
+            .where(
+                MarketBar.workspace_id == workspace_id,
+                MarketBar.symbol == symbol,
+                MarketBar.timeframe == timeframe,
+                MarketBar.source == source,
+                MarketBar.open_time >= since,
+            )
+            .group_by(MarketBar.open_time)
+            .having(func.count() > 1)
+            .subquery()
+        )
+        count = await self._session.scalar(select(func.count()).select_from(revised))
+        return int(count or 0)
+
+    async def open_ingestion_gaps(
+        self, *, workspace_id: UUID, symbol: str, timeframe: str
+    ) -> list[dict[str, Any]]:
+        """Khoảng trống ingest chưa được lấp (``resolved_at`` rỗng) của mã/khung (CK-9)."""
+        rows = await self._scalars(
+            select(IngestionGap)
+            .where(
+                IngestionGap.workspace_id == workspace_id,
+                IngestionGap.symbol == symbol,
+                IngestionGap.timeframe == timeframe,
+                IngestionGap.resolved_at.is_(None),
+            )
+            .order_by(IngestionGap.gap_start.desc())
+            .limit(20)
+        )
+        return [
+            {
+                "source": row.source,
+                "start": row.gap_start.isoformat(),
+                "end": row.gap_end.isoformat(),
+                "detected_at": row.detected_at.isoformat(),
+            }
+            for row in rows
+        ]
 
     async def latest_live_quote(self, *, workspace_id: UUID, symbol: str) -> dict[str, Any] | None:
         """Giá mua/bán tốt nhất mới nhất (CK-1) của symbol; ``None`` khi stream chưa ghi."""
