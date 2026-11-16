@@ -1,3 +1,7 @@
+from trading_bot.adapters.database.models.analyst_entities import (
+    AnalystRunRecord,
+    AnalystSessionRecord,
+)
 from trading_bot.adapters.database.models.backtest_entities import (
     BacktestDatasetManifestRecord,
     BacktestDatasetReplayBundleRecord,
@@ -192,6 +196,8 @@ from trading_bot.adapters.database.models.venue_entities import (
 )
 
 __all__ = [
+    "AnalystRunRecord",
+    "AnalystSessionRecord",
     "LearningIncidentHoldEventRecord",
     "LearningPaperPerformanceReportRecord",
     "CandidateUniverseProofRecord",

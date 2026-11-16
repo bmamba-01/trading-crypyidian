@@ -4361,3 +4361,21 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
   - `docs/research/ai-cli-agent-engine-2026-11-16.md`: Claude Code chính, Codex dự phòng, `agy` sau; Gemini CLI ngừng. Binary trong app bundle, không có trên PATH. Không fine-tune được, chỉ tích lũy ngữ cảnh. Subscription cá nhân có rủi ro điều khoản với job định kỳ.
   - `docs/research/news-social-sources-2026-11-16.md`: điều khoản bên thứ ba ưu tiên hơn TRAINING nội bộ. S1: BLS/BEA/FOMC, phái sinh Binance, diff exchangeInfo, CoinGecko map. S2: X pay-per-use khoảng 0,005 USD/bài, CryptoPanic, Tokenomist. Tránh scraping.
 - **Câu hỏi owner còn mở:** API key hay subscription cho job định kỳ; tần suất phân tích/ngày; topic theo bot hay họ chiến lược; ngân sách X/tháng; duyệt API key Binance chỉ đọc cho kênh thông báo; ai duyệt map coin → X/GitHub.
+
+### 2026-11-16 — AI-2 lát 1: AI Analyst qua CLI agent (Claude/Codex), validator số liệu, lưu kiểm toán
+
+- **Yêu cầu của owner:** "AI-2 trước".
+- **Mặc định khi owner chưa trả lời 4 câu hỏi:** dùng tài khoản CLI đang đăng nhập trên máy; có trần lượt/chi phí; session theo họ chiến lược; chạy tay hoặc thưa. Ghi trong WBS §7.
+- **Thiết kế + mã:** xem WBS §7.
+  - `application/ai_analyst.py`, `ports/analyst.py`, `adapters/analyst/cli_engines.py`.
+  - `adapters/database/models/analyst_entities.py` + migration `e7a9c1d3f5b8` (head mới; 15 file test đổi chuỗi head).
+  - `scripts/run_ai_analyst.py`.
+- **Cờ CLI:** đã kiểm bằng `--help` trên binary local (Claude Code 2.1.321 trong `~/Library/Application Support/Claude/claude-code/<ver>/…/claude`; Codex 0.169.0-alpha trong `ChatGPT.app`). Claude dùng `--tools ""` để tắt mọi công cụ.
+- **Lỗi khi làm:**
+  - (1) Chạy thật: Claude `Not logged in · Please run /login`; Codex `Your workspace is out of credits`. Chặn ở tài khoản, phải owner xử lý; không nhập credential thay owner.
+  - (2) Validator báo nhầm số trong tên bot ("T01 H03 1h · 20 coin"). Bỏ định danh (tên bot, coin, release) trước khi so; regex không nhận số dính chữ (1h, 15m).
+  - (3) **Unit test bắt lỗi dung sai quá rộng** (±1 đơn vị chữ số cuối làm "6 tín hiệu" lọt khi report là 5). Sửa thành ≤ ½ đơn vị (đúng làm tròn).
+  - (4) `alembic check` trên **DB local** báo thừa bảng `market_trade_flow`/`market_mark_price`/`market_liquidation`: sai lệch có sẵn của DB local (không có trong model/migration nhánh này), không do AI-2. E2E dùng DB sạch nên `alembic check` đạt.
+  - (5) Ruff PT018/E501 chặn E2E trước khi chạy (sửa assert/dòng dài).
+- **Chạy local (engine giả):** report 24 giờ của 10 bot → 3 chủ đề (CARD/H01/H03) hợp lệ; lượt 2 `resumed: true`, `run_count` tăng; lượt không hợp lệ vẫn lưu để kiểm toán.
+- **Kiểm chứng:** unit **4489 passed/133.00s** (`tests/unit/test_ai2_analyst.py` 18 test); mypy sạch; E2E RT-1 thêm phase `analyst` **1 passed/337.03s** (gồm `alembic check` trên DB sạch, 2 lượt lưu, 1 hợp lệ, RLS bắt buộc, admin-web chỉ SELECT).

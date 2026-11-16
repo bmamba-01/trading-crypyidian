@@ -676,6 +676,106 @@ async def run_report() -> dict[str, Any]:
     }
 
 
+async def analyst() -> dict[str, Any]:
+    """AI-2: report → engine giả → validator → lưu analyst_run/session (role admin migrator)."""
+    from sqlalchemy import func, select
+
+    from trading_bot.adapters.database.models import AnalystRunRecord, AnalystSessionRecord
+    from trading_bot.application.ai_analyst import (
+        ANALYST_OUTPUT_VERSION,
+        PROMPT_VERSION,
+        build_prompt,
+        input_hash,
+        topic_report,
+        validate_analysis,
+    )
+    from trading_bot.application.outbox import UnitOfWork
+    from trading_bot.application.run_report import load_run_report
+
+    engine, sessions = _sessions()
+    try:
+        report = await load_run_report(
+            sessions,
+            workspace_id=WORKSPACE,
+            start=NOW - timedelta(days=3),
+            end=NOW + timedelta(days=1),
+            run_label="rt1-e2e",
+        )
+        family = report.payload["bots"][0]["config"]["strategy_family"]
+        topic = topic_report(report.payload, family)
+        closed = topic["bots"][0]["performance"]["closed_trades"]
+        output = {
+            "summary": "Kiểm luồng E2E.",
+            "findings": [
+                {
+                    "statement": f"Có {closed} lệnh đóng.",
+                    "evidence_refs": ["/bots/0/performance/closed_trades"],
+                }
+            ],
+            "hypotheses": [],
+            "proposals": [],
+            "confidence": "low",
+        }
+        bad = dict(output, summary="Lãi 987654 USDT.")
+        prompt = build_prompt(topic)
+        async with UnitOfWork(sessions, workspace_id=WORKSPACE) as uow:
+            for candidate in (output, bad):
+                check = validate_analysis(candidate, topic)
+                uow.session.add(
+                    AnalystRunRecord(
+                        workspace_id=WORKSPACE,
+                        topic_key=f"family:{family}",
+                        engine="fake",
+                        session_id="e2e-session",
+                        resumed=False,
+                        run_report_hash=report.report_hash,
+                        input_sha256=input_hash(prompt),
+                        prompt_version=PROMPT_VERSION,
+                        output_version=ANALYST_OUTPUT_VERSION,
+                        usage={},
+                        exit_code=0,
+                        raw_stdout="{}",
+                        structured_output=candidate,
+                        validation_errors=list(check.errors),
+                        valid=check.ok,
+                    )
+                )
+            uow.session.add(
+                AnalystSessionRecord(
+                    workspace_id=WORKSPACE,
+                    topic_key=f"family:{family}",
+                    engine="fake",
+                    session_id="e2e-session",
+                    status="ACTIVE",
+                    run_count=2,
+                )
+            )
+        async with UnitOfWork(sessions, workspace_id=WORKSPACE) as uow:
+            valid = await uow.session.scalar(
+                select(func.count()).where(
+                    AnalystRunRecord.workspace_id == WORKSPACE, AnalystRunRecord.valid.is_(True)
+                )
+            )
+            total = await uow.session.scalar(
+                select(func.count()).where(AnalystRunRecord.workspace_id == WORKSPACE)
+            )
+    finally:
+        await engine.dispose()
+    with _connect() as connection:
+        admin_web_can_select = connection.execute(
+            "SELECT has_table_privilege('crypidian_admin_web', 'analyst_run', 'SELECT'), "
+            "has_table_privilege('crypidian_admin_web', 'analyst_run', 'INSERT'), "
+            "(SELECT relforcerowsecurity FROM pg_class WHERE relname = 'analyst_run')"
+        ).fetchone()
+    return {
+        "runs": int(total or 0),
+        "valid_runs": int(valid or 0),
+        "admin_web_select": bool(admin_web_can_select[0]),
+        "admin_web_insert": bool(admin_web_can_select[1]),
+        "forced_rls": bool(admin_web_can_select[2]),
+    }
+
+
 def pause_resume() -> dict[str, Any]:
     """Owner tạm dừng rồi tiếp tục bot (bản ghi append-only như luồng resume có MFA)."""
     with _connect() as connection, connection.transaction():
@@ -976,6 +1076,8 @@ elif phase == "mark_check":
     output = asyncio.run(mark_check())
 elif phase == "breaker":
     output = asyncio.run(breaker())
+elif phase == "analyst":
+    output = asyncio.run(analyst())
 elif phase == "run_report":
     output = asyncio.run(run_report())
 elif phase == "pause_resume":

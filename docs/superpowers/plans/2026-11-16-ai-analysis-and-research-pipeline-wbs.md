@@ -169,3 +169,28 @@ Owner yêu cầu: triển khai AI-1 ngay, đồng thời nghiên cứu các bư�
     - Tokenomist (lịch unlock, trả phí);
     - kênh thông báo Binance (cần API key chỉ đọc, owner phải duyệt).
   - **Tránh:** scraping X và bên bán lại dữ liệu X.
+
+## 7. AI-2 lát 1 (16/11/2026)
+
+- **Đã làm:**
+  - `application/ai_analyst.py`: schema `analyst_output.v1` (findings/hypotheses/proposals có `evidence_refs`, confidence), prompt `ai2-prompt-v1` đánh dấu report là dữ liệu, `topic_report` theo họ chiến lược.
+  - **Validator số liệu:**
+    - JSON Pointer phải tồn tại;
+    - mọi số trong câu phải bằng giá trị tại trường được trích, làm tròn đúng ≤ ½ đơn vị chữ số cuối;
+    - chấp nhận kiểu VN/EN và % của tỷ lệ;
+    - bỏ qua số nằm trong tên bot/coin/release.
+  - Port `AnalystEngine`; adapter `ClaudeCliEngine` (`-p --output-format json --json-schema --tools "" --restricted --permission-prompts none --max-budget-usd`, `--session-id`/`--resume`) và `CodexCliEngine` (`exec -s read-only --output-schema --json -o`, `exec resume`). Chạy trong thư mục tạm, biến môi trường tối thiểu, có timeout.
+  - Bảng `analyst_session` / `analyst_run` (migration `e7a9c1d3f5b8`, RLS bắt buộc, admin-web chỉ SELECT).
+  - Script host `scripts/run_ai_analyst.py`: report → session theo `family:<H..>` → engine → validator → lưu → Telegram (chỉ kết quả hợp lệ).
+  - Engine giả `--engine fake` để kiểm luồng.
+- **Chạy thật 16/11:** cả hai engine bị chặn ở **tài khoản**:
+  - Claude Code CLI trong bundle Claude Desktop báo `Not logged in · Please run /login` (CLI không dùng chung đăng nhập với app);
+  - Codex đã đăng nhập ChatGPT nhưng `Your workspace is out of credits`.
+  - Luồng với engine giả chạy thông suốt trên report 24 giờ của 10 bot: 3 chủ đề hợp lệ, lượt 2 tiếp tục session, `run_count` tăng.
+- **Còn mở:**
+  - owner đăng nhập Claude CLI hoặc nạp credit Codex rồi chạy thật;
+  - ảnh thẻ "Phân tích AI" (hiện gửi văn bản);
+  - lịch tự chạy sau mỗi tổng kết;
+  - file knowledge theo chủ đề + xoay vòng session trước mốc 30 ngày;
+  - trang Admin xem `analyst_run`;
+  - AI-3 (đề xuất → backtest).

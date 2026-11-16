@@ -38,6 +38,7 @@ SERVICES = {
     "breaker": "trading-runtime",
     "pause_resume": "migrator",
     "run_report": "migrator",
+    "analyst": "migrator",
     "tg_seed": "migrator",
     "tg_results": "telegram-signal-worker",
     "tg_verify": "migrator",
@@ -120,7 +121,7 @@ def test_rest_candles_drive_paper_entry_fill_and_stop_exit_idempotently() -> Non
         compose("run", "--rm", "--no-deps", "db-provisioner")
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "head")
         heads = compose("run", "--rm", "--no-deps", "migrator", "alembic", "heads")
-        assert "d5f7b9c1e3a6 (head)" in heads.stdout
+        assert "e7a9c1d3f5b8 (head)" in heads.stdout
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "check")
         state.update(run("seed"))
         assert run("genesis") == {"genesis": True}
@@ -211,6 +212,15 @@ def test_rest_candles_drive_paper_entry_fill_and_stop_exit_idempotently() -> Non
         assert Decimal(report["r_mean"]) < 0, report
         assert report["mae_mean"] is not None, report
         assert report["candidates"] == report["candidates_with_intent"] == 1, report
+
+        # AI-2: kết quả hợp lệ và kết quả bịa số đều được lưu để kiểm toán; chỉ một hợp lệ.
+        assert run("analyst") == {
+            "runs": 2,
+            "valid_runs": 1,
+            "admin_web_select": True,
+            "admin_web_insert": False,
+            "forced_rls": True,
+        }
 
         # FX-2: ngắt mạch drawdown đo bằng role runtime trên ledger thật.
         before = run("breaker")
