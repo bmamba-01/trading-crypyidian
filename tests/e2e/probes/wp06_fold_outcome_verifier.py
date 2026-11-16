@@ -97,81 +97,16 @@ def _candidate_builder_engine():
     return create_database_engine(url)
 
 
-def _licensed_qa_transition(original):
-    """Vá transition của seed replay QA để pending/VERIFIED mang license scope + evidence id."""
-    from e2e.probes.source_license_fixture import (
-        fixture_license_scope,
-        pending_license_kwargs,
-        verified_license_kwargs,
-    )
-    from trading_bot.application.first_party_qa_dataset import (
-        CRYPIDIAN_FIRST_PARTY_QA,
-        CRYPIDIAN_FIRST_PARTY_QA_EVIDENCE_REF,
-    )
-    from trading_bot.domain.research.source_policy import SourcePolicyState
-
-    scope = fixture_license_scope(CRYPIDIAN_FIRST_PARTY_QA)
-
-    def transition(self, **kwargs):
-        state = kwargs.get("state")
-        extra = {}
-        if self.source_id == CRYPIDIAN_FIRST_PARTY_QA:
-            if state is SourcePolicyState.RIGHTS_PENDING:
-                extra = pending_license_kwargs(scope, CRYPIDIAN_FIRST_PARTY_QA_EVIDENCE_REF)
-            elif state is SourcePolicyState.VERIFIED:
-                extra = verified_license_kwargs(
-                    scope, CRYPIDIAN_FIRST_PARTY_QA_EVIDENCE_REF, uuid4()
-                )
-        for key, value in extra.items():
-            kwargs.setdefault(key, value)
-        return original(self, **kwargs)
-
-    return transition
-
-
 async def _seed_licensed_qa_replay() -> dict[str, object]:
     """Seed replay QA có bundle v4 + MarketBar thật (dùng chung với E2E source-pinned).
 
     Gate TRAINING exact-scope (b7d9f1a3c5e8) coi outcome backtest thật trong sample
     "không phụ thuộc nguồn" là giả mạo, nên fixture phải đi từ replay bundle persisted.
-    Probe gốc chưa ghi license evidence; vá giống `wp06_source_license_scope.py`.
+    Probe source-pinned tự ghi license evidence và chạy consumer rights event.
     """
-    from unittest.mock import patch
-
-    from e2e.probes.source_license_fixture import (
-        append_fixture_license_evidence,
-        consume_rights_events,
-    )
     from e2e.probes.wp06_source_pinned_replay_persistence import run_probe
-    from trading_bot.adapters.database.repositories.source_registry import (
-        SourceRegistryRepository,
-    )
-    from trading_bot.domain.research.source_registry import SourceRegistryEntry
 
-    original_append = SourceRegistryRepository.append_revision
-
-    async def append_with_evidence(repository, **kwargs):
-        await append_fixture_license_evidence(
-            repository._session,
-            workspace_id=kwargs["workspace_id"],
-            revision=kwargs["revision"],
-        )
-        return await original_append(repository, **kwargs)
-
-    with (
-        patch.object(
-            SourceRegistryEntry,
-            "transition",
-            _licensed_qa_transition(SourceRegistryEntry.transition),
-        ),
-        patch.object(SourceRegistryRepository, "append_revision", append_with_evidence),
-    ):
-        seeded = await run_probe(scorer_seed=True)
-    engine = _engine()
-    # Mỗi revision policy phát rights event; gate TRAINING đòi consumer đã ghi receipt.
-    await consume_rights_events(create_session_factory(engine), workspace_id=WORKSPACE_ID)
-    await engine.dispose()
-    return seeded
+    return await run_probe(scorer_seed=True)
 
 
 async def _seed() -> dict[str, object]:

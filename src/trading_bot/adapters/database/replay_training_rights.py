@@ -209,7 +209,8 @@ class DatabaseReplayTrainingRightsGate:
 class DatabaseReplayEvaluationRightsGate:
     """Gate quyền sống cho evaluator với manifest v5 ghim lineage replay bundle.
 
-    Gọi verifier SQL với operation EVALUATION (chỉ login evaluator được phép) và đòi
+    Gọi verifier SQL với operation EVALUATION (login evaluator; từ `c2e4a6b8d0f1` builder
+    cũng được gọi để dựng scorer TEST proof) và đòi
     tập child hiện hành khớp đúng `source_use_lineage` đã seal; manifest phụ thuộc nguồn
     kiểu cũ (source-item `source_references`) bị từ chối vì không có lineage có kiểu.
     """

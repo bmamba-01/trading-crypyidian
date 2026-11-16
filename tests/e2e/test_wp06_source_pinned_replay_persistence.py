@@ -221,6 +221,31 @@ def test_source_pinned_runtime_replay_persists_exact_lineage_in_postgres(scorer_
             )
             assert "No new upgrade operations detected" in check.stdout
             return
+        # Gate TRAINING exact-scope chỉ nhận login builder: seed bằng migrator, proof bằng
+        # `candidate-proof-builder` thật (cùng workspace, tách hai lần chạy Compose).
+        trial_record_id = result.pop("trial_record_id")
+        child_manifests = result.pop("child_manifests")
+        proof = _compose_probe(
+            root,
+            project,
+            environment,
+            "run",
+            "--rm",
+            "--no-deps",
+            "-e",
+            "CRYPIDIAN_E2E_WORKSPACE_ID",
+            "-e",
+            f"WP06_PINNED_TRIAL_RECORD_ID={trial_record_id}",
+            "-e",
+            f"WP06_PINNED_CHILD_MANIFESTS={child_manifests}",
+            "--volume",
+            volume,
+            "candidate-proof-builder",
+            "python",
+            "/e2e-tests/e2e/probes/wp06_source_pinned_replay_persistence.py",
+            "--proof",
+        )
+        result |= json.loads(proof.stdout.strip().splitlines()[-1])
         assert result == {
             "bars": 206,
             "base_opportunity_complete": True,

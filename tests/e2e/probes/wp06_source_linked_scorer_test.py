@@ -1065,39 +1065,58 @@ async def verify_current_rights(sessions):
         assert entry is not None
         revision = entry.revisions[-1]
         policy = revision.policy
-        sql_policy_fingerprint = await session.scalar(
-            text(
-                "SELECT public.wp06_scorer_source_policy_fingerprint("
-                ":source_id,:sequence,:policy_id,:state,CAST(:purposes AS jsonb),"
-                ":evidence_ref,:reviewed_at,:valid_until,:approved_by,:publisher,"
-                ":endpoint_url,:access_method,:auth_scope,:attribution,:retention_ref,"
-                ":window_seconds,:max_requests,:max_bytes,CAST(:max_cost AS numeric),:cost_unit)"
-            ),
-            {
-                "source_id": policy.source_id,
-                "sequence": revision.sequence,
-                "policy_id": policy.policy_id,
-                "state": policy.state.value,
-                "purposes": json.dumps(
-                    sorted(purpose.value for purpose in policy.allowed_purposes)
+        if revision.license_evidence_id is not None:
+            # Từ d823df5 policy VERIFIED mang license evidence; `source_rights_hash` gắn thêm
+            # evidence id/digest/scope hash, nên đối chiếu với hàm SQL theo row của
+            # a4c6e8f0b2d5 (helper cũ không nhận trường license).
+            sql_policy_fingerprint = await session.scalar(
+                text(
+                    "SELECT public.wp06_license_source_policy_fingerprint(policy) "
+                    "FROM public.source_policy_revision AS policy "
+                    "WHERE policy.workspace_id=:workspace AND policy.source_id=:source_id "
+                    "AND policy.sequence=:sequence"
                 ),
-                "evidence_ref": policy.evidence_ref,
-                "reviewed_at": policy.reviewed_at,
-                "valid_until": policy.valid_until,
-                "approved_by": revision.approved_by,
-                "publisher": revision.publisher,
-                "endpoint_url": revision.endpoint_url,
-                "access_method": revision.access_method,
-                "auth_scope": revision.auth_scope,
-                "attribution": revision.attribution,
-                "retention_ref": revision.retention_ref,
-                "window_seconds": int(revision.budget.window.total_seconds()),
-                "max_requests": revision.budget.max_requests,
-                "max_bytes": revision.budget.max_bytes,
-                "max_cost": str(revision.budget.max_cost),
-                "cost_unit": revision.budget.cost_unit,
-            },
-        )
+                {
+                    "workspace": WORKSPACE,
+                    "source_id": policy.source_id,
+                    "sequence": revision.sequence,
+                },
+            )
+        else:
+            sql_policy_fingerprint = await session.scalar(
+                text(
+                    "SELECT public.wp06_scorer_source_policy_fingerprint("
+                    ":source_id,:sequence,:policy_id,:state,CAST(:purposes AS jsonb),"
+                    ":evidence_ref,:reviewed_at,:valid_until,:approved_by,:publisher,"
+                    ":endpoint_url,:access_method,:auth_scope,:attribution,:retention_ref,"
+                    ":window_seconds,:max_requests,:max_bytes,"
+                    "CAST(:max_cost AS numeric),:cost_unit)"
+                ),
+                {
+                    "source_id": policy.source_id,
+                    "sequence": revision.sequence,
+                    "policy_id": policy.policy_id,
+                    "state": policy.state.value,
+                    "purposes": json.dumps(
+                        sorted(purpose.value for purpose in policy.allowed_purposes)
+                    ),
+                    "evidence_ref": policy.evidence_ref,
+                    "reviewed_at": policy.reviewed_at,
+                    "valid_until": policy.valid_until,
+                    "approved_by": revision.approved_by,
+                    "publisher": revision.publisher,
+                    "endpoint_url": revision.endpoint_url,
+                    "access_method": revision.access_method,
+                    "auth_scope": revision.auth_scope,
+                    "attribution": revision.attribution,
+                    "retention_ref": revision.retention_ref,
+                    "window_seconds": int(revision.budget.window.total_seconds()),
+                    "max_requests": revision.budget.max_requests,
+                    "max_bytes": revision.budget.max_bytes,
+                    "max_cost": str(revision.budget.max_cost),
+                    "cost_unit": revision.budget.cost_unit,
+                },
+            )
         expected_policy_fingerprint = source_rights_hash(revision)
         assert sql_policy_fingerprint == expected_policy_fingerprint, (
             sql_policy_fingerprint,

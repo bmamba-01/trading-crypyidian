@@ -49,7 +49,7 @@ def test_paper_performance_aggregate_gateway_is_narrow_and_fails_closed() -> Non
             assert "No new upgrade operations detected" in check.stdout + check.stderr
             heads = compose("run", "--rm", "--no-deps", "migrator", "alembic", "heads")
             assert heads.stdout.count("(head)") == 1
-            assert "d8f1b3a5c7e9 (head)" in heads.stdout
+            assert "c2e4a6b8d0f1 (head)" in heads.stdout
             admin_secret = (
                 resources.compose_file.parent / ".secrets" / "database_admin_web_password"
             )
