@@ -556,3 +556,93 @@ def summary_card_caption(view: SummaryCardView) -> str:
         lines.append("DỮ LIỆU MẪU")
     lines.append("Mô phỏng nội bộ, không phải kết quả giao dịch thật.")
     return _fit_caption(lines)
+
+
+# --- View thẻ phân tích AI (AI-2) -------------------------------------------------------------
+
+MAX_ANALYSIS_ITEMS = 6
+_CONFIDENCE_VI = {"low": "thấp", "medium": "trung bình", "high": "cao"}
+
+
+@dataclass(frozen=True, slots=True)
+class AnalysisCardView:
+    """Kết quả AI Analyst **đã qua validator số liệu**; chỉ là gợi ý, phải backtest trước."""
+
+    topic_key: str
+    confidence: str
+    window_start: datetime
+    window_end: datetime
+    summary: str
+    findings: tuple[str, ...] = ()
+    hypotheses: tuple[tuple[str, str], ...] = ()
+    proposals: tuple[tuple[str, str, str], ...] = ()
+    report_hash: str = ""
+    engine: str = ""
+    sample: bool = False
+
+    @property
+    def confidence_vi(self) -> str:
+        return _CONFIDENCE_VI.get(self.confidence, self.confidence)
+
+    @property
+    def topic_label(self) -> str:
+        """``family:H03`` → ``Họ H03``; giữ nguyên chủ đề lạ."""
+        kind, _, name = self.topic_key.partition(":")
+        return f"Họ {name}" if kind == "family" and name else self.topic_key
+
+
+def analysis_card_view_from(
+    topic_key: str, report: Mapping[str, object], output: Mapping[str, object]
+) -> AnalysisCardView:
+    """Dựng view từ Run Report theo chủ đề và đầu ra AI đã hợp lệ."""
+    window = report.get("window") or {}
+    assert isinstance(window, Mapping)
+    findings = output.get("findings") or []
+    hypotheses = output.get("hypotheses") or []
+    proposals = output.get("proposals") or []
+    assert isinstance(findings, list | tuple)
+    assert isinstance(hypotheses, list | tuple)
+    assert isinstance(proposals, list | tuple)
+    return AnalysisCardView(
+        topic_key=topic_key,
+        confidence=str(output.get("confidence", "")),
+        window_start=datetime.fromisoformat(str(window.get("start"))),
+        window_end=datetime.fromisoformat(str(window.get("end"))),
+        summary=clean_text(output.get("summary", ""), limit=600),
+        findings=tuple(clean_text(item.get("statement", ""), limit=400) for item in findings),
+        hypotheses=tuple(
+            (
+                clean_text(item.get("statement", ""), limit=400),
+                clean_text(item.get("how_to_test", ""), limit=300),
+            )
+            for item in hypotheses
+        ),
+        proposals=tuple(
+            (
+                clean_text(item.get("bot_name", ""), limit=80),
+                clean_text(
+                    ", ".join(
+                        f"{change.get('field')} → {change.get('to')}"
+                        for change in item.get("changes") or ()
+                    ),
+                    limit=200,
+                ),
+                clean_text(item.get("risk", ""), limit=300),
+            )
+            for item in proposals
+        ),
+        report_hash=str(report.get("report_hash", "")),
+    )
+
+
+def analysis_card_caption(view: AnalysisCardView) -> str:
+    """Caption ngắn kèm ảnh thẻ phân tích AI."""
+    lines = [
+        "PHÂN TÍCH AI (PAPER) — CHỈ LÀ GỢI Ý, PHẢI BACKTEST TRƯỚC",
+        f"{view.topic_label} · Độ tin cậy: {view.confidence_vi}",
+        view.summary,
+    ]
+    if view.proposals:
+        lines.append(f"{len(view.proposals)} đề xuất để backtest (không tự áp).")
+    lines.append(f"Report {view.report_hash[:12]} · số liệu đã đối chiếu với Run Report.")
+    return _fit_caption(lines)

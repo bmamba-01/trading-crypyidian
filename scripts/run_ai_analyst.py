@@ -122,6 +122,70 @@ class FakeEngine:
         )
 
 
+STATE_DIR = ROOT / "var" / "ai-analyst"
+
+
+def topic_fingerprint(topic: dict[str, Any]) -> str:
+    """Dấu vân tay các **sự kiện có ý nghĩa** của chủ đề để biết có cần gọi AI lại không.
+
+    Chỉ gồm tín hiệu, lệnh, vị thế, PnL, lý do từ chối theo bot. Số quyết định ABSTAIN tăng mỗi
+    phút nên không đưa vào (16/11: băm cả report làm dấu vân tay luôn đổi, AI bị gọi mỗi lượt).
+    """
+    import hashlib
+
+    stable = [
+        {
+            "bot": bot.get("bot_name"),
+            "candidates": (bot.get("funnel") or {}).get("candidates"),
+            "with_intent": (bot.get("funnel") or {}).get("candidates_with_intent"),
+            "rejections": (bot.get("funnel") or {}).get("rejection_reasons"),
+            "closed": (bot.get("performance") or {}).get("closed_trades"),
+            "open": (bot.get("performance") or {}).get("open_trades"),
+            "pnl": (bot.get("performance") or {}).get("net_pnl_usdt"),
+        }
+        for bot in topic.get("bots", [])
+    ]
+    canonical = json.dumps(stable, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def load_state(path: Path) -> dict[str, Any]:
+    try:
+        return dict(json.loads(path.read_text(encoding="utf-8")))
+    except OSError, ValueError:
+        return {}
+
+
+def save_state(path: Path, state: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    temporary.replace(path)
+
+
+class RunLock:
+    """Khóa file không chặn: lượt lịch mới bỏ qua nếu lượt trước còn chạy."""
+
+    def __init__(self, path: Path) -> None:
+        self._path = path
+        self._handle: Any = None
+
+    def __enter__(self) -> bool:
+        import fcntl
+
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._handle = self._path.open("w")
+        try:
+            fcntl.flock(self._handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return False
+        return True
+
+    def __exit__(self, *_exc: object) -> None:
+        if self._handle is not None:
+            self._handle.close()
+
+
 def _phase(project: str, service: str, phase: str, state: dict[str, Any]) -> dict[str, Any]:
     payload = json.dumps(
         {"phase": phase, "state": state, "code": Path(__file__).read_text(encoding="utf-8")}
@@ -146,6 +210,8 @@ def analyze_topics(
     families: list[str] | None,
     timeout: float,
     budget: float,
+    skip_fingerprints: dict[str, str] | None = None,
+    max_engine_calls: int | None = None,
 ) -> list[dict[str, Any]]:
     """Chạy engine cho từng họ chiến lược có trong report; trả bản ghi để lưu."""
     from trading_bot.application.ai_analyst import (
@@ -162,6 +228,7 @@ def analyze_topics(
 
     present = sorted({bot["config"]["strategy_family"] for bot in report.get("bots", [])})
     records = []
+    calls = 0
 
     def record(
         topic_key: str, topic: dict[str, Any], prompt: str, result: Any, resumed: bool
@@ -200,6 +267,12 @@ def analyze_topics(
             continue
         topic_key = f"family:{family}"
         topic = topic_report(report, family)
+        fingerprint = topic_fingerprint(topic)
+        if skip_fingerprints is not None and skip_fingerprints.get(topic_key) == fingerprint:
+            # Dữ liệu chủ đề không đổi từ lượt trước: không gọi AI (tiết kiệm hạn mức).
+            continue
+        if max_engine_calls is not None and calls >= max_engine_calls:
+            break
         session_id = sessions.get(topic_key)
         prompt = build_prompt(topic, resumed=session_id is not None)
         result = engine.analyze(
@@ -213,7 +286,9 @@ def analyze_topics(
                 max_budget_usd=budget,
             )
         )
+        calls += 1
         first = record(topic_key, topic, prompt, result, session_id is not None)
+        first["fingerprint"] = fingerprint
         records.append(first)
         if first["valid"] or not first["validation_errors"] or not result.session_id:
             continue
@@ -230,7 +305,10 @@ def analyze_topics(
                 max_budget_usd=budget,
             )
         )
-        records.append(record(topic_key, topic, repair_prompt, repaired, True))
+        calls += 1
+        repaired_record = record(topic_key, topic, repair_prompt, repaired, True)
+        repaired_record["fingerprint"] = fingerprint
+        records.append(repaired_record)
     return records
 
 
@@ -244,7 +322,7 @@ def send_telegram(
         TelegramBotApiSender,
         load_telegram_bot_token,
     )
-    from trading_bot.application.ai_analyst import format_analysis_message
+    from trading_bot.adapters.telegram.card_delivery import send_analysis_card
 
     if sender is None:
         token = load_telegram_bot_token(ROOT / ".secrets" / "telegram_bot_token")
@@ -255,11 +333,23 @@ def send_telegram(
         for record in records:
             if not record["valid"]:
                 continue
-            text = format_analysis_message(
-                record["topic_key"], record["topic_report"], record["structured_output"]
-            )
             for chat in chats:
-                await sender.send_message(chat, text)
+                # Ảnh thẻ "Phân tích AI" + caption; vẽ lỗi thì tự gửi văn bản. Lỗi gửi một tin
+                # chỉ ghi lại, không làm hỏng cả lượt (kết quả đã lưu DB trước đó).
+                try:
+                    await send_analysis_card(
+                        sender,
+                        chat,
+                        record["topic_key"],
+                        record["topic_report"],
+                        record["structured_output"],
+                    )
+                except Exception as error:  # noqa: BLE001
+                    print(
+                        f"Gửi Telegram lỗi ({record['topic_key']}): {type(error).__name__}",
+                        file=sys.stderr,
+                    )
+                    continue
                 sent += 1
                 await asyncio.sleep(pause)
         return sent
@@ -281,10 +371,41 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--report-file", type=Path, help="Dùng report JSON có sẵn thay vì sinh mới."
     )
+    parser.add_argument(
+        "--scheduled",
+        action="store_true",
+        help="Chế độ lịch: khóa chạy, bỏ qua chủ đề không đổi, trần lượt gọi AI mỗi ngày.",
+    )
+    parser.add_argument("--max-calls-per-day", type=int, default=30)
+    parser.add_argument(
+        "--rotate-after", type=int, default=8, help="Mở session mới sau N lượt của một chủ đề."
+    )
+    parser.add_argument("--state-dir", type=Path, default=STATE_DIR)
     args = parser.parse_args(argv)
     if "live" in args.project.lower() or "prod" in args.project.lower():
         raise SystemExit("Script chỉ dành cho stack local PAPER.")
+    if not args.scheduled:
+        return _run(args, local_state=None)
+    with RunLock(args.state_dir / "run.lock") as acquired:
+        if not acquired:
+            print(json.dumps({"skipped": "LOCKED"}))
+            return 0
+        return _run(args, local_state=args.state_dir / "state.json")
+
+
+def _run(args: argparse.Namespace, *, local_state: Path | None) -> int:
+    from datetime import UTC, datetime
+
     state: dict[str, Any] = {"workspace_id": args.workspace_id}
+    saved = load_state(local_state) if local_state else {}
+    today = datetime.now(UTC).date().isoformat()
+    calls_today = int(saved.get("calls", {}).get(today, 0))
+    remaining = None
+    if local_state is not None:
+        remaining = max(0, args.max_calls_per_day - calls_today)
+        if remaining == 0:
+            print(json.dumps({"skipped": "DAILY_CALL_CAP", "calls_today": calls_today}))
+            return 0
     if args.report_file:
         report = json.loads(args.report_file.read_text(encoding="utf-8"))
     else:
@@ -295,7 +416,13 @@ def main(argv: list[str] | None = None) -> int:
             state | {"hours": args.hours, "label": args.label},
         )
     engine = build_engine(args.engine)
-    sessions = _phase(args.project, "migrator", "sessions", state | {"engine": engine.name})
+    sessions = _phase(
+        args.project,
+        "migrator",
+        "sessions",
+        state | {"engine": engine.name, "rotate_after": args.rotate_after},
+    )
+    fingerprints = dict(saved.get("fingerprints", {})) if local_state else None
     records = analyze_topics(
         report,
         engine,
@@ -303,15 +430,32 @@ def main(argv: list[str] | None = None) -> int:
         families=args.family,
         timeout=args.timeout,
         budget=args.max_budget_usd,
-    )
-    stored = _phase(
-        args.project,
-        "migrator",
-        "persist",
-        state | {"records": [{k: v for k, v in r.items() if k != "topic_report"} for r in records]},
+        skip_fingerprints=fingerprints,
+        max_engine_calls=remaining,
     )
     sent = 0
-    if args.send_telegram:
+    if records:
+        stored = _phase(
+            args.project,
+            "migrator",
+            "persist",
+            state
+            | {
+                "records": [
+                    {k: v for k, v in r.items() if k not in {"topic_report", "fingerprint"}}
+                    for r in records
+                ]
+            },
+        )
+    if local_state is not None:
+        # Lưu trạng thái ngay sau khi kết quả đã vào DB, trước bước gửi Telegram: lỗi gửi không
+        # được làm lượt lịch sau phân tích lại (sự cố 16/11: hai bộ thẻ 02:28 và 02:29).
+        for record in records:
+            if record["valid"]:
+                fingerprints[record["topic_key"]] = record["fingerprint"]  # type: ignore[index]
+        calls = {today: calls_today + len(records)}
+        save_state(local_state, {"fingerprints": fingerprints, "calls": calls})
+    if records and args.send_telegram:
         sent = send_telegram(records, stored["chats"])
     summary = [
         {
@@ -395,6 +539,9 @@ async def _container(phase: str, state: dict[str, Any]) -> dict[str, Any]:
                         AnalystSessionRecord.workspace_id == workspace,
                         AnalystSessionRecord.engine == state["engine"],
                         AnalystSessionRecord.status == "ACTIVE",
+                        # Xoay session: ngữ cảnh tích lũy làm mỗi lượt đắt dần (16/11: H03 vượt
+                        # trần 1 USD/lượt sau ~7 lượt). Quá ngưỡng thì mở session mới.
+                        AnalystSessionRecord.run_count < int(state.get("rotate_after", 8)),
                     )
                     .order_by(AnalystSessionRecord.created_at)
                 )

@@ -15,9 +15,12 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Mapping
 from decimal import Decimal
+from typing import Any
 
 from trading_bot.adapters.telegram.card_renderer import (
+    render_analysis_card,
     render_signal_card,
     render_summary_card,
     render_trade_card,
@@ -26,6 +29,8 @@ from trading_bot.application.telegram_cards import (
     SummaryBotRow,
     SummaryCardView,
     TradeCardView,
+    analysis_card_caption,
+    analysis_card_view_from,
     signal_card_caption,
     signal_card_view_from,
     summary_card_caption,
@@ -151,7 +156,31 @@ async def send_paper_report_card(
     await sender.send_photo(chat_id, png, caption)
 
 
+async def send_analysis_card(
+    sender: TelegramMessageSender,
+    chat_id: int,
+    topic_key: str,
+    report: Mapping[str, Any],
+    output: Mapping[str, Any],
+) -> None:
+    """Thẻ "Phân tích AI" (kết quả đã qua validator); dự phòng văn bản khi vẽ lỗi."""
+    from trading_bot.application.ai_analyst import format_analysis_message
+
+    try:
+        view = analysis_card_view_from(topic_key, report, output)
+        png = render_analysis_card(view)
+        caption = analysis_card_caption(view)
+    except _RENDER_ERRORS + (AssertionError,) as error:
+        logger.warning(
+            "Không vẽ được thẻ phân tích AI; gửi văn bản. error=%s", type(error).__name__
+        )
+        await sender.send_message(chat_id, format_analysis_message(topic_key, report, output))
+        return
+    await sender.send_photo(chat_id, png, caption)
+
+
 __all__ = [
+    "send_analysis_card",
     "send_paper_report_card",
     "send_signal_card",
     "send_trade_result_card",

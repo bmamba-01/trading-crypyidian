@@ -4447,3 +4447,30 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
   - E2E `test_rt1_paper_market_loop` (thêm phase `outcome` bằng role `crypidian_trading_runtime`: 1 hàng sau 2 lần ghi, bot khác bị RLS chặn) + `test_db_role_least_privilege` **2 passed/419.44s**.
   - Head test đổi `f9b1d3e5a7c2` (15 file).
 - **Local:** DB `f9b1d3e5a7c2`, runtime READY 10/10, dispatch running, `execution_1m_missing_accounts=0`.
+
+### 2026-11-16 — Thẻ ảnh "Phân tích AI" + lịch tự chạy AI Analyst (launchd)
+
+- **Yêu cầu của owner:** "Có, làm tiếp" (thẻ ảnh + lịch tự chạy).
+- **Thẻ ảnh:**
+  - `AnalysisCardView` / `analysis_card_view_from` / `analysis_card_caption` (`application/telegram_cards.py`); `render_analysis_card` (Pillow) gồm tóm tắt, nhận định, giả thuyết + cách kiểm, đề xuất để backtest + rủi ro, chip độ tin cậy; `card_delivery.send_analysis_card` dự phòng văn bản.
+  - Mẫu thật: `docs/design/telegram-cards/analysis-card-sample.png` (họ H03).
+  - **Lỗi phát hiện khi xem ảnh:** Be Vietnam Pro **không có `→ ← ⟶ ✓ ✗ ▸`** (kiểm bằng `getmask`), hiện ô trống. Thêm `_safe_text` thay bằng `› ‹ v x` ở cả đo (`_fit`/`_wrap`) lẫn vẽ (`_Canvas.text`); áp cho mọi thẻ.
+- **Runner `--scheduled`:**
+  - khóa file `var/ai-analyst/run.lock` (fcntl, không chặn);
+  - **dấu vân tay chủ đề** chỉ gồm tín hiệu/intent/lý do từ chối/lệnh/vị thế/PnL. Lần đầu băm cả report thì dấu luôn đổi vì ABSTAIN tăng mỗi phút;
+  - trần 30 lượt gọi AI/ngày;
+  - trạng thái `var/ai-analyst/state.json` (`var/` gitignored);
+  - **lưu trạng thái trước khi gửi Telegram**, lỗi gửi từng tin chỉ ghi stderr;
+  - xoay session sau `--rotate-after 8` lượt;
+  - lịch dùng `--max-budget-usd 3`.
+- **Sự cố khi thử:**
+  - (1) Lượt 02:28 lưu DB/gửi nhưng không ghi được state nên lượt 02:29 phân tích lại. Owner có thể nhận 2 bộ thẻ. Lỗi gốc bị nuốt do tôi parse đầu ra; gia cố như trên.
+  - (2) H03 `error_max_budget_usd`: session tích lũy ~75k token cache/lượt, ước tính ~1,5–2,5 USD/lượt (ước tính phía client, gói subscription không trừ tiền thật) → xoay session + nâng trần.
+- **Lịch:** `scripts/ai_analyst_schedule.py install|status|uninstall` → LaunchAgent `com.crypidian.ai-analyst`, chạy 10 phút sau mỗi mốc tổng kết UTC 00/04/08/12/16/20 (= 3/7/11/15/19/23 giờ VN), lệnh `uv run python scripts/run_ai_analyst.py --engine claude --hours 24 --scheduled --send-telegram --max-budget-usd 3`.
+  - Đã cài và `kickstart` thử: exit 0, launchd thấy Docker + Keychain, gửi 2 thẻ.
+  - **Gắn đường dẫn worktree hiện tại:** xóa worktree thì job hỏng; chạy lại `install` từ checkout mới.
+- **Kiểm chứng:** unit **4501 passed/126.13s** (test thẻ, fallback, ký tự, khóa, dấu vân tay, trần, lỗi gửi, plist); E2E `test_wp07_telegram_signal` + `test_wp07_market_signal_producer` **2 passed/50.34s**.
+- **Còn mở:**
+  - file knowledge theo chủ đề khi xoay session (tóm tắt bài học, owner duyệt);
+  - AI-3 (đề xuất → backtest);
+  - trang Admin xem `analyst_run`.

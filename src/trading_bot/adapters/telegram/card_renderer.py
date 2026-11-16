@@ -28,10 +28,12 @@ from typing import Literal
 from PIL import Image, ImageDraw, ImageFont
 
 from trading_bot.application.telegram_cards import (
+    MAX_ANALYSIS_ITEMS,
     MAX_CARD_CHECKLIST,
     MAX_CARD_INVALIDATION,
     MAX_CARD_TARGETS,
     MAX_SUMMARY_ROWS,
+    AnalysisCardView,
     SignalCardView,
     SummaryBotRow,
     SummaryCardView,
@@ -111,8 +113,20 @@ def _font(weight: Weight, size: int) -> ImageFont.FreeTypeFont:
     return ImageFont.truetype(io.BytesIO(data), size, layout_engine=ImageFont.Layout.BASIC)
 
 
+# Be Vietnam Pro không có các ký tự này (kiểm 16/11/2026 bằng Pillow getmask): thay bằng ký tự
+# có trong font để không hiện ô trống (AI hay viết "→").
+_GLYPH_FALLBACK = str.maketrans(
+    {"→": "›", "⟶": "›", "←": "‹", "⟵": "‹", "▸": "›", "✓": "v", "✔": "v", "✗": "x", "✘": "x"}
+)
+
+
+def _safe_text(text: str) -> str:
+    return text.translate(_GLYPH_FALLBACK)
+
+
 def _fit(text: str, font: ImageFont.FreeTypeFont, max_width: float) -> str:
     """Cắt chuỗi cho vừa ``max_width`` và thêm "…" khi phải cắt."""
+    text = _safe_text(text)
     if font.getlength(text) <= max_width:
         return text
     low, high = 0, len(text)
@@ -127,7 +141,7 @@ def _fit(text: str, font: ImageFont.FreeTypeFont, max_width: float) -> str:
 
 def _wrap(text: str, font: ImageFont.FreeTypeFont, max_width: float, max_lines: int) -> list[str]:
     """Ngắt dòng theo từ; dòng cuối mang phần còn lại và bị cắt "…" nếu vẫn dài."""
-    words = text.split()
+    words = _safe_text(text).split()
     lines: list[str] = []
     current = ""
     index = 0
@@ -254,7 +268,7 @@ class _Canvas:
         fill: Color,
         anchor: str = "lm",
     ) -> None:
-        self.draw.text(xy, text, font=font, fill=fill, anchor=anchor)
+        self.draw.text(xy, _safe_text(text), font=font, fill=fill, anchor=anchor)
 
     def chip(
         self,
@@ -1012,4 +1026,113 @@ def render_summary_card(view: SummaryCardView) -> bytes:
     shown = ranked[:MAX_SUMMARY_ROWS]
     _summary_table(canvas, shown, len(ranked) - len(shown))
     _footer(canvas, "PnL tính bằng USDT · mô phỏng PAPER, không phải kết quả thật.", "crypidian")
+    return _png(canvas.crop())
+
+
+# --- Thẻ phân tích AI (AI-2) -------------------------------------------------------------------
+
+
+def _bullet_panel(
+    canvas: _Canvas,
+    title: str,
+    note: str | None,
+    items: Sequence[tuple[str, str | None]],
+    color: Color,
+    *,
+    max_lines: int = 3,
+) -> None:
+    """Khối gạch đầu dòng: dòng chính (≤ ``max_lines``) + dòng phụ xám tùy chọn."""
+    font = _font("Regular", 25)
+    sub_font = _font("Regular", 22)
+    left = _PAD + _INNER
+    width = CARD_WIDTH - 2 * _PAD - 2 * _INNER - 32
+    line_height = 36
+    blocks = [
+        (_wrap(text, font, width, max_lines), _wrap(sub, sub_font, width, 2) if sub else [])
+        for text, sub in items[:MAX_ANALYSIS_ITEMS]
+    ]
+
+    def body(y0: int) -> None:
+        y = y0
+        for main_lines, sub_lines in blocks:
+            canvas.circle(left + 7, y + line_height // 2, 6, color)
+            for line in main_lines:
+                canvas.text((left + 28, y + line_height // 2), line, font, P.text)
+                y += line_height
+            for line in sub_lines:
+                canvas.text((left + 28, y + 16), line, sub_font, P.muted)
+                y += 32
+            y += 12
+
+    height = sum(len(m) * line_height + len(sub) * 32 + 12 for m, sub in blocks)
+    _panel(canvas, title, note, max(height, line_height), body)
+
+
+def render_analysis_card(view: AnalysisCardView) -> bytes:
+    """Thẻ "Phân tích AI" (PNG): tóm tắt, nhận định, giả thuyết, đề xuất để backtest."""
+    canvas = _Canvas()
+    mood = {"high": P.up, "medium": P.accent}.get(view.confidence, P.warn)
+    _top_glow(canvas, P.accent)
+    _brand_row(canvas, sample=view.sample)
+    _disclaimer_strip(canvas, "PHÂN TÍCH AI — CHỈ LÀ GỢI Ý, PHẢI BACKTEST TRƯỚC")
+    title_font = _font("Bold", 46)
+    canvas.text((_PAD, canvas.y + 26), f"Phân tích AI · {view.topic_label}", title_font, P.text)
+    chip_font = _font("Bold", 22)
+    canvas.chip(
+        CARD_WIDTH - _PAD,
+        canvas.y + 28,
+        f"Tin cậy: {view.confidence_vi}",
+        chip_font,
+        mood,
+        _tint(mood, 0.2),
+        align="right",
+    )
+    sub_font = _font("Medium", 23)
+    subtitle = (
+        f"Cửa sổ {format_local_time(view.window_start)} – {format_local_time(view.window_end)}"
+        " (giờ VN)"
+    )
+    canvas.text(
+        (_PAD, canvas.y + 80), _fit(subtitle, sub_font, CARD_WIDTH - 2 * _PAD), sub_font, P.muted
+    )
+    canvas.y += 124
+    summary_font = _font("Regular", 26)
+    summary_lines = _wrap(view.summary, summary_font, CARD_WIDTH - 2 * _PAD - 2 * _INNER, 7)
+
+    def summary_body(y0: int) -> None:
+        for index, line in enumerate(summary_lines):
+            canvas.text((_PAD + _INNER, y0 + 18 + index * 38), line, summary_font, P.text)
+
+    _panel(canvas, "Tóm tắt", None, len(summary_lines) * 38 + 8, summary_body)
+    if view.findings:
+        _bullet_panel(
+            canvas,
+            "Nhận định",
+            "mọi con số đã đối chiếu với report",
+            [(text, None) for text in view.findings],
+            P.accent,
+        )
+    if view.hypotheses:
+        _bullet_panel(
+            canvas,
+            "Giả thuyết cần kiểm",
+            None,
+            [(text, f"Cách kiểm: {test}") for text, test in view.hypotheses],
+            P.warn,
+            max_lines=2,
+        )
+    if view.proposals:
+        _bullet_panel(
+            canvas,
+            "Đề xuất để BACKTEST",
+            "không tự áp vào bot",
+            [(f"{bot}: {changes}", f"Rủi ro: {risk}") for bot, changes, risk in view.proposals],
+            P.up,
+            max_lines=2,
+        )
+    _footer(
+        canvas,
+        f"Report {view.report_hash[:12]} · PAPER, không phải khuyến nghị đầu tư.",
+        "crypidian",
+    )
     return _png(canvas.crop())

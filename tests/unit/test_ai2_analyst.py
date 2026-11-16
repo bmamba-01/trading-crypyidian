@@ -263,9 +263,12 @@ def test_runner_fake_engine_flow_and_telegram_sends_only_valid_results() -> None
     sender = RecordingTelegramSender()
     sent = runner.send_telegram(records, [42], sender=sender, pause=0)
     assert sent == 1
-    [(chat, text)] = sender.messages
+    assert sender.messages == []
+    [(chat, png, caption)] = sender.photos
     assert chat == 42
-    assert "family:H03" in text
+    assert png.startswith(b"\x89PNG")
+    assert "Họ H03" in caption
+    assert caption.startswith("PHÂN TÍCH AI (PAPER)")
 
 
 def test_claude_engine_passes_oauth_token_only_via_env(tmp_path) -> None:
@@ -320,3 +323,128 @@ def test_topic_report_groups_only_topic_bots() -> None:
     groups = topic_report(REPORT, "H03")["groups"]
     assert set(groups["by_strategy_family"]) == {"H03"}
     assert groups["by_timeframe"]["1h"]["bots"] == 1
+
+
+def test_analysis_card_renders_and_falls_back_to_text(monkeypatch) -> None:
+    import asyncio
+
+    from trading_bot.adapters.telegram import card_delivery
+    from trading_bot.adapters.telegram.card_renderer import _safe_text
+    from trading_bot.adapters.telegram.recording_sender import RecordingTelegramSender
+
+    output = _output("Tín hiệu → lệnh: có 5 tín hiệu.", ["/bots/0/funnel/candidates"])
+    sender = RecordingTelegramSender()
+    asyncio.run(card_delivery.send_analysis_card(sender, 7, "family:H03", REPORT, output))
+    assert sender.photos[0][1].startswith(b"\x89PNG")
+    assert _safe_text("a → b ✓") == "a › b v"
+
+    def broken(_view: object) -> bytes:
+        raise ValueError("vẽ lỗi")
+
+    monkeypatch.setattr(card_delivery, "render_analysis_card", broken)
+    fallback = RecordingTelegramSender()
+    asyncio.run(card_delivery.send_analysis_card(fallback, 7, "family:H03", REPORT, output))
+    assert list(fallback.photos) == []
+    assert fallback.messages[0][1].startswith("PHÂN TÍCH AI (PAPER)")
+
+
+def test_runner_skips_unchanged_topics_and_respects_call_budget() -> None:
+    from scripts import run_ai_analyst as runner
+
+    first = runner.analyze_topics(
+        REPORT,
+        runner.FakeEngine(),
+        {},
+        families=None,
+        timeout=5,
+        budget=0.1,
+        skip_fingerprints={},
+        max_engine_calls=None,
+    )
+    seen = {record["topic_key"]: record["fingerprint"] for record in first}
+    again = runner.analyze_topics(
+        REPORT,
+        runner.FakeEngine(),
+        {},
+        families=None,
+        timeout=5,
+        budget=0.1,
+        skip_fingerprints=seen,
+        max_engine_calls=None,
+    )
+    assert again == []
+    # Cửa sổ trượt và hash report đổi nhưng nội dung chủ đề giữ nguyên → cùng dấu vân tay.
+    moved = dict(REPORT, window={"start": "x", "end": "y"}, report_hash="b" * 64)
+    assert runner.topic_fingerprint(topic_report(moved, "H03")) == seen["family:H03"]
+    capped = runner.analyze_topics(
+        REPORT,
+        runner.FakeEngine(),
+        {},
+        families=None,
+        timeout=5,
+        budget=0.1,
+        skip_fingerprints={},
+        max_engine_calls=1,
+    )
+    assert len(capped) == 1
+
+
+def test_run_lock_is_exclusive(tmp_path) -> None:
+    from scripts import run_ai_analyst as runner
+
+    path = tmp_path / "run.lock"
+    with runner.RunLock(path) as first:
+        assert first is True
+        with runner.RunLock(path) as second:
+            assert second is False
+    with runner.RunLock(path) as again:
+        assert again is True
+
+
+def test_schedule_plist_runs_scheduled_mode_after_each_summary() -> None:
+    from scripts import ai_analyst_schedule as schedule
+
+    plist = schedule.build_plist(uv="/opt/uv", claude="/Users/x/.local/bin/claude")
+    command = str(plist["ProgramArguments"][2])  # type: ignore[index]
+    assert "--scheduled" in command
+    assert "--send-telegram" in command
+    assert "CRYPIDIAN_CLAUDE_BIN='/Users/x/.local/bin/claude'" in command
+    slots = list(plist["StartCalendarInterval"])  # type: ignore[call-overload]
+    assert len(slots) == 6
+    assert {slot["Minute"] for slot in slots} == {10}
+    hours = sorted(slot["Hour"] for slot in slots)
+    assert all((later - hours[0]) % 4 == 0 for later in hours)
+
+
+def test_send_failure_for_one_chat_does_not_stop_others() -> None:
+    from scripts import run_ai_analyst as runner
+
+    from trading_bot.adapters.telegram.recording_sender import RecordingTelegramSender
+
+    class Flaky(RecordingTelegramSender):
+        async def send_photo(self, chat_id: int, png_bytes: bytes, caption: str) -> None:
+            if chat_id == 1:
+                raise RuntimeError("telegram down")
+            await super().send_photo(chat_id, png_bytes, caption)
+
+    records = runner.analyze_topics(
+        REPORT, runner.FakeEngine(), {}, families=["H03"], timeout=5, budget=0.1
+    )
+    sender = Flaky()
+    assert runner.send_telegram(records, [1, 2], sender=sender, pause=0) == 1
+    assert [photo[0] for photo in sender.photos] == [2]
+
+
+def test_fingerprint_ignores_abstain_growth_but_tracks_trades() -> None:
+    import copy
+
+    from scripts import run_ai_analyst as runner
+
+    topic = topic_report(REPORT, "H03")
+    base = runner.topic_fingerprint(topic)
+    more_abstain = copy.deepcopy(topic)
+    more_abstain["bots"][0]["funnel"]["decisions_total"] = 999
+    assert runner.topic_fingerprint(more_abstain) == base
+    traded = copy.deepcopy(topic)
+    traded["bots"][0]["performance"]["closed_trades"] = 3
+    assert runner.topic_fingerprint(traded) != base
