@@ -272,6 +272,13 @@ def test_rest_candles_drive_paper_entry_fill_and_stop_exit_idempotently() -> Non
             "changes": [["DELIST_SCHEDULED", "ZECUSDT"]],
             "before_at_risk": [],
             "admin_web_insert": False,
+            "blocks": {
+                "zec_after": "SYMBOL_DELIST_SCHEDULED",
+                "zec_before": None,
+                "c0_after": None,
+                "unlisted_after": "SYMBOL_NOT_LISTED",
+                "no_data": None,
+            },
         }
 
         # FX-2: ngắt mạch drawdown đo bằng role runtime trên ledger thật.

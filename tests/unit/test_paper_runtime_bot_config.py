@@ -380,6 +380,13 @@ async def test_risk_profile_cycle_replaces_limits_and_selection_with_bot_config(
         return world.risk_profile
 
     monkeypatch.setattr(paper_decision_cycle, "load_risk_profile", fake_profile)
+    block = object()
+
+    async def fake_block(_session: Any, **_: Any) -> Any:
+        return block
+
+    monkeypatch.setattr(paper_decision_cycle, "symbol_entry_block", fake_block)
+    snapshot = SimpleNamespace(symbol="BTCUSDT")
     cycle = PaperDecisionCycle(StrategyRegistry(), None, None, None)  # type: ignore[arg-type]
 
     def capture(**kwargs: Any) -> str:
@@ -410,7 +417,7 @@ async def test_risk_profile_cycle_replaces_limits_and_selection_with_bot_config(
     result = await cycle.prepare_published_with_risk_profile(
         session=None,  # type: ignore[arg-type]
         published_settings=world.root,
-        snapshot=None,  # type: ignore[arg-type]
+        snapshot=snapshot,  # type: ignore[arg-type]
         evaluated_at=NOW,
         planner_settings=planner,  # type: ignore[arg-type]
         account=None,  # type: ignore[arg-type]
@@ -425,12 +432,14 @@ async def test_risk_profile_cycle_replaces_limits_and_selection_with_bot_config(
     assert captured["planner_settings"].limits.per_trade_risk_fraction == Decimal("0.005")
     assert captured["selection_override"].parameters == (("donchian_lookback", 60),)
     assert captured["allowed_symbols"] == config.symbols
+    # AI-4 lát 3: kết quả tra niêm yết được chuyển tới bước chuẩn bị lệnh.
+    assert captured["entry_block"] is block
 
     mismatched = replace(config, settings_version_id=uuid4())
     rejected = await cycle.prepare_published_with_risk_profile(
         session=None,  # type: ignore[arg-type]
         published_settings=world.root,
-        snapshot=None,  # type: ignore[arg-type]
+        snapshot=snapshot,  # type: ignore[arg-type]
         evaluated_at=NOW,
         planner_settings=planner,  # type: ignore[arg-type]
         account=None,  # type: ignore[arg-type]

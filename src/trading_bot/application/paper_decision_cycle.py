@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from trading_bot.application.listings_state import EntryBlock, symbol_entry_block
 from trading_bot.application.runtime_risk_profile import load_risk_profile
 from trading_bot.config.workspace_settings import PublishedWorkspaceSettings, WorkspaceSettings
 from trading_bot.domain.execution.paper import PaperExecutionGateway, PaperOrderIntent
@@ -165,6 +166,7 @@ class PaperDecisionCycle:
         selection_override: StrategySelection | None = None,
         allowed_symbols: tuple[str, ...] | None = None,
         allowed_timeframes: tuple[str, ...] | None = None,
+        entry_block: EntryBlock | None = None,
     ) -> DecisionCycleResult:
         """Chuẩn bị quyết định từ root settings mà chưa gửi PAPER intent.
 
@@ -283,6 +285,7 @@ class PaperDecisionCycle:
             risk_state=risk_state,
             open_exposures=open_exposures,
             cost_model=cost_model,
+            entry_block=entry_block,
         )
 
     async def prepare_published_with_risk_profile(
@@ -306,6 +309,13 @@ class PaperDecisionCycle:
             profile_id=published_settings.settings.risk.profile_version_id,
         )
         effective_planner = profile.apply_to(planner_settings)
+        # AI-4 lát 3: coin bị Binance lên lịch gỡ/không còn TRADING thì không mở vị thế mới.
+        entry_block = await symbol_entry_block(
+            session,
+            workspace_id=published_settings.workspace_id,
+            symbol=snapshot.symbol,
+            as_of=evaluated_at,
+        )
         if bot_config is None:
             return self.prepare_published(
                 published_settings=published_settings,
@@ -316,6 +326,7 @@ class PaperDecisionCycle:
                 risk_state=risk_state,
                 open_exposures=open_exposures,
                 cost_model=cost_model,
+                entry_block=entry_block,
             )
         if (
             bot_config.workspace_id != published_settings.workspace_id
@@ -342,6 +353,7 @@ class PaperDecisionCycle:
             selection_override=bot_config.strategy_selection(),
             allowed_symbols=bot_config.symbols,
             allowed_timeframes=bot_config.timeframes,
+            entry_block=entry_block,
         )
 
     def prepare(
@@ -356,6 +368,7 @@ class PaperDecisionCycle:
         risk_state: RiskState,
         open_exposures: tuple[OpenExposure, ...],
         cost_model: CostModel,
+        entry_block: EntryBlock | None = None,
     ) -> DecisionCycleResult:
         """Đánh giá strategy, plan và risk mà chưa tạo PAPER intent."""
         if (
@@ -390,6 +403,18 @@ class PaperDecisionCycle:
                 candidate_id=strategy_result.candidate_id,
             )
 
+        if entry_block is not None and entry_block.symbol == strategy_result.symbol:
+            return DecisionCycleResult(
+                DecisionCycleOutcome.PLAN_REJECTED,
+                strategy_result,
+                plan=PlanRejected(
+                    entry_block.reason_code,
+                    entry_block.detail_vi,
+                    planner_settings.settings_version_id,
+                    strategy_result.strategy_release_id,
+                ),
+                strategy_invoked=True,
+            )
         plan = self._planner.plan(
             strategy_result,
             planner_settings,
