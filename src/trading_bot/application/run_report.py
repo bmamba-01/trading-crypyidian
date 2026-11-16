@@ -21,6 +21,7 @@ from trading_bot.adapters.database.models import (
     BotDecisionRecord,
     BotInstance,
     OrderIntentRecord,
+    PaperCandidateOutcomeRecord,
     TradingAccount,
 )
 from trading_bot.adapters.database.models.paper_entities import TradeRecord
@@ -102,6 +103,39 @@ async def _decisions(
         .where(*window, BotDecisionRecord.status == "CANDIDATE")
     )
     return counts, int(converted or 0)
+
+
+async def _rejections(
+    session: AsyncSession, workspace_id: UUID, bot_id: UUID, start: datetime, end: datetime
+) -> tuple[tuple[DecisionCount, ...], int]:
+    """Lý do candidate (tạo trong cửa sổ) không thành lệnh, đếm theo số decision khác nhau."""
+    window = (
+        PaperCandidateOutcomeRecord.workspace_id == workspace_id,
+        PaperCandidateOutcomeRecord.bot_id == bot_id,
+        BotDecisionRecord.created_at >= start,
+        BotDecisionRecord.created_at < end,
+    )
+    joined = and_(
+        BotDecisionRecord.workspace_id == PaperCandidateOutcomeRecord.workspace_id,
+        BotDecisionRecord.id == PaperCandidateOutcomeRecord.decision_id,
+    )
+    rows = await session.execute(
+        select(
+            PaperCandidateOutcomeRecord.stage,
+            PaperCandidateOutcomeRecord.reason_code,
+            func.count(func.distinct(PaperCandidateOutcomeRecord.decision_id)),
+        )
+        .join(BotDecisionRecord, joined)
+        .where(*window)
+        .group_by(PaperCandidateOutcomeRecord.stage, PaperCandidateOutcomeRecord.reason_code)
+    )
+    counts = tuple(DecisionCount(str(s), str(r), int(c)) for s, r, c in rows)
+    explained = await session.scalar(
+        select(func.count(func.distinct(PaperCandidateOutcomeRecord.decision_id)))
+        .join(BotDecisionRecord, joined)
+        .where(*window)
+    )
+    return counts, int(explained or 0)
 
 
 async def _extremes(
@@ -190,6 +224,7 @@ async def load_run_report(
             report = build_bot_report(snapshot=snapshot, start=start, end=end)
             payload = dict(report.payload)
             decisions, converted = await _decisions(session, workspace_id, bot_id, start, end)
+            rejections, explained = await _rejections(session, workspace_id, bot_id, start, end)
             extremes = await _extremes(
                 session, workspace_id, list(payload.get("trades") or ()), timeframe
             )
@@ -205,6 +240,8 @@ async def load_run_report(
                 bot_report=payload,
                 decisions=decisions,
                 candidates_with_intent=converted,
+                rejections=rejections,
+                candidates_with_recorded_rejection=explained,
                 extremes=extremes,
             )
         )

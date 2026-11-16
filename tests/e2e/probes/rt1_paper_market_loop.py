@@ -776,6 +776,67 @@ async def analyst() -> dict[str, Any]:
     }
 
 
+async def outcome() -> dict[str, Any]:
+    """16/11/2026: runtime (role thật) lưu lý do candidate, idempotent, RLS theo bot."""
+    from sqlalchemy import func, select, text
+    from sqlalchemy.dialects.postgresql import insert
+    from sqlalchemy.exc import DBAPIError
+
+    from trading_bot.adapters.database.models import BotDecisionRecord, PaperCandidateOutcomeRecord
+    from trading_bot.application.outbox import UnitOfWork
+
+    engine, sessions = _sessions()
+    bot_id = UUID(STATE["bot_id"])
+    try:
+        async with UnitOfWork(sessions, workspace_id=WORKSPACE, bot_id=bot_id) as uow:
+            decision_id = await uow.session.scalar(
+                select(BotDecisionRecord.id).where(
+                    BotDecisionRecord.workspace_id == WORKSPACE,
+                    BotDecisionRecord.status == "CANDIDATE",
+                )
+            )
+        statement = (
+            insert(PaperCandidateOutcomeRecord)
+            .values(
+                id=uuid4(),
+                workspace_id=WORKSPACE,
+                bot_id=bot_id,
+                account_id=ACCOUNT,
+                decision_id=decision_id,
+                stage="PLAN",
+                reason_code="MARKET_DATA_STALE",
+            )
+            .on_conflict_do_nothing(constraint="uq_paper_candidate_outcome")
+        )
+        for _ in range(2):
+            async with UnitOfWork(sessions, workspace_id=WORKSPACE, bot_id=bot_id) as uow:
+                await uow.session.execute(statement)
+        async with UnitOfWork(sessions, workspace_id=WORKSPACE, bot_id=bot_id) as uow:
+            rows = await uow.session.scalar(
+                select(func.count()).where(PaperCandidateOutcomeRecord.workspace_id == WORKSPACE)
+            )
+            user = await uow.session.scalar(text("SELECT current_user"))
+        other_denied = False
+        try:
+            async with UnitOfWork(sessions, workspace_id=WORKSPACE, bot_id=uuid4()) as uow:
+                await uow.session.execute(
+                    insert(PaperCandidateOutcomeRecord).values(
+                        id=uuid4(),
+                        workspace_id=WORKSPACE,
+                        bot_id=bot_id,
+                        account_id=ACCOUNT,
+                        decision_id=decision_id,
+                        stage="RISK",
+                        reason_code="OTHER_BOT_SCOPE",
+                    )
+                )
+        except DBAPIError:
+            other_denied = True
+    finally:
+        await engine.dispose()
+    return {"rows": int(rows or 0), "user": str(user), "other_bot_denied": other_denied}
+
+
 def pause_resume() -> dict[str, Any]:
     """Owner tạm dừng rồi tiếp tục bot (bản ghi append-only như luồng resume có MFA)."""
     with _connect() as connection, connection.transaction():
@@ -1078,6 +1139,8 @@ elif phase == "breaker":
     output = asyncio.run(breaker())
 elif phase == "analyst":
     output = asyncio.run(analyst())
+elif phase == "outcome":
+    output = asyncio.run(outcome())
 elif phase == "run_report":
     output = asyncio.run(run_report())
 elif phase == "pause_resume":

@@ -37,6 +37,7 @@ SERVICES = {
     "verify": "migrator",
     "breaker": "trading-runtime",
     "pause_resume": "migrator",
+    "outcome": "trading-runtime",
     "run_report": "migrator",
     "analyst": "migrator",
     "tg_seed": "migrator",
@@ -121,7 +122,7 @@ def test_rest_candles_drive_paper_entry_fill_and_stop_exit_idempotently() -> Non
         compose("run", "--rm", "--no-deps", "db-provisioner")
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "head")
         heads = compose("run", "--rm", "--no-deps", "migrator", "alembic", "heads")
-        assert "e7a9c1d3f5b8 (head)" in heads.stdout
+        assert "f9b1d3e5a7c2 (head)" in heads.stdout
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "check")
         state.update(run("seed"))
         assert run("genesis") == {"genesis": True}
@@ -202,6 +203,13 @@ def test_rest_candles_drive_paper_entry_fill_and_stop_exit_idempotently() -> Non
         assert run("tg_verify") == {
             "notifications": [["CLOSED", "SENT", 1, True], ["OPENED", "SENT", 1, True]],
             "reports": [["SENT", 1, True, "4:00:00"]],
+        }
+
+        # Lý do candidate lưu bền bằng role runtime thật: idempotent và chặn bot khác (RLS).
+        assert run("outcome") == {
+            "rows": 1,
+            "user": "crypidian_trading_runtime",
+            "other_bot_denied": True,
         }
 
         # AI-1: Run Report tất định từ ledger thật (lệnh lỗ chạm stop → R âm, có MAE).

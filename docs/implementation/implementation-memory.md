@@ -4427,3 +4427,23 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
   - lịch tự chạy;
   - file knowledge/xoay session;
   - cảnh báo khi root không có 1m mà bật market dispatch (nên fail-closed hoặc cảnh báo readiness).
+
+### 2026-11-16 — Cảnh báo thiếu nến 1m; lưu bền lý do candidate không thành lệnh
+
+- **Yêu cầu của owner:** "Có, sửa tiếp" (sau AI-2 chạy thật).
+- **(1) Thiếu 1m:**
+  - `PaperMarketEventLoop._check_execution_bars`: account có entry chờ khớp mà khung execution ≠ 1m → readiness `market_dispatch` **degraded**, `execution_1m_missing_accounts`, `last_error_code=PAPER_EXECUTION_1M_UNAVAILABLE`, log một lần mỗi intent.
+  - Vị thế đã mở vẫn theo dõi trên khung chiến lược (không degraded).
+  - Không fail-closed toàn runtime vì monitor vẫn cần chạy.
+- **(2) Lý do từ chối:**
+  - Migration `f9b1d3e5a7c2` (head) tạo `paper_candidate_outcome`:
+    - (decision, stage ENTRY_BLOCK/STRATEGY/PLAN/RISK/ERROR, reason_code) unique;
+    - FK `bot_decision`;
+    - RLS bắt buộc: runtime SELECT/INSERT theo workspace + `app.bot_id`; admin-web SELECT theo workspace; không UPDATE/DELETE.
+  - `app._submit_bot_candidates(..., record)` + `candidate_rejections()` phân loại kết quả. `_first_rejection` chặn trùng trong process (≤ 4.096 khóa) và log một lần. `process_pending.record_outcome` ghi bằng `INSERT … ON CONFLICT DO NOTHING`. Lỗi ghi không chặn runtime.
+  - Run Report: `funnel.rejection_reasons` ("STAGE:CODE" → số decision), `candidates_with_recorded_rejection`. Cảnh báo chỉ còn cho candidate chưa có intent lẫn lý do.
+- **Kiểm chứng:**
+  - Unit **4495 passed/135.94s**: test degraded 1m, `candidate_rejections` + ghi một lần, Run Report có lý do. Test cũ dùng `__new__` phải bổ sung `_missing_execution_bars`.
+  - E2E `test_rt1_paper_market_loop` (thêm phase `outcome` bằng role `crypidian_trading_runtime`: 1 hàng sau 2 lần ghi, bot khác bị RLS chặn) + `test_db_role_least_privilege` **2 passed/419.44s**.
+  - Head test đổi `f9b1d3e5a7c2` (15 file).
+- **Local:** DB `f9b1d3e5a7c2`, runtime READY 10/10, dispatch running, `execution_1m_missing_accounts=0`.

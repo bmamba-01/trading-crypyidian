@@ -1185,7 +1185,29 @@ def _runtime_job_processor(
         pending_candidates = await store.pending_candidate_decisions(
             workspace_id=workspace_id, account_id=account_id, now=now
         )
-        return await _submit_bot_candidates(application, pending_candidates)
+        return await _submit_bot_candidates(application, pending_candidates, record_outcome)
+
+    async def record_outcome(decision: Any, stage: str, reason_code: str) -> None:
+        """Lưu (decision, giai đoạn, lý do) vào paper_candidate_outcome; trùng thì bỏ qua."""
+        from sqlalchemy.dialects.postgresql import insert
+
+        from trading_bot.adapters.database.models import PaperCandidateOutcomeRecord
+        from trading_bot.application.outbox import UnitOfWork
+
+        async with UnitOfWork(sessions, workspace_id=workspace_id, bot_id=decision.bot_id) as uow:
+            await uow.session.execute(
+                insert(PaperCandidateOutcomeRecord)
+                .values(
+                    id=uuid4(),
+                    workspace_id=workspace_id,
+                    bot_id=decision.bot_id,
+                    account_id=decision.account_id,
+                    decision_id=decision.decision_id,
+                    stage=stage,
+                    reason_code=reason_code[:120],
+                )
+                .on_conflict_do_nothing(constraint="uq_paper_candidate_outcome")
+            )
 
     return process_pending
 
@@ -1194,8 +1216,41 @@ def _runtime_job_processor(
 _LOGGED_CANDIDATE_REJECTIONS: dict[tuple[Any, ...], None] = {}
 
 
-async def _submit_bot_candidates(application: Any, decisions: Any) -> tuple[Any, ...]:
-    """Chuyển candidate đã lưu thành PAPER command riêng; abstain/veto không đặt lệnh."""
+CandidateRecorder = Callable[[Any, str, str], Awaitable[None]]
+
+
+def candidate_rejections(result: Any) -> list[tuple[str, str]]:
+    """(giai đoạn, mã lý do) khiến candidate không thành lệnh; rỗng nếu đã submit/trùng."""
+    if getattr(result, "submission", None) is not None or getattr(result, "duplicate", False):
+        return []
+    reasons: list[tuple[str, str]] = []
+    block = getattr(result, "entry_block_reason", None)
+    if block:
+        reasons.append(("ENTRY_BLOCK", str(block)))
+    cycle = getattr(result, "decision", None)
+    risk = getattr(cycle, "risk_decision", None)
+    if risk is not None and not getattr(risk, "approved", True):
+        reasons.append(("RISK", str(getattr(risk, "reason_code", "RISK_REJECTED"))))
+    plan_code = getattr(getattr(cycle, "plan", None), "reason_code", None)
+    if plan_code:
+        reasons.append(("PLAN", str(plan_code)))
+    strategy_code = getattr(getattr(cycle, "strategy_result", None), "code", None)
+    outcome = getattr(getattr(cycle, "outcome", None), "value", None)
+    if outcome == "NO_TRADE" and strategy_code:
+        reasons.append(("STRATEGY", str(strategy_code)))
+    if not reasons:
+        reasons.append(("ERROR", str(outcome or "NOT_SUBMITTED")))
+    return reasons
+
+
+async def _submit_bot_candidates(
+    application: Any, decisions: Any, record: CandidateRecorder | None = None
+) -> tuple[Any, ...]:
+    """Chuyển candidate đã lưu thành PAPER command riêng; abstain/veto không đặt lệnh.
+
+    Candidate không thành lệnh: log một lần cho mỗi (decision, lý do) và gọi ``record`` để lưu
+    bền vào ``paper_candidate_outcome`` (16/11/2026) cho Run Report/AI Analyst phân tích.
+    """
     from trading_bot.application.bot_dispatcher import BotDecisionStatus
 
     results = []
@@ -1211,42 +1266,46 @@ async def _submit_bot_candidates(application: Any, decisions: Any) -> tuple[Any,
             )
         except Exception as error:
             # Một candidate lỗi không được chặn candidate khác của bot; ghi mã để vận hành thấy.
-            logger.warning(
-                "PAPER candidate không submit được; decision_id=%s reason_code=%s",
-                decision.decision_id,
-                getattr(error, "reason_code", type(error).__name__),
-            )
+            code = str(getattr(error, "reason_code", type(error).__name__))
+            if await _first_rejection(decision, (("ERROR", code),), record):
+                logger.warning(
+                    "PAPER candidate không submit được; decision_id=%s reason_code=%s",
+                    decision.decision_id,
+                    code,
+                )
             continue
         results.append(result)
-        if getattr(result, "submission", None) is None and not getattr(result, "duplicate", False):
-            # Quan sát (15/11/2026): candidate bị từ chối "êm" trước đây không để lại dấu vết.
-            cycle = getattr(result, "decision", None)
-            risk = getattr(cycle, "risk_decision", None)
-            plan = getattr(cycle, "plan", None)
-            # Candidate chưa submit được đánh giá lại mỗi tick tới khi hết hạn; chỉ log một lần
-            # cho mỗi (decision, lý do) để không ngập log (15/11: 1.380 dòng/15 phút).
-            log_key = (
-                decision.decision_id,
-                getattr(result, "entry_block_reason", None),
-                getattr(plan, "reason_code", None),
-                getattr(risk, "reason_code", None),
-            )
-            if log_key in _LOGGED_CANDIDATE_REJECTIONS:
-                continue
-            _LOGGED_CANDIDATE_REJECTIONS[log_key] = None
-            while len(_LOGGED_CANDIDATE_REJECTIONS) > 4096:
-                _LOGGED_CANDIDATE_REJECTIONS.pop(next(iter(_LOGGED_CANDIDATE_REJECTIONS)))
+        reasons = candidate_rejections(result)
+        if reasons and await _first_rejection(decision, tuple(reasons), record):
             logger.warning(
-                "PAPER candidate không thành lệnh; decision_id=%s entry_block=%s outcome=%s "
-                "strategy=%s risk=%s plan=%s",
+                "PAPER candidate không thành lệnh; decision_id=%s reasons=%s",
                 decision.decision_id,
-                getattr(result, "entry_block_reason", None),
-                getattr(getattr(cycle, "outcome", None), "value", None),
-                getattr(getattr(cycle, "strategy_result", None), "code", None),
-                getattr(risk, "reason_code", None),
-                getattr(plan, "reason_code", None),
+                ",".join(f"{stage}:{code}" for stage, code in reasons),
             )
     return tuple(results)
+
+
+async def _first_rejection(
+    decision: Any, reasons: tuple[tuple[str, str], ...], record: CandidateRecorder | None
+) -> bool:
+    """True khi (decision, lý do) mới gặp lần đầu trong process: log + lưu bền một lần.
+
+    Candidate chưa submit được đánh giá lại mỗi tick tới khi hết hạn (15/11: 1.380 dòng log/15
+    phút) nên phải chặn trùng; DB còn ràng buộc unique để restart không ghi lặp.
+    """
+    key = (decision.decision_id, reasons)
+    if key in _LOGGED_CANDIDATE_REJECTIONS:
+        return False
+    _LOGGED_CANDIDATE_REJECTIONS[key] = None
+    while len(_LOGGED_CANDIDATE_REJECTIONS) > 4096:
+        _LOGGED_CANDIDATE_REJECTIONS.pop(next(iter(_LOGGED_CANDIDATE_REJECTIONS)))
+    if record is not None:
+        for stage, code in reasons:
+            try:
+                await record(decision, stage, code)
+            except Exception as error:  # noqa: BLE001 - lưu lý do không được chặn runtime
+                logger.warning("Không lưu được lý do candidate; error=%s", type(error).__name__)
+    return True
 
 
 def _default_supervisor(**kwargs: Any) -> BotRuntimeSupervisor:

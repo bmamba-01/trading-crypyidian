@@ -98,6 +98,22 @@ def test_funnel_separates_out_of_universe_and_flags_unconverted_candidates() -> 
     assert funnel["top_skip_reasons"] == {"H03_NO_BREAKOUT": 30}
     assert funnel["candidate_to_order_rate"] == "0.25"
     assert any("3 tín hiệu chưa thành lệnh" in w for w in report.warnings)
+    explained = _bot(
+        "T04",
+        "h03-v3-1h",
+        [],
+        decisions=decisions,
+        candidates_with_intent=1,
+        rejections=(DecisionCount("PLAN", "MARKET_DATA_STALE", 2),),
+        candidates_with_recorded_rejection=2,
+    )
+    with_reasons = build_run_report(
+        workspace_id="w", run_label="t", window_start=START, window_end=END, bots=[explained]
+    )
+    assert with_reasons.payload["bots"][0]["funnel"]["rejection_reasons"] == {
+        "PLAN:MARKET_DATA_STALE": 2
+    }
+    assert any("1 tín hiệu chưa thành lệnh mà chưa có lý do" in w for w in with_reasons.warnings)
     assert any("chưa đủ để kết luận" in w for w in report.warnings)
 
 

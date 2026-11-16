@@ -254,6 +254,10 @@ class PaperMarketEventLoop:
         self.last_tick_at: datetime | None = None
         self.last_tick_succeeded: bool | None = None
         self.last_error_code: str | None = None
+        # Account có entry chờ khớp mà không có nến 1m (khung execution = khung chiến lược): lệnh
+        # chỉ khớp ở nến mở sau lúc submit nên luôn hết hạn trước khi khớp (sự cố 16/11/2026).
+        self._missing_execution_bars: set[UUID] = set()
+        self._warned_intents: set[UUID] = set()
 
     def status(self) -> dict[str, Any]:
         """Trạng thái cho readiness: chỉ bộ đếm/mã an toàn, không chứa dữ liệu nhạy cảm."""
@@ -261,7 +265,11 @@ class PaperMarketEventLoop:
             state = "starting"
         else:
             # Gián đoạn dữ liệu là trạng thái cần người vận hành xử lý (vị thế đang bị treo).
-            healthy = self.last_tick_succeeded and self.counters.discontinuities == 0
+            healthy = (
+                self.last_tick_succeeded
+                and self.counters.discontinuities == 0
+                and not self._missing_execution_bars
+            )
             state = "running" if healthy else "degraded"
         counters = self.counters
         return {
@@ -275,6 +283,7 @@ class PaperMarketEventLoop:
             "expired_reservations": counters.expired_reservations,
             "errors": counters.errors,
             "discontinuities": counters.discontinuities,
+            "execution_1m_missing_accounts": len(self._missing_execution_bars),
             "last_error_code": self.last_error_code,
         }
 
@@ -295,6 +304,7 @@ class PaperMarketEventLoop:
         if account is None or self._sessions is None:
             return True
         now, scopes = await self._load_scopes(account)
+        self._check_execution_bars(account_id, scopes)
         succeeded = True
         for scope in scopes:
             try:
@@ -316,6 +326,29 @@ class PaperMarketEventLoop:
             succeeded = False
             self._record_error(error)
         return succeeded
+
+    def _check_execution_bars(self, account_id: UUID, scopes: Sequence[_Scope]) -> None:
+        """Cảnh báo (degraded) khi entry chờ khớp phải dùng khung chiến lược vì thiếu nến 1m."""
+        missing = [
+            scope
+            for scope in scopes
+            if scope.entry_pending and scope.timeframe != EXECUTION_TIMEFRAME
+        ]
+        if not missing:
+            self._missing_execution_bars.discard(account_id)
+            return
+        self._missing_execution_bars.add(account_id)
+        self.last_error_code = "PAPER_EXECUTION_1M_UNAVAILABLE"
+        for scope in missing:
+            if scope.intent_id in self._warned_intents:
+                continue
+            self._warned_intents.add(scope.intent_id)
+            logger.warning(
+                "PAPER entry không thể khớp: root thiếu nến 1m nên khung execution = %s; "
+                "reason_code=PAPER_EXECUTION_1M_UNAVAILABLE symbol=%s",
+                scope.timeframe,
+                scope.symbol,
+            )
 
     async def _load_scopes(self, account: Any) -> tuple[datetime, tuple[_Scope, ...]]:
         assert self._sessions is not None

@@ -1467,3 +1467,43 @@ def test_rejected_candidate_logged_once_and_error_does_not_block_others(
     stale_logs = [record for record in caplog.records if "MARKET_DATA_STALE" in record.getMessage()]
     assert len(stale_logs) == 1
     assert any("BOT_DECISION_CONFIG_MISMATCH" in record.getMessage() for record in caplog.records)
+
+
+def test_candidate_rejections_are_recorded_once_per_reason() -> None:
+    """16/11/2026: lý do không thành lệnh được lưu bền (một lần mỗi decision + lý do)."""
+    from trading_bot.app import _submit_bot_candidates, candidate_rejections
+    from trading_bot.application.bot_dispatcher import BotDecisionStatus
+
+    risk_rejected = SimpleNamespace(
+        submission=None,
+        duplicate=False,
+        entry_block_reason=None,
+        decision=SimpleNamespace(
+            outcome=SimpleNamespace(value="RISK_REJECTED"),
+            strategy_result=SimpleNamespace(code="H03_LONG_ENTRY"),
+            risk_decision=SimpleNamespace(
+                approved=False, reason_code="DAILY_LOSS_CAP_WOULD_BREACH"
+            ),
+            plan=None,
+        ),
+    )
+    assert candidate_rejections(risk_rejected) == [("RISK", "DAILY_LOSS_CAP_WOULD_BREACH")]
+    assert candidate_rejections(SimpleNamespace(submission=object())) == []
+    blocked = SimpleNamespace(submission=None, duplicate=False, entry_block_reason="BOT_PAUSED")
+    assert candidate_rejections(blocked) == [("ENTRY_BLOCK", "BOT_PAUSED")]
+
+    class Application:
+        async def evaluate_and_submit(self, command: PaperBotDecisionCommand) -> object:
+            return risk_rejected
+
+    recorded: list[tuple[object, str, str]] = []
+
+    async def record(decision: object, stage: str, code: str) -> None:
+        recorded.append((decision.decision_id, stage, code))  # type: ignore[attr-defined]
+
+    decision = SimpleNamespace(
+        status=BotDecisionStatus.CANDIDATE, decision_id=uuid4(), account_id=uuid4()
+    )
+    for _ in range(3):
+        asyncio.run(_submit_bot_candidates(Application(), (decision,), record))
+    assert recorded == [(decision.decision_id, "RISK", "DAILY_LOSS_CAP_WOULD_BREACH")]

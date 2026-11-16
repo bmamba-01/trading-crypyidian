@@ -66,6 +66,9 @@ class BotRunInput:
     decisions: tuple[DecisionCount, ...] = ()
     candidates_with_intent: int = 0
     extremes: tuple[TradeExtremes, ...] = ()
+    # (giai đoạn, mã) → số candidate bị từ chối; từ paper_candidate_outcome (16/11/2026).
+    rejections: tuple[DecisionCount, ...] = ()
+    candidates_with_recorded_rejection: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -191,10 +194,11 @@ def _bot_section(bot: BotRunInput) -> tuple[dict[str, Any], list[str]]:
             f"{bot.bot_name}: chỉ {closed} lệnh đóng (< {MIN_TRADES_FOR_CONCLUSION}), "
             "chưa đủ để kết luận thống kê."
         )
-    if candidates > bot.candidates_with_intent:
+    unexplained = candidates - bot.candidates_with_intent - bot.candidates_with_recorded_rejection
+    if unexplained > 0:
         warnings.append(
-            f"{bot.bot_name}: {candidates - bot.candidates_with_intent} tín hiệu chưa thành lệnh; "
-            "lý do từ chối kế hoạch/rủi ro chưa được lưu bền (chỉ có trong log runtime)."
+            f"{bot.bot_name}: {unexplained} tín hiệu chưa thành lệnh mà chưa có lý do được lưu "
+            "(chưa tới lượt runtime xử lý hoặc tín hiệu trước khi bắt đầu lưu lý do)."
         )
     section = {
         "bot_id": bot.bot_id,
@@ -216,6 +220,13 @@ def _bot_section(bot: BotRunInput) -> tuple[dict[str, Any], list[str]]:
             "candidates": candidates,
             "candidates_with_intent": bot.candidates_with_intent,
             "candidate_to_order_rate": _ratio(bot.candidates_with_intent, candidates),
+            "candidates_with_recorded_rejection": bot.candidates_with_recorded_rejection,
+            "rejection_reasons": {
+                f"{item.status}:{item.reason_code}": item.count
+                for item in sorted(
+                    bot.rejections, key=lambda r: (-r.count, r.status, r.reason_code)
+                )
+            },
         },
         "performance": {
             "closed_trades": closed,

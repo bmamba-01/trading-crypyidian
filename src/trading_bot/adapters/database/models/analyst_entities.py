@@ -12,6 +12,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     Numeric,
@@ -79,3 +80,35 @@ class AnalystRunRecord(UuidPrimaryKey, CreatedAt, Base):
     structured_output: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     validation_errors: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
     valid: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+
+class PaperCandidateOutcomeRecord(UuidPrimaryKey, CreatedAt, Base):
+    """Lý do một candidate không thành lệnh PAPER (giai đoạn + mã), mỗi cặp ghi một lần.
+
+    Trước 16/11/2026 lý do từ chối plan/risk/entry chỉ nằm trong log runtime nên Run Report và AI
+    Analyst không phân tích được tầng nghẽn sau tín hiệu.
+    """
+
+    __tablename__ = "paper_candidate_outcome"
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id", "decision_id", "stage", "reason_code", name="uq_paper_candidate_outcome"
+        ),
+        CheckConstraint(
+            "stage IN ('ENTRY_BLOCK', 'STRATEGY', 'PLAN', 'RISK', 'ERROR')",
+            name="paper_candidate_outcome_stage_valid",
+        ),
+        ForeignKeyConstraint(
+            ["workspace_id", "decision_id"],
+            ["bot_decision.workspace_id", "bot_decision.id"],
+            ondelete="CASCADE",
+        ),
+        Index("ix_paper_candidate_outcome_bot", "workspace_id", "bot_id", "created_at"),
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    bot_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    account_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    decision_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    stage: Mapped[str] = mapped_column(String(16), nullable=False)
+    reason_code: Mapped[str] = mapped_column(String(120), nullable=False)
