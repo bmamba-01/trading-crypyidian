@@ -132,7 +132,7 @@ def test_rest_candles_drive_paper_entry_fill_and_stop_exit_idempotently() -> Non
         compose("run", "--rm", "--no-deps", "db-provisioner")
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "head")
         heads = compose("run", "--rm", "--no-deps", "migrator", "alembic", "heads")
-        assert "a42edbd211e5 (head)" in heads.stdout
+        assert "ad99c4f520d0 (head)" in heads.stdout
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "check")
         state.update(run("seed"))
         # CK-11: bộ quét đọc nến 4h thật (đủ 21 ngày), 1h thiếu 21 ngày bị loại kèm lý do;
@@ -288,6 +288,11 @@ def test_rest_candles_drive_paper_entry_fill_and_stop_exit_idempotently() -> Non
         # AI-1: Run Report tất định từ ledger thật (lệnh lỗ chạm stop → R âm, có MAE).
         report = run("run_report")
         assert report["deterministic"] is True, report
+        # CRY-380: lưu lần đầu, lần hai trùng hash bỏ qua; mọi UPDATE/DELETE bị trigger chặn.
+        assert report["stored"] == [True, False], report
+        assert report["stored_rows"] == 1, report
+        assert report["immutable"] == [True, True], report
+        assert report["report_rights"] == [True, False, True], report
         assert report["closed_trades"] == 1, report
         assert report["r_mean"] is not None, report
         assert Decimal(report["r_mean"]) < 0, report

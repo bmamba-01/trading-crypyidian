@@ -256,3 +256,30 @@ class ListingSnapshotRecord(UuidPrimaryKey, CreatedAt, Base):
     entries: Mapped[list[dict[str, Any]] | None] = mapped_column(
         JSONB(none_as_null=True), nullable=True
     )
+
+
+class RunReportRecord(UuidPrimaryKey, CreatedAt, Base):
+    """Run Report tất định đã lưu (CRY-380): bất biến (trigger chặn UPDATE/DELETE)."""
+
+    __tablename__ = "run_report"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "report_hash", name="uq_run_report_hash"),
+        CheckConstraint("report_hash ~ '^[0-9a-f]{64}$'", name="run_report_hash_sha256"),
+        CheckConstraint(
+            "payload->>'report_hash' = report_hash", name="run_report_payload_hash_matches"
+        ),
+        CheckConstraint("window_start < window_end", name="run_report_window_ordered"),
+        CheckConstraint("bot_count >= 0", name="run_report_bot_count_nonnegative"),
+        Index("ix_run_report_created", "workspace_id", "created_at"),
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("workspace.id", ondelete="CASCADE"), nullable=False
+    )
+    report_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    report_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    run_label: Mapped[str] = mapped_column(String(120), nullable=False)
+    window_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    window_end: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    bot_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)

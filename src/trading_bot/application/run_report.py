@@ -7,11 +7,11 @@ chiến lược để tính MAE/MFE. Mỗi bot đọc trong UnitOfWork có ``bot
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from decimal import Decimal
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import String, and_, cast, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -252,3 +252,36 @@ async def load_run_report(
         window_end=end,
         bots=inputs,
     )
+
+
+async def persist_run_report(
+    session: AsyncSession, *, workspace_id: UUID, payload: Mapping[str, Any]
+) -> bool:
+    """CRY-380: lưu Run Report bất biến theo ``report_hash``; trùng hash thì bỏ qua (idempotent).
+
+    Trả ``True`` khi vừa ghi hàng mới. ``payload`` phải là report nguyên bản (chưa gắn bối cảnh
+    AI như lịch vĩ mô/phái sinh) để khớp ``report_hash``.
+    """
+    from sqlalchemy.dialects.postgresql import insert
+
+    from trading_bot.adapters.database.models import RunReportRecord
+
+    report_hash = str(payload.get("report_hash") or "")
+    window = payload.get("window") or {}
+    statement = (
+        insert(RunReportRecord)
+        .values(
+            id=uuid4(),
+            workspace_id=workspace_id,
+            report_hash=report_hash,
+            report_version=str(payload.get("report_version") or ""),
+            run_label=str(payload.get("run_label") or "")[:120],
+            window_start=datetime.fromisoformat(str(window["start"])),
+            window_end=datetime.fromisoformat(str(window["end"])),
+            bot_count=len(payload.get("bots") or ()),
+            payload=dict(payload),
+        )
+        .on_conflict_do_nothing(constraint="uq_run_report_hash")
+        .returning(RunReportRecord.id)
+    )
+    return (await session.execute(statement)).first() is not None

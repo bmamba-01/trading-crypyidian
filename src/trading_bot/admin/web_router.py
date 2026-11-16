@@ -3021,6 +3021,54 @@ async def ai_analyses_page(
     )
 
 
+_REPORT_HASH = re.compile(r"^[0-9a-f]{64}$")
+
+
+@router.get("/run-reports/{report_hash}")
+async def run_report_page(
+    request: Request,
+    report_hash: str,
+    identity: Annotated[AuthIdentity, Depends(current_identity)],
+) -> Response:
+    """CRY-380: Run Report đã lưu (bất biến) và các lượt AI đã đọc report này."""
+    if not _REPORT_HASH.fullmatch(report_hash):
+        raise HTTPException(status_code=404, detail="Không tìm thấy Run Report.")
+    try:
+        report = await _analyst_review(request).get_report(identity.principal, report_hash)
+    except AnalystReviewError as error:
+        raise HTTPException(status_code=error.status_code, detail=error.message) from error
+    return _templates(request).TemplateResponse(
+        request=request,
+        name="admin/run_report.html",
+        context={"identity": identity, "report": report},
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.get("/run-reports/{report_hash}/report.json")
+async def run_report_json(
+    request: Request,
+    report_hash: str,
+    identity: Annotated[AuthIdentity, Depends(current_identity)],
+) -> Response:
+    """Tải nguyên văn JSON đã lưu (đúng dữ liệu AI đọc, không gắn bối cảnh)."""
+    if not _REPORT_HASH.fullmatch(report_hash):
+        raise HTTPException(status_code=404, detail="Không tìm thấy Run Report.")
+    try:
+        report = await _analyst_review(request).get_report(identity.principal, report_hash)
+    except AnalystReviewError as error:
+        raise HTTPException(status_code=error.status_code, detail=error.message) from error
+    body = json.dumps(report["payload"], ensure_ascii=False, sort_keys=True, indent=2)
+    return Response(
+        content=body,
+        media_type="application/json",
+        headers={
+            "Cache-Control": "no-store",
+            "Content-Disposition": f'attachment; filename="run-report-{report_hash[:12]}.json"',
+        },
+    )
+
+
 @router.get("/ai-analyses/{run_id}")
 async def ai_analysis_detail(
     request: Request,

@@ -15,7 +15,11 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from trading_bot.adapters.database.models import AnalystRunRecord, ProposalBacktestRecord
+from trading_bot.adapters.database.models import (
+    AnalystRunRecord,
+    ProposalBacktestRecord,
+    RunReportRecord,
+)
 from trading_bot.application.outbox import UnitOfWork
 from trading_bot.auth.policy import Permission, Principal, authorize
 
@@ -197,6 +201,34 @@ class AnalystReviewService:
             "runs": [_run_row(row, counts.get(row.id, 0)) for row in rows],
         }
 
+    async def get_report(self, principal: Principal, report_hash: str) -> dict[str, Any]:
+        """Run Report đã lưu (CRY-380) + các lượt AI đã đọc report này."""
+        async with self._uow(principal) as unit:
+            row = await unit.session.scalar(
+                select(RunReportRecord).where(
+                    RunReportRecord.workspace_id == principal.workspace_id,
+                    RunReportRecord.report_hash == report_hash,
+                )
+            )
+            if row is None:
+                raise AnalystReviewError(404, "Không tìm thấy Run Report.")
+            runs = list(
+                await unit.session.scalars(
+                    select(AnalystRunRecord)
+                    .where(
+                        AnalystRunRecord.workspace_id == principal.workspace_id,
+                        AnalystRunRecord.run_report_hash == report_hash,
+                    )
+                    .order_by(AnalystRunRecord.created_at)
+                )
+            )
+            payload = dict(row.payload or {})
+        return {
+            **_report_view(row),
+            "payload": payload,
+            "runs": [_run_row(item, 0) for item in runs],
+        }
+
     async def get_run(self, principal: Principal, run_id: UUID) -> dict[str, Any]:
         async with self._uow(principal) as unit:
             row = await unit.session.scalar(
@@ -243,6 +275,37 @@ class AnalystReviewService:
             "context": _context_view(row.context),
             "backtests": [_backtest_view(item) for item in backtests],
         }
+
+
+def _report_view(row: RunReportRecord) -> dict[str, Any]:
+    payload = row.payload or {}
+    bots = []
+    for bot in _items(payload.get("bots")):
+        config = bot.get("config") or {}
+        performance = bot.get("performance") or {}
+        funnel = bot.get("funnel") or {}
+        bots.append(
+            {
+                "bot_name": bot.get("bot_name"),
+                "family": config.get("strategy_family"),
+                "timeframe": config.get("timeframe"),
+                "candidates": funnel.get("candidates"),
+                "closed_trades": performance.get("closed_trades"),
+                "net_pnl": performance.get("net_pnl_usdt"),
+                "win_rate": performance.get("win_rate_percent"),
+            }
+        )
+    quality = payload.get("data_quality") or {}
+    return {
+        "report_hash": row.report_hash,
+        "report_version": row.report_version,
+        "run_label": row.run_label,
+        "window_start": row.window_start,
+        "window_end": row.window_end,
+        "created_at": row.created_at,
+        "bots": bots,
+        "warnings": [str(item) for item in quality.get("warnings") or ()],
+    }
 
 
 def _run_row(row: AnalystRunRecord, backtest_count: int) -> dict[str, Any]:

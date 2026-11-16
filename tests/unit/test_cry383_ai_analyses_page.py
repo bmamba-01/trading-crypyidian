@@ -125,6 +125,19 @@ class _ReviewStub:
             ],
         }  # fmt: skip
 
+    async def get_report(self, principal: Any, report_hash: str) -> dict[str, Any]:
+        if report_hash != "a" * 64:
+            raise AnalystReviewError(404, "Không tìm thấy Run Report.")
+        return {
+            "report_hash": "a" * 64, "report_version": "run_report.v1", "run_label": "ai-analyst",
+            "window_start": CREATED, "window_end": CREATED, "created_at": CREATED,
+            "bots": [{"bot_name": "T09", "family": "H03", "timeframe": "15m", "candidates": 4,
+                      "closed_trades": 2, "net_pnl": "-60.08", "win_rate": "50.00"}],
+            "warnings": ["T09: chỉ 2 lệnh đóng"], "payload": {"report_hash": "a" * 64, "bots": []},
+            "runs": [{"id": str(RUN_ID), "created_at": CREATED, "topic_key": "family:H03",
+                      "valid": True, "error": None}],
+        }  # fmt: skip
+
     async def get_run(self, principal: Any, run_id: UUID) -> dict[str, Any]:
         if run_id != RUN_ID:
             raise AnalystReviewError(404, "Không tìm thấy lượt phân tích.")
@@ -189,3 +202,20 @@ def test_decimal_cost_is_formatted() -> None:
 
     assert _money(Decimal("0.12345678")) == "0.1235"
     assert _money(None) is None
+
+
+def test_run_report_page_and_json_download() -> None:
+    client = _client()
+    client.app.state.analyst_review_service = _ReviewStub()
+    html = client.get("/admin/run-reports/" + "a" * 64).text
+    assert "T09" in html and "-60.08" in html  # noqa: PT018
+    assert "T09: chỉ 2 lệnh đóng" in html
+    assert f'href="/admin/ai-analyses/{RUN_ID}"' in html
+    download = client.get("/admin/run-reports/" + "a" * 64 + "/report.json")
+    assert download.status_code == 200
+    assert download.headers["content-type"].startswith("application/json")
+    assert download.json() == {"report_hash": "a" * 64, "bots": []}
+    assert client.get("/admin/run-reports/not-a-hash").status_code == 404
+    assert client.get("/admin/run-reports/" + "b" * 64).status_code == 404
+    detail = client.get(f"/admin/ai-analyses/{RUN_ID}").text
+    assert 'href="/admin/run-reports/' + "a" * 64 + '"' in detail

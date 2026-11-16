@@ -25,7 +25,7 @@
       <div><dt>Token vào / ra</dt><dd>{{ run.tokens_in if run.tokens_in is not none else "—" }} / {{ run.tokens_out if run.tokens_out is not none else "—" }}</dd></div>
       <div><dt>Phiên</dt><dd>{% if run.resumed %}Tiếp phiên{% else %}Phiên mới{% endif %}</dd></div>
       <div><dt>Prompt / đầu ra</dt><dd>{{ run.prompt_version }} / {{ run.output_version }}</dd></div>
-      <div><dt>Report hash</dt><dd class="ai-hash">{{ run.run_report_hash[:16] }}</dd></div>
+      <div><dt>Run Report</dt><dd class="ai-hash"><a href="/admin/run-reports/{{ run.run_report_hash }}">{{ run.run_report_hash[:16] }}</a></dd></div>
       <div><dt>Input SHA-256</dt><dd class="ai-hash">{{ run.input_sha256[:16] }}</dd></div>
     </dl>
     {% if run.error %}<p class="ai-note">Engine báo lỗi: <code>{{ run.error }}</code></p>{% endif %}

@@ -1,0 +1,56 @@
+{% extends "admin/base.html" %}
+{% block title %}Run Report — Crypidian{% endblock %}
+{% block heading %}Run Report đã lưu{% endblock %}
+{% block head_extra %}<link rel="stylesheet" href="/static/pages/ai.css">{% endblock %}
+
+{% block content %}
+{#- CRY-380: report tất định đã lưu (bất biến). Đây là đúng dữ liệu AI đã đọc, chưa gắn bối cảnh. -#}
+<div class="ai-page">
+  <p><a href="/admin/ai-analyses">← Tất cả lượt phân tích</a></p>
+  <section class="glass-card" aria-labelledby="report-title">
+    <h2 id="report-title">{{ report.run_label }}</h2>
+    <dl class="ai-meta">
+      <div><dt>Cửa sổ</dt><dd>{{ report.window_start | local_minute }} – {{ report.window_end | local_minute }}</dd></div>
+      <div><dt>Phiên bản</dt><dd>{{ report.report_version }}</dd></div>
+      <div><dt>Lưu lúc</dt><dd>{{ report.created_at | local_minute }}</dd></div>
+      <div><dt>Report hash</dt><dd class="ai-hash">{{ report.report_hash }}</dd></div>
+    </dl>
+    <p class="ai-note">Report bất biến: cơ sở dữ liệu chặn mọi thao tác sửa/xóa. <a href="/admin/run-reports/{{ report.report_hash }}/report.json">Tải JSON nguyên văn</a></p>
+  </section>
+
+  <section class="glass-card" aria-labelledby="report-bots">
+    <h2 id="report-bots">Bot trong report ({{ report.bots | length }})</h2>
+    {% if report.bots %}
+    <div class="table-wrapper"><table class="responsive-table" aria-label="Bot trong Run Report">
+      <thead><tr><th scope="col">Bot</th><th scope="col">Họ / khung</th><th scope="col">Tín hiệu</th><th scope="col">Lệnh đóng</th><th scope="col">PnL ròng (USDT)</th><th scope="col">Tỷ lệ thắng (%)</th></tr></thead>
+      <tbody>
+      {% for bot in report.bots %}
+        <tr>
+          <td data-label="Bot">{{ bot.bot_name }}</td>
+          <td data-label="Họ / khung">{{ bot.family or "—" }} · {{ bot.timeframe or "—" }}</td>
+          <td data-label="Tín hiệu" class="ai-num">{{ bot.candidates if bot.candidates is not none else "—" }}</td>
+          <td data-label="Lệnh đóng" class="ai-num">{{ bot.closed_trades if bot.closed_trades is not none else "—" }}</td>
+          <td data-label="PnL ròng (USDT)" class="ai-num">{{ bot.net_pnl if bot.net_pnl is not none else "—" }}</td>
+          <td data-label="Tỷ lệ thắng (%)" class="ai-num">{{ bot.win_rate if bot.win_rate is not none else "—" }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table></div>
+    {% else %}<p class="ai-note">Report không có bot nào đang bật.</p>{% endif %}
+  </section>
+
+  {% if report.warnings %}
+  <section class="glass-card" aria-labelledby="report-warnings">
+    <h2 id="report-warnings">Cảnh báo chất lượng dữ liệu ({{ report.warnings | length }})</h2>
+    <ul class="ai-list">{% for warning in report.warnings %}<li>{{ warning }}</li>{% endfor %}</ul>
+  </section>
+  {% endif %}
+
+  <section class="glass-card" aria-labelledby="report-runs">
+    <h2 id="report-runs">Lượt AI đã đọc report này ({{ report.runs | length }})</h2>
+    {% if report.runs %}
+    <ul class="ai-list">{% for run in report.runs %}<li><a href="/admin/ai-analyses/{{ run.id }}">{{ run.created_at | local_minute }} · {{ run.topic_key }}</a> — {% if run.error %}lỗi engine{% elif run.valid %}hợp lệ{% else %}bị loại{% endif %}</li>{% endfor %}</ul>
+    {% else %}<p class="ai-note">Chưa có lượt AI nào dùng report này.</p>{% endif %}
+  </section>
+</div>
+{% endblock %}

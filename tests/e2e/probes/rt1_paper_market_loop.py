@@ -957,10 +957,45 @@ async def run_report() -> dict[str, Any]:
             end=NOW + timedelta(days=1),
             run_label="rt1-e2e",
         )
+        # CRY-380: lưu bất biến, idempotent theo hash.
+        from trading_bot.application.outbox import UnitOfWork
+        from trading_bot.application.run_report import persist_run_report
+
+        stored = []
+        for _ in range(2):
+            async with UnitOfWork(sessions, workspace_id=WORKSPACE) as uow:
+                stored.append(
+                    await persist_run_report(
+                        uow.session, workspace_id=WORKSPACE, payload=first.payload
+                    )
+                )
     finally:
         await engine.dispose()
+    blocked = []
+    for statement in (
+        "UPDATE run_report SET run_label = 'x'",
+        "DELETE FROM run_report",
+    ):
+        try:
+            with _connect() as connection:
+                connection.execute(statement)
+            blocked.append(False)
+        except Exception as error:  # noqa: BLE001
+            blocked.append("RUN_REPORT_IMMUTABLE" in str(error))
+    with _connect() as connection:
+        report_rights = connection.execute(
+            "SELECT has_table_privilege('crypidian_admin_web', 'run_report', 'SELECT'), "
+            "has_table_privilege('crypidian_admin_web', 'run_report', 'INSERT'), "
+            "(SELECT relforcerowsecurity FROM pg_class WHERE relname = 'run_report'), "
+            "(SELECT count(*) FROM run_report WHERE report_hash = %s)",
+            (first.report_hash,),
+        ).fetchone()
     [bot] = [item for item in first.payload["bots"] if item["bot_id"] == STATE["bot_id"]]
     return {
+        "stored": stored,
+        "immutable": blocked,
+        "report_rights": [bool(report_rights[0]), bool(report_rights[1]), bool(report_rights[2])],
+        "stored_rows": int(report_rights[3]),
         "deterministic": first.report_hash == second.report_hash,
         "closed_trades": bot["performance"]["closed_trades"],
         "r_mean": bot["performance"]["r_multiple"]["mean"],

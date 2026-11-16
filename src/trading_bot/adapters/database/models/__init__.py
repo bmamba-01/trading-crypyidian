@@ -6,6 +6,7 @@ from trading_bot.adapters.database.models.analyst_entities import (
     MacroCalendarFetchRecord,
     PaperCandidateOutcomeRecord,
     ProposalBacktestRecord,
+    RunReportRecord,
 )
 from trading_bot.adapters.database.models.backtest_entities import (
     BacktestDatasetManifestRecord,
@@ -213,6 +214,7 @@ __all__ = [
     "ListingSnapshotRecord",
     "MacroCalendarFetchRecord",
     "ProposalBacktestRecord",
+    "RunReportRecord",
     "EconomicEventRecord",
     "LearningIncidentHoldEventRecord",
     "LearningPaperPerformanceReportRecord",
