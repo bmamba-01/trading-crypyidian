@@ -1044,6 +1044,10 @@ async def analyst() -> dict[str, Any]:
                         structured_output=candidate,
                         validation_errors=list(check.errors),
                         valid=check.ok,
+                        # CRY-384: lượt hợp lệ lưu bối cảnh đã đưa AI; lượt kia không có (NULL).
+                        context={"macro_calendar": {"horizon_days": 7, "upcoming": []}}
+                        if check.ok
+                        else None,
                     )
                 )
             uow.session.add(
@@ -1113,7 +1117,9 @@ async def analyst() -> dict[str, Any]:
             "has_table_privilege('crypidian_admin_web', 'proposal_backtest', 'INSERT'), "
             "has_table_privilege('crypidian_trading_runtime', 'proposal_backtest', 'SELECT'), "
             "(SELECT relforcerowsecurity FROM pg_class WHERE relname = 'proposal_backtest'), "
-            "(SELECT count(*) FROM proposal_backtest)"
+            "(SELECT count(*) FROM proposal_backtest), "
+            "(SELECT count(*) FROM analyst_run WHERE context IS NULL), "
+            "(SELECT count(*) FROM analyst_run WHERE context->'macro_calendar' IS NOT NULL)"
         ).fetchone()
     return {
         "runs": int(total or 0),
@@ -1127,6 +1133,8 @@ async def analyst() -> dict[str, Any]:
         "backtest_forced_rls": bool(admin_web_can_select[6]),
         "backtests": int(admin_web_can_select[7]),
         "backtest_duplicate_rejected": duplicate_rejected,
+        "context_sql_null": int(admin_web_can_select[8]),
+        "context_stored": int(admin_web_can_select[9]),
     }
 
 

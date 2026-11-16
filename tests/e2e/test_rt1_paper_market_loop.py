@@ -132,7 +132,7 @@ def test_rest_candles_drive_paper_entry_fill_and_stop_exit_idempotently() -> Non
         compose("run", "--rm", "--no-deps", "db-provisioner")
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "head")
         heads = compose("run", "--rm", "--no-deps", "migrator", "alembic", "heads")
-        assert "7707d82de246 (head)" in heads.stdout
+        assert "a42edbd211e5 (head)" in heads.stdout
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "check")
         state.update(run("seed"))
         # CK-11: bộ quét đọc nến 4h thật (đủ 21 ngày), 1h thiếu 21 ngày bị loại kèm lý do;
@@ -308,6 +308,8 @@ def test_rest_candles_drive_paper_entry_fill_and_stop_exit_idempotently() -> Non
             "backtest_forced_rls": True,
             "backtests": 1,
             "backtest_duplicate_rejected": True,
+            "context_sql_null": 1,
+            "context_stored": 1,
         }
 
         # AI-4: ingestion ghi lịch vĩ mô (append-only), runtime đọc trạng thái point-in-time.

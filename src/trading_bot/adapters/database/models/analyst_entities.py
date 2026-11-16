@@ -80,6 +80,8 @@ class AnalystRunRecord(UuidPrimaryKey, CreatedAt, Base):
     structured_output: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     validation_errors: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
     valid: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # CRY-384: bối cảnh ngoài Run Report đã đưa cho AI (lịch vĩ mô, phái sinh, niêm yết) để tái lập.
+    context: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True), nullable=True)
 
 
 class PaperCandidateOutcomeRecord(UuidPrimaryKey, CreatedAt, Base):

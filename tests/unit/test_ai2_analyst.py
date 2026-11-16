@@ -535,3 +535,59 @@ def test_backtest_hook_runs_only_when_valid_proposals_exist() -> None:
     # Lỗi backtest không ném ra ngoài: lượt phân tích đã lưu/gửi vẫn hoàn tất.
     failed = runner.backtest_proposals(records, "p", send=False, runner=failing)
     assert failed == {"proposals": 2, "exit_code": 1}
+
+
+def test_validator_error_suggests_pointer_with_matching_value() -> None:
+    from trading_bot.application.ai_analyst import suggest_pointers
+
+    # Tỷ lệ thắng nằm ở /bots/0/performance/win_rate_percent nhưng AI chỉ trích net_pnl.
+    result = validate_analysis(
+        _output("T01 thắng 41.67 phần trăm.", ["/bots/0/performance/net_pnl_usdt"]), REPORT
+    )
+    assert not result.ok
+    assert "/bots/0/performance/win_rate_percent" in result.errors[0]
+    assert suggest_pointers(REPORT, "41.67%") == ["/bots/0/performance/win_rate_percent"]
+    assert suggest_pointers(REPORT, "41.67") == ["/bots/0/performance/win_rate_percent"]
+    missing = validate_analysis(_output("Có 999 tín hiệu.", ["/bots/0/funnel/candidates"]), REPORT)
+    assert "không trường nào có giá trị này" in missing.errors[0]
+
+
+def test_runner_allows_two_repairs_and_stores_context() -> None:
+    from scripts import run_ai_analyst as runner
+
+    from trading_bot.ports.analyst import AnalysisResult
+
+    bad = _output("Có 6 tín hiệu.", ["/bots/0/funnel/candidates"])
+    still_bad = _output("Có 9 tín hiệu.", ["/bots/0/funnel/candidates"])
+    good = _output("Có 5 tín hiệu.", ["/bots/0/funnel/candidates"])
+
+    class Engine:
+        name = "scripted"
+
+        def __init__(self, outputs: list[dict]) -> None:
+            self.outputs = outputs
+            self.requests: list[AnalysisRequest] = []
+
+        def analyze(self, request: AnalysisRequest) -> AnalysisResult:
+            self.requests.append(request)
+            output = self.outputs[min(len(self.requests) - 1, len(self.outputs) - 1)]
+            return AnalysisResult("scripted", output, "{}", "sess-2", 0)
+
+    report = {**REPORT, "macro_calendar": {"horizon_days": 7, "upcoming": []}}
+    engine = Engine([bad, still_bad, good])
+    records = runner.analyze_topics(report, engine, {}, families=["H03"], timeout=5, budget=0.1)
+    assert [record["valid"] for record in records] == [False, False, True]
+    assert all(r["context"] == {"macro_calendar": report["macro_calendar"]} for r in records)
+    # Lỗi lượt sửa 2 là của đầu ra lượt sửa 1 (số 7), không lặp lỗi cũ.
+    assert "số '9'" in engine.requests[2].prompt
+    # Hết 2 lượt sửa thì dừng; trần lượt gọi cũng chặn vòng sửa.
+    stubborn = Engine([bad])
+    records = runner.analyze_topics(report, stubborn, {}, families=["H03"], timeout=5, budget=0.1)
+    assert len(records) == 3
+    capped = Engine([bad])
+    records = runner.analyze_topics(
+        report, capped, {}, families=["H03"], timeout=5, budget=0.1, max_engine_calls=2
+    )
+    assert len(records) == 2
+    assert runner.analyze_topics(REPORT, Engine([good]), {}, families=["H03"], timeout=5,
+                                 budget=0.1)[0]["context"] is None  # fmt: skip

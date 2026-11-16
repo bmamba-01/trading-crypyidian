@@ -329,6 +329,41 @@ def _matches(token: str, candidates: Iterable[Decimal]) -> bool:
     return False
 
 
+CONTEXT_KEYS = ("macro_calendar", "derivatives", "listings")
+MAX_POINTER_HINTS = 3
+
+
+def _numeric_leaves(value: Any, pointer: str = "") -> Iterable[tuple[str, Decimal]]:
+    """(JSON Pointer, số) cho mọi lá số trong report (số, hoặc chuỗi là một số)."""
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            token = str(key).replace("~", "~0").replace("/", "~1")
+            yield from _numeric_leaves(item, f"{pointer}/{token}")
+    elif isinstance(value, list | tuple):
+        for index, item in enumerate(value):
+            yield from _numeric_leaves(item, f"{pointer}/{index}")
+    elif not isinstance(value, bool) and isinstance(value, int | float | Decimal | str):
+        numbers = _numbers_in(value)
+        if len(numbers) == 1 and (not isinstance(value, str) or _parse_number(value) is not None):
+            yield pointer, numbers[0]
+
+
+def suggest_pointers(
+    report: Mapping[str, Any], token: str, *, limit: int = MAX_POINTER_HINTS
+) -> list[str]:
+    """Trường trong report có giá trị khớp con số AI đã viết (để gợi ý trong lượt sửa).
+
+    Ưu tiên pointer ngắn (trường tổng hợp trước trường lồng sâu); bỏ khối lịch vĩ mô vì ngày giờ
+    không phải số liệu.
+    """
+    matches = [
+        pointer
+        for pointer, number in _numeric_leaves(_numeric_part(report))
+        if _matches(token, (number,))
+    ]
+    return sorted(matches, key=lambda item: (item.count("/"), item))[:limit]
+
+
 def _check_item(
     report: Mapping[str, Any], kind: str, index: int, text: str, refs: Sequence[str]
 ) -> list[str]:
@@ -345,8 +380,14 @@ def _check_item(
     errors.extend(moment_errors)
     for token in _NUMBER.findall(text):
         if not _matches(token, values):
+            hints = suggest_pointers(report, token)
+            hint = (
+                f"; trường có giá trị này: {hints}"
+                if hints
+                else "; không trường nào có giá trị này"
+            )
             errors.append(
-                f"{kind}[{index}]: số '{token}' không khớp trường được trích {list(refs)}"
+                f"{kind}[{index}]: số '{token}' không khớp trường được trích {list(refs)}{hint}"
             )
     return errors
 
@@ -529,8 +570,9 @@ def build_repair_prompt(errors: Sequence[str]) -> str:
     return (
         "Kết quả vừa rồi bị bộ kiểm tra số liệu loại vì các lỗi sau:\n"
         f"{listed}\n"
-        "Hãy trả lại TOÀN BỘ JSON đúng schema, sửa evidence_refs cho đúng trường chứa con số, "
-        "hoặc bỏ con số không có trong report. Không thêm số mới. Dùng cùng report ở lượt trước.\n"
+        "Hãy trả lại TOÀN BỘ JSON đúng schema. Với mỗi lỗi: thêm vào evidence_refs đúng trường "
+        "được gợi ý (giữ các evidence_refs cũ vẫn đúng), hoặc bỏ con số nếu không trường nào có "
+        "giá trị đó. Không thêm số mới, không làm tròn khác đi. Dùng cùng report ở lượt trước.\n"
     )
 
 

@@ -212,11 +212,13 @@ def analyze_topics(
     budget: float,
     skip_fingerprints: dict[str, str] | None = None,
     max_engine_calls: int | None = None,
+    max_repairs: int = 2,
 ) -> list[dict[str, Any]]:
     """Chạy engine cho từng họ chiến lược có trong report; trả bản ghi để lưu."""
     from trading_bot.application.ai_analyst import (
         ANALYST_OUTPUT_SCHEMA,
         ANALYST_OUTPUT_VERSION,
+        CONTEXT_KEYS,
         PROMPT_VERSION,
         build_prompt,
         build_repair_prompt,
@@ -260,6 +262,8 @@ def analyze_topics(
             "validation_errors": list(validation.errors) if validation else [],
             "valid": bool(validation and validation.ok and result.error is None),
             "topic_report": topic,
+            # CRY-384: bối cảnh ngoài Run Report đã đưa cho AI, lưu để tái lập đầu vào.
+            "context": {key: topic[key] for key in CONTEXT_KEYS if key in topic} or None,
         }
 
     for family in families or present:
@@ -287,28 +291,38 @@ def analyze_topics(
             )
         )
         calls += 1
-        first = record(topic_key, topic, prompt, result, session_id is not None)
-        first["fingerprint"] = fingerprint
-        records.append(first)
-        if first["valid"] or not first["validation_errors"] or not result.session_id:
-            continue
-        # Một lượt sửa trong cùng session: đưa lỗi validator, yêu cầu trả JSON đã sửa.
-        repair_prompt = build_repair_prompt(first["validation_errors"])
-        repaired = engine.analyze(
-            AnalysisRequest(
-                topic_key=topic_key,
-                prompt=repair_prompt,
-                schema=ANALYST_OUTPUT_SCHEMA,
-                session_id=result.session_id,
-                resume=True,
-                timeout_seconds=timeout,
-                max_budget_usd=budget,
+        latest = record(topic_key, topic, prompt, result, session_id is not None)
+        latest["fingerprint"] = fingerprint
+        records.append(latest)
+        # Tối đa `max_repairs` lượt sửa trong cùng session (16/11: một lượt không đủ — AI sửa lỗi
+        # này lại bỏ trích dẫn khác). Lỗi validator kèm gợi ý trường có giá trị khớp.
+        repairs = 0
+        session = result.session_id
+        while (
+            not latest["valid"]
+            and latest["validation_errors"]
+            and session
+            and repairs < max_repairs
+            and (max_engine_calls is None or calls < max_engine_calls)
+        ):
+            repair_prompt = build_repair_prompt(latest["validation_errors"])
+            repaired = engine.analyze(
+                AnalysisRequest(
+                    topic_key=topic_key,
+                    prompt=repair_prompt,
+                    schema=ANALYST_OUTPUT_SCHEMA,
+                    session_id=session,
+                    resume=True,
+                    timeout_seconds=timeout,
+                    max_budget_usd=budget,
+                )
             )
-        )
-        calls += 1
-        repaired_record = record(topic_key, topic, repair_prompt, repaired, True)
-        repaired_record["fingerprint"] = fingerprint
-        records.append(repaired_record)
+            calls += 1
+            repairs += 1
+            latest = record(topic_key, topic, repair_prompt, repaired, True)
+            latest["fingerprint"] = fingerprint
+            records.append(latest)
+            session = repaired.session_id or session
     return records
 
 
