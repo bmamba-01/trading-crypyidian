@@ -706,8 +706,14 @@ def build_h03_source_pinned_dataset_replay(
     fee_rate: Decimal = Decimal("0.001"),
     rights_evidence: BackfillRightsEvidence | None = None,
     dataset_start: datetime | None = None,
+    provider: str = "CRYPIDIAN_FIRST_PARTY_QA",
 ) -> tuple[BacktestDatasetReplayBundle, RuntimePaperReplayComparison]:
-    """Chạy H03 trên bundle v4 có identity nguồn và opportunity do runtime ghi."""
+    """Chạy H03 trên bundle v4 có identity nguồn và opportunity do runtime ghi.
+
+    `provider` mặc định là fixture QA first-party. `BINANCE_USDM_REST` dựng cùng chuỗi nến
+    synthetic dưới nguồn `BINANCE_USDM_REST_BACKFILL` để E2E kiểm gate theo nguồn non-QA; khi
+    đó bắt buộc truyền evidence do Source Registry thật cấp (terms URL lấy từ evidence).
+    """
     from trading_bot.application.backtest_dataset_manifest import (
         build_backtest_dataset_manifest,
     )
@@ -730,6 +736,16 @@ def build_h03_source_pinned_dataset_replay(
         or any(pattern not in {"loss", "flat", "profit"} for pattern in trade_patterns)
     ):
         raise ValueError("trade_patterns chỉ nhận loss, flat, profit và không được rỗng.")
+    if provider == CRYPIDIAN_FIRST_PARTY_QA:
+        market_source = CRYPIDIAN_FIRST_PARTY_QA_SOURCE
+        cursor_prefix = "crypidian-first-party-qa:v1"
+    elif provider == "BINANCE_USDM_REST":
+        if rights_evidence is None:
+            raise ValueError("Provider BINANCE_USDM_REST cần evidence từ Source Registry.")
+        market_source = "BINANCE_USDM_REST_BACKFILL"
+        cursor_prefix = "binance-usdm-rest-synthetic-fixture:v1"
+    else:
+        raise ValueError("provider chỉ nhận CRYPIDIAN_FIRST_PARTY_QA hoặc BINANCE_USDM_REST.")
     if type(pattern_stride) is not int or pattern_stride < 3:
         raise ValueError("pattern_stride phải là số nguyên từ 3 trở lên.")
     if not isinstance(fee_rate, Decimal) or not fee_rate.is_finite() or fee_rate < 0:
@@ -761,11 +777,14 @@ def build_h03_source_pinned_dataset_replay(
         raise ValueError("rights_evidence phải là evidence đã xác thực từ Source Registry.")
     if (
         rights.workspace_id != workspace_id
-        or rights.provider != CRYPIDIAN_FIRST_PARTY_QA
+        or rights.provider != provider
         or rights.purpose is not BackfillRightsPurpose.BACKTEST_RESEARCH
-        or rights.terms_url != CRYPIDIAN_FIRST_PARTY_QA_EVIDENCE_REF
+        or (
+            provider == CRYPIDIAN_FIRST_PARTY_QA
+            and rights.terms_url != CRYPIDIAN_FIRST_PARTY_QA_EVIDENCE_REF
+        )
     ):
-        raise PermissionError("Rights evidence không khớp provider fixture QA.")
+        raise PermissionError("Rights evidence không khớp provider fixture.")
     bars: list[OHLCVBar] = []
     signal_patterns = {
         200 + pattern_stride * index: pattern for index, pattern in enumerate(trade_patterns)
@@ -851,8 +870,8 @@ def build_h03_source_pinned_dataset_replay(
                 volume=Decimal("100"),
                 quote_volume=quote_volume,
                 is_closed=True,
-                source=CRYPIDIAN_FIRST_PARTY_QA_SOURCE,
-                source_cursor=f"crypidian-first-party-qa:v1:{logical_key}",
+                source=market_source,
+                source_cursor=f"{cursor_prefix}:{logical_key}",
                 checksum=checksum,
                 raw_reference=None,
                 source_identity=MarketBarSourceIdentity(
@@ -866,7 +885,10 @@ def build_h03_source_pinned_dataset_replay(
             )
         )
 
-    request = FirstPartyQADatasetRequest(
+    request_type = (
+        FirstPartyQADatasetRequest if provider == CRYPIDIAN_FIRST_PARTY_QA else RestBackfillRequest
+    )
+    request = request_type(
         symbol="BTCUSDT",
         interval="1h",
         start=start,

@@ -9,9 +9,10 @@
   `WP06_SCORER_DEPLOYMENT_QA_SOURCE_DENIED`) do phase deployment của
   `test_wp06_source_pinned_replay_persistence.py[source-linked-test]` phủ.
 
-Fixture chỉ có nguồn QA nên chưa có đường sản phẩm tới `WP06_SCORER_PAPER_SOURCE_RIGHTS_DENIED`
-cho artifact đã train; bản thân gate PAPER (`wp06_require_scorer_paper_source_rights`) vẫn
-được kiểm trực tiếp trong `wp06_scorer_paper_rights.py` của E2E scorer deployment.
+- Replay v5 nguồn non-QA `BINANCE_USDM_REST` có policy chỉ BACKTEST_RESEARCH + TRAINING (không
+  PAPER_DEMO), train thật và có TEST proof: preflight PAPER lấy canonical source từ bundle của
+  proof và gateway từ chối đúng `WP06_SCORER_PAPER_SOURCE_RIGHTS_DENIED` trước lookup report,
+  không đổi pointer/event/score.
 """
 
 from __future__ import annotations
@@ -47,6 +48,7 @@ def test_real_deployment_gateway_fails_closed_for_trained_and_legacy_sources() -
     )
     project = f"crypidian-wp06-paper-gateway-{uuid.uuid4().hex[:10]}"
     replay_workspace = str(uuid.uuid4())
+    binance_workspace = str(uuid.uuid4())
     image = build_image_reference(root)
     environment = os.environ | {
         "CRYPIDIAN_APP_IMAGE": image,
@@ -71,6 +73,53 @@ def test_real_deployment_gateway_fails_closed_for_trained_and_legacy_sources() -
             "/e2e-tests/e2e/probes/wp06_normalized_fold_samples.py",
             values={"WP06_NORMALIZED_PHASE": phase} | (values or {}),
         )
+
+    def train_replay(workspace_id, *seed_flags, through_proof=False):
+        """Seed replay pinned rồi đi stage → approve → seal → enqueue → train (→ proof)."""
+        state = run_json(
+            "migrator",
+            "/e2e-tests/e2e/probes/wp06_source_pinned_replay_persistence.py",
+            "--scorer-seed",
+            *seed_flags,
+            values={"CRYPIDIAN_E2E_WORKSPACE_ID": workspace_id},
+        )
+        state["evaluation_run_id"] = str(uuid.uuid4())
+        phases = [
+            ("candidate-proof-builder", "stage"),
+            ("admin-web", "approve"),
+            ("candidate-proof-builder", "seal"),
+            ("admin-web", "enqueue"),
+            ("trainer-worker", "train"),
+        ]
+        if through_proof:
+            phases.append(("candidate-proof-builder", "proof"))
+        for service, phase in phases:
+            state |= run_json(
+                service,
+                "/e2e-tests/e2e/probes/wp06_source_linked_scorer_test.py",
+                phase,
+                values={"WP06_SOURCE_LINKED_STATE": json.dumps(state)},
+            )
+        assert state["status"] == "succeeded"
+        return state
+
+    def denied_by_gateway(workspace_id, attempt_id, expected):
+        return run_json(
+            "admin-web",
+            GATEWAY_PROBE,
+            values={
+                "WP06_WORKSPACE_ID": workspace_id,
+                "WP06_ATTEMPT_ID": attempt_id,
+                "WP06_EXPECTED_DENIAL": expected,
+            },
+        )
+
+    denial_result = {
+        "real_gateway_paper_rights_denied": True,
+        "pointer_and_event_ledger_unchanged": True,
+        "diagnostic_artifact_only": True,
+        "positive_rights_evidence": False,
+    }
 
     def ledger(workspace_id):
         return run_json(
@@ -115,44 +164,29 @@ def test_real_deployment_gateway_fails_closed_for_trained_and_legacy_sources() -
         assert ledger(manifest["workspace_id"]) == EMPTY_LEDGER
 
         # 2) Replay QA manifest v5 train thật, chưa có TEST report: gateway từ chối.
-        state = run_json(
-            "migrator",
-            "/e2e-tests/e2e/probes/wp06_source_pinned_replay_persistence.py",
-            "--scorer-seed",
-            values={"CRYPIDIAN_E2E_WORKSPACE_ID": replay_workspace},
-        )
-        for service, phase in (
-            ("candidate-proof-builder", "stage"),
-            ("admin-web", "approve"),
-            ("candidate-proof-builder", "seal"),
-            ("admin-web", "enqueue"),
-            ("trainer-worker", "train"),
-        ):
-            state |= run_json(
-                service,
-                "/e2e-tests/e2e/probes/wp06_source_linked_scorer_test.py",
-                phase,
-                values={"WP06_SOURCE_LINKED_STATE": json.dumps(state)},
-            )
-        assert state["status"] == "succeeded"
+        state = train_replay(replay_workspace)
         before = ledger(replay_workspace)
         assert before == EMPTY_LEDGER | {"learning_scorer_artifact": 1}
-        denied = run_json(
-            "admin-web",
-            GATEWAY_PROBE,
-            values={
-                "WP06_WORKSPACE_ID": replay_workspace,
-                "WP06_ATTEMPT_ID": state["attempt_id"],
-                "WP06_EXPECTED_DENIAL": "WP06_SCORER_DEPLOYMENT_REPORT_NOT_FOUND",
-            },
+        assert (
+            denied_by_gateway(
+                replay_workspace, state["attempt_id"], "WP06_SCORER_DEPLOYMENT_REPORT_NOT_FOUND"
+            )
+            == denial_result
         )
-        assert denied == {
-            "real_gateway_paper_rights_denied": True,
-            "pointer_and_event_ledger_unchanged": True,
-            "diagnostic_artifact_only": True,
-            "positive_rights_evidence": False,
-        }
         assert ledger(replay_workspace) == before
+
+        # 3) Nguồn non-QA chỉ TRAINING, có TEST proof: chặn đúng ở gate PAPER.
+        binance = train_replay(binance_workspace, "--binance", through_proof=True)
+        assert binance["qa_provider"] == "BINANCE_USDM_REST"
+        before = ledger(binance_workspace)
+        assert before == EMPTY_LEDGER | {"learning_scorer_artifact": 1}
+        assert (
+            denied_by_gateway(
+                binance_workspace, binance["attempt_id"], "WP06_SCORER_PAPER_SOURCE_RIGHTS_DENIED"
+            )
+            == denial_result
+        )
+        assert ledger(binance_workspace) == before
     finally:
         compose("down", "--volumes", "--remove-orphans")
         if image_created:

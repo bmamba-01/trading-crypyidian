@@ -10,6 +10,7 @@ import sys
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 from sqlalchemy import select, text
@@ -35,7 +36,7 @@ from trading_bot.application.backtest_dataset_replay_bundle import (
     BacktestDatasetReplayBundleReference,
 )
 from trading_bot.application.backtest_replay_jobs import BacktestReplayJobSubmission
-from trading_bot.application.binance_rest_backfill import BackfillRightsPurpose
+from trading_bot.application.binance_rest_backfill import BackfillRightsPurpose, RestBackfillRequest
 from trading_bot.application.binance_rest_backfill_rights import SourceRegistryBackfillRightsGate
 from trading_bot.application.candidate_universe_proof import CandidateUniverseProofService
 from trading_bot.application.first_party_qa_dataset import (
@@ -60,10 +61,31 @@ from e2e.probes.source_license_fixture import (
 from fixtures.runtime_replay import build_h03_source_pinned_dataset_replay
 
 WORKSPACE_ID = UUID(os.environ["CRYPIDIAN_E2E_WORKSPACE_ID"])
+BINANCE_PROVIDER = "BINANCE_USDM_REST"
+# Nguồn non-QA chỉ TRAINING (không PAPER_DEMO) để E2E chạm gate PAPER của deployment.
+FIXTURE_SOURCES = {
+    CRYPIDIAN_FIRST_PARTY_QA: SimpleNamespace(
+        market_source=CRYPIDIAN_FIRST_PARTY_QA_SOURCE,
+        evidence_ref=CRYPIDIAN_FIRST_PARTY_QA_EVIDENCE_REF,
+        request_type=FirstPartyQADatasetRequest,
+        publisher="Crypidian Repository QA Fixture",
+        auth_scope="repo-owned synthetic QA data; no exchange account",
+    ),
+    BINANCE_PROVIDER: SimpleNamespace(
+        market_source="BINANCE_USDM_REST_BACKFILL",
+        evidence_ref="https://example.test/wp06-binance-training-only-fixture-terms",
+        request_type=RestBackfillRequest,
+        publisher="Fixture Binance USDⓈ-M synthetic trong Compose tạm",
+        auth_scope="synthetic fixture bars; no exchange account",
+    ),
+}
 
 
 async def run_probe(
-    *, scorer_seed: bool = False, license_fixture: bool = True
+    *,
+    scorer_seed: bool = False,
+    license_fixture: bool = True,
+    provider: str = CRYPIDIAN_FIRST_PARTY_QA,
 ) -> dict[str, object]:
     """Seed replay QA source-pinned.
 
@@ -71,7 +93,10 @@ async def run_probe(
     + evidence tổng hợp từ `source_license_fixture` và consumer rights chạy hết event, đúng
     điều kiện của gate TRAINING exact-scope. Probe khác cần scope riêng (ví dụ
     `wp06_source_license_scope.py`) truyền `False` rồi tự vá transition/evidence.
+    `provider=BINANCE_USDM_REST` dựng cùng replay dưới nguồn non-QA, policy chỉ
+    BACKTEST_RESEARCH + TRAINING (không PAPER_DEMO).
     """
+    fixture_source = FIXTURE_SOURCES[provider]
     engine = create_database_engine(
         database_url_from_secret(
             username=os.environ["TRADING_BOT_DATABASE_USER"],
@@ -88,7 +113,7 @@ async def run_probe(
         hours=bar_count
     )
     range_end = dataset_start + timedelta(hours=bar_count)
-    qa_request = FirstPartyQADatasetRequest(
+    qa_request = fixture_source.request_type(
         symbol="BTCUSDT",
         interval="1h",
         start=dataset_start,
@@ -128,7 +153,7 @@ async def run_probe(
             MarketInstrument(
                 id=instrument_id,
                 workspace_id=WORKSPACE_ID,
-                source=CRYPIDIAN_FIRST_PARTY_QA_SOURCE,
+                source=fixture_source.market_source,
                 idempotency_key="wp06-source-pinned-qa-fixture-instrument",
                 symbol="BTCUSDT",
                 base_asset="BTC",
@@ -146,14 +171,14 @@ async def run_probe(
             )
         )
     policy_now = datetime.now(UTC)
-    qa_scope = fixture_license_scope(CRYPIDIAN_FIRST_PARTY_QA)
+    qa_scope = fixture_license_scope(provider)
     rights_history = (
         SourceRegistryEntry.discover(
-            source_id=CRYPIDIAN_FIRST_PARTY_QA,
-            publisher="Crypidian Repository QA Fixture",
-            endpoint_url=CRYPIDIAN_FIRST_PARTY_QA_EVIDENCE_REF,
+            source_id=provider,
+            publisher=fixture_source.publisher,
+            endpoint_url=fixture_source.evidence_ref,
             access_method="GET",
-            auth_scope="repo-owned synthetic QA data; no exchange account",
+            auth_scope=fixture_source.auth_scope,
             budget=SourceBudget(
                 window=timedelta(hours=1),
                 max_requests=100,
@@ -166,19 +191,19 @@ async def run_probe(
             reason="Đăng ký fixture synthetic first-party trong workspace Compose tạm.",
         )
         .transition(
-            policy_id=f"{CRYPIDIAN_FIRST_PARTY_QA}:source-pinned-pending",
+            policy_id=f"{provider}:source-pinned-pending",
             state=SourcePolicyState.RIGHTS_PENDING,
             actor_id="fixture-operator",
             at=policy_now - timedelta(minutes=2),
             reason="Ghi nhận nguồn QA đang chờ review trong test workspace.",
             **(
-                pending_license_kwargs(qa_scope, CRYPIDIAN_FIRST_PARTY_QA_EVIDENCE_REF)
+                pending_license_kwargs(qa_scope, fixture_source.evidence_ref)
                 if license_fixture
                 else {}
             ),
         )
         .transition(
-            policy_id=f"{CRYPIDIAN_FIRST_PARTY_QA}:source-pinned-training",
+            policy_id=f"{provider}:source-pinned-training",
             state=SourcePolicyState.VERIFIED,
             actor_id="fixture-operator",
             at=policy_now - timedelta(minutes=1),
@@ -190,9 +215,9 @@ async def run_probe(
             valid_until=policy_now + timedelta(days=7),
             approved_by="fixture-reviewer",
             **(
-                verified_license_kwargs(qa_scope, CRYPIDIAN_FIRST_PARTY_QA_EVIDENCE_REF, uuid4())
+                verified_license_kwargs(qa_scope, fixture_source.evidence_ref, uuid4())
                 if license_fixture
-                else {"evidence_ref": CRYPIDIAN_FIRST_PARTY_QA_EVIDENCE_REF}
+                else {"evidence_ref": fixture_source.evidence_ref}
             ),
         )
     )
@@ -209,7 +234,7 @@ async def run_probe(
         async with UnitOfWork(sessions, workspace_id=WORKSPACE_ID) as uow:
             await SourceRegistryRepository(uow.session).finalize_policy(
                 workspace_id=WORKSPACE_ID,
-                source_id=CRYPIDIAN_FIRST_PARTY_QA,
+                source_id=provider,
                 policy_id=revision.policy.policy_id,
             )
     if license_fixture:
@@ -219,7 +244,7 @@ async def run_probe(
         qa_rights = await SourceRegistryBackfillRightsGate(
             workspace_id=WORKSPACE_ID,
             repository=SourceRegistryRepository(uow.session),
-            source_id=CRYPIDIAN_FIRST_PARTY_QA,
+            source_id=provider,
         ).authorize(request=qa_request, now=datetime.now(UTC))
     bundle, comparison = build_h03_source_pinned_dataset_replay(
         WORKSPACE_ID,
@@ -227,6 +252,7 @@ async def run_probe(
         pattern_stride=pattern_stride,
         fee_rate=Decimal("0") if scorer_seed else Decimal("0.001"),
         rights_evidence=qa_rights,
+        provider=provider,
         dataset_start=dataset_start,
     )
     if not comparison.is_complete or len(comparison.runs) != 1:
@@ -417,7 +443,7 @@ async def run_probe(
             "bars": len(identity_ids),
             "linked_outcomes": linked_outcomes,
             "opportunities": len(replay.opportunities),
-            "qa_provider": CRYPIDIAN_FIRST_PARTY_QA,
+            "qa_provider": provider,
             "test_candidate_count": test_candidate_count,
             "expected_test_inventory": {
                 hashlib.sha256(item.event_id.encode()).hexdigest(): {
@@ -497,5 +523,8 @@ if __name__ == "__main__":
             child_manifests=int(os.environ["WP06_PINNED_CHILD_MANIFESTS"]),
         )
     else:
-        outcome = run_probe(scorer_seed="--scorer-seed" in sys.argv)
+        outcome = run_probe(
+            scorer_seed="--scorer-seed" in sys.argv,
+            provider=BINANCE_PROVIDER if "--binance" in sys.argv else CRYPIDIAN_FIRST_PARTY_QA,
+        )
     print(json.dumps(asyncio.run(outcome), sort_keys=True))

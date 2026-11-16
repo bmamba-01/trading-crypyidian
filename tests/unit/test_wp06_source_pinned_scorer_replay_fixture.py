@@ -60,3 +60,56 @@ def test_source_pinned_replay_builds_policy_sized_class_support_from_h03_runtime
     label_counts = Counter((trade.net_pnl > 0) - (trade.net_pnl < 0) for trade in outcomes)
     assert len(outcomes) == 27
     assert label_counts == {-1: 9, 0: 9, 1: 9}
+
+
+def _binance_evidence(workspace_id: UUID, *, provider: str = "BINANCE_USDM_REST"):
+    import hashlib
+    from datetime import UTC, datetime, timedelta
+
+    from trading_bot.application.binance_rest_backfill import (
+        BackfillRightsEvidence,
+        BackfillRightsPurpose,
+    )
+
+    now = datetime.now(UTC)
+    return BackfillRightsEvidence(
+        workspace_id=workspace_id,
+        provider=provider,
+        purpose=BackfillRightsPurpose.BACKTEST_RESEARCH,
+        terms_url="https://example.test/binance-fixture-terms",
+        policy_fingerprint=hashlib.sha256(b"binance-fixture-policy").hexdigest(),
+        verified_at=now - timedelta(days=60),
+        checked_at=now - timedelta(days=30),
+        valid_until=now + timedelta(days=2),
+    )
+
+
+def test_source_pinned_replay_supports_non_qa_binance_provider_with_registry_evidence() -> None:
+    workspace_id = UUID("dddddddd-dddd-4ddd-8ddd-dddddddddddd")
+    bundle, comparison = build_h03_source_pinned_dataset_replay(
+        workspace_id,
+        rights_evidence=_binance_evidence(workspace_id),
+        provider="BINANCE_USDM_REST",
+    )
+
+    assert bundle.rights_provider == "BINANCE_USDM_REST"
+    assert {item.manifest.rights_provider for item in bundle.components} == {"BINANCE_USDM_REST"}
+    assert {bar.source for item in bundle.components for bar in item.bars} == {
+        "BINANCE_USDM_REST_BACKFILL"
+    }
+    assert len(comparison.runs[0].trade_outcomes) == 2
+
+
+def test_source_pinned_replay_rejects_unknown_provider_or_missing_or_mismatched_evidence() -> None:
+    import pytest
+
+    workspace_id = UUID("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee")
+    with pytest.raises(ValueError, match="evidence"):
+        build_h03_source_pinned_dataset_replay(workspace_id, provider="BINANCE_USDM_REST")
+    with pytest.raises(ValueError, match="provider chỉ nhận"):
+        build_h03_source_pinned_dataset_replay(workspace_id, provider="UNKNOWN_SOURCE")
+    with pytest.raises(PermissionError):
+        build_h03_source_pinned_dataset_replay(
+            workspace_id,
+            rights_evidence=_binance_evidence(workspace_id),
+        )
