@@ -1386,6 +1386,22 @@ async def listings_write() -> dict[str, Any]:
                         "entries": [e.payload() for e in entries],
                     }
                 )
+        # Lần kiểm thứ ba không đổi nội dung: chỉ ghi mốc kiểm, entries là SQL NULL.
+        async with scope() as store:
+            previous = await store.last_check()
+            assert previous is not None
+            await store.insert(
+                {
+                    "id": uuid4(),
+                    "workspace_id": WORKSPACE,
+                    "fetched_at": LISTING_AT + timedelta(hours=1, minutes=30),
+                    "policy_fingerprint": "c" * 64,
+                    "entries_sha256": previous[1],
+                    "entry_count": 11,
+                    "changed": False,
+                    "entries": None,
+                }
+            )
         async with scope() as store:
             last = await store.last_check()
         denied = []

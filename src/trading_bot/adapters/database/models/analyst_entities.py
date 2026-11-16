@@ -249,4 +249,8 @@ class ListingSnapshotRecord(UuidPrimaryKey, CreatedAt, Base):
     entries_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     entry_count: Mapped[int] = mapped_column(Integer, nullable=False)
     changed: Mapped[bool] = mapped_column(Boolean, nullable=False)
-    entries: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB, nullable=True)
+    # none_as_null: lần kiểm không đổi lưu SQL NULL (mặc định JSONB ghi `None` thành JSON 'null'
+    # → vi phạm ràng buộc `changed = (entries IS NOT NULL)`; lỗi thấy ở lần kiểm thứ hai 16/11).
+    entries: Mapped[list[dict[str, Any]] | None] = mapped_column(
+        JSONB(none_as_null=True), nullable=True
+    )

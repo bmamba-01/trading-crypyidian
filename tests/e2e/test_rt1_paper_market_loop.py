@@ -334,6 +334,8 @@ def test_rest_candles_drive_paper_entry_fill_and_stop_exit_idempotently() -> Non
         # AI-4 lát 3: lần kiểm exchangeInfo append-only; lịch gỡ chỉ thấy sau lần kiểm phát hiện.
         listed = run("listings_write")
         assert listed["update_delete_denied"] == [True, True], listed
+        # Lần kiểm không đổi nội dung được ghi (entries SQL NULL) và là mốc kiểm mới nhất.
+        assert listed["last"] == "2026-11-16T10:30:00+00:00", listed
         assert run("listings_read") == {
             "at_risk": [["ZECUSDT", "20/11 15:00"]],
             "changes": [["DELIST_SCHEDULED", "ZECUSDT"]],
