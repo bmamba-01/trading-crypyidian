@@ -55,6 +55,7 @@ CLOSE_SETTLE = timedelta(seconds=3)
 # Runner từ chối trang "nhận trong tương lai" so với mốc ``now`` truyền vào, nên mốc kiểm hợp lệ
 # là đầu tick + khoảng cho phép tải. Khoảng request vẫn tính từ đầu tick nên chỉ gồm nến đã đóng.
 PAGE_RECEIPT_ALLOWANCE = timedelta(seconds=60)
+MAX_COLLECTOR_STREAMS = 100
 _SYMBOL = re.compile(r"[A-Z0-9]{3,32}")
 
 
@@ -87,8 +88,12 @@ def parse_collector_streams(value: str) -> tuple[CollectorStream, ...]:
                 streams.append(stream)
     if not streams:
         raise ValueError("Cấu hình collector không có luồng nào.")
-    if len(streams) > 60:
-        raise ValueError("Collector tối đa 60 luồng để giữ trong hạn mức request.")
+    # 100 luồng × 1 request/tick (30 giây) × weight 5 (limit 1000) ≈ 1.000 weight/phút, dưới
+    # hạn mức 2.400/phút của Binance USDⓈ-M (bộ giới hạn request vẫn chặn khi vượt).
+    if len(streams) > MAX_COLLECTOR_STREAMS:
+        raise ValueError(
+            f"Collector tối đa {MAX_COLLECTOR_STREAMS} luồng để giữ trong hạn mức request."
+        )
     return tuple(streams)
 
 

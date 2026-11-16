@@ -4389,3 +4389,41 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Nguyên nhân (tài liệu chính thức):** phiên Claude Desktop dùng OAuth do app quản lý, không chia sẻ cho CLI độc lập. CLI cần `claude auth login` (Keychain) hoặc `CLAUDE_CODE_OAUTH_TOKEN` từ `claude setup-token`. Đây là token 1 năm gắn subscription, chỉ dùng gọi model, dành cho script/CI (https://code.claude.com/docs/en/authentication, kiểm 16/11/2026).
 - **Sửa:** `ClaudeCliEngine(oauth_token_file=...)` đọc `.secrets/claude_code_oauth_token` (gitignored), chỉ đưa token vào env của tiến trình con, không vào argv/log/DB. Thiếu file thì CLI dùng Keychain. Test `test_claude_engine_passes_oauth_token_only_via_env`.
 - **Chờ owner:** chạy `claude setup-token` và lưu token vào file trên (chmod 600), hoặc `claude auth login` trong Terminal của chính owner.
+
+### 2026-11-16 — AI-2 chạy thật bằng Claude CLI; AI phát hiện lỗi "0 lệnh khớp" → đưa nến 1m trở lại
+
+- **Owner:** "đã đăng nhập trên terminal". `claude auth status` → `loggedIn: true, claude.ai, max` (bản `~/.local/bin/claude` và bản trong bundle).
+  - Chạy ngoài sandbox để CLI đọc Keychain. Trong sandbox trước đó báo chưa đăng nhập.
+- **Lượt thật 1** (report 24 giờ):
+  - CARD hợp lệ và **đã gửi Telegram**.
+  - H01/H03 bị validator loại vì: AI viết tắt "T07 (14 coin)"; số đếm "2 bot"; vài evidence_ref trỏ sai.
+  - **Nội dung AI chỉ ra đúng:**
+    - bot 1h/4h có tín hiệu nhưng 0 lệnh;
+    - bot 15m có intent nhưng **0 vị thế**;
+    - `H03_SERIES_STALE` chỉ ở 15m;
+    - nhiều đánh giá ngoài universe;
+    - report lệch (ranking "0" khi PnL null; `groups` lẫn họ khác).
+- **Lỗi thật "0 lệnh khớp":** `entry_events 23, entry_fills 0`, mọi intent EXPIRED.
+  - Nguyên nhân gốc: `PaperExecutionGateway.submit` đặt `eligible_at = max(ready, submitted_at) + latency`. Khi root không có 1m thì khung execution = khung chiến lược. Nến mở lúc tín hiệu đã mở **trước** `submitted_at`; nến kế mở đúng `expires_at` nên bị đánh EXPIRED. Không nến nào hợp lệ.
+  - E2E RT-1 không bắt được vì có 1m.
+  - Thử "lùi hạn reservation" trước: không đúng gốc nên đã hoàn tác.
+- **Sửa (vận hành + code):**
+  - Collector `MAX_COLLECTOR_STREAMS` 60 → **100**. Tính: 100 luồng × 1 request/30 giây × weight 5 (limit 1000) ≈ 1.000/phút < 2.400/phút; `PublicRequestLimiter` vẫn chặn.
+  - Kế hoạch đợt thử thêm `1m` (giữ nguyên 20 coin, không bốc lại vì danh sách đủ điều kiện đổi theo volume) → 80 luồng.
+  - Script `seed_signal_test_bots.py`: id root theo bộ khung, `bot_config_version` = max+1 gắn root mới.
+  - Local: root v3 (1m/15m/1h/4h), config mới cho 10 bot; collector ok 80/80; runtime READY 10/10.
+  - **Kết quả:** intent ACCEPTED khớp trên nến 1m. 3 vị thế SHORT mở (T06 AEROUSDT, T09 ZECUSDT/AEROUSDT); 3 thẻ "mở lệnh" đã gửi Telegram.
+- **Cải tiến AI-2 từ lượt thật:**
+  - ranking giữ `null` khi chưa có PnL;
+  - `topic_report` tính lại `groups` chỉ trên bot của chủ đề (`group_sections`);
+  - validator coi mảnh tên bot ("T07 H01 1h", "14 coin") là định danh, chấp nhận số bot trong chủ đề;
+  - **vòng sửa 1 lần** trong cùng session (`build_repair_prompt` liệt kê lỗi validator); cả 2 lượt lưu kiểm toán.
+- **Lượt thật 2** (tiếp tục session): cả 3 chủ đề lượt đầu bị loại → sau vòng sửa **3/3 hợp lệ**, gửi 3 tin Telegram.
+  - Quan sát: session tiếp tục mang số của **report lượt trước** (CARD viết 578/517 của cửa sổ cũ). Validator chặn được. Đây là rủi ro cố hữu khi resume; đã ghi.
+- **Kiểm chứng:** unit **4493 passed/131.38s**; mypy sạch.
+- **Còn mở:**
+  - lưu bền lý do candidate bị từ chối;
+  - thẻ ảnh "Phân tích AI";
+  - lịch tự chạy;
+  - file knowledge/xoay session;
+  - cảnh báo khi root không có 1m mà bật market dispatch (nên fail-closed hoặc cảnh báo readiness).

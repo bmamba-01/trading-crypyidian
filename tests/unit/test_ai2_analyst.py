@@ -28,18 +28,28 @@ REPORT: dict[str, Any] = {
             "bot_name": "T01 H03 1h · 20 coin",
             "config": {
                 "strategy_family": "H03",
+                "timeframe": "1h",
                 "release_id": "h03-v3-1h",
                 "universe": ["BTWUSDT"],
             },
             "funnel": {"candidates": 5, "candidate_to_order_rate": "0.25"},
-            "performance": {"net_pnl_usdt": "-12.3456", "win_rate_percent": "41.67"},
+            "performance": {
+                "net_pnl_usdt": "-12.3456",
+                "win_rate_percent": "41.67",
+                "closed_trades": 2,
+            },
             "by_symbol": {"BTWUSDT": {"closed": 2}},
         },
         {
             "bot_name": "T07 H01 1h · 14 coin",
-            "config": {"strategy_family": "H01", "release_id": "h01-v1", "universe": []},
+            "config": {
+                "strategy_family": "H01",
+                "timeframe": "1h",
+                "release_id": "h01-v1",
+                "universe": [],
+            },
             "funnel": {"candidates": 0},
-            "performance": {"net_pnl_usdt": "0"},
+            "performance": {"net_pnl_usdt": "0", "closed_trades": 0},
             "by_symbol": {},
         },
     ],
@@ -271,3 +281,42 @@ def test_claude_engine_passes_oauth_token_only_via_env(tmp_path) -> None:
         _request()
     )
     assert "CLAUDE_CODE_OAUTH_TOKEN" not in missing.calls[-1]["env"]
+
+
+def test_runner_repairs_invalid_output_once_in_same_session() -> None:
+    from scripts import run_ai_analyst as runner
+
+    from trading_bot.ports.analyst import AnalysisResult
+
+    bad = _output("Có 6 tín hiệu.", ["/bots/0/funnel/candidates"])
+    good = _output("Có 5 tín hiệu.", ["/bots/0/funnel/candidates"])
+
+    class Engine:
+        name = "scripted"
+
+        def __init__(self) -> None:
+            self.requests: list[AnalysisRequest] = []
+
+        def analyze(self, request: AnalysisRequest) -> AnalysisResult:
+            self.requests.append(request)
+            output = bad if len(self.requests) == 1 else good
+            return AnalysisResult("scripted", output, "{}", "sess-9", 0)
+
+    engine = Engine()
+    records = runner.analyze_topics(REPORT, engine, {}, families=["H03"], timeout=5, budget=0.1)
+    assert [record["valid"] for record in records] == [False, True]
+    repair = engine.requests[1]
+    assert (repair.resume, repair.session_id) == (True, "sess-9")
+    assert "số '6'" in repair.prompt
+
+
+def test_validator_accepts_bot_name_fragments_and_bot_count() -> None:
+    text = "Cả 2 bot: T07 (14 coin) và T01 (20 coin) đều có 0 tín hiệu ở T07."
+    output = _output(text, ["/bots/1/funnel/candidates"])
+    assert validate_analysis(output, REPORT).ok
+
+
+def test_topic_report_groups_only_topic_bots() -> None:
+    groups = topic_report(REPORT, "H03")["groups"]
+    assert set(groups["by_strategy_family"]) == {"H03"}
+    assert groups["by_timeframe"]["1h"]["bots"] == 1

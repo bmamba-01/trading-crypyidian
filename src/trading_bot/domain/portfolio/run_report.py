@@ -245,6 +245,11 @@ def _bot_section(bot: BotRunInput) -> tuple[dict[str, Any], list[str]]:
     return section, warnings
 
 
+def group_sections(sections: Sequence[Mapping[str, Any]], key: str) -> dict[str, Any]:
+    """Gộp các mục bot theo ``config[key]`` (họ chiến lược hoặc khung)."""
+    return _groups(sections, key)
+
+
 def _groups(sections: Sequence[Mapping[str, Any]], key: str) -> dict[str, Any]:
     grouped: dict[str, dict[str, Any]] = {}
     for section in sections:
@@ -287,12 +292,13 @@ def build_run_report(
         (
             {
                 "bot_name": section["bot_name"],
-                "net_pnl_usdt": section["performance"]["net_pnl_usdt"] or "0",
+                # Null (chưa có lệnh đóng) giữ null, không đổi thành "0" (AI phát hiện lệch 16/11).
+                "net_pnl_usdt": section["performance"]["net_pnl_usdt"],
                 "closed_trades": section["performance"]["closed_trades"],
             }
             for section in sections
         ),
-        key=lambda row: (-_dec(row["net_pnl_usdt"]), row["bot_name"]),
+        key=lambda row: (-_dec(row["net_pnl_usdt"] or 0), row["bot_name"]),
     )
     payload = {
         "report_version": RUN_REPORT_VERSION,

@@ -6,6 +6,7 @@ from decimal import Decimal
 
 from scripts import seed_signal_test_bots as script
 
+from trading_bot.application.market_bar_collector import parse_collector_streams
 from trading_bot.application.strategy_catalog import strategy_registry
 from trading_bot.config.bot_settings import BotConfigOverlay
 from trading_bot.domain.strategy.contracts import StrategySelection
@@ -74,7 +75,10 @@ def test_plan_is_deterministic_and_respects_limits() -> None:
     assert plan != script.build_plan(_symbols(), seed=8)
     assert len(plan["coins"]) == 20 == len(set(plan["coins"]))
     assert len(plan["bots"]) == 10
-    assert len(script.collector_streams(plan).split(";")) * 3 == 60  # đúng trần collector
+    # 20 coin × 4 khung (gồm 1m execution) = 80 luồng, dưới trần collector 100.
+    streams = parse_collector_streams(script.collector_streams(plan))
+    assert len(streams) == 80
+    assert {stream.interval for stream in streams} == {"1m", "15m", "1h", "4h"}
     registry = strategy_registry()
     for bot in plan["bots"]:
         assert set(bot["symbols"]) <= set(plan["coins"])
@@ -93,6 +97,7 @@ def test_plan_is_deterministic_and_respects_limits() -> None:
         assert bot["risk"]["max_positions"] <= 6
         StrategySelection("s", (bot["release_id"],), True, tuple(sorted(bot["parameters"].items())))
     timeframes = {bot["timeframe"] for bot in plan["bots"]}
+    assert plan["timeframes"][0] == "1m"
     assert timeframes == {"15m", "1h", "4h"}
 
 

@@ -153,6 +153,7 @@ def analyze_topics(
         ANALYST_OUTPUT_VERSION,
         PROMPT_VERSION,
         build_prompt,
+        build_repair_prompt,
         input_hash,
         topic_report,
         validate_analysis,
@@ -161,6 +162,39 @@ def analyze_topics(
 
     present = sorted({bot["config"]["strategy_family"] for bot in report.get("bots", [])})
     records = []
+
+    def record(
+        topic_key: str, topic: dict[str, Any], prompt: str, result: Any, resumed: bool
+    ) -> dict[str, Any]:
+        validation = (
+            validate_analysis(result.structured_output, topic)
+            if result.structured_output is not None
+            else None
+        )
+        return {
+            "topic_key": topic_key,
+            "engine": result.engine,
+            "session_id": result.session_id,
+            "resumed": resumed,
+            "run_report_hash": report["report_hash"],
+            "input_sha256": input_hash(prompt),
+            "prompt_version": PROMPT_VERSION,
+            "output_version": ANALYST_OUTPUT_VERSION,
+            "cli_version": result.cli_version,
+            "model": result.model,
+            "usage": dict(result.usage),
+            "cost_usd": result.cost_usd,
+            "exit_code": result.exit_code,
+            "error": result.error,
+            "raw_stdout": result.raw_stdout[-200_000:],
+            "structured_output": dict(result.structured_output)
+            if result.structured_output is not None
+            else None,
+            "validation_errors": list(validation.errors) if validation else [],
+            "valid": bool(validation and validation.ok and result.error is None),
+            "topic_report": topic,
+        }
+
     for family in families or present:
         if family not in present:
             continue
@@ -179,36 +213,24 @@ def analyze_topics(
                 max_budget_usd=budget,
             )
         )
-        validation = (
-            validate_analysis(result.structured_output, topic)
-            if result.structured_output is not None
-            else None
+        first = record(topic_key, topic, prompt, result, session_id is not None)
+        records.append(first)
+        if first["valid"] or not first["validation_errors"] or not result.session_id:
+            continue
+        # Một lượt sửa trong cùng session: đưa lỗi validator, yêu cầu trả JSON đã sửa.
+        repair_prompt = build_repair_prompt(first["validation_errors"])
+        repaired = engine.analyze(
+            AnalysisRequest(
+                topic_key=topic_key,
+                prompt=repair_prompt,
+                schema=ANALYST_OUTPUT_SCHEMA,
+                session_id=result.session_id,
+                resume=True,
+                timeout_seconds=timeout,
+                max_budget_usd=budget,
+            )
         )
-        records.append(
-            {
-                "topic_key": topic_key,
-                "engine": result.engine,
-                "session_id": result.session_id,
-                "resumed": session_id is not None,
-                "run_report_hash": report["report_hash"],
-                "input_sha256": input_hash(prompt),
-                "prompt_version": PROMPT_VERSION,
-                "output_version": ANALYST_OUTPUT_VERSION,
-                "cli_version": result.cli_version,
-                "model": result.model,
-                "usage": dict(result.usage),
-                "cost_usd": result.cost_usd,
-                "exit_code": result.exit_code,
-                "error": result.error,
-                "raw_stdout": result.raw_stdout[-200_000:],
-                "structured_output": dict(result.structured_output)
-                if result.structured_output is not None
-                else None,
-                "validation_errors": list(validation.errors) if validation else [],
-                "valid": bool(validation and validation.ok and result.error is None),
-                "topic_report": topic,
-            }
-        )
+        records.append(record(topic_key, topic, repair_prompt, repaired, True))
     return records
 
 

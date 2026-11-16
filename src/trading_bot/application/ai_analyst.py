@@ -20,6 +20,8 @@ from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+from trading_bot.domain.portfolio.run_report import group_sections
+
 ANALYST_OUTPUT_VERSION = "analyst_output.v1"
 PROMPT_VERSION = "ai2-prompt-v1"
 MAX_ITEMS = 8
@@ -98,12 +100,20 @@ def _identifiers(report: Mapping[str, Any]) -> list[str]:
     """Tên bot, mã coin, release — chứa chữ số nhưng không phải số liệu cần đối chiếu."""
     names: set[str] = set()
     for bot in report.get("bots", []) or []:
-        names.add(str(bot.get("bot_name", "")))
+        name = str(bot.get("bot_name", ""))
+        names.add(name)
+        # AI hay viết tắt "T07 (14 coin)": coi từng mảnh tên ("T07 H01 1h", "14 coin") là định danh.
+        names.update(part.strip() for part in name.split("·"))
         config = bot.get("config") or {}
         names.add(str(config.get("release_id", "")))
         names.update(str(symbol) for symbol in config.get("universe") or ())
         names.update(str(symbol) for symbol in (bot.get("by_symbol") or {}))
     return sorted((name for name in names if name), key=len, reverse=True)
+
+
+def _implicit_numbers(report: Mapping[str, Any]) -> tuple[Decimal, ...]:
+    """Số đếm hiển nhiên không có trường riêng: số bot trong report (vd "cả 2 bot")."""
+    return (Decimal(len(report.get("bots", []) or [])),)
 
 
 def _strip_identifiers(text: str, identifiers: Sequence[str]) -> str:
@@ -203,7 +213,7 @@ def _check_item(
     report: Mapping[str, Any], kind: str, index: int, text: str, refs: Sequence[str]
 ) -> list[str]:
     errors: list[str] = []
-    values: list[Decimal] = []
+    values: list[Decimal] = list(_implicit_numbers(report))
     for ref in refs:
         try:
             values.extend(_numbers_in(resolve_pointer(report, ref)))
@@ -246,7 +256,7 @@ def validate_analysis(output: Any, report: Mapping[str, Any]) -> ValidationResul
                 continue
             errors.extend(_check_item(report, section, index, str(item.get(text_key, "")), refs))
     # Tóm tắt không được nêu số nào không có trong report.
-    all_numbers = _numbers_in(report)
+    all_numbers = _numbers_in(report) + list(_implicit_numbers(report))
     summary = _strip_identifiers(str(output.get("summary", "")), _identifiers(report))
     for token in _NUMBER.findall(summary):
         if not _matches(token, all_numbers):
@@ -266,7 +276,11 @@ def topic_report(report: Mapping[str, Any], family: str) -> dict[str, Any]:
         "window": report.get("window"),
         "topic": f"family:{family}",
         "bots": bots,
-        "groups": report.get("groups"),
+        # Tính lại nhóm chỉ trên bot của chủ đề: nhóm toàn workspace làm AI tưởng report lệch.
+        "groups": {
+            "by_strategy_family": group_sections(bots, "strategy_family"),
+            "by_timeframe": group_sections(bots, "timeframe"),
+        },
         "ranking_by_net_pnl": [
             row for row in report.get("ranking_by_net_pnl", []) if row["bot_name"] in names
         ],
@@ -352,3 +366,14 @@ def format_analysis_message(
     lines += ["", f"Report hash: {str(report.get('report_hash', ''))[:12]}"]
     message = "\n".join(lines)
     return message if len(message) <= 4096 else message[:4090] + "…"
+
+
+def build_repair_prompt(errors: Sequence[str]) -> str:
+    """Lượt sửa trong cùng session: chỉ ra lỗi validator, yêu cầu trả lại JSON đã sửa."""
+    listed = "\n".join(f"- {error}" for error in errors[:20])
+    return (
+        "Kết quả vừa rồi bị bộ kiểm tra số liệu loại vì các lỗi sau:\n"
+        f"{listed}\n"
+        "Hãy trả lại TOÀN BỘ JSON đúng schema, sửa evidence_refs cho đúng trường chứa con số, "
+        "hoặc bỏ con số không có trong report. Không thêm số mới. Dùng cùng report ở lượt trước.\n"
+    )

@@ -36,7 +36,9 @@ from typing import Any
 ROOT = Path(globals().get("__file__", "/app/x/x")).resolve().parents[1]
 BINANCE_FAPI = "https://fapi.binance.com"
 DEFAULT_WORKSPACE = "c486b52b-912a-446f-aeed-99685c06cad6"
-TIMEFRAMES = ("15m", "1h", "4h")
+# 1m là khung execution: lệnh có hiệu lực đúng một nến chiến lược và chỉ khớp ở nến mở sau thời
+# điểm submit, nên thiếu nến mịn hơn khung chiến lược thì không lệnh nào khớp được (sự cố 16/11).
+TIMEFRAMES = ("1m", "15m", "1h", "4h")
 BOT_COUNT = 10
 # Collector và bot config chỉ nhận mã ASCII viết hoa (market_bar_collector.py, bot_settings.py);
 # Binance có niêm yết mã ký tự không phải Latin nên phải lọc trước khi bốc.
@@ -139,7 +141,7 @@ def build_plan(symbols: list[str], *, seed: int) -> dict[str, Any]:
 
 
 def collector_streams(plan: dict[str, Any]) -> str:
-    """Giá trị ``TRADING_BOT_MARKET_COLLECTOR_STREAMS``: 20 coin × 15m/1h/4h = 60 stream (trần)."""
+    """Giá trị ``TRADING_BOT_MARKET_COLLECTOR_STREAMS``: 20 coin × 1m/15m/1h/4h = 80 stream."""
     return ";".join(f"{coin}:{','.join(plan['timeframes'])}" for coin in plan["coins"])
 
 
@@ -262,7 +264,8 @@ def _container_apply(state: dict[str, Any]) -> dict[str, Any]:
         if current is None:
             raise SystemExit("Workspace chưa có root settings đã publish.")
         parent_id, parent_version, parent_json, owner = current
-        settings_id = det("root-settings")
+        # Mỗi bộ khung một phiên bản root; đổi khung (vd thêm 1m) tạo phiên bản mới.
+        settings_id = det(f"root-settings:{','.join(plan['timeframes'])}")
         exists = connection.execute(
             "SELECT 1 FROM workspace_settings_version WHERE workspace_id=%s AND id=%s",
             (workspace, settings_id),
@@ -375,7 +378,7 @@ def _container_apply(state: dict[str, Any]) -> dict[str, Any]:
                     source_settings_hash=root_hash,
                     idempotency_key=f"paper-seed:{account}",
                 )
-            config_id = det(f"config:{bot['key']}")
+            config_id = det(f"config:{bot['key']}:{settings_id}")
             if (
                 connection.execute(
                     "SELECT 1 FROM bot_config_version WHERE workspace_id=%s AND id=%s",
@@ -403,7 +406,11 @@ def _container_apply(state: dict[str, Any]) -> dict[str, Any]:
                     workspace_id=workspace,
                     bot_id=bot_id,
                     account_id=account,
-                    version=1,
+                    version=connection.execute(
+                        "SELECT coalesce(max(version), 0) + 1 FROM bot_config_version "
+                        "WHERE workspace_id=%s AND bot_id=%s",
+                        (workspace, bot_id),
+                    ).fetchone()[0],
                     schema_version=1,
                     overlay_json=Jsonb(overlay),
                     overlay_hash=overlay_hash(overlay),
