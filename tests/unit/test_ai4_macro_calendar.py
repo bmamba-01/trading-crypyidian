@@ -9,12 +9,14 @@ import pytest
 from trading_bot.domain.research.macro_calendar import (
     BEA_SOURCE_ID,
     FOMC_SOURCE_ID,
+    PFEI_SOURCE_ID,
     MacroCalendarFetch,
     MacroEvent,
     events_hash,
     macro_state,
     parse_bea_release_dates,
     parse_fomc_calendar,
+    parse_pfei_schedule,
     upcoming_events,
 )
 
@@ -69,6 +71,8 @@ def _fetch(fetch_id: str, source: str, at: datetime, *events: MacroEvent) -> Mac
 GDP = MacroEvent(BEA_SOURCE_ID, "gdp", "GDP", datetime(2026, 11, 25, 13, 30, tzinfo=UTC), True)
 TRAVEL = MacroEvent(BEA_SOURCE_ID, "t", "Travel", datetime(2026, 11, 26, 15, tzinfo=UTC), False)
 FAR_BEA = MacroEvent(BEA_SOURCE_ID, "far", "GDP", datetime(2027, 3, 1, 13, 30, tzinfo=UTC), True)
+CPI = MacroEvent(PFEI_SOURCE_ID, "cpi", "CPI", datetime(2026, 12, 10, 13, 30, tzinfo=UTC), True)
+FAR_CPI = MacroEvent(PFEI_SOURCE_ID, "c2", "CPI", datetime(2027, 3, 10, 12, 30, tzinfo=UTC), True)
 FOMC = MacroEvent(FOMC_SOURCE_ID, "f", "FOMC", datetime(2026, 12, 9, 19, tzinfo=UTC), True)
 FAR_FOMC = MacroEvent(FOMC_SOURCE_ID, "f2", "FOMC", datetime(2027, 3, 17, 18, tzinfo=UTC), True)
 FETCHED = datetime(2026, 11, 25, 6, tzinfo=UTC)
@@ -78,6 +82,7 @@ def _fetches(at: datetime = FETCHED) -> list[MacroCalendarFetch]:
     return [
         _fetch("bea-1", BEA_SOURCE_ID, at, GDP, TRAVEL, FAR_BEA),
         _fetch("fomc-1", FOMC_SOURCE_ID, at, FOMC, FAR_FOMC),
+        _fetch("pfei-1", PFEI_SOURCE_ID, at, CPI, FAR_CPI),
     ]
 
 
@@ -86,7 +91,7 @@ def test_blackout_window_is_half_open_around_high_impact_events() -> None:
     before = macro_state(fetches, GDP.scheduled_at - timedelta(minutes=31))
     assert before.blackout is False
     assert before.is_fresh is True
-    assert before.evidence_ids == ("bea-1", "fomc-1")
+    assert before.evidence_ids == ("bea-1", "fomc-1", "pfei-1")
     assert before.evidence_available_at == FETCHED
     start = macro_state(fetches, GDP.scheduled_at - timedelta(minutes=30))
     assert start.blackout is True
@@ -100,6 +105,8 @@ def test_blackout_window_is_half_open_around_high_impact_events() -> None:
 def test_unknown_without_every_source_and_no_lookahead() -> None:
     only_bea = [_fetches()[0]]
     assert macro_state(only_bea, GDP.scheduled_at).blackout is None
+    # Thiếu lịch OMB (CPI/việc làm) cũng là chưa biết.
+    assert macro_state(_fetches()[:2], GDP.scheduled_at).blackout is None
     # Lần tải sau decision_time không được dùng (không nhìn trước).
     state = macro_state(_fetches(), FETCHED - timedelta(seconds=1))
     assert state.blackout is None
@@ -113,17 +120,18 @@ def test_stale_when_fetch_too_old_or_coverage_too_short() -> None:
     short = [
         _fetch("bea-2", BEA_SOURCE_ID, FETCHED, GDP),
         _fetch("fomc-2", FOMC_SOURCE_ID, FETCHED, FOMC, FAR_FOMC),
+        _fetch("pfei-2", PFEI_SOURCE_ID, FETCHED, CPI, FAR_CPI),
     ]
     assert macro_state(short, FETCHED + timedelta(hours=1)).is_fresh is False
     # Lần tải mới nhất được ưu tiên.
     newer = [*_fetches(), _fetch("bea-3", BEA_SOURCE_ID, FETCHED + timedelta(hours=2), FAR_BEA)]
     state = macro_state(newer, FETCHED + timedelta(hours=3))
-    assert state.evidence_ids == ("bea-3", "fomc-1")
+    assert state.evidence_ids == ("bea-3", "fomc-1", "pfei-1")
 
 
 def test_upcoming_events_and_hash_are_stable() -> None:
     events = upcoming_events(_fetches(), after=FETCHED, within=timedelta(days=30))
-    assert [e.key for e in events] == ["gdp", "f"]
+    assert [e.key for e in events] == ["gdp", "f", "cpi"]
     assert events_hash([GDP, TRAVEL]) == events_hash([TRAVEL, GDP])
     assert events_hash([GDP]) != events_hash([TRAVEL])
     assert MacroEvent.from_payload(BEA_SOURCE_ID, GDP.payload()) == GDP
@@ -177,7 +185,12 @@ def _collector(store: _Store, fetcher) -> object:
     async def scope():
         yield store
 
-    return MacroCalendarCollector(workspace_id=UUID(int=1), fetcher=fetcher, store_scope=scope)
+    return MacroCalendarCollector(
+        workspace_id=UUID(int=1),
+        fetcher=fetcher,
+        store_scope=scope,
+        sources=(BEA_SOURCE_ID, FOMC_SOURCE_ID),
+    )
 
 
 class _Fetcher:
@@ -228,6 +241,100 @@ def test_collector_stores_only_with_rights_and_isolates_failures() -> None:
         (FOMC_SOURCE_ID, "error"),
     ]
     assert recent.rows == []
+
+
+PFEI_TEXT_2026 = """
+SCHEDULE OF RELEASE DATES FOR
+PRINCIPAL FEDERAL ECONOMIC INDICATORS FOR 2026
+COMMERCE
+Advance Monthly Sales for Retail and Food Services
+(Data are for previous month)
+15 17 16 16 14 17 16 14 16 15 17 16
+LABOR
+BUREAU OF LABOR STATISTICS
+The Employment Situation
+(Data are for previous month)
+9 6 6 3 8 5 2 7 4 2 6 4
+Producer Price Indexes
+(Data are for previous month)
+14 12 12 14 13 11 15 13 10 15 13 15
+Consumer Price Index
+(Data are for previous month)
+13 11 11 10 12 10 14 12 11 14 10 --
+"""
+
+
+def test_pfei_schedule_dates_at_830_eastern() -> None:
+    events = parse_pfei_schedule([("https://omb/2026.pdf", PFEI_TEXT_2026)])
+    # 4 chỉ số × 12 tháng, trừ một ô "--".
+    assert len(events) == 47
+    by_key = {e.key: e for e in events}
+    # 8:30 EST = 13:30 UTC (tháng 12), 8:30 EDT = 12:30 UTC (tháng 7).
+    assert by_key["PFEI:Employment Situation:2026-12-04"].scheduled_at == datetime(
+        2026, 12, 4, 13, 30, tzinfo=UTC
+    )
+    assert by_key["PFEI:Consumer Price Index:2026-07-14"].scheduled_at == datetime(
+        2026, 7, 14, 12, 30, tzinfo=UTC
+    )
+    assert "PFEI:Consumer Price Index:2026-12-10" not in by_key
+    assert all(e.high_impact and e.source_id == PFEI_SOURCE_ID for e in events)
+    # Hai PDF trùng năm không nhân đôi sự kiện.
+    assert len(parse_pfei_schedule([("a", PFEI_TEXT_2026), ("b", PFEI_TEXT_2026)])) == 47
+
+
+def test_pfei_schedule_fails_closed_on_bad_documents() -> None:
+    with pytest.raises(ValueError, match="Không có PDF"):
+        parse_pfei_schedule([])
+    with pytest.raises(ValueError, match="thiếu chỉ số"):
+        parse_pfei_schedule([("x", PFEI_TEXT_2026.replace("Producer Price Indexes", "PPI"))])
+    with pytest.raises(ValueError, match="hàng ngày"):
+        parse_pfei_schedule([("x", PFEI_TEXT_2026.replace("13 11 11 10", "13 11 11"))])
+    with pytest.raises(ValueError, match="một năm"):
+        parse_pfei_schedule([("x", PFEI_TEXT_2026.replace("FOR 2026", ""))])
+    # 7/3/2026 là thứ Bảy: PDF đọc lệch cột thì từ chối thay vì lưu ngày sai.
+    with pytest.raises(ValueError, match="cuối tuần"):
+        parse_pfei_schedule([("x", PFEI_TEXT_2026.replace("9 6 6 3", "9 6 7 3"))])
+
+
+def test_pfei_fetcher_follows_only_omb_pdf_links() -> None:
+    import asyncio
+
+    import httpx2
+
+    from trading_bot.adapters.sources.macro_calendar_http import (
+        MACRO_SOURCE_URLS,
+        MacroCalendarHttpFetcher,
+        pfei_pdf_links,
+    )
+
+    good = "https://www.whitehouse.gov/wp-content/uploads/2026/10/FY2027-PFEI.pdf"
+    html = (
+        f'<a href="{good}">2027</a><a href="{good}">dup</a>'
+        '<a href="https://evil.example/uploads/2026/10/pfei.pdf">x</a>'
+        '<a href="https://www.whitehouse.gov/wp-content/uploads/2026/10/other.pdf">y</a>'
+    )
+    assert pfei_pdf_links(html) == [good]
+    with pytest.raises(RuntimeError, match="không có link"):
+        pfei_pdf_links("<html></html>")
+
+    requested: list[str] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        requested.append(str(request.url))
+        if str(request.url) == MACRO_SOURCE_URLS[PFEI_SOURCE_ID]:
+            return httpx2.Response(200, text=html)
+        return httpx2.Response(404)
+
+    async def run() -> None:
+        fetcher = MacroCalendarHttpFetcher(transport=httpx2.MockTransport(handler))
+        try:
+            with pytest.raises(RuntimeError, match="HTTP 404"):
+                await fetcher.fetch(PFEI_SOURCE_ID)
+        finally:
+            await fetcher.aclose()
+
+    asyncio.run(run())
+    assert requested == [MACRO_SOURCE_URLS[PFEI_SOURCE_ID], good]
 
 
 def test_only_h06_releases_load_macro_state() -> None:

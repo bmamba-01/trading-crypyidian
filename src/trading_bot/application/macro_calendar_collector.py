@@ -20,10 +20,12 @@ from trading_bot.domain.research.macro_calendar import (
     BEA_SOURCE_ID,
     FOMC_SOURCE_ID,
     MACRO_SOURCE_IDS,
+    PFEI_SOURCE_ID,
     MacroEvent,
     events_hash,
     parse_bea_release_dates,
     parse_fomc_calendar,
+    parse_pfei_schedule,
 )
 from trading_bot.domain.research.source_policy import SourceUsePurpose
 
@@ -58,6 +60,8 @@ def parse_source(source_id: str, raw: Any) -> list[MacroEvent]:
         return parse_bea_release_dates(raw)
     if source_id == FOMC_SOURCE_ID:
         return parse_fomc_calendar(raw)
+    if source_id == PFEI_SOURCE_ID:
+        return parse_pfei_schedule(raw)
     raise ValueError(f"Nguồn macro chưa hỗ trợ: {source_id}")
 
 

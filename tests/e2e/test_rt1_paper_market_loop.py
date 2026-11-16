@@ -240,11 +240,11 @@ def test_rest_candles_drive_paper_entry_fill_and_stop_exit_idempotently() -> Non
         }
 
         # AI-4: ingestion ghi lịch vĩ mô (append-only), runtime đọc trạng thái point-in-time.
-        assert run("macro_write") == {"written": 2, "update_denied": True}
+        assert run("macro_write") == {"written": 3, "update_denied": True}
         assert run("macro_read") == {
             "during_blackout": True,
             "during_fresh": True,
-            "evidence": 2,
+            "evidence": 3,
             "after_blackout": False,
             "before_fetch_unknown": True,
             "admin_web_insert": False,

@@ -4528,3 +4528,20 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Kiểm chứng:** unit **4545 passed/152s** (parser, DST, blackout nửa mở, không nhìn trước, độ mới, collector quyền/lỗi, cổng quyền fail-closed, chỉ H06 nạp macro); E2E `test_rt1_paper_market_loop` (phase `macro_write` bằng role ingestion — UPDATE bị chặn; `macro_read` bằng role runtime — blackout/hết blackout/chưa biết; admin-web không INSERT) + `test_db_role_least_privilege` **2 passed/367s**.
 - **Giới hạn:** chưa có bot H06 đang chạy nên chưa quan sát quyết định H06 thật; replay/backtest trước lần tải đầu vẫn "chưa biết".
 - **Còn mở:** BLS (cần quyết định liên hệ); digest lịch vĩ mô cho AI Analyst/Telegram (cần validator chấp nhận ngày giờ); AI-4 (b) phái sinh Binance (funding/OI/long-short), (c) diff exchangeInfo; trang Admin `analyst_run`.
+
+### 2026-11-16 — AI-4: lịch CPI/việc làm/PPI/bán lẻ từ OMB PFEI (thay BLS bị chặn)
+
+- **Bối cảnh:** BLS trả 403 cho bot không ghi liên hệ chủ sở hữu (https://www.bls.gov/bls/pss.htm). Owner yêu cầu tìm nguồn khác; không vượt chặn BLS, không dùng email owner.
+- **Nguồn đã dò (16/11/2026):**
+  - FRED/ALFRED (Fed St. Louis): web treo sau TLS với client tự động; API `api.stlouisfed.org/fred/release/dates` cần API key (owner phải tự đăng ký) → để dự phòng.
+  - Forex Factory feed `nfs.faireconomy.media/ff_calendar_thisweek.json`: tải được, có giờ, nhưng chỉ 1 tuần và không tìm thấy điều khoản sử dụng cho feed → **không dùng** làm nguồn; chỉ dùng tay để đối chiếu (Retail Sales 17/11 08:30 ET khớp).
+  - Census calendar: 403. Brookings PFEI page: nội dung tải bằng JS. Cleveland Fed nowcast: không có ngày công bố trong HTML tĩnh.
+  - **Chọn OMB PFEI**: https://www.whitehouse.gov/omb/information-resources/guidance/us-principal-federal-economic-indicators/ liệt kê PDF `pfei_schedule_release_dates_cy2026.pdf` (26/9/2025) và `FY2027-PFEI.pdf` (1/10/2026). Nội dung chính phủ trên whitehouse.gov không có bản quyền (https://www.whitehouse.gov/copyright/).
+- **Quyết định:**
+  - Nguồn `OMB_PFEI_SCHEDULE` thêm vào `MACRO_SOURCE_IDS` (bắt buộc) → `MACRO_POLICY_VERSION` = `macro-blackout-v2`. Thiếu lần tải OMB → H06 "chưa biết".
+  - Fetcher: GET trang OMB, chỉ theo link PDF dưới `https://www.whitehouse.gov/wp-content/uploads/YYYY/MM/*pfei*.pdf` (tối đa 4, bỏ trùng), trích văn bản bằng `pypdf==6.9.2` (BSD-3, pin bản 23/3/2026; 7.x mới phát hành 6–13/11/2026 nên chưa dùng — https://pypi.org/project/pypdf/).
+  - Parser `parse_pfei_schedule`: 4 chỉ số (Employment Situation, CPI, PPI, Advance Retail Sales), hàng 12 tháng ngay sau tiêu đề; fail-closed nếu thiếu chỉ số, sai hàng, không đúng một năm, hoặc ngày rơi cuối tuần (bắt lỗi lệch cột).
+  - Giờ 8:30 a.m. ET: PDF chỉ có ngày; giờ theo lịch BLS ("All times on calendar are Eastern Time", các bản tin này 8:30 AM — đọc qua kết quả tìm kiếm, không tải bls.gov). Cả 4 là tác động mạnh.
+- **Hạn chế còn mở:** OMB không sửa PDF khi cơ quan dời lịch đột xuất (vd đóng cửa chính phủ 2025) → lịch có thể lệch; chưa có nguồn đối chiếu tự động. Có thể thêm FRED API nếu owner cấp API key.
+- **Kết quả local:** policy `OMB_PFEI_SCHEDULE` PAPER_DEMO đăng ký + duyệt qua Admin (owner gửi, reviewer local duyệt). Collector tải 07:08Z: 96 sự kiện, phủ tới 15/12/2027. Trạng thái lúc này: không cấm, lịch mới, 3 bằng chứng. Mốc kế: Retail Sales 17/11 13:30Z (đã kiểm `macro_state` trả blackout tại 13:20Z), Employment Situation 4/12, CPI 10/12.
+- **Kiểm chứng:** unit 4548 passed; ruff/mypy sạch; E2E RT-1 passed (probe ghi 3 nguồn, đọc bằng role runtime, `evidence: 3`). Image `crypidian-app:local` build lại (có pypdf).

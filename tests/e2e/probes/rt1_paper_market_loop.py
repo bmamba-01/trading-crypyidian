@@ -847,6 +847,7 @@ async def macro_write() -> dict[str, Any]:
     from trading_bot.domain.research.macro_calendar import (
         BEA_SOURCE_ID,
         FOMC_SOURCE_ID,
+        PFEI_SOURCE_ID,
         MacroEvent,
         events_hash,
     )
@@ -866,6 +867,7 @@ async def macro_write() -> dict[str, Any]:
                 ],
             ),
             (FOMC_SOURCE_ID, [MacroEvent(FOMC_SOURCE_ID, "fomc", "FOMC", far, True)]),
+            (PFEI_SOURCE_ID, [MacroEvent(PFEI_SOURCE_ID, "cpi", "CPI", far, True)]),
         ):
             async with scope() as store:
                 await store.insert(
@@ -890,7 +892,7 @@ async def macro_write() -> dict[str, Any]:
             update_denied = True
     finally:
         await engine.dispose()
-    return {"written": 2, "update_denied": update_denied}
+    return {"written": 3, "update_denied": update_denied}
 
 
 async def macro_read() -> dict[str, Any]:

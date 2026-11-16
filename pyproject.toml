@@ -19,6 +19,7 @@ dependencies = [
     "psycopg[binary]==3.3.6",
     "pydantic-settings==2.16.0",
     "pyotp==2.10.0",
+    "pypdf==6.9.2",
     "sqlalchemy[asyncio]==2.1.5",
     "uvicorn==0.54.0",
 ]

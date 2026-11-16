@@ -6,8 +6,14 @@ Nguồn (kiểm 16/11/2026):
   công bố có múi giờ UTC; trang lịch https://www.bea.gov/news/schedule.
 - Fed: ``https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm`` — HTML theo năm; tuyên
   bố FOMC công bố 2:00 p.m. giờ miền Đông (ET) ngày cuối cuộc họp (tiêu đề các thông cáo 2026).
-- BLS (CPI, việc làm) **chưa thu**: BLS chặn bot không có thông tin liên hệ của chủ sở hữu
-  (https://www.bls.gov/bls/pss.htm); chờ owner quyết thông tin liên hệ.
+- OMB (Nhà Trắng): "Schedule of Release Dates for Principal Federal Economic Indicators" — PDF
+  theo năm, liệt kê ngày công bố CPI, Employment Situation, PPI (BLS) và Retail Sales (Census);
+  danh sách PDF trên https://www.whitehouse.gov/omb/information-resources/guidance/
+  us-principal-federal-economic-indicators/ (kiểm 16/11/2026). Thay cho việc thu trực tiếp từ
+  BLS — BLS chặn bot không có thông tin liên hệ của chủ sở hữu (https://www.bls.gov/bls/pss.htm).
+  PDF chỉ có ngày; giờ 8:30 a.m. ET lấy theo lịch BLS ("All times on calendar are Eastern
+  Time", các bản tin trên là 8:30 AM). Hạn chế: OMB không cập nhật PDF khi cơ quan đổi lịch đột
+  xuất (vd đóng cửa chính phủ 2025) — lịch có thể lệch trong tình huống đó.
 
 Module thuần: không I/O. Mỗi lần tải là một ``MacroCalendarFetch`` bất biến (danh sách sự kiện +
 mốc tải); trạng thái tại ``decision_time`` chỉ dùng lần tải gần nhất **trước** mốc đó (không nhìn
@@ -27,8 +33,10 @@ from zoneinfo import ZoneInfo
 
 BEA_SOURCE_ID = "BEA_RELEASE_SCHEDULE"
 FOMC_SOURCE_ID = "FED_FOMC_CALENDAR"
-MACRO_SOURCE_IDS = (BEA_SOURCE_ID, FOMC_SOURCE_ID)
-MACRO_POLICY_VERSION = "macro-blackout-v1"
+PFEI_SOURCE_ID = "OMB_PFEI_SCHEDULE"
+MACRO_SOURCE_IDS = (BEA_SOURCE_ID, FOMC_SOURCE_ID, PFEI_SOURCE_ID)
+# v2: thêm nguồn OMB PFEI (CPI, việc làm, PPI, bán lẻ) vào nhóm nguồn bắt buộc.
+MACRO_POLICY_VERSION = "macro-blackout-v2"
 BLACKOUT_BEFORE = timedelta(minutes=30)
 BLACKOUT_AFTER = timedelta(minutes=60)
 MAX_FETCH_AGE = timedelta(hours=36)
@@ -173,6 +181,63 @@ def parse_fomc_calendar(html: str) -> list[MacroEvent]:
     return sorted(events.values(), key=lambda e: (e.scheduled_at, e.key))
 
 
+# Dòng tiêu đề trong PDF OMB → tên ngắn. Cả bốn chỉ số công bố 8:30 a.m. ET (không có chú thích
+# giờ khác trong PDF) và được coi là tác động mạnh.
+PFEI_INDICATORS = {
+    "The Employment Situation": "Employment Situation",
+    "Consumer Price Index": "Consumer Price Index",
+    "Producer Price Indexes": "Producer Price Index",
+    "Advance Monthly Sales for Retail and Food Services": "Retail Sales",
+}
+_PFEI_RELEASE_TIME = time(8, 30)
+_PFEI_YEAR = re.compile(r"PRINCIPAL FEDERAL ECONOMIC INDICATORS\s+FOR\s+(\d{4})")
+_PFEI_ROW = re.compile(r"^(?:(?:\d{1,2}|--)\s+){11}(?:\d{1,2}|--)$")
+
+
+def _pfei_document_events(text: str) -> list[MacroEvent]:
+    years = {int(value) for value in _PFEI_YEAR.findall(text)}
+    if len(years) != 1:
+        raise ValueError("PDF OMB PFEI không xác định được đúng một năm.")
+    year = years.pop()
+    lines = [line.strip() for line in text.splitlines()]
+    events: list[MacroEvent] = []
+    for heading, title in PFEI_INDICATORS.items():
+        try:
+            start = lines.index(heading)
+        except ValueError as error:
+            raise ValueError(f"PDF OMB PFEI {year} thiếu chỉ số {heading!r}.") from error
+        # Hàng 12 tháng nằm ngay sau dòng tiêu đề và dòng chú thích "(Data are for ...)".
+        row = next((line for line in lines[start + 1 : start + 4] if _PFEI_ROW.match(line)), None)
+        if row is None:
+            raise ValueError(f"PDF OMB PFEI {year}: không đọc được hàng ngày của {heading!r}.")
+        for month, token in enumerate(row.split(), start=1):
+            if token == "--":
+                continue
+            day = date(year, month, int(token))
+            if day.weekday() >= 5:
+                raise ValueError(f"PDF OMB PFEI: {title} rơi vào cuối tuần ({day}).")
+            instant = datetime.combine(day, _PFEI_RELEASE_TIME, tzinfo=_ET).astimezone(UTC)
+            key = f"PFEI:{title}:{day.isoformat()}"
+            events.append(MacroEvent(PFEI_SOURCE_ID, key, title, instant, True))
+    return events
+
+
+def parse_pfei_schedule(documents: Sequence[tuple[str, str]]) -> list[MacroEvent]:
+    """Văn bản các PDF OMB PFEI ``[(url, text), ...]`` → sự kiện 8:30 ET của bốn chỉ số.
+
+    Một PDF sai định dạng làm hỏng cả lần tải (fail-closed): không lưu lịch thiếu một phần.
+    """
+    if not documents:
+        raise ValueError("Không có PDF OMB PFEI nào.")
+    events: dict[str, MacroEvent] = {}
+    for _url, text in documents:
+        if not isinstance(text, str):
+            raise ValueError("Nội dung PDF OMB PFEI phải là văn bản.")
+        for event in _pfei_document_events(text):
+            events[event.key] = event
+    return sorted(events.values(), key=lambda e: (e.scheduled_at, e.key))
+
+
 # ---------------------------------------------------------------------------
 # Trạng thái macro tại decision_time
 # ---------------------------------------------------------------------------
@@ -289,6 +354,8 @@ __all__ = [
     "MACRO_SOURCE_IDS",
     "MAX_FETCH_AGE",
     "MIN_COVERAGE_AHEAD",
+    "PFEI_INDICATORS",
+    "PFEI_SOURCE_ID",
     "UNKNOWN_MACRO",
     "MacroCalendarFetch",
     "MacroEvent",
@@ -297,5 +364,6 @@ __all__ = [
     "macro_state",
     "parse_bea_release_dates",
     "parse_fomc_calendar",
+    "parse_pfei_schedule",
     "upcoming_events",
 ]
