@@ -21,3 +21,6 @@ tests/e2e/evidence/admin-playwright/
 
 # Trạng thái cục bộ của job AI Analyst trên host (khóa chạy, dấu vân tay chủ đề, đếm lượt/ngày).
 var/
+
+# macOS
+.DS_Store
