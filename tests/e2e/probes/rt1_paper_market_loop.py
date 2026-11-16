@@ -932,6 +932,109 @@ async def macro_read() -> dict[str, Any]:
     }
 
 
+DERIV_AT = datetime(2026, 11, 16, 8, 6, 40, tzinfo=UTC)
+
+
+def _deriv_raw(symbol: str) -> dict[str, Any]:
+    hour = 3_600_000
+    t08 = 1794816000000
+    return {
+        "premium": {
+            "symbol": symbol,
+            "markPrice": "64772",
+            "lastFundingRate": "0.0001",
+            "nextFundingTime": 1794844800000,
+            "time": 1794816400000,
+        },
+        "oi_hist": [
+            {"symbol": symbol, "sumOpenInterest": "90", "sumOpenInterestValue": "1000",
+             "timestamp": t08 - 24 * hour},
+            {"symbol": symbol, "sumOpenInterest": "93", "sumOpenInterestValue": "1100",
+             "timestamp": t08},
+        ],
+        "global_ls": [{"symbol": symbol, "longShortRatio": "2.5", "timestamp": t08}],
+        "top_ls": [{"symbol": symbol, "longShortRatio": "1.5", "timestamp": t08}],
+        "taker": [{"buySellRatio": "1.1", "timestamp": t08 - hour}],
+    }  # fmt: skip
+
+
+async def derivatives_write() -> dict[str, Any]:
+    """AI-4 lát 2: ingestion-worker (role thật) ghi ảnh chụp phái sinh; không UPDATE/DELETE."""
+    from uuid import uuid4
+
+    from sqlalchemy import delete, update
+    from sqlalchemy.exc import DBAPIError
+
+    from trading_bot.adapters.database.models import DerivativesSnapshotRecord
+    from trading_bot.domain.research.derivatives import build_snapshot, payload_hash
+    from trading_bot.workers.derivatives_worker import database_derivatives_store_scope
+
+    engine, sessions = _sessions()
+    try:
+        scope = database_derivatives_store_scope(sessions, WORKSPACE)
+        async with scope() as store:
+            for symbol in ("BTCUSDT", "ETHUSDT"):
+                raw = _deriv_raw(symbol)
+                await store.insert(
+                    {
+                        "id": uuid4(),
+                        "workspace_id": WORKSPACE,
+                        "policy_fingerprint": "f" * 64,
+                        "payload_sha256": payload_hash(raw),
+                        **build_snapshot(symbol, DERIV_AT, raw).record(),
+                    }
+                )
+            last = await store.last_collected_at()
+        denied = []
+        for statement in (
+            update(DerivativesSnapshotRecord).values(funding_rate=0),
+            delete(DerivativesSnapshotRecord),
+        ):
+            try:
+                async with scope() as store:
+                    await store._session.execute(statement)
+                denied.append(False)
+            except DBAPIError:
+                denied.append(True)
+    finally:
+        await engine.dispose()
+    return {"written": 2, "last": last.isoformat(), "update_delete_denied": denied}
+
+
+async def derivatives_read() -> dict[str, Any]:
+    """AI-4 lát 2: runtime (role thật) đọc ảnh chụp point-in-time; admin-web không được ghi."""
+    from trading_bot.application.derivatives_state import load_derivatives_snapshots
+    from trading_bot.application.outbox import UnitOfWork
+    from trading_bot.domain.research.derivatives import derivatives_digest
+
+    engine, sessions = _sessions()
+    try:
+        async with UnitOfWork(sessions, workspace_id=WORKSPACE) as uow:
+            now = await load_derivatives_snapshots(
+                uow.session, workspace_id=WORKSPACE, as_of=DERIV_AT + timedelta(minutes=5)
+            )
+            before = await load_derivatives_snapshots(
+                uow.session, workspace_id=WORKSPACE, as_of=DERIV_AT - timedelta(seconds=1)
+            )
+            other = await load_derivatives_snapshots(
+                uow.session, workspace_id=uuid4(), as_of=DERIV_AT + timedelta(minutes=5)
+            )
+    finally:
+        await engine.dispose()
+    digest = derivatives_digest(now, DERIV_AT + timedelta(minutes=5), priority_symbols=["ETHUSDT"])
+    with _connect() as connection:
+        admin_insert = connection.execute(
+            "SELECT has_table_privilege('crypidian_admin_web', 'derivatives_snapshot', 'INSERT')"
+        ).fetchone()[0]
+    return {
+        "symbols": [row["symbol"] for row in digest["symbols"]],
+        "oi_change": digest["symbols"][0]["oi_change_24h_pct"],
+        "before_collect": len(before),
+        "other_workspace": len(other),
+        "admin_web_insert": bool(admin_insert),
+    }
+
+
 async def outcome() -> dict[str, Any]:
     """16/11/2026: runtime (role thật) lưu lý do candidate, idempotent, RLS theo bot."""
     from sqlalchemy import func, select, text
@@ -1299,6 +1402,10 @@ elif phase == "macro_write":
     output = asyncio.run(macro_write())
 elif phase == "macro_read":
     output = asyncio.run(macro_read())
+elif phase == "derivatives_write":
+    output = asyncio.run(derivatives_write())
+elif phase == "derivatives_read":
+    output = asyncio.run(derivatives_read())
 elif phase == "outcome":
     output = asyncio.run(outcome())
 elif phase == "run_report":

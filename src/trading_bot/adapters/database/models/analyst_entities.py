@@ -170,3 +170,56 @@ class MacroCalendarFetchRecord(UuidPrimaryKey, CreatedAt, Base):
     event_count: Mapped[int] = mapped_column(Integer, nullable=False)
     coverage_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     events: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False)
+
+
+_STAT = Numeric(38, 18)
+
+
+class DerivativesSnapshotRecord(UuidPrimaryKey, CreatedAt, Base):
+    """Ảnh chụp phái sinh Binance một symbol (AI-4 lát 2): append-only, theo ``collected_at``."""
+
+    __tablename__ = "derivatives_snapshot"
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id", "symbol", "collected_at", name="uq_derivatives_snapshot_point"
+        ),
+        CheckConstraint(
+            "payload_sha256 ~ '^[0-9a-f]{64}$' AND policy_fingerprint ~ '^[0-9a-f]{64}$'",
+            name="derivatives_snapshot_hash_sha256",
+        ),
+        CheckConstraint(
+            "premium_time <= collected_at"
+            " AND (oi_at IS NULL OR oi_at <= collected_at)"
+            " AND (ls_at IS NULL OR ls_at <= collected_at)"
+            " AND (top_at IS NULL OR top_at <= collected_at)"
+            " AND (taker_at IS NULL OR taker_at <= collected_at)",
+            name="derivatives_snapshot_timestamps_causal",
+        ),
+        CheckConstraint(
+            "mark_price > 0 AND (oi_value_usdt IS NULL OR oi_value_usdt >= 0)",
+            name="derivatives_snapshot_values_valid",
+        ),
+        Index("ix_derivatives_snapshot_asof", "workspace_id", "collected_at", "symbol"),
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("workspace.id", ondelete="CASCADE"), nullable=False
+    )
+    symbol: Mapped[str] = mapped_column(String(40), nullable=False)
+    collected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    policy_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    mark_price: Mapped[Decimal] = mapped_column(_STAT, nullable=False)
+    funding_rate: Mapped[Decimal] = mapped_column(_STAT, nullable=False)
+    next_funding_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    premium_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    oi_contracts: Mapped[Decimal | None] = mapped_column(_STAT, nullable=True)
+    oi_value_usdt: Mapped[Decimal | None] = mapped_column(_STAT, nullable=True)
+    oi_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    oi_value_24h_ago: Mapped[Decimal | None] = mapped_column(_STAT, nullable=True)
+    long_short_account_ratio: Mapped[Decimal | None] = mapped_column(_STAT, nullable=True)
+    ls_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    top_position_ratio: Mapped[Decimal | None] = mapped_column(_STAT, nullable=True)
+    top_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    taker_buy_sell_ratio: Mapped[Decimal | None] = mapped_column(_STAT, nullable=True)
+    taker_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

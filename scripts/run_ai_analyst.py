@@ -584,12 +584,24 @@ async def _container(phase: str, state: dict[str, Any]) -> dict[str, Any]:
             payload = dict(report.payload)
             # AI-4: lịch vĩ mô sắp tới làm bối cảnh; ngoài report_hash (Run Report giữ tất định),
             # nằm trong prompt nên được input_sha256 phủ; dựng lại được từ macro_calendar_fetch.
+            from trading_bot.application.derivatives_state import load_derivatives_snapshots
             from trading_bot.application.macro_calendar_state import load_macro_fetches
+            from trading_bot.domain.research.derivatives import derivatives_digest
             from trading_bot.domain.research.macro_calendar import macro_digest
 
             async with UnitOfWork(sessions, workspace_id=workspace) as uow:
                 fetches = await load_macro_fetches(uow.session, workspace_id=workspace, as_of=end)
+                snapshots = await load_derivatives_snapshots(
+                    uow.session, workspace_id=workspace, as_of=end
+                )
             payload["macro_calendar"] = macro_digest(fetches, end)
+            # AI-4 lát 2: phái sinh Binance; coin bot đã giao dịch trong cửa sổ đứng trước.
+            traded = [
+                symbol for bot in payload.get("bots", []) for symbol in (bot.get("by_symbol") or {})
+            ]
+            payload["derivatives"] = derivatives_digest(
+                snapshots, end, priority_symbols=list(dict.fromkeys(traded))
+            )
             return payload
         if phase == "sessions":
             async with UnitOfWork(sessions, workspace_id=workspace) as uow:

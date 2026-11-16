@@ -374,6 +374,7 @@ def create_app(
         rights_worker_task: asyncio.Task[None] | None = None
         market_collector_task: asyncio.Task[None] | None = None
         macro_calendar_task: asyncio.Task[None] | None = None
+        derivatives_task: asyncio.Task[None] | None = None
         signal_worker_task: asyncio.Task[None] | None = None
         trade_result_worker_task: asyncio.Task[None] | None = None
         market_signal_worker_task: asyncio.Task[None] | None = None
@@ -417,6 +418,14 @@ def create_app(
             if app_settings.macro_calendar_enabled:
                 macro_calendar_task = _start_macro_calendar_collector(
                     application,
+                    session_factory=active_session_factory,
+                    workspace_id=workspace_id,
+                    stopping=stopping,
+                )
+            if app_settings.derivatives_collector_enabled:
+                derivatives_task = _start_derivatives_collector(
+                    application,
+                    app_settings=app_settings,
                     session_factory=active_session_factory,
                     workspace_id=workspace_id,
                     stopping=stopping,
@@ -572,6 +581,12 @@ def create_app(
                 fetcher = getattr(application.state, "macro_calendar_fetcher", None)
                 if fetcher is not None:
                     await fetcher.aclose()
+            if derivatives_task is not None:
+                with contextlib.suppress(asyncio.CancelledError, TimeoutError):
+                    await asyncio.wait_for(derivatives_task, timeout=10)
+                derivatives_fetcher = getattr(application.state, "derivatives_fetcher", None)
+                if derivatives_fetcher is not None:
+                    await derivatives_fetcher.aclose()
             if signal_worker_task is not None:
                 with contextlib.suppress(asyncio.CancelledError, TimeoutError):
                     await asyncio.wait_for(signal_worker_task, timeout=10)
@@ -1407,6 +1422,49 @@ def _start_macro_calendar_collector(
         run_macro_collector(collector, stopping, on_tick=remember), name="macro-calendar"
     )
     application.state.macro_calendar_task = task
+    return task
+
+
+def _start_derivatives_collector(
+    application: FastAPI,
+    *,
+    app_settings: AppSettings,
+    session_factory: Any,
+    workspace_id: UUID,
+    stopping: asyncio.Event,
+) -> asyncio.Task[None]:
+    """AI-4 lát 2: ảnh chụp phái sinh Binance theo giờ; cần policy PAPER_DEMO của nguồn."""
+    from trading_bot.adapters.sources.binance_derivatives_http import (
+        BinanceDerivativesHttpFetcher,
+    )
+    from trading_bot.application.derivatives_collector import (
+        DerivativesCollector,
+        run_derivatives_collector,
+    )
+    from trading_bot.application.market_bar_collector import parse_collector_streams
+    from trading_bot.workers.derivatives_worker import database_derivatives_store_scope
+
+    symbols = tuple(
+        dict.fromkeys(
+            s.symbol for s in parse_collector_streams(app_settings.market_collector_streams)
+        )
+    )
+    fetcher = BinanceDerivativesHttpFetcher()
+    application.state.derivatives_fetcher = fetcher
+    collector = DerivativesCollector(
+        workspace_id=workspace_id,
+        symbols=symbols,
+        fetcher=fetcher,
+        store_scope=database_derivatives_store_scope(session_factory, workspace_id),
+    )
+
+    def remember(result: Any) -> None:
+        application.state.derivatives_last = result.status
+
+    task = asyncio.create_task(
+        run_derivatives_collector(collector, stopping, on_tick=remember), name="derivatives"
+    )
+    application.state.derivatives_task = task
     return task
 
 

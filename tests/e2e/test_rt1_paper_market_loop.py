@@ -40,6 +40,8 @@ SERVICES = {
     "outcome": "trading-runtime",
     "macro_write": "ingestion-worker",
     "macro_read": "trading-runtime",
+    "derivatives_write": "ingestion-worker",
+    "derivatives_read": "trading-runtime",
     "run_report": "migrator",
     "analyst": "migrator",
     "tg_seed": "migrator",
@@ -124,7 +126,7 @@ def test_rest_candles_drive_paper_entry_fill_and_stop_exit_idempotently() -> Non
         compose("run", "--rm", "--no-deps", "db-provisioner")
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "head")
         heads = compose("run", "--rm", "--no-deps", "migrator", "alembic", "heads")
-        assert "62d0ea00fae5 (head)" in heads.stdout
+        assert "00912d59476e (head)" in heads.stdout
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "check")
         state.update(run("seed"))
         assert run("genesis") == {"genesis": True}
@@ -247,6 +249,17 @@ def test_rest_candles_drive_paper_entry_fill_and_stop_exit_idempotently() -> Non
             "evidence": 3,
             "after_blackout": False,
             "before_fetch_unknown": True,
+            "admin_web_insert": False,
+        }
+        # AI-4 lát 2: ảnh chụp phái sinh append-only, đọc point-in-time bằng role runtime.
+        written = run("derivatives_write")
+        assert written["written"] == 2, written
+        assert written["update_delete_denied"] == [True, True], written
+        assert run("derivatives_read") == {
+            "symbols": ["ETHUSDT", "BTCUSDT"],
+            "oi_change": "10.00",
+            "before_collect": 0,
+            "other_workspace": 0,
             "admin_web_insert": False,
         }
 

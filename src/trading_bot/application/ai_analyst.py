@@ -30,8 +30,9 @@ from zoneinfo import ZoneInfo
 from trading_bot.domain.portfolio.run_report import group_sections
 
 ANALYST_OUTPUT_VERSION = "analyst_output.v2"
-PROMPT_VERSION = "ai2-prompt-v3"
+PROMPT_VERSION = "ai2-prompt-v4"
 MACRO_KEY = "macro_calendar"
+DERIVATIVES_KEY = "derivatives"
 
 # AI-3: trường đề xuất được phép (đường dẫn trong overlay cấu hình bot) và miền giá trị. Chỉ các
 # trường này mới chạy backtest tự động được; tên khác → validator loại.
@@ -420,7 +421,7 @@ def topic_report(report: Mapping[str, Any], family: str) -> dict[str, Any]:
                 if any(w.startswith(name) for name in names)
             ],
         },
-        **({MACRO_KEY: report[MACRO_KEY]} if MACRO_KEY in report else {}),
+        **{key: report[key] for key in (MACRO_KEY, DERIVATIVES_KEY) if key in report},
     }
 
 
@@ -452,6 +453,12 @@ def build_prompt(report: Mapping[str, Any], *, knowledge: str = "", resumed: boo
         "25/11 20:30); evidence_refs trỏ tới /macro_calendar/upcoming/<i>. Chỉ dùng lịch làm bối "
         "cảnh rủi ro biến động; không khẳng định sự kiện gây ra lãi/lỗ khi report không có số "
         "liệu chứng minh. Tỷ lệ viết dạng 'x trên y', không dùng dấu '/' giữa hai số.\n"
+        "7. derivatives (nếu có) là ảnh chụp phái sinh Binance mới nhất mỗi coin: funding_rate_pct "
+        "(% mỗi kỳ funding), oi_change_24h_pct (thay đổi giá trị open interest 24 giờ, %), "
+        "long_short_account_ratio (tài khoản long/short), top_trader_position_ratio, "
+        "taker_buy_sell_ratio (khối lượng mua/bán chủ động). Chép nguyên văn số đã làm tròn sẵn, "
+        "trích /derivatives/symbols/<i>/<trường>. Đây là bối cảnh thị trường, chưa chiến lược nào "
+        "dùng để vào lệnh: chỉ được nêu như giả thuyết cần kiểm, không coi là nguyên nhân lãi/lỗ.\n"
     )
     memory = (
         f"\nKiến thức đã tích lũy (owner đã duyệt):\n{knowledge.strip()}\n" if knowledge else ""
