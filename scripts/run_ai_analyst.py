@@ -64,7 +64,13 @@ def build_engine(name: str) -> Any:
         binary = find_claude_binary()
         if binary is None:
             raise SystemExit("Không tìm thấy Claude Code CLI; đặt CRYPIDIAN_CLAUDE_BIN.")
-        return ClaudeCliEngine(binary, model=os.environ.get("CRYPIDIAN_ANALYST_MODEL"))
+        return ClaudeCliEngine(
+            binary,
+            model=os.environ.get("CRYPIDIAN_ANALYST_MODEL"),
+            # Token dài hạn từ `claude setup-token` (gitignored, chmod 600); không có thì CLI
+            # dùng đăng nhập Keychain (`claude auth login`).
+            oauth_token_file=ROOT / ".secrets" / "claude_code_oauth_token",
+        )
     if name == "codex":
         return CodexCliEngine(
             os.environ.get("CRYPIDIAN_CODEX_BIN", CODEX_DEFAULT),

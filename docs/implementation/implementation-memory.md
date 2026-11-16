@@ -4379,3 +4379,13 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
   - (5) Ruff PT018/E501 chặn E2E trước khi chạy (sửa assert/dòng dài).
 - **Chạy local (engine giả):** report 24 giờ của 10 bot → 3 chủ đề (CARD/H01/H03) hợp lệ; lượt 2 `resumed: true`, `run_count` tăng; lượt không hợp lệ vẫn lưu để kiểm toán.
 - **Kiểm chứng:** unit **4489 passed/133.00s** (`tests/unit/test_ai2_analyst.py` 18 test); mypy sạch; E2E RT-1 thêm phase `analyst` **1 passed/337.03s** (gồm `alembic check` trên DB sạch, 2 lượt lưu, 1 hợp lệ, RLS bắt buộc, admin-web chỉ SELECT).
+
+### 2026-11-16 — Chạy thật AI-2: Claude CLI vẫn "Not logged in"; thêm token dài hạn `claude setup-token`
+
+- **Owner báo:** "Đã đăng nhập, chạy đi".
+- **Kết quả:** `scripts/run_ai_analyst.py --engine claude` cả 3 chủ đề lỗi `Not logged in · Please run /login` (12 giây, 0 token, đã lưu 3 lượt lỗi vào `analyst_run`).
+  - `claude auth status`: `loggedIn: false` với cả 2 bản 2.1.317/2.1.321, môi trường đầy đủ lẫn tối thiểu, trong và ngoài sandbox.
+  - `~/.claude.json` có `oauthAccount`.
+- **Nguyên nhân (tài liệu chính thức):** phiên Claude Desktop dùng OAuth do app quản lý, không chia sẻ cho CLI độc lập. CLI cần `claude auth login` (Keychain) hoặc `CLAUDE_CODE_OAUTH_TOKEN` từ `claude setup-token`. Đây là token 1 năm gắn subscription, chỉ dùng gọi model, dành cho script/CI (https://code.claude.com/docs/en/authentication, kiểm 16/11/2026).
+- **Sửa:** `ClaudeCliEngine(oauth_token_file=...)` đọc `.secrets/claude_code_oauth_token` (gitignored), chỉ đưa token vào env của tiến trình con, không vào argv/log/DB. Thiếu file thì CLI dùng Keychain. Test `test_claude_engine_passes_oauth_token_only_via_env`.
+- **Chờ owner:** chạy `claude setup-token` và lưu token vào file trên (chmod 600), hoặc `claude auth login` trong Terminal của chính owner.

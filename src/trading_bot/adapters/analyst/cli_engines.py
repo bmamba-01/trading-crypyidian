@@ -50,11 +50,29 @@ class ClaudeCliEngine:
     name = "claude-cli"
 
     def __init__(
-        self, binary: str, *, model: str | None = None, runner: Runner = subprocess.run
+        self,
+        binary: str,
+        *,
+        model: str | None = None,
+        runner: Runner = subprocess.run,
+        oauth_token_file: Path | None = None,
     ) -> None:
         self._binary = binary
         self._model = model
         self._runner = runner
+        self._token_file = oauth_token_file
+
+    def _env(self) -> dict[str, str]:
+        """Env tối thiểu; thêm token dài hạn (``claude setup-token``) nếu có file secret.
+
+        Token chỉ đi qua biến môi trường của tiến trình con, không vào argv/log/DB.
+        """
+        env = _minimal_env()
+        if self._token_file is not None and self._token_file.is_file():
+            token = self._token_file.read_text(encoding="utf-8").strip()
+            if token:
+                env["CLAUDE_CODE_OAUTH_TOKEN"] = token
+        return env
 
     def command(self, request: AnalysisRequest, session_id: str) -> list[str]:
         argv = [
@@ -89,7 +107,7 @@ class ClaudeCliEngine:
                     text=True,
                     timeout=request.timeout_seconds,
                     cwd=workdir,
-                    env=_minimal_env(),
+                    env=self._env(),
                 )
             except subprocess.TimeoutExpired:
                 return AnalysisResult(self.name, None, "", session_id, -1, version, error="TIMEOUT")

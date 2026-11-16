@@ -256,3 +256,18 @@ def test_runner_fake_engine_flow_and_telegram_sends_only_valid_results() -> None
     [(chat, text)] = sender.messages
     assert chat == 42
     assert "family:H03" in text
+
+
+def test_claude_engine_passes_oauth_token_only_via_env(tmp_path) -> None:
+    token_file = tmp_path / "claude_code_oauth_token"
+    token_file.write_text("tok-secret\n", encoding="utf-8")
+    runner = Runner(json.dumps({"structured_output": {}, "session_id": "s"}))
+    ClaudeCliEngine("/bin/claude", runner=runner, oauth_token_file=token_file).analyze(_request())
+    call = runner.calls[-1]
+    assert call["env"]["CLAUDE_CODE_OAUTH_TOKEN"] == "tok-secret"
+    assert all("tok-secret" not in part for part in call["argv"])
+    missing = Runner(json.dumps({"structured_output": {}, "session_id": "s"}))
+    ClaudeCliEngine("/bin/claude", runner=missing, oauth_token_file=tmp_path / "khong-co").analyze(
+        _request()
+    )
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in missing.calls[-1]["env"]
