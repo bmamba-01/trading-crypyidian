@@ -3,9 +3,20 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from decimal import Decimal
+from decimal import ROUND_FLOOR, Decimal
 
 from trading_bot.domain.execution.paper import ZERO, PaperBar, PaperPosition
+
+
+@dataclass(frozen=True, slots=True)
+class PartialExit:
+    """Chốt lời một phần (SIG-3 lát 2): lượng, giá tham chiếu và stop mới (nếu dời)."""
+
+    target_index: int
+    quantity: Decimal
+    reference_price: Decimal
+    targets_hit: int
+    new_stop: Decimal | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -15,6 +26,26 @@ class PositionMonitorResult:
     position: PaperPosition
     exit_reason: str | None = None
     exit_reference_price: Decimal | None = None
+    partial_exit: PartialExit | None = None
+
+
+def _ladder_step(position: PaperPosition, bar: PaperBar) -> tuple[int, Decimal] | None:
+    """Mục tiêu chưa chốt bị chạm trong nến: (số mục tiêu đã chạm sau nến, giá chốt bảo thủ).
+
+    Nhiều mục tiêu cùng nến được gộp và chốt ở giá mục tiêu ĐẦU TIÊN chạm (bảo thủ: không giả
+    định giá đi hết tới mục tiêu xa nhất rồi mới chốt từng phần). Gap qua mục tiêu dùng giá mở.
+    """
+    pending = position.targets[position.targets_hit :]
+    reached = [
+        target
+        for target in pending
+        if (bar.high >= target.price if position.direction == "long" else bar.low <= target.price)
+    ]
+    if not reached:
+        return None
+    first = reached[0].price
+    price = max(bar.open, first) if position.direction == "long" else min(bar.open, first)
+    return position.targets_hit + len(reached), price
 
 
 def monitor_position(
@@ -55,10 +86,16 @@ def monitor_position(
         if position.direction == "long"
         else bar.high >= position.stop_price
     )
-    target_hit = position.target_price is not None and (
-        bar.high >= position.target_price
-        if position.direction == "long"
-        else bar.low <= position.target_price
+    ladder = _ladder_step(position, bar) if position.targets else None
+    target_hit = (
+        ladder is None
+        and not position.targets
+        and position.target_price is not None
+        and (
+            bar.high >= position.target_price
+            if position.direction == "long"
+            else bar.low <= position.target_price
+        )
     )
     if stop_hit:
         gap_price = (
@@ -77,6 +114,62 @@ def monitor_position(
             exit_reference_price=gap_price,
         )
         return PositionMonitorResult(closed, "STOP_LOSS", gap_price)
+    if ladder is not None:
+        hit_count, price = ladder
+        if hit_count >= len(position.targets):
+            closed = replace(
+                position,
+                quantity=ZERO,
+                protective_stop_quantity=ZERO,
+                bars_held=bars_held,
+                is_closed=True,
+                seen_bar_keys=seen,
+                exit_reason="TAKE_PROFIT",
+                exit_reference_price=price,
+                targets_hit=hit_count,
+            )
+            return PositionMonitorResult(closed, "TAKE_PROFIT", price)
+        fraction = sum(
+            (target.fraction for target in position.targets[position.targets_hit : hit_count]),
+            ZERO,
+        )
+        raw = position.initial_quantity * fraction
+        step = position.quantity_step
+        quantity = (
+            (raw / step).to_integral_value(rounding=ROUND_FLOOR) * step if step > ZERO else raw
+        )
+        quantity = min(quantity, position.quantity)
+        moves_stop = any(
+            target.stop_to_entry_after
+            for target in position.targets[position.targets_hit : hit_count]
+        )
+        new_stop = None
+        if moves_stop:
+            entry = position.entry_execution_price
+            better = (
+                entry > position.stop_price
+                if position.direction == "long"
+                else entry < position.stop_price
+            )
+            new_stop = entry if better else None
+        advanced = replace(
+            position,
+            bars_held=bars_held,
+            seen_bar_keys=seen,
+            targets_hit=hit_count,
+            stop_price=new_stop if new_stop is not None else position.stop_price,
+        )
+        if quantity <= ZERO:
+            # Phần chốt nhỏ hơn bước khối lượng: chỉ ghi đã chạm; phần còn lại chờ mục tiêu sau.
+            return PositionMonitorResult(advanced)
+        partial = PartialExit(
+            target_index=hit_count,
+            quantity=quantity,
+            reference_price=price,
+            targets_hit=hit_count,
+            new_stop=new_stop,
+        )
+        return PositionMonitorResult(advanced, partial_exit=partial)
     if target_hit:
         assert position.target_price is not None
         gap_price = (

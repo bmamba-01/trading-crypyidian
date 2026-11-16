@@ -229,9 +229,12 @@ def verify_paper_ledger_consistency(
             event = actual_events[event_key]
             if event.event_type != event_type or event.quantity != quantity:
                 raise PaperRecoveryConflict("Position event quantity/type lệch fill ledger.")
+        # SIG-3 lát 2: sau chốt lời từng phần, STOP_UPDATED ghi khối lượng tại thời điểm dời stop,
+        # nên chỉ cần là một mức khối lượng vị thế từng có (sau entry hoặc sau mỗi lần chốt bớt).
+        quantity_levels = {quantity for _, quantity in expected_events.values() if quantity > 0}
         for event in stop_events.values():
             if (
-                event.quantity != Decimal(position["quantity"])
+                event.quantity not in quantity_levels | {Decimal(position["quantity"])}
                 or event.payload.get("bar_key") not in position["seen_bar_keys"]
                 or not event.payload.get("stop_price")
             ):
@@ -241,7 +244,17 @@ def verify_paper_ledger_consistency(
             if Decimal(latest_stop.payload["stop_price"]) != Decimal(position["stop_price"]):
                 raise PaperRecoveryConflict("Stop price hiện hành không khớp position event.")
         if trade.status == "OPEN" and exit_quantity:
-            raise PaperRecoveryConflict("Partial EXIT của OPEN trade chưa có gross PnL ledger.")
+            # Chỉ chấp nhận EXIT trên trade còn mở khi đó là chốt lời từng phần theo thang của kế
+            # hoạch (SIG-3 lát 2): vị thế có thang, đã chạm ít nhất một mục tiêu, chưa đóng, và
+            # số lần chốt không vượt số mục tiêu đã chạm.
+            ladder_hits = int(position.get("targets_hit", 0))
+            if (
+                not position.get("targets")
+                or ladder_hits < 1
+                or bool(position["is_closed"])
+                or len(exit_fills) > ladder_hits
+            ):
+                raise PaperRecoveryConflict("Partial EXIT của OPEN trade chưa có gross PnL ledger.")
         if trade.status == "OPEN":
             expected_fee = expected_funding = expected_slippage = expected_total = Decimal(0)
             expected_gross = Decimal(0)

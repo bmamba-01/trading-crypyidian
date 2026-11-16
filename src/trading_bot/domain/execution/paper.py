@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 
 from trading_bot.domain.execution.funding import FundingSettlement, funding_cashflow
 from trading_bot.domain.risk.planner import TradePlan
+from trading_bot.domain.risk.take_profit import PlanTarget
 from trading_bot.domain.strategy.recipes import ExitRecipe
 
 if TYPE_CHECKING:
@@ -156,6 +157,12 @@ class PaperPosition:
     seen_bar_keys: tuple[str, ...] = ()
     exit_reason: str | None = None
     exit_reference_price: Decimal | None = None
+    # SIG-3 lát 2: thang chốt lời của kế hoạch, số mục tiêu đã chốt, khối lượng ban đầu (để tính
+    # phần chốt theo tỷ lệ) và bước khối lượng sàn (làm tròn xuống). Mặc định = không có thang.
+    targets: tuple[PlanTarget, ...] = ()
+    targets_hit: int = 0
+    initial_quantity: Decimal = ZERO
+    quantity_step: Decimal = ZERO
 
     @property
     def net_realized_pnl(self) -> Decimal:
@@ -450,6 +457,26 @@ class PaperExecutionGateway:
             exit_feature_value=exit_feature_value,
             strategy_bar_closed=strategy_bar_closed,
         )
+        if result.partial_exit is not None:
+            # SIG-3 lát 2: chốt lời một phần — khóa idempotency theo chỉ số mục tiêu để không
+            # đụng khóa exit toàn phần của cùng nến.
+            partial = result.partial_exit
+            receipt = self.close_position(
+                current.position_id,
+                partial.quantity,
+                reference_price=partial.reference_price,
+                closed_at=bar.closed_at,
+                idempotency_key=f"exit:{current.position_id}:{bar.bar_key}:TP{partial.target_index}",
+            )
+            reduced = replace(
+                receipt.position,
+                bars_held=result.position.bars_held,
+                seen_bar_keys=result.position.seen_bar_keys,
+                targets_hit=result.position.targets_hit,
+                stop_price=result.position.stop_price,
+            )
+            self._positions[position.intent_id] = reduced
+            return replace(result, position=reduced)
         if result.exit_reason is None or result.exit_reference_price is None:
             self._positions[position.intent_id] = result.position
             return result
@@ -466,6 +493,7 @@ class PaperExecutionGateway:
             seen_bar_keys=result.position.seen_bar_keys,
             exit_reason=result.exit_reason,
             exit_reference_price=result.exit_reference_price,
+            targets_hit=result.position.targets_hit,
         )
         self._positions[position.intent_id] = closed
         return replace(result, position=closed)
@@ -635,6 +663,9 @@ class PaperExecutionGateway:
             position,
             quantity=total,
             protective_stop_quantity=total,
+            targets=plan.targets,
+            initial_quantity=total if plan.targets else ZERO,
+            quantity_step=plan.exchange_rules.quantity_step if plan.targets else ZERO,
             entry_reference_price=avg_reference,
             entry_execution_price=avg_execution,
             fee_cost=position.fee_cost + fill.fee_cost,

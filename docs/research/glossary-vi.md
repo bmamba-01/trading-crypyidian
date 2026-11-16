@@ -878,3 +878,24 @@ Khái niệm VSA và ZigZag đã định nghĩa ở mục AC; mục này ghi tê
 | Position slots | Chỗ chạy | Số lệnh PAPER đang mở của bot (mọi mã, từ ledger) / `max_positions` của cấu hình hiệu lực; bằng nhau là "đã đủ", planner không mở thêm. | `domain/risk/planner.py` (`RiskLimits.max_positions`) |
 | Realised net loss (today / 24h) | Lỗ ròng đã thực hiện (hôm nay / 24 giờ) | Phần âm của tổng PnL ròng các lệnh đã đóng từ 00:00 UTC hôm nay / trong 24 giờ trượt, so với `max_daily_loss` / `max_rolling_loss`; ≥ 80% cảnh báo, ≥ 100% vượt. Bảng chỉ mô tả; chặn lệnh vẫn do risk engine. | Định nghĩa nội bộ (`ck12-protection-v1`) |
 | Monitor verdict | Kết luận giám sát | Câu ngắn từ tiến độ setup (CK-6): "Chờ tín hiệu: x/n điều kiện bắt buộc", "Đủ điều kiện MUA/BÁN", "Tín hiệu … đã hết hạn". | Định nghĩa nội bộ |
+
+## AP. Thang chốt lời và chốt từng phần (SIG-3 lát 2, 16/11/2026)
+
+| Thuật ngữ (EN) | Tiếng Việt | Định nghĩa và giới hạn | Nguồn |
+|---|---|---|---|
+| Take-profit ladder | Thang chốt lời | 1–3 mục tiêu theo bội số R của khoảng entry→stop, mỗi mục tiêu chốt một tỷ lệ khối lượng ban đầu (tổng = 1). Chỉ release scalping đăng ký mới có; release cũ giữ một mục tiêu theo recipe. | Định nghĩa nội bộ (`sig3-ladder-v1`) |
+| Partial take profit | Chốt lời từng phần | Đóng một phần vị thế khi chạm mục tiêu; ghi fill EXIT `TAKE_PROFIT_{i}`, trade còn mở tới khi đóng hết. | [Investopedia — Scaling out](https://www.investopedia.com/terms/s/scaling-out.asp) |
+| Move stop to breakeven | Dời stop về hòa vốn | Sau mục tiêu 1, đặt stop phần còn lại bằng giá vào thực tế (chỉ khi tốt hơn stop cũ); có hiệu lực từ nến sau. | Định nghĩa nội bộ |
+| Weighted net R:R | R:R ròng bình quân | Σ (tỷ lệ chốt × R:R ròng sau phí của mục tiêu); cổng tối thiểu của planner áp cho chỉ số này khi có thang. | Định nghĩa nội bộ |
+
+## AQ. Họ scalping H18–H20 (SIG-4, 16/11/2026)
+
+Các khái niệm đã có (liquidity sweep, VWAP, retest, BOS, delta nến, funding window) không lặp lại.
+
+| Thuật ngữ (EN) | Tiếng Việt | Định nghĩa và giới hạn | Nguồn |
+|---|---|---|---|
+| Sweep and reclaim | Quét rồi lấy lại mức | Râu nến vượt mức thanh khoản (đỉnh/đáy phiên, PDH/PDL) nhưng giá đóng quay lại bên trong mức; H18 còn đòi delta nến ngược hướng quét. | Định nghĩa nội bộ (`sig4-scalping-v1`); [nghiên cứu §6](./signal-scalping-chart-research-2026-11-15.md) |
+| VWAP deviation band | Dải lệch VWAP | VWAP ngày UTC ± k·σ, σ là độ lệch chuẩn của giá điển hình quanh VWAP trong ngày; H19 dùng k = 2. | [TradingView — VWAP](https://www.tradingview.com/support/solutions/43000502018-volume-weighted-average-price-vwap/) |
+| Round-trip cost gate | Cổng chi phí khứ hồi | Khoảng stop phải ≥ 3 × (phí vào + phí ra) ước tính; với VIP0 taker 0,05% hai chiều là 0,3% giá. | Mức phí theo quyết định owner #4 (16/11/2026); [Binance — Fee rate](https://www.binance.com/en/fee/futureFee) tải động, kiểm 16/11/2026 không đọc được bảng số → cần owner xác nhận lại trên trang khi đăng nhập. [TradingView — VWAP](https://www.tradingview.com/support/solutions/43000502018-volume-weighted-average-price-vwap/) kiểm 16/11/2026 (có dải độ lệch chuẩn). |
+| Session filter (London/New York) | Bộ lọc phiên London/New York | Chỉ nhận tín hiệu khi giờ đóng nến nằm trong giờ mở cửa địa phương của London hoặc New York (tự theo giờ mùa hè). | Định nghĩa nội bộ (`sig1-session-v1`) |
+

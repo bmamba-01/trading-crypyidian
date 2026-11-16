@@ -22,6 +22,7 @@ from trading_bot.domain.risk.planner import (
     TradePlan,
     calculate_plan_hash,
 )
+from trading_bot.domain.risk.take_profit import PlanTarget
 from trading_bot.domain.strategy.recipes import ExitRecipe
 
 PAPER_STATE_SCHEMA_VERSION = 2
@@ -320,7 +321,7 @@ def _order_from_json(row: dict[str, Any]) -> PaperOrderIntent:
 
 
 def _position_to_json(position: PaperPosition) -> dict[str, Any]:
-    return {
+    value: dict[str, Any] = {
         "position_id": position.position_id,
         "intent_id": position.intent_id,
         "symbol": position.symbol,
@@ -350,6 +351,35 @@ def _position_to_json(position: PaperPosition) -> dict[str, Any]:
             else None
         ),
     }
+    # SIG-3 lát 2: chỉ ghi khóa thang chốt lời khi vị thế có thang → checkpoint cũ không đổi.
+    if position.targets:
+        value["targets"] = [_target_to_json(target) for target in position.targets]
+        value["targets_hit"] = position.targets_hit
+        value["initial_quantity"] = str(position.initial_quantity)
+        value["quantity_step"] = str(position.quantity_step)
+    return value
+
+
+def _target_to_json(target: PlanTarget) -> dict[str, Any]:
+    return {
+        "index": target.index,
+        "price": str(target.price),
+        "fraction": str(target.fraction),
+        "r_multiple": str(target.r_multiple),
+        "net_reward_to_risk": str(target.net_reward_to_risk),
+        "stop_to_entry_after": target.stop_to_entry_after,
+    }
+
+
+def _target_from_json(row: dict[str, Any]) -> PlanTarget:
+    return PlanTarget(
+        index=int(row["index"]),
+        price=Decimal(row["price"]),
+        fraction=Decimal(row["fraction"]),
+        r_multiple=Decimal(row["r_multiple"]),
+        net_reward_to_risk=Decimal(row["net_reward_to_risk"]),
+        stop_to_entry_after=bool(row["stop_to_entry_after"]),
+    )
 
 
 def _position_from_json(row: dict[str, Any]) -> PaperPosition:
@@ -383,6 +413,10 @@ def _position_from_json(row: dict[str, Any]) -> PaperPosition:
             if row["exit_reference_price"] is not None
             else None
         ),
+        targets=tuple(_target_from_json(item) for item in row.get("targets", ())),
+        targets_hit=int(row.get("targets_hit", 0)),
+        initial_quantity=Decimal(row.get("initial_quantity", "0")),
+        quantity_step=Decimal(row.get("quantity_step", "0")),
     )
 
 
@@ -397,6 +431,10 @@ def _plan_to_json(plan: TradePlan) -> dict[str, Any]:
         value[key] = list(getattr(plan, key))
     value["exchange_rules"] = {key: str(item) for key, item in asdict(plan.exchange_rules).items()}
     value["exit_recipe"] = asdict(plan.exit_recipe)
+    if plan.targets:
+        value["targets"] = [_target_to_json(target) for target in plan.targets]
+    else:
+        value.pop("targets", None)
     return value
 
 
@@ -431,6 +469,7 @@ def _plan_from_json(value: dict[str, Any]) -> TradePlan:
         **{key: Decimal(item) for key, item in data["exchange_rules"].items()}
     )
     data["exit_recipe"] = ExitRecipe(**data["exit_recipe"])
+    data["targets"] = tuple(_target_from_json(item) for item in data.get("targets", ()))
     return TradePlan(**data)
 
 

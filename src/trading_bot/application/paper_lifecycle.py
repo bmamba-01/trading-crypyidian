@@ -637,6 +637,49 @@ class PaperLifecycleCoordinator:
             exit_feature_value=exit_feature_value,
             strategy_bar_closed=strategy_bar_closed,
         )
+        if result.partial_exit is not None:
+            # SIG-3 lát 2: chốt lời một phần. Gateway đã đóng phần này với khóa theo chỉ số mục
+            # tiêu; gọi lại cùng khóa (idempotent) để lấy fill rồi ghi ledger: fill EXIT + sự kiện
+            # REDUCED (ledger tự ghi) và STOP_UPDATED nếu dời stop về entry. Trade vẫn mở.
+            partial = result.partial_exit
+            receipt = self._gateway.close_position(
+                position.position_id,
+                partial.quantity,
+                reference_price=partial.reference_price,
+                closed_at=bar.closed_at,
+                idempotency_key=f"exit:{position.position_id}:{bar.bar_key}:TP{partial.target_index}",
+            )
+            fill = receipt.fill
+            if fill is None:
+                raise PaperLifecycleConflict("Gateway chốt một phần nhưng không tạo exit fill.")
+            appended = await self._ledger.append_exit_fill(
+                uow,
+                intent_id=ledger_intent_id,
+                fill_key=fill.fill_id,
+                bar_key=fill.bar_key,
+                fill_policy_version=fill.fill_policy_version,
+                quantity=fill.quantity,
+                price=fill.execution_price,
+                fee_amount=fill.fee_cost,
+                slippage_amount=fill.slippage_cost,
+                occurred_at=fill.filled_at,
+                exit_reason=f"TAKE_PROFIT_{partial.target_index}",
+            )
+            if partial.new_stop is not None:
+                await self._ledger.append_position_event(
+                    uow,
+                    intent_id=ledger_intent_id,
+                    event_key=f"stop-update:{position.position_id}:{bar.bar_key}",
+                    event_type="STOP_UPDATED",
+                    quantity=result.position.quantity,
+                    occurred_at=bar.closed_at,
+                    payload={
+                        "bar_key": bar.bar_key,
+                        "stop_price": str(partial.new_stop),
+                        "reason": f"BREAKEVEN_AFTER_TP{partial.target_index}",
+                    },
+                )
+            return PositionLifecycleResult(result.position, fill, appended, False, result)
         if result.exit_reason is None:
             if result.position.stop_price != position.stop_price:
                 await self._ledger.append_position_event(

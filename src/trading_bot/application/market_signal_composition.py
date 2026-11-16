@@ -44,6 +44,7 @@ from trading_bot.application.scorer_runtime_policy import ScorerRuntimePolicyPro
 from trading_bot.application.strategy_catalog import strategy_registry
 from trading_bot.application.strategy_market_requirements import (
     TIMEFRAME_INTERVALS,
+    MarketRequirementError,
     feature_requirements_for_release,
     feature_settings_for,
 )
@@ -87,7 +88,11 @@ class PostgresClosedMarketObservationSource(QualifiedMarketObservationSource):
             return ()
         unknown = set(timeframes) - TIMEFRAME_INTERVALS.keys()
         if unknown:
-            raise ValueError("Bot yêu cầu timeframe chưa được hỗ trợ bởi producer.")
+            raise MarketRequirementError(
+                "TIMEFRAME_UNSUPPORTED",
+                "Bot yêu cầu timeframe chưa được hỗ trợ bởi producer: "
+                f"{', '.join(sorted(unknown))}.",
+            )
         async with UnitOfWork(self._sessions, workspace_id=workspace_id) as uow:
             rows = await _latest_bar_rows(
                 uow.session,

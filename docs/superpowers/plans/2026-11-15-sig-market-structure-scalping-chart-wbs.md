@@ -77,6 +77,8 @@ Mọi feature có `formula_version`, chạy được tăng dần, và có `confi
 
 **Đã triển khai (15/11/2026):** G4 sửa — `CARD_VOL_BREAKOUT_RELEASE` (`sc-binance-usdm-vol-breakout-001-v1.0.0`) khai báo khung vào 1h + `atr_14` trong `strategy_market_requirements`, khớp release trong `strategy_registry()` (test). Khung 1m/3m/5m/30m cho runtime vẫn chưa mở.
 
+**Đã triển khai (16/11/2026, chưa commit):** `strategy_market_requirements.TIMEFRAME_INTERVALS` mở 1m/3m/5m/30m (giữ 15m/1h/4h); giới hạn `MAX_TIMEFRAMES_PER_RELEASE = 3`, `MAX_FEATURES_PER_TIMEFRAME = 8` kiểm khi nạp module (`validate_requirements`); lỗi `MarketRequirementError(code, message)` (vẫn là `ValueError`, giữ câu cũ để không đổi hành vi) với mã `TIMEFRAME_UNSUPPORTED`, `RELEASE_UNSUPPORTED`, `TOO_MANY_TIMEFRAMES`, `TOO_MANY_FEATURES`; producer (`market_signal_composition`) báo mã khi bot yêu cầu khung chưa hỗ trợ. Chart admin đã có 1m/3m/30m từ SIG-7. **Không sửa** `_TIMEFRAME_INTERVALS` trong `domain/strategy/rules.py` vì `release_content_hash` băm mã nguồn module rules → H18–H20 (SIG-4) sẽ nằm ở module riêng.
+
 ### SIG-3 — Hợp đồng tín hiệu v2: vùng vào, thang chốt lời, điều kiện mất hiệu lực (mở rộng MI-1, MI-2, SC-1)
 
 1. `StrategyCandidate` v2 (giữ v1 đọc được): `entry_zone_low/high`, `stop_price`, `targets[]` (giá + tỷ lệ chốt), `setup_id`, `invalidation[]` có cấu trúc, `expires_at`, `checklist[]` (`condition_key`, `actual`, `threshold`, `operator`, `passed` — chính là MI-1), `confidence_tier` + `calibrated_probability` (nullable).
@@ -94,6 +96,14 @@ Mọi feature có `formula_version`, chạy được tăng dần, và có `confi
 - Trang `/admin/chart`: khối "Thẻ tín hiệu gần nhất" + "Quyết định mới nhất: không vào lệnh" kèm checklist; lớp "Thẻ tín hiệu (SL/TP)" vẽ đường giá SL/vào/TP khi tín hiệu cùng mã và còn hiệu lực.
 - **Chưa làm (lát sau):** `TradePlan` nhiều target và chốt từng phần trong PAPER (G6), giữ confidence/R:R/zone của card qua `planner_bridge` (G5), net R:R từng mục tiêu (cần tách công thức planner thành hàm dùng chung), thẻ trong tin Telegram (TG-1), checklist cho Strategy Card L0–L6.
 
+**Đã triển khai (16/11/2026, lát 2 — G6 lõi, chưa commit):**
+- `domain/risk/take_profit.py` (`sig3-ladder-v1`): `TakeProfitLadder` (1–3 bậc, R tăng dần, tổng tỷ lệ = 1, tùy chọn dời stop về entry sau TP1), `build_targets` (giá theo R của khoảng entry→stop, làm tròn bảo thủ ra xa entry, chặn trùng sau làm tròn), `net_reward_to_risk` dùng chung công thức với planner, R:R bình quân theo tỷ lệ chốt.
+- **Không sửa `ExitRecipe`** (giữ `release_content_hash`); thang là cấu trúc riêng truyền vào `TradePlanner.plan(..., ladder=)`. `TradePlan.targets` mặc định rỗng và **chỉ vào hash khi có** → plan/checkpoint/quyết định cũ giữ nguyên hash (test hash kiểu cũ). Cổng R:R ròng áp cho R:R bình quân của thang; mục tiêu cuối là `target_price`.
+- PAPER: `PaperPosition` mang `targets`, `targets_hit`, `initial_quantity`, `quantity_step`; `position_monitor` chốt từng phần (stop vẫn ưu tiên cùng nến; nhiều mục tiêu cùng nến gộp và chốt ở giá mục tiêu đầu tiên chạm — bảo thủ; mục tiêu cuối đóng hết `TAKE_PROFIT`; làm tròn xuống theo bước khối lượng); gateway đóng một phần với khóa `exit:{pos}:{bar}:TP{i}`; dời stop về giá vào thực tế sau TP1 (chỉ khi tốt hơn stop hiện tại), hiệu lực từ nến sau.
+- Ledger: `paper_lifecycle` ghi fill EXIT lý do `TAKE_PROFIT_{i}` (ledger tự ghi REDUCED) và `STOP_UPDATED` lý do `BREAKEVEN_AFTER_TP{i}`; trade vẫn OPEN tới khi đóng hết. Checkpoint chỉ ghi khóa thang khi có thang (checkpoint cũ khôi phục được — test).
+- Recovery: chấp nhận EXIT trên trade OPEN **chỉ khi** vị thế có thang, đã chạm ≥ 1 mục tiêu, chưa đóng và số lần chốt ≤ số mục tiêu đã chạm; STOP_UPDATED kiểm khối lượng theo các mức vị thế từng có.
+- **Còn mở:** G5 (`planner_bridge` giữ vùng vào/R:R/điểm của card dạng có cấu trúc); lý do thoát từng fill trong báo cáo/CSV; hiển thị thang trên thẻ tín hiệu; Compose E2E chốt từng phần (làm cùng acceptance SIG-4: fixture M5 → candidate → plan → khớp → TP1 → đóng).
+
 ### SIG-4 — Họ chiến lược scalping H18–H20 (mới; chỉ PAPER, `EXPERIMENTAL_UNVALIDATED`)
 
 1. H18 quét + lấy lại mức phiên/PDH/PDL (M5/M15); H19 hồi về VWAP/POC trong RANGE (M1–M5); H20 BOS + retest có mất cân bằng (M5/M15). Định nghĩa trong [nghiên cứu §6](../../research/signal-scalping-chart-research-2026-11-15.md#6-bộ-setup-scalping-đề-xuất-giả-thuyết-chỉ-paper); bổ sung vào `strategies-2026.md`.
@@ -102,6 +112,16 @@ Mọi feature có `formula_version`, chạy được tăng dần, và có `confi
 4. Tham số cố định trước backtest; mỗi lần đổi tham số tính là một lượt thử (BT-1).
 
 **Acceptance:** unit cho từng điều kiện vào/vô hiệu; E2E PAPER từ fixture M5 → candidate → plan → fill limit → TP1 chốt một phần → đóng; không có order Binance.
+
+**Đã triển khai lát 1 (16/11/2026, chưa commit):**
+
+- `domain/strategy/scalping_rules.py`: `H18SweepReclaimRule` (`h18-v1`), `H19VwapRangeReversionRule` (`h19-v1`), `H20BreakRetestRule` (`h20-v1`); bộ kiểm đầu vào point-in-time riêng cho 5m/15m (nhân đôi `rules._inputs` có chủ đích để không đổi hash release cũ); bộ lọc chung phiên London/New York, ±10 phút funding 00/08/16 UTC, blackout vĩ mô, stop ≥ 3× chi phí khứ hồi taker, vị thế phẳng. Định nghĩa chi tiết trong `strategies-2026.md` mục H18–H20.
+- Đăng ký vào registry sản phẩm (`application/strategy_catalog.scalping_rules`), `StrategyRegistry()` trần giữ nguyên 5 release; khai báo dữ liệu trong `strategy_market_requirements` (5m; H20 thêm 15m).
+- Thang chốt lời theo release (`ladder_for_release`: TP1 1R 50% + hòa vốn, TP2 2R 50%), truyền vào planner ở `PaperDecisionCycle.prepare` — release khác nhận `None` (không đổi hành vi).
+- Test: `tests/unit/test_sig4_scalping_rules.py` (điều kiện vào/vô hiệu từng setup, các cổng chung, biên cửa sổ funding, đăng ký + hash, kế hoạch có thang sau phí VIP0) và `tests/unit/test_sig4_acceptance.py` (chấp nhận trong tiến trình: nến M5 → H18 → `PaperDecisionCycle` đường settings đã publish → intent PAPER → khớp 1m → TP1 chốt một phần + hòa vốn → TP2 đóng; không kết nối sàn).
+- **E2E (16/11/2026):** `tests/e2e/test_sig4_scalping_paper.py` + probe `tests/e2e/probes/sig4_scalping_paper.py` + fixture `tests/fixtures/sig4_runtime_replay.py`. "Đồng hồ có kiểm soát" = thời gian của dữ liệu + `clock=` tiêm vào `PaperLedgerRepository`/`RiskReservationRepository` (không sửa mã production). Pha `lifecycle` (role trading-runtime, chặn socket): snapshot từ `build_decision_snapshot_from_bars` thật → `PaperDecisionCycle` (registry sản phẩm) → `record_evaluation`/`reserve` → `PaperLifecycleCoordinator` với ledger + checkpoint + lease/fencing token thật: khớp 10:05 → TP1 (fill EXIT `TAKE_PROFIT_1`, `STOP_UPDATED` `BREAKEVEN_AFTER_TP1`) → TP2 đóng trade (net PnL ledger = gateway) → coordinator mới hydrate từ checkpoint khớp. Pha `replay` (db-provisioner): replay H18 qua `run_backtest_dataset_runtime_replay` và lưu outcome bằng role `crypidian_replay_writer` (report hash/net PnL khớp). Cũng đóng mục "Compose E2E chốt từng phần" của SIG-3.
+- **Ràng buộc phát hiện khi làm E2E:** PostgreSQL có `CHECK (risk_reservation.expires_at > created_at)` với `created_at = now()` thật, nên kịch bản ledger chạy ở **cùng thứ/giờ của tuần tương lai** (`same_slot_after`); checkpoint từ revision 2 cần lease runtime + fencing token (MB-05); bộ tính đặc trưng chung đòi đủ warmup mọi đặc trưng (EMA200) → chiến lược 5m cần ≥ 200 nến M5 (~17 giờ) trước khi có tín hiệu; snapshot builder tính đủ `adx_14`/`efficiency_ratio_40` cho 5m (đã thấy giá trị READY trong replay).
+- **Chưa làm:** E2E qua producer `market-signal-worker` + vòng runtime production (`create_app`) cho release scalping — bộ lọc phiên/funding đọc giờ thật nên chỉ chạy được khi đồng hồ có kiểm soát ở producer/runtime; mô phỏng limit maker, hết hạn lệnh chờ, cooldown sau chuỗi thua.
 
 ### SIG-5 — Kiểm định scalping (mở rộng BT-1, WB07C)
 
@@ -188,6 +208,13 @@ SIG-1 + SIG-7 có thể làm trên dữ liệu seed/fixture trước khi SIG-0 c
 | 4 | Giả định phí: VIP0 taker 0,05%/maker 0,02% hay mức khác; có tính giảm BNB không | SIG-4, SIG-5 |
 | 5 | Tiêu chí bật PAPER cho một setup scalping (đề xuất: ≥ 200 lệnh ngoài mẫu, kỳ vọng dương sau phí ở kịch bản trượt giá ×2) | SIG-5 |
 | 6 | Có làm SIG-9 không | SIG-9 |
+
+### Quyết định owner đã chốt (16/11/2026, trước khi chạy bất kỳ kiểm định nào)
+
+- **#2 Mã/khung scalping đầu tiên:** BTCUSDT, ETHUSDT; khung M5 + M15.
+- **#4 Phí:** VIP0 — taker 0,05%, maker 0,02%; **không** tính giảm phí BNB.
+- **#5 Tiêu chí đề xuất bật PAPER cho một setup scalping:** ≥ 200 lệnh **ngoài mẫu** (walk-forward) **và** kỳ vọng sau phí vẫn dương ở kịch bản xấu (trượt giá ×2 + chỉ khớp taker). Tiêu chí khóa trước khi chạy SIG-5; đổi tiêu chí sau khi thấy kết quả phải ghi là lượt thử mới.
+- **Thứ tự:** SIG-2 → SIG-3 → SIG-4 → SIG-5 (đúng chuỗi phụ thuộc).
 
 ## Rủi ro và giới hạn
 

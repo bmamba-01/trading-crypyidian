@@ -869,7 +869,13 @@ def _canonical_value(value: object) -> object:
     if isinstance(value, Enum):
         return value.value
     if is_dataclass(value) and not isinstance(value, type):
-        return {field.name: _canonical_value(getattr(value, field.name)) for field in fields(value)}
+        return {
+            field.name: _canonical_value(getattr(value, field.name))
+            for field in fields(value)
+            # SIG-3 lát 2: `TradePlan.targets` rỗng không vào payload (cùng quy tắc `plan_hash` và
+            # checkpoint) để payload plan cũ giữ nguyên và recovery so khớp được với checkpoint.
+            if not (isinstance(value, TradePlan) and field.name == "targets" and not value.targets)
+        }
     if isinstance(value, dict):
         return {str(key): _canonical_value(item) for key, item in value.items()}
     if isinstance(value, (tuple, list)):

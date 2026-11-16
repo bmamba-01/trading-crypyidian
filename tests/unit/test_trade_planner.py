@@ -313,3 +313,57 @@ def test_cost_model_rejects_invalid_funding_reserve() -> None:
         _costs(expected_funding_periods=-1)
     with pytest.raises(ValueError, match="không âm"):
         _costs(adverse_funding_rate=Decimal("-0.0001"))
+
+
+def test_planner_without_ladder_keeps_legacy_plan_hash_shape() -> None:
+    """SIG-3 lát 2: kế hoạch không có thang chốt lời giữ đúng hash như trước khi có `targets`."""
+    import hashlib
+    import json
+    from dataclasses import fields
+
+    from trading_bot.domain.risk.planner import _canonical_plan, calculate_plan_hash
+
+    plan = TradePlanner().plan(_candidate(), _settings(), _account(), (), _costs(), now=NOW)
+    assert isinstance(plan, TradePlan)
+    assert plan.targets == ()
+    legacy = {item.name: getattr(plan, item.name) for item in fields(plan)}
+    legacy.pop("plan_hash")
+    legacy.pop("targets")  # hash cũ không có khóa này
+    digest = hashlib.sha256(
+        json.dumps(_canonical_plan(legacy), sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    assert plan.plan_hash == digest == calculate_plan_hash(plan)
+
+
+def test_planner_with_ladder_builds_targets_and_gates_weighted_net_rr() -> None:
+    from decimal import Decimal
+
+    from trading_bot.domain.risk.planner import calculate_plan_hash
+    from trading_bot.domain.risk.take_profit import LadderStep, TakeProfitLadder
+
+    ladder = TakeProfitLadder(
+        steps=(
+            LadderStep(Decimal("1.5"), Decimal("0.5")),
+            LadderStep(Decimal("3"), Decimal("0.5")),
+        ),
+        breakeven_after_first=True,
+    )
+    plain = TradePlanner().plan(_candidate(), _settings(), _account(), (), _costs(), now=NOW)
+    laddered = TradePlanner().plan(
+        _candidate(), _settings(), _account(), (), _costs(), now=NOW, ladder=ladder
+    )
+    assert isinstance(plain, TradePlan)
+    assert isinstance(laddered, TradePlan)
+    assert len(laddered.targets) == 2
+    assert laddered.target_price == laddered.targets[-1].price
+    assert laddered.plan_hash != plain.plan_hash
+    assert calculate_plan_hash(laddered) == laddered.plan_hash
+    risk = abs(laddered.entry_price - laddered.stop_price)
+    # Mục tiêu 1 cách entry ít nhất 1,5R (làm tròn bảo thủ ra xa entry).
+    assert abs(laddered.targets[0].price - laddered.entry_price) >= Decimal("1.5") * risk
+    too_close = TakeProfitLadder(steps=(LadderStep(Decimal("0.2"), Decimal("1")),))
+    rejected = TradePlanner().plan(
+        _candidate(), _settings(), _account(), (), _costs(), now=NOW, ladder=too_close
+    )
+    assert isinstance(rejected, PlanRejected)
+    assert rejected.reason_code == "NET_REWARD_RISK_BELOW_MINIMUM"

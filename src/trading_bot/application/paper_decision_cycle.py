@@ -31,6 +31,7 @@ from trading_bot.domain.strategy.contracts import (
     StrategySelection,
 )
 from trading_bot.domain.strategy.registry import StrategyRegistry
+from trading_bot.domain.strategy.scalping_rules import ladder_for_release
 
 if TYPE_CHECKING:
     from trading_bot.application.bot_config_resolver import EffectiveBotConfig
@@ -380,6 +381,7 @@ class PaperDecisionCycle:
             open_exposures,
             cost_model,
             now=evaluated_at,
+            ladder=ladder_for_release(strategy_result.strategy_release_id),
         )
         if isinstance(plan, PlanRejected):
             return DecisionCycleResult(

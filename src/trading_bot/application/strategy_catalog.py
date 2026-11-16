@@ -18,6 +18,11 @@ from trading_bot.application.strategy_pipeline.card_strategy import StrategyCard
 from trading_bot.application.strategy_pipeline.demo_cards import build_default_demo_cards
 from trading_bot.domain.strategy.contracts import Strategy
 from trading_bot.domain.strategy.registry import StrategyRegistry
+from trading_bot.domain.strategy.scalping_rules import (
+    H18SweepReclaimRule,
+    H19VwapRangeReversionRule,
+    H20BreakRetestRule,
+)
 
 # Thẻ được phép làm release của sản phẩm. Thẻ `SC-BINANCE-USDM-MEAN-REVERT-002` chưa được đưa vào
 # vì engine chưa hiện thực ngòi nổ và z-score mà thẻ khai báo.
@@ -46,6 +51,40 @@ def strategy_card_rules() -> tuple[tuple[Strategy, str, str, str], ...]:
     return tuple(rules)
 
 
+SCALPING_RECIPE_VERSION = "sig4-scalping-exit-v1"
+
+
+def scalping_rules() -> tuple[tuple[Strategy, str, str, str], ...]:
+    """Họ scalping H18–H20 (SIG-4, M5); thang chốt lời lấy từ ``ladder_for_release``."""
+    common = (
+        " Chỉ phiên London/New York, tránh ±10 phút quanh funding, stop ≥ 3× phí khứ hồi; "
+        "TP1 1R chốt 50% rồi dời stop về hòa vốn, TP2 2R; tối đa 12 nến M5."
+    )
+    return (
+        (
+            H18SweepReclaimRule(),
+            "Quét thanh khoản và lấy lại mức",
+            "Râu M5 vượt đỉnh/đáy phiên hoặc PDH/PDL rồi đóng quay vào; delta nến ngược hướng "
+            "quét; stop sau râu + 0,1 ATR." + common,
+            SCALPING_RECIPE_VERSION,
+        ),
+        (
+            H19VwapRangeReversionRule(),
+            "Hồi về VWAP trong vùng đi ngang",
+            "ADX14 < 18 và ER40 < 0,25; giá đóng M5 lệch ≥ 2σ khỏi VWAP ngày UTC; vào ngược "
+            "hướng lệch; stop 1 ATR." + common,
+            SCALPING_RECIPE_VERSION,
+        ),
+        (
+            H20BreakRetestRule(),
+            "Phá cấu trúc và kiểm tra lại",
+            "BOS M5 bằng giá đóng có |delta| ≥ phân vị 80; xu hướng M15 cùng chiều; nến retest "
+            "giữ ngoài mức phá; stop tại swing đối diện." + common,
+            SCALPING_RECIPE_VERSION,
+        ),
+    )
+
+
 def strategy_registry() -> StrategyRegistry:
     """Registry đầy đủ của sản phẩm; rẻ để dựng và không giữ trạng thái."""
-    return StrategyRegistry(extra_rules=strategy_card_rules())
+    return StrategyRegistry(extra_rules=(*strategy_card_rules(), *scalping_rules()))

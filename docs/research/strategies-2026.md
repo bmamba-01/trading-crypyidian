@@ -196,6 +196,18 @@ Mọi rule dưới đây chỉ tạo intent; risk gate chung vẫn có quyền t
 - **Exit:** primary/triple barrier, classifier không được dời hard stop. Chart primary direction, p, rejection reason, regime.
 - **Thất bại/dữ liệu:** label contamination, base signal không có edge, routing overfit; OHLCV rẻ nhưng cần audit sample timestamps/model artifacts. Tham khảo phương pháp gốc [QuantResearch](https://www.quantresearch.org/Innovations.htm), không gọi meta-labeling là chiến lược mới 2026. Purge mọi train label kết thúc trong test interval và embargo theo horizon, chọn threshold trong inner walk-forward.
 
+### H18–H20 — Họ scalping M5 (SIG-4 lát 1, 16/11/2026; giả thuyết, chỉ PAPER)
+
+Mã: `src/trading_bot/domain/strategy/scalping_rules.py` (`sig4-scalping-v1`), module riêng để không đổi `release_content_hash` của H01/H03/H06. Nguồn định nghĩa: [nghiên cứu tín hiệu/scalping §6](./signal-scalping-chart-research-2026-11-15.md). Phạm vi owner chốt 16/11/2026: BTCUSDT/ETHUSDT, M5 + M15, phí VIP0 taker 0,05% (không giảm BNB).
+
+- **Bộ lọc chung:** vị thế phẳng; không trong blackout vĩ mô (khi snapshot báo `macro_blackout=True`); giờ đóng nến tín hiệu nằm trong phiên London (08:00–17:00 Europe/London) hoặc New York (09:30–16:00 America/New_York); cách mốc funding 00/08/16 UTC hơn 10 phút; khoảng stop ≥ 3 × chi phí khứ hồi taker (2 × 0,05% × giá).
+- **Thoát:** thang `TP1 = 1R chốt 50% → dời stop về hòa vốn → TP2 = 2R chốt 50%`; tối đa 12 nến M5. Planner vẫn áp R:R ròng bình quân ≥ 1 sau phí: với phí taker hai chiều, stop dưới ≈ 0,5% giá sẽ bị từ chối dù qua cổng 3× chi phí.
+- **H18 quét + lấy lại:** mức đỉnh/đáy phiên đã đóng hoặc PDH/PDL (`liquidity_levels`) bị râu nến M5 hiện tại vượt rồi đóng quay vào; delta nến (2·taker buy − volume) ngược hướng quét; vào ngược hướng quét; stop = cực trị râu + 0,1·ATR14.
+- **H19 hồi về VWAP:** ADX14 < 18 và ER40 < 0,25; giá đóng lệch ≥ 2σ (độ lệch chuẩn của giá điển hình quanh VWAP ngày UTC) và có ≥ 20 nến trong ngày; vào ngược hướng lệch; stop 1·ATR14.
+- **H20 BOS + retest:** BOS bằng giá đóng trong 6 nến M5 gần nhất, |delta| nến phá ≥ phân vị 80 của 50 nến trước; xu hướng cấu trúc M15 cùng chiều; nến hiện tại chạm lại mức phá (≤ 0,25·ATR), đóng ngoài mức và không xuyên quá 0,5·ATR; stop tại swing đối diện đã xác nhận gần nhất.
+- **Chênh lệch có chủ đích so với nghiên cứu:** khớp bằng giá mở nến sau với phí taker (bảo thủ hơn mô phỏng limit maker); TP theo R thay cho mức cấu trúc (giữa range/VWAP, cực trị đối diện); chưa có cooldown sau chuỗi thua; H19 chưa dùng POC.
+- **Trạng thái:** `EXPERIMENTAL_UNVALIDATED`; chỉ được đề xuất bật PAPER khi qua tiêu chí SIG-5 (≥ 200 lệnh walk-forward ngoài mẫu, kỳ vọng dương sau phí dưới trượt giá ×2 và chỉ taker).
+
 ## 5. Bộ lọc regime và quản lý rủi ro dùng chung
 
 Các ngưỡng là đề xuất kỹ thuật cần kiểm định, không là phát hiện trong nguồn: `NORMAL` khi RV dưới percentile90 past90d và spread dưới percentile95 past7d; `VOLATILE` khi vượt một ngưỡng thì giảm risk budget còn1/2; `SHOCK` khi abs(return1m)>5×RV1m past24h hoặc spread>3×median1h thì chặn entry và để policy bảo vệ vị thế hoạt động. Recovery cần 30 bars1m hợp lệ dưới ngưỡng. Funding/OI thiếu không làm tắt quản lý stop; chỉ tắt strategy phụ thuộc feature đó.

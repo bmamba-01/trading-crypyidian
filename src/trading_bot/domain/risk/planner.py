@@ -10,6 +10,12 @@ from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 from typing import Any
 
 from trading_bot.domain.risk.sizing import RiskSizingInput, TradingSide, size_position
+from trading_bot.domain.risk.take_profit import (
+    PlanTarget,
+    TakeProfitLadder,
+    build_targets,
+    weighted_net_reward_to_risk,
+)
 from trading_bot.domain.strategy.contracts import StrategyCandidate
 from trading_bot.domain.strategy.recipes import ExitRecipe
 
@@ -302,6 +308,9 @@ class TradePlan:
     expires_at: datetime
     source_signal_at: datetime
     plan_hash: str
+    # SIG-3 lát 2: thang chốt lời nhiều mục tiêu. Mặc định rỗng và KHÔNG vào hash khi rỗng, nên
+    # mọi kế hoạch/checkpoint/quyết định cũ giữ nguyên plan_hash.
+    targets: tuple[PlanTarget, ...] = ()
 
 
 class TradePlanner:
@@ -316,8 +325,13 @@ class TradePlanner:
         cost_model: CostModel,
         *,
         now: datetime,
+        ladder: TakeProfitLadder | None = None,
     ) -> TradePlan | PlanRejected:
-        """Tính entry/stop/target, size, chi phí và các mốc lineage."""
+        """Tính entry/stop/target, size, chi phí và các mốc lineage.
+
+        ``ladder`` (SIG-3 lát 2, chỉ release scalping đăng ký) thay mục tiêu đơn của recipe bằng
+        thang nhiều mục tiêu theo R; cổng R:R ròng áp cho R:R bình quân theo tỷ lệ chốt.
+        """
         _aware(now, "now")
         _aware(account_snapshot.captured_at, "account_snapshot.captured_at")
         reject = self._precheck(candidate, settings, account_snapshot, open_exposure, now)
@@ -506,7 +520,33 @@ class TradePlanner:
         exit_fee = stop * multiplier * cost_model.exit_fee_rate
         slippage_cost = abs(entry - reference) * multiplier
         funding_per_unit = cost_model.funding_per_unit(entry, multiplier)
-        if target is not None:
+        targets: tuple[PlanTarget, ...] = ()
+        if ladder is not None:
+            try:
+                targets = build_targets(
+                    side=side,
+                    entry=entry,
+                    stop=stop,
+                    ladder=ladder,
+                    tick_size=exchange.tick_size,
+                    multiplier=multiplier,
+                    cost_model=cost_model,
+                )
+            except ValueError as error:
+                return self._reject("TARGET_LADDER_INVALID", str(error), settings, candidate)
+            weighted = weighted_net_reward_to_risk(targets)
+            if weighted < MIN_NET_REWARD_TO_RISK:
+                return self._reject(
+                    "NET_REWARD_RISK_BELOW_MINIMUM",
+                    f"R:R ròng bình quân của thang chốt lời sau chi phí là "
+                    f"{weighted.quantize(Decimal('0.01'))}, thấp hơn mức tối thiểu "
+                    f"{MIN_NET_REWARD_TO_RISK}.",
+                    settings,
+                    candidate,
+                )
+            # Mục tiêu cuối của thang là target_price (đóng phần còn lại); recipe không còn dùng.
+            target = targets[-1].price
+        elif target is not None:
             # R:R ròng trên một đơn vị: lợi nhuận tại target và lỗ tại stop đều đã trừ phí hai
             # chiều, funding bất lợi và trượt giá lúc thoát. Entry đã gồm trượt giá vào lệnh.
             common_cost = entry_fee + funding_per_unit
@@ -568,6 +608,7 @@ class TradePlanner:
             exit_fee=exit_fee,
             funding=funding_per_unit,
             slippage=slippage_cost,
+            targets=targets,
         )
 
     @staticmethod
@@ -655,6 +696,7 @@ def _make_plan(
     exit_fee: Decimal,
     funding: Decimal,
     slippage: Decimal,
+    targets: tuple[PlanTarget, ...] = (),
 ) -> TradePlan:
     fields: dict[str, Any] = {
         "workspace_id": settings.workspace_id,
@@ -693,6 +735,8 @@ def _make_plan(
         "expires_at": candidate.expires_at,
         "source_signal_at": candidate.signal_at,
     }
+    if targets:
+        fields["targets"] = targets
     digest = _hash_plan_fields(fields)
     return TradePlan(**fields, plan_hash=digest)
 
@@ -700,7 +744,9 @@ def _make_plan(
 def calculate_plan_hash(plan: TradePlan) -> str:
     """Tính lại hash mọi tham số có thể ảnh hưởng tới fill, risk và exit."""
     plan_fields = {
-        item.name: getattr(plan, item.name) for item in fields(plan) if item.name != "plan_hash"
+        item.name: getattr(plan, item.name)
+        for item in fields(plan)
+        if item.name != "plan_hash" and not (item.name == "targets" and not plan.targets)
     }
     return _hash_plan_fields(plan_fields)
 
@@ -724,6 +770,8 @@ def _canonical_plan(fields: dict[str, Any]) -> dict[str, Any]:
                 if hasattr(value, "__dict__")
                 else {name: canonical(getattr(value, name)) for name in value.__dataclass_fields__}
             )
+        if isinstance(value, PlanTarget):
+            return {name: canonical(getattr(value, name)) for name in value.__dataclass_fields__}
         if isinstance(value, ExchangeRules):
             return {name: canonical(getattr(value, name)) for name in value.__dataclass_fields__}
         if isinstance(value, tuple):
