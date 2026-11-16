@@ -581,7 +581,16 @@ async def _container(phase: str, state: dict[str, Any]) -> dict[str, Any]:
                 end=end,
                 run_label=str(state["label"]),
             )
-            return dict(report.payload)
+            payload = dict(report.payload)
+            # AI-4: lịch vĩ mô sắp tới làm bối cảnh; ngoài report_hash (Run Report giữ tất định),
+            # nằm trong prompt nên được input_sha256 phủ; dựng lại được từ macro_calendar_fetch.
+            from trading_bot.application.macro_calendar_state import load_macro_fetches
+            from trading_bot.domain.research.macro_calendar import macro_digest
+
+            async with UnitOfWork(sessions, workspace_id=workspace) as uow:
+                fetches = await load_macro_fetches(uow.session, workspace_id=workspace, as_of=end)
+            payload["macro_calendar"] = macro_digest(fetches, end)
+            return payload
         if phase == "sessions":
             async with UnitOfWork(sessions, workspace_id=workspace) as uow:
                 rows = await uow.session.execute(

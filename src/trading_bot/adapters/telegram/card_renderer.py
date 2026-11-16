@@ -1131,6 +1131,19 @@ def render_analysis_card(view: AnalysisCardView) -> bytes:
             P.up,
             max_lines=2,
         )
+    if view.macro_events:
+        title = (
+            f"Lịch vĩ mô {view.macro_horizon_days} ngày tới (giờ VN)"
+            if view.macro_horizon_days
+            else "Lịch vĩ mô sắp tới (giờ VN)"
+        )
+        _bullet_panel(
+            canvas,
+            title,
+            "lịch chính thức, không phải AI",
+            [(text, None) for text in view.macro_events],
+            P.down if view.macro_blackout else P.warn,
+        )
     _footer(
         canvas,
         f"Report {view.report_hash[:12]} · PAPER, không phải khuyến nghị đầu tư.",

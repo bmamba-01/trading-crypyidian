@@ -4545,3 +4545,16 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Hạn chế còn mở:** OMB không sửa PDF khi cơ quan dời lịch đột xuất (vd đóng cửa chính phủ 2025) → lịch có thể lệch; chưa có nguồn đối chiếu tự động. Có thể thêm FRED API nếu owner cấp API key.
 - **Kết quả local:** policy `OMB_PFEI_SCHEDULE` PAPER_DEMO đăng ký + duyệt qua Admin (owner gửi, reviewer local duyệt). Collector tải 07:08Z: 96 sự kiện, phủ tới 15/12/2027. Trạng thái lúc này: không cấm, lịch mới, 3 bằng chứng. Mốc kế: Retail Sales 17/11 13:30Z (đã kiểm `macro_state` trả blackout tại 13:20Z), Employment Situation 4/12, CPI 10/12.
 - **Kiểm chứng:** unit 4548 passed; ruff/mypy sạch; E2E RT-1 passed (probe ghi 3 nguồn, đọc bằng role runtime, `evidence: 3`). Image `crypidian-app:local` build lại (có pypdf).
+
+### 2026-11-16 — AI-4: lịch vĩ mô vào AI Analyst + thẻ Telegram; sửa bug tách số của validator
+
+- **Thay đổi:**
+  - Domain `macro_digest(fetches, now)` → `macro_digest.v1`: trạng thái (blackout/fresh/blocking), nguồn đã tải, nguồn thiếu, sự kiện tác động mạnh 7 ngày tới (tối đa 8) với `vn_date`/`vn_time` tính sẵn, nhãn tiếng Việt không chứa chữ số.
+  - `scripts/run_ai_analyst.py` bước `report` gắn `payload["macro_calendar"]` (đọc `macro_calendar_fetch` với `as_of = end`). Ngoài `report_hash`; nằm trong prompt nên `input_sha256` phủ. `topic_report` mang theo khối này; dấu vân tay chủ đề vẫn chỉ tính trên bot (lịch đổi không làm gọi AI thêm).
+  - Prompt `ai2-prompt-v3`, quy tắc 6: chỉ nêu ngày giờ đúng như report, lịch chỉ là bối cảnh rủi ro, tỷ lệ viết "x trên y".
+  - Validator: tách ngày ISO, `dd/mm`, `HH:MM`/`HHhMM` khỏi phép đối chiếu số; mỗi mốc phải trùng ngày/giờ suy ra từ chuỗi ISO datetime trong report (UTC/VN/ET). Kho số cho tóm tắt bỏ khối `macro_calendar`; `horizon_days` được tính là số hiển nhiên.
+  - Thẻ "Phân tích AI": khối "Lịch vĩ mô 7 ngày tới (giờ VN)" ghi rõ "lịch chính thức, không phải AI"; caption thêm sự kiện kế tiếp và cảnh báo khi đang trong khoảng cấm.
+- **Lỗi phát hiện khi chạy thật (16/11 ~07:45Z, H03, Claude CLI, không gửi Telegram):** hai lượt (gốc + sửa) bị loại. Phần lịch vĩ mô của AI qua validator ("17/11 20:30"). Lỗi còn lại:
+  - **Bug cũ của `_NUMBER`:** regex lùi về số ngắn hơn khi số dính chữ — "15m" thành "1", "1.2568R" thành "1.256" → loại oan. Sửa bằng nhóm nguyên tử `(?>...)`, cho hậu tố `R` được đối chiếu, số dính đơn vị khác (15m, 4h) bỏ qua. Kiểm lại hai đầu ra đã lưu với report cùng thời điểm: chỉ còn lỗi thật của AI (thiếu `closed_trades`/`win_rate_percent` trong evidence_refs).
+- **Còn mở:** lượt sửa chỉ một lần — AI sửa lỗi này lại bỏ trích dẫn khác; cân nhắc cho phép 2 lượt sửa hoặc gợi ý pointer đúng trong repair prompt. Digest chưa lưu riêng trong `analyst_run` (dựng lại theo `as_of`).
+- **Kiểm chứng:** unit 4553 passed; ruff/mypy sạch; E2E RT-1 passed; bước `report` thật trả `macro_calendar` đủ 3 nguồn, 1 sự kiện (Retail Sales 17/11 20:30 VN); thẻ ảnh mẫu vẽ đúng khối lịch.

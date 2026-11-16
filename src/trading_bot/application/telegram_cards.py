@@ -15,7 +15,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 if TYPE_CHECKING:
@@ -579,6 +579,10 @@ class AnalysisCardView:
     report_hash: str = ""
     engine: str = ""
     sample: bool = False
+    # Lịch vĩ mô (AI-4): dữ liệu tất định từ lịch chính thức, không phải lời AI.
+    macro_events: tuple[str, ...] = ()
+    macro_horizon_days: int = 0
+    macro_blackout: bool = False
 
     @property
     def confidence_vi(self) -> str:
@@ -632,7 +636,30 @@ def analysis_card_view_from(
             for item in proposals
         ),
         report_hash=str(report.get("report_hash", "")),
+        **_macro_fields(report.get("macro_calendar")),
     )
+
+
+MAX_MACRO_EVENTS = 5
+
+
+def _macro_fields(macro: object) -> dict[str, Any]:
+    if not isinstance(macro, Mapping):
+        return {}
+    upcoming = macro.get("upcoming") or []
+    state = macro.get("state") or {}
+    horizon = macro.get("horizon_days")
+    return {
+        "macro_events": tuple(
+            clean_text(
+                f"{item.get('vn_date')} {item.get('vn_time')} · {item.get('label_vi')}", limit=80
+            )
+            for item in list(upcoming)[:MAX_MACRO_EVENTS]
+            if isinstance(item, Mapping)
+        ),
+        "macro_horizon_days": horizon if isinstance(horizon, int) else 0,
+        "macro_blackout": isinstance(state, Mapping) and state.get("blackout") is True,
+    }
 
 
 def analysis_card_caption(view: AnalysisCardView) -> str:
@@ -644,6 +671,10 @@ def analysis_card_caption(view: AnalysisCardView) -> str:
     ]
     if view.proposals:
         lines.append(f"{len(view.proposals)} đề xuất để backtest (không tự áp).")
+    if view.macro_blackout:
+        lines.append("Đang trong khoảng cấm vào lệnh quanh sự kiện vĩ mô.")
+    if view.macro_events:
+        lines.append(f"Vĩ mô kế tiếp (giờ VN): {view.macro_events[0]}")
     lines.append(f"Report {view.report_hash[:12]} · số liệu đã đối chiếu với Run Report.")
     return _fit_caption(lines)
 

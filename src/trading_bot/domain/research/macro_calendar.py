@@ -345,8 +345,79 @@ def upcoming_events(
     )
 
 
+MACRO_DIGEST_VERSION = "macro_digest.v1"
+DIGEST_HORIZON = timedelta(days=7)
+DIGEST_MAX_EVENTS = 8
+_VN = ZoneInfo("Asia/Ho_Chi_Minh")
+# Nhãn tiếng Việt cho người đọc thẻ/AI; cố ý không chứa chữ số (validator số liệu của AI).
+MACRO_LABELS_VI = {
+    "FOMC rate decision": "Fed quyết định lãi suất (FOMC)",
+    "Gross Domestic Product": "GDP Mỹ",
+    "Personal Income and Outlays": "Thu nhập và chi tiêu cá nhân (PCE)",
+    "Employment Situation": "Báo cáo việc làm (NFP)",
+    "Consumer Price Index": "Lạm phát CPI",
+    "Producer Price Index": "Giá sản xuất PPI",
+    "Retail Sales": "Doanh số bán lẻ",
+}
+
+
+def macro_digest(
+    fetches: Iterable[MacroCalendarFetch],
+    now: datetime,
+    *,
+    horizon: timedelta = DIGEST_HORIZON,
+) -> dict[str, Any]:
+    """Tóm tắt lịch vĩ mô cho AI Analyst/Telegram: trạng thái hiện tại + sự kiện mạnh sắp tới.
+
+    Dữ liệu tất định từ các lần tải ``fetched_at ≤ now`` (dựng lại được từ ``macro_calendar_fetch``
+    theo ``as_of``). Giờ VN tính sẵn để AI không phải tự đổi múi giờ.
+    """
+    if now.tzinfo is None:
+        raise ValueError("now phải có múi giờ.")
+    instant = now.astimezone(UTC)
+    fetches = list(fetches)
+    state = macro_state(fetches, instant)
+    latest: dict[str, MacroCalendarFetch] = {}
+    for fetch in fetches:
+        if fetch.fetched_at <= instant and (
+            fetch.source_id not in latest or fetch.fetched_at > latest[fetch.source_id].fetched_at
+        ):
+            latest[fetch.source_id] = fetch
+    upcoming = upcoming_events(fetches, after=instant, within=horizon)[:DIGEST_MAX_EVENTS]
+    return {
+        "digest_version": MACRO_DIGEST_VERSION,
+        "policy_version": MACRO_POLICY_VERSION,
+        "as_of": instant.isoformat(),
+        "horizon_days": horizon.days,
+        "state": {
+            "blackout": state.blackout,
+            "is_fresh": state.is_fresh,
+            "blocking_event": state.blocking_event,
+        },
+        "sources": [
+            {"source_id": source, "fetched_at": latest[source].fetched_at.isoformat()}
+            for source in sorted(latest)
+        ],
+        "missing_sources": [s for s in MACRO_SOURCE_IDS if s not in latest],
+        "upcoming": [
+            {
+                "label_vi": MACRO_LABELS_VI.get(event.title, event.title),
+                "title": event.title,
+                "source_id": event.source_id,
+                "scheduled_at_utc": event.scheduled_at.isoformat(),
+                "vn_date": event.scheduled_at.astimezone(_VN).strftime("%d/%m"),
+                "vn_time": event.scheduled_at.astimezone(_VN).strftime("%H:%M"),
+            }
+            for event in upcoming
+        ],
+    }
+
+
 __all__ = [
     "BEA_SOURCE_ID",
+    "MACRO_DIGEST_VERSION",
+    "MACRO_LABELS_VI",
+    "macro_digest",
     "BLACKOUT_AFTER",
     "BLACKOUT_BEFORE",
     "FOMC_SOURCE_ID",
