@@ -1,0 +1,113 @@
+{% extends "admin/base.html" %}
+{% block title %}Lượt phân tích AI — Crypidian{% endblock %}
+{% block heading %}Lượt phân tích AI{% endblock %}
+{% block head_extra %}<link rel="stylesheet" href="/static/pages/ai.css">{% endblock %}
+
+{% macro refs(items) -%}
+{% if items %}<span class="ai-refs">{% for ref in items %}<code>{{ ref }}</code>{% endfor %}</span>{% endif %}
+{%- endmacro %}
+
+{% block content %}
+<div class="ai-page">
+  <p><a href="/admin/ai-analyses">← Tất cả lượt phân tích</a></p>
+
+  <section class="glass-card" aria-labelledby="run-title">
+    <h2 id="run-title"><code>{{ run.topic_key }}</code> ·
+      {% if run.error %}<span class="badge badge-danger">Lỗi engine</span>
+      {% elif run.valid %}<span class="badge badge-success">Hợp lệ</span>
+      {% else %}<span class="badge badge-warning">Bị loại</span>{% endif %}
+    </h2>
+    <dl class="ai-meta">
+      <div><dt>Thời điểm</dt><dd>{{ run.created_at | local_minute }}</dd></div>
+      <div><dt>Engine</dt><dd>{{ run.engine }}{% if run.model %} · {{ run.model }}{% endif %}</dd></div>
+      <div><dt>Độ tin cậy</dt><dd>{{ run.output.confidence }}</dd></div>
+      <div><dt>Chi phí (USD)</dt><dd>{{ run.cost_usd or "—" }}</dd></div>
+      <div><dt>Token vào / ra</dt><dd>{{ run.tokens_in if run.tokens_in is not none else "—" }} / {{ run.tokens_out if run.tokens_out is not none else "—" }}</dd></div>
+      <div><dt>Phiên</dt><dd>{% if run.resumed %}Tiếp phiên{% else %}Phiên mới{% endif %}</dd></div>
+      <div><dt>Prompt / đầu ra</dt><dd>{{ run.prompt_version }} / {{ run.output_version }}</dd></div>
+      <div><dt>Run Report</dt><dd class="ai-hash"><a href="/admin/run-reports/{{ run.run_report_hash }}">{{ run.run_report_hash[:16] }}</a></dd></div>
+      <div><dt>Input SHA-256</dt><dd class="ai-hash">{{ run.input_sha256[:16] }}</dd></div>
+    </dl>
+    {% if run.error %}<p class="ai-note">Engine báo lỗi: <code>{{ run.error }}</code></p>{% endif %}
+  </section>
+
+  {% if run.validation_errors %}
+  <section class="glass-card" aria-labelledby="run-errors">
+    <h2 id="run-errors">Lỗi kiểm tra số liệu ({{ run.validation_errors | length }})</h2>
+    <p class="ai-note">Lượt bị loại vì con số AI viết không khớp trường được trích. Hệ thống cho AI tối đa 2 lượt sửa trong cùng phiên.</p>
+    <ul class="ai-list ai-errors">{% for error in run.validation_errors %}<li>{{ error }}</li>{% endfor %}</ul>
+  </section>
+  {% endif %}
+
+  {% if run.has_output %}
+  <section class="glass-card" aria-labelledby="run-summary">
+    <h2 id="run-summary">Tóm tắt</h2>
+    <p>{{ run.output.summary or "—" }}</p>
+  </section>
+
+  <section class="glass-card" aria-labelledby="run-findings">
+    <h2 id="run-findings">Nhận định ({{ run.output.findings | length }})</h2>
+    {% if run.output.findings %}
+    <ol class="ai-list">{% for item in run.output.findings %}<li>{{ item.statement }}{{ refs(item.refs) }}</li>{% endfor %}</ol>
+    {% else %}<p class="ai-note">Không có.</p>{% endif %}
+  </section>
+
+  <section class="glass-card" aria-labelledby="run-hypotheses">
+    <h2 id="run-hypotheses">Giả thuyết cần kiểm ({{ run.output.hypotheses | length }})</h2>
+    {% if run.output.hypotheses %}
+    <ol class="ai-list">{% for item in run.output.hypotheses %}<li>{{ item.statement }}{% if item.how_to_test %}<p class="ai-note">Cách kiểm: {{ item.how_to_test }}</p>{% endif %}{{ refs(item.refs) }}</li>{% endfor %}</ol>
+    {% else %}<p class="ai-note">Không có.</p>{% endif %}
+  </section>
+
+  <section class="glass-card" aria-labelledby="run-proposals">
+    <h2 id="run-proposals">Đề xuất để backtest ({{ run.output.proposals | length }})</h2>
+    {% if run.output.proposals %}
+    <ol class="ai-list">{% for item in run.output.proposals %}<li><strong>{{ item.bot_name }}</strong>: {% for change in item.changes %}<code>{{ change }}</code>{% if not loop.last %}, {% endif %}{% endfor %}
+      {% if item.rationale %}<p class="ai-note">Lý do: {{ item.rationale }}</p>{% endif %}
+      {% if item.risk %}<p class="ai-note">Rủi ro: {{ item.risk }}</p>{% endif %}{{ refs(item.refs) }}</li>{% endfor %}</ol>
+    {% else %}<p class="ai-note">Không có.</p>{% endif %}
+  </section>
+  {% endif %}
+
+  <section class="glass-card" aria-labelledby="run-backtests">
+    <h2 id="run-backtests">Kết quả backtest đề xuất ({{ run.backtests | length }})</h2>
+    {% if run.backtests %}
+    <div class="table-wrapper"><table class="responsive-table" aria-label="Kết quả backtest đề xuất">
+      <thead><tr><th scope="col">Bot</th><th scope="col">Thay đổi</th><th scope="col">Kết luận</th><th scope="col">Số lệnh</th><th scope="col">PnL ròng (USDT)</th><th scope="col">Drawdown/coin</th></tr></thead>
+      <tbody>
+      {% for item in run.backtests %}
+        <tr>
+          <td data-label="Bot">{% if item.bot_id %}<a href="/admin/bots/{{ item.bot_id }}#ai-proposals">{{ item.bot_name }}</a>{% else %}{{ item.bot_name }}{% endif %}</td>
+          <td data-label="Thay đổi">{% for change in item.changes %}<code>{{ change }}</code>{% if not loop.last %}<br>{% endif %}{% endfor %}{% if item.notes %}<p class="ai-note">{{ item.notes | join(" ") }}</p>{% endif %}</td>
+          <td data-label="Kết luận">{{ item.verdict_vi }}</td>
+          <td data-label="Số lệnh" class="ai-num">{{ item.baseline.trades if item.baseline.trades is defined else "—" }} → {{ item.variant.trades if item.variant.trades is defined else "—" }}</td>
+          <td data-label="PnL ròng (USDT)" class="ai-num">{{ item.baseline.net_pnl or "—" }} → {{ item.variant.net_pnl or "—" }}</td>
+          <td data-label="Drawdown/coin" class="ai-num">{{ item.baseline.max_drawdown or "—" }} → {{ item.variant.max_drawdown or "—" }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table></div>
+    <p class="ai-note">Tạo bản nháp cấu hình từ đề xuất ở trang chi tiết bot (mục "Đề xuất AI đã backtest").</p>
+    {% else %}<p class="ai-note">Chưa có đề xuất nào của lượt này được backtest.</p>{% endif %}
+  </section>
+
+  <section class="glass-card" aria-labelledby="run-context">
+    <h2 id="run-context">Bối cảnh đã đưa AI</h2>
+    {% if run.context %}
+    <h3>Lịch vĩ mô 7 ngày tới (giờ VN){% if run.context.macro_blackout %} · <span class="badge badge-danger">đang trong khoảng cấm</span>{% endif %}</h3>
+    {% if run.context.macro_events %}<ul class="ai-list">{% for event in run.context.macro_events %}<li>{{ event }}</li>{% endfor %}</ul>{% else %}<p class="ai-note">Không có sự kiện tác động mạnh.</p>{% endif %}
+    <h3>Phái sinh Binance{% if run.context.derivatives_count %} ({{ run.context.derivatives_count }} coin){% endif %}</h3>
+    {% if run.context.derivatives_rows %}
+    <div class="table-wrapper"><table class="responsive-table" aria-label="Ảnh chụp phái sinh">
+      <thead><tr><th scope="col">Coin</th><th scope="col">Funding (%)</th><th scope="col">OI 24h (%)</th><th scope="col">Long/short</th><th scope="col">Taker mua/bán</th></tr></thead>
+      <tbody>{% for row in run.context.derivatives_rows %}<tr><td data-label="Coin">{{ row.symbol }}</td><td data-label="Funding (%)" class="ai-num">{{ row.funding or "—" }}</td><td data-label="OI 24h (%)" class="ai-num">{{ row.oi_change or "—" }}</td><td data-label="Long/short" class="ai-num">{{ row.long_short or "—" }}</td><td data-label="Taker mua/bán" class="ai-num">{{ row.taker or "—" }}</td></tr>{% endfor %}</tbody>
+    </table></div>
+    {% else %}<p class="ai-note">Không có ảnh chụp phái sinh.</p>{% endif %}
+    <h3>Niêm yết Binance</h3>
+    {% if run.context.listing_risks %}<ul class="ai-list ai-errors">{% for item in run.context.listing_risks %}<li>{{ item }}</li>{% endfor %}</ul>{% else %}<p class="ai-note">Không coin nào trong danh mục bị đe dọa.</p>{% endif %}
+    {% else %}
+    <p class="ai-note">Lượt này chạy trước khi hệ thống lưu bối cảnh (16/11/2026).</p>
+    {% endif %}
+  </section>
+</div>
+{% endblock %}

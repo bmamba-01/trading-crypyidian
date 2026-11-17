@@ -21,9 +21,6 @@ from trading_bot.adapters.database.engine import (
 )
 from trading_bot.adapters.database.models import (
     LearningEvaluationAccessFoldRecord,
-    UserAccount,
-    UserMembership,
-    Workspace,
 )
 from trading_bot.adapters.database.repositories.backtest_outcomes import BacktestOutcomeRepository
 from trading_bot.adapters.database.repositories.dataset_manifest import DatasetManifestRepository
@@ -41,7 +38,6 @@ from trading_bot.adapters.database.repositories.learning_fold_samples import (
 from trading_bot.adapters.database.repositories.learning_split_approvals import (
     LearningSplitApprovalRepository,
 )
-from trading_bot.application.backtest_sensitivity import SensitivityScenario
 from trading_bot.application.learning_evaluation import (
     LearningEvaluationReportService,
     LearningEvaluationRequest,
@@ -86,60 +82,70 @@ def _engine():
     return create_database_engine(url)
 
 
+def _candidate_builder_engine():
+    """Engine đăng nhập thật bằng candidate builder.
+
+    Gate `wp06_record_replay_training_receipts` kiểm `session_user`, nên migrator
+    không thể ghi normalized dataset thay builder (kể cả bằng SET ROLE).
+    """
+    url = database_url_from_secret(
+        username="crypidian_candidate_builder",
+        password_file=Path("/run/secrets/database_candidate_builder_password"),
+        host=os.environ.get("TRADING_BOT_DATABASE_HOST", "postgres"),
+        database=os.environ.get("TRADING_BOT_DATABASE_NAME", "crypidian"),
+    )
+    return create_database_engine(url)
+
+
+async def _seed_licensed_qa_replay() -> dict[str, object]:
+    """Seed replay QA có bundle v4 + MarketBar thật (dùng chung với E2E source-pinned).
+
+    Gate TRAINING exact-scope (b7d9f1a3c5e8) coi outcome backtest thật trong sample
+    "không phụ thuộc nguồn" là giả mạo, nên fixture phải đi từ replay bundle persisted.
+    Probe source-pinned tự ghi license evidence và chạy consumer rights event.
+    """
+    from e2e.probes.wp06_source_pinned_replay_persistence import run_probe
+
+    return await run_probe(scorer_seed=True)
+
+
 async def _seed() -> dict[str, object]:
+    sys.path.insert(0, "/e2e-tests")
+    from trading_bot.domain.learning.source_use_lineage import source_use_lineage_set_hash
+
+    seeded = await _seed_licensed_qa_replay()
+    user_id = UUID(str(seeded["account_id"]))
+    membership_id = UUID(str(seeded["membership_id"]))
+    trial_record_id = UUID(str(seeded["trial_record_id"]))
     engine = _engine()
     sessions = create_session_factory(engine)
     async with sessions() as session, session.begin():
-        user_id, membership_id = uuid4(), uuid4()
-        session.add_all(
-            [
-                Workspace(
-                    id=WORKSPACE_ID,
-                    name="WP06 verifier E2E",
-                    slug=f"wp06-fold-{str(WORKSPACE_ID)[:8]}",
-                ),
-                UserAccount(
-                    id=user_id,
-                    email_normalized=f"wp06-fold-{user_id.hex}@example.invalid",
-                    password_hash="fixture-only-not-a-credential",
-                ),
-            ]
-        )
-        await session.flush()
         await session.execute(
             text("SELECT set_config('app.workspace_id', :workspace_id, true)"),
             {"workspace_id": str(WORKSPACE_ID)},
         )
-        session.add(UserMembership(id=membership_id, workspace_id=WORKSPACE_ID, user_id=user_id))
-        sys.path.insert(0, "/e2e-tests")
-        from fixtures.runtime_replay import build_h03_runtime_sensitivity
-
-        persisted_rows = []
-        for index in range(4):
-            start_at = datetime(2026, 10, 20, tzinfo=UTC) + timedelta(days=2 * index)
-            replay = build_h03_runtime_sensitivity(
-                WORKSPACE_ID,
-                (SensitivityScenario(scenario_id=f"base-{index}", kind="BASE"),),
-                start_at=start_at,
-            )
-            if not replay.is_complete or len(replay.runs) != 1:
-                raise AssertionError("PAPER replay fixture chưa hoàn tất đúng một trial.")
-            run = replay.runs[0]
-            receipt = await BacktestOutcomeRepository(session).append_sensitivity_run(
-                workspace_id=WORKSPACE_ID,
-                sensitivity_run=run.sensitivity_run,
-                trade_outcomes=tuple(
-                    replace(trade, trade_id=f"fold-fixture-{index}-{trade.trade_id}")
-                    for trade in run.trade_outcomes
-                ),
-            )
-            persisted = await BacktestOutcomeRepository(session).load_trade_outcome_rows(
-                workspace_id=WORKSPACE_ID,
-                trial_record_id=receipt.trial_record_id,
-            )
-            if len(persisted.rows) != 1:
-                raise AssertionError("Mỗi PAPER trial fixture phải có đúng một trade.")
-            persisted_rows.append(persisted.rows[0])
+        outcomes = await BacktestOutcomeRepository(session).load_trade_outcome_rows(
+            workspace_id=WORKSPACE_ID,
+            trial_record_id=trial_record_id,
+        )
+        lineage = await BacktestOutcomeRepository(session).load_training_bundle_lineage(
+            workspace_id=WORKSPACE_ID,
+            trial_record_id=trial_record_id,
+            outcomes=outcomes.rows,
+        )
+        lineage_set_hash = source_use_lineage_set_hash(lineage.source_use_lineage)
+        # Gate yêu cầu mọi sample source-dependent cùng một run/trial/bundle; chọn bốn trade
+        # đóng có PnL khác 0 theo thời gian để train/validation/test/holdout không chồng lấn.
+        persisted_rows = sorted(
+            (
+                row
+                for row in outcomes.rows
+                if row.trade.has_entry_provenance and row.trade.net_pnl != 0
+            ),
+            key=lambda row: row.trade.entry_decision_at,
+        )[:4]
+        if len(persisted_rows) != 4:
+            raise AssertionError("Replay QA phải có ít nhất bốn trade đóng có PnL khác 0.")
 
         samples = []
         roles = (
@@ -150,14 +156,12 @@ async def _seed() -> dict[str, object]:
         )
         for index, (sample_id, split) in enumerate(roles):
             outcome = persisted_rows[index]
-            if not outcome.trade.has_entry_provenance:
-                raise AssertionError("Fixture trade cần lineage feature tại entry để chuẩn hóa.")
-            decision = outcome.trade.opened_at - timedelta(hours=1)
+            decision = outcome.trade.entry_decision_at
             samples.append(
                 DatasetSample(
                     sample_id=sample_id,
                     decision_at=decision,
-                    feature_available_at=decision - timedelta(minutes=1),
+                    feature_available_at=decision,
                     outcome_start=outcome.trade.opened_at,
                     outcome_end=outcome.trade.closed_at,
                     feature_snapshot_hash=outcome.trade.entry_features_hash,
@@ -167,9 +171,11 @@ async def _seed() -> dict[str, object]:
                     label_value=(outcome.trade.net_pnl > 0) - (outcome.trade.net_pnl < 0),
                     label_version="e2e-label-v1",
                     split=split,
-                    source_dependent=False,
+                    source_dependent=True,
                     source_rights_hashes=(),
                     source_revision_refs=(),
+                    source_replay_bundle_hash=lineage.bundle_hash,
+                    source_use_lineage_set_hash=lineage_set_hash,
                 )
             )
         data_start = samples[0].decision_at - timedelta(hours=1)
@@ -190,6 +196,8 @@ async def _seed() -> dict[str, object]:
             exclusions=(),
             holdout_sealed_at=data_end,
             retention_policy_ref="e2e-retention-v1",
+            manifest_version="dataset-manifest-v5",
+            source_use_lineage=lineage.source_use_lineage,
         )
         folds = _plan(manifest).folds
         from e2e.probes.wp06_split_approval_anchor import append_split_approval_anchor
@@ -269,13 +277,21 @@ async def _seed() -> dict[str, object]:
         normalized = replace_dataclass(
             normalized, content_hash=normalized_learning_dataset_hash(normalized)
         )
+    await engine.dispose()
+    # Manifest/approval đã commit; normalized dataset do đúng role builder ghi.
+    builder_engine = _candidate_builder_engine()
+    async with create_session_factory(builder_engine)() as session, session.begin():
+        await session.execute(
+            text("SELECT set_config('app.workspace_id', :workspace_id, true)"),
+            {"workspace_id": str(WORKSPACE_ID)},
+        )
         await LearningFoldSampleRepository(session).append_normalized_dataset(
             manifest=manifest,
             fold_plan=_plan(manifest),
             approval=approval,
             dataset=normalized,
         )
-    await engine.dispose()
+    await builder_engine.dispose()
     plan = _plan(manifest)
     fold = plan.folds[0]
     return {
@@ -362,8 +378,22 @@ async def _verify() -> dict[str, object]:
     normalizer_accepts_database_verified_batch = False
     normalizer_rejects_no_trade_sample = False
     normalizer_rejects_multi_trade_sample = False
+    normalizer_requires_rights_gate = False
     if len(captured_batches) == 1:
-        verified_manifest, verifier_request, verified_batch = captured_batches[0]
+        source_manifest, source_request, source_batch = captured_batches[0]
+        # Normalizer thuần fail-closed với sample phụ thuộc nguồn: chuẩn hóa thật chỉ đi qua
+        # repository builder có gate TRAINING hiện hành (đã chạy ở seed).
+        normalizer_requires_rights_gate = _normalizer_rejects_batch(
+            source_manifest,
+            source_request.fold_plan,
+            source_batch,
+            expected_message="Source-dependent sample cần cổng quyền TRAINING hiện hành",
+        )
+        # Contract cardinality 0/nhiều trade độc lập với nguồn: kiểm trên bản chiếu
+        # source-free giữ nguyên các hàng outcome/trade đã được verifier PostgreSQL trả về.
+        verified_manifest, verifier_request, verified_batch = _source_free_projection(
+            source_manifest, source_request, source_batch
+        )
         normalized = build_normalized_learning_dataset(
             manifest=verified_manifest,
             fold_plan=verifier_request.fold_plan,
@@ -410,7 +440,8 @@ async def _verify() -> dict[str, object]:
         async with UnitOfWork(
             sessions,
             workspace_id=workspace_id,
-            snapshot_repeatable_read=True,
+            # Như service: gate replay TRAINING (b7d9f1a3c5e8) đòi READ COMMITTED.
+            snapshot_repeatable_read=False,
         ) as uow:
             await LearningEvaluationAccessRepository(uow.session).open(
                 workspace_id=workspace_id,
@@ -435,7 +466,8 @@ async def _verify() -> dict[str, object]:
     async with UnitOfWork(
         sessions,
         workspace_id=workspace_id,
-        snapshot_repeatable_read=True,
+        # Như service: gate replay TRAINING (b7d9f1a3c5e8) đòi READ COMMITTED.
+        snapshot_repeatable_read=False,
     ) as uow:
         await LearningEvaluationAccessRepository(uow.session).open(
             workspace_id=workspace_id,
@@ -457,7 +489,8 @@ async def _verify() -> dict[str, object]:
             async with UnitOfWork(
                 sessions,
                 workspace_id=workspace_id,
-                snapshot_repeatable_read=True,
+                # Như service: gate replay TRAINING (b7d9f1a3c5e8) đòi READ COMMITTED.
+                snapshot_repeatable_read=False,
             ) as uow:
                 await LearningEvaluationAccessRepository(uow.session).open(
                     workspace_id=workspace_id,
@@ -568,6 +601,7 @@ async def _verify() -> dict[str, object]:
         "normalizer_accepts_database_verified_batch": normalizer_accepts_database_verified_batch,
         "normalizer_rejects_no_trade_sample": normalizer_rejects_no_trade_sample,
         "normalizer_rejects_multi_trade_sample": normalizer_rejects_multi_trade_sample,
+        "normalizer_requires_rights_gate": normalizer_requires_rights_gate,
         "candidate_completeness_verified": report.candidate_completeness_verified,
         "holdout_payload_in_report": "sealed-holdout-sample" in str(report.fold_evaluations),
         "mismatched_workspace_rejected": mismatched_workspace_rejected,
@@ -643,6 +677,51 @@ def _batch_with_trade_count(
         outcomes=ordered,
         batch_hash=verification_batch_hash(request, ordered),
     )
+
+
+def _source_free_projection(
+    manifest: DatasetManifest,
+    request: FoldOutcomeVerificationRequest,
+    batch: FoldOutcomeVerificationBatch,
+) -> tuple[DatasetManifest, FoldOutcomeVerificationRequest, FoldOutcomeVerificationBatch]:
+    """Bỏ lineage nguồn khỏi manifest; hàng outcome/trade DB-verified giữ nguyên hash."""
+    projected = replace(
+        manifest,
+        manifest_version="dataset-manifest-v1",
+        source_use_lineage=(),
+        samples=tuple(
+            replace(
+                sample,
+                source_dependent=False,
+                source_replay_bundle_hash=None,
+                source_use_lineage_set_hash=None,
+            )
+            for sample in manifest.samples
+        ),
+    )
+    plan = build_manifest_fold_plan(
+        projected,
+        folds=tuple(item.split for item in request.fold_plan.folds),
+        expected_split_policy_version=projected.split_policy_version,
+        evaluation_cutoff=request.fold_plan.evaluation_cutoff,
+    )
+    original = next(item for item in request.fold_plan.folds if item.fold_id == request.fold_id)
+    fold = next(item for item in plan.folds if item.split == original.split)
+    projected_request = replace(
+        request,
+        manifest_hash=projected.content_hash,
+        fold_plan=plan,
+        fold_plan_hash=plan.content_hash,
+        fold_id=fold.fold_id,
+    )
+    projected_batch = replace(
+        batch,
+        manifest_hash=projected.content_hash,
+        fold_plan_hash=plan.content_hash,
+        fold_id=fold.fold_id,
+        batch_hash=verification_batch_hash(projected_request, batch.outcomes),
+    )
+    return projected, projected_request, projected_batch
 
 
 def _normalizer_rejects_batch(

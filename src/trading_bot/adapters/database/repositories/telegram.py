@@ -310,9 +310,51 @@ class TelegramBindingRepository:
         )
         return len(result.scalars().all())
 
+    async def binding_chat(self, workspace_id: UUID, membership_id: UUID) -> int | None:
+        """Chat riêng (= Telegram user ID) của binding đã xác minh, chưa thu hồi (TG-4)."""
+        value = await self._session.scalar(
+            select(TelegramBinding.telegram_user_id).where(
+                TelegramBinding.workspace_id == workspace_id,
+                TelegramBinding.membership_id == membership_id,
+                TelegramBinding.verified_at.is_not(None),
+                TelegramBinding.revoked_at.is_(None),
+            )
+        )
+        if value is None or not str(value).isdigit() or int(value) <= 0:
+            return None
+        return int(value)
+
+    async def set_topics(
+        self,
+        workspace_id: UUID,
+        membership_id: UUID,
+        *,
+        signal_thread_id: int | None,
+        report_thread_id: int | None,
+    ) -> bool:
+        """Ghi hai topic của binding đang hoạt động; False nếu binding đã bị thu hồi (TG-4)."""
+        result = await self._session.execute(
+            update(TelegramBinding)
+            .where(
+                TelegramBinding.workspace_id == workspace_id,
+                TelegramBinding.membership_id == membership_id,
+                TelegramBinding.verified_at.is_not(None),
+                TelegramBinding.revoked_at.is_(None),
+            )
+            .values(signal_thread_id=signal_thread_id, report_thread_id=report_thread_id)
+            .returning(TelegramBinding.id)
+        )
+        return result.first() is not None
+
     async def list_active(self, workspace_id: UUID) -> list[dict[str, str]]:
         rows = await self._session.execute(
-            select(TelegramBinding.id, TelegramBinding.membership_id, TelegramBinding.created_at)
+            select(
+                TelegramBinding.id,
+                TelegramBinding.membership_id,
+                TelegramBinding.created_at,
+                TelegramBinding.signal_thread_id,
+                TelegramBinding.report_thread_id,
+            )
             .where(
                 TelegramBinding.workspace_id == workspace_id,
                 TelegramBinding.revoked_at.is_(None),
@@ -324,8 +366,12 @@ class TelegramBindingRepository:
                 "id": str(binding_id),
                 "membership_id": str(membership_id),
                 "created_at": created_at.isoformat(),
+                # TG-4: chỉ báo đã tách topic hay chưa; không hiển thị id topic/chat.
+                "topics": "split"
+                if signal_thread_id is not None and report_thread_id is not None
+                else "",
             }
-            for binding_id, membership_id, created_at in rows
+            for binding_id, membership_id, created_at, signal_thread_id, report_thread_id in rows
         ]
 
     async def _membership_is_usable(

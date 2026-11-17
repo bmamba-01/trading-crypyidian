@@ -80,7 +80,7 @@ def test_pause_kill_resume_permissions_exits_and_ruling_27_race() -> None:
         assert db["reservations"]["b"][-1] == ["RELEASED", "CANCELLED_NO_FILL"], db
         assert db["states"]["b"][3] == 1  # applied_workspace_control_revision
 
-        race = harness.probe("race", "migrator")
+        race = harness.probe("race", "db-provisioner")
         rounds = race["rounds"]
         assert len(rounds) == 8
         for item in rounds:

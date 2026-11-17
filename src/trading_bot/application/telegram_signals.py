@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from decimal import Decimal
 from uuid import UUID
@@ -104,6 +105,9 @@ class TelegramSignalCandidate:
     reason_code: str
     detail_vi: str
     invalidation: str | None = None
+    # TG-1 (SIG-3): thẻ tín hiệu dựng từ candidate + checklist đã xác minh hash; None khi không
+    # dựng được (quyết định cũ, thang giá sai hướng) — tin vẫn gửi phần cơ bản.
+    card: Mapping[str, object] | None = field(default=None, compare=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.decision_id, UUID):
@@ -154,6 +158,66 @@ def is_candidate_deliverable(
     )
 
 
+_MAX_CHECKLIST_LINES = 8
+
+
+def _price(value: object) -> str:
+    """Giá kiểu Việt Nam: nhóm nghìn bằng dấu chấm, thập phân bằng dấu phẩy."""
+    number = Decimal(str(value))
+    digits = 2 if abs(number) >= 1 else 8
+    text = f"{number:,.{digits}f}".rstrip("0").rstrip(".") if digits == 8 else f"{number:,.2f}"
+    return text.replace(",", "_").replace(".", ",").replace("_", ".")
+
+
+def _r_multiple(value: object) -> str:
+    """Bội số R một chữ số thập phân, dấu phẩy thập phân."""
+    return f"{Decimal(str(value)):.1f}".replace(".", ",")
+
+
+def _card_lines(card: Mapping[str, object]) -> list[str]:
+    """Các dòng thẻ tín hiệu (SIG-3) cho Telegram; chỉ đọc giá trị đã tính sẵn."""
+    zone = card.get("entry_zone")
+    lines = ["", "— THẺ TÍN HIỆU (PAPER) —"]
+    if isinstance(zone, Mapping):
+        low, high = zone.get("low"), zone.get("high")
+        lines.append(
+            f"Vùng vào: {_price(low)}"
+            + (f" – {_price(high)}" if high is not None and high != low else "")
+        )
+    lines.append(f"Cắt lỗ (SL): {_price(card.get('stop'))}")
+    targets = card.get("targets")
+    if isinstance(targets, list | tuple) and targets:
+        lines.append("Mục tiêu (R thô, chưa trừ phí):")
+        for target in targets:
+            if isinstance(target, Mapping):
+                lines.append(
+                    f"  • {target.get('label')}: {_price(target.get('price'))} "
+                    f"({_r_multiple(target.get('r_multiple'))}R)"
+                )
+    checklist = card.get("checklist")
+    if isinstance(checklist, list | tuple) and checklist:
+        lines.append(
+            f"Điều kiện ({card.get('checklist_passed')}/{card.get('checklist_total')} đạt):"
+        )
+        for item in list(checklist)[:_MAX_CHECKLIST_LINES]:
+            if not isinstance(item, Mapping):
+                continue
+            passed = item.get("passed")
+            mark = "✓" if passed is True else ("✗" if passed is False else "—")
+            lines.append(
+                f"  {mark} {item.get('label_vi')}: {item.get('actual')} · cần "
+                f"{item.get('operator')} {item.get('threshold')}"
+            )
+    invalidation = card.get("invalidation")
+    if isinstance(invalidation, list | tuple) and invalidation:
+        lines.append("Mất hiệu lực khi:")
+        lines.extend(f"  • {line}" for line in invalidation)
+    confidence = card.get("confidence")
+    if isinstance(confidence, Mapping):
+        lines.append(f"Độ tin cậy: {confidence.get('label')} (chưa hiện %)")
+    return lines
+
+
 def build_signal_message(candidate: TelegramSignalCandidate) -> str:
     """Tạo nội dung thuần văn bản, không có lệnh giao dịch hoặc cú pháp parse-mode."""
     lines = [
@@ -170,7 +234,83 @@ def build_signal_message(candidate: TelegramSignalCandidate) -> str:
     ]
     if candidate.invalidation:
         lines.append(f"Điều kiện mất hiệu lực: {candidate.invalidation}")
+    if candidate.card is not None:
+        lines.extend(_card_lines(candidate.card))
+    lines.append("")
+    lines.append("PAPER · mô phỏng nội bộ, không phải khuyến nghị đầu tư.")
     message = "\n".join(lines)
     if len(message) > 4096:
         raise ValueError("Nội dung tín hiệu vượt giới hạn Telegram.")
     return message
+
+
+# --- TG-2: chống spam -----------------------------------------------------------------------
+
+SUPPRESSED_COOLDOWN = "SIGNAL_COOLDOWN_DUPLICATE"
+SUPPRESSED_HOURLY_CAP = "SIGNAL_HOURLY_CAP"
+_HOUR = timedelta(hours=1)
+
+
+@dataclass(frozen=True, slots=True)
+class SignalThrottlePolicy:
+    """Giới hạn tin cho mỗi subscription (một bot → một chat).
+
+    - ``cooldown``: không gửi lại cùng mã + hướng + chiến lược + release trong khoảng này
+      (gộp tín hiệu trùng khi rule lặp lại trên các nến liên tiếp).
+    - ``max_per_hour``: tối đa số tin trong 60 phút trượt; tin vượt bị ghi ``SUPPRESSED``.
+    """
+
+    cooldown: timedelta = timedelta(minutes=90)
+    max_per_hour: int = 6
+
+    def __post_init__(self) -> None:
+        if not timedelta(0) <= self.cooldown <= timedelta(hours=24):
+            raise ValueError("Cooldown tín hiệu phải trong 0–24 giờ.")
+        if not 1 <= self.max_per_hour <= 60:
+            raise ValueError("Giới hạn tin/giờ phải trong 1–60.")
+
+    @property
+    def lookback(self) -> timedelta:
+        """Khoảng lịch sử cần đọc để quyết định."""
+        return max(self.cooldown, _HOUR)
+
+
+@dataclass(frozen=True, slots=True)
+class RecentSignalDelivery:
+    """Một tin đã gửi hoặc đang gửi của cùng subscription: khóa gộp và thời điểm."""
+
+    dedup_key: str
+    at: datetime
+
+
+def signal_dedup_key(
+    *, symbol: str, direction: str, strategy_id: str, strategy_release_id: str
+) -> str:
+    """Khóa gộp tín hiệu trùng; timeframe đã nằm trong release nên không lặp lại."""
+    return f"{symbol.upper()}|{direction.upper()}|{strategy_id}|{strategy_release_id}"
+
+
+def candidate_dedup_key(candidate: TelegramSignalCandidate) -> str:
+    return signal_dedup_key(
+        symbol=candidate.symbol,
+        direction=candidate.direction,
+        strategy_id=candidate.strategy_id,
+        strategy_release_id=candidate.strategy_release_id,
+    )
+
+
+def throttle_reason(
+    candidate: TelegramSignalCandidate,
+    recent: Iterable[RecentSignalDelivery],
+    *,
+    now: datetime,
+    policy: SignalThrottlePolicy,
+) -> str | None:
+    """Mã lý do chặn tin (None = được gửi). Trùng được kiểm trước giới hạn giờ."""
+    key = candidate_dedup_key(candidate)
+    history = list(recent)
+    if any(item.dedup_key == key and now - item.at < policy.cooldown for item in history):
+        return SUPPRESSED_COOLDOWN
+    if sum(1 for item in history if now - item.at < _HOUR) >= policy.max_per_hour:
+        return SUPPRESSED_HOURLY_CAP
+    return None

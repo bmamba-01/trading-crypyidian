@@ -67,7 +67,18 @@
             </span>
             {% if member == my_membership %}<span class="badge badge-paper-subtle ops-chip">Tài khoản của bạn</span>{% endif %}
             <span class="ops-binding__meta">Liên kết lúc <time title="{{ binding.created_at | local_time }}">{{ binding.created_at | local_minute }}</time></span>
+            {% if binding.topics == "split" %}<span class="badge badge-success ops-chip" data-telegram-topics="split">Đã tách 2 topic: Tín hiệu · PAPER report</span>{% else %}<span class="badge badge-neutral ops-chip" data-telegram-topics="main">Mọi tin vào chat chính</span>{% endif %}
           </div>
+          {#- TG-4: tách tin tín hiệu và PAPER report vào 2 topic trong chat riêng của bot. -#}
+          <form method="post" action="/admin/telegram/topics/{{ binding.membership_id }}" class="ops-binding__form" data-ops-submit-once>
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            {% if binding.topics == "split" %}
+            <button type="submit" name="action" value="create" class="btn btn-secondary">Tạo lại 2 topic</button>
+            <button type="submit" name="action" value="clear" class="btn btn-danger-outline">Gộp về chat chính</button>
+            {% else %}
+            <button type="submit" name="action" value="create" class="btn btn-primary" aria-describedby="topic-hint">Tách 2 topic (Tín hiệu · PAPER report)</button>
+            {% endif %}
+          </form>
           <form method="post" action="/admin/telegram/revoke/{{ binding.membership_id }}" class="ops-binding__form" data-ops-submit-once>
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <label for="revoke-reason-{{ loop.index }}">Lý do thu hồi</label>
@@ -79,6 +90,7 @@
         </li>
       {% endfor %}
       </ul>
+      <p id="topic-hint" class="ops-hint">Tách topic: bot tạo 2 topic “Tín hiệu” và “PAPER report” trong tin nhắn riêng; tín hiệu vào topic thứ nhất, kết quả mở/đóng lệnh, tổng hợp định kỳ và thẻ AI vào topic thứ hai. Cần bật chế độ topic (Threaded Mode) cho bot trong @BotFather và MFA trong 15 phút gần nhất.</p>
       <p id="revoke-hint" class="ops-hint">Sau khi thu hồi, lệnh điều khiển từ tài khoản Telegram đó bị từ chối và tín hiệu mới không còn được xếp gửi tới đó. Muốn dùng lại phải tạo mã liên kết mới.</p>
     {% else %}
       <p class="ops-empty"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M10 14a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1"/><path d="M14 10a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1"/><path d="M3 3l18 18"/></svg>Chưa có liên kết hoạt động.</p>

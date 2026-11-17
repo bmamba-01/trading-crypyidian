@@ -328,3 +328,45 @@ def test_funding_settlement_uses_mark_price_notional_and_rate_sign() -> None:
     # Cùng một kỳ funding không bị ghi hai lần.
     assert again.funding_cost == updated.funding_cost
     assert again.funding_event_ids.count(settlement.event_id) == 1
+
+
+def test_forced_delist_exit_closes_at_bar_close_after_stop_target_checks() -> None:
+    import pytest
+
+    position = replace(
+        _open_position(),
+        stop_price=Decimal("90"),
+        target_price=Decimal("120"),
+        recipe=ExitRecipe("long", 2, opposite_signal_exit=True, max_hold_bars=50),
+    )
+    calm = _bar("delist", 2, high="101", low="99")
+    result = monitor_position(position, calm, forced_exit_reason="DELIST_EXIT")
+    assert result.exit_reason == "DELIST_EXIT"
+    assert result.exit_reference_price == calm.close
+    assert result.position.is_closed
+    assert result.position.quantity == Decimal(0)
+    # Stop chạm trong cùng nến vẫn thắng (đã xảy ra trước giá đóng nến).
+    crash = _bar("crash", 2, high="101", low="89")
+    assert monitor_position(position, crash, forced_exit_reason="DELIST_EXIT").exit_reason == (
+        "STOP_LOSS"
+    )
+    # Không ép đóng thì giữ hành vi cũ.
+    assert monitor_position(position, calm).exit_reason is None
+    with pytest.raises(ValueError, match="forced_exit_reason"):
+        monitor_position(position, calm, forced_exit_reason=" ")
+
+
+def test_gateway_forced_exit_creates_exit_fill_with_reason() -> None:
+    gateway = _gateway()
+    order = gateway.submit(_plan(), "intent-1", submitted_at=NOW)
+    gateway.apply_market_event(_bar("bar-entry", 1), available_quantity=Decimal("1"))
+    position = gateway.position(order.intent_id)
+    assert position is not None
+    result = gateway.monitor_position(
+        position, _bar("delist-bar", 2), forced_exit_reason="DELIST_EXIT"
+    )
+    assert result.exit_reason == "DELIST_EXIT"
+    closed = gateway.position(order.intent_id)
+    assert closed is not None
+    assert closed.is_closed
+    assert closed.exit_reason == "DELIST_EXIT"

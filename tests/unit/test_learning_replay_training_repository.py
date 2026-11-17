@@ -237,3 +237,42 @@ async def test_normalization_replay_receipt_uses_database_derived_scope_only() -
         "fold_plan_hash": "c" * 64,
     }
     assert "source_use_lineage" not in session.parameters
+
+
+class _NormalizeDeniedSession:
+    """Session giả: gate SQL `wp06_record_replay_training_receipts` ném lỗi DB."""
+
+    def __init__(self, message: str) -> None:
+        self.message = message
+
+    async def execute(self, statement, parameters=None):
+        from sqlalchemy.exc import DBAPIError
+
+        raise DBAPIError(str(statement), parameters, Exception(self.message))
+
+
+@pytest.mark.asyncio
+async def test_normalize_receipt_gate_maps_denial_token_to_permission_error() -> None:
+    """CRY-427: token từ gate SQL thành PermissionError, không để DBAPIError thô lọt ra."""
+    from uuid import uuid4
+
+    session = _NormalizeDeniedSession(
+        "WP06_TRAINING_REPLAY_LEGACY_LINEAGE_DENIED\nCONTEXT: PL/pgSQL function ..."
+    )
+    with pytest.raises(PermissionError, match="^WP06_TRAINING_REPLAY_LEGACY_LINEAGE_DENIED$"):
+        await LearningFoldSampleRepository(session)._invoke_training_source_receipt_gate(
+            manifest=_manifest(), normalized_dataset_id=uuid4(), fold_plan_hash="f" * 64
+        )
+
+
+@pytest.mark.asyncio
+async def test_normalize_receipt_gate_keeps_unrelated_database_errors() -> None:
+    from uuid import uuid4
+
+    from sqlalchemy.exc import DBAPIError
+
+    session = _NormalizeDeniedSession("connection reset by peer")
+    with pytest.raises(DBAPIError):
+        await LearningFoldSampleRepository(session)._invoke_training_source_receipt_gate(
+            manifest=_manifest(), normalized_dataset_id=uuid4(), fold_plan_hash="f" * 64
+        )

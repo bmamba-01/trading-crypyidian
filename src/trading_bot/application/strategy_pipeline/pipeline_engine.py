@@ -19,11 +19,12 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
 from statistics import median
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from trading_bot.application.strategy_pipeline.context_gate import (
     ContextGateEvaluator,
@@ -75,6 +76,28 @@ ATR_SOURCE_SINGLE_BAR = "single_bar_range"
 # Nguồn chỉ báo khi chưa đủ nến lịch sử warmup hoặc thiếu feature trên snapshot.
 WARMUP_SOURCE_INSUFFICIENT = "insufficient_history"
 WARMUP_SOURCES = frozenset({ATR_SOURCE_SINGLE_BAR, WARMUP_SOURCE_INSUFFICIENT})
+# Tầng có đầu ra số theo từng nến (dùng cho phân tích đồng thuận giả SIG-6).
+NUMERIC_LAYERS = (
+    CompositionLayer.L1_CANDLE_ANATOMY,
+    CompositionLayer.L2_INDICATORS,
+    CompositionLayer.L3_ALGORITHMS,
+)
+
+
+class PriceBarLike(Protocol):
+    """Tối thiểu một nến cần cho L0–L3: OHLC dạng Decimal (``OHLCVBar`` thỏa mãn)."""
+
+    @property
+    def open(self) -> Decimal: ...
+
+    @property
+    def high(self) -> Decimal: ...
+
+    @property
+    def low(self) -> Decimal: ...
+
+    @property
+    def close(self) -> Decimal: ...
 
 
 def compute_candidate_id(
@@ -341,7 +364,35 @@ class StrategyPipelineEngine:
             indicator_sources=indicator_sources,
         )
 
-    def _check_data_hygiene(self, bar: OHLCVBar) -> str | None:
+    def numeric_node_series(
+        self, card: StrategyCard, bars: Sequence[PriceBarLike]
+    ) -> dict[str, list[float]]:
+        """Chuỗi đầu ra L1–L3 theo từng nến, cùng công thức với ``execute``.
+
+        Giá trị tại nến ``i`` chỉ dùng nến ``0..i`` (không nhìn trước). Nến vi phạm L0 bị bỏ ở
+        mọi node để các chuỗi cùng độ dài. L2 không có feature snapshot nên ATR lấy từ nến
+        (``execute`` cũng dùng nhánh này khi snapshot không có feature ``atr_<period>``).
+        """
+        nodes = [node for node in card.nodes if node.layer in NUMERIC_LAYERS]
+        series: dict[str, list[float]] = {node.node_id: [] for node in nodes}
+        for index, bar in enumerate(bars):
+            if self._check_data_hygiene(bar) is not None:
+                continue
+            values: dict[str, Any] = {}
+            for node in nodes:
+                if node.layer == CompositionLayer.L1_CANDLE_ANATOMY:
+                    values[node.node_id] = self._compute_l1_node(node.operation, bar)
+            for node in nodes:
+                if node.layer == CompositionLayer.L2_INDICATORS:
+                    values[node.node_id] = self._l2_from_bars(node, bar, bars[: index + 1])[0]
+            for node in nodes:
+                if node.layer == CompositionLayer.L3_ALGORITHMS:
+                    values[node.node_id] = self._compute_l3_node(node, values)
+            for node_id, items in series.items():
+                items.append(float(values[node_id]))
+        return series
+
+    def _check_data_hygiene(self, bar: PriceBarLike) -> str | None:
         """Kiểm tra độ sạch của nến L0: High >= Low, High >= max(O,C), Low <= min(O,C)."""
         if bar.high < bar.low:
             return f"Nến vi phạm High < Low (High={bar.high}, Low={bar.low})"
@@ -353,7 +404,7 @@ class StrategyPipelineEngine:
             return "Giá Open/Close phải là số dương"
         return None
 
-    def _compute_l1_node(self, operation: str, bar: OHLCVBar) -> Decimal:
+    def _compute_l1_node(self, operation: str, bar: PriceBarLike) -> Decimal:
         """Tính toán khối nguyên tử giải phẫu nến L1."""
         op = operation.lower()
         if "lower_wick" in op:
@@ -414,10 +465,73 @@ class StrategyPipelineEngine:
 
         if "atr" in op or "true_range" in op:
             period = int(params.get("period", 14))
-            name = f"atr_{period}"
-            found = self._snapshot_feature(snapshot, name, timeframe)
+            found = self._snapshot_feature(snapshot, f"atr_{period}", timeframe)
             if found is not None and found[0] > Decimal("0"):
                 return found
+            return self._l2_from_bars(node, bar, bars)
+
+        if "ema" in op or "exponential_moving_average" in op:
+            period = int(params.get("period", 20))
+            found = self._snapshot_feature(snapshot, f"ema_{period}", timeframe)
+            if found is not None:
+                return found
+            return self._l2_from_bars(node, bar, bars)
+
+        if "sma" in op or "simple_moving_average" in op:
+            period = int(params.get("period", 20))
+            found = self._snapshot_feature(snapshot, f"sma_{period}", timeframe)
+            if found is not None:
+                return found
+            return self._l2_from_bars(node, bar, bars)
+
+        if "rsi" in op:
+            period = int(params.get("period", 14))
+            found = self._snapshot_feature(snapshot, f"rsi_{period}", timeframe)
+            if found is not None:
+                return found
+            return self._l2_from_bars(node, bar, bars)
+
+        if "adx" in op:
+            period = int(params.get("period", 14))
+            found = self._snapshot_feature(snapshot, f"adx_{period}", timeframe)
+            if found is not None:
+                return found
+            return self._l2_from_bars(node, bar, bars)
+
+        if "realized_volatility" in op or "rv" in op:
+            period = int(params.get("period", 20))
+            found = self._snapshot_feature(snapshot, f"realized_volatility_{period}", timeframe)
+            if found is not None:
+                return found
+            return self._l2_from_bars(node, bar, bars)
+
+        if "bollinger_bandwidth" in op or "bb_width" in op:
+            period = int(params.get("period", 20))
+            upper_f = self._snapshot_feature(snapshot, f"bollinger_upper_{period}", timeframe)
+            lower_f = self._snapshot_feature(snapshot, f"bollinger_lower_{period}", timeframe)
+            mid_f = self._snapshot_feature(snapshot, f"sma_{period}", timeframe)
+            if upper_f and lower_f and mid_f and mid_f[0] > 0:
+                bw = (upper_f[0] - lower_f[0]) / mid_f[0]
+                return bw, f"feature:bollinger_bw_{period}", upper_f[2]
+            return self._l2_from_bars(node, bar, bars)
+
+        if "vwap" in op:
+            found = self._snapshot_feature(snapshot, "session_vwap", timeframe)
+            if found is not None:
+                return found
+            return self._l2_from_bars(node, bar, bars)
+
+        return self._l2_from_bars(node, bar, bars)
+
+    def _l2_from_bars(
+        self, node: Any, bar: PriceBarLike, bars: Sequence[PriceBarLike]
+    ) -> tuple[Decimal, str, str | None]:
+        """Nhánh L2 chỉ từ chuỗi nến ``bars`` kết thúc tại ``bar`` (point-in-time)."""
+        op = node.operation.lower()
+        params = node.parameters
+
+        if "atr" in op or "true_range" in op:
+            period = int(params.get("period", 14))
             if len(bars) > period:
                 window = bars[-(period + 1) :]
                 ranges = [
@@ -433,9 +547,6 @@ class StrategyPipelineEngine:
 
         if "ema" in op or "exponential_moving_average" in op:
             period = int(params.get("period", 20))
-            found = self._snapshot_feature(snapshot, f"ema_{period}", timeframe)
-            if found is not None:
-                return found
             if len(bars) >= period:
                 val = ema([float(b.close) for b in bars], period)[-1]
                 if val is not None:
@@ -444,9 +555,6 @@ class StrategyPipelineEngine:
 
         if "sma" in op or "simple_moving_average" in op:
             period = int(params.get("period", 20))
-            found = self._snapshot_feature(snapshot, f"sma_{period}", timeframe)
-            if found is not None:
-                return found
             if len(bars) >= period:
                 val = sma([float(b.close) for b in bars], period)[-1]
                 if val is not None:
@@ -455,9 +563,6 @@ class StrategyPipelineEngine:
 
         if "rsi" in op:
             period = int(params.get("period", 14))
-            found = self._snapshot_feature(snapshot, f"rsi_{period}", timeframe)
-            if found is not None:
-                return found
             if len(bars) > period:
                 val = rsi([float(b.close) for b in bars], period)[-1]
                 if val is not None:
@@ -466,9 +571,6 @@ class StrategyPipelineEngine:
 
         if "adx" in op:
             period = int(params.get("period", 14))
-            found = self._snapshot_feature(snapshot, f"adx_{period}", timeframe)
-            if found is not None:
-                return found
             if len(bars) >= 2 * period:
                 _, _, _, adx_s = adx_dmi(
                     [float(b.high) for b in bars],
@@ -483,9 +585,6 @@ class StrategyPipelineEngine:
 
         if "realized_volatility" in op or "rv" in op:
             period = int(params.get("period", 20))
-            found = self._snapshot_feature(snapshot, f"realized_volatility_{period}", timeframe)
-            if found is not None:
-                return found
             if len(bars) > period:
                 val = realized_volatility([float(b.close) for b in bars], period)[-1]
                 if val is not None:
@@ -494,12 +593,6 @@ class StrategyPipelineEngine:
 
         if "bollinger_bandwidth" in op or "bb_width" in op:
             period = int(params.get("period", 20))
-            upper_f = self._snapshot_feature(snapshot, f"bollinger_upper_{period}", timeframe)
-            lower_f = self._snapshot_feature(snapshot, f"bollinger_lower_{period}", timeframe)
-            mid_f = self._snapshot_feature(snapshot, f"sma_{period}", timeframe)
-            if upper_f and lower_f and mid_f and mid_f[0] > 0:
-                bw = (upper_f[0] - lower_f[0]) / mid_f[0]
-                return bw, f"feature:bollinger_bw_{period}", upper_f[2]
             if len(bars) >= period:
                 mid, up, low = bollinger_bands([float(b.close) for b in bars], period=period)
                 u, m, lw = up[-1], mid[-1], low[-1]
@@ -508,17 +601,22 @@ class StrategyPipelineEngine:
             return Decimal("0"), WARMUP_SOURCE_INSUFFICIENT, None
 
         if "vwap" in op:
-            found = self._snapshot_feature(snapshot, "session_vwap", timeframe)
-            if found is not None:
-                return found
-            utc_day = bar.open_time.astimezone(UTC).date()
-            day_bars = [b for b in bars if b.open_time.astimezone(UTC).date() == utc_day]
-            if len(day_bars) >= 8:
-                prices = [float((b.high + b.low + b.close) / Decimal("3")) for b in day_bars]
-                vols = [float(b.volume) for b in day_bars]
-                val = vwap(prices, vols)[-1]
-                if val is not None:
-                    return Decimal(str(round(val, 6))), "bars:session_vwap", None
+            bar_open_time = getattr(bar, "open_time", None)
+            if bar_open_time is not None:
+                utc_day = bar_open_time.astimezone(UTC).date()
+                day_bars = [
+                    b
+                    for b in bars
+                    if getattr(b, "open_time", None) is not None
+                    and getattr(b, "volume", None) is not None
+                    and b.open_time.astimezone(UTC).date() == utc_day  # type: ignore[attr-defined]
+                ]
+                if len(day_bars) >= 8:
+                    prices = [float((b.high + b.low + b.close) / Decimal("3")) for b in day_bars]
+                    vols = [float(b.volume) for b in day_bars]  # type: ignore[attr-defined]
+                    val = vwap(prices, vols)[-1]
+                    if val is not None:
+                        return Decimal(str(round(val, 6))), "bars:session_vwap", None
             return bar.close, WARMUP_SOURCE_INSUFFICIENT, None
 
         if "macd" in op:
@@ -537,18 +635,19 @@ class StrategyPipelineEngine:
             if len(bars) < tf_window:
                 return Decimal("0"), WARMUP_SOURCE_INSUFFICIENT, None
             recent = bars[-tf_window:]
-            if any(
-                b.taker_buy_base_volume is None
-                or b.volume <= 0
-                or b.taker_buy_base_volume < 0
-                or b.taker_buy_base_volume > b.volume
+            flow_pairs = [
+                (getattr(b, "volume", None), getattr(b, "taker_buy_base_volume", None))
                 for b in recent
+            ]
+            if any(
+                vol is None or tbuy is None or vol <= 0 or tbuy < 0 or tbuy > vol
+                for vol, tbuy in flow_pairs
             ):
                 return Decimal("0"), WARMUP_SOURCE_INSUFFICIENT, None
             ti_list = [
-                (2.0 * float(b.taker_buy_base_volume) - float(b.volume)) / float(b.volume)
-                for b in recent
-                if b.taker_buy_base_volume is not None
+                (2.0 * float(tbuy) - float(vol)) / float(vol)
+                for vol, tbuy in flow_pairs
+                if vol is not None and tbuy is not None
             ]
             return (
                 Decimal(str(round(sum(ti_list) / len(ti_list), 6))),

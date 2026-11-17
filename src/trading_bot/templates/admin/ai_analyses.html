@@ -1,0 +1,58 @@
+{% extends "admin/base.html" %}
+{% block title %}Phân tích AI — Crypidian{% endblock %}
+{% block heading %}Phân tích AI{% endblock %}
+{% block head_extra %}<link rel="stylesheet" href="/static/pages/ai.css">{% endblock %}
+
+{% block content %}
+{#- CRY-383: lượt AI Analyst đã lưu (chỉ đọc). Đầu ra AI chỉ là gợi ý; số liệu đã qua validator. -#}
+<div class="ai-page">
+  <section class="glass-card" aria-labelledby="ai-intro">
+    <h2 id="ai-intro">Các lượt phân tích</h2>
+    <p class="ai-note">Mỗi lượt là một lần AI đọc Run Report của một họ chiến lược. "Hợp lệ" nghĩa là mọi con số AI viết đã khớp trường trong report; lượt bị loại không gửi Telegram. Đề xuất chỉ để backtest, không tự áp vào bot.</p>
+    <form method="get" action="/admin/ai-analyses" class="ai-filters">
+      <label>Chủ đề
+        <select name="topic">
+          <option value="">Tất cả</option>
+          {% for item in topics %}<option value="{{ item }}" {% if item == topic %}selected{% endif %}>{{ item }}</option>{% endfor %}
+        </select>
+      </label>
+      <label>Kết quả kiểm tra
+        <select name="valid">
+          <option value="" {% if not valid %}selected{% endif %}>Tất cả</option>
+          <option value="yes" {% if valid == "yes" %}selected{% endif %}>Hợp lệ</option>
+          <option value="no" {% if valid == "no" %}selected{% endif %}>Bị loại</option>
+        </select>
+      </label>
+      <button type="submit" class="btn btn-secondary">Lọc</button>
+    </form>
+  </section>
+
+  <section class="glass-card" aria-labelledby="ai-list-title">
+    <h2 id="ai-list-title">{{ runs | length }} lượt gần nhất</h2>
+    {% if runs %}
+    <div class="table-wrapper"><table class="responsive-table" aria-label="Danh sách lượt phân tích AI">
+      <thead><tr><th scope="col">Thời điểm</th><th scope="col">Chủ đề</th><th scope="col">Kết quả</th><th scope="col">Tóm tắt</th><th scope="col">Đề xuất</th><th scope="col">Chi phí (USD)</th><th scope="col"><span class="sr-only">Mở</span></th></tr></thead>
+      <tbody>
+      {% for run in runs %}
+        <tr>
+          <td data-label="Thời điểm" class="ai-num">{{ run.created_at | local_minute }}{% if run.resumed %}<br><span class="ai-note">tiếp phiên</span>{% endif %}</td>
+          <td data-label="Chủ đề"><code>{{ run.topic_key }}</code></td>
+          <td data-label="Kết quả">
+            {% if run.error %}<span class="badge badge-danger">Lỗi engine</span>
+            {% elif run.valid %}<span class="badge badge-success">Hợp lệ</span>
+            {% else %}<span class="badge badge-warning">Bị loại ({{ run.error_count }} lỗi)</span>{% endif %}
+          </td>
+          <td data-label="Tóm tắt" class="ai-summary">{{ run.summary | truncate(120) if run.summary else "—" }}</td>
+          <td data-label="Đề xuất" class="ai-num">{{ run.proposal_count }}{% if run.backtest_count %} · {{ run.backtest_count }} đã backtest{% endif %}</td>
+          <td data-label="Chi phí (USD)" class="ai-num">{{ run.cost_usd or "—" }}</td>
+          <td data-label="Mở"><a class="btn btn-sm btn-outline" href="/admin/ai-analyses/{{ run.id }}">Xem chi tiết</a></td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table></div>
+    {% else %}
+    <p class="ai-note">Chưa có lượt phân tích nào{% if topic or valid %} khớp bộ lọc{% endif %}.</p>
+    {% endif %}
+  </section>
+</div>
+{% endblock %}

@@ -430,6 +430,10 @@ class _ScriptedLoop(PaperMarketEventLoop):
         await super()._process_scope(account, scope, now)
         self.closed = self.counters.closed_trades > 0
 
+    async def _funding_moments(self, scope: _Scope, *, after: datetime, now: datetime) -> tuple:
+        """Kịch bản RT-1 không có mốc funding (FX-3 kiểm riêng ở test_fx3_paper_funding_runtime)."""
+        return ()
+
 
 def test_loop_fills_on_first_bar_then_monitors_until_stop_and_is_idempotent() -> None:
     app = _FakeApplication(stop=Decimal("95"))
@@ -661,9 +665,43 @@ def test_status_is_degraded_after_discontinuity() -> None:
     from trading_bot.application.paper_market_event_loop import MarketDispatchCounters
 
     loop.counters = MarketDispatchCounters(discontinuities=1)
+    loop._missing_execution_bars = set()
+    loop._funding_holding = set()
+    loop._funding_missing = {}
     loop.last_tick_at = datetime(2026, 11, 15, tzinfo=UTC)
     loop.last_tick_succeeded = True
     loop.last_error_code = "PAPER_MARKET_DISCONTINUITY"
     status = loop.status()
     assert status["state"] == "degraded"
     assert status["discontinuities"] == 1
+
+
+def test_pending_entry_without_1m_bars_marks_dispatch_degraded() -> None:
+    """16/11/2026: thiếu nến 1m → lệnh không bao giờ khớp; readiness phải báo rõ, không im lặng."""
+    from trading_bot.application.paper_market_event_loop import PaperMarketEventLoop
+
+    loop = PaperMarketEventLoop(application=object(), sessions=None, workspace_id=uuid4())
+    account = uuid4()
+
+    def scope(timeframe: str, pending: bool) -> _Scope:
+        return _Scope(
+            intent_id=uuid4(),
+            paper_intent_id="p",
+            symbol="AEROUSDT",
+            timeframe=timeframe,
+            feature_snapshot_id="f" * 64,
+            trade_id=None,
+            entry_pending=pending,
+            cursor=None,
+        )
+
+    loop.last_tick_at = NOW
+    loop.last_tick_succeeded = True
+    loop._check_execution_bars(account, (scope("15m", True),))
+    status = loop.status()
+    assert status["state"] == "degraded"
+    assert status["execution_1m_missing_accounts"] == 1
+    assert status["last_error_code"] == "PAPER_EXECUTION_1M_UNAVAILABLE"
+    # Vị thế đã mở theo dõi trên khung chiến lược không làm degraded; có 1m thì hết cảnh báo.
+    loop._check_execution_bars(account, (scope("15m", False), scope("1m", True)))
+    assert loop.status()["state"] == "running"

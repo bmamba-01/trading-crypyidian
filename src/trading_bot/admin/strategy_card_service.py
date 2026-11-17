@@ -7,11 +7,9 @@ phục vụ giao diện Admin Web và REST API.
 
 from __future__ import annotations
 
-import math
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
-from decimal import Decimal
-from functools import lru_cache
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -19,18 +17,21 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from trading_bot.adapters.database.repositories.strategy_card_repository import (
     StrategyCardRepository,
 )
+from trading_bot.application.strategy_pipeline.consensus import (
+    ConsensusSummary,
+    PriceBar,
+    card_consensus,
+)
 from trading_bot.application.strategy_pipeline.demo_cards import build_default_demo_cards
-from trading_bot.application.strategy_pipeline.pipeline_engine import StrategyPipelineEngine
 from trading_bot.auth.policy import Principal
-from trading_bot.domain.market.models import OHLCVBar
-from trading_bot.domain.strategy.contracts import DecisionSnapshot, MarketSeries, SeriesQuality
 from trading_bot.domain.strategy_card.graph_verifier import DeadNodeDetector
-from trading_bot.domain.strategy_card.models import CompositionLayer
-from trading_bot.domain.strategy_card.orthogonality import AntiConsensusAnalyzer
 from trading_bot.domain.strategy_card.schema import StrategyCard, compute_canonical_hash
 
 if TYPE_CHECKING:
     pass
+
+# Nguồn nến đã đóng (tăng dần) cho phân tích đồng thuận: (principal, symbol, timeframe) → nến.
+CardBarsProvider = Callable[[Principal, str, str], Awaitable[Sequence[PriceBar]]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +54,11 @@ class StrategyCardView:
     dead_nodes: tuple[str, ...]
     has_consensus_warning: bool
     consensus_warnings: tuple[str, ...]
+    consensus_status: str
+    consensus_sample_size: int
+    independent_conditions: int | None
+    total_conditions: int
+    consensus_scope: str
     target_symbols: tuple[str, ...]
     timeframes: tuple[str, ...]
     is_verified: bool
@@ -76,66 +82,15 @@ class StrategyCardView:
             "dead_nodes": list(self.dead_nodes),
             "has_consensus_warning": self.has_consensus_warning,
             "consensus_warnings": list(self.consensus_warnings),
+            "consensus_status": self.consensus_status,
+            "consensus_sample_size": self.consensus_sample_size,
+            "independent_conditions": self.independent_conditions,
+            "total_conditions": self.total_conditions,
+            "consensus_scope": self.consensus_scope,
             "target_symbols": list(self.target_symbols),
             "timeframes": list(self.timeframes),
             "is_verified": self.is_verified,
         }
-
-
-_BENCHMARK_ORIGIN = datetime(2026, 10, 1, 0, 0, tzinfo=UTC)
-_BENCHMARK_INTERVAL_MINUTES = {
-    "1m": 1,
-    "3m": 3,
-    "5m": 5,
-    "15m": 15,
-    "30m": 30,
-    "1h": 60,
-    "4h": 240,
-}
-
-
-@lru_cache(maxsize=8)
-def _benchmark_bars_for_timeframe(timeframe: str) -> tuple[OHLCVBar, ...]:
-    """Sinh chuỗi 120 nến tổng hợp đa chế độ tất định để kiểm định tương quan chỉ báo."""
-    step = timedelta(minutes=_BENCHMARK_INTERVAL_MINUTES.get(timeframe, 60))
-    bars: list[OHLCVBar] = []
-    for idx in range(120):
-        close = (
-            100.0
-            + 14.0 * math.sin(idx * 0.055)
-            + 4.0 * math.sin(idx * 0.25)
-            + 1.5 * math.cos(idx * 0.61)
-        )
-        amp = 1.0 + 2.0 * abs(math.cos(idx * 0.41))
-        open_p = close - (0.3 if idx % 2 == 0 else -0.35) * amp
-        upper_extra = (0.7 if idx % 3 == 0 else 0.2) * amp
-        lower_extra = (0.7 if idx % 3 == 1 else 0.2) * amp
-        high_p = max(open_p, close) + upper_extra
-        low_p = min(open_p, close) - lower_extra
-        vol = 100.0 + 80.0 * abs(math.sin(idx * 0.71))
-        tbuy = vol * (0.25 + 0.55 * (0.5 + 0.5 * math.sin(idx * 0.89)))
-        opened = _BENCHMARK_ORIGIN + idx * step
-        closed = opened + step - timedelta(microseconds=1)
-        bars.append(
-            OHLCVBar(
-                symbol="BTCUSDT",
-                timeframe=timeframe,
-                open_time=opened,
-                close_time=closed,
-                event_at=closed,
-                received_at=closed,
-                available_at=closed,
-                open=Decimal(str(round(open_p, 4))),
-                high=Decimal(str(round(high_p, 4))),
-                low=Decimal(str(round(low_p, 4))),
-                close=Decimal(str(round(close, 4))),
-                volume=Decimal(str(round(vol, 4))),
-                quote_volume=Decimal(str(round(vol * close, 4))),
-                taker_buy_base_volume=Decimal(str(round(tbuy, 4))),
-                is_closed=True,
-            )
-        )
-    return tuple(bars)
 
 
 class StrategyCardAdminService:
@@ -145,47 +100,14 @@ class StrategyCardAdminService:
         self,
         session_factory: async_sessionmaker[AsyncSession] | None = None,
         in_memory_cards: list[StrategyCard] | None = None,
+        bars_provider: CardBarsProvider | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._dead_node_detector = DeadNodeDetector()
-        self._anti_consensus_analyzer = AntiConsensusAnalyzer()
-        self._pipeline_engine = StrategyPipelineEngine()
+        self._bars_provider = bars_provider
         self._fallback_cards: list[StrategyCard] = (
             in_memory_cards if in_memory_cards is not None else build_default_demo_cards()
         )
-
-    def _evaluate_orthogonality(self, card: StrategyCard) -> tuple[bool, tuple[str, ...]]:
-        """Kiểm định tính trực giao giữa các nút L1/L2 trên chuỗi chuẩn đa chế độ."""
-        nodes = [
-            node
-            for node in card.nodes
-            if node.layer in {CompositionLayer.L1_CANDLE_ANATOMY, CompositionLayer.L2_INDICATORS}
-        ]
-        if len(nodes) < 2:
-            return False, ()
-        timeframe = card.compatibility.timeframes[0] if card.compatibility.timeframes else "15m"
-        bars = _benchmark_bars_for_timeframe(timeframe)
-        series_by_node: dict[str, list[float]] = {node.node_id: [] for node in nodes}
-        for end in range(40, len(bars)):
-            sub_bars = bars[:end]
-            latest = sub_bars[-1]
-            snap = DecisionSnapshot(
-                symbol=latest.symbol,
-                decision_time=latest.close_time,
-                snapshot_id=f"ortho-{card.card_id}-{end}",
-                series=(
-                    MarketSeries(timeframe=timeframe, bars=sub_bars, quality=SeriesQuality.READY),
-                ),
-                features=(),
-            )
-            for node in nodes:
-                if node.layer == CompositionLayer.L1_CANDLE_ANATOMY:
-                    val = self._pipeline_engine._compute_l1_node(node.operation, latest)
-                else:
-                    val, _, _ = self._pipeline_engine._compute_l2_node(node, latest, snap)
-                series_by_node[node.node_id].append(float(val))
-        report = self._anti_consensus_analyzer.check_orthogonality(series_by_node, threshold=0.85)
-        return (not report.is_orthogonal), tuple(report.warnings)
 
     def _card_to_view(
         self,
@@ -193,6 +115,8 @@ class StrategyCardAdminService:
         record_id: str,
         content_hash: str,
         is_active: bool,
+        consensus: ConsensusSummary,
+        consensus_scope: str,
     ) -> StrategyCardView:
         """Phân tích cấu trúc đồ thị và sinh đối tượng hiển thị an toàn."""
         # 1. Thống kê số lượng node ở từng phân tầng L0 -> L6
@@ -214,8 +138,10 @@ class StrategyCardAdminService:
         report = self._dead_node_detector.verify(card.nodes, card.edges)
         dead_nodes = tuple(report.dead_nodes)
 
-        # 3. Phân tích trực giao & cảnh báo tương quan ảo giác đồng thuận thực tế
-        has_consensus_warning, consensus_warnings = self._evaluate_orthogonality(card)
+        # 3. Đồng thuận giả (G7): đo trên chuỗi đầu ra node thật; thiếu nến = "chưa đủ dữ liệu",
+        # không mặc định là trực giao.
+        has_consensus_warning = consensus.status == "warning"
+        consensus_warnings = consensus.warnings
 
         is_verified = (len(dead_nodes) == 0) and (not has_consensus_warning)
         if len(content_hash) >= 14:
@@ -245,10 +171,28 @@ class StrategyCardAdminService:
             dead_nodes=dead_nodes,
             has_consensus_warning=has_consensus_warning,
             consensus_warnings=consensus_warnings,
+            consensus_status=consensus.status,
+            consensus_sample_size=consensus.sample_size,
+            independent_conditions=consensus.independent_conditions,
+            total_conditions=consensus.total_conditions,
+            consensus_scope=consensus_scope,
             target_symbols=tuple(card.compatibility.target_symbols),
             timeframes=tuple(card.compatibility.timeframes),
             is_verified=is_verified,
         )
+
+    async def _consensus(
+        self, principal: Principal, card: StrategyCard
+    ) -> tuple[ConsensusSummary, str]:
+        """Đo đồng thuận giả trên mã/khung đầu tiên card khai báo, từ nến đã lưu nội bộ."""
+        symbols, timeframes = card.compatibility.target_symbols, card.compatibility.timeframes
+        if not symbols or not timeframes:
+            return card_consensus(card, []), "—"
+        symbol, timeframe = symbols[0], timeframes[0]
+        bars: Sequence[PriceBar] = ()
+        if self._bars_provider is not None:
+            bars = await self._bars_provider(principal, symbol, timeframe)
+        return card_consensus(card, bars), f"{symbol} · {timeframe}"
 
     async def list_strategy_cards(self, principal: Principal) -> list[StrategyCardView]:
         """Liệt kê danh sách các Strategy Card trong workspace của principal."""
@@ -260,12 +204,15 @@ class StrategyCardAdminService:
                     views: list[StrategyCardView] = []
                     for rec in records:
                         card = rec.to_domain()
+                        consensus, scope = await self._consensus(principal, card)
                         views.append(
                             self._card_to_view(
                                 card=card,
                                 record_id=str(rec.id),
                                 content_hash=rec.content_hash,
                                 is_active=rec.is_active,
+                                consensus=consensus,
+                                consensus_scope=scope,
                             )
                         )
                     return views
@@ -275,12 +222,15 @@ class StrategyCardAdminService:
         # Thẻ mẫu chưa lưu DB: hash là SHA-256 canonical thật của nội dung thẻ (không bịa) và
         # không thẻ nào được coi là đang kích hoạt vì chưa có hàng công bố.
         for idx, card in enumerate(self._fallback_cards):
+            consensus, scope = await self._consensus(principal, card)
             views.append(
                 self._card_to_view(
                     card=card,
                     record_id=f"demo-card-{idx + 1}",
                     content_hash=compute_canonical_hash(card),
                     is_active=False,
+                    consensus=consensus,
+                    consensus_scope=scope,
                 )
             )
         return views

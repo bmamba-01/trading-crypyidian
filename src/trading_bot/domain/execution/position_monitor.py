@@ -57,6 +57,7 @@ def monitor_position(
     exit_channel_level: Decimal | None = None,
     exit_feature_value: Decimal | None = None,
     strategy_bar_closed: bool = True,
+    forced_exit_reason: str | None = None,
 ) -> PositionMonitorResult:
     """Kiểm tra stop/target, rồi exit theo kênh, thời gian, feature và tín hiệu ngược.
 
@@ -74,6 +75,9 @@ def monitor_position(
 
     Nơi gọi chỉ truyền hai mức exit khi release của vị thế có hiệu lực các exit đó; `None` giữ
     nguyên hành vi cũ.
+    - `forced_exit_reason`: lý do đóng bắt buộc do vận hành (vd ``DELIST_EXIT`` khi Binance sắp gỡ
+      hợp đồng). Xét **sau** stop/target (các mức đó có thể đã chạm trong nến) và đóng tại giá
+      đóng nến, trước mọi exit theo chiến lược.
     """
     if position.is_closed or bar.bar_key in position.seen_bar_keys:
         return PositionMonitorResult(position, position.exit_reason, position.exit_reference_price)
@@ -188,6 +192,21 @@ def monitor_position(
             exit_reference_price=gap_price,
         )
         return PositionMonitorResult(closed, "TAKE_PROFIT", gap_price)
+
+    if forced_exit_reason is not None:
+        if not forced_exit_reason.strip():
+            raise ValueError("forced_exit_reason không được rỗng.")
+        closed = replace(
+            position,
+            quantity=ZERO,
+            protective_stop_quantity=ZERO,
+            bars_held=bars_held,
+            is_closed=True,
+            seen_bar_keys=seen,
+            exit_reason=forced_exit_reason,
+            exit_reference_price=bar.close,
+        )
+        return PositionMonitorResult(closed, forced_exit_reason, bar.close)
 
     recipe = position.recipe
     if recipe.exit_channel_period is not None and exit_channel_level is not None:

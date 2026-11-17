@@ -115,6 +115,94 @@ def mb07b_ui_report_grant():
             permission="bot:report:read", granted_by=UUID(workspace["members"]["owner"]))
     return {"granted": True}
 PHASES["mb07b_ui_report_grant"] = mb07b_ui_report_grant
+
+def ai3_proposal_seed():
+    # AI-3: kết quả backtest đề xuất AI cho bot "a", bản gốc khớp cấu hình đang publish.
+    import json as _json
+
+    from trading_bot.application.proposal_backtest import arm_from_overlay
+
+    workspace = _ws("main")
+    workspace_id = UUID(workspace["workspace"])
+    bot_id = UUID(workspace["bots"]["a"])
+    run_id = uuid4()
+    backtest_id = uuid4()
+    proposal_changes = [{"field": "risk.per_trade_risk_fraction", "to": "0.001"}]
+    with _connect() as connection, connection.transaction():
+        head = connection.execute(
+            "SELECT overlay_json FROM bot_config_version WHERE workspace_id=%s AND bot_id=%s "
+            "AND status='PUBLISHED' ORDER BY version DESC LIMIT 1",
+            (workspace_id, bot_id),
+        ).fetchone()
+        assert head is not None, "Bot cần cấu hình đã publish."
+        # CRY-383: đầu ra + bối cảnh để trang "Phân tích AI" hiển thị.
+        output = {
+            "summary": "Nhóm H03 có 12 lệnh đóng, chưa đủ để kết luận.",
+            "confidence": "low",
+            "findings": [{"statement": "T01 có 12 lệnh đóng.",
+                          "evidence_refs": ["/bots/0/performance/closed_trades"]}],
+            "hypotheses": [{"statement": "Rủi ro mỗi lệnh có thể quá cao.",
+                            "how_to_test": "Backtest rủi ro 0.001.", "evidence_refs": ["/bots/0"]}],
+            "proposals": [{"bot_name": "e2e", "changes": proposal_changes,
+                           "rationale": "Giảm drawdown.", "risk": "Lợi nhuận giảm.",
+                           "evidence_refs": ["/bots/0"]}],
+        }
+        context = {
+            "macro_calendar": {"horizon_days": 7, "state": {"blackout": False}, "upcoming": [
+                {"vn_date": "17/11", "vn_time": "20:30", "label_vi": "Doanh số bán lẻ"}]},
+            "listings": {"watched_at_risk": [
+                {"symbol": "ZECUSDT", "status": "TRADING", "delist_at_vn": "20/11 15:00"}]},
+        }
+        connection.execute(
+            "INSERT INTO analyst_run (id, workspace_id, topic_key, engine, resumed, "
+            "run_report_hash, input_sha256, prompt_version, output_version, usage, exit_code, "
+            "raw_stdout, structured_output, validation_errors, valid, cost_usd, context) VALUES "
+            "(%s,%s,'family:H03','fake',FALSE,%s,%s,'ai2-prompt-v5','analyst_output.v2',"
+            "'{}'::jsonb,0,'{}',%s::jsonb,'[]'::jsonb,TRUE,0.125,%s::jsonb)",
+            (run_id, workspace_id, "a" * 64, "b" * 64, _json.dumps(output), _json.dumps(context)),
+        )
+        # Một lượt bị loại để kiểm bộ lọc và danh sách lỗi validator.
+        connection.execute(
+            "INSERT INTO analyst_run (id, workspace_id, topic_key, engine, resumed, "
+            "run_report_hash, input_sha256, prompt_version, output_version, usage, exit_code, "
+            "raw_stdout, validation_errors, valid) VALUES (%s,%s,'family:H01','fake',TRUE,"
+            "%s,%s,'ai2-prompt-v5','analyst_output.v2','{}'::jsonb,0,'{}',%s::jsonb,FALSE)",
+            (uuid4(), workspace_id, "a" * 64, "c" * 64,
+             _json.dumps(["findings[0]: số '9' không khớp trường được trích"])),
+        )
+        proposal = {"changes": proposal_changes}
+        result = {
+            "verdict": "BETTER",
+            "bot_name": "e2e",
+            "baseline_arm": arm_from_overlay(head[0]).payload(),
+            "baseline": {"trades": 12, "net_pnl": "-5.00", "max_drawdown": "9.00"},
+            "variant": {"trades": 12, "net_pnl": "-1.00", "max_drawdown": "2.00"},
+            "notes": [],
+        }
+        connection.execute(
+            "INSERT INTO proposal_backtest (id, workspace_id, analyst_run_id, proposal_index, "
+            "topic_key, bot_id, bot_name, proposal, result, verdict, version) VALUES "
+            "(%s,%s,%s,0,'family:H03',%s,'e2e',%s::jsonb,%s::jsonb,'BETTER',"
+            "'ai3-proposal-backtest-v1')",
+            (
+                backtest_id, workspace_id, run_id, bot_id,
+                _json.dumps(proposal), _json.dumps(result),
+            ),
+        )
+    return {"ai3_backtest_id": str(backtest_id), "ai_run_id": str(run_id)}
+PHASES["ai3_proposal_seed"] = ai3_proposal_seed
+
+def ai3_draft_inspect():
+    workspace = _ws("main")
+    with _connect() as connection:
+        rows = connection.execute(
+            "SELECT status, overlay_json->'risk'->>'per_trade_risk_fraction' "
+            "FROM bot_config_version WHERE workspace_id=%s AND bot_id=%s "
+            "ORDER BY version DESC LIMIT 1",
+            (UUID(workspace["workspace"]), UUID(workspace["bots"]["a"])),
+        ).fetchone()
+    return {"latest_status": rows[0], "latest_risk_fraction": rows[1]}
+PHASES["ai3_draft_inspect"] = ai3_draft_inspect
 """
 
 
@@ -243,6 +331,9 @@ def test_admin_browser_session_navigation_accessibility_and_telegram_link(
         assert successful_login_info.value.status == 303
         expect(browser_page).to_have_url(f"{base_url}/admin")
         expect(browser_page.get_by_text("browser-owner@example.test", exact=True)).to_be_visible()
+        # Rời trang trước khi đổi cookie: trang còn polling sẽ nhận 401 trong khoảng chưa có
+        # cookie và `session-guard.js` (đúng thiết kế) chuyển về đăng nhập, chen vào goto.
+        browser_page.goto("about:blank")
         browser_page.context.clear_cookies()
 
         browser_page.context.add_cookies(
@@ -460,6 +551,9 @@ def test_admin_browser_session_navigation_accessibility_and_telegram_link(
         expect(browser_page.locator(".chart-event-list")).to_contain_text("Vì sao bắt tín hiệu")
         expect(browser_page.locator(".chart-event-list")).to_contain_text("Vì sao đóng")
         analyst = harness.state["mb07a_sessions"]["analyst_reviewer"]
+        # Rời trang trước khi đổi cookie: trang còn polling sẽ nhận 401 trong khoảng chưa có
+        # cookie và `session-guard.js` (đúng thiết kế) chuyển về đăng nhập, chen vào goto.
+        browser_page.goto("about:blank")
         browser_page.context.clear_cookies()
         browser_page.context.add_cookies(
             [
@@ -498,6 +592,9 @@ def test_admin_browser_session_navigation_accessibility_and_telegram_link(
         assert denied_workspace is not None
         assert denied_workspace.status == 403
         expect(browser_page.get_by_role("alert")).to_be_visible()
+        # Rời trang trước khi đổi cookie: trang còn polling sẽ nhận 401 trong khoảng chưa có
+        # cookie và `session-guard.js` (đúng thiết kế) chuyển về đăng nhập, chen vào goto.
+        browser_page.goto("about:blank")
         browser_page.context.clear_cookies()
         browser_page.context.add_cookies(
             [
@@ -689,6 +786,52 @@ def test_admin_browser_session_navigation_accessibility_and_telegram_link(
             .locator("xpath=following-sibling::dd[1]")
         )
         expect(entry_state).to_have_text("Tạm dừng")
+
+        # AI-3: đề xuất AI đã backtest → owner bấm tạo bản nháp; không tự publish.
+        harness.probe("ai3_proposal_seed", "migrator")
+        browser_page.goto(f"{base_url}/admin/bots/{bot_id}", wait_until="networkidle")
+        proposals = browser_page.get_by_role("region", name="Đề xuất AI đã backtest")
+        expect(proposals.get_by_text("risk.per_trade_risk_fraction → 0.001")).to_be_visible()
+        with browser_page.expect_response(
+            lambda response: response.request.method == "POST" and "/ai-proposals/" in response.url
+        ) as ai_draft_info:
+            proposals.get_by_role("button", name="Tạo bản nháp từ đề xuất").press("Enter")
+        assert ai_draft_info.value.status == 303
+        expect(
+            browser_page.get_by_role("status").filter(has_text="Đã tạo bản nháp từ đề xuất AI")
+        ).to_be_visible()
+        expect(
+            browser_page.get_by_text(re.compile(r"Bản nháp [0-9a-f-]+ — phiên bản 1"))
+        ).to_be_visible()
+        assert harness.probe("ai3_draft_inspect", "migrator") == {
+            "latest_status": "DRAFT",
+            "latest_risk_fraction": "0.001",
+        }
+        # CRY-383: trang "Phân tích AI" — danh sách, bộ lọc, chi tiết lượt và backtest đề xuất.
+        _open_mobile_menu(browser_page)
+        browser_page.get_by_role("navigation", name="Điều hướng chính").get_by_role(
+            "link", name="Phân tích AI", exact=True
+        ).press("Enter")
+        expect(browser_page.get_by_role("heading", name="Các lượt phân tích")).to_be_visible()
+        runs = browser_page.get_by_role("table", name="Danh sách lượt phân tích AI")
+        expect(runs.get_by_text("family:H03")).to_be_visible()
+        expect(runs.get_by_text("Bị loại (1 lỗi)")).to_be_visible()
+        browser_page.get_by_label("Kết quả kiểm tra").select_option("yes")
+        browser_page.get_by_role("button", name="Lọc").press("Enter")
+        expect(runs.get_by_text("family:H01")).to_have_count(0)
+        runs.get_by_role("link", name="Xem chi tiết").first.press("Enter")
+        expect(browser_page.get_by_role("heading", name="Nhận định (1)")).to_be_visible()
+        expect(browser_page.get_by_text("T01 có 12 lệnh đóng.")).to_be_visible()
+        expect(browser_page.get_by_text("/bots/0/performance/closed_trades")).to_be_visible()
+        backtests = browser_page.get_by_role("table", name="Kết quả backtest đề xuất")
+        expect(backtests.get_by_text("Tốt hơn")).to_be_visible()
+        expect(browser_page.get_by_text("17/11 20:30 · Doanh số bán lẻ")).to_be_visible()
+        expect(
+            browser_page.get_by_text("ZECUSDT: TRADING — gỡ 20/11 15:00 (giờ VN)")
+        ).to_be_visible()
+        assert browser_page.evaluate(
+            "document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1"
+        ), "Trang chi tiết phân tích AI bị tràn ngang."
         _open_mobile_menu(browser_page)
         browser_page.get_by_role("navigation", name="Điều hướng chính").get_by_role(
             "link", name="Tổng quan", exact=True

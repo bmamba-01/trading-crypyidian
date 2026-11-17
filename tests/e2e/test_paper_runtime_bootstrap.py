@@ -459,7 +459,9 @@ def test_runtime_process_hydrates_and_fails_closed_without_checkpoint() -> None:
                 "quote_asset": "USDT",
                 "starting_equity": "10000",
                 "fee_schedule_version": "paper-fees-v1",
-                "fill_model": "next_bar_with_adverse_costs",
+                # FX-3 lát 3a: hồ sơ funding theo tỷ lệ đi qua validate/publish của admin API và
+                # bootstrap runtime thật (v1 vẫn được các E2E khác như RT-1 bao phủ).
+                "fill_model": "next_bar_with_adverse_costs_v2",
             },
         }
         draft_status, draft_result = api_request(

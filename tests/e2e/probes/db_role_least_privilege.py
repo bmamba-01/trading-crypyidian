@@ -84,7 +84,8 @@ COLUMN_UPDATE = {
         "user_membership": {"created_at"},
         "session": {"revoked_at", "csrf_token_hash", "mfa_verified_at"},
         "mfa_factor": {"verified_at", "last_used_counter"},
-        "telegram_binding": {"revoked_at"},
+        # TG-4: topic tín hiệu / PAPER report do Admin tạo.
+        "telegram_binding": {"revoked_at", "signal_thread_id", "report_thread_id"},
         "telegram_link_request": {"expires_at", "consumed_at"},
         "telegram_binding_challenge": {"consumed_at"},
         "trading_account": {"updated_at"},
@@ -301,6 +302,10 @@ DEFINER_OWNERS = {
     "crypidian_scorer_deployment_rights_reader",
     "crypidian_learning_model_registry_guard",
     "crypidian_learning_shadow_integrity_guard",
+    # WP06 incident entry hold (f5b7d9e1a3c6 + b2d4f6a8c0e3) và paper performance (c7e9a1b3d5f8).
+    "crypidian_learning_incident_guard",
+    "crypidian_learning_incident_reader",
+    "crypidian_learning_paper_performance_evaluator",
     "crypidian_risk_aggregator",
     "crypidian_source_expiry_scanner",
     "crypidian_source_rights_emitter",

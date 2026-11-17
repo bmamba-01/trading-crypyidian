@@ -72,9 +72,20 @@ def test_migration_is_the_single_head_after_previous_head() -> None:
         elif isinstance(parent, tuple | list):
             parents.update(parent)
     heads = [revision for revision in graph if revision not in parents]
-    # RT-1 lát 2 nối migration mark fallback ngay sau SIG-0, CK-1 nối bảng giá trực tiếp sau đó;
-    # chuỗi vẫn một head.
-    assert heads == ["b8d0f2a4c6e8"]
+    # RT-1 lát 2 nối migration mark fallback ngay sau SIG-0. Sau đó hai nhánh tách ra: dev (CK-1
+    # bảng giá trực tiếp, CK-10 lịch kinh tế) và main (AI-3/AI-4); revision gộp CRY-88 nối lại
+    # thành một head; CRY-384/CRY-380 nối analyst_run.context và run_report sau 7707d82de246.
+    # WP06 nối migration caller EVALUATION của scorer TEST proof, rồi lát B (manifest v5).
+    assert heads == ["d4f6a8b0c2e4"]
+    assert graph["d4f6a8b0c2e4"] == "c2e4a6b8d0f1"
+    assert graph["c2e4a6b8d0f1"] == "d8f1b3a5c7e9"  # FX-3 bundle replay funding (CRY-198)
+    assert graph["d8f1b3a5c7e9"] == "f1b8e93fa47f"  # FX-3 funding/mark price (CRY-198)
+    assert graph["f1b8e93fa47f"] == "60a62c705a89"  # TG-4 topic Telegram (CRY-424)
+    assert graph["60a62c705a89"] == "ad99c4f520d0"
+    assert graph["ad99c4f520d0"] == "a42edbd211e5"
+    assert graph["a42edbd211e5"] == "7707d82de246"
+    assert graph["7707d82de246"] == "c1fec3af85ea"  # bù bảng live market b4d6 (CRY-88)
+    assert graph["c1fec3af85ea"] == ("645ed2998ab1", "b8d0f2a4c6e8")
     assert graph["b8d0f2a4c6e8"] == "a7c9e1b3d5f6"
     assert graph["a7c9e1b3d5f6"] == "f1b3d5e7a9c2"
     assert graph["f1b3d5e7a9c2"] == "e3a5c7e9f1b4"
@@ -222,3 +233,23 @@ def test_wp07c_replay_job_downgrade_guard_still_present() -> None:
     downgrade = source.split("def downgrade", 1)[1]
     assert "WP07C_REPLAY_JOB_DOWNGRADE_REQUIRES_EMPTY_TABLE" in downgrade
     assert downgrade.index("RAISE EXCEPTION") < downgrade.index("drop_table")
+
+
+def test_incident_definer_owner_migration_moves_three_functions_off_admin() -> None:
+    """Hàm SECURITY DEFINER WP06 incident không còn do user đăng nhập `crypidian_admin` sở hữu."""
+    path = MIGRATIONS / "b2d4f6a8c0e3_wp06_incident_definer_owner.py"
+    spec = importlib.util.spec_from_file_location("incident_owner", path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    statements: list[str] = []
+    module.op = SimpleNamespace(execute=lambda sql: statements.append(" ".join(str(sql).split())))
+    module.upgrade()
+    sql = "\n".join(statements)
+    assert "CREATE ROLE crypidian_learning_incident_guard NOLOGIN NOSUPERUSER NOBYPASSRLS" in sql
+    for function in module.OWNED_FUNCTIONS:
+        assert f"ALTER FUNCTION public.{function} OWNER TO crypidian_learning_incident_guard" in sql
+    for table in module.TABLES:
+        assert f'ON public."{table}" FOR SELECT TO crypidian_learning_incident_guard' in sql
+    assert "GRANT EXECUTE ON FUNCTION public.wp06_learning_incident_guard()" not in sql

@@ -41,6 +41,9 @@ def _compose(
         errors="replace",
         timeout=300,
     )
+    if result.returncode != 0:
+        # Pytest rút gọn repr assert; in đủ stderr để thấy traceback probe và lỗi SQL gốc.
+        print(result.stderr)
     assert result.returncode == 0, (args, result.stdout[-5000:], result.stderr[-5000:])
     return result
 
@@ -64,6 +67,10 @@ def test_evaluator_uses_one_shot_receipt_before_disclosing_fold_payload() -> Non
     workspace_id = str(uuid.uuid4())
     test_volume = f"{repository_root / 'tests'}:/e2e-tests:ro"
     script = "/e2e-tests/e2e/probes/wp06_fold_outcome_verifier.py"
+    builder_secret = (
+        f"{repository_root / '.secrets/database_candidate_builder_password'}"
+        ":/run/secrets/database_candidate_builder_password:ro"
+    )
     ensure_image_available(repository_root, image_reference)
     try:
         _compose(
@@ -115,7 +122,7 @@ def test_evaluator_uses_one_shot_receipt_before_disclosing_fold_payload() -> Non
             "heads",
         )
         assert heads.stdout.strip().count("(head)") == 1, heads.stdout
-        assert "b8d0f2a4c6e8 (head)" in heads.stdout
+        assert "d4f6a8b0c2e4 (head)" in heads.stdout
         seeded = _compose(
             repository_root,
             project_name,
@@ -127,6 +134,9 @@ def test_evaluator_uses_one_shot_receipt_before_disclosing_fold_payload() -> Non
             f"CRYPIDIAN_E2E_WORKSPACE_ID={workspace_id}",
             "--volume",
             test_volume,
+            # Seed ghi normalized dataset bằng login candidate builder thật.
+            "--volume",
+            builder_secret,
             "migrator",
             "python",
             script,
@@ -167,6 +177,7 @@ def test_evaluator_uses_one_shot_receipt_before_disclosing_fold_payload() -> Non
         assert result["normalizer_accepts_database_verified_batch"] is True
         assert result["normalizer_rejects_no_trade_sample"] is True
         assert result["normalizer_rejects_multi_trade_sample"] is True
+        assert result["normalizer_requires_rights_gate"] is True
         assert result["candidate_completeness_verified"] is False
         assert result["holdout_payload_in_report"] is False
         assert result["mismatched_workspace_rejected"] is True
@@ -306,7 +317,10 @@ def test_evaluator_uses_one_shot_receipt_before_disclosing_fold_payload() -> Non
         )
         downgrade_output = downgrade.stdout + downgrade.stderr
         assert downgrade.returncode != 0
-        assert "WP06_SPLIT_CANDIDATE_DOWNGRADE_REQUIRES_EMPTY_TABLE" in downgrade_output
+        # Seed giờ đi qua replay lineage nên builder ghi receipt replay TRAINING; guard của
+        # migration b7d9f1a3c5e8 (nằm trên split candidate) chặn trước. Guard split candidate
+        # được kiểm tĩnh ở tests/unit/test_learning_split_candidate_manifest_insert_migration.py.
+        assert "WP06_REPLAY_TRAINING_RECEIPT_POPULATED_DOWNGRADE_DENIED" in downgrade_output
         current = _compose(
             repository_root,
             project_name,
@@ -318,7 +332,7 @@ def test_evaluator_uses_one_shot_receipt_before_disclosing_fold_payload() -> Non
             "alembic",
             "current",
         )
-        assert "b8d0f2a4c6e8 (head)" in current.stdout
+        assert "d4f6a8b0c2e4 (head)" in current.stdout
     finally:
         subprocess.run(
             [

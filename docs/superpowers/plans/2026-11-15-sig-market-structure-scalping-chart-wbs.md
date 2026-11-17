@@ -131,6 +131,33 @@ Mọi feature có `formula_version`, chạy được tăng dần, và có `confi
 
 **Acceptance:** cùng bundle → cùng hash báo cáo; tiêu chí bật PAPER được owner duyệt trước khi chạy (tránh chọn sau khi thấy kết quả).
 
+**Đã triển khai lát 1 (16/11/2026, chưa commit) — bộ máy kiểm định; chưa có kết luận trên dữ liệu thật:**
+
+- `domain/portfolio/scalping_validation.py` (`sig5-validation-v1`): `ScalpTrade` (R ròng = PnL ròng / rủi ro ban đầu), `walk_forward_folds` (khối liền nhau + embargo), `setup_report` (n, n ngoài mẫu, tỷ lệ thắng so với hòa vốn, kỳ vọng ròng và theo R, phân phối R, theo phiên/giờ UTC, theo fold, cờ chưa đủ mẫu, `report_hash` không phụ thuộc thứ tự), `paper_enable_verdict` (`sig5-paper-criterion-v1` = quyết định #5: ≥ 200 lệnh ngoài mẫu **và** kỳ vọng ròng > 0 ở kịch bản xấu; chỉ là đề xuất).
+- `application/scalping_validation.py` (`sig5-costs-v1`): replay PAPER từng release qua `run_backtest_dataset_runtime_replay` ở kịch bản gốc (taker VIP0 0,05%, trượt giá cơ sở 0,02% — **giả định dự án**, chưa đo từ sổ lệnh) và xấu (trượt giá ×2, chỉ taker); planner nhận cùng chi phí; `validate_release` trả báo cáo + kết luận + `validation_hash`; `build_research_bundle` dựng bundle 5m/15m từ nến REST đã lưu.
+- Replay dùng **cửa sổ 256 nến như producer** (`max_bars_per_timeframe`, mặc định `None` giữ hành vi BT-1): trước đây replay thấy toàn bộ lịch sử → đặc trưng lệch live và O(n²) theo độ dài dữ liệu. Đo trên dữ liệu thật: 20–45 ms/quan sát (chủ yếu tính feature snapshot); 1 tháng M5 ≈ 7 phút, 760 MB. Dựng observation cả 6 tháng một lần tốn > 3,8 GB/tiến trình → dùng `validate_release_chunks` (replay đoạn 30 ngày, mỗi đoạn tự mang warmup 72 h, gộp lệnh rồi mới chia fold) và CLI `--chunk-days`.
+- `scripts/sig5_scalping_validation.py`: `fetch` (REST kline công khai, không khóa — **chỉ chạy khi owner đồng ý tải**) và `validate` (chỉ đọc file cục bộ, ghi JSON + bảng tóm tắt).
+- Test: `tests/unit/test_sig5_scalping_validation.py` (fold/embargo, công thức báo cáo, hash, kết luận, runner trên bundle replay, cửa sổ observation, CLI offline).
+**Lượt chạy dữ liệu thật đầu tiên (16/11/2026) — kết luận theo `sig5-paper-criterion-v1`: KHÔNG đề xuất bật PAPER cho setup nào.**
+
+Dữ liệu: REST kline công khai Binance USDⓈ-M, 2026-05-01 → 2026-11-01 (tải 16/11/2026), 5m + 15m; đánh giá từ 2026-05-04 (warmup 72 h), 4 fold walk-forward, embargo 60 phút, đoạn replay 30 ngày, vốn 10 000 USDT, rủi ro 0,5%/lệnh. Kịch bản xấu = trượt giá 0,04%/lần khớp + taker 0,05%.
+
+| Release × mã | n ngoài mẫu (xấu) | Thắng | Hòa vốn | Kỳ vọng R (gốc / xấu) | Kỳ vọng ròng xấu (USDT/lệnh) | Lý do | `validation_hash` (16 ký tự đầu) |
+|---|---|---|---|---|---|---|---|
+| h18-v1 BTCUSDT | 0 | — | — | — | — | thiếu mẫu, kỳ vọng không dương | d1b007724744e4e4 |
+| h18-v1 ETHUSDT | 3 | 33,3% | 58,3% | −0,70 / −0,54 | −21,42 | thiếu mẫu, kỳ vọng âm | ea6059043729a69e |
+| h19-v1 BTCUSDT | 0 | — | — | — | — | thiếu mẫu, kỳ vọng không dương | 947286559988080c |
+| h19-v1 ETHUSDT | 0 | — | — | — | — | thiếu mẫu, kỳ vọng không dương | 7bd37f73e34e5348 |
+| h20-v1 BTCUSDT | 116 | 25,0% | 48,1% | −0,25 / −0,25 | −10,51 | thiếu mẫu, kỳ vọng âm | c49a83d3c8e9e95e |
+| h20-v1 ETHUSDT | 163 | 30,1% | 55,7% | −0,26 / −0,29 | −11,79 | thiếu mẫu, kỳ vọng âm | 172d518f03f8e095 |
+
+- H20 âm ổn định ở **cả 4 fold** (BTC −0,11…−0,35R; ETH −0,18…−0,36R) và mọi phiên (New York tệ nhất ≈ −0,31/−0,35R); không lệnh nào đạt ≥ 2R (phân phối dồn ở −1R…0 — dừng hòa vốn/hết thời gian giữ). Phí ≈ 1/2 khoản lỗ ròng (BTC: phí 579 / lỗ 1 219 USDT) → âm cả trước phí.
+- H18/H19 gần như không phát tín hiệu: 1 tháng BTC H18 chỉ ~14 lần quét-lấy lại trong phiên, 13 lần bị loại vì delta chưa đảo; H19 ETH 1 ứng viên/tháng (2 944 lần loại vì không đi ngang ADX/ER, 1 048 vì chưa lệch 2σ VWAP) nhưng 6 tháng vẫn 0 lệnh — planner loại `NET_REWARD_RISK_BELOW_MINIMUM` (R:R ròng thang 1R/2R sau phí 0,96/0,91 < 1,0; stop hẹp).
+- Cửa sổ 256 nến 5m (~21 h, giống producer) không chứa trọn ngày UTC trước → PDH/PDL của H18 là đỉnh/đáy **một phần** ngày. Replay ↔ live vẫn khớp, nhưng ngữ nghĩa mức sai; sửa (cửa sổ ≥ 2 ngày hoặc nguồn mức ngày riêng) = đổi producer + release H18 mới → cần owner quyết.
+- Đổi tham số rule sau khi xem kết quả này là **lượt thử mới** (trial mới), không phải sửa lượt này.
+
+- **Lệch so với mô tả:** khớp trên nến 5m (chưa dùng 1m làm execution); "chỉ taker" trùng kịch bản gốc vì lát này chưa có limit maker; chưa ghi báo cáo vào DB/admin; chưa chạy trên dữ liệu thật (cần owner cho phép tải và xác nhận quyền dùng dữ liệu REST cho nghiên cứu).
+
 ### SIG-6 — Độ tin cậy có hiệu chuẩn và đồng thuận không trùng lặp (mở rộng WP06 calibration, MI-5)
 
 1. Nhãn: P(chạm TP1 trước SL trong H nến) từ outcome đã lưu, theo setup.
@@ -140,6 +167,16 @@ Mọi feature có `formula_version`, chạy được tăng dần, và có `confi
 5. Không bật SHADOW/PAPER_GATE; đây chỉ là hiển thị/xếp hạng.
 
 **Acceptance:** không có con số % nào hiển thị khi chưa có báo cáo hiệu chuẩn; test xác nhận hai điều kiện tương quan cao bị gộp.
+
+**Đã triển khai lát 1 (16/11/2026, commit `cd123a7`) — mục 4 (sửa G7) + kiểm mục 3:**
+
+- `StrategyPipelineEngine.numeric_node_series`: chuỗi đầu ra L1–L3 theo từng nến, cùng công thức `execute` (tách `_l2_from_bars` dùng chung, không đổi `PIPELINE_ENGINE_VERSION` vì ngữ nghĩa giữ nguyên), không nhìn trước, bỏ nến vi phạm L0 ở mọi node.
+- `application/strategy_pipeline/consensus.py` (`sig6-consensus-v1`): `card_consensus` gọi `AntiConsensusAnalyzer` (|r Pearson| ≥ 0,85), số **điều kiện độc lập** = số nhóm liên thông của đồ thị tương quan cao; < 50 nến hợp lệ → `insufficient_data` (không coi là trực giao).
+- `StrategyCardAdminService(bars_provider=…)`: bỏ `has_consensus_warning = False` gán cứng; đo trên mã/khung đầu tiên thẻ khai báo, tối đa 300 nến đã đóng. `PostgresCardBarsProvider` đọc `market_bar` của workspace (phiên chỉ đọc, RLS, một nguồn như chart/bộ quét; không gọi mạng sàn), nối trong `create_app`.
+- Giao diện: huy hiệu "Đã kiểm định (Orthogonal)" chỉ khi đo được và không có cặp tương quan cao; thiếu nến → "Chưa đủ dữ liệu tương quan"; KPI chỉ đếm thẻ đo được trực giao; hộp chi tiết hiện "x/y điều kiện độc lập · n nến · mã · khung".
+- Thẻ mẫu `MEAN-REVERT-002`: L3 `zscore_normalizer` (trung bình các node, giá đóng cửa áp đảo) gần trùng L2 (trả giá đóng cửa) → cảnh báo, 3/4 điều kiện độc lập — đúng loại "đồng thuận giả" G7 cần bắt.
+- Mục 3 đã đạt từ trước: thẻ tín hiệu chỉ hiện "Chưa hiệu chuẩn", Telegram không gửi độ tin cậy.
+- **Chưa làm:** nhãn hiệu chuẩn (mục 1–2) — chưa có setup scalping đạt SIG-5 nên chưa có outcome để hiệu chuẩn; checklist H01/H03/H06 chưa có "x/y điều kiện độc lập" (cần chuỗi điểm điều kiện theo lịch sử); ma trận tương quan trực quan.
 
 ### SIG-7 — Chart kiểu TradingView (mở rộng WB07A)
 
@@ -166,6 +203,10 @@ Mọi feature có `formula_version`, chạy được tăng dần, và có `confi
 3. Tường thuật bằng template từ sự kiện (MI-6), không để LLM sinh số.
 
 **Acceptance:** tin và thẻ truy ngược được về decision/feature snapshot; filter Telegram hiện có (symbol/khung/hướng/strategy/setup) áp được cho setup mới.
+
+- **Đã làm 15/11/2026 — TG-1 lát 1:** tin Telegram thêm khối "THẺ TÍN HIỆU (PAPER)" dựng bằng cùng `build_signal_card` với Admin, từ candidate + checklist của quyết định **đã xác minh hash**: vùng vào, SL, mục tiêu recipe và mốc 1R/2R/3R tham chiếu (R thô, chưa trừ phí), checklist ✓/✗/— có giá trị thật và ngưỡng (tối đa 8 dòng), "Mất hiệu lực khi", "Độ tin cậy: Chưa hiệu chuẩn", dòng cuối "PAPER · mô phỏng nội bộ, không phải khuyến nghị đầu tư." Thẻ không dựng được (dữ liệu cũ, thang giá sai hướng) thì chỉ gửi phần cơ bản.
+- **Đã làm 15/11/2026 — TG-2 lát 1:** chống spam theo subscription (một bot → một chat) trong transaction claim, tuần tự hóa bằng advisory lock theo subscription: gộp tín hiệu trùng (cùng mã + hướng + chiến lược + release) trong cooldown (mặc định 90 phút, `TRADING_BOT_SIGNAL_WORKER_COOLDOWN_MINUTES`), trần tin/60 phút trượt (mặc định 6, `TRADING_BOT_SIGNAL_WORKER_MAX_MESSAGES_PER_HOUR`). Delivery bị chặn ghi `SUPPRESSED` + mã lý do (migration `c3e5a7b9d1f4`).
+- **Chưa làm (TG-1/TG-2):** reply cập nhật vào tin gốc, R:R ròng từng TP, rủi ro % vốn; trần tin theo **chat** xuyên nhiều bot (RLS worker hiện theo bot), giờ yên lặng, hiển thị số tin bị chặn trên Admin.
 
 ### SIG-9 — Dải biến động dự kiến (tùy chọn, ưu tiên thấp)
 

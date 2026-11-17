@@ -18,9 +18,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from decimal import Decimal
+from decimal import ROUND_HALF_EVEN, Decimal
 
 ZERO = Decimal("0")
+# `trade_cost.amount` là NUMERIC(38, 18): PAPER và replay cùng làm tròn về đây để ra cùng một số.
+FUNDING_AMOUNT_QUANTUM = Decimal("1e-18")
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,3 +70,19 @@ def funding_cashflow(
     nominal_value = settlement.mark_price * quantity * contract_multiplier
     signed = nominal_value * settlement.funding_rate
     return signed if direction == "long" else -signed
+
+
+def settled_funding_amount(
+    *,
+    direction: str,
+    quantity: Decimal,
+    contract_multiplier: Decimal,
+    settlement: FundingSettlement,
+) -> Decimal:
+    """Dòng tiền funding đã làm tròn theo scale ledger; dùng chung cho runtime PAPER và replay."""
+    return funding_cashflow(
+        direction=direction,
+        quantity=quantity,
+        contract_multiplier=contract_multiplier,
+        settlement=settlement,
+    ).quantize(FUNDING_AMOUNT_QUANTUM, rounding=ROUND_HALF_EVEN)

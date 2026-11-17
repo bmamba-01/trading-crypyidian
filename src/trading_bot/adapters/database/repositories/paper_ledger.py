@@ -302,6 +302,29 @@ class PaperLedgerRepository:
             )
         )
 
+    async def open_quantity_at(self, uow: UnitOfWork, *, intent_id: UUID, at: datetime) -> Decimal:
+        """Khối lượng vị thế còn mở **tại** mốc ``at`` theo fill đã ghi (FX-3 lát 2).
+
+        ENTRY tính khi khớp trước mốc (``occurred_at < at``: fill ở nến mở đúng mốc là vào sau
+        mốc); EXIT tính khi khớp tới mốc (``occurred_at <= at``: đóng ở cuối nến kết thúc tại mốc
+        là đã đóng trước khi thu funding). Chỉ đọc, trong scope bot hiện tại.
+        """
+        _validate_aware(at)
+        rows = await uow.session.execute(
+            select(FillRecord.fill_role, FillRecord.quantity, FillRecord.occurred_at).where(
+                FillRecord.bot_id == uow.session.info.get("bot_id"),
+                FillRecord.workspace_id == uow.workspace_id,
+                FillRecord.intent_id == intent_id,
+            )
+        )
+        quantity = Decimal(0)
+        for role, amount, occurred_at in rows.all():
+            if role == "ENTRY" and occurred_at < at:
+                quantity += amount
+            elif role == "EXIT" and occurred_at <= at:
+                quantity -= amount
+        return quantity
+
     async def cancel_remainder(
         self, uow: UnitOfWork, *, intent_id: UUID, occurred_at: datetime
     ) -> bool:

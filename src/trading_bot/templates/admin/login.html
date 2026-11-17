@@ -48,6 +48,7 @@
 
       <form class="login-form" action="/admin/login" method="post" id="login-form">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        {% if next_path %}<input type="hidden" name="next" value="{{ next_path }}">{% endif %}
 
         <div class="login-field">
           <label for="workspace-slug">Mã không gian làm việc</label>

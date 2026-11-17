@@ -391,15 +391,15 @@ def test_every_checkpoint_append_in_coordinator_passes_fencing_token() -> None:
         and node.func.attr == "append"
         and "checkpoints" in ast.unparse(node.func.value)
     ]
-    # submit/entry/monitor + control pause/resume + flatten close đều có fence.
-    assert len(appends) == 5
+    # submit/entry/monitor + control pause/resume + flatten close + funding (FX-3) đều có fence.
+    assert len(appends) == 6
     assert all(any(k.arg == "fencing_token" for k in node.keywords) for node in appends)
     for name in ("submit_approved", "apply_entry_market_event", "monitor_market_event"):
         parameter = inspect.signature(getattr(PaperLifecycleCoordinator, name)).parameters[
             "fencing_token"
         ]
         assert parameter.default is None
-    for name in ("apply_entry_pause", "apply_entry_resume"):
+    for name in ("apply_entry_pause", "apply_entry_resume", "apply_funding_settlement"):
         parameter = inspect.signature(getattr(PaperLifecycleCoordinator, name)).parameters[
             "fencing_token"
         ]

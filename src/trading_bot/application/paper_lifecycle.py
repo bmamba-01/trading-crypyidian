@@ -12,6 +12,11 @@ from typing import TYPE_CHECKING
 from uuid import UUID
 
 from trading_bot.application.paper_recovery import PaperRecoveryConflict
+from trading_bot.domain.execution.funding import (
+    FUNDING_AMOUNT_QUANTUM,
+    FundingSettlement,
+    settled_funding_amount,
+)
 from trading_bot.domain.execution.paper import (
     IntentConflict,
     OrderStatus,
@@ -88,6 +93,25 @@ class FlattenCloseResult:
     closed: bool
     fill_key: str | None
     trade_closed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class FundingLifecycleResult:
+    """Kết quả ghi một kỳ funding đã chốt cho vị thế PAPER (FX-3 lát 2).
+
+    ``applied`` False nghĩa là kỳ đã ghi từ trước (retry idempotent): không ghi thêm gì.
+    """
+
+    position: PaperPosition
+    event_id: str
+    quantity: Decimal
+    amount: Decimal
+    applied: bool
+
+
+# Làm tròn `FUNDING_AMOUNT_QUANTUM` (scale `trade_cost.amount`) trước khi ghi gateway lẫn ledger để
+# snapshot và ledger giữ cùng một số (recovery so khớp tuyệt đối `funding_cost` ↔ tổng FUNDING).
+__all__ = ["FUNDING_AMOUNT_QUANTUM"]
 
 
 class PaperLifecycleCoordinator:
@@ -293,6 +317,74 @@ class PaperLifecycleCoordinator:
         return FlattenCloseResult(
             position_id, receipt.position.is_closed, fill.fill_id, trade_closed
         )
+
+    async def apply_funding_settlement(
+        self,
+        uow: UnitOfWork,
+        *,
+        account_id: UUID,
+        paper_position_id: str,
+        ledger_intent_id: UUID,
+        trade_id: UUID,
+        settlement: FundingSettlement,
+        currency: str,
+        fencing_token: FencingToken | None,
+    ) -> FundingLifecycleResult:
+        """Ghi một kỳ funding đã chốt: gateway + ``trade_cost`` FUNDING + checkpoint cùng UoW.
+
+        Dòng tiền tính theo **khối lượng còn mở tại mốc funding** đọc từ fill ledger (không theo
+        khối lượng hiện tại, vì kỳ có thể được ghi muộn sau khi đã chốt lời từng phần). Checkpoint
+        dùng scope funding riêng (`_funding_event_scope`): cursor nến của vòng thị trường là
+        ``max(event_at)`` theo scope vị thế, nên ghi mốc funding vào scope đó sẽ làm bỏ qua nến
+        trước mốc. Gateway thật chỉ đổi sau commit.
+        """
+        if self._checkpoints is None:
+            raise PaperLifecycleConflict("Chưa cấu hình PAPER checkpoint repository.")
+        candidate, _revision = await self._latest_candidate(uow, account_id=account_id)
+        position = candidate.position(paper_position_id)
+        if position is None:
+            raise PaperLifecycleConflict("Checkpoint không có position cần ghi funding.")
+        if position.symbol != settlement.symbol:
+            raise PaperLifecycleConflict("Funding settlement khác symbol của vị thế.")
+        event_id = settlement.event_id
+        if event_id in position.funding_event_ids:
+            return FundingLifecycleResult(position, event_id, Decimal(0), Decimal(0), False)
+        if position.is_closed:
+            raise PaperLifecycleConflict("Không ghi funding cho vị thế đã đóng.")
+        quantity = await self._ledger.open_quantity_at(
+            uow, intent_id=ledger_intent_id, at=settlement.funding_time
+        )
+        if quantity <= 0:
+            raise PaperLifecycleConflict("Vị thế không mở tại mốc funding.")
+        amount = settled_funding_amount(
+            direction=position.direction,
+            quantity=quantity,
+            contract_multiplier=position.contract_multiplier,
+            settlement=settlement,
+        )
+        updated = candidate.apply_funding_event(paper_position_id, event_id, amount)
+        await self._ledger.append_trade_cost(
+            uow,
+            trade_id=trade_id,
+            cost_key=_funding_cost_key(paper_position_id, event_id),
+            cost_type="FUNDING",
+            amount=amount,
+            currency=currency,
+            source_event_id=event_id,
+            occurred_at=settlement.funding_time,
+        )
+        append_result = await self._checkpoints.append(
+            uow,
+            account_id=account_id,
+            event_key=_funding_event_key(paper_position_id, event_id),
+            event_hash=_funding_hash(settlement, quantity=quantity, amount=amount),
+            snapshot=candidate.export_state(),
+            occurred_at=settlement.funding_time,
+            event_scope=_funding_event_scope(paper_position_id, settlement.symbol),
+            fencing_token=fencing_token,
+        )
+        uow.after_commit(lambda: self._gateway.replace_state(append_result.snapshot))
+        return FundingLifecycleResult(updated, event_id, quantity, amount, True)
 
     async def _latest_candidate(
         self, uow: UnitOfWork, *, account_id: UUID
@@ -578,6 +670,7 @@ class PaperLifecycleCoordinator:
         strategy_bar_closed: bool = True,
         account_id: UUID | None = None,
         fencing_token: FencingToken | None = None,
+        forced_exit_reason: str | None = None,
     ) -> PositionLifecycleResult:
         """Monitor stop/target/trailing và ghi EXIT fill, transition, đóng trade.
 
@@ -611,6 +704,7 @@ class PaperLifecycleCoordinator:
                 exit_channel_level=exit_channel_level,
                 exit_feature_value=exit_feature_value,
                 strategy_bar_closed=strategy_bar_closed,
+                forced_exit_reason=forced_exit_reason,
             )
             snapshot = candidate.export_state()
             append_result = await self._checkpoints.append(
@@ -636,6 +730,7 @@ class PaperLifecycleCoordinator:
             exit_channel_level=exit_channel_level,
             exit_feature_value=exit_feature_value,
             strategy_bar_closed=strategy_bar_closed,
+            forced_exit_reason=forced_exit_reason,
         )
         if result.partial_exit is not None:
             # SIG-3 lát 2: chốt lời một phần. Gateway đã đóng phần này với khóa theo chỉ số mục
@@ -763,3 +858,34 @@ def _market_event_key(kind: str, intent_id: str, bar: PaperBar) -> str:
     """Tạo event key ngắn từ tuple đầy đủ để không vượt giới hạn DB."""
     identity = json.dumps([kind, intent_id, bar.symbol, bar.bar_key], separators=(",", ":"))
     return f"paper:v1:{kind}:{hashlib.sha256(identity.encode()).hexdigest()}"
+
+
+def _funding_event_scope(intent_id: str, symbol: str) -> str:
+    """Scope checkpoint funding, tách khỏi scope cursor nến `_market_event_scope`."""
+    return hashlib.sha256(f"funding:{intent_id}:{symbol}".encode()).hexdigest()
+
+
+def _funding_event_key(intent_id: str, event_id: str) -> str:
+    """Event key checkpoint funding ngắn, xác định theo vị thế và kỳ funding."""
+    identity = json.dumps(["funding", intent_id, event_id], separators=(",", ":"))
+    return f"paper:v1:funding:{hashlib.sha256(identity.encode()).hexdigest()}"
+
+
+def _funding_cost_key(intent_id: str, event_id: str) -> str:
+    """Khóa idempotent của `trade_cost` FUNDING (≤ 240 ký tự với mọi ID)."""
+    identity = json.dumps([intent_id, event_id], separators=(",", ":"))
+    return f"funding:{hashlib.sha256(identity.encode()).hexdigest()}"
+
+
+def _funding_hash(settlement: FundingSettlement, *, quantity: Decimal, amount: Decimal) -> str:
+    """Hash payload kỳ funding + khối lượng/dòng tiền đã tính để bảo vệ khóa retry."""
+    payload = {
+        "event_id": settlement.event_id,
+        "funding_rate": str(settlement.funding_rate),
+        "mark_price": str(settlement.mark_price),
+        "quantity": str(quantity),
+        "amount": str(amount),
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()

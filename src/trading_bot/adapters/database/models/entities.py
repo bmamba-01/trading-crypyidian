@@ -4,6 +4,7 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     DateTime,
@@ -146,6 +147,14 @@ class TelegramBinding(UuidPrimaryKey, CreatedAt, Base):
             ["user_membership.workspace_id", "user_membership.id"],
             ondelete="CASCADE",
         ),
+        CheckConstraint(
+            "signal_thread_id IS NULL OR signal_thread_id > 0",
+            name="telegram_binding_signal_thread_positive",
+        ),
+        CheckConstraint(
+            "report_thread_id IS NULL OR report_thread_id > 0",
+            name="telegram_binding_report_thread_positive",
+        ),
     )
 
     workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
@@ -153,6 +162,9 @@ class TelegramBinding(UuidPrimaryKey, CreatedAt, Base):
     telegram_user_id: Mapped[str] = mapped_column(String(64), nullable=False)
     verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # TG-4: topic trong chat riêng của bot; None = gửi vào chat chính như trước.
+    signal_thread_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    report_thread_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
 
 class TradingAccount(UuidPrimaryKey, CreatedAt, UpdatedAt, Base):

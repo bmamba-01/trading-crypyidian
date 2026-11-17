@@ -11,6 +11,12 @@ import httpx2
 
 _TOKEN = re.compile(r"^[^\s/?#]{8,512}$")
 _MAX_MESSAGE_CHARS = 4096
+_MAX_CAPTION_CHARS = 1024
+_MAX_PHOTO_BYTES = 10 * 1024 * 1024
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+_MAX_TOPIC_NAME_CHARS = 128
+# message_thread_id là số nguyên dương; chặn trên để không gửi số quá cỡ BIGINT/JSON an toàn.
+_MAX_THREAD_ID = 2**53 - 1
 
 
 class TelegramApiError(RuntimeError):
@@ -38,7 +44,7 @@ def load_telegram_bot_token(path: Path) -> str:
 
 
 class TelegramBotApiSender:
-    """Gửi tin nhắn văn bản, xác nhận liên kết và callback qua Bot API HTTPS."""
+    """Gửi tin nhắn văn bản, ảnh thẻ PNG, xác nhận liên kết và callback qua Bot API HTTPS."""
 
     def __init__(
         self,
@@ -70,12 +76,38 @@ class TelegramBotApiSender:
     async def __aexit__(self, *_: object) -> None:
         await self.aclose()
 
-    async def send_message(self, chat_id: int, text: str) -> None:
+    async def send_message(
+        self, chat_id: int, text: str, *, message_thread_id: int | None = None
+    ) -> None:
+        """Gửi văn bản thuần; ``message_thread_id`` đưa tin vào một topic (TG-4).
+
+        Theo https://core.telegram.org/bots/api#sendmessage (kiểm 17/11/2026), tham số này dùng
+        cho supergroup forum và chat riêng của bot đã bật chế độ topic (Bot API 9.3+).
+        """
         _validate_message(chat_id, text)
-        await self._request(
-            "sendMessage",
-            {"chat_id": chat_id, "text": text},
-        )
+        payload: dict[str, Any] = {"chat_id": chat_id, "text": text}
+        if message_thread_id is not None:
+            payload["message_thread_id"] = validate_thread_id(message_thread_id)
+        await self._request("sendMessage", payload)
+
+    async def create_forum_topic(self, chat_id: int, name: str) -> int:
+        """Tạo topic trong chat riêng với người dùng và trả ``message_thread_id`` (TG-4).
+
+        https://core.telegram.org/bots/api#createforumtopic (kiểm 17/11/2026): tên 1–128 ký tự,
+        trả về ``ForumTopic``. Chat riêng phải bật chế độ topic cho bot trong @BotFather.
+        """
+        _validate_chat_id(chat_id)
+        if not isinstance(name, str) or not 1 <= len(name.strip()) <= _MAX_TOPIC_NAME_CHARS:
+            raise ValueError("Tên topic Telegram phải có từ 1 đến 128 ký tự.")
+        result = await self._post("createForumTopic", json={"chat_id": chat_id, "name": name})
+        thread_id = result.get("message_thread_id") if isinstance(result, dict) else None
+        if (
+            not isinstance(thread_id, int)
+            or isinstance(thread_id, bool)
+            or not 0 < thread_id <= _MAX_THREAD_ID
+        ):
+            raise TelegramApiError(code="TELEGRAM_INVALID_RESPONSE")
+        return thread_id
 
     async def send_link_confirmation(self, chat_id: int, text: str, callback_data: str) -> None:
         _validate_message(chat_id, text)
@@ -99,9 +131,44 @@ class TelegramBotApiSender:
             raise ValueError("Thông tin callback Telegram không hợp lệ.")
         await self._request("answerCallbackQuery", {"callback_query_id": callback_id, "text": text})
 
+    async def send_photo(
+        self,
+        chat_id: int,
+        png_bytes: bytes,
+        caption: str,
+        *,
+        message_thread_id: int | None = None,
+    ) -> None:
+        """Tải ảnh PNG bằng multipart/form-data (``sendPhoto``); caption thuần, không parse mode.
+
+        Giới hạn theo https://core.telegram.org/bots/api#sendphoto (kiểm 15/11/2026): ảnh ≤ 10 MB,
+        caption 0–1024 ký tự. Kích thước ảnh (rộng + cao ≤ 10000) do renderer bảo đảm.
+        """
+        _validate_chat_id(chat_id)
+        if not isinstance(png_bytes, bytes | bytearray) or not png_bytes.startswith(_PNG_SIGNATURE):
+            raise ValueError("Ảnh Telegram phải là PNG hợp lệ.")
+        if len(png_bytes) > _MAX_PHOTO_BYTES:
+            raise ValueError("Ảnh Telegram vượt giới hạn 10 MB.")
+        if not isinstance(caption, str) or len(caption) > _MAX_CAPTION_CHARS:
+            raise ValueError("Caption Telegram phải có tối đa 1024 ký tự.")
+        data = {"chat_id": str(chat_id)}
+        if message_thread_id is not None:
+            data["message_thread_id"] = str(validate_thread_id(message_thread_id))
+        if caption:
+            data["caption"] = caption
+        await self._post(
+            "sendPhoto",
+            data=data,
+            files={"photo": ("card.png", bytes(png_bytes), "image/png")},
+        )
+
     async def _request(self, method: str, payload: dict[str, Any]) -> None:
+        await self._post(method, json=payload)
+
+    async def _post(self, method: str, **kwargs: Any) -> Any:
+        """Gọi Bot API; trả ``result`` của phản hồi thành công."""
         try:
-            response = await self._client.post(method, json=payload)
+            response = await self._client.post(method, **kwargs)
         except httpx2.HTTPError:
             raise TelegramApiError(code="TELEGRAM_NETWORK_ERROR") from None
         try:
@@ -131,10 +198,26 @@ class TelegramBotApiSender:
                 status_code=response.status_code,
                 retry_after=safe_retry_after,
             )
+        return body.get("result")
+
+
+def validate_thread_id(thread_id: int) -> int:
+    """``message_thread_id`` hợp lệ: số nguyên dương (không bool), trong giới hạn an toàn."""
+    if (
+        not isinstance(thread_id, int)
+        or isinstance(thread_id, bool)
+        or not 0 < thread_id <= _MAX_THREAD_ID
+    ):
+        raise ValueError("Telegram message_thread_id phải là số nguyên dương.")
+    return thread_id
+
+
+def _validate_chat_id(chat_id: int) -> None:
+    if not isinstance(chat_id, int) or isinstance(chat_id, bool) or chat_id <= 0:
+        raise ValueError("Telegram chat_id phải là số nguyên dương.")
 
 
 def _validate_message(chat_id: int, text: str) -> None:
-    if not isinstance(chat_id, int) or isinstance(chat_id, bool) or chat_id <= 0:
-        raise ValueError("Telegram chat_id phải là số nguyên dương.")
+    _validate_chat_id(chat_id)
     if not isinstance(text, str) or not 1 <= len(text) <= _MAX_MESSAGE_CHARS:
         raise ValueError("Tin nhắn Telegram phải có từ 1 đến 4096 ký tự.")

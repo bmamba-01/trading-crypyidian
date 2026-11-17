@@ -116,8 +116,9 @@ class TestAdminStrategyCardsUI:
         assert "Băm xác thực (SHA-256)" in html
         assert "hash-code" in html
 
-        # 6. Huy hiệu kiểm định trực giao
-        assert "Đã kiểm định (Orthogonal)" in html
+        # 6. Không có nến đã lưu → không được tự nhận trực giao (G7): huy hiệu "chưa đủ dữ liệu".
+        assert "Chưa đủ dữ liệu tương quan" in html
+        assert 'aria-label="Trạng thái kiểm định: Đã kiểm định (Orthogonal)"' not in html
 
         # 7. Phân tầng kiến trúc L0 -> L6 đầy đủ
         assert "L0" in html
@@ -193,3 +194,28 @@ class TestAdminStrategyCardsAPI:
         assert card0["is_verified"] is True
         assert "L0_DATA_HYGIENE" in card0["layers_breakdown"]
         assert "L6_ZONES" in card0["layers_breakdown"]
+
+
+def test_strategy_cards_page_shows_real_consensus_badges_with_stored_bars() -> None:
+    """Có nến: 8 thẻ mặc định trực giao; thẻ có 2 node đồng tuyến bị cảnh báo (SIG-6)."""
+    from tests.fixtures.sig6_consensus_bars import consensus_bars_provider
+    from tests.unit.test_sig6_card_consensus import _collinear_card
+
+    from trading_bot.application.strategy_pipeline.demo_cards import build_default_demo_cards
+
+    client = _create_authenticated_client(
+        StrategyCardAdminService(bars_provider=consensus_bars_provider)
+    )
+    html = client.get("/admin/strategy-cards").text
+    assert 'aria-label="Trạng thái kiểm định: Đã kiểm định (Orthogonal)"' in html
+    assert "2/2 điều kiện độc lập" in html
+
+    client_flagged = _create_authenticated_client(
+        StrategyCardAdminService(
+            in_memory_cards=[*build_default_demo_cards()[:1], _collinear_card()],
+            bars_provider=consensus_bars_provider,
+        )
+    )
+    html_flagged = client_flagged.get("/admin/strategy-cards").text
+    assert "Cảnh báo tương quan cao" in html_flagged
+    assert "1/2 điều kiện độc lập" in html_flagged

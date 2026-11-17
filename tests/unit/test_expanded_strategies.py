@@ -179,7 +179,16 @@ def _selection(release_id: str) -> StrategySelection:
 # ---------------------------------------------------------------------------
 def test_expanded_releases_registered_without_polluting_bare_registry() -> None:
     bare_ids = [r.release_id for r in StrategyRegistry().list_releases()]
-    assert bare_ids == ["h01-v1", "h03-v1", "h03-v2", "h06-v1", "h06-v2"]
+    assert bare_ids == [
+        "h01-v1",
+        "h03-v1",
+        "h03-v2",
+        "h03-v3-15m",
+        "h03-v3-1h",
+        "h03-v3-4h",
+        "h06-v1",
+        "h06-v2",
+    ]
 
     product_registry = strategy_registry()
     product_ids = {r.release_id for r in product_registry.list_releases()}

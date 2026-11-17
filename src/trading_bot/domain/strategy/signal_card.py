@@ -66,8 +66,18 @@ def validate_price_ladder(
         raise SignalCardError("Hướng lệnh không hợp lệ.")
 
 
+def _price_vi(value: Decimal) -> str:
+    """Giá kiểu Việt Nam (nhóm nghìn bằng dấu chấm, thập phân bằng dấu phẩy), bỏ số 0 thừa."""
+    text = f"{value.normalize():f}"
+    whole, _, fraction = text.partition(".")
+    sign = "-" if whole.startswith("-") else ""
+    digits = whole.lstrip("-")
+    grouped = f"{int(digits):,}".replace(",", ".") if digits else "0"
+    return f"{sign}{grouped}" + (f",{fraction}" if fraction else "")
+
+
 def _invalidation(recipe: Mapping[str, Any], stop: Decimal, expires_at: str | None) -> list[str]:
-    lines = [f"Giá chạm SL {stop.normalize():f} (dừng lỗ theo recipe/kế hoạch)."]
+    lines = [f"Giá chạm SL {_price_vi(stop)} (dừng lỗ theo recipe/kế hoạch)."]
     if expires_at:
         lines.append("Tín hiệu hết hạn nếu chưa vào lệnh trước mốc hết hạn ghi ở đầu thẻ.")
     if recipe.get("trailing_atr_multiple"):

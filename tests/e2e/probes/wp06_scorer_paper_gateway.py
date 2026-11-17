@@ -1,4 +1,9 @@
-"""Gọi gateway thật bằng artifact chẩn đoán; fixture không chứng minh quyền sản phẩm."""
+"""Gọi gateway thật bằng artifact chẩn đoán; fixture không chứng minh quyền sản phẩm.
+
+Probe nhận mã từ chối kỳ vọng qua `WP06_EXPECTED_DENIAL` (mặc định gate PAPER) và khẳng
+định pointer/event ledger không đổi. Phase `ledger` (chạy bằng migrator) đếm artifact,
+score event, deployment event và pointer khác `DISABLED` của workspace.
+"""
 
 from __future__ import annotations
 
@@ -18,11 +23,22 @@ from trading_bot.adapters.database.engine import (
 )
 from trading_bot.application.outbox import UnitOfWork
 
+# Pointer DISABLED có thể có sẵn cho workspace; chỉ pointer SHADOW/PAPER_GATE là deployment.
+LEDGER_QUERIES = {
+    "learning_scorer_artifact": "public.learning_scorer_artifact WHERE workspace_id=:workspace",
+    "learning_score_event": "public.learning_score_event WHERE workspace_id=:workspace",
+    "learning_scoring_deployment_event": (
+        "public.learning_scoring_deployment_event WHERE workspace_id=:workspace"
+    ),
+    "enabled_deployment_pointer": (
+        "public.learning_scoring_deployment_pointer "
+        "WHERE workspace_id=:workspace AND mode <> 'DISABLED'"
+    ),
+}
 
-async def main() -> dict[str, bool]:
-    workspace_id = UUID(os.environ["WP06_WORKSPACE_ID"])
-    attempt_id = UUID(os.environ["WP06_ATTEMPT_ID"])
-    engine = create_database_engine(
+
+def _engine():
+    return create_database_engine(
         database_url_from_secret(
             username=os.environ["TRADING_BOT_DATABASE_USER"],
             password_file=Path(os.environ["TRADING_BOT_DATABASE_PASSWORD_FILE"]),
@@ -30,6 +46,30 @@ async def main() -> dict[str, bool]:
             database=os.environ.get("TRADING_BOT_DATABASE_NAME", "crypidian"),
         )
     )
+
+
+async def ledger_counts() -> dict[str, int]:
+    """Đếm hàng ledger scorer của workspace (migrator, đọc toàn bộ dưới RLS workspace)."""
+    workspace_id = UUID(os.environ["WP06_WORKSPACE_ID"])
+    engine = _engine()
+    sessions = create_session_factory(engine)
+    try:
+        async with UnitOfWork(sessions, workspace_id=workspace_id) as unit:
+            return {
+                name: await unit.session.scalar(
+                    text(f"SELECT count(*) FROM {query}"), {"workspace": workspace_id}
+                )
+                for name, query in LEDGER_QUERIES.items()
+            }
+    finally:
+        await engine.dispose()
+
+
+async def main() -> dict[str, bool]:
+    workspace_id = UUID(os.environ["WP06_WORKSPACE_ID"])
+    attempt_id = UUID(os.environ["WP06_ATTEMPT_ID"])
+    expected = os.environ.get("WP06_EXPECTED_DENIAL", "WP06_SCORER_PAPER_SOURCE_RIGHTS_DENIED")
+    engine = _engine()
     sessions = create_session_factory(engine)
     try:
         async with UnitOfWork(sessions, workspace_id=workspace_id) as unit:
@@ -42,7 +82,10 @@ async def main() -> dict[str, bool]:
                     {"workspace": workspace_id, "attempt": attempt_id},
                 )
             ).one()
-            assert artifact.state == "abstain", "Fixture chỉ là artifact chẩn đoán, chưa eligible"
+            # Mỗi kịch bản khai báo đúng trạng thái artifact (replay v5 train ra
+            # `ready_for_evaluation`); gateway nhận report id ngẫu nhiên nên vẫn chưa eligible.
+            expected_state = os.environ.get("WP06_EXPECTED_ARTIFACT_STATE", "abstain")
+            assert artifact.state == expected_state, (artifact.state, expected_state)
 
             async def snapshot():
                 pointer = (
@@ -75,11 +118,10 @@ async def main() -> dict[str, bool]:
                         {"workspace": workspace_id, "artifact": artifact.id, "report": uuid4()},
                     )
             except DBAPIError as error:
-                if "WP06_SCORER_PAPER_SOURCE_RIGHTS_DENIED" not in str(error.orig):
+                if expected not in str(error.orig):
                     raise AssertionError(
-                        "Gateway thật phải chặn canonical source thiếu PAPER_DEMO "
-                        "trước lookup report; không chấp nhận denial từ gate khác: "
-                        + str(error.orig)
+                        f"Gateway thật phải chặn bằng {expected}; "
+                        "không chấp nhận denial từ gate khác: " + str(error.orig)
                     ) from error
             else:
                 raise AssertionError("Gateway không được cấp eligibility cho fixture chẩn đoán")
@@ -95,4 +137,5 @@ async def main() -> dict[str, bool]:
 
 
 if __name__ == "__main__":
-    print(json.dumps(asyncio.run(main()), sort_keys=True))
+    phase = os.environ.get("WP06_GATEWAY_PHASE", "gateway")
+    print(json.dumps(asyncio.run(ledger_counts() if phase == "ledger" else main()), sort_keys=True))

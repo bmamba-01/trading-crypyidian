@@ -61,6 +61,19 @@ def test_deployment_migration_scopes_event_insert_and_drops_jsonb_function_signa
     assert "length(btrim(reason)) BETWEEN 12 AND 2000" in migration
 
 
+def test_deployment_populated_downgrade_guard_runs_before_drops() -> None:
+    """Guard scorer không còn chạm tới được trong E2E (guard license WP06 chặn trước)."""
+    root = Path(__file__).parents[2]
+    migration = (
+        root / "migrations" / "versions" / "c5e7a9b1d3f5_wp06_scorer_deployment.py"
+    ).read_text(encoding="utf-8")
+    downgrade = migration.split("def downgrade", 1)[1]
+
+    assert "WP06_SCORING_DEPLOYMENT_POPULATED_DOWNGRADE_DENIED" in downgrade
+    assert downgrade.index("raise RuntimeError") < downgrade.index("DROP TRIGGER")
+    assert downgrade.index("raise RuntimeError") < downgrade.index("op.drop_table")
+
+
 def test_deployment_definers_use_dedicated_minimum_privilege_roles() -> None:
     migration_path = (
         Path(__file__).parents[2]

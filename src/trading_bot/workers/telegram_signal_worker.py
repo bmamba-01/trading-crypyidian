@@ -7,6 +7,7 @@ import logging
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
+from typing import Protocol
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -17,14 +18,34 @@ from trading_bot.adapters.database.repositories.telegram_signals import (
     TelegramSignalRepository,
 )
 from trading_bot.adapters.telegram.bot_api_sender import TelegramApiError
+from trading_bot.adapters.telegram.topic_sender import bind_topic
 from trading_bot.application.outbox import UnitOfWork, retry_delay_seconds
 from trading_bot.application.telegram_signals import (
+    SignalThrottlePolicy,
+    TelegramSignalCandidate,
     build_signal_message,
     is_candidate_deliverable,
 )
 from trading_bot.ports.telegram import TelegramMessageSender
 
 logger = logging.getLogger(__name__)
+
+SignalSend = Callable[[TelegramMessageSender, int, TelegramSignalCandidate], Awaitable[None]]
+
+
+async def send_signal_text(
+    sender: TelegramMessageSender, chat_id: int, candidate: TelegramSignalCandidate
+) -> None:
+    """Gửi tín hiệu dạng văn bản thuần (mặc định; cũng là dự phòng của ảnh thẻ)."""
+    await sender.send_message(chat_id, build_signal_message(candidate))
+
+
+class ChatPacerPort(Protocol):
+    """Giãn cách tin theo chat dùng chung giữa các worker (xem ``ChatPacer`` của TG-3)."""
+
+    async def wait(self, chat_id: int) -> None: ...
+
+    def mark_sent(self, chat_id: int) -> None: ...
 
 
 class TelegramSignalDeliveryWorker:
@@ -46,10 +67,13 @@ class TelegramSignalDeliveryWorker:
         lease_duration: timedelta = timedelta(seconds=45),
         max_attempts: int = 5,
         batch_size: int = 100,
+        throttle: SignalThrottlePolicy | None = None,
+        signal_send: SignalSend | None = None,
         now: Callable[[], datetime] | None = None,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         unit_of_work: Callable[..., UnitOfWork] = UnitOfWork,
         repository: Callable[[AsyncSession], TelegramSignalRepository] = TelegramSignalRepository,
+        pacer: ChatPacerPort | None = None,
     ) -> None:
         if not worker_id.strip() or not 0.1 <= tick_seconds <= 300:
             raise ValueError("Thông số Telegram signal worker không hợp lệ.")
@@ -66,10 +90,15 @@ class TelegramSignalDeliveryWorker:
         self._lease_duration = lease_duration
         self._max_attempts = max_attempts
         self._batch_size = batch_size
+        self._throttle = throttle or SignalThrottlePolicy()
+        # TG-3: app truyền bộ gửi ảnh thẻ; mặc định gửi văn bản thuần như trước.
+        self._signal_send = signal_send or send_signal_text
         self._now = now or (lambda: datetime.now(UTC))
         self._sleep = sleep
         self._unit_of_work = unit_of_work
         self._repository = repository
+        # TG-3: pacer dùng chung với worker kết quả PAPER để giãn cách tin mỗi chat ≥ 1,1 giây.
+        self._pacer = pacer
         self.last_tick_succeeded = False
         self.last_tick_at: datetime | None = None
         self.last_error_code: str | None = None
@@ -139,8 +168,8 @@ class TelegramSignalDeliveryWorker:
                 claim = await self._claim_one(bot_id, now)
                 if claim is None:
                     break
-                # claim_one đã đối chiếu lại bộ lọc hiện hành trong cùng transaction và
-                # ghi receipt FILTERED; không cấp lease hoặc gửi candidate cũ tới chat.
+                # claim_one đã đối chiếu lại bộ lọc hiện hành và chống spam (TG-2) trong cùng
+                # transaction, ghi receipt FILTERED/SUPPRESSED; không cấp lease hay gửi tới chat.
                 if claim.filtered:
                     continue
                 if not is_candidate_deliverable(
@@ -162,8 +191,9 @@ class TelegramSignalDeliveryWorker:
                     await self._mark_expired(claim)
                     continue
                 try:
-                    await self._sender.send_message(
-                        claim.chat_id, build_signal_message(claim.candidate)
+                    # TG-4: topic tín hiệu của binding (None → chat chính như trước).
+                    await self._signal_send(
+                        bind_topic(self._sender, claim.thread_id), claim.chat_id, claim.candidate
                     )
                 except TelegramApiError as error:
                     await self._mark_failed(claim, error.code, error.retry_after)
@@ -172,6 +202,8 @@ class TelegramSignalDeliveryWorker:
                 else:
                     await self._mark_sent(claim)
                     self._last_sent_by_chat[claim.chat_id] = self._now()
+                    if self._pacer is not None:
+                        self._pacer.mark_sent(claim.chat_id)
                     sent += 1
         return sent
 
@@ -186,6 +218,7 @@ class TelegramSignalDeliveryWorker:
                 now=now,
                 lease_duration=self._lease_duration,
                 max_attempts=self._max_attempts,
+                throttle=self._throttle,
             )
 
     async def _mark_sent(self, claim: SignalDeliveryClaim) -> None:
@@ -245,6 +278,9 @@ class TelegramSignalDeliveryWorker:
             )
 
     async def _pace_chat(self, chat_id: int) -> None:
+        if self._pacer is not None:
+            await self._pacer.wait(chat_id)
+            return
         now = self._now()
         elapsed = (now - self._last_sent_by_chat[chat_id]).total_seconds()
         if elapsed < 1.1:

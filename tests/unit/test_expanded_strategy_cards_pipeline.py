@@ -128,7 +128,9 @@ async def test_admin_service_runs_real_orthogonality_check_and_detects_collinear
         roles=frozenset({Role.OWNER}),
         mfa_verified_at=datetime.now(UTC),
     )
-    service = StrategyCardAdminService()
+    from tests.fixtures.sig6_consensus_bars import consensus_bars_provider
+
+    service = StrategyCardAdminService(bars_provider=consensus_bars_provider)
     views = await service.list_strategy_cards(principal)
     assert len(views) == len(EXPECTED_CARD_IDS)
     for view in views:
@@ -221,7 +223,10 @@ async def test_admin_service_runs_real_orthogonality_check_and_detects_collinear
             assumed_taker_fee=Decimal("0.0005"), assumed_slippage_bps=Decimal("2.0")
         ),
     )
-    collinear_service = StrategyCardAdminService(in_memory_cards=[collinear_card])
+    collinear_service = StrategyCardAdminService(
+        in_memory_cards=[collinear_card],
+        bars_provider=consensus_bars_provider,
+    )
     collinear_views = await collinear_service.list_strategy_cards(principal)
     assert collinear_views[0].has_consensus_warning is True
     assert collinear_views[0].is_verified is False

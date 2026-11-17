@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import io
 import json
+import logging
 import re
 import secrets
 from collections.abc import Mapping
@@ -53,7 +54,14 @@ from trading_bot.admin.presentation import (
     number_vi,
     pnl_tone,
 )
+from trading_bot.admin.session_redirect import (
+    ADMIN_HOME_PATH,
+    NEXT_PARAM,
+    login_redirect_for,
+    safe_next_path,
+)
 from trading_bot.admin.strategy_card_service import StrategyCardAdminService
+from trading_bot.application.analyst_review import AnalystReviewError, AnalystReviewService
 from trading_bot.application.bot_lifecycle_guard import BotNotFlatError
 from trading_bot.application.bot_operations import BotOperationsService, PrincipalBotOperations
 from trading_bot.application.bot_reporting import (
@@ -80,6 +88,7 @@ from trading_bot.application.market_levels import price_levels
 from trading_bot.application.market_narrative import market_narrative
 from trading_bot.application.market_scanner import MarketScannerError, MarketScannerService
 from trading_bot.application.strategy_pipeline.microscope import MicroscopeReplayService
+from trading_bot.application.telegram_binding import TelegramTopicSetupError
 from trading_bot.application.telegram_signal_subscription import (
     TelegramSignalSubscriptionError,
 )
@@ -200,6 +209,10 @@ class AdminHTMLRoute(APIRoute):
                     if isinstance(error, (StarletteHTTPException, AuthenticationFailure))
                     else 422
                 )
+                # Phiên hết hạn khi người dùng mở trang/gửi form HTML: về trang đăng nhập.
+                redirect = login_redirect_for(request, status)
+                if redirect is not None:
+                    return redirect
                 messages = {
                     401: "Phiên đăng nhập không hợp lệ hoặc đã hết hạn.",
                     403: "Xác thực hoặc quyền truy cập chưa đáp ứng yêu cầu.",
@@ -239,6 +252,7 @@ class AdminHTMLRoute(APIRoute):
         return handle
 
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin", tags=["admin web"], route_class=AdminHTMLRoute)
 
 
@@ -405,6 +419,7 @@ def _login_page(
     error: str | None = None,
     status_code: int | None = None,
     error_kind: str = "invalid",
+    next_path: str | None = None,
 ) -> Response:
     token = secrets.token_urlsafe(32)
     templates = _templates(request)
@@ -414,6 +429,8 @@ def _login_page(
         context={
             "identity": None,
             "csrf_token": token,
+            # Chỉ đường dẫn nội bộ `/admin...` đã kiểm tra mới được đưa vào form.
+            "next_path": safe_next_path(next_path),
             "error": error,
             "error_title": LOGIN_ERROR_DETAILS.get(error_kind, LOGIN_ERROR_DETAILS["invalid"])[0],
             "error_hint": LOGIN_ERROR_DETAILS.get(error_kind, LOGIN_ERROR_DETAILS["invalid"])[1],
@@ -430,8 +447,11 @@ def _login_page(
 
 @router.get("/login")
 async def login_page(request: Request) -> Response:
-    """Hiển thị form đăng nhập không lưu cache và cấp token chống login-CSRF."""
-    return _login_page(request)
+    """Hiển thị form đăng nhập không lưu cache và cấp token chống login-CSRF.
+
+    `next` (nếu an toàn) được giữ trong form để quay lại trang cũ sau khi đăng nhập.
+    """
+    return _login_page(request, next_path=request.query_params.get(NEXT_PARAM))
 
 
 @router.post("/login")
@@ -443,15 +463,20 @@ async def submit_login(request: Request) -> Response:
         raise
     cookie_token = request.cookies.get(_login_csrf_cookie_name(request), "")
     form_token = values.pop("csrf_token", "")
+    next_path = safe_next_path(values.pop(NEXT_PARAM, ""))
     if not cookie_token or not form_token or not hmac.compare_digest(cookie_token, form_token):
         # Không xác thực gì: chỉ trả lại form với token mới để người dùng gửi lại.
         return _login_page(
-            request, error=LOGIN_FORM_EXPIRED_MESSAGE, status_code=403, error_kind="expired"
+            request,
+            error=LOGIN_FORM_EXPIRED_MESSAGE,
+            status_code=403,
+            error_kind="expired",
+            next_path=next_path,
         )
     try:
         credentials = LoginRequest.model_validate(values)
     except ValidationError:
-        return _login_page(request, error="Thông tin đăng nhập không hợp lệ.")
+        return _login_page(request, error="Thông tin đăng nhập không hợp lệ.", next_path=next_path)
     limiter = get_rate_limiter(request)
     service = _auth_service(request)
     try:
@@ -473,12 +498,13 @@ async def submit_login(request: Request) -> Response:
                 error="Thử lại sau khi hết thời gian giới hạn.",
                 status_code=429,
                 error_kind="rate_limited",
+                next_path=next_path,
             )
-        return _login_page(request, error="Thông tin đăng nhập không hợp lệ.")
+        return _login_page(request, error="Thông tin đăng nhập không hợp lệ.", next_path=next_path)
     settings = request.app.state.settings
     response = Response(
         status_code=303,
-        headers={"Location": "/admin", "Cache-Control": "no-store"},
+        headers={"Location": next_path or ADMIN_HOME_PATH, "Cache-Control": "no-store"},
     )
     set_session_cookie(
         response,
@@ -1099,6 +1125,7 @@ def _dashboard_performance_chart(reports: list[dict[str, Any]]) -> dict[str, Any
                 "OPPOSING_SIGNAL": "ĐẢO",
                 "CHANNEL_EXIT": "KÊNH",
                 "FEATURE_EXIT": "CHỈ BÁO",
+                "DELIST_EXIT": "GỠ",
             }.get(trade.get("exit_reason") or "", "ĐÓNG")
             entry_reason = trade.get("entry_reason")
             entry_reason = entry_reason if isinstance(entry_reason, dict) else {}
@@ -1156,6 +1183,7 @@ def _exit_reason_label_vi(reason: object) -> str:
         "CHANNEL_EXIT": "Thoát theo kênh giá",
         "FEATURE_EXIT": "Thoát theo chỉ báo",
         "FLATTEN_OPERATION": "Đóng theo thao tác quản trị",
+        "DELIST_EXIT": "Đóng trước khi Binance gỡ hợp đồng",
     }
     if not isinstance(reason, str) or not reason:
         return "Chưa có dữ liệu"
@@ -1634,11 +1662,14 @@ async def bot_detail(
     identity: Annotated[AuthIdentity, Depends(current_identity)],
     draft_validation: str | None = None,
     signal_filter_error: str | None = None,
+    ai_proposal: str | None = None,
+    ai_proposal_error: str | None = None,
 ) -> Response:
     """Chi tiết bot; service dùng cùng lỗi 404 cho bot không tồn tại/ngoài grant."""
     response.headers["Cache-Control"] = "no-store"
     try:
         bot = await _admin_service(request).get_bot(identity.principal, bot_id=bot_id)
+        ai_proposals = await _ai_proposals(request, identity, bot_id)
         runtime = _runtime_dict(await _operations(request, identity).bot_status(bot_id))
         csrf_token = await _auth_service(request).issue_csrf_token(read_session_cookie(request))
         signal_service = getattr(request.app.state, "telegram_signal_subscription_service", None)
@@ -1681,6 +1712,10 @@ async def bot_detail(
             else '{\n  "schema_version": 1\n}',
             "draft_validation": draft_validation,
             "signal_filter_error": signal_filter_error,
+            "ai_proposals": ai_proposals,
+            "ai_proposal_status": "created" if ai_proposal == "created" else None,
+            # Chỉ hiển thị lỗi mẫu đã biết (tránh chèn văn bản tùy ý qua query string).
+            "ai_proposal_error": _AI_PROPOSAL_ERRORS.get(ai_proposal_error or ""),
             "telegram_signal_state": signal_state,
             "signal_filter_choices": _signal_filter_choices(signal_state),
             "overlay_form": _overlay_form_choices(current_overlay, root_universe),
@@ -1837,6 +1872,74 @@ def _overlay_from_form(values: dict[str, str]) -> dict[str, Any]:
     if risk:
         overlay["risk"] = risk
     return overlay
+
+
+async def _ai_proposals(
+    request: Request, identity: AuthIdentity, bot_id: UUID
+) -> list[dict[str, Any]]:
+    """Mục phụ "Đề xuất AI đã backtest": lỗi đọc không được làm hỏng trang chi tiết bot."""
+    try:
+        rows = await _admin_service(request).list_proposal_backtests(
+            identity.principal, bot_id=bot_id
+        )
+    except Exception as error:  # noqa: BLE001
+        logger.warning("Không đọc được đề xuất AI của bot. error=%s", type(error).__name__)
+        return []
+    return rows if isinstance(rows, list) else []
+
+
+_AI_PROPOSAL_ERRORS = {
+    "stale": "Cấu hình bot đã đổi so với bản gốc đã backtest; cần backtest lại trước khi áp.",
+    "verdict": "Kết luận backtest không cho phép tạo bản nháp (kém hơn hoặc không backtest được).",
+    "mfa": "Đề xuất đổi khối rủi ro: cần xác thực MFA gần đây rồi thử lại.",
+    "permission": "Không đủ quyền tạo bản nháp cho bot này.",
+    "conflict": "Không tạo được bản nháp (đã có bản nháp hoặc cấu hình vừa đổi). Tải lại trang.",
+    "invalid": "Cấu hình đề xuất không hợp lệ với lược đồ hoặc giới hạn rủi ro gốc.",
+    "missing": "Không tìm thấy kết quả backtest đề xuất.",
+}
+
+
+def _ai_proposal_error_code(error: BotAdminError) -> str:
+    message = error.message
+    if error.status_code == 404:
+        return "missing"
+    if "MFA" in message:
+        return "mfa"
+    if error.status_code == 403:
+        return "permission"
+    if "backtest lại" in message:
+        return "stale"
+    if "Kết luận" in message:
+        return "verdict"
+    if error.status_code == 422 or error.errors:
+        return "invalid"
+    return "conflict"
+
+
+@router.post("/bots/{bot_id}/ai-proposals/{backtest_id}/draft")
+async def create_draft_from_ai_proposal_form(
+    bot_id: UUID,
+    backtest_id: UUID,
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(current_identity)],
+) -> Response:
+    """AI-3: tạo bản nháp từ đề xuất AI đã backtest; owner vẫn kiểm định + công bố (MFA)."""
+    values = await _parse_form(request)
+    await _verify_form_csrf(request, values)
+    try:
+        await _admin_service(request).create_draft_from_proposal(
+            identity.principal, bot_id=bot_id, backtest_id=backtest_id
+        )
+    except BotAdminError as error:
+        code = _ai_proposal_error_code(error)
+        return Response(
+            status_code=303,
+            headers={"Location": f"/admin/bots/{bot_id}?ai_proposal_error={code}#ai-proposals"},
+        )
+    return Response(
+        status_code=303,
+        headers={"Location": f"/admin/bots/{bot_id}?ai_proposal=created#ai-proposals"},
+    )
 
 
 @router.post("/bots/{bot_id}/config-drafts/{draft_id}/validate")
@@ -2206,6 +2309,37 @@ async def telegram_revoke_form(
     return Response(status_code=303, headers={"Location": "/admin/telegram"})
 
 
+_TOPIC_SETUP_FAILED = (
+    "Telegram không tạo được topic. Hãy bật chế độ topic (Threaded Mode) cho bot trong "
+    "@BotFather rồi thử lại; tin vẫn đi vào chat chính như trước."
+)
+
+
+@router.post("/telegram/topics/{membership_id}")
+async def telegram_topics_form(
+    membership_id: UUID,
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(current_identity)],
+) -> Response:
+    """TG-4: tạo topic "Tín hiệu" và "PAPER report" trong chat riêng của binding."""
+    values = await _parse_form(request)
+    await _verify_form_csrf(request, values)
+    service = _telegram_binding_service(request)
+    try:
+        if values.get("action") == "clear":
+            await service.clear_topics(identity.principal, membership_id)
+        else:
+            await service.create_topics(identity.principal, membership_id)
+    except TelegramTopicSetupError as error:
+        raise HTTPException(status_code=502, detail=_TOPIC_SETUP_FAILED) from error
+    except ValueError as error:
+        status = 403 if "owner" in str(error).lower() or "mfa" in str(error).lower() else 422
+        raise HTTPException(
+            status_code=status, detail="Không thể cấu hình topic Telegram."
+        ) from error
+    return Response(status_code=303, headers={"Location": "/admin/telegram"})
+
+
 @router.get("/reports")
 async def reports(
     request: Request,
@@ -2494,7 +2628,9 @@ async def strategy_cards_page(
             "cards": cards,
             "total_cards": len(cards),
             "active_cards_count": sum(1 for c in cards if c.is_active),
-            "verified_cards_count": sum(1 for c in cards if c.is_verified),
+            "verified_cards_count": sum(
+                1 for c in cards if c.is_verified and c.consensus_status == "ok"
+            ),
         },
         headers={"Cache-Control": "no-store"},
     )
@@ -2899,6 +3035,111 @@ async def market_chart_history_api(
         "trades": trades,
         "csv_url": f"/admin/reports/export.csv?{csv_query}",
     }
+
+
+def _analyst_review(request: Request) -> AnalystReviewService:
+    service = cast(
+        AnalystReviewService | None, getattr(request.app.state, "analyst_review_service", None)
+    )
+    if service is None:
+        raise HTTPException(status_code=503, detail="Trang phân tích AI chưa sẵn sàng.")
+    return service
+
+
+@router.get("/ai-analyses")
+async def ai_analyses_page(
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(current_identity)],
+    topic: str | None = None,
+    valid: str | None = None,
+) -> Response:
+    """CRY-383: danh sách lượt AI Analyst (chỉ đọc), lọc theo chủ đề và kết quả validator."""
+    valid_filter = {"yes": True, "no": False}.get(valid or "")
+    try:
+        data = await _analyst_review(request).list_runs(
+            identity.principal, topic=topic or None, valid=valid_filter
+        )
+    except AnalystReviewError as error:
+        raise HTTPException(status_code=error.status_code, detail=error.message) from error
+    return _templates(request).TemplateResponse(
+        request=request,
+        name="admin/ai_analyses.html",
+        context={
+            "identity": identity,
+            "runs": data["runs"],
+            "topics": data["topics"],
+            "topic": topic or "",
+            "valid": valid or "",
+        },
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+_REPORT_HASH = re.compile(r"^[0-9a-f]{64}$")
+
+
+@router.get("/run-reports/{report_hash}")
+async def run_report_page(
+    request: Request,
+    report_hash: str,
+    identity: Annotated[AuthIdentity, Depends(current_identity)],
+) -> Response:
+    """CRY-380: Run Report đã lưu (bất biến) và các lượt AI đã đọc report này."""
+    if not _REPORT_HASH.fullmatch(report_hash):
+        raise HTTPException(status_code=404, detail="Không tìm thấy Run Report.")
+    try:
+        report = await _analyst_review(request).get_report(identity.principal, report_hash)
+    except AnalystReviewError as error:
+        raise HTTPException(status_code=error.status_code, detail=error.message) from error
+    return _templates(request).TemplateResponse(
+        request=request,
+        name="admin/run_report.html",
+        context={"identity": identity, "report": report},
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.get("/run-reports/{report_hash}/report.json")
+async def run_report_json(
+    request: Request,
+    report_hash: str,
+    identity: Annotated[AuthIdentity, Depends(current_identity)],
+) -> Response:
+    """Tải nguyên văn JSON đã lưu (đúng dữ liệu AI đọc, không gắn bối cảnh)."""
+    if not _REPORT_HASH.fullmatch(report_hash):
+        raise HTTPException(status_code=404, detail="Không tìm thấy Run Report.")
+    try:
+        report = await _analyst_review(request).get_report(identity.principal, report_hash)
+    except AnalystReviewError as error:
+        raise HTTPException(status_code=error.status_code, detail=error.message) from error
+    body = json.dumps(report["payload"], ensure_ascii=False, sort_keys=True, indent=2)
+    return Response(
+        content=body,
+        media_type="application/json",
+        headers={
+            "Cache-Control": "no-store",
+            "Content-Disposition": f'attachment; filename="run-report-{report_hash[:12]}.json"',
+        },
+    )
+
+
+@router.get("/ai-analyses/{run_id}")
+async def ai_analysis_detail(
+    request: Request,
+    run_id: UUID,
+    identity: Annotated[AuthIdentity, Depends(current_identity)],
+) -> Response:
+    """CRY-383: một lượt AI Analyst — đầu ra, lỗi validator, bối cảnh, backtest đề xuất."""
+    try:
+        run = await _analyst_review(request).get_run(identity.principal, run_id)
+    except AnalystReviewError as error:
+        raise HTTPException(status_code=error.status_code, detail=error.message) from error
+    return _templates(request).TemplateResponse(
+        request=request,
+        name="admin/ai_analysis_detail.html",
+        context={"identity": identity, "run": run},
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 def _calendar_service(request: Request) -> EconomicCalendarService:

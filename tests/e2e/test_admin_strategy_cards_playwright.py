@@ -31,6 +31,7 @@ from tests.e2e.csp_harness import (
     install_security_headers,
     watch_browser_violations,
 )
+from tests.fixtures.sig6_consensus_bars import consensus_bars_provider
 from trading_bot.admin.strategy_card_service import StrategyCardAdminService
 from trading_bot.admin.web_router import router as admin_web_router
 from trading_bot.auth.policy import Principal, Role
@@ -155,7 +156,10 @@ def create_test_admin_app() -> FastAPI:
     app.state.auth_service = auth_service
     app.state.bot_admin_service = MockBotAdminStub()
     app.state.bot_operations_service = MockBotOperationsStub()
-    app.state.strategy_card_service = StrategyCardAdminService()
+    # Nến xác định thay kho market_bar: thẻ 1 trực giao, thẻ 2 có L3 chép giá → cảnh báo (SIG-6).
+    app.state.strategy_card_service = StrategyCardAdminService(
+        bars_provider=consensus_bars_provider
+    )
 
     app.mount("/static", StaticFiles(directory="src/trading_bot/static"), name="static")
     app.include_router(admin_web_router)
@@ -260,8 +264,9 @@ def test_strategy_cards_desktop_view(strategy_cards_server_url: str) -> None:
         assert hash_code.is_visible()
         assert "..." in hash_code.text_content() or ""
 
-        # 8. Kiểm tra huy hiệu Đã kiểm định (Orthogonal)
-        assert "Đã kiểm định (Orthogonal)" in first_card.text_content() or ""
+        # 8. Kiểm tra huy hiệu Đã kiểm định (Orthogonal) ở các thẻ đã hoàn thiện
+        assert "Đã kiểm định (Orthogonal)" in (first_card.text_content() or "")
+        assert "Đã kiểm định (Orthogonal)" in (card_items.nth(1).text_content() or "")
 
         # 9. Kiểm tra các tầng kiến trúc L0 -> L6
         layers = first_card.locator(".layer-pill")

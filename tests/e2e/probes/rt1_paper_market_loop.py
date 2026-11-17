@@ -12,6 +12,10 @@ Dữ liệu chỉ có nguồn `BINANCE_USDM_REST_BACKFILL` (như collector SIG-0
 - `mark_check` (trading-runtime): vốn account có vị thế mở phải `known` chỉ với mark REST.
 - `add_stop_bar` (migrator): nến 1m chạm stop.
 - `verify` (migrator): đối soát ledger.
+- `tg_seed` (migrator): binding Telegram đã xác minh + subscription bật cho bot (TG-3).
+- `tg_results` (telegram-signal-worker): worker kết quả PAPER thật dưới role signal-worker gửi
+  qua sender ghi nhớ; chạy lại và khởi động lại không gửi trùng; kiểm quyền cột/RLS.
+- `tg_verify` (migrator): trạng thái delivery ledger TG-3.
 """
 
 import asyncio
@@ -48,6 +52,9 @@ ROOT_SETTINGS = _id("root-settings")
 RISK_PROFILE = _id("risk-profile")
 BOT_CONFIG = _id("bot-config")
 INSTRUMENT = _id("instrument")
+TELEGRAM_BINDING = _id("telegram-binding")
+TELEGRAM_SUBSCRIPTION = _id("telegram-subscription")
+TELEGRAM_CHAT = 777000111
 
 
 def _password() -> str:
@@ -823,6 +830,801 @@ async def scanner() -> dict[str, Any]:
     }
 
 
+async def card_consensus_phase() -> dict[str, Any]:
+    """SIG-6: nguồn nến của cảnh báo đồng thuận đọc market_bar bằng role admin-web (RLS)."""
+    from sqlalchemy import text
+
+    from trading_bot.application.strategy_card_bars import PostgresCardBarsProvider
+    from trading_bot.application.strategy_pipeline.consensus import card_consensus
+    from trading_bot.application.strategy_pipeline.demo_cards import build_default_demo_cards
+    from trading_bot.auth.policy import Principal, Role
+
+    owner = Principal(
+        user_id=_id("owner"),
+        membership_id=MEMBERSHIP,
+        workspace_id=WORKSPACE,
+        roles=frozenset({Role.OWNER}),
+        mfa_verified_at=NOW,
+    )
+    outsider = Principal(
+        user_id=_id("outsider"),
+        membership_id=_id("outsider-membership"),
+        workspace_id=_id("other-workspace"),
+        roles=frozenset({Role.OWNER}),
+        mfa_verified_at=NOW,
+    )
+    engine, sessions = _sessions()
+    try:
+        async with sessions() as session:
+            role = await session.scalar(text("SELECT current_user"))
+        provider = PostgresCardBarsProvider(sessions)
+        bars = await provider(owner, "BTCUSDT", "4h")
+        missing = await provider(owner, "SOLUSDT", "4h")
+        foreign = await provider(outsider, "BTCUSDT", "4h")
+    finally:
+        await engine.dispose()
+    summary = card_consensus(build_default_demo_cards()[0], bars)
+    return {
+        "role": role,
+        "enough_bars": len(bars) >= 50,
+        "within_limit": len(bars) <= 300,
+        "positive_prices": all(bar.low > 0 for bar in bars),
+        "status": summary.status,
+        "missing": len(missing),
+        "other_workspace": len(foreign),
+    }
+
+
+async def breaker() -> dict[str, Any]:
+    """FX-2: đo drawdown bằng role trading-runtime thật (đọc trade + bot_runtime_control)."""
+    from decimal import Decimal
+    from types import SimpleNamespace
+
+    from sqlalchemy import func, select
+
+    from trading_bot.adapters.database.repositories.account_equity import AccountEquityRepository
+    from trading_bot.adapters.database.repositories.workspace_settings import (
+        WorkspaceSettingsRepository,
+    )
+    from trading_bot.application.outbox import UnitOfWork
+    from trading_bot.application.paper_market_context import PostgresPaperDecisionContextProvider
+    from trading_bot.application.workspace_risk import mark_policy_from
+
+    engine, sessions = _sessions()
+    bot_id = UUID(STATE["bot_id"])
+    try:
+        async with UnitOfWork(sessions, workspace_id=WORKSPACE, bot_id=bot_id) as uow:
+            now = (await uow.session.scalar(select(func.clock_timestamp()))).astimezone(UTC)
+            published = await WorkspaceSettingsRepository(uow.session).load_effective_config(
+                workspace_id=WORKSPACE
+            )
+            equity = await AccountEquityRepository(uow.session).load_paper_equity_snapshot(
+                workspace_id=WORKSPACE,
+                bot_id=bot_id,
+                account_id=ACCOUNT,
+                as_of=now,
+                max_equity_age=timedelta(seconds=3600),
+                max_mark_age=timedelta(seconds=3600),
+                mark_policy=mark_policy_from(published.settings),
+            )
+            assert equity.known, equity.unknown_reason
+            assert equity.seed_capital is not None
+            provider = PostgresPaperDecisionContextProvider(sessions, workspace_id=WORKSPACE)
+            account = SimpleNamespace(account_id=ACCOUNT, bot_id=bot_id)
+            actual = await provider._drawdown_breaker(
+                uow.session,
+                account,
+                as_of=now,
+                equity=equity.equity_amount,
+                seed=equity.seed_capital,
+            )
+            stressed = await provider._drawdown_breaker(
+                uow.session,
+                account,
+                as_of=now,
+                equity=actual.peak_equity * Decimal("0.89"),
+                seed=equity.seed_capital,
+            )
+    finally:
+        await engine.dispose()
+    return {
+        "seed": str(equity.seed_capital),
+        "realized": str(equity.cumulative_realized_pnl),
+        "actual_peak": str(actual.peak_equity),
+        "actual_tripped": actual.tripped,
+        "stressed_tripped": stressed.tripped,
+        "baseline_at": actual.baseline_at.isoformat() if actual.baseline_at else None,
+    }
+
+
+async def run_report() -> dict[str, Any]:
+    """AI-1: Run Report tất định từ ledger thật của bot RT-1 (role admin của migrator)."""
+    from trading_bot.application.run_report import load_run_report
+
+    engine, sessions = _sessions()
+    try:
+        first = await load_run_report(
+            sessions,
+            workspace_id=WORKSPACE,
+            start=NOW - timedelta(days=3),
+            end=NOW + timedelta(days=1),
+            run_label="rt1-e2e",
+        )
+        second = await load_run_report(
+            sessions,
+            workspace_id=WORKSPACE,
+            start=NOW - timedelta(days=3),
+            end=NOW + timedelta(days=1),
+            run_label="rt1-e2e",
+        )
+        # CRY-380: lưu bất biến, idempotent theo hash.
+        from trading_bot.application.outbox import UnitOfWork
+        from trading_bot.application.run_report import persist_run_report
+
+        stored = []
+        for _ in range(2):
+            async with UnitOfWork(sessions, workspace_id=WORKSPACE) as uow:
+                stored.append(
+                    await persist_run_report(
+                        uow.session, workspace_id=WORKSPACE, payload=first.payload
+                    )
+                )
+    finally:
+        await engine.dispose()
+    blocked = []
+    for statement in (
+        "UPDATE run_report SET run_label = 'x'",
+        "DELETE FROM run_report",
+    ):
+        try:
+            with _connect() as connection:
+                connection.execute(statement)
+            blocked.append(False)
+        except Exception as error:  # noqa: BLE001
+            blocked.append("RUN_REPORT_IMMUTABLE" in str(error))
+    with _connect() as connection:
+        report_rights = connection.execute(
+            "SELECT has_table_privilege('crypidian_admin_web', 'run_report', 'SELECT'), "
+            "has_table_privilege('crypidian_admin_web', 'run_report', 'INSERT'), "
+            "(SELECT relforcerowsecurity FROM pg_class WHERE relname = 'run_report'), "
+            "(SELECT count(*) FROM run_report WHERE report_hash = %s)",
+            (first.report_hash,),
+        ).fetchone()
+    [bot] = [item for item in first.payload["bots"] if item["bot_id"] == STATE["bot_id"]]
+    return {
+        "stored": stored,
+        "immutable": blocked,
+        "report_rights": [bool(report_rights[0]), bool(report_rights[1]), bool(report_rights[2])],
+        "stored_rows": int(report_rights[3]),
+        "deterministic": first.report_hash == second.report_hash,
+        "closed_trades": bot["performance"]["closed_trades"],
+        "r_mean": bot["performance"]["r_multiple"]["mean"],
+        "mae_mean": bot["performance"]["mae_r"]["mean"],
+        "candidates": bot["funnel"]["candidates"],
+        "candidates_with_intent": bot["funnel"]["candidates_with_intent"],
+        "exit_reasons": bot["performance"]["exit_reasons"],
+    }
+
+
+async def analyst() -> dict[str, Any]:
+    """AI-2: report → engine giả → validator → lưu analyst_run/session (role admin migrator)."""
+    from sqlalchemy import func, select
+    from sqlalchemy.exc import IntegrityError
+
+    from trading_bot.adapters.database.models import (
+        AnalystRunRecord,
+        AnalystSessionRecord,
+        ProposalBacktestRecord,
+    )
+    from trading_bot.application.ai_analyst import (
+        ANALYST_OUTPUT_VERSION,
+        PROMPT_VERSION,
+        build_prompt,
+        input_hash,
+        topic_report,
+        validate_analysis,
+    )
+    from trading_bot.application.outbox import UnitOfWork
+    from trading_bot.application.proposal_backtest import (
+        PROPOSAL_BACKTEST_VERSION,
+        BacktestArm,
+        ProposalBacktestResult,
+        aggregate,
+    )
+    from trading_bot.application.run_report import load_run_report
+
+    engine, sessions = _sessions()
+    try:
+        report = await load_run_report(
+            sessions,
+            workspace_id=WORKSPACE,
+            start=NOW - timedelta(days=3),
+            end=NOW + timedelta(days=1),
+            run_label="rt1-e2e",
+        )
+        family = report.payload["bots"][0]["config"]["strategy_family"]
+        topic = topic_report(report.payload, family)
+        closed = topic["bots"][0]["performance"]["closed_trades"]
+        output = {
+            "summary": "Kiểm luồng E2E.",
+            "findings": [
+                {
+                    "statement": f"Có {closed} lệnh đóng.",
+                    "evidence_refs": ["/bots/0/performance/closed_trades"],
+                }
+            ],
+            "hypotheses": [],
+            "proposals": [],
+            "confidence": "low",
+        }
+        bad = dict(output, summary="Lãi 987654 USDT.")
+        prompt = build_prompt(topic)
+        async with UnitOfWork(sessions, workspace_id=WORKSPACE) as uow:
+            for candidate in (output, bad):
+                check = validate_analysis(candidate, topic)
+                uow.session.add(
+                    AnalystRunRecord(
+                        workspace_id=WORKSPACE,
+                        topic_key=f"family:{family}",
+                        engine="fake",
+                        session_id="e2e-session",
+                        resumed=False,
+                        run_report_hash=report.report_hash,
+                        input_sha256=input_hash(prompt),
+                        prompt_version=PROMPT_VERSION,
+                        output_version=ANALYST_OUTPUT_VERSION,
+                        usage={},
+                        exit_code=0,
+                        raw_stdout="{}",
+                        structured_output=candidate,
+                        validation_errors=list(check.errors),
+                        valid=check.ok,
+                        # CRY-384: lượt hợp lệ lưu bối cảnh đã đưa AI; lượt kia không có (NULL).
+                        context={"macro_calendar": {"horizon_days": 7, "upcoming": []}}
+                        if check.ok
+                        else None,
+                    )
+                )
+            uow.session.add(
+                AnalystSessionRecord(
+                    workspace_id=WORKSPACE,
+                    topic_key=f"family:{family}",
+                    engine="fake",
+                    session_id="e2e-session",
+                    status="ACTIVE",
+                    run_count=2,
+                )
+            )
+        async with UnitOfWork(sessions, workspace_id=WORKSPACE) as uow:
+            valid = await uow.session.scalar(
+                select(func.count()).where(
+                    AnalystRunRecord.workspace_id == WORKSPACE, AnalystRunRecord.valid.is_(True)
+                )
+            )
+            total = await uow.session.scalar(
+                select(func.count()).where(AnalystRunRecord.workspace_id == WORKSPACE)
+            )
+            valid_run_id = await uow.session.scalar(
+                select(AnalystRunRecord.id).where(
+                    AnalystRunRecord.workspace_id == WORKSPACE, AnalystRunRecord.valid.is_(True)
+                )
+            )
+        # AI-3: lưu kết quả backtest đề xuất gắn với lượt phân tích hợp lệ; trùng đề xuất bị chặn.
+        result = ProposalBacktestResult(
+            bot_name="e2e",
+            baseline_arm=BacktestArm("h03-v3-1h", (("donchian_lookback", 20),), Decimal("0.005")),
+            variant_arm=BacktestArm("h03-v3-1h", (("donchian_lookback", 40),), Decimal("0.005")),
+            baseline=aggregate([]),
+            variant=aggregate([]),
+            verdict="INCONCLUSIVE",
+            notes=("e2e",),
+            unsupported_fields=(),
+            skipped_symbols=(),
+            window=None,
+        )
+        record = {
+            "workspace_id": WORKSPACE,
+            "analyst_run_id": valid_run_id,
+            "proposal_index": 0,
+            "topic_key": f"family:{family}",
+            "bot_name": "e2e",
+            "proposal": {"changes": []},
+            "result": result.payload(),
+            "verdict": result.verdict,
+            "version": PROPOSAL_BACKTEST_VERSION,
+        }
+        async with UnitOfWork(sessions, workspace_id=WORKSPACE) as uow:
+            uow.session.add(ProposalBacktestRecord(**record))
+        duplicate_rejected = False
+        try:
+            async with UnitOfWork(sessions, workspace_id=WORKSPACE) as uow:
+                uow.session.add(ProposalBacktestRecord(**record))
+        except IntegrityError:
+            duplicate_rejected = True
+    finally:
+        await engine.dispose()
+    with _connect() as connection:
+        admin_web_can_select = connection.execute(
+            "SELECT has_table_privilege('crypidian_admin_web', 'analyst_run', 'SELECT'), "
+            "has_table_privilege('crypidian_admin_web', 'analyst_run', 'INSERT'), "
+            "(SELECT relforcerowsecurity FROM pg_class WHERE relname = 'analyst_run'), "
+            "has_table_privilege('crypidian_admin_web', 'proposal_backtest', 'SELECT'), "
+            "has_table_privilege('crypidian_admin_web', 'proposal_backtest', 'INSERT'), "
+            "has_table_privilege('crypidian_trading_runtime', 'proposal_backtest', 'SELECT'), "
+            "(SELECT relforcerowsecurity FROM pg_class WHERE relname = 'proposal_backtest'), "
+            "(SELECT count(*) FROM proposal_backtest), "
+            "(SELECT count(*) FROM analyst_run WHERE context IS NULL), "
+            "(SELECT count(*) FROM analyst_run WHERE context->'macro_calendar' IS NOT NULL)"
+        ).fetchone()
+    return {
+        "runs": int(total or 0),
+        "valid_runs": int(valid or 0),
+        "admin_web_select": bool(admin_web_can_select[0]),
+        "admin_web_insert": bool(admin_web_can_select[1]),
+        "forced_rls": bool(admin_web_can_select[2]),
+        "backtest_admin_web_select": bool(admin_web_can_select[3]),
+        "backtest_admin_web_insert": bool(admin_web_can_select[4]),
+        "backtest_runtime_select": bool(admin_web_can_select[5]),
+        "backtest_forced_rls": bool(admin_web_can_select[6]),
+        "backtests": int(admin_web_can_select[7]),
+        "backtest_duplicate_rejected": duplicate_rejected,
+        "context_sql_null": int(admin_web_can_select[8]),
+        "context_stored": int(admin_web_can_select[9]),
+    }
+
+
+MACRO_EVENT_AT = datetime(2026, 11, 25, 13, 30, tzinfo=UTC)
+
+
+async def macro_write() -> dict[str, Any]:
+    """AI-4: ingestion-worker (role thật) ghi lần tải lịch vĩ mô; không được UPDATE/DELETE."""
+    from sqlalchemy import update
+    from sqlalchemy.exc import DBAPIError
+
+    from trading_bot.adapters.database.models import MacroCalendarFetchRecord
+    from trading_bot.domain.research.macro_calendar import (
+        BEA_SOURCE_ID,
+        FOMC_SOURCE_ID,
+        PFEI_SOURCE_ID,
+        MacroEvent,
+        events_hash,
+    )
+    from trading_bot.workers.macro_calendar_worker import database_macro_store_scope
+
+    engine, sessions = _sessions()
+    fetched_at = MACRO_EVENT_AT - timedelta(hours=6)
+    try:
+        scope = database_macro_store_scope(sessions, WORKSPACE)
+        far = MACRO_EVENT_AT + timedelta(days=30)
+        for source, events in (
+            (
+                BEA_SOURCE_ID,
+                [
+                    MacroEvent(BEA_SOURCE_ID, "gdp", "GDP", MACRO_EVENT_AT, True),
+                    MacroEvent(BEA_SOURCE_ID, "gdp2", "GDP", far, True),
+                ],
+            ),
+            (FOMC_SOURCE_ID, [MacroEvent(FOMC_SOURCE_ID, "fomc", "FOMC", far, True)]),
+            (PFEI_SOURCE_ID, [MacroEvent(PFEI_SOURCE_ID, "cpi", "CPI", far, True)]),
+        ):
+            async with scope() as store:
+                await store.insert(
+                    {
+                        "id": uuid4(),
+                        "workspace_id": WORKSPACE,
+                        "source_id": source,
+                        "fetched_at": fetched_at,
+                        "source_url": "https://example.invalid/macro",
+                        "policy_fingerprint": "d" * 64,
+                        "events_sha256": events_hash(events),
+                        "event_count": len(events),
+                        "coverage_end": far,
+                        "events": [event.payload() for event in events],
+                    }
+                )
+        update_denied = False
+        try:
+            async with scope() as store:
+                await store._session.execute(update(MacroCalendarFetchRecord).values(event_count=0))
+        except DBAPIError:
+            update_denied = True
+    finally:
+        await engine.dispose()
+    return {"written": 3, "update_denied": update_denied}
+
+
+async def macro_read() -> dict[str, Any]:
+    """AI-4: runtime (role thật) đọc trạng thái macro point-in-time."""
+    from trading_bot.application.macro_calendar_state import load_macro_state
+    from trading_bot.application.outbox import UnitOfWork
+
+    engine, sessions = _sessions()
+    try:
+        async with UnitOfWork(sessions, workspace_id=WORKSPACE) as uow:
+            during = await load_macro_state(
+                uow.session, workspace_id=WORKSPACE, decision_time=MACRO_EVENT_AT
+            )
+            clear = await load_macro_state(
+                uow.session,
+                workspace_id=WORKSPACE,
+                decision_time=MACRO_EVENT_AT + timedelta(hours=2),
+            )
+            before_fetch = await load_macro_state(
+                uow.session,
+                workspace_id=WORKSPACE,
+                decision_time=MACRO_EVENT_AT - timedelta(hours=7),
+            )
+    finally:
+        await engine.dispose()
+    with _connect() as connection:
+        admin_insert = connection.execute(
+            "SELECT has_table_privilege('crypidian_admin_web', 'macro_calendar_fetch', 'INSERT')"
+        ).fetchone()[0]
+    return {
+        "during_blackout": during.blackout,
+        "during_fresh": during.is_fresh,
+        "evidence": len(during.evidence_ids),
+        "after_blackout": clear.blackout,
+        "before_fetch_unknown": before_fetch.blackout is None,
+        "admin_web_insert": bool(admin_insert),
+    }
+
+
+DERIV_AT = datetime(2026, 11, 16, 8, 6, 40, tzinfo=UTC)
+
+
+def _deriv_raw(symbol: str) -> dict[str, Any]:
+    hour = 3_600_000
+    t08 = 1794816000000
+    return {
+        "premium": {
+            "symbol": symbol,
+            "markPrice": "64772",
+            "lastFundingRate": "0.0001",
+            "nextFundingTime": 1794844800000,
+            "time": 1794816400000,
+        },
+        "oi_hist": [
+            {"symbol": symbol, "sumOpenInterest": "90", "sumOpenInterestValue": "1000",
+             "timestamp": t08 - 24 * hour},
+            {"symbol": symbol, "sumOpenInterest": "93", "sumOpenInterestValue": "1100",
+             "timestamp": t08},
+        ],
+        "global_ls": [{"symbol": symbol, "longShortRatio": "2.5", "timestamp": t08}],
+        "top_ls": [{"symbol": symbol, "longShortRatio": "1.5", "timestamp": t08}],
+        "taker": [{"buySellRatio": "1.1", "timestamp": t08 - hour}],
+    }  # fmt: skip
+
+
+async def derivatives_write() -> dict[str, Any]:
+    """AI-4 lát 2: ingestion-worker (role thật) ghi ảnh chụp phái sinh; không UPDATE/DELETE."""
+    from uuid import uuid4
+
+    from sqlalchemy import delete, update
+    from sqlalchemy.exc import DBAPIError
+
+    from trading_bot.adapters.database.models import DerivativesSnapshotRecord
+    from trading_bot.domain.research.derivatives import build_snapshot, payload_hash
+    from trading_bot.workers.derivatives_worker import database_derivatives_store_scope
+
+    engine, sessions = _sessions()
+    try:
+        scope = database_derivatives_store_scope(sessions, WORKSPACE)
+        async with scope() as store:
+            for symbol in ("BTCUSDT", "ETHUSDT"):
+                raw = _deriv_raw(symbol)
+                await store.insert(
+                    {
+                        "id": uuid4(),
+                        "workspace_id": WORKSPACE,
+                        "policy_fingerprint": "f" * 64,
+                        "payload_sha256": payload_hash(raw),
+                        **build_snapshot(symbol, DERIV_AT, raw).record(),
+                    }
+                )
+            last = await store.last_collected_at()
+        denied = []
+        for statement in (
+            update(DerivativesSnapshotRecord).values(funding_rate=0),
+            delete(DerivativesSnapshotRecord),
+        ):
+            try:
+                async with scope() as store:
+                    await store._session.execute(statement)
+                denied.append(False)
+            except DBAPIError:
+                denied.append(True)
+    finally:
+        await engine.dispose()
+    return {"written": 2, "last": last.isoformat(), "update_delete_denied": denied}
+
+
+async def derivatives_read() -> dict[str, Any]:
+    """AI-4 lát 2: runtime (role thật) đọc ảnh chụp point-in-time; admin-web không được ghi."""
+    from trading_bot.application.derivatives_state import load_derivatives_snapshots
+    from trading_bot.application.outbox import UnitOfWork
+    from trading_bot.domain.research.derivatives import derivatives_digest
+
+    engine, sessions = _sessions()
+    try:
+        async with UnitOfWork(sessions, workspace_id=WORKSPACE) as uow:
+            now = await load_derivatives_snapshots(
+                uow.session, workspace_id=WORKSPACE, as_of=DERIV_AT + timedelta(minutes=5)
+            )
+            before = await load_derivatives_snapshots(
+                uow.session, workspace_id=WORKSPACE, as_of=DERIV_AT - timedelta(seconds=1)
+            )
+            other = await load_derivatives_snapshots(
+                uow.session, workspace_id=uuid4(), as_of=DERIV_AT + timedelta(minutes=5)
+            )
+    finally:
+        await engine.dispose()
+    digest = derivatives_digest(now, DERIV_AT + timedelta(minutes=5), priority_symbols=["ETHUSDT"])
+    with _connect() as connection:
+        admin_insert = connection.execute(
+            "SELECT has_table_privilege('crypidian_admin_web', 'derivatives_snapshot', 'INSERT')"
+        ).fetchone()[0]
+    return {
+        "symbols": [row["symbol"] for row in digest["symbols"]],
+        "oi_change": digest["symbols"][0]["oi_change_24h_pct"],
+        "before_collect": len(before),
+        "other_workspace": len(other),
+        "admin_web_insert": bool(admin_insert),
+    }
+
+
+def _listing_symbols(zec_delivery: int) -> list[dict[str, Any]]:
+    far = 4133404800000
+    rows = [
+        {
+            "symbol": f"C{i}USDT",
+            "status": "TRADING",
+            "contractType": "PERPETUAL",
+            "quoteAsset": "USDT",
+            "deliveryDate": far,
+            "onboardDate": 1569398400000,
+        }
+        for i in range(10)
+    ]
+    rows.append(
+        {
+            "symbol": "ZECUSDT",
+            "status": "TRADING",
+            "contractType": "PERPETUAL",
+            "quoteAsset": "USDT",
+            "deliveryDate": zec_delivery,
+            "onboardDate": 1569398400000,
+        }
+    )
+    return rows  # fmt: skip
+
+
+LISTING_AT = datetime(2026, 11, 16, 9, tzinfo=UTC)
+
+
+async def listings_write() -> dict[str, Any]:
+    """AI-4 lát 3: ingestion-worker (role thật) ghi 2 lần kiểm exchangeInfo; không UPDATE/DELETE."""
+    from sqlalchemy import delete, update
+    from sqlalchemy.exc import DBAPIError
+
+    from trading_bot.adapters.database.models import ListingSnapshotRecord
+    from trading_bot.domain.research.listings import entries_hash, parse_exchange_info
+    from trading_bot.workers.listings_worker import database_listings_store_scope
+
+    engine, sessions = _sessions()
+    try:
+        scope = database_listings_store_scope(sessions, WORKSPACE)
+        for offset, delivery in ((0, 4133404800000), (1, 1795161600000)):
+            entries = parse_exchange_info({"symbols": _listing_symbols(delivery)})
+            async with scope() as store:
+                await store.insert(
+                    {
+                        "id": uuid4(),
+                        "workspace_id": WORKSPACE,
+                        "fetched_at": LISTING_AT + timedelta(hours=offset),
+                        "policy_fingerprint": "c" * 64,
+                        "entries_sha256": entries_hash(entries),
+                        "entry_count": len(entries),
+                        "changed": True,
+                        "entries": [e.payload() for e in entries],
+                    }
+                )
+        # Lần kiểm thứ ba không đổi nội dung: chỉ ghi mốc kiểm, entries là SQL NULL.
+        async with scope() as store:
+            previous = await store.last_check()
+            assert previous is not None
+            await store.insert(
+                {
+                    "id": uuid4(),
+                    "workspace_id": WORKSPACE,
+                    "fetched_at": LISTING_AT + timedelta(hours=1, minutes=30),
+                    "policy_fingerprint": "c" * 64,
+                    "entries_sha256": previous[1],
+                    "entry_count": 11,
+                    "changed": False,
+                    "entries": None,
+                }
+            )
+        async with scope() as store:
+            last = await store.last_check()
+        denied = []
+        for statement in (
+            update(ListingSnapshotRecord).values(entry_count=1),
+            delete(ListingSnapshotRecord),
+        ):
+            try:
+                async with scope() as store:
+                    await store._session.execute(statement)
+                denied.append(False)
+            except DBAPIError:
+                denied.append(True)
+    finally:
+        await engine.dispose()
+    return {"last": last[0].isoformat() if last else None, "update_delete_denied": denied}
+
+
+async def listings_read() -> dict[str, Any]:
+    """AI-4 lát 3: runtime (role thật) đọc lần kiểm point-in-time và phát hiện lịch gỡ ZEC."""
+    from trading_bot.application.listings_state import (
+        delist_exit_reason,
+        load_listing_fetches,
+        symbol_entry_block,
+    )
+    from trading_bot.application.outbox import UnitOfWork
+    from trading_bot.domain.research.listings import listings_digest
+
+    engine, sessions = _sessions()
+    try:
+        async with UnitOfWork(sessions, workspace_id=WORKSPACE) as uow:
+            after = LISTING_AT + timedelta(hours=2)
+            fetches, checked = await load_listing_fetches(
+                uow.session, workspace_id=WORKSPACE, as_of=after
+            )
+            early, early_checked = await load_listing_fetches(
+                uow.session, workspace_id=WORKSPACE, as_of=LISTING_AT + timedelta(minutes=30)
+            )
+            # Chặn vào lệnh trong runtime (role thật, RLS): ZEC bị lên lịch gỡ sau lần kiểm thứ hai.
+            blocks = {}
+            for label, symbol, at in (
+                ("zec_after", "ZECUSDT", after),
+                ("zec_before", "ZECUSDT", LISTING_AT + timedelta(minutes=30)),
+                ("c0_after", "C0USDT", after),
+                ("unlisted_after", "NOPEUSDT", after),
+                ("no_data", "ZECUSDT", LISTING_AT - timedelta(hours=1)),
+            ):
+                block = await symbol_entry_block(
+                    uow.session, workspace_id=WORKSPACE, symbol=symbol, as_of=at
+                )
+                blocks[label] = block.reason_code if block else None
+            # Đóng vị thế trước giờ gỡ (20/11 08:00 UTC): chỉ trong vòng 24 giờ trước giờ gỡ.
+            exits = {}
+            for label, symbol, at in (
+                ("zec_far", "ZECUSDT", after),
+                ("zec_within_24h", "ZECUSDT", datetime(2026, 11, 19, 9, tzinfo=UTC)),
+                ("c0_within", "C0USDT", datetime(2026, 11, 19, 9, tzinfo=UTC)),
+                ("unlisted", "NOPEUSDT", after),
+            ):
+                exits[label] = await delist_exit_reason(
+                    uow.session, workspace_id=WORKSPACE, symbol=symbol, as_of=at
+                )
+    finally:
+        await engine.dispose()
+    digest = listings_digest(fetches, after, last_checked_at=checked, watch_symbols=["ZECUSDT"])
+    before = listings_digest(
+        early,
+        LISTING_AT + timedelta(minutes=30),
+        last_checked_at=early_checked,
+        watch_symbols=["ZECUSDT"],
+    )
+    with _connect() as connection:
+        admin_insert = connection.execute(
+            "SELECT has_table_privilege('crypidian_admin_web', 'listing_snapshot', 'INSERT')"
+        ).fetchone()[0]
+    return {
+        "at_risk": [(r["symbol"], r["delist_at_vn"]) for r in digest["watched_at_risk"]],
+        "changes": [(c["kind"], c["symbol"]) for c in digest["recent_changes"]],
+        "before_at_risk": before["watched_at_risk"],
+        "admin_web_insert": bool(admin_insert),
+        "blocks": blocks,
+        "exits": exits,
+    }
+
+
+async def outcome() -> dict[str, Any]:
+    """16/11/2026: runtime (role thật) lưu lý do candidate, idempotent, RLS theo bot."""
+    from sqlalchemy import func, select, text
+    from sqlalchemy.dialects.postgresql import insert
+    from sqlalchemy.exc import DBAPIError
+
+    from trading_bot.adapters.database.models import BotDecisionRecord, PaperCandidateOutcomeRecord
+    from trading_bot.application.outbox import UnitOfWork
+
+    engine, sessions = _sessions()
+    bot_id = UUID(STATE["bot_id"])
+    try:
+        async with UnitOfWork(sessions, workspace_id=WORKSPACE, bot_id=bot_id) as uow:
+            decision_id = await uow.session.scalar(
+                select(BotDecisionRecord.id).where(
+                    BotDecisionRecord.workspace_id == WORKSPACE,
+                    BotDecisionRecord.status == "CANDIDATE",
+                )
+            )
+        statement = (
+            insert(PaperCandidateOutcomeRecord)
+            .values(
+                id=uuid4(),
+                workspace_id=WORKSPACE,
+                bot_id=bot_id,
+                account_id=ACCOUNT,
+                decision_id=decision_id,
+                stage="PLAN",
+                reason_code="MARKET_DATA_STALE",
+            )
+            .on_conflict_do_nothing(constraint="uq_paper_candidate_outcome")
+        )
+        for _ in range(2):
+            async with UnitOfWork(sessions, workspace_id=WORKSPACE, bot_id=bot_id) as uow:
+                await uow.session.execute(statement)
+        async with UnitOfWork(sessions, workspace_id=WORKSPACE, bot_id=bot_id) as uow:
+            rows = await uow.session.scalar(
+                select(func.count()).where(PaperCandidateOutcomeRecord.workspace_id == WORKSPACE)
+            )
+            user = await uow.session.scalar(text("SELECT current_user"))
+        other_denied = False
+        try:
+            async with UnitOfWork(sessions, workspace_id=WORKSPACE, bot_id=uuid4()) as uow:
+                await uow.session.execute(
+                    insert(PaperCandidateOutcomeRecord).values(
+                        id=uuid4(),
+                        workspace_id=WORKSPACE,
+                        bot_id=bot_id,
+                        account_id=ACCOUNT,
+                        decision_id=decision_id,
+                        stage="RISK",
+                        reason_code="OTHER_BOT_SCOPE",
+                    )
+                )
+        except DBAPIError:
+            other_denied = True
+    finally:
+        await engine.dispose()
+    return {"rows": int(rows or 0), "user": str(user), "other_bot_denied": other_denied}
+
+
+def pause_resume() -> dict[str, Any]:
+    """Owner tạm dừng rồi tiếp tục bot (bản ghi append-only như luồng resume có MFA)."""
+    with _connect() as connection, connection.transaction():
+        bot_id = UUID(STATE["bot_id"])
+        latest = connection.execute(
+            "SELECT coalesce(max(revision), 0) FROM bot_runtime_control "
+            "WHERE workspace_id=%s AND bot_id=%s",
+            (WORKSPACE, bot_id),
+        ).fetchone()[0]
+        for offset, state_name, code in (
+            (1, "PAUSED", "OPERATOR_PAUSE"),
+            (2, "ENABLED", "OPERATOR_RESUME"),
+        ):
+            _insert(
+                connection,
+                "bot_runtime_control",
+                workspace_id=WORKSPACE,
+                bot_id=bot_id,
+                account_id=ACCOUNT,
+                revision=latest + offset,
+                entry_state=state_name,
+                reason_code=code,
+                reason_text="E2E FX-2: mở lại sau ngắt mạch drawdown",
+                changed_by=MEMBERSHIP,
+                correlation_id=uuid4(),
+            )
+        resumed_at = connection.execute(
+            "SELECT changed_at FROM bot_runtime_control WHERE workspace_id=%s AND bot_id=%s "
+            "AND revision=%s",
+            (WORKSPACE, bot_id, latest + 2),
+        ).fetchone()[0]
+    return {"resumed_at": resumed_at.astimezone(UTC).isoformat()}
+
+
 def add_minutes() -> dict[str, Any]:
     """Ba nến 1m bình thường bắt đầu ở phút tròn đầu tiên sau `evaluated_at + 5s` của candidate."""
     with _connect() as connection, connection.transaction():
@@ -840,12 +1642,38 @@ def add_minutes() -> dict[str, Any]:
     return {"minute_base": base.isoformat()}
 
 
+FUNDING_RATE = Decimal("0.0001")
+FUNDING_MARK = Decimal("329.5")
+
+
 def add_stop_bar() -> dict[str, Any]:
     with _connect() as connection, connection.transaction():
         _minute(connection, 3, low=250.0)
         # Nến sau stop (còn trong tương lai khi runtime chạy): không được dùng.
         _minute(connection, 4)
-    return {"added": 2}
+        # FX-3 lát 2: kỳ funding đã chốt đúng mốc mở nến 3 (vị thế đang mở qua mốc). Runtime phải
+        # ghi `trade_cost` FUNDING trước khi đưa nến 3 (nến chạm stop) vào monitor.
+        funding_time = _minute_open(3)
+        _insert(
+            connection,
+            "market_funding",
+            id=_id("funding-minute-3"),
+            workspace_id=WORKSPACE,
+            instrument_id=INSTRUMENT,
+            source="BINANCE_USDM_REST",
+            idempotency_key=f"funding:BTCUSDT:{int(funding_time.timestamp() * 1000)}",
+            revision=1,
+            checksum=hashlib.sha256(b"rt1-funding-minute-3").hexdigest(),
+            supersedes_id=None,
+            funding_time=funding_time,
+            event_at=funding_time,
+            received_at=funding_time + timedelta(seconds=1),
+            available_at=funding_time + timedelta(seconds=2),
+            funding_rate=FUNDING_RATE,
+            mark_price=FUNDING_MARK,
+            rate_type="Regular",
+        )
+    return {"added": 2, "funding_seeded": 1}
 
 
 def verify() -> dict[str, Any]:
@@ -894,6 +1722,15 @@ def verify() -> dict[str, Any]:
                 (WORKSPACE,),
             ).fetchone()[0]
         )
+        funding_costs = rows(
+            "SELECT amount, source_event_id, occurred_at FROM trade_cost "
+            "WHERE workspace_id=%s AND cost_type='FUNDING'"
+        )
+        funding_basis = rows(
+            "SELECT i.side, sum(f.quantity), max(t.funding_total) FROM order_intent i "
+            "JOIN fill f ON f.intent_id = i.id AND f.fill_role = 'ENTRY' "
+            "JOIN trade t ON t.intent_id = i.id WHERE i.workspace_id=%s GROUP BY i.side"
+        )
         checkpoints = rows("SELECT count(*) FROM paper_execution_checkpoint WHERE workspace_id=%s")[
             0
         ][0]
@@ -934,6 +1771,168 @@ def verify() -> dict[str, Any]:
         "venue_rows": venue_rows,
         "checkpoints": int(checkpoints),
         "minute_open": {key: value.isoformat() for key, value in minute_open.items()},
+        "funding": _funding_summary(funding_costs, funding_basis),
+    }
+
+
+def _funding_summary(costs: list[tuple[Any, ...]], basis: list[tuple[Any, ...]]) -> dict[str, Any]:
+    """Đối chiếu `trade_cost` FUNDING với công thức mark × khối lượng × rate (dấu theo hướng)."""
+    if "minute_base" not in STATE:
+        return {"rows": len(costs)}
+    funding_time = _minute_open(3)
+    expected = None
+    trade_total = None
+    if basis:
+        side, quantity, trade_total = basis[0]
+        signed = FUNDING_MARK * Decimal(quantity) * FUNDING_RATE
+        expected = signed if str(side).upper() == "LONG" else -signed
+    return {
+        "rows": len(costs),
+        "amount_matches": [row[0] == expected for row in costs],
+        "event_ids": [row[1] == f"funding:BTCUSDT:{funding_time.isoformat()}" for row in costs],
+        "at_funding_time": [row[2] == funding_time for row in costs],
+        # Trade đã đóng: `funding_total` gồm kỳ funding (net = gross − tổng chi phí).
+        "trade_total_matches": trade_total is not None
+        and (trade_total == expected or (not costs and trade_total == 0)),
+    }
+
+
+def tg_seed() -> dict[str, Any]:
+    """TG-3: chủ workspace liên kết Telegram và bật nhận tin cho bot RT1 (lọc BTCUSDT)."""
+    bot_id = UUID(STATE["bot_id"])
+    with _connect() as connection, connection.transaction():
+        _insert(
+            connection,
+            "telegram_binding",
+            id=TELEGRAM_BINDING,
+            workspace_id=WORKSPACE,
+            membership_id=MEMBERSHIP,
+            telegram_user_id=str(TELEGRAM_CHAT),
+            verified_at=datetime.now(UTC),
+            revoked_at=None,
+        )
+        _insert(
+            connection,
+            "telegram_signal_subscription",
+            id=TELEGRAM_SUBSCRIPTION,
+            workspace_id=WORKSPACE,
+            membership_id=MEMBERSHIP,
+            bot_id=bot_id,
+            telegram_binding_id=TELEGRAM_BINDING,
+            telegram_chat_id=TELEGRAM_CHAT,
+            enabled=True,
+            symbols=Jsonb(["BTCUSDT"]),
+        )
+    return {"tg_seeded": True}
+
+
+async def tg_results() -> dict[str, Any]:
+    """TG-3: worker kết quả PAPER thật dưới role signal-worker, gửi tới sender ghi nhớ."""
+    from trading_bot.adapters.telegram.recording_sender import RecordingTelegramSender
+    from trading_bot.workers.telegram_trade_result_worker import TelegramTradeResultWorker
+
+    engine, sessions = _sessions()
+
+    def worker(name: str, sender: Any) -> Any:
+        return TelegramTradeResultWorker(
+            session_factory=sessions,
+            workspace_id=WORKSPACE,
+            sender=sender,
+            worker_id=name,
+            max_event_age=timedelta(minutes=60),
+            report_interval=timedelta(hours=4),
+        )
+
+    try:
+        first_sender = RecordingTelegramSender()
+        first = worker("rt1-tg3-a", first_sender)
+        sent_first = await first.tick()
+        sent_again = await first.tick()
+        restart_sender = RecordingTelegramSender()
+        sent_restart = await worker("rt1-tg3-b", restart_sender).tick()
+    finally:
+        await engine.dispose()
+    texts = [text for _, text in first_sender.messages]
+    closes = [text for text in texts if "Đóng lệnh PAPER" in text]
+    opens = [text for text in texts if "Mở vị thế PAPER" in text]
+    summaries = [text for text in texts if text.startswith("TỔNG HỢP KẾT QUẢ PAPER")]
+    close_text = closes[0] if len(closes) == 1 else ""
+    bot_id = UUID(STATE["bot_id"])
+    with _connect() as connection:
+
+        def scalar(query: str, params: tuple[Any, ...] = ()) -> Any:
+            row = connection.execute(query, params).fetchone()
+            assert row is not None
+            return row[0]
+
+        privileges = {
+            "trade_table_select": scalar(
+                "SELECT has_table_privilege(current_user, 'trade', 'SELECT')"
+            ),
+            "trade_net_pnl_select": scalar(
+                "SELECT has_column_privilege(current_user, 'trade', 'net_pnl', 'SELECT')"
+            ),
+            "trade_lineage_select": scalar(
+                "SELECT has_column_privilege(current_user, 'trade', 'lineage', 'SELECT')"
+            ),
+            "trade_any_update": scalar(
+                "SELECT has_any_column_privilege(current_user, 'trade', 'UPDATE')"
+            ),
+            "fill_any_insert": scalar(
+                "SELECT has_any_column_privilege(current_user, 'fill', 'INSERT')"
+            ),
+            "order_intent_any_select": scalar(
+                "SELECT has_any_column_privilege(current_user, 'order_intent', 'SELECT')"
+            ),
+        }
+        connection.execute(
+            "SELECT set_config('app.workspace_id', %s, false), set_config('app.bot_id', %s, false)",
+            (str(WORKSPACE), str(bot_id)),
+        )
+        visible_own = scalar("SELECT count(id) FROM trade WHERE workspace_id=%s", (WORKSPACE,))
+        connection.execute("SELECT set_config('app.bot_id', %s, false)", (str(uuid4()),))
+        visible_other = scalar("SELECT count(id) FROM trade WHERE workspace_id=%s", (WORKSPACE,))
+        try:
+            connection.execute("SELECT lineage FROM trade LIMIT 1")
+            lineage_denied = False
+        except psycopg.errors.InsufficientPrivilege:
+            lineage_denied = True
+    return {
+        "sent": [sent_first, sent_again, sent_restart],
+        "recipients": sorted({chat for chat, _ in first_sender.messages}),
+        "restart_messages": len(restart_sender.messages),
+        "opens": len(opens),
+        "closes": len(closes),
+        "summaries": len(summaries),
+        "close_header": close_text.splitlines()[0] if close_text else None,
+        "close_reason": "Lý do thoát: Chạm dừng lỗ (SL) (STOP_LOSS)" in close_text,
+        "close_loss_pnl": "PnL ròng (sau phí): -" in close_text,
+        "close_r_negative": "Bội số R: -" in close_text,
+        "summary_lists_bot": bool(summaries) and "1. " in summaries[0],
+        "max_length": max((len(text) for text in texts), default=0),
+        "privileges": privileges,
+        "rls": {"own_bot": int(visible_own), "other_bot": int(visible_other)},
+        "lineage_denied": lineage_denied,
+    }
+
+
+def tg_verify() -> dict[str, Any]:
+    with _connect() as connection:
+        notifications = connection.execute(
+            "SELECT kind, status, attempts, telegram_chat_id = %s FROM telegram_trade_notification "
+            "JOIN telegram_signal_subscription s ON s.workspace_id = "
+            "telegram_trade_notification.workspace_id AND s.id = subscription_id "
+            "WHERE telegram_trade_notification.workspace_id=%s ORDER BY kind",
+            (TELEGRAM_CHAT, WORKSPACE),
+        ).fetchall()
+        reports = connection.execute(
+            "SELECT status, attempts, telegram_chat_id, window_end - window_start "
+            "FROM telegram_paper_report_delivery WHERE workspace_id=%s",
+            (WORKSPACE,),
+        ).fetchall()
+    return {
+        "notifications": [list(row) for row in notifications],
+        "reports": [[row[0], row[1], row[2] == TELEGRAM_CHAT, str(row[3])] for row in reports],
     }
 
 
@@ -954,12 +1953,42 @@ elif phase == "calendar":
     output = asyncio.run(calendar())
 elif phase == "scanner":
     output = asyncio.run(scanner())
+elif phase == "card_consensus":
+    output = asyncio.run(card_consensus_phase())
+elif phase == "breaker":
+    output = asyncio.run(breaker())
+elif phase == "analyst":
+    output = asyncio.run(analyst())
+elif phase == "macro_write":
+    output = asyncio.run(macro_write())
+elif phase == "macro_read":
+    output = asyncio.run(macro_read())
+elif phase == "derivatives_write":
+    output = asyncio.run(derivatives_write())
+elif phase == "derivatives_read":
+    output = asyncio.run(derivatives_read())
+elif phase == "listings_write":
+    output = asyncio.run(listings_write())
+elif phase == "listings_read":
+    output = asyncio.run(listings_read())
+elif phase == "outcome":
+    output = asyncio.run(outcome())
+elif phase == "run_report":
+    output = asyncio.run(run_report())
+elif phase == "pause_resume":
+    output = pause_resume()
 elif phase == "add_minutes":
     output = add_minutes()
 elif phase == "add_stop_bar":
     output = add_stop_bar()
 elif phase == "verify":
     output = verify()
+elif phase == "tg_seed":
+    output = tg_seed()
+elif phase == "tg_results":
+    output = asyncio.run(tg_results())
+elif phase == "tg_verify":
+    output = tg_verify()
 else:
     raise AssertionError(phase)
 print(json.dumps(output, default=str))

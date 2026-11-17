@@ -1,3 +1,13 @@
+from trading_bot.adapters.database.models.analyst_entities import (
+    AnalystRunRecord,
+    AnalystSessionRecord,
+    DerivativesSnapshotRecord,
+    ListingSnapshotRecord,
+    MacroCalendarFetchRecord,
+    PaperCandidateOutcomeRecord,
+    ProposalBacktestRecord,
+    RunReportRecord,
+)
 from trading_bot.adapters.database.models.backtest_entities import (
     BacktestDatasetManifestRecord,
     BacktestDatasetReplayBundleRecord,
@@ -185,8 +195,10 @@ from trading_bot.adapters.database.models.strategy_card_entities import Strategy
 from trading_bot.adapters.database.models.telegram_entities import (
     TelegramBindingChallenge,
     TelegramLinkRequest,
+    TelegramPaperReportDelivery,
     TelegramSignalDelivery,
     TelegramSignalSubscription,
+    TelegramTradeNotification,
     TelegramUpdateReceipt,
 )
 from trading_bot.adapters.database.models.venue_entities import (
@@ -195,6 +207,14 @@ from trading_bot.adapters.database.models.venue_entities import (
 )
 
 __all__ = [
+    "AnalystRunRecord",
+    "AnalystSessionRecord",
+    "PaperCandidateOutcomeRecord",
+    "DerivativesSnapshotRecord",
+    "ListingSnapshotRecord",
+    "MacroCalendarFetchRecord",
+    "ProposalBacktestRecord",
+    "RunReportRecord",
     "EconomicEventRecord",
     "LearningIncidentHoldEventRecord",
     "LearningPaperPerformanceReportRecord",
@@ -303,6 +323,8 @@ __all__ = [
     "TelegramBindingChallenge",
     "TelegramLinkRequest",
     "TelegramSignalDelivery",
+    "TelegramTradeNotification",
+    "TelegramPaperReportDelivery",
     "TelegramSignalSubscription",
     "TelegramUpdateReceipt",
     "TradingAccount",

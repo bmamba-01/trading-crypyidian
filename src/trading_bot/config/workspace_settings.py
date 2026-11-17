@@ -21,7 +21,7 @@ from pydantic import (
 )
 
 Timeframe = Literal["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d"]
-FillModel = Literal["next_bar_with_adverse_costs"]
+FillModel = Literal["next_bar_with_adverse_costs", "next_bar_with_adverse_costs_v2"]
 _SECRET_KEY_PATTERN = re.compile(r"(?:secret|token|password|credential|api[_-]?key|cookie)", re.I)
 
 

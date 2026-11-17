@@ -51,6 +51,10 @@ class FillModelDefinition:
     slippage_rate: Decimal
     adverse_funding_per_unit: Decimal
     max_fill_quantity_per_event: Decimal | None
+    # FX-3 lát 3a: dự trù funding bất lợi theo tỷ lệ × notional × số kỳ (`CostModel`). Mặc định 0
+    # và **không** vào hash khi bằng 0, để hash hồ sơ v1 giữ nguyên cho account đang chạy.
+    adverse_funding_rate: Decimal = Decimal("0")
+    expected_funding_periods: int = 0
 
     def __post_init__(self) -> None:
         if not self.reference.strip() or not self.version_id.strip():
@@ -60,6 +64,9 @@ class FillModelDefinition:
         _validate_rate(self.spread_rate, "spread_rate")
         _validate_rate(self.slippage_rate, "slippage_rate")
         _validate_nonnegative(self.adverse_funding_per_unit, "adverse_funding_per_unit")
+        _validate_rate(self.adverse_funding_rate, "adverse_funding_rate")
+        if type(self.expected_funding_periods) is not int or self.expected_funding_periods < 0:
+            raise ValueError("expected_funding_periods phải là số nguyên không âm.")
         if self.spread_rate + self.slippage_rate >= Decimal("1"):
             raise ValueError("Spread cộng slippage phải nhỏ hơn 100%.")
         if self.max_fill_quantity_per_event is not None:
@@ -94,6 +101,11 @@ def default_paper_execution_profile_catalog() -> PaperExecutionProfileCatalog:
     cá nhân. Fill stress dùng độ trễ 5 giây, spread 0,05%, slippage 0,10% và
     funding adverse 0,05 đơn vị quote trên một contract unit. Các mức fill này
     là giả định kỹ thuật bảo thủ để replay PAPER, không phải thống kê thị trường.
+
+    FX-3 lát 3a (owner duyệt 17/11/2026): `next_bar_with_adverse_costs_v2` giữ nguyên độ trễ,
+    spread, slippage của v1 nhưng thay funding tuyệt đối bằng dự trù theo tỷ lệ: 0,05%/kỳ (gấp 5
+    mức cơ sở 0,01%/8 giờ của Binance) × 3 kỳ (~24 giờ giữ lệnh) × notional. v1 giữ nguyên hash;
+    workspace chuyển sang v2 bằng cách publish root settings mới khi account không còn vị thế mở.
     """
     return PaperExecutionProfileCatalog(
         fee_schedules=(
@@ -113,6 +125,17 @@ def default_paper_execution_profile_catalog() -> PaperExecutionProfileCatalog:
                 slippage_rate=Decimal("0.001"),
                 adverse_funding_per_unit=Decimal("0.05"),
                 max_fill_quantity_per_event=None,
+            ),
+            FillModelDefinition(
+                reference="next_bar_with_adverse_costs_v2",
+                version_id="next-bar-adverse-v2",
+                latency=timedelta(seconds=5),
+                spread_rate=Decimal("0.0005"),
+                slippage_rate=Decimal("0.001"),
+                adverse_funding_per_unit=Decimal("0"),
+                max_fill_quantity_per_event=None,
+                adverse_funding_rate=Decimal("0.0005"),
+                expected_funding_periods=3,
             ),
         ),
     )
@@ -219,6 +242,8 @@ def resolve_paper_execution_profile(
         adverse_funding_per_unit=fill_model.adverse_funding_per_unit,
         entry_slippage_rate=fill_model.spread_rate + fill_model.slippage_rate,
         exit_slippage_rate=fill_model.spread_rate + fill_model.slippage_rate,
+        adverse_funding_rate=fill_model.adverse_funding_rate,
+        expected_funding_periods=fill_model.expected_funding_periods,
     )
     return ResolvedPaperExecutionProfile(
         workspace_id=published.workspace_id,
@@ -249,21 +274,24 @@ def _hash_fee_schedule(schedule: FeeScheduleDefinition) -> str:
 
 
 def _hash_fill_model(model: FillModelDefinition) -> str:
-    return _hash(
-        {
-            "reference": model.reference,
-            "version_id": model.version_id,
-            "latency_microseconds": str(model.latency // timedelta(microseconds=1)),
-            "spread_rate": str(model.spread_rate),
-            "slippage_rate": str(model.slippage_rate),
-            "adverse_funding_per_unit": str(model.adverse_funding_per_unit),
-            "max_fill_quantity_per_event": (
-                str(model.max_fill_quantity_per_event)
-                if model.max_fill_quantity_per_event is not None
-                else None
-            ),
-        }
-    )
+    payload: dict[str, str | None] = {
+        "reference": model.reference,
+        "version_id": model.version_id,
+        "latency_microseconds": str(model.latency // timedelta(microseconds=1)),
+        "spread_rate": str(model.spread_rate),
+        "slippage_rate": str(model.slippage_rate),
+        "adverse_funding_per_unit": str(model.adverse_funding_per_unit),
+        "max_fill_quantity_per_event": (
+            str(model.max_fill_quantity_per_event)
+            if model.max_fill_quantity_per_event is not None
+            else None
+        ),
+    }
+    if model.adverse_funding_rate != 0 or model.expected_funding_periods != 0:
+        # Chỉ thêm khi khác 0: hash fill model v1 (và profile hash account đang chạy) giữ nguyên.
+        payload["adverse_funding_rate"] = str(model.adverse_funding_rate)
+        payload["expected_funding_periods"] = str(model.expected_funding_periods)
+    return _hash(payload)
 
 
 def _hash_profile(

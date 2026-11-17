@@ -38,6 +38,10 @@ FEATURES_BY_RELEASE: Mapping[str, Mapping[str, tuple[str, ...]]] = MappingProxyT
         ),
         "h03-v1": MappingProxyType({"1h": ("atr_14",)}),
         "h03-v2": MappingProxyType({"1h": ("atr_14",)}),
+        # H03 v3 (15/11/2026): mỗi khung vào lệnh một release (domain/strategy/rules_v3.py).
+        "h03-v3-15m": MappingProxyType({"15m": ("atr_14",)}),
+        "h03-v3-1h": MappingProxyType({"1h": ("atr_14",)}),
+        "h03-v3-4h": MappingProxyType({"4h": ("atr_14",)}),
         "h06-v1": MappingProxyType(
             {
                 "15m": (
@@ -142,6 +146,9 @@ ENTRY_TIMEFRAME_BY_RELEASE = MappingProxyType(
         "h03-v1": "1h",
         "h06-v1": "15m",
         "h03-v2": "1h",
+        "h03-v3-15m": "15m",
+        "h03-v3-1h": "1h",
+        "h03-v3-4h": "4h",
         "h06-v2": "15m",
         CARD_VOL_BREAKOUT_RELEASE: "1h",
         "h18-v1": "5m",

@@ -15,9 +15,11 @@ dependencies = [
     "fastapi==0.156.4",
     "httpx2[ws]>=2,<3",
     "jinja2==3.1.6",
+    "pillow==13.0.0",
     "psycopg[binary]==3.3.6",
     "pydantic-settings==2.16.0",
     "pyotp==2.10.0",
+    "pypdf==6.9.2",
     "sqlalchemy[asyncio]==2.1.5",
     "uvicorn==0.54.0",
 ]

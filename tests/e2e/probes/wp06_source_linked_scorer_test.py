@@ -933,7 +933,22 @@ async def evaluate(sessions):
     ):
         assert getattr(report, name) == getattr(proof, name)
     assert report.scorer_artifact_hash == scorer.artifact_hash
+    # Digest scope EVALUATION hiện hành tính bằng gate Python dưới login evaluator thật;
+    # phase current-rights (migrator) đối chiếu với digest recheck SQL dựng lại (d4f6a8b0c2e4).
+    from trading_bot.adapters.database.replay_training_rights import (
+        DatabaseReplayTrainingRightsGate,
+        ReplayTrainingOperation,
+        training_scope_digest,
+    )
+
+    async with UnitOfWork(sessions, workspace_id=WORKSPACE) as rights_unit:
+        evaluation_receipts = await DatabaseReplayTrainingRightsGate(rights_unit.session).authorize(
+            workspace_id=WORKSPACE,
+            bundle_hash=STATE["bundle_hash"],
+            operation=ReplayTrainingOperation.EVALUATION,
+        )
     return {
+        "evaluation_training_scope_digest": training_scope_digest(evaluation_receipts),
         "receipt_committed_before_payload": True,
         "atomic_rollback": True,
         "one_consumption_one_report": True,
@@ -960,10 +975,6 @@ async def verify_current_rights(sessions):
     """Kiểm gateway trong PostgreSQL bằng fixture TEST có source reference thật."""
     import hashlib
 
-    from trading_bot.adapters.database.replay_training_rights import (
-        DatabaseReplayTrainingRightsGate,
-        training_scope_digest,
-    )
     from trading_bot.adapters.database.repositories.source_registry import (
         SourceRegistryRepository,
     )
@@ -1065,39 +1076,58 @@ async def verify_current_rights(sessions):
         assert entry is not None
         revision = entry.revisions[-1]
         policy = revision.policy
-        sql_policy_fingerprint = await session.scalar(
-            text(
-                "SELECT public.wp06_scorer_source_policy_fingerprint("
-                ":source_id,:sequence,:policy_id,:state,CAST(:purposes AS jsonb),"
-                ":evidence_ref,:reviewed_at,:valid_until,:approved_by,:publisher,"
-                ":endpoint_url,:access_method,:auth_scope,:attribution,:retention_ref,"
-                ":window_seconds,:max_requests,:max_bytes,CAST(:max_cost AS numeric),:cost_unit)"
-            ),
-            {
-                "source_id": policy.source_id,
-                "sequence": revision.sequence,
-                "policy_id": policy.policy_id,
-                "state": policy.state.value,
-                "purposes": json.dumps(
-                    sorted(purpose.value for purpose in policy.allowed_purposes)
+        if revision.license_evidence_id is not None:
+            # Từ d823df5 policy VERIFIED mang license evidence; `source_rights_hash` gắn thêm
+            # evidence id/digest/scope hash, nên đối chiếu với hàm SQL theo row của
+            # a4c6e8f0b2d5 (helper cũ không nhận trường license).
+            sql_policy_fingerprint = await session.scalar(
+                text(
+                    "SELECT public.wp06_license_source_policy_fingerprint(policy) "
+                    "FROM public.source_policy_revision AS policy "
+                    "WHERE policy.workspace_id=:workspace AND policy.source_id=:source_id "
+                    "AND policy.sequence=:sequence"
                 ),
-                "evidence_ref": policy.evidence_ref,
-                "reviewed_at": policy.reviewed_at,
-                "valid_until": policy.valid_until,
-                "approved_by": revision.approved_by,
-                "publisher": revision.publisher,
-                "endpoint_url": revision.endpoint_url,
-                "access_method": revision.access_method,
-                "auth_scope": revision.auth_scope,
-                "attribution": revision.attribution,
-                "retention_ref": revision.retention_ref,
-                "window_seconds": int(revision.budget.window.total_seconds()),
-                "max_requests": revision.budget.max_requests,
-                "max_bytes": revision.budget.max_bytes,
-                "max_cost": str(revision.budget.max_cost),
-                "cost_unit": revision.budget.cost_unit,
-            },
-        )
+                {
+                    "workspace": WORKSPACE,
+                    "source_id": policy.source_id,
+                    "sequence": revision.sequence,
+                },
+            )
+        else:
+            sql_policy_fingerprint = await session.scalar(
+                text(
+                    "SELECT public.wp06_scorer_source_policy_fingerprint("
+                    ":source_id,:sequence,:policy_id,:state,CAST(:purposes AS jsonb),"
+                    ":evidence_ref,:reviewed_at,:valid_until,:approved_by,:publisher,"
+                    ":endpoint_url,:access_method,:auth_scope,:attribution,:retention_ref,"
+                    ":window_seconds,:max_requests,:max_bytes,"
+                    "CAST(:max_cost AS numeric),:cost_unit)"
+                ),
+                {
+                    "source_id": policy.source_id,
+                    "sequence": revision.sequence,
+                    "policy_id": policy.policy_id,
+                    "state": policy.state.value,
+                    "purposes": json.dumps(
+                        sorted(purpose.value for purpose in policy.allowed_purposes)
+                    ),
+                    "evidence_ref": policy.evidence_ref,
+                    "reviewed_at": policy.reviewed_at,
+                    "valid_until": policy.valid_until,
+                    "approved_by": revision.approved_by,
+                    "publisher": revision.publisher,
+                    "endpoint_url": revision.endpoint_url,
+                    "access_method": revision.access_method,
+                    "auth_scope": revision.auth_scope,
+                    "attribution": revision.attribution,
+                    "retention_ref": revision.retention_ref,
+                    "window_seconds": int(revision.budget.window.total_seconds()),
+                    "max_requests": revision.budget.max_requests,
+                    "max_bytes": revision.budget.max_bytes,
+                    "max_cost": str(revision.budget.max_cost),
+                    "cost_unit": revision.budget.cost_unit,
+                },
+            )
         expected_policy_fingerprint = source_rights_hash(revision)
         assert sql_policy_fingerprint == expected_policy_fingerprint, (
             sql_policy_fingerprint,
@@ -1315,11 +1345,8 @@ async def verify_current_rights(sessions):
             )
             expected_digests[fold_role] = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
-        async with UnitOfWork(sessions, workspace_id=WORKSPACE) as training_rights_unit:
-            receipts = await DatabaseReplayTrainingRightsGate(
-                training_rights_unit.session
-            ).authorize(workspace_id=WORKSPACE, bundle_hash=STATE["bundle_hash"])
-            expected_training_scope_digest = training_scope_digest(receipts)
+        # Gate replay chỉ nhận login builder/evaluator; digest Python lấy từ phase evaluate.
+        expected_training_scope_digest = STATE["evaluation_training_scope_digest"]
 
         counts_before = tuple(
             (

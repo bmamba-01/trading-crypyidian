@@ -51,6 +51,7 @@ from trading_bot.adapters.database.repositories.learning_incident_entry_holds im
 from trading_bot.adapters.database.repositories.paper_checkpoints import (
     PaperCheckpointConflict,
 )
+from trading_bot.adapters.database.repositories.paper_ledger import PaperLedgerConflict
 from trading_bot.adapters.database.repositories.risk_reservations import (
     RiskReservationRepository,
 )
@@ -65,6 +66,7 @@ from trading_bot.application.bot_config_resolver import (
     load_effective_bot_config,
 )
 from trading_bot.application.bot_dispatcher import BotDecision, BotDecisionStatus
+from trading_bot.application.listings_state import delist_exit_reason
 from trading_bot.application.outbox import AfterCommitCallbackError, UnitOfWork
 from trading_bot.application.paper_decision_cycle import (
     DecisionCycleOutcome,
@@ -80,6 +82,7 @@ from trading_bot.application.paper_execution_profile import (
 )
 from trading_bot.application.paper_lifecycle import (
     EntryLifecycleResult,
+    FundingLifecycleResult,
     PaperLifecycleConflict,
     PaperSubmissionResult,
     PositionLifecycleResult,
@@ -93,6 +96,7 @@ from trading_bot.application.workspace_risk import (
 )
 from trading_bot.config.bot_settings import BotConfigOverlay, overlay_hash
 from trading_bot.config.workspace_settings import PublishedWorkspaceSettings, WorkspaceSettings
+from trading_bot.domain.execution.funding import FundingSettlement
 from trading_bot.domain.execution.paper import PaperBar
 from trading_bot.domain.execution.runtime_control import (
     BotEntryState,
@@ -268,6 +272,17 @@ class PaperMonitorCommand:
     paper_position_id: str
     bar: PaperBar
     feature_snapshot_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class PaperFundingCommand:
+    """Ghi một kỳ funding đã chốt cho trade PAPER đang mở (FX-3 lát 2)."""
+
+    account_id: UUID
+    ledger_intent_id: UUID
+    trade_id: UUID
+    paper_position_id: str
+    settlement: FundingSettlement
 
 
 @dataclass(frozen=True, slots=True)
@@ -886,6 +901,13 @@ class PaperRuntimeApplicationService:
                     exit_feature_value=evidence.exit_feature_value,
                     strategy_bar_closed=evidence.strategy_bar_closed,
                     fencing_token=_account_token(account),
+                    # AI-4 lát 3: đóng trước khi Binance gỡ hợp đồng (point-in-time theo nến).
+                    forced_exit_reason=await delist_exit_reason(
+                        uow.session,
+                        workspace_id=self._workspace_id,
+                        symbol=command.bar.symbol,
+                        as_of=command.bar.closed_at,
+                    ),
                 )
         except PaperRuntimeApplicationError:
             raise
@@ -898,6 +920,65 @@ class PaperRuntimeApplicationService:
             SettingsVersionConflict,
             ExecutionProfileResolutionError,
         ):
+            raise PaperRuntimeApplicationError("PAPER_COMMAND_REJECTED") from None
+        except DBAPIError as error:
+            self._raise_if_fence_rejected(command.account_id, error)
+            raise
+
+    async def apply_funding(self, command: PaperFundingCommand) -> FundingLifecycleResult:
+        """Ghi funding đã chốt cho trade OPEN dưới khóa workspace + fence (FX-3 lát 2).
+
+        Không phụ thuộc pause/kill: funding là dòng tiền của vị thế đang mở, không phải lệnh mới.
+        Gateway/ledger/checkpoint cùng một UoW; gateway thật chỉ đổi sau commit.
+        """
+        account = self._require_account(command.account_id)
+        if self._sessions is None:
+            raise PaperRuntimeApplicationError("DATABASE_UNAVAILABLE")
+        settlement = command.settlement
+        try:
+            async with self._unit_of_work_factory(
+                self._sessions, workspace_id=self._workspace_id, bot_id=account.bot_id
+            ) as uow:
+                await self._settings_repository_factory(uow.session).lock_workspace(
+                    self._workspace_id
+                )
+                await self._require_fence(uow, account)
+                intent = await _load_scoped_intent(
+                    uow, account_id=command.account_id, intent_id=command.ledger_intent_id
+                )
+                trade = await uow.session.scalar(
+                    select(TradeRecord).where(
+                        TradeRecord.workspace_id == self._workspace_id,
+                        TradeRecord.account_id == command.account_id,
+                        TradeRecord.id == command.trade_id,
+                        TradeRecord.intent_id == command.ledger_intent_id,
+                    )
+                )
+                if (
+                    intent is None
+                    or trade is None
+                    or command.paper_position_id != f"paper:{intent.idempotency_key}"
+                    or intent.symbol != settlement.symbol
+                    or trade.status != "OPEN"
+                    or trade.opened_at >= settlement.funding_time
+                ):
+                    raise PaperRuntimeApplicationError("PAPER_FUNDING_SCOPE_MISMATCH")
+                return await account.coordinator.apply_funding_settlement(
+                    uow,
+                    account_id=command.account_id,
+                    paper_position_id=command.paper_position_id,
+                    ledger_intent_id=command.ledger_intent_id,
+                    trade_id=command.trade_id,
+                    settlement=settlement,
+                    currency=trade.quote_asset,
+                    fencing_token=_account_token(account),
+                )
+        except PaperRuntimeApplicationError:
+            raise
+        except AfterCommitCallbackError:
+            self._invalidate_account(command.account_id, "PAPER_PUBLISH_FAILED")
+            raise PaperRuntimeApplicationError("PAPER_PUBLISH_FAILED") from None
+        except PaperLifecycleConflict, PaperCheckpointConflict, PaperLedgerConflict:
             raise PaperRuntimeApplicationError("PAPER_COMMAND_REJECTED") from None
         except DBAPIError as error:
             self._raise_if_fence_rejected(command.account_id, error)

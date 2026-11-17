@@ -8,12 +8,19 @@ import os
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import select, text
 from sqlalchemy.engine import URL
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+# Test mount `tests/` vào /e2e-tests và thêm vào sys.path trước khi exec probe.
+from e2e.probes.source_license_fixture import (
+    append_fixture_license_evidence,
+    fixture_license_scope,
+    pending_license_kwargs,
+    verified_license_kwargs,
+)
 from trading_bot.adapters.database.models import (
     OutboxEvent,
     SourcePolicyRevisionRecord,
@@ -30,6 +37,11 @@ SOURCE = "expiry-fixture"
 ADMIN = "crypidian_admin_web"
 INGESTION = "crypidian_ingestion_worker"
 EVENT_TYPE = "research.rights_changed.v1"
+# Từ d823df5 (13/11/2026) VERIFIED mới phải mang license scope + evidence đã lưu cho đúng
+# pending trước đó; fixture tổng hợp không cấp quyền dữ liệu sản phẩm.
+LICENSE_SCOPE = fixture_license_scope(SOURCE)
+GRANT_TERMS = "https://example.invalid/expiry-license-grant"
+RENEWAL_TERMS = "https://example.invalid/expiry-license-renewal"
 
 
 def _engine(role: str):
@@ -127,6 +139,7 @@ async def _run() -> dict[str, object]:
             actor_id="expiry-operator",
             at=first.revision.created_at + timedelta(microseconds=1),
             reason="fixture only",
+            **pending_license_kwargs(LICENSE_SCOPE, GRANT_TERMS),
         )
         second = await SourceRegistryRepository(session).append_revision(
             workspace_id=WORKSPACE, revision=pending.current
@@ -138,12 +151,15 @@ async def _run() -> dict[str, object]:
             state=SourcePolicyState.VERIFIED,
             actor_id="expiry-operator",
             approved_by="separate-reviewer",
-            evidence_ref="fixture:approved-metadata-only",
             reviewed_at=expiry_now,
             valid_until=expiry_now + timedelta(seconds=2),
             allowed_purposes=frozenset({SourceUsePurpose.METADATA}),
             at=expiry_now + timedelta(microseconds=1),
             reason="fixture only",
+            **verified_license_kwargs(LICENSE_SCOPE, GRANT_TERMS, uuid4()),
+        )
+        await append_fixture_license_evidence(
+            session, workspace_id=WORKSPACE, revision=grant.current
         )
         third = await SourceRegistryRepository(session).append_revision(
             workspace_id=WORKSPACE, revision=grant.current
@@ -169,6 +185,7 @@ async def _run() -> dict[str, object]:
             actor_id="expiry-operator",
             at=now + timedelta(microseconds=1),
             reason="renewal fixture only",
+            **pending_license_kwargs(LICENSE_SCOPE, RENEWAL_TERMS),
         )
         fourth = await SourceRegistryRepository(session).append_revision(
             workspace_id=WORKSPACE, revision=renewal_pending.current
@@ -180,12 +197,15 @@ async def _run() -> dict[str, object]:
             state=SourcePolicyState.VERIFIED,
             actor_id="expiry-operator",
             approved_by="separate-reviewer",
-            evidence_ref="fixture:renewed-metadata-only",
             reviewed_at=renewal_now,
             valid_until=renewal_now + timedelta(days=1),
             allowed_purposes=frozenset({SourceUsePurpose.METADATA}),
             at=renewal_now + timedelta(microseconds=1),
             reason="renewal fixture only",
+            **verified_license_kwargs(LICENSE_SCOPE, RENEWAL_TERMS, uuid4()),
+        )
+        await append_fixture_license_evidence(
+            session, workspace_id=WORKSPACE, revision=renewed.current
         )
         await SourceRegistryRepository(session).append_revision(
             workspace_id=WORKSPACE, revision=renewed.current

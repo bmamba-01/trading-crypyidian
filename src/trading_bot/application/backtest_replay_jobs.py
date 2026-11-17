@@ -37,6 +37,9 @@ class BacktestReplayJobSubmission:
     slippage_rate: Decimal
     seed: int
     learning_intent: str = "RESEARCH"
+    # AI-3 (16/11/2026): tham số chiến lược của bot (H03 lookback) để so bản gốc/bản đề xuất.
+    # Rỗng = tham số mặc định của release (hành vi cũ, hash cũ giữ nguyên).
+    strategy_parameters: tuple[tuple[str, int], ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.bundle_hash, str) or _SHA256.fullmatch(self.bundle_hash) is None:
@@ -46,6 +49,15 @@ class BacktestReplayJobSubmission:
         if not isinstance(self.execution_interval, str) or not self.execution_interval.strip():
             raise ValueError("Cần chọn khung thời gian khớp PAPER.")
         strategy_registry().get_release(self.strategy_release_id)
+        if self.strategy_parameters:
+            from trading_bot.domain.strategy.contracts import StrategySelection
+
+            StrategySelection(
+                "replay-parameter-check",
+                (self.strategy_release_id,),
+                True,
+                tuple(sorted(self.strategy_parameters)),
+            )
         for name in ("starting_equity", "per_trade_risk_fraction", "fee_rate", "slippage_rate"):
             value = getattr(self, name)
             if not isinstance(value, Decimal) or not value.is_finite():

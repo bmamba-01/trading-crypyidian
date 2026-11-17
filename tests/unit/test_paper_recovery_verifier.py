@@ -311,3 +311,37 @@ def test_restore_rejects_intent_with_mismatched_plan_or_reservation_lineage() ->
             costs=(),
             reservations=(reservation,),
         )
+
+
+def test_stop_event_quantity_accepts_any_previously_open_quantity() -> None:
+    """Lỗi 15/11/2026: vị thế đã đóng (quantity 0) có STOP_UPDATED ghi khi còn mở 21,76 bị coi là
+    không khớp, làm bot kẹt RECOVERY_REQUIRED sau restart."""
+    from trading_bot.application.paper_recovery import stop_event_quantity_valid
+
+    opened = {Decimal("21.76")}
+    assert stop_event_quantity_valid(
+        Decimal("21.76"),
+        open_quantities=opened,
+        current_quantity=Decimal("0"),
+        position_closed=True,
+    )
+    # Vị thế còn mở: mức hiện tại hợp lệ.
+    assert stop_event_quantity_valid(
+        Decimal("21.76"),
+        open_quantities=opened,
+        current_quantity=Decimal("21.76"),
+        position_closed=False,
+    )
+    # Mức chưa từng mở, hoặc 0, vẫn bị từ chối (đối soát không bị nới thành vô điều kiện).
+    assert not stop_event_quantity_valid(
+        Decimal("5"), open_quantities=opened, current_quantity=Decimal("0"), position_closed=True
+    )
+    assert not stop_event_quantity_valid(
+        Decimal("0"), open_quantities=opened, current_quantity=Decimal("0"), position_closed=True
+    )
+    # Sau một lần giảm: mức trước khi giảm và mức còn lại đều là mức từng mở.
+    reduced = {Decimal("10"), Decimal("4")}
+    for quantity in (Decimal("10"), Decimal("4")):
+        assert stop_event_quantity_valid(
+            quantity, open_quantities=reduced, current_quantity=Decimal("0"), position_closed=True
+        )

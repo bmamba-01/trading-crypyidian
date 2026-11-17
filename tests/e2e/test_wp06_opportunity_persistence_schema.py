@@ -127,7 +127,7 @@ def test_opportunity_schema_persistence_roles_and_legacy_migration() -> None:
                 )
                 heads = compose("run", "--rm", "--no-deps", "migrator", "alembic", "heads").stdout
                 assert heads.count("(head)") == 1
-                assert "b8d0f2a4c6e8 (head)" in heads
+                assert "d4f6a8b0c2e4 (head)" in heads
                 print(
                     json.dumps(
                         {

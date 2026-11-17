@@ -206,3 +206,72 @@ def test_account_validation_checks_scope_currency_and_known_state() -> None:
             ),
             account_quote_asset="USDT",
         )
+
+
+# --- FX-3 lát 3a (CRY-198): hồ sơ funding theo tỷ lệ, phát hành fill model v2 -------------------
+V1_FILL_HASH = "2cc487ddfbfbf6a41dd2db08fc0190f0f14bc3aafb4a3f432c7fa22515733ea5"
+
+
+def _published_with_fill(fill_model: str) -> PublishedWorkspaceSettings:
+    payload = valid_payload()
+    paper = payload["paper_execution"]
+    assert isinstance(paper, dict)
+    paper["fill_model"] = fill_model
+    return PublishedWorkspaceSettings(
+        workspace_id=uuid4(),
+        settings_version_id=uuid4(),
+        settings_hash="d" * 64,
+        settings=WorkspaceSettings.model_validate(payload),
+    )
+
+
+def test_v1_fill_model_hash_is_unchanged_by_funding_rate_fields() -> None:
+    from trading_bot.application.paper_execution_profile import _hash_fill_model
+
+    v1 = default_paper_execution_profile_catalog().fill_models[0]
+    assert v1.adverse_funding_rate == Decimal("0")
+    assert v1.expected_funding_periods == 0
+    # Account đang chạy hồ sơ v1 giữ nguyên profile hash (không PAPER_PROFILE_DRIFT).
+    assert _hash_fill_model(v1) == V1_FILL_HASH
+
+
+def test_v2_fill_model_reserves_funding_by_rate_times_notional() -> None:
+    catalog = default_paper_execution_profile_catalog()
+    v2 = next(item for item in catalog.fill_models if item.reference.endswith("_v2"))
+    assert v2.reference == "next_bar_with_adverse_costs_v2"
+    assert v2.version_id == "next-bar-adverse-v2"
+    assert v2.adverse_funding_per_unit == Decimal("0")
+    assert v2.adverse_funding_rate == Decimal("0.0005")
+    assert v2.expected_funding_periods == 3
+    v1 = catalog.fill_models[0]
+    assert (v2.latency, v2.spread_rate, v2.slippage_rate) == (
+        v1.latency,
+        v1.spread_rate,
+        v1.slippage_rate,
+    )
+
+    profile = resolve_paper_execution_profile(
+        _published_with_fill("next_bar_with_adverse_costs_v2"), catalog
+    )
+    costs = profile.cost_model
+    assert costs.adverse_funding_per_unit == Decimal("0")
+    assert costs.adverse_funding_rate == Decimal("0.0005")
+    assert costs.expected_funding_periods == 3
+    # Coin giá nhỏ: dự trù tỷ lệ với giá thay vì 0,05 quote/đơn vị cố định.
+    assert costs.funding_per_unit(Decimal("0.1"), Decimal("1")) == Decimal("0.00015")
+    v1_profile = resolve_paper_execution_profile(
+        _published_with_fill("next_bar_with_adverse_costs"), catalog
+    )
+    assert v1_profile.cost_model.funding_per_unit(Decimal("0.1"), Decimal("1")) == Decimal("0.05")
+    assert profile.fill_model_hash != v1_profile.fill_model_hash
+
+
+def test_fill_model_rejects_invalid_funding_rate_fields() -> None:
+    base = default_paper_execution_profile_catalog().fill_models[0]
+    for changes in (
+        {"adverse_funding_rate": Decimal("-0.1")},
+        {"adverse_funding_rate": Decimal("1")},
+        {"expected_funding_periods": -1},
+    ):
+        with pytest.raises(ValueError, match="funding"):
+            replace(base, **changes)

@@ -535,7 +535,11 @@ class MarketDataRepository:
         version: MarketRecordVersion,
         funding_time: datetime,
         funding_rate: Decimal,
+        mark_price: Decimal | None = None,
+        rate_type: str | None = None,
     ) -> MarketAppendResult:
+        if mark_price is not None and (not mark_price.is_finite() or mark_price <= 0):
+            raise ValueError("mark_price funding phải hữu hạn và dương.")
         return await self._append_point_record(
             model=MarketFunding,
             workspace_id=workspace_id,
@@ -545,6 +549,7 @@ class MarketDataRepository:
             point_time=funding_time,
             value_field="funding_rate",
             value=funding_rate,
+            extra_fields={"mark_price": mark_price, "rate_type": rate_type},
         )
 
     async def append_open_interest(
@@ -720,8 +725,10 @@ class MarketDataRepository:
         point_time: datetime,
         value_field: str,
         value: Decimal,
+        extra_fields: dict[str, Any] | None = None,
     ) -> MarketAppendResult:
         _require_aware(point_time, point_field)
+        extras = dict(extra_fields or {})
         if not value.is_finite():
             raise ValueError("Market numeric value phải hữu hạn.")
         existing = await self._session.scalar(
@@ -738,6 +745,7 @@ class MarketDataRepository:
                 and existing.supersedes_id == version.supersedes_record_id
                 and getattr(existing, point_field) == point_time
                 and getattr(existing, value_field) == value
+                and all(getattr(existing, key) == item for key, item in extras.items())
             ):
                 return MarketAppendResult(IngestionDisposition.DUPLICATE, existing.id)
             raise MarketRepositoryConflict("idempotency key market record có payload khác.")
@@ -775,6 +783,7 @@ class MarketDataRepository:
             checksum=version.content_checksum,
             supersedes_id=version.supersedes_record_id,
             **{point_field: point_time, value_field: value},
+            **extras,
             event_at=version.event_at,
             received_at=version.received_at,
             available_at=version.available_at,
@@ -792,6 +801,7 @@ class MarketDataRepository:
                 and existing.supersedes_id == version.supersedes_record_id
                 and getattr(existing, point_field) == point_time
                 and getattr(existing, value_field) == value
+                and all(getattr(existing, key) == item for key, item in extras.items())
             ),
             conflict_message=(
                 "idempotency key hoặc revision market record xung đột khi ghi đồng thời."
