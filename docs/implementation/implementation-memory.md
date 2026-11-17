@@ -5644,3 +5644,8 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
     - ruff/format/mypy (489 file), diff-check đạt;
     - `test_admin_*_playwright.py` **57 passed**;
     - RT-1 + `test_live_market_backfill_migration.py` **2 passed/449.93s**.
+- **Push:** `dev` `62b0b3c..7850fdf`, `git ls-remote` khớp. Phiên AI-5 sau đó nối `a5c7`→`c9e1` sau `e5b7` (dev `2e89700`) và nâng DB `crypidian-review` lên `c9e1a3b5d7f9`.
+- **Kiểm trên stack local** bằng container phụ `crypidian-review-admin-web-cry428` (`127.0.0.1:8011`, image từ `dev` `2e89700`, chỉ xem, không lưu):
+  - `/admin/risk`: 13 bot, cột "Thoát lệnh" của T01 là "Theo release".
+  - Trang bot T01: fieldset "Thông số thoát lệnh (h03-v3-1h)" có đúng 3 ô SL/trailing/giữ tối đa, gợi ý 2/3/120.
+  - Admin-web chính (8010) vẫn chạy container cũ dù image `crypidian-app:local` đã được build lại; cần restart `admin-web` + `trading-runtime` (chờ owner).
