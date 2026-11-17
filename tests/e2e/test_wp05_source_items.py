@@ -13,7 +13,7 @@ from typing import Any
 from scripts.docker_image import build_image_reference, ensure_image_available
 
 PROBE_BOOTSTRAP = (
-    "import json,os,sys;p=json.load(sys.stdin);"
+    "import json,os,sys;sys.path.insert(0,'/e2e-tests');p=json.load(sys.stdin);"
     "os.environ.update(WP05C_PHASE=p['phase'],WP05C_STATE=json.dumps(p['state']));"
     "exec(compile(p['code'],'wp05_source_items.py','exec'),{'__name__':'__main__'})"
 )
@@ -75,6 +75,8 @@ def test_source_item_metadata_persists_with_restart_rls_and_durable_takedown() -
             "--rm",
             "--no-deps",
             "-T",
+            "--volume",
+            f"{root / 'tests'}:/e2e-tests:ro",
             "migrator",
             "python",
             "-c",
@@ -97,6 +99,13 @@ def test_source_item_metadata_persists_with_restart_rls_and_durable_takedown() -
         migrate("upgrade", "d0f2a4c6e8b1")
         run_probe("legacy_timestamp_validation")
         migrate("upgrade", "e0b2d4f6a8c1")
+        # Guard của e0b2 chỉ chạm được khi chưa có guard nào phía trên; kiểm ngay khi có dữ
+        # liệu legacy. Các phase sau dùng code hiện tại (ORM có cột thêm sau WP05) nên chạy ở head.
+        observation_guard = migrate("downgrade", PREVIOUS_HEAD, success=False)
+        assert "WP05_SOURCE_OBSERVATION_DOWNGRADE_BLOCKED" in (
+            observation_guard.stdout + observation_guard.stderr
+        )
+        migrate("upgrade", "head")
         run_probe("observe_legacy")
         run_probe("legacy_recording_readback")
         run_probe("utc_boundary")
@@ -113,13 +122,13 @@ def test_source_item_metadata_persists_with_restart_rls_and_durable_takedown() -
         compose("restart", "postgres")
         compose("up", "--detach", "--wait", "--wait-timeout", "180", "postgres")
         run_probe("withdrawn_readback")
-        observation_guard = migrate("downgrade", PREVIOUS_HEAD, success=False)
-        assert "WP05_SOURCE_OBSERVATION_DOWNGRADE_BLOCKED" in (
-            observation_guard.stdout + observation_guard.stderr
-        )
-        migrate("upgrade", "head")
         global_guard = migrate("downgrade", PREVIOUS_HEAD, success=False)
-        assert "WP03_RISK_GUARD_DOWNGRADE_BLOCKED" in (global_guard.stdout + global_guard.stderr)
+        # Probe đã ghi license evidence (bắt buộc từ d823df5), nên guard license nằm trên chặn
+        # trước guard WP03; guard WP03 được kiểm tĩnh trong
+        # tests/unit/test_wp03_risk_reservation_guard_migration.py.
+        assert "WP06_LICENSE_EVIDENCE_DOWNGRADE_BLOCKED" in (
+            global_guard.stdout + global_guard.stderr
+        )
         migrate("check")
     finally:
         subprocess.run(

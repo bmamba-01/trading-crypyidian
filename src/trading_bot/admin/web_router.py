@@ -54,6 +54,12 @@ from trading_bot.admin.presentation import (
     number_vi,
     pnl_tone,
 )
+from trading_bot.admin.session_redirect import (
+    ADMIN_HOME_PATH,
+    NEXT_PARAM,
+    login_redirect_for,
+    safe_next_path,
+)
 from trading_bot.admin.strategy_card_service import StrategyCardAdminService
 from trading_bot.application.analyst_review import AnalystReviewError, AnalystReviewService
 from trading_bot.application.bot_lifecycle_guard import BotNotFlatError
@@ -203,6 +209,10 @@ class AdminHTMLRoute(APIRoute):
                     if isinstance(error, (StarletteHTTPException, AuthenticationFailure))
                     else 422
                 )
+                # Phiên hết hạn khi người dùng mở trang/gửi form HTML: về trang đăng nhập.
+                redirect = login_redirect_for(request, status)
+                if redirect is not None:
+                    return redirect
                 messages = {
                     401: "Phiên đăng nhập không hợp lệ hoặc đã hết hạn.",
                     403: "Xác thực hoặc quyền truy cập chưa đáp ứng yêu cầu.",
@@ -409,6 +419,7 @@ def _login_page(
     error: str | None = None,
     status_code: int | None = None,
     error_kind: str = "invalid",
+    next_path: str | None = None,
 ) -> Response:
     token = secrets.token_urlsafe(32)
     templates = _templates(request)
@@ -418,6 +429,8 @@ def _login_page(
         context={
             "identity": None,
             "csrf_token": token,
+            # Chỉ đường dẫn nội bộ `/admin...` đã kiểm tra mới được đưa vào form.
+            "next_path": safe_next_path(next_path),
             "error": error,
             "error_title": LOGIN_ERROR_DETAILS.get(error_kind, LOGIN_ERROR_DETAILS["invalid"])[0],
             "error_hint": LOGIN_ERROR_DETAILS.get(error_kind, LOGIN_ERROR_DETAILS["invalid"])[1],
@@ -434,8 +447,11 @@ def _login_page(
 
 @router.get("/login")
 async def login_page(request: Request) -> Response:
-    """Hiển thị form đăng nhập không lưu cache và cấp token chống login-CSRF."""
-    return _login_page(request)
+    """Hiển thị form đăng nhập không lưu cache và cấp token chống login-CSRF.
+
+    `next` (nếu an toàn) được giữ trong form để quay lại trang cũ sau khi đăng nhập.
+    """
+    return _login_page(request, next_path=request.query_params.get(NEXT_PARAM))
 
 
 @router.post("/login")
@@ -447,15 +463,20 @@ async def submit_login(request: Request) -> Response:
         raise
     cookie_token = request.cookies.get(_login_csrf_cookie_name(request), "")
     form_token = values.pop("csrf_token", "")
+    next_path = safe_next_path(values.pop(NEXT_PARAM, ""))
     if not cookie_token or not form_token or not hmac.compare_digest(cookie_token, form_token):
         # Không xác thực gì: chỉ trả lại form với token mới để người dùng gửi lại.
         return _login_page(
-            request, error=LOGIN_FORM_EXPIRED_MESSAGE, status_code=403, error_kind="expired"
+            request,
+            error=LOGIN_FORM_EXPIRED_MESSAGE,
+            status_code=403,
+            error_kind="expired",
+            next_path=next_path,
         )
     try:
         credentials = LoginRequest.model_validate(values)
     except ValidationError:
-        return _login_page(request, error="Thông tin đăng nhập không hợp lệ.")
+        return _login_page(request, error="Thông tin đăng nhập không hợp lệ.", next_path=next_path)
     limiter = get_rate_limiter(request)
     service = _auth_service(request)
     try:
@@ -477,12 +498,13 @@ async def submit_login(request: Request) -> Response:
                 error="Thử lại sau khi hết thời gian giới hạn.",
                 status_code=429,
                 error_kind="rate_limited",
+                next_path=next_path,
             )
-        return _login_page(request, error="Thông tin đăng nhập không hợp lệ.")
+        return _login_page(request, error="Thông tin đăng nhập không hợp lệ.", next_path=next_path)
     settings = request.app.state.settings
     response = Response(
         status_code=303,
-        headers={"Location": "/admin", "Cache-Control": "no-store"},
+        headers={"Location": next_path or ADMIN_HOME_PATH, "Cache-Control": "no-store"},
     )
     set_session_cookie(
         response,

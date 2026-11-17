@@ -8,13 +8,15 @@ from pathlib import Path
 from typing import Any, cast
 from uuid import UUID, uuid4
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
+from fastapi.exception_handlers import http_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from trading_bot.adapters.database.engine import (
     admin_web_session_timeouts,
@@ -68,6 +70,7 @@ from trading_bot.admin.learning_training_page_router import (
 from trading_bot.admin.learning_training_router import router as learning_training_router
 from trading_bot.admin.research_source_router import admin_router as research_source_admin_router
 from trading_bot.admin.research_source_router import router as research_source_router
+from trading_bot.admin.session_redirect import login_redirect_for
 from trading_bot.admin.settings_router import router as settings_router
 from trading_bot.admin.settings_service import SettingsAdminService
 from trading_bot.admin.strategy_card_service import StrategyCardAdminService
@@ -756,6 +759,18 @@ def create_app(
             app.include_router(learning_split_page_router)
         app.include_router(admin_web_router)
         app.include_router(telegram_router)
+
+    @app.exception_handler(StarletteHTTPException)
+    async def http_error_response(request: Request, error: StarletteHTTPException) -> Response:
+        """Phiên hết hạn khi mở trang HTML Admin thì về login; còn lại giữ hành vi mặc định.
+
+        Cần ở mức app vì một số router trang (`/admin/learning/*`, `/admin/research-sources`)
+        không dùng `AdminHTMLRoute`; API JSON vẫn qua handler mặc định của FastAPI.
+        """
+        redirect = login_redirect_for(request, error.status_code)
+        if redirect is not None:
+            return redirect
+        return await http_exception_handler(request, error)
 
     @app.exception_handler(RequestValidationError)
     async def validation_error_response(

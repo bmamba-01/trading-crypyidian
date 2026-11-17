@@ -10,7 +10,7 @@ from pathlib import Path
 from uuid import UUID
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from playwright.sync_api import Page, expect
 
 from tests.e2e.csp_harness import install_security_headers, watch_browser_violations
@@ -59,7 +59,7 @@ def _owner_identity() -> AuthIdentity:
 
 
 def _serve_app(
-    *, authenticated: bool = True
+    *, authenticated: bool = True, forbidden: bool = False
 ) -> tuple[str, uvicorn.Server, threading.Thread, socket.socket]:
     application: FastAPI = create_app(AppSettings(app_env="test"))
     install_security_headers(application)
@@ -67,6 +67,8 @@ def _serve_app(
     application.state.bot_admin_service = _BotAdminStub()
     if authenticated:
         application.dependency_overrides[current_identity] = lambda: _owner_identity()
+    if forbidden:
+        application.dependency_overrides[current_identity] = _forbidden_identity
 
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -93,6 +95,11 @@ def _serve_app(
     return f"http://127.0.0.1:{port}", server, thread, listener
 
 
+def _forbidden_identity() -> None:
+    """Phiên hợp lệ nhưng không đủ quyền: trang lỗi HTML vẫn hiển thị (khác 401 về login)."""
+    raise HTTPException(status_code=403, detail="Không đủ quyền")
+
+
 def _stop_app(server: uvicorn.Server, thread: threading.Thread, listener: socket.socket) -> None:
     server.should_exit = True
     thread.join(timeout=5)
@@ -115,9 +122,21 @@ def _assert_touch_and_no_overflow(page: Page) -> None:
 def test_error_page_light_dark_and_responsive(
     browser_page: Page, browser_violations: list[str]
 ) -> None:
-    """Trang /admin/error (401) đồng bộ Dark/Light, không tràn lề và chạm >= 44px."""
+    """Trang lỗi HTML (403) đồng bộ Dark/Light, không tràn lề và chạm >= 44px.
+
+    401 khi mở trang nay chuyển về đăng nhập (xem `test_admin_session_expiry_playwright.py`)
+    nên trang lỗi được chụp với 403; 401 chỉ còn được kiểm là chuyển hướng.
+    """
     SCREENSHOTS.mkdir(parents=True, exist_ok=True)
-    app_url, server, thread, listener = _serve_app(authenticated=False)
+    expired_url, expired_server, expired_thread, expired_listener = _serve_app(authenticated=False)
+    try:
+        response = browser_page.goto(f"{expired_url}/admin/bots/new", wait_until="networkidle")
+        assert response is not None
+        assert response.status == 200
+        assert browser_page.url.startswith(f"{expired_url}/admin/login?next=")
+    finally:
+        _stop_app(expired_server, expired_thread, expired_listener)
+    app_url, server, thread, listener = _serve_app(authenticated=False, forbidden=True)
     try:
         watch_browser_violations(browser_page)
         browser_page.route(
@@ -130,9 +149,9 @@ def test_error_page_light_dark_and_responsive(
         browser_page.set_viewport_size({"width": 1280, "height": 800})
         response = browser_page.goto(f"{app_url}/admin/bots/new", wait_until="networkidle")
         assert response is not None
-        assert response.status == 401
+        assert response.status == 403
         expect(browser_page.get_by_role("alert")).to_be_visible()
-        expect(browser_page.get_by_text("Mã phản hồi: 401")).to_be_visible()
+        expect(browser_page.get_by_text("Mã phản hồi: 403")).to_be_visible()
         expect(browser_page.get_by_role("link", name="Đăng nhập lại").last).to_be_visible()
         _assert_touch_and_no_overflow(browser_page)
         browser_page.screenshot(

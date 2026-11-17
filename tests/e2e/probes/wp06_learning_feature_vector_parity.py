@@ -12,11 +12,18 @@ from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
-from uuid import UUID, uuid5
+from uuid import UUID, uuid4, uuid5
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+# Test mount `tests/` vào /e2e-tests và thêm vào sys.path trước khi exec probe.
+from e2e.probes.source_license_fixture import (
+    append_fixture_license_evidence,
+    fixture_license_scope,
+    pending_license_kwargs,
+    verified_license_kwargs,
+)
 from trading_bot.adapters.database.engine import create_database_engine, database_url_from_secret
 from trading_bot.adapters.database.models.entities import Workspace
 from trading_bot.adapters.database.models.market_entities import (
@@ -216,12 +223,16 @@ async def _seed(sessions: async_sessionmaker[AsyncSession]) -> dict[str, str]:
         at=NOW - timedelta(days=3),
         reason="Khởi tạo policy fixture.",
     )
+    # Từ d823df5 VERIFIED mới phải mang license scope + evidence của đúng pending trước.
+    license_scope = fixture_license_scope("BINANCE_USDM_REST")
+    terms = "https://example.invalid/c11-terms"
     pending = entry.transition(
         policy_id="C11:pending",
         state=SourcePolicyState.RIGHTS_PENDING,
         actor_id="fixture-operator",
         at=NOW - timedelta(days=2),
         reason="Chờ xác minh fixture.",
+        **pending_license_kwargs(license_scope, terms),
     )
     verified = pending.transition(
         policy_id="C11:verified",
@@ -230,13 +241,16 @@ async def _seed(sessions: async_sessionmaker[AsyncSession]) -> dict[str, str]:
         at=NOW - timedelta(hours=1),
         reason="Chỉ cho backtest research.",
         allowed_purposes=frozenset({SourceUsePurpose.BACKTEST_RESEARCH}),
-        evidence_ref="https://example.invalid/c11-terms",
         reviewed_at=NOW - timedelta(hours=1),
         valid_until=NOW + timedelta(days=1),
         approved_by="fixture-reviewer",
+        **verified_license_kwargs(license_scope, terms, uuid4()),
     )
     for revision in verified.revisions:
         async with UnitOfWork(sessions, workspace_id=WORKSPACE_ID) as uow:
+            await append_fixture_license_evidence(
+                uow.session, workspace_id=WORKSPACE_ID, revision=revision
+            )
             await SourceRegistryRepository(uow.session).append_revision(
                 workspace_id=WORKSPACE_ID, revision=revision
             )

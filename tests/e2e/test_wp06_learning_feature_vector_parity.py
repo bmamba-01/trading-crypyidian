@@ -18,7 +18,7 @@ from typing import Any, cast
 from scripts.docker_image import ensure_image_available
 
 BOOTSTRAP = (
-    "import json,os,sys;p=json.load(sys.stdin);"
+    "import json,os,sys;sys.path.insert(0,'/e2e-tests');p=json.load(sys.stdin);"
     "os.environ['WP06_PARITY_STATE']=json.dumps(p['state']);"
     "exec(compile(p['code'],'wp06_learning_feature_vector_parity.py','exec'),"
     "{'__name__':'__main__'})"
@@ -131,6 +131,8 @@ def _run_parity_compose(root: Path, resources: ComposeParityResources) -> None:
             "--rm",
             "--no-deps",
             "-T",
+            "--volume",
+            f"{root / 'tests'}:/e2e-tests:ro",
             service,
             "python",
             "-c",

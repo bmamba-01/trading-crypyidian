@@ -180,7 +180,10 @@ def _serve_app() -> tuple[str, uvicorn.Server, threading.Thread, socket.socket, 
     return f"http://127.0.0.1:{port}", server, thread, listener, service
 
 
-def test_split_approval_ui_is_vietnamese_responsive_and_metadata_only(page: Page) -> None:
+def test_split_approval_ui_is_vietnamese_responsive_and_metadata_only(browser_page: Page) -> None:
+    # Dùng fixture tự đóng Playwright; fixture `page` của plugin giữ event loop sync chạy cả
+    # phiên pytest, làm hỏng các test sau gọi asyncio.run() hoặc Playwright sync (CRY-426).
+    page = browser_page
     base_url, server, thread, listener, service = _serve_app()
     try:
         page.set_viewport_size({"width": 1280, "height": 1000})

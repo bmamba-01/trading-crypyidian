@@ -9,13 +9,20 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import select, text
 from sqlalchemy.engine import URL
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+# Test mount `tests/` vào /e2e-tests và thêm vào sys.path trước khi exec probe.
+from e2e.probes.source_license_fixture import (
+    append_fixture_license_evidence,
+    fixture_license_scope,
+    pending_license_kwargs,
+    verified_license_kwargs,
+)
 from trading_bot.adapters.database.models import (
     SourceItemObservationRecord,
     SourceItemRevisionRecord,
@@ -133,10 +140,20 @@ async def _seed():
 
         async def append_legacy(revision):
             record = SourcePolicyRevisionRecord.from_domain(WORKSPACE, revision)
+            # Seed chạy ở revision WP05 cũ: chỉ ghi cột đang tồn tại ở schema lúc đó (các cột
+            # license/provider thêm sau trong a4c6e8f0b2d5 chưa có).
+            existing = set(
+                await session.scalars(
+                    text(
+                        "SELECT column_name FROM information_schema.columns "
+                        "WHERE table_schema = 'public' AND table_name = 'source_policy_revision'"
+                    )
+                )
+            )
             values = {
                 column.name: getattr(record, column.name)
                 for column in SourcePolicyRevisionRecord.__table__.columns
-                if column.name != "barrier_txid"
+                if column.name != "barrier_txid" and column.name in existing
             }
             values["id"] = uuid4()
             values["allowed_purposes"] = json.dumps(values["allowed_purposes"])
@@ -407,11 +424,13 @@ async def _roles():
     await engine.dispose()
     for role in (
         "crypidian_trading_runtime",
-        "crypidian_trainer_worker",
         "crypidian_execution_gateway",
     ):
         for table in ("source_item_revision", "source_item_takedown"):
             await _expect_denied(role, f"SELECT * FROM {table}")
+    # Từ WP06G.2 (d2f4a6c8e0b1) trainer chỉ được đọc (RLS workspace) để kiểm quyền live.
+    for table in ("source_item_revision", "source_item_takedown"):
+        await _expect_denied("crypidian_trainer_worker", f"INSERT INTO {table} DEFAULT VALUES")
     await _expect_denied(ADMIN, "INSERT INTO source_item_revision DEFAULT VALUES")
     await _expect_denied(INGESTION, "INSERT INTO source_item_takedown DEFAULT VALUES")
     for table in ("source_item_revision", "source_item_takedown"):
@@ -1102,6 +1121,9 @@ async def _utc_engine_boundary():
                 assert await connection.scalar(text("SHOW TimeZone")) == "UTC"
             await app.dispose()
         async with raw.connect() as connection, connection.begin():
+            # Ở head, ghi source_item_revision phát rights event vào outbox_event (RLS theo
+            # workspace), nên kết nối thô cũng phải gắn workspace như các phase khác.
+            await _scope(connection)
             for number, (zone, instant) in enumerate(
                 (
                     ("Etc/GMT+12", "0001-01-01 00:00:00+00"),
@@ -1369,12 +1391,16 @@ async def _observer_boundary():
                 cost_unit="USD",
             ),
         )
+        # Từ d823df5 VERIFIED mới phải mang license scope + evidence của đúng pending trước.
+        license_scope = fixture_license_scope(policy_source)
+        observer_terms = "https://example.invalid/observer-license"
         entry = entry.transition(
             policy_id="observer-pending",
             state=SourcePolicyState.RIGHTS_PENDING,
             actor_id="operator",
             at=at,
             reason="Rà quyền",
+            **pending_license_kwargs(license_scope, observer_terms),
         )
         entry = entry.transition(
             policy_id="observer-verified",
@@ -1383,13 +1409,16 @@ async def _observer_boundary():
             approved_by="reviewer",
             at=at,
             reviewed_at=at,
-            evidence_ref="fixture:observer",
             allowed_purposes=frozenset({SourceUsePurpose.METADATA}),
             reason="Duyệt fixture",
+            **verified_license_kwargs(license_scope, observer_terms, uuid4()),
         )
         async with writes() as writer, observes() as reader:
             async with writer.begin():
                 for revision in entry.revisions:
+                    await append_fixture_license_evidence(
+                        writer, workspace_id=WORKSPACE, revision=revision
+                    )
                     await SourceRegistryRepository(writer).append_revision(
                         workspace_id=WORKSPACE, revision=revision
                     )
@@ -1562,15 +1591,15 @@ async def _observer_boundary():
                 )
                 is None
             )
+        app_terms = "https://example.invalid/observer-app-license"
         recheck = revoked.transition(
             policy_id="observer-recheck",
             state=SourcePolicyState.RIGHTS_PENDING,
             actor_id="operator",
             at=datetime.now(UTC),
             reason="Rà quyền lại",
+            **pending_license_kwargs(license_scope, app_terms),
         )
-        from uuid import uuid4
-
         from trading_bot.application.source_registry import SourceRegistryService
         from trading_bot.auth.policy import Principal, Role
 
@@ -1588,10 +1617,16 @@ async def _observer_boundary():
             approved_by="forged-reviewer",
             at=now,
             reviewed_at=now,
-            evidence_ref="fixture:app-rights",
             allowed_purposes=frozenset({SourceUsePurpose.METADATA}),
             reason="Duyệt app fixture",
+            **verified_license_kwargs(license_scope, app_terms, uuid4()),
         )
+        # Luồng admin: evidence của pending được lưu trước khi reviewer duyệt VERIFIED.
+        async with writes() as evidence_session, evidence_session.begin():
+            await _scope(evidence_session)
+            await append_fixture_license_evidence(
+                evidence_session, workspace_id=WORKSPACE, revision=approved.current
+            )
         saved = await facade.append_revision(approved.current, reviewer=reviewer)
         assert saved.actor_id == str(owner.user_id)
         assert saved.approved_by == str(reviewer.user_id)
@@ -1612,11 +1647,14 @@ async def _observer_boundary():
 
     for role in (
         "crypidian_trading_runtime",
-        "crypidian_trainer_worker",
         "crypidian_execution_gateway",
     ):
         for table in ("source_item_observation", "source_policy_observation"):
             await _expect_denied(role, f"SELECT * FROM {table}")
+    # Từ WP06G.2 (d2f4a6c8e0b1) trainer được đọc observation (RLS theo workspace) để kiểm quyền
+    # live trước khi train; vẫn không được ghi.
+    for table in ("source_item_observation", "source_policy_observation"):
+        await _expect_denied("crypidian_trainer_worker", f"INSERT INTO {table} DEFAULT VALUES")
     await _expect_denied(ADMIN, "INSERT INTO source_item_observation DEFAULT VALUES")
     await _expect_denied(INGESTION, "INSERT INTO source_policy_observation DEFAULT VALUES")
     for table in ("source_item_observation", "source_policy_observation"):
