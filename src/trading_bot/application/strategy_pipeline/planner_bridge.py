@@ -65,9 +65,9 @@ class StrategyPipelinePlannerBridge:
             max_hold_bars=12,
         )
 
-        # 2. Xác định các mốc thời gian hiệu lực
+        # 2. Xác định các mốc thời gian hiệu lực (evaluated_at tại replay là signal_at + 1µs)
         signal_at = pipeline_candidate.signal_at
-        eligible_after = signal_at + timedelta(seconds=1)
+        eligible_after = signal_at + timedelta(microseconds=1)
         expires_at = signal_at + valid_duration
 
         # 3. Bar keys bằng chứng

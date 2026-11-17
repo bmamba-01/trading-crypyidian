@@ -265,7 +265,11 @@ class BacktestDatasetReplayContextProvider:
             evaluated_at=evaluated_at,
             risk_state=risk_state,
             execution_events=events,
-            opposing_signal=None,
+            # Khi chưa cấu hình opposing_signal_provider theo từng bar, tôn trọng khai báo
+            # từ seed (giống paper_market_context.py đặt opposing_signal=False nếu đã xác nhận).
+            opposing_signal=(
+                None if self._opposing_signal_provider is not None else self._seed.opposing_signal
+            ),
             atr_by_symbol=(),
             atr_by_bar=atr_by_bar,
             opposing_signal_by_bar=opposing_by_bar,

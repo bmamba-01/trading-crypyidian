@@ -7,8 +7,11 @@ phục vụ giao diện Admin Web và REST API.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+from functools import lru_cache
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -17,8 +20,12 @@ from trading_bot.adapters.database.repositories.strategy_card_repository import 
     StrategyCardRepository,
 )
 from trading_bot.application.strategy_pipeline.demo_cards import build_default_demo_cards
+from trading_bot.application.strategy_pipeline.pipeline_engine import StrategyPipelineEngine
 from trading_bot.auth.policy import Principal
+from trading_bot.domain.market.models import OHLCVBar
+from trading_bot.domain.strategy.contracts import DecisionSnapshot, MarketSeries, SeriesQuality
 from trading_bot.domain.strategy_card.graph_verifier import DeadNodeDetector
+from trading_bot.domain.strategy_card.models import CompositionLayer
 from trading_bot.domain.strategy_card.orthogonality import AntiConsensusAnalyzer
 from trading_bot.domain.strategy_card.schema import StrategyCard, compute_canonical_hash
 
@@ -75,6 +82,62 @@ class StrategyCardView:
         }
 
 
+_BENCHMARK_ORIGIN = datetime(2026, 10, 1, 0, 0, tzinfo=UTC)
+_BENCHMARK_INTERVAL_MINUTES = {
+    "1m": 1,
+    "3m": 3,
+    "5m": 5,
+    "15m": 15,
+    "30m": 30,
+    "1h": 60,
+    "4h": 240,
+}
+
+
+@lru_cache(maxsize=8)
+def _benchmark_bars_for_timeframe(timeframe: str) -> tuple[OHLCVBar, ...]:
+    """Sinh chuỗi 120 nến tổng hợp đa chế độ tất định để kiểm định tương quan chỉ báo."""
+    step = timedelta(minutes=_BENCHMARK_INTERVAL_MINUTES.get(timeframe, 60))
+    bars: list[OHLCVBar] = []
+    for idx in range(120):
+        close = (
+            100.0
+            + 14.0 * math.sin(idx * 0.055)
+            + 4.0 * math.sin(idx * 0.25)
+            + 1.5 * math.cos(idx * 0.61)
+        )
+        amp = 1.0 + 2.0 * abs(math.cos(idx * 0.41))
+        open_p = close - (0.3 if idx % 2 == 0 else -0.35) * amp
+        upper_extra = (0.7 if idx % 3 == 0 else 0.2) * amp
+        lower_extra = (0.7 if idx % 3 == 1 else 0.2) * amp
+        high_p = max(open_p, close) + upper_extra
+        low_p = min(open_p, close) - lower_extra
+        vol = 100.0 + 80.0 * abs(math.sin(idx * 0.71))
+        tbuy = vol * (0.25 + 0.55 * (0.5 + 0.5 * math.sin(idx * 0.89)))
+        opened = _BENCHMARK_ORIGIN + idx * step
+        closed = opened + step - timedelta(microseconds=1)
+        bars.append(
+            OHLCVBar(
+                symbol="BTCUSDT",
+                timeframe=timeframe,
+                open_time=opened,
+                close_time=closed,
+                event_at=closed,
+                received_at=closed,
+                available_at=closed,
+                open=Decimal(str(round(open_p, 4))),
+                high=Decimal(str(round(high_p, 4))),
+                low=Decimal(str(round(low_p, 4))),
+                close=Decimal(str(round(close, 4))),
+                volume=Decimal(str(round(vol, 4))),
+                quote_volume=Decimal(str(round(vol * close, 4))),
+                taker_buy_base_volume=Decimal(str(round(tbuy, 4))),
+                is_closed=True,
+            )
+        )
+    return tuple(bars)
+
+
 class StrategyCardAdminService:
     """Service hỗ trợ giao diện quản trị Admin Web đối soát và quản lý Strategy Cards."""
 
@@ -86,9 +149,43 @@ class StrategyCardAdminService:
         self._session_factory = session_factory
         self._dead_node_detector = DeadNodeDetector()
         self._anti_consensus_analyzer = AntiConsensusAnalyzer()
+        self._pipeline_engine = StrategyPipelineEngine()
         self._fallback_cards: list[StrategyCard] = (
             in_memory_cards if in_memory_cards is not None else build_default_demo_cards()
         )
+
+    def _evaluate_orthogonality(self, card: StrategyCard) -> tuple[bool, tuple[str, ...]]:
+        """Kiểm định tính trực giao giữa các nút L1/L2 trên chuỗi chuẩn đa chế độ."""
+        nodes = [
+            node
+            for node in card.nodes
+            if node.layer in {CompositionLayer.L1_CANDLE_ANATOMY, CompositionLayer.L2_INDICATORS}
+        ]
+        if len(nodes) < 2:
+            return False, ()
+        timeframe = card.compatibility.timeframes[0] if card.compatibility.timeframes else "15m"
+        bars = _benchmark_bars_for_timeframe(timeframe)
+        series_by_node: dict[str, list[float]] = {node.node_id: [] for node in nodes}
+        for end in range(40, len(bars)):
+            sub_bars = bars[:end]
+            latest = sub_bars[-1]
+            snap = DecisionSnapshot(
+                symbol=latest.symbol,
+                decision_time=latest.close_time,
+                snapshot_id=f"ortho-{card.card_id}-{end}",
+                series=(
+                    MarketSeries(timeframe=timeframe, bars=sub_bars, quality=SeriesQuality.READY),
+                ),
+                features=(),
+            )
+            for node in nodes:
+                if node.layer == CompositionLayer.L1_CANDLE_ANATOMY:
+                    val = self._pipeline_engine._compute_l1_node(node.operation, latest)
+                else:
+                    val, _, _ = self._pipeline_engine._compute_l2_node(node, latest, snap)
+                series_by_node[node.node_id].append(float(val))
+        report = self._anti_consensus_analyzer.check_orthogonality(series_by_node, threshold=0.85)
+        return (not report.is_orthogonal), tuple(report.warnings)
 
     def _card_to_view(
         self,
@@ -117,10 +214,8 @@ class StrategyCardAdminService:
         report = self._dead_node_detector.verify(card.nodes, card.edges)
         dead_nodes = tuple(report.dead_nodes)
 
-        # 3. Phân tích trực giao & cảnh báo tương quan ảo giác đồng thuận
-        # Mặc định trực giao an toàn trừ khi phát hiện dấu hiệu cảnh báo trong report
-        has_consensus_warning = False
-        consensus_warnings: tuple[str, ...] = ()
+        # 3. Phân tích trực giao & cảnh báo tương quan ảo giác đồng thuận thực tế
+        has_consensus_warning, consensus_warnings = self._evaluate_orthogonality(card)
 
         is_verified = (len(dead_nodes) == 0) and (not has_consensus_warning)
         if len(content_hash) >= 14:

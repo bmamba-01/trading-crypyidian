@@ -67,6 +67,73 @@ FEATURES_BY_RELEASE: Mapping[str, Mapping[str, tuple[str, ...]]] = MappingProxyT
         "h18-v1": MappingProxyType({"5m": ("atr_14",)}),
         "h19-v1": MappingProxyType({"5m": ("atr_14", "adx_14", "efficiency_ratio_40")}),
         "h20-v1": MappingProxyType({"5m": ("atr_14",), "15m": ("atr_14",)}),
+        # 6 rule định lượng mở rộng (expanded_rules.py)
+        "h02-v1": MappingProxyType({"4h": ("atr_14", "realized_volatility_20")}),
+        "h04-v1": MappingProxyType(
+            {
+                "15m": (
+                    "atr_14",
+                    "ema_20",
+                    "sma_20",
+                    "bollinger_upper_20",
+                    "bollinger_lower_20",
+                    "realized_volatility_20",
+                )
+            }
+        ),
+        "h05-v1": MappingProxyType(
+            {
+                "1h": ("atr_14", "ema_20", "ema_80", "rsi_14", "adx_14"),
+                "4h": ("ema_200",),
+            }
+        ),
+        "h07-v1": MappingProxyType(
+            {"5m": ("atr_14", "adx_14", "efficiency_ratio_40", "session_vwap")}
+        ),
+        "h21-v1": MappingProxyType(
+            {
+                "1h": ("atr_14", "adx_14", "plus_di_14", "minus_di_14"),
+                "4h": ("ema_200",),
+            }
+        ),
+        "h22-v1": MappingProxyType({"15m": ("atr_14", "adx_14"), "1h": ("ema_80", "atr_14")}),
+        # 7 Strategy Cards L0–L6 kích hoạt mới/nâng cấp (cards 002..008)
+        "sc-binance-usdm-mean-revert-002-v1.2.1": MappingProxyType(
+            {"15m": ("atr_14", "ema_20", "zscore_20")}
+        ),
+        "sc-binance-usdm-tsmom-003-v1.0.0": MappingProxyType(
+            {"4h": ("atr_14", "realized_volatility_20")}
+        ),
+        "sc-binance-usdm-bbkc-squeeze-004-v1.0.0": MappingProxyType(
+            {
+                "15m": (
+                    "atr_14",
+                    "ema_20",
+                    "sma_20",
+                    "bollinger_upper_20",
+                    "bollinger_lower_20",
+                    "realized_volatility_20",
+                )
+            }
+        ),
+        "sc-binance-usdm-trend-pullback-005-v1.0.0": MappingProxyType(
+            {
+                "1h": ("atr_14", "ema_20", "ema_80", "rsi_14", "adx_14"),
+                "4h": ("ema_200",),
+            }
+        ),
+        "sc-binance-usdm-vwap-revert-006-v1.0.0": MappingProxyType(
+            {"15m": ("atr_14", "adx_14", "efficiency_ratio_40", "session_vwap")}
+        ),
+        "sc-binance-usdm-macd-adx-007-v1.0.0": MappingProxyType(
+            {
+                "1h": ("atr_14", "adx_14", "plus_di_14", "minus_di_14"),
+                "4h": ("ema_200",),
+            }
+        ),
+        "sc-binance-usdm-taker-flow-008-v1.0.0": MappingProxyType(
+            {"15m": ("atr_14", "adx_14"), "1h": ("ema_80", "atr_14")}
+        ),
     }
 )
 ENTRY_TIMEFRAME_BY_RELEASE = MappingProxyType(
@@ -80,6 +147,19 @@ ENTRY_TIMEFRAME_BY_RELEASE = MappingProxyType(
         "h18-v1": "5m",
         "h19-v1": "5m",
         "h20-v1": "5m",
+        "h02-v1": "4h",
+        "h04-v1": "15m",
+        "h05-v1": "1h",
+        "h07-v1": "5m",
+        "h21-v1": "1h",
+        "h22-v1": "15m",
+        "sc-binance-usdm-mean-revert-002-v1.2.1": "15m",
+        "sc-binance-usdm-tsmom-003-v1.0.0": "4h",
+        "sc-binance-usdm-bbkc-squeeze-004-v1.0.0": "15m",
+        "sc-binance-usdm-trend-pullback-005-v1.0.0": "1h",
+        "sc-binance-usdm-vwap-revert-006-v1.0.0": "15m",
+        "sc-binance-usdm-macd-adx-007-v1.0.0": "1h",
+        "sc-binance-usdm-taker-flow-008-v1.0.0": "15m",
     }
 )
 

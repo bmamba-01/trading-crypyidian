@@ -226,12 +226,29 @@ def test_strategy_cards_desktop_view(strategy_cards_server_url: str) -> None:
         assert nav_link.is_visible()
         assert "Chiến lược" in nav_link.text_content() or ""
 
-        # 4. Xác nhận thẻ KPI
+        # 4. Xác nhận thẻ KPI hiển thị đủ 8 chiến lược đã kiểm định
         assert page.locator(".kpi-card").count() >= 3
+        expect_kpi_text = page.locator(".sc-kpis").text_content() or ""
+        assert "8" in expect_kpi_text
 
-        # 5. Xác nhận hiển thị danh sách Strategy Cards
+        # 5. Xác nhận hiển thị đầy đủ 8 Strategy Cards (truyền thống + nâng cao)
         card_items = page.locator(".strategy-card-item")
-        assert card_items.count() >= 2
+        assert card_items.count() == 8
+        all_cards_text = page.locator(".strategy-cards-grid").text_content() or ""
+        for cid in (
+            "SC-BINANCE-USDM-VOL-BREAKOUT-001",
+            "SC-BINANCE-USDM-MEAN-REVERT-002",
+            "SC-BINANCE-USDM-TSMOM-003",
+            "SC-BINANCE-USDM-BBKC-SQUEEZE-004",
+            "SC-BINANCE-USDM-TREND-PULLBACK-005",
+            "SC-BINANCE-USDM-VWAP-REVERT-006",
+            "SC-BINANCE-USDM-MACD-ADX-007",
+            "SC-BINANCE-USDM-TAKER-FLOW-008",
+        ):
+            assert cid in all_cards_text
+
+        # Không tràn ngang trên Desktop 1280px
+        assert page.evaluate("document.documentElement.scrollWidth - innerWidth") <= 0
 
         # 6. Kiểm tra card đầu tiên: Donchian Trend & Volatility Breakout
         first_card = card_items.first
@@ -352,5 +369,18 @@ def test_navigation_to_strategy_cards(strategy_cards_server_url: str) -> None:
         page.wait_for_url("**/admin/strategy-cards")
         assert "/admin/strategy-cards" in page.url
         assert "Quản lý Thẻ Chiến lược (Strategy Cards)" in page.content()
+
+        # 4. Kiểm Microscope trên thẻ Taker-Flow nâng cao mới
+        page.goto(
+            f"{strategy_cards_server_url}/admin/strategy-cards/SC-BINANCE-USDM-TAKER-FLOW-008/microscope",
+            wait_until="networkidle",
+        )
+        assert "SC-BINANCE-USDM-TAKER-FLOW-008" in page.content()
+        page.locator('button[data-preset-id="preset-low-vol-block"]').click()
+        page.wait_for_selector("#status-banner.banner-short-circuit")
+        assert "NGẮT MẠCH" in (page.locator("#status-banner").text_content() or "").upper()
+        microscope_new_shot = SCREENSHOTS_DIR / "16_microscope_taker_flow_desktop.png"
+        page.screenshot(path=str(microscope_new_shot), full_page=True)
+        assert microscope_new_shot.exists()
 
         browser.close()

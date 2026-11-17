@@ -349,6 +349,26 @@ def test_admin_backtest_replays_desktop_view(backtest_server_url: str) -> None:
         interval_select = page.locator('select[name="execution_interval"]')
         expect(interval_select).to_be_visible()
 
+        strategy_select = page.locator('select[name="strategy_release_id"]')
+        expect(strategy_select).to_be_visible()
+        option_values = strategy_select.locator("option").evaluate_all(
+            "els => els.map(e => e.value)"
+        )
+        for rel in (
+            "h02-v1",
+            "h04-v1",
+            "h05-v1",
+            "h07-v1",
+            "h21-v1",
+            "h22-v1",
+            "sc-binance-usdm-mean-revert-002-v1.2.1",
+            "sc-binance-usdm-tsmom-003-v1.0.0",
+            "sc-binance-usdm-taker-flow-008-v1.0.0",
+        ):
+            assert rel in option_values
+        strategy_select.select_option("h22-v1")
+        expect(strategy_select).to_have_value("h22-v1")
+
         # Vốn mô phỏng chọn từ mốc có sẵn (select), mặc định 10.000.
         equity_input = page.locator('select[name="starting_equity"]')
         expect(equity_input).to_be_visible()
