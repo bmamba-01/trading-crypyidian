@@ -368,3 +368,27 @@ def test_unexpected_service_error_is_sanitized(
     assert "987654" not in error
     assert auth.logout_calls == 1
     assert engine.disposed
+
+
+@pytest.mark.parametrize(
+    ("extra", "expected"),
+    [([], "RESEARCH"), (["--learning-intent", "TRAINING_BASE"], "TRAINING_BASE")],
+)
+def test_enqueue_passes_learning_intent(
+    extra: list[str],
+    expected: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # AI-5 (CRY-236): CLI đặt được TRAINING_BASE như form Admin; mặc định vẫn RESEARCH.
+    service = _Service(object())
+    _wire_admin_mocks(monkeypatch, auth=_Auth(_principal()), service=service, engine=_Engine())
+    assert cli.main([*_arguments("enqueue"), *extra]) == 0
+    capsys.readouterr()
+    assert service.calls[0][1][1].learning_intent == expected
+
+
+def test_enqueue_rejects_unknown_learning_intent(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        cli.main([*_arguments("enqueue"), "--learning-intent", "SHADOW"])
+    assert "invalid choice" in capsys.readouterr().err

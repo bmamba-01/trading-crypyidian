@@ -54,6 +54,12 @@ def _parser() -> argparse.ArgumentParser:
     enqueue.add_argument("--fee-rate", required=True, type=Decimal)
     enqueue.add_argument("--slippage-rate", required=True, type=Decimal)
     enqueue.add_argument("--seed", required=True, type=int)
+    enqueue.add_argument(
+        "--learning-intent",
+        choices=("RESEARCH", "TRAINING_BASE"),
+        default="RESEARCH",
+        help="TRAINING_BASE: lưu opportunity/outcome làm dữ liệu huấn luyện WP-06 (AI-5).",
+    )
     cancel = commands.add_parser("cancel", help="Yêu cầu worker dừng job tại điểm an toàn.")
     _add_admin_scope(cancel)
     cancel.add_argument("--job-id", required=True, type=UUID)
@@ -176,6 +182,7 @@ async def _run_admin_command(arguments: argparse.Namespace, settings: AppSetting
                 fee_rate=arguments.fee_rate,
                 slippage_rate=arguments.slippage_rate,
                 seed=arguments.seed,
+                learning_intent=arguments.learning_intent,
             )
             print(
                 json.dumps(
