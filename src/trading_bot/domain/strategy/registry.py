@@ -174,6 +174,16 @@ class StrategyRegistry:
         except KeyError as error:
             raise UnknownStrategyReleaseError(release_id) from error
 
+    def describe_rule(self, release_id: str) -> object:
+        """Rule chỉ để đọc metadata (recipe/manifest) cho trang quản trị; không dùng để quyết định.
+
+        Đường quyết định phải đi qua ``resolve`` để kiểm cấu hình đã công bố.
+        """
+        try:
+            return self._rules[release_id]
+        except KeyError as error:
+            raise UnknownStrategyReleaseError(release_id) from error
+
     def resolve(self, release_id: str, settings: StrategySelection) -> Strategy:
         """Trả rule chỉ khi release nằm trong cấu hình đã công bố."""
         if not settings.published:

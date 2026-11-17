@@ -21,17 +21,119 @@ from trading_bot.application.strategy_pipeline.demo_cards import build_default_d
 from trading_bot.application.strategy_pipeline.pipeline_engine import StrategyPipelineEngine
 from trading_bot.auth.policy import Principal, Role
 
-VOL_BREAKOUT, MEAN_REVERT = build_default_demo_cards()
+VOL_BREAKOUT, MEAN_REVERT = build_default_demo_cards()[:2]
 
 
 _bars = consensus_bars
+
+
+def _collinear_card():
+    from trading_bot.domain.strategy_card.models import (
+        CompositionLayer,
+        DataType,
+        NodeExecutionRole,
+        TypedPort,
+    )
+    from trading_bot.domain.strategy_card.schema import (
+        CompatibilityMap,
+        ExecutionProfile,
+        GraphEdge,
+        GraphNode,
+        StrategyCard,
+    )
+
+    ps = TypedPort(name="ohlcv_in", data_type=DataType.PRICE_SERIES)
+    pn = TypedPort(name="val", data_type=DataType.NUMERIC_SCALAR)
+    pf = TypedPort(name="flag", data_type=DataType.BOOLEAN_FLAG)
+    return StrategyCard(
+        card_id="SC-TEST-COLLINEAR-SIG6",
+        name="Collinear Test Card",
+        version="1.0.0",
+        author="Test",
+        created_at=datetime(2026, 11, 16, tzinfo=UTC),
+        layers=[
+            CompositionLayer.L0_DATA_HYGIENE,
+            CompositionLayer.L2_INDICATORS,
+            CompositionLayer.L4_CONTEXT_GATE,
+            CompositionLayer.L5_STRATEGY_TRIGGER,
+            CompositionLayer.L6_ZONES,
+        ],
+        nodes=[
+            GraphNode(
+                "l0_clean",
+                CompositionLayer.L0_DATA_HYGIENE,
+                NodeExecutionRole.STATELESS_TRANSFORM,
+                "data_hygiene_check",
+                outputs=(ps,),
+            ),
+            GraphNode(
+                "l2_ema",
+                CompositionLayer.L2_INDICATORS,
+                NodeExecutionRole.STATEFUL_WINDOW,
+                "exponential_moving_average",
+                parameters={"period": 20},
+                inputs=(ps,),
+                outputs=(pn,),
+            ),
+            GraphNode(
+                "l2_sma",
+                CompositionLayer.L2_INDICATORS,
+                NodeExecutionRole.STATEFUL_WINDOW,
+                "simple_moving_average",
+                parameters={"period": 20},
+                inputs=(ps,),
+                outputs=(pn,),
+            ),
+            GraphNode(
+                "l4_gate",
+                CompositionLayer.L4_CONTEXT_GATE,
+                NodeExecutionRole.GATE_FILTER,
+                "volatility_regime_gate",
+                parameters={"min_atr": 0.1},
+                inputs=(ps, pn),
+                outputs=(pf,),
+            ),
+            GraphNode(
+                "l5_trigger",
+                CompositionLayer.L5_STRATEGY_TRIGGER,
+                NodeExecutionRole.STATELESS_TRANSFORM,
+                "rejection_breakout_trigger",
+                parameters={"threshold": 0.5},
+                inputs=(pn, pf),
+                outputs=(pf,),
+            ),
+            GraphNode(
+                "l6_zones",
+                CompositionLayer.L6_ZONES,
+                NodeExecutionRole.TERMINAL_ZONE,
+                "atr_zone_calculator",
+                parameters={"risk_reward": 2.0},
+                inputs=(pf,),
+            ),
+        ],
+        edges=[
+            GraphEdge("l0_clean", "ohlcv_in", "l2_ema", "ohlcv_in"),
+            GraphEdge("l0_clean", "ohlcv_in", "l2_sma", "ohlcv_in"),
+            GraphEdge("l2_ema", "val", "l4_gate", "val"),
+            GraphEdge("l2_sma", "val", "l5_trigger", "val"),
+            GraphEdge("l4_gate", "flag", "l5_trigger", "flag"),
+            GraphEdge("l5_trigger", "flag", "l6_zones", "flag"),
+        ],
+        parameters=[],
+        compatibility=CompatibilityMap(
+            target_venues=("BINANCE_USDM",), target_symbols=("BTCUSDT",), timeframes=("15m",)
+        ),
+        execution_profile=ExecutionProfile(
+            assumed_taker_fee=Decimal("0.0005"), assumed_slippage_bps=Decimal("2.0")
+        ),
+    )
 
 
 def test_node_series_has_no_lookahead_and_skips_dirty_bars() -> None:
     engine = StrategyPipelineEngine()
     bars = _bars(80, broken_at=40)
     series = engine.numeric_node_series(MEAN_REVERT, bars)
-    assert set(series) == {"l1_body", "l1_upper_wick", "l2_ema", "l3_zscore"}
+    assert set(series) == {"l1_body", "l1_location", "l2_ema", "l2_atr", "l3_zscore"}
     assert {len(values) for values in series.values()} == {79}  # nến 40 vi phạm L0 bị bỏ
     shorter = engine.numeric_node_series(MEAN_REVERT, bars[:60])
     for node_id, values in shorter.items():
@@ -42,17 +144,22 @@ def test_node_series_has_no_lookahead_and_skips_dirty_bars() -> None:
 
 
 def test_consensus_flags_l3_composite_that_copies_price_and_counts_independent_groups() -> None:
-    summary = card_consensus(MEAN_REVERT, _bars(120))
+    collinear = _collinear_card()
+    summary = card_consensus(collinear, _bars(120))
     assert summary.version == CONSENSUS_VERSION
     assert summary.status == "warning"
     assert summary.sample_size == 120
-    assert summary.total_conditions == 4
-    # L3 trung bình có giá đóng cửa áp đảo → gần như trùng L2 (giá đóng cửa): 2 node thành 1 nhóm.
-    assert ("l2_ema", "l3_zscore") in {pair[:2] for pair in summary.high_correlation_pairs}
-    assert summary.independent_conditions == 3
-    assert ("l2_ema", "l3_zscore") in summary.groups
+    assert summary.total_conditions == 2
+    # EMA20 và SMA20 cùng đo một xu hướng giá → bị gộp thành 1 nhóm độc lập.
+    assert ("l2_ema", "l2_sma") in {pair[:2] for pair in summary.high_correlation_pairs}
+    assert summary.independent_conditions == 1
+    assert ("l2_ema", "l2_sma") in summary.groups
     assert summary.warnings
     assert "l2_ema" in summary.warnings[0]
+
+    # MEAN_REVERT v1.2.1 đã dùng giải phẫu nến + Z-Score thật nên trực giao.
+    revert_summary = card_consensus(MEAN_REVERT, _bars(120))
+    assert revert_summary.status == "ok"
 
 
 def test_consensus_needs_minimum_sample_and_never_reports_ok_without_data() -> None:
@@ -85,23 +192,25 @@ async def test_admin_service_uses_bars_provider_instead_of_hardcoded_no_warning(
         requested.append((symbol, timeframe))
         return _bars(120)
 
+    collinear = _collinear_card()
     views = {
         view.card_id: view
-        for view in await StrategyCardAdminService(bars_provider=provider).list_strategy_cards(
-            PRINCIPAL
-        )
+        for view in await StrategyCardAdminService(
+            in_memory_cards=[VOL_BREAKOUT, MEAN_REVERT, collinear],
+            bars_provider=provider,
+        ).list_strategy_cards(PRINCIPAL)
     }
-    revert = views[MEAN_REVERT.card_id]
-    assert revert.has_consensus_warning is True
-    assert revert.consensus_status == "warning"
-    assert revert.is_verified is False
-    assert revert.independent_conditions == 3
-    assert revert.total_conditions == 4
-    assert revert.to_dict()["consensus_status"] == "warning"
+    flagged = views[collinear.card_id]
+    assert flagged.has_consensus_warning is True
+    assert flagged.consensus_status == "warning"
+    assert flagged.is_verified is False
+    assert flagged.independent_conditions == 1
+    assert flagged.total_conditions == 2
+    assert flagged.to_dict()["consensus_status"] == "warning"
     assert views[VOL_BREAKOUT.card_id].consensus_status == "ok"
-    # Đo trên mã/khung đầu tiên khai báo của thẻ.
-    assert ("BTCUSDT", "5m") in requested
-    assert ("BTCUSDT", "15m") in requested
+    assert views[MEAN_REVERT.card_id].consensus_status == "ok"
+    # Đo trên mã/khung đầu tiên khai báo của mỗi thẻ (15m).
+    assert requested == [("BTCUSDT", "15m"), ("BTCUSDT", "15m"), ("BTCUSDT", "15m")]
 
 
 @pytest.mark.asyncio

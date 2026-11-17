@@ -518,6 +518,8 @@ def _build_context_seed(
         feature_schema_hash=feature_schema_hash,
         pipeline_content_hash=pipeline_content_hash,
         execution_events=(),
+        # Khớp hành vi paper_market_context.py ở runtime khi chưa đánh giá ngược theo execution bar.
+        opposing_signal=False,
         reserve_risk=lambda decision, key: decision.approved and bool(key),
     )
 

@@ -21,6 +21,7 @@ from trading_bot.adapters.database.models.learning_source_training_receipt_entit
     LearningSourceTrainingReceiptRecord,
 )
 from trading_bot.adapters.database.replay_training_rights import (
+    REPLAY_TRAINING_DENIAL_TOKEN,
     DatabaseReplayTrainingRightsGate,
     ManifestRightsMismatch,
     ReplayTrainingOperation,
@@ -178,20 +179,31 @@ class LearningFoldSampleRepository:
         normalized_dataset_id: UUID,
         fold_plan_hash: str,
     ) -> None:
-        """Nhờ DB kiểm manifest/outcome và tự ghi receipt bất biến nếu có replay lineage."""
-        await self._session.execute(
-            text(
-                "SELECT public.wp06_record_replay_training_receipts("
-                "CAST(:workspace_id AS uuid), CAST(:manifest_hash AS text), "
-                "CAST(:normalized_dataset_id AS uuid), CAST(:fold_plan_hash AS text))"
-            ),
-            {
-                "workspace_id": str(manifest.workspace_id),
-                "manifest_hash": manifest.content_hash,
-                "normalized_dataset_id": str(normalized_dataset_id),
-                "fold_plan_hash": fold_plan_hash,
-            },
-        )
+        """Nhờ DB kiểm manifest/outcome và tự ghi receipt bất biến nếu có replay lineage.
+
+        Token từ chối `WP06_TRAINING_REPLAY_*` của gate SQL thành `PermissionError(token)`
+        giống `DatabaseReplayTrainingRightsGate.authorize`; lỗi DB khác giữ nguyên để không che
+        sự cố hạ tầng.
+        """
+        try:
+            await self._session.execute(
+                text(
+                    "SELECT public.wp06_record_replay_training_receipts("
+                    "CAST(:workspace_id AS uuid), CAST(:manifest_hash AS text), "
+                    "CAST(:normalized_dataset_id AS uuid), CAST(:fold_plan_hash AS text))"
+                ),
+                {
+                    "workspace_id": str(manifest.workspace_id),
+                    "manifest_hash": manifest.content_hash,
+                    "normalized_dataset_id": str(normalized_dataset_id),
+                    "fold_plan_hash": fold_plan_hash,
+                },
+            )
+        except DBAPIError as error:
+            token = REPLAY_TRAINING_DENIAL_TOKEN.search(str(error.orig))
+            if token is None:
+                raise
+            raise PermissionError(token.group(0)) from None
 
     async def _assert_source_eligibility(
         self, manifest: DatasetManifest

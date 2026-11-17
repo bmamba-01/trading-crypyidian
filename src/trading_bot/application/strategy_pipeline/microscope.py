@@ -240,6 +240,7 @@ class MicroscopeReplayService:
         content_hash = compute_canonical_hash(card)
         layer_traces: list[LayerTrace] = []
         node_values: dict[str, Any] = {}
+        indicator_sources: dict[str, str] = {}
 
         # -------------------------------------------------------------------
         # TẦNG L0: KIỂM TRA ĐỘ SẠCH DỮ LIỆU NẾN (DATA HYGIENE THÔ TRƯỚC)
@@ -340,6 +341,25 @@ class MicroscopeReplayService:
             )
         )
 
+        # Dựng snapshot đơn nến point-in-time sau khi L0 xác nhận dữ liệu sạch
+        series = MarketSeries(
+            timeframe=timeframe,
+            bars=(bar,),
+            quality=SeriesQuality.READY,
+            expected_interval=timedelta(minutes=15),
+            max_event_age=timedelta(minutes=30),
+            backfill_complete=True,
+        )
+        snapshot = DecisionSnapshot(
+            symbol=symbol,
+            decision_time=bar.close_time,
+            snapshot_id=f"microscope-{int(bar.close_time.timestamp())}",
+            series=(series,),
+            features=(),
+            position_is_flat=True,
+            macro_blackout=bool(ctx.get("macro_blackout", False)),
+        )
+
         # -------------------------------------------------------------------
         # TẦNG L1: KHỐI NGUYÊN TỬ GIẢI PHẪU NẾN (CANDLE ANATOMY)
         # -------------------------------------------------------------------
@@ -379,13 +399,9 @@ class MicroscopeReplayService:
         # -------------------------------------------------------------------
         l2_nodes = [n for n in card.nodes if n.layer == CompositionLayer.L2_INDICATORS]
         for node in l2_nodes:
-            # Microscope soi đúng một nến nên ATR ở đây là biên độ của nến đó; đường quyết định
-            # thật dùng feature đã quản trị hoặc lịch sử nến (xem `StrategyPipelineEngine`).
-            operation = node.operation.lower()
-            val = (
-                bar.high - bar.low if "atr" in operation or "true_range" in operation else bar.close
-            )
+            val, src, _ = self._engine._compute_l2_node(node, bar, snapshot)
             node_values[node.node_id] = val
+            indicator_sources[node.node_id] = src
             layer_traces.append(
                 LayerTrace(
                     layer=node.layer,
@@ -402,8 +418,11 @@ class MicroscopeReplayService:
         # -------------------------------------------------------------------
         l3_nodes = [n for n in card.nodes if n.layer == CompositionLayer.L3_ALGORITHMS]
         for node in l3_nodes:
-            val = self._engine._compute_l3_node(node, node_values)
+            val, src, _ = self._engine._compute_l3_node_with_source(
+                node, node_values, bar=bar, snapshot=snapshot
+            )
             node_values[node.node_id] = val
+            indicator_sources[node.node_id] = src
             layer_traces.append(
                 LayerTrace(
                     layer=node.layer,
@@ -419,23 +438,6 @@ class MicroscopeReplayService:
         # TẦNG L4: CỔNG BỐI CẢNH THỊ TRƯỜNG (CONTEXT GATE & SHORT-CIRCUIT)
         # -------------------------------------------------------------------
         l4_nodes = [n for n in card.nodes if n.layer == CompositionLayer.L4_CONTEXT_GATE]
-        series = MarketSeries(
-            timeframe=timeframe,
-            bars=(bar,),
-            quality=SeriesQuality.READY,
-            expected_interval=timedelta(minutes=15),
-            max_event_age=timedelta(minutes=30),
-            backfill_complete=True,
-        )
-        snapshot = DecisionSnapshot(
-            symbol=symbol,
-            decision_time=bar.close_time,
-            snapshot_id=f"microscope-{int(bar.close_time.timestamp())}",
-            series=(series,),
-            features=(),
-            position_is_flat=True,
-            macro_blackout=bool(ctx.get("macro_blackout", False)),
-        )
 
         # Hỗ trợ ghi đè tham số gate từ context (ví dụ min_atr)
         gate_nodes_to_eval = []
@@ -462,6 +464,7 @@ class MicroscopeReplayService:
             node_outputs=node_values,
             snapshot=snapshot,
             latest_bar=bar,
+            indicator_sources=indicator_sources,
         )
 
         if gate_result.status == ContextGateStatus.BLOCK:
@@ -647,13 +650,17 @@ class MicroscopeReplayService:
 
         if l6_nodes:
             params = l6_nodes[0].parameters
-            if "sl_multiplier" in params:
-                sl_multiplier = Decimal(str(params["sl_multiplier"]))
-            if "rr_ratio" in params:
-                rr_ratio = Decimal(str(params["rr_ratio"]))
+            for key in ("sl_multiplier", "stop_atr_multiple"):
+                if key in params:
+                    sl_multiplier = Decimal(str(params[key]))
+                    break
+            for key in ("rr_ratio", "risk_reward"):
+                if key in params:
+                    rr_ratio = Decimal(str(params[key]))
+                    break
 
         # Lấy ATR từ node L2 hoặc tính biên độ nến
-        current_atr = Decimal(str(node_values.get("l2_atr", str(bar.high - bar.low))))
+        current_atr = self._engine._resolve_atr_value(node_values, bar, snapshot)
         direction_str = "LONG" if trigger_result.signal == TriggerSignal.LONG_ENTRY else "SHORT"
 
         zones = self._engine.zone_builder.build_zones(

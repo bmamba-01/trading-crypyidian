@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 from trading_bot.application.strategy_pipeline.pipeline_engine import (
     ATR_SOURCE_SINGLE_BAR,
     PIPELINE_ENGINE_VERSION,
+    WARMUP_SOURCE_INSUFFICIENT,
     StrategyPipelineEngine,
 )
 from trading_bot.application.strategy_pipeline.planner_bridge import StrategyPipelinePlannerBridge
@@ -77,6 +78,23 @@ class StrategyCardStrategy:
     ) -> StrategyCandidate | NoTrade:
         """Chạy L0→L6 trên snapshot; chỉ trả candidate khi L4 cho qua và L5 kích hoạt."""
         result = self.engine.execute(self.card, snapshot)
+        unwarmed_sources = {WARMUP_SOURCE_INSUFFICIENT, "taker_flow_unavailable"}
+        if result.status != "DATA_HYGIENE_FAILED" and any(
+            source in unwarmed_sources for source in result.indicator_sources.values()
+        ):
+            missing = tuple(
+                sorted(
+                    node
+                    for node, source in result.indicator_sources.items()
+                    if source in unwarmed_sources
+                )
+            )
+            return NoTrade(
+                strategy_id=self.strategy_id,
+                code="STRATEGY_CARD_INDICATOR_WARMUP",
+                detail_vi="Chưa đủ feature hoặc lịch sử nến để tính chỉ báo của Strategy Card.",
+                missing_features=missing,
+            )
         if result.status != "SUCCESS" or result.candidate is None:
             return NoTrade(
                 strategy_id=self.strategy_id,

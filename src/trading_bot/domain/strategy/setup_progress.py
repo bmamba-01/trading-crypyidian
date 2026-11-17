@@ -38,11 +38,37 @@ class SetupRule:
 
 SETUP_RULES: dict[str, SetupRule] = {
     "H01": SetupRule("H01", "Giao cắt EMA theo xu hướng", ("ema_cross", "htf_trend", "adx")),
+    "H02": SetupRule("H02", "Động lượng đa chân trời (TSMOM 4h)", ("rv_regime", "tsmom_horizon")),
     "H03": SetupRule("H03", "Phá biên Donchian", ("donchian_breakout", "volume_above_median")),
+    "H04": SetupRule(
+        "H04",
+        "Nén biến động Bollinger–Keltner",
+        ("prior_squeeze", "bw_expansion", "volume_surge", "band_breakout"),
+    ),
+    "H05": SetupRule(
+        "H05",
+        "Nhịp hồi xu hướng EMA20",
+        ("htf_trend", "ema_alignment", "adx", "rsi_band", "pullback_reclaim"),
+    ),
     "H06": SetupRule(
         "H06",
         "Đảo chiều trong biên",
         ("macro_clear", "range_adx", "range_er", "extreme", "no_adverse_break"),
+    ),
+    "H07": SetupRule(
+        "H07",
+        "Hồi quy Session VWAP",
+        ("session_warmup", "range_regime", "vwap_deviation", "cost_hurdle"),
+    ),
+    "H21": SetupRule(
+        "H21",
+        "Động lượng MACD lọc theo ADX",
+        ("htf_trend", "adx", "di_alignment", "macd_hist_cross"),
+    ),
+    "H22": SetupRule(
+        "H22",
+        "Phá vỡ dòng lệnh Taker-Flow",
+        ("taker_flow_valid", "adx", "volume_surge", "taker_imbalance_breakout"),
     ),
 }
 STATUS_LABELS_VI = {

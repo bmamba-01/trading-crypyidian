@@ -23,7 +23,7 @@ from trading_bot.domain.research.source_policy import SourceUsePurpose
 
 SOURCE_ID = "BINANCE_USDM_REST"
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
-_DENIAL_TOKEN = re.compile(r"WP06_TRAINING_REPLAY_[A-Z_]+")
+REPLAY_TRAINING_DENIAL_TOKEN = re.compile(r"WP06_TRAINING_REPLAY_[A-Z_]+")
 
 
 class ReplayTrainingOperation(StrEnum):
@@ -188,7 +188,7 @@ class DatabaseReplayTrainingRightsGate:
         except DBAPIError as error:
             # Verifier SQL từ chối bằng RAISE EXCEPTION; giữ hợp đồng cũ của gate là
             # PermissionError với token ổn định, không lộ SQL/parameters thô cho caller.
-            token = _DENIAL_TOKEN.search(str(error.orig))
+            token = REPLAY_TRAINING_DENIAL_TOKEN.search(str(error.orig))
             if token is None:
                 raise
             raise PermissionError(token.group(0)) from None

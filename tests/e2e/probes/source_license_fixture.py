@@ -36,8 +36,13 @@ def fixture_license_scope(
     purposes: frozenset[SourceUsePurpose] | None = None,
     symbols: tuple[str, ...] = ("BTCUSDT", "ETHUSDT"),
     intervals: tuple[str, ...] = ("1m", "5m", "15m", "1h", "4h", "1d"),
+    max_retention_days: int | None = None,
 ) -> SourceLicenseScope:
-    """Dựng scope rộng đủ bao mọi purpose fixture cần; identity suy từ `source_id`."""
+    """Dựng scope rộng đủ bao mọi purpose fixture cần; identity suy từ `source_id`.
+
+    `max_retention_days` mặc định None (giữ vô thời hạn như normalized data/model); giá trị
+    hữu hạn dùng để kiểm gate từ chối license có retention khi chưa có lifecycle xóa.
+    """
     identity = source_id.upper()
     return SourceLicenseScope(
         source_id=source_id,
@@ -62,7 +67,7 @@ def fixture_license_scope(
             "model_training",
             "paper_inference",
         ),
-        max_retention_days=None,
+        max_retention_days=max_retention_days,
         attribution=FIXTURE_ATTRIBUTION,
     )
 

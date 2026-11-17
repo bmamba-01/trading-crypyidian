@@ -123,7 +123,7 @@ def test_hammer_bar_yields_long_candidate_with_pipeline_zones() -> None:
     assert result.recipe.stop_atr_multiple == pytest.approx(2.0)
     assert result.recipe.take_profit_atr_multiple == pytest.approx(4.0)
     assert result.signal_at == DECIDED_AT
-    assert result.eligible_after == DECIDED_AT + timedelta(seconds=1)
+    assert result.eligible_after == DECIDED_AT + timedelta(microseconds=1)
     assert result.expires_at == DECIDED_AT + timedelta(minutes=15)
     assert result.macro_evidence_ids == ("macro-1",)
     assert result.reason_code == "QUANTSMART_L6_ZONE_CONFIRMED"
@@ -180,7 +180,16 @@ def test_product_catalog_registers_listed_cards_with_stable_hashes() -> None:
     registry = strategy_registry()
     strategy = _strategy()
 
-    assert PRODUCT_CARD_IDS == ("SC-BINANCE-USDM-VOL-BREAKOUT-001",)
+    assert PRODUCT_CARD_IDS == (
+        "SC-BINANCE-USDM-VOL-BREAKOUT-001",
+        "SC-BINANCE-USDM-MEAN-REVERT-002",
+        "SC-BINANCE-USDM-TSMOM-003",
+        "SC-BINANCE-USDM-BBKC-SQUEEZE-004",
+        "SC-BINANCE-USDM-TREND-PULLBACK-005",
+        "SC-BINANCE-USDM-VWAP-REVERT-006",
+        "SC-BINANCE-USDM-MACD-ADX-007",
+        "SC-BINANCE-USDM-TAKER-FLOW-008",
+    )
     release = registry.get_release(strategy.release_id)
     assert release.strategy_id == strategy.strategy_id
     assert release.status == "EXPERIMENTAL_UNVALIDATED"

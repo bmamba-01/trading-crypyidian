@@ -889,6 +889,7 @@ async def breaker() -> dict[str, Any]:
     from trading_bot.application.outbox import UnitOfWork
     from trading_bot.application.paper_market_context import PostgresPaperDecisionContextProvider
     from trading_bot.application.workspace_risk import mark_policy_from
+    from trading_bot.domain.risk.drawdown_breaker import drawdown_policy_for
 
     engine, sessions = _sessions()
     bot_id = UUID(STATE["bot_id"])
@@ -911,12 +912,15 @@ async def breaker() -> dict[str, Any]:
             assert equity.seed_capital is not None
             provider = PostgresPaperDecisionContextProvider(sessions, workspace_id=WORKSPACE)
             account = SimpleNamespace(account_id=ACCOUNT, bot_id=bot_id)
+            # CRY-428: ngưỡng lấy từ workspace settings đã publish như context provider thật.
+            policy = drawdown_policy_for(published.settings.risk.max_drawdown_fraction)
             actual = await provider._drawdown_breaker(
                 uow.session,
                 account,
                 as_of=now,
                 equity=equity.equity_amount,
                 seed=equity.seed_capital,
+                policy=policy,
             )
             stressed = await provider._drawdown_breaker(
                 uow.session,
@@ -924,6 +928,15 @@ async def breaker() -> dict[str, Any]:
                 as_of=now,
                 equity=actual.peak_equity * Decimal("0.89"),
                 seed=equity.seed_capital,
+                policy=policy,
+            )
+            mild = await provider._drawdown_breaker(
+                uow.session,
+                account,
+                as_of=now,
+                equity=actual.peak_equity * Decimal("0.94"),
+                seed=equity.seed_capital,
+                policy=policy,
             )
     finally:
         await engine.dispose()
@@ -933,7 +946,116 @@ async def breaker() -> dict[str, Any]:
         "actual_peak": str(actual.peak_equity),
         "actual_tripped": actual.tripped,
         "stressed_tripped": stressed.tripped,
+        "mild_tripped": mild.tripped,
+        "max_drawdown_fraction": str(actual.max_drawdown_fraction),
         "baseline_at": actual.baseline_at.isoformat() if actual.baseline_at else None,
+    }
+
+
+async def risk_appetite() -> dict[str, Any]:
+    """CRY-428: trang Khẩu vị rủi ro qua service thật bằng role admin-web (RLS, audit, MFA)."""
+    from decimal import Decimal
+
+    from sqlalchemy import select
+
+    from trading_bot.adapters.database.models import AuditEvent
+    from trading_bot.admin.risk_appetite_service import (
+        RiskAppetiteService,
+        parse_risk_appetite_form,
+    )
+    from trading_bot.admin.settings_service import SettingsAdminError
+    from trading_bot.application.outbox import UnitOfWork
+    from trading_bot.auth.policy import Principal, Role
+
+    owner = Principal(
+        user_id=_id("owner"),
+        membership_id=MEMBERSHIP,
+        workspace_id=WORKSPACE,
+        roles=frozenset({Role.OWNER}),
+        mfa_verified_at=datetime.now(UTC),
+    )
+    stale_mfa = Principal(
+        user_id=_id("owner"),
+        membership_id=MEMBERSHIP,
+        workspace_id=WORKSPACE,
+        roles=frozenset({Role.OWNER}),
+        mfa_verified_at=datetime.now(UTC) - timedelta(days=1),
+    )
+    engine, sessions = _sessions()
+    try:
+        service = RiskAppetiteService(sessions)
+        before = await service.overview(owner, symbol="BTCUSDT")
+        limits = before["profile"]["limits"]
+        form = {name: str(value) for name, value in limits.items()} | {
+            "workspace_max_open_risk_fraction": before["settings"][
+                "workspace_max_open_risk_fraction"
+            ],
+            "max_drawdown_fraction": "0.05",
+            "max_daily_loss": str(Decimal(limits["max_daily_loss"]) - 1),
+            "reason": "CRY-428 E2E: siết drawdown 5%",
+        }
+        update = parse_risk_appetite_form(form)
+        try:
+            await service.save(stale_mfa, update)
+            stale = "saved"
+        except SettingsAdminError as error:
+            stale = f"{error.status_code}:{error.message}"
+        saved = await service.save(owner, update)
+        unchanged = await service.save(owner, update)
+        after = await service.overview(owner, symbol="BTCUSDT")
+        async with UnitOfWork(
+            sessions, workspace_id=WORKSPACE, actor_membership_id=MEMBERSHIP
+        ) as uow:
+            actions = list(
+                (
+                    await uow.session.scalars(
+                        select(AuditEvent.action)
+                        .where(
+                            AuditEvent.workspace_id == WORKSPACE,
+                            AuditEvent.action.in_(
+                                (
+                                    "risk_profile.version_created",
+                                    "settings.published",
+                                    "risk_appetite.published",
+                                )
+                            ),
+                        )
+                        .order_by(AuditEvent.occurred_at)
+                    )
+                ).all()
+            )
+            reasons = list(
+                (
+                    await uow.session.scalars(
+                        select(AuditEvent.reason).where(
+                            AuditEvent.workspace_id == WORKSPACE,
+                            AuditEvent.action == "risk_appetite.published",
+                        )
+                    )
+                ).all()
+            )
+    finally:
+        await engine.dispose()
+    [bot_row] = after["bots"]
+    return {
+        "before_drawdown": before["settings"]["max_drawdown_fraction"],
+        "before_default": before["settings"]["max_drawdown_is_default"],
+        "stale_mfa": stale,
+        "saved_status": saved["status"],
+        "risk_profile_changed": saved["risk_profile_changed"],
+        "unchanged_status": unchanged["status"],
+        "after_drawdown": after["settings"]["max_drawdown_fraction"],
+        "after_version": after["settings"]["version"],
+        "saved_version": saved["version"],
+        "after_profile_version": after["profile"]["version"],
+        "before_profile_version": before["profile"]["version"],
+        "after_daily_loss": after["profile"]["limits"]["max_daily_loss"],
+        "expected_daily_loss": form["max_daily_loss"],
+        "bot_daily_loss": (bot_row["limits"] or {}).get("max_daily_loss"),
+        "bot_loss_today": bot_row["loss_today"],
+        "exit_release_count": len(after["exit_policies"]),
+        "audit_actions": actions,
+        "audit_reasons": reasons,
     }
 
 
@@ -1957,6 +2079,8 @@ elif phase == "card_consensus":
     output = asyncio.run(card_consensus_phase())
 elif phase == "breaker":
     output = asyncio.run(breaker())
+elif phase == "risk_appetite":
+    output = asyncio.run(risk_appetite())
 elif phase == "analyst":
     output = asyncio.run(analyst())
 elif phase == "macro_write":
