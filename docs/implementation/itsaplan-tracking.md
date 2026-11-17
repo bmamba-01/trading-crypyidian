@@ -13,6 +13,8 @@
 | Mã triển khai | `/Users/macbook/Work/itsaplan` (clone upstream, ngoài repo này), `.env` quyền 600, `docker-compose.override.yml` chỉ mở cổng trên `127.0.0.1` |
 | Script import/sync | `/Users/macbook/Work/itsaplan/local/crypidian/` (`merge_wbs.py`, `sync_wbs.py`, `state.json` ánh xạ ref → issue id, dữ liệu `wbs-merged-2026-11-16.json`) |
 | MCP cho Claude Code | Server `itsaplan`, phạm vi **user** (có hiệu lực ở mọi worktree trong `.claude/worktrees/`) |
+| MCP cho Codex | `~/.codex/config.toml`, mục `[mcp_servers.itsaplan]` (`url` + `http_headers`; app GUI không đọc biến môi trường shell nên không dùng `bearer_token_env_var`) |
+| MCP cho Antigravity | `~/.gemini/config/mcp_config.json`, mục `mcpServers.itsaplan` (`serverUrl` + `headers`); app Antigravity đọc đúng đường dẫn này |
 
 Stack chạy bằng Docker Compose (postgres 17, RustFS, api, worker, bot, web), image ghim `VERSION=1.11.0`, telemetry tắt. Tài khoản đăng ký đầu tiên là admin instance.
 
@@ -78,5 +80,6 @@ claude mcp remove itsaplan -s user
 claude mcp add --scope user --transport http itsaplan http://localhost:3000/mcp --header "Authorization: Bearer $(cat /Users/macbook/Work/itsaplan/.mcp-api-key)"
 ```
 
+- Codex và Antigravity giữ key ngay trong file cấu hình (quyền 600). Khi gia hạn, thay chuỗi `Bearer itp_…` trong `~/.codex/config.toml` và `~/.gemini/config/mcp_config.json`, rồi khởi động lại app. Kiểm tra Codex bằng `codex mcp get itsaplan` (binary nằm trong `/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex`).
 - Kiểm tra kết nối: `claude mcp get itsaplan` phải báo `✔ Connected`. Session Claude Code đang mở cần khởi động lại để thấy tool `mcp__itsaplan__*`.
 - MCP bật ở cấp team và project `CRY`. OAuth của MCP chỉ dùng được qua HTTPS hoặc localhost; ở đây dùng key Bearer.
