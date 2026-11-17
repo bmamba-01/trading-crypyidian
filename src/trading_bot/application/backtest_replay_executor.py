@@ -216,6 +216,10 @@ def build_backtest_replay_plan(
     if strategy_parameters:
         # Chỉ thêm khi có tham số: hash profile của job cũ (không tham số) giữ nguyên.
         profile_payload["strategy_parameters"] = strategy_parameters
+    exit_override = submission.exit_override()
+    if exit_override is not None:
+        # CRY-428: chỉ thêm khi bot ghi đè thoát lệnh; job không ghi đè giữ hash cũ.
+        profile_payload["exit_override"] = exit_override.payload()
     profile_hash = _hash(profile_payload)
     settings_version_id = uuid5(job_id, f"settings:{profile_hash}")
     risk_profile_version_id = uuid5(job_id, f"risk:{profile_hash}")
@@ -345,6 +349,7 @@ def build_backtest_replay_plan(
             scenarios=(base_scenario,),
             progress_callback=progress_callback,
             cancel_requested=cancel_requested,
+            exit_override=exit_override,
         )
 
     return BacktestReplayPlan(manifest=manifest, executor=executor)

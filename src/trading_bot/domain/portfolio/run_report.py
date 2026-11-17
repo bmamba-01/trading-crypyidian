@@ -10,6 +10,9 @@ Nội dung theo bot:
 - ``funnel``: số quyết định theo trạng thái, lý do bỏ qua phổ biến, tín hiệu → lệnh;
 - ``performance``: tổng từ báo cáo bot + thống kê R-multiple, MAE/MFE (đơn vị R);
 - ``by_symbol``: lệnh/thắng/PnL theo coin;
+- ``signal_outcomes`` (CRY-430, v2): kết quả các tín hiệu phát trong cửa sổ, chấm bằng nến đã đóng
+  sau 1×/4×/24× khung (đúng/sai/hòa theo dải ±0,1R, TP1/SL chạm trước, MFE/MAE theo R), theo coin,
+  đã gửi Telegram hay không, và nhóm sai lặp lại — kể cả tín hiệu không thành lệnh;
 - ``data_quality``: cờ mẫu nhỏ để AI không kết luận quá mức.
 
 R-multiple = PnL ròng / rủi ro đã giữ chỗ (``risk_reservation.reserved_risk`` ≈ lỗ dự kiến tại
@@ -29,8 +32,22 @@ from decimal import Decimal
 from statistics import median
 from typing import Any
 
-RUN_REPORT_VERSION = "ai1-run-report-v1"
+from trading_bot.domain.strategy.signal_outcome import (
+    HORIZON_MULTIPLES,
+    LABEL_VERSION,
+    METHOD_VERSION,
+)
+from trading_bot.domain.strategy.signal_outcome_summary import (
+    OutcomeRow,
+    group_summaries,
+    repeated_wrong,
+    summarize,
+)
+
+RUN_REPORT_VERSION = "ai1-run-report-v2"
 MIN_TRADES_FOR_CONCLUSION = 20
+MIN_SIGNALS_FOR_CONCLUSION = 20
+SIGNAL_TOP_SYMBOLS = 10
 TOP_REASONS = 8
 OUT_OF_UNIVERSE = "SYMBOL_OUT_OF_BOT_UNIVERSE"
 _Q = Decimal("0.0001")
@@ -54,6 +71,17 @@ class TradeExtremes:
 
 
 @dataclass(frozen=True, slots=True)
+class SignalOutcomeInput:
+    """Một hàng ``signal_outcome`` của bot (CRY-430) kèm trạng thái gửi Telegram."""
+
+    horizon_bars: int
+    symbol: str
+    direction: str
+    delivered: bool
+    row: OutcomeRow
+
+
+@dataclass(frozen=True, slots=True)
 class BotRunInput:
     bot_id: str
     bot_name: str
@@ -69,6 +97,7 @@ class BotRunInput:
     # (giai đoạn, mã) → số candidate bị từ chối; từ paper_candidate_outcome (16/11/2026).
     rejections: tuple[DecisionCount, ...] = ()
     candidates_with_recorded_rejection: int = 0
+    signal_outcomes: tuple[SignalOutcomeInput, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,6 +179,56 @@ def _distribution(values: Sequence[Decimal]) -> dict[str, str | None]:
     }
 
 
+_COMPACT = (
+    "signals", "scored", "correct", "wrong", "neutral", "hit_rate_percent", "outcome_r_mean",
+    "tp1_first", "sl_first",
+)  # fmt: skip
+PRIMARY_HORIZON_BARS = 4
+
+
+def _compact(item: Mapping[str, Any]) -> dict[str, Any]:
+    return {key: item[key] for key in ("key", *_COMPACT) if key in item}
+
+
+def signal_outcome_section(items: Sequence[SignalOutcomeInput]) -> dict[str, Any]:
+    """Khối ``signal_outcomes`` của một bot: horizon chính 4× khung có phân rã chi tiết."""
+    by_horizon = {
+        str(horizon): summarize(item.row for item in items if item.horizon_bars == horizon)
+        for horizon in HORIZON_MULTIPLES
+    }
+    for horizon, summary in by_horizon.items():
+        if horizon != str(PRIMARY_HORIZON_BARS):
+            summary.pop("r_distribution", None)
+    primary = [item for item in items if item.horizon_bars == PRIMARY_HORIZON_BARS]
+    return {
+        "method_version": METHOD_VERSION,
+        "label_version": LABEL_VERSION,
+        "primary_horizon_bars": PRIMARY_HORIZON_BARS,
+        "by_horizon_bars": by_horizon,
+        "by_symbol": [
+            _compact(item)
+            for item in group_summaries(
+                ((item.symbol, item.row) for item in primary), limit=SIGNAL_TOP_SYMBOLS
+            )
+        ],
+        "by_delivery": [
+            _compact(item)
+            for item in group_summaries(
+                ("sent" if item.delivered else "not_sent", item.row) for item in primary
+            )
+        ],
+        "repeated_wrong": [
+            _compact(item)
+            for item in repeated_wrong(
+                ((f"{item.symbol} {item.direction}", item.row) for item in primary),
+                min_wrong=2,
+                limit=5,
+            )
+        ],
+        "source": {"table": "signal_outcome", "window_field": "signal_at"},
+    }
+
+
 def _bot_section(bot: BotRunInput) -> tuple[dict[str, Any], list[str]]:
     warnings: list[str] = []
     report = bot.bot_report
@@ -193,6 +272,13 @@ def _bot_section(bot: BotRunInput) -> tuple[dict[str, Any], list[str]]:
         warnings.append(
             f"{bot.bot_name}: chỉ {closed} lệnh đóng (< {MIN_TRADES_FOR_CONCLUSION}), "
             "chưa đủ để kết luận thống kê."
+        )
+    signal_block = signal_outcome_section(bot.signal_outcomes)
+    primary_scored = signal_block["by_horizon_bars"][str(PRIMARY_HORIZON_BARS)]["scored"]
+    if primary_scored < MIN_SIGNALS_FOR_CONCLUSION:
+        warnings.append(
+            f"{bot.bot_name}: chỉ {primary_scored} tín hiệu đã chấm ở horizon chính "
+            f"(< {MIN_SIGNALS_FOR_CONCLUSION}), chưa đủ để kết luận về chất lượng tín hiệu."
         )
     unexplained = candidates - bot.candidates_with_intent - bot.candidates_with_recorded_rejection
     if unexplained > 0:
@@ -251,6 +337,7 @@ def _bot_section(bot: BotRunInput) -> tuple[dict[str, Any], list[str]]:
             }
             for symbol, row in sorted(per_symbol.items())
         },
+        "signal_outcomes": signal_block,
         "source": {"bot_report_hash": report.get("report_hash")},
     }
     return section, warnings
@@ -324,6 +411,7 @@ def build_run_report(
         "ranking_by_net_pnl": ranking,
         "data_quality": {
             "min_trades_for_conclusion": MIN_TRADES_FOR_CONCLUSION,
+            "min_signals_for_conclusion": MIN_SIGNALS_FOR_CONCLUSION,
             "warnings": warnings,
         },
     }

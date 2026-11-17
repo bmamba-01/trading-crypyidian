@@ -162,3 +162,78 @@ def test_invalid_window_and_family_names() -> None:
         )
     assert strategy_family("h03-v3-15m") == "H03"
     assert strategy_family("sc-binance-usdm-vol-breakout-001-v1.0.0") == "CARD"
+
+
+def test_signal_outcomes_block_and_ai_validator_refs() -> None:
+    """CRY-430: khối signal_outcomes theo bot, cảnh báo ít mẫu, AI trích được số qua pointer."""
+    from trading_bot.application.ai_analyst import topic_report, validate_analysis
+    from trading_bot.domain.portfolio.run_report import SignalOutcomeInput
+    from trading_bot.domain.strategy.signal_outcome_summary import OutcomeRow
+
+    def outcome(horizon: int, symbol: str, label: int, r: str, *, sent: bool) -> SignalOutcomeInput:
+        return SignalOutcomeInput(
+            horizon_bars=horizon,
+            symbol=symbol,
+            direction="long",
+            delivered=sent,
+            row=OutcomeRow(
+                status="SCORED",
+                label=label,
+                outcome_r=Decimal(r),
+                mfe_r=Decimal("1.5"),
+                mae_r=Decimal("-0.5"),
+                first_touch="SL" if label < 0 else "TP1",
+                same_bar_conflict=False,
+                seconds_to_first_touch=900,
+            ),
+        )
+
+    outcomes = (
+        outcome(4, "XMRUSDT", -1, "-1", sent=True),
+        outcome(4, "XMRUSDT", -1, "-1", sent=False),
+        outcome(4, "XMRUSDT", -1, "-1", sent=False),
+        outcome(4, "BTWUSDT", 1, "1", sent=True),
+        outcome(1, "BTWUSDT", 0, "0.05", sent=True),
+        outcome(24, "XMRUSDT", 1, "1", sent=True),
+    )
+    report = build_run_report(
+        workspace_id="w",
+        run_label="t",
+        window_start=START,
+        window_end=END,
+        bots=[_bot("T09", "h03-v3-15m", [], signal_outcomes=outcomes)],
+    ).payload
+    block = report["bots"][0]["signal_outcomes"]
+    assert block["method_version"] == "sig-outcome-v1"
+    assert block["primary_horizon_bars"] == 4
+    primary = block["by_horizon_bars"]["4"]
+    assert (primary["scored"], primary["correct"], primary["wrong"]) == (4, 1, 3)
+    assert primary["hit_rate_percent"] == "25.0"
+    assert "r_distribution" in primary
+    assert "r_distribution" not in block["by_horizon_bars"]["1"]
+    assert block["repeated_wrong"][0]["key"] == "XMRUSDT long"
+    assert block["repeated_wrong"][0]["wrong"] == 3
+    assert {row["key"] for row in block["by_delivery"]} == {"sent", "not_sent"}
+    assert any("tín hiệu đã chấm" in warning for warning in report["data_quality"]["warnings"])
+    family = topic_report(report, "H03")
+    assert family["bots"][0]["signal_outcomes"] == block
+    output = {
+        "summary": "Tín hiệu XMRUSDT sai lặp lại.",
+        "confidence": "low",
+        "findings": [
+            {
+                "statement": "Ở horizon 4 nến, tỷ lệ đúng 25.0%, XMRUSDT long sai 3 lần; "
+                "24 nến có 1 tín hiệu đúng.",
+                "evidence_refs": [
+                    "/bots/0/signal_outcomes/by_horizon_bars/4/hit_rate_percent",
+                    "/bots/0/signal_outcomes/repeated_wrong/0/wrong",
+                    "/bots/0/signal_outcomes/by_horizon_bars/24/correct",
+                ],
+            }
+        ],
+        "hypotheses": [],
+        "proposals": [],
+    }
+    assert validate_analysis(output, family).ok, validate_analysis(output, family).errors
+    output["findings"][0]["statement"] = "Tỷ lệ đúng 30.0%."
+    assert not validate_analysis(output, family).ok

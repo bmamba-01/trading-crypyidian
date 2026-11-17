@@ -48,7 +48,7 @@ def _statements(direction: str) -> list[str]:
 def test_revision_follows_wp06_head_and_pins_every_definition() -> None:
     module = _module()
     assert module.revision == "a5c7e9b1d3f5"
-    assert module.down_revision == "d4f6a8b0c2e4"
+    assert module.down_revision == "e5b7d9f1a3c6"
     for signature, hashes in module.FUNCTION_DEFINITION_HASHES.items():
         assert set(hashes) == {"preimage", "postimage"}, signature
         for value in hashes.values():

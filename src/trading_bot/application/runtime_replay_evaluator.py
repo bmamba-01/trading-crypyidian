@@ -69,6 +69,7 @@ from trading_bot.domain.strategy.contracts import (
     NoTrade,
     StrategyCandidate,
 )
+from trading_bot.domain.strategy.exit_override import ExitOverride
 from trading_bot.domain.strategy.registry import StrategyRegistry
 from trading_bot.domain.strategy.rules_v3 import exit_evidence_spec
 
@@ -366,6 +367,7 @@ class RuntimeReplayEvaluator:
         context_provider: ContextProvider,
         scenario: SensitivityScenario | None = None,
         mark_to_market: bool = False,
+        exit_override: ExitOverride | None = None,
     ) -> None:
         if cycle.paper_gateway is not gateway:
             raise ReplayEvaluationContextError(
@@ -378,6 +380,8 @@ class RuntimeReplayEvaluator:
         self._mark_to_market = mark_to_market
         self.scenario = scenario or SensitivityScenario("base", "BASE")
         self.strategy_parameters = _runtime_parameters(self.scenario)
+        # CRY-428: ghi đè thoát theo bot cho backtest bản nháp (cùng đường áp với runtime).
+        self.exit_override = exit_override
         self.context_provider = context_provider
         self._intent_plans: dict[str, TradePlan] = {}
         self._intent_entry_provenance: dict[str, _EntryDecisionProvenance | None] = {}
@@ -588,6 +592,7 @@ class RuntimeReplayEvaluator:
             open_exposures=open_exposures,
             cost_model=context.cost_model,
             strategy_parameters=self.strategy_parameters,
+            exit_override=self.exit_override,
         )
 
         if result.outcome is DecisionCycleOutcome.RISK_APPROVED:

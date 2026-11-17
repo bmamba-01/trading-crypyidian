@@ -120,6 +120,8 @@ class AppSettings(BaseSettings):
     signal_worker_tick_seconds: float = Field(default=5.0, gt=0, le=300)
     signal_worker_max_candidate_age_seconds: int = Field(default=7200, ge=5, le=14_400)
     signal_worker_max_attempts: int = Field(default=5, ge=1, le=20)
+    # CRY-430: chu kỳ worker chấm kết quả tín hiệu chạy trong market-signal-worker (0 = tắt).
+    signal_outcome_tick_seconds: float = Field(default=60.0, ge=0, le=3600)
     # TG-2: chống spam theo subscription — cooldown tín hiệu trùng và trần số tin/60 phút.
     signal_worker_cooldown_minutes: int = Field(default=90, ge=0, le=1440)
     signal_worker_max_messages_per_hour: int = Field(default=6, ge=1, le=60)

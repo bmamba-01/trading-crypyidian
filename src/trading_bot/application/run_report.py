@@ -1,8 +1,9 @@
 """Nạp dữ liệu cho Run Report AI-1 từ PostgreSQL (chỉ đọc) rồi dựng báo cáo tất định.
 
 Nguồn: báo cáo bot ``bot-report.v2`` (ledger đã đối soát), ``bot_decision`` trong cửa sổ, order
-intent theo ``bot_decision_id``, ``risk_reservation.reserved_risk`` (1R) và nến đã đóng của khung
-chiến lược để tính MAE/MFE. Mỗi bot đọc trong UnitOfWork có ``bot_id`` riêng (RLS theo bot).
+intent theo ``bot_decision_id``, ``risk_reservation.reserved_risk`` (1R), nến đã đóng của khung
+chiến lược để tính MAE/MFE và ``signal_outcome`` (CRY-430) cho kết quả tín hiệu. Mỗi bot đọc
+trong UnitOfWork có ``bot_id`` riêng (RLS theo bot).
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import String, and_, cast, func, select
+from sqlalchemy import String, and_, cast, exists, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from trading_bot.adapters.database.models import (
@@ -22,6 +23,8 @@ from trading_bot.adapters.database.models import (
     BotInstance,
     OrderIntentRecord,
     PaperCandidateOutcomeRecord,
+    SignalOutcomeRecord,
+    TelegramSignalDelivery,
     TradingAccount,
 )
 from trading_bot.adapters.database.models.paper_entities import TradeRecord
@@ -35,12 +38,16 @@ from trading_bot.domain.portfolio.run_report import (
     BotRunInput,
     DecisionCount,
     RunReport,
+    SignalOutcomeInput,
     TradeExtremes,
     build_run_report,
 )
+from trading_bot.domain.strategy.signal_outcome import METHOD_VERSION as SIGNAL_OUTCOME_METHOD
+from trading_bot.domain.strategy.signal_outcome_summary import OutcomeRow
 
 MAX_CLOSED_TRADES = 2000
 MAX_OPEN_TRADES = 200
+MAX_SIGNAL_OUTCOMES = 6000
 
 
 async def _enabled_bots(session: AsyncSession, workspace_id: UUID) -> list[tuple[Any, ...]]:
@@ -138,6 +145,48 @@ async def _rejections(
     return counts, int(explained or 0)
 
 
+async def _signal_outcomes(
+    session: AsyncSession, workspace_id: UUID, bot_id: UUID, start: datetime, end: datetime
+) -> tuple[SignalOutcomeInput, ...]:
+    """CRY-430: kết quả tín hiệu phát trong cửa sổ (theo ``signal_at``), kèm cờ đã gửi Telegram."""
+    sent = exists().where(
+        TelegramSignalDelivery.workspace_id == SignalOutcomeRecord.workspace_id,
+        TelegramSignalDelivery.decision_id == SignalOutcomeRecord.decision_id,
+        TelegramSignalDelivery.status == "SENT",
+    )
+    rows = await session.execute(
+        select(SignalOutcomeRecord, sent.label("sent"))
+        .where(
+            SignalOutcomeRecord.workspace_id == workspace_id,
+            SignalOutcomeRecord.bot_id == bot_id,
+            SignalOutcomeRecord.method_version == SIGNAL_OUTCOME_METHOD,
+            SignalOutcomeRecord.signal_at >= start,
+            SignalOutcomeRecord.signal_at < end,
+        )
+        .order_by(SignalOutcomeRecord.signal_at, SignalOutcomeRecord.id)
+        .limit(MAX_SIGNAL_OUTCOMES)
+    )
+    return tuple(
+        SignalOutcomeInput(
+            horizon_bars=record.horizon_bars,
+            symbol=record.symbol,
+            direction=record.direction,
+            delivered=bool(delivered),
+            row=OutcomeRow(
+                status=record.status,
+                label=record.label,
+                outcome_r=record.outcome_r,
+                mfe_r=record.mfe_r,
+                mae_r=record.mae_r,
+                first_touch=record.first_touch,
+                same_bar_conflict=record.same_bar_conflict,
+                seconds_to_first_touch=record.seconds_to_first_touch,
+            ),
+        )
+        for record, delivered in rows.all()
+    )
+
+
 async def _extremes(
     session: AsyncSession,
     workspace_id: UUID,
@@ -228,6 +277,7 @@ async def load_run_report(
             extremes = await _extremes(
                 session, workspace_id, list(payload.get("trades") or ()), timeframe
             )
+            signal_outcomes = await _signal_outcomes(session, workspace_id, bot_id, start, end)
         inputs.append(
             BotRunInput(
                 bot_id=str(bot_id),
@@ -243,6 +293,7 @@ async def load_run_report(
                 rejections=rejections,
                 candidates_with_recorded_rejection=explained,
                 extremes=extremes,
+                signal_outcomes=signal_outcomes,
             )
         )
     return build_run_report(

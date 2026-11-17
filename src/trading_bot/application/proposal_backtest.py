@@ -20,6 +20,7 @@ Luồng cho mỗi đề xuất (``analyst_output.v2`` đã qua validator):
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -89,13 +90,18 @@ class BacktestArm:
     release_id: str
     parameters: tuple[tuple[str, int], ...]
     per_trade_risk_fraction: Decimal
+    # CRY-428: JSON canonical của khối ``exit`` (ghi đè thoát theo bot); rỗng = recipe release.
+    exit_override_json: str = ""
 
     def payload(self) -> dict[str, Any]:
-        return {
+        data: dict[str, Any] = {
             "release_id": self.release_id,
             "parameters": dict(self.parameters),
             "per_trade_risk_fraction": str(self.per_trade_risk_fraction),
         }
+        if self.exit_override_json:
+            data["exit"] = json.loads(self.exit_override_json)
+        return data
 
 
 def arm_from_overlay(overlay: Mapping[str, Any]) -> BacktestArm:
@@ -109,10 +115,14 @@ def arm_from_overlay(overlay: Mapping[str, Any]) -> BacktestArm:
     )
     risk = overlay.get("risk") or {}
     fraction = risk.get("per_trade_risk_fraction")
+    exit_block = overlay.get("exit") or {}
     return BacktestArm(
         release_id=release,
         parameters=parameters,
         per_trade_risk_fraction=Decimal(str(fraction)) if fraction else DEFAULT_RISK_FRACTION,
+        exit_override_json=(
+            json.dumps(exit_block, sort_keys=True, separators=(",", ":")) if exit_block else ""
+        ),
     )
 
 
@@ -388,6 +398,7 @@ def run_arm(
         slippage_rate=SLIPPAGE_RATE,
         seed=seed,
         strategy_parameters=arm.parameters,
+        exit_override_json=arm.exit_override_json,
     )
     job_id = uuid5(_NAMESPACE, f"{bundle.dataset_hash}:{arm.payload()}")
     plan = build_backtest_replay_plan(bundle.workspace_id, job_id, bundle, submission)
@@ -504,6 +515,54 @@ def backtest_proposal(
     """
     baseline_arm, variant_arm, unsupported = arms_for_proposal(bot_config, changes)
     base_limits, var_limits = limits_for_proposal(bot_config, changes)
+    return _backtest_arms(
+        bot_name=bot_name,
+        baseline_arm=baseline_arm,
+        variant_arm=variant_arm,
+        base_limits=base_limits,
+        var_limits=var_limits,
+        unsupported=unsupported,
+        bundles=bundles,
+        workers=workers,
+    )
+
+
+def backtest_bot_draft(
+    *,
+    bot_name: str,
+    head_overlay: Mapping[str, Any],
+    draft_overlay: Mapping[str, Any],
+    bundles: Mapping[str, BacktestDatasetReplayBundle | str],
+    workers: int = 1,
+) -> ProposalBacktestResult:
+    """CRY-428: bản gốc = overlay đang publish, bản mới = overlay nháp của owner (kể cả ``exit``).
+
+    Cùng replay/so sánh với đề xuất AI; kết quả là điều kiện bắt buộc trước khi publish thay đổi
+    thông số thoát (owner tự quyết dù kết luận thế nào — quyết định 17/11/2026).
+    """
+    return _backtest_arms(
+        bot_name=bot_name,
+        baseline_arm=arm_from_overlay(head_overlay),
+        variant_arm=arm_from_overlay(draft_overlay),
+        base_limits=portfolio_limits(head_overlay.get("risk") or {}),
+        var_limits=portfolio_limits(draft_overlay.get("risk") or {}),
+        unsupported=(),
+        bundles=bundles,
+        workers=workers,
+    )
+
+
+def _backtest_arms(
+    *,
+    bot_name: str,
+    baseline_arm: BacktestArm,
+    variant_arm: BacktestArm,
+    base_limits: PortfolioLimits,
+    var_limits: PortfolioLimits,
+    unsupported: tuple[str, ...],
+    bundles: Mapping[str, BacktestDatasetReplayBundle | str],
+    workers: int,
+) -> ProposalBacktestResult:
     portfolio_change = base_limits != var_limits
     if baseline_arm == variant_arm and not portfolio_change:
         empty = aggregate([])

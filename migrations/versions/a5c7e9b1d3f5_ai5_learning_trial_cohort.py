@@ -1,7 +1,7 @@
 """AI-5 (CRY-236): dataset học gom nhiều trial/bundle (trial cohort nhiều coin).
 
 Revision ID: a5c7e9b1d3f5
-Revises: d4f6a8b0c2e4
+Revises: e5b7d9f1a3c6
 
 Trước đây một candidate/manifest v5 chỉ được ghim **một** replay bundle và **một** trial
 (`WP06_TRAINING_REPLAY_MIXED_BUNDLE`/`MIXED_RUN`), mà bundle chỉ có một symbol → dataset
@@ -39,7 +39,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "a5c7e9b1d3f5"
-down_revision: str | None = "d4f6a8b0c2e4"
+down_revision: str | None = "e5b7d9f1a3c6"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

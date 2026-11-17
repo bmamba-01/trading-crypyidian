@@ -189,6 +189,7 @@ from trading_bot.adapters.database.models.signal_entities import (
     BotDecisionRecord,
     SharedSignalEvidenceRecord,
 )
+from trading_bot.adapters.database.models.signal_outcome_entities import SignalOutcomeRecord
 from trading_bot.adapters.database.models.source_license_evidence_entities import (
     SourceLicenseEvidenceRecord,
 )
@@ -208,6 +209,7 @@ from trading_bot.adapters.database.models.venue_entities import (
 )
 
 __all__ = [
+    "SignalOutcomeRecord",
     "AnalystRunRecord",
     "AnalystSessionRecord",
     "PaperCandidateOutcomeRecord",

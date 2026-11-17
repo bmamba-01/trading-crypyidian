@@ -739,6 +739,264 @@ def _verify() -> dict[str, Any]:
         }
 
 
+# --- CRY-430: chấm kết quả tín hiệu bằng nến đã đóng sau tín hiệu ---------------------------
+
+
+def _engine_sessions() -> tuple[Any, Any]:
+    from trading_bot.adapters.database.engine import (
+        create_database_engine,
+        create_session_factory,
+        database_url_from_secret,
+    )
+
+    engine = create_database_engine(
+        database_url_from_secret(
+            username=os.environ["TRADING_BOT_DATABASE_USER"],
+            password_file=Path(os.environ["TRADING_BOT_DATABASE_PASSWORD_FILE"]),
+            host="postgres",
+            database="crypidian",
+        )
+    )
+    return engine, create_session_factory(engine)
+
+
+def _candidate_row(connection: psycopg.Connection[Any]) -> tuple[UUID, UUID, dict[str, Any]]:
+    row = connection.execute(
+        "SELECT id, bot_id, payload->'candidate' FROM bot_decision "
+        "WHERE workspace_id=%s AND status='CANDIDATE' ORDER BY created_at LIMIT 1",
+        (WORKSPACE,),
+    ).fetchone()
+    assert row is not None, "Cần một tín hiệu CANDIDATE từ phase produce."
+    return row[0], row[1], dict(row[2])
+
+
+def _outcome_seed(connection: psycopg.Connection[Any]) -> dict[str, Any]:
+    """Nến 1h liền sau tín hiệu: nến 1 đi ngang, nến 2 chạm TP1, nến 3 chạm TP2, rồi đi ngang."""
+    from trading_bot.domain.strategy.signal_outcome import levels_from_candidate
+
+    decision_id, bot_id, candidate = _candidate_row(connection)
+    levels = levels_from_candidate(candidate)
+    signal_at = datetime.fromisoformat(str(candidate["signal_at"]).replace("Z", "+00:00"))
+    entry, risk, sign = levels.entry, levels.risk, levels.sign
+    tp2 = levels.tp2 if levels.tp2 is not None else levels.tp1 + sign * risk
+    plan = [  # (giá mở, giá thuận lợi nhất, giá bất lợi nhất, giá đóng)
+        (entry, entry + sign * risk / 5, entry - sign * risk / 5, entry),
+        (entry, levels.tp1 + sign * risk / 10, entry - sign * risk * 3 / 10, levels.tp1),
+        (levels.tp1, tp2 + sign * risk / 10, levels.tp1 - sign * risk / 10, tp2),
+        (tp2, tp2 + sign * risk / 10, tp2 - sign * risk / 10, tp2),
+        (tp2, tp2 + sign * risk / 10, tp2 - sign * risk / 10, tp2),
+        (tp2, tp2 + sign * risk / 10, tp2 - sign * risk / 10, tp2),
+    ]
+    for index, (open_price, favorable, adverse, close) in enumerate(plan):
+        opened = signal_at + timedelta(microseconds=1) + index * timedelta(hours=1)
+        closed = opened + timedelta(hours=1) - timedelta(microseconds=1)
+        prices = (favorable, adverse, open_price, close)
+        _insert(
+            connection,
+            "market_bar",
+            id=_id(f"fwd-1h-{index}"),
+            workspace_id=WORKSPACE,
+            instrument_id=INSTRUMENT,
+            symbol="BTCUSDT",
+            timeframe="1h",
+            source="BINANCE_USDM",
+            logical_key=f"BTCUSDT:1h:{opened.isoformat()}",
+            idempotency_key=f"wp07-market-signal:fwd:1h:{index}",
+            revision=1,
+            checksum=f"{index + 4096:064x}",
+            supersedes_id=None,
+            raw_reference_id=None,
+            source_cursor=f"fixture:fwd:1h:{index}",
+            open_time=opened,
+            close_time=closed,
+            event_at=closed,
+            received_at=closed + timedelta(milliseconds=500),
+            available_at=closed + timedelta(seconds=1),
+            open=open_price,
+            high=max(prices),
+            low=min(prices),
+            close=close,
+            volume=Decimal("100"),
+            is_closed=True,
+        )
+    return {
+        "decision_id": str(decision_id),
+        "outcome_bot_id": str(bot_id),
+        "signal_at": signal_at.isoformat(),
+        "expected_tp1_r": str(levels.r_at(levels.tp1)),
+    }
+
+
+def _outcome_score() -> dict[str, Any]:
+    """Chạy scorer bằng role market-signal-worker thật (RLS theo bot), kiểm idempotent + quyền."""
+    import asyncio
+
+    from trading_bot.application.signal_outcomes import SignalOutcomeScorer
+
+    signal_at = datetime.fromisoformat(STATE["signal_at"])
+    engine, sessions = _engine_sessions()
+    scorer = SignalOutcomeScorer(sessions)
+
+    async def run(now: datetime) -> dict[str, int]:
+        result = await scorer.score_once(workspace_id=WORKSPACE, now=now)
+        return {
+            "examined": result.decisions_examined,
+            "scored": result.scored,
+            "pending": result.pending,
+            "data_gap": result.data_gap,
+            "invalid": result.invalid,
+        }
+
+    try:
+        # Trước khi nến đầu đóng: chưa có gì để chấm (không nhìn trước).
+        early = asyncio.run(run(signal_at + timedelta(minutes=30)))
+        after_six = asyncio.run(run(signal_at + timedelta(hours=6, minutes=2)))
+        repeat = asyncio.run(run(signal_at + timedelta(hours=6, minutes=2)))
+        after_gap = asyncio.run(run(signal_at + timedelta(hours=31, minutes=1)))
+        done = asyncio.run(run(signal_at + timedelta(hours=31, minutes=1)))
+    finally:
+        asyncio.run(engine.dispose())
+    bot_id = UUID(STATE["outcome_bot_id"])
+    with _connect() as connection:
+        connection.execute("SELECT set_config('app.workspace_id', %s, false)", (str(WORKSPACE),))
+        unscoped = connection.execute("SELECT count(*) FROM signal_outcome").fetchone()[0]
+        connection.execute("SELECT set_config('app.bot_id', %s, false)", (str(bot_id),))
+        scoped = connection.execute("SELECT count(*) FROM signal_outcome").fetchone()[0]
+        try:
+            connection.execute("UPDATE signal_outcome SET label = 1")
+            update_denied = False
+        except psycopg.errors.InsufficientPrivilege:
+            update_denied = True
+        try:
+            connection.execute(
+                "INSERT INTO signal_outcome (id, workspace_id, bot_id, decision_id, "
+                "method_version, label_version, horizon_bars, status, symbol, timeframe, "
+                "direction, strategy_id, strategy_release_id, signal_at, scored_at) VALUES "
+                "(%s,%s,%s,%s,'x','x',7,'INVALID_SIGNAL','BTCUSDT','1h','long','H01','h01-v1',"
+                "now(),now())",
+                (uuid4(), WORKSPACE, uuid4(), UUID(STATE["decision_id"])),
+            )
+            foreign_bot_denied = False
+        except psycopg.errors.InsufficientPrivilege:
+            foreign_bot_denied = True
+    return {
+        "early": early,
+        "after_six": after_six,
+        "repeat": repeat,
+        "after_gap": after_gap,
+        "done": done,
+        "unscoped_rows": unscoped,
+        "scoped_rows": scoped,
+        "update_denied": update_denied,
+        "foreign_bot_insert_denied": foreign_bot_denied,
+    }
+
+
+def _outcome_verify(connection: psycopg.Connection[Any]) -> dict[str, Any]:
+    """Đọc kết quả bằng migrator: hàng theo horizon, trigger append-only, khối Run Report."""
+    import asyncio
+
+    from trading_bot.application.run_report import load_run_report
+
+    rows = connection.execute(
+        "SELECT horizon_bars, status, first_touch, tp1_hit, tp2_hit, invalidated, "
+        "bars_to_first_touch, outcome_r::text, label, same_bar_conflict, method_version "
+        "FROM signal_outcome WHERE workspace_id=%s ORDER BY horizon_bars",
+        (WORKSPACE,),
+    ).fetchall()
+    immutable: dict[str, str] = {}
+    for verb, statement in (
+        ("update", "UPDATE signal_outcome SET label = -1 WHERE workspace_id=%s"),
+        ("delete", "DELETE FROM signal_outcome WHERE workspace_id=%s"),
+    ):
+        try:
+            connection.execute(statement, (WORKSPACE,))
+            immutable[verb] = "ALLOWED"
+        except psycopg.errors.RaiseException as error:
+            immutable[verb] = str(error).splitlines()[0]
+    signal_at = datetime.fromisoformat(STATE["signal_at"])
+    engine, sessions = _engine_sessions()
+    try:
+        report = asyncio.run(
+            load_run_report(
+                sessions,
+                workspace_id=WORKSPACE,
+                start=signal_at - timedelta(hours=1),
+                end=signal_at + timedelta(hours=1),
+                run_label="cry430-e2e",
+            )
+        ).payload
+    finally:
+        asyncio.run(engine.dispose())
+    block = report["bots"][0]["signal_outcomes"]
+    return {
+        "rows": [
+            {
+                "horizon": row[0], "status": row[1], "first_touch": row[2], "tp1_hit": row[3],
+                "tp2_hit": row[4], "invalidated": row[5], "bars_to_first_touch": row[6],
+                "outcome_r": row[7], "label": row[8], "same_bar_conflict": row[9],
+                "method": row[10],
+            }
+            for row in rows
+        ],
+        "immutable": immutable,
+        "report_version": report["report_version"],
+        "report_primary": block["by_horizon_bars"]["4"],
+        "report_delivery": block["by_delivery"],
+    }  # fmt: skip
+
+
+def _outcome_admin() -> dict[str, Any]:
+    """Trang Admin chạy với role admin-web thật (RLS workspace), danh tính owner giả lập."""
+    from fastapi.testclient import TestClient
+
+    from trading_bot.app import create_app
+    from trading_bot.auth.policy import Principal, Role
+    from trading_bot.auth.router import current_identity
+    from trading_bot.auth.service import AuthIdentity
+    from trading_bot.config.settings import AppSettings
+
+    engine, sessions = _engine_sessions()
+    app = create_app(AppSettings(app_env="test"), session_factory=sessions)
+    principal = Principal(
+        user_id=_id("owner-user"),
+        membership_id=MEMBERSHIP,
+        workspace_id=WORKSPACE,
+        roles=frozenset({Role.OWNER}),
+        mfa_verified_at=datetime.now(UTC),
+    )
+    app.dependency_overrides[current_identity] = lambda: AuthIdentity(
+        principal=principal, email="owner@example.test"
+    )
+    try:
+        with TestClient(app) as client:
+            primary = client.get("/admin/signal-outcomes?horizon=4&period=90")
+            gap = client.get("/admin/signal-outcomes?horizon=24&period=90")
+            other = client.get("/admin/signal-outcomes?horizon=4&symbol=ETHUSDT")
+    finally:
+        import asyncio
+
+        asyncio.run(engine.dispose())
+    with _connect() as connection:
+        connection.execute("SELECT set_config('app.workspace_id', %s, false)", (str(WORKSPACE),))
+        visible = connection.execute("SELECT count(*) FROM signal_outcome").fetchone()[0]
+        try:
+            connection.execute("DELETE FROM signal_outcome")
+            delete_denied = False
+        except psycopg.errors.InsufficientPrivilege:
+            delete_denied = True
+    return {
+        "status": [primary.status_code, gap.status_code, other.status_code],
+        "primary_hit_rate": ">100.0%<" in primary.text,
+        "primary_delivered": "Đã gửi" in primary.text,
+        "primary_correct_badge": 'class="badge badge-success">Đúng' in primary.text,
+        "gap_badge": "Thiếu nến" in gap.text,
+        "filtered_empty": "khớp bộ lọc" in other.text,
+        "admin_visible_rows": visible,
+        "admin_delete_denied": delete_denied,
+    }
+
+
 with _connect() as connection:
     phase = os.environ["WP07M_PHASE"]
     if phase == "seed":
@@ -754,6 +1012,14 @@ with _connect() as connection:
         result = _throttle()
     elif phase == "verify":
         result = _verify()
+    elif phase == "outcome_seed":
+        result = _outcome_seed(connection)
+    elif phase == "outcome_score":
+        result = _outcome_score()
+    elif phase == "outcome_verify":
+        result = _outcome_verify(connection)
+    elif phase == "outcome_admin":
+        result = _outcome_admin()
     else:
         raise AssertionError(phase)
     print(json.dumps(result, default=str))

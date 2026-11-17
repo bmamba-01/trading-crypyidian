@@ -474,7 +474,7 @@
   </section>
 
   <section class="bot-section-card bot-ops-card" aria-label="Đề xuất AI đã backtest" id="ai-proposals">
-    <h2 class="bot-section-title">{{ ico("config") }}Đề xuất AI đã backtest</h2>
+    <h2 class="bot-section-title">{{ ico("config") }}Đề xuất và bản nháp đã backtest</h2>
     <p class="bot-field-help">Gợi ý của AI Analyst, đã chạy thử bản gốc và bản đề xuất trên cùng nến đã lưu (1x, 1 vị thế/coin, có phí + trượt giá). Không tự áp vào bot: bấm "Tạo bản nháp" rồi kiểm định và công bố như bản nháp thường (đổi khối rủi ro cần MFA).</p>
     {% if ai_proposal_status == "created" %}
       <p class="bot-notice bot-notice--success" role="status">Đã tạo bản nháp từ đề xuất AI. Kiểm định rồi công bố ở mục "Bản nháp cấu hình".</p>
@@ -499,7 +499,8 @@
         {% for item in ai_proposals %}
           <tr class="bot-table__row">
             <td data-label="Thay đổi" class="bot-table__lead">
-              {% for change in item.changes %}<code>{{ change.field }} → {{ change.to }}</code>{% if not loop.last %}<br>{% endif %}{% endfor %}
+              {% if item.source == "OWNER_DRAFT" %}<span class="badge badge-paper-subtle">Bản nháp owner</span><br>{% endif %}
+              {% for change in item.changes %}<code>{{ change.field }} → {{ change.to | tojson if change.to is mapping else change.to }}</code>{% if not loop.last %}<br>{% endif %}{% endfor %}
               {% if item.notes %}<br><span class="value-muted">{{ item.notes | join(" ") }}</span>{% endif %}
             </td>
             <td data-label="Kết luận">{{ {"BETTER": "Tốt hơn", "WORSE": "Kém hơn", "INCONCLUSIVE": "Chưa kết luận", "UNSUPPORTED": "Không backtest được"}.get(item.verdict, item.verdict) }}</td>
@@ -531,6 +532,9 @@
     {% if draft_validation == "valid" %}
       <p class="bot-notice bot-notice--success" role="status" data-toast-mirrored data-toast-tone="success" data-toast-title="Bản nháp hợp lệ" data-toast-message="Bản nháp cấu hình đã qua kiểm định.">Bản nháp đã qua kiểm định.</p>
     {% endif %}
+    {% if draft_validation == "exit_backtest_required" %}
+      <p class="bot-notice bot-notice--danger" role="alert" id="exit-backtest-required">Chưa công bố: bản nháp đổi thông số thoát lệnh nhưng chưa có backtest bản gốc vs bản nháp này.</p>
+    {% endif %}
     {% if draft_validation == "invalid" %}
       <p class="bot-notice bot-notice--danger" role="alert" data-toast-mirrored data-toast-tone="error" data-toast-title="Bản nháp không hợp lệ" data-toast-message="Kiểm tra lỗi cấu hình qua API hoặc chỉnh sửa thông số.">Bản nháp không hợp lệ; xem lỗi qua API cấu hình.</p>
     {% endif %}
@@ -553,6 +557,17 @@
           <button type="submit" class="btn btn-sm btn-primary">Công bố bản nháp</button>
         </form>
       </div>
+      {% if exit_review %}
+      <div class="bot-exit-review" id="exit-review">
+        <p><strong>Bản nháp đổi thông số thoát lệnh</strong>: <code>{{ exit_review.before | tojson }}</code> → <code>{{ exit_review.after | tojson }}</code></p>
+        {% if exit_review.backtest %}
+          {% set bt = exit_review.backtest %}
+          <p>Backtest bản gốc vs bản nháp: <strong>{{ {"BETTER": "Tốt hơn", "WORSE": "Kém hơn", "INCONCLUSIVE": "Chưa kết luận", "UNSUPPORTED": "Không backtest được"}.get(bt.verdict, bt.verdict) }}</strong> — lệnh {{ bt.baseline.trades if bt.baseline.trades is defined else "—" }} → {{ bt.variant.trades if bt.variant.trades is defined else "—" }}, PnL ròng {{ bt.baseline.net_pnl or "—" }} → {{ bt.variant.net_pnl or "—" }} USDT. Anh/chị tự quyết có công bố hay không.</p>
+        {% else %}
+          <p class="bot-field-help">Bắt buộc backtest trước khi công bố. Chạy trên máy chủ local rồi tải lại trang:<br><code>uv run python scripts/run_proposal_backtest.py --bot-draft {{ bot.id }} --max-symbols 5</code></p>
+        {% endif %}
+      </div>
+      {% endif %}
     </div>
     {% endif %}
 
@@ -587,6 +602,31 @@
           {% endfor %}
         </div>
       </fieldset>
+      {% set exit_form = overlay.exit %}
+      <fieldset class="bot-risk-fieldset" id="overlay-exit">
+        <legend>Thông số thoát lệnh ({{ exit_form.release or "release gốc" }})</legend>
+        <p id="overlay-exit-help" class="bot-field-help">Để trống = dùng giá trị của release (hiện ở ô gợi ý). Chỉ chỉnh được trường release vốn có{% if exit_form.stop_fixed %}; release này đặt SL theo cấu trúc/vùng giá nên không chỉnh SL{% endif %}. Đổi khối này cần MFA gần đây và <strong>bắt buộc backtest bản gốc vs bản nháp</strong> trước khi công bố. Đổi chiến thuật thì kiểm định sẽ báo trường không hợp lệ với release mới.</p>
+        {% if exit_form.fields or exit_form.ladder %}
+        <div class="bot-field-grid">
+          {% for field in exit_form.fields %}
+          <div class="bot-field">
+            <label for="overlay-exit-{{ field.name }}">{{ field.label }}</label>
+            <input id="overlay-exit-{{ field.name }}" name="exit_{{ field.name }}" inputmode="decimal" autocomplete="off" value="{{ field.value }}" placeholder="{{ field.base }} (release)" aria-describedby="overlay-exit-help">
+          </div>
+          {% endfor %}
+          {% if exit_form.ladder %}
+          <div class="bot-field">
+            <label for="overlay-exit-ladder">Thang TP (R:tỷ lệ)</label>
+            <input id="overlay-exit-ladder" name="exit_ladder" autocomplete="off" value="{{ exit_form.ladder.value }}" placeholder="{{ exit_form.ladder.base }} (release)" aria-describedby="overlay-exit-ladder-help">
+            <p id="overlay-exit-ladder-help" class="bot-field-help">Ví dụ 1:0.5, 2:0.5 — tối đa 3 bậc, R tăng dần, tổng tỷ lệ = 1.</p>
+            <label class="bot-check"><input type="checkbox" name="exit_ladder_breakeven"{% if exit_form.ladder.breakeven %} checked{% endif %}> Sau bậc 1 dời stop về hòa vốn</label>
+          </div>
+          {% endif %}
+        </div>
+        {% else %}
+        <p class="bot-field-help">Release này không có thông số thoát chỉnh được.</p>
+        {% endif %}
+      </fieldset>
       <button type="submit" class="btn btn-secondary bot-filter-form__submit">Tạo bản nháp</button>
     </form>
 
@@ -599,7 +639,7 @@
         <div class="bot-field">
           <label for="overlay-json">Cấu hình bổ sung (JSON)</label>
           <textarea class="bot-json" id="overlay-json" name="overlay_json" rows="8" required spellcheck="false" aria-describedby="overlay-json-help">{{ config_draft_json }}</textarea>
-          <p id="overlay-json-help" class="bot-field-help">Dành cho tham số chiến lược riêng. Chỉ nhận khóa trong lược đồ v1: <code>strategy</code>, <code>universe</code>, <code>risk</code>.</p>
+          <p id="overlay-json-help" class="bot-field-help">Dành cho tham số chiến lược riêng. Chỉ nhận khóa trong lược đồ v1: <code>strategy</code>, <code>universe</code>, <code>risk</code>, <code>exit</code>.</p>
         </div>
         <button type="submit" class="btn btn-outline bot-filter-form__submit">Tạo bản nháp từ JSON</button>
       </form>

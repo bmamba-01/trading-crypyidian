@@ -144,6 +144,65 @@ class BotRiskOverlay(FrozenSettingsModel):
         return None if value is None else decimal_text(value)
 
 
+EXIT_DECIMAL_FIELDS = ("stop_atr_multiple", "trailing_atr_multiple", "take_profit_atr_multiple")
+
+
+class BotLadderStepOverlay(FrozenSettingsModel):
+    """Một bậc thang TP: bội số R và tỷ lệ khối lượng ban đầu cần chốt."""
+
+    r_multiple: Decimal
+    fraction: Decimal
+
+    @field_validator("r_multiple", "fraction", mode="before")
+    @classmethod
+    def parse_decimal(cls, value: object) -> Decimal:
+        return exact_decimal(value)
+
+    @field_serializer("r_multiple", "fraction")
+    def serialize_decimal(self, value: Decimal) -> str:
+        return decimal_text(value)
+
+
+class BotLadderOverlay(FrozenSettingsModel):
+    steps: tuple[BotLadderStepOverlay, ...] = Field(min_length=1, max_length=3)
+    breakeven_after_first: bool = False
+
+
+class BotExitOverlay(FrozenSettingsModel):
+    """CRY-428: ghi đè thông số thoát của release cho riêng bot (owner quyết 17/11/2026).
+
+    Chỉ trường release vốn có (resolver kiểm theo catalog); đổi khối này phải có backtest bản
+    gốc vs bản mới của đúng overlay nháp trước khi publish.
+    """
+
+    stop_atr_multiple: Decimal | None = None
+    trailing_atr_multiple: Decimal | None = None
+    take_profit_atr_multiple: Decimal | None = None
+    max_hold_bars: int | None = Field(default=None, strict=True)
+    ladder: BotLadderOverlay | None = None
+
+    @field_validator(*EXIT_DECIMAL_FIELDS, mode="before")
+    @classmethod
+    def parse_multiple(cls, value: object) -> Decimal | None:
+        return None if value is None else exact_decimal(value)
+
+    @field_serializer(*EXIT_DECIMAL_FIELDS)
+    def serialize_multiple(self, value: Decimal | None) -> str | None:
+        return None if value is None else decimal_text(value)
+
+    @model_validator(mode="after")
+    def validate_bounds(self) -> BotExitOverlay:
+        # Dựng domain object để dùng chung một bộ kiểm biên/thang TP với runtime.
+        if self.to_exit_override() is None:
+            raise ValueError("Khối exit cần ít nhất một trường; bỏ khối để kế thừa release.")
+        return self
+
+    def to_exit_override(self) -> Any:
+        from trading_bot.domain.strategy.exit_override import exit_override_from_payload
+
+        return exit_override_from_payload(self.model_dump(mode="json", exclude_none=True))
+
+
 class BotConfigOverlay(FrozenSettingsModel):
     """Overlay bot schema v1; resolver kiểm thêm ràng buộc so với root đã publish."""
 
@@ -151,6 +210,7 @@ class BotConfigOverlay(FrozenSettingsModel):
     strategy: BotStrategyOverlay | None = None
     universe: BotUniverseOverlay | None = None
     risk: BotRiskOverlay | None = None
+    exit: BotExitOverlay | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -170,6 +230,12 @@ def overlay_hash(payload: Mapping[str, Any]) -> str:
         payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
     )
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def exit_section(overlay: Mapping[str, Any] | BotConfigOverlay) -> dict[str, Any]:
+    """Khối exit canonical (rỗng nếu không ghi đè) để phát hiện thay đổi cần backtest."""
+    payload = canonical_overlay(overlay) if isinstance(overlay, BotConfigOverlay) else overlay
+    return cast(dict[str, Any], dict(payload.get("exit") or {}))
 
 
 def risk_section(overlay: BotConfigOverlay) -> dict[str, Any]:

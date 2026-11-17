@@ -27,7 +27,7 @@
 
   <section class="glass-card" aria-labelledby="risk-intro-heading">
     <h2 id="risk-intro-heading" class="bot-section-title">Giới hạn đang áp dụng ở đâu</h2>
-    <p class="bot-card-help">Ba tầng, tầng sau chỉ được chặt hơn tầng trước: <strong>workspace</strong> (trang này: risk profile + workspace settings) → <strong>overlay của bot</strong> (trang chi tiết bot) → <strong>recipe của chiến lược</strong> (SL/TP theo ATR, cố định trong mã của release, chỉ đọc). Chỉ chạy PAPER.</p>
+    <p class="bot-card-help">Ba tầng, tầng sau chỉ được chặt hơn tầng trước: <strong>workspace</strong> (trang này: risk profile + workspace settings) → <strong>overlay của bot</strong> (trang chi tiết bot) → <strong>recipe của chiến lược</strong> (SL/TP theo ATR, cố định trong mã của release; bot có thể ghi đè trường release vốn có, kèm backtest bắt buộc). Chỉ chạy PAPER.</p>
   </section>
 
   {% if not overview.configured %}
@@ -90,7 +90,7 @@
           <th scope="col">Bot</th><th scope="col">Release</th>
           <th scope="col" class="num">Rủi ro/lệnh</th><th scope="col" class="num">Đòn bẩy</th><th scope="col" class="num">Vị thế</th>
           <th scope="col" class="num">Notional</th><th scope="col" class="num">Trần lỗ ngày</th><th scope="col" class="num">Lỗ hôm nay</th>
-          <th scope="col" class="num">Drawdown</th><th scope="col">Cấu hình</th>
+          <th scope="col" class="num">Drawdown</th><th scope="col">Thoát lệnh</th><th scope="col">Cấu hình</th>
         </tr></thead>
         <tbody>
         {% for bot in overview.bots %}
@@ -106,10 +106,11 @@
             {% endif %}
             <td class="num" data-label="Lỗ hôm nay">{{ amount(bot.loss_today) }}</td>
             <td class="num" data-label="Drawdown">{% if bot.drawdown %}{{ pct_vi(bot.drawdown.fraction, 2) }}%{% if bot.drawdown.tripped %} <span class="badge badge-danger">Đã ngắt</span>{% endif %}{% else %}<span class="value-muted">không rõ</span>{% endif %}</td>
+            <td data-label="Thoát lệnh" data-field="exit">{% if bot.exit_override %}<span class="badge badge-paper-subtle">Ghi đè</span> {% for key, value in bot.exit_override.items() %}{{ exit_labels.get(key, key) }} {% if value is mapping %}{% for step in value.steps %}{{ step.r_multiple }}R:{{ pct_vi(step.fraction) }}%{% if not loop.last %}, {% endif %}{% endfor %}{% if value.breakeven_after_first %} +hòa vốn{% endif %}{% else %}{{ value }}{% endif %}{% if not loop.last %}; {% endif %}{% endfor %}{% else %}<span class="value-muted">Theo release</span>{% endif %}</td>
             <td data-label="Cấu hình"><a href="/admin/bots/{{ bot.id }}#bot-config">Chỉnh overlay</a></td>
           </tr>
         {% else %}
-          <tr><td colspan="10">Chưa có bot nào bạn được xem.</td></tr>
+          <tr><td colspan="11">Chưa có bot nào bạn được xem.</td></tr>
         {% endfor %}
         </tbody>
       </table>
@@ -120,7 +121,7 @@
 
   <section class="glass-card" aria-labelledby="risk-exit-heading" id="risk-exit-policies">
     <div class="bot-panel-head">
-      <h3 id="risk-exit-heading">Stop-loss / take-profit theo chiến lược (chỉ đọc)</h3>
+      <h3 id="risk-exit-heading">Stop-loss / take-profit gốc theo chiến lược</h3>
       {% if overview.symbol %}
       <form method="get" action="/admin/risk" class="risk-symbol-form">
         <label for="risk-symbol">Ví dụ % theo ATR(14) của</label>
@@ -129,7 +130,7 @@
       </form>
       {% endif %}
     </div>
-    <p class="bot-card-help">SL/TP tính theo bội số ATR hoặc bội số R (1R = khoảng cách vào lệnh → stop), không theo %. Cột % là ví dụ quy đổi tại giá đóng nến gần nhất của {{ overview.symbol or "coin đã chọn" }}: % = bội số × ATR ÷ giá. Đổi các bội số này là đổi release và phải backtest lại; hiện chưa cho chỉnh trên giao diện.</p>
+    <p class="bot-card-help">SL/TP tính theo bội số ATR hoặc bội số R (1R = khoảng cách vào lệnh → stop), không theo %. Cột % là ví dụ quy đổi tại giá đóng nến gần nhất của {{ overview.symbol or "coin đã chọn" }}: % = bội số × ATR ÷ giá. Đây là giá trị gốc của release. Có thể ghi đè riêng cho từng bot ở mục "Thông số thoát lệnh" trong bản nháp cấu hình bot (chỉ trường release vốn có, bắt buộc backtest bản gốc vs bản nháp trước khi công bố).</p>
     <div class="bot-table-wrap">
       <table class="bot-table" aria-label="Chính sách thoát theo release" id="risk-exit-table">
         <thead><tr>

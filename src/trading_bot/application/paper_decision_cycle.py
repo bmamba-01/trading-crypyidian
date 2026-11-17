@@ -31,6 +31,7 @@ from trading_bot.domain.strategy.contracts import (
     StrategyCandidate,
     StrategySelection,
 )
+from trading_bot.domain.strategy.exit_override import ExitOverride
 from trading_bot.domain.strategy.registry import StrategyRegistry
 from trading_bot.domain.strategy.scalping_rules import ladder_for_release
 
@@ -168,6 +169,7 @@ class PaperDecisionCycle:
         allowed_symbols: tuple[str, ...] | None = None,
         allowed_timeframes: tuple[str, ...] | None = None,
         entry_block: EntryBlock | None = None,
+        exit_override: ExitOverride | None = None,
     ) -> DecisionCycleResult:
         """Chuẩn bị quyết định từ root settings mà chưa gửi PAPER intent.
 
@@ -287,6 +289,7 @@ class PaperDecisionCycle:
             open_exposures=open_exposures,
             cost_model=cost_model,
             entry_block=entry_block,
+            exit_override=exit_override,
         )
 
     async def prepare_published_with_risk_profile(
@@ -355,6 +358,7 @@ class PaperDecisionCycle:
             allowed_symbols=bot_config.symbols,
             allowed_timeframes=bot_config.timeframes,
             entry_block=entry_block,
+            exit_override=bot_config.exit_override,
         )
 
     def prepare(
@@ -370,8 +374,13 @@ class PaperDecisionCycle:
         open_exposures: tuple[OpenExposure, ...],
         cost_model: CostModel,
         entry_block: EntryBlock | None = None,
+        exit_override: ExitOverride | None = None,
     ) -> DecisionCycleResult:
-        """Đánh giá strategy, plan và risk mà chưa tạo PAPER intent."""
+        """Đánh giá strategy, plan và risk mà chưa tạo PAPER intent.
+
+        ``exit_override`` (CRY-428): thông số thoát của bot thay recipe/thang TP của candidate
+        trước planner; plan và vị thế ghi đúng recipe đã ghi đè.
+        """
         if (
             not selection.published
             or not planner_settings.published
@@ -404,6 +413,13 @@ class PaperDecisionCycle:
                 candidate_id=strategy_result.candidate_id,
             )
 
+        ladder = ladder_for_release(strategy_result.strategy_release_id)
+        if exit_override is not None:
+            strategy_result = replace(
+                strategy_result, recipe=exit_override.apply_to_recipe(strategy_result.recipe)
+            )
+            ladder = exit_override.apply_to_ladder(ladder)
+
         if entry_block is not None and entry_block.symbol == strategy_result.symbol:
             return DecisionCycleResult(
                 DecisionCycleOutcome.PLAN_REJECTED,
@@ -423,7 +439,7 @@ class PaperDecisionCycle:
             open_exposures,
             cost_model,
             now=evaluated_at,
-            ladder=ladder_for_release(strategy_result.strategy_release_id),
+            ladder=ladder,
         )
         if isinstance(plan, PlanRejected):
             return DecisionCycleResult(

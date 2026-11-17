@@ -60,6 +60,9 @@ _MAX_BARS_PER_STREAM = 256
 PRODUCER_MAX_BARS_PER_STREAM = _MAX_BARS_PER_STREAM
 _LIVE_BAR_SOURCE = "BINANCE_USDM"
 _BACKFILL_BAR_SOURCE = "BINANCE_USDM_REST_BACKFILL"
+# Nguồn nến tín hiệu dùng (live ưu tiên, rồi REST backfill); CRY-430 chấm kết quả trên cùng nguồn.
+SIGNAL_LIVE_BAR_SOURCE = _LIVE_BAR_SOURCE
+SIGNAL_BAR_SOURCES = (_LIVE_BAR_SOURCE, _BACKFILL_BAR_SOURCE)
 
 
 class PostgresClosedMarketObservationSource(QualifiedMarketObservationSource):

@@ -85,6 +85,10 @@ def test_closed_usdm_fixture_creates_one_candidate_delivery_without_execution() 
             "deliver": "telegram-signal-worker",
             "throttle": "telegram-signal-worker",
             "verify": "migrator",
+            "outcome_seed": "migrator",
+            "outcome_score": "market-signal-worker",
+            "outcome_verify": "migrator",
+            "outcome_admin": "admin-web",
         }[phase]
         result = compose(
             "run",
@@ -152,6 +156,63 @@ def test_closed_usdm_fixture_creates_one_candidate_delivery_without_execution() 
         assert verified["producer_has_no_execution_or_delivery_privilege"] is True
         assert verified["delivery_has_no_market_or_evidence_write_privilege"] is True
         assert verified["live_source_preferred_over_backfill"] is True
+
+        # CRY-430: chấm kết quả tín hiệu bằng nến đóng sau tín hiệu, rồi Admin + Run Report.
+        state.update(run_probe("outcome_seed"))
+        scored = run_probe("outcome_score")
+        empty = {"examined": 1, "scored": 0, "pending": 3, "data_gap": 0, "invalid": 0}
+        assert scored["early"] == empty, scored
+        assert scored["after_six"] == {
+            "examined": 1, "scored": 2, "pending": 1, "data_gap": 0, "invalid": 0,
+        }  # fmt: skip
+        assert scored["repeat"] == {
+            "examined": 1, "scored": 0, "pending": 1, "data_gap": 0, "invalid": 0,
+        }  # fmt: skip
+        assert scored["after_gap"] == {
+            "examined": 1, "scored": 0, "pending": 0, "data_gap": 1, "invalid": 0,
+        }  # fmt: skip
+        assert scored["done"]["examined"] == 0
+        assert scored["unscoped_rows"] == 0
+        assert scored["scoped_rows"] == 3
+        assert scored["update_denied"] is True
+        assert scored["foreign_bot_insert_denied"] is True
+
+        outcomes = run_probe("outcome_verify")
+        h1, h4, h24 = outcomes["rows"]
+        assert (h1["horizon"], h1["status"], h1["first_touch"], h1["label"]) == (
+            1, "SCORED", "NONE", 0,
+        )  # fmt: skip
+        assert h1["outcome_r"] == "0.0000"
+        assert (h4["horizon"], h4["status"], h4["first_touch"]) == (4, "SCORED", "TP1")
+        assert h4["tp1_hit"] is True and h4["tp2_hit"] is True  # noqa: PT018
+        assert h4["invalidated"] is False and h4["same_bar_conflict"] is False  # noqa: PT018
+        assert h4["bars_to_first_touch"] == 2
+        assert h4["outcome_r"] == state["expected_tp1_r"]
+        assert h4["label"] == 1
+        assert (h24["horizon"], h24["status"], h24["label"]) == (24, "DATA_GAP", None)
+        assert {row["method"] for row in outcomes["rows"]} == {"sig-outcome-v1"}
+        assert outcomes["immutable"] == {
+            "update": "SIGNAL_OUTCOME_IMMUTABLE",
+            "delete": "SIGNAL_OUTCOME_IMMUTABLE",
+        }
+        assert outcomes["report_version"] == "ai1-run-report-v2"
+        primary = outcomes["report_primary"]
+        assert (primary["scored"], primary["correct"], primary["hit_rate_percent"]) == (
+            1, 1, "100.0",
+        )  # fmt: skip
+        assert outcomes["report_delivery"][0]["key"] == "sent"
+
+        admin = run_probe("outcome_admin")
+        assert admin == {
+            "status": [200, 200, 200],
+            "primary_hit_rate": True,
+            "primary_delivered": True,
+            "primary_correct_badge": True,
+            "gap_badge": True,
+            "filtered_empty": True,
+            "admin_visible_rows": 3,
+            "admin_delete_denied": True,
+        }, admin
     finally:
         subprocess.run(
             [*base, "down", "--volumes", "--remove-orphans"],

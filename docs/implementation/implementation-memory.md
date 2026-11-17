@@ -5554,3 +5554,86 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Chạy trên stack local:** image `crypidian-app:cry429` (= image E2E của worktree, dựng lại sau lần sửa cuối), container riêng `crypidian-review-admin-web-cry429` cổng **127.0.0.1:8019**, cùng env/secret/network với `crypidian-review-admin-web-1`, DB thật workspace `crypidian-cards-v1`; không đụng 8010 (phiên khác dùng 8011 cho CRY-428). Đăng nhập owner, `/admin/live`: 10/13 bot, 10 vị thế, feed 26 s, outbox 0 lag/475 bản ghi chưa có consumer, đồng hồ 0 ms, ngắt mạch đóng, không tràn ngang ở 1440 px. Quyết định runtime ghi 13:15:26.99 UTC hiện trên trang lúc 13:15:28 (~1–1,5 s). Smoke truy vấn (13 bot): lượt đầu nguội 2,3 s, nhịp sự kiện 42 ms, nhịp + trạng thái 101 ms.
 - **Rebase lên `dev` `fa3e101` (CRY-428 Khẩu vị rủi ro vào trước):** xung đột chỉ ở `app.py` (thứ tự `include_router`), glossary (CRY-428 dùng mã BH → mục này đổi thành **BI**) và cuối memory; giữ cả hai. Sau rebase: unit **5204 passed/244.09s**, `ruff check`/`format --check` (1179 file), `mypy` (482 file) đạt, E2E LIVE-MON **2 passed/152.25s**.
 - **Còn mở:** (1) "Nhịp runtime" nhiều bot `RECOVERY_REQUIRED` hiển thị đúng dữ liệu, không phải lỗi màn Live. (2) Drawdown breaker thật của runtime (FX-2) chưa hiện riêng — màn Live chỉ có đánh giá `CircuitBreakerEngine` không lưu trạng thái + `entry_state`/readiness. (3) Slot luồng theo tiến trình (admin-web 1 worker); nếu chạy nhiều worker cần bộ đếm chung. (4) `paper.*`/`bot.config.*` outbox tích lũy PENDING vì chưa có consumer — cân nhắc dọn hoặc consumer. (5) Port 8010 của stack review vẫn là bản cũ tới khi phiên quản lý stack rebuild từ `dev`.
+
+### 2026-11-17 — CRY-430 `[SIG-OUTCOME]`: lưu và chấm kết quả tín hiệu đã phát, đưa vào Admin và AI (nhánh `claude/nice-ishizaka-685468` từ `dev`)
+
+- **Yêu cầu owner (ticket CRY-430):** mọi tín hiệu phải được đối chứng sau một khoảng thời gian (đúng/sai, tốt/xấu), rồi đưa kết quả vào AI. Trước vòng này chỉ lệnh PAPER đã khớp mới được chấm (post-mortem); `telegram_signal_delivery` chỉ lưu trạng thái gửi.
+- **Quyết định thiết kế:**
+  - "Tín hiệu" = `bot_decision` CANDIDATE (đã lưu bất biến, có hash) — chấm **mọi** tín hiệu kể cả bị lọc/SUPPRESSED/không có đăng ký/không thành lệnh; trạng thái gửi ghép lúc đọc từ `telegram_signal_delivery` (không chép vào bảng kết quả vì delivery còn đổi trạng thái).
+  - Phương pháp `sig-outcome-v1` (`domain/strategy/signal_outcome.py`): mức giá lấy đúng như thẻ Telegram (`build_signal_card` không kế hoạch: vào = giá tham chiếu, SL recipe, TP1/TP2 = hai mục tiêu đầu); horizon 1×/4×/24× khung vào lệnh; chỉ nến đã đóng **liền mạch** sau nến tín hiệu với `close_time`/`available_at` ≤ lúc chấm; gap qua SL/TP thoát ở giá mở; **nến chạm cả SL và TP1 → SL trước** + cờ `same_bar_conflict`; TP2 chỉ tính khi không có SL trước/cùng nến; MFE/MAE trên toàn horizon; `outcome_r` theo bracket SL/TP1 (chưa chạm → R đóng cửa); `invalidated` = chạm SL bất kỳ lúc nào. Nhãn `signal-gross-r-band-v1` (±0,1R, R **thô**). Đây là dạng triple-barrier (López de Prado 2018, ch.3).
+  - Code nhãn AI-5 `trade_labels.py` (`net-r-band-v1`) **chưa có trên dev** (ở nhánh `claude/project-progress-review-wp07-d70431`) → không import; dùng cùng ngưỡng `R_BAND_HALF_WIDTH = 0,1` nhưng tên nhãn khác vì R thô ≠ R ròng. Dùng kết quả tín hiệu làm nhãn bổ sung dataset AI-5: **chờ owner quyết**, không tự làm.
+  - Bảng `signal_outcome` (migration `8f8ec8240b11` sau `d4f6a8b0c2e4`): một hàng/(decision, method_version, horizon), status `SCORED`/`DATA_GAP`/`INVALID_SIGNAL`, CHECK hàng SCORED đủ trường, FK (workspace, bot, decision) → `bot_decision`; trigger `SIGNAL_OUTCOME_IMMUTABLE` chặn UPDATE/DELETE mọi role; FORCE RLS: `crypidian_market_signal_worker` SELECT/INSERT theo scope bot (như `bot_decision`), `crypidian_admin_web` SELECT theo workspace.
+  - Worker: `application/signal_outcomes.SignalOutcomeScorer` + `workers/signal_outcome_worker.SignalOutcomeWorker`, chạy như task thứ hai trong tiến trình `market-signal-worker` (role đã đọc decision/feature/market_bar; không thêm service/role/secret). `TRADING_BOT_SIGNAL_OUTCOME_TICK_SECONDS` (mặc định 60, 0 = tắt). Idempotent bằng unique + `ON CONFLICT DO NOTHING`; lookback 14 ngày, tối đa 1.000 tín hiệu/bot/lượt; tín hiệu chưa horizon nào đến hạn thì không truy vấn nến; thiếu nến quá 6 giờ sau hạn horizon → `DATA_GAP`. Khung: release dựng sẵn → `entry_timeframe_for_release`, release lạ → khung của feature snapshot.
+  - Admin `/admin/signal-outcomes` (`application/signal_outcome_review.py`, template `signal_outcomes.html`, CSS `static/pages/signal-outcomes.css`, menu "Kết quả tín hiệu"): lọc bot/setup(release)/coin/khung/horizon/khoảng 7–30–90 ngày; KPI tỷ lệ đúng, đúng/sai/hòa, R trung bình/trung vị, MFE/MAE, TP1/SL trước, số nến mơ hồ; phân phối R bằng `<meter>` (không inline style, hợp CSP); bảng đã gửi/bị lọc/không gửi, theo setup, sai lặp lại, theo coin, 50 tín hiệu gần nhất.
+  - Run Report `ai1-run-report-v2`: `bots[i].signal_outcomes` (method/label version, `by_horizon_bars` 1/4/24 — horizon chính 4 có phân phối R, `by_symbol` top 10, `by_delivery` sent/not_sent, `repeated_wrong` ≥ 2 lần sai) + cảnh báo khi < 20 tín hiệu đã chấm; tổng hợp dùng chung `domain/strategy/signal_outcome_summary.py`. AI Analyst `ai2-prompt-v6` thêm quy tắc 9 (phân tích tín hiệu sai lặp lại, trích `/bots/<i>/signal_outcomes/...`, đề xuất vẫn chỉ qua `proposals` → backtest AI-3); validator nhận số horizon 1/4/24 là số hiển nhiên.
+- **Lỗi gặp và nguyên nhân:** (1) E2E lần đầu: `docker image inspect` quá 30 giây do Docker bận (nhiều phiên chạy E2E song song) → build image trước bằng `docker build` rồi chạy lại. (2) Sau khi sửa lint C416, `dict(result.tuples())` lỗi `'ChunkedIteratorResult' object is not subscriptable` — `dict()` coi `Result` là mapping vì có `.keys()` → dùng `.tuples().all()`; unit trang Admin dùng stub nên không bắt được, E2E role admin-web thật bắt được. (3) Unit lượt đầu 2 lỗi `docker compose config` (worktree mới chưa có `.secrets`, E2E chạy `prepare_local_secrets` song song) → chạy lại đạt. (4) Rebase lên dev `3776525`: xung đột chỉ ở glossary (dev thêm mục BG, rồi CRY-428 thêm BH, CRY-429 thêm BI) → giữ cả hai, mục của vòng này thành **BJ**.
+- **Kiểm thử:**
+  - Unit mới: `test_signal_outcome_scoring.py` (15: TP1→TP2, SL trước, **SL/TP1 cùng nến long và short → SL**, TP2 cùng nến với SL sau đó không tính, TP1+TP2 nến đầu, gap SL/TP, chưa chạm + dải nhãn, biên ±0,1R, hash tất định, cửa sổ thiếu/hở/không dùng nến tín hiệu, mức giá khớp thẻ), `test_signal_outcome_worker.py` (4), `test_cry430_signal_outcomes_page.py` (15: tổng hợp, biên dải R, nhóm/sai lặp lại, 403, render trang/bộ lọc/menu/không inline style, bot id sai, 503), `test_market_signal_app.py` (+2: worker chạy cùng tiến trình, tắt bằng 0), `test_ai1_run_report.py` (+1: khối signal_outcomes, cảnh báo, topic_report, validator trích pointer đúng/sai số). Head Alembic trong `test_sig0_taker_flow.py` và ~22 E2E/probe đổi `d4f6a8b0c2e4` → `8f8ec8240b11`.
+  - Unit toàn bộ trước rebase `PYTHONPATH=. uv run pytest tests/unit -q -p no:cacheprovider`: 5154 passed + 2 lỗi môi trường ở trên (chạy lại 2 test đạt); **sau rebase: 5175 passed/299s**. `ruff check`, `ruff format --check src tests migrations` (1175 file), `mypy src/trading_bot` (480 file) sạch.
+  - E2E `tests/e2e/test_wp07_market_signal_producer.py` mở rộng 4 phase: `outcome_seed` (migrator: 6 nến 1h sau tín hiệu theo mức giá thẻ), `outcome_score` (role market-signal-worker thật: trước khi nến đầu đóng → 0 chấm/3 chờ; sau 6h → 2 chấm/1 chờ; chạy lại → 0 (idempotent); sau 31h → 1 `DATA_GAP`; lượt sau không còn gì; RLS: không có app.bot_id thấy 0 hàng, có scope thấy 3; UPDATE bị từ chối; INSERT cho bot khác bị RLS chặn), `outcome_verify` (migrator: h1 NONE/hòa/0R, h4 TP1 trước + TP2, nhãn đúng, R = R của TP1, h24 DATA_GAP; UPDATE/DELETE → `SIGNAL_OUTCOME_IMMUTABLE`; `load_run_report` → `ai1-run-report-v2`, horizon 4: 1 chấm/1 đúng/100.0%, by_delivery `sent`), `outcome_admin` (role admin-web thật qua `create_app` + `TestClient`, danh tính owner giả lập: 3 trang 200, tỷ lệ 100.0%, "Đã gửi", nhãn "Đúng", horizon 24 "Thiếu nến", lọc coin khác rỗng; admin-web thấy 3 hàng, DELETE bị từ chối) → **1 passed/92s** (trước rebase).
+  - Sau rebase lên dev `3776525` (image build từ cây đã rebase; chỉnh định dạng 1 dòng `signal_outcome_review.py` sau đó, không đổi hành vi): `uv run pytest -q -rA tests/e2e/test_wp07_market_signal_producer.py tests/e2e/test_rt1_paper_market_loop.py tests/e2e/test_live_market_backfill_migration.py tests/e2e/test_multibot_config.py tests/e2e/test_db_role_least_privilege.py tests/e2e/test_admin_web_workflows.py` → **12 passed, 0 failed/2759s** (chấm tín hiệu + Admin, RT-1 Run Report/head mới, backfill migration, multibot head, least-privilege với bảng/hàm mới, Admin 5 khổ màn hình có menu mới). Các E2E còn lại chỉ đổi chuỗi head Alembic, chưa chạy lại trong vòng này.
+  - Rebase lần 2 lên dev `fa3e101` (CRY-428: trang Khẩu vị rủi ro, sửa `paper_market_context`/RT-1; `app.py`, `base.html`, `test_rt1` tự gộp, không migration mới): ruff/format (1180 file)/mypy (483 file) sạch; unit **5208 passed/259s**; E2E `test_wp07_market_signal_producer` + `test_admin_risk_appetite_playwright` (3) + `test_admin_web_workflows::...navigation...` (5 khổ) → **9 passed**; `test_rt1_paper_market_loop` lượt đó **fail** ở tick runtime đầu (ledger rỗng: chưa có intent/fill) trong khi Docker rất tải (nhiều phiên chạy E2E) — test chờ nến 1m đóng theo đồng hồ thật nên nhạy độ trễ; cùng code chạy lại riêng → **1 passed/493s**, và trước rebase lần 2 đã đạt. Không thấy lỗi do thay đổi CRY-430 (worker chấm chỉ INSERT `signal_outcome`, không chạm runtime PAPER); nếu lặp lại cần đo độ trễ giữa `_sleep_until` và tick runtime.
+  - Rebase lần 3 lên dev `e296c45` (CRY-429 LIVE-MON; `app.py`/`base.html` tự gộp, không migration): ruff/format (1189 file)/mypy (488 file) sạch; unit **5244 passed/524s**; E2E `test_wp07_market_signal_producer` + `test_admin_live_monitor_playwright` (2) + `test_admin_web_workflows::...navigation...` (5 khổ) → **8 passed/827s**.
+- **Phối hợp migration (17/11):** phiên AI-5 xác nhận để CRY-430 đẩy trước; AI-5 sẽ nối `a5c7e9b1d3f5` sau `8f8ec8240b11` và đổi assert head sang `c9e1a3b5d7f9`. Migration CRY-430 không đụng các hàm/trigger WP06 mà AI-5 ghim hash. CRY-428 báo sắp đẩy `e5b7d9f1a3c6` (sau `d4f6a8b0c2e4`, chỉ sửa `proposal_backtest`); quy ước: phiên đẩy sau nối migration của mình sau head mới nhất trên dev và đổi assert head.
+- **Còn mở / rủi ro:** (1) chưa triển khai lên stack local `crypidian-review`: DB local đã ở `c9e1a3b5d7f9` (migration AI-5 chưa lên dev) nên migration này cần nối sau head AI-5 khi AI-5 vào dev — khi đó đổi `down_revision` và các assert head; (2) dùng kết quả tín hiệu làm nhãn bổ sung dataset AI-5 — chờ owner; (3) cập nhật kết quả lên thẻ Telegram đã gửi (reply/sửa tin) chưa làm; (4) nến mơ hồ có thể giải bằng nến khung nhỏ hơn ở `sig-outcome-v2`; (5) tín hiệu có payload không xác minh được bị bỏ qua và quét lại mỗi lượt trong 14 ngày (chỉ ghi log).
+### 2026-11-17 — CRY-428 lát 2: ghi đè thông số thoát lệnh theo bot, bắt buộc backtest bản nháp trước khi publish
+
+- **Quyết định owner (chat + AskUserQuestion 17/11):**
+  - "Có, theo bot".
+  - Phạm vi: chỉ trường release vốn có. SL theo cấu trúc (H18/H20) và Strategy Card không chỉnh SL.
+  - Backtest: bắt buộc có backtest bản gốc vs bản nháp; owner tự quyết dù kết luận thế nào.
+- **Thiết kế:** ghi đè áp sau khi rule sinh candidate, trước planner (`PaperDecisionCycle.prepare`, `exit_override`). Hệ quả:
+  - Hash release không đổi; `recipe_id` giữ nguyên để tra bằng chứng thoát kênh/feature.
+  - `candidate_id` đổi theo recipe; `TradePlan.exit_recipe`/vị thế ghi đúng giá trị đã dùng.
+  - Không thêm loại thoát release không có (vd không thêm thang TP cho H03).
+- **Thay đổi:**
+  - Mới `domain/strategy/exit_override.py`: `ExitOverride`, biên 0,25–10 ATR/R, giữ 1–1000 nến, thang TP qua `TakeProfitLadder`, payload canonical, hash.
+  - `exit_policy_catalog.validate_exit_override`/`policy_for_release`: kiểm "chỉ trường release vốn có".
+  - `config/bot_settings.py`: overlay `exit` (`BotExitOverlay`, thang TP), `exit_section`. Overlay không có `exit` giữ JSON/hash cũ; khối rỗng bị từ chối.
+  - `bot_config_resolver`: kiểm và mang `EffectiveBotConfig.exit_override`; `effective_hash` chỉ thêm khóa khi có ghi đè.
+  - `paper_decision_cycle`: `prepare`/`prepare_published` nhận `exit_override`; `prepare_published_with_risk_profile` truyền từ cấu hình bot.
+  - Replay: `BacktestReplayJobSubmission.exit_override_json` (kiểm theo release; profile hash chỉ thêm khi có) → executor → `BacktestDatasetRuntimeEvaluatorFactory` → `RuntimeReplayEvaluator`.
+  - `proposal_backtest`: arm mang khối `exit`; tách lõi `_backtest_arms`; mới `backtest_bot_draft(head_overlay, draft_overlay)`.
+  - Migration **`e5b7d9f1a3c6`** (ban đầu sau `d4f6a8b0c2e4`; khi rebase nối sau `8f8ec8240b11` của CRY-430 vì CRY-430 đẩy trước), bảng `proposal_backtest`:
+    - cột `source` `AI_PROPOSAL`/`OWNER_DRAFT`; `analyst_run_id` nullable theo nguồn (CHECK);
+    - index partial owner draft;
+    - downgrade bị chặn khi đã có hàng `OWNER_DRAFT` (`CRY428_OWNER_DRAFT_BACKTEST_DOWNGRADE_BLOCKED`).
+    - Quyền giữ nguyên: admin-web chỉ SELECT nên không tự ghi được bằng chứng để vượt gate (E2E xác nhận `permission denied`).
+  - `scripts/run_proposal_backtest.py --bot-draft <bot_id>`: phase `draft_backtest` trong container migrator, lưu `OWNER_DRAFT` với hash overlay nháp/head. Bot không có `strategy` trong overlay thì kế thừa release/tham số root.
+  - `admin/bot_service.py`, publish:
+    - khối `exit` đổi so với head → cần MFA gần đây và backtest `OWNER_DRAFT` khớp cả hai hash, không thì 409 field `exit`;
+    - audit `bot.config.exit_backtest_accepted`, reason `proposal_backtest=<id> verdict=<…>` (audit chỉ lưu hash trạng thái).
+  - `admin/bot_service.py`, các thay đổi khác:
+    - `validate_draft` cảnh báo `EXIT_BACKTEST_REQUIRED`;
+    - danh sách backtest có `source`/`draft_id`;
+    - kết quả `OWNER_DRAFT` không dùng để tạo nháp AI.
+  - Trang bot:
+    - fieldset "Thông số thoát lệnh": chỉ ô release có, placeholder giá trị gốc, để trống = kế thừa;
+    - thang TP dạng `1:0.5, 2:0.5` + "dời hòa vốn";
+    - khối "Bản nháp đổi thông số thoát lệnh" hiện kết luận backtest hoặc lệnh cần chạy;
+    - publish thiếu backtest → quay lại trang với `draft_validation=exit_backtest_required`.
+  - Trang `/admin/risk`: cột "Thoát lệnh" theo bot (Ghi đè/Theo release); bỏ câu "chưa cho chỉnh".
+- **Lỗi gặp khi làm:**
+  - `alembic check` trong RT-1 báo model thiếu index partial → thêm `Index(..., postgresql_where=...)` vào model.
+  - Probe đọc `AuditEvent.after_state` (bảng chỉ có hash) → dùng `reason`.
+  - Fixture test executor thiếu tham số `exit_override`.
+  - Unit decision cycle: khối lượng chạm trần notional nên so `estimated_loss` thay vì quantity.
+- **Kiểm thử:**
+  - Unit mới `test_cry428_exit_override.py` **22 passed**, cộng ca replay thật `test_ai3_proposal_backtest::…owner_draft…` (stop 0,5 ATR + giữ 4 nến cho kết quả khác bản gốc, tất định).
+  - Toàn bộ unit **5192 passed/565.66s** (trước khi thêm index vào model).
+  - Playwright mới `test_admin_bot_exit_override_playwright.py` **2 passed**. Toàn bộ `test_admin_*_playwright.py` **55 passed**.
+  - RT-1 Compose (role thật): kiểm định báo `exit.take_profit_atr_multiple` với h01; publish bị chặn 409; admin-web ghi giả bị từ chối; **script thật từ host** lưu `OWNER_DRAFT` (INCONCLUSIVE vì RT-1 không có quyền BACKTEST_RESEARCH); publish được, audit đúng mã backtest; runtime resolve ra ghi đè, hash hợp lệ — **1 passed/438.85s**.
+- **Phối hợp migration:** phiên AI-5 (`a5c7e9b1d3f5`→`c9e1a3b5d7f9`) và CRY-430 (`8f8ec8240b11`) đồng ý: ai đẩy sau nối vào head mới nhất trên `dev`. CRY-430 đẩy trước nên `e5b7` nối sau `8f8ec8240b11`; AI-5 nối sau `e5b7`.
+- **Còn mở:**
+  - Chưa có nút "Chạy backtest" trên web (backtest chạy bằng script host; cần worker + quyền ghi riêng).
+  - Rollback về version cũ có khối `exit` khác không đòi backtest (bản đó đã từng được publish).
+  - Thang TP chỉ ghi đè được cho release vốn có thang (scalping).
+- **E2E migration đi qua `e5b7`** (upgrade/downgrade, assert head mới): `test_live_market_backfill_migration.py` + `test_wp06_shadow_drift_persistence.py` **3 passed/97.17s**; unit `test_sig0_taker_flow.py` (chuỗi head) đạt.
+- **Rebase lên `dev` `62b0b3c`** (CRY-429 LIVE-MON, CRY-430 `8f8ec8240b11`):
+  - `e5b7d9f1a3c6` nối sau `8f8ec8240b11`; các assert head CRY-430 vừa đổi được chuyển sang `e5b7`.
+  - Glossary hai dòng mới về mục BH (trước BI/BJ của dev).
+  - Sau rebase:
+    - unit **5268 passed/207.72s**;
+    - ruff/format/mypy (489 file), diff-check đạt;
+    - `test_admin_*_playwright.py` **57 passed**;
+    - RT-1 + `test_live_market_backfill_migration.py` **2 passed/449.93s**.

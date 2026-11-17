@@ -418,3 +418,26 @@ def test_pct_vi_formats_exact_fractions_and_rounds_measurements() -> None:
     assert pct_vi("0.03645189414722563772340080108", 2) == "3,65"
     assert pct_vi("0", 2) == "0"
     assert pct_vi("abc") == "abc"
+
+
+def test_bot_table_shows_exit_override_or_release_default() -> None:
+    overview = _overview()
+    overview["bots"][0]["exit_override"] = {
+        "stop_atr_multiple": "1.5",
+        "ladder": {
+            "steps": [
+                {"r_multiple": "1", "fraction": "0.5"},
+                {"r_multiple": "3", "fraction": "0.5"},
+            ],
+            "breakeven_after_first": True,
+        },
+    }
+    service = AsyncMock()
+    service.overview.return_value = overview
+    html = _client(_identity("owner"), service).get("/admin/risk").text
+    assert "Ghi đè" in html
+    assert "SL ×ATR 1.5" in html
+    assert "1R:50%, 3R:50% +hòa vốn" in html
+    overview["bots"][0]["exit_override"] = None
+    html = _client(_identity("owner"), service).get("/admin/risk").text
+    assert "Theo release" in html
