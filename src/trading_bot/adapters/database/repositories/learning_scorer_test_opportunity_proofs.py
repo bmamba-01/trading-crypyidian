@@ -523,9 +523,24 @@ class LearningScorerTestOpportunityProofRepository:
         approved_result = await repository.build_and_append(
             workspace_id=workspace_id, trial_record_id=trial_record_id
         )
+        # AI-5: cohort nhiều trial → so với proof đã ghim của đúng trial này (neo = scalar).
+        expected = next(
+            (
+                (item.proof_record_id, item.proof_hash)
+                for item in candidate.sources
+                if item.trial_record_id == trial_record_id
+            ),
+            (candidate.proof_record_id, candidate.proof_hash)
+            if trial_record_id == candidate.trial_record_id
+            else None,
+        )
         if (
-            approved_result.record_id != candidate.proof_record_id
-            or approved_result.proof.content_hash != candidate.proof_hash
+            expected is None
+            or (
+                approved_result.record_id,
+                approved_result.proof.content_hash,
+            )
+            != expected
         ):
             raise ValueError("BASE proof TRAINING rights/provenance khác split candidate.")
         # Candidate split ghim proof closed-trade v1; proof opportunity v2 có ID/hash
