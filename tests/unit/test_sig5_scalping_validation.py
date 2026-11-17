@@ -340,3 +340,12 @@ def test_cli_validate_reads_local_files_and_writes_report(tmp_path) -> None:  # 
     assert item["reports"]["base"]["n"] == 1
     assert item["verdict"]["recommend_paper"] is False
     assert len(item["validation_hash"]) == 64
+
+
+def test_backtest_replay_executor_uses_producer_window() -> None:
+    """CRY-236: replay job dùng đúng cửa sổ nến của producer live (tránh O(n²) theo lịch sử)."""
+    from trading_bot.application import backtest_replay_executor as executor
+    from trading_bot.application.market_signal_composition import PRODUCER_MAX_BARS_PER_STREAM
+
+    assert executor.REPLAY_MAX_BARS_PER_TIMEFRAME == PRODUCER_MAX_BARS_PER_STREAM
+    assert executor.REPLAY_CONTEXT_PROVIDER.endswith("window256")

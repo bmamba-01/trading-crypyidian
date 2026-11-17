@@ -62,6 +62,14 @@ class ReplayExecutor(Protocol):
     ) -> RuntimePaperReplayComparison: ...
 
 
+# CRY-236 (17/11/2026): snapshot replay chỉ thấy N nến gần nhất mỗi khung, đúng cửa sổ producer
+# live (``PRODUCER_MAX_BARS_PER_STREAM``). Trước đó mỗi nến quyết định tính feature trên toàn bộ
+# lịch sử → O(n²): 180 ngày 15m một coin > 25 phút và > 4 GB RAM. Đo thật BTCUSDT 10 ngày 15m:
+# cùng 7 lệnh, PnL lệch < 1e-9 USDT. Đổi cửa sổ = đổi ngữ nghĩa → context provider v2 (đổi
+# pipeline_content_hash nên kết quả replay cũ/mới không bị coi là cùng pipeline).
+REPLAY_MAX_BARS_PER_TIMEFRAME = 256
+REPLAY_CONTEXT_PROVIDER = "backtest-dataset-runtime-context-v2-window256"
+
 _SUPPORTED_EXECUTION_INTERVALS = {
     "1m": timedelta(minutes=1),
     "3m": timedelta(minutes=3),
@@ -180,7 +188,7 @@ def build_backtest_replay_plan(
     pipeline_content_hash = _hash(
         {
             "pipeline": "crypidian-paper-replay-v1",
-            "context_provider": "backtest-dataset-runtime-context-v1",
+            "context_provider": REPLAY_CONTEXT_PROVIDER,
             "runtime_evaluator": "runtime-paper-evaluator-v1",
             "runner": "backtest-runner-v1",
             "strategy_content_hash": release.content_hash,
@@ -260,6 +268,7 @@ def build_backtest_replay_plan(
             replay_manifest,
             strategies=registry,
             execution_interval=submission.execution_interval,
+            max_bars_per_timeframe=REPLAY_MAX_BARS_PER_TIMEFRAME,
             context_seed_factory=lambda scenario, scenario_manifest: _context_for_scenario(
                 scenario,
                 scenario_manifest,

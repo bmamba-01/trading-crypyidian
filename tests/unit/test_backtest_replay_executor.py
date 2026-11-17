@@ -77,7 +77,9 @@ def test_executor_uses_only_one_base_scenario_and_matching_paper_context(
         scenarios,
         progress_callback,
         cancel_requested,
+        max_bars_per_timeframe,
     ):
+        captured["max_bars_per_timeframe"] = max_bars_per_timeframe
         captured.update(
             replay_bundle=replay_bundle,
             manifest=manifest,
@@ -100,6 +102,7 @@ def test_executor_uses_only_one_base_scenario_and_matching_paper_context(
     assert captured["replay_bundle"] is source
     assert captured["manifest"] == plan.manifest
     assert captured["execution_interval"] == "1h"
+    assert captured["max_bars_per_timeframe"] == 256
     assert captured["scenarios"] == (SensitivityScenario("base", "BASE"),)
     assert captured["progress_callback"] is None
     assert captured["cancel_requested"] is None
