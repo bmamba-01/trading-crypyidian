@@ -87,6 +87,10 @@ from trading_bot.application.market_chart import (
 from trading_bot.application.market_levels import price_levels
 from trading_bot.application.market_narrative import market_narrative
 from trading_bot.application.market_scanner import MarketScannerError, MarketScannerService
+from trading_bot.application.signal_outcome_review import (
+    SignalOutcomeReviewError,
+    SignalOutcomeReviewService,
+)
 from trading_bot.application.strategy_pipeline.microscope import MicroscopeReplayService
 from trading_bot.application.telegram_binding import TelegramTopicSetupError
 from trading_bot.application.telegram_signal_subscription import (
@@ -3071,6 +3075,52 @@ async def ai_analyses_page(
             "topic": topic or "",
             "valid": valid or "",
         },
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+def _signal_outcome_review(request: Request) -> SignalOutcomeReviewService:
+    service = cast(
+        SignalOutcomeReviewService | None,
+        getattr(request.app.state, "signal_outcome_review_service", None),
+    )
+    if service is None:
+        raise HTTPException(status_code=503, detail="Trang kết quả tín hiệu chưa sẵn sàng.")
+    return service
+
+
+@router.get("/signal-outcomes")
+async def signal_outcomes_page(
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(current_identity)],
+    bot: str | None = None,
+    release: str | None = None,
+    symbol: str | None = None,
+    timeframe: str | None = None,
+    horizon: int = 4,
+    period: str = "30",
+) -> Response:
+    """CRY-430: kết quả tín hiệu đã chấm (chỉ đọc), lọc theo bot/setup/coin/khung/horizon."""
+    try:
+        bot_id = UUID(bot) if bot else None
+    except ValueError:
+        bot_id = None
+    try:
+        data = await _signal_outcome_review(request).overview(
+            identity.principal,
+            bot_id=bot_id,
+            release=(release or "")[:80] or None,
+            symbol=(symbol or "")[:64] or None,
+            timeframe=(timeframe or "")[:16] or None,
+            horizon=horizon,
+            period=period,
+        )
+    except SignalOutcomeReviewError as error:
+        raise HTTPException(status_code=error.status_code, detail=error.message) from error
+    return _templates(request).TemplateResponse(
+        request=request,
+        name="admin/signal_outcomes.html",
+        context={"identity": identity, "data": data},
         headers={"Cache-Control": "no-store"},
     )
 

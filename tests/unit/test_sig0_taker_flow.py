@@ -76,7 +76,9 @@ def test_migration_is_the_single_head_after_previous_head() -> None:
     # bảng giá trực tiếp, CK-10 lịch kinh tế) và main (AI-3/AI-4); revision gộp CRY-88 nối lại
     # thành một head; CRY-384/CRY-380 nối analyst_run.context và run_report sau 7707d82de246.
     # WP06 nối migration caller EVALUATION của scorer TEST proof, rồi lát B (manifest v5).
-    assert heads == ["d4f6a8b0c2e4"]
+    # CRY-430 nối bảng kết quả tín hiệu sau lát B.
+    assert heads == ["8f8ec8240b11"]
+    assert graph["8f8ec8240b11"] == "d4f6a8b0c2e4"
     assert graph["d4f6a8b0c2e4"] == "c2e4a6b8d0f1"
     assert graph["c2e4a6b8d0f1"] == "d8f1b3a5c7e9"  # FX-3 bundle replay funding (CRY-198)
     assert graph["d8f1b3a5c7e9"] == "f1b8e93fa47f"  # FX-3 funding/mark price (CRY-198)
