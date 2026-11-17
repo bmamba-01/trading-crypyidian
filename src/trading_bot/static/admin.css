@@ -1934,6 +1934,15 @@ th {
   background: var(--bg-base);
 }
 
+.trade-reasoning-panel,
+.reasoning-columns,
+.reasoning-box,
+.reasoning-kv-list,
+.reasoning-kv-item {
+  min-width: 0;
+  max-width: 100%;
+}
+
 .reasoning-box h4 {
   margin-top: 0;
   margin-bottom: 0.75rem;
@@ -1965,6 +1974,39 @@ th {
 .reasoning-kv-item dd {
   font-weight: 600;
   margin: 0;
+}
+
+.reasoning-kv-item > dt,
+.reasoning-kv-item > dd {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 640px) {
+  .trade-reasoning-panel {
+    padding: 1rem;
+  }
+
+  .reasoning-kv-item {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 0.15rem;
+  }
+
+  .reasoning-kv-item > dd {
+    max-width: 100% !important;
+    text-align: left !important;
+  }
+
+  .ai-retraining-info {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .btn-ai-retrain {
+    max-width: 100%;
+    white-space: normal;
+  }
 }
 
 /* Hộp mổ xẻ và đưa vào AI Retraining */

@@ -30,6 +30,24 @@ Một trader có thể xem từng quyết định/vị thế trên chart respons
 
 1. Subscription tường minh theo private chat và bot; allowlist symbol, timeframe, hướng, strategy ID và setup/reason code; danh sách rỗng nghĩa là mọi giá trị. `/start` liên kết chat, `/stop` hủy ngay; cài quiet hours/timezone, cooldown và giới hạn số tín hiệu/ngày.
 2. Producer rà soát market stream dùng nến đã đóng, dữ liệu point-in-time và feature quality gate để phát `SharedSignalEvidence`; fan-out chạy strategy đã publish theo từng bot.
+   **Live ingest (14/11/2026):** `ingestion-worker` có thể thu nến đóng qua WebSocket `/market` và lấp gap bằng REST, ghi `market_bar` nguồn `BINANCE_USDM` sau rights gate `PAPER_DEMO`; bật bằng `TRADING_BOT_INGESTION_LIVE_SYMBOLS` (mặc định tắt).
+   **Live market data — trạng thái 14/11/2026:**
+
+   | Hạng mục | Trạng thái | Ghi chú |
+   |---|---|---|
+   | Nến đóng qua stream + REST lấp gap → `market_bar` | Xong | `TRADING_BOT_INGESTION_LIVE_SYMBOLS`, `..._TIMEFRAMES` |
+   | Mark/index price + funding dự kiến → `market_mark_price` | Xong | Lấy mẫu theo `..._LIVE_MARK_PRICE_INTERVAL_SECONDS` (mặc định 60) |
+   | Lệnh thanh lý → `market_liquidation` | Xong | Sàn chỉ đẩy lệnh lớn nhất mỗi giây/symbol; chưa quan sát lệnh thật cho symbol đã bật |
+   | Dòng lệnh taker theo phút → `market_trade_flow` | Xong | Gộp từ `@aggTrade`; `is_complete` phân biệt bucket bị cắt |
+   | Wrapper REST: giá, ticker, book ticker, premium index, funding info, long/short, taker ratio, kline flow, depth, aggTrades, basis, kline mark/index | Xong | Chỉ tầng adapter |
+   | Lưu định kỳ OI, funding đã chốt, long/short, taker ratio, basis vào DB | Chưa | Sàn giữ 30 ngày; cần poller + bảng |
+   | Feature/strategy dùng dữ liệu mới (H10, H12, H13) | Chưa | Cần hợp đồng feature point-in-time và backtest |
+   | Diff-depth L2 có sequence (H14) | Chưa | Mới có ảnh chụp `depth` qua REST |
+   | Taker buy volume/trade count trên `market_bar` | Chưa | Cần migration; hiện đọc qua `get_kline_flows` |
+   | Metric freshness/gap, cảnh báo (WP-07E) | Chưa | Readiness đã có `live_market_ingestion`, `live_market_events` |
+   | Policy `BINANCE_USDM_REST` mục đích `PAPER_DEMO` cho workspace thật | Chưa | Điều kiện để bật live ingest |
+
+   Bật stream sự kiện bằng `TRADING_BOT_INGESTION_LIVE_EVENTS=mark_price,liquidation,trade_flow` (mặc định tắt).
 3. Candidate chỉ được phát sau BotDecision pipeline, không ghi `OrderIntent`, `FillRecord`, `TradeRecord` hoặc reservation. Market-signal producer và Telegram sender tách process/DB role khỏi PAPER runtime; producer chỉ đọc nến đã lưu và ghi evidence/decision/outbox, sender chỉ đọc candidate/subscription và ghi delivery.
 4. Event/outbox có decision ID, setup identity, freshness/expiry/invalidation và dedupe; worker rate-limited, retry/dead-letter và receipt/audit.
 5. Telegram Bot API sender dùng token từ secret file/provider; redaction, HTTPS, message length/escaping và xử lý 429 `retry_after`.
@@ -37,7 +55,7 @@ Một trader có thể xem từng quyết định/vị thế trên chart respons
 7. Dashboard hiển thị trạng thái liên kết, đăng ký, lần gửi cuối, lỗi, dedupe/expired/invalidated và lịch sử; cho phép test message không tạo signal/order.
 8. Tùy chọn loại thông báo candidate, invalidation, hết hạn và đóng PAPER trade; có giới hạn tần suất theo chat/bot và nội dung có thể đọc nhanh trên mobile.
 
-**Acceptance:** từ nến đóng offline fixture → evidence → BotDecision candidate → tối đa một delivery receipt; `/stop` ngăn gửi tiếp; candidate hết hạn bị bỏ; lỗi Telegram được retry theo policy; DB role producer/sender không thể chạm order/trade/position; không có lệnh hay PAPER trade từ alert. Đường producer → evidence → candidate → fake Telegram receipt đã được nối. Subscription hỗ trợ GET/PUT, giao diện HTML tiếng Việt và năm allowlist; PostgreSQL E2E chứng minh preference đổi khi receipt đang chờ làm receipt thành `FILTERED`, không tăng attempts/không gửi, trong khi subscription khớp vẫn nhận đúng một tin giả. WP-07B còn thiếu market-feed ingestion tự động, dashboard lịch sử/trạng thái delivery, quiet-hours/cooldown/rate-cap đầy đủ và retry/dead-letter matrix mọi lỗi Bot API.
+**Acceptance:** từ nến đóng offline fixture → evidence → BotDecision candidate → tối đa một delivery receipt; `/stop` ngăn gửi tiếp; candidate hết hạn bị bỏ; lỗi Telegram được retry theo policy; DB role producer/sender không thể chạm order/trade/position; không có lệnh hay PAPER trade từ alert. Đường producer → evidence → candidate → fake Telegram receipt đã được nối. Subscription hỗ trợ GET/PUT, giao diện HTML tiếng Việt và năm allowlist; PostgreSQL E2E chứng minh preference đổi khi receipt đang chờ làm receipt thành `FILTERED`, không tăng attempts/không gửi, trong khi subscription khớp vẫn nhận đúng một tin giả. Ingestion tự động nến đóng qua WebSocket `/market` + REST gap-fill hiện đã có nhưng mặc định tắt và phụ thuộc policy quyền workspace. WP-07B còn thiếu dashboard lịch sử/trạng thái delivery, quiet-hours/cooldown/rate-cap đầy đủ và retry/dead-letter matrix mọi lỗi Bot API.
 
 ### WP-07C — Backfill dữ liệu lịch sử một năm
 
@@ -62,7 +80,7 @@ Một trader có thể xem từng quyết định/vị thế trên chart respons
 
 **Cập nhật 04/11/2026 — replay jobs/CLI/admin:** queue PostgreSQL, owner-only job service, worker Compose, CLI MFA owner và `/admin/backtests` đã được kiểm bằng Compose/Playwright như implementation memory ghi. Task 1 thêm capability persist hẹp cho role trainer; Task 2 nối `begin → quyền hiện hành → mọi outcome/receipt → complete` trong cùng UoW. Task 3 hiện đang chuyển worker khỏi lease callback/session riêng sang row lock cùng transaction; chỉ sau Compose race/rollback E2E mới xác nhận end-to-end fencing hoàn tất. Trainer được thu hồi SELECT market cũ; quyền đọc market nằm ở replay worker riêng. Scheduler, macro/raw evidence và dữ liệu có grant thật vẫn mở.
 
-**Acceptance:** fixture offline cho một năm tạo manifest xác định; tải dở có thể tiếp tục; checksum/schema/gap bị phát hiện; quyền không hợp lệ chặn ingest/training; backtest từ manifest nêu rõ coverage và mọi giả định fill/chi phí. Request/paginator/cursor, Source Registry rights gate, manifest coverage/hash/persistence, workspace RLS, quyền recheck, kiểm toàn vẹn bars và service-level flow bundle → runtime PAPER → `BacktestRunner` → PostgreSQL reports/scenarios/trade outcomes/rights receipts đều có unit/Compose evidence trên fixture offline. Scheduler riêng và xác nhận run với dataset được cấp quyền thật còn mở; CLI, job lifecycle, worker và UI `/admin/backtests` đã triển khai, nhưng ownership fence xuyên transaction outcome đang được hoàn thiện ở WP07C Task 3. Luồng dữ liệu dùng cho demo/sản phẩm chỉ chạy với source grant phù hợp; dữ liệu bị giới hạn quyền chỉ được gắn với purpose được phép.
+**Acceptance:** fixture offline cho một năm tạo manifest xác định; tải dở có thể tiếp tục; checksum/schema/gap bị phát hiện; quyền không hợp lệ chặn ingest/training; backtest từ manifest nêu rõ coverage và mọi giả định fill/chi phí. Request/paginator/cursor, Source Registry rights gate, manifest coverage/hash/persistence, workspace RLS, quyền recheck, kiểm toàn vẹn bars và service-level flow bundle → runtime PAPER → `BacktestRunner` → PostgreSQL reports/scenarios/trade outcomes/rights receipts đều có unit/Compose evidence trên fixture offline. CLI, job lifecycle, worker, ownership fence và UI `/admin/backtests` đã được kiểm bằng Compose/Playwright; scheduler riêng và xác nhận run với dataset được cấp quyền thật còn mở. Luồng dữ liệu dùng cho demo/sản phẩm chỉ chạy với source grant phù hợp; dữ liệu bị giới hạn quyền chỉ được gắn với purpose được phép.
 
 ### WP-07D — Trader analytics và report mở rộng
 
@@ -81,7 +99,7 @@ Một trader có thể xem từng quyết định/vị thế trên chart respons
 9. Bản report v2 công bố metric mới có semantics/version riêng; v1 tiếp tục đọc được nguyên schema. PnL dùng net theo quote asset, hòa vốn không tính là thắng/thua và ngắt streak; profit factor không xác định khi không có tổng lỗ; metric chia làm tròn tối đa 8 chữ số thập phân theo HALF_UP.
 10. Phân tích funding/OI/liquidations/heatmap là lớp bối cảnh tùy chọn có provenance, coverage, timestamp và nguồn/terms riêng; không dùng nguồn tổng hợp hoặc heatmap làm giá fill, sự thật của sàn hay tín hiệu dự báo nếu chưa qua validation.
 
-**Acceptance:** số liệu reconcile với ledger, filters không đổi scope quyền, drawdown/window semantics được kiểm tra, mobile không tràn và không có chỉ số không nguồn. UI E2E kiểm PnL dương/âm theo tone và dấu, chart tăng/giảm, màu chữ tương phản, hòa vốn trung tính, cùng layout mobile/desktop.
+**Acceptance:** số liệu reconcile với ledger, filters không đổi scope quyền, drawdown/window semantics được kiểm tra, report không tràn ngang ở viewport hẹp và không có chỉ số không nguồn. UI E2E kiểm PnL dương/âm theo tone và dấu, chart tăng/giảm, màu chữ tương phản, hòa vốn trung tính, cùng layout mobile/desktop. Regression Playwright cuối kiểm `scrollWidth <= clientWidth` ở 360, 390, 768, 1024 và 1280px; desktop/mobile screenshots được tạo lại.
 
 ### WP-07E — Readiness, vận hành và chất lượng dữ liệu
 

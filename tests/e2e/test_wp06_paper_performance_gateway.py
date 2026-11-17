@@ -49,7 +49,7 @@ def test_paper_performance_aggregate_gateway_is_narrow_and_fails_closed() -> Non
             assert "No new upgrade operations detected" in check.stdout + check.stderr
             heads = compose("run", "--rm", "--no-deps", "migrator", "alembic", "heads")
             assert heads.stdout.count("(head)") == 1
-            assert "e2f4a6c8b0d7 (head)" in heads.stdout
+            assert "a9c7e5f3d1b2 (head)" in heads.stdout
             admin_secret = (
                 resources.compose_file.parent / ".secrets" / "database_admin_web_password"
             )
@@ -77,6 +77,8 @@ def test_paper_performance_aggregate_gateway_is_narrow_and_fails_closed() -> Non
                 "missing_active_target_denied": True,
                 "report_writer_acl_is_narrow": True,
                 "report_writer_aggregate_execute": True,
+                "report_writer_zero_denominator_safe": True,
+                "report_writer_zero_eligible_coverage_guard": True,
                 "report_writer_denies_missing_target_without_mutation": True,
                 "no_raw_member_fields_returned": True,
             }
@@ -92,6 +94,34 @@ def test_paper_performance_aggregate_gateway_is_narrow_and_fails_closed() -> Non
             compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "head")
             check = compose("run", "--rm", "--no-deps", "migrator", "alembic", "check")
             assert "No new upgrade operations detected" in check.stdout + check.stderr
+            compose("run", "--rm", "--no-deps", "migrator", "alembic", "downgrade", "e2f4a6c8b0d7")
+            compose(
+                "run",
+                "--rm",
+                "--no-deps",
+                "-T",
+                "--volume",
+                f"{root / 'tests'}:/e2e-tests:ro",
+                "migrator",
+                "python",
+                "/e2e-tests/e2e/probes/wp06_projection_guard_semicolon_tamper.py",
+            )
+            rejected_upgrade = subprocess.run(
+                [*base, "run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "head"],
+                cwd=root,
+                env=environment,
+                capture_output=True,
+                text=True,
+                timeout=360,
+            )
+            rejected_output = rejected_upgrade.stdout + rejected_upgrade.stderr
+            assert rejected_upgrade.returncode != 0, (
+                "Migration đã chấp nhận target bổ sung theo sau dấu chấm phẩy."
+            )
+            assert "WP06_INCIDENT_ELIGIBILITY_PROJECTION_NOT_RESTRICTED" in rejected_output, (
+                "Migration từ chối fixture vì nguyên nhân khác guard projection. "
+                + rejected_output[-5000:]
+            )
         finally:
             compose("down", "--volumes", "--remove-orphans")
             for resource in ("container", "volume", "network"):

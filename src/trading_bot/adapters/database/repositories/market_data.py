@@ -8,9 +8,10 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import or_, select
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,8 +25,11 @@ from trading_bot.adapters.database.models import (
     MarketBar,
     MarketFunding,
     MarketInstrument,
+    MarketLiquidation,
+    MarketMarkPrice,
     MarketOpenInterest,
     MarketRawReference,
+    MarketTradeFlow,
 )
 from trading_bot.domain.market.ingestion import (
     IngestionCursor,
@@ -38,6 +42,8 @@ from trading_bot.domain.market.ingestion import (
     assess_ingestion_range,
 )
 from trading_bot.domain.market.models import MarketBarSourceIdentity, OHLCVBar
+from trading_bot.domain.market.stream_events import LiquidationEvent, MarkPriceEvent
+from trading_bot.domain.market.trade_flow import TradeFlowBucket
 
 
 class MarketRepositoryConflict(RuntimeError):
@@ -551,6 +557,107 @@ class MarketDataRepository:
             value_field="quantity",
             value=quantity,
         )
+
+    async def append_mark_price(
+        self,
+        *,
+        workspace_id: UUID,
+        instrument_id: UUID,
+        source: str,
+        idempotency_key: str,
+        event: MarkPriceEvent,
+    ) -> bool:
+        """Append mẫu mark price; trùng idempotency key thì bỏ qua và trả False."""
+        return await self._insert_event(
+            MarketMarkPrice,
+            workspace_id=workspace_id,
+            instrument_id=instrument_id,
+            source=source,
+            idempotency_key=idempotency_key,
+            checksum=event.checksum,
+            event_at=event.event_at,
+            received_at=event.received_at,
+            available_at=event.received_at,
+            mark_price=event.mark_price,
+            index_price=event.index_price,
+            funding_rate=event.funding_rate,
+            next_funding_time=event.next_funding_time,
+        )
+
+    async def append_liquidation(
+        self,
+        *,
+        workspace_id: UUID,
+        instrument_id: UUID,
+        source: str,
+        idempotency_key: str,
+        event: LiquidationEvent,
+    ) -> bool:
+        """Append lệnh thanh lý; `event_at` là thời điểm khớp do sàn công bố."""
+        return await self._insert_event(
+            MarketLiquidation,
+            workspace_id=workspace_id,
+            instrument_id=instrument_id,
+            source=source,
+            idempotency_key=idempotency_key,
+            checksum=event.checksum,
+            event_at=event.trade_time,
+            received_at=event.received_at,
+            available_at=event.received_at,
+            side=event.side,
+            order_type=event.order_type,
+            time_in_force=event.time_in_force,
+            status=event.status,
+            price=event.price,
+            average_price=event.average_price,
+            quantity=event.quantity,
+            filled_quantity=event.filled_quantity,
+        )
+
+    async def append_trade_flow(
+        self,
+        *,
+        workspace_id: UUID,
+        instrument_id: UUID,
+        source: str,
+        idempotency_key: str,
+        checksum: str,
+        bucket: TradeFlowBucket,
+    ) -> bool:
+        """Append bucket dòng lệnh; chỉ khả dụng từ lúc bucket đóng (`closed_at`)."""
+        return await self._insert_event(
+            MarketTradeFlow,
+            workspace_id=workspace_id,
+            instrument_id=instrument_id,
+            source=source,
+            idempotency_key=idempotency_key,
+            checksum=checksum,
+            event_at=min(bucket.bucket_end, bucket.closed_at),
+            received_at=bucket.closed_at,
+            available_at=bucket.closed_at,
+            bucket_start=bucket.bucket_start,
+            bucket_seconds=bucket.bucket_seconds,
+            buy_quantity=bucket.buy_quantity,
+            sell_quantity=bucket.sell_quantity,
+            buy_quote=bucket.buy_quote,
+            sell_quote=bucket.sell_quote,
+            trade_count=bucket.trade_count,
+            first_aggregate_id=bucket.first_aggregate_id,
+            last_aggregate_id=bucket.last_aggregate_id,
+            is_complete=bucket.is_complete,
+        )
+
+    async def _insert_event(self, model: Any, **values: Any) -> bool:
+        if not str(values["idempotency_key"]).strip():
+            raise ValueError("idempotency_key không được để trống.")
+        statement = (
+            postgresql_insert(model)
+            .values(id=uuid4(), **values)
+            .on_conflict_do_nothing(index_elements=["workspace_id", "source", "idempotency_key"])
+            .returning(model.id)
+        )
+        inserted = await self._session.scalar(statement)
+        return inserted is not None
 
     async def _append_point_record(
         self,

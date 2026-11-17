@@ -174,6 +174,14 @@ def main() -> None:
                                'public.wp06_aggregate_paper_performance'
                                '(uuid,uuid,text,uuid,text,timestamp with time zone)',
                                'EXECUTE') AS aggregate_execute,
+                           pg_catalog.strpos(
+                               pg_catalog.pg_get_functiondef(write_function.oid),
+                               'NULLIF(aggregate_row.eligible_decision_count, 0)'
+                           ) > 0 AS zero_denominator_safe,
+                           pg_catalog.strpos(
+                               pg_catalog.pg_get_functiondef(write_function.oid),
+                               $g$(report_cohort->>'coverage')::numeric <> 0$g$
+                           ) > 0 AS zero_eligible_coverage_guard,
                            owner.rolname AS function_owner
                       FROM pg_catalog.pg_roles AS writer
                       JOIN pg_catalog.pg_class AS report
@@ -472,6 +480,8 @@ def main() -> None:
         assert writer_acl["insert_columns_only"] is True
         assert writer_acl["function_execute_scoped"] is True
         assert writer_acl["aggregate_execute"] is True
+        assert writer_acl["zero_denominator_safe"] is True
+        assert writer_acl["zero_eligible_coverage_guard"] is True
         assert writer_acl["function_owner"] == "crypidian_learning_paper_performance_report_writer"
         assert report_exists is False
         print(
@@ -484,6 +494,8 @@ def main() -> None:
                     "missing_active_target_denied": True,
                     "report_writer_acl_is_narrow": True,
                     "report_writer_aggregate_execute": True,
+                    "report_writer_zero_denominator_safe": True,
+                    "report_writer_zero_eligible_coverage_guard": True,
                     "report_writer_denies_missing_target_without_mutation": True,
                     "no_raw_member_fields_returned": True,
                 },

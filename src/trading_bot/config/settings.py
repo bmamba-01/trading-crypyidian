@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 from uuid import UUID
@@ -25,6 +26,20 @@ ProcessRole = Literal[
     "learning-evaluator",
     "backtest-worker",
 ]
+
+
+# Interval có độ dài cố định mà kho market và REST backfill cùng hỗ trợ.
+_LIVE_TIMEFRAMES = frozenset(
+    {"1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d", "1w"}
+)
+# Giữ dưới trần 1024 stream/kết nối của Binance và giới hạn tải REST lúc warm-up.
+_MAX_LIVE_STREAMS = 200
+_LIVE_EVENT_ORDER = ("mark_price", "liquidation", "trade_flow")
+_LIVE_EVENT_KINDS = frozenset(_LIVE_EVENT_ORDER)
+
+
+def _split_csv(value: str) -> tuple[str, ...]:
+    return tuple(item.strip() for item in value.split(",") if item.strip())
 
 
 class AppSettings(BaseSettings):
@@ -64,6 +79,13 @@ class AppSettings(BaseSettings):
     runtime_lease_ttl_seconds: int = Field(default=30, ge=3, le=300)
     runtime_supervisor_tick_seconds: float = Field(default=5.0, gt=0, le=60)
     ingestion_worker_tick_seconds: float = Field(default=5.0, gt=0, le=300)
+    # Thu nến live qua WebSocket công khai; để trống symbols là tắt (mặc định fail-closed).
+    ingestion_live_symbols: str = ""
+    ingestion_live_timeframes: str = "15m,1h,4h"
+    ingestion_live_warmup_bars: int = Field(default=300, ge=200, le=1500)
+    # Stream sự kiện bổ sung: mark_price, liquidation, trade_flow; để trống là chỉ thu nến.
+    ingestion_live_events: str = ""
+    ingestion_live_mark_price_interval_seconds: int = Field(default=60, ge=1, le=3600)
     mfa_encryption_key_file: Path | None = None
     mfa_secret_directory: Path | None = None
     bootstrap_token_file: Path | None = None
@@ -201,6 +223,53 @@ class AppSettings(BaseSettings):
                 "ingestion_workspace_id chỉ được cấu hình cho process_role ingestion-worker."
             )
         return self
+
+    @property
+    def ingestion_live_subscriptions(self) -> tuple[tuple[str, str], ...]:
+        """Tích symbol × timeframe đã sắp xếp; rỗng khi live ingest đang tắt."""
+        symbols = _split_csv(self.ingestion_live_symbols)
+        timeframes = _split_csv(self.ingestion_live_timeframes)
+        return tuple(
+            (symbol, timeframe) for symbol in sorted(symbols) for timeframe in sorted(timeframes)
+        )
+
+    @model_validator(mode="after")
+    def validate_live_ingestion(self) -> AppSettings:
+        """Chỉ ingestion worker được bật live ingest, với symbol/timeframe hợp lệ."""
+        symbols = _split_csv(self.ingestion_live_symbols)
+        if not symbols:
+            if _split_csv(self.ingestion_live_events):
+                raise ValueError("ingestion_live_events cần ingestion_live_symbols.")
+            return self
+        if self.process_role != "ingestion-worker":
+            raise ValueError(
+                "ingestion_live_symbols chỉ được cấu hình cho process_role ingestion-worker."
+            )
+        timeframes = _split_csv(self.ingestion_live_timeframes)
+        if len(set(symbols)) != len(symbols) or any(
+            re.fullmatch(r"[A-Z0-9]{3,32}", symbol) is None for symbol in symbols
+        ):
+            raise ValueError("ingestion_live_symbols phải là mã USD-M viết hoa, không trùng lặp.")
+        if (
+            not timeframes
+            or len(set(timeframes)) != len(timeframes)
+            or not set(timeframes) <= _LIVE_TIMEFRAMES
+        ):
+            raise ValueError("ingestion_live_timeframes chứa interval không được hỗ trợ.")
+        if len(symbols) * len(timeframes) > _MAX_LIVE_STREAMS:
+            raise ValueError("ingestion_live_symbols vượt giới hạn stream của một worker.")
+        events = _split_csv(self.ingestion_live_events)
+        if len(set(events)) != len(events) or not set(events) <= _LIVE_EVENT_KINDS:
+            raise ValueError("ingestion_live_events chứa loại stream không được hỗ trợ.")
+        if len(symbols) * len(events) > _MAX_LIVE_STREAMS:
+            raise ValueError("ingestion_live_events vượt giới hạn stream của một worker.")
+        return self
+
+    @property
+    def ingestion_live_event_kinds(self) -> tuple[str, ...]:
+        """Loại stream sự kiện đã bật, theo thứ tự cố định."""
+        enabled = set(_split_csv(self.ingestion_live_events))
+        return tuple(kind for kind in _LIVE_EVENT_ORDER if kind in enabled)
 
     @model_validator(mode="after")
     def validate_signal_worker_identity(self) -> AppSettings:

@@ -217,7 +217,8 @@ def _create_writer() -> None:
                    OR (aggregate_row.eligible_decision_count > 0 AND
                         abs((report_cohort->>'coverage')::numeric -
                             aggregate_row.covered_outcome_count::numeric /
-                                aggregate_row.eligible_decision_count) > 0.000000000000001)
+                                NULLIF(aggregate_row.eligible_decision_count, 0))
+                            > 0.000000000000001)
                    OR pg_catalog.jsonb_typeof(report_cohort->'baseline_brier')
                         IS DISTINCT FROM 'string'
                    OR (report_cohort->>'baseline_brier')::numeric

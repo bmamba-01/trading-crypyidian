@@ -1,13 +1,15 @@
 """Các trang HTML quản trị; dữ liệu và quyền vẫn do service/backend quyết định."""
 
+import csv
 import hashlib
 import hmac
+import io
 import json
 import re
 import secrets
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, timezone, tzinfo
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Annotated, Any, cast
 from urllib.parse import parse_qs
 from uuid import UUID, uuid4
@@ -74,7 +76,13 @@ from trading_bot.domain.portfolio.reporting import (
     REPORT_MODE,
     REPORT_VERSION,
 )
+from trading_bot.domain.risk.circuit_breaker import (
+    CircuitBreakerEngine,
+    OperationalTelemetry,
+)
+from trading_bot.domain.risk.risk_windows import LossWindowPolicy, calculate_loss_windows
 from trading_bot.domain.strategy_card.schema import compute_canonical_hash
+from trading_bot.observability.health import build_system_health_snapshot
 
 try:
     VN_TZ: tzinfo = ZoneInfo("Asia/Ho_Chi_Minh")
@@ -2049,3 +2057,153 @@ async def inspect_bar_api(
         "status": "success",
         "trace": trace.to_dict(),
     }
+
+
+def _sanitize_csv_cell(value: Any) -> str:
+    """Chống CSV formula injection khi mở bằng Excel/Google Sheets, giữ nguyên số âm hợp lệ."""
+    text = "" if value is None else str(value)
+    if not text:
+        return ""
+    if text[0] in ("=", "+", "@", "\t", "\r"):
+        return f"'{text}"
+    if text[0] == "-":
+        try:
+            Decimal(text)
+        except InvalidOperation:
+            return f"'{text}"
+    return text
+
+
+@router.get("/api/operations/health")
+async def operations_health(
+    request: Request,
+    response: Response,
+    identity: Annotated[AuthIdentity, Depends(current_identity)],
+) -> dict[str, Any]:
+    """Cung cấp ảnh chụp sức khỏe vận hành đã che bí mật và gắn correlation_id (OPS07A/B)."""
+    response.headers["Cache-Control"] = "no-store"
+    now_utc = datetime.now(UTC)
+    correlation_id = (
+        request.headers.get("X-Correlation-Id", "").strip() or f"corr-{uuid4().hex[:12]}"
+    )
+
+    try:
+        operations = _operations(request, identity)
+        runtime = [_runtime_dict(item) for item in await operations.list_bots()]
+        workspace = (
+            _runtime_dict(await operations.workspace_status())
+            if hasattr(operations, "workspace_status")
+            else {"kill_state": "ACTIVE", "revision": 1}
+        )
+    except BotAdminError as error:
+        raise HTTPException(status_code=error.status_code, detail=error.message) from error
+
+    total_api_errors = sum(int(item.get("error_count", 0) or 0) for item in runtime)
+    loss_snapshot = calculate_loss_windows(
+        events=[],
+        as_of=now_utc,
+        policy=LossWindowPolicy(timezone_name="Asia/Ho_Chi_Minh"),
+    )
+    breaker_snapshot = CircuitBreakerEngine().evaluate(
+        OperationalTelemetry(
+            evaluated_at=now_utc,
+            feed_age_seconds=0,
+            daily_loss=loss_snapshot.realized_loss_today,
+            drawdown_pct=Decimal("0"),
+            consecutive_api_errors=total_api_errors,
+            outbox_lag_seconds=0,
+            clock_skew_ms=0,
+            unprotected_exposure_count=0,
+            reconciliation_discrepancy_count=0,
+            unknown_order_count=0,
+        )
+    )
+    health_snapshot = build_system_health_snapshot(
+        service_name="crypidian-admin",
+        environment="PAPER",
+        correlation_id=correlation_id,
+        breaker=breaker_snapshot,
+        loss_windows=loss_snapshot,
+        metadata={
+            "workspace_id": str(identity.principal.workspace_id),
+            "kill_state": str(workspace.get("kill_state", "ACTIVE")),
+            "runtime_bot_count": len(runtime),
+        },
+        evaluated_at=now_utc,
+    )
+    return health_snapshot.to_dict()
+
+
+@router.get("/reports/export.csv")
+async def export_reports_csv(
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(current_identity)],
+    start: datetime,
+    end: datetime,
+    scope: str = "bot",
+    bot_id: str | None = None,
+) -> Response:
+    """Xuất danh sách giao dịch và chỉ số MFE/MAE ra file CSV an toàn (WB-07D)."""
+    parsed_bot_id: UUID | None = None
+    if bot_id and bot_id.strip():
+        try:
+            parsed_bot_id = UUID(bot_id)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail="bot_id phải là UUID hợp lệ.") from error
+
+    try:
+        report_scope = ReportScope(scope)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail="scope chỉ nhận bot hoặc workspace.") from error
+
+    query = BotReportQuery(
+        workspace_id=identity.principal.workspace_id,
+        bot_id=parsed_bot_id,
+        start=start,
+        end=end,
+        scope=report_scope,
+    )
+    service = _reporting_service(request)
+    try:
+        if report_scope is ReportScope.WORKSPACE:
+            report = (await service.get_workspace_report(query, identity.principal)).as_dict()
+        else:
+            report = (await service.get_bot_report(query, identity.principal)).as_dict()
+    except BotReportError as error:
+        raise HTTPException(
+            status_code=error.status_code,
+            detail={"code": error.code, "message": error.message},
+        ) from error
+
+    trades = report.get("trades", []) if isinstance(report, dict) else []
+    fieldnames = [
+        "id",
+        "symbol",
+        "side",
+        "leverage",
+        "entry_price",
+        "exit_price",
+        "net_pnl",
+        "mfe_pct",
+        "mae_pct",
+        "entry_reason",
+        "exit_reason",
+        "closed_at",
+    ]
+    buffer = io.StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=fieldnames)
+    writer.writeheader()
+    for trade in trades:
+        if not isinstance(trade, dict):
+            continue
+        writer.writerow({key: _sanitize_csv_cell(trade.get(key, "")) for key in fieldnames})
+
+    filename = f"crypidian-report-{report_scope.value}.csv"
+    return Response(
+        content=buffer.getvalue(),
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Cache-Control": "no-store",
+            "Content-Disposition": f'attachment; filename="{filename}"',
+        },
+    )

@@ -92,3 +92,300 @@ class MarketDataPort(Protocol):
         end_time: datetime | None = None,
         limit: int = 30,
     ) -> MarketDataPage[OpenInterestObservation]: ...
+
+
+@dataclass(frozen=True, slots=True)
+class PremiumIndexObservation:
+    """Mark price, index price và funding hiện hành của một hợp đồng."""
+
+    symbol: str
+    mark_price: Decimal
+    index_price: Decimal
+    last_funding_rate: Decimal | None
+    next_funding_time: datetime | None
+    observed_at: datetime
+    received_at: datetime
+    available_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class PriceTicker:
+    """Giá khớp gần nhất do sàn công bố."""
+
+    symbol: str
+    price: Decimal
+    observed_at: datetime
+    received_at: datetime
+    available_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class BookTicker:
+    """Giá và khối lượng tốt nhất hai phía sổ lệnh; không gồm lệnh RPI."""
+
+    symbol: str
+    bid_price: Decimal
+    bid_quantity: Decimal
+    ask_price: Decimal
+    ask_quantity: Decimal
+    observed_at: datetime
+    received_at: datetime
+    available_at: datetime
+
+    @property
+    def spread(self) -> Decimal:
+        return self.ask_price - self.bid_price
+
+
+@dataclass(frozen=True, slots=True)
+class Ticker24h:
+    """Thống kê cửa sổ trượt 24 giờ; dùng để xếp hạng thanh khoản, không thay cho nến."""
+
+    symbol: str
+    last_price: Decimal
+    price_change_percent: Decimal
+    high_price: Decimal
+    low_price: Decimal
+    volume: Decimal
+    quote_volume: Decimal
+    trade_count: int
+    open_time: datetime
+    close_time: datetime
+    received_at: datetime
+    available_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class FundingInfo:
+    """Chu kỳ và biên funding đã điều chỉnh của một symbol."""
+
+    symbol: str
+    funding_interval_hours: int
+    rate_cap: Decimal
+    rate_floor: Decimal
+    received_at: datetime
+    available_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class LongShortRatioObservation:
+    """Tỷ lệ long/short theo tài khoản hoặc vị thế; là thống kê sàn, không phải dòng lệnh."""
+
+    symbol: str
+    kind: str
+    period: str
+    observed_at: datetime
+    long_share: Decimal
+    short_share: Decimal
+    ratio: Decimal
+    received_at: datetime
+    available_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class TakerFlowObservation:
+    """Khối lượng taker mua/bán trong một period."""
+
+    symbol: str
+    period: str
+    observed_at: datetime
+    buy_volume: Decimal
+    sell_volume: Decimal
+    ratio: Decimal
+    received_at: datetime
+    available_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class KlineFlow:
+    """Số trade và khối lượng taker mua của một nến (cột 8–10 của kline)."""
+
+    symbol: str
+    timeframe: str
+    open_time: datetime
+    close_time: datetime
+    volume: Decimal
+    quote_volume: Decimal
+    trade_count: int
+    taker_buy_volume: Decimal
+    taker_buy_quote_volume: Decimal
+    is_closed: bool
+    received_at: datetime
+    available_at: datetime
+
+    @property
+    def taker_sell_volume(self) -> Decimal:
+        return self.volume - self.taker_buy_volume
+
+
+PriceLevel = tuple[Decimal, Decimal]
+
+
+@dataclass(frozen=True, slots=True)
+class OrderBookSnapshot:
+    """Ảnh chụp sổ lệnh L2 tại một `lastUpdateId`; không gồm lệnh RPI."""
+
+    symbol: str
+    last_update_id: int
+    bids: tuple[PriceLevel, ...]
+    asks: tuple[PriceLevel, ...]
+    observed_at: datetime
+    received_at: datetime
+    available_at: datetime
+
+    @property
+    def mid_price(self) -> Decimal:
+        return (self.bids[0][0] + self.asks[0][0]) / 2
+
+    def imbalance(self, *, levels: int = 5) -> Decimal:
+        """(Σbid − Σask) / (Σbid + Σask) trên `levels` mức đầu; nằm trong [-1, 1]."""
+        if levels < 1:
+            raise ValueError("levels phải lớn hơn 0.")
+        bid = sum((quantity for _, quantity in self.bids[:levels]), Decimal(0))
+        ask = sum((quantity for _, quantity in self.asks[:levels]), Decimal(0))
+        total = bid + ask
+        if total == 0:
+            raise ValueError("Sổ lệnh rỗng, không tính được imbalance.")
+        return (bid - ask) / total
+
+
+@dataclass(frozen=True, slots=True)
+class AggregateTrade:
+    """Các fill cùng giá, cùng phía taker, cùng thời điểm được sàn gộp lại."""
+
+    symbol: str
+    aggregate_id: int
+    price: Decimal
+    quantity: Decimal
+    first_trade_id: int
+    last_trade_id: int
+    trade_time: datetime
+    buyer_is_maker: bool
+    received_at: datetime
+    available_at: datetime
+
+    @property
+    def taker_side(self) -> str:
+        """Bên chủ động khớp: buyer là maker nghĩa là taker bán."""
+        return "SELL" if self.buyer_is_maker else "BUY"
+
+    @property
+    def quote_quantity(self) -> Decimal:
+        return self.price * self.quantity
+
+
+@dataclass(frozen=True, slots=True)
+class BasisObservation:
+    """Chênh lệch giá futures so với index trong một period."""
+
+    pair: str
+    contract_type: str
+    period: str
+    observed_at: datetime
+    futures_price: Decimal
+    index_price: Decimal
+    basis: Decimal
+    basis_rate: Decimal
+    received_at: datetime
+    available_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class ReferencePriceBar:
+    """Nến OHLC của mark price hoặc index price; không có khối lượng."""
+
+    symbol: str
+    timeframe: str
+    kind: str
+    open_time: datetime
+    close_time: datetime
+    open: Decimal
+    high: Decimal
+    low: Decimal
+    close: Decimal
+    is_closed: bool
+    received_at: datetime
+    available_at: datetime
+
+
+class MarketSnapshotPort(Protocol):
+    """Hợp đồng đọc giá hiện tại, funding và thống kê vị thế/dòng lệnh công khai."""
+
+    async def get_premium_index(
+        self, symbol: str | None = None
+    ) -> MarketDataPage[PremiumIndexObservation]: ...
+
+    async def get_price_tickers(self, symbol: str | None = None) -> MarketDataPage[PriceTicker]: ...
+
+    async def get_book_tickers(self, symbol: str | None = None) -> MarketDataPage[BookTicker]: ...
+
+    async def get_24h_tickers(self, symbol: str | None = None) -> MarketDataPage[Ticker24h]: ...
+
+    async def get_funding_info(self) -> MarketDataPage[FundingInfo]: ...
+
+    async def get_long_short_ratio(
+        self,
+        *,
+        symbol: str,
+        kind: str,
+        period: str,
+        start_time: datetime | None = None,
+        end_time: datetime | None = None,
+        limit: int = 30,
+    ) -> MarketDataPage[LongShortRatioObservation]: ...
+
+    async def get_taker_buy_sell_volume(
+        self,
+        *,
+        symbol: str,
+        period: str,
+        start_time: datetime | None = None,
+        end_time: datetime | None = None,
+        limit: int = 30,
+    ) -> MarketDataPage[TakerFlowObservation]: ...
+
+    async def get_kline_flows(
+        self,
+        *,
+        symbol: str,
+        interval: str,
+        start_time: datetime | None = None,
+        end_time: datetime | None = None,
+        limit: int = 500,
+    ) -> MarketDataPage[KlineFlow]: ...
+
+    async def get_order_book(
+        self, symbol: str, *, limit: int = 100
+    ) -> MarketDataPage[OrderBookSnapshot]: ...
+
+    async def get_aggregate_trades(
+        self,
+        *,
+        symbol: str,
+        from_id: int | None = None,
+        start_time: datetime | None = None,
+        end_time: datetime | None = None,
+        limit: int = 500,
+    ) -> MarketDataPage[AggregateTrade]: ...
+
+    async def get_basis(
+        self,
+        *,
+        pair: str,
+        period: str,
+        contract_type: str = "PERPETUAL",
+        start_time: datetime | None = None,
+        end_time: datetime | None = None,
+        limit: int = 30,
+    ) -> MarketDataPage[BasisObservation]: ...
+
+    async def get_reference_price_klines(
+        self,
+        *,
+        symbol: str,
+        kind: str,
+        interval: str,
+        start_time: datetime | None = None,
+        end_time: datetime | None = None,
+        limit: int = 500,
+    ) -> MarketDataPage[ReferencePriceBar]: ...

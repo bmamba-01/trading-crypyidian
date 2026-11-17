@@ -162,7 +162,7 @@ def test_closed_usdm_fixture_creates_one_candidate_delivery_without_execution() 
         downgrade = migrate("downgrade", "c7e9a1b3d5f8", success=False)
         assert "WP06_SOURCE_BAR_DOWNGRADE_NONEMPTY" in downgrade.stderr
         current = migrate("current")
-        assert "e2f4a6c8b0d7" in current.stdout
+        assert "a9c7e5f3d1b2 (head) (mergepoint)" in current.stdout
     finally:
         subprocess.run(
             [*base, "down", "--volumes", "--remove-orphans"],

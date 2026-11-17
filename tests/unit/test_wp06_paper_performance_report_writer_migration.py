@@ -99,7 +99,11 @@ def test_writer_binds_report_payload_to_current_aggregate_and_fixed_policy() -> 
     assert "minimum_outcomes_not_met" in function
     assert "minimum_class_support_not_met" in function
     assert "minimum_mature_coverage_not_met" in function
-    assert "aggregate_row.eligible_decision_count = 0 AND" in function
+    normalized_function = " ".join(function.split())
+    assert (
+        "aggregate_row.eligible_decision_count = 0 AND (report_cohort->>'coverage')::numeric <> 0"
+    ) in normalized_function
+    assert "NULLIF(aggregate_row.eligible_decision_count, 0)" in function
     assert "aggregate_row.covered_outcome_count::numeric * 5 <" in function
     assert "joint_metric_regression_in_both_cohorts" in function
     assert "wp06_license_canonical_json" in function

@@ -5,6 +5,7 @@ from decimal import Decimal
 from uuid import UUID
 
 from sqlalchemy import (
+    BigInteger,
     CheckConstraint,
     DateTime,
     ForeignKeyConstraint,
@@ -351,3 +352,155 @@ class IngestionGap(UuidPrimaryKey, CreatedAt, Base):
     gap_end: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class MarketMarkPrice(UuidPrimaryKey, CreatedAt, Base):
+    """Mẫu mark/index price và funding dự kiến lấy từ stream, bất biến sau khi ghi."""
+
+    __tablename__ = "market_mark_price"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "id", name="uq_market_mark_price_workspace_id"),
+        UniqueConstraint(
+            "workspace_id", "source", "idempotency_key", name="uq_market_mark_price_idempotency"
+        ),
+        ForeignKeyConstraint(["workspace_id"], ["workspace.id"], ondelete="CASCADE"),
+        ForeignKeyConstraint(
+            ["workspace_id", "instrument_id"],
+            ["market_instrument.workspace_id", "market_instrument.id"],
+        ),
+        CheckConstraint(
+            "event_at <= received_at AND received_at <= available_at",
+            name="market_mark_price_timestamps_causal",
+        ),
+        CheckConstraint(
+            "mark_price > 0 AND index_price > 0", name="market_mark_price_prices_positive"
+        ),
+        Index(
+            "ix_market_mark_price_asof",
+            "workspace_id",
+            "instrument_id",
+            "event_at",
+            "available_at",
+        ),
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    instrument_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    source: Mapped[str] = mapped_column(String(80), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(240), nullable=False)
+    checksum: Mapped[str] = mapped_column(String(64), nullable=False)
+    event_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    mark_price: Mapped[Decimal] = mapped_column(_MARKET_VALUE, nullable=False)
+    index_price: Mapped[Decimal] = mapped_column(_MARKET_VALUE, nullable=False)
+    funding_rate: Mapped[Decimal | None] = mapped_column(_MARKET_VALUE, nullable=True)
+    next_funding_time: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+class MarketLiquidation(UuidPrimaryKey, CreatedAt, Base):
+    """Lệnh thanh lý do sàn công bố; mỗi giây sàn chỉ đẩy lệnh lớn nhất của symbol."""
+
+    __tablename__ = "market_liquidation"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "id", name="uq_market_liquidation_workspace_id"),
+        UniqueConstraint(
+            "workspace_id", "source", "idempotency_key", name="uq_market_liquidation_idempotency"
+        ),
+        ForeignKeyConstraint(["workspace_id"], ["workspace.id"], ondelete="CASCADE"),
+        ForeignKeyConstraint(
+            ["workspace_id", "instrument_id"],
+            ["market_instrument.workspace_id", "market_instrument.id"],
+        ),
+        CheckConstraint(
+            "event_at <= received_at AND received_at <= available_at",
+            name="market_liquidation_timestamps_causal",
+        ),
+        CheckConstraint("side IN ('BUY', 'SELL')", name="market_liquidation_side_valid"),
+        CheckConstraint(
+            "quantity > 0 AND filled_quantity >= 0 AND filled_quantity <= quantity "
+            "AND price >= 0 AND average_price >= 0",
+            name="market_liquidation_values_valid",
+        ),
+        Index(
+            "ix_market_liquidation_asof",
+            "workspace_id",
+            "instrument_id",
+            "event_at",
+            "available_at",
+        ),
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    instrument_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    source: Mapped[str] = mapped_column(String(80), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(240), nullable=False)
+    checksum: Mapped[str] = mapped_column(String(64), nullable=False)
+    event_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    side: Mapped[str] = mapped_column(String(8), nullable=False)
+    order_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    time_in_force: Mapped[str] = mapped_column(String(16), nullable=False)
+    status: Mapped[str] = mapped_column(String(40), nullable=False)
+    price: Mapped[Decimal] = mapped_column(_MARKET_VALUE, nullable=False)
+    average_price: Mapped[Decimal] = mapped_column(_MARKET_VALUE, nullable=False)
+    quantity: Mapped[Decimal] = mapped_column(_MARKET_VALUE, nullable=False)
+    filled_quantity: Mapped[Decimal] = mapped_column(_MARKET_VALUE, nullable=False)
+
+
+class MarketTradeFlow(UuidPrimaryKey, CreatedAt, Base):
+    """Khối lượng taker mua/bán gộp theo bucket; `is_complete` phân biệt dữ liệu một phần."""
+
+    __tablename__ = "market_trade_flow"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "id", name="uq_market_trade_flow_workspace_id"),
+        UniqueConstraint(
+            "workspace_id", "source", "idempotency_key", name="uq_market_trade_flow_idempotency"
+        ),
+        ForeignKeyConstraint(["workspace_id"], ["workspace.id"], ondelete="CASCADE"),
+        ForeignKeyConstraint(
+            ["workspace_id", "instrument_id"],
+            ["market_instrument.workspace_id", "market_instrument.id"],
+        ),
+        CheckConstraint(
+            "event_at <= received_at AND received_at <= available_at",
+            name="market_trade_flow_timestamps_causal",
+        ),
+        CheckConstraint(
+            "bucket_seconds > 0 AND trade_count > 0 AND first_aggregate_id <= last_aggregate_id",
+            name="market_trade_flow_shape_valid",
+        ),
+        CheckConstraint(
+            "buy_quantity >= 0 AND sell_quantity >= 0 AND buy_quote >= 0 AND sell_quote >= 0",
+            name="market_trade_flow_values_nonnegative",
+        ),
+        Index(
+            "ix_market_trade_flow_asof",
+            "workspace_id",
+            "instrument_id",
+            "bucket_start",
+            "available_at",
+        ),
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    instrument_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    source: Mapped[str] = mapped_column(String(80), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(240), nullable=False)
+    checksum: Mapped[str] = mapped_column(String(64), nullable=False)
+    event_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    bucket_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    bucket_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
+    buy_quantity: Mapped[Decimal] = mapped_column(_MARKET_VALUE, nullable=False)
+    sell_quantity: Mapped[Decimal] = mapped_column(_MARKET_VALUE, nullable=False)
+    buy_quote: Mapped[Decimal] = mapped_column(_MARKET_VALUE, nullable=False)
+    sell_quote: Mapped[Decimal] = mapped_column(_MARKET_VALUE, nullable=False)
+    trade_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    first_aggregate_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    last_aggregate_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    is_complete: Mapped[bool] = mapped_column(nullable=False)

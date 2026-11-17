@@ -24,6 +24,10 @@ INGESTION = "crypidian_ingestion_worker"
 TRAINER = "crypidian_trainer_worker"
 REPLAY_WRITER = "crypidian_replay_writer"
 LEGACY_TRIGGER_GRANTEE = "crypidian_legacy_trigger_integrator"
+PERFORMANCE_EVALUATOR = "crypidian_learning_paper_performance_evaluator"
+PERFORMANCE_REPORT_WRITER = "crypidian_learning_paper_performance_report_writer"
+RIGHTS_ROLE = "crypidian_scorer_deployment_rights_reader"
+INCIDENT_GUARD_ROLE = "crypidian_learning_incident_guard"
 PROCESS_ROLES = (ADMIN, RUNTIME, GATEWAY, INGESTION, TRAINER, REPLAY_WRITER)
 WORKER_ROLES = (GATEWAY, INGESTION, TRAINER)
 
@@ -293,6 +297,8 @@ DEFINER_OWNERS = {
     "crypidian_candidate_locker",
     "crypidian_learning_batch_reader",
     "crypidian_learning_evaluation_reader",
+    PERFORMANCE_EVALUATOR,
+    PERFORMANCE_REPORT_WRITER,
     "crypidian_learning_source_rights_reader",
     "crypidian_manifest_comparator",
     "crypidian_risk_reservation_guard",
@@ -301,6 +307,8 @@ DEFINER_OWNERS = {
     "crypidian_scorer_deployment_rights_reader",
     "crypidian_learning_model_registry_guard",
     "crypidian_learning_shadow_integrity_guard",
+    "crypidian_learning_incident_reader",
+    INCIDENT_GUARD_ROLE,
     "crypidian_risk_aggregator",
     "crypidian_source_expiry_scanner",
     "crypidian_source_rights_emitter",
@@ -318,6 +326,45 @@ FUNCTION_EXECUTE = {
     "workspace_account_risk_state(uuid,timestamp with time zone,integer,text,text[])": {
         RUNTIME,
         ADMIN,
+    },
+    "wp06_aggregate_paper_performance(uuid,uuid,text,uuid,text,timestamp with time zone)": {
+        ADMIN,
+        PERFORMANCE_EVALUATOR,
+        PERFORMANCE_REPORT_WRITER,
+    },
+    (
+        "wp06_insert_paper_performance_report("
+        "uuid,uuid,uuid,uuid,text,text,text,text,text,"
+        "timestamp with time zone,text,uuid,text,jsonb,text)"
+    ): {ADMIN},
+    "wp06_learning_incident_guard()": {INCIDENT_GUARD_ROLE},
+    "wp06_learning_incident_canonical(jsonb)": {INCIDENT_GUARD_ROLE},
+    "wp06_learning_incident_eligible_target(uuid,uuid)": {
+        ADMIN,
+        RIGHTS_ROLE,
+        INCIDENT_GUARD_ROLE,
+    },
+    "wp06_lock_learning_incident_scope(uuid,uuid)": {
+        ADMIN,
+        RIGHTS_ROLE,
+        INCIDENT_GUARD_ROLE,
+    },
+    "wp06_require_shadow_exact_source_scope()": {RIGHTS_ROLE},
+    "wp06_shadow_drift_decision_source_ids(uuid,uuid)": {
+        ADMIN,
+        RIGHTS_ROLE,
+        "crypidian_learning_shadow_observer",
+        "crypidian_learning_shadow_integrity_guard",
+    },
+    "wp06_authorize_shadow_inference_source_scope(uuid,uuid,timestamp with time zone)": {
+        ADMIN,
+        RIGHTS_ROLE,
+        "crypidian_learning_shadow_observer",
+    },
+    "wp06_compact_canonical_json(json)": {RIGHTS_ROLE, INCIDENT_GUARD_ROLE},
+    "wp06_canonical_utc_timestamp_json(timestamp with time zone)": {
+        RIGHTS_ROLE,
+        INCIDENT_GUARD_ROLE,
     },
 }
 
@@ -340,15 +387,27 @@ def check_functions(connection):
         "SELECT rolcanlogin, rolsuper, rolbypassrls, rolreplication, rolcreaterole, "
         "rolcreatedb, rolinherit, EXISTS (SELECT 1 FROM pg_auth_members m "
         "WHERE m.roleid = r.oid OR m.member = r.oid) FROM pg_roles r "
-        "WHERE rolname IN ('crypidian_source_expiry_scanner', 'crypidian_source_rights_emitter') "
+        "WHERE rolname IN ('crypidian_source_expiry_scanner', 'crypidian_source_rights_emitter', "
+        "'crypidian_learning_paper_performance_report_writer', "
+        "'crypidian_learning_paper_performance_evaluator', "
+        "'crypidian_scorer_deployment_rights_reader', "
+        "'crypidian_learning_incident_guard', "
+        "'crypidian_learning_incident_reader') "
         "ORDER BY rolname"
     ).fetchall()
-    if len(definer_roles) != 2 or any(
+    if len(definer_roles) != 7 or any(
         role != (False, False, False, False, False, False, False, False) for role in definer_roles
     ):
-        problems.append(("source rights definer role posture", definer_roles))
+        problems.append(("security definer role posture", definer_roles))
     for signature, allowed in FUNCTION_EXECUTE.items():
-        for role in (*PROCESS_ROLES, "crypidian_app"):
+        for role in (
+            *PROCESS_ROLES,
+            "crypidian_app",
+            PERFORMANCE_EVALUATOR,
+            PERFORMANCE_REPORT_WRITER,
+            RIGHTS_ROLE,
+            INCIDENT_GUARD_ROLE,
+        ):
             granted = connection.execute(
                 "SELECT has_function_privilege(%s, %s, 'EXECUTE')", (role, signature)
             ).fetchone()[0]

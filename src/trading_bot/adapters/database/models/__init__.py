@@ -149,8 +149,11 @@ from trading_bot.adapters.database.models.market_entities import (
     MarketBar,
     MarketFunding,
     MarketInstrument,
+    MarketLiquidation,
+    MarketMarkPrice,
     MarketOpenInterest,
     MarketRawReference,
+    MarketTradeFlow,
 )
 from trading_bot.adapters.database.models.paper_entities import (
     ExchangeOrderRecord,
@@ -273,7 +276,10 @@ __all__ = [
     "MarketBar",
     "MarketFunding",
     "MarketInstrument",
+    "MarketLiquidation",
+    "MarketMarkPrice",
     "MarketOpenInterest",
+    "MarketTradeFlow",
     "MarketRawReference",
     "ConfigVersion",
     "MfaFactor",

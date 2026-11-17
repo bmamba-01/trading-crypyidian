@@ -56,10 +56,6 @@ def test_process_roles_cannot_write_identity_or_config_and_risk_guard_blocks_dow
             errors="replace",
             timeout=300,
         )
-        if result.returncode != 0:
-            for line in result.stdout.splitlines():
-                if line.startswith("DB_ROLE_DEFINER_AUDIT="):
-                    print(line)
         assert (result.returncode == 0) is success, (
             args,
             result.stdout[-12000:],
