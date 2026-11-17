@@ -5518,3 +5518,9 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
   - `ruff check`/`ruff format --check src tests migrations`, `mypy src/trading_bot` (477 file), `git diff --check` đạt;
   - Playwright risk + strategy cards + session expiry + design system **11 passed**;
   - RT-1 Compose **1 passed/777.80s**.
+- **Push:** `git push origin HEAD:dev` `3776525..e1b5254`, `git ls-remote` khớp.
+- **Phát hiện khi xem trang trên dữ liệu thật sau rebase (không do vòng này gây ra):**
+  - Commit `1a1e8eb` (mở rộng chiến lược/8 card) đổi `content_hash` của release `sc-binance-usdm-vol-breakout-001-v1.0.0` (`9055c001…` → `d0586858…`).
+  - Bot ghim release đó (T03 CARD, "Bot strategy-card" trong workspace `crypidian-cards-v1`) nay `BOT_CONFIG_ROOT_MISMATCH`: trang hiện "Không resolve được". Khi stack chạy code `dev` mới, entry của hai bot này sẽ bị chặn (fail-closed).
+  - Cần publish lại release/hash cho workspace hoặc tách version card; đã ghi ticket riêng.
+- **Container phụ** `crypidian-review-admin-web-cry428` (8011) vẫn chạy để owner xem; xóa bằng `docker rm -f crypidian-review-admin-web-cry428`.
