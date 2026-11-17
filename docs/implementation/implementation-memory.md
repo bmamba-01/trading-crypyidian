@@ -5191,3 +5191,10 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
   - T02 `per_trade_risk_fraction` →0,002: **BETTER** — cùng 107 lệnh, PnL −952,45→−635,44. Lưu ý phân tích: chỉ "tốt hơn" vì chiến lược đang lỗ thì lệnh nhỏ lỗ ít hơn (profit factor 0,52 không đổi); tiêu chí `compare` hiện ưu tiên PnL tuyệt đối nên luôn chấm giảm rủi ro là BETTER khi chiến lược lỗ — cần xem lại tiêu chí (theo dõi ở ticket mới).
   - T06 `max_positions` 1→3 (**danh mục**, 20 coin, 5x): **WORSE** — lệnh vào 42→106, bỏ vì trần 118→54, PnL −149,69→−1.393,06, drawdown 981,29→1.982,17. Đề xuất AI "nới trần vị thế vì bị chặn nhiều" làm danh mục lỗ nặng hơn.
   - Thời gian: T02 mỗi đề xuất ~14 phút (10 coin × 2 bản); T06 ~64 phút (20 coin × 1 bản) — replay 15m đơn luồng là nút thắt; cân nhắc chạy song song theo coin.
+
+### 2026-11-16 — Cài MCP itsaplan cho Codex và Antigravity
+
+- **Codex** (CLI 0.169.0-alpha.11.1 trong app ChatGPT): thêm `[mcp_servers.itsaplan]` (`url`, `http_headers`) vào `~/.codex/config.toml` (sao lưu `config.toml.bak-2026-11-16`, quyền 600). `codex mcp get itsaplan` → `enabled`, `streamable_http`, header Bearer. Chạy thử `codex exec` bị chặn vì workspace Codex hết credit → **chưa kiểm được gọi tool đầu-cuối**.
+- **Antigravity** (app, chưa cài CLI `agy`): ghi `mcpServers.itsaplan` (`serverUrl`, `headers`) vào `~/.gemini/config/mcp_config.json` (trước đó rỗng, quyền 600). Bundle app tham chiếu đúng `~/.gemini/config/mcp_config.json`; theo [hướng dẫn runner](https://github.com/croffasia/itsaplan/blob/main/docs/runner.md) (kiểm 16/11/2026). Cần khởi động lại app để nạp; chưa kiểm được từ trong app.
+- Cả hai dùng chung personal API key `claude-code-mcp` với Claude Code; key không ghi vào repo. Tài liệu: `docs/implementation/itsaplan-tracking.md` (vị trí cấu hình, cách gia hạn).
+- **Readback:** đã đọc lại mục này, khớp output `codex mcp get` và nội dung file cấu hình.
