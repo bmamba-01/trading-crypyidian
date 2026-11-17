@@ -39,6 +39,14 @@
 
 **Nghiệm thu:** config version conflict không mất dữ liệu; dashboard không gộp mode; audit có thể truy từ lệnh về config và người duyệt. Tất cả trang dùng được ở viewport mobile, không tràn ngang vì nav/form/table; chart chỉ nhận series authoritative có đơn vị, currency, time range và freshness.
 
+### LIVE-MON — theo dõi bot trực tiếp (CRY-429, 17/11/2026)
+
+- **Màn hình:** `/admin/live?bot=<id>&bot=…` (mặc định mọi bot đang bật, tối đa 50). Dòng sự kiện (nến đóng → quyết định/lý do bỏ → reservation → lệnh → khớp → dời SL → đóng kèm PnL ròng, R, funding), vị thế mở (mark, % tới SL/TP, R hiện tại, thời gian giữ, funding), vốn/drawdown ước tính theo mark (gộp + từng bot), kill switch workspace, đánh giá ngắt mạch, độ trễ feed nến 1m/mark/outbox, lệch đồng hồ app↔DB, nhịp tim runtime.
+- **Đẩy dữ liệu:** SSE `GET /admin/api/live/stream` (`fastapi.sse`, sự kiện `events` có `id` = con trỏ `created_at`, `state` mỗi 2 nhịp × 1,5 s, `rotate` sau 300 s để trình duyệt kết nối lại + xác thực lại, `auth` khi phiên hết hạn); fallback `GET /admin/api/live/snapshot?since=` poll 4 s. Tối đa 4 luồng/membership (429 + `Retry-After`).
+- **Nguồn & phạm vi:** đọc ledger PAPER (`bot_decision`, `risk_reservation`, `order_intent`, `fill`, `position_event`, `trade`, `trade_cost`, `trade_plan`) + outbox `paper.order_intent.expired` trong **một** transaction READ ONLY/REPEATABLE READ ngắn mỗi nhịp; lọc `workspace_id` + `bot_id = ANY(...)` tường minh, RLS `bot_member_isolation`, grant `bot:report:read` từng bot. Không giữ kết nối giữa các nhịp, không khóa hàng, không gọi runtime/sàn.
+- **Chỉ đọc:** điều khiển (tạm dừng, kill switch, đóng toàn bộ vị thế) vẫn qua form có CSRF + MFA; trang chỉ dẫn link. Telegram đã có tin mở/đóng lệnh PAPER (TG-3/TG-4) nên không thêm kênh đẩy mới.
+- **Highlight/âm thanh:** sự kiện `notice` (lệnh mới, khớp) và `alert` (chạm SL/TP) được tô sáng + vào dải cảnh báo; âm thanh WebAudio do người xem tự bật (mặc định tắt vì chính sách autoplay).
+
 ## WP-04D — Telegram webhook, bind và command policy
 
 1. Tạo one-time binding code từ web; lưu `telegram_user_id`, `chat_id`, workspace/user và thời gian bind/revoke.
