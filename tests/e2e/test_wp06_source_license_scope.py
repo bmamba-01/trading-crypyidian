@@ -199,7 +199,8 @@ def test_wp06_source_license_scope_and_receipts_are_database_verified() -> None:
         state = run_probe("candidate-proof-builder", "seed-negative-manifests", state)
         authorization = run_probe("candidate-proof-builder", "authorize", state)
         assert authorization["exact_training_scope_allowed"] is True
-        assert authorization["evaluation_operation_denied_to_builder"] is True
+        assert authorization["evaluation_operation_allowed_to_builder"] is True
+        assert authorization["unknown_operation_denied"] is True
         assert authorization["cross_workspace_denied"] is True
 
         normalized = run_probe("candidate-proof-builder", "normalize", state)
@@ -214,6 +215,14 @@ def test_wp06_source_license_scope_and_receipts_are_database_verified() -> None:
         assert scope_denials["missing_child"] is True, scope_denials
         assert scope_denials["extra_child"] is True, scope_denials
         assert scope_denials["market_bar_substitution"] is True, scope_denials
+        for service, role in (
+            ("admin-web", "crypidian_admin_web"),
+            ("trainer-worker", "crypidian_trainer_worker"),
+        ):
+            assert run_probe(service, "check-bundle-gate-acl", state) == {
+                "role": role,
+                "bundle_gate_denied": True,
+            }
         gate_acl = run_probe("learning-evaluator", "check-evaluator-gate-acl", state)
         assert gate_acl["direct_gate_denied_to_evaluator"] is True
 

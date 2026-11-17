@@ -219,7 +219,7 @@ async def _seed_replay() -> dict[str, Any]:
                 ),
             ),
         ):
-            seed_result = await run_probe(scorer_seed=True)
+            seed_result = await run_probe(scorer_seed=True, license_fixture=False)
         workspace_id = UUID(seed_result["workspace_id"])
         async with sessions() as session, session.begin():
             await _set_workspace(session)
@@ -623,12 +623,30 @@ async def _authorize() -> dict[str, object]:
             )
         ).all()
         assert len(rows) == STATE["expected_source_receipt_count"]
-        await _expect_denied(
+        # Owner 16/11/2026 (migration c2e4a6b8d0f1): builder được gọi `evaluation` để dựng
+        # scorer TEST proof; scope evaluation khác scope training trên cùng child set.
+        evaluation_rows = (
+            await session.execute(
+                text(
+                    "SELECT child_dataset_hash, scope_hash, purpose "
+                    "FROM public.wp06_authorize_replay_training_bundle("
+                    ":workspace_id, :bundle_hash, 'evaluation')"
+                ),
+                {"workspace_id": str(WORKSPACE_ID), "bundle_hash": bundle_hash},
+            )
+        ).all()
+        assert sorted(row.child_dataset_hash for row in evaluation_rows) == sorted(
+            row.child_dataset_hash for row in rows
+        )
+        assert {row.purpose for row in evaluation_rows} == {"training"}
+        assert not {row.scope_hash for row in evaluation_rows} & {row.scope_hash for row in rows}
+        unknown_operation = await _expect_denied(
             session,
             "SELECT * FROM public.wp06_authorize_replay_training_bundle("
-            ":workspace_id, :bundle_hash, 'evaluation')",
+            ":workspace_id, :bundle_hash, 'backtest_research')",
             {"workspace_id": str(WORKSPACE_ID), "bundle_hash": bundle_hash},
         )
+        assert "WP06_TRAINING_REPLAY_BUNDLE_CALLER_DENIED" in unknown_operation
         await _expect_denied(
             session,
             "SELECT * FROM public.wp06_authorize_replay_training_bundle("
@@ -638,7 +656,8 @@ async def _authorize() -> dict[str, object]:
     await engine.dispose()
     return {
         "exact_training_scope_allowed": True,
-        "evaluation_operation_denied_to_builder": True,
+        "evaluation_operation_allowed_to_builder": True,
+        "unknown_operation_denied": True,
         "cross_workspace_denied": True,
     }
 
@@ -903,7 +922,10 @@ async def _seed_negative_manifests(state: dict[str, Any]) -> dict[str, Any]:
         assert isinstance(lineage, dict)
         missing_payload = json.loads(json.dumps(source_v5))
         missing_payload["source_use_lineage"] = []
-        missing_payload["samples"][0]["source_use_lineage_set_hash"] = _source_lineage_set_hash([])
+        # Mọi sample phải cùng lineage-set hash; chỉ sửa samples[0] làm mã từ chối phụ thuộc
+        # thứ tự sample_id ngẫu nhiên (flaky từ 7c9b749).
+        for sample in missing_payload["samples"]:
+            sample["source_use_lineage_set_hash"] = _source_lineage_set_hash([])
         missing_hash, missing_id = await _persist_manifest(
             session,
             missing_payload,
@@ -920,10 +942,16 @@ async def _seed_negative_manifests(state: dict[str, Any]) -> dict[str, Any]:
         extra_payload = json.loads(json.dumps(source_v5))
         extra_lineage = dict(lineage)
         extra_lineage["child_dataset_hash"] = hashlib.sha256(b"unexpected-child").hexdigest()
-        extra_payload["source_use_lineage"] = [lineage, extra_lineage]
-        extra_payload["samples"][0]["source_use_lineage_set_hash"] = _source_lineage_set_hash(
-            [lineage, extra_lineage]
+        # Lineage set phải sắp theo child hash như domain; SQL băm mảng theo thứ tự đã lưu, nên
+        # để nguyên [lineage, extra] làm mã từ chối phụ thuộc hash child ngẫu nhiên (flaky).
+        extra_set = sorted(
+            [lineage, extra_lineage], key=lambda item: str(item["child_dataset_hash"])
         )
+        extra_payload["source_use_lineage"] = extra_set
+        # Mọi sample phải cùng lineage-set hash; chỉ sửa samples[0] làm mã từ chối phụ thuộc
+        # thứ tự sample_id ngẫu nhiên (flaky từ 7c9b749).
+        for sample in extra_payload["samples"]:
+            sample["source_use_lineage_set_hash"] = _source_lineage_set_hash(extra_set)
         extra_hash, extra_id = await _persist_manifest(
             session,
             extra_payload,
@@ -943,9 +971,10 @@ async def _seed_negative_manifests(state: dict[str, Any]) -> dict[str, Any]:
         supplied_ids[0] = f"market-bar-record:{uuid4()}"
         substitute_lineage["market_bar_ids"] = supplied_ids
         substitute_payload["source_use_lineage"] = [substitute_lineage]
-        substitute_payload["samples"][0]["source_use_lineage_set_hash"] = _source_lineage_set_hash(
-            [substitute_lineage]
-        )
+        # Mọi sample phải cùng lineage-set hash; chỉ sửa samples[0] làm mã từ chối phụ thuộc
+        # thứ tự sample_id ngẫu nhiên (flaky từ 7c9b749).
+        for sample in substitute_payload["samples"]:
+            sample["source_use_lineage_set_hash"] = _source_lineage_set_hash([substitute_lineage])
         substitute_hash, substitute_id = await _persist_manifest(
             session,
             substitute_payload,
@@ -1063,6 +1092,23 @@ async def _check_scope_variants_phase() -> dict[str, object]:
         result = await _check_scope_variants(session)
     await engine.dispose()
     return result
+
+
+async def _check_bundle_gate_acl_phase() -> dict[str, object]:
+    """Role ngoài builder/evaluator không có EXECUTE trên gate replay, kể cả `evaluation`."""
+    engine = _engine()
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    async with sessions() as session, session.begin():
+        await _set_workspace(session)
+        role = await session.scalar(text("SELECT session_user"))
+        error = await _expect_denied(
+            session,
+            "SELECT * FROM public.wp06_authorize_replay_training_bundle("
+            ":workspace_id, :bundle_hash, 'evaluation')",
+            {"workspace_id": str(WORKSPACE_ID), "bundle_hash": STATE["bundle_hash"]},
+        )
+    await engine.dispose()
+    return {"role": role, "bundle_gate_denied": "permission denied for function" in error}
 
 
 async def _check_evaluator_gate_acl_phase() -> dict[str, bool]:
@@ -1529,6 +1575,8 @@ async def main() -> None:
         result = await _inspect_receipts()
     elif PHASE == "check-scope-variants":
         result = await _check_scope_variants_phase()
+    elif PHASE == "check-bundle-gate-acl":
+        result = await _check_bundle_gate_acl_phase()
     elif PHASE == "check-evaluator-gate-acl":
         result = await _check_evaluator_gate_acl_phase()
     elif PHASE == "revoke":

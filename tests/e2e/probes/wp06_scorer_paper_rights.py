@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from uuid import uuid4
 
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
@@ -15,6 +16,21 @@ from trading_bot.application.outbox import UnitOfWork
 from trading_bot.domain.research.source_policy import SourcePolicyState, SourceUsePurpose
 from trading_bot.domain.research.source_registry import SourceBudget, SourceRegistryEntry
 
+try:
+    from source_license_fixture import (
+        append_fixture_license_evidence,
+        fixture_license_scope,
+        pending_license_kwargs,
+        verified_license_kwargs,
+    )
+except ModuleNotFoundError:  # Import qua package `e2e.probes` khi /e2e-tests nằm trên sys.path.
+    from e2e.probes.source_license_fixture import (
+        append_fixture_license_evidence,
+        fixture_license_scope,
+        pending_license_kwargs,
+        verified_license_kwargs,
+    )
+
 GATE = "SELECT public.wp06_require_scorer_paper_source_rights(:workspace,:source)"
 
 
@@ -24,8 +40,14 @@ async def verify_paper_rights(seed_engine, admin_engine, workspace_id):
     now = datetime.now(UTC)
     both = frozenset({SourceUsePurpose.TRAINING, SourceUsePurpose.PAPER_DEMO})
 
+    evidence_ref = "https://example.test/fixture-license"
+
     async def append(unit, revision):
         repository = SourceRegistryRepository(unit.session)
+        # Evidence phải gắn với pending mới nhất trước khi ghi VERIFIED.
+        await append_fixture_license_evidence(
+            unit.session, workspace_id=workspace_id, revision=revision
+        )
         await repository.append_revision(workspace_id=workspace_id, revision=revision)
 
     async def finalize(unit, revision):
@@ -38,6 +60,7 @@ async def verify_paper_rights(seed_engine, admin_engine, workspace_id):
 
     async def seed(name, purposes, *, expired=False):
         source = f"WP06_PAPER_GATE_TEST_{name}"
+        scope = fixture_license_scope(source, purposes=both)
         entry = (
             SourceRegistryEntry.discover(
                 source_id=source,
@@ -62,6 +85,7 @@ async def verify_paper_rights(seed_engine, admin_engine, workspace_id):
                 actor_id="fixture-operator",
                 at=now - timedelta(minutes=2),
                 reason="Review fixture kỹ thuật.",
+                **pending_license_kwargs(scope, evidence_ref),
             )
             .transition(
                 policy_id=f"{source}:verified",
@@ -70,7 +94,7 @@ async def verify_paper_rights(seed_engine, admin_engine, workspace_id):
                 at=now - timedelta(minutes=1),
                 reason="Chỉ xác minh fixture trong database tạm.",
                 allowed_purposes=purposes,
-                evidence_ref="https://example.test/fixture-license",
+                **verified_license_kwargs(scope, evidence_ref, uuid4()),
                 reviewed_at=now - timedelta(minutes=1),
                 valid_until=(
                     datetime.now(UTC) + timedelta(seconds=2) if expired else now + timedelta(days=1)
@@ -99,6 +123,9 @@ async def verify_paper_rights(seed_engine, admin_engine, workspace_id):
                 raise AssertionError(str(error.orig)) from error
         else:
             assert expected is None, f"Source {source} phải bị từ chối"
+
+    def scope_of(entry):
+        return fixture_license_scope(entry.source_id, purposes=both)
 
     denied = "WP06_SCORER_PAPER_SOURCE_RIGHTS_DENIED"
     for name, purposes, expired in (
@@ -131,6 +158,7 @@ async def verify_paper_rights(seed_engine, admin_engine, workspace_id):
             actor_id="fixture-operator",
             at=now,
             reason="Thu hồi một purpose của fixture.",
+            **pending_license_kwargs(scope_of(entry), evidence_ref),
         )
         changed = pending.transition(
             policy_id=f"{entry.source_id}:limited",
@@ -139,7 +167,7 @@ async def verify_paper_rights(seed_engine, admin_engine, workspace_id):
             at=now,
             reason="Giữ lại đúng một purpose.",
             allowed_purposes=both - {missing},
-            evidence_ref="https://example.test/fixture-license",
+            **verified_license_kwargs(scope_of(entry), evidence_ref, uuid4()),
             reviewed_at=now,
             valid_until=now + timedelta(days=1),
             approved_by="fixture-reviewer",
