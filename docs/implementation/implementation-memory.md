@@ -5191,3 +5191,14 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
   - T02 `per_trade_risk_fraction` →0,002: **BETTER** — cùng 107 lệnh, PnL −952,45→−635,44. Lưu ý phân tích: chỉ "tốt hơn" vì chiến lược đang lỗ thì lệnh nhỏ lỗ ít hơn (profit factor 0,52 không đổi); tiêu chí `compare` hiện ưu tiên PnL tuyệt đối nên luôn chấm giảm rủi ro là BETTER khi chiến lược lỗ — cần xem lại tiêu chí (theo dõi ở ticket mới).
   - T06 `max_positions` 1→3 (**danh mục**, 20 coin, 5x): **WORSE** — lệnh vào 42→106, bỏ vì trần 118→54, PnL −149,69→−1.393,06, drawdown 981,29→1.982,17. Đề xuất AI "nới trần vị thế vì bị chặn nhiều" làm danh mục lỗ nặng hơn.
   - Thời gian: T02 mỗi đề xuất ~14 phút (10 coin × 2 bản); T06 ~64 phút (20 coin × 1 bản) — replay 15m đơn luồng là nút thắt; cân nhắc chạy song song theo coin.
+
+### 2026-11-17 — CRY-422 `[AI-3/compare-criteria]`: tiêu chí `compare-v2` không thưởng việc chỉ đổi quy mô lệnh
+
+- **Vấn đề (từ chạy thật CRY-386):** T02 giảm `per_trade_risk_fraction` 0,005→0,002 ra BETTER chỉ vì chiến lược lỗ thì lệnh nhỏ lỗ ít (cùng 107 lệnh, PF 0,52 không đổi).
+- **Thay đổi `proposal_backtest.compare` (`COMPARE_RULE = "compare-v2"`, `PROPOSAL_BACKTEST_VERSION` = `ai3-proposal-backtest-v3`, payload có `verdict_rule`):**
+  - "Chỉ đổi quy mô": cùng số lệnh + cùng số thắng + |ΔPF| ≤ 0,02 → INCONCLUSIVE kèm ghi chú (thêm "chiến lược đang lỗ" khi PF gốc < 1). Áp cả chiều tăng quy mô chiến lược lời (không còn BETTER/WORSE theo quy mô).
+  - BETTER cần thêm profit factor không giảm (PF thiếu khi có lãi không lỗ = vô cùng); PnL tốt hơn mà PF giảm → INCONCLUSIVE "có thể chỉ do lệnh lớn hơn".
+  - BETTER mà bản đề xuất vẫn lỗ → ghi chú "vẫn lỗ; chỉ ít lỗ hơn".
+- **Đối chiếu trên 6 kết quả thật đã lưu (không ghi đè DB):** T02 rủi ro →0,002: BETTER → **INCONCLUSIVE** (chỉ đổi quy mô, chiến lược lỗ); T02 donchian 80: vẫn **BETTER** (PF 0,52→0,79) + ghi chú vẫn lỗ; T06 max_positions 1→3: vẫn **WORSE** (PF 0,93→0,74); T03 card: vẫn INCONCLUSIVE (mẫu nhỏ).
+- **Bản nháp:** `DRAFTABLE_VERDICTS` giữ BETTER + INCONCLUSIVE, nên owner vẫn tạo được bản nháp từ đề xuất "chỉ đổi quy mô" nếu muốn giảm rủi ro chủ động — kết luận chỉ không còn gọi đó là "tốt hơn".
+- **Kiểm chứng:** unit **4933 passed** (2 test mới: ca thật T02 rủi ro → INCONCLUSIVE "chỉ đổi quy mô"; tăng/giảm quy mô chiến lược lời → INCONCLUSIVE; PF giảm → INCONCLUSIVE; vẫn lỗ → BETTER kèm ghi chú; PF vô cùng); E2E `test_rt1_paper_market_loop` → **1 passed**.

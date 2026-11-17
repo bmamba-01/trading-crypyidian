@@ -61,7 +61,7 @@ from trading_bot.domain.portfolio.portfolio_backtest import (
 )
 
 # v2 (CRY-386): thêm mô phỏng danh mục nhiều coin; max_positions/max_leverage kiểm được.
-PROPOSAL_BACKTEST_VERSION = "ai3-proposal-backtest-v2"
+PROPOSAL_BACKTEST_VERSION = "ai3-proposal-backtest-v3"  # v3 (CRY-422): tiêu chí compare-v2
 MIN_TRADES_FOR_VERDICT = 10
 DEFAULT_RISK_FRACTION = Decimal("0.005")
 STARTING_EQUITY = Decimal("10000")
@@ -219,22 +219,77 @@ def aggregate(results: Sequence[SymbolResult]) -> ArmMetrics:
     )
 
 
+# CRY-422: tiêu chí v2 — không thưởng việc chỉ đổi quy mô lệnh (vd giảm rủi ro trên chiến lược lỗ).
+COMPARE_RULE = "compare-v2"
+SCALE_ONLY_PF_TOLERANCE = Decimal("0.02")
+
+
+def _quality(metrics: ArmMetrics) -> Decimal | None:
+    """Profit factor không phụ thuộc quy mô lệnh; không có lệnh lỗ mà có lãi → vô cùng."""
+    if metrics.profit_factor is not None:
+        return metrics.profit_factor
+    if metrics.trades and metrics.wins:
+        return Decimal("Infinity")
+    return None
+
+
+def _scale_only(baseline: ArmMetrics, variant: ArmMetrics) -> bool:
+    """Cùng tập lệnh (cùng số lệnh, cùng số thắng), profit factor gần như không đổi: chỉ đổi
+    kích thước lệnh nên lãi/lỗ đổi theo tỷ lệ còn chất lượng chiến lược giữ nguyên."""
+    if (
+        baseline.trades != variant.trades
+        or baseline.wins != variant.wins
+        or baseline.profit_factor is None
+        or variant.profit_factor is None
+    ):
+        return False
+    return abs(baseline.profit_factor - variant.profit_factor) <= SCALE_ONLY_PF_TOLERANCE
+
+
 def compare(baseline: ArmMetrics, variant: ArmMetrics) -> tuple[str, list[str]]:
-    """Kết luận thận trọng: cần đủ lệnh, PnL ròng tốt hơn và drawdown không xấu hơn quá 20%."""
+    """Kết luận thận trọng (``compare-v2``).
+
+    - Dưới ``MIN_TRADES_FOR_VERDICT`` lệnh ở cả hai bản → INCONCLUSIVE.
+    - Chỉ đổi quy mô lệnh (cùng tập lệnh, profit factor không đổi) → INCONCLUSIVE: PnL lớn/nhỏ hơn
+      chỉ do lệnh to/nhỏ hơn, không phải chiến lược tốt/xấu hơn.
+    - BETTER cần cả ba: PnL ròng tốt hơn, drawdown không xấu hơn quá 20%, profit factor không giảm.
+    - WORSE khi PnL ròng kém hơn. Còn lại INCONCLUSIVE kèm lý do.
+    """
     notes: list[str] = []
     if max(baseline.trades, variant.trades) < MIN_TRADES_FOR_VERDICT:
         notes.append(
             f"Mẫu nhỏ: dưới {MIN_TRADES_FOR_VERDICT} lệnh ở cả hai bản; chưa đủ để kết luận."
         )
         return "INCONCLUSIVE", notes
+    if _scale_only(baseline, variant):
+        notes.append(
+            f"Chỉ đổi quy mô lệnh: cùng {variant.trades} lệnh, profit factor "
+            f"{baseline.profit_factor}→{variant.profit_factor}; PnL đổi theo kích thước lệnh, "
+            "chất lượng chiến lược không đổi."
+        )
+        if baseline.profit_factor is not None and baseline.profit_factor < 1:
+            notes.append("Chiến lược đang lỗ (profit factor < 1): giảm quy mô chỉ làm lỗ ít hơn.")
+        return "INCONCLUSIVE", notes
     pnl_better = variant.net_pnl > baseline.net_pnl
     drawdown_ok = variant.max_drawdown <= baseline.max_drawdown * Decimal("1.2") + Decimal("1")
-    if pnl_better and drawdown_ok:
+    base_quality, var_quality = _quality(baseline), _quality(variant)
+    quality_ok = base_quality is None or (var_quality is not None and var_quality >= base_quality)
+    if pnl_better and drawdown_ok and quality_ok:
+        if variant.net_pnl < 0:
+            notes.append(
+                f"Bản đề xuất vẫn lỗ ({variant.net_pnl} USDT); chỉ ít lỗ hơn bản gốc "
+                f"({baseline.net_pnl} USDT)."
+            )
         return "BETTER", notes
-    if not pnl_better and variant.net_pnl < baseline.net_pnl:
+    if variant.net_pnl < baseline.net_pnl:
         return "WORSE", notes
     if pnl_better and not drawdown_ok:
         notes.append("PnL ròng tốt hơn nhưng drawdown xấu hơn quá 20%.")
+    if pnl_better and not quality_ok:
+        notes.append(
+            f"PnL ròng tốt hơn nhưng profit factor giảm ({baseline.profit_factor}→"
+            f"{variant.profit_factor}): có thể chỉ do lệnh lớn hơn."
+        )
     return "INCONCLUSIVE", notes
 
 
@@ -379,6 +434,7 @@ class ProposalBacktestResult:
                 {"baseline": b.payload(), "variant": v.payload()} for b, v in self.per_symbol
             ],
             "comparison_basis": self.comparison_basis,
+            "verdict_rule": COMPARE_RULE,
             "portfolio": self.portfolio,
             "assumptions": {
                 "starting_equity_per_symbol": str(STARTING_EQUITY),

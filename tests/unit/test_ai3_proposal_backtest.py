@@ -306,7 +306,8 @@ def test_portfolio_change_runs_replay_once_and_compares_on_portfolio(monkeypatch
     assert calls == ["AAAUSDT", "BBBUSDT"]  # mỗi coin replay đúng một lần
     payload = result.payload()
     assert payload["comparison_basis"] == "portfolio"
-    assert payload["version"] == "ai3-proposal-backtest-v2"
+    assert payload["version"] == "ai3-proposal-backtest-v3"
+    assert payload["verdict_rule"] == "compare-v2"
     base, variant = payload["portfolio"]["baseline"], payload["portfolio"]["variant"]
     assert (base["max_positions"], variant["max_positions"]) == (1, 2)
     # Hai coin cùng chuỗi giá → tín hiệu trùng giờ: trần 1 vị thế phải bỏ lệnh, trần 2 thì không.
@@ -314,3 +315,38 @@ def test_portfolio_change_runs_replay_once_and_compares_on_portfolio(monkeypatch
     assert variant["skipped_max_positions"] < base["skipped_max_positions"]
     assert result.variant.trades > result.baseline.trades
     assert any("danh mục chung vốn" in note for note in result.notes)
+
+
+def test_compare_v2_does_not_reward_scale_only_changes() -> None:
+    # Ca thật 17/11: T02 giảm rủi ro 0,005→0,002 — cùng 107 lệnh, 26 thắng, PF 0,52.
+    base = ArmMetrics(10, 107, 26, Decimal("0.2430"), Decimal("0.52"),
+                      Decimal("-952.45"), Decimal("205.58"))  # fmt: skip
+    smaller = replace(base, net_pnl=Decimal("-635.44"), max_drawdown=Decimal("137.37"))
+    verdict, notes = compare(base, smaller)
+    assert verdict == "INCONCLUSIVE"
+    assert "Chỉ đổi quy mô lệnh" in notes[0]
+    assert "đang lỗ" in notes[1]
+    # Chiều ngược lại (tăng quy mô chiến lược lời) cũng không phải "tốt hơn" hay "kém hơn".
+    winning = replace(base, profit_factor=Decimal("1.60"), net_pnl=Decimal("500"))
+    assert compare(winning, replace(winning, net_pnl=Decimal("800")))[0] == "INCONCLUSIVE"
+    assert compare(winning, replace(winning, net_pnl=Decimal("300")))[0] == "INCONCLUSIVE"
+
+
+def test_compare_v2_requires_profit_factor_not_worse_and_flags_still_losing() -> None:
+    base = ArmMetrics(10, 107, 26, None, Decimal("0.52"), Decimal("-952.45"), Decimal("205.58"))
+    # T02 donchian 80: ít lệnh hơn, chất lượng tốt hơn, vẫn lỗ → BETTER kèm ghi chú.
+    better = replace(base, trades=79, wins=22, profit_factor=Decimal("0.71"),
+                     net_pnl=Decimal("-309.71"), max_drawdown=Decimal("146.45"))  # fmt: skip
+    verdict, notes = compare(base, better)
+    assert verdict == "BETTER"
+    assert "vẫn lỗ" in notes[0]
+    # PnL tốt hơn nhưng PF giảm (vd lệnh lớn hơn trên tập lệnh khác) → không BETTER.
+    bigger = replace(base, trades=90, wins=20, profit_factor=Decimal("0.40"),
+                     net_pnl=Decimal("-900"), max_drawdown=Decimal("200"))  # fmt: skip
+    verdict, notes = compare(base, bigger)
+    assert verdict == "INCONCLUSIVE"
+    assert "profit factor giảm" in notes[0]
+    # PF vô cùng (không lệnh lỗ) vẫn so sánh được.
+    perfect = replace(base, trades=12, wins=12, profit_factor=None, net_pnl=Decimal("50"),
+                      max_drawdown=Decimal("0"))  # fmt: skip
+    assert compare(base, perfect)[0] == "BETTER"
