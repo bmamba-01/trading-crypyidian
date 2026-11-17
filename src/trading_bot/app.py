@@ -70,6 +70,8 @@ from trading_bot.admin.learning_training_page_router import (
 from trading_bot.admin.learning_training_router import router as learning_training_router
 from trading_bot.admin.research_source_router import admin_router as research_source_admin_router
 from trading_bot.admin.research_source_router import router as research_source_router
+from trading_bot.admin.risk_appetite_page_router import router as risk_appetite_page_router
+from trading_bot.admin.risk_appetite_service import RiskAppetiteService
 from trading_bot.admin.session_redirect import login_redirect_for
 from trading_bot.admin.settings_router import router as settings_router
 from trading_bot.admin.settings_service import SettingsAdminService
@@ -263,6 +265,12 @@ def create_app(
         )
         application.state.settings_admin_service = (
             SettingsAdminService(active_session_factory)
+            if active_session_factory is not None
+            else None
+        )
+        # CRY-428: trang "Khẩu vị rủi ro" dùng chung SettingsAdminService để publish có audit.
+        application.state.risk_appetite_service = (
+            RiskAppetiteService(active_session_factory, application.state.settings_admin_service)
             if active_session_factory is not None
             else None
         )
@@ -757,6 +765,7 @@ def create_app(
             app.include_router(learning_training_page_router)
             app.include_router(learning_split_router)
             app.include_router(learning_split_page_router)
+        app.include_router(risk_appetite_page_router)
         app.include_router(admin_web_router)
         app.include_router(telegram_router)
 

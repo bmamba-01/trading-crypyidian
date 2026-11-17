@@ -5463,3 +5463,53 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
   - Kiểm định tĩnh: `uv run ruff format --check` và `uv run ruff check` trên 21 file sửa/thêm mới đạt **0 lỗi**; `uv run mypy src/trading_bot` đạt **Success: no issues found in 427 source files** (các file cũ không chạm tới vẫn có cảnh báo E501 legacy nếu chạy `ruff check src tests` toàn repo).
 - **Rủi ro & việc còn mở:** Toàn bộ 13 release mới (6 rule + 7 card) đều mang trạng thái nghiên cứu `EXPERIMENTAL_UNVALIDATED`; chỉ số hiệu suất lịch sử thật trên dữ liệu Binance USDⓈ-M nhiều tháng cần được chạy Backtest Walk-Forward và đánh giá OOS qua worker trước khi cân nhắc kích hoạt sản xuất. Các thay đổi đang ở nhánh `dev` (working tree có lẫn thay đổi tracker It's a Plan của vòng trước, chưa commit).
 - **Readback:** đã đọc lại toàn bộ mục này sau khi ghi để xác nhận khớp với log kiểm thử và mã nguồn thực tế.
+
+### 2026-11-17 — CRY-428 `[RISK-UI]`: trang Admin "Khẩu vị rủi ro" (TP/SL, đòn bẩy, dừng đợt chạy) + ngưỡng drawdown cấu hình được
+
+- **Yêu cầu owner (ticket CRY-428):** biết mỗi chiến lược đặt TP/SL ra sao, đòn bẩy tối đa, điều kiện dừng đợt chạy và chỉnh ở đâu trong Admin. Nhánh `claude/determined-liskov-f6d8ea` từ `dev` `2e3785d`. Không migration (head vẫn `d4f6a8b0c2e4`).
+- **Kiểm kê trước khi code:**
+  - Risk profile/workspace settings chỉ có JSON API.
+  - Cổng entry thật của runtime **đã là** RiskEngine FX-2: trần lỗ ngày/24 giờ lấy từ risk profile (∩ overlay bot) + ngắt mạch drawdown 10% cứng trong code.
+  - `CircuitBreakerEngine` (OPS07B) vẫn chỉ chạy ở trang health với telemetry giả. Vì vậy "nối circuit breaker vào cổng entry" làm bằng cách cho cấu hình các ngưỡng của cổng FX-2 đang chạy thật, không nhân đôi bằng engine thứ hai.
+- **Thay đổi:**
+  - `config/workspace_settings.py`: `RiskSettings.max_drawdown_fraction` (Decimal ∈ (0,1), không nhận float). Khi None thì bị lược khỏi JSON (`exclude_if`) nên canonical JSON/hash của các version cũ không đổi.
+  - `domain/risk/drawdown_breaker.py`: `drawdown_policy_for()`; `DrawdownBreakerState.max_drawdown_fraction`, evidence thêm `drawdown_max_fraction`. Version cách đo giữ `fx2-drawdown-v1`.
+  - `application/paper_market_context.py`: dùng ngưỡng từ settings đã publish; `CONTEXT_PROVIDER_VERSION` → `rt1-postgres-paper-context-v3`.
+  - `domain/strategy/registry.py`: `describe_rule()` chỉ để đọc metadata. Đường quyết định vẫn đi qua `resolve`.
+  - Mới `application/exit_policy_catalog.py`: SL/trailing/TP/thoát khác/giữ tối đa lấy thẳng từ `ExitRecipe`/`recipe_manifest` và `ladder_for_release` của từng release. Không có bản sao thủ công. `percent_example`: `% = bội số × ATR ÷ giá`; TP theo R chỉ quy đổi khi stop là bội số ATR cố định; Strategy Card và stop theo cấu trúc (H18/H20) không quy đổi.
+  - Mới `admin/risk_appetite_service.py`, phần đọc (`overview`):
+    - Risk profile đang dùng và lịch sử version.
+    - Từng bot: giá trị hiệu lực qua `load_effective_bot_config` (workspace ∩ overlay), đánh dấu trường bị overlay siết.
+    - Lỗ hôm nay và drawdown đo bằng đúng `_loss_windows`/`_drawdown_breaker` của runtime (lỗi đọc → "không rõ", không làm hỏng trang).
+    - ATR(14) theo khung vào lệnh của coin chọn (`load_closed_market_bars` + `FeatureCalculator`).
+  - `admin/risk_appetite_service.py`, phần ghi (`save`):
+    - Cần `RISK_PROFILE_WRITE`, MFA gần đây và lý do.
+    - Đổi hard cap thì thêm version risk profile mới, có audit `risk_profile.version_created` kèm before/after và lý do; kiểm `risk_limits_from_profile` trước khi ghi.
+    - Sau đó `SettingsAdminService` create_draft → validate → publish (audit, outbox, đánh giá capacity) và audit `risk_appetite.published` kèm lý do.
+    - Không đổi gì thì trả `unchanged`.
+    - **Từ chối 409** nếu giới hạn mới thấp hơn overlay đã publish của bot: resolver sẽ từ chối bot đó (fail-closed, entry bị chặn âm thầm), nên phải hạ overlay trước.
+  - Mới `admin/risk_appetite_page_router.py` + `templates/admin/risk_appetite.html` + `static/pages/risk.css`: `GET/POST /admin/risk` (form urlencoded, CSRF, lỗi theo ô giữ giá trị đã nhập, lỗi MFA kèm hướng dẫn đăng nhập lại, tài khoản không có quyền chỉ xem). Thêm menu "Khẩu vị rủi ro" ở `base.html`, anchor `#bot-config` ở trang bot, đăng ký service/router trong `app.py`.
+- **Nguồn kiểm 17/11/2026:** [Wikipedia Risk appetite](https://en.wikipedia.org/wiki/Risk_appetite) (định nghĩa theo ISO 31000/ISO 31073:2022). Freqtrade MaxDrawdown và TradingView ATR đã có trong glossary. Glossary mục **BH**.
+- **Quyết định/giả định:**
+  - Ngưỡng drawdown đặt ở workspace settings (versioned, MFA, audit, đúng ranh giới RiskSettings), không đặt trong `_HardCaps` của risk profile (strict, đổi `RiskLimits`/`effective_hash`).
+  - Trần lỗ ngày/24 giờ vẫn ở risk profile như cũ.
+  - Không có overlay drawdown theo bot.
+  - **Chỉnh ATR multiple/TP ladder theo bot: chưa làm.** Ticket ghi cần owner quyết định; đổi là đổi release hash và phải backtest lại. Trang ghi rõ "chỉ đọc".
+- **Lỗi gặp khi làm:**
+  - Script sửa file đầu tiên treo vì `cat > file` không có heredoc chờ stdin; đã dừng, không ghi gì.
+  - Test unit ban đầu thiếu `app.state.settings` (cookie name) và role giả `viewer` không tồn tại → sửa fixture.
+  - Ảnh chụp: dòng Strategy Card hiện "SL theo cấu trúc" thay vì ghi chú → bỏ ví dụ % cho nguồn `strategy_card`.
+  - Dữ liệu thật: drawdown hiện ~30 chữ số → `pct_vi(value, 2)`.
+  - 2 unit compose boundary fail lúc worktree chưa có `.secrets` (E2E vừa tạo) → chạy lại đạt.
+- **Kiểm thử:**
+  - Unit mới `tests/unit/test_cry428_risk_appetite.py` **30 passed**: schema/hash, policy, catalog mọi release, quy đổi %, form, xung đột overlay, trang GET/POST/CSRF/MFA/quyền, `pct_vi`.
+  - Toàn bộ unit `uv run pytest tests/unit -q` **5146 passed, 2 failed/306.86s**. 2 fail là compose boundary do lúc đó thiếu `.secrets`; chạy lại 2 file đó **5 passed**.
+  - ruff/format/mypy các file đổi sạch.
+  - E2E Playwright mới `tests/e2e/test_admin_risk_appetite_playwright.py` **3 passed**: menu, bảng bot, bảng SL/TP có % theo coin, đổi coin, nhập sai, lưu hợp lệ có CSRF, xung đột overlay, di động 390 px không tràn ngang, nút ≥ 44 px, chưa đăng nhập → login; CSP sạch.
+  - E2E Compose `tests/e2e/test_rt1_paper_market_loop.py` thêm phase `risk_appetite` (role admin-web thật) và `breaker` sau khi siết: MFA cũ bị 403, lưu → publish + version profile mới, lưu lại → `unchanged`, audit đủ 3 hành động kèm lý do, bot đọc trần lỗ ngày mới và lỗ hôm nay từ ledger, runtime đọc ngưỡng 0,05 và sụt 6% thì ngắt (trước đó mặc định 0,10 không ngắt) — **1 passed/567.17s**.
+- **Kiểm trên stack local `crypidian-review`:** image `crypidian-app:cry428`, container phụ `crypidian-review-admin-web-cry428` ở `127.0.0.1:8011`, cùng DB. Đăng nhập owner workspace `crypidian-cards-v1` và chỉ xem, không lưu thay đổi vào workspace thật. Kết quả: 13 bot với giá trị hiệu lực (ví dụ T01 0,5%/2x, T05 0,2%/2x); ví dụ % AAVEUSDT H03 1h SL 2,83%/trailing 4,25%; khung 5m chưa có ATR cho coin đó nên hiện ghi chú. Admin-web chính (8010, image dùng chung `crypidian-app:local` build từ worktree khác) chưa đổi: sau khi lên `dev` cần build lại image dùng chung và restart `admin-web` + `trading-runtime`.
+- **Còn mở:**
+  - Owner quyết định có cho chỉnh ATR multiple/TP ladder theo bot không (cần version hóa recipe + backtest lại).
+  - Trang health vẫn dùng `CircuitBreakerEngine` với telemetry giả (feed age, API errors…); các ngưỡng đó chưa gác entry.
+  - Overlay drawdown theo bot.
+  - Replay/backtest chưa áp ngắt mạch drawdown.

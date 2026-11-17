@@ -1,0 +1,30 @@
+/* Trang "Khẩu vị rủi ro" (CRY-428): bổ sung nhỏ trên nền bots.css, mọi bộ chọn dưới .risk-page. */
+.risk-page .risk-form input {
+  width: 100%;
+  min-height: 44px;
+  padding: 0.45rem 0.65rem;
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+  border-radius: 0.5rem;
+}
+.risk-page .bot-field--error input { border-color: var(--danger); }
+.risk-page .risk-reason { max-width: 40rem; }
+.risk-page .risk-symbol-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: var(--fs-xs);
+}
+.risk-page .risk-symbol-form select,
+.risk-page .risk-symbol-form .btn { min-height: 44px; }
+.risk-page .risk-example { font-size: var(--fs-xs); white-space: normal; }
+.risk-page .risk-history { margin: 0; padding-left: 1.1rem; font-size: var(--fs-sm); }
+.risk-page .risk-history li + li { margin-top: 0.25rem; }
+.risk-page #risk-exit-table code,
+.risk-page #risk-bot-table code { font-size: var(--fs-2xs); overflow-wrap: anywhere; }
+.risk-page .risk-symbol-form select { width: auto; min-width: 9rem; }
+@media (min-width: 768px) {
+  .risk-page #risk-bot-table td.bot-table__lead { min-width: 11rem; }
+  .risk-page #risk-bot-table td:last-child a { white-space: nowrap; }
+}

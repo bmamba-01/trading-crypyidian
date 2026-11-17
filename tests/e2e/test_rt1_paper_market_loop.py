@@ -40,6 +40,7 @@ SERVICES = {
     "add_stop_bar": "migrator",
     "verify": "migrator",
     "breaker": "trading-runtime",
+    "risk_appetite": "admin-web",
     "pause_resume": "migrator",
     "outcome": "trading-runtime",
     "macro_write": "ingestion-worker",
@@ -395,6 +396,32 @@ def test_rest_candles_drive_paper_entry_fill_and_stop_exit_idempotently() -> Non
             before["realized"]
         ), after
         assert after["actual_tripped"] is False, after
+        assert after["max_drawdown_fraction"] == "0.10", after  # mặc định FX-2
+        assert after["mild_tripped"] is False, after  # sụt 6% < 10%
+
+        # CRY-428: chỉnh khẩu vị rủi ro qua service thật (admin-web), runtime dùng ngưỡng mới.
+        appetite = run("risk_appetite")
+        assert appetite["before_default"] is True, appetite
+        assert appetite["stale_mfa"] == "403:Cần xác thực MFA gần đây.", appetite
+        assert appetite["saved_status"] == "published", appetite
+        assert appetite["risk_profile_changed"] is True, appetite
+        assert appetite["unchanged_status"] == "unchanged", appetite
+        assert appetite["after_drawdown"] == "0.05", appetite
+        assert appetite["after_version"] == appetite["saved_version"], appetite
+        assert appetite["after_profile_version"] == appetite["before_profile_version"] + 1
+        assert appetite["after_daily_loss"] == appetite["expected_daily_loss"], appetite
+        assert appetite["bot_daily_loss"] == appetite["expected_daily_loss"], appetite
+        assert appetite["bot_loss_today"] is not None, appetite  # đọc ledger bằng role admin-web
+        assert appetite["exit_release_count"] >= 12, appetite
+        assert appetite["audit_actions"][-3:] == [
+            "risk_profile.version_created",
+            "settings.published",
+            "risk_appetite.published",
+        ], appetite
+        assert appetite["audit_reasons"] == ["CRY-428 E2E: siết drawdown 5%"], appetite
+        tightened = run("breaker")
+        assert tightened["max_drawdown_fraction"] == "0.05", tightened
+        assert tightened["mild_tripped"] is True, tightened  # sụt 6% ≥ 5%
 
         assert final["decisions"] == ["CANDIDATE"]
         assert final["intents"] == [
@@ -402,7 +429,7 @@ def test_rest_candles_drive_paper_entry_fill_and_stop_exit_idempotently() -> Non
                 "status": "FILLED",
                 "full": True,
                 "feature_snapshot_id_len": 64,
-                "context_provider": "rt1-postgres-paper-context-v2",
+                "context_provider": "rt1-postgres-paper-context-v3",
                 "has_bot_decision": True,
             }
         ]
