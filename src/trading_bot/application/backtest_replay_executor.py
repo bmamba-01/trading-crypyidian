@@ -62,6 +62,56 @@ class ReplayExecutor(Protocol):
     ) -> RuntimePaperReplayComparison: ...
 
 
+def learning_feature_schema_hash_for_bundle(
+    bundle: BacktestDatasetReplayBundle, release_id: str, release_content_hash: str
+) -> str:
+    """Schema hash vector học của release, dựng từ snapshot ở nến quyết định đầu tiên."""
+    from trading_bot.application.decision_snapshot_builder import (
+        build_decision_snapshot_from_bars,
+    )
+    from trading_bot.application.learning_feature_vector import build_learning_feature_vector
+
+    requirements = feature_requirements_for_release(release_id)
+    decision_timeframe = entry_timeframe_for_release(release_id)
+    components = {item.manifest.interval: item for item in bundle.components}
+    if decision_timeframe is None or decision_timeframe not in components:
+        raise ValueError("Bundle thiếu timeframe quyết định của strategy.")
+    first = min(
+        (
+            bar
+            for bar in components[decision_timeframe].bars
+            if bundle.evaluation_start <= bar.open_time < bundle.range_end and bar.is_closed
+        ),
+        key=lambda bar: bar.open_time,
+    )
+    decision_time = first.available_at
+    bars_by_timeframe = {}
+    for timeframe in requirements:
+        visible = sorted(
+            (
+                bar
+                for bar in components[timeframe].bars
+                if bar.is_closed and max(bar.close_time, bar.available_at) <= decision_time
+            ),
+            key=lambda bar: (max(bar.close_time, bar.available_at), bar.open_time),
+        )
+        bars_by_timeframe[timeframe] = tuple(visible[-REPLAY_MAX_BARS_PER_TIMEFRAME:])
+    snapshot = build_decision_snapshot_from_bars(
+        workspace_id=bundle.workspace_id,
+        symbol=bundle.symbol,
+        strategy_release_id=release_id,
+        decision_time=decision_time,
+        series_quality_as_of=decision_time,
+        bars_by_timeframe=bars_by_timeframe,
+        source_identity_required=True,
+    )
+    return build_learning_feature_vector(
+        snapshot,
+        strategy_release_id=release_id,
+        strategy_release_content_hash=release_content_hash,
+    ).feature_schema_hash
+
+
 # CRY-236 (17/11/2026): snapshot replay chỉ thấy N nến gần nhất mỗi khung, đúng cửa sổ producer
 # live (``PRODUCER_MAX_BARS_PER_STREAM``). Trước đó mỗi nến quyết định tính feature trên toàn bộ
 # lịch sử → O(n²): 180 ngày 15m một coin > 25 phút và > 4 GB RAM. Đo thật BTCUSDT 10 ngày 15m:
@@ -185,6 +235,13 @@ def build_backtest_replay_plan(
             },
         }
     )
+    if submission.learning_intent == "TRAINING_BASE":
+        # AI-5 (17/11/2026): runtime so vector học của từng nến với hash này; hash kiểu cũ
+        # không bao giờ khớp → mọi cơ hội bị loại FEATURE_SCHEMA_MISMATCH, 0 lệnh. Dùng đúng
+        # schema hash của vector học (không phụ thuộc dữ liệu), như fixture WP-06.
+        feature_schema_hash = learning_feature_schema_hash_for_bundle(
+            bundle, release.release_id, release.content_hash
+        )
     pipeline_content_hash = _hash(
         {
             "pipeline": "crypidian-paper-replay-v1",

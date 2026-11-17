@@ -145,3 +145,23 @@ def test_outcome_risk_migration_pins_hashes_both_directions() -> None:
     module.downgrade()
     assert module.POSTIMAGE in statements[0]
     assert module.PREIMAGE in statements[0]
+
+
+def test_training_base_plan_uses_learning_vector_schema_hash_of_fixture() -> None:
+    """Executor TRAINING_BASE phải ghim đúng schema hash vector học (fixture WP-06 ghim)."""
+    from uuid import UUID
+
+    from tests.fixtures.runtime_replay import build_h03_source_pinned_dataset_replay
+
+    from trading_bot.application.backtest_replay_executor import (
+        learning_feature_schema_hash_for_bundle,
+    )
+    from trading_bot.application.strategy_catalog import strategy_registry
+
+    workspace = UUID("a1a50000-0000-4000-8000-000000000005")
+    bundle, comparison = build_h03_source_pinned_dataset_replay(workspace)
+    release = strategy_registry().get_release("h03-v1")
+    expected = comparison.runs[0].sensitivity_run.manifest.feature_schema_hash
+    assert (
+        learning_feature_schema_hash_for_bundle(bundle, "h03-v1", release.content_hash) == expected
+    )
