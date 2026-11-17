@@ -5513,3 +5513,8 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
   - Trang health vẫn dùng `CircuitBreakerEngine` với telemetry giả (feed age, API errors…); các ngưỡng đó chưa gác entry.
   - Overlay drawdown theo bot.
   - Replay/backtest chưa áp ngắt mạch drawdown.
+- **Rebase lên `dev` `3776525`** (thêm H02/H04/H05/H07/H21/H22 và 8 Strategy Card; không migration). Chỉ xung đột nối cuối memory/glossary: giữ cả hai, mục glossary của vòng này đổi thành **BH** vì `dev` đã dùng BG. Catalog SL/TP tự nhận đủ 25 release, không cần sửa code. Sau rebase:
+  - unit **5168 passed/395.21s**;
+  - `ruff check`/`ruff format --check src tests migrations`, `mypy src/trading_bot` (477 file), `git diff --check` đạt;
+  - Playwright risk + strategy cards + session expiry + design system **11 passed**;
+  - RT-1 Compose **1 passed/777.80s**.
