@@ -12,6 +12,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKeyConstraint,
     Index,
+    Integer,
     String,
     Text,
     UniqueConstraint,
@@ -24,6 +25,7 @@ from trading_bot.adapters.database.models.base import Base, CreatedAt, UuidPrima
 from trading_bot.application.learning_fold_plan import build_manifest_fold_plan
 from trading_bot.application.learning_split_candidate import (
     SPLIT_POLICY_VERSION,
+    LearningCandidateTrialSource,
     LearningSplitCandidate,
     LearningSplitCandidateConfig,
 )
@@ -165,6 +167,87 @@ class LearningSplitCandidateRecord(UuidPrimaryKey, CreatedAt, Base):
         return candidate
 
 
+class LearningSplitCandidateSourceRecord(UuidPrimaryKey, CreatedAt, Base):
+    """AI-5: một trial (bundle/coin) của candidate cohort; ordinal 0 = trial neo."""
+
+    __tablename__ = "learning_split_candidate_source"
+    __table_args__ = (
+        ForeignKeyConstraint(["workspace_id"], ["workspace.id"], ondelete="RESTRICT"),
+        ForeignKeyConstraint(
+            ["workspace_id", "candidate_id"],
+            ["learning_split_candidate.workspace_id", "learning_split_candidate.id"],
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["workspace_id", "trial_record_id"],
+            ["backtest_trial.workspace_id", "backtest_trial.id"],
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["workspace_id", "proof_record_id"],
+            ["candidate_universe_proof.workspace_id", "candidate_universe_proof.id"],
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint(
+            "workspace_id", "candidate_id", "trial_record_id", name="uq_ai5_cohort_trial"
+        ),
+        UniqueConstraint(
+            "workspace_id", "candidate_id", "bundle_hash", name="uq_ai5_cohort_bundle"
+        ),
+        UniqueConstraint("workspace_id", "candidate_id", "ordinal", name="uq_ai5_cohort_ord"),
+        CheckConstraint(
+            "manifest_hash ~ '^[0-9a-f]{64}$' AND fold_plan_hash ~ '^[0-9a-f]{64}$' "
+            "AND proof_hash ~ '^[0-9a-f]{64}$' AND bundle_hash ~ '^[0-9a-f]{64}$' "
+            "AND ordinal >= 0",
+            name="learning_split_candidate_source_valid",
+        ),
+        Index(
+            "ix_learning_split_candidate_source_scope",
+            "workspace_id",
+            "manifest_hash",
+            "fold_plan_hash",
+            "trial_record_id",
+        ),
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    candidate_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    manifest_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    fold_plan_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    trial_record_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    proof_record_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    proof_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    bundle_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    @classmethod
+    def rows_for(
+        cls, candidate: LearningSplitCandidate
+    ) -> list[LearningSplitCandidateSourceRecord]:
+        return [
+            cls(
+                workspace_id=candidate.workspace_id,
+                candidate_id=candidate.candidate_id,
+                manifest_hash=candidate.manifest.content_hash,
+                fold_plan_hash=candidate.fold_plan.content_hash,
+                trial_record_id=item.trial_record_id,
+                proof_record_id=item.proof_record_id,
+                proof_hash=item.proof_hash,
+                bundle_hash=item.bundle_hash,
+                ordinal=ordinal,
+            )
+            for ordinal, item in enumerate(candidate.sources)
+        ]
+
+    def to_domain(self) -> LearningCandidateTrialSource:
+        return LearningCandidateTrialSource(
+            trial_record_id=self.trial_record_id,
+            proof_record_id=self.proof_record_id,
+            proof_hash=self.proof_hash,
+            bundle_hash=self.bundle_hash,
+        )
+
+
 def _fold_from_json(value: object) -> WalkForwardSplit:
     if type(value) is not dict or set(value) != {"train", "validation", "test"}:
         raise ValueError("Fold config cần train/validation/test chính xác.")
@@ -190,4 +273,4 @@ def _timestamp(value: object) -> datetime:
     return result
 
 
-__all__ = ["LearningSplitCandidateRecord"]
+__all__ = ["LearningSplitCandidateRecord", "LearningSplitCandidateSourceRecord"]

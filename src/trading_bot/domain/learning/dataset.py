@@ -337,10 +337,13 @@ class DatasetManifest:
                 expected_lineage_hash = source_use_lineage_set_hash(lineage)
                 bundle_hashes = {item.source_replay_bundle_hash for item in dependent}
                 lineage_hashes = {item.source_use_lineage_set_hash for item in dependent}
+                # AI-5 (CRY-236): trial cohort nhiều coin → nhiều bundle; lineage là hợp các
+                # child của mọi bundle. Tập bundle của sample phải trùng tập bundle của lineage
+                # (N=1 giữ đúng hợp đồng cũ: một bundle, mọi child thuộc bundle đó).
                 if (
-                    len(bundle_hashes) != 1
+                    not bundle_hashes
                     or len(lineage_hashes) != 1
-                    or any(item.bundle_hash not in bundle_hashes for item in lineage)
+                    or {item.bundle_hash for item in lineage} != bundle_hashes
                     or lineage_hashes != {expected_lineage_hash}
                 ):
                     raise ValueError("Manifest v5 samples không ghim đúng shared replay lineage.")

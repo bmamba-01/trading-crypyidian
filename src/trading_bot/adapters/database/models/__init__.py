@@ -141,6 +141,7 @@ from trading_bot.adapters.database.models.learning_source_training_receipt_entit
 )
 from trading_bot.adapters.database.models.learning_split_candidate_entities import (
     LearningSplitCandidateRecord,
+    LearningSplitCandidateSourceRecord,
 )
 from trading_bot.adapters.database.models.learning_training_artifact_entities import (
     LearningTrainingArtifactRecord,
@@ -267,6 +268,7 @@ __all__ = [
     "LearningTrainingJobRecord",
     "LearningSplitApprovalRecord",
     "LearningSplitCandidateRecord",
+    "LearningSplitCandidateSourceRecord",
     "LearningTrainingAttemptRecord",
     "NormalizedFoldAssignmentRecord",
     "NormalizedLearningDatasetRecord",

@@ -27,7 +27,13 @@ def parse_request(arguments: list[str] | None = None) -> argparse.Namespace:
     commands = parser.add_subparsers(dest="action", required=True)
     stage = commands.add_parser("stage", help="Dựng preview metadata từ một BASE trial.")
     stage.add_argument("--workspace-id", type=UUID, required=True)
-    stage.add_argument("--trial-record-id", type=UUID, required=True)
+    stage.add_argument(
+        "--trial-record-id",
+        type=UUID,
+        required=True,
+        action="append",
+        help="Lặp lại để gom cohort nhiều trial (mỗi trial một coin, AI-5).",
+    )
     stage.add_argument("--config-json", required=True)
     seal = commands.add_parser("seal", help="Seal candidate đã được reviewer phê duyệt.")
     seal.add_argument("--workspace-id", type=UUID, required=True)
@@ -67,7 +73,7 @@ async def run(request: argparse.Namespace) -> dict[str, object]:
         if request.action == "stage":
             stage_result = await service.stage(
                 workspace_id=request.workspace_id,
-                trial_record_id=request.trial_record_id,
+                trial_record_ids=tuple(request.trial_record_id),
                 config=parse_config(request.config_json),
             )
             return {

@@ -81,6 +81,32 @@ class LearningCandidateOutcome:
 
 
 @dataclass(frozen=True, slots=True)
+class LearningCandidateTrial:
+    """Một trial BASE (một job replay = một bundle/coin) trong cohort của candidate."""
+
+    trial_record_id: UUID
+    proof_record_id: UUID
+    proof: CandidateUniverseProof
+    outcomes: tuple[LearningCandidateOutcome, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class LearningCandidateTrialSource:
+    """Metadata trial nguồn đã ghim của candidate (không chứa outcome payload)."""
+
+    trial_record_id: UUID
+    proof_record_id: UUID
+    proof_hash: str
+    bundle_hash: str
+
+    def __post_init__(self) -> None:
+        if type(self.trial_record_id) is not UUID or type(self.proof_record_id) is not UUID:
+            raise ValueError("Trial source cần UUID trial/proof.")
+        _sha256(self.proof_hash, "proof_hash")
+        _sha256(self.bundle_hash, "bundle_hash")
+
+
+@dataclass(frozen=True, slots=True)
 class LearningSplitCandidateConfig:
     """Holdout cutoff và các cửa sổ do operator cấu hình ngoài giao diện web."""
 
@@ -113,8 +139,21 @@ class LearningSplitCandidate:
     fold_plan: ManifestFoldPlan
     config: LearningSplitCandidateConfig
     preview_json: str
+    # AI-5: mọi trial của cohort, sắp theo trial id; phần tử đầu là "neo" (= trường scalar).
+    sources: tuple[LearningCandidateTrialSource, ...] = ()
 
     def __post_init__(self) -> None:
+        sources = tuple(self.sources)
+        if sources and (
+            any(type(item) is not LearningCandidateTrialSource for item in sources)
+            or sources != tuple(sorted(sources, key=lambda item: str(item.trial_record_id)))
+            or len({item.trial_record_id for item in sources}) != len(sources)
+            or sources[0].trial_record_id != self.trial_record_id
+            or sources[0].proof_record_id != self.proof_record_id
+            or sources[0].proof_hash != self.proof_hash
+        ):
+            raise ValueError("Trial sources phải sắp theo trial id, không lặp, neo khớp scalar.")
+        object.__setattr__(self, "sources", sources)
         if any(
             type(value) is not UUID
             for value in (
@@ -186,64 +225,137 @@ def build_learning_split_candidate(
     config: LearningSplitCandidateConfig,
     as_of: datetime,
 ) -> LearningSplitCandidate:
-    """Dựng manifest từ rows DB đã hash-verify, không nhận sample từ caller."""
+    """Dựng manifest từ rows DB đã hash-verify của một trial (hash giữ nguyên hợp đồng cũ)."""
     if any(type(value) is not UUID for value in (workspace_id, trial_record_id, proof_record_id)):
         raise ValueError("Workspace/trial/proof phải là UUID.")
-    if (
-        type(proof) is not CandidateUniverseProof
-        or type(config) is not LearningSplitCandidateConfig
-    ):
-        raise ValueError("Cần proof và split configuration typed.")
+    return build_learning_split_cohort_candidate(
+        workspace_id=workspace_id,
+        trials=(
+            LearningCandidateTrial(
+                trial_record_id=trial_record_id,
+                proof_record_id=proof_record_id,
+                proof=proof,
+                outcomes=tuple(outcomes),
+            ),
+        ),
+        config=config,
+        as_of=as_of,
+    )
+
+
+def build_learning_split_cohort_candidate(
+    *,
+    workspace_id: UUID,
+    trials: tuple[LearningCandidateTrial, ...],
+    config: LearningSplitCandidateConfig,
+    as_of: datetime,
+) -> LearningSplitCandidate:
+    """Dựng manifest từ N trial (mỗi trial một bundle/coin) cùng release/schema (AI-5).
+
+    Mỗi trial được kiểm với candidate-universe proof của chính nó (ordinal, membership, đếm).
+    N=1 cho đúng ``query_hash``/``candidate_id`` như builder một trial trước đây.
+    """
+    if type(workspace_id) is not UUID:
+        raise ValueError("Workspace phải là UUID.")
+    if type(config) is not LearningSplitCandidateConfig:
+        raise ValueError("Cần split configuration typed.")
     _aware(as_of, "as_of")
     if (
-        proof.workspace_id != workspace_id
-        or proof.trial_record_id != trial_record_id
-        or proof.training_authorized is not False
+        type(trials) is not tuple
+        or not trials
+        or any(type(item) is not LearningCandidateTrial for item in trials)
     ):
-        raise ValueError("Proof không khớp workspace/trial hoặc đang cấp quyền ngoài hợp đồng.")
-    ordered = tuple(sorted(outcomes, key=lambda item: item.ordinal))
-    if not ordered or len(ordered) != proof.candidate_count:
-        raise ValueError("Outcome rows không bao phủ đúng candidate proof.")
-    if any(
-        type(item) is not LearningCandidateOutcome
-        or item.workspace_id != workspace_id
-        or item.trial_record_id != trial_record_id
-        or item.ordinal != expected
-        for expected, item in enumerate(ordered)
-    ):
-        raise ValueError("Outcome rows vượt workspace/trial hoặc ordinal không liên tục.")
-    row_ids = tuple(item.record_id for item in ordered)
-    if len(set(row_ids)) != len(row_ids):
-        raise ValueError("Outcome record ID bị lặp.")
-    bundle_hashes = {item.source_replay_bundle_hash for item in ordered}
-    if None in bundle_hashes or len(bundle_hashes) != 1:
-        raise ValueError("Mọi outcome phải ghim đúng một replay bundle authoritative.")
-    source_replay_bundle_hash = next(iter(bundle_hashes))
-    assert isinstance(source_replay_bundle_hash, str)
-    lineage_values = {item.source_use_lineage for item in ordered}
-    if len(lineage_values) != 1:
-        raise ValueError("Mọi outcome phải ghim cùng exact source-use child lineage.")
-    source_use_lineage = next(iter(lineage_values))
-    if not source_use_lineage:
-        raise ValueError("Mọi outcome cần source-use lineage không rỗng.")
+        raise ValueError("Cần ít nhất một LearningCandidateTrial.")
+    ordered_trials = tuple(sorted(trials, key=lambda item: str(item.trial_record_id)))
+    if len({item.trial_record_id for item in ordered_trials}) != len(ordered_trials):
+        raise ValueError("Trial bị lặp trong cohort.")
+    if len({item.proof_record_id for item in ordered_trials}) != len(ordered_trials):
+        raise ValueError("Proof bị lặp trong cohort.")
 
-    members: list[dict[str, object]] = []
     accepted: list[tuple[LearningCandidateOutcome, DatasetSample]] = []
     exclusions: list[DatasetExclusion] = []
     schemas: set[str] = set()
     symbols: set[str] = set()
-    for item in ordered:
+    query_versions: set[str] = set()
+    trial_bundles: list[str] = []
+    lineage_by_child: dict[str, SourceUseLineage] = {}
+    pending: list[tuple[LearningCandidateOutcome, bool]] = []
+    all_ids: set[UUID] = set()
+    for trial in ordered_trials:
+        proof = trial.proof
+        if type(trial.trial_record_id) is not UUID or type(trial.proof_record_id) is not UUID:
+            raise ValueError("Workspace/trial/proof phải là UUID.")
+        if type(proof) is not CandidateUniverseProof:
+            raise ValueError("Cần proof và split configuration typed.")
+        if (
+            proof.workspace_id != workspace_id
+            or proof.trial_record_id != trial.trial_record_id
+            or proof.training_authorized is not False
+        ):
+            raise ValueError("Proof không khớp workspace/trial hoặc đang cấp quyền ngoài hợp đồng.")
+        query_versions.add(proof.query_version)
+        ordered = tuple(sorted(trial.outcomes, key=lambda item: item.ordinal))
+        if not ordered or len(ordered) != proof.candidate_count:
+            raise ValueError("Outcome rows không bao phủ đúng candidate proof.")
+        if any(
+            type(item) is not LearningCandidateOutcome
+            or item.workspace_id != workspace_id
+            or item.trial_record_id != trial.trial_record_id
+            or item.ordinal != expected
+            for expected, item in enumerate(ordered)
+        ):
+            raise ValueError("Outcome rows vượt workspace/trial hoặc ordinal không liên tục.")
+        row_ids = {item.record_id for item in ordered}
+        if len(row_ids) != len(ordered) or row_ids & all_ids:
+            raise ValueError("Outcome record ID bị lặp.")
+        all_ids |= row_ids
+        bundle_hashes = {item.source_replay_bundle_hash for item in ordered}
+        if None in bundle_hashes or len(bundle_hashes) != 1:
+            raise ValueError("Mọi outcome phải ghim đúng một replay bundle authoritative.")
+        bundle_hash = next(iter(bundle_hashes))
+        assert isinstance(bundle_hash, str)
+        if bundle_hash in trial_bundles:
+            raise ValueError("Hai trial của cohort dùng cùng một replay bundle.")
+        trial_bundles.append(bundle_hash)
+        lineage_values = {item.source_use_lineage for item in ordered}
+        if len(lineage_values) != 1:
+            raise ValueError("Mọi outcome phải ghim cùng exact source-use child lineage.")
+        trial_lineage = next(iter(lineage_values))
+        if not trial_lineage:
+            raise ValueError("Mọi outcome cần source-use lineage không rỗng.")
+        for entry in trial_lineage:
+            if lineage_by_child.setdefault(entry.child_dataset_hash, entry) != entry:
+                raise ValueError("Child lineage trùng hash nhưng khác nội dung giữa các trial.")
+
+        members: list[dict[str, object]] = []
+        eligible_count = 0
+        exclusion_count = 0
+        for item in ordered:
+            trade = item.trade
+            eligible = trade.has_entry_provenance
+            members.append(
+                {
+                    "ordinal": item.ordinal,
+                    "outcome_record_id": str(item.record_id),
+                    "outcome_hash": item.outcome_hash,
+                    "eligible": eligible,
+                    "exclusion_reason": None if eligible else "entry_provenance_missing",
+                }
+            )
+            pending.append((item, eligible))
+            eligible_count += eligible
+            exclusion_count += not eligible
+        if digest(canonical(members)) != proof.membership_digest:
+            raise ValueError("Membership digest không khớp candidate-universe proof.")
+        if eligible_count != proof.eligible_count or exclusion_count != proof.exclusion_count:
+            raise ValueError("Counts provenance không khớp candidate-universe proof.")
+    if len(query_versions) != 1:
+        raise ValueError("Mọi proof của cohort phải cùng query version.")
+    source_use_lineage = tuple(lineage_by_child[key] for key in sorted(lineage_by_child))
+    lineage_set_hash = source_use_lineage_set_hash(source_use_lineage)
+
+    for item, eligible in pending:
         trade = item.trade
-        eligible = trade.has_entry_provenance
-        members.append(
-            {
-                "ordinal": item.ordinal,
-                "outcome_record_id": str(item.record_id),
-                "outcome_hash": item.outcome_hash,
-                "eligible": eligible,
-                "exclusion_reason": None if eligible else "entry_provenance_missing",
-            }
-        )
         if not eligible:
             exclusions.append(DatasetExclusion(str(item.record_id), ("entry_provenance_missing",)))
             continue
@@ -283,16 +395,12 @@ def build_learning_split_candidate(
             source_rights_hashes=(),
             source_revision_refs=(),
             source_replay_bundle_hash=item.source_replay_bundle_hash,
-            source_use_lineage_set_hash=source_use_lineage_set_hash(source_use_lineage),
+            source_use_lineage_set_hash=lineage_set_hash,
         )
         accepted.append((item, sample))
         schemas.add(trade.entry_feature_schema_hash)
         symbols.add(trade.entry_symbol)
 
-    if digest(canonical(members)) != proof.membership_digest:
-        raise ValueError("Membership digest không khớp candidate-universe proof.")
-    if len(accepted) != proof.eligible_count or len(exclusions) != proof.exclusion_count:
-        raise ValueError("Counts provenance không khớp candidate-universe proof.")
     if len(schemas) != 1:
         raise ValueError("Candidate phải có một feature schema thống nhất.")
     development_count = sum(sample.split is DatasetSplit.DEVELOPMENT for _, sample in accepted)
@@ -300,23 +408,35 @@ def build_learning_split_candidate(
     if development_count == 0 or holdout_count == 0:
         raise ValueError("Candidate cần có cả development và final holdout.")
 
-    sample_values = tuple(sample for _, sample in accepted)
+    sample_values = (
+        tuple(sample for _, sample in sorted(accepted, key=lambda pair: pair[1].sample_id))
+        if len(ordered_trials) > 1
+        else tuple(sample for _, sample in accepted)
+    )
     data_start = min(sample.decision_at for sample in sample_values)
     data_end = max(sample.outcome_end for sample in sample_values)
     if data_start >= data_end:
         raise ValueError("Candidate data range không hợp lệ.")
-    query_hash = digest(
-        canonical(
-            {
-                "builder_version": "wp06-split-candidate-v1",
-                "proof_hash": proof.content_hash,
-                "query_version": proof.query_version,
-            }
+    query_version = next(iter(query_versions))
+    if len(ordered_trials) == 1:
+        query_payload: dict[str, object] = {
+            "builder_version": "wp06-split-candidate-v1",
+            "proof_hash": ordered_trials[0].proof.content_hash,
+            "query_version": query_version,
+        }
+        cohort_key = str(ordered_trials[0].trial_record_id)
+    else:
+        query_payload = {
+            "builder_version": "wp06-split-candidate-cohort-v1",
+            "proof_hashes": [item.proof.content_hash for item in ordered_trials],
+            "query_version": query_version,
+        }
+        cohort_key = "cohort:" + digest(
+            canonical([str(item.trial_record_id) for item in ordered_trials])
         )
-    )
     manifest = DatasetManifest(
         workspace_id=workspace_id,
-        query_hash=query_hash,
+        query_hash=digest(canonical(query_payload)),
         symbols=tuple(sorted(symbols)),
         data_start=data_start,
         data_end=data_end,
@@ -342,19 +462,29 @@ def build_learning_split_candidate(
     preview = _preview(manifest, plan)
     candidate_id = uuid5(
         NAMESPACE_URL,
-        f"crypidian:wp06-split-candidate:{workspace_id}:{trial_record_id}:"
+        f"crypidian:wp06-split-candidate:{workspace_id}:{cohort_key}:"
         f"{manifest.content_hash}:{plan.content_hash}",
     )
+    anchor = ordered_trials[0]
     return LearningSplitCandidate(
         candidate_id=candidate_id,
         workspace_id=workspace_id,
-        trial_record_id=trial_record_id,
-        proof_record_id=proof_record_id,
-        proof_hash=proof.content_hash,
+        trial_record_id=anchor.trial_record_id,
+        proof_record_id=anchor.proof_record_id,
+        proof_hash=anchor.proof.content_hash,
         manifest=manifest,
         fold_plan=plan,
         config=config,
         preview_json=canonical(preview),
+        sources=tuple(
+            LearningCandidateTrialSource(
+                trial_record_id=item.trial_record_id,
+                proof_record_id=item.proof_record_id,
+                proof_hash=item.proof.content_hash,
+                bundle_hash=bundle,
+            )
+            for item, bundle in zip(ordered_trials, trial_bundles, strict=True)
+        ),
     )
 
 
@@ -453,15 +583,17 @@ class LearningSplitCandidateBuilderService:
         self,
         *,
         workspace_id: UUID,
-        trial_record_id: UUID,
+        trial_record_id: UUID | None = None,
+        trial_record_ids: tuple[UUID, ...] = (),
         config: LearningSplitCandidateConfig,
     ) -> LearningSplitCandidateStageResult:
-        """Proof, quyền hiện hành và candidate private được ghi cùng transaction."""
+        """Proof, quyền hiện hành và candidate private được ghi cùng transaction.
+
+        AI-5: ``trial_record_ids`` cho cohort nhiều trial (mỗi trial một coin); một trial giữ
+        đúng hợp đồng cũ.
+        """
         from sqlalchemy import select, text
 
-        from trading_bot.adapters.database.repositories.backtest_outcomes import (
-            BacktestOutcomeRepository,
-        )
         from trading_bot.adapters.database.repositories.candidate_universe_proofs import (
             CandidateUniverseProofRepository,
         )
@@ -469,7 +601,8 @@ class LearningSplitCandidateBuilderService:
             LearningSplitCandidateRepository,
         )
 
-        if type(workspace_id) is not UUID or type(trial_record_id) is not UUID:
+        trial_ids = _trial_ids(trial_record_id, trial_record_ids)
+        if type(workspace_id) is not UUID:
             raise ValueError("workspace_id và trial_record_id phải là UUID.")
         async with self._sessions() as session, session.begin():
             await session.execute(
@@ -477,61 +610,38 @@ class LearningSplitCandidateBuilderService:
             )
             await _bind_builder_workspace(session, workspace_id)
             proof_repository = CandidateUniverseProofRepository(session)
-            proof_result = await proof_repository.build_and_append(
-                workspace_id=workspace_id,
-                trial_record_id=trial_record_id,
-            )
-            persisted = await BacktestOutcomeRepository(session).load_trade_outcome_rows(
-                workspace_id=workspace_id,
-                trial_record_id=trial_record_id,
-            )
-            training_lineage = await BacktestOutcomeRepository(
-                session
-            ).load_training_bundle_lineage(
-                workspace_id=workspace_id,
-                trial_record_id=trial_record_id,
-                outcomes=persisted.rows,
-            )
-            outcomes = tuple(
-                LearningCandidateOutcome(
-                    workspace_id=row.workspace_id,
-                    trial_record_id=row.trial_record_id,
-                    record_id=row.record_id,
-                    ordinal=row.ordinal,
-                    outcome_hash=row.outcome_hash,
-                    trade=row.trade,
-                    source_replay_bundle_hash=training_lineage.bundle_hash,
-                    source_use_lineage=training_lineage.source_use_lineage,
+            trials = []
+            for trial_id in trial_ids:
+                trials.append(
+                    await _load_candidate_trial(
+                        session, proof_repository, workspace_id=workspace_id, trial_id=trial_id
+                    )
                 )
-                for row in persisted.rows
-            )
             database_now = await session.scalar(select(text("clock_timestamp()")))
-            as_of = max(row.trade.closed_at for row in outcomes)
+            as_of = max(row.trade.closed_at for trial in trials for row in trial.outcomes)
             if (
                 not isinstance(database_now, datetime)
                 or database_now.tzinfo is None
                 or as_of > database_now
             ):
                 raise ValueError("Database clock không trả timestamp có timezone.")
-            candidate = build_learning_split_candidate(
+            candidate = build_learning_split_cohort_candidate(
                 workspace_id=workspace_id,
-                trial_record_id=trial_record_id,
-                proof_record_id=proof_result.record_id,
-                proof=proof_result.proof,
-                outcomes=outcomes,
+                trials=tuple(trials),
                 config=config,
                 as_of=as_of,
             )
             write = await LearningSplitCandidateRepository(session).append(candidate=candidate)
-            verified = await proof_repository.build_and_append(
-                workspace_id=workspace_id,
-                trial_record_id=trial_record_id,
-            )
-            if verified.proof.content_hash != candidate.proof_hash:
-                raise ValueError("Proof/quyền thay đổi trong khi stage candidate.")
+            for trial in trials:
+                verified = await proof_repository.build_and_append(
+                    workspace_id=workspace_id,
+                    trial_record_id=trial.trial_record_id,
+                )
+                if verified.proof.content_hash != trial.proof.content_hash:
+                    raise ValueError("Proof/quyền thay đổi trong khi stage candidate.")
             return LearningSplitCandidateStageResult(
                 candidate_id=write.candidate.candidate_id,
-                proof_record_id=proof_result.record_id,
+                proof_record_id=candidate.proof_record_id,
                 manifest_hash=write.candidate.manifest.content_hash,
                 fold_plan_hash=write.candidate.fold_plan.content_hash,
                 preview_json=write.candidate.preview_json,
@@ -545,9 +655,6 @@ class LearningSplitCandidateBuilderService:
         from sqlalchemy import select, text
 
         from trading_bot.adapters.database.models import NormalizedLearningDatasetRecord
-        from trading_bot.adapters.database.repositories.backtest_outcomes import (
-            BacktestOutcomeRepository,
-        )
         from trading_bot.adapters.database.repositories.candidate_universe_proofs import (
             CandidateUniverseProofRepository,
         )
@@ -611,45 +718,34 @@ class LearningSplitCandidateBuilderService:
                     {"lock_key": f"research-source:{workspace_id}:{source_id}"},
                 )
             proof_repository = CandidateUniverseProofRepository(session)
-            proof_result = await proof_repository.build_and_append(
-                workspace_id=workspace_id,
-                trial_record_id=candidate.trial_record_id,
+            sources = candidate.sources or (
+                LearningCandidateTrialSource(
+                    trial_record_id=candidate.trial_record_id,
+                    proof_record_id=candidate.proof_record_id,
+                    proof_hash=candidate.proof_hash,
+                    bundle_hash=_single_bundle(candidate.manifest),
+                ),
             )
-            if (
-                proof_result.record_id != candidate.proof_record_id
-                or proof_result.proof.content_hash != candidate.proof_hash
-            ):
-                raise PermissionError("Proof hoặc quyền TRAINING hiện hành không khớp candidate.")
-            persisted = await BacktestOutcomeRepository(session).load_trade_outcome_rows(
-                workspace_id=workspace_id,
-                trial_record_id=candidate.trial_record_id,
-            )
-            training_lineage = await BacktestOutcomeRepository(
-                session
-            ).load_training_bundle_lineage(
-                workspace_id=workspace_id,
-                trial_record_id=candidate.trial_record_id,
-                outcomes=persisted.rows,
-            )
-            outcomes = tuple(
-                LearningCandidateOutcome(
-                    workspace_id=row.workspace_id,
-                    trial_record_id=row.trial_record_id,
-                    record_id=row.record_id,
-                    ordinal=row.ordinal,
-                    outcome_hash=row.outcome_hash,
-                    trade=row.trade,
-                    source_replay_bundle_hash=training_lineage.bundle_hash,
-                    source_use_lineage=training_lineage.source_use_lineage,
+            trials = []
+            for source in sources:
+                trial = await _load_candidate_trial(
+                    session,
+                    proof_repository,
+                    workspace_id=workspace_id,
+                    trial_id=source.trial_record_id,
                 )
-                for row in persisted.rows
-            )
-            rebuilt = build_learning_split_candidate(
+                if (
+                    trial.proof_record_id != source.proof_record_id
+                    or trial.proof.content_hash != source.proof_hash
+                ):
+                    raise PermissionError(
+                        "Proof hoặc quyền TRAINING hiện hành không khớp candidate."
+                    )
+                trials.append(trial)
+            outcomes = tuple(row for trial in trials for row in trial.outcomes)
+            rebuilt = build_learning_split_cohort_candidate(
                 workspace_id=workspace_id,
-                trial_record_id=candidate.trial_record_id,
-                proof_record_id=candidate.proof_record_id,
-                proof=proof_result.proof,
-                outcomes=outcomes,
+                trials=tuple(trials),
                 config=candidate.config,
                 as_of=candidate.manifest.as_of,
             )
@@ -679,12 +775,15 @@ class LearningSplitCandidateBuilderService:
                 approval=approval,
                 dataset=normalized,
             )
-            final_proof = await proof_repository.build_and_append(
-                workspace_id=workspace_id,
-                trial_record_id=candidate.trial_record_id,
-            )
-            if final_proof.proof.content_hash != candidate.proof_hash:
-                raise PermissionError("Rights TRAINING hết hạn hoặc thay đổi trước seal commit.")
+            for source in sources:
+                final_proof = await proof_repository.build_and_append(
+                    workspace_id=workspace_id,
+                    trial_record_id=source.trial_record_id,
+                )
+                if final_proof.proof.content_hash != source.proof_hash:
+                    raise PermissionError(
+                        "Rights TRAINING hết hạn hoặc thay đổi trước seal commit."
+                    )
             stored_id = await session.scalar(
                 select(NormalizedLearningDatasetRecord.id).where(
                     NormalizedLearningDatasetRecord.workspace_id == workspace_id,
@@ -704,6 +803,71 @@ class LearningSplitCandidateBuilderService:
                 approval_hash=approval.content_hash,
                 duplicate=write.is_duplicate,
             )
+
+
+def _trial_ids(single: UUID | None, many: tuple[UUID, ...]) -> tuple[UUID, ...]:
+    """Trial của cohort sắp theo id (thứ tự khóa cố định, tránh deadlock)."""
+    values = tuple(many) + ((single,) if single is not None else ())
+    if not values or any(type(value) is not UUID for value in values):
+        raise ValueError("workspace_id và trial_record_id phải là UUID.")
+    if len(set(values)) != len(values):
+        raise ValueError("Trial bị lặp trong cohort.")
+    return tuple(sorted(values, key=str))
+
+
+def _single_bundle(manifest: DatasetManifest) -> str:
+    bundles = {item.source_replay_bundle_hash for item in manifest.samples}
+    if len(bundles) != 1 or None in bundles:
+        raise ValueError("Candidate cũ phải ghim đúng một replay bundle.")
+    value = next(iter(bundles))
+    assert isinstance(value, str)
+    return value
+
+
+async def _load_candidate_trial(
+    session: AsyncSession,
+    proof_repository: object,
+    *,
+    workspace_id: UUID,
+    trial_id: UUID,
+) -> LearningCandidateTrial:
+    """Proof universe + outcome + lineage bundle của một trial, đúng như builder một trial."""
+    from trading_bot.adapters.database.repositories.backtest_outcomes import (
+        BacktestOutcomeRepository,
+    )
+
+    proof_result = await proof_repository.build_and_append(  # type: ignore[attr-defined]
+        workspace_id=workspace_id,
+        trial_record_id=trial_id,
+    )
+    outcome_repository = BacktestOutcomeRepository(session)
+    persisted = await outcome_repository.load_trade_outcome_rows(
+        workspace_id=workspace_id,
+        trial_record_id=trial_id,
+    )
+    training_lineage = await outcome_repository.load_training_bundle_lineage(
+        workspace_id=workspace_id,
+        trial_record_id=trial_id,
+        outcomes=persisted.rows,
+    )
+    return LearningCandidateTrial(
+        trial_record_id=trial_id,
+        proof_record_id=proof_result.record_id,
+        proof=proof_result.proof,
+        outcomes=tuple(
+            LearningCandidateOutcome(
+                workspace_id=row.workspace_id,
+                trial_record_id=row.trial_record_id,
+                record_id=row.record_id,
+                ordinal=row.ordinal,
+                outcome_hash=row.outcome_hash,
+                trade=row.trade,
+                source_replay_bundle_hash=training_lineage.bundle_hash,
+                source_use_lineage=training_lineage.source_use_lineage,
+            )
+            for row in persisted.rows
+        ),
+    )
 
 
 async def _bind_builder_workspace(session: AsyncSession, workspace_id: UUID) -> None:
@@ -781,6 +945,8 @@ __all__ = [
     "FEATURE_VERSION",
     "LABEL_VERSION",
     "LearningCandidateOutcome",
+    "LearningCandidateTrial",
+    "LearningCandidateTrialSource",
     "LearningSplitCandidate",
     "LearningSplitCandidateConfig",
     "LearningSplitCandidateSealResult",
@@ -790,5 +956,6 @@ __all__ = [
     "SAMPLE_SCHEMA_VERSION",
     "SPLIT_POLICY_VERSION",
     "build_learning_split_candidate",
+    "build_learning_split_cohort_candidate",
     "build_normalized_candidate_dataset",
 ]

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any
 from uuid import UUID
@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from trading_bot.adapters.database.models import (
     LearningSplitApprovalRecord,
     LearningSplitCandidateRecord,
+    LearningSplitCandidateSourceRecord,
 )
 from trading_bot.application.learning_split_candidate import LearningSplitCandidate
 
@@ -75,7 +76,7 @@ class LearningSplitCandidateRepository:
             )
         )
         if existing is not None:
-            stored = existing.to_domain()
+            stored = await self._with_sources(existing.to_domain())
             if (
                 stored.candidate_id != candidate.candidate_id
                 or stored.manifest.canonical_json != candidate.manifest.canonical_json
@@ -83,11 +84,16 @@ class LearningSplitCandidateRepository:
                 or stored.preview_json != candidate.preview_json
                 or stored.proof_hash != candidate.proof_hash
                 or stored.proof_record_id != candidate.proof_record_id
+                or (stored.sources and stored.sources != candidate.sources)
             ):
                 raise LearningSplitCandidateConflict("Candidate hash đã gắn payload khác.")
             return LearningSplitCandidateWriteResult(stored, True)
         record = LearningSplitCandidateRecord.from_domain(candidate)
         self._session.add(record)
+        await self._session.flush()
+        # AI-5: ghi mọi trial của cohort (ordinal 0 = neo) sau dòng cha (trigger kiểm khớp).
+        for row in LearningSplitCandidateSourceRecord.rows_for(candidate):
+            self._session.add(row)
         await self._session.flush()
         return LearningSplitCandidateWriteResult(candidate, False)
 
@@ -192,7 +198,29 @@ class LearningSplitCandidateRepository:
                 LearningSplitCandidateRecord.id == candidate_id,
             )
         )
-        return record.to_domain() if record is not None else None
+        return await self._with_sources(record.to_domain()) if record is not None else None
+
+    async def _with_sources(self, candidate: LearningSplitCandidate) -> LearningSplitCandidate:
+        """Gắn trial cohort đã lưu; candidate cũ (trước AI-5) không có dòng con → sources rỗng."""
+        rows = list(
+            await self._session.scalars(
+                select(LearningSplitCandidateSourceRecord)
+                .where(
+                    LearningSplitCandidateSourceRecord.workspace_id == candidate.workspace_id,
+                    LearningSplitCandidateSourceRecord.candidate_id == candidate.candidate_id,
+                )
+                .order_by(LearningSplitCandidateSourceRecord.ordinal)
+            )
+        )
+        if not rows:
+            return candidate
+        if any(
+            row.manifest_hash != candidate.manifest.content_hash
+            or row.fold_plan_hash != candidate.fold_plan.content_hash
+            for row in rows
+        ) or [row.ordinal for row in rows] != list(range(len(rows))):
+            raise LearningSplitCandidateConflict("Trial cohort không khớp candidate.")
+        return replace(candidate, sources=tuple(row.to_domain() for row in rows))
 
     async def _bind_workspace(self, workspace_id: UUID) -> None:
         await self._session.execute(

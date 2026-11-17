@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -229,28 +230,60 @@ class DatabaseReplayEvaluationRightsGate:
         dependent = tuple(sample for sample in manifest.samples if sample.source_dependent)
         if not dependent:
             return
-        lineage = manifest.source_use_lineage
-        bundle_hashes = {sample.source_replay_bundle_hash for sample in dependent}
-        lineage_hashes = {sample.source_use_lineage_set_hash for sample in dependent}
-        if manifest.manifest_version != "dataset-manifest-v5" or not lineage:
+        if manifest.manifest_version != "dataset-manifest-v5" or not manifest.source_use_lineage:
             raise PermissionError("Manifest phụ thuộc nguồn cần lineage replay v5.")
-        if (
-            len(bundle_hashes) != 1
-            or None in bundle_hashes
-            or lineage_hashes != {source_use_lineage_set_hash(lineage)}
-        ):
-            raise PermissionError("Sample v5 không ghim cùng bundle và lineage set.")
-        bundle_hash = next(iter(bundle_hashes))
-        assert bundle_hash is not None
-        receipts = await DatabaseReplayTrainingRightsGate(self._session).authorize(
+        await authorize_manifest_bundles(
+            DatabaseReplayTrainingRightsGate(self._session),
             workspace_id=workspace_id,
-            bundle_hash=bundle_hash,
+            manifest=manifest,
             operation=ReplayTrainingOperation.EVALUATION,
         )
-        expected = {item.child_dataset_hash: item for item in lineage}
+
+
+class ManifestRightsMismatch(PermissionError):
+    """Quyền hiện hành không khớp đúng child set/lineage của manifest (không phải lỗi gate)."""
+
+
+async def authorize_manifest_bundles(
+    gate: Any,
+    *,
+    workspace_id: UUID,
+    manifest: DatasetManifest,
+    operation: ReplayTrainingOperation,
+    coverage_message: str = "Quyền hiện hành không bao phủ đúng child set của manifest.",
+    mismatch_message: str = "Receipt hiện hành lệch lineage nguồn của manifest.",
+    require_bars_content: bool = False,
+) -> tuple[ReplayTrainingRightsReceipt, ...]:
+    """Cấp quyền hiện hành cho **mọi** bundle của manifest v5 (AI-5: cohort nhiều coin).
+
+    Tập bundle của sample phải trùng tập bundle của lineage; mỗi bundle được gate SQL cấp quyền
+    riêng và child set trả về phải khớp đúng lineage của bundle đó. Thứ tự bundle cố định (sắp
+    theo hash) để khóa nhất quán. N=1 tương đương kiểm cũ. Lỗi → ``PermissionError``.
+    """
+    dependent = tuple(sample for sample in manifest.samples if sample.source_dependent)
+    lineage = manifest.source_use_lineage
+    bundle_hashes = {sample.source_replay_bundle_hash for sample in dependent}
+    lineage_hashes = {sample.source_use_lineage_set_hash for sample in dependent}
+    if (
+        not dependent
+        or None in bundle_hashes
+        or lineage_hashes != {source_use_lineage_set_hash(lineage)}
+        or {item.bundle_hash for item in lineage} != bundle_hashes
+    ):
+        raise PermissionError("Sample v5 không ghim cùng bundle và lineage set.")
+    collected: list[ReplayTrainingRightsReceipt] = []
+    for bundle_hash in sorted(value for value in bundle_hashes if value is not None):
+        receipts = await gate.authorize(
+            workspace_id=workspace_id,
+            bundle_hash=bundle_hash,
+            operation=operation,
+        )
+        expected = {
+            item.child_dataset_hash: item for item in lineage if item.bundle_hash == bundle_hash
+        }
         by_child = {item.child_dataset_hash: item for item in receipts}
         if len(by_child) != len(receipts) or set(by_child) != set(expected):
-            raise PermissionError("Quyền hiện hành không bao phủ đúng child set của manifest.")
+            raise ManifestRightsMismatch(coverage_message)
         for child_hash, item in expected.items():
             receipt = by_child[child_hash]
             if (
@@ -259,8 +292,27 @@ class DatabaseReplayEvaluationRightsGate:
                 or receipt.provider != item.provider
                 or receipt.symbol != item.symbol
                 or receipt.interval != item.interval
+                or (require_bars_content and receipt.bars_content_hash == "")
             ):
-                raise PermissionError("Receipt hiện hành lệch lineage nguồn của manifest.")
+                raise ManifestRightsMismatch(mismatch_message)
+        collected.extend(receipts)
+    return tuple(collected)
+
+
+def replay_bundle_set_hash(bundle_hashes: Iterable[str]) -> str:
+    """Một bundle → chính hash đó; nhiều → sha256 JSON compact của danh sách đã sắp.
+
+    Trùng công thức SQL ``wp06_replay_bundle_set_hash`` (migration ``a5c7e9b1d3f5``).
+    """
+    values = sorted(set(bundle_hashes))
+    if not values or any(
+        len(value) != 64 or any(char not in "0123456789abcdef" for char in value)
+        for value in values
+    ):
+        raise ValueError("Bundle set cần SHA-256 lowercase không rỗng.")
+    if len(values) == 1:
+        return values[0]
+    return digest(canonical(values))
 
 
 def _receipt_from_authorized_row(

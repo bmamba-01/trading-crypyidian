@@ -22,7 +22,9 @@ from trading_bot.adapters.database.models.learning_source_training_receipt_entit
 )
 from trading_bot.adapters.database.replay_training_rights import (
     DatabaseReplayTrainingRightsGate,
+    ManifestRightsMismatch,
     ReplayTrainingOperation,
+    authorize_manifest_bundles,
 )
 from trading_bot.adapters.database.repositories.dataset_manifest_eligibility import (
     DatasetManifestEligibilityRepository,
@@ -40,7 +42,6 @@ from trading_bot.application.learning_fold_samples import (
 )
 from trading_bot.domain.learning.approval import LearningSplitApproval
 from trading_bot.domain.learning.dataset import DatasetManifest
-from trading_bot.domain.learning.source_use_lineage import source_use_lineage_set_hash
 
 
 class NormalizedLearningDatasetConflict(RuntimeError):
@@ -248,29 +249,27 @@ class LearningFoldSampleRepository:
             raise NormalizedLearningDatasetConflict(
                 "Manifest v5 replay không được trộn sample source-free."
             )
-        first = samples[0]
-        bundle_hash = first.source_replay_bundle_hash
-        source_lineage = manifest.source_use_lineage
-        if (
-            bundle_hash is None
-            or not source_lineage
-            or source_use_lineage_set_hash(source_lineage) != first.source_use_lineage_set_hash
-            or any(
-                sample.source_replay_bundle_hash != bundle_hash
-                or sample.source_use_lineage_set_hash != first.source_use_lineage_set_hash
-                or sample.source_use_lineage
-                for sample in samples
-            )
-        ):
+        if not manifest.source_use_lineage:
             raise NormalizedLearningDatasetConflict(
                 "Manifest v5 không ghim cùng bundle và shared exact source-use child set."
             )
         try:
-            current = await DatabaseReplayTrainingRightsGate(self._session).authorize(
+            # AI-5: cấp quyền TRAINING cho từng bundle của cohort (N=1 như trước).
+            await authorize_manifest_bundles(
+                DatabaseReplayTrainingRightsGate(self._session),
                 workspace_id=manifest.workspace_id,
-                bundle_hash=bundle_hash,
+                manifest=manifest,
                 operation=ReplayTrainingOperation.TRAINING,
+                coverage_message=(
+                    "Current TRAINING scope không bao phủ đúng persisted bundle child set."
+                ),
+                mismatch_message=(
+                    "Current TRAINING receipt lệch v5 source-use lineage/policy fingerprint."
+                ),
+                require_bars_content=True,
             )
+        except ManifestRightsMismatch as error:
+            raise NormalizedLearningDatasetConflict(str(error)) from None
         except (PermissionError, ValueError, LookupError) as error:
             raise NormalizedLearningDatasetConflict(
                 f"Source replay TRAINING rights bị từ chối ({error})."
@@ -281,26 +280,6 @@ class LearningFoldSampleRepository:
             raise NormalizedLearningDatasetConflict(
                 "Source replay TRAINING rights bị từ chối bởi verifier cơ sở dữ liệu."
             ) from None
-        by_child = {item.child_dataset_hash: item for item in current}
-        expected = {item.child_dataset_hash: item for item in source_lineage}
-        if len(by_child) != len(current) or set(by_child) != set(expected):
-            raise NormalizedLearningDatasetConflict(
-                "Current TRAINING scope không bao phủ đúng persisted bundle child set."
-            )
-        for child_hash, lineage in expected.items():
-            receipt = by_child[child_hash]
-            if (
-                receipt.workspace_id != manifest.workspace_id
-                or receipt.bundle_hash != bundle_hash
-                or receipt.child_dataset_hash != child_hash
-                or receipt.provider != lineage.provider
-                or receipt.symbol != lineage.symbol
-                or receipt.interval != lineage.interval
-                or receipt.bars_content_hash == ""
-            ):
-                raise NormalizedLearningDatasetConflict(
-                    "Current TRAINING receipt lệch v5 source-use lineage/policy fingerprint."
-                )
 
     async def _verify_source_receipts(
         self,
