@@ -504,3 +504,9 @@
 }
 .bot-page .bot-advanced[open] > summary { color: var(--text-main); }
 .bot-page .bot-toggle-row .switch-control { flex: 1 1 auto; justify-content: space-between; }
+
+/* CRY-428: ghi đè thông số thoát lệnh và trạng thái backtest bắt buộc của bản nháp. */
+.bot-page .bot-check { display: inline-flex; align-items: center; gap: 0.4rem; min-height: 44px; font-size: var(--fs-xs); }
+.bot-page .bot-overlay-form input[name^="exit_"]:not([type="checkbox"]) { width: 100%; min-height: 44px; padding: 0.45rem 0.65rem; font-size: var(--fs-sm); border-radius: 0.5rem; }
+.bot-page .bot-exit-review { margin-top: 0.6rem; padding: 0.55rem 0.75rem; font-size: var(--fs-xs); background: var(--bg-surface-subtle); border-radius: 0.6rem; overflow-wrap: anywhere; }
+.bot-page .bot-exit-review p { margin: 0 0 0.35rem; }

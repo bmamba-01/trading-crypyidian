@@ -105,6 +105,15 @@ _FIELD_LABELS: dict[str, tuple[str]] = {
 } | {"reason": ("Lý do thay đổi",)}
 
 
+EXIT_LABELS = {
+    "stop_atr_multiple": "SL ×ATR",
+    "trailing_atr_multiple": "trailing ×ATR",
+    "take_profit_atr_multiple": "TP ×ATR",
+    "max_hold_bars": "giữ tối đa (nến)",
+    "ladder": "thang TP",
+}
+
+
 def pct_vi(value: object, places: int | None = None) -> str:
     """Tỷ lệ dạng chuỗi Decimal → phần trăm kiểu Việt Nam, không qua float (0,005 → "0,5").
 
@@ -171,6 +180,7 @@ async def _render(
             "saved": saved,
             "field_labels": _FIELD_LABELS,
             "pct_vi": pct_vi,
+            "exit_labels": EXIT_LABELS,
         },
         status_code=status_code,
         headers={"Cache-Control": "no-store"},

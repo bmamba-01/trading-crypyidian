@@ -373,6 +373,7 @@ class RiskAppetiteService:
                 "loss_today": None,
                 "loss_rolling": None,
                 "drawdown": None,
+                "exit_override": None,
             }
             limits = root_limits
             try:
@@ -385,6 +386,8 @@ class RiskAppetiteService:
                 if effective is not None:
                     limits = effective.risk_limits
                     row["release_id"] = effective.strategy.release_id
+                    if effective.exit_override is not None:
+                        row["exit_override"] = effective.exit_override.payload()
             except BotConfigResolutionError as error:
                 row["error"] = str(error) or "BOT_CONFIG_UNRESOLVED"
                 limits = None

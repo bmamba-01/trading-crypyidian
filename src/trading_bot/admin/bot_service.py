@@ -53,11 +53,17 @@ from trading_bot.config.bot_settings import (
     BotConfigOverlay,
     canonical_overlay,
     decimal_text,
+    exit_section,
     overlay_hash,
     risk_section,
 )
 from trading_bot.config.workspace_settings import PublishedWorkspaceSettings
 from trading_bot.domain.events import EventEnvelope
+
+EXIT_BACKTEST_REQUIRED_MESSAGE = (
+    "Chưa có backtest bản gốc vs bản nháp này. Chạy "
+    "`uv run python scripts/run_proposal_backtest.py --bot-draft <bot_id>` rồi kiểm định lại."
+)
 
 
 class BotAdminError(Exception):
@@ -375,6 +381,23 @@ class BotConfigAdminService:
                         ),
                     }
                 )
+            if exit_changed(overlay, head) and (
+                await find_exit_backtest(
+                    unit.session,
+                    workspace_id=principal.workspace_id,
+                    bot_id=bot_id,
+                    draft=draft,
+                    head=head,
+                )
+                is None
+            ):
+                warnings.append(
+                    {
+                        "field": "exit",
+                        "code": "EXIT_BACKTEST_REQUIRED",
+                        "message": EXIT_BACKTEST_REQUIRED_MESSAGE,
+                    }
+                )
             return {"valid": not issues, "errors": _issue_dicts(issues), "warnings": warnings}
 
     # --- Publish / rollback -----------------------------------------------------------------
@@ -420,6 +443,24 @@ class BotConfigAdminService:
             root = await self._root(unit, principal)
             _raise_issues(_issues(overlay, root, account))
             _require_mfa_for_risk_change(principal, overlay, head)
+            exit_backtest = None
+            if exit_changed(overlay, head):
+                # CRY-428 (owner 17/11/2026): đổi thông số thoát phải có backtest gốc vs mới của
+                # đúng bản nháp; owner tự quyết dù kết luận thế nào.
+                exit_backtest = await find_exit_backtest(
+                    unit.session,
+                    workspace_id=principal.workspace_id,
+                    bot_id=bot_id,
+                    draft=draft,
+                    head=head,
+                )
+                if exit_backtest is None:
+                    raise BotAdminError(
+                        409,
+                        "Đổi thông số thoát lệnh cần backtest bản gốc vs bản nháp này trước khi "
+                        "publish.",
+                        [{"field": "exit", "message": EXIT_BACKTEST_REQUIRED_MESSAGE}],
+                    )
             published = await self._publish(
                 versions, principal, draft, expected_revision, head, root
             )
@@ -432,6 +473,21 @@ class BotConfigAdminService:
                 published,
                 head.overlay_json if head is not None else None,
             )
+            if exit_backtest is not None:
+                unit.record_audit(
+                    action="bot.config.exit_backtest_accepted",
+                    target_type="bot_config_version",
+                    target_id=published.id,
+                    # Audit chỉ lưu hash trạng thái; reason giữ mã backtest để truy vết trực tiếp.
+                    reason=(
+                        f"proposal_backtest={exit_backtest.id} verdict={exit_backtest.verdict}"
+                    ),
+                    after_state={
+                        "proposal_backtest_id": str(exit_backtest.id),
+                        "verdict": exit_backtest.verdict,
+                        "exit": exit_section(overlay),
+                    },
+                )
             return serialize_bot_version(published)
 
     async def rollback(
@@ -536,7 +592,10 @@ class BotConfigAdminService:
                     "variant": dict(row.result.get("variant") or {}),
                     "notes": list(row.result.get("notes") or []),
                     "window": row.result.get("window"),
-                    "draftable": row.verdict in DRAFTABLE_VERDICTS,
+                    "source": row.source,
+                    "draft_id": row.proposal.get("draft_id"),
+                    # Kết quả backtest bản nháp của owner (CRY-428) không tạo nháp mới được.
+                    "draftable": row.source == "AI_PROPOSAL" and row.verdict in DRAFTABLE_VERDICTS,
                 }
                 for row in rows.all()
             ]
@@ -568,7 +627,7 @@ class BotConfigAdminService:
                     ProposalBacktestRecord.id == backtest_id,
                 )
             )
-            if record is None:
+            if record is None or record.source != "AI_PROPOSAL":
                 raise BotAdminError(404, "Không tìm thấy kết quả backtest đề xuất của bot này.")
             head = await BotConfigVersionRepository(unit.session).get_head(
                 workspace_id=principal.workspace_id, bot_id=bot_id
@@ -737,10 +796,44 @@ def _require_recent_mfa(principal: Principal) -> None:
 def _require_mfa_for_risk_change(
     principal: Principal, overlay: BotConfigOverlay, baseline: BotConfigVersion | None
 ) -> None:
-    """Đổi khối risk so với version cha/hiện hành bắt buộc MFA gần đây."""
+    """Đổi khối risk hoặc exit (CRY-428) so với version cha/hiện hành bắt buộc MFA gần đây."""
     before = baseline.overlay_json.get("risk", {}) if baseline is not None else {}
-    if risk_section(overlay) != before:
+    if risk_section(overlay) != before or exit_changed(overlay, baseline):
         _require_recent_mfa(principal)
+
+
+def exit_changed(overlay: BotConfigOverlay, baseline: BotConfigVersion | None) -> bool:
+    """Khối ``exit`` (ghi đè thoát lệnh) khác bản đang publish."""
+    before = exit_section(baseline.overlay_json) if baseline is not None else {}
+    return exit_section(overlay) != before
+
+
+async def find_exit_backtest(
+    session: AsyncSession,
+    *,
+    workspace_id: UUID,
+    bot_id: UUID,
+    draft: BotConfigVersion,
+    head: BotConfigVersion | None,
+) -> Any:
+    """Backtest OWNER_DRAFT của đúng bản nháp này trên đúng bản đang publish (mới nhất)."""
+    from sqlalchemy import select
+
+    from trading_bot.adapters.database.models import ProposalBacktestRecord
+
+    return await session.scalar(
+        select(ProposalBacktestRecord)
+        .where(
+            ProposalBacktestRecord.workspace_id == workspace_id,
+            ProposalBacktestRecord.bot_id == bot_id,
+            ProposalBacktestRecord.source == "OWNER_DRAFT",
+            ProposalBacktestRecord.proposal["draft_overlay_hash"].astext == draft.overlay_hash,
+            ProposalBacktestRecord.proposal["head_overlay_hash"].astext
+            == (head.overlay_hash if head is not None else ""),
+        )
+        .order_by(ProposalBacktestRecord.created_at.desc())
+        .limit(1)
+    )
 
 
 def _parse_stored(record: BotConfigVersion) -> BotConfigOverlay:

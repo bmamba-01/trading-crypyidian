@@ -115,6 +115,7 @@ from trading_bot.auth.service import (
     AuthService,
 )
 from trading_bot.config.bot_settings import BotConfigOverlay
+from trading_bot.config.workspace_settings import decimal_text
 from trading_bot.domain.market.economic_calendar import IMPACT_LABELS_VI, EconomicEventInput
 from trading_bot.domain.market.scanner import SCAN_INTERVALS, ScanCriteria
 from trading_bot.domain.portfolio.post_mortem import evaluate_trade_post_mortem
@@ -1655,6 +1656,90 @@ def _overlay_form_choices(overlay: dict[str, Any], root: dict[str, Any]) -> dict
         "risk": risk_fields(dict(overlay.get("risk") or {})),
         "root_limited": bool(root_symbols),
         "has_parameters": bool(strategy.get("parameters")),
+        "exit": _exit_form(overlay, default_release),
+    }
+
+
+EXIT_FORM_FIELDS = (
+    ("stop_atr_multiple", "Stop-loss (× ATR)"),
+    ("trailing_atr_multiple", "Trailing stop (× ATR)"),
+    ("take_profit_atr_multiple", "Take-profit tối đa (× ATR)"),
+    ("max_hold_bars", "Giữ tối đa (số nến)"),
+)
+
+
+def _exit_review(
+    draft: dict[str, Any] | None,
+    published: dict[str, Any] | None,
+    backtests: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Bản nháp có đổi khối ``exit``: trạng thái backtest bắt buộc (gate thật ở service)."""
+    if draft is None:
+        return None
+    before = dict((published or {}).get("overlay") or {}).get("exit") or {}
+    after = dict(draft.get("overlay") or {}).get("exit") or {}
+    if before == after:
+        return None
+    record = next(
+        (
+            item
+            for item in backtests
+            if item.get("source") == "OWNER_DRAFT" and item.get("draft_id") == draft.get("id")
+        ),
+        None,
+    )
+    return {"before": before, "after": after, "backtest": record}
+
+
+def _ladder_text(steps: Any) -> str:
+    """Thang TP dạng "1:0.5, 2:0.5" (bội số R : tỷ lệ khối lượng)."""
+    parts = []
+    for step in steps:
+        r_value = step["r_multiple"] if isinstance(step, dict) else step.r_multiple
+        fraction = step["fraction"] if isinstance(step, dict) else step.fraction
+        parts.append(
+            f"{decimal_text(Decimal(str(r_value)))}:{decimal_text(Decimal(str(fraction)))}"
+        )
+    return ", ".join(parts)
+
+
+def _exit_form(overlay: dict[str, Any], default_release: str) -> dict[str, Any]:
+    """CRY-428: ô ghi đè thoát lệnh — chỉ trường release vốn có; rỗng = kế thừa release."""
+    from trading_bot.application.exit_policy_catalog import policy_for_release
+
+    release = str((overlay.get("strategy") or {}).get("release_id") or default_release)
+    policy = policy_for_release(release) if release else None
+    current = dict(overlay.get("exit") or {})
+    fields: list[dict[str, Any]] = []
+    ladder: dict[str, Any] | None = None
+    if policy is not None:
+        for name, label in EXIT_FORM_FIELDS:
+            base = getattr(policy, name)
+            if base is None:
+                continue
+            fields.append(
+                {
+                    "name": name,
+                    "label": label,
+                    "value": "" if current.get(name) is None else str(current[name]),
+                    "base": str(base) if name == "max_hold_bars" else decimal_text(base),
+                }
+            )
+        if policy.ladder:
+            current_ladder = current.get("ladder") or {}
+            ladder = {
+                "value": _ladder_text(current_ladder.get("steps") or ()),
+                "base": _ladder_text(policy.ladder),
+                "breakeven": bool(
+                    current_ladder.get("breakeven_after_first", policy.breakeven_after_first)
+                ),
+            }
+    return {
+        "release": release,
+        "fields": fields,
+        "ladder": ladder,
+        "has_override": bool(current),
+        "stop_fixed": policy is not None and policy.stop_atr_multiple is None,
     }
 
 
@@ -1702,6 +1787,7 @@ async def bot_detail(
     draft = next((item for item in versions if item.get("status") == "DRAFT"), None)
     root_universe = await _root_universe(request, identity.principal)
     current_overlay = dict((draft or published or {}).get("overlay") or {})
+    exit_review = _exit_review(draft, published, ai_proposals)
     return templates.TemplateResponse(
         request=request,
         name="admin/bot_detail.html",
@@ -1723,6 +1809,7 @@ async def bot_detail(
             "telegram_signal_state": signal_state,
             "signal_filter_choices": _signal_filter_choices(signal_state),
             "overlay_form": _overlay_form_choices(current_overlay, root_universe),
+            "exit_review": exit_review,
             "trading_data_available": trading_data["data_available"],
             "metrics": trading_data["metrics"],
             "positions": trading_data["positions"],
@@ -1875,7 +1962,40 @@ def _overlay_from_form(values: dict[str, str]) -> dict[str, Any]:
             risk[name] = raw
     if risk:
         overlay["risk"] = risk
+    exit_block = _exit_from_form(values)
+    if exit_block:
+        overlay["exit"] = exit_block
     return overlay
+
+
+def _exit_from_form(values: dict[str, str]) -> dict[str, Any]:
+    """Ô thoát lệnh để trống = kế thừa release; thang TP dạng "1:0.5, 2:0.5"."""
+    exit_block: dict[str, Any] = {}
+    for name, _label in EXIT_FORM_FIELDS:
+        raw = values.get(f"exit_{name}", "").strip()
+        if not raw:
+            continue
+        if name == "max_hold_bars":
+            if not raw.isdigit():
+                raise ValueError("Số nến giữ tối đa phải là số nguyên dương.")
+            exit_block[name] = int(raw)
+        else:
+            exit_block[name] = raw.replace(",", ".")
+    ladder_raw = values.get("exit_ladder", "").strip()
+    if ladder_raw:
+        steps = []
+        for part in ladder_raw.replace(";", ",").split(","):
+            if not part.strip():
+                continue
+            r_text, separator, fraction_text = part.partition(":")
+            if not separator:
+                raise ValueError("Thang TP phải có dạng R:tỷ lệ, ví dụ 1:0.5, 2:0.5.")
+            steps.append({"r_multiple": r_text.strip(), "fraction": fraction_text.strip()})
+        exit_block["ladder"] = {
+            "steps": steps,
+            "breakeven_after_first": values.get("exit_ladder_breakeven") == "on",
+        }
+    return exit_block
 
 
 async def _ai_proposals(
@@ -1991,6 +2111,14 @@ async def publish_config_draft_form(
             expected_revision=expected_revision,
         )
     except BotAdminError as error:
+        if error.status_code == 409 and any(item.get("field") == "exit" for item in error.errors):
+            # CRY-428: thiếu backtest bản nháp đổi thông số thoát → về trang bot kèm hướng dẫn.
+            return Response(
+                status_code=303,
+                headers={
+                    "Location": f"/admin/bots/{bot_id}?draft_validation=exit_backtest_required"
+                },
+            )
         raise HTTPException(status_code=error.status_code, detail=error.message) from error
     return Response(status_code=303, headers={"Location": f"/admin/bots/{bot_id}"})
 

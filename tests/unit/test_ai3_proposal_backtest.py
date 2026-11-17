@@ -415,3 +415,31 @@ def test_stored_bundle_carries_settled_funding_of_evaluation_window() -> None:
     assert calls[0]["window_start"] == funded.evaluation_start
     assert calls[0]["window_end"] == funded.range_end
     assert funded.dataset_hash != plain.dataset_hash
+
+
+def test_owner_draft_backtest_replays_exit_override_against_published_head() -> None:
+    """CRY-428: bản nháp đổi thông số thoát được replay thật, khác bản gốc và tất định."""
+    from trading_bot.application.proposal_backtest import backtest_bot_draft
+
+    series = {("AAAUSDT", "1h"): _bars("AAAUSDT", "1h", 320)}
+    bundles = {"AAAUSDT": _bundle("AAAUSDT", series)}
+    head = {
+        "strategy": {"release_id": "h03-v3-1h", "parameters": H03_CONFIG["parameters"]},
+        "risk": {"per_trade_risk_fraction": "0.005"},
+    }
+    draft = head | {"exit": {"stop_atr_multiple": "0.5", "max_hold_bars": 4}}
+
+    first = backtest_bot_draft(
+        bot_name="T01", head_overlay=head, draft_overlay=draft, bundles=bundles
+    )
+    again = backtest_bot_draft(
+        bot_name="T01", head_overlay=head, draft_overlay=draft, bundles=bundles
+    )
+    payload = first.payload()
+    assert payload == again.payload()
+    assert "exit" not in payload["baseline_arm"]
+    assert payload["variant_arm"]["exit"] == {"stop_atr_multiple": "0.5", "max_hold_bars": 4}
+    assert first.baseline.trades > 0
+    # Stop 0,5 ATR và giữ tối đa 4 nến: lệnh thoát sớm hơn nên kết quả khác bản gốc.
+    assert first.variant.payload() != first.baseline.payload()
+    assert payload["verdict"] in {"BETTER", "WORSE", "INCONCLUSIVE"}

@@ -5570,3 +5570,56 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
   - Rebase lần 3 lên dev `e296c45` (CRY-429 LIVE-MON; `app.py`/`base.html` tự gộp, không migration): ruff/format (1189 file)/mypy (488 file) sạch; unit **5244 passed/524s**; E2E `test_wp07_market_signal_producer` + `test_admin_live_monitor_playwright` (2) + `test_admin_web_workflows::...navigation...` (5 khổ) → **8 passed/827s**.
 - **Phối hợp migration (17/11):** phiên AI-5 xác nhận để CRY-430 đẩy trước; AI-5 sẽ nối `a5c7e9b1d3f5` sau `8f8ec8240b11` và đổi assert head sang `c9e1a3b5d7f9`. Migration CRY-430 không đụng các hàm/trigger WP06 mà AI-5 ghim hash. CRY-428 báo sắp đẩy `e5b7d9f1a3c6` (sau `d4f6a8b0c2e4`, chỉ sửa `proposal_backtest`); quy ước: phiên đẩy sau nối migration của mình sau head mới nhất trên dev và đổi assert head.
 - **Còn mở / rủi ro:** (1) chưa triển khai lên stack local `crypidian-review`: DB local đã ở `c9e1a3b5d7f9` (migration AI-5 chưa lên dev) nên migration này cần nối sau head AI-5 khi AI-5 vào dev — khi đó đổi `down_revision` và các assert head; (2) dùng kết quả tín hiệu làm nhãn bổ sung dataset AI-5 — chờ owner; (3) cập nhật kết quả lên thẻ Telegram đã gửi (reply/sửa tin) chưa làm; (4) nến mơ hồ có thể giải bằng nến khung nhỏ hơn ở `sig-outcome-v2`; (5) tín hiệu có payload không xác minh được bị bỏ qua và quét lại mỗi lượt trong 14 ngày (chỉ ghi log).
+### 2026-11-17 — CRY-428 lát 2: ghi đè thông số thoát lệnh theo bot, bắt buộc backtest bản nháp trước khi publish
+
+- **Quyết định owner (chat + AskUserQuestion 17/11):**
+  - "Có, theo bot".
+  - Phạm vi: chỉ trường release vốn có. SL theo cấu trúc (H18/H20) và Strategy Card không chỉnh SL.
+  - Backtest: bắt buộc có backtest bản gốc vs bản nháp; owner tự quyết dù kết luận thế nào.
+- **Thiết kế:** ghi đè áp sau khi rule sinh candidate, trước planner (`PaperDecisionCycle.prepare`, `exit_override`). Hệ quả:
+  - Hash release không đổi; `recipe_id` giữ nguyên để tra bằng chứng thoát kênh/feature.
+  - `candidate_id` đổi theo recipe; `TradePlan.exit_recipe`/vị thế ghi đúng giá trị đã dùng.
+  - Không thêm loại thoát release không có (vd không thêm thang TP cho H03).
+- **Thay đổi:**
+  - Mới `domain/strategy/exit_override.py`: `ExitOverride`, biên 0,25–10 ATR/R, giữ 1–1000 nến, thang TP qua `TakeProfitLadder`, payload canonical, hash.
+  - `exit_policy_catalog.validate_exit_override`/`policy_for_release`: kiểm "chỉ trường release vốn có".
+  - `config/bot_settings.py`: overlay `exit` (`BotExitOverlay`, thang TP), `exit_section`. Overlay không có `exit` giữ JSON/hash cũ; khối rỗng bị từ chối.
+  - `bot_config_resolver`: kiểm và mang `EffectiveBotConfig.exit_override`; `effective_hash` chỉ thêm khóa khi có ghi đè.
+  - `paper_decision_cycle`: `prepare`/`prepare_published` nhận `exit_override`; `prepare_published_with_risk_profile` truyền từ cấu hình bot.
+  - Replay: `BacktestReplayJobSubmission.exit_override_json` (kiểm theo release; profile hash chỉ thêm khi có) → executor → `BacktestDatasetRuntimeEvaluatorFactory` → `RuntimeReplayEvaluator`.
+  - `proposal_backtest`: arm mang khối `exit`; tách lõi `_backtest_arms`; mới `backtest_bot_draft(head_overlay, draft_overlay)`.
+  - Migration **`e5b7d9f1a3c6`** (ban đầu sau `d4f6a8b0c2e4`; khi rebase nối sau `8f8ec8240b11` của CRY-430 vì CRY-430 đẩy trước), bảng `proposal_backtest`:
+    - cột `source` `AI_PROPOSAL`/`OWNER_DRAFT`; `analyst_run_id` nullable theo nguồn (CHECK);
+    - index partial owner draft;
+    - downgrade bị chặn khi đã có hàng `OWNER_DRAFT` (`CRY428_OWNER_DRAFT_BACKTEST_DOWNGRADE_BLOCKED`).
+    - Quyền giữ nguyên: admin-web chỉ SELECT nên không tự ghi được bằng chứng để vượt gate (E2E xác nhận `permission denied`).
+  - `scripts/run_proposal_backtest.py --bot-draft <bot_id>`: phase `draft_backtest` trong container migrator, lưu `OWNER_DRAFT` với hash overlay nháp/head. Bot không có `strategy` trong overlay thì kế thừa release/tham số root.
+  - `admin/bot_service.py`, publish:
+    - khối `exit` đổi so với head → cần MFA gần đây và backtest `OWNER_DRAFT` khớp cả hai hash, không thì 409 field `exit`;
+    - audit `bot.config.exit_backtest_accepted`, reason `proposal_backtest=<id> verdict=<…>` (audit chỉ lưu hash trạng thái).
+  - `admin/bot_service.py`, các thay đổi khác:
+    - `validate_draft` cảnh báo `EXIT_BACKTEST_REQUIRED`;
+    - danh sách backtest có `source`/`draft_id`;
+    - kết quả `OWNER_DRAFT` không dùng để tạo nháp AI.
+  - Trang bot:
+    - fieldset "Thông số thoát lệnh": chỉ ô release có, placeholder giá trị gốc, để trống = kế thừa;
+    - thang TP dạng `1:0.5, 2:0.5` + "dời hòa vốn";
+    - khối "Bản nháp đổi thông số thoát lệnh" hiện kết luận backtest hoặc lệnh cần chạy;
+    - publish thiếu backtest → quay lại trang với `draft_validation=exit_backtest_required`.
+  - Trang `/admin/risk`: cột "Thoát lệnh" theo bot (Ghi đè/Theo release); bỏ câu "chưa cho chỉnh".
+- **Lỗi gặp khi làm:**
+  - `alembic check` trong RT-1 báo model thiếu index partial → thêm `Index(..., postgresql_where=...)` vào model.
+  - Probe đọc `AuditEvent.after_state` (bảng chỉ có hash) → dùng `reason`.
+  - Fixture test executor thiếu tham số `exit_override`.
+  - Unit decision cycle: khối lượng chạm trần notional nên so `estimated_loss` thay vì quantity.
+- **Kiểm thử:**
+  - Unit mới `test_cry428_exit_override.py` **22 passed**, cộng ca replay thật `test_ai3_proposal_backtest::…owner_draft…` (stop 0,5 ATR + giữ 4 nến cho kết quả khác bản gốc, tất định).
+  - Toàn bộ unit **5192 passed/565.66s** (trước khi thêm index vào model).
+  - Playwright mới `test_admin_bot_exit_override_playwright.py` **2 passed**. Toàn bộ `test_admin_*_playwright.py` **55 passed**.
+  - RT-1 Compose (role thật): kiểm định báo `exit.take_profit_atr_multiple` với h01; publish bị chặn 409; admin-web ghi giả bị từ chối; **script thật từ host** lưu `OWNER_DRAFT` (INCONCLUSIVE vì RT-1 không có quyền BACKTEST_RESEARCH); publish được, audit đúng mã backtest; runtime resolve ra ghi đè, hash hợp lệ — **1 passed/438.85s**.
+- **Phối hợp migration:** phiên AI-5 (`a5c7e9b1d3f5`→`c9e1a3b5d7f9`) và CRY-430 (`8f8ec8240b11`) đồng ý: ai đẩy sau nối vào head mới nhất trên `dev`. CRY-430 đẩy trước nên `e5b7` nối sau `8f8ec8240b11`; AI-5 nối sau `e5b7`.
+- **Còn mở:**
+  - Chưa có nút "Chạy backtest" trên web (backtest chạy bằng script host; cần worker + quyền ghi riêng).
+  - Rollback về version cũ có khối `exit` khác không đòi backtest (bản đó đã từng được publish).
+  - Thang TP chỉ ghi đè được cho release vốn có thang (scalping).
+- **E2E migration đi qua `e5b7`** (upgrade/downgrade, assert head mới): `test_live_market_backfill_migration.py` + `test_wp06_shadow_drift_persistence.py` **3 passed/97.17s**; unit `test_sig0_taker_flow.py` (chuỗi head) đạt.

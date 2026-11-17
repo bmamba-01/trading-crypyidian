@@ -6,6 +6,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -40,6 +41,9 @@ class BacktestReplayJobSubmission:
     # AI-3 (16/11/2026): tham số chiến lược của bot (H03 lookback) để so bản gốc/bản đề xuất.
     # Rỗng = tham số mặc định của release (hành vi cũ, hash cũ giữ nguyên).
     strategy_parameters: tuple[tuple[str, int], ...] = ()
+    # CRY-428: ghi đè thoát lệnh theo bot (JSON canonical của ``ExitOverride.payload``). Rỗng =
+    # recipe của release (hash cũ giữ nguyên).
+    exit_override_json: str = ""
 
     def __post_init__(self) -> None:
         if not isinstance(self.bundle_hash, str) or _SHA256.fullmatch(self.bundle_hash) is None:
@@ -58,6 +62,8 @@ class BacktestReplayJobSubmission:
                 True,
                 tuple(sorted(self.strategy_parameters)),
             )
+        if self.exit_override_json:
+            self.exit_override()
         for name in ("starting_equity", "per_trade_risk_fraction", "fee_rate", "slippage_rate"):
             value = getattr(self, name)
             if not isinstance(value, Decimal) or not value.is_finite():
@@ -77,6 +83,23 @@ class BacktestReplayJobSubmission:
             "TRAINING_BASE",
         }:
             raise ValueError("Mục đích replay không hợp lệ.")
+
+    def exit_override(self) -> Any:
+        """Ghi đè thoát đã kiểm (chỉ trường release vốn có); None nếu không ghi đè."""
+        if not self.exit_override_json:
+            return None
+        import json
+
+        from trading_bot.application.exit_policy_catalog import validate_exit_override
+        from trading_bot.domain.strategy.exit_override import exit_override_from_payload
+
+        override = exit_override_from_payload(json.loads(self.exit_override_json))
+        if override is None:
+            raise ValueError("Ghi đè thoát lệnh rỗng.")
+        problems = validate_exit_override(self.strategy_release_id, override)
+        if problems:
+            raise ValueError("; ".join(f"{field}: {message}" for field, message in problems))
+        return override
 
     def to_payload(self) -> dict[str, str | int]:
         """Chuẩn hóa Decimal thành chuỗi để payload JSON không đi qua float."""

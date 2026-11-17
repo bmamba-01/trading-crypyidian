@@ -952,6 +952,177 @@ async def breaker() -> dict[str, Any]:
     }
 
 
+def _owner_now() -> Any:
+    from trading_bot.auth.policy import Principal, Role
+
+    return Principal(
+        user_id=_id("owner"),
+        membership_id=MEMBERSHIP,
+        workspace_id=WORKSPACE,
+        roles=frozenset({Role.OWNER}),
+        mfa_verified_at=datetime.now(UTC),
+    )
+
+
+async def exit_draft() -> dict[str, Any]:
+    """CRY-428: owner tạo bản nháp ghi đè thoát lệnh; publish bị chặn khi chưa backtest."""
+    from sqlalchemy.exc import DBAPIError
+
+    from trading_bot.adapters.database.models import ProposalBacktestRecord
+    from trading_bot.admin.bot_service import BotAdminError, BotConfigAdminService
+    from trading_bot.application.outbox import UnitOfWork
+    from trading_bot.config.bot_settings import BotConfigOverlay
+
+    owner = _owner_now()
+    bot_id = UUID(STATE["bot_id"])
+    engine, sessions = _sessions()
+    try:
+        service = BotConfigAdminService(sessions)
+        bot = await service.get_bot(owner, bot_id=bot_id)
+        head = bot["current_config"]
+        base = dict(head["overlay"])
+        # h01-v1 không có TP theo ATR: kiểm định phải báo lỗi trường đó.
+        invalid = await service.create_draft(
+            owner,
+            bot_id=bot_id,
+            overlay=BotConfigOverlay.model_validate(
+                base | {"exit": {"take_profit_atr_multiple": "2"}}
+            ),
+            expected_parent_version_id=UUID(head["id"]),
+        )
+        invalid_check = await service.validate_draft(
+            owner, bot_id=bot_id, draft_id=UUID(invalid["id"])
+        )
+        draft = await service.create_draft(
+            owner,
+            bot_id=bot_id,
+            overlay=BotConfigOverlay.model_validate(
+                base | {"exit": {"stop_atr_multiple": "1.5", "max_hold_bars": 60}}
+            ),
+            expected_parent_version_id=UUID(head["id"]),
+        )
+        check = await service.validate_draft(owner, bot_id=bot_id, draft_id=UUID(draft["id"]))
+        try:
+            await service.publish(
+                owner,
+                bot_id=bot_id,
+                draft_id=UUID(draft["id"]),
+                expected_revision=int(draft["revision"]),
+            )
+            blocked = None
+        except BotAdminError as error:
+            blocked = [error.status_code, [item.get("field") for item in error.errors]]
+        # admin-web không tự ghi được kết quả backtest để vượt gate.
+        try:
+            async with UnitOfWork(
+                sessions, workspace_id=WORKSPACE, actor_membership_id=MEMBERSHIP
+            ) as uow:
+                uow.session.add(
+                    ProposalBacktestRecord(
+                        workspace_id=WORKSPACE,
+                        analyst_run_id=None,
+                        source="OWNER_DRAFT",
+                        proposal_index=0,
+                        topic_key="owner_draft",
+                        bot_id=bot_id,
+                        bot_name="forged",
+                        proposal={
+                            "draft_overlay_hash": draft["overlay_hash"],
+                            "head_overlay_hash": head["overlay_hash"],
+                        },
+                        result={},
+                        verdict="BETTER",
+                        version="forged",
+                    )
+                )
+                await uow.session.flush()
+            forged = "inserted"
+        except DBAPIError as error:
+            forged = "denied" if "permission denied" in str(error) else str(error)[:200]
+    finally:
+        await engine.dispose()
+    return {
+        "invalid_errors": [item["field"] for item in invalid_check["errors"]],
+        "draft_id": draft["id"],
+        "draft_revision": draft["revision"],
+        "warnings": [item.get("code") for item in check["warnings"]],
+        "valid": check["valid"],
+        "blocked": blocked,
+        "forged": forged,
+    }
+
+
+async def exit_publish() -> dict[str, Any]:
+    """CRY-428: có backtest OWNER_DRAFT của đúng bản nháp thì publish được, có audit."""
+    from sqlalchemy import select
+
+    from trading_bot.adapters.database.models import AuditEvent
+    from trading_bot.admin.bot_service import BotConfigAdminService
+    from trading_bot.application.outbox import UnitOfWork
+
+    owner = _owner_now()
+    bot_id = UUID(STATE["bot_id"])
+    engine, sessions = _sessions()
+    try:
+        service = BotConfigAdminService(sessions)
+        check = await service.validate_draft(
+            owner, bot_id=bot_id, draft_id=UUID(STATE["exit_draft_id"])
+        )
+        published = await service.publish(
+            owner,
+            bot_id=bot_id,
+            draft_id=UUID(STATE["exit_draft_id"]),
+            expected_revision=int(STATE["exit_draft_revision"]),
+        )
+        listed = await service.list_proposal_backtests(owner, bot_id=bot_id)
+        async with UnitOfWork(
+            sessions, workspace_id=WORKSPACE, actor_membership_id=MEMBERSHIP
+        ) as uow:
+            accepted = (
+                await uow.session.scalars(
+                    select(AuditEvent.reason).where(
+                        AuditEvent.workspace_id == WORKSPACE,
+                        AuditEvent.action == "bot.config.exit_backtest_accepted",
+                    )
+                )
+            ).all()
+    finally:
+        await engine.dispose()
+    owner_rows = [row for row in listed if row["source"] == "OWNER_DRAFT"]
+    return {
+        "warnings": [item.get("code") for item in check["warnings"]],
+        "status": published["status"],
+        "exit": published["overlay"].get("exit"),
+        "owner_rows": [[row["draft_id"], row["verdict"], row["draftable"]] for row in owner_rows],
+        "accepted": list(accepted),
+    }
+
+
+async def exit_resolve() -> dict[str, Any]:
+    """CRY-428: runtime (role trading-runtime) resolve cấu hình bot có ghi đè thoát lệnh."""
+    from trading_bot.application.bot_config_resolver import load_effective_bot_config
+    from trading_bot.application.outbox import UnitOfWork
+
+    bot_id = UUID(STATE["bot_id"])
+    engine, sessions = _sessions()
+    try:
+        async with UnitOfWork(sessions, workspace_id=WORKSPACE, bot_id=bot_id) as uow:
+            config = await load_effective_bot_config(
+                uow.session,
+                workspace_id=WORKSPACE,
+                account_id=ACCOUNT,
+                as_of=datetime.now(UTC),
+            )
+    finally:
+        await engine.dispose()
+    assert config is not None
+    return {
+        "release_id": config.strategy.release_id,
+        "exit_override": config.exit_override.payload() if config.exit_override else None,
+        "hash_ok": config.verify_hash(),
+    }
+
+
 async def risk_appetite() -> dict[str, Any]:
     """CRY-428: trang Khẩu vị rủi ro qua service thật bằng role admin-web (RLS, audit, MFA)."""
     from decimal import Decimal
@@ -2081,6 +2252,12 @@ elif phase == "breaker":
     output = asyncio.run(breaker())
 elif phase == "risk_appetite":
     output = asyncio.run(risk_appetite())
+elif phase == "exit_draft":
+    output = asyncio.run(exit_draft())
+elif phase == "exit_publish":
+    output = asyncio.run(exit_publish())
+elif phase == "exit_resolve":
+    output = asyncio.run(exit_resolve())
 elif phase == "analyst":
     output = asyncio.run(analyst())
 elif phase == "macro_write":

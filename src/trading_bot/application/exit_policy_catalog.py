@@ -11,8 +11,9 @@ thẳng từ mã đã ghim hash của release, không có bản sao thủ công:
 
 Ví dụ quy đổi ra phần trăm giá dùng ATR(14) của khung vào lệnh tại một mốc giá:
 ``% = bội số × ATR / giá × 100``. 1R = khoảng cách vào lệnh→stop, nên TP theo R chỉ quy đổi
-được khi stop là bội số ATR cố định. Trang này **không** cho sửa các giá trị trên: đổi ATR multiple
-hay thang TP là đổi release (hash mới) và phải backtest lại — chờ owner quyết định.
+được khi stop là bội số ATR cố định. Bảng hiện giá trị gốc của release; đổi ATR multiple
+hay thang TP của **release** là đổi release (hash mới). Từ 17/11/2026 owner cho ghi đè theo bot
+(``ExitOverride``, overlay ``exit``) với trường release vốn có, bắt buộc backtest trước publish.
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ from typing import Any
 
 from trading_bot.application.strategy_catalog import strategy_registry
 from trading_bot.application.strategy_market_requirements import entry_timeframe_for_release
+from trading_bot.domain.strategy.exit_override import ExitOverride
 from trading_bot.domain.strategy.recipes import ExitRecipe
 from trading_bot.domain.strategy.registry import StrategyRegistry
 from trading_bot.domain.strategy.scalping_rules import ladder_for_release
@@ -257,3 +259,47 @@ def percent_example(policy: ExitPolicyView, *, atr: Decimal, price: Decimal) -> 
         take_profit_pct=pct(policy.take_profit_atr_multiple),
         ladder_pcts=ladder_pcts,
     )
+
+
+def policy_for_release(
+    release_id: str, registry: StrategyRegistry | None = None
+) -> ExitPolicyView | None:
+    """Chính sách thoát gốc của một release; None nếu release không có trong catalog."""
+    return next(
+        (view for view in build_exit_policy_catalog(registry) if view.release_id == release_id),
+        None,
+    )
+
+
+def validate_exit_override(
+    release_id: str, override: ExitOverride, registry: StrategyRegistry | None = None
+) -> list[tuple[str, str]]:
+    """Quyết định owner 17/11/2026: chỉ ghi đè trường release vốn có.
+
+    Trả danh sách (trường, lý do) vi phạm; rỗng là hợp lệ. SL theo cấu trúc (H18/H20) và Strategy
+    Card không có bội số SL cố định nên không chỉnh SL; release không có thang TP thì không thêm.
+    """
+    policy = policy_for_release(release_id, registry)
+    if policy is None:
+        return [("exit", "Release không có trong catalog chiến lược.")]
+    issues: list[tuple[str, str]] = []
+    checks = (
+        ("stop_atr_multiple", policy.stop_atr_multiple, "SL của release không theo bội số ATR."),
+        (
+            "trailing_atr_multiple",
+            policy.trailing_atr_multiple,
+            "Release không dùng trailing stop.",
+        ),
+        (
+            "take_profit_atr_multiple",
+            policy.take_profit_atr_multiple,
+            "Release không có TP theo bội số ATR.",
+        ),
+        ("max_hold_bars", policy.max_hold_bars, "Release không có giới hạn thời gian giữ."),
+    )
+    for name, base, message in checks:
+        if getattr(override, name) is not None and base is None:
+            issues.append((f"exit.{name}", message))
+    if override.ladder is not None and not policy.ladder:
+        issues.append(("exit.ladder", "Release không có thang TP theo R."))
+    return issues

@@ -41,6 +41,9 @@ SERVICES = {
     "verify": "migrator",
     "breaker": "trading-runtime",
     "risk_appetite": "admin-web",
+    "exit_draft": "admin-web",
+    "exit_publish": "admin-web",
+    "exit_resolve": "trading-runtime",
     "pause_resume": "migrator",
     "outcome": "trading-runtime",
     "macro_write": "ingestion-worker",
@@ -133,7 +136,7 @@ def test_rest_candles_drive_paper_entry_fill_and_stop_exit_idempotently() -> Non
         compose("run", "--rm", "--no-deps", "db-provisioner")
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "head")
         heads = compose("run", "--rm", "--no-deps", "migrator", "alembic", "heads")
-        assert "8f8ec8240b11 (head)" in heads.stdout
+        assert "e5b7d9f1a3c6 (head)" in heads.stdout
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "check")
         state.update(run("seed"))
         # CK-11: bộ quét đọc nến 4h thật (đủ 21 ngày), 1h thiếu 21 ngày bị loại kèm lý do;
@@ -422,6 +425,62 @@ def test_rest_candles_drive_paper_entry_fill_and_stop_exit_idempotently() -> Non
         tightened = run("breaker")
         assert tightened["max_drawdown_fraction"] == "0.05", tightened
         assert tightened["mild_tripped"] is True, tightened  # sụt 6% ≥ 5%
+
+        # CRY-428: ghi đè thoát lệnh theo bot; publish bắt buộc có backtest bản nháp.
+        drafted = run("exit_draft")
+        assert drafted["invalid_errors"] == ["exit.take_profit_atr_multiple"], drafted
+        assert drafted["valid"] is True, drafted
+        assert drafted["warnings"] == ["EXIT_BACKTEST_REQUIRED"], drafted
+        assert drafted["blocked"] == [409, ["exit"]], drafted
+        assert drafted["forged"] == "denied", drafted
+        state["exit_draft_id"] = drafted["draft_id"]
+        state["exit_draft_revision"] = drafted["draft_revision"]
+        # Script backtest thật của owner (container migrator, cùng image). RT-1 không có quyền
+        # BACKTEST_RESEARCH nên coin bị loại → INCONCLUSIVE, nhưng bằng chứng vẫn được lưu.
+        script = subprocess.run(
+            [
+                sys.executable,
+                "scripts/run_proposal_backtest.py",
+                "--bot-draft",
+                state["bot_id"],
+                "--workspace-id",
+                state["workspace_id"],
+                "--project",
+                project,
+                "--max-symbols",
+                "1",
+                "--workers",
+                "1",
+                "--timeout",
+                "600",
+            ],
+            cwd=root,
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=900,
+        )
+        assert script.returncode == 0, (script.stdout[-3000:], script.stderr[-3000:])
+        backtested = json.loads(script.stdout)
+        assert backtested["draft_id"] == drafted["draft_id"], backtested
+        assert backtested["record_id"], backtested
+        assert backtested["verdict"] == "INCONCLUSIVE", backtested
+        published_exit = run("exit_publish")
+        assert published_exit["warnings"] == [], published_exit
+        assert published_exit["status"] == "PUBLISHED", published_exit
+        assert published_exit["exit"] == {"stop_atr_multiple": "1.5", "max_hold_bars": 60}
+        assert published_exit["owner_rows"] == [[drafted["draft_id"], "INCONCLUSIVE", False]], (
+            published_exit
+        )
+        assert published_exit["accepted"] == [
+            f"proposal_backtest={backtested['record_id']} verdict=INCONCLUSIVE"
+        ], published_exit
+        resolved = run("exit_resolve")
+        assert resolved == {
+            "release_id": "h01-v1",
+            "exit_override": {"stop_atr_multiple": "1.5", "max_hold_bars": 60},
+            "hash_ok": True,
+        }, resolved
 
         assert final["decisions"] == ["CANDIDATE"]
         assert final["intents"] == [

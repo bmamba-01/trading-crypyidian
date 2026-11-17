@@ -20,6 +20,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     Uuid,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
@@ -129,14 +130,32 @@ class ProposalBacktestRecord(UuidPrimaryKey, CreatedAt, Base):
             name="proposal_backtest_verdict_valid",
         ),
         CheckConstraint("proposal_index >= 0", name="proposal_backtest_index_nonnegative"),
+        CheckConstraint(
+            "source IN ('AI_PROPOSAL', 'OWNER_DRAFT')", name="proposal_backtest_source_valid"
+        ),
+        CheckConstraint(
+            "(source = 'AI_PROPOSAL') = (analyst_run_id IS NOT NULL)",
+            name="proposal_backtest_source_ref",
+        ),
         Index("ix_proposal_backtest_created", "workspace_id", "created_at"),
+        Index(
+            "ix_proposal_backtest_owner_draft",
+            "workspace_id",
+            "bot_id",
+            "created_at",
+            postgresql_where=text("source = 'OWNER_DRAFT'"),
+        ),
     )
 
     workspace_id: Mapped[UUID] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("workspace.id", ondelete="CASCADE"), nullable=False
     )
-    analyst_run_id: Mapped[UUID] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("analyst_run.id", ondelete="CASCADE"), nullable=False
+    # CRY-428: NULL khi ``source = OWNER_DRAFT`` (backtest bản nháp cấu hình của owner).
+    analyst_run_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("analyst_run.id", ondelete="CASCADE"), nullable=True
+    )
+    source: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="AI_PROPOSAL", server_default="AI_PROPOSAL"
     )
     proposal_index: Mapped[int] = mapped_column(Integer, nullable=False)
     topic_key: Mapped[str] = mapped_column(String(120), nullable=False)
