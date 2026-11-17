@@ -1,10 +1,10 @@
-"""Chấm kết quả tín hiệu đã phát (CRY-430, phương pháp ``sig-outcome-v1``).
+"""Chấm kết quả tín hiệu đã phát (CRY-430, phương pháp ``sig-outcome-v2``).
 
 Mỗi tín hiệu (``bot_decision`` CANDIDATE, kể cả tin bị lọc/SUPPRESSED hoặc không thành lệnh) được
 chấm tại các horizon cố định 1×, 4×, 24× khung vào lệnh, chỉ bằng **nến đã đóng sau nến tín hiệu**
 và đã khả dụng tại lúc chấm (point-in-time, không nhìn trước).
 
-Quy ước ``sig-outcome-v1``:
+Quy ước ``sig-outcome-v2`` (v1 + kiểm giá tham chiếu, 17/11/2026):
 
 - **Mức giá** lấy đúng như thẻ tín hiệu Telegram (``build_signal_card`` không kế hoạch): giá vào =
   giá tham chiếu (giá đóng nến tín hiệu), SL theo recipe (tham chiếu ∓ ATR × hệ số stop), TP1/TP2 =
@@ -20,6 +20,11 @@ Quy ước ``sig-outcome-v1``:
   nhỏ hơn → −1 (sai). Cùng dải ±0,1R với nhãn lệnh ``net-r-band-v1`` của AI-5 nhưng là R **thô**
   (tín hiệu không có phí/trượt giá), nên không trộn lẫn với nhãn lệnh thật.
 - **Mất hiệu lực** (invalidated) = giá chạm SL bất kỳ lúc nào trong horizon.
+- **Kiểm giá tham chiếu** (từ v2): theo định nghĩa thẻ, giá tham chiếu là giá đóng nến tín hiệu. Nếu
+  nến tín hiệu đã lưu có giá đóng lệch quá ``REFERENCE_TOLERANCE`` (0,5%) thì tín hiệu không khớp
+  dữ liệu thị trường (ví dụ dữ liệu giả lập lẫn vào workspace) → ``INVALID_SIGNAL``, không chấm. v1
+  thiếu bước này nên tín hiệu giả giá 100 trên nến BTC thật cho R hàng vạn (phát hiện trên stack
+  local 17/11). Không tìm thấy nến tín hiệu thì vẫn chấm (nguồn nến có thể thiếu nến cũ).
 """
 
 from __future__ import annotations
@@ -35,10 +40,11 @@ from typing import Any
 
 from trading_bot.domain.strategy.signal_card import SignalCardError, build_signal_card
 
-METHOD_VERSION = "sig-outcome-v1"
+METHOD_VERSION = "sig-outcome-v2"
 LABEL_VERSION = "signal-gross-r-band-v1"
 HORIZON_MULTIPLES: tuple[int, ...] = (1, 4, 24)
 R_BAND_HALF_WIDTH = Decimal("0.1")
+REFERENCE_TOLERANCE = Decimal("0.005")
 _R_QUANTUM = Decimal("0.0001")
 
 
@@ -146,6 +152,23 @@ def r_band_label(r_multiple: Decimal) -> int:
     if abs(r_multiple) <= R_BAND_HALF_WIDTH:
         return 0
     return 1 if r_multiple > 0 else -1
+
+
+def reference_matches(reference_price: Decimal, signal_bar_close: Decimal) -> bool:
+    """Giá tham chiếu khớp giá đóng nến tín hiệu trong sai số tương đối ``REFERENCE_TOLERANCE``."""
+    if signal_bar_close <= 0:
+        return False
+    return abs(reference_price - signal_bar_close) / signal_bar_close <= REFERENCE_TOLERANCE
+
+
+def signal_bar(
+    bars: Sequence[ForwardBar], *, signal_at: datetime, interval: timedelta
+) -> ForwardBar | None:
+    """Nến chứa mốc ``signal_at`` (nến tín hiệu đóng tại đó), nếu có trong ``bars``."""
+    for bar in bars:
+        if bar.open_time <= signal_at < bar.open_time + interval:
+            return bar
+    return None
 
 
 def contiguous_window(
@@ -276,8 +299,11 @@ __all__ = [
     "SignalLevels",
     "SignalOutcome",
     "SignalOutcomeError",
+    "REFERENCE_TOLERANCE",
     "contiguous_window",
     "levels_from_candidate",
+    "reference_matches",
+    "signal_bar",
     "r_band_label",
     "score_signal",
 ]

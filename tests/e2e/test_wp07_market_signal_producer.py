@@ -190,7 +190,7 @@ def test_closed_usdm_fixture_creates_one_candidate_delivery_without_execution() 
         assert h4["outcome_r"] == state["expected_tp1_r"]
         assert h4["label"] == 1
         assert (h24["horizon"], h24["status"], h24["label"]) == (24, "DATA_GAP", None)
-        assert {row["method"] for row in outcomes["rows"]} == {"sig-outcome-v1"}
+        assert {row["method"] for row in outcomes["rows"]} == {"sig-outcome-v2"}
         assert outcomes["immutable"] == {
             "update": "SIGNAL_OUTCOME_IMMUTABLE",
             "delete": "SIGNAL_OUTCOME_IMMUTABLE",

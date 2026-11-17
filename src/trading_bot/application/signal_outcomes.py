@@ -53,7 +53,9 @@ from trading_bot.domain.strategy.signal_outcome import (
     SignalOutcomeError,
     contiguous_window,
     levels_from_candidate,
+    reference_matches,
     score_signal,
+    signal_bar,
 )
 
 logger = logging.getLogger(__name__)
@@ -262,15 +264,23 @@ class SignalOutcomeScorer:
                 totals["invalid"] += 1
             return
         interval = TIMEFRAME_INTERVALS[signal.timeframe]
+        # Nạp cả nến tín hiệu (mở trong khung ngay trước ``signal_at``) để kiểm giá tham chiếu.
         bars = await load_forward_bars(
             session,
             workspace_id=workspace_id,
             symbol=signal.symbol,
             timeframe=signal.timeframe,
-            after=signal.signal_at,
+            after=signal.signal_at - interval,
             until=signal.signal_at + interval * max(missing),
             as_of=now,
         )
+        origin = signal_bar(bars, signal_at=signal.signal_at, interval=interval)
+        if origin is not None and not reference_matches(levels.entry, origin.close):
+            for horizon in missing:
+                await _insert(session, workspace_id, signal, horizon, now, levels, None,
+                              OutcomeStatus.INVALID_SIGNAL, "REFERENCE_PRICE_MISMATCH")  # fmt: skip
+                totals["invalid"] += 1
+            return
         for horizon in missing:
             window = contiguous_window(
                 bars, signal_at=signal.signal_at, interval=interval, horizon_bars=horizon

@@ -1,4 +1,4 @@
-"""CRY-430: phương pháp chấm kết quả tín hiệu ``sig-outcome-v1``."""
+"""CRY-430: phương pháp chấm kết quả tín hiệu ``sig-outcome-v2``."""
 
 from __future__ import annotations
 
@@ -15,7 +15,9 @@ from trading_bot.domain.strategy.signal_outcome import (
     contiguous_window,
     levels_from_candidate,
     r_band_label,
+    reference_matches,
     score_signal,
+    signal_bar,
 )
 
 SIGNAL_AT = datetime(2026, 11, 17, 11, 59, 59, 999000, tzinfo=UTC)
@@ -205,3 +207,22 @@ def test_levels_validation() -> None:
         SignalLevels(direction="long", entry=Decimal(1), stop=Decimal(2), tp1=Decimal(3), tp2=None)
     with pytest.raises(SignalOutcomeError):
         SignalLevels(direction="up", entry=Decimal(1), stop=Decimal(0), tp1=Decimal(3), tp2=None)
+
+
+def test_reference_price_must_match_signal_bar_close() -> None:
+    """v2: giá tham chiếu giả (100) trên nến BTC thật (~65.000) bị loại thay vì cho R hàng vạn."""
+    assert reference_matches(Decimal("65000"), Decimal("65200"))
+    assert not reference_matches(Decimal("65000"), Decimal("65400"))
+    assert not reference_matches(Decimal("100.2"), Decimal("65309.8"))
+    assert not reference_matches(Decimal("1"), Decimal("0"))
+    origin = ForwardBar(
+        open_time=SIGNAL_AT - STEP + timedelta(milliseconds=1),
+        close_time=SIGNAL_AT,
+        open=Decimal(1),
+        high=Decimal(1),
+        low=Decimal(1),
+        close=Decimal("100"),
+    )
+    later = _bars(("100", "101", "99", "100"))
+    assert signal_bar((origin, *later), signal_at=SIGNAL_AT, interval=STEP) == origin
+    assert signal_bar(later, signal_at=SIGNAL_AT, interval=STEP) is None

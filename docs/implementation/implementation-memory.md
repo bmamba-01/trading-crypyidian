@@ -5649,3 +5649,12 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
   - `/admin/risk`: 13 bot, cột "Thoát lệnh" của T01 là "Theo release".
   - Trang bot T01: fieldset "Thông số thoát lệnh (h03-v3-1h)" có đúng 3 ô SL/trailing/giữ tối đa, gợi ý 2/3/120.
   - Admin-web chính (8010) vẫn chạy container cũ dù image `crypidian-app:local` đã được build lại; cần restart `admin-web` + `trading-runtime` (chờ owner).
+
+
+### 2026-11-17 — CRY-430 vòng 2: `sig-outcome-v2` kiểm giá tham chiếu sau khi chạy thật trên stack local
+
+- **Phát hiện:** sau khi phiên AI-5 rebuild `crypidian-app:local` từ dev `2e89700` và recreate service, worker chấm 1.907 hàng (729 tín hiệu; h1 729, h4 706, h24 472, đều SCORED). R trung bình của `sc-binance-usdm-vol-breakout-001-v1.0.0` ≈ 270R và `h03-v1` ≈ 16.812R — phi lý.
+- **Nguyên nhân gốc:** workspace thật có tín hiệu **dữ liệu giả** (BTCUSDT giá tham chiếu 100,2/101,5, ATR 2,0 — 49 tín hiệu, 10 tín hiệu |R| > 20) trong khi nến BTC đã lưu ~65.000. `sig-outcome-v1` tin giá tham chiếu của candidate mà không đối chiếu với nến tín hiệu, nên nến đầu "gap qua TP" và R vọt lên hàng vạn, làm méo trung bình theo setup.
+- **Sửa (`sig-outcome-v2`):** scorer nạp thêm nến tín hiệu (nến chứa `signal_at`); nếu giá đóng nến đó lệch giá tham chiếu > 0,5% (`REFERENCE_TOLERANCE`) → mọi horizon `INVALID_SIGNAL` với `detail_code = REFERENCE_PRICE_MISMATCH`, không chấm. Không có nến tín hiệu thì vẫn chấm. Hàng v1 giữ nguyên (append-only); Admin/Run Report chỉ đọc `METHOD_VERSION` hiện hành nên tự chuyển sang v2, worker chấm lại toàn bộ tín hiệu trong 14 ngày theo v2. Không cần migration. Glossary thêm "Reference price consistency check" (mục BJ).
+- **Kiểm thử:** unit mới `test_reference_price_must_match_signal_bar_close`; toàn bộ unit **5302 passed/125s**; ruff/format (1201 file)/mypy (491 file) sạch; E2E `test_wp07_market_signal_producer` (giá tham chiếu fixture khớp nến tín hiệu live, `invalid = 0`) **1 passed/39s**.
+- **Còn mở:** nguồn tín hiệu giả trong workspace thật chưa truy ra (có thể từ seed/demo của phiên khác); cần rebuild image local lần nữa để worker chấm theo v2.

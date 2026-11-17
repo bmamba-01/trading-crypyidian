@@ -132,7 +132,7 @@ class _Stub:
             "options": {"bots": [{"id": str(BOT), "name": "T09"}], "releases": ["h03-v3-15m"],
                         "symbols": ["ZECUSDT"], "timeframes": ["15m"], "horizons": [1, 4, 24],
                         "periods": ["7", "30", "90"]},
-            "method_version": "sig-outcome-v1",
+            "method_version": "sig-outcome-v2",
             "truncated": False,
             "summary": summary,
             "bucket_labels": bucket_labels(),

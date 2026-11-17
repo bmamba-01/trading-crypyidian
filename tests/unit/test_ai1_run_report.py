@@ -204,7 +204,7 @@ def test_signal_outcomes_block_and_ai_validator_refs() -> None:
         bots=[_bot("T09", "h03-v3-15m", [], signal_outcomes=outcomes)],
     ).payload
     block = report["bots"][0]["signal_outcomes"]
-    assert block["method_version"] == "sig-outcome-v1"
+    assert block["method_version"] == "sig-outcome-v2"
     assert block["primary_horizon_bars"] == 4
     primary = block["by_horizon_bars"]["4"]
     assert (primary["scored"], primary["correct"], primary["wrong"]) == (4, 1, 3)
