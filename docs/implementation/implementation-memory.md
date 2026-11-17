@@ -5623,3 +5623,11 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
   - Rollback về version cũ có khối `exit` khác không đòi backtest (bản đó đã từng được publish).
   - Thang TP chỉ ghi đè được cho release vốn có thang (scalping).
 - **E2E migration đi qua `e5b7`** (upgrade/downgrade, assert head mới): `test_live_market_backfill_migration.py` + `test_wp06_shadow_drift_persistence.py` **3 passed/97.17s**; unit `test_sig0_taker_flow.py` (chuỗi head) đạt.
+- **Rebase lên `dev` `62b0b3c`** (CRY-429 LIVE-MON, CRY-430 `8f8ec8240b11`):
+  - `e5b7d9f1a3c6` nối sau `8f8ec8240b11`; các assert head CRY-430 vừa đổi được chuyển sang `e5b7`.
+  - Glossary hai dòng mới về mục BH (trước BI/BJ của dev).
+  - Sau rebase:
+    - unit **5268 passed/207.72s**;
+    - ruff/format/mypy (489 file), diff-check đạt;
+    - `test_admin_*_playwright.py` **57 passed**;
+    - RT-1 + `test_live_market_backfill_migration.py` **2 passed/449.93s**.
