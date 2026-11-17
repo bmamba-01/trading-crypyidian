@@ -17,6 +17,9 @@ from trading_bot.application.backtest_dataset_replay_bundle import BacktestDatas
 from trading_bot.application.backtest_dataset_replay_observations import (
     build_backtest_dataset_replay_observations,
 )
+from trading_bot.application.backtest_replay_opposing import (
+    build_default_opposing_signal_provider,
+)
 from trading_bot.application.backtest_sensitivity import SensitivityScenario
 from trading_bot.application.paper_decision_cycle import PaperDecisionCycle
 from trading_bot.application.runtime_replay_evaluator import (
@@ -370,7 +373,14 @@ class BacktestDatasetRuntimeEvaluatorFactory:
         opposing_provider = (
             self.opposing_signal_provider_factory(scenario, manifest)
             if self.opposing_signal_provider_factory is not None
-            else None
+            else build_default_opposing_signal_provider(
+                strategies=self.strategies,
+                manifest=manifest,
+                scenario=scenario,
+                seed=seed,
+                observations=self.observations,
+                gateway=gateway,
+            )
         )
         context_provider = BacktestDatasetReplayContextProvider(
             self.bundle,
