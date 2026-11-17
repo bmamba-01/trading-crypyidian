@@ -209,7 +209,18 @@ def _seed_paper() -> dict[str, Any]:
             "published_at=%s, effective_at=%s WHERE workspace_id=%s AND id=%s",
             (membership_id, effective_at, effective_at, WORKSPACE, bot_config_id),
         )
-        for symbol, instrument_id in instrument_ids.items():
+        for symbol in tuple(instrument_ids):
+            # Phase `seed` (probe candidate universe proof) đã ghi instrument BINANCE_USDM thật
+            # để persist nến; dùng lại thay vì insert trùng (workspace, source, symbol, revision).
+            existing = connection.execute(
+                "SELECT id FROM market_instrument WHERE workspace_id=%s AND source=%s "
+                "AND symbol=%s AND revision=1",
+                (WORKSPACE, "BINANCE_USDM", symbol),
+            ).fetchone()
+            if existing is not None:
+                instrument_ids[symbol] = existing[0]
+                continue
+            instrument_id = instrument_ids[symbol]
             _insert(
                 connection,
                 "market_instrument",
@@ -253,12 +264,19 @@ def _seed_market_bars() -> dict[str, Any]:
         for symbol, instrument_id in instrument_ids.items():
             symbol_index = SYMBOLS.index(symbol)
             price_offset = float(symbol_index * 100)
+            # Nến khớp lưới khung thời gian như kline Binance thật: workspace còn nến backfill
+            # synthetic (khớp giờ) do phase `seed` ghi, producer trộn live+backfill theo
+            # open_time nên nến lệch lưới làm khoảng nến không chia hết cho interval. 1h dùng
+            # 260 nến để cửa sổ 256 nến của producer chỉ chứa nến journey; 4h trùng open_time
+            # với nến backfill và nguồn live được ưu tiên.
             for timeframe, interval, count, breakout in (
-                ("1h", timedelta(hours=1), 206, True),
+                ("1h", timedelta(hours=1), 260, True),
                 ("4h", timedelta(hours=4), 205, False),
             ):
-                final_close = now - timedelta(seconds=3)
-                final_open = final_close - interval + timedelta(microseconds=1)
+                epoch = datetime(1970, 1, 1, tzinfo=UTC)
+                # Lùi 5 giây để available_at (đóng + 1s) của nến cuối không vượt `now`.
+                settled = now - timedelta(seconds=5)
+                final_open = epoch + ((settled - epoch) // interval) * interval - interval
                 first_open = final_open - (count - 1) * interval
                 closes = (
                     [300.0 + price_offset - index * 0.1 for index in range(count - 1)]
@@ -325,9 +343,29 @@ async def _grant_paper_rights() -> dict[str, Any]:
             database="crypidian",
         )
     )
+    try:
+        from source_license_fixture import (
+            append_fixture_license_evidence,
+            consume_rights_events,
+            fixture_license_scope,
+            pending_license_kwargs,
+            verified_license_kwargs,
+        )
+    except ModuleNotFoundError:  # Import qua package khi /e2e-tests nằm trên sys.path.
+        from e2e.probes.source_license_fixture import (
+            append_fixture_license_evidence,
+            consume_rights_events,
+            fixture_license_scope,
+            pending_license_kwargs,
+            verified_license_kwargs,
+        )
+
     sessions = create_session_factory(engine)
     source_id = "BINANCE_USDM_REST"
     policy_id = f"{source_id}:task9-paper-demo"
+    # Từ d823df5 VERIFIED mới phải mang license scope + evidence của đúng pending trước.
+    license_scope = fixture_license_scope(source_id)
+    terms = "https://example.invalid/wp06-task9-paper-demo-fixture"
     async with UnitOfWork(sessions, workspace_id=WORKSPACE) as unit:
         repository = SourceRegistryRepository(unit.session)
         history = await repository.get_entry(workspace_id=WORKSPACE, source_id=source_id)
@@ -338,6 +376,7 @@ async def _grant_paper_rights() -> dict[str, Any]:
             actor_id="task9-fixture-operator",
             at=now,
             reason="Mở xét quyền PAPER_DEMO cho journey tích hợp.",
+            **pending_license_kwargs(license_scope, terms),
         )
         await repository.append_revision(workspace_id=WORKSPACE, revision=pending.current)
     async with UnitOfWork(sessions, workspace_id=WORKSPACE) as unit:
@@ -357,10 +396,13 @@ async def _grant_paper_rights() -> dict[str, Any]:
             at=now,
             reason="Cho phép dùng dữ liệu fixture trong PAPER_DEMO.",
             allowed_purposes=frozenset({SourceUsePurpose.PAPER_DEMO}),
-            evidence_ref="https://example.invalid/wp06-task9-paper-demo-fixture",
             reviewed_at=now,
             valid_until=now + timedelta(days=1),
             approved_by="task9-fixture-reviewer",
+            **verified_license_kwargs(license_scope, terms, uuid4()),
+        )
+        await append_fixture_license_evidence(
+            unit.session, workspace_id=WORKSPACE, revision=verified.current
         )
         await repository.append_revision(workspace_id=WORKSPACE, revision=verified.current)
     async with UnitOfWork(sessions, workspace_id=WORKSPACE) as unit:
@@ -369,6 +411,8 @@ async def _grant_paper_rights() -> dict[str, Any]:
             source_id=source_id,
             policy_id=verified.current.policy.policy_id,
         )
+    # Gate quyền phía sau đòi mọi rights event đã có receipt của consumer.
+    await consume_rights_events(sessions, workspace_id=WORKSPACE)
     await engine.dispose()
     return {"paper_rights_policy_id": policy_id}
 
