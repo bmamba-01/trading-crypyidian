@@ -331,6 +331,9 @@ def test_admin_browser_session_navigation_accessibility_and_telegram_link(
         assert successful_login_info.value.status == 303
         expect(browser_page).to_have_url(f"{base_url}/admin")
         expect(browser_page.get_by_text("browser-owner@example.test", exact=True)).to_be_visible()
+        # Rời trang trước khi đổi cookie: trang còn polling sẽ nhận 401 trong khoảng chưa có
+        # cookie và `session-guard.js` (đúng thiết kế) chuyển về đăng nhập, chen vào goto.
+        browser_page.goto("about:blank")
         browser_page.context.clear_cookies()
 
         browser_page.context.add_cookies(
@@ -548,6 +551,9 @@ def test_admin_browser_session_navigation_accessibility_and_telegram_link(
         expect(browser_page.locator(".chart-event-list")).to_contain_text("Vì sao bắt tín hiệu")
         expect(browser_page.locator(".chart-event-list")).to_contain_text("Vì sao đóng")
         analyst = harness.state["mb07a_sessions"]["analyst_reviewer"]
+        # Rời trang trước khi đổi cookie: trang còn polling sẽ nhận 401 trong khoảng chưa có
+        # cookie và `session-guard.js` (đúng thiết kế) chuyển về đăng nhập, chen vào goto.
+        browser_page.goto("about:blank")
         browser_page.context.clear_cookies()
         browser_page.context.add_cookies(
             [
@@ -586,6 +592,9 @@ def test_admin_browser_session_navigation_accessibility_and_telegram_link(
         assert denied_workspace is not None
         assert denied_workspace.status == 403
         expect(browser_page.get_by_role("alert")).to_be_visible()
+        # Rời trang trước khi đổi cookie: trang còn polling sẽ nhận 401 trong khoảng chưa có
+        # cookie và `session-guard.js` (đúng thiết kế) chuyển về đăng nhập, chen vào goto.
+        browser_page.goto("about:blank")
         browser_page.context.clear_cookies()
         browser_page.context.add_cookies(
             [
