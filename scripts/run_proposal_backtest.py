@@ -56,7 +56,7 @@ def _phase(project: str, phase: str, state: dict[str, Any], timeout: float) -> d
 
 
 def send_telegram(
-    results: list[dict[str, Any]], chats: list[int], sender: Any = None, pause: float = 1.1
+    results: list[dict[str, Any]], chats: list[Any], sender: Any = None, pause: float = 1.1
 ) -> int:
     """Gửi thẻ so sánh tới các chat đã liên kết; lỗi một tin chỉ ghi lại."""
     import asyncio
@@ -66,6 +66,7 @@ def send_telegram(
         load_telegram_bot_token,
     )
     from trading_bot.adapters.telegram.card_delivery import send_backtest_card
+    from trading_bot.adapters.telegram.topic_sender import bind_topic, split_destination
 
     if sender is None:
         sender = TelegramBotApiSender(
@@ -75,9 +76,12 @@ def send_telegram(
     async def run() -> int:
         sent = 0
         for item in results:
-            for chat in chats:
+            for destination in chats:
+                # TG-4: đích là chat hoặc [chat, topic PAPER report]; thẻ AI vào topic report.
+                chat, thread_id = split_destination(destination)
+                target = bind_topic(sender, thread_id)
                 try:
-                    await send_backtest_card(sender, chat, item["proposal"], item["result"])
+                    await send_backtest_card(target, chat, item["proposal"], item["result"])
                 except Exception as error:  # noqa: BLE001
                     print(f"Gửi Telegram lỗi: {type(error).__name__}", file=sys.stderr)
                     continue
@@ -189,6 +193,7 @@ async def _container(phase: str, state: dict[str, Any]) -> dict[str, Any]:
     from trading_bot.adapters.database.repositories.source_registry import (
         SourceRegistryRepository,
     )
+    from trading_bot.adapters.telegram.topic_sender import report_destinations
     from trading_bot.application.ai_analyst import ANALYST_OUTPUT_VERSION, validate_proposals
     from trading_bot.application.binance_rest_backfill_rights import (
         SourceRegistryBackfillRightsGate,
@@ -358,7 +363,10 @@ async def _container(phase: str, state: dict[str, Any]) -> dict[str, Any]:
             results.append({"proposal": dict(proposal), "result": result_payload})
         async with UnitOfWork(sessions, workspace_id=workspace) as uow:
             chats = await uow.session.execute(
-                select(TelegramSignalSubscription.telegram_chat_id)
+                select(
+                    TelegramSignalSubscription.telegram_chat_id,
+                    TelegramBinding.report_thread_id,
+                )
                 .join(
                     TelegramBinding,
                     TelegramBinding.id == TelegramSignalSubscription.telegram_binding_id,
@@ -371,7 +379,7 @@ async def _container(phase: str, state: dict[str, Any]) -> dict[str, Any]:
                 )
                 .distinct()
             )
-            chat_ids = sorted({int(c) for (c,) in chats})
+            chat_ids = [list(item) for item in report_destinations(chats)]
     finally:
         await engine.dispose()
     return {"results": results, "invalid": invalid, "chats": chat_ids}

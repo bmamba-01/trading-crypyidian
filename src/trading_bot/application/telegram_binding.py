@@ -12,10 +12,29 @@ from typing import Protocol
 from uuid import UUID
 
 from trading_bot.auth.policy import Principal, Role
+from trading_bot.ports.telegram import TelegramTopicCreator
 
 LINK_TTL = timedelta(minutes=10)
 RECENT_MFA_TTL = timedelta(minutes=15)
 _BOT_USERNAME = re.compile(r"^[A-Za-z0-9_]{5,32}$")
+# TG-4: tên hai topic trong chat riêng của bot (owner chọn 17/11/2026).
+SIGNAL_TOPIC_NAME = "Tín hiệu"
+REPORT_TOPIC_NAME = "PAPER report"
+_SAFE_ERROR_CODE = re.compile(r"^[A-Z0-9_]{1,64}$")
+
+
+class TelegramTopicSetupError(RuntimeError):
+    """Telegram từ chối/không tạo được topic; chỉ giữ mã an toàn, không body/token."""
+
+    def __init__(self, code: str) -> None:
+        self.code = code if _SAFE_ERROR_CODE.fullmatch(code) else "TELEGRAM_TOPIC_CREATE_FAILED"
+        super().__init__(self.code)
+
+
+@dataclass(frozen=True, slots=True)
+class TelegramTopics:
+    signal_thread_id: int
+    report_thread_id: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,6 +63,20 @@ class TelegramBindingRepository(Protocol):
 
     async def list_bindings(self, workspace_id: UUID) -> list[dict[str, str]]: ...
 
+    async def binding_chat(self, workspace_id: UUID, membership_id: UUID) -> int | None:
+        """Chat riêng của binding đã xác minh, chưa thu hồi; None nếu không có."""
+        ...
+
+    async def set_topics(
+        self,
+        workspace_id: UUID,
+        membership_id: UUID,
+        actor_membership_id: UUID,
+        *,
+        signal_thread_id: int | None,
+        report_thread_id: int | None,
+    ) -> bool: ...
+
 
 class TelegramBindingService:
     """Áp quyền/MFA và không chuyển mã thô xuống repository hoặc audit."""
@@ -55,6 +88,7 @@ class TelegramBindingService:
         bot_username: str,
         now: Callable[[], datetime] | None = None,
         token_factory: Callable[[], str] | None = None,
+        topic_creator: Callable[[], TelegramTopicCreator | None] | None = None,
     ) -> None:
         if not _BOT_USERNAME.fullmatch(bot_username):
             raise ValueError("Tên bot Telegram cấu hình không hợp lệ.")
@@ -62,6 +96,8 @@ class TelegramBindingService:
         self._bot_username = bot_username
         self._now = now or (lambda: datetime.now(UTC))
         self._token_factory = token_factory or (lambda: secrets.token_urlsafe(32))
+        # Sender được dựng sau service trong lifespan nên truyền dạng hàm lấy trễ.
+        self._topic_creator = topic_creator or (lambda: None)
 
     async def create_link(self, principal: Principal, *, reason: str) -> TelegramLink:
         self._require_owner(principal)
@@ -97,6 +133,50 @@ class TelegramBindingService:
     async def list_bindings(self, principal: Principal) -> list[dict[str, str]]:
         self._require_owner(principal)
         return await self._repository.list_bindings(principal.workspace_id)
+
+    async def create_topics(self, principal: Principal, membership_id: UUID) -> TelegramTopics:
+        """Tạo topic "Tín hiệu" và "PAPER report" trong chat riêng của binding rồi lưu id.
+
+        Chỉ lưu khi tạo được cả hai topic; lỗi Telegram (vd. bot chưa bật chế độ topic trong
+        @BotFather) → ``TelegramTopicSetupError`` và binding giữ nguyên cấu hình cũ.
+        """
+        self._require_owner(principal)
+        self._require_recent_mfa(principal)
+        chat_id = await self._repository.binding_chat(principal.workspace_id, membership_id)
+        if chat_id is None:
+            raise ValueError("Không có liên kết Telegram đang hoạt động cho thành viên này.")
+        creator = self._topic_creator()
+        if creator is None:
+            raise TelegramTopicSetupError("TELEGRAM_SENDER_UNAVAILABLE")
+        try:
+            signal_thread_id = await creator.create_forum_topic(chat_id, SIGNAL_TOPIC_NAME)
+            report_thread_id = await creator.create_forum_topic(chat_id, REPORT_TOPIC_NAME)
+        except Exception as error:
+            raise TelegramTopicSetupError(
+                str(getattr(error, "code", "TELEGRAM_TOPIC_CREATE_FAILED"))
+            ) from None
+        saved = await self._repository.set_topics(
+            principal.workspace_id,
+            membership_id,
+            principal.membership_id,
+            signal_thread_id=signal_thread_id,
+            report_thread_id=report_thread_id,
+        )
+        if not saved:
+            raise ValueError("Liên kết Telegram đã bị thu hồi trong lúc tạo topic.")
+        return TelegramTopics(signal_thread_id, report_thread_id)
+
+    async def clear_topics(self, principal: Principal, membership_id: UUID) -> bool:
+        """Bỏ cấu hình topic: tin quay về chat chính (không xóa topic trên Telegram)."""
+        self._require_owner(principal)
+        self._require_recent_mfa(principal)
+        return await self._repository.set_topics(
+            principal.workspace_id,
+            membership_id,
+            principal.membership_id,
+            signal_thread_id=None,
+            report_thread_id=None,
+        )
 
     @staticmethod
     def _require_owner(principal: Principal) -> None:

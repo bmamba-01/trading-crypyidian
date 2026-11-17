@@ -75,7 +75,8 @@ def test_migration_is_the_single_head_after_previous_head() -> None:
     # RT-1 lát 2 nối migration mark fallback ngay sau SIG-0. Sau đó hai nhánh tách ra: dev (CK-1
     # bảng giá trực tiếp, CK-10 lịch kinh tế) và main (AI-3/AI-4); revision gộp CRY-88 nối lại
     # thành một head.
-    assert heads == ["ad99c4f520d0"]
+    assert heads == ["60a62c705a89"]
+    assert graph["60a62c705a89"] == "ad99c4f520d0"  # TG-4: topic Telegram tín hiệu / PAPER report
     assert graph["ad99c4f520d0"] == "a42edbd211e5"  # CRY-380: run_report bất biến
     assert graph["a42edbd211e5"] == "7707d82de246"  # CRY-384: analyst_run.context
     assert graph["7707d82de246"] == "c1fec3af85ea"  # bù bảng live market b4d6 (CRY-88)

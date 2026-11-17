@@ -84,7 +84,8 @@ COLUMN_UPDATE = {
         "user_membership": {"created_at"},
         "session": {"revoked_at", "csrf_token_hash", "mfa_verified_at"},
         "mfa_factor": {"verified_at", "last_used_counter"},
-        "telegram_binding": {"revoked_at"},
+        # TG-4: topic tín hiệu / PAPER report do Admin tạo.
+        "telegram_binding": {"revoked_at", "signal_thread_id", "report_thread_id"},
         "telegram_link_request": {"expires_at", "consumed_at"},
         "telegram_binding_challenge": {"consumed_at"},
         "trading_account": {"updated_at"},

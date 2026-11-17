@@ -69,9 +69,9 @@ def test_signal_worker_sends_only_to_active_opted_in_private_binding() -> None:
         )
     }
 
-    def run_probe(phase: str, *, worker: bool = False) -> dict[str, Any]:
+    def run_probe(phase: str, *, worker: bool = False, admin: bool = False) -> dict[str, Any]:
         payload = json.dumps({"phase": phase, "state": state, "code": probe})
-        service = "telegram-signal-worker" if worker else "migrator"
+        service = "telegram-signal-worker" if worker else "admin-web" if admin else "migrator"
         result = compose(
             "run",
             "--rm",
@@ -104,6 +104,17 @@ def test_signal_worker_sends_only_to_active_opted_in_private_binding() -> None:
         assert run_probe("acl", worker=True) == {
             "signal_scope_grants": True,
             "order_privileges": False,
+        }
+        # TG-4: admin-web lưu 2 topic; worker đọc topic và định tuyến tin vào đúng thread.
+        assert run_probe("admin_set_topics", admin=True) == {
+            "chat": 987654321,
+            "saved": True,
+            "topics": ["split"],
+            "zero_thread_rejected": True,
+        }
+        assert run_probe("worker_topic_routing", worker=True) == {
+            "threads": [["message", 987654321, 66]],
+            "signal_thread": 55,
         }
         assert run_probe("revoke_binding") == {"revoked": True}
         assert run_probe("worker_revoked_binding", worker=True) == {

@@ -327,7 +327,7 @@ def analyze_topics(
 
 
 def send_telegram(
-    records: list[dict[str, Any]], chats: list[int], sender: Any = None, pause: float = 1.1
+    records: list[dict[str, Any]], chats: list[Any], sender: Any = None, pause: float = 1.1
 ) -> int:
     """Gửi kết quả hợp lệ tới các chat đã liên kết; token đọc từ .secrets (không in)."""
     import asyncio
@@ -337,6 +337,7 @@ def send_telegram(
         load_telegram_bot_token,
     )
     from trading_bot.adapters.telegram.card_delivery import send_analysis_card
+    from trading_bot.adapters.telegram.topic_sender import bind_topic, split_destination
 
     if sender is None:
         token = load_telegram_bot_token(ROOT / ".secrets" / "telegram_bot_token")
@@ -347,12 +348,15 @@ def send_telegram(
         for record in records:
             if not record["valid"]:
                 continue
-            for chat in chats:
+            for destination in chats:
+                # TG-4: đích là chat hoặc [chat, topic PAPER report]; thẻ AI vào topic report.
+                chat, thread_id = split_destination(destination)
+                target = bind_topic(sender, thread_id)
                 # Ảnh thẻ "Phân tích AI" + caption; vẽ lỗi thì tự gửi văn bản. Lỗi gửi một tin
                 # chỉ ghi lại, không làm hỏng cả lượt (kết quả đã lưu DB trước đó).
                 try:
                     await send_analysis_card(
-                        sender,
+                        target,
                         chat,
                         record["topic_key"],
                         record["topic_report"],
@@ -580,6 +584,7 @@ async def _container(phase: str, state: dict[str, Any]) -> dict[str, Any]:
         TelegramBinding,
         TelegramSignalSubscription,
     )
+    from trading_bot.adapters.telegram.topic_sender import report_destinations
     from trading_bot.application.outbox import UnitOfWork
     from trading_bot.application.run_report import load_run_report
 
@@ -703,7 +708,10 @@ async def _container(phase: str, state: dict[str, Any]) -> dict[str, Any]:
                             existing.run_count += 1
                             existing.last_used_at = now
                 chats = await session.execute(
-                    select(TelegramSignalSubscription.telegram_chat_id)
+                    select(
+                        TelegramSignalSubscription.telegram_chat_id,
+                        TelegramBinding.report_thread_id,
+                    )
                     .join(
                         TelegramBinding,
                         TelegramBinding.id == TelegramSignalSubscription.telegram_binding_id,
@@ -718,7 +726,7 @@ async def _container(phase: str, state: dict[str, Any]) -> dict[str, Any]:
                 )
                 return {
                     "stored": len(state["records"]),
-                    "chats": sorted({int(c) for (c,) in chats}),
+                    "chats": [list(item) for item in report_destinations(chats)],
                 }
         raise SystemExit(phase)
     finally:

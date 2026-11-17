@@ -37,6 +37,7 @@ from trading_bot.adapters.database.repositories.telegram_trade_results import (
     TradeNotificationClaim,
 )
 from trading_bot.adapters.telegram.bot_api_sender import TelegramApiError
+from trading_bot.adapters.telegram.topic_sender import bind_topic
 from trading_bot.application.outbox import UnitOfWork, retry_delay_seconds
 from trading_bot.application.telegram_trade_results import (
     PaperReportView,
@@ -272,7 +273,7 @@ class TelegramTradeResultWorker:
                 claim.chat_id,
                 claim.notification_id,
                 claim.attempts,
-                self._trade_result_delivery(view),
+                self._trade_result_delivery(view, claim.thread_id),
                 bot_id=bot_id,
             ):
                 sent += 1
@@ -313,11 +314,20 @@ class TelegramTradeResultWorker:
                 await self._mark_report_filtered(claim)
                 continue
             view = await self._build_report_view(claim, bot_ids)
+            # TG-4: topic PAPER report của binding ứng với chat này (cấu hình hiện hành).
+            thread_id = next(
+                (
+                    t.report_thread_id
+                    for t in targets
+                    if t.chat_id == claim.chat_id and t.report_thread_id is not None
+                ),
+                None,
+            )
             if await self._send(
                 claim.chat_id,
                 claim.report_id,
                 claim.attempts,
-                self._paper_report_delivery(view),
+                self._paper_report_delivery(view, thread_id),
                 bot_id=None,
             ):
                 sent += 1
@@ -346,15 +356,19 @@ class TelegramTradeResultWorker:
             window_start=claim.window_start, window_end=claim.window_end, rows=rows
         )
 
-    def _trade_result_delivery(self, view: TradeResultView) -> Callable[[int], Awaitable[None]]:
+    def _trade_result_delivery(
+        self, view: TradeResultView, thread_id: int | None
+    ) -> Callable[[int], Awaitable[None]]:
         async def deliver(chat_id: int) -> None:
-            await self._trade_result_send(self._sender, chat_id, view)
+            await self._trade_result_send(bind_topic(self._sender, thread_id), chat_id, view)
 
         return deliver
 
-    def _paper_report_delivery(self, view: PaperReportView) -> Callable[[int], Awaitable[None]]:
+    def _paper_report_delivery(
+        self, view: PaperReportView, thread_id: int | None
+    ) -> Callable[[int], Awaitable[None]]:
         async def deliver(chat_id: int) -> None:
-            await self._paper_report_send(self._sender, chat_id, view)
+            await self._paper_report_send(bind_topic(self._sender, thread_id), chat_id, view)
 
         return deliver
 

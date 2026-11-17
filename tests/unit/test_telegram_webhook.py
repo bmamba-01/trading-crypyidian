@@ -814,3 +814,44 @@ def test_update_id_beyond_bigint_is_rejected(update_id: int) -> None:
 
     assert response.status_code == 400
     assert telegram.calls == []
+
+
+# --- TG-4: trả lời lệnh ngay trong topic người dùng gõ -----------------------------------
+@pytest.mark.parametrize(
+    ("overrides", "expected"),
+    [
+        ({"message_thread_id": 55, "is_topic_message": True}, 55),
+        ({"message_thread_id": 55}, None),
+        ({"message_thread_id": -1, "is_topic_message": True}, None),
+        ({"message_thread_id": True, "is_topic_message": True}, None),
+        ({}, None),
+    ],
+    ids=["topic", "not-topic-flag", "negative", "bool", "main-chat"],
+)
+def test_command_reply_goes_to_topic_where_it_was_typed(
+    overrides: dict[str, Any], expected: int | None
+) -> None:
+    client, _, _, sender = _setup()
+
+    response = _send(client, _message("/bots", update_id=401, **overrides))
+
+    assert response.status_code == 200
+    assert sender.threads[-1] == ("message", OPERATOR_TG, expected)
+
+
+def test_start_stop_replies_stay_in_their_topic() -> None:
+    client, _, _, sender = _setup()
+
+    _send(client, _message("/start", update_id=411, message_thread_id=7, is_topic_message=True))
+    _send(client, _message("/stop", update_id=412, message_thread_id=8, is_topic_message=True))
+
+    assert sender.threads[-2:] == [("message", OPERATOR_TG, 7), ("message", OPERATOR_TG, 8)]
+
+
+def test_concurrent_topics_do_not_leak_thread_between_updates() -> None:
+    client, _, _, sender = _setup()
+
+    _send(client, _message("/bots", update_id=421, message_thread_id=9, is_topic_message=True))
+    _send(client, _message("/bots", update_id=422))
+
+    assert [item[2] for item in sender.threads[-2:]] == [9, None]

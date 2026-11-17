@@ -22,6 +22,7 @@ import re
 import time
 from collections import OrderedDict, deque
 from collections.abc import Callable, Mapping
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, cast
@@ -38,6 +39,7 @@ from trading_bot.adapters.database.repositories.telegram import (
     TelegramUpdateReceiptRepository,
 )
 from trading_bot.adapters.database.repositories.telegram_signals import TelegramSignalRepository
+from trading_bot.adapters.telegram.topic_sender import bind_topic
 from trading_bot.application.outbox import UnitOfWork
 from trading_bot.ports.telegram import TelegramMessageSender
 from trading_bot.telegram.bot_commands import (
@@ -81,6 +83,9 @@ _FORGED_FIELDS = {
 }
 _LINK_START = re.compile(r"^/start(?:@[A-Za-z0-9_]+)?\s+([A-Za-z0-9_-]{43,64})$")
 _LINK_CALLBACK = re.compile(r"^bind:([A-Za-z0-9_-]{43,64})$")
+
+# TG-4: topic của update đang xử lý; mỗi request FastAPI có context riêng nên không rò giữa update.
+_REPLY_THREAD: ContextVar[int | None] = ContextVar("telegram_reply_thread", default=None)
 
 router = APIRouter(prefix="/api/v1/telegram", tags=["telegram"])
 
@@ -195,6 +200,42 @@ class DatabaseTelegramStore:
     async def list_bindings(self, workspace_id: UUID) -> list[dict[str, str]]:
         async with UnitOfWork(self._sessions, workspace_id=workspace_id) as uow:
             return await TelegramBindingRepository(uow.session).list_active(workspace_id)
+
+    async def binding_chat(self, workspace_id: UUID, membership_id: UUID) -> int | None:
+        async with UnitOfWork(self._sessions, workspace_id=workspace_id) as uow:
+            return await TelegramBindingRepository(uow.session).binding_chat(
+                workspace_id, membership_id
+            )
+
+    async def set_topics(
+        self,
+        workspace_id: UUID,
+        membership_id: UUID,
+        actor_membership_id: UUID,
+        *,
+        signal_thread_id: int | None,
+        report_thread_id: int | None,
+    ) -> bool:
+        """TG-4: lưu/bỏ topic của binding kèm audit (không ghi id topic/chat vào audit)."""
+        async with UnitOfWork(
+            self._sessions, workspace_id=workspace_id, actor_membership_id=actor_membership_id
+        ) as uow:
+            saved = await TelegramBindingRepository(uow.session).set_topics(
+                workspace_id,
+                membership_id,
+                signal_thread_id=signal_thread_id,
+                report_thread_id=report_thread_id,
+            )
+            if saved:
+                uow.record_audit(
+                    action="telegram.binding.topics_configured"
+                    if signal_thread_id is not None
+                    else "telegram.binding.topics_cleared",
+                    target_type="user_membership",
+                    target_id=membership_id,
+                    reason="TG-4 tách topic tín hiệu / PAPER report",
+                )
+            return saved
 
     async def consume_link_code(
         self, workspace_id: UUID, code: str, telegram_user_id: str, request_id: UUID
@@ -381,10 +422,18 @@ class TelegramWebhookService:
             return "duplicate"
         request_id = update_request_id(self._workspace_id, update_id)
         progress = _Progress()
+        token = _REPLY_THREAD.set(_topic_thread_id(update))
         try:
             return await self._process_claimed(update, request_id, progress)
         except Exception as error:
             return await self._recover(error, request_id, progress)
+        finally:
+            _REPLY_THREAD.reset(token)
+
+    @property
+    def _reply(self) -> TelegramMessageSender:
+        """Sender trả lời: cùng topic với lệnh người dùng gõ (TG-4); chat chính nếu không có."""
+        return bind_topic(self._sender, _REPLY_THREAD.get())
 
     def _bucket(self, update: Mapping[str, Any]) -> TelegramCommandThrottle:
         message = update.get("message")
@@ -406,10 +455,14 @@ class TelegramWebhookService:
         await self._safe_audit(update_request_id(self._workspace_id, update_id), THROTTLED)
         message = update.get("message")
         if isinstance(message, Mapping) and _forgery_code(message) is None:
-            await self._safe_send(
-                int(message["from"]["id"]),
-                "Quá nhiều lệnh; lệnh này CHƯA được thực hiện. Hãy gửi lại sau ít phút.",
-            )
+            token = _REPLY_THREAD.set(_topic_thread_id(update))
+            try:
+                await self._safe_send(
+                    int(message["from"]["id"]),
+                    "Quá nhiều lệnh; lệnh này CHƯA được thực hiện. Hãy gửi lại sau ít phút.",
+                )
+            finally:
+                _REPLY_THREAD.reset(token)
 
     async def _recover(self, error: Exception, request_id: UUID, progress: _Progress) -> str:
         """Catch-all sau claim: Telegram không giao lại update đã claim (ruling 38)."""
@@ -491,7 +544,7 @@ class TelegramWebhookService:
                 await self._audit(
                     request_id, "telegram.update.rejected", None, None, "TELEGRAM_NOT_BOUND"
                 )
-                await self._sender.send_message(
+                await self._reply.send_message(
                     sender_id, "Tài khoản Telegram này chưa được liên kết với workspace."
                 )
             return "unbound"
@@ -532,7 +585,7 @@ class TelegramWebhookService:
                 progress.reason,
             )
             progress.audited = True
-            await self._sender.send_message(sender_id, message)
+            await self._reply.send_message(sender_id, message)
             progress.sent = True
             return response_status
         principal = telegram_principal(
@@ -561,7 +614,7 @@ class TelegramWebhookService:
         )
         progress.audited = True
         logger.info("Telegram command đã xử lý; ok=%s code=%s", result.ok, result.code)
-        await self._sender.send_message(sender_id, result.message)
+        await self._reply.send_message(sender_id, result.message)
         progress.sent = True
         return "processed"
 
@@ -624,7 +677,7 @@ class TelegramWebhookService:
 
     async def _safe_send(self, chat_id: int, text: str) -> None:
         try:
-            await self._sender.send_message(chat_id, text)
+            await self._reply.send_message(chat_id, text)
         except Exception as error:
             logger.warning("Không gửi được trả lời Telegram; error=%s", type(error).__name__)
 
@@ -675,6 +728,24 @@ def _sender_key(update: Mapping[str, Any]) -> str | None:
                 sender_id = sender.get("id")
                 if isinstance(sender_id, int) and not isinstance(sender_id, bool):
                     return str(sender_id)
+    return None
+
+
+def _topic_thread_id(update: Mapping[str, Any]) -> int | None:
+    """``message_thread_id`` khi tin nằm trong topic (``is_topic_message``), ngược lại None.
+
+    Bot API 9.3+: tin trong chat riêng có bật topic mang ``message_thread_id`` và
+    ``is_topic_message`` (https://core.telegram.org/bots/api#message, kiểm 17/11/2026).
+    """
+    message = update.get("message")
+    if not isinstance(message, Mapping):
+        callback = update.get("callback_query")
+        message = callback.get("message") if isinstance(callback, Mapping) else None
+    if not isinstance(message, Mapping) or message.get("is_topic_message") is not True:
+        return None
+    thread_id = message.get("message_thread_id")
+    if isinstance(thread_id, int) and not isinstance(thread_id, bool) and 0 < thread_id < 2**53:
+        return thread_id
     return None
 
 

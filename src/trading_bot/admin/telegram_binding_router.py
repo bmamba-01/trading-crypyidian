@@ -7,6 +7,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
+from trading_bot.application.telegram_binding import TelegramTopicSetupError
 from trading_bot.auth.router import require_csrf
 from trading_bot.auth.service import AuthIdentity
 
@@ -61,3 +62,34 @@ async def revoke_telegram_binding(
     except ValueError as error:
         raise _service_error(error) from error
     return {"revoked": revoked}
+
+
+@router.post("/{membership_id}/topics")
+async def create_telegram_topics(
+    membership_id: UUID,
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(require_csrf)],
+) -> dict[str, bool]:
+    """TG-4: tạo hai topic (tín hiệu / PAPER report); không trả id topic hay chat."""
+    try:
+        await _service(request).create_topics(identity.principal, membership_id)
+    except TelegramTopicSetupError as error:
+        raise HTTPException(
+            status_code=502, detail=f"Telegram không tạo được topic ({error.code})."
+        ) from error
+    except ValueError as error:
+        raise _service_error(error) from error
+    return {"topics": True}
+
+
+@router.delete("/{membership_id}/topics")
+async def clear_telegram_topics(
+    membership_id: UUID,
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(require_csrf)],
+) -> dict[str, bool]:
+    try:
+        cleared = await _service(request).clear_topics(identity.principal, membership_id)
+    except ValueError as error:
+        raise _service_error(error) from error
+    return {"cleared": cleared}
