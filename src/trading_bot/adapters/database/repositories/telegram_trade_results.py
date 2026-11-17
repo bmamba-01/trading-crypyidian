@@ -62,6 +62,8 @@ class TradeNotificationClaim:
     attempts: int
     chat_id: int
     source: TradeResultSource
+    # TG-4: topic PAPER report của binding; None = chat chính.
+    thread_id: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -205,7 +207,11 @@ class TelegramTradeResultRepository:
         max_attempts: int,
     ) -> TradeNotificationClaim | None:
         query = _active_subscription_join(
-            select(TelegramTradeNotification, TelegramSignalSubscription.telegram_chat_id).join(
+            select(
+                TelegramTradeNotification,
+                TelegramSignalSubscription.telegram_chat_id,
+                TelegramBinding.report_thread_id,
+            ).join(
                 TelegramSignalSubscription,
                 and_(
                     TelegramSignalSubscription.workspace_id
@@ -267,6 +273,7 @@ class TelegramTradeResultRepository:
             attempts=notification.attempts,
             chat_id=int(row.telegram_chat_id),
             source=source,
+            thread_id=int(row.report_thread_id) if row.report_thread_id is not None else None,
         )
 
     async def bot_name(self, *, workspace_id: UUID, bot_id: UUID) -> str | None:

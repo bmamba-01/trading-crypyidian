@@ -162,7 +162,8 @@ class FakeRepository:
         row.status, row.lease_owner = "PROCESSING", worker_id
         row.attempts += 1
         subscription_id, trade_id, kind = row.key
-        chat = next(t.chat_id for t in self.db.targets if t.subscription_id == subscription_id)
+        target = next(t for t in self.db.targets if t.subscription_id == subscription_id)
+        chat = target.chat_id
         return TradeNotificationClaim(
             notification_id=row.id,
             bot_id=bot_id,
@@ -172,6 +173,7 @@ class FakeRepository:
             attempts=row.attempts,
             chat_id=chat,
             source=_source(bot_id, kind),
+            thread_id=target.report_thread_id,
         )
 
     async def bot_summary(self, *, bot_id: UUID, window_start: datetime, **_: Any) -> Any:
@@ -472,3 +474,47 @@ async def test_chat_pacer_shares_slots_between_workers_of_same_chat() -> None:
 def test_worker_rejects_invalid_configuration(overrides: dict[str, Any]) -> None:
     with pytest.raises(ValueError, match="phải|không hợp lệ|tối thiểu"):
         _worker(FakeDb(), **overrides)
+
+
+@pytest.mark.asyncio
+async def test_trade_results_and_summary_go_to_report_topic_when_configured() -> None:
+    """TG-4: binding có topic PAPER report → mở/đóng lệnh và tổng hợp đều vào topic đó."""
+    db = FakeDb()
+    db.targets = [
+        SignalSubscriptionTarget(SUB_A, BOT_A, CHAT, report_thread_id=202),
+        SignalSubscriptionTarget(SUB_B, BOT_B, CHAT, report_thread_id=202),
+    ]
+    worker, sender = _worker(db)
+
+    assert await worker.tick() == 3
+    assert sender.threads == [("message", CHAT, 202)] * 3
+
+
+@pytest.mark.asyncio
+async def test_trade_results_stay_in_main_chat_without_topic_config() -> None:
+    db = FakeDb()
+    worker, sender = _worker(db)
+
+    assert await worker.tick() == 3
+    assert sender.threads == [("message", CHAT, None)] * 3
+
+
+@pytest.mark.asyncio
+async def test_report_card_text_fallback_stays_in_report_topic(monkeypatch: Any) -> None:
+    from trading_bot.adapters.telegram import card_delivery
+
+    def broken(_view: object) -> bytes:
+        raise ValueError("render lỗi")
+
+    monkeypatch.setattr(card_delivery, "render_trade_card", broken)
+    monkeypatch.setattr(card_delivery, "render_summary_card", broken)
+    db = FakeDb()
+    db.targets = [SignalSubscriptionTarget(SUB_A, BOT_A, CHAT, report_thread_id=303)]
+    worker, sender = _worker(
+        db,
+        trade_result_send=card_delivery.send_trade_result_card,
+        paper_report_send=card_delivery.send_paper_report_card,
+    )
+
+    assert await worker.tick() == 3
+    assert sender.threads == [("message", CHAT, 303)] * 3

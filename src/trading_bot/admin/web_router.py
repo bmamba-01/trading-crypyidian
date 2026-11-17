@@ -82,6 +82,7 @@ from trading_bot.application.market_levels import price_levels
 from trading_bot.application.market_narrative import market_narrative
 from trading_bot.application.market_scanner import MarketScannerError, MarketScannerService
 from trading_bot.application.strategy_pipeline.microscope import MicroscopeReplayService
+from trading_bot.application.telegram_binding import TelegramTopicSetupError
 from trading_bot.application.telegram_signal_subscription import (
     TelegramSignalSubscriptionError,
 )
@@ -2282,6 +2283,37 @@ async def telegram_revoke_form(
         status = 403 if "owner" in str(error).lower() or "mfa" in str(error).lower() else 422
         raise HTTPException(
             status_code=status, detail="Không thể thu hồi liên kết Telegram."
+        ) from error
+    return Response(status_code=303, headers={"Location": "/admin/telegram"})
+
+
+_TOPIC_SETUP_FAILED = (
+    "Telegram không tạo được topic. Hãy bật chế độ topic (Threaded Mode) cho bot trong "
+    "@BotFather rồi thử lại; tin vẫn đi vào chat chính như trước."
+)
+
+
+@router.post("/telegram/topics/{membership_id}")
+async def telegram_topics_form(
+    membership_id: UUID,
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(current_identity)],
+) -> Response:
+    """TG-4: tạo topic "Tín hiệu" và "PAPER report" trong chat riêng của binding."""
+    values = await _parse_form(request)
+    await _verify_form_csrf(request, values)
+    service = _telegram_binding_service(request)
+    try:
+        if values.get("action") == "clear":
+            await service.clear_topics(identity.principal, membership_id)
+        else:
+            await service.create_topics(identity.principal, membership_id)
+    except TelegramTopicSetupError as error:
+        raise HTTPException(status_code=502, detail=_TOPIC_SETUP_FAILED) from error
+    except ValueError as error:
+        status = 403 if "owner" in str(error).lower() or "mfa" in str(error).lower() else 422
+        raise HTTPException(
+            status_code=status, detail="Không thể cấu hình topic Telegram."
         ) from error
     return Response(status_code=303, headers={"Location": "/admin/telegram"})
 

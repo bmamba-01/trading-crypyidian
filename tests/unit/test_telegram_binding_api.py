@@ -93,3 +93,63 @@ def test_revoke_api_checks_csrf_before_service_call() -> None:
     assert response.status_code == 200
     assert response.json() == {"revoked": 1}
     assert service.calls == [("revoke", MEMBERSHIP, MEMBERSHIP, "Thu hồi")]
+
+
+class TopicServiceStub(BindingServiceStub):
+    """TG-4: service tạo/bỏ topic; ``error`` mô phỏng Telegram từ chối."""
+
+    def __init__(self, error: Exception | None = None) -> None:
+        super().__init__()
+        self.error = error
+
+    async def create_topics(self, principal: Principal, membership_id: UUID) -> object:
+        self.calls.append(("topics", principal.membership_id, membership_id))
+        if self.error is not None:
+            raise self.error
+        return SimpleNamespace(signal_thread_id=11, report_thread_id=12)
+
+    async def clear_topics(self, principal: Principal, membership_id: UUID) -> bool:
+        self.calls.append(("clear", principal.membership_id, membership_id))
+        return True
+
+
+def _topic_client(error: Exception | None = None) -> tuple[TestClient, TopicServiceStub]:
+    client, _ = _client()
+    service = TopicServiceStub(error)
+    client.app.state.telegram_binding_service = service  # type: ignore[attr-defined]
+    return client, service
+
+
+def test_topics_api_requires_csrf_and_hides_thread_ids() -> None:
+    client, service = _topic_client()
+    target = UUID("b93c4b18-f76c-4cfb-9bad-9e0aee5ccadc")
+
+    assert client.post(f"/api/v1/telegram-binding/{target}/topics").status_code == 403
+    assert service.calls == []
+    created = client.post(
+        f"/api/v1/telegram-binding/{target}/topics", headers={"X-CSRF-Token": "csrf-good"}
+    )
+    cleared = client.delete(
+        f"/api/v1/telegram-binding/{target}/topics", headers={"X-CSRF-Token": "csrf-good"}
+    )
+
+    assert created.status_code == 200
+    assert created.json() == {"topics": True}
+    assert "11" not in created.text
+    assert "12" not in created.text
+    assert cleared.json() == {"cleared": True}
+    assert service.calls == [("topics", MEMBERSHIP, target), ("clear", MEMBERSHIP, target)]
+
+
+def test_topics_api_maps_telegram_rejection_to_502_without_details() -> None:
+    from trading_bot.application.telegram_binding import TelegramTopicSetupError
+
+    client, _ = _topic_client(TelegramTopicSetupError("TELEGRAM_HTTP_400"))
+    target = UUID("b93c4b18-f76c-4cfb-9bad-9e0aee5ccadc")
+
+    response = client.post(
+        f"/api/v1/telegram-binding/{target}/topics", headers={"X-CSRF-Token": "csrf-good"}
+    )
+
+    assert response.status_code == 502
+    assert "TELEGRAM_HTTP_400" in response.text

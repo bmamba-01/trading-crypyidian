@@ -18,6 +18,7 @@ from trading_bot.adapters.database.repositories.telegram_signals import (
     TelegramSignalRepository,
 )
 from trading_bot.adapters.telegram.bot_api_sender import TelegramApiError
+from trading_bot.adapters.telegram.topic_sender import bind_topic
 from trading_bot.application.outbox import UnitOfWork, retry_delay_seconds
 from trading_bot.application.telegram_signals import (
     SignalThrottlePolicy,
@@ -190,7 +191,10 @@ class TelegramSignalDeliveryWorker:
                     await self._mark_expired(claim)
                     continue
                 try:
-                    await self._signal_send(self._sender, claim.chat_id, claim.candidate)
+                    # TG-4: topic tín hiệu của binding (None → chat chính như trước).
+                    await self._signal_send(
+                        bind_topic(self._sender, claim.thread_id), claim.chat_id, claim.candidate
+                    )
                 except TelegramApiError as error:
                     await self._mark_failed(claim, error.code, error.retry_after)
                 except Exception as error:

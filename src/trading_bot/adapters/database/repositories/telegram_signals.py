@@ -38,6 +38,8 @@ class SignalSubscriptionTarget:
     bot_id: UUID
     chat_id: int
     filters: TelegramSignalFilters = field(default_factory=TelegramSignalFilters)
+    # TG-4: topic PAPER report của binding (kết quả trade + tổng hợp); None = chat chính.
+    report_thread_id: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,6 +54,8 @@ class SignalDeliveryClaim:
     filtered: bool = False
     # TG-2: mã lý do khi delivery bị chặn chống spam (SUPPRESSED); None nếu không bị chặn.
     suppressed_reason: str | None = None
+    # TG-4: topic tín hiệu của binding, đọc lúc claim (cấu hình hiện hành); None = chat chính.
+    thread_id: int | None = None
 
 
 class TelegramSignalRepository:
@@ -176,6 +180,7 @@ class TelegramSignalRepository:
                 TelegramSignalSubscription.directions,
                 TelegramSignalSubscription.strategy_ids,
                 TelegramSignalSubscription.setup_codes,
+                TelegramBinding.report_thread_id,
             )
             .join(
                 TelegramBinding,
@@ -212,6 +217,7 @@ class TelegramSignalRepository:
                     strategy_ids=tuple(strategy_ids),
                     setup_codes=tuple(setup_codes),
                 ),
+                int(report_thread_id) if report_thread_id is not None else None,
             )
             for (
                 subscription_id,
@@ -222,6 +228,7 @@ class TelegramSignalRepository:
                 directions,
                 strategy_ids,
                 setup_codes,
+                report_thread_id,
             ) in rows
         )
 
@@ -317,6 +324,7 @@ class TelegramSignalRepository:
                 TelegramSignalSubscription.directions.label("filter_directions"),
                 TelegramSignalSubscription.strategy_ids.label("filter_strategy_ids"),
                 TelegramSignalSubscription.setup_codes.label("filter_setup_codes"),
+                TelegramBinding.signal_thread_id.label("signal_thread_id"),
                 BotDecisionRecord.id.label("decision_record_id"),
                 BotDecisionRecord.workspace_id.label("decision_workspace_id"),
                 BotDecisionRecord.bot_id.label("decision_bot_id"),
@@ -384,6 +392,7 @@ class TelegramSignalRepository:
             return None
         delivery = result[0]
         chat_id = int(result.telegram_chat_id)
+        thread_id = int(result.signal_thread_id) if result.signal_thread_id is not None else None
         decision = _verified_decision(result, prefixed=True)
         timeframe = await self._session.scalar(
             select(FeatureSnapshotRecord.timeframe).where(
@@ -459,6 +468,7 @@ class TelegramSignalRepository:
             attempts=delivery.attempts,
             chat_id=chat_id,
             candidate=candidate,
+            thread_id=thread_id,
         )
 
     async def _throttle_reason(

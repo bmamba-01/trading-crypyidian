@@ -329,6 +329,10 @@ def create_app(
             TelegramBindingService(
                 DatabaseTelegramStore(active_session_factory),
                 bot_username=app_settings.telegram_bot_username,
+                # TG-4: sender dựng sau trong lifespan; chỉ sender có create_forum_topic dùng được.
+                topic_creator=lambda: _topic_creator(
+                    getattr(application.state, "telegram_sender", None)
+                ),
             )
             if active_session_factory is not None and app_settings.telegram_bot_username
             else None
@@ -952,6 +956,11 @@ def create_app(
         return body
 
     return app
+
+
+def _topic_creator(sender: Any) -> Any:
+    """Sender hỗ trợ ``create_forum_topic`` (Bot API thật hoặc recording); ngược lại None."""
+    return sender if callable(getattr(sender, "create_forum_topic", None)) else None
 
 
 def _build_telegram_sender(settings: AppSettings, *, required: bool) -> Any:

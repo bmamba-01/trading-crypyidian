@@ -328,3 +328,69 @@ async def test_worker_uses_injected_signal_sender_for_image_cards() -> None:
     assert sent == [(987654321, repository.candidate)]
     assert sender.messages == []
     assert repository.sent == [DELIVERY]
+
+
+class ThreadedClaimRepository(FakeRepository):
+    """Claim mang ``thread_id`` topic tín hiệu của binding (TG-4)."""
+
+    def __init__(self, *, thread_id: int | None, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.thread_id = thread_id
+
+    async def claim_one(self, **kwargs: object) -> SignalDeliveryClaim | None:
+        claim = await super().claim_one(**kwargs)
+        if claim is None:
+            return None
+        from dataclasses import replace
+
+        return replace(claim, thread_id=self.thread_id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("thread_id", [None, 77])
+async def test_worker_routes_signal_into_signal_topic_when_configured(
+    thread_id: int | None,
+) -> None:
+    from trading_bot.adapters.telegram.recording_sender import RecordingTelegramSender
+
+    repository = ThreadedClaimRepository(candidate=_candidate(), thread_id=thread_id)
+    sender = RecordingTelegramSender()
+    worker = TelegramSignalDeliveryWorker(
+        session_factory=object(),  # type: ignore[arg-type]
+        workspace_id=WORKSPACE,
+        sender=sender,
+        worker_id="test-signal-worker",
+        now=lambda: NOW,
+        sleep=lambda _seconds: _no_sleep(),
+        unit_of_work=cast(Any, FakeUow),
+        repository=cast(Any, lambda _session: repository),
+    )
+    assert await worker.tick() == 1
+    # Chưa cấu hình topic → chat chính như trước; có topic → đúng topic tín hiệu.
+    assert sender.threads == [("message", 987654321, thread_id)]
+
+
+@pytest.mark.asyncio
+async def test_signal_card_text_fallback_stays_in_signal_topic(monkeypatch: Any) -> None:
+    from trading_bot.adapters.telegram import card_delivery
+    from trading_bot.adapters.telegram.recording_sender import RecordingTelegramSender
+
+    def broken(_view: object) -> bytes:
+        raise ValueError("render lỗi")
+
+    monkeypatch.setattr(card_delivery, "render_signal_card", broken)
+    repository = ThreadedClaimRepository(candidate=_candidate(), thread_id=91)
+    sender = RecordingTelegramSender()
+    worker = TelegramSignalDeliveryWorker(
+        session_factory=object(),  # type: ignore[arg-type]
+        workspace_id=WORKSPACE,
+        sender=sender,
+        worker_id="test-signal-worker",
+        now=lambda: NOW,
+        sleep=lambda _seconds: _no_sleep(),
+        unit_of_work=cast(Any, FakeUow),
+        repository=cast(Any, lambda _session: repository),
+        signal_send=card_delivery.send_signal_card,
+    )
+    assert await worker.tick() == 1
+    assert sender.threads == [("message", 987654321, 91)]

@@ -116,6 +116,111 @@ with psycopg.connect(
             ("order_intent", "INSERT"),
         )
         result = {"active_targets": len(targets), "order_insert": False}
+    elif phase == "admin_set_topics":
+        # TG-4: admin-web thật (role crypidian_admin_web) lưu topic qua store của ứng dụng.
+        import asyncio
+
+        from trading_bot.adapters.database.engine import (
+            create_database_engine,
+            create_session_factory,
+            database_url_from_secret,
+        )
+        from trading_bot.telegram.webhook import DatabaseTelegramStore
+
+        async def _admin_topics() -> dict[str, Any]:
+            engine = create_database_engine(
+                database_url_from_secret(
+                    username=os.environ["TRADING_BOT_DATABASE_USER"],
+                    password_file=Path(os.environ["TRADING_BOT_DATABASE_PASSWORD_FILE"]),
+                    host="postgres",
+                    database="crypidian",
+                )
+            )
+            try:
+                store = DatabaseTelegramStore(create_session_factory(engine))
+                chat = await store.binding_chat(WORKSPACE, MEMBERSHIP)
+                saved = await store.set_topics(
+                    WORKSPACE, MEMBERSHIP, MEMBERSHIP, signal_thread_id=55, report_thread_id=66
+                )
+                listed = await store.list_bindings(WORKSPACE)
+                return {"chat": chat, "saved": saved, "topics": [b["topics"] for b in listed]}
+            finally:
+                await engine.dispose()
+
+        result = asyncio.run(_admin_topics())
+        assert _scalar(connection, "SELECT current_user = 'crypidian_admin_web'")
+        assert not _scalar(
+            connection,
+            "SELECT has_column_privilege(current_user, 'telegram_binding', "
+            "'telegram_user_id', 'UPDATE')",
+        )
+        try:
+            connection.execute(
+                "SELECT set_config('app.workspace_id', %s, false)", (str(WORKSPACE),)
+            )
+            connection.execute(
+                "UPDATE telegram_binding SET report_thread_id=0 WHERE workspace_id=%s AND id=%s",
+                (WORKSPACE, BINDING),
+            )
+        except psycopg.errors.CheckViolation:
+            result["zero_thread_rejected"] = True
+    elif phase == "worker_topic_routing":
+        # TG-4: repository + worker-side routing thật dưới role signal-worker.
+        import asyncio
+
+        from trading_bot.adapters.database.engine import (
+            create_database_engine,
+            create_session_factory,
+            database_url_from_secret,
+        )
+        from trading_bot.adapters.database.repositories.telegram_signals import (
+            TelegramSignalRepository,
+        )
+        from trading_bot.adapters.telegram.recording_sender import RecordingTelegramSender
+        from trading_bot.adapters.telegram.topic_sender import bind_topic
+        from trading_bot.application.outbox import UnitOfWork
+
+        async def _routing() -> dict[str, Any]:
+            engine = create_database_engine(
+                database_url_from_secret(
+                    username=os.environ["TRADING_BOT_DATABASE_USER"],
+                    password_file=Path(os.environ["TRADING_BOT_DATABASE_PASSWORD_FILE"]),
+                    host="postgres",
+                    database="crypidian",
+                )
+            )
+            try:
+                async with UnitOfWork(
+                    create_session_factory(engine), workspace_id=WORKSPACE, bot_id=BOT
+                ) as uow:
+                    targets = await TelegramSignalRepository(
+                        uow.session
+                    ).list_enabled_subscriptions(workspace_id=WORKSPACE)
+            finally:
+                await engine.dispose()
+            sender = RecordingTelegramSender()
+            for target in targets:
+                await bind_topic(sender, target.report_thread_id).send_message(
+                    target.chat_id, "PAPER report"
+                )
+            return {"threads": [list(item) for item in sender.threads]}
+
+        result = asyncio.run(_routing())
+        connection.execute(
+            "SELECT set_config('app.workspace_id', %s, false), set_config('app.bot_id', %s, false)",
+            (str(WORKSPACE), str(BOT)),
+        )
+        result["signal_thread"] = _scalar(
+            connection,
+            "SELECT b.signal_thread_id FROM telegram_binding b WHERE b.workspace_id=%s AND b.id=%s",
+            (WORKSPACE, BINDING),
+        )
+        for column in ("signal_thread_id", "report_thread_id"):
+            assert not _scalar(
+                connection,
+                "SELECT has_column_privilege(current_user, 'telegram_binding', %s, 'UPDATE')",
+                (column,),
+            ), column
     elif phase == "revoke_binding":
         connection.execute(
             "UPDATE telegram_binding SET revoked_at=now() WHERE workspace_id=%s AND id=%s",
