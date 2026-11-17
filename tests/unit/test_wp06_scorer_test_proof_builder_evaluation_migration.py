@@ -41,7 +41,7 @@ def _statements(direction: str) -> str:
 def test_migration_follows_previous_head_and_targets_only_the_bundle_gate() -> None:
     module = _migration()
     assert module.revision == "c2e4a6b8d0f1"
-    assert module.down_revision == "7707d82de246"
+    assert module.down_revision == "ad99c4f520d0"
     assert module.SIGNATURE == "public.wp06_authorize_replay_training_bundle(uuid,text,text)"
     hashes = module.FUNCTION_DEFINITION_HASHES[module.SIGNATURE]
     assert hashes["preimage"] != hashes["postimage"]

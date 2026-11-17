@@ -922,7 +922,10 @@ async def _seed_negative_manifests(state: dict[str, Any]) -> dict[str, Any]:
         assert isinstance(lineage, dict)
         missing_payload = json.loads(json.dumps(source_v5))
         missing_payload["source_use_lineage"] = []
-        missing_payload["samples"][0]["source_use_lineage_set_hash"] = _source_lineage_set_hash([])
+        # Mọi sample phải cùng lineage-set hash; chỉ sửa samples[0] làm mã từ chối phụ thuộc
+        # thứ tự sample_id ngẫu nhiên (flaky từ 7c9b749).
+        for sample in missing_payload["samples"]:
+            sample["source_use_lineage_set_hash"] = _source_lineage_set_hash([])
         missing_hash, missing_id = await _persist_manifest(
             session,
             missing_payload,
@@ -939,10 +942,16 @@ async def _seed_negative_manifests(state: dict[str, Any]) -> dict[str, Any]:
         extra_payload = json.loads(json.dumps(source_v5))
         extra_lineage = dict(lineage)
         extra_lineage["child_dataset_hash"] = hashlib.sha256(b"unexpected-child").hexdigest()
-        extra_payload["source_use_lineage"] = [lineage, extra_lineage]
-        extra_payload["samples"][0]["source_use_lineage_set_hash"] = _source_lineage_set_hash(
-            [lineage, extra_lineage]
+        # Lineage set phải sắp theo child hash như domain; SQL băm mảng theo thứ tự đã lưu, nên
+        # để nguyên [lineage, extra] làm mã từ chối phụ thuộc hash child ngẫu nhiên (flaky).
+        extra_set = sorted(
+            [lineage, extra_lineage], key=lambda item: str(item["child_dataset_hash"])
         )
+        extra_payload["source_use_lineage"] = extra_set
+        # Mọi sample phải cùng lineage-set hash; chỉ sửa samples[0] làm mã từ chối phụ thuộc
+        # thứ tự sample_id ngẫu nhiên (flaky từ 7c9b749).
+        for sample in extra_payload["samples"]:
+            sample["source_use_lineage_set_hash"] = _source_lineage_set_hash(extra_set)
         extra_hash, extra_id = await _persist_manifest(
             session,
             extra_payload,
@@ -962,9 +971,10 @@ async def _seed_negative_manifests(state: dict[str, Any]) -> dict[str, Any]:
         supplied_ids[0] = f"market-bar-record:{uuid4()}"
         substitute_lineage["market_bar_ids"] = supplied_ids
         substitute_payload["source_use_lineage"] = [substitute_lineage]
-        substitute_payload["samples"][0]["source_use_lineage_set_hash"] = _source_lineage_set_hash(
-            [substitute_lineage]
-        )
+        # Mọi sample phải cùng lineage-set hash; chỉ sửa samples[0] làm mã từ chối phụ thuộc
+        # thứ tự sample_id ngẫu nhiên (flaky từ 7c9b749).
+        for sample in substitute_payload["samples"]:
+            sample["source_use_lineage_set_hash"] = _source_lineage_set_hash([substitute_lineage])
         substitute_hash, substitute_id = await _persist_manifest(
             session,
             substitute_payload,
