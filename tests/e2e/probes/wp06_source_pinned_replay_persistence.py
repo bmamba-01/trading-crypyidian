@@ -10,6 +10,7 @@ import sys
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 from sqlalchemy import select, text
@@ -28,9 +29,6 @@ from trading_bot.adapters.database.models import (
     MarketInstrument,
 )
 from trading_bot.adapters.database.models.backtest_job_entities import BacktestReplayJobRecord
-from trading_bot.adapters.database.models.source_license_evidence_entities import (
-    SourceLicenseEvidenceRecord,
-)
 from trading_bot.adapters.database.repositories.backtest_outcomes import BacktestOutcomeRepository
 from trading_bot.adapters.database.repositories.market_data import MarketDataRepository
 from trading_bot.adapters.database.repositories.source_registry import SourceRegistryRepository
@@ -38,7 +36,7 @@ from trading_bot.application.backtest_dataset_replay_bundle import (
     BacktestDatasetReplayBundleReference,
 )
 from trading_bot.application.backtest_replay_jobs import BacktestReplayJobSubmission
-from trading_bot.application.binance_rest_backfill import BackfillRightsPurpose
+from trading_bot.application.binance_rest_backfill import BackfillRightsPurpose, RestBackfillRequest
 from trading_bot.application.binance_rest_backfill_rights import SourceRegistryBackfillRightsGate
 from trading_bot.application.candidate_universe_proof import CandidateUniverseProofService
 from trading_bot.application.first_party_qa_dataset import (
@@ -49,21 +47,56 @@ from trading_bot.application.first_party_qa_dataset import (
 )
 from trading_bot.application.outbox import UnitOfWork
 from trading_bot.domain.market.ingestion import MarketRecordVersion, MarketStream
-from trading_bot.domain.research.license_scope import (
-    SourceLicenseScope,
-    canonical_scope_json,
-    scope_sha256,
-)
 from trading_bot.domain.research.source_policy import SourcePolicyState, SourceUsePurpose
 from trading_bot.domain.research.source_registry import SourceBudget, SourceRegistryEntry
 
 sys.path.insert(0, "/e2e-tests")
+from e2e.probes.source_license_fixture import (
+    append_fixture_license_evidence,
+    consume_rights_events,
+    fixture_license_scope,
+    pending_license_kwargs,
+    verified_license_kwargs,
+)
 from fixtures.runtime_replay import build_h03_source_pinned_dataset_replay
 
 WORKSPACE_ID = UUID(os.environ["CRYPIDIAN_E2E_WORKSPACE_ID"])
+BINANCE_PROVIDER = "BINANCE_USDM_REST"
+# Nguồn non-QA chỉ TRAINING (không PAPER_DEMO) để E2E chạm gate PAPER của deployment.
+FIXTURE_SOURCES = {
+    CRYPIDIAN_FIRST_PARTY_QA: SimpleNamespace(
+        market_source=CRYPIDIAN_FIRST_PARTY_QA_SOURCE,
+        evidence_ref=CRYPIDIAN_FIRST_PARTY_QA_EVIDENCE_REF,
+        request_type=FirstPartyQADatasetRequest,
+        publisher="Crypidian Repository QA Fixture",
+        auth_scope="repo-owned synthetic QA data; no exchange account",
+    ),
+    BINANCE_PROVIDER: SimpleNamespace(
+        market_source="BINANCE_USDM_REST_BACKFILL",
+        evidence_ref="https://example.test/wp06-binance-training-only-fixture-terms",
+        request_type=RestBackfillRequest,
+        publisher="Fixture Binance USDⓈ-M synthetic trong Compose tạm",
+        auth_scope="synthetic fixture bars; no exchange account",
+    ),
+}
 
 
-async def run_probe(*, scorer_seed: bool = False) -> dict[str, object]:
+async def run_probe(
+    *,
+    scorer_seed: bool = False,
+    license_fixture: bool = True,
+    provider: str = CRYPIDIAN_FIRST_PARTY_QA,
+) -> dict[str, object]:
+    """Seed replay QA source-pinned.
+
+    `license_fixture=True` (mặc định, chạy trực tiếp): pending/VERIFIED mang license scope
+    + evidence tổng hợp từ `source_license_fixture` và consumer rights chạy hết event, đúng
+    điều kiện của gate TRAINING exact-scope. Probe khác cần scope riêng (ví dụ
+    `wp06_source_license_scope.py`) truyền `False` rồi tự vá transition/evidence.
+    `provider=BINANCE_USDM_REST` dựng cùng replay dưới nguồn non-QA, policy chỉ
+    BACKTEST_RESEARCH + TRAINING (không PAPER_DEMO).
+    """
+    fixture_source = FIXTURE_SOURCES[provider]
     engine = create_database_engine(
         database_url_from_secret(
             username=os.environ["TRADING_BOT_DATABASE_USER"],
@@ -80,7 +113,7 @@ async def run_probe(*, scorer_seed: bool = False) -> dict[str, object]:
         hours=bar_count
     )
     range_end = dataset_start + timedelta(hours=bar_count)
-    qa_request = FirstPartyQADatasetRequest(
+    qa_request = fixture_source.request_type(
         symbol="BTCUSDT",
         interval="1h",
         start=dataset_start,
@@ -120,7 +153,7 @@ async def run_probe(*, scorer_seed: bool = False) -> dict[str, object]:
             MarketInstrument(
                 id=instrument_id,
                 workspace_id=WORKSPACE_ID,
-                source=CRYPIDIAN_FIRST_PARTY_QA_SOURCE,
+                source=fixture_source.market_source,
                 idempotency_key="wp06-source-pinned-qa-fixture-instrument",
                 symbol="BTCUSDT",
                 base_asset="BTC",
@@ -138,32 +171,14 @@ async def run_probe(*, scorer_seed: bool = False) -> dict[str, object]:
             )
         )
     policy_now = datetime.now(UTC)
-    # Từ WP06 (13/11/2026, d823df5) policy VERIFIED mới phải kèm license scope + bằng chứng đã lưu
-    # (digest/scope_hash). Probe viết trước quy tắc đó nên lỗi khi seed; sửa 16/11/2026 (AI-3).
-    license_scope = SourceLicenseScope(
-        source_id=CRYPIDIAN_FIRST_PARTY_QA,
-        provider="CRYPIDIAN",
-        product="QA_SYNTHETIC_KLINES",
-        venue="FIRST_PARTY",
-        contract="RESEARCH",
-        symbols=("BTCUSDT",),
-        intervals=("1m", "5m", "15m", "1h", "4h"),
-        data_start=policy_now - timedelta(days=3650),
-        data_end=policy_now + timedelta(days=3650),
-        allowed_purposes=(SourceUsePurpose.BACKTEST_RESEARCH, SourceUsePurpose.TRAINING),
-        allowed_outputs=("aggregate_report", "derived_features"),
-        derived_use=("aggregate_reporting", "feature_extraction"),
-        attribution="Crypidian QA fixture",
-        max_retention_days=None,
-    )
-    license_evidence_id = uuid4()
+    qa_scope = fixture_license_scope(provider)
     rights_history = (
         SourceRegistryEntry.discover(
-            source_id=CRYPIDIAN_FIRST_PARTY_QA,
-            publisher="Crypidian Repository QA Fixture",
-            endpoint_url=CRYPIDIAN_FIRST_PARTY_QA_EVIDENCE_REF,
+            source_id=provider,
+            publisher=fixture_source.publisher,
+            endpoint_url=fixture_source.evidence_ref,
             access_method="GET",
-            auth_scope="repo-owned synthetic QA data; no exchange account",
+            auth_scope=fixture_source.auth_scope,
             budget=SourceBudget(
                 window=timedelta(hours=1),
                 max_requests=100,
@@ -176,75 +191,60 @@ async def run_probe(*, scorer_seed: bool = False) -> dict[str, object]:
             reason="Đăng ký fixture synthetic first-party trong workspace Compose tạm.",
         )
         .transition(
-            policy_id=f"{CRYPIDIAN_FIRST_PARTY_QA}:source-pinned-pending",
+            policy_id=f"{provider}:source-pinned-pending",
             state=SourcePolicyState.RIGHTS_PENDING,
             actor_id="fixture-operator",
             at=policy_now - timedelta(minutes=2),
             reason="Ghi nhận nguồn QA đang chờ review trong test workspace.",
-            evidence_ref=CRYPIDIAN_FIRST_PARTY_QA_EVIDENCE_REF,
-            provider=license_scope.provider,
-            product=license_scope.product,
-            venue=license_scope.venue,
-            contract=license_scope.contract,
-            license_scope=license_scope,
-            attribution=license_scope.attribution,
+            **(
+                pending_license_kwargs(qa_scope, fixture_source.evidence_ref)
+                if license_fixture
+                else {}
+            ),
         )
         .transition(
-            policy_id=f"{CRYPIDIAN_FIRST_PARTY_QA}:source-pinned-training",
+            policy_id=f"{provider}:source-pinned-training",
             state=SourcePolicyState.VERIFIED,
             actor_id="fixture-operator",
             at=policy_now - timedelta(minutes=1),
             reason="Chỉ cấp mục đích nghiên cứu và TRAINING cho fixture first-party.",
-            license_scope=license_scope,
-            license_evidence_id=license_evidence_id,
-            license_digest="a" * 64,
-            license_scope_hash=scope_sha256(license_scope),
             allowed_purposes=frozenset(
                 {SourceUsePurpose.BACKTEST_RESEARCH, SourceUsePurpose.TRAINING}
             ),
-            evidence_ref=CRYPIDIAN_FIRST_PARTY_QA_EVIDENCE_REF,
             reviewed_at=policy_now - timedelta(minutes=1),
             valid_until=policy_now + timedelta(days=7),
             approved_by="fixture-reviewer",
+            **(
+                verified_license_kwargs(qa_scope, fixture_source.evidence_ref, uuid4())
+                if license_fixture
+                else {"evidence_ref": fixture_source.evidence_ref}
+            ),
         )
     )
     for revision in rights_history.revisions:
         async with UnitOfWork(sessions, workspace_id=WORKSPACE_ID) as uow:
-            if revision.state is SourcePolicyState.VERIFIED:
-                uow.session.add(
-                    SourceLicenseEvidenceRecord(
-                        id=license_evidence_id,
-                        workspace_id=WORKSPACE_ID,
-                        source_id=CRYPIDIAN_FIRST_PARTY_QA,
-                        policy_id=f"{CRYPIDIAN_FIRST_PARTY_QA}:source-pinned-pending",
-                        idempotency_key=uuid4(),
-                        evidence_ref=CRYPIDIAN_FIRST_PARTY_QA_EVIDENCE_REF,
-                        digest="a" * 64,
-                        byte_count=64,
-                        media_type="text/plain",
-                        scope_version=license_scope.scope_version,
-                        license_scope=json.loads(canonical_scope_json(license_scope)),
-                        canonical_scope=canonical_scope_json(license_scope),
-                        scope_hash=scope_sha256(license_scope),
-                        actor_id="fixture-operator",
-                        created_at=policy_now - timedelta(minutes=2),
-                    )
+            if license_fixture:
+                # VERIFIED chỉ ghi được khi pending trước đó đã có dòng evidence khớp.
+                await append_fixture_license_evidence(
+                    uow.session, workspace_id=WORKSPACE_ID, revision=revision
                 )
-                await uow.session.flush()
             await SourceRegistryRepository(uow.session).append_revision(
                 workspace_id=WORKSPACE_ID, revision=revision
             )
         async with UnitOfWork(sessions, workspace_id=WORKSPACE_ID) as uow:
             await SourceRegistryRepository(uow.session).finalize_policy(
                 workspace_id=WORKSPACE_ID,
-                source_id=CRYPIDIAN_FIRST_PARTY_QA,
+                source_id=provider,
                 policy_id=revision.policy.policy_id,
             )
+    if license_fixture:
+        # Mỗi revision policy phát rights event; gate TRAINING đòi receipt của consumer.
+        await consume_rights_events(sessions, workspace_id=WORKSPACE_ID)
     async with UnitOfWork(sessions, workspace_id=WORKSPACE_ID) as uow:
         qa_rights = await SourceRegistryBackfillRightsGate(
             workspace_id=WORKSPACE_ID,
             repository=SourceRegistryRepository(uow.session),
-            source_id=CRYPIDIAN_FIRST_PARTY_QA,
+            source_id=provider,
         ).authorize(request=qa_request, now=datetime.now(UTC))
     bundle, comparison = build_h03_source_pinned_dataset_replay(
         WORKSPACE_ID,
@@ -252,6 +252,7 @@ async def run_probe(*, scorer_seed: bool = False) -> dict[str, object]:
         pattern_stride=pattern_stride,
         fee_rate=Decimal("0") if scorer_seed else Decimal("0.001"),
         rights_evidence=qa_rights,
+        provider=provider,
         dataset_start=dataset_start,
     )
     if not comparison.is_complete or len(comparison.runs) != 1:
@@ -442,7 +443,7 @@ async def run_probe(*, scorer_seed: bool = False) -> dict[str, object]:
             "bars": len(identity_ids),
             "linked_outcomes": linked_outcomes,
             "opportunities": len(replay.opportunities),
-            "qa_provider": CRYPIDIAN_FIRST_PARTY_QA,
+            "qa_provider": provider,
             "test_candidate_count": test_candidate_count,
             "expected_test_inventory": {
                 hashlib.sha256(item.event_id.encode()).hexdigest(): {
@@ -465,35 +466,65 @@ async def run_probe(*, scorer_seed: bool = False) -> dict[str, object]:
             },
         }
 
-    proof_service = CandidateUniverseProofService(sessions)
-    proof = await proof_service.build_decision_opportunity(
-        workspace_id=WORKSPACE_ID, trial_record_id=trial_record_id
-    )
-    retry = await proof_service.build_decision_opportunity(
-        workspace_id=WORKSPACE_ID, trial_record_id=trial_record_id
-    )
-    async with UnitOfWork(sessions, workspace_id=WORKSPACE_ID) as uow:
-        receipt_count = await uow.session.scalar(
-            text("SELECT count(*) FROM candidate_training_rights WHERE proof_id=:proof_id"),
-            {"proof_id": proof.record_id},
-        )
-    if receipt_count != len(bundle.components):
-        raise AssertionError("Proof chưa có receipt hiện hành cho mọi child manifest.")
     await engine.dispose()
+    # Gate TRAINING exact-scope (b7d9f1a3c5e8) chỉ chấp nhận session_user
+    # `crypidian_candidate_builder`, nên proof được dựng ở lần chạy riêng `--proof`.
     return {
         "bars": len(identity_ids),
-        "base_opportunity_complete": proof.proof.completeness_verified,
         "bundle_round_trip": stored_bundle.bundle_hash == bundle.dataset_hash,
+        "child_manifests": len(bundle.components),
         "closed_trades": len(replay.trade_outcomes),
         "linked_outcomes": linked_outcomes,
+        "source_ids_exact": True,
+        "trial_record_id": str(trial_record_id),
+    }
+
+
+async def build_proof(*, trial_record_id: UUID, child_manifests: int) -> dict[str, object]:
+    """Dựng decision-opportunity proof bằng login builder thật và kiểm receipt từng child."""
+    engine = create_database_engine(
+        database_url_from_secret(
+            username=os.environ["TRADING_BOT_DATABASE_USER"],
+            password_file=Path(os.environ["TRADING_BOT_DATABASE_PASSWORD_FILE"]),
+            host="postgres",
+            database="crypidian",
+        )
+    )
+    sessions = create_session_factory(engine)
+    try:
+        proof_service = CandidateUniverseProofService(sessions)
+        proof = await proof_service.build_decision_opportunity(
+            workspace_id=WORKSPACE_ID, trial_record_id=trial_record_id
+        )
+        retry = await proof_service.build_decision_opportunity(
+            workspace_id=WORKSPACE_ID, trial_record_id=trial_record_id
+        )
+        async with UnitOfWork(sessions, workspace_id=WORKSPACE_ID) as uow:
+            receipt_count = await uow.session.scalar(
+                text("SELECT count(*) FROM candidate_training_rights WHERE proof_id=:proof_id"),
+                {"proof_id": proof.record_id},
+            )
+    finally:
+        await engine.dispose()
+    if receipt_count != child_manifests:
+        raise AssertionError("Proof chưa có receipt hiện hành cho mọi child manifest.")
+    return {
+        "base_opportunity_complete": proof.proof.completeness_verified,
         "opportunities": proof.proof.opportunity_count,
         "proof_retry_idempotent": retry.duplicate and retry.record_id == proof.record_id,
-        "source_ids_exact": True,
         "training_receipts": receipt_count,
     }
 
 
 if __name__ == "__main__":
-    print(
-        json.dumps(asyncio.run(run_probe(scorer_seed="--scorer-seed" in sys.argv)), sort_keys=True)
-    )
+    if "--proof" in sys.argv:
+        outcome = build_proof(
+            trial_record_id=UUID(os.environ["WP06_PINNED_TRIAL_RECORD_ID"]),
+            child_manifests=int(os.environ["WP06_PINNED_CHILD_MANIFESTS"]),
+        )
+    else:
+        outcome = run_probe(
+            scorer_seed="--scorer-seed" in sys.argv,
+            provider=BINANCE_PROVIDER if "--binance" in sys.argv else CRYPIDIAN_FIRST_PARTY_QA,
+        )
+    print(json.dumps(asyncio.run(outcome), sort_keys=True))

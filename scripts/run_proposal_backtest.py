@@ -189,6 +189,9 @@ async def _container(phase: str, state: dict[str, Any]) -> dict[str, Any]:
         TelegramBinding,
         TelegramSignalSubscription,
     )
+    from trading_bot.adapters.database.repositories.funding_settlements import (
+        FundingSettlementRepository,
+    )
     from trading_bot.adapters.database.repositories.market_data import MarketDataRepository
     from trading_bot.adapters.database.repositories.source_registry import (
         SourceRegistryRepository,
@@ -331,6 +334,8 @@ async def _container(phase: str, state: dict[str, Any]) -> dict[str, Any]:
                                 market_data=market,
                                 rights_gate=gate,
                                 now=now,
+                                # FX-3 lát 3b: replay trả/nhận funding đã chốt như PAPER.
+                                funding_source=FundingSettlementRepository(uow.session),
                             )
                         except (ValueError, PermissionError) as error:
                             bundles[symbol] = f"{type(error).__name__}: {str(error)[:140]}"

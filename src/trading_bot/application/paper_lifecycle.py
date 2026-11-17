@@ -7,12 +7,16 @@ import json
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
-from decimal import ROUND_HALF_EVEN, Decimal
+from decimal import Decimal
 from typing import TYPE_CHECKING
 from uuid import UUID
 
 from trading_bot.application.paper_recovery import PaperRecoveryConflict
-from trading_bot.domain.execution.funding import FundingSettlement, funding_cashflow
+from trading_bot.domain.execution.funding import (
+    FUNDING_AMOUNT_QUANTUM,
+    FundingSettlement,
+    settled_funding_amount,
+)
 from trading_bot.domain.execution.paper import (
     IntentConflict,
     OrderStatus,
@@ -105,9 +109,9 @@ class FundingLifecycleResult:
     applied: bool
 
 
-# `trade_cost.amount` là NUMERIC(38, 18): làm tròn trước khi ghi cả gateway lẫn ledger để snapshot
-# và ledger giữ đúng cùng một số (recovery so khớp tuyệt đối `funding_cost` ↔ tổng FUNDING).
-FUNDING_AMOUNT_QUANTUM = Decimal("1e-18")
+# Làm tròn `FUNDING_AMOUNT_QUANTUM` (scale `trade_cost.amount`) trước khi ghi gateway lẫn ledger để
+# snapshot và ledger giữ cùng một số (recovery so khớp tuyệt đối `funding_cost` ↔ tổng FUNDING).
+__all__ = ["FUNDING_AMOUNT_QUANTUM"]
 
 
 class PaperLifecycleCoordinator:
@@ -352,12 +356,12 @@ class PaperLifecycleCoordinator:
         )
         if quantity <= 0:
             raise PaperLifecycleConflict("Vị thế không mở tại mốc funding.")
-        amount = funding_cashflow(
+        amount = settled_funding_amount(
             direction=position.direction,
             quantity=quantity,
             contract_multiplier=position.contract_multiplier,
             settlement=settlement,
-        ).quantize(FUNDING_AMOUNT_QUANTUM, rounding=ROUND_HALF_EVEN)
+        )
         updated = candidate.apply_funding_event(paper_position_id, event_id, amount)
         await self._ledger.append_trade_cost(
             uow,

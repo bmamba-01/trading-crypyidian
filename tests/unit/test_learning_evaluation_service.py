@@ -295,6 +295,24 @@ async def test_service_commits_receipt_snapshot_before_persisting_report(
 
 
 @pytest.mark.asyncio
+async def test_service_passes_live_replay_rights_gate_bound_to_access_transaction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from trading_bot.adapters.database.replay_training_rights import (
+        DatabaseReplayEvaluationRightsGate,
+    )
+
+    harness = Harness(manifest())
+    install_harness(monkeypatch, harness)
+
+    await LearningEvaluationReportService(object()).evaluate(request())
+
+    gate = harness.evaluator_calls[0]["source_eligibility_gate"]
+    assert type(gate) is DatabaseReplayEvaluationRightsGate
+    assert gate._session is harness.units[0].session
+
+
+@pytest.mark.asyncio
 async def test_service_rolls_back_receipt_when_fold_evaluation_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

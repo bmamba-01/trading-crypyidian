@@ -169,8 +169,27 @@ def test_source_pinned_runtime_replay_persists_exact_lineage_in_postgres(scorer_
             assert result["opportunities"] == 270
             assert result["test_candidate_count"] == 9
             _run_source_linked_test(root, project, environment, volume, result)
-            _run_qa_migration_downgrade_guard(root, project, environment, volume, workspace_id)
-            _compose(
+            # Từ b7d9f1a3c5e8 (14/11/2026) receipt replay TRAINING đã ghi chặn mọi downgrade đi
+            # qua nó, trước guard QA của 8ac4e2f6b0d1 và roundtrip e8f0a2c4d6b8; guard bị che được
+            # kiểm tĩnh bằng unit (test_wp06_first_party_qa_source_downgrade_migration.py).
+            for target in ("c3f5a7b9d1e3", "e8f0a2c4d6b8"):
+                denied = _compose_expected_failure(
+                    root,
+                    project,
+                    environment,
+                    "run",
+                    "--rm",
+                    "--no-deps",
+                    "migrator",
+                    "alembic",
+                    "downgrade",
+                    target,
+                )
+                assert denied.returncode != 0
+                assert "WP06_REPLAY_TRAINING_RECEIPT_POPULATED_DOWNGRADE_DENIED" in (
+                    denied.stdout + denied.stderr
+                )
+            current = _compose(
                 root,
                 project,
                 environment,
@@ -179,28 +198,9 @@ def test_source_pinned_runtime_replay_persists_exact_lineage_in_postgres(scorer_
                 "--no-deps",
                 "migrator",
                 "alembic",
-                "downgrade",
-                "e8f0a2c4d6b8",
+                "current",
             )
-            assert (
-                _lineage_contract(root, project, environment, volume, workspace_id)
-                == lineage_contract
-            )
-            assert _function_definition_hashes(
-                root, project, environment, volume, workspace_id
-            ) == _migration_hashes(root, "preimage")
-            _compose(
-                root,
-                project,
-                environment,
-                "run",
-                "--rm",
-                "--no-deps",
-                "migrator",
-                "alembic",
-                "upgrade",
-                "head",
-            )
+            assert "d4f6a8b0c2e4 (head)" in current.stdout
             assert (
                 _lineage_contract(root, project, environment, volume, workspace_id)
                 == lineage_contract
@@ -221,6 +221,31 @@ def test_source_pinned_runtime_replay_persists_exact_lineage_in_postgres(scorer_
             )
             assert "No new upgrade operations detected" in check.stdout
             return
+        # Gate TRAINING exact-scope chỉ nhận login builder: seed bằng migrator, proof bằng
+        # `candidate-proof-builder` thật (cùng workspace, tách hai lần chạy Compose).
+        trial_record_id = result.pop("trial_record_id")
+        child_manifests = result.pop("child_manifests")
+        proof = _compose_probe(
+            root,
+            project,
+            environment,
+            "run",
+            "--rm",
+            "--no-deps",
+            "-e",
+            "CRYPIDIAN_E2E_WORKSPACE_ID",
+            "-e",
+            f"WP06_PINNED_TRIAL_RECORD_ID={trial_record_id}",
+            "-e",
+            f"WP06_PINNED_CHILD_MANIFESTS={child_manifests}",
+            "--volume",
+            volume,
+            "candidate-proof-builder",
+            "python",
+            "/e2e-tests/e2e/probes/wp06_source_pinned_replay_persistence.py",
+            "--proof",
+        )
+        result |= json.loads(proof.stdout.strip().splitlines()[-1])
         assert result == {
             "bars": 206,
             "base_opportunity_complete": True,
@@ -328,96 +353,6 @@ def _run_source_linked_test(root, project, environment, volume, state):
         "class_support": {"-1": 3, "0": 3, "1": 3},
         "minimum_class_support": 100,
     }
-
-
-def _run_qa_migration_downgrade_guard(root, project, environment, volume, workspace_id):
-    # Đưa schema về đúng preimage của guard QA trước khi cố ý làm drift function.
-    _compose(
-        root,
-        project,
-        environment,
-        "run",
-        "--rm",
-        "--no-deps",
-        "migrator",
-        "alembic",
-        "downgrade",
-        "c3f5a7b9d1e3",
-    )
-    migration_cases = (
-        (
-            "test-lock",
-            "WP06_SCORER_TEST_QA_LOCK_DOWNGRADE_PREIMAGE_UNEXPECTED",
-        ),
-        (
-            "current-rights",
-            "WP06_SCORER_CURRENT_RIGHTS_QA_DOWNGRADE_PREIMAGE_UNEXPECTED",
-        ),
-        (
-            "deployment",
-            "WP06_SCORER_DEPLOYMENT_QA_GUARD_DOWNGRADE_MARKER_PREIMAGE_UNEXPECTED",
-        ),
-    )
-    for case_name, error_marker in migration_cases:
-        state = {"workspace_id": workspace_id, "migration_case": case_name}
-        prepare = _compose_probe(
-            root,
-            project,
-            environment,
-            "run",
-            "--rm",
-            "--no-deps",
-            "--volume",
-            volume,
-            "-e",
-            "WP06_SOURCE_LINKED_STATE=" + json.dumps(state),
-            "migrator",
-            "python",
-            "/e2e-tests/e2e/probes/wp06_source_linked_scorer_test.py",
-            "qa-migration-downgrade-prepare",
-        )
-        state.update(json.loads(prepare.stdout.strip().splitlines()[-1]))
-        failed = _compose_expected_failure(
-            root,
-            project,
-            environment,
-            "run",
-            "--rm",
-            "--no-deps",
-            "migrator",
-            "alembic",
-            "downgrade",
-            "55c504fe5b86",
-        )
-        output = failed.stdout + failed.stderr
-        assert failed.returncode != 0
-        assert error_marker in output, (case_name, output[-6000:])
-        restored = _compose_probe(
-            root,
-            project,
-            environment,
-            "run",
-            "--rm",
-            "--no-deps",
-            "--volume",
-            volume,
-            "-e",
-            "WP06_SOURCE_LINKED_STATE=" + json.dumps(state),
-            "migrator",
-            "python",
-            "/e2e-tests/e2e/probes/wp06_source_linked_scorer_test.py",
-            "qa-migration-downgrade-check-restore",
-        )
-        result = json.loads(restored.stdout.strip().splitlines()[-1])
-        assert result["migration_case"] == case_name
-        assert result["migration_error_marker"] == error_marker
-        for flag in (
-            "migration_downgrade_rolled_back",
-            "migration_revision_preserved",
-            "migration_drift_survived_rollback",
-            "migration_body_restored",
-        ):
-            assert result[flag] is True
 
 
 def _compose_expected_failure(root, project, environment, *args):

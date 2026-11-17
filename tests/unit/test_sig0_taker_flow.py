@@ -74,12 +74,16 @@ def test_migration_is_the_single_head_after_previous_head() -> None:
     heads = [revision for revision in graph if revision not in parents]
     # RT-1 lát 2 nối migration mark fallback ngay sau SIG-0. Sau đó hai nhánh tách ra: dev (CK-1
     # bảng giá trực tiếp, CK-10 lịch kinh tế) và main (AI-3/AI-4); revision gộp CRY-88 nối lại
-    # thành một head.
-    assert heads == ["f1b8e93fa47f"]
-    assert graph["f1b8e93fa47f"] == "60a62c705a89"  # FX-3: mark price của kỳ funding
-    assert graph["60a62c705a89"] == "ad99c4f520d0"  # TG-4: topic Telegram tín hiệu / PAPER report
-    assert graph["ad99c4f520d0"] == "a42edbd211e5"  # CRY-380: run_report bất biến
-    assert graph["a42edbd211e5"] == "7707d82de246"  # CRY-384: analyst_run.context
+    # thành một head; CRY-384/CRY-380 nối analyst_run.context và run_report sau 7707d82de246.
+    # WP06 nối migration caller EVALUATION của scorer TEST proof, rồi lát B (manifest v5).
+    assert heads == ["d4f6a8b0c2e4"]
+    assert graph["d4f6a8b0c2e4"] == "c2e4a6b8d0f1"
+    assert graph["c2e4a6b8d0f1"] == "d8f1b3a5c7e9"  # FX-3 bundle replay funding (CRY-198)
+    assert graph["d8f1b3a5c7e9"] == "f1b8e93fa47f"  # FX-3 funding/mark price (CRY-198)
+    assert graph["f1b8e93fa47f"] == "60a62c705a89"  # TG-4 topic Telegram (CRY-424)
+    assert graph["60a62c705a89"] == "ad99c4f520d0"
+    assert graph["ad99c4f520d0"] == "a42edbd211e5"
+    assert graph["a42edbd211e5"] == "7707d82de246"
     assert graph["7707d82de246"] == "c1fec3af85ea"  # bù bảng live market b4d6 (CRY-88)
     assert graph["c1fec3af85ea"] == ("645ed2998ab1", "b8d0f2a4c6e8")
     assert graph["b8d0f2a4c6e8"] == "a7c9e1b3d5f6"

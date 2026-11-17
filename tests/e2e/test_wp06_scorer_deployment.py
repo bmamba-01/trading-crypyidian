@@ -58,7 +58,7 @@ def test_postgres_scorer_deployment_governance_and_rights_gate() -> None:
             compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "head")
             heads = compose("run", "--rm", "--no-deps", "migrator", "alembic", "heads")
             assert heads.stdout.count("(head)") == 1, heads.stdout
-            assert "f1b8e93fa47f (head)" in heads.stdout
+            assert "d4f6a8b0c2e4 (head)" in heads.stdout
             check = compose("run", "--rm", "--no-deps", "migrator", "alembic", "check")
             assert "No new upgrade operations detected" in check.stdout + check.stderr
 
@@ -135,7 +135,11 @@ def test_postgres_scorer_deployment_governance_and_rights_gate() -> None:
                 allowed_failure=True,
             )
             assert downgrade.returncode != 0
-            assert "WP06_SCORING_DEPLOYMENT_POPULATED_DOWNGRADE_DENIED" in (
+            # Từ WP06 license evidence (13/11/2026) fixture paper rights phải ghi evidence,
+            # nên guard của migration license (nằm trên scorer trong chuỗi downgrade) chặn
+            # trước; guard scorer được kiểm tĩnh ở
+            # tests/unit/test_learning_scoring_deployment_persistence.py.
+            assert "WP06_LICENSE_EVIDENCE_DOWNGRADE_BLOCKED" in (
                 downgrade.stdout + downgrade.stderr
             )
             compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "head")

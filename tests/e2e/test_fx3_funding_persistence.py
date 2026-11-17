@@ -17,7 +17,13 @@ BOOTSTRAP = (
     "os.environ.update(FX3_PHASE=p['phase'],FX3_STATE=json.dumps(p['state']));"
     "exec(compile(p['code'],'fx3_funding_persistence.py','exec'),{'__name__':'__main__'})"
 )
-SERVICES = {"seed": "migrator", "write": "ingestion-worker", "read": "trading-runtime"}
+SERVICES = {
+    "seed": "migrator",
+    "write": "ingestion-worker",
+    "read": "trading-runtime",
+    "bundle_store": "admin-web",
+    "bundle_load": "backtest-worker",
+}
 
 
 def test_settled_funding_with_mark_price_is_idempotent_constrained_and_rls_scoped() -> None:
@@ -36,6 +42,8 @@ def test_settled_funding_with_mark_price_is_idempotent_constrained_and_rls_scope
         "compose",
         "--profile",
         "paper",
+        "--profile",
+        "backtest",
         "--project-name",
         project,
         "-f",
@@ -77,7 +85,9 @@ def test_settled_funding_with_mark_price_is_idempotent_constrained_and_rls_scope
             BOOTSTRAP,
             stdin=payload,
         )
-        return cast(dict[str, Any], json.loads(result.stdout.strip().splitlines()[-1]))
+        output = cast(dict[str, Any], json.loads(result.stdout.strip().splitlines()[-1]))
+        state.update(output.pop("_state", {}))
+        return output
 
     def psql(statement: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
@@ -99,7 +109,7 @@ def test_settled_funding_with_mark_price_is_idempotent_constrained_and_rls_scope
         compose("run", "--rm", "--no-deps", "db-provisioner")
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "head")
         assert (
-            "f1b8e93fa47f (head)"
+            "d4f6a8b0c2e4 (head)"
             in compose("run", "--rm", "--no-deps", "migrator", "alembic", "heads").stdout
         )
         check = compose("run", "--rm", "--no-deps", "migrator", "alembic", "check")
@@ -141,6 +151,24 @@ def test_settled_funding_with_mark_price_is_idempotent_constrained_and_rls_scope
             "has_table_privilege('crypidian_ingestion_worker','market_funding','INSERT')"
         )
         assert privileges.stdout.strip() == "t|t"
+
+        # FX-3 lát 3b: bundle replay schema 2 mang funding đã chốt (point-in-time theo as_of),
+        # lưu idempotent bằng role admin-web; backtest-worker đọc lại funding từ DB và khớp hash.
+        stored = run("bundle_store")
+        assert stored == {
+            "role": "crypidian_admin_web",
+            "settlements": [["0.000100000000000000", "90500.120000000000000000"]],
+            "before_available": 0,
+            "stored": [False, True],
+            "schema_version": 2,
+            "bundle_hash": stored["bundle_hash"],
+        }, stored
+        loaded = run("bundle_load")
+        assert loaded == {
+            "role": "crypidian_backtest_worker",
+            "hash_matches": True,
+            "funding_event_ids": ["funding:BTCUSDT:2026-11-16T08:00:00+00:00"],
+        }, loaded
     finally:
         subprocess.run(
             base + ["down", "--volumes", "--remove-orphans"],

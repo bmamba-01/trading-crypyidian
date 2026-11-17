@@ -83,6 +83,43 @@ class FundingSettlementRepository:
             for time, rate, mark in rows.all()
         )
 
+    async def settled_in_window(
+        self,
+        *,
+        workspace_id: UUID,
+        symbol: str,
+        window_start: datetime,
+        window_end: datetime,
+        as_of: datetime,
+    ) -> tuple[SettledFundingRow, ...]:
+        """Kỳ đã chốt trong ``[window_start, window_end)`` nhìn tại ``as_of`` (bundle replay)."""
+        rows = await self._session.execute(
+            select(MarketFunding.funding_time, MarketFunding.funding_rate, MarketFunding.mark_price)
+            .join(
+                MarketInstrument,
+                (MarketInstrument.workspace_id == MarketFunding.workspace_id)
+                & (MarketInstrument.id == MarketFunding.instrument_id),
+            )
+            .where(
+                MarketFunding.workspace_id == workspace_id,
+                MarketInstrument.symbol == symbol,
+                MarketFunding.source == FUNDING_RECORD_SOURCE,
+                MarketFunding.funding_time >= window_start,
+                MarketFunding.funding_time < window_end,
+                MarketFunding.available_at <= as_of,
+            )
+            .ext(distinct_on(MarketFunding.funding_time))
+            .order_by(
+                MarketFunding.funding_time,
+                MarketFunding.revision.desc(),
+                MarketFunding.available_at.desc(),
+            )
+        )
+        return tuple(
+            SettledFundingRow(funding_time=time, funding_rate=rate, mark_price=mark)
+            for time, rate, mark in rows.all()
+        )
+
     async def scheduled_after(
         self,
         *,

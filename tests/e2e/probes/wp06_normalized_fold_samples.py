@@ -342,12 +342,24 @@ async def _source_admin_seed() -> dict[str, object]:
             cost_unit="USD",
         ),
     )
+    sys.path.insert(0, "/e2e-tests")
+    from e2e.probes.source_license_fixture import (
+        append_fixture_license_evidence,
+        fixture_license_scope,
+        pending_license_kwargs,
+        verified_license_kwargs,
+    )
+
+    # Pending và VERIFIED phải cùng reference/scope với dòng license evidence.
+    license_ref = "https://example.invalid/wp06/training-terms"
+    license_scope = fixture_license_scope(source_id)
     entry = entry.transition(
         policy_id=f"{source_id}:policy:pending",
         state=SourcePolicyState.RIGHTS_PENDING,
         actor_id="fixture-policy-author",
         at=now,
         reason="Chờ reviewer xác minh quyền.",
+        **pending_license_kwargs(license_scope, license_ref),
     )
     entry = entry.transition(
         policy_id=f"{source_id}:policy:verified",
@@ -356,13 +368,19 @@ async def _source_admin_seed() -> dict[str, object]:
         approved_by="fixture-policy-reviewer",
         at=now,
         reviewed_at=now,
-        evidence_ref="https://example.invalid/wp06/training-terms",
         allowed_purposes=frozenset({SourceUsePurpose.TRAINING}),
         reason="Reviewer fixture cấp riêng mục đích training.",
+        **verified_license_kwargs(license_scope, license_ref, uuid4()),
     )
     observer = PostCommitSourceObserver(sessions)
     current = None
     for revision in entry.revisions:
+        if revision.state is SourcePolicyState.VERIFIED:
+            # Evidence cho pending đã commit phải có trước khi observer ghi VERIFIED.
+            async with sessions() as session, session.begin():
+                await append_fixture_license_evidence(
+                    session, workspace_id=workspace_id, revision=revision
+                )
         result, progress = await observer.append_policy(
             workspace_id=workspace_id,
             revision=revision,
@@ -766,8 +784,10 @@ async def _source_rights_verify_unchanged() -> dict[str, object]:
             )
         )
     await engine.dispose()
-    assert receipt_count == 1
-    assert normalized_count == 3
+    # Mặc định: retry bị từ chối sau một lần chuẩn hóa thành công; manifest bị từ chối
+    # ngay lần đầu truyền 0/0 để chứng minh không ghi gì.
+    assert receipt_count == int(os.environ.get("WP06_EXPECTED_SOURCE_RECEIPTS", "1"))
+    assert normalized_count == int(os.environ.get("WP06_EXPECTED_NORMALIZED_SAMPLES", "3"))
     return {"receipt_unchanged": True, "normalized_sample_count_unchanged": True}
 
 

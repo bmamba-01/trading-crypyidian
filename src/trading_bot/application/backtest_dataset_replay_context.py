@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from datetime import timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
 
 from trading_bot.application.backtest import (
@@ -26,6 +26,7 @@ from trading_bot.application.runtime_replay_evaluator import (
     RuntimeReplayEvaluator,
     run_runtime_paper_replay,
 )
+from trading_bot.domain.execution.funding import FundingSettlement
 from trading_bot.domain.execution.paper import PaperBar, PaperExecutionGateway
 from trading_bot.domain.market.models import OHLCVBar
 from trading_bot.domain.risk.engine import RiskDecision, RiskEngine
@@ -277,10 +278,18 @@ class BacktestDatasetReplayContextProvider:
             opposing_signal_by_bar=opposing_by_bar,
             exit_evidence_by_bar=exit_evidence_by_bar,
             reserve_risk=_reserve_in_memory,
+            # FX-3 lát 3b: chỉ kỳ có mốc đã qua tại quyết định này (không nhìn trước).
+            funding_settlements=self._funding_until(decision_time),
         )
         self._last_decision_time = decision_time
         self._next_observation += 1
         return context
+
+    def _funding_until(self, decision_time: datetime) -> tuple[FundingSettlement, ...]:
+        funding = self._bundle.funding
+        if funding is None:
+            return ()
+        return tuple(item for item in funding.settlements if item.funding_time <= decision_time)
 
     def _exit_evidence_at(
         self, event: PaperBar, recipe_id: str, spec: ExitEvidenceSpec

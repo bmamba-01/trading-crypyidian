@@ -40,6 +40,7 @@ from trading_bot.application.paper_decision_cycle import (
 )
 from trading_bot.application.strategy_market_requirements import entry_timeframe_for_release
 from trading_bot.config.workspace_settings import PublishedWorkspaceSettings
+from trading_bot.domain.execution.funding import FundingSettlement, settled_funding_amount
 from trading_bot.domain.execution.paper import (
     OrderStatus,
     PaperBar,
@@ -117,6 +118,8 @@ class ReplayEvaluationContext:
     atr_by_bar: tuple[tuple[str, str, Decimal], ...] = ()
     opposing_signal_by_bar: tuple[tuple[str, str, bool | None], ...] = ()
     exit_evidence_by_bar: tuple[ReplayExitEvidence, ...] = ()
+    # FX-3 lát 3b: kỳ funding đã chốt từ bundle (mốc <= quyết định hiện tại), tăng dần theo mốc.
+    funding_settlements: tuple[FundingSettlement, ...] = ()
 
 
 ContextProvider = Callable[[DecisionSnapshot], ReplayEvaluationContext]
@@ -899,6 +902,48 @@ class RuntimeReplayEvaluator:
             ):
                 raise ReplayEvaluationContextError("Kênh thoát có đáy cao hơn đỉnh.")
 
+    def _apply_funding_before(
+        self, event: PaperBar, settlements: tuple[FundingSettlement, ...]
+    ) -> None:
+        """Ghi kỳ funding có mốc <= ``event.opened_at`` cho vị thế đã mở trước mốc (FX-3 lát 3b).
+
+        Cùng quy tắc với runtime PAPER: khối lượng là khối lượng còn mở tại mốc (mọi nến trước
+        mốc đã được áp), vị thế phải có fill vào trước mốc, số tiền làm tròn như ledger và
+        idempotent theo ``settlement.event_id``.
+        """
+        if not settlements:
+            return
+        for intent_id in self._intent_plans:
+            position = self._gateway.position(intent_id)
+            if (
+                position is None
+                or position.is_closed
+                or position.quantity <= 0
+                or position.symbol != event.symbol
+            ):
+                continue
+            fills = self._gateway.order(intent_id).fills
+            first_fill = next((fill for fill in fills if fill.quantity > 0), None)
+            if first_fill is None:
+                continue
+            for settlement in settlements:
+                if settlement.symbol != event.symbol:
+                    continue
+                if settlement.funding_time > event.opened_at:
+                    break
+                if (
+                    settlement.funding_time <= first_fill.filled_at
+                    or settlement.event_id in position.funding_event_ids
+                ):
+                    continue
+                amount = settled_funding_amount(
+                    direction=position.direction,
+                    quantity=position.quantity,
+                    contract_multiplier=position.contract_multiplier,
+                    settlement=settlement,
+                )
+                position = self._gateway.apply_funding_event(intent_id, settlement.event_id, amount)
+
     def _advance_execution(
         self, context: ReplayEvaluationContext, snapshot: DecisionSnapshot
     ) -> EvaluationTrade | None:
@@ -922,6 +967,9 @@ class RuntimeReplayEvaluator:
             if event_key in self._seen_events:
                 continue
             self._seen_events.add(event_key)
+            # FX-3 lát 3b: như runtime PAPER, ghi funding của mọi mốc <= mở nến trước khi đưa nến
+            # (kể cả nến có thể khớp entry: vị thế mở đúng mốc không trả funding kỳ đó).
+            self._apply_funding_before(event, context.funding_settlements)
             self._gateway.apply_market_event(event)
             for intent_id in self._intent_plans:
                 position = self._gateway.position(intent_id)

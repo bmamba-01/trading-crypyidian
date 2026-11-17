@@ -146,3 +146,43 @@ async def test_gate_rejects_duplicate_child_rows() -> None:
             bundle_hash=BUNDLE_HASH,
             operation=ReplayTrainingOperation.TRAINING,
         )
+
+
+class _DeniedSession:
+    """Giả lập verifier SQL RAISE EXCEPTION với token từ chối hoặc lỗi DB khác."""
+
+    def __init__(self, message: str) -> None:
+        self.message = message
+
+    async def execute(self, statement, parameters):
+        from sqlalchemy.exc import DBAPIError
+
+        raise DBAPIError(str(statement), parameters, Exception(self.message))
+
+
+@pytest.mark.asyncio
+async def test_gate_maps_verifier_denial_token_to_permission_error() -> None:
+    session = _DeniedSession(
+        "WP06_TRAINING_REPLAY_CURRENT_POLICY_DENIED\nCONTEXT: PL/pgSQL function ..."
+    )
+
+    with pytest.raises(PermissionError, match="WP06_TRAINING_REPLAY_CURRENT_POLICY_DENIED"):
+        await DatabaseReplayTrainingRightsGate(session).authorize(  # type: ignore[arg-type]
+            workspace_id=WORKSPACE_ID,
+            bundle_hash=BUNDLE_HASH,
+            operation=ReplayTrainingOperation.TRAINING,
+        )
+
+
+@pytest.mark.asyncio
+async def test_gate_does_not_hide_unrelated_database_errors() -> None:
+    from sqlalchemy.exc import DBAPIError
+
+    session = _DeniedSession("connection reset by peer")
+
+    with pytest.raises(DBAPIError):
+        await DatabaseReplayTrainingRightsGate(session).authorize(  # type: ignore[arg-type]
+            workspace_id=WORKSPACE_ID,
+            bundle_hash=BUNDLE_HASH,
+            operation=ReplayTrainingOperation.TRAINING,
+        )

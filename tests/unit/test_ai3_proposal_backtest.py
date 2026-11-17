@@ -372,3 +372,46 @@ def test_parallel_replay_matches_sequential_exactly() -> None:
     assert [b.symbol for b, _ in parallel.per_symbol] == ["AAAUSDT", "BBBUSDT", "CCCUSDT"]
     assert parallel.skipped_symbols == (("ZZZUSDT", "Thiếu nến 1h"),)
     assert middle > started  # thời gian chỉ để tham khảo; không khẳng định tốc độ trong unit
+
+
+def test_stored_bundle_carries_settled_funding_of_evaluation_window() -> None:
+    """FX-3 lát 3b: có nguồn funding thì bundle schema 2 mang kỳ đã chốt nhìn tại ``now``."""
+    from types import SimpleNamespace
+
+    calls: list[dict[str, object]] = []
+
+    class _Funding:
+        async def settled_in_window(self, **kwargs: object) -> list[SimpleNamespace]:
+            calls.append(kwargs)
+            start = kwargs["window_start"]
+            assert isinstance(start, datetime)
+            return [
+                SimpleNamespace(
+                    funding_time=start + timedelta(hours=8),
+                    funding_rate=Decimal("0.0001"),
+                    mark_price=Decimal("100"),
+                )
+            ]
+
+    series = {("AAAUSDT", "1h"): _bars("AAAUSDT", "1h", 320)}
+    plain = _bundle("AAAUSDT", series)
+    funded = asyncio.run(
+        build_stored_bundle(
+            workspace_id=WORKSPACE,
+            symbol="AAAUSDT",
+            timeframes=("1h",),
+            market_data=_Market(series),
+            rights_gate=_Gate(),
+            now=NOW,
+            funding_source=_Funding(),
+        )
+    )
+    assert not isinstance(plain, str)
+    assert not isinstance(funded, str)
+    assert plain.funding is None
+    assert funded.funding is not None
+    assert len(funded.funding.settlements) == 1
+    assert calls[0]["as_of"] == NOW
+    assert calls[0]["window_start"] == funded.evaluation_start
+    assert calls[0]["window_end"] == funded.range_end
+    assert funded.dataset_hash != plain.dataset_hash

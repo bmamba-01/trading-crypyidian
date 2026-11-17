@@ -12,6 +12,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from trading_bot.adapters.database.learning_fold_outcome_verifier import (
     DatabaseFoldOutcomeVerifier,
 )
+from trading_bot.adapters.database.replay_training_rights import (
+    DatabaseReplayEvaluationRightsGate,
+)
 from trading_bot.adapters.database.repositories.learning_evaluation_access import (
     LearningEvaluationAccessConflict,
     LearningEvaluationAccessRepository,
@@ -162,6 +165,9 @@ class LearningEvaluationReportService:
                     ),
                     seed=request.seed,
                     access_receipt_id=access.receipt_id,
+                    # Manifest phụ thuộc nguồn (v5) phải được kiểm lại quyền hiện hành trong
+                    # cùng transaction đã mở receipt evaluator, trước khi đọc payload outcome.
+                    source_eligibility_gate=DatabaseReplayEvaluationRightsGate(uow.session),
                 )
 
         # Transaction receipt đã commit; đến đây mới trả report hoặc bắt đầu persist.

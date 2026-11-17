@@ -115,3 +115,19 @@ def test_candidate_source_metadata_migration_has_only_identity_columns():
     statements.clear()
     module.downgrade()
     assert any(value.startswith("REVOKE SELECT (") for value in statements)
+
+
+def test_opportunity_universe_populated_downgrade_guard_runs_before_drops() -> None:
+    """Guard opportunity không còn chạm tới được trong E2E (guard license WP06 chặn trước)."""
+    source = (
+        Path(__file__).parents[2]
+        / "migrations"
+        / "versions"
+        / "b2d4f6a8c0e1_wp06_decision_opportunity_universe.py"
+    ).read_text(encoding="utf-8")
+    downgrade = source.split("def downgrade", 1)[1]
+
+    assert "WP06_OPPORTUNITY_DOWNGRADE_REQUIRES_EMPTY_V2" in downgrade
+    guard = downgrade.index("WP06_OPPORTUNITY_DOWNGRADE_REQUIRES_EMPTY_V2")
+    assert guard < downgrade.index("DROP TRIGGER")
+    assert guard < downgrade.index("DROP FUNCTION")

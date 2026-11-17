@@ -4,12 +4,10 @@ from __future__ import annotations
 
 import json
 import os
-import select
 import subprocess
 import sys
 import time
 import uuid
-from datetime import UTC, datetime
 from pathlib import Path
 
 from scripts.docker_image import build_image_reference, ensure_image_available
@@ -99,130 +97,6 @@ def test_wp06_normalized_samples_are_append_only_and_builder_only() -> None:
             success=False,
         )
 
-    def run_builder_then_revoke_under_lock(
-        *, workspace_id: object, manifest_hash: object, source_id: object
-    ) -> tuple[dict[str, object], dict[str, object], float]:
-        command = base + [
-            "run",
-            "--rm",
-            "--no-deps",
-            "--volume",
-            probe_mount,
-            "-e",
-            "WP06_NORMALIZED_PHASE=builder",
-            "-e",
-            f"WP06_WORKSPACE_ID={workspace_id}",
-            "-e",
-            f"WP06_MANIFEST_HASH={manifest_hash}",
-            "-e",
-            "WP06_BUILDER_HOLD_SOURCE_LOCK_SECONDS=4",
-            "candidate-proof-builder",
-            "python",
-            probe,
-        ]
-        process = subprocess.Popen(
-            command,
-            cwd=root,
-            env=environment,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            bufsize=1,
-        )
-        try:
-            assert process.stdout is not None
-            readable, _, _ = select.select([process.stdout], [], [], 120)
-            assert readable, "Candidate builder không phát trạng thái lock-held đúng hạn."
-            sentinel = process.stdout.readline().strip()
-            assert sentinel == "WP06_SOURCE_LOCK_HELD", sentinel
-            started_at = time.monotonic()
-            revoked = run_probe(
-                "admin-web",
-                "source-rights-revoke",
-                "-e",
-                f"WP06_SOURCE_WORKSPACE_ID={workspace_id}",
-                "-e",
-                f"WP06_SOURCE_ID={source_id}",
-            )
-            blocked_seconds = time.monotonic() - started_at
-            stdout, stderr = process.communicate(timeout=120)
-            assert process.returncode == 0, f"Builder lỗi. stdout={stdout}\nstderr={stderr}"
-            builder = json.loads(stdout.strip().splitlines()[-1])
-            assert blocked_seconds >= 2.0, (
-                "Policy writer không chờ candidate builder nhả shared source lock; "
-                f"chỉ chờ {blocked_seconds:.3f}s."
-            )
-            return builder, revoked, blocked_seconds
-        finally:
-            if process.poll() is None:
-                process.terminate()
-                process.communicate(timeout=30)
-
-    def run_evaluator_then_revoke_under_lock(
-        *, workspace_id: object, manifest_hash: object, source_id: object, run_id: object
-    ) -> tuple[dict[str, object], dict[str, object], float]:
-        command = base + [
-            "run",
-            "--rm",
-            "--no-deps",
-            "--volume",
-            probe_mount,
-            "-e",
-            "WP06_NORMALIZED_PHASE=source-evaluation-open",
-            "-e",
-            f"WP06_SOURCE_WORKSPACE_ID={workspace_id}",
-            "-e",
-            f"WP06_SOURCE_MANIFEST_HASH={manifest_hash}",
-            "-e",
-            f"WP06_EVALUATION_RUN_ID={run_id}",
-            "-e",
-            "WP06_CONSUMER_HOLD_SOURCE_LOCK_SECONDS=4",
-            "learning-evaluator",
-            "python",
-            probe,
-        ]
-        process = subprocess.Popen(
-            command,
-            cwd=root,
-            env=environment,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            bufsize=1,
-        )
-        try:
-            assert process.stdout is not None
-            readable, _, _ = select.select([process.stdout], [], [], 120)
-            assert readable, "Evaluator không phát trạng thái source lock-held đúng hạn."
-            sentinel = process.stdout.readline().strip()
-            assert sentinel == "WP06_CONSUMER_SOURCE_LOCK_HELD", sentinel
-            started_at = time.monotonic()
-            revoked = run_probe(
-                "admin-web",
-                "source-rights-revoke",
-                "-e",
-                f"WP06_SOURCE_WORKSPACE_ID={workspace_id}",
-                "-e",
-                f"WP06_SOURCE_ID={source_id}",
-            )
-            blocked_seconds = time.monotonic() - started_at
-            stdout, stderr = process.communicate(timeout=120)
-            assert process.returncode == 0, f"Evaluator lỗi. stdout={stdout}\nstderr={stderr}"
-            evaluator = json.loads(stdout.strip().splitlines()[-1])
-            assert blocked_seconds >= 2.0, (
-                "Policy writer không chờ evaluator commit receipt source; "
-                f"chỉ chờ {blocked_seconds:.3f}s."
-            )
-            return evaluator, revoked, blocked_seconds
-        finally:
-            if process.poll() is None:
-                process.terminate()
-                process.communicate(timeout=30)
-
     try:
         compose("up", "--detach", "--wait", "--wait-timeout", "180", "postgres")
         compose("run", "--rm", "--no-deps", "db-provisioner")
@@ -230,7 +104,7 @@ def test_wp06_normalized_samples_are_append_only_and_builder_only() -> None:
         heads = compose("run", "--rm", "--no-deps", "migrator", "alembic", "heads")
         check = compose("run", "--rm", "--no-deps", "migrator", "alembic", "check")
         assert heads.stdout.count("(head)") == 1
-        assert "f1b8e93fa47f (head)" in heads.stdout
+        assert "d4f6a8b0c2e4 (head)" in heads.stdout
         assert "No new upgrade operations detected" in check.stdout + check.stderr
         compose(
             "run",
@@ -687,8 +561,11 @@ def test_wp06_normalized_samples_are_append_only_and_builder_only() -> None:
         )
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "head")
 
-        # Typed source rights are checked by the trusted builder, receipted
-        # atomically, and rechecked on duplicate retry after policy revocation.
+        # Từ migration b7d9f1a3c5e8 (7c9b749, 14/11/2026) manifest phụ thuộc nguồn chỉ được
+        # chuẩn hóa khi là dataset-manifest-v5 có `source_use_lineage` của replay bundle.
+        # Manifest source-item kiểu WP05 (`source_references`) bị gate DB từ chối có chủ đích
+        # (spec 2026-11-13-wp06-source-use-scope-consumers-design.md). Positive path bằng replay
+        # lineage, receipt và revoke-trước-claim được kiểm ở test_wp06_source_license_scope.py.
         source = run_probe("admin-web", "source-admin-seed")
         item = run_probe(
             "ingestion-worker",
@@ -723,21 +600,33 @@ def test_wp06_normalized_samples_are_append_only_and_builder_only() -> None:
             "-e",
             f"WP06_SOURCE_RIGHTS_HASH={source['rights_hash']}",
         )
-        source_builder, revoked, writer_wait_seconds = run_builder_then_revoke_under_lock(
-            workspace_id=source_manifest["workspace_id"],
-            manifest_hash=source_manifest["manifest_hash"],
-            source_id=source["source_id"],
+        legacy_builder = run_probe_failure(
+            "candidate-proof-builder",
+            "builder",
+            "-e",
+            f"WP06_WORKSPACE_ID={source_manifest['workspace_id']}",
+            "-e",
+            f"WP06_MANIFEST_HASH={source_manifest['manifest_hash']}",
         )
-        assert source_builder["source_training_receipt_count"] == 1
-        assert source_builder["source_receipt_metadata_only"] is True
-        assert revoked == {"revoked": True, "observed": True}
-        assert writer_wait_seconds >= 2.0
+        assert "WP06_TRAINING_REPLAY_LEGACY_LINEAGE_DENIED" in (
+            legacy_builder.stdout + legacy_builder.stderr
+        )
+        # Từ chối nguyên tử: không receipt TRAINING, không normalized sample nào được ghi.
         assert run_probe(
-            "migrator",
-            "source-receipt-immutable",
+            "candidate-proof-builder",
+            "source-rights-verify-unchanged",
             "-e",
             f"WP06_SOURCE_WORKSPACE_ID={source['workspace_id']}",
-        ) == {"receipt_update_trigger_immutable": True}
+            "-e",
+            f"WP06_SOURCE_MANIFEST_HASH={source_manifest['manifest_hash']}",
+            "-e",
+            "WP06_EXPECTED_SOURCE_RECEIPTS=0",
+            "-e",
+            "WP06_EXPECTED_NORMALIZED_SAMPLES=0",
+        ) == {
+            "receipt_unchanged": True,
+            "normalized_sample_count_unchanged": True,
+        }
         for role_service, expected_role in (
             ("admin-web", "crypidian_admin_web"),
             ("trainer-worker", "crypidian_trainer_worker"),
@@ -746,36 +635,6 @@ def test_wp06_normalized_samples_are_append_only_and_builder_only() -> None:
                 "receipt_access_denied_for": expected_role,
                 "app_receipt_access_denied": True,
             }
-
-        revocation_batch = run_probe(
-            "ingestion-worker",
-            "source-rights-consume",
-            "-e",
-            f"WP06_SOURCE_WORKSPACE_ID={source['workspace_id']}",
-        )
-        assert revocation_batch["rights_events_processed"] >= 1
-        assert revocation_batch["rights_backlog_empty"] is True
-        stale_retry = run_probe_failure(
-            "candidate-proof-builder",
-            "builder",
-            "-e",
-            f"WP06_WORKSPACE_ID={source_manifest['workspace_id']}",
-            "-e",
-            f"WP06_MANIFEST_HASH={source_manifest['manifest_hash']}",
-        )
-        assert "Source TRAINING rights bị từ chối" in stale_retry.stdout + stale_retry.stderr
-        unchanged = run_probe(
-            "candidate-proof-builder",
-            "source-rights-verify-unchanged",
-            "-e",
-            f"WP06_SOURCE_WORKSPACE_ID={source['workspace_id']}",
-            "-e",
-            f"WP06_SOURCE_MANIFEST_HASH={source_manifest['manifest_hash']}",
-        )
-        assert unchanged == {
-            "receipt_unchanged": True,
-            "normalized_sample_count_unchanged": True,
-        }
         source_downgrade = compose(
             "run",
             "--rm",
@@ -786,278 +645,13 @@ def test_wp06_normalized_samples_are_append_only_and_builder_only() -> None:
             "e1a2c4e6f8b0",
             success=False,
         )
-        assert "WP06_SCORER_ARTIFACT_DOWNGRADE_REQUIRES_EMPTY_TABLE" in (
+        # Seed source đã ghi license evidence, nên guard migration license (nằm trên trong
+        # chuỗi downgrade) chặn trước; guard scorer artifact đã được kiểm ở bước trước.
+        assert "WP06_LICENSE_EVIDENCE_DOWNGRADE_BLOCKED" in (
             source_downgrade.stdout + source_downgrade.stderr
         )
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "head")
 
-        # Consumer gateways phải kiểm quyền hiện hành dưới lock và lưu biên nhận theo run.
-        consumer_source = run_probe("admin-web", "source-admin-seed")
-        consumer_item = run_probe(
-            "ingestion-worker",
-            "source-item-seed",
-            "-e",
-            f"WP06_SOURCE_WORKSPACE_ID={consumer_source['workspace_id']}",
-            "-e",
-            f"WP06_SOURCE_ID={consumer_source['source_id']}",
-            "-e",
-            f"WP06_SOURCE_ITEM_ID={consumer_source['item_id']}",
-            "-e",
-            f"WP06_SOURCE_REVISION_ID={consumer_source['revision_id']}",
-        )
-        assert consumer_item["rights_backlog_empty"] is True
-        consumer_manifest = run_probe(
-            "migrator",
-            "source-manifest-seed",
-            "-e",
-            f"WP06_SOURCE_WORKSPACE_ID={consumer_source['workspace_id']}",
-            "-e",
-            f"WP06_SOURCE_ID={consumer_source['source_id']}",
-            "-e",
-            f"WP06_SOURCE_ITEM_ID={consumer_source['item_id']}",
-            "-e",
-            f"WP06_SOURCE_REVISION_ID={consumer_source['revision_id']}",
-            "-e",
-            f"WP06_SOURCE_POLICY_ID={consumer_source['policy_id']}",
-            "-e",
-            f"WP06_SOURCE_POLICY_SEQUENCE={consumer_source['policy_sequence']}",
-            "-e",
-            f"WP06_SOURCE_RIGHTS_HASH={consumer_source['rights_hash']}",
-        )
-        consumer_builder = run_probe(
-            "candidate-proof-builder",
-            "builder",
-            "-e",
-            f"WP06_WORKSPACE_ID={consumer_manifest['workspace_id']}",
-            "-e",
-            f"WP06_MANIFEST_HASH={consumer_manifest['manifest_hash']}",
-        )
-        assert consumer_builder["source_training_receipt_count"] == 1
-        training_attempt = run_probe(
-            "admin-web",
-            "create-training-attempt",
-            "-e",
-            f"WP06_WORKSPACE_ID={consumer_manifest['workspace_id']}",
-            "-e",
-            f"WP06_MANIFEST_HASH={consumer_manifest['manifest_hash']}",
-            "-e",
-            "WP06_TRIAL_INDEX=1",
-        )
-        training_run = compose(
-            "run",
-            "--rm",
-            "--no-deps",
-            "trainer-worker",
-            "python",
-            "-m",
-            "trading_bot.cli.learning_trainer",
-            "work-once",
-            "--workspace-id",
-            str(consumer_manifest["workspace_id"]),
-            "--worker-id",
-            "e2e-source-rights-worker",
-        )
-        training_result = json.loads(training_run.stdout.strip().splitlines()[-1])
-        assert training_result["status"] == "succeeded"
-        assert training_result["attempt_id"] == training_attempt["attempt_id"]
-        assert run_probe(
-            "admin-web",
-            "source-run-rights-verify",
-            "-e",
-            f"WP06_SOURCE_WORKSPACE_ID={consumer_manifest['workspace_id']}",
-            "-e",
-            "WP06_ACCESS_KIND=training",
-            "-e",
-            f"WP06_ACCESS_ID={training_attempt['attempt_id']}",
-        ) == {
-            "gate_execute_scope": True,
-            "run_source_rights_metadata_only": True,
-            "workspace_isolation": True,
-        }
-
-        evaluation_run_id = uuid.uuid4()
-        opened, consumer_revoked, consumer_lock_wait = run_evaluator_then_revoke_under_lock(
-            workspace_id=consumer_manifest["workspace_id"],
-            manifest_hash=consumer_manifest["manifest_hash"],
-            source_id=consumer_source["source_id"],
-            run_id=evaluation_run_id,
-        )
-        assert opened == {"evaluation_access_opened": True, "receipt_committed": True}
-        assert consumer_revoked == {"revoked": True, "observed": True}
-        assert consumer_lock_wait >= 2.0
-        assert run_probe(
-            "admin-web",
-            "source-run-rights-verify",
-            "-e",
-            f"WP06_SOURCE_WORKSPACE_ID={consumer_manifest['workspace_id']}",
-            "-e",
-            "WP06_ACCESS_KIND=evaluation",
-            "-e",
-            f"WP06_ACCESS_ID={evaluation_run_id}",
-        ) == {
-            "gate_execute_scope": True,
-            "run_source_rights_metadata_only": True,
-            "workspace_isolation": True,
-        }
-        assert run_probe(
-            "migrator",
-            "source-run-rights-immutable",
-            "-e",
-            f"WP06_SOURCE_WORKSPACE_ID={consumer_manifest['workspace_id']}",
-            "-e",
-            f"WP06_ACCESS_ID={evaluation_run_id}",
-        ) == {"run_source_rights_immutable": True}
-
-        pending_evaluation_id = uuid.uuid4()
-        pending_denial = run_probe_failure(
-            "learning-evaluator",
-            "source-evaluation-open",
-            "-e",
-            f"WP06_SOURCE_WORKSPACE_ID={consumer_manifest['workspace_id']}",
-            "-e",
-            f"WP06_SOURCE_MANIFEST_HASH={consumer_manifest['manifest_hash']}",
-            "-e",
-            f"WP06_EVALUATION_RUN_ID={pending_evaluation_id}",
-        )
-        assert "WP06_SOURCE_TRAINING_RIGHTS_INVALIDATED" in (
-            pending_denial.stdout + pending_denial.stderr
-        )
-        assert run_probe(
-            "admin-web",
-            "source-run-rights-verify",
-            "-e",
-            f"WP06_SOURCE_WORKSPACE_ID={consumer_manifest['workspace_id']}",
-            "-e",
-            "WP06_ACCESS_KIND=evaluation",
-            "-e",
-            f"WP06_ACCESS_ID={pending_evaluation_id}",
-            "-e",
-            "WP06_EXPECTED_SOURCE_RECEIPTS=0",
-        ) == {
-            "gate_execute_scope": True,
-            "run_source_rights_metadata_only": True,
-            "workspace_isolation": True,
-        }
-        consumer_revocation_batch = run_probe(
-            "ingestion-worker",
-            "source-rights-consume",
-            "-e",
-            f"WP06_SOURCE_WORKSPACE_ID={consumer_manifest['workspace_id']}",
-        )
-        assert consumer_revocation_batch["rights_events_processed"] >= 1
-        denied_attempt = run_probe(
-            "admin-web",
-            "create-training-attempt",
-            "-e",
-            f"WP06_WORKSPACE_ID={consumer_manifest['workspace_id']}",
-            "-e",
-            f"WP06_MANIFEST_HASH={consumer_manifest['manifest_hash']}",
-            "-e",
-            "WP06_TRIAL_INDEX=2",
-        )
-        trainer_denial = run_probe_failure(
-            "trainer-worker",
-            "source-training-claim",
-            "-e",
-            f"WP06_SOURCE_WORKSPACE_ID={consumer_manifest['workspace_id']}",
-            "-e",
-            f"WP06_ATTEMPT_ID={denied_attempt['attempt_id']}",
-        )
-        assert "WP06_SOURCE_TRAINING_RIGHTS_INVALIDATED" in (
-            trainer_denial.stdout + trainer_denial.stderr
-        )
-        assert run_probe(
-            "admin-web",
-            "source-run-rights-verify",
-            "-e",
-            f"WP06_SOURCE_WORKSPACE_ID={consumer_manifest['workspace_id']}",
-            "-e",
-            "WP06_ACCESS_KIND=training",
-            "-e",
-            f"WP06_ACCESS_ID={denied_attempt['attempt_id']}",
-            "-e",
-            "WP06_EXPECTED_SOURCE_RECEIPTS=0",
-        ) == {
-            "gate_execute_scope": True,
-            "run_source_rights_metadata_only": True,
-            "workspace_isolation": True,
-        }
-        retention_source = run_probe("admin-web", "source-admin-seed")
-        retention_item = run_probe(
-            "ingestion-worker",
-            "source-item-seed",
-            "-e",
-            f"WP06_SOURCE_WORKSPACE_ID={retention_source['workspace_id']}",
-            "-e",
-            f"WP06_SOURCE_ID={retention_source['source_id']}",
-            "-e",
-            f"WP06_SOURCE_ITEM_ID={retention_source['item_id']}",
-            "-e",
-            f"WP06_SOURCE_REVISION_ID={retention_source['revision_id']}",
-            "-e",
-            "WP06_SOURCE_RETENTION_SECONDS=45",
-        )
-        assert retention_item["rights_backlog_empty"] is True
-        assert retention_item["retention_expires_at"] is not None
-        retention_manifest = run_probe(
-            "migrator",
-            "source-manifest-seed",
-            "-e",
-            f"WP06_SOURCE_WORKSPACE_ID={retention_source['workspace_id']}",
-            "-e",
-            f"WP06_SOURCE_ID={retention_source['source_id']}",
-            "-e",
-            f"WP06_SOURCE_ITEM_ID={retention_source['item_id']}",
-            "-e",
-            f"WP06_SOURCE_REVISION_ID={retention_source['revision_id']}",
-            "-e",
-            f"WP06_SOURCE_POLICY_ID={retention_source['policy_id']}",
-            "-e",
-            f"WP06_SOURCE_POLICY_SEQUENCE={retention_source['policy_sequence']}",
-            "-e",
-            f"WP06_SOURCE_RIGHTS_HASH={retention_source['rights_hash']}",
-        )
-        retention_builder = run_probe(
-            "candidate-proof-builder",
-            "builder",
-            "-e",
-            f"WP06_WORKSPACE_ID={retention_manifest['workspace_id']}",
-            "-e",
-            f"WP06_MANIFEST_HASH={retention_manifest['manifest_hash']}",
-        )
-        assert retention_builder["source_training_receipt_count"] == 1
-        retention_expiry = datetime.fromisoformat(retention_item["retention_expires_at"])
-        time.sleep(max(0.0, (retention_expiry - datetime.now(UTC)).total_seconds() + 0.2))
-        retention_run_id = uuid.uuid4()
-        expired_retention = run_probe_failure(
-            "learning-evaluator",
-            "source-evaluation-open",
-            "-e",
-            f"WP06_SOURCE_WORKSPACE_ID={retention_manifest['workspace_id']}",
-            "-e",
-            f"WP06_SOURCE_MANIFEST_HASH={retention_manifest['manifest_hash']}",
-            "-e",
-            f"WP06_EVALUATION_RUN_ID={retention_run_id}",
-        )
-        assert "WP06_SOURCE_TRAINING_RIGHTS_ITEM_DENIED" in (
-            expired_retention.stdout + expired_retention.stderr
-        )
-        assert run_probe(
-            "admin-web",
-            "source-run-rights-verify",
-            "-e",
-            f"WP06_SOURCE_WORKSPACE_ID={retention_manifest['workspace_id']}",
-            "-e",
-            "WP06_ACCESS_KIND=evaluation",
-            "-e",
-            f"WP06_ACCESS_ID={retention_run_id}",
-            "-e",
-            "WP06_EXPECTED_SOURCE_RECEIPTS=0",
-        ) == {
-            "gate_execute_scope": True,
-            "run_source_rights_metadata_only": True,
-            "workspace_isolation": True,
-        }
         run_rights_downgrade = compose(
             "run",
             "--rm",
@@ -1068,7 +662,9 @@ def test_wp06_normalized_samples_are_append_only_and_builder_only() -> None:
             "f0b2d4e6a8c3",
             success=False,
         )
-        assert "WP06_SCORER_ARTIFACT_DOWNGRADE_REQUIRES_EMPTY_TABLE" in (
+        # Seed source đã ghi license evidence, nên guard migration license (nằm trên trong
+        # chuỗi downgrade) chặn trước; guard scorer artifact đã được kiểm ở bước trước.
+        assert "WP06_LICENSE_EVIDENCE_DOWNGRADE_BLOCKED" in (
             run_rights_downgrade.stdout + run_rights_downgrade.stderr
         )
         assert run_probe(
