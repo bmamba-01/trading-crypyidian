@@ -22,6 +22,13 @@ huấn luyện bị giới hạn một coin (BTC H03 15m 180 ngày = 190 lệnh,
      proof TEST, gộp scope EVALUATION mọi bundle (sắp theo child).
    - `wp06_claim_learning_training_lineage`: outcome thuộc trial neo **hoặc** trial trong cohort.
 
+**Quyền mới (owner cần xem lại):** `crypidian_learning_evaluator` được EXECUTE
+`wp06_scorer_manifest_replay_bundles` (SECURITY DEFINER, search_path đóng, kiểm
+`app.workspace_id`, chỉ trả danh sách hash bundle — không payload) để gateway TEST cấp quyền
+từng bundle. Review WP-06 17/11: thêm `wp06_scorer_proof_replay_bundles` và vá
+`wp06_verify_scorer_deployment_rights` (3 join theo hash proof → fail-open khi N>1).
+Giới hạn: mọi bundle của cohort phải cùng provider (chặn ở stage và ở recheck).
+
 Với N = 1 mọi hành vi và hash giữ nguyên (candidate/proof/receipt cũ vẫn hợp lệ).
 Downgrade đảo patch, xóa hàm/bảng mới (từ chối nếu đã có cohort N > 1).
 """

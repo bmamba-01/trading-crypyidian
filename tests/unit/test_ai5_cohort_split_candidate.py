@@ -37,13 +37,21 @@ def _config() -> LearningSplitCandidateConfig:
     )
 
 
-def _trial(workspace_id, *, symbol: str, bundle: str, child: str, schema: str = "a" * 64):
+def _trial(
+    workspace_id,
+    *,
+    symbol: str,
+    bundle: str,
+    child: str,
+    schema: str = "a" * 64,
+    provider: str = "BINANCE_USDM_REST",
+):
     trial_id = uuid4()
     outcomes, membership = _outcomes(workspace_id, trial_id)
     lineage = (
         SourceUseLineage(
-            source_id="BINANCE_USDM_REST",
-            provider="BINANCE_USDM_REST",
+            source_id=provider,
+            provider=provider,
             bundle_hash=bundle,
             child_dataset_hash=child,
             policy_fingerprint="b" * 64,
@@ -214,4 +222,20 @@ def test_wrapper_still_validates_identifiers() -> None:
             outcomes=outcomes,
             config=candidate.config,
             as_of=candidate.manifest.as_of,
+        )
+
+
+def test_cohort_rejects_mixed_providers_at_stage() -> None:
+    workspace_id = uuid4()
+    btc = _trial(workspace_id, symbol="BTCUSDT", bundle="1" * 64, child="2" * 64)
+    qa = _trial(
+        workspace_id,
+        symbol="ETHUSDT",
+        bundle="3" * 64,
+        child="4" * 64,
+        provider="CRYPIDIAN_FIRST_PARTY_QA",
+    )
+    with pytest.raises(ValueError, match="nhiều nguồn"):
+        build_learning_split_cohort_candidate(
+            workspace_id=workspace_id, trials=(btc, qa), config=_config(), as_of=_as_of((btc, qa))
         )

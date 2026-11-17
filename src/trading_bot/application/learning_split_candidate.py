@@ -363,6 +363,12 @@ def build_learning_split_cohort_candidate(
     if len(query_versions) != 1:
         raise ValueError("Mọi proof của cohort phải cùng query version.")
     source_use_lineage = tuple(lineage_by_child[key] for key in sorted(lineage_by_child))
+    # Recheck scorer/deployment yêu cầu mọi bundle cùng một nguồn quyền; chặn sớm để owner
+    # không phải train xong mới bị từ chối (review WP-06 17/11/2026).
+    if len({entry.provider for entry in source_use_lineage}) > 1:
+        raise ValueError(
+            "Cohort trộn nhiều nguồn dữ liệu (provider); mỗi dataset chỉ được một nguồn."
+        )
     lineage_set_hash = source_use_lineage_set_hash(source_use_lineage)
 
     for item, eligible in pending:

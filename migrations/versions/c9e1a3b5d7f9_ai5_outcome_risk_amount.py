@@ -8,8 +8,8 @@ lưu 1R nên trigger `wp06_validate_outcome_opportunity` (b2d4f6a8c0e1) khóa c�
 cho phép thêm đúng một khóa `risk_amount` — chuỗi số thập phân dương — vào mọi dạng outcome.
 Outcome cũ (không có khóa) giữ nguyên hash; canonical JSON SQL đã tổng quát theo khóa.
 
-Rewrite ghim hash định nghĩa trước/sau (đo trên PostgreSQL thật); downgrade từ chối nếu đã có
-outcome mang `risk_amount`.
+Rewrite ghim hash định nghĩa trước/sau (đo trên PostgreSQL thật). Downgrade chỉ đảo trigger;
+outcome đã lưu không bị đụng (trigger kiểm khi INSERT).
 """
 
 from collections.abc import Sequence
@@ -76,11 +76,5 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.execute("""DO $migration$
-        BEGIN
-            IF EXISTS (SELECT 1 FROM public.backtest_trade_outcome WHERE outcome ? 'risk_amount')
-            THEN
-                RAISE EXCEPTION 'AI5_OUTCOME_RISK_DOWNGRADE_HAS_DATA';
-            END IF;
-        END $migration$""")
+    # Trigger chỉ kiểm khi INSERT: outcome đã lưu có `risk_amount` vẫn hợp lệ, không cần chặn.
     _rewrite(forward=False)

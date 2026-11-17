@@ -125,7 +125,7 @@ def test_replay_risk_amount_scales_planned_loss_by_filled_fraction() -> None:
     assert _trade_risk_amount(plan, SimpleNamespace(filled_quantity=Decimal("0"))) is None
 
 
-def test_outcome_risk_migration_pins_hashes_and_refuses_downgrade_with_data() -> None:
+def test_outcome_risk_migration_pins_hashes_both_directions() -> None:
     path = Path(__file__).parents[2] / "migrations/versions/c9e1a3b5d7f9_ai5_outcome_risk_amount.py"
     spec = importlib.util.spec_from_file_location("ai5_outcome_risk", path)
     assert spec is not None
@@ -143,4 +143,5 @@ def test_outcome_risk_migration_pins_hashes_and_refuses_downgrade_with_data() ->
     assert "AI5_OUTCOME_RISK_AMOUNT_INVALID" in statements[0]
     statements.clear()
     module.downgrade()
-    assert "AI5_OUTCOME_RISK_DOWNGRADE_HAS_DATA" in statements[0]
+    assert module.POSTIMAGE in statements[0]
+    assert module.PREIMAGE in statements[0]
