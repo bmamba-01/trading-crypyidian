@@ -5209,3 +5209,10 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Antigravity** (app, chưa cài CLI `agy`): ghi `mcpServers.itsaplan` (`serverUrl`, `headers`) vào `~/.gemini/config/mcp_config.json` (trước đó rỗng, quyền 600). Bundle app tham chiếu đúng `~/.gemini/config/mcp_config.json`; theo [hướng dẫn runner](https://github.com/croffasia/itsaplan/blob/main/docs/runner.md) (kiểm 16/11/2026). Cần khởi động lại app để nạp; chưa kiểm được từ trong app.
 - Cả hai dùng chung personal API key `claude-code-mcp` với Claude Code; key không ghi vào repo. Tài liệu: `docs/implementation/itsaplan-tracking.md` (vị trí cấu hình, cách gia hạn).
 - **Readback:** đã đọc lại mục này, khớp output `codex mcp get` và nội dung file cấu hình.
+
+### 2026-11-17 — CRY-423 `[AI-3/parallel-replay]`: replay backtest đề xuất song song theo coin
+
+- **Thay đổi:** `backtest_proposal(..., workers=1)`: `workers > 1` → `ProcessPoolExecutor` (mỗi coin một tác vụ `_replay_symbol`, hàm cấp module để pickle); kết quả gom theo thứ tự coin đã sắp, lỗi replay trả về chuỗi lý do; `skipped_symbols` sắp theo coin → payload trùng khớp chạy tuần tự. `scripts/run_proposal_backtest.py --workers` (mặc định 4, chừa CPU cho stack đang chạy; máy có 10 nhân).
+- **Lỗi gặp:** (1) service `migrator` có `read_only: true` và không có `/tmp` → `ProcessPoolExecutor` (start method `forkserver` của Python 3.14 trên Linux) báo `No usable temporary directory`; thêm `tmpfs /tmp:rw,noexec,nosuid,size=16m` như các service khác. (2) Benchmark đầu thiếu guard `if __name__ == "__main__"` → forkserver nạp lại file chính trong tiến trình con, `ConnectionResetError`; script thật chạy qua `python -c` nên không bị.
+- **Đo thật (container migrator, 4 coin T06 khung 15m, đề xuất donchian 20→40, 2 bản):** tuần tự **429,0 giây**, 4 tiến trình **122,9 giây** (~3,5 lần), payload **trùng khớp**. Chạy qua script `--dry-run --max-symbols 4 --workers 4` đề xuất T06 đang chờ: 71 giây, không lỗi.
+- **Kiểm chứng:** unit **4934 passed** (song song 3 tiến trình = tuần tự, thứ tự coin, coin bị loại); E2E `test_rt1_paper_market_loop` + `test_db_role_least_privilege` → **2 passed**.

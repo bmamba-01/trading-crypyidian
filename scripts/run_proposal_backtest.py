@@ -94,6 +94,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--hours", type=float, default=48.0, help="Đề xuất trong N giờ qua.")
     parser.add_argument("--max-proposals", type=int, default=3)
     parser.add_argument("--max-symbols", type=int, default=20, help="Trần số coin mỗi đề xuất.")
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=4,
+        help="Số tiến trình replay song song theo coin (CRY-423); 1 = tuần tự.",
+    )
     parser.add_argument("--project", default="crypidian-review")
     parser.add_argument("--timeout", type=float, default=3600.0)
     parser.add_argument("--send-telegram", action="store_true")
@@ -111,6 +117,7 @@ def main(argv: list[str] | None = None) -> int:
             "hours": args.hours,
             "max_proposals": args.max_proposals,
             "max_symbols": args.max_symbols,
+            "workers": args.workers,
             "persist": not args.dry_run,
         },
         args.timeout,
@@ -327,6 +334,7 @@ async def _container(phase: str, state: dict[str, Any]) -> dict[str, Any]:
                     bot_config=config,
                     changes=proposal["changes"],
                     bundles=bundles,
+                    workers=int(state.get("workers", 1)),
                 )
                 result_payload = result.payload()
             if not state.get("persist", True):

@@ -451,14 +451,52 @@ class ProposalBacktestResult:
         }
 
 
+def _replay_symbol(
+    bundle: BacktestDatasetReplayBundle,
+    baseline_arm: BacktestArm,
+    variant_arm: BacktestArm,
+    same_arm: bool,
+) -> tuple[SymbolResult, SymbolResult] | str:
+    """Một coin, hai bản; lỗi replay → chuỗi lý do (để process con trả về được)."""
+    try:
+        base = run_arm(bundle, baseline_arm)
+        # Chỉ đổi trần danh mục: lệnh từng coin giống hệt, không replay lần hai.
+        return base, base if same_arm else run_arm(bundle, variant_arm)
+    except ValueError as error:
+        return str(error)[:160]
+
+
+def _replay_symbols(
+    ready: Sequence[tuple[str, BacktestDatasetReplayBundle]],
+    baseline_arm: BacktestArm,
+    variant_arm: BacktestArm,
+    same_arm: bool,
+    workers: int,
+) -> list[tuple[SymbolResult, SymbolResult] | str]:
+    if workers <= 1 or len(ready) <= 1:
+        return [_replay_symbol(b, baseline_arm, variant_arm, same_arm) for _, b in ready]
+    from concurrent.futures import ProcessPoolExecutor
+
+    with ProcessPoolExecutor(max_workers=min(workers, len(ready))) as pool:
+        futures = [
+            pool.submit(_replay_symbol, bundle, baseline_arm, variant_arm, same_arm)
+            for _, bundle in ready
+        ]
+        return [future.result() for future in futures]
+
+
 def backtest_proposal(
     *,
     bot_name: str,
     bot_config: Mapping[str, Any],
     changes: Sequence[Mapping[str, Any]],
     bundles: Mapping[str, BacktestDatasetReplayBundle | str],
+    workers: int = 1,
 ) -> ProposalBacktestResult:
     """So sánh baseline/variant trên cùng bundle mỗi coin; ``str`` = lý do coin bị loại.
+
+    ``workers`` > 1: replay các coin song song bằng process pool (CRY-423); kết quả gom theo thứ
+    tự coin đã sắp nên trùng khớp chạy tuần tự (mỗi coin tất định, seed cố định).
 
     Đổi trần danh mục (``max_positions``/``max_leverage``) → kết luận theo mô phỏng danh mục chung
     vốn; ngược lại kết luận theo tổng từng coin như trước, danh mục kèm để tham khảo.
@@ -484,19 +522,21 @@ def backtest_proposal(
     skipped: list[tuple[str, str]] = []
     pairs: list[tuple[SymbolResult, SymbolResult]] = []
     windows: list[tuple[datetime, datetime]] = []
+    ready: list[tuple[str, BacktestDatasetReplayBundle]] = []
     for symbol in sorted(bundles):
         bundle = bundles[symbol]
         if isinstance(bundle, str):
             skipped.append((symbol, bundle))
+        else:
+            ready.append((symbol, bundle))
+    outcomes = _replay_symbols(ready, baseline_arm, variant_arm, same_arm, workers)
+    for (symbol, bundle), outcome in zip(ready, outcomes, strict=True):
+        if isinstance(outcome, str):
+            skipped.append((symbol, outcome))
             continue
-        try:
-            base = run_arm(bundle, baseline_arm)
-            # Chỉ đổi trần danh mục: lệnh từng coin giống hệt, không replay lần hai.
-            pairs.append((base, base if same_arm else run_arm(bundle, variant_arm)))
-        except ValueError as error:
-            skipped.append((symbol, str(error)[:160]))
-            continue
+        pairs.append(outcome)
         windows.append((bundle.evaluation_start, bundle.range_end))
+    skipped.sort()
     base_portfolio = run_portfolio([b for b, _ in pairs], base_limits)
     var_portfolio = run_portfolio([v for _, v in pairs], var_limits)
     portfolio = {

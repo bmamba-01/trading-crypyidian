@@ -151,6 +151,9 @@ services:
     volumes:
       - ./migrations:/app/migrations
     read_only: true
+    # CRY-423: process pool của backtest đề xuất (chạy qua migrator) cần /tmp cho forkserver.
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
     user: "10001:10001"
     cap_drop: ["ALL"]
     security_opt: ["no-new-privileges:true"]

@@ -350,3 +350,25 @@ def test_compare_v2_requires_profit_factor_not_worse_and_flags_still_losing() ->
     perfect = replace(base, trades=12, wins=12, profit_factor=None, net_pnl=Decimal("50"),
                       max_drawdown=Decimal("0"))  # fmt: skip
     assert compare(base, perfect)[0] == "BETTER"
+
+
+def test_parallel_replay_matches_sequential_exactly() -> None:
+    # CRY-423: process pool theo coin; payload phải trùng khớp chạy tuần tự (tất định).
+    import time
+
+    series = {(s, "1h"): _bars(s, "1h", 320) for s in ("AAAUSDT", "BBBUSDT", "CCCUSDT")}
+    bundles: dict = {s: _bundle(s, series) for s in ("CCCUSDT", "AAAUSDT", "BBBUSDT")}
+    bundles["ZZZUSDT"] = "Thiếu nến 1h"
+    changes = [{"field": "strategy.parameters.donchian_lookback", "to": "60"}]
+    started = time.perf_counter()
+    sequential = backtest_proposal(
+        bot_name="T01", bot_config=H03_CONFIG, changes=changes, bundles=bundles, workers=1
+    )
+    middle = time.perf_counter()
+    parallel = backtest_proposal(
+        bot_name="T01", bot_config=H03_CONFIG, changes=changes, bundles=bundles, workers=3
+    )
+    assert parallel.payload() == sequential.payload()
+    assert [b.symbol for b, _ in parallel.per_symbol] == ["AAAUSDT", "BBBUSDT", "CCCUSDT"]
+    assert parallel.skipped_symbols == (("ZZZUSDT", "Thiếu nến 1h"),)
+    assert middle > started  # thời gian chỉ để tham khảo; không khẳng định tốc độ trong unit
