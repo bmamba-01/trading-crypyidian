@@ -465,7 +465,10 @@ def test_wp06_task9_integrated_learning_journey_uses_real_training_and_paper_lin
         )
         migration_output = migration_probe.stdout + migration_probe.stderr
         assert migration_probe.returncode != 0
-        assert "WP06_BOUNDED_DRIFT_DOWNGRADE_POPULATED" in migration_output
+        # Journey đã ghi receipt replay TRAINING (bắt buộc từ b7d9f1a3c5e8), nên guard đó nằm trên
+        # chặn trước guard bounded drift; guard bị che được kiểm tĩnh trong
+        # tests/unit/test_wp06_bounded_drift_downgrade_migration.py.
+        assert "WP06_REPLAY_TRAINING_RECEIPT_POPULATED_DOWNGRADE_DENIED" in migration_output
         migrate("check")
         heads = migrate("heads")
         assert heads.stdout.count("(head)") == 1, heads.stdout

@@ -17,8 +17,6 @@ from urllib.request import HTTPCookieProcessor, Request, build_opener
 import pyotp
 from scripts.docker_image import build_image_reference, ensure_image_available
 
-from tests.e2e.multibot_runtime_harness import MB05_EXPORT_SQL
-
 # Bootstrap ngắn đọc gói JSON từ stdin: Windows giới hạn dòng lệnh 32.767 ký tự.
 PROBE_BOOTSTRAP = (
     "import json,os,sys;p=json.load(sys.stdin);"
@@ -142,8 +140,11 @@ def test_bot_overlay_versions_admin_api_and_open_paper_position() -> None:
             "object-store",
         )
         compose("run", "--rm", "--no-deps", "db-provisioner")
-        # Rehearsal MB-02/05 trên head cũ để WP-03 guard mới không che chúng.
-        compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "e0b2d4f6a8c1")
+        # App hiện tại cần schema head (vd cột market_bar.trade_count của SIG-0), nên không còn
+        # diễn tập MB-02/05 trên head cũ e0b2d4f6a8c1; guard MB-02/MB-05/WP03 bị guard nằm trên
+        # che được kiểm tĩnh trong test_bot_config_versions, test_mb05_migration và
+        # test_wp03_risk_reservation_guard_migration.
+        compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "head")
         compose("run", "--rm", "--no-deps", "mfa-volume-provisioner")
         compose(
             "up",
@@ -156,7 +157,7 @@ def test_bot_overlay_versions_admin_api_and_open_paper_position() -> None:
             "trading-runtime",
         )
         current = compose("run", "--rm", "--no-deps", "migrator", "alembic", "current")
-        assert "e0b2d4f6a8c1" in current.stdout
+        assert "d4f6a8b0c2e4 (head)" in current.stdout
 
         # --- Owner, MFA, risk profile và root settings ------------------------------------
         status, bootstrap = api(
@@ -542,7 +543,7 @@ def test_bot_overlay_versions_admin_api_and_open_paper_position() -> None:
             "('bot_config_version','bot_config_request')"
         ).stdout.strip()
         assert rls_flags == "bot_config_request:truetrue,bot_config_version:truetrue"
-        runtime_guard = compose(
+        top_guard = compose(
             "run",
             "--rm",
             "--no-deps",
@@ -552,31 +553,9 @@ def test_bot_overlay_versions_admin_api_and_open_paper_position() -> None:
             "c7a90d3f8e21",
             success=False,
         )
-        assert "MB05_DOWNGRADE_REQUIRES_EXPORT_OF_RUNTIME_STATE" in runtime_guard.stderr
-        psql(MB05_EXPORT_SQL)
-        config_guard = compose(
-            "run",
-            "--rm",
-            "--no-deps",
-            "migrator",
-            "alembic",
-            "downgrade",
-            "c7a90d3f8e21",
-            success=False,
-        )
-        assert "MB02_DOWNGRADE_REQUIRES_EXPORT_OF_BOT_CONFIG" in config_guard.stderr
-        compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "head")
-        risk_guard = compose(
-            "run",
-            "--rm",
-            "--no-deps",
-            "migrator",
-            "alembic",
-            "downgrade",
-            "c7a90d3f8e21",
-            success=False,
-        )
-        assert "WP03_RISK_GUARD_DOWNGRADE_BLOCKED" in risk_guard.stderr
+        assert "WP03_RISK_GUARD_DOWNGRADE_BLOCKED" in top_guard.stderr, top_guard.stderr[-3000:]
+        after_guard = compose("run", "--rm", "--no-deps", "migrator", "alembic", "current")
+        assert "d4f6a8b0c2e4 (head)" in after_guard.stdout
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "check")
     finally:
         compose("down", "--volumes", "--remove-orphans")

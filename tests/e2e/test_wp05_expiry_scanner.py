@@ -13,7 +13,7 @@ from typing import Any
 from scripts.docker_image import build_image_reference, ensure_image_available
 
 PROBE_BOOTSTRAP = (
-    "import json,os,sys;p=json.load(sys.stdin);"
+    "import json,os,sys;sys.path.insert(0,'/e2e-tests');p=json.load(sys.stdin);"
     "os.environ.update(WP05_EXPIRY_STATE=json.dumps(p['state']));"
     "exec(compile(p['code'],'wp05_expiry_scanner.py','exec'),{'__name__':'__main__'})"
 )
@@ -77,6 +77,8 @@ def test_expiry_scanner_uses_database_clock_and_keeps_expiry_event_after_renewal
             "--rm",
             "--no-deps",
             "-T",
+            "--volume",
+            f"{root / 'tests'}:/e2e-tests:ro",
             "migrator",
             "python",
             "-c",
