@@ -1336,6 +1336,7 @@ async def _exercise() -> dict[str, Any]:
     calls_after_owner = collector_provider.calls
     unlicensed_workspace = UUID(int=WORKSPACE_ID.int + 1)
     collector_denied = await collector_for(unlicensed_workspace).collect_once(datetime.now(UTC))
+    calls_after_denied = collector_provider.calls
     async with UnitOfWork(sessions, workspace_id=WORKSPACE_ID) as uow:
         collected_rows = (
             await uow.session.execute(
@@ -1354,6 +1355,58 @@ async def _exercise() -> dict[str, Any]:
                 CursorRow.timeframe == "5m",
             )
         )
+
+    # AI-5 (CRY-236): backfill lùi lịch sử trước nến cũ nhất (mục đích BACKTEST_RESEARCH).
+    from sqlalchemy import func as sql_func
+
+    from trading_bot.application.market_history_backfill import (
+        BACKFILL_BAR_SOURCE,
+        MarketHistoryBackfill,
+    )
+
+    async def earliest_5m(session, symbol, interval):
+        return await session.market._session.scalar(
+            select(sql_func.min(MarketBar.open_time)).where(
+                MarketBar.workspace_id == session.rights_gate._workspace_id,
+                MarketBar.symbol == symbol,
+                MarketBar.timeframe == interval,
+                MarketBar.source == BACKFILL_BAR_SOURCE,
+            )
+        )
+
+    def history_for(workspace_id):
+        return MarketHistoryBackfill(
+            workspace_id=workspace_id,
+            market_data=collector_provider,
+            session_scope=database_collector_scope(sessions, workspace_id),
+            earliest_open_time=earliest_5m,
+            page_limit=6,
+            max_pages=1,
+            pause_seconds=0,
+        )
+
+    history_now = datetime.now(UTC)
+    history_first = await history_for(WORKSPACE_ID).backfill(
+        "BTCUSDT", "5m", days=1, now=history_now
+    )
+    calls_after_history = collector_provider.calls
+    history_second = await history_for(WORKSPACE_ID).backfill(
+        "BTCUSDT", "5m", days=1, now=history_now
+    )
+    history_denied = await history_for(unlicensed_workspace).backfill(
+        "BTCUSDT", "5m", days=1, now=history_now
+    )
+    async with UnitOfWork(sessions, workspace_id=WORKSPACE_ID) as uow:
+        history_rows = (
+            await uow.session.execute(
+                select(MarketBar.open_time).where(
+                    MarketBar.workspace_id == WORKSPACE_ID,
+                    MarketBar.timeframe == "5m",
+                    MarketBar.source == BACKFILL_BAR_SOURCE,
+                )
+            )
+        ).all()
+    history_times = [row[0] for row in history_rows]
 
     async with UnitOfWork(sessions, workspace_id=WORKSPACE_ID) as uow:
         revoked_observation = await SourceRegistryRepository(uow.session).get_observed_entry(
@@ -1540,7 +1593,16 @@ async def _exercise() -> dict[str, Any]:
         ),
         "collector_without_policy_denied_before_network": collector_denied.results[0].status
         == "rights_denied"
-        and collector_provider.calls == calls_after_owner,
+        and calls_after_denied == calls_after_owner,
+        "history_backfill_filled_before_earliest": history_first.status == "filled"
+        and history_first.bars_written > 0
+        and len(history_times) == len(set(history_times)) == 6 + history_first.bars_written
+        and history_first.requested_end
+        == min(t for t in history_times if t >= history_first.requested_end),
+        "history_backfill_second_run_up_to_date": history_second.status == "up_to_date"
+        and collector_provider.calls == calls_after_history,
+        "history_backfill_without_policy_denied": history_denied.status == "error"
+        and "PermissionError" in history_denied.detail,
         "seeded": True,
         "rollback_left_no_market_rows": bars_after_rollback == 0 and cursors_after_rollback == 0,
         "committed_bars": first_count,
