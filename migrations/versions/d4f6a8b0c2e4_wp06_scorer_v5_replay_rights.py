@@ -25,6 +25,14 @@ aggregate_reporting), DB dựng quyền từ persisted proof/source bundle, khô
    `ReplayTrainingRightsReceipt.scope_payload` (key sắp xếp, timestamp ISO UTC) mà
    `_current_training_scope_digest` đã ghim vào access receipt. Kiểm cũ khác giữ nguyên.
 
+   Recheck còn buộc mọi sample phụ thuộc nguồn của manifest v5 ghim đúng bundle của proof
+   TEST (`WP06_SCORER_RIGHTS_V5_LINEAGE_MISMATCH`), đọc qua helper
+   `wp06_scorer_manifest_replay_bundle` (owner comparator, EXECUTE chỉ cho owner recheck).
+
+Hệ quả có chủ đích: access receipt TEST mở bằng digest scope dạng cũ (trước `b7d9f1a3c5e8`)
+sẽ bị recheck đánh `WP06_SCORER_RIGHTS_TEST_RECEIPT_STALE` (fail closed); report/deployment
+đó phải đánh giá lại với receipt mới.
+
 Mọi rewrite ghim hash toàn định nghĩa trước/sau và số lần thay; downgrade đảo patch, xóa
 helper, không sửa dữ liệu.
 """
@@ -44,6 +52,8 @@ GATE_SIGNATURE = "public.wp06_authorize_replay_training_bundle(uuid,text,text)"
 HELPER_SIGNATURE = "public.wp06_scorer_replay_evaluation_scope(uuid,text,text)"
 SOURCE_REFS_SIGNATURE = "public.wp06_scorer_manifest_source_refs(uuid,uuid)"
 RECHECK_SIGNATURE = "public.wp06_recheck_scorer_current_rights(uuid,uuid)"
+REPLAY_BUNDLE_SIGNATURE = "public.wp06_scorer_manifest_replay_bundle(uuid,uuid)"
+COMPARATOR = "crypidian_manifest_comparator"
 
 FUNCTION_DEFINITION_HASHES = {
     GATE_SIGNATURE: {
@@ -58,7 +68,7 @@ FUNCTION_DEFINITION_HASHES = {
     },
     RECHECK_SIGNATURE: {
         "preimage": "c46e15a5bf2518faeac621bb22c8bbec3a3245bacfbced545eb4b2714108cecb",
-        "postimage": "b7f14a22c92fd2943ced9e3f29435ac01e38421e3b357050c482889bbcd66716",
+        "postimage": "90ad7352b669dd87553f65ce214bbaf2b39b1eed56ae5d6ad3936d2e70b4ae38",
     },
 }
 
@@ -218,7 +228,16 @@ CURRENT_TRAINING_SCOPE_STATEMENT = """            -- Scope EVALUATION hiện hà
              WHERE scope.workspace_id = target_workspace
                AND scope.bundle_hash = proof_row.bundle_hash
                AND scope.purpose = 'training'
-               AND scope.provider = target_source_id;"""
+               AND scope.provider = target_source_id;
+            -- Manifest v5 train phải ghim đúng bundle của proof TEST; không chỉ dựa vào kiểm
+            -- Python lúc normalize/evaluate (review 17/11/2026). Đọc manifest qua helper của
+            -- comparator vì owner recheck không có quyền bảng dataset_manifest.
+            IF public.wp06_scorer_manifest_replay_bundle(target_workspace, v_manifest_id)
+                    IS DISTINCT FROM proof_row.bundle_hash
+               AND public.wp06_scorer_manifest_replay_bundle(target_workspace, v_manifest_id)
+                    IS NOT NULL THEN
+                RAISE EXCEPTION 'WP06_SCORER_RIGHTS_V5_LINEAGE_MISMATCH';
+            END IF;"""
 
 RECHECK_PATCHES = ((LEGACY_TRAINING_SCOPE_STATEMENT, CURRENT_TRAINING_SCOPE_STATEMENT),)
 
@@ -308,10 +327,62 @@ def _create_helper() -> None:
     op.execute(f"GRANT EXECUTE ON FUNCTION {HELPER_SIGNATURE} TO {SCORER_RIGHTS_READER}")
 
 
+def _create_replay_bundle_lookup() -> None:
+    """Bundle replay duy nhất mà manifest v5 ghim cho sample phụ thuộc nguồn (NULL nếu không có).
+
+    Cùng mẫu quyền với `wp06_scorer_manifest_source_refs`: owner comparator (đọc được manifest),
+    EXECUTE chỉ cho owner recheck; trả metadata hash, không trả payload sample.
+    """
+    op.execute("""
+        CREATE FUNCTION public.wp06_scorer_manifest_replay_bundle(
+            target_workspace uuid, target_manifest_id uuid
+        ) RETURNS text LANGUAGE plpgsql STABLE SECURITY DEFINER
+        SET search_path = pg_catalog, pg_temp AS $$
+        DECLARE
+            stored_manifest jsonb;
+            bundle_hashes text[];
+        BEGIN
+            IF target_workspace IS NULL OR target_manifest_id IS NULL
+               OR target_workspace IS DISTINCT FROM
+                   NULLIF(pg_catalog.current_setting('app.workspace_id', true), '')::uuid THEN
+                RAISE EXCEPTION 'WP06_SCORER_RIGHTS_WORKSPACE_DENIED';
+            END IF;
+            SELECT manifest.manifest INTO stored_manifest
+              FROM public.dataset_manifest AS manifest
+             WHERE manifest.workspace_id = target_workspace
+               AND manifest.id = target_manifest_id;
+            IF NOT FOUND THEN
+                RAISE EXCEPTION 'WP06_SCORER_RIGHTS_MANIFEST_MISSING';
+            END IF;
+            IF stored_manifest->>'manifest_version' IS DISTINCT FROM 'dataset-manifest-v5' THEN
+                RETURN NULL;
+            END IF;
+            SELECT pg_catalog.array_agg(DISTINCT sample.value->>'source_replay_bundle_hash')
+              INTO bundle_hashes
+              FROM pg_catalog.jsonb_array_elements(
+                       COALESCE(stored_manifest->'samples', '[]'::jsonb)) AS sample(value)
+             WHERE sample.value->>'source_dependent' = 'true';
+            IF bundle_hashes IS NULL THEN
+                RETURN NULL;
+            END IF;
+            IF pg_catalog.array_length(bundle_hashes, 1) <> 1
+               OR bundle_hashes[1] IS NULL
+               OR bundle_hashes[1] !~ '^[0-9a-f]{64}$' THEN
+                RAISE EXCEPTION 'WP06_SCORER_RIGHTS_V5_LINEAGE_MISMATCH';
+            END IF;
+            RETURN bundle_hashes[1];
+        END $$
+    """)
+    op.execute(f"ALTER FUNCTION {REPLAY_BUNDLE_SIGNATURE} OWNER TO {COMPARATOR}")
+    op.execute(f"REVOKE ALL ON FUNCTION {REPLAY_BUNDLE_SIGNATURE} FROM PUBLIC")
+    op.execute(f"GRANT EXECUTE ON FUNCTION {REPLAY_BUNDLE_SIGNATURE} TO {SCORER_RIGHTS_READER}")
+
+
 def upgrade() -> None:
     """Helper trước, rồi source refs v5, cuối cùng recheck dùng helper."""
     hashes = FUNCTION_DEFINITION_HASHES
     _create_helper()
+    _create_replay_bundle_lookup()
     _rewrite(
         SOURCE_REFS_SIGNATURE,
         SOURCE_REFS_PATCHES,
@@ -352,4 +423,5 @@ def downgrade() -> None:
         expected_after=hashes[SOURCE_REFS_SIGNATURE]["preimage"],
         exception="WP06_SCORER_V5_RIGHTS_SOURCE_REFS",
     )
+    op.execute(f"DROP FUNCTION {REPLAY_BUNDLE_SIGNATURE}")
     op.execute(f"DROP FUNCTION {HELPER_SIGNATURE}")

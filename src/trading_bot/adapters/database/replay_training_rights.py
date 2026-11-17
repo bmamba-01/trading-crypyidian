@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 from urllib.parse import urlsplit
@@ -109,7 +109,11 @@ class ReplayTrainingRightsReceipt:
 
     @property
     def scope_payload(self) -> dict[str, object]:
-        """Scope ổn định cho retry; thời điểm lease được lưu riêng trong receipt."""
+        """Scope ổn định cho retry; thời điểm lease được lưu riêng trong receipt.
+
+        Timestamp luôn render theo UTC (`+00:00`) để khớp `wp06_canonical_utc_timestamp_json`
+        mà recheck SQL (`d4f6a8b0c2e4`) dùng, bất kể timezone của session DB.
+        """
         return {
             "workspace_id": str(self.workspace_id),
             "bundle_hash": self.bundle_hash,
@@ -120,14 +124,14 @@ class ReplayTrainingRightsReceipt:
             "product": self.product,
             "venue": self.venue,
             "contract": self.contract,
-            "data_start": self.data_start.isoformat(),
-            "data_end": self.data_end.isoformat(),
+            "data_start": self.data_start.astimezone(UTC).isoformat(),
+            "data_end": self.data_end.astimezone(UTC).isoformat(),
             "policy_id": self.policy_id,
             "policy_fingerprint": self.policy_fingerprint,
             "bundle_policy_fingerprint": self.bundle_policy_fingerprint,
             "current_policy_fingerprint": self.current_policy_fingerprint,
             "terms_url": self.terms_url,
-            "verified_at": self.verified_at.isoformat(),
+            "verified_at": self.verified_at.astimezone(UTC).isoformat(),
             "license_evidence_id": str(self.license_evidence_id),
             "evidence_digest": self.evidence_digest,
             "license_scope_hash": self.license_scope_hash,

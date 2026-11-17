@@ -111,6 +111,7 @@ def test_real_deployment_gateway_fails_closed_for_trained_and_legacy_sources() -
                 "WP06_WORKSPACE_ID": workspace_id,
                 "WP06_ATTEMPT_ID": attempt_id,
                 "WP06_EXPECTED_DENIAL": expected,
+                "WP06_EXPECTED_ARTIFACT_STATE": "ready_for_evaluation",
             },
         )
 

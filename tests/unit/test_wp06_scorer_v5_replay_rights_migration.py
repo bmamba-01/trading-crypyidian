@@ -141,9 +141,12 @@ def test_helper_only_serves_evaluation_and_is_executable_only_by_scorer_rights_o
     )
     assert f"REVOKE ALL ON FUNCTION {module.HELPER_SIGNATURE} FROM PUBLIC" in sql
     grants = [line.strip() for line in sql.splitlines() if "GRANT " in line]
+    # Hai EXECUTE duy nhất, cùng cho owner NOLOGIN của recheck; không GRANT bảng/role khác.
     assert grants == [
         f"GRANT EXECUTE ON FUNCTION {module.HELPER_SIGNATURE} TO "
-        "crypidian_scorer_deployment_rights_reader"
+        "crypidian_scorer_deployment_rights_reader",
+        f"GRANT EXECUTE ON FUNCTION {module.REPLAY_BUNDLE_SIGNATURE} TO "
+        "crypidian_scorer_deployment_rights_reader",
     ]
     assert "ON TABLE" not in sql
     assert "CREATE POLICY" not in sql
@@ -221,3 +224,58 @@ def test_dollar_quote_tags_cannot_collide_with_patch_content() -> None:
     module = _migration()
     with pytest.raises(RuntimeError, match="DOLLAR_TAG_COLLISION"):
         module._dollar("old0", "x $old0$ y")
+
+
+def test_scope_payload_renders_utc_regardless_of_session_timezone() -> None:
+    """Recheck SQL luôn render `+00:00`; digest Python không được phụ thuộc timezone session."""
+    from dataclasses import replace
+    from datetime import timezone
+
+    utc_receipt = _receipt()
+    plus_seven = timezone(timedelta(hours=7))
+    shifted = replace(
+        utc_receipt,
+        data_start=utc_receipt.data_start.astimezone(plus_seven),
+        data_end=utc_receipt.data_end.astimezone(plus_seven),
+        verified_at=utc_receipt.verified_at.astimezone(plus_seven),
+        checked_at=utc_receipt.checked_at.astimezone(plus_seven),
+        valid_until=utc_receipt.valid_until.astimezone(plus_seven),
+    )
+    assert shifted.scope_payload == utc_receipt.scope_payload
+    assert shifted.scope_payload["verified_at"].endswith("+00:00")
+
+
+def test_recheck_binds_v5_manifest_lineage_to_test_proof_bundle() -> None:
+    """Review 17/11: DB phải tự chứng minh manifest train và proof TEST cùng một bundle."""
+    module = _migration()
+    statement = module.CURRENT_TRAINING_SCOPE_STATEMENT
+    assert statement.index("INTO training_scope") < statement.index(
+        "WP06_SCORER_RIGHTS_V5_LINEAGE_MISMATCH"
+    )
+    assert "wp06_scorer_manifest_replay_bundle(target_workspace, v_manifest_id)" in statement
+    assert "IS DISTINCT FROM proof_row.bundle_hash" in statement
+    # Owner recheck không có quyền bảng dataset_manifest: đọc qua helper của comparator.
+    assert "public.dataset_manifest" not in statement
+    sql = "\n".join(_statements("upgrade"))
+    lookup = sql[sql.index("CREATE FUNCTION public.wp06_scorer_manifest_replay_bundle(") :]
+    lookup = lookup[: lookup.index("END $$")]
+    for marker in (
+        "SECURITY DEFINER",
+        "SET search_path = pg_catalog, pg_temp",
+        "'dataset-manifest-v5'",
+        "sample.value->>'source_dependent' = 'true'",
+        "pg_catalog.array_length(bundle_hashes, 1) <> 1",
+        "WP06_SCORER_RIGHTS_WORKSPACE_DENIED",
+    ):
+        assert marker in lookup
+    signature = module.REPLAY_BUNDLE_SIGNATURE
+    assert f"ALTER FUNCTION {signature} OWNER TO crypidian_manifest_comparator" in sql
+    assert f"REVOKE ALL ON FUNCTION {signature} FROM PUBLIC" in sql
+    assert (
+        f"GRANT EXECUTE ON FUNCTION {signature} TO crypidian_scorer_deployment_rights_reader" in sql
+    )
+    downgrade = _statements("downgrade")
+    assert downgrade[-2:] == [
+        f"DROP FUNCTION {signature}",
+        f"DROP FUNCTION {module.HELPER_SIGNATURE}",
+    ]

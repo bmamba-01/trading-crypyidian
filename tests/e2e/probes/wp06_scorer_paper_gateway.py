@@ -82,9 +82,10 @@ async def main() -> dict[str, bool]:
                     {"workspace": workspace_id, "attempt": attempt_id},
                 )
             ).one()
-            # Artifact replay v5 có thể `ready_for_evaluation`; gateway nhận report id ngẫu
-            # nhiên (không có report TEST), nên vẫn chỉ là artifact chẩn đoán, chưa eligible.
-            assert artifact.state in {"abstain", "ready_for_evaluation"}, artifact.state
+            # Mỗi kịch bản khai báo đúng trạng thái artifact (replay v5 train ra
+            # `ready_for_evaluation`); gateway nhận report id ngẫu nhiên nên vẫn chưa eligible.
+            expected_state = os.environ.get("WP06_EXPECTED_ARTIFACT_STATE", "abstain")
+            assert artifact.state == expected_state, (artifact.state, expected_state)
 
             async def snapshot():
                 pointer = (
