@@ -15,11 +15,13 @@ Kiểm tra:
 
 from __future__ import annotations
 
+import math
 import secrets
 import socket
 import threading
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -36,8 +38,9 @@ from tests.e2e.csp_harness import (
     install_security_headers,
     watch_browser_violations,
 )
-from trading_bot.admin.strategy_card_service import StrategyCardAdminService
+from trading_bot.admin.strategy_card_service import CardBarsProvider, StrategyCardAdminService
 from trading_bot.admin.web_router import router as admin_web_router
+from trading_bot.application.strategy_pipeline.consensus import PriceBar
 from trading_bot.application.strategy_pipeline.microscope import MicroscopeReplayService
 from trading_bot.auth.policy import Principal, Role
 from trading_bot.auth.security import LoginRateLimiter
@@ -132,7 +135,79 @@ class MockBotOperationsStub:
         return {"kill_state": "ACTIVE", "revision": 1, "bots": []}
 
 
-def create_test_microscope_app() -> FastAPI:
+async def _rich_consensus_bars_provider(
+    _principal: Principal, _symbol: str, timeframe: str
+) -> list[PriceBar]:
+    """Sinh 300 PriceBar mở rộng đa chế độ (đủ volume/open_time/taker) cho kiểm chứng E2E."""
+    step = {"5m": 5, "15m": 15, "1h": 60, "4h": 240}.get(timeframe, 15)
+    dt = timedelta(minutes=step)
+    start = datetime(2026, 10, 1, 0, 0, tzinfo=UTC)
+    bars: list[PriceBar] = []
+    close = 100.0
+    for idx in range(300):
+        if idx < 60:
+            drift = math.sin(idx / 5.0) * 1.1 + math.cos(idx / 2.5) * 0.6
+            spread = 0.8 + abs(math.sin(idx)) * 0.6
+            vol = 100.0 + 30.0 * abs(math.sin(idx * 0.7))
+            tbuy_ratio = 0.45 + 0.15 * math.sin(idx * 0.8)
+        elif idx < 95:
+            drift = 0.05 * math.sin(idx * 1.3)
+            spread = 0.12
+            vol = 80.0
+            tbuy_ratio = 0.50 + 0.05 * math.sin(idx)
+        elif idx == 95:
+            drift = 5.5
+            spread = 0.6
+            vol = 420.0
+            tbuy_ratio = 0.88
+        elif idx < 150:
+            if idx % 14 == 0:
+                drift = -1.6
+            elif idx % 14 == 1:
+                drift = 1.9
+            else:
+                drift = 0.55 + 0.25 * math.sin(idx / 3.0)
+            spread = 0.6 + 0.4 * abs(math.cos(idx))
+            vol = 130.0 + (180.0 if idx in (118, 132) else 40.0 * abs(math.sin(idx)))
+            tbuy_ratio = 0.82 if idx in (95, 118, 132) else (0.55 + 0.15 * math.sin(idx * 0.6))
+        elif idx < 230:
+            drift = -0.45 + 0.8 * math.sin(idx / 4.0)
+            spread = 0.7 + 0.5 * abs(math.sin(idx * 1.1))
+            vol = 140.0 + (220.0 if idx == 190 else 50.0 * abs(math.cos(idx)))
+            tbuy_ratio = 0.15 if idx == 190 else (0.42 + 0.15 * math.cos(idx * 0.7))
+        else:
+            drift = 0.4 + 1.4 * math.sin(idx / 4.5)
+            spread = 0.9 + 0.6 * abs(math.sin(idx * 0.9))
+            vol = 150.0 + 90.0 * abs(math.sin(idx * 0.6))
+            tbuy_ratio = 0.52 + 0.28 * math.sin(idx * 0.85)
+
+        open_ = close
+        close = max(10.0, open_ + drift)
+        if idx == 95:
+            high = close + 0.2
+            low = open_ - 0.15
+        elif 96 <= idx < 150 and idx % 14 == 1:
+            high = close + 0.3
+            low = min(open_, close) - 2.2
+        else:
+            high = max(open_, close) + spread * (0.4 + 0.5 * abs(math.sin(idx * 0.9)))
+            low = min(open_, close) - spread * (0.4 + 0.5 * abs(math.cos(idx * 1.1)))
+
+        bars.append(
+            PriceBar(
+                open=Decimal(f"{open_:.4f}"),
+                high=Decimal(f"{high:.4f}"),
+                low=Decimal(f"{low:.4f}"),
+                close=Decimal(f"{close:.4f}"),
+                volume=Decimal(f"{vol:.4f}"),
+                open_time=start + idx * dt,
+                taker_buy_base_volume=Decimal(f"{vol * tbuy_ratio:.4f}"),
+            )
+        )
+    return bars
+
+
+def create_test_microscope_app(bars_provider: CardBarsProvider | None = None) -> FastAPI:
     """Khởi tạo FastAPI app phục vụ Playwright E2E test cho Microscope Replay."""
     app = FastAPI(title="Crypidian Microscope Replay Test Server")
 
@@ -160,7 +235,7 @@ def create_test_microscope_app() -> FastAPI:
     app.state.auth_service = auth_service
     app.state.bot_admin_service = MockBotAdminStub()
     app.state.bot_operations_service = MockBotOperationsStub()
-    app.state.strategy_card_service = StrategyCardAdminService()
+    app.state.strategy_card_service = StrategyCardAdminService(bars_provider=bars_provider)
     app.state.microscope_replay_service = MicroscopeReplayService()
 
     app.mount("/static", StaticFiles(directory="src/trading_bot/static"), name="static")
@@ -169,15 +244,15 @@ def create_test_microscope_app() -> FastAPI:
     return app
 
 
-@pytest.fixture(scope="module")
-def microscope_server_url() -> Any:
-    """Khởi chạy uvicorn server in-process trên cổng ngẫu nhiên cho Playwright test."""
+def _start_server(
+    bars_provider: CardBarsProvider | None = None,
+) -> tuple[uvicorn.Server, threading.Thread, str]:
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.bind(("127.0.0.1", 0))
     port = sock.getsockname()[1]
     sock.close()
 
-    app = create_test_microscope_app()
+    app = create_test_microscope_app(bars_provider=bars_provider)
     config = uvicorn.Config(
         app=app,
         host="127.0.0.1",
@@ -188,9 +263,24 @@ def microscope_server_url() -> Any:
     server = uvicorn.Server(config)
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
-
     time.sleep(0.6)
-    yield f"http://127.0.0.1:{port}"
+    return server, thread, f"http://127.0.0.1:{port}"
+
+
+@pytest.fixture(scope="module")
+def microscope_server_url() -> Any:
+    """Khởi chạy uvicorn server in-process trên cổng ngẫu nhiên cho Playwright test."""
+    server, thread, url = _start_server()
+    yield url
+    server.should_exit = True
+    thread.join(timeout=3)
+
+
+@pytest.fixture(scope="module")
+def consensus_microscope_server_url() -> Any:
+    """Server có nguồn nến mở rộng 300 nến để kiểm chứng đủ 8 badge độc lập + Microscope."""
+    server, thread, url = _start_server(bars_provider=_rich_consensus_bars_provider)
+    yield url
     server.should_exit = True
     thread.join(timeout=3)
 
@@ -404,4 +494,202 @@ def test_navigation_from_cards_to_microscope(microscope_server_url: str) -> None
         assert "Kính hiển vi Soi vết Lịch sử (Microscope Replay)" in page.content()
         assert "Donchian Trend" in page.content()
 
+        browser.close()
+
+
+def test_expanded_cards_orthogonality_badges_and_independence_counts(
+    consensus_microscope_server_url: str,
+) -> None:
+    """Kiểm chứng đủ 8 Strategy Cards, badge Orthogonal và số điều kiện độc lập x/y trên UI."""
+    cookie_value = f"{WORKSPACE_ID}:valid_test_token_microscope"
+    expected_counts = (
+        ("SC-BINANCE-USDM-VOL-BREAKOUT-001", "2/2 điều kiện độc lập"),
+        ("SC-BINANCE-USDM-MEAN-REVERT-002", "5/5 điều kiện độc lập"),
+        ("SC-BINANCE-USDM-TSMOM-003", "4/4 điều kiện độc lập"),
+        ("SC-BINANCE-USDM-BBKC-SQUEEZE-004", "4/4 điều kiện độc lập"),
+        ("SC-BINANCE-USDM-TREND-PULLBACK-005", "6/6 điều kiện độc lập"),
+        ("SC-BINANCE-USDM-VWAP-REVERT-006", "5/5 điều kiện độc lập"),
+        ("SC-BINANCE-USDM-MACD-ADX-007", "5/5 điều kiện độc lập"),
+        ("SC-BINANCE-USDM-TAKER-FLOW-008", "5/5 điều kiện độc lập"),
+    )
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        context = browser.new_context(
+            viewport={"width": 1280, "height": 800},
+            color_scheme="light",
+        )
+        context.add_cookies(
+            [
+                {
+                    "name": "crypidian_session",
+                    "value": cookie_value,
+                    "domain": "127.0.0.1",
+                    "path": "/",
+                    "httpOnly": True,
+                    "sameSite": "Lax",
+                }
+            ]
+        )
+        page = context.new_page()
+        watch_browser_violations(page)
+
+        page.goto(
+            f"{consensus_microscope_server_url}/admin/strategy-cards",
+            wait_until="networkidle",
+        )
+
+        # Đủ 8 thẻ và cả 8 thẻ đều đạt huy hiệu Đã kiểm định (Orthogonal), không cảnh báo giả.
+        card_items = page.locator(".strategy-card-item")
+        assert card_items.count() == 8
+        ortho_sel = '[aria-label="Trạng thái kiểm định: Đã kiểm định (Orthogonal)"]'
+        ortho_badges = page.locator(ortho_sel)
+        assert ortho_badges.count() == 8
+        grid_text = page.locator(".strategy-cards-grid").text_content() or ""
+        assert "Cảnh báo tương quan cao" not in grid_text
+        assert "Chưa đủ dữ liệu tương quan" not in grid_text
+        assert page.evaluate("document.documentElement.scrollWidth - innerWidth") <= 0
+
+        # Mở dialog chi tiết của từng thẻ để xác nhận số điều kiện độc lập x/y khớp chuẩn xác.
+        for idx, (card_id, expected_label) in enumerate(expected_counts, start=1):
+            assert card_id in grid_text
+            page.locator(f'button[data-dialog-open="card-dialog-{idx}"]').click()
+            dialog = page.locator(f"#card-dialog-{idx}")
+            dialog.wait_for(state="visible", timeout=3000)
+            dialog_text = dialog.text_content() or ""
+            assert card_id in dialog_text
+            assert expected_label in dialog_text
+            assert "Không có cặp điều kiện tương quan cao" in dialog_text
+            dialog.locator('button[aria-label="Đóng chi tiết thẻ"]').click()
+            dialog.wait_for(state="hidden", timeout=3000)
+
+        shot_path = SCREENSHOTS_DIR / "17_expanded_cards_consensus_badges_desktop.png"
+        page.screenshot(path=str(shot_path), full_page=True)
+        assert shot_path.exists()
+        assert shot_path.stat().st_size > 5000
+
+        browser.close()
+
+
+def test_expanded_cards_microscope_inspection_and_short_circuit(
+    consensus_microscope_server_url: str,
+) -> None:
+    """Kiểm chứng Microscope Replay trên các thẻ mở rộng mới (Desktop & Mobile)."""
+    cookie_value = f"{WORKSPACE_ID}:valid_test_token_microscope"
+    expanded_card_ids = (
+        "SC-BINANCE-USDM-TSMOM-003",
+        "SC-BINANCE-USDM-BBKC-SQUEEZE-004",
+        "SC-BINANCE-USDM-TREND-PULLBACK-005",
+        "SC-BINANCE-USDM-VWAP-REVERT-006",
+        "SC-BINANCE-USDM-MACD-ADX-007",
+        "SC-BINANCE-USDM-TAKER-FLOW-008",
+    )
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+
+        # 1. Desktop (1280x800): điều hướng từ /admin/strategy-cards vào Microscope thẻ VWAP 006
+        desktop_ctx = browser.new_context(
+            viewport={"width": 1280, "height": 800},
+            color_scheme="light",
+        )
+        desktop_ctx.add_cookies(
+            [
+                {
+                    "name": "crypidian_session",
+                    "value": cookie_value,
+                    "domain": "127.0.0.1",
+                    "path": "/",
+                    "httpOnly": True,
+                    "sameSite": "Lax",
+                }
+            ]
+        )
+        page = desktop_ctx.new_page()
+        watch_browser_violations(page)
+
+        page.goto(
+            f"{consensus_microscope_server_url}/admin/strategy-cards",
+            wait_until="networkidle",
+        )
+        vwap_btn = page.locator(
+            'a.btn-microscope[href*="SC-BINANCE-USDM-VWAP-REVERT-006/microscope"]'
+        )
+        assert vwap_btn.is_visible()
+        vwap_btn.click()
+        page.wait_for_url("**/SC-BINANCE-USDM-VWAP-REVERT-006/microscope")
+        assert page.locator("#selected-card-id").inner_text() == "SC-BINANCE-USDM-VWAP-REVERT-006"
+
+        for layer in ("l0", "l1", "l2", "l3", "l4", "l5", "l6"):
+            assert page.locator(f"#card-layer-{layer}").is_visible()
+
+        page.locator('button[data-preset-id="preset-low-vol-block"]').click()
+        page.wait_for_selector(".banner-short-circuit", timeout=5000)
+        assert "CHẶN ĐỨNG (BLOCK)" in page.locator("#l4-status-badge").inner_text()
+        assert "BỎ QUA (SKIPPED)" in page.locator("#l5-status-badge").inner_text()
+        assert "BỎ QUA (SKIPPED)" in page.locator("#l6-status-badge").inner_text()
+        assert page.evaluate("document.documentElement.scrollWidth - innerWidth") <= 0
+
+        vwap_shot = SCREENSHOTS_DIR / "18_microscope_expanded_vwap_desktop.png"
+        page.screenshot(path=str(vwap_shot), full_page=True)
+        assert vwap_shot.exists()
+        assert vwap_shot.stat().st_size > 5000
+
+        # Kiểm nhanh các thẻ mới còn lại 003/004/005/007/008 đều render 7 tầng & short-circuit sạch.
+        for card_id in expanded_card_ids:
+            if card_id == "SC-BINANCE-USDM-VWAP-REVERT-006":
+                continue
+            page.goto(
+                f"{consensus_microscope_server_url}/admin/strategy-cards/{card_id}/microscope",
+                wait_until="networkidle",
+            )
+            assert page.locator("#selected-card-id").inner_text() == card_id
+            page.locator('button[data-preset-id="preset-low-vol-block"]').click()
+            page.wait_for_selector(".banner-short-circuit", timeout=5000)
+            assert "CHẶN ĐỨNG (BLOCK)" in page.locator("#l4-status-badge").inner_text()
+            assert "BỎ QUA (SKIPPED)" in page.locator("#l5-status-badge").inner_text()
+            assert "BỎ QUA (SKIPPED)" in page.locator("#l6-status-badge").inner_text()
+
+        desktop_ctx.close()
+
+        # 2. Mobile iPhone (390x844, dark mode): kiểm tra Taker Flow 008 không tràn ngang
+        mobile_ctx = browser.new_context(
+            viewport={"width": 390, "height": 844},
+            is_mobile=True,
+            has_touch=True,
+            color_scheme="dark",
+        )
+        mobile_ctx.add_cookies(
+            [
+                {
+                    "name": "crypidian_session",
+                    "value": cookie_value,
+                    "domain": "127.0.0.1",
+                    "path": "/",
+                    "httpOnly": True,
+                    "sameSite": "Lax",
+                }
+            ]
+        )
+        mobile_page = mobile_ctx.new_page()
+        watch_browser_violations(mobile_page)
+        mobile_page.goto(
+            f"{consensus_microscope_server_url}/admin/strategy-cards/"
+            "SC-BINANCE-USDM-TAKER-FLOW-008/microscope",
+            wait_until="networkidle",
+        )
+        assert (
+            mobile_page.locator("#selected-card-id").inner_text()
+            == "SC-BINANCE-USDM-TAKER-FLOW-008"
+        )
+        mobile_page.locator('button[data-preset-id="preset-low-vol-block"]').click()
+        mobile_page.wait_for_selector(".banner-short-circuit", timeout=5000)
+        assert mobile_page.evaluate("document.documentElement.scrollWidth - innerWidth") <= 0
+
+        taker_shot = SCREENSHOTS_DIR / "19_microscope_expanded_taker_mobile.png"
+        mobile_page.screenshot(path=str(taker_shot), full_page=True)
+        assert taker_shot.exists()
+        assert taker_shot.stat().st_size > 5000
+
+        mobile_ctx.close()
         browser.close()
