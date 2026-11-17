@@ -430,6 +430,10 @@ class _ScriptedLoop(PaperMarketEventLoop):
         await super()._process_scope(account, scope, now)
         self.closed = self.counters.closed_trades > 0
 
+    async def _funding_moments(self, scope: _Scope, *, after: datetime, now: datetime) -> tuple:
+        """Kịch bản RT-1 không có mốc funding (FX-3 kiểm riêng ở test_fx3_paper_funding_runtime)."""
+        return ()
+
 
 def test_loop_fills_on_first_bar_then_monitors_until_stop_and_is_idempotent() -> None:
     app = _FakeApplication(stop=Decimal("95"))
@@ -662,6 +666,8 @@ def test_status_is_degraded_after_discontinuity() -> None:
 
     loop.counters = MarketDispatchCounters(discontinuities=1)
     loop._missing_execution_bars = set()
+    loop._funding_holding = set()
+    loop._funding_missing = {}
     loop.last_tick_at = datetime(2026, 11, 15, tzinfo=UTC)
     loop.last_tick_succeeded = True
     loop.last_error_code = "PAPER_MARKET_DISCONTINUITY"

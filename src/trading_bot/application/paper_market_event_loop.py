@@ -8,6 +8,14 @@ Mỗi tick, với từng account READY:
    vị thế đóng hoặc hết nến.
 3. `expire_reservations(as_of = đồng hồ DB)`.
 
+FX-3 lát 2 (quyết định owner 17/11/2026): với trade OPEN, trước khi đưa nến có
+`opened_at ≥ funding_time` phải ghi funding **đã chốt** của kỳ đó (`apply_funding`). Mốc lấy từ dữ
+liệu (`market_funding` + `next_funding_time` của `market_mark_price`), không suy từ đồng hồ. Chưa
+có mức đã chốt thì tạm giữ các nến từ mốc trở đi; quá 15 phút sau mốc vẫn chưa có thì báo
+`degraded` (mã `PAPER_FUNDING_RATE_MISSING` / `PAPER_FUNDING_MARK_PRICE_MISSING`) rồi xử lý tiếp;
+mức về muộn vẫn được ghi theo khối lượng tại mốc. Checkpoint funding ở scope riêng nên không làm
+lệch con trỏ nến.
+
 Chỉ đọc `market_bar` đã persist (live ưu tiên, rồi REST backfill), nến phải `is_closed`, có
 `close_time ≤ now` và `available_at ≤ now` theo đồng hồ DB: không bao giờ dùng nến chưa đóng hoặc
 kết thúc sau hiện tại. Không gọi API sàn.
@@ -43,6 +51,10 @@ from trading_bot.adapters.database.models.paper_entities import (
     PaperExecutionCheckpointRecord,
     TradeRecord,
 )
+from trading_bot.adapters.database.repositories.funding_settlements import (
+    FundingSettlementRepository,
+    SettledFundingRow,
+)
 from trading_bot.adapters.database.repositories.workspace_settings import (
     WorkspaceSettingsRepository,
 )
@@ -51,10 +63,12 @@ from trading_bot.application.paper_market_context import BAR_INTERVALS
 from trading_bot.application.paper_runtime_application import (
     LEASE_LOSS_REASONS,
     PaperEntryEventCommand,
+    PaperFundingCommand,
     PaperMonitorCommand,
     PaperRuntimeApplicationError,
 )
 from trading_bot.application.strategy_market_requirements import entry_timeframe_for_release
+from trading_bot.domain.execution.funding import FundingSettlement
 from trading_bot.domain.execution.paper import PaperBar
 
 logger = logging.getLogger(__name__)
@@ -74,6 +88,53 @@ def paper_bar_key(*, source: str, symbol: str, timeframe: str, open_time: dateti
 def market_event_scope(paper_intent_id: str, symbol: str) -> str:
     """Phải trùng `paper_lifecycle._market_event_scope` (unit test đối chiếu)."""
     return hashlib.sha256(f"{paper_intent_id}:{symbol}".encode()).hexdigest()
+
+
+def funding_event_scope(paper_intent_id: str, symbol: str) -> str:
+    """Phải trùng `paper_lifecycle._funding_event_scope`; khác scope cursor nến."""
+    return hashlib.sha256(f"funding:{paper_intent_id}:{symbol}".encode()).hexdigest()
+
+
+# FX-3 lát 2: chờ mức funding đã chốt tối đa 15 phút sau mốc (quyết định owner 17/11/2026).
+FUNDING_SETTLEMENT_TIMEOUT = timedelta(minutes=15)
+FUNDING_RATE_MISSING_REASON = "PAPER_FUNDING_RATE_MISSING"
+FUNDING_MARK_PRICE_MISSING_REASON = "PAPER_FUNDING_MARK_PRICE_MISSING"
+
+
+@dataclass(frozen=True, slots=True)
+class FundingMoment:
+    """Một mốc funding đã qua của symbol; ``settlement`` None khi chưa dùng được mức đã chốt."""
+
+    funding_time: datetime
+    settlement: FundingSettlement | None
+    missing_reason: str | None
+
+
+def funding_moments_from(
+    *,
+    symbol: str,
+    settled: Sequence[SettledFundingRow],
+    scheduled: Sequence[datetime],
+) -> tuple[FundingMoment, ...]:
+    """Gộp kỳ đã chốt với lịch mốc, tăng dần theo mốc.
+
+    Quy tắc an toàn khi ``mark_price`` NULL: không tự lấy giá khác thay mark price của kỳ (giá nến
+    là last price, không phải giá sàn dùng thu funding) — coi như chưa có mức đã chốt dùng được:
+    giữ nến tới hạn chờ rồi báo `PAPER_FUNDING_MARK_PRICE_MISSING`.
+    """
+    rows = {row.funding_time.astimezone(UTC): row for row in settled}
+    times = sorted(set(rows) | {moment.astimezone(UTC) for moment in scheduled})
+    moments: list[FundingMoment] = []
+    for at in times:
+        row = rows.get(at)
+        if row is None:
+            moments.append(FundingMoment(at, None, FUNDING_RATE_MISSING_REASON))
+        elif row.mark_price is None:
+            moments.append(FundingMoment(at, None, FUNDING_MARK_PRICE_MISSING_REASON))
+        else:
+            settlement = FundingSettlement(symbol, at, row.funding_rate, row.mark_price)
+            moments.append(FundingMoment(at, settlement, None))
+    return tuple(moments)
 
 
 def paper_bar_from_row(row: Any) -> PaperBar | None:
@@ -217,6 +278,9 @@ class _Scope:
     trade_id: UUID | None
     entry_pending: bool
     cursor: datetime | None
+    # FX-3 lát 2: lúc mở trade (fill đầu) và mốc funding cuối đã ghi (scope funding riêng).
+    trade_opened_at: datetime | None = None
+    funding_cursor: datetime | None = None
 
 
 @dataclass(slots=True)
@@ -229,6 +293,8 @@ class MarketDispatchCounters:
     expired_reservations: int = 0
     errors: int = 0
     discontinuities: int = 0
+    funding_events: int = 0
+    funding_holds: int = 0
 
 
 class PaperMarketEventLoop:
@@ -258,6 +324,10 @@ class PaperMarketEventLoop:
         # chỉ khớp ở nến mở sau lúc submit nên luôn hết hạn trước khi khớp (sự cố 16/11/2026).
         self._missing_execution_bars: set[UUID] = set()
         self._warned_intents: set[UUID] = set()
+        # FX-3 lát 2: (account, intent) đang giữ nến chờ mức funding / đã quá hạn chờ (degraded).
+        self._funding_holding: set[tuple[UUID, UUID]] = set()
+        self._funding_missing: dict[tuple[UUID, UUID], str] = {}
+        self._warned_funding: set[tuple[UUID, datetime]] = set()
 
     def status(self) -> dict[str, Any]:
         """Trạng thái cho readiness: chỉ bộ đếm/mã an toàn, không chứa dữ liệu nhạy cảm."""
@@ -269,6 +339,7 @@ class PaperMarketEventLoop:
                 self.last_tick_succeeded
                 and self.counters.discontinuities == 0
                 and not self._missing_execution_bars
+                and not self._funding_missing
             )
             state = "running" if healthy else "degraded"
         counters = self.counters
@@ -284,6 +355,10 @@ class PaperMarketEventLoop:
             "errors": counters.errors,
             "discontinuities": counters.discontinuities,
             "execution_1m_missing_accounts": len(self._missing_execution_bars),
+            "funding_events": counters.funding_events,
+            "funding_holds": counters.funding_holds,
+            "funding_holding": len(self._funding_holding),
+            "funding_missing": len(self._funding_missing),
             "last_error_code": self.last_error_code,
         }
 
@@ -305,6 +380,7 @@ class PaperMarketEventLoop:
             return True
         now, scopes = await self._load_scopes(account)
         self._check_execution_bars(account_id, scopes)
+        self._forget_funding_state(account_id, {scope.intent_id for scope in scopes})
         succeeded = True
         for scope in scopes:
             try:
@@ -349,6 +425,15 @@ class PaperMarketEventLoop:
                 scope.timeframe,
                 scope.symbol,
             )
+
+    def _forget_funding_state(self, account_id: UUID, live_intents: set[UUID]) -> None:
+        """Bỏ trạng thái funding của scope không còn (trade đã đóng/intent kết thúc)."""
+        for key in [key for key in self._funding_holding if key[0] == account_id]:
+            if key[1] not in live_intents:
+                self._funding_holding.discard(key)
+        for key in [key for key in self._funding_missing if key[0] == account_id]:
+            if key[1] not in live_intents:
+                self._funding_missing.pop(key, None)
 
     async def _load_scopes(self, account: Any) -> tuple[datetime, tuple[_Scope, ...]]:
         assert self._sessions is not None
@@ -419,6 +504,16 @@ class PaperMarketEventLoop:
                     )
                 )
                 trade = open_trades.get(intent.id)
+                funding_cursor = None
+                if trade is not None:
+                    funding_cursor = await session.scalar(
+                        select(func.max(PaperExecutionCheckpointRecord.event_at)).where(
+                            PaperExecutionCheckpointRecord.workspace_id == self._workspace_id,
+                            PaperExecutionCheckpointRecord.account_id == account.account_id,
+                            PaperExecutionCheckpointRecord.event_scope
+                            == funding_event_scope(paper_intent_id, intent.symbol),
+                        )
+                    )
                 scopes.append(
                     _Scope(
                         intent_id=intent.id,
@@ -429,6 +524,8 @@ class PaperMarketEventLoop:
                         trade_id=trade.id if trade is not None else None,
                         entry_pending=intent.status in ENTRY_STATUSES,
                         cursor=cursor,
+                        trade_opened_at=trade.opened_at if trade is not None else None,
+                        funding_cursor=funding_cursor,
                     )
                 )
             return now, tuple(scopes)
@@ -464,7 +561,24 @@ class PaperMarketEventLoop:
                 )
         trade_id = scope.trade_id
         entry_pending = scope.entry_pending and eligible_at is not None
+        key = (account.account_id, scope.intent_id)
+        self._funding_holding.discard(key)
+        self._funding_missing.pop(key, None)
+        moments: list[FundingMoment] = []
+        if trade_id is not None and scope.trade_opened_at is not None:
+            moments = await self._load_funding(scope, opened_at=scope.trade_opened_at, now=now)
+            if scope.cursor is not None:
+                # Kỳ có mốc đã nằm sau con trỏ nến (mức về muộn): ghi ngay, không giữ nến.
+                await self._settle_funding(
+                    account, scope, trade_id, moments, until=scope.cursor, now=now, hold=False
+                )
         for bar in bars:
+            if trade_id is not None and not await self._settle_funding(
+                account, scope, trade_id, moments, until=bar.opened_at, now=now, hold=True
+            ):
+                self.counters.funding_holds += 1
+                self._funding_holding.add(key)
+                return
             if entry_pending:
                 entry = await self._application.apply_entry_event(
                     PaperEntryEventCommand(
@@ -477,6 +591,9 @@ class PaperMarketEventLoop:
                 self.counters.entry_events += 1
                 self.counters.entry_fills += int(entry.persisted_fill_count or 0)
                 if entry.trade_id is not None:
+                    if trade_id is None:
+                        # Trade vừa mở ở nến này: mốc funding tính từ lúc khớp đầu.
+                        moments = await self._load_funding(scope, opened_at=bar.opened_at, now=now)
                     trade_id = entry.trade_id
                 status = str(getattr(entry.order.status, "value", entry.order.status))
                 entry_pending = status in ENTRY_STATUSES
@@ -500,6 +617,77 @@ class PaperMarketEventLoop:
             if monitored.trade_closed:
                 self.counters.closed_trades += 1
                 return
+
+    async def _load_funding(
+        self, scope: _Scope, *, opened_at: datetime, now: datetime
+    ) -> list[FundingMoment]:
+        """Mốc funding sau lúc mở trade và sau kỳ cuối đã ghi (thứ tự tăng dần)."""
+        after = opened_at
+        if scope.funding_cursor is not None and scope.funding_cursor > after:
+            after = scope.funding_cursor
+        return list(await self._funding_moments(scope, after=after, now=now))
+
+    async def _settle_funding(
+        self,
+        account: Any,
+        scope: _Scope,
+        trade_id: UUID,
+        moments: list[FundingMoment],
+        *,
+        until: datetime,
+        now: datetime,
+        hold: bool,
+    ) -> bool:
+        """Ghi các kỳ có mốc ``<= until``; False nghĩa là phải giữ nến (chờ mức đã chốt)."""
+        key = (account.account_id, scope.intent_id)
+        while moments and moments[0].funding_time <= until:
+            moment = moments[0]
+            if moment.settlement is not None:
+                result = await self._application.apply_funding(
+                    PaperFundingCommand(
+                        account_id=account.account_id,
+                        ledger_intent_id=scope.intent_id,
+                        trade_id=trade_id,
+                        paper_position_id=scope.paper_intent_id,
+                        settlement=moment.settlement,
+                    )
+                )
+                self.counters.funding_events += int(bool(getattr(result, "applied", False)))
+                moments.pop(0)
+                continue
+            if now - moment.funding_time < FUNDING_SETTLEMENT_TIMEOUT:
+                # Còn trong hạn chờ: giữ nến từ mốc (hoặc chỉ dừng ghi muộn, nến đã qua mốc).
+                return not hold
+            reason = moment.missing_reason or FUNDING_RATE_MISSING_REASON
+            self._funding_missing[key] = reason
+            self.last_error_code = reason
+            warned = (scope.intent_id, moment.funding_time)
+            if warned not in self._warned_funding:
+                self._warned_funding.add(warned)
+                logger.warning(
+                    "PAPER funding chưa có mức đã chốt quá hạn chờ; xử lý tiếp nến không ghi "
+                    "funding kỳ này. reason_code=%s symbol=%s funding_time=%s",
+                    reason,
+                    scope.symbol,
+                    moment.funding_time.isoformat(),
+                )
+            moments.pop(0)
+        return True
+
+    async def _funding_moments(
+        self, scope: _Scope, *, after: datetime, now: datetime
+    ) -> tuple[FundingMoment, ...]:
+        """Đọc point-in-time kỳ đã chốt + lịch mốc từ DB (``available_at <= now``)."""
+        assert self._sessions is not None
+        async with UnitOfWork(self._sessions, workspace_id=self._workspace_id) as uow:
+            repository = FundingSettlementRepository(uow.session)
+            settled = await repository.settled_after(
+                workspace_id=self._workspace_id, symbol=scope.symbol, after=after, now=now
+            )
+            scheduled = await repository.scheduled_after(
+                workspace_id=self._workspace_id, symbol=scope.symbol, after=after, now=now
+            )
+        return funding_moments_from(symbol=scope.symbol, settled=settled, scheduled=scheduled)
 
     async def _bars(
         self, scope: _Scope, *, now: datetime, at_or_after: datetime | None

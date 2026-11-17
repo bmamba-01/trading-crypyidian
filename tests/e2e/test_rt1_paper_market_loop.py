@@ -231,7 +231,7 @@ def test_rest_candles_drive_paper_entry_fill_and_stop_exit_idempotently() -> Non
         assert after["intents"] == before["intents"]
 
         # Nến 1m chạm stop → đóng lệnh; nến sau đó không được dùng.
-        assert run("add_stop_bar") == {"added": 2}
+        assert run("add_stop_bar") == {"added": 2, "funding_seeded": 1}
         _sleep_until(minute_base + timedelta(minutes=4, seconds=3))
         closed = run("runtime")
         assert closed["network_attempts"] == []
@@ -241,12 +241,30 @@ def test_rest_candles_drive_paper_entry_fill_and_stop_exit_idempotently() -> Non
             "fills": ["ENTRY", "EXIT"],
         }
         final = run("verify")
+        # FX-3 lát 2: kỳ funding seed tại mốc nến 3 được ghi đúng số trước nến chạm stop (nến 3
+        # vẫn được xử lý: lệnh đóng bằng STOP_LOSS ở nến 3, không bị bỏ qua).
+        closed_dispatch = closed["readiness"]["market_dispatch"]
+        assert closed_dispatch["funding_events"] == 1, closed_dispatch
+        assert closed_dispatch["funding_missing"] == 0, closed_dispatch
+        assert closed_dispatch["errors"] == 0, closed_dispatch
+        assert final["funding"] == {
+            "rows": 1,
+            "amount_matches": [True],
+            "event_ids": [True],
+            "at_funding_time": [True],
+            "trade_total_matches": True,
+        }, final["funding"]
         closed_read = run("web_read")
         assert closed_read["positions"] == []  # đã đóng bằng stop → không còn vị thế mở
         assert closed_read["monitor_slots"] == "0/2"
         assert closed_read["monitor_daily_loss_positive"] is True  # lệnh lỗ vừa đóng được tính
         rerun = run("runtime")
         assert rerun["ledger"] == closed["ledger"]
+        # Restart: recovery đối soát funding_event_ids ↔ trade_cost FUNDING vẫn khớp.
+        assert rerun["readiness"]["execution_capabilities"]["paper_recovery"] == "ready", (
+            json.dumps(rerun["readiness"], default=str)
+        )
+        assert rerun["readiness"]["market_dispatch"]["funding_events"] == 0
         assert run("verify") == final
 
         # TG-3: trade PAPER đã đóng → đúng một tin kết quả (và một tin mở, một tin tổng hợp) tới

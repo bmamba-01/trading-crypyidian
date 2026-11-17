@@ -1642,12 +1642,38 @@ def add_minutes() -> dict[str, Any]:
     return {"minute_base": base.isoformat()}
 
 
+FUNDING_RATE = Decimal("0.0001")
+FUNDING_MARK = Decimal("329.5")
+
+
 def add_stop_bar() -> dict[str, Any]:
     with _connect() as connection, connection.transaction():
         _minute(connection, 3, low=250.0)
         # Nến sau stop (còn trong tương lai khi runtime chạy): không được dùng.
         _minute(connection, 4)
-    return {"added": 2}
+        # FX-3 lát 2: kỳ funding đã chốt đúng mốc mở nến 3 (vị thế đang mở qua mốc). Runtime phải
+        # ghi `trade_cost` FUNDING trước khi đưa nến 3 (nến chạm stop) vào monitor.
+        funding_time = _minute_open(3)
+        _insert(
+            connection,
+            "market_funding",
+            id=_id("funding-minute-3"),
+            workspace_id=WORKSPACE,
+            instrument_id=INSTRUMENT,
+            source="BINANCE_USDM_REST",
+            idempotency_key=f"funding:BTCUSDT:{int(funding_time.timestamp() * 1000)}",
+            revision=1,
+            checksum=hashlib.sha256(b"rt1-funding-minute-3").hexdigest(),
+            supersedes_id=None,
+            funding_time=funding_time,
+            event_at=funding_time,
+            received_at=funding_time + timedelta(seconds=1),
+            available_at=funding_time + timedelta(seconds=2),
+            funding_rate=FUNDING_RATE,
+            mark_price=FUNDING_MARK,
+            rate_type="Regular",
+        )
+    return {"added": 2, "funding_seeded": 1}
 
 
 def verify() -> dict[str, Any]:
@@ -1696,6 +1722,15 @@ def verify() -> dict[str, Any]:
                 (WORKSPACE,),
             ).fetchone()[0]
         )
+        funding_costs = rows(
+            "SELECT amount, source_event_id, occurred_at FROM trade_cost "
+            "WHERE workspace_id=%s AND cost_type='FUNDING'"
+        )
+        funding_basis = rows(
+            "SELECT i.side, sum(f.quantity), max(t.funding_total) FROM order_intent i "
+            "JOIN fill f ON f.intent_id = i.id AND f.fill_role = 'ENTRY' "
+            "JOIN trade t ON t.intent_id = i.id WHERE i.workspace_id=%s GROUP BY i.side"
+        )
         checkpoints = rows("SELECT count(*) FROM paper_execution_checkpoint WHERE workspace_id=%s")[
             0
         ][0]
@@ -1736,6 +1771,29 @@ def verify() -> dict[str, Any]:
         "venue_rows": venue_rows,
         "checkpoints": int(checkpoints),
         "minute_open": {key: value.isoformat() for key, value in minute_open.items()},
+        "funding": _funding_summary(funding_costs, funding_basis),
+    }
+
+
+def _funding_summary(costs: list[tuple[Any, ...]], basis: list[tuple[Any, ...]]) -> dict[str, Any]:
+    """Đối chiếu `trade_cost` FUNDING với công thức mark × khối lượng × rate (dấu theo hướng)."""
+    if "minute_base" not in STATE:
+        return {"rows": len(costs)}
+    funding_time = _minute_open(3)
+    expected = None
+    trade_total = None
+    if basis:
+        side, quantity, trade_total = basis[0]
+        signed = FUNDING_MARK * Decimal(quantity) * FUNDING_RATE
+        expected = signed if str(side).upper() == "LONG" else -signed
+    return {
+        "rows": len(costs),
+        "amount_matches": [row[0] == expected for row in costs],
+        "event_ids": [row[1] == f"funding:BTCUSDT:{funding_time.isoformat()}" for row in costs],
+        "at_funding_time": [row[2] == funding_time for row in costs],
+        # Trade đã đóng: `funding_total` gồm kỳ funding (net = gross − tổng chi phí).
+        "trade_total_matches": trade_total is not None
+        and (trade_total == expected or (not costs and trade_total == 0)),
     }
 
 
