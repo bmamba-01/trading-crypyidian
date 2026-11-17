@@ -78,7 +78,8 @@ def test_migration_is_the_single_head_after_previous_head() -> None:
     # WP06 nối migration caller EVALUATION của scorer TEST proof, rồi lát B (manifest v5).
     assert heads == ["d4f6a8b0c2e4"]
     assert graph["d4f6a8b0c2e4"] == "c2e4a6b8d0f1"
-    assert graph["c2e4a6b8d0f1"] == "ad99c4f520d0"
+    assert graph["c2e4a6b8d0f1"] == "60a62c705a89"  # TG-4 topic Telegram (CRY-424)
+    assert graph["60a62c705a89"] == "ad99c4f520d0"
     assert graph["ad99c4f520d0"] == "a42edbd211e5"
     assert graph["a42edbd211e5"] == "7707d82de246"
     assert graph["7707d82de246"] == "c1fec3af85ea"  # bù bảng live market b4d6 (CRY-88)
