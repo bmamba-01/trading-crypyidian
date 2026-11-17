@@ -7,6 +7,10 @@ from datetime import datetime
 from typing import Protocol
 from uuid import UUID
 
+from trading_bot.application.backtest_dataset_funding import (
+    FundingRowSource,
+    load_funding_series,
+)
 from trading_bot.application.backtest_dataset_replay import BacktestDatasetReplayLoader
 from trading_bot.application.backtest_dataset_replay_bundle import (
     BacktestDatasetBundleMismatch,
@@ -34,9 +38,12 @@ class BacktestDatasetReplayBundleLoader:
         *,
         repository: BacktestDatasetReplayBundleLookup,
         replay_loader: BacktestDatasetReplayLoader,
+        funding_source: FundingRowSource | None = None,
     ) -> None:
         self._repository = repository
         self._replay_loader = replay_loader
+        # FX-3 lát 3b: chỉ cần khi bundle schema 2 (có funding đã chốt).
+        self._funding_source = funding_source
 
     async def load_for_replay(
         self, *, workspace_id: UUID, bundle_hash: str, now: datetime
@@ -66,7 +73,21 @@ class BacktestDatasetReplayBundleLoader:
                     workspace_id=workspace_id, dataset_hash=component.dataset_hash, now=now
                 )
             )
-        bundle = build_backtest_dataset_replay_bundle(inputs)
+        funding = None
+        if reference.funding is not None:
+            if self._funding_source is None:
+                raise BacktestDatasetBundleMismatch(
+                    "Bundle có funding nhưng loader chưa cấu hình nguồn funding."
+                )
+            funding = await load_funding_series(
+                self._funding_source,
+                workspace_id=workspace_id,
+                symbol=reference.symbol,
+                window_start=reference.funding.window_start,
+                window_end=reference.funding.window_end,
+                as_of=reference.funding.as_of,
+            )
+        bundle = build_backtest_dataset_replay_bundle(inputs, funding=funding)
         rebuilt = BacktestDatasetReplayBundleReference.from_bundle(bundle)
         if rebuilt != reference or bundle.dataset_hash != bundle_hash:
             raise BacktestDatasetBundleMismatch(
@@ -91,7 +112,7 @@ class BacktestDatasetReplayBundleLoader:
                     now=now,
                 )
             )
-        current = build_backtest_dataset_replay_bundle(refreshed)
+        current = build_backtest_dataset_replay_bundle(refreshed, funding=bundle.funding)
         if (
             current.dataset_hash != bundle.dataset_hash
             or BacktestDatasetReplayBundleReference.from_bundle(current)

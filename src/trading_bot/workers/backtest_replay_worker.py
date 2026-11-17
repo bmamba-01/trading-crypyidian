@@ -30,6 +30,9 @@ from trading_bot.adapters.database.repositories.backtest_outcomes import Backtes
 from trading_bot.adapters.database.repositories.backtest_replay_jobs import (
     BacktestReplayJobRepository,
 )
+from trading_bot.adapters.database.repositories.funding_settlements import (
+    FundingSettlementRepository,
+)
 from trading_bot.adapters.database.repositories.market_data import MarketDataRepository
 from trading_bot.adapters.database.repositories.source_registry import SourceRegistryRepository
 from trading_bot.application.backtest import ReplayCancelled
@@ -409,6 +412,8 @@ def _bundle_loader(uow: Any, workspace_id: UUID) -> BacktestDatasetReplayBundleL
     return BacktestDatasetReplayBundleLoader(
         repository=BacktestDatasetReplayBundleRepository(uow.session),
         replay_loader=replay_loader,
+        # FX-3 lát 3b: bundle schema 2 đọc lại funding đã chốt từ market_funding.
+        funding_source=FundingSettlementRepository(uow.session),
     )
 
 

@@ -29,6 +29,7 @@ from uuid import UUID, uuid5
 
 from trading_bot.application.ai_analyst import H03_PARAMETERIZED, apply_proposal
 from trading_bot.application.backtest import EvaluationReport
+from trading_bot.application.backtest_dataset_funding import FundingRowSource, load_funding_series
 from trading_bot.application.backtest_dataset_manifest import (
     BacktestDatasetNotReady,
     build_backtest_dataset_manifest,
@@ -661,11 +662,15 @@ async def build_stored_bundle(
     rights_gate: RightsGate,
     now: datetime,
     warmup_bars: int = WARMUP_BARS,
+    funding_source: FundingRowSource | None = None,
 ) -> BacktestDatasetReplayBundle | str:
     """Bundle chung cửa sổ đánh giá cho mọi khung; trả lý do (str) nếu không dựng được.
 
     Cửa sổ = phần chung của các khung sau khi trừ warm-up, căn theo khung lớn nhất. Nến thiếu
     trong cửa sổ → manifest không READY → coin bị loại (không nội suy).
+
+    FX-3 lát 3b: có ``funding_source`` thì bundle mang funding đã chốt của cửa sổ đánh giá
+    (nhìn tại ``now``) để replay trả/nhận funding như runtime PAPER.
     """
     source = market_source_for_rights_provider(BINANCE_USDM_REST_PROVIDER)
     largest = max(_INTERVALS[tf] for tf in timeframes)
@@ -727,7 +732,17 @@ async def build_stored_bundle(
                 manifest=manifest, bars=tuple(window), current_rights=evidence
             )
         )
-    return build_backtest_dataset_replay_bundle(inputs)
+    funding = None
+    if funding_source is not None:
+        funding = await load_funding_series(
+            funding_source,
+            workspace_id=workspace_id,
+            symbol=symbol,
+            window_start=evaluation_start,
+            window_end=range_end,
+            as_of=now,
+        )
+    return build_backtest_dataset_replay_bundle(inputs, funding=funding)
 
 
 __all__ = [

@@ -256,7 +256,7 @@ class BacktestDatasetReplayBundleRecord(UuidPrimaryKey, CreatedAt, Base):
             "bundle_hash ~ '^[0-9a-f]{64}$' AND policy_fingerprint ~ '^[0-9a-f]{64}$'",
             name="backtest_replay_bundle_hashes_valid",
         ),
-        CheckConstraint("schema_version = 1", name="backtest_replay_bundle_schema_valid"),
+        CheckConstraint("schema_version IN (1, 2)", name="backtest_replay_bundle_schema_valid"),
         CheckConstraint(
             "length(symbol) > 0 AND length(rights_provider) > 0 AND length(rights_purpose) > 0",
             name="backtest_replay_bundle_scope_valid",

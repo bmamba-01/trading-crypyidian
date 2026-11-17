@@ -10,6 +10,11 @@ from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID
 
+from trading_bot.application.backtest_dataset_funding import (
+    FUNDING_RIGHTS_PROVIDER,
+    ReplayFundingReference,
+    ReplayFundingSeries,
+)
 from trading_bot.application.backtest_dataset_manifest import (
     backtest_dataset_bar_identity_hash,
     backtest_dataset_bars_hash,
@@ -36,6 +41,8 @@ _REFERENCE_FIELDS = frozenset(
         "components",
     }
 )
+# FX-3 lát 3b: schema 2 = schema 1 + chuỗi funding đã chốt; schema 1 giữ nguyên bytes và hash.
+_FUNDING_REFERENCE_FIELDS = _REFERENCE_FIELDS | {"funding"}
 _COMPONENT_REFERENCE_FIELDS = frozenset({"interval", "dataset_hash", "bars_content_hash"})
 
 
@@ -67,14 +74,20 @@ class BacktestDatasetReplayBundleReference:
     rights_purpose: str
     policy_fingerprint: str
     components: tuple[BacktestDatasetReplayBundleComponentReference, ...]
+    funding: ReplayFundingReference | None = None
 
     def __post_init__(self) -> None:
         try:
             object.__setattr__(self, "components", tuple(self.components))
         except TypeError as exc:
             raise ValueError("Bundle reference cần component là dãy hợp lệ.") from exc
-        if type(self.schema_version) is not int or self.schema_version != 1:
-            raise ValueError("schema_version của bundle reference phải bằng 1.")
+        expected_schema = 1 if self.funding is None else 2
+        if type(self.schema_version) is not int or self.schema_version != expected_schema:
+            raise ValueError(
+                "schema_version của bundle reference phải là 1 (không funding) hoặc 2."
+            )
+        if self.funding is not None and type(self.funding) is not ReplayFundingReference:
+            raise ValueError("Funding reference của bundle không hợp lệ.")
         if type(self.workspace_id) is not UUID:
             raise ValueError("workspace_id của bundle reference không hợp lệ.")
         if not all(
@@ -109,7 +122,7 @@ class BacktestDatasetReplayBundleReference:
         if type(bundle) is not BacktestDatasetReplayBundle:
             raise TypeError("bundle phải là BacktestDatasetReplayBundle đã xác thực.")
         return cls(
-            schema_version=1,
+            schema_version=1 if bundle.funding is None else 2,
             workspace_id=bundle.workspace_id,
             symbol=bundle.symbol,
             evaluation_start=bundle.evaluation_start,
@@ -125,6 +138,7 @@ class BacktestDatasetReplayBundleReference:
                 )
                 for item in bundle.components
             ),
+            funding=None if bundle.funding is None else bundle.funding.reference(),
         )
 
     @property
@@ -151,7 +165,10 @@ class BacktestDatasetReplayBundleReference:
             raise ValueError("Canonical JSON hoặc expected bundle hash không hợp lệ.")
         try:
             payload = json.loads(canonical_json)
-            if type(payload) is not dict or set(payload) != _REFERENCE_FIELDS:
+            if type(payload) is not dict or set(payload) not in (
+                _REFERENCE_FIELDS,
+                _FUNDING_REFERENCE_FIELDS,
+            ):
                 raise ValueError("Canonical payload có field thiếu hoặc không nhận diện.")
             if type(payload["components"]) is not list or not payload["components"]:
                 raise ValueError("Canonical payload cần danh sách component không rỗng.")
@@ -170,6 +187,11 @@ class BacktestDatasetReplayBundleReference:
                 rights_purpose=payload["rights_purpose"],
                 policy_fingerprint=payload["policy_fingerprint"],
                 components=tuple(components),
+                funding=(
+                    ReplayFundingReference.from_payload(payload["funding"])
+                    if "funding" in payload
+                    else None
+                ),
             )
         except (AttributeError, KeyError, TypeError, ValueError, OverflowError) as exc:
             raise ValueError("Canonical bundle reference không hợp lệ.") from exc
@@ -185,7 +207,7 @@ def _is_sha256(value: object) -> bool:
 
 
 def _reference_payload(reference: BacktestDatasetReplayBundleReference) -> dict[str, object]:
-    return {
+    payload: dict[str, object] = {
         "schema_version": reference.schema_version,
         "workspace_id": str(reference.workspace_id),
         "symbol": reference.symbol,
@@ -203,6 +225,9 @@ def _reference_payload(reference: BacktestDatasetReplayBundleReference) -> dict[
             for component in reference.components
         ],
     }
+    if reference.funding is not None:
+        payload["funding"] = reference.funding.payload()
+    return payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -218,6 +243,8 @@ class BacktestDatasetReplayBundle:
     rights_purpose: str
     policy_fingerprint: str
     dataset_hash: str
+    # FX-3 lát 3b: funding đã chốt của symbol trong cửa sổ bundle (None = bundle schema 1 cũ).
+    funding: ReplayFundingSeries | None = None
 
     def __post_init__(self) -> None:
         if not self.components:
@@ -286,6 +313,18 @@ class BacktestDatasetReplayBundle:
                     raise BacktestDatasetBundleMismatch(
                         "Identity record/revision bar của manifest con bị thay đổi."
                     )
+        if self.funding is not None:
+            if type(self.funding) is not ReplayFundingSeries:
+                raise BacktestDatasetBundleMismatch("Funding của bundle không hợp lệ.")
+            if (
+                self.funding.symbol != self.symbol
+                or self.rights_provider != FUNDING_RIGHTS_PROVIDER
+                or self.funding.window_end != self.range_end
+                or self.funding.window_start > self.evaluation_start
+            ):
+                raise BacktestDatasetBundleMismatch(
+                    "Funding phải cùng symbol, nguồn quyền và phủ cửa sổ đánh giá của bundle."
+                )
         expected_hash = _bundle_hash(
             components=self.components,
             workspace_id=self.workspace_id,
@@ -295,6 +334,7 @@ class BacktestDatasetReplayBundle:
             rights_provider=self.rights_provider,
             rights_purpose=self.rights_purpose,
             policy_fingerprint=self.policy_fingerprint,
+            funding=self.funding,
         )
         if self.dataset_hash != expected_hash:
             raise ValueError("dataset_hash của bundle không khớp nội dung.")
@@ -302,6 +342,8 @@ class BacktestDatasetReplayBundle:
 
 def build_backtest_dataset_replay_bundle(
     inputs: Sequence[BacktestDatasetReplayInput],
+    *,
+    funding: ReplayFundingSeries | None = None,
 ) -> BacktestDatasetReplayBundle:
     """Ghép child manifest cùng symbol/window/rights thành hash ổn định."""
     if not isinstance(inputs, Sequence) or not inputs:
@@ -326,6 +368,7 @@ def build_backtest_dataset_replay_bundle(
         rights_provider=first.rights_provider,
         rights_purpose=first.rights_purpose,
         policy_fingerprint=first.policy_fingerprint,
+        funding=funding,
     )
     return BacktestDatasetReplayBundle(
         components=components,
@@ -337,6 +380,7 @@ def build_backtest_dataset_replay_bundle(
         rights_purpose=first.rights_purpose,
         policy_fingerprint=first.policy_fingerprint,
         dataset_hash=dataset_hash,
+        funding=funding,
     )
 
 
@@ -350,9 +394,10 @@ def _bundle_hash(
     rights_provider: str,
     rights_purpose: str,
     policy_fingerprint: str,
+    funding: ReplayFundingSeries | None = None,
 ) -> str:
-    payload = {
-        "schema_version": 1,
+    payload: dict[str, object] = {
+        "schema_version": 1 if funding is None else 2,
         "workspace_id": str(workspace_id),
         "symbol": symbol,
         "evaluation_start": evaluation_start.isoformat(),
@@ -369,5 +414,7 @@ def _bundle_hash(
             for item in components
         ],
     }
+    if funding is not None:
+        payload["funding"] = funding.reference().payload()
     canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
