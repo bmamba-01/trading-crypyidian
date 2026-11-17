@@ -3,8 +3,8 @@
 Owner chọn (17/11/2026) đưa funding lịch sử vào bundle để replay tái lập được. Bundle có funding
 dùng ``schema_version = 2`` (thêm khóa ``funding`` trong JSON canonical, nằm trong ``bundle_hash``);
 bundle không funding giữ schema 1 và bytes cũ. Nới CHECK schema và cấp ``SELECT market_funding`` cho
-``crypidian_backtest_worker`` (worker chỉ có grant trực tiếp, cần đọc lại funding của bundle schema 2;
-RLS workspace của bảng giữ nguyên).
+``crypidian_backtest_worker`` (worker chỉ có grant trực tiếp, cần đọc lại funding của bundle
+schema 2; RLS workspace của bảng giữ nguyên).
 Ghi chú: trigger WP-06 cho bundle TRAINING vẫn đòi đúng 9 khóa, nên bundle TRAINING tiếp tục là
 schema 1 (funding chỉ dùng cho backtest nghiên cứu).
 """
