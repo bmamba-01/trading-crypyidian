@@ -222,6 +222,13 @@ class MarketFunding(UuidPrimaryKey, CreatedAt, Base):
             "event_at <= received_at AND received_at <= available_at",
             name="market_funding_timestamps_causal",
         ),
+        CheckConstraint(
+            "mark_price IS NULL OR mark_price > 0", name="market_funding_mark_price_positive"
+        ),
+        CheckConstraint(
+            "rate_type IS NULL OR rate_type IN ('Regular', 'Special')",
+            name="market_funding_rate_type_known",
+        ),
         Index(
             "ix_market_funding_asof",
             "workspace_id",
@@ -243,6 +250,10 @@ class MarketFunding(UuidPrimaryKey, CreatedAt, Base):
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     funding_rate: Mapped[Decimal] = mapped_column(_MARKET_VALUE, nullable=False)
+    # FX-3: mark price dùng tính phí funding của kỳ và loại kỳ (Regular/Special) từ
+    # ``GET /fapi/v1/fundingRate``; NULL với bản ghi cũ hoặc khi sàn không trả.
+    mark_price: Mapped[Decimal | None] = mapped_column(_MARKET_VALUE, nullable=True)
+    rate_type: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
 
 class MarketOpenInterest(UuidPrimaryKey, CreatedAt, Base):
