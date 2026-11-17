@@ -660,6 +660,10 @@ def create_app(
             if market_collector_task is not None:
                 with contextlib.suppress(asyncio.CancelledError, TimeoutError):
                     await asyncio.wait_for(market_collector_task, timeout=10)
+                funding_task = getattr(application.state, "funding_collector_task", None)
+                if funding_task is not None:
+                    with contextlib.suppress(asyncio.CancelledError, TimeoutError):
+                        await asyncio.wait_for(funding_task, timeout=10)
                 adapter = getattr(application.state, "market_collector_adapter", None)
                 if adapter is not None:
                     await adapter.aclose()
@@ -1519,6 +1523,26 @@ def _start_market_collector(
     application.state.market_collector = worker
     task = asyncio.create_task(worker.run(stopping), name="market-bar-collector")
     application.state.market_collector_task = task
+    # FX-3 lát 1: funding đã chốt cho cùng danh sách symbol, cùng adapter công khai và quyền nguồn.
+    from trading_bot.application.funding_rate_collector import (
+        FundingRateCollector,
+        run_funding_collector,
+    )
+
+    funding = FundingRateCollector(
+        workspace_id=workspace_id,
+        symbols=[stream.symbol for stream in collector.streams],
+        market_data=adapter,
+        session_scope=database_collector_scope(session_factory, workspace_id),
+    )
+
+    def remember_funding(tick: Any) -> None:
+        application.state.funding_collector_last = tick
+
+    application.state.funding_collector_task = asyncio.create_task(
+        run_funding_collector(funding, stopping, on_tick=remember_funding),
+        name="funding-rate-collector",
+    )
     return task
 
 
