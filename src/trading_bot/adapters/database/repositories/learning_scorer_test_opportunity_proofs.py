@@ -524,15 +524,19 @@ class LearningScorerTestOpportunityProofRepository:
             workspace_id=workspace_id, trial_record_id=trial_record_id
         )
         # AI-5: cohort nhiều trial → so với proof đã ghim của đúng trial này (neo = scalar).
-        expected = next(
-            (
-                (item.proof_record_id, item.proof_hash)
-                for item in candidate.sources
-                if item.trial_record_id == trial_record_id
-            ),
-            (candidate.proof_record_id, candidate.proof_hash)
-            if trial_record_id == candidate.trial_record_id
-            else None,
+        sources = tuple(getattr(candidate, "sources", ()))
+        expected = (
+            next(
+                (
+                    (item.proof_record_id, item.proof_hash)
+                    for item in sources
+                    if item.trial_record_id == trial_record_id
+                ),
+                None,
+            )
+            if sources
+            # Candidate trước AI-5 (một trial, không có dòng cohort): giữ kiểm cũ.
+            else (candidate.proof_record_id, candidate.proof_hash)
         )
         if (
             expected is None
