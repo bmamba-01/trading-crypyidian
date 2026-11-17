@@ -28,6 +28,11 @@ from trading_bot.domain.learning.source_use_lineage import (
     SourceUseLineage,
     source_use_lineage_set_hash,
 )
+from trading_bot.domain.learning.trade_labels import (
+    NET_PNL_SIGN_V1,
+    SUPPORTED_LABEL_VERSIONS,
+    trade_label_value,
+)
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -36,7 +41,7 @@ if TYPE_CHECKING:
 
 
 SPLIT_POLICY_VERSION = "wp06-walk-forward-v1"
-LABEL_VERSION = "net-pnl-sign-v1"
+LABEL_VERSION = NET_PNL_SIGN_V1
 SAMPLE_SCHEMA_VERSION = "wp06-entry-trade-v1"
 FEATURE_VERSION = "runtime-entry-snapshot-v1"
 RETENTION_POLICY_REF = "wp06-training-retention-v1"
@@ -113,8 +118,12 @@ class LearningSplitCandidateConfig:
     holdout_start: datetime
     evaluation_cutoff: datetime
     folds: tuple[WalkForwardSplit, ...]
+    # AI-5: phiên bản nhãn; mặc định giữ hợp đồng cũ (dấu net PnL).
+    label_version: str = LABEL_VERSION
 
     def __post_init__(self) -> None:
+        if self.label_version not in SUPPORTED_LABEL_VERSIONS:
+            raise ValueError("label_version không được hỗ trợ.")
         _aware(self.holdout_start, "holdout_start")
         _aware(self.evaluation_cutoff, "evaluation_cutoff")
         if (
@@ -182,12 +191,14 @@ class LearningSplitCandidate:
     @property
     def canonical_configuration(self) -> str:
         """Cấu hình tái dựng plan; không chứa sample identity hoặc payload."""
-        payload = {
+        payload: dict[str, object] = {
             "evaluation_cutoff": self.config.evaluation_cutoff.isoformat(),
             "folds": [_split_payload(fold) for fold in self.config.folds],
             "holdout_start": self.config.holdout_start.isoformat(),
             "split_policy_version": SPLIT_POLICY_VERSION,
         }
+        if self.config.label_version != LABEL_VERSION:
+            payload["label_version"] = self.config.label_version
         return canonical(payload)
 
 
@@ -365,10 +376,10 @@ def build_learning_split_cohort_candidate(
         assert trade.entry_symbol is not None
         if trade.closed_at > as_of or trade.entry_decision_at > as_of:
             raise ValueError("Outcome chưa hoàn tất tại thời điểm dựng candidate.")
-        value = (trade.net_pnl > 0) - (trade.net_pnl < 0)
+        value = trade_label_value(trade, config.label_version)
         sample_id = str(item.record_id)
         label_payload = {
-            "label_version": LABEL_VERSION,
+            "label_version": config.label_version,
             "outcome_hash": item.outcome_hash,
             "sample_id": sample_id,
             "value": value,
@@ -389,7 +400,7 @@ def build_learning_split_cohort_candidate(
             outcome_hash=item.outcome_hash,
             label_hash=digest(canonical(label_payload)),
             label_value=value,
-            label_version=LABEL_VERSION,
+            label_version=config.label_version,
             split=split,
             source_dependent=True,
             source_rights_hashes=(),
@@ -443,7 +454,7 @@ def build_learning_split_cohort_candidate(
         as_of=as_of,
         feature_schema_version=f"entry-feature-schema:{next(iter(schemas))}",
         feature_version=FEATURE_VERSION,
-        label_version=LABEL_VERSION,
+        label_version=config.label_version,
         sample_schema_version=SAMPLE_SCHEMA_VERSION,
         split_policy_version=SPLIT_POLICY_VERSION,
         samples=sample_values,
@@ -534,7 +545,8 @@ def build_normalized_candidate_dataset(
                     or trade.entry_features_hash != sample.feature_snapshot_hash
                     or trade.entry_feature_schema_hash is None
                     or trade.entry_symbol not in candidate.manifest.symbols
-                    or (trade.net_pnl > 0) - (trade.net_pnl < 0) != sample.label_value
+                    or trade_label_value(trade, candidate.manifest.label_version)
+                    != sample.label_value
                 ):
                     raise ValueError("Feature/label entry không khớp manifest authoritative.")
                 row = NormalizedLearningSample(

@@ -1127,6 +1127,8 @@ def _trade_payload(trade: EvaluationTrade) -> dict[str, Any]:
         "slippage": str(trade.slippage),
         "exposure": str(trade.exposure),
     }
+    if trade.risk_amount is not None:
+        payload["risk_amount"] = str(trade.risk_amount)
     if trade.has_entry_provenance:
         assert trade.entry_decision_at is not None
         payload.update(
@@ -1171,7 +1173,9 @@ def _validate_trade_outcome_row(row: BacktestTradeOutcomeRecord) -> EvaluationTr
         "entry_symbol",
     }
     link_keys = {"entry_opportunity_event_id", "entry_candidate_id", "entry_vector_hash"}
-    if type(row.outcome) is not dict or set(row.outcome) not in (
+    # AI-5: khóa tùy chọn `risk_amount` (1R) cho nhãn dải R; outcome cũ không có khóa này.
+    keys = set(row.outcome) - {"risk_amount"} if type(row.outcome) is dict else None
+    if keys is None or keys not in (
         legacy_keys,
         legacy_keys | entry_keys,
         legacy_keys | entry_keys | link_keys,
@@ -1236,6 +1240,9 @@ def _trade_from_payload(payload: dict[str, Any]) -> EvaluationTrade:
         funding=Decimal(str(payload["funding"])),
         slippage=Decimal(str(payload["slippage"])),
         exposure=Decimal(str(payload["exposure"])),
+        risk_amount=(
+            Decimal(str(payload["risk_amount"])) if payload.get("risk_amount") is not None else None
+        ),
         **entry,
     )
 

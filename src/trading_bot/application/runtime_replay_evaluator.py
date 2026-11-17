@@ -8,7 +8,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime
 from decimal import Decimal
-from typing import ClassVar, cast
+from typing import Any, ClassVar, cast
 
 from trading_bot.application.backtest import (
     BacktestRunner,
@@ -1036,6 +1036,7 @@ class RuntimeReplayEvaluator:
                         funding=position.funding_cost,
                         slippage=position.slippage_cost,
                         exposure=plan.notional,
+                        risk_amount=_trade_risk_amount(plan, intent),
                     )
                 )
                 provenance = self._intent_entry_provenance.get(intent_id)
@@ -1328,3 +1329,14 @@ def _decimal_parameter(value: str) -> str:
 def _hash_payload(value: object) -> str:
     canonical = json.dumps(value, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _trade_risk_amount(plan: Any, intent: Any) -> Decimal | None:
+    """1R của lệnh = lỗ dự tính khi chạm stop × tỷ lệ khối lượng đã khớp (AI-5)."""
+    requested = getattr(plan, "quantity", None)
+    filled = getattr(intent, "filled_quantity", None)
+    loss = getattr(plan, "estimated_loss", None)
+    if not requested or filled is None or loss is None or requested <= 0:
+        return None
+    amount = Decimal(loss) * min(Decimal("1"), Decimal(filled) / Decimal(requested))
+    return amount if amount.is_finite() and amount > 0 else None

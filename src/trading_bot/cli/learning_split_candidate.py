@@ -10,6 +10,7 @@ from typing import Any
 from uuid import UUID
 
 from trading_bot.application.learning_split_candidate import (
+    LABEL_VERSION,
     LearningSplitCandidateBuilderService,
     LearningSplitCandidateConfig,
 )
@@ -49,12 +50,15 @@ def parse_config(value: str) -> LearningSplitCandidateConfig:
         payload: Any = json.loads(value)
     except (TypeError, ValueError) as error:
         raise ValueError("config JSON không hợp lệ.") from error
-    if type(payload) is not dict or set(payload) != {
+    if type(payload) is not dict or set(payload) - {"label_version"} != {
         "holdout_start",
         "evaluation_cutoff",
         "folds",
     }:
         raise ValueError("config cần holdout_start, evaluation_cutoff và folds.")
+    label_version = payload.get("label_version", LABEL_VERSION)
+    if not isinstance(label_version, str):
+        raise ValueError("label_version phải là chuỗi.")
     raw_folds = payload["folds"]
     if type(raw_folds) is not list or not raw_folds:
         raise ValueError("folds phải là danh sách không rỗng.")
@@ -62,6 +66,7 @@ def parse_config(value: str) -> LearningSplitCandidateConfig:
         holdout_start=_timestamp(payload["holdout_start"]),
         evaluation_cutoff=_timestamp(payload["evaluation_cutoff"]),
         folds=tuple(_fold(item) for item in raw_folds),
+        label_version=label_version,
     )
 
 

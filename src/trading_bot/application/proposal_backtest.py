@@ -663,6 +663,8 @@ async def build_stored_bundle(
     now: datetime,
     warmup_bars: int = WARMUP_BARS,
     funding_source: FundingRowSource | None = None,
+    manifest_schema_version: int = 3,
+    lookback_days: int = 400,
 ) -> BacktestDatasetReplayBundle | str:
     """Bundle chung cửa sổ đánh giá cho mọi khung; trả lý do (str) nếu không dựng được.
 
@@ -671,10 +673,17 @@ async def build_stored_bundle(
 
     FX-3 lát 3b: có ``funding_source`` thì bundle mang funding đã chốt của cửa sổ đánh giá
     (nhìn tại ``now``) để replay trả/nhận funding như runtime PAPER.
+
+    AI-5: ``manifest_schema_version=4`` ghim identity từng nến (bundle học TRAINING); bundle
+    TRAINING không mang funding vì gate SQL chỉ nhận bundle schema 1.
     """
+    if manifest_schema_version not in (3, 4):
+        raise ValueError("manifest_schema_version chỉ nhận 3 hoặc 4.")
+    if manifest_schema_version == 4 and funding_source is not None:
+        raise ValueError("Bundle TRAINING (manifest v4) không mang funding.")
     source = market_source_for_rights_provider(BINANCE_USDM_REST_PROVIDER)
     largest = max(_INTERVALS[tf] for tf in timeframes)
-    lookback_start = now - timedelta(days=400)
+    lookback_start = now - timedelta(days=lookback_days)
     series: dict[str, list[OHLCVBar]] = {}
     for timeframe in timeframes:
         bars = await market_data.list_bars(
@@ -722,6 +731,7 @@ async def build_stored_bundle(
             bars=window,
             rights_evidence=evidence,
             prepared_at=now,
+            schema_version=manifest_schema_version,
         )
         try:
             manifest.require_ready()

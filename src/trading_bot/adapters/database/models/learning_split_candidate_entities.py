@@ -24,6 +24,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from trading_bot.adapters.database.models.base import Base, CreatedAt, UuidPrimaryKey
 from trading_bot.application.learning_fold_plan import build_manifest_fold_plan
 from trading_bot.application.learning_split_candidate import (
+    LABEL_VERSION,
     SPLIT_POLICY_VERSION,
     LearningCandidateTrialSource,
     LearningSplitCandidate,
@@ -120,12 +121,8 @@ class LearningSplitCandidateRecord(UuidPrimaryKey, CreatedAt, Base):
         if self.split_policy_version != SPLIT_POLICY_VERSION:
             raise ValueError("Split policy candidate không được hỗ trợ.")
         payload = json.loads(self.canonical_configuration)
-        if type(payload) is not dict or set(payload) != {
-            "evaluation_cutoff",
-            "folds",
-            "holdout_start",
-            "split_policy_version",
-        }:
+        base_keys = {"evaluation_cutoff", "folds", "holdout_start", "split_policy_version"}
+        if type(payload) is not dict or set(payload) - {"label_version"} != base_keys:
             raise ValueError("Cấu hình candidate có schema không hợp lệ.")
         if payload["split_policy_version"] != SPLIT_POLICY_VERSION:
             raise ValueError("Cấu hình candidate sai split policy.")
@@ -138,6 +135,7 @@ class LearningSplitCandidateRecord(UuidPrimaryKey, CreatedAt, Base):
             holdout_start=_timestamp(payload["holdout_start"]),
             evaluation_cutoff=cutoff,
             folds=folds,
+            label_version=str(payload.get("label_version", LABEL_VERSION)),
         )
         plan = build_manifest_fold_plan(
             manifest,

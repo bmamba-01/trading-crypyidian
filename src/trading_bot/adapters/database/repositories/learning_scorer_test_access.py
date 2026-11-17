@@ -46,6 +46,11 @@ from trading_bot.application.learning_scorer_test_service import (
     ScorerTestStoredReport,
 )
 from trading_bot.application.outbox import UnitOfWork
+from trading_bot.domain.learning.trade_labels import (
+    NET_PNL_SIGN_V1,
+    SUPPORTED_LABEL_VERSIONS,
+    trade_label_value,
+)
 
 _REPORT_LOCK_PREFIX = "wp06-scorer-test-evaluation"
 
@@ -370,6 +375,20 @@ async def _current_training_scope_digest(
     return digest
 
 
+def _label_version_for_hash(sample: Any, *, outcome_hash: str) -> str | None:
+    """Phiên bản nhãn mà ``label_hash`` của sample đã ghim (None nếu không khớp phiên bản nào)."""
+    for version in SUPPORTED_LABEL_VERSIONS:
+        payload = {
+            "label_version": version,
+            "outcome_hash": outcome_hash,
+            "sample_id": sample.sample_id,
+            "value": sample.label_value,
+        }
+        if hashlib.sha256(_canonical(payload).encode("utf-8")).hexdigest() == sample.label_hash:
+            return version
+    return None
+
+
 def _receipt_from_mapping(row: Mapping[str, Any], *, workspace_id: UUID) -> ScorerTestAccessReceipt:
     try:
         returned_workspace_id = row["workspace_id"]
@@ -582,8 +601,12 @@ def _scorer_test_row(
         raise ValueError("Feature snapshot/schema của TEST sample không khớp outcome entry.")
     if dict(sample.features) != dict(trade.entry_features):
         raise ValueError("Feature của TEST sample không khớp vector outcome entry.")
-    outcome_label = int(trade.net_pnl > 0) - int(trade.net_pnl < 0)
-    if sample.label_value != outcome_label:
+    # AI-5: label_hash đã ghim phiên bản nhãn → suy ra phiên bản rồi tính lại giá trị nhãn.
+    # Hash không khớp phiên bản nào → giữ kiểm cũ (dấu net PnL), không nới hơn trước AI-5.
+    label_version = (
+        _label_version_for_hash(sample, outcome_hash=sample.outcome_hash) or NET_PNL_SIGN_V1
+    )
+    if sample.label_value != trade_label_value(trade, label_version):
         raise ValueError("Label của TEST sample không khớp dấu net PnL outcome.")
     return ScorerTestRow(
         sample_id=sample.sample_id,
