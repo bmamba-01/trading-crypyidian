@@ -1,7 +1,7 @@
 """WP06: builder được gọi operation EVALUATION của gate replay khi dựng scorer TEST proof.
 
 Revision ID: c2e4a6b8d0f1
-Revises: 60a62c705a89
+Revises: f1b8e93fa47f
 
 Từ `7c9b749` (14/11/2026), `LearningScorerTestOpportunityProofRepository` xin quyền replay
 bằng operation `evaluation` (spec `2026-11-13-wp06-source-use-scope-consumers-design.md`
@@ -22,7 +22,7 @@ from collections.abc import Sequence
 from alembic import op
 
 revision: str = "c2e4a6b8d0f1"
-down_revision: str | None = "60a62c705a89"
+down_revision: str | None = "f1b8e93fa47f"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

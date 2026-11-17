@@ -68,7 +68,7 @@ FUNCTION_DEFINITION_HASHES = {
     },
     RECHECK_SIGNATURE: {
         "preimage": "c46e15a5bf2518faeac621bb22c8bbec3a3245bacfbced545eb4b2714108cecb",
-        "postimage": "90ad7352b669dd87553f65ce214bbaf2b39b1eed56ae5d6ad3936d2e70b4ae38",
+        "postimage": "61a6f4f38a6de89d26cdbff7850663730ce77488b0e8ba5042c67a6010b522f3",
     },
 }
 
