@@ -55,6 +55,8 @@ CLAIM_SIGNATURE = "public.wp06_claim_learning_training_lineage(uuid,uuid)"
 SET_HASH_SIGNATURE = "public.wp06_replay_bundle_set_hash(text[])"
 REPLAY_BUNDLE_SIGNATURE = "public.wp06_scorer_manifest_replay_bundle(uuid,uuid)"
 REPLAY_BUNDLES_SIGNATURE = "public.wp06_scorer_manifest_replay_bundles(uuid,uuid)"
+PROOF_BUNDLES_SIGNATURE = "public.wp06_scorer_proof_replay_bundles(uuid,uuid)"
+DEPLOY_SIGNATURE = "public.wp06_verify_scorer_deployment_rights(uuid,uuid,uuid)"
 
 FUNCTION_DEFINITION_HASHES = {
     SCOPE_SIGNATURE: {
@@ -64,6 +66,10 @@ FUNCTION_DEFINITION_HASHES = {
     RECHECK_SIGNATURE: {
         "preimage": "61a6f4f38a6de89d26cdbff7850663730ce77488b0e8ba5042c67a6010b522f3",
         "postimage": "2f6075fd0519a81a8861d53e33e1a22e62ab7441a09c2084738464f609a22f2e",
+    },
+    DEPLOY_SIGNATURE: {
+        "preimage": "c6d4628be43041410b8bc44df912b64b6c95c23fdb4e7794cc20eede0c9dbe92",
+        "postimage": "c2f9a5be3f1fba2037602d2a385792f4f84d93c4bc9b3a18f96e94fa1fc39256",
     },
     CLAIM_SIGNATURE: {
         "preimage": "157bd184dcf82f397686725003f37d14ee34254619e19b1372cc77dfda1ef83b",
@@ -295,7 +301,24 @@ CLAIM_PATCHES: tuple[tuple[str, str], ...] = (
     ),
 )
 
+# Review WP-06 (17/11): với N>1 bundle-set hash không trùng dòng nào của bảng bundle → join
+# `bundle.bundle_hash = proof.bundle_hash` rỗng → bỏ qua kiểm quyền PAPER / chặn QA (fail-open).
+# Thay bằng danh sách bundle đã xác minh của proof (helper ném lỗi nếu set-hash lệch).
+DEPLOY_PATCHES: tuple[tuple[str, str], ...] = tuple(
+    (
+        f"{indent}AND {alias}.bundle_hash = {proof}.bundle_hash\n",
+        f"{indent}AND {alias}.bundle_hash = ANY(public.wp06_scorer_proof_replay_bundles(\n"
+        f"{indent}    target_workspace, {proof}.id))\n",
+    )
+    for indent, alias, proof in (
+        ("                     ", "bundle", "source_proof"),
+        ("                   ", "qa_bundle", "qa_proof"),
+        ("                         ", "bundle", "proof_row"),
+    )
+)
+
 PATCH_COUNTS = {
+    DEPLOY_SIGNATURE: (1, 1, 1),
     SCOPE_SIGNATURE: (1, 1, 1, 1, 1, 1, 1, 1, 1),
     RECHECK_SIGNATURE: (1, 1, 1, 1, 1, 1),
     CLAIM_SIGNATURE: (2,),
@@ -597,9 +620,53 @@ def _create_functions() -> None:
     )
 
 
+def _create_proof_bundles_helper() -> None:
+    """Danh sách bundle đã xác minh của một proof TEST (fail-closed nếu set-hash lệch)."""
+    op.execute(f"""
+        CREATE FUNCTION {PROOF_BUNDLES_SIGNATURE.replace("(uuid,uuid)", "")}(
+            target_workspace uuid, target_proof_id uuid
+        ) RETURNS text[] LANGUAGE plpgsql STABLE SECURITY DEFINER
+        SET search_path = pg_catalog, pg_temp AS $fn$
+        DECLARE
+            proof_bundle text;
+            manifest_id uuid;
+            bundles text[];
+        BEGIN
+            IF target_workspace IS DISTINCT FROM
+                   NULLIF(pg_catalog.current_setting('app.workspace_id', true), '')::uuid THEN
+                RAISE EXCEPTION 'WP06_SCORER_RIGHTS_WORKSPACE_DENIED';
+            END IF;
+            SELECT proof.bundle_hash, manifest.id INTO proof_bundle, manifest_id
+              FROM public.learning_scorer_test_opportunity_proof AS proof
+              LEFT JOIN public.dataset_manifest AS manifest
+                ON manifest.workspace_id = proof.workspace_id
+               AND manifest.manifest_hash = proof.manifest_hash
+             WHERE proof.workspace_id = target_workspace AND proof.id = target_proof_id;
+            IF proof_bundle IS NULL THEN
+                RETURN ARRAY[]::text[];
+            END IF;
+            IF manifest_id IS NOT NULL THEN
+                bundles := public.wp06_scorer_manifest_replay_bundles(
+                    target_workspace, manifest_id);
+            END IF;
+            IF bundles IS NULL OR pg_catalog.cardinality(bundles) = 0 THEN
+                bundles := ARRAY[proof_bundle];
+            END IF;
+            IF public.wp06_replay_bundle_set_hash(bundles) IS DISTINCT FROM proof_bundle THEN
+                RAISE EXCEPTION 'WP06_SCORER_RIGHTS_V5_LINEAGE_MISMATCH';
+            END IF;
+            RETURN bundles;
+        END $fn$
+    """)
+    op.execute(f"ALTER FUNCTION {PROOF_BUNDLES_SIGNATURE} OWNER TO {SCORER_RIGHTS_READER}")
+    op.execute(f"REVOKE ALL ON FUNCTION {PROOF_BUNDLES_SIGNATURE} FROM PUBLIC")
+
+
 def upgrade() -> None:
     _create_table()
     _create_functions()
+    _create_proof_bundles_helper()
+    _rewrite(DEPLOY_SIGNATURE, DEPLOY_PATCHES, forward=True)
     _rewrite(SCOPE_SIGNATURE, SCOPE_PATCHES, forward=True)
     _rewrite(RECHECK_SIGNATURE, RECHECK_PATCHES, forward=True)
     _rewrite(CLAIM_SIGNATURE, CLAIM_PATCHES, forward=True)
@@ -613,6 +680,8 @@ def downgrade() -> None:
             END IF;
         END $migration$""")
     _rewrite(CLAIM_SIGNATURE, CLAIM_PATCHES, forward=False)
+    _rewrite(DEPLOY_SIGNATURE, DEPLOY_PATCHES, forward=False)
+    op.execute(f"DROP FUNCTION {PROOF_BUNDLES_SIGNATURE}")
     _rewrite(RECHECK_SIGNATURE, RECHECK_PATCHES, forward=False)
     _rewrite(SCOPE_SIGNATURE, SCOPE_PATCHES, forward=False)
     op.execute(f"DROP FUNCTION {REPLAY_BUNDLES_SIGNATURE}")

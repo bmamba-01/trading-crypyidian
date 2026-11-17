@@ -65,8 +65,8 @@ def test_rewrites_check_hashes_before_and_after(direction: str) -> None:
     for hashes in module.FUNCTION_DEFINITION_HASHES.values():
         assert hashes["preimage"] in joined
         assert hashes["postimage"] in joined
-    assert joined.count("AI5_COHORT_PREIMAGE_UNEXPECTED") == 3
-    assert joined.count("AI5_COHORT_POSTIMAGE_UNEXPECTED") == 3
+    assert joined.count("AI5_COHORT_PREIMAGE_UNEXPECTED") == 4
+    assert joined.count("AI5_COHORT_POSTIMAGE_UNEXPECTED") == 4
 
 
 def test_scope_gate_no_longer_rejects_mixed_bundles_but_still_rejects_shared_runs() -> None:
