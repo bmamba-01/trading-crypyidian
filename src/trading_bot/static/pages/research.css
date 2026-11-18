@@ -128,7 +128,7 @@
   font-weight: 500;
   color: var(--text-main);
 }
-.lx-research .source-purpose-options input.ios-switch { width: 51px; height: 44px; flex: 0 0 51px; accent-color: initial; }
+.lx-research .source-purpose-options input.ios-switch { width: 34px; height: 44px; flex: 0 0 34px; accent-color: initial; }
 .lx-research .license-scope-field label {
   font-size: var(--fs-xs);
   font-weight: 600;

@@ -188,7 +188,9 @@
 body {
   max-width: 80rem;
   margin: 0 auto;
-  padding: 1rem;
+  padding: 0.65rem;
+  font-size: 0.875rem;
+  line-height: 1.42;
   font-family: "Be Vietnam Pro", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   background-color: var(--bg-base);
   color: var(--text-main);
@@ -644,8 +646,8 @@ h2 {
 .control-box {
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
-  padding: 1rem;
+  gap: 0.5rem;
+  padding: 0.7rem;
   border: 1px solid var(--border-subtle);
   border-radius: 0.5rem;
   background-color: var(--bg-base);
@@ -653,10 +655,10 @@ h2 {
 
 .control-box label {
   font-weight: 600;
-  font-size: 0.9375rem;
+  font-size: 0.8125rem;
 }
 
-/* Inputs, Textareas, Buttons — Hit target tối thiểu 44px (2.75rem) */
+/* Inputs, Textareas, Buttons — Vùng chạm 44px nhưng trình bày gọn gàng cho mật độ Trader */
 input,
 select,
 textarea,
@@ -664,9 +666,11 @@ button,
 .btn {
   min-height: 2.75rem;
   min-width: 2.75rem;
-  padding: 0.5rem 0.875rem;
+  padding: 0.35rem 0.65rem;
   font: inherit;
-  border-radius: 0.5rem;
+  font-size: 0.8125rem;
+  line-height: 1.25;
+  border-radius: 0.42rem;
   box-sizing: border-box;
   transition: border-color 140ms ease, box-shadow 140ms ease;
 }
@@ -685,9 +689,9 @@ select:not([multiple]):not([size]):not(.ts-hidden-accessible) {
   -webkit-appearance: none;
   background-image: url("/static/icons/chevron-down.svg");
   background-repeat: no-repeat;
-  background-position: right 0.75rem center;
-  background-size: 0.9rem 0.9rem;
-  padding-right: 2.25rem;
+  background-position: right 0.55rem center;
+  background-size: 0.8rem 0.8rem;
+  padding-right: 1.9rem;
   cursor: pointer;
 }
 
@@ -3849,9 +3853,9 @@ body {
   width: 100%;
   max-width: 96rem;
   margin-inline: auto;
-  padding: 0.75rem 1rem 2rem;
+  padding: 0.55rem 0.85rem 1.4rem;
 }
-.app-main > .admin-footer { margin: 0 1rem; padding: 0.75rem 0 1rem; font-size: 0.8rem; }
+.app-main > .admin-footer { margin: 0 0.85rem; padding: 0.55rem 0 0.75rem; font-size: 0.75rem; }
 .app-shell--plain .app-main > main { max-width: 64rem; }
 
 .app-sidebar {
@@ -4317,13 +4321,13 @@ main .tabs-bar [role="tab"] { min-height: 44px; }
    cặp nhãn–giá trị dàn ngang trên một dòng thay vì nhãn trên số dưới.
    ============================================================================ */
 :root {
-  --fs-2xs: 0.68rem;
-  --fs-xs: 0.74rem;
-  --fs-sm: 0.82rem;
-  --fs-md: 0.9rem;
-  --fs-lg: 1.1rem;
-  --fs-xl: 1.45rem;
-  --fs-2xl: 1.85rem;
+  --fs-2xs: 0.65rem;
+  --fs-xs: 0.72rem;
+  --fs-sm: 0.8rem;
+  --fs-md: 0.86rem;
+  --fs-lg: 1.02rem;
+  --fs-xl: 1.3rem;
+  --fs-2xl: 1.65rem;
   --num-font: "Be Vietnam Pro", ui-sans-serif, system-ui, sans-serif;
 }
 .num, .kpi-value, .stat__value, .kv dd, .trade-table td.num, .pnl-value {
@@ -5074,10 +5078,10 @@ main button.icon-btn:hover, dialog button.icon-btn:hover { background: var(--gla
 }
 
 /* ==========================================================================
-   Công tắc kiểu iOS (UI kit v1.1, 15/11/2026)
+   Công tắc kiểu iOS thu gọn (UI kit v1.2, 18/11/2026)
    Dùng cho mọi lựa chọn bật/tắt: `input[type=checkbox].ios-switch[role=switch]` hoặc
    `button.switch-control[role=switch][aria-checked]` chứa `span.ios-switch`.
-   Rãnh 51×31px và nút tròn 27px như iOS; ô bấm của input cao 44px (vùng chạm WCAG 2.5.5).
+   Rãnh 34×20px và nút tròn 16px gọn hơn cho mật độ desktop; ô bấm của input vẫn cao 44px.
    Trạng thái không chỉ dựa vào màu: nút tròn đổi vị trí trái/phải.
    ========================================================================== */
 :root {
@@ -5101,11 +5105,11 @@ input[type="checkbox"].ios-switch {
   appearance: none;
   position: relative;
   display: inline-block;
-  flex: 0 0 51px;
-  width: 51px;
-  min-width: 51px;
-  height: 31px;
-  min-height: 31px;
+  flex: 0 0 34px;
+  width: 34px;
+  min-width: 34px;
+  height: 20px;
+  min-height: 20px;
   margin: 0;
   padding: 0;
   border: 0;
@@ -5114,7 +5118,7 @@ input[type="checkbox"].ios-switch {
   vertical-align: middle;
   cursor: pointer;
 }
-input[type="checkbox"].ios-switch { height: 44px; min-height: 44px; }
+input[type="checkbox"].ios-switch { height: 44px; min-height: 44px; margin-block: -0.35rem; }
 .ios-switch::before,
 .ios-switch::after {
   content: "";
@@ -5125,23 +5129,23 @@ input[type="checkbox"].ios-switch { height: 44px; min-height: 44px; }
 }
 .ios-switch::before {
   left: 0;
-  width: 51px;
-  height: 31px;
+  width: 34px;
+  height: 20px;
   transform: translateY(-50%);
   background: var(--switch-track-off);
 }
 .ios-switch::after {
   left: 2px;
-  width: 27px;
-  height: 27px;
+  width: 16px;
+  height: 16px;
   transform: translate(0, -50%);
   background: var(--switch-thumb);
-  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.15), 0 3px 1px rgba(0, 0, 0, 0.06);
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.16), 0 1px 1px rgba(0, 0, 0, 0.08);
 }
 input[type="checkbox"].ios-switch:checked::before,
 [role="switch"][aria-checked="true"] .ios-switch::before { background: var(--switch-track-on); }
 input[type="checkbox"].ios-switch:checked::after,
-[role="switch"][aria-checked="true"] .ios-switch::after { transform: translate(20px, -50%); }
+[role="switch"][aria-checked="true"] .ios-switch::after { transform: translate(14px, -50%); }
 input[type="checkbox"].ios-switch:focus-visible,
 .switch-control:focus-visible {
   outline: 3px solid var(--primary);
@@ -5194,12 +5198,12 @@ input[type="checkbox"].ios-switch:disabled,
 .ts-wrapper { min-width: 0; }
 .ts-wrapper .ts-control {
   min-height: 44px;
-  padding: 0 0.6rem;
+  padding: 0 0.5rem;
   border: 1px solid var(--border-main);
-  border-radius: 0.6rem;
+  border-radius: 0.42rem;
   background: var(--bg-surface);
   color: var(--text-main);
-  font-size: var(--fs-sm, 0.875rem);
+  font-size: var(--fs-sm, 0.8125rem);
   box-shadow: none;
 }
 .ts-wrapper.focus .ts-control {
