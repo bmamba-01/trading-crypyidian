@@ -83,10 +83,10 @@
         </div>
       </div>
       {% if reports %}
-        <div class="lx-stack">
+        <div class="lx-stack learning-paper-report-list" data-admin-pagination-items=".learning-paper-report-card" data-pagination-label="Báo cáo hiệu năng PAPER">
           {% for report in reports %}
             {% set bot_key = report.bot_id | string %}
-            <article class="glass-card lx-card" aria-label="Báo cáo chẩn đoán lúc {{ report.as_of.strftime('%d/%m/%Y %H:%M UTC') }}">
+            <article class="glass-card lx-card learning-paper-report-card" aria-label="Báo cáo chẩn đoán lúc {{ report.as_of.strftime('%d/%m/%Y %H:%M UTC') }}">
               <header class="lx-card__head">
                 <div class="lx-card__title">
                   <h3 id="paper-report-title-{{ loop.index }}">{{ bot_names.get(bot_key, "Bot " ~ bot_key[:8]) }}</h3>

@@ -80,7 +80,7 @@
       </div>
       <a class="lx-link" href="/admin/learning/training">{{ icon("refresh") }}Tải lại trang</a>
     </div>
-    <div id="learning-training-jobs" class="lx-grid lx-grid--wide learning-training-jobs">
+    <div id="learning-training-jobs" class="lx-grid lx-grid--wide learning-training-jobs" data-admin-pagination-items=".learning-training-card" data-pagination-label="Tác vụ gần đây">
       {% if jobs %}
         {% for item in jobs %}
           {% set job = item.job %}

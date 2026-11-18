@@ -41,7 +41,7 @@
   </div>
   <p id="learning-split-status" class="lx-status" role="status" aria-live="polite">{{ candidates|length }} candidate trong không gian làm việc.</p>
   <p id="learning-split-error" class="lx-error" role="alert" tabindex="-1" hidden></p>
-  <section class="lx-stack learning-split-candidates" data-csrf-token="{{ csrf_token }}" aria-label="Danh sách candidate">
+  <section class="lx-stack learning-split-candidates" data-csrf-token="{{ csrf_token }}" aria-label="Danh sách candidate" data-admin-pagination-items=".learning-split-card" data-pagination-label="Danh sách candidate">
     {% if candidates %}
       {% for candidate in candidates %}
         {% set preview = candidate.preview %}

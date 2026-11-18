@@ -49,7 +49,7 @@
       <section class="lx-stack" aria-labelledby="learning-incident-candidates-heading">
         <h3 id="learning-incident-candidates-heading">{{ icon("alert") }}Sự cố có thể xử lý</h3>
         {% if actionable_proposals %}
-          <div class="lx-grid lx-grid--wide learning-incident-candidates">
+          <div class="lx-grid lx-grid--wide learning-incident-candidates" data-admin-pagination-items=".learning-incident-card" data-pagination-label="Sự cố có thể xử lý">
             {% for item in actionable_proposals %}
               {% set candidate = item.candidate %}
               <article class="glass-card lx-card lx-incident-card learning-incident-card learning-incident-card--candidate">
@@ -89,7 +89,7 @@
       <section class="lx-stack" aria-labelledby="learning-incident-open-heading">
         <h3 id="learning-incident-open-heading">{{ icon("lock") }}Lệnh vào đang bị tạm chặn</h3>
         {% if open_holds %}
-          <div class="lx-grid lx-grid--wide learning-incident-open-list">
+          <div class="lx-grid lx-grid--wide learning-incident-open-list" data-admin-pagination-items=".learning-incident-card" data-pagination-label="Lệnh vào đang bị tạm chặn">
             {% for item in open_holds %}
               {% set event = item.event %}
               <article class="glass-card lx-card lx-incident-card learning-incident-card learning-incident-card--open">
@@ -146,7 +146,7 @@
       <section class="lx-stack" aria-labelledby="learning-observations-{{ group.kind }}-heading">
         <h2 id="learning-observations-{{ group.kind }}-heading">{{ icon(group_icons.get(group.kind, "info")) }}{{ group.title }}</h2>
         {% if group.records %}
-          <div class="lx-grid learning-observations-list">
+          <div class="lx-grid learning-observations-list" data-admin-pagination-items=".learning-observations-card" data-pagination-label="Bản ghi quan sát">
             {% for record in group.records %}
               <article class="glass-card lx-card lx-obs-card learning-observations-card">
                 <header class="lx-card__head">

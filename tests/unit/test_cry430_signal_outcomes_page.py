@@ -167,6 +167,8 @@ def test_page_renders_filters_kpis_tables_and_nav() -> None:
     assert "h03-v3-15m · ZECUSDT · long" in html
     assert "cùng nến" in html
     assert 'class="badge badge-danger">Sai' in html
+    assert 'data-dialog-open="signal-recent-dialog"' in html
+    assert '<dialog id="signal-recent-dialog"' in html
     assert "<meter" in html and "style=" not in html.split("<main")[-1]  # noqa: PT018
     assert stub.calls == [
         {

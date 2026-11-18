@@ -80,6 +80,42 @@ main .tabs-bar [role="tab"]:focus-visible,
 .admin-disclosure__body { display: grid; gap: 0.5rem; min-width: 0; padding-top: 0.55rem; }
 .admin-disclosure__count { margin-left: auto; color: var(--text-muted); font-size: 0.75rem; font-weight: 600; white-space: nowrap; }
 
+.admin-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.4rem;
+  min-width: 0;
+  margin: 0.35rem 0 0.65rem;
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+.admin-pagination__button { width: 2rem; min-width: 2rem; min-height: 2rem; padding: 0; }
+.admin-pagination__button:disabled { opacity: 0.48; cursor: not-allowed; }
+.admin-pagination__status { min-width: 5.5rem; text-align: center; }
+[data-admin-page-hidden="true"] { display: none !important; }
+.mc-entry__list > .admin-pagination,
+.lx-stack > .admin-pagination,
+.lx-grid > .admin-pagination,
+.mobile-trade-list > .admin-pagination { grid-column: 1 / -1; }
+
+.mc-setup__summary { cursor: default; }
+.mc-setup__details-trigger { justify-self: end; width: 2.25rem; min-width: 2.25rem; min-height: 2.25rem; }
+.mc-setup__details-trigger .ico { color: var(--text-muted); }
+.mc-setup__details-trigger:hover .ico { color: var(--text-main); }
+.trade-detail-trigger { width: 2rem; min-width: 2rem; min-height: 2rem; padding: 0; }
+.bot-list-detail-trigger { width: 2rem; min-width: 2rem; min-height: 2rem; padding: 0; }
+.signal-recent-launch { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; }
+.signal-recent-launch h2, .signal-recent-launch p { margin: 0; }
+.signal-recent-launch > div { min-width: 0; }
+.dashboard-bot-picker-container { display: grid; gap: 0.45rem; min-width: 0; }
+
+@media (max-width: 40rem) {
+  .admin-pagination { justify-content: center; }
+  .signal-recent-launch { align-items: flex-start; flex-direction: column; }
+}
+
 @media (pointer: coarse), (max-width: 767px) {
   main :is(button, .btn):not([role="switch"]):not([role="tab"]):not(.theme-switch),
   main .tabs-bar [role="tab"],

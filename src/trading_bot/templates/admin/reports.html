@@ -429,7 +429,7 @@
         <li>{{ help_term("quality_deviant") }}</li>
         <li>{{ help_term("quality_unverified") }}</li>
       </ul>
-      <div class="mobile-trade-list" aria-label="Giao dịch trong kỳ báo cáo">
+      <div class="mobile-trade-list" aria-label="Giao dịch trong kỳ báo cáo" data-admin-pagination-items=".trade-list-card" data-pagination-label="Giao dịch trong kỳ báo cáo">
         {% for trade in closed_trades %}
         {% set m_pm = trade.get("post_mortem", {}) %}
         <article class="trade-list-card{% if trade.trade_id == selected_trade_id %} is-selected{% endif %}">

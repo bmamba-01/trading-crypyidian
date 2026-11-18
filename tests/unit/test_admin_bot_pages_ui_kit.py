@@ -41,6 +41,8 @@ def test_bot_list_renders_scoped_summary_table_and_page_stylesheet() -> None:
     assert 'id="bots-entry-allowed">1<' in html
     assert '<span class="badge badge-success bot-badge">Đã bật</span>' in html
     assert f'href="/admin/bots/{BOT_ID}"' in html
+    assert f'data-dialog-open="bot-detail-{BOT_ID}"' in html
+    assert f'<dialog id="bot-detail-{BOT_ID}"' in html
     assert 'href="/admin/bots/new"' in html
     # Bot thật không có trường symbol: không được hiển thị mã cặp mặc định.
     assert "BTCUSDT" not in html
