@@ -17,7 +17,14 @@ class RecordingTelegramSender:
         # TG-4: (loại tin, chat_id, message_thread_id) theo thứ tự gửi, để kiểm định tuyến topic.
         self._threads: deque[tuple[str, int, int | None]] = deque(maxlen=capacity)
         self._topics: deque[tuple[int, str, int]] = deque(maxlen=capacity)
+        # SIG-8: (loại tin, chat_id, message_id, reply_to_message_id) để kiểm reply cập nhật.
+        self._replies: deque[tuple[str, int, int, int | None]] = deque(maxlen=capacity)
         self._next_thread_id = 1000
+        self._next_message_id = 1
+
+    @property
+    def replies(self) -> list[tuple[str, int, int, int | None]]:
+        return list(self._replies)
 
     @property
     def threads(self) -> list[tuple[str, int, int | None]]:
@@ -32,12 +39,23 @@ class RecordingTelegramSender:
         return list(self._messages)
 
     async def send_message(
-        self, chat_id: int, text: str, *, message_thread_id: int | None = None
-    ) -> None:
+        self,
+        chat_id: int,
+        text: str,
+        *,
+        message_thread_id: int | None = None,
+        reply_to_message_id: int | None = None,
+    ) -> int | None:
         if message_thread_id is not None:
             validate_thread_id(message_thread_id)
+        if reply_to_message_id is not None:
+            validate_thread_id(reply_to_message_id)
+        msg_id = self._next_message_id
+        self._next_message_id += 1
         self._messages.append((chat_id, text))
         self._threads.append(("message", chat_id, message_thread_id))
+        self._replies.append(("message", chat_id, msg_id, reply_to_message_id))
+        return msg_id
 
     async def send_link_confirmation(self, chat_id: int, text: str, callback_data: str) -> None:
         self.confirmations.append((chat_id, text, callback_data))
@@ -52,11 +70,18 @@ class RecordingTelegramSender:
         caption: str,
         *,
         message_thread_id: int | None = None,
-    ) -> None:
+        reply_to_message_id: int | None = None,
+    ) -> int | None:
         if message_thread_id is not None:
             validate_thread_id(message_thread_id)
+        if reply_to_message_id is not None:
+            validate_thread_id(reply_to_message_id)
+        msg_id = self._next_message_id
+        self._next_message_id += 1
         self.photos.append((chat_id, bytes(png_bytes), caption))
         self._threads.append(("photo", chat_id, message_thread_id))
+        self._replies.append(("photo", chat_id, msg_id, reply_to_message_id))
+        return msg_id
 
     async def create_forum_topic(self, chat_id: int, name: str) -> int:
         """Giả lập ``createForumTopic``: cấp id tăng dần, không gọi mạng."""

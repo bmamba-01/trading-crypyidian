@@ -17,7 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Protocol
+from typing import Any, Protocol
 from uuid import UUID
 
 from trading_bot.application.bot_lifecycle_guard import BotNotFlatError
@@ -55,6 +55,12 @@ class PaperReportProvider(Protocol):
     """Nguồn tin tổng hợp PAPER đã kiểm quyền theo principal (``TelegramPaperReportService``)."""
 
     async def build_view(self, principal: Principal) -> PaperReportView: ...
+
+
+class BotDecisionInsightsProvider(Protocol):
+    """Nguồn tường thuật quyết định & điều kiện còn thiếu (MI-2/MI-6) cho ``/bot status``."""
+
+    async def get_latest_signal(self, principal: Principal, *, bot_id: UUID) -> dict[str, Any]: ...
 
 
 class BotCommandParseError(ValueError):
@@ -180,9 +186,11 @@ class BotCommandHandler:
         self,
         operations: BotOperationsService,
         paper_report: PaperReportProvider | None = None,
+        decision_insights: BotDecisionInsightsProvider | None = None,
     ) -> None:
         self._operations = operations
         self._paper_report = paper_report
+        self._decision_insights = decision_insights
 
     async def handle_bot_command(
         self, principal: Principal, command: BotCommand, bot_id: UUID | str | None
@@ -209,7 +217,13 @@ class BotCommandHandler:
                     return reject("BOT_NOT_FOUND")
                 else:
                     return reject("BOT_TARGET_REQUIRED", visible)
-            return await self._execute(operations, command, target)
+            return await self._execute(
+                operations,
+                command,
+                target,
+                principal=principal,
+                decision_insights=self._decision_insights,
+            )
         except (BotRuntimeControlError, BotNotFlatError) as error:
             result = reject(error.reason_code)
             target = _parse_target(bot_id)
@@ -228,11 +242,19 @@ class BotCommandHandler:
 
     @staticmethod
     async def _execute(
-        operations: PrincipalBotOperations, command: BotCommand, target: UUID
+        operations: PrincipalBotOperations,
+        command: BotCommand,
+        target: UUID,
+        *,
+        principal: Principal | None = None,
+        decision_insights: BotDecisionInsightsProvider | None = None,
     ) -> BotCommandResult:
         if command is BotCommand.STATUS:
             status = await operations.bot_status(target)
-            return BotCommandResult(True, "OK", _status_line(status), (str(target),), target)
+            text = _status_line(status)
+            if decision_insights is not None and principal is not None:
+                text = await _append_status_insights(text, decision_insights, principal, target)
+            return BotCommandResult(True, "OK", text, (str(target),), target)
         if command is BotCommand.PAUSE:
             paused = await operations.pause_bot(target, "Lệnh Telegram /bot pause")
             note = "đã pause" if paused.changed else "đã ở trạng thái pause"
@@ -251,3 +273,35 @@ class BotCommandHandler:
             (str(target),),
             target,
         )
+
+
+async def _append_status_insights(
+    base_line: str,
+    provider: BotDecisionInsightsProvider,
+    principal: Principal,
+    bot_id: UUID,
+) -> str:
+    """Bổ sung tường thuật quyết định (MI-6) và điều kiện còn thiếu (MI-2) vào ``/bot status``."""
+    from trading_bot.application.market_narrative import (
+        decision_narrative,
+        format_decision_narrative_text,
+    )
+    from trading_bot.domain.strategy.setup_progress import setup_progress
+
+    try:
+        view = await provider.get_latest_signal(principal, bot_id=bot_id)
+    except BotReportError, PermissionError, ValueError:
+        return base_line
+    latest = view.get("latest_decision")
+    if not isinstance(latest, dict):
+        return base_line
+    setup = setup_progress(
+        strategy_release_id=str(latest.get("strategy_release_id") or "—"),
+        decisions=[latest],
+        bonus=(),
+        now=datetime.now(UTC),
+    )
+    narrative = format_decision_narrative_text(
+        decision_narrative(latest, setup=setup, card=view.get("card")), max_sentences=2
+    )
+    return f"{base_line}\n{narrative}" if narrative else base_line

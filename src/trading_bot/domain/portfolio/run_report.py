@@ -32,6 +32,18 @@ from decimal import Decimal
 from statistics import median
 from typing import Any
 
+from trading_bot.domain.portfolio.analytics import (
+    MTMEquityBar,
+    calmar_ratio,
+    cost_to_gross_profit_ratio,
+    daily_returns,
+    max_consecutive_losses,
+    max_drawdown_pct,
+    mtm_equity_curve,
+    r_multiple_distribution,
+    sharpe_ratio,
+    sortino_ratio,
+)
 from trading_bot.domain.strategy.signal_outcome import (
     HORIZON_MULTIPLES,
     LABEL_VERSION,
@@ -98,6 +110,9 @@ class BotRunInput:
     rejections: tuple[DecisionCount, ...] = ()
     candidates_with_recorded_rejection: int = 0
     signal_outcomes: tuple[SignalOutcomeInput, ...] = ()
+    # MT-1: vốn khởi điểm và chuỗi nến MTM (tùy chọn) để tính Sharpe/Sortino/Calmar & drawdown %.
+    initial_capital: Decimal | None = None
+    mtm_bars: tuple[MTMEquityBar, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -238,6 +253,7 @@ def _bot_section(bot: BotRunInput) -> tuple[dict[str, Any], list[str]]:
     r_values: list[Decimal] = []
     mae: list[Decimal] = []
     mfe: list[Decimal] = []
+    trade_pnls: list[Decimal] = []
     exit_reasons: Counter[str] = Counter()
     per_symbol: dict[str, dict[str, Any]] = defaultdict(
         lambda: {"closed": 0, "wins": 0, "net_pnl": Decimal(0)}
@@ -249,6 +265,7 @@ def _bot_section(bot: BotRunInput) -> tuple[dict[str, Any], list[str]]:
         if mae_r is not None and mfe_r is not None:
             mae.append(mae_r)
             mfe.append(mfe_r)
+        trade_pnls.append(_dec(trade["net_pnl"]))
         exit_reasons[str(trade.get("exit_reason") or "UNKNOWN")] += 1
         row = per_symbol[str(trade["symbol"])]
         row["closed"] += 1
@@ -286,6 +303,27 @@ def _bot_section(bot: BotRunInput) -> tuple[dict[str, Any], list[str]]:
             f"{bot.bot_name}: {unexplained} tín hiệu chưa thành lệnh mà chưa có lý do được lưu "
             "(chưa tới lượt runtime xử lý hoặc tín hiệu trước khi bắt đầu lưu lý do)."
         )
+    risk_adjusted: dict[str, str | None] = {
+        "max_drawdown_percent": None,
+        "sharpe_ratio": None,
+        "sortino_ratio": None,
+        "calmar_ratio": None,
+    }
+    if bot.initial_capital is not None and bot.initial_capital > 0 and bot.mtm_bars:
+        curve = mtm_equity_curve(bot.initial_capital, bot.mtm_bars)
+        dd_pct = max_drawdown_pct(curve)
+        rets = daily_returns(curve)
+        risk_adjusted = {
+            "max_drawdown_percent": _text(dd_pct),
+            "sharpe_ratio": _text(sharpe_ratio(rets)),
+            "sortino_ratio": _text(sortino_ratio(rets)),
+            "calmar_ratio": _text(calmar_ratio(rets, max_dd_pct=dd_pct)),
+        }
+    cost_ratio = (
+        cost_to_gross_profit_ratio(_dec(totals["total_cost"]), _dec(totals["gross_pnl"]))
+        if totals.get("total_cost") is not None and totals.get("gross_pnl") is not None
+        else None
+    )
     section = {
         "bot_id": bot.bot_id,
         "bot_name": bot.bot_name,
@@ -325,8 +363,12 @@ def _bot_section(bot: BotRunInput) -> tuple[dict[str, Any], list[str]]:
             "total_cost_usdt": totals.get("total_cost"),
             "average_holding_seconds": totals.get("average_holding_seconds"),
             "r_multiple": _distribution(r_values),
+            "r_distribution": r_multiple_distribution(r_values),
             "mae_r": _distribution(mae),
             "mfe_r": _distribution(mfe),
+            "max_consecutive_losses": max_consecutive_losses(trade_pnls),
+            "cost_to_gross_profit_ratio": _text(cost_ratio),
+            "risk_adjusted": risk_adjusted,
             "exit_reasons": dict(sorted(exit_reasons.items())),
         },
         "by_symbol": {

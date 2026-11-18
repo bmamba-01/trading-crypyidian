@@ -408,6 +408,27 @@
     {% endif %}
   </section>
 
+  <section class="bot-section-card bot-ops-card" aria-labelledby="decision-narrative-heading">
+    <h2 id="decision-narrative-heading" class="bot-section-title">{{ ico("list") }}Tường thuật quyết định &amp; điều kiện còn thiếu</h2>
+    {% if decision_insights and decision_insights.missing_vi %}
+      <p class="bot-field-help" data-setup-counterfactual>{{ decision_insights.missing_vi }}</p>
+    {% endif %}
+    {% if decision_insights and decision_insights.narrative %}
+      <ul class="bot-narrative-list" data-decision-narrative>
+        {% for item in decision_insights.narrative %}
+          <li>
+            <span>{{ item.text }}</span>
+            {% if item.source and item.source.decision_id %}
+              <small class="value-muted">({{ item.source.kind }} · {{ item.source.decision_id[:8] }})</small>
+            {% endif %}
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="bot-empty">Chưa có quyết định bot gần đây để tường thuật.</p>
+    {% endif %}
+  </section>
+
   <section class="bot-section-card bot-ops-card" aria-labelledby="telegram-signal-heading">
     <h2 id="telegram-signal-heading" class="bot-section-title">{{ ico("send") }}Nhận tín hiệu qua Telegram</h2>
     <p class="bot-card-help">

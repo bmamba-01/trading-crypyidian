@@ -185,6 +185,7 @@ class CardTarget:
     price: Decimal
     r_multiple: Decimal | None
     source: str = "r_ladder"
+    net_r_multiple: Decimal | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -222,6 +223,9 @@ class SignalCardView:
     checklist_total: int | None = None
     invalidation: tuple[str, ...] = ()
     confidence_label: str = "Chưa hiệu chuẩn"
+    account_risk_pct: Decimal | None = None
+    feature_snapshot_id: str | None = None
+    narrative: str | None = None
     sample: bool = False
 
     def __post_init__(self) -> None:
@@ -283,6 +287,7 @@ def signal_card_view_from(
                     price=price,
                     r_multiple=_to_decimal(item.get("r_multiple")),
                     source=str(item.get("source") or "r_ladder"),
+                    net_r_multiple=_to_decimal(item.get("net_r_multiple")),
                 )
             )
     checklist: list[CardChecklistItem] = []
@@ -313,6 +318,29 @@ def signal_card_view_from(
         confidence_label = clean_text(confidence["label"], limit=40)
     passed_count = card.get("checklist_passed")
     total_count = card.get("checklist_total")
+    account_risk_pct = _to_decimal(card.get("account_risk_pct"))
+    raw_snapshot_id = card.get("feature_snapshot_id")
+    feature_snapshot_id = clean_text(raw_snapshot_id, limit=80) if raw_snapshot_id else None
+    from trading_bot.application.market_narrative import (
+        decision_narrative,
+        format_decision_narrative_text,
+    )
+
+    narrative = format_decision_narrative_text(
+        decision_narrative(
+            {
+                "decision_id": str(candidate.decision_id),
+                "status": "CANDIDATE",
+                "reason_code": candidate.reason_code,
+                "detail_vi": candidate.detail_vi,
+                "evaluated_at": candidate.signal_at.isoformat(),
+                "strategy_release_id": candidate.strategy_release_id,
+                "direction": candidate.direction,
+            },
+            card=card or None,
+        ),
+        max_sentences=2,
+    )
     return SignalCardView(
         decision_id=str(candidate.decision_id),
         symbol=candidate.symbol,
@@ -334,6 +362,9 @@ def signal_card_view_from(
         checklist_total=total_count if isinstance(total_count, int) else None,
         invalidation=tuple(invalidation),
         confidence_label=confidence_label,
+        account_risk_pct=account_risk_pct,
+        feature_snapshot_id=feature_snapshot_id,
+        narrative=narrative or None,
         sample=sample,
     )
 
@@ -486,12 +517,17 @@ def signal_card_caption(view: SignalCardView) -> str:
         f"Vùng vào: {zone}",
     ]
     if view.stop is not None:
-        lines.append(f"SL: {format_price_vi(view.stop)}")
+        stop_line = f"SL: {format_price_vi(view.stop)}"
+        if view.account_risk_pct is not None:
+            stop_line += f" · Rủi ro vốn: {format_number_vi(view.account_risk_pct, decimals=2)}%"
+        lines.append(stop_line)
     if view.targets:
         lines.append(
             "Mục tiêu: "
             + " · ".join(
-                f"{format_price_vi(t.price)} ({format_r_vi(t.r_multiple)})"
+                f"{format_price_vi(t.price)} ({format_r_vi(t.r_multiple)}"
+                + (f"/ròng {format_r_vi(t.net_r_multiple)}" if t.net_r_multiple is not None else "")
+                + ")"
                 for t in view.targets[:MAX_CARD_TARGETS]
             )
         )
@@ -499,7 +535,11 @@ def signal_card_caption(view: SignalCardView) -> str:
         f"Hết hạn: {format_local_time(view.expires_at)} (giờ VN) · Độ tin cậy: "
         f"{view.confidence_label}"
     )
+    if view.narrative:
+        lines.append(f"Tường thuật: {view.narrative}")
     lines.append(f"Mã tín hiệu: {view.decision_id}")
+    if view.feature_snapshot_id:
+        lines.append(f"Snapshot: {view.feature_snapshot_id}")
     if view.sample:
         lines.append("DỮ LIỆU MẪU")
     lines.append("Mô phỏng nội bộ, không phải khuyến nghị đầu tư.")

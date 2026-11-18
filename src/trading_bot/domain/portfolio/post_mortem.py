@@ -12,7 +12,7 @@ liệt kê ở `unevaluated_checks` thay vì chạy trên giá trị mặc đị
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
@@ -26,6 +26,7 @@ from uuid import UUID
 # nhãn sai lệch cho mọi lệnh; so với kế hoạch mới phản ánh thực thi tệ hơn dự kiến.
 SLIPPAGE_DEVIANT_PLAN_MULTIPLE = Decimal("1.5")
 FALSE_BREAKOUT_MAX_HOLDING_SECONDS = 900
+FALSE_BREAKOUT_MAX_BARS = 3
 EXCESSIVE_LOSS_R_MULTIPLE = Decimal("1.25")
 
 # Tên các quy tắc phát hiện sai lệch; dùng để báo quy tắc nào chưa kiểm được.
@@ -171,6 +172,9 @@ class TradePostMortem:
     ai_penalty_weight: Decimal | None
     # Quy tắc phát hiện sai lệch không chạy được vì thiếu dữ liệu đầu vào.
     unevaluated_checks: tuple[str, ...] = ()
+    # MT-1: điểm tuân thủ quy trình (0–100%) dựa trên các tiêu chí kiểm được.
+    process_score_pct: Decimal | None = None
+    process_checks: Mapping[str, bool | None] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -186,6 +190,8 @@ class TradePostMortem:
             "recommended_counterfactual_action": self.recommended_counterfactual_action,
             "ai_penalty_weight": _text(self.ai_penalty_weight),
             "unevaluated_checks": list(self.unevaluated_checks),
+            "process_score_pct": _text(self.process_score_pct),
+            "process_checks": dict(self.process_checks),
         }
 
 
@@ -287,6 +293,8 @@ def evaluate_trade_post_mortem(
     *,
     planned_risk_amount: Decimal | None = None,
     plan: Mapping[str, Any] | None = None,
+    timeframe_seconds: int | None = None,
+    false_breakout_max_bars: int = FALSE_BREAKOUT_MAX_BARS,
 ) -> TradePostMortem:
     """Đánh giá một giao dịch đã đóng để phân loại chất lượng và đề xuất cho người rà soát.
 
@@ -393,6 +401,27 @@ def evaluate_trade_post_mortem(
     recommended_action: str
     ai_penalty_weight: Decimal | None
 
+    false_breakout_triggered = False
+    false_breakout_note = ""
+    if (
+        exit_reason_code == "STOP_LOSS"
+        and holding_duration is not None
+        and net_pnl is not None
+        and net_pnl < 0
+    ):
+        if timeframe_seconds is not None and timeframe_seconds > 0:
+            holding_bars = holding_duration / timeframe_seconds
+            if holding_bars < false_breakout_max_bars:
+                false_breakout_triggered = True
+                false_breakout_note = (
+                    f"{holding_bars:.2f} nến (< {false_breakout_max_bars} nến khung chiến lược)."
+                )
+        elif holding_duration < FALSE_BREAKOUT_MAX_HOLDING_SECONDS:
+            false_breakout_triggered = True
+            false_breakout_note = (
+                f"{holding_duration} giây, dưới ngưỡng {FALSE_BREAKOUT_MAX_HOLDING_SECONDS} giây."
+            )
+
     if (
         slippage_total is not None
         and expected_slippage is not None
@@ -408,18 +437,11 @@ def evaluate_trade_post_mortem(
         )
         recommended_action = "ABSTAIN"
         ai_penalty_weight = Decimal("1.8")
-    elif (
-        exit_reason_code == "STOP_LOSS"
-        and holding_duration is not None
-        and holding_duration < FALSE_BREAKOUT_MAX_HOLDING_SECONDS
-        and net_pnl is not None
-        and net_pnl < 0
-    ):
+    elif false_breakout_triggered:
         classification = TradeQualityClassification.DEVIANT_FALSE_BREAKOUT
         is_deviant = True
         deviation_reason = (
-            "Bẫy thanh khoản / Phá vỡ giả: giá đảo chiều quét Stop Loss sau "
-            f"{holding_duration} giây, dưới ngưỡng {FALSE_BREAKOUT_MAX_HOLDING_SECONDS} giây."
+            "Bẫy thanh khoản / Phá vỡ giả: giá đảo chiều quét Stop Loss sau " + false_breakout_note
         )
         recommended_action = "ABSTAIN"
         ai_penalty_weight = Decimal("2.0")
@@ -483,6 +505,34 @@ def evaluate_trade_post_mortem(
         expected_slippage=expected_slippage,
     )
 
+    process_checks: dict[str, bool | None] = {
+        "has_approved_plan": bool(plan_values),
+        "context_gate_passed": gate_passed if isinstance(gate_passed, bool) else None,
+        "slippage_within_plan": (
+            not (slippage_total > expected_slippage * SLIPPAGE_DEVIANT_PLAN_MULTIPLE)
+            if slippage_total is not None and expected_slippage is not None
+            else None
+        ),
+        "loss_within_plan": (
+            not (net_pnl_r_multiple < -EXCESSIVE_LOSS_R_MULTIPLE)
+            if net_pnl_r_multiple is not None
+            else None
+        ),
+        "not_false_breakout": (
+            not false_breakout_triggered if CHECK_FALSE_BREAKOUT not in unevaluated else None
+        ),
+    }
+    evaluated_proc = [val for val in process_checks.values() if val is not None]
+    process_score_pct = (
+        (
+            Decimal(sum(1 for v in evaluated_proc if v))
+            / Decimal(len(evaluated_proc))
+            * Decimal("100")
+        ).quantize(Decimal("0.01"))
+        if evaluated_proc
+        else None
+    )
+
     return TradePostMortem(
         trade_id=trade_id,
         bot_id=bot_id,
@@ -496,4 +546,6 @@ def evaluate_trade_post_mortem(
         recommended_counterfactual_action=recommended_action,
         ai_penalty_weight=ai_penalty_weight,
         unevaluated_checks=tuple(unevaluated),
+        process_score_pct=process_score_pct,
+        process_checks=process_checks,
     )

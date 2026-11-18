@@ -103,6 +103,9 @@ def build_signal_card(
     *,
     checklist: Sequence[Mapping[str, Any]] = (),
     plan: Mapping[str, Any] | None = None,
+    fee_rate: Decimal | float | None = None,
+    account_risk_pct: Decimal | float | None = None,
+    confidence: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Dựng thẻ tín hiệu từ ``bot_decision.payload.candidate`` (và kế hoạch đã duyệt nếu có)."""
     direction = str(candidate.get("direction", ""))
@@ -135,12 +138,42 @@ def build_signal_card(
     if recipe_target is not None:
         ladder.append(("Mục tiêu recipe", recipe_target, "recipe"))
     ladder.sort(key=lambda item: item[1] * sign)
+    raw_fee = (
+        fee_rate
+        if fee_rate is not None
+        else (
+            plan.get("fee_rate")
+            if plan is not None and plan.get("fee_rate") is not None
+            else candidate.get("fee_rate")
+        )
+    )
+    one_way_fee = _decimal(raw_fee, "fee_rate") if raw_fee is not None else None
+    raw_risk_pct = (
+        account_risk_pct
+        if account_risk_pct is not None
+        else (
+            plan.get("account_risk_pct")
+            if plan is not None and plan.get("account_risk_pct") is not None
+            else candidate.get("account_risk_pct")
+        )
+    )
+    resolved_risk_pct = (
+        float(_decimal(raw_risk_pct, "account_risk_pct")) if raw_risk_pct is not None else None
+    )
     for label, price, source in ladder:
+        gross_r = ((price - entry) * sign / risk).quantize(Decimal("0.01"))
+        net_r: float | None = None
+        if one_way_fee is not None and one_way_fee >= 0:
+            net_reward = (price - entry) * sign - (entry + price) * one_way_fee
+            net_risk = risk + (entry + stop) * one_way_fee
+            if net_risk > 0:
+                net_r = float((net_reward / net_risk).quantize(Decimal("0.01")))
         targets.append(
             {
                 "label": label,
                 "price": float(price),
-                "r_multiple": float(((price - entry) * sign / risk).quantize(Decimal("0.01"))),
+                "r_multiple": float(gross_r),
+                "net_r_multiple": net_r,
                 "source": source,
             }
         )
@@ -159,6 +192,14 @@ def build_signal_card(
         targets=[Decimal(str(t["price"])) for t in deduplicated],
     )
     items = [dict(item) for item in checklist]
+    raw_conf = confidence if confidence is not None else candidate.get("confidence")
+    if isinstance(raw_conf, Mapping) and raw_conf.get("label"):
+        resolved_conf: dict[str, Any] = dict(raw_conf)
+    else:
+        resolved_conf = {"tier": "uncalibrated", "label": "Chưa hiệu chuẩn"}
+    snapshot_id = candidate.get("feature_snapshot_id") or (
+        plan.get("feature_snapshot_id") if plan is not None else None
+    )
     return {
         "card_version": CARD_VERSION,
         "symbol": candidate.get("symbol"),
@@ -166,17 +207,19 @@ def build_signal_card(
         "strategy_id": candidate.get("strategy_id"),
         "strategy_release_id": candidate.get("strategy_release_id"),
         "reason_code": candidate.get("reason_code"),
+        "feature_snapshot_id": snapshot_id,
         "signal_at": candidate.get("signal_at"),
         "expires_at": candidate.get("expires_at"),
         "reference_price": float(reference),
         "entry_zone": {"low": float(entry_low), "high": float(entry_high)},
         "stop": float(stop),
         "risk_per_unit": float(risk),
+        "account_risk_pct": resolved_risk_pct,
         "targets": deduplicated,
         "plan_source": "approved_plan" if plan is not None else "recipe",
         "checklist": items,
         "checklist_passed": sum(1 for item in items if item.get("passed") is True),
         "checklist_total": len(items),
         "invalidation": _invalidation(recipe, stop, candidate.get("expires_at")),
-        "confidence": {"tier": "uncalibrated", "label": "Chưa hiệu chuẩn"},
+        "confidence": resolved_conf,
     }
