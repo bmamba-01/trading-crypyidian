@@ -100,11 +100,15 @@ def run_sensitivity(
     observation_count = len(observations)
     total_work = observation_count * len(ordered)
     for trial_index, scenario in enumerate(ordered):
+        effective_trial_count = (
+            manifest.trial_count if len(ordered) == 1 else max(manifest.trial_count, len(ordered))
+        )
+        effective_trial_index = manifest.trial_index if len(ordered) == 1 else trial_index
         scenario_manifest = _manifest_for_scenario(
             manifest,
             scenario,
-            trial_index=trial_index,
-            trial_count=len(ordered),
+            trial_index=effective_trial_index,
+            trial_count=effective_trial_count,
         )
         evaluator = evaluator_factory(scenario, scenario_manifest)
         scenario_progress = _progress_callback_for_offset(

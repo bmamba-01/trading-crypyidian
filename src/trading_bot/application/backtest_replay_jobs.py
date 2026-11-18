@@ -44,6 +44,12 @@ class BacktestReplayJobSubmission:
     # CRY-428: ghi đè thoát lệnh theo bot (JSON canonical của ``ExitOverride.payload``). Rỗng =
     # recipe của release (hash cũ giữ nguyên).
     exit_override_json: str = ""
+    # BT-1: hồ sơ chi phí khớp PAPER (spread, funding, đòn bẩy) và số lượt thử để chiết khấu.
+    spread_rate: Decimal = Decimal("0")
+    adverse_funding_rate: Decimal = Decimal("0")
+    leverage: Decimal = Decimal("1")
+    trial_count: int = 1
+    trial_index: int = 0
 
     def __post_init__(self) -> None:
         if not isinstance(self.bundle_hash, str) or _SHA256.fullmatch(self.bundle_hash) is None:
@@ -64,7 +70,15 @@ class BacktestReplayJobSubmission:
             )
         if self.exit_override_json:
             self.exit_override()
-        for name in ("starting_equity", "per_trade_risk_fraction", "fee_rate", "slippage_rate"):
+        for name in (
+            "starting_equity",
+            "per_trade_risk_fraction",
+            "fee_rate",
+            "slippage_rate",
+            "spread_rate",
+            "adverse_funding_rate",
+            "leverage",
+        ):
             value = getattr(self, name)
             if not isinstance(value, Decimal) or not value.is_finite():
                 raise ValueError(f"{name} phải là Decimal hữu hạn.")
@@ -76,6 +90,19 @@ class BacktestReplayJobSubmission:
             raise ValueError("Phí mỗi chiều phải nằm trong [0, 100%).")
         if not 0 <= self.slippage_rate < 1:
             raise ValueError("Trượt giá phải nằm trong [0, 100%).")
+        if not 0 <= self.spread_rate < 1:
+            raise ValueError("Spread phải nằm trong [0, 100%).")
+        if not 0 <= self.adverse_funding_rate < 1:
+            raise ValueError("Adverse funding rate phải nằm trong [0, 100%).")
+        if not Decimal("1") <= self.leverage <= Decimal("125"):
+            raise ValueError("Đòn bẩy phải nằm trong [1, 125].")
+        if (
+            type(self.trial_count) is not int
+            or type(self.trial_index) is not int
+            or self.trial_count < 1
+            or not 0 <= self.trial_index < self.trial_count
+        ):
+            raise ValueError("trial_index phải thuộc [0, trial_count) với trial_count >= 1.")
         if type(self.seed) is not int or not 0 <= self.seed <= 2**31 - 1:
             raise ValueError("Seed phải là số nguyên từ 0 đến 2,147,483,647.")
         if type(self.learning_intent) is not str or self.learning_intent not in {
@@ -101,9 +128,46 @@ class BacktestReplayJobSubmission:
             raise ValueError("; ".join(f"{field}: {message}" for field, message in problems))
         return override
 
+    @classmethod
+    def from_paper_profile(
+        cls,
+        profile: Any,
+        *,
+        bundle_hash: str,
+        strategy_release_id: str,
+        execution_interval: str,
+        per_trade_risk_fraction: Decimal,
+        seed: int,
+        leverage: Decimal = Decimal("1"),
+        trial_count: int = 1,
+        trial_index: int = 0,
+        learning_intent: str = "RESEARCH",
+        strategy_parameters: tuple[tuple[str, int], ...] = (),
+        exit_override_json: str = "",
+    ) -> BacktestReplayJobSubmission:
+        """Khởi tạo submission replay dùng đúng hồ sơ chi phí của PAPER."""
+        return cls(
+            bundle_hash=bundle_hash,
+            strategy_release_id=strategy_release_id,
+            execution_interval=execution_interval,
+            starting_equity=profile.new_account_initial_equity,
+            per_trade_risk_fraction=per_trade_risk_fraction,
+            fee_rate=profile.fill_policy.fee_rate,
+            slippage_rate=profile.fill_policy.slippage_rate,
+            seed=seed,
+            learning_intent=learning_intent,
+            strategy_parameters=strategy_parameters,
+            exit_override_json=exit_override_json,
+            spread_rate=profile.fill_policy.spread_rate,
+            adverse_funding_rate=profile.cost_model.adverse_funding_rate,
+            leverage=leverage,
+            trial_count=trial_count,
+            trial_index=trial_index,
+        )
+
     def to_payload(self) -> dict[str, str | int]:
         """Chuẩn hóa Decimal thành chuỗi để payload JSON không đi qua float."""
-        return {
+        payload: dict[str, str | int] = {
             "bundle_hash": self.bundle_hash,
             "strategy_release_id": self.strategy_release_id,
             "execution_interval": self.execution_interval,
@@ -114,11 +178,21 @@ class BacktestReplayJobSubmission:
             "seed": self.seed,
             "learning_intent": self.learning_intent,
         }
+        if self.spread_rate != Decimal("0"):
+            payload["spread_rate"] = str(self.spread_rate)
+        if self.adverse_funding_rate != Decimal("0"):
+            payload["adverse_funding_rate"] = str(self.adverse_funding_rate)
+        if self.leverage != Decimal("1"):
+            payload["leverage"] = str(self.leverage)
+        if self.trial_count != 1 or self.trial_index != 0:
+            payload["trial_count"] = self.trial_count
+            payload["trial_index"] = self.trial_index
+        return payload
 
     @classmethod
     def from_payload(cls, payload: object) -> BacktestReplayJobSubmission:
         """Đọc payload worker và từ chối field thiếu/lạ hoặc sai kiểu."""
-        fields = {
+        required_fields = {
             "bundle_hash",
             "strategy_release_id",
             "execution_interval",
@@ -128,10 +202,19 @@ class BacktestReplayJobSubmission:
             "slippage_rate",
             "seed",
         }
-        if type(payload) is not dict or frozenset(payload) not in {
-            frozenset(fields),
-            frozenset(fields | {"learning_intent"}),
-        }:
+        optional_fields = {
+            "learning_intent",
+            "spread_rate",
+            "adverse_funding_rate",
+            "leverage",
+            "trial_count",
+            "trial_index",
+        }
+        if (
+            type(payload) is not dict
+            or not required_fields.issubset(payload)
+            or not set(payload).issubset(required_fields | optional_fields)
+        ):
             raise ValueError("Payload job replay có field thiếu hoặc không nhận diện.")
         decimal_fields = (
             "starting_equity",
@@ -141,6 +224,9 @@ class BacktestReplayJobSubmission:
         )
         if any(type(payload[name]) is not str for name in decimal_fields):
             raise ValueError("Giá trị Decimal trong payload phải là chuỗi.")
+        for opt_decimal in ("spread_rate", "adverse_funding_rate", "leverage"):
+            if opt_decimal in payload and type(payload[opt_decimal]) is not str:
+                raise ValueError("Giá trị Decimal trong payload phải là chuỗi.")
         return cls(
             bundle_hash=payload["bundle_hash"],
             strategy_release_id=payload["strategy_release_id"],
@@ -151,6 +237,11 @@ class BacktestReplayJobSubmission:
             slippage_rate=Decimal(payload["slippage_rate"]),
             seed=payload["seed"],
             learning_intent=payload.get("learning_intent", "RESEARCH"),
+            spread_rate=Decimal(payload.get("spread_rate", "0")),
+            adverse_funding_rate=Decimal(payload.get("adverse_funding_rate", "0")),
+            leverage=Decimal(payload.get("leverage", "1")),
+            trial_count=payload.get("trial_count", 1),
+            trial_index=payload.get("trial_index", 0),
         )
 
 

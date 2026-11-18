@@ -372,6 +372,9 @@ class EvaluationTrade:
         return self.gross_pnl - self.fees - self.funding - self.slippage
 
 
+MIN_TRADES_FOR_CONFIDENCE_INTERVAL = 30
+
+
 @dataclass(frozen=True, slots=True)
 class EvaluationMetrics:
     """Số liệu net, chi phí, độ phủ và khoảng bất định của một run."""
@@ -399,8 +402,11 @@ def build_evaluation_metrics(
     observation_count: int,
     seed: int,
     usable_observation_count: int | None = None,
+    min_trades_for_ci: int = MIN_TRADES_FOR_CONFIDENCE_INTERVAL,
 ) -> EvaluationMetrics:
     """Tính báo cáo và khoảng tin cậy bootstrap theo block liên tiếp."""
+    if min_trades_for_ci < 2:
+        raise ValueError("min_trades_for_ci phải >= 2.")
     usable_count = (
         observation_count if usable_observation_count is None else usable_observation_count
     )
@@ -435,7 +441,20 @@ def build_evaluation_metrics(
     average_exposure = (
         sum((trade.exposure for trade in trades), ZERO) / len(trades) if trades else ZERO
     )
-    interval = _block_bootstrap_interval(net_values, seed=seed) if len(trades) >= 2 else None
+    base_caveat = (
+        "Khoảng bất định bootstrap theo block chỉ mô tả mẫu này, không phải bằng chứng "
+        "lợi nhuận tương lai hay cam kết có lợi thế. Exposure là trung bình mỗi giao dịch, "
+        "không phải exposure theo thời gian."
+    )
+    if len(trades) < min_trades_for_ci:
+        interval = None
+        caveat_vi = (
+            f"Chưa đủ mẫu để báo khoảng tin cậy (cần tối thiểu {min_trades_for_ci} lệnh; "
+            f"hiện có {len(trades)} lệnh). {base_caveat}"
+        )
+    else:
+        interval = _block_bootstrap_interval(net_values, seed=seed)
+        caveat_vi = base_caveat
     return EvaluationMetrics(
         observation_count=observation_count,
         usable_observation_count=usable_count,
@@ -451,11 +470,7 @@ def build_evaluation_metrics(
         max_drawdown=drawdown,
         average_exposure=average_exposure,
         confidence_interval=interval,
-        caveat_vi=(
-            "Khoảng bất định bootstrap theo block chỉ mô tả mẫu này, không phải bằng chứng "
-            "lợi nhuận tương lai hay cam kết có lợi thế. Exposure là trung bình mỗi giao dịch, "
-            "không phải exposure theo thời gian."
-        ),
+        caveat_vi=caveat_vi,
     )
 
 

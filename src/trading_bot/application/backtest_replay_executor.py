@@ -261,6 +261,25 @@ def build_backtest_replay_plan(
             "strategy_parameters": strategy_parameters,
         }
     )
+    fee_rate = decimal_text(submission.fee_rate)
+    slippage_rate = decimal_text(submission.slippage_rate)
+    total_slippage_rate = decimal_text(submission.spread_rate + submission.slippage_rate)
+    spread_rate = decimal_text(submission.spread_rate)
+    cost_assumptions: list[tuple[str, str]] = [
+        ("adverse_funding_per_unit", "0"),
+        ("entry_fee_rate", fee_rate),
+        ("entry_slippage_rate", total_slippage_rate),
+        ("exit_fee_rate", fee_rate),
+        ("exit_slippage_rate", total_slippage_rate),
+        ("spread_rate", spread_rate),
+    ]
+    if submission.adverse_funding_rate != Decimal("0"):
+        cost_assumptions.append(
+            ("adverse_funding_rate", decimal_text(submission.adverse_funding_rate))
+        )
+    if submission.leverage != Decimal("1"):
+        cost_assumptions.append(("leverage", decimal_text(submission.leverage)))
+    cost_assumptions.sort(key=lambda item: item[0])
     manifest = ReplayManifest(
         dataset_hash=bundle.dataset_hash,
         range_start=bundle.evaluation_start,
@@ -272,17 +291,10 @@ def build_backtest_replay_plan(
         feature_schema_hash=feature_schema_hash,
         fill_model_version="paper-fill-v1",
         pipeline_content_hash=pipeline_content_hash,
-        cost_assumptions=(
-            ("adverse_funding_per_unit", "0"),
-            ("entry_fee_rate", fee_rate),
-            ("entry_slippage_rate", slippage_rate),
-            ("exit_fee_rate", fee_rate),
-            ("exit_slippage_rate", slippage_rate),
-            ("spread_rate", "0"),
-        ),
+        cost_assumptions=tuple(cost_assumptions),
         parameter_family_hash=parameter_family_hash,
-        trial_count=1,
-        trial_index=0,
+        trial_count=submission.trial_count,
+        trial_index=submission.trial_index,
         seed=submission.seed,
         learning_intent=submission.learning_intent,
         learning_job_id=(str(job_id) if submission.learning_intent == "TRAINING_BASE" else None),
@@ -344,6 +356,7 @@ def build_backtest_replay_plan(
                 expected_manifest=manifest,
                 fee_rate=submission.fee_rate,
                 slippage_rate=submission.slippage_rate,
+                spread_rate=submission.spread_rate,
                 fill_model_version=manifest.fill_model_version,
             ),
             scenarios=(base_scenario,),
@@ -441,23 +454,25 @@ def _build_context_seed(
     )
 
     unit = Decimal("1")
+    leverage = submission.leverage
+    leveraged_notional = equity * leverage
     quantity_step = Decimal("0.00000001")
     exchange = ExchangeRules(
         tick_size=quantity_step,
         quantity_step=quantity_step,
         contract_multiplier=unit,
         min_notional=Decimal("0.01"),
-        max_notional=equity,
-        max_quantity=equity / quantity_step,
+        max_notional=leveraged_notional,
+        max_quantity=leveraged_notional / quantity_step,
     )
     max_trade_loss = equity * risk_fraction
     risk_limits = RiskLimits(
         per_trade_risk_fraction=risk_fraction,
         max_aggregate_open_risk=max_trade_loss,
-        max_notional=equity,
-        max_leverage=unit,
+        max_notional=leveraged_notional,
+        max_leverage=leverage,
         max_positions=1,
-        max_symbol_notional=equity,
+        max_symbol_notional=leveraged_notional,
         max_concentration_fraction=unit,
         max_daily_loss=max_trade_loss,
         max_rolling_loss=max_trade_loss * 2,
@@ -470,7 +485,7 @@ def _build_context_seed(
         risk_profile_version_id=str(risk_profile_version_id),
         published=True,
         active_release_ids=(release_id,),
-        leverage=unit,
+        leverage=leverage,
         exchange=exchange,
         limits=risk_limits,
         release_content_hashes=((release_id, release_content_hash),),
@@ -509,8 +524,9 @@ def _build_context_seed(
         entry_fee_rate=submission.fee_rate,
         exit_fee_rate=submission.fee_rate,
         adverse_funding_per_unit=Decimal("0"),
-        entry_slippage_rate=submission.slippage_rate,
-        exit_slippage_rate=submission.slippage_rate,
+        entry_slippage_rate=submission.spread_rate + submission.slippage_rate,
+        exit_slippage_rate=submission.spread_rate + submission.slippage_rate,
+        adverse_funding_rate=submission.adverse_funding_rate,
     )
     return ReplayEvaluationContext(
         published_settings=published,
@@ -550,6 +566,7 @@ def _gateway_for_scenario(
     expected_manifest: ReplayManifest,
     fee_rate: Decimal,
     slippage_rate: Decimal,
+    spread_rate: Decimal,
     fill_model_version: str,
 ) -> PaperExecutionGateway:
     if scenario != expected_scenario or manifest != expected_manifest:
@@ -558,7 +575,7 @@ def _gateway_for_scenario(
         PaperExecutionPolicy(
             version_id=fill_model_version,
             latency=timedelta(0),
-            spread_rate=Decimal("0"),
+            spread_rate=spread_rate,
             slippage_rate=slippage_rate,
             fee_rate=fee_rate,
         )

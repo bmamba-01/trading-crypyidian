@@ -157,7 +157,7 @@ def test_bot_overlay_versions_admin_api_and_open_paper_position() -> None:
             "trading-runtime",
         )
         current = compose("run", "--rm", "--no-deps", "migrator", "alembic", "current")
-        assert "c9e1a3b5d7f9 (head)" in current.stdout
+        assert "d4f6a8b0c2e1 (head)" in current.stdout
 
         # --- Owner, MFA, risk profile và root settings ------------------------------------
         status, bootstrap = api(
@@ -555,7 +555,7 @@ def test_bot_overlay_versions_admin_api_and_open_paper_position() -> None:
         )
         assert "WP03_RISK_GUARD_DOWNGRADE_BLOCKED" in top_guard.stderr, top_guard.stderr[-3000:]
         after_guard = compose("run", "--rm", "--no-deps", "migrator", "alembic", "current")
-        assert "c9e1a3b5d7f9 (head)" in after_guard.stdout
+        assert "d4f6a8b0c2e1 (head)" in after_guard.stdout
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "check")
     finally:
         compose("down", "--volumes", "--remove-orphans")

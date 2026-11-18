@@ -163,6 +163,8 @@ class PaperPosition:
     targets_hit: int = 0
     initial_quantity: Decimal = ZERO
     quantity_step: Decimal = ZERO
+    # FX-4: lý do thoát chờ khớp ở giá mở nến kế tiếp, lưu bền trong checkpoint.
+    pending_exit_reason: str | None = None
 
     @property
     def net_realized_pnl(self) -> Decimal:
@@ -453,6 +455,7 @@ class PaperExecutionGateway:
         current = self._positions.get(position.intent_id, position)
         if current.is_closed and bar.bar_key in current.seen_bar_keys:
             return PositionMonitorResult(current, current.exit_reason, current.exit_reference_price)
+        was_pending_exit = current.pending_exit_reason is not None
         result = monitor_position(
             current,
             bar,
@@ -480,17 +483,19 @@ class PaperExecutionGateway:
                 seen_bar_keys=result.position.seen_bar_keys,
                 targets_hit=result.position.targets_hit,
                 stop_price=result.position.stop_price,
+                pending_exit_reason=result.position.pending_exit_reason,
             )
             self._positions[position.intent_id] = reduced
             return replace(result, position=reduced)
         if result.exit_reason is None or result.exit_reference_price is None:
             self._positions[position.intent_id] = result.position
             return result
+        exit_at = bar.opened_at if was_pending_exit else bar.closed_at
         receipt = self.close_position(
             current.position_id,
             current.quantity,
             reference_price=result.exit_reference_price,
-            closed_at=bar.closed_at,
+            closed_at=exit_at,
             idempotency_key=f"exit:{current.position_id}:{bar.bar_key}:{result.exit_reason}",
         )
         closed = replace(
@@ -500,6 +505,7 @@ class PaperExecutionGateway:
             exit_reason=result.exit_reason,
             exit_reference_price=result.exit_reference_price,
             targets_hit=result.position.targets_hit,
+            pending_exit_reason=None,
         )
         self._positions[position.intent_id] = closed
         return replace(result, position=closed)

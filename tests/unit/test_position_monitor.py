@@ -51,14 +51,29 @@ def test_trailing_stop_only_moves_in_favorable_direction() -> None:
 
 def test_time_and_opposing_signal_exit_reasons_are_reported() -> None:
     position = replace(_open_position(), recipe=ExitRecipe("time", 2, max_hold_bars=1))
-    time_result = monitor_position(position, _bar("time", 2))
+    time_pending = monitor_position(position, _bar("time", 2))
+    assert time_pending.exit_reason is None
+    assert time_pending.position.pending_exit_reason == "TIME_STOP"
+    assert not time_pending.position.is_closed
+    next_time_bar = _bar("time-next", 3, open_price="100.75", high="102", low="98", close="101.25")
+    time_result = monitor_position(time_pending.position, next_time_bar)
     assert time_result.exit_reason == "TIME_STOP"
+    assert time_result.exit_reference_price == Decimal("100.75")
+    assert time_result.position.is_closed
+    assert time_result.position.pending_exit_reason is None
 
     opposite = replace(
         position, recipe=ExitRecipe("opposite", 2, opposite_signal_exit=True, max_hold_bars=5)
     )
-    opposite_result = monitor_position(opposite, _bar("opposite", 3), opposing_signal=True)
+    opposite_pending = monitor_position(opposite, _bar("opposite", 3), opposing_signal=True)
+    assert opposite_pending.exit_reason is None
+    assert opposite_pending.position.pending_exit_reason == "OPPOSING_SIGNAL"
+    next_opp_bar = _bar("opposite-next", 4, open_price="99.25", high="102", low="98", close="98.5")
+    opposite_result = monitor_position(opposite_pending.position, next_opp_bar)
     assert opposite_result.exit_reason == "OPPOSING_SIGNAL"
+    assert opposite_result.exit_reference_price == Decimal("99.25")
+    assert opposite_result.position.is_closed
+    assert opposite_result.position.pending_exit_reason is None
 
 
 def test_funding_event_is_applied_once_and_cost_components_sum_to_net() -> None:
@@ -231,7 +246,14 @@ def test_hold_count_only_advances_on_closed_strategy_bars() -> None:
     first = monitor_position(current, _bar("strategy-1", 10, high="101", low="99"))
     assert first.exit_reason is None
     second = monitor_position(first.position, _bar("strategy-2", 11, high="101", low="99"))
-    assert second.exit_reason == "TIME_STOP"
+    assert second.exit_reason is None
+    assert second.position.pending_exit_reason == "TIME_STOP"
+    third = monitor_position(
+        second.position, _bar("strategy-3", 12, open_price="100.4", high="101", low="99")
+    )
+    assert third.exit_reason == "TIME_STOP"
+    assert third.exit_reference_price == Decimal("100.4")
+    assert third.position.bars_held == 2
 
 
 def test_replay_selects_exit_evidence_only_for_v2_recipes() -> None:
@@ -370,3 +392,173 @@ def test_gateway_forced_exit_creates_exit_fill_with_reason() -> None:
     assert closed is not None
     assert closed.is_closed
     assert closed.exit_reason == "DELIST_EXIT"
+
+
+def test_pending_exit_survives_checkpoint_roundtrip_and_compat_with_legacy_snapshot() -> None:
+    """FX-4: pending_exit_reason bền qua checkpoint/restart và tương thích checkpoint cũ."""
+    import json
+
+    from trading_bot.domain.execution.paper import PaperBar, PaperExecutionGateway
+    from trading_bot.domain.risk.planner import calculate_plan_hash
+
+    gateway = _gateway()
+    base_plan = replace(_plan(), exit_recipe=ExitRecipe("time", 2, max_hold_bars=1))
+    plan = replace(base_plan, plan_hash=calculate_plan_hash(base_plan))
+    order = gateway.submit(plan, "intent-1", submitted_at=NOW)
+    gateway.apply_market_event(_bar("bar-entry", 1), available_quantity=Decimal("1"))
+    position = gateway.position(order.intent_id)
+    assert position is not None
+
+    # Giữ tương thích checkpoint cũ không có khóa `pending_exit_reason`.
+    legacy_snapshot = gateway.export_state()
+    legacy_body = json.loads(legacy_snapshot.payload)
+    assert "pending_exit_reason" not in legacy_body["positions"][0]
+    restored_legacy = PaperExecutionGateway.restore(gateway.policy, legacy_snapshot)
+    legacy_pos = restored_legacy.position(order.intent_id)
+    assert legacy_pos is not None
+    assert legacy_pos.pending_exit_reason is None
+
+    pending = gateway.monitor_position(position, _bar("trigger", 2))
+    assert pending.exit_reason is None
+    assert pending.position.pending_exit_reason == "TIME_STOP"
+
+    # Mô phỏng restart giữa 2 nến: xuất snapshot rồi restore sang gateway mới.
+    snapshot = gateway.export_state()
+    body = json.loads(snapshot.payload)
+    assert body["positions"][0]["pending_exit_reason"] == "TIME_STOP"
+    restarted = PaperExecutionGateway.restore(gateway.policy, snapshot)
+    restored_pos = restarted.position(order.intent_id)
+    assert restored_pos is not None
+    assert restored_pos.pending_exit_reason == "TIME_STOP"
+
+    next_open = NOW + timedelta(minutes=3)
+    next_bar = PaperBar(
+        "after-restart",
+        "BTCUSDT",
+        next_open,
+        next_open + timedelta(minutes=1),
+        next_open + timedelta(minutes=1),
+        Decimal("101.40"),
+        Decimal("102.00"),
+        Decimal("100.50"),
+        Decimal("101.00"),
+    )
+    closed_result = restarted.monitor_position(restored_pos, next_bar)
+    assert closed_result.exit_reason == "TIME_STOP"
+    assert closed_result.exit_reference_price == Decimal("101.40")
+    assert closed_result.position.is_closed
+    assert closed_result.position.pending_exit_reason is None
+    close_receipt = next(iter(restarted._close_keys.values()))
+    assert close_receipt.fill is not None
+    assert close_receipt.fill.filled_at == next_open
+
+
+def test_time_stop_pending_exit_matches_time_and_price_across_1m_and_1h_monitor() -> None:
+    """FX-4: monitor 1m hay 1h cho cùng thời điểm và giá thoát ở open nến kế tiếp."""
+    from trading_bot.domain.execution.paper import PaperBar
+
+    recipe = ExitRecipe("time-1h", 2, max_hold_bars=2)
+    entry_open = NOW + timedelta(minutes=1)
+    gw_1h = _gateway()
+    gw_1m = _gateway()
+    intent_ids: list[str] = []
+    for gw in (gw_1h, gw_1m):
+        submitted = gw.submit(_plan(), "intent-1", submitted_at=NOW)
+        intent_ids.append(submitted.intent_id)
+        gw.apply_market_event(_bar("entry", 1), available_quantity=Decimal("1"))
+        pos = gw.position(submitted.intent_id)
+        assert pos is not None
+        gw._positions[submitted.intent_id] = replace(pos, stop_price=Decimal("80"), recipe=recipe)
+    id_1h, id_1m = intent_ids
+
+    hour1_start = entry_open + timedelta(hours=1)
+    hour2_start = entry_open + timedelta(hours=2)
+    hour3_start = entry_open + timedelta(hours=3)
+
+    # Gateway 1h: 2 nến chiến lược -> pending TIME_STOP, nến giờ 3 khớp ở open=102.35
+    for idx, start in enumerate((hour1_start, hour2_start), start=1):
+        p = gw_1h.position(id_1h)
+        assert p is not None
+        gw_1h.monitor_position(
+            p,
+            PaperBar(
+                f"1h-{idx}",
+                "BTCUSDT",
+                start,
+                start + timedelta(hours=1),
+                start + timedelta(hours=1),
+                Decimal("100"),
+                Decimal("103"),
+                Decimal("98"),
+                Decimal("102"),
+            ),
+            strategy_bar_closed=True,
+        )
+    p_1h = gw_1h.position(id_1h)
+    assert p_1h is not None
+    assert p_1h.pending_exit_reason == "TIME_STOP"
+    res_1h = gw_1h.monitor_position(
+        p_1h,
+        PaperBar(
+            "1h-3",
+            "BTCUSDT",
+            hour3_start,
+            hour3_start + timedelta(hours=1),
+            hour3_start + timedelta(hours=1),
+            Decimal("102.35"),
+            Decimal("104"),
+            Decimal("101"),
+            Decimal("103"),
+        ),
+        strategy_bar_closed=True,
+    )
+
+    # Gateway 1m: 120 nến 1m (strategy_bar_closed=True ở phút thứ 59 mỗi giờ), nến 1m đầu giờ 3 khớp
+    for hour_start in (hour1_start, hour2_start):
+        for minute in range(60):
+            m_start = hour_start + timedelta(minutes=minute)
+            p = gw_1m.position(id_1m)
+            assert p is not None
+            gw_1m.monitor_position(
+                p,
+                PaperBar(
+                    f"1m-{m_start.isoformat()}",
+                    "BTCUSDT",
+                    m_start,
+                    m_start + timedelta(minutes=1),
+                    m_start + timedelta(minutes=1),
+                    Decimal("100"),
+                    Decimal("102"),
+                    Decimal("99"),
+                    Decimal("101"),
+                ),
+                strategy_bar_closed=(minute == 59),
+            )
+    p_1m = gw_1m.position(id_1m)
+    assert p_1m is not None
+    assert p_1m.pending_exit_reason == "TIME_STOP"
+    res_1m = gw_1m.monitor_position(
+        p_1m,
+        PaperBar(
+            "1m-hour3-0",
+            "BTCUSDT",
+            hour3_start,
+            hour3_start + timedelta(minutes=1),
+            hour3_start + timedelta(minutes=1),
+            Decimal("102.35"),
+            Decimal("103"),
+            Decimal("102"),
+            Decimal("102.5"),
+        ),
+        strategy_bar_closed=False,
+    )
+
+    assert res_1h.exit_reason == res_1m.exit_reason == "TIME_STOP"
+    assert res_1h.exit_reference_price == res_1m.exit_reference_price == Decimal("102.35")
+    assert res_1h.position.bars_held == res_1m.position.bars_held == 2
+    assert res_1h.position.net_realized_pnl == res_1m.position.net_realized_pnl
+    fill_1h = next(iter(gw_1h._close_keys.values())).fill
+    fill_1m = next(iter(gw_1m._close_keys.values())).fill
+    assert fill_1h is not None
+    assert fill_1m is not None
+    assert fill_1h.filled_at == fill_1m.filled_at == hour3_start

@@ -31,6 +31,7 @@ DERIVATIVES_SOURCE_ID = "BINANCE_USDM_DERIVATIVES_STATS"
 DERIVATIVES_DIGEST_VERSION = "derivatives_digest.v1"
 STATS_PERIOD = "1h"
 OI_LOOKBACK_PERIODS = 25  # kỳ hiện tại + 24 kỳ 1h trước → thay đổi OI 24 giờ
+MAX_FUTURES_DATA_REQUESTS_PER_5M = 1000
 DIGEST_MAX_AGE = timedelta(hours=3)
 DIGEST_MAX_ROWS = 20
 # Đồng hồ máy chủ Binance có thể nhanh hơn đồng hồ local vài giây: chấp nhận lệch nhỏ và đẩy
@@ -87,6 +88,14 @@ class DerivativesSnapshot:
     top_at: datetime | None = None
     taker_buy_sell_ratio: Decimal | None = None
     taker_at: datetime | None = None
+    index_price: Decimal | None = None
+    basis: Decimal | None = None
+    basis_rate: Decimal | None = None
+    basis_at: datetime | None = None
+    ticker_last_price: Decimal | None = None
+    ticker_quote_volume_24h: Decimal | None = None
+    ticker_price_change_pct_24h: Decimal | None = None
+    ticker_at: datetime | None = None
 
     @property
     def oi_change_24h(self) -> Decimal | None:
@@ -114,6 +123,14 @@ class DerivativesSnapshot:
             "top_at": self.top_at,
             "taker_buy_sell_ratio": self.taker_buy_sell_ratio,
             "taker_at": self.taker_at,
+            "index_price": self.index_price,
+            "basis": self.basis,
+            "basis_rate": self.basis_rate,
+            "basis_at": self.basis_at,
+            "ticker_last_price": self.ticker_last_price,
+            "ticker_quote_volume_24h": self.ticker_quote_volume_24h,
+            "ticker_price_change_pct_24h": self.ticker_price_change_pct_24h,
+            "ticker_at": self.ticker_at,
         }
 
 
@@ -191,7 +208,46 @@ def build_snapshot(
     taker, taker_at = _latest_ratio(
         raw.get("taker"), "takerlongshortRatio", "buySellRatio", symbol, collected_at
     )
-    moments = [m for m in (premium_time, oi_at, ls_at, top_at, taker_at) if m is not None]
+    index_price: Decimal | None = None
+    if premium.get("indexPrice") is not None:
+        index_price = _decimal(premium.get("indexPrice"), "premiumIndex.indexPrice", positive=True)
+    basis_val = basis_rate = None
+    basis_at: datetime | None = None
+    if raw.get("basis") is not None:
+        basis_rows = _rows(raw.get("basis"), "basis", None)
+        for item in basis_rows:
+            if item.get("pair") != symbol or item.get("contractType") != "PERPETUAL":
+                raise DerivativesContractError("basis: pair hoặc contractType không khớp.")
+        if basis_rows:
+            last_basis = basis_rows[-1]
+            basis_val = _decimal(last_basis.get("basis"), "basis.basis")
+            basis_rate = _decimal(last_basis.get("basisRate"), "basis.basisRate")
+            if last_basis.get("indexPrice") is not None:
+                index_price = _decimal(
+                    last_basis.get("indexPrice"), "basis.indexPrice", positive=True
+                )
+            basis_at = _instant(
+                last_basis.get("timestamp"), "basis.timestamp", not_after=collected_at
+            )
+    ticker_last = ticker_qvol = ticker_pct = None
+    ticker_at: datetime | None = None
+    if raw.get("ticker_24h") is not None:
+        ticker = raw.get("ticker_24h")
+        if not isinstance(ticker, Mapping) or ticker.get("symbol") != symbol:
+            raise DerivativesContractError("ticker_24h thiếu hoặc sai symbol.")
+        ticker_last = _decimal(ticker.get("lastPrice"), "ticker_24h.lastPrice", positive=True)
+        ticker_qvol = _decimal(ticker.get("quoteVolume"), "ticker_24h.quoteVolume")
+        if ticker_qvol < 0:
+            raise DerivativesContractError("ticker_24h.quoteVolume không được âm.")
+        ticker_pct = _decimal(ticker.get("priceChangePercent"), "ticker_24h.priceChangePercent")
+        ticker_at = _instant(
+            ticker.get("closeTime"), "ticker_24h.closeTime", not_after=collected_at
+        )
+    moments = [
+        m
+        for m in (premium_time, oi_at, ls_at, top_at, taker_at, basis_at, ticker_at)
+        if m is not None
+    ]
     return DerivativesSnapshot(
         symbol=symbol,
         collected_at=max([received_at, *moments]),
@@ -209,6 +265,14 @@ def build_snapshot(
         top_at=top_at,
         taker_buy_sell_ratio=taker,
         taker_at=taker_at,
+        index_price=index_price,
+        basis=basis_val,
+        basis_rate=basis_rate,
+        basis_at=basis_at,
+        ticker_last_price=ticker_last,
+        ticker_quote_volume_24h=ticker_qvol,
+        ticker_price_change_pct_24h=ticker_pct,
+        ticker_at=ticker_at,
     )
 
 
@@ -263,6 +327,10 @@ def derivatives_digest(
             "long_short_account_ratio": _text(snap.long_short_account_ratio, 4),
             "top_trader_position_ratio": _text(snap.top_position_ratio, 4),
             "taker_buy_sell_ratio": _text(snap.taker_buy_sell_ratio, 4),
+            "basis_rate_pct": _text(
+                snap.basis_rate * 100 if snap.basis_rate is not None else None, 4
+            ),
+            "quote_volume_24h_usdt": _text(snap.ticker_quote_volume_24h, 0),
             "collected_at": snap.collected_at.isoformat(),
         }
         for snap in ordered[:max_rows]
@@ -284,6 +352,7 @@ __all__ = [
     "DERIVATIVES_DIGEST_VERSION",
     "DERIVATIVES_SOURCE_ID",
     "DIGEST_MAX_AGE",
+    "MAX_FUTURES_DATA_REQUESTS_PER_5M",
     "OI_LOOKBACK_PERIODS",
     "STATS_PERIOD",
     "DerivativesContractError",
