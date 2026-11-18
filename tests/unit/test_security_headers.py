@@ -39,10 +39,11 @@ def test_local_responses_carry_security_headers_without_hsts() -> None:
 
 
 def test_production_responses_add_hsts() -> None:
-    client = TestClient(create_app(AppSettings(app_env="production")))
+    client = TestClient(create_app(AppSettings(app_env="production", allowed_hosts="testserver")))
 
     response = client.get("/health/live")
 
+    assert response.status_code == 200
     _assert_baseline_headers(response.headers)
     assert response.headers["strict-transport-security"] == "max-age=31536000; includeSubDomains"
 
@@ -75,7 +76,12 @@ def test_route_defined_cache_control_is_not_overridden() -> None:
 
 def test_security_headers_helper_only_adds_hsts_for_production() -> None:
     local_names = {name for name, _ in security_headers(AppSettings(app_env="local"))}
-    production_names = {name for name, _ in security_headers(AppSettings(app_env="production"))}
+    production_names = {
+        name
+        for name, _ in security_headers(
+            AppSettings(app_env="production", allowed_hosts="testserver")
+        )
+    }
 
     assert "Strict-Transport-Security" not in local_names
     assert production_names - local_names == {"Strict-Transport-Security"}

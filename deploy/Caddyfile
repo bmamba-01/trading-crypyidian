@@ -1,0 +1,39 @@
+# Template Reverse Proxy TLS (Caddy v2) cho Crypidian Admin Web (SEC-29, SEC-30, SEC-36).
+# Tham chiếu (kiểm tra 2026-11-18):
+# - https://caddyserver.com/docs/caddyfile/directives/reverse_proxy
+# - https://caddyserver.com/docs/caddyfile/directives/request_body
+#
+# Thay CRYPIDIAN_PUBLIC_HOST bằng tên miền thật (ví dụ admin.crypidian.example).
+# Mặc định Caddy bỏ qua X-Forwarded-* do client tự gửi để chống giả mạo IP; chỉ bật
+# `servers { trusted_proxies static <CIDR> }` khi có CDN/Load Balancer tin cậy đứng trước.
+{$CRYPIDIAN_PUBLIC_HOST:localhost} {
+	encode zstd gzip
+
+	# Giới hạn kích thước request body ở tầng proxy (khớp TRADING_BOT_REQUEST_BODY_MAX_BYTES).
+	request_body {
+		max_size 1MB
+	}
+
+	# SEC-36: webhook Telegram chỉ nhận từ hai dải IP chính thức của Telegram Bot API.
+	@telegram_webhook path /api/v1/telegram/webhook*
+	handle @telegram_webhook {
+		@telegram_allowed remote_ip 149.154.160.0/20 91.108.4.0/22
+		handle @telegram_allowed {
+			request_body {
+				max_size 64KB
+			}
+			reverse_proxy admin-web:8000 {
+				header_up -Forwarded
+				header_down -Server
+			}
+		}
+		respond 403
+	}
+
+	handle {
+		reverse_proxy admin-web:8000 {
+			header_up -Forwarded
+			header_down -Server
+		}
+	}
+}

@@ -66,11 +66,30 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    command:
+      - uvicorn
+      - trading_bot.app:app
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8000"
+      - --proxy-headers
+      - --forwarded-allow-ips
+      - ${TRADING_BOT_TRUSTED_PROXY_IPS:-127.0.0.1,::1}
+      - --limit-concurrency
+      - ${TRADING_BOT_UVICORN_LIMIT_CONCURRENCY:-128}
+      - --no-server-header
     environment:
       <<: *scorer_test_policy_environment
       TRADING_BOT_APP_ENV: local
       TRADING_BOT_TRADING_MODE: PAPER
       TRADING_BOT_PROCESS_ROLE: admin-web
+      # SEC-29/SEC-30: danh sách Host hợp lệ, dải IP proxy tin cậy và giới hạn request/body.
+      TRADING_BOT_ALLOWED_HOSTS: ${TRADING_BOT_ALLOWED_HOSTS:-}
+      TRADING_BOT_TRUSTED_PROXY_IPS: ${TRADING_BOT_TRUSTED_PROXY_IPS:-127.0.0.1,::1}
+      TRADING_BOT_REQUEST_BODY_MAX_BYTES: ${TRADING_BOT_REQUEST_BODY_MAX_BYTES:-1048576}
+      TRADING_BOT_RATE_LIMIT_MUTATION_PER_MINUTE: ${TRADING_BOT_RATE_LIMIT_MUTATION_PER_MINUTE:-60}
+      TRADING_BOT_RATE_LIMIT_HEAVY_READ_PER_MINUTE: ${TRADING_BOT_RATE_LIMIT_HEAVY_READ_PER_MINUTE:-30}
       # Cờ kiểm thử local: chấp nhận mã xác thực cố định 123456. Mặc định tắt; cấu hình từ chối
       # bật khi app_env không phải local/test hoặc mode không phải PAPER.
       TRADING_BOT_AUTH_TEST_TOTP_ENABLED: ${TRADING_BOT_AUTH_TEST_TOTP_ENABLED:-false}
