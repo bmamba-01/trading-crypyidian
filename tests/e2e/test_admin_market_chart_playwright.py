@@ -429,6 +429,13 @@ def test_market_chart_renders_overlays_polls_and_is_responsive(server_url: str) 
         page.goto(f"{server_url}/admin/chart?timeframe=5m", wait_until="networkidle")
         page.evaluate("() => document.documentElement.setAttribute('data-theme', 'dark')")
         expect(page.locator("#market-chart canvas").first).to_be_visible()
+        metrics_box = page.locator("#mc-live-strip").bounding_box()
+        filters_box = page.locator(".mc-toolbar").bounding_box()
+        chart_card_box = page.locator(".mc-chart-card").bounding_box()
+        assert metrics_box is not None
+        assert filters_box is not None
+        assert chart_card_box is not None
+        assert metrics_box["y"] < filters_box["y"] < chart_card_box["y"]
         chart_box = page.locator("#market-chart").bounding_box()
         assert chart_box is not None
         assert chart_box["y"] < 800
@@ -532,6 +539,9 @@ def test_market_chart_renders_overlays_polls_and_is_responsive(server_url: str) 
 
         # CK-6: bảng Entry — tiến độ k/n, còn thiếu, ghim kịch bản lên chart.
         board = page.locator("#mc-entry-board")
+        first_setup = board.locator("details.mc-setup").first
+        first_summary = first_setup.locator("summary")
+        expect(first_setup).not_to_have_attribute("open")
         expect(board).to_contain_text("Bắt buộc 2/3")
         expect(board).to_contain_text("Còn thiếu: ADX14 1h đủ mạnh")
         # CK-12: giám sát bot — kết luận và chỗ chạy.
@@ -542,6 +552,14 @@ def test_market_chart_renders_overlays_polls_and_is_responsive(server_url: str) 
         expect(board.locator("[data-setup-status]").first).to_have_attribute(
             "data-setup-status", "not_ready"
         )
+        first_summary.focus()
+        first_summary.press("Enter")
+        expect(first_setup).to_have_attribute("open", "")
+        expect(board.locator("[data-monitor-slots]")).to_have_text("1/3")
+        expect(first_setup.locator(".sc-checklist li")).to_have_count(6)
+        board.screenshot(path=str(SCREENSHOTS_DIR / "ck6-entry-board-details-desktop.png"))
+        first_summary.press("Enter")
+        expect(first_setup).not_to_have_attribute("open")
         pin = page.locator("[data-setup-pin]")
         expect(pin.locator("option")).to_have_count(2)
         pin.select_option("0")
@@ -587,7 +605,12 @@ def test_market_chart_renders_overlays_polls_and_is_responsive(server_url: str) 
         page.reload(wait_until="networkidle")
         box = chart.bounding_box()
         count = page.locator("[data-draw-count]")
+        draw_tools = page.locator("[data-draw-tools]")
+        expect(draw_tools).not_to_have_attribute("open", "")
         expect(count).to_have_text("0 hình vẽ")
+        draw_tools.locator("summary").focus()
+        page.keyboard.press("Enter")
+        expect(draw_tools).to_have_attribute("open", "")
         page.locator('[data-draw-tool="trendline"]').click()
         chart.click(position={"x": box["width"] * 0.3, "y": box["height"] * 0.3})
         chart.click(position={"x": box["width"] * 0.6, "y": box["height"] * 0.5})
@@ -631,8 +654,12 @@ def test_market_chart_renders_overlays_polls_and_is_responsive(server_url: str) 
         chart.click(position={"x": box["width"] * 0.5, "y": box["height"] * 0.2})
         expect(count).to_have_text("3 hình vẽ")
         page.locator('[data-draw-toggle="lock"]').click()
+        draw_tools.locator("summary").click()
+        expect(draw_tools).not_to_have_attribute("open", "")
+        expect(count).to_be_visible()
         page.reload(wait_until="networkidle")
         expect(page.locator("[data-draw-count]")).to_have_text("3 hình vẽ")
+        expect(page.locator("[data-draw-tools]")).not_to_have_attribute("open", "")
 
         # CK-8: preset lớp và đếm "Lớp a/b".
         page.locator("[data-chart-settings-open]").click()
@@ -751,9 +778,10 @@ def test_market_chart_renders_overlays_polls_and_is_responsive(server_url: str) 
             _assert_no_horizontal_overflow(page, f"{width}px")
             # CK-8: điện thoại chỉ xem bản vẽ (ẩn thanh công cụ vẽ).
             if width < 768:
-                expect(page.locator("[data-draw-toolbar]")).to_be_hidden()
+                expect(page.locator("[data-draw-tools]")).to_be_hidden()
             else:
-                expect(page.locator("[data-draw-toolbar]")).to_be_visible()
+                expect(page.locator("[data-draw-tools]")).to_be_visible()
+                expect(page.locator("[data-draw-toolbar]")).to_be_hidden()
             strip_box = page.locator("#mc-live-strip").bounding_box()
             assert strip_box is not None
             assert strip_box["x"] + strip_box["width"] <= width + 1, f"dải thông số @ {width}px"

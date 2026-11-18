@@ -36,81 +36,8 @@
 {% set OV_ZONE = {"premium": "Vùng đắt (premium)", "discount": "Vùng rẻ (discount)", "equilibrium": "Cân bằng"} %}
 {% set OV_ARROW = {"up": "▲", "down": "▼", "range": "◆", "unknown": "·"} %}
 <div class="mc-page">
-  <section class="glass-card mc-toolbar" aria-label="Chọn bot, khung và lớp hiển thị">
-    {% if bots %}
-    <form class="mc-toolbar__select" method="get" action="/admin/chart">
-      <label for="mc-bot">Bot</label>
-      <select id="mc-bot" name="bot_id">
-        {% for bot in bots %}<option value="{{ bot.id }}" {% if selected_bot and bot.id == selected_bot.id %}selected{% endif %}>{{ bot.name }}</option>{% endfor %}
-      </select>
-      {% if series %}
-      <label for="mc-symbol">Mã</label>
-      {#- Ô chọn mã có tìm kiếm và biểu tượng coin (UI kit v1.1); chỉ liệt kê mã có nến đã lưu. -#}
-      <select id="mc-symbol" name="symbol" data-searchable="coins">
-        {% for choice in symbol_choices %}<option value="{{ choice.value }}"{% for key, value in (choice.data or {}).items() %} data-{{ key }}="{{ value }}"{% endfor %}{% if choice.selected %} selected{% endif %}>{{ choice.value }}</option>{% endfor %}
-      </select>
-      {% endif %}
-      <input type="hidden" name="timeframe" value="{{ timeframe }}">
-      <button type="submit" class="btn btn-secondary">Xem</button>
-    </form>
-    {% if selected_symbol %}
-    <nav class="mc-timeframes" aria-label="Khung thời gian">
-      {% for item in timeframes %}
-      {% set has_data = item in available_timeframes %}
-      <a href="/admin/chart?bot_id={{ selected_bot.id | urlencode }}&symbol={{ selected_symbol | urlencode }}&timeframe={{ item | urlencode }}" class="mc-timeframe{% if item == timeframe %} is-active{% endif %}{% if not has_data %} is-empty{% endif %}" {% if item == timeframe %}aria-current="true"{% endif %} title="{% if has_data %}Có nến đã lưu{% else %}Chưa có nến đã lưu cho khung này{% endif %}">{{ item | upper }}</a>
-      {% endfor %}
-    </nav>
-    {% endif %}
-    {% if chart_payload %}
-    <button type="button" class="btn btn-secondary mc-settings-trigger" data-chart-settings-open
-      aria-controls="mc-chart-settings" aria-expanded="false" aria-haspopup="dialog"
-      title="Cài đặt lớp hiển thị"
-      aria-label="Mở cài đặt lớp hiển thị">
-      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></svg>
-      <span>Lớp</span><span class="mc-layer-count" data-layer-count data-layer-count-compact>—</span>
-    </button>
-    {#- CK-8: dialog bên phải giữ preset, nhóm lớp và số lớp bật; đóng mặc định để chart vào viewport. -#}
-    <dialog id="mc-chart-settings" class="mc-settings" data-chart-settings aria-labelledby="mc-settings-title"
-      aria-describedby="mc-settings-description">
-      <header class="mc-settings__head">
-        <div>
-          <h2 id="mc-settings-title">Lớp hiển thị <span class="mc-layer-count" data-layer-count>—</span></h2>
-          <p id="mc-settings-description">Chọn các lớp sẽ vẽ trên biểu đồ. Tùy chọn được lưu trên trình duyệt này.</p>
-        </div>
-        <button type="button" class="btn btn-secondary mc-settings__close" data-chart-settings-close aria-label="Đóng cài đặt lớp">×</button>
-      </header>
-      {#- CK-8: panel lớp nhóm theo loại và preset. -#}
-    {% set LAYER_GROUPS = [
-      ("Giá và chỉ báo", ["ema", "vwap", "zigzag", "rsi", "macd"]),
-      ("Cấu trúc và ICT", ["structure", "trendlines", "levels", "sessions", "ict_zones", "equal_levels", "killzones"]),
-      ("Khối lượng", ["profile", "tpo", "profile_levels", "vsa"]),
-      ("Giao dịch", ["signal", "paper", "quote"]),
-    ] %}
-    <fieldset class="mc-layers">
-      <legend class="visually-hidden">Lớp biểu đồ</legend>
-      <div class="mc-layer-presets">
-        <label for="mc-layer-preset">Bộ lớp</label>
-        <select id="mc-layer-preset" data-layer-preset>
-          <option value="">Tự chọn</option>
-          <option value="default">Mặc định</option>
-          <option value="ict">ICT</option>
-          <option value="volume">Volume</option>
-          <option value="minimal">Tối giản</option>
-        </select>
-      </div>
-      {% for group_label, keys in LAYER_GROUPS %}
-      <div class="mc-layer-group" role="group" aria-label="{{ group_label }}">
-        <span class="mc-layer-group__title">{{ group_label }}</span>
-        {% for key, label, default_on in LAYERS if key in keys %}
-        <label class="mc-layer switch-row"><span>{{ label }}</span><input type="checkbox" class="ios-switch" role="switch" data-layer="{{ key }}" data-default="{{ 'on' if default_on else 'off' }}" {% if default_on %}checked{% endif %}></label>
-        {% endfor %}
-      </div>
-      {% endfor %}
-    </fieldset>
-    </dialog>
-    {% endif %}
-    {% endif %}
-  </section>
+  {% if not chart_payload or not overview %}{% include "admin/_market_chart_toolbar.html" %}{% endif %}
+
 
   {% if not bots %}
   <section class="glass-card mc-empty" role="status">
@@ -163,6 +90,7 @@
     <ul class="mc-live__notices" data-ov-notices>{% for notice in overview.notices %}<li>{{ notice }}</li>{% endfor %}</ul>
   </section>
   {% endif %}
+  {% if chart_payload and overview %}{% include "admin/_market_chart_toolbar.html" %}{% endif %}
   <div class="mc-main">
   <section class="glass-card mc-chart-card" aria-labelledby="mc-title">
     <header class="mc-head">
@@ -200,8 +128,14 @@
         </ul>
       </details>
     </div>
-    {#- CK-8: công cụ vẽ (lưu trong trình duyệt theo mã). Ẩn trên điện thoại: chỉ xem bản vẽ. -#}
-    <div class="mc-draw-toolbar" role="toolbar" aria-label="Công cụ vẽ" data-draw-toolbar>
+    {#- CK-8: thu gọn nhóm công cụ vẽ, vẫn giữ số hình ngay trên biểu đồ. -#}
+    <details class="mc-draw-tools" data-draw-tools>
+      <summary class="mc-draw-tools__summary">
+        <svg aria-hidden="true" viewBox="0 0 20 20" focusable="false"><path d="M3 15.5 13.8 4.7a2.1 2.1 0 0 1 3 3L6 18.5H3v-3Z"/><path d="m11.9 6.6 3 3"/></svg>
+        <span>Công cụ vẽ</span>
+        <span class="sc-meta" data-draw-count>0 hình vẽ</span>
+      </summary>
+      <div class="mc-draw-toolbar" role="toolbar" aria-label="Công cụ vẽ" data-draw-toolbar>
       <button type="button" class="btn btn-secondary mc-control" data-draw-tool="cursor" aria-pressed="true" title="Chọn hình (Esc bỏ chọn, Delete xóa)">Con trỏ</button>
       <button type="button" class="btn btn-secondary mc-control" data-draw-tool="trendline" aria-pressed="false">Trendline</button>
       <button type="button" class="btn btn-secondary mc-control" data-draw-tool="hline" aria-pressed="false">Đường ngang</button>
@@ -217,8 +151,8 @@
       <button type="button" class="btn btn-secondary mc-control" data-draw-action="undo" title="Hoàn tác (Ctrl/Cmd+Z)">Hoàn tác</button>
       <button type="button" class="btn btn-secondary mc-control" data-draw-action="redo" title="Làm lại (Ctrl/Cmd+Shift+Z)">Làm lại</button>
       <button type="button" class="btn btn-secondary mc-control" data-draw-action="delete" title="Xóa hình đang chọn; không chọn thì hỏi xóa tất cả">Xóa</button>
-      <span class="sc-meta" data-draw-count>0 hình vẽ</span>
-    </div>
+      </div>
+    </details>
     <div id="market-chart" class="mc-canvas" tabindex="0" role="img" aria-label="Biểu đồ nến {{ chart_payload.symbol }} khung {{ timeframe }} với cấu trúc thị trường, phiên và volume profile" data-bot-id="{{ selected_bot.id }}" data-symbol="{{ selected_symbol }}" data-timeframe="{{ timeframe }}"></div>
     {#- CK-9: thanh trạng thái dữ liệu (cập nhật cùng overview 2 giây) và nút kiểm dữ liệu. -#}
     {% set ds = overview.data_status if overview else none %}
@@ -389,21 +323,29 @@
       {% endif %}
     </header>
     {% if setups %}
-    <div class="mc-entry__grid">
+    <div class="mc-entry__list">
       {% for setup in setups %}
-      <article class="mc-setup mc-setup--{{ setup.status }}" data-setup-status="{{ setup.status }}">
-        <header class="mc-setup__head">
-          <h3>{{ setup.bot_name }} <span class="mc-setup__strategy">{{ setup.strategy_id }} · {{ setup.label }}</span></h3>
-          <span class="mc-setup__status">{{ setup.status_label }}</span>
-        </header>
-        <p class="mc-setup__progress">
-          <span>Bắt buộc <strong>{{ setup.required.passed }}/{{ setup.required.total }}</strong></span>
-          <span>Cộng điểm <strong>{{ setup.bonus.passed }}/{{ setup.bonus.total }}</strong>{% if setup.bonus.k %} (cần ≥ {{ setup.bonus.k }}){% endif %}</span>
-          {% if setup.direction %}<span class="sc-direction sc-direction--{{ setup.direction }}">{{ 'MUA' if setup.direction == 'long' else 'BÁN' }}</span>{% endif %}
-          {% if setup.evaluated_at %}<span class="sc-meta">quyết định {{ setup.evaluated_at | local_minute }}</span>{% endif %}
-        </p>
-        {#- CK-12: giám sát bot — kết luận, trạng thái vận hành, bảo vệ vốn, lối tắt (không nút 1 chạm). -#}
-        <p class="mc-setup__verdict" data-setup-verdict>{{ setup.verdict }}</p>
+      <details class="mc-setup mc-setup--{{ setup.status }}" data-setup-status="{{ setup.status }}">
+        <summary class="mc-setup__summary">
+          <span class="mc-setup__identity">
+            <span class="mc-setup__name">{{ setup.bot_name }}</span>
+            <span class="mc-setup__strategy">{{ setup.strategy_id }} · {{ setup.label }}</span>
+          </span>
+          <span class="mc-setup__state">
+            <span class="mc-setup__status">{{ setup.status_label }}</span>
+            <span class="mc-setup__verdict" data-setup-verdict>{{ setup.verdict }}</span>
+          </span>
+          <span class="mc-setup__progress">
+            <span>Bắt buộc <strong>{{ setup.required.passed }}/{{ setup.required.total }}</strong></span>
+            <span>Cộng điểm <strong>{{ setup.bonus.passed }}/{{ setup.bonus.total }}</strong></span>
+          </span>
+          <span class="mc-setup__signal">
+            {% if setup.direction %}<span class="sc-direction sc-direction--{{ setup.direction }}">{{ 'MUA' if setup.direction == 'long' else 'BÁN' }}</span>{% endif %}
+            {% if setup.evaluated_at %}<span class="sc-meta">{{ setup.evaluated_at | local_minute }}</span>{% endif %}
+          </span>
+          <span class="mc-setup__chevron" aria-hidden="true"></span>
+        </summary>
+        <div class="mc-setup__details">
         <dl class="mc-monitor" data-bot-monitor>
           <div><dt>Vận hành</dt><dd>{% if setup.runtime %}{{ setup.runtime.entry_state | label_vi }}{% if setup.runtime.workspace_kill_state != "ACTIVE" %} · workspace {{ setup.runtime.workspace_kill_state | label_vi }}{% endif %} · {{ "cho phép vào lệnh" if setup.runtime.entry_allowed else "không vào lệnh mới" }}{% else %}Chưa đọc được{% endif %}</dd></div>
           {% set pr = setup.protection %}
@@ -424,7 +366,8 @@
           {% endfor %}
         </ul>
         {% if setup.unverified_decisions %}<p class="sc-meta">Bỏ qua {{ setup.unverified_decisions }} quyết định không khớp hash.</p>{% endif %}
-      </article>
+        </div>
+      </details>
       {% endfor %}
     </div>
     <p class="mc-mtf__note">Điều kiện bắt buộc lấy từ checklist quyết định gần nhất của bot (nến đã đóng); điều kiện cộng điểm tính lúc tải trang và chưa nằm trong rule (k = 0). Không có nút đặt lệnh: khi đủ điều kiện, quyết định vẫn đi qua planner và risk gate.</p>

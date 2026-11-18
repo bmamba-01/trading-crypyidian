@@ -141,7 +141,7 @@
     return { type: pending.type, points: [pending.start, pending.end || pending.start] };
   };
 
-  const countNode = toolbar.querySelector("[data-draw-count]");
+  const countNode = toolbar.closest("[data-draw-tools]")?.querySelector("[data-draw-count]");
   const refresh = () => {
     layer.set(drawings, !hidden);
     if (countNode) countNode.textContent = `${drawings.length} hình vẽ`;

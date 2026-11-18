@@ -621,6 +621,10 @@ def test_chart_page_renders_entry_board_with_missing_condition_and_bonus() -> No
     assert [name for _, name in call["bots"]] == ["Bot BTC", "Bot khác"]
     assert [item["key"] for item in call["bonus"]] == ["killzone", "funding_clear", "news"]
     assert 'id="mc-entry-board"' in html
+    assert html.index('id="mc-live-strip"') < html.index('class="glass-card mc-toolbar"')
+    assert '<details class="mc-setup mc-setup--' in html
+    assert '<summary class="mc-setup__summary">' in html
+    assert 'class="mc-setup__details"' in html
     assert "Bắt buộc <strong>2/3</strong>" in html
     assert "Còn thiếu: ADX14 1h đủ mạnh — hiện 12, cần &gt;= 20" in html
     assert "đạt từ" in html
@@ -652,7 +656,10 @@ def test_chart_page_has_drawing_toolbar_layer_presets_and_multi_chart() -> None:
         .get("/admin/chart?timeframe=5m")
         .text
     )
+    assert '<details class="mc-draw-tools" data-draw-tools>' in html
+    assert '<summary class="mc-draw-tools__summary">' in html
     assert "data-draw-toolbar" in html
+    assert 'data-draw-count>0 hình vẽ</span>' in html
     for tool in ("trendline", "hline", "ray", "rect", "fib", "text"):
         assert f'data-draw-tool="{tool}"' in html
     for toggle in ("magnet", "lock", "hide"):
