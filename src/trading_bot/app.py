@@ -31,10 +31,13 @@ from trading_bot.adapters.database.repositories.flatten_snapshot import (
 from trading_bot.adapters.database.source_policy_admin import DatabaseSourcePolicyAdminRepository
 from trading_bot.adapters.paper.account_activity import PaperLedgerAccountActivityAdapter
 from trading_bot.adapters.secrets.local_mfa import LocalMfaSecretProvider
-from trading_bot.adapters.telegram.bot_api_sender import (
-    TelegramBotApiSender,
-    load_telegram_bot_token,
+from trading_bot.adapters.secrets.telegram_token import (
+    DEFAULT_TELEGRAM_BOT_TOKEN_REFERENCE,
+    CompositeSecretProvider,
+    FileTelegramBotSecretProvider,
 )
+from trading_bot.adapters.telegram.bot_api_sender import TelegramBotApiSender
+from trading_bot.adapters.telegram.outbound_queue import ThrottledTelegramSender
 from trading_bot.adapters.telegram.recording_sender import RecordingTelegramSender
 from trading_bot.admin.audit_router import router as audit_router
 from trading_bot.admin.backtest_replay_router import router as backtest_replay_router
@@ -151,7 +154,11 @@ from trading_bot.observability.readiness import (
     WorkerReadinessState,
     evaluate_worker_readiness,
 )
-from trading_bot.ports.secrets import SecretProvider
+from trading_bot.ports.secrets import (
+    SecretAccessError,
+    SecretProvider,
+    TelegramBotSecretProvider,
+)
 from trading_bot.telegram.bot_commands import BotCommandHandler
 from trading_bot.telegram.webhook import (
     DatabaseTelegramStore,
@@ -281,15 +288,29 @@ def create_app(
 
             application.state.database_probe = _default_probe
         application.state.scorer_runtime_policy_provider = scorer_policy_provider
-        if (
-            active_secret_provider is None
-            and app_settings.mfa_encryption_key_file
-            and app_settings.mfa_secret_directory
-        ):
-            active_secret_provider = LocalMfaSecretProvider(
-                key_file=app_settings.mfa_encryption_key_file,
-                storage_directory=app_settings.mfa_secret_directory,
+        if active_secret_provider is None:
+            mfa_provider = (
+                LocalMfaSecretProvider(
+                    key_file=app_settings.mfa_encryption_key_file,
+                    storage_directory=app_settings.mfa_secret_directory,
+                )
+                if app_settings.mfa_encryption_key_file and app_settings.mfa_secret_directory
+                else None
             )
+            telegram_token_provider = (
+                FileTelegramBotSecretProvider(token_file=app_settings.telegram_bot_token_file)
+                if app_settings.telegram_bot_token_file is not None
+                else None
+            )
+            if mfa_provider is not None and telegram_token_provider is not None:
+                active_secret_provider = CompositeSecretProvider(
+                    mfa_provider=mfa_provider,
+                    telegram_provider=telegram_token_provider,
+                )
+            elif mfa_provider is not None:
+                active_secret_provider = mfa_provider
+            elif telegram_token_provider is not None:
+                active_secret_provider = telegram_token_provider
         if app_settings.auth_test_totp_enabled:
             logger.warning(
                 "AUTH_TEST_TOTP_ENABLED: chấp nhận mã xác thực cố định; chỉ cho kiểm thử local."
@@ -470,6 +491,7 @@ def create_app(
             )
         telegram_sender = _build_telegram_sender(
             app_settings,
+            secret_provider=active_secret_provider,
             required=app_settings.process_role == "signal-worker",
         )
         application.state.telegram_sender = telegram_sender
@@ -1174,20 +1196,66 @@ def _topic_creator(sender: Any) -> Any:
     return sender if callable(getattr(sender, "create_forum_topic", None)) else None
 
 
-def _build_telegram_sender(settings: AppSettings, *, required: bool) -> Any:
-    """Chỉ dùng sender thật khi token tồn tại; test/local giữ adapter recording."""
-    path = settings.telegram_bot_token_file
-    if path is None:
-        if required:
-            raise RuntimeError("signal-worker cần telegram_bot_token_file.")
+def _build_telegram_sender(
+    settings: AppSettings,
+    *,
+    secret_provider: SecretProvider | TelegramBotSecretProvider | None = None,
+    required: bool,
+) -> Any:
+    """Nạp token Telegram qua SecretProvider (fallback secret file ở local; fail-closed prod)."""
+    if settings.process_role not in {"admin-web", "signal-worker"}:
         return RecordingTelegramSender()
+
+    workspace_id = settings.signal_workspace_id or settings.telegram_workspace_id
+    reference = settings.telegram_bot_token_reference or DEFAULT_TELEGRAM_BOT_TOKEN_REFERENCE
+    telegram_configured = required or any(
+        value is not None
+        for value in (
+            settings.telegram_workspace_id,
+            settings.telegram_webhook_secret_file,
+            settings.telegram_bot_username,
+            settings.telegram_bot_token_reference,
+            settings.telegram_bot_token_file,
+        )
+    )
+
+    tg_provider: TelegramBotSecretProvider | None = None
+    if (
+        secret_provider is not None
+        and not isinstance(secret_provider, LocalMfaSecretProvider)
+        and callable(getattr(secret_provider, "resolve_telegram_bot_token", None))
+    ):
+        tg_provider = secret_provider
+    elif settings.telegram_bot_token_file is not None and (
+        settings.telegram_bot_token_reference is None or settings.app_env != "production"
+    ):
+        tg_provider = FileTelegramBotSecretProvider(token_file=settings.telegram_bot_token_file)
+
+    if tg_provider is None:
+        if required or (settings.app_env == "production" and telegram_configured):
+            raise RuntimeError(
+                "Telegram Bot API token yêu cầu SecretProvider hoặc secret file hợp lệ."
+            )
+        if settings.app_env == "production":
+            return None
+        return RecordingTelegramSender()
+
     try:
-        token = load_telegram_bot_token(path)
-    except OSError, ValueError:
-        if required or settings.app_env == "production":
-            raise RuntimeError("Telegram Bot API token chưa sẵn sàng.") from None
+        api_sender = TelegramBotApiSender.from_secret_provider(
+            tg_provider,
+            reference=reference,
+            workspace_id=workspace_id,
+        )
+    except SecretAccessError, ValueError:
+        if (
+            required
+            or settings.app_env == "production"
+            or settings.telegram_bot_token_reference is not None
+        ):
+            raise RuntimeError("Telegram Bot API token chưa sẵn sàng qua SecretProvider.") from None
         return RecordingTelegramSender()
-    return TelegramBotApiSender(token)
+
+    return ThrottledTelegramSender(api_sender, retry_on_error=not required)
 
 
 def _configured_scorer_policy_provider(

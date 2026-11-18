@@ -15,6 +15,14 @@ class SecretLease:
     value: str = field(repr=False)
 
 
+class TelegramBotSecretProvider(Protocol):
+    """Hợp đồng cấp lease token Telegram Bot API (hỗ trợ xoay vòng secret)."""
+
+    def resolve_telegram_bot_token(
+        self, reference: str, *, workspace_id: UUID | None = None
+    ) -> SecretLease: ...
+
+
 class SecretProvider(Protocol):
     """Hợp đồng lưu và phân phối bí mật theo workspace và danh tính process."""
 
@@ -25,3 +33,7 @@ class SecretProvider(Protocol):
     def delete_mfa_secret(self, workspace_id: UUID, reference: str) -> None: ...
 
     def resolve_for_gateway(self, workspace_id: UUID, reference: str) -> SecretLease: ...
+
+    def resolve_telegram_bot_token(
+        self, reference: str, *, workspace_id: UUID | None = None
+    ) -> SecretLease: ...

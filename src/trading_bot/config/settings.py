@@ -119,6 +119,7 @@ class AppSettings(BaseSettings):
     telegram_webhook_secret_file: Path | None = None
     telegram_bot_username: str | None = None
     telegram_bot_token_file: Path | None = None
+    telegram_bot_token_reference: str | None = None
     signal_worker_tick_seconds: float = Field(default=5.0, gt=0, le=300)
     signal_worker_max_candidate_age_seconds: int = Field(default=7200, ge=5, le=14_400)
     signal_worker_max_attempts: int = Field(default=5, ge=1, le=20)
@@ -231,7 +232,10 @@ class AppSettings(BaseSettings):
                 r"[A-Za-z0-9_]{5,32}", self.telegram_bot_username
             ):
                 raise ValueError("telegram_bot_username không hợp lệ hoặc sai process role.")
-        if self.telegram_bot_token_file is not None and self.process_role not in {
+        if (
+            self.telegram_bot_token_file is not None
+            or self.telegram_bot_token_reference is not None
+        ) and self.process_role not in {
             "admin-web",
             "signal-worker",
         }:
@@ -339,12 +343,14 @@ class AppSettings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_signal_worker_identity(self) -> AppSettings:
-        """Buộc signal worker có workspace riêng và token Bot API từ secret file."""
+        """Buộc signal worker có workspace riêng và tham chiếu/tệp token Bot API."""
         if self.process_role == "signal-worker":
             if self.signal_workspace_id is None:
                 raise ValueError("signal-worker cần signal_workspace_id từ deployment environment.")
-            if self.telegram_bot_token_file is None:
-                raise ValueError("signal-worker cần telegram_bot_token_file từ secret file.")
+            if self.telegram_bot_token_file is None and self.telegram_bot_token_reference is None:
+                raise ValueError(
+                    "signal-worker cần telegram_bot_token_reference hoặc telegram_bot_token_file."
+                )
         elif self.signal_workspace_id is not None:
             raise ValueError("signal_workspace_id chỉ dành cho process_role signal-worker.")
         if 0 < self.telegram_report_interval_minutes < 15:
@@ -363,7 +369,10 @@ class AppSettings(BaseSettings):
                 raise ValueError(
                     "market-signal-worker không được dùng workspace UUID placeholder toàn-0."
                 )
-            if self.telegram_bot_token_file is not None:
+            if (
+                self.telegram_bot_token_file is not None
+                or self.telegram_bot_token_reference is not None
+            ):
                 raise ValueError("market-signal-worker không được nhận token Telegram.")
         elif self.market_signal_workspace_id is not None:
             raise ValueError(

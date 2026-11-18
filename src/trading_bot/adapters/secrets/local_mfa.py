@@ -80,6 +80,13 @@ class LocalMfaSecretProvider:
         del workspace_id, reference
         raise SecretAccessError("Adapter local MFA không cấp secret giao dịch cho gateway")
 
+    def resolve_telegram_bot_token(
+        self, reference: str, *, workspace_id: UUID | None = None
+    ) -> SecretLease:
+        """Không cấp token Telegram Bot API từ adapter chỉ phục vụ MFA local."""
+        del reference, workspace_id
+        raise SecretAccessError("Adapter local MFA không cấp token Telegram Bot API")
+
     @staticmethod
     def _parse_reference(reference: str) -> UUID:
         prefix, separator, identifier = reference.partition(":")
