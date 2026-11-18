@@ -77,18 +77,26 @@ class TelegramBotApiSender:
         await self.aclose()
 
     async def send_message(
-        self, chat_id: int, text: str, *, message_thread_id: int | None = None
-    ) -> None:
-        """Gửi văn bản thuần; ``message_thread_id`` đưa tin vào một topic (TG-4).
+        self,
+        chat_id: int,
+        text: str,
+        *,
+        message_thread_id: int | None = None,
+        reply_to_message_id: int | None = None,
+    ) -> int | None:
+        """Gửi văn bản thuần; ``message_thread_id`` (TG-4) và ``reply_to_message_id`` (SIG-8).
 
-        Theo https://core.telegram.org/bots/api#sendmessage (kiểm 17/11/2026), tham số này dùng
-        cho supergroup forum và chat riêng của bot đã bật chế độ topic (Bot API 9.3+).
+        Theo https://core.telegram.org/bots/api#sendmessage (kiểm 17/11/2026), trả ``message_id``
+        nếu Telegram trả về đối tượng ``Message``.
         """
         _validate_message(chat_id, text)
         payload: dict[str, Any] = {"chat_id": chat_id, "text": text}
         if message_thread_id is not None:
             payload["message_thread_id"] = validate_thread_id(message_thread_id)
-        await self._request("sendMessage", payload)
+        if reply_to_message_id is not None:
+            payload["reply_parameters"] = {"message_id": validate_thread_id(reply_to_message_id)}
+        result = await self._post("sendMessage", json=payload)
+        return _extract_message_id(result)
 
     async def create_forum_topic(self, chat_id: int, name: str) -> int:
         """Tạo topic trong chat riêng với người dùng và trả ``message_thread_id`` (TG-4).
@@ -138,7 +146,8 @@ class TelegramBotApiSender:
         caption: str,
         *,
         message_thread_id: int | None = None,
-    ) -> None:
+        reply_to_message_id: int | None = None,
+    ) -> int | None:
         """Tải ảnh PNG bằng multipart/form-data (``sendPhoto``); caption thuần, không parse mode.
 
         Giới hạn theo https://core.telegram.org/bots/api#sendphoto (kiểm 15/11/2026): ảnh ≤ 10 MB,
@@ -154,13 +163,18 @@ class TelegramBotApiSender:
         data = {"chat_id": str(chat_id)}
         if message_thread_id is not None:
             data["message_thread_id"] = str(validate_thread_id(message_thread_id))
+        if reply_to_message_id is not None:
+            data["reply_parameters"] = json.dumps(
+                {"message_id": validate_thread_id(reply_to_message_id)}
+            )
         if caption:
             data["caption"] = caption
-        await self._post(
+        result = await self._post(
             "sendPhoto",
             data=data,
             files={"photo": ("card.png", bytes(png_bytes), "image/png")},
         )
+        return _extract_message_id(result)
 
     async def _request(self, method: str, payload: dict[str, Any]) -> None:
         await self._post(method, json=payload)
@@ -199,6 +213,15 @@ class TelegramBotApiSender:
                 retry_after=safe_retry_after,
             )
         return body.get("result")
+
+
+def _extract_message_id(result: Any) -> int | None:
+    if not isinstance(result, dict):
+        return None
+    msg_id = result.get("message_id")
+    if isinstance(msg_id, int) and not isinstance(msg_id, bool) and 0 < msg_id <= _MAX_THREAD_ID:
+        return msg_id
+    return None
 
 
 def validate_thread_id(thread_id: int) -> int:

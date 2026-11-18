@@ -18,10 +18,18 @@ class TopicBoundSender:
         self.thread_id = validate_thread_id(thread_id)
 
     async def send_message(
-        self, chat_id: int, text: str, *, message_thread_id: int | None = None
-    ) -> None:
-        await self._inner.send_message(
-            chat_id, text, message_thread_id=message_thread_id or self.thread_id
+        self,
+        chat_id: int,
+        text: str,
+        *,
+        message_thread_id: int | None = None,
+        reply_to_message_id: int | None = None,
+    ) -> int | None:
+        return await self._inner.send_message(
+            chat_id,
+            text,
+            message_thread_id=message_thread_id or self.thread_id,
+            reply_to_message_id=reply_to_message_id,
         )
 
     async def send_photo(
@@ -31,9 +39,14 @@ class TopicBoundSender:
         caption: str,
         *,
         message_thread_id: int | None = None,
-    ) -> None:
-        await self._inner.send_photo(
-            chat_id, png_bytes, caption, message_thread_id=message_thread_id or self.thread_id
+        reply_to_message_id: int | None = None,
+    ) -> int | None:
+        return await self._inner.send_photo(
+            chat_id,
+            png_bytes,
+            caption,
+            message_thread_id=message_thread_id or self.thread_id,
+            reply_to_message_id=reply_to_message_id,
         )
 
     async def send_link_confirmation(self, chat_id: int, text: str, callback_data: str) -> None:

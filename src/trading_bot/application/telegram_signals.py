@@ -185,14 +185,19 @@ def _card_lines(card: Mapping[str, object]) -> list[str]:
             + (f" – {_price(high)}" if high is not None and high != low else "")
         )
     lines.append(f"Cắt lỗ (SL): {_price(card.get('stop'))}")
+    risk_pct = card.get("account_risk_pct")
+    if risk_pct is not None:
+        lines.append(f"Rủi ro % vốn: {Decimal(str(risk_pct)):.2f}%".replace(".", ","))
     targets = card.get("targets")
     if isinstance(targets, list | tuple) and targets:
-        lines.append("Mục tiêu (R thô, chưa trừ phí):")
+        lines.append("Mục tiêu (R thô / R:R ròng sau phí):")
         for target in targets:
             if isinstance(target, Mapping):
+                net_r = target.get("net_r_multiple")
+                net_part = f" · ròng {_r_multiple(net_r)}R" if net_r is not None else ""
                 lines.append(
                     f"  • {target.get('label')}: {_price(target.get('price'))} "
-                    f"({_r_multiple(target.get('r_multiple'))}R)"
+                    f"({_r_multiple(target.get('r_multiple'))}R{net_part})"
                 )
     checklist = card.get("checklist")
     if isinstance(checklist, list | tuple) and checklist:
@@ -214,12 +219,22 @@ def _card_lines(card: Mapping[str, object]) -> list[str]:
         lines.extend(f"  • {line}" for line in invalidation)
     confidence = card.get("confidence")
     if isinstance(confidence, Mapping):
-        lines.append(f"Độ tin cậy: {confidence.get('label')} (chưa hiện %)")
+        tier = confidence.get("tier")
+        tier_note = f" [{tier}]" if tier and tier != "uncalibrated" else " (chưa hiện %)"
+        lines.append(f"Độ tin cậy: {confidence.get('label')}{tier_note}")
+    snapshot_id = card.get("feature_snapshot_id")
+    if snapshot_id:
+        lines.append(f"Feature snapshot: {snapshot_id}")
     return lines
 
 
 def build_signal_message(candidate: TelegramSignalCandidate) -> str:
     """Tạo nội dung thuần văn bản, không có lệnh giao dịch hoặc cú pháp parse-mode."""
+    from trading_bot.application.market_narrative import (
+        decision_narrative,
+        format_decision_narrative_text,
+    )
+
     lines = [
         "TÍN HIỆU THAM KHẢO — KHÔNG PHẢI LỆNH",
         f"Mã tín hiệu: {candidate.decision_id}",
@@ -236,6 +251,23 @@ def build_signal_message(candidate: TelegramSignalCandidate) -> str:
         lines.append(f"Điều kiện mất hiệu lực: {candidate.invalidation}")
     if candidate.card is not None:
         lines.extend(_card_lines(candidate.card))
+    narrative_text = format_decision_narrative_text(
+        decision_narrative(
+            {
+                "decision_id": str(candidate.decision_id),
+                "status": "CANDIDATE",
+                "reason_code": candidate.reason_code,
+                "detail_vi": candidate.detail_vi,
+                "evaluated_at": candidate.signal_at.isoformat(),
+                "strategy_release_id": candidate.strategy_release_id,
+                "direction": candidate.direction,
+            },
+            card=candidate.card,
+        ),
+        max_sentences=2,
+    )
+    if narrative_text:
+        lines.append(f"Tường thuật: {narrative_text}")
     lines.append("")
     lines.append("PAPER · mô phỏng nội bộ, không phải khuyến nghị đầu tư.")
     message = "\n".join(lines)
@@ -249,6 +281,8 @@ def build_signal_message(candidate: TelegramSignalCandidate) -> str:
 SUPPRESSED_COOLDOWN = "SIGNAL_COOLDOWN_DUPLICATE"
 SUPPRESSED_HOURLY_CAP = "SIGNAL_HOURLY_CAP"
 _HOUR = timedelta(hours=1)
+SCALPING_STRATEGY_IDS = frozenset({"H18", "H19", "H20"})
+SCALPING_TIMEFRAMES = frozenset({"1m", "3m", "5m"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -257,22 +291,38 @@ class SignalThrottlePolicy:
 
     - ``cooldown``: không gửi lại cùng mã + hướng + chiến lược + release trong khoảng này
       (gộp tín hiệu trùng khi rule lặp lại trên các nến liên tiếp).
+    - ``scalping_cooldown``: cooldown riêng cho scalping (H18–H20 hoặc khung 1m/3m/5m), tách
+      theo symbol + setup (``reason_code``).
     - ``max_per_hour``: tối đa số tin trong 60 phút trượt; tin vượt bị ghi ``SUPPRESSED``.
     """
 
     cooldown: timedelta = timedelta(minutes=90)
+    scalping_cooldown: timedelta = timedelta(minutes=15)
     max_per_hour: int = 6
 
     def __post_init__(self) -> None:
         if not timedelta(0) <= self.cooldown <= timedelta(hours=24):
             raise ValueError("Cooldown tín hiệu phải trong 0–24 giờ.")
+        if not timedelta(0) <= self.scalping_cooldown <= timedelta(hours=24):
+            raise ValueError("Cooldown scalping phải trong 0–24 giờ.")
         if not 1 <= self.max_per_hour <= 60:
             raise ValueError("Giới hạn tin/giờ phải trong 1–60.")
 
     @property
     def lookback(self) -> timedelta:
         """Khoảng lịch sử cần đọc để quyết định."""
-        return max(self.cooldown, _HOUR)
+        return max(self.cooldown, self.scalping_cooldown, _HOUR)
+
+    def cooldown_for(self, candidate: TelegramSignalCandidate) -> timedelta:
+        """Trả cooldown theo loại setup: scalping (H18–H20 / 1m–5m) dùng ngưỡng ngắn hơn."""
+        if is_scalping_candidate(candidate):
+            return self.scalping_cooldown
+        return self.cooldown
+
+
+def is_scalping_candidate(candidate: TelegramSignalCandidate) -> bool:
+    """Nhận diện tín hiệu scalping theo họ chiến lược (H18–H20)."""
+    return candidate.strategy_id.upper() in SCALPING_STRATEGY_IDS
 
 
 @dataclass(frozen=True, slots=True)
@@ -284,10 +334,18 @@ class RecentSignalDelivery:
 
 
 def signal_dedup_key(
-    *, symbol: str, direction: str, strategy_id: str, strategy_release_id: str
+    *,
+    symbol: str,
+    direction: str,
+    strategy_id: str,
+    strategy_release_id: str,
+    setup_code: str | None = None,
 ) -> str:
-    """Khóa gộp tín hiệu trùng; timeframe đã nằm trong release nên không lặp lại."""
-    return f"{symbol.upper()}|{direction.upper()}|{strategy_id}|{strategy_release_id}"
+    """Khóa gộp tín hiệu trùng; scalping (H18–H20) tách theo ``setup_code``."""
+    base = f"{symbol.upper()}|{direction.upper()}|{strategy_id}|{strategy_release_id}"
+    if setup_code:
+        return f"{base}|{setup_code.upper()}"
+    return base
 
 
 def candidate_dedup_key(candidate: TelegramSignalCandidate) -> str:
@@ -296,6 +354,7 @@ def candidate_dedup_key(candidate: TelegramSignalCandidate) -> str:
         direction=candidate.direction,
         strategy_id=candidate.strategy_id,
         strategy_release_id=candidate.strategy_release_id,
+        setup_code=candidate.reason_code if is_scalping_candidate(candidate) else None,
     )
 
 
@@ -308,8 +367,9 @@ def throttle_reason(
 ) -> str | None:
     """Mã lý do chặn tin (None = được gửi). Trùng được kiểm trước giới hạn giờ."""
     key = candidate_dedup_key(candidate)
+    cooldown = policy.cooldown_for(candidate)
     history = list(recent)
-    if any(item.dedup_key == key and now - item.at < policy.cooldown for item in history):
+    if any(item.dedup_key == key and now - item.at < cooldown for item in history):
         return SUPPRESSED_COOLDOWN
     if sum(1 for item in history if now - item.at < _HOUR) >= policy.max_per_hour:
         return SUPPRESSED_HOURLY_CAP

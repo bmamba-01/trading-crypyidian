@@ -64,8 +64,12 @@ def _strategy_and_timeframe(bot_name: str) -> tuple[str, str]:
 
 
 async def send_signal_card(
-    sender: TelegramMessageSender, chat_id: int, candidate: TelegramSignalCandidate
-) -> None:
+    sender: TelegramMessageSender,
+    chat_id: int,
+    candidate: TelegramSignalCandidate,
+    *,
+    reply_to_message_id: int | None = None,
+) -> int | None:
     """Thẻ tín hiệu tham khảo; dự phòng văn bản ``build_signal_message``."""
     try:
         view = signal_card_view_from(candidate)
@@ -73,9 +77,10 @@ async def send_signal_card(
         caption = signal_card_caption(view)
     except _RENDER_ERRORS as error:
         logger.warning("Không vẽ được thẻ tín hiệu; gửi văn bản. error=%s", type(error).__name__)
-        await sender.send_message(chat_id, build_signal_message(candidate))
-        return
-    await sender.send_photo(chat_id, png, caption)
+        return await sender.send_message(
+            chat_id, build_signal_message(candidate), reply_to_message_id=reply_to_message_id
+        )
+    return await sender.send_photo(chat_id, png, caption, reply_to_message_id=reply_to_message_id)
 
 
 def trade_card_view_from(view: TradeResultView) -> TradeCardView:
@@ -101,8 +106,12 @@ def trade_card_view_from(view: TradeResultView) -> TradeCardView:
 
 
 async def send_trade_result_card(
-    sender: TelegramMessageSender, chat_id: int, view: TradeResultView
-) -> None:
+    sender: TelegramMessageSender,
+    chat_id: int,
+    view: TradeResultView,
+    *,
+    reply_to_message_id: int | None = None,
+) -> int | None:
     """Thẻ mở/đóng vị thế PAPER; dự phòng văn bản ``format_trade_result_text``."""
     try:
         card = trade_card_view_from(view)
@@ -110,9 +119,10 @@ async def send_trade_result_card(
         caption = trade_card_caption(card)
     except _RENDER_ERRORS as error:
         logger.warning("Không vẽ được thẻ kết quả; gửi văn bản. error=%s", type(error).__name__)
-        await sender.send_message(chat_id, format_trade_result_text(view))
-        return
-    await sender.send_photo(chat_id, png, caption)
+        return await sender.send_message(
+            chat_id, format_trade_result_text(view), reply_to_message_id=reply_to_message_id
+        )
+    return await sender.send_photo(chat_id, png, caption, reply_to_message_id=reply_to_message_id)
 
 
 def summary_card_view_from(view: PaperReportView) -> SummaryCardView:

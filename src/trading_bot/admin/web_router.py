@@ -90,7 +90,7 @@ from trading_bot.application.market_chart import (
     chart_fingerprint,
 )
 from trading_bot.application.market_levels import price_levels
-from trading_bot.application.market_narrative import market_narrative
+from trading_bot.application.market_narrative import decision_narrative, market_narrative
 from trading_bot.application.market_scanner import MarketScannerError, MarketScannerService
 from trading_bot.application.operational_telemetry import OperationalHealthService
 from trading_bot.application.signal_outcome_review import (
@@ -1873,6 +1873,32 @@ async def bot_detail(
 
     bot_view = _bot_view(bot, runtime)
     trading_data = await _get_bot_trading_data(request, identity.principal, bot_id)
+    decision_insights: dict[str, Any] = {"narrative": [], "missing_vi": None}
+    reporting = getattr(request.app.state, "bot_reporting_service", None)
+    if reporting is not None:
+        try:
+            signal_view = await reporting.get_latest_signal(identity.principal, bot_id=bot_id)
+            latest_dec = signal_view.get("latest_decision")
+            latest_card = signal_view.get("card")
+            from trading_bot.domain.strategy.setup_progress import (
+                format_setup_missing_vi,
+                setup_progress,
+            )
+
+            setup_view: dict[str, Any] | None = None
+            if latest_dec is not None:
+                setup_view = setup_progress(
+                    strategy_release_id=str(latest_dec.get("strategy_release_id") or "—"),
+                    decisions=[latest_dec],
+                    bonus=(),
+                    now=datetime.now(UTC),
+                )
+            decision_insights = {
+                "narrative": decision_narrative(latest_dec, setup=setup_view, card=latest_card),
+                "missing_vi": format_setup_missing_vi(setup_view) if setup_view else None,
+            }
+        except BotReportError, HTTPException, SQLAlchemyError, ValueError:
+            decision_insights = {"narrative": [], "missing_vi": None}
 
     templates = _templates(request)
     versions = bot.get("versions", [])
@@ -1916,6 +1942,7 @@ async def bot_detail(
                 published_release_ids=published_release_ids,
             ),
             "exit_review": exit_review,
+            "decision_insights": decision_insights,
             "trading_data_available": trading_data["data_available"],
             "metrics": trading_data["metrics"],
             "positions": trading_data["positions"],

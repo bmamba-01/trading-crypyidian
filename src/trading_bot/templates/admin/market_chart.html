@@ -355,7 +355,7 @@
         </dl>
         {% if pr.note %}<p class="sc-meta">{{ pr.note }}</p>{% endif %}
         <p class="mc-setup__links"><a href="/admin/bots/{{ setup.bot_id }}">Trang bot (tạm dừng/tiếp tục có lý do)</a> · <a href="/admin/chart?bot_id={{ setup.bot_id | urlencode }}&symbol={{ selected_symbol | urlencode }}&timeframe={{ timeframe | urlencode }}">Xem bot này trên chart (dock "Nhật ký quyết định")</a></p>
-        {% if setup.missing %}<p class="mc-setup__missing">{{ setup.missing }}</p>{% endif %}
+        {% if setup.counterfactual and setup.counterfactual.summary_vi %}<p class="mc-setup__missing">{{ setup.counterfactual.summary_vi }}{% if setup.counterfactual.closest and setup.counterfactual.closest.key != setup.counterfactual.key %} · gần đạt nhất: {{ setup.counterfactual.closest.label_vi }} ({{ setup.counterfactual.closest.gap_text_vi }}){% endif %}</p>{% elif setup.missing %}<p class="mc-setup__missing">{{ setup.missing }}</p>{% endif %}
         <ul class="sc-checklist">
           {% for item in setup.conditions %}
           <li class="sc-check sc-check--{{ 'pass' if item.passed is sameas true else ('fail' if item.passed is sameas false else 'na') }}">
@@ -406,11 +406,12 @@
     </div>
     <dl class="sc-levels">
       <div class="sc-level"><dt>Vùng vào</dt><dd>{{ price(card.entry_zone.low) }}{% if card.entry_zone.high != card.entry_zone.low %} – {{ price(card.entry_zone.high) }}{% endif %}</dd></div>
-      <div class="sc-level sc-level--stop"><dt>Cắt lỗ (SL)</dt><dd>{{ price(card.stop) }}</dd></div>
+      <div class="sc-level sc-level--stop"><dt>Cắt lỗ (SL)</dt><dd>{{ price(card.stop) }}{% if card.account_risk_pct is not none %} <span class="sc-r">({{ card.account_risk_pct | number2_vi }}% vốn)</span>{% endif %}</dd></div>
       {% for target in card.targets %}
-      <div class="sc-level sc-level--{{ 'recipe' if target.source == 'recipe' else 'ladder' }}"><dt>{{ target.label }}</dt><dd>{{ price(target.price) }} <span class="sc-r">{{ target.r_multiple | number2_vi }}R</span></dd></div>
+      <div class="sc-level sc-level--{{ 'recipe' if target.source == 'recipe' else 'ladder' }}"><dt>{{ target.label }}</dt><dd>{{ price(target.price) }} <span class="sc-r">{{ target.r_multiple | number2_vi }}R{% if target.net_r_multiple is not none %} · ròng {{ target.net_r_multiple | number2_vi }}R{% endif %}</span></dd></div>
       {% endfor %}
     </dl>
+    {% if card.feature_snapshot_id %}<p class="sc-meta">Truy vết: decision <code>{{ card.decision_id }}</code> · snapshot <code>{{ card.feature_snapshot_id }}</code></p>{% endif %}
     <p class="sc-note">{% if card.plan_source == 'approved_plan' %}Vùng vào, SL và mục tiêu recipe lấy từ kế hoạch đã qua risk gate.{% else %}Chưa có kế hoạch đã duyệt cho tín hiệu này: SL và mục tiêu tính từ recipe (giá tham chiếu ± ATR).{% endif %} R là bội số thô chưa trừ phí; planner chặn R:R ròng &lt; 1,0. Mốc 1R/2R/3R chỉ để tham chiếu, PAPER chưa chốt lời từng phần.</p>
     <div class="sc-columns">
       <div>
