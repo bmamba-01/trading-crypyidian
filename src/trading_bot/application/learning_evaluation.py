@@ -99,12 +99,12 @@ class LearningEvaluationReportService:
             snapshot_repeatable_read=False,
         ) as uow:
             report_repository = LearningEvaluationReportRepository(uow.session)
-            existing = await report_repository.get_by_idempotency_key(
+            existing_identity = await report_repository.get_identity_by_idempotency_key(
                 workspace_id=request.workspace_id,
                 idempotency_key=request.idempotency_key,
             )
             access_repository = LearningEvaluationAccessRepository(uow.session)
-            if existing is not None:
+            if existing_identity is not None:
                 receipt = await access_repository.get_for_run(
                     workspace_id=request.workspace_id,
                     evaluation_run_id=request.idempotency_key,
@@ -113,14 +113,38 @@ class LearningEvaluationReportService:
                     receipt is None
                     or receipt.request_fingerprint != fingerprint
                     or receipt.manifest_hash != request.manifest_hash
-                    or receipt.evaluation_run_id != existing.idempotency_key
+                    or receipt.evaluation_run_id != existing_identity.idempotency_key
                     or receipt.purpose != "diagnostic-evaluation"
                     or receipt.actor_principal != "crypidian_learning_evaluator"
-                    or receipt.fold_plan_hash != existing.fold_plan_hash
-                    or receipt.split_policy_version != existing.split_policy_version
+                    or receipt.fold_plan_hash != existing_identity.fold_plan_hash
+                    or receipt.split_policy_version != existing_identity.split_policy_version
+                    or existing_identity.manifest_hash != request.manifest_hash
                 ):
                     raise LearningEvaluationAccessConflict(
                         "Report đã có nhưng receipt không khớp request authoritative."
+                    )
+                await access_repository.recheck_current_source_rights(
+                    workspace_id=request.workspace_id,
+                    evaluation_run_id=request.idempotency_key,
+                    request_fingerprint=fingerprint,
+                )
+                existing = await report_repository.get_by_idempotency_key(
+                    workspace_id=request.workspace_id,
+                    idempotency_key=request.idempotency_key,
+                )
+                if (
+                    existing is None
+                    or existing.id != existing_identity.id
+                    or existing.idempotency_key != existing_identity.idempotency_key
+                    or existing.report_hash != existing_identity.report_hash
+                    or existing.manifest_hash != existing_identity.manifest_hash
+                    or existing.fold_plan_hash != existing_identity.fold_plan_hash
+                    or existing.split_policy_version != existing_identity.split_policy_version
+                    or existing.evaluation_cutoff != existing_identity.evaluation_cutoff
+                    or existing.seed != existing_identity.seed
+                ):
+                    raise LearningEvaluationAccessConflict(
+                        "Report identity đã đổi sau khi kiểm lại quyền nguồn."
                     )
                 report = walk_forward_evaluation_report_from_canonical_json(
                     existing.canonical_report,
@@ -134,7 +158,7 @@ class LearningEvaluationReportService:
                     raise LearningEvaluationAccessConflict(
                         "Report đã lưu không khớp fingerprint evaluation request."
                     )
-                existing_record_id = existing.id
+                existing_record_id = existing_identity.id
             else:
                 access = await access_repository.open(
                     workspace_id=request.workspace_id,

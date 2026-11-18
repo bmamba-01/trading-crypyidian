@@ -127,6 +127,9 @@ class LearningScoreEventRepository:
             or payload.get("candidate_hash") != record.candidate_hash
             or payload.get("vector_hash") != record.vector_hash
             or payload.get("source_rights_fingerprint") != record.source_rights_fingerprint
+            or payload.get("decision_source_rights_fingerprint")
+            != record.decision_source_rights_fingerprint
+            or payload.get("decision_scope_fingerprint") != record.decision_scope_fingerprint
             or payload.get("deployment_event_id") != str(record.deployment_event_id)
             or payload.get("scorer_artifact_id") != str(record.scorer_artifact_id)
             or payload.get("evaluation_report_id") != str(record.evaluation_report_id)

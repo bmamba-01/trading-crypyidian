@@ -50,6 +50,10 @@ class LearningDriftCohortMember:
 
     observation: DriftObservation
     rights_fingerprint: str | None
+    incumbent_decision_id: UUID | None = None
+    source_ids: tuple[str, ...] = ()
+    current_rights_eligible: bool | None = None
+    current_rights_fingerprint: str | None = None
 
     def __post_init__(self) -> None:
         if type(self.observation) is not DriftObservation:
@@ -62,6 +66,29 @@ class LearningDriftCohortMember:
                 raise ValueError("Quyền đã xác minh cần rights_fingerprint.")
         elif self.rights_fingerprint is not None:
             raise ValueError("Quyền chưa xác minh không được ghim rights_fingerprint.")
+        if self.incumbent_decision_id is not None and (
+            type(self.incumbent_decision_id) is not UUID or self.incumbent_decision_id.int == 0
+        ):
+            raise ValueError("incumbent_decision_id phải là UUID khác zero hoặc None.")
+        if type(self.source_ids) is not tuple or any(
+            not isinstance(source_id, str) or not source_id.strip() for source_id in self.source_ids
+        ):
+            raise ValueError("source_ids phải là tuple mã nguồn không rỗng.")
+        if self.source_ids != tuple(sorted(set(self.source_ids))):
+            raise ValueError("source_ids phải duy nhất và sắp xếp tăng dần.")
+        if self.current_rights_eligible is None:
+            if self.current_rights_fingerprint is not None:
+                raise ValueError("Fingerprint hiện hành cần trạng thái quyền hiện hành.")
+        elif type(self.current_rights_eligible) is not bool:
+            raise ValueError("current_rights_eligible phải là boolean hoặc None.")
+        elif self.current_rights_eligible:
+            if (
+                not isinstance(self.current_rights_fingerprint, str)
+                or _SHA256.fullmatch(self.current_rights_fingerprint) is None
+            ):
+                raise ValueError("Quyền hiện hành cần current_rights_fingerprint SHA-256.")
+        elif self.current_rights_fingerprint is not None:
+            raise ValueError("Quyền hiện hành bị từ chối không được có fingerprint.")
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,6 +147,7 @@ class LearningDriftRepository:
             select(
                 observation.id.label("observation_id"),
                 observation.workspace_id.label("workspace_id"),
+                observation.incumbent_decision_id.label("incumbent_decision_id"),
                 observation.challenger_registry_id.label("challenger_registry_id"),
                 observation.challenger_revision.label("challenger_revision"),
                 observation.observed_at.label("observed_at"),
@@ -146,8 +174,21 @@ class LearningDriftRepository:
 
     @staticmethod
     def transaction_clock_statement() -> Select[Any]:
-        """Lấy cùng một thời điểm PostgreSQL transaction để trigger xác minh."""
+        """Ghim mốc database transaction dùng cho assessment bất biến."""
         return select(func.transaction_timestamp())
+
+    @staticmethod
+    def source_scope_fingerprint_statement(
+        *, workspace_id: UUID, decision_id: UUID, checked_at: datetime
+    ) -> Select[Any]:
+        """Gọi gate aggregate PAPER cố định; NULL nghĩa là member không đủ quyền."""
+        return select(
+            func.public.wp06_authorize_learning_drift_source_scope(
+                workspace_id,
+                decision_id,
+                checked_at,
+            )
+        )
 
     @staticmethod
     def assessment_idempotency_key(
@@ -157,16 +198,18 @@ class LearningDriftRepository:
         revision: int,
         policy_version: str,
         membership_digest: str,
+        source_rights_digest: str | None = None,
     ) -> str:
         _validate_cohort_scope(workspace_id, registry_id, revision)
         canonical = json.dumps(
-            {
-                "membership_digest": membership_digest,
-                "policy_version": policy_version,
-                "registry_id": str(registry_id),
-                "revision": revision,
-                "workspace_id": str(workspace_id),
-            },
+            _assessment_key_document(
+                workspace_id=workspace_id,
+                registry_id=registry_id,
+                revision=revision,
+                policy_version=policy_version,
+                membership_digest=membership_digest,
+                source_rights_digest=source_rights_digest,
+            ),
             sort_keys=True,
             separators=(",", ":"),
             allow_nan=False,
@@ -199,6 +242,38 @@ class LearningDriftRepository:
                 "revision": revision,
             },
         )
+
+    async def lock_member_set(self, *, workspace_id: UUID) -> None:
+        """Khóa shared workspace fence sau toàn bộ source advisory locks."""
+        await self._bind_workspace(workspace_id)
+        await self._session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:lock_key, 0))"),
+            {"lock_key": f"wp06-learning-observation-member-set:{workspace_id}"},
+        )
+
+    async def lock_registry_entry(self, *, workspace_id: UUID, registry_id: UUID) -> None:
+        """Khóa revision model trước khi chốt cohort/source set."""
+        _validate_cohort_scope(workspace_id, registry_id, 1)
+        await self._bind_workspace(workspace_id)
+        await self._session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:lock_key, 0))"),
+            {"lock_key": (f"learning-model-registry:{workspace_id}:registry-entry:{registry_id}")},
+        )
+
+    async def authorize_current_source_scope(
+        self, *, workspace_id: UUID, decision_id: UUID, checked_at: datetime
+    ) -> str | None:
+        await self._bind_workspace(workspace_id)
+        value = await self._session.scalar(
+            self.source_scope_fingerprint_statement(
+                workspace_id=workspace_id,
+                decision_id=decision_id,
+                checked_at=checked_at,
+            )
+        )
+        if not isinstance(value, str) or _SHA256.fullmatch(value) is None:
+            return None
+        return value
 
     async def list_cohort(
         self,
@@ -315,6 +390,7 @@ class LearningDriftRepository:
             revision=revision,
             policy_version=policy.policy_version,
             membership_digest=assessment.membership_digest,
+            source_rights_digest=assessment.source_rights_digest,
         )
         if assessment.member_count and (
             assessment.cohort_registry_id != registry_id or assessment.cohort_revision != revision
@@ -402,6 +478,7 @@ def _member_from_mapping(row: Any) -> LearningDriftCohortMember:
     return LearningDriftCohortMember(
         observation=observation,
         rights_fingerprint=row["rights_fingerprint"],
+        incumbent_decision_id=row["incumbent_decision_id"],
     )
 
 
@@ -429,6 +506,7 @@ def _assessment_from_record(
             performance_status=DriftAssessmentStatus(record.performance_status),
             reason_codes=tuple(DriftReason(reason) for reason in record.reason_codes),
             created_at=record.created_at,
+            source_rights_digest=record.source_rights_digest,
         )
     except (TypeError, ValueError) as error:
         raise LearningDriftCorruptRecord("Assessment đã lưu không hợp lệ theo domain.") from error
@@ -487,6 +565,7 @@ def _assessment_record(
         performance_status=assessment.performance_status.value,
         reason_codes=[reason.value for reason in assessment.reason_codes],
         membership_digest=assessment.membership_digest,
+        source_rights_digest=assessment.source_rights_digest,
         idempotency_key=idempotency_key,
         content_hash=assessment.content_hash,
         created_at=assessment.created_at,
@@ -507,7 +586,7 @@ def _member_record(
         eligible=(
             observation.baseline_available
             and observation.schema_compatible
-            and observation.rights_eligible
+            and member.current_rights_eligible is True
         ),
         observed_at=observation.observed_at,
         snapshot_hash=observation.snapshot_hash,
@@ -517,6 +596,20 @@ def _member_record(
         schema_compatible=observation.schema_compatible,
         rights_eligible=observation.rights_eligible,
         rights_fingerprint=member.rights_fingerprint,
+        current_rights_eligible=member.current_rights_eligible,
+        current_rights_fingerprint=member.current_rights_fingerprint,
+        current_source_ids=list(member.source_ids)
+        if member.current_rights_eligible is not None
+        else None,
+        current_eligible=(
+            None
+            if member.current_rights_eligible is None
+            else (
+                observation.baseline_available
+                and observation.schema_compatible
+                and member.current_rights_eligible
+            )
+        ),
         challenger_decision=observation.challenger_decision.value,
     )
 
@@ -557,7 +650,29 @@ def _same_assessment_identity(
         and stored.data_quality_status is requested.data_quality_status
         and stored.performance_status is requested.performance_status
         and stored.reason_codes == requested.reason_codes
+        and stored.source_rights_digest == requested.source_rights_digest
     )
+
+
+def _assessment_key_document(
+    *,
+    workspace_id: UUID,
+    registry_id: UUID,
+    revision: int,
+    policy_version: str,
+    membership_digest: str,
+    source_rights_digest: str | None,
+) -> dict[str, object]:
+    document: dict[str, object] = {
+        "membership_digest": membership_digest,
+        "policy_version": policy_version,
+        "registry_id": str(registry_id),
+        "revision": revision,
+        "workspace_id": str(workspace_id),
+    }
+    if source_rights_digest is not None:
+        document["source_rights_digest"] = source_rights_digest
+    return document
 
 
 def _is_idempotency_violation(error: IntegrityError) -> bool:

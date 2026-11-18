@@ -25,7 +25,6 @@ class ScorerReportReadModel:
         async with UnitOfWork(
             self._sessions,
             workspace_id=workspace_id,
-            snapshot_read_only=True,
         ) as unit:
             return await LearningScorerReportReadRepository(unit.session).get_latest(
                 workspace_id=workspace_id

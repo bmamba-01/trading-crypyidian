@@ -137,6 +137,9 @@ class AppSettings(BaseSettings):
     # Chu kỳ tin tổng hợp so sánh các bot; 0 = tắt. Tối thiểu 15 phút để tránh spam.
     telegram_report_interval_minutes: int = Field(default=240, ge=0, le=10_080)
 
+    # SHADOW/PAPER_GATE mặc định khóa đồng thời ở admin và runtime.
+    scorer_active_modes_enabled: bool = False
+
     # Chính sách TEST scorer phải có version/hash giống hệt report và deployment được ghim.
     scorer_test_policy_version: str = Field(
         default="wp06-scorer-test-v1", min_length=1, max_length=120

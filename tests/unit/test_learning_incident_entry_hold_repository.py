@@ -12,6 +12,9 @@ from sqlalchemy.exc import DBAPIError
 from tests.unit.test_learning_incident_entry_hold import WORKSPACE_ID, _hold
 
 from trading_bot.adapters.database.models import LearningIncidentHoldEventRecord
+from trading_bot.adapters.database.repositories.learning_incident_entry_holds import (
+    LearningIncidentHoldConflict,
+)
 
 
 def _repository(session):
@@ -249,14 +252,94 @@ class _EligibilitySession(_Session):
             "deployment_revision": target.deployment_revision,
             "active_pointer_version": pointer_version,
         }
+        self.context = _incident_context()
 
     async def execute(self, statement, params=None):
         self.statements.append((str(statement), params))
-        if "eligible_target" in str(statement):
-            return _MappingResult(self.eligible)
+        if "wp06_read_learning_incident_context" in str(statement):
+            return _MappingResult({"context": self.context})
         if "resolve_scorer_runtime_target" in str(statement):
             return _MappingResult(self.metadata)
         return object()
+
+
+def _incident_context():
+    from tests.unit.test_learning_incident_entry_hold import _evidence
+
+    from trading_bot.adapters.database.repositories.learning_drift import (
+        _assessment_record,
+        _proposal_record,
+    )
+    from trading_bot.domain.learning.drift import DriftPolicy
+
+    proposal, assessment = _evidence()
+    proposal_record = _proposal_record(proposal)
+    assessment_record = _assessment_record(
+        assessment,
+        policy=DriftPolicy("coverage-v2-30d", 1, 0.8, 0.9),
+        idempotency_key="9" * 64,
+    )
+    proposal_fields = (
+        "id",
+        "workspace_id",
+        "assessment_id",
+        "assessment_hash",
+        "policy_version",
+        "membership_digest",
+        "idempotency_key",
+        "reason_codes",
+        "content_hash",
+        "created_at",
+    )
+    assessment_fields = (
+        "id",
+        "workspace_id",
+        "policy_version",
+        "cohort_registry_id",
+        "cohort_revision",
+        "window_start",
+        "window_end",
+        "membership_digest",
+        "member_count",
+        "eligible_count",
+        "snapshot_coverage_rate",
+        "quality_rate",
+        "abstention_rate",
+        "data_quality_status",
+        "performance_status",
+        "reason_codes",
+        "created_at",
+        "source_rights_digest",
+        "content_hash",
+    )
+    eligible, _target = _eligibility_projection()
+    return {
+        "eligible": eligible,
+        "proposal": {name: getattr(proposal_record, name) for name in proposal_fields},
+        "assessment": {name: getattr(assessment_record, name) for name in assessment_fields},
+        "member_ids": [str(item) for item in assessment.member_ids],
+    }
+
+
+def _eligibility_projection():
+    from tests.unit.test_learning_incident_entry_hold import _target
+
+    target = _target()
+    return {
+        "incumbent_registry_id": target.target.registry_id,
+        "incumbent_registry_revision": target.target.registry_revision,
+        "incumbent_artifact_hash": "8" * 64,
+        "active_pointer_version": target.active_pointer_version,
+        "deployment_revision": target.deployment_revision,
+    }, target
+
+
+class _IncidentContextSession(_EligibilitySession):
+    """Giả đầu ra có kiểu của một gateway DB, không đọc ledger trực tiếp."""
+
+    def __init__(self):
+        super().__init__()
+        self.context = _incident_context()
 
 
 @pytest.mark.asyncio
@@ -281,3 +364,49 @@ async def test_eligibility_rejects_target_change_between_authoritative_reads() -
         await _repository(_EligibilitySession(pointer_version=7)).eligible_incident_target(
             workspace_id=WORKSPACE_ID, proposal_id=_hold().proposal_id
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("incumbent_registry_revision", "invalid"),
+        ("incumbent_artifact_hash", None),
+    ],
+)
+async def test_eligibility_rejects_malformed_context_scalars_as_conflict(
+    field: str, value: object
+) -> None:
+    session = _IncidentContextSession()
+    session.context["eligible"][field] = value
+
+    with pytest.raises(LearningIncidentHoldConflict, match="schema"):
+        await _repository(session).eligible_incident_target(
+            workspace_id=WORKSPACE_ID, proposal_id=_hold().proposal_id
+        )
+
+
+@pytest.mark.asyncio
+async def test_incident_context_comes_from_one_gated_gateway_not_raw_ledger_selects() -> None:
+    session = _IncidentContextSession()
+
+    result = await _repository(session).eligible_incident_target(
+        workspace_id=WORKSPACE_ID, proposal_id=_hold().proposal_id
+    )
+
+    assert result.proposal.assessment_hash == result.assessment.content_hash
+    gateway_calls = [
+        sql for sql, _params in session.statements if "wp06_read_learning_incident_context" in sql
+    ]
+    assert len(gateway_calls) == 1
+    assert all(
+        not any(
+            f"FROM public.{table}" in sql or f"FROM {table}" in sql
+            for table in (
+                "learning_retrain_proposal",
+                "learning_drift_assessment",
+                "learning_drift_assessment_member",
+            )
+        )
+        for sql, _params in session.statements
+    )

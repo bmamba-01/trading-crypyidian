@@ -138,6 +138,7 @@ def _client(
     mfa_method: MfaMethod | None = MfaMethod.TOTP,
     snapshot: ScorerDeploymentAdminSnapshot | None = None,
     report_summary: ScorerReportSummary | None = None,
+    active_modes_enabled: bool = False,
 ) -> tuple[TestClient, _ScorerDeploymentService, Principal]:
     principal = Principal(
         user_id=uuid4(),
@@ -150,7 +151,10 @@ def _client(
     identity = AuthIdentity(principal=principal, email="reviewer@example.test")
     application = FastAPI()
     application.include_router(router)
-    application.state.settings = AppSettings(app_env="test")
+    application.state.settings = AppSettings(
+        app_env="test",
+        scorer_active_modes_enabled=active_modes_enabled,
+    )
     application.state.templates = Jinja2Templates(
         directory=str(Path(__file__).parents[2] / "src" / "trading_bot" / "templates")
     )
@@ -270,7 +274,10 @@ def test_accepted_shadow_report_shows_exact_id_and_leaves_rights_to_server_reche
         status="ACCEPTED_SHADOW_ONLY",
         evaluation_report_id=report_id,
     )
-    client, _service, _principal = _client(report_summary=summary)
+    client, _service, _principal = _client(
+        report_summary=summary,
+        active_modes_enabled=True,
+    )
 
     response = client.get("/admin/learning/scoring")
 
@@ -282,6 +289,22 @@ def test_accepted_shadow_report_shows_exact_id_and_leaves_rights_to_server_reche
     assert "máy chủ sẽ xác minh lại quyền hiện hành" in response.text.lower()
     assert "health=DISABLED" in response.text
     assert "runtime_usable=false" in response.text
+
+
+def test_accepted_shadow_report_does_not_unlock_active_mode_by_default() -> None:
+    summary = replace(
+        _summary(),
+        status="ACCEPTED_SHADOW_ONLY",
+        evaluation_report_id=uuid4(),
+    )
+    client, _service, _principal = _client(report_summary=summary)
+
+    response = client.get("/admin/learning/scoring")
+
+    assert response.status_code == 200
+    assert 'option value="SHADOW" disabled' in response.text
+    assert 'option value="PAPER_GATE" disabled' in response.text
+    assert "đang khóa theo cấu hình triển khai" in response.text.lower()
 
 
 def test_scoring_admin_page_shows_only_persisted_aggregate_report_metadata() -> None:

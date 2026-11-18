@@ -423,6 +423,7 @@ def create_app(
                 ScorerDeploymentService(
                     active_session_factory,
                     policy_provider=scorer_policy_provider,
+                    active_modes_enabled=app_settings.scorer_active_modes_enabled,
                 )
                 if active_session_factory is not None
                 else None
@@ -1436,6 +1437,7 @@ async def _wire_paper_runtime(
         workspace_id=result.workspace_id,
         application=paper_application,
         scorer_policy_provider=_configured_scorer_policy_provider(app_settings),
+        active_modes_enabled=app_settings.scorer_active_modes_enabled,
     )
     if market_dispatch:
         from trading_bot.application.paper_market_event_loop import PaperMarketEventLoop
@@ -1503,6 +1505,7 @@ def _runtime_job_processor(
     workspace_id: Any,
     application: Any,
     scorer_policy_provider: ScorerRuntimePolicyProvider | None = None,
+    active_modes_enabled: bool = False,
 ) -> Callable[..., Any] | None:
     """Nối worker job khi context provider có thể dựng snapshot decision đã lưu."""
     if sessions is None or not callable(getattr(context_provider, "snapshot_for", None)):
@@ -1520,10 +1523,16 @@ def _runtime_job_processor(
         RuntimeFanOutGate,
     )
     from trading_bot.application.bot_dispatcher import (
+        DEFAULT_MAX_BARS_PER_STREAM,
         BotEvidenceDispatcher,
         SignalEvidenceFanOutConsumer,
     )
 
+    max_bars_per_stream = getattr(
+        decision_snapshot_provider,
+        "max_bars_per_stream",
+        DEFAULT_MAX_BARS_PER_STREAM,
+    )
     decision_contexts = EffectiveBotDecisionContextProvider(
         sessions,
         runtime_gate=RuntimeFanOutGate(),
@@ -1532,10 +1541,13 @@ def _runtime_job_processor(
             workspace_id=workspace_id,
             accounts=application.runtime_account,
         ),
+        max_bars_per_stream=max_bars_per_stream,
     )
     store = PostgresSignalDecisionStore(
         sessions,
-        score_candidate=PostgresScorerRuntimeCommitter(scorer_policy_provider),
+        score_candidate=PostgresScorerRuntimeCommitter(
+            scorer_policy_provider if active_modes_enabled else None
+        ),
     )
     dispatcher = BotEvidenceDispatcher(
         store,

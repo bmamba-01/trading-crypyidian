@@ -98,6 +98,7 @@ def _observation(*, evaluated_at: datetime = NOW, **changes: object) -> ShadowOb
         "schema_compatible": True,
         "rights_eligible": True,
         "rights_fingerprint": "9" * 64,
+        "source_scope_fingerprint": "8" * 64,
         "rights_source_id": "BINANCE_USDM_REST",
         "rights_policy_id": "BINANCE_USDM_REST:policy:2",
         "rights_policy_sequence": 2,
@@ -106,6 +107,8 @@ def _observation(*, evaluated_at: datetime = NOW, **changes: object) -> ShadowOb
         "observed_at": NOW + timedelta(seconds=2),
     }
     values.update(changes)
+    if values.get("rights_eligible") is False and "source_scope_fingerprint" not in changes:
+        values["source_scope_fingerprint"] = None
     return ShadowObservation(**values)  # type: ignore[arg-type]
 
 

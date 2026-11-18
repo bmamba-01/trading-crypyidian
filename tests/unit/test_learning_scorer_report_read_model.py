@@ -71,16 +71,40 @@ class _Result:
     def mappings(self) -> _Mappings:
         return _Mappings(self.row)
 
+    def scalar_one_or_none(self) -> UUID | None:
+        if self.row is None:
+            return None
+        if isinstance(self.row, UUID):
+            return self.row
+        return self.row.get("report_id", self.row.get("id"))
+
 
 class _Session:
-    def __init__(self, row: dict[str, object] | None) -> None:
+    def __init__(
+        self,
+        row: dict[str, object] | None,
+        *,
+        report_id: UUID | None = REPORT_ID,
+        rights_error: Exception | None = None,
+    ) -> None:
         self.row = row
+        self.report_id = report_id
+        self.rights_error = rights_error
+        self.calls: list[tuple[object, object]] = []
         self.statement = None
         self.parameters = None
 
     async def execute(self, statement, parameters=None):
         self.statement = statement
         self.parameters = parameters
+        self.calls.append((statement, parameters))
+        sql = str(statement)
+        if "wp06_recheck_scorer_test_report_source_rights" in sql:
+            if self.rights_error is not None:
+                raise self.rights_error
+            return _Result(None)
+        if "AS report_id" in sql:
+            return _Result(None if self.report_id is None else {"report_id": self.report_id})
         return _Result(self.row)
 
 
@@ -102,6 +126,14 @@ async def test_latest_summary_projects_only_workspace_scoped_metadata() -> None:
     assert summary.class_support == ((-1, 3), (0, 2), (1, 4))
     assert summary.report_hash == "a" * 64
     assert summary.policy_version == "test-policy-v1"
+    assert len(session.calls) == 3
+    report_id_statement, report_id_parameters = session.calls[0]
+    rights_statement, rights_parameters = session.calls[1]
+    report_id_compiled = report_id_statement.compile(dialect=postgresql.dialect())
+    assert WORKSPACE_ID in report_id_compiled.params.values()
+    assert "LIMIT" in str(report_id_compiled).upper()
+    assert "wp06_recheck_scorer_test_report_source_rights" in str(rights_statement)
+    assert rights_parameters["report_id"] == str(REPORT_ID)
     compiled = session.statement.compile(dialect=postgresql.dialect())
     assert WORKSPACE_ID in compiled.params.values()
     selected_columns = {column.key for column in session.statement.selected_columns}
@@ -112,16 +144,32 @@ async def test_latest_summary_projects_only_workspace_scoped_metadata() -> None:
     assert "canonical_report" not in sql
     assert "learning_scorer_test_evaluation_report.report" in sql
     assert "learning_score_event" not in sql
-    assert "LIMIT" in sql.upper()
+    assert "LIMIT" not in sql.upper()
 
 
 @pytest.mark.asyncio
 async def test_latest_summary_returns_none_when_workspace_has_no_persisted_report() -> None:
-    summary = await LearningScorerReportReadRepository(_Session(None)).get_latest(
+    session = _Session(None, report_id=None)
+    summary = await LearningScorerReportReadRepository(session).get_latest(
         workspace_id=WORKSPACE_ID
     )
 
     assert summary is None
+    assert len(session.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_latest_summary_is_not_loaded_when_current_rights_are_denied() -> None:
+    session = _Session(
+        _row(),
+        rights_error=ValueError("current training source scope is no longer covered"),
+    )
+
+    with pytest.raises(ValueError, match="no longer covered"):
+        await LearningScorerReportReadRepository(session).get_latest(workspace_id=WORKSPACE_ID)
+
+    assert len(session.calls) == 2
+    assert "wp06_recheck_scorer_test_report_source_rights" in str(session.calls[1][0])
 
 
 @pytest.mark.asyncio

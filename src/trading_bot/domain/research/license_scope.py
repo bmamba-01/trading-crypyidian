@@ -190,3 +190,32 @@ def canonical_scope_json(scope: SourceLicenseScope) -> str:
 def scope_sha256(scope: SourceLicenseScope) -> str:
     """Băm SHA-256 đúng bytes UTF-8 của canonical scope, không hash JSONB text."""
     return hashlib.sha256(canonical_scope_json(scope).encode("utf-8")).hexdigest()
+
+
+def canonical_use_scope_json(scope: SourceUseScope) -> str:
+    """Mã hóa phạm vi một lần dùng theo JSON UTF-8 chuẩn, timestamp UTC sáu chữ số."""
+    if type(scope) is not SourceUseScope:
+        raise ValueError("scope phải là SourceUseScope.")
+    payload = {
+        "source_id": scope.source_id,
+        "provider": scope.provider,
+        "product": scope.product,
+        "venue": scope.venue,
+        "contract": scope.contract,
+        "symbols": scope.symbols,
+        "intervals": scope.intervals,
+        "data_start": scope.data_start.isoformat(timespec="microseconds").replace("+00:00", "Z"),
+        "data_end": scope.data_end.isoformat(timespec="microseconds").replace("+00:00", "Z"),
+        "purpose": scope.purpose.value,
+        "outputs": scope.outputs,
+        "derived_use": scope.derived_use,
+        "retention_days": scope.retention_days,
+    }
+    return json.dumps(
+        payload, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":")
+    )
+
+
+def use_scope_sha256(scope: SourceUseScope) -> str:
+    """Băm SHA-256 đúng bytes UTF-8 của canonical use scope."""
+    return hashlib.sha256(canonical_use_scope_json(scope).encode("utf-8")).hexdigest()

@@ -348,8 +348,8 @@ class SourcePolicyRevision:
         return self.policy.state
 
 
-def source_rights_hash(revision: SourcePolicyRevision) -> str:
-    """Băm ổn định các điều kiện quyền và hạn mức đã được duyệt của policy."""
+def source_rights_canonical_json(revision: SourcePolicyRevision) -> str:
+    """Trả JSON tất định của quyền, hạn mức và license evidence đã được duyệt."""
     if type(revision) is not SourcePolicyRevision:
         raise ValueError("revision phải là SourcePolicyRevision.")
     policy = revision.policy
@@ -386,7 +386,12 @@ def source_rights_hash(revision: SourcePolicyRevision) -> str:
                 "license_scope_hash": revision.license_scope_hash,
             }
         )
-    canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def source_rights_hash(revision: SourcePolicyRevision) -> str:
+    """Băm ổn định các điều kiện quyền và hạn mức đã được duyệt của policy."""
+    canonical = source_rights_canonical_json(revision)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 

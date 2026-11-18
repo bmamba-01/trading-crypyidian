@@ -46,6 +46,7 @@ class LearningScoreEvent:
     timeframe_snapshot_ids: tuple[tuple[str, str], ...]
     source_event_digests: tuple[tuple[str, str], ...]
     source_rights_fingerprint: str
+    decision_source_rights_fingerprint: str
     mode: ScorerDeploymentMode
     deployment_event_id: UUID
     deployment_revision: int
@@ -76,6 +77,7 @@ class LearningScoreEvent:
     idempotency_key: str = field(init=False)
     event_hash: str = field(init=False)
     canonical_json: str = field(init=False)
+    decision_scope_fingerprint: str = field(init=False)
 
     @classmethod
     def create(cls, **values: object) -> LearningScoreEvent:
@@ -104,6 +106,7 @@ class LearningScoreEvent:
             "vector_hash",
             "feature_schema_hash",
             "source_rights_fingerprint",
+            "decision_source_rights_fingerprint",
             "scorer_artifact_hash",
             "base_artifact_hash",
             "evaluation_report_hash",
@@ -195,6 +198,12 @@ class LearningScoreEvent:
             _require_hash(digest, "source_event_digest")
         object.__setattr__(self, "timeframe_snapshot_ids", timeframes)
         object.__setattr__(self, "source_event_digests", digests)
+        scope_fingerprint = _decision_scope_fingerprint(
+            self.decision_snapshot_id,
+            timeframes,
+            digests,
+        )
+        object.__setattr__(self, "decision_scope_fingerprint", scope_fingerprint)
 
         probabilities = tuple(self.class_probabilities)
         if score_decision is LearningScoreDecision.ABSTAIN:
@@ -258,6 +267,8 @@ class LearningScoreEvent:
             "class_probabilities": [[label, value] for label, value in self.class_probabilities],
             "confidence": self.confidence,
             "decision": self.decision.value,
+            "decision_scope_fingerprint": self.decision_scope_fingerprint,
+            "decision_source_rights_fingerprint": self.decision_source_rights_fingerprint,
             "decision_snapshot_id": self.decision_snapshot_id,
             "deployment_event_id": str(self.deployment_event_id),
             "deployment_revision": self.deployment_revision,
@@ -301,3 +312,23 @@ class LearningScoreEvent:
 def _require_hash(value: object, name: str) -> None:
     if not isinstance(value, str) or _SHA256.fullmatch(value) is None:
         raise ValueError(f"{name} phải là SHA-256 hex chữ thường.")
+
+
+def _decision_scope_fingerprint(
+    snapshot_id: str,
+    timeframe_snapshot_ids: tuple[tuple[str, str], ...],
+    source_event_digests: tuple[tuple[str, str], ...],
+) -> str:
+    """Băm metadata lineage sẽ được đối soát lại từ ledger PostgreSQL."""
+    canonical = json.dumps(
+        {
+            "decision_snapshot_id": snapshot_id,
+            "source_event_digests": [list(item) for item in source_event_digests],
+            "timeframe_snapshot_ids": [list(item) for item in timeframe_snapshot_ids],
+        },
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()

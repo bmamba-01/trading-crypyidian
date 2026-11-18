@@ -22,6 +22,10 @@ from trading_bot.adapters.database.models.signal_entities import (
     BotDecisionJobRecord,
     BotDecisionRecord,
 )
+from trading_bot.adapters.database.repositories.bot_decision_source_bars import (
+    BotDecisionSourceBarConflict,
+    append_decision_source_bars,
+)
 from trading_bot.adapters.database.repositories.learning_score_events import (
     LearningScoreEventConflict,
     LearningScoreEventRepository,
@@ -35,6 +39,7 @@ from trading_bot.application.bot_dispatcher import (
     BotDecisionConflict,
     BotDecisionEvaluation,
     BotDecisionJob,
+    BotDecisionStatus,
     DecisionEvaluator,
     EvidenceRecordedEvent,
     EvidenceScopeError,
@@ -46,10 +51,12 @@ from trading_bot.application.outbox import OutboxRepository, UnitOfWork
 from trading_bot.domain.events import EventEnvelope
 from trading_bot.domain.learning.score_event import LearningScoreEvent
 from trading_bot.domain.market.signal_evidence import SharedSignalEvidence
+from trading_bot.domain.strategy.contracts import DecisionSnapshot
 
 _PENDING = "PENDING"
 _COMPLETED = "COMPLETED"
 _DEAD = "DEAD"
+_SHA256_HEX = frozenset("0123456789abcdef")
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,7 +64,7 @@ class BotDecisionScoringCommit:
     """Quyết định cuối và score metadata cùng ghi trong transaction job."""
 
     decision: BotDecision
-    score_event: LearningScoreEvent
+    score_event: LearningScoreEvent | None
     incumbent_decision: BotDecision
     vector_hash: str
     decision_snapshot_id: str
@@ -66,6 +73,25 @@ class BotDecisionScoringCommit:
         event = self.score_event
         incumbent = self.incumbent_decision
         final = self.decision
+        if event is None:
+            if (
+                final.workspace_id != incumbent.workspace_id
+                or final.bot_id != incumbent.bot_id
+                or final.decision_id != incumbent.decision_id
+                or final.idempotency_key != incumbent.idempotency_key
+                or final.decision_snapshot_id != self.decision_snapshot_id
+                or final.decision_snapshot_id != incumbent.decision_snapshot_id
+                or final.status is not BotDecisionStatus.ABSTAIN
+                or final.reason_code
+                not in {"SCORER_SOURCE_LINEAGE_MISSING", "SCORER_VECTOR_MISSING"}
+                or final.candidate_json is not None
+                or incumbent.candidate_id is None
+                or not _is_sha256(self.vector_hash)
+            ):
+                raise BotDecisionConflict(
+                    "Scoreless decision chỉ hợp lệ cho ABSTAIN do thiếu source lineage/vector."
+                )
+            return
         expected_candidate_hash = (
             None
             if incumbent.candidate_json is None
@@ -440,18 +466,53 @@ class PostgresSignalDecisionStore:
                     raise BotDecisionConflict(
                         "Score event cần kết quả runtime có snapshot/vector strategy."
                     )
+                if evaluation.snapshot is None:
+                    raise BotDecisionConflict("Score commit cần DecisionSnapshot đã dùng.")
+                expected_vector_hash = (
+                    evaluation.vector.vector_hash
+                    if evaluation.vector is not None
+                    else hashlib.sha256(b"SCORER_VECTOR_MISSING").hexdigest()
+                )
                 if (
-                    evaluation.vector is None
-                    or evaluation.snapshot is None
-                    or scoring_commit.vector_hash != evaluation.vector.vector_hash
+                    scoring_commit.vector_hash != expected_vector_hash
                     or scoring_commit.decision_snapshot_id != evaluation.snapshot.snapshot_id
+                    or (scoring_commit.score_event is not None and evaluation.vector is None)
                 ):
                     raise BotDecisionConflict(
                         "Score event không được dựng từ vector/snapshot đã dùng bởi strategy."
                     )
             final_decision = scoring_commit.decision if scoring_commit is not None else decision
             stored_decision = await repository.insert_decision(final_decision)
-            if scoring_commit is not None:
+            if isinstance(evaluation, BotDecisionEvaluation) and evaluation.snapshot is not None:
+                if type(evaluation.snapshot) is not DecisionSnapshot:
+                    raise BotDecisionConflict(
+                        "BotDecision source lineage cần DecisionSnapshot domain đã đóng băng."
+                    )
+                if final_decision.decision_snapshot_id != evaluation.snapshot.snapshot_id:
+                    raise BotDecisionConflict(
+                        "BotDecision không cùng DecisionSnapshot với kết quả đánh giá."
+                    )
+                if not (
+                    scoring_commit is not None
+                    and scoring_commit.score_event is None
+                    and final_decision.status is BotDecisionStatus.ABSTAIN
+                    and final_decision.reason_code == "SCORER_SOURCE_LINEAGE_MISSING"
+                ):
+                    try:
+                        await append_decision_source_bars(
+                            uow.session,
+                            final_decision,
+                            evaluation.snapshot,
+                        )
+                    except BotDecisionSourceBarConflict as error:
+                        if scoring_commit is not None:
+                            raise BotDecisionConflict(
+                                "Score event không thể commit thiếu lineage MarketBar "
+                                "authoritative."
+                            ) from error
+                        # Quyết định nền được giữ để theo dõi; consumer quyền coi thiếu lineage
+                        # là không đủ căn cứ và không suy scope từ feature hash.
+            if scoring_commit is not None and scoring_commit.score_event is not None:
                 if stored_decision.decision_hash != scoring_commit.decision.decision_hash:
                     raise BotDecisionConflict("BotDecision lưu khác score event đã resolve.")
                 try:
@@ -627,3 +688,7 @@ async def _bind_job_bot(uow: UnitOfWork, account_id: UUID, bot_id: UUID) -> None
     resolved = await uow.bind_account(account_id)
     if resolved != bot_id:
         raise EvidenceScopeError("Account của job không thuộc bot đã khai trong context.")
+
+
+def _is_sha256(value: str) -> bool:
+    return len(value) == 64 and all(character in _SHA256_HEX for character in value)

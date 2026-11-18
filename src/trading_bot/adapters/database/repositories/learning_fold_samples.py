@@ -185,6 +185,8 @@ class LearningFoldSampleRepository:
         giống `DatabaseReplayTrainingRightsGate.authorize`; lỗi DB khác giữ nguyên để không che
         sự cố hạ tầng.
         """
+        if not _uses_replay_training_scope(manifest):
+            return
         try:
             await self._session.execute(
                 text(

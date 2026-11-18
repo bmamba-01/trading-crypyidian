@@ -6,6 +6,7 @@ from hashlib import sha256
 
 import pytest
 
+import trading_bot.domain.research.license_scope as license_scope_module
 from trading_bot.domain.research.license_scope import (
     SourceLicenseScope,
     SourceUseScope,
@@ -226,3 +227,30 @@ def test_canonical_json_and_utf8_digest_match_fixed_contract() -> None:
     assert scope_sha256(replace(license_scope(), attribution="Khác")) != scope_sha256(
         license_scope()
     )
+
+
+def test_source_use_scope_has_stable_canonical_json_and_sha256() -> None:
+    canonicalizer = getattr(license_scope_module, "canonical_use_scope_json", None)
+    digester = getattr(license_scope_module, "use_scope_sha256", None)
+    assert callable(canonicalizer), "SourceUseScope cần canonical serializer riêng"
+    assert callable(digester), "SourceUseScope cần SHA-256 cho canonical JSON"
+
+    expected = (
+        '{"contract":"USD_M","data_end":"2026-02-01T00:00:00.000000Z",'
+        '"data_start":"2026-01-01T00:00:00.000000Z",'
+        '"derived_use":["model_training"],"intervals":["15m"],'
+        '"outputs":["trained_model"],"product":"OHLCV","provider":"PROVIDER",'
+        '"purpose":"training","retention_days":null,"source_id":"licensed-source",'
+        '"symbols":["BTCUSDT"],"venue":"BINANCE"}'
+    )
+    assert canonicalizer(use_scope()) == expected
+    assert digester(use_scope()) == sha256(expected.encode("utf-8")).hexdigest()
+
+    shifted = replace(
+        use_scope(),
+        data_start=START.astimezone(timezone(timedelta(hours=7))),
+        data_end=END.astimezone(timezone(timedelta(hours=7))),
+        symbols=("BTCUSDT",),
+    )
+    assert canonicalizer(shifted) == expected
+    assert digester(shifted) == digester(use_scope())

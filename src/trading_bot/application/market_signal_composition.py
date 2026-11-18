@@ -196,7 +196,10 @@ class PostgresMarketDecisionSnapshotProvider:
                 series_quality_as_of=evaluated_at,
                 # Signal-only chỉ đưa strategy qua bộ lọc; không đọc PAPER position hay tạo lệnh.
                 position_is_flat=True,
-                max_bars_per_stream=self._source._max_bars_per_stream,
+                max_bars_per_stream=(
+                    getattr(context, "max_bars_per_stream", None)
+                    or self._source._max_bars_per_stream
+                ),
             )
 
 

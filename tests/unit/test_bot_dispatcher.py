@@ -599,6 +599,31 @@ def test_job_and_decision_payloads_round_trip_with_hash_verification() -> None:
         replace(job, bot_id=BOT_A)
 
 
+def test_context_v2_pins_source_bar_limit_and_legacy_v1_keeps_its_original_hash_shape() -> None:
+    from trading_bot.application.bot_dispatcher import BotDecisionContext
+
+    context = _context(max_bars_per_stream=1200)
+    payload = context.canonical_payload()
+    assert payload["schema_version"] == "crypidian-bot-decision-context-v2"
+    assert payload["max_bars_per_stream"] == 1200
+    assert BotDecisionContext.from_payload(payload) == context
+
+    legacy_payload = dict(payload)
+    legacy_payload["schema_version"] = "crypidian-bot-decision-context-v1"
+    legacy_payload.pop("max_bars_per_stream")
+    legacy = BotDecisionContext.from_payload(legacy_payload)
+
+    assert legacy.max_bars_per_stream == 256
+    assert legacy.canonical_payload() == legacy_payload
+    assert legacy.context_hash == bot_dispatcher._hash(legacy_payload)
+
+
+@pytest.mark.parametrize("value", [199, 2001, True])
+def test_context_rejects_source_bar_limits_outside_the_persisted_contract(value: object) -> None:
+    with pytest.raises(ValueError, match="max_bars_per_stream"):
+        _context(max_bars_per_stream=value)
+
+
 async def test_decision_round_trip_detects_tampering() -> None:
     dispatcher, _, _ = _dispatcher()
     (decision,) = await dispatcher.dispatch_evidence(_evidence(), [_context()], DECISION_TIME)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from uuid import UUID, uuid4, uuid5
@@ -780,28 +781,49 @@ async def test_scorer_test_service_retry_returns_saved_report_without_reopening_
     )
     receipt_opens = 0
     payload_reads = 0
+    deny_current_rights = False
+    deny_phase_two_rights = False
+    phase_two_rechecks = 0
+    cached_receipt = None
 
     class Access:
         async def open_committed_receipt(
             self, scope, *, scorer_artifact_hash, policy_hash, request_fingerprint
         ):
-            nonlocal receipt_opens
+            nonlocal receipt_opens, cached_receipt
             receipt_opens += 1
-            return ScorerTestAccessReceipt(
-                receipt_id=uuid4(),
-                workspace_id=request.scope.workspace_id,
-                receipt_hash="7" * 64,
-                request_fingerprint=request_fingerprint,
-                scorer_artifact_hash=scorer_artifact_hash,
-                policy_hash=request.policy.policy_hash,
-                proof_id=scope.opportunity_proof_id,
-                proof_hash=scope.opportunity_proof_hash,
-                current_rights_receipt_hash="d" * 64,
-                committed_at=datetime(2026, 11, 9, tzinfo=UTC),
-            )
+            if deny_current_rights:
+                from trading_bot.application.learning_scorer_test_service import (
+                    ScorerTestEvaluationAccessConflict,
+                )
+
+                raise ScorerTestEvaluationAccessConflict("current source rights revoked")
+            if cached_receipt is None:
+                cached_receipt = ScorerTestAccessReceipt(
+                    receipt_id=uuid4(),
+                    workspace_id=request.scope.workspace_id,
+                    receipt_hash="7" * 64,
+                    request_fingerprint=request_fingerprint,
+                    scorer_artifact_hash=scorer_artifact_hash,
+                    policy_hash=request.policy.policy_hash,
+                    proof_id=scope.opportunity_proof_id,
+                    proof_hash=scope.opportunity_proof_hash,
+                    current_rights_receipt_hash="e" * 64,
+                    committed_at=datetime(2026, 11, 9, tzinfo=UTC),
+                )
+            return cached_receipt
 
         async def evaluate_and_persist(self, receipt, *, request_fingerprint, evaluate_payload):
-            nonlocal payload_reads
+            nonlocal payload_reads, phase_two_rechecks
+            phase_two_rechecks += 1
+            if deny_phase_two_rights:
+                from trading_bot.application.learning_scorer_test_service import (
+                    ScorerTestEvaluationAccessConflict,
+                )
+
+                raise ScorerTestEvaluationAccessConflict("phase-two source rights revoked")
+            if reports.stored is not None:
+                return replace(reports.stored, is_duplicate=True)
             payload_reads += 1
             rows = _rows()
             consumption = ScorerTestPayloadConsumption(
@@ -824,7 +846,7 @@ async def test_scorer_test_service_retry_returns_saved_report_without_reopening_
         stored = None
 
         async def get_by_run(self, **values):
-            return self.stored
+            raise AssertionError("Report payload phải được đọc sau current-rights gate.")
 
         async def append(self, *, request_fingerprint, report):
             self.stored = ScorerTestStoredReport(
@@ -844,36 +866,35 @@ async def test_scorer_test_service_retry_returns_saved_report_without_reopening_
     assert first.is_duplicate is False
     assert retry.is_duplicate is True
     assert retry.report == first.report
-    assert receipt_opens == 1
+    assert receipt_opens == 2
+    assert payload_reads == 1
+    assert phase_two_rechecks == 2
+
+    deny_phase_two_rights = True
+    from trading_bot.application.learning_scorer_test_service import (
+        ScorerTestEvaluationAccessConflict,
+    )
+
+    with pytest.raises(ScorerTestEvaluationAccessConflict, match="phase-two source rights"):
+        await service.evaluate(request)
+    assert receipt_opens == 3
+    assert phase_two_rechecks == 3
     assert payload_reads == 1
 
 
 @pytest.mark.asyncio
-async def test_scorer_test_service_rejects_saved_report_for_changed_policy() -> None:
+async def test_scorer_test_service_rejects_changed_receipt_scope_before_payload() -> None:
     spec = importlib.util.find_spec("trading_bot.application.learning_scorer_test_service")
     assert spec is not None, "C.3 cần orchestrator hai pha riêng cho TEST payload."
-    from trading_bot.application.learning_scorer_evaluation import (
-        build_scorer_test_evaluation_report,
-    )
     from trading_bot.application.learning_scorer_test_service import (
-        ScorerTestEvaluationReportConflict,
+        ScorerTestEvaluationAccessConflict,
         ScorerTestEvaluationRequest,
         ScorerTestEvaluationService,
-        ScorerTestStoredReport,
     )
 
     base = _base_artifact()
     scope = _scope(base, complete=True)
-    original_policy = _policy()
     evaluated_at = datetime(2026, 11, 9, tzinfo=UTC)
-    report = build_scorer_test_evaluation_report(
-        scope=scope,
-        scorer_artifact=_scorer_artifact(base),
-        base_artifact=base,
-        policy=original_policy,
-        rows=_rows(),
-        evaluated_at=evaluated_at,
-    )
     changed_request = ScorerTestEvaluationRequest(
         scope=scope,
         scorer_artifact=_scorer_artifact(base),
@@ -887,24 +908,18 @@ async def test_scorer_test_service_rejects_saved_report_for_changed_policy() -> 
         async def open_committed_receipt(self, *args, **kwargs):
             nonlocal access_opened
             access_opened = True
-            raise AssertionError("Không được mở TEST khi run đã có report scope khác.")
+            raise ScorerTestEvaluationAccessConflict("Receipt hiện hành không khớp scope đã lưu.")
 
         async def evaluate_and_persist(self, receipt, **kwargs):
             raise AssertionError("Không được đọc TEST khi fingerprint report không khớp.")
 
     class Reports:
         async def get_by_run(self, **values):
-            return ScorerTestStoredReport(
-                record_id=uuid4(),
-                request_fingerprint="0" * 64,
-                report=report,
-                is_duplicate=False,
-                committed_at=datetime(2026, 11, 9, 0, 2, tzinfo=UTC),
-            )
+            raise AssertionError("Không được đọc report trước khi mở receipt hiện hành.")
 
-    with pytest.raises(ScorerTestEvaluationReportConflict, match="fingerprint"):
+    with pytest.raises(ScorerTestEvaluationAccessConflict, match="scope đã lưu"):
         await ScorerTestEvaluationService(Access(), Reports()).evaluate(changed_request)
-    assert access_opened is False
+    assert access_opened is True
 
 
 def test_scorer_test_report_is_inconclusive_when_class_support_policy_fails() -> None:

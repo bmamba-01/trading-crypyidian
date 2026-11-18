@@ -20,6 +20,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from trading_bot.adapters.database.models.base import Base, CreatedAt, UuidPrimaryKey
+from trading_bot.adapters.database.models.postgres_types import Xid8
 
 _BOT_INSTANCE_SCOPE = (
     "bot_instance.workspace_id",
@@ -240,3 +241,4 @@ class BotDecisionRecord(UuidPrimaryKey, CreatedAt, Base):
     idempotency_key: Mapped[str] = mapped_column(String(64), nullable=False)
     decision_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    source_bar_created_xid: Mapped[str | None] = mapped_column(Xid8(), nullable=True)

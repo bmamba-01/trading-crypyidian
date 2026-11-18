@@ -103,6 +103,19 @@ async def _assert_permission_denied(
     raise AssertionError("La consulta debe bị từ chối bởi quyền cột/bảng PostgreSQL.")
 
 
+async def _assert_database_marker(
+    connection, statement: str, parameters: dict[str, object], marker: str
+) -> None:
+    try:
+        async with connection.begin_nested():
+            await connection.execute(text(statement), parameters)
+    except DBAPIError as error:
+        if marker in str(error.orig):
+            return
+        raise AssertionError(f"PostgreSQL không trả marker {marker}: {error.orig}") from error
+    raise AssertionError(f"Truy vấn phải bị chặn với marker {marker}.")
+
+
 def _invalid_score_event_payload(*, nested_extra: bool) -> dict[str, object]:
     digest = "a" * 64
     timeframe_snapshot_ids: list[list[object]] = [["1m", digest]]
@@ -122,6 +135,8 @@ def _invalid_score_event_payload(*, nested_extra: bool) -> dict[str, object]:
         "confidence": None,
         "decision": "ABSTAIN",
         "decision_snapshot_id": digest,
+        "decision_scope_fingerprint": digest,
+        "decision_source_rights_fingerprint": digest,
         "deployment_event_id": str(uuid4()),
         "deployment_revision": 1,
         "evaluation_report_hash": digest,
@@ -240,6 +255,8 @@ async def _score_event_insert_reaches_expected_guard(
         "timeframe_snapshot_ids": json.dumps(payload["timeframe_snapshot_ids"]),
         "source_event_digests": json.dumps(payload["source_event_digests"]),
         "source_rights_fingerprint": payload["source_rights_fingerprint"],
+        "decision_source_rights_fingerprint": payload["decision_source_rights_fingerprint"],
+        "decision_scope_fingerprint": payload["decision_scope_fingerprint"],
         "mode": payload["mode"],
         "deployment_event_id": deployment_event_id,
         "deployment_revision": payload["deployment_revision"],
@@ -634,6 +651,31 @@ async def _probe() -> dict[str, object]:
                 {},
             )
 
+    async with worker_engine.connect() as connection:
+        async with connection.begin():
+            await connection.execute(
+                text("SELECT set_config('app.workspace_id', :workspace_id, true)"),
+                {"workspace_id": str(workspace_id)},
+            )
+            await connection.execute(
+                text("SELECT set_config('app.bot_id', :bot_id, true)"),
+                {"bot_id": str(uuid4())},
+            )
+            await _assert_permission_denied(
+                connection,
+                "SELECT * FROM public.wp06_resolve_scorer_runtime_target("
+                "CAST(:workspace_id AS uuid), NULL::text, NULL::jsonb, NULL::uuid, "
+                "NULL::integer, false)",
+                {"workspace_id": workspace_id},
+            )
+            await _assert_database_marker(
+                connection,
+                "SELECT * FROM public.wp06_resolve_scorer_runtime_target_for_job("
+                "CAST(:workspace_id AS uuid), CAST(:job_id AS uuid))",
+                {"workspace_id": workspace_id, "job_id": uuid4()},
+                "WP06_SCORER_RUNTIME_JOB_SCOPE_DENIED",
+            )
+
     score_event_bot_id = uuid4()
     unknown_score_event_rejected = await _score_event_insert_reaches_expected_guard(
         worker_engine,
@@ -708,7 +750,7 @@ async def _probe() -> dict[str, object]:
                 workspace_id=workspace_id,
                 bot_id=score_event_bot_id,
                 payload=payload,
-                expected_marker="WP06_SCORE_EVENT_DECISION_MISMATCH",
+                expected_marker="WP06_SCORE_EVENT_DECISION_SOURCE_RIGHTS_MISMATCH",
             )
             for payload in valid_paper_gate_payloads
         ]
@@ -718,7 +760,7 @@ async def _probe() -> dict[str, object]:
         workspace_id=workspace_id,
         bot_id=score_event_bot_id,
         payload=_score_event_result_payload(decision="VETO", final_status="CANDIDATE"),
-        expected_marker="WP06_SCORE_EVENT_DECISION_MISMATCH",
+        expected_marker="WP06_SCORE_EVENT_DECISION_SOURCE_RIGHTS_MISMATCH",
     )
     scoring_pointer_race_waits = await _score_event_insert_waits_for_pointer_lock(
         seed_engine,
@@ -982,6 +1024,7 @@ async def _probe() -> dict[str, object]:
         "score_event_valid_shadow_veto_preserved": valid_shadow_veto_reaches_decision_check,
         "score_event_scoring_pointer_lock_wait": scoring_pointer_race_waits,
         "score_event_model_pointer_lock_wait": model_pointer_race_waits,
+        "worker_artifact_resolver_bound_to_job": True,
     }
     assert all(value is True for key, value in result.items() if key not in {"event_count"}), result
     assert event_count == 3, result
