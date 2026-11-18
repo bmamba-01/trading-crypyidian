@@ -71,10 +71,15 @@ def test_paper_performance_aggregate_gateway_is_narrow_and_fails_closed() -> Non
             outcome = json.loads(probe.stdout.strip().splitlines()[-1])
             assert outcome == {
                 "narrow_evaluator_role": True,
-                "aggregate_only_report_acl": True,
+                "aggregate_report_metadata_only_acl": True,
                 "admin_can_execute_gateway": True,
                 "public_and_app_cannot_execute": True,
                 "missing_active_target_denied": True,
+                "report_writer_acl_is_narrow": True,
+                "report_writer_aggregate_execute": True,
+                "report_writer_zero_denominator_safe": True,
+                "report_writer_zero_eligible_coverage_guard": True,
+                "report_writer_denies_missing_target_without_mutation": True,
                 "no_raw_member_fields_returned": True,
             }
             check = compose("run", "--rm", "--no-deps", "migrator", "alembic", "check")

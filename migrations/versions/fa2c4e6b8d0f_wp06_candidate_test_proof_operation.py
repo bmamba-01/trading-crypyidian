@@ -26,6 +26,20 @@ _NEW_GUARD = (
     "               OR target_operation NOT IN ('training', 'evaluation', '"
     "candidate_test_proof') THEN"
 )
+_OLD_GUARD_AFTER_C2E4 = (
+    "IF (target_operation = 'training' AND session_user <> 'crypidian_candidate_builder')\n"
+    "               OR (target_operation = 'evaluation' AND session_user NOT IN (\n"
+    "                   'crypidian_learning_evaluator', 'crypidian_candidate_builder'))\n"
+    "               OR target_operation NOT IN ('training', 'evaluation') THEN"
+)
+_NEW_GUARD_AFTER_C2E4 = (
+    "IF (target_operation IN ('training', 'candidate_test_proof')\n"
+    "                    AND session_user <> 'crypidian_candidate_builder')\n"
+    "               OR (target_operation = 'evaluation' AND session_user NOT IN (\n"
+    "                   'crypidian_learning_evaluator', 'crypidian_candidate_builder'))\n"
+    "               OR target_operation NOT IN ('training', 'evaluation', '"
+    "candidate_test_proof') THEN"
+)
 _OLD_OUTPUT_SCOPE = """IF target_operation = 'evaluation' THEN
                 use_outputs := '[\"aggregate_report\"]'::jsonb;
                 use_derived := '[\"aggregate_reporting\"]'::jsonb;
@@ -46,6 +60,8 @@ def _rewrite_function(
     *,
     old_guard: str,
     new_guard: str,
+    old_guard_alt: str,
+    new_guard_alt: str,
     old_scope: str,
     new_scope: str,
     expect_candidate_test_proof: bool,
@@ -56,18 +72,29 @@ def _rewrite_function(
         f"""DO $migration$
         DECLARE
             v_definition text;
+            v_old_guard text;
+            v_new_guard text;
         BEGIN
             v_definition := pg_catalog.pg_get_functiondef('{FUNCTION_SIGNATURE}'::regprocedure);
             IF (pg_catalog.length(v_definition) - pg_catalog.length(
                     pg_catalog.replace(v_definition, $old_guard${old_guard}$old_guard$, '')))
-                    <> pg_catalog.length($old_guard${old_guard}$old_guard$)
-               OR (pg_catalog.length(v_definition) - pg_catalog.length(
+                    = pg_catalog.length($old_guard${old_guard}$old_guard$) THEN
+                v_old_guard := $old_guard${old_guard}$old_guard$;
+                v_new_guard := $new_guard${new_guard}$new_guard$;
+            ELSIF (pg_catalog.length(v_definition) - pg_catalog.length(
+                    pg_catalog.replace(v_definition, $og2${old_guard_alt}$og2$, '')))
+                    = pg_catalog.length($og2${old_guard_alt}$og2$) THEN
+                v_old_guard := $og2${old_guard_alt}$og2$;
+                v_new_guard := $ng2${new_guard_alt}$ng2$;
+            ELSE
+                RAISE EXCEPTION '{EXCEPTION}';
+            END IF;
+            IF (pg_catalog.length(v_definition) - pg_catalog.length(
                     pg_catalog.replace(v_definition, $old_scope${old_scope}$old_scope$, '')))
                     <> pg_catalog.length($old_scope${old_scope}$old_scope$) THEN
                 RAISE EXCEPTION '{EXCEPTION}';
             END IF;
-            v_definition := pg_catalog.replace(
-                v_definition, $old_guard${old_guard}$old_guard$, $new_guard${new_guard}$new_guard$);
+            v_definition := pg_catalog.replace(v_definition, v_old_guard, v_new_guard);
             v_definition := pg_catalog.replace(
                 v_definition, $old_scope${old_scope}$old_scope$, $new_scope${new_scope}$new_scope$);
             EXECUTE v_definition;
@@ -84,6 +111,8 @@ def upgrade() -> None:
     _rewrite_function(
         old_guard=_OLD_GUARD,
         new_guard=_NEW_GUARD,
+        old_guard_alt=_OLD_GUARD_AFTER_C2E4,
+        new_guard_alt=_NEW_GUARD_AFTER_C2E4,
         old_scope=_OLD_OUTPUT_SCOPE,
         new_scope=_NEW_OUTPUT_SCOPE,
         expect_candidate_test_proof=True,
@@ -95,6 +124,8 @@ def downgrade() -> None:
     _rewrite_function(
         old_guard=_NEW_GUARD,
         new_guard=_OLD_GUARD,
+        old_guard_alt=_NEW_GUARD_AFTER_C2E4,
+        new_guard_alt=_OLD_GUARD_AFTER_C2E4,
         old_scope=_NEW_OUTPUT_SCOPE,
         new_scope=_OLD_OUTPUT_SCOPE,
         expect_candidate_test_proof=False,

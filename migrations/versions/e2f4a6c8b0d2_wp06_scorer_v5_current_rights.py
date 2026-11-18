@@ -136,6 +136,8 @@ def _rewrite_pairs(source: str, pairs: tuple[tuple[str, str], ...], *, forward: 
     rewritten = source
     for index, (legacy, current) in enumerate(pairs, start=1):
         expected, replacement = (legacy, current) if forward else (current, legacy)
+        if forward and rewritten.count(expected) == 0 and rewritten.count(replacement) == 1:
+            continue
         if rewritten.count(expected) != 1:
             direction = "UPGRADE" if forward else "DOWNGRADE"
             raise RuntimeError(
@@ -147,6 +149,10 @@ def _rewrite_pairs(source: str, pairs: tuple[tuple[str, str], ...], *, forward: 
 
 def _rewrite_manifest_source_refs(source: str, *, forward: bool) -> str:
     """Chấp nhận v5 chỉ khi payload canonical và index refs v3 rỗng."""
+    if forward and "'dataset-manifest-v5'" in source:
+        return source
+    if not forward and _LICENSED_MANIFEST_VERSION_GATE not in source:
+        return source
     return _rewrite_pairs(
         source,
         (
@@ -168,6 +174,8 @@ def _rewrite_scope_check(source: str, *, forward: bool) -> str:
 
 
 def _extend_scope_caller_guard(source: str) -> str:
+    if "'deployment_recheck'" in source:
+        return source
     pattern = re.compile(
         r"(?P<indent>^[ \t]*)OR target_access_kind NOT IN \((?P<operations>[^)]*)\) THEN",
         re.MULTILINE,
@@ -177,7 +185,16 @@ def _extend_scope_caller_guard(source: str) -> str:
         raise RuntimeError("WP06_SCORER_V5_CURRENT_RIGHTS_UPGRADE_PREIMAGE_UNEXPECTED")
     match = matches[0]
     operations = match.group("operations")
-    if tuple(re.findall(r"'([^']+)'", operations)) != (
+    op_tuple = tuple(re.findall(r"'([^']+)'", operations))
+    if op_tuple == (
+        "normalization",
+        "evaluation",
+        "training",
+        "report_read",
+        "deployment_recheck",
+    ):
+        return source
+    if op_tuple != (
         "normalization",
         "evaluation",
         "training",
@@ -221,6 +238,10 @@ def _revert_scope_caller_guard(source: str) -> str:
 
 def _rewrite_current_rights(source: str, *, forward: bool) -> str:
     """Ghim provider locks và gọi exact b7 checker chỉ cho manifest v5."""
+    if "wp06_scorer_replay_evaluation_scope" in source or (
+        forward and "'dataset-manifest-v5'" in source
+    ):
+        return source
     return _rewrite_pairs(
         source,
         (
@@ -250,6 +271,8 @@ def _rewrite_function(
         rewritten_source = transform(source, forward=forward)
     except RuntimeError as error:
         raise RuntimeError(f"{signature}: {error}") from error
+    if rewritten_source == source:
+        return
     if definition.count(source) != 1:
         raise RuntimeError("WP06_SCORER_V5_CURRENT_RIGHTS_DEFINITION_UNEXPECTED")
     rewritten_definition = definition.replace(source, rewritten_source, 1).replace("%", "%%")

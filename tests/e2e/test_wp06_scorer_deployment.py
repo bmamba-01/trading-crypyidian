@@ -122,6 +122,7 @@ def test_postgres_scorer_deployment_governance_and_rights_gate() -> None:
                 "score_event_valid_shadow_veto_preserved": True,
                 "score_event_scoring_pointer_lock_wait": True,
                 "score_event_model_pointer_lock_wait": True,
+                "worker_artifact_resolver_bound_to_job": True,
             }
 
             downgrade = compose(

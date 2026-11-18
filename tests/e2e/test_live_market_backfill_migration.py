@@ -82,12 +82,10 @@ def test_backfill_recreates_live_market_tables_for_main_lineage_database() -> No
     try:
         compose("up", "--detach", "--wait", "--wait-timeout", "180", "postgres")
         compose("run", "--rm", "--no-deps", "db-provisioner")
-        alembic("upgrade", "head")
         assert "778263f66bad (head)" in alembic("heads").stdout
-
-        # DB theo main: đã qua revision gộp nhưng chưa từng có ba bảng của b4d6. Hạ các revision
-        # sau 7707d82de246 trước (vd cột analyst_run.context của CRY-384) để stamp lùi khớp schema.
-        alembic("downgrade", "7707d82de246")
+        # DB theo main: đã qua revision gộp nhưng chưa từng có ba bảng của b4d6. Nâng tới
+        # 7707d82de246 rồi xóa ba bảng và stamp lùi về c1fec3af85ea để kiểm tra backfill.
+        alembic("upgrade", "7707d82de246")
         drop(TABLES)
         alembic("stamp", "c1fec3af85ea")
         assert sql("SELECT count(*) FROM pg_class WHERE relname IN " + str(TABLES)) == "0"

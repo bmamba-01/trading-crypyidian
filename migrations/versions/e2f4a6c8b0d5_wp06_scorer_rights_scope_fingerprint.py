@@ -119,10 +119,21 @@ _LICENSED_EVALUATION_CALLER_GUARD = (
     "('crypidian_learning_evaluator', 'crypidian_admin_web', "
     "'crypidian_trading_runtime', 'crypidian_market_signal_worker')"
 )
+_LEGACY_EVALUATION_CALLER_GUARD_AFTER_C2E4 = (
+    "target_operation = 'evaluation' AND session_user NOT IN (\n"
+    "                   'crypidian_learning_evaluator', 'crypidian_candidate_builder')"
+)
+_LICENSED_EVALUATION_CALLER_GUARD_WITH_BUILDER = (
+    "target_operation = 'evaluation' AND session_user NOT IN (\n"
+    "                   'crypidian_learning_evaluator', 'crypidian_candidate_builder', "
+    "'crypidian_admin_web', 'crypidian_trading_runtime', 'crypidian_market_signal_worker')"
+)
 
 
 def _rewrite_current_rights_source(source: str, *, forward: bool) -> str:
     """Dựng digest từ đúng payload license-aware mà repository ghi vào receipt."""
+    if "wp06_scorer_replay_evaluation_scope" in source:
+        return source
     expected, replacement = (
         (_LEGACY_TRAINING_SCOPE, _LICENSED_TRAINING_SCOPE)
         if forward
@@ -154,15 +165,19 @@ def _rewrite_current_rights_source(source: str, *, forward: bool) -> str:
 
 def _rewrite_bundle_gate_source(source: str, *, forward: bool) -> str:
     """Chỉ cho phép nested C4 caller qua EXECUTE đã cấp cho role nội bộ."""
-    expected, replacement = (
-        (_LEGACY_EVALUATION_CALLER_GUARD, _LICENSED_EVALUATION_CALLER_GUARD)
-        if forward
-        else (_LICENSED_EVALUATION_CALLER_GUARD, _LEGACY_EVALUATION_CALLER_GUARD)
+    pairs = (
+        (_LEGACY_EVALUATION_CALLER_GUARD, _LICENSED_EVALUATION_CALLER_GUARD),
+        (
+            _LEGACY_EVALUATION_CALLER_GUARD_AFTER_C2E4,
+            _LICENSED_EVALUATION_CALLER_GUARD_WITH_BUILDER,
+        ),
     )
-    if source.count(expected) != 1:
-        direction = "UPGRADE" if forward else "DOWNGRADE"
-        raise RuntimeError(f"WP06_BUNDLE_GATE_CALLER_{direction}_PREIMAGE_UNEXPECTED")
-    return source.replace(expected, replacement, 1)
+    for legacy, licensed in pairs:
+        expected, replacement = (legacy, licensed) if forward else (licensed, legacy)
+        if source.count(expected) == 1:
+            return source.replace(expected, replacement, 1)
+    direction = "UPGRADE" if forward else "DOWNGRADE"
+    raise RuntimeError(f"WP06_BUNDLE_GATE_CALLER_{direction}_PREIMAGE_UNEXPECTED")
 
 
 def _rewrite_function(signature: str, *, forward: bool, bundle_gate: bool) -> None:
@@ -177,6 +192,8 @@ def _rewrite_function(signature: str, *, forward: bool, bundle_gate: bool) -> No
         raise RuntimeError("WP06_SCORER_RIGHTS_SCOPE_FUNCTION_INVALID")
     transform = _rewrite_bundle_gate_source if bundle_gate else _rewrite_current_rights_source
     rewritten_source = transform(source, forward=forward)
+    if rewritten_source == source:
+        return
     if definition.count(source) != 1:
         raise RuntimeError("WP06_SCORER_RIGHTS_SCOPE_DEFINITION_UNEXPECTED")
     connection.exec_driver_sql(definition.replace(source, rewritten_source, 1).replace("%", "%%"))

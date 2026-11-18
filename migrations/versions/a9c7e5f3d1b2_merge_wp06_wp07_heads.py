@@ -313,12 +313,14 @@ def _grant_incident_guard_access() -> None:
     )
     for table in tables:
         op.execute(f"GRANT SELECT ON TABLE public.{table} TO {INCIDENT_GUARD_ROLE}")
+        op.execute(f"DROP POLICY IF EXISTS wp06_incident_guard_read ON public.{table}")
         op.execute(f"""
             CREATE POLICY wp06_incident_guard_read ON public.{table} FOR SELECT
             TO {INCIDENT_GUARD_ROLE} USING (workspace_id = NULLIF(
                 pg_catalog.current_setting('app.workspace_id', true), '')::uuid)
         """)
     op.execute(f"GRANT SELECT ON TABLE public.learning_drift_assessment TO {INCIDENT_GUARD_ROLE}")
+    op.execute("DROP POLICY IF EXISTS wp06_incident_guard_read ON public.learning_drift_assessment")
     op.execute("""
         CREATE POLICY wp06_incident_guard_read ON public.learning_drift_assessment FOR SELECT
         TO crypidian_learning_incident_guard USING (workspace_id = NULLIF(
@@ -351,7 +353,7 @@ def _revoke_incident_guard_access() -> None:
         "learning_retrain_proposal",
         "learning_drift_assessment",
     ):
-        op.execute(f"DROP POLICY wp06_incident_guard_read ON public.{table}")
+        op.execute(f"DROP POLICY IF EXISTS wp06_incident_guard_read ON public.{table}")
         op.execute(f"REVOKE SELECT ON TABLE public.{table} FROM {INCIDENT_GUARD_ROLE}")
     for signature in (
         LOCK_FUNCTION,
@@ -362,4 +364,7 @@ def _revoke_incident_guard_access() -> None:
     ):
         op.execute(f"REVOKE EXECUTE ON FUNCTION {signature} FROM {INCIDENT_GUARD_ROLE}")
     op.execute(f"REVOKE USAGE ON SCHEMA public FROM {INCIDENT_GUARD_ROLE}")
-    op.execute(f"DROP ROLE {INCIDENT_GUARD_ROLE}")
+    op.execute(
+        f"DO $$ BEGIN DROP ROLE IF EXISTS {INCIDENT_GUARD_ROLE}; "
+        "EXCEPTION WHEN dependent_objects_still_exist THEN NULL; END $$;"
+    )

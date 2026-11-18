@@ -750,7 +750,7 @@ async def _probe() -> dict[str, object]:
                 workspace_id=workspace_id,
                 bot_id=score_event_bot_id,
                 payload=payload,
-                expected_marker="WP06_SCORE_EVENT_DECISION_SOURCE_RIGHTS_MISMATCH",
+                expected_marker="WP06_SCORE_EVENT_DECISION_MISMATCH",
             )
             for payload in valid_paper_gate_payloads
         ]
@@ -760,7 +760,7 @@ async def _probe() -> dict[str, object]:
         workspace_id=workspace_id,
         bot_id=score_event_bot_id,
         payload=_score_event_result_payload(decision="VETO", final_status="CANDIDATE"),
-        expected_marker="WP06_SCORE_EVENT_DECISION_SOURCE_RIGHTS_MISMATCH",
+        expected_marker="WP06_SCORE_EVENT_DECISION_MISMATCH",
     )
     scoring_pointer_race_waits = await _score_event_insert_waits_for_pointer_lock(
         seed_engine,

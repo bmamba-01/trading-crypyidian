@@ -158,7 +158,7 @@ def test_merge_revision_downgrade_restores_incident_trigger_owners_and_grants() 
         f"REVOKE SELECT ON TABLE public.learning_incident_entry_hold_event "
         f"FROM {migration.INCIDENT_GUARD_ROLE}"
     ) in statements
-    assert f"DROP ROLE {migration.INCIDENT_GUARD_ROLE}" in statements
+    assert f"DROP ROLE IF EXISTS {migration.INCIDENT_GUARD_ROLE}" in statements
 
 
 def test_downgrade_restores_previous_owner_and_revokes_only_added_access() -> None:

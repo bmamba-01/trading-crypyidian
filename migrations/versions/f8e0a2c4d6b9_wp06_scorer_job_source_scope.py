@@ -1551,14 +1551,6 @@ def _create_job_bound_artifact_resolver() -> None:
                OR NULLIF(pg_catalog.current_setting('app.bot_id', true), '') IS NULL THEN
                 RAISE EXCEPTION 'WP06_SCORER_RUNTIME_JOB_SCOPE_DENIED';
             END IF;
-            SELECT metadata.workspace_id, metadata.mode,
-                   metadata.deployment_event_id, metadata.deployment_revision,
-                   metadata.active_pointer_version
-              INTO metadata_row
-              FROM public.wp06_resolve_scorer_runtime_metadata(target_workspace) AS metadata;
-            IF NOT FOUND THEN
-                RETURN;
-            END IF;
             SELECT job.workspace_id, job.id, job.bot_id, job.status
               INTO job_row
               FROM public.bot_decision_job AS job
@@ -1569,6 +1561,14 @@ def _create_job_bound_artifact_resolver() -> None:
                AND job.status = 'PENDING';
             IF NOT FOUND THEN
                 RAISE EXCEPTION 'WP06_SCORER_RUNTIME_JOB_SCOPE_DENIED';
+            END IF;
+            SELECT metadata.workspace_id, metadata.mode,
+                   metadata.deployment_event_id, metadata.deployment_revision,
+                   metadata.active_pointer_version
+              INTO metadata_row
+              FROM public.wp06_resolve_scorer_runtime_metadata(target_workspace) AS metadata;
+            IF NOT FOUND THEN
+                RETURN;
             END IF;
             current_source_rights_fingerprint :=
                 public.wp06_authorize_scorer_job_source_scope(target_workspace, target_job);
