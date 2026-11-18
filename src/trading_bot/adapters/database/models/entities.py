@@ -135,6 +135,86 @@ class Session(UuidPrimaryKey, CreatedAt, Base):
     mfa_method: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
 
+class ActionChallengeRecord(UuidPrimaryKey, CreatedAt, Base):
+    """Challenge step-up một lần gắn phiên, hành động và hash payload WYSIWYS (SEC-20)."""
+
+    __tablename__ = "action_challenge"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "id", name="uq_action_challenge_workspace_id"),
+        ForeignKeyConstraint(["workspace_id"], ["workspace.id"], ondelete="CASCADE"),
+        ForeignKeyConstraint(
+            ["workspace_id", "membership_id"],
+            ["user_membership.workspace_id", "user_membership.id"],
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["workspace_id", "session_id"],
+            ["session.workspace_id", "session.id"],
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            "status IN ('PENDING', 'VERIFIED', 'CONSUMED', 'CANCELLED')",
+            name="action_challenge_status_valid",
+        ),
+        CheckConstraint("length(trim(action)) > 0", name="action_challenge_action_nonempty"),
+        CheckConstraint(
+            "length(payload_hash) = 64 "
+            "AND payload_hash = lower(payload_hash) "
+            "AND payload_hash !~ '[^0-9a-f]'",
+            name="action_challenge_payload_hash_sha256",
+        ),
+        CheckConstraint(
+            "verification_token_hash IS NULL OR ("
+            "length(verification_token_hash) = 64 "
+            "AND verification_token_hash = lower(verification_token_hash) "
+            "AND verification_token_hash !~ '[^0-9a-f]')",
+            name="action_challenge_token_hash_sha256",
+        ),
+        CheckConstraint(
+            "expires_at > created_at AND expires_at <= created_at + interval '300 seconds'",
+            name="action_challenge_ttl_valid",
+        ),
+        CheckConstraint(
+            "max_attempts = 5 AND failed_attempts >= 0 AND failed_attempts <= max_attempts",
+            name="action_challenge_attempts_valid",
+        ),
+        CheckConstraint(
+            "(status = 'CONSUMED') = (consumed_at IS NOT NULL)",
+            name="action_challenge_consumed_consistent",
+        ),
+        CheckConstraint(
+            "(status = 'CANCELLED') = (cancelled_at IS NOT NULL)",
+            name="action_challenge_cancelled_consistent",
+        ),
+        CheckConstraint(
+            "(status NOT IN ('VERIFIED', 'CONSUMED')) OR (verified_at IS NOT NULL)",
+            name="action_challenge_verified_consistent",
+        ),
+        Index(
+            "ix_action_challenge_session_lookup",
+            "workspace_id",
+            "session_id",
+            "action",
+            "status",
+        ),
+        Index("ix_action_challenge_expiry", "workspace_id", "expires_at"),
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    membership_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    session_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    action: Mapped[str] = mapped_column(String(80), nullable=False)
+    payload_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="PENDING")
+    failed_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
+    verification_token_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class MfaFactor(UuidPrimaryKey, CreatedAt, Base):
     __tablename__ = "mfa_factor"
     __table_args__ = (

@@ -47,6 +47,7 @@ from trading_bot.adapters.database.models.circuit_breaker_entities import (
     CircuitBreakerEventRecord,
 )
 from trading_bot.adapters.database.models.entities import (
+    ActionChallengeRecord,
     ApprovalRequest,
     AuditEvent,
     ConfigVersion,
@@ -242,6 +243,7 @@ __all__ = [
     "BotDecisionRecord",
     "BotGrant",
     "BotInstance",
+    "ActionChallengeRecord",
     "ApprovalRequest",
     "AuditEvent",
     "ConsumerReceipt",

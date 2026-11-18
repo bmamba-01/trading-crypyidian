@@ -39,6 +39,14 @@ from trading_bot.application.bot_runtime_control import (
     BotRuntimeControlService,
 )
 from trading_bot.application.outbox import UnitOfWork
+from trading_bot.auth.action_challenge import (
+    ACTION_BOT_ENABLE,
+    ActionChallengeError,
+    ActionChallengeService,
+    StepUpProof,
+    bot_enable_payload,
+    verify_service_step_up,
+)
 from trading_bot.auth.bot_policy import BotPermission
 from trading_bot.auth.policy import Principal, Role
 from trading_bot.auth.service import RECENT_MFA_LIFETIME
@@ -143,10 +151,19 @@ class BotOperationsService:
         operations_repository_factory: Callable[[Any], Any] = BotOperationsRepository,
         grant_repository_factory: Callable[[Any], Any] = BotGrantRepository,
         lifecycle_guard_factory: Callable[[Any], Any] = BotLifecycleGuard,
+        action_challenge_service: ActionChallengeService | None = None,
+        require_action_step_up: bool = False,
     ) -> None:
         self._sessions = sessions
         self._clock = clock or (lambda: datetime.now(UTC))
-        self._control = control_service or BotRuntimeControlService(sessions, clock=self._clock)
+        self._action_challenge_service = action_challenge_service
+        self._require_action_step_up = require_action_step_up
+        self._control = control_service or BotRuntimeControlService(
+            sessions,
+            clock=self._clock,
+            action_challenge_service=action_challenge_service,
+            require_action_step_up=require_action_step_up,
+        )
         self._unit_of_work_factory = unit_of_work_factory
         self._operations_repository_factory = operations_repository_factory
         self._grant_repository_factory = grant_repository_factory
@@ -276,16 +293,29 @@ class PrincipalBotOperations:
             await self._audit_disable_denied(bot_id, UNAVAILABLE, correlation_id)
             raise BotRuntimeControlError(UNAVAILABLE) from None
 
-    async def enable_bot(self, bot_id: UUID, reason: str) -> BotEnableResult:
+    async def enable_bot(
+        self, bot_id: UUID, reason: str, *, step_up: StepUpProof | None = None
+    ) -> BotEnableResult:
         """Bật lại account PAPER chỉ khi runtime, control, incident và config đã đối soát."""
         correlation_id = uuid4()
         principal = self._principal
         try:
             if Role.OWNER not in principal.roles:
                 raise BotRuntimeControlError("CONTROL_PERMISSION_DENIED")
-            self._require_recent_mfa()
             if not isinstance(reason, str) or not reason.strip() or len(reason) > 500:
                 raise BotRuntimeControlError("CONTROL_REASON_REQUIRED")
+            try:
+                await verify_service_step_up(
+                    principal,
+                    action_challenge_service=self._service._action_challenge_service,
+                    require_action_step_up=self._service._require_action_step_up,
+                    action=ACTION_BOT_ENABLE,
+                    payload=bot_enable_payload(bot_id=bot_id, reason=reason),
+                    step_up=step_up,
+                    fallback_recent_mfa=self._require_recent_mfa,
+                )
+            except ActionChallengeError as error:
+                raise BotRuntimeControlError(error.code) from None
             async with self._uow(bot_id, correlation_id) as uow:
                 repository = self._service._operations_repository_factory(uow.session)
                 row = await repository.get_bot(principal.workspace_id, bot_id)

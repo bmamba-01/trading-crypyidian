@@ -259,8 +259,10 @@ class AuthService:
                 raise AuthenticationFailure(403, "Tài khoản chưa được cấp vai trò")
             raw_token = secrets.token_urlsafe(32)
             csrf_token = secrets.token_urlsafe(32)
+            session_id = uuid4()
             database.add(
                 Session(
+                    id=session_id,
                     workspace_id=workspace.id,
                     membership_id=membership.id,
                     token_hash=hash_token(raw_token),
@@ -277,6 +279,7 @@ class AuthService:
                 roles=roles,
                 mfa_verified_at=now,
                 mfa_method=MfaMethod.TOTP,
+                session_id=session_id,
             )
         return LoginResult(
             cookie_value=f"{principal.workspace_id}:{raw_token}",
@@ -336,6 +339,7 @@ class AuthService:
                 mfa_method=(
                     MfaMethod(session.mfa_method) if session.mfa_method is not None else None
                 ),
+                session_id=session.id,
             )
             return AuthIdentity(principal=principal, email=user.email_normalized)
 

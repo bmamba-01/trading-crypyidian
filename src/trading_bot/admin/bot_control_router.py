@@ -15,6 +15,7 @@ from trading_bot.application.bot_lifecycle_guard import BotNotFlatError
 from trading_bot.application.bot_operations import BotOperationsService, PrincipalBotOperations
 from trading_bot.application.bot_runtime_control import BotRuntimeControlError
 from trading_bot.application.flatten_all import FlattenAllError, FlattenAllService
+from trading_bot.auth.action_challenge import ActionChallengeError, http_step_up_scope
 from trading_bot.auth.bot_policy import BotPermission
 from trading_bot.auth.policy import Permission
 from trading_bot.auth.route_policy import (
@@ -77,12 +78,22 @@ class FlattenConfirmRequest(ControlReasonRequest):
 
 def error_status(code: str) -> int:
     """Mã HTTP ổn định theo reason code; mã lạ là xung đột trạng thái (409)."""
+    if code == "STEP_UP_SERVICE_UNAVAILABLE":
+        return 503
+    if code in {"STEP_UP_TTL_INVALID", "STEP_UP_PAYLOAD_INVALID", "STEP_UP_ACTION_INVALID"}:
+        return 422
+    if code.startswith("STEP_UP_"):
+        return 403
     return _ERRORS.get(code, (409, ""))[0]
 
 
 def _raise(error: BotRuntimeControlError | BotNotFlatError) -> NoReturn:
     code = error.reason_code
-    status, message = _ERRORS.get(code, (409, "Thao tác bị từ chối."))
+    if code.startswith("STEP_UP_"):
+        status = error_status(code)
+        message = "Xác thực step-up theo hành động không hợp lệ hoặc đã hết hạn."
+    else:
+        status, message = _ERRORS.get(code, (409, "Thao tác bị từ chối."))
     detail: dict[str, object] = {"code": code, "message": message}
     if isinstance(error, BotNotFlatError) and code == "BOT_NOT_FLAT":
         detail |= {
@@ -105,14 +116,22 @@ def _flatten_service(request: Request) -> FlattenAllService:
 def _raise_flatten(error: FlattenAllError) -> NoReturn:
     code = error.reason_code
     status_code = (
-        403
+        503
+        if code in {"FLATTEN_SNAPSHOT_UNAVAILABLE", "STEP_UP_SERVICE_UNAVAILABLE"}
+        else 422
+        if code
+        in {
+            "CONTROL_REASON_REQUIRED",
+            "FLATTEN_IDEMPOTENCY_KEY_REQUIRED",
+            "STEP_UP_TTL_INVALID",
+            "STEP_UP_PAYLOAD_INVALID",
+            "STEP_UP_ACTION_INVALID",
+        }
+        else 403
         if code in {"CONTROL_PERMISSION_DENIED", "RECENT_MFA_REQUIRED"}
+        or code.startswith("STEP_UP_")
         else 404
         if code in {"FLATTEN_PREVIEW_NOT_FOUND", "FLATTEN_OPERATION_NOT_FOUND"}
-        else 422
-        if code in {"CONTROL_REASON_REQUIRED", "FLATTEN_IDEMPOTENCY_KEY_REQUIRED"}
-        else 503
-        if code == "FLATTEN_SNAPSHOT_UNAVAILABLE"
         else 409
     )
     raise HTTPException(
@@ -243,9 +262,12 @@ async def resume_bot(
     operations = _operations(request, identity)
     response.headers["Cache-Control"] = "no-store"
     try:
-        return _bot_control(
-            await operations.resume_bot(bot_id, body.reason, body.expected_revision)
-        )
+        with http_step_up_scope(request):
+            return _bot_control(
+                await operations.resume_bot(bot_id, body.reason, body.expected_revision)
+            )
+    except ActionChallengeError as error:
+        raise HTTPException(status_code=error.status_code, detail=error.as_detail()) from error
     except BotRuntimeControlError as error:
         _raise(error)
 
@@ -283,7 +305,10 @@ async def enable_bot(
     operations = _operations(request, identity)
     response.headers["Cache-Control"] = "no-store"
     try:
-        return {"bot": (await operations.enable_bot(bot_id, body.reason)).as_dict()}
+        with http_step_up_scope(request):
+            return {"bot": (await operations.enable_bot(bot_id, body.reason)).as_dict()}
+    except ActionChallengeError as error:
+        raise HTTPException(status_code=error.status_code, detail=error.as_detail()) from error
     except BotRuntimeControlError as error:
         _raise(error)
 
@@ -331,9 +356,12 @@ async def release_workspace(
     operations = _operations(request, identity)
     response.headers["Cache-Control"] = "no-store"
     try:
-        return _workspace_control(
-            await operations.release_workspace(body.reason, body.expected_revision)
-        )
+        with http_step_up_scope(request):
+            return _workspace_control(
+                await operations.release_workspace(body.reason, body.expected_revision)
+            )
+    except ActionChallengeError as error:
+        raise HTTPException(status_code=error.status_code, detail=error.as_detail()) from error
     except BotRuntimeControlError as error:
         _raise(error)
 
@@ -382,16 +410,17 @@ async def flatten_confirm(
 ) -> dict[str, object]:
     response.headers["Cache-Control"] = "no-store"
     try:
-        result = (
-            await _flatten_service(request)
-            .for_principal(identity.principal)
-            .confirm(
-                preview_id=body.preview_id,
-                preview_hash=body.preview_hash,
-                idempotency_key=body.idempotency_key,
-                reason=body.reason,
+        with http_step_up_scope(request):
+            result = (
+                await _flatten_service(request)
+                .for_principal(identity.principal)
+                .confirm(
+                    preview_id=body.preview_id,
+                    preview_hash=body.preview_hash,
+                    idempotency_key=body.idempotency_key,
+                    reason=body.reason,
+                )
             )
-        )
         return {
             "operation": {
                 "id": str(result.operation_id),
@@ -399,6 +428,8 @@ async def flatten_confirm(
                 "created": result.created,
             }
         }
+    except ActionChallengeError as error:
+        raise HTTPException(status_code=error.status_code, detail=error.as_detail()) from error
     except FlattenAllError as error:
         _raise_flatten(error)
     except BotRuntimeControlError as error:

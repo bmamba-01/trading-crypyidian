@@ -111,6 +111,9 @@ class AppSettings(BaseSettings):
     listings_collector_enabled: bool = False
     # Cờ kiểm thử: chấp nhận mã xác thực cố định 123456 (chỉ local/test + PAPER, mặc định tắt).
     auth_test_totp_enabled: bool = False
+    # SEC-20: bắt buộc step-up theo hành động (challenge một lần gắn payload hash).
+    # None = tự động bật ở production hoặc ngoài PAPER; không được tắt ở production/ngoài PAPER.
+    action_step_up_required: bool | None = None
     mfa_encryption_key_file: Path | None = None
     mfa_secret_directory: Path | None = None
     bootstrap_token_file: Path | None = None
@@ -258,6 +261,24 @@ class AppSettings(BaseSettings):
                     "(cấm '*')."
                 )
         return self
+
+    @model_validator(mode="after")
+    def validate_action_step_up(self) -> AppSettings:
+        """SEC-20: không được tắt step-up theo hành động ngoài local/test hoặc ngoài PAPER."""
+        if self.action_step_up_required is False and (
+            self.app_env not in {"local", "test"} or self.trading_mode != "PAPER"
+        ):
+            raise ValueError(
+                "Step-up theo hành động bắt buộc bật ngoài môi trường local/test hoặc ngoài PAPER."
+            )
+        return self
+
+    @property
+    def is_action_step_up_required(self) -> bool:
+        """Bật step-up bắt buộc theo cấu hình hoặc mặc định fail-closed cho production."""
+        if self.action_step_up_required is not None:
+            return self.action_step_up_required
+        return self.app_env == "production" or self.trading_mode != "PAPER"
 
     @model_validator(mode="after")
     def validate_telegram_webhook(self) -> AppSettings:

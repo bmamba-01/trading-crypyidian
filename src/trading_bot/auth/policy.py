@@ -100,6 +100,7 @@ class Principal:
     roles: frozenset[Role]
     mfa_verified_at: datetime
     mfa_method: MfaMethod | None = None
+    session_id: UUID | None = None
 
 
 def authorize(principal: Principal, permission: Permission, *, raise_error: bool = False) -> bool:

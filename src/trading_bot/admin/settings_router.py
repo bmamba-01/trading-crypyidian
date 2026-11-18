@@ -14,6 +14,7 @@ from trading_bot.admin.settings_schemas import (
     UpdateDraftRequest,
 )
 from trading_bot.admin.settings_service import SettingsAdminError, SettingsAdminService
+from trading_bot.auth.action_challenge import ActionChallengeError, http_step_up_scope
 from trading_bot.auth.policy import Permission
 from trading_bot.auth.route_policy import CsrfMode, permission_route
 from trading_bot.auth.router import current_identity, require_csrf
@@ -33,7 +34,10 @@ def get_settings_admin_service(request: Request) -> SettingsAdminService:
 
 
 def raise_settings_error(error: SettingsAdminError) -> NoReturn:
-    raise HTTPException(status_code=error.status_code, detail=error.message) from error
+    detail: object = (
+        {"code": error.code, "message": error.message} if error.code is not None else error.message
+    )
+    raise HTTPException(status_code=error.status_code, detail=detail) from error
 
 
 _SETTINGS_READ_POLICY = permission_route(
@@ -212,13 +216,16 @@ async def publish_settings_draft(
     service = get_settings_admin_service(request)
     response.headers["Cache-Control"] = "no-store"
     try:
-        version = await service.publish_draft(
-            identity.principal,
-            draft_id=draft_id,
-            expected_revision=body.expected_revision,
-            reason=body.reason,
-            request_id=_request_id(request),
-        )
+        with http_step_up_scope(request):
+            version = await service.publish_draft(
+                identity.principal,
+                draft_id=draft_id,
+                expected_revision=body.expected_revision,
+                reason=body.reason,
+                request_id=_request_id(request),
+            )
+    except ActionChallengeError as error:
+        raise HTTPException(status_code=error.status_code, detail=error.as_detail()) from error
     except SettingsAdminError as error:
         raise_settings_error(error)
     return {"version": version}
@@ -235,12 +242,15 @@ async def rollback_settings(
     service = get_settings_admin_service(request)
     response.headers["Cache-Control"] = "no-store"
     try:
-        result = await service.rollback(
-            identity.principal,
-            version=version,
-            reason=body.reason,
-            request_id=_request_id(request),
-        )
+        with http_step_up_scope(request):
+            result = await service.rollback(
+                identity.principal,
+                version=version,
+                reason=body.reason,
+                request_id=_request_id(request),
+            )
+    except ActionChallengeError as error:
+        raise HTTPException(status_code=error.status_code, detail=error.as_detail()) from error
     except SettingsAdminError as error:
         raise_settings_error(error)
     return {"version": result}

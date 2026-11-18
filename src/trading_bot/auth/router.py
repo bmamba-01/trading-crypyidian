@@ -1,9 +1,18 @@
+from collections.abc import Mapping
 from datetime import UTC, datetime
-from typing import Annotated, cast
+from typing import Annotated, Any, cast
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 
+from trading_bot.auth.action_challenge import (
+    ACTION_RISK_PROFILE_CREATE,
+    ActionChallengeError,
+    ActionChallengeService,
+    extract_step_up_proof,
+    resolve_step_up_proof,
+    risk_profile_create_payload,
+)
 from trading_bot.auth.cookies import (
     clear_session_cookie,
     read_session_cookie,
@@ -29,6 +38,8 @@ from trading_bot.auth.route_policy import (
     public_route,
 )
 from trading_bot.auth.schemas import (
+    ActionChallengeCreateRequest,
+    ActionChallengeVerifyRequest,
     BootstrapRequest,
     BootstrapVerifyRequest,
     LoginRequest,
@@ -51,6 +62,76 @@ router = APIRouter(prefix="/api/v1", tags=["authentication and administration"])
 THROTTLED_DETAIL = "Thử lại sau khi hết thời gian giới hạn"
 
 
+def get_action_challenge_service(request: Request) -> ActionChallengeService:
+    service = cast(
+        ActionChallengeService | None,
+        getattr(request.app.state, "action_challenge_service", None),
+    )
+    if service is None:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "STEP_UP_SERVICE_UNAVAILABLE",
+                "message": "Dịch vụ xác thực step-up chưa sẵn sàng.",
+            },
+        )
+    return service
+
+
+async def enforce_endpoint_step_up(
+    request: Request,
+    principal: Principal,
+    *,
+    action: str,
+    payload: Mapping[str, Any],
+    form_values: Mapping[str, str] | None = None,
+) -> None:
+    """Thực thi step-up theo hành động (SEC-20) ở lớp HTTP router."""
+    try:
+        proof = resolve_step_up_proof(extract_step_up_proof(request, form_values=form_values))
+    except ActionChallengeError as error:
+        raise HTTPException(status_code=error.status_code, detail=error.as_detail()) from error
+
+    service = cast(
+        ActionChallengeService | None,
+        getattr(request.app.state, "action_challenge_service", None),
+    )
+    settings = cast(AppSettings | None, getattr(request.app.state, "settings", None))
+    strict = bool(settings.is_action_step_up_required) if settings is not None else False
+    if (
+        settings is not None
+        and settings.app_env == "test"
+        and settings.action_step_up_required is None
+        and service is not None
+    ):
+        strict = True
+
+    if proof is not None:
+        if service is None:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "STEP_UP_SERVICE_UNAVAILABLE",
+                    "message": "Dịch vụ xác thực step-up chưa sẵn sàng.",
+                },
+            )
+        try:
+            await service.consume_proof(principal, proof=proof, action=action, payload=payload)
+        except ActionChallengeError as error:
+            raise HTTPException(status_code=error.status_code, detail=error.as_detail()) from error
+        return
+
+    if strict:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "STEP_UP_REQUIRED",
+                "message": "Thao tác rủi ro cao yêu cầu xác thực step-up theo hành động.",
+            },
+        )
+    now = datetime.now(UTC)
+    if principal.mfa_verified_at > now or now - principal.mfa_verified_at > RECENT_MFA_LIFETIME:
+        raise HTTPException(status_code=403, detail="Cần xác thực MFA gần đây")
 def get_rate_limiter(request: Request) -> LoginRateLimiter:
     return cast(LoginRateLimiter, request.app.state.login_limiter)
 
@@ -290,6 +371,99 @@ async def reauthenticate(
 
 
 @router.post(
+    "/auth/challenges",
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[permission_route(Permission.WORKSPACE_READ, csrf=CsrfMode.HEADER)],
+)
+async def create_action_challenge(
+    body: ActionChallengeCreateRequest,
+    response: Response,
+    identity: Annotated[AuthIdentity, Depends(require_csrf)],
+    challenge_service: Annotated[ActionChallengeService, Depends(get_action_challenge_service)],
+) -> dict[str, object]:
+    """Tạo challenge một lần (TTL ≤ 5 phút) gắn phiên, hành động và hash payload WYSIWYS."""
+    if not authorize(identity.principal, Permission.WORKSPACE_READ):
+        raise HTTPException(status_code=403, detail="Không đủ quyền tạo challenge xác thực")
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        created = await challenge_service.create_challenge(
+            identity.principal,
+            action=body.action,
+            payload=body.payload,
+            ttl_seconds=body.ttl_seconds,
+        )
+    except ActionChallengeError as error:
+        raise HTTPException(status_code=error.status_code, detail=error.as_detail()) from error
+    return {
+        "challenge": {
+            "id": str(created.challenge_id),
+            "action": created.action,
+            "payload_hash": created.payload_hash,
+            "created_at": created.created_at.isoformat(),
+            "expires_at": created.expires_at.isoformat(),
+            "max_attempts": created.max_attempts,
+            "remaining_attempts": created.remaining_attempts,
+            "status": created.status,
+        }
+    }
+
+
+@router.post(
+    "/auth/challenges/{challenge_id}/verify",
+    dependencies=[permission_route(Permission.WORKSPACE_READ, csrf=CsrfMode.HEADER)],
+)
+async def verify_action_challenge(
+    challenge_id: UUID,
+    body: ActionChallengeVerifyRequest,
+    response: Response,
+    identity: Annotated[AuthIdentity, Depends(require_csrf)],
+    challenge_service: Annotated[ActionChallengeService, Depends(get_action_challenge_service)],
+) -> dict[str, object]:
+    """Xác minh TOTP cho challenge và cấp token một lần gắn chặt phiên/hành động/payload."""
+    if not authorize(identity.principal, Permission.WORKSPACE_READ):
+        raise HTTPException(status_code=403, detail="Không đủ quyền xác minh challenge")
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        verified = await challenge_service.verify_challenge(
+            identity.principal,
+            challenge_id=challenge_id,
+            code=body.code,
+            action=body.action,
+            payload=body.payload,
+        )
+    except ActionChallengeError as error:
+        raise HTTPException(status_code=error.status_code, detail=error.as_detail()) from error
+    return {
+        "authorization": {
+            "challenge_id": str(verified.challenge_id),
+            "step_up_token": verified.step_up_token,
+            "action": verified.action,
+            "payload_hash": verified.payload_hash,
+            "expires_at": verified.expires_at.isoformat(),
+        }
+    }
+
+
+@router.post(
+    "/auth/challenges/{challenge_id}/cancel",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[permission_route(Permission.WORKSPACE_READ, csrf=CsrfMode.HEADER)],
+)
+async def cancel_action_challenge(
+    challenge_id: UUID,
+    identity: Annotated[AuthIdentity, Depends(require_csrf)],
+    challenge_service: Annotated[ActionChallengeService, Depends(get_action_challenge_service)],
+) -> None:
+    """Hủy challenge đang chờ khi người dùng bỏ thao tác."""
+    if not authorize(identity.principal, Permission.WORKSPACE_READ):
+        raise HTTPException(status_code=403, detail="Không đủ quyền hủy challenge")
+    try:
+        await challenge_service.cancel_challenge(identity.principal, challenge_id=challenge_id)
+    except ActionChallengeError as error:
+        raise HTTPException(status_code=error.status_code, detail=error.as_detail()) from error
+
+
+@router.post(
     "/auth/logout",
     status_code=status.HTTP_204_NO_CONTENT,
     dependencies=[authenticated_route(csrf=CsrfMode.HEADER)],
@@ -318,11 +492,22 @@ async def logout(
 )
 async def create_risk_profile(
     body: RiskProfileRequest,
+    request: Request,
     identity: Annotated[AuthIdentity, Depends(require_csrf)],
     service: Annotated[AuthService, Depends(get_auth_service)],
 ) -> dict[str, str]:
-    if datetime.now(UTC) - identity.principal.mfa_verified_at > RECENT_MFA_LIFETIME:
-        raise HTTPException(status_code=403, detail="Cần xác thực MFA gần đây")
+    if not authorize(identity.principal, Permission.RISK_PROFILE_WRITE):
+        raise HTTPException(status_code=403, detail="Không đủ quyền thay đổi hồ sơ rủi ro")
+    await enforce_endpoint_step_up(
+        request,
+        identity.principal,
+        action=ACTION_RISK_PROFILE_CREATE,
+        payload=risk_profile_create_payload(
+            name=body.name,
+            max_risk_fraction=body.max_risk_fraction,
+            settings=body.settings,
+        ),
+    )
     profile_id = await service.create_risk_profile(
         identity.principal,
         name=body.name,

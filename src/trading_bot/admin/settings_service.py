@@ -30,6 +30,17 @@ from trading_bot.application.runtime_risk_profile import (
 )
 from trading_bot.application.strategy_catalog import strategy_registry
 from trading_bot.application.workspace_risk import assess_risk_capacity
+from trading_bot.auth.action_challenge import (
+    ACTION_SETTINGS_PUBLISH,
+    ACTION_SETTINGS_ROLLBACK,
+    ActionChallengeError,
+    ActionChallengeService,
+    StepUpProof,
+    resolve_step_up_proof,
+    settings_publish_payload,
+    settings_rollback_payload,
+    verify_service_step_up,
+)
 from trading_bot.auth.bot_policy import WORKSPACE_BOT_ROLES
 from trading_bot.auth.policy import Permission, Principal, authorize
 from trading_bot.auth.service import RECENT_MFA_LIFETIME
@@ -44,17 +55,26 @@ _SECRET_KEY = re.compile(r"(?:secret|token|password|credential|api[_-]?key|cooki
 class SettingsAdminError(Exception):
     """Lỗi nghiệp vụ có mã HTTP ổn định cho API quản trị."""
 
-    def __init__(self, status_code: int, message: str) -> None:
+    def __init__(self, status_code: int, message: str, *, code: str | None = None) -> None:
         self.status_code = status_code
         self.message = message
+        self.code = code
         super().__init__(message)
 
 
 class SettingsAdminService:
     """Thực hiện thay đổi cấu hình trong cùng transaction với audit và outbox."""
 
-    def __init__(self, sessions: async_sessionmaker[AsyncSession]) -> None:
+    def __init__(
+        self,
+        sessions: async_sessionmaker[AsyncSession],
+        *,
+        action_challenge_service: ActionChallengeService | None = None,
+        require_action_step_up: bool = False,
+    ) -> None:
         self._sessions = sessions
+        self._action_challenge_service = action_challenge_service
+        self._require_action_step_up = require_action_step_up
 
     async def get_current(self, principal: Principal) -> dict[str, Any] | None:
         async with self._uow(principal) as unit:
@@ -81,6 +101,7 @@ class SettingsAdminService:
         settings: WorkspaceSettings | None,
         expected_parent_version_id: UUID | None,
         request_id: UUID | None = None,
+        _verified_step_up: bool = False,
     ) -> dict[str, Any]:
         async with self._uow(principal, request_id=request_id) as unit:
             repository = WorkspaceSettingsRepository(unit.session)
@@ -94,7 +115,10 @@ class SettingsAdminService:
                 if current is None:
                     raise SettingsAdminError(409, "Cần cung cấp cấu hình đầu tiên cho workspace.")
                 selected_settings = WorkspaceSettings.model_validate(current.settings_json)
-            self._require_risk_change_access(principal, current, selected_settings)
+            if _verified_step_up:
+                self._require_risk_permission(principal, current, selected_settings)
+            else:
+                self._require_risk_change_access(principal, current, selected_settings)
             try:
                 record = await repository.create_draft(
                     workspace_id=principal.workspace_id,
@@ -274,6 +298,8 @@ class SettingsAdminService:
         expected_revision: int,
         reason: str | None = None,
         request_id: UUID | None = None,
+        step_up: StepUpProof | None = None,
+        _verified_step_up: bool = False,
     ) -> dict[str, Any]:
         async with self._uow(principal, request_id=request_id) as unit:
             repository = WorkspaceSettingsRepository(unit.session)
@@ -299,12 +325,22 @@ class SettingsAdminService:
                 ) from error
             records = await repository.list_versions(workspace_id=principal.workspace_id)
             parent = next((item for item in records if item.id == record.parent_version_id), None)
-            self._require_risk_change_access(
-                principal,
-                parent,
-                settings,
-                WorkspaceSettings.model_validate(parent.settings_json) if parent else None,
+            parent_settings = (
+                WorkspaceSettings.model_validate(parent.settings_json) if parent else None
             )
+            self._require_risk_permission(principal, parent, settings, parent_settings)
+            if not _verified_step_up and self._requires_publish_step_up(parent_settings, settings):
+                await self._verify_publish_step_up(
+                    principal,
+                    action=ACTION_SETTINGS_PUBLISH,
+                    payload=settings_publish_payload(
+                        draft_id=draft_id,
+                        expected_revision=expected_revision,
+                        settings_hash=record.settings_hash,
+                    ),
+                    risk_changed=self._risk_changed(parent, settings, parent_settings),
+                    step_up=step_up,
+                )
             current = await repository.get_effective(workspace_id=principal.workspace_id)
             if (current.id if current else None) != record.parent_version_id:
                 raise SettingsAdminError(
@@ -374,6 +410,7 @@ class SettingsAdminService:
         version: int,
         reason: str,
         request_id: UUID | None = None,
+        step_up: StepUpProof | None = None,
     ) -> dict[str, Any]:
         async with self._uow(principal, request_id=request_id) as unit:
             repository = WorkspaceSettingsRepository(unit.session)
@@ -384,27 +421,33 @@ class SettingsAdminService:
                 raise SettingsAdminError(404, "Không tìm thấy phiên bản đã publish để rollback.")
             current = await repository.get_effective(workspace_id=principal.workspace_id)
             settings = WorkspaceSettings.model_validate(target.settings_json)
-            current_risk = (
-                WorkspaceSettings.model_validate(current.settings_json).risk if current else None
+            current_settings = (
+                WorkspaceSettings.model_validate(current.settings_json) if current else None
             )
+            current_risk = current_settings.risk if current_settings else None
             risk_changed = current_risk != settings.risk
             if risk_changed:
                 await repository.lock_workspace_risk(principal.workspace_id)
             await self._guard_paper_policy_change(
                 unit,
                 workspace_id=principal.workspace_id,
-                current_settings=(
-                    WorkspaceSettings.model_validate(current.settings_json) if current else None
-                ),
+                current_settings=current_settings,
                 next_settings=settings,
                 principal=principal,
             )
-            self._require_risk_change_access(
-                principal,
-                current,
-                settings,
-                WorkspaceSettings.model_validate(current.settings_json) if current else None,
-            )
+            self._require_risk_permission(principal, current, settings, current_settings)
+            if self._requires_publish_step_up(current_settings, settings):
+                await self._verify_publish_step_up(
+                    principal,
+                    action=ACTION_SETTINGS_ROLLBACK,
+                    payload=settings_rollback_payload(
+                        version=version,
+                        target_settings_hash=target.settings_hash,
+                        reason=reason,
+                    ),
+                    risk_changed=risk_changed,
+                    step_up=step_up,
+                )
             try:
                 draft = await repository.create_draft(
                     workspace_id=principal.workspace_id,
@@ -580,6 +623,68 @@ class SettingsAdminService:
         if record is None:
             raise SettingsAdminError(404, "Không tìm thấy phiên bản cấu hình.")
         return record
+
+    @staticmethod
+    def _risk_changed(
+        parent: WorkspaceSettingsVersion | None,
+        settings: WorkspaceSettings,
+        parent_settings: WorkspaceSettings | None = None,
+    ) -> bool:
+        if parent_settings is None and parent is not None:
+            parent_settings = WorkspaceSettings.model_validate(parent.settings_json)
+        before = parent_settings.risk if parent_settings else None
+        return settings.risk != before
+
+    @classmethod
+    def _require_risk_permission(
+        cls,
+        principal: Principal,
+        parent: WorkspaceSettingsVersion | None,
+        settings: WorkspaceSettings,
+        parent_settings: WorkspaceSettings | None = None,
+    ) -> None:
+        if cls._risk_changed(parent, settings, parent_settings) and not authorize(
+            principal, Permission.RISK_PROFILE_WRITE
+        ):
+            raise SettingsAdminError(403, "Cần quyền thay đổi hồ sơ rủi ro.")
+
+    @staticmethod
+    def _requires_publish_step_up(
+        before: WorkspaceSettings | None, after: WorkspaceSettings
+    ) -> bool:
+        if before is None:
+            return True
+        return (
+            before.risk != after.risk
+            or before.strategy != after.strategy
+            or before.market_data != after.market_data
+            or before.paper_execution != after.paper_execution
+            or before.runtime != after.runtime
+        )
+
+    async def _verify_publish_step_up(
+        self,
+        principal: Principal,
+        *,
+        action: str,
+        payload: dict[str, Any],
+        risk_changed: bool,
+        step_up: StepUpProof | None = None,
+    ) -> None:
+        proof = resolve_step_up_proof(step_up)
+        if proof is None and not self._require_action_step_up and not risk_changed:
+            return
+        try:
+            await verify_service_step_up(
+                principal,
+                action_challenge_service=self._action_challenge_service,
+                require_action_step_up=self._require_action_step_up,
+                action=action,
+                payload=payload,
+                step_up=proof,
+            )
+        except ActionChallengeError as error:
+            raise SettingsAdminError(error.status_code, error.message, code=error.code) from error
 
     @staticmethod
     def _require_risk_change_access(
