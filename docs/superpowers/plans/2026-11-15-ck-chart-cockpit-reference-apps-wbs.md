@@ -344,7 +344,7 @@ Ký hiệu: **D** = đã có trên `dev`; **S** = đã làm lát đầu trên nh
 - **Phạm vi UI:** `/admin/chart` (toolbar, lớp, kỳ lịch sử), `/admin/scanner`, `/admin/reports`, `/admin/ai-analyses`, `/admin/signal-outcomes`, `/admin/live`, `/admin/risk` và filter subscription tín hiệu tại trang bot.
 - **Giữ nguyên:** API, GET/POST, tên/giá trị trường, truy vấn, quyền và mặc định; không thu gọn form thay đổi cấu hình vận hành. Icon có tên truy cập; dialog đóng bằng Escape/nút; kích thước chạm tối thiểu 44px.
 - **Thiết kế:** [Tối ưu bộ lọc Admin](../specs/2026-11-18-admin-filter-density-design.md) · [Kế hoạch](./2026-11-18-admin-filter-density.md).
-- **Trạng thái:** implementation hoàn tất; unit 52/52 và E2E chart/live/risk 7/7 đạt ngày 18/11/2026. Commit `ef4b75d` đã lên `dev`; bổ sung nền đặc cho panel sau khi rà trên admin local, rồi restart admin-web local lần cuối.
+- **Trạng thái:** hoàn tất ngày 18/11/2026; unit 52/52 và E2E chart/live/risk 7/7 đạt. Commits `ef4b75d`, `21ac666` đã lên `dev`; admin-web local restart healthy trên cổng 8010.
 
 ## 8. Dữ liệu và API
 
