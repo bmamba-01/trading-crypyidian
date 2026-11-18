@@ -48,7 +48,7 @@
 - [x] Cập nhật E2E: kiểm thứ tự vị trí, disclosure ban đầu đóng, mở bằng keyboard, nội dung đầy đủ, đóng lại; giữ kiểm trigger panel/filter.
 - [x] Chạy unit chart, E2E chart và regression live/risk liên quan; lưu screenshot desktop và mobile.
 - [x] Cập nhật project-status và implementation-memory, đọc lại memory và đối chiếu với diff/test.
-- [ ] Chạy `git diff --check`, rà form names/query và commit sau khi unit/E2E đạt.
+- [x] Chạy `git diff --check`, rà form names/query và commit sau khi unit/E2E đạt; push lên `dev`, restart admin-web và kiểm tra trang chart.
 
 ## Verification
 
