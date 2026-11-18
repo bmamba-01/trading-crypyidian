@@ -18,10 +18,12 @@ from trading_bot.adapters.binance_usdm.demo_rest import (
 from trading_bot.adapters.binance_usdm.gateway_boundary import (
     ApiKeyCredentials,
     BinanceExecutionMode,
+    WsRouteKind,
     redact_sensitive_text,
     sign_hmac_sha256,
     validate_host_boundary,
     validate_recv_window,
+    validate_ws_route,
 )
 from trading_bot.ports.exchange_gateway import (
     ExchangeGateway,
@@ -74,6 +76,36 @@ class BinanceUsdMExchangeGateway(ExchangeGateway):
         self._recv_window_ms = recv_window_ms
         self._max_drift_tolerance_ms = max_drift_tolerance_ms
         self._allow_local_mock = allow_local_mock
+        self._server_time_offset_ms: int = 0
+
+    @property
+    def server_time_offset_ms(self) -> int:
+        """Độ lệch thời gian (ms) giữa server sàn và đồng hồ local."""
+        return self._server_time_offset_ms
+
+    def signed_timestamp_ms(self) -> int:
+        """Trả về timestamp ký request đã hiệu chỉnh theo server-time offset."""
+        return self._clock_ms() + self._server_time_offset_ms
+
+    def sync_server_time(self) -> int | None:
+        """Đồng bộ server-time offset từ endpoint public `/fapi/v1/time`."""
+        local_before = self._clock_ms()
+        probe, server_time = self.probe_public_data()
+        if probe.status is ReadinessStatus.READY and server_time is not None:
+            local_after = self._clock_ms()
+            local_mid = (local_before + local_after) // 2
+            self._server_time_offset_ms = server_time - local_mid
+            return self._server_time_offset_ms
+        return None
+
+    def ws_route_url(self, route_kind: WsRouteKind | str) -> str:
+        """Trả về URL WebSocket đã kiểm duyệt theo route (/public, /market, /private)."""
+        return validate_ws_route(
+            mode=self._mode,
+            ws_base_url=self._ws_base_url,
+            route_kind=route_kind,
+            allow_local_mock=self._allow_local_mock,
+        )
 
     @property
     def account_id(self) -> str:
@@ -140,7 +172,7 @@ class BinanceUsdMExchangeGateway(ExchangeGateway):
 
     def probe_user_data(self) -> tuple[ReadinessProbeResult, dict[str, Any] | None]:
         """Thăm dò quyền truy cập USER_DATA qua signed request /fapi/v3/account."""
-        ts = self._clock_ms()
+        ts = self.signed_timestamp_ms()
         query = f"timestamp={ts}&recvWindow={self._recv_window_ms}"
         sig = sign_hmac_sha256(self._credentials.secret_key, query)
         url = f"{self._rest_base_url}/fapi/v3/account?{query}&signature={sig}"

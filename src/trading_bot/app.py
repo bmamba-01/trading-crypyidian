@@ -36,11 +36,13 @@ from trading_bot.adapters.telegram.bot_api_sender import (
     load_telegram_bot_token,
 )
 from trading_bot.adapters.telegram.recording_sender import RecordingTelegramSender
+from trading_bot.admin.audit_router import router as audit_router
 from trading_bot.admin.backtest_replay_router import router as backtest_replay_router
 from trading_bot.admin.bot_control_router import router as bot_control_router
 from trading_bot.admin.bot_reports_router import router as bot_reports_router
 from trading_bot.admin.bot_service import BotConfigAdminService
 from trading_bot.admin.bots_router import router as bots_router
+from trading_bot.admin.incidents_router import router as incidents_router
 from trading_bot.admin.learning_incident_entry_hold_router import (
     router as learning_incident_entry_hold_router,
 )
@@ -69,6 +71,7 @@ from trading_bot.admin.learning_training_page_router import (
 )
 from trading_bot.admin.learning_training_router import router as learning_training_router
 from trading_bot.admin.live_monitor_router import router as live_monitor_router
+from trading_bot.admin.members_router import router as members_router
 from trading_bot.admin.research_source_router import admin_router as research_source_admin_router
 from trading_bot.admin.research_source_router import router as research_source_router
 from trading_bot.admin.risk_appetite_page_router import router as risk_appetite_page_router
@@ -80,6 +83,7 @@ from trading_bot.admin.strategy_card_service import StrategyCardAdminService
 from trading_bot.admin.strategy_release_service import StrategyReleaseAdminService
 from trading_bot.admin.telegram_binding_router import router as telegram_binding_router
 from trading_bot.admin.telegram_signal_router import router as telegram_signal_router
+from trading_bot.admin.watchlist_router import router as watchlist_router
 from trading_bot.admin.web_router import router as admin_web_router
 from trading_bot.application.account_activity_guard import AccountActivityGuard
 from trading_bot.application.analyst_review import AnalystReviewService
@@ -261,6 +265,7 @@ def create_app(
             scorer_history_engine = build_scorer_history_database_engine(app_settings)
             if scorer_history_engine is not None:
                 active_scorer_history_sessions = create_session_factory(scorer_history_engine)
+        application.state.session_factory = active_session_factory
         application.state.database_probe = database_probe
         application.state.scorer_runtime_policy_provider = scorer_policy_provider
         if database_probe is None and isinstance(active_session_factory, async_sessionmaker):
@@ -803,7 +808,10 @@ def create_app(
     app = FastAPI(
         title="Crypidian Trading Bot",
         openapi_url=None
-        if app_settings.process_role in {"signal-worker", "market-signal-worker"}
+        if (
+            app_settings.app_env == "production"
+            or app_settings.process_role in {"signal-worker", "market-signal-worker"}
+        )
         else "/openapi.json",
         docs_url=None,
         redoc_url=None,
@@ -830,16 +838,20 @@ def create_app(
         app.state.paper_application = None
     if not worker_role:
         app.include_router(auth_router)
-        app.include_router(settings_router)
-        app.include_router(bots_router)
-        app.include_router(bot_reports_router)
-        app.include_router(backtest_replay_router)
-        app.include_router(bot_control_router)
-        app.include_router(telegram_binding_router)
-        app.include_router(telegram_signal_router)
-        app.include_router(research_source_router)
-        app.include_router(research_source_admin_router)
         if admin_web_role:
+            app.include_router(settings_router)
+            app.include_router(members_router)
+            app.include_router(watchlist_router)
+            app.include_router(incidents_router)
+            app.include_router(audit_router)
+            app.include_router(bots_router)
+            app.include_router(bot_reports_router)
+            app.include_router(backtest_replay_router)
+            app.include_router(bot_control_router)
+            app.include_router(telegram_binding_router)
+            app.include_router(telegram_signal_router)
+            app.include_router(research_source_router)
+            app.include_router(research_source_admin_router)
             app.include_router(learning_model_registry_router)
             app.include_router(learning_scoring_deployment_router)
             app.include_router(learning_model_registry_page_router)
@@ -851,9 +863,9 @@ def create_app(
             app.include_router(learning_training_page_router)
             app.include_router(learning_split_router)
             app.include_router(learning_split_page_router)
-        app.include_router(risk_appetite_page_router)
-        app.include_router(live_monitor_router)
-        app.include_router(admin_web_router)
+            app.include_router(risk_appetite_page_router)
+            app.include_router(live_monitor_router)
+            app.include_router(admin_web_router)
         app.include_router(telegram_router)
 
     @app.exception_handler(StarletteHTTPException)

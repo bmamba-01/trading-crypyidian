@@ -500,6 +500,38 @@ class RiskReservationRepository:
         await self._session.flush()
         return _to_domain(record)
 
+    async def release_for_venue_reconciliation(
+        self,
+        *,
+        workspace_id: UUID,
+        account_id: UUID,
+        reservation_id: UUID,
+        reason: ReservationReleaseReason,
+    ) -> RiskReservation:
+        """Giải phóng reservation từ RESERVED/UNKNOWN khi đối soát venue xác nhận."""
+        if reason not in {
+            ReservationReleaseReason.ORDER_ABSENT,
+            ReservationReleaseReason.CANCELLED_NO_FILL,
+        }:
+            raise ReservationConflict("Lý do giải phóng đối soát venue không hợp lệ.")
+        await self._lock_account(workspace_id=workspace_id, account_id=account_id)
+        record = await self._get_reservation(
+            workspace_id=workspace_id, account_id=account_id, reservation_id=reservation_id
+        )
+        if record.status == ReservationStatus.RELEASED.value:
+            if record.resolution_reason == reason.value:
+                return _to_domain(record)
+            raise ReservationConflict("Reservation đã RELEASED với lý do khác.")
+        if record.status not in {
+            ReservationStatus.RESERVED.value,
+            ReservationStatus.UNKNOWN.value,
+        }:
+            raise ReservationConflict("Reservation đã TRANSFERRED không thể tự giải phóng.")
+        record.status = ReservationStatus.RELEASED.value
+        record.resolution_reason = reason.value
+        await self._session.flush()
+        return _to_domain(record)
+
     async def release_before_submit(
         self,
         *,

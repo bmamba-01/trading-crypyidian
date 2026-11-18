@@ -13,7 +13,7 @@ import hashlib
 import hmac
 import logging
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from urllib.parse import urlsplit
@@ -46,6 +46,15 @@ ALLOWED_DEMO_WS_HOSTS: frozenset[str] = frozenset(
 )
 
 LOCAL_MOCK_HOSTNAMES: frozenset[str] = frozenset({"localhost", "127.0.0.1", "mock.local"})
+
+
+class WsRouteKind(StrEnum):
+    """Phân tách route WebSocket Binance USDⓈ-M (public/market/private)."""
+
+    PUBLIC = "/public"
+    MARKET = "/market"
+    PRIVATE = "/private"
+
 
 # --- Regex patterns dùng để redact dữ liệu nhạy cảm ---
 _SIGNATURE_PATTERN = re.compile(r"signature=[a-fA-F0-9]{32,64}")
@@ -312,3 +321,56 @@ def sign_hmac_sha256(secret_key: str, query_or_body: str) -> str:
         ).hexdigest()
     except Exception as exc:
         raise GatewayBoundaryError("Lỗi trong quá trình tính chữ ký HMAC-SHA256.") from exc
+
+
+def validate_ws_route(
+    *,
+    mode: BinanceExecutionMode | str,
+    ws_base_url: str,
+    route_kind: WsRouteKind | str,
+    allow_local_mock: bool = False,
+) -> str:
+    """Mô hình hóa và xác thực route WebSocket (/public, /market, /private) theo host boundary."""
+    try:
+        kind = WsRouteKind(route_kind)
+    except ValueError as error:
+        raise HostBoundaryViolationError(f"Route WebSocket không hợp lệ: {route_kind}") from error
+    parsed_ws = urlsplit(ws_base_url)
+    if parsed_ws.query or parsed_ws.fragment or parsed_ws.username or parsed_ws.password:
+        raise HostBoundaryViolationError(
+            "ws_base_url không được chứa query, fragment hoặc userinfo."
+        )
+    if parsed_ws.path and parsed_ws.path != "/":
+        raise HostBoundaryViolationError("ws_base_url không được chứa đường dẫn bổ sung.")
+    execution_mode = BinanceExecutionMode(mode)
+    normalized_ws = f"{parsed_ws.scheme}://{parsed_ws.netloc}"
+    if execution_mode in (BinanceExecutionMode.DEMO, BinanceExecutionMode.PAPER):
+        if (
+            normalized_ws in ALLOWED_PRODUCTION_WS_HOSTS
+            or parsed_ws.netloc == "fstream.binance.com"
+        ):
+            raise HostBoundaryViolationError(
+                f"Cấm kết nối tới production Binance WebSocket host ({normalized_ws}) "
+                f"trong chế độ {execution_mode}."
+            )
+    is_mock_ws = allow_local_mock and parsed_ws.hostname in LOCAL_MOCK_HOSTNAMES
+    if not is_mock_ws and normalized_ws not in (
+        ALLOWED_DEMO_WS_HOSTS
+        if execution_mode in (BinanceExecutionMode.DEMO, BinanceExecutionMode.PAPER)
+        else ALLOWED_PRODUCTION_WS_HOSTS
+    ):
+        raise HostBoundaryViolationError(f"WebSocket host không thuộc allowlist: {normalized_ws}")
+    return f"{normalized_ws}{kind.value}"
+
+
+def resolve_demo_credentials_from_mapping(
+    secrets_map: Mapping[str, str],
+) -> ApiKeyCredentials | None:
+    """Nạp secret Demo tách biệt (`binance_demo_api_key/secret`), không dùng `binance_api_key`."""
+    api_key = secrets_map.get("binance_demo_api_key") or secrets_map.get("BINANCE_DEMO_API_KEY")
+    secret_key = secrets_map.get("binance_demo_api_secret") or secrets_map.get(
+        "BINANCE_DEMO_API_SECRET"
+    )
+    if not api_key or not secret_key:
+        return None
+    return ApiKeyCredentials(api_key=api_key, secret_key=secret_key)

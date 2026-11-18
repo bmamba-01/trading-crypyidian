@@ -6,7 +6,9 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
 from trading_bot.admin.settings_schemas import (
+    ApproveDraftRequest,
     CreateDraftRequest,
+    ProposeDraftRequest,
     PublishDraftRequest,
     RollbackRequest,
     UpdateDraftRequest,
@@ -135,7 +137,71 @@ async def validate_settings_draft(
         raise_settings_error(error)
 
 
-@router.post("/drafts/{draft_id}/publish")
+@router.post(
+    "/drafts/{draft_id}/propose",
+    summary="Đề xuất bản nháp cấu hình",
+    description=(
+        "Chuyển bản nháp từ DRAFT sang PROPOSED để chờ người khác phê duyệt (maker-checker)."
+    ),
+)
+async def propose_settings_draft(
+    draft_id: UUID,
+    body: ProposeDraftRequest,
+    identity: Annotated[AuthIdentity, Depends(require_csrf)],
+    request: Request,
+    response: Response,
+) -> dict[str, object]:
+    require_settings_write(identity)
+    service = get_settings_admin_service(request)
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        version = await service.propose_draft(
+            identity.principal,
+            draft_id=draft_id,
+            expected_revision=body.expected_revision,
+            reason=body.reason,
+            request_id=_request_id(request),
+        )
+    except SettingsAdminError as error:
+        raise_settings_error(error)
+    return {"version": version}
+
+
+@router.post(
+    "/drafts/{draft_id}/approve",
+    summary="Phê duyệt bản đề xuất cấu hình",
+    description=(
+        "Phê duyệt bản đề xuất PROPOSED sang APPROVED; người duyệt phải khác người đề xuất."
+    ),
+)
+async def approve_settings_draft(
+    draft_id: UUID,
+    body: ApproveDraftRequest,
+    identity: Annotated[AuthIdentity, Depends(require_csrf)],
+    request: Request,
+    response: Response,
+) -> dict[str, object]:
+    require_settings_write(identity)
+    service = get_settings_admin_service(request)
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        version = await service.approve_proposed(
+            identity.principal,
+            draft_id=draft_id,
+            expected_revision=body.expected_revision,
+            reason=body.reason,
+            request_id=_request_id(request),
+        )
+    except SettingsAdminError as error:
+        raise_settings_error(error)
+    return {"version": version}
+
+
+@router.post(
+    "/drafts/{draft_id}/publish",
+    summary="Phát hành bản cấu hình",
+    description="Phát hành bản nháp DRAFT hoặc APPROVED thành phiên bản hiệu lực mới.",
+)
 async def publish_settings_draft(
     draft_id: UUID,
     body: PublishDraftRequest,
@@ -151,6 +217,7 @@ async def publish_settings_draft(
             identity.principal,
             draft_id=draft_id,
             expected_revision=body.expected_revision,
+            reason=body.reason,
             request_id=_request_id(request),
         )
     except SettingsAdminError as error:
