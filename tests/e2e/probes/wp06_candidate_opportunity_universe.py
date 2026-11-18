@@ -73,6 +73,7 @@ from trading_bot.application.binance_rest_backfill_rights import SourceRegistryB
 from trading_bot.application.candidate_universe_proof import CandidateUniverseProofService
 from trading_bot.application.learning_feature_vector import build_learning_feature_vector
 from trading_bot.application.outbox import UnitOfWork
+from trading_bot.application.strategy_catalog import strategy_registry
 from trading_bot.domain.learning.evaluation import EvaluationTrade, calculate_entry_features_hash
 from trading_bot.domain.research.source_policy import SourcePolicyState, SourceUsePurpose
 from trading_bot.domain.research.source_registry import SourceBudget, SourceRegistryEntry
@@ -1036,7 +1037,9 @@ async def races(admin, writer, builder, writer_engine, builder_engine, first, se
     assert result.proof.completeness_verified
     assert result.proof.opportunity_count == 4
     async with UnitOfWork(builder, workspace_id=WORKSPACE) as uow:
-        proof = await CandidateUniverseProofRepository(uow.session).build_decision_opportunity(
+        proof = await CandidateUniverseProofRepository(
+            uow.session, strategy_registry=strategy_registry()
+        ).build_decision_opportunity(
             workspace_id=WORKSPACE, trial_record_id=second.receipt.trial_record_id
         )
         assert proof.proof.completeness_verified is False
@@ -1062,7 +1065,9 @@ async def races(admin, writer, builder, writer_engine, builder_engine, first, se
 async def source_lock_race(admin, admin_engine, builder, item):
     """Policy writer phải đợi source lock đang được proof giữ tới commit."""
     async with UnitOfWork(builder, workspace_id=WORKSPACE) as uow:
-        await CandidateUniverseProofRepository(uow.session).build_decision_opportunity(
+        await CandidateUniverseProofRepository(
+            uow.session, strategy_registry=strategy_registry()
+        ).build_decision_opportunity(
             workspace_id=WORKSPACE, trial_record_id=item.receipt.trial_record_id
         )
         holder = await uow.session.scalar(text("SELECT pg_backend_pid()"))

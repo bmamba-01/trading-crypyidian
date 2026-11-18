@@ -12,6 +12,11 @@ from uuid import UUID
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+    from trading_bot.adapters.database.repositories.candidate_universe_proofs import (
+        CandidateUniverseProofRepository,
+    )
+    from trading_bot.ports.strategy_registry import ReleaseLookup, StrategyReleaseLookup
+
 QUERY_VERSION = "base-closed-trade-universe-v1"
 
 
@@ -209,18 +214,40 @@ class CandidateDecisionOpportunityProofResult:
 class CandidateUniverseProofService:
     """Tự quản lý transaction, khóa nguồn và trial cho scan/append nhất quán."""
 
-    def __init__(self, sessions: async_sessionmaker[AsyncSession]) -> None:
+    def __init__(
+        self,
+        sessions: async_sessionmaker[AsyncSession],
+        strategy_registry: StrategyReleaseLookup | None = None,
+        *,
+        release_lookup: ReleaseLookup | None = None,
+    ) -> None:
+        if strategy_registry is not None and release_lookup is not None:
+            raise ValueError("Chỉ truyền một trong `strategy_registry` hoặc `release_lookup`.")
         self._sessions = sessions
+        self._strategy_registry = strategy_registry
+        self._release_lookup = release_lookup
+
+    def _proof_repository(self, session: AsyncSession) -> CandidateUniverseProofRepository:
+        from trading_bot.adapters.database.repositories.candidate_universe_proofs import (
+            CandidateUniverseProofRepository,
+        )
+
+        if self._release_lookup is not None:
+            return CandidateUniverseProofRepository(session, release_lookup=self._release_lookup)
+        registry = self._strategy_registry
+        if registry is None:
+            from trading_bot.application.strategy_catalog import (
+                strategy_registry as product_registry,
+            )
+
+            registry = product_registry()
+        return CandidateUniverseProofRepository(session, strategy_registry=registry)
 
     async def build(
         self, *, workspace_id: UUID, trial_record_id: UUID
     ) -> CandidateUniverseProofResult:
         """Caller chỉ được chọn workspace và trial; không nhận claimed coverage."""
         from sqlalchemy import text
-
-        from trading_bot.adapters.database.repositories.candidate_universe_proofs import (
-            CandidateUniverseProofRepository,
-        )
 
         if type(workspace_id) is not UUID or type(trial_record_id) is not UUID:
             raise ValueError("workspace_id và trial_record_id phải là UUID.")
@@ -233,7 +260,7 @@ class CandidateUniverseProofService:
                 {"workspace_id": str(workspace_id)},
             )
             session.info["workspace_id"] = workspace_id
-            return await CandidateUniverseProofRepository(session).build_and_append(
+            return await self._proof_repository(session).build_and_append(
                 workspace_id=workspace_id, trial_record_id=trial_record_id
             )
 
@@ -243,10 +270,6 @@ class CandidateUniverseProofService:
         """Dựng proof BASE từ DB; caller không truyền inventory hay claimed count."""
         from sqlalchemy import text
 
-        from trading_bot.adapters.database.repositories.candidate_universe_proofs import (
-            CandidateUniverseProofRepository,
-        )
-
         if type(workspace_id) is not UUID or type(trial_record_id) is not UUID:
             raise ValueError("workspace_id và trial_record_id phải là UUID.")
         async with self._sessions() as session, session.begin():
@@ -258,7 +281,7 @@ class CandidateUniverseProofService:
                 {"workspace_id": str(workspace_id)},
             )
             session.info["workspace_id"] = workspace_id
-            return await CandidateUniverseProofRepository(session).build_decision_opportunity(
+            return await self._proof_repository(session).build_decision_opportunity(
                 workspace_id=workspace_id, trial_record_id=trial_record_id
             )
 

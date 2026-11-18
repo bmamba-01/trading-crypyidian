@@ -870,8 +870,11 @@ async def build_opportunity(persisted):
     from trading_bot.adapters.database.repositories.candidate_universe_proofs import (
         CandidateUniverseProofRepository,
     )
+    from trading_bot.application.strategy_catalog import strategy_registry
 
-    return await CandidateUniverseProofRepository(persisted[0]).build_decision_opportunity(
+    return await CandidateUniverseProofRepository(
+        persisted[0], strategy_registry=strategy_registry()
+    ).build_decision_opportunity(
         workspace_id=WORKSPACE, trial_record_id=persisted[1].trial_record_id
     )
 

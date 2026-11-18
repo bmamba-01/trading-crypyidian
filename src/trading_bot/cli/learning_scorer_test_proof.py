@@ -23,6 +23,7 @@ from trading_bot.adapters.database.repositories.learning_scorer_test_opportunity
     LearningScorerTestOpportunityProofConflict,
     LearningScorerTestOpportunityProofRepository,
 )
+from trading_bot.application.strategy_catalog import strategy_registry
 from trading_bot.cli.candidate_proof import create_builder_pool
 
 
@@ -45,7 +46,9 @@ async def run(workspace_id: UUID, attempt_id: UUID) -> dict[str, object]:
                 {"workspace_id": str(workspace_id)},
             )
             session.info["workspace_id"] = workspace_id
-            repository = LearningScorerTestOpportunityProofRepository(session)
+            repository = LearningScorerTestOpportunityProofRepository(
+                session, strategy_registry=strategy_registry()
+            )
             existing = await repository.get_for_attempt(
                 workspace_id=workspace_id, attempt_id=attempt_id
             )
