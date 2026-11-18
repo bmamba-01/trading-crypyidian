@@ -14,7 +14,8 @@ from trading_bot.admin.settings_schemas import (
     UpdateDraftRequest,
 )
 from trading_bot.admin.settings_service import SettingsAdminError, SettingsAdminService
-from trading_bot.auth.policy import Permission, authorize
+from trading_bot.auth.policy import Permission
+from trading_bot.auth.route_policy import CsrfMode, permission_route
 from trading_bot.auth.router import current_identity, require_csrf
 from trading_bot.auth.service import AuthIdentity
 
@@ -31,27 +32,27 @@ def get_settings_admin_service(request: Request) -> SettingsAdminService:
     return service
 
 
-def require_settings_read(identity: AuthIdentity) -> None:
-    if not authorize(identity.principal, Permission.SETTINGS_READ):
-        raise HTTPException(status_code=403, detail="Không đủ quyền xem cấu hình")
-
-
-def require_settings_write(identity: AuthIdentity) -> None:
-    if not authorize(identity.principal, Permission.SETTINGS_WRITE):
-        raise HTTPException(status_code=403, detail="Không đủ quyền thay đổi cấu hình")
-
-
 def raise_settings_error(error: SettingsAdminError) -> NoReturn:
     raise HTTPException(status_code=error.status_code, detail=error.message) from error
 
 
-@router.get("/current")
+_SETTINGS_READ_POLICY = permission_route(
+    Permission.SETTINGS_READ,
+    denied_detail="Không đủ quyền xem cấu hình",
+)
+_SETTINGS_WRITE_POLICY = permission_route(
+    Permission.SETTINGS_WRITE,
+    csrf=CsrfMode.HEADER,
+    denied_detail="Không đủ quyền thay đổi cấu hình",
+)
+
+
+@router.get("/current", dependencies=[_SETTINGS_READ_POLICY])
 async def get_current_settings(
     response: Response,
     request: Request,
     identity: Annotated[AuthIdentity, Depends(current_identity)],
 ) -> dict[str, object]:
-    require_settings_read(identity)
     service = get_settings_admin_service(request)
     response.headers["Cache-Control"] = "no-store"
     try:
@@ -60,13 +61,12 @@ async def get_current_settings(
         raise_settings_error(error)
 
 
-@router.get("/versions")
+@router.get("/versions", dependencies=[_SETTINGS_READ_POLICY])
 async def list_settings_versions(
     response: Response,
     request: Request,
     identity: Annotated[AuthIdentity, Depends(current_identity)],
 ) -> dict[str, object]:
-    require_settings_read(identity)
     service = get_settings_admin_service(request)
     response.headers["Cache-Control"] = "no-store"
     try:
@@ -75,14 +75,13 @@ async def list_settings_versions(
         raise_settings_error(error)
 
 
-@router.post("/drafts", status_code=201)
+@router.post("/drafts", status_code=201, dependencies=[_SETTINGS_WRITE_POLICY])
 async def create_settings_draft(
     body: CreateDraftRequest,
     identity: Annotated[AuthIdentity, Depends(require_csrf)],
     request: Request,
     response: Response,
 ) -> dict[str, object]:
-    require_settings_write(identity)
     service = get_settings_admin_service(request)
     response.headers["Cache-Control"] = "no-store"
     try:
@@ -97,7 +96,7 @@ async def create_settings_draft(
     return {"draft": draft}
 
 
-@router.patch("/drafts/{draft_id}")
+@router.patch("/drafts/{draft_id}", dependencies=[_SETTINGS_WRITE_POLICY])
 async def update_settings_draft(
     draft_id: UUID,
     body: UpdateDraftRequest,
@@ -105,7 +104,6 @@ async def update_settings_draft(
     request: Request,
     response: Response,
 ) -> dict[str, object]:
-    require_settings_write(identity)
     service = get_settings_admin_service(request)
     response.headers["Cache-Control"] = "no-store"
     try:
@@ -121,14 +119,13 @@ async def update_settings_draft(
     return {"draft": draft}
 
 
-@router.post("/drafts/{draft_id}/validate")
+@router.post("/drafts/{draft_id}/validate", dependencies=[_SETTINGS_WRITE_POLICY])
 async def validate_settings_draft(
     draft_id: UUID,
     identity: Annotated[AuthIdentity, Depends(require_csrf)],
     request: Request,
     response: Response,
 ) -> dict[str, object]:
-    require_settings_write(identity)
     service = get_settings_admin_service(request)
     response.headers["Cache-Control"] = "no-store"
     try:
@@ -143,6 +140,7 @@ async def validate_settings_draft(
     description=(
         "Chuyển bản nháp từ DRAFT sang PROPOSED để chờ người khác phê duyệt (maker-checker)."
     ),
+    dependencies=[_SETTINGS_WRITE_POLICY],
 )
 async def propose_settings_draft(
     draft_id: UUID,
@@ -173,6 +171,7 @@ async def propose_settings_draft(
     description=(
         "Phê duyệt bản đề xuất PROPOSED sang APPROVED; người duyệt phải khác người đề xuất."
     ),
+    dependencies=[_SETTINGS_WRITE_POLICY],
 )
 async def approve_settings_draft(
     draft_id: UUID,
@@ -201,6 +200,7 @@ async def approve_settings_draft(
     "/drafts/{draft_id}/publish",
     summary="Phát hành bản cấu hình",
     description="Phát hành bản nháp DRAFT hoặc APPROVED thành phiên bản hiệu lực mới.",
+    dependencies=[_SETTINGS_WRITE_POLICY],
 )
 async def publish_settings_draft(
     draft_id: UUID,
@@ -209,7 +209,6 @@ async def publish_settings_draft(
     request: Request,
     response: Response,
 ) -> dict[str, object]:
-    require_settings_write(identity)
     service = get_settings_admin_service(request)
     response.headers["Cache-Control"] = "no-store"
     try:
@@ -225,7 +224,7 @@ async def publish_settings_draft(
     return {"version": version}
 
 
-@router.post("/versions/{version}/rollback")
+@router.post("/versions/{version}/rollback", dependencies=[_SETTINGS_WRITE_POLICY])
 async def rollback_settings(
     version: int,
     body: RollbackRequest,
@@ -233,7 +232,6 @@ async def rollback_settings(
     request: Request,
     response: Response,
 ) -> dict[str, object]:
-    require_settings_write(identity)
     service = get_settings_admin_service(request)
     response.headers["Cache-Control"] = "no-store"
     try:

@@ -9,7 +9,25 @@ from trading_bot.auth.cookies import (
     read_session_cookie,
     set_session_cookie,
 )
-from trading_bot.auth.policy import Permission, Principal, authorize
+from trading_bot.auth.dependencies import (
+    current_identity as current_identity,
+)
+from trading_bot.auth.dependencies import (
+    get_auth_service as get_auth_service,
+)
+from trading_bot.auth.dependencies import (
+    raise_auth_failure as raise_auth_failure,
+)
+from trading_bot.auth.dependencies import (
+    require_csrf as require_csrf,
+)
+from trading_bot.auth.policy import Permission, Principal
+from trading_bot.auth.route_policy import (
+    CsrfMode,
+    authenticated_route,
+    permission_route,
+    public_route,
+)
 from trading_bot.auth.schemas import (
     BootstrapRequest,
     BootstrapVerifyRequest,
@@ -31,13 +49,6 @@ from trading_bot.config.settings import AppSettings
 
 router = APIRouter(prefix="/api/v1", tags=["authentication and administration"])
 THROTTLED_DETAIL = "Thử lại sau khi hết thời gian giới hạn"
-
-
-def get_auth_service(request: Request) -> AuthService:
-    service = cast(AuthService | None, getattr(request.app.state, "auth_service", None))
-    if service is None:
-        raise HTTPException(status_code=503, detail="Dịch vụ xác thực chưa sẵn sàng")
-    return service
 
 
 def get_rate_limiter(request: Request) -> LoginRateLimiter:
@@ -70,10 +81,6 @@ def session_account_scope(workspace_id: UUID) -> str:
     return f"workspace-id:{workspace_id}"
 
 
-def raise_auth_failure(error: AuthenticationFailure) -> None:
-    raise HTTPException(status_code=error.status_code, detail=error.message) from error
-
-
 async def authenticate_login(
     *,
     workspace_slug: str,
@@ -103,7 +110,19 @@ async def authenticate_login(
     return result
 
 
-@router.post("/auth/bootstrap", status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/auth/bootstrap",
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[
+        public_route(
+            reason=(
+                "Khởi tạo workspace đầu tiên khi DB trống; xác thực bằng "
+                "X-Bootstrap-Token và rate limit."
+            ),
+            csrf=CsrfMode.BOOTSTRAP_TOKEN,
+        )
+    ],
+)
 async def bootstrap_owner(
     body: BootstrapRequest,
     request: Request,
@@ -145,7 +164,15 @@ async def bootstrap_owner(
     }
 
 
-@router.post("/auth/bootstrap/verify")
+@router.post(
+    "/auth/bootstrap/verify",
+    dependencies=[
+        public_route(
+            reason="Xác minh TOTP kích hoạt tài khoản bootstrap; bảo vệ bằng rate limit.",
+            csrf=CsrfMode.PUBLIC_AUTH,
+        )
+    ],
+)
 async def verify_bootstrap(
     body: BootstrapVerifyRequest,
     request: Request,
@@ -172,7 +199,15 @@ async def verify_bootstrap(
     return {"status": "active"}
 
 
-@router.post("/auth/login")
+@router.post(
+    "/auth/login",
+    dependencies=[
+        public_route(
+            reason="Đăng nhập API bằng mật khẩu và TOTP kèm rate limit.",
+            csrf=CsrfMode.PUBLIC_AUTH,
+        )
+    ],
+)
 async def login(
     body: LoginRequest,
     request: Request,
@@ -200,39 +235,14 @@ async def login(
     return identity_body(result.email, result.principal) | {"csrf_token": result.csrf_token}
 
 
-async def current_identity(
-    request: Request, service: Annotated[AuthService, Depends(get_auth_service)]
-) -> AuthIdentity:
-    try:
-        return await service.authenticate(read_session_cookie(request))
-    except AuthenticationFailure as error:
-        raise_auth_failure(error)
-    raise AssertionError("Không thể tiếp tục sau lỗi xác thực")
-
-
-async def require_csrf(
-    request: Request,
-    identity: Annotated[AuthIdentity, Depends(current_identity)],
-    service: Annotated[AuthService, Depends(get_auth_service)],
-) -> AuthIdentity:
-    try:
-        await service.verify_csrf(
-            read_session_cookie(request),
-            request.headers.get("X-CSRF-Token"),
-        )
-    except AuthenticationFailure as error:
-        raise_auth_failure(error)
-    return identity
-
-
-@router.get("/auth/me")
+@router.get("/auth/me", dependencies=[authenticated_route()])
 async def get_current_identity(
     identity: Annotated[AuthIdentity, Depends(current_identity)],
 ) -> dict[str, object]:
     return identity_body(identity.email, identity.principal)
 
 
-@router.get("/auth/csrf")
+@router.get("/auth/csrf", dependencies=[authenticated_route()])
 async def get_csrf_token(
     request: Request,
     response: Response,
@@ -248,7 +258,11 @@ async def get_csrf_token(
     return {"csrf_token": token}
 
 
-@router.post("/auth/reauthenticate", status_code=status.HTTP_204_NO_CONTENT)
+@router.post(
+    "/auth/reauthenticate",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[authenticated_route(csrf=CsrfMode.HEADER)],
+)
 async def reauthenticate(
     body: ReauthenticationRequest,
     request: Request,
@@ -275,7 +289,11 @@ async def reauthenticate(
     limiter.record_success(address, identity.email, account_scope=scope)
 
 
-@router.post("/auth/logout", status_code=status.HTTP_204_NO_CONTENT)
+@router.post(
+    "/auth/logout",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[authenticated_route(csrf=CsrfMode.HEADER)],
+)
 async def logout(
     request: Request,
     response: Response,
@@ -287,14 +305,22 @@ async def logout(
     clear_session_cookie(response, request.app.state.settings)
 
 
-@router.post("/risk-profiles", status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/risk-profiles",
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[
+        permission_route(
+            Permission.RISK_PROFILE_WRITE,
+            csrf=CsrfMode.HEADER,
+            denied_detail="Không đủ quyền thay đổi hồ sơ rủi ro",
+        )
+    ],
+)
 async def create_risk_profile(
     body: RiskProfileRequest,
     identity: Annotated[AuthIdentity, Depends(require_csrf)],
     service: Annotated[AuthService, Depends(get_auth_service)],
 ) -> dict[str, str]:
-    if not authorize(identity.principal, Permission.RISK_PROFILE_WRITE):
-        raise HTTPException(status_code=403, detail="Không đủ quyền thay đổi hồ sơ rủi ro")
     if datetime.now(UTC) - identity.principal.mfa_verified_at > RECENT_MFA_LIFETIME:
         raise HTTPException(status_code=403, detail="Cần xác thực MFA gần đây")
     profile_id = await service.create_risk_profile(

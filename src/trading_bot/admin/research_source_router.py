@@ -32,6 +32,7 @@ from trading_bot.application.source_policy_admin import (
 )
 from trading_bot.auth.cookies import read_session_cookie
 from trading_bot.auth.policy import Permission, authorize
+from trading_bot.auth.route_policy import CsrfMode, permission_route
 from trading_bot.auth.router import current_identity, require_csrf
 from trading_bot.auth.service import AuthIdentity
 from trading_bot.domain.research.license_scope import scope_sha256
@@ -84,7 +85,24 @@ def _no_store_error(error: HTTPException) -> HTTPException:
     )
 
 
-@router.get("", response_model=list[SourceEntryResponse])
+_RESEARCH_READ_POLICY = permission_route(
+    Permission.RESEARCH_SOURCE_WRITE,
+    Permission.RESEARCH_SOURCE_APPROVE,
+    denied_detail="Không có quyền quản lý nguồn nghiên cứu.",
+)
+_RESEARCH_WRITE_POLICY = permission_route(
+    Permission.RESEARCH_SOURCE_WRITE,
+    csrf=CsrfMode.HEADER,
+    denied_detail="Không có quyền quản lý nguồn nghiên cứu.",
+)
+_RESEARCH_APPROVE_POLICY = permission_route(
+    Permission.RESEARCH_SOURCE_APPROVE,
+    csrf=CsrfMode.HEADER,
+    denied_detail="Không có quyền duyệt nguồn nghiên cứu.",
+)
+
+
+@router.get("", response_model=list[SourceEntryResponse], dependencies=[_RESEARCH_READ_POLICY])
 async def list_sources(
     request: Request,
     response: Response,
@@ -100,7 +118,11 @@ async def list_sources(
     return [SourceEntryResponse.from_domain(entry) for entry in entries]
 
 
-@router.get("/{source_id}", response_model=SourceDetailResponse)
+@router.get(
+    "/{source_id}",
+    response_model=SourceDetailResponse,
+    dependencies=[_RESEARCH_READ_POLICY],
+)
 async def get_source(
     source_id: str,
     request: Request,
@@ -121,7 +143,12 @@ async def get_source(
     return SourceDetailResponse.from_snapshot(*snapshot)
 
 
-@router.post("", status_code=201, response_model=SourceRevisionResponse)
+@router.post(
+    "",
+    status_code=201,
+    response_model=SourceRevisionResponse,
+    dependencies=[_RESEARCH_WRITE_POLICY],
+)
 async def create_source(
     body: SourceCreateRequest,
     request: Request,
@@ -146,7 +173,12 @@ async def create_source(
     return SourceRevisionResponse.from_domain(revision)
 
 
-@router.post("/{source_id}/revisions", status_code=201, response_model=SourceRevisionResponse)
+@router.post(
+    "/{source_id}/revisions",
+    status_code=201,
+    response_model=SourceRevisionResponse,
+    dependencies=[_RESEARCH_WRITE_POLICY],
+)
 async def submit_revision(
     source_id: str,
     body: SourceRevisionRequest,
@@ -181,6 +213,7 @@ async def submit_revision(
     "/{source_id}/revisions/{policy_id}/approve",
     status_code=201,
     response_model=SourceRevisionResponse,
+    dependencies=[_RESEARCH_APPROVE_POLICY],
 )
 async def approve_revision(
     source_id: str,
@@ -242,6 +275,7 @@ _evidence_router = APIRouter(route_class=_EvidenceRoute)
     "/{source_id}/revisions/{policy_id}/license-evidence",
     status_code=201,
     response_model=SourceLicenseEvidenceResponse,
+    dependencies=[_RESEARCH_WRITE_POLICY],
 )
 async def upload_license_evidence(
     source_id: str,
@@ -329,7 +363,7 @@ def _selected_form_values(
     return tuple(selected)
 
 
-@admin_router.get("")
+@admin_router.get("", dependencies=[_RESEARCH_READ_POLICY])
 async def source_console(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(current_identity)],
@@ -407,7 +441,17 @@ async def source_console(
     )
 
 
-@admin_router.post("/{action}")
+@admin_router.post(
+    "/{action}",
+    dependencies=[
+        permission_route(
+            Permission.RESEARCH_SOURCE_WRITE,
+            Permission.RESEARCH_SOURCE_APPROVE,
+            csrf=CsrfMode.FORM,
+            denied_detail="Không có quyền quản lý nguồn nghiên cứu.",
+        )
+    ],
+)
 async def mutate_source_form(
     action: str,
     request: Request,

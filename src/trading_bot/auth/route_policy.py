@@ -1,433 +1,582 @@
-"""Registry phân quyền deny-by-default cho toàn bộ route HTTP (SEC-18 / WP-04A)."""
+"""Registry và dependency phân quyền deny-by-default tập trung cho mọi HTTP route (SEC-18).
+
+Mọi HTTP route trong ``app.routes`` bắt buộc khai báo một ``RoutePolicy`` tường minh thông qua
+các hàm tạo dependency của module này (``permission_route``, ``bot_scoped_route``, ``owner_route``,
+``roles_route``, ``authenticated_route``, hoặc ``public_route`` kèm lý do thuộc allowlist).
+
+Nguyên tắc vận hành:
+1. **Deny-by-default:** Bất kỳ ``APIRoute`` nào thiếu ``RoutePolicy``, hoặc route không nằm
+   trong allowlist nhưng gán ``PUBLIC``, hoặc ``Mount``/``Route`` ngoài danh sách khung cho phép
+   đều bị ``audit_app_routes`` / ``assert_all_routes_have_policy`` từ chối ngay.
+2. **Bảo toàn BOLA & Audit:** Các route gắn ``bot_id`` khai báo ``BotScopePolicy`` để nối kiểm tra
+   trần vai trò (``BotPermission``) và phạm vi cấp quyền theo từng bot (``BotGrantRepository``).
+   Những thao tác control-plane cần che 404 (SEC-19) hoặc ghi ``audit_event`` từ chối ở service
+   dùng ``EnforcementMode.SERVICE_AUDITED`` (chỉ giới hạn trong ``ALLOWED_SERVICE_AUDITED_PATHS``).
+3. **CSRF đồng nhất:** Mọi route mutation không công khai phải chỉ rõ ``CsrfMode.HEADER`` (API qua
+   ``require_csrf``), ``CsrfMode.FORM`` (form HTML qua ``_verify_form_csrf``), hoặc lý do miễn trừ
+   tường minh cho thao tác chỉ đọc giả lập.
+"""
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any
+from typing import Annotated, Any, Literal
 
-from fastapi import FastAPI
-from fastapi.routing import APIRoute
+from fastapi import Depends, FastAPI, HTTPException
+from fastapi.dependencies.models import Dependant
+from fastapi.routing import APIRoute, RouteContext, iter_route_contexts
+from starlette.routing import Mount, Route
 
-from trading_bot.auth.policy import Permission
+from trading_bot.auth.bot_policy import BotPermission, role_allows_bot_permission
+from trading_bot.auth.dependencies import current_identity, require_csrf
+from trading_bot.auth.policy import Permission, Principal, Role, authorize
+from trading_bot.auth.service import AuthIdentity
+
+ROUTE_POLICY_ATTR = "__route_policy__"
+MUTATION_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+# Danh sách route công khai tối thiểu được phép bỏ qua xác thực phiên (kèm kiểm soát riêng).
+ALLOWED_PUBLIC_PATHS: frozenset[str] = frozenset(
+    {
+        "/health/live",
+        "/health/ready",
+        "/admin/login",
+        "/api/v1/auth/bootstrap",
+        "/api/v1/auth/bootstrap/verify",
+        "/api/v1/auth/login",
+        "/api/v1/telegram/webhook",
+    }
+)
+
+# Chỉ vòng đời phiên tự phục vụ mới được dùng RouteAccess.AUTHENTICATED không kèm Permission.
+ALLOWED_AUTHENTICATED_SESSION_PATHS: frozenset[str] = frozenset(
+    {
+        "/api/v1/auth/me",
+        "/api/v1/auth/csrf",
+        "/api/v1/auth/reauthenticate",
+        "/api/v1/auth/logout",
+    }
+)
+
+# Các route control có service tự ghi audit từ chối hoặc che 404 theo SEC-19.
+ALLOWED_SERVICE_AUDITED_PATHS: frozenset[str] = frozenset(
+    {
+        "/api/v1/bots/{bot_id}/runtime/pause",
+        "/api/v1/bots/{bot_id}/runtime/resume",
+        "/api/v1/bots/{bot_id}/disable",
+        "/api/v1/bots/{bot_id}/enable",
+        "/api/v1/workspace/runtime/kill",
+        "/api/v1/workspace/runtime/release",
+        "/admin/bots/{bot_id}/pause",
+        "/admin/bots/{bot_id}/resume",
+    }
+)
+
+# Starlette routes nội bộ của FastAPI (docs/reDoc đã tắt trong app.py).
+ALLOWED_FRAMEWORK_ROUTES: dict[str, type[Any]] = {
+    "/openapi.json": Route,
+    "/static": Mount,
+}
 
 
-class RouteAccessLevel(StrEnum):
-    """Mức truy cập tối thiểu của một route HTTP."""
+class RouteAccess(StrEnum):
+    """Chế độ kiểm soát truy cập khai báo cho từng HTTP route."""
 
-    PUBLIC = "PUBLIC"
-    AUTHENTICATED = "AUTHENTICATED"
-    WORKSPACE_PERMISSION = "WORKSPACE_PERMISSION"
-    BOT_PERMISSION = "BOT_PERMISSION"
+    PUBLIC = "public"
+    AUTHENTICATED = "authenticated"
+    PERMISSION = "permission"
+    BOT_SCOPED = "bot_scoped"
+    OWNER_ONLY = "owner_only"
+    ROLES = "roles"
+
+
+class CsrfMode(StrEnum):
+    """Cơ chế chống CSRF áp dụng cho route."""
+
+    NONE = "none"
+    HEADER = "header"
+    FORM = "form"
+    LOGIN_COOKIE = "login_cookie"
+    WEBHOOK_SECRET = "webhook_secret"
+    BOOTSTRAP_TOKEN = "bootstrap_token"
+    PUBLIC_AUTH = "public_auth"
+
+
+class EnforcementMode(StrEnum):
+    """Vị trí thi hành quyết định từ chối chi tiết."""
+
+    DEPENDENCY = "dependency"
+    SERVICE_AUDITED = "service_audited"
+
+
+@dataclass(frozen=True, slots=True)
+class BotScopePolicy:
+    """Khai báo phạm vi kiểm soát quyền cấp đối tượng theo ``bot_id`` (SEC-19)."""
+
+    permission: BotPermission
+    param_name: str | None = "bot_id"
+    param_location: Literal["path", "query", "body", "service"] = "path"
+
+    def __post_init__(self) -> None:
+        if self.param_location != "service" and not (self.param_name or "").strip():
+            raise ValueError("BotScopePolicy yêu cầu param_name khi không ở chế độ service.")
 
 
 @dataclass(frozen=True, slots=True)
 class RoutePolicy:
-    """Chính sách phân quyền khai báo tường minh cho từng (method, path)."""
+    """Hợp đồng phân quyền gắn trực tiếp lên từng HTTP route."""
 
-    access_level: RouteAccessLevel
-    permission: Permission | None = None
-    bot_permission: str | None = None
-    description_vi: str = ""
+    access: RouteAccess
+    permissions: tuple[Permission, ...] = ()
+    require_all_permissions: bool = False
+    roles: tuple[Role, ...] = ()
+    bot_scope: BotScopePolicy | None = None
+    csrf: CsrfMode = CsrfMode.NONE
+    enforcement: EnforcementMode = EnforcementMode.DEPENDENCY
+    public_reason: str | None = None
+    csrf_exempt_reason: str | None = None
+    denied_detail: str = "Không đủ quyền thực hiện thao tác này."
+    denied_code: str | None = None
 
+    def __post_init__(self) -> None:
+        if self.access is RouteAccess.PUBLIC:
+            if not (self.public_reason or "").strip():
+                raise ValueError("Route PUBLIC bắt buộc khai báo public_reason.")
+            if self.permissions or self.roles or self.bot_scope is not None:
+                raise ValueError("Route PUBLIC không được mang permission/role/bot_scope.")
+            return
 
-def _pub(desc: str = "") -> RoutePolicy:
-    return RoutePolicy(RouteAccessLevel.PUBLIC, description_vi=desc)
+        if self.public_reason is not None:
+            raise ValueError("Chỉ route PUBLIC mới dùng public_reason.")
 
-
-def _auth(desc: str = "") -> RoutePolicy:
-    return RoutePolicy(RouteAccessLevel.AUTHENTICATED, description_vi=desc)
-
-
-def _perm(permission: Permission, desc: str = "") -> RoutePolicy:
-    return RoutePolicy(
-        RouteAccessLevel.WORKSPACE_PERMISSION, permission=permission, description_vi=desc
-    )
-
-
-def _bot(bot_permission: str, desc: str = "") -> RoutePolicy:
-    return RoutePolicy(
-        RouteAccessLevel.BOT_PERMISSION, bot_permission=bot_permission, description_vi=desc
-    )
-
-
-ROUTE_PERMISSION_REGISTRY: dict[tuple[str, str], RoutePolicy] = {
-    # Health & Webhook công khai có xác thực riêng
-    ("GET", "/health/live"): _pub("Kiểm tra sống"),
-    ("GET", "/health/ready"): _pub("Kiểm tra sẵn sàng"),
-    ("POST", "/api/v1/telegram/webhook"): _pub("Webhook Telegram xác thực bằng secret header"),
-    # Auth
-    ("GET", "/admin/login"): _pub("Trang đăng nhập Admin"),
-    ("POST", "/admin/login"): _pub("Đăng nhập Admin"),
-    ("POST", "/api/v1/auth/bootstrap"): _pub("Khởi tạo tài khoản owner đầu tiên"),
-    ("POST", "/api/v1/auth/bootstrap/verify"): _pub("Xác minh MFA khi bootstrap"),
-    ("GET", "/api/v1/auth/csrf"): _auth("Lấy CSRF token theo phiên"),
-    ("POST", "/api/v1/auth/login"): _pub("Đăng nhập API"),
-    ("POST", "/api/v1/auth/logout"): _auth("Đăng xuất phiên"),
-    ("GET", "/api/v1/auth/me"): _auth("Thông tin phiên hiện tại"),
-    ("POST", "/api/v1/auth/reauthenticate"): _auth("Xác thực lại MFA step-up"),
-    # Dashboard & Admin HTML pages
-    ("GET", "/admin"): _perm(Permission.WORKSPACE_READ, "Trang tổng quan Admin"),
-    ("GET", "/admin/audit"): _perm(Permission.SETTINGS_READ, "Trang nhật ký audit"),
-    ("GET", "/admin/ai-analyses"): _perm(Permission.TRADE_READ, "Danh sách phân tích AI"),
-    ("GET", "/admin/ai-analyses/{run_id}"): _perm(Permission.TRADE_READ, "Chi tiết phân tích AI"),
-    ("GET", "/admin/backtests"): _perm(Permission.WORKSPACE_READ, "Trang backtest"),
-    ("POST", "/admin/backtests/submit"): _perm(Permission.STRATEGY_WRITE, "Gửi job backtest"),
-    ("POST", "/admin/backtests/{job_id}/cancel"): _perm(
-        Permission.STRATEGY_WRITE, "Hủy job backtest"
-    ),
-    ("GET", "/admin/bots"): _perm(Permission.WORKSPACE_READ, "Danh sách bot"),
-    ("GET", "/admin/bots/new"): _perm(Permission.STRATEGY_WRITE, "Form tạo bot"),
-    ("POST", "/admin/bots/new"): _perm(Permission.STRATEGY_WRITE, "Tạo bot mới"),
-    ("GET", "/admin/bots/{bot_id}"): _bot("READ", "Chi tiết bot"),
-    ("POST", "/admin/bots/{bot_id}/ai-proposals/{backtest_id}/draft"): _bot(
-        "CONFIG_WRITE", "Tạo draft từ đề xuất AI"
-    ),
-    ("POST", "/admin/bots/{bot_id}/config-drafts"): _bot("CONFIG_WRITE", "Tạo draft cấu hình bot"),
-    ("POST", "/admin/bots/{bot_id}/config-drafts/{draft_id}/publish"): _bot(
-        "CONFIG_WRITE", "Publish cấu hình bot"
-    ),
-    ("POST", "/admin/bots/{bot_id}/config-drafts/{draft_id}/validate"): _bot(
-        "CONFIG_WRITE", "Kiểm tra draft cấu hình bot"
-    ),
-    ("POST", "/admin/bots/{bot_id}/disable"): _bot("CONTROL_RUNTIME", "Vô hiệu hóa bot"),
-    ("POST", "/admin/bots/{bot_id}/enable"): _bot("CONTROL_RUNTIME", "Kích hoạt bot"),
-    ("POST", "/admin/bots/{bot_id}/pause"): _bot("CONTROL_RUNTIME", "Tạm dừng bot"),
-    ("POST", "/admin/bots/{bot_id}/resume"): _bot("CONTROL_RUNTIME", "Tiếp tục bot"),
-    ("POST", "/admin/bots/{bot_id}/telegram-signal-filters"): _bot(
-        "CONFIG_WRITE", "Cập nhật bộ lọc tín hiệu Telegram"
-    ),
-    ("POST", "/admin/bots/{bot_id}/telegram-signals"): _bot(
-        "CONFIG_WRITE", "Cập nhật cấu hình tín hiệu Telegram"
-    ),
-    ("GET", "/admin/calendar"): _perm(Permission.WORKSPACE_READ, "Lịch kinh tế"),
-    ("POST", "/admin/calendar"): _perm(Permission.SETTINGS_WRITE, "Thêm sự kiện lịch kinh tế"),
-    ("POST", "/admin/calendar/{event_id}"): _perm(
-        Permission.SETTINGS_WRITE, "Cập nhật sự kiện lịch kinh tế"
-    ),
-    ("POST", "/admin/calendar/{event_id}/delete"): _perm(
-        Permission.SETTINGS_WRITE, "Xóa sự kiện lịch kinh tế"
-    ),
-    ("GET", "/admin/chart"): _perm(Permission.TRADE_READ, "Trang biểu đồ"),
-    ("GET", "/admin/dashboard/bots/{bot_id}/snapshot"): _bot("READ", "Snapshot dashboard bot"),
-    ("GET", "/admin/flatten"): _perm(Permission.WORKSPACE_KILL, "Trang flatten toàn workspace"),
-    ("POST", "/admin/flatten/confirm"): _perm(Permission.WORKSPACE_KILL, "Xác nhận flatten"),
-    ("GET", "/admin/flatten/operations/{operation_id}"): _perm(
-        Permission.WORKSPACE_READ, "Trạng thái flatten"
-    ),
-    ("POST", "/admin/flatten/preview"): _perm(Permission.WORKSPACE_KILL, "Xem trước flatten"),
-    ("GET", "/admin/live"): _perm(Permission.TRADE_READ, "Trang giám sát live"),
-    ("GET", "/admin/reports"): _perm(Permission.TRADE_READ, "Trang báo cáo"),
-    ("GET", "/admin/reports/export.csv"): _perm(Permission.TRADE_READ, "Xuất CSV báo cáo"),
-    ("GET", "/admin/research-sources"): _perm(
-        Permission.RESEARCH_SOURCE_WRITE, "Trang nguồn nghiên cứu"
-    ),
-    ("POST", "/admin/research-sources/{action}"): _perm(
-        Permission.RESEARCH_SOURCE_WRITE, "Thao tác nguồn nghiên cứu"
-    ),
-    ("GET", "/admin/risk"): _perm(Permission.SETTINGS_READ, "Trang khẩu vị rủi ro"),
-    ("POST", "/admin/risk"): _perm(Permission.RISK_PROFILE_WRITE, "Cập nhật khẩu vị rủi ro"),
-    ("GET", "/admin/run-reports/{report_hash}"): _perm(Permission.TRADE_READ, "Xem báo cáo chạy"),
-    ("GET", "/admin/run-reports/{report_hash}/report.json"): _perm(
-        Permission.TRADE_READ, "Tải JSON báo cáo chạy"
-    ),
-    ("GET", "/admin/scanner"): _perm(Permission.WORKSPACE_READ, "Trang quét thị trường"),
-    ("POST", "/admin/scanner"): _perm(Permission.SETTINGS_WRITE, "Chạy quét thị trường"),
-    ("GET", "/admin/signal-outcomes"): _perm(Permission.TRADE_READ, "Trang kết quả tín hiệu"),
-    ("GET", "/admin/strategy-cards"): _perm(Permission.WORKSPACE_READ, "Trang Strategy Cards"),
-    ("GET", "/admin/strategy-cards/{card_id}/microscope"): _perm(
-        Permission.WORKSPACE_READ, "Soi chi tiết Strategy Card"
-    ),
-    ("POST", "/admin/strategy-releases/publish"): _perm(
-        Permission.STRATEGY_WRITE, "Publish strategy release"
-    ),
-    ("POST", "/admin/strategy-releases/retire"): _perm(
-        Permission.STRATEGY_WRITE, "Retire strategy release"
-    ),
-    ("GET", "/admin/telegram"): _perm(Permission.WORKSPACE_READ, "Trang liên kết Telegram"),
-    ("POST", "/admin/telegram/link"): _perm(Permission.MEMBER_WRITE, "Liên kết Telegram"),
-    ("POST", "/admin/telegram/revoke/{membership_id}"): _perm(
-        Permission.MEMBER_WRITE, "Thu hồi Telegram"
-    ),
-    ("POST", "/admin/telegram/topics/{membership_id}"): _perm(
-        Permission.MEMBER_WRITE, "Cấu hình topic Telegram"
-    ),
-    ("POST", "/admin/workspace/kill"): _perm(Permission.WORKSPACE_KILL, "Kill switch workspace"),
-    ("POST", "/admin/workspace/release"): _perm(
-        Permission.WORKSPACE_KILL, "Mở khóa kill switch workspace"
-    ),
-    # Admin JSON endpoints (/admin/api/*)
-    ("GET", "/admin/api/bots/{bot_id}/realtime"): _bot("READ", "Dữ liệu realtime bot"),
-    ("GET", "/admin/api/chart"): _perm(Permission.TRADE_READ, "Dữ liệu biểu đồ"),
-    ("GET", "/admin/api/chart/decision"): _perm(Permission.TRADE_READ, "Quyết định trên biểu đồ"),
-    ("GET", "/admin/api/chart/decisions"): _perm(
-        Permission.TRADE_READ, "Danh sách quyết định biểu đồ"
-    ),
-    ("GET", "/admin/api/chart/history"): _perm(Permission.TRADE_READ, "Lịch sử biểu đồ"),
-    ("GET", "/admin/api/chart/overview"): _perm(Permission.TRADE_READ, "Tổng quan biểu đồ"),
-    ("GET", "/admin/api/chart/validate"): _perm(Permission.TRADE_READ, "Kiểm tra biểu đồ"),
-    ("GET", "/admin/api/dashboard/realtime"): _perm(
-        Permission.WORKSPACE_READ, "Realtime dashboard"
-    ),
-    ("GET", "/admin/api/live/snapshot"): _perm(Permission.TRADE_READ, "Snapshot live"),
-    ("GET", "/admin/api/live/stream"): _perm(Permission.TRADE_READ, "Stream live SSE"),
-    ("POST", "/admin/api/operations/breaker/resume"): _perm(
-        Permission.RUNTIME_RESUME, "Mở lại circuit breaker"
-    ),
-    ("GET", "/admin/api/operations/health"): _perm(Permission.WORKSPACE_READ, "Sức khỏe vận hành"),
-    ("GET", "/admin/api/workers/readiness"): _perm(Permission.WORKSPACE_READ, "Readiness worker"),
-    ("GET", "/admin/api/strategy-cards"): _perm(Permission.WORKSPACE_READ, "API Strategy Cards"),
-    ("POST", "/admin/api/strategy-cards/{card_id}/inspect-bar"): _perm(
-        Permission.WORKSPACE_READ, "Soi bar Strategy Card"
-    ),
-    ("GET", "/admin/api/strategy-releases"): _perm(
-        Permission.WORKSPACE_READ, "Danh sách strategy release"
-    ),
-    ("POST", "/admin/api/strategy-releases/publish"): _perm(
-        Permission.STRATEGY_WRITE, "API publish strategy release"
-    ),
-    ("POST", "/admin/api/strategy-releases/retire"): _perm(
-        Permission.STRATEGY_WRITE, "API retire strategy release"
-    ),
-    ("POST", "/admin/api/trades/{trade_id}/ingest-negative-sample"): _perm(
-        Permission.TRADE_REVIEW, "Nạp mẫu âm từ trade"
-    ),
-    ("POST", "/admin/api/trades/{trade_id}/queue-ai-retraining"): _perm(
-        Permission.LEARNING_TRAINING_MANAGE, "Đưa vào hàng đợi huấn luyện lại"
-    ),
-    # Learning pages & APIs
-    ("GET", "/admin/learning/models"): _perm(
-        Permission.LEARNING_MODEL_READ, "Trang model registry"
-    ),
-    ("GET", "/admin/learning/observations"): _perm(
-        Permission.LEARNING_MODEL_READ, "Trang quan sát learning"
-    ),
-    ("GET", "/admin/learning/paper-performance"): _perm(
-        Permission.LEARNING_MODEL_READ, "Trang hiệu năng PAPER"
-    ),
-    ("GET", "/admin/learning/scoring"): _perm(Permission.LEARNING_MODEL_READ, "Trang scorer"),
-    ("POST", "/admin/learning/scoring/decisions/{bot_decision_id}/block-paper-entry"): _perm(
-        Permission.LEARNING_INCIDENT_MANAGE, "Chặn entry PAPER theo quyết định"
-    ),
-    ("GET", "/admin/learning/splits"): _perm(
-        Permission.LEARNING_SPLIT_APPROVE, "Trang duyệt split"
-    ),
-    ("GET", "/admin/learning/training"): _perm(
-        Permission.LEARNING_TRAINING_MANAGE, "Trang job huấn luyện"
-    ),
-    ("GET", "/api/v1/learning-models"): _perm(Permission.LEARNING_MODEL_READ, "Danh sách model"),
-    ("POST", "/api/v1/learning-models"): _perm(Permission.LEARNING_MODEL_WRITE, "Đăng ký model"),
-    ("GET", "/api/v1/learning-models/active-pointer"): _perm(
-        Permission.LEARNING_MODEL_READ, "Con trỏ model đang chạy"
-    ),
-    ("GET", "/api/v1/learning-models/{registry_id}"): _perm(
-        Permission.LEARNING_MODEL_READ, "Chi tiết model"
-    ),
-    ("POST", "/api/v1/learning-models/{registry_id}/activate"): _perm(
-        Permission.LEARNING_MODEL_APPROVE, "Kích hoạt model"
-    ),
-    ("POST", "/api/v1/learning-models/{registry_id}/approve"): _perm(
-        Permission.LEARNING_MODEL_APPROVE, "Phê duyệt model"
-    ),
-    ("POST", "/api/v1/learning-models/{registry_id}/evaluation"): _perm(
-        Permission.LEARNING_MODEL_WRITE, "Ghi đánh giá model"
-    ),
-    ("GET", "/api/v1/learning-models/{registry_id}/events"): _perm(
-        Permission.LEARNING_MODEL_READ, "Sự kiện model"
-    ),
-    ("POST", "/api/v1/learning-models/{registry_id}/reject"): _perm(
-        Permission.LEARNING_MODEL_APPROVE, "Từ chối model"
-    ),
-    ("POST", "/api/v1/learning-models/{registry_id}/retire"): _perm(
-        Permission.LEARNING_MODEL_APPROVE, "Ngừng dùng model"
-    ),
-    ("POST", "/api/v1/learning-models/{registry_id}/rollback"): _perm(
-        Permission.LEARNING_MODEL_APPROVE, "Rollback model"
-    ),
-    ("GET", "/api/v1/learning-scorer/deployment"): _perm(
-        Permission.LEARNING_MODEL_READ, "Trạng thái triển khai scorer"
-    ),
-    ("POST", "/api/v1/learning-scorer/deployment"): _perm(
-        Permission.LEARNING_MODEL_APPROVE, "Triển khai scorer"
-    ),
-    ("GET", "/api/v1/learning-splits/candidates"): _perm(
-        Permission.LEARNING_SPLIT_APPROVE, "Danh sách candidate split"
-    ),
-    ("POST", "/api/v1/learning-splits/candidates/{candidate_id}/approve"): _perm(
-        Permission.LEARNING_SPLIT_APPROVE, "Duyệt candidate split"
-    ),
-    ("GET", "/api/v1/learning-training/jobs"): _perm(
-        Permission.LEARNING_TRAINING_MANAGE, "Danh sách job huấn luyện"
-    ),
-    ("POST", "/api/v1/learning-training/jobs"): _perm(
-        Permission.LEARNING_TRAINING_MANAGE, "Tạo job huấn luyện"
-    ),
-    ("POST", "/api/v1/learning-training/jobs/{job_id}/cancel"): _perm(
-        Permission.LEARNING_TRAINING_MANAGE, "Hủy job huấn luyện"
-    ),
-    ("GET", "/api/v1/learning/incident-entry-holds"): _perm(
-        Permission.LEARNING_INCIDENT_MANAGE, "Danh sách hold entry"
-    ),
-    ("POST", "/api/v1/learning/incident-entry-holds/{proposal_id}/hold"): _perm(
-        Permission.LEARNING_INCIDENT_MANAGE, "Bật hold entry"
-    ),
-    ("POST", "/api/v1/learning/incident-entry-holds/{proposal_id}/release"): _perm(
-        Permission.LEARNING_INCIDENT_MANAGE, "Gỡ hold entry"
-    ),
-    ("POST", "/api/v1/learning/paper-performance/assess"): _perm(
-        Permission.LEARNING_MODEL_READ, "Đánh giá hiệu năng PAPER"
-    ),
-    # Core API v1
-    ("GET", "/api/v1/audit"): _perm(Permission.SETTINGS_READ, "Tra cứu nhật ký audit"),
-    ("GET", "/api/v1/bots"): _perm(Permission.WORKSPACE_READ, "Danh sách bot"),
-    ("POST", "/api/v1/bots"): _perm(Permission.STRATEGY_WRITE, "Tạo bot"),
-    ("GET", "/api/v1/bots/{bot_id}"): _bot("READ", "Chi tiết bot"),
-    ("POST", "/api/v1/bots/{bot_id}/config-drafts"): _bot("CONFIG_WRITE", "Tạo draft cấu hình bot"),
-    ("PUT", "/api/v1/bots/{bot_id}/config-drafts/{draft_id}"): _bot(
-        "CONFIG_WRITE", "Cập nhật draft bot"
-    ),
-    ("POST", "/api/v1/bots/{bot_id}/config-drafts/{draft_id}/publish"): _bot(
-        "CONFIG_WRITE", "Publish cấu hình bot"
-    ),
-    ("POST", "/api/v1/bots/{bot_id}/config-drafts/{draft_id}/validate"): _bot(
-        "CONFIG_WRITE", "Kiểm tra draft bot"
-    ),
-    ("POST", "/api/v1/bots/{bot_id}/config-versions/{version}/rollback"): _bot(
-        "CONFIG_WRITE", "Rollback cấu hình bot"
-    ),
-    ("POST", "/api/v1/bots/{bot_id}/disable"): _bot("CONTROL_RUNTIME", "Vô hiệu hóa bot"),
-    ("POST", "/api/v1/bots/{bot_id}/enable"): _bot("CONTROL_RUNTIME", "Kích hoạt bot"),
-    ("GET", "/api/v1/bots/{bot_id}/runtime"): _bot("READ", "Trạng thái runtime bot"),
-    ("POST", "/api/v1/bots/{bot_id}/runtime/pause"): _bot("CONTROL_RUNTIME", "Tạm dừng bot"),
-    ("POST", "/api/v1/bots/{bot_id}/runtime/resume"): _bot("CONTROL_RUNTIME", "Tiếp tục bot"),
-    ("GET", "/api/v1/experiments"): _perm(Permission.WORKSPACE_READ, "Danh sách thí nghiệm"),
-    ("GET", "/api/v1/incidents"): _perm(Permission.TRADE_READ, "Danh sách sự cố"),
-    ("GET", "/api/v1/members"): _perm(Permission.WORKSPACE_READ, "Danh sách thành viên"),
-    ("GET", "/api/v1/members/invitations"): _perm(Permission.MEMBER_WRITE, "Danh sách lời mời"),
-    ("POST", "/api/v1/members/invitations"): _perm(Permission.MEMBER_WRITE, "Tạo lời mời"),
-    ("POST", "/api/v1/members/invitations/{invitation_id}/revoke"): _perm(
-        Permission.MEMBER_WRITE, "Thu hồi lời mời"
-    ),
-    ("POST", "/api/v1/members/recovery/mfa-reset"): _perm(
-        Permission.MEMBER_WRITE, "Khôi phục MFA thành viên"
-    ),
-    ("PATCH", "/api/v1/members/{membership_id}/role"): _perm(
-        Permission.MEMBER_WRITE, "Đổi vai trò thành viên"
-    ),
-    ("GET", "/api/v1/reports"): _perm(Permission.TRADE_READ, "Báo cáo bot/workspace"),
-    ("GET", "/api/v1/research-sources"): _perm(
-        Permission.RESEARCH_SOURCE_WRITE, "Danh sách nguồn nghiên cứu"
-    ),
-    ("POST", "/api/v1/research-sources"): _perm(
-        Permission.RESEARCH_SOURCE_WRITE, "Tạo nguồn nghiên cứu"
-    ),
-    ("GET", "/api/v1/research-sources/{source_id}"): _perm(
-        Permission.RESEARCH_SOURCE_WRITE, "Chi tiết nguồn nghiên cứu"
-    ),
-    ("POST", "/api/v1/research-sources/{source_id}/revisions"): _perm(
-        Permission.RESEARCH_SOURCE_WRITE, "Tạo revision nguồn nghiên cứu"
-    ),
-    ("POST", "/api/v1/research-sources/{source_id}/revisions/{policy_id}/approve"): _perm(
-        Permission.RESEARCH_SOURCE_APPROVE, "Duyệt revision nguồn nghiên cứu"
-    ),
-    ("POST", "/api/v1/research-sources/{source_id}/revisions/{policy_id}/license-evidence"): _perm(
-        Permission.RESEARCH_SOURCE_WRITE, "Nộp bằng chứng bản quyền nguồn"
-    ),
-    ("GET", "/api/v1/risk-profiles"): _perm(Permission.SETTINGS_READ, "Danh sách risk profile"),
-    ("POST", "/api/v1/risk-profiles"): _perm(Permission.RISK_PROFILE_WRITE, "Tạo risk profile mới"),
-    ("GET", "/api/v1/settings/current"): _perm(Permission.SETTINGS_READ, "Cấu hình hiện hành"),
-    ("POST", "/api/v1/settings/drafts"): _perm(Permission.SETTINGS_WRITE, "Tạo draft cấu hình"),
-    ("PATCH", "/api/v1/settings/drafts/{draft_id}"): _perm(
-        Permission.SETTINGS_WRITE, "Cập nhật draft cấu hình"
-    ),
-    ("POST", "/api/v1/settings/drafts/{draft_id}/approve"): _perm(
-        Permission.SETTINGS_WRITE, "Phê duyệt cấu hình (maker-checker)"
-    ),
-    ("POST", "/api/v1/settings/drafts/{draft_id}/propose"): _perm(
-        Permission.SETTINGS_WRITE, "Đề xuất cấu hình"
-    ),
-    ("POST", "/api/v1/settings/drafts/{draft_id}/publish"): _perm(
-        Permission.SETTINGS_WRITE, "Publish cấu hình"
-    ),
-    ("POST", "/api/v1/settings/drafts/{draft_id}/validate"): _perm(
-        Permission.SETTINGS_WRITE, "Kiểm tra draft cấu hình"
-    ),
-    ("GET", "/api/v1/settings/versions"): _perm(Permission.SETTINGS_READ, "Lịch sử cấu hình"),
-    ("POST", "/api/v1/settings/versions/{version}/rollback"): _perm(
-        Permission.SETTINGS_WRITE, "Rollback cấu hình"
-    ),
-    ("POST", "/api/v1/telegram-binding/link"): _perm(
-        Permission.MEMBER_WRITE, "Liên kết tài khoản Telegram"
-    ),
-    ("POST", "/api/v1/telegram-binding/{membership_id}/revoke"): _perm(
-        Permission.MEMBER_WRITE, "Thu hồi liên kết Telegram"
-    ),
-    ("POST", "/api/v1/telegram-binding/{membership_id}/topics"): _perm(
-        Permission.MEMBER_WRITE, "Cập nhật topic Telegram"
-    ),
-    ("DELETE", "/api/v1/telegram-binding/{membership_id}/topics"): _perm(
-        Permission.MEMBER_WRITE, "Xóa topic Telegram"
-    ),
-    ("PUT", "/api/v1/telegram-signals/{bot_id}/subscription"): _bot(
-        "CONFIG_WRITE", "Đăng ký tín hiệu Telegram cho bot"
-    ),
-    ("GET", "/api/v1/telegram-signals/{bot_id}/subscription"): _bot(
-        "READ", "Xem đăng ký tín hiệu Telegram"
-    ),
-    ("GET", "/api/v1/watchlists"): _perm(
-        Permission.WORKSPACE_READ, "Danh sách phiên bản watchlist"
-    ),
-    ("POST", "/api/v1/watchlists"): _perm(
-        Permission.WATCHLIST_WRITE, "Phát hành phiên bản watchlist"
-    ),
-    ("POST", "/api/v1/workspace/flatten/confirm"): _perm(
-        Permission.WORKSPACE_KILL, "Xác nhận flatten workspace"
-    ),
-    ("GET", "/api/v1/workspace/flatten/operations/{operation_id}"): _perm(
-        Permission.WORKSPACE_READ, "Xem tiến trình flatten"
-    ),
-    ("POST", "/api/v1/workspace/flatten/preview"): _perm(
-        Permission.WORKSPACE_KILL, "Xem trước flatten workspace"
-    ),
-    ("GET", "/api/v1/workspace/runtime"): _perm(
-        Permission.WORKSPACE_READ, "Trạng thái runtime workspace"
-    ),
-    ("POST", "/api/v1/workspace/runtime/kill"): _perm(
-        Permission.WORKSPACE_KILL, "Kill switch workspace"
-    ),
-    ("POST", "/api/v1/workspace/runtime/release"): _perm(
-        Permission.WORKSPACE_KILL, "Mở khóa kill switch workspace"
-    ),
-}
+        if self.access is RouteAccess.AUTHENTICATED:
+            if self.permissions or self.roles or self.bot_scope is not None:
+                raise ValueError("Route AUTHENTICATED không nhận permission/role/bot_scope.")
+        elif self.access is RouteAccess.PERMISSION:
+            if not self.permissions:
+                raise ValueError("Route PERMISSION phải khai báo ít nhất một Permission.")
+        elif self.access is RouteAccess.BOT_SCOPED:
+            if self.bot_scope is None:
+                raise ValueError("Route BOT_SCOPED phải khai báo bot_scope.")
+        elif self.access is RouteAccess.ROLES:
+            if not self.roles:
+                raise ValueError("Route ROLES phải khai báo ít nhất một Role.")
+        elif self.access is RouteAccess.OWNER_ONLY:
+            if self.roles and self.roles != (Role.OWNER,):
+                raise ValueError("Route OWNER_ONLY chỉ chấp nhận Role.OWNER.")
 
 
-def iter_app_routes(app: FastAPI) -> list[tuple[str, str, APIRoute]]:
-    """Duyệt đệ quy toàn bộ APIRoute trong FastAPI app (bao gồm _IncludedRouter)."""
-    discovered: list[tuple[str, str, APIRoute]] = []
-
-    def _walk(routes: list[Any], prefix: str = "") -> None:
-        for route in routes:
-            if isinstance(route, APIRoute):
-                full_path = f"{prefix}{route.path}"
-                for method in sorted((route.methods or set()) - {"HEAD", "OPTIONS"}):
-                    discovered.append((method, full_path, route))
-            elif hasattr(route, "original_router"):
-                ctx = getattr(route, "include_context", None)
-                ctx_prefix = getattr(ctx, "prefix", "") or ""
-                _walk(route.original_router.routes, f"{prefix}{ctx_prefix}")
-
-    _walk(list(app.routes))
-    return discovered
+class RoutePolicyViolation(AssertionError):
+    """Ném khi phát hiện route vi phạm nguyên tắc deny-by-default SEC-18."""
 
 
-def verify_app_routes_registered(app: FastAPI) -> None:
-    """Bảo đảm deny-by-default: mọi route HTTP phải có chính sách trong registry."""
-    missing: list[str] = []
-    for method, path, _route in iter_app_routes(app):
-        if (method, path) not in ROUTE_PERMISSION_REGISTRY:
-            missing.append(f"{method} {path}")
-    if missing:
-        raise AssertionError(
-            "Các route sau chưa khai báo trong ROUTE_PERMISSION_REGISTRY (deny-by-default): "
-            + ", ".join(sorted(missing))
+@dataclass(frozen=True, slots=True)
+class PolicyViolationItem:
+    """Chi tiết một vi phạm khi quét ``app.routes``."""
+
+    path: str
+    methods: tuple[str, ...]
+    reason: str
+
+    def __str__(self) -> str:
+        method_list = ",".join(self.methods) or "MOUNT"
+        return f"[{method_list}] {self.path}: {self.reason}"
+
+
+@dataclass(frozen=True, slots=True)
+class AuditedRoute:
+    """Bản ghi route đã qua kiểm định chính sách SEC-18."""
+
+    path: str
+    methods: frozenset[str]
+    endpoint_name: str
+    policy: RoutePolicy
+
+
+@dataclass(frozen=True, slots=True)
+class RouteAuditReport:
+    """Kết quả quét toàn bộ ``app.routes``."""
+
+    audited: tuple[AuditedRoute, ...]
+    violations: tuple[PolicyViolationItem, ...]
+
+
+class _PolicyHTTPException(HTTPException):
+    """Ném khi từ chối ở tầng dependency kèm mã lý do an toàn nếu route yêu cầu."""
+
+    def __init__(
+        self,
+        *,
+        status_code: int,
+        detail: str,
+        reason_code: str | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        super().__init__(status_code=status_code, detail=detail, headers=headers)
+        self.reason_code = reason_code
+
+
+def _deny_http_exception(policy: RoutePolicy) -> HTTPException:
+    if policy.denied_code is not None:
+        return _PolicyHTTPException(
+            status_code=403,
+            detail=policy.denied_detail,
+            reason_code=policy.denied_code,
+            headers={"Cache-Control": "no-store"},
         )
+    return HTTPException(
+        status_code=403,
+        detail=policy.denied_detail,
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+def _enforce_principal_policy(principal: Principal, policy: RoutePolicy) -> None:
+    """Thi hành chính sách ở tầng dependency FastAPI (fail-closed)."""
+    if policy.access is RouteAccess.AUTHENTICATED:
+        return
+
+    if not principal.roles:
+        raise _deny_http_exception(policy)
+
+    if policy.enforcement is EnforcementMode.SERVICE_AUDITED:
+        return
+
+    allowed = True
+    if policy.access is RouteAccess.OWNER_ONLY:
+        allowed = Role.OWNER in principal.roles
+    elif policy.access is RouteAccess.ROLES:
+        allowed = bool(principal.roles & frozenset(policy.roles))
+    elif policy.permissions:
+        if policy.require_all_permissions:
+            allowed = all(authorize(principal, perm) for perm in policy.permissions)
+        else:
+            allowed = any(authorize(principal, perm) for perm in policy.permissions)
+
+    if allowed and policy.bot_scope is not None:
+        allowed = role_allows_bot_permission(principal.roles, policy.bot_scope.permission)
+
+    if not allowed:
+        raise _deny_http_exception(policy)
+
+
+def require_route_policy(policy: RoutePolicy) -> Any:
+    """Tạo FastAPI ``Depends(...)`` gắn ``RoutePolicy`` lên route và thi hành khi gọi HTTP."""
+    if policy.access is RouteAccess.PUBLIC:
+
+        def _public_policy_guard() -> None:
+            return None
+
+        setattr(_public_policy_guard, ROUTE_POLICY_ATTR, policy)
+        return Depends(_public_policy_guard)
+
+    if policy.csrf is CsrfMode.HEADER:
+
+        async def _header_csrf_policy_guard(
+            identity: Annotated[AuthIdentity, Depends(require_csrf)],
+        ) -> AuthIdentity:
+            _enforce_principal_policy(identity.principal, policy)
+            return identity
+
+        setattr(_header_csrf_policy_guard, ROUTE_POLICY_ATTR, policy)
+        return Depends(_header_csrf_policy_guard)
+
+    async def _session_policy_guard(
+        identity: Annotated[AuthIdentity, Depends(current_identity)],
+    ) -> AuthIdentity:
+        _enforce_principal_policy(identity.principal, policy)
+        return identity
+
+    setattr(_session_policy_guard, ROUTE_POLICY_ATTR, policy)
+    return Depends(_session_policy_guard)
+
+
+def public_route(*, reason: str, csrf: CsrfMode = CsrfMode.NONE) -> Any:
+    """Khai báo route công khai thuộc allowlist kèm lý do bắt buộc."""
+    return require_route_policy(
+        RoutePolicy(access=RouteAccess.PUBLIC, csrf=csrf, public_reason=reason)
+    )
+
+
+def authenticated_route(*, csrf: CsrfMode = CsrfMode.NONE) -> Any:
+    """Khai báo route chỉ yêu cầu phiên hợp lệ (vòng đời phiên tự phục vụ)."""
+    return require_route_policy(RoutePolicy(access=RouteAccess.AUTHENTICATED, csrf=csrf))
+
+
+def owner_route(
+    *,
+    csrf: CsrfMode = CsrfMode.NONE,
+    enforcement: EnforcementMode = EnforcementMode.DEPENDENCY,
+    denied_detail: str = "Chỉ chủ sở hữu (owner) được thực hiện thao tác này.",
+    denied_code: str | None = None,
+) -> Any:
+    """Khai báo route chỉ dành riêng cho vai trò ``Role.OWNER``."""
+    return require_route_policy(
+        RoutePolicy(
+            access=RouteAccess.OWNER_ONLY,
+            roles=(Role.OWNER,),
+            csrf=csrf,
+            enforcement=enforcement,
+            denied_detail=denied_detail,
+            denied_code=denied_code,
+        )
+    )
+
+
+def permission_route(
+    *permissions: Permission,
+    require_all: bool = False,
+    bot_scope: BotScopePolicy | None = None,
+    csrf: CsrfMode = CsrfMode.NONE,
+    csrf_exempt_reason: str | None = None,
+    enforcement: EnforcementMode = EnforcementMode.DEPENDENCY,
+    denied_detail: str = "Không đủ quyền thực hiện thao tác này.",
+) -> Any:
+    """Khai báo route yêu cầu ``Permission`` ở mức workspace (và tùy chọn ``bot_scope``)."""
+    return require_route_policy(
+        RoutePolicy(
+            access=RouteAccess.PERMISSION,
+            permissions=permissions,
+            require_all_permissions=require_all,
+            bot_scope=bot_scope,
+            csrf=csrf,
+            csrf_exempt_reason=csrf_exempt_reason,
+            enforcement=enforcement,
+            denied_detail=denied_detail,
+        )
+    )
+
+
+def bot_scoped_route(
+    permission: BotPermission,
+    *,
+    param_name: str | None = "bot_id",
+    param_location: Literal["path", "query", "body", "service"] = "path",
+    workspace_permissions: tuple[Permission, ...] = (Permission.WORKSPACE_READ,),
+    csrf: CsrfMode = CsrfMode.NONE,
+    enforcement: EnforcementMode = EnforcementMode.DEPENDENCY,
+    denied_detail: str = "Không đủ quyền thao tác bot này.",
+) -> Any:
+    """Khai báo route gắn phạm vi từng bot (BOLA / SEC-19) qua ``BotPermission``."""
+    return require_route_policy(
+        RoutePolicy(
+            access=RouteAccess.BOT_SCOPED,
+            permissions=workspace_permissions,
+            bot_scope=BotScopePolicy(
+                permission=permission,
+                param_name=param_name,
+                param_location=param_location,
+            ),
+            csrf=csrf,
+            enforcement=enforcement,
+            denied_detail=denied_detail,
+        )
+    )
+
+
+def roles_route(
+    *roles: Role,
+    csrf: CsrfMode = CsrfMode.NONE,
+    denied_detail: str = "Vai trò hiện tại không được phép thực hiện thao tác này.",
+) -> Any:
+    """Khai báo route cho danh sách ``Role`` cụ thể."""
+    return require_route_policy(
+        RoutePolicy(
+            access=RouteAccess.ROLES,
+            roles=roles,
+            csrf=csrf,
+            denied_detail=denied_detail,
+        )
+    )
+
+
+def _walk_dependants(root: Dependant | None) -> list[Dependant]:
+    if root is None:
+        return []
+    result: list[Dependant] = []
+    stack = [root]
+    while stack:
+        node = stack.pop()
+        result.append(node)
+        stack.extend(node.dependencies)
+    return result
+
+
+def extract_route_policy(route_context: RouteContext) -> RoutePolicy | None:
+    """Trích xuất ``RoutePolicy`` gắn trên một ``RouteContext`` từ FastAPI."""
+    found: list[RoutePolicy] = []
+    dependant = getattr(route_context, "dependant", None)
+    for node in _walk_dependants(dependant):
+        policy = getattr(node.call, ROUTE_POLICY_ATTR, None)
+        if isinstance(policy, RoutePolicy):
+            found.append(policy)
+    endpoint = route_context.endpoint
+    if endpoint is not None:
+        ep_policy = getattr(endpoint, ROUTE_POLICY_ATTR, None)
+        if isinstance(ep_policy, RoutePolicy):
+            found.append(ep_policy)
+    unique = list(dict.fromkeys(found))
+    if len(unique) > 1:
+        raise ValueError(f"Route {route_context.path} khai báo nhiều hơn một RoutePolicy.")
+    return unique[0] if unique else None
+
+
+def _dependant_calls(route_context: RouteContext) -> set[Callable[..., Any]]:
+    dependant = getattr(route_context, "dependant", None)
+    return {node.call for node in _walk_dependants(dependant) if node.call is not None}
+
+
+def audit_app_routes(app: FastAPI) -> RouteAuditReport:
+    """Quét toàn bộ ``app.routes`` và trả về báo cáo tuân thủ SEC-18 (deny-by-default)."""
+    audited: list[AuditedRoute] = []
+    violations: list[PolicyViolationItem] = []
+
+    for ctx in iter_route_contexts(app.routes):
+        path = ctx.path or ""
+        methods = frozenset(ctx.methods or ())
+        method_tuple = tuple(sorted(methods))
+
+        if not isinstance(ctx.original_route, APIRoute):
+            expected_type = ALLOWED_FRAMEWORK_ROUTES.get(path)
+            if expected_type is None or not isinstance(ctx.original_route, expected_type):
+                violations.append(
+                    PolicyViolationItem(
+                        path=path,
+                        methods=method_tuple,
+                        reason=(
+                            "Starlette Route/Mount ngoài danh sách khung cho phép "
+                            f"({type(ctx.original_route).__name__})."
+                        ),
+                    )
+                )
+            continue
+
+        try:
+            policy = extract_route_policy(ctx)
+        except ValueError as error:
+            violations.append(
+                PolicyViolationItem(path=path, methods=method_tuple, reason=str(error))
+            )
+            continue
+
+        if policy is None:
+            violations.append(
+                PolicyViolationItem(
+                    path=path,
+                    methods=method_tuple,
+                    reason="Thiếu khai báo RoutePolicy (vi phạm deny-by-default).",
+                )
+            )
+            continue
+
+        route_errors = _validate_route_policy(ctx, path, methods, policy)
+        if route_errors:
+            for reason in route_errors:
+                violations.append(
+                    PolicyViolationItem(path=path, methods=method_tuple, reason=reason)
+                )
+            continue
+
+        endpoint = ctx.endpoint
+        endpoint_name = (
+            f"{endpoint.__module__}.{endpoint.__name__}" if endpoint is not None else "<unknown>"
+        )
+        audited.append(
+            AuditedRoute(
+                path=path,
+                methods=methods,
+                endpoint_name=endpoint_name,
+                policy=policy,
+            )
+        )
+
+    return RouteAuditReport(audited=tuple(audited), violations=tuple(violations))
+
+
+def _validate_route_policy(
+    ctx: RouteContext, path: str, methods: frozenset[str], policy: RoutePolicy
+) -> list[str]:
+    errors: list[str] = []
+    calls = _dependant_calls(ctx)
+    is_mutation = bool(methods & MUTATION_METHODS)
+
+    if policy.access is RouteAccess.PUBLIC:
+        if path not in ALLOWED_PUBLIC_PATHS:
+            errors.append("Route PUBLIC không nằm trong ALLOWED_PUBLIC_PATHS.")
+        if path.startswith("/admin") and path != "/admin/login":
+            errors.append("Route /admin* (trừ /admin/login) không được phép là PUBLIC.")
+        if current_identity in calls or require_csrf in calls:
+            errors.append("Route PUBLIC không được gắn dependency phiên người dùng.")
+    else:
+        if current_identity not in calls and require_csrf not in calls:
+            errors.append(
+                "Route bảo vệ thiếu dependency xác thực phiên (current_identity/require_csrf)."
+            )
+        if policy.access is RouteAccess.AUTHENTICATED:
+            if path not in ALLOWED_AUTHENTICATED_SESSION_PATHS:
+                errors.append(
+                    "RouteAccess.AUTHENTICATED chỉ dành cho endpoint vòng đời phiên /api/v1/auth/*."
+                )
+        if is_mutation:
+            if policy.csrf is CsrfMode.NONE and not (policy.csrf_exempt_reason or "").strip():
+                errors.append(
+                    "Route mutation thiếu chính sách CSRF (csrf hoặc csrf_exempt_reason)."
+                )
+            if policy.csrf is CsrfMode.HEADER and require_csrf not in calls:
+                errors.append("Route khai báo CsrfMode.HEADER nhưng thiếu dependency require_csrf.")
+
+    if policy.bot_scope is not None:
+        if policy.bot_scope.param_location == "path" and policy.bot_scope.param_name:
+            marker = f"{{{policy.bot_scope.param_name}}}"
+            if marker not in path:
+                errors.append(f"bot_scope khai báo tham số path '{marker}' nhưng route không có.")
+
+    if policy.enforcement is EnforcementMode.SERVICE_AUDITED:
+        if path not in ALLOWED_SERVICE_AUDITED_PATHS:
+            errors.append(
+                "EnforcementMode.SERVICE_AUDITED chỉ dùng cho ALLOWED_SERVICE_AUDITED_PATHS."
+            )
+
+    return errors
+
+
+def assert_all_routes_have_policy(app: FastAPI) -> tuple[AuditedRoute, ...]:
+    """Xác nhận mọi route trong ``app.routes`` đều có chính sách hợp lệ; fail nếu vi phạm."""
+    report = audit_app_routes(app)
+    if report.violations:
+        formatted = "\n".join(f" - {item}" for item in report.violations)
+        raise RoutePolicyViolation(
+            f"Phát hiện {len(report.violations)} route vi phạm chính sách SEC-18:\n{formatted}"
+        )
+    return report.audited
+
+
+__all__ = [
+    "ALLOWED_AUTHENTICATED_SESSION_PATHS",
+    "ALLOWED_FRAMEWORK_ROUTES",
+    "ALLOWED_PUBLIC_PATHS",
+    "ALLOWED_SERVICE_AUDITED_PATHS",
+    "MUTATION_METHODS",
+    "ROUTE_POLICY_ATTR",
+    "AuditedRoute",
+    "BotScopePolicy",
+    "CsrfMode",
+    "EnforcementMode",
+    "PolicyViolationItem",
+    "RouteAccess",
+    "RouteAuditReport",
+    "RoutePolicy",
+    "RoutePolicyViolation",
+    "assert_all_routes_have_policy",
+    "audit_app_routes",
+    "authenticated_route",
+    "bot_scoped_route",
+    "extract_route_policy",
+    "owner_route",
+    "permission_route",
+    "public_route",
+    "require_route_policy",
+    "roles_route",
+]

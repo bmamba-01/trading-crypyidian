@@ -41,6 +41,7 @@ from trading_bot.adapters.database.repositories.telegram import (
 from trading_bot.adapters.database.repositories.telegram_signals import TelegramSignalRepository
 from trading_bot.adapters.telegram.topic_sender import bind_topic
 from trading_bot.application.outbox import UnitOfWork
+from trading_bot.auth.route_policy import CsrfMode, public_route
 from trading_bot.ports.telegram import TelegramMessageSender
 from trading_bot.telegram.bot_commands import (
     BotCommand,
@@ -790,7 +791,19 @@ def _status(status_code: int, status: str) -> JSONResponse:
     )
 
 
-@router.post("/webhook", include_in_schema=False)
+@router.post(
+    "/webhook",
+    include_in_schema=False,
+    dependencies=[
+        public_route(
+            reason=(
+                "Webhook Telegram Bot API; xác thực bằng header "
+                "X-Telegram-Bot-Api-Secret-Token so sánh hằng thời gian."
+            ),
+            csrf=CsrfMode.WEBHOOK_SECRET,
+        )
+    ],
+)
 async def telegram_webhook(request: Request) -> JSONResponse:
     service = cast(
         TelegramWebhookService | None, getattr(request.app.state, "telegram_webhook", None)

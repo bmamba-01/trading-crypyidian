@@ -18,6 +18,15 @@ from trading_bot.admin.bot_schemas import (
     UpdateBotDraftRequest,
 )
 from trading_bot.admin.bot_service import BotAdminError, BotConfigAdminService
+from trading_bot.auth.bot_policy import BotPermission
+from trading_bot.auth.policy import Permission
+from trading_bot.auth.route_policy import (
+    BotScopePolicy,
+    CsrfMode,
+    bot_scoped_route,
+    owner_route,
+    permission_route,
+)
 from trading_bot.auth.router import current_identity, require_csrf
 from trading_bot.auth.service import AuthIdentity
 
@@ -41,7 +50,15 @@ def raise_bot_error(error: BotAdminError) -> NoReturn:
     raise HTTPException(status_code=error.status_code, detail=detail) from error
 
 
-@router.get("")
+@router.get(
+    "",
+    dependencies=[
+        permission_route(
+            Permission.WORKSPACE_READ,
+            bot_scope=BotScopePolicy(BotPermission.READ, param_name=None, param_location="service"),
+        )
+    ],
+)
 async def list_bots(
     request: Request,
     response: Response,
@@ -55,7 +72,16 @@ async def list_bots(
         raise_bot_error(error)
 
 
-@router.post("", status_code=201)
+@router.post(
+    "",
+    status_code=201,
+    dependencies=[
+        owner_route(
+            csrf=CsrfMode.HEADER,
+            denied_detail="Chỉ owner được tạo bot và account PAPER mới.",
+        )
+    ],
+)
 async def create_bot(
     body: CreateBotRequest,
     request: Request,
@@ -78,7 +104,10 @@ async def create_bot(
     return {"bot": bot}
 
 
-@router.get("/{bot_id}")
+@router.get(
+    "/{bot_id}",
+    dependencies=[bot_scoped_route(BotPermission.READ)],
+)
 async def get_bot(
     bot_id: UUID,
     request: Request,
@@ -93,7 +122,11 @@ async def get_bot(
         raise_bot_error(error)
 
 
-@router.post("/{bot_id}/config-drafts", status_code=201)
+@router.post(
+    "/{bot_id}/config-drafts",
+    status_code=201,
+    dependencies=[bot_scoped_route(BotPermission.CONFIG_WRITE, csrf=CsrfMode.HEADER)],
+)
 async def create_bot_config_draft(
     bot_id: UUID,
     body: CreateBotDraftRequest,
@@ -117,7 +150,10 @@ async def create_bot_config_draft(
     return {"draft": draft}
 
 
-@router.put("/{bot_id}/config-drafts/{draft_id}")
+@router.put(
+    "/{bot_id}/config-drafts/{draft_id}",
+    dependencies=[bot_scoped_route(BotPermission.CONFIG_WRITE, csrf=CsrfMode.HEADER)],
+)
 async def update_bot_config_draft(
     bot_id: UUID,
     draft_id: UUID,
@@ -143,7 +179,10 @@ async def update_bot_config_draft(
     return {"draft": draft}
 
 
-@router.post("/{bot_id}/config-drafts/{draft_id}/validate")
+@router.post(
+    "/{bot_id}/config-drafts/{draft_id}/validate",
+    dependencies=[bot_scoped_route(BotPermission.CONFIG_WRITE, csrf=CsrfMode.HEADER)],
+)
 async def validate_bot_config_draft(
     bot_id: UUID,
     draft_id: UUID,
@@ -159,7 +198,10 @@ async def validate_bot_config_draft(
         raise_bot_error(error)
 
 
-@router.post("/{bot_id}/config-drafts/{draft_id}/publish")
+@router.post(
+    "/{bot_id}/config-drafts/{draft_id}/publish",
+    dependencies=[bot_scoped_route(BotPermission.CONFIG_PUBLISH, csrf=CsrfMode.HEADER)],
+)
 async def publish_bot_config_draft(
     bot_id: UUID,
     draft_id: UUID,
@@ -184,7 +226,10 @@ async def publish_bot_config_draft(
     return {"version": version}
 
 
-@router.post("/{bot_id}/config-versions/{version}/rollback")
+@router.post(
+    "/{bot_id}/config-versions/{version}/rollback",
+    dependencies=[bot_scoped_route(BotPermission.CONFIG_PUBLISH, csrf=CsrfMode.HEADER)],
+)
 async def rollback_bot_config(
     bot_id: UUID,
     version: int,

@@ -30,7 +30,7 @@ def mock_identity() -> AuthIdentity:
         workspace_id=workspace_id,
         user_id=user_id,
         membership_id=uuid4(),
-        roles=frozenset({"trader"}),
+        roles=frozenset({Role.OWNER}),
         mfa_verified_at=datetime.now(UTC),
     )
     return AuthIdentity(

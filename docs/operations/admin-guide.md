@@ -23,6 +23,8 @@
 | **Strategy Admin** | Đọc/ghi cấu hình nháp, validate/publish cấu hình bot và watchlist. | Bị từ chối khi kích hoạt `workspace kill` hoặc thao tác giao dịch khẩn cấp. |
 | **Analyst Reviewer** | Xem báo cáo, rà soát giao dịch, gắn nhãn dữ liệu, duyệt nguồn nghiên cứu và split học máy. | Bị từ chối khi `pause`/`resume` bot hoặc `workspace kill`. |
 
+> **Quy ước cho nhà phát triển (SEC-18 deny-by-default):** Mọi HTTP route mới thêm vào router hoặc `app.py` đều phải khai báo chính sách qua `src/trading_bot/auth/route_policy.py` (`permission_route`, `bot_scoped_route`, `owner_route`, `roles_route`, `authenticated_route`, hoặc `public_route` có lý do thuộc allowlist; đồng thời khai báo rõ `csrf=CsrfMode.HEADER` / `CsrfMode.FORM` cho mọi mutation). `create_app()` và kiểm thử quét `app.routes` sẽ từ chối khởi động/fail ngay nếu có route thiếu chính sách.
+
 ---
 
 ## 3. Các Màn hình Vận hành Chính

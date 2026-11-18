@@ -20,6 +20,7 @@ from trading_bot.application.learning_scoring_deployment import (
     ScorerDeploymentService,
 )
 from trading_bot.auth.policy import Permission, authorize
+from trading_bot.auth.route_policy import CsrfMode, permission_route
 from trading_bot.auth.router import current_identity, require_csrf
 from trading_bot.auth.service import AuthIdentity
 
@@ -59,7 +60,16 @@ def _no_store(error: HTTPException) -> HTTPException:
     )
 
 
-@router.get("/deployment", response_model=ScorerDeploymentResponse)
+@router.get(
+    "/deployment",
+    response_model=ScorerDeploymentResponse,
+    dependencies=[
+        permission_route(
+            Permission.LEARNING_MODEL_READ,
+            denied_detail="Không có quyền quản lý scorer deployment.",
+        )
+    ],
+)
 async def get_deployment(
     request: Request,
     response: Response,
@@ -83,7 +93,17 @@ async def get_deployment(
     return ScorerDeploymentResponse.from_snapshot(snapshot)
 
 
-@router.post("/deployment", response_model=ScorerDeploymentResponse)
+@router.post(
+    "/deployment",
+    response_model=ScorerDeploymentResponse,
+    dependencies=[
+        permission_route(
+            Permission.LEARNING_MODEL_APPROVE,
+            csrf=CsrfMode.HEADER,
+            denied_detail="Không có quyền quản lý scorer deployment.",
+        )
+    ],
+)
 async def set_deployment(
     body: ScorerDeploymentRequest,
     request: Request,

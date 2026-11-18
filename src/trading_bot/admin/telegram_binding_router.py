@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from trading_bot.application.telegram_binding import TelegramTopicSetupError
+from trading_bot.auth.route_policy import CsrfMode, owner_route
 from trading_bot.auth.router import require_csrf
 from trading_bot.auth.service import AuthIdentity
 
@@ -31,7 +32,7 @@ def _service_error(error: ValueError) -> HTTPException:
     return HTTPException(status_code=status, detail="Thao tác liên kết Telegram bị từ chối.")
 
 
-@router.post("/link")
+@router.post("/link", dependencies=[owner_route(csrf=CsrfMode.HEADER)])
 async def create_telegram_link(
     body: TelegramBindingReason,
     request: Request,
@@ -48,7 +49,7 @@ async def create_telegram_link(
     return {"url": link.url, "expires_at": link.expires_at}
 
 
-@router.post("/{membership_id}/revoke")
+@router.post("/{membership_id}/revoke", dependencies=[owner_route(csrf=CsrfMode.HEADER)])
 async def revoke_telegram_binding(
     membership_id: UUID,
     body: TelegramBindingReason,
@@ -64,7 +65,7 @@ async def revoke_telegram_binding(
     return {"revoked": revoked}
 
 
-@router.post("/{membership_id}/topics")
+@router.post("/{membership_id}/topics", dependencies=[owner_route(csrf=CsrfMode.HEADER)])
 async def create_telegram_topics(
     membership_id: UUID,
     request: Request,
@@ -82,7 +83,7 @@ async def create_telegram_topics(
     return {"topics": True}
 
 
-@router.delete("/{membership_id}/topics")
+@router.delete("/{membership_id}/topics", dependencies=[owner_route(csrf=CsrfMode.HEADER)])
 async def clear_telegram_topics(
     membership_id: UUID,
     request: Request,

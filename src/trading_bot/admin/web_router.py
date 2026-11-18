@@ -103,8 +103,19 @@ from trading_bot.application.telegram_signal_subscription import (
     TelegramSignalSubscriptionError,
 )
 from trading_bot.application.telegram_signals import TelegramSignalFilters
+from trading_bot.auth.bot_policy import BotPermission
 from trading_bot.auth.cookies import read_session_cookie, set_session_cookie
 from trading_bot.auth.policy import MfaMethod, Permission, Principal, Role, authorize
+from trading_bot.auth.route_policy import (
+    BotScopePolicy,
+    CsrfMode,
+    EnforcementMode,
+    bot_scoped_route,
+    owner_route,
+    permission_route,
+    public_route,
+    roles_route,
+)
 from trading_bot.auth.router import (
     authenticate_login,
     client_address,
@@ -254,8 +265,15 @@ class AdminHTMLRoute(APIRoute):
                 headers["Cache-Control"] = "no-store"
                 is_api = request.url.path.startswith("/admin/api/")
                 if self.response_class is JSONResponse or is_api:
+                    payload: dict[str, Any] = {
+                        "detail": messages.get(status, "Không thể xử lý yêu cầu này.")
+                    }
+                    reason_code = getattr(error, "reason_code", None)
+                    if reason_code in SAFE_ERROR_REASONS:
+                        payload["status"] = "error"
+                        payload["code"] = reason_code
                     return JSONResponse(
-                        {"detail": messages.get(status, "Không thể xử lý yêu cầu này.")},
+                        payload,
                         status_code=status,
                         headers=headers,
                     )
@@ -490,7 +508,12 @@ def _login_page(
     return page
 
 
-@router.get("/login")
+@router.get(
+    "/login",
+    dependencies=[
+        public_route(reason="Trang HTML đăng nhập Admin Web; cấp login CSRF cookie trước phiên.")
+    ],
+)
 async def login_page(request: Request) -> Response:
     """Hiển thị form đăng nhập không lưu cache và cấp token chống login-CSRF.
 
@@ -499,7 +522,18 @@ async def login_page(request: Request) -> Response:
     return _login_page(request, next_path=request.query_params.get(NEXT_PARAM))
 
 
-@router.post("/login")
+@router.post(
+    "/login",
+    dependencies=[
+        public_route(
+            reason=(
+                "Xử lý form đăng nhập Admin Web với login CSRF cookie, "
+                "mật khẩu, TOTP và rate limit."
+            ),
+            csrf=CsrfMode.LOGIN_COOKIE,
+        )
+    ],
+)
 async def submit_login(request: Request) -> Response:
     """Xử lý form HTML qua cùng service MFA/throttle với endpoint đăng nhập API."""
     try:
@@ -764,7 +798,15 @@ async def _collect_worker_readiness(request: Request | None) -> list[dict[str, A
     return reports
 
 
-@router.get("")
+@router.get(
+    "",
+    dependencies=[
+        permission_route(
+            Permission.WORKSPACE_READ,
+            bot_scope=BotScopePolicy(BotPermission.READ, param_name=None, param_location="service"),
+        )
+    ],
+)
 async def dashboard(
     request: Request,
     response: Response,
@@ -853,7 +895,15 @@ async def dashboard(
     )
 
 
-@router.get("/api/dashboard/realtime")
+@router.get(
+    "/api/dashboard/realtime",
+    dependencies=[
+        permission_route(
+            Permission.WORKSPACE_READ,
+            bot_scope=BotScopePolicy(BotPermission.READ, param_name=None, param_location="service"),
+        )
+    ],
+)
 async def dashboard_realtime(
     request: Request,
     response: Response,
@@ -996,7 +1046,11 @@ async def dashboard_realtime(
     }
 
 
-@router.get("/dashboard/bots/{bot_id}/snapshot", response_class=JSONResponse)
+@router.get(
+    "/dashboard/bots/{bot_id}/snapshot",
+    response_class=JSONResponse,
+    dependencies=[bot_scoped_route(BotPermission.REPORT_READ)],
+)
 async def dashboard_bot_snapshot(
     bot_id: UUID,
     request: Request,
@@ -1312,7 +1366,15 @@ def _exit_reason_label_vi(reason: object) -> str:
     return labels.get(reason, reason)
 
 
-@router.get("/bots")
+@router.get(
+    "/bots",
+    dependencies=[
+        permission_route(
+            Permission.WORKSPACE_READ,
+            bot_scope=BotScopePolicy(BotPermission.READ, param_name=None, param_location="service"),
+        )
+    ],
+)
 async def bot_list(
     request: Request,
     response: Response,
@@ -1338,14 +1400,15 @@ async def bot_list(
     )
 
 
-@router.get("/bots/new")
+@router.get(
+    "/bots/new",
+    dependencies=[owner_route(denied_detail="Chỉ owner được tạo bot.")],
+)
 async def create_bot_page(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(current_identity)],
 ) -> Response:
     """Form tạo account PAPER; quyền owner/MFA vẫn được kiểm lại bởi application service."""
-    if Role.OWNER not in identity.principal.roles:
-        raise HTTPException(status_code=403, detail="Chỉ owner được tạo bot.")
     try:
         csrf_token = await _auth_service(request).issue_csrf_token(read_session_cookie(request))
     except AuthenticationFailure as error:
@@ -1368,7 +1431,10 @@ def _max_notional_choices(selected: str) -> object:
     return preset_choices(BOT_MAX_NOTIONAL_PRESETS, selected, formatter="number")
 
 
-@router.post("/bots/new")
+@router.post(
+    "/bots/new",
+    dependencies=[owner_route(csrf=CsrfMode.FORM, denied_detail="Chỉ owner được tạo bot.")],
+)
 async def create_bot_form(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(current_identity)],
@@ -1633,7 +1699,10 @@ async def _get_bot_trading_data(
     }
 
 
-@router.get("/api/bots/{bot_id}/realtime")
+@router.get(
+    "/api/bots/{bot_id}/realtime",
+    dependencies=[bot_scoped_route(BotPermission.READ)],
+)
 async def bot_detail_realtime(
     bot_id: UUID,
     request: Request,
@@ -1885,7 +1954,10 @@ def _exit_form(overlay: dict[str, Any], default_release: str) -> dict[str, Any]:
     }
 
 
-@router.get("/bots/{bot_id}")
+@router.get(
+    "/bots/{bot_id}",
+    dependencies=[bot_scoped_route(BotPermission.READ)],
+)
 async def bot_detail(
     bot_id: UUID,
     request: Request,
@@ -2010,7 +2082,10 @@ async def bot_detail(
     )
 
 
-@router.post("/bots/{bot_id}/telegram-signals")
+@router.post(
+    "/bots/{bot_id}/telegram-signals",
+    dependencies=[bot_scoped_route(BotPermission.READ, csrf=CsrfMode.FORM)],
+)
 async def set_bot_telegram_signals_form(
     bot_id: UUID,
     request: Request,
@@ -2039,7 +2114,10 @@ async def set_bot_telegram_signals_form(
     )
 
 
-@router.post("/bots/{bot_id}/telegram-signal-filters")
+@router.post(
+    "/bots/{bot_id}/telegram-signal-filters",
+    dependencies=[bot_scoped_route(BotPermission.READ, csrf=CsrfMode.FORM)],
+)
 async def set_bot_telegram_signal_filters_form(
     bot_id: UUID,
     request: Request,
@@ -2094,7 +2172,10 @@ def _parse_filter_values(raw: str) -> tuple[str, ...]:
     return values
 
 
-@router.post("/bots/{bot_id}/config-drafts")
+@router.post(
+    "/bots/{bot_id}/config-drafts",
+    dependencies=[bot_scoped_route(BotPermission.CONFIG_WRITE, csrf=CsrfMode.FORM)],
+)
 async def create_config_draft_form(
     bot_id: UUID,
     request: Request,
@@ -2230,7 +2311,10 @@ def _ai_proposal_error_code(error: BotAdminError) -> str:
     return "conflict"
 
 
-@router.post("/bots/{bot_id}/ai-proposals/{backtest_id}/draft")
+@router.post(
+    "/bots/{bot_id}/ai-proposals/{backtest_id}/draft",
+    dependencies=[bot_scoped_route(BotPermission.CONFIG_WRITE, csrf=CsrfMode.FORM)],
+)
 async def create_draft_from_ai_proposal_form(
     bot_id: UUID,
     backtest_id: UUID,
@@ -2256,7 +2340,10 @@ async def create_draft_from_ai_proposal_form(
     )
 
 
-@router.post("/bots/{bot_id}/config-drafts/{draft_id}/validate")
+@router.post(
+    "/bots/{bot_id}/config-drafts/{draft_id}/validate",
+    dependencies=[bot_scoped_route(BotPermission.CONFIG_WRITE, csrf=CsrfMode.FORM)],
+)
 async def validate_config_draft_form(
     bot_id: UUID,
     draft_id: UUID,
@@ -2278,7 +2365,10 @@ async def validate_config_draft_form(
     )
 
 
-@router.post("/bots/{bot_id}/config-drafts/{draft_id}/publish")
+@router.post(
+    "/bots/{bot_id}/config-drafts/{draft_id}/publish",
+    dependencies=[bot_scoped_route(BotPermission.CONFIG_PUBLISH, csrf=CsrfMode.FORM)],
+)
 async def publish_config_draft_form(
     bot_id: UUID,
     draft_id: UUID,
@@ -2313,7 +2403,16 @@ async def publish_config_draft_form(
     return Response(status_code=303, headers={"Location": f"/admin/bots/{bot_id}"})
 
 
-@router.post("/bots/{bot_id}/pause")
+@router.post(
+    "/bots/{bot_id}/pause",
+    dependencies=[
+        bot_scoped_route(
+            BotPermission.RUNTIME_PAUSE,
+            csrf=CsrfMode.FORM,
+            enforcement=EnforcementMode.SERVICE_AUDITED,
+        )
+    ],
+)
 async def pause_bot_form(
     bot_id: UUID,
     request: Request,
@@ -2331,7 +2430,16 @@ async def pause_bot_form(
     return Response(status_code=303, headers={"Location": f"/admin/bots/{bot_id}"})
 
 
-@router.post("/bots/{bot_id}/resume")
+@router.post(
+    "/bots/{bot_id}/resume",
+    dependencies=[
+        bot_scoped_route(
+            BotPermission.RUNTIME_RESUME,
+            csrf=CsrfMode.FORM,
+            enforcement=EnforcementMode.SERVICE_AUDITED,
+        )
+    ],
+)
 async def resume_bot_form(
     bot_id: UUID,
     request: Request,
@@ -2353,7 +2461,7 @@ async def resume_bot_form(
     return Response(status_code=303, headers={"Location": f"/admin/bots/{bot_id}"})
 
 
-@router.post("/bots/{bot_id}/disable")
+@router.post("/bots/{bot_id}/disable", dependencies=[owner_route(csrf=CsrfMode.FORM)])
 async def disable_bot_form(
     bot_id: UUID,
     request: Request,
@@ -2373,7 +2481,7 @@ async def disable_bot_form(
     return Response(status_code=303, headers={"Location": f"/admin/bots/{bot_id}"})
 
 
-@router.post("/bots/{bot_id}/enable")
+@router.post("/bots/{bot_id}/enable", dependencies=[owner_route(csrf=CsrfMode.FORM)])
 async def enable_bot_form(
     bot_id: UUID,
     request: Request,
@@ -2391,7 +2499,10 @@ async def enable_bot_form(
     return Response(status_code=303, headers={"Location": f"/admin/bots/{bot_id}"})
 
 
-@router.post("/workspace/kill")
+@router.post(
+    "/workspace/kill",
+    dependencies=[permission_route(Permission.WORKSPACE_KILL, csrf=CsrfMode.FORM)],
+)
 async def kill_workspace_form(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(current_identity)],
@@ -2408,7 +2519,10 @@ async def kill_workspace_form(
     return Response(status_code=303, headers={"Location": "/admin"})
 
 
-@router.post("/workspace/release")
+@router.post(
+    "/workspace/release",
+    dependencies=[permission_route(Permission.WORKSPACE_KILL, csrf=CsrfMode.FORM)],
+)
 async def release_workspace_form(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(current_identity)],
@@ -2429,14 +2543,15 @@ async def release_workspace_form(
     return Response(status_code=303, headers={"Location": "/admin"})
 
 
-@router.get("/flatten")
+@router.get(
+    "/flatten",
+    dependencies=[owner_route(denied_detail="Chỉ owner được flatten workspace.")],
+)
 async def flatten_page(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(current_identity)],
 ) -> Response:
     """Hiển thị form preview PAPER; service sẽ xác minh owner và MFA gần đây."""
-    if Role.OWNER not in identity.principal.roles:
-        raise HTTPException(status_code=403, detail="Chỉ owner được flatten workspace.")
     try:
         csrf_token = await _auth_service(request).issue_csrf_token(read_session_cookie(request))
     except AuthenticationFailure as error:
@@ -2450,7 +2565,12 @@ async def flatten_page(
     )
 
 
-@router.post("/flatten/preview")
+@router.post(
+    "/flatten/preview",
+    dependencies=[
+        owner_route(csrf=CsrfMode.FORM, denied_detail="Chỉ owner được flatten workspace.")
+    ],
+)
 async def flatten_preview_form(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(current_identity)],
@@ -2489,7 +2609,12 @@ async def flatten_preview_form(
     )
 
 
-@router.post("/flatten/confirm")
+@router.post(
+    "/flatten/confirm",
+    dependencies=[
+        owner_route(csrf=CsrfMode.FORM, denied_detail="Chỉ owner được flatten workspace.")
+    ],
+)
 async def flatten_confirm_form(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(current_identity)],
@@ -2527,15 +2652,16 @@ async def flatten_confirm_form(
     return Response(status_code=303, headers={"Location": location})
 
 
-@router.get("/flatten/operations/{operation_id}")
+@router.get(
+    "/flatten/operations/{operation_id}",
+    dependencies=[owner_route(denied_detail="Chỉ owner được xem operation flatten.")],
+)
 async def flatten_operation_page(
     operation_id: UUID,
     request: Request,
     identity: Annotated[AuthIdentity, Depends(current_identity)],
     pause_failed: Annotated[int, Query(ge=0, le=1000)] = 0,
 ) -> Response:
-    if Role.OWNER not in identity.principal.roles:
-        raise HTTPException(status_code=403, detail="Chỉ owner được xem operation flatten.")
     try:
         operation = (
             await _flatten_service(request)
@@ -2556,7 +2682,10 @@ async def flatten_operation_page(
     )
 
 
-@router.get("/telegram")
+@router.get(
+    "/telegram",
+    dependencies=[owner_route(denied_detail="Không đủ quyền quản lý Telegram.")],
+)
 async def telegram_bindings_page(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(current_identity)],
@@ -2578,7 +2707,12 @@ async def telegram_bindings_page(
     )
 
 
-@router.post("/telegram/link")
+@router.post(
+    "/telegram/link",
+    dependencies=[
+        owner_route(csrf=CsrfMode.FORM, denied_detail="Không đủ quyền quản lý Telegram.")
+    ],
+)
 async def telegram_link_form(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(current_identity)],
@@ -2611,7 +2745,12 @@ async def telegram_link_form(
     )
 
 
-@router.post("/telegram/revoke/{membership_id}")
+@router.post(
+    "/telegram/revoke/{membership_id}",
+    dependencies=[
+        owner_route(csrf=CsrfMode.FORM, denied_detail="Không đủ quyền quản lý Telegram.")
+    ],
+)
 async def telegram_revoke_form(
     membership_id: UUID,
     request: Request,
@@ -2637,7 +2776,12 @@ _TOPIC_SETUP_FAILED = (
 )
 
 
-@router.post("/telegram/topics/{membership_id}")
+@router.post(
+    "/telegram/topics/{membership_id}",
+    dependencies=[
+        owner_route(csrf=CsrfMode.FORM, denied_detail="Không đủ quyền quản lý Telegram.")
+    ],
+)
 async def telegram_topics_form(
     membership_id: UUID,
     request: Request,
@@ -2662,7 +2806,17 @@ async def telegram_topics_form(
     return Response(status_code=303, headers={"Location": "/admin/telegram"})
 
 
-@router.get("/reports")
+@router.get(
+    "/reports",
+    dependencies=[
+        permission_route(
+            Permission.WORKSPACE_READ,
+            bot_scope=BotScopePolicy(
+                BotPermission.REPORT_READ, param_name="bot_id", param_location="query"
+            ),
+        )
+    ],
+)
 async def reports(
     request: Request,
     response: Response,
@@ -2851,7 +3005,16 @@ def _holding_duration_seconds(trade: dict[str, Any]) -> int | None:
     return max(0, int((closed - opened).total_seconds()))
 
 
-@router.post("/api/trades/{trade_id}/ingest-negative-sample")
+@router.post(
+    "/api/trades/{trade_id}/ingest-negative-sample",
+    dependencies=[
+        roles_route(
+            *RETRAINING_LABEL_ROLES,
+            csrf=CsrfMode.HEADER,
+            denied_detail="Vai trò hiện tại không được gắn nhãn ca.",
+        )
+    ],
+)
 async def ingest_trade_negative_sample(
     request: Request,
     response: Response,
@@ -2913,7 +3076,16 @@ async def ingest_trade_negative_sample(
     }
 
 
-@router.post("/api/trades/{trade_id}/queue-ai-retraining")
+@router.post(
+    "/api/trades/{trade_id}/queue-ai-retraining",
+    dependencies=[
+        roles_route(
+            *RETRAINING_LABEL_ROLES,
+            csrf=CsrfMode.HEADER,
+            denied_detail="Vai trò hiện tại không được gắn nhãn ca.",
+        )
+    ],
+)
 async def queue_trade_ai_retraining(
     request: Request,
     response: Response,
@@ -2990,7 +3162,7 @@ async def _render_strategy_cards_page(
     )
 
 
-@router.get("/strategy-cards")
+@router.get("/strategy-cards", dependencies=[permission_route(Permission.WORKSPACE_READ)])
 async def strategy_cards_page(
     request: Request,
     response: Response,
@@ -3015,7 +3187,10 @@ async def strategy_cards_page(
     )
 
 
-@router.post("/strategy-releases/publish")
+@router.post(
+    "/strategy-releases/publish",
+    dependencies=[owner_route(csrf=CsrfMode.FORM)],
+)
 async def publish_strategy_release_form(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(current_identity)],
@@ -3051,7 +3226,10 @@ async def publish_strategy_release_form(
     )
 
 
-@router.post("/strategy-releases/retire")
+@router.post(
+    "/strategy-releases/retire",
+    dependencies=[owner_route(csrf=CsrfMode.FORM)],
+)
 async def retire_strategy_release_form(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(current_identity)],
@@ -3108,7 +3286,17 @@ def _report_http_error(error: BotReportError) -> HTTPException:
     )
 
 
-@router.get("/chart")
+@router.get(
+    "/chart",
+    dependencies=[
+        permission_route(
+            Permission.WORKSPACE_READ,
+            bot_scope=BotScopePolicy(
+                BotPermission.REPORT_READ, param_name="bot_id", param_location="query"
+            ),
+        )
+    ],
+)
 async def market_chart_page(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(current_identity)],
@@ -3303,7 +3491,10 @@ def _card_for_symbol(
     return card
 
 
-@router.get("/api/chart")
+_CHART_API_POLICY = bot_scoped_route(BotPermission.REPORT_READ, param_location="query")
+
+
+@router.get("/api/chart", dependencies=[_CHART_API_POLICY])
 async def market_chart_api(
     request: Request,
     response: Response,
@@ -3345,7 +3536,7 @@ async def market_chart_api(
     return {"status": "ok"} | payload
 
 
-@router.get("/api/chart/overview")
+@router.get("/api/chart/overview", dependencies=[_CHART_API_POLICY])
 async def market_overview_api(
     request: Request,
     response: Response,
@@ -3370,7 +3561,7 @@ async def market_overview_api(
     return {"status": "ok"} | overview
 
 
-@router.get("/api/chart/decision")
+@router.get("/api/chart/decision", dependencies=[_CHART_API_POLICY])
 async def market_bar_decision_api(
     request: Request,
     response: Response,
@@ -3404,7 +3595,7 @@ async def market_bar_decision_api(
     }
 
 
-@router.get("/api/chart/validate")
+@router.get("/api/chart/validate", dependencies=[_CHART_API_POLICY])
 async def market_chart_validate_api(
     request: Request,
     response: Response,
@@ -3429,7 +3620,7 @@ async def market_chart_validate_api(
     return {"status": "ok"} | report
 
 
-@router.get("/api/chart/decisions")
+@router.get("/api/chart/decisions", dependencies=[_CHART_API_POLICY])
 async def market_chart_decisions_api(
     request: Request,
     response: Response,
@@ -3448,7 +3639,7 @@ async def market_chart_decisions_api(
 _HISTORY_PERIODS = {"today": None, "7d": timedelta(days=7), "30d": timedelta(days=30)}
 
 
-@router.get("/api/chart/history")
+@router.get("/api/chart/history", dependencies=[_CHART_API_POLICY])
 async def market_chart_history_api(
     request: Request,
     response: Response,
@@ -3497,7 +3688,7 @@ def _analyst_review(request: Request) -> AnalystReviewService:
     return service
 
 
-@router.get("/ai-analyses")
+@router.get("/ai-analyses", dependencies=[permission_route(Permission.WORKSPACE_READ)])
 async def ai_analyses_page(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(current_identity)],
@@ -3536,7 +3727,7 @@ def _signal_outcome_review(request: Request) -> SignalOutcomeReviewService:
     return service
 
 
-@router.get("/signal-outcomes")
+@router.get("/signal-outcomes", dependencies=[permission_route(Permission.WORKSPACE_READ)])
 async def signal_outcomes_page(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(current_identity)],
@@ -3575,7 +3766,9 @@ async def signal_outcomes_page(
 _REPORT_HASH = re.compile(r"^[0-9a-f]{64}$")
 
 
-@router.get("/run-reports/{report_hash}")
+@router.get(
+    "/run-reports/{report_hash}", dependencies=[permission_route(Permission.WORKSPACE_READ)]
+)
 async def run_report_page(
     request: Request,
     report_hash: str,
@@ -3596,7 +3789,10 @@ async def run_report_page(
     )
 
 
-@router.get("/run-reports/{report_hash}/report.json")
+@router.get(
+    "/run-reports/{report_hash}/report.json",
+    dependencies=[permission_route(Permission.WORKSPACE_READ)],
+)
 async def run_report_json(
     request: Request,
     report_hash: str,
@@ -3620,7 +3816,7 @@ async def run_report_json(
     )
 
 
-@router.get("/ai-analyses/{run_id}")
+@router.get("/ai-analyses/{run_id}", dependencies=[permission_route(Permission.WORKSPACE_READ)])
 async def ai_analysis_detail(
     request: Request,
     run_id: UUID,
@@ -3653,7 +3849,7 @@ def _calendar_http_error(error: EconomicCalendarError) -> HTTPException:
     return HTTPException(status_code=error.status_code, detail=error.message)
 
 
-@router.get("/calendar")
+@router.get("/calendar", dependencies=[permission_route(Permission.WORKSPACE_READ)])
 async def economic_calendar_page(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(current_identity)],
@@ -3734,7 +3930,16 @@ def _calendar_reason(values: dict[str, str]) -> str:
     return reason
 
 
-@router.post("/calendar")
+@router.post(
+    "/calendar",
+    dependencies=[
+        permission_route(
+            Permission.SETTINGS_WRITE,
+            csrf=CsrfMode.FORM,
+            denied_detail="Không đủ quyền chỉnh sửa lịch sự kiện kinh tế.",
+        )
+    ],
+)
 async def economic_calendar_create(
     request: Request, identity: Annotated[AuthIdentity, Depends(current_identity)]
 ) -> Response:
@@ -3750,7 +3955,16 @@ async def economic_calendar_create(
     return _calendar_redirect()
 
 
-@router.post("/calendar/{event_id}")
+@router.post(
+    "/calendar/{event_id}",
+    dependencies=[
+        permission_route(
+            Permission.SETTINGS_WRITE,
+            csrf=CsrfMode.FORM,
+            denied_detail="Không đủ quyền chỉnh sửa lịch sự kiện kinh tế.",
+        )
+    ],
+)
 async def economic_calendar_update(
     event_id: UUID, request: Request, identity: Annotated[AuthIdentity, Depends(current_identity)]
 ) -> Response:
@@ -3766,7 +3980,16 @@ async def economic_calendar_update(
     return _calendar_redirect()
 
 
-@router.post("/calendar/{event_id}/delete")
+@router.post(
+    "/calendar/{event_id}/delete",
+    dependencies=[
+        permission_route(
+            Permission.SETTINGS_WRITE,
+            csrf=CsrfMode.FORM,
+            denied_detail="Không đủ quyền chỉnh sửa lịch sự kiện kinh tế.",
+        )
+    ],
+)
 async def economic_calendar_delete(
     event_id: UUID, request: Request, identity: Annotated[AuthIdentity, Depends(current_identity)]
 ) -> Response:
@@ -3819,7 +4042,7 @@ def _scanner_params(values: Mapping[str, str]) -> tuple[str, ScanCriteria]:
     )
 
 
-@router.get("/scanner")
+@router.get("/scanner", dependencies=[permission_route(Permission.WORKSPACE_READ)])
 async def market_scanner_page(
     request: Request, identity: Annotated[AuthIdentity, Depends(current_identity)]
 ) -> Response:
@@ -3855,7 +4078,10 @@ async def market_scanner_page(
     )
 
 
-@router.post("/scanner")
+@router.post(
+    "/scanner",
+    dependencies=[permission_route(Permission.WORKSPACE_READ, csrf=CsrfMode.FORM)],
+)
 async def market_scanner_run(
     request: Request, identity: Annotated[AuthIdentity, Depends(current_identity)]
 ) -> Response:
@@ -3884,7 +4110,7 @@ async def market_scanner_run(
     )
 
 
-@router.get("/api/strategy-cards")
+@router.get("/api/strategy-cards", dependencies=[permission_route(Permission.WORKSPACE_READ)])
 async def strategy_cards_api(
     request: Request,
     response: Response,
@@ -3901,7 +4127,7 @@ async def strategy_cards_api(
     }
 
 
-@router.get("/api/strategy-releases")
+@router.get("/api/strategy-releases", dependencies=[permission_route(Permission.WORKSPACE_READ)])
 async def strategy_releases_api(
     request: Request,
     response: Response,
@@ -3927,7 +4153,10 @@ async def strategy_releases_api(
     )
 
 
-@router.post("/api/strategy-releases/publish")
+@router.post(
+    "/api/strategy-releases/publish",
+    dependencies=[owner_route(csrf=CsrfMode.HEADER, denied_code="CONTROL_PERMISSION_DENIED")],
+)
 async def publish_strategy_release_api(
     payload: StrategyReleaseActionRequest,
     request: Request,
@@ -3953,7 +4182,10 @@ async def publish_strategy_release_api(
     )
 
 
-@router.post("/api/strategy-releases/retire")
+@router.post(
+    "/api/strategy-releases/retire",
+    dependencies=[owner_route(csrf=CsrfMode.HEADER, denied_code="CONTROL_PERMISSION_DENIED")],
+)
 async def retire_strategy_release_api(
     payload: StrategyReleaseActionRequest,
     request: Request,
@@ -3979,7 +4211,10 @@ async def retire_strategy_release_api(
     )
 
 
-@router.get("/strategy-cards/{card_id}/microscope")
+@router.get(
+    "/strategy-cards/{card_id}/microscope",
+    dependencies=[permission_route(Permission.WORKSPACE_READ)],
+)
 async def strategy_card_microscope_page(
     card_id: str,
     request: Request,
@@ -4025,7 +4260,16 @@ async def strategy_card_microscope_page(
     )
 
 
-@router.post("/api/strategy-cards/{card_id}/inspect-bar")
+@router.post(
+    "/api/strategy-cards/{card_id}/inspect-bar",
+    dependencies=[
+        permission_route(
+            Permission.WORKSPACE_READ,
+            csrf=CsrfMode.NONE,
+            csrf_exempt_reason="Mô phỏng chỉ đọc một nến không thay đổi trạng thái hệ thống.",
+        )
+    ],
+)
 async def inspect_bar_api(
     card_id: str,
     payload: InspectBarRequest,
@@ -4072,7 +4316,10 @@ def _sanitize_csv_cell(value: Any) -> str:
     return text
 
 
-@router.get("/api/workers/readiness")
+@router.get(
+    "/api/workers/readiness",
+    dependencies=[permission_route(Permission.WORKSPACE_READ)],
+)
 async def workers_readiness(
     request: Request,
     response: Response,
@@ -4085,7 +4332,15 @@ async def workers_readiness(
     return {"workers": workers}
 
 
-@router.get("/api/operations/health")
+@router.get(
+    "/api/operations/health",
+    dependencies=[
+        permission_route(
+            Permission.WORKSPACE_READ,
+            bot_scope=BotScopePolicy(BotPermission.READ, param_name=None, param_location="service"),
+        )
+    ],
+)
 async def operations_health(
     request: Request,
     response: Response,
@@ -4120,7 +4375,16 @@ async def operations_health(
     )
 
 
-@router.post("/api/operations/breaker/resume")
+@router.post(
+    "/api/operations/breaker/resume",
+    dependencies=[
+        permission_route(
+            Permission.RUNTIME_RESUME,
+            csrf=CsrfMode.FORM,
+            denied_detail="Không đủ quyền mở lại cầu dao vận hành.",
+        )
+    ],
+)
 async def operations_breaker_resume(
     request: Request,
     response: Response,
@@ -4214,7 +4478,17 @@ def _report_csv_row(trade: dict[str, Any]) -> dict[str, Any]:
     return {key: "" if value is None else value for key, value in row.items()}
 
 
-@router.get("/reports/export.csv")
+@router.get(
+    "/reports/export.csv",
+    dependencies=[
+        permission_route(
+            Permission.WORKSPACE_READ,
+            bot_scope=BotScopePolicy(
+                BotPermission.REPORT_READ, param_name="bot_id", param_location="query"
+            ),
+        )
+    ],
+)
 async def export_reports_csv(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(current_identity)],

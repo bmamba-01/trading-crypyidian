@@ -24,6 +24,7 @@ from trading_bot.application.learning_model_registry import (
     PrincipalLearningModelRegistryService,
 )
 from trading_bot.auth.policy import Permission, authorize
+from trading_bot.auth.route_policy import CsrfMode, permission_route
 from trading_bot.auth.router import current_identity, require_csrf
 from trading_bot.auth.service import AuthIdentity
 
@@ -60,7 +61,23 @@ def _raise_no_store(error: HTTPException) -> HTTPException:
     )
 
 
-@router.get("", response_model=list[RegistryEntryResponse])
+_MODEL_READ_POLICY = permission_route(
+    Permission.LEARNING_MODEL_READ,
+    denied_detail="Không có quyền quản lý registry mô hình.",
+)
+_MODEL_WRITE_POLICY = permission_route(
+    Permission.LEARNING_MODEL_WRITE,
+    csrf=CsrfMode.HEADER,
+    denied_detail="Không có quyền quản lý registry mô hình.",
+)
+_MODEL_APPROVE_POLICY = permission_route(
+    Permission.LEARNING_MODEL_APPROVE,
+    csrf=CsrfMode.HEADER,
+    denied_detail="Không có quyền quản lý registry mô hình.",
+)
+
+
+@router.get("", response_model=list[RegistryEntryResponse], dependencies=[_MODEL_READ_POLICY])
 async def list_entries(
     request: Request,
     response: Response,
@@ -76,7 +93,11 @@ async def list_entries(
     return [RegistryEntryResponse.from_domain(entry) for entry in entries]
 
 
-@router.get("/active-pointer", response_model=ActivePointerResponse)
+@router.get(
+    "/active-pointer",
+    response_model=ActivePointerResponse,
+    dependencies=[_MODEL_READ_POLICY],
+)
 async def get_active_pointer(
     request: Request,
     response: Response,
@@ -94,7 +115,11 @@ async def get_active_pointer(
     return ActivePointerResponse.from_domain(pointer)
 
 
-@router.get("/{registry_id}", response_model=RegistryEntryResponse)
+@router.get(
+    "/{registry_id}",
+    response_model=RegistryEntryResponse,
+    dependencies=[_MODEL_READ_POLICY],
+)
 async def get_entry(
     registry_id: UUID,
     request: Request,
@@ -113,7 +138,11 @@ async def get_entry(
     return RegistryEntryResponse.from_domain(entry)
 
 
-@router.get("/{registry_id}/events", response_model=list[RegistryEventResponse])
+@router.get(
+    "/{registry_id}/events",
+    response_model=list[RegistryEventResponse],
+    dependencies=[_MODEL_READ_POLICY],
+)
 async def list_events(
     registry_id: UUID,
     request: Request,
@@ -132,7 +161,12 @@ async def list_events(
     return [RegistryEventResponse.from_domain(event) for event in events]
 
 
-@router.post("", status_code=201, response_model=RegistryEntryResponse)
+@router.post(
+    "",
+    status_code=201,
+    response_model=RegistryEntryResponse,
+    dependencies=[_MODEL_WRITE_POLICY],
+)
 async def register_artifact(
     body: RegisterArtifactRequest,
     request: Request,
@@ -154,7 +188,11 @@ async def register_artifact(
     return RegistryEntryResponse.from_domain(entry)
 
 
-@router.post("/{registry_id}/evaluation", response_model=RegistryEntryResponse)
+@router.post(
+    "/{registry_id}/evaluation",
+    response_model=RegistryEntryResponse,
+    dependencies=[_MODEL_WRITE_POLICY],
+)
 async def attach_evaluation(
     registry_id: UUID,
     body: AttachEvaluationRequest,
@@ -180,7 +218,11 @@ async def attach_evaluation(
     return RegistryEntryResponse.from_domain(entry)
 
 
-@router.post("/{registry_id}/approve", response_model=RegistryEntryResponse)
+@router.post(
+    "/{registry_id}/approve",
+    response_model=RegistryEntryResponse,
+    dependencies=[_MODEL_APPROVE_POLICY],
+)
 async def approve_entry(
     registry_id: UUID,
     body: RegistryDecisionRequest,
@@ -204,7 +246,11 @@ async def approve_entry(
     return RegistryEntryResponse.from_domain(entry)
 
 
-@router.post("/{registry_id}/reject", response_model=RegistryEntryResponse)
+@router.post(
+    "/{registry_id}/reject",
+    response_model=RegistryEntryResponse,
+    dependencies=[_MODEL_APPROVE_POLICY],
+)
 async def reject_entry(
     registry_id: UUID,
     body: RejectModelRequest,
@@ -229,7 +275,11 @@ async def reject_entry(
     return RegistryEntryResponse.from_domain(entry)
 
 
-@router.post("/{registry_id}/activate", response_model=RegistryEntryResponse)
+@router.post(
+    "/{registry_id}/activate",
+    response_model=RegistryEntryResponse,
+    dependencies=[_MODEL_APPROVE_POLICY],
+)
 async def activate_entry(
     registry_id: UUID,
     body: PointerChangeRequest,
@@ -257,7 +307,11 @@ async def activate_entry(
     return RegistryEntryResponse.from_domain(entry)
 
 
-@router.post("/{registry_id}/rollback", response_model=RegistryEntryResponse)
+@router.post(
+    "/{registry_id}/rollback",
+    response_model=RegistryEntryResponse,
+    dependencies=[_MODEL_APPROVE_POLICY],
+)
 async def rollback_entry(
     registry_id: UUID,
     body: PointerChangeRequest,
@@ -285,7 +339,11 @@ async def rollback_entry(
     return RegistryEntryResponse.from_domain(entry)
 
 
-@router.post("/{registry_id}/retire", response_model=RegistryEntryResponse)
+@router.post(
+    "/{registry_id}/retire",
+    response_model=RegistryEntryResponse,
+    dependencies=[_MODEL_APPROVE_POLICY],
+)
 async def retire_entry(
     registry_id: UUID,
     body: RegistryDecisionRequest,

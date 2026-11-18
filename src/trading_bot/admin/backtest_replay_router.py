@@ -29,7 +29,7 @@ from trading_bot.admin.web_router import (
 from trading_bot.application.backtest_replay_jobs import BacktestReplayJobSubmission
 from trading_bot.application.strategy_catalog import strategy_registry
 from trading_bot.auth.cookies import read_session_cookie
-from trading_bot.auth.policy import Role
+from trading_bot.auth.route_policy import CsrfMode, owner_route
 from trading_bot.auth.router import current_identity
 from trading_bot.auth.service import AuthIdentity
 
@@ -75,16 +75,14 @@ class BacktestJobView:
     can_cancel: bool
 
 
+_BACKTEST_OWNER_DETAIL = "Chỉ owner được quản lý lượt kiểm thử."
+
+
 def _service(request: Request) -> Any:
     service = getattr(request.app.state, "backtest_replay_job_service", None)
     if service is None:
         raise HTTPException(status_code=503, detail="Dịch vụ kiểm thử chưa sẵn sàng.")
     return service
-
-
-def _require_owner(identity: AuthIdentity) -> None:
-    if Role.OWNER not in identity.principal.roles:
-        raise HTTPException(status_code=403, detail="Chỉ owner được quản lý lượt kiểm thử.")
 
 
 def _decimal(values: dict[str, str], key: str, *, positive: bool = False) -> Decimal:
@@ -209,7 +207,7 @@ def _compact_local_time(value: object) -> str:
     return value.astimezone(ZoneInfo("Asia/Ho_Chi_Minh")).strftime("%d/%m/%Y %H:%M")
 
 
-@router.get("")
+@router.get("", dependencies=[owner_route(denied_detail=_BACKTEST_OWNER_DETAIL)])
 async def backtest_replay_page(
     request: Request,
     response: Response,
@@ -220,7 +218,6 @@ async def backtest_replay_page(
 ) -> Response:
     """Hiển thị form tạo lượt chạy và trạng thái các lượt trong workspace."""
     response.headers["Cache-Control"] = "no-store"
-    _require_owner(identity)
     service = _service(request)
     try:
         jobs = tuple(_job_view(item) for item in await service.list(identity.principal))
@@ -288,13 +285,15 @@ async def backtest_replay_page(
     )
 
 
-@router.post("/submit")
+@router.post(
+    "/submit",
+    dependencies=[owner_route(csrf=CsrfMode.FORM, denied_detail=_BACKTEST_OWNER_DETAIL)],
+)
 async def submit_backtest_replay(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(current_identity)],
 ) -> Response:
     """Kiểm CSRF và owner trước khi đưa yêu cầu hợp lệ vào hàng đợi."""
-    _require_owner(identity)
     values = await _parse_form(request, max_bytes=_MAX_FORM_BYTES)
     await _verify_form_csrf(request, values)
     try:
@@ -321,14 +320,16 @@ async def submit_backtest_replay(
     )
 
 
-@router.post("/{job_id}/cancel")
+@router.post(
+    "/{job_id}/cancel",
+    dependencies=[owner_route(csrf=CsrfMode.FORM, denied_detail=_BACKTEST_OWNER_DETAIL)],
+)
 async def cancel_backtest_replay(
     job_id: UUID,
     request: Request,
     identity: Annotated[AuthIdentity, Depends(current_identity)],
 ) -> Response:
     """Yêu cầu tiến trình nền dừng lượt đang chạy; thao tác hủy không xóa bằng chứng."""
-    _require_owner(identity)
     values = await _parse_form(request, max_bytes=4096)
     await _verify_form_csrf(request, values)
     try:

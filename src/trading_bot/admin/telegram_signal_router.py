@@ -8,6 +8,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from trading_bot.application.telegram_signal_subscription import TelegramSignalSubscriptionError
 from trading_bot.application.telegram_signals import TelegramSignalFilters
+from trading_bot.auth.bot_policy import BotPermission
+from trading_bot.auth.route_policy import CsrfMode, bot_scoped_route
 from trading_bot.auth.router import current_identity, require_csrf
 from trading_bot.auth.service import AuthIdentity
 
@@ -46,7 +48,10 @@ def _service(request: Request) -> Any:
     return service
 
 
-@router.put("/{bot_id}/subscription")
+@router.put(
+    "/{bot_id}/subscription",
+    dependencies=[bot_scoped_route(BotPermission.READ, csrf=CsrfMode.HEADER)],
+)
 async def set_telegram_signal_subscription(
     bot_id: UUID,
     body: TelegramSignalPreference,
@@ -91,7 +96,10 @@ async def set_telegram_signal_subscription(
     return _state_payload(state)
 
 
-@router.get("/{bot_id}/subscription")
+@router.get(
+    "/{bot_id}/subscription",
+    dependencies=[bot_scoped_route(BotPermission.READ)],
+)
 async def get_telegram_signal_subscription(
     bot_id: UUID,
     request: Request,
