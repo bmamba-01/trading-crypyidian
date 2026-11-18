@@ -199,7 +199,12 @@
   {% if chart_data %}
   <div class="bot-panel-head">
     <h3 id="bot-chart-heading">Giao dịch đã đóng gần nhất: <span data-coin="{{ chart_data.symbol }}">{{ chart_data.symbol }}</span></h3>
-    <div class="bot-panel-head__chips">{{ side_badge(chart_data.side) }}<span class="badge badge-paper-subtle bot-badge">Khung {{ chart_data.timeframe }}</span></div>
+    <div class="bot-panel-head__chips">
+      {{ side_badge(chart_data.side) }}
+      <span class="badge badge-paper-subtle bot-badge">Khung {{ chart_data.timeframe }}</span>
+      <a class="btn btn-secondary btn-sm" href="/admin/chart?bot_id={{ bot.id }}&symbol={{ chart_data.symbol | urlencode }}&timeframe={{ chart_data.timeframe | urlencode }}">{{ ico("chart") }}Chart Cockpit</a>
+      <a class="btn btn-secondary btn-sm" href="{% if bot_strategy_card_id %}/admin/strategy-cards/{{ bot_strategy_card_id | urlencode }}/microscope?bot_id={{ bot.id }}{% else %}/admin/strategy-cards{% endif %}">{{ ico("strategy") }}Microscope</a>
+    </div>
   </div>
   {% if chart_data.notice %}<p class="bot-notice" role="status">{{ chart_data.notice }}</p>{% endif %}
   <p id="trade-chart-legend" class="chart-ohlc-legend" data-chart-legend>Rê chuột hoặc chạm vào nến để xem Mở / Cao / Thấp / Đóng.</p>
@@ -207,7 +212,8 @@
   <div id="trade-chart-event-detail" class="chart-event-detail bot-chart-detail" role="status" aria-live="polite">
     Rê chuột hoặc chạm vào nến có đánh dấu để đọc thời điểm, giá khớp và lý do vào/đóng lệnh.
   </div>
-  {% set chart_key_timeframe = chart_data.timeframe %}{% set chart_key_entry_line = false %}{% set chart_key_stop = false %}{% set chart_key_target = false %}
+  {% set bot_ea = (chart_data.trade.post_mortem.entry_analysis if chart_data.trade and chart_data.trade.post_mortem and chart_data.trade.post_mortem.entry_analysis else {}) %}
+  {% set chart_key_timeframe = chart_data.timeframe %}{% set chart_key_entry_line = bot_ea.get("entry_price") is not none %}{% set chart_key_stop = bot_ea.get("stop_loss_price") is not none %}{% set chart_key_target = bot_ea.get("take_profit_price") is not none or ((bot_ea.get("targets") or []) | length > 0) %}
   {% include "admin/_trade_chart_key.html" %}
   <p class="chart-attribution">Biểu đồ sử dụng <a href="https://www.tradingview.com/lightweight-charts/" target="_blank" rel="noopener noreferrer">TradingView Lightweight Charts</a>, theo giấy phép Apache 2.0.</p>
   <script id="trade-chart-data" type="application/json">{{ chart_data | tojson }}</script>
@@ -216,6 +222,10 @@
   <p class="bot-empty" role="status" id="bot-chart-empty">
     Chưa có giao dịch đã đóng kèm dữ liệu nến trong 30 ngày để dựng biểu đồ.
   </p>
+  <div class="bot-panel-head__chips">
+    <a class="btn btn-secondary btn-sm" href="/admin/chart?bot_id={{ bot.id }}">{{ ico("chart") }}Chart Cockpit</a>
+    <a class="btn btn-secondary btn-sm" href="{% if bot_strategy_card_id %}/admin/strategy-cards/{{ bot_strategy_card_id | urlencode }}/microscope?bot_id={{ bot.id }}{% else %}/admin/strategy-cards{% endif %}">{{ ico("strategy") }}Microscope</a>
+  </div>
   {% endif %}
 </section>
 </div>

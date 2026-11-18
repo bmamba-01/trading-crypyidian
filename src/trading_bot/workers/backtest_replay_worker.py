@@ -50,6 +50,10 @@ from trading_bot.application.backtest_replay_jobs import BacktestReplayJobSubmis
 from trading_bot.application.binance_rest_backfill_rights import SourceRegistryBackfillRightsGate
 from trading_bot.application.outbox import UnitOfWork
 from trading_bot.config.settings import AppSettings
+from trading_bot.observability.readiness import (
+    WorkerReadinessReport,
+    evaluate_worker_readiness,
+)
 
 LEASE_LOST = "BACKTEST_WORKER_LEASE_LOST"
 _LOGGER = logging.getLogger(__name__)
@@ -87,11 +91,35 @@ class BacktestReplayJobWorker:
         self._persist_unit_of_work_factory = persist_unit_of_work_factory or (
             lambda workspace_id: UnitOfWork(persist_sessions, workspace_id=workspace_id)
         )
+        self.last_tick_succeeded = False
+        self.last_tick_at: datetime | None = None
+        self.last_error_code: str | None = None
+
+    def readiness_snapshot(
+        self, *, task: Any = None, missing_rights_reason: str | None = None
+    ) -> WorkerReadinessReport:
+        """Trả báo cáo readiness reason-coded cho backtest/backfill worker."""
+        return evaluate_worker_readiness(
+            component="backtest_worker",
+            worker=self,
+            task=task,
+            require_task=task is not None,
+            missing_rights_reason=missing_rights_reason,
+        )
 
     async def run(self, stopping: asyncio.Event) -> None:
         """Chạy poll loop; chờ ngắn khi hàng đợi rỗng để không quay CPU liên tục."""
         while not stopping.is_set():
-            claimed = await self.run_once()
+            claimed = False
+            try:
+                claimed = await self.run_once()
+                self.last_tick_succeeded = True
+                self.last_tick_at = datetime.now(UTC)
+                self.last_error_code = None
+            except Exception as error:
+                self.last_tick_succeeded = False
+                self.last_error_code = _error_code(error)
+                _LOGGER.warning("Backtest replay worker tick lỗi; code=%s", self.last_error_code)
             if not claimed:
                 try:
                     await asyncio.wait_for(stopping.wait(), timeout=self._tick)

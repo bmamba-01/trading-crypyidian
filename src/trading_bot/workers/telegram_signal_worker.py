@@ -7,7 +7,7 @@ import logging
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
-from typing import Protocol
+from typing import Any, Protocol
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -25,6 +25,10 @@ from trading_bot.application.telegram_signals import (
     TelegramSignalCandidate,
     build_signal_message,
     is_candidate_deliverable,
+)
+from trading_bot.observability.readiness import (
+    WorkerReadinessReport,
+    evaluate_worker_readiness,
 )
 from trading_bot.ports.telegram import TelegramMessageSender
 
@@ -104,6 +108,18 @@ class TelegramSignalDeliveryWorker:
         self.last_error_code: str | None = None
         self._last_sent_by_chat: dict[int, datetime] = defaultdict(
             lambda: datetime.min.replace(tzinfo=UTC)
+        )
+
+    def readiness_snapshot(
+        self, *, task: Any = None, missing_secret_reason: str | None = None
+    ) -> WorkerReadinessReport:
+        """Trả báo cáo readiness reason-coded cho telegram signal sender."""
+        return evaluate_worker_readiness(
+            component="telegram_signal_worker",
+            worker=self,
+            task=task,
+            require_task=task is not None,
+            missing_secret_reason=missing_secret_reason,
         )
 
     async def run(self, stopping: asyncio.Event) -> None:

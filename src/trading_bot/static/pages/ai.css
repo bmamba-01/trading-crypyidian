@@ -1,5 +1,5 @@
 /* CRY-383: trang Phân tích AI (danh sách lượt và chi tiết). Dùng token màu chung của admin.css. */
-.ai-page { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1rem; min-width: 0; }
+.ai-page { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.75rem; min-width: 0; }
 /* Con của grid mặc định min-width:auto: bảng rộng sẽ kéo cột tràn khung (E2E 1024px phát hiện). */
 .ai-page > * { min-width: 0; }
 .ai-page .table-wrapper { overflow-x: auto; }

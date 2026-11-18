@@ -255,6 +255,44 @@
             title: container.dataset.targetTitle || "Đường chốt lời (TP)",
           });
         }
+        // Vẽ thang TP (TP1, TP2, TP3...) nếu dữ liệu hậu kiểm hoặc payload có danh sách targets.
+        const tpLadder = Array.isArray(pm.entry_analysis.targets)
+          ? pm.entry_analysis.targets
+          : Array.isArray(payload.targets)
+            ? payload.targets
+            : [];
+        tpLadder.forEach((step, idx) => {
+          const stepPrice = Number(typeof step === "object" && step !== null ? step.price : step);
+          if (!(stepPrice > 0) || Math.abs(stepPrice - tpPrice) < 1e-9) return;
+          const stepLabel =
+            typeof step === "object" && step !== null && step.label
+              ? String(step.label)
+              : `TP${idx + 1}`;
+          candleSeries.createPriceLine({
+            price: stepPrice,
+            color: colors.up,
+            lineWidth: 1,
+            lineStyle: chartLibrary.LineStyle?.Dotted ?? 1,
+            axisLabelVisible: true,
+            title: stepLabel,
+          });
+        });
+      }
+
+      // Tái dùng lớp chỉ báo (vd EMA20, EMA50) nếu payload có mảng overlays.
+      if (Array.isArray(payload.overlays)) {
+        const overlayPalette = ["#3861fb", "#f59e0b", "#a855f7", "#06b6d4"];
+        payload.overlays.forEach((overlay, idx) => {
+          if (!overlay || !Array.isArray(overlay.data) || overlay.data.length === 0) return;
+          const line = chart.addSeries(chartLibrary.LineSeries, {
+            color: overlay.color || overlayPalette[idx % overlayPalette.length],
+            lineWidth: 1,
+            priceLineVisible: false,
+            lastValueVisible: false,
+            title: overlay.label || overlay.name || "",
+          });
+          line.setData(overlay.data);
+        });
       }
 
       const markers = [];
@@ -325,13 +363,28 @@
         }
         renderLegend(legend, items);
       };
-      chart.subscribeCrosshairMove((parameter) => {
-        if (parameter.time === undefined || parameter.time === null) return;
-        showBarLegend(parameter.time);
+      const updateCandleDetail = (time) => {
+        if (time === undefined || time === null) return;
+        showBarLegend(time);
         if (!eventDetail) return;
-        const details = markerDetails.get(Number(parameter.time));
-        if (details?.length) eventDetail.textContent = details.join(" ");
+        const details = markerDetails.get(Number(time));
+        if (details?.length) {
+          eventDetail.textContent = details.join(" ");
+        } else {
+          const bar = barsByTime.get(Number(time));
+          if (bar && bar.explanation) {
+            eventDetail.textContent = String(bar.explanation);
+          }
+        }
+      };
+      chart.subscribeCrosshairMove((parameter) => {
+        updateCandleDetail(parameter.time);
       });
+      if (typeof chart.subscribeClick === "function") {
+        chart.subscribeClick((parameter) => {
+          updateCandleDetail(parameter.time);
+        });
+      }
       chart.timeScale().fitContent();
       container.dataset.chartReady = "true";
     } catch (_error) {

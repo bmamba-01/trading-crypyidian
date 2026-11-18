@@ -143,6 +143,10 @@ class TelegramSignalSubscription(UuidPrimaryKey, CreatedAt, UpdatedAt, Base):
             )
             for name in ("symbols", "timeframes", "directions", "strategy_ids", "setup_codes")
         ),
+        CheckConstraint(
+            "jsonb_typeof(delivery_policy) = 'object'",
+            name="telegram_signal_delivery_policy_object",
+        ),
         Index(
             "ix_telegram_signal_subscription_ready",
             "workspace_id",
@@ -173,6 +177,9 @@ class TelegramSignalSubscription(UuidPrimaryKey, CreatedAt, UpdatedAt, Base):
     )
     setup_codes: Mapped[list[str]] = mapped_column(
         JSONB, nullable=False, server_default=text("'[]'::jsonb")
+    )
+    delivery_policy: Mapped[dict[str, object]] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
     )
 
 
