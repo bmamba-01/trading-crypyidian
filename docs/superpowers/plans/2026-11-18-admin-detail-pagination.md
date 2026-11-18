@@ -10,8 +10,8 @@
 4. [x] Thêm popup xem nhanh cho danh sách bot; đưa hậu kiểm từng giao dịch bot vào dialog.
 5. [x] Gắn phân trang cho vùng thẻ dài đã được audit; cập nhật kiểm thử template/E2E.
 6. [x] Chạy unit, E2E liên quan, Ruff và `git diff --check`; xử lý mọi lỗi/flaky trước commit.
-7. [ ] Cập nhật `implementation-memory.md`, `project-status.md`, WBS và tracker; đọc lại memory.
-8. [ ] Commit, push fast-forward lên `dev`, restart admin-web và xác minh health/UI; archive worktree.
+7. [x] Cập nhật `implementation-memory.md`, `project-status.md`, WBS và tracker; đọc lại memory.
+8. [x] Commit, push fast-forward lên `dev`, restart admin-web và xác minh health/UI; archive worktree.
 
 ## Lệnh kiểm tra dự kiến
 
