@@ -357,6 +357,9 @@ def _position_to_json(position: PaperPosition) -> dict[str, Any]:
         value["targets_hit"] = position.targets_hit
         value["initial_quantity"] = str(position.initial_quantity)
         value["quantity_step"] = str(position.quantity_step)
+    # FX-4: chỉ ghi pending_exit_reason khi có pending exit → checkpoint cũ không đổi.
+    if position.pending_exit_reason is not None:
+        value["pending_exit_reason"] = position.pending_exit_reason
     return value
 
 
@@ -417,6 +420,9 @@ def _position_from_json(row: dict[str, Any]) -> PaperPosition:
         targets_hit=int(row.get("targets_hit", 0)),
         initial_quantity=Decimal(row.get("initial_quantity", "0")),
         quantity_step=Decimal(row.get("quantity_step", "0")),
+        pending_exit_reason=(
+            str(row["pending_exit_reason"]) if row.get("pending_exit_reason") is not None else None
+        ),
     )
 
 

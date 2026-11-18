@@ -83,8 +83,22 @@ def monitor_position(
         return PositionMonitorResult(position, position.exit_reason, position.exit_reference_price)
     if position.symbol != bar.symbol:
         raise ValueError("Nến monitor phải cùng symbol với vị thế.")
-    bars_held = position.bars_held + (1 if strategy_bar_closed else 0)
     seen = (*position.seen_bar_keys, bar.bar_key)
+    if position.pending_exit_reason is not None:
+        # FX-4: lệnh thoát chờ từ nến trước khớp ngay tại giá mở nến kế tiếp.
+        reason = position.pending_exit_reason
+        closed = replace(
+            position,
+            quantity=ZERO,
+            protective_stop_quantity=ZERO,
+            is_closed=True,
+            seen_bar_keys=seen,
+            exit_reason=reason,
+            exit_reference_price=bar.open,
+            pending_exit_reason=None,
+        )
+        return PositionMonitorResult(closed, reason, bar.open)
+    bars_held = position.bars_held + (1 if strategy_bar_closed else 0)
     stop_hit = (
         bar.low <= position.stop_price
         if position.direction == "long"
@@ -235,17 +249,13 @@ def monitor_position(
             )
             return PositionMonitorResult(closed, "CHANNEL_EXIT", channel_price)
     if bars_held >= recipe.max_hold_bars:
-        closed = replace(
+        pending = replace(
             position,
-            quantity=ZERO,
-            protective_stop_quantity=ZERO,
             bars_held=bars_held,
-            is_closed=True,
             seen_bar_keys=seen,
-            exit_reason="TIME_STOP",
-            exit_reference_price=bar.close,
+            pending_exit_reason="TIME_STOP",
         )
-        return PositionMonitorResult(closed, "TIME_STOP", bar.close)
+        return PositionMonitorResult(pending)
     if (
         recipe.exit_feature_name is not None
         and recipe.exit_feature_threshold is not None
@@ -272,17 +282,13 @@ def monitor_position(
             )
             return PositionMonitorResult(closed, "FEATURE_EXIT", bar.close)
     if recipe.opposite_signal_exit and opposing_signal:
-        closed = replace(
+        pending = replace(
             position,
-            quantity=ZERO,
-            protective_stop_quantity=ZERO,
             bars_held=bars_held,
-            is_closed=True,
             seen_bar_keys=seen,
-            exit_reason="OPPOSING_SIGNAL",
-            exit_reference_price=bar.close,
+            pending_exit_reason="OPPOSING_SIGNAL",
         )
-        return PositionMonitorResult(closed, "OPPOSING_SIGNAL", bar.close)
+        return PositionMonitorResult(pending)
 
     new_stop = position.stop_price
     trailing_multiple = recipe.trailing_atr_multiple

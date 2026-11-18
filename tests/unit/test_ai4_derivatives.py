@@ -262,6 +262,17 @@ def test_fetcher_calls_only_public_endpoints_with_fixed_params() -> None:
         assert "x-mbx-apikey" not in {key.lower() for key in request.headers}
         if request.url.path == "/fapi/v1/premiumIndex":
             return httpx2.Response(200, json=_raw()["premium"])
+        if request.url.path == "/fapi/v1/ticker/24hr":
+            return httpx2.Response(
+                200,
+                json={
+                    "symbol": "BTCUSDT",
+                    "lastPrice": "64770.00",
+                    "quoteVolume": "123456789.12",
+                    "priceChangePercent": "1.25",
+                    "closeTime": T08,
+                },
+            )
         return httpx2.Response(200, json=[])
 
     async def run() -> dict:
@@ -274,16 +285,18 @@ def test_fetcher_calls_only_public_endpoints_with_fixed_params() -> None:
             await fetcher.aclose()
 
     raw = asyncio.run(run())
-    assert set(raw) == {"premium", "oi_hist", "global_ls", "top_ls", "taker"}
+    assert set(raw) == {"premium", "ticker_24h", "oi_hist", "global_ls", "top_ls", "taker", "basis"}
     assert seen[0] == ("/fapi/v1/premiumIndex", {"symbol": "BTCUSDT"})
-    assert seen[1] == (
+    assert seen[1] == ("/fapi/v1/ticker/24hr", {"symbol": "BTCUSDT"})
+    assert seen[2] == (
         "/futures/data/openInterestHist",
         {"symbol": "BTCUSDT", "period": "1h", "limit": "25"},
     )
-    assert [path for path, _ in seen[2:]] == [
+    assert [path for path, _ in seen[3:]] == [
         "/futures/data/globalLongShortAccountRatio",
         "/futures/data/topLongShortPositionRatio",
         "/futures/data/takerlongshortRatio",
+        "/futures/data/basis",
     ]
 
     async def throttled() -> None:
@@ -337,3 +350,120 @@ def test_analyst_topic_and_validator_use_derivatives_numbers() -> None:
     assert validate_analysis(good, topic).ok
     good["findings"][0]["statement"] = "OI BTC tăng 7.00%."
     assert not validate_analysis(good, topic).ok
+
+
+def test_snapshot_parses_basis_and_24h_ticker_and_rejects_bad_contracts() -> None:
+    """DATA-1: parse basis + 24h ticker theo shape Binance và kiểm contract."""
+    payload = _raw(
+        basis=[
+            {
+                "pair": "BTCUSDT",
+                "contractType": "PERPETUAL",
+                "futuresPrice": "64772.0",
+                "indexPrice": "64793.31673913",
+                "basis": "-21.31673913",
+                "basisRate": "-0.00032900",
+                "timestamp": T08,
+            }
+        ],
+        ticker_24h={
+            "symbol": "BTCUSDT",
+            "lastPrice": "64770.50",
+            "quoteVolume": "987654321.50",
+            "priceChangePercent": "2.45",
+            "closeTime": T08,
+        },
+    )
+    snap = build_snapshot("BTCUSDT", COLLECTED, payload)
+    assert snap.index_price == Decimal("64793.31673913")
+    assert snap.basis == Decimal("-21.31673913")
+    assert snap.basis_rate == Decimal("-0.00032900")
+    assert snap.basis_at == datetime(2026, 11, 16, 8, tzinfo=UTC)
+    assert snap.ticker_last_price == Decimal("64770.50")
+    assert snap.ticker_quote_volume_24h == Decimal("987654321.50")
+    assert snap.ticker_price_change_pct_24h == Decimal("2.45")
+    assert snap.ticker_at == datetime(2026, 11, 16, 8, tzinfo=UTC)
+
+    digest = derivatives_digest([snap], COLLECTED)
+    row = digest["symbols"][0]
+    assert row["basis_rate_pct"] == "-0.0329"
+    assert row["quote_volume_24h_usdt"] == "987654322"
+
+    with pytest.raises(DerivativesContractError, match="basis"):
+        build_snapshot(
+            "BTCUSDT",
+            COLLECTED,
+            _raw(
+                basis=[
+                    {
+                        "pair": "ETHUSDT",
+                        "contractType": "PERPETUAL",
+                        "basis": "1",
+                        "basisRate": "0.0001",
+                        "timestamp": T08,
+                    }
+                ]
+            ),
+        )
+    with pytest.raises(DerivativesContractError, match="quoteVolume"):
+        build_snapshot(
+            "BTCUSDT",
+            COLLECTED,
+            _raw(
+                ticker_24h={
+                    "symbol": "BTCUSDT",
+                    "lastPrice": "100",
+                    "quoteVolume": "-1",
+                    "priceChangePercent": "0",
+                    "closeTime": T08,
+                }
+            ),
+        )
+
+
+def test_http_fetcher_enforces_1000_per_5m_futures_data_budget() -> None:
+    """DATA-1: giữ trần 1.000 request /futures/data trong cửa sổ 5 phút."""
+    import httpx2
+
+    from trading_bot.adapters.sources.binance_derivatives_http import (
+        BinanceDerivativesHttpFetcher,
+        BinanceThrottled,
+    )
+
+    now = [0.0]
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        if request.url.path == "/fapi/v1/premiumIndex":
+            return httpx2.Response(200, json=_raw()["premium"])
+        if request.url.path == "/fapi/v1/ticker/24hr":
+            return httpx2.Response(
+                200,
+                json={
+                    "symbol": "BTCUSDT",
+                    "lastPrice": "64770",
+                    "quoteVolume": "1000",
+                    "priceChangePercent": "0.5",
+                    "closeTime": T08,
+                },
+            )
+        return httpx2.Response(200, json=[])
+
+    async def run() -> None:
+        fetcher = BinanceDerivativesHttpFetcher(
+            transport=httpx2.MockTransport(handler),
+            pause_seconds=0,
+            max_futures_data_per_5m=5,
+            monotonic_clock=lambda: now[0],
+        )
+        try:
+            # 1 symbol dùng đúng 5 request /futures/data -> vừa đủ trần 5.
+            await fetcher.fetch_symbol("BTCUSDT")
+            with pytest.raises(BinanceThrottled, match="1.000"):
+                await fetcher.fetch_symbol("BTCUSDT")
+            # Sau 301 giây, cửa sổ trượt được giải phóng.
+            now[0] = 301.0
+            await fetcher.fetch_symbol("BTCUSDT")
+        finally:
+            await fetcher.aclose()
+
+    asyncio.run(run())

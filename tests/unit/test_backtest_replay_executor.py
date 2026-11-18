@@ -253,3 +253,78 @@ def test_submission_rejects_unknown_strategy_parameter() -> None:
             _submission(source, release="h03-v3-1h"),
             strategy_parameters=(("not_a_parameter", 5),),
         )
+
+
+def test_bt1_paper_cost_profile_leverage_and_trial_count_propagate_to_manifest() -> None:
+    """BT-1: spread, funding, đòn bẩy và trial_count được ghim vào manifest và context."""
+    source = bundle()
+    submission = BacktestReplayJobSubmission(
+        bundle_hash=source.dataset_hash,
+        strategy_release_id="h01-v1",
+        execution_interval="1h",
+        starting_equity=Decimal("10000"),
+        per_trade_risk_fraction=Decimal("0.01"),
+        fee_rate=Decimal("0.0005"),
+        slippage_rate=Decimal("0.0002"),
+        seed=17,
+        spread_rate=Decimal("0.0003"),
+        adverse_funding_rate=Decimal("0.0001"),
+        leverage=Decimal("3"),
+        trial_count=8,
+        trial_index=2,
+    )
+    payload = submission.to_payload()
+    assert BacktestReplayJobSubmission.from_payload(payload) == submission
+
+    plan = build_backtest_replay_plan(source.workspace_id, JOB_ID, source, submission)
+    assert plan.manifest.trial_count == 8
+    assert plan.manifest.trial_index == 2
+    assumptions = dict(plan.manifest.cost_assumptions)
+    assert assumptions["spread_rate"] == "0.0003"
+    assert assumptions["adverse_funding_rate"] == "0.0001"
+    assert assumptions["leverage"] == "3"
+
+
+def test_bt1_walk_forward_h0x_runs_folds_discounts_trials_and_flags_small_sample() -> None:
+    """BT-1: walk-forward H0x chạy OOS theo fold, chiết khấu theo trial_count, báo chưa đủ mẫu."""
+    from tests.unit.test_expanded_walkforward_portfolio import (
+        _build_multi_regime_bundle_for_release,
+    )
+
+    from trading_bot.application.backtest_walkforward import (
+        multiple_testing_haircut,
+        run_h0x_walk_forward,
+    )
+
+    source, _ = _build_multi_regime_bundle_for_release("h04-v1", symbol="BTCUSDT", seed=42)
+    submission = BacktestReplayJobSubmission(
+        bundle_hash=source.dataset_hash,
+        strategy_release_id="h04-v1",
+        execution_interval="15m",
+        starting_equity=Decimal("10000"),
+        per_trade_risk_fraction=Decimal("0.01"),
+        fee_rate=Decimal("0.0005"),
+        slippage_rate=Decimal("0.0002"),
+        seed=17,
+        spread_rate=Decimal("0.0002"),
+        adverse_funding_rate=Decimal("0.0001"),
+        leverage=Decimal("2"),
+        trial_count=5,
+        trial_index=0,
+    )
+    report = run_h0x_walk_forward(
+        source.workspace_id,
+        JOB_ID,
+        source,
+        submission,
+        folds=3,
+        embargo=timedelta(0),
+    )
+    assert len(report.folds) == 3
+    assert report.trial_count == 5
+    assert report.haircut_factor == multiple_testing_haircut(5)
+    assert report.haircut_factor < Decimal("1")
+    assert report.sample_status == "INSUFFICIENT_SAMPLE"
+    assert report.has_enough_samples is False
+    assert report.metrics.confidence_interval is None
+    assert "Chưa đủ mẫu" in report.metrics.caveat_vi

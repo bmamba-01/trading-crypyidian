@@ -722,6 +722,7 @@ class PaperLifecycleCoordinator:
 
         if position.position_id != paper_position_id:
             raise PaperLifecycleConflict("Position ID không khớp snapshot được cung cấp.")
+        was_pending_exit = position.pending_exit_reason is not None
         result = self._gateway.monitor_position(
             position,
             bar,
@@ -793,12 +794,13 @@ class PaperLifecycleCoordinator:
 
         if result.exit_reference_price is None:
             raise PaperLifecycleConflict("Exit reason cần giá tham chiếu để tạo fill.")
+        exit_at = bar.opened_at if was_pending_exit else bar.closed_at
         close_key = f"exit:{position.position_id}:{bar.bar_key}:{result.exit_reason}"
         receipt = self._gateway.close_position(
             position.position_id,
             position.quantity,
             reference_price=result.exit_reference_price,
-            closed_at=bar.closed_at,
+            closed_at=exit_at,
             idempotency_key=close_key,
         )
         fill = receipt.fill
@@ -825,7 +827,7 @@ class PaperLifecycleCoordinator:
                 uow,
                 trade_id=trade_id,
                 gross_pnl=receipt.position.gross_realized_pnl,
-                closed_at=bar.closed_at,
+                closed_at=exit_at,
             )
             trade_closed = True
         return PositionLifecycleResult(result.position, fill, appended, trade_closed, result)

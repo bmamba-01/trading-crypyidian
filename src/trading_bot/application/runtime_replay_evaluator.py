@@ -838,8 +838,11 @@ class RuntimeReplayEvaluator:
             "exit_slippage_rate": str(context.cost_model.exit_slippage_rate),
         }
         manifest_costs = dict(manifest.cost_assumptions)
+        allowed_extra = {"spread_rate", "adverse_funding_rate", "leverage"}
         if (
-            set(manifest_costs) != set(cost_values) | {"spread_rate"}
+            not set(cost_values).issubset(manifest_costs)
+            or not set(manifest_costs).issubset(set(cost_values) | allowed_extra)
+            or "spread_rate" not in manifest_costs
             or {key: manifest_costs.get(key) for key in cost_values} != cost_values
             or manifest_costs.get("spread_rate") != str(self._gateway.policy.spread_rate)
         ):
@@ -852,13 +855,13 @@ class RuntimeReplayEvaluator:
             raise ReplayEvaluationContextError(
                 "Fee của PAPER fill policy không khớp Planner CostModel."
             )
+        expected_slippage = self._gateway.policy.spread_rate + self._gateway.policy.slippage_rate
         if (
-            self._gateway.policy.spread_rate != Decimal("0")
-            or context.cost_model.entry_slippage_rate != context.cost_model.exit_slippage_rate
-            or self._gateway.policy.slippage_rate != context.cost_model.entry_slippage_rate
+            context.cost_model.entry_slippage_rate != context.cost_model.exit_slippage_rate
+            or expected_slippage != context.cost_model.entry_slippage_rate
         ):
             raise ReplayEvaluationContextError(
-                "Replay PAPER yêu cầu spread bằng 0 và slippage Planner/fill đối xứng, khớp nhau."
+                "Replay PAPER yêu cầu spread + slippage của Planner/fill đối xứng, khớp nhau."
             )
         if any(event.available_at > snapshot.decision_time for event in context.execution_events):
             raise ReplayEvaluationContextError("Execution event chưa available tại decision time.")
@@ -1009,6 +1012,7 @@ class RuntimeReplayEvaluator:
                     raise ReplayEvaluationContextError(
                         "Thiếu opposing signal point-in-time cho exit recipe."
                     )
+                was_pending_exit = position.pending_exit_reason is not None
                 result = self._gateway.monitor_position(
                     position,
                     event,
@@ -1018,8 +1022,9 @@ class RuntimeReplayEvaluator:
                     exit_feature_value=exit_feature_value,
                     strategy_bar_closed=strategy_bar_closed,
                 )
+                closed_at = event.opened_at if was_pending_exit else event.closed_at
                 if result.position.is_closed and self._account_state is not None:
-                    self._account_state.record_close(result.position.position_id, event.closed_at)
+                    self._account_state.record_close(result.position.position_id, closed_at)
                 if (
                     not result.position.is_closed
                     or result.position.position_id in self._emitted_trades
@@ -1035,7 +1040,7 @@ class RuntimeReplayEvaluator:
                     EvaluationTrade(
                         trade_id=position.position_id,
                         opened_at=first_fill.filled_at,
-                        closed_at=event.closed_at,
+                        closed_at=closed_at,
                         gross_pnl=position.gross_realized_pnl,
                         fees=position.fee_cost,
                         funding=position.funding_cost,
@@ -1110,7 +1115,9 @@ def _fixed_exit_preempts_optional_context(
     *,
     strategy_bar_closed: bool = True,
 ) -> bool:
-    """Nhận biết stop/target/time exit vốn không cần ATR hay tín hiệu đối nghịch."""
+    """Nhận biết stop/target/time/pending exit vốn không cần ATR hay tín hiệu đối nghịch."""
+    if position.pending_exit_reason is not None:
+        return True
     if position.direction == "long":
         stop_hit = event.low <= position.stop_price
         target_hit = position.target_price is not None and event.high >= position.target_price

@@ -119,7 +119,8 @@ def _build_h02_bundle(mode: str) -> tuple[BacktestDatasetReplayBundle, datetime]
     interval = timedelta(hours=4)
     warmup_count = 255
     eval_start = START_4H + warmup_count * interval
-    total_bars = warmup_count + 4
+    eval_bars = 5 if mode in ("short_to_long", "reverse_short") else 4
+    total_bars = warmup_count + eval_bars
     range_end = START_4H + total_bars * interval
     rights = _rights(START_4H, range_end)
 
@@ -188,7 +189,7 @@ def _build_h02_bundle(mode: str) -> tuple[BacktestDatasetReplayBundle, datetime]
                 cursor_prefix=f"h02-{mode}",
             )
         )
-        # Bar 258: nến kế tiếp -> vị thế SHORT đóng bằng OPPOSING_SIGNAL tại 103.5
+        # Bar 258: nến kế tiếp -> kích hoạt pending OPPOSING_SIGNAL
         bars.append(
             _ohlcv_bar(
                 timeframe="4h",
@@ -198,6 +199,19 @@ def _build_h02_bundle(mode: str) -> tuple[BacktestDatasetReplayBundle, datetime]
                 high=104.5,
                 low=103.0,
                 close=103.5,
+                cursor_prefix=f"h02-{mode}",
+            )
+        )
+        # Bar 259: nến tiếp theo -> khớp pending OPPOSING_SIGNAL tại giá mở 103.5
+        bars.append(
+            _ohlcv_bar(
+                timeframe="4h",
+                interval=interval,
+                opened=eval_start + 4 * interval,
+                open_price=103.5,
+                high=104.0,
+                low=102.5,
+                close=103.0,
                 cursor_prefix=f"h02-{mode}",
             )
         )
@@ -243,7 +257,7 @@ def _build_h02_bundle(mode: str) -> tuple[BacktestDatasetReplayBundle, datetime]
                     cursor_prefix=f"h02-{mode}",
                 )
             )
-            # Bar 258: nến kế tiếp -> vị thế LONG đóng bằng OPPOSING_SIGNAL tại 96.5
+            # Bar 258: nến kế tiếp -> kích hoạt pending OPPOSING_SIGNAL
             bars.append(
                 _ohlcv_bar(
                     timeframe="4h",
@@ -253,6 +267,19 @@ def _build_h02_bundle(mode: str) -> tuple[BacktestDatasetReplayBundle, datetime]
                     high=97.0,
                     low=95.5,
                     close=96.5,
+                    cursor_prefix=f"h02-{mode}",
+                )
+            )
+            # Bar 259: nến tiếp theo -> khớp pending OPPOSING_SIGNAL tại giá mở 96.5
+            bars.append(
+                _ohlcv_bar(
+                    timeframe="4h",
+                    interval=interval,
+                    opened=eval_start + 4 * interval,
+                    open_price=96.5,
+                    high=97.5,
+                    low=95.5,
+                    close=97.0,
                     cursor_prefix=f"h02-{mode}",
                 )
             )
@@ -689,7 +716,7 @@ def test_opposing_provider_enforces_no_lookahead_and_direction_matching() -> Non
         strategy_release_id="h02-v1",
         max_bars_per_timeframe=REPLAY_MAX_BARS_PER_TIMEFRAME,
     )
-    assert len(observations) == 4
+    assert len(observations) == 5
     registry = strategy_registry()
     selection = StrategySelection(
         settings_version_id="settings-opposing-unit",
@@ -821,10 +848,11 @@ def test_h02_long_position_closes_on_opposite_short_signal_and_ignores_same_or_e
     assert pos.is_closed is True
     assert pos.exit_reason == "OPPOSING_SIGNAL"
     assert pos.exit_reference_price == Decimal("96.5")
-    # Không lookahead: bar 257 đóng ở eval_start + 12h - 1ms mới sinh SHORT -> chỉ đóng ở bar 258
+    # Không lookahead: bar 257 đóng ở eval_start + 12h - 1ms mới sinh SHORT -> bar 258 đặt pending,
+    # bar 259 khớp ở open tại eval_start + 16h.
     trade = comparison_rev.runs[0].trade_outcomes[0]
     assert trade.opened_at == eval_start + timedelta(hours=4)
-    assert trade.closed_at == eval_start + timedelta(hours=16) - timedelta(milliseconds=1)
+    assert trade.closed_at == eval_start + timedelta(hours=16)
 
     # Cũng kiểm chứng qua `build_backtest_replay_plan` thật (đường executor sản phẩm)
     sub = BacktestReplayJobSubmission(
@@ -886,12 +914,12 @@ def test_h22_long_position_closes_on_opposite_short_signal_and_respects_1m_no_lo
     assert pos.direction == "long"
     assert pos.is_closed is True
     assert pos.exit_reason == "OPPOSING_SIGNAL"
-    assert pos.exit_reference_price == Decimal("98.5")
+    assert pos.exit_reference_price == Decimal("99.8")
     # bar[eval_idx+2] = +30m..+45m -> LONG; khớp ở +45m; bar[eval_idx+3] = +45m..+60m -> SHORT;
-    # đóng ở bar[eval_idx+4] = +60m..+75m (closed_at = eval_start + 75m - 1ms)
+    # bar[eval_idx+4] = +60m..+75m đặt pending -> khớp ở open bar+75m (eval_start + 75m)
     trade = comparison_rev.runs[0].trade_outcomes[0]
     assert trade.opened_at == eval_start + timedelta(minutes=45)
-    assert trade.closed_at == eval_start + timedelta(minutes=75) - timedelta(milliseconds=1)
+    assert trade.closed_at == eval_start + timedelta(minutes=75)
 
     # 2. H22 không có tín hiệu ngược chiều -> giữ nguyên vị thế LONG
     bundle_hold, _ = _build_h22_bundle(mode="hold", include_1m=False)
@@ -918,9 +946,9 @@ def test_h22_long_position_closes_on_opposite_short_signal_and_respects_1m_no_lo
     pos_1m = gateway_1m.positions()[0]
     assert pos_1m.exit_reason == "OPPOSING_SIGNAL"
     trade_1m = comparison_1m.runs[0].trade_outcomes[0]
-    # Nến 15m đóng lúc 100:59:59.999 (eval_start + 60m - 1ms), nên nến 1m đầu tiên mở sau mốc này
-    # là 101:00:00..101:01:00 (eval_start + 61m - 1ms).
-    assert trade_1m.closed_at == eval_start + timedelta(minutes=61) - timedelta(milliseconds=1)
+    # Nến 15m đóng lúc 100:59:59.999 (eval_start + 60m - 1ms), nến 1m đầu tiên (101:00..101:01)
+    # thấy tín hiệu SHORT và đặt pending -> khớp ở open nến 1m kế tiếp (eval_start + 61m).
+    assert trade_1m.closed_at == eval_start + timedelta(minutes=61)
 
 
 def test_h22_with_injected_no_signal_check_does_not_skip_when_ready_features_missing() -> None:
@@ -984,7 +1012,7 @@ def test_h02_short_position_closes_on_opposite_long_signal() -> None:
     assert pos.exit_reference_price == Decimal("103.5")
     trade = comparison.runs[0].trade_outcomes[0]
     assert trade.opened_at == eval_start + timedelta(hours=4)
-    assert trade.closed_at == eval_start + timedelta(hours=16) - timedelta(milliseconds=1)
+    assert trade.closed_at == eval_start + timedelta(hours=16)
 
 
 def test_opposing_provider_respects_gateway_recipe_flag() -> None:

@@ -53,9 +53,35 @@ def test_evaluation_report_reports_net_costs_drawdown_expectancy_and_uncertainty
     assert metrics.slippage == Decimal("2.5")
     assert metrics.expectancy == Decimal("17") / Decimal("3")
     assert metrics.max_drawdown == Decimal("7")
-    assert metrics.confidence_interval[0] <= metrics.expectancy <= metrics.confidence_interval[1]
+    assert metrics.confidence_interval is None
+    assert "Chưa đủ mẫu" in metrics.caveat_vi
     assert "không phải" in metrics.caveat_vi
     assert "không phải exposure theo thời gian" in metrics.caveat_vi
+
+
+def test_evaluation_report_computes_confidence_interval_when_sample_reaches_minimum() -> None:
+    from trading_bot.domain.learning.evaluation import MIN_TRADES_FOR_CONFIDENCE_INTERVAL
+
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    trades = tuple(
+        EvaluationTrade(
+            f"t-{idx}",
+            start + timedelta(hours=idx * 2),
+            start + timedelta(hours=idx * 2 + 1),
+            Decimal("10") if idx % 3 != 0 else Decimal("-4"),
+            Decimal("0.5"),
+            Decimal("0"),
+            Decimal("0.5"),
+            Decimal("100"),
+        )
+        for idx in range(MIN_TRADES_FOR_CONFIDENCE_INTERVAL)
+    )
+    metrics = build_evaluation_metrics(
+        trades, observation_count=MIN_TRADES_FOR_CONFIDENCE_INTERVAL, seed=11
+    )
+    assert metrics.confidence_interval is not None
+    assert metrics.confidence_interval[0] <= metrics.expectancy <= metrics.confidence_interval[1]
+    assert "Chưa đủ mẫu" not in metrics.caveat_vi
 
 
 def test_evaluation_metrics_reject_duplicate_trade_ids_and_bad_time_order() -> None:

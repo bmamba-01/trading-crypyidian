@@ -1133,7 +1133,9 @@ def test_replay_and_portfolio_are_deterministic_by_seed() -> None:
         assert plan_other.manifest.content_hash != plan_1.manifest.content_hash
         assert run_other.trade_outcomes == run_1.trade_outcomes
         assert rep_other.net_pnl == rep_1.net_pnl
-        if rep_1.trade_count >= 2:
+        from trading_bot.domain.learning.evaluation import MIN_TRADES_FOR_CONFIDENCE_INTERVAL
+
+        if rep_1.trade_count >= MIN_TRADES_FOR_CONFIDENCE_INTERVAL:
             assert rep_1.confidence_interval is not None
             assert rep_other.confidence_interval is not None
 

@@ -213,11 +213,17 @@ class DerivativesSnapshotRecord(UuidPrimaryKey, CreatedAt, Base):
             " AND (oi_at IS NULL OR oi_at <= collected_at)"
             " AND (ls_at IS NULL OR ls_at <= collected_at)"
             " AND (top_at IS NULL OR top_at <= collected_at)"
-            " AND (taker_at IS NULL OR taker_at <= collected_at)",
+            " AND (taker_at IS NULL OR taker_at <= collected_at)"
+            " AND (basis_at IS NULL OR basis_at <= collected_at)"
+            " AND (ticker_at IS NULL OR ticker_at <= collected_at)",
             name="derivatives_snapshot_timestamps_causal",
         ),
         CheckConstraint(
-            "mark_price > 0 AND (oi_value_usdt IS NULL OR oi_value_usdt >= 0)",
+            "mark_price > 0"
+            " AND (oi_value_usdt IS NULL OR oi_value_usdt >= 0)"
+            " AND (index_price IS NULL OR index_price > 0)"
+            " AND (ticker_last_price IS NULL OR ticker_last_price > 0)"
+            " AND (ticker_quote_volume_24h IS NULL OR ticker_quote_volume_24h >= 0)",
             name="derivatives_snapshot_values_valid",
         ),
         Index("ix_derivatives_snapshot_asof", "workspace_id", "collected_at", "symbol"),
@@ -244,6 +250,14 @@ class DerivativesSnapshotRecord(UuidPrimaryKey, CreatedAt, Base):
     top_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     taker_buy_sell_ratio: Mapped[Decimal | None] = mapped_column(_STAT, nullable=True)
     taker_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    index_price: Mapped[Decimal | None] = mapped_column(_STAT, nullable=True)
+    basis: Mapped[Decimal | None] = mapped_column(_STAT, nullable=True)
+    basis_rate: Mapped[Decimal | None] = mapped_column(_STAT, nullable=True)
+    basis_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ticker_last_price: Mapped[Decimal | None] = mapped_column(_STAT, nullable=True)
+    ticker_quote_volume_24h: Mapped[Decimal | None] = mapped_column(_STAT, nullable=True)
+    ticker_price_change_pct_24h: Mapped[Decimal | None] = mapped_column(_STAT, nullable=True)
+    ticker_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class ListingSnapshotRecord(UuidPrimaryKey, CreatedAt, Base):
