@@ -349,7 +349,7 @@ def test_dashboard_exposes_operations_health_strip_updated_by_external_script() 
 
     assert 'id="kpi-ops-health"' in template
     assert 'id="kpi-ops-health-sub"' in template
-    assert "chưa nối vào cầu dao" in template
+    assert "telemetry vận hành thật" in template
     assert "realized_loss_today" not in template
     assert "data.operations_health" in realtime_js
     assert "kpi-ops-health" in realtime_js

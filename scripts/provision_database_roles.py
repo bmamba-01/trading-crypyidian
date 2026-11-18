@@ -20,6 +20,7 @@ PROCESS_ROLES = (
         "/run/secrets/database_learning_shadow_observer_password",
     ),
     ("crypidian_backtest_worker", "/run/secrets/database_backtest_worker_password"),
+    ("crypidian_scorer_history", "/run/secrets/database_scorer_history_password"),
 )
 
 
@@ -53,6 +54,7 @@ def main() -> None:
                     "crypidian_replay_writer",
                     "crypidian_learning_evaluator",
                     "crypidian_learning_shadow_observer",
+                    "crypidian_scorer_history",
                 }
                 else sql.SQL("")
             )

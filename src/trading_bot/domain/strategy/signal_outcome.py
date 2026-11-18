@@ -108,6 +108,7 @@ class ForwardBar:
     low: Decimal
     close: Decimal
     ref: str = ""
+    source: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,6 +128,7 @@ class SignalOutcome:
     outcome_r: Decimal
     label: int
     input_hash: str
+    bar_sources: tuple[str, ...] = ()
 
 
 def levels_from_candidate(candidate: Mapping[str, Any]) -> SignalLevels:
@@ -285,6 +287,7 @@ def score_signal(
         outcome_r=outcome_r,
         label=r_band_label(outcome_r),
         input_hash=_input_hash(levels, window),
+        bar_sources=tuple(sorted({bar.source for bar in window if bar.source})),
     )
 
 

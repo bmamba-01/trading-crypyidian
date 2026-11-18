@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Annotated, Any, cast
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy.exc import SQLAlchemyError
@@ -12,7 +13,10 @@ from trading_bot.adapters.database.repositories.learning_scoring_deployments imp
     ScorerDeploymentConflict,
     ScorerDeploymentRightsUnavailable,
 )
-from trading_bot.admin.web_router import _auth_service, _templates
+from trading_bot.adapters.database.repositories.paper_entry_operator_blocks import (
+    OperatorEntryBlockError,
+)
+from trading_bot.admin.web_router import _auth_service, _parse_form, _templates
 from trading_bot.auth.cookies import read_session_cookie
 from trading_bot.auth.policy import MfaMethod, Permission, Principal, authorize
 from trading_bot.auth.router import current_identity
@@ -167,10 +171,19 @@ async def learning_scoring_admin_page(
                 headers={"Cache-Control": "no-store"},
             ) from error
 
+    operator_blocks: tuple[Any, ...] = ()
+    block_service: Any = getattr(request.app.state, "paper_entry_operator_block_service", None)
+    if block_service is not None:
+        try:
+            operator_blocks = await block_service.list_recent(principal, limit=20)
+        except OperatorEntryBlockError, SQLAlchemyError:
+            operator_blocks = ()
+
     return _templates(request).TemplateResponse(
         request=request,
         name="admin/learning_scoring.html",
         context={
+            "operator_blocks": operator_blocks,
             "identity": identity,
             "snapshot": snapshot,
             "mode_label": _MODE_LABELS[snapshot.mode],
@@ -349,4 +362,68 @@ def _percent(value: float | None) -> str | None:
     return None if value is None else f"{value * 100:.1f}%"
 
 
-__all__ = ["learning_scoring_admin_page", "router"]
+@router.post("/admin/learning/scoring/decisions/{bot_decision_id}/block-paper-entry")
+async def block_paper_entry_decision(
+    bot_decision_id: UUID,
+    request: Request,
+    response: Response,
+    identity: Annotated[AuthIdentity, Depends(current_identity)],
+) -> dict[str, Any]:
+    """Chặn thêm PAPER entry cho một BotDecision APPROVE (owner/risk-admin + TOTP MFA + CSRF)."""
+    response.headers["Cache-Control"] = "no-store"
+    principal = identity.principal
+    if not (
+        authorize(principal, Permission.WORKSPACE_KILL)
+        and authorize(principal, Permission.RISK_PROFILE_WRITE)
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Chỉ owner hoặc risk-admin mới có quyền chặn thêm PAPER entry.",
+            headers={"Cache-Control": "no-store"},
+        )
+    content_type = request.headers.get("content-type", "")
+    if "application/json" in content_type:
+        body = await request.json()
+        values = body if isinstance(body, dict) else {}
+    else:
+        values = await _parse_form(request)
+    reason = str(values.get("reason") or "")
+    csrf_token = str(values.get("csrf_token") or "")
+    try:
+        await _auth_service(request).verify_csrf(read_session_cookie(request), csrf_token)
+    except AuthenticationFailure as error:
+        raise HTTPException(
+            status_code=403,
+            detail=error.message,
+            headers={"Cache-Control": "no-store"},
+        ) from error
+
+    service: Any = getattr(request.app.state, "paper_entry_operator_block_service", None)
+    if service is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Dịch vụ chặn entry PAPER chưa sẵn sàng.",
+            headers={"Cache-Control": "no-store"},
+        )
+    try:
+        summary = await service.block_paper_entry(
+            principal,
+            bot_decision_id=bot_decision_id,
+            reason=reason,
+        )
+    except OperatorEntryBlockError as error:
+        raise HTTPException(
+            status_code=error.status_code,
+            detail=error.message,
+            headers={"Cache-Control": "no-store"},
+        ) from error
+    return {
+        "block_id": str(summary.block_id),
+        "bot_id": str(summary.bot_id),
+        "bot_decision_id": str(summary.bot_decision_id),
+        "reason": summary.reason,
+        "created_at": summary.created_at.isoformat(),
+    }
+
+
+__all__ = ["block_paper_entry_decision", "learning_scoring_admin_page", "router"]

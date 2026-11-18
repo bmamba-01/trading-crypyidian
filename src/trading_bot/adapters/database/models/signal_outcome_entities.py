@@ -18,7 +18,9 @@ from sqlalchemy import (
     String,
     UniqueConstraint,
     Uuid,
+    text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from trading_bot.adapters.database.models.base import Base, CreatedAt, UuidPrimaryKey
@@ -98,6 +100,9 @@ class SignalOutcomeRecord(UuidPrimaryKey, CreatedAt, Base):
     close_r: Mapped[Decimal | None] = mapped_column(Numeric(20, 4), nullable=True)
     outcome_r: Mapped[Decimal | None] = mapped_column(Numeric(20, 4), nullable=True)
     label: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
+    bar_sources: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, server_default=text("'[]'::jsonb")
+    )
     input_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     detail_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
     scored_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

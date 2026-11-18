@@ -48,8 +48,14 @@ from trading_bot.adapters.database.repositories.learning_incident_entry_holds im
     LearningIncidentEntryHoldRepository,
     LearningIncidentHoldUnavailable,
 )
+from trading_bot.adapters.database.repositories.operational_telemetry import (
+    OperationalTelemetryRepository,
+)
 from trading_bot.adapters.database.repositories.paper_checkpoints import (
     PaperCheckpointConflict,
+)
+from trading_bot.adapters.database.repositories.paper_entry_operator_blocks import (
+    PaperEntryOperatorBlockRepository,
 )
 from trading_bot.adapters.database.repositories.paper_ledger import PaperLedgerConflict
 from trading_bot.adapters.database.repositories.risk_reservations import (
@@ -242,6 +248,7 @@ class EntryGateState:
     activity_checked_at: datetime | None
     open_incident: bool
     learning_incident_hold_active: bool
+    circuit_breaker_open: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -440,6 +447,18 @@ class PaperRuntimeApplicationService:
                         bot_decision_id=bot_decision.decision_id,
                     )
                 assert isinstance(command, PaperDecisionCommand)
+                if command.bot_decision_id is not None:
+                    operator_block = await PaperEntryOperatorBlockRepository(
+                        uow.session
+                    ).lock_decision_and_check_blocked(
+                        workspace_id=self._workspace_id,
+                        bot_decision_id=command.bot_decision_id,
+                    )
+                    if operator_block is not None:
+                        return PaperDecisionApplicationResult(
+                            decision=None,
+                            entry_block_reason="OPERATOR_ENTRY_BLOCKED",
+                        )
                 # Snapshot strategy đã đánh giá có ID riêng (content hash) với producer thật;
                 # snapshot tổng hợp/cũ dùng chính feature snapshot ID nên hai giá trị trùng nhau.
                 expected_snapshot_id = (
@@ -1388,6 +1407,7 @@ class PaperRuntimeApplicationService:
                 activity_status=activity,
                 control_available=True,
                 learning_incident_hold_active=state.learning_incident_hold_active,
+                circuit_breaker_open=state.circuit_breaker_open,
             ),
             RuntimeOperation.NEW_ENTRY,
         )
@@ -2054,6 +2074,9 @@ async def load_entry_gate_state(
         if state is not None and state.activity_status
         else None
     )
+    open_breaker = await OperationalTelemetryRepository(session).has_open_breaker(
+        workspace_id=workspace_id, bot_id=account.bot_id
+    )
     return EntryGateState(
         account_enabled=account_status == "ENABLED",
         bot_enabled=bot_status == "ENABLED",
@@ -2065,6 +2088,7 @@ async def load_entry_gate_state(
         learning_incident_hold_active=await LearningIncidentEntryHoldRepository(
             session
         ).active_hold_exists(workspace_id=workspace_id),
+        circuit_breaker_open=open_breaker is not None,
     )
 
 

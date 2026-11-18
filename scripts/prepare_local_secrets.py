@@ -30,6 +30,7 @@ def main() -> None:
                 "replay_writer",
                 "candidate_builder",
                 "backtest_worker",
+                "scorer_history",
             )
         },
         "telegram_bot_token": "",

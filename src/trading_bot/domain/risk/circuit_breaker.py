@@ -49,18 +49,66 @@ class CircuitBreakerPolicy:
 
 @dataclass(frozen=True)
 class OperationalTelemetry:
-    """Ảnh chụp telemetry vận hành tại thời điểm đánh giá ngắt mạch."""
+    """Ảnh chụp telemetry vận hành tại thời điểm đánh giá ngắt mạch.
+
+    Các trường có thể nhận ``None`` khi chưa đo được (hiển thị/ghi ``"unknown"``
+    trong evidence thay vì mặc định ``0`` thuận lợi).
+    """
 
     evaluated_at: datetime
-    feed_age_seconds: int
-    daily_loss: Decimal
-    drawdown_pct: Decimal
+    feed_age_seconds: int | None
+    daily_loss: Decimal | None
+    drawdown_pct: Decimal | None
     consecutive_api_errors: int
-    outbox_lag_seconds: int
-    clock_skew_ms: int
-    unprotected_exposure_count: int
-    reconciliation_discrepancy_count: int
-    unknown_order_count: int
+    outbox_lag_seconds: int | None
+    clock_skew_ms: int | None
+    unprotected_exposure_count: int | None
+    reconciliation_discrepancy_count: int | None
+    unknown_order_count: int | None
+
+    def unknown_fields(self) -> tuple[str, ...]:
+        """Danh sách các trường telemetry chưa có dữ liệu thật."""
+        fields = (
+            ("feed_age_seconds", self.feed_age_seconds),
+            ("daily_loss", self.daily_loss),
+            ("drawdown_pct", self.drawdown_pct),
+            ("outbox_lag_seconds", self.outbox_lag_seconds),
+            ("clock_skew_ms", self.clock_skew_ms),
+            ("unprotected_exposure_count", self.unprotected_exposure_count),
+            ("reconciliation_discrepancy_count", self.reconciliation_discrepancy_count),
+            ("unknown_order_count", self.unknown_order_count),
+        )
+        return tuple(name for name, value in fields if value is None)
+
+    def to_evidence(self) -> dict[str, Any]:
+        """Chuyển telemetry sang dict bằng chứng; giá trị thiếu ghi rõ ``unknown``."""
+        return {
+            "evaluated_at": self.evaluated_at.isoformat(),
+            "feed_age_seconds": (
+                self.feed_age_seconds if self.feed_age_seconds is not None else "unknown"
+            ),
+            "daily_loss": str(self.daily_loss) if self.daily_loss is not None else "unknown",
+            "drawdown_pct": str(self.drawdown_pct) if self.drawdown_pct is not None else "unknown",
+            "consecutive_api_errors": self.consecutive_api_errors,
+            "outbox_lag_seconds": (
+                self.outbox_lag_seconds if self.outbox_lag_seconds is not None else "unknown"
+            ),
+            "clock_skew_ms": self.clock_skew_ms if self.clock_skew_ms is not None else "unknown",
+            "unprotected_exposure_count": (
+                self.unprotected_exposure_count
+                if self.unprotected_exposure_count is not None
+                else "unknown"
+            ),
+            "reconciliation_discrepancy_count": (
+                self.reconciliation_discrepancy_count
+                if self.reconciliation_discrepancy_count is not None
+                else "unknown"
+            ),
+            "unknown_order_count": (
+                self.unknown_order_count if self.unknown_order_count is not None else "unknown"
+            ),
+            "unknown_fields": list(self.unknown_fields()),
+        }
 
 
 @dataclass(frozen=True)
@@ -91,6 +139,25 @@ class CircuitBreakerEngine:
         self._detail_vi = "Hệ thống vận hành bình thường; cổng vào lệnh đang mở."
         self._evidence: dict[str, Any] = {}
 
+    @classmethod
+    def from_snapshot(
+        cls,
+        snapshot: CircuitBreakerSnapshot | None,
+        *,
+        policy: CircuitBreakerPolicy | None = None,
+    ) -> CircuitBreakerEngine:
+        """Khởi tạo lại engine từ ảnh chụp trạng thái đã lưu bền vững."""
+        engine = cls(policy=policy)
+        if snapshot is not None:
+            engine._state = snapshot.state
+            engine._tripped_reasons = snapshot.tripped_reasons
+            engine._tripped_at = snapshot.tripped_at
+            engine._cooldown_until = snapshot.cooldown_until
+            engine._revision = snapshot.revision
+            engine._detail_vi = snapshot.detail_vi
+            engine._evidence = dict(snapshot.evidence)
+        return engine
+
     @property
     def policy(self) -> CircuitBreakerPolicy:
         """Trả về chính sách ngưỡng hiện hành."""
@@ -99,21 +166,33 @@ class CircuitBreakerEngine:
     def _detect_triggers(self, telemetry: OperationalTelemetry) -> tuple[BreakerTriggerKind, ...]:
         reasons: list[BreakerTriggerKind] = []
         p = self._policy
-        if telemetry.feed_age_seconds > p.max_feed_age_seconds:
+        if (
+            telemetry.feed_age_seconds is not None
+            and telemetry.feed_age_seconds > p.max_feed_age_seconds
+        ):
             reasons.append(BreakerTriggerKind.FEED_STALE)
-        if telemetry.daily_loss > p.max_daily_loss:
+        if telemetry.daily_loss is not None and telemetry.daily_loss > p.max_daily_loss:
             reasons.append(BreakerTriggerKind.DAILY_LOSS_BREACH)
-        if telemetry.drawdown_pct > p.max_drawdown_pct:
+        if telemetry.drawdown_pct is not None and telemetry.drawdown_pct > p.max_drawdown_pct:
             reasons.append(BreakerTriggerKind.MAX_DRAWDOWN_BREACH)
         if telemetry.consecutive_api_errors > p.max_consecutive_api_errors:
             reasons.append(BreakerTriggerKind.API_ERROR_BURST)
-        if telemetry.outbox_lag_seconds > p.max_outbox_lag_seconds:
+        if (
+            telemetry.outbox_lag_seconds is not None
+            and telemetry.outbox_lag_seconds > p.max_outbox_lag_seconds
+        ):
             reasons.append(BreakerTriggerKind.OUTBOX_QUEUE_LAG)
-        if telemetry.clock_skew_ms > p.max_clock_skew_ms:
+        if telemetry.clock_skew_ms is not None and telemetry.clock_skew_ms > p.max_clock_skew_ms:
             reasons.append(BreakerTriggerKind.CLOCK_SKEW)
-        if telemetry.unprotected_exposure_count > 0:
+        if (
+            telemetry.unprotected_exposure_count is not None
+            and telemetry.unprotected_exposure_count > 0
+        ):
             reasons.append(BreakerTriggerKind.MISSING_PROTECTION)
-        if telemetry.reconciliation_discrepancy_count > 0 or telemetry.unknown_order_count > 0:
+        if (
+            telemetry.reconciliation_discrepancy_count is not None
+            and telemetry.reconciliation_discrepancy_count > 0
+        ) or (telemetry.unknown_order_count is not None and telemetry.unknown_order_count > 0):
             reasons.append(BreakerTriggerKind.RECONCILIATION_DISCREPANCY)
         return tuple(reasons)
 
@@ -145,18 +224,7 @@ class CircuitBreakerEngine:
                 + ", ".join(r.value for r in reasons)
                 + "); chặn mở vị thế mới, vẫn cho phép thoát lệnh bảo vệ."
             )
-            self._evidence = {
-                "evaluated_at": telemetry.evaluated_at.isoformat(),
-                "feed_age_seconds": telemetry.feed_age_seconds,
-                "daily_loss": str(telemetry.daily_loss),
-                "drawdown_pct": str(telemetry.drawdown_pct),
-                "consecutive_api_errors": telemetry.consecutive_api_errors,
-                "outbox_lag_seconds": telemetry.outbox_lag_seconds,
-                "clock_skew_ms": telemetry.clock_skew_ms,
-                "unprotected_exposure_count": telemetry.unprotected_exposure_count,
-                "reconciliation_discrepancy_count": telemetry.reconciliation_discrepancy_count,
-                "unknown_order_count": telemetry.unknown_order_count,
-            }
+            self._evidence = telemetry.to_evidence()
             return self._build_snapshot()
 
         if self._state is BreakerState.OPEN:
@@ -167,6 +235,8 @@ class CircuitBreakerEngine:
                     "Đã hết thời gian cooldown và telemetry sạch; "
                     "đang chờ người vận hành phê duyệt MFA để mở lại."
                 )
+        if self._state is BreakerState.CLOSED:
+            self._evidence = telemetry.to_evidence()
         return self._build_snapshot()
 
     def request_resume(
@@ -197,7 +267,10 @@ class CircuitBreakerEngine:
                 "Chưa thể mở lại: cần ghi rõ mã người vận hành và lý do phê duyệt."
             )
 
-        if telemetry.reconciliation_discrepancy_count > 0 or telemetry.unknown_order_count > 0:
+        if (
+            telemetry.reconciliation_discrepancy_count is not None
+            and telemetry.reconciliation_discrepancy_count > 0
+        ) or (telemetry.unknown_order_count is not None and telemetry.unknown_order_count > 0):
             raise CircuitBreakerResumeDenied(
                 "Chưa thể mở lại: còn lệnh UNKNOWN hoặc sai lệch đối soát chưa xử lý xong."
             )
