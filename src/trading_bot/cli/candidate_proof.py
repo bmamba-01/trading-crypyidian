@@ -18,6 +18,7 @@ from trading_bot.adapters.database.engine import (
     database_url_from_secret,
 )
 from trading_bot.application.candidate_universe_proof import CandidateUniverseProofService
+from trading_bot.application.strategy_catalog import strategy_registry
 
 
 class ProofUniverse(StrEnum):
@@ -67,7 +68,7 @@ async def run(
     try:
         if not isinstance(universe, ProofUniverse):
             raise ValueError("Universe phải thuộc enum cố định.")
-        service = CandidateUniverseProofService(sessions)
+        service = CandidateUniverseProofService(sessions, strategy_registry=strategy_registry())
         builder = (
             service.build_decision_opportunity
             if universe is ProofUniverse.DECISION_OPPORTUNITIES

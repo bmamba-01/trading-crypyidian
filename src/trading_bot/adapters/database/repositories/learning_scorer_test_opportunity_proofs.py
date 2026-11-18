@@ -48,6 +48,7 @@ from trading_bot.application.learning_scorer_evaluation import (
     ScorerTestOpportunityProof,
 )
 from trading_bot.application.learning_split_candidate import LearningSplitCandidate
+from trading_bot.ports.strategy_registry import ReleaseLookup, StrategyReleaseLookup
 
 _CANDIDATE_BUILDER = "crypidian_candidate_builder"
 
@@ -78,8 +79,29 @@ class _TestMembershipRow:
 class LearningScorerTestOpportunityProofRepository:
     """Chỉ nhận UUID; dựng grid TEST và event/outcome mapping bên trong DB boundary."""
 
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        strategy_registry: StrategyReleaseLookup | None = None,
+        *,
+        release_lookup: ReleaseLookup | None = None,
+    ) -> None:
+        if strategy_registry is not None and release_lookup is not None:
+            raise ValueError("Chỉ truyền một trong `strategy_registry` hoặc `release_lookup`.")
         self._session = session
+        self._strategy_registry = strategy_registry
+        self._release_lookup = release_lookup
+
+    def _proof_repository(self) -> CandidateUniverseProofRepository:
+        if self._release_lookup is not None:
+            return CandidateUniverseProofRepository(
+                self._session, release_lookup=self._release_lookup
+            )
+        if self._strategy_registry is not None:
+            return CandidateUniverseProofRepository(
+                self._session, strategy_registry=self._strategy_registry
+            )
+        return CandidateUniverseProofRepository(self._session)
 
     async def build_and_append(
         self,
@@ -331,7 +353,7 @@ class LearningScorerTestOpportunityProofRepository:
             {"lock_key": source_lock},
         )
         membership_by_outcome = {sample.outcome_id: sample for sample in samples}
-        source_repository = CandidateUniverseProofRepository(self._session)
+        source_repository = self._proof_repository()
         all_receipts: list[ReplayTrainingRightsReceipt] = []
         all_entries: list[Any] = []
         all_candidate_ids: set[str] = set()
@@ -519,7 +541,7 @@ class LearningScorerTestOpportunityProofRepository:
         candidate: LearningSplitCandidate,
     ) -> None:
         """Xác minh proof đã duyệt, rồi kiểm inventory nguồn bằng proof BASE riêng."""
-        repository = CandidateUniverseProofRepository(self._session)
+        repository = self._proof_repository()
         approved_result = await repository.build_and_append(
             workspace_id=workspace_id, trial_record_id=trial_record_id
         )

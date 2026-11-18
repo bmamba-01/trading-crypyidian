@@ -37,7 +37,11 @@ from trading_bot.domain.learning.trade_labels import (
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+    from trading_bot.adapters.database.repositories.candidate_universe_proofs import (
+        CandidateUniverseProofRepository,
+    )
     from trading_bot.application.learning_fold_samples import NormalizedLearningDataset
+    from trading_bot.ports.strategy_registry import ReleaseLookup, StrategyReleaseLookup
 
 
 SPLIT_POLICY_VERSION = "wp06-walk-forward-v1"
@@ -594,8 +598,37 @@ def build_normalized_candidate_dataset(
 class LearningSplitCandidateBuilderService:
     """Stage/seal candidate bằng login builder, không chia sẻ secret với admin."""
 
-    def __init__(self, sessions: async_sessionmaker[AsyncSession]) -> None:
+    def __init__(
+        self,
+        sessions: async_sessionmaker[AsyncSession],
+        strategy_registry: StrategyReleaseLookup | None = None,
+        *,
+        release_lookup: ReleaseLookup | None = None,
+    ) -> None:
+        if strategy_registry is not None and release_lookup is not None:
+            raise ValueError("Chỉ truyền một trong `strategy_registry` hoặc `release_lookup`.")
         self._sessions = sessions
+        self._strategy_registry = strategy_registry
+        self._release_lookup = release_lookup
+
+    def _proof_repository(self, session: AsyncSession) -> CandidateUniverseProofRepository:
+        from trading_bot.adapters.database.repositories.candidate_universe_proofs import (
+            CandidateUniverseProofRepository,
+        )
+
+        if self._release_lookup is not None:
+            return CandidateUniverseProofRepository(
+                session,
+                release_lookup=self._release_lookup,
+            )
+        registry = self._strategy_registry
+        if registry is None:
+            from trading_bot.application.strategy_catalog import (
+                strategy_registry as product_registry,
+            )
+
+            registry = product_registry()
+        return CandidateUniverseProofRepository(session, strategy_registry=registry)
 
     async def stage(
         self,
@@ -612,9 +645,6 @@ class LearningSplitCandidateBuilderService:
         """
         from sqlalchemy import select, text
 
-        from trading_bot.adapters.database.repositories.candidate_universe_proofs import (
-            CandidateUniverseProofRepository,
-        )
         from trading_bot.adapters.database.repositories.learning_split_candidates import (
             LearningSplitCandidateRepository,
         )
@@ -627,7 +657,7 @@ class LearningSplitCandidateBuilderService:
                 text("SET TRANSACTION ISOLATION LEVEL READ COMMITTED, READ WRITE")
             )
             await _bind_builder_workspace(session, workspace_id)
-            proof_repository = CandidateUniverseProofRepository(session)
+            proof_repository = self._proof_repository(session)
             trials = []
             for trial_id in trial_ids:
                 trials.append(
@@ -673,9 +703,6 @@ class LearningSplitCandidateBuilderService:
         from sqlalchemy import select, text
 
         from trading_bot.adapters.database.models import NormalizedLearningDatasetRecord
-        from trading_bot.adapters.database.repositories.candidate_universe_proofs import (
-            CandidateUniverseProofRepository,
-        )
         from trading_bot.adapters.database.repositories.dataset_manifest import (
             DatasetManifestRepository,
         )
@@ -735,7 +762,7 @@ class LearningSplitCandidateBuilderService:
                     text("SELECT pg_advisory_xact_lock(hashtextextended(:lock_key, 0))"),
                     {"lock_key": f"research-source:{workspace_id}:{source_id}"},
                 )
-            proof_repository = CandidateUniverseProofRepository(session)
+            proof_repository = self._proof_repository(session)
             sources = candidate.sources or (
                 LearningCandidateTrialSource(
                     trial_record_id=candidate.trial_record_id,

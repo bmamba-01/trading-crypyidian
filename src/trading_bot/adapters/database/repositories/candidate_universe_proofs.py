@@ -61,6 +61,7 @@ from trading_bot.application.candidate_universe_proof import (
     canonical,
     digest,
 )
+from trading_bot.ports.strategy_registry import ReleaseLookup, StrategyReleaseLookup
 
 DECISION_PROOF_FIELDS = (
     "opportunity_count",
@@ -97,8 +98,21 @@ class CandidateUniverseProofError(ValueError):
 class CandidateUniverseProofRepository:
     """Không có API nhận candidate/exclusion/claimed count từ caller."""
 
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        strategy_registry: StrategyReleaseLookup | None = None,
+        *,
+        release_lookup: ReleaseLookup | None = None,
+    ) -> None:
+        if strategy_registry is not None and release_lookup is not None:
+            raise ValueError("Chỉ truyền một trong `strategy_registry` hoặc `release_lookup`.")
         self._session = session
+        self._release_lookup = (
+            release_lookup
+            if release_lookup is not None
+            else (strategy_registry.get_release if strategy_registry is not None else None)
+        )
 
     async def build_and_append(
         self, *, workspace_id: UUID, trial_record_id: UUID
@@ -365,19 +379,27 @@ class CandidateUniverseProofRepository:
             feature_requirements_for_release,
         )
         from trading_bot.domain.market.models import MarketBarSourceIdentity
-        from trading_bot.domain.strategy.registry import StrategyRegistry
 
+        if self._release_lookup is None:
+            raise CandidateUniverseProofError(
+                "Thiếu port tra cứu strategy release để xác minh replay BASE."
+            )
         reference = await BacktestDatasetReplayBundleRepository(self._session).get_by_hash(
             workspace_id=workspace_id, bundle_hash=manifest.dataset_hash
         )
+        try:
+            registered_release = self._release_lookup(manifest.strategy_release_id)
+        except LookupError as error:
+            raise CandidateUniverseProofError(
+                "Bundle/strategy/window không khớp replay BASE."
+            ) from error
         if (
             reference is None
             or reference.workspace_id != workspace_id
             or reference.bundle_hash != manifest.dataset_hash
             or reference.evaluation_start != manifest.range_start
             or reference.range_end != manifest.range_end
-            or StrategyRegistry().get_release(manifest.strategy_release_id).content_hash
-            != manifest.strategy_content_hash
+            or registered_release.content_hash != manifest.strategy_content_hash
         ):
             raise CandidateUniverseProofError("Bundle/strategy/window không khớp replay BASE.")
         timeframe = entry_timeframe_for_release(manifest.strategy_release_id)

@@ -479,6 +479,7 @@ async def run(phase):
             from trading_bot.adapters.database.repositories.learning_scorer_test_opportunity_proofs import (  # noqa: E501
                 LearningScorerTestOpportunityProofRepository,
             )
+            from trading_bot.application.strategy_catalog import strategy_registry
 
             async with UnitOfWork(sessions, workspace_id=WORKSPACE) as unit:
                 for table in ("learning_training_attempt", "learning_scorer_artifact"):
@@ -534,15 +535,16 @@ async def run(phase):
                     scorer_row.training_sample_count,
                     scorer_row.validation_sample_count,
                 )
+                registry = strategy_registry()
                 base = await CandidateUniverseProofRepository(
-                    unit.session
+                    unit.session, strategy_registry=registry
                 ).build_decision_opportunity(
                     workspace_id=WORKSPACE,
                     trial_record_id=UUID(STATE["trial_record_id"]),
                 )
                 assert base.proof.completeness_verified
                 approved_base = await CandidateUniverseProofRepository(
-                    unit.session
+                    unit.session, strategy_registry=registry
                 ).build_and_append(
                     workspace_id=WORKSPACE, trial_record_id=UUID(STATE["trial_record_id"])
                 )
@@ -552,7 +554,7 @@ async def run(phase):
                 assert base.record_id != approved_base.record_id
                 assert base.proof.content_hash != approved_base.proof.content_hash
                 result = await LearningScorerTestOpportunityProofRepository(
-                    unit.session
+                    unit.session, strategy_registry=registry
                 ).build_and_append(
                     workspace_id=WORKSPACE,
                     evaluation_run_id=UUID(STATE["evaluation_run_id"]),
