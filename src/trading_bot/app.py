@@ -38,6 +38,8 @@ from trading_bot.adapters.telegram.bot_api_sender import (
 from trading_bot.adapters.telegram.recording_sender import RecordingTelegramSender
 from trading_bot.admin.backtest_replay_router import router as backtest_replay_router
 from trading_bot.admin.bot_control_router import router as bot_control_router
+from trading_bot.admin.bot_grant_service import BotGrantAdminService
+from trading_bot.admin.bot_grants_router import router as bot_grants_router
 from trading_bot.admin.bot_reports_router import router as bot_reports_router
 from trading_bot.admin.bot_service import BotConfigAdminService
 from trading_bot.admin.bots_router import router as bots_router
@@ -307,6 +309,11 @@ def create_app(
         application.state.bot_admin_service = (
             BotConfigAdminService(active_session_factory)
             if active_session_factory is not None
+            else None
+        )
+        application.state.bot_grant_service = (
+            BotGrantAdminService(active_session_factory)
+            if admin_web_role and active_session_factory is not None
             else None
         )
         application.state.source_policy_admin_service = (
@@ -802,8 +809,9 @@ def create_app(
 
     app = FastAPI(
         title="Crypidian Trading Bot",
+        # SEC-26: production không công khai schema; worker không phục vụ API quản trị.
         openapi_url=None
-        if app_settings.process_role in {"signal-worker", "market-signal-worker"}
+        if app_settings.app_env == "production" or not admin_web_role
         else "/openapi.json",
         docs_url=None,
         redoc_url=None,
@@ -812,8 +820,7 @@ def create_app(
     app.add_middleware(SecurityHeadersMiddleware, headers=security_headers(app_settings))
     app.state.settings = app_settings
     app.state.templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
-    worker_role = app_settings.process_role in {"signal-worker", "market-signal-worker"}
-    if not worker_role:
+    if admin_web_role:
         app.mount(
             "/static",
             StaticFiles(directory=str(Path(__file__).parent / "static")),
@@ -828,10 +835,12 @@ def create_app(
     if app_settings.process_role == "trading-runtime":
         app.state.readiness["paper_runtime"] = False
         app.state.paper_application = None
-    if not worker_role:
+    # SEC-26: router admin/UI/API quản trị chỉ mount ở process admin-web.
+    if admin_web_role:
         app.include_router(auth_router)
         app.include_router(settings_router)
         app.include_router(bots_router)
+        app.include_router(bot_grants_router)
         app.include_router(bot_reports_router)
         app.include_router(backtest_replay_router)
         app.include_router(bot_control_router)
@@ -839,18 +848,17 @@ def create_app(
         app.include_router(telegram_signal_router)
         app.include_router(research_source_router)
         app.include_router(research_source_admin_router)
-        if admin_web_role:
-            app.include_router(learning_model_registry_router)
-            app.include_router(learning_scoring_deployment_router)
-            app.include_router(learning_model_registry_page_router)
-            app.include_router(learning_observations_page_router)
-            app.include_router(learning_paper_performance_router)
-            app.include_router(learning_incident_entry_hold_router)
-            app.include_router(learning_scoring_page_router)
-            app.include_router(learning_training_router)
-            app.include_router(learning_training_page_router)
-            app.include_router(learning_split_router)
-            app.include_router(learning_split_page_router)
+        app.include_router(learning_model_registry_router)
+        app.include_router(learning_scoring_deployment_router)
+        app.include_router(learning_model_registry_page_router)
+        app.include_router(learning_observations_page_router)
+        app.include_router(learning_paper_performance_router)
+        app.include_router(learning_incident_entry_hold_router)
+        app.include_router(learning_scoring_page_router)
+        app.include_router(learning_training_router)
+        app.include_router(learning_training_page_router)
+        app.include_router(learning_split_router)
+        app.include_router(learning_split_page_router)
         app.include_router(risk_appetite_page_router)
         app.include_router(live_monitor_router)
         app.include_router(admin_web_router)

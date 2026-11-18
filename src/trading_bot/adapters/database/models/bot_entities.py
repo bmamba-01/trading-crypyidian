@@ -11,6 +11,7 @@ from sqlalchemy import (
     Index,
     Integer,
     String,
+    Text,
     UniqueConstraint,
     Uuid,
     text,
@@ -72,6 +73,10 @@ class BotGrant(UuidPrimaryKey, CreatedAt, Base):
         CheckConstraint(
             "revoked_at IS NULL OR revoked_at >= created_at", name="bot_grant_revocation_valid"
         ),
+        CheckConstraint(
+            "revoke_reason IS NULL OR revoked_at IS NOT NULL",
+            name="bot_grant_revoke_reason_valid",
+        ),
         Index(
             "uq_bot_grant_active",
             "workspace_id",
@@ -81,6 +86,12 @@ class BotGrant(UuidPrimaryKey, CreatedAt, Base):
             unique=True,
             postgresql_where=text("revoked_at IS NULL"),
         ),
+        Index(
+            "ix_bot_grant_workspace_expiry",
+            "workspace_id",
+            "revoked_at",
+            "expires_at",
+        ),
     )
 
     workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
@@ -88,7 +99,10 @@ class BotGrant(UuidPrimaryKey, CreatedAt, Base):
     membership_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     permission: Mapped[str] = mapped_column(String(40), nullable=False)
     granted_by: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoke_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 _SHA256 = "length({column}) = 64 AND {column} = lower({column}) AND {column} !~ '[^0-9a-f]'"
