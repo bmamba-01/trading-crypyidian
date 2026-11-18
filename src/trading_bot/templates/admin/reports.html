@@ -461,6 +461,7 @@
       </div>
       <div class="desktop-trades table-responsive report-table-wrap">
         <table class="report-table">
+          <caption class="sr-only">Lịch sử giao dịch đã đóng</caption>
           <thead>
             <tr>
               <th scope="col">{{ help_term("position_symbol_side", "Cặp / Hướng") }}</th>
@@ -511,6 +512,7 @@
       {% if open_trades %}
       <div class="table-responsive report-table-wrap">
         <table class="report-table report-table--open">
+          <caption class="sr-only">Các vị thế đang mở</caption>
           <thead><tr><th scope="col">Cặp / Hướng</th><th scope="col">Mở lúc</th><th scope="col">Tài sản</th><th scope="col">Mã lệnh</th></tr></thead>
           <tbody>
             {% for trade in open_trades %}
@@ -539,6 +541,7 @@
       {% if bot_rows %}
       <div class="table-responsive report-table-wrap">
         <table class="report-table report-table--bots">
+          <caption class="sr-only">Hiệu suất theo từng bot</caption>
           <thead>
             <tr>
               <th scope="col">Bot</th>
