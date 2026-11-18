@@ -5752,3 +5752,21 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
   - Unit + Playwright E2E tích hợp Nhóm 1 (14 files: `test_sc3_strategy_release_admin.py`, `test_sc4_single_registry_invariant.py`, `test_fx7_liquidation_margin.py`, `test_risk1_correlation_group_cap.py`, `test_sig6_checklist_independence.py`, `test_trade_planner.py`, `test_risk_engine.py`, `test_paper_execution.py`, `test_candidate_universe_proof.py`, `test_sig3_signal_card.py`, `test_expanded_strategy_checklists.py`, `test_admin_strategy_cards_ui.py`, `test_sc3_strategy_release_playwright.py`, `test_admin_strategy_cards_playwright.py`) → **258 passed in 41.52s**.
 - **Lưu ý còn mở (SC-3 trên Postgres thật):** Migration `f4d6b8c0e2a5_process_role_least_privilege.py` hiện mới cấp `SELECT` trên `strategy_release` cho `crypidian_admin_web`; khi triển khai thao tác publish/retire qua UI lên Postgres Compose thật cần bổ sung migration cấp `INSERT, UPDATE` trên `strategy_release` cho role `crypidian_admin_web`.
 - **Readback:** đã đọc lại mục này và đối chiếu với diff/test output trước khi commit và push lên `origin/dev`.
+
+
+### 2026-11-18 — Hợp nhất Nhóm A (`CRY-269`, `CRY-111`, `CRY-276`), `CRY-32` (`SC-1`) & Đối soát đóng `CRY-29`, `CRY-31`, `CRY-419`, `CRY-34`, `CRY-35`
+
+- **Nhóm A — Ops Drill & Admin Docs/A11y (`fix/next-ops-a11y-docs`, `483f9b8`, merge vào `dev`):**
+  - **`CRY-269` (`Done`):** Thêm mã hóa AES-256-GCM + kiểm tra dung lượng/chống ghi đè target production trong `src/trading_bot/observability/backup_drill.py`, CLI `scripts/backup_restore_drill.py`, runbook `docs/operations/backup-restore-runbook.md`, unit + E2E Postgres cô lập đo RPO/RTO thực tế.
+  - **`CRY-111` & `CRY-276` (`Done`):** Viết `docs/operations/admin-guide.md`, bổ sung `<caption class="sr-only">` cho 3 bảng trong `src/trading_bot/templates/admin/reports.html`, thêm Playwright E2E `tests/e2e/test_admin_a11y_zoom_keyboard_playwright.py` (zoom 200%, điều hướng bàn phím, skip link, RBAC smoke).
+- **Nhóm C — `CRY-32` (`SC-1`, lấy từ `840bb26` vào `dev`):**
+  - Thêm `src/trading_bot/domain/strategy_card/operations.py` (`OPERATION_REGISTRY`, `resolve_operation`), cập nhật `graph_verifier.py`, `context_gate.py`, `trigger_evaluator.py`, `pipeline_engine.py`, `planner_bridge.py`, `card_strategy.py`, nâng `PIPELINE_ENGINE_VERSION = "l0-l6-v4"`; thêm `tests/unit/test_strategy_card_sc1_engine.py`.
+- **Đối soát tránh trùng lặp trên `dev`:**
+  - `CRY-29` (`FX-7`), `CRY-31` (`RISK-1` — `correlation_groups.py`), `CRY-419` (`SIG-6/checklist-independence` — `_attach_independence`), `CRY-34` (`SC-3` — `strategy_release_service.py`) và `CRY-35` (`SC-4` — `CandidateUniverseProofRepository` nhận `release_lookup`) đã tồn tại sẵn trong `dev` (chưa đóng trên It's a Plan) nên giữ nguyên triển khai chính chủ trên `dev` và đã đóng trên It's a Plan.
+- **Kiểm chứng tổng hợp trên `dev`:**
+  - `uv run alembic heads` → **`d8e2f4a6b8c0 (head)`**.
+  - `uv run ruff check src tests scripts` & `uv run ruff format --check src tests scripts` → **All checks passed** (`1125 files already formatted`).
+  - `uv run mypy src/trading_bot` → **Success: no issues found in 507 source files**.
+  - Unit tests tổng hợp (`test_backup_restore_drill.py`, `test_fx7_liquidation_margin.py`, `test_risk1_correlation_group_cap.py`, `test_sig6_checklist_independence.py`, `test_trade_planner.py`, `test_risk_engine.py`, `test_strategy_card_sc1_engine.py`, `test_expanded_strategy_cards_pipeline.py`, `test_strategy_pipeline_engine.py`, `test_strategy_pipeline_planner_bridge.py`, `test_strategy_card_strategy.py`, `test_strategy_card_verification.py`, `test_candidate_universe_proof.py`, `test_admin_strategy_cards_ui.py`) → **238 passed in 12.84s**.
+  - E2E tests (`test_admin_a11y_zoom_keyboard_playwright.py`, `test_admin_strategy_cards_playwright.py`, `test_ops07c_backup_restore_drill_postgres_e2e.py`) → **6 passed in 41.80s**.
+- **Readback:** đã đọc lại mục này và đối chiếu kết quả test trước khi commit và rebuild stack local.

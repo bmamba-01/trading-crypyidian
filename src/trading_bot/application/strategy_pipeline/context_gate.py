@@ -15,6 +15,8 @@ from decimal import Decimal
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
+from trading_bot.domain.strategy_card.operations import resolve_operation
+
 if TYPE_CHECKING:
     from trading_bot.domain.market.models import OHLCVBar
     from trading_bot.domain.strategy.contracts import DecisionSnapshot
@@ -45,8 +47,12 @@ class ContextGateEvaluator:
         current_atr: Decimal,
         min_atr: Decimal | None = None,
         max_atr: Decimal | None = None,
+        *,
+        current_price: Decimal | None = None,
+        min_atr_pct: Decimal | None = None,
+        max_atr_pct: Decimal | None = None,
     ) -> ContextGateResult:
-        """Kiểm tra điều kiện biên độ biến động (ATR) nằm trong vùng an toàn."""
+        """Kiểm tra điều kiện biên độ biến động (ATR và ATR/giá) nằm trong vùng an toàn."""
         reasons: list[str] = []
         metrics: dict[str, Any] = {"current_atr": float(current_atr)}
 
@@ -60,6 +66,22 @@ class ContextGateEvaluator:
                 f"ATR {current_atr} > max_atr {max_atr}: Biến động thị trường "
                 "quá cao, vượt ngưỡng kiểm soát rủi ro an toàn."
             )
+        if min_atr_pct is not None or max_atr_pct is not None:
+            if current_price is None or current_price <= Decimal("0"):
+                reasons.append("Thiếu giá hợp lệ để tính tỷ lệ biến động ATR/giá.")
+            else:
+                atr_pct = current_atr / current_price
+                metrics["atr_pct"] = float(atr_pct)
+                if min_atr_pct is not None and atr_pct < min_atr_pct:
+                    reasons.append(
+                        f"ATR/giá {atr_pct:.6f} < min_atr_pct {min_atr_pct}: "
+                        "Biến động tương đối quá thấp."
+                    )
+                if max_atr_pct is not None and atr_pct > max_atr_pct:
+                    reasons.append(
+                        f"ATR/giá {atr_pct:.6f} > max_atr_pct {max_atr_pct}: "
+                        "Biến động tương đối quá cao."
+                    )
 
         if reasons:
             return ContextGateResult(
@@ -208,25 +230,43 @@ class ContextGateEvaluator:
             )
 
         # 2. Duyệt qua từng gate node được cấu hình trong đồ thị
+        current_price = latest_bar.close if latest_bar is not None else None
         for node in gate_nodes:
-            op = node.operation.lower()
+            spec = resolve_operation(node.operation, layer=node.layer)
+            if spec is None:
+                all_reasons.append(
+                    f"Operation L4 chưa đăng ký '{node.operation}' tại node '{node.node_id}'."
+                )
+                continue
+            canonical = spec.canonical
             params = node.parameters
             checked_vol = False
 
-            if "volatility" in op or "atr" in op:
+            if canonical == "volatility_gate":
                 checked_vol = True
                 min_atr = Decimal(str(params["min_atr"])) if "min_atr" in params else None
                 max_atr = Decimal(str(params["max_atr"])) if "max_atr" in params else None
+                min_atr_pct = (
+                    Decimal(str(params["min_atr_pct"])) if "min_atr_pct" in params else None
+                )
+                max_atr_pct = (
+                    Decimal(str(params["max_atr_pct"])) if "max_atr_pct" in params else None
+                )
                 atr_val = self._resolve_atr(node_outputs, latest_bar, params)
 
                 res = self.evaluate_volatility_gate(
-                    current_atr=atr_val, min_atr=min_atr, max_atr=max_atr
+                    current_atr=atr_val,
+                    min_atr=min_atr,
+                    max_atr=max_atr,
+                    current_price=current_price,
+                    min_atr_pct=min_atr_pct,
+                    max_atr_pct=max_atr_pct,
                 )
                 all_metrics.update(res.metrics)
                 if res.status == ContextGateStatus.BLOCK:
                     all_reasons.extend(res.reasons)
 
-            elif "rv_regime" in op or "realized_volatility" in op:
+            elif canonical == "rv_regime_gate":
                 min_rv = Decimal(str(params["min_rv"])) if "min_rv" in params else None
                 max_rv = Decimal(str(params["max_rv"])) if "max_rv" in params else None
                 rv_val: Decimal | None = None
@@ -242,7 +282,7 @@ class ContextGateEvaluator:
                     if res.status == ContextGateStatus.BLOCK:
                         all_reasons.extend(res.reasons)
 
-            elif "adx" in op:
+            elif canonical == "adx_regime_gate":
                 min_adx = Decimal(str(params["min_adx"])) if "min_adx" in params else None
                 max_adx = Decimal(str(params["max_adx"])) if "max_adx" in params else None
                 adx_val: Decimal | None = None
@@ -258,7 +298,7 @@ class ContextGateEvaluator:
                     if res.status == ContextGateStatus.BLOCK:
                         all_reasons.extend(res.reasons)
 
-            elif "squeeze" in op:
+            elif canonical == "squeeze_regime_gate":
                 squeeze_val: Decimal | None = None
                 for out_key, val in node_outputs.items():
                     if "squeeze" in out_key.lower() and isinstance(val, (int, float, Decimal)):
@@ -267,43 +307,60 @@ class ContextGateEvaluator:
                 if squeeze_val is not None:
                     all_metrics["squeeze_score"] = float(squeeze_val)
 
-            elif "trend" in op or "ema" in op:
-                expected_trend = str(params.get("trend", "BULLISH"))
-                price = latest_bar.close if latest_bar is not None else Decimal("100.0")
-                ema_val = None
-                for out_key, val in node_outputs.items():
-                    if "ema" in out_key.lower() and isinstance(val, (int, float, Decimal)):
-                        ema_val = Decimal(str(val))
-                        break
-                if ema_val is None:
-                    ema_val = Decimal(str(params.get("trend_ema", str(price))))
-
-                if not _is_preview_warmup("ema"):
-                    res = self.evaluate_trend_gate(
-                        current_price=price,
-                        trend_ema=ema_val,
-                        expected_trend=expected_trend,
+            elif canonical == "trend_gate":
+                expected_trend = str(params.get("trend", "")).strip()
+                if not expected_trend:
+                    all_reasons.append(
+                        f"Cổng xu hướng '{node.node_id}' thiếu tham số bắt buộc 'trend'."
                     )
-                    all_metrics.update(res.metrics)
-                    if res.status == ContextGateStatus.BLOCK:
-                        all_reasons.extend(res.reasons)
+                else:
+                    price = latest_bar.close if latest_bar is not None else Decimal("100.0")
+                    ema_val = None
+                    for out_key, val in node_outputs.items():
+                        if "ema" in out_key.lower() and isinstance(val, (int, float, Decimal)):
+                            ema_val = Decimal(str(val))
+                            break
+                    if ema_val is None and "trend_ema" in params:
+                        ema_val = Decimal(str(params["trend_ema"]))
 
-            else:
-                # Kiểm tra cờ boolean mặc định nếu có node đầu vào
-                for inp in node.inputs:
-                    inp_val = node_outputs.get(inp.name)
-                    if inp_val is False:
-                        all_reasons.append(
-                            f"Gate '{node.node_id}' nhận cờ False từ cổng vào '{inp.name}'."
-                        )
+                    if not _is_preview_warmup("ema"):
+                        if ema_val is None:
+                            all_reasons.append(
+                                f"Thiếu giá trị EMA đầu vào cho cổng xu hướng '{node.node_id}'."
+                            )
+                        else:
+                            res = self.evaluate_trend_gate(
+                                current_price=price,
+                                trend_ema=ema_val,
+                                expected_trend=expected_trend,
+                            )
+                            all_metrics.update(res.metrics)
+                            if res.status == ContextGateStatus.BLOCK:
+                                all_reasons.extend(res.reasons)
 
-            # Hỗ trợ kiểm tra min_atr/max_atr đồng nhất trên mọi cổng L4 khi được cấu hình
-            if not checked_vol and ("min_atr" in params or "max_atr" in params):
+            # Hỗ trợ kiểm tra min_atr/max_atr và min_atr_pct/max_atr_pct đồng nhất trên mọi cổng L4
+            if not checked_vol and (
+                "min_atr" in params
+                or "max_atr" in params
+                or "min_atr_pct" in params
+                or "max_atr_pct" in params
+            ):
                 min_atr = Decimal(str(params["min_atr"])) if "min_atr" in params else None
                 max_atr = Decimal(str(params["max_atr"])) if "max_atr" in params else None
+                min_atr_pct = (
+                    Decimal(str(params["min_atr_pct"])) if "min_atr_pct" in params else None
+                )
+                max_atr_pct = (
+                    Decimal(str(params["max_atr_pct"])) if "max_atr_pct" in params else None
+                )
                 atr_val = self._resolve_atr(node_outputs, latest_bar, params)
                 vol_res = self.evaluate_volatility_gate(
-                    current_atr=atr_val, min_atr=min_atr, max_atr=max_atr
+                    current_atr=atr_val,
+                    min_atr=min_atr,
+                    max_atr=max_atr,
+                    current_price=current_price,
+                    min_atr_pct=min_atr_pct,
+                    max_atr_pct=max_atr_pct,
                 )
                 all_metrics.update(vol_res.metrics)
                 if vol_res.status == ContextGateStatus.BLOCK:

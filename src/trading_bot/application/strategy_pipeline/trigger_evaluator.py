@@ -9,6 +9,7 @@ Tầng L5 đóng vai trò ngòi nổ hành động (Action Trigger):
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
 from enum import StrEnum
@@ -18,11 +19,13 @@ from trading_bot.application.strategy_pipeline.context_gate import (
     ContextGateResult,
     ContextGateStatus,
 )
+from trading_bot.domain.market.features import ema
 from trading_bot.domain.strategy_card.anatomy import (
     body_ratio,
     lower_wick_ratio,
     upper_wick_ratio,
 )
+from trading_bot.domain.strategy_card.operations import resolve_operation
 
 if TYPE_CHECKING:
     from trading_bot.domain.market.models import OHLCVBar
@@ -57,6 +60,7 @@ class TriggerEvaluator:
         gate_result: ContextGateResult,
         latest_bar: OHLCVBar | None = None,
         edges: list[GraphEdge] | tuple[GraphEdge, ...] | None = None,
+        bars: Sequence[OHLCVBar] | None = None,
     ) -> TriggerEvaluationResult:
         """Đánh giá các điều kiện kích hoạt chiến lược.
 
@@ -70,10 +74,13 @@ class TriggerEvaluator:
             )
 
         for node in trigger_nodes:
-            op = node.operation.lower()
+            spec = resolve_operation(node.operation, layer=node.layer)
+            if spec is None:
+                continue
+            canonical = spec.canonical
             params = node.parameters
 
-            if "wick_reversal" in op:
+            if canonical == "wick_reversal_trigger":
                 z_threshold = Decimal(str(params.get("z_threshold", "1.5")))
                 min_wick = Decimal(str(params.get("min_wick", "0.45")))
                 max_body = Decimal(str(params.get("max_body", "0.45")))
@@ -119,7 +126,7 @@ class TriggerEvaluator:
                             },
                         )
 
-            elif "vwap_reversion" in op:
+            elif canonical == "vwap_reversion_trigger":
                 dev_threshold = Decimal(str(params.get("dev_threshold", "1.75")))
                 dev_val = self._find_decimal(node_outputs, ("vwap_dev", "l3_vwap_dev"))
                 loc_val = self._find_decimal(node_outputs, ("l1_location", "location"))
@@ -139,10 +146,13 @@ class TriggerEvaluator:
                             metadata={"matched_node": node.node_id, "vwap_dev": float(dev_val)},
                         )
 
-            elif any(
-                name in op
-                for name in ("tsmom", "squeeze_breakout", "pullback", "macd_adx", "taker_flow")
-            ):
+            elif canonical in {
+                "tsmom_threshold_trigger",
+                "squeeze_breakout_trigger",
+                "pullback_continuation_trigger",
+                "macd_adx_trigger",
+                "taker_flow_breakout_trigger",
+            }:
                 threshold = Decimal(str(params.get("threshold", "0.25")))
                 score_val = self._find_connected_decimal(node.node_id, node_outputs, edges)
                 if score_val is not None:
@@ -169,7 +179,12 @@ class TriggerEvaluator:
                             },
                         )
 
-            elif "rejection" in op or "breakout" in op or "threshold" in op:
+            elif canonical in {"breakout_candle_trigger", "threshold_trigger"}:
+                if canonical == "threshold_trigger" and (
+                    "threshold" not in params or "direction" not in params
+                ):
+                    # Bắt buộc khai báo ngưỡng và hướng tường minh cho ngòi nổ ngưỡng tổng quát.
+                    continue
                 threshold = Decimal(str(params.get("threshold", "0.5")))
                 direction = str(params.get("direction", "LONG")).upper()
 
@@ -219,16 +234,27 @@ class TriggerEvaluator:
                         },
                     )
 
-            elif "crossover" in op:
-                direction = str(params.get("direction", "LONG")).upper()
-                signal = (
-                    TriggerSignal.LONG_ENTRY if direction == "LONG" else TriggerSignal.SHORT_ENTRY
-                )
-                return TriggerEvaluationResult(
-                    signal=signal,
-                    trigger_score=Decimal("1.0"),
-                    evidence_nodes=(node.node_id,),
-                )
+            elif canonical == "crossover_trigger":
+                raw_dir = str(params.get("direction", "")).upper().strip()
+                if raw_dir not in {"LONG", "SHORT", "BOTH"}:
+                    continue
+                cross = self._evaluate_crossover(node_outputs, params, bars)
+                if cross is None:
+                    continue
+                if cross == "BULLISH" and raw_dir in {"LONG", "BOTH"}:
+                    return TriggerEvaluationResult(
+                        signal=TriggerSignal.LONG_ENTRY,
+                        trigger_score=Decimal("1.0"),
+                        evidence_nodes=(node.node_id,),
+                        metadata={"matched_node": node.node_id, "crossover": "BULLISH"},
+                    )
+                if cross == "BEARISH" and raw_dir in {"SHORT", "BOTH"}:
+                    return TriggerEvaluationResult(
+                        signal=TriggerSignal.SHORT_ENTRY,
+                        trigger_score=Decimal("1.0"),
+                        evidence_nodes=(node.node_id,),
+                        metadata={"matched_node": node.node_id, "crossover": "BEARISH"},
+                    )
 
         return TriggerEvaluationResult(
             signal=TriggerSignal.NO_SIGNAL,
@@ -269,3 +295,38 @@ class TriggerEvaluator:
         return self._find_decimal(
             node_outputs, ("l3_", "tsmom", "squeeze", "pullback", "macd", "flow")
         )
+
+    def _evaluate_crossover(
+        self,
+        node_outputs: dict[str, Any],
+        params: dict[str, Any],
+        bars: Sequence[OHLCVBar] | None,
+    ) -> str | None:
+        """Kiểm tra giao cắt thật (BULLISH/BEARISH) từ node_outputs hoặc chuỗi EMA trên nến."""
+        if all(k in node_outputs for k in ("fast_prev", "fast_curr", "slow_prev", "slow_curr")):
+            fp = Decimal(str(node_outputs["fast_prev"]))
+            fc = Decimal(str(node_outputs["fast_curr"]))
+            sp = Decimal(str(node_outputs["slow_prev"]))
+            sc = Decimal(str(node_outputs["slow_curr"]))
+            if fp <= sp and fc > sc:
+                return "BULLISH"
+            if fp >= sp and fc < sc:
+                return "BEARISH"
+            return None
+
+        fast_period = int(params.get("fast_period", 9))
+        slow_period = int(params.get("slow_period", 21))
+        if bars is None or len(bars) < slow_period + 1:
+            return None
+        closes = [float(b.close) for b in bars]
+        fast_series = ema(closes, fast_period)
+        slow_series = ema(closes, slow_period)
+        fp_f, fc_f = fast_series[-2], fast_series[-1]
+        sp_f, sc_f = slow_series[-2], slow_series[-1]
+        if fp_f is None or fc_f is None or sp_f is None or sc_f is None:
+            return None
+        if fp_f <= sp_f and fc_f > sc_f:
+            return "BULLISH"
+        if fp_f >= sp_f and fc_f < sc_f:
+            return "BEARISH"
+        return None

@@ -52,7 +52,7 @@ from trading_bot.domain.market.features import (
     vwap,
     zscore,
 )
-from trading_bot.domain.strategy.contracts import FeatureQuality
+from trading_bot.domain.strategy.contracts import FeatureQuality, SeriesQuality
 from trading_bot.domain.strategy_card.anatomy import (
     body_ratio,
     close_location,
@@ -61,16 +61,17 @@ from trading_bot.domain.strategy_card.anatomy import (
     wick_rejection_strength,
 )
 from trading_bot.domain.strategy_card.models import CompositionLayer
+from trading_bot.domain.strategy_card.operations import resolve_operation
 from trading_bot.domain.strategy_card.schema import StrategyCard, compute_canonical_hash
 
 if TYPE_CHECKING:
     from trading_bot.domain.market.models import OHLCVBar
-    from trading_bot.domain.strategy.contracts import DecisionSnapshot
+    from trading_bot.domain.strategy.contracts import DecisionSnapshot, MarketSeries
 
 
 # Phiên bản ngữ nghĩa của engine; đổi cách tính một tầng thì tăng giá trị này để hash release
 # của mọi Strategy Card đổi theo.
-PIPELINE_ENGINE_VERSION = "l0-l6-v3"
+PIPELINE_ENGINE_VERSION = "l0-l6-v4"
 # Nguồn ATR khi không có feature đã quản trị lẫn đủ lịch sử nến: chỉ là biên độ của một nến.
 ATR_SOURCE_SINGLE_BAR = "single_bar_range"
 # Nguồn chỉ báo khi chưa đủ nến lịch sử warmup hoặc thiếu feature trên snapshot.
@@ -175,20 +176,83 @@ class StrategyPipelineEngine:
         self.trigger_evaluator = trigger_evaluator or TriggerEvaluator()
         self.zone_builder = zone_builder or ZoneBuilder()
 
+    def _select_card_series(
+        self, card: StrategyCard, snapshot: DecisionSnapshot
+    ) -> MarketSeries | None:
+        """Chọn chuỗi nến khớp timeframe thẻ khai báo thay vì mặc định ``series[0]``."""
+        if not snapshot.series:
+            return None
+        declared_tfs = tuple(getattr(card.compatibility, "timeframes", ()) or ())
+        if not declared_tfs:
+            return snapshot.series[0]
+        for tf in declared_tfs:
+            found = snapshot.get_series(tf)
+            if found is not None and found.bars:
+                return found
+        return None
+
     def execute(
         self,
         card: StrategyCard,
         snapshot: DecisionSnapshot,
     ) -> PipelineExecutionResult:
         """Thực thi toàn diện đồ thị tính toán L0 -> L6 từ DecisionSnapshot."""
-        # 1. Trích xuất nến mới nhất từ snapshot
-        if not snapshot.series or not snapshot.series[0].bars:
+        # 0. Kiểm tra toàn bộ node có operation đã đăng ký tường minh (SC-1)
+        for node in card.nodes:
+            if resolve_operation(node.operation, layer=node.layer) is None:
+                return PipelineExecutionResult(
+                    status="ERROR",
+                    reasons=(
+                        f"UNREGISTERED_OPERATION: Node '{node.node_id}' tầng '{node.layer.value}' "
+                        f"dùng operation chưa đăng ký '{node.operation}'.",
+                    ),
+                )
+
+        # 1. Trích xuất chuỗi nến đúng timeframe thẻ khai báo & guard dữ liệu như H0x
+        if not snapshot.series:
             return PipelineExecutionResult(
                 status="DATA_HYGIENE_FAILED",
                 reasons=("DATA_HYGIENE_FAILED: Không có chuỗi nến nào trong DecisionSnapshot.",),
             )
+        selected_series = self._select_card_series(card, snapshot)
+        if selected_series is None or not selected_series.bars:
+            declared = tuple(getattr(card.compatibility, "timeframes", ()) or ())
+            return PipelineExecutionResult(
+                status="DATA_HYGIENE_FAILED",
+                reasons=(
+                    "DATA_HYGIENE_FAILED: Snapshot thiếu chuỗi nến thuộc "
+                    f"timeframe thẻ ({declared}).",
+                ),
+            )
 
-        bar = snapshot.series[0].bars[-1]
+        if (
+            selected_series.quality
+            in {SeriesQuality.STALE, SeriesQuality.INCOMPLETE, SeriesQuality.INVALID}
+            or selected_series.backfill_complete is False
+        ):
+            return PipelineExecutionResult(
+                status="DATA_HYGIENE_FAILED",
+                reasons=(
+                    f"DATA_HYGIENE_FAILED: Chuỗi nến {selected_series.timeframe} chưa sẵn sàng "
+                    f"(quality={selected_series.quality.value}, "
+                    f"backfill={selected_series.backfill_complete}).",
+                ),
+            )
+
+        bar = selected_series.bars[-1]
+        if not getattr(bar, "is_closed", True):
+            return PipelineExecutionResult(
+                status="DATA_HYGIENE_FAILED",
+                reasons=("DATA_HYGIENE_FAILED: Nến mới nhất chưa đóng cửa (is_closed=False).",),
+            )
+        if getattr(bar, "available_at", bar.close_time) > snapshot.decision_time:
+            return PipelineExecutionResult(
+                status="DATA_HYGIENE_FAILED",
+                reasons=(
+                    "DATA_HYGIENE_FAILED: Phát hiện dữ liệu nhìn trước "
+                    "(available_at > decision_time).",
+                ),
+            )
 
         # -------------------------------------------------------------------
         # TẦNG L0: DATA HYGIENE CHECK
@@ -217,7 +281,9 @@ class StrategyPipelineEngine:
         indicator_sources: dict[str, str] = {}
         indicator_feature_ids: list[str] = []
         for node in l2_nodes:
-            val, source, feature_id = self._compute_l2_node(node, bar, snapshot)
+            val, source, feature_id = self._compute_l2_node(
+                node, bar, snapshot, default_timeframe=selected_series.timeframe
+            )
             node_values[node.node_id] = val
             indicator_sources[node.node_id] = source
             if feature_id is not None:
@@ -229,7 +295,12 @@ class StrategyPipelineEngine:
         l3_nodes = [n for n in card.nodes if n.layer == CompositionLayer.L3_ALGORITHMS]
         for node in l3_nodes:
             val, source, feature_id = self._compute_l3_node_with_source(
-                node, node_values, bar=bar, snapshot=snapshot
+                node,
+                node_values,
+                bar=bar,
+                snapshot=snapshot,
+                default_timeframe=selected_series.timeframe,
+                edges=card.edges,
             )
             node_values[node.node_id] = val
             indicator_sources[node.node_id] = source
@@ -268,6 +339,7 @@ class StrategyPipelineEngine:
             gate_result=gate_result,
             latest_bar=bar,
             edges=card.edges,
+            bars=selected_series.bars,
         )
 
         if trigger_result.signal == TriggerSignal.NO_SIGNAL:
@@ -299,8 +371,19 @@ class StrategyPipelineEngine:
                     rr_ratio = Decimal(str(params[key]))
                     break
 
-        # Lấy ATR từ node L2 nếu có, hoặc qua managed feature / biên độ nến
-        current_atr = self._resolve_atr_value(node_values, bar, snapshot)
+        # Lấy ATR từ node L2 nối vào L6 qua cạnh đồ thị (hoặc node ATR / managed feature)
+        current_atr, atr_from_single_bar = self._resolve_atr_value_with_source(
+            node_values,
+            bar,
+            snapshot,
+            l6_nodes=l6_nodes,
+            edges=card.edges,
+            default_timeframe=selected_series.timeframe,
+        )
+        if atr_from_single_bar and not any(
+            src == ATR_SOURCE_SINGLE_BAR for src in indicator_sources.values()
+        ):
+            indicator_sources["l6_atr"] = ATR_SOURCE_SINGLE_BAR
         direction_str = "LONG" if trigger_result.signal == TriggerSignal.LONG_ENTRY else "SHORT"
 
         zones = self.zone_builder.build_zones(
@@ -405,17 +488,18 @@ class StrategyPipelineEngine:
         return None
 
     def _compute_l1_node(self, operation: str, bar: PriceBarLike) -> Decimal:
-        """Tính toán khối nguyên tử giải phẫu nến L1."""
-        op = operation.lower()
-        if "lower_wick" in op:
+        """Tính toán khối nguyên tử giải phẫu nến L1 qua bảng đăng ký operation."""
+        spec = resolve_operation(operation, layer=CompositionLayer.L1_CANDLE_ANATOMY)
+        if spec is None:
+            raise ValueError(f"Operation L1 chưa đăng ký: {operation}")
+        if spec.canonical == "lower_wick_ratio":
             return lower_wick_ratio(bar.open, bar.high, bar.low, bar.close)
-        if "upper_wick" in op:
+        if spec.canonical == "upper_wick_ratio":
             return upper_wick_ratio(bar.open, bar.high, bar.low, bar.close)
-        if "body" in op:
+        if spec.canonical == "body_ratio":
             return body_ratio(bar.open, bar.high, bar.low, bar.close)
-        if "location" in op:
+        if spec.canonical == "close_location":
             return close_location(bar.open, bar.high, bar.low, bar.close)
-        # Mặc định là wick_rejection_strength
         return wick_rejection_strength(bar.open, bar.high, bar.low, bar.close)
 
     def _snapshot_feature(
@@ -438,74 +522,116 @@ class StrategyPipelineEngine:
         bar: OHLCVBar,
         snapshot: DecisionSnapshot,
     ) -> Decimal:
+        val, _ = self._resolve_atr_value_with_source(node_values, bar, snapshot)
+        return val
+
+    def _resolve_atr_value_with_source(
+        self,
+        node_values: dict[str, Any],
+        bar: OHLCVBar,
+        snapshot: DecisionSnapshot,
+        *,
+        l6_nodes: Sequence[Any] = (),
+        edges: Sequence[Any] = (),
+        default_timeframe: str | None = None,
+    ) -> tuple[Decimal, bool]:
+        """Truy vết ATR từ cạnh nối vào L6, node ATR L2 hoặc feature ``atr_14``."""
+        # 1. Ưu tiên node ATR nối gián tiếp/trực tiếp tới L6 qua cạnh đồ thị.
+        if l6_nodes and edges:
+            reverse_adj: dict[str, list[str]] = {}
+            for edge in edges:
+                reverse_adj.setdefault(edge.to_node, []).append(edge.from_node)
+            visited: set[str] = set()
+            stack = [node.node_id for node in l6_nodes]
+            while stack:
+                curr = stack.pop()
+                for prev in reverse_adj.get(curr, ()):
+                    if prev not in visited:
+                        visited.add(prev)
+                        stack.append(prev)
+                        if "atr" in prev.lower() and isinstance(
+                            node_values.get(prev), (int, float, Decimal)
+                        ):
+                            dval = Decimal(str(node_values[prev]))
+                            if dval > Decimal("0"):
+                                return dval, False
+
         for key, val in node_values.items():
             if "atr" in key.lower() and isinstance(val, (int, float, Decimal)):
                 dval = Decimal(str(val))
                 if dval > Decimal("0"):
-                    return dval
-        if snapshot.series:
-            tf = snapshot.series[0].timeframe
+                    return dval, False
+        tf = default_timeframe or (snapshot.series[0].timeframe if snapshot.series else None)
+        if tf is not None:
             found = self._snapshot_feature(snapshot, "atr_14", tf)
             if found is not None and found[0] > Decimal("0"):
-                return found[0]
-        return bar.high - bar.low
+                return found[0], False
+        return bar.high - bar.low, True
 
     def _compute_l2_node(
         self,
         node: Any,
         bar: OHLCVBar,
         snapshot: DecisionSnapshot,
+        *,
+        default_timeframe: str | None = None,
     ) -> tuple[Decimal, str, str | None]:
         """Tính chỉ báo L2 point-in-time; trả (giá trị, nguồn, feature_id đã dùng nếu có)."""
-        op = node.operation.lower()
+        spec = resolve_operation(node.operation, layer=CompositionLayer.L2_INDICATORS)
+        if spec is None:
+            raise ValueError(f"Operation L2 chưa đăng ký: {node.operation}")
+        canonical = spec.canonical
         params = node.parameters
-        timeframe = str(params.get("timeframe", snapshot.series[0].timeframe))
-        series = snapshot.get_series(timeframe) or snapshot.series[0]
+        fallback_tf = default_timeframe or snapshot.series[0].timeframe
+        timeframe = str(params.get("timeframe", fallback_tf))
+        series = (
+            snapshot.get_series(timeframe) or snapshot.get_series(fallback_tf) or snapshot.series[0]
+        )
         bars = series.bars
 
-        if "atr" in op or "true_range" in op:
+        if canonical == "atr":
             period = int(params.get("period", 14))
             found = self._snapshot_feature(snapshot, f"atr_{period}", timeframe)
             if found is not None and found[0] > Decimal("0"):
                 return found
             return self._l2_from_bars(node, bar, bars)
 
-        if "ema" in op or "exponential_moving_average" in op:
+        if canonical == "ema":
             period = int(params.get("period", 20))
             found = self._snapshot_feature(snapshot, f"ema_{period}", timeframe)
             if found is not None:
                 return found
             return self._l2_from_bars(node, bar, bars)
 
-        if "sma" in op or "simple_moving_average" in op:
+        if canonical == "sma":
             period = int(params.get("period", 20))
             found = self._snapshot_feature(snapshot, f"sma_{period}", timeframe)
             if found is not None:
                 return found
             return self._l2_from_bars(node, bar, bars)
 
-        if "rsi" in op:
+        if canonical == "rsi":
             period = int(params.get("period", 14))
             found = self._snapshot_feature(snapshot, f"rsi_{period}", timeframe)
             if found is not None:
                 return found
             return self._l2_from_bars(node, bar, bars)
 
-        if "adx" in op:
+        if canonical == "adx":
             period = int(params.get("period", 14))
             found = self._snapshot_feature(snapshot, f"adx_{period}", timeframe)
             if found is not None:
                 return found
             return self._l2_from_bars(node, bar, bars)
 
-        if "realized_volatility" in op or "rv" in op:
+        if canonical == "realized_volatility":
             period = int(params.get("period", 20))
             found = self._snapshot_feature(snapshot, f"realized_volatility_{period}", timeframe)
             if found is not None:
                 return found
             return self._l2_from_bars(node, bar, bars)
 
-        if "bollinger_bandwidth" in op or "bb_width" in op:
+        if canonical == "bollinger_bandwidth":
             period = int(params.get("period", 20))
             upper_f = self._snapshot_feature(snapshot, f"bollinger_upper_{period}", timeframe)
             lower_f = self._snapshot_feature(snapshot, f"bollinger_lower_{period}", timeframe)
@@ -515,7 +641,7 @@ class StrategyPipelineEngine:
                 return bw, f"feature:bollinger_bw_{period}", upper_f[2]
             return self._l2_from_bars(node, bar, bars)
 
-        if "vwap" in op:
+        if canonical == "vwap":
             found = self._snapshot_feature(snapshot, "session_vwap", timeframe)
             if found is not None:
                 return found
@@ -527,10 +653,13 @@ class StrategyPipelineEngine:
         self, node: Any, bar: PriceBarLike, bars: Sequence[PriceBarLike]
     ) -> tuple[Decimal, str, str | None]:
         """Nhánh L2 chỉ từ chuỗi nến ``bars`` kết thúc tại ``bar`` (point-in-time)."""
-        op = node.operation.lower()
+        spec = resolve_operation(node.operation, layer=CompositionLayer.L2_INDICATORS)
+        if spec is None:
+            raise ValueError(f"Operation L2 chưa đăng ký: {node.operation}")
+        canonical = spec.canonical
         params = node.parameters
 
-        if "atr" in op or "true_range" in op:
+        if canonical == "atr":
             period = int(params.get("period", 14))
             if len(bars) > period:
                 window = bars[-(period + 1) :]
@@ -545,7 +674,7 @@ class StrategyPipelineEngine:
                 return sum(ranges, Decimal("0")) / Decimal(len(ranges)), f"bars:{period}", None
             return bar.high - bar.low, ATR_SOURCE_SINGLE_BAR, None
 
-        if "ema" in op or "exponential_moving_average" in op:
+        if canonical == "ema":
             period = int(params.get("period", 20))
             if len(bars) >= period:
                 val = ema([float(b.close) for b in bars], period)[-1]
@@ -553,7 +682,7 @@ class StrategyPipelineEngine:
                     return Decimal(str(round(val, 6))), f"bars:ema_{period}", None
             return bar.close, WARMUP_SOURCE_INSUFFICIENT, None
 
-        if "sma" in op or "simple_moving_average" in op:
+        if canonical == "sma":
             period = int(params.get("period", 20))
             if len(bars) >= period:
                 val = sma([float(b.close) for b in bars], period)[-1]
@@ -561,7 +690,7 @@ class StrategyPipelineEngine:
                     return Decimal(str(round(val, 6))), f"bars:sma_{period}", None
             return bar.close, WARMUP_SOURCE_INSUFFICIENT, None
 
-        if "rsi" in op:
+        if canonical == "rsi":
             period = int(params.get("period", 14))
             if len(bars) > period:
                 val = rsi([float(b.close) for b in bars], period)[-1]
@@ -569,7 +698,7 @@ class StrategyPipelineEngine:
                     return Decimal(str(round(val, 4))), f"bars:rsi_{period}", None
             return Decimal("50"), WARMUP_SOURCE_INSUFFICIENT, None
 
-        if "adx" in op:
+        if canonical == "adx":
             period = int(params.get("period", 14))
             if len(bars) >= 2 * period:
                 _, _, _, adx_s = adx_dmi(
@@ -583,7 +712,7 @@ class StrategyPipelineEngine:
                     return Decimal(str(round(val, 4))), f"bars:adx_{period}", None
             return Decimal("0"), WARMUP_SOURCE_INSUFFICIENT, None
 
-        if "realized_volatility" in op or "rv" in op:
+        if canonical == "realized_volatility":
             period = int(params.get("period", 20))
             if len(bars) > period:
                 val = realized_volatility([float(b.close) for b in bars], period)[-1]
@@ -591,7 +720,7 @@ class StrategyPipelineEngine:
                     return Decimal(str(round(val, 6))), f"bars:rv_{period}", None
             return Decimal("0"), WARMUP_SOURCE_INSUFFICIENT, None
 
-        if "bollinger_bandwidth" in op or "bb_width" in op:
+        if canonical == "bollinger_bandwidth":
             period = int(params.get("period", 20))
             if len(bars) >= period:
                 mid, up, low = bollinger_bands([float(b.close) for b in bars], period=period)
@@ -600,7 +729,7 @@ class StrategyPipelineEngine:
                     return Decimal(str(round((u - lw) / m, 6))), f"bars:bbw_{period}", None
             return Decimal("0"), WARMUP_SOURCE_INSUFFICIENT, None
 
-        if "vwap" in op:
+        if canonical == "vwap":
             bar_open_time = getattr(bar, "open_time", None)
             if bar_open_time is not None:
                 utc_day = bar_open_time.astimezone(UTC).date()
@@ -619,7 +748,7 @@ class StrategyPipelineEngine:
                         return Decimal(str(round(val, 6))), "bars:session_vwap", None
             return bar.close, WARMUP_SOURCE_INSUFFICIENT, None
 
-        if "macd" in op:
+        if canonical == "macd":
             fast = int(params.get("fast", 12))
             slow = int(params.get("slow", 26))
             sig = int(params.get("signal", 9))
@@ -630,7 +759,7 @@ class StrategyPipelineEngine:
                     return Decimal(str(round(val, 6))), "bars:macd_hist", None
             return Decimal("0"), WARMUP_SOURCE_INSUFFICIENT, None
 
-        if "taker_flow" in op or "taker_imbalance" in op:
+        if canonical == "taker_flow":
             tf_window = int(params.get("window", 3))
             if len(bars) < tf_window:
                 return Decimal("0"), WARMUP_SOURCE_INSUFFICIENT, None
@@ -673,26 +802,41 @@ class StrategyPipelineEngine:
         *,
         bar: OHLCVBar | None = None,
         snapshot: DecisionSnapshot | None = None,
+        default_timeframe: str | None = None,
+        edges: Sequence[Any] = (),
     ) -> tuple[Decimal, str, str | None]:
         """Tính điểm tổng hợp L3 point-in-time kèm nguồn dữ liệu/warmup."""
-        op = node.operation.lower()
+        spec = resolve_operation(node.operation, layer=CompositionLayer.L3_ALGORITHMS)
+        if spec is None:
+            raise ValueError(f"Operation L3 chưa đăng ký: {node.operation}")
+        canonical = spec.canonical
         params = node.parameters
-        timeframe = snapshot.series[0].timeframe if (snapshot and snapshot.series) else "15m"
-        bars = snapshot.series[0].bars if (snapshot and snapshot.series) else ()
+        timeframe = default_timeframe or (
+            snapshot.series[0].timeframe if (snapshot and snapshot.series) else "15m"
+        )
+        selected_series = snapshot.get_series(timeframe) if snapshot is not None else None
+        bars = (
+            selected_series.bars
+            if selected_series is not None
+            else (snapshot.series[0].bars if (snapshot and snapshot.series) else ())
+        )
 
-        if "zscore" in op:
+        if canonical == "zscore":
             window = int(params.get("window", 20))
             if snapshot is not None:
                 found = self._snapshot_feature(snapshot, f"zscore_{window}", timeframe)
                 if found is not None:
                     return found
             if len(bars) > window:
+                # Nếu zscore có cạnh nối từ một node L1/L2 đã có chuỗi hoặc giá đóng nến,
+                # tính zscore chuẩn trên chuỗi giá đóng của khung thời gian thẻ.
+                _ = [e.from_node for e in edges if e.to_node == node.node_id]
                 z_val = zscore([float(b.close) for b in bars], window)[-1]
                 if z_val is not None and math.isfinite(z_val):
                     return Decimal(str(round(z_val, 6))), f"bars:zscore_{window}", None
             return Decimal("0"), WARMUP_SOURCE_INSUFFICIENT, None
 
-        if "tsmom" in op:
+        if canonical == "tsmom":
             horizons = tuple(int(h) for h in params.get("horizons", (42, 126, 252)))
             if len(bars) <= max(horizons):
                 return Decimal("0"), WARMUP_SOURCE_INSUFFICIENT, None
@@ -712,7 +856,7 @@ class StrategyPipelineEngine:
                 return Decimal(str(round(score, 4))), "bars:tsmom", None
             return Decimal("0"), "bars:tsmom", None
 
-        if "squeeze" in op:
+        if canonical == "squeeze":
             lookback = int(params.get("lookback", 20))
             vol_mult = float(params.get("volume_multiplier", 1.5))
             if len(bars) < 60:
@@ -754,7 +898,7 @@ class StrategyPipelineEngine:
                     return Decimal("-1.0"), "bars:squeeze_release", None
             return Decimal("0"), "bars:squeeze_release", None
 
-        if "pullback" in op:
+        if canonical == "pullback":
             if len(bars) < 83 or snapshot is None or bar is None:
                 return Decimal("0"), WARMUP_SOURCE_INSUFFICIENT, None
             closes = [float(b.close) for b in bars]
@@ -801,7 +945,7 @@ class StrategyPipelineEngine:
                 return Decimal("-1.0"), "bars:pullback_alignment", None
             return Decimal("0"), "bars:pullback_alignment", None
 
-        if "vwap" in op:
+        if canonical == "vwap_dev":
             if bar is None:
                 return Decimal("0"), WARMUP_SOURCE_INSUFFICIENT, None
             utc_day = bar.open_time.astimezone(UTC).date()
@@ -823,7 +967,7 @@ class StrategyPipelineEngine:
             dev = (bar.close - vwap_val) / atr_val
             return dev.quantize(Decimal("0.0001")), "bars:vwap_dev", None
 
-        if "macd" in op:
+        if canonical == "macd_momentum":
             if len(bars) < 35 or snapshot is None:
                 return Decimal("0"), WARMUP_SOURCE_INSUFFICIENT, None
             closes = [float(b.close) for b in bars]
@@ -848,7 +992,7 @@ class StrategyPipelineEngine:
                 return Decimal("-1.0"), "bars:macd_momentum", None
             return Decimal("0"), "bars:macd_momentum", None
 
-        if "taker_flow" in op:
+        if canonical == "taker_flow_score":
             lookback = int(params.get("lookback", 20))
             min_mult = float(params.get("min_volume_multiple", 1.3))
             if len(bars) < lookback + 1 or snapshot is None or bar is None:

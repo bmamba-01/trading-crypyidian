@@ -323,16 +323,25 @@ def test_cards_003_to_008_execute_and_short_circuit_l4_cleanly() -> None:
     # Ngắt mạch L4 macro_blackout cho từng card mới 003..008
     for cid in EXPECTED_CARD_IDS[2:]:
         card = cards[cid]
+        bars_map = {
+            tf: (tuple(_bar(i, tf, 100.0 + i * 0.1, start=start_1h) for i in range(30)))
+            for tf in FEATURES_BY_RELEASE[strategy_card_release_id(card)]
+        }
+        blackout_dt = max(tf_bars[-1].available_at for tf_bars in bars_map.values())
+        # Đẩy các khung ngắn hơn tới sát blackout_dt để không bị tính là stale.
+        fresh_bars_map = {}
+        for tf, tf_bars in bars_map.items():
+            shift = blackout_dt - tf_bars[-1].available_at
+            fresh_bars_map[tf] = tuple(
+                _bar(i, tf, 100.0 + i * 0.1, start=start_1h + shift) for i in range(30)
+            )
         blackout_snap = build_decision_snapshot_from_bars(
             workspace_id=WORKSPACE_ID,
             symbol="BTCUSDT",
             strategy_release_id=strategy_card_release_id(card),
-            decision_time=dt8,
-            series_quality_as_of=dt8,
-            bars_by_timeframe={
-                tf: (tuple(_bar(i, tf, 100.0 + i * 0.1, start=start_1h) for i in range(30)))
-                for tf in FEATURES_BY_RELEASE[strategy_card_release_id(card)]
-            },
+            decision_time=blackout_dt,
+            series_quality_as_of=blackout_dt,
+            bars_by_timeframe=fresh_bars_map,
             macro_blackout=True,
             source_identity_required=True,
         )

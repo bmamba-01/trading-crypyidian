@@ -659,7 +659,7 @@ def test_chart_page_has_drawing_toolbar_layer_presets_and_multi_chart() -> None:
     assert '<details class="mc-draw-tools" data-draw-tools>' in html
     assert '<summary class="mc-draw-tools__summary">' in html
     assert "data-draw-toolbar" in html
-    assert 'data-draw-count>0 hình vẽ</span>' in html
+    assert "data-draw-count>0 hình vẽ</span>" in html
     for tool in ("trendline", "hline", "ray", "rect", "fib", "text"):
         assert f'data-draw-tool="{tool}"' in html
     for toggle in ("magnet", "lock", "hide"):

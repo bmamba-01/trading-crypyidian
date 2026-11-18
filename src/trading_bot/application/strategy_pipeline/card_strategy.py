@@ -77,6 +77,26 @@ class StrategyCardStrategy:
         self, snapshot: DecisionSnapshot, settings: StrategySelection
     ) -> StrategyCandidate | NoTrade:
         """Chạy L0→L6 trên snapshot; chỉ trả candidate khi L4 cho qua và L5 kích hoạt."""
+        if snapshot.position_is_flat is False:
+            return NoTrade(
+                strategy_id=self.strategy_id,
+                code="STRATEGY_CARD_POSITION_NOT_FLAT",
+                detail_vi="Đang có vị thế mở hoặc lệnh chờ trên symbol; bỏ qua tín hiệu mới.",
+            )
+        selected_series = self.engine._select_card_series(self.card, snapshot)
+        if (
+            selected_series is not None
+            and selected_series.bars
+            and selected_series.max_event_age is not None
+            and selected_series.max_event_age.total_seconds() > 0
+            and snapshot.decision_time - selected_series.bars[-1].close_time
+            > selected_series.max_event_age
+        ):
+            return NoTrade(
+                strategy_id=self.strategy_id,
+                code="STRATEGY_CARD_DATA_HYGIENE_FAILED",
+                detail_vi="Dữ liệu nến của Strategy Card quá cũ (stale) so với decision_time.",
+            )
         result = self.engine.execute(self.card, snapshot)
         unwarmed_sources = {WARMUP_SOURCE_INSUFFICIENT, "taker_flow_unavailable"}
         if result.status != "DATA_HYGIENE_FAILED" and any(

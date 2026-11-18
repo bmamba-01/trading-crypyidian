@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 
 from trading_bot.domain.strategy.contracts import StrategyCandidate as ContractCandidate
 from trading_bot.domain.strategy.recipes import ExitRecipe
+from trading_bot.domain.strategy_card.models import CompositionLayer
 
 if TYPE_CHECKING:
     from trading_bot.application.strategy_pipeline.pipeline_engine import (
@@ -58,17 +59,30 @@ class StrategyPipelinePlannerBridge:
         sl_multiplier = float(stop_distance / atr)
         tp_multiplier = float(target_distance / atr)
 
+        # Đọc max_hold_bars và candidate_validity_minutes từ node L6 của thẻ nếu có.
+        max_hold_bars = 12
+        effective_validity = valid_duration
+        l6_nodes = [n for n in card.nodes if n.layer == CompositionLayer.L6_ZONES]
+        if l6_nodes:
+            l6_params = l6_nodes[0].parameters
+            if "max_hold_bars" in l6_params:
+                max_hold_bars = max(1, int(l6_params["max_hold_bars"]))
+            if "candidate_validity_minutes" in l6_params:
+                effective_validity = timedelta(
+                    minutes=max(1, int(l6_params["candidate_validity_minutes"]))
+                )
+
         recipe = ExitRecipe(
             recipe_id=f"recipe_{card.card_id[:8]}",
             stop_atr_multiple=sl_multiplier,
             take_profit_atr_multiple=tp_multiplier,
-            max_hold_bars=12,
+            max_hold_bars=max_hold_bars,
         )
 
         # 2. Xác định các mốc thời gian hiệu lực (evaluated_at tại replay là signal_at + 1µs)
         signal_at = pipeline_candidate.signal_at
         eligible_after = signal_at + timedelta(microseconds=1)
-        expires_at = signal_at + valid_duration
+        expires_at = signal_at + effective_validity
 
         # 3. Bar keys bằng chứng
         if evidence_bar_keys is None:

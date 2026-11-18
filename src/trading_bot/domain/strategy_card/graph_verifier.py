@@ -13,6 +13,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from trading_bot.domain.strategy_card.operations import resolve_operation
+
 
 def _extract_field(obj: Any, field_name: str, default: Any = None) -> Any:
     """Trích xuất giá trị trường từ đối tượng Pydantic, dataclass hoặc từ điển (dict)."""
@@ -146,11 +148,19 @@ class DeadNodeDetector:
                     f"không có đường dẫn truyền dữ liệu tới tầng quyết định L6."
                 )
 
-        # 3. Phát hiện ngõ cụt logic (Logic Dead Ends / Constant Trivialization)
+        # 3. Phát hiện ngõ cụt logic và operation chưa đăng ký (SC-1)
         for nid, n in node_map.items():
-            op_name = str(
+            raw_op = str(
                 _extract_field(n, "operation", "") or _extract_field(n, "operator_name", "")
-            ).upper()
+            ).strip()
+            node_layer = _extract_field(n, "layer", "")
+            if raw_op and resolve_operation(raw_op, layer=node_layer) is None:
+                logic_anomalies.append(nid)
+                warnings.append(
+                    f"CẢNH BÁO OPERATION CHƯA ĐĂNG KÝ: Node '{nid}' ở tầng '{node_layer}' "
+                    f"khai báo operation '{raw_op}' không có trong OPERATION_REGISTRY."
+                )
+            op_name = raw_op.upper()
             params = _extract_field(n, "parameters", {}) or {}
             input_ports = (
                 _extract_field(n, "inputs", []) or _extract_field(n, "input_ports", []) or []
