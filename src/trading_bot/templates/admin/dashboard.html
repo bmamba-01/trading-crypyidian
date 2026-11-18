@@ -11,7 +11,7 @@
     <p>Điều khiển không gian làm việc: {{ workspace.kill_state | label_vi }}</p>
     {% if operations_health is defined and operations_health %}
     {#- Cùng dữ liệu với /admin/api/operations/health; dashboard-realtime.js cập nhật mỗi lần poll. -#}
-    <p aria-label="Sức khỏe hệ thống và cầu dao rủi ro" title="Hiện chỉ tính số lỗi runtime; lỗ ngày và độ trễ dữ liệu chưa nối vào cầu dao.">
+    <p aria-label="Sức khỏe hệ thống và cầu dao rủi ro" title="Trạng thái cầu dao đánh giá từ telemetry vận hành thật (lỗ ngày, drawdown, độ trễ feed/outbox, lệch đồng hồ, lệnh UNKNOWN).">
       Cầu dao rủi ro:
       {% if operations_health.status == "HEALTHY" %}
       <span class="badge badge-success" id="kpi-ops-health" title="Trạng thái cầu dao: {{ operations_health.breaker.state }}">Ổn định</span>

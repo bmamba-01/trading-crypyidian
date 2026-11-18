@@ -203,6 +203,33 @@
           </form>
           <p id="learning-scoring-status" class="lx-status" role="status" aria-live="polite" hidden></p>
         </section>
+        <section class="lx-card" aria-labelledby="operator-paper-blocks-heading">
+          <h2 id="operator-paper-blocks-heading">Nhật ký chặn thêm PAPER entry (MFA)</h2>
+          {% if operator_blocks %}
+            <div class="table-wrap">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>Thời điểm</th>
+                    <th>Mã quyết định</th>
+                    <th>Lý do</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for blk in operator_blocks %}
+                    <tr>
+                      <td>{{ blk.created_at.strftime("%d/%m/%Y %H:%M") if blk.created_at else "" }}</td>
+                      <td><code>{{ blk.bot_decision_id }}</code></td>
+                      <td>{{ blk.reason }}</td>
+                    </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+          {% else %}
+            <p class="lx-help">Chưa có quyết định PAPER nào bị owner/risk-admin chặn thêm.</p>
+          {% endif %}
+        </section>
       </div>
     </div>
   </div>

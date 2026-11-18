@@ -224,6 +224,7 @@ class EntryBlockReason(StrEnum):
     ACCOUNT_ACTIVITY_UNVERIFIED = "ACCOUNT_ACTIVITY_UNVERIFIED"
     RUNTIME_CONTROL_UNAVAILABLE = "RUNTIME_CONTROL_UNAVAILABLE"
     LEARNING_INCIDENT_ENTRY_HOLD = "LEARNING_INCIDENT_ENTRY_HOLD"
+    CIRCUIT_BREAKER_OPEN = "CIRCUIT_BREAKER_OPEN"
 
 
 _PROTECTIVE = frozenset(
@@ -249,6 +250,7 @@ class EntryGateInput:
     activity_status: RuntimeActivityStatus | None
     control_available: bool
     learning_incident_hold_active: bool
+    circuit_breaker_open: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -295,6 +297,10 @@ class EntryGate:
             (
                 gate.learning_incident_hold_active,
                 EntryBlockReason.LEARNING_INCIDENT_ENTRY_HOLD,
+            ),
+            (
+                gate.circuit_breaker_open,
+                EntryBlockReason.CIRCUIT_BREAKER_OPEN,
             ),
         )
         for blocked, reason in checks:

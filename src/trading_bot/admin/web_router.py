@@ -87,6 +87,7 @@ from trading_bot.application.market_chart import (
 from trading_bot.application.market_levels import price_levels
 from trading_bot.application.market_narrative import market_narrative
 from trading_bot.application.market_scanner import MarketScannerError, MarketScannerService
+from trading_bot.application.operational_telemetry import OperationalHealthService
 from trading_bot.application.signal_outcome_review import (
     SignalOutcomeReviewError,
     SignalOutcomeReviewService,
@@ -98,7 +99,7 @@ from trading_bot.application.telegram_signal_subscription import (
 )
 from trading_bot.application.telegram_signals import TelegramSignalFilters
 from trading_bot.auth.cookies import read_session_cookie, set_session_cookie
-from trading_bot.auth.policy import Permission, Principal, Role, authorize
+from trading_bot.auth.policy import MfaMethod, Permission, Principal, Role, authorize
 from trading_bot.auth.router import (
     authenticate_login,
     client_address,
@@ -109,6 +110,7 @@ from trading_bot.auth.router import (
 from trading_bot.auth.schemas import LoginRequest
 from trading_bot.auth.security import TEST_TOTP_CODE
 from trading_bot.auth.service import (
+    RECENT_MFA_LIFETIME,
     SESSION_LIFETIME,
     AuthenticationFailure,
     AuthIdentity,
@@ -126,6 +128,7 @@ from trading_bot.domain.portfolio.reporting import (
 from trading_bot.domain.portfolio.setup_statistics import trade_statistics
 from trading_bot.domain.risk.circuit_breaker import (
     CircuitBreakerEngine,
+    CircuitBreakerResumeDenied,
     OperationalTelemetry,
 )
 from trading_bot.domain.risk.risk_windows import (
@@ -606,35 +609,58 @@ def _control_error(error: BotRuntimeControlError) -> HTTPException:
     )
 
 
-def _build_operations_health_data(
+async def _build_operations_health_data(
     *,
     workspace_id: str,
     runtime: list[dict[str, Any]],
     workspace: dict[str, Any],
     correlation_id: str,
     now_utc: datetime,
+    request: Request | None = None,
+    actor_membership_id: UUID | None = None,
 ) -> dict[str, Any]:
     """Tổng hợp ảnh chụp sức khỏe vận hành thật từ runtime và workspace hiện hành."""
+    health_service = (
+        getattr(request.app.state, "operational_health_service", None)
+        if request is not None
+        else None
+    )
+    if health_service is None and request is not None:
+        session_factory = getattr(request.app.state, "session_factory", None)
+        if session_factory is not None:
+            health_service = OperationalHealthService(session_factory)
+    if health_service is not None:
+        return cast(
+            "dict[str, Any]",
+            await health_service.load_health_snapshot(
+                workspace_id=UUID(workspace_id),
+                actor_membership_id=actor_membership_id,
+                runtime=runtime,
+                workspace=workspace,
+                correlation_id=correlation_id,
+                now_utc=now_utc,
+            ),
+        )
+
     total_api_errors = sum(int(item.get("error_count", 0) or 0) for item in runtime)
     loss_snapshot = calculate_loss_windows(
         events=[],
         as_of=now_utc,
         policy=RISK_LOSS_WINDOW_POLICY,
     )
-    breaker_snapshot = CircuitBreakerEngine().evaluate(
-        OperationalTelemetry(
-            evaluated_at=now_utc,
-            feed_age_seconds=0,
-            daily_loss=loss_snapshot.realized_loss_today,
-            drawdown_pct=Decimal("0"),
-            consecutive_api_errors=total_api_errors,
-            outbox_lag_seconds=0,
-            clock_skew_ms=0,
-            unprotected_exposure_count=0,
-            reconciliation_discrepancy_count=0,
-            unknown_order_count=0,
-        )
+    telemetry = OperationalTelemetry(
+        evaluated_at=now_utc,
+        feed_age_seconds=None,
+        daily_loss=None,
+        drawdown_pct=None,
+        consecutive_api_errors=total_api_errors,
+        outbox_lag_seconds=None,
+        clock_skew_ms=None,
+        unprotected_exposure_count=None,
+        reconciliation_discrepancy_count=None,
+        unknown_order_count=None,
     )
+    breaker_snapshot = CircuitBreakerEngine().evaluate(telemetry)
     health_snapshot = build_system_health_snapshot(
         service_name="crypidian-admin",
         environment="PAPER",
@@ -645,6 +671,7 @@ def _build_operations_health_data(
             "workspace_id": workspace_id,
             "kill_state": str(workspace.get("kill_state", "ACTIVE")),
             "runtime_bot_count": len(runtime),
+            "telemetry": telemetry.to_evidence(),
         },
         evaluated_at=now_utc,
     )
@@ -726,12 +753,14 @@ async def dashboard(
             "report_end": report_end,
             "workspace": workspace,
             "csrf_token": csrf_token,
-            "operations_health": _build_operations_health_data(
+            "operations_health": await _build_operations_health_data(
                 workspace_id=str(principal.workspace_id),
                 runtime=runtime,
                 workspace=workspace,
                 correlation_id=f"dash-{uuid4().hex[:10]}",
                 now_utc=report_end,
+                request=request,
+                actor_membership_id=principal.membership_id,
             ),
         },
         headers={"Cache-Control": "no-store"},
@@ -869,12 +898,14 @@ async def dashboard_realtime(
             for b in bot_views
         ],
         "metrics": metrics,
-        "operations_health": _build_operations_health_data(
+        "operations_health": await _build_operations_health_data(
             workspace_id=str(principal.workspace_id),
             runtime=runtime,
             workspace=workspace,
             correlation_id=f"rt-{uuid4().hex[:10]}",
             now_utc=now_utc,
+            request=request,
+            actor_membership_id=principal.membership_id,
         ),
     }
 
@@ -3699,13 +3730,76 @@ async def operations_health(
     except BotAdminError as error:
         raise HTTPException(status_code=error.status_code, detail=error.message) from error
 
-    return _build_operations_health_data(
+    return await _build_operations_health_data(
         workspace_id=str(identity.principal.workspace_id),
         runtime=runtime,
         workspace=workspace,
         correlation_id=correlation_id,
         now_utc=now_utc,
+        request=request,
+        actor_membership_id=identity.principal.membership_id,
     )
+
+
+@router.post("/api/operations/breaker/resume")
+async def operations_breaker_resume(
+    request: Request,
+    response: Response,
+    identity: Annotated[AuthIdentity, Depends(current_identity)],
+    bot_id: UUID | None = None,
+    reason: str = "",
+    csrf_token: str = "",
+) -> dict[str, Any]:
+    """Mở lại Circuit Breaker bền vững qua quyền riêng + MFA + lý do tiếng Việt (OPS07B)."""
+    response.headers["Cache-Control"] = "no-store"
+    principal = identity.principal
+    if not authorize(principal, Permission.RUNTIME_RESUME):
+        raise HTTPException(
+            status_code=403,
+            detail="Không đủ quyền mở lại cầu dao vận hành.",
+            headers={"Cache-Control": "no-store"},
+        )
+    try:
+        await _auth_service(request).verify_csrf(read_session_cookie(request), csrf_token)
+    except AuthenticationFailure as error:
+        raise HTTPException(status_code=403, detail=error.message) from error
+    recent_mfa = (
+        principal.mfa_verified_at is not None
+        and principal.mfa_method is MfaMethod.TOTP
+        and datetime.now(UTC) - principal.mfa_verified_at <= RECENT_MFA_LIFETIME
+    )
+    health_service = getattr(request.app.state, "operational_health_service", None)
+    if health_service is None:
+        session_factory = getattr(request.app.state, "session_factory", None)
+        if session_factory is not None:
+            health_service = OperationalHealthService(session_factory)
+    if health_service is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Dịch vụ lưu trạng thái cầu dao chưa sẵn sàng.",
+            headers={"Cache-Control": "no-store"},
+        )
+    try:
+        resumed = await health_service.resume_breaker(
+            workspace_id=principal.workspace_id,
+            bot_id=bot_id,
+            operator_membership_id=principal.membership_id,
+            operator_id=identity.email,
+            mfa_verified=recent_mfa,
+            approval_reason=reason,
+        )
+    except CircuitBreakerResumeDenied as error:
+        raise HTTPException(
+            status_code=409,
+            detail=str(error),
+            headers={"Cache-Control": "no-store"},
+        ) from error
+    return {
+        "state": resumed.state.value,
+        "entry_allowed": resumed.entry_allowed,
+        "revision": resumed.revision,
+        "detail_vi": resumed.detail_vi,
+    }
 
 
 # Cột CSV khớp khóa thật của dòng trade (`domain/portfolio/reporting.py::_trade_row`). Không có

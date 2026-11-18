@@ -342,6 +342,7 @@ async def load_forward_bars(
             low=row.low,
             close=row.close,
             ref=f"{row.id}:{row.checksum}",
+            source=row.source,
         )
         for row in rows.all()
     )
@@ -399,6 +400,7 @@ async def _insert(
             "outcome_r": outcome.outcome_r,
             "label": outcome.label,
             "input_hash": outcome.input_hash,
+            "bar_sources": list(outcome.bar_sources),
         }
     await session.execute(
         insert(SignalOutcomeRecord)

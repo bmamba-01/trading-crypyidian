@@ -110,6 +110,8 @@ from trading_bot.application.live_kline_ingestion_composition import (
 from trading_bot.application.live_monitor import LiveMonitorService
 from trading_bot.application.market_scanner import MarketScannerService
 from trading_bot.application.market_signal_composition import build_market_signal_scanner
+from trading_bot.application.operational_telemetry import OperationalHealthService
+from trading_bot.application.paper_entry_operator_block import PaperEntryOperatorBlockService
 from trading_bot.application.paper_runtime_application import (
     PaperBotDecisionCommand,
     PaperRuntimeApplicationService,
@@ -206,10 +208,26 @@ def build_database_engine(settings: AppSettings) -> AsyncEngine | None:
     return create_database_engine(database_url)
 
 
+def build_scorer_history_database_engine(settings: AppSettings) -> AsyncEngine | None:
+    """Engine riêng chỉ đọc lịch sử scorer bằng role ``crypidian_scorer_history`` (CRY-439)."""
+    if not (
+        settings.scorer_history_database_user and settings.scorer_history_database_password_file
+    ):
+        return None
+    database_url = database_url_from_secret(
+        username=settings.scorer_history_database_user,
+        password_file=settings.scorer_history_database_password_file,
+        host=settings.database_host,
+        database=settings.database_name,
+    )
+    return create_database_engine(database_url, session_timeouts=admin_web_session_timeouts())
+
+
 def create_app(
     settings: AppSettings | None = None,
     *,
     session_factory: async_sessionmaker[AsyncSession] | None = None,
+    scorer_history_session_factory: async_sessionmaker[AsyncSession] | None = None,
     secret_provider: SecretProvider | None = None,
     paper_runtime_bootstrap_factory: Callable[..., Any] | None = None,
     paper_decision_context_provider_factory: Callable[..., Any] | None = None,
@@ -230,12 +248,18 @@ def create_app(
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         engine: AsyncEngine | None = None
+        scorer_history_engine: AsyncEngine | None = None
         active_session_factory = session_factory
+        active_scorer_history_sessions = scorer_history_session_factory
         active_secret_provider = secret_provider
         if active_session_factory is None:
             engine = build_database_engine(app_settings)
             if engine is not None:
                 active_session_factory = create_session_factory(engine)
+        if active_scorer_history_sessions is None and admin_web_role:
+            scorer_history_engine = build_scorer_history_database_engine(app_settings)
+            if scorer_history_engine is not None:
+                active_scorer_history_sessions = create_session_factory(scorer_history_engine)
         application.state.database_probe = database_probe
         application.state.scorer_runtime_policy_provider = scorer_policy_provider
         if database_probe is None and isinstance(active_session_factory, async_sessionmaker):
@@ -334,6 +358,11 @@ def create_app(
             if active_session_factory is not None
             else None
         )
+        application.state.operational_health_service = (
+            OperationalHealthService(active_session_factory)
+            if active_session_factory is not None
+            else None
+        )
         application.state.strategy_card_service = (
             StrategyCardAdminService(
                 active_session_factory,
@@ -387,9 +416,10 @@ def create_app(
                 if active_session_factory is not None
                 else None
             )
+            scorer_history_sessions = active_scorer_history_sessions or active_session_factory
             application.state.learning_scoring_score_event_read_model = (
-                ScorerScoreEventReadModel(active_session_factory)
-                if active_session_factory is not None
+                ScorerScoreEventReadModel(scorer_history_sessions)
+                if scorer_history_sessions is not None
                 else None
             )
             application.state.learning_observations_admin_service = (
@@ -414,6 +444,11 @@ def create_app(
             )
             application.state.learning_split_admin_service = (
                 LearningSplitAdminService(active_session_factory)
+                if active_session_factory is not None
+                else None
+            )
+            application.state.paper_entry_operator_block_service = (
+                PaperEntryOperatorBlockService(active_session_factory)
                 if active_session_factory is not None
                 else None
             )
@@ -754,6 +789,8 @@ def create_app(
             close_sender = getattr(telegram_sender, "aclose", None)
             if callable(close_sender):
                 await close_sender()
+            if scorer_history_engine is not None:
+                await scorer_history_engine.dispose()
             if engine is not None:
                 await engine.dispose()
 

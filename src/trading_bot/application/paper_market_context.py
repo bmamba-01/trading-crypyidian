@@ -55,6 +55,7 @@ from trading_bot.application.market_signal_composition import (
     build_market_decision_snapshot,
     load_closed_market_bars,
 )
+from trading_bot.application.operational_telemetry import evaluate_and_persist_breaker
 from trading_bot.application.outbox import UnitOfWork
 from trading_bot.application.paper_runtime_application import (
     PaperDecisionContext,
@@ -73,6 +74,7 @@ from trading_bot.application.strategy_market_requirements import (
 from trading_bot.application.workspace_risk import mark_policy_from
 from trading_bot.domain.market.feature_snapshot import FeatureCalculator
 from trading_bot.domain.market.models import MarketSnapshot, OHLCVBar
+from trading_bot.domain.risk.circuit_breaker import CircuitBreakerPolicy
 from trading_bot.domain.risk.drawdown_breaker import (
     PAPER_DRAWDOWN_BREAKER_POLICY,
     ClosedTradePnl,
@@ -386,6 +388,19 @@ class PostgresPaperDecisionContextProvider:
             seed=equity.seed_capital,
             policy=drawdown_policy_for(risk.max_drawdown_fraction),
         )
+        _telemetry, _loss_windows, ops_breaker = await evaluate_and_persist_breaker(
+            session,
+            workspace_id=workspace_id,
+            bot_id=account.bot_id,
+            as_of=evaluated_at,
+            policy=CircuitBreakerPolicy(
+                max_drawdown_pct=breaker.max_drawdown_fraction * Decimal("100"),
+            ),
+            drawdown_pct_override=(breaker.drawdown_fraction * Decimal("100")).quantize(
+                Decimal("0.01")
+            ),
+            outbox=uow,
+        )
         available_margin = max(Decimal("0"), equity.equity_amount - open_margin)
         workspace = str(workspace_id)
         version = str(published.settings_version_id)
@@ -430,7 +445,7 @@ class PostgresPaperDecisionContextProvider:
             pending_reservation_count=totals.count,
             pending_reservation_notional=totals.notional,
             pending_symbol_reservation_notional=totals.symbol_notional,
-            drawdown_breaker_tripped=breaker.tripped,
+            drawdown_breaker_tripped=breaker.tripped or not ops_breaker.entry_allowed,
         )
         return PaperDecisionContext(
             snapshot=snapshot,
@@ -449,6 +464,8 @@ class PostgresPaperDecisionContextProvider:
                 "leverage_source": "effective_max_leverage",
                 "loss_window_timezone": losses.timezone_name,
                 "market_data_as_of": market_data_as_of.isoformat(),
+                "circuit_breaker_state": ops_breaker.state.value,
+                "circuit_breaker_revision": ops_breaker.revision,
                 **breaker.evidence(),
             },
         )

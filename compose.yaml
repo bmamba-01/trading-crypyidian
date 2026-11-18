@@ -76,6 +76,8 @@ services:
       TRADING_BOT_AUTH_TEST_TOTP_ENABLED: ${TRADING_BOT_AUTH_TEST_TOTP_ENABLED:-false}
       TRADING_BOT_DATABASE_USER: crypidian_admin_web
       TRADING_BOT_DATABASE_PASSWORD_FILE: /run/secrets/database_admin_web_password
+      TRADING_BOT_SCORER_HISTORY_DATABASE_USER: crypidian_scorer_history
+      TRADING_BOT_SCORER_HISTORY_DATABASE_PASSWORD_FILE: /run/secrets/database_scorer_history_password
       TRADING_BOT_DATABASE_HOST: postgres
       TRADING_BOT_DATABASE_NAME: crypidian
       TRADING_BOT_MFA_ENCRYPTION_KEY_FILE: /run/secrets/mfa_encryption_key
@@ -105,6 +107,7 @@ services:
     security_opt: ["no-new-privileges:true"]
     secrets:
       - database_admin_web_password
+      - database_scorer_history_password
       - mfa_encryption_key
       - bootstrap_token
       - telegram_bot_token
@@ -183,6 +186,7 @@ services:
       - database_backtest_worker_password
       - database_signal_worker_password
       - database_market_signal_worker_password
+      - database_scorer_history_password
     networks:
       - backend
     read_only: true
@@ -638,6 +642,8 @@ secrets:
     file: ./.secrets/database_trainer_worker_password
   database_learning_evaluator_password:
     file: ./.secrets/database_learning_evaluator_password
+  database_scorer_history_password:
+    file: ./.secrets/database_scorer_history_password
   database_learning_shadow_observer_password:
     file: ./.secrets/database_learning_shadow_observer_password
   database_replay_writer_password:

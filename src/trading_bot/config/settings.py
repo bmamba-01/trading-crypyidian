@@ -74,6 +74,8 @@ class AppSettings(BaseSettings):
     backtest_worker_lease_seconds: int = Field(default=120, ge=15, le=900)
     backtest_replay_database_user: str | None = None
     backtest_replay_database_password_file: Path | None = None
+    scorer_history_database_user: str | None = None
+    scorer_history_database_password_file: Path | None = None
     # Lease một writer theo bot (MB-05): TTL ≤ 300 giây (khớp trigger DB), tick supervisor
     # phải ngắn hơn TTL để kịp gia hạn trước khi hết hạn.
     runtime_lease_ttl_seconds: int = Field(default=30, ge=3, le=300)
@@ -397,6 +399,22 @@ class AppSettings(BaseSettings):
                 raise ValueError("backtest_worker_workspace_id chỉ dành cho backtest-worker.")
             if any(value is not None for value in configured_replay_writer):
                 raise ValueError("Replay-writer credential chỉ được gắn vào backtest-worker.")
+        return self
+
+    @model_validator(mode="after")
+    def validate_scorer_history_identity(self) -> AppSettings:
+        """Credential đọc lịch sử scorer chỉ dùng role crypidian_scorer_history trên admin-web."""
+        configured = (
+            self.scorer_history_database_user,
+            self.scorer_history_database_password_file,
+        )
+        if any(value is not None for value in configured):
+            if self.process_role != "admin-web":
+                raise ValueError("Scorer-history credential chỉ được gắn vào admin-web.")
+            if any(value is None for value in configured):
+                raise ValueError("Cần đủ user và password_file cho scorer-history.")
+            if self.scorer_history_database_user != "crypidian_scorer_history":
+                raise ValueError("Credential scorer-history phải dùng crypidian_scorer_history.")
         return self
 
     @model_validator(mode="after")

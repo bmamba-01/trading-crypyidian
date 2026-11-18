@@ -43,6 +43,9 @@ from trading_bot.adapters.database.models.candidate_universe_entities import (
     CandidateTrainingRightsRecord,
     CandidateUniverseProofRecord,
 )
+from trading_bot.adapters.database.models.circuit_breaker_entities import (
+    CircuitBreakerEventRecord,
+)
 from trading_bot.adapters.database.models.entities import (
     ApprovalRequest,
     AuditEvent,
@@ -171,6 +174,9 @@ from trading_bot.adapters.database.models.paper_entities import (
     TradeCostRecord,
     TradeRecord,
 )
+from trading_bot.adapters.database.models.paper_entry_block_entities import (
+    PaperEntryOperatorBlockRecord,
+)
 from trading_bot.adapters.database.models.research_entities import (
     SourceItemObservationRecord,
     SourceItemRevisionRecord,
@@ -227,6 +233,7 @@ __all__ = [
     "BotRuntimeControlRecord",
     "BotRuntimeLeaseRecord",
     "BotRuntimeStateRecord",
+    "CircuitBreakerEventRecord",
     "WorkspaceRuntimeControlRecord",
     "BotConfigRequest",
     "BotConfigVersion",
@@ -306,6 +313,7 @@ __all__ = [
     "OutboxEvent",
     "PaperAccountSeed",
     "OrderIntentRecord",
+    "PaperEntryOperatorBlockRecord",
     "PaperExecutionCheckpointRecord",
     "PositionEventRecord",
     "RiskProfileVersion",
