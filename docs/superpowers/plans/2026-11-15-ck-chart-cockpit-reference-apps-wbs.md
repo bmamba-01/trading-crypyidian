@@ -352,7 +352,7 @@ Ký hiệu: **D** = đã có trên `dev`; **S** = đã làm lát đầu trên nh
 - **Phạm vi:** 32 template page trực tiếp. Base layout nạp `admin-density.css`; icon dùng trong filter, search, chart/layer, zoom và công cụ vẽ. Disclosure mặc định đóng cho watchlist/mã loại/log scanner, breakdown/tín hiệu gần đây, backtest/context AI, lượt liên quan report, feed live và lịch sử risk profile. Form vận hành, cảnh báo, KPI/chỉ số chính giữ hiển thị.
 - **Bằng chứng:** unit liên quan **208 passed**; Playwright design system/chart/scanner/live/risk **9 passed** (desktop/mobile); screenshot chart và scanner đã rà trực quan; `git diff --check` sạch. Kiểm tra E2E ban đầu xác nhận desktop control 36–40px, mobile 44px; cập nhật test contract cũ vốn đòi 44px cho mọi desktop.
 - **Tài liệu:** [audit 32 page](../specs/2026-11-18-admin-full-density-design.md) · [kế hoạch](./2026-11-18-admin-full-density.md).
-- **Trạng thái tích hợp:** đang hoàn tất review, commit/push và restart admin-web.
+- **Trạng thái tích hợp:** hoàn tất; commit `0bc25f8` đã push lên `dev`, admin-web build lại/restart healthy cổng 8010; CRY-443 chuyển Done và lưu bằng chứng test.
 
 ## 8. Dữ liệu và API
 

@@ -40,7 +40,7 @@
 - [x] Chụp và xem ảnh chart/scanner desktop; E2E xác nhận responsive mobile; rà form contract và labels.
 - [x] Cập nhật project status, WBS, implementation memory; đọc lại memory.
 - [ ] Commit/push `dev` và restart admin-web theo yêu cầu đã có; kiểm health và UI live.
-- [ ] Ghi kết quả lên tracker CRY-443.
+- [x] Ghi commit/test/restart lên tracker CRY-443; chuyển trạng thái hoàn tất.
 
 ## Review focus
 
