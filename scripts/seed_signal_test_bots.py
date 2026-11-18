@@ -301,21 +301,49 @@ def _container_apply(state: dict[str, Any]) -> dict[str, Any]:
             (workspace, settings_id),
         ).fetchone()[0]
         for release in sorted({bot["release_id"] for bot in plan["bots"]}):
-            present = connection.execute(
-                "SELECT 1 FROM strategy_release WHERE workspace_id=%s AND name=%s",
+            expected_hash = registry.get_release(release).content_hash
+            existing = connection.execute(
+                "SELECT id, version, status, content_hash FROM strategy_release "
+                "WHERE workspace_id=%s AND name=%s ORDER BY version ASC",
                 (workspace, release),
-            ).fetchone()
-            if present is None:
+            ).fetchall()
+            published_match = [
+                row for row in existing if row[2] == "PUBLISHED" and row[3] == expected_hash
+            ]
+            stale_published = [
+                row[0] for row in existing if row[2] == "PUBLISHED" and row[3] != expected_hash
+            ]
+            if len(published_match) == 1 and not stale_published:
+                continue
+            for stale_id in stale_published:
+                connection.execute(
+                    "UPDATE strategy_release SET status='SUPERSEDED' WHERE id=%s",
+                    (stale_id,),
+                )
+            matching_any = [row for row in existing if row[3] == expected_hash]
+            if matching_any:
+                keeper_id = matching_any[-1][0]
+                connection.execute(
+                    "UPDATE strategy_release SET status='PUBLISHED' WHERE id=%s",
+                    (keeper_id,),
+                )
+            else:
+                next_version = max((int(row[1]) for row in existing), default=0) + 1
+                release_uuid = (
+                    det(f"release:{release}")
+                    if next_version == 1
+                    else det(f"release:{release}:v{next_version}")
+                )
                 _insert(
                     connection,
                     "strategy_release",
-                    id=det(f"release:{release}"),
+                    id=release_uuid,
                     workspace_id=workspace,
                     name=release,
-                    version=1,
+                    version=next_version,
                     status="PUBLISHED",
                     recipe=Jsonb({}),
-                    content_hash=registry.get_release(release).content_hash,
+                    content_hash=expected_hash,
                 )
         binding = connection.execute(
             "SELECT membership_id, telegram_binding_id, telegram_chat_id "
