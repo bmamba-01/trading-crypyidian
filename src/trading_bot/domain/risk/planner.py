@@ -9,6 +9,11 @@ from datetime import datetime, timedelta
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 from typing import Any
 
+from trading_bot.domain.risk.liquidation import (
+    DEFAULT_LIQUIDATION_SAFETY_BUFFER,
+    MaintenanceMarginTier,
+    check_stop_before_liquidation,
+)
 from trading_bot.domain.risk.sizing import RiskSizingInput, TradingSide, size_position
 from trading_bot.domain.risk.take_profit import (
     PlanTarget,
@@ -80,6 +85,7 @@ class RiskLimits:
     max_data_age: timedelta
     account_max_open_risk_fraction: Decimal = Decimal("1.0")
     bot_max_open_risk_fraction: Decimal | None = None
+    liquidation_safety_buffer: Decimal = DEFAULT_LIQUIDATION_SAFETY_BUFFER
 
     def __post_init__(self) -> None:
         fractions = [
@@ -91,6 +97,12 @@ class RiskLimits:
             fractions.append(self.bot_max_open_risk_fraction)
         if any(not isinstance(value, Decimal) or not value.is_finite() for value in fractions):
             raise ValueError("Tỷ lệ risk phải là Decimal hữu hạn.")
+        if (
+            not isinstance(self.liquidation_safety_buffer, Decimal)
+            or not self.liquidation_safety_buffer.is_finite()
+            or not ZERO <= self.liquidation_safety_buffer < Decimal("1")
+        ):
+            raise ValueError("Biên an toàn thanh lý phải nằm trong khoảng [0, 1).")
         if not ZERO < self.per_trade_risk_fraction <= Decimal("1"):
             raise ValueError("Tỷ lệ risk mỗi lệnh phải nằm trong (0, 1].")
         if not ZERO < self.max_concentration_fraction <= Decimal("1"):
@@ -326,6 +338,7 @@ class TradePlanner:
         *,
         now: datetime,
         ladder: TakeProfitLadder | None = None,
+        liquidation_tiers: tuple[MaintenanceMarginTier, ...] | None = None,
     ) -> TradePlan | PlanRejected:
         """Tính entry/stop/target, size, chi phí và các mốc lineage.
 
@@ -595,6 +608,24 @@ class TradePlanner:
         if not sizing.accepted:
             code = sizing.reason or "SIZING_REJECTED"
             return self._reject(code, f"Không thể lập size: {code}.", settings, candidate)
+        liq_check = check_stop_before_liquidation(
+            side=side,
+            entry_price=entry,
+            stop_price=stop,
+            quantity=sizing.quantity,
+            leverage=settings.leverage,
+            contract_multiplier=multiplier,
+            safety_buffer=limits.liquidation_safety_buffer,
+            symbol=candidate.symbol,
+            tiers=liquidation_tiers,
+        )
+        if not liq_check.safe:
+            return self._reject(
+                liq_check.reason_code or "STOP_LIQUIDATION_UNSAFE",
+                liq_check.detail_vi,
+                settings,
+                candidate,
+            )
         return _make_plan(
             candidate=candidate,
             settings=settings,

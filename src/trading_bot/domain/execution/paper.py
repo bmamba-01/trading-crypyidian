@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
@@ -11,6 +12,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from trading_bot.domain.execution.funding import FundingSettlement, funding_cashflow
+from trading_bot.domain.risk.liquidation import MaintenanceMarginTier, calculate_liquidation_price
 from trading_bot.domain.risk.planner import TradePlan
 from trading_bot.domain.risk.take_profit import PlanTarget
 from trading_bot.domain.strategy.recipes import ExitRecipe
@@ -187,8 +189,18 @@ class ReduceOnlyReceipt:
 class PaperExecutionGateway:
     """State machine trong bộ nhớ; không import credentials, HTTP hoặc adapter sàn."""
 
-    def __init__(self, policy: PaperExecutionPolicy) -> None:
+    def __init__(
+        self,
+        policy: PaperExecutionPolicy,
+        *,
+        liquidation_tiers: (
+            tuple[MaintenanceMarginTier, ...]
+            | Mapping[str, tuple[MaintenanceMarginTier, ...]]
+            | None
+        ) = None,
+    ) -> None:
         self._policy = policy
+        self._liquidation_tiers = liquidation_tiers
         self._orders: dict[str, PaperOrderIntent] = {}
         self._keys: dict[str, str] = {}
         self._positions: dict[str, PaperPosition] = {}
@@ -433,6 +445,36 @@ class PaperExecutionGateway:
         """Trả snapshot order để retry/reconcile có thể kiểm tra trạng thái."""
         return self._get_order(intent_id)
 
+    def position_liquidation_price(self, position: PaperPosition) -> Decimal | None:
+        """Tính giá thanh lý Isolated One-Way hiện hành cho vị thế PAPER đang mở (FX-7)."""
+        plan = self._plans.get(position.intent_id)
+        if plan is None or position.is_closed or position.quantity <= ZERO:
+            return None
+        side = "LONG" if position.direction == "long" else "SHORT"
+        entry_notional = (
+            position.quantity * position.contract_multiplier * position.entry_execution_price
+        )
+        initial_wallet = entry_notional / plan.leverage
+        wallet_balance = initial_wallet - position.fee_cost - position.funding_cost
+        tiers = self._tiers_for_symbol(position.symbol)
+        return calculate_liquidation_price(
+            side=side,
+            entry_price=position.entry_execution_price,
+            quantity=position.quantity,
+            leverage=plan.leverage,
+            contract_multiplier=position.contract_multiplier,
+            wallet_balance=wallet_balance,
+            symbol=position.symbol,
+            tiers=tiers,
+        )
+
+    def _tiers_for_symbol(self, symbol: str) -> tuple[MaintenanceMarginTier, ...] | None:
+        if self._liquidation_tiers is None:
+            return None
+        if isinstance(self._liquidation_tiers, tuple):
+            return self._liquidation_tiers
+        return self._liquidation_tiers.get(symbol.strip().upper())
+
     def monitor_position(
         self,
         position: PaperPosition,
@@ -445,7 +487,7 @@ class PaperExecutionGateway:
         strategy_bar_closed: bool = True,
         forced_exit_reason: str | None = None,
     ) -> PositionMonitorResult:
-        """Theo dõi stop/target/trailing và thời điểm; pause entry không áp dụng ở đây."""
+        """Theo dõi stop/target/trailing, thanh lý và thời điểm; pause entry không áp dụng ở đây."""
         from trading_bot.domain.execution.position_monitor import (
             PositionMonitorResult,
             monitor_position,
@@ -455,6 +497,35 @@ class PaperExecutionGateway:
         current = self._positions.get(position.intent_id, position)
         if current.is_closed and bar.bar_key in current.seen_bar_keys:
             return PositionMonitorResult(current, current.exit_reason, current.exit_reference_price)
+        if not current.is_closed and bar.bar_key not in current.seen_bar_keys:
+            if current.symbol != bar.symbol:
+                raise ValueError("Nến monitor phải cùng symbol với vị thế.")
+            liq_price = self.position_liquidation_price(current)
+            if liq_price is not None and _liquidation_preempts_stop(current, bar, liq_price):
+                liq_exit_price = (
+                    min(bar.open, liq_price)
+                    if current.direction == "long"
+                    else max(bar.open, liq_price)
+                )
+                bars_held = current.bars_held + (1 if strategy_bar_closed else 0)
+                seen = (*current.seen_bar_keys, bar.bar_key)
+                receipt = self.close_position(
+                    current.position_id,
+                    current.quantity,
+                    reference_price=liq_exit_price,
+                    closed_at=bar.closed_at,
+                    idempotency_key=f"exit:{current.position_id}:{bar.bar_key}:LIQUIDATION",
+                )
+                closed = replace(
+                    receipt.position,
+                    bars_held=bars_held,
+                    seen_bar_keys=seen,
+                    exit_reason="LIQUIDATION",
+                    exit_reference_price=liq_exit_price,
+                    targets_hit=current.targets_hit,
+                )
+                self._positions[position.intent_id] = closed
+                return PositionMonitorResult(closed, "LIQUIDATION", liq_exit_price)
         was_pending_exit = current.pending_exit_reason is not None
         result = monitor_position(
             current,
@@ -761,6 +832,21 @@ class PaperExecutionGateway:
 def _aware(value: datetime) -> None:
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError("Thời gian PAPER phải có múi giờ.")
+
+
+def _liquidation_preempts_stop(position: PaperPosition, bar: PaperBar, liq_price: Decimal) -> bool:
+    """Xác định bar có kích hoạt thanh lý trước hoặc tại thời điểm chạm stop hay không."""
+    if position.direction == "long":
+        if liq_price <= ZERO:
+            return False
+        liq_hit = bar.low <= liq_price
+        gap_open_liq = bar.open <= liq_price
+        liq_ahead_of_stop = liq_price >= position.stop_price
+        return liq_hit and (gap_open_liq or liq_ahead_of_stop)
+    liq_hit = bar.high >= liq_price
+    gap_open_liq = bar.open >= liq_price
+    liq_ahead_of_stop = liq_price <= position.stop_price
+    return liq_hit and (gap_open_liq or liq_ahead_of_stop)
 
 
 def _round_price(value: Decimal, tick: Decimal, rounding: str) -> Decimal:
