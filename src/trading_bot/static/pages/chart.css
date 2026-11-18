@@ -41,7 +41,7 @@
   border: 1px solid var(--glass-border, rgba(148, 163, 184, 0.35));
   border-radius: 0;
   color: var(--text-main, #f8fafc);
-  background: var(--bg-surface, #0e1223);
+  background: var(--bg-base, #0e1223);
   box-shadow: -1rem 0 2.5rem rgba(0, 0, 0, 0.32);
 }
 .mc-settings[open] { display: grid; grid-template-rows: auto minmax(0, 1fr); gap: 0.8rem; }

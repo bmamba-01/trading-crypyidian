@@ -427,6 +427,7 @@ def test_market_chart_renders_overlays_polls_and_is_responsive(server_url: str) 
         _login(page, server_url)
 
         page.goto(f"{server_url}/admin/chart?timeframe=5m", wait_until="networkidle")
+        page.evaluate("() => document.documentElement.setAttribute('data-theme', 'dark')")
         expect(page.locator("#market-chart canvas").first).to_be_visible()
         chart_box = page.locator("#market-chart").bounding_box()
         assert chart_box is not None
@@ -492,6 +493,10 @@ def test_market_chart_renders_overlays_polls_and_is_responsive(server_url: str) 
         expect(settings_dialog).to_be_visible()
         expect(settings_button).to_have_attribute("aria-expanded", "true")
         expect(page.locator("[data-chart-settings-close]")).to_be_focused()
+        panel_background = page.locator("[data-chart-settings]").evaluate(
+            "dialog => getComputedStyle(dialog).backgroundColor"
+        )
+        assert panel_background == "rgb(5, 10, 24)"
         page.screenshot(path=str(SCREENSHOTS_DIR / "admin-filter-density-panel.png"))
         expect(page.locator('[data-layer="ict_zones"]')).to_be_checked()
         expect(page.locator('[data-layer="killzones"]')).not_to_be_checked()
