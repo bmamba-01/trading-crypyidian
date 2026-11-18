@@ -1,7 +1,7 @@
 {% extends "admin/base.html" %}
 {% block title %}Báo cáo hiệu năng & phân tích giao dịch — Crypidian{% endblock %}
 {% block heading %}Báo cáo hiệu năng & phân tích giao dịch{% endblock %}
-{% block head_extra %}<link rel="stylesheet" href="/static/pages/reports.css">{% endblock %}
+{% block head_extra %}<link rel="stylesheet" href="/static/pages/reports.css"><link rel="stylesheet" href="/static/pages/filters.css">{% endblock %}
 
 {% block content %}
 {% from "admin/_metric_help.html" import help_term, help_icon %}
@@ -103,7 +103,7 @@
 <div class="report-page">
 <!-- Bộ lọc: một hàng trên màn hình rộng, tự xuống dòng trên màn hình hẹp. -->
 <section class="report-filter glass-card" aria-label="Bộ lọc báo cáo">
-  <form class="report-filter-form" method="get" action="/admin/reports">
+  <form class="report-filter-form admin-filter" method="get" action="/admin/reports">
     <div class="report-filter__row">
       <div class="report-field report-field--scope">
         <label for="scope">Phạm vi</label>

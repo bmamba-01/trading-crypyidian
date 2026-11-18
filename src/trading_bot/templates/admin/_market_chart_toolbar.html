@@ -1,0 +1,75 @@
+<section class="glass-card mc-toolbar" aria-label="Chọn bot, khung và lớp hiển thị">
+    {% if bots %}
+    <form class="mc-toolbar__select" method="get" action="/admin/chart">
+      <label for="mc-bot">Bot</label>
+      <select id="mc-bot" name="bot_id">
+        {% for bot in bots %}<option value="{{ bot.id }}" {% if selected_bot and bot.id == selected_bot.id %}selected{% endif %}>{{ bot.name }}</option>{% endfor %}
+      </select>
+      {% if series %}
+      <label for="mc-symbol">Mã</label>
+      {#- Ô chọn mã có tìm kiếm và biểu tượng coin (UI kit v1.1); chỉ liệt kê mã có nến đã lưu. -#}
+      <select id="mc-symbol" name="symbol" data-searchable="coins">
+        {% for choice in symbol_choices %}<option value="{{ choice.value }}"{% for key, value in (choice.data or {}).items() %} data-{{ key }}="{{ value }}"{% endfor %}{% if choice.selected %} selected{% endif %}>{{ choice.value }}</option>{% endfor %}
+      </select>
+      {% endif %}
+      <input type="hidden" name="timeframe" value="{{ timeframe }}">
+      <button type="submit" class="btn btn-secondary">Xem</button>
+    </form>
+    {% if selected_symbol %}
+    <nav class="mc-timeframes" aria-label="Khung thời gian">
+      {% for item in timeframes %}
+      {% set has_data = item in available_timeframes %}
+      <a href="/admin/chart?bot_id={{ selected_bot.id | urlencode }}&symbol={{ selected_symbol | urlencode }}&timeframe={{ item | urlencode }}" class="mc-timeframe{% if item == timeframe %} is-active{% endif %}{% if not has_data %} is-empty{% endif %}" {% if item == timeframe %}aria-current="true"{% endif %} title="{% if has_data %}Có nến đã lưu{% else %}Chưa có nến đã lưu cho khung này{% endif %}">{{ item | upper }}</a>
+      {% endfor %}
+    </nav>
+    {% endif %}
+    {% if chart_payload %}
+    <button type="button" class="btn btn-secondary mc-settings-trigger" data-chart-settings-open
+      aria-controls="mc-chart-settings" aria-expanded="false" aria-haspopup="dialog"
+      title="Cài đặt lớp hiển thị"
+      aria-label="Mở cài đặt lớp hiển thị">
+      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></svg>
+      <span>Lớp</span><span class="mc-layer-count" data-layer-count data-layer-count-compact>—</span>
+    </button>
+    {#- CK-8: dialog bên phải giữ preset, nhóm lớp và số lớp bật; đóng mặc định để chart vào viewport. -#}
+    <dialog id="mc-chart-settings" class="mc-settings" data-chart-settings aria-labelledby="mc-settings-title"
+      aria-describedby="mc-settings-description">
+      <header class="mc-settings__head">
+        <div>
+          <h2 id="mc-settings-title">Lớp hiển thị <span class="mc-layer-count" data-layer-count>—</span></h2>
+          <p id="mc-settings-description">Chọn các lớp sẽ vẽ trên biểu đồ. Tùy chọn được lưu trên trình duyệt này.</p>
+        </div>
+        <button type="button" class="btn btn-secondary mc-settings__close" data-chart-settings-close aria-label="Đóng cài đặt lớp">×</button>
+      </header>
+      {#- CK-8: panel lớp nhóm theo loại và preset. -#}
+    {% set LAYER_GROUPS = [
+      ("Giá và chỉ báo", ["ema", "vwap", "zigzag", "rsi", "macd"]),
+      ("Cấu trúc và ICT", ["structure", "trendlines", "levels", "sessions", "ict_zones", "equal_levels", "killzones"]),
+      ("Khối lượng", ["profile", "tpo", "profile_levels", "vsa"]),
+      ("Giao dịch", ["signal", "paper", "quote"]),
+    ] %}
+    <fieldset class="mc-layers">
+      <legend class="visually-hidden">Lớp biểu đồ</legend>
+      <div class="mc-layer-presets">
+        <label for="mc-layer-preset">Bộ lớp</label>
+        <select id="mc-layer-preset" data-layer-preset>
+          <option value="">Tự chọn</option>
+          <option value="default">Mặc định</option>
+          <option value="ict">ICT</option>
+          <option value="volume">Volume</option>
+          <option value="minimal">Tối giản</option>
+        </select>
+      </div>
+      {% for group_label, keys in LAYER_GROUPS %}
+      <div class="mc-layer-group" role="group" aria-label="{{ group_label }}">
+        <span class="mc-layer-group__title">{{ group_label }}</span>
+        {% for key, label, default_on in LAYERS if key in keys %}
+        <label class="mc-layer switch-row"><span>{{ label }}</span><input type="checkbox" class="ios-switch" role="switch" data-layer="{{ key }}" data-default="{{ 'on' if default_on else 'off' }}" {% if default_on %}checked{% endif %}></label>
+        {% endfor %}
+      </div>
+      {% endfor %}
+    </fieldset>
+    </dialog>
+    {% endif %}
+    {% endif %}
+  </section>

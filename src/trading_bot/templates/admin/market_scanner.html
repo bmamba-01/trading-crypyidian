@@ -1,7 +1,7 @@
 {% extends "admin/base.html" %}
 {% block title %}Bộ quét thị trường — Crypidian{% endblock %}
 {% block heading %}Bộ quét thị trường{% endblock %}
-{% block head_extra %}<link rel="stylesheet" href="/static/pages/chart.css">{% endblock %}
+{% block head_extra %}<link rel="stylesheet" href="/static/pages/chart.css"><link rel="stylesheet" href="/static/pages/filters.css">{% endblock %}
 
 {%- macro money(value) -%}{{ value | round(0) | int | number2_vi if value is not none else "—" }}{%- endmacro -%}
 {%- macro pct(value) -%}{% if value is none %}—{% else %}{{ '%+.2f' | format(value) | replace('.', ',') }}%{% endif %}{%- endmacro -%}
@@ -29,7 +29,7 @@
 <div class="mc-page">
   <section class="glass-card mc-calendar" aria-labelledby="scan-form-title">
     <h2 id="scan-form-title">Tiêu chí</h2>
-    <form method="get" action="/admin/scanner" class="mc-calendar__form" data-scan-form>
+    <form method="get" action="/admin/scanner" class="mc-calendar__form admin-filter" data-scan-form>
       <label>Khung tính
         <select name="timeframe">
           {% for item in ["1h", "4h", "1d"] %}<option value="{{ item }}" {% if item == timeframe %}selected{% endif %}>{{ item | upper }}</option>{% endfor %}

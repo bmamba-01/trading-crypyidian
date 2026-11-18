@@ -1,7 +1,7 @@
 {% extends "admin/base.html" %}
 {% block title %}Khẩu vị rủi ro · Crypidian{% endblock %}
 {% block heading %}Khẩu vị rủi ro{% endblock %}
-{% block head_extra %}<link rel="stylesheet" href="/static/pages/bots.css"><link rel="stylesheet" href="/static/pages/risk.css">{% endblock %}
+{% block head_extra %}<link rel="stylesheet" href="/static/pages/bots.css"><link rel="stylesheet" href="/static/pages/risk.css"><link rel="stylesheet" href="/static/pages/filters.css">{% endblock %}
 
 {% block content %}
 {#- Số tỷ lệ (chuỗi Decimal) → phần trăm dễ đọc; giữ nguyên chuỗi nếu không phải số. -#}
@@ -123,7 +123,7 @@
     <div class="bot-panel-head">
       <h3 id="risk-exit-heading">Stop-loss / take-profit gốc theo chiến lược</h3>
       {% if overview.symbol %}
-      <form method="get" action="/admin/risk" class="risk-symbol-form">
+      <form method="get" action="/admin/risk" class="risk-symbol-form admin-filter">
         <label for="risk-symbol">Ví dụ % theo ATR(14) của</label>
         <select id="risk-symbol" name="symbol">{% for item in settings.symbols %}<option value="{{ item }}"{% if item == overview.symbol %} selected{% endif %}>{{ item }}</option>{% endfor %}</select>
         <button type="submit" class="btn btn-outline">Xem</button>

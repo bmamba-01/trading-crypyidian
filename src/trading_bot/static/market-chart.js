@@ -637,6 +637,22 @@
 
   // ---- Lớp bật/tắt ----
   const layerInputs = Array.from(document.querySelectorAll("[data-layer]"));
+  const settingsDialog = document.querySelector("[data-chart-settings]");
+  const settingsOpenButton = document.querySelector("[data-chart-settings-open]");
+  const settingsCloseButton = document.querySelector("[data-chart-settings-close]");
+  settingsOpenButton?.addEventListener("click", () => {
+    if (!settingsDialog || typeof settingsDialog.showModal !== "function") return;
+    settingsDialog.showModal();
+    settingsOpenButton.setAttribute("aria-expanded", "true");
+    settingsCloseButton?.focus();
+  });
+  settingsCloseButton?.addEventListener("click", () => settingsDialog?.close());
+  settingsDialog?.addEventListener("close", () => {
+    settingsOpenButton?.setAttribute("aria-expanded", "false");
+  });
+  settingsDialog?.addEventListener("click", (event) => {
+    if (event.target === settingsDialog) settingsDialog.close();
+  });
   const layerOn = (key) => {
     const input = layerInputs.find((element) => element.dataset.layer === key);
     return input ? input.checked : true;
@@ -1005,12 +1021,17 @@
     volume: ["vwap", "profile", "tpo", "profile_levels", "vsa", "signal", "paper", "quote"],
     minimal: ["ema", "signal", "paper", "quote"],
   };
-  const layerCount = document.querySelector("[data-layer-count]");
+  const layerCounts = Array.from(document.querySelectorAll("[data-layer-count]"));
   const presetSelect = document.querySelector("[data-layer-preset]");
   const updateLayerCount = () => {
-    if (layerCount) {
-      layerCount.textContent = `Lớp ${layerInputs.filter((el) => el.checked).length}/${layerInputs.length}`;
+    const enabledCount = layerInputs.filter((el) => el.checked).length;
+    const label = `Lớp ${enabledCount}/${layerInputs.length}`;
+    for (const layerCount of layerCounts) {
+      layerCount.textContent = layerCount.hasAttribute("data-layer-count-compact")
+        ? `${enabledCount}/${layerInputs.length}`
+        : label;
     }
+    settingsOpenButton?.setAttribute("aria-label", `Mở cài đặt lớp hiển thị, ${label}`);
   };
   presetSelect?.addEventListener("change", () => {
     const preset = presetSelect.value;

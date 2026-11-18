@@ -427,7 +427,19 @@ def test_market_chart_renders_overlays_polls_and_is_responsive(server_url: str) 
         _login(page, server_url)
 
         page.goto(f"{server_url}/admin/chart?timeframe=5m", wait_until="networkidle")
+        page.evaluate("() => document.documentElement.setAttribute('data-theme', 'dark')")
         expect(page.locator("#market-chart canvas").first).to_be_visible()
+        metrics_box = page.locator("#mc-live-strip").bounding_box()
+        filters_box = page.locator(".mc-toolbar").bounding_box()
+        chart_card_box = page.locator(".mc-chart-card").bounding_box()
+        assert metrics_box is not None
+        assert filters_box is not None
+        assert chart_card_box is not None
+        assert metrics_box["y"] < filters_box["y"] < chart_card_box["y"]
+        chart_box = page.locator("#market-chart").bounding_box()
+        assert chart_box is not None
+        assert chart_box["y"] < 800
+        page.screenshot(path=str(SCREENSHOTS_DIR / "admin-filter-density-compact.png"))
         expect(page.locator("#mc-symbol")).to_have_value("BTCUSDT")
         expect(page.locator(".mc-timeframe.is-active")).to_have_text("5M")
         expect(page.locator('.mc-timeframe[href*="timeframe=1h"]')).to_have_class(
@@ -455,8 +467,7 @@ def test_market_chart_renders_overlays_polls_and_is_responsive(server_url: str) 
         expect(strip.locator("[data-ov-funding]")).to_have_text("0,0100%")
         first_clock = strip.locator("[data-ov-candle-left]").inner_text()
         assert re.fullmatch(r"\d{2}:\d{2}", first_clock), first_clock
-        page.wait_for_timeout(1300)
-        assert strip.locator("[data-ov-candle-left]").inner_text() != first_clock
+        expect(strip.locator("[data-ov-candle-left]")).not_to_have_text(first_clock, timeout=5000)
         expect(strip.locator("[data-ov-notices] li")).to_have_count(0)
         # Polling ~2 giây trả số mới và JS cập nhật bid.
         with page.expect_response(
@@ -481,6 +492,19 @@ def test_market_chart_renders_overlays_polls_and_is_responsive(server_url: str) 
 
         # CK-3: lớp ICT — số vùng còn hiệu lực, công tắc killzone (mặc định tắt), chip killzone.
         expect(page.locator("[data-mc-ict-count]")).to_have_text(re.compile(r"^\d+$"))
+        settings_button = page.locator("[data-chart-settings-open]")
+        settings_dialog = page.locator("[data-chart-settings]")
+        expect(settings_dialog).not_to_have_attribute("open")
+        expect(settings_button).to_have_attribute("aria-expanded", "false")
+        settings_button.click()
+        expect(settings_dialog).to_be_visible()
+        expect(settings_button).to_have_attribute("aria-expanded", "true")
+        expect(page.locator("[data-chart-settings-close]")).to_be_focused()
+        panel_background = page.locator("[data-chart-settings]").evaluate(
+            "dialog => getComputedStyle(dialog).backgroundColor"
+        )
+        assert panel_background == "rgb(5, 10, 24)"
+        page.screenshot(path=str(SCREENSHOTS_DIR / "admin-filter-density-panel.png"))
         expect(page.locator('[data-layer="ict_zones"]')).to_be_checked()
         expect(page.locator('[data-layer="killzones"]')).not_to_be_checked()
         page.locator('[data-layer="killzones"]').check()
@@ -489,8 +513,12 @@ def test_market_chart_renders_overlays_polls_and_is_responsive(server_url: str) 
             path=str(SCREENSHOTS_DIR / "ck3-ict-layer-desktop.png")
         )
         page.locator('[data-layer="killzones"]').uncheck()
+        page.keyboard.press("Escape")
+        expect(settings_dialog).not_to_be_visible()
+        expect(settings_button).to_be_focused()
 
         # CK-4: TPO mặc định tắt; nPOC/VAH-VAL mặc định bật.
+        settings_button.click()
         expect(page.locator('[data-layer="tpo"]')).not_to_be_checked()
         expect(page.locator('[data-layer="profile_levels"]')).to_be_checked()
         page.locator('[data-layer="tpo"]').check()
@@ -507,9 +535,13 @@ def test_market_chart_renders_overlays_polls_and_is_responsive(server_url: str) 
             path=str(SCREENSHOTS_DIR / "ck5-zigzag-vsa-desktop.png")
         )
         page.locator('[data-layer="vsa"]').uncheck()
+        page.keyboard.press("Escape")
 
         # CK-6: bảng Entry — tiến độ k/n, còn thiếu, ghim kịch bản lên chart.
         board = page.locator("#mc-entry-board")
+        first_setup = board.locator("details.mc-setup").first
+        first_summary = first_setup.locator("summary")
+        expect(first_setup).not_to_have_attribute("open")
         expect(board).to_contain_text("Bắt buộc 2/3")
         expect(board).to_contain_text("Còn thiếu: ADX14 1h đủ mạnh")
         # CK-12: giám sát bot — kết luận và chỗ chạy.
@@ -520,6 +552,14 @@ def test_market_chart_renders_overlays_polls_and_is_responsive(server_url: str) 
         expect(board.locator("[data-setup-status]").first).to_have_attribute(
             "data-setup-status", "not_ready"
         )
+        first_summary.focus()
+        first_summary.press("Enter")
+        expect(first_setup).to_have_attribute("open", "")
+        expect(board.locator("[data-monitor-slots]")).to_have_text("1/3")
+        expect(first_setup.locator(".sc-checklist li")).to_have_count(6)
+        board.screenshot(path=str(SCREENSHOTS_DIR / "ck6-entry-board-details-desktop.png"))
+        first_summary.press("Enter")
+        expect(first_setup).not_to_have_attribute("open")
         pin = page.locator("[data-setup-pin]")
         expect(pin.locator("option")).to_have_count(2)
         pin.select_option("0")
@@ -565,7 +605,12 @@ def test_market_chart_renders_overlays_polls_and_is_responsive(server_url: str) 
         page.reload(wait_until="networkidle")
         box = chart.bounding_box()
         count = page.locator("[data-draw-count]")
+        draw_tools = page.locator("[data-draw-tools]")
+        expect(draw_tools).not_to_have_attribute("open", "")
         expect(count).to_have_text("0 hình vẽ")
+        draw_tools.locator("summary").focus()
+        page.keyboard.press("Enter")
+        expect(draw_tools).to_have_attribute("open", "")
         page.locator('[data-draw-tool="trendline"]').click()
         chart.click(position={"x": box["width"] * 0.3, "y": box["height"] * 0.3})
         chart.click(position={"x": box["width"] * 0.6, "y": box["height"] * 0.5})
@@ -609,16 +654,23 @@ def test_market_chart_renders_overlays_polls_and_is_responsive(server_url: str) 
         chart.click(position={"x": box["width"] * 0.5, "y": box["height"] * 0.2})
         expect(count).to_have_text("3 hình vẽ")
         page.locator('[data-draw-toggle="lock"]').click()
+        draw_tools.locator("summary").click()
+        expect(draw_tools).not_to_have_attribute("open", "")
+        expect(count).to_be_visible()
         page.reload(wait_until="networkidle")
         expect(page.locator("[data-draw-count]")).to_have_text("3 hình vẽ")
+        expect(page.locator("[data-draw-tools]")).not_to_have_attribute("open", "")
 
         # CK-8: preset lớp và đếm "Lớp a/b".
+        page.locator("[data-chart-settings-open]").click()
         total = page.locator("[data-layer]").count()
         page.locator("[data-layer-preset]").select_option("minimal")
-        expect(page.locator("[data-layer-count]")).to_have_text(f"Lớp 4/{total}")
+        expect(page.locator("[data-layer-count]").first).to_have_text(f"4/{total}")
+        expect(page.locator("[data-layer-count]").nth(1)).to_have_text(f"Lớp 4/{total}")
         page.locator("[data-layer-preset]").select_option("default")
         expect(page.locator('[data-layer="killzones"]')).not_to_be_checked()
         expect(page.locator('[data-layer="ict_zones"]')).to_be_checked()
+        page.keyboard.press("Escape")
 
         # CK-8: nhiều khung — 2 khung → thêm khung 4H, có nến.
         page.locator("[data-multi-count]").select_option("2")
@@ -697,6 +749,7 @@ def test_market_chart_renders_overlays_polls_and_is_responsive(server_url: str) 
 
         # Bật RSI/MACD → hai pane phụ hiện; lựa chọn được nhớ sau khi tải lại.
         expect(page.locator("#market-chart-rsi")).to_be_hidden()
+        page.locator("[data-chart-settings-open]").click()
         page.locator('[data-layer="rsi"]').check()
         page.locator('[data-layer="macd"]').check()
         expect(page.locator("#market-chart-rsi canvas").first).to_be_visible()
@@ -725,15 +778,24 @@ def test_market_chart_renders_overlays_polls_and_is_responsive(server_url: str) 
             _assert_no_horizontal_overflow(page, f"{width}px")
             # CK-8: điện thoại chỉ xem bản vẽ (ẩn thanh công cụ vẽ).
             if width < 768:
-                expect(page.locator("[data-draw-toolbar]")).to_be_hidden()
+                expect(page.locator("[data-draw-tools]")).to_be_hidden()
             else:
-                expect(page.locator("[data-draw-toolbar]")).to_be_visible()
+                expect(page.locator("[data-draw-tools]")).to_be_visible()
+                expect(page.locator("[data-draw-toolbar]")).to_be_hidden()
             strip_box = page.locator("#mc-live-strip").bounding_box()
             assert strip_box is not None
             assert strip_box["x"] + strip_box["width"] <= width + 1, f"dải thông số @ {width}px"
-            for selector in (".mc-timeframe", ".mc-layer", "#mc-bot"):
-                height = page.locator(selector).first.bounding_box()["height"]
+            for selector in (".mc-timeframe", "#mc-bot"):
+                box = page.locator(selector).first.bounding_box()
+                assert box is not None
+                height = box["height"]
                 assert height >= 43.5, f"{selector} @ {width}px cao {height}"
+            page.locator("[data-chart-settings-open]").click()
+            _assert_no_horizontal_overflow(page, f"panel {width}px")
+            layer_box = page.locator(".mc-layer").first.bounding_box()
+            assert layer_box is not None
+            assert layer_box["height"] >= 43.5
+            page.keyboard.press("Escape")
         page.screenshot(
             path=str(SCREENSHOTS_DIR / "sig7-market-chart-mobile-dark.png"), full_page=True
         )

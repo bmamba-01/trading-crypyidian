@@ -1,7 +1,7 @@
 {% extends "admin/base.html" %}
 {% block title %}{{ bot.name }} · Quản trị Bot · Crypidian{% endblock %}
 {% block heading %}{{ bot.name }}{% endblock %}
-{% block head_extra %}<link rel="stylesheet" href="/static/pages/bots.css">{% endblock %}
+{% block head_extra %}<link rel="stylesheet" href="/static/pages/bots.css"><link rel="stylesheet" href="/static/pages/filters.css">{% endblock %}
 
 {% block content %}
 {#- Option dùng chung cho select/multi-select; `data-name`/`data-icon` là tên và biểu tượng coin cho Tom Select. -#}
@@ -440,7 +440,7 @@
         Chọn từ danh sách; gõ để tìm nhanh. Để trống nghĩa là nhận tất cả; tối đa 100 mục mỗi danh sách.
       </p>
 
-      <form class="bot-filter-form" method="post" action="/admin/bots/{{ bot.id }}/telegram-signal-filters" aria-labelledby="telegram-signal-filters-heading">
+      <form class="bot-filter-form admin-filter" method="post" action="/admin/bots/{{ bot.id }}/telegram-signal-filters" aria-labelledby="telegram-signal-filters-heading">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         {% set choices = signal_filter_choices %}
         <div class="bot-field">

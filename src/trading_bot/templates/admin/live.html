@@ -1,6 +1,7 @@
 {% extends "admin/base.html" %}
 {% block title %}Theo dõi trực tiếp — Crypidian{% endblock %}
 {% block heading %}Theo dõi bot trực tiếp (PAPER){% endblock %}
+{% block head_extra %}<link rel="stylesheet" href="/static/pages/filters.css">{% endblock %}
 {% block content %}
 {#- LIVE-MON (CRY-429): trang chỉ đọc; dữ liệu nạp bằng SSE (/admin/api/live/stream), poll dự phòng
     /admin/api/live/snapshot. Điều khiển vẫn qua form có MFA ở trang bot / đóng toàn bộ vị thế. -#}
@@ -24,7 +25,7 @@
 
   <details class="live-mon__picker"{% if not selected %} open{% endif %}>
     <summary>Chọn bot theo dõi ({{ selected | length }}/{{ bots | length }})</summary>
-    <form method="get" action="/admin/live" class="live-mon__picker-form">
+    <form method="get" action="/admin/live" class="live-mon__picker-form admin-filter admin-filter--selection">
       <fieldset>
         <legend class="visually-hidden">Bot hiển thị (tối đa {{ max_bots }})</legend>
         {% for bot in bots %}
