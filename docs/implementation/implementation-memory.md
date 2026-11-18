@@ -5793,3 +5793,19 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
   - Playwright E2E (`test_admin_live_monitor_playwright.py` 2 passed, `test_market_chart_renders_overlays_polls_and_is_responsive` 1 passed in 25.56s).
 - **Còn mở (Nhóm 3):** `CRY-133`, `CRY-236`, `CRY-333` (hợp nhất `codex/wp06-runtime-resolver` ~21k dòng / 167 file) để thành vòng riêng tiếp theo.
 - **Readback:** đã đọc lại mục này và đối chiếu kết quả test trước khi commit và cập nhật stack local.
+
+
+### 2026-11-18 — Hợp nhất vòng Nhóm 3 (`codex/wp06-runtime-resolver`, `CRY-333`, `CRY-133`)
+
+- **Hợp nhất trên nhánh `merge/wp06-runtime-resolver` (`773f5aa`, `734d56c`) từ `dev` (`7d5f8f5`) + `codex/wp06-runtime-resolver` (`2fe5b3a`):**
+  - Giải quyết toàn bộ xung đột giữ lại thay đổi WP-07 trên `dev` (`health.py`, `market_signal_composition.py` + `max_bars_per_stream`, `test_wp07_market_signal_producer.py`), khôi phục `ReplayTrainingOperation.CANDIDATE_TEST_PROOF` + `candidate_test_proof_scope_digest`, `_uses_replay_training_scope`, `LearningScorerTestAccessRepository.get_by_run`, `LearningScorerTestOpportunityProofRepository._source_scope_hash`, tạo migration gộp `migrations/versions/778263f66bad_merge_wp06_runtime_resolver_and_dev_.py` (1 head duy nhất `778263f66bad`).
+  - Làm idempotent các migration xung đột thứ tự nhánh `dev`/`codex` (`fa2c4e6b8d0f`, `e2f4a6c8b0d2` cả upgrade lẫn downgrade khi v5 đã do `d4f6a8b0c2e4` cài, `e2f4a6c8b0d5`, `a9c7e5f3d1b2` bỏ qua role/policy khi còn phụ thuộc ở nhánh khác, `f8e0a2c4d6b9` kiểm quyền job trước kiểm dòng metadata).
+  - Cập nhật probe & test E2E khớp contract mới: `tests/e2e/probes/db_role_least_privilege.py` (thêm `crypidian_learning_paper_performance_report_writer` vào `DEFINER_OWNERS`), `tests/e2e/test_wp06_paper_performance_gateway.py`, `tests/e2e/probes/wp06_scorer_deployment.py` + `tests/e2e/test_wp06_scorer_deployment.py` (`worker_artifact_resolver_bound_to_job`), `tests/e2e/test_live_market_backfill_migration.py` (nâng thẳng tới `7707d82de246` thay vì `downgrade` xuyên nhánh `a9c7e5f3d1b2` vì `a5c7e9b1d3f5` khóa SHA-256 toàn hàm `wp06_recheck_scorer_current_rights`), và `tests/unit/test_wp06_incident_eligibility_owner_migration.py`.
+- **Kiểm chứng trên `merge/wp06-runtime-resolver` (`734d56c`):**
+  - `uv run ruff format --check src tests migrations` → **1305 files already formatted**; `uv run ruff check src tests migrations` → **All checks passed!**; `uv run mypy src/trading_bot` → **Success: no issues found in 518 source files**.
+  - Unit tests (`test_sig0_taker_flow.py`, `test_wp06_*.py`, `test_learning_*.py`, `test_scorer_*.py`, `test_bot_decision_source_bars.py`, `test_replay_training_rights.py`) → **1041 passed in 25.01s** (`test_wp06_scorer_v5_current_rights_migration.py` chạy lại sau sửa cuối **13 passed in 0.22s**).
+  - Postgres E2E: `tests/e2e/test_wp06_paper_performance_gateway.py` → **1 passed**; `tests/e2e/test_wp06_scorer_deployment.py` → **1 passed in 37.29s**; `tests/e2e/test_live_market_backfill_migration.py` → **1 passed in 26.04s**; `tests/e2e/test_db_role_least_privilege.py` (sau sửa cuối `e2f4a6c8b0d2`) → **1 passed in 42.42s**.
+- **Ghi chú nhánh `dev` & phạm vi còn mở:**
+  - Chưa fast-forward sang `dev` vì `dev` (`9b3aeba`) đang được giữ bởi worktree khác (`merge-sec-dev` có thay đổi SEC-20/25/26 chưa commit); nhánh `merge/wp06-runtime-resolver` sẵn sàng merge vào `dev` khi worktree kia hoàn tất.
+  - `CRY-236` (`AI-5`) giữ `In Progress`: phần migration cohort/outcome (`a5c7e9b1d3f5`, `e5b7d9f1a3c6`) đã có, vẫn còn phần vận hành ghi policy/evidence TRAINING qua Source Registry, chạy backtest 20 coin ≥ 1.000 mẫu, train → TEST → SHADOW và sửa `learning-evaluator`.
+- **Readback:** đã đọc lại mục này và đối chiếu với diff/output thực tế trước khi commit.
