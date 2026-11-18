@@ -1,0 +1,49 @@
+# Override Compose chạy admin-web sau reverse proxy TLS (SEC-29, SEC-30).
+# Cách dùng:
+#   CRYPIDIAN_PUBLIC_HOST=admin.crypidian.example \
+#   TRADING_BOT_ALLOWED_HOSTS=admin.crypidian.example \
+#   TRADING_BOT_TRUSTED_PROXY_IPS=172.16.0.0/12 \
+#   docker compose -f compose.yaml -f deploy/compose.tls.yaml up -d
+#
+# Lưu ý: giữ subnet `web_ingress` cố định hoặc đặt `TRADING_BOT_TRUSTED_PROXY_IPS` khớp
+# chính xác subnet Docker của mạng `web_ingress` (không dùng '*' hoặc 0.0.0.0/0).
+
+services:
+  reverse-proxy:
+    image: caddy:2.11.9-alpine@sha256:003a97808e781aa9f7e75cc2f43d34d461099031faf5e20faefb9f61126836f0
+    environment:
+      CRYPIDIAN_PUBLIC_HOST: ${CRYPIDIAN_PUBLIC_HOST:?Can dat CRYPIDIAN_PUBLIC_HOST}
+    depends_on:
+      admin-web:
+        condition: service_healthy
+    networks:
+      - web_ingress
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    cap_drop: ["ALL"]
+    cap_add: ["NET_BIND_SERVICE"]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+
+  admin-web:
+    environment:
+      TRADING_BOT_APP_ENV: production
+      TRADING_BOT_ALLOWED_HOSTS: ${TRADING_BOT_ALLOWED_HOSTS:?Can dat TRADING_BOT_ALLOWED_HOSTS}
+      TRADING_BOT_TRUSTED_PROXY_IPS: ${TRADING_BOT_TRUSTED_PROXY_IPS:?Can dat TRADING_BOT_TRUSTED_PROXY_IPS}
+    # Đóng cổng trực tiếp ra host; toàn bộ truy cập đi qua reverse-proxy TLS.
+    ports: !reset []
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import os, urllib.request; host = os.environ.get('CRYPIDIAN_HEALTHCHECK_HOST') or os.environ['TRADING_BOT_ALLOWED_HOSTS'].split(',')[0].strip(); urllib.request.urlopen(urllib.request.Request('http://127.0.0.1:8000/health/live', headers={'Host': host}), timeout=2).read()"
+
+volumes:
+  caddy_data:
+  caddy_config:

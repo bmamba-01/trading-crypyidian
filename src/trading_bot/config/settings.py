@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from trading_bot.application.learning_scorer_evaluation import (
         ScorerTestEvaluationPolicy,
     )
+    from trading_bot.common.http_limits import IPNetwork
 
 TradingMode = Literal["PAPER", "DEMO"]
 ProcessRole = Literal[
@@ -138,6 +139,18 @@ class AppSettings(BaseSettings):
     # Chu kỳ tin tổng hợp so sánh các bot; 0 = tắt. Tối thiểu 15 phút để tránh spam.
     telegram_report_interval_minutes: int = Field(default=240, ge=0, le=10_080)
 
+    # SEC-29: danh sách Host hợp lệ (CSV) và dải IP/CIDR reverse proxy tin cậy (CSV).
+    # Môi trường production trên admin-web bắt buộc cấu hình allowed_hosts tường minh (cấm '*').
+    allowed_hosts: str = ""
+    trusted_proxy_ips: str = ""
+    # SEC-30: giới hạn kích thước request body (mặc định 1 MiB) và rate limit chung mỗi phút.
+    request_body_max_bytes: int = Field(default=1_048_576, ge=256, le=52_428_800)
+    rate_limit_mutation_per_minute: int = Field(default=60, ge=1, le=10_000)
+    rate_limit_heavy_read_per_minute: int = Field(default=30, ge=1, le=10_000)
+    rate_limit_heavy_read_paths: str = (
+        "/admin/reports,/admin/run-reports,/admin/api/chart,/admin/backtests,/api/v1/reports"
+    )
+
     # Chính sách TEST scorer phải có version/hash giống hệt report và deployment được ghim.
     scorer_test_policy_version: str = Field(
         default="wp06-scorer-test-v1", min_length=1, max_length=120
@@ -210,6 +223,40 @@ class AppSettings(BaseSettings):
             raise ValueError(
                 "Chế độ kiểm thử mã xác thực chỉ bật được khi app_env là local/test và mode PAPER."
             )
+        return self
+
+    @property
+    def allowed_host_list(self) -> tuple[str, ...]:
+        """Danh sách Host hợp lệ đã chuẩn hóa; rỗng khi chưa bật giới hạn Host."""
+        from trading_bot.common.http_limits import parse_allowed_hosts
+
+        return parse_allowed_hosts(self.allowed_hosts)
+
+    @property
+    def trusted_proxy_networks(self) -> tuple[IPNetwork, ...]:
+        """Mạng/IP reverse proxy được tin cậy để đọc `X-Forwarded-For`."""
+        from trading_bot.common.http_limits import parse_trusted_proxies
+
+        return parse_trusted_proxies(self.trusted_proxy_ips)
+
+    @property
+    def heavy_read_path_prefixes(self) -> tuple[str, ...]:
+        """Tiền tố đường dẫn đọc nặng chịu rate limit riêng."""
+        return _split_csv(self.rate_limit_heavy_read_paths)
+
+    @model_validator(mode="after")
+    def validate_http_limits(self) -> AppSettings:
+        """Xác thực cấu hình Host/proxy tin cậy; fail-closed cho admin-web ở production."""
+        from trading_bot.common.http_limits import parse_allowed_hosts, parse_trusted_proxies
+
+        parse_trusted_proxies(self.trusted_proxy_ips)
+        hosts = parse_allowed_hosts(self.allowed_hosts)
+        if self.app_env == "production" and self.process_role == "admin-web":
+            if not hosts or "*" in hosts:
+                raise ValueError(
+                    "Môi trường production cho admin-web phải cấu hình allowed_hosts tường minh "
+                    "(cấm '*')."
+                )
         return self
 
     @model_validator(mode="after")

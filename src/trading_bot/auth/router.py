@@ -26,6 +26,7 @@ from trading_bot.auth.service import (
     AuthService,
     LoginResult,
 )
+from trading_bot.common.http_limits import IPNetwork, resolve_client_ip
 from trading_bot.config.settings import AppSettings
 
 router = APIRouter(prefix="/api/v1", tags=["authentication and administration"])
@@ -44,7 +45,15 @@ def get_rate_limiter(request: Request) -> LoginRateLimiter:
 
 
 def client_address(request: Request) -> str:
-    return request.client.host if request.client is not None else "unknown"
+    """Trả IP client thực tế (chỉ tin `X-Forwarded-For` khi peer nằm trong proxy tin cậy)."""
+    peer = request.client.host if request.client is not None else None
+    app = request.scope.get("app")
+    state = getattr(app, "state", None)
+    trusted = cast(
+        tuple[IPNetwork, ...],
+        getattr(state, "trusted_proxies", ()) if state is not None else (),
+    )
+    return resolve_client_ip(peer, request.headers.get("x-forwarded-for"), trusted)
 
 
 def login_account_scope(workspace_slug: str) -> str:

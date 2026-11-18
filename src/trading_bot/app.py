@@ -17,6 +17,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from trading_bot.adapters.database.engine import (
     admin_web_session_timeouts,
@@ -144,9 +145,15 @@ from trading_bot.application.telegram_binding import TelegramBindingService
 from trading_bot.application.telegram_paper_report import TelegramPaperReportService
 from trading_bot.application.telegram_signal_subscription import TelegramSignalSubscriptionService
 from trading_bot.application.telegram_signals import SignalThrottlePolicy
+from trading_bot.auth.cookies import session_cookie_name
 from trading_bot.auth.router import router as auth_router
 from trading_bot.auth.security import LoginRateLimiter, TestModeTotpManager
 from trading_bot.auth.service import AuthService
+from trading_bot.common.http_limits import (
+    BodySizeLimitMiddleware,
+    ClientIPMiddleware,
+    RequestRateLimitMiddleware,
+)
 from trading_bot.common.http_security import SecurityHeadersMiddleware, security_headers
 from trading_bot.config.settings import AppSettings
 from trading_bot.observability.readiness import (
@@ -844,8 +851,24 @@ def create_app(
         redoc_url=None,
         lifespan=lifespan,
     )
+    trusted_proxies = app_settings.trusted_proxy_networks
+    allowed_hosts = app_settings.allowed_host_list
+    # Thứ tự bọc từ trong ra ngoài (lớp thêm sau chạy trước):
+    # SecurityHeaders -> ClientIP -> TrustedHost -> BodySizeLimit -> RequestRateLimit -> router.
+    app.add_middleware(
+        RequestRateLimitMiddleware,
+        mutation_per_window=app_settings.rate_limit_mutation_per_minute,
+        heavy_read_per_window=app_settings.rate_limit_heavy_read_per_minute,
+        heavy_read_paths=app_settings.heavy_read_path_prefixes,
+        session_cookie_names=(session_cookie_name(app_settings),),
+    )
+    app.add_middleware(BodySizeLimitMiddleware, max_bytes=app_settings.request_body_max_bytes)
+    if allowed_hosts:
+        app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts, www_redirect=False)
+    app.add_middleware(ClientIPMiddleware, trusted_proxies=trusted_proxies)
     app.add_middleware(SecurityHeadersMiddleware, headers=security_headers(app_settings))
     app.state.settings = app_settings
+    app.state.trusted_proxies = trusted_proxies
     app.state.templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
     worker_role = app_settings.process_role in {"signal-worker", "market-signal-worker"}
     if not worker_role:

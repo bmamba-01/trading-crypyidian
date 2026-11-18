@@ -63,7 +63,8 @@ class FakeAuthService:
 
 def _client(app_env: Literal["local", "test", "production"]) -> tuple[TestClient, FakeAuthService]:
     service = FakeAuthService()
-    app = create_app(AppSettings(app_env=app_env))
+    allowed_hosts = "testserver" if app_env == "production" else ""
+    app = create_app(AppSettings(app_env=app_env, allowed_hosts=allowed_hosts))
     app.dependency_overrides[get_auth_service] = lambda: service
     return TestClient(app), service
 
@@ -85,7 +86,7 @@ def test_cookie_name_derives_from_secure_setting() -> None:
     assert session_cookie_name(AppSettings(app_env="local")) == SESSION_COOKIE_BASE_NAME
     assert session_cookie_name(AppSettings(app_env="test")) == SESSION_COOKIE_BASE_NAME
     assert (
-        session_cookie_name(AppSettings(app_env="production"))
+        session_cookie_name(AppSettings(app_env="production", allowed_hosts="testserver"))
         == f"__Host-{SESSION_COOKIE_BASE_NAME}"
     )
 
