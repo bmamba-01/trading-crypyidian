@@ -1,4 +1,5 @@
 {% extends "admin/base.html" %}
+{% import "admin/_admin_icons.html" as icons %}
 {% block title %}Phân tích AI — Crypidian{% endblock %}
 {% block heading %}Phân tích AI{% endblock %}
 {% block head_extra %}<link rel="stylesheet" href="/static/pages/ai.css"><link rel="stylesheet" href="/static/pages/filters.css">{% endblock %}
@@ -23,7 +24,7 @@
           <option value="no" {% if valid == "no" %}selected{% endif %}>Bị loại</option>
         </select>
       </label>
-      <button type="submit" class="btn btn-secondary">Lọc</button>
+      <button type="submit" class="btn btn-secondary btn--icon" aria-label="Lọc lượt phân tích" title="Lọc lượt phân tích">{{ icons.action("filter") }}</button>
     </form>
   </section>
 

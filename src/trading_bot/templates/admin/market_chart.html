@@ -1,4 +1,5 @@
 {% extends "admin/base.html" %}
+{% import "admin/_admin_icons.html" as icons %}
 {% block title %}Biểu đồ thị trường — Crypidian{% endblock %}
 {% block heading %}Biểu đồ thị trường{% endblock %}
 {% block head_extra %}<link rel="stylesheet" href="/static/pages/chart.css"><link rel="stylesheet" href="/static/pages/filters.css">{% endblock %}
@@ -106,11 +107,11 @@
     <p id="mc-legend" class="chart-ohlc-legend" data-chart-legend>Rê chuột hoặc chạm vào nến để xem Mở / Cao / Thấp / Đóng và khối lượng.</p>
     {#- CK-7: điều khiển vùng nhìn, cỡ chart và phím tắt (chart nhận phím khi được focus). -#}
     <div class="mc-controls" role="toolbar" aria-label="Điều khiển biểu đồ">
-      <button type="button" class="btn btn-secondary mc-control" data-chart-action="zoom-out" title="Thu nhỏ (phím −)" aria-label="Thu nhỏ">−</button>
-      <button type="button" class="btn btn-secondary mc-control" data-chart-action="zoom-in" title="Phóng to (phím +)" aria-label="Phóng to">+</button>
-      <button type="button" class="btn btn-secondary mc-control" data-chart-action="home" title="Về nến đầu (Home)">Về đầu</button>
-      <button type="button" class="btn btn-secondary mc-control" data-chart-action="reset" title="Đặt lại vùng nhìn (phím 0 hoặc nhấp đúp)">Đặt lại</button>
-      <button type="button" class="btn btn-secondary mc-control" data-chart-action="live" title="Về nến mới nhất (End)">→ Live</button>
+      <button type="button" class="btn btn-secondary mc-control btn--icon" data-chart-action="zoom-out" title="Thu nhỏ biểu đồ (phím −)" aria-label="Thu nhỏ biểu đồ">{{ icons.action("zoom_out") }}</button>
+      <button type="button" class="btn btn-secondary mc-control btn--icon" data-chart-action="zoom-in" title="Phóng to biểu đồ (phím +)" aria-label="Phóng to biểu đồ">{{ icons.action("zoom_in") }}</button>
+      <button type="button" class="btn btn-secondary mc-control btn--icon" data-chart-action="home" title="Về nến đầu (Home)" aria-label="Về nến đầu">{{ icons.action("home") }}</button>
+      <button type="button" class="btn btn-secondary mc-control btn--icon" data-chart-action="reset" title="Đặt lại vùng nhìn (phím 0 hoặc nhấp đúp)" aria-label="Đặt lại vùng nhìn">{{ icons.action("reset") }}</button>
+      <button type="button" class="btn btn-secondary mc-control btn--icon" data-chart-action="live" title="Về nến mới nhất (End)" aria-label="Về nến mới nhất">{{ icons.action("live") }}</button>
       <label class="mc-size" for="mc-chart-size">Cỡ</label>
       <select id="mc-chart-size" data-chart-size>
         <option value="s">S</option>
@@ -136,21 +137,21 @@
         <span class="sc-meta" data-draw-count>0 hình vẽ</span>
       </summary>
       <div class="mc-draw-toolbar" role="toolbar" aria-label="Công cụ vẽ" data-draw-toolbar>
-      <button type="button" class="btn btn-secondary mc-control" data-draw-tool="cursor" aria-pressed="true" title="Chọn hình (Esc bỏ chọn, Delete xóa)">Con trỏ</button>
-      <button type="button" class="btn btn-secondary mc-control" data-draw-tool="trendline" aria-pressed="false">Trendline</button>
-      <button type="button" class="btn btn-secondary mc-control" data-draw-tool="hline" aria-pressed="false">Đường ngang</button>
-      <button type="button" class="btn btn-secondary mc-control" data-draw-tool="ray" aria-pressed="false">Tia</button>
-      <button type="button" class="btn btn-secondary mc-control" data-draw-tool="rect" aria-pressed="false">Hình chữ nhật</button>
-      <button type="button" class="btn btn-secondary mc-control" data-draw-tool="fib" aria-pressed="false">Fibonacci</button>
-      <button type="button" class="btn btn-secondary mc-control" data-draw-tool="text" aria-pressed="false">Văn bản</button>
+      <button type="button" class="btn btn-secondary mc-control btn--icon" data-draw-tool="cursor" aria-pressed="true" title="Chọn hình (Esc bỏ chọn, Delete xóa)" aria-label="Chọn hình">{{ icons.action("cursor") }}</button>
+      <button type="button" class="btn btn-secondary mc-control btn--icon" data-draw-tool="trendline" aria-pressed="false" title="Vẽ trendline" aria-label="Vẽ trendline">{{ icons.action("trendline") }}</button>
+      <button type="button" class="btn btn-secondary mc-control btn--icon" data-draw-tool="hline" aria-pressed="false" title="Vẽ đường ngang" aria-label="Vẽ đường ngang">{{ icons.action("hline") }}</button>
+      <button type="button" class="btn btn-secondary mc-control btn--icon" data-draw-tool="ray" aria-pressed="false" title="Vẽ tia" aria-label="Vẽ tia">{{ icons.action("ray") }}</button>
+      <button type="button" class="btn btn-secondary mc-control btn--icon" data-draw-tool="rect" aria-pressed="false" title="Vẽ hình chữ nhật" aria-label="Vẽ hình chữ nhật">{{ icons.action("rectangle") }}</button>
+      <button type="button" class="btn btn-secondary mc-control btn--icon" data-draw-tool="fib" aria-pressed="false" title="Vẽ Fibonacci" aria-label="Vẽ Fibonacci">{{ icons.action("fibonacci") }}</button>
+      <button type="button" class="btn btn-secondary mc-control btn--icon" data-draw-tool="text" aria-pressed="false" title="Thêm văn bản" aria-label="Thêm văn bản">{{ icons.action("text") }}</button>
       <label class="visually-hidden" for="mc-draw-text">Nội dung văn bản</label>
       <input id="mc-draw-text" class="mc-draw-text" type="text" maxlength="120" value="Ghi chú" data-draw-text>
-      <button type="button" class="btn btn-secondary mc-control" data-draw-toggle="magnet" aria-pressed="false" title="Bắt điểm vào giá Mở/Cao/Thấp/Đóng gần nhất">Nam châm</button>
-      <button type="button" class="btn btn-secondary mc-control" data-draw-toggle="lock" aria-pressed="false">Khóa</button>
-      <button type="button" class="btn btn-secondary mc-control" data-draw-toggle="hide" aria-pressed="false">Ẩn hình vẽ</button>
-      <button type="button" class="btn btn-secondary mc-control" data-draw-action="undo" title="Hoàn tác (Ctrl/Cmd+Z)">Hoàn tác</button>
-      <button type="button" class="btn btn-secondary mc-control" data-draw-action="redo" title="Làm lại (Ctrl/Cmd+Shift+Z)">Làm lại</button>
-      <button type="button" class="btn btn-secondary mc-control" data-draw-action="delete" title="Xóa hình đang chọn; không chọn thì hỏi xóa tất cả">Xóa</button>
+      <button type="button" class="btn btn-secondary mc-control btn--icon" data-draw-toggle="magnet" aria-pressed="false" title="Bắt điểm vào giá Mở/Cao/Thấp/Đóng gần nhất" aria-label="Bật/tắt nam châm">{{ icons.action("magnet") }}</button>
+      <button type="button" class="btn btn-secondary mc-control btn--icon" data-draw-toggle="lock" aria-pressed="false" title="Khóa hình vẽ" aria-label="Khóa hình vẽ">{{ icons.action("lock") }}</button>
+      <button type="button" class="btn btn-secondary mc-control btn--icon" data-draw-toggle="hide" aria-pressed="false" title="Ẩn hoặc hiện hình vẽ" aria-label="Ẩn hoặc hiện hình vẽ">{{ icons.action("eye") }}</button>
+      <button type="button" class="btn btn-secondary mc-control btn--icon" data-draw-action="undo" title="Hoàn tác (Ctrl/Cmd+Z)" aria-label="Hoàn tác">{{ icons.action("undo") }}</button>
+      <button type="button" class="btn btn-secondary mc-control btn--icon" data-draw-action="redo" title="Làm lại (Ctrl/Cmd+Shift+Z)" aria-label="Làm lại">{{ icons.action("redo") }}</button>
+      <button type="button" class="btn btn-secondary mc-control btn--icon" data-draw-action="delete" title="Xóa hình đang chọn; không chọn thì hỏi xóa tất cả" aria-label="Xóa hình vẽ">{{ icons.action("trash") }}</button>
       </div>
     </details>
     <div id="market-chart" class="mc-canvas" tabindex="0" role="img" aria-label="Biểu đồ nến {{ chart_payload.symbol }} khung {{ timeframe }} với cấu trúc thị trường, phiên và volume profile" data-bot-id="{{ selected_bot.id }}" data-symbol="{{ selected_symbol }}" data-timeframe="{{ timeframe }}"></div>

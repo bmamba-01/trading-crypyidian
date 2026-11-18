@@ -346,6 +346,14 @@ Ký hiệu: **D** = đã có trên `dev`; **S** = đã làm lát đầu trên nh
 - **Thiết kế:** [Tối ưu bộ lọc Admin](../specs/2026-11-18-admin-filter-density-design.md) · [Kế hoạch](./2026-11-18-admin-filter-density.md).
 - **Trạng thái:** hoàn tất ngày 18/11/2026; unit 52/52 và E2E chart/live/risk 7/7 đạt. Commits `ef4b75d`, `21ac666` đã lên `dev`; admin-web local restart healthy trên cổng 8010.
 
+### UI-Admin/full-density — Thu nhỏ control và rà soát toàn Admin (CRY-443, 18/11/2026)
+
+- **Mục tiêu:** giảm kích thước nút trên desktop, thay nhãn lặp lại bằng SVG icon có tên truy cập/tooltip, đồng bộ spacing cho toàn bộ Admin; thu gọn dữ liệu phụ dài.
+- **Phạm vi:** 32 template page trực tiếp. Base layout nạp `admin-density.css`; icon dùng trong filter, search, chart/layer, zoom và công cụ vẽ. Disclosure mặc định đóng cho watchlist/mã loại/log scanner, breakdown/tín hiệu gần đây, backtest/context AI, lượt liên quan report, feed live và lịch sử risk profile. Form vận hành, cảnh báo, KPI/chỉ số chính giữ hiển thị.
+- **Bằng chứng:** unit liên quan **208 passed**; Playwright design system/chart/scanner/live/risk **9 passed** (desktop/mobile); screenshot chart và scanner đã rà trực quan; `git diff --check` sạch. Kiểm tra E2E ban đầu xác nhận desktop control 36–40px, mobile 44px; cập nhật test contract cũ vốn đòi 44px cho mọi desktop.
+- **Tài liệu:** [audit 32 page](../specs/2026-11-18-admin-full-density-design.md) · [kế hoạch](./2026-11-18-admin-full-density.md).
+- **Trạng thái tích hợp:** đang hoàn tất review, commit/push và restart admin-web.
+
 ## 8. Dữ liệu và API
 
 - Mở rộng `GET /admin/api/chart` thành các khối: `header` (CK-1), `mtf` (CK-2), `zones` (CK-3), `profiles` (CK-4), `vsa`/`zigzag` (CK-5), `setups` (CK-6), `positions` (CK-7), `levels`/`events`/`narrative` (CK-10), `status` (CK-9). Mỗi khối có `formula_version`, `as_of`, nguồn; thiếu dữ liệu trả lý do, không trả 0.

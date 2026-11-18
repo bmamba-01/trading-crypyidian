@@ -1,3 +1,4 @@
+{% import "admin/_admin_icons.html" as icons %}
 <section class="glass-card mc-toolbar" aria-label="Chọn bot, khung và lớp hiển thị">
     {% if bots %}
     <form class="mc-toolbar__select" method="get" action="/admin/chart">
@@ -13,7 +14,7 @@
       </select>
       {% endif %}
       <input type="hidden" name="timeframe" value="{{ timeframe }}">
-      <button type="submit" class="btn btn-secondary">Xem</button>
+      <button type="submit" class="btn btn-secondary btn--icon" title="Xem biểu đồ theo lựa chọn" aria-label="Xem biểu đồ theo lựa chọn">{{ icons.action("search") }}</button>
     </form>
     {% if selected_symbol %}
     <nav class="mc-timeframes" aria-label="Khung thời gian">
@@ -28,8 +29,7 @@
       aria-controls="mc-chart-settings" aria-expanded="false" aria-haspopup="dialog"
       title="Cài đặt lớp hiển thị"
       aria-label="Mở cài đặt lớp hiển thị">
-      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></svg>
-      <span>Lớp</span><span class="mc-layer-count" data-layer-count data-layer-count-compact>—</span>
+      {{ icons.action("layers") }}<span class="mc-layer-count" data-layer-count data-layer-count-compact>—</span>
     </button>
     {#- CK-8: dialog bên phải giữ preset, nhóm lớp và số lớp bật; đóng mặc định để chart vào viewport. -#}
     <dialog id="mc-chart-settings" class="mc-settings" data-chart-settings aria-labelledby="mc-settings-title"

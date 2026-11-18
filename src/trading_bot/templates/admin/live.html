@@ -1,4 +1,5 @@
 {% extends "admin/base.html" %}
+{% import "admin/_admin_icons.html" as icons %}
 {% block title %}Theo dõi trực tiếp — Crypidian{% endblock %}
 {% block heading %}Theo dõi bot trực tiếp (PAPER){% endblock %}
 {% block head_extra %}<link rel="stylesheet" href="/static/pages/filters.css">{% endblock %}
@@ -37,7 +38,7 @@
         <p>Không có bot nào trong phạm vi được cấp quyền.</p>
         {% endfor %}
       </fieldset>
-      <button type="submit" class="btn btn-primary btn-sm">Áp dụng</button>
+      <button type="submit" class="btn btn-primary btn-sm btn--icon" aria-label="Áp dụng bộ lọc bot" title="Áp dụng bộ lọc bot">{{ icons.action("filter") }}</button>
     </form>
   </details>
 
@@ -78,11 +79,12 @@
       </div>
     </section>
 
-    <section class="live-mon__panel live-mon__panel--feed" aria-labelledby="live-feed-h">
-      <h2 id="live-feed-h">Dòng sự kiện</h2>
+    <details class="live-mon__panel live-mon__panel--feed admin-disclosure admin-disclosure--live-feed">
+      <summary><h2 id="live-feed-h">Dòng sự kiện</h2><span class="admin-disclosure__chevron" aria-hidden="true"></span></summary><div class="admin-disclosure__body">
       <ol class="live-mon__feed" data-live-feed aria-live="polite" aria-relevant="additions"></ol>
       <p class="live-mon__empty" data-live-feed-empty>Chưa có sự kiện trong phạm vi bot đã chọn.</p>
-    </section>
+      </div>
+    </details>
 
     <section class="live-mon__panel live-mon__panel--positions" aria-labelledby="live-pos-h">
       <h2 id="live-pos-h">Vị thế mở <span class="badge badge-neutral" data-live-pos-count>0</span></h2>

@@ -789,7 +789,8 @@ def test_market_chart_renders_overlays_polls_and_is_responsive(server_url: str) 
                 box = page.locator(selector).first.bounding_box()
                 assert box is not None
                 height = box["height"]
-                assert height >= 43.5, f"{selector} @ {width}px cao {height}"
+                min_height = 43.5 if width <= 767 else 40
+                assert height >= min_height, f"{selector} @ {width}px cao {height}"
             page.locator("[data-chart-settings-open]").click()
             _assert_no_horizontal_overflow(page, f"panel {width}px")
             layer_box = page.locator(".mc-layer").first.bounding_box()
@@ -825,9 +826,16 @@ def test_scanner_page_watchlist_is_saved_in_browser(server_url: str) -> None:
         expect(page.locator('[data-scan-row="BTCUSDT"]').first).to_be_visible()
         # ETHUSDT thiếu 21 ngày: không vào bảng xếp hạng, có trong danh sách loại kèm lý do.
         expect(page.locator('[data-scan-row="ETHUSDT"]')).to_have_count(0)
-        expect(page.locator('section[aria-labelledby="scan-excluded"]')).to_contain_text(
+        excluded = page.locator("details").filter(has=page.locator("#scan-excluded"))
+        expect(excluded.locator("summary")).to_be_visible()
+        excluded.locator("summary").click()
+        expect(excluded).to_contain_text(
             "ETHUSDT — Thiếu dữ liệu 21 ngày"
         )
+        # Watchlist được thu gọn mặc định để ưu tiên bảng kết quả.
+        watchlist = page.locator("details").filter(has=page.locator("#scan-watch"))
+        expect(watchlist).not_to_have_attribute("open", "")
+        watchlist.locator("summary").click()
         # Tom Select: gõ để tìm rồi chọn BTCUSDT.
         page.locator(".ts-control input").first.fill("BTC")
         page.locator(".ts-dropdown .option[data-value='BTCUSDT']").click()

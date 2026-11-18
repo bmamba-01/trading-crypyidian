@@ -13,6 +13,15 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 
 ## Nhật ký các vòng
 
+### 2026-11-18 — CRY-443: giảm mật độ control và rà soát toàn Admin
+
+- **Phạm vi:** áp dụng layer `admin-density.css` sau stylesheet page cho 32 template page trực tiếp; desktop nút tối thiểu 36px, input/select 40px, viewport cảm ứng/narrow giữ 44px. SVG icon line không thêm dependency; icon-only có `aria-label`, `title`, focus ring. Icon hóa toolbar chart/layer, filter/search ngắn; hành động vận hành và hành động ghi log vẫn dùng chữ.
+- **Disclosure:** scanner giữ ba bảng kết quả và thu gọn watchlist/mã loại/log; signal outcomes giữ filter/KPI/phân phối và gập breakdown/recent; AI detail gập backtest/context; Run Report gập lượt AI liên quan; live gập event feed; risk gập version history. Form, cảnh báo, số liệu chính và giới hạn hiện hành luôn mở. Chi tiết từng page ở `docs/superpowers/specs/2026-11-18-admin-full-density-design.md`.
+- **TDD / lỗi và quyết định:** regression đầu tiên đỏ vì base chưa nạp stylesheet và scanner chưa có disclosure. Sau implement, bộ E2E cũ yêu cầu mọi nút/field desktop cao 44px; cập nhật helper theo 36px nút / 40px field desktop và 44px touch. Test scanner cũ tìm `<section>` đã đổi native `<details>`; cập nhật test mở disclosure trước khi assert nội dung. Không đổi form method/action hoặc input.
+- **Kiểm thử:** unit liên quan → **208 passed**, sau đó bổ sung hợp đồng icon filter và chạy `test_admin_density.py` → **3 passed** (tổng khác nhau 209). `uv run pytest tests/e2e/test_admin_design_system_components_playwright.py tests/e2e/test_admin_market_chart_playwright.py tests/e2e/test_admin_live_monitor_playwright.py tests/e2e/test_admin_risk_appetite_playwright.py -q` → **9 passed** (160.00s; một pytest assert-rewrite warning của CSP harness); chạy lại chart sau lần icon hóa cuối → **2 passed**. Ruff cho test unit/E2E liên quan sạch; `git diff --check` đạt.
+- **Rà ảnh:** screenshot chart 1280px xác nhận dải chỉ số → thanh filter gọn → chart bắt đầu trong viewport; scanner desktop xác nhận ba bảng chính giữ mở, disclosure phụ nằm gọn bên dưới. Mobile overflow và 44px controls được E2E kiểm tra.
+- **Còn mở trong lần ghi này:** kiểm tra staged diff; commit/push `dev`, restart admin-web, health/UI live; cập nhật CRY-443 bằng commit/test/result. Không đánh dấu hoàn tất trước các bước đó.
+
 ### 2026-11-05 — WP-SC.6: Kính hiển vi soi vết lịch sử (Microscope Replay Workspace) & Playwright Automation Test cho Strategy Card
 
 - **Mục tiêu/phạm vi:** Hoàn thiện gói công việc WP-SC.6 triển khai không gian làm việc mô phỏng và soi kính hiển vi vết nến điểm thời gian (Microscope Replay Workspace) lấy cảm hứng từ QUANTSMART:

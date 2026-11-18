@@ -165,14 +165,15 @@
   </section>
 
   {% if overview.profile_history %}
-  <section class="glass-card" aria-labelledby="risk-history-heading">
-    <h3 id="risk-history-heading" class="bot-section-title">Các phiên bản risk profile gần đây</h3>
+  <details class="glass-card admin-disclosure admin-disclosure--risk-history">
+    <summary><h3 id="risk-history-heading" class="bot-section-title">Các phiên bản risk profile gần đây</h3><span class="admin-disclosure__chevron" aria-hidden="true"></span></summary><div class="admin-disclosure__body">
     <ul class="risk-history">
       {% for item in overview.profile_history %}
       <li>{{ item.name }} v{{ item.version }}{% if item.active %} <span class="badge badge-paper-subtle">đang dùng</span>{% endif %} · <time datetime="{{ item.created_at }}">{{ (item.created_at or "")[:16] | replace("T", " ") }} UTC</time></li>
       {% endfor %}
     </ul>
-  </section>
+    </div>
+  </details>
   {% endif %}
 </div>
 {% endblock %}

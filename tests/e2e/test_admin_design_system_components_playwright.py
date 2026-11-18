@@ -112,11 +112,17 @@ def _assert_touch_and_no_overflow(page: Page) -> None:
         "input:not([type=hidden]):not([type=checkbox]):not([type=radio]),"
         "select,textarea,button,a.btn"
     ).all()
+    touch_viewport = page.viewport_size["width"] <= 767
     for control in controls:
         if control.is_visible():
             box = control.bounding_box()
             assert box is not None
-            assert box["height"] >= 44
+            if touch_viewport:
+                assert box["height"] >= 44
+            elif control.evaluate("el => el.matches('button, a.btn')"):
+                assert box["height"] >= 32
+            else:
+                assert box["height"] >= 40
 
 
 def test_error_page_light_dark_and_responsive(

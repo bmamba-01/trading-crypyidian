@@ -1,4 +1,5 @@
 {% extends "admin/base.html" %}
+{% import "admin/_admin_icons.html" as icons %}
 {% block title %}Bộ quét thị trường — Crypidian{% endblock %}
 {% block heading %}Bộ quét thị trường{% endblock %}
 {% block head_extra %}<link rel="stylesheet" href="/static/pages/chart.css"><link rel="stylesheet" href="/static/pages/filters.css">{% endblock %}
@@ -51,7 +52,7 @@
         </select>
       </label>
       <div class="mc-calendar__actions">
-        <button type="submit" class="btn btn-secondary">Xem kết quả</button>
+        <button type="submit" class="btn btn-secondary btn--icon" aria-label="Xem kết quả quét" title="Xem kết quả quét">{{ icons.action("search") }}</button>
         <button type="submit" class="btn btn-primary" formmethod="post" formaction="/admin/scanner">Chạy quét và ghi nhật ký</button>
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       </div>
@@ -72,17 +73,20 @@
     {{ scan_table(result.top_volume, "volume") }}
   </section>
 
-  <section class="glass-card mc-calendar" aria-labelledby="scan-watch">
-    <h2 id="scan-watch">Watchlist của bạn</h2>
+  <details class="glass-card mc-calendar admin-disclosure admin-disclosure--scanner-history">
+    <summary><h2 id="scan-watch">Watchlist của bạn</h2><span class="admin-disclosure__chevron" aria-hidden="true"></span></summary>
+    <div class="admin-disclosure__body">
     <label for="scan-watchlist">Mã theo dõi (lưu trên trình duyệt này)</label>
     <select id="scan-watchlist" multiple data-multiselect="coins" data-watchlist data-placeholder="Gõ để tìm, ví dụ BTC">
       {% for choice in watch_choices %}<option value="{{ choice.value }}"{% for key, value in (choice.data or {}).items() %} data-{{ key }}="{{ value }}"{% endfor %}>{{ choice.label }}</option>{% endfor %}
     </select>
     <ul class="mc-calendar-list" data-watchlist-rows><li>Chưa chọn mã nào.</li></ul>
-  </section>
+    </div>
+  </details>
 
-  <section class="glass-card mc-calendar" aria-labelledby="scan-excluded">
-    <h2 id="scan-excluded">Mã bị loại ({{ result.excluded | length }})</h2>
+  <details class="glass-card mc-calendar admin-disclosure admin-disclosure--scanner-history">
+    <summary><h2 id="scan-excluded">Mã bị loại ({{ result.excluded | length }})</h2><span class="admin-disclosure__chevron" aria-hidden="true"></span></summary>
+    <div class="admin-disclosure__body">
     {% if result.excluded %}
     <ul class="mc-calendar-list">
       {% for row in result.excluded %}<li><strong>{{ row.symbol }}</strong> — {{ row.reason }}</li>{% endfor %}
@@ -90,10 +94,12 @@
     {% else %}
     <p class="sc-empty">Không có mã nào bị loại.</p>
     {% endif %}
-  </section>
+    </div>
+  </details>
 
-  <section class="glass-card mc-calendar" aria-labelledby="scan-log">
-    <h2 id="scan-log">Nhật ký quét</h2>
+  <details class="glass-card mc-calendar admin-disclosure admin-disclosure--scanner-history">
+    <summary><h2 id="scan-log">Nhật ký quét</h2><span class="admin-disclosure__chevron" aria-hidden="true"></span></summary>
+    <div class="admin-disclosure__body">
     {% if runs %}
     <ol class="mc-event-list">
       {% for run in runs %}<li><time datetime="{{ run.occurred_at }}">{{ run.occurred_at | local_minute }}</time> — {{ run.summary }} <span class="sc-meta">(hash {{ (run.result_hash or "")[:12] }})</span></li>{% endfor %}
@@ -101,7 +107,8 @@
     {% else %}
     <p class="sc-empty">Chưa có lượt quét nào được ghi.</p>
     {% endif %}
-  </section>
+    </div>
+  </details>
   <script id="scanner-data" type="application/json">{{ {"rows": result.rows, "excluded": result.excluded} | tojson }}</script>
 </div>
 {% endblock %}
