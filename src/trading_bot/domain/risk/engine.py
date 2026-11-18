@@ -7,6 +7,11 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
+from trading_bot.domain.risk.correlation_groups import (
+    DEFAULT_CORRELATION_GROUP_POLICY,
+    CorrelationGroupPolicy,
+    evaluate_correlation_group_cap,
+)
 from trading_bot.domain.risk.planner import (
     OpenExposure,
     PlannerSettings,
@@ -45,6 +50,10 @@ class RiskState:
     # FX-2: ngắt mạch drawdown PAPER do context provider đo từ ledger (domain/risk/
     # drawdown_breaker.py). Replay/backtest để mặc định False (chưa áp breaker).
     drawdown_breaker_tripped: bool = False
+    # RISK-1: phần reservation đang giữ chỗ thuộc cùng nhóm tương quan và chính sách nhóm tùy chọn.
+    pending_group_reservation_risk: Decimal = ZERO
+    pending_group_reservation_notional: Decimal = ZERO
+    correlation_policy: CorrelationGroupPolicy | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,8 +94,16 @@ class RiskDecision:
 class RiskEngine:
     """Từ chối theo fail-closed; candidate và model không chỉnh hard cap."""
 
+    def __init__(self, *, correlation_policy: CorrelationGroupPolicy | None = None) -> None:
+        self._correlation_policy = correlation_policy
+
     def evaluate(
-        self, plan: TradePlan, state: RiskState, settings: PlannerSettings
+        self,
+        plan: TradePlan,
+        state: RiskState,
+        settings: PlannerSettings,
+        *,
+        correlation_policy: CorrelationGroupPolicy | None = None,
     ) -> RiskDecision:
         """Đối chiếu plan với version, freshness và mọi hard limit đang có."""
         open_risk = (
@@ -219,12 +236,16 @@ class RiskEngine:
             or not state.pending_reservation_notional.is_finite()
             or not state.pending_symbol_reservation_notional.is_finite()
             or not state.pending_reservation_initial_margin.is_finite()
+            or not state.pending_group_reservation_risk.is_finite()
+            or not state.pending_group_reservation_notional.is_finite()
             or state.realized_loss_today < ZERO
             or state.realized_loss_rolling < ZERO
             or state.pending_reservation_risk < ZERO
             or state.pending_reservation_notional < ZERO
             or state.pending_symbol_reservation_notional < ZERO
             or state.pending_reservation_initial_margin < ZERO
+            or state.pending_group_reservation_risk < ZERO
+            or state.pending_group_reservation_notional < ZERO
             or state.pending_reservation_count < 0
         ):
             return reject("RISK_STATE_INVALID", "Snapshot risk chứa giá trị âm hoặc không hữu hạn.")
@@ -326,6 +347,24 @@ class RiskEngine:
             return reject(
                 "SYMBOL_EXPOSURE_CAP_EXCEEDED", "Notional tập trung theo symbol vượt giới hạn."
             )
+        effective_correlation_policy = DEFAULT_CORRELATION_GROUP_POLICY
+        for candidate_policy in (
+            correlation_policy,
+            state.correlation_policy,
+            getattr(limits, "correlation_policy", None),
+            self._correlation_policy,
+        ):
+            if isinstance(candidate_policy, CorrelationGroupPolicy):
+                effective_correlation_policy = candidate_policy
+                break
+        correlation_check = evaluate_correlation_group_cap(
+            plan=plan,
+            state=state,
+            limits=limits,
+            policy=effective_correlation_policy,
+        )
+        if not correlation_check.approved:
+            return reject(correlation_check.reason_code, correlation_check.detail_vi)
         if plan.initial_margin <= ZERO:
             return reject("MARGIN_INVALID", "Initial margin phải dương.")
         return approve()
