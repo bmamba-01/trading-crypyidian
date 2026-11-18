@@ -132,8 +132,12 @@ class WorkspaceSettingsRepository:
     ) -> WorkspaceSettingsVersion:
         await self._lock_workspace(workspace_id)
         draft = await self._get_version(workspace_id, draft_id)
-        if draft is None or draft.status != "DRAFT" or draft.revision != expected_revision:
-            raise SettingsVersionConflict("Bản nháp đã đổi hoặc không còn ở trạng thái DRAFT.")
+        if (
+            draft is None
+            or draft.status not in {"DRAFT", "APPROVED"}
+            or draft.revision != expected_revision
+        ):
+            raise SettingsVersionConflict("Bản nháp đã đổi hoặc không ở trạng thái DRAFT/APPROVED.")
         if draft.parent_version_id != expected_parent_version_id:
             raise SettingsVersionConflict("Phiên bản cha của bản nháp không khớp.")
         current = await self.get_effective(workspace_id=workspace_id)
@@ -149,20 +153,91 @@ class WorkspaceSettingsRepository:
             .where(
                 WorkspaceSettingsVersion.workspace_id == workspace_id,
                 WorkspaceSettingsVersion.id == draft_id,
-                WorkspaceSettingsVersion.status == "DRAFT",
+                WorkspaceSettingsVersion.status.in_(("DRAFT", "APPROVED")),
                 WorkspaceSettingsVersion.revision == expected_revision,
                 WorkspaceSettingsVersion.parent_version_id == expected_parent_version_id,
             )
             .values(
                 status="PUBLISHED",
-                approved_by=approved_by,
+                approved_by=draft.approved_by if draft.status == "APPROVED" else approved_by,
                 published_at=now,
                 effective_at=effective_at or now,
             )
             .returning(WorkspaceSettingsVersion.id)
         )
         if updated_id is None:
-            raise SettingsVersionConflict("Bản nháp đã đổi hoặc không còn ở trạng thái DRAFT.")
+            raise SettingsVersionConflict("Bản nháp đã đổi hoặc không ở trạng thái DRAFT/APPROVED.")
+        record = await self._get_version(workspace_id, draft_id)
+        assert record is not None
+        return record
+
+    async def propose_draft(
+        self,
+        *,
+        workspace_id: UUID,
+        draft_id: UUID,
+        expected_revision: int,
+        proposed_by: UUID,
+    ) -> WorkspaceSettingsVersion:
+        """Chuyển bản nháp từ DRAFT sang PROPOSED để chờ người khác phê duyệt (SEC-21)."""
+        await self._lock_workspace(workspace_id)
+        now = func.statement_timestamp()
+        updated_id = await self._session.scalar(
+            update(WorkspaceSettingsVersion)
+            .where(
+                WorkspaceSettingsVersion.workspace_id == workspace_id,
+                WorkspaceSettingsVersion.id == draft_id,
+                WorkspaceSettingsVersion.status == "DRAFT",
+                WorkspaceSettingsVersion.revision == expected_revision,
+            )
+            .values(
+                status="PROPOSED",
+                proposed_by=proposed_by,
+                proposed_at=now,
+                revision=WorkspaceSettingsVersion.revision + 1,
+            )
+            .returning(WorkspaceSettingsVersion.id)
+        )
+        if updated_id is None:
+            raise SettingsVersionConflict("Bản nháp đã đổi hoặc không ở trạng thái DRAFT.")
+        record = await self._get_version(workspace_id, draft_id)
+        assert record is not None
+        return record
+
+    async def approve_proposed(
+        self,
+        *,
+        workspace_id: UUID,
+        draft_id: UUID,
+        expected_revision: int,
+        approved_by: UUID,
+        reason: str,
+    ) -> WorkspaceSettingsVersion:
+        """Phê duyệt bản đề xuất PROPOSED -> APPROVED; bắt buộc maker != checker."""
+        await self._lock_workspace(workspace_id)
+        now = func.statement_timestamp()
+        updated_id = await self._session.scalar(
+            update(WorkspaceSettingsVersion)
+            .where(
+                WorkspaceSettingsVersion.workspace_id == workspace_id,
+                WorkspaceSettingsVersion.id == draft_id,
+                WorkspaceSettingsVersion.status == "PROPOSED",
+                WorkspaceSettingsVersion.revision == expected_revision,
+                WorkspaceSettingsVersion.proposed_by != approved_by,
+            )
+            .values(
+                status="APPROVED",
+                approved_by=approved_by,
+                approved_at=now,
+                approval_reason=reason,
+                revision=WorkspaceSettingsVersion.revision + 1,
+            )
+            .returning(WorkspaceSettingsVersion.id)
+        )
+        if updated_id is None:
+            raise SettingsVersionConflict(
+                "Bản đề xuất đã đổi, không ở trạng thái PROPOSED hoặc trùng người đề xuất."
+            )
         record = await self._get_version(workspace_id, draft_id)
         assert record is not None
         return record

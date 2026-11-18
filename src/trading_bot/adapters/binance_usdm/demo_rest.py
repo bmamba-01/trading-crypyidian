@@ -29,6 +29,7 @@ from trading_bot.adapters.binance_usdm.submission_errors import (
 from trading_bot.domain.execution.venue_orders import VenueOrderIntent, VenueOrderState
 
 _ORDER_PATH = "/fapi/v1/order"
+_USER_TRADES_PATH = "/fapi/v1/userTrades"
 _CLIENT_ID_PATTERN = re.compile(r"^[.A-Z:/a-z0-9_-]{1,36}$")
 _ORDER_STATUS = {
     "NEW": VenueOrderState.ACKNOWLEDGED,
@@ -137,6 +138,39 @@ class OrderMissing:
 
     client_order_id: str
     authoritative_absence: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class CancelAccepted:
+    """ACK hủy lệnh; lưu ý cancel ACK không chứng minh không có fill chạy đua."""
+
+    venue_order_id: str
+    client_order_id: str
+    symbol: str
+    state: VenueOrderState
+    cumulative_filled: Decimal
+    racing_fill_possible: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class UserTradeFill:
+    """Bản ghi fill từ `/fapi/v1/userTrades` phục vụ đối soát lịch sử."""
+
+    trade_id: str
+    order_id: str
+    symbol: str
+    qty: Decimal
+    price: Decimal
+    time_ms: int
+
+
+@dataclass(frozen=True, slots=True)
+class OrderReconciliationEvidence:
+    """Kết quả đối soát có giới hạn từ order query + recent trades."""
+
+    order: OrderFound | OrderMissing
+    trades: tuple[UserTradeFill, ...]
+    authoritative_absence: bool
 
 
 class DemoUsdMRestAdapter:
@@ -297,6 +331,157 @@ class DemoUsdMRestAdapter:
         except ArithmeticError, OverflowError, TypeError, ValueError:
             raise BinanceAdapterError(failure=classify_submission_failure(None)) from None
 
+    def cancel_order(
+        self,
+        intent: VenueOrderIntent,
+        *,
+        venue_order_id: str | None = None,
+    ) -> CancelAccepted | OrderMissing | SubmissionFailed:
+        """Gửi `DELETE /fapi/v1/order` độc lập; cancel ACK vẫn cần đối soát fill chạy đua."""
+        self._validate_intent_scope(intent)
+        if not _CLIENT_ID_PATTERN.fullmatch(intent.client_order_id):
+            raise ValueError("client_order_id không hợp lệ.")
+        params: list[tuple[str, str]] = [
+            ("symbol", intent.symbol),
+            ("origClientOrderId", intent.client_order_id),
+        ]
+        if venue_order_id is not None:
+            params.append(("orderId", venue_order_id))
+        params.extend(self._signed_time_params())
+        request = self._signed_request("DELETE", params)
+        try:
+            response = self._transport.send(request)
+        except TransportNotSent:
+            return SubmissionFailed(classify_submission_failure(None, request_was_sent=False))
+        except Exception:
+            return SubmissionFailed(classify_submission_failure(None))
+
+        payload = _json_object(response.body)
+        if response.status_code < 200 or response.status_code >= 300:
+            if response.status_code == 400 and _integer(payload, "code") == -2011:
+                return OrderMissing(client_order_id=intent.client_order_id)
+            return self._submission_failure(response, payload, attempt_count=intent.attempt_count)
+        try:
+            if payload is None:
+                raise ValueError
+            order_id = payload.get("orderId")
+            if type(order_id) not in {int, str} or not str(order_id):
+                raise ValueError
+            executed = Decimal(_required_string(payload, "executedQty"))
+            return CancelAccepted(
+                venue_order_id=str(order_id),
+                client_order_id=intent.client_order_id,
+                symbol=intent.symbol,
+                state=_order_state(payload.get("status")),
+                cumulative_filled=executed,
+                racing_fill_possible=True,
+            )
+        except ArithmeticError, OverflowError, TypeError, ValueError:
+            return SubmissionFailed(classify_submission_failure(None))
+
+    def query_user_trades(
+        self,
+        *,
+        symbol: str,
+        order_id: str | None = None,
+        limit: int = 50,
+    ) -> tuple[UserTradeFill, ...]:
+        """Truy vấn `/fapi/v1/userTrades` để kiểm tra fill chạy đua hoặc khi order query vắng."""
+        params: list[tuple[str, str]] = [
+            ("symbol", symbol),
+            ("limit", str(max(1, min(limit, 100)))),
+        ]
+        if order_id is not None:
+            params.append(("orderId", order_id))
+        params.extend(self._signed_time_params())
+        request = self._signed_request("GET", params, path=_USER_TRADES_PATH)
+        try:
+            response = self._transport.send(request)
+        except TransportNotSent:
+            raise BinanceAdapterError(
+                failure=classify_submission_failure(None, request_was_sent=False)
+            ) from None
+        except Exception:
+            raise BinanceAdapterError(failure=classify_submission_failure(None)) from None
+
+        if response.status_code < 200 or response.status_code >= 300:
+            payload = _json_object(response.body)
+            failure = _binance_failure(response, payload)
+            raise BinanceAdapterError(
+                failure=failure,
+                retry_not_before=self._backoff_deadline(
+                    failure, attempt_count=1, response=response
+                ),
+            )
+        import json
+
+        try:
+            raw_list = json.loads(response.body.decode("utf-8"))
+        except Exception as exc:
+            raise BinanceAdapterError(failure=classify_submission_failure(None)) from exc
+        if not isinstance(raw_list, list):
+            raise BinanceAdapterError(failure=classify_submission_failure(None))
+        fills: list[UserTradeFill] = []
+        for entry in raw_list:
+            if not isinstance(entry, dict):
+                continue
+            tid = entry.get("id")
+            oid = entry.get("orderId")
+            sym = entry.get("symbol")
+            qty = entry.get("qty")
+            price = entry.get("price")
+            tm = entry.get("time")
+            if (
+                tid is None
+                or oid is None
+                or not isinstance(sym, str)
+                or qty is None
+                or price is None
+                or type(tm) is not int
+            ):
+                continue
+            fills.append(
+                UserTradeFill(
+                    trade_id=str(tid),
+                    order_id=str(oid),
+                    symbol=sym,
+                    qty=Decimal(str(qty)),
+                    price=Decimal(str(price)),
+                    time_ms=tm,
+                )
+            )
+        return tuple(fills)
+
+    def reconcile_order_with_history(
+        self,
+        intent: VenueOrderIntent,
+        *,
+        max_queries: int = 2,
+    ) -> OrderReconciliationEvidence:
+        """Đối soát có giới hạn: query theo client ID + recent userTrades."""
+        if max_queries < 1:
+            raise ValueError("max_queries phải >= 1.")
+        order_result = self.query_order(intent)
+        if max_queries == 1:
+            return OrderReconciliationEvidence(
+                order=order_result,
+                trades=(),
+                authoritative_absence=False,
+            )
+        order_id = order_result.venue_order_id if isinstance(order_result, OrderFound) else None
+        trades = self.query_user_trades(symbol=intent.symbol, order_id=order_id)
+        authoritative_absence = isinstance(order_result, OrderMissing) and len(trades) == 0
+        if isinstance(order_result, OrderMissing) and authoritative_absence:
+            order_result = OrderMissing(
+                client_order_id=order_result.client_order_id,
+                authoritative_absence=True,
+            )
+        return OrderReconciliationEvidence(
+            order=order_result,
+            trades=trades,
+            authoritative_absence=authoritative_absence,
+        )
+
     def _validate_intent_scope(self, intent: VenueOrderIntent) -> None:
         if (
             intent.workspace_id != self._workspace_id
@@ -319,7 +504,13 @@ class DemoUsdMRestAdapter:
             ("recvWindow", str(self._recv_window_ms)),
         ]
 
-    def _signed_request(self, method: str, params: list[tuple[str, str]]) -> BinanceHttpRequest:
+    def _signed_request(
+        self,
+        method: str,
+        params: list[tuple[str, str]],
+        *,
+        path: str = _ORDER_PATH,
+    ) -> BinanceHttpRequest:
         encoded = urlencode(params)
         signature = hmac.new(
             self._credentials.api_secret.encode("utf-8"),
@@ -335,15 +526,15 @@ class DemoUsdMRestAdapter:
             headers += (("Content-Type", "application/x-www-form-urlencoded"),)
             return BinanceHttpRequest(
                 method=method,
-                url=f"{base}{_ORDER_PATH}",
+                url=f"{base}{path}",
                 headers=headers,
                 body=signed.encode("ascii"),
                 timeout_seconds=self._timeout_seconds,
             )
-        if method == "GET":
+        if method in {"GET", "DELETE"}:
             return BinanceHttpRequest(
                 method=method,
-                url=f"{base}{_ORDER_PATH}?{signed}",
+                url=f"{base}{path}?{signed}",
                 headers=headers,
                 body=b"",
                 timeout_seconds=self._timeout_seconds,
@@ -359,16 +550,38 @@ class DemoUsdMRestAdapter:
     ) -> SubmissionFailed:
         failure = _binance_failure(response, payload)
         return SubmissionFailed(
-            failure, self._backoff_deadline(failure, attempt_count=attempt_count)
+            failure,
+            self._backoff_deadline(failure, attempt_count=attempt_count, response=response),
         )
 
     def _backoff_deadline(
-        self, failure: SubmissionFailure, *, attempt_count: int
+        self,
+        failure: SubmissionFailure,
+        *,
+        attempt_count: int,
+        response: BinanceHttpResponse | None = None,
     ) -> datetime | None:
         if not failure.backoff_required:
             return None
-        exponent = min(max(attempt_count - 1, 0), 30)
-        delay_seconds = min(30, self._retry_backoff_seconds * (2**exponent))
+        retry_after_seconds: int | None = None
+        if response is not None and response.status_code in {418, 429}:
+            header_items = (
+                response.headers.items() if isinstance(response.headers, dict) else response.headers
+            )
+            for key, value in header_items:
+                if key.lower() == "retry-after":
+                    try:
+                        parsed = int(value.strip())
+                        if parsed > 0:
+                            retry_after_seconds = min(parsed, 3600)
+                    except ValueError:
+                        pass
+                    break
+        if retry_after_seconds is not None:
+            delay_seconds = retry_after_seconds
+        else:
+            exponent = min(max(attempt_count - 1, 0), 30)
+            delay_seconds = min(30, self._retry_backoff_seconds * (2**exponent))
         deadline_ms = self._clock_ms() + delay_seconds * 1000
         return datetime.fromtimestamp(deadline_ms / 1000, tz=UTC)
 

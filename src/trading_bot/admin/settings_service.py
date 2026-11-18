@@ -199,20 +199,97 @@ class SettingsAdminService:
                 }
             return {"valid": True, "errors": [], "warnings": []}
 
+    async def propose_draft(
+        self,
+        principal: Principal,
+        *,
+        draft_id: UUID,
+        expected_revision: int,
+        reason: str,
+        request_id: UUID | None = None,
+    ) -> dict[str, Any]:
+        """Đề xuất bản nháp để người khác phê duyệt (SEC-21 maker-checker)."""
+        clean_reason = reason.strip()
+        if not clean_reason:
+            raise SettingsAdminError(422, "Cần lý do khi đề xuất cấu hình.")
+        async with self._uow(principal, request_id=request_id) as unit:
+            repository = WorkspaceSettingsRepository(unit.session)
+            await repository.lock_workspace(principal.workspace_id)
+            record = await self._find_version(repository, principal.workspace_id, draft_id)
+            if record.status != "DRAFT":
+                raise SettingsAdminError(409, "Chỉ có thể đề xuất bản nháp ở trạng thái DRAFT.")
+            try:
+                proposed = await repository.propose_draft(
+                    workspace_id=principal.workspace_id,
+                    draft_id=draft_id,
+                    expected_revision=expected_revision,
+                    proposed_by=principal.membership_id,
+                )
+            except SettingsVersionConflict as error:
+                raise SettingsAdminError(409, str(error)) from error
+            self._record_change(unit, "settings.proposed", proposed, None, reason=clean_reason)
+            return serialize_version(proposed) or {}
+
+    async def approve_proposed(
+        self,
+        principal: Principal,
+        *,
+        draft_id: UUID,
+        expected_revision: int,
+        reason: str,
+        request_id: UUID | None = None,
+    ) -> dict[str, Any]:
+        """Phê duyệt bản đề xuất; bắt buộc người duyệt khác người đề xuất (SEC-21)."""
+        clean_reason = reason.strip()
+        if not clean_reason:
+            raise SettingsAdminError(422, "Cần lý do khi phê duyệt cấu hình.")
+        async with self._uow(principal, request_id=request_id) as unit:
+            repository = WorkspaceSettingsRepository(unit.session)
+            await repository.lock_workspace(principal.workspace_id)
+            record = await self._find_version(repository, principal.workspace_id, draft_id)
+            if record.status != "PROPOSED":
+                raise SettingsAdminError(409, "Bản nháp chưa ở trạng thái PROPOSED.")
+            if getattr(record, "proposed_by", None) == principal.membership_id:
+                raise SettingsAdminError(
+                    403, "Người duyệt cấu hình phải khác người đề xuất (maker-checker)."
+                )
+            try:
+                approved = await repository.approve_proposed(
+                    workspace_id=principal.workspace_id,
+                    draft_id=draft_id,
+                    expected_revision=expected_revision,
+                    approved_by=principal.membership_id,
+                    reason=clean_reason,
+                )
+            except SettingsVersionConflict as error:
+                raise SettingsAdminError(409, str(error)) from error
+            self._record_change(unit, "settings.approved", approved, None, reason=clean_reason)
+            return serialize_version(approved) or {}
+
     async def publish_draft(
         self,
         principal: Principal,
         *,
         draft_id: UUID,
         expected_revision: int,
+        reason: str | None = None,
         request_id: UUID | None = None,
     ) -> dict[str, Any]:
         async with self._uow(principal, request_id=request_id) as unit:
             repository = WorkspaceSettingsRepository(unit.session)
             await repository.lock_workspace(principal.workspace_id)
             record = await self._find_version(repository, principal.workspace_id, draft_id)
-            if record.status != "DRAFT":
+            if record.status == "PROPOSED":
+                raise SettingsAdminError(
+                    409, "Bản đề xuất cần được người khác phê duyệt trước khi publish."
+                )
+            if record.status not in {"DRAFT", "APPROVED"}:
                 raise SettingsAdminError(409, "Bản nháp không còn ở trạng thái có thể publish.")
+            if record.status == "APPROVED" and (
+                record.approved_by is None
+                or record.approved_by == getattr(record, "proposed_by", None)
+            ):
+                raise SettingsAdminError(403, "Vi phạm nguyên tắc maker-checker khi publish.")
             settings = WorkspaceSettings.model_validate(record.settings_json)
             try:
                 strategy_registry().get_release(settings.strategy.default_release)
@@ -277,6 +354,7 @@ class SettingsAdminService:
                 "settings.published",
                 published,
                 current.settings_json if current else None,
+                reason=reason.strip() if reason else getattr(record, "approval_reason", None),
             )
             response = serialize_version(published) or {}
             if risk_changed:
@@ -528,11 +606,14 @@ class SettingsAdminService:
         action: str,
         record: WorkspaceSettingsVersion,
         before: object | None,
+        *,
+        reason: str | None = None,
     ) -> None:
         unit.record_audit(
             action=action,
             target_type="workspace_settings_version",
             target_id=record.id,
+            reason=reason,
             before_state=before,
             after_state=record.settings_json,
         )

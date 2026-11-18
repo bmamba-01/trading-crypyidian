@@ -4266,11 +4266,20 @@ async def export_reports_csv(
         writer.writerow({key: _sanitize_csv_cell(row.get(key, "")) for key in REPORT_CSV_FIELDS})
 
     filename = f"crypidian-report-{report_scope.value}.csv"
+    headers = {
+        "Cache-Control": "no-store",
+        "Content-Disposition": f'attachment; filename="{filename}"',
+        "X-Report-Scope": report_scope.value,
+        "X-Report-Start": start.isoformat(),
+        "X-Report-End": end.isoformat(),
+        "X-Report-Version": (
+            str(report.get("report_version", "")) if isinstance(report, dict) else ""
+        ),
+    }
+    if parsed_bot_id is not None:
+        headers["X-Report-Bot-Id"] = str(parsed_bot_id)
     return Response(
         content=buffer.getvalue(),
         media_type="text/csv; charset=utf-8",
-        headers={
-            "Cache-Control": "no-store",
-            "Content-Disposition": f'attachment; filename="{filename}"',
-        },
+        headers=headers,
     )

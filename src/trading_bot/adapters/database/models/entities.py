@@ -77,6 +77,36 @@ class RoleBinding(UuidPrimaryKey, CreatedAt, Base):
     role: Mapped[str] = mapped_column(String(40), nullable=False)
 
 
+class UserInvitation(UuidPrimaryKey, CreatedAt, Base):
+    """Lời mời tham gia workspace; chỉ lưu hash token một chiều."""
+
+    __tablename__ = "user_invitation"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "id", name="uq_user_invitation_workspace_id"),
+        UniqueConstraint("token_hash", name="uq_user_invitation_token_hash"),
+        ForeignKeyConstraint(["workspace_id"], ["workspace.id"], ondelete="CASCADE"),
+        ForeignKeyConstraint(
+            ["workspace_id", "invited_by"],
+            ["user_membership.workspace_id", "user_membership.id"],
+            name="fk_user_invitation_invited_by",
+        ),
+        CheckConstraint(
+            "status IN ('PENDING', 'ACCEPTED', 'REVOKED', 'EXPIRED')",
+            name="user_invitation_status_valid",
+        ),
+        Index("ix_user_invitation_workspace_status", "workspace_id", "status"),
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    email: Mapped[str] = mapped_column(String(320), nullable=False)
+    role: Mapped[str] = mapped_column(String(40), nullable=False)
+    token_hash: Mapped[str] = mapped_column(String(128), nullable=False)
+    invited_by: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="PENDING")
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class Session(UuidPrimaryKey, CreatedAt, Base):
     __tablename__ = "session"
     __table_args__ = (
@@ -311,6 +341,11 @@ class WorkspaceSettingsVersion(UuidPrimaryKey, CreatedAt, Base):
             name="fk_workspace_settings_created_by",
         ),
         ForeignKeyConstraint(
+            ["workspace_id", "proposed_by"],
+            ["user_membership.workspace_id", "user_membership.id"],
+            name="fk_workspace_settings_proposed_by",
+        ),
+        ForeignKeyConstraint(
             ["workspace_id", "approved_by"],
             ["user_membership.workspace_id", "user_membership.id"],
             name="fk_workspace_settings_approved_by",
@@ -318,7 +353,10 @@ class WorkspaceSettingsVersion(UuidPrimaryKey, CreatedAt, Base):
         CheckConstraint("version >= 1", name="workspace_settings_version_positive"),
         CheckConstraint("schema_version >= 1", name="workspace_settings_schema_positive"),
         CheckConstraint("revision >= 1", name="workspace_settings_revision_positive"),
-        CheckConstraint("status IN ('DRAFT', 'PUBLISHED')", name="workspace_settings_status_valid"),
+        CheckConstraint(
+            "status IN ('DRAFT', 'PROPOSED', 'APPROVED', 'PUBLISHED', 'RETIRED')",
+            name="workspace_settings_status_valid",
+        ),
         Index("ix_workspace_settings_effective", "workspace_id", "status", "effective_at"),
     )
 
@@ -331,7 +369,11 @@ class WorkspaceSettingsVersion(UuidPrimaryKey, CreatedAt, Base):
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="DRAFT")
     revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     created_by: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    proposed_by: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True)
+    proposed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     approved_by: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    approval_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     effective_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 

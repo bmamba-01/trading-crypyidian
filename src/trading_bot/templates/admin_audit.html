@@ -1,0 +1,51 @@
+{% extends "admin_base.html" %}
+{% block title %}Nhật ký Audit · Crypidian{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>Nhật ký Audit hệ thống</h1>
+  <p class="muted">Theo dõi mọi thao tác thay đổi cấu hình, thành viên, quyền và điều khiển runtime.</p>
+  <form method="get" action="/admin/audit" class="filter-row">
+    <label>
+      Hành động
+      <input type="text" name="action" value="{{ action_filter }}" placeholder="vd: settings.published">
+    </label>
+    <label>
+      Đối tượng
+      <input type="text" name="target_type" value="{{ target_type_filter }}" placeholder="vd: workspace_settings_version">
+    </label>
+    <button type="submit" class="btn">Lọc</button>
+  </form>
+  {% if not events %}
+    <p class="muted">Chưa có dữ liệu audit phù hợp.</p>
+  {% else %}
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Thời điểm</th>
+            <th>Actor</th>
+            <th>Hành động</th>
+            <th>Đối tượng</th>
+            <th>Hash trước / sau</th>
+            <th>Lý do</th>
+            <th>Correlation (request_id)</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for ev in events %}
+          <tr>
+            <td>{{ ev.occurred_at }}</td>
+            <td><code>{{ ev.actor_membership_id or "system" }}</code></td>
+            <td><code>{{ ev.action }}</code></td>
+            <td><code>{{ ev.target_type }}</code> {% if ev.target_id %}<small>{{ ev.target_id }}</small>{% endif %}</td>
+            <td><small>{{ ev.before_hash or "—" }} → {{ ev.after_hash or "—" }}</small></td>
+            <td>{{ ev.reason or "—" }}</td>
+            <td><code>{{ ev.request_id }}</code></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% endif %}
+</section>
+{% endblock %}

@@ -21,10 +21,25 @@ class UpdateDraftRequest(BaseModel):
     settings: WorkspaceSettings
 
 
+class ProposeDraftRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_revision: int = Field(ge=1)
+    reason: str = Field(min_length=3, max_length=500)
+
+
+class ApproveDraftRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_revision: int = Field(ge=1)
+    reason: str = Field(min_length=3, max_length=500)
+
+
 class PublishDraftRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     expected_revision: int = Field(ge=1)
+    reason: str | None = Field(default=None, min_length=1, max_length=500)
 
 
 class RollbackRequest(BaseModel):
