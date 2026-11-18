@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from trading_bot.admin.bot_grant_service import BotGrantAdminError, BotGrantAdminService
 from trading_bot.auth.bot_policy import BotPermission
+from trading_bot.auth.route_policy import CsrfMode, owner_route
 from trading_bot.auth.router import current_identity, require_csrf
 from trading_bot.auth.service import AuthIdentity
 
@@ -70,7 +71,7 @@ def _request_id(request: Request) -> UUID | None:
         raise HTTPException(status_code=400, detail="X-Request-ID phải là UUID hợp lệ") from error
 
 
-@router.post("", status_code=201)
+@router.post("", status_code=201, dependencies=[owner_route(csrf=CsrfMode.HEADER)])
 async def grant_bot_permission(
     body: GrantBotPermissionRequest,
     request: Request,
@@ -94,7 +95,7 @@ async def grant_bot_permission(
     return {"grant": grant}
 
 
-@router.post("/revoke")
+@router.post("/revoke", dependencies=[owner_route(csrf=CsrfMode.HEADER)])
 async def revoke_bot_permission(
     body: RevokeBotPermissionRequest,
     request: Request,
@@ -116,7 +117,7 @@ async def revoke_bot_permission(
     return result
 
 
-@router.get("/review")
+@router.get("/review", dependencies=[owner_route()])
 async def review_bot_grants(
     request: Request,
     response: Response,
@@ -141,7 +142,7 @@ async def review_bot_grants(
     return {"review": review}
 
 
-@router.post("/review")
+@router.post("/review", dependencies=[owner_route(csrf=CsrfMode.HEADER)])
 async def record_bot_grant_review(
     body: AccessReviewRequest,
     request: Request,

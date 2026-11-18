@@ -88,7 +88,7 @@ def test_migration_chains_from_head_and_enforces_rls_and_column_grants() -> None
     module, statements = _run("upgrade")
     joined = "\n".join(statements)
 
-    assert module.down_revision == "d8e2f4a6b8c0"
+    assert module.down_revision == "e9f1a3b5c7d9"
     assert "CREATE TABLE action_challenge" in joined
     assert "ALTER TABLE action_challenge ENABLE ROW LEVEL SECURITY" in joined
     assert "ALTER TABLE action_challenge FORCE ROW LEVEL SECURITY" in joined

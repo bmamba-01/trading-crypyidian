@@ -1,7 +1,7 @@
 """SEC-20: bảng action_challenge cho step-up theo hành động (TTL ≤ 5p, atomic consume).
 
 Revision ID: e9a1c3f5b7d2
-Revises: d8e2f4a6b8c0
+Revises: e9f1a3b5c7d9
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "e9a1c3f5b7d2"
-down_revision: str | None = "d8e2f4a6b8c0"
+down_revision: str | None = "e9f1a3b5c7d9"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

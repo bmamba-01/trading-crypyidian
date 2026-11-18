@@ -30,7 +30,7 @@ from trading_bot.auth.dependencies import (
 from trading_bot.auth.dependencies import (
     require_csrf as require_csrf,
 )
-from trading_bot.auth.policy import Permission, Principal
+from trading_bot.auth.policy import Permission, Principal, authorize
 from trading_bot.auth.route_policy import (
     CsrfMode,
     authenticated_route,
@@ -132,6 +132,8 @@ async def enforce_endpoint_step_up(
     now = datetime.now(UTC)
     if principal.mfa_verified_at > now or now - principal.mfa_verified_at > RECENT_MFA_LIFETIME:
         raise HTTPException(status_code=403, detail="Cần xác thực MFA gần đây")
+
+
 def get_rate_limiter(request: Request) -> LoginRateLimiter:
     return cast(LoginRateLimiter, request.app.state.login_limiter)
 

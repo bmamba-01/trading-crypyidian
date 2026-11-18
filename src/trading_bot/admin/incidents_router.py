@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from trading_bot.adapters.database.models import AccountActivityIncidentRecord, BacktestRunRecord
 from trading_bot.application.outbox import UnitOfWork
 from trading_bot.auth.policy import Permission, authorize
+from trading_bot.auth.route_policy import permission_route
 from trading_bot.auth.router import current_identity
 from trading_bot.auth.service import AuthIdentity
 
@@ -36,6 +37,7 @@ def _require_permission(identity: AuthIdentity, permission: Permission) -> None:
     "/incidents",
     summary="Danh sách sự cố hoạt động tài khoản",
     description="Liệt kê các sự cố hoạt động bất thường / đối soát trong workspace hiện tại.",
+    dependencies=[permission_route(Permission.TRADE_READ)],
 )
 async def list_incidents(
     request: Request,
@@ -78,6 +80,7 @@ async def list_incidents(
     "/experiments",
     summary="Danh sách thí nghiệm backtest và đánh giá",
     description="Liệt kê các lần chạy backtest / thí nghiệm trong workspace theo thứ tự mới nhất.",
+    dependencies=[permission_route(Permission.WORKSPACE_READ)],
 )
 async def list_experiments(
     request: Request,

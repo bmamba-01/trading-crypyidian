@@ -23,6 +23,7 @@ from trading_bot.adapters.database.models import (
 )
 from trading_bot.application.outbox import UnitOfWork
 from trading_bot.auth.policy import RECENT_MFA_LIFETIME, Permission, Principal, Role, authorize
+from trading_bot.auth.route_policy import CsrfMode, permission_route
 from trading_bot.auth.router import current_identity, require_csrf
 from trading_bot.auth.service import AuthIdentity
 from trading_bot.domain.events import EventEnvelope
@@ -95,6 +96,7 @@ def _request_id(request: Request) -> UUID:
     "",
     summary="Danh sách thành viên workspace",
     description="Liệt kê toàn bộ thành viên và vai trò hiện tại trong workspace.",
+    dependencies=[permission_route(Permission.WORKSPACE_READ)],
 )
 async def list_members(
     request: Request,
@@ -144,6 +146,7 @@ async def list_members(
         "Thay đổi vai trò của một thành viên trong workspace; "
         "không cho phép hạ quyền owner cuối cùng."
     ),
+    dependencies=[permission_route(Permission.MEMBER_WRITE, csrf=CsrfMode.HEADER)],
 )
 async def update_member_role(
     membership_id: UUID,
@@ -237,6 +240,7 @@ async def update_member_role(
     "/invitations",
     summary="Danh sách lời mời thành viên",
     description="Liệt kê các lời mời tham gia workspace (không trả về token bí mật).",
+    dependencies=[permission_route(Permission.MEMBER_WRITE)],
 )
 async def list_invitations(
     request: Request,
@@ -273,6 +277,7 @@ async def list_invitations(
     status_code=201,
     summary="Tạo lời mời thành viên mới",
     description="Tạo lời mời có thời hạn và chỉ lưu hash token; token thô trả về đúng một lần.",
+    dependencies=[permission_route(Permission.MEMBER_WRITE, csrf=CsrfMode.HEADER)],
 )
 async def create_invitation(
     body: CreateInvitationRequest,
@@ -332,6 +337,7 @@ async def create_invitation(
     "/invitations/{invitation_id}/revoke",
     summary="Thu hồi lời mời thành viên",
     description="Thu hồi lời mời đang ở trạng thái PENDING và ghi nhật ký audit.",
+    dependencies=[permission_route(Permission.MEMBER_WRITE, csrf=CsrfMode.HEADER)],
 )
 async def revoke_invitation(
     invitation_id: UUID,
@@ -379,6 +385,7 @@ async def revoke_invitation(
     description=(
         "Vô hiệu hóa yếu tố MFA cũ của thành viên khi mất thiết bị; yêu cầu MFA gần đây và lý do."
     ),
+    dependencies=[permission_route(Permission.MEMBER_WRITE, csrf=CsrfMode.HEADER)],
 )
 async def reset_member_mfa(
     body: MfaRecoveryRequest,

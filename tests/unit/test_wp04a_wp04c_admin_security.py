@@ -45,7 +45,9 @@ def test_sec18_all_app_routes_registered_deny_by_default() -> None:
 
 
 def test_sec26_openapi_disabled_in_production_and_admin_routers_isolated() -> None:
-    prod_app = create_app(AppSettings(app_env="production", process_role="admin-web"))
+    prod_app = create_app(
+        AppSettings(app_env="production", process_role="admin-web", allowed_hosts="testserver")
+    )
     assert prod_app.openapi_url is None
 
     worker_app = create_app(
@@ -55,7 +57,7 @@ def test_sec26_openapi_disabled_in_production_and_admin_routers_isolated() -> No
             ingestion_workspace_id=uuid4(),
         )
     )
-    assert worker_app.openapi_url is not None  # chỉ production hoặc signal-worker mới tắt
+    assert worker_app.openapi_url is None  # SEC-26: worker ngoài admin-web luôn tắt OpenAPI
     worker_paths = {path for _m, path, _r in iter_app_routes(worker_app)}
     assert "/api/v1/settings/current" not in worker_paths
     assert "/api/v1/members" not in worker_paths

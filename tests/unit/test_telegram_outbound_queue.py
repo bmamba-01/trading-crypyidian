@@ -661,6 +661,7 @@ def test_app_builds_telegram_sender_from_secret_provider_and_fails_closed_in_pro
             AppSettings(
                 app_env="production",
                 process_role="admin-web",
+                allowed_hosts="testserver",
                 telegram_workspace_id=WORKSPACE,
                 telegram_webhook_secret_file=webhook_secret,
             ),

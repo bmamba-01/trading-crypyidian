@@ -1,7 +1,7 @@
 """SEC-25: thêm thời hạn và lý do cấp/thu hồi cho bot_grant, giữ bất biến lịch sử.
 
 Revision ID: e9f1a3b5c7d9
-Revises: d8e2f4a6b8c0
+Revises: e1f3a5b7c9d1
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "e9f1a3b5c7d9"
-down_revision: str | None = "d8e2f4a6b8c0"
+down_revision: str | None = "e1f3a5b7c9d1"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

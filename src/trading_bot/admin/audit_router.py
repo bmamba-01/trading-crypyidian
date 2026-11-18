@@ -15,6 +15,7 @@ from trading_bot.adapters.database.models import AuditEvent
 from trading_bot.admin.web_router import _templates
 from trading_bot.application.outbox import UnitOfWork
 from trading_bot.auth.policy import Permission, authorize
+from trading_bot.auth.route_policy import permission_route
 from trading_bot.auth.router import current_identity
 from trading_bot.auth.service import AuthIdentity
 
@@ -95,6 +96,7 @@ async def _query_audit_events(
         "Liệt kê các sự kiện audit trong workspace kèm actor, target, "
         "hash trước/sau, lý do và correlation."
     ),
+    dependencies=[permission_route(Permission.WORKSPACE_READ)],
 )
 async def list_audit_events(
     request: Request,
@@ -132,6 +134,7 @@ async def list_audit_events(
     description=(
         "Hiển thị bảng nhật ký audit với bộ lọc theo hành động, đối tượng và correlation ID."
     ),
+    dependencies=[permission_route(Permission.WORKSPACE_READ)],
 )
 async def admin_audit_page(
     request: Request,

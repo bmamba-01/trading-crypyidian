@@ -553,6 +553,29 @@ def assert_all_routes_have_policy(app: FastAPI) -> tuple[AuditedRoute, ...]:
     return report.audited
 
 
+def iter_app_routes(app: FastAPI) -> list[tuple[str, str, APIRoute]]:
+    """Liệt kê bộ ba ``(method, path, route)`` của mọi ``APIRoute`` trong ``app.routes``."""
+    items: list[tuple[str, str, APIRoute]] = []
+    for ctx in iter_route_contexts(app.routes):
+        route = ctx.route
+        if not isinstance(route, APIRoute):
+            continue
+        path = str(getattr(ctx, "path", route.path))
+        for method in sorted(route.methods or ()):
+            if method in {"HEAD", "OPTIONS"}:
+                continue
+            items.append((method, path, route))
+    return items
+
+
+def verify_app_routes_registered(app: FastAPI) -> None:
+    """Kiểm tra deny-by-default mọi route; ném ``AssertionError`` nếu thiếu policy."""
+    try:
+        assert_all_routes_have_policy(app)
+    except RoutePolicyViolation as error:
+        raise AssertionError(str(error)) from error
+
+
 __all__ = [
     "ALLOWED_AUTHENTICATED_SESSION_PATHS",
     "ALLOWED_FRAMEWORK_ROUTES",
@@ -574,9 +597,11 @@ __all__ = [
     "authenticated_route",
     "bot_scoped_route",
     "extract_route_policy",
+    "iter_app_routes",
     "owner_route",
     "permission_route",
     "public_route",
     "require_route_policy",
     "roles_route",
+    "verify_app_routes_registered",
 ]

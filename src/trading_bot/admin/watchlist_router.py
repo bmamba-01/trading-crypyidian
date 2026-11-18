@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from trading_bot.adapters.database.models import AuditEvent, WatchlistItem, WatchlistVersion
 from trading_bot.application.outbox import UnitOfWork
 from trading_bot.auth.policy import Permission, authorize
+from trading_bot.auth.route_policy import CsrfMode, permission_route
 from trading_bot.auth.router import current_identity, require_csrf
 from trading_bot.auth.service import AuthIdentity
 from trading_bot.domain.events import EventEnvelope
@@ -68,6 +69,7 @@ def _request_id(request: Request) -> UUID:
     "",
     summary="Danh sách phiên bản watchlist",
     description="Liệt kê các phiên bản watchlist bất biến và danh sách symbol của từng phiên bản.",
+    dependencies=[permission_route(Permission.WORKSPACE_READ)],
 )
 async def list_watchlists(
     request: Request,
@@ -114,6 +116,7 @@ async def list_watchlists(
     status_code=201,
     summary="Tạo phiên bản watchlist mới",
     description="Phát hành phiên bản watchlist bất biến mới kèm audit và outbox.",
+    dependencies=[permission_route(Permission.WATCHLIST_WRITE, csrf=CsrfMode.HEADER)],
 )
 async def create_watchlist_version(
     body: CreateWatchlistVersionRequest,

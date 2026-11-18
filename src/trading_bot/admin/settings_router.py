@@ -153,7 +153,6 @@ async def propose_settings_draft(
     request: Request,
     response: Response,
 ) -> dict[str, object]:
-    require_settings_write(identity)
     service = get_settings_admin_service(request)
     response.headers["Cache-Control"] = "no-store"
     try:
@@ -184,7 +183,6 @@ async def approve_settings_draft(
     request: Request,
     response: Response,
 ) -> dict[str, object]:
-    require_settings_write(identity)
     service = get_settings_admin_service(request)
     response.headers["Cache-Control"] = "no-store"
     try:

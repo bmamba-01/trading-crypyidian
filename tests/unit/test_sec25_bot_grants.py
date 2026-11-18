@@ -114,7 +114,7 @@ def test_bot_grant_model_and_migration_have_expiry_reason_and_history_guard() ->
     migration = Path("migrations/versions/e9f1a3b5c7d9_sec25_bot_grant_expiry_reason.py").read_text(
         encoding="utf-8"
     )
-    assert 'down_revision: str | None = "d8e2f4a6b8c0"' in migration
+    assert 'down_revision: str | None = "e1f3a5b7c9d1"' in migration
     assert "expires_at" in migration
     assert "reason" in migration
     assert "revoke_reason" in migration

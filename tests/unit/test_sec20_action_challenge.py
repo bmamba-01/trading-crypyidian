@@ -543,8 +543,11 @@ async def test_five_wrong_codes_cancel_challenge_and_require_new_challenge() -> 
 
 def test_production_settings_forbid_disabling_action_step_up() -> None:
     with pytest.raises(ValueError, match="Step-up theo hành động"):
-        AppSettings(app_env="production", action_step_up_required=False)
-    assert AppSettings(app_env="production").is_action_step_up_required is True
+        AppSettings(app_env="production", action_step_up_required=False, allowed_hosts="testserver")
+    assert (
+        AppSettings(app_env="production", allowed_hosts="testserver").is_action_step_up_required
+        is True
+    )
     assert (
         AppSettings(app_env="test", action_step_up_required=True).is_action_step_up_required is True
     )
@@ -746,11 +749,12 @@ async def test_sect19_settings_publish_strategy_and_symbols_requires_stepup() ->
             *,
             draft_id: UUID,
             expected_revision: int,
+            reason: str | None = None,
             request_id: UUID | None = None,
             step_up: Any = None,
             _verified_step_up: bool = False,
         ) -> dict[str, Any]:
-            del request_id, _verified_step_up
+            del reason, request_id, _verified_step_up
             assert self._requires_publish_step_up(settings_v1, settings_v2) is True
             await self._verify_publish_step_up(
                 principal,

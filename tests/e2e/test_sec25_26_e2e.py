@@ -394,7 +394,7 @@ def test_sec25_26_postgres_and_app_surface_e2e() -> None:
             capture_output=True,
             text=True,
         )
-        assert "e9f1a3b5c7d9 (head)" in alembic_heads.stdout
+        assert "e9a1c3f5b7d2 (head)" in alembic_heads.stdout
 
         result = subprocess.run(
             [
@@ -421,7 +421,7 @@ def test_sec25_26_postgres_and_app_surface_e2e() -> None:
 
         # Kiểm tra rollback/re-upgrade migration trên DB thật không lỗi.
         downgrade = subprocess.run(
-            [*base, "run", "--rm", "migrator", "alembic", "downgrade", "d8e2f4a6b8c0"],
+            [*base, "run", "--rm", "migrator", "alembic", "downgrade", "e1f3a5b7c9d1"],
             cwd=root,
             env=env,
             check=False,
