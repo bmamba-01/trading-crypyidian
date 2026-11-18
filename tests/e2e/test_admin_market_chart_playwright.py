@@ -539,31 +539,56 @@ def test_market_chart_renders_overlays_polls_and_is_responsive(server_url: str) 
 
         # CK-6: bảng Entry — tiến độ k/n, còn thiếu, ghim kịch bản lên chart.
         board = page.locator("#mc-entry-board")
-        first_setup = board.locator("details.mc-setup").first
-        first_summary = first_setup.locator("summary")
-        expect(first_setup).not_to_have_attribute("open")
+        first_setup = board.locator(".mc-setup").first
+        detail_button = first_setup.get_by_role("button", name="Xem chi tiết Entry")
         expect(board).to_contain_text("Bắt buộc 2/3")
-        expect(board).to_contain_text("Còn thiếu: ADX14 1h đủ mạnh")
+        expect(first_setup).not_to_contain_text("Còn thiếu: ADX14 1h đủ mạnh")
         # CK-12: giám sát bot — kết luận và chỗ chạy.
         expect(board.locator("[data-setup-verdict]")).to_have_text(
             "Chờ tín hiệu: 2/3 điều kiện bắt buộc"
         )
-        expect(board.locator("[data-monitor-slots]")).to_have_text("1/3")
+        expect(first_setup.locator("[data-monitor-slots]")).to_have_count(0)
         expect(board.locator("[data-setup-status]").first).to_have_attribute(
             "data-setup-status", "not_ready"
         )
-        first_summary.focus()
-        first_summary.press("Enter")
-        expect(first_setup).to_have_attribute("open", "")
-        expect(board.locator("[data-monitor-slots]")).to_have_text("1/3")
-        expect(first_setup.locator(".sc-checklist li")).to_have_count(6)
-        board.screenshot(path=str(SCREENSHOTS_DIR / "ck6-entry-board-details-desktop.png"))
-        first_summary.press("Enter")
-        expect(first_setup).not_to_have_attribute("open")
+        detail_button.focus()
+        page.keyboard.press("Enter")
+        dialog = page.locator('dialog[id^="mc-setup-detail-"]')
+        expect(dialog).to_be_visible()
+        expect(dialog.locator("[data-monitor-slots]")).to_have_text("1/3")
+        expect(dialog.locator(".sc-checklist li")).to_have_count(6)
+        expect(dialog).to_contain_text("Còn thiếu: ADX14 1h đủ mạnh")
+        dialog.screenshot(path=str(SCREENSHOTS_DIR / "ck6-entry-board-details-desktop.png"))
+        page.keyboard.press("Escape")
+        expect(dialog).not_to_be_visible()
+        expect(detail_button).to_be_focused()
         pin = page.locator("[data-setup-pin]")
         expect(pin.locator("option")).to_have_count(2)
         pin.select_option("0")
         board.screenshot(path=str(SCREENSHOTS_DIR / "ck6-entry-board-desktop.png"))
+
+        # Bộ phân trang dùng chung hiển thị 20/41 dòng đầu, sau đó dòng 21–40.
+        page.evaluate("""() => {
+          const table = document.createElement('table');
+          const body = table.createTBody();
+          body.id = 'pagination-e2e-body';
+          for (let index = 1; index <= 41; index += 1) {
+            const row = body.insertRow();
+            row.insertCell().textContent = `Mục ${index}`;
+          }
+          document.body.append(table);
+          window.crypidianPagination.refresh();
+        }""")
+        expect(page.get_by_role("row", name="Mục 1", exact=True)).to_be_visible()
+        expect(page.get_by_role("row", name="Mục 20", exact=True)).to_be_visible()
+        expect(page.get_by_role("row", name="Mục 21", exact=True)).to_be_hidden()
+        pager = page.locator("nav.admin-pagination").last
+        expect(pager).to_contain_text("1–20 / 41")
+        pager.get_by_role("button", name="Trang sau").click()
+        expect(page.get_by_role("row", name="Mục 20", exact=True)).to_be_hidden()
+        expect(page.get_by_role("row", name="Mục 21", exact=True)).to_be_visible()
+        expect(page.get_by_role("row", name="Mục 40", exact=True)).to_be_visible()
+        expect(page.get_by_role("row", name="Mục 41", exact=True)).to_be_hidden()
         pin.select_option("")
 
         # CK-7: vị thế PAPER (UPnL theo mark), điều khiển, phím tắt, cỡ, phân tích tại nến.
@@ -789,7 +814,8 @@ def test_market_chart_renders_overlays_polls_and_is_responsive(server_url: str) 
                 box = page.locator(selector).first.bounding_box()
                 assert box is not None
                 height = box["height"]
-                assert height >= 43.5, f"{selector} @ {width}px cao {height}"
+                min_height = 43.5 if width <= 767 else 40
+                assert height >= min_height, f"{selector} @ {width}px cao {height}"
             page.locator("[data-chart-settings-open]").click()
             _assert_no_horizontal_overflow(page, f"panel {width}px")
             layer_box = page.locator(".mc-layer").first.bounding_box()
@@ -825,9 +851,14 @@ def test_scanner_page_watchlist_is_saved_in_browser(server_url: str) -> None:
         expect(page.locator('[data-scan-row="BTCUSDT"]').first).to_be_visible()
         # ETHUSDT thiếu 21 ngày: không vào bảng xếp hạng, có trong danh sách loại kèm lý do.
         expect(page.locator('[data-scan-row="ETHUSDT"]')).to_have_count(0)
-        expect(page.locator('section[aria-labelledby="scan-excluded"]')).to_contain_text(
-            "ETHUSDT — Thiếu dữ liệu 21 ngày"
-        )
+        excluded = page.locator("details").filter(has=page.locator("#scan-excluded"))
+        expect(excluded.locator("summary")).to_be_visible()
+        excluded.locator("summary").click()
+        expect(excluded).to_contain_text("ETHUSDT — Thiếu dữ liệu 21 ngày")
+        # Watchlist được thu gọn mặc định để ưu tiên bảng kết quả.
+        watchlist = page.locator("details").filter(has=page.locator("#scan-watch"))
+        expect(watchlist).not_to_have_attribute("open", "")
+        watchlist.locator("summary").click()
         # Tom Select: gõ để tìm rồi chọn BTCUSDT.
         page.locator(".ts-control input").first.fill("BTC")
         page.locator(".ts-dropdown .option[data-value='BTCUSDT']").click()

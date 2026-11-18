@@ -622,10 +622,11 @@ def test_chart_page_renders_entry_board_with_missing_condition_and_bonus() -> No
     assert [item["key"] for item in call["bonus"]] == ["killzone", "funding_clear", "news"]
     assert 'id="mc-entry-board"' in html
     assert html.index('id="mc-live-strip"') < html.index('class="glass-card mc-toolbar"')
-    assert '<details class="mc-setup mc-setup--' in html
-    assert '<summary class="mc-setup__summary">' in html
-    assert 'class="mc-setup__details"' in html
-    assert "Bắt buộc <strong>2/3</strong>" in html
+    assert '<details class="mc-setup' not in html
+    assert 'class="mc-setup mc-setup--' in html
+    assert 'data-dialog-open="mc-setup-detail-' in html
+    assert '<dialog id="mc-setup-detail-' in html
+    assert "Bắt buộc" in html
     assert "Còn thiếu: ADX14 1h đủ mạnh — hiện 12, cần &gt;= 20" in html
     assert "đạt từ" in html
     assert "cộng điểm" in html
@@ -883,7 +884,9 @@ def test_entry_board_shows_bot_monitor_with_protection() -> None:
     assert "data-monitor-slots>3/3 · đã đủ" in html
     assert "mc-monitor--warning" in html  # lỗ hôm nay 45/50 = 90%
     assert "Trang bot (tạm dừng/tiếp tục có lý do)" in html
-    # Không có nút tạm dừng/tiếp tục một chạm trên bảng giám sát.
+    # Chi tiết nằm sau nút popup; thao tác vận hành vẫn chỉ ở trang bot.
+    assert 'data-dialog-open="mc-setup-detail-' in html
     assert (
-        'action="/admin/bots/' not in html.split("data-bot-monitor", 1)[1].split("</article>", 1)[0]
+        'action="/admin/bots/'
+        not in html.split('id="mc-entry-board"', 1)[1].split('class="mc-mtf__note"', 1)[0]
     )

@@ -52,6 +52,7 @@
             <th scope="col">Mức sẵn sàng</th>
             <th scope="col">Trạng thái mở vị thế</th>
             <th scope="col">Vào lệnh</th>
+            <th scope="col" aria-label="Chi tiết"></th>
           </tr>
         </thead>
         <tbody>
@@ -65,11 +66,38 @@
             <td data-label="Mức sẵn sàng"><span class="badge badge-{{ STATUS_TONES.get(bot.readiness, 'neutral') }} bot-badge">{{ bot.readiness | label_vi }}</span></td>
             <td data-label="Trạng thái mở vị thế">{{ bot.entry_state | label_vi }}</td>
             <td data-label="Vào lệnh">{% if bot.entry_allowed %}<span class="status-indicator status-allowed">Cho phép</span>{% else %}<span class="status-indicator status-blocked">Bị chặn</span>{% endif %}</td>
+            <td data-label="Chi tiết"><button type="button" class="btn btn-secondary btn--icon bot-list-detail-trigger" data-dialog-open="bot-detail-{{ bot.id }}" aria-label="Xem nhanh bot {{ bot.name }}" title="Xem nhanh bot"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg></button></td>
           </tr>
           {% endfor %}
         </tbody>
       </table>
     </div>
+    {% for bot in bots %}
+    <dialog id="bot-detail-{{ bot.id }}" class="glass-dialog" aria-labelledby="bot-detail-title-{{ loop.index }}">
+      <div class="glass-dialog__head">
+        <div class="glass-dialog__titles">
+          <h2 id="bot-detail-title-{{ loop.index }}" class="glass-dialog__title">{{ bot.name }}</h2>
+          <p class="glass-dialog__lead">Tóm tắt trạng thái bot · PAPER</p>
+        </div>
+        <button type="button" class="btn btn-secondary btn--icon icon-btn glass-dialog__close" aria-label="Đóng chi tiết bot" title="Đóng" data-dialog-close><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M6 6 18 18M18 6 6 18"/></svg></button>
+      </div>
+      <div class="glass-dialog__body">
+        <dl class="kv-grid">
+          <div><dt>Trạng thái</dt><dd>{{ bot.status | label_vi }}</dd></div>
+          <div><dt>Tài khoản</dt><dd>{{ bot.account_status | label_vi }} · {{ bot.account_mode | label_vi }}</dd></div>
+          <div><dt>Mức sẵn sàng</dt><dd>{{ bot.readiness | label_vi }}</dd></div>
+          <div><dt>Trạng thái vào lệnh</dt><dd>{{ bot.entry_state | label_vi }}</dd></div>
+          <div><dt>Cho phép vào lệnh</dt><dd>{{ "Có" if bot.entry_allowed else "Không" }}</dd></div>
+          <div><dt>Phiên bản điều khiển</dt><dd>{{ bot.control_revision }}</dd></div>
+          {% if bot.symbol %}<div><dt>Mã giao dịch</dt><dd>{{ bot.symbol }}</dd></div>{% endif %}
+        </dl>
+      </div>
+      <div class="glass-dialog__actions">
+        <a class="btn btn-primary" href="/admin/bots/{{ bot.id }}">Mở trang bot</a>
+        <button type="button" class="btn btn-secondary" data-dialog-close>Đóng</button>
+      </div>
+    </dialog>
+    {% endfor %}
   </section>
   {% else %}
   <p class="bot-empty" role="status">Chưa có bot được cấp quyền xem.{% if "owner" in identity.principal.roles %} Bấm "Tạo bot mô phỏng" để tạo tài khoản PAPER đầu tiên.{% endif %}</p>

@@ -549,7 +549,7 @@ def test_trading_revamp_playwright_desktop_and_mobile(revamp_server_url: str) ->
 
         # Chọn bot và nhấn Phân tích
         page.locator("#bot_id").select_option(str(BOT_ID))
-        page.locator("button:has-text('Phân tích')").click()
+        page.get_by_role("button", name="Phân tích báo cáo").click()
         page.wait_for_load_state("networkidle")
 
         # 1.3 Kiểm tra Lưới Trading Metric Cards và Tooltips
@@ -849,13 +849,21 @@ def test_bot_detail_trading_revamp_playwright_desktop_and_mobile(
         expect(recent_rows).to_contain_text("94960")
         expect(recent_rows.locator(".coin-chip").first).to_be_visible()
         expect(recent_rows.locator(".side-badge--long").first).to_be_visible()
-        assert page.get_by_text("Vì sao vào", exact=True).first.is_visible()
-        assert page.get_by_text("Vì sao thoát", exact=True).first.is_visible()
-        assert_metric_tooltip(page, "trade_entry_price", mode="focus")
-        assert_metric_tooltip(page, "trade_entry_price", mode="click")
+        expect(recent_rows.locator(".post-mortem__reasons")).to_have_count(0)
+        trade_detail_trigger = recent_rows.locator(".trade-detail-trigger").first
+        trade_detail_trigger.click()
+        trade_dialog = page.locator('dialog[id^="trade-detail-"]')
+        expect(trade_dialog).to_be_visible()
+        expect(trade_dialog).to_contain_text("Vì sao vào")
+        expect(trade_dialog).to_contain_text("Vì sao thoát")
+        expect(trade_dialog).to_contain_text("Không phát hiện sai lệch")
         ai_btn = page.locator(".btn-ingest-ai").first
         assert ai_btn.count() == 0
-        assert page.get_by_text("Không phát hiện sai lệch").is_visible()
+        page.keyboard.press("Escape")
+        expect(trade_dialog).not_to_be_visible()
+        expect(trade_detail_trigger).to_be_focused()
+        assert_metric_tooltip(page, "trade_entry_price", mode="focus")
+        assert_metric_tooltip(page, "trade_entry_price", mode="click")
 
         # Chụp màn hình Desktop Light Theme
         page.screenshot(
@@ -911,6 +919,13 @@ def test_bot_detail_trading_revamp_playwright_desktop_and_mobile(
         page_m.get_by_role("tab", name="Vị thế mở").tap()
         assert page_m.locator("#open-positions-heading").is_visible()
         page_m.get_by_role("tab", name="Lịch sử lệnh").tap()
+        mobile_trade_trigger = page_m.locator(".trade-detail-trigger").first
+        mobile_trade_trigger.tap()
+        mobile_trade_dialog = page_m.locator('dialog[id^="trade-detail-"]')
+        expect(mobile_trade_dialog).to_be_visible()
+        expect(mobile_trade_dialog).to_contain_text("Phí")
+        page_m.keyboard.press("Escape")
+        expect(mobile_trade_dialog).not_to_be_visible()
         page_m.locator(".bot-legend > summary").tap()
         assert_metric_tooltip(page_m, "quality_unverified", mode="tap")
         page_m.set_viewport_size({"width": 360, "height": 780})
@@ -933,13 +948,16 @@ BOT_PAGE_WIDTHS = (360, 390, 768, 1024, 1280, 1440, 2000)
 
 
 def assert_bot_page_layout(page: Page, name: str, width: int) -> None:
-    """Không tràn ngang, mọi điều khiển hiển thị cao ≥ 44px và giá trị .kv không bị ngắt dòng."""
+    """Không tràn ngang, nút gọn trên desktop/đủ vùng chạm trên mobile, .kv không bị ngắt dòng."""
     assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), (name, width)
+    minimum_height = (
+        44 if width <= 767 or page.evaluate("matchMedia('(pointer: coarse)').matches") else 32
+    )
     for element in page.locator("input:not([type=hidden]), select, textarea, button").all():
         if element.is_visible():
             bounds = element.bounding_box()
             assert bounds is not None
-            assert bounds["height"] >= 44, (name, width, bounds)
+            assert bounds["height"] >= minimum_height, (name, width, bounds)
     # Giá trị trong hàng nhãn–giá trị nằm trên một dòng (trừ hàng rộng chứa nhiều chip).
     wrapped = page.evaluate(
         """() => [...document.querySelectorAll('.bot-page .kv:not(.kv--wide) > dd')]
@@ -975,6 +993,19 @@ def test_bot_pages_ui_kit_responsive_light_dark(revamp_server_url: str) -> None:
         expect(page.locator("#bots-total")).to_have_text("1")
         expect(page.get_by_role("link", name="Binance BTC Trend Pullback H01")).to_be_visible()
         expect(page.get_by_role("link", name="Tạo bot mô phỏng")).to_be_visible()
+        quick_detail = page.get_by_role(
+            "button", name="Xem nhanh bot Binance BTC Trend Pullback H01"
+        )
+        quick_detail.click()
+        quick_dialog = page.get_by_role("dialog", name="Binance BTC Trend Pullback H01")
+        expect(quick_dialog).to_be_visible()
+        expect(quick_dialog).to_contain_text("Mức sẵn sàng")
+        expect(quick_dialog.get_by_role("link", name="Mở trang bot")).to_have_attribute(
+            "href", f"/admin/bots/{BOT_ID}"
+        )
+        page.keyboard.press("Escape")
+        expect(quick_dialog).not_to_be_visible()
+        expect(quick_detail).to_be_focused()
 
         pages = (
             ("bots", "/admin/bots"),

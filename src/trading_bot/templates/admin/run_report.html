@@ -46,11 +46,12 @@
   </section>
   {% endif %}
 
-  <section class="glass-card" aria-labelledby="report-runs">
-    <h2 id="report-runs">Lượt AI đã đọc report này ({{ report.runs | length }})</h2>
+  <details class="glass-card admin-disclosure admin-disclosure--report-runs">
+    <summary><h2 id="report-runs">Lượt AI đã đọc report này ({{ report.runs | length }})</h2><span class="admin-disclosure__chevron" aria-hidden="true"></span></summary><div class="admin-disclosure__body">
     {% if report.runs %}
     <ul class="ai-list">{% for run in report.runs %}<li><a href="/admin/ai-analyses/{{ run.id }}">{{ run.created_at | local_minute }} · {{ run.topic_key }}</a> — {% if run.error %}lỗi engine{% elif run.valid %}hợp lệ{% else %}bị loại{% endif %}</li>{% endfor %}</ul>
     {% else %}<p class="ai-note">Chưa có lượt AI nào dùng report này.</p>{% endif %}
-  </section>
+    </div>
+  </details>
 </div>
 {% endblock %}

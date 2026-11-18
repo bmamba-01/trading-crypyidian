@@ -307,6 +307,7 @@
           <th scope="col" class="num">{{ help_term("net_pnl", "Lãi/lỗ ròng") }}</th>
           <th scope="col">{{ help_term("exit_reason", "Lý do đóng") }}</th>
           <th scope="col">{{ help_term("execution_quality", "Đánh giá") }}</th>
+          <th scope="col" aria-label="Chi tiết"></th>
         </tr>
       </thead>
       <tbody id="recent-trades-tbody">
@@ -320,39 +321,50 @@
           <td data-label="Lãi/lỗ ròng" class="num num--strong bot-table__pnl">{{ money(trade.net_pnl, trade.quote_asset, signed=true) }}</td>
           <td data-label="Lý do đóng">{% if trade.exit_reason == "TAKE_PROFIT" %}<span class="badge badge-success bot-badge">{{ trade.exit_reason_vi }}</span>{% elif trade.exit_reason == "STOP_LOSS" %}<span class="badge badge-danger bot-badge">{{ trade.exit_reason_vi }}</span>{% else %}<span class="badge badge-neutral bot-badge">{{ trade.exit_reason_vi }}</span>{% endif %}</td>
           <td data-label="Đánh giá">{% if trade.quality == "OPTIMAL" %}<span class="badge badge-success bot-badge">Tối ưu</span>{% elif trade.is_deviant %}<span class="badge badge-warning bot-badge">{{ ico("warn") }}Sai lệch</span>{% elif trade.quality == "UNVERIFIED" %}<span class="badge badge-neutral bot-badge">Chưa đủ dữ liệu</span>{% else %}<span class="badge badge-neutral bot-badge">Chấp nhận được</span>{% endif %}</td>
-        </tr>
-        <tr class="trade-post-mortem-row">
-          <td colspan="8">
-            <div class="post-mortem">
-              <dl class="post-mortem__reasons">
-                <div><dt>{{ ico("why_in") }}Vì sao vào</dt><dd>{% if trade.entry_detail_vi or trade.strategy_id %}{% if trade.strategy_id %}Chiến thuật {{ trade.strategy_id }}{% endif %}{% if trade.strategy_id and trade.entry_detail_vi %} — {% endif %}{{ trade.entry_detail_vi or "" }}{% else %}<span class="value-muted">Ledger chưa lưu lý do vào lệnh cho giao dịch này.</span>{% endif %}</dd></div>
-                <div><dt>{{ ico("why_out") }}Vì sao thoát</dt><dd>{{ trade.exit_reason_vi }}</dd></div>
-                {% if trade.is_deviant and trade.deviant_reason %}<div class="post-mortem__deviant"><dt>{{ ico("warn") }}Lý do sai lệch</dt><dd>{{ trade.deviant_reason }}</dd></div>{% endif %}
-              </dl>
-              <dl class="post-mortem__costs" aria-label="Chi phí của lệnh">
-                <div class="kv"><dt>{{ ico("fee") }}Phí</dt><dd>{{ money(trade.fee_total, trade.quote_asset) }}</dd></div>
-                <div class="kv"><dt>{{ ico("funding") }}Funding</dt><dd>{{ money(trade.funding_total, trade.quote_asset) }}</dd></div>
-                <div class="kv"><dt>{{ ico("slippage") }}Trượt giá</dt><dd>{{ money(trade.slippage_total, trade.quote_asset) }}</dd></div>
-                <div class="kv"><dt>{{ ico("id") }}Mã giao dịch</dt><dd>{{ id_chip(trade.trade_id) }}</dd></div>
-              </dl>
-              <div class="post-mortem__action">
-                {% if trade.is_deviant and can_label_retraining %}
-                <button type="button" class="btn btn-sm btn-outline btn-ingest-ai" data-trade-id="{{ trade.trade_id }}" data-closed-at="{{ trade.closed_at }}" data-reason="{{ trade.deviant_reason or '' }}">{{ ico("flag") }}<span data-label>Gắn nhãn ca để rà soát huấn luyện</span></button>
-                {% elif trade.is_deviant %}
-                <span class="value-muted">Có sai lệch; vai trò hiện tại không được gắn nhãn huấn luyện.</span>
-                {% elif trade.quality == "UNVERIFIED" %}
-                <span class="value-muted">Chưa đủ dữ liệu để đánh giá</span>
-                {% else %}
-                <span class="value-muted">Không phát hiện sai lệch</span>
-                {% endif %}
-              </div>
-            </div>
-          </td>
+          <td data-label="Chi tiết"><button type="button" class="btn btn-secondary btn--icon trade-detail-trigger" data-dialog-open="trade-detail-{{ loop.index }}" aria-label="Xem hậu kiểm {{ trade.symbol }} {{ trade.side | label_vi }}" title="Xem hậu kiểm"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg></button></td>
         </tr>
         {% endfor %}
       </tbody>
     </table>
   </div>
+  {% for trade in recent_trades %}
+  <dialog id="trade-detail-{{ loop.index }}" class="glass-dialog" aria-labelledby="trade-detail-title-{{ loop.index }}">
+    <div class="glass-dialog__head">
+      <div class="glass-dialog__titles">
+        <h2 id="trade-detail-title-{{ loop.index }}" class="glass-dialog__title">Hậu kiểm · {{ trade.symbol }} {{ trade.side | label_vi }}</h2>
+        <p class="glass-dialog__lead">Đóng lúc {{ trade.closed_at | local_minute }} · {{ trade.exit_reason_vi }}</p>
+      </div>
+      <button type="button" class="btn btn-secondary btn--icon icon-btn glass-dialog__close" aria-label="Đóng hậu kiểm giao dịch" title="Đóng" data-dialog-close><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M6 6 18 18M18 6 6 18"/></svg></button>
+    </div>
+    <div class="glass-dialog__body">
+      <div class="post-mortem">
+        <dl class="post-mortem__reasons">
+          <div><dt>{{ ico("why_in") }}Vì sao vào</dt><dd>{% if trade.entry_detail_vi or trade.strategy_id %}{% if trade.strategy_id %}Chiến thuật {{ trade.strategy_id }}{% endif %}{% if trade.strategy_id and trade.entry_detail_vi %} — {% endif %}{{ trade.entry_detail_vi or "" }}{% else %}<span class="value-muted">Ledger chưa lưu lý do vào lệnh cho giao dịch này.</span>{% endif %}</dd></div>
+          <div><dt>{{ ico("why_out") }}Vì sao thoát</dt><dd>{{ trade.exit_reason_vi }}</dd></div>
+          {% if trade.is_deviant and trade.deviant_reason %}<div class="post-mortem__deviant"><dt>{{ ico("warn") }}Lý do sai lệch</dt><dd>{{ trade.deviant_reason }}</dd></div>{% endif %}
+        </dl>
+        <dl class="post-mortem__costs" aria-label="Chi phí của lệnh">
+          <div class="kv"><dt>{{ ico("fee") }}Phí</dt><dd>{{ money(trade.fee_total, trade.quote_asset) }}</dd></div>
+          <div class="kv"><dt>{{ ico("funding") }}Funding</dt><dd>{{ money(trade.funding_total, trade.quote_asset) }}</dd></div>
+          <div class="kv"><dt>{{ ico("slippage") }}Trượt giá</dt><dd>{{ money(trade.slippage_total, trade.quote_asset) }}</dd></div>
+          <div class="kv"><dt>{{ ico("id") }}Mã giao dịch</dt><dd>{{ id_chip(trade.trade_id) }}</dd></div>
+        </dl>
+        <div class="post-mortem__action">
+          {% if trade.is_deviant and can_label_retraining %}
+          <button type="button" class="btn btn-sm btn-outline btn-ingest-ai" data-trade-id="{{ trade.trade_id }}" data-closed-at="{{ trade.closed_at }}" data-reason="{{ trade.deviant_reason or '' }}">{{ ico("flag") }}<span data-label>Gắn nhãn ca để rà soát huấn luyện</span></button>
+          {% elif trade.is_deviant %}
+          <span class="value-muted">Có sai lệch; vai trò hiện tại không được gắn nhãn huấn luyện.</span>
+          {% elif trade.quality == "UNVERIFIED" %}
+          <span class="value-muted">Chưa đủ dữ liệu để đánh giá</span>
+          {% else %}
+          <span class="value-muted">Không phát hiện sai lệch</span>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+    <div class="glass-dialog__actions"><button type="button" class="btn btn-secondary" data-dialog-close>Đóng</button></div>
+  </dialog>
+  {% endfor %}
   {% else %}
   <p class="bot-empty" role="status">
     {% if trading_data_available %}Chưa có giao dịch PAPER đã đóng trong 30 ngày.{% else %}Chưa có dữ liệu lịch sử lệnh.{% endif %}

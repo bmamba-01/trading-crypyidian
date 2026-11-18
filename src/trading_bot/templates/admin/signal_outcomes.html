@@ -1,4 +1,5 @@
 {% extends "admin/base.html" %}
+{% import "admin/_admin_icons.html" as icons %}
 {% block title %}Kết quả tín hiệu — Crypidian{% endblock %}
 {% block heading %}Kết quả tín hiệu{% endblock %}
 {% block head_extra %}<link rel="stylesheet" href="/static/pages/ai.css"><link rel="stylesheet" href="/static/pages/signal-outcomes.css"><link rel="stylesheet" href="/static/pages/filters.css">{% endblock %}
@@ -66,7 +67,7 @@
           {% for item in data.options.periods %}<option value="{{ item }}" {% if item == data.filters.period %}selected{% endif %}>{{ item }} ngày</option>{% endfor %}
         </select>
       </label>
-      <button type="submit" class="btn btn-secondary">Lọc</button>
+      <button type="submit" class="btn btn-secondary btn--icon" aria-label="Lọc kết quả tín hiệu" title="Lọc kết quả tín hiệu">{{ icons.action("filter") }}</button>
     </form>
   </section>
 
@@ -100,30 +101,52 @@
     </ul>
   </section>
 
-  <section class="glass-card" aria-labelledby="so-delivery-title">
-    <h2 id="so-delivery-title">Tín hiệu đã gửi so với không gửi</h2>
+  <details class="glass-card admin-disclosure admin-disclosure--signal-breakdown">
+    <summary><h2 id="so-delivery-title">Tín hiệu đã gửi so với không gửi</h2><span class="admin-disclosure__chevron" aria-hidden="true"></span></summary><div class="admin-disclosure__body">
     {{ stat_table(data.by_delivery, "Trạng thái gửi", "So sánh tín hiệu đã gửi và không gửi") }}
-  </section>
+    </div>
+  </details>
 
-  <section class="glass-card" aria-labelledby="so-setup-title">
-    <h2 id="so-setup-title">Theo setup và khung</h2>
+  <details class="glass-card admin-disclosure admin-disclosure--signal-breakdown">
+    <summary><h2 id="so-setup-title">Theo setup và khung</h2><span class="admin-disclosure__chevron" aria-hidden="true"></span></summary><div class="admin-disclosure__body">
     {{ stat_table(data.by_setup, "Setup · khung", "Kết quả theo setup và khung") }}
-  </section>
+    </div>
+  </details>
 
-  <section class="glass-card" aria-labelledby="so-wrong-title">
-    <h2 id="so-wrong-title">Tín hiệu sai lặp lại</h2>
+  <details class="glass-card admin-disclosure admin-disclosure--signal-breakdown">
+    <summary><h2 id="so-wrong-title">Tín hiệu sai lặp lại</h2><span class="admin-disclosure__chevron" aria-hidden="true"></span></summary><div class="admin-disclosure__body">
     <p class="ai-note">Nhóm (setup · coin · hướng) có từ 2 tín hiệu sai trở lên trong khoảng đã chọn — ứng viên để AI phân tích và đề xuất backtest.</p>
     {{ stat_table(data.repeated_wrong, "Setup · coin · hướng", "Tín hiệu sai lặp lại") }}
-  </section>
+    </div>
+  </details>
 
-  <section class="glass-card" aria-labelledby="so-symbol-title">
-    <h2 id="so-symbol-title">Theo coin</h2>
+  <details class="glass-card admin-disclosure admin-disclosure--signal-breakdown">
+    <summary><h2 id="so-symbol-title">Theo coin</h2><span class="admin-disclosure__chevron" aria-hidden="true"></span></summary><div class="admin-disclosure__body">
     {{ stat_table(data.by_symbol, "Coin", "Kết quả theo coin") }}
-  </section>
+    </div>
+  </details>
 
-  <section class="glass-card" aria-labelledby="so-recent-title">
-    <h2 id="so-recent-title">{{ data.recent | length }} tín hiệu gần nhất</h2>
+  <section class="glass-card signal-recent-launch" aria-labelledby="so-recent-title">
+    <div>
+      <h2 id="so-recent-title">{{ data.recent | length }} tín hiệu gần nhất</h2>
+      <p class="ai-note">Danh sách đầy đủ mở riêng để giữ trang tổng quan gọn.</p>
+    </div>
     {% if data.recent %}
+    <button type="button" class="btn btn-secondary" data-dialog-open="signal-recent-dialog" aria-label="Mở danh sách {{ data.recent | length }} tín hiệu gần nhất" title="Mở danh sách tín hiệu"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg> Xem danh sách</button>
+    {% else %}
+    <p class="ai-note">Chưa có tín hiệu nào được chấm{% if data.filters.bot_id or data.filters.release or data.filters.symbol or data.filters.timeframe %} khớp bộ lọc{% endif %}. Worker chấm sau khi đủ nến đóng của horizon.</p>
+    {% endif %}
+  </section>
+  {% if data.recent %}
+  <dialog id="signal-recent-dialog" class="glass-dialog" aria-labelledby="signal-recent-dialog-title">
+    <div class="glass-dialog__head">
+      <div class="glass-dialog__titles">
+        <h2 id="signal-recent-dialog-title" class="glass-dialog__title">{{ data.recent | length }} tín hiệu gần nhất</h2>
+        <p class="glass-dialog__lead">Tín hiệu đã chấm theo bộ lọc hiện tại; tối đa 20 mục mỗi trang.</p>
+      </div>
+      <button type="button" class="btn btn-secondary btn--icon icon-btn glass-dialog__close" aria-label="Đóng danh sách tín hiệu" title="Đóng" data-dialog-close><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M6 6 18 18M18 6 6 18"/></svg></button>
+    </div>
+    <div class="glass-dialog__body">
     <div class="table-wrapper"><table class="responsive-table" aria-label="Tín hiệu đã chấm gần nhất">
       <thead><tr><th scope="col">Thời điểm</th><th scope="col">Bot</th><th scope="col">Setup</th><th scope="col">Coin</th><th scope="col">Hướng</th><th scope="col">Chạm trước</th><th scope="col">R</th><th scope="col">MFE / MAE</th><th scope="col">Kết quả</th><th scope="col">Gửi</th></tr></thead>
       <tbody>
@@ -148,9 +171,9 @@
       {% endfor %}
       </tbody>
     </table></div>
-    {% else %}
-    <p class="ai-note">Chưa có tín hiệu nào được chấm{% if data.filters.bot_id or data.filters.release or data.filters.symbol or data.filters.timeframe %} khớp bộ lọc{% endif %}. Worker chấm sau khi đủ nến đóng của horizon.</p>
-    {% endif %}
-  </section>
+    </div>
+    <div class="glass-dialog__actions"><button type="button" class="btn btn-secondary" data-dialog-close>Đóng</button></div>
+  </dialog>
+  {% endif %}
 </div>
 {% endblock %}

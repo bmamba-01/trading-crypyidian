@@ -111,12 +111,14 @@
   <h2 id="dashboard-live-heading">Theo dõi bot và phiên PAPER</h2>
   <p>Chọn một bot đang bật để xem trạng thái vận hành và giao dịch PAPER đã ghi nhận. Tự cập nhật mỗi 5 giây khi trang đang hiển thị.</p>
   <div class="dashboard-live-layout">
+    <div class="dashboard-bot-picker-container" data-admin-pagination-items=".dashboard-bot-picker [data-dashboard-bot]" data-pagination-label="Bot đang theo dõi">
     <div class="dashboard-bot-picker" role="group" aria-label="Chọn bot đang theo dõi">
       {% for bot in bots if bot.status in ["ENABLED", "ACTIVE"] %}
       <button type="button" data-dashboard-bot="{{ bot.id }}" aria-pressed="false" aria-controls="dashboard-live-panel">
         <span>{{ bot.name }}</span><small>{{ bot.status | label_vi }} · {{ bot.readiness | label_vi }}</small>
       </button>
       {% else %}<p>Chưa có bot đang bật để theo dõi.</p>{% endfor %}
+    </div>
     </div>
     <section id="dashboard-live-panel" class="dashboard-live-panel" role="region" aria-label="Bot đang theo dõi" aria-busy="false">
       <div class="live-panel-head">
@@ -213,11 +215,13 @@
   <script id="dashboard-chart-data" type="application/json">{{ dashboard_chart | tojson }}</script>
   {% else %}<p role="status">Chưa có giao dịch USDT đã đóng trong 30 ngày để dựng biểu đồ hiệu suất.</p>{% endif %}
   {% if dashboard_reports is defined and dashboard_reports %}
+  <div data-admin-pagination-items=".bot-report" data-pagination-label="Báo cáo bot">
   <p>Từ {{ report_start | local_time }} đến {{ report_end | local_time }}; không gồm mốc kết thúc. Chỉ bot có quyền xem báo cáo; số liệu tiền tệ theo từng tài sản.</p>
   {% for report in dashboard_reports %}
   <article class="bot-report"><h3>{{ report.name }}</h3>
   {% with totals=report.totals, rounded=True %}{% include "admin/metric_cards.html" %}{% endwith %}</article>
   {% endfor %}
+  </div>
   {% elif metrics_loaded %}
   <p role="status">Chưa có bot đang hoạt động được cấp quyền xem báo cáo.</p>
   {% else %}

@@ -1,0 +1,28 @@
+{# SVG nét dùng chung cho các nút thao tác ngắn. Văn bản thay thế do nút cung cấp. #}
+{% macro action(name) -%}
+<svg class="admin-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+  {% if name == "search" %}<circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/>
+  {% elif name == "filter" %}<path d="M4 5h16l-6.5 7.5v5L10 19v-6.5L4 5Z"/>
+  {% elif name == "home" %}<path d="M3 12h18M12 3v18"/><path d="m7 7 5-4 5 4M7 17l5 4 5-4"/>
+  {% elif name == "live" %}<path d="M4 12h4l3-7 4 14 3-7h2"/><circle cx="20" cy="12" r="1"/>
+  {% elif name == "zoom_in" %}<circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5M10.5 7.5v6M7.5 10.5h6"/>
+  {% elif name == "zoom_out" %}<circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5M7.5 10.5h6"/>
+  {% elif name == "reset" %}<path d="M4 8V3M4 8h5"/><path d="M5.6 6.4A8 8 0 1 1 4 12"/>
+  {% elif name == "cursor" %}<path d="m5 3 13 10-6 1-3 6L5 3Z"/>
+  {% elif name == "trendline" %}<path d="m4 18 6-7 4 3 6-8"/><circle cx="4" cy="18" r="1"/><circle cx="20" cy="6" r="1"/>
+  {% elif name == "hline" %}<path d="M4 12h16"/><path d="M7 8v8M17 8v8"/>
+  {% elif name == "ray" %}<path d="M4 19 19 4M10 4h9v9"/><circle cx="4" cy="19" r="1.5"/>
+  {% elif name == "rectangle" %}<rect x="4" y="5" width="16" height="14" rx="1"/>
+  {% elif name == "fibonacci" %}<path d="M4 5h16M4 9h12M4 13h8M4 17h4M4 21h16"/>
+  {% elif name == "text" %}<path d="M4 5h16M12 5v14M8 19h8"/>
+  {% elif name == "magnet" %}<path d="M6 4v8a6 6 0 0 0 12 0V4M6 8h4M14 8h4"/>
+  {% elif name == "lock" %}<rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/>
+  {% elif name == "eye" %}<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/>
+  {% elif name == "undo" %}<path d="M9 14 4 9l5-5"/><path d="M5 9h8a7 7 0 0 1 0 14h-2"/>
+  {% elif name == "redo" %}<path d="m15 4 5 5-5 5"/><path d="M19 9h-8a7 7 0 0 0 0 14h2"/>
+  {% elif name == "trash" %}<path d="M4 7h16M10 11v6M14 11v6M6 7l1 14h10l1-14M9 7V4h6v3"/>
+  {% elif name == "chart" %}<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>
+  {% elif name == "layers" %}<path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3 12 9 5 9-5M3 16l9 5 9-5"/>
+  {% endif %}
+</svg>
+{%- endmacro %}

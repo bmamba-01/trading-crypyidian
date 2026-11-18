@@ -69,8 +69,8 @@
   </section>
   {% endif %}
 
-  <section class="glass-card" aria-labelledby="run-backtests">
-    <h2 id="run-backtests">Kết quả backtest đề xuất ({{ run.backtests | length }})</h2>
+  <details class="glass-card admin-disclosure admin-disclosure--ai-context">
+    <summary><h2 id="run-backtests">Kết quả backtest đề xuất ({{ run.backtests | length }})</h2><span class="admin-disclosure__chevron" aria-hidden="true"></span></summary><div class="admin-disclosure__body">
     {% if run.backtests %}
     <div class="table-wrapper"><table class="responsive-table" aria-label="Kết quả backtest đề xuất">
       <thead><tr><th scope="col">Bot</th><th scope="col">Thay đổi</th><th scope="col">Kết luận</th><th scope="col">Số lệnh</th><th scope="col">PnL ròng (USDT)</th><th scope="col">Drawdown/coin</th></tr></thead>
@@ -89,10 +89,11 @@
     </table></div>
     <p class="ai-note">Tạo bản nháp cấu hình từ đề xuất ở trang chi tiết bot (mục "Đề xuất AI đã backtest").</p>
     {% else %}<p class="ai-note">Chưa có đề xuất nào của lượt này được backtest.</p>{% endif %}
-  </section>
+    </div>
+  </details>
 
-  <section class="glass-card" aria-labelledby="run-context">
-    <h2 id="run-context">Bối cảnh đã đưa AI</h2>
+  <details class="glass-card admin-disclosure admin-disclosure--ai-context">
+    <summary><h2 id="run-context">Bối cảnh đã đưa AI</h2><span class="admin-disclosure__chevron" aria-hidden="true"></span></summary><div class="admin-disclosure__body">
     {% if run.context %}
     <h3>Lịch vĩ mô 7 ngày tới (giờ VN){% if run.context.macro_blackout %} · <span class="badge badge-danger">đang trong khoảng cấm</span>{% endif %}</h3>
     {% if run.context.macro_events %}<ul class="ai-list">{% for event in run.context.macro_events %}<li>{{ event }}</li>{% endfor %}</ul>{% else %}<p class="ai-note">Không có sự kiện tác động mạnh.</p>{% endif %}
@@ -108,6 +109,7 @@
     {% else %}
     <p class="ai-note">Lượt này chạy trước khi hệ thống lưu bối cảnh (16/11/2026).</p>
     {% endif %}
-  </section>
+    </div>
+  </details>
 </div>
 {% endblock %}
