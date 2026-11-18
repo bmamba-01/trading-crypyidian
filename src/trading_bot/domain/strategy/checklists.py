@@ -13,15 +13,25 @@ ngòi nổ L5 bị ngắt mạch tại L4).
 from __future__ import annotations
 
 import math
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, replace
 from datetime import UTC
 from decimal import Decimal
 from functools import lru_cache
 from statistics import median
 from typing import TYPE_CHECKING, Any
 
-from trading_bot.domain.market.features import atr, bollinger_bands, ema, macd
+from trading_bot.domain.market.features import (
+    adx_dmi,
+    atr,
+    bollinger_bands,
+    efficiency_ratio,
+    ema,
+    macd,
+    rsi,
+    zscore,
+)
+from trading_bot.domain.market.models import OHLCVBar
 from trading_bot.domain.strategy.contracts import (
     DecisionSnapshot,
     FeatureObservation,
@@ -45,12 +55,17 @@ from trading_bot.domain.strategy_card.anatomy import (
     upper_wick_ratio,
 )
 from trading_bot.domain.strategy_card.models import CompositionLayer
+from trading_bot.domain.strategy_card.orthogonality import AntiConsensusAnalyzer
 
 if TYPE_CHECKING:
     from trading_bot.application.strategy_pipeline.pipeline_engine import PipelineExecutionResult
     from trading_bot.domain.strategy_card.schema import StrategyCard
 
 CHECKLIST_VERSION = "sig3-checklist-v1"
+CHECKLIST_INDEPENDENCE_VERSION = "sig6-checklist-independence-v1"
+INDEPENDENCE_THRESHOLD = 0.85
+MIN_INDEPENDENCE_SAMPLES = 50
+_VARIANCE_EPSILON = 1e-12
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,15 +78,53 @@ class ChecklistItem:
     operator: str
     threshold: str
     passed: bool | None
+    independence_summary: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "key": self.key,
             "label_vi": self.label_vi,
             "actual": self.actual,
             "operator": self.operator,
             "threshold": self.threshold,
             "passed": self.passed,
+        }
+        if self.independence_summary is not None:
+            payload["independence_summary"] = self.independence_summary
+        return payload
+
+
+@dataclass(frozen=True, slots=True)
+class ChecklistIndependenceSummary:
+    """Báo cáo độ độc lập giữa các điều kiện checklist trên chuỗi nến lịch sử (SIG-6)."""
+
+    release_id: str
+    status: str  # "ok" | "warning" | "insufficient_data"
+    sample_size: int
+    total_conditions: int
+    independent_conditions: int | None
+    groups: tuple[tuple[str, ...], ...]
+    high_correlation_pairs: tuple[tuple[str, str, float], ...]
+    warnings: tuple[str, ...]
+    summary_vi: str
+    inactive_conditions: tuple[str, ...] = ()
+    version: str = CHECKLIST_INDEPENDENCE_VERSION
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "release_id": self.release_id,
+            "status": self.status,
+            "sample_size": self.sample_size,
+            "total_conditions": self.total_conditions,
+            "independent_conditions": self.independent_conditions,
+            "groups": [list(group) for group in self.groups],
+            "high_correlation_pairs": [
+                [left, right, r] for left, right, r in self.high_correlation_pairs
+            ],
+            "warnings": list(self.warnings),
+            "summary_vi": self.summary_vi,
+            "inactive_conditions": list(self.inactive_conditions),
+            "version": self.version,
         }
 
 
@@ -1674,6 +1727,496 @@ _EXPANDED_RULE_BUILDERS: dict[
 }
 
 
+def _bar_ohlc_valid(bar: OHLCVBar) -> bool:
+    return (
+        bar.open > Decimal("0")
+        and bar.close > Decimal("0")
+        and bar.high >= bar.low
+        and bar.high >= max(bar.open, bar.close)
+        and bar.low <= min(bar.open, bar.close)
+    )
+
+
+def _extract_eligible_series(
+    snapshot: DecisionSnapshot, timeframe: str
+) -> tuple[tuple[OHLCVBar, ...], tuple[float, ...] | None]:
+    """Lọc chuỗi nến READY, backfill đủ, đã đóng và khả dụng tại ``decision_time``."""
+    series = snapshot.get_series(timeframe)
+    if (
+        series is None
+        or series.quality is not SeriesQuality.READY
+        or series.backfill_complete is not True
+        or not series.bars
+    ):
+        return (), None
+
+    bars_out: list[OHLCVBar] = []
+    qvols_out: list[float] | None = [] if series.quote_volumes is not None else None
+    for idx, bar in enumerate(series.bars):
+        if not bar.is_closed:
+            continue
+        if max(bar.close_time, bar.event_at, bar.available_at) > snapshot.decision_time:
+            continue
+        if not _bar_ohlc_valid(bar):
+            continue
+        bars_out.append(bar)
+        if qvols_out is not None and series.quote_volumes is not None:
+            qvols_out.append(series.quote_volumes[idx])
+    return tuple(bars_out), (tuple(qvols_out) if qvols_out is not None else None)
+
+
+def _causal_ema(values: Sequence[float], period: int) -> list[float]:
+    """EMA nhân quả (không nhìn trước): mở rộng trung bình trong warmup rồi nối EMA chuẩn."""
+    if not values:
+        return []
+    raw = list(ema(values, period))
+    for i in range(min(period - 1, len(values))):
+        raw[i] = math.fsum(values[: i + 1]) / (i + 1)
+    return [float(x) for x in raw if x is not None]
+
+
+def _causal_adx(
+    highs: Sequence[float], lows: Sequence[float], closes: Sequence[float], period: int = 14
+) -> list[float]:
+    """ADX nhân quả theo Wilder (không nhìn trước) cho mọi độ dài chuỗi."""
+    if not closes:
+        return []
+    _, _, dx, adx_s = adx_dmi(highs, lows, closes, period)
+    out: list[float] = []
+    dx_run: list[float] = []
+    for i in range(len(closes)):
+        adx_val = adx_s[i]
+        dx_val = dx[i]
+        if adx_val is not None:
+            out.append(float(adx_val))
+        elif dx_val is not None:
+            dx_run.append(float(dx_val))
+            out.append(math.fsum(dx_run) / len(dx_run))
+        else:
+            out.append(0.0)
+    return out
+
+
+def _causal_er(closes: Sequence[float], period: int = 40) -> list[float]:
+    """Efficiency Ratio nhân quả (không nhìn trước) cho mọi độ dài chuỗi."""
+    if not closes:
+        return []
+    raw = efficiency_ratio(closes, period)
+    out: list[float] = []
+    for i in range(len(closes)):
+        val = raw[i]
+        if val is not None:
+            out.append(float(val))
+        elif i > 0:
+            path = math.fsum(abs(closes[k] - closes[k - 1]) for k in range(1, i + 1))
+            out.append(abs(closes[i] - closes[0]) / path if path > 0.0 else 0.0)
+        else:
+            out.append(0.0)
+    return out
+
+
+def _causal_zscore(closes: Sequence[float], window: int = 20) -> list[float]:
+    """Z-score nhân quả chuẩn hóa theo cửa sổ trước đó (không nhìn trước)."""
+    if not closes:
+        return []
+    raw = zscore(closes, window)
+    out: list[float] = []
+    for i in range(len(closes)):
+        val = raw[i]
+        if val is not None:
+            out.append(float(val))
+        elif 2 <= i < window:
+            hist = closes[:i]
+            mean_val = math.fsum(hist) / len(hist)
+            std = math.sqrt(math.fsum((x - mean_val) ** 2 for x in hist) / len(hist))
+            out.append((closes[i] - mean_val) / std if std > 0.0 else 0.0)
+        else:
+            out.append(0.0)
+    return out
+
+
+def _causal_rsi(closes: Sequence[float], period: int = 14) -> list[float]:
+    """RSI nhân quả (không nhìn trước) cho mọi độ dài chuỗi."""
+    if not closes:
+        return []
+    raw = rsi(closes, period)
+    out: list[float] = []
+    gain_sum = 0.0
+    loss_sum = 0.0
+    for i in range(len(closes)):
+        if i > 0:
+            change = closes[i] - closes[i - 1]
+            if change > 0.0:
+                gain_sum += change
+            elif change < 0.0:
+                loss_sum += -change
+        val = raw[i]
+        if val is not None:
+            out.append(float(val))
+        elif i == 0 or (gain_sum == 0.0 and loss_sum == 0.0):
+            out.append(50.0)
+        elif loss_sum == 0.0:
+            out.append(100.0)
+        elif gain_sum == 0.0:
+            out.append(0.0)
+        else:
+            rs = gain_sum / loss_sum
+            out.append(100.0 - 100.0 / (1.0 + rs))
+    return out
+
+
+def _h01_condition_series(
+    snapshot: DecisionSnapshot, _settings: StrategySelection
+) -> dict[str, list[float]]:
+    """Chuỗi điểm số điều kiện H01 theo từng nến 1h (ema_cross, htf_trend, adx)."""
+    bars_1h, _ = _extract_eligible_series(snapshot, "1h")
+    if not bars_1h:
+        return {"ema_cross": [], "htf_trend": [], "adx": []}
+
+    closes_1h = [float(b.close) for b in bars_1h]
+    highs_1h = [float(b.high) for b in bars_1h]
+    lows_1h = [float(b.low) for b in bars_1h]
+    ema20 = _causal_ema(closes_1h, 20)
+    ema80 = _causal_ema(closes_1h, 80)
+    adx14 = _causal_adx(highs_1h, lows_1h, closes_1h, 14)
+
+    gaps = [e20 - e80 for e20, e80 in zip(ema20, ema80, strict=True)]
+    ema_cross_scores = [0.0]
+    for i in range(1, len(bars_1h)):
+        ema_cross_scores.append((gaps[i] - gaps[i - 1]) / ema80[i] if ema80[i] > 0.0 else 0.0)
+
+    bars_4h, _ = _extract_eligible_series(snapshot, "4h")
+    if bars_4h:
+        closes_4h = [float(b.close) for b in bars_4h]
+        ema200_4h = _causal_ema(closes_4h, 200)
+        htf_scores: list[float] = []
+        j = -1
+        for bar_1h in bars_1h:
+            t_1h = max(bar_1h.close_time, bar_1h.event_at, bar_1h.available_at)
+            while j + 1 < len(bars_4h):
+                next_4h = bars_4h[j + 1]
+                t_4h = max(next_4h.close_time, next_4h.event_at, next_4h.available_at)
+                if t_4h <= t_1h:
+                    j += 1
+                else:
+                    break
+            if j >= 0 and ema200_4h[j] > 0.0:
+                htf_scores.append((closes_4h[j] - ema200_4h[j]) / ema200_4h[j])
+            else:
+                htf_scores.append(0.0)
+    else:
+        htf_scores = [0.0] * len(bars_1h)
+
+    adx_scores = [val - 20.0 for val in adx14]
+    return {
+        "ema_cross": ema_cross_scores,
+        "htf_trend": htf_scores,
+        "adx": adx_scores,
+    }
+
+
+def _h03_condition_series(
+    snapshot: DecisionSnapshot, settings: StrategySelection, timeframe: str = "1h"
+) -> dict[str, list[float]]:
+    """Chuỗi điểm số điều kiện H03 theo từng nến (donchian_breakout, volume_above_median)."""
+    parameters = dict(settings.parameters)
+    lookback = parameters.get("donchian_lookback", 55)
+    volume_lookback = parameters.get("volume_median_lookback", 20)
+    bars, qvols = _extract_eligible_series(snapshot, timeframe)
+    if not bars:
+        return {"donchian_breakout": [], "volume_above_median": []}
+
+    closes = [float(b.close) for b in bars]
+    highs = [float(b.high) for b in bars]
+    lows = [float(b.low) for b in bars]
+    donchian_scores: list[float] = []
+    volume_scores: list[float] = []
+
+    for i in range(len(bars)):
+        if i == 0:
+            donchian_scores.append(0.0)
+            volume_scores.append(0.0)
+            continue
+        start_d = max(0, i - lookback)
+        prior_high = max(highs[start_d:i])
+        prior_low = min(lows[start_d:i])
+        half_width = 0.5 * (prior_high - prior_low)
+        mid = 0.5 * (prior_high + prior_low)
+        if half_width > 0.0:
+            donchian_scores.append((closes[i] - mid) / half_width)
+        elif closes[i] > prior_high:
+            donchian_scores.append(1.0)
+        elif closes[i] < prior_low:
+            donchian_scores.append(-1.0)
+        else:
+            donchian_scores.append(0.0)
+
+        if qvols is None:
+            volume_scores.append(0.0)
+        else:
+            start_v = max(0, i - volume_lookback)
+            med_vol = median(qvols[start_v:i])
+            volume_scores.append((qvols[i] - med_vol) / med_vol if med_vol > 0.0 else 0.0)
+
+    return {
+        "donchian_breakout": donchian_scores,
+        "volume_above_median": volume_scores,
+    }
+
+
+def _h06_condition_series(
+    snapshot: DecisionSnapshot, _settings: StrategySelection
+) -> dict[str, list[float]]:
+    """Chuỗi điểm số điều kiện H06 trên nến 15m (range_adx, range_er, extreme, no_adverse_break)."""
+    bars, _ = _extract_eligible_series(snapshot, "15m")
+    if not bars:
+        return {"range_adx": [], "range_er": [], "extreme": [], "no_adverse_break": []}
+
+    closes = [float(b.close) for b in bars]
+    highs = [float(b.high) for b in bars]
+    lows = [float(b.low) for b in bars]
+    adx14 = _causal_adx(highs, lows, closes, 14)
+    er40 = _causal_er(closes, 40)
+    z20 = _causal_zscore(closes, 20)
+    rsi14 = _causal_rsi(closes, 14)
+
+    range_adx_scores = [(18.0 - val) / 18.0 for val in adx14]
+    range_er_scores = [(0.25 - val) / 0.25 for val in er40]
+    extreme_scores: list[float] = []
+    break_scores: list[float] = []
+
+    for i in range(len(bars)):
+        s_long = min(-z20[i] / 2.0, (50.0 - rsi14[i]) / 20.0)
+        s_short = min(z20[i] / 2.0, (rsi14[i] - 50.0) / 20.0)
+        extreme_scores.append(max(s_long, s_short))
+        if i == 0:
+            break_scores.append(0.0)
+            continue
+        start_idx = max(0, i - 120)
+        floor = min(lows[start_idx:i])
+        ceiling = max(highs[start_idx:i])
+        width = ceiling - floor
+        if width > 0.0:
+            break_scores.append(min(closes[i] - floor, ceiling - closes[i]) / (0.5 * width))
+        else:
+            break_scores.append(0.0)
+
+    return {
+        "range_adx": range_adx_scores,
+        "range_er": range_er_scores,
+        "extreme": extreme_scores,
+        "no_adverse_break": break_scores,
+    }
+
+
+def _card_primary_bars(card: StrategyCard, snapshot: DecisionSnapshot) -> tuple[OHLCVBar, ...]:
+    for tf in card.compatibility.timeframes:
+        bars, _ = _extract_eligible_series(snapshot, tf)
+        if bars:
+            return bars
+    for series in snapshot.series:
+        bars, _ = _extract_eligible_series(snapshot, series.timeframe)
+        if bars:
+            return bars
+    return ()
+
+
+def checklist_condition_series(
+    release_id: str, snapshot: DecisionSnapshot, settings: StrategySelection
+) -> dict[str, list[float]]:
+    """Tính chuỗi điểm số lịch sử (zero lookahead) cho điều kiện checklist theo ``release_id``."""
+    v3_timeframe = H03_V3_TIMEFRAMES.get(release_id)
+    if v3_timeframe is not None:
+        return _h03_condition_series(snapshot, settings, v3_timeframe)
+    normalized = release_id.lower()
+    card = _strategy_cards_by_release().get(normalized)
+    if card is not None:
+        from trading_bot.application.strategy_pipeline.consensus import card_node_series
+
+        return card_node_series(card, _card_primary_bars(card, snapshot))
+    strategy_key = release_id.split("-", 1)[0].upper()
+    if strategy_key == "H01":
+        return _h01_condition_series(snapshot, settings)
+    if strategy_key == "H03":
+        return _h03_condition_series(snapshot, settings)
+    if strategy_key == "H06":
+        return _h06_condition_series(snapshot, settings)
+    return {}
+
+
+def _has_variance(values: Sequence[float]) -> bool:
+    if len(values) < 2:
+        return False
+    mean_val = math.fsum(values) / len(values)
+    return math.fsum((val - mean_val) ** 2 for val in values) >= _VARIANCE_EPSILON
+
+
+def _connected_groups(
+    names: Sequence[str], pairs: Sequence[tuple[str, str, float]]
+) -> tuple[tuple[str, ...], ...]:
+    parent = {name: name for name in names}
+
+    def find(node: str) -> str:
+        while parent[node] != node:
+            parent[node] = parent[parent[node]]
+            node = parent[node]
+        return node
+
+    for left, right, _ in pairs:
+        parent[find(left)] = find(right)
+    grouped: dict[str, list[str]] = {}
+    for name in sorted(names):
+        grouped.setdefault(find(name), []).append(name)
+    return tuple(tuple(group) for group in sorted(grouped.values()))
+
+
+def _format_independence_summary_vi(
+    status: str,
+    independent_conditions: int | None,
+    total_conditions: int,
+    sample_size: int,
+    min_samples: int,
+) -> str:
+    if total_conditions <= 0:
+        return "Chưa hỗ trợ đo độc lập điều kiện"
+    if status == "insufficient_data" or independent_conditions is None:
+        return f"Chưa đủ dữ liệu ({sample_size} nến hợp lệ, cần ≥ {min_samples})"
+    return f"{independent_conditions}/{total_conditions} điều kiện độc lập"
+
+
+def checklist_independence(
+    release_id: str,
+    snapshot: DecisionSnapshot,
+    settings: StrategySelection,
+    *,
+    threshold: float = INDEPENDENCE_THRESHOLD,
+    min_samples: int = MIN_INDEPENDENCE_SAMPLES,
+) -> ChecklistIndependenceSummary:
+    """Đo độ độc lập giữa các điều kiện checklist bằng ``AntiConsensusAnalyzer`` (SIG-6)."""
+    normalized = release_id.lower()
+    card = _strategy_cards_by_release().get(normalized)
+    if card is not None:
+        from trading_bot.application.strategy_pipeline.consensus import card_consensus
+
+        cs = card_consensus(
+            card,
+            _card_primary_bars(card, snapshot),
+            threshold=threshold,
+            min_samples=min_samples,
+        )
+        return ChecklistIndependenceSummary(
+            release_id=release_id,
+            status=cs.status,
+            sample_size=cs.sample_size,
+            total_conditions=cs.total_conditions,
+            independent_conditions=cs.independent_conditions,
+            groups=cs.groups,
+            high_correlation_pairs=cs.high_correlation_pairs,
+            warnings=cs.warnings,
+            summary_vi=_format_independence_summary_vi(
+                cs.status,
+                cs.independent_conditions,
+                cs.total_conditions,
+                cs.sample_size,
+                min_samples,
+            ),
+            inactive_conditions=cs.inactive_conditions,
+        )
+
+    series = checklist_condition_series(release_id, snapshot, settings)
+    if not series:
+        return ChecklistIndependenceSummary(
+            release_id=release_id,
+            status="insufficient_data",
+            sample_size=0,
+            total_conditions=0,
+            independent_conditions=None,
+            groups=(),
+            high_correlation_pairs=(),
+            warnings=(),
+            summary_vi=_format_independence_summary_vi(
+                "insufficient_data", None, 0, 0, min_samples
+            ),
+            inactive_conditions=(),
+        )
+
+    keys = sorted(series)
+    total_conditions = len(keys)
+    sample_size = len(series[keys[0]])
+    if sample_size < min_samples:
+        return ChecklistIndependenceSummary(
+            release_id=release_id,
+            status="insufficient_data",
+            sample_size=sample_size,
+            total_conditions=total_conditions,
+            independent_conditions=None,
+            groups=(),
+            high_correlation_pairs=(),
+            warnings=(),
+            summary_vi=_format_independence_summary_vi(
+                "insufficient_data", None, total_conditions, sample_size, min_samples
+            ),
+            inactive_conditions=(),
+        )
+
+    active_keys = [
+        key
+        for key in keys
+        if all(math.isfinite(val) for val in series[key]) and _has_variance(series[key])
+    ]
+    inactive_keys = tuple(key for key in keys if key not in active_keys)
+    if not active_keys:
+        return ChecklistIndependenceSummary(
+            release_id=release_id,
+            status="insufficient_data",
+            sample_size=sample_size,
+            total_conditions=total_conditions,
+            independent_conditions=None,
+            groups=(),
+            high_correlation_pairs=(),
+            warnings=(),
+            summary_vi=_format_independence_summary_vi(
+                "insufficient_data", None, total_conditions, sample_size, min_samples
+            ),
+            inactive_conditions=inactive_keys,
+        )
+
+    active_series = {key: series[key] for key in active_keys}
+    report = AntiConsensusAnalyzer().check_orthogonality(active_series, threshold=threshold)
+    pairs = tuple((left, right, round(r, 4)) for left, right, r in report.high_correlation_pairs)
+    groups = _connected_groups(active_keys, pairs)
+    independent_conditions = len(groups)
+    status = "ok" if report.is_orthogonal else "warning"
+    return ChecklistIndependenceSummary(
+        release_id=release_id,
+        status=status,
+        sample_size=sample_size,
+        total_conditions=total_conditions,
+        independent_conditions=independent_conditions,
+        groups=tuple(group for group in groups if len(group) > 1),
+        high_correlation_pairs=pairs,
+        warnings=tuple(report.warnings),
+        summary_vi=_format_independence_summary_vi(
+            status, independent_conditions, total_conditions, sample_size, min_samples
+        ),
+        inactive_conditions=inactive_keys,
+    )
+
+
+def _attach_independence(
+    items: tuple[ChecklistItem, ...],
+    release_id: str,
+    snapshot: DecisionSnapshot,
+    settings: StrategySelection,
+) -> tuple[ChecklistItem, ...]:
+    if not items:
+        return items
+    summary = checklist_independence(release_id, snapshot, settings)
+    if summary.total_conditions <= 0:
+        return items
+    return tuple(replace(item, independence_summary=summary.summary_vi) for item in items)
+
+
 def strategy_checklist(
     release_id: str, snapshot: DecisionSnapshot, settings: StrategySelection
 ) -> tuple[ChecklistItem, ...]:
@@ -1681,15 +2224,19 @@ def strategy_checklist(
     # H03 v3: mỗi release một khung vào lệnh (15m/1h/4h) — checklist đọc đúng khung đó.
     v3_timeframe = H03_V3_TIMEFRAMES.get(release_id)
     if v3_timeframe is not None:
-        return _h03(snapshot, settings, v3_timeframe)
+        return _attach_independence(
+            _h03(snapshot, settings, v3_timeframe), release_id, snapshot, settings
+        )
     normalized = release_id.lower()
     expanded_builder = _EXPANDED_RULE_BUILDERS.get(normalized)
     if expanded_builder is not None:
         return expanded_builder(snapshot, settings)
     card = _strategy_cards_by_release().get(normalized)
     if card is not None:
-        return _strategy_card_checklist(card, snapshot)
+        return _attach_independence(
+            _strategy_card_checklist(card, snapshot), release_id, snapshot, settings
+        )
     builder = _BUILDERS.get(release_id.split("-", 1)[0].upper())
     if builder is None:
         return ()
-    return builder(snapshot, settings)
+    return _attach_independence(builder(snapshot, settings), release_id, snapshot, settings)
