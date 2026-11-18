@@ -35,6 +35,7 @@ from trading_bot.domain.market.models import OHLCVBar
 from trading_bot.domain.risk.engine import RiskDecision, RiskEngine
 from trading_bot.domain.risk.planner import TradePlanner
 from trading_bot.domain.strategy.contracts import DecisionSnapshot, FeatureQuality
+from trading_bot.domain.strategy.exit_override import ExitOverride
 from trading_bot.domain.strategy.registry import StrategyRegistry
 from trading_bot.domain.strategy.rules_v2 import EXIT_EVIDENCE_BY_RECIPE, ExitEvidenceSpec
 from trading_bot.domain.strategy.rules_v3 import EXIT_EVIDENCE_BY_RECIPE_V3
@@ -362,6 +363,7 @@ class BacktestDatasetRuntimeEvaluatorFactory:
     context_seed_factory: ContextSeedFactory
     gateway_factory: GatewayFactory
     opposing_signal_provider_factory: OpposingSignalProviderFactory | None = None
+    exit_override: ExitOverride | None = None
 
     def __call__(
         self, scenario: SensitivityScenario, manifest: ReplayManifest
@@ -409,6 +411,7 @@ class BacktestDatasetRuntimeEvaluatorFactory:
             manifest=manifest,
             context_provider=context_provider,
             scenario=scenario,
+            exit_override=self.exit_override,
         )
 
 
@@ -426,6 +429,7 @@ def run_backtest_dataset_runtime_replay(
     progress_callback: Callable[[int, int], None] | None = None,
     cancel_requested: Callable[[], bool] | None = None,
     max_bars_per_timeframe: int | None = None,
+    exit_override: ExitOverride | None = None,
 ) -> RuntimePaperReplayComparison:
     """Chạy bundle đã kiểm quyền qua snapshot builder và PAPER runtime evaluator."""
     _validate_manifest_bundle(bundle, manifest)
@@ -442,6 +446,7 @@ def run_backtest_dataset_runtime_replay(
         context_seed_factory=context_seed_factory,
         gateway_factory=gateway_factory,
         opposing_signal_provider_factory=opposing_signal_provider_factory,
+        exit_override=exit_override,
     )
     return run_runtime_paper_replay(
         observations,

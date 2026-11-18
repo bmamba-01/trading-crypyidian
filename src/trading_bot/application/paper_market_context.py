@@ -14,7 +14,8 @@
   → `PAPER_EQUITY_UNKNOWN`), lỗ ngày/trượt từ `calculate_loss_windows` (chính sách UTC đã ghim),
   exposure mở + reservation đang giữ như runtime thật.
 - Ngắt mạch drawdown (FX-2, v2): đỉnh vốn đã chốt kể từ lần "Tiếp tục" bot gần nhất trong
-  `bot_runtime_control` (resume cần MFA + lý do) so với vốn mark-to-market hiện tại; ≥ 10% thì
+  `bot_runtime_control` (resume cần MFA + lý do) so với vốn mark-to-market hiện tại; ≥ ngưỡng
+  `risk.max_drawdown_fraction` của workspace settings đã publish (mặc định 10%, CRY-428) thì
   `RiskState.drawdown_breaker_tripped` và RiskEngine từ chối NEW_ENTRY (thoát lệnh không bị chặn).
 - CostModel không nằm ở đây: application dùng `ResolvedPaperExecutionProfile.cost_model`.
 - Monitor evidence: ATR (`atr_14`) của entry timeframe tính bằng `FeatureCalculator` từ nến đã
@@ -73,8 +74,11 @@ from trading_bot.application.workspace_risk import mark_policy_from
 from trading_bot.domain.market.feature_snapshot import FeatureCalculator
 from trading_bot.domain.market.models import MarketSnapshot, OHLCVBar
 from trading_bot.domain.risk.drawdown_breaker import (
+    PAPER_DRAWDOWN_BREAKER_POLICY,
     ClosedTradePnl,
+    DrawdownBreakerPolicy,
     DrawdownBreakerState,
+    drawdown_policy_for,
     evaluate_drawdown_breaker,
 )
 from trading_bot.domain.risk.engine import RiskState
@@ -92,7 +96,8 @@ from trading_bot.domain.risk.risk_windows import (
 from trading_bot.domain.strategy.contracts import DecisionSnapshot
 from trading_bot.domain.strategy.rules_v3 import exit_evidence_spec
 
-CONTEXT_PROVIDER_VERSION = "rt1-postgres-paper-context-v2"  # v2: ngắt mạch drawdown FX-2
+# v2: ngắt mạch drawdown FX-2; v3 (CRY-428): ngưỡng drawdown lấy từ workspace settings.
+CONTEXT_PROVIDER_VERSION = "rt1-postgres-paper-context-v3"
 INSTRUMENT_SOURCE = "BINANCE_USDM"
 # Trạng thái intent còn có thể khớp hoặc chưa rõ: account không được coi là phẳng.
 LIVE_INTENT_STATUSES = ("ACCEPTED", "PARTIALLY_FILLED", "UNKNOWN")
@@ -379,6 +384,7 @@ class PostgresPaperDecisionContextProvider:
             as_of=evaluated_at,
             equity=equity.equity_amount,
             seed=equity.seed_capital,
+            policy=drawdown_policy_for(risk.max_drawdown_fraction),
         )
         available_margin = max(Decimal("0"), equity.equity_amount - open_margin)
         workspace = str(workspace_id)
@@ -636,6 +642,7 @@ class PostgresPaperDecisionContextProvider:
         as_of: datetime,
         equity: Decimal,
         seed: Decimal | None,
+        policy: DrawdownBreakerPolicy = PAPER_DRAWDOWN_BREAKER_POLICY,
     ) -> DrawdownBreakerState:
         """Đo drawdown từ ledger; thiếu seed thì fail-closed như vốn unknown."""
         if seed is None or seed <= 0:
@@ -671,6 +678,7 @@ class PostgresPaperDecisionContextProvider:
             closed_trades=trades,
             current_equity=equity,
             baseline_at=baseline_at,
+            policy=policy,
         )
 
     async def _feature_at(

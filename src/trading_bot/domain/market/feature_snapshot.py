@@ -13,6 +13,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
+from functools import lru_cache
 from types import MappingProxyType
 from typing import Any
 from uuid import UUID
@@ -243,13 +244,13 @@ def _hash(value: Any) -> str:
 
 
 def _bar_id(bar: OHLCVBar) -> str:
-    return _hash(
-        {
-            "open_time": _utc_iso(bar.open_time),
-            "symbol": bar.symbol,
-            "timeframe": bar.timeframe,
-        }
-    )
+    return _cached_bar_id(bar.open_time, bar.symbol, bar.timeframe)
+
+
+@lru_cache(maxsize=262_144)
+def _cached_bar_id(open_time: datetime, symbol: str, timeframe: str) -> str:
+    # Hàm thuần theo (open_time, symbol, timeframe); replay gọi lại cùng nến hàng nghìn lần.
+    return _hash({"open_time": _utc_iso(open_time), "symbol": symbol, "timeframe": timeframe})
 
 
 def _feature_names(settings: FeatureSettings) -> tuple[str, ...]:

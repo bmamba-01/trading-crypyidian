@@ -121,6 +121,27 @@ def test_learning_evaluator_cli_runs_under_evaluator_role() -> None:
         )
         assert empty.returncode == 2
         assert "Stdin không có artifact gốc." in empty.stderr, empty.stderr
+
+        # AI-5: công thức bundle-set hash SQL trùng byte với Python (N=1 = chính hash; N>1 =
+        # sha256 JSON compact danh sách đã sắp, không khoảng trắng; thứ tự đầu vào không đổi).
+        from trading_bot.adapters.database.replay_training_rights import replay_bundle_set_hash
+
+        hashes = ["f" * 64, "0" * 64, "a" * 64]
+        for sample in ([hashes[0]], hashes[:2], list(reversed(hashes))):
+            literal = ",".join(f"'{value}'" for value in sample)
+            query = "SELECT public.wp06_replay_bundle_set_hash(ARRAY[" + literal + "]::text[])"
+            sql = _compose(
+                project_name,
+                environment,
+                "exec",
+                "-T",
+                "postgres",
+                "sh",
+                "-c",
+                f'psql -U "$POSTGRES_USER" -d crypidian -At -c "{query}"',
+            )
+            assert sql.stdout.strip() == replay_bundle_set_hash(sample), (sample, sql.stdout)
+        assert replay_bundle_set_hash([hashes[0]]) == hashes[0]
     finally:
         subprocess.run(
             [

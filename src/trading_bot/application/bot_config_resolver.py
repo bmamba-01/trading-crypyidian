@@ -49,6 +49,7 @@ from trading_bot.config.workspace_settings import PublishedWorkspaceSettings
 from trading_bot.domain.risk.planner import RiskLimits
 from trading_bot.domain.risk.workspace_budget import effective_bot_open_risk_fraction
 from trading_bot.domain.strategy.contracts import StrategySelection
+from trading_bot.domain.strategy.exit_override import ExitOverride
 from trading_bot.domain.strategy.registry import (
     StrategyRelease as RegisteredRelease,
 )
@@ -120,6 +121,8 @@ class EffectiveBotConfig:
     timeframes: tuple[str, ...]
     risk_limits: RiskLimits
     effective_hash: str
+    # CRY-428: ghi đè thông số thoát theo bot (None = dùng recipe của release).
+    exit_override: ExitOverride | None = None
 
     def strategy_selection(self) -> StrategySelection:
         """Hợp đồng strategy runtime; version ghim là root để khớp PlannerSettings."""
@@ -169,6 +172,9 @@ def compute_effective_hash(config: EffectiveBotConfig) -> str:
             "max_data_age_seconds": int(limits.max_data_age.total_seconds()),
         },
     }
+    if config.exit_override is not None:
+        # Chỉ thêm khi bot có ghi đè: hash của cấu hình cũ giữ nguyên.
+        payload["exit_override"] = config.exit_override.payload()
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
@@ -180,6 +186,7 @@ class _Evaluation:
     symbols: tuple[str, ...]
     timeframes: tuple[str, ...]
     risk_limits: RiskLimits | None
+    exit_override: ExitOverride | None = None
 
 
 def validate_bot_overlay(
@@ -260,6 +267,7 @@ def resolve_effective_bot_config(
         timeframes=evaluation.timeframes,
         risk_limits=evaluation.risk_limits,
         effective_hash="",
+        exit_override=evaluation.exit_override,
     )
     return replace(config, effective_hash=compute_effective_hash(config))
 
@@ -411,7 +419,31 @@ def _evaluate(
         workspace_settings=workspace_settings,
         strict_open_risk_caps=strict_open_risk_caps,
     )
-    return _Evaluation(tuple(issues), strategy, tuple(symbols), tuple(timeframes), limits)
+    exit_override = _evaluate_exit(overlay, strategy, registry, issues)
+    return _Evaluation(
+        tuple(issues), strategy, tuple(symbols), tuple(timeframes), limits, exit_override
+    )
+
+
+def _evaluate_exit(
+    overlay: BotConfigOverlay,
+    strategy: EffectiveStrategy | None,
+    registry: ReleaseCatalog,
+    issues: list[OverlayIssue],
+) -> ExitOverride | None:
+    """CRY-428: ghi đè thoát chỉ cho trường release vốn có (quyết định owner 17/11/2026)."""
+    if overlay.exit is None:
+        return None
+    from trading_bot.application.exit_policy_catalog import validate_exit_override
+    from trading_bot.domain.strategy.registry import StrategyRegistry
+
+    override = overlay.exit.to_exit_override()
+    if override is None or strategy is None:
+        return None
+    catalog = registry if isinstance(registry, StrategyRegistry) else None
+    problems = validate_exit_override(strategy.release_id, override, catalog)
+    issues.extend(OverlayIssue(field, message) for field, message in problems)
+    return None if problems else override
 
 
 def _evaluate_strategy(

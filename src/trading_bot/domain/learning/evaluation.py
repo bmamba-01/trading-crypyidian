@@ -269,8 +269,17 @@ class EvaluationTrade:
     entry_opportunity_event_id: str | None = None
     entry_candidate_id: str | None = None
     entry_vector_hash: str | None = None
+    # AI-5: 1R của lệnh (khoản lỗ dự tính khi chạm stop theo khối lượng đã khớp); None với
+    # outcome cũ. Dùng cho nhãn dải R (``net-r-band-v1``).
+    risk_amount: Decimal | None = None
 
     def __post_init__(self) -> None:
+        if self.risk_amount is not None and (
+            not isinstance(self.risk_amount, Decimal)
+            or not self.risk_amount.is_finite()
+            or self.risk_amount <= ZERO
+        ):
+            raise ValueError("risk_amount phải là Decimal hữu hạn dương hoặc None.")
         if not self.trade_id.strip():
             raise ValueError("trade_id không được để trống.")
         object.__setattr__(self, "opened_at", _utc(self.opened_at, "opened_at"))

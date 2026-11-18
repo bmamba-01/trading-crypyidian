@@ -145,6 +145,12 @@ class RiskSettings(FrozenSettingsModel):
     max_equity_age_seconds: int = Field(default=300, ge=1, le=86_400)
     max_conversion_age_seconds: int = Field(default=300, ge=1, le=86_400)
     max_mark_age_seconds: int = Field(default=60, ge=1, le=3_600)
+    # CRY-428: ngưỡng ngắt mạch drawdown (tỷ lệ sụt từ đỉnh) chặn NEW_ENTRY ở runtime PAPER.
+    # None = dùng mặc định FX-2 (0,10). Trường bị lược khỏi JSON khi None để hash/lineage của
+    # các phiên bản cũ không đổi.
+    max_drawdown_fraction: Decimal | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
     @field_validator("workspace_max_open_risk_fraction", mode="before")
     @classmethod
@@ -154,9 +160,23 @@ class RiskSettings(FrozenSettingsModel):
             raise ValueError("workspace_max_open_risk_fraction phải nằm trong (0, 1].")
         return parsed
 
+    @field_validator("max_drawdown_fraction", mode="before")
+    @classmethod
+    def parse_max_drawdown_fraction(cls, value: object) -> Decimal | None:
+        if value is None:
+            return None
+        parsed = exact_decimal(value)
+        if not Decimal("0") < parsed < Decimal("1"):
+            raise ValueError("max_drawdown_fraction phải nằm trong (0, 1).")
+        return parsed
+
     @field_serializer("workspace_max_open_risk_fraction")
     def serialize_fraction(self, value: Decimal) -> str:
         return decimal_text(value)
+
+    @field_serializer("max_drawdown_fraction")
+    def serialize_drawdown_fraction(self, value: Decimal | None) -> str | None:
+        return None if value is None else decimal_text(value)
 
 
 class PaperExecutionSettings(FrozenSettingsModel):

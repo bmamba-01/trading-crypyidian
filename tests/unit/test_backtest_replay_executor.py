@@ -78,8 +78,10 @@ def test_executor_uses_only_one_base_scenario_and_matching_paper_context(
         progress_callback,
         cancel_requested,
         max_bars_per_timeframe,
+        exit_override,
     ):
         captured["max_bars_per_timeframe"] = max_bars_per_timeframe
+        captured["exit_override"] = exit_override
         captured.update(
             replay_bundle=replay_bundle,
             manifest=manifest,

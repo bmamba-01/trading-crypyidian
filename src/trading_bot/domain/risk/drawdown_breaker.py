@@ -12,6 +12,10 @@ Cách đo (``fx2-drawdown-v1``):
 - drawdown = max(0, (đỉnh − vốn hiện tại) / đỉnh); ngắt khi drawdown ≥ ngưỡng.
 
 Breaker chỉ chặn NEW_ENTRY; thoát lệnh bảo vệ không đi qua RiskEngine nên không bị ảnh hưởng.
+
+CRY-428: ngưỡng cấu hình được theo workspace (``risk.max_drawdown_fraction`` trong workspace
+settings, đổi qua trang "Khẩu vị rủi ro" có MFA + audit); 10% chỉ còn là mặc định. ``version``
+định danh **cách đo**; ngưỡng thực tế được ghi riêng vào evidence (``drawdown_max_fraction``).
 """
 
 from __future__ import annotations
@@ -26,7 +30,7 @@ ZERO = Decimal("0")
 
 @dataclass(frozen=True, slots=True)
 class DrawdownBreakerPolicy:
-    """Ngưỡng drawdown đã được owner chốt; đổi ngưỡng phải đổi ``version``."""
+    """Ngưỡng drawdown (mặc định = quyết định owner 15/11/2026) và phiên bản cách đo."""
 
     max_drawdown_fraction: Decimal = Decimal("0.10")
     version: str = "fx2-drawdown-v1"
@@ -37,6 +41,13 @@ class DrawdownBreakerPolicy:
 
 
 PAPER_DRAWDOWN_BREAKER_POLICY = DrawdownBreakerPolicy()
+
+
+def drawdown_policy_for(max_drawdown_fraction: Decimal | None) -> DrawdownBreakerPolicy:
+    """Chính sách theo ngưỡng cấu hình của workspace; None = mặc định FX-2 (10%)."""
+    if max_drawdown_fraction is None:
+        return PAPER_DRAWDOWN_BREAKER_POLICY
+    return DrawdownBreakerPolicy(max_drawdown_fraction=max_drawdown_fraction)
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +66,7 @@ class DrawdownBreakerState:
     tripped: bool
     baseline_at: datetime | None
     policy_version: str
+    max_drawdown_fraction: Decimal = PAPER_DRAWDOWN_BREAKER_POLICY.max_drawdown_fraction
 
     def evidence(self) -> dict[str, str | None]:
         return {
@@ -62,6 +74,7 @@ class DrawdownBreakerState:
             "drawdown_peak_equity": str(self.peak_equity),
             "drawdown_current_equity": str(self.current_equity),
             "drawdown_fraction": str(self.drawdown_fraction),
+            "drawdown_max_fraction": str(self.max_drawdown_fraction),
             "drawdown_baseline_at": self.baseline_at.isoformat() if self.baseline_at else None,
             "drawdown_breaker_tripped": str(self.tripped).lower(),
         }
@@ -103,4 +116,5 @@ def evaluate_drawdown_breaker(
         tripped=fraction >= policy.max_drawdown_fraction,
         baseline_at=baseline_at,
         policy_version=policy.version,
+        max_drawdown_fraction=policy.max_drawdown_fraction,
     )

@@ -30,7 +30,7 @@ from zoneinfo import ZoneInfo
 from trading_bot.domain.portfolio.run_report import group_sections
 
 ANALYST_OUTPUT_VERSION = "analyst_output.v2"
-PROMPT_VERSION = "ai2-prompt-v5"
+PROMPT_VERSION = "ai2-prompt-v6"
 MACRO_KEY = "macro_calendar"
 DERIVATIVES_KEY = "derivatives"
 LISTINGS_KEY = "listings"
@@ -143,6 +143,13 @@ def _implicit_numbers(report: Mapping[str, Any]) -> tuple[Decimal, ...]:
     macro = report.get(MACRO_KEY)
     if isinstance(macro, Mapping) and isinstance(macro.get("horizon_days"), int):
         numbers.append(Decimal(macro["horizon_days"]))
+    # CRY-430: horizon chấm tín hiệu (1/4/24 nến) là khóa của by_horizon_bars, không phải giá trị.
+    for bot in report.get("bots", []) or []:
+        outcomes = bot.get("signal_outcomes") if isinstance(bot, Mapping) else None
+        if isinstance(outcomes, Mapping):
+            for key in outcomes.get("by_horizon_bars") or {}:
+                if str(key).isdigit():
+                    numbers.append(Decimal(str(key)))
     return tuple(numbers)
 
 
@@ -507,6 +514,15 @@ def build_prompt(report: Mapping[str, Any], *, knowledge: str = "", resumed: boo
         "recent_changes là thay đổi phát hiện trong 24 giờ. Nếu watched_at_risk khác rỗng, phải "
         "nêu trong findings kèm evidence_refs /listings/watched_at_risk/<i> và nói rõ rủi ro; "
         "không tạo proposal cho việc này (chưa có trường đổi danh mục). Không suy đoán lý do gỡ.\n"
+        "9. bots[i].signal_outcomes là kết quả TÍN HIỆU (kể cả tín hiệu không thành lệnh, không "
+        "gửi Telegram), chấm bằng nến đã đóng sau 1, 4, 24 nến của khung vào lệnh "
+        "(by_horizon_bars; horizon chính là primary_horizon_bars). correct/wrong/neutral = R theo "
+        "bracket SL/TP1 > +0,1R / < −0,1R / còn lại (R thô, chưa trừ phí); hit_rate_percent là % "
+        "đúng; tp1_first/sl_first là số lần chạm TP1/SL trước. repeated_wrong là nhóm "
+        "coin-hướng sai lặp lại. Hãy chỉ ra tín hiệu sai lặp lại (trích "
+        "/bots/<i>/signal_outcomes/...) và giả thuyết vì sao; đề xuất chỉnh tham số vẫn chỉ "
+        "qua proposals để hệ thống backtest. So sánh by_delivery (sent/not_sent) nếu có. Không "
+        "kết luận khi data_quality.warnings báo ít tín hiệu đã chấm.\n"
     )
     memory = (
         f"\nKiến thức đã tích lũy (owner đã duyệt):\n{knowledge.strip()}\n" if knowledge else ""

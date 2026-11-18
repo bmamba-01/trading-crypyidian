@@ -1,0 +1,178 @@
+{% extends "admin/base.html" %}
+{% block title %}Khẩu vị rủi ro · Crypidian{% endblock %}
+{% block heading %}Khẩu vị rủi ro{% endblock %}
+{% block head_extra %}<link rel="stylesheet" href="/static/pages/bots.css"><link rel="stylesheet" href="/static/pages/risk.css">{% endblock %}
+
+{% block content %}
+{#- Số tỷ lệ (chuỗi Decimal) → phần trăm dễ đọc; giữ nguyên chuỗi nếu không phải số. -#}
+{%- macro pct(value) -%}{%- if value is none -%}<span class="value-muted">—</span>{%- else -%}{{ pct_vi(value) }}%{%- endif -%}{%- endmacro -%}
+{%- macro amount(value) -%}{%- if value is none -%}<span class="value-muted">—</span>{%- else -%}{{ value | number_vi }}{%- endif -%}{%- endmacro -%}
+{%- macro show(name, value) -%}
+  {%- if name in ("per_trade_risk_fraction", "account_max_open_risk_fraction", "max_concentration_fraction") -%}{{ pct(value) }}
+  {%- elif name == "max_leverage" -%}{{ value }}x
+  {%- elif name == "max_positions" -%}{{ value }}
+  {%- else -%}{{ amount(value) }}{%- endif -%}
+{%- endmacro -%}
+{% set settings = overview.settings or {} %}
+{% set profile = overview.profile %}
+<div class="bot-page risk-page">
+  {% if saved == "unchanged" %}
+    <div class="ui-alert ui-alert--info" role="status" id="risk-saved"><div class="ui-alert__content"><p>Không có thay đổi nào để lưu.</p></div></div>
+  {% elif saved %}
+    <div class="ui-alert ui-alert--success" role="status" id="risk-saved"><div class="ui-alert__content"><p class="ui-alert__title">Đã publish cấu hình workspace v{{ saved }}.</p><p>Runtime PAPER áp giới hạn mới từ quyết định kế tiếp. Lịch sử thay đổi nằm trong audit.</p></div></div>
+  {% endif %}
+  {% if error %}
+    <div class="ui-alert ui-alert--danger" role="alert" id="risk-error" tabindex="-1"><div class="ui-alert__content"><p class="ui-alert__title">Chưa lưu được.</p><p>{% if error_field %}{{ field_labels.get(error_field, (error_field,))[0] }}: {% endif %}{{ error }}</p>{% if "MFA" in error %}<p>Đăng xuất rồi đăng nhập lại bằng mã xác thực để làm mới MFA, sau đó gửi lại.</p>{% endif %}</div></div>
+  {% endif %}
+
+  <section class="glass-card" aria-labelledby="risk-intro-heading">
+    <h2 id="risk-intro-heading" class="bot-section-title">Giới hạn đang áp dụng ở đâu</h2>
+    <p class="bot-card-help">Ba tầng, tầng sau chỉ được chặt hơn tầng trước: <strong>workspace</strong> (trang này: risk profile + workspace settings) → <strong>overlay của bot</strong> (trang chi tiết bot) → <strong>recipe của chiến lược</strong> (SL/TP theo ATR, cố định trong mã của release; bot có thể ghi đè trường release vốn có, kèm backtest bắt buộc). Chỉ chạy PAPER.</p>
+  </section>
+
+  {% if not overview.configured %}
+    <section class="glass-card"><p>Workspace chưa có cấu hình đã publish.</p></section>
+  {% else %}
+  <section class="glass-card" aria-labelledby="risk-form-heading">
+    <div class="bot-panel-head">
+      <h3 id="risk-form-heading">Giới hạn workspace</h3>
+      <span class="bot-panel-head__note">Cấu hình v{{ settings.version }} · Risk profile {{ profile.name if profile else "?" }} v{{ profile.version if profile else "?" }}</span>
+    </div>
+    <form class="bot-filter-form risk-form" method="post" action="/admin/risk" aria-describedby="risk-form-help">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <p id="risk-form-help" class="bot-field-help">Lưu sẽ tạo phiên bản risk profile mới (nếu đổi hard cap) rồi publish workspace settings mới. Cần quyền đổi hồ sơ rủi ro và MFA gần đây; mọi thay đổi ghi audit kèm lý do. Tỷ lệ nhập dạng thập phân (0,005 = 0,5%).</p>
+      <fieldset class="bot-risk-fieldset">
+        <legend>Kích thước lệnh và trần vị thế</legend>
+        <div class="bot-field-grid">
+          {% for name, label, help, unit in form_fields %}
+          <div class="bot-field{% if error_field == name %} bot-field--error{% endif %}">
+            <label for="risk-{{ name }}">{{ label }}</label>
+            <input id="risk-{{ name }}" name="{{ name }}" inputmode="decimal" autocomplete="off" required value="{{ values.get(name, '') }}" aria-describedby="risk-{{ name }}-help"{% if not can_edit %} disabled{% endif %}{% if error_field == name %} aria-invalid="true"{% endif %}>
+            <p id="risk-{{ name }}-help" class="bot-field-help">{{ help }}</p>
+          </div>
+          {% endfor %}
+        </div>
+      </fieldset>
+      <fieldset class="bot-risk-fieldset" id="risk-breaker">
+        <legend>Điều kiện dừng mở lệnh mới (ngắt mạch)</legend>
+        <div class="bot-field-grid">
+          {% for name, label, help, unit in breaker_fields %}
+          <div class="bot-field{% if error_field == name %} bot-field--error{% endif %}">
+            <label for="risk-{{ name }}">{{ label }}</label>
+            <input id="risk-{{ name }}" name="{{ name }}" inputmode="decimal" autocomplete="off" required value="{{ values.get(name, '') }}" aria-describedby="risk-{{ name }}-help"{% if not can_edit %} disabled{% endif %}{% if error_field == name %} aria-invalid="true"{% endif %}>
+            <p id="risk-{{ name }}-help" class="bot-field-help">{{ help }}{% if name == "max_drawdown_fraction" and settings.max_drawdown_is_default %} Đang dùng mặc định 10%.{% endif %}</p>
+          </div>
+          {% endfor %}
+        </div>
+        <p class="bot-footnote">Ngoài ra luôn có: Kill switch workspace, Tạm dừng/Tắt từng bot và <a href="/admin/flatten">Đóng toàn bộ vị thế</a>. Các ngắt mạch trên chỉ chặn lệnh mới; lệnh thoát (SL/TP) vẫn chạy.</p>
+      </fieldset>
+      {% if can_edit %}
+      <div class="bot-field risk-reason">
+        <label for="risk-reason">Lý do thay đổi</label>
+        <input id="risk-reason" name="reason" maxlength="500" required value="{{ values.get('reason', '') }}" aria-describedby="risk-reason-help">
+        <p id="risk-reason-help" class="bot-field-help">Ghi vào audit cùng giá trị trước/sau.</p>
+      </div>
+      <button type="submit" class="btn btn-primary bot-filter-form__submit">Lưu và publish</button>
+      {% else %}
+      <p class="bot-field-help">Tài khoản của bạn chỉ được xem; cần quyền thay đổi hồ sơ rủi ro để chỉnh.</p>
+      {% endif %}
+    </form>
+  </section>
+
+  <section class="glass-card" aria-labelledby="risk-bots-heading">
+    <div class="bot-panel-head">
+      <h3 id="risk-bots-heading">Giá trị hiệu lực theo bot</h3>
+      <span class="bot-panel-head__note">workspace ∩ overlay bot · <strong>đậm</strong> = overlay siết chặt hơn</span>
+    </div>
+    <div class="bot-table-wrap">
+      <table class="bot-table" aria-label="Giới hạn hiệu lực theo bot" id="risk-bot-table">
+        <thead><tr>
+          <th scope="col">Bot</th><th scope="col">Release</th>
+          <th scope="col" class="num">Rủi ro/lệnh</th><th scope="col" class="num">Đòn bẩy</th><th scope="col" class="num">Vị thế</th>
+          <th scope="col" class="num">Notional</th><th scope="col" class="num">Trần lỗ ngày</th><th scope="col" class="num">Lỗ hôm nay</th>
+          <th scope="col" class="num">Drawdown</th><th scope="col">Thoát lệnh</th><th scope="col">Cấu hình</th>
+        </tr></thead>
+        <tbody>
+        {% for bot in overview.bots %}
+          <tr class="bot-table__row" data-bot-id="{{ bot.id }}">
+            <td class="bot-table__lead" data-label="Bot"><a class="bot-link" href="/admin/bots/{{ bot.id }}">{{ bot.name }}</a></td>
+            <td data-label="Release"><code>{{ bot.release_id }}</code></td>
+            {% if bot.limits %}
+              {% for name in ("per_trade_risk_fraction", "max_leverage", "max_positions", "max_notional", "max_daily_loss") %}
+              <td class="num{% if name in bot.overridden %} num--strong{% endif %}" data-label="{{ field_labels.get(name, (name,))[0] }}" data-field="{{ name }}">{{ show(name, bot.limits[name]) }}</td>
+              {% endfor %}
+            {% else %}
+              <td colspan="5" data-label="Giới hạn"><span class="badge badge-danger">Không resolve được: {{ bot.error }}</span></td>
+            {% endif %}
+            <td class="num" data-label="Lỗ hôm nay">{{ amount(bot.loss_today) }}</td>
+            <td class="num" data-label="Drawdown">{% if bot.drawdown %}{{ pct_vi(bot.drawdown.fraction, 2) }}%{% if bot.drawdown.tripped %} <span class="badge badge-danger">Đã ngắt</span>{% endif %}{% else %}<span class="value-muted">không rõ</span>{% endif %}</td>
+            <td data-label="Thoát lệnh" data-field="exit">{% if bot.exit_override %}<span class="badge badge-paper-subtle">Ghi đè</span> {% for key, value in bot.exit_override.items() %}{{ exit_labels.get(key, key) }} {% if value is mapping %}{% for step in value.steps %}{{ step.r_multiple }}R:{{ pct_vi(step.fraction) }}%{% if not loop.last %}, {% endif %}{% endfor %}{% if value.breakeven_after_first %} +hòa vốn{% endif %}{% else %}{{ value }}{% endif %}{% if not loop.last %}; {% endif %}{% endfor %}{% else %}<span class="value-muted">Theo release</span>{% endif %}</td>
+            <td data-label="Cấu hình"><a href="/admin/bots/{{ bot.id }}#bot-config">Chỉnh overlay</a></td>
+          </tr>
+        {% else %}
+          <tr><td colspan="11">Chưa có bot nào bạn được xem.</td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <p class="bot-footnote">Drawdown đo bằng cùng hàm runtime dùng (đỉnh vốn đã chốt từ lần "Tiếp tục" gần nhất so với vốn mark-to-market); "không rõ" khi thiếu vốn/giá mark mới.</p>
+  </section>
+  {% endif %}
+
+  <section class="glass-card" aria-labelledby="risk-exit-heading" id="risk-exit-policies">
+    <div class="bot-panel-head">
+      <h3 id="risk-exit-heading">Stop-loss / take-profit gốc theo chiến lược</h3>
+      {% if overview.symbol %}
+      <form method="get" action="/admin/risk" class="risk-symbol-form">
+        <label for="risk-symbol">Ví dụ % theo ATR(14) của</label>
+        <select id="risk-symbol" name="symbol">{% for item in settings.symbols %}<option value="{{ item }}"{% if item == overview.symbol %} selected{% endif %}>{{ item }}</option>{% endfor %}</select>
+        <button type="submit" class="btn btn-outline">Xem</button>
+      </form>
+      {% endif %}
+    </div>
+    <p class="bot-card-help">SL/TP tính theo bội số ATR hoặc bội số R (1R = khoảng cách vào lệnh → stop), không theo %. Cột % là ví dụ quy đổi tại giá đóng nến gần nhất của {{ overview.symbol or "coin đã chọn" }}: % = bội số × ATR ÷ giá. Đây là giá trị gốc của release. Có thể ghi đè riêng cho từng bot ở mục "Thông số thoát lệnh" trong bản nháp cấu hình bot (chỉ trường release vốn có, bắt buộc backtest bản gốc vs bản nháp trước khi công bố).</p>
+    <div class="bot-table-wrap">
+      <table class="bot-table" aria-label="Chính sách thoát theo release" id="risk-exit-table">
+        <thead><tr>
+          <th scope="col">Release</th><th scope="col">Khung</th><th scope="col">Stop-loss</th><th scope="col">Trailing</th>
+          <th scope="col">Take-profit</th><th scope="col">Thoát khác</th><th scope="col">Giữ tối đa</th><th scope="col">Ví dụ % ({{ overview.symbol or "—" }})</th>
+        </tr></thead>
+        <tbody>
+        {% for row in overview.exit_policies %}
+          <tr class="bot-table__row" data-release-id="{{ row.release_id }}">
+            <td class="bot-table__lead" data-label="Release"><strong>{{ row.name_vi }}</strong><br><code>{{ row.release_id }}</code></td>
+            <td data-label="Khung">{{ row.timeframe or "—" }}</td>
+            <td data-label="Stop-loss">{{ row.stop_label_vi }}</td>
+            <td data-label="Trailing">{% if row.trailing_atr_multiple %}{{ row.trailing_atr_multiple | replace(".", ",") }} × ATR{% else %}<span class="value-muted">—</span>{% endif %}</td>
+            <td data-label="Take-profit">{{ row.take_profit_label_vi }}</td>
+            <td data-label="Thoát khác">{% for item in row.other_exits_vi %}{{ item }}{% if not loop.last %}<br>{% endif %}{% else %}<span class="value-muted">—</span>{% endfor %}</td>
+            <td data-label="Giữ tối đa">{{ row.max_hold_label_vi }}</td>
+            <td data-label="Ví dụ %" class="risk-example">
+              {% if row.example %}
+                {% if row.example.stop_pct %}SL {{ row.example.stop_pct | replace(".", ",") }}%{% endif %}
+                {% if row.example.trailing_pct %} · trailing {{ row.example.trailing_pct | replace(".", ",") }}%{% endif %}
+                {% if row.example.take_profit_pct %} · TP ≤ {{ row.example.take_profit_pct | replace(".", ",") }}%{% endif %}
+                {% for value in row.example.ladder_pcts %} · TP{{ loop.index }} {{ value | replace(".", ",") }}%{% endfor %}
+                {% if not row.example.stop_pct %}<span class="value-muted">SL theo cấu trúc: không quy đổi cố định</span>{% endif %}
+              {% elif row.notes_vi %}<span class="value-muted">{{ row.notes_vi[0] }}</span>
+              {% else %}<span class="value-muted">Chưa có ATR {{ row.timeframe }} cho coin này</span>{% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  {% if overview.profile_history %}
+  <section class="glass-card" aria-labelledby="risk-history-heading">
+    <h3 id="risk-history-heading" class="bot-section-title">Các phiên bản risk profile gần đây</h3>
+    <ul class="risk-history">
+      {% for item in overview.profile_history %}
+      <li>{{ item.name }} v{{ item.version }}{% if item.active %} <span class="badge badge-paper-subtle">đang dùng</span>{% endif %} · <time datetime="{{ item.created_at }}">{{ (item.created_at or "")[:16] | replace("T", " ") }} UTC</time></li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endif %}
+</div>
+{% endblock %}

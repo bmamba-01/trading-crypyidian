@@ -68,8 +68,11 @@ from trading_bot.admin.learning_training_page_router import (
     router as learning_training_page_router,
 )
 from trading_bot.admin.learning_training_router import router as learning_training_router
+from trading_bot.admin.live_monitor_router import router as live_monitor_router
 from trading_bot.admin.research_source_router import admin_router as research_source_admin_router
 from trading_bot.admin.research_source_router import router as research_source_router
+from trading_bot.admin.risk_appetite_page_router import router as risk_appetite_page_router
+from trading_bot.admin.risk_appetite_service import RiskAppetiteService
 from trading_bot.admin.session_redirect import login_redirect_for
 from trading_bot.admin.settings_router import router as settings_router
 from trading_bot.admin.settings_service import SettingsAdminService
@@ -104,6 +107,7 @@ from trading_bot.application.learning_training_admin import LearningTrainingAdmi
 from trading_bot.application.live_kline_ingestion_composition import (
     build_live_market_ingestion,
 )
+from trading_bot.application.live_monitor import LiveMonitorService
 from trading_bot.application.market_scanner import MarketScannerService
 from trading_bot.application.market_signal_composition import build_market_signal_scanner
 from trading_bot.application.paper_runtime_application import (
@@ -119,6 +123,7 @@ from trading_bot.application.scorer_runtime_policy import (
     ConfiguredScorerRuntimePolicyProvider,
     ScorerRuntimePolicyProvider,
 )
+from trading_bot.application.signal_outcome_review import SignalOutcomeReviewService
 from trading_bot.application.source_policy_admin import (
     SourcePolicyAdminRepository,
     SourcePolicyAdminService,
@@ -146,6 +151,7 @@ from trading_bot.workers.learning_training_supervisor import LearningTrainingJob
 from trading_bot.workers.learning_training_worker import LearningTrainingAttemptWorker
 from trading_bot.workers.market_signal_producer import MarketSignalProducerWorker
 from trading_bot.workers.research_rights_worker import ResearchRightsMaintenanceWorker
+from trading_bot.workers.signal_outcome_worker import SignalOutcomeWorker
 from trading_bot.workers.telegram_signal_worker import TelegramSignalDeliveryWorker
 from trading_bot.workers.telegram_trade_result_worker import (
     ChatPacer,
@@ -212,6 +218,7 @@ def create_app(
     live_market_ingestion_factory: Callable[..., Any] | None = None,
     signal_worker_factory: Callable[..., Any] | None = None,
     market_signal_worker_factory: Callable[..., Any] | None = None,
+    signal_outcome_worker_factory: Callable[..., Any] | None = None,
     training_supervisor_factory: Callable[..., Any] | None = None,
     database_probe: Callable[[], Awaitable[bool]] | None = None,
 ) -> FastAPI:
@@ -266,6 +273,12 @@ def create_app(
             if active_session_factory is not None
             else None
         )
+        # CRY-428: trang "Khẩu vị rủi ro" dùng chung SettingsAdminService để publish có audit.
+        application.state.risk_appetite_service = (
+            RiskAppetiteService(active_session_factory, application.state.settings_admin_service)
+            if active_session_factory is not None
+            else None
+        )
         application.state.bot_admin_service = (
             BotConfigAdminService(active_session_factory)
             if active_session_factory is not None
@@ -286,6 +299,11 @@ def create_app(
             if active_session_factory is not None
             else None
         )
+        application.state.live_monitor_service = (
+            LiveMonitorService(active_session_factory)
+            if active_session_factory is not None
+            else None
+        )
         application.state.market_scanner_service = (
             MarketScannerService(active_session_factory)
             if active_session_factory is not None
@@ -298,6 +316,11 @@ def create_app(
         )
         application.state.analyst_review_service = (
             AnalystReviewService(active_session_factory)
+            if active_session_factory is not None
+            else None
+        )
+        application.state.signal_outcome_review_service = (
+            SignalOutcomeReviewService(active_session_factory)
             if active_session_factory is not None
             else None
         )
@@ -416,6 +439,7 @@ def create_app(
         signal_worker_task: asyncio.Task[None] | None = None
         trade_result_worker_task: asyncio.Task[None] | None = None
         market_signal_worker_task: asyncio.Task[None] | None = None
+        signal_outcome_task: asyncio.Task[None] | None = None
         training_supervisor_task: asyncio.Task[None] | None = None
         if app_settings.process_role == "trading-runtime":
             supervisor_task = await _start_paper_runtime(
@@ -636,6 +660,30 @@ def create_app(
                 market_signal_worker.run(stopping), name="market-signal-producer-worker"
             )
             application.state.market_signal_worker_task = market_signal_worker_task
+            if app_settings.signal_outcome_tick_seconds > 0:
+                outcome_factory = signal_outcome_worker_factory
+                if outcome_factory is None:
+
+                    def default_signal_outcome_worker_factory(**kwargs: Any) -> Any:
+                        from trading_bot.application.signal_outcomes import SignalOutcomeScorer
+
+                        return SignalOutcomeWorker(
+                            SignalOutcomeScorer(kwargs["session_factory"]),
+                            workspace_id=kwargs["workspace_id"],
+                            tick_seconds=kwargs["tick_seconds"],
+                        )
+
+                    outcome_factory = default_signal_outcome_worker_factory
+                signal_outcome_worker = outcome_factory(
+                    session_factory=active_session_factory,
+                    workspace_id=workspace_id,
+                    tick_seconds=app_settings.signal_outcome_tick_seconds,
+                )
+                application.state.signal_outcome_worker = signal_outcome_worker
+                signal_outcome_task = asyncio.create_task(
+                    signal_outcome_worker.run(stopping), name="signal-outcome-worker"
+                )
+                application.state.signal_outcome_task = signal_outcome_task
         try:
             yield
         finally:
@@ -697,6 +745,9 @@ def create_app(
             if market_signal_worker_task is not None:
                 with contextlib.suppress(asyncio.CancelledError, TimeoutError):
                     await asyncio.wait_for(market_signal_worker_task, timeout=10)
+            if signal_outcome_task is not None:
+                with contextlib.suppress(asyncio.CancelledError, TimeoutError):
+                    await asyncio.wait_for(signal_outcome_task, timeout=10)
             if training_supervisor_task is not None:
                 with contextlib.suppress(asyncio.CancelledError):
                     await training_supervisor_task
@@ -757,6 +808,8 @@ def create_app(
             app.include_router(learning_training_page_router)
             app.include_router(learning_split_router)
             app.include_router(learning_split_page_router)
+        app.include_router(risk_appetite_page_router)
+        app.include_router(live_monitor_router)
         app.include_router(admin_web_router)
         app.include_router(telegram_router)
 

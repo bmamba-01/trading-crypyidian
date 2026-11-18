@@ -1,0 +1,156 @@
+{% extends "admin/base.html" %}
+{% block title %}Kết quả tín hiệu — Crypidian{% endblock %}
+{% block heading %}Kết quả tín hiệu{% endblock %}
+{% block head_extra %}<link rel="stylesheet" href="/static/pages/ai.css"><link rel="stylesheet" href="/static/pages/signal-outcomes.css">{% endblock %}
+
+{% macro stat_row(item, label) -%}
+<tr>
+  <th scope="row" data-label="{{ label }}"><code>{{ item.key }}</code></th>
+  <td data-label="Tín hiệu" class="ai-num">{{ item.signals }}</td>
+  <td data-label="Đã chấm" class="ai-num">{{ item.scored }}</td>
+  <td data-label="Đúng / Sai / Hòa" class="ai-num">{{ item.correct }} / {{ item.wrong }} / {{ item.neutral }}</td>
+  <td data-label="Tỷ lệ đúng" class="ai-num">{{ (item.hit_rate_percent ~ "%") if item.hit_rate_percent is not none else "—" }}</td>
+  <td data-label="R trung bình" class="ai-num">{{ item.outcome_r_mean if item.outcome_r_mean is not none else "—" }}</td>
+  <td data-label="TP1 trước / SL trước" class="ai-num">{{ item.tp1_first }} / {{ item.sl_first }}</td>
+</tr>
+{%- endmacro %}
+
+{% macro stat_table(items, label, caption) -%}
+{% if items %}
+<div class="table-wrapper"><table class="responsive-table" aria-label="{{ caption }}">
+  <thead><tr><th scope="col">{{ label }}</th><th scope="col">Tín hiệu</th><th scope="col">Đã chấm</th><th scope="col">Đúng / Sai / Hòa</th><th scope="col">Tỷ lệ đúng</th><th scope="col">R trung bình</th><th scope="col">TP1 trước / SL trước</th></tr></thead>
+  <tbody>{% for item in items %}{{ stat_row(item, label) }}{% endfor %}</tbody>
+</table></div>
+{% else %}<p class="ai-note">Chưa có dữ liệu.</p>{% endif %}
+{%- endmacro %}
+
+{% block content %}
+{#- CRY-430: kết quả tín hiệu đã chấm (chỉ đọc). Chỉ số là PAPER/mô phỏng, R thô chưa trừ phí. -#}
+{% set s = data.summary %}
+<div class="ai-page so-page">
+  <section class="glass-card" aria-labelledby="so-intro">
+    <h2 id="so-intro">Tín hiệu đúng hay sai?</h2>
+    <p class="ai-note">Mỗi tín hiệu (kể cả tín hiệu không gửi Telegram hoặc không thành lệnh) được chấm sau {{ data.options.horizons | join("×, ") }}× khung vào lệnh bằng nến đã đóng. Giá vào, SL và TP1/TP2 lấy đúng như thẻ tín hiệu. <strong>Đúng</strong> = R &gt; +0,1; <strong>Sai</strong> = R &lt; −0,1; còn lại là <strong>hòa</strong>. R tính theo bracket SL/TP1, chưa trừ phí. Nến chạm cả SL lẫn TP1 thì coi như SL trước. Phương pháp <code>{{ data.method_version }}</code>.</p>
+    <form method="get" action="/admin/signal-outcomes" class="ai-filters" aria-label="Lọc kết quả tín hiệu">
+      <label>Bot
+        <select name="bot">
+          <option value="">Tất cả</option>
+          {% for bot in data.options.bots %}<option value="{{ bot.id }}" {% if bot.id == data.filters.bot_id %}selected{% endif %}>{{ bot.name }}</option>{% endfor %}
+        </select>
+      </label>
+      <label>Setup (release)
+        <select name="release">
+          <option value="">Tất cả</option>
+          {% for item in data.options.releases %}<option value="{{ item }}" {% if item == data.filters.release %}selected{% endif %}>{{ item }}</option>{% endfor %}
+        </select>
+      </label>
+      <label>Coin
+        <select name="symbol">
+          <option value="">Tất cả</option>
+          {% for item in data.options.symbols %}<option value="{{ item }}" {% if item == data.filters.symbol %}selected{% endif %}>{{ item }}</option>{% endfor %}
+        </select>
+      </label>
+      <label>Khung
+        <select name="timeframe">
+          <option value="">Tất cả</option>
+          {% for item in data.options.timeframes %}<option value="{{ item }}" {% if item == data.filters.timeframe %}selected{% endif %}>{{ item }}</option>{% endfor %}
+        </select>
+      </label>
+      <label>Horizon
+        <select name="horizon">
+          {% for item in data.options.horizons %}<option value="{{ item }}" {% if item == data.filters.horizon %}selected{% endif %}>{{ item }}× khung</option>{% endfor %}
+        </select>
+      </label>
+      <label>Khoảng thời gian
+        <select name="period">
+          {% for item in data.options.periods %}<option value="{{ item }}" {% if item == data.filters.period %}selected{% endif %}>{{ item }} ngày</option>{% endfor %}
+        </select>
+      </label>
+      <button type="submit" class="btn btn-secondary">Lọc</button>
+    </form>
+  </section>
+
+  <section class="glass-card" aria-labelledby="so-kpi-title">
+    <h2 id="so-kpi-title">Tổng quan · horizon {{ data.filters.horizon }}× khung</h2>
+    <dl class="so-kpis">
+      <div><dt>Tín hiệu</dt><dd data-testid="so-signals">{{ s.signals }}</dd></div>
+      <div><dt>Đã chấm</dt><dd>{{ s.scored }}</dd></div>
+      <div><dt>Tỷ lệ đúng</dt><dd data-testid="so-hit-rate">{{ (s.hit_rate_percent ~ "%") if s.hit_rate_percent is not none else "—" }}</dd></div>
+      <div><dt>Đúng / Sai / Hòa</dt><dd>{{ s.correct }} / {{ s.wrong }} / {{ s.neutral }}</dd></div>
+      <div><dt>R trung bình / trung vị</dt><dd>{{ s.outcome_r_mean or "—" }} / {{ s.outcome_r_median or "—" }}</dd></div>
+      <div><dt>MFE / MAE trung bình (R)</dt><dd>{{ s.mfe_r_mean or "—" }} / {{ s.mae_r_mean or "—" }}</dd></div>
+      <div><dt>TP1 trước / SL trước / chưa chạm</dt><dd>{{ s.tp1_first }} / {{ s.sl_first }} / {{ s.no_touch }}</dd></div>
+      <div><dt>Nến chạm cả SL và TP1</dt><dd>{{ s.same_bar_conflicts }}</dd></div>
+      <div><dt>Thiếu nến / tín hiệu lỗi</dt><dd>{{ s.data_gap }} / {{ s.invalid }}</dd></div>
+    </dl>
+    {% if data.truncated %}<p class="ai-note">Chỉ tính {{ s.signals }} tín hiệu mới nhất; thu hẹp bộ lọc để xem đủ.</p>{% endif %}
+  </section>
+
+  <section class="glass-card" aria-labelledby="so-dist-title">
+    <h2 id="so-dist-title">Phân phối R</h2>
+    {% set peak = (s.r_distribution.values() | max) if s.scored else 0 %}
+    <ul class="so-histogram">
+      {% for key, label in data.bucket_labels.items() %}
+      <li>
+        <span class="so-histogram__label">{{ label }}</span>
+        <meter class="so-histogram__bar so-histogram__bar--{{ key }}" min="0" max="{{ peak if peak else 1 }}" value="{{ s.r_distribution[key] }}" aria-label="{{ label }}: {{ s.r_distribution[key] }} tín hiệu"></meter>
+        <span class="so-histogram__count ai-num">{{ s.r_distribution[key] }}</span>
+      </li>
+      {% endfor %}
+    </ul>
+  </section>
+
+  <section class="glass-card" aria-labelledby="so-delivery-title">
+    <h2 id="so-delivery-title">Tín hiệu đã gửi so với không gửi</h2>
+    {{ stat_table(data.by_delivery, "Trạng thái gửi", "So sánh tín hiệu đã gửi và không gửi") }}
+  </section>
+
+  <section class="glass-card" aria-labelledby="so-setup-title">
+    <h2 id="so-setup-title">Theo setup và khung</h2>
+    {{ stat_table(data.by_setup, "Setup · khung", "Kết quả theo setup và khung") }}
+  </section>
+
+  <section class="glass-card" aria-labelledby="so-wrong-title">
+    <h2 id="so-wrong-title">Tín hiệu sai lặp lại</h2>
+    <p class="ai-note">Nhóm (setup · coin · hướng) có từ 2 tín hiệu sai trở lên trong khoảng đã chọn — ứng viên để AI phân tích và đề xuất backtest.</p>
+    {{ stat_table(data.repeated_wrong, "Setup · coin · hướng", "Tín hiệu sai lặp lại") }}
+  </section>
+
+  <section class="glass-card" aria-labelledby="so-symbol-title">
+    <h2 id="so-symbol-title">Theo coin</h2>
+    {{ stat_table(data.by_symbol, "Coin", "Kết quả theo coin") }}
+  </section>
+
+  <section class="glass-card" aria-labelledby="so-recent-title">
+    <h2 id="so-recent-title">{{ data.recent | length }} tín hiệu gần nhất</h2>
+    {% if data.recent %}
+    <div class="table-wrapper"><table class="responsive-table" aria-label="Tín hiệu đã chấm gần nhất">
+      <thead><tr><th scope="col">Thời điểm</th><th scope="col">Bot</th><th scope="col">Setup</th><th scope="col">Coin</th><th scope="col">Hướng</th><th scope="col">Chạm trước</th><th scope="col">R</th><th scope="col">MFE / MAE</th><th scope="col">Kết quả</th><th scope="col">Gửi</th></tr></thead>
+      <tbody>
+      {% for row in data.recent %}
+        <tr>
+          <td data-label="Thời điểm" class="ai-num">{{ row.signal_at | local_minute }}</td>
+          <td data-label="Bot">{{ row.bot_name }}</td>
+          <td data-label="Setup"><code>{{ row.release }}</code> · {{ row.timeframe }}</td>
+          <td data-label="Coin">{{ row.symbol }}</td>
+          <td data-label="Hướng">{{ row.direction }}</td>
+          <td data-label="Chạm trước">{{ row.touch }}{% if row.conflict %} <span class="badge badge-warning" title="Cùng nến chạm cả SL và TP1">cùng nến</span>{% endif %}</td>
+          <td data-label="R" class="ai-num">{{ row.outcome_r }}</td>
+          <td data-label="MFE / MAE" class="ai-num">{{ row.mfe_r }} / {{ row.mae_r }}</td>
+          <td data-label="Kết quả">
+            {% if row.label_value == 1 %}<span class="badge badge-success">Đúng</span>
+            {% elif row.label_value == -1 %}<span class="badge badge-danger">Sai</span>
+            {% elif row.label_value == 0 %}<span class="badge">Hòa</span>
+            {% else %}<span class="badge badge-warning">{{ row.status }}</span>{% endif %}
+          </td>
+          <td data-label="Gửi">{{ row.delivery }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table></div>
+    {% else %}
+    <p class="ai-note">Chưa có tín hiệu nào được chấm{% if data.filters.bot_id or data.filters.release or data.filters.symbol or data.filters.timeframe %} khớp bộ lọc{% endif %}. Worker chấm sau khi đủ nến đóng của horizon.</p>
+    {% endif %}
+  </section>
+</div>
+{% endblock %}

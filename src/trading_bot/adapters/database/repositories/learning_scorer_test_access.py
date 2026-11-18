@@ -46,6 +46,11 @@ from trading_bot.application.learning_scorer_test_service import (
     ScorerTestStoredReport,
 )
 from trading_bot.application.outbox import UnitOfWork
+from trading_bot.domain.learning.trade_labels import (
+    NET_PNL_SIGN_V1,
+    SUPPORTED_LABEL_VERSIONS,
+    trade_label_value,
+)
 
 _REPORT_LOCK_PREFIX = "wp06-scorer-test-evaluation"
 
@@ -80,6 +85,7 @@ class LearningScorerTestAccessRepository:
                 uow.session,
                 workspace_id=scope.workspace_id,
                 bundle_hash=scope.bundle_hash,
+                manifest_hash=scope.manifest_hash,
             )
             try:
                 result = await uow.session.execute(
@@ -182,6 +188,7 @@ class LearningScorerTestAccessRepository:
                     session,
                     workspace_id=receipt.workspace_id,
                     bundle_hash=receipt_row.bundle_hash,
+                    manifest_hash=receipt_row.manifest_hash,
                 )
                 try:
                     result = await session.execute(
@@ -307,28 +314,58 @@ async def _current_training_scope_digest(
     *,
     workspace_id: UUID,
     bundle_hash: str,
+    manifest_hash: str,
 ) -> str:
-    """Lấy quyền TRAINING hiện hành cho mọi child của bundle trong transaction."""
+    """Lấy quyền TRAINING hiện hành cho mọi child của mọi bundle trong transaction.
+
+    AI-5: ``bundle_hash`` của proof là bundle-set hash; danh sách bundle đọc qua helper SQL
+    ``wp06_scorer_manifest_replay_bundles`` (chỉ trả hash) và phải tái tạo đúng set hash.
+    """
     from trading_bot.adapters.database.replay_training_rights import (
         DatabaseReplayTrainingRightsGate,
         ReplayTrainingOperation,
+        replay_bundle_set_hash,
         training_scope_digest,
     )
 
     try:
-        receipts = await DatabaseReplayTrainingRightsGate(session).authorize(
-            workspace_id=workspace_id,
-            bundle_hash=bundle_hash,
-            operation=ReplayTrainingOperation.EVALUATION,
+        manifest_id = await session.scalar(
+            text(
+                "SELECT id FROM public.dataset_manifest "
+                "WHERE workspace_id = CAST(:workspace_id AS uuid) "
+                "AND manifest_hash = :manifest_hash"
+            ),
+            {"workspace_id": str(workspace_id), "manifest_hash": manifest_hash},
         )
-        if not receipts or any(
-            item.workspace_id != workspace_id
-            or item.bundle_hash != bundle_hash
-            or item.purpose.value != "training"
-            for item in receipts
-        ):
-            raise PermissionError("Bundle không có đủ quyền TRAINING hiện hành.")
-        digest = training_scope_digest(receipts)
+        bundles: list[str] | None = None
+        if manifest_id is not None:
+            bundles = await session.scalar(
+                text(
+                    "SELECT public.wp06_scorer_manifest_replay_bundles("
+                    "CAST(:workspace_id AS uuid), CAST(:manifest_id AS uuid))"
+                ),
+                {"workspace_id": str(workspace_id), "manifest_id": str(manifest_id)},
+            )
+        bundle_list = list(bundles) if bundles else [bundle_hash]
+        if replay_bundle_set_hash(bundle_list) != bundle_hash:
+            raise PermissionError("Bundle set của manifest không khớp bundle của proof TEST.")
+        gate = DatabaseReplayTrainingRightsGate(session)
+        receipts: list[Any] = []
+        for item_bundle in sorted(bundle_list):
+            bundle_receipts = await gate.authorize(
+                workspace_id=workspace_id,
+                bundle_hash=item_bundle,
+                operation=ReplayTrainingOperation.EVALUATION,
+            )
+            if not bundle_receipts or any(
+                item.workspace_id != workspace_id
+                or item.bundle_hash != item_bundle
+                or item.purpose.value != "training"
+                for item in bundle_receipts
+            ):
+                raise PermissionError("Bundle không có đủ quyền TRAINING hiện hành.")
+            receipts.extend(bundle_receipts)
+        digest = training_scope_digest(tuple(receipts))
     except (DBAPIError, LookupError, PermissionError, ValueError, TypeError) as error:
         raise ScorerTestEvaluationAccessConflict(
             "Không xác minh được quyền TRAINING hiện hành cho bundle TEST."
@@ -336,6 +373,20 @@ async def _current_training_scope_digest(
     if not _is_sha256(digest):
         raise ScorerTestEvaluationAccessConflict("Rights scope digest không hợp lệ.")
     return digest
+
+
+def _label_version_for_hash(sample: Any, *, outcome_hash: str) -> str | None:
+    """Phiên bản nhãn mà ``label_hash`` của sample đã ghim (None nếu không khớp phiên bản nào)."""
+    for version in SUPPORTED_LABEL_VERSIONS:
+        payload = {
+            "label_version": version,
+            "outcome_hash": outcome_hash,
+            "sample_id": sample.sample_id,
+            "value": sample.label_value,
+        }
+        if hashlib.sha256(_canonical(payload).encode("utf-8")).hexdigest() == sample.label_hash:
+            return version
+    return None
 
 
 def _receipt_from_mapping(row: Mapping[str, Any], *, workspace_id: UUID) -> ScorerTestAccessReceipt:
@@ -550,8 +601,12 @@ def _scorer_test_row(
         raise ValueError("Feature snapshot/schema của TEST sample không khớp outcome entry.")
     if dict(sample.features) != dict(trade.entry_features):
         raise ValueError("Feature của TEST sample không khớp vector outcome entry.")
-    outcome_label = int(trade.net_pnl > 0) - int(trade.net_pnl < 0)
-    if sample.label_value != outcome_label:
+    # AI-5: label_hash đã ghim phiên bản nhãn → suy ra phiên bản rồi tính lại giá trị nhãn.
+    # Hash không khớp phiên bản nào → giữ kiểm cũ (dấu net PnL), không nới hơn trước AI-5.
+    label_version = (
+        _label_version_for_hash(sample, outcome_hash=sample.outcome_hash) or NET_PNL_SIGN_V1
+    )
+    if sample.label_value != trade_label_value(trade, label_version):
         raise ValueError("Label của TEST sample không khớp dấu net PnL outcome.")
     return ScorerTestRow(
         sample_id=sample.sample_id,

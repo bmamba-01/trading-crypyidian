@@ -77,13 +77,18 @@ async def _verify_migration_body_guards(engine):
     f9 = _load_migration("c3_guard_f9", "f9c1e3a5b7d9_wp06_trainer_source_trial_lineage.py")
     a4 = _load_migration("c3_guard_a4", "a4c6e8f0b2d4_wp06_scorer_test_entry_hashes.py")
     b3 = _load_migration("c3_guard_b3", "b3d5f7a9c1e3_wp06_scorer_test_gateway_return_types.py")
+    # AI-5 (a5c7e9b1d3f5) viết lại điều kiện trial trong SOURCE_TRIAL_LINK để nhận trial cohort.
+    cohort = _load_migration("c3_guard_ai5", "a5c7e9b1d3f5_ai5_learning_trial_cohort.py")
+    source_trial_link = f9.SOURCE_TRIAL_LINK
+    for before, after in cohort.CLAIM_PATCHES:
+        source_trial_link = source_trial_link.replace(before, after)
     cases = (
         (
             f9,
             f9.FUNCTION_SIGNATURE,
             "WP06_TRAINER_LINEAGE_PREIMAGE_UNEXPECTED",
             (
-                (f9.SOURCE_TRIAL_LINK, 2),
+                (source_trial_link, 2),
                 *((replacement, 1) for _, replacement in f9.RETURN_CASTS),
             ),
         ),

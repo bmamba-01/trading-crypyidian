@@ -10,6 +10,7 @@ from typing import Any
 from uuid import UUID
 
 from trading_bot.application.learning_split_candidate import (
+    LABEL_VERSION,
     LearningSplitCandidateBuilderService,
     LearningSplitCandidateConfig,
 )
@@ -27,7 +28,13 @@ def parse_request(arguments: list[str] | None = None) -> argparse.Namespace:
     commands = parser.add_subparsers(dest="action", required=True)
     stage = commands.add_parser("stage", help="Dựng preview metadata từ một BASE trial.")
     stage.add_argument("--workspace-id", type=UUID, required=True)
-    stage.add_argument("--trial-record-id", type=UUID, required=True)
+    stage.add_argument(
+        "--trial-record-id",
+        type=UUID,
+        required=True,
+        action="append",
+        help="Lặp lại để gom cohort nhiều trial (mỗi trial một coin, AI-5).",
+    )
     stage.add_argument("--config-json", required=True)
     seal = commands.add_parser("seal", help="Seal candidate đã được reviewer phê duyệt.")
     seal.add_argument("--workspace-id", type=UUID, required=True)
@@ -43,12 +50,15 @@ def parse_config(value: str) -> LearningSplitCandidateConfig:
         payload: Any = json.loads(value)
     except (TypeError, ValueError) as error:
         raise ValueError("config JSON không hợp lệ.") from error
-    if type(payload) is not dict or set(payload) != {
+    if type(payload) is not dict or set(payload) - {"label_version"} != {
         "holdout_start",
         "evaluation_cutoff",
         "folds",
     }:
         raise ValueError("config cần holdout_start, evaluation_cutoff và folds.")
+    label_version = payload.get("label_version", LABEL_VERSION)
+    if not isinstance(label_version, str):
+        raise ValueError("label_version phải là chuỗi.")
     raw_folds = payload["folds"]
     if type(raw_folds) is not list or not raw_folds:
         raise ValueError("folds phải là danh sách không rỗng.")
@@ -56,6 +66,7 @@ def parse_config(value: str) -> LearningSplitCandidateConfig:
         holdout_start=_timestamp(payload["holdout_start"]),
         evaluation_cutoff=_timestamp(payload["evaluation_cutoff"]),
         folds=tuple(_fold(item) for item in raw_folds),
+        label_version=label_version,
     )
 
 
@@ -67,7 +78,7 @@ async def run(request: argparse.Namespace) -> dict[str, object]:
         if request.action == "stage":
             stage_result = await service.stage(
                 workspace_id=request.workspace_id,
-                trial_record_id=request.trial_record_id,
+                trial_record_ids=tuple(request.trial_record_id),
                 config=parse_config(request.config_json),
             )
             return {

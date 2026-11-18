@@ -32,6 +32,7 @@ from trading_bot.adapters.database.replay_training_rights import (
     DatabaseReplayTrainingRightsGate,
     ReplayTrainingOperation,
     ReplayTrainingRightsReceipt,
+    replay_bundle_set_hash,
     training_scope_digest,
 )
 from trading_bot.adapters.database.repositories.candidate_universe_proofs import (
@@ -282,152 +283,209 @@ class LearningScorerTestOpportunityProofRepository:
         test_outcome_rows: tuple[Any, ...] = tuple(outcomes_result.all())
         if {row.id for row in test_outcome_rows} != outcome_ids:
             raise ValueError("TEST membership tham chiếu outcome thiếu hoặc sai workspace.")
-        source_trials = {row.trial_record_id for row in test_outcome_rows}
-        source_runs = {row.run_id for row in test_outcome_rows}
-        if len(source_trials) != 1 or len(source_runs) != 1:
-            raise ValueError("TEST outcomes không thuộc cùng một BASE trial/run.")
-        trial_id = next(iter(source_trials))
-        trial = await self._session.scalar(
-            select(BacktestTrialRecord).where(
-                BacktestTrialRecord.workspace_id == workspace_id,
-                BacktestTrialRecord.id == trial_id,
+        # AI-5: candidate có thể gom nhiều trial (mỗi trial một bundle/coin). Inventory TEST phải
+        # duyệt MỌI trial của cohort (coin không có outcome TEST vẫn có decision event).
+        candidate_records = list(
+            await self._session.scalars(
+                select(LearningSplitCandidateRecord).where(
+                    LearningSplitCandidateRecord.workspace_id == workspace_id,
+                    LearningSplitCandidateRecord.manifest_hash == attempt.manifest_hash,
+                    LearningSplitCandidateRecord.fold_plan_hash == attempt.fold_plan_hash,
+                )
             )
         )
-        run_id = next(iter(source_runs))
-        run = await self._session.scalar(
-            select(BacktestRunRecord).where(
-                BacktestRunRecord.workspace_id == workspace_id,
-                BacktestRunRecord.id == run_id,
-            )
-        )
-        if trial is None or run is None:
-            raise LookupError("TEST outcome thiếu trial/run authoritative.")
-        from trading_bot.adapters.database.learning_fold_outcome_verifier import (
-            DatabaseFoldOutcomeVerifier,
-        )
-
-        DatabaseFoldOutcomeVerifier._validate_trial(trial, workspace_id=workspace_id)
-        replay_manifest = DatabaseFoldOutcomeVerifier._validate_run(run, workspace_id=workspace_id)
-        if (
-            trial.status != "COMPLETED"
-            or trial.run_id != run.id
-            or trial.manifest_hash != run.manifest_hash
-            or replay_manifest.learning_intent != "TRAINING_BASE"
-        ):
-            raise ValueError("TEST sample không bắt nguồn từ BASE run đã hoàn tất.")
-
-        candidate_record = await self._session.scalar(
-            select(LearningSplitCandidateRecord).where(
-                LearningSplitCandidateRecord.workspace_id == workspace_id,
-                LearningSplitCandidateRecord.trial_record_id == trial.id,
-                LearningSplitCandidateRecord.manifest_hash == attempt.manifest_hash,
-                LearningSplitCandidateRecord.fold_plan_hash == attempt.fold_plan_hash,
-            )
-        )
+        candidate_record = candidate_records[0] if len(candidate_records) == 1 else None
         if candidate_record is None:
             raise LookupError("Thiếu split candidate đã pin cửa sổ TEST authoritative.")
-        candidate = candidate_record.to_domain()
+        from trading_bot.adapters.database.repositories.learning_split_candidates import (
+            LearningSplitCandidateRepository,
+        )
+
+        candidate = await LearningSplitCandidateRepository(self._session)._with_sources(
+            candidate_record.to_domain()
+        )
+        cohort_trials = tuple(item.trial_record_id for item in candidate.sources) or (
+            candidate.trial_record_id,
+        )
         if (
             candidate.manifest.content_hash != attempt.manifest_hash
             or candidate.fold_plan.content_hash != attempt.fold_plan_hash
             or candidate.proof_record_id is None
-            or candidate.trial_record_id != trial.id
+            or cohort_trials[0] != candidate.trial_record_id
         ):
             raise ValueError("Split candidate không khớp manifest/fold/trial.")
+        if not {row.trial_record_id for row in test_outcome_rows} <= set(cohort_trials):
+            raise ValueError("TEST outcomes không thuộc cùng một BASE trial/run.")
         fold = self._select_fold(candidate, attempt.fold_id)
         if {sample.sample_id for sample in samples} != set(fold.test_sample_ids):
             raise ValueError("Normalized TEST assignments lệch fold plan đã duyệt.")
         self._validate_test_samples(candidate, samples, test_outcome_rows)
+
+        from trading_bot.adapters.database.learning_fold_outcome_verifier import (
+            DatabaseFoldOutcomeVerifier,
+        )
 
         source_lock = f"research-source:{workspace_id}:{SOURCE_ID}"
         await self._session.execute(
             text("SELECT pg_advisory_xact_lock(hashtextextended(:lock_key, 0))"),
             {"lock_key": source_lock},
         )
-        await self._verify_approved_base_proofs(
-            workspace_id=workspace_id, trial_record_id=trial.id, candidate=candidate
-        )
-        rights_receipts = await DatabaseReplayTrainingRightsGate(self._session).authorize(
-            workspace_id=workspace_id,
-            bundle_hash=replay_manifest.dataset_hash,
-            operation=ReplayTrainingOperation.EVALUATION,
-        )
-        if not rights_receipts or any(
-            receipt.purpose.value != "training" for receipt in rights_receipts
-        ):
-            raise PermissionError("Thiếu current TRAINING rights cho mọi child bundle.")
-
+        membership_by_outcome = {sample.outcome_id: sample for sample in samples}
         source_repository = CandidateUniverseProofRepository(self._session)
-        (
-            reference,
-            timeframe,
-            inventory,
-            decision_grid,
-            sources_complete,
-            identity_scope_hash,
-        ) = await source_repository._decision_source_inventory(
-            workspace_id,
-            replay_manifest,
-            rights_receipts,
-        )
-        source_gap_count = await self._source_gap_count(
-            workspace_id=workspace_id,
-            reference=reference,
-            inventory=inventory,
-        )
-        if sources_complete != (source_gap_count == 0):
-            raise ValueError("Source completeness lệch số identity bar bị thiếu.")
-        expected_events = await self._expected_test_events(
-            session=self._session,
-            workspace_id=workspace_id,
-            replay_manifest=replay_manifest,
-            candidate=candidate,
-            fold=fold,
-            reference=reference,
-            timeframe=timeframe,
-            inventory=inventory,
-            decision_grid=decision_grid,
-        )
-        if not expected_events:
-            raise ValueError("Test window không có decision event trong pinned bundle.")
-        opportunity_rows = await self._load_trial_opportunities(
-            workspace_id=workspace_id,
-            trial_record_id=trial.id,
-        )
-        opportunity_by_event = {row.event_id: row for row in opportunity_rows}
-        outcome_by_event = {
-            row.entry_opportunity_event_id: row
-            for row in await self._load_trial_outcome_metadata(
+        all_receipts: list[ReplayTrainingRightsReceipt] = []
+        all_entries: list[Any] = []
+        all_candidate_ids: set[str] = set()
+        bundle_scopes: list[dict[str, str]] = []
+        expected_total = 0
+        source_gap_total = 0
+        missing_total = 0
+        unlabeled_total = 0
+        for trial_id in cohort_trials:
+            trial = await self._session.scalar(
+                select(BacktestTrialRecord).where(
+                    BacktestTrialRecord.workspace_id == workspace_id,
+                    BacktestTrialRecord.id == trial_id,
+                )
+            )
+            run = (
+                None
+                if trial is None
+                else await self._session.scalar(
+                    select(BacktestRunRecord).where(
+                        BacktestRunRecord.workspace_id == workspace_id,
+                        BacktestRunRecord.id == trial.run_id,
+                    )
+                )
+            )
+            if trial is None or run is None:
+                raise LookupError("TEST outcome thiếu trial/run authoritative.")
+            DatabaseFoldOutcomeVerifier._validate_trial(trial, workspace_id=workspace_id)
+            replay_manifest = DatabaseFoldOutcomeVerifier._validate_run(
+                run, workspace_id=workspace_id
+            )
+            if (
+                trial.status != "COMPLETED"
+                or trial.run_id != run.id
+                or trial.manifest_hash != run.manifest_hash
+                or replay_manifest.learning_intent != "TRAINING_BASE"
+                or any(
+                    row.trial_record_id == trial.id and row.run_id != run.id
+                    for row in test_outcome_rows
+                )
+            ):
+                raise ValueError("TEST sample không bắt nguồn từ BASE run đã hoàn tất.")
+            await self._verify_approved_base_proofs(
+                workspace_id=workspace_id, trial_record_id=trial.id, candidate=candidate
+            )
+            rights_receipts = await DatabaseReplayTrainingRightsGate(self._session).authorize(
+                workspace_id=workspace_id,
+                bundle_hash=replay_manifest.dataset_hash,
+                operation=ReplayTrainingOperation.EVALUATION,
+            )
+            if not rights_receipts or any(
+                receipt.purpose.value != "training" for receipt in rights_receipts
+            ):
+                raise PermissionError("Thiếu current TRAINING rights cho mọi child bundle.")
+            (
+                reference,
+                timeframe,
+                inventory,
+                decision_grid,
+                sources_complete,
+                identity_scope_hash,
+            ) = await source_repository._decision_source_inventory(
+                workspace_id,
+                replay_manifest,
+                rights_receipts,
+            )
+            source_gap_count = await self._source_gap_count(
+                workspace_id=workspace_id,
+                reference=reference,
+                inventory=inventory,
+            )
+            if sources_complete != (source_gap_count == 0):
+                raise ValueError("Source completeness lệch số identity bar bị thiếu.")
+            expected_events = await self._expected_test_events(
+                session=self._session,
+                workspace_id=workspace_id,
+                replay_manifest=replay_manifest,
+                candidate=candidate,
+                fold=fold,
+                reference=reference,
+                timeframe=timeframe,
+                inventory=inventory,
+                decision_grid=decision_grid,
+            )
+            if not expected_events and len(cohort_trials) == 1:
+                raise ValueError("Test window không có decision event trong pinned bundle.")
+            opportunity_rows = await self._load_trial_opportunities(
                 workspace_id=workspace_id,
                 trial_record_id=trial.id,
             )
-            if row.entry_opportunity_event_id is not None
-        }
-        membership_by_outcome = {sample.outcome_id: sample for sample in samples}
-        self._validate_test_vector_schemas(
-            scorer_vector_schema_hash=scorer.vector_schema_hash,
-            samples=samples,
-            expected_events=expected_events,
-            opportunity_by_event=opportunity_by_event,
-        )
-        test_entries, missing_events, unlabeled_candidates, candidate_ids = (
-            _build_test_inventory_entries(
+            opportunity_by_event = {row.event_id: row for row in opportunity_rows}
+            outcome_by_event = {
+                row.entry_opportunity_event_id: row
+                for row in await self._load_trial_outcome_metadata(
+                    workspace_id=workspace_id,
+                    trial_record_id=trial.id,
+                )
+                if row.entry_opportunity_event_id is not None
+            }
+            trial_outcome_ids = {
+                row.id for row in test_outcome_rows if row.trial_record_id == trial.id
+            }
+            trial_samples = tuple(
+                sample for sample in samples if sample.outcome_id in trial_outcome_ids
+            )
+            self._validate_test_vector_schemas(
+                scorer_vector_schema_hash=scorer.vector_schema_hash,
+                samples=trial_samples,
                 expected_events=expected_events,
                 opportunity_by_event=opportunity_by_event,
-                outcome_by_event=outcome_by_event,
-                membership_by_outcome=membership_by_outcome,
             )
-        )
-
-        membership_digest = _membership_digest(samples, test_outcome_rows)
-        source_scope_hash = digest(
-            canonical(
+            entries, missing_events, unlabeled_candidates, candidate_ids = (
+                _build_test_inventory_entries(
+                    expected_events=expected_events,
+                    opportunity_by_event=opportunity_by_event,
+                    outcome_by_event=outcome_by_event,
+                    membership_by_outcome={
+                        key: value
+                        for key, value in membership_by_outcome.items()
+                        if key in trial_outcome_ids
+                    },
+                )
+            )
+            all_receipts.extend(rights_receipts)
+            all_entries.extend(entries)
+            all_candidate_ids |= candidate_ids
+            expected_total += len(expected_events)
+            source_gap_total += source_gap_count
+            missing_total += missing_events
+            unlabeled_total += unlabeled_candidates
+            bundle_scopes.append(
                 {
+                    "bundle_hash": replay_manifest.dataset_hash,
                     "identity_scope_hash": identity_scope_hash,
-                    "training_rights_scope_hash": training_scope_digest(rights_receipts),
+                    "trial_record_id": str(trial.id),
                 }
             )
-        )
+        if not expected_total:
+            raise ValueError("Test window không có decision event trong pinned bundle.")
+        rights_receipts = tuple(all_receipts)
+        test_entries = tuple(sorted(all_entries, key=lambda item: item.stable_id_hash))
+
+        membership_digest = _membership_digest(samples, test_outcome_rows)
+        if len(bundle_scopes) == 1:
+            scope_payload: dict[str, object] = {
+                "identity_scope_hash": bundle_scopes[0]["identity_scope_hash"],
+                "training_rights_scope_hash": training_scope_digest(rights_receipts),
+            }
+        else:
+            scope_payload = {
+                "bundles": sorted(bundle_scopes, key=lambda item: item["bundle_hash"]),
+                "training_rights_scope_hash": training_scope_digest(rights_receipts),
+            }
+        source_scope_hash = digest(canonical(scope_payload))
         proof = ScorerTestOpportunityProof(
             record_id=uuid4(),
             workspace_id=workspace_id,
@@ -438,18 +496,18 @@ class LearningScorerTestOpportunityProofRepository:
             fold_plan_hash=attempt.fold_plan_hash,
             fold_id=attempt.fold_id,
             approval_hash=attempt.approval_hash,
-            bundle_hash=replay_manifest.dataset_hash,
+            bundle_hash=replay_bundle_set_hash(item["bundle_hash"] for item in bundle_scopes),
             vector_schema_version=scorer.vector_schema_version or "",
             vector_schema_hash=scorer.vector_schema_hash,
             test_membership_digest=membership_digest,
             source_scope_hash=source_scope_hash,
-            expected_opportunity_count=len(expected_events),
-            source_gap_count=source_gap_count,
-            membership_mismatch_count=missing_events,
-            unlabeled_candidate_count=unlabeled_candidates,
+            expected_opportunity_count=expected_total,
+            source_gap_count=source_gap_total,
+            membership_mismatch_count=missing_total,
+            unlabeled_candidate_count=unlabeled_total,
             entries=test_entries,
         )
-        if proof.candidate_count != len(candidate_ids):
+        if proof.candidate_count != len(all_candidate_ids):
             raise ValueError("Candidate inventory TEST có duplicate hoặc count sai.")
         return proof, rights_receipts
 
@@ -465,9 +523,28 @@ class LearningScorerTestOpportunityProofRepository:
         approved_result = await repository.build_and_append(
             workspace_id=workspace_id, trial_record_id=trial_record_id
         )
+        # AI-5: cohort nhiều trial → so với proof đã ghim của đúng trial này (neo = scalar).
+        sources = tuple(getattr(candidate, "sources", ()))
+        expected = (
+            next(
+                (
+                    (item.proof_record_id, item.proof_hash)
+                    for item in sources
+                    if item.trial_record_id == trial_record_id
+                ),
+                None,
+            )
+            if sources
+            # Candidate trước AI-5 (một trial, không có dòng cohort): giữ kiểm cũ.
+            else (candidate.proof_record_id, candidate.proof_hash)
+        )
         if (
-            approved_result.record_id != candidate.proof_record_id
-            or approved_result.proof.content_hash != candidate.proof_hash
+            expected is None
+            or (
+                approved_result.record_id,
+                approved_result.proof.content_hash,
+            )
+            != expected
         ):
             raise ValueError("BASE proof TRAINING rights/provenance khác split candidate.")
         # Candidate split ghim proof closed-trade v1; proof opportunity v2 có ID/hash

@@ -1,0 +1,101 @@
+{% extends "admin/base.html" %}
+{% block title %}Theo dõi trực tiếp — Crypidian{% endblock %}
+{% block heading %}Theo dõi bot trực tiếp (PAPER){% endblock %}
+{% block content %}
+{#- LIVE-MON (CRY-429): trang chỉ đọc; dữ liệu nạp bằng SSE (/admin/api/live/stream), poll dự phòng
+    /admin/api/live/snapshot. Điều khiển vẫn qua form có MFA ở trang bot / đóng toàn bộ vị thế. -#}
+<div class="live-mon" data-live-monitor
+     data-stream-url="/admin/api/live/stream"
+     data-snapshot-url="/admin/api/live/snapshot"
+     data-poll-ms="{{ poll_interval_ms }}"
+     data-bot-ids="{{ selected_ids | join(',') }}">
+
+  <div class="live-mon__bar" role="region" aria-label="Trạng thái kết nối trực tiếp">
+    <span class="live-mon__conn" data-live-connection data-state="connecting">
+      <span class="pulse-dot" aria-hidden="true"></span>
+      <span data-live-connection-text>Đang kết nối…</span>
+    </span>
+    <span class="live-mon__clock">Máy chủ: <time data-live-observed>--:--:--</time></span>
+    <div class="live-mon__toggles">
+      <label class="live-mon__toggle switch-row"><span>Hiện tín hiệu bị bỏ</span><input type="checkbox" class="ios-switch" role="switch" data-live-show-muted checked></label>
+      <label class="live-mon__toggle switch-row"><span>Âm thanh khi có lệnh/chạm SL-TP</span><input type="checkbox" class="ios-switch" role="switch" data-live-sound></label>
+    </div>
+  </div>
+
+  <details class="live-mon__picker"{% if not selected %} open{% endif %}>
+    <summary>Chọn bot theo dõi ({{ selected | length }}/{{ bots | length }})</summary>
+    <form method="get" action="/admin/live" class="live-mon__picker-form">
+      <fieldset>
+        <legend class="visually-hidden">Bot hiển thị (tối đa {{ max_bots }})</legend>
+        {% for bot in bots %}
+        <label class="live-mon__bot-option">
+          <input type="checkbox" class="form-check-input" name="bot" value="{{ bot.id }}" {% if bot.id in selected %}checked{% endif %}>
+          {{ bot.name }} <span class="badge badge-neutral">{{ bot.status | label_vi }}</span>
+        </label>
+        {% else %}
+        <p>Không có bot nào trong phạm vi được cấp quyền.</p>
+        {% endfor %}
+      </fieldset>
+      <button type="submit" class="btn btn-primary btn-sm">Áp dụng</button>
+    </form>
+  </details>
+
+  <section class="live-mon__alerts" aria-label="Cảnh báo" data-live-alerts aria-live="assertive"></section>
+
+  <div class="live-mon__grid">
+    <section class="live-mon__panel live-mon__panel--health" aria-labelledby="live-health-h">
+      <h2 id="live-health-h">Sức khỏe &amp; ngắt mạch</h2>
+      <dl class="live-mon__kv" data-live-health>
+        <div><dt>Kill switch workspace</dt><dd data-live-kill>—</dd></div>
+        <div><dt>Ngắt mạch (đánh giá)</dt><dd data-live-breaker>—</dd></div>
+        <div><dt>Độ trễ feed nến 1m</dt><dd data-live-feed-age>—</dd></div>
+        <div><dt>Mark price</dt><dd data-live-mark>—</dd></div>
+        <div><dt>Outbox chờ gửi</dt><dd data-live-outbox>—</dd></div>
+        <div><dt>Lệch đồng hồ app↔DB</dt><dd data-live-clock>—</dd></div>
+      </dl>
+      <p class="live-mon__note">Điều khiển: <a href="/admin/flatten">Đóng toàn bộ vị thế</a> · tạm dừng/kill tại <a href="/admin">Tổng quan</a> và trang từng bot (có xác thực MFA).</p>
+    </section>
+
+    <section class="live-mon__panel live-mon__panel--equity" aria-labelledby="live-equity-h">
+      <h2 id="live-equity-h">Vốn &amp; drawdown (ước tính theo mark)</h2>
+      <dl class="live-mon__kv live-mon__kv--big" data-live-equity>
+        <div><dt>Vốn</dt><dd data-live-equity-value>—</dd></div>
+        <div><dt>PnL chưa chốt</dt><dd data-live-upnl>—</dd></div>
+        <div><dt>PnL ròng hôm nay (UTC)</dt><dd data-live-today>—</dd></div>
+        <div><dt>Drawdown từ đỉnh</dt><dd data-live-dd>—</dd></div>
+      </dl>
+      <svg class="live-mon__spark" data-live-spark viewBox="0 0 300 60" preserveAspectRatio="none" role="img" aria-label="Đường vốn gần đây"><polyline points="" /></svg>
+    </section>
+
+    <section class="live-mon__panel live-mon__panel--bots" aria-labelledby="live-bots-h">
+      <h2 id="live-bots-h">Bot</h2>
+      <div class="table-responsive">
+        <table class="table live-mon__table">
+          <thead><tr><th scope="col">Bot</th><th scope="col">Vào lệnh</th><th scope="col">Vị thế</th><th scope="col">Vốn</th><th scope="col">DD</th><th scope="col">Hôm nay</th><th scope="col">Nhịp runtime</th></tr></thead>
+          <tbody data-live-bots><tr><td colspan="7">Đang tải…</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="live-mon__panel live-mon__panel--feed" aria-labelledby="live-feed-h">
+      <h2 id="live-feed-h">Dòng sự kiện</h2>
+      <ol class="live-mon__feed" data-live-feed aria-live="polite" aria-relevant="additions"></ol>
+      <p class="live-mon__empty" data-live-feed-empty>Chưa có sự kiện trong phạm vi bot đã chọn.</p>
+    </section>
+
+    <section class="live-mon__panel live-mon__panel--positions" aria-labelledby="live-pos-h">
+      <h2 id="live-pos-h">Vị thế mở <span class="badge badge-neutral" data-live-pos-count>0</span></h2>
+      <div class="table-responsive">
+        <table class="table live-mon__table">
+          <thead><tr><th scope="col">Cặp</th><th scope="col">Hướng</th><th scope="col">Giá vào</th><th scope="col">Mark</th><th scope="col">PnL</th><th scope="col">R</th><th scope="col">Tới SL</th><th scope="col">Tới TP</th><th scope="col">Giữ</th><th scope="col">Funding</th></tr></thead>
+          <tbody data-live-positions><tr><td colspan="10">Đang tải…</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="/static/live-monitor.js" defer></script>
+{% endblock %}

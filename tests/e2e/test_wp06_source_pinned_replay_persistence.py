@@ -200,7 +200,7 @@ def test_source_pinned_runtime_replay_persists_exact_lineage_in_postgres(scorer_
                 "alembic",
                 "current",
             )
-            assert "d4f6a8b0c2e4 (head)" in current.stdout
+            assert "c9e1a3b5d7f9 (head)" in current.stdout
             assert (
                 _lineage_contract(root, project, environment, volume, workspace_id)
                 == lineage_contract
@@ -424,6 +424,17 @@ def _migration_hashes(root: Path, image_side: str) -> dict[str, str]:
                 for signature, hashes in module.FUNCTION_DEFINITION_HASHES.items()
             }
         )
+    # Migration sau (AI-5 trial cohort) rewrite lại một số hàm trên: head mang postimage mới.
+    for filename in ("a5c7e9b1d3f5_ai5_learning_trial_cohort.py",):
+        spec = importlib.util.spec_from_file_location(
+            filename, root / "migrations/versions" / filename
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        if image_side == "postimage":
+            for signature, hashes in module.FUNCTION_DEFINITION_HASHES.items():
+                if signature in expected:
+                    expected[signature] = hashes["postimage"]
     return expected
 
 

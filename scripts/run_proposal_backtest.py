@@ -9,6 +9,12 @@ từ ``.secrets``, không in). Mỗi đề xuất (``analyst_run`` + vị trí) 
 
     uv run python scripts/run_proposal_backtest.py --hours 48 --send-telegram
     uv run python scripts/run_proposal_backtest.py --max-symbols 3   # chạy thử nhanh
+
+CRY-428: ``--bot-draft <bot_id>`` backtest bản nháp cấu hình mới nhất của bot (bản gốc = cấu
+hình đang publish) và lưu ``proposal_backtest`` nguồn ``OWNER_DRAFT``. Đây là điều kiện bắt buộc
+để publish thay đổi thông số thoát lệnh (owner xem kết quả rồi tự quyết):
+
+    uv run python scripts/run_proposal_backtest.py --bot-draft <bot_id> --max-symbols 5
 """
 
 from __future__ import annotations
@@ -110,9 +116,29 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--dry-run", action="store_true", help="Chạy thử: không lưu DB, không gửi Telegram."
     )
+    parser.add_argument(
+        "--bot-draft",
+        default=None,
+        help="CRY-428: ID bot; backtest bản nháp mới nhất của bot so với bản đang publish.",
+    )
     args = parser.parse_args(argv)
     if "live" in args.project.lower() or "prod" in args.project.lower():
         raise SystemExit("Script chỉ dành cho stack local PAPER.")
+    if args.bot_draft:
+        draft_done = _phase(
+            args.project,
+            "draft_backtest",
+            {
+                "workspace_id": args.workspace_id,
+                "bot_id": args.bot_draft,
+                "max_symbols": args.max_symbols,
+                "workers": args.workers,
+                "persist": not args.dry_run,
+            },
+            args.timeout,
+        )
+        print(json.dumps(draft_done, ensure_ascii=False, indent=2, default=str))
+        return 0
     done = _phase(
         args.project,
         "backtest",
@@ -210,6 +236,8 @@ async def _container(phase: str, state: dict[str, Any]) -> dict[str, Any]:
         required_timeframes,
     )
 
+    if phase == "draft_backtest":
+        return await _draft_backtest(state)
     if phase != "backtest":
         raise SystemExit(phase)
     workspace = UUID(state["workspace_id"])
@@ -388,6 +416,183 @@ async def _container(phase: str, state: dict[str, Any]) -> dict[str, Any]:
     finally:
         await engine.dispose()
     return {"results": results, "invalid": invalid, "chats": chat_ids}
+
+
+async def _stored_bundles(
+    sessions: Any, workspace: Any, symbols: list[str], timeframes: list[str]
+) -> dict[str, Any]:
+    """Bundle nến đã lưu theo coin (kiểm quyền BACKTEST_RESEARCH); lỗi coin → chuỗi lý do."""
+    from datetime import UTC, datetime
+
+    from trading_bot.adapters.database.repositories.funding_settlements import (
+        FundingSettlementRepository,
+    )
+    from trading_bot.adapters.database.repositories.market_data import MarketDataRepository
+    from trading_bot.adapters.database.repositories.source_registry import (
+        SourceRegistryRepository,
+    )
+    from trading_bot.application.binance_rest_backfill_rights import (
+        SourceRegistryBackfillRightsGate,
+    )
+    from trading_bot.application.outbox import UnitOfWork
+    from trading_bot.application.proposal_backtest import build_stored_bundle
+
+    now = datetime.now(UTC)
+    bundles: dict[str, Any] = {}
+    async with UnitOfWork(sessions, workspace_id=workspace) as uow:
+        gate = SourceRegistryBackfillRightsGate(
+            workspace_id=workspace, repository=SourceRegistryRepository(uow.session)
+        )
+        market = MarketDataRepository(uow.session)
+        for symbol in symbols:
+            try:
+                bundles[symbol] = await build_stored_bundle(
+                    workspace_id=workspace,
+                    symbol=symbol,
+                    timeframes=timeframes,
+                    market_data=market,
+                    rights_gate=gate,
+                    now=now,
+                    funding_source=FundingSettlementRepository(uow.session),
+                )
+            except (ValueError, PermissionError) as error:
+                bundles[symbol] = f"{type(error).__name__}: {str(error)[:140]}"
+    return bundles
+
+
+def _effective_overlay(overlay: dict[str, Any], root: Any) -> dict[str, Any]:
+    """Overlay để dựng arm: thiếu strategy thì kế thừa release/tham số của root (như resolver)."""
+    effective = dict(overlay)
+    if not effective.get("strategy"):
+        effective["strategy"] = {
+            "release_id": root.strategy.default_release,
+            "parameters": dict(root.strategy.parameters),
+        }
+    return effective
+
+
+async def _draft_backtest(state: dict[str, Any]) -> dict[str, Any]:
+    """CRY-428: backtest bản nháp mới nhất của bot vs bản đang publish; lưu OWNER_DRAFT."""
+    from uuid import UUID
+
+    from sqlalchemy import select
+
+    from trading_bot.adapters.database.models import (
+        BotConfigVersion,
+        BotInstance,
+        ProposalBacktestRecord,
+    )
+    from trading_bot.adapters.database.repositories.workspace_settings import (
+        WorkspaceSettingsRepository,
+    )
+    from trading_bot.application.outbox import UnitOfWork
+    from trading_bot.application.proposal_backtest import (
+        PROPOSAL_BACKTEST_VERSION,
+        backtest_bot_draft,
+        required_timeframes,
+    )
+    from trading_bot.config.bot_settings import exit_section
+
+    workspace = UUID(state["workspace_id"])
+    bot_id = UUID(state["bot_id"])
+    engine, sessions = _sessions_factory()
+    try:
+        async with UnitOfWork(sessions, workspace_id=workspace) as uow:
+            bot = await uow.session.scalar(
+                select(BotInstance).where(
+                    BotInstance.workspace_id == workspace, BotInstance.id == bot_id
+                )
+            )
+            if bot is None:
+                raise SystemExit("Không tìm thấy bot trong workspace.")
+            versions = (
+                await uow.session.scalars(
+                    select(BotConfigVersion)
+                    .where(
+                        BotConfigVersion.workspace_id == workspace,
+                        BotConfigVersion.bot_id == bot_id,
+                    )
+                    .order_by(BotConfigVersion.version.desc())
+                )
+            ).all()
+            published = await WorkspaceSettingsRepository(uow.session).load_effective_config(
+                workspace_id=workspace
+            )
+        head = next((row for row in versions if row.status == "PUBLISHED"), None)
+        draft = next((row for row in versions if row.status == "DRAFT"), None)
+        if draft is None:
+            raise SystemExit("Bot không có bản nháp cấu hình.")
+        if published is None:
+            raise SystemExit("Workspace chưa có cấu hình đã publish.")
+        if (head.id if head is not None else None) != draft.parent_version_id:
+            raise SystemExit("Bản nháp dựa trên cấu hình cũ; tạo bản nháp mới rồi backtest.")
+        root = published.settings
+        head_overlay = _effective_overlay(dict(head.overlay_json) if head else {}, root)
+        draft_overlay = _effective_overlay(dict(draft.overlay_json), root)
+        symbols = list(
+            (draft.overlay_json.get("universe") or {}).get("symbols") or root.market_data.symbols
+        )[: int(state["max_symbols"])]
+        release_ids = {
+            head_overlay["strategy"]["release_id"],
+            draft_overlay["strategy"]["release_id"],
+        }
+        timeframes = sorted({tf for release in release_ids for tf in required_timeframes(release)})
+        bundles = await _stored_bundles(sessions, workspace, symbols, timeframes)
+        result = backtest_bot_draft(
+            bot_name=bot.name,
+            head_overlay=head_overlay,
+            draft_overlay=draft_overlay,
+            bundles=bundles,
+            workers=int(state.get("workers", 1)),
+        )
+        payload = result.payload()
+        proposal = {
+            "kind": "OWNER_DRAFT",
+            "draft_id": str(draft.id),
+            "draft_version": draft.version,
+            "draft_revision": draft.revision,
+            "draft_overlay_hash": draft.overlay_hash,
+            "head_overlay_hash": head.overlay_hash if head is not None else "",
+            "changes": [
+                {
+                    "field": "exit",
+                    "from": exit_section(head.overlay_json) if head is not None else {},
+                    "to": exit_section(draft.overlay_json),
+                }
+            ],
+            "rationale": "Backtest bắt buộc trước khi publish bản nháp cấu hình (CRY-428).",
+        }
+        record_id = None
+        if state.get("persist", True):
+            async with UnitOfWork(sessions, workspace_id=workspace) as uow:
+                record = ProposalBacktestRecord(
+                    workspace_id=workspace,
+                    analyst_run_id=None,
+                    source="OWNER_DRAFT",
+                    proposal_index=0,
+                    topic_key="owner_draft",
+                    bot_id=bot_id,
+                    bot_name=bot.name[:160],
+                    proposal=proposal,
+                    result=payload,
+                    verdict=payload["verdict"],
+                    version=PROPOSAL_BACKTEST_VERSION,
+                )
+                uow.session.add(record)
+                await uow.session.flush()
+                record_id = str(record.id)
+    finally:
+        await engine.dispose()
+    return {
+        "record_id": record_id,
+        "bot": bot.name,
+        "draft_id": str(draft.id),
+        "verdict": payload["verdict"],
+        "baseline": payload["baseline"],
+        "variant": payload["variant"],
+        "notes": payload["notes"],
+        "skipped": payload["skipped_symbols"],
+    }
 
 
 if __name__ == "__container__":

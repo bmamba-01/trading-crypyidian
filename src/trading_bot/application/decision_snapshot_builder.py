@@ -5,9 +5,12 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+from collections import OrderedDict
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from decimal import Decimal
+from functools import lru_cache
+from typing import Any
 from uuid import UUID
 
 from trading_bot.application.backtest_dataset_manifest import MarketBarIdentityMetadata
@@ -39,7 +42,78 @@ class DecisionSnapshotBuildError(ValueError):
     """Từ chối snapshot thiếu lineage, sai scope hoặc chứa dữ liệu tương lai."""
 
 
+_SNAPSHOT_CACHE: OrderedDict[tuple[object, ...], DecisionSnapshot] = OrderedDict()
+_SNAPSHOT_CACHE_SIZE = 64
+
+
 def build_decision_snapshot_from_bars(
+    *,
+    workspace_id: UUID,
+    symbol: str,
+    strategy_release_id: str,
+    decision_time: datetime,
+    series_quality_as_of: datetime,
+    bars_by_timeframe: Mapping[str, Sequence[OHLCVBar]],
+    position_is_flat: bool | None = None,
+    macro_blackout: bool | None = None,
+    macro_evidence_ids: tuple[str, ...] = (),
+    macro_evidence_available_at: datetime | None = None,
+    macro_is_fresh: bool | None = None,
+    source_identity_required: bool,
+    legacy_identity_namespace: str | None = None,
+) -> DecisionSnapshot:
+    """Như ``_build_decision_snapshot_from_bars`` nhưng nhớ vài kết quả gần nhất (AI-5).
+
+    Replay dựng lại cùng snapshot nhiều lần mỗi nến (kiểm envelope, vector học); hàm thuần và
+    ``DecisionSnapshot`` bất biến nên trả lại kết quả cũ cho cùng đầu vào không đổi ngữ nghĩa.
+    Đầu vào không hash được → tính trực tiếp. Lỗi kiểm không bị nhớ.
+    """
+    arguments: dict[str, Any] = {
+        "workspace_id": workspace_id,
+        "symbol": symbol,
+        "strategy_release_id": strategy_release_id,
+        "decision_time": decision_time,
+        "series_quality_as_of": series_quality_as_of,
+        "bars_by_timeframe": bars_by_timeframe,
+        "position_is_flat": position_is_flat,
+        "macro_blackout": macro_blackout,
+        "macro_evidence_ids": macro_evidence_ids,
+        "macro_evidence_available_at": macro_evidence_available_at,
+        "macro_is_fresh": macro_is_fresh,
+        "source_identity_required": source_identity_required,
+        "legacy_identity_namespace": legacy_identity_namespace,
+    }
+    try:
+        key: tuple[object, ...] | None = (
+            workspace_id,
+            symbol,
+            strategy_release_id,
+            decision_time,
+            series_quality_as_of,
+            tuple(sorted((str(tf), tuple(bars)) for tf, bars in bars_by_timeframe.items())),
+            position_is_flat,
+            macro_blackout,
+            tuple(macro_evidence_ids),
+            macro_evidence_available_at,
+            macro_is_fresh,
+            source_identity_required,
+            legacy_identity_namespace,
+        )
+        hash(key)
+    except TypeError:
+        key = None
+    if key is not None and key in _SNAPSHOT_CACHE:
+        _SNAPSHOT_CACHE.move_to_end(key)
+        return _SNAPSHOT_CACHE[key]
+    snapshot = _build_decision_snapshot_from_bars(**arguments)
+    if key is not None:
+        _SNAPSHOT_CACHE[key] = snapshot
+        if len(_SNAPSHOT_CACHE) > _SNAPSHOT_CACHE_SIZE:
+            _SNAPSHOT_CACHE.popitem(last=False)
+    return snapshot
+
+
+def _build_decision_snapshot_from_bars(
     *,
     workspace_id: UUID,
     symbol: str,
@@ -324,6 +398,12 @@ def build_decision_snapshot_from_bars(
 
 def canonical_market_bar_event_id(bar: OHLCVBar, *, workspace_id: UUID) -> str:
     """Tạo event reference ổn định từ identity DB-authoritative của một bar."""
+    return _cached_market_bar_event_id(bar, workspace_id)
+
+
+@lru_cache(maxsize=262_144)
+def _cached_market_bar_event_id(bar: OHLCVBar, workspace_id: UUID) -> str:
+    # Hàm thuần theo (bar bất biến, workspace); lỗi kiểm không bị cache (exception không lưu).
     identity = bar.source_identity
     if type(identity) is not MarketBarSourceIdentity:
         raise DecisionSnapshotBuildError("Bar thiếu MarketBar source identity.")
