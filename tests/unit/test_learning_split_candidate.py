@@ -5,10 +5,11 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
+import trading_bot.application.learning_split_candidate as learning_split_candidate_module
 from trading_bot.application.candidate_universe_proof import (
     CandidateUniverseProof,
     canonical,
@@ -187,6 +188,55 @@ def test_candidate_stores_shared_replay_lineage_once_and_hashes_each_sample_refe
     assert rebuilt.manifest.source_use_lineage == outcomes[0].source_use_lineage
     assert all(not sample.source_use_lineage for sample in rebuilt.manifest.samples)
     assert len({sample.source_use_lineage_set_hash for sample in rebuilt.manifest.samples}) == 1
+
+
+def test_candidate_hashes_shared_large_lineage_once_without_deep_hashing_each_sample(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate, outcomes, proof = _candidate()
+    original = outcomes[0].source_use_lineage[0]
+    large_lineage = (
+        replace(
+            original,
+            market_bar_ids=tuple(
+                f"market-bar-record:{UUID(int=index + 1)}" for index in range(2_000)
+            ),
+        ),
+    )
+    outcomes = tuple(replace(item, source_use_lineage=large_lineage) for item in outcomes)
+
+    digest_calls = 0
+    lineage_hash_calls = 0
+    original_digest = learning_split_candidate_module.source_use_lineage_set_hash
+
+    def count_digest_calls(lineage: tuple[SourceUseLineage, ...]) -> str:
+        nonlocal digest_calls
+        digest_calls += 1
+        return original_digest(lineage)
+
+    def count_lineage_hash_calls(_lineage: SourceUseLineage) -> int:
+        nonlocal lineage_hash_calls
+        lineage_hash_calls += 1
+        return 1
+
+    monkeypatch.setattr(
+        learning_split_candidate_module, "source_use_lineage_set_hash", count_digest_calls
+    )
+    monkeypatch.setattr(SourceUseLineage, "__hash__", count_lineage_hash_calls)
+
+    rebuilt = build_learning_split_candidate(
+        workspace_id=candidate.workspace_id,
+        trial_record_id=candidate.trial_record_id,
+        proof_record_id=candidate.proof_record_id,
+        proof=proof,
+        outcomes=outcomes,
+        config=candidate.config,
+        as_of=candidate.manifest.as_of,
+    )
+
+    assert digest_calls == 1
+    assert lineage_hash_calls == 0
+    assert len(rebuilt.manifest.source_use_lineage[0].market_bar_ids) == 2_000
 
 
 def test_candidate_rejects_missing_replay_bundle_lineage() -> None:

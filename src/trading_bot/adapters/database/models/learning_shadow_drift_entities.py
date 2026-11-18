@@ -17,6 +17,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.schema import conv
 
 from trading_bot.adapters.database.models.base import Base, CreatedAt, UuidPrimaryKey
 
@@ -152,6 +153,15 @@ class LearningShadowObservationRecord(UuidPrimaryKey, CreatedAt, Base):
             name="learning_shadow_observation_rights_valid",
         ),
         CheckConstraint(
+            "source_scope_fingerprint IS NULL OR source_scope_fingerprint ~ '^[0-9a-f]{64}$'",
+            name=conv("learning_shadow_observation_source_scope_hash_valid"),
+        ),
+        CheckConstraint(
+            "(rights_eligible AND source_scope_fingerprint IS NOT NULL) OR "
+            "(NOT rights_eligible AND source_scope_fingerprint IS NULL)",
+            name=conv("learning_shadow_observation_exact_rights_valid"),
+        ),
+        CheckConstraint(
             "(rights_eligible AND rights_source_id IS NOT NULL AND rights_policy_id IS NOT NULL "
             "AND rights_policy_sequence IS NOT NULL AND rights_known_at IS NOT NULL) OR "
             "(NOT rights_eligible AND rights_source_id IS NULL AND rights_policy_id IS NULL "
@@ -213,6 +223,7 @@ class LearningShadowObservationRecord(UuidPrimaryKey, CreatedAt, Base):
     schema_compatible: Mapped[bool] = mapped_column(Boolean, nullable=False)
     rights_eligible: Mapped[bool] = mapped_column(Boolean, nullable=False)
     rights_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    source_scope_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
     challenger_decision: Mapped[str] = mapped_column(String(16), nullable=False)
     challenger_reason: Mapped[str] = mapped_column(String(40), nullable=False)
     rights_source_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
@@ -255,6 +266,10 @@ class LearningDriftAssessmentRecord(UuidPrimaryKey, CreatedAt, Base):
             "AND length(idempotency_key) = 64 AND idempotency_key ~ '^[0-9a-f]{64}$' "
             "AND length(content_hash) = 64 AND content_hash ~ '^[0-9a-f]{64}$'",
             name="learning_drift_assessment_hashes_valid",
+        ),
+        CheckConstraint(
+            "source_rights_digest IS NULL OR source_rights_digest ~ '^[0-9a-f]{64}$'",
+            name=conv("learning_drift_assessment_source_rights_digest_valid"),
         ),
         CheckConstraint(
             "member_count >= 0 AND eligible_count >= 0 AND eligible_count <= member_count",
@@ -331,6 +346,7 @@ class LearningDriftAssessmentRecord(UuidPrimaryKey, CreatedAt, Base):
     performance_status: Mapped[str] = mapped_column(String(16), nullable=False)
     reason_codes: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
     membership_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_rights_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
     idempotency_key: Mapped[str] = mapped_column(String(64), nullable=False)
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
 
@@ -375,8 +391,20 @@ class LearningDriftAssessmentMemberRecord(Base):
             name="learning_drift_assessment_member_decision_valid",
         ),
         CheckConstraint(
-            "eligible = (baseline_available AND schema_compatible AND rights_eligible)",
-            name="learning_drift_assessment_member_eligibility_valid",
+            "(current_rights_eligible IS NULL AND current_rights_fingerprint IS NULL "
+            "AND current_source_ids IS NULL AND current_eligible IS NULL) OR "
+            "(current_rights_eligible IS NOT NULL AND current_source_ids IS NOT NULL "
+            "AND jsonb_typeof(current_source_ids) = 'array' AND current_eligible IS NOT NULL "
+            "AND ((current_rights_eligible AND current_rights_fingerprint IS NOT NULL "
+            "AND current_rights_fingerprint ~ '^[0-9a-f]{64}$') OR "
+            "(NOT current_rights_eligible AND current_rights_fingerprint IS NULL)))",
+            name=conv("learning_drift_assessment_member_current_scope_valid"),
+        ),
+        CheckConstraint(
+            "current_eligible IS NULL OR (current_eligible = "
+            "(baseline_available AND schema_compatible AND current_rights_eligible) "
+            "AND eligible = current_eligible)",
+            name=conv("learning_drift_assessment_member_current_eligible_valid"),
         ),
         Index(
             "ix_learning_drift_assessment_member_observation",
@@ -398,6 +426,12 @@ class LearningDriftAssessmentMemberRecord(Base):
     schema_compatible: Mapped[bool] = mapped_column(Boolean, nullable=False)
     rights_eligible: Mapped[bool] = mapped_column(Boolean, nullable=False)
     rights_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    current_rights_eligible: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    current_rights_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    current_source_ids: Mapped[list[str] | None] = mapped_column(
+        JSONB(none_as_null=True), nullable=True
+    )
+    current_eligible: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     challenger_decision: Mapped[str] = mapped_column(String(16), nullable=False)
 
 

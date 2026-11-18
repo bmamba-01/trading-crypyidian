@@ -16,11 +16,24 @@ from trading_bot.adapters.database.repositories.learning_scorer_runtime_targets 
 from trading_bot.adapters.database.repositories.learning_scoring_deployments import (
     ScorerDeploymentRightsUnavailable,
 )
+from trading_bot.adapters.database.repositories.scorer_runtime_source_rights import (
+    ScorerDecisionSourceLineageUnavailable,
+    ScorerDecisionSourceRightsDenied,
+    authorize_job_source_scope,
+    combine_source_rights_fingerprints,
+    persist_decision_feature_snapshots,
+    preflight_job_source_rights,
+    stage_job_source_bars,
+)
 from trading_bot.application.bot_dispatcher import (
     BotDecision,
     BotDecisionEvaluation,
     BotDecisionJob,
     BotDecisionStatus,
+)
+from trading_bot.application.learning_feature_vector import (
+    LearningFeatureVectorBuildError,
+    build_learning_feature_vector,
 )
 from trading_bot.application.learning_scorer_runtime import (
     LearningScorerRuntimeRequest,
@@ -50,14 +63,119 @@ class PostgresScorerRuntimeCommitter:
         evaluation: BotDecisionEvaluation,
         incumbent: BotDecision,
     ) -> BotDecisionScoringCommit | None:
-        resolved = await PostgresScorerRuntimeTargetRepository(session).resolve_active(
-            workspace_id=job.workspace_id
-        )
-        if resolved is None:
+        target_repository = PostgresScorerRuntimeTargetRepository(session)
+        metadata = await target_repository.resolve_active_metadata(workspace_id=job.workspace_id)
+        if metadata is None:
             return None
         if self._policy_provider is None:
             raise ScorerDeploymentRightsUnavailable(
                 "Scorer rights gateway chưa nhận policy runtime đã cấu hình."
+            )
+        if evaluation.snapshot is None:
+            raise ScorerDeploymentRightsUnavailable(
+                "Scorer candidate thiếu DecisionSnapshot strategy canonical."
+            )
+        if evaluation.candidate_id is None or evaluation.candidate_id != incumbent.candidate_id:
+            raise ScorerDeploymentRightsUnavailable(
+                "Scorer candidate không khớp BotDecision strategy."
+            )
+        if evaluation.snapshot.snapshot_id != incumbent.decision_snapshot_id:
+            raise ScorerDeploymentRightsUnavailable(
+                "Scorer snapshot không khớp BotDecision strategy."
+            )
+        if evaluation.vector is None:
+            vector_hash = hashlib.sha256(b"SCORER_VECTOR_MISSING").hexdigest()
+            try:
+                async with session.begin_nested() as savepoint:
+                    await stage_job_source_bars(
+                        session,
+                        job=job,
+                        snapshot=evaluation.snapshot,
+                    )
+                    await savepoint.rollback()
+            except ScorerDecisionSourceLineageUnavailable:
+                return _lineage_abstain_commit(
+                    incumbent,
+                    vector_hash=vector_hash,
+                    decision_snapshot_id=evaluation.snapshot.snapshot_id,
+                )
+            return _vector_missing_commit(
+                incumbent,
+                vector_hash=vector_hash,
+                decision_snapshot_id=evaluation.snapshot.snapshot_id,
+            )
+        if (
+            evaluation.vector.snapshot_id != evaluation.snapshot.snapshot_id
+            or evaluation.vector.workspace_id != job.workspace_id
+            or evaluation.vector.vector_hash == ""
+        ):
+            raise ScorerDeploymentRightsUnavailable(
+                "Scorer candidate không cùng snapshot/vector với BotDecision strategy."
+            )
+
+        try:
+            async with session.begin_nested():
+                await stage_job_source_bars(
+                    session,
+                    job=job,
+                    snapshot=evaluation.snapshot,
+                )
+                await preflight_job_source_rights(
+                    session,
+                    workspace_id=job.workspace_id,
+                    job_id=job.job_id,
+                )
+                await persist_decision_feature_snapshots(
+                    session,
+                    job=job,
+                    snapshot=evaluation.snapshot,
+                )
+                decision_rights_fingerprint = await authorize_job_source_scope(
+                    session,
+                    workspace_id=job.workspace_id,
+                    job_id=job.job_id,
+                )
+        except ScorerDecisionSourceLineageUnavailable:
+            # Thiếu identity không được đưa tới scorer CPU. Chỉ lưu quyết định ABSTAIN metadata.
+            return _lineage_abstain_commit(
+                incumbent,
+                vector_hash=evaluation.vector.vector_hash,
+                decision_snapshot_id=evaluation.snapshot.snapshot_id,
+            )
+        except ScorerDecisionSourceRightsDenied as error:
+            raise ScorerDeploymentRightsUnavailable(
+                "Current PAPER source-use rights bị từ chối đúng scope MarketBar."
+            ) from error
+
+        try:
+            expected_vector = build_learning_feature_vector(
+                evaluation.snapshot,
+                strategy_release_id=incumbent.strategy_release_id,
+                strategy_release_content_hash=incumbent.strategy_release_hash or "",
+            )
+        except LearningFeatureVectorBuildError as error:
+            raise ScorerDeploymentRightsUnavailable(
+                "Scorer vector không thể dựng lại từ snapshot strategy canonical."
+            ) from error
+        if evaluation.vector != expected_vector:
+            raise ScorerDeploymentRightsUnavailable(
+                "Scorer vector không khớp tái dựng canonical từ DecisionSnapshot strategy."
+            )
+
+        resolved = await target_repository.resolve_active_for_job(
+            workspace_id=job.workspace_id,
+            job_id=job.job_id,
+        )
+        if resolved is None:
+            return None
+        if (
+            resolved.mode != metadata.mode
+            or resolved.deployment_event_id != metadata.deployment_event_id
+            or resolved.deployment_revision != metadata.deployment_revision
+            or resolved.target.active_pointer_version != metadata.active_pointer_version
+        ):
+            raise ScorerDeploymentRightsUnavailable(
+                "Scorer deployment đổi giữa metadata preflight và artifact resolution."
             )
         policy = self._policy_provider.get_policy(
             workspace_id=job.workspace_id,
@@ -72,21 +190,11 @@ class PostgresScorerRuntimeCommitter:
             raise ScorerDeploymentRightsUnavailable(
                 "Scorer rights gateway không có đúng policy version/hash đã ghim trong report."
             )
-        if evaluation.snapshot is None or evaluation.vector is None:
-            raise ScorerDeploymentRightsUnavailable(
-                "Scorer candidate thiếu DecisionSnapshot hoặc vector strategy canonical."
-            )
-        if (
-            evaluation.candidate_id is None
-            or evaluation.candidate_id != incumbent.candidate_id
-            or evaluation.snapshot.snapshot_id != incumbent.decision_snapshot_id
-            or evaluation.vector.snapshot_id != evaluation.snapshot.snapshot_id
-            or evaluation.vector.workspace_id != job.workspace_id
-            or evaluation.vector.vector_hash == ""
-        ):
-            raise ScorerDeploymentRightsUnavailable(
-                "Scorer candidate không cùng snapshot/vector với BotDecision strategy."
-            )
+
+        source_rights_fingerprint = combine_source_rights_fingerprints(
+            deployment_fingerprint=resolved.source_rights_fingerprint,
+            decision_fingerprint=decision_rights_fingerprint,
+        )
 
         # Ngưỡng OOD thuộc policy hash; schema/statistics thiếu hoặc sai luôn đóng.
         is_out_of_distribution = feature_vector_is_out_of_distribution(
@@ -100,13 +208,31 @@ class PostgresScorerRuntimeCommitter:
                 candidate_id=evaluation.candidate_id,
                 vector=evaluation.vector,
                 source_rights_eligible=True,
-                source_rights_hash=resolved.source_rights_fingerprint,
+                source_rights_hash=source_rights_fingerprint,
                 is_out_of_distribution=is_out_of_distribution,
             ),
             base_artifact=resolved.base_artifact,
             scorer_artifact=resolved.scorer_artifact,
             policy=policy,
         )
+        try:
+            rechecked_fingerprint = await authorize_job_source_scope(
+                session,
+                workspace_id=job.workspace_id,
+                job_id=job.job_id,
+            )
+        except ScorerDecisionSourceLineageUnavailable as error:
+            raise ScorerDeploymentRightsUnavailable(
+                "Source lineage candidate biến mất trước khi append decision."
+            ) from error
+        except ScorerDecisionSourceRightsDenied as error:
+            raise ScorerDeploymentRightsUnavailable(
+                "Current PAPER rights bị thu hồi trước khi append decision."
+            ) from error
+        if rechecked_fingerprint != decision_rights_fingerprint:
+            raise ScorerDeploymentRightsUnavailable(
+                "Source rights fingerprint đổi trong scorer transaction."
+            )
         latency_ms = max(0, int((time.perf_counter() - started) * 1000))
         final_decision = _final_decision(incumbent, resolved.mode, result)
         vector = evaluation.vector
@@ -143,6 +269,7 @@ class PostgresScorerRuntimeCommitter:
             timeframe_snapshot_ids=timeframes,
             source_event_digests=source_digests,
             source_rights_fingerprint=resolved.source_rights_fingerprint,
+            decision_source_rights_fingerprint=decision_rights_fingerprint,
             mode=resolved.mode,
             deployment_event_id=resolved.deployment_event_id,
             deployment_revision=resolved.deployment_revision,
@@ -216,6 +343,74 @@ def _final_decision(
     )
     values["decision_hash"] = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
     return BotDecision(**values)
+
+
+def _lineage_abstain_commit(
+    incumbent: BotDecision,
+    *,
+    vector_hash: str,
+    decision_snapshot_id: str,
+) -> BotDecisionScoringCommit:
+    """Tạo ABSTAIN không giữ candidate hay score khi lineage nguồn chưa đủ."""
+    values = {field.name: getattr(incumbent, field.name) for field in fields(BotDecision)}
+    values.pop("decision_hash")
+    values["status"] = BotDecisionStatus.ABSTAIN
+    values["reason_code"] = "SCORER_SOURCE_LINEAGE_MISSING"
+    values["detail_vi"] = "Không dùng scorer vì thiếu lineage nến nguồn đã xác minh."
+    values["candidate_json"] = None
+    values["gate_details"] = tuple(
+        dict.fromkeys((*incumbent.gate_details, "SCORER_SOURCE_LINEAGE_MISSING"))
+    )
+    canonical = json.dumps(
+        _decision_payload(values),
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    values["decision_hash"] = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    final_decision = BotDecision(**values)
+    return BotDecisionScoringCommit(
+        decision=final_decision,
+        score_event=None,
+        incumbent_decision=incumbent,
+        vector_hash=vector_hash,
+        decision_snapshot_id=decision_snapshot_id,
+    )
+
+
+def _vector_missing_commit(
+    incumbent: BotDecision,
+    *,
+    vector_hash: str,
+    decision_snapshot_id: str,
+) -> BotDecisionScoringCommit:
+    """Tạo ABSTAIN riêng khi lineage hợp lệ nhưng vector canonical không có."""
+    values = {field.name: getattr(incumbent, field.name) for field in fields(BotDecision)}
+    values.pop("decision_hash")
+    values["status"] = BotDecisionStatus.ABSTAIN
+    values["reason_code"] = "SCORER_VECTOR_MISSING"
+    values["detail_vi"] = "Không dùng scorer vì thiếu vector canonical đã xác minh."
+    values["candidate_json"] = None
+    values["gate_details"] = tuple(
+        dict.fromkeys((*incumbent.gate_details, "SCORER_VECTOR_MISSING"))
+    )
+    canonical = json.dumps(
+        _decision_payload(values),
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    values["decision_hash"] = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    final_decision = BotDecision(**values)
+    return BotDecisionScoringCommit(
+        decision=final_decision,
+        score_event=None,
+        incumbent_decision=incumbent,
+        vector_hash=vector_hash,
+        decision_snapshot_id=decision_snapshot_id,
+    )
 
 
 def _decision_payload(values: dict[str, object]) -> dict[str, object]:

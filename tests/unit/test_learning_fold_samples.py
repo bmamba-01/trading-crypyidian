@@ -14,7 +14,10 @@ from trading_bot.adapters.database.models.learning_fold_sample_entities import (
     NormalizedLearningDatasetRecord,
     NormalizedLearningSampleRecord,
 )
-from trading_bot.adapters.database.repositories.learning_fold_samples import _validate_input
+from trading_bot.adapters.database.repositories.learning_fold_samples import (
+    LearningFoldSampleRepository,
+    _validate_input,
+)
 from trading_bot.application.learning_fold_evaluation import (
     FoldOutcomeExpectation,
     FoldOutcomeVerificationBatch,
@@ -135,6 +138,27 @@ def manifest() -> DatasetManifest:
         holdout_sealed_at=at(16),
         manifest_version="dataset-manifest-v2",
     )
+
+
+@pytest.mark.asyncio
+async def test_source_free_normalization_does_not_call_replay_receipt_gate() -> None:
+    class Session:
+        def __init__(self) -> None:
+            self.statements = []
+
+        async def execute(self, statement, *_args, **_kwargs) -> None:
+            self.statements.append(str(statement))
+
+    session = Session()
+    repository = LearningFoldSampleRepository(session)
+
+    await repository._invoke_training_source_receipt_gate(
+        manifest=manifest(),
+        normalized_dataset_id=uuid4(),
+        fold_plan_hash="d" * 64,
+    )
+
+    assert session.statements == []
 
 
 def fold_plan(dataset: DatasetManifest) -> ManifestFoldPlan:

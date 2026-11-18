@@ -296,13 +296,27 @@ class LearningScorerTestEvaluationReportRepository:
         async with UnitOfWork(
             self._sessions,
             workspace_id=workspace_id,
-            snapshot_read_only=True,
         ) as uow:
-            row = await uow.session.scalar(
-                select(LearningScorerTestEvaluationReportRecord).where(
-                    LearningScorerTestEvaluationReportRecord.workspace_id == workspace_id,
-                    LearningScorerTestEvaluationReportRecord.evaluation_run_id == evaluation_run_id,
+            session = uow.session
+            report = LearningScorerTestEvaluationReportRecord
+            report_id = await session.scalar(
+                select(report.id).where(
+                    report.workspace_id == workspace_id,
+                    report.evaluation_run_id == evaluation_run_id,
                 )
+            )
+            if report_id is None:
+                return None
+            await session.execute(
+                text(
+                    "SELECT public.wp06_recheck_scorer_test_report_source_rights("
+                    "target_workspace => CAST(:workspace_id AS uuid), "
+                    "target_report_id => CAST(:report_id AS uuid))"
+                ),
+                {"workspace_id": str(workspace_id), "report_id": str(report_id)},
+            )
+            row = await session.scalar(
+                select(report).where(report.workspace_id == workspace_id, report.id == report_id)
             )
             if row is None:
                 return None

@@ -58,7 +58,7 @@ def test_postgres_scorer_deployment_governance_and_rights_gate() -> None:
             compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "head")
             heads = compose("run", "--rm", "--no-deps", "migrator", "alembic", "heads")
             assert heads.stdout.count("(head)") == 1, heads.stdout
-            assert "e1f3a5b7c9d1 (head)" in heads.stdout
+            assert "c8d28da699c6 (head)" in heads.stdout
             check = compose("run", "--rm", "--no-deps", "migrator", "alembic", "check")
             assert "No new upgrade operations detected" in check.stdout + check.stderr
 
@@ -122,6 +122,7 @@ def test_postgres_scorer_deployment_governance_and_rights_gate() -> None:
                 "score_event_valid_shadow_veto_preserved": True,
                 "score_event_scoring_pointer_lock_wait": True,
                 "score_event_model_pointer_lock_wait": True,
+                "worker_artifact_resolver_bound_to_job": True,
             }
 
             downgrade = compose(

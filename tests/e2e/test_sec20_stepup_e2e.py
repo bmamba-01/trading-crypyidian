@@ -702,7 +702,7 @@ def test_sec20_stepup_postgres_migration_rls_and_http_e2e() -> None:
             capture_output=True,
             text=True,
         )
-        assert "e9a1c3f5b7d2 (head)" in alembic_heads.stdout
+        assert "c8d28da699c6 (head)" in alembic_heads.stdout
 
         # Kiểm tra downgrade -> upgrade hoạt động sạch trên PostgreSQL thật
         subprocess.run(

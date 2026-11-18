@@ -24,6 +24,94 @@ from trading_bot.adapters.database.models.base import Base, CreatedAt, UuidPrima
 from trading_bot.domain.learning.score_event import LearningScoreEvent
 
 
+class BotDecisionJobSourceRightsAuthorization(UuidPrimaryKey, CreatedAt, Base):
+    """Ủy quyền scope scorer transaction-only, xóa khi job tạo BotDecision."""
+
+    __tablename__ = "bot_decision_job_source_rights_auth"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["workspace_id", "job_id"],
+            ["bot_decision_job.workspace_id", "bot_decision_job.id"],
+            ondelete="RESTRICT",
+            name="fk_bot_decision_job_source_rights_auth_job",
+        ),
+        ForeignKeyConstraint(
+            ["workspace_id", "evidence_id"],
+            ["shared_signal_evidence.workspace_id", "shared_signal_evidence.id"],
+            ondelete="RESTRICT",
+            name="fk_bot_decision_job_source_rights_auth_evidence",
+        ),
+        UniqueConstraint(
+            "workspace_id", "job_id", name="uq_bot_decision_job_source_rights_auth_job"
+        ),
+        CheckConstraint(
+            "evidence_hash ~ '^[0-9a-f]{64}$' AND decision_snapshot_id ~ '^[0-9a-f]{64}$' "
+            "AND decision_source_rights_fingerprint ~ '^[0-9a-f]{64}$' "
+            "AND decision_lineage_fingerprint ~ '^[0-9a-f]{64}$'",
+            name="bot_decision_job_source_rights_auth_hashes_valid",
+        ),
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    bot_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    job_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    evidence_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    evidence_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    decision_snapshot_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    decision_source_rights_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    decision_lineage_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+
+
+class BotDecisionSourceRightsReceipt(UuidPrimaryKey, CreatedAt, Base):
+    """Ghim quyền PAPER đã kiểm tra vào lineage nguồn cuối cùng của một quyết định."""
+
+    __tablename__ = "bot_decision_source_rights_receipt"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["workspace_id", "bot_id", "bot_decision_id"],
+            ["bot_decision.workspace_id", "bot_decision.bot_id", "bot_decision.id"],
+            ondelete="RESTRICT",
+            name="fk_bot_decision_source_rights_receipt_decision",
+        ),
+        ForeignKeyConstraint(
+            ["workspace_id", "job_id"],
+            ["bot_decision_job.workspace_id", "bot_decision_job.id"],
+            ondelete="RESTRICT",
+            name="fk_bot_decision_source_rights_receipt_job",
+        ),
+        ForeignKeyConstraint(
+            ["workspace_id", "evidence_id"],
+            ["shared_signal_evidence.workspace_id", "shared_signal_evidence.id"],
+            ondelete="RESTRICT",
+            name="fk_bot_decision_source_rights_receipt_evidence",
+        ),
+        UniqueConstraint(
+            "workspace_id",
+            "bot_decision_id",
+            name="uq_bot_decision_source_rights_receipt_decision",
+        ),
+        UniqueConstraint(
+            "workspace_id", "job_id", name="uq_bot_decision_source_rights_receipt_job"
+        ),
+        CheckConstraint(
+            "evidence_hash ~ '^[0-9a-f]{64}$' AND decision_snapshot_id ~ '^[0-9a-f]{64}$' "
+            "AND decision_source_rights_fingerprint ~ '^[0-9a-f]{64}$' "
+            "AND decision_lineage_fingerprint ~ '^[0-9a-f]{64}$'",
+            name="bot_decision_source_rights_receipt_hashes_valid",
+        ),
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    bot_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    bot_decision_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    job_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    evidence_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    evidence_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    decision_snapshot_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    decision_source_rights_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    decision_lineage_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+
+
 class LearningScoreEventRecord(UuidPrimaryKey, CreatedAt, Base):
     """Metadata score đã ghim vào quyết định; không lưu feature/vector payload."""
 
@@ -120,6 +208,15 @@ class LearningScoreEventRecord(UuidPrimaryKey, CreatedAt, Base):
             name="learning_score_event_hashes_valid",
         ),
         CheckConstraint(
+            "decision_source_rights_fingerprint IS NULL OR "
+            "decision_source_rights_fingerprint ~ '^[0-9a-f]{64}$'",
+            name="learning_score_event_decision_rights_hash_valid",
+        ),
+        CheckConstraint(
+            "decision_scope_fingerprint IS NULL OR decision_scope_fingerprint ~ '^[0-9a-f]{64}$'",
+            name="learning_score_event_decision_scope_hash_valid",
+        ),
+        CheckConstraint(
             "length(btrim(feature_schema_version)) > 0 AND length(btrim(policy_id)) > 0 "
             "AND model_latency_ms >= 0 AND jsonb_typeof(timeframe_snapshot_ids) = 'array' "
             "AND jsonb_array_length(timeframe_snapshot_ids) > 0 "
@@ -174,6 +271,10 @@ class LearningScoreEventRecord(UuidPrimaryKey, CreatedAt, Base):
     timeframe_snapshot_ids: Mapped[list[list[str]]] = mapped_column(JSONB, nullable=False)
     source_event_digests: Mapped[list[list[str]]] = mapped_column(JSONB, nullable=False)
     source_rights_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    decision_source_rights_fingerprint: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
+    decision_scope_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
     mode: Mapped[str] = mapped_column(String(16), nullable=False)
     deployment_event_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     deployment_revision: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -229,6 +330,8 @@ class LearningScoreEventRecord(UuidPrimaryKey, CreatedAt, Base):
             timeframe_snapshot_ids=[list(item) for item in event.timeframe_snapshot_ids],
             source_event_digests=[list(item) for item in event.source_event_digests],
             source_rights_fingerprint=event.source_rights_fingerprint,
+            decision_source_rights_fingerprint=event.decision_source_rights_fingerprint,
+            decision_scope_fingerprint=event.decision_scope_fingerprint,
             mode=event.mode.value,
             deployment_event_id=event.deployment_event_id,
             deployment_revision=event.deployment_revision,

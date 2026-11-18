@@ -31,15 +31,20 @@ class ScorerDeploymentService:
         sessions: async_sessionmaker[AsyncSession],
         *,
         policy_provider: ScorerRuntimePolicyProvider | None = None,
+        active_modes_enabled: bool = False,
     ) -> None:
         self._sessions = sessions
         self._policy_provider = policy_provider
+        self._active_modes_enabled = active_modes_enabled
 
     def for_principal(self, principal: Principal) -> PrincipalScorerDeploymentService:
         if not isinstance(principal, Principal):
             raise TypeError("principal phải đến từ authentication boundary.")
         return PrincipalScorerDeploymentService(
-            self._sessions, principal, policy_provider=self._policy_provider
+            self._sessions,
+            principal,
+            policy_provider=self._policy_provider,
+            active_modes_enabled=self._active_modes_enabled,
         )
 
 
@@ -50,10 +55,12 @@ class PrincipalScorerDeploymentService:
         principal: Principal,
         *,
         policy_provider: ScorerRuntimePolicyProvider | None = None,
+        active_modes_enabled: bool = False,
     ) -> None:
         self._sessions = sessions
         self._principal = principal
         self._policy_provider = policy_provider
+        self._active_modes_enabled = active_modes_enabled
 
     async def load_active_scoring_deployment(self) -> ScorerDeploymentSnapshot:
         self._require(Permission.LEARNING_MODEL_READ)
@@ -82,6 +89,10 @@ class PrincipalScorerDeploymentService:
         verified_at = self._require_recent_mfa(Permission.LEARNING_MODEL_APPROVE)
         if type(mode) is not ScorerDeploymentMode:
             raise ValueError("mode không hợp lệ.")
+        if mode is not ScorerDeploymentMode.DISABLED and not self._active_modes_enabled:
+            raise ScorerDeploymentRightsUnavailable(
+                "Chế độ SHADOW/PAPER_GATE đang khóa theo cấu hình triển khai."
+            )
         if mode is ScorerDeploymentMode.DISABLED:
             if evaluation_report_id is not None:
                 raise ValueError("DISABLED không nhận evaluation_report_id.")

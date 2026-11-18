@@ -8,6 +8,7 @@ import pytest
 from trading_bot.adapters.database.replay_training_rights import (
     DatabaseReplayTrainingRightsGate,
     ReplayTrainingOperation,
+    candidate_test_proof_scope_digest,
     training_scope_digest,
 )
 
@@ -109,6 +110,49 @@ async def test_verifier_receipt_pins_evaluation_operation_separately() -> None:
     assert receipts[0].purpose.value == "training"
     assert receipts[0].operation is ReplayTrainingOperation.EVALUATION
     assert receipts[0].scope_payload["operation"] == "evaluation"
+
+
+@pytest.mark.asyncio
+async def test_verifier_receipt_pins_candidate_test_proof_operation_separately() -> None:
+    session = _Session((_row("a" * 64),))
+    receipts = await DatabaseReplayTrainingRightsGate(session).authorize(
+        workspace_id=WORKSPACE_ID,
+        bundle_hash=BUNDLE_HASH,
+        operation=ReplayTrainingOperation.CANDIDATE_TEST_PROOF,
+    )
+
+    assert session.parameters["operation"] == "candidate_test_proof"
+    assert receipts[0].purpose.value == "training"
+    assert receipts[0].operation is ReplayTrainingOperation.CANDIDATE_TEST_PROOF
+    assert receipts[0].scope_payload["operation"] == "candidate_test_proof"
+
+
+@pytest.mark.asyncio
+async def test_candidate_test_proof_digest_preserves_legacy_evaluation_proof_hash() -> None:
+    builder_receipts = await DatabaseReplayTrainingRightsGate(
+        _Session((_row("a" * 64), _row("b" * 64)))  # type: ignore[arg-type]
+    ).authorize(
+        workspace_id=WORKSPACE_ID,
+        bundle_hash=BUNDLE_HASH,
+        operation=ReplayTrainingOperation.CANDIDATE_TEST_PROOF,
+    )
+    legacy_evaluator_receipts = await DatabaseReplayTrainingRightsGate(
+        _Session((_row("a" * 64), _row("b" * 64)))  # type: ignore[arg-type]
+    ).authorize(
+        workspace_id=WORKSPACE_ID,
+        bundle_hash=BUNDLE_HASH,
+        operation=ReplayTrainingOperation.EVALUATION,
+    )
+
+    assert all(
+        receipt.scope_payload["operation"] == "candidate_test_proof" for receipt in builder_receipts
+    )
+    assert candidate_test_proof_scope_digest(builder_receipts) == training_scope_digest(
+        legacy_evaluator_receipts
+    )
+    assert training_scope_digest(builder_receipts) != training_scope_digest(
+        legacy_evaluator_receipts
+    )
 
 
 @pytest.mark.asyncio

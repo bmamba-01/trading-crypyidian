@@ -103,6 +103,9 @@ from trading_bot.adapters.database.models.learning_fold_sample_entities import (
 from trading_bot.adapters.database.models.learning_incident_entry_hold_entities import (
     LearningIncidentHoldEventRecord,
 )
+from trading_bot.adapters.database.models.learning_job_source_bar_entities import (
+    BotDecisionJobSourceBarRecord,
+)
 from trading_bot.adapters.database.models.learning_model_registry_entities import (
     LearningModelActivePointerRecord,
     LearningModelRegistryEventRecord,
@@ -140,6 +143,9 @@ from trading_bot.adapters.database.models.learning_shadow_drift_entities import 
     LearningDriftAssessmentRecord,
     LearningRetrainProposalRecord,
     LearningShadowObservationRecord,
+)
+from trading_bot.adapters.database.models.learning_source_bar_entities import (
+    BotDecisionSourceBarRecord,
 )
 from trading_bot.adapters.database.models.learning_source_training_receipt_entities import (
     LearningSourceTrainingReceiptRecord,
@@ -240,7 +246,9 @@ __all__ = [
     "BotConfigRequest",
     "BotConfigVersion",
     "BotDecisionJobRecord",
+    "BotDecisionJobSourceBarRecord",
     "BotDecisionRecord",
+    "BotDecisionSourceBarRecord",
     "BotGrant",
     "BotInstance",
     "ActionChallengeRecord",

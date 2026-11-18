@@ -40,7 +40,10 @@ from trading_bot.application.bot_config_resolver import (
     EffectiveBotConfig,
     load_effective_bot_config,
 )
-from trading_bot.application.bot_dispatcher import BotDecisionContext
+from trading_bot.application.bot_dispatcher import (
+    DEFAULT_MAX_BARS_PER_STREAM,
+    BotDecisionContext,
+)
 from trading_bot.application.outbox import UnitOfWork
 
 logger = logging.getLogger(__name__)
@@ -57,7 +60,11 @@ BOT_RECOVERY_REQUIRED = "BOT_RECOVERY_REQUIRED"
 BOT_STANDBY = "BOT_STANDBY"
 
 
-def bot_decision_context_from_effective(config: EffectiveBotConfig) -> BotDecisionContext:
+def bot_decision_context_from_effective(
+    config: EffectiveBotConfig,
+    *,
+    max_bars_per_stream: int = DEFAULT_MAX_BARS_PER_STREAM,
+) -> BotDecisionContext:
     """Chuyển `EffectiveBotConfig` đã kiểm hash thành context tối thiểu của dispatcher.
 
     `root_settings_version_id` là root `workspace_settings_version` (ruling fix round MB-03):
@@ -78,6 +85,7 @@ def bot_decision_context_from_effective(config: EffectiveBotConfig) -> BotDecisi
         symbols=config.symbols,
         effective_at=config.effective_at,
         strategy_parameters=config.strategy.parameters,
+        max_bars_per_stream=max_bars_per_stream,
     )
 
 
@@ -192,6 +200,7 @@ class EffectiveBotDecisionContextProvider:
         on_exclusion: Callable[[FanOutExclusion], None] | None = None,
         runtime_gate: RuntimeGate,
         exclusion_recorder: ExclusionRecorder,
+        max_bars_per_stream: int = DEFAULT_MAX_BARS_PER_STREAM,
     ) -> None:
         # Fix round 1 (I3): gate + recorder bắt buộc (fail-closed). Thiếu gate thì bot bị pause/
         # kill/incident vẫn lọt fan-out; thiếu recorder thì lý do loại không được lưu bền.
@@ -202,6 +211,13 @@ class EffectiveBotDecisionContextProvider:
         self._on_exclusion = on_exclusion
         self._runtime_gate = runtime_gate
         self._exclusion_recorder = exclusion_recorder
+        if (
+            isinstance(max_bars_per_stream, bool)
+            or not isinstance(max_bars_per_stream, int)
+            or not 200 <= max_bars_per_stream <= 2000
+        ):
+            raise ValueError("max_bars_per_stream phải nằm trong [200, 2000].")
+        self._max_bars_per_stream = max_bars_per_stream
 
     async def contexts_for(
         self, *, workspace_id: UUID, as_of: datetime
@@ -273,7 +289,10 @@ class EffectiveBotDecisionContextProvider:
                 bot.account_id,
             ):
                 return BOT_CONFIG_SCOPE_MISMATCH
-            return bot_decision_context_from_effective(config)
+            return bot_decision_context_from_effective(
+                config,
+                max_bars_per_stream=self._max_bars_per_stream,
+            )
         except BotConfigResolutionError as error:
             return error.code
 

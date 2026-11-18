@@ -332,10 +332,9 @@ def build_learning_split_cohort_candidate(
         if bundle_hash in trial_bundles:
             raise ValueError("Hai trial của cohort dùng cùng một replay bundle.")
         trial_bundles.append(bundle_hash)
-        lineage_values = {item.source_use_lineage for item in ordered}
-        if len(lineage_values) != 1:
+        trial_lineage = ordered[0].source_use_lineage
+        if any(item.source_use_lineage != trial_lineage for item in ordered[1:]):
             raise ValueError("Mọi outcome phải ghim cùng exact source-use child lineage.")
-        trial_lineage = next(iter(lineage_values))
         if not trial_lineage:
             raise ValueError("Mọi outcome cần source-use lineage không rỗng.")
         for entry in trial_lineage:

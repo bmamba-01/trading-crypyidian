@@ -146,6 +146,7 @@ class LearningDriftAssessment:
     performance_status: DriftAssessmentStatus
     reason_codes: tuple[DriftReason, ...]
     created_at: datetime
+    source_rights_digest: str | None = None
 
     def __post_init__(self) -> None:
         for name in ("assessment_id", "workspace_id"):
@@ -190,6 +191,11 @@ class LearningDriftAssessment:
             or _SHA256.fullmatch(self.membership_digest) is None
         ):
             raise ValueError("membership_digest phải là SHA-256 hex chữ thường.")
+        if self.source_rights_digest is not None and (
+            not isinstance(self.source_rights_digest, str)
+            or _SHA256.fullmatch(self.source_rights_digest) is None
+        ):
+            raise ValueError("source_rights_digest phải là SHA-256 hex chữ thường hoặc None.")
         if self.membership_digest != _digest(_canonical([str(item) for item in self.member_ids])):
             raise ValueError("membership_digest không khớp member_ids.")
         if type(self.member_count) is not int or self.member_count != len(self.member_ids):
@@ -256,6 +262,7 @@ class LearningDriftAssessment:
                 "quality_rate": self.quality_rate,
                 "reason_codes": [item.value for item in self.reason_codes],
                 "snapshot_coverage_rate": self.snapshot_coverage_rate,
+                "source_rights_digest": self.source_rights_digest,
                 "window_end": self.window_end.isoformat() if self.window_end else None,
                 "window_start": self.window_start.isoformat() if self.window_start else None,
                 "workspace_id": str(self.workspace_id),
@@ -346,6 +353,7 @@ def assess_learning_drift(
     policy: DriftPolicy,
     observations: tuple[DriftObservation, ...],
     created_at: datetime,
+    source_rights_digest: str | None = None,
 ) -> LearningDriftAssessment:
     """Đo coverage/chất lượng từ metadata đã xác minh; không suy luận PnL."""
     if type(workspace_id) is not UUID or workspace_id.int == 0:
@@ -360,6 +368,10 @@ def assess_learning_drift(
         raise ValueError("observations phải là tuple[DriftObservation, ...].")
     if any(item.workspace_id != workspace_id for item in observations):
         raise PermissionError("Observation nằm ngoài workspace assessment.")
+    if source_rights_digest is not None and (
+        not isinstance(source_rights_digest, str) or _SHA256.fullmatch(source_rights_digest) is None
+    ):
+        raise ValueError("source_rights_digest phải là SHA-256 hex chữ thường hoặc None.")
     if len({item.challenger_registry_id for item in observations}) > 1:
         raise ValueError("Assessment chỉ được chứa cùng challenger registry.")
     if len({item.challenger_revision for item in observations}) > 1:
@@ -420,6 +432,7 @@ def assess_learning_drift(
         quality_rate = None
         data_status = DriftAssessmentStatus.INCONCLUSIVE
 
+    rights_complete = not any(not item.rights_eligible for item in ordered)
     abstention_rate = (
         _rounded_rate(
             sum(
@@ -431,7 +444,7 @@ def assess_learning_drift(
             ),
             len(ordered),
         )
-        if ordered
+        if ordered and rights_complete
         else None
     )
     return LearningDriftAssessment(
@@ -457,6 +470,7 @@ def assess_learning_drift(
         performance_status=DriftAssessmentStatus.INCONCLUSIVE,
         reason_codes=tuple(sorted(reasons, key=lambda item: item.value)),
         created_at=created_at,
+        source_rights_digest=source_rights_digest,
     )
 
 

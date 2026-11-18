@@ -2,7 +2,8 @@ import hashlib
 import json
 from datetime import UTC, datetime
 from decimal import Decimal
-from uuid import uuid4
+from types import SimpleNamespace
+from uuid import UUID, uuid4
 
 import pytest
 from test_learning_scorer_evaluation import (
@@ -19,6 +20,7 @@ from trading_bot.adapters.database.models.learning_fold_sample_entities import (
 )
 from trading_bot.adapters.database.repositories.backtest_outcomes import _trade_payload
 from trading_bot.adapters.database.repositories.learning_scorer_test_access import (
+    LearningScorerTestEvaluationReportRepository,
     _consumption_from_rows,
     _scorer_test_row,
     scorer_test_evaluation_report_from_canonical_json,
@@ -101,6 +103,109 @@ def test_scorer_test_report_repository_parser_rejects_wrong_hash() -> None:
             report.canonical_json,
             expected_report_hash="0" * 64,
         )
+
+
+@pytest.mark.asyncio
+async def test_scorer_test_report_retry_rechecks_rights_before_loading_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report_id = UUID("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee")
+    workspace_id = uuid4()
+    expected_workspace_id = workspace_id
+    evaluation_run_id = uuid4()
+
+    class Session:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        async def scalar(self, statement):
+            sql = str(statement)
+            self.calls.append(sql)
+            if "SELECT learning_scorer_test_evaluation_report.id" in sql:
+                return report_id
+            assert "SELECT learning_scorer_test_evaluation_report." in sql
+            return None
+
+        async def execute(self, statement, _parameters):
+            sql = str(statement)
+            self.calls.append(sql)
+            assert "wp06_recheck_scorer_test_report_source_rights" in sql
+            return None
+
+    session = Session()
+
+    class UnitOfWork:
+        def __init__(self, _sessions, *, workspace_id, snapshot_read_only: bool = False):
+            assert workspace_id == expected_workspace_id
+            self.session = session
+
+        async def __aenter__(self):
+            return SimpleNamespace(session=self.session)
+
+        async def __aexit__(self, *_exc):
+            return False
+
+    import trading_bot.adapters.database.repositories.learning_scorer_test_access as repository
+
+    monkeypatch.setattr(repository, "UnitOfWork", UnitOfWork)
+    result = await LearningScorerTestEvaluationReportRepository(object()).get_by_run(
+        workspace_id=workspace_id,
+        evaluation_run_id=evaluation_run_id,
+    )
+
+    assert result is None
+    assert len(session.calls) == 3
+    assert "SELECT learning_scorer_test_evaluation_report.id" in session.calls[0]
+    assert "wp06_recheck_scorer_test_report_source_rights" in session.calls[1]
+    assert "SELECT learning_scorer_test_evaluation_report." in session.calls[2]
+
+
+@pytest.mark.asyncio
+async def test_scorer_test_report_retry_never_loads_payload_after_rights_denial(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace_id = uuid4()
+    expected_workspace_id = workspace_id
+    report_id = uuid4()
+
+    class Session:
+        def __init__(self) -> None:
+            self.scalar_calls = 0
+            self.gate_calls = 0
+
+        async def scalar(self, _statement):
+            self.scalar_calls += 1
+            return report_id
+
+        async def execute(self, statement, _parameters):
+            self.gate_calls += 1
+            assert "wp06_recheck_scorer_test_report_source_rights" in str(statement)
+            raise RuntimeError("current source rights revoked")
+
+    session = Session()
+
+    class UnitOfWork:
+        def __init__(self, _sessions, *, workspace_id, snapshot_read_only: bool = False):
+            assert workspace_id == expected_workspace_id
+            self.session = session
+
+        async def __aenter__(self):
+            return SimpleNamespace(session=self.session)
+
+        async def __aexit__(self, *_exc):
+            return False
+
+    import trading_bot.adapters.database.repositories.learning_scorer_test_access as repository
+
+    monkeypatch.setattr(repository, "UnitOfWork", UnitOfWork)
+    with pytest.raises(RuntimeError, match="rights revoked"):
+        await LearningScorerTestEvaluationReportRepository(object()).get_by_run(
+            workspace_id=workspace_id,
+            evaluation_run_id=uuid4(),
+        )
+
+    assert session.scalar_calls == 1
+    assert session.gate_calls == 1
 
 
 def _consumption_row() -> tuple[dict[str, object], ScorerTestAccessReceipt]:

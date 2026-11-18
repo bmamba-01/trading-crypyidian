@@ -75,11 +75,131 @@ class ResolvedScorerRuntimeTarget:
             raise ValueError("source_rights_fingerprint phải là SHA-256.")
 
 
+@dataclass(frozen=True, slots=True)
+class ResolvedScorerRuntimeMetadata:
+    """Metadata pointer active; không chứa hoặc giải mã artifact."""
+
+    workspace_id: UUID
+    mode: ScorerDeploymentMode
+    deployment_event_id: UUID
+    deployment_revision: int
+    active_pointer_version: int
+
+    def __post_init__(self) -> None:
+        if type(self.workspace_id) is not UUID:
+            raise ValueError("workspace_id phải là UUID authoritative.")
+        if (
+            type(self.mode) is not ScorerDeploymentMode
+            or self.mode is ScorerDeploymentMode.DISABLED
+        ):
+            raise ValueError("Metadata runtime cần mode active authoritative.")
+        if type(self.deployment_event_id) is not UUID:
+            raise ValueError("deployment_event_id phải là UUID authoritative.")
+        if type(self.deployment_revision) is not int or self.deployment_revision < 1:
+            raise ValueError("deployment_revision phải là số dương.")
+        if type(self.active_pointer_version) is not int or self.active_pointer_version < 1:
+            raise ValueError("active_pointer_version phải là số dương.")
+
+
 class PostgresScorerRuntimeTargetRepository:
     """Chỉ nhận artifact/runtime metadata từ SECURITY DEFINER gateway đã ghim target."""
 
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
+
+    async def resolve_active_metadata(
+        self,
+        *,
+        workspace_id: UUID,
+    ) -> ResolvedScorerRuntimeMetadata | None:
+        """Kiểm tra active pointer mà chưa đọc bytes artifact scorer/base."""
+        if type(workspace_id) is not UUID:
+            raise ValueError("workspace_id phải là UUID authoritative.")
+        await self._session.execute(
+            text("SELECT set_config('app.workspace_id', :workspace_id, true)"),
+            {"workspace_id": str(workspace_id)},
+        )
+        result = await self._session.execute(
+            text(
+                "SELECT * FROM public.wp06_resolve_scorer_runtime_metadata("
+                "CAST(:workspace_id AS uuid))"
+            ),
+            {"workspace_id": str(workspace_id)},
+        )
+        return self._active_metadata_from_result(result, workspace_id=workspace_id)
+
+    async def resolve_active_for_job(
+        self,
+        *,
+        workspace_id: UUID,
+        job_id: UUID,
+    ) -> ResolvedScorerRuntimeTarget | None:
+        """Đọc artifact qua resolver chỉ mở sau current source gate của job đã khóa."""
+        if type(workspace_id) is not UUID or type(job_id) is not UUID:
+            raise ValueError("workspace_id và job_id phải là UUID authoritative.")
+        await self._session.execute(
+            text("SELECT set_config('app.workspace_id', :workspace_id, true)"),
+            {"workspace_id": str(workspace_id)},
+        )
+        result = await self._session.execute(
+            text(
+                "SELECT * FROM public.wp06_resolve_scorer_runtime_target_for_job("
+                "CAST(:workspace_id AS uuid), CAST(:job_id AS uuid))"
+            ),
+            {"workspace_id": str(workspace_id), "job_id": str(job_id)},
+        )
+        return self._active_target_from_result(result, workspace_id=workspace_id)
+
+    @classmethod
+    def _active_metadata_from_result(
+        cls, result: Any, *, workspace_id: UUID
+    ) -> ResolvedScorerRuntimeMetadata | None:
+        row = result.mappings().one_or_none()
+        if row is None:
+            return None
+        expected_names = {
+            "workspace_id",
+            "mode",
+            "deployment_event_id",
+            "deployment_revision",
+            "active_pointer_version",
+        }
+        if not isinstance(row, Mapping) or set(row.keys()) != expected_names:
+            raise ScorerDeploymentRightsUnavailable(
+                "Gateway scorer metadata trả schema không tối thiểu."
+            )
+        try:
+            metadata = ResolvedScorerRuntimeMetadata(
+                workspace_id=row["workspace_id"],
+                mode=ScorerDeploymentMode(row["mode"]),
+                deployment_event_id=row["deployment_event_id"],
+                deployment_revision=row["deployment_revision"],
+                active_pointer_version=row["active_pointer_version"],
+            )
+        except (TypeError, ValueError) as error:
+            raise ScorerDeploymentRightsUnavailable(
+                "Gateway scorer metadata không hợp lệ."
+            ) from error
+        if metadata.workspace_id != workspace_id:
+            raise ScorerDeploymentRightsUnavailable("Gateway scorer metadata trả workspace khác.")
+        return metadata
+
+    @classmethod
+    def _active_target_from_result(
+        cls, result: Any, *, workspace_id: UUID
+    ) -> ResolvedScorerRuntimeTarget | None:
+        row = result.mappings().one_or_none()
+        if row is None:
+            return None
+        if not isinstance(row, Mapping) or not isinstance(row.get("mode"), str):
+            raise ScorerDeploymentRightsUnavailable("Gateway scorer không trả mode hợp lệ.")
+        try:
+            mode = ScorerDeploymentMode(row["mode"])
+        except ValueError as error:
+            raise ScorerDeploymentRightsUnavailable(
+                "Gateway scorer trả mode không hỗ trợ."
+            ) from error
+        return cls._target_from_row(row, workspace_id=workspace_id, mode=mode)
 
     async def resolve_active(
         self,
@@ -115,7 +235,9 @@ class PostgresScorerRuntimeTargetRepository:
             raise ScorerDeploymentRightsUnavailable(
                 "Gateway scorer trả mode không hỗ trợ."
             ) from error
-        return self._target_from_row(row, workspace_id=workspace_id, mode=mode)
+        return PostgresScorerRuntimeTargetRepository._target_from_row(
+            row, workspace_id=workspace_id, mode=mode
+        )
 
     @staticmethod
     def _target_from_row(
@@ -383,6 +505,7 @@ def _is_sha256(value: object) -> bool:
 
 __all__ = [
     "PostgresScorerRuntimeTargetRepository",
+    "ResolvedScorerRuntimeMetadata",
     "ResolvedScorerRuntimeTarget",
     "learning_cpu_artifact_from_canonical_json",
     "learning_scorer_artifact_from_canonical_json",

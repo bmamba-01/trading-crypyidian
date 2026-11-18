@@ -7,7 +7,8 @@ import re
 from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from trading_bot.adapters.database.models import LearningScorerTestEvaluationReportRecord
@@ -37,6 +38,10 @@ _METRIC_KEYS = frozenset(
 )
 
 
+class LearningScorerReportRightsUnavailable(ValueError):
+    """Current source scope không cho phép đọc report scorer đã lưu."""
+
+
 class LearningScorerReportReadRepository:
     """Đọc một báo cáo gần nhất, không tải JSON/canonical payload đầy đủ."""
 
@@ -48,30 +53,49 @@ class LearningScorerReportReadRepository:
             raise ValueError("Workspace phải là UUID.")
 
         report = LearningScorerTestEvaluationReportRecord
-        report_metadata = func.jsonb_build_object(
-            *(value for key in sorted(_METRIC_KEYS) for value in (key, report.report[key]))
-        ).label("report_metadata")
-        statement = (
-            select(
-                report.id,
-                report.created_at,
-                report.report_hash,
-                report.proof_hash,
-                report.scorer_artifact_hash,
-                report.base_artifact_hash,
-                report.policy_hash,
-                report.policy_version,
-                report.evaluation_status,
-                report.candidate_completeness_verified,
-                report.scored_candidate_coverage_verified,
-                report.test_sample_count,
-                report.opportunity_count,
-                report_metadata,
-            )
+        identity_statement = (
+            select(report.id.label("report_id"))
             .where(report.workspace_id == workspace_id)
             .order_by(report.created_at.desc(), report.id.desc())
             .limit(1)
         )
+        identity_result = await self._session.execute(identity_statement)
+        report_id = identity_result.scalar_one_or_none()
+        if report_id is None:
+            return None
+        try:
+            await self._session.execute(
+                text(
+                    "SELECT public.wp06_recheck_scorer_test_report_source_rights("
+                    "target_workspace => CAST(:workspace_id AS uuid), "
+                    "target_report_id => CAST(:report_id AS uuid))"
+                ),
+                {"workspace_id": str(workspace_id), "report_id": str(report_id)},
+            )
+        except DBAPIError as error:
+            raise LearningScorerReportRightsUnavailable(
+                "Current source scope không cho phép đọc report scorer."
+            ) from error
+
+        report_metadata = func.jsonb_build_object(
+            *(value for key in sorted(_METRIC_KEYS) for value in (key, report.report[key]))
+        ).label("report_metadata")
+        statement = select(
+            report.id,
+            report.created_at,
+            report.report_hash,
+            report.proof_hash,
+            report.scorer_artifact_hash,
+            report.base_artifact_hash,
+            report.policy_hash,
+            report.policy_version,
+            report.evaluation_status,
+            report.candidate_completeness_verified,
+            report.scored_candidate_coverage_verified,
+            report.test_sample_count,
+            report.opportunity_count,
+            report_metadata,
+        ).where(report.workspace_id == workspace_id, report.id == report_id)
         result = await self._session.execute(statement)
         row = result.mappings().first()
         if row is None:

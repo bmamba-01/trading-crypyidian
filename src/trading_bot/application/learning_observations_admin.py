@@ -68,9 +68,9 @@ class PrincipalLearningObservationsAdminService:
             self._sessions,
             workspace_id=self._principal.workspace_id,
             actor_membership_id=self._principal.membership_id,
-            snapshot_read_only=True,
         ) as unit:
-            return await self._repository_factory(unit.session).list_recent(
+            repository = self._repository_factory(unit.session)
+            return await repository.list_recent(
                 workspace_id=self._principal.workspace_id,
                 limit=limit,
             )

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -19,6 +20,7 @@ from trading_bot.adapters.database.models.learning_paper_performance_entities im
 from trading_bot.adapters.database.repositories.bot_grants import BotGrantRepository
 from trading_bot.adapters.database.repositories.learning_paper_performance import (
     LearningPaperPerformanceRepository,
+    PaperPerformanceAggregateUnavailable,
     PaperPerformanceIdempotencyConflict,
 )
 from trading_bot.adapters.database.repositories.learning_scorer_current_rights import (
@@ -37,6 +39,8 @@ from trading_bot.domain.learning.paper_performance import (
     PaperPerformanceStatus,
     assess_paper_performance,
 )
+
+_SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,20 +80,32 @@ class PrincipalLearningPaperPerformanceService:
     async def list_recent(self, *, limit: int = 50) -> tuple[PaperPerformanceReportSummary, ...]:
         self._require_read()
         async with self._uow() as unit:
-            rows = await LearningPaperPerformanceRepository(unit.session).list_recent(
+            repository = LearningPaperPerformanceRepository(unit.session)
+            references = await repository.list_recent_references(
                 workspace_id=self._principal.workspace_id,
                 limit=limit,
             )
             visible: list[PaperPerformanceReportSummary] = []
             grants = BotGrantRepository(unit.session)
-            for row in rows:
+            for reference in references:
                 try:
                     await grants.require(
                         self._principal,
-                        bot_id=row.bot_id,
+                        bot_id=reference.bot_id,
                         permission=BotPermission.READ,
                     )
                 except PermissionError:
+                    continue
+                if not await repository.report_current_rights(
+                    workspace_id=self._principal.workspace_id,
+                    report_id=reference.report_id,
+                ):
+                    continue
+                row = await repository.get_report_by_id(
+                    workspace_id=self._principal.workspace_id,
+                    report_id=reference.report_id,
+                )
+                if row is None:
                     continue
                 visible.append(_summary_from_record(row))
             return tuple(visible)
@@ -118,15 +134,26 @@ class PrincipalLearningPaperPerformanceService:
                 text("SELECT pg_advisory_xact_lock(pg_catalog.hashtextextended(:key, 0))"),
                 {"key": lock_name},
             )
-            prior = await repository.get_by_idempotency_key(
+            prior_reference = await repository.get_idempotency_reference(
                 workspace_id=workspace_id,
                 idempotency_key=idempotency_key,
             )
-            if prior is not None:
-                if prior.bot_id != bot_id:
+            if prior_reference is not None:
+                if prior_reference.bot_id != bot_id:
                     raise PaperPerformanceIdempotencyConflict(
                         "Idempotency-Key đã được dùng cho bot khác."
                     )
+                if not await repository.report_current_rights(
+                    workspace_id=workspace_id,
+                    report_id=prior_reference.report_id,
+                ):
+                    raise PermissionError("Quyền aggregate hiện hành của báo cáo đã bị thu hồi.")
+                prior = await repository.get_report_by_id(
+                    workspace_id=workspace_id,
+                    report_id=prior_reference.report_id,
+                )
+                if prior is None:
+                    raise PermissionError("Không thể đọc báo cáo sau khi tái xác minh quyền.")
                 return _summary_from_record(prior)
 
             target = await PostgresScorerRuntimeTargetRepository(session).resolve_active(
@@ -154,28 +181,41 @@ class PrincipalLearningPaperPerformanceService:
                 baseline_report_hash=target.target.evaluation_report_hash,
                 as_of=as_of,
             )
+            rights_digest = _aggregate_rights_digest(rows)
             cohorts = tuple(_cohort_from_row(row) for row in sorted(rows, key=_cohort_order))
             assessment = assess_paper_performance(
                 cohorts,
                 as_of=as_of,
                 policy=self._policy,
             )
-            membership_digest = hashlib.sha256(
-                "\n".join(item.membership_digest for item in assessment.cohorts).encode("ascii")
-            ).hexdigest()
+            membership_digest = _combined_membership_digest(
+                assessment.cohorts,
+                rights_digest=rights_digest,
+            )
             report = _assessment_report(
                 assessment,
                 target_fingerprint=fingerprint,
                 baseline_report_hash=target.target.evaluation_report_hash,
             )
-            prior_snapshot = await repository.get_snapshot(
+            prior_snapshot_reference = await repository.get_snapshot_reference(
                 workspace_id=workspace_id,
                 target_fingerprint=fingerprint,
                 policy_hash=self._policy.content_hash,
                 as_of=as_of,
                 membership_digest=membership_digest,
             )
-            if prior_snapshot is not None:
+            if prior_snapshot_reference is not None:
+                if not await repository.report_current_rights(
+                    workspace_id=workspace_id,
+                    report_id=prior_snapshot_reference.report_id,
+                ):
+                    raise PermissionError("Quyền aggregate hiện hành của báo cáo đã bị thu hồi.")
+                prior_snapshot = await repository.get_report_by_id(
+                    workspace_id=workspace_id,
+                    report_id=prior_snapshot_reference.report_id,
+                )
+                if prior_snapshot is None:
+                    raise PermissionError("Không thể đọc báo cáo sau khi tái xác minh quyền.")
                 return _summary_from_record(prior_snapshot)
             canonical = json.dumps(
                 report,
@@ -202,6 +242,11 @@ class PrincipalLearningPaperPerformanceService:
                 report_hash=hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
             )
             await repository.insert(report_record)
+            if not await repository.report_current_rights(
+                workspace_id=workspace_id,
+                report_id=report_record.id,
+            ):
+                raise PermissionError("Quyền aggregate hiện hành không còn hợp lệ.")
             return _summary_from_record(report_record)
 
     def _require_read(self) -> None:
@@ -236,6 +281,45 @@ def _target_fingerprint(workspace_id: UUID, bot_id: UUID, target: Any) -> str:
         "report_scope_hash": runtime.report_scope_hash,
         "feature_schema_hash": target.scorer_artifact.vector_schema_hash,
         "source_rights_fingerprint": target.source_rights_fingerprint,
+    }
+    canonical = json.dumps(
+        payload,
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _aggregate_rights_digest(rows: tuple[Any, ...]) -> str:
+    digests = {row.get("rights_digest") for row in rows}
+    if len(rows) != 2 or len(digests) != 1:
+        raise PaperPerformanceAggregateUnavailable(
+            "Gateway không trả cùng một dấu quyền hiện hành cho hai cohort."
+        )
+    digest = next(iter(digests))
+    if type(digest) is not str or _SHA256.fullmatch(digest) is None:
+        raise PaperPerformanceAggregateUnavailable("Gateway không trả dấu quyền hiện hành hợp lệ.")
+    return digest
+
+
+def _combined_membership_digest(
+    cohorts: tuple[PaperPerformanceCohort, ...],
+    *,
+    rights_digest: str,
+) -> str:
+    """Ghim dấu quyền aggregate hiện hành cùng đúng hai cohort vào snapshot key."""
+    if (
+        len(cohorts) != 2
+        or type(rights_digest) is not str
+        or _SHA256.fullmatch(rights_digest) is None
+    ):
+        raise PaperPerformanceAggregateUnavailable("Dấu thành viên hoặc quyền hiện hành sai dạng.")
+    payload = {
+        "cohort_membership_digests": [item.membership_digest for item in cohorts],
+        "rights_digest": rights_digest,
+        "schema_version": "crypidian.wp06.paper-performance-membership.v2",
     }
     canonical = json.dumps(
         payload,

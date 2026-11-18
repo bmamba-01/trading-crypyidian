@@ -54,6 +54,11 @@ def _assessment_values(
         "id": uuid4(),
         "workspace_id": workspace_id,
         "policy_version": "coverage-v2-30d",
+        "cohort_registry_id": None,
+        "cohort_revision": None,
+        "window_start": None,
+        "window_end": None,
+        "member_ids": [],
         "member_count": 0,
         "eligible_count": 0,
         "observation_window_days": 30,
@@ -66,18 +71,7 @@ def _assessment_values(
         "membership_digest": _digest("[]"),
         "created_at": created_at,
     }
-    values["idempotency_key"] = _digest(
-        _canonical(
-            {
-                "membership_digest": values["membership_digest"],
-                "policy_version": values["policy_version"],
-                "registry_id": None,
-                "revision": None,
-                "workspace_id": str(workspace_id),
-            }
-        )
-    )
-    values["content_hash"] = _digest(_canonical(_assessment_payload(values)))
+    _refresh_assessment_digests(values)
     return values
 
 
@@ -87,22 +81,43 @@ def _assessment_payload(values: dict[str, Any]) -> dict[str, Any]:
         "assessment_id": str(values["id"]),
         "abstention_rate": None,
         "created_at": created_at.isoformat(),
-        "cohort_registry_id": None,
-        "cohort_revision": None,
+        "cohort_registry_id": (
+            str(values["cohort_registry_id"]) if values["cohort_registry_id"] is not None else None
+        ),
+        "cohort_revision": values["cohort_revision"],
         "data_quality_status": values["data_quality_status"],
         "eligible_count": values["eligible_count"],
         "member_count": values["member_count"],
-        "member_ids": [],
+        "member_ids": values["member_ids"],
         "membership_digest": values["membership_digest"],
         "performance_status": values["performance_status"],
         "policy_version": values["policy_version"],
         "quality_rate": None,
         "reason_codes": json.loads(values["reason_codes"]),
         "snapshot_coverage_rate": None,
-        "window_end": None,
-        "window_start": None,
+        "window_end": _iso(values["window_end"]),
+        "window_start": _iso(values["window_start"]),
         "workspace_id": str(values["workspace_id"]),
     }
+
+
+def _refresh_assessment_digests(values: dict[str, Any]) -> None:
+    values["idempotency_key"] = _digest(
+        _canonical(
+            {
+                "membership_digest": values["membership_digest"],
+                "policy_version": values["policy_version"],
+                "registry_id": (
+                    str(values["cohort_registry_id"])
+                    if values["cohort_registry_id"] is not None
+                    else None
+                ),
+                "revision": values["cohort_revision"],
+                "workspace_id": str(values["workspace_id"]),
+            }
+        )
+    )
+    values["content_hash"] = _digest(_canonical(_assessment_payload(values)))
 
 
 def _proposal_values(
@@ -158,7 +173,8 @@ def _insert_assessment(connection: psycopg.Connection[Any], values: dict[str, An
             data_quality_status, performance_status, reason_codes,
             membership_digest, idempotency_key, content_hash
         ) VALUES (
-            %(id)s, %(workspace_id)s, %(policy_version)s, NULL, NULL, NULL, NULL, %(created_at)s,
+            %(id)s, %(workspace_id)s, %(policy_version)s, %(cohort_registry_id)s,
+            %(cohort_revision)s, %(window_start)s, %(window_end)s, %(created_at)s,
             %(member_count)s, %(eligible_count)s, %(observation_window_days)s,
             %(minimum_observations)s,
             %(minimum_snapshot_coverage)s, %(minimum_quality_rate)s,
@@ -236,13 +252,41 @@ def _seed_workspaces() -> None:
         )
 
 
-def _assert_empty_assessment_rls(observer: psycopg.Connection[Any]) -> bool:
+def _seed_assessment_rls_fixture() -> UUID:
+    with _connect("crypidian_admin", "/run/secrets/postgres_password") as connection:
+        values = _assessment_values(
+            connection,
+            WORKSPACE,
+            reasons=["low_sample", "performance_not_evaluable"],
+        )
+        values["policy_version"] = "coverage-v1"
+        values["observation_window_days"] = None
+        _refresh_assessment_digests(values)
+        connection.execute("SET LOCAL session_replication_role = replica")
+        _insert_assessment(connection, values)
+        return values["id"]
+
+
+def _assert_assessment_rls_isolation(
+    observer: psycopg.Connection[Any], seeded_assessment_id: UUID
+) -> dict[str, bool]:
     for workspace_id in (WORKSPACE, OTHER_WORKSPACE):
         _scope(observer, workspace_id)
-        assert observer.execute(f"SELECT count(*) FROM {TABLE}").fetchone()[0] == 0
+        visible_ids = observer.execute(f"SELECT id FROM {TABLE}").fetchall()
+        assert visible_ids == ([(seeded_assessment_id,)] if workspace_id == WORKSPACE else [])
     _scope(observer, None)
     assert observer.execute(f"SELECT count(*) FROM {TABLE}").fetchone()[0] == 0
     observer.commit()
+    return {"assessment_rows_scoped_per_workspace": True, "unscoped_read_denied": True}
+
+
+def _delete_assessment_rls_fixture(seeded_assessment_id: UUID) -> bool:
+    with _connect("crypidian_admin", "/run/secrets/postgres_password") as connection:
+        connection.execute("SET LOCAL session_replication_role = replica")
+        deleted = connection.execute(
+            f"DELETE FROM {TABLE} WHERE id = %s", (seeded_assessment_id,)
+        ).rowcount
+        assert deleted == 1
     return True
 
 
@@ -707,6 +751,7 @@ def _assert_bounded_policy_schema() -> bool:
 
 def main() -> None:
     _seed_workspaces()
+    seeded_assessment_id = _seed_assessment_rls_fixture()
     with _connect(OBSERVER, "/run/secrets/database_learning_shadow_observer_password") as observer:
         who = observer.execute("SELECT session_user, current_user").fetchone()
         assert who == (OBSERVER, OBSERVER)
@@ -720,7 +765,7 @@ def main() -> None:
         drift_policy_rejected = _expect_assessment_marker(
             observer,
             forged_policy,
-            "WP06_SHADOW_DRIFT_POLICY_INVALID",
+            "WP06_SHADOW_DRIFT_POLICY_OR_TIME_INVALID",
         )
 
         _scope(observer, WORKSPACE)
@@ -729,7 +774,7 @@ def main() -> None:
         )
         forged_duration["observation_window_days"] = 31
         assert _expect_assessment_marker(
-            observer, forged_duration, "WP06_SHADOW_DRIFT_POLICY_INVALID"
+            observer, forged_duration, "WP06_SHADOW_DRIFT_POLICY_OR_TIME_INVALID"
         )
 
         _scope(observer, WORKSPACE)
@@ -741,38 +786,30 @@ def main() -> None:
         empty_assessment_rejected = _expect_assessment_marker(
             observer,
             target_assessment,
-            "WP06_SHADOW_DRIFT_EMPTY_COHORT",
+            "WP06_SHADOW_DRIFT_POLICY_OR_TIME_INVALID",
         )
-        assessment_rows_scoped_per_workspace = _assert_empty_assessment_rls(observer)
+        assessment_rls_results = _assert_assessment_rls_isolation(observer, seeded_assessment_id)
 
         _scope(observer, OTHER_WORKSPACE)
-        denied = _expect_sqlstate(
+        cross_workspace_assessment = _assessment_values(
             observer,
-            f"""
-            INSERT INTO {TABLE} (
-                id, workspace_id, policy_version, cohort_registry_id, cohort_revision,
-                window_start, window_end,
-                member_count, eligible_count,
-                observation_window_days, minimum_observations,
-                minimum_snapshot_coverage, minimum_quality_rate,
-                data_quality_status, performance_status, reason_codes,
-                membership_digest, idempotency_key, content_hash
-            ) VALUES (%s, %s, 'coverage-v2-30d', NULL, NULL, transaction_timestamp(),
-                      transaction_timestamp(), 1, 0, 30, 3, 0.8, 0.9,
-                      'inconclusive', 'inconclusive',
-                      '["low_sample","performance_not_evaluable"]'::jsonb,
-                      %s, %s, %s)
-            """,
-            (
-                uuid4(),
-                WORKSPACE,
-                _digest("[]"),
-                _digest("cross-workspace-idempotency"),
-                _digest("cross-workspace-content"),
-            ),
-            "42501",
+            WORKSPACE,
+            reasons=["low_sample", "performance_not_evaluable"],
         )
-        cross_workspace_insert_denied = denied
+        cross_workspace_assessment.update(
+            cohort_registry_id=uuid4(),
+            cohort_revision=1,
+            window_start=cross_workspace_assessment["created_at"] - timedelta(days=30),
+            window_end=cross_workspace_assessment["created_at"],
+            member_count=1,
+            member_ids=[],
+        )
+        _refresh_assessment_digests(cross_workspace_assessment)
+        cross_workspace_insert_denied_by_member_scope_guard = _expect_assessment_marker(
+            observer,
+            cross_workspace_assessment,
+            "WP06 CURRENT MEMBER SET CHANGED",
+        )
 
         _scope(observer, WORKSPACE)
         rights_helpers = observer.execute(
@@ -993,19 +1030,22 @@ def main() -> None:
 
     with _connect(ADMIN_WEB, "/run/secrets/database_admin_web_password") as admin_web:
         _scope(admin_web, WORKSPACE)
-        select_only = admin_web.execute(
+        privileges = admin_web.execute(
             """
             SELECT pg_catalog.has_table_privilege(current_user, %s, 'SELECT'),
                    pg_catalog.has_table_privilege(current_user, %s, 'INSERT'),
                    pg_catalog.has_table_privilege(current_user, %s, 'UPDATE'),
-                   pg_catalog.has_table_privilege(current_user, %s, 'DELETE'),
-                   count(*)
-              FROM public.learning_drift_assessment
+                   pg_catalog.has_table_privilege(current_user, %s, 'DELETE')
             """,
             (TABLE, TABLE, TABLE, TABLE),
         ).fetchone()
-        admin_select_only = select_only == (True, False, False, False, 0)
-        admin_web.rollback()
+        admin_direct_select_denied = privileges == (False, False, False, False)
+        admin_direct_select_denied = admin_direct_select_denied and _expect_sqlstate(
+            admin_web,
+            f"SELECT count(*) FROM {TABLE}",
+            (),
+            "42501",
+        )
 
     with _connect("crypidian_admin", "/run/secrets/postgres_password") as owner:
         role = owner.execute(
@@ -1050,19 +1090,22 @@ def main() -> None:
         ).fetchone()[0]
         immutable_trigger_definitions_present = immutable_triggers == 3
 
+    rls_fixture_cleaned = _delete_assessment_rls_fixture(seeded_assessment_id)
     print(
         json.dumps(
             {
                 "bounded_policy_schema": _assert_bounded_policy_schema(),
                 "bounded_cutoffs_and_expiry": _assert_bounded_query_cutoffs_and_expiry(),
                 "empty_assessment_rejected": empty_assessment_rejected,
-                "assessment_rows_scoped_per_workspace": assessment_rows_scoped_per_workspace,
+                **assessment_rls_results,
+                "assessment_rls_fixture_cleaned": rls_fixture_cleaned,
                 "drift_policy_rejected": drift_policy_rejected,
-                "cross_workspace_insert_denied": cross_workspace_insert_denied,
-                "unscoped_read_denied": True,
+                "cross_workspace_insert_denied_by_member_scope_guard": (
+                    cross_workspace_insert_denied_by_member_scope_guard
+                ),
                 "observer_role_least_privilege": observer_role_least_privilege,
                 "observer_sensitive_columns_denied": sensitive_columns_denied,
-                "admin_select_only": admin_select_only,
+                "admin_direct_select_denied": admin_direct_select_denied,
                 "rights_hash_helper_execute_denied": rights_hash_helper_execute_denied,
                 "rights_receipt_helper_execute_allowed": rights_receipt_helper_execute_allowed,
                 "rights_receipt_fails_closed": rights_receipt_fails_closed,

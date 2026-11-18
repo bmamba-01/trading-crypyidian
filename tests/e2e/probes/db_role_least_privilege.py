@@ -306,6 +306,7 @@ DEFINER_OWNERS = {
     "crypidian_learning_incident_guard",
     "crypidian_learning_incident_reader",
     "crypidian_learning_paper_performance_evaluator",
+    "crypidian_learning_paper_performance_report_writer",
     "crypidian_risk_aggregator",
     "crypidian_source_expiry_scanner",
     "crypidian_source_rights_emitter",

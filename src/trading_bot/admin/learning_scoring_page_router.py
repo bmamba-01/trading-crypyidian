@@ -154,6 +154,9 @@ async def learning_scoring_admin_page(
 
     has_approval = authorize(principal, Permission.LEARNING_MODEL_APPROVE)
     recent_totp = _has_recent_totp(principal)
+    active_modes_enabled = bool(
+        getattr(getattr(request.app.state, "settings", None), "scorer_active_modes_enabled", False)
+    )
     mode_options = tuple(
         _mode_option(
             mode,
@@ -162,6 +165,7 @@ async def learning_scoring_admin_page(
             report_summary=report_summary,
             has_approval=has_approval,
             recent_totp=recent_totp,
+            active_modes_enabled=active_modes_enabled,
         )
         for mode in ScorerDeploymentMode
     )
@@ -286,6 +290,7 @@ def _mode_option(
     report_summary: Any,
     has_approval: bool,
     recent_totp: bool,
+    active_modes_enabled: bool,
 ) -> dict[str, Any]:
     labels = {
         ScorerDeploymentMode.DISABLED: "DISABLED — Tắt scorer",
@@ -301,6 +306,8 @@ def _mode_option(
             if auth_gate:
                 gates.append(auth_gate)
     else:
+        if not active_modes_enabled:
+            gates.append("Chế độ SHADOW/PAPER_GATE đang khóa theo cấu hình triển khai.")
         gates.extend(_report_mode_gates(mode, report_summary))
         auth_gate = _authorization_gate(has_approval, recent_totp)
         if auth_gate:

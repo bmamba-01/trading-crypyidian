@@ -158,18 +158,6 @@ class ScorerTestEvaluationService:
             raise ValueError("Cần ScorerTestEvaluationRequest tường minh.")
         fingerprint = scorer_test_evaluation_request_fingerprint(request)
         scope = request.scope
-        existing = await self._reports.get_by_run(
-            workspace_id=scope.workspace_id,
-            evaluation_run_id=scope.evaluation_run_id,
-        )
-        if existing is not None:
-            self._validate_stored_report(existing, request, fingerprint)
-            return ScorerTestEvaluationResult(
-                report=existing.report,
-                record_id=existing.record_id,
-                is_duplicate=True,
-            )
-
         receipt = await self._access.open_committed_receipt(
             scope,
             scorer_artifact_hash=request.scorer_artifact.artifact_hash,
@@ -226,13 +214,30 @@ class ScorerTestEvaluationService:
             evaluate_payload=evaluate_payload,
         )
         expected = expected_evidence[0] if expected_evidence else None
+        duplicate_receipt_hash = (
+            scorer_test_access_receipt_hash(receipt=receipt, scope=scope)
+            if stored.is_duplicate
+            else None
+        )
         self._validate_stored_report(
             stored,
             request,
             fingerprint,
-            expected_receipt_id=None if expected is None else expected[0],
-            expected_receipt_hash=None if expected is None else expected[1],
-            expected_rights_hash=None if expected is None else expected[2],
+            expected_receipt_id=(
+                receipt.receipt_id
+                if expected is None and stored.is_duplicate
+                else expected[0]
+                if expected is not None
+                else None
+            ),
+            expected_receipt_hash=(duplicate_receipt_hash if expected is None else expected[1]),
+            expected_rights_hash=(
+                receipt.current_rights_receipt_hash
+                if expected is None and stored.is_duplicate
+                else expected[2]
+                if expected is not None
+                else None
+            ),
             expected_consumption_id=None if expected is None else expected[3],
             expected_consumption_hash=None if expected is None else expected[4],
         )

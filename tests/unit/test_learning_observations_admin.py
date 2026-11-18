@@ -4,7 +4,6 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
-from sqlalchemy.dialects import postgresql
 
 from trading_bot.adapters.database.repositories.learning_observations_admin import (
     LearningObservationAdminItem,
@@ -40,7 +39,7 @@ class _FakeUnitOfWork:
         *,
         workspace_id: object,
         actor_membership_id: object,
-        snapshot_read_only: bool,
+        snapshot_read_only: bool = False,
     ) -> None:
         self.workspace_id = workspace_id
         self.actor_membership_id = actor_membership_id
@@ -56,13 +55,13 @@ class _FakeUnitOfWork:
 
 
 class _FakeRepository:
-    calls: list[tuple[object, int]] = []
+    calls: list[tuple[str, object, int]] = []
 
     def __init__(self, session: object) -> None:
         self.session = session
 
     async def list_recent(self, *, workspace_id: object, limit: int) -> tuple[object, ...]:
-        self.calls.append((workspace_id, limit))
+        self.calls.append(("list", workspace_id, limit))
         return ()
 
 
@@ -77,17 +76,17 @@ def _service() -> LearningObservationsAdminService:
 
 
 @pytest.mark.asyncio
-async def test_recent_observations_use_principal_workspace_and_read_only_uow() -> None:
+async def test_recent_observations_use_principal_workspace_and_read_committed_uow() -> None:
     facade = _service().for_principal(_principal())
 
     result = await facade.list_recent()
 
     assert result == ()
-    assert _FakeRepository.calls == [(WORKSPACE_ID, 50)]
+    assert _FakeRepository.calls == [("list", WORKSPACE_ID, 50)]
     unit = _FakeUnitOfWork.instances[-1]
     assert unit.workspace_id == WORKSPACE_ID
     assert unit.actor_membership_id == MEMBERSHIP_ID
-    assert unit.snapshot_read_only is True
+    assert unit.snapshot_read_only is False
 
 
 @pytest.mark.asyncio
@@ -104,24 +103,28 @@ async def test_recent_observations_require_learning_read_and_cap_at_fifty() -> N
     assert not _FakeRepository.calls
 
 
-def test_recent_projection_is_workspace_scoped_metadata_only_and_limited() -> None:
+def test_recent_projection_uses_admin_gate_without_direct_ledger_reads() -> None:
     statement = LearningObservationsAdminRepository.recent_statement(
         workspace_id=WORKSPACE_ID,
         limit=50,
     )
-    compiled = statement.compile(
-        dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
-    )
-    sql = str(compiled).lower()
+    sql = str(statement).lower()
 
-    assert str(WORKSPACE_ID) in sql
-    assert "learning_shadow_observation" in sql
-    assert "learning_drift_assessment" in sql
-    assert "learning_retrain_proposal" in sql
-    assert "limit 50" in sql
+    assert "wp06_read_learning_observations_admin_feed" in sql
+    assert "workspace_id" in statement.compile().params
+    assert "limit" in statement.compile().params
     assert all(
         forbidden not in sql
-        for forbidden in ("features", "label", "source_refs", "payload", "outcome")
+        for forbidden in (
+            "learning_shadow_observation",
+            "learning_drift_assessment",
+            "learning_retrain_proposal",
+            "features",
+            "label",
+            "source_refs",
+            "payload",
+            "outcome",
+        )
     )
     assert Permission.LEARNING_MODEL_READ.value == "learning:model_read"
 

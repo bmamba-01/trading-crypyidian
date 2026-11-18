@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
+from datetime import datetime
+from types import SimpleNamespace
+from typing import cast
 from uuid import UUID
 
 from sqlalchemy import exists, select, text
@@ -11,7 +15,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from trading_bot.adapters.database.models import (
-    LearningDriftAssessmentMemberRecord,
     LearningDriftAssessmentRecord,
     LearningIncidentHoldEventRecord,
     LearningRetrainProposalRecord,
@@ -27,6 +30,8 @@ from trading_bot.domain.learning.scoring_deployment import (
     ScorerDeploymentSnapshot,
     ScorerDeploymentTarget,
 )
+
+_SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 
 
 class LearningIncidentHoldConflict(RuntimeError):
@@ -226,9 +231,8 @@ class LearningIncidentEntryHoldRepository:
         try:
             result = await self._session.execute(
                 text(
-                    "SELECT * FROM "
-                    "public.wp06_learning_incident_eligible_target(CAST(:workspace_id "
-                    "AS uuid), CAST(:proposal_id AS uuid))"
+                    "SELECT public.wp06_read_learning_incident_context(CAST(:workspace_id "
+                    "AS uuid), CAST(:proposal_id AS uuid)) AS context"
                 ),
                 {"workspace_id": str(workspace_id), "proposal_id": str(proposal_id)},
             )
@@ -236,39 +240,88 @@ class LearningIncidentEntryHoldRepository:
             raise LearningIncidentHoldConflict(
                 "Incident không còn eligible theo assessment/target/quyền hiện hành."
             ) from error
-        eligible = result.mappings().one_or_none()
-        if eligible is None:
-            raise LearningIncidentHoldConflict("Gateway không trả target incident eligible.")
-        proposal_row = await self._session.scalar(
-            select(LearningRetrainProposalRecord).where(
-                LearningRetrainProposalRecord.workspace_id == workspace_id,
-                LearningRetrainProposalRecord.id == proposal_id,
-            )
-        )
-        if proposal_row is None:
-            raise LearningIncidentHoldConflict("Không tìm thấy proposal incident trong workspace.")
-        assessment_row = await self._session.scalar(
-            select(LearningDriftAssessmentRecord).where(
-                LearningDriftAssessmentRecord.workspace_id == workspace_id,
-                LearningDriftAssessmentRecord.id == proposal_row.assessment_id,
-            )
-        )
-        if assessment_row is None:
+        result_row = result.mappings().one_or_none()
+        context = result_row.get("context") if result_row is not None else None
+        if not isinstance(context, dict):
             raise LearningIncidentHoldConflict(
-                "Không tìm thấy assessment incident trong workspace."
+                "Gateway context incident không trả projection hợp lệ."
             )
-        member_ids = await self._session.scalars(
-            select(LearningDriftAssessmentMemberRecord.observation_id)
-            .where(
-                LearningDriftAssessmentMemberRecord.workspace_id == workspace_id,
-                LearningDriftAssessmentMemberRecord.assessment_id == assessment_row.id,
+        try:
+            eligible = _required_context_mapping(context, "eligible")
+            proposal_context = _required_context_mapping(context, "proposal")
+            assessment_context = _required_context_mapping(context, "assessment")
+            incumbent_registry_revision = _context_int(
+                eligible.get("incumbent_registry_revision"), "incumbent_registry_revision"
             )
-            .order_by(LearningDriftAssessmentMemberRecord.ordinal)
-        )
-        assessment = _assessment_from_record(assessment_row, tuple(member_ids.all()))
-        if assessment.content_hash != assessment_row.content_hash:
-            raise LearningIncidentHoldConflict("Assessment incident hash đã sai.")
-        proposal = _proposal_from_record(proposal_row, assessment)
+            active_pointer_version = _context_int(
+                eligible.get("active_pointer_version"), "active_pointer_version"
+            )
+            deployment_revision = _context_int(
+                eligible.get("deployment_revision"), "deployment_revision"
+            )
+            incumbent_artifact_hash = _context_hash(
+                eligible.get("incumbent_artifact_hash"), "incumbent_artifact_hash"
+            )
+            member_values = context.get("member_ids")
+            if not isinstance(member_values, list):
+                raise ValueError("member_ids không phải danh sách.")
+            member_ids = tuple(_context_uuid(value) for value in member_values)
+            assessment_row = cast(
+                LearningDriftAssessmentRecord,
+                SimpleNamespace(
+                    **{
+                        name: _context_value(name, assessment_context[name])
+                        for name in (
+                            "id",
+                            "workspace_id",
+                            "policy_version",
+                            "cohort_registry_id",
+                            "cohort_revision",
+                            "window_start",
+                            "window_end",
+                            "membership_digest",
+                            "member_count",
+                            "eligible_count",
+                            "snapshot_coverage_rate",
+                            "quality_rate",
+                            "abstention_rate",
+                            "data_quality_status",
+                            "performance_status",
+                            "reason_codes",
+                            "created_at",
+                            "source_rights_digest",
+                        )
+                    }
+                ),
+            )
+            assessment = _assessment_from_record(assessment_row, member_ids)
+            if assessment.content_hash != assessment_context.get("content_hash"):
+                raise ValueError("Assessment hash không khớp projection.")
+            proposal_row = cast(
+                LearningRetrainProposalRecord,
+                SimpleNamespace(
+                    **{
+                        name: _context_value(name, proposal_context[name])
+                        for name in (
+                            "id",
+                            "workspace_id",
+                            "assessment_id",
+                            "assessment_hash",
+                            "policy_version",
+                            "membership_digest",
+                            "idempotency_key",
+                            "reason_codes",
+                            "content_hash",
+                            "created_at",
+                        )
+                    }
+                ),
+            )
+            proposal = _proposal_from_record(proposal_row, assessment)
+        except (KeyError, TypeError, ValueError) as error:
+            raise LearningIncidentHoldConflict(
+                "Gateway context incident sai schema hoặc hash/lineage không khớp."
+            ) from error
         # SELECT chỉ metadata; gateway không gửi canonical artifact/base payload cho repository này.
         columns = ", ".join(
             (
@@ -307,12 +360,55 @@ class LearningIncidentEntryHoldRepository:
             target.active_pointer_version,
             snapshot.deployment_revision,
         ) != (
-            eligible["incumbent_registry_id"],
-            eligible["incumbent_registry_revision"],
-            eligible["active_pointer_version"],
-            eligible["deployment_revision"],
+            _context_uuid(eligible["incumbent_registry_id"]),
+            incumbent_registry_revision,
+            active_pointer_version,
+            deployment_revision,
         ):
             raise LearningIncidentHoldConflict("Tuple incumbent/deployment đã đổi trong UoW.")
         return EligibleLearningIncidentTarget(
-            proposal, assessment, snapshot, eligible["incumbent_artifact_hash"]
+            proposal, assessment, snapshot, incumbent_artifact_hash
         )
+
+
+def _required_context_mapping(context: dict[str, object], key: str) -> dict[str, object]:
+    value = context.get(key)
+    if not isinstance(value, dict):
+        raise ValueError(f"{key} không phải object.")
+    return value
+
+
+def _context_uuid(value: object) -> UUID:
+    if isinstance(value, UUID):
+        return value
+    if not isinstance(value, str):
+        raise ValueError("UUID gateway sai kiểu.")
+    return UUID(value)
+
+
+def _context_int(value: object, name: str) -> int:
+    if type(value) is not int or value < 1:
+        raise ValueError(f"{name} không phải số nguyên dương.")
+    return value
+
+
+def _context_hash(value: object, name: str) -> str:
+    if not isinstance(value, str) or _SHA256.fullmatch(value) is None:
+        raise ValueError(f"{name} không phải SHA-256.")
+    return value
+
+
+def _context_value(name: str, value: object) -> object:
+    if name in {"id", "workspace_id", "assessment_id", "cohort_registry_id"}:
+        if value is None and name == "cohort_registry_id":
+            return None
+        return _context_uuid(value)
+    if name in {"window_start", "window_end", "created_at"}:
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            return value
+        if isinstance(value, str):
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        raise ValueError("Timestamp gateway sai kiểu.")
+    return value

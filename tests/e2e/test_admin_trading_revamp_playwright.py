@@ -709,6 +709,30 @@ def test_trading_revamp_playwright_desktop_and_mobile(revamp_server_url: str) ->
         )
 
         # Kiểm tra responsive hiển thị trên Mobile
+        for viewport_width in (360, 390, 768, 1024, 1280):
+            page_m.set_viewport_size({"width": viewport_width, "height": 844})
+            layout = page_m.evaluate(
+                """() => ({
+              viewport: document.documentElement.clientWidth,
+              document: document.documentElement.scrollWidth,
+              overflowing: [...document.querySelectorAll('body *')]
+                .map((element) => ({ element, rect: element.getBoundingClientRect() }))
+                .filter(({ element, rect }) => rect.right > document.documentElement.clientWidth + 1
+                  && getComputedStyle(element).position !== 'absolute')
+                .slice(0, 12)
+                .map(({ element, rect }) => ({
+                  tag: element.tagName,
+                  className: typeof element.className === 'string' ? element.className : '',
+                  width: Math.round(rect.width),
+                  right: Math.round(rect.right),
+                })),
+                })"""
+            )
+            assert layout["document"] <= layout["viewport"], {
+                "viewport_width": viewport_width,
+                **layout,
+            }
+        page_m.set_viewport_size({"width": 390, "height": 844})
         assert page_m.locator("text=Tài Sản Ký Quỹ / Định Giá:").is_visible()
         assert page_m.locator("#trade-chart").is_visible()
         assert page_m.locator("text=Mổ Xẻ Quyết Định Định Lượng & Quản Trị Rủi Ro").is_visible()

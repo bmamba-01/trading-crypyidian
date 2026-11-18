@@ -48,7 +48,7 @@ def test_installed_scorer_receipt_projection_exposes_membership_digest() -> None
             compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "f4a6c8e0b2d5")
             heads = compose("run", "--rm", "--no-deps", "migrator", "alembic", "heads")
             assert heads.stdout.count("(head)") == 1, heads.stdout
-            assert "e1f3a5b7c9d1 (head)" in heads.stdout, heads.stdout
+            assert "c8d28da699c6 (head)" in heads.stdout, heads.stdout
             result = compose(
                 "run",
                 "--rm",

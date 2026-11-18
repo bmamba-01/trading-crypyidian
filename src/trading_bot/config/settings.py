@@ -154,6 +154,9 @@ class AppSettings(BaseSettings):
         "/admin/reports,/admin/run-reports,/admin/api/chart,/admin/backtests,/api/v1/reports"
     )
 
+    # SHADOW/PAPER_GATE mặc định khóa đồng thời ở admin và runtime.
+    scorer_active_modes_enabled: bool = False
+
     # Chính sách TEST scorer phải có version/hash giống hệt report và deployment được ghim.
     scorer_test_policy_version: str = Field(
         default="wp06-scorer-test-v1", min_length=1, max_length=120

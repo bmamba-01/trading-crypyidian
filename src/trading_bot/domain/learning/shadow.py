@@ -156,6 +156,7 @@ class ShadowObservation:
     rights_known_at: datetime | None
     challenger_reason: ShadowAbstainReason
     observed_at: datetime
+    source_scope_fingerprint: str | None = None
 
     def __post_init__(self) -> None:
         if any(
@@ -220,9 +221,13 @@ class ShadowObservation:
         object.__setattr__(self, "observed_at", observed_at)
         if self.rights_fingerprint is not None:
             _sha256(self.rights_fingerprint, "rights_fingerprint")
+        if self.source_scope_fingerprint is not None:
+            _sha256(self.source_scope_fingerprint, "source_scope_fingerprint")
         if self.rights_eligible:
             if self.rights_fingerprint is None:
                 raise ValueError("rights_fingerprint bắt buộc khi quyền nguồn đã xác minh.")
+            if self.source_scope_fingerprint is None:
+                raise ValueError("source_scope_fingerprint bắt buộc khi scope nguồn đã xác minh.")
             for name in ("rights_source_id", "rights_policy_id"):
                 _nonempty(getattr(self, name), name)
             if type(self.rights_policy_sequence) is not int or self.rights_policy_sequence < 1:
@@ -241,10 +246,11 @@ class ShadowObservation:
                 self.rights_policy_id,
                 self.rights_policy_sequence,
                 self.rights_known_at,
+                self.source_scope_fingerprint,
             )
         ):
             raise ValueError(
-                "rights_fingerprint và receipt policy phải null khi quyền chưa xác minh."
+                "rights_fingerprint và mọi receipt/fingerprint phải null khi quyền chưa xác minh."
             )
 
     @property
@@ -280,6 +286,8 @@ class ShadowObservation:
             ),
             "workspace_id": str(self.workspace_id),
         }
+        if self.source_scope_fingerprint is not None:
+            payload["source_scope_fingerprint"] = self.source_scope_fingerprint
         return _digest(_canonical(payload))
 
     @property
@@ -289,7 +297,7 @@ class ShadowObservation:
 
     def canonical_payload(self) -> dict[str, object]:
         """Chiếu metadata ổn định, không sao chép snapshot hay outcome payload."""
-        return {
+        payload: dict[str, object] = {
             "active_artifact_hash": self.active_artifact_hash,
             "active_registry_id": str(self.active_registry_id),
             "active_registry_revision": self.active_registry_revision,
@@ -327,6 +335,9 @@ class ShadowObservation:
             },
             "workspace_id": str(self.workspace_id),
         }
+        if self.source_scope_fingerprint is not None:
+            payload["source_scope_fingerprint"] = self.source_scope_fingerprint
+        return payload
 
 
 def _model_payload(model: ShadowModelReference) -> dict[str, object]:

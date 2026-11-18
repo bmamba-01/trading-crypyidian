@@ -30,21 +30,19 @@ def test_long_secondary_panels_have_named_native_disclosures() -> None:
     }
     for filename, class_name in required.items():
         source = (TEMPLATES / filename).read_text(encoding="utf-8")
-        assert re.search(
-            rf'<details class="[^"]*\b{re.escape(class_name)}\b[^"]*"', source
-        )
+        assert re.search(rf'<details class="[^"]*\b{re.escape(class_name)}\b[^"]*"', source)
         assert "<summary>" in source
 
 
 def test_repeated_filter_actions_use_named_icon_buttons() -> None:
     checks = {
-        "market_scanner.html": "aria-label=\"Xem kết quả quét\"",
-        "ai_analyses.html": "aria-label=\"Lọc lượt phân tích\"",
-        "signal_outcomes.html": "aria-label=\"Lọc kết quả tín hiệu\"",
-        "live.html": "aria-label=\"Áp dụng bộ lọc bot\"",
+        "market_scanner.html": 'aria-label="Xem kết quả quét"',
+        "ai_analyses.html": 'aria-label="Lọc lượt phân tích"',
+        "signal_outcomes.html": 'aria-label="Lọc kết quả tín hiệu"',
+        "live.html": 'aria-label="Áp dụng bộ lọc bot"',
     }
     for filename, accessible_name in checks.items():
         source = (TEMPLATES / filename).read_text(encoding="utf-8")
-        assert "btn--icon\"" in source
+        assert 'btn--icon"' in source
         assert accessible_name in source
-        assert "icons.action(\"" in source
+        assert 'icons.action("' in source

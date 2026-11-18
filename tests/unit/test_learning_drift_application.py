@@ -9,11 +9,9 @@ from trading_bot.adapters.database.repositories.learning_drift import (
     LearningDriftCohortMember,
     LearningDriftPersistenceResult,
 )
-from trading_bot.adapters.database.repositories.learning_shadow import PaperSourceRightsReceipt
 from trading_bot.application.learning_drift import (
     LearningDriftApplication,
     LearningDriftIdempotencyConflict,
-    LearningDriftRightsConflict,
     LearningDriftTimestampConflict,
     _validate_existing,
 )
@@ -62,6 +60,7 @@ def _members(
             LearningDriftCohortMember(
                 observation=observation,
                 rights_fingerprint=RIGHTS_FINGERPRINT if rights_eligible else None,
+                incumbent_decision_id=uuid4(),
             )
         )
     return tuple(result)
@@ -84,21 +83,27 @@ class _FakeShadowRepository:
         self.calls = calls
         self.fingerprint = fingerprint
 
-    async def current_paper_rights(
-        self, *, workspace_id: UUID, source_id: str = "BINANCE_USDM_REST"
-    ) -> PaperSourceRightsReceipt | None:
-        self.calls.append("rights")
+    async def decision_source_ids(
+        self, *, workspace_id: UUID, decision_id: UUID
+    ) -> tuple[str, ...]:
+        self.calls.append("source_ids")
         assert workspace_id == WORKSPACE_ID
-        assert source_id == "BINANCE_USDM_REST"
-        if self.fingerprint is None:
-            return None
-        return PaperSourceRightsReceipt(
-            source_id=source_id,
-            policy_id="BINANCE_USDM_REST:policy:5",
-            policy_sequence=5,
-            known_at=NOW - timedelta(seconds=1),
-            fingerprint=self.fingerprint,
-        )
+        assert type(decision_id) is UUID
+        return ("BINANCE_USDM_REST",)
+
+    async def lock_source_ids(self, *, workspace_id: UUID, source_ids: tuple[str, ...]) -> None:
+        self.calls.append("source_locks")
+        assert workspace_id == WORKSPACE_ID
+        assert source_ids == ("BINANCE_USDM_REST",)
+
+    async def lock_member_set(self, *, workspace_id: UUID) -> None:
+        self.calls.append("member_set_lock")
+        assert workspace_id == WORKSPACE_ID
+
+    async def authorization_clock(self, *, workspace_id: UUID) -> datetime:
+        self.calls.append("authorization_clock")
+        assert workspace_id == WORKSPACE_ID
+        return NOW + timedelta(minutes=2)
 
 
 class _FakeDriftRepository:
@@ -110,11 +115,15 @@ class _FakeDriftRepository:
         members: tuple[LearningDriftCohortMember, ...],
         stored: LearningDriftPersistenceResult | None = None,
         timestamp: datetime = NOW + timedelta(hours=1),
+        fingerprint: str | None = RIGHTS_FINGERPRINT,
+        denied_decision_ids: frozenset[UUID] = frozenset(),
     ) -> None:
         self.calls = calls
         self.members = members
         self.stored = stored
         self.timestamp = timestamp
+        self.fingerprint = fingerprint
+        self.denied_decision_ids = denied_decision_ids
         self.persisted: LearningDriftPersistenceResult | None = None
         self.keys: list[str] = []
 
@@ -125,6 +134,19 @@ class _FakeDriftRepository:
             REGISTRY_ID,
             REGISTRY_REVISION,
         )
+
+    async def lock_registry_entry(self, *, workspace_id: UUID, registry_id: UUID) -> None:
+        self.calls.append("registry_lock")
+        assert (workspace_id, registry_id) == (WORKSPACE_ID, REGISTRY_ID)
+
+    async def authorize_current_source_scope(
+        self, *, workspace_id: UUID, decision_id: UUID, checked_at: datetime
+    ) -> str | None:
+        self.calls.append("current_scope")
+        assert workspace_id == WORKSPACE_ID
+        assert type(decision_id) is UUID
+        assert checked_at == NOW + timedelta(minutes=2)
+        return None if decision_id in self.denied_decision_ids else self.fingerprint
 
     async def list_cohort(
         self,
@@ -187,6 +209,7 @@ def _service(
     fingerprint: str | None = RIGHTS_FINGERPRINT,
     stored: LearningDriftPersistenceResult | None = None,
     timestamp: datetime = NOW + timedelta(hours=1),
+    denied_decision_ids: frozenset[UUID] = frozenset(),
 ) -> tuple[LearningDriftApplication, list[str], list[_FakeDriftRepository]]:
     calls: list[str] = []
     repos: list[_FakeDriftRepository] = []
@@ -198,6 +221,8 @@ def _service(
             members=members if members is not None else _members(),
             stored=stored,
             timestamp=timestamp,
+            fingerprint=fingerprint,
+            denied_decision_ids=denied_decision_ids,
         )
         repos.append(repository)
         return repository
@@ -223,14 +248,12 @@ async def test_detected_assessment_revalidates_then_locks_and_persists_proposal(
         challenger_revision=REGISTRY_REVISION,
     )
 
-    assert calls == [
-        "rights",
-        "cohort_lock",
-        "transaction_timestamp",
-        "list_cohort",
-        "find_assessment",
-        "persist",
-    ]
+    assert calls.index("source_locks") < calls.index("member_set_lock")
+    assert calls.index("member_set_lock") < calls.index("current_scope")
+    assert calls.index("current_scope") < calls.index("find_assessment")
+    assert calls.index("find_assessment") < calls.index("persist")
+    assert calls.count("source_ids") == 6
+    assert calls.count("current_scope") == 3
     assert result.assessment.policy_version == "coverage-v2-30d"
     assert result.assessment.data_quality_status.value == "detected"
     assert result.assessment.performance_status.value == "inconclusive"
@@ -284,7 +307,7 @@ async def test_empty_cohort_returns_no_assessment_without_persisting_unpinned_sc
     )
 
     assert result is None
-    assert calls == ["rights", "cohort_lock", "transaction_timestamp", "list_cohort"]
+    assert calls == ["registry_lock", "transaction_timestamp", "list_cohort"]
     assert repositories[0].persisted is None
 
 
@@ -330,22 +353,29 @@ def test_existing_empty_record_cannot_claim_a_requested_cohort_scope() -> None:
             revision=REGISTRY_REVISION,
             policy_version="coverage-v2-30d",
             membership_digest=empty_assessment.membership_digest,
+            source_rights_digest="a" * 64,
         )
 
 
 @pytest.mark.asyncio
-async def test_rights_receipt_mismatch_aborts_without_cohort_read_or_write() -> None:
-    service, calls, repositories = _service(fingerprint="8" * 64)
+async def test_mixed_current_rights_persists_inconclusive_without_metrics_or_proposal() -> None:
+    members = _members()
+    denied = frozenset({members[1].incumbent_decision_id})
+    service, _, repositories = _service(members=members, denied_decision_ids=denied)
 
-    with pytest.raises(LearningDriftRightsConflict, match="receipt"):
-        await service.assess_cohort(
-            workspace_id=WORKSPACE_ID,
-            challenger_registry_id=REGISTRY_ID,
-            challenger_revision=REGISTRY_REVISION,
-        )
+    result = await service.assess_cohort(
+        workspace_id=WORKSPACE_ID,
+        challenger_registry_id=REGISTRY_ID,
+        challenger_revision=REGISTRY_REVISION,
+    )
 
-    assert calls == ["rights", "cohort_lock", "transaction_timestamp", "list_cohort"]
-    assert repositories[0].persisted is None
+    assert result.assessment.data_quality_status.value == "inconclusive"
+    assert "rights_unverified" in {reason.value for reason in result.assessment.reason_codes}
+    assert result.assessment.snapshot_coverage_rate is None
+    assert result.assessment.quality_rate is None
+    assert result.assessment.abstention_rate is None
+    assert result.proposal is None
+    assert repositories[0].persisted is not None
 
 
 @pytest.mark.asyncio
@@ -361,14 +391,11 @@ async def test_missing_rights_persists_inconclusive_for_all_ineligible_cohort() 
         challenger_revision=REGISTRY_REVISION,
     )
 
-    assert calls == [
-        "rights",
-        "cohort_lock",
-        "transaction_timestamp",
-        "list_cohort",
-        "find_assessment",
-        "persist",
-    ]
+    assert calls.index("source_locks") < calls.index("member_set_lock")
+    assert calls.index("member_set_lock") < calls.index("current_scope")
+    assert calls.index("current_scope") < calls.index("find_assessment")
+    assert calls.index("find_assessment") < calls.index("persist")
+    assert calls.count("current_scope") == 3
     assert result.assessment.data_quality_status.value == "inconclusive"
     assert "rights_unverified" in {reason.value for reason in result.assessment.reason_codes}
     assert result.proposal is None
@@ -376,7 +403,7 @@ async def test_missing_rights_persists_inconclusive_for_all_ineligible_cohort() 
 
 
 @pytest.mark.asyncio
-async def test_missing_rights_aborts_when_cohort_contains_eligible_observation() -> None:
+async def test_current_rights_missing_does_not_disclose_eligible_history_metrics() -> None:
     ineligible = _members(count=2, rights_eligible=False)
     eligible = _members(count=1, rights_eligible=True)
     service, calls, repositories = _service(
@@ -384,15 +411,18 @@ async def test_missing_rights_aborts_when_cohort_contains_eligible_observation()
         fingerprint=None,
     )
 
-    with pytest.raises(LearningDriftRightsConflict, match="receipt"):
-        await service.assess_cohort(
-            workspace_id=WORKSPACE_ID,
-            challenger_registry_id=REGISTRY_ID,
-            challenger_revision=REGISTRY_REVISION,
-        )
+    result = await service.assess_cohort(
+        workspace_id=WORKSPACE_ID,
+        challenger_registry_id=REGISTRY_ID,
+        challenger_revision=REGISTRY_REVISION,
+    )
 
-    assert calls == ["rights", "cohort_lock", "transaction_timestamp", "list_cohort"]
-    assert repositories[0].persisted is None
+    assert result.assessment.data_quality_status.value == "inconclusive"
+    assert result.assessment.snapshot_coverage_rate is None
+    assert result.assessment.quality_rate is None
+    assert result.assessment.abstention_rate is None
+    assert result.proposal is None
+    assert repositories[0].persisted is not None
 
 
 @pytest.mark.asyncio
@@ -455,10 +485,6 @@ async def test_existing_assessment_retry_reads_bounded_cohort_and_returns_origin
     assert repeated.assessment == original.assessment
     assert repeated.proposal == original.proposal
     assert repeated.is_duplicate is True
-    assert calls == [
-        "rights",
-        "cohort_lock",
-        "transaction_timestamp",
-        "list_cohort",
-        "find_assessment",
-    ]
+    assert calls.index("source_locks") < calls.index("member_set_lock")
+    assert calls.index("member_set_lock") < calls.index("current_scope")
+    assert calls.index("current_scope") < calls.index("find_assessment")
