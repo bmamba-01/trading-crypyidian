@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -11,8 +12,14 @@ from trading_bot.observability.backup_drill import (
     BackupArtifactInput,
     RestoreDrillPolicy,
     RestoreVerificationError,
+    check_disk_space_available,
     create_backup_manifest,
+    decrypt_backup_artifact,
     execute_isolated_restore_drill,
+    format_restore_drill_report_json,
+    load_backup_manifest,
+    serialize_backup_manifest,
+    validate_isolated_target,
 )
 
 
@@ -98,3 +105,86 @@ def test_backup_rejects_plain_secret_and_restore_rejects_corruption_or_prod(tmp_
             target_environment="isolated-drill",
             incident_at=datetime(2026, 11, 14, 6, 5, tzinfo=UTC),
         )
+
+
+def test_encrypted_backup_manifest_roundtrip_and_tamper_detection(tmp_path: Path) -> None:
+    """Mã hóa AES-256-GCM, lưu manifest JSON, giải mã cô lập và phát hiện sai khóa/hỏng file."""
+    dump_file = tmp_path / "plain.sql"
+    dump_file.write_text(
+        "CREATE TABLE demo (id int); INSERT INTO demo VALUES (1);\n",
+        encoding="utf-8",
+    )
+    enc_dir = tmp_path / "encrypted"
+    created_at = datetime(2026, 11, 18, 4, 0, tzinfo=UTC)
+    passphrase = "strong-drill-passphrase-123"
+
+    manifest = create_backup_manifest(
+        backup_id="bkp-enc-01",
+        created_at=created_at,
+        operator_id="owner@crypidian.io",
+        artifacts=[BackupArtifactInput(name="postgres_dump", path=dump_file)],
+        secret_canaries=["CANARY_SECRET_XYZ"],
+        encrypted=True,
+        passphrase=passphrase,
+        output_dir=enc_dir,
+    )
+    assert manifest.artifacts[0].encrypted is True
+    assert manifest.artifacts[0].plaintext_sha256_hex is not None
+
+    manifest_path = enc_dir / "bkp-enc-01.manifest.json"
+    manifest_path.write_text(serialize_backup_manifest(manifest), encoding="utf-8")
+    loaded = load_backup_manifest(manifest_path)
+    assert loaded == manifest
+
+    enc_file = enc_dir / manifest.artifacts[0].filename
+    restore_dir = tmp_path / "restored"
+    report = execute_isolated_restore_drill(
+        manifest=loaded,
+        artifact_sources={"postgres_dump": enc_file},
+        restore_dir=restore_dir,
+        target_environment="isolated-drill",
+        incident_at=created_at + timedelta(seconds=120),
+        policy=RestoreDrillPolicy(max_rpo_seconds=900, max_rto_seconds=300),
+        passphrase=passphrase,
+    )
+    assert report.verified is True
+    assert report.rpo_seconds == 120
+    assert report.rpo_within_sla is True
+    assert report.rto_within_sla is True
+    assert (restore_dir / "plain.sql").read_text(encoding="utf-8") == dump_file.read_text(
+        encoding="utf-8"
+    )
+
+    report_json = json.loads(format_restore_drill_report_json(report))
+    assert report_json["backup_id"] == "bkp-enc-01"
+    assert report_json["verified"] is True
+
+    # Sai passphrase khi giải mã trực tiếp -> RestoreVerificationError
+    with pytest.raises(RestoreVerificationError, match="Giải mã"):
+        decrypt_backup_artifact(enc_file, tmp_path / "bad.sql", passphrase="wrong-passphrase")
+
+    # Làm hỏng 1 byte trong file mã hóa -> phát hiện lỗi checksum/giải mã
+    corrupted = bytearray(enc_file.read_bytes())
+    corrupted[-1] ^= 0xFF
+    enc_file.write_bytes(bytes(corrupted))
+    with pytest.raises(RestoreVerificationError, match="checksum"):
+        execute_isolated_restore_drill(
+            manifest=loaded,
+            artifact_sources={"postgres_dump": enc_file},
+            restore_dir=tmp_path / "restored_corrupt",
+            target_environment="isolated-drill",
+            incident_at=created_at + timedelta(seconds=120),
+            passphrase=passphrase,
+        )
+
+
+def test_isolated_target_and_disk_space_guards(tmp_path: Path) -> None:
+    """Chặn ghi đè project nguồn và cảnh báo khi dung lượng đĩa dưới ngưỡng."""
+    with pytest.raises(RestoreVerificationError, match="Compose project nguồn"):
+        validate_isolated_target(
+            "isolated-drill",
+            source_project="crypidian-review",
+            target_project="crypidian-review",
+        )
+    with pytest.raises(RestoreVerificationError, match="Cảnh báo đầy đĩa"):
+        check_disk_space_available(tmp_path, min_free_bytes=10**18)
