@@ -77,6 +77,7 @@ from trading_bot.admin.session_redirect import login_redirect_for
 from trading_bot.admin.settings_router import router as settings_router
 from trading_bot.admin.settings_service import SettingsAdminService
 from trading_bot.admin.strategy_card_service import StrategyCardAdminService
+from trading_bot.admin.strategy_release_service import StrategyReleaseAdminService
 from trading_bot.admin.telegram_binding_router import router as telegram_binding_router
 from trading_bot.admin.telegram_signal_router import router as telegram_signal_router
 from trading_bot.admin.web_router import router as admin_web_router
@@ -341,6 +342,11 @@ def create_app(
             )
             if active_session_factory is not None
             else StrategyCardAdminService()
+        )
+        application.state.strategy_release_service = (
+            StrategyReleaseAdminService(active_session_factory)
+            if active_session_factory is not None
+            else StrategyReleaseAdminService()
         )
         application.state.flatten_all_service = (
             FlattenAllService(
