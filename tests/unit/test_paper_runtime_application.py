@@ -406,6 +406,9 @@ class _FakeUnitOfWork:
 
 
 class _FakeSession:
+    async def execute(self, _statement, _params=None):
+        return SimpleNamespace(scalar_one_or_none=lambda: None, all=lambda: [])
+
     async def scalar(self, _statement):
         if _FakeUnitOfWork.scalar_results:
             return _FakeUnitOfWork.scalar_results.pop(0)

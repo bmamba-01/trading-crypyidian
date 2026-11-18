@@ -424,7 +424,7 @@ def test_metric_without_value_does_not_append_asset_suffix() -> None:
 
 
 def test_market_chart_layers_are_switches_and_symbol_is_searchable_coin_select() -> None:
-    html = _template("market_chart.html")
+    html = _template("_market_chart_toolbar.html") + _template("market_chart.html")
     assert re.search(
         r'<label class="mc-layer switch-row"><span>\{\{ label \}\}</span>'
         r'<input type="checkbox" class="ios-switch" role="switch" data-layer=',

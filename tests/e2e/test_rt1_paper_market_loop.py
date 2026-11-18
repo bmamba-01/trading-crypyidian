@@ -136,7 +136,7 @@ def test_rest_candles_drive_paper_entry_fill_and_stop_exit_idempotently() -> Non
         compose("run", "--rm", "--no-deps", "db-provisioner")
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "head")
         heads = compose("run", "--rm", "--no-deps", "migrator", "alembic", "heads")
-        assert "d8e2f4a6b8c0 (head)" in heads.stdout
+        assert "e1f3a5b7c9d1 (head)" in heads.stdout
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "check")
         state.update(run("seed"))
         # CK-11: bộ quét đọc nến 4h thật (đủ 21 ngày), 1h thiếu 21 ngày bị loại kèm lý do;

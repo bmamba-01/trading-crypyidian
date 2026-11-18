@@ -175,6 +175,7 @@ ROUTE_PERMISSION_REGISTRY: dict[tuple[str, str], RoutePolicy] = {
         Permission.RUNTIME_RESUME, "Mở lại circuit breaker"
     ),
     ("GET", "/admin/api/operations/health"): _perm(Permission.WORKSPACE_READ, "Sức khỏe vận hành"),
+    ("GET", "/admin/api/workers/readiness"): _perm(Permission.WORKSPACE_READ, "Readiness worker"),
     ("GET", "/admin/api/strategy-cards"): _perm(Permission.WORKSPACE_READ, "API Strategy Cards"),
     ("POST", "/admin/api/strategy-cards/{card_id}/inspect-bar"): _perm(
         Permission.WORKSPACE_READ, "Soi bar Strategy Card"

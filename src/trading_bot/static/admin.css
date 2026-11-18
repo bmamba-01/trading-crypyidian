@@ -5384,8 +5384,35 @@ input[type="checkbox"].ios-switch:disabled,
 .live-mon__note { margin: 0.75rem 0 0; font-size: 0.85rem; color: var(--text-muted); }
 .live-mon__spark { width: 100%; height: 60px; margin-top: 0.5rem; }
 .live-mon__spark polyline { fill: none; stroke: var(--primary); stroke-width: 2; vector-effect: non-scaling-stroke; }
-.live-mon__table { font-size: 0.875rem; font-variant-numeric: tabular-nums; margin: 0; }
-.live-mon__table th, .live-mon__table td { white-space: nowrap; vertical-align: middle; }
+.live-mon__table {
+  --bs-table-color: var(--text-main);
+  --bs-table-bg: transparent;
+  --bs-table-border-color: var(--border-subtle);
+  --bs-table-striped-color: var(--text-main);
+  --bs-table-hover-color: var(--text-main);
+  color: var(--text-main);
+  font-size: 0.8125rem;
+  font-variant-numeric: tabular-nums;
+  margin: 0;
+}
+.live-mon__table th, .live-mon__table td {
+  color: var(--text-main);
+  background: transparent;
+  white-space: nowrap;
+  vertical-align: middle;
+  padding: 0.35rem 0.5rem;
+}
+.live-mon__table thead th {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+.live-mon__table .badge-short,
+.live-mon__table .badge-long {
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+}
 .live-mon__sub { display: block; color: var(--text-muted); font-size: 0.75rem; }
 .live-mon__row--danger { background: var(--danger-bg); }
 .live-mon__ok { color: var(--success-text); }

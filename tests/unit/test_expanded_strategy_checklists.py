@@ -373,14 +373,14 @@ def _h21_snap(
         if bars_count >= 2:
             prices[-2:] = [104.0, 108.5] if cross else [103.5, 102.0]
         pdi, mdi = (28.0, 14.0) if di_match else (14.0, 28.0)
-        bars_4h = tuple(_bar(i, "4h", 100.0 + i * 0.5) for i in range(30))
+        bars_4h = tuple(_bar(i, "4h", 100.0 + i * 0.5) for i in range(max(1, bars_count // 4)))
         ema200_4h = 95.0 if htf_match else 350.0
     else:
         prices = [100.0 + i * 0.15 for i in range(bars_count)]
         if cross and bars_count >= 2:
             prices[-2:] = [106.0, 100.5]
         pdi, mdi = (12.0, 29.0) if di_match else (29.0, 12.0)
-        bars_4h = tuple(_bar(i, "4h", 300.0 - i * 1.0) for i in range(30))
+        bars_4h = tuple(_bar(i, "4h", 300.0 - i * 1.0) for i in range(max(1, bars_count // 4)))
         ema200_4h = 350.0 if htf_match else 95.0
     bars_1h = tuple(_bar(i, "1h", p) for i, p in enumerate(prices))
     at = bars_1h[-1].available_at
@@ -841,7 +841,7 @@ def _card005_snap(
                     if rt is not None and 40.0 <= rt <= 60.0:
                         bars_1h = test_bars
                         break
-        bars_4h = tuple(_bar(i, "4h", 100.0 + i * 2.0) for i in range(40))
+        bars_4h = tuple(_bar(i, "4h", 100.0 + i * 2.0) for i in range(max(1, len(bars_1h) // 4)))
         ema200 = 120.0
     else:
         closes = [250.0 - i * 0.4 for i in range(max(1, bars_count - 5))]
@@ -892,7 +892,7 @@ def _card005_snap(
                     if rt is not None and 40.0 <= rt <= 60.0:
                         bars_1h = test_bars
                         break
-        bars_4h = tuple(_bar(i, "4h", 300.0 - i * 1.0) for i in range(40))
+        bars_4h = tuple(_bar(i, "4h", 300.0 - i * 1.0) for i in range(max(1, len(bars_1h) // 4)))
         ema200 = 350.0
 
     at = bars_1h[-1].available_at

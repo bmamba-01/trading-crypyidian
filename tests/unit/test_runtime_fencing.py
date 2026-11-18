@@ -197,6 +197,7 @@ RESERVATION_WRITES = {
     "release_before_submit",
     "expire_overdue",
     "expire_due",
+    "release_for_venue_reconciliation",
 }
 RESERVATION_READS = {
     "lock_workspace_risk",

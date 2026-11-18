@@ -136,6 +136,9 @@ class StubReportingService:
             ],
         }
 
+    async def get_latest_signal(self, _principal: object, *, bot_id: object) -> dict[str, object]:
+        return {"bot_id": str(bot_id), "candidate": None, "decision": None}
+
     async def get_bot_report(self, query: object, principal: object) -> StubBotReport:
         bot_id = query.bot_id  # type: ignore[attr-defined]
         return StubBotReport(

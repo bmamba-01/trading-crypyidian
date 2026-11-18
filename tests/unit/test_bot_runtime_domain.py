@@ -221,6 +221,7 @@ def test_entry_gate_returns_first_reason_in_fixed_order() -> None:
         activity_status=RuntimeActivityStatus.UNVERIFIED,
         control_available=False,
         learning_incident_hold_active=True,
+        circuit_breaker_open=True,
     )
     expected_order = [
         EntryBlockReason.BOT_DISABLED,
@@ -232,6 +233,7 @@ def test_entry_gate_returns_first_reason_in_fixed_order() -> None:
         EntryBlockReason.ACCOUNT_ACTIVITY_UNVERIFIED,
         EntryBlockReason.RUNTIME_CONTROL_UNAVAILABLE,
         EntryBlockReason.LEARNING_INCIDENT_ENTRY_HOLD,
+        EntryBlockReason.CIRCUIT_BREAKER_OPEN,
     ]
     fixes: list[dict[str, object]] = [
         {"account_enabled": True, "bot_enabled": True},
@@ -243,6 +245,7 @@ def test_entry_gate_returns_first_reason_in_fixed_order() -> None:
         {"activity_status": RuntimeActivityStatus.VERIFIED},
         {"control_available": True},
         {"learning_incident_hold_active": False},
+        {"circuit_breaker_open": False},
     ]
     current = everything_wrong
     observed = []

@@ -351,6 +351,7 @@ class TelegramDeliveryPolicy:
     """Chính sách giao nhận đầy đủ theo từng subscription (WP-07B / CRY-346)."""
 
     cooldown: timedelta = timedelta(minutes=90)
+    scalping_cooldown: timedelta = timedelta(minutes=15)
     max_per_hour: int = 6
     max_per_day: int = 24
     quiet_hours_start: str | None = None
@@ -391,7 +392,13 @@ class TelegramDeliveryPolicy:
     @property
     def lookback(self) -> timedelta:
         """Khoảng lịch sử cần đọc để kiểm tra cooldown, giờ và ngày."""
-        return max(self.cooldown, _DAY)
+        return max(self.cooldown, self.scalping_cooldown, _DAY)
+
+    def cooldown_for(self, candidate: TelegramSignalCandidate) -> timedelta:
+        """Cooldown theo loại setup: scalping (H18–H20) dùng ngưỡng ngắn hơn."""
+        if is_scalping_candidate(candidate):
+            return self.scalping_cooldown
+        return self.cooldown
 
     def is_quiet_at(self, now: datetime) -> bool:
         """Kiểm tra `now` có nằm trong quiet hours theo timezone của subscription không."""

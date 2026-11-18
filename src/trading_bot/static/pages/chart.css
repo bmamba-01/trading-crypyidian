@@ -195,10 +195,11 @@
 .sc-levels { display: grid; grid-template-columns: repeat(auto-fill, minmax(10.5rem, 1fr)); gap: 0.4rem; margin: 0; }
 .sc-level { border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.3)); border-radius: 0.55rem; padding: 0.4rem 0.55rem; min-width: 0; }
 .sc-level dt { font-size: 0.72rem; opacity: 0.75; }
-.sc-level dd { margin: 0; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.sc-level dd { margin: 0; font-weight: 700; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .sc-level--stop dd { color: var(--pnl-negative-text, #c7354b); }
 .sc-level--recipe dd { color: var(--pnl-positive-text, #0b8a5a); }
 .sc-r { font-size: 0.75rem; font-weight: 600; opacity: 0.75; margin-left: 0.25rem; }
+.sc-meta code { overflow-wrap: anywhere; }
 .sc-note, .sc-empty { margin: 0; font-size: 0.8rem; opacity: 0.8; }
 .sc-columns { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 0.8rem; }
 .sc-columns h3, .sc-latest h3 { margin: 0 0 0.3rem; font-size: 0.88rem; }

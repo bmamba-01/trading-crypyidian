@@ -5770,3 +5770,26 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
   - Unit tests tổng hợp (`test_backup_restore_drill.py`, `test_fx7_liquidation_margin.py`, `test_risk1_correlation_group_cap.py`, `test_sig6_checklist_independence.py`, `test_trade_planner.py`, `test_risk_engine.py`, `test_strategy_card_sc1_engine.py`, `test_expanded_strategy_cards_pipeline.py`, `test_strategy_pipeline_engine.py`, `test_strategy_pipeline_planner_bridge.py`, `test_strategy_card_strategy.py`, `test_strategy_card_verification.py`, `test_candidate_universe_proof.py`, `test_admin_strategy_cards_ui.py`) → **238 passed in 12.84s**.
   - E2E tests (`test_admin_a11y_zoom_keyboard_playwright.py`, `test_admin_strategy_cards_playwright.py`, `test_ops07c_backup_restore_drill_postgres_e2e.py`) → **6 passed in 41.80s**.
 - **Readback:** đã đọc lại mục này và đối chiếu kết quả test trước khi commit và rebuild stack local.
+
+
+### 2026-11-18 — Hợp nhất Nhóm 1, 2, 4 (`In Progress`), `CRY-439`, Sửa lỗi `/admin/live` & Responsive 360px
+
+- **Hợp nhất từ 3 nhánh `In Progress` + cherry-pick `CRY-439`:**
+  - **Nhóm 1 (`feat/ip-group1-analytics`, `dfeaeac`):** `CRY-76` (`MI-2`), `CRY-36` (`MT-1` `domain/portfolio/analytics.py`), `CRY-53` (`SIG-8`), `CRY-80` (`MI-6` `decision_narrative`).
+  - **Nhóm 2 (`feat/ip-group2-workbench-ui`, `4ee5d8b`):** `CRY-219` (`SIG-ext/WB07A`), `CRY-346` (`WP-07B/delivery-policy` + migration `e1a2b3c4d5f6`), `CRY-375` (`WP-07E/readiness`), `CRY-443` (`UI-Admin/full-density`), `CRY-283` (`MB-07b.5`). Hợp nhất xung đột `telegram_signals.py` giữ cả `scalping_cooldown` lẫn `TelegramDeliveryPolicy`; đăng ký `GET /admin/api/workers/readiness` vào `ROUTE_PERMISSION_REGISTRY` (`route_policy.py`).
+  - **Nhóm 4 (`feat/ip-group4-wp04-wp03`, `c29741b`):** Đóng Epic `CRY-25`, `CRY-104`; `CRY-107` (`WP-04A`), `CRY-109` (`WP-04C`), `CRY-150`, `CRY-289`, `CRY-290`, `CRY-291` (`WP-03` offline/mock). Nối migration `e1f3a5b7c9d1` sau `e1a2b3c4d5f6` thành **1 head duy nhất (`e1f3a5b7c9d1`)**.
+  - **`CRY-439` (`dbedf21`):** Cherry-pick bản sửa fail-closed read model lịch sử scorer khi thiếu credential.
+- **Sửa lỗi unit test sau hợp nhất (9 ca → 0 ca):**
+  - `test_admin_form_controls.py` (đọc thêm `_market_chart_toolbar.html`), `test_bot_detail_trading_revamp.py` (thêm `get_latest_signal` vào stub), `test_bot_runtime_domain.py` (thêm `CIRCUIT_BREAKER_OPEN`), `test_paper_runtime_application.py` (thêm `execute` vào `_FakeSession`), `test_runtime_fencing.py` (thêm `release_for_venue_reconciliation`), `test_expanded_strategy_checklists.py` (đồng bộ `bars_4h` trong `_h21_snap`/`_card005_snap` tránh stale so với `decision_time`).
+- **Sửa giao diện `/admin/live` & responsive 360px `/admin/chart`:**
+  - Nguyên nhân `/admin/live` tàng hình chữ bảng Bot/Vị thế: `.live-mon__table` dùng class `.table` của Bootstrap 5.3.8 làm `--bs-table-color` thành đen `#212529` trên nền tối; badge `SHORT` thiếu `white-space: nowrap`. Đã đặt `--bs-table-color: var(--text-main)`, `--bs-table-bg: transparent` và `white-space: nowrap` cho badge trong `src/trading_bot/static/admin.css`.
+  - Nguyên nhân `/admin/chart` tràn ngang 31px ở 360px: `.sc-level dd` và `.sc-r` có `white-space: nowrap` khi hiển thị thêm `ròng ...R`/`...% vốn` trong lưới 2 cột; đã đổi sang `overflow-wrap: anywhere` trong `src/trading_bot/static/pages/chart.css`.
+- **Kiểm chứng trên `dev`:**
+  - `uv run alembic heads` → **`e1f3a5b7c9d1 (head)`**.
+  - `uv run ruff check src tests scripts` & `ruff format --check src tests scripts` → **All checks passed**.
+  - `uv run mypy src/trading_bot` → **Success: no issues found in 514 source files**.
+  - 9 ca từng lỗi + các file liên quan → **77 passed in 6.02s**.
+  - Postgres E2E (`test_live_market_backfill_migration.py`) → **1 passed in 50.92s**.
+  - Playwright E2E (`test_admin_live_monitor_playwright.py` 2 passed, `test_market_chart_renders_overlays_polls_and_is_responsive` 1 passed in 25.56s).
+- **Còn mở (Nhóm 3):** `CRY-133`, `CRY-236`, `CRY-333` (hợp nhất `codex/wp06-runtime-resolver` ~21k dòng / 167 file) để thành vòng riêng tiếp theo.
+- **Readback:** đã đọc lại mục này và đối chiếu kết quả test trước khi commit và cập nhật stack local.
