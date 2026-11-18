@@ -1,7 +1,7 @@
 {% extends "admin/base.html" %}
 {% block title %}Biểu đồ thị trường — Crypidian{% endblock %}
 {% block heading %}Biểu đồ thị trường{% endblock %}
-{% block head_extra %}<link rel="stylesheet" href="/static/pages/chart.css">{% endblock %}
+{% block head_extra %}<link rel="stylesheet" href="/static/pages/chart.css"><link rel="stylesheet" href="/static/pages/filters.css">{% endblock %}
 
 {% block content %}
 {#-
@@ -61,7 +61,25 @@
       {% endfor %}
     </nav>
     {% endif %}
-    {#- CK-8: panel lớp nhóm theo loại, preset và đếm "Lớp a/b". -#}
+    {% if chart_payload %}
+    <button type="button" class="btn btn-secondary mc-settings-trigger" data-chart-settings-open
+      aria-controls="mc-chart-settings" aria-expanded="false" aria-haspopup="dialog"
+      title="Cài đặt lớp hiển thị"
+      aria-label="Mở cài đặt lớp hiển thị">
+      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></svg>
+      <span>Lớp</span><span class="mc-layer-count" data-layer-count data-layer-count-compact>—</span>
+    </button>
+    {#- CK-8: dialog bên phải giữ preset, nhóm lớp và số lớp bật; đóng mặc định để chart vào viewport. -#}
+    <dialog id="mc-chart-settings" class="mc-settings" data-chart-settings aria-labelledby="mc-settings-title"
+      aria-describedby="mc-settings-description">
+      <header class="mc-settings__head">
+        <div>
+          <h2 id="mc-settings-title">Lớp hiển thị <span class="mc-layer-count" data-layer-count>—</span></h2>
+          <p id="mc-settings-description">Chọn các lớp sẽ vẽ trên biểu đồ. Tùy chọn được lưu trên trình duyệt này.</p>
+        </div>
+        <button type="button" class="btn btn-secondary mc-settings__close" data-chart-settings-close aria-label="Đóng cài đặt lớp">×</button>
+      </header>
+      {#- CK-8: panel lớp nhóm theo loại và preset. -#}
     {% set LAYER_GROUPS = [
       ("Giá và chỉ báo", ["ema", "vwap", "zigzag", "rsi", "macd"]),
       ("Cấu trúc và ICT", ["structure", "trendlines", "levels", "sessions", "ict_zones", "equal_levels", "killzones"]),
@@ -69,7 +87,7 @@
       ("Giao dịch", ["signal", "paper", "quote"]),
     ] %}
     <fieldset class="mc-layers">
-      <legend>Lớp hiển thị <span class="mc-layer-count" data-layer-count>—</span></legend>
+      <legend class="visually-hidden">Lớp biểu đồ</legend>
       <div class="mc-layer-presets">
         <label for="mc-layer-preset">Bộ lớp</label>
         <select id="mc-layer-preset" data-layer-preset>
@@ -89,6 +107,8 @@
       </div>
       {% endfor %}
     </fieldset>
+    </dialog>
+    {% endif %}
     {% endif %}
   </section>
 
@@ -488,7 +508,7 @@
       </table></div>
     </div>
     <div id="mc-panel-history" role="tabpanel" aria-labelledby="mc-tab-history" data-dock-panel="history" hidden>
-      <div class="mc-dock__filters">
+      <div class="mc-dock__filters admin-filter admin-filter--inline">
         <label for="mc-history-period">Kỳ</label>
         <select id="mc-history-period" data-history-period>
           <option value="today">Hôm nay (UTC)</option>

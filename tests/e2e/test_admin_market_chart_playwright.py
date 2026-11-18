@@ -428,6 +428,10 @@ def test_market_chart_renders_overlays_polls_and_is_responsive(server_url: str) 
 
         page.goto(f"{server_url}/admin/chart?timeframe=5m", wait_until="networkidle")
         expect(page.locator("#market-chart canvas").first).to_be_visible()
+        chart_box = page.locator("#market-chart").bounding_box()
+        assert chart_box is not None
+        assert chart_box["y"] < 800
+        page.screenshot(path=str(SCREENSHOTS_DIR / "admin-filter-density-compact.png"))
         expect(page.locator("#mc-symbol")).to_have_value("BTCUSDT")
         expect(page.locator(".mc-timeframe.is-active")).to_have_text("5M")
         expect(page.locator('.mc-timeframe[href*="timeframe=1h"]')).to_have_class(
@@ -455,8 +459,7 @@ def test_market_chart_renders_overlays_polls_and_is_responsive(server_url: str) 
         expect(strip.locator("[data-ov-funding]")).to_have_text("0,0100%")
         first_clock = strip.locator("[data-ov-candle-left]").inner_text()
         assert re.fullmatch(r"\d{2}:\d{2}", first_clock), first_clock
-        page.wait_for_timeout(1300)
-        assert strip.locator("[data-ov-candle-left]").inner_text() != first_clock
+        expect(strip.locator("[data-ov-candle-left]")).not_to_have_text(first_clock, timeout=5000)
         expect(strip.locator("[data-ov-notices] li")).to_have_count(0)
         # Polling ~2 giây trả số mới và JS cập nhật bid.
         with page.expect_response(
@@ -481,6 +484,15 @@ def test_market_chart_renders_overlays_polls_and_is_responsive(server_url: str) 
 
         # CK-3: lớp ICT — số vùng còn hiệu lực, công tắc killzone (mặc định tắt), chip killzone.
         expect(page.locator("[data-mc-ict-count]")).to_have_text(re.compile(r"^\d+$"))
+        settings_button = page.locator("[data-chart-settings-open]")
+        settings_dialog = page.locator("[data-chart-settings]")
+        expect(settings_dialog).not_to_have_attribute("open")
+        expect(settings_button).to_have_attribute("aria-expanded", "false")
+        settings_button.click()
+        expect(settings_dialog).to_be_visible()
+        expect(settings_button).to_have_attribute("aria-expanded", "true")
+        expect(page.locator("[data-chart-settings-close]")).to_be_focused()
+        page.screenshot(path=str(SCREENSHOTS_DIR / "admin-filter-density-panel.png"))
         expect(page.locator('[data-layer="ict_zones"]')).to_be_checked()
         expect(page.locator('[data-layer="killzones"]')).not_to_be_checked()
         page.locator('[data-layer="killzones"]').check()
@@ -489,8 +501,12 @@ def test_market_chart_renders_overlays_polls_and_is_responsive(server_url: str) 
             path=str(SCREENSHOTS_DIR / "ck3-ict-layer-desktop.png")
         )
         page.locator('[data-layer="killzones"]').uncheck()
+        page.keyboard.press("Escape")
+        expect(settings_dialog).not_to_be_visible()
+        expect(settings_button).to_be_focused()
 
         # CK-4: TPO mặc định tắt; nPOC/VAH-VAL mặc định bật.
+        settings_button.click()
         expect(page.locator('[data-layer="tpo"]')).not_to_be_checked()
         expect(page.locator('[data-layer="profile_levels"]')).to_be_checked()
         page.locator('[data-layer="tpo"]').check()
@@ -507,6 +523,7 @@ def test_market_chart_renders_overlays_polls_and_is_responsive(server_url: str) 
             path=str(SCREENSHOTS_DIR / "ck5-zigzag-vsa-desktop.png")
         )
         page.locator('[data-layer="vsa"]').uncheck()
+        page.keyboard.press("Escape")
 
         # CK-6: bảng Entry — tiến độ k/n, còn thiếu, ghim kịch bản lên chart.
         board = page.locator("#mc-entry-board")
@@ -613,12 +630,15 @@ def test_market_chart_renders_overlays_polls_and_is_responsive(server_url: str) 
         expect(page.locator("[data-draw-count]")).to_have_text("3 hình vẽ")
 
         # CK-8: preset lớp và đếm "Lớp a/b".
+        page.locator("[data-chart-settings-open]").click()
         total = page.locator("[data-layer]").count()
         page.locator("[data-layer-preset]").select_option("minimal")
-        expect(page.locator("[data-layer-count]")).to_have_text(f"Lớp 4/{total}")
+        expect(page.locator("[data-layer-count]").first).to_have_text(f"4/{total}")
+        expect(page.locator("[data-layer-count]").nth(1)).to_have_text(f"Lớp 4/{total}")
         page.locator("[data-layer-preset]").select_option("default")
         expect(page.locator('[data-layer="killzones"]')).not_to_be_checked()
         expect(page.locator('[data-layer="ict_zones"]')).to_be_checked()
+        page.keyboard.press("Escape")
 
         # CK-8: nhiều khung — 2 khung → thêm khung 4H, có nến.
         page.locator("[data-multi-count]").select_option("2")
@@ -697,6 +717,7 @@ def test_market_chart_renders_overlays_polls_and_is_responsive(server_url: str) 
 
         # Bật RSI/MACD → hai pane phụ hiện; lựa chọn được nhớ sau khi tải lại.
         expect(page.locator("#market-chart-rsi")).to_be_hidden()
+        page.locator("[data-chart-settings-open]").click()
         page.locator('[data-layer="rsi"]').check()
         page.locator('[data-layer="macd"]').check()
         expect(page.locator("#market-chart-rsi canvas").first).to_be_visible()
@@ -731,9 +752,17 @@ def test_market_chart_renders_overlays_polls_and_is_responsive(server_url: str) 
             strip_box = page.locator("#mc-live-strip").bounding_box()
             assert strip_box is not None
             assert strip_box["x"] + strip_box["width"] <= width + 1, f"dải thông số @ {width}px"
-            for selector in (".mc-timeframe", ".mc-layer", "#mc-bot"):
-                height = page.locator(selector).first.bounding_box()["height"]
+            for selector in (".mc-timeframe", "#mc-bot"):
+                box = page.locator(selector).first.bounding_box()
+                assert box is not None
+                height = box["height"]
                 assert height >= 43.5, f"{selector} @ {width}px cao {height}"
+            page.locator("[data-chart-settings-open]").click()
+            _assert_no_horizontal_overflow(page, f"panel {width}px")
+            layer_box = page.locator(".mc-layer").first.bounding_box()
+            assert layer_box is not None
+            assert layer_box["height"] >= 43.5
+            page.keyboard.press("Escape")
         page.screenshot(
             path=str(SCREENSHOTS_DIR / "sig7-market-chart-mobile-dark.png"), full_page=True
         )

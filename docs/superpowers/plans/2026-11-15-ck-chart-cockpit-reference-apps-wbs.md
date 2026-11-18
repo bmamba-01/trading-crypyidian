@@ -337,6 +337,15 @@ Ký hiệu: **D** = đã có trên `dev`; **S** = đã làm lát đầu trên nh
 | H23 | "Cờ xanh" đảo chiều đáy | 1H, bối cảnh 1D | Nến đảo chiều tăng đã xác nhận + kiểm tra đáy bằng nhau + MA20 đi ngang/đảo lên; cần ≥ 3/5 điều kiện khung ngày; thoát theo "cờ đỏ" + phá cấu trúc |
 | H24 | Spike & Ledge | M5/M15 | Tên trên ảnh 1, **chưa có định nghĩa kiểm chứng** — cần owner cung cấp mô tả trước khi đưa vào danh sách |
 
+### UI-Admin/filters — Thu gọn bộ lọc và cài đặt chart (CRY-441, 18/11/2026)
+
+- **Mục tiêu:** giảm phần điều khiển đẩy biểu đồ xuống dưới viewport và dùng một kiểu bố trí/spacing dễ nhận biết cho bộ lọc dữ liệu trong Admin.
+- **Chọn:** thanh chart giữ bot/mã/khung thời gian; nút "Lớp" mở dialog trượt cạnh phải chứa preset và nhóm công tắc lớp, đóng mặc định. Filter data tái dùng class CSS chung.
+- **Phạm vi UI:** `/admin/chart` (toolbar, lớp, kỳ lịch sử), `/admin/scanner`, `/admin/reports`, `/admin/ai-analyses`, `/admin/signal-outcomes`, `/admin/live`, `/admin/risk` và filter subscription tín hiệu tại trang bot.
+- **Giữ nguyên:** API, GET/POST, tên/giá trị trường, truy vấn, quyền và mặc định; không thu gọn form thay đổi cấu hình vận hành. Icon có tên truy cập; dialog đóng bằng Escape/nút; kích thước chạm tối thiểu 44px.
+- **Thiết kế:** [Tối ưu bộ lọc Admin](../specs/2026-11-18-admin-filter-density-design.md) · [Kế hoạch](./2026-11-18-admin-filter-density.md).
+- **Trạng thái:** implementation hoàn tất; unit 52/52 và E2E chart/live/risk 7/7 đạt ngày 18/11/2026. Đang commit/push `dev` và restart admin-web local.
+
 ## 8. Dữ liệu và API
 
 - Mở rộng `GET /admin/api/chart` thành các khối: `header` (CK-1), `mtf` (CK-2), `zones` (CK-3), `profiles` (CK-4), `vsa`/`zigzag` (CK-5), `setups` (CK-6), `positions` (CK-7), `levels`/`events`/`narrative` (CK-10), `status` (CK-9). Mỗi khối có `formula_version`, `as_of`, nguồn; thiếu dữ liệu trả lý do, không trả 0.

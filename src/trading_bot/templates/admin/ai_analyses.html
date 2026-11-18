@@ -1,7 +1,7 @@
 {% extends "admin/base.html" %}
 {% block title %}Phân tích AI — Crypidian{% endblock %}
 {% block heading %}Phân tích AI{% endblock %}
-{% block head_extra %}<link rel="stylesheet" href="/static/pages/ai.css">{% endblock %}
+{% block head_extra %}<link rel="stylesheet" href="/static/pages/ai.css"><link rel="stylesheet" href="/static/pages/filters.css">{% endblock %}
 
 {% block content %}
 {#- CRY-383: lượt AI Analyst đã lưu (chỉ đọc). Đầu ra AI chỉ là gợi ý; số liệu đã qua validator. -#}
@@ -9,7 +9,7 @@
   <section class="glass-card" aria-labelledby="ai-intro">
     <h2 id="ai-intro">Các lượt phân tích</h2>
     <p class="ai-note">Mỗi lượt là một lần AI đọc Run Report của một họ chiến lược. "Hợp lệ" nghĩa là mọi con số AI viết đã khớp trường trong report; lượt bị loại không gửi Telegram. Đề xuất chỉ để backtest, không tự áp vào bot.</p>
-    <form method="get" action="/admin/ai-analyses" class="ai-filters">
+    <form method="get" action="/admin/ai-analyses" class="admin-filter ai-filters" aria-label="Lọc lượt phân tích">
       <label>Chủ đề
         <select name="topic">
           <option value="">Tất cả</option>

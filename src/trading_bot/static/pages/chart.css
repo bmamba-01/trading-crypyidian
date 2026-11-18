@@ -20,6 +20,41 @@
 .mc-toolbar__select label { font-weight: 600; white-space: nowrap; }
 .mc-toolbar__select select { min-height: 44px; min-width: 0; flex: 1 1 8rem; max-width: 18rem; }
 .mc-toolbar__select .btn { min-height: 44px; }
+.mc-settings-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-height: 44px;
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+.mc-settings-trigger svg { width: 1.05rem; height: 1.05rem; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.mc-settings-trigger[aria-expanded="true"] { border-color: var(--focus-ring); }
+.mc-settings {
+  position: fixed;
+  inset: 0 0 0 auto;
+  width: min(28rem, calc(100vw - 1rem));
+  height: 100dvh;
+  max-height: 100dvh;
+  margin: 0;
+  padding: 1rem;
+  border: 1px solid var(--glass-border, rgba(148, 163, 184, 0.35));
+  border-radius: 0;
+  color: var(--text-main, #f8fafc);
+  background: var(--bg-surface, #0e1223);
+  box-shadow: -1rem 0 2.5rem rgba(0, 0, 0, 0.32);
+}
+.mc-settings[open] { display: grid; grid-template-rows: auto minmax(0, 1fr); gap: 0.8rem; }
+.mc-settings::backdrop { background: rgba(2, 6, 23, 0.58); }
+.mc-settings__head { display: flex; align-items: flex-start; justify-content: space-between; gap: 0.75rem; }
+.mc-settings__head h2 { margin: 0; font-size: 1rem; }
+.mc-settings__head p { margin: 0.25rem 0 0; color: var(--text-muted, #94a3b8); font-size: 0.8rem; }
+.mc-settings__close { flex: 0 0 44px; min-width: 44px; min-height: 44px; padding: 0; font-size: 1.4rem; }
+.mc-settings .mc-layers { display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: 0.75rem; overflow: auto; padding: 0 0.2rem 0.6rem 0; }
+.mc-settings .mc-layer-presets, .mc-settings .mc-layer-group { flex: initial; }
+.mc-settings .mc-layer-group { gap: 0.25rem 0.6rem; }
+.mc-settings .mc-layer-group__title { margin-bottom: 0.1rem; }
+.mc-settings .mc-layer { justify-content: space-between; flex: 1 1 12rem; }
 
 .mc-timeframes {
   display: flex;
@@ -127,6 +162,15 @@
   .mc-timeframe { min-width: 0; }
   .mc-canvas { height: 360px; }
   .mc-chart-card { padding: 0.6rem; }
+}
+
+@media (max-width: 520px) {
+  .mc-settings { width: 100vw; padding: 0.75rem; }
+  .mc-settings .mc-layer { flex-basis: 100%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mc-settings, .mc-settings-trigger { animation: none; transition: none; scroll-behavior: auto; }
 }
 
 /* ---------- Thẻ tín hiệu (SIG-3) ---------- */

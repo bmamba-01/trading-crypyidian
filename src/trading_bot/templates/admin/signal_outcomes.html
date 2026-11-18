@@ -1,7 +1,7 @@
 {% extends "admin/base.html" %}
 {% block title %}Kết quả tín hiệu — Crypidian{% endblock %}
 {% block heading %}Kết quả tín hiệu{% endblock %}
-{% block head_extra %}<link rel="stylesheet" href="/static/pages/ai.css"><link rel="stylesheet" href="/static/pages/signal-outcomes.css">{% endblock %}
+{% block head_extra %}<link rel="stylesheet" href="/static/pages/ai.css"><link rel="stylesheet" href="/static/pages/signal-outcomes.css"><link rel="stylesheet" href="/static/pages/filters.css">{% endblock %}
 
 {% macro stat_row(item, label) -%}
 <tr>
@@ -31,7 +31,7 @@
   <section class="glass-card" aria-labelledby="so-intro">
     <h2 id="so-intro">Tín hiệu đúng hay sai?</h2>
     <p class="ai-note">Mỗi tín hiệu (kể cả tín hiệu không gửi Telegram hoặc không thành lệnh) được chấm sau {{ data.options.horizons | join("×, ") }}× khung vào lệnh bằng nến đã đóng. Giá vào, SL và TP1/TP2 lấy đúng như thẻ tín hiệu. <strong>Đúng</strong> = R &gt; +0,1; <strong>Sai</strong> = R &lt; −0,1; còn lại là <strong>hòa</strong>. R tính theo bracket SL/TP1, chưa trừ phí. Nến chạm cả SL lẫn TP1 thì coi như SL trước. Phương pháp <code>{{ data.method_version }}</code>.</p>
-    <form method="get" action="/admin/signal-outcomes" class="ai-filters" aria-label="Lọc kết quả tín hiệu">
+    <form method="get" action="/admin/signal-outcomes" class="admin-filter ai-filters" aria-label="Lọc kết quả tín hiệu">
       <label>Bot
         <select name="bot">
           <option value="">Tất cả</option>
