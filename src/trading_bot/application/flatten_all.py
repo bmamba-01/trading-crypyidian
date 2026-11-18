@@ -18,6 +18,14 @@ from trading_bot.adapters.database.repositories.flatten_all import (
 )
 from trading_bot.application.bot_runtime_control import BotRuntimeControlError
 from trading_bot.application.outbox import UnitOfWork
+from trading_bot.auth.action_challenge import (
+    ACTION_WORKSPACE_FLATTEN_CONFIRM,
+    ActionChallengeError,
+    ActionChallengeService,
+    StepUpProof,
+    flatten_confirm_payload,
+    verify_service_step_up,
+)
 from trading_bot.auth.policy import Principal, Role
 from trading_bot.auth.service import RECENT_MFA_LIFETIME
 from trading_bot.domain.execution.flatten_all import FlattenSnapshot
@@ -71,6 +79,8 @@ class FlattenAllService:
         unit_of_work_factory: Callable[..., Any] = UnitOfWork,
         operations_factory: Callable[[Principal], Any] | None = None,
         clock: Callable[[], datetime] | None = None,
+        action_challenge_service: ActionChallengeService | None = None,
+        require_action_step_up: bool = False,
     ) -> None:
         self._sessions = sessions
         self._snapshot_provider = snapshot_provider
@@ -78,6 +88,8 @@ class FlattenAllService:
         self._unit_of_work_factory = unit_of_work_factory
         self._operations_factory = operations_factory
         self._clock = clock or (lambda: datetime.now(UTC))
+        self._action_challenge_service = action_challenge_service
+        self._require_action_step_up = require_action_step_up
 
     def for_principal(self, principal: Principal) -> PrincipalFlattenAll:
         return PrincipalFlattenAll(self, principal)
@@ -160,18 +172,38 @@ class PrincipalFlattenAll:
         preview_hash: str,
         idempotency_key: str,
         reason: str,
+        step_up: StepUpProof | None = None,
     ) -> FlattenConfirmResult:
         principal = self._principal
         now = self._service._clock()
         if not _aware(now):
             raise FlattenAllError("FLATTEN_CLOCK_INVALID")
-        _authorize(principal, reason, now)
+        if Role.OWNER not in principal.roles:
+            raise FlattenAllError("CONTROL_PERMISSION_DENIED")
+        if not isinstance(reason, str) or not reason.strip() or len(reason) > 500:
+            raise FlattenAllError("CONTROL_REASON_REQUIRED")
         if not isinstance(idempotency_key, str) or not idempotency_key.strip():
             raise FlattenAllError("FLATTEN_IDEMPOTENCY_KEY_REQUIRED")
         if len(idempotency_key) > 128:
             raise FlattenAllError("FLATTEN_IDEMPOTENCY_KEY_INVALID")
         if not _is_sha256(preview_hash):
             raise FlattenAllError("FLATTEN_PREVIEW_INVALID")
+        try:
+            await verify_service_step_up(
+                principal,
+                action_challenge_service=self._service._action_challenge_service,
+                require_action_step_up=self._service._require_action_step_up,
+                action=ACTION_WORKSPACE_FLATTEN_CONFIRM,
+                payload=flatten_confirm_payload(
+                    preview_id=preview_id,
+                    preview_hash=preview_hash,
+                    reason=reason,
+                ),
+                step_up=step_up,
+                fallback_recent_mfa=lambda: _require_recent_mfa(principal, now),
+            )
+        except ActionChallengeError as error:
+            raise FlattenAllError(error.code) from None
         request_hash = _request_hash(preview_id, preview_hash, reason.strip())
         receipt: FlattenOperationReceipt
         bot_ids: tuple[UUID, ...]
@@ -296,9 +328,7 @@ class PrincipalFlattenAll:
         )
 
 
-def _authorize(principal: Principal, reason: str, now: datetime) -> None:
-    if Role.OWNER not in principal.roles:
-        raise FlattenAllError("CONTROL_PERMISSION_DENIED")
+def _require_recent_mfa(principal: Principal, now: datetime) -> None:
     verified = principal.mfa_verified_at
     if (
         verified is None
@@ -307,6 +337,12 @@ def _authorize(principal: Principal, reason: str, now: datetime) -> None:
         or now - verified > RECENT_MFA_LIFETIME
     ):
         raise FlattenAllError("RECENT_MFA_REQUIRED")
+
+
+def _authorize(principal: Principal, reason: str, now: datetime) -> None:
+    if Role.OWNER not in principal.roles:
+        raise FlattenAllError("CONTROL_PERMISSION_DENIED")
+    _require_recent_mfa(principal, now)
     if not isinstance(reason, str) or not reason.strip() or len(reason) > 500:
         raise FlattenAllError("CONTROL_REASON_REQUIRED")
 

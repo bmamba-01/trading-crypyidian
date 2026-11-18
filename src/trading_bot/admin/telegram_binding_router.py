@@ -7,7 +7,11 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
-from trading_bot.application.telegram_binding import TelegramTopicSetupError
+from trading_bot.application.telegram_binding import (
+    TelegramStepUpError,
+    TelegramTopicSetupError,
+)
+from trading_bot.auth.action_challenge import ActionChallengeError, http_step_up_scope
 from trading_bot.auth.router import require_csrf
 from trading_bot.auth.service import AuthIdentity
 
@@ -26,6 +30,11 @@ def _service(request: Request) -> Any:
 
 
 def _service_error(error: ValueError) -> HTTPException:
+    if isinstance(error, TelegramStepUpError):
+        return HTTPException(
+            status_code=error.status_code,
+            detail={"code": error.code, "message": str(error)},
+        )
     message = str(error)
     status = 403 if "owner" in message.lower() or "mfa" in message.lower() else 422
     return HTTPException(status_code=status, detail="Thao tác liên kết Telegram bị từ chối.")
@@ -42,7 +51,10 @@ async def create_telegram_link(
     response.headers["Cache-Control"] = "no-store"
     response.headers["Referrer-Policy"] = "no-referrer"
     try:
-        link = await _service(request).create_link(identity.principal, reason=body.reason)
+        with http_step_up_scope(request):
+            link = await _service(request).create_link(identity.principal, reason=body.reason)
+    except ActionChallengeError as error:
+        raise HTTPException(status_code=error.status_code, detail=error.as_detail()) from error
     except ValueError as error:
         raise _service_error(error) from error
     return {"url": link.url, "expires_at": link.expires_at}
@@ -56,9 +68,12 @@ async def revoke_telegram_binding(
     identity: Annotated[AuthIdentity, Depends(require_csrf)],
 ) -> dict[str, int]:
     try:
-        revoked = await _service(request).revoke(
-            identity.principal, membership_id, reason=body.reason
-        )
+        with http_step_up_scope(request):
+            revoked = await _service(request).revoke(
+                identity.principal, membership_id, reason=body.reason
+            )
+    except ActionChallengeError as error:
+        raise HTTPException(status_code=error.status_code, detail=error.as_detail()) from error
     except ValueError as error:
         raise _service_error(error) from error
     return {"revoked": revoked}

@@ -1,5 +1,5 @@
 from decimal import Decimal
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -35,3 +35,16 @@ class RiskProfileRequest(AuthRequest):
     name: str = Field(min_length=2, max_length=120)
     max_risk_fraction: Decimal = Field(ge=Decimal("0"), le=Decimal("1"))
     settings: dict[str, object] = Field(default_factory=dict)
+
+
+class ActionChallengeCreateRequest(AuthRequest):
+    action: str = Field(min_length=2, max_length=80)
+    payload: dict[str, Any] = Field(default_factory=dict)
+    ttl_seconds: int = Field(default=300)
+
+
+class ActionChallengeVerifyRequest(AuthRequest):
+    # Chấp nhận mọi chuỗi ngắn để service tự đếm lỗi và khóa challenge sau 5 lần sai.
+    code: str = Field(min_length=1, max_length=32)
+    action: str | None = Field(default=None, max_length=80)
+    payload: dict[str, Any] | None = None

@@ -59,6 +59,14 @@ from trading_bot.application.runtime_risk_profile import (
     risk_limits_from_profile,
 )
 from trading_bot.application.workspace_risk import mark_policy_from
+from trading_bot.auth.action_challenge import (
+    ACTION_RISK_APPETITE_SAVE,
+    ActionChallengeError,
+    ActionChallengeService,
+    StepUpProof,
+    risk_appetite_save_payload,
+    verify_service_step_up,
+)
 from trading_bot.auth.bot_policy import BotPermission
 from trading_bot.auth.policy import Permission, Principal, authorize
 from trading_bot.auth.service import RECENT_MFA_LIFETIME
@@ -217,9 +225,18 @@ class RiskAppetiteService:
         self,
         sessions: async_sessionmaker[AsyncSession],
         settings_service: SettingsAdminService | None = None,
+        *,
+        action_challenge_service: ActionChallengeService | None = None,
+        require_action_step_up: bool = False,
     ) -> None:
         self._sessions = sessions
-        self._settings = settings_service or SettingsAdminService(sessions)
+        self._action_challenge_service = action_challenge_service
+        self._require_action_step_up = require_action_step_up
+        self._settings = settings_service or SettingsAdminService(
+            sessions,
+            action_challenge_service=action_challenge_service,
+            require_action_step_up=require_action_step_up,
+        )
 
     def _uow(self, principal: Principal) -> UnitOfWork:
         return UnitOfWork(
@@ -490,9 +507,36 @@ class RiskAppetiteService:
 
     # --- Ghi ---------------------------------------------------------------------------------
 
-    async def save(self, principal: Principal, update: RiskAppetiteUpdate) -> dict[str, Any]:
+    async def save(
+        self,
+        principal: Principal,
+        update: RiskAppetiteUpdate,
+        *,
+        step_up: StepUpProof | None = None,
+    ) -> dict[str, Any]:
         """Lưu khẩu vị rủi ro mới; trả version settings đã publish (hoặc ``unchanged``)."""
-        _require_write(principal)
+        if not authorize(principal, Permission.RISK_PROFILE_WRITE):
+            raise SettingsAdminError(403, "Cần quyền thay đổi hồ sơ rủi ro.")
+        try:
+            await verify_service_step_up(
+                principal,
+                action_challenge_service=self._action_challenge_service,
+                require_action_step_up=self._require_action_step_up,
+                action=ACTION_RISK_APPETITE_SAVE,
+                payload=risk_appetite_save_payload(
+                    per_trade_risk_fraction=update.per_trade_risk_fraction,
+                    account_max_open_risk_fraction=update.account_max_open_risk_fraction,
+                    max_positions=update.max_positions,
+                    caps=update.caps,
+                    workspace_max_open_risk_fraction=update.workspace_max_open_risk_fraction,
+                    max_drawdown_fraction=update.max_drawdown_fraction,
+                    reason=update.reason,
+                ),
+                step_up=step_up,
+                fallback_recent_mfa=lambda: _require_write(principal),
+            )
+        except ActionChallengeError as error:
+            raise SettingsAdminError(error.status_code, error.message, code=error.code) from error
         async with self._uow(principal) as unit:
             session = unit.session
             current = await WorkspaceSettingsRepository(session).get_effective(
@@ -588,14 +632,20 @@ class RiskAppetiteService:
         if next_settings == settings:
             return {"status": "unchanged", "version": current.version}
         draft = await self._settings.create_draft(
-            principal, settings=next_settings, expected_parent_version_id=parent_id
+            principal,
+            settings=next_settings,
+            expected_parent_version_id=parent_id,
+            _verified_step_up=True,
         )
         validation = await self._settings.validate_draft(principal, draft_id=UUID(draft["id"]))
         if not validation.get("valid"):
             messages = "; ".join(item["message"] for item in validation.get("errors", []))
             raise SettingsAdminError(422, f"Cấu hình mới không hợp lệ: {messages}")
         published = await self._settings.publish_draft(
-            principal, draft_id=UUID(draft["id"]), expected_revision=int(draft["revision"])
+            principal,
+            draft_id=UUID(draft["id"]),
+            expected_revision=int(draft["revision"]),
+            _verified_step_up=True,
         )
         async with self._uow(principal) as unit:
             unit.record_audit(

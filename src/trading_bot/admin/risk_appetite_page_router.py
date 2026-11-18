@@ -21,6 +21,7 @@ from trading_bot.admin.web_router import (
     _templates,
     _verify_form_csrf,
 )
+from trading_bot.auth.action_challenge import ActionChallengeError, http_step_up_scope
 from trading_bot.auth.cookies import read_session_cookie
 from trading_bot.auth.policy import Permission, authorize
 from trading_bot.auth.router import current_identity
@@ -219,15 +220,17 @@ async def risk_appetite_save(
             error_field=error.field,
         )
     try:
-        result = await _service(request).save(identity.principal, update)
-    except SettingsAdminError as error:
+        with http_step_up_scope(request, form_values=values):
+            result = await _service(request).save(identity.principal, update)
+    except (ActionChallengeError, SettingsAdminError) as error:
+        message = error.message
         return await _render(
             request,
             identity,
             symbol=None,
             status_code=error.status_code,
             form_values=submitted,
-            error=error.message,
+            error=message,
         )
     saved = "unchanged" if result.get("status") == "unchanged" else str(result.get("version"))
     return Response(status_code=303, headers={"Location": f"/admin/risk?saved={saved}"})

@@ -11,6 +11,16 @@ from datetime import UTC, datetime, timedelta
 from typing import Protocol
 from uuid import UUID
 
+from trading_bot.auth.action_challenge import (
+    ACTION_TELEGRAM_BINDING_REVOKE,
+    ACTION_TELEGRAM_LINK_CREATE,
+    ActionChallengeError,
+    ActionChallengeService,
+    StepUpProof,
+    telegram_link_payload,
+    telegram_revoke_payload,
+    verify_service_step_up,
+)
 from trading_bot.auth.policy import Principal, Role
 from trading_bot.ports.telegram import TelegramTopicCreator
 
@@ -29,6 +39,15 @@ class TelegramTopicSetupError(RuntimeError):
     def __init__(self, code: str) -> None:
         self.code = code if _SAFE_ERROR_CODE.fullmatch(code) else "TELEGRAM_TOPIC_CREATE_FAILED"
         super().__init__(self.code)
+
+
+class TelegramStepUpError(ValueError):
+    """Lỗi step-up SEC-20 khi tạo/thu hồi liên kết Telegram."""
+
+    def __init__(self, status_code: int, code: str, message: str) -> None:
+        self.status_code = status_code
+        self.code = code
+        super().__init__(message)
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,6 +108,8 @@ class TelegramBindingService:
         now: Callable[[], datetime] | None = None,
         token_factory: Callable[[], str] | None = None,
         topic_creator: Callable[[], TelegramTopicCreator | None] | None = None,
+        action_challenge_service: ActionChallengeService | None = None,
+        require_action_step_up: bool = False,
     ) -> None:
         if not _BOT_USERNAME.fullmatch(bot_username):
             raise ValueError("Tên bot Telegram cấu hình không hợp lệ.")
@@ -98,11 +119,41 @@ class TelegramBindingService:
         self._token_factory = token_factory or (lambda: secrets.token_urlsafe(32))
         # Sender được dựng sau service trong lifespan nên truyền dạng hàm lấy trễ.
         self._topic_creator = topic_creator or (lambda: None)
+        self._action_challenge_service = action_challenge_service
+        self._require_action_step_up = require_action_step_up
 
-    async def create_link(self, principal: Principal, *, reason: str) -> TelegramLink:
+    async def _verify_step_up(
+        self,
+        principal: Principal,
+        *,
+        action: str,
+        payload: dict[str, object],
+        step_up: StepUpProof | None = None,
+    ) -> None:
+        try:
+            await verify_service_step_up(
+                principal,
+                action_challenge_service=self._action_challenge_service,
+                require_action_step_up=self._require_action_step_up,
+                action=action,
+                payload=payload,
+                step_up=step_up,
+                fallback_recent_mfa=lambda: self._require_recent_mfa(principal),
+            )
+        except ActionChallengeError as error:
+            raise TelegramStepUpError(error.status_code, error.code, error.message) from error
+
+    async def create_link(
+        self, principal: Principal, *, reason: str, step_up: StepUpProof | None = None
+    ) -> TelegramLink:
         self._require_owner(principal)
-        self._require_recent_mfa(principal)
         clean_reason = self._reason(reason)
+        await self._verify_step_up(
+            principal,
+            action=ACTION_TELEGRAM_LINK_CREATE,
+            payload=telegram_link_payload(reason=clean_reason),
+            step_up=step_up,
+        )
         code = self._token_factory()
         if not 43 <= len(code) <= 64 or not re.fullmatch(r"[A-Za-z0-9_-]+", code):
             raise ValueError("Bộ sinh mã Telegram không tạo mã an toàn.")
@@ -122,10 +173,22 @@ class TelegramBindingService:
             expires_at=expires_at,
         )
 
-    async def revoke(self, principal: Principal, membership_id: UUID, *, reason: str) -> int:
+    async def revoke(
+        self,
+        principal: Principal,
+        membership_id: UUID,
+        *,
+        reason: str,
+        step_up: StepUpProof | None = None,
+    ) -> int:
         self._require_owner(principal)
-        self._require_recent_mfa(principal)
         clean_reason = self._reason(reason)
+        await self._verify_step_up(
+            principal,
+            action=ACTION_TELEGRAM_BINDING_REVOKE,
+            payload=telegram_revoke_payload(membership_id=membership_id, reason=clean_reason),
+            step_up=step_up,
+        )
         return await self._repository.revoke(
             principal.workspace_id, membership_id, principal.membership_id, clean_reason
         )

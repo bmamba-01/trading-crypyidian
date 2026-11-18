@@ -18,6 +18,7 @@ from trading_bot.admin.bot_schemas import (
     UpdateBotDraftRequest,
 )
 from trading_bot.admin.bot_service import BotAdminError, BotConfigAdminService
+from trading_bot.auth.action_challenge import ActionChallengeError, http_step_up_scope
 from trading_bot.auth.router import current_identity, require_csrf
 from trading_bot.auth.service import AuthIdentity
 
@@ -36,7 +37,11 @@ def get_bot_admin_service(request: Request) -> BotConfigAdminService:
 
 def raise_bot_error(error: BotAdminError) -> NoReturn:
     detail: object = (
-        {"message": error.message, "errors": error.errors} if error.errors else error.message
+        {"message": error.message, "errors": error.errors}
+        if error.errors
+        else {"code": error.code, "message": error.message}
+        if error.code is not None
+        else error.message
     )
     raise HTTPException(status_code=error.status_code, detail=detail) from error
 
@@ -65,12 +70,15 @@ async def create_bot(
     service = get_bot_admin_service(request)
     response.headers["Cache-Control"] = "no-store"
     try:
-        bot, created = await service.create_bot(
-            identity.principal,
-            name=body.name,
-            max_notional=body.max_notional,
-            request_id=_request_id(request),
-        )
+        with http_step_up_scope(request):
+            bot, created = await service.create_bot(
+                identity.principal,
+                name=body.name,
+                max_notional=body.max_notional,
+                request_id=_request_id(request),
+            )
+    except ActionChallengeError as error:
+        raise HTTPException(status_code=error.status_code, detail=error.as_detail()) from error
     except BotAdminError as error:
         raise_bot_error(error)
     if not created:
@@ -171,14 +179,17 @@ async def publish_bot_config_draft(
     service = get_bot_admin_service(request)
     response.headers["Cache-Control"] = "no-store"
     try:
-        version = await service.publish(
-            identity.principal,
-            bot_id=bot_id,
-            draft_id=draft_id,
-            expected_revision=body.expected_revision,
-            idempotency_key=_idempotency_key(request),
-            request_id=_request_id(request),
-        )
+        with http_step_up_scope(request):
+            version = await service.publish(
+                identity.principal,
+                bot_id=bot_id,
+                draft_id=draft_id,
+                expected_revision=body.expected_revision,
+                idempotency_key=_idempotency_key(request),
+                request_id=_request_id(request),
+            )
+    except ActionChallengeError as error:
+        raise HTTPException(status_code=error.status_code, detail=error.as_detail()) from error
     except BotAdminError as error:
         raise_bot_error(error)
     return {"version": version}
@@ -196,15 +207,18 @@ async def rollback_bot_config(
     service = get_bot_admin_service(request)
     response.headers["Cache-Control"] = "no-store"
     try:
-        result = await service.rollback(
-            identity.principal,
-            bot_id=bot_id,
-            version=version,
-            expected_current_version_id=body.expected_current_version_id,
-            reason=body.reason,
-            idempotency_key=_idempotency_key(request),
-            request_id=_request_id(request),
-        )
+        with http_step_up_scope(request):
+            result = await service.rollback(
+                identity.principal,
+                bot_id=bot_id,
+                version=version,
+                expected_current_version_id=body.expected_current_version_id,
+                reason=body.reason,
+                idempotency_key=_idempotency_key(request),
+                request_id=_request_id(request),
+            )
+    except ActionChallengeError as error:
+        raise HTTPException(status_code=error.status_code, detail=error.as_detail()) from error
     except BotAdminError as error:
         raise_bot_error(error)
     return {"version": result}

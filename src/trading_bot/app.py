@@ -137,6 +137,7 @@ from trading_bot.application.telegram_binding import TelegramBindingService
 from trading_bot.application.telegram_paper_report import TelegramPaperReportService
 from trading_bot.application.telegram_signal_subscription import TelegramSignalSubscriptionService
 from trading_bot.application.telegram_signals import SignalThrottlePolicy
+from trading_bot.auth.action_challenge import ActionChallengeService
 from trading_bot.auth.router import router as auth_router
 from trading_bot.auth.security import LoginRateLimiter, TestModeTotpManager
 from trading_bot.auth.service import AuthService
@@ -284,28 +285,57 @@ def create_app(
             logger.warning(
                 "AUTH_TEST_TOTP_ENABLED: chấp nhận mã xác thực cố định; chỉ cho kiểm thử local."
             )
+        totp_manager = TestModeTotpManager() if app_settings.auth_test_totp_enabled else None
         application.state.auth_service = (
             AuthService(
                 active_session_factory,
                 active_secret_provider,
-                totp=TestModeTotpManager() if app_settings.auth_test_totp_enabled else None,
+                totp=totp_manager,
             )
             if active_session_factory is not None and active_secret_provider is not None
             else None
         )
+        action_challenge_service = (
+            ActionChallengeService(
+                active_session_factory,
+                active_secret_provider,
+                totp=totp_manager,
+            )
+            if active_session_factory is not None and active_secret_provider is not None
+            else None
+        )
+        require_action_step_up = app_settings.is_action_step_up_required or (
+            app_settings.app_env == "test"
+            and app_settings.action_step_up_required is None
+            and action_challenge_service is not None
+        )
+        application.state.action_challenge_service = action_challenge_service
         application.state.settings_admin_service = (
-            SettingsAdminService(active_session_factory)
+            SettingsAdminService(
+                active_session_factory,
+                action_challenge_service=action_challenge_service,
+                require_action_step_up=require_action_step_up,
+            )
             if active_session_factory is not None
             else None
         )
         # CRY-428: trang "Khẩu vị rủi ro" dùng chung SettingsAdminService để publish có audit.
         application.state.risk_appetite_service = (
-            RiskAppetiteService(active_session_factory, application.state.settings_admin_service)
+            RiskAppetiteService(
+                active_session_factory,
+                application.state.settings_admin_service,
+                action_challenge_service=action_challenge_service,
+                require_action_step_up=require_action_step_up,
+            )
             if active_session_factory is not None
             else None
         )
         application.state.bot_admin_service = (
-            BotConfigAdminService(active_session_factory)
+            BotConfigAdminService(
+                active_session_factory,
+                action_challenge_service=action_challenge_service,
+                require_action_step_up=require_action_step_up,
+            )
             if active_session_factory is not None
             else None
         )
@@ -355,7 +385,11 @@ def create_app(
             else None
         )
         application.state.bot_operations_service = (
-            BotOperationsService(active_session_factory)
+            BotOperationsService(
+                active_session_factory,
+                action_challenge_service=action_challenge_service,
+                require_action_step_up=require_action_step_up,
+            )
             if active_session_factory is not None
             else None
         )
@@ -373,7 +407,11 @@ def create_app(
             else StrategyCardAdminService()
         )
         application.state.strategy_release_service = (
-            StrategyReleaseAdminService(active_session_factory)
+            StrategyReleaseAdminService(
+                active_session_factory,
+                action_challenge_service=action_challenge_service,
+                require_action_step_up=require_action_step_up,
+            )
             if active_session_factory is not None
             else StrategyReleaseAdminService()
         )
@@ -382,6 +420,8 @@ def create_app(
                 active_session_factory,
                 snapshot_provider=PostgresFlattenSnapshotProvider(),
                 operations_factory=application.state.bot_operations_service.for_principal,
+                action_challenge_service=action_challenge_service,
+                require_action_step_up=require_action_step_up,
             )
             if active_session_factory is not None
             else None
@@ -394,6 +434,8 @@ def create_app(
                 topic_creator=lambda: _topic_creator(
                     getattr(application.state, "telegram_sender", None)
                 ),
+                action_challenge_service=action_challenge_service,
+                require_action_step_up=require_action_step_up,
             )
             if active_session_factory is not None and app_settings.telegram_bot_username
             else None

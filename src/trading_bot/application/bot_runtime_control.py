@@ -25,6 +25,16 @@ from trading_bot.adapters.database.repositories.bot_runtime_controls import (
     BotRuntimeControlRepository,
 )
 from trading_bot.application.outbox import UnitOfWork
+from trading_bot.auth.action_challenge import (
+    ACTION_BOT_RUNTIME_RESUME,
+    ACTION_WORKSPACE_RUNTIME_RELEASE,
+    ActionChallengeError,
+    ActionChallengeService,
+    StepUpProof,
+    bot_runtime_resume_payload,
+    verify_service_step_up,
+    workspace_release_payload,
+)
 from trading_bot.auth.bot_policy import BotPermission
 from trading_bot.auth.policy import Permission, Principal, authorize
 from trading_bot.auth.service import RECENT_MFA_LIFETIME
@@ -67,6 +77,8 @@ class BotRuntimeControlService:
         control_repository_factory: Callable[[Any], Any] = BotRuntimeControlRepository,
         grant_repository_factory: Callable[[Any], Any] = BotGrantRepository,
         bot_visibility: Callable[..., Awaitable[bool]] = bot_is_visible,
+        action_challenge_service: ActionChallengeService | None = None,
+        require_action_step_up: bool = False,
     ) -> None:
         self._sessions = sessions
         self._clock = clock or (lambda: datetime.now(UTC))
@@ -74,6 +86,8 @@ class BotRuntimeControlService:
         self._control_repository_factory = control_repository_factory
         self._grant_repository_factory = grant_repository_factory
         self._bot_visibility = bot_visibility
+        self._action_challenge_service = action_challenge_service
+        self._require_action_step_up = require_action_step_up
 
     def for_principal(self, principal: Principal) -> PrincipalRuntimeControl:
         return PrincipalRuntimeControl(self, principal)
@@ -101,9 +115,14 @@ class PrincipalRuntimeControl:
         )
 
     async def resume_bot(
-        self, bot_id: UUID, reason: str, expected_revision: int | None
+        self,
+        bot_id: UUID,
+        reason: str,
+        expected_revision: int | None,
+        *,
+        step_up: StepUpProof | None = None,
     ) -> BotControlResult:
-        """Tăng rủi ro: quyền resume riêng, MFA gần đây, lý do, `expected_revision`."""
+        """Tăng rủi ro: quyền resume riêng, step-up/MFA gần đây, lý do, `expected_revision`."""
         return await self._bot_change(
             bot_id,
             target=BotEntryState.ENABLED,
@@ -113,6 +132,7 @@ class PrincipalRuntimeControl:
             require_mfa=True,
             action="bot.runtime.resumed",
             reason_code="OPERATOR_RESUME",
+            step_up=step_up,
         )
 
     # --- workspace -----------------------------------------------------------------------
@@ -128,9 +148,13 @@ class PrincipalRuntimeControl:
         )
 
     async def release_workspace(
-        self, reason: str, expected_revision: int | None
+        self,
+        reason: str,
+        expected_revision: int | None,
+        *,
+        step_up: StepUpProof | None = None,
     ) -> WorkspaceControlResult:
-        """Release kill: owner/risk_admin + MFA gần đây + lý do + `expected_revision`."""
+        """Release kill: owner/risk_admin + step-up/MFA gần đây + lý do + `expected_revision`."""
         return await self._workspace_change(
             target=WorkspaceKillState.ACTIVE,
             reason=reason,
@@ -138,6 +162,7 @@ class PrincipalRuntimeControl:
             require_mfa=True,
             action="workspace.runtime.released",
             reason_code="WORKSPACE_RELEASE",
+            step_up=step_up,
         )
 
     # --- nội bộ --------------------------------------------------------------------------
@@ -160,6 +185,26 @@ class PrincipalRuntimeControl:
         if not isinstance(reason, str) or not reason.strip() or len(reason) > 500:
             raise BotRuntimeControlError("CONTROL_REASON_REQUIRED")
 
+    async def _require_step_up(
+        self,
+        *,
+        action: str,
+        payload: dict[str, Any],
+        step_up: StepUpProof | None,
+    ) -> None:
+        try:
+            await verify_service_step_up(
+                self._principal,
+                action_challenge_service=self._service._action_challenge_service,
+                require_action_step_up=self._service._require_action_step_up,
+                action=action,
+                payload=payload,
+                step_up=step_up,
+                fallback_recent_mfa=self._require_recent_mfa,
+            )
+        except ActionChallengeError as error:
+            raise BotRuntimeControlError(error.code) from None
+
     async def _bot_change(
         self,
         bot_id: UUID,
@@ -171,6 +216,7 @@ class PrincipalRuntimeControl:
         require_mfa: bool,
         action: str,
         reason_code: str,
+        step_up: StepUpProof | None = None,
     ) -> BotControlResult:
         correlation_id = uuid4()
         principal = self._principal
@@ -189,7 +235,15 @@ class PrincipalRuntimeControl:
                 except PermissionError:
                     raise BotRuntimeControlError("BOT_NOT_FOUND") from None
                 if require_mfa:
-                    self._require_recent_mfa()
+                    await self._require_step_up(
+                        action=ACTION_BOT_RUNTIME_RESUME,
+                        payload=bot_runtime_resume_payload(
+                            bot_id=bot_id,
+                            expected_revision=expected_revision or 0,
+                            reason=reason if isinstance(reason, str) else "",
+                        ),
+                        step_up=step_up,
+                    )
                 self._require_reason(reason)
                 result: BotControlResult = await self._service._control_repository_factory(
                     uow.session
@@ -227,6 +281,7 @@ class PrincipalRuntimeControl:
         require_mfa: bool,
         action: str,
         reason_code: str,
+        step_up: StepUpProof | None = None,
     ) -> WorkspaceControlResult:
         correlation_id = uuid4()
         principal = self._principal
@@ -234,7 +289,14 @@ class PrincipalRuntimeControl:
             if not authorize(principal, Permission.WORKSPACE_KILL):
                 raise BotRuntimeControlError("CONTROL_PERMISSION_DENIED")
             if require_mfa:
-                self._require_recent_mfa()
+                await self._require_step_up(
+                    action=ACTION_WORKSPACE_RUNTIME_RELEASE,
+                    payload=workspace_release_payload(
+                        expected_revision=expected_revision or 0,
+                        reason=reason if isinstance(reason, str) else "",
+                    ),
+                    step_up=step_up,
+                )
             self._require_reason(reason)
             async with self._uow(correlation_id) as uow:
                 result: WorkspaceControlResult = await self._service._control_repository_factory(

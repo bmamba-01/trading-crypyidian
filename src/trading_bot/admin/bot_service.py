@@ -46,6 +46,19 @@ from trading_bot.application.runtime_risk_profile import (
     RuntimeRiskProfile,
     load_risk_profile,
 )
+from trading_bot.auth.action_challenge import (
+    ACTION_BOT_CONFIG_PUBLISH,
+    ACTION_BOT_CONFIG_ROLLBACK,
+    ACTION_BOT_CREATE,
+    ActionChallengeError,
+    ActionChallengeService,
+    StepUpProof,
+    bot_config_publish_payload,
+    bot_config_rollback_payload,
+    bot_create_payload,
+    resolve_step_up_proof,
+    verify_service_step_up,
+)
 from trading_bot.auth.bot_policy import BotPermission
 from trading_bot.auth.policy import Principal, Role
 from trading_bot.auth.service import RECENT_MFA_LIFETIME
@@ -70,11 +83,17 @@ class BotAdminError(Exception):
     """Lỗi nghiệp vụ có mã HTTP ổn định; ``errors`` liệt kê trường vi phạm nếu có."""
 
     def __init__(
-        self, status_code: int, message: str, errors: Sequence[dict[str, str]] = ()
+        self,
+        status_code: int,
+        message: str,
+        errors: Sequence[dict[str, str]] = (),
+        *,
+        code: str | None = None,
     ) -> None:
         self.status_code = status_code
         self.message = message
         self.errors = list(errors)
+        self.code = code
         super().__init__(message)
 
 
@@ -112,8 +131,16 @@ async def load_root_context(session: AsyncSession, *, workspace_id: UUID) -> Roo
 class BotConfigAdminService:
     """Quản trị bot và overlay; mutation cấu hình hỗ trợ Idempotency-Key tùy chọn."""
 
-    def __init__(self, sessions: async_sessionmaker[AsyncSession]) -> None:
+    def __init__(
+        self,
+        sessions: async_sessionmaker[AsyncSession],
+        *,
+        action_challenge_service: ActionChallengeService | None = None,
+        require_action_step_up: bool = False,
+    ) -> None:
         self._sessions = sessions
+        self._action_challenge_service = action_challenge_service
+        self._require_action_step_up = require_action_step_up
 
     # --- Bot -------------------------------------------------------------------------------
 
@@ -153,13 +180,20 @@ class BotConfigAdminService:
         name: str,
         max_notional: Decimal,
         request_id: UUID | None = None,
+        step_up: StepUpProof | None = None,
     ) -> tuple[dict[str, Any], bool]:
         """Tạo PAPER account để trigger MB-01 tạo bot; cùng tên + thuộc tính là replay."""
         if Role.OWNER not in principal.roles:
             raise BotAdminError(403, "Chỉ owner được tạo bot và account PAPER mới.")
-        _require_recent_mfa(principal)
         if not max_notional.is_finite() or max_notional <= 0:
             raise BotAdminError(422, "max_notional phải hữu hạn và dương.")
+        await self._verify_step_up(
+            principal,
+            action=ACTION_BOT_CREATE,
+            payload=bot_create_payload(name=name, max_notional=max_notional),
+            risk_or_exit_changed=True,
+            step_up=step_up,
+        )
         async with self._uow(principal, request_id=request_id) as unit:
             bots = BotInstanceRepository(unit.session)
             existing = await bots.get_account_by_name(
@@ -411,6 +445,7 @@ class BotConfigAdminService:
         expected_revision: int,
         idempotency_key: str | None = None,
         request_id: UUID | None = None,
+        step_up: StepUpProof | None = None,
     ) -> dict[str, Any]:
         fingerprint = request_fingerprint(
             "publish",
@@ -442,7 +477,19 @@ class BotConfigAdminService:
             overlay = _parse_stored(draft)
             root = await self._root(unit, principal)
             _raise_issues(_issues(overlay, root, account))
-            _require_mfa_for_risk_change(principal, overlay, head)
+            if _overlay_high_risk_changed(overlay, head):
+                await self._verify_step_up(
+                    principal,
+                    action=ACTION_BOT_CONFIG_PUBLISH,
+                    payload=bot_config_publish_payload(
+                        bot_id=bot_id,
+                        draft_id=draft_id,
+                        expected_revision=expected_revision,
+                        overlay_hash=draft.overlay_hash,
+                    ),
+                    risk_or_exit_changed=_risk_or_exit_changed(overlay, head),
+                    step_up=step_up,
+                )
             exit_backtest = None
             if exit_changed(overlay, head):
                 # CRY-428 (owner 17/11/2026): đổi thông số thoát phải có backtest gốc vs mới của
@@ -500,6 +547,7 @@ class BotConfigAdminService:
         reason: str,
         idempotency_key: str | None = None,
         request_id: UUID | None = None,
+        step_up: StepUpProof | None = None,
     ) -> dict[str, Any]:
         fingerprint = request_fingerprint(
             "rollback",
@@ -532,7 +580,20 @@ class BotConfigAdminService:
             overlay = _parse_stored(target)
             root = await self._root(unit, principal)
             _raise_issues(_issues(overlay, root, account))
-            _require_mfa_for_risk_change(principal, overlay, head)
+            if _overlay_high_risk_changed(overlay, head):
+                await self._verify_step_up(
+                    principal,
+                    action=ACTION_BOT_CONFIG_ROLLBACK,
+                    payload=bot_config_rollback_payload(
+                        bot_id=bot_id,
+                        version=version,
+                        expected_current_version_id=expected_current_version_id,
+                        target_overlay_hash=target.overlay_hash,
+                        reason=reason,
+                    ),
+                    risk_or_exit_changed=_risk_or_exit_changed(overlay, head),
+                    step_up=step_up,
+                )
             draft = await versions.create_draft(
                 workspace_id=principal.workspace_id,
                 bot_id=bot_id,
@@ -652,6 +713,31 @@ class BotConfigAdminService:
         )
 
     # --- Helpers ----------------------------------------------------------------------------
+
+    async def _verify_step_up(
+        self,
+        principal: Principal,
+        *,
+        action: str,
+        payload: dict[str, Any],
+        risk_or_exit_changed: bool,
+        step_up: StepUpProof | None = None,
+    ) -> None:
+        proof = resolve_step_up_proof(step_up)
+        if proof is None and not self._require_action_step_up and not risk_or_exit_changed:
+            return
+        try:
+            await verify_service_step_up(
+                principal,
+                action_challenge_service=self._action_challenge_service,
+                require_action_step_up=self._require_action_step_up,
+                action=action,
+                payload=payload,
+                step_up=proof,
+                fallback_recent_mfa=lambda: _require_recent_mfa(principal),
+            )
+        except ActionChallengeError as error:
+            raise BotAdminError(error.status_code, error.message, code=error.code) from error
 
     def _uow(
         self,
@@ -793,12 +879,31 @@ def _require_recent_mfa(principal: Principal) -> None:
         raise BotAdminError(403, "Cần xác thực MFA gần đây.")
 
 
+def _risk_or_exit_changed(overlay: BotConfigOverlay, baseline: BotConfigVersion | None) -> bool:
+    before = baseline.overlay_json.get("risk", {}) if baseline is not None else {}
+    return risk_section(overlay) != before or exit_changed(overlay, baseline)
+
+
+def _overlay_high_risk_changed(
+    overlay: BotConfigOverlay, baseline: BotConfigVersion | None
+) -> bool:
+    """Đổi risk, exit, strategy hoặc universe đều thuộc phạm vi step-up SEC-20."""
+    if baseline is None:
+        return True
+    before = baseline.overlay_json
+    after = canonical_overlay(overlay)
+    return (
+        _risk_or_exit_changed(overlay, baseline)
+        or after.get("strategy") != before.get("strategy")
+        or after.get("universe") != before.get("universe")
+    )
+
+
 def _require_mfa_for_risk_change(
     principal: Principal, overlay: BotConfigOverlay, baseline: BotConfigVersion | None
 ) -> None:
     """Đổi khối risk hoặc exit (CRY-428) so với version cha/hiện hành bắt buộc MFA gần đây."""
-    before = baseline.overlay_json.get("risk", {}) if baseline is not None else {}
-    if risk_section(overlay) != before or exit_changed(overlay, baseline):
+    if _risk_or_exit_changed(overlay, baseline):
         _require_recent_mfa(principal)
 
 

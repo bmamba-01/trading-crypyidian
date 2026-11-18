@@ -103,12 +103,20 @@ from trading_bot.application.telegram_signal_subscription import (
     TelegramSignalSubscriptionError,
 )
 from trading_bot.application.telegram_signals import TelegramSignalFilters
+from trading_bot.auth.action_challenge import (
+    ACTION_BREAKER_RESUME,
+    ActionChallengeError,
+    breaker_resume_payload,
+    extract_step_up_proof,
+    http_step_up_scope,
+)
 from trading_bot.auth.cookies import read_session_cookie, set_session_cookie
 from trading_bot.auth.policy import MfaMethod, Permission, Principal, Role, authorize
 from trading_bot.auth.router import (
     authenticate_login,
     client_address,
     current_identity,
+    enforce_endpoint_step_up,
     get_rate_limiter,
     require_csrf,
 )
@@ -1338,11 +1346,14 @@ async def create_bot_form(
             request, identity, values, messages or ["Thông tin tạo bot không hợp lệ."]
         )
     try:
-        bot, _created = await _admin_service(request).create_bot(
-            identity.principal,
-            name=body.name,
-            max_notional=Decimal(body.max_notional),
-        )
+        with http_step_up_scope(request, form_values=values):
+            bot, _created = await _admin_service(request).create_bot(
+                identity.principal,
+                name=body.name,
+                max_notional=Decimal(body.max_notional),
+            )
+    except ActionChallengeError as error:
+        raise HTTPException(status_code=error.status_code, detail=error.message) from error
     except BotAdminError as error:
         if error.status_code in {409, 422}:
             # Lỗi nghiệp vụ người dùng sửa được: hiện lại form kèm giá trị đã nhập.
@@ -2210,12 +2221,15 @@ async def publish_config_draft_form(
     if expected_revision < 1:
         raise HTTPException(status_code=422, detail="Revision bản nháp không hợp lệ.")
     try:
-        await _admin_service(request).publish(
-            identity.principal,
-            bot_id=bot_id,
-            draft_id=draft_id,
-            expected_revision=expected_revision,
-        )
+        with http_step_up_scope(request, form_values=values):
+            await _admin_service(request).publish(
+                identity.principal,
+                bot_id=bot_id,
+                draft_id=draft_id,
+                expected_revision=expected_revision,
+            )
+    except ActionChallengeError as error:
+        raise HTTPException(status_code=error.status_code, detail=error.message) from error
     except BotAdminError as error:
         if error.status_code == 409 and any(item.get("field") == "exit" for item in error.errors):
             # CRY-428: thiếu backtest bản nháp đổi thông số thoát → về trang bot kèm hướng dẫn.
@@ -2263,7 +2277,10 @@ async def resume_bot_form(
     if not 1 <= len(reason) <= 500 or expected_revision < 1:
         raise HTTPException(status_code=422, detail="Lý do hoặc revision không hợp lệ.")
     try:
-        await _operations(request, identity).resume_bot(bot_id, reason, expected_revision)
+        with http_step_up_scope(request, form_values=values):
+            await _operations(request, identity).resume_bot(bot_id, reason, expected_revision)
+    except ActionChallengeError as error:
+        raise HTTPException(status_code=error.status_code, detail=error.message) from error
     except BotRuntimeControlError as error:
         raise _control_error(error) from error
     return Response(status_code=303, headers={"Location": f"/admin/bots/{bot_id}"})
@@ -2301,7 +2318,10 @@ async def enable_bot_form(
     if not 1 <= len(reason) <= 500:
         raise HTTPException(status_code=422, detail="Lý do cần từ 1 đến 500 ký tự.")
     try:
-        await _operations(request, identity).enable_bot(bot_id, reason)
+        with http_step_up_scope(request, form_values=values):
+            await _operations(request, identity).enable_bot(bot_id, reason)
+    except ActionChallengeError as error:
+        raise HTTPException(status_code=error.status_code, detail=error.message) from error
     except BotRuntimeControlError as error:
         raise _control_error(error) from error
     return Response(status_code=303, headers={"Location": f"/admin/bots/{bot_id}"})
@@ -2339,7 +2359,10 @@ async def release_workspace_form(
     if not 1 <= len(reason) <= 500 or expected_revision < 1:
         raise HTTPException(status_code=422, detail="Lý do hoặc revision không hợp lệ.")
     try:
-        await _operations(request, identity).release_workspace(reason, expected_revision)
+        with http_step_up_scope(request, form_values=values):
+            await _operations(request, identity).release_workspace(reason, expected_revision)
+    except ActionChallengeError as error:
+        raise HTTPException(status_code=error.status_code, detail=error.message) from error
     except BotRuntimeControlError as error:
         raise _control_error(error) from error
     return Response(status_code=303, headers={"Location": "/admin"})
@@ -2413,26 +2436,36 @@ async def flatten_confirm_form(
     values = await _parse_form(request)
     await _verify_form_csrf(request, values)
     try:
-        result = (
-            await _flatten_service(request)
-            .for_principal(identity.principal)
-            .confirm(
-                preview_id=UUID(values.get("preview_id", "")),
-                preview_hash=values.get("preview_hash", ""),
-                idempotency_key=values.get("idempotency_key", ""),
-                reason=values.get("reason", ""),
+        with http_step_up_scope(request, form_values=values):
+            result = (
+                await _flatten_service(request)
+                .for_principal(identity.principal)
+                .confirm(
+                    preview_id=UUID(values.get("preview_id", "")),
+                    preview_hash=values.get("preview_hash", ""),
+                    idempotency_key=values.get("idempotency_key", ""),
+                    reason=values.get("reason", ""),
+                )
             )
-        )
+    except ActionChallengeError as error:
+        raise AdminHTTPException(
+            error.status_code, error.message, reason_code=error.code
+        ) from error
     except ValueError as error:
         raise HTTPException(status_code=422, detail="Preview flatten-all không hợp lệ.") from error
     except FlattenAllError as error:
-        status = {
-            "CONTROL_PERMISSION_DENIED": 403,
-            "RECENT_MFA_REQUIRED": 403,
-            "FLATTEN_PREVIEW_STALE": 409,
-            "FLATTEN_PREVIEW_EXPIRED": 409,
-            "FLATTEN_IDEMPOTENCY_KEY_REUSED": 409,
-        }.get(error.reason_code, 422)
+        if error.reason_code == "STEP_UP_SERVICE_UNAVAILABLE":
+            status = 503
+        elif error.reason_code.startswith("STEP_UP_"):
+            status = 403
+        else:
+            status = {
+                "CONTROL_PERMISSION_DENIED": 403,
+                "RECENT_MFA_REQUIRED": 403,
+                "FLATTEN_PREVIEW_STALE": 409,
+                "FLATTEN_PREVIEW_EXPIRED": 409,
+                "FLATTEN_IDEMPOTENCY_KEY_REUSED": 409,
+            }.get(error.reason_code, 422)
         raise AdminHTTPException(
             status, "Xác nhận flatten-all bị từ chối.", reason_code=error.reason_code
         ) from error
@@ -2502,10 +2535,13 @@ async def telegram_link_form(
     values = await _parse_form(request)
     await _verify_form_csrf(request, values)
     try:
-        link = await _telegram_binding_service(request).create_link(
-            identity.principal, reason=values.get("reason", "")
-        )
+        with http_step_up_scope(request, form_values=values):
+            link = await _telegram_binding_service(request).create_link(
+                identity.principal, reason=values.get("reason", "")
+            )
         csrf_token = await _auth_service(request).issue_csrf_token(read_session_cookie(request))
+    except ActionChallengeError as error:
+        raise HTTPException(status_code=error.status_code, detail=error.message) from error
     except ValueError as error:
         status = 403 if "owner" in str(error).lower() or "mfa" in str(error).lower() else 422
         raise HTTPException(
@@ -2536,9 +2572,12 @@ async def telegram_revoke_form(
     values = await _parse_form(request)
     await _verify_form_csrf(request, values)
     try:
-        await _telegram_binding_service(request).revoke(
-            identity.principal, membership_id, reason=values.get("reason", "")
-        )
+        with http_step_up_scope(request, form_values=values):
+            await _telegram_binding_service(request).revoke(
+                identity.principal, membership_id, reason=values.get("reason", "")
+            )
+    except ActionChallengeError as error:
+        raise HTTPException(status_code=error.status_code, detail=error.message) from error
     except ValueError as error:
         status = 403 if "owner" in str(error).lower() or "mfa" in str(error).lower() else 422
         raise HTTPException(
@@ -2943,11 +2982,20 @@ async def publish_strategy_release_form(
     reason = values.get("reason", "")
     expected_hash = values["content_hash"] if "content_hash" in values else None
     try:
-        updated = await _strategy_release_service(request).publish_release(
-            identity.principal,
-            release_id=release_id,
-            reason=reason,
-            expected_content_hash=expected_hash,
+        with http_step_up_scope(request, form_values=values):
+            updated = await _strategy_release_service(request).publish_release(
+                identity.principal,
+                release_id=release_id,
+                reason=reason,
+                expected_content_hash=expected_hash,
+            )
+    except ActionChallengeError as error:
+        return await _render_strategy_cards_page(
+            request,
+            identity,
+            status_code=error.status_code,
+            active_tab="tab-releases",
+            release_error=error.message,
         )
     except StrategyReleaseAdminError as error:
         return await _render_strategy_cards_page(
@@ -2979,11 +3027,20 @@ async def retire_strategy_release_form(
     reason = values.get("reason", "")
     expected_hash = values["content_hash"] if "content_hash" in values else None
     try:
-        updated = await _strategy_release_service(request).retire_release(
-            identity.principal,
-            release_id=release_id,
-            reason=reason,
-            expected_content_hash=expected_hash,
+        with http_step_up_scope(request, form_values=values):
+            updated = await _strategy_release_service(request).retire_release(
+                identity.principal,
+                release_id=release_id,
+                reason=reason,
+                expected_content_hash=expected_hash,
+            )
+    except ActionChallengeError as error:
+        return await _render_strategy_cards_page(
+            request,
+            identity,
+            status_code=error.status_code,
+            active_tab="tab-releases",
+            release_error=error.message,
         )
     except StrategyReleaseAdminError as error:
         return await _render_strategy_cards_page(
@@ -3851,11 +3908,18 @@ async def publish_strategy_release_api(
 ) -> Response:
     """API công bố một `strategy_release` từ catalog vào workspace (Owner + MFA + CSRF)."""
     try:
-        updated = await _strategy_release_service(request).publish_release(
-            identity.principal,
-            release_id=payload.release_id,
-            reason=payload.reason,
-            expected_content_hash=payload.content_hash,
+        with http_step_up_scope(request):
+            updated = await _strategy_release_service(request).publish_release(
+                identity.principal,
+                release_id=payload.release_id,
+                reason=payload.reason,
+                expected_content_hash=payload.content_hash,
+            )
+    except ActionChallengeError as error:
+        return JSONResponse(
+            {"status": "error", "code": error.code, "detail": error.message},
+            status_code=error.status_code,
+            headers={"Cache-Control": "no-store"},
         )
     except StrategyReleaseAdminError as error:
         return JSONResponse(
@@ -3877,11 +3941,18 @@ async def retire_strategy_release_api(
 ) -> Response:
     """API thu hồi một `strategy_release` trong workspace (Owner + MFA + CSRF)."""
     try:
-        updated = await _strategy_release_service(request).retire_release(
-            identity.principal,
-            release_id=payload.release_id,
-            reason=payload.reason,
-            expected_content_hash=payload.content_hash,
+        with http_step_up_scope(request):
+            updated = await _strategy_release_service(request).retire_release(
+                identity.principal,
+                release_id=payload.release_id,
+                reason=payload.reason,
+                expected_content_hash=payload.content_hash,
+            )
+    except ActionChallengeError as error:
+        return JSONResponse(
+            {"status": "error", "code": error.code, "detail": error.message},
+            status_code=error.status_code,
+            headers={"Cache-Control": "no-store"},
         )
     except StrategyReleaseAdminError as error:
         return JSONResponse(
@@ -4045,11 +4116,37 @@ async def operations_breaker_resume(
         await _auth_service(request).verify_csrf(read_session_cookie(request), csrf_token)
     except AuthenticationFailure as error:
         raise HTTPException(status_code=403, detail=error.message) from error
-    recent_mfa = (
-        principal.mfa_verified_at is not None
-        and principal.mfa_method is MfaMethod.TOTP
-        and datetime.now(UTC) - principal.mfa_verified_at <= RECENT_MFA_LIFETIME
+    try:
+        step_up_proof = extract_step_up_proof(request)
+    except ActionChallengeError as error:
+        raise HTTPException(status_code=error.status_code, detail=error.as_detail()) from error
+    app_settings = getattr(request.app.state, "settings", None)
+    challenge_service = getattr(request.app.state, "action_challenge_service", None)
+    step_up_strict = bool(
+        app_settings is not None
+        and (
+            app_settings.is_action_step_up_required
+            or (
+                app_settings.app_env == "test"
+                and app_settings.action_step_up_required is None
+                and challenge_service is not None
+            )
+        )
     )
+    if step_up_proof is not None or step_up_strict:
+        await enforce_endpoint_step_up(
+            request,
+            principal,
+            action=ACTION_BREAKER_RESUME,
+            payload=breaker_resume_payload(bot_id=bot_id, reason=reason),
+        )
+        recent_mfa = True
+    else:
+        recent_mfa = (
+            principal.mfa_verified_at is not None
+            and principal.mfa_method is MfaMethod.TOTP
+            and datetime.now(UTC) - principal.mfa_verified_at <= RECENT_MFA_LIFETIME
+        )
     health_service = getattr(request.app.state, "operational_health_service", None)
     if health_service is None:
         session_factory = getattr(request.app.state, "session_factory", None)

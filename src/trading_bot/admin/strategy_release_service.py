@@ -27,6 +27,15 @@ from trading_bot.adapters.database.repositories.workspace_settings import (
 )
 from trading_bot.application.outbox import UnitOfWork
 from trading_bot.application.strategy_catalog import strategy_registry
+from trading_bot.auth.action_challenge import (
+    ACTION_STRATEGY_RELEASE_PUBLISH,
+    ACTION_STRATEGY_RELEASE_RETIRE,
+    ActionChallengeError,
+    ActionChallengeService,
+    StepUpProof,
+    strategy_release_payload,
+    verify_service_step_up,
+)
 from trading_bot.auth.policy import Permission, Principal, Role, authorize
 from trading_bot.auth.service import RECENT_MFA_LIFETIME
 from trading_bot.domain.events import state_hash
@@ -215,10 +224,14 @@ class StrategyReleaseAdminService:
         registry: StrategyRegistry | None = None,
         initial_releases: Sequence[StrategyRelease] = (),
         workspace_scoped: bool | None = None,
+        action_challenge_service: ActionChallengeService | None = None,
+        require_action_step_up: bool = False,
     ) -> None:
         self._session_factory = session_factory
         self._registry = registry or strategy_registry()
         self._workspace_scoped = workspace_scoped
+        self._action_challenge_service = action_challenge_service
+        self._require_action_step_up = require_action_step_up
         self._in_memory_releases: dict[UUID, list[StrategyRelease]] = {}
         self._in_memory_audits: list[AuditEvent] = []
         for row in initial_releases:
@@ -416,6 +429,41 @@ class StrategyReleaseAdminService:
         views = await self.list_releases(principal)
         return tuple(view.release_id for view in views if view.is_published)
 
+    async def _verify_step_up(
+        self,
+        principal: Principal,
+        *,
+        action: str,
+        release_id: str,
+        expected_content_hash: str | None,
+        reason: str,
+        step_up: StepUpProof | None = None,
+    ) -> None:
+        if Role.OWNER not in principal.roles:
+            raise StrategyReleaseAdminError(
+                403,
+                "Chỉ chủ sở hữu (owner) mới được công bố hoặc thu hồi bản phát hành chiến lược.",
+                reason_code="CONTROL_PERMISSION_DENIED",
+            )
+        try:
+            await verify_service_step_up(
+                principal,
+                action_challenge_service=self._action_challenge_service,
+                require_action_step_up=self._require_action_step_up,
+                action=action,
+                payload=strategy_release_payload(
+                    release_id=release_id,
+                    expected_content_hash=expected_content_hash,
+                    reason=reason,
+                ),
+                step_up=step_up,
+                fallback_recent_mfa=lambda: _require_owner_and_recent_mfa(principal),
+            )
+        except ActionChallengeError as error:
+            raise StrategyReleaseAdminError(
+                error.status_code, error.message, reason_code=error.code
+            ) from error
+
     async def publish_release(
         self,
         principal: Principal,
@@ -424,12 +472,20 @@ class StrategyReleaseAdminService:
         reason: str,
         expected_content_hash: str | None = None,
         request_id: UUID | None = None,
+        step_up: StepUpProof | None = None,
     ) -> CatalogReleaseView:
-        """Công bố một `strategy_release` từ catalog vào workspace (Owner + MFA + Audit)."""
-        _require_owner_and_recent_mfa(principal)
+        """Công bố một `strategy_release` từ catalog vào workspace (Owner + Step-Up/MFA + Audit)."""
         clean_reason = _validate_reason_vi(reason)
         registered = self._resolve_catalog_release(
             release_id, expected_content_hash=expected_content_hash
+        )
+        await self._verify_step_up(
+            principal,
+            action=ACTION_STRATEGY_RELEASE_PUBLISH,
+            release_id=registered.release_id,
+            expected_content_hash=expected_content_hash,
+            reason=clean_reason,
+            step_up=step_up,
         )
         recipe_payload = _build_recipe_payload(self._registry, registered)
 
@@ -555,12 +611,20 @@ class StrategyReleaseAdminService:
         reason: str,
         expected_content_hash: str | None = None,
         request_id: UUID | None = None,
+        step_up: StepUpProof | None = None,
     ) -> CatalogReleaseView:
         """Thu hồi (`RETIRED`) một `strategy_release` đang công bố trong workspace."""
-        _require_owner_and_recent_mfa(principal)
         clean_reason = _validate_reason_vi(reason)
         registered = self._resolve_catalog_release(
             release_id, expected_content_hash=expected_content_hash
+        )
+        await self._verify_step_up(
+            principal,
+            action=ACTION_STRATEGY_RELEASE_RETIRE,
+            release_id=registered.release_id,
+            expected_content_hash=expected_content_hash,
+            reason=clean_reason,
+            step_up=step_up,
         )
 
         if self._session_factory is not None:
