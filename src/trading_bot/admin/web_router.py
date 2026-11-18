@@ -31,6 +31,7 @@ from trading_bot.admin.bot_service import BotAdminError, BotConfigAdminService
 from trading_bot.admin.form_choices import (
     BOT_MAX_NOTIONAL_PRESETS,
     RISK_FIELD_SPECS,
+    Choice,
     coin_choices,
     direction_choices,
     preset_choices,
@@ -61,6 +62,10 @@ from trading_bot.admin.session_redirect import (
     safe_next_path,
 )
 from trading_bot.admin.strategy_card_service import StrategyCardAdminService
+from trading_bot.admin.strategy_release_service import (
+    StrategyReleaseAdminError,
+    StrategyReleaseAdminService,
+)
 from trading_bot.application.analyst_review import AnalystReviewError, AnalystReviewService
 from trading_bot.application.bot_lifecycle_guard import BotNotFlatError
 from trading_bot.application.bot_operations import BotOperationsService, PrincipalBotOperations
@@ -191,6 +196,19 @@ SAFE_ERROR_REASONS: dict[str, str] = {
     ),
     "RECENT_MFA_REQUIRED": "Cần xác thực MFA gần đây. Đăng nhập lại rồi thử lại.",
     "CONTROL_PERMISSION_DENIED": "Tài khoản không có quyền thực hiện thao tác này.",
+    "CATALOG_HASH_MISMATCH": (
+        "Mã băm (SHA-256) không khớp với danh mục chiến lược hiện hành. Hãy tải lại trang "
+        "và chỉ công bố bản phát hành chính thức từ catalog."
+    ),
+    "CONTROL_REASON_REQUIRED": (
+        "Lý do thao tác cần từ 3 đến 500 ký tự tiếng Việt rõ ràng để ghi vào nhật ký kiểm toán."
+    ),
+    "UNKNOWN_STRATEGY_RELEASE": (
+        "Mã phát hành chiến lược không tồn tại trong danh mục sản phẩm hiện hành."
+    ),
+    "RELEASE_NOT_PUBLISHED": (
+        "Bản phát hành chưa ở trạng thái Đã công bố trong không gian làm việc này."
+    ),
 }
 
 
@@ -353,6 +371,25 @@ def _strategy_card_service(request: Request) -> StrategyCardAdminService:
         service = StrategyCardAdminService()
         request.app.state.strategy_card_service = service
     return service
+
+
+def _strategy_release_service(request: Request) -> StrategyReleaseAdminService:
+    service = cast(
+        StrategyReleaseAdminService | None,
+        getattr(request.app.state, "strategy_release_service", None),
+    )
+    if service is None:
+        service = StrategyReleaseAdminService()
+        request.app.state.strategy_release_service = service
+    return service
+
+
+class StrategyReleaseActionRequest(BaseModel):
+    """Yêu cầu công bố hoặc thu hồi một `strategy_release` từ Admin API."""
+
+    release_id: str
+    reason: str
+    content_hash: str | None = None
 
 
 def _microscope_service(request: Request) -> MicroscopeReplayService:
@@ -1668,7 +1705,31 @@ def _signal_filter_choices(signal_state: Any) -> dict[str, Any] | None:
     }
 
 
-def _overlay_form_choices(overlay: dict[str, Any], root: dict[str, Any]) -> dict[str, Any]:
+def _filter_published_release_choices(
+    choices: tuple[Choice, ...], published_release_ids: tuple[str, ...] | None
+) -> tuple[Choice, ...]:
+    """Giới hạn ô chọn release của bot theo các bản đã công bố trong workspace (SC-3)."""
+    if published_release_ids is None:
+        return choices
+    allowed = set(published_release_ids)
+    filtered: list[Choice] = []
+    for item in choices:
+        if not item.value or item.value in allowed:
+            filtered.append(item)
+        elif item.selected:
+            label = (
+                item.label if "(ngoài danh mục)" in item.label else f"{item.label} (chưa công bố)"
+            )
+            filtered.append(Choice(value=item.value, label=label, selected=True, data=item.data))
+    return tuple(filtered)
+
+
+def _overlay_form_choices(
+    overlay: dict[str, Any],
+    root: dict[str, Any],
+    *,
+    published_release_ids: tuple[str, ...] | None = None,
+) -> dict[str, Any]:
     """Ô chọn cho bản nháp overlay, điền sẵn theo bản nháp hoặc bản đang công bố."""
     strategy = overlay.get("strategy") or {}
     universe = overlay.get("universe") or {}
@@ -1678,8 +1739,9 @@ def _overlay_form_choices(overlay: dict[str, Any], root: dict[str, Any]) -> dict
     inherit = (
         f"Kế thừa cấu hình gốc ({default_release})" if default_release else "Kế thừa cấu hình gốc"
     )
+    raw_releases = release_choices(str(strategy.get("release_id") or ""), inherit_label=inherit)
     return {
-        "releases": release_choices(str(strategy.get("release_id") or ""), inherit_label=inherit),
+        "releases": _filter_published_release_choices(raw_releases, published_release_ids),
         "symbols": coin_choices(tuple(universe.get("symbols") or ()), only=root_symbols),
         "timeframes": timeframe_choices(
             tuple(universe.get("timeframes") or ()), only=root_timeframes
@@ -1819,6 +1881,15 @@ async def bot_detail(
     root_universe = await _root_universe(request, identity.principal)
     current_overlay = dict((draft or published or {}).get("overlay") or {})
     exit_review = _exit_review(draft, published, ai_proposals)
+    published_release_ids: tuple[str, ...] | None = None
+    release_service = _strategy_release_service(request)
+    if release_service.has_workspace_state(identity.principal.workspace_id):
+        try:
+            published_release_ids = await release_service.list_published_release_ids(
+                identity.principal
+            )
+        except SQLAlchemyError, StrategyReleaseAdminError:
+            published_release_ids = None
     return templates.TemplateResponse(
         request=request,
         name="admin/bot_detail.html",
@@ -1839,7 +1910,11 @@ async def bot_detail(
             "ai_proposal_error": _AI_PROPOSAL_ERRORS.get(ai_proposal_error or ""),
             "telegram_signal_state": signal_state,
             "signal_filter_choices": _signal_filter_choices(signal_state),
-            "overlay_form": _overlay_form_choices(current_overlay, root_universe),
+            "overlay_form": _overlay_form_choices(
+                current_overlay,
+                root_universe,
+                published_release_ids=published_release_ids,
+            ),
             "exit_review": exit_review,
             "trading_data_available": trading_data["data_available"],
             "metrics": trading_data["metrics"],
@@ -2772,16 +2847,36 @@ async def queue_trade_ai_retraining(
     )
 
 
-@router.get("/strategy-cards")
-async def strategy_cards_page(
+_RELEASE_NOTICE_MESSAGES: dict[str, str] = {
+    "published": "Đã công bố bản phát hành chiến lược trong không gian làm việc.",
+    "retired": "Đã thu hồi bản phát hành chiến lược khỏi trạng thái hoạt động.",
+}
+
+
+async def _issue_optional_csrf_token(request: Request) -> str:
+    try:
+        return await _auth_service(request).issue_csrf_token(read_session_cookie(request))
+    except AuthenticationFailure, HTTPException:
+        return ""
+
+
+async def _render_strategy_cards_page(
     request: Request,
-    response: Response,
-    identity: Annotated[AuthIdentity, Depends(current_identity)],
+    identity: AuthIdentity,
+    *,
+    status_code: int = 200,
+    active_tab: str = "tab-cards",
+    release_notice: str | None = None,
+    release_error: str | None = None,
 ) -> Response:
-    """Hiển thị danh sách Strategy Cards, các tầng L0-L6 và kết quả kiểm định."""
-    response.headers["Cache-Control"] = "no-store"
-    service = _strategy_card_service(request)
-    cards = await service.list_strategy_cards(identity.principal)
+    card_service = _strategy_card_service(request)
+    release_service = _strategy_release_service(request)
+    cards = await card_service.list_strategy_cards(identity.principal)
+    try:
+        releases = await release_service.list_releases(identity.principal)
+    except StrategyReleaseAdminError:
+        releases = []
+    csrf_token = await _issue_optional_csrf_token(request)
     templates = _templates(request)
     return templates.TemplateResponse(
         request=request,
@@ -2794,8 +2889,117 @@ async def strategy_cards_page(
             "verified_cards_count": sum(
                 1 for c in cards if c.is_verified and c.consensus_status == "ok"
             ),
+            "releases": releases,
+            "published_releases_count": sum(1 for r in releases if r.is_published),
+            "retired_releases_count": sum(1 for r in releases if r.is_retired),
+            "unpublished_releases_count": sum(
+                1 for r in releases if r.workspace_status in {"UNPUBLISHED", "HASH_MISMATCH"}
+            ),
+            "can_manage_releases": Role.OWNER in identity.principal.roles,
+            "csrf_token": csrf_token,
+            "active_tab": active_tab,
+            "release_notice": release_notice,
+            "release_error": release_error,
         },
+        status_code=status_code,
         headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.get("/strategy-cards")
+async def strategy_cards_page(
+    request: Request,
+    response: Response,
+    identity: Annotated[AuthIdentity, Depends(current_identity)],
+    release_status: str | None = None,
+    release_id: str | None = None,
+) -> Response:
+    """Hiển thị danh sách Strategy Cards, các tầng L0-L6, kiểm định và Quản lý Phát hành."""
+    response.headers["Cache-Control"] = "no-store"
+    notice: str | None = None
+    active_tab = "tab-cards"
+    if release_status in _RELEASE_NOTICE_MESSAGES:
+        active_tab = "tab-releases"
+        prefix = _RELEASE_NOTICE_MESSAGES[release_status]
+        safe_id = (release_id or "").strip()
+        notice = f"{prefix} ({safe_id})" if safe_id else prefix
+    return await _render_strategy_cards_page(
+        request,
+        identity,
+        active_tab=active_tab,
+        release_notice=notice,
+    )
+
+
+@router.post("/strategy-releases/publish")
+async def publish_strategy_release_form(
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(current_identity)],
+) -> Response:
+    """Owner công bố một `strategy_release` từ catalog vào workspace (MFA + lý do + audit)."""
+    values = await _parse_form(request)
+    await _verify_form_csrf(request, values)
+    release_id = values.get("release_id", "").strip()
+    reason = values.get("reason", "")
+    expected_hash = values["content_hash"] if "content_hash" in values else None
+    try:
+        updated = await _strategy_release_service(request).publish_release(
+            identity.principal,
+            release_id=release_id,
+            reason=reason,
+            expected_content_hash=expected_hash,
+        )
+    except StrategyReleaseAdminError as error:
+        return await _render_strategy_cards_page(
+            request,
+            identity,
+            status_code=error.status_code,
+            active_tab="tab-releases",
+            release_error=error.message,
+        )
+    query = urlencode({"release_status": "published", "release_id": updated.release_id})
+    return Response(
+        status_code=303,
+        headers={
+            "Location": f"/admin/strategy-cards?{query}#tab-releases",
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+@router.post("/strategy-releases/retire")
+async def retire_strategy_release_form(
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(current_identity)],
+) -> Response:
+    """Owner thu hồi một `strategy_release` khỏi workspace (MFA + lý do + audit)."""
+    values = await _parse_form(request)
+    await _verify_form_csrf(request, values)
+    release_id = values.get("release_id", "").strip()
+    reason = values.get("reason", "")
+    expected_hash = values["content_hash"] if "content_hash" in values else None
+    try:
+        updated = await _strategy_release_service(request).retire_release(
+            identity.principal,
+            release_id=release_id,
+            reason=reason,
+            expected_content_hash=expected_hash,
+        )
+    except StrategyReleaseAdminError as error:
+        return await _render_strategy_cards_page(
+            request,
+            identity,
+            status_code=error.status_code,
+            active_tab="tab-releases",
+            release_error=error.message,
+        )
+    query = urlencode({"release_status": "retired", "release_id": updated.release_id})
+    return Response(
+        status_code=303,
+        headers={
+            "Location": f"/admin/strategy-cards?{query}#tab-releases",
+            "Cache-Control": "no-store",
+        },
     )
 
 
@@ -3611,6 +3815,84 @@ async def strategy_cards_api(
         "total": len(cards),
         "cards": [c.to_dict() for c in cards],
     }
+
+
+@router.get("/api/strategy-releases")
+async def strategy_releases_api(
+    request: Request,
+    response: Response,
+    identity: Annotated[AuthIdentity, Depends(current_identity)],
+) -> Response:
+    """Trả về JSON danh sách release từ catalog kèm trạng thái hiện hành trong workspace."""
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        releases = await _strategy_release_service(request).list_releases(identity.principal)
+    except StrategyReleaseAdminError as error:
+        return JSONResponse(
+            {"status": "error", "code": error.reason_code, "detail": error.message},
+            status_code=error.status_code,
+            headers={"Cache-Control": "no-store"},
+        )
+    return JSONResponse(
+        {
+            "status": "success",
+            "total": len(releases),
+            "releases": [r.to_dict() for r in releases],
+        },
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.post("/api/strategy-releases/publish")
+async def publish_strategy_release_api(
+    payload: StrategyReleaseActionRequest,
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(require_csrf)],
+) -> Response:
+    """API công bố một `strategy_release` từ catalog vào workspace (Owner + MFA + CSRF)."""
+    try:
+        updated = await _strategy_release_service(request).publish_release(
+            identity.principal,
+            release_id=payload.release_id,
+            reason=payload.reason,
+            expected_content_hash=payload.content_hash,
+        )
+    except StrategyReleaseAdminError as error:
+        return JSONResponse(
+            {"status": "error", "code": error.reason_code, "detail": error.message},
+            status_code=error.status_code,
+            headers={"Cache-Control": "no-store"},
+        )
+    return JSONResponse(
+        {"status": "success", "release": updated.to_dict()},
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.post("/api/strategy-releases/retire")
+async def retire_strategy_release_api(
+    payload: StrategyReleaseActionRequest,
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(require_csrf)],
+) -> Response:
+    """API thu hồi một `strategy_release` trong workspace (Owner + MFA + CSRF)."""
+    try:
+        updated = await _strategy_release_service(request).retire_release(
+            identity.principal,
+            release_id=payload.release_id,
+            reason=payload.reason,
+            expected_content_hash=payload.content_hash,
+        )
+    except StrategyReleaseAdminError as error:
+        return JSONResponse(
+            {"status": "error", "code": error.reason_code, "detail": error.message},
+            status_code=error.status_code,
+            headers={"Cache-Control": "no-store"},
+        )
+    return JSONResponse(
+        {"status": "success", "release": updated.to_dict()},
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @router.get("/strategy-cards/{card_id}/microscope")

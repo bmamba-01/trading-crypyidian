@@ -58,11 +58,35 @@
   </article>
 </section>
 
+{% if release_notice %}
+<div class="ui-alert ui-alert--success" role="status" aria-live="polite" data-release-notice>
+  <svg class="ui-alert__icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M20 6 9 17l-5-5"/></svg>
+  <div class="ui-alert__content">
+    <p class="ui-alert__title">Cập nhật phát hành chiến lược thành công</p>
+    <p>{{ release_notice }}</p>
+  </div>
+</div>
+{% endif %}
+
+{% if release_error %}
+<div class="ui-alert ui-alert--danger" role="alert" data-release-error>
+  <svg class="ui-alert__icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9"/><path d="M12 8v5"/><path d="M12 16h.01"/></svg>
+  <div class="ui-alert__content">
+    <p class="ui-alert__title">Không thể cập nhật trạng thái phát hành</p>
+    <p>{{ release_error }}</p>
+  </div>
+</div>
+{% endif %}
+
 <div class="sc-tabs" data-tabs>
   <div class="tabs-bar" role="tablist" aria-label="Khu vực của trang thẻ chiến lược">
-    <button type="button" role="tab" id="tab-cards" aria-controls="panel-cards" aria-selected="true">
+    <button type="button" role="tab" id="tab-cards" aria-controls="panel-cards" aria-selected="{{ 'true' if active_tab != 'tab-releases' else 'false' }}">
       <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3" y="4" width="8" height="7" rx="1.5"/><rect x="13" y="4" width="8" height="7" rx="1.5"/><rect x="3" y="13" width="8" height="7" rx="1.5"/><rect x="13" y="13" width="8" height="7" rx="1.5"/></svg>
       Thẻ chiến lược <span class="tabs-bar__count">{{ total_cards }}</span>
+    </button>
+    <button type="button" role="tab" id="tab-releases" aria-controls="panel-releases" aria-selected="{{ 'true' if active_tab == 'tab-releases' else 'false' }}">
+      <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
+      Quản lý Phát hành <span class="tabs-bar__count">{{ published_releases_count }}/{{ releases | length }}</span>
     </button>
     <button type="button" role="tab" id="tab-layers" aria-controls="panel-layers" aria-selected="false">
       <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3 13 9 5 9-5"/></svg>
@@ -70,7 +94,7 @@
     </button>
   </div>
 
-<div role="tabpanel" id="panel-cards" aria-labelledby="tab-cards" tabindex="0">
+<div role="tabpanel" id="panel-cards" aria-labelledby="tab-cards" tabindex="0"{% if active_tab == 'tab-releases' %} hidden{% endif %}>
 <!-- Danh sách các thẻ chiến lược -->
 <section class="cards-section" aria-labelledby="section-cards-heading">
   <div class="section-header sc-section-head">
@@ -249,7 +273,107 @@
 </section>
 </div>
 
-<div role="tabpanel" id="panel-layers" aria-labelledby="tab-layers" tabindex="0">
+<div role="tabpanel" id="panel-releases" aria-labelledby="tab-releases" tabindex="0"{% if active_tab != 'tab-releases' %} hidden{% endif %}>
+<section aria-labelledby="releases-heading">
+  <div class="sc-section-head">
+    <div>
+      <h2 id="releases-heading">Quản lý Phát hành Chiến lược trong Workspace</h2>
+      <p class="sc-muted">Chỉ các phiên bản ở trạng thái <strong>PUBLISHED</strong> và khớp mã băm SHA-256 của catalog sản phẩm (<code>strategy_registry()</code>) mới khả dụng để gán cho bot.</p>
+    </div>
+    <div class="sc-card__badges" role="status" aria-label="Tổng hợp trạng thái phát hành">
+      <span class="badge badge-success">Đang công bố: {{ published_releases_count }}</span>
+      <span class="badge badge-danger">Đã thu hồi: {{ retired_releases_count }}</span>
+      <span class="badge badge-neutral">Chưa công bố: {{ unpublished_releases_count }}</span>
+    </div>
+  </div>
+
+  {% if not can_manage_releases %}
+  <div class="ui-alert ui-alert--info" role="status">
+    <svg class="ui-alert__icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9"/><path d="M12 10v6"/><path d="M12 7h.01"/></svg>
+    <div class="ui-alert__content">
+      <p class="ui-alert__title">Chế độ chỉ đọc</p>
+      <p>Chỉ thành viên có vai trò <strong>Owner</strong> và xác thực MFA gần đây (≤ 15 phút) mới được công bố hoặc thu hồi phiên bản chiến lược.</p>
+    </div>
+  </div>
+  {% endif %}
+
+  <div class="controls-grid" role="list" aria-label="Danh sách phiên bản chiến lược từ catalog">
+    {% for rel in releases %}
+    <article class="glass-card sc-card release-card" role="listitem" data-release-id="{{ rel.release_id }}" data-workspace-status="{{ rel.workspace_status }}" aria-labelledby="release-title-{{ loop.index }}">
+      <header class="sc-card__head">
+        <div class="sc-card__title-row">
+          <h3 id="release-title-{{ loop.index }}" class="strategy-name">{{ rel.name_vi }}</h3>
+        </div>
+        <div class="sc-card__badges">
+          <span class="badge badge-version"><code>{{ rel.release_id }}</code></span>
+          <span class="badge badge-neutral">{{ 'Thẻ chiến lược' if rel.kind == 'strategy_card' else 'Quy tắc nền' }}</span>
+          {% if rel.workspace_status == 'PUBLISHED' %}
+          <span class="badge badge-success" data-release-status-badge="{{ rel.release_id }}">{{ rel.workspace_status_label_vi }}</span>
+          {% elif rel.workspace_status == 'RETIRED' %}
+          <span class="badge badge-danger" data-release-status-badge="{{ rel.release_id }}">{{ rel.workspace_status_label_vi }}</span>
+          {% elif rel.workspace_status == 'HASH_MISMATCH' %}
+          <span class="badge badge-warning" data-release-status-badge="{{ rel.release_id }}">{{ rel.workspace_status_label_vi }}</span>
+          {% else %}
+          <span class="badge badge-neutral" data-release-status-badge="{{ rel.release_id }}">{{ rel.workspace_status_label_vi }}</span>
+          {% endif %}
+        </div>
+      </header>
+
+      <p class="sc-muted">{{ rel.rule_summary_vi }}</p>
+
+      <dl class="sc-kv">
+        <div>
+          <dt>Mã chiến lược</dt>
+          <dd><code>{{ rel.strategy_id }}</code></dd>
+        </div>
+        <div>
+          <dt>Phiên bản công thức / quy tắc</dt>
+          <dd><code>{{ rel.recipe_version }} / {{ rel.rule_version }}</code></dd>
+        </div>
+        <div>
+          <dt>Mã băm catalog (SHA-256)</dt>
+          <dd>
+            <code class="hash-code" title="{{ rel.content_hash }}">{{ rel.short_hash }}</code>
+            <span class="visually-hidden">{{ rel.content_hash }}</span>
+          </dd>
+        </div>
+        {% if not rel.hash_matches_catalog and rel.workspace_content_hash %}
+        <div>
+          <dt>Mã băm workspace hiện tại</dt>
+          <dd><code class="hash-code" title="{{ rel.workspace_content_hash }}">{{ rel.workspace_content_hash[:12] }}</code></dd>
+        </div>
+        {% endif %}
+        {% if rel.created_at_formatted %}
+        <div>
+          <dt>Cập nhật gần nhất</dt>
+          <dd><span>{{ rel.created_at_formatted }}</span></dd>
+        </div>
+        {% endif %}
+      </dl>
+
+      {% if can_manage_releases %}
+      <form class="form-stack" method="post" action="{{ '/admin/strategy-releases/retire' if rel.is_published else '/admin/strategy-releases/publish' }}" data-release-form="{{ rel.release_id }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="release_id" value="{{ rel.release_id }}">
+        <input type="hidden" name="content_hash" value="{{ rel.content_hash }}">
+        <div class="form-field">
+          <label for="release-reason-{{ loop.index }}">{{ 'Lý do thu hồi (tiếng Việt)' if rel.is_published else 'Lý do công bố (tiếng Việt)' }}</label>
+          <input id="release-reason-{{ loop.index }}" class="form-input" type="text" name="reason" required minlength="3" maxlength="500" placeholder="{{ 'Ví dụ: Ngừng sử dụng do thay bằng phiên bản mới' if rel.is_published else 'Ví dụ: Đã kiểm chứng trên paper và phê duyệt cho workspace' }}">
+        </div>
+        <button type="submit" class="btn {{ 'btn-danger-outline' if rel.is_published else 'btn-primary' }}" data-release-action="{{ 'retire' if rel.is_published else 'publish' }}" data-release-target="{{ rel.release_id }}">
+          {{ 'Thu hồi phát hành' if rel.is_published else ('Công bố lại từ catalog' if rel.is_retired or rel.workspace_status == 'HASH_MISMATCH' else 'Công bố vào workspace') }}
+        </button>
+      </form>
+      {% else %}
+      <p class="form-hint">Yêu cầu quyền Owner kèm MFA gần đây để thay đổi trạng thái phát hành.</p>
+      {% endif %}
+    </article>
+    {% endfor %}
+  </div>
+</section>
+</div>
+
+<div role="tabpanel" id="panel-layers" aria-labelledby="tab-layers" tabindex="0"{% if active_tab == 'tab-releases' %} hidden{% endif %}>
 <section class="sc-architecture" aria-labelledby="architecture-heading">
   <h2 id="architecture-heading">Bảy tầng của đồ thị chiến lược</h2>
   <p class="sc-muted">Nến đi lần lượt qua các tầng; tầng L0 hoặc L4 có thể ngắt mạch để các tầng sau không chạy. Chọn “Chi tiết” để xem engine hiện làm gì và hạn chế đã biết.</p>
