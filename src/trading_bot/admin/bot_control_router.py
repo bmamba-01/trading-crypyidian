@@ -15,6 +15,16 @@ from trading_bot.application.bot_lifecycle_guard import BotNotFlatError
 from trading_bot.application.bot_operations import BotOperationsService, PrincipalBotOperations
 from trading_bot.application.bot_runtime_control import BotRuntimeControlError
 from trading_bot.application.flatten_all import FlattenAllError, FlattenAllService
+from trading_bot.auth.bot_policy import BotPermission
+from trading_bot.auth.policy import Permission
+from trading_bot.auth.route_policy import (
+    BotScopePolicy,
+    CsrfMode,
+    EnforcementMode,
+    bot_scoped_route,
+    owner_route,
+    permission_route,
+)
 from trading_bot.auth.router import current_identity, require_csrf
 from trading_bot.auth.service import AuthIdentity
 from trading_bot.domain.execution.runtime_control import BotControlResult, WorkspaceControlResult
@@ -148,7 +158,15 @@ def _workspace_control(result: WorkspaceControlResult) -> dict[str, object]:
     }
 
 
-@router.get("/workspace/runtime")
+@router.get(
+    "/workspace/runtime",
+    dependencies=[
+        permission_route(
+            Permission.WORKSPACE_READ,
+            bot_scope=BotScopePolicy(BotPermission.READ, param_name=None, param_location="service"),
+        )
+    ],
+)
 async def workspace_runtime(
     request: Request,
     response: Response,
@@ -162,7 +180,10 @@ async def workspace_runtime(
         _raise(error)
 
 
-@router.get("/bots/{bot_id}/runtime")
+@router.get(
+    "/bots/{bot_id}/runtime",
+    dependencies=[bot_scoped_route(BotPermission.READ)],
+)
 async def bot_runtime(
     bot_id: UUID,
     request: Request,
@@ -177,7 +198,16 @@ async def bot_runtime(
         _raise(error)
 
 
-@router.post("/bots/{bot_id}/runtime/pause")
+@router.post(
+    "/bots/{bot_id}/runtime/pause",
+    dependencies=[
+        bot_scoped_route(
+            BotPermission.RUNTIME_PAUSE,
+            csrf=CsrfMode.HEADER,
+            enforcement=EnforcementMode.SERVICE_AUDITED,
+        )
+    ],
+)
 async def pause_bot(
     bot_id: UUID,
     body: ControlReasonRequest,
@@ -193,7 +223,16 @@ async def pause_bot(
         _raise(error)
 
 
-@router.post("/bots/{bot_id}/runtime/resume")
+@router.post(
+    "/bots/{bot_id}/runtime/resume",
+    dependencies=[
+        bot_scoped_route(
+            BotPermission.RUNTIME_RESUME,
+            csrf=CsrfMode.HEADER,
+            enforcement=EnforcementMode.SERVICE_AUDITED,
+        )
+    ],
+)
 async def resume_bot(
     bot_id: UUID,
     body: ControlResumeRequest,
@@ -211,7 +250,10 @@ async def resume_bot(
         _raise(error)
 
 
-@router.post("/bots/{bot_id}/disable")
+@router.post(
+    "/bots/{bot_id}/disable",
+    dependencies=[owner_route(csrf=CsrfMode.HEADER, enforcement=EnforcementMode.SERVICE_AUDITED)],
+)
 async def disable_bot(
     bot_id: UUID,
     body: ControlReasonRequest,
@@ -227,7 +269,10 @@ async def disable_bot(
         _raise(error)
 
 
-@router.post("/bots/{bot_id}/enable")
+@router.post(
+    "/bots/{bot_id}/enable",
+    dependencies=[owner_route(csrf=CsrfMode.HEADER, enforcement=EnforcementMode.SERVICE_AUDITED)],
+)
 async def enable_bot(
     bot_id: UUID,
     body: ControlReasonRequest,
@@ -243,7 +288,16 @@ async def enable_bot(
         _raise(error)
 
 
-@router.post("/workspace/runtime/kill")
+@router.post(
+    "/workspace/runtime/kill",
+    dependencies=[
+        permission_route(
+            Permission.WORKSPACE_KILL,
+            csrf=CsrfMode.HEADER,
+            enforcement=EnforcementMode.SERVICE_AUDITED,
+        )
+    ],
+)
 async def kill_workspace(
     body: ControlReasonRequest,
     request: Request,
@@ -258,7 +312,16 @@ async def kill_workspace(
         _raise(error)
 
 
-@router.post("/workspace/runtime/release")
+@router.post(
+    "/workspace/runtime/release",
+    dependencies=[
+        permission_route(
+            Permission.WORKSPACE_KILL,
+            csrf=CsrfMode.HEADER,
+            enforcement=EnforcementMode.SERVICE_AUDITED,
+        )
+    ],
+)
 async def release_workspace(
     body: ControlResumeRequest,
     request: Request,
@@ -275,7 +338,10 @@ async def release_workspace(
         _raise(error)
 
 
-@router.post("/workspace/flatten/preview")
+@router.post(
+    "/workspace/flatten/preview",
+    dependencies=[owner_route(csrf=CsrfMode.HEADER)],
+)
 async def flatten_preview(
     body: FlattenPreviewRequest,
     request: Request,
@@ -304,7 +370,10 @@ async def flatten_preview(
         _raise_flatten(error)
 
 
-@router.post("/workspace/flatten/confirm")
+@router.post(
+    "/workspace/flatten/confirm",
+    dependencies=[owner_route(csrf=CsrfMode.HEADER)],
+)
 async def flatten_confirm(
     body: FlattenConfirmRequest,
     request: Request,
@@ -336,7 +405,10 @@ async def flatten_confirm(
         _raise(error)
 
 
-@router.get("/workspace/flatten/operations/{operation_id}")
+@router.get(
+    "/workspace/flatten/operations/{operation_id}",
+    dependencies=[owner_route()],
+)
 async def flatten_operation(
     operation_id: UUID,
     request: Request,

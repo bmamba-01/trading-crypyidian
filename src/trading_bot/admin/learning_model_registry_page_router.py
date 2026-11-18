@@ -11,6 +11,7 @@ from trading_bot.admin.learning_model_registry_router import _facade
 from trading_bot.admin.web_router import _auth_service, _templates
 from trading_bot.auth.cookies import read_session_cookie
 from trading_bot.auth.policy import Permission
+from trading_bot.auth.route_policy import permission_route
 from trading_bot.auth.router import current_identity
 from trading_bot.auth.service import AuthIdentity
 
@@ -36,7 +37,15 @@ _ACTION_LABELS = {
 }
 
 
-@router.get("/admin/learning/models")
+@router.get(
+    "/admin/learning/models",
+    dependencies=[
+        permission_route(
+            Permission.LEARNING_MODEL_READ,
+            denied_detail="Không đủ quyền xem registry mô hình.",
+        )
+    ],
+)
 async def learning_model_registry_page(
     request: Request,
     response: Response,

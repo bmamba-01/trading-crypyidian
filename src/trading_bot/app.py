@@ -137,6 +137,7 @@ from trading_bot.application.telegram_binding import TelegramBindingService
 from trading_bot.application.telegram_paper_report import TelegramPaperReportService
 from trading_bot.application.telegram_signal_subscription import TelegramSignalSubscriptionService
 from trading_bot.application.telegram_signals import SignalThrottlePolicy
+from trading_bot.auth.route_policy import assert_all_routes_have_policy, public_route
 from trading_bot.auth.router import router as auth_router
 from trading_bot.auth.security import LoginRateLimiter, TestModeTotpManager
 from trading_bot.auth.service import AuthService
@@ -883,7 +884,13 @@ def create_app(
         ]
         return JSONResponse(status_code=422, content={"detail": details})
 
-    @app.get("/health/live", include_in_schema=False)
+    @app.get(
+        "/health/live",
+        include_in_schema=False,
+        dependencies=[
+            public_route(reason="Probe liveness cho Docker/k8s; chỉ trả status, mode và role.")
+        ],
+    )
     def live_health() -> dict[str, str]:
         """Báo process còn hoạt động; không khẳng định các dependency đã sẵn sàng."""
         return {
@@ -892,7 +899,14 @@ def create_app(
             "role": app_settings.process_role,
         }
 
-    @app.get("/health/ready", include_in_schema=False, response_model=None)
+    @app.get(
+        "/health/ready",
+        include_in_schema=False,
+        response_model=None,
+        dependencies=[
+            public_route(reason="Probe readiness cho Docker/k8s; chỉ trả bộ đếm trạng thái.")
+        ],
+    )
     async def ready_health() -> JSONResponse | dict[str, object]:
         """Readiness theo vai trò; runtime: 200 `ready`/`degraded`, 503 khi không phục vụ được.
 
@@ -1070,6 +1084,7 @@ def create_app(
             body["market_dispatch"] = dispatch_detail
         return body
 
+    assert_all_routes_have_policy(app)
     return app
 
 

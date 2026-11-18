@@ -18,6 +18,7 @@ from trading_bot.application.learning_training_admin import (
     PrincipalLearningTrainingAdminService,
 )
 from trading_bot.auth.policy import Permission, authorize
+from trading_bot.auth.route_policy import CsrfMode, permission_route
 from trading_bot.auth.router import current_identity, require_csrf
 from trading_bot.auth.service import AuthIdentity
 
@@ -55,7 +56,22 @@ def _no_store(error: HTTPException) -> HTTPException:
     )
 
 
-@router.get("/jobs", response_model=LearningTrainingSnapshotResponse)
+_TRAINING_READ_POLICY = permission_route(
+    Permission.LEARNING_TRAINING_MANAGE,
+    denied_detail="Không có quyền quản lý training job.",
+)
+_TRAINING_WRITE_POLICY = permission_route(
+    Permission.LEARNING_TRAINING_MANAGE,
+    csrf=CsrfMode.HEADER,
+    denied_detail="Không có quyền quản lý training job.",
+)
+
+
+@router.get(
+    "/jobs",
+    response_model=LearningTrainingSnapshotResponse,
+    dependencies=[_TRAINING_READ_POLICY],
+)
 async def list_training_jobs(
     request: Request,
     response: Response,
@@ -75,7 +91,12 @@ async def list_training_jobs(
     )
 
 
-@router.post("/jobs", status_code=201, response_model=LearningTrainingSubmissionResponse)
+@router.post(
+    "/jobs",
+    status_code=201,
+    response_model=LearningTrainingSubmissionResponse,
+    dependencies=[_TRAINING_WRITE_POLICY],
+)
 async def enqueue_training_job(
     body: EnqueueTrainingRequest,
     request: Request,
@@ -97,7 +118,11 @@ async def enqueue_training_job(
     return LearningTrainingSubmissionResponse.from_domain(submission)
 
 
-@router.post("/jobs/{job_id}/cancel", response_model=LearningTrainingJobResponse)
+@router.post(
+    "/jobs/{job_id}/cancel",
+    response_model=LearningTrainingJobResponse,
+    dependencies=[_TRAINING_WRITE_POLICY],
+)
 async def cancel_training_job(
     job_id: UUID,
     request: Request,

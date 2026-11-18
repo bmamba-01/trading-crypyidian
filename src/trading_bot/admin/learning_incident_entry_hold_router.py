@@ -23,6 +23,7 @@ from trading_bot.application.learning_incident_entry_hold import (
     PrincipalLearningIncidentEntryHoldService,
 )
 from trading_bot.auth.policy import Permission, authorize
+from trading_bot.auth.route_policy import CsrfMode, permission_route
 from trading_bot.auth.router import current_identity, require_csrf
 from trading_bot.auth.service import AuthIdentity
 
@@ -65,7 +66,22 @@ def _no_store(error: HTTPException) -> HTTPException:
     )
 
 
-@router.get("", response_model=LearningIncidentHoldHistoryResponse)
+_INCIDENT_READ_POLICY = permission_route(
+    Permission.LEARNING_INCIDENT_MANAGE,
+    denied_detail="Không có quyền quản lý sự cố học máy.",
+)
+_INCIDENT_WRITE_POLICY = permission_route(
+    Permission.LEARNING_INCIDENT_MANAGE,
+    csrf=CsrfMode.HEADER,
+    denied_detail="Không có quyền quản lý sự cố học máy.",
+)
+
+
+@router.get(
+    "",
+    response_model=LearningIncidentHoldHistoryResponse,
+    dependencies=[_INCIDENT_READ_POLICY],
+)
 async def list_incident_hold_history(
     request: Request,
     response: Response,
@@ -81,7 +97,11 @@ async def list_incident_hold_history(
     return LearningIncidentHoldHistoryResponse.from_events(events)
 
 
-@router.post("/{proposal_id}/hold", response_model=LearningIncidentHoldEventResponse)
+@router.post(
+    "/{proposal_id}/hold",
+    response_model=LearningIncidentHoldEventResponse,
+    dependencies=[_INCIDENT_WRITE_POLICY],
+)
 async def hold_incident_entry(
     proposal_id: UUID,
     body: LearningIncidentHoldRequest,
@@ -116,7 +136,11 @@ async def hold_incident_entry(
     return LearningIncidentHoldEventResponse.from_event(event)
 
 
-@router.post("/{proposal_id}/release", response_model=LearningIncidentHoldEventResponse)
+@router.post(
+    "/{proposal_id}/release",
+    response_model=LearningIncidentHoldEventResponse,
+    dependencies=[_INCIDENT_WRITE_POLICY],
+)
 async def release_incident_entry(
     proposal_id: UUID,
     body: LearningIncidentReleaseRequest,

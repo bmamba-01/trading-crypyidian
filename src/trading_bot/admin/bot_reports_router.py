@@ -16,6 +16,8 @@ from trading_bot.application.bot_reporting import (
     BotReportQuery,
     ReportScope,
 )
+from trading_bot.auth.bot_policy import BotPermission
+from trading_bot.auth.route_policy import bot_scoped_route
 from trading_bot.auth.router import current_identity
 from trading_bot.auth.service import AuthIdentity
 from trading_bot.domain.portfolio.reporting import (
@@ -45,7 +47,10 @@ def _reject(response: Response, status_code: int, code: str, message: str) -> No
     )
 
 
-@router.get("")
+@router.get(
+    "",
+    dependencies=[bot_scoped_route(BotPermission.REPORT_READ, param_location="query")],
+)
 async def get_report(
     request: Request,
     response: Response,

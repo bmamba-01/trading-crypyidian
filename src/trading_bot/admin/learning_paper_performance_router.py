@@ -21,8 +21,10 @@ from trading_bot.application.learning_paper_performance import (
     LearningPaperPerformanceService,
     PaperPerformanceReportSummary,
 )
+from trading_bot.auth.bot_policy import BotPermission
 from trading_bot.auth.cookies import read_session_cookie
 from trading_bot.auth.policy import Permission, authorize
+from trading_bot.auth.route_policy import BotScopePolicy, CsrfMode, permission_route
 from trading_bot.auth.router import current_identity, require_csrf
 from trading_bot.auth.service import AuthenticationFailure, AuthIdentity
 
@@ -40,7 +42,18 @@ def paper_bot_options(bots: Sequence[Mapping[str, Any]]) -> tuple[dict[str, str]
     return tuple(options)
 
 
-@router.get("/admin/learning/paper-performance")
+@router.get(
+    "/admin/learning/paper-performance",
+    dependencies=[
+        permission_route(
+            Permission.LEARNING_MODEL_READ,
+            bot_scope=BotScopePolicy(
+                BotPermission.REPORT_READ, param_name=None, param_location="service"
+            ),
+            denied_detail="Không đủ quyền xem chẩn đoán PAPER.",
+        )
+    ],
+)
 async def learning_paper_performance_page(
     request: Request,
     response: Response,
@@ -87,6 +100,16 @@ async def learning_paper_performance_page(
 @router.post(
     "/api/v1/learning/paper-performance/assess",
     response_model=PaperPerformanceReportResponse,
+    dependencies=[
+        permission_route(
+            Permission.LEARNING_MODEL_READ,
+            bot_scope=BotScopePolicy(
+                BotPermission.REPORT_READ, param_name="bot_id", param_location="body"
+            ),
+            csrf=CsrfMode.HEADER,
+            denied_detail="Không đủ quyền tạo chẩn đoán PAPER.",
+        )
+    ],
 )
 async def assess_learning_paper_performance(
     body: PaperPerformanceAssessRequest,

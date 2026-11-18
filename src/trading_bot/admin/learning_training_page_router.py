@@ -9,6 +9,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from trading_bot.admin.learning_training_router import _facade
 from trading_bot.admin.web_router import _auth_service, _templates
 from trading_bot.auth.cookies import read_session_cookie
+from trading_bot.auth.policy import Permission
+from trading_bot.auth.route_policy import permission_route
 from trading_bot.auth.router import current_identity
 from trading_bot.auth.service import AuthIdentity
 
@@ -31,7 +33,15 @@ _STAGE_LABELS = {
 }
 
 
-@router.get("/admin/learning/training")
+@router.get(
+    "/admin/learning/training",
+    dependencies=[
+        permission_route(
+            Permission.LEARNING_TRAINING_MANAGE,
+            denied_detail="Không đủ quyền xem hàng đợi huấn luyện.",
+        )
+    ],
+)
 async def learning_training_admin_page(
     request: Request,
     response: Response,

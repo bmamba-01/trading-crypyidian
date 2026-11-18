@@ -27,4 +27,4 @@ BOT_ROLE_PERMISSIONS = {
 
 def role_allows_bot_permission(roles: frozenset[Role], permission: BotPermission) -> bool:
     """Kiểm tra trần quyền role trước khi xét grant theo từng bot."""
-    return any(permission in BOT_ROLE_PERMISSIONS[role] for role in roles)
+    return any(permission in BOT_ROLE_PERMISSIONS.get(role, frozenset()) for role in roles)

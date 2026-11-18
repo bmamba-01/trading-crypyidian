@@ -104,7 +104,7 @@ class Principal:
 
 def authorize(principal: Principal, permission: Permission, *, raise_error: bool = False) -> bool:
     """Kiểm tra quyền theo role ở backend; giao diện không thay cho bước này."""
-    allowed = any(permission in ROLE_PERMISSIONS[role] for role in principal.roles)
+    allowed = any(permission in ROLE_PERMISSIONS.get(role, frozenset()) for role in principal.roles)
     if not allowed and raise_error:
         raise PermissionError("Không đủ quyền cho thao tác này")
     return allowed

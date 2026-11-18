@@ -18,6 +18,7 @@ from trading_bot.admin.learning_split_schemas import (
 )
 from trading_bot.application.learning_split_admin import PrincipalLearningSplitAdminService
 from trading_bot.auth.policy import Permission, authorize
+from trading_bot.auth.route_policy import CsrfMode, permission_route
 from trading_bot.auth.router import current_identity, require_csrf
 from trading_bot.auth.service import AuthIdentity
 
@@ -57,7 +58,16 @@ def _no_store(error: HTTPException) -> HTTPException:
     )
 
 
-@router.get("/candidates", response_model=LearningSplitCandidateListResponse)
+@router.get(
+    "/candidates",
+    response_model=LearningSplitCandidateListResponse,
+    dependencies=[
+        permission_route(
+            Permission.LEARNING_SPLIT_APPROVE,
+            denied_detail="Không có quyền duyệt split learning.",
+        )
+    ],
+)
 async def list_split_candidates(
     request: Request,
     response: Response,
@@ -79,6 +89,13 @@ async def list_split_candidates(
     "/candidates/{candidate_id}/approve",
     status_code=201,
     response_model=LearningSplitApprovalResponse,
+    dependencies=[
+        permission_route(
+            Permission.LEARNING_SPLIT_APPROVE,
+            csrf=CsrfMode.HEADER,
+            denied_detail="Không có quyền duyệt split learning.",
+        )
+    ],
 )
 async def approve_split_candidate(
     candidate_id: UUID,

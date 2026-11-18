@@ -23,6 +23,7 @@ from trading_bot.admin.web_router import (
 )
 from trading_bot.auth.cookies import read_session_cookie
 from trading_bot.auth.policy import Permission, authorize
+from trading_bot.auth.route_policy import CsrfMode, permission_route
 from trading_bot.auth.router import current_identity
 from trading_bot.auth.service import AuthIdentity
 
@@ -187,7 +188,7 @@ async def _render(
     )
 
 
-@router.get("/risk")
+@router.get("/risk", dependencies=[permission_route(Permission.WORKSPACE_READ)])
 async def risk_appetite_page(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(current_identity)],
@@ -198,7 +199,16 @@ async def risk_appetite_page(
     return await _render(request, identity, symbol=symbol, saved=saved_text)
 
 
-@router.post("/risk")
+@router.post(
+    "/risk",
+    dependencies=[
+        permission_route(
+            Permission.RISK_PROFILE_WRITE,
+            csrf=CsrfMode.FORM,
+            denied_detail="Không đủ quyền thay đổi khẩu vị rủi ro.",
+        )
+    ],
+)
 async def risk_appetite_save(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(current_identity)],

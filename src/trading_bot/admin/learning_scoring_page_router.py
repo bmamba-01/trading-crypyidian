@@ -19,6 +19,7 @@ from trading_bot.adapters.database.repositories.paper_entry_operator_blocks impo
 from trading_bot.admin.web_router import _auth_service, _parse_form, _templates
 from trading_bot.auth.cookies import read_session_cookie
 from trading_bot.auth.policy import MfaMethod, Permission, Principal, authorize
+from trading_bot.auth.route_policy import CsrfMode, permission_route
 from trading_bot.auth.router import current_identity
 from trading_bot.auth.service import (
     RECENT_MFA_LIFETIME,
@@ -63,7 +64,15 @@ _SCORE_EVENT_DECISION_LABELS: dict[ScorerEventDecision, str] = {
 _ACTIVE_REPORT_STATUSES = frozenset({"ACCEPTED_SHADOW_ONLY", "ACCEPTED_PAPER_GATE_ELIGIBLE"})
 
 
-@router.get("/admin/learning/scoring")
+@router.get(
+    "/admin/learning/scoring",
+    dependencies=[
+        permission_route(
+            Permission.LEARNING_MODEL_READ,
+            denied_detail="Không đủ quyền xem trang chấm điểm mô hình.",
+        )
+    ],
+)
 async def learning_scoring_admin_page(
     request: Request,
     response: Response,
@@ -362,7 +371,18 @@ def _percent(value: float | None) -> str | None:
     return None if value is None else f"{value * 100:.1f}%"
 
 
-@router.post("/admin/learning/scoring/decisions/{bot_decision_id}/block-paper-entry")
+@router.post(
+    "/admin/learning/scoring/decisions/{bot_decision_id}/block-paper-entry",
+    dependencies=[
+        permission_route(
+            Permission.WORKSPACE_KILL,
+            Permission.RISK_PROFILE_WRITE,
+            require_all=True,
+            csrf=CsrfMode.FORM,
+            denied_detail="Chỉ owner hoặc risk-admin mới có quyền chặn thêm PAPER entry.",
+        )
+    ],
+)
 async def block_paper_entry_decision(
     bot_decision_id: UUID,
     request: Request,

@@ -31,7 +31,9 @@ from trading_bot.admin.web_router import (
 )
 from trading_bot.application.bot_runtime_control import BotRuntimeControlError
 from trading_bot.application.live_monitor import MAX_LIVE_BOTS, LiveMonitorService
+from trading_bot.auth.bot_policy import BotPermission
 from trading_bot.auth.cookies import read_session_cookie
+from trading_bot.auth.route_policy import bot_scoped_route
 from trading_bot.auth.router import current_identity
 from trading_bot.auth.service import AuthenticationFailure, AuthIdentity
 from trading_bot.domain.monitoring.live_monitor import LiveCursor, dedupe_events
@@ -82,7 +84,10 @@ def _selected(runtime: dict[str, dict[str, Any]], requested: list[UUID]) -> list
 BotQuery = Annotated[list[UUID], Query(alias="bot", max_length=MAX_LIVE_BOTS)]
 
 
-@router.get("/live")
+@router.get(
+    "/live",
+    dependencies=[bot_scoped_route(BotPermission.READ, param_name=None, param_location="service")],
+)
 async def live_page(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(current_identity)],
@@ -106,7 +111,12 @@ async def live_page(
     )
 
 
-@router.get("/api/live/snapshot")
+@router.get(
+    "/api/live/snapshot",
+    dependencies=[
+        bot_scoped_route(BotPermission.REPORT_READ, param_name=None, param_location="service")
+    ],
+)
 async def live_snapshot(
     request: Request,
     response: Response,
@@ -192,7 +202,13 @@ async def _stream_context(
     return _StreamContext(service, token, runtime, _selected(runtime, bot_ids))
 
 
-@router.get("/api/live/stream", response_class=EventSourceResponse)
+@router.get(
+    "/api/live/stream",
+    response_class=EventSourceResponse,
+    dependencies=[
+        bot_scoped_route(BotPermission.REPORT_READ, param_name=None, param_location="service")
+    ],
+)
 async def live_stream(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(current_identity)],

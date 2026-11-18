@@ -23,6 +23,7 @@ from trading_bot.auth.policy import (
     Principal,
     authorize,
 )
+from trading_bot.auth.route_policy import permission_route
 from trading_bot.auth.router import current_identity
 from trading_bot.auth.service import AuthenticationFailure, AuthIdentity
 
@@ -56,7 +57,16 @@ _DATA_STATUS = {
 }
 
 
-@router.get("/admin/learning/observations")
+@router.get(
+    "/admin/learning/observations",
+    dependencies=[
+        permission_route(
+            Permission.LEARNING_MODEL_READ,
+            Permission.LEARNING_INCIDENT_MANAGE,
+            denied_detail="Không đủ quyền xem quan sát hoặc quản lý sự cố học máy.",
+        )
+    ],
+)
 async def learning_observations_admin_page(
     request: Request,
     response: Response,
