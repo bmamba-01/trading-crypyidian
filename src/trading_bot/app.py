@@ -432,10 +432,10 @@ def create_app(
                 if active_session_factory is not None
                 else None
             )
-            scorer_history_sessions = active_scorer_history_sessions or active_session_factory
+            # Fail-closed (CRY-439): không dùng fallback sang active_session_factory của admin_web.
             application.state.learning_scoring_score_event_read_model = (
-                ScorerScoreEventReadModel(scorer_history_sessions)
-                if scorer_history_sessions is not None
+                ScorerScoreEventReadModel(active_scorer_history_sessions)
+                if active_scorer_history_sessions is not None
                 else None
             )
             application.state.learning_observations_admin_service = (

@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
@@ -266,6 +266,29 @@ def test_settings_validate_scorer_history_database_identity() -> None:
             scorer_history_database_user="crypidian_scorer_history",
             scorer_history_database_password_file=Path("/run/secrets/x"),
         )
+
+
+def test_create_app_scorer_history_read_model_is_fail_closed_without_credential() -> None:
+    """Thiếu scorer_history credential/session factory thì read model phải None (fail-closed)."""
+    from trading_bot.app import create_app
+
+    fake_sessions = MagicMock()
+    app_without_scorer = create_app(
+        AppSettings(process_role="admin-web"),
+        session_factory=fake_sessions,
+    )
+    with TestClient(app_without_scorer):
+        assert app_without_scorer.state.learning_scoring_score_event_read_model is None
+        assert app_without_scorer.state.learning_scoring_report_read_model is not None
+
+    fake_scorer_sessions = MagicMock()
+    app_with_scorer = create_app(
+        AppSettings(process_role="admin-web"),
+        session_factory=fake_sessions,
+        scorer_history_session_factory=fake_scorer_sessions,
+    )
+    with TestClient(app_with_scorer):
+        assert app_with_scorer.state.learning_scoring_score_event_read_model is not None
 
 
 def test_block_paper_entry_endpoint_enforces_role_csrf_and_mfa() -> None:
