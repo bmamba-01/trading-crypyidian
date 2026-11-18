@@ -5685,3 +5685,32 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
   - Unit + Playwright E2E tích hợp (`test_expanded_strategy_checklists.py`, `test_expanded_opposing_exit.py`, `test_expanded_cards_sig6_consensus.py`, `test_sig6_card_consensus.py`, `test_expanded_strategies.py`, `test_expanded_strategy_cards_pipeline.py`, `test_admin_strategy_cards_playwright.py`, `test_admin_microscope_playwright.py`, `test_admin_backtest_replays_playwright.py`) → **65 passed in 50.34s**.
   - Walk-Forward & Portfolio Backtest (`test_expanded_walkforward_portfolio.py`) → **39 passed in 415.56s (0:06:55)**.
 - **Readback:** đã đọc lại mục này và đối chiếu với log kiểm thử trước khi commit và push.
+
+
+### 2026-11-18 — Hợp nhất 3 đợt triển khai song song (`CRY-437`, `CRY-420`, `CRY-431`, `CRY-199`, `CRY-206`, `CRY-86`, `CRY-263/266`, `CRY-439/440`, `CRY-438`) & Tối ưu mật độ UI Admin Web
+
+- **Mục tiêu:** Triển khai đồng thời 3 đợt ticket còn tồn đọng trên It's a Plan qua 3 sub-agent trên worktree `share` riêng biệt, tối ưu mật độ form/toggle/chart UI của Admin Web, hợp nhất vào `dev`, nối chuỗi migration và cập nhật stack local `crypidian-review`.
+- **Tối ưu UI Admin Web (`e887c06`):**
+  - `src/trading_bot/static/admin.css`, `src/trading_bot/static/pages/research.css`: thu gọn nền `body` (`0.875rem`), token `--fs-2xs..2xl` (`0.65rem..1.65rem`), padding khung/control, và thu nhỏ công tắc `.ios-switch` từ `51×31px` xuống `34×20px` (vẫn giữ vùng chạm 44px với `margin-block: -0.35rem`).
+  - `src/trading_bot/static/pages/chart.css`: gom nhóm và chuyển 19 lớp hiển thị trên `/admin/chart` thành dạng pill-chip với công tắc mini `26×15px` (visual cao `26px`, hit-area `44px`), thu gọn `.mc-toolbar`, `.mc-live`, `.mc-chart-card`.
+  - Kiểm chứng UI: `test_admin_form_controls.py` + `test_admin_market_chart.py` + `test_admin_templates_csp_compliance.py` **156 passed in 4.36s**; Playwright `test_admin_market_chart_playwright.py` **2 passed in 26.89s**; `test_admin_dashboard_playwright.py` + `test_admin_bot_exit_override_playwright.py` **3 passed in 31.04s**.
+- **Đợt 1 — Runtime & Cleanup (`fix/batch1-cry437-cry420`, `08f6431`):**
+  - **`CRY-437` (`Done`):** Nguyên nhân gốc `BOT_CONFIG_ROOT_MISMATCH` do `1a1e8eb` nâng `PIPELINE_ENGINE_VERSION` (`l0-l6-v2` → `l0-l6-v3`) và sửa `card_strategy.py`, làm `content_hash` của `sc-binance-usdm-vol-breakout-001-v1.0.0` đổi sang `d0586858…` trong khi DB giữ bản `PUBLISHED` hash cũ. Thêm `src/trading_bot/admin/strategy_release_sync.py`, CLI `python -m trading_bot.cli.strategy_releases sync`, cập nhật `scripts/seed_signal_test_bots.py` (supersede bản cũ, publish version mới khớp hash registry). Unit **44 passed in 1.45s**, E2E `test_strategy_release_sync.py` **1 passed in 21.67s**.
+  - **`CRY-420` (`Done`):** Tái kiểm chứng các E2E từng đỏ trên `dev` đã được `CRY-426` (`2e3785d`) sửa: 3 E2E **3 passed in 216.63s** và 6 file kiểm tra rò rỉ event loop **8 passed in 22.51s**.
+  - **`CRY-431` (`Done`):** Đối chiếu 5/5 subtask (`CRY-432..436`) đã `Done` và đóng Epic cha.
+- **Đợt 2 — Dữ liệu, Backtest & Pending-Exit (`fix/batch2-fx4-data1-bt1`, `2a7b571`):**
+  - **`CRY-199` (`Done`):** Thêm `pending_exit_reason` (tương thích ngược checkpoint cũ) vào `PaperPosition`/`paper_state.py`, xử lý `TIME_STOP` và `OPPOSING_SIGNAL` khớp ở `bar.open` nến kế tiếp trong `position_monitor.py`, `paper_lifecycle.py`, `runtime_replay_evaluator.py`.
+  - **`CRY-206` (`Done`):** Mở rộng `DerivativesSnapshot`, `BinanceDerivativesHttpFetcher` thu `basis` (`/futures/data/basis`) và `24h ticker` (`/fapi/v1/ticker/24hr`) kèm bộ đếm sliding window 5 phút (`MAX_FUTURES_DATA_REQUESTS_PER_5M = 1000`); migration `d4f6a8b0c2e1` (parent `c9e1a3b5d7f9`).
+  - **`CRY-86` (`Done`):** Ngưỡng `MIN_TRADES_FOR_CONFIDENCE_INTERVAL = 30`, replay dùng chung hồ sơ chi phí PAPER (`from_paper_profile`, `spread_rate`, `trial_count`), bổ sung `src/trading_bot/application/backtest_walkforward.py` (`run_h0x_walk_forward`, `multiple_testing_haircut`). Unit **125 passed in 7.38s**, E2E **3 passed in 88.24s**.
+- **Đợt 3 — Telemetry/Breaker, Bảo mật WP-06F & Nhãn AI-5 (`fix/batch3-ops07-wp06f-ai5`, `41715de`, nối merge `06c846f`):**
+  - **`CRY-263` & `CRY-266` (`Done (MVP)`):** Nạp `OperationalTelemetry` thật (`operational_telemetry.py`) và nối circuit breaker bền (`circuit_breaker_entities.py`) vào cổng entry runtime PAPER (`paper_runtime_application.py`).
+  - **`CRY-439` & `CRY-440` (`Done (MVP)`):** DB role chỉ đọc riêng `crypidian_scorer_history` + RLS/allowlist cột (`learning_scoring_page_router.py`, `provision_database_roles.py`, `prepare_local_secrets.py`, `compose.yaml`) và ledger chặn entry PAPER bằng MFA (`paper_entry_operator_block.py`, `paper_entry_block_entities.py`).
+  - **`CRY-438` (`Done (MVP)`):** Ghi nguồn nến từng horizon cho `signal_outcome` (`bar_sources`) và dựng dataset học AI-5 riêng (`learning_signal_dataset.py`) chỉ nhận mẫu có mọi nến đạt quyền `training`.
+  - Migration `d8e2f4a6b8c0` nối `down_revision` từ `c9e1a3b5d7f9` → **`d4f6a8b0c2e1`** khi hợp nhất vào `dev` (`06c846f`).
+- **Kiểm chứng tổng hợp trên `dev` sau merge (`06c846f`):**
+  - `uv run alembic heads` → **`d8e2f4a6b8c0 (head)`** (1 head duy nhất).
+  - `uv run ruff check src tests` & `uv run ruff format --check src tests` → **All checks passed** (`1091 files already formatted`).
+  - `uv run mypy src/trading_bot` → **Success: no issues found in 502 source files**.
+  - Unit tests tổng hợp (3 đợt + UI + migration head) → **120 passed in 8.82s**.
+  - Postgres E2E (`test_live_market_backfill_migration.py`, `test_batch3_postgres_e2e.py`) → **2 passed in 44.55s**.
+- **Readback:** đã đọc lại mục này và đối chiếu với diff/test output trước khi commit.
