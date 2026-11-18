@@ -4,7 +4,7 @@ from uuid import uuid4
 
 import pytest
 
-from trading_bot.adapters.database.models import BotGrant, BotInstance, UserMembership
+from trading_bot.adapters.database.models import AuditEvent, BotGrant, BotInstance, UserMembership
 from trading_bot.adapters.database.repositories.bot_grants import BotGrantRepository
 from trading_bot.auth.bot_policy import BotPermission
 from trading_bot.auth.policy import Principal, Role
@@ -69,6 +69,7 @@ async def test_grant_revoke_reissue_keeps_history_and_rejects_non_owner() -> Non
     class GrantSession:
         def __init__(self):
             self.rows = []
+            self.audits = []
 
         async def scalar(self, query):
             entity = query.column_descriptions[0]["entity"]
@@ -80,7 +81,10 @@ async def test_grant_revoke_reissue_keeps_history_and_rejects_non_owner() -> Non
             return next((row for row in self.rows if row.revoked_at is None), None)
 
         def add(self, row):
-            self.rows.append(row)
+            if isinstance(row, AuditEvent):
+                self.audits.append(row)
+            else:
+                self.rows.append(row)
 
         async def flush(self):
             return None
@@ -104,6 +108,11 @@ async def test_grant_revoke_reissue_keeps_history_and_rejects_non_owner() -> Non
     assert first.revoked_at is not None
     assert second.revoked_at is None
     assert len(session.rows) == 2
+    assert [audit.action for audit in session.audits] == [
+        "bot.grant.granted",
+        "bot.grant.revoked",
+        "bot.grant.granted",
+    ]
     with pytest.raises(PermissionError, match="owner"):
         await repository.grant(target, **args)
 
