@@ -5,7 +5,7 @@
    đặt qua biến --tone/--tone-bg (độ trong suốt giữ tương phản trên cả hai nền).
    ============================================================================ */
 
-.sc-page { display: grid; gap: 1rem; min-width: 0; }
+.sc-page { display: grid; gap: 0.75rem; min-width: 0; }
 .sc-page > * { min-width: 0; }
 .sc-page h2 { font-size: var(--fs-lg); margin: 0; }
 .sc-muted { margin: 0 0 0.75rem; font-size: var(--fs-sm); color: var(--text-muted); }

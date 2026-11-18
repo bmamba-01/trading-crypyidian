@@ -23,6 +23,7 @@ import logging
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -47,6 +48,10 @@ from trading_bot.application.telegram_trade_results import (
     format_paper_report_text,
     format_trade_result_text,
     report_window,
+)
+from trading_bot.observability.readiness import (
+    WorkerReadinessReport,
+    evaluate_worker_readiness,
 )
 from trading_bot.ports.telegram import TelegramMessageSender
 
@@ -167,6 +172,18 @@ class TelegramTradeResultWorker:
         self.last_tick_succeeded = False
         self.last_tick_at: datetime | None = None
         self.last_error_code: str | None = None
+
+    def readiness_snapshot(
+        self, *, task: Any = None, missing_secret_reason: str | None = None
+    ) -> WorkerReadinessReport:
+        """Trả báo cáo readiness reason-coded cho telegram trade-result sender."""
+        return evaluate_worker_readiness(
+            component="telegram_trade_result_worker",
+            worker=self,
+            task=task,
+            require_task=task is not None,
+            missing_secret_reason=missing_secret_reason,
+        )
 
     async def run(self, stopping: asyncio.Event) -> None:
         """Chạy tick đến khi lifespan yêu cầu dừng; lỗi tick sẽ thử lại ở chu kỳ sau."""

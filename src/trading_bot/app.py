@@ -142,6 +142,11 @@ from trading_bot.auth.security import LoginRateLimiter, TestModeTotpManager
 from trading_bot.auth.service import AuthService
 from trading_bot.common.http_security import SecurityHeadersMiddleware, security_headers
 from trading_bot.config.settings import AppSettings
+from trading_bot.observability.readiness import (
+    WorkerReadinessReport,
+    WorkerReadinessState,
+    evaluate_worker_readiness,
+)
 from trading_bot.ports.secrets import SecretProvider
 from trading_bot.telegram.bot_commands import BotCommandHandler
 from trading_bot.telegram.webhook import (
@@ -903,6 +908,7 @@ def create_app(
         ingestion_role = app_settings.process_role == "ingestion-worker"
         signal_role = app_settings.process_role == "signal-worker"
         market_signal_role = app_settings.process_role == "market-signal-worker"
+        backtest_role = app_settings.process_role == "backtest-worker"
         trainer_role = app_settings.process_role == "trainer-worker"
         if ingestion_role:
             pending: list[str] = []
@@ -963,52 +969,130 @@ def create_app(
             return {"status": "ready"}
         if signal_role:
             pending = []
+            reasons: dict[str, str] = {}
+            degraded_reasons: dict[str, str] = {}
             probe = getattr(app.state, "database_probe", None)
             if probe is None or not await probe():
                 pending.append("database")
+                reasons["database"] = "DATABASE_UNAVAILABLE"
+            missing_token_reason = (
+                "TELEGRAM_TOKEN_MISSING"
+                if (
+                    app_settings.telegram_bot_token_file is not None
+                    and not app_settings.telegram_bot_token_file.exists()
+                )
+                else None
+            )
             worker = getattr(app.state, "telegram_signal_worker", None)
             worker_task = getattr(app.state, "telegram_signal_worker_task", None)
-            if (
-                worker is None
-                or not getattr(worker, "last_tick_succeeded", False)
-                or worker_task is None
-                or worker_task.done()
-            ):
+            signal_report = _worker_readiness_report(
+                component="telegram_signal_worker",
+                worker=worker,
+                task=worker_task,
+                missing_secret_reason=missing_token_reason,
+            )
+            if signal_report.state is WorkerReadinessState.NOT_READY:
                 pending.append("telegram_signal_worker")
+                reasons["telegram_signal_worker"] = (
+                    signal_report.reason_code or "NO_SUCCESSFUL_TICK"
+                )
+            elif signal_report.state is WorkerReadinessState.DEGRADED and signal_report.reason_code:
+                degraded_reasons["telegram_signal_worker"] = signal_report.reason_code
             trade_worker = getattr(app.state, "telegram_trade_result_worker", None)
             if trade_worker is not None:
                 trade_task = getattr(app.state, "telegram_trade_result_worker_task", None)
-                if (
-                    not getattr(trade_worker, "last_tick_succeeded", False)
-                    or trade_task is None
-                    or trade_task.done()
-                ):
+                trade_report = _worker_readiness_report(
+                    component="telegram_trade_result_worker",
+                    worker=trade_worker,
+                    task=trade_task,
+                    missing_secret_reason=missing_token_reason,
+                )
+                if trade_report.state is WorkerReadinessState.NOT_READY:
                     pending.append("telegram_trade_result_worker")
+                    reasons["telegram_trade_result_worker"] = (
+                        trade_report.reason_code or "NO_SUCCESSFUL_TICK"
+                    )
+                elif (
+                    trade_report.state is WorkerReadinessState.DEGRADED and trade_report.reason_code
+                ):
+                    degraded_reasons["telegram_trade_result_worker"] = trade_report.reason_code
             if pending:
                 return JSONResponse(
                     status_code=503,
-                    content={"status": "not_ready", "pending": sorted(pending)},
+                    content={
+                        "status": "not_ready",
+                        "pending": sorted(pending),
+                        "reasons": reasons,
+                    },
                 )
+            if degraded_reasons:
+                return {"status": "degraded", "reasons": degraded_reasons}
             return {"status": "ready"}
         if market_signal_role:
             market_pending: list[str] = []
+            market_reasons: dict[str, str] = {}
+            market_degraded: dict[str, str] = {}
             probe = getattr(app.state, "database_probe", None)
             if probe is None or not await probe():
                 market_pending.append("database")
+                market_reasons["database"] = "DATABASE_UNAVAILABLE"
             worker = getattr(app.state, "market_signal_worker", None)
             worker_task = getattr(app.state, "market_signal_worker_task", None)
-            if (
-                worker is None
-                or not getattr(worker, "last_tick_succeeded", False)
-                or worker_task is None
-                or worker_task.done()
-            ):
+            market_report = _worker_readiness_report(
+                component="market_signal_worker",
+                worker=worker,
+                task=worker_task,
+            )
+            if market_report.state is WorkerReadinessState.NOT_READY:
                 market_pending.append("market_signal_worker")
+                market_reasons["market_signal_worker"] = (
+                    market_report.reason_code or "NO_SUCCESSFUL_TICK"
+                )
+            elif market_report.state is WorkerReadinessState.DEGRADED and market_report.reason_code:
+                market_degraded["market_signal_worker"] = market_report.reason_code
             if market_pending:
                 return JSONResponse(
                     status_code=503,
-                    content={"status": "not_ready", "pending": sorted(market_pending)},
+                    content={
+                        "status": "not_ready",
+                        "pending": sorted(market_pending),
+                        "reasons": market_reasons,
+                    },
                 )
+            if market_degraded:
+                return {"status": "degraded", "reasons": market_degraded}
+            return {"status": "ready"}
+        if backtest_role:
+            backtest_pending: list[str] = []
+            backtest_reasons: dict[str, str] = {}
+            backtest_degraded: dict[str, str] = {}
+            probe = getattr(app.state, "database_probe", None)
+            if probe is None or not await probe():
+                backtest_pending.append("database")
+                backtest_reasons["database"] = "DATABASE_UNAVAILABLE"
+            bt_worker = getattr(app.state, "backtest_worker", None)
+            bt_task = getattr(app.state, "backtest_worker_task", None)
+            bt_report = _worker_readiness_report(
+                component="backtest_worker",
+                worker=bt_worker,
+                task=bt_task,
+            )
+            if bt_report.state is WorkerReadinessState.NOT_READY:
+                backtest_pending.append("backtest_worker")
+                backtest_reasons["backtest_worker"] = bt_report.reason_code or "NO_SUCCESSFUL_TICK"
+            elif bt_report.state is WorkerReadinessState.DEGRADED and bt_report.reason_code:
+                backtest_degraded["backtest_worker"] = bt_report.reason_code
+            if backtest_pending:
+                return JSONResponse(
+                    status_code=503,
+                    content={
+                        "status": "not_ready",
+                        "pending": sorted(backtest_pending),
+                        "reasons": backtest_reasons,
+                    },
+                )
+            if backtest_degraded:
+                return {"status": "degraded", "reasons": backtest_degraded}
             return {"status": "ready"}
         if trainer_role:
             pending = []
@@ -1786,3 +1870,25 @@ def _market_collector_status(app: FastAPI) -> dict[str, Any] | None:
         "rights_denied": statuses.count("rights_denied"),
         "errors": statuses.count("error"),
     }
+
+
+def _worker_readiness_report(
+    *,
+    component: str,
+    worker: Any,
+    task: Any,
+    missing_secret_reason: str | None = None,
+) -> WorkerReadinessReport:
+    """Ưu tiên snapshot riêng của worker nếu có; ngược lại đánh giá chuẩn hóa chung."""
+    snapshot_fn = getattr(worker, "readiness_snapshot", None)
+    if callable(snapshot_fn) and missing_secret_reason is None:
+        report = snapshot_fn(task=task)
+        if isinstance(report, WorkerReadinessReport):
+            return report
+    return evaluate_worker_readiness(
+        component=component,
+        worker=worker,
+        task=task,
+        require_task=True,
+        missing_secret_reason=missing_secret_reason,
+    )

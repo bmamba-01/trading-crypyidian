@@ -25,6 +25,7 @@ from trading_bot.application.bot_dispatcher import BotDecision
 from trading_bot.application.telegram_signals import (
     RecentSignalDelivery,
     SignalThrottlePolicy,
+    TelegramDeliveryPolicy,
     TelegramSignalCandidate,
     TelegramSignalFilters,
     signal_dedup_key,
@@ -40,6 +41,7 @@ class SignalSubscriptionTarget:
     filters: TelegramSignalFilters = field(default_factory=TelegramSignalFilters)
     # TG-4: topic PAPER report của binding (kết quả trade + tổng hợp); None = chat chính.
     report_thread_id: int | None = None
+    delivery_policy: TelegramDeliveryPolicy = field(default_factory=TelegramDeliveryPolicy)
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,6 +100,7 @@ class TelegramSignalRepository:
         binding: TelegramBinding,
         enabled: bool,
         filters: TelegramSignalFilters | None = None,
+        delivery_policy: TelegramDeliveryPolicy | None = None,
     ) -> TelegramSignalSubscription:
         try:
             chat_id = int(binding.telegram_user_id)
@@ -118,6 +121,11 @@ class TelegramSignalRepository:
                 telegram_chat_id=chat_id,
                 enabled=enabled,
                 **(filters.as_dict() if filters is not None else TelegramSignalFilters().as_dict()),
+                delivery_policy=(
+                    delivery_policy.as_dict()
+                    if delivery_policy is not None
+                    else TelegramDeliveryPolicy().as_dict()
+                ),
             )
             self._session.add(row)
         else:
@@ -127,6 +135,8 @@ class TelegramSignalRepository:
             if filters is not None:
                 for name, values in filters.as_dict().items():
                     setattr(row, name, values)
+            if delivery_policy is not None:
+                row.delivery_policy = delivery_policy.as_dict()
         await self._session.flush()
         return row
 
@@ -181,6 +191,7 @@ class TelegramSignalRepository:
                 TelegramSignalSubscription.strategy_ids,
                 TelegramSignalSubscription.setup_codes,
                 TelegramBinding.report_thread_id,
+                TelegramSignalSubscription.delivery_policy,
             )
             .join(
                 TelegramBinding,
@@ -207,29 +218,20 @@ class TelegramSignalRepository:
         )
         return tuple(
             SignalSubscriptionTarget(
-                subscription_id,
-                bot_id,
-                int(chat_id),
+                row.id,
+                row.bot_id,
+                int(row.telegram_chat_id),
                 TelegramSignalFilters(
-                    symbols=tuple(symbols),
-                    timeframes=tuple(timeframes),
-                    directions=tuple(directions),
-                    strategy_ids=tuple(strategy_ids),
-                    setup_codes=tuple(setup_codes),
+                    symbols=tuple(row.symbols),
+                    timeframes=tuple(row.timeframes),
+                    directions=tuple(row.directions),
+                    strategy_ids=tuple(row.strategy_ids),
+                    setup_codes=tuple(row.setup_codes),
                 ),
-                int(report_thread_id) if report_thread_id is not None else None,
+                int(row.report_thread_id) if row.report_thread_id is not None else None,
+                TelegramDeliveryPolicy.from_dict(row.delivery_policy),
             )
-            for (
-                subscription_id,
-                bot_id,
-                chat_id,
-                symbols,
-                timeframes,
-                directions,
-                strategy_ids,
-                setup_codes,
-                report_thread_id,
-            ) in rows
+            for row in rows
         )
 
     async def recent_candidates(
@@ -324,6 +326,7 @@ class TelegramSignalRepository:
                 TelegramSignalSubscription.directions.label("filter_directions"),
                 TelegramSignalSubscription.strategy_ids.label("filter_strategy_ids"),
                 TelegramSignalSubscription.setup_codes.label("filter_setup_codes"),
+                TelegramSignalSubscription.delivery_policy.label("delivery_policy"),
                 TelegramBinding.signal_thread_id.label("signal_thread_id"),
                 BotDecisionRecord.id.label("decision_record_id"),
                 BotDecisionRecord.workspace_id.label("decision_workspace_id"),
@@ -431,14 +434,18 @@ class TelegramSignalRepository:
                 candidate=candidate,
                 filtered=True,
             )
-        if throttle is not None:
+        raw_delivery_policy = getattr(result, "delivery_policy", None)
+        if throttle is not None or raw_delivery_policy:
+            effective_policy: SignalThrottlePolicy | TelegramDeliveryPolicy = (
+                TelegramDeliveryPolicy.from_dict(raw_delivery_policy, fallback=throttle)
+            )
             reason = await self._throttle_reason(
                 workspace_id=workspace_id,
                 bot_id=bot_id,
                 delivery=delivery,
                 candidate=candidate,
                 now=now,
-                policy=throttle,
+                policy=effective_policy,
             )
             if reason is not None:
                 delivery.status = "SUPPRESSED"
@@ -479,7 +486,7 @@ class TelegramSignalRepository:
         delivery: TelegramSignalDelivery,
         candidate: TelegramSignalCandidate,
         now: datetime,
-        policy: SignalThrottlePolicy,
+        policy: SignalThrottlePolicy | TelegramDeliveryPolicy,
     ) -> str | None:
         """TG-2: chặn tin trùng/quá giới hạn của cùng subscription.
 

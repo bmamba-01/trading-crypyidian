@@ -6,11 +6,15 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
-from typing import Protocol
+from typing import Any, Protocol
 from uuid import UUID
 
 from trading_bot.application.market_signal_scanner import (
     MarketSignalScanResult,
+)
+from trading_bot.observability.readiness import (
+    WorkerReadinessReport,
+    evaluate_worker_readiness,
 )
 
 logger = logging.getLogger(__name__)
@@ -59,6 +63,15 @@ class MarketSignalProducerWorker:
         )
         self.last_scan_result = result
         return result
+
+    def readiness_snapshot(self, *, task: Any = None) -> WorkerReadinessReport:
+        """Trả báo cáo readiness reason-coded cho market-signal-worker."""
+        return evaluate_worker_readiness(
+            component="market_signal_worker",
+            worker=self,
+            task=task,
+            require_task=task is not None,
+        )
 
     async def run(self, stopping: asyncio.Event) -> None:
         """Poll đến khi lifespan dừng; lỗi được ghi dạng mã an toàn rồi thử lại."""

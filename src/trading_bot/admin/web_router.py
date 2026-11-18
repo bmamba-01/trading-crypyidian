@@ -667,7 +667,7 @@ async def _build_operations_health_data(
         if session_factory is not None:
             health_service = OperationalHealthService(session_factory)
     if health_service is not None:
-        return cast(
+        result = cast(
             "dict[str, Any]",
             await health_service.load_health_snapshot(
                 workspace_id=UUID(workspace_id),
@@ -678,6 +678,8 @@ async def _build_operations_health_data(
                 now_utc=now_utc,
             ),
         )
+        result["workers"] = await _collect_worker_readiness(request)
+        return result
 
     total_api_errors = sum(int(item.get("error_count", 0) or 0) for item in runtime)
     loss_snapshot = calculate_loss_windows(
@@ -712,7 +714,54 @@ async def _build_operations_health_data(
         },
         evaluated_at=now_utc,
     )
-    return health_snapshot.to_dict()
+    payload = health_snapshot.to_dict()
+    payload["workers"] = await _collect_worker_readiness(request)
+    return payload
+
+
+async def _collect_worker_readiness(request: Request | None) -> list[dict[str, Any]]:
+    """Thu thập readiness reason-coded của các worker cho admin-web (CRY-375)."""
+    from trading_bot.observability.readiness import WorkerReadinessReport, WorkerReadinessState
+
+    if request is None:
+        return []
+    provider = getattr(request.app.state, "worker_readiness_provider", None)
+    if callable(provider):
+        provided = provider()
+        if hasattr(provided, "__await__"):
+            provided = await provided
+        return [
+            item.to_dict() if isinstance(item, WorkerReadinessReport) else dict(item)
+            for item in provided
+        ]
+
+    reports: list[dict[str, Any]] = []
+    for attr in (
+        "market_signal_worker",
+        "telegram_signal_worker",
+        "telegram_trade_result_worker",
+        "backtest_worker",
+    ):
+        worker = getattr(request.app.state, attr, None)
+        if worker is not None and callable(getattr(worker, "readiness_snapshot", None)):
+            snap = worker.readiness_snapshot()
+            reports.append(
+                snap.to_dict() if isinstance(snap, WorkerReadinessReport) else dict(snap)
+            )
+    if not reports:
+        # Khi admin-web chạy tách container, kiểm tra DB probe để báo rõ trạng thái kết nối.
+        probe = getattr(request.app.state, "database_probe", None)
+        db_ok = bool(await probe()) if callable(probe) else True
+        if not db_ok:
+            reports.append(
+                WorkerReadinessReport(
+                    component="worker_telemetry_store",
+                    state=WorkerReadinessState.NOT_READY,
+                    reason_code="DATABASE_UNAVAILABLE",
+                    detail_vi="Admin-web không truy cập được cơ sở dữ liệu trạng thái worker.",
+                ).to_dict()
+            )
+    return reports
 
 
 @router.get("")
@@ -1916,12 +1965,20 @@ async def bot_detail(
             )
         except SQLAlchemyError, StrategyReleaseAdminError:
             published_release_ids = None
+    bot_strategy_id = str(current_overlay.get("strategy_id") or "").strip()
+    bot_strategy_card_id: str | None = None
+    if bot_strategy_id:
+        from trading_bot.application.strategy_catalog import PRODUCT_CARD_IDS
+
+        if bot_strategy_id in PRODUCT_CARD_IDS:
+            bot_strategy_card_id = bot_strategy_id
     return templates.TemplateResponse(
         request=request,
         name="admin/bot_detail.html",
         context={
             "identity": identity,
             "bot": bot_view,
+            "bot_strategy_card_id": bot_strategy_card_id,
             "csrf_token": csrf_token,
             "config_parent_version_id": published.get("id", "") if published else "",
             "config_draft": draft,
@@ -4013,6 +4070,19 @@ def _sanitize_csv_cell(value: Any) -> str:
         except InvalidOperation:
             return f"'{text}"
     return text
+
+
+@router.get("/api/workers/readiness")
+async def workers_readiness(
+    request: Request,
+    response: Response,
+    identity: Annotated[AuthIdentity, Depends(current_identity)],
+) -> dict[str, Any]:
+    """Trả readiness reason-coded của các worker cho admin-web (CRY-375)."""
+    del identity
+    response.headers["Cache-Control"] = "no-store"
+    workers = await _collect_worker_readiness(request)
+    return {"workers": workers}
 
 
 @router.get("/api/operations/health")

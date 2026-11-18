@@ -256,6 +256,8 @@
           </select>
           <button type="submit" class="btn btn-secondary">Đổi khung</button>
         </form>
+        <a class="btn btn-secondary btn-sm" href="/admin/chart?bot_id={{ selected_trade.bot_id }}&symbol={{ selected_trade.symbol | urlencode }}&timeframe={{ chart_data.timeframe | urlencode }}">{{ ico("chart") }}Chart Cockpit</a>
+        <a class="btn btn-secondary btn-sm" href="{% if ea.strategy_id %}/admin/strategy-cards/{{ ea.strategy_id | urlencode }}/microscope?bot_id={{ selected_trade.bot_id }}{% else %}/admin/strategy-cards{% endif %}">{{ ico("strategy") }}Microscope</a>
         <a class="icon-link" href="/admin/reports?scope={{ scope | urlencode }}&bot_id={{ bot_id | urlencode }}&start={{ start | urlencode }}&end={{ end | urlencode }}">{{ ico("close") }}<span>Đóng biểu đồ</span></a>
       </div>
     </header>

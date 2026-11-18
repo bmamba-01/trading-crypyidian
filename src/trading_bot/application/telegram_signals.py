@@ -5,9 +5,11 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 from decimal import Decimal
+from typing import Any
 from uuid import UUID
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 _SYMBOL = re.compile(r"^[A-Z0-9_]{2,40}$")
 _DIRECTIONS = frozenset({"LONG", "SHORT"})
@@ -276,13 +278,32 @@ def build_signal_message(candidate: TelegramSignalCandidate) -> str:
     return message
 
 
-# --- TG-2: chống spam -----------------------------------------------------------------------
+# --- TG-2 & WP-07B/delivery-policy: chống spam, quiet hours, trần ngày và loại tin ------------
 
 SUPPRESSED_COOLDOWN = "SIGNAL_COOLDOWN_DUPLICATE"
 SUPPRESSED_HOURLY_CAP = "SIGNAL_HOURLY_CAP"
+SUPPRESSED_DAILY_CAP = "SIGNAL_DAILY_CAP"
+SUPPRESSED_QUIET_HOURS = "SIGNAL_QUIET_HOURS"
+SUPPRESSED_NOTIFICATION_TYPE = "SIGNAL_NOTIFICATION_TYPE_DISABLED"
 _HOUR = timedelta(hours=1)
 SCALPING_STRATEGY_IDS = frozenset({"H18", "H19", "H20"})
 SCALPING_TIMEFRAMES = frozenset({"1m", "3m", "5m"})
+_DAY = timedelta(hours=24)
+_HHMM = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
+ALL_NOTIFICATION_TYPES: tuple[str, ...] = (
+    "CANDIDATE",
+    "INVALIDATION",
+    "EXPIRY",
+    "PAPER_TRADE_OPENED",
+    "PAPER_TRADE_CLOSED",
+)
+
+
+def _parse_hhmm(value: str, field_name: str) -> time:
+    match = _HHMM.fullmatch(value.strip())
+    if match is None:
+        raise ValueError(f"{field_name} phải có định dạng HH:MM (00:00–23:59).")
+    return time(int(match.group(1)), int(match.group(2)))
 
 
 @dataclass(frozen=True, slots=True)
@@ -326,6 +347,119 @@ def is_scalping_candidate(candidate: TelegramSignalCandidate) -> bool:
 
 
 @dataclass(frozen=True, slots=True)
+class TelegramDeliveryPolicy:
+    """Chính sách giao nhận đầy đủ theo từng subscription (WP-07B / CRY-346)."""
+
+    cooldown: timedelta = timedelta(minutes=90)
+    max_per_hour: int = 6
+    max_per_day: int = 24
+    quiet_hours_start: str | None = None
+    quiet_hours_end: str | None = None
+    timezone_name: str = "Asia/Ho_Chi_Minh"
+    notification_types: tuple[str, ...] = ALL_NOTIFICATION_TYPES
+
+    def __post_init__(self) -> None:
+        if not timedelta(0) <= self.cooldown <= timedelta(hours=24):
+            raise ValueError("Cooldown tín hiệu phải trong 0–24 giờ.")
+        if not 1 <= self.max_per_hour <= 60:
+            raise ValueError("Giới hạn tin/giờ phải trong 1–60.")
+        if not 1 <= self.max_per_day <= 200:
+            raise ValueError("Giới hạn tin/ngày phải trong 1–200.")
+        if self.max_per_day < self.max_per_hour:
+            raise ValueError("Giới hạn tin/ngày không được nhỏ hơn giới hạn tin/giờ.")
+        try:
+            ZoneInfo(self.timezone_name)
+        except (ZoneInfoNotFoundError, ValueError) as error:
+            raise ValueError(f"Múi giờ không hợp lệ: {self.timezone_name}") from error
+        if (self.quiet_hours_start is None) != (self.quiet_hours_end is None):
+            raise ValueError("Phải cấu hình cả giờ bắt đầu và kết thúc quiet hours.")
+        if self.quiet_hours_start is not None and self.quiet_hours_end is not None:
+            start = _parse_hhmm(self.quiet_hours_start, "quiet_hours_start")
+            end = _parse_hhmm(self.quiet_hours_end, "quiet_hours_end")
+            if start == end:
+                raise ValueError("quiet_hours_start và quiet_hours_end không được trùng nhau.")
+            object.__setattr__(self, "quiet_hours_start", f"{start.hour:02d}:{start.minute:02d}")
+            object.__setattr__(self, "quiet_hours_end", f"{end.hour:02d}:{end.minute:02d}")
+        normalized_types = tuple(
+            dict.fromkeys(str(item).strip().upper() for item in self.notification_types if item)
+        )
+        invalid = [item for item in normalized_types if item not in ALL_NOTIFICATION_TYPES]
+        if invalid:
+            raise ValueError(f"Loại thông báo không hợp lệ: {', '.join(invalid)}")
+        object.__setattr__(self, "notification_types", normalized_types)
+
+    @property
+    def lookback(self) -> timedelta:
+        """Khoảng lịch sử cần đọc để kiểm tra cooldown, giờ và ngày."""
+        return max(self.cooldown, _DAY)
+
+    def is_quiet_at(self, now: datetime) -> bool:
+        """Kiểm tra `now` có nằm trong quiet hours theo timezone của subscription không."""
+        if self.quiet_hours_start is None or self.quiet_hours_end is None:
+            return False
+        if now.tzinfo is None or now.utcoffset() is None:
+            raise ValueError("now phải có múi giờ.")
+        local_time = now.astimezone(ZoneInfo(self.timezone_name)).time()
+        start = _parse_hhmm(self.quiet_hours_start, "quiet_hours_start")
+        end = _parse_hhmm(self.quiet_hours_end, "quiet_hours_end")
+        if start < end:
+            return start <= local_time < end
+        # Khoảng qua đêm (vd 23:00 → 07:00)
+        return local_time >= start or local_time < end
+
+    def allows_notification_type(self, notification_type: str) -> bool:
+        """Kiểm tra loại thông báo có được phép gửi cho subscription này không."""
+        return notification_type.strip().upper() in self.notification_types
+
+    def as_dict(self) -> dict[str, Any]:
+        """Serialize JSON ổn định cho DB và API."""
+        return {
+            "cooldown_minutes": int(self.cooldown.total_seconds() // 60),
+            "max_per_hour": self.max_per_hour,
+            "max_per_day": self.max_per_day,
+            "quiet_hours_start": self.quiet_hours_start,
+            "quiet_hours_end": self.quiet_hours_end,
+            "timezone_name": self.timezone_name,
+            "notification_types": list(self.notification_types),
+        }
+
+    @classmethod
+    def from_dict(
+        cls,
+        raw: Mapping[str, Any] | None,
+        *,
+        fallback: SignalThrottlePolicy | None = None,
+    ) -> TelegramDeliveryPolicy:
+        """Khôi phục policy từ JSONB; fallback về mặc định của worker khi thiếu trường."""
+        data = dict(raw or {})
+        base_cooldown = fallback.cooldown if fallback is not None else timedelta(minutes=90)
+        base_hourly = fallback.max_per_hour if fallback is not None else 6
+        cooldown_minutes = data.get("cooldown_minutes")
+        cooldown = (
+            timedelta(minutes=int(cooldown_minutes))
+            if cooldown_minutes is not None
+            else base_cooldown
+        )
+        max_per_hour = int(data.get("max_per_hour", base_hourly))
+        max_per_day = int(data.get("max_per_day", max(24, max_per_hour)))
+        raw_types = data.get("notification_types")
+        notification_types = (
+            tuple(str(item) for item in raw_types)
+            if isinstance(raw_types, list | tuple)
+            else ALL_NOTIFICATION_TYPES
+        )
+        return cls(
+            cooldown=cooldown,
+            max_per_hour=max_per_hour,
+            max_per_day=max_per_day,
+            quiet_hours_start=data.get("quiet_hours_start"),
+            quiet_hours_end=data.get("quiet_hours_end"),
+            timezone_name=str(data.get("timezone_name") or "Asia/Ho_Chi_Minh"),
+            notification_types=notification_types,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class RecentSignalDelivery:
     """Một tin đã gửi hoặc đang gửi của cùng subscription: khóa gộp và thời điểm."""
 
@@ -363,9 +497,16 @@ def throttle_reason(
     recent: Iterable[RecentSignalDelivery],
     *,
     now: datetime,
-    policy: SignalThrottlePolicy,
+    policy: SignalThrottlePolicy | TelegramDeliveryPolicy,
+    notification_type: str = "CANDIDATE",
 ) -> str | None:
-    """Mã lý do chặn tin (None = được gửi). Trùng được kiểm trước giới hạn giờ."""
+    """Mã lý do chặn tin (None = được gửi)."""
+    if isinstance(policy, TelegramDeliveryPolicy):
+        if not policy.allows_notification_type(notification_type):
+            return SUPPRESSED_NOTIFICATION_TYPE
+        if policy.is_quiet_at(now):
+            return SUPPRESSED_QUIET_HOURS
+
     key = candidate_dedup_key(candidate)
     cooldown = policy.cooldown_for(candidate)
     history = list(recent)
@@ -373,4 +514,10 @@ def throttle_reason(
         return SUPPRESSED_COOLDOWN
     if sum(1 for item in history if now - item.at < _HOUR) >= policy.max_per_hour:
         return SUPPRESSED_HOURLY_CAP
+    if isinstance(policy, TelegramDeliveryPolicy):
+        tz = ZoneInfo(policy.timezone_name)
+        local_date = now.astimezone(tz).date()
+        sent_today = sum(1 for item in history if item.at.astimezone(tz).date() == local_date)
+        if sent_today >= policy.max_per_day:
+            return SUPPRESSED_DAILY_CAP
     return None

@@ -14,7 +14,7 @@ from trading_bot.adapters.database.models import BotInstance
 from trading_bot.adapters.database.repositories.bot_grants import BotGrantRepository
 from trading_bot.adapters.database.repositories.telegram_signals import TelegramSignalRepository
 from trading_bot.application.outbox import UnitOfWork
-from trading_bot.application.telegram_signals import TelegramSignalFilters
+from trading_bot.application.telegram_signals import TelegramDeliveryPolicy, TelegramSignalFilters
 from trading_bot.auth.bot_policy import BotPermission
 from trading_bot.auth.policy import Principal
 
@@ -25,6 +25,7 @@ class TelegramSignalSubscriptionState:
     enabled: bool
     binding_linked: bool = False
     filters: TelegramSignalFilters = field(default_factory=TelegramSignalFilters)
+    delivery_policy: TelegramDeliveryPolicy = field(default_factory=TelegramDeliveryPolicy)
 
 
 class TelegramSignalSubscriptionError(ValueError):
@@ -80,6 +81,7 @@ class TelegramSignalSubscriptionService:
                 enabled=enabled,
                 binding_linked=linked,
                 filters=_filters_from_row(subscription),
+                delivery_policy=_delivery_policy_from_row(subscription),
             )
 
     async def set_enabled(
@@ -115,15 +117,18 @@ class TelegramSignalSubscriptionService:
         bot_id: UUID,
         enabled: bool | None,
         filters: TelegramSignalFilters | None,
+        delivery_policy: TelegramDeliveryPolicy | None = None,
     ) -> TelegramSignalSubscriptionState:
         if enabled is not None and not isinstance(enabled, bool):
             raise TelegramSignalSubscriptionError("enabled chỉ nhận true hoặc false.")
-        if enabled is None and filters is None:
+        if enabled is None and filters is None and delivery_policy is None:
             raise TelegramSignalSubscriptionError(
-                "Cần cập nhật trạng thái hoặc ít nhất một bộ lọc."
+                "Cần cập nhật trạng thái, bộ lọc hoặc chính sách giao nhận."
             )
         if filters is not None and not isinstance(filters, TelegramSignalFilters):
             raise TelegramSignalSubscriptionError("Bộ lọc tín hiệu không hợp lệ.")
+        if delivery_policy is not None and not isinstance(delivery_policy, TelegramDeliveryPolicy):
+            raise TelegramSignalSubscriptionError("Chính sách giao nhận không hợp lệ.")
         async with self._unit_of_work(
             self._sessions,
             workspace_id=principal.workspace_id,
@@ -137,7 +142,12 @@ class TelegramSignalSubscriptionService:
                 membership_id=principal.membership_id,
                 bot_id=bot_id,
             )
-            must_have_binding = enabled is True or filters is not None or current is None
+            must_have_binding = (
+                enabled is True
+                or filters is not None
+                or delivery_policy is not None
+                or current is None
+            )
             binding = (
                 await repository.active_binding(
                     workspace_id=principal.workspace_id,
@@ -159,6 +169,7 @@ class TelegramSignalSubscriptionService:
                     binding=binding,
                     enabled=enabled if enabled is not None else bool(current and current.enabled),
                     filters=filters,
+                    delivery_policy=delivery_policy,
                 )
                 target_id = row.id
                 result = row.enabled
@@ -182,6 +193,7 @@ class TelegramSignalSubscriptionService:
                     "bot_id": str(bot_id),
                     "enabled": result,
                     "filters": _filters_from_row(row).as_dict(),
+                    "delivery_policy": _delivery_policy_from_row(row).as_dict(),
                 },
             )
             return TelegramSignalSubscriptionState(
@@ -197,6 +209,7 @@ class TelegramSignalSubscriptionService:
                     is not None
                 ),
                 filters=_filters_from_row(row),
+                delivery_policy=_delivery_policy_from_row(row),
             )
 
     async def _require_bot(self, session: AsyncSession, principal: Principal, bot_id: UUID) -> None:
@@ -230,3 +243,9 @@ def _filters_from_row(row: Any) -> TelegramSignalFilters:
         strategy_ids=tuple(row.strategy_ids or ()),
         setup_codes=tuple(row.setup_codes or ()),
     )
+
+
+def _delivery_policy_from_row(row: Any) -> TelegramDeliveryPolicy:
+    if row is None:
+        return TelegramDeliveryPolicy()
+    return TelegramDeliveryPolicy.from_dict(getattr(row, "delivery_policy", None))
