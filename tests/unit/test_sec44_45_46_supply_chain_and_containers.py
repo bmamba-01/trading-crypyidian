@@ -390,6 +390,7 @@ def test_compose_container_hardening_and_egress_isolation_pass_on_repo() -> None
         "backtest-worker",
         "telegram-signal-worker",
         "market-signal-worker",
+        "report-reader",
     )
     report = verify_compose_container_hardening(
         compose_path,

@@ -158,7 +158,7 @@ def test_sec33_migration_chains_from_c8d28da699c6_and_contains_hash_chain_ddl() 
         "GENESIS",
         "pg_catalog.sha256",
         "pg_advisory_xact_lock",
-        "pg_catalog.current_user",
+        "CURRENT_USER",
         "pg_catalog.clock_timestamp()",
     ):
         assert token in source, f"Thiếu DDL bắt buộc trong migration: {token}"
