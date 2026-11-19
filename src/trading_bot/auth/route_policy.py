@@ -57,6 +57,8 @@ ALLOWED_AUTHENTICATED_SESSION_PATHS: frozenset[str] = frozenset(
         "/api/v1/auth/csrf",
         "/api/v1/auth/reauthenticate",
         "/api/v1/auth/logout",
+        "/api/v1/auth/sessions",
+        "/api/v1/auth/sessions/{session_id}/revoke",
     }
 )
 

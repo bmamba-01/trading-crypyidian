@@ -82,7 +82,7 @@ COLUMN_UPDATE = {
     ADMIN: {
         # Cột lock-only (như R4): chỉ để SELECT ... FOR UPDATE, không phải dữ liệu nghiệp vụ.
         "user_membership": {"created_at"},
-        "session": {"revoked_at", "csrf_token_hash", "mfa_verified_at"},
+        "session": {"revoked_at", "csrf_token_hash", "mfa_verified_at", "last_seen_at"},
         "mfa_factor": {"verified_at", "last_used_counter"},
         # TG-4: topic tín hiệu / PAPER report do Admin tạo.
         "telegram_binding": {"revoked_at", "signal_thread_id", "report_thread_id"},
@@ -1037,7 +1037,7 @@ def admin(connection):
         assert (
             connection.execute(
                 "UPDATE session SET revoked_at = now(), csrf_token_hash = 'x', "
-                "mfa_verified_at = now()"
+                "mfa_verified_at = now(), last_seen_at = now()"
             ).rowcount
             == 1
         )

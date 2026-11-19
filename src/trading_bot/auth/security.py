@@ -9,6 +9,14 @@ import pyotp
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError
 
+# SEC-12: hash Argon2id hợp lệ dùng để chống timing enumeration khi user/workspace không tồn tại.
+# Sinh một lần từ chuỗi ngẫu nhiên 256 bit đã hủy bỏ; thông số khớp mặc định argon2-cffi
+# (t=3, m=64 MiB, p=4).
+DUMMY_PASSWORD_HASH = (
+    "$argon2id$v=19$m=65536,t=3,p=4$jIWONG7nXQP18JBPOWbHNw$"
+    "Al+z41HXIY5SrAX8qbrktJoAtQLr5/t0xgAojoFAUFA"
+)
+
 
 class PasswordManager:
     """Băm mật khẩu bằng Argon2id với tham số mặc định của thư viện."""

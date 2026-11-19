@@ -45,6 +45,7 @@ from trading_bot.auth.schemas import (
     LoginRequest,
     ReauthenticationRequest,
     RiskProfileRequest,
+    SessionRevokeRequest,
 )
 from trading_bot.auth.security import LoginRateLimiter, verify_bootstrap_token
 from trading_bot.auth.service import (
@@ -349,6 +350,7 @@ async def get_csrf_token(
 async def reauthenticate(
     body: ReauthenticationRequest,
     request: Request,
+    response: Response,
     identity: Annotated[AuthIdentity, Depends(require_csrf)],
     service: Annotated[AuthService, Depends(get_auth_service)],
     limiter: Annotated[LoginRateLimiter, Depends(get_rate_limiter)],
@@ -361,7 +363,7 @@ async def reauthenticate(
     if not limiter.allow(address, identity.email, account_scope=scope):
         raise HTTPException(status_code=429, detail=THROTTLED_DETAIL)
     try:
-        await service.reauthenticate(
+        rotated = await service.reauthenticate(
             read_session_cookie(request),
             password=body.password,
             code=body.code,
@@ -370,6 +372,94 @@ async def reauthenticate(
         limiter.record_failure(address, identity.email, account_scope=scope)
         raise_auth_failure(error)
     limiter.record_success(address, identity.email, account_scope=scope)
+    response.headers["Cache-Control"] = "no-store"
+    # SEC-10: đặt cookie phiên mới nếu service trả kết quả xoay phiên (giữ tương thích stub test).
+    cookie_value = getattr(rotated, "cookie_value", None)
+    if isinstance(cookie_value, str) and cookie_value:
+        settings: AppSettings = request.app.state.settings
+        expires_at = getattr(rotated, "expires_at", None)
+        if isinstance(expires_at, datetime):
+            now_fn = getattr(service, "now", None)
+            current_time = now_fn() if callable(now_fn) else datetime.now(UTC)
+            max_age = max(1, int((expires_at - current_time).total_seconds()))
+        else:
+            max_age = int(SESSION_LIFETIME.total_seconds())
+        set_session_cookie(response, settings, cookie_value, max_age=max_age)
+
+
+@router.get("/auth/sessions", dependencies=[authenticated_route()])
+async def list_my_sessions(
+    response: Response,
+    identity: Annotated[AuthIdentity, Depends(current_identity)],
+    service: Annotated[AuthService, Depends(get_auth_service)],
+) -> dict[str, object]:
+    """Liệt kê toàn bộ phiên đang hoạt động của thành viên hiện tại (SEC-11)."""
+    try:
+        summaries = await service.list_active_sessions(identity.principal)
+    except AuthenticationFailure as error:
+        raise_auth_failure(error)
+    response.headers["Cache-Control"] = "no-store"
+    return {
+        "sessions": [
+            {
+                "id": str(item.id),
+                "created_at": item.created_at.isoformat(),
+                "last_seen_at": item.last_seen_at.isoformat(),
+                "expires_at": item.expires_at.isoformat(),
+                "idle_expires_at": item.idle_expires_at.isoformat(),
+                "mfa_verified_at": (
+                    item.mfa_verified_at.isoformat() if item.mfa_verified_at is not None else None
+                ),
+                "mfa_method": item.mfa_method,
+                "is_current": item.is_current,
+            }
+            for item in summaries
+        ]
+    }
+
+
+@router.post(
+    "/auth/sessions/{session_id}/revoke",
+    dependencies=[authenticated_route(csrf=CsrfMode.HEADER)],
+)
+async def revoke_session(
+    session_id: UUID,
+    request: Request,
+    response: Response,
+    identity: Annotated[AuthIdentity, Depends(require_csrf)],
+    service: Annotated[AuthService, Depends(get_auth_service)],
+    body: SessionRevokeRequest | None = None,
+) -> dict[str, object]:
+    """Thu hồi phiên của mình hoặc phiên member cùng workspace nếu là Owner (SEC-11)."""
+    req_id = _optional_request_id(request)
+    try:
+        revoked = await service.revoke_session(
+            identity.principal,
+            session_id=session_id,
+            reason=body.reason if body is not None else None,
+            request_id=req_id,
+        )
+    except AuthenticationFailure as error:
+        raise_auth_failure(error)
+    response.headers["Cache-Control"] = "no-store"
+    if identity.principal.session_id == revoked.session_id:
+        clear_session_cookie(response, request.app.state.settings)
+    return {
+        "session_id": str(revoked.session_id),
+        "membership_id": str(revoked.membership_id),
+        "revoked": True,
+        "revoked_at": revoked.revoked_at.isoformat(),
+    }
+
+
+def _optional_request_id(request: Request) -> UUID | None:
+    raw = request.headers.get("X-Request-ID")
+    if not raw:
+        return None
+    try:
+        return UUID(raw)
+    except ValueError:
+        return None
 
 
 @router.post(

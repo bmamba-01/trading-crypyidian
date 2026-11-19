@@ -48,3 +48,15 @@ class ActionChallengeVerifyRequest(AuthRequest):
     code: str = Field(min_length=1, max_length=32)
     action: str | None = Field(default=None, max_length=80)
     payload: dict[str, Any] | None = None
+
+
+class SessionRevokeRequest(AuthRequest):
+    """Tùy chọn lý do khi thu hồi một phiên đăng nhập (SEC-11)."""
+
+    reason: str | None = Field(default=None, min_length=1, max_length=500)
+
+
+class MemberSessionsRevokeAllRequest(AuthRequest):
+    """Tùy chọn lý do khi owner thu hồi toàn bộ phiên của thành viên (SEC-11)."""
+
+    reason: str | None = Field(default=None, min_length=1, max_length=500)
