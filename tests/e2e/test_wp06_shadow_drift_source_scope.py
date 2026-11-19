@@ -47,7 +47,7 @@ def test_shadow_drift_source_scope_denies_qa_without_license_fixture() -> None:
             compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "head")
             heads = compose("run", "--rm", "--no-deps", "migrator", "alembic", "heads")
             assert heads.stdout.count("(head)") == 1
-            assert "a9c7e5f3d1b2 (head)" in heads.stdout
+            assert "f4b6d8e0a2c7 (head)" in heads.stdout
             admin_secret = (
                 resources.compose_file.parent / ".secrets" / ("database_admin_web_password")
             )

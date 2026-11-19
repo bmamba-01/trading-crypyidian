@@ -109,7 +109,7 @@ def test_settled_funding_with_mark_price_is_idempotent_constrained_and_rls_scope
         compose("run", "--rm", "--no-deps", "db-provisioner")
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "head")
         assert (
-            "e8a2c4d6f0b3 (head)"
+            "f4b6d8e0a2c7 (head)"
             in compose("run", "--rm", "--no-deps", "migrator", "alembic", "heads").stdout
         )
         check = compose("run", "--rm", "--no-deps", "migrator", "alembic", "check")

@@ -18,7 +18,7 @@ PROBE_BOOTSTRAP = (
     "exec(compile(p['code'],'wp06_shadow_drift_persistence.py','exec'),{'__name__':'__main__'})"
 )
 PREVIOUS_HEAD = "d2b4c6e8f0a1"
-CURRENT_HEAD = "e8a2c4d6f0b3"
+CURRENT_HEAD = "f4b6d8e0a2c7"
 
 
 def test_shadow_drift_postgres_append_only_rls_rights_and_empty_downgrade() -> None:
@@ -107,12 +107,13 @@ def test_shadow_drift_postgres_append_only_rls_rights_and_empty_downgrade() -> N
             "bounded_cutoffs_and_expiry": True,
             "empty_assessment_rejected": True,
             "assessment_rows_scoped_per_workspace": True,
+            "assessment_rls_fixture_cleaned": True,
             "drift_policy_rejected": True,
-            "cross_workspace_insert_denied": True,
+            "cross_workspace_insert_denied_by_member_scope_guard": True,
             "unscoped_read_denied": True,
             "observer_role_least_privilege": True,
             "observer_sensitive_columns_denied": True,
-            "admin_select_only": True,
+            "admin_direct_select_denied": True,
             "rights_hash_helper_execute_denied": True,
             "rights_receipt_helper_execute_allowed": True,
             "rights_receipt_fails_closed": True,
@@ -210,8 +211,20 @@ def test_populated_coverage_v1_ledger_survives_bounded_window_upgrade() -> None:
         assert after["canonical"] == [True, True, True, True]
         legacy = after["rows"]["learning_drift_assessment"][0][0]
         assert legacy["policy_version"] == "coverage-v1"
-        assert "observation_window_days" in legacy
-        assert legacy.pop("observation_window_days") is None
+        added_columns = {
+            "learning_shadow_observation": ("source_scope_fingerprint",),
+            "learning_drift_assessment": ("observation_window_days", "source_rights_digest"),
+            "learning_drift_assessment_member": (
+                "current_rights_eligible",
+                "current_rights_fingerprint",
+                "current_source_ids",
+                "current_eligible",
+            ),
+        }
+        for table, columns in added_columns.items():
+            row = after["rows"][table][0][0]
+            for column in columns:
+                assert row.pop(column) is None, (table, column)
         assert after["rows"] == before["rows"]
     finally:
         subprocess.run(

@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from uuid import uuid4
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy.exc import SQLAlchemyError
@@ -59,10 +60,16 @@ def _assess(client: TestClient):
     )
 
 
-def test_paper_performance_business_rights_marker_is_a_conflict() -> None:
-    response = _assess(
-        _client(_MarkedDatabaseError("WP06_PAPER_PERFORMANCE_CURRENT_RIGHTS_DENIED"))
-    )
+@pytest.mark.parametrize(
+    "marker",
+    [
+        "WP06_PAPER_PERFORMANCE_CURRENT_RIGHTS_DENIED",
+        "WP06_SOURCE_RIGHTS_DECISION_LINEAGE_INVALID",
+        "WP06_PAPER_PERFORMANCE_REPORT_AGGREGATE_MISMATCH",
+    ],
+)
+def test_paper_performance_database_conflict_is_sanitized(marker: str) -> None:
+    response = _assess(_client(_MarkedDatabaseError(marker)))
 
     assert response.status_code == 409
     assert response.headers["Cache-Control"] == "no-store"

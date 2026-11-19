@@ -5,15 +5,118 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from datetime import timedelta
+from decimal import Decimal
 from pathlib import Path
 from uuid import UUID, uuid4
 
 from sqlalchemy import create_engine, text
-from sqlalchemy.engine import URL
+from sqlalchemy.engine import URL, Connection
 from sqlalchemy.exc import DBAPIError
 
 from trading_bot.domain.learning.paper_performance import PaperPerformancePolicy
+
+EVALUATOR = "crypidian_learning_paper_performance_evaluator"
+UNSCOPED_SIGNATURE = (
+    "public.wp06_aggregate_paper_performance_unscoped("
+    "uuid,uuid,text,uuid,text,timestamp with time zone)"
+)
+
+
+def _assert_aggregate_sql_contract(connection: Connection, workspace_id: UUID) -> None:
+    """Chạy SQL cài trong gateway dưới role evaluator trên DB chưa có active target."""
+    source = connection.execute(
+        text("SELECT prosrc FROM pg_catalog.pg_proc WHERE oid=CAST(:signature AS regprocedure)"),
+        {"signature": UNSCOPED_SIGNATURE},
+    ).scalar_one()
+    baseline = re.search(r"(SELECT report\..+?) INTO baseline_row(\s+FROM .+?);", source, re.S)
+    metric = re.search(
+        r"metric_rows AS \(\s*(SELECT scored\.\*.+?FROM scored WHERE outcome_label IS NOT NULL)",
+        source,
+        re.S,
+    )
+    assert baseline is not None
+    assert metric is not None
+    baseline_sql = re.sub(
+        r"\b(target_workspace|expected_baseline_report_id)\b",
+        r":\1",
+        "".join(baseline.groups()),
+    )
+    sql_errors = {}
+    with connection.begin_nested():
+        connection.execute(text(f"SET LOCAL ROLE {EVALUATOR}"))
+        connection.execute(text("SET LOCAL search_path = pg_catalog, pg_temp"))
+        connection.execute(
+            text("SELECT pg_catalog.set_config('app.workspace_id', :workspace, true)"),
+            {"workspace": str(workspace_id)},
+        )
+        for name, query, params in (
+            (
+                "baseline",
+                baseline_sql,
+                {"target_workspace": workspace_id, "expected_baseline_report_id": uuid4()},
+            ),
+            ("event_status", "SELECT evaluation_status FROM public.learning_score_event", {}),
+            (
+                "log_loss",
+                "WITH scored(outcome_label, p_minus, p_zero, p_plus) AS "
+                "(VALUES (-1, 0.75, 0.20, 0.05), (1, 0.75, 0.25, 0.00), "
+                "(NULL, 0.75, 0.25, 0.00)) "
+                "SELECT round(brier_value, 6), round(log_loss_value, 6) "
+                f"FROM ({metric[1]}) AS metrics ORDER BY outcome_label",
+                {},
+            ),
+        ):
+            try:
+                with connection.begin_nested():
+                    rows = connection.execute(text(query), params).all()
+            except DBAPIError as error:
+                sql_errors[name] = (error.orig.sqlstate, error.orig.diag.message_primary)
+                continue
+            if name == "log_loss":
+                assert rows == [
+                    (Decimal("0.105000"), Decimal("0.287682")),
+                    (Decimal("1.625000"), Decimal("27.631021")),
+                ]
+            else:
+                assert rows == []
+        connection.execute(text("RESET ROLE"))
+    assert not sql_errors, sql_errors
+
+    expected_columns = {
+        "learning_scorer_test_evaluation_report": set(
+            "workspace_id id report_hash report canonical_report evaluation_status "
+            "scorer_artifact_hash base_artifact_hash policy_hash".split()
+        ),
+        "learning_score_event": set(
+            "workspace_id bot_id bot_decision_id bot_decision_hash final_status candidate_id "
+            "mode deployment_event_id deployment_revision registry_id registry_revision "
+            "active_pointer_version scorer_artifact_id scorer_artifact_hash base_artifact_hash "
+            "evaluation_report_id evaluation_report_hash evaluation_status report_scope_hash "
+            "proof_hash policy_id policy_hash feature_schema_hash source_rights_fingerprint "
+            "decision class_probabilities event_hash".split()
+        ),
+    }
+    for table, columns in expected_columns.items():
+        privileges = {"role": EVALUATOR, "relation": f"public.{table}"}
+        assert (
+            connection.execute(
+                text("SELECT pg_catalog.has_table_privilege(:role, :relation, 'SELECT')"),
+                privileges,
+            ).scalar_one()
+            is False
+        )
+        actual = connection.execute(
+            text(
+                "SELECT a.attname FROM pg_catalog.pg_attribute AS a "
+                "WHERE a.attrelid=CAST(:relation AS regclass) AND a.attnum > 0 "
+                "AND NOT a.attisdropped AND pg_catalog.has_column_privilege("
+                ":role, a.attrelid, a.attnum, 'SELECT')"
+            ),
+            privileges,
+        ).scalars()
+        assert set(actual) == columns
 
 
 def _url(user: str, password: str) -> URL:
@@ -42,6 +145,8 @@ def main() -> None:
         )
     )
     try:
+        with super_engine.begin() as connection:
+            _assert_aggregate_sql_contract(connection, workspace_id)
         with super_engine.begin() as connection:
             connection.execute(text("SET LOCAL session_replication_role = replica"))
             connection.execute(

@@ -85,6 +85,7 @@
 - [x] Aggregate gateway kiểm toàn bộ decision của cả hai cohort dưới source lock trước khi tính metric; thiếu quyền từ chối, không trả member data hoặc persist report.
 - [x] Gắn membership + current-rights digest vào identity/idempotency và recheck trước khi trả idempotent/recent reports.
 - [x] Unit/Compose kiểm exact decision→intent→closed trade attribution, QA/missing-target denial, metadata-only access, no-write denial, digest và current report recheck. D7 writer tự chạy aggregate gateway, đối chiếu report/policy/metric/status/digest trước insert; E2E kiểm cả table/column INSERT ACL, scope, downgrade và re-upgrade.
+- [x] Xác minh và sửa truy vấn PostgreSQL của evaluator trong migration `f4b6d8e0a2c7`. Compose chạy projection baseline và phép tính log-loss từ hàm đã cài, kiểm đúng tập cột được cấp và xác nhận downgrade/re-upgrade. API trả HTTP 409 cho lỗi lineage và sai lệch với kết quả aggregate.
 - [ ] Hoàn tất matrix policy thu hẹp/rights revoke, race khi cohort/read/write, retry sau policy change và toàn bộ scope mismatch; positive aggregate report E2E chờ quyền non-QA thật. Giữ ngưỡng 30 ngày, 1.000/100, coverage ≥80%, regression >0,01 và `NO_STATE_CHANGE`.
 - [x] Không đổi projection/UI trong lát source-use này; Playwright responsive desktop/mobile report đã đạt ở vòng UI trước, screenshot hiện có được giữ.
 

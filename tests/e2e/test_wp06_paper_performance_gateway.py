@@ -11,6 +11,8 @@ from scripts.docker_image import ensure_image_available
 
 from tests.e2e.test_wp06_learning_feature_vector_parity import isolated_compose_resources
 
+PREVIOUS_REVISION = "e8a2c4d6f0b3"
+
 
 def test_paper_performance_aggregate_gateway_is_narrow_and_fails_closed() -> None:
     root = Path(__file__).parents[2]
@@ -41,15 +43,60 @@ def test_paper_performance_aggregate_gateway_is_narrow_and_fails_closed() -> Non
             assert result.returncode == 0, output[-9000:]
             return result
 
+        def snapshot_aggregate_contract() -> list[str]:
+            result = compose(
+                "exec",
+                "-T",
+                "postgres",
+                "psql",
+                "-XAt",
+                "--username",
+                "crypidian_admin",
+                "--dbname",
+                "crypidian",
+                "--command",
+                """
+                SELECT pg_catalog.md5(pg_catalog.pg_get_functiondef(function.oid)),
+                       function.oid, function.proowner, function.prosecdef,
+                       function.proconfig, function.proacl,
+                       ARRAY(
+                           SELECT pg_catalog.has_column_privilege(
+                               'crypidian_learning_paper_performance_evaluator',
+                               column_info.relation, column_info.name, 'SELECT'
+                           )
+                           FROM (VALUES
+                               ('public.learning_scorer_test_evaluation_report',
+                                'base_artifact_hash'),
+                               ('public.learning_scorer_test_evaluation_report',
+                                'scorer_artifact_hash'),
+                               ('public.learning_scorer_test_evaluation_report', 'policy_hash'),
+                               ('public.learning_score_event', 'evaluation_status')
+                           ) AS column_info(relation, name)
+                           ORDER BY column_info.relation, column_info.name
+                       )
+                  FROM pg_catalog.pg_proc AS function
+                 WHERE function.oid = 'public.wp06_aggregate_paper_performance_unscoped'
+                    '(uuid,uuid,text,uuid,text,timestamptz)'::regprocedure
+                """,
+            )
+            return result.stdout.strip().split("|")
+
         try:
             compose("up", "--detach", "--wait", "--wait-timeout", "180", "postgres")
             compose("run", "--rm", "--no-deps", "db-provisioner")
+            compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", PREVIOUS_REVISION)
+            before = snapshot_aggregate_contract()
             compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "head")
+            upgraded = snapshot_aggregate_contract()
+            assert before[0] != upgraded[0]
+            assert before[1:-1] == upgraded[1:-1]
+            assert before[-1] == "{f,f,f,f}"
+            assert upgraded[-1] == "{t,t,t,t}"
             check = compose("run", "--rm", "--no-deps", "migrator", "alembic", "check")
             assert "No new upgrade operations detected" in check.stdout + check.stderr
             heads = compose("run", "--rm", "--no-deps", "migrator", "alembic", "heads")
             assert heads.stdout.count("(head)") == 1
-            assert "e8a2c4d6f0b3 (head)" in heads.stdout
+            assert "f4b6d8e0a2c7 (head)" in heads.stdout
             admin_secret = (
                 resources.compose_file.parent / ".secrets" / "database_admin_web_password"
             )
@@ -82,6 +129,12 @@ def test_paper_performance_aggregate_gateway_is_narrow_and_fails_closed() -> Non
                 "report_writer_denies_missing_target_without_mutation": True,
                 "no_raw_member_fields_returned": True,
             }
+            compose(
+                "run", "--rm", "--no-deps", "migrator", "alembic", "downgrade", PREVIOUS_REVISION
+            )
+            assert snapshot_aggregate_contract() == before
+            compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "head")
+            assert snapshot_aggregate_contract() == upgraded
             check = compose("run", "--rm", "--no-deps", "migrator", "alembic", "check")
             assert "No new upgrade operations detected" in check.stdout + check.stderr
         finally:
