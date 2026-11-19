@@ -5881,3 +5881,16 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
   - `PYTHONPATH=. uv run pytest tests/unit/test_sig0_taker_flow.py -q` → **14 passed in 1.41s**.
   - `uv run pytest tests/e2e/test_wp07_telegram_signal.py tests/e2e/test_db_role_least_privilege.py -v --tb=short` → **2 passed in 73.26s**.
 - **Readback:** đã đọc lại mục này và đối chiếu với kết quả kiểm chứng trước khi commit và push lên `origin/dev`.
+
+
+### 2026-11-19 — Xác nhận WP-05 E2E (`CRY-309`) & Bật MTM trong Replay/Backtest (`CRY-256`)
+
+- **`CRY-309` (`[WP-05G/e2e-license-probe]` → Done):**
+  - Chạy xác nhận cả 3 Compose E2E WP-05 trên `dev` (`94b894d`, head `0094c0fdba7f`) mà không nới domain guard: `uv run pytest tests/e2e/test_wp05_expiry_scanner.py tests/e2e/test_wp05_source_items.py tests/e2e/test_wp05_rights_change_outbox.py -v --tb=short` → **3 passed in 100.30s**.
+- **`CRY-256` (`[WP-02F/mtm-enable]` → Done):**
+  - Thêm `equity_valuation_mode: Literal["realized_only", "mark_to_market"]` (mặc định `realized_only` giữ tương thích ngược hash cũ; đổi sang `mark_to_market` làm đổi `ReplayManifest.content_hash`) và property `mark_to_market` trên `ReplayManifest`, `EvaluationReport`, `ReplayRejected` (`src/trading_bot/application/backtest.py`).
+  - Nối cờ `mark_to_market` từ `BacktestReplayJobSubmission` (`to_payload`/`from_payload`/`from_paper_profile`), `build_backtest_replay_plan`, `BacktestDatasetReplayContextFactory` (`backtest_dataset_replay_context.py`) và `proposal_backtest.run_arm`.
+  - Fail-closed khi thiếu hoặc sai giá mark cho bất kỳ vị thế mở nào ở chế độ MTM (`ReplayAccountState.project` ném `ReplayEvaluationContextError` với mã `MTM_MARK_PRICE_MISSING`), thay vì âm thầm coi UPNL = 0.
+  - Chống trộn chế độ định giá trên toàn bộ tầng: `BacktestRunner` (`VALUATION_MODE_MISMATCH`), `BacktestRepository.append_result` (`BacktestRepositoryConflict` + lưu `equity_valuation_mode`/`mark_to_market` trong payload report), `SensitivityComparison` và `RuntimePaperReplayComparison`.
+  - Kiểm chứng: `uv run ruff format --check src tests` (**1177 files already formatted**), `uv run ruff check src tests` (**All checks passed!**), `uv run mypy src/trading_bot` (**Success: no issues found in 528 source files**), `PYTHONPATH=. uv run pytest tests/unit/test_cry256_replay_mtm_enable.py tests/unit/test_runtime_replay_evaluator.py tests/unit/test_backtest*.py -q` → **318 passed in 8.13s**, `uv run pytest tests/e2e/test_backtest_persistence.py -v --tb=short` → **1 passed in 31.16s**.
+- **Readback:** đã đọc lại mục này và đối chiếu với kết quả kiểm chứng trước khi commit và push lên `origin/dev`.

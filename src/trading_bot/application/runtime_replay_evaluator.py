@@ -212,17 +212,21 @@ class ReplayAccountState:
                 )
                 open_count += 1
                 allocated_margin += plan.initial_margin * filled_fraction
-                if mark_prices is not None and plan.symbol in mark_prices:
-                    mark = mark_prices[plan.symbol]
-                    if isinstance(mark, Decimal) and mark.is_finite() and mark > ZERO:
-                        direction_sign = ONE if position.direction == "long" else -ONE
-                        pos_unrealized = (
-                            (mark - position.entry_execution_price)
-                            * position.quantity
-                            * position.contract_multiplier
-                            * direction_sign
+                if mark_prices is not None:
+                    mark = mark_prices.get(plan.symbol)
+                    if type(mark) is not Decimal or not mark.is_finite() or mark <= ZERO:
+                        raise ReplayEvaluationContextError(
+                            "MTM_MARK_PRICE_MISSING: thiếu hoặc sai giá mark cho vị thế mở "
+                            f"{plan.symbol}."
                         )
-                        unrealized_pnl += pos_unrealized
+                    direction_sign = ONE if position.direction == "long" else -ONE
+                    pos_unrealized = (
+                        (mark - position.entry_execution_price)
+                        * position.quantity
+                        * position.contract_multiplier
+                        * direction_sign
+                    )
+                    unrealized_pnl += pos_unrealized
             elif position is not None and position.is_closed:
                 self._closed_pnl[position.position_id] = position.net_realized_pnl
                 # Vị thế đóng ngoài vòng monitor: lấy mốc đánh giá hiện tại, không lùi về quá khứ.
@@ -395,6 +399,11 @@ class RuntimeReplayEvaluator:
     def manifest_hash(self) -> str:
         """Hash manifest mà evaluator đã ghim khi tạo."""
         return self._manifest.content_hash
+
+    @property
+    def mark_to_market(self) -> bool:
+        """Trả True nếu evaluator bật định giá vốn theo thị trường (MTM)."""
+        return self._mark_to_market
 
     @property
     def gateway(self) -> PaperExecutionGateway:
@@ -1161,6 +1170,14 @@ class RuntimePaperReplayComparison:
         base_count = sum(run.sensitivity_run.scenario.kind == "BASE" for run in self.runs)
         if not self.runs or base_count != 1:
             raise ValueError("Replay comparison cần đúng một run BASE.")
+        modes = {run.sensitivity_run.manifest.equity_valuation_mode for run in self.runs} | {
+            run.sensitivity_run.result.equity_valuation_mode for run in self.runs
+        }
+        if len(modes) != 1:
+            raise ValueError(
+                "Không được trộn hai chế độ định giá vốn (realized_only/mark_to_market) "
+                "trong cùng một báo cáo replay."
+            )
 
     @property
     def is_complete(self) -> bool:

@@ -8,10 +8,18 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
+from typing import Literal
 from uuid import UUID
 
 from trading_bot.domain.learning.evaluation import EvaluationTrade, build_evaluation_metrics
 from trading_bot.domain.strategy.contracts import DecisionSnapshot
+
+EQUITY_VALUATION_REALIZED_ONLY: Literal["realized_only"] = "realized_only"
+EQUITY_VALUATION_MARK_TO_MARKET: Literal["mark_to_market"] = "mark_to_market"
+EquityValuationMode = Literal["realized_only", "mark_to_market"]
+EQUITY_VALUATION_MODES: frozenset[str] = frozenset(
+    {EQUITY_VALUATION_REALIZED_ONLY, EQUITY_VALUATION_MARK_TO_MARKET}
+)
 
 
 def _aware(value: datetime, name: str) -> None:
@@ -40,6 +48,8 @@ class ReplayManifest:
     seed: int
     learning_intent: str = "RESEARCH"
     learning_job_id: str | None = None
+    # CRY-256: chế độ định giá vốn replay; mặc định realized_only giữ tương thích hash cũ.
+    equity_valuation_mode: EquityValuationMode = EQUITY_VALUATION_REALIZED_ONLY
 
     def __post_init__(self) -> None:
         _aware(self.range_start, "range_start")
@@ -90,6 +100,16 @@ class ReplayManifest:
                 raise ValueError("Replay TRAINING_BASE cần UUID job đã xếp hàng.") from error
         elif self.learning_job_id is not None:
             raise ValueError("Replay RESEARCH không được gắn job học.")
+        if (
+            type(self.equity_valuation_mode) is not str
+            or self.equity_valuation_mode not in EQUITY_VALUATION_MODES
+        ):
+            raise ValueError("equity_valuation_mode phải là 'realized_only' hoặc 'mark_to_market'.")
+
+    @property
+    def mark_to_market(self) -> bool:
+        """Trả True khi manifest yêu cầu định giá vốn theo thị trường (MTM)."""
+        return self.equity_valuation_mode == EQUITY_VALUATION_MARK_TO_MARKET
 
     @property
     def content_hash(self) -> str:
@@ -114,6 +134,8 @@ class ReplayManifest:
         if self.learning_intent != "RESEARCH":
             payload["learning_intent"] = self.learning_intent
             payload["learning_job_id"] = self.learning_job_id
+        if self.equity_valuation_mode != EQUITY_VALUATION_REALIZED_ONLY:
+            payload["equity_valuation_mode"] = self.equity_valuation_mode
         canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(canonical.encode()).hexdigest()
 
@@ -173,6 +195,20 @@ class EvaluationReport:
     confidence_interval: tuple[Decimal, Decimal] | None
     caveat_vi: str
     trial_record: TrialRecord
+    # CRY-256: gắn rõ chế độ định giá vốn để report không trộn realized_only và mark_to_market.
+    equity_valuation_mode: EquityValuationMode = EQUITY_VALUATION_REALIZED_ONLY
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.equity_valuation_mode) is not str
+            or self.equity_valuation_mode not in EQUITY_VALUATION_MODES
+        ):
+            raise ValueError("equity_valuation_mode phải là 'realized_only' hoặc 'mark_to_market'.")
+
+    @property
+    def mark_to_market(self) -> bool:
+        """Trả True nếu báo cáo chạy trong chế độ định giá MTM."""
+        return self.equity_valuation_mode == EQUITY_VALUATION_MARK_TO_MARKET
 
 
 @dataclass(frozen=True, slots=True)
@@ -183,6 +219,19 @@ class ReplayRejected:
     reason_code: str
     detail_vi: str
     trial_record: TrialRecord
+    equity_valuation_mode: EquityValuationMode = EQUITY_VALUATION_REALIZED_ONLY
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.equity_valuation_mode) is not str
+            or self.equity_valuation_mode not in EQUITY_VALUATION_MODES
+        ):
+            raise ValueError("equity_valuation_mode phải là 'realized_only' hoặc 'mark_to_market'.")
+
+    @property
+    def mark_to_market(self) -> bool:
+        """Trả True nếu lượt bị từ chối thuộc chế độ định giá MTM."""
+        return self.equity_valuation_mode == EQUITY_VALUATION_MARK_TO_MARKET
 
 
 class ReplayCancelled(RuntimeError):
@@ -277,6 +326,16 @@ class BacktestRunner:
                     if status == "FAILED"
                     else None,
                 ),
+                equity_valuation_mode=manifest.equity_valuation_mode,
+            )
+
+        evaluator_mtm = getattr(evaluator, "mark_to_market", None)
+        if isinstance(evaluator_mtm, bool) and evaluator_mtm != manifest.mark_to_market:
+            return rejected(
+                "VALUATION_MODE_MISMATCH",
+                "Chế độ mark_to_market của evaluator không khớp manifest.",
+                status="FAILED",
+                error_type="ValueError",
             )
 
         if len({item.event_id for item in observations}) != len(observations):
@@ -424,4 +483,5 @@ class BacktestRunner:
             confidence_interval=metrics.confidence_interval,
             caveat_vi=metrics.caveat_vi,
             trial_record=trial,
+            equity_valuation_mode=manifest.equity_valuation_mode,
         )

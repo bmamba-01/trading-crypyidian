@@ -68,6 +68,8 @@ class BacktestRepository:
             or trial.manifest_hash != manifest.content_hash
         ):
             raise BacktestRepositoryConflict("Manifest hash không khớp kết quả replay.")
+        if result.equity_valuation_mode != manifest.equity_valuation_mode:
+            raise BacktestRepositoryConflict("Chế độ định giá vốn của kết quả không khớp manifest.")
         expected_trial_id = hashlib.sha256(f"trial:{manifest.content_hash}".encode()).hexdigest()
         if trial.trial_id != expected_trial_id:
             raise BacktestRepositoryConflict("Trial ID không khớp manifest.")
@@ -225,6 +227,8 @@ def _report_payload(report: EvaluationReport) -> dict[str, Any]:
             else None
         ),
         "caveat_vi": report.caveat_vi,
+        "equity_valuation_mode": report.equity_valuation_mode,
+        "mark_to_market": report.mark_to_market,
     }
 
 

@@ -412,6 +412,7 @@ class BacktestDatasetRuntimeEvaluatorFactory:
             context_provider=context_provider,
             scenario=scenario,
             exit_override=self.exit_override,
+            mark_to_market=manifest.mark_to_market,
         )
 
 
