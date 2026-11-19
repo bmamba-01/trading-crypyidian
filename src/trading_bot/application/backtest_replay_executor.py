@@ -11,7 +11,11 @@ from decimal import Decimal
 from typing import Protocol
 from uuid import UUID, uuid5
 
-from trading_bot.application.backtest import ReplayManifest
+from trading_bot.application.backtest import (
+    EQUITY_VALUATION_MARK_TO_MARKET,
+    EQUITY_VALUATION_REALIZED_ONLY,
+    ReplayManifest,
+)
 from trading_bot.application.backtest_dataset_replay_bundle import (
     BacktestDatasetReplayBundle,
     BacktestDatasetReplayBundleReference,
@@ -298,6 +302,11 @@ def build_backtest_replay_plan(
         seed=submission.seed,
         learning_intent=submission.learning_intent,
         learning_job_id=(str(job_id) if submission.learning_intent == "TRAINING_BASE" else None),
+        equity_valuation_mode=(
+            EQUITY_VALUATION_MARK_TO_MARKET
+            if submission.mark_to_market
+            else EQUITY_VALUATION_REALIZED_ONLY
+        ),
     )
     pinned_bundle_reference = BacktestDatasetReplayBundleReference.from_bundle(bundle)
 

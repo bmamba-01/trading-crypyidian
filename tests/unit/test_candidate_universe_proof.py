@@ -248,6 +248,54 @@ async def test_database_scan_creates_immutable_metadata_only_proof(persisted):
 
 
 @pytest.mark.asyncio
+async def test_report_valuation_metadata_matches_manifest(persisted):
+    from trading_bot.adapters.database.models.backtest_entities import BacktestReportRecord
+
+    report = next(row for row in persisted[0].rows if isinstance(row, BacktestReportRecord))
+    assert report.report["equity_valuation_mode"] == "realized_only"
+    assert report.report["mark_to_market"] is False
+    result = await build(persisted)
+    assert result.proof.candidate_count == 1
+
+
+@pytest.mark.asyncio
+async def test_legacy_report_without_valuation_metadata_means_realized_only(persisted):
+    from trading_bot.adapters.database.models.backtest_entities import BacktestReportRecord
+    from trading_bot.application.candidate_universe_proof import canonical
+
+    report = next(row for row in persisted[0].rows if isinstance(row, BacktestReportRecord))
+    payload = dict(report.report)
+    payload.pop("equity_valuation_mode")
+    payload.pop("mark_to_market")
+    report.report = payload
+    report.canonical_json = canonical(payload)
+
+    result = await build(persisted)
+    assert result.proof.candidate_count == 1
+
+
+@pytest.mark.asyncio
+async def test_report_valuation_metadata_cannot_disagree_with_manifest(persisted):
+    from trading_bot.adapters.database.models.backtest_entities import BacktestReportRecord
+    from trading_bot.adapters.database.repositories.candidate_universe_proofs import (
+        CandidateUniverseProofError,
+    )
+    from trading_bot.application.candidate_universe_proof import canonical
+
+    report = next(row for row in persisted[0].rows if isinstance(row, BacktestReportRecord))
+    payload = dict(report.report)
+    payload["equity_valuation_mode"] = "mark_to_market"
+    payload["mark_to_market"] = True
+    report.report = payload
+    report.canonical_json = canonical(payload)
+
+    with pytest.raises(
+        CandidateUniverseProofError, match="Report mode định giá không khớp manifest"
+    ):
+        await build(persisted)
+
+
+@pytest.mark.asyncio
 async def test_candidate_proof_rejects_replay_without_predeclared_training_intent(persisted):
     import json
 
@@ -700,7 +748,13 @@ async def test_canonical_report_boolean_count_is_rejected_even_with_matching_has
             {
                 key: value
                 for key, value in payload.items()
-                if key not in ("report_hash", "caveat_vi")
+                if key
+                not in (
+                    "report_hash",
+                    "caveat_vi",
+                    "equity_valuation_mode",
+                    "mark_to_market",
+                )
             }
         )
     )

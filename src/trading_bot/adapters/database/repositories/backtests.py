@@ -21,6 +21,7 @@ from trading_bot.adapters.database.models.backtest_entities import (
     BacktestTrialRecord,
 )
 from trading_bot.application.backtest import (
+    EQUITY_VALUATION_REALIZED_ONLY,
     EvaluationReport,
     ReplayManifest,
     ReplayRejected,
@@ -68,11 +69,17 @@ class BacktestRepository:
             or trial.manifest_hash != manifest.content_hash
         ):
             raise BacktestRepositoryConflict("Manifest hash không khớp kết quả replay.")
+        if result.equity_valuation_mode != manifest.equity_valuation_mode:
+            raise BacktestRepositoryConflict("Chế độ định giá vốn của kết quả không khớp manifest.")
         expected_trial_id = hashlib.sha256(f"trial:{manifest.content_hash}".encode()).hexdigest()
         if trial.trial_id != expected_trial_id:
             raise BacktestRepositoryConflict("Trial ID không khớp manifest.")
 
         manifest_payload = _plain(asdict(manifest))
+        if manifest.equity_valuation_mode == EQUITY_VALUATION_REALIZED_ONLY:
+            # Giữ canonical hash cũ cho report realized_only; ReplayManifest.content_hash
+            # chỉ ghi mode mới khi là mark_to_market.
+            manifest_payload.pop("equity_valuation_mode", None)
         canonical_manifest = _canonical(manifest_payload)
         run, run_duplicate = await self._append_unique(
             model=BacktestRunRecord,
@@ -225,6 +232,8 @@ def _report_payload(report: EvaluationReport) -> dict[str, Any]:
             else None
         ),
         "caveat_vi": report.caveat_vi,
+        "equity_valuation_mode": report.equity_valuation_mode,
+        "mark_to_market": report.mark_to_market,
     }
 
 

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
@@ -34,6 +37,35 @@ def make_manifest() -> ReplayManifest:
         trial_index=0,
         seed=17,
     )
+
+
+@pytest.mark.parametrize(
+    ("mode", "is_legacy_mode"),
+    [("realized_only", True), ("mark_to_market", False)],
+)
+@pytest.mark.asyncio
+async def test_run_canonical_manifest_hash_matches_mode_hash(
+    mode: str, is_legacy_mode: bool
+) -> None:
+    manifest = replace(
+        make_manifest(),
+        learning_intent="TRAINING_BASE",
+        learning_job_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        equity_valuation_mode=mode,  # type: ignore[arg-type]
+    )
+    result = BacktestRunner().run((), manifest=manifest, evaluator=lambda _: None)
+    session = FakeSession([None, None, None])
+
+    await BacktestRepository(session).append_result(
+        workspace_id=WORKSPACE_ID, manifest=manifest, result=result
+    )
+    run = session.added[0]
+
+    assert hashlib.sha256(run.canonical_manifest.encode("utf-8")).hexdigest() == (
+        manifest.content_hash
+    )
+    assert run.manifest == json.loads(run.canonical_manifest)
+    assert ("equity_valuation_mode" not in run.manifest) is is_legacy_mode
 
 
 class FakeSession:

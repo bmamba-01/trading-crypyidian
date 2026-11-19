@@ -5883,6 +5883,18 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Readback:** đã đọc lại mục này và đối chiếu với kết quả kiểm chứng trước khi commit và push lên `origin/dev`.
 
 
+### 2026-11-19 — Tích hợp cuối WP06F + CRY-421 + CRY-256 trên `dev`
+
+- **Hợp nhất:** nhánh WP06F được gộp với `origin/dev` tại `9f3ff727c819e9a770f809380b3761098d5d6574` (bao gồm CRY-421 report-reader và CRY-256 replay MTM). Hai migration head được nối bằng `f6c8e0a2b4db`; `uv run alembic heads` xác nhận duy nhất `f6c8e0a2b4db (head)`.
+- **Tương thích canonical manifest:** E2E source-linked làm lộ rằng report `realized_only` lưu `equity_valuation_mode` mặc định vào `BacktestRunRecord.canonical_manifest`, trong khi `ReplayManifest.content_hash` giữ hash legacy bằng cách chỉ thêm mode khi là MTM. `BacktestRepository.append_result` nay bỏ key mặc định khỏi payload canonical; mode `mark_to_market` vẫn được lưu tường minh và nằm trong hash. TDD unit kiểm hai mode, và source-linked Compose E2E đạt.
+- **Sửa test integration:** helper principal MFA trong `test_source_policy_admin.py` tạo timestamp khi gọi để suite dài không làm MFA giả hết hạn; policy MFA production không đổi. Probe least-privilege thêm owner role `crypidian_paper_entry_block_reader`. WP-07 test chấp nhận dòng `alembic current` có marker `(mergepoint)` hợp lệ.
+- **Build E2E:** lần Compose đầu lỗi vì Dockerfile chạy bytecode compile lại toàn bộ dependencies ở lần `uv sync` cuối, làm Python startup trong build vượt timeout 60 giây. Tắt compile ở lần sync cuối; dependencies vẫn được precompile/cache ở layer đầu. E2E operator sau đó pass.
+- **UI:** ảnh Playwright desktop 1366×900 cho thấy `.lx-table th.num` giữ `white-space: nowrap`, làm tiêu đề xác suất tràn ô. Thêm override riêng cho scorer history và assertion computed layout; Playwright xác nhận tiêu đề gói đúng, không có tràn ngang. Ảnh cuối được xem: `tests/e2e/evidence/wp06-paper-block-desktop.png`, `tests/e2e/evidence/wp06-paper-block-mobile.png`.
+- **Kiểm chứng cuối:** `uv run pytest -q --tb=short tests/unit` → **6.006 passed/440.34s**; Compose/PostgreSQL batch `test_wp06_scorer_paper_entry_block.py`, runtime resolver, DDL/source DDL, scorer deployment, CRY-421 report-reader, DB least privilege, source-pinned replay và WP-07 backfill → **24 passed/496.73s/0 skipped**. Focused integration rerun cho ba nhóm lỗi đầu → **5 passed/238.25s**. Playwright `test_learning_scorer_paper_entry_block_admin_ui.py` → **1 passed/4.60s/0 skipped**.
+- **Static:** Ruff check đạt; Ruff format-check **1.377 files already formatted**; mypy **533 source files**; `node --check src/trading_bot/static/learning-scoring.js`, `git diff --check`, Alembic head và Compose `alembic check` đạt.
+- **Trạng thái:** phần merge/WP06F đã đủ test nhưng chờ stage, merge commit và push `dev`; CRY-440 chỉ chuyển Done sau push. CRY-334 vẫn mở cho scorer lock/race, source-scope near-miss, mixed-cohort performance, Shadow/Drift application-writer race và quyền non-QA. Không bật `SHADOW`/`PAPER_GATE`.
+
+
 ### 2026-11-19 — CRY-313/CRY-334 E2E rerun trên head tích hợp
 
 - Worktree/phạm vi: checkout sạch, detached trên origin/dev ad6583f7c2d12f7fba38154a60011fc3599a9dea; Alembic graph/current head 0094c0fdba7f. Thay đổi hiện tại chỉ trong bốn E2E test/probe (test_wp06_source_pinned_replay_persistence, wp06_source_linked_scorer_test, test_wp07_rest_backfill_persistence, wp07_backfill_persistence); không đổi production behavior hay migration.
@@ -5898,5 +5910,32 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 
 - **Kiểm thử tổng:** trên nhánh riêng codex/wp06f-operator-dev, full unit 5.993 passed/447.75s; E2E Compose operator/schema/scorer/incident/UI 21 passed/160.09s; source-linked replay + REST backfill 7 passed/393.17s; Playwright scorer/operator UI sau hiệu chỉnh desktop 3 passed/6.49s; unit UI hồi quy sau chỉnh CSS 39 passed/4.85s. Không có test nào trong các lượt cuối bị skip.
 - **Phát hiện và sửa UI:** ảnh desktop 1366px cho thấy action column tràn vùng bảng khoảng 30px. TDD thêm assertion kiểm biên action trong .lx-table-wrap, RED 1 failed; giảm min-width desktop bảng scorer history từ 1100px còn 1060px, giữ cột action ≥320px và kiểm cuộn ngang tại 1280px, hiển thị trọn form ở 1366px. Playwright GREEN 3 passed; ảnh desktop/mobile được sinh lại và xem.
-- **Static:** uv run ruff check src tests migrations đạt; uv run ruff format --check src tests migrations báo 1352 file đã đúng định dạng; uv run mypy src/trading_bot không lỗi trên 533 file; node --check src/trading_bot/static/learning-scoring.js và git diff --check đạt; uv run alembic heads có duy nhất f6c8e0a2b4da. Host uv run alembic check không phân giải DNS postgres do Compose service chưa chạy; cùng phép alembic check chạy trong Compose E2E scorer deployment đạt sau migrate/rollback/upgrade. Không khởi tạo volume DB phát triển để lặp lại lệnh host.
+- **Static:** uv run ruff check src tests migrations đạt; uv run ruff format --check src tests migrations báo 1352 file đã đúng định dạng; uv run mypy src/trading_bot không lỗi trên 533 file; node --check src/trading_bot/static/learning-scoring.js và git diff --check đạt; sau merge CRY-421, sole Alembic head là f6c8e0a2b4db. Host uv run alembic check không phân giải DNS postgres do Compose service chưa chạy; cùng phép alembic check chạy trong Compose E2E scorer deployment đạt sau migrate/rollback/upgrade. Không khởi tạo volume DB phát triển để lặp lại lệnh host.
 - **Docs/tracker/tích hợp:** WBS, project-status, WP06 guide và WP06F plan ghi kết quả; đã đọc lại memory/WBS/status/plan và đối chiếu với đầu ra kiểm thử. CRY-440 còn chờ Itsaplan, commit và push fast-forward. CRY-334 còn scorer lock order, scope near-miss, performance mixed-cohort, Shadow/Drift application-writer race. WP06 tổng thể chưa Done; chưa có quyền non-QA/positive active journey, SHADOW/PAPER_GATE giữ khóa.
+
+
+### 2026-11-19 — Xác nhận WP-05 E2E (`CRY-309`) & Bật MTM trong Replay/Backtest (`CRY-256`)
+
+- **`CRY-309` (`[WP-05G/e2e-license-probe]` → Done):**
+  - Chạy xác nhận cả 3 Compose E2E WP-05 trên `dev` (`94b894d`, head `0094c0fdba7f`) mà không nới domain guard: `uv run pytest tests/e2e/test_wp05_expiry_scanner.py tests/e2e/test_wp05_source_items.py tests/e2e/test_wp05_rights_change_outbox.py -v --tb=short` → **3 passed in 100.30s**.
+- **`CRY-256` (`[WP-02F/mtm-enable]` → Done):**
+  - Thêm `equity_valuation_mode: Literal["realized_only", "mark_to_market"]` (mặc định `realized_only` giữ tương thích ngược hash cũ; đổi sang `mark_to_market` làm đổi `ReplayManifest.content_hash`) và property `mark_to_market` trên `ReplayManifest`, `EvaluationReport`, `ReplayRejected` (`src/trading_bot/application/backtest.py`).
+  - Nối cờ `mark_to_market` từ `BacktestReplayJobSubmission` (`to_payload`/`from_payload`/`from_paper_profile`), `build_backtest_replay_plan`, `BacktestDatasetReplayContextFactory` (`backtest_dataset_replay_context.py`) và `proposal_backtest.run_arm`.
+  - Fail-closed khi thiếu hoặc sai giá mark cho bất kỳ vị thế mở nào ở chế độ MTM (`ReplayAccountState.project` ném `ReplayEvaluationContextError` với mã `MTM_MARK_PRICE_MISSING`), thay vì âm thầm coi UPNL = 0.
+  - Chống trộn chế độ định giá trên toàn bộ tầng: `BacktestRunner` (`VALUATION_MODE_MISMATCH`), `BacktestRepository.append_result` (`BacktestRepositoryConflict` + lưu `equity_valuation_mode`/`mark_to_market` trong payload report), `SensitivityComparison` và `RuntimePaperReplayComparison`.
+  - Kiểm chứng: `uv run ruff format --check src tests` (**1177 files already formatted**), `uv run ruff check src tests` (**All checks passed!**), `uv run mypy src/trading_bot` (**Success: no issues found in 528 source files**), `PYTHONPATH=. uv run pytest tests/unit/test_cry256_replay_mtm_enable.py tests/unit/test_runtime_replay_evaluator.py tests/unit/test_backtest*.py -q` → **318 passed in 8.13s**, `uv run pytest tests/e2e/test_backtest_persistence.py -v --tb=short` → **1 passed in 31.16s**.
+- **Readback:** đã đọc lại mục này và đối chiếu với kết quả kiểm chứng trước khi commit và push lên `origin/dev`.
+
+
+### 2026-11-19 — Role DB đọc báo cáo riêng `crypidian_report_reader` (`CRY-421`)
+
+- **Triển khai `CRY-421` (`[AI-1/report-reader-role]` → Done):**
+  - Thêm role `crypidian_report_reader` (`LOGIN NOINHERIT NOBYPASSRLS`) vào `scripts/provision_database_roles.py`, secret `database_report_reader_password` vào `scripts/prepare_local_secrets.py`, và service `report-reader` (`profiles: ["manual"]`, `read_only: true`, `cap_drop: ["ALL"]`) vào `compose.yaml`.
+  - Tạo migration `migrations/versions/12e554aace5d_cry421_report_reader_role.py` (head duy nhất `12e554aace5d`, nối sau `0094c0fdba7f`) cấp `SELECT` + RLS theo `app.workspace_id` trên 22 bảng đọc báo cáo/AI-4 và `INSERT` + RLS `WITH CHECK` chỉ trên 4 bảng append-only (`run_report`, `analyst_run`, `analyst_session`, `proposal_backtest`), tuyệt đối không cấp `UPDATE`/`DELETE` và không cấp quyền trên bảng identity/session/audit.
+  - Chuyển toàn bộ các phase `report`/`sessions`/`persist` trong `scripts/run_ai_analyst.py` sang service `report-reader`, đồng thời bỏ `UPDATE analyst_session` sang chế độ append-only (đếm lượt chạy theo `analyst_run`).
+  - Đồng bộ head `12e554aace5d` trong `tests/unit/test_sig0_taker_flow.py` và các E2E test; thêm unit test `tests/unit/test_cry421_report_reader_role.py` và Postgres E2E `tests/e2e/test_cry421_report_reader_role.py`.
+- **Kiểm chứng trên `dev`:**
+  - `uv run ruff format --check src tests migrations scripts` → **1354 files already formatted**; `uv run ruff check src tests migrations scripts` → **All checks passed!**; `uv run mypy src/trading_bot` → **Success: no issues found in 528 source files**.
+  - `PYTHONPATH=. uv run pytest tests/unit/test_cry421_report_reader_role.py tests/unit/test_sig0_taker_flow.py -q` → **17 passed in 1.07s**.
+  - `uv run pytest tests/e2e/test_db_role_least_privilege.py -v --tb=short` → **1 passed**; `uv run pytest tests/e2e/test_cry421_report_reader_role.py -v --tb=short` → **1 passed in 12.89s**.
+- **Readback:** đã đọc lại mục này và đối chiếu với kết quả kiểm chứng trước khi commit và push lên `origin/dev`.

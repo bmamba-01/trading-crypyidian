@@ -41,7 +41,11 @@ from trading_bot.adapters.database.repositories.backtest_outcomes import (
     PersistedBacktestTradeOutcome,
 )
 from trading_bot.adapters.database.repositories.backtests import BacktestRepositoryConflict
-from trading_bot.application.backtest import ReplayManifest
+from trading_bot.application.backtest import (
+    EQUITY_VALUATION_MODES,
+    EQUITY_VALUATION_REALIZED_ONLY,
+    ReplayManifest,
+)
 from trading_bot.application.backtest_dataset_manifest import MarketBarIdentityMetadata
 from trading_bot.application.backtest_dataset_replay_bundle import (
     BacktestDatasetReplayBundleReference,
@@ -1008,13 +1012,30 @@ class CandidateUniverseProofRepository:
             "confidence_interval",
             "caveat_vi",
         }
-        if (
-            type(payload) is not dict
-            or set(payload) != expected_keys
-            or payload != report.report
-            or canonical(payload) != report.canonical_json
-        ):
+        valuation_keys = {"equity_valuation_mode", "mark_to_market"}
+        if type(payload) is not dict:
             raise CandidateUniverseProofError("Report sai schema/canonical/JSONB.")
+        payload_keys = set(payload)
+        if payload_keys == expected_keys:
+            # Report cũ được tạo trước CRY-256 mặc định dùng định giá realized_only.
+            equity_valuation_mode: str = EQUITY_VALUATION_REALIZED_ONLY
+            mark_to_market: bool = False
+        elif payload_keys == expected_keys | valuation_keys:
+            equity_valuation_mode = payload["equity_valuation_mode"]
+            mark_to_market = payload["mark_to_market"]
+        else:
+            raise CandidateUniverseProofError("Report sai schema/canonical/JSONB.")
+        if payload != report.report or canonical(payload) != report.canonical_json:
+            raise CandidateUniverseProofError("Report sai schema/canonical/JSONB.")
+        if (
+            type(equity_valuation_mode) is not str
+            or equity_valuation_mode not in EQUITY_VALUATION_MODES
+            or type(mark_to_market) is not bool
+            or mark_to_market != (equity_valuation_mode == "mark_to_market")
+            or equity_valuation_mode != manifest.equity_valuation_mode
+            or mark_to_market != manifest.mark_to_market
+        ):
+            raise CandidateUniverseProofError("Report mode định giá không khớp manifest.")
         if any(
             type(payload[field]) is not int
             for field in ("observation_count", "usable_observation_count", "trade_count")
@@ -1033,7 +1054,15 @@ class CandidateUniverseProofRepository:
             if payload[field] != getattr(report, field):
                 raise CandidateUniverseProofError("Cột report lệch canonical.")
         metrics_payload = {
-            key: value for key, value in payload.items() if key not in ("report_hash", "caveat_vi")
+            key: value
+            for key, value in payload.items()
+            if key
+            not in (
+                "report_hash",
+                "caveat_vi",
+                "equity_valuation_mode",
+                "mark_to_market",
+            )
         }
         if (
             digest(canonical(metrics_payload)) != report.report_hash

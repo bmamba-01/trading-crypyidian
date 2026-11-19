@@ -324,6 +324,16 @@ def test_paper_entry_block_admin_ui_is_vietnamese_responsive_and_audits_operator
         browser_page.set_viewport_size({"width": 1366, "height": 900})
         _assert_no_horizontal_overflow(browser_page, width=1366, height=900)
         assert table_region.evaluate("element => element.scrollWidth <= element.clientWidth + 1")
+        numeric_headers = browser_page.locator(".lx-table--scoring-history thead th.num")
+        header_layout = numeric_headers.evaluate_all(
+            "elements => elements.map(element => ({"
+            "whiteSpace: getComputedStyle(element).whiteSpace, "
+            "clientWidth: element.clientWidth, scrollWidth: element.scrollWidth}))"
+        )
+        assert all(
+            header["whiteSpace"] == "normal" and header["scrollWidth"] <= header["clientWidth"] + 1
+            for header in header_layout
+        ), header_layout
         table_region.evaluate("element => element.blur()")
         action_cell_width = browser_page.locator(".paper-entry-block-cell").evaluate(
             "element => element.getBoundingClientRect().width"

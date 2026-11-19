@@ -82,7 +82,7 @@ def test_backfill_recreates_live_market_tables_for_main_lineage_database() -> No
     try:
         compose("up", "--detach", "--wait", "--wait-timeout", "180", "postgres")
         compose("run", "--rm", "--no-deps", "db-provisioner")
-        assert "f6c8e0a2b4da (head)" in alembic("heads").stdout
+        assert "f6c8e0a2b4db (head)" in alembic("heads").stdout
         # DB theo main: đã qua revision gộp nhưng chưa từng có ba bảng của b4d6. Nâng tới
         # 7707d82de246 rồi xóa ba bảng và stamp lùi về c1fec3af85ea để kiểm tra backfill.
         alembic("upgrade", "7707d82de246")
@@ -90,7 +90,7 @@ def test_backfill_recreates_live_market_tables_for_main_lineage_database() -> No
         alembic("stamp", "c1fec3af85ea")
         assert sql("SELECT count(*) FROM pg_class WHERE relname IN " + str(TABLES)) == "0"
         alembic("upgrade", "head")
-        assert "f6c8e0a2b4da (head)" in alembic("current").stdout
+        assert "f6c8e0a2b4db (head)" in alembic("current").stdout
         assert (
             sql(
                 "SELECT count(*) FROM pg_class WHERE relrowsecurity AND relforcerowsecurity "

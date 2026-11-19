@@ -50,6 +50,8 @@ class BacktestReplayJobSubmission:
     leverage: Decimal = Decimal("1")
     trial_count: int = 1
     trial_index: int = 0
+    # CRY-256: bật định giá vốn theo thị trường (Mark-to-Market) cho sizing/risk cap trong replay.
+    mark_to_market: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.bundle_hash, str) or _SHA256.fullmatch(self.bundle_hash) is None:
@@ -110,6 +112,8 @@ class BacktestReplayJobSubmission:
             "TRAINING_BASE",
         }:
             raise ValueError("Mục đích replay không hợp lệ.")
+        if type(self.mark_to_market) is not bool:
+            raise ValueError("mark_to_market phải là kiểu bool.")
 
     def exit_override(self) -> Any:
         """Ghi đè thoát đã kiểm (chỉ trường release vốn có); None nếu không ghi đè."""
@@ -144,6 +148,7 @@ class BacktestReplayJobSubmission:
         learning_intent: str = "RESEARCH",
         strategy_parameters: tuple[tuple[str, int], ...] = (),
         exit_override_json: str = "",
+        mark_to_market: bool = False,
     ) -> BacktestReplayJobSubmission:
         """Khởi tạo submission replay dùng đúng hồ sơ chi phí của PAPER."""
         return cls(
@@ -163,11 +168,12 @@ class BacktestReplayJobSubmission:
             leverage=leverage,
             trial_count=trial_count,
             trial_index=trial_index,
+            mark_to_market=mark_to_market,
         )
 
-    def to_payload(self) -> dict[str, str | int]:
+    def to_payload(self) -> dict[str, str | int | bool]:
         """Chuẩn hóa Decimal thành chuỗi để payload JSON không đi qua float."""
-        payload: dict[str, str | int] = {
+        payload: dict[str, str | int | bool] = {
             "bundle_hash": self.bundle_hash,
             "strategy_release_id": self.strategy_release_id,
             "execution_interval": self.execution_interval,
@@ -187,6 +193,8 @@ class BacktestReplayJobSubmission:
         if self.trial_count != 1 or self.trial_index != 0:
             payload["trial_count"] = self.trial_count
             payload["trial_index"] = self.trial_index
+        if self.mark_to_market:
+            payload["mark_to_market"] = True
         return payload
 
     @classmethod
@@ -209,6 +217,7 @@ class BacktestReplayJobSubmission:
             "leverage",
             "trial_count",
             "trial_index",
+            "mark_to_market",
         }
         if (
             type(payload) is not dict
@@ -227,6 +236,8 @@ class BacktestReplayJobSubmission:
         for opt_decimal in ("spread_rate", "adverse_funding_rate", "leverage"):
             if opt_decimal in payload and type(payload[opt_decimal]) is not str:
                 raise ValueError("Giá trị Decimal trong payload phải là chuỗi.")
+        if "mark_to_market" in payload and type(payload["mark_to_market"]) is not bool:
+            raise ValueError("mark_to_market trong payload phải là bool.")
         return cls(
             bundle_hash=payload["bundle_hash"],
             strategy_release_id=payload["strategy_release_id"],
@@ -242,6 +253,7 @@ class BacktestReplayJobSubmission:
             leverage=Decimal(payload.get("leverage", "1")),
             trial_count=payload.get("trial_count", 1),
             trial_index=payload.get("trial_index", 0),
+            mark_to_market=payload.get("mark_to_market", False),
         )
 
 

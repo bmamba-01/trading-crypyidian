@@ -383,6 +383,7 @@ def run_arm(
     arm: BacktestArm,
     *,
     seed: int = 20261116,
+    mark_to_market: bool = False,
 ) -> SymbolResult:
     """Một arm trên một bundle; khớp lệnh ở khung vào lệnh (giá mở nến kế tiếp)."""
     execution = entry_timeframe_for_release(arm.release_id)
@@ -399,6 +400,7 @@ def run_arm(
         seed=seed,
         strategy_parameters=arm.parameters,
         exit_override_json=arm.exit_override_json,
+        mark_to_market=mark_to_market,
     )
     job_id = uuid5(_NAMESPACE, f"{bundle.dataset_hash}:{arm.payload()}")
     plan = build_backtest_replay_plan(bundle.workspace_id, job_id, bundle, submission)

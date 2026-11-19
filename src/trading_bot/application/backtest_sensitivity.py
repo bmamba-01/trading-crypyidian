@@ -73,6 +73,16 @@ class SensitivityComparison:
         "hay bằng chứng về lợi nhuận tương lai."
     )
 
+    def __post_init__(self) -> None:
+        modes = {run.manifest.equity_valuation_mode for run in self.runs} | {
+            run.result.equity_valuation_mode for run in self.runs
+        }
+        if len(modes) > 1:
+            raise ValueError(
+                "Không được trộn hai chế độ định giá vốn (realized_only/mark_to_market) "
+                "trong cùng một đối chiếu độ nhạy."
+            )
+
 
 EvaluatorFactory = Callable[[SensitivityScenario, ReplayManifest], ReplayEvaluator]
 

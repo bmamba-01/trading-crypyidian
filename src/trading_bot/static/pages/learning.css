@@ -296,6 +296,7 @@
   overflow-wrap: anywhere;
   word-break: break-word;
 }
+.lx-table--scoring-history th.num { white-space: normal; }
 .paper-entry-block-cell { vertical-align: top !important; min-width: 0; }
 .paper-entry-block-confirm { display: grid; gap: 0.55rem; min-width: 0; }
 .paper-entry-block-confirm > summary {
