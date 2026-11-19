@@ -18,7 +18,7 @@ PROBE_BOOTSTRAP = (
     "exec(compile(p['code'],'wp06_shadow_drift_persistence.py','exec'),{'__name__':'__main__'})"
 )
 PREVIOUS_HEAD = "d2b4c6e8f0a1"
-CURRENT_HEAD = "f4b6d8e0a2c7"
+CURRENT_HEAD = "a6c8e0b2d4f7"
 
 
 def test_shadow_drift_postgres_append_only_rls_rights_and_empty_downgrade() -> None:
@@ -164,7 +164,9 @@ def test_populated_coverage_v1_ledger_survives_bounded_window_upgrade() -> None:
         "compose.yaml",
     ]
 
-    def compose(*args: str, stdin: str | None = None) -> subprocess.CompletedProcess[str]:
+    def compose(
+        *args: str, stdin: str | None = None, success: bool = True
+    ) -> subprocess.CompletedProcess[str]:
         result = subprocess.run(
             base + list(args),
             cwd=root,
@@ -176,7 +178,7 @@ def test_populated_coverage_v1_ledger_survives_bounded_window_upgrade() -> None:
             errors="replace",
             timeout=300,
         )
-        assert result.returncode == 0, (
+        assert (result.returncode == 0) is success, (
             f"Compose lệnh {args!r} thất bại:\n{result.stdout}\n{result.stderr}"
         )
         return result
@@ -198,6 +200,58 @@ def test_populated_coverage_v1_ledger_survives_bounded_window_upgrade() -> None:
         )
         return json.loads(result.stdout.strip().splitlines()[-1])
 
+    def database(sql: str) -> str:
+        return compose(
+            "exec",
+            "-T",
+            "postgres",
+            "psql",
+            "-XAt",
+            "-v",
+            "ON_ERROR_STOP=1",
+            "--username",
+            "crypidian_admin",
+            "--dbname",
+            "crypidian",
+            "--command",
+            sql,
+        ).stdout.strip()
+
+    def drift_contract() -> list[list[str]]:
+        rows = database("""
+            SELECT proname, pg_catalog.md5(pg_catalog.pg_get_functiondef(oid)),
+                   oid, proowner, prosecdef, proconfig, proacl,
+                   pg_catalog.has_function_privilege('crypidian_learning_shadow_observer',
+                                                     oid, 'EXECUTE')
+              FROM pg_catalog.pg_proc
+             WHERE oid IN (
+                'public.wp06_authorize_learning_drift_source_scope(uuid,uuid,timestamptz)'::regprocedure,
+                'public.wp06_authorize_paper_performance_decision_source_scope(uuid,uuid,timestamptz)'::regprocedure,
+                'public.wp06_paper_performance_decision_source_ids(uuid,uuid)'::regprocedure
+             )
+             ORDER BY proname
+        """)
+        return [line.split("|") for line in rows.splitlines()]
+
+    def observer_gate_contract() -> list[list[str]]:
+        rows = database("""
+            SELECT pg_catalog.md5(pg_catalog.pg_get_functiondef(function.oid)),
+                   function.proowner::pg_catalog.regrole,
+                   function.prosecdef, function.proconfig, function.proacl,
+                   pg_catalog.has_function_privilege(
+                       'crypidian_learning_shadow_observer', function.oid, 'EXECUTE'),
+                   pg_catalog.has_function_privilege('crypidian_app', function.oid, 'EXECUTE'),
+                   pg_catalog.has_function_privilege(
+                       'crypidian_trading_runtime', function.oid, 'EXECUTE')
+              FROM pg_catalog.pg_proc AS function
+             WHERE function.oid = pg_catalog.to_regprocedure(
+                'public.wp06_authorize_learning_drift_source_scope_current(uuid,uuid)')
+        """)
+        return [line.split("|") for line in rows.splitlines()]
+
+    def migrate(*args: str, success: bool = True) -> subprocess.CompletedProcess[str]:
+        return compose("run", "--rm", "--no-deps", "migrator", "alembic", *args, success=success)
+
     ensure_image_available(root, image)
     try:
         compose("up", "--detach", "--wait", "--wait-timeout", "180", "postgres")
@@ -206,8 +260,32 @@ def test_populated_coverage_v1_ledger_survives_bounded_window_upgrade() -> None:
         before = snapshot("seed")
         assert before["canonical"] == [True, True, True, True]
         assert all(len(rows) == 1 for rows in before["rows"].values())
-        compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", CURRENT_HEAD)
+        migrate("upgrade", "f4b6d8e0a2c7")
+        old_contract = drift_contract()
+        assert observer_gate_contract() == []
+        migrate("upgrade", CURRENT_HEAD)
+        contract = drift_contract()
+        observer_gate = observer_gate_contract()
+        assert len(contract) == len(old_contract) == 3
+        assert len(observer_gate) == 1
+        assert observer_gate[0][1] == "crypidian_scorer_deployment_rights_reader"
+        assert observer_gate[0][2] == "t"
+        assert observer_gate[0][5:] == ["t", "f", "f"]
+        for old, new in zip(old_contract, contract, strict=True):
+            assert old[0] == new[0]
+            assert old[1] != new[1]
+            assert old[2:6] == new[2:6]
+            assert old[-1] == "f"
+            assert old[-1] == new[-1] == "f"
+            assert old[6:] == new[6:]
+        populated = snapshot("read")
+        denied = migrate("downgrade", "f4b6d8e0a2c7", success=False)
+        assert "WP06_DRIFT_OBSERVER_SCOPE_DOWNGRADE_POPULATED_DENIED" in denied.stderr
+        assert CURRENT_HEAD + " (head)" in migrate("current").stdout
+        assert drift_contract() == contract
+        assert observer_gate_contract() == observer_gate
         after = snapshot("read")
+        assert after == populated
         assert after["canonical"] == [True, True, True, True]
         legacy = after["rows"]["learning_drift_assessment"][0][0]
         assert legacy["policy_version"] == "coverage-v1"
@@ -226,6 +304,24 @@ def test_populated_coverage_v1_ledger_survives_bounded_window_upgrade() -> None:
             for column in columns:
                 assert row.pop(column) is None, (table, column)
         assert after["rows"] == before["rows"]
+        # Chỉ dọn ba hàng fixture v1 trong DB dùng riêng cho phép thử.
+        workspace = uuid.UUID(legacy["workspace_id"])
+        database(f"""
+            BEGIN;
+            SET LOCAL session_replication_role = replica;
+            DELETE FROM public.learning_drift_assessment_member WHERE workspace_id = '{workspace}';
+            DELETE FROM public.learning_drift_assessment WHERE workspace_id = '{workspace}';
+            DELETE FROM public.learning_shadow_observation WHERE workspace_id = '{workspace}';
+            COMMIT;
+        """)
+        migrate("downgrade", "f4b6d8e0a2c7")
+        assert drift_contract() == old_contract
+        assert observer_gate_contract() == []
+        migrate("upgrade", "head")
+        assert drift_contract() == contract
+        assert observer_gate_contract() == observer_gate
+        assert CURRENT_HEAD + " (head)" in migrate("current").stdout
+        assert "No new upgrade operations detected" in migrate("check").stdout
     finally:
         subprocess.run(
             [*base, "down", "--volumes", "--remove-orphans"],

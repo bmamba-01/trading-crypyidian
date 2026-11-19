@@ -47,7 +47,7 @@ def test_shadow_drift_source_scope_denies_qa_without_license_fixture() -> None:
             compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "head")
             heads = compose("run", "--rm", "--no-deps", "migrator", "alembic", "heads")
             assert heads.stdout.count("(head)") == 1
-            assert "f4b6d8e0a2c7 (head)" in heads.stdout
+            assert "a6c8e0b2d4f7 (head)" in heads.stdout
             admin_secret = (
                 resources.compose_file.parent / ".secrets" / ("database_admin_web_password")
             )
@@ -81,6 +81,7 @@ def test_shadow_drift_source_scope_denies_qa_without_license_fixture() -> None:
                 "missing_decision_denied": True,
                 "missing_observation_recheck_false": True,
                 "observer_can_execute_shadow_source_gate": True,
+                "observer_drift_qa_source_denied": True,
                 "observer_qa_source_is_explicit": True,
                 "observer_shadow_qa_source_denied": True,
                 "qa_source_is_explicit": True,

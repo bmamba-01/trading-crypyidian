@@ -49,7 +49,7 @@ def test_admin_shadow_drift_feed_uses_rights_gated_read_gateway() -> None:
             assert "No new upgrade operations detected" in check.stdout + check.stderr
             heads = compose("run", "--rm", "--no-deps", "migrator", "alembic", "heads")
             assert heads.stdout.count("(head)") == 1
-            assert "f4b6d8e0a2c7 (head)" in heads.stdout
+            assert "a6c8e0b2d4f7 (head)" in heads.stdout
 
             admin_secret = (
                 resources.compose_file.parent / ".secrets" / ("database_admin_web_password")

@@ -6,7 +6,7 @@ import hashlib
 import json
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from datetime import datetime, timedelta
+from datetime import timedelta
 from uuid import UUID, uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -154,12 +154,10 @@ class LearningDriftApplication:
             membership_digest = LearningDriftRepository.membership_digest(
                 tuple(member.observation.observation_id for member in members)
             )
-            checked_at = await shadow_repository.authorization_clock(workspace_id=workspace_id)
             members = await _authorize_members_current_scope(
                 repository=repository,
                 workspace_id=workspace_id,
                 members=members,
-                checked_at=checked_at,
             )
             source_rights_digest = _source_rights_digest(members)
             effective_observations = tuple(
@@ -322,7 +320,6 @@ async def _authorize_members_current_scope(
     repository: LearningDriftRepository,
     workspace_id: UUID,
     members: tuple[LearningDriftCohortMember, ...],
-    checked_at: datetime,
 ) -> tuple[LearningDriftCohortMember, ...]:
     authorized: list[LearningDriftCohortMember] = []
     for member in members:
@@ -331,7 +328,6 @@ async def _authorize_members_current_scope(
             await repository.authorize_current_source_scope(
                 workspace_id=workspace_id,
                 decision_id=decision_id,
-                checked_at=checked_at,
             )
             if decision_id is not None and member.source_ids
             else None

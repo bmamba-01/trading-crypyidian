@@ -292,3 +292,8 @@ WP06.3 schema và WP06.4 evaluator có thể song song khi contracts `SampleLine
 
 - Migration tiến `f4b6d8e0a2c7` nối sau `e8a2c4d6f0b3`, giới hạn truy vấn baseline vào các cột được dùng và bổ sung đúng bốn quyền SELECT theo cột. Compose kiểm Brier/log-loss, khóa quyền đọc trực tiếp payload của admin, denial/no-write và vòng hạ cấp/nâng cấp lại. API trả 409 với thông báo đã lược bỏ mã lỗi nội bộ cho hai trường hợp lineage và sai lệch aggregate.
 - Ma trận cohort hỗn hợp, quyền thu hẹp/thu hồi và retry vẫn mở cho tới khi có quyền PAPER non-QA hợp lệ. CRY-334 giữ In Progress và `SHADOW`/`PAPER_GATE` giữ khóa. Xem [kế hoạch exact source-use](./2026-11-14-wp06-exact-source-use-consumers.md#task-4-kiểm-scope-chính-xác-cho-aggregate-hiệu-năng-paper).
+
+### CRY-334 Task 5 — Quyền gọi cổng Drift của observer (19/11/2026)
+
+- Migration `a6c8e0b2d4f7` thêm cổng Drift hai tham số riêng cho observer. Cổng lấy source IDs, khóa nguồn theo thứ tự rồi mới lấy `clock_timestamp()` PostgreSQL; observer không có EXECUTE trên cổng ba tham số nhận timestamp, hai hàm PAPER nội bộ hoặc app/runtime không được cấp quyền. PostgreSQL xác nhận lời gọi với timestamp lịch sử bị từ chối `42501`, cổng chờ khóa QA rồi trả `NULL`, không dùng fixture để kết luận quyền PAPER. Khi có dữ liệu trong sổ Shadow/Drift, downgrade bị từ chối trước khi thay đổi hàm hoặc quyền.
+- Writer được kiểm với cohort trống và repository thật với decision QA. Ma trận writer cho cohort có member, quyền PAPER non-QA và hai thứ tự khóa khi thu hồi quyền vẫn mở. CRY-334 giữ In Progress, `SHADOW` và `PAPER_GATE` tiếp tục khóa. [Kế hoạch Task 5](./2026-11-14-wp06-exact-source-use-consumers.md#task-5-kiểm-quyền-chính-xác-cho-từng-member-shadow-và-drift)

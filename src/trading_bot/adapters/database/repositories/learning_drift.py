@@ -178,15 +178,12 @@ class LearningDriftRepository:
         return select(func.transaction_timestamp())
 
     @staticmethod
-    def source_scope_fingerprint_statement(
-        *, workspace_id: UUID, decision_id: UUID, checked_at: datetime
-    ) -> Select[Any]:
-        """Gọi gate aggregate PAPER cố định; NULL nghĩa là member không đủ quyền."""
+    def source_scope_fingerprint_statement(*, workspace_id: UUID, decision_id: UUID) -> Select[Any]:
+        """Gọi gate aggregate PAPER lấy giờ PostgreSQL; NULL nghĩa là member thiếu quyền."""
         return select(
-            func.public.wp06_authorize_learning_drift_source_scope(
+            func.public.wp06_authorize_learning_drift_source_scope_current(
                 workspace_id,
                 decision_id,
-                checked_at,
             )
         )
 
@@ -261,14 +258,13 @@ class LearningDriftRepository:
         )
 
     async def authorize_current_source_scope(
-        self, *, workspace_id: UUID, decision_id: UUID, checked_at: datetime
+        self, *, workspace_id: UUID, decision_id: UUID
     ) -> str | None:
         await self._bind_workspace(workspace_id)
         value = await self._session.scalar(
             self.source_scope_fingerprint_statement(
                 workspace_id=workspace_id,
                 decision_id=decision_id,
-                checked_at=checked_at,
             )
         )
         if not isinstance(value, str) or _SHA256.fullmatch(value) is None:

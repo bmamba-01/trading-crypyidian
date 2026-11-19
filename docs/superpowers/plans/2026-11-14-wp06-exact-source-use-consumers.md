@@ -97,8 +97,10 @@
 - [x] Dùng exact source-use gate kiểm từng Shadow decision trước khi append; giữ nguyên baseline decision và metadata-only/ABSTAIN.
 - [x] Recheck bar của mọi Drift member dưới source lock và persist current-rights digest xác định cùng membership cohort.
 - [x] Compose E2E kiểm QA denial, workspace/RLS/ACL, source-scope gate, Drift persistence/digest, admin metadata read và populated downgrade.
+- [x] Trên head `a6c8e0b2d4f7`, observer chỉ gọi được cổng Drift hai tham số; cổng tự lấy source IDs, khóa nguồn theo thứ tự rồi mới đọc `clock_timestamp()` của PostgreSQL. Lời gọi cổng ba tham số với timestamp lịch sử và hai hàm PAPER nội bộ đều bị từ chối `42501`; app/runtime không có EXECUTE. Compose cũng xác nhận gate chờ khóa QA rồi trả `NULL`, không dùng fixture để suy ra quyền PAPER.
+- [x] Repository thật trả `None` cho decision QA. Ứng dụng trả `None` khi cohort trống, không ghi assessment/member; downgrade bị chặn khi ledger có dữ liệu và downgrade/re-upgrade bảng trống khôi phục contract/ACL.
 - [ ] Hoàn tất ma trận mixed-source/member và race rights revoke khi đang giữ cohort lock; không giả lập quyền non-QA.
-- [x] Shadow/Drift units và Compose source-scope/admin-read/persistence đạt trên D7 current head. Projection UI Shadow/Drift không đổi nên bằng chứng Playwright responsive trước đó vẫn áp dụng.
+- [x] Shadow/Drift units và Compose source-scope/admin-read/persistence đạt trên D8 current head `a6c8e0b2d4f7`. Projection UI Shadow/Drift không đổi nên bằng chứng Playwright responsive trước đó vẫn áp dụng.
 
 ### Task 6: WP06 traceability and regression audit
 

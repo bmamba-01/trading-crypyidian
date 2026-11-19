@@ -101,7 +101,7 @@ def test_paper_performance_aggregate_gateway_is_narrow_and_fails_closed() -> Non
             assert "No new upgrade operations detected" in check.stdout + check.stderr
             heads = compose("run", "--rm", "--no-deps", "migrator", "alembic", "heads")
             assert heads.stdout.count("(head)") == 1
-            assert "f4b6d8e0a2c7 (head)" in heads.stdout
+            assert "a6c8e0b2d4f7 (head)" in heads.stdout
             admin_secret = (
                 resources.compose_file.parent / ".secrets" / "database_admin_web_password"
             )
@@ -167,7 +167,7 @@ def test_paper_performance_aggregate_gateway_is_narrow_and_fails_closed() -> Non
                 "WP06_PAPER_PERFORMANCE_AGGREGATE_DOWNGRADE_POPULATED_DENIED"
             ) in denied.stderr
             current = compose("run", "--rm", "--no-deps", "migrator", "alembic", "current")
-            assert "f4b6d8e0a2c7 (head)" in current.stdout
+            assert "a6c8e0b2d4f7 (head)" in current.stdout
             assert snapshot_aggregate_contract() == upgraded
             assert database(row_count_sql) == "1"
 
