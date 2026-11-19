@@ -147,8 +147,10 @@ from trading_bot.application.telegram_binding import TelegramBindingService
 from trading_bot.application.telegram_paper_report import TelegramPaperReportService
 from trading_bot.application.telegram_signal_subscription import TelegramSignalSubscriptionService
 from trading_bot.application.telegram_signals import SignalThrottlePolicy
+from trading_bot.auth.account_security_router import router as account_security_router
 from trading_bot.auth.action_challenge import ActionChallengeService
 from trading_bot.auth.cookies import session_cookie_name
+from trading_bot.auth.mfa_recovery import AccountSecurityService
 from trading_bot.auth.route_policy import assert_all_routes_have_policy, public_route
 from trading_bot.auth.router import router as auth_router
 from trading_bot.auth.security import LoginRateLimiter, TestModeTotpManager
@@ -329,6 +331,15 @@ def create_app(
         totp_manager = TestModeTotpManager() if app_settings.auth_test_totp_enabled else None
         application.state.auth_service = (
             AuthService(
+                active_session_factory,
+                active_secret_provider,
+                totp=totp_manager,
+            )
+            if active_session_factory is not None and active_secret_provider is not None
+            else None
+        )
+        application.state.account_security_service = (
+            AccountSecurityService(
                 active_session_factory,
                 active_secret_provider,
                 totp=totp_manager,
@@ -937,6 +948,7 @@ def create_app(
     # SEC-26: router admin/UI/API quản trị chỉ mount ở process admin-web.
     if admin_web_role:
         app.include_router(auth_router)
+        app.include_router(account_security_router)
         app.include_router(settings_router)
         app.include_router(members_router)
         app.include_router(watchlist_router)

@@ -20,7 +20,10 @@ def get_auth_service(request: Request) -> AuthService:
 
 def raise_auth_failure(error: AuthenticationFailure) -> NoReturn:
     """Chuyển lỗi xác thực thành ``HTTPException`` với mã trạng thái an toàn."""
-    raise HTTPException(status_code=error.status_code, detail=error.message) from error
+    detail: str | dict[str, str] = (
+        {"code": error.code, "message": error.message} if error.code is not None else error.message
+    )
+    raise HTTPException(status_code=error.status_code, detail=detail) from error
 
 
 async def current_identity(
