@@ -98,19 +98,22 @@
 - [x] Recheck bar của mọi Drift member dưới source lock và persist current-rights digest xác định cùng membership cohort.
 - [x] Compose E2E kiểm QA denial, workspace/RLS/ACL, source-scope gate, Drift persistence/digest, admin metadata read và populated downgrade.
 - [x] Trên head `a6c8e0b2d4f7`, observer chỉ gọi được cổng Drift hai tham số; cổng tự lấy source IDs, khóa nguồn theo thứ tự rồi mới đọc `clock_timestamp()` của PostgreSQL. Lời gọi cổng ba tham số với timestamp lịch sử và hai hàm PAPER nội bộ đều bị từ chối `42501`; app/runtime không có EXECUTE. Compose cũng xác nhận gate chờ khóa QA rồi trả `NULL`, không dùng fixture để suy ra quyền PAPER.
+- [x] Mở rộng QA-only Compose E2E qua `LearningDriftApplication` với cohort có một member QA: assessment/member thật được ghi nhưng `INCONCLUSIVE`, `rights_unverified`, 0 eligible và không có proposal; retry trả duplicate. Fixture chỉ kiểm denial, không phải bằng chứng quyền.
+- [x] Sửa hash parity cho `source_rights_digest` khác NULL: migration `c6e8a0b2d4f9` dựng JSON theo thứ tự khóa của Python và giữ nguyên cách viết số mũ khi tính SHA-256. Integrity guard dùng quyền có sẵn trên hàm JSON và số thực. Nhánh NULL lịch sử giữ nguyên chuỗi byte.
 - [x] Repository thật trả `None` cho decision QA. Ứng dụng trả `None` khi cohort trống, không ghi assessment/member; downgrade bị chặn khi ledger có dữ liệu và downgrade/re-upgrade bảng trống khôi phục contract/ACL.
 - [ ] Hoàn tất ma trận mixed-source/member và race rights revoke khi đang giữ cohort lock; không giả lập quyền non-QA.
-- [x] Shadow/Drift units và Compose source-scope/admin-read/persistence đạt trên D8 current head `a6c8e0b2d4f7`. Projection UI Shadow/Drift không đổi nên bằng chứng Playwright responsive trước đó vẫn áp dụng.
+- [x] Sau sửa review, 149 unit liên quan và lô Compose source-scope, persistence, admin-read đạt trên head `c6e8a0b2d4f9` (4 E2E/133.88s/0 skipped). Các bước downgrade trực tiếp khi ledger có dữ liệu bị từ chối tại đúng revision. Re-review không còn finding chặn; retry xác nhận cùng assessment ID và chỉ một hàng theo đúng identity.
+- [x] Full unit **6.076 passed**, regression chéo 8 file WP06 scorer/source-lineage/PAPER/rights/DB **11 passed/613.13s/0 skipped**, Ruff, format (1.408 files), mypy (544 source files), sole Alembic head `c6e8a0b2d4f9` và diff-check đạt.
+- [ ] Mixed-source/member và rights revoke/shrink race vẫn cần quyền PAPER non-QA thật; QA fixture chỉ chứng minh denial. Fixture registry Drift được seed ở chế độ replica, nên test không tuyên bố kiểm registry approval hoặc Shadow production writer. Fixture DB WP06F chỉ dành kiểm operator path.
 
 ### Task 6: WP06 traceability and regression audit
 
 **Deliverable:** WBS accurately marks completed exact-scope consumers and names external evidence required for any positive active deployment.
 
 - [x] Rà lại TRAINING normalization/claim và TEST report gates theo operation map; giữ operation `evaluation` tách biệt với aggregate/report scope. Source-linked replay kiểm parity hash D5; PAPER aggregate dùng đúng `aggregate_report`/`aggregate_reporting` cố định.
-- [ ] Hoàn tất cập nhật WP06 WBS, open gaps, module, memory và project-status sau khi tích hợp các commit mới từ `origin/dev`; không phát sinh thuật ngữ glossary EN→VI mới.
-- [ ] Đọc lại mục memory cuối sau khi cập nhật và đối chiếu source diff/test output.
+- [x] Cập nhật WP06 WBS, open gaps, module, memory và project-status; đọc lại memory, đối chiếu source diff/test output; glossary không phát sinh thuật ngữ mới.
 - [x] D7 full unit **4077 passed/0 skipped**, Ruff, format-check **965 files**, mypy **379**, Compose config, sole Alembic head `e2f4a6c8b0d7`, source-linked/scorer/source-scope/Shadow/Drift/writer Compose batch **10 passed/500.80s/0 skipped**, downgrade/re-upgrade writer và diff-check đạt.
-- [ ] Tích hợp 5 commit mới từ `origin/dev`, rồi chạy lại Compose current-head liên quan; projection report/UI không đổi nên bằng chứng Playwright responsive hiện có vẫn áp dụng.
+- [x] `git fetch origin dev` xác nhận nhánh hiện tại có chung base `5c360a7` với `origin/dev`, ahead 5/behind 0; không còn commit dev mới cần tích hợp. Chạy lại Compose current-head liên quan: Drift **4 passed** và regression chéo WP06 **11 passed/613.13s/0 skipped**. Không sửa projection/UI nên bằng chứng Playwright responsive hiện có vẫn áp dụng.
 
 ### Bổ sung bằng chứng replay execute→persist — 19/11/2026
 

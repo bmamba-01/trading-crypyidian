@@ -18,7 +18,7 @@ PROBE_BOOTSTRAP = (
     "exec(compile(p['code'],'wp06_shadow_drift_persistence.py','exec'),{'__name__':'__main__'})"
 )
 PREVIOUS_HEAD = "d2b4c6e8f0a1"
-CURRENT_HEAD = "a6c8e0b2d4f7"
+CURRENT_HEAD = "c6e8a0b2d4f9"
 
 
 def test_shadow_drift_postgres_append_only_rls_rights_and_empty_downgrade() -> None:
@@ -252,6 +252,21 @@ def test_populated_coverage_v1_ledger_survives_bounded_window_upgrade() -> None:
     def migrate(*args: str, success: bool = True) -> subprocess.CompletedProcess[str]:
         return compose("run", "--rm", "--no-deps", "migrator", "alembic", *args, success=success)
 
+    def writer_contract() -> str:
+        return database("""
+            SELECT proname, pg_catalog.md5(pg_catalog.pg_get_functiondef(oid)), proacl,
+                   pg_catalog.has_function_privilege(
+                       'crypidian_learning_shadow_integrity_guard', oid, 'EXECUTE')
+              FROM pg_catalog.pg_proc
+             WHERE pronamespace = 'public'::regnamespace AND proname IN (
+                'wp06_drift_assessment_idempotency_key', 'wp06_drift_assessment_content_hash',
+                'wp06_require_learning_drift_member_lineage', 'wp06_license_canonical_json',
+                'wp06_authorize_learning_drift_source_scope_current',
+                'wp06_learning_drift_current_rights_digest', 'wp06_sha256_canonical_json',
+                'wp06_canonical_float_json')
+             ORDER BY oid
+        """)
+
     ensure_image_available(root, image)
     try:
         compose("up", "--detach", "--wait", "--wait-timeout", "180", "postgres")
@@ -263,7 +278,29 @@ def test_populated_coverage_v1_ledger_survives_bounded_window_upgrade() -> None:
         migrate("upgrade", "f4b6d8e0a2c7")
         old_contract = drift_contract()
         assert observer_gate_contract() == []
-        migrate("upgrade", CURRENT_HEAD)
+        revisions = (
+            ("a6c8e0b2d4f7", "WP06_DRIFT_OBSERVER_SCOPE_DOWNGRADE_POPULATED_DENIED"),
+            ("b4c6d8e0f2a9", "WP06_DRIFT_GUARD_SCOPE_GRANT_DOWNGRADE_POPULATED_DENIED"),
+            ("c6e8a0b2d4f9", "WP06_DRIFT_SOURCE_RIGHTS_HASH_DOWNGRADE_POPULATED_DENIED"),
+        )
+        contracts = {"f4b6d8e0a2c7": writer_contract()}
+        for helper in ("wp06_sha256_canonical_json(json)", "wp06_canonical_float_json(float8)"):
+            assert (
+                database(
+                    "SELECT pg_catalog.has_function_privilege("
+                    f"'crypidian_learning_shadow_integrity_guard','public.{helper}','EXECUTE')"
+                )
+                == "t"
+            )
+        for revision, marker in revisions:
+            migrate("upgrade", revision)
+            contracts[revision] = writer_contract()
+            populated = snapshot("read")
+            denied = migrate("downgrade", "-1", success=False)
+            assert f"psycopg.errors.RaiseException: {marker}" in denied.stderr
+            assert database("SELECT version_num FROM alembic_version") == revision
+            assert writer_contract() == contracts[revision]
+            assert snapshot("read") == populated
         contract = drift_contract()
         observer_gate = observer_gate_contract()
         assert len(contract) == len(old_contract) == 3
@@ -278,14 +315,8 @@ def test_populated_coverage_v1_ledger_survives_bounded_window_upgrade() -> None:
             assert old[-1] == "f"
             assert old[-1] == new[-1] == "f"
             assert old[6:] == new[6:]
-        populated = snapshot("read")
-        denied = migrate("downgrade", "f4b6d8e0a2c7", success=False)
-        assert "WP06_DRIFT_OBSERVER_SCOPE_DOWNGRADE_POPULATED_DENIED" in denied.stderr
         assert CURRENT_HEAD + " (head)" in migrate("current").stdout
-        assert drift_contract() == contract
-        assert observer_gate_contract() == observer_gate
         after = snapshot("read")
-        assert after == populated
         assert after["canonical"] == [True, True, True, True]
         legacy = after["rows"]["learning_drift_assessment"][0][0]
         assert legacy["policy_version"] == "coverage-v1"
@@ -314,10 +345,15 @@ def test_populated_coverage_v1_ledger_survives_bounded_window_upgrade() -> None:
             DELETE FROM public.learning_shadow_observation WHERE workspace_id = '{workspace}';
             COMMIT;
         """)
-        migrate("downgrade", "f4b6d8e0a2c7")
+        for previous in ("b4c6d8e0f2a9", "a6c8e0b2d4f7", "f4b6d8e0a2c7"):
+            migrate("downgrade", "-1")
+            assert database("SELECT version_num FROM alembic_version") == previous
+            assert writer_contract() == contracts[previous]
         assert drift_contract() == old_contract
         assert observer_gate_contract() == []
-        migrate("upgrade", "head")
+        for revision, _ in revisions:
+            migrate("upgrade", revision)
+            assert writer_contract() == contracts[revision]
         assert drift_contract() == contract
         assert observer_gate_contract() == observer_gate
         assert CURRENT_HEAD + " (head)" in migrate("current").stdout

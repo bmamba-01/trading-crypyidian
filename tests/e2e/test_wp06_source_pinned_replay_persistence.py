@@ -205,7 +205,7 @@ def test_source_pinned_runtime_replay_persists_exact_lineage_in_postgres(case: s
                 "alembic",
                 "current",
             )
-            assert "a6c8e0b2d4f7 (head)" in current.stdout
+            assert "c6e8a0b2d4f9 (head)" in current.stdout
             assert (
                 _lineage_contract(root, project, environment, volume, workspace_id)
                 == lineage_contract
