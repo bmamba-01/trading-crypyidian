@@ -131,7 +131,7 @@ def run_backfill_compose_probe(
             )
             assert error_marker is not None, downgrade_output[:3000]
         current = compose("run", "--rm", "--no-deps", "migrator", "alembic", "current")
-        assert re.fullmatch(r"f6c8e0a2b4db \(head\)(?: \(mergepoint\))?", current.stdout.strip()), (
+        assert re.fullmatch(r"e8a2c4d6f0b3 \(head\)(?: \(mergepoint\))?", current.stdout.strip()), (
             current.stdout
         )
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "check")

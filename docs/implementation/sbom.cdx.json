@@ -2,9 +2,9 @@
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
   "version": 1,
-  "serialNumber": "urn:uuid:d247ed85-4e4c-4276-8905-00200f6e30c3",
+  "serialNumber": "urn:uuid:e37d0660-9ab2-42cf-a685-a5da728f2c4d",
   "metadata": {
-    "timestamp": "2026-11-14T13:32:58.558171000Z",
+    "timestamp": "2026-11-19T00:30:23.956245000Z",
     "tools": [
       {
         "vendor": "Astral Software Inc.",
@@ -2735,7 +2735,236 @@
     },
     {
       "type": "library",
-      "bom-ref": "playwright-29@1.64.1",
+      "bom-ref": "pillow-29@13.0.0",
+      "name": "pillow",
+      "version": "13.0.0",
+      "purl": "pkg:pypi/pillow@13.0.0",
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://files.pythonhosted.org/packages/ce/a4/9cc30690a394a8305e8be4c9036aa16d0dfddadd09079860b582f562496d/pillow-13.0.0.tar.gz",
+          "hashes": [
+            {
+              "alg": "SHA-256",
+              "content": "cdcd1ba258178f7356d74170c9a81ba4eab6a5d55748bc402a5a2a6fe6be3510"
+            }
+          ]
+        },
+        {
+          "type": "distribution",
+          "url": "https://files.pythonhosted.org/packages/8e/45/fbad9c7f5e2f1745c373a434d46072bc84eddfefaa28b852425ac957fda6/pillow-13.0.0-cp314-cp314-ios_13_0_arm64_iphoneos.whl",
+          "hashes": [
+            {
+              "alg": "SHA-256",
+              "content": "44629d4498c9cb6b2051806155f22141df0d8a929c56134b166655232dfb2f8c"
+            }
+          ]
+        },
+        {
+          "type": "distribution",
+          "url": "https://files.pythonhosted.org/packages/a2/bf/2074902a259a90692c5dbf132885d21671644cbbd3f690047516243a55db/pillow-13.0.0-cp314-cp314-ios_13_0_arm64_iphonesimulator.whl",
+          "hashes": [
+            {
+              "alg": "SHA-256",
+              "content": "bf97ba1b5542050e9b0c74e632323b6d8136cc99d64e193abebee22fe6013c76"
+            }
+          ]
+        },
+        {
+          "type": "distribution",
+          "url": "https://files.pythonhosted.org/packages/ff/a5/3d1bb93b8ea38d15d21356c1b8e9f50971ac592aaa248f7fb71739094c0e/pillow-13.0.0-cp314-cp314-ios_13_0_x86_64_iphonesimulator.whl",
+          "hashes": [
+            {
+              "alg": "SHA-256",
+              "content": "aa694c49787040943570d61c9b8fc01271bd2a2cfdd55f0d896f8aecdce1a981"
+            }
+          ]
+        },
+        {
+          "type": "distribution",
+          "url": "https://files.pythonhosted.org/packages/84/a1/be060135d85187b25fa8b2573786c0e45c62ae27527fff5257675eb97f4a/pillow-13.0.0-cp314-cp314-macosx_10_15_x86_64.whl",
+          "hashes": [
+            {
+              "alg": "SHA-256",
+              "content": "49c12af515073e9bf511e4ef736743bf70d531a643668722279314b937742ba4"
+            }
+          ]
+        },
+        {
+          "type": "distribution",
+          "url": "https://files.pythonhosted.org/packages/b5/f4/0bf6f1ac9ba7ee2ffe9914aeb410a1035a0c1a3c42f122388d7fc950bc4b/pillow-13.0.0-cp314-cp314-macosx_11_0_arm64.whl",
+          "hashes": [
+            {
+              "alg": "SHA-256",
+              "content": "d9b0a2bee3f3e03e9f29057aedb807dbf1e1d96ee1b9d0f422d9db6c8583271d"
+            }
+          ]
+        },
+        {
+          "type": "distribution",
+          "url": "https://files.pythonhosted.org/packages/83/16/b603274617b3e6728da3a0133d4fba1ea8d7fbe0c4ea5fef9cbffa398b8b/pillow-13.0.0-cp314-cp314-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl",
+          "hashes": [
+            {
+              "alg": "SHA-256",
+              "content": "5933fcea5a5ba64c686f55c886a115cbfd92f2900460784a1e79909fdbafd7b6"
+            }
+          ]
+        },
+        {
+          "type": "distribution",
+          "url": "https://files.pythonhosted.org/packages/1d/f2/1371707ce438ba9a43f9d24089828494ec6f9396e28cd7903aa704dd6306/pillow-13.0.0-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+          "hashes": [
+            {
+              "alg": "SHA-256",
+              "content": "e91c2b1cbeae768c98752e67e717e283d68dae45717b41f2d91eaee648e37b7d"
+            }
+          ]
+        },
+        {
+          "type": "distribution",
+          "url": "https://files.pythonhosted.org/packages/b9/a9/62cf68587f910bc87c5951bcb6e9430c7643a65076adf5f18b4bf350e2bd/pillow-13.0.0-cp314-cp314-musllinux_1_2_aarch64.whl",
+          "hashes": [
+            {
+              "alg": "SHA-256",
+              "content": "7f6299e494e46253d40c34653cac369412f44ca53b5f85d848d3f95b1ed0546c"
+            }
+          ]
+        },
+        {
+          "type": "distribution",
+          "url": "https://files.pythonhosted.org/packages/6c/c9/9e9b48178649730299be0bafbf5f810a5b6977538f5a92d47e4ba5f5d608/pillow-13.0.0-cp314-cp314-musllinux_1_2_x86_64.whl",
+          "hashes": [
+            {
+              "alg": "SHA-256",
+              "content": "f9bd7d260d986f3553518c5d723544346fa48031f8aef3265d786aeb59845bc0"
+            }
+          ]
+        },
+        {
+          "type": "distribution",
+          "url": "https://files.pythonhosted.org/packages/8f/48/c44e91384b1b6c072a714a63d00608acc16a6a968735e478e4be4384e5ac/pillow-13.0.0-cp314-cp314-win32.whl",
+          "hashes": [
+            {
+              "alg": "SHA-256",
+              "content": "2e31c4e68cffd7b1f116127626813b82fcba19edf6b940a7b0c266d6484d0055"
+            }
+          ]
+        },
+        {
+          "type": "distribution",
+          "url": "https://files.pythonhosted.org/packages/50/e2/7ad17747517e4c813dca78257d6bb593466f8231baf1384bc98d92745edb/pillow-13.0.0-cp314-cp314-win_amd64.whl",
+          "hashes": [
+            {
+              "alg": "SHA-256",
+              "content": "f7cbb7a64e7ec664775195e4f81923bc8a93d9451b963f844e59118f63147a7a"
+            }
+          ]
+        },
+        {
+          "type": "distribution",
+          "url": "https://files.pythonhosted.org/packages/41/9f/e5b51f2ce8ef4563215334035403ce61a244f93a2e65c24a940131618f87/pillow-13.0.0-cp314-cp314-win_arm64.whl",
+          "hashes": [
+            {
+              "alg": "SHA-256",
+              "content": "a6aaa7871aebca081eb5c45f83e845bbd9712ae99fa9286dbfdcee835e63f4b4"
+            }
+          ]
+        },
+        {
+          "type": "distribution",
+          "url": "https://files.pythonhosted.org/packages/97/73/a53502f731f6c84805a4ce87a8881e86d07a65aee64728b900d112dc703e/pillow-13.0.0-cp314-cp314t-macosx_10_15_x86_64.whl",
+          "hashes": [
+            {
+              "alg": "SHA-256",
+              "content": "7b999816b5850a35ada08443e6e03945f1f6488144a83afe2d37b240a552aafa"
+            }
+          ]
+        },
+        {
+          "type": "distribution",
+          "url": "https://files.pythonhosted.org/packages/21/50/7e949959a56b5559c78ef172b70fc6025706acb289f3f648a15329e4fa6f/pillow-13.0.0-cp314-cp314t-macosx_11_0_arm64.whl",
+          "hashes": [
+            {
+              "alg": "SHA-256",
+              "content": "67871a13cf47275201553b536c025da777f997fa562a19eb798af4ad4b97c18f"
+            }
+          ]
+        },
+        {
+          "type": "distribution",
+          "url": "https://files.pythonhosted.org/packages/c9/52/43ded0ac08e77e39d17bd6d894162572201b5e8fdc4a022b14c55a1960a4/pillow-13.0.0-cp314-cp314t-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl",
+          "hashes": [
+            {
+              "alg": "SHA-256",
+              "content": "e8ca8f69b7c77fa96dad99f8638c1fc4f1c0bed4acaa1baf7a3c31bdb80a0ab1"
+            }
+          ]
+        },
+        {
+          "type": "distribution",
+          "url": "https://files.pythonhosted.org/packages/0d/2e/4a57ed216d5bf877387cba4d44c02aa87abe51ad2e06404aa6b597c4da39/pillow-13.0.0-cp314-cp314t-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+          "hashes": [
+            {
+              "alg": "SHA-256",
+              "content": "6bce6a29c3898191f4c9998e4d4e8f69790caeabde46e54da4bc235ce5bde683"
+            }
+          ]
+        },
+        {
+          "type": "distribution",
+          "url": "https://files.pythonhosted.org/packages/5c/3d/2929b248e135752d63aaeabf53f6de797e905b7b6263f9c1e2adade20aba/pillow-13.0.0-cp314-cp314t-musllinux_1_2_aarch64.whl",
+          "hashes": [
+            {
+              "alg": "SHA-256",
+              "content": "816752a5ef76a80484c8c441c85593b7ea9304f6231fc5776ad1fbff7e773058"
+            }
+          ]
+        },
+        {
+          "type": "distribution",
+          "url": "https://files.pythonhosted.org/packages/bc/33/fb0da992cf084ed1ee6ee05e96b6191e35c351eb707ca2df874feb24ce47/pillow-13.0.0-cp314-cp314t-musllinux_1_2_x86_64.whl",
+          "hashes": [
+            {
+              "alg": "SHA-256",
+              "content": "5bdb38ba220b61b4ec31dd1046dea6b016d3c6850a23f43ed8b58332b2fc668e"
+            }
+          ]
+        },
+        {
+          "type": "distribution",
+          "url": "https://files.pythonhosted.org/packages/bb/af/c30dd9ef6a3dce84ecb1b2393cac629047a32e66279056c6cb46c3ffd65c/pillow-13.0.0-cp314-cp314t-win32.whl",
+          "hashes": [
+            {
+              "alg": "SHA-256",
+              "content": "06903aac074d00c988e77a1fc435286dc498506d4ca8d6f69df9babddf4ecc15"
+            }
+          ]
+        },
+        {
+          "type": "distribution",
+          "url": "https://files.pythonhosted.org/packages/85/d5/ef3a8ae7609c8ab26570abf18194882534b480d245a9148b895a2262c004/pillow-13.0.0-cp314-cp314t-win_amd64.whl",
+          "hashes": [
+            {
+              "alg": "SHA-256",
+              "content": "9a635068d9793c7f0d929f39f18b58f1bd86c236e8e7b64167b86af9232ebca0"
+            }
+          ]
+        },
+        {
+          "type": "distribution",
+          "url": "https://files.pythonhosted.org/packages/84/3c/0861db0c69a03689ebe3e7599d35668a414deb5aaafd8255215e4e62e3d3/pillow-13.0.0-cp314-cp314t-win_arm64.whl",
+          "hashes": [
+            {
+              "alg": "SHA-256",
+              "content": "0d1a9cf7bc6917538b20f8d06b9ab2147e542f68849e96fc58eb66bdf6acc692"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "playwright-30@1.64.1",
       "name": "playwright",
       "version": "1.64.1",
       "purl": "pkg:pypi/playwright@1.64.1",
@@ -2824,7 +3053,7 @@
     },
     {
       "type": "library",
-      "bom-ref": "pluggy-30@1.7.0",
+      "bom-ref": "pluggy-31@1.7.0",
       "name": "pluggy",
       "version": "1.7.0",
       "purl": "pkg:pypi/pluggy@1.7.0",
@@ -2853,7 +3082,7 @@
     },
     {
       "type": "library",
-      "bom-ref": "psycopg-31@3.3.6",
+      "bom-ref": "psycopg-32@3.3.6",
       "name": "psycopg",
       "version": "3.3.6",
       "purl": "pkg:pypi/psycopg@3.3.6",
@@ -2882,7 +3111,7 @@
     },
     {
       "type": "library",
-      "bom-ref": "psycopg-binary-32@3.3.6",
+      "bom-ref": "psycopg-binary-33@3.3.6",
       "name": "psycopg-binary",
       "version": "3.3.6",
       "purl": "pkg:pypi/psycopg-binary@3.3.6",
@@ -3007,7 +3236,7 @@
     },
     {
       "type": "library",
-      "bom-ref": "pycparser-33@3.11",
+      "bom-ref": "pycparser-34@3.11",
       "name": "pycparser",
       "version": "3.11",
       "purl": "pkg:pypi/pycparser@3.11",
@@ -3042,7 +3271,7 @@
     },
     {
       "type": "library",
-      "bom-ref": "pydantic-34@2.14.1",
+      "bom-ref": "pydantic-35@2.14.1",
       "name": "pydantic",
       "version": "2.14.1",
       "purl": "pkg:pypi/pydantic@2.14.1",
@@ -3071,7 +3300,7 @@
     },
     {
       "type": "library",
-      "bom-ref": "pydantic-core-35@2.50.1",
+      "bom-ref": "pydantic-core-36@2.50.1",
       "name": "pydantic-core",
       "version": "2.50.1",
       "purl": "pkg:pypi/pydantic-core@2.50.1",
@@ -3400,7 +3629,7 @@
     },
     {
       "type": "library",
-      "bom-ref": "pydantic-settings-36@2.16.0",
+      "bom-ref": "pydantic-settings-37@2.16.0",
       "name": "pydantic-settings",
       "version": "2.16.0",
       "purl": "pkg:pypi/pydantic-settings@2.16.0",
@@ -3429,7 +3658,7 @@
     },
     {
       "type": "library",
-      "bom-ref": "pyee-37@14.0.0",
+      "bom-ref": "pyee-38@14.0.0",
       "name": "pyee",
       "version": "14.0.0",
       "purl": "pkg:pypi/pyee@14.0.0",
@@ -3458,7 +3687,7 @@
     },
     {
       "type": "library",
-      "bom-ref": "pygments-38@2.21.0",
+      "bom-ref": "pygments-39@2.21.0",
       "name": "pygments",
       "version": "2.21.0",
       "purl": "pkg:pypi/pygments@2.21.0",
@@ -3487,7 +3716,7 @@
     },
     {
       "type": "library",
-      "bom-ref": "pyotp-39@2.10.0",
+      "bom-ref": "pyotp-40@2.10.0",
       "name": "pyotp",
       "version": "2.10.0",
       "purl": "pkg:pypi/pyotp@2.10.0",
@@ -3516,7 +3745,36 @@
     },
     {
       "type": "library",
-      "bom-ref": "pytest-40@9.1.1",
+      "bom-ref": "pypdf-41@6.9.2",
+      "name": "pypdf",
+      "version": "6.9.2",
+      "purl": "pkg:pypi/pypdf@6.9.2",
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://files.pythonhosted.org/packages/31/83/691bdb309306232362503083cb15777491045dd54f45393a317dc7d8082f/pypdf-6.9.2.tar.gz",
+          "hashes": [
+            {
+              "alg": "SHA-256",
+              "content": "7f850faf2b0d4ab936582c05da32c52214c2b089d61a316627b5bfb5b0dab46c"
+            }
+          ]
+        },
+        {
+          "type": "distribution",
+          "url": "https://files.pythonhosted.org/packages/a5/7e/c85f41243086a8fe5d1baeba527cb26a1918158a565932b41e0f7c0b32e9/pypdf-6.9.2-py3-none-any.whl",
+          "hashes": [
+            {
+              "alg": "SHA-256",
+              "content": "662cf29bcb419a36a1365232449624ab40b7c2d0cfc28e54f42eeecd1fd7e844"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pytest-42@9.1.1",
       "name": "pytest",
       "version": "9.1.1",
       "purl": "pkg:pypi/pytest@9.1.1",
@@ -3545,7 +3803,7 @@
     },
     {
       "type": "library",
-      "bom-ref": "pytest-asyncio-41@1.4.0",
+      "bom-ref": "pytest-asyncio-43@1.4.0",
       "name": "pytest-asyncio",
       "version": "1.4.0",
       "purl": "pkg:pypi/pytest-asyncio@1.4.0",
@@ -3574,7 +3832,7 @@
     },
     {
       "type": "library",
-      "bom-ref": "pytest-playwright-42@0.10.0",
+      "bom-ref": "pytest-playwright-44@0.10.0",
       "name": "pytest-playwright",
       "version": "0.10.0",
       "purl": "pkg:pypi/pytest-playwright@0.10.0",
@@ -3603,7 +3861,7 @@
     },
     {
       "type": "library",
-      "bom-ref": "python-dotenv-43@1.2.4",
+      "bom-ref": "python-dotenv-45@1.2.4",
       "name": "python-dotenv",
       "version": "1.2.4",
       "purl": "pkg:pypi/python-dotenv@1.2.4",
@@ -3632,7 +3890,7 @@
     },
     {
       "type": "library",
-      "bom-ref": "python-slugify-44@9.1.3",
+      "bom-ref": "python-slugify-46@9.1.3",
       "name": "python-slugify",
       "version": "9.1.3",
       "purl": "pkg:pypi/python-slugify@9.1.3",
@@ -3661,7 +3919,7 @@
     },
     {
       "type": "library",
-      "bom-ref": "ruff-45@0.17.1",
+      "bom-ref": "ruff-47@0.17.1",
       "name": "ruff",
       "version": "0.17.1",
       "purl": "pkg:pypi/ruff@0.17.1",
@@ -3850,7 +4108,7 @@
     },
     {
       "type": "library",
-      "bom-ref": "sqlalchemy-46@2.1.5",
+      "bom-ref": "sqlalchemy-48@2.1.5",
       "name": "sqlalchemy",
       "version": "2.1.5",
       "purl": "pkg:pypi/sqlalchemy@2.1.5",
@@ -4079,7 +4337,7 @@
     },
     {
       "type": "library",
-      "bom-ref": "starlette-47@1.9.0",
+      "bom-ref": "starlette-49@1.9.0",
       "name": "starlette",
       "version": "1.9.0",
       "purl": "pkg:pypi/starlette@1.9.0",
@@ -4108,7 +4366,7 @@
     },
     {
       "type": "library",
-      "bom-ref": "text-unidecode-48@1.3",
+      "bom-ref": "text-unidecode-50@1.3",
       "name": "text-unidecode",
       "version": "1.3",
       "purl": "pkg:pypi/text-unidecode@1.3",
@@ -4137,7 +4395,7 @@
     },
     {
       "type": "library",
-      "bom-ref": "truststore-49@0.10.5",
+      "bom-ref": "truststore-51@0.10.5",
       "name": "truststore",
       "version": "0.10.5",
       "purl": "pkg:pypi/truststore@0.10.5",
@@ -4172,7 +4430,7 @@
     },
     {
       "type": "library",
-      "bom-ref": "typing-extensions-50@4.16.0",
+      "bom-ref": "typing-extensions-52@4.16.0",
       "name": "typing-extensions",
       "version": "4.16.0",
       "purl": "pkg:pypi/typing-extensions@4.16.0",
@@ -4201,7 +4459,7 @@
     },
     {
       "type": "library",
-      "bom-ref": "typing-inspection-51@0.4.4",
+      "bom-ref": "typing-inspection-53@0.4.4",
       "name": "typing-inspection",
       "version": "0.4.4",
       "purl": "pkg:pypi/typing-inspection@0.4.4",
@@ -4230,7 +4488,7 @@
     },
     {
       "type": "library",
-      "bom-ref": "tzdata-52@2026.5",
+      "bom-ref": "tzdata-54@2026.5",
       "name": "tzdata",
       "version": "2026.5",
       "purl": "pkg:pypi/tzdata@2026.5",
@@ -4265,7 +4523,7 @@
     },
     {
       "type": "library",
-      "bom-ref": "uv-build-53@0.13.4",
+      "bom-ref": "uv-build-55@0.13.4",
       "name": "uv-build",
       "version": "0.13.4",
       "purl": "pkg:pypi/uv-build@0.13.4",
@@ -4464,7 +4722,7 @@
     },
     {
       "type": "library",
-      "bom-ref": "uvicorn-54@0.54.0",
+      "bom-ref": "uvicorn-56@0.54.0",
       "name": "uvicorn",
       "version": "0.54.0",
       "purl": "pkg:pypi/uvicorn@0.54.0",
@@ -4493,7 +4751,7 @@
     },
     {
       "type": "library",
-      "bom-ref": "wsproto-55@1.3.2",
+      "bom-ref": "wsproto-57@1.3.2",
       "name": "wsproto",
       "version": "1.3.2",
       "purl": "pkg:pypi/wsproto@1.3.2",
@@ -4526,8 +4784,8 @@
       "ref": "alembic-2@1.20.0",
       "dependsOn": [
         "mako-22@1.4.3",
-        "sqlalchemy-46@2.1.5",
-        "typing-extensions-50@4.16.0"
+        "sqlalchemy-48@2.1.5",
+        "typing-extensions-52@4.16.0"
       ]
     },
     {
@@ -4540,7 +4798,7 @@
       "ref": "anyio-5@4.15.1",
       "dependsOn": [
         "idna-18@3.20",
-        "typing-extensions-50@4.16.0"
+        "typing-extensions-52@4.16.0"
       ]
     },
     {
@@ -4558,7 +4816,7 @@
     {
       "ref": "cffi-8@2.1.1",
       "dependsOn": [
-        "pycparser-33@3.11"
+        "pycparser-34@3.11"
       ]
     },
     {
@@ -4578,10 +4836,10 @@
       "dependsOn": [
         "annotated-doc-3@0.0.5",
         "opentelemetry-api-26@1.45.1",
-        "pydantic-34@2.14.1",
-        "starlette-47@1.9.0",
-        "typing-extensions-50@4.16.0",
-        "typing-inspection-51@0.4.4"
+        "pydantic-35@2.14.1",
+        "starlette-49@1.9.0",
+        "typing-extensions-52@4.16.0",
+        "typing-inspection-53@0.4.4"
       ]
     },
     {
@@ -4594,7 +4852,7 @@
       "ref": "httpcore2-15@2.15.1",
       "dependsOn": [
         "h11-14@0.16.0",
-        "truststore-49@0.10.5"
+        "truststore-51@0.10.5"
       ]
     },
     {
@@ -4604,8 +4862,8 @@
         "httpcore2-15@2.15.1",
         "httpx2-jsfetch-17@1.0",
         "idna-18@3.20",
-        "truststore-49@0.10.5",
-        "wsproto-55@1.3.2"
+        "truststore-51@0.10.5",
+        "wsproto-57@1.3.2"
       ]
     },
     {
@@ -4641,7 +4899,7 @@
         "librt-21@0.16.0",
         "mypy-extensions-25@1.1.0",
         "pathspec-28@1.1.1",
-        "typing-extensions-50@4.16.0"
+        "typing-extensions-52@4.16.0"
       ]
     },
     {
@@ -4650,7 +4908,7 @@
     {
       "ref": "opentelemetry-api-26@1.45.1",
       "dependsOn": [
-        "typing-extensions-50@4.16.0"
+        "typing-extensions-52@4.16.0"
       ]
     },
     {
@@ -4660,115 +4918,121 @@
       "ref": "pathspec-28@1.1.1"
     },
     {
-      "ref": "playwright-29@1.64.1",
+      "ref": "pillow-29@13.0.0"
+    },
+    {
+      "ref": "playwright-30@1.64.1",
       "dependsOn": [
         "greenlet-13@3.5.6",
-        "pyee-37@14.0.0"
+        "pyee-38@14.0.0"
       ]
     },
     {
-      "ref": "pluggy-30@1.7.0"
+      "ref": "pluggy-31@1.7.0"
     },
     {
-      "ref": "psycopg-31@3.3.6",
+      "ref": "psycopg-32@3.3.6",
       "dependsOn": [
-        "psycopg-binary-32@3.3.6",
-        "tzdata-52@2026.5"
+        "psycopg-binary-33@3.3.6",
+        "tzdata-54@2026.5"
       ]
     },
     {
-      "ref": "psycopg-binary-32@3.3.6"
+      "ref": "psycopg-binary-33@3.3.6"
     },
     {
-      "ref": "pycparser-33@3.11"
+      "ref": "pycparser-34@3.11"
     },
     {
-      "ref": "pydantic-34@2.14.1",
+      "ref": "pydantic-35@2.14.1",
       "dependsOn": [
         "annotated-types-4@0.8.0",
-        "pydantic-core-35@2.50.1",
-        "typing-extensions-50@4.16.0",
-        "typing-inspection-51@0.4.4"
+        "pydantic-core-36@2.50.1",
+        "typing-extensions-52@4.16.0",
+        "typing-inspection-53@0.4.4"
       ]
     },
     {
-      "ref": "pydantic-core-35@2.50.1",
+      "ref": "pydantic-core-36@2.50.1",
       "dependsOn": [
-        "typing-extensions-50@4.16.0"
+        "typing-extensions-52@4.16.0"
       ]
     },
     {
-      "ref": "pydantic-settings-36@2.16.0",
+      "ref": "pydantic-settings-37@2.16.0",
       "dependsOn": [
-        "pydantic-34@2.14.1",
-        "python-dotenv-43@1.2.4",
-        "typing-extensions-50@4.16.0",
-        "typing-inspection-51@0.4.4"
+        "pydantic-35@2.14.1",
+        "python-dotenv-45@1.2.4",
+        "typing-extensions-52@4.16.0",
+        "typing-inspection-53@0.4.4"
       ]
     },
     {
-      "ref": "pyee-37@14.0.0",
+      "ref": "pyee-38@14.0.0",
       "dependsOn": [
-        "typing-extensions-50@4.16.0"
+        "typing-extensions-52@4.16.0"
       ]
     },
     {
-      "ref": "pygments-38@2.21.0"
+      "ref": "pygments-39@2.21.0"
     },
     {
-      "ref": "pyotp-39@2.10.0"
+      "ref": "pyotp-40@2.10.0"
     },
     {
-      "ref": "pytest-40@9.1.1",
+      "ref": "pypdf-41@6.9.2"
+    },
+    {
+      "ref": "pytest-42@9.1.1",
       "dependsOn": [
         "colorama-10@0.4.6",
         "iniconfig-19@2.3.1",
         "packaging-27@26.3",
-        "pluggy-30@1.7.0",
-        "pygments-38@2.21.0"
+        "pluggy-31@1.7.0",
+        "pygments-39@2.21.0"
       ]
     },
     {
-      "ref": "pytest-asyncio-41@1.4.0",
+      "ref": "pytest-asyncio-43@1.4.0",
       "dependsOn": [
-        "pytest-40@9.1.1"
+        "pytest-42@9.1.1"
       ]
     },
     {
-      "ref": "pytest-playwright-42@0.10.0",
+      "ref": "pytest-playwright-44@0.10.0",
       "dependsOn": [
-        "playwright-29@1.64.1",
-        "pytest-40@9.1.1",
-        "python-slugify-44@9.1.3"
+        "playwright-30@1.64.1",
+        "pytest-42@9.1.1",
+        "python-slugify-46@9.1.3"
       ]
     },
     {
-      "ref": "python-dotenv-43@1.2.4"
+      "ref": "python-dotenv-45@1.2.4"
     },
     {
-      "ref": "python-slugify-44@9.1.3",
+      "ref": "python-slugify-46@9.1.3",
       "dependsOn": [
-        "text-unidecode-48@1.3"
+        "text-unidecode-50@1.3"
       ]
     },
     {
-      "ref": "ruff-45@0.17.1"
+      "ref": "ruff-47@0.17.1"
     },
     {
-      "ref": "sqlalchemy-46@2.1.5",
+      "ref": "sqlalchemy-48@2.1.5",
       "dependsOn": [
         "greenlet-13@3.5.6",
-        "typing-extensions-50@4.16.0"
+        "typing-extensions-52@4.16.0"
       ]
     },
     {
-      "ref": "starlette-47@1.9.0",
+      "ref": "starlette-49@1.9.0",
       "dependsOn": [
         "anyio-5@4.15.1"
       ]
     },
     {
-      "ref": "text-unidecode-48@1.3"
+      "ref": "text-unidecode-50@1.3"
     },
     {
       "ref": "trading-crypyidian-1@0.1.0",
@@ -4780,46 +5044,48 @@
         "httpx2-16@2.15.1",
         "jinja2-20@3.1.6",
         "mypy-24@1.20.2",
-        "playwright-29@1.64.1",
-        "psycopg-31@3.3.6",
-        "pydantic-settings-36@2.16.0",
-        "pyotp-39@2.10.0",
-        "pytest-40@9.1.1",
-        "pytest-asyncio-41@1.4.0",
-        "pytest-playwright-42@0.10.0",
-        "ruff-45@0.17.1",
-        "sqlalchemy-46@2.1.5",
-        "uv-build-53@0.13.4",
-        "uvicorn-54@0.54.0"
+        "pillow-29@13.0.0",
+        "playwright-30@1.64.1",
+        "psycopg-32@3.3.6",
+        "pydantic-settings-37@2.16.0",
+        "pyotp-40@2.10.0",
+        "pypdf-41@6.9.2",
+        "pytest-42@9.1.1",
+        "pytest-asyncio-43@1.4.0",
+        "pytest-playwright-44@0.10.0",
+        "ruff-47@0.17.1",
+        "sqlalchemy-48@2.1.5",
+        "uv-build-55@0.13.4",
+        "uvicorn-56@0.54.0"
       ]
     },
     {
-      "ref": "truststore-49@0.10.5"
+      "ref": "truststore-51@0.10.5"
     },
     {
-      "ref": "typing-extensions-50@4.16.0"
+      "ref": "typing-extensions-52@4.16.0"
     },
     {
-      "ref": "typing-inspection-51@0.4.4",
+      "ref": "typing-inspection-53@0.4.4",
       "dependsOn": [
-        "typing-extensions-50@4.16.0"
+        "typing-extensions-52@4.16.0"
       ]
     },
     {
-      "ref": "tzdata-52@2026.5"
+      "ref": "tzdata-54@2026.5"
     },
     {
-      "ref": "uv-build-53@0.13.4"
+      "ref": "uv-build-55@0.13.4"
     },
     {
-      "ref": "uvicorn-54@0.54.0",
+      "ref": "uvicorn-56@0.54.0",
       "dependsOn": [
         "click-9@8.5.0",
         "h11-14@0.16.0"
       ]
     },
     {
-      "ref": "wsproto-55@1.3.2",
+      "ref": "wsproto-57@1.3.2",
       "dependsOn": [
         "h11-14@0.16.0"
       ]

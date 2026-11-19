@@ -30,6 +30,11 @@ from trading_bot.auth.dependencies import (
 from trading_bot.auth.dependencies import (
     require_csrf as require_csrf,
 )
+from trading_bot.auth.mfa_recovery import (
+    AccountSecurityError,
+    assert_bootstrap_allowed,
+    check_bootstrap_token_retired,
+)
 from trading_bot.auth.policy import Permission, Principal, authorize
 from trading_bot.auth.route_policy import (
     CsrfMode,
@@ -45,8 +50,13 @@ from trading_bot.auth.schemas import (
     LoginRequest,
     ReauthenticationRequest,
     RiskProfileRequest,
+    SessionRevokeRequest,
 )
-from trading_bot.auth.security import LoginRateLimiter, verify_bootstrap_token
+from trading_bot.auth.security import (
+    RateLimitDecision,
+    SharedAuthRateLimiter,
+    verify_bootstrap_token,
+)
 from trading_bot.auth.service import (
     RECENT_MFA_LIFETIME,
     SESSION_LIFETIME,
@@ -134,8 +144,87 @@ async def enforce_endpoint_step_up(
         raise HTTPException(status_code=403, detail="Cần xác thực MFA gần đây")
 
 
-def get_rate_limiter(request: Request) -> LoginRateLimiter:
-    return cast(LoginRateLimiter, request.app.state.login_limiter)
+def get_rate_limiter(request: Request) -> SharedAuthRateLimiter:
+    return cast(SharedAuthRateLimiter, request.app.state.login_limiter)
+
+
+def _retry_after_headers(decision: RateLimitDecision) -> dict[str, str] | None:
+    if decision.retry_after_seconds is None:
+        return None
+    return {"Retry-After": str(max(1, decision.retry_after_seconds))}
+
+
+async def check_rate_limit(
+    limiter: SharedAuthRateLimiter,
+    client_ip: str,
+    email: str,
+    *,
+    account_scope: str = "",
+    factor: str = "",
+    check_email: bool = True,
+) -> RateLimitDecision:
+    """Kiểm tra limiter bất đồng bộ (tương thích cả SharedAuthRateLimiter lẫn mock sync)."""
+    if isinstance(limiter, SharedAuthRateLimiter):
+        return await limiter.check_async(
+            client_ip,
+            email,
+            account_scope=account_scope,
+            factor=factor,
+            check_email=check_email,
+        )
+    allowed = limiter.allow(client_ip, email, account_scope=account_scope)
+    return RateLimitDecision(allowed=bool(allowed))
+
+
+async def record_rate_limit_failure(
+    limiter: SharedAuthRateLimiter,
+    client_ip: str,
+    email: str,
+    *,
+    account_scope: str = "",
+    factor: str = "",
+    count_account: bool = True,
+    check_email: bool = True,
+) -> RateLimitDecision:
+    """Ghi nhận lỗi xác thực bất đồng bộ vào limiter dùng chung."""
+    if isinstance(limiter, SharedAuthRateLimiter):
+        return await limiter.record_failure_async(
+            client_ip,
+            email,
+            account_scope=account_scope,
+            factor=factor,
+            count_account=count_account,
+            check_email=check_email,
+        )
+    limiter.record_failure(
+        client_ip,
+        email,
+        account_scope=account_scope,
+        count_account=count_account,
+    )
+    return RateLimitDecision(allowed=True)
+
+
+async def record_rate_limit_success(
+    limiter: SharedAuthRateLimiter,
+    client_ip: str,
+    email: str,
+    *,
+    account_scope: str = "",
+    factor: str = "",
+    reset_email: bool = True,
+) -> None:
+    """Xóa bộ đếm lỗi liên tiếp và làm mới cặp IP + email quen."""
+    if isinstance(limiter, SharedAuthRateLimiter):
+        await limiter.record_success_async(
+            client_ip,
+            email,
+            account_scope=account_scope,
+            factor=factor,
+            reset_email=reset_email,
+        )
+        return
+    limiter.record_success(client_ip, email, account_scope=account_scope)
 
 
 def client_address(request: Request) -> str:
@@ -172,13 +261,18 @@ async def authenticate_login(
     code: str,
     address: str,
     service: AuthService,
-    limiter: LoginRateLimiter,
+    limiter: SharedAuthRateLimiter,
 ) -> LoginResult:
     """Dùng chung xác thực, MFA và throttle cho API lẫn form HTML."""
     normalized_email = email.strip().casefold()
     scope = login_account_scope(workspace_slug)
-    if not limiter.allow(address, normalized_email, account_scope=scope):
-        raise HTTPException(status_code=429, detail=THROTTLED_DETAIL)
+    decision = await check_rate_limit(limiter, address, normalized_email, account_scope=scope)
+    if not decision.allowed:
+        raise HTTPException(
+            status_code=429,
+            detail=THROTTLED_DETAIL,
+            headers=_retry_after_headers(decision),
+        )
     try:
         result = await service.login(
             workspace_slug=workspace_slug,
@@ -187,9 +281,9 @@ async def authenticate_login(
             code=code,
         )
     except AuthenticationFailure as error:
-        limiter.record_failure(address, normalized_email, account_scope=scope)
+        await record_rate_limit_failure(limiter, address, normalized_email, account_scope=scope)
         raise_auth_failure(error)
-    limiter.record_success(address, normalized_email, account_scope=scope)
+    await record_rate_limit_success(limiter, address, normalized_email, account_scope=scope)
     return result
 
 
@@ -211,13 +305,26 @@ async def bootstrap_owner(
     request: Request,
     response: Response,
     service: Annotated[AuthService, Depends(get_auth_service)],
-    limiter: Annotated[LoginRateLimiter, Depends(get_rate_limiter)],
+    limiter: Annotated[SharedAuthRateLimiter, Depends(get_rate_limiter)],
 ) -> dict[str, str]:
     email = body.email.strip().casefold()
     scope = login_account_scope(body.workspace_slug)
     address = client_address(request)
-    if not limiter.allow(address, email, account_scope=scope):
-        raise HTTPException(status_code=429, detail=THROTTLED_DETAIL)
+    decision = await check_rate_limit(limiter, address, email, account_scope=scope)
+    if not decision.allowed:
+        raise HTTPException(
+            status_code=429,
+            detail=THROTTLED_DETAIL,
+            headers=_retry_after_headers(decision),
+        )
+    sessions = getattr(request.app.state, "session_factory", None) or getattr(
+        service, "_sessions", None
+    )
+    if sessions is not None:
+        try:
+            await assert_bootstrap_allowed(sessions, phase="start")
+        except AccountSecurityError as error:
+            raise HTTPException(status_code=error.status_code, detail=error.as_detail()) from error
     settings: AppSettings = request.app.state.settings
     if not verify_bootstrap_token(
         settings.bootstrap_token_file,
@@ -225,7 +332,7 @@ async def bootstrap_owner(
     ):
         # Token bootstrap sai không chứng minh gì về tài khoản: không ghi bộ đếm tài khoản
         # để endpoint này không thành đường khóa email bất kỳ (fix round 1 SEC-08).
-        limiter.record_failure(address, email, count_account=False)
+        await record_rate_limit_failure(limiter, address, email, count_account=False)
         raise HTTPException(status_code=403, detail="Mã bootstrap không hợp lệ")
     try:
         result = await service.bootstrap(
@@ -236,9 +343,9 @@ async def bootstrap_owner(
             mode=body.mode,
         )
     except AuthenticationFailure as error:
-        limiter.record_failure(address, email, count_account=False)
+        await record_rate_limit_failure(limiter, address, email, count_account=False)
         raise_auth_failure(error)
-    limiter.record_success(address, email, account_scope=scope)
+    await record_rate_limit_success(limiter, address, email, account_scope=scope)
     response.headers["Cache-Control"] = "no-store"
     return {
         "workspace_id": str(result.workspace_id),
@@ -261,13 +368,26 @@ async def verify_bootstrap(
     request: Request,
     response: Response,
     service: Annotated[AuthService, Depends(get_auth_service)],
-    limiter: Annotated[LoginRateLimiter, Depends(get_rate_limiter)],
+    limiter: Annotated[SharedAuthRateLimiter, Depends(get_rate_limiter)],
 ) -> dict[str, str]:
     email = body.email.strip().casefold()
     scope = login_account_scope(body.workspace_slug)
     address = client_address(request)
-    if not limiter.allow(address, email, account_scope=scope):
-        raise HTTPException(status_code=429, detail=THROTTLED_DETAIL)
+    decision = await check_rate_limit(limiter, address, email, account_scope=scope)
+    if not decision.allowed:
+        raise HTTPException(
+            status_code=429,
+            detail=THROTTLED_DETAIL,
+            headers=_retry_after_headers(decision),
+        )
+    sessions = getattr(request.app.state, "session_factory", None) or getattr(
+        service, "_sessions", None
+    )
+    if sessions is not None:
+        try:
+            await assert_bootstrap_allowed(sessions, phase="verify")
+        except AccountSecurityError as error:
+            raise HTTPException(status_code=error.status_code, detail=error.as_detail()) from error
     try:
         await service.confirm_bootstrap(
             workspace_slug=body.workspace_slug,
@@ -275,9 +395,11 @@ async def verify_bootstrap(
             code=body.code,
         )
     except AuthenticationFailure as error:
-        limiter.record_failure(address, email, account_scope=scope)
+        await record_rate_limit_failure(limiter, address, email, account_scope=scope)
         raise_auth_failure(error)
-    limiter.record_success(address, email, account_scope=scope)
+    await record_rate_limit_success(limiter, address, email, account_scope=scope)
+    settings: AppSettings = request.app.state.settings
+    check_bootstrap_token_retired(settings.bootstrap_token_file, bootstrapped=True)
     response.headers["Cache-Control"] = "no-store"
     return {"status": "active"}
 
@@ -296,7 +418,7 @@ async def login(
     request: Request,
     response: Response,
     service: Annotated[AuthService, Depends(get_auth_service)],
-    limiter: Annotated[LoginRateLimiter, Depends(get_rate_limiter)],
+    limiter: Annotated[SharedAuthRateLimiter, Depends(get_rate_limiter)],
 ) -> dict[str, object]:
     result = await authenticate_login(
         workspace_slug=body.workspace_slug,
@@ -349,27 +471,127 @@ async def get_csrf_token(
 async def reauthenticate(
     body: ReauthenticationRequest,
     request: Request,
+    response: Response,
     identity: Annotated[AuthIdentity, Depends(require_csrf)],
     service: Annotated[AuthService, Depends(get_auth_service)],
-    limiter: Annotated[LoginRateLimiter, Depends(get_rate_limiter)],
+    limiter: Annotated[SharedAuthRateLimiter, Depends(get_rate_limiter)],
 ) -> None:
     # SEC-08: khóa theo IP + email của phiên. Bộ đếm tài khoản dùng phạm vi riêng theo
-    # workspace_id của phiên (khác phạm vi slug của login) để lỗi login do kẻ tấn công
-    # dồn vào không chặn được reauth của phiên đang sống; cặp IP quen vẫn bỏ qua nó.
+    # workspace_id của phiên (khác phạm vi slug của login) và bỏ qua bộ đếm email chung
+    # để lỗi login do kẻ tấn công dồn vào không chặn được reauth của phiên đang sống.
     address = client_address(request)
     scope = session_account_scope(identity.principal.workspace_id)
-    if not limiter.allow(address, identity.email, account_scope=scope):
-        raise HTTPException(status_code=429, detail=THROTTLED_DETAIL)
+    decision = await check_rate_limit(
+        limiter, address, identity.email, account_scope=scope, check_email=False
+    )
+    if not decision.allowed:
+        raise HTTPException(
+            status_code=429,
+            detail=THROTTLED_DETAIL,
+            headers=_retry_after_headers(decision),
+        )
     try:
-        await service.reauthenticate(
+        rotated = await service.reauthenticate(
             read_session_cookie(request),
             password=body.password,
             code=body.code,
         )
     except AuthenticationFailure as error:
-        limiter.record_failure(address, identity.email, account_scope=scope)
+        await record_rate_limit_failure(
+            limiter, address, identity.email, account_scope=scope, check_email=False
+        )
         raise_auth_failure(error)
-    limiter.record_success(address, identity.email, account_scope=scope)
+    await record_rate_limit_success(
+        limiter, address, identity.email, account_scope=scope, reset_email=False
+    )
+    response.headers["Cache-Control"] = "no-store"
+    # SEC-10: đặt cookie phiên mới nếu service trả kết quả xoay phiên (giữ tương thích stub test).
+    cookie_value = getattr(rotated, "cookie_value", None)
+    if isinstance(cookie_value, str) and cookie_value:
+        settings: AppSettings = request.app.state.settings
+        expires_at = getattr(rotated, "expires_at", None)
+        if isinstance(expires_at, datetime):
+            now_fn = getattr(service, "now", None)
+            current_time = now_fn() if callable(now_fn) else datetime.now(UTC)
+            max_age = max(1, int((expires_at - current_time).total_seconds()))
+        else:
+            max_age = int(SESSION_LIFETIME.total_seconds())
+        set_session_cookie(response, settings, cookie_value, max_age=max_age)
+
+
+@router.get("/auth/sessions", dependencies=[authenticated_route()])
+async def list_my_sessions(
+    response: Response,
+    identity: Annotated[AuthIdentity, Depends(current_identity)],
+    service: Annotated[AuthService, Depends(get_auth_service)],
+) -> dict[str, object]:
+    """Liệt kê toàn bộ phiên đang hoạt động của thành viên hiện tại (SEC-11)."""
+    try:
+        summaries = await service.list_active_sessions(identity.principal)
+    except AuthenticationFailure as error:
+        raise_auth_failure(error)
+    response.headers["Cache-Control"] = "no-store"
+    return {
+        "sessions": [
+            {
+                "id": str(item.id),
+                "created_at": item.created_at.isoformat(),
+                "last_seen_at": item.last_seen_at.isoformat(),
+                "expires_at": item.expires_at.isoformat(),
+                "idle_expires_at": item.idle_expires_at.isoformat(),
+                "mfa_verified_at": (
+                    item.mfa_verified_at.isoformat() if item.mfa_verified_at is not None else None
+                ),
+                "mfa_method": item.mfa_method,
+                "is_current": item.is_current,
+            }
+            for item in summaries
+        ]
+    }
+
+
+@router.post(
+    "/auth/sessions/{session_id}/revoke",
+    dependencies=[authenticated_route(csrf=CsrfMode.HEADER)],
+)
+async def revoke_session(
+    session_id: UUID,
+    request: Request,
+    response: Response,
+    identity: Annotated[AuthIdentity, Depends(require_csrf)],
+    service: Annotated[AuthService, Depends(get_auth_service)],
+    body: SessionRevokeRequest | None = None,
+) -> dict[str, object]:
+    """Thu hồi phiên của mình hoặc phiên member cùng workspace nếu là Owner (SEC-11)."""
+    req_id = _optional_request_id(request)
+    try:
+        revoked = await service.revoke_session(
+            identity.principal,
+            session_id=session_id,
+            reason=body.reason if body is not None else None,
+            request_id=req_id,
+        )
+    except AuthenticationFailure as error:
+        raise_auth_failure(error)
+    response.headers["Cache-Control"] = "no-store"
+    if identity.principal.session_id == revoked.session_id:
+        clear_session_cookie(response, request.app.state.settings)
+    return {
+        "session_id": str(revoked.session_id),
+        "membership_id": str(revoked.membership_id),
+        "revoked": True,
+        "revoked_at": revoked.revoked_at.isoformat(),
+    }
+
+
+def _optional_request_id(request: Request) -> UUID | None:
+    raw = request.headers.get("X-Request-ID")
+    if not raw:
+        return None
+    try:
+        return UUID(raw)
+    except ValueError:
+        return None
 
 
 @router.post(

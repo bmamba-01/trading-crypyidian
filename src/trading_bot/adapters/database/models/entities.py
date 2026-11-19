@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
@@ -8,6 +8,7 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     DateTime,
+    FetchedValue,
     ForeignKeyConstraint,
     Index,
     Integer,
@@ -51,6 +52,10 @@ class UserMembership(UuidPrimaryKey, CreatedAt, Base):
         UniqueConstraint("workspace_id", "user_id", name="uq_user_membership_workspace_user"),
         ForeignKeyConstraint(["workspace_id"], ["workspace.id"], ondelete="CASCADE"),
         ForeignKeyConstraint(["user_id"], ["user_account.id"], ondelete="CASCADE"),
+        CheckConstraint(
+            "status IN ('ACTIVE', 'SUSPENDED', 'REVOKED')",
+            name="user_membership_status_valid",
+        ),
     )
 
     workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
@@ -129,6 +134,12 @@ class Session(UuidPrimaryKey, CreatedAt, Base):
     membership_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     token_hash: Mapped[str] = mapped_column(String(128), nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+        server_default=func.now(),
+    )
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     csrf_token_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
     mfa_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -648,12 +659,21 @@ class AuditEvent(UuidPrimaryKey, Base):
     __tablename__ = "audit_event"
     __table_args__ = (
         UniqueConstraint("workspace_id", "id", name="uq_audit_event_workspace_id"),
+        UniqueConstraint("workspace_id", "seq", name="uq_audit_event_workspace_seq"),
         ForeignKeyConstraint(["workspace_id"], ["workspace.id"], ondelete="CASCADE"),
         ForeignKeyConstraint(
             ["workspace_id", "actor_membership_id"],
             ["user_membership.workspace_id", "user_membership.id"],
         ),
         Index("ix_audit_event_workspace_time", "workspace_id", "occurred_at"),
+        CheckConstraint("seq >= 1", name="seq_positive"),
+        CheckConstraint(
+            "prev_hash = 'GENESIS' OR length(prev_hash) = 64",
+            name="prev_hash_valid",
+        ),
+        CheckConstraint("length(row_hash) = 64", name="row_hash_sha256"),
+        CheckConstraint("length(db_role) > 0", name="db_role_nonempty"),
+        {"implicit_returning": False},
     )
 
     workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
@@ -666,3 +686,52 @@ class AuditEvent(UuidPrimaryKey, Base):
     after_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     request_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # Các cột chuỗi băm bất biến do trigger DB tự điền khi INSERT (SEC-33).
+    seq: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=FetchedValue())
+    prev_hash: Mapped[str] = mapped_column(
+        String(64), nullable=False, server_default=FetchedValue()
+    )
+    row_hash: Mapped[str] = mapped_column(String(64), nullable=False, server_default=FetchedValue())
+    db_role: Mapped[str] = mapped_column(String(64), nullable=False, server_default=FetchedValue())
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=FetchedValue()
+    )
+    # Ngữ cảnh bảo mật bổ sung cho audit sự kiện SEC-32 (không lưu token/secret thô).
+    session_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    client_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    user_agent: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    outcome: Mapped[str | None] = mapped_column(String(24), nullable=True)
+
+
+class AuthRateLimitState(Base):
+    """Trạng thái giới hạn thử xác thực/lockout chia sẻ giữa các replica (SEC-08).
+
+    Khóa chính ``scope_key`` chỉ lưu tiền tố ``scope_type`` kèm SHA-256 hex, tuyệt đối
+    không lưu IP, email hay slug workspace dạng rõ để tránh lộ PII hoặc dò tài khoản.
+    """
+
+    __tablename__ = "auth_rate_limit_state"
+    __table_args__ = (
+        CheckConstraint("failures >= 0", name="failures_nonnegative"),
+        CheckConstraint(
+            "scope_type IN ('ip', 'email', 'pair', 'account', "
+            "'familiar', 'step_up', 'telegram_link')",
+            name="scope_type_valid",
+        ),
+        CheckConstraint(
+            "scope_key ~ '^[a-z][a-z0-9_]*:[0-9a-f]{64}$'",
+            name="scope_key_hashed",
+        ),
+        Index("ix_auth_rate_limit_state_updated_at", "updated_at"),
+    )
+
+    scope_key: Mapped[str] = mapped_column(String(128), primary_key=True)
+    scope_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    failures: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    window_started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )

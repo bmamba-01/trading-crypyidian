@@ -18,7 +18,7 @@ PROBE_BOOTSTRAP = (
     "exec(compile(p['code'],'wp06_shadow_drift_persistence.py','exec'),{'__name__':'__main__'})"
 )
 PREVIOUS_HEAD = "d2b4c6e8f0a1"
-CURRENT_HEAD = "f6c8e0a2b4db"
+CURRENT_HEAD = "e8a2c4d6f0b3"
 
 
 def test_shadow_drift_postgres_append_only_rls_rights_and_empty_downgrade() -> None:

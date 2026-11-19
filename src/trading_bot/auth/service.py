@@ -1,6 +1,6 @@
 import asyncio
-import hashlib
 import secrets
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -10,6 +10,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from trading_bot.adapters.database.models import (
+    AuditEvent,
     MfaFactor,
     RoleBinding,
     SecretReference,
@@ -18,20 +19,36 @@ from trading_bot.adapters.database.models import (
     UserMembership,
     Workspace,
 )
+from trading_bot.auth.password_policy import PasswordPolicyViolation, validate_password_policy
 from trading_bot.auth.policy import RECENT_MFA_LIFETIME as RECENT_MFA_LIFETIME
 from trading_bot.auth.policy import MfaMethod, Principal, Role
+from trading_bot.auth.security import DUMMY_PASSWORD_HASH as DUMMY_PASSWORD_HASH
 from trading_bot.auth.security import PasswordManager, TotpManager
+from trading_bot.auth.session_lifecycle import (
+    DEFAULT_SESSION_IDLE_TIMEOUT,
+    LAST_SEEN_REFRESH_INTERVAL,
+    SESSION_ABSOLUTE_LIFETIME,
+    effective_last_seen_at,
+    hash_session_token,
+    is_session_absolute_expired,
+    is_session_idle_expired,
+    issue_rotated_session,
+    revoke_membership_sessions,
+    should_refresh_last_seen,
+)
+from trading_bot.domain.events import state_hash
 from trading_bot.ports.secrets import SecretProvider
 
-SESSION_LIFETIME = timedelta(hours=12)
+SESSION_LIFETIME = SESSION_ABSOLUTE_LIFETIME
 
 
 class AuthenticationFailure(Exception):
     """Lỗi xác thực không tiết lộ email, mật khẩu hay trạng thái tài khoản."""
 
-    def __init__(self, status_code: int, message: str) -> None:
+    def __init__(self, status_code: int, message: str, *, code: str | None = None) -> None:
         self.status_code = status_code
         self.message = message
+        self.code = code
         super().__init__(message)
 
 
@@ -50,13 +67,47 @@ class LoginResult:
 
 
 @dataclass(frozen=True, slots=True)
+class SessionRotationResult:
+    """Kết quả xoay token phiên khi xác thực lại step-up hoặc đổi vai trò (SEC-10)."""
+
+    cookie_value: str
+    principal: Principal
+    email: str
+    expires_at: datetime
+    csrf_token: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SessionSummary:
+    """Thông tin tóm tắt an toàn của một phiên đang hoạt động (không lộ hash token)."""
+
+    id: UUID
+    created_at: datetime
+    last_seen_at: datetime
+    expires_at: datetime
+    idle_expires_at: datetime
+    mfa_verified_at: datetime | None
+    mfa_method: str | None
+    is_current: bool
+
+
+@dataclass(frozen=True, slots=True)
+class SessionRevocationResult:
+    """Kết quả thu hồi một phiên đăng nhập (SEC-11)."""
+
+    session_id: UUID
+    membership_id: UUID
+    revoked_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
 class AuthIdentity:
     principal: Principal
     email: str
 
 
 class AuthService:
-    """Điều phối bootstrap, MFA, session và phạm vi truy cập workspace."""
+    """Điều phối bootstrap, MFA, vòng đời phiên (idle/rotate/revoke) và phạm vi workspace."""
 
     def __init__(
         self,
@@ -65,17 +116,37 @@ class AuthService:
         *,
         passwords: PasswordManager | None = None,
         totp: TotpManager | None = None,
+        idle_timeout: timedelta = DEFAULT_SESSION_IDLE_TIMEOUT,
+        absolute_timeout: timedelta = SESSION_LIFETIME,
+        last_seen_refresh_interval: timedelta = LAST_SEEN_REFRESH_INTERVAL,
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
+        if idle_timeout.total_seconds() <= 0 or absolute_timeout.total_seconds() <= 0:
+            raise ValueError("Ngưỡng thời hạn phiên phải lớn hơn 0")
+        if last_seen_refresh_interval.total_seconds() < 0:
+            raise ValueError("Khoảng làm mới last_seen_at không được âm")
         self._sessions = sessions
         self._secret_provider = secret_provider
         self._passwords = passwords or PasswordManager()
         self._totp = totp or TotpManager()
+        self._idle_timeout = idle_timeout
+        self._absolute_timeout = absolute_timeout
+        self._last_seen_refresh_interval = last_seen_refresh_interval
+        self._clock = clock or (lambda: datetime.now(UTC))
+
+    def now(self) -> datetime:
+        """Trả mốc thời gian UTC hiện hành theo đồng hồ của dịch vụ."""
+        return self._clock()
 
     async def bootstrap(
         self, *, workspace_name: str, workspace_slug: str, email: str, password: str, mode: str
     ) -> BootstrapResult:
         normalized_email = normalize_email(email)
         validated_slug = normalize_slug(workspace_slug)
+        try:
+            validate_password_policy(password, email=normalized_email)
+        except PasswordPolicyViolation as error:
+            raise AuthenticationFailure(422, error.message, code=error.code) from error
         password_hash = await asyncio.to_thread(self._passwords.hash, password)
         mfa_secret = self._totp.generate_secret()
         workspace_id = uuid4()
@@ -86,7 +157,11 @@ class AuthService:
                 has_workspace = await database.scalar(select(Workspace.id).limit(1))
                 has_user = await database.scalar(select(UserAccount.id).limit(1))
                 if has_workspace is not None or has_user is not None:
-                    raise AuthenticationFailure(409, "Thiết lập ban đầu đã hoàn tất")
+                    raise AuthenticationFailure(
+                        409,
+                        "Thiết lập ban đầu đã hoàn tất",
+                        code="BOOTSTRAP_ALREADY_COMPLETED",
+                    )
                 workspace = Workspace(
                     id=workspace_id,
                     name=workspace_name.strip(),
@@ -147,7 +222,24 @@ class AuthService:
 
     async def confirm_bootstrap(self, *, workspace_slug: str, email: str, code: str) -> None:
         normalized_email = normalize_email(email)
+        now = self._clock()
         async with self._sessions() as database, database.begin():
+            has_workspace = await database.scalar(select(Workspace.id).limit(1))
+            has_user = await database.scalar(select(UserAccount.id).limit(1))
+            setup_workspace = await database.scalar(
+                select(Workspace.id).where(Workspace.status == "SETUP").limit(1)
+            )
+            pending_user = await database.scalar(
+                select(UserAccount.id).where(UserAccount.status == "PENDING_MFA").limit(1)
+            )
+            if (has_workspace is not None or has_user is not None) and (
+                setup_workspace is None or pending_user is None
+            ):
+                raise AuthenticationFailure(
+                    409,
+                    "Thiết lập ban đầu đã hoàn tất",
+                    code="BOOTSTRAP_ALREADY_COMPLETED",
+                )
             user = await database.scalar(
                 select(UserAccount).where(
                     UserAccount.email_normalized == normalized_email,
@@ -183,10 +275,10 @@ class AuthService:
             if factor is None:
                 raise AuthenticationFailure(401, "Thông tin xác thực không hợp lệ")
             secret = self._secret_provider.resolve_mfa_secret(workspace.id, factor.secret_reference)
-            counter = self._totp.matching_counter(secret, code, datetime.now(UTC), valid_window=1)
+            counter = self._totp.matching_counter(secret, code, now, valid_window=1)
             if counter is None:
                 raise AuthenticationFailure(401, "Mã xác thực không hợp lệ")
-            factor.verified_at = datetime.now(UTC)
+            factor.verified_at = now
             factor.last_used_counter = counter
             user.status = "ACTIVE"
             workspace.status = "ACTIVE"
@@ -195,36 +287,45 @@ class AuthService:
         self, *, workspace_slug: str, email: str, password: str, code: str
     ) -> LoginResult:
         normalized_email = normalize_email(email)
-        now = datetime.now(UTC)
+        validated_slug = normalize_slug(workspace_slug)
+        now = self._clock()
         async with self._sessions() as database, database.begin():
             user = await database.scalar(
-                select(UserAccount).where(
-                    UserAccount.email_normalized == normalized_email,
-                    UserAccount.status == "ACTIVE",
-                )
+                select(UserAccount).where(UserAccount.email_normalized == normalized_email)
             )
             workspace = await database.scalar(
-                select(Workspace).where(
-                    Workspace.slug == normalize_slug(workspace_slug),
-                    Workspace.status == "ACTIVE",
-                )
+                select(Workspace).where(Workspace.slug == validated_slug)
             )
-            if (
-                user is None
-                or workspace is None
-                or not await asyncio.to_thread(self._passwords.verify, user.password_hash, password)
-            ):
-                raise AuthenticationFailure(401, "Thông tin xác thực không hợp lệ")
-            await self._set_workspace(database, workspace.id)
-            membership = await database.scalar(
-                select(UserMembership).where(
-                    UserMembership.workspace_id == workspace.id,
-                    UserMembership.user_id == user.id,
-                    UserMembership.status == "ACTIVE",
-                )
+            membership: UserMembership | None = None
+            if workspace is not None and workspace.status == "ACTIVE":
+                await self._set_workspace(database, workspace.id)
+                if user is not None:
+                    membership = await database.scalar(
+                        select(UserMembership).where(
+                            UserMembership.workspace_id == workspace.id,
+                            UserMembership.user_id == user.id,
+                        )
+                    )
+            account_active = (
+                user is not None
+                and user.status == "ACTIVE"
+                and workspace is not None
+                and workspace.status == "ACTIVE"
+                and membership is not None
+                and membership.status == "ACTIVE"
             )
-            if membership is None:
+            # SEC-12: luôn chạy Argon2 với hash giả khi user/workspace/membership không tồn tại
+            # hoặc không ACTIVE để thời gian phản hồi và thông điệp lỗi luôn đồng nhất.
+            candidate_hash = (
+                user.password_hash if account_active and user is not None else DUMMY_PASSWORD_HASH
+            )
+            password_ok = await asyncio.to_thread(self._passwords.verify, candidate_hash, password)
+            if not account_active or not password_ok:
                 raise AuthenticationFailure(401, "Thông tin xác thực không hợp lệ")
+            assert user is not None
+            assert workspace is not None
+            assert membership is not None
+
             factor = (
                 await database.scalars(
                     select(MfaFactor)
@@ -267,7 +368,8 @@ class AuthService:
                     membership_id=membership.id,
                     token_hash=hash_token(raw_token),
                     csrf_token_hash=hash_token(csrf_token),
-                    expires_at=now + SESSION_LIFETIME,
+                    expires_at=now + self._absolute_timeout,
+                    last_seen_at=now,
                     mfa_verified_at=now,
                     mfa_method=MfaMethod.TOTP.value,
                 )
@@ -290,7 +392,9 @@ class AuthService:
 
     async def authenticate(self, cookie_value: str | None) -> AuthIdentity:
         workspace_id, raw_token = parse_cookie_value(cookie_value)
-        now = datetime.now(UTC)
+        now = self._clock()
+        failure: AuthenticationFailure | None = None
+        identity: AuthIdentity | None = None
         async with self._sessions() as database, database.begin():
             await self._set_workspace(database, workspace_id)
             row = (
@@ -306,66 +410,125 @@ class AuthService:
                         Session.workspace_id == workspace_id,
                         Session.token_hash == hash_token(raw_token),
                         Session.revoked_at.is_(None),
-                        Session.expires_at > now,
-                        UserMembership.status == "ACTIVE",
-                        UserAccount.status == "ACTIVE",
                     )
                 )
             ).first()
             if row is None:
-                raise AuthenticationFailure(401, "Phiên đăng nhập không hợp lệ hoặc đã hết hạn")
-            session, membership, user = row
-            if session.mfa_verified_at is None or session.csrf_token_hash is None:
-                raise AuthenticationFailure(401, "Phiên đăng nhập cần xác thực lại")
-            roles = frozenset(
-                Role(role)
-                for role in (
-                    await database.scalars(
-                        select(RoleBinding.role).where(
-                            RoleBinding.workspace_id == workspace_id,
-                            RoleBinding.membership_id == membership.id,
-                        )
+                failure = AuthenticationFailure(401, "Phiên đăng nhập không hợp lệ hoặc đã hết hạn")
+            else:
+                session, membership, user = row
+                if membership.status != "ACTIVE" or user.status != "ACTIVE":
+                    await self._revoke_inactive_member_sessions(
+                        database,
+                        workspace_id=workspace_id,
+                        membership_id=membership.id,
+                        now=now,
                     )
-                ).all()
-            )
-            if not roles:
-                raise AuthenticationFailure(403, "Tài khoản chưa được cấp vai trò")
-            principal = Principal(
-                user_id=user.id,
-                membership_id=membership.id,
-                workspace_id=workspace_id,
-                roles=roles,
-                mfa_verified_at=session.mfa_verified_at,
-                mfa_method=(
-                    MfaMethod(session.mfa_method) if session.mfa_method is not None else None
-                ),
-                session_id=session.id,
-            )
-            return AuthIdentity(principal=principal, email=user.email_normalized)
+                    failure = AuthenticationFailure(
+                        401, "Phiên đăng nhập không hợp lệ hoặc đã hết hạn"
+                    )
+                elif is_session_absolute_expired(session, now=now):
+                    failure = AuthenticationFailure(
+                        401, "Phiên đăng nhập không hợp lệ hoặc đã hết hạn"
+                    )
+                elif is_session_idle_expired(session, now=now, idle_timeout=self._idle_timeout):
+                    session.revoked_at = now
+                    failure = AuthenticationFailure(
+                        401, "Phiên đăng nhập không hợp lệ hoặc đã hết hạn"
+                    )
+                elif session.mfa_verified_at is None or session.csrf_token_hash is None:
+                    failure = AuthenticationFailure(401, "Phiên đăng nhập cần xác thực lại")
+                else:
+                    if should_refresh_last_seen(
+                        session,
+                        now=now,
+                        refresh_interval=self._last_seen_refresh_interval,
+                    ):
+                        session.last_seen_at = now
+                    roles = frozenset(
+                        Role(role)
+                        for role in (
+                            await database.scalars(
+                                select(RoleBinding.role).where(
+                                    RoleBinding.workspace_id == workspace_id,
+                                    RoleBinding.membership_id == membership.id,
+                                )
+                            )
+                        ).all()
+                    )
+                    if not roles:
+                        failure = AuthenticationFailure(403, "Tài khoản chưa được cấp vai trò")
+                    else:
+                        principal = Principal(
+                            user_id=user.id,
+                            membership_id=membership.id,
+                            workspace_id=workspace_id,
+                            roles=roles,
+                            mfa_verified_at=session.mfa_verified_at,
+                            mfa_method=(
+                                MfaMethod(session.mfa_method)
+                                if session.mfa_method is not None
+                                else None
+                            ),
+                            session_id=session.id,
+                        )
+                        identity = AuthIdentity(principal=principal, email=user.email_normalized)
+        if failure is not None:
+            raise failure
+        assert identity is not None
+        return identity
 
     async def verify_csrf(self, cookie_value: str | None, csrf_token: str | None) -> None:
         workspace_id, raw_token = parse_cookie_value(cookie_value)
         if not csrf_token:
             raise AuthenticationFailure(403, "Thiếu mã CSRF")
+        now = self._clock()
+        failure: AuthenticationFailure | None = None
         async with self._sessions() as database, database.begin():
             await self._set_workspace(database, workspace_id)
-            session = await database.scalar(
-                select(Session).where(
-                    Session.workspace_id == workspace_id,
-                    Session.token_hash == hash_token(raw_token),
-                    Session.revoked_at.is_(None),
-                    Session.expires_at > datetime.now(UTC),
+            row = (
+                await database.execute(
+                    select(Session, UserMembership, UserAccount)
+                    .join(
+                        UserMembership,
+                        (UserMembership.workspace_id == Session.workspace_id)
+                        & (UserMembership.id == Session.membership_id),
+                    )
+                    .join(UserAccount, UserAccount.id == UserMembership.user_id)
+                    .where(
+                        Session.workspace_id == workspace_id,
+                        Session.token_hash == hash_token(raw_token),
+                        Session.revoked_at.is_(None),
+                    )
                 )
-            )
-            if (
-                session is None
-                or session.csrf_token_hash is None
-                or not secrets.compare_digest(session.csrf_token_hash, hash_token(csrf_token))
-            ):
-                raise AuthenticationFailure(403, "Mã CSRF không hợp lệ")
+            ).first()
+            if row is None:
+                failure = AuthenticationFailure(403, "Mã CSRF không hợp lệ")
+            else:
+                session, membership, user = row
+                if membership.status != "ACTIVE" or user.status != "ACTIVE":
+                    await self._revoke_inactive_member_sessions(
+                        database,
+                        workspace_id=workspace_id,
+                        membership_id=membership.id,
+                        now=now,
+                    )
+                    failure = AuthenticationFailure(403, "Mã CSRF không hợp lệ")
+                elif is_session_absolute_expired(session, now=now):
+                    failure = AuthenticationFailure(403, "Mã CSRF không hợp lệ")
+                elif is_session_idle_expired(session, now=now, idle_timeout=self._idle_timeout):
+                    session.revoked_at = now
+                    failure = AuthenticationFailure(403, "Mã CSRF không hợp lệ")
+                elif session.csrf_token_hash is None or not secrets.compare_digest(
+                    session.csrf_token_hash, hash_token(csrf_token)
+                ):
+                    failure = AuthenticationFailure(403, "Mã CSRF không hợp lệ")
+        if failure is not None:
+            raise failure
 
     async def logout(self, cookie_value: str | None) -> None:
         workspace_id, raw_token = parse_cookie_value(cookie_value)
+        now = self._clock()
         async with self._sessions() as database, database.begin():
             await self._set_workspace(database, workspace_id)
             session = await database.scalar(
@@ -376,35 +539,13 @@ class AuthService:
                 )
             )
             if session is not None:
-                session.revoked_at = datetime.now(UTC)
+                session.revoked_at = now
 
     async def issue_csrf_token(self, cookie_value: str | None) -> str:
         workspace_id, raw_token = parse_cookie_value(cookie_value)
+        now = self._clock()
         token = secrets.token_urlsafe(32)
-        async with self._sessions() as database, database.begin():
-            await self._set_workspace(database, workspace_id)
-            session = await database.scalar(
-                select(Session).where(
-                    Session.workspace_id == workspace_id,
-                    Session.token_hash == hash_token(raw_token),
-                    Session.revoked_at.is_(None),
-                    Session.expires_at > datetime.now(UTC),
-                )
-            )
-            if session is None:
-                raise AuthenticationFailure(401, "Phiên đăng nhập không hợp lệ hoặc đã hết hạn")
-            session.csrf_token_hash = hash_token(token)
-        return token
-
-    async def reauthenticate(
-        self,
-        cookie_value: str | None,
-        *,
-        password: str,
-        code: str,
-    ) -> None:
-        workspace_id, raw_token = parse_cookie_value(cookie_value)
-        now = datetime.now(UTC)
+        failure: AuthenticationFailure | None = None
         async with self._sessions() as database, database.begin():
             await self._set_workspace(database, workspace_id)
             row = (
@@ -420,40 +561,281 @@ class AuthService:
                         Session.workspace_id == workspace_id,
                         Session.token_hash == hash_token(raw_token),
                         Session.revoked_at.is_(None),
-                        Session.expires_at > now,
-                        UserMembership.status == "ACTIVE",
-                        UserAccount.status == "ACTIVE",
                     )
                 )
             ).first()
             if row is None:
-                raise AuthenticationFailure(401, "Thông tin xác thực không hợp lệ")
-            session, membership, user = row
-            if not await asyncio.to_thread(self._passwords.verify, user.password_hash, password):
-                raise AuthenticationFailure(401, "Thông tin xác thực không hợp lệ")
-            factor = (
-                await database.scalars(
-                    select(MfaFactor)
-                    .where(
-                        MfaFactor.workspace_id == workspace_id,
-                        MfaFactor.membership_id == membership.id,
-                        MfaFactor.factor_type == "TOTP",
-                        MfaFactor.verified_at.is_not(None),
+                failure = AuthenticationFailure(401, "Phiên đăng nhập không hợp lệ hoặc đã hết hạn")
+            else:
+                session, membership, user = row
+                if membership.status != "ACTIVE" or user.status != "ACTIVE":
+                    await self._revoke_inactive_member_sessions(
+                        database,
+                        workspace_id=workspace_id,
+                        membership_id=membership.id,
+                        now=now,
                     )
-                    .with_for_update()
+                    failure = AuthenticationFailure(
+                        401, "Phiên đăng nhập không hợp lệ hoặc đã hết hạn"
+                    )
+                elif is_session_absolute_expired(session, now=now):
+                    failure = AuthenticationFailure(
+                        401, "Phiên đăng nhập không hợp lệ hoặc đã hết hạn"
+                    )
+                elif is_session_idle_expired(session, now=now, idle_timeout=self._idle_timeout):
+                    session.revoked_at = now
+                    failure = AuthenticationFailure(
+                        401, "Phiên đăng nhập không hợp lệ hoặc đã hết hạn"
+                    )
+                else:
+                    if should_refresh_last_seen(
+                        session,
+                        now=now,
+                        refresh_interval=self._last_seen_refresh_interval,
+                    ):
+                        session.last_seen_at = now
+                    session.csrf_token_hash = hash_token(token)
+        if failure is not None:
+            raise failure
+        return token
+
+    async def reauthenticate(
+        self,
+        cookie_value: str | None,
+        *,
+        password: str,
+        code: str,
+    ) -> SessionRotationResult:
+        workspace_id, raw_token = parse_cookie_value(cookie_value)
+        now = self._clock()
+        failure: AuthenticationFailure | None = None
+        rotated: SessionRotationResult | None = None
+        async with self._sessions() as database, database.begin():
+            await self._set_workspace(database, workspace_id)
+            row = (
+                await database.execute(
+                    select(Session, UserMembership, UserAccount)
+                    .join(
+                        UserMembership,
+                        (UserMembership.workspace_id == Session.workspace_id)
+                        & (UserMembership.id == Session.membership_id),
+                    )
+                    .join(UserAccount, UserAccount.id == UserMembership.user_id)
+                    .where(
+                        Session.workspace_id == workspace_id,
+                        Session.token_hash == hash_token(raw_token),
+                        Session.revoked_at.is_(None),
+                    )
                 )
             ).first()
-            if factor is None:
-                raise AuthenticationFailure(401, "Thông tin xác thực không hợp lệ")
-            secret = self._secret_provider.resolve_mfa_secret(workspace_id, factor.secret_reference)
-            counter = self._totp.matching_counter(secret, code, now, valid_window=1)
-            if counter is None or (
-                factor.last_used_counter is not None and counter <= factor.last_used_counter
+            if row is None:
+                failure = AuthenticationFailure(401, "Thông tin xác thực không hợp lệ")
+            else:
+                session, membership, user = row
+                if membership.status != "ACTIVE" or user.status != "ACTIVE":
+                    await self._revoke_inactive_member_sessions(
+                        database,
+                        workspace_id=workspace_id,
+                        membership_id=membership.id,
+                        now=now,
+                    )
+                    failure = AuthenticationFailure(401, "Thông tin xác thực không hợp lệ")
+                elif is_session_absolute_expired(session, now=now):
+                    failure = AuthenticationFailure(401, "Thông tin xác thực không hợp lệ")
+                elif is_session_idle_expired(session, now=now, idle_timeout=self._idle_timeout):
+                    session.revoked_at = now
+                    failure = AuthenticationFailure(401, "Thông tin xác thực không hợp lệ")
+                elif not await asyncio.to_thread(
+                    self._passwords.verify, user.password_hash, password
+                ):
+                    failure = AuthenticationFailure(401, "Thông tin xác thực không hợp lệ")
+                else:
+                    factor = (
+                        await database.scalars(
+                            select(MfaFactor)
+                            .where(
+                                MfaFactor.workspace_id == workspace_id,
+                                MfaFactor.membership_id == membership.id,
+                                MfaFactor.factor_type == "TOTP",
+                                MfaFactor.verified_at.is_not(None),
+                            )
+                            .with_for_update()
+                        )
+                    ).first()
+                    if factor is None:
+                        failure = AuthenticationFailure(401, "Thông tin xác thực không hợp lệ")
+                    else:
+                        secret = self._secret_provider.resolve_mfa_secret(
+                            workspace_id, factor.secret_reference
+                        )
+                        counter = self._totp.matching_counter(secret, code, now, valid_window=1)
+                        if counter is None or (
+                            factor.last_used_counter is not None
+                            and counter <= factor.last_used_counter
+                        ):
+                            failure = AuthenticationFailure(401, "Thông tin xác thực không hợp lệ")
+                        else:
+                            roles = frozenset(
+                                Role(role)
+                                for role in (
+                                    await database.scalars(
+                                        select(RoleBinding.role).where(
+                                            RoleBinding.workspace_id == workspace_id,
+                                            RoleBinding.membership_id == membership.id,
+                                        )
+                                    )
+                                ).all()
+                            )
+                            if not roles:
+                                failure = AuthenticationFailure(
+                                    403, "Tài khoản chưa được cấp vai trò"
+                                )
+                            else:
+                                factor.last_used_counter = counter
+                                # SEC-10: xoay token phiên khi step-up, thu hồi phiên cũ,
+                                # giữ nguyên CSRF hash để không làm gãy form/SPA đang mở.
+                                new_session, new_raw_token, _ = issue_rotated_session(
+                                    database,
+                                    session,
+                                    now=now,
+                                    mfa_verified_at=now,
+                                    mfa_method=MfaMethod.TOTP.value,
+                                    preserve_csrf=True,
+                                )
+                                database.add(
+                                    AuditEvent(
+                                        workspace_id=workspace_id,
+                                        actor_membership_id=membership.id,
+                                        action="auth.session.rotated",
+                                        target_type="session",
+                                        target_id=new_session.id,
+                                        reason="Xoay token phiên khi xác thực lại step-up",
+                                        before_hash=state_hash({"old_session_id": str(session.id)}),
+                                        after_hash=state_hash(
+                                            {"new_session_id": str(new_session.id)}
+                                        ),
+                                        request_id=uuid4(),
+                                        occurred_at=now,
+                                    )
+                                )
+                                principal = Principal(
+                                    user_id=user.id,
+                                    membership_id=membership.id,
+                                    workspace_id=workspace_id,
+                                    roles=roles,
+                                    mfa_verified_at=now,
+                                    mfa_method=MfaMethod.TOTP,
+                                    session_id=new_session.id,
+                                )
+                                rotated = SessionRotationResult(
+                                    cookie_value=f"{workspace_id}:{new_raw_token}",
+                                    principal=principal,
+                                    email=user.email_normalized,
+                                    expires_at=new_session.expires_at,
+                                )
+        if failure is not None:
+            raise failure
+        assert rotated is not None
+        return rotated
+
+    async def list_active_sessions(self, principal: Principal) -> list[SessionSummary]:
+        """Liệt kê các phiên còn hiệu lực (chưa thu hồi, chưa idle/absolute timeout) của mình."""
+        now = self._clock()
+        async with self._sessions() as database, database.begin():
+            await self._set_workspace(database, principal.workspace_id)
+            rows = (
+                await database.scalars(
+                    select(Session)
+                    .where(
+                        Session.workspace_id == principal.workspace_id,
+                        Session.membership_id == principal.membership_id,
+                        Session.revoked_at.is_(None),
+                        Session.expires_at > now,
+                    )
+                    .order_by(Session.last_seen_at.desc(), Session.created_at.desc())
+                )
+            ).all()
+            summaries: list[SessionSummary] = []
+            for row in rows:
+                if is_session_idle_expired(row, now=now, idle_timeout=self._idle_timeout):
+                    continue
+                last_seen = effective_last_seen_at(row) or row.created_at
+                summaries.append(
+                    SessionSummary(
+                        id=row.id,
+                        created_at=row.created_at,
+                        last_seen_at=last_seen,
+                        expires_at=row.expires_at,
+                        idle_expires_at=min(row.expires_at, last_seen + self._idle_timeout),
+                        mfa_verified_at=row.mfa_verified_at,
+                        mfa_method=row.mfa_method,
+                        is_current=row.id == principal.session_id,
+                    )
+                )
+            return summaries
+
+    async def revoke_session(
+        self,
+        principal: Principal,
+        *,
+        session_id: UUID,
+        reason: str | None = None,
+        request_id: UUID | None = None,
+    ) -> SessionRevocationResult:
+        """Thu hồi một phiên của chính mình hoặc phiên của thành viên khác nếu là Owner."""
+        now = self._clock()
+        clean_reason = reason.strip() if reason and reason.strip() else "Thu hồi phiên đăng nhập"
+        async with self._sessions() as database, database.begin():
+            await self._set_workspace(database, principal.workspace_id)
+            target = await database.scalar(
+                select(Session)
+                .where(
+                    Session.workspace_id == principal.workspace_id,
+                    Session.id == session_id,
+                )
+                .with_for_update()
+            )
+            if target is None:
+                raise AuthenticationFailure(404, "Không tìm thấy phiên đăng nhập")
+            if (
+                target.membership_id != principal.membership_id
+                and Role.OWNER not in principal.roles
             ):
-                raise AuthenticationFailure(401, "Thông tin xác thực không hợp lệ")
-            factor.last_used_counter = counter
-            session.mfa_verified_at = now
-            session.mfa_method = MfaMethod.TOTP.value
+                raise AuthenticationFailure(403, "Không đủ quyền thu hồi phiên của thành viên khác")
+            was_revoked = target.revoked_at is not None
+            if target.revoked_at is None:
+                target.revoked_at = now
+            revoked_at = target.revoked_at
+            database.add(
+                AuditEvent(
+                    workspace_id=principal.workspace_id,
+                    actor_membership_id=principal.membership_id,
+                    action="auth.session.revoked",
+                    target_type="session",
+                    target_id=target.id,
+                    reason=clean_reason,
+                    before_hash=state_hash(
+                        {
+                            "session_id": str(target.id),
+                            "membership_id": str(target.membership_id),
+                            "was_revoked": was_revoked,
+                        }
+                    ),
+                    after_hash=state_hash(
+                        {
+                            "session_id": str(target.id),
+                            "revoked_at": revoked_at.isoformat(),
+                        }
+                    ),
+                    request_id=request_id or uuid4(),
+                    occurred_at=now,
+                )
+            )
+            return SessionRevocationResult(
+                session_id=target.id,
+                membership_id=target.membership_id,
+                revoked_at=revoked_at,
+            )
 
     async def create_risk_profile(
         self,
@@ -487,6 +869,36 @@ class AuthService:
             await database.flush()
             return profile.id
 
+    async def _revoke_inactive_member_sessions(
+        self,
+        database: AsyncSession,
+        *,
+        workspace_id: UUID,
+        membership_id: UUID,
+        now: datetime,
+    ) -> None:
+        revoked_ids = await revoke_membership_sessions(
+            database,
+            workspace_id=workspace_id,
+            membership_id=membership_id,
+            now=now,
+        )
+        database.add(
+            AuditEvent(
+                workspace_id=workspace_id,
+                actor_membership_id=None,
+                action="auth.sessions.revoked_inactive_member",
+                target_type="user_membership",
+                target_id=membership_id,
+                reason=(
+                    "Tự động thu hồi phiên do thành viên hoặc tài khoản không ở trạng thái ACTIVE"
+                ),
+                after_hash=state_hash({"revoked_count": len(revoked_ids)}),
+                request_id=uuid4(),
+                occurred_at=now,
+            )
+        )
+
     @staticmethod
     async def _set_workspace(database: AsyncSession, workspace_id: UUID) -> None:
         await database.execute(
@@ -515,7 +927,7 @@ def normalize_slug(slug: str) -> str:
 
 
 def hash_token(token: str) -> str:
-    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+    return hash_session_token(token)
 
 
 def parse_cookie_value(cookie_value: str | None) -> tuple[UUID, str]:

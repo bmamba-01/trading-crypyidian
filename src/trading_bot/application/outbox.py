@@ -163,21 +163,56 @@ class UnitOfWork:
         reason: str | None = None,
         before_state: object | None = None,
         after_state: object | None = None,
-    ) -> None:
-        self.session.add(
-            AuditEvent(
-                workspace_id=self.workspace_id,
-                actor_membership_id=self.actor_membership_id,
-                action=action,
-                target_type=target_type,
-                target_id=target_id,
-                reason=reason,
-                before_hash=state_hash(before_state) if before_state is not None else None,
-                after_hash=state_hash(after_state) if after_state is not None else None,
-                request_id=self.request_id,
-                occurred_at=datetime.now(UTC),
-            )
+        before_hash: str | None = None,
+        after_hash: str | None = None,
+        session_hash: str | None = None,
+        client_ip: str | None = None,
+        user_agent: str | None = None,
+        outcome: str | None = None,
+    ) -> AuditEvent:
+        from trading_bot.observability.security_audit import (
+            current_security_audit_context,
+            mask_client_ip,
+            sanitize_audit_reason,
+            sanitize_user_agent,
         )
+
+        context = current_security_audit_context()
+        resolved_before_hash = (
+            before_hash
+            if before_hash is not None
+            else (state_hash(before_state) if before_state is not None else None)
+        )
+        resolved_after_hash = (
+            after_hash
+            if after_hash is not None
+            else (state_hash(after_state) if after_state is not None else None)
+        )
+        resolved_session_hash = session_hash if session_hash is not None else context.session_hash
+        resolved_client_ip = (
+            mask_client_ip(client_ip) if client_ip is not None else context.client_ip
+        )
+        resolved_user_agent = (
+            sanitize_user_agent(user_agent) if user_agent is not None else context.user_agent
+        )
+        event = AuditEvent(
+            workspace_id=self.workspace_id,
+            actor_membership_id=self.actor_membership_id,
+            action=action,
+            target_type=target_type,
+            target_id=target_id,
+            reason=sanitize_audit_reason(reason),
+            before_hash=resolved_before_hash,
+            after_hash=resolved_after_hash,
+            request_id=self.request_id,
+            occurred_at=datetime.now(UTC),
+            session_hash=resolved_session_hash,
+            client_ip=resolved_client_ip,
+            user_agent=resolved_user_agent,
+            outcome=outcome,
+        )
+        self.session.add(event)
+        return event
 
 
 class OutboxRepository:

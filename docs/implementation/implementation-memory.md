@@ -13,6 +13,25 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 
 ## Nhật ký các vòng
 
+### 2026-11-19 — Hoàn tất tích hợp Nhóm Bảo mật Đợt 2 (CRY-132, CRY-135, CRY-136, CRY-286, CRY-144, CRY-149)
+
+- **Mục tiêu/phạm vi:** Triển khai và hợp nhất toàn diện 6 ticket Bảo mật còn lại của hệ thống:
+  1. `CRY-286` (`[SEC-08]`): Bộ giới hạn xác thực và lockout bền vững `SharedAuthRateLimiter` hỗ trợ `PostgresRateLimitStore` và `InMemoryRateLimitStore`. Mọi khóa đều là chuỗi băm SHA-256 phân tách miền không chứa PII; cơ chế progressive delay từ lần lỗi thứ 5 trở đi theo cấp số nhân (1s, 2s, 4s, 8s, 16s, 30s) và lockout bền vững lưu vào bảng `auth_rate_limit_state` qua migration `d9e1f3a5b7c8`.
+  2. `CRY-132` & `CRY-135` (`[SEC-09..12]`): Vòng đời phiên bảo mật với idle session timeout 30 phút, cập nhật throttle `last_seen_at` trên `session` (migration `f0912a3b4c5d`), cơ chế xoay token phiên `issue_rotated_session` khi reauthenticate/step-up và thu hồi phiên cũ, bảo toàn CSRF token hash; API xem/thu hồi phiên `/api/v1/auth/sessions`; chống timing enumeration bằng `DUMMY_PASSWORD_HASH` tiêu chuẩn Argon2id khi user/workspace không tồn tại.
+  3. `CRY-136` (`[SEC-14..16]`): Mã khôi phục MFA một lần băm salted SHA-256 lưu bảng `mfa_recovery_code` có RLS workspace (migration `f2a4c6e8b0d1`), API xoay TOTP pending/confirm; admin reset MFA thành viên không bao giờ biết secret của member; chính sách mật khẩu tối thiểu 14 ký tự chống blocklist và thu hồi các phiên khác khi đổi; vô hiệu hóa vĩnh viễn bootstrap token sau khi khởi tạo Owner đầu tiên.
+  4. `CRY-144` (`[SEC-32..34]`): Phủ audit log sự kiện bảo mật đầy đủ (`auth.login.failed`, `auth.csrf.failed`, `auth.forbidden`, `auth.secret.rotated`, v.v.); chuỗi băm bất biến trên bảng `audit_event` gồm `seq`, `prev_hash`, `row_hash` tính bởi trigger `BEFORE INSERT` với hàm PL/pgSQL `audit_event_assign_hash_chain()`; bảo vệ chống xóa log bằng trigger `BEFORE TRUNCATE` và `REVOKE TRUNCATE`; bộ phát hiện cảnh báo bất thường brute-force/timing anomaly.
+  5. `CRY-149` (`[SEC-44..46]`): Bản kiểm kê bí mật hệ thống `secret_inventory.py` chuẩn hóa 100% tệp bí mật local sang quyền POSIX 0600 (`scripts/prepare_local_secrets.py`); CI workflow `.github/workflows/supply-chain-security.yml` gate kiểm tra SBOM CycloneDX khớp `uv.lock`, quét chống rò rỉ secret/canary/PEM key; siết cứng tài nguyên container (`cpus`, `mem_limit`, `pids_limit`) và bind mount `:ro` cho toàn bộ service trong `compose.yaml`.
+- **Nối chuỗi migration Alembic:** Nối liền mạch từ `12e554aace5d` (CRY-421) -> `d9e1f3a5b7c8` (SEC-08) -> `f0912a3b4c5d` (SEC-09/11) -> `f2a4c6e8b0d1` (SEC-14) -> `c9d1e3f5a7b4` (SEC-32/33 head duy nhất).
+- **Lỗi phát hiện & Quyết định xử lý:**
+  - *PostgreSQL `pg_catalog.current_user`:* Trong PL/pgSQL function gán hash chain, `CURRENT_USER` là SQL keyword chuẩn, không mang tiền tố `pg_catalog.`. Đã sửa thành `NEW.db_role := CURRENT_USER;` giúp trigger hoạt động chính xác trên Postgres container thật.
+  - *Session token rotation on reauth:* Sau khi gọi `reauthenticate`, session cũ bị thu hồi và trả về token mới. Đã cập nhật test `test_sec14_15_16_mfa_password_bootstrap.py` để sử dụng token mới từ kết quả reauth.
+  - *Container hardening cho report-reader:* Service `report-reader` mới merge từ `origin/dev` được bổ sung đầy đủ limits (`cpus: 1.0`, `mem_limit: 512m`, `pids_limit: 64`) để đạt 100% chuẩn SEC-46.
+- **Kiểm thử đạt 100%:**
+  - `uv run mypy src/trading_bot` → 539 source files passed.
+  - `uv run ruff check` & `uv run ruff format --check` → 1357 files clean.
+  - 13 unit test files (`test_sec08_*`, `test_sec09_12_*`, `test_sec14_*`, `test_sec32_34_*`, `test_sec33_*`, `test_sec44_45_46_*`, `test_auth_*`, `test_cry421_*`) → **204 passed in 29.58s**.
+  - E2E tests (`test_sec20_stepup_e2e`, `test_sec25_26_e2e`, `test_cry421_report_reader_role`) → **3 passed in 74.22s**.
+
 ### 2026-11-19 — Follow-up CRY-429 Live cards và CRY-443 số liệu báo cáo/tooltips
 
 - **Worktree/nền:** tiếp tục trong `codex/live-monitor-bot-grid`, rebase tới `origin/dev` `94b894d`; thay đổi chỉ nằm trong worktree này. `uv run alembic heads` xác nhận một head `0094c0fdba7f`.
@@ -5881,6 +5900,17 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
   - `PYTHONPATH=. uv run pytest tests/unit/test_sig0_taker_flow.py -q` → **14 passed in 1.41s**.
   - `uv run pytest tests/e2e/test_wp07_telegram_signal.py tests/e2e/test_db_role_least_privilege.py -v --tb=short` → **2 passed in 73.26s**.
 - **Readback:** đã đọc lại mục này và đối chiếu với kết quả kiểm chứng trước khi commit và push lên `origin/dev`.
+
+
+### 2026-11-19 — Tích hợp WP06F với `origin/dev` mới nhất và regression cuối
+
+- **Đầu vào merge:** trong lúc chuẩn bị tích hợp WP06F/CRY-440, `origin/dev` đã tiến từ `9f3ff727c819` lên `164b85a4e43956eae35cb44a1c2978c6b4dc1325`, gồm SEC-08/09/14/32/33. Đã nhập thay đổi này; xử lý hai xung đột ở SEC-20 và SEC-25/26 E2E bằng kiểm tra graph có đúng một Alembic head. Thêm migration nối `f6c8e0a2b4db` với `c9d1e3f5a7b4`: sole head hiện là `e8a2c4d6f0b3`. Cập nhật các assertion current-head thuộc WP06/WP07 và probe; giữ nguyên các assertion revision tổ tiên dùng kiểm lịch sử.
+- **Hồi quy được tìm và sửa:** full unit lần đầu có 2 lỗi trong tổng 6.065 test. Test limiter gửi cùng email qua peer không tin cậy trước đó nên các scope account/email hợp lệ trả `429`; đổi sang email fixture riêng để chỉ đo phạm vi cặp IP/email. Unit migration SEC-33 khóa `c9d1e3f5a7b4` làm current head; cập nhật sang merge head `e8a2c4d6f0b3`. Focused regression cho hai nhóm và migration graph: **60 passed/4.19s**. Full unit rerun: **6.065 passed/457.65s**, 4 cảnh báo deprecation (Starlette cookies và Alembic `path_separator`), không test nào skip.
+- **PostgreSQL E2E:** lệnh gồm `test_wp06_scorer_paper_entry_block`, `test_wp06_scorer_runtime_target_resolver`, DDL/source-DDL, scorer deployment, CRY-421 report-reader role, DB least-privilege, source-pinned replay, WP07 REST backfill persistence, SEC-20 step-up, SEC-25/26 grant và market-backfill migration → **27 passed/638.30s/0 skipped**. Race chỉ seed lineage tổng hợp trong DB Compose disposable và phục hồi trigger/FK trước operator/runtime; current-rights resolver chạy riêng, kiểm denial fail-closed. Không coi fixture là quyền sử dụng dữ liệu hoặc bằng chứng positive active eligibility.
+- **Playwright:** `test_learning_scorer_paper_entry_block_admin_ui.py` → **1 passed/4.33s**. Tạo lại ảnh desktop `tests/e2e/evidence/wp06-paper-block-desktop.png` (1366×900) và mobile `tests/e2e/evidence/wp06-paper-block-mobile.png` (390×844), xem trực quan. Bảng đổi sang card ở mobile; không thấy tràn ngang; desktop hiển thị đầy đủ form/chỉ số operator.
+- **Static/schema:** Ruff check đạt; Ruff format-check **1.401 files**; mypy **544 source files**; `node --check src/trading_bot/static/learning-scoring.js`; `uv run alembic heads` sole head `e8a2c4d6f0b3`; Compose scorer-deployment E2E gọi `alembic check`; `git diff --check` trước cập nhật tài liệu đạt và cần chạy lại sau cập nhật này.
+- **Traceability/trạng thái:** cập nhật WBS WP06, plan WP06F, project-status và memory. WP06F/CRY-440 chỉ chuyển Done sau merge commit/push xác nhận và Itsaplan cập nhật. CRY-334/WP06 còn mở: scorer lock/race và scope near-miss, cohort performance, Shadow/Drift application writer/race; chưa có source non-QA với quyền phù hợp cho positive active journey. `SHADOW`/`PAPER_GATE` tiếp tục khóa. Chưa commit/push ở thời điểm ghi mục này.
+- **Đọc lại:** vừa đọc lại mục memory và đối chiếu count với output của lệnh full unit, batch E2E, Playwright, Ruff, format, mypy, Alembic heads và JS syntax; sau chỉnh sửa tài liệu phải chạy lại `git diff --check`.
 
 
 ### 2026-11-19 — Tích hợp cuối WP06F + CRY-421 + CRY-256 trên `dev`

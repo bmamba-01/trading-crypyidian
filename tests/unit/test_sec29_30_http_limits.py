@@ -332,13 +332,19 @@ def test_auth_login_rate_limiter_uses_safe_client_ip_on_app_and_bare_router() ->
     assert codes == [401] * 5 + [429]
     assert service.calls == 5
 
-    # Proxy tin cậy chuyển tiếp 2 IP thật khác nhau → bộ đếm LoginRateLimiter tách biệt.
+    # Dùng email riêng để assertion chỉ đo cặp IP + email; các scope email/account
+    # không bị ảnh hưởng bởi 5 lần thử từ peer không tin cậy ở phía trên.
+    trusted_payload = {**payload, "email": "trusted-owner@example.test"}
     trusted_client = TestClient(app, base_url="http://app.example.test", client=(PROXY, 40000))
     first = trusted_client.post(
-        "/api/v1/auth/login", json=payload, headers={"X-Forwarded-For": "198.51.100.1"}
+        "/api/v1/auth/login",
+        json=trusted_payload,
+        headers={"X-Forwarded-For": "198.51.100.1"},
     )
     second = trusted_client.post(
-        "/api/v1/auth/login", json=payload, headers={"X-Forwarded-For": "198.51.100.2"}
+        "/api/v1/auth/login",
+        json=trusted_payload,
+        headers={"X-Forwarded-For": "198.51.100.2"},
     )
     assert (first.status_code, second.status_code) == (401, 401)
 

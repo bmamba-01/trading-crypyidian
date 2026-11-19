@@ -394,7 +394,8 @@ def test_sec25_26_postgres_and_app_surface_e2e() -> None:
             capture_output=True,
             text=True,
         )
-        assert "f6c8e0a2b4db (head)" in alembic_heads.stdout
+        assert "(head)" in alembic_heads.stdout
+        assert len(alembic_heads.stdout.strip().splitlines()) == 1
 
         result = subprocess.run(
             [

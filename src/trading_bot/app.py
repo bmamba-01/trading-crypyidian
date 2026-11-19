@@ -150,8 +150,10 @@ from trading_bot.application.telegram_binding import TelegramBindingService
 from trading_bot.application.telegram_paper_report import TelegramPaperReportService
 from trading_bot.application.telegram_signal_subscription import TelegramSignalSubscriptionService
 from trading_bot.application.telegram_signals import SignalThrottlePolicy
+from trading_bot.auth.account_security_router import router as account_security_router
 from trading_bot.auth.action_challenge import ActionChallengeService
 from trading_bot.auth.cookies import session_cookie_name
+from trading_bot.auth.mfa_recovery import AccountSecurityService
 from trading_bot.auth.route_policy import assert_all_routes_have_policy, public_route
 from trading_bot.auth.router import router as auth_router
 from trading_bot.auth.security import LoginRateLimiter, TestModeTotpManager
@@ -276,6 +278,15 @@ def create_app(
     admin_web_role = app_settings.process_role == "admin-web"
     scorer_policy_provider = _configured_scorer_policy_provider(app_settings)
 
+    initial_limiter_sessions = (
+        session_factory
+        if admin_web_role
+        and isinstance(session_factory, async_sessionmaker)
+        and session_factory.kw.get("bind") is not None
+        else None
+    )
+    default_login_limiter = LoginRateLimiter(session_factory=initial_limiter_sessions)
+
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         engine: AsyncEngine | None = None
@@ -292,6 +303,14 @@ def create_app(
             if scorer_history_engine is not None:
                 active_scorer_history_sessions = create_session_factory(scorer_history_engine)
         application.state.session_factory = active_session_factory
+        if (
+            admin_web_role
+            and isinstance(active_session_factory, async_sessionmaker)
+            and active_session_factory.kw.get("bind") is not None
+            and application.state.login_limiter is default_login_limiter
+            and default_login_limiter.session_factory is None
+        ):
+            default_login_limiter.bind_session_factory(active_session_factory)
         application.state.database_probe = database_probe
         application.state.scorer_runtime_policy_provider = scorer_policy_provider
         if database_probe is None and isinstance(active_session_factory, async_sessionmaker):
@@ -332,6 +351,16 @@ def create_app(
         totp_manager = TestModeTotpManager() if app_settings.auth_test_totp_enabled else None
         application.state.auth_service = (
             AuthService(
+                active_session_factory,
+                active_secret_provider,
+                totp=totp_manager,
+                idle_timeout=timedelta(minutes=app_settings.session_idle_timeout_minutes),
+            )
+            if active_session_factory is not None and active_secret_provider is not None
+            else None
+        )
+        application.state.account_security_service = (
+            AccountSecurityService(
                 active_session_factory,
                 active_secret_provider,
                 totp=totp_manager,
@@ -928,7 +957,7 @@ def create_app(
             StaticFiles(directory=str(Path(__file__).parent / "static")),
             name="static",
         )
-    app.state.login_limiter = LoginRateLimiter()
+    app.state.login_limiter = default_login_limiter
     app.state.readiness = {
         "database": False,
         "market_data": False,
@@ -940,6 +969,7 @@ def create_app(
     # SEC-26: router admin/UI/API quản trị chỉ mount ở process admin-web.
     if admin_web_role:
         app.include_router(auth_router)
+        app.include_router(account_security_router)
         app.include_router(settings_router)
         app.include_router(members_router)
         app.include_router(watchlist_router)

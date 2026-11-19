@@ -17,16 +17,23 @@ from trading_bot.adapters.database.models import (
     AuditEvent,
     MfaFactor,
     RoleBinding,
+    Session,
     UserAccount,
     UserInvitation,
     UserMembership,
 )
 from trading_bot.application.outbox import UnitOfWork
+from trading_bot.auth.cookies import clear_session_cookie, set_session_cookie
 from trading_bot.auth.policy import RECENT_MFA_LIFETIME, Permission, Principal, Role, authorize
 from trading_bot.auth.route_policy import CsrfMode, permission_route
 from trading_bot.auth.router import current_identity, require_csrf
+from trading_bot.auth.schemas import MemberSessionsRevokeAllRequest
 from trading_bot.auth.service import AuthIdentity
-from trading_bot.domain.events import EventEnvelope
+from trading_bot.auth.session_lifecycle import (
+    issue_rotated_session,
+    revoke_membership_sessions,
+)
+from trading_bot.domain.events import EventEnvelope, state_hash
 
 router = APIRouter(prefix="/api/v1/members", tags=["quản lý thành viên"])
 
@@ -75,8 +82,22 @@ def _require_permission(identity: AuthIdentity, permission: Permission) -> None:
         raise HTTPException(status_code=403, detail="Không đủ quyền thực hiện thao tác thành viên")
 
 
-def _require_recent_mfa(principal: Principal) -> None:
-    if datetime.now(UTC) - principal.mfa_verified_at > RECENT_MFA_LIFETIME:
+def _current_now(request: Request) -> datetime:
+    auth_service = getattr(request.app.state, "auth_service", None)
+    now_fn = getattr(auth_service, "now", None)
+    if callable(now_fn):
+        current = now_fn()
+        if isinstance(current, datetime):
+            return current
+    return datetime.now(UTC)
+
+
+def _require_recent_mfa(principal: Principal, *, now: datetime | None = None) -> None:
+    current = now if now is not None else datetime.now(UTC)
+    if (
+        current < principal.mfa_verified_at
+        or current - principal.mfa_verified_at > RECENT_MFA_LIFETIME
+    ):
         raise HTTPException(
             status_code=403, detail="Thao tác nhạy cảm yêu cầu xác thực MFA gần đây"
         )
@@ -156,12 +177,19 @@ async def update_member_role(
     response: Response,
 ) -> dict[str, object]:
     _require_permission(identity, Permission.MEMBER_WRITE)
-    _require_recent_mfa(identity.principal)
+    now = _current_now(request)
+    _require_recent_mfa(identity.principal, now=now)
     response.headers["Cache-Control"] = "no-store"
     sessions = _get_sessions(request)
     req_id = _request_id(request)
+    rotated_cookie_value: str | None = None
+    rotated_max_age: int | None = None
+    revoked_count = 0
     async with UnitOfWork(
-        sessions, workspace_id=identity.principal.workspace_id, request_id=req_id
+        sessions,
+        workspace_id=identity.principal.workspace_id,
+        actor_membership_id=identity.principal.membership_id,
+        request_id=req_id,
     ) as unit:
         target = await unit.session.scalar(
             select(UserMembership).where(
@@ -205,7 +233,53 @@ async def update_member_role(
                 role=body.role.value,
             )
         )
-        now = datetime.now(UTC)
+        # SEC-10 + SEC-11: khi đổi vai trò thành viên, thu hồi toàn bộ phiên cũ; nếu tự đổi
+        # vai trò của chính mình thì xoay sang phiên/token mới và đặt lại cookie trên response.
+        if (
+            membership_id == identity.principal.membership_id
+            and identity.principal.session_id is not None
+        ):
+            current_session = await unit.session.scalar(
+                select(Session).where(
+                    Session.workspace_id == identity.principal.workspace_id,
+                    Session.id == identity.principal.session_id,
+                    Session.revoked_at.is_(None),
+                )
+            )
+            if current_session is not None:
+                new_session, new_raw_token, _ = issue_rotated_session(
+                    unit.session,
+                    current_session,
+                    now=now,
+                    preserve_csrf=True,
+                )
+                other_revoked = await revoke_membership_sessions(
+                    unit.session,
+                    workspace_id=identity.principal.workspace_id,
+                    membership_id=membership_id,
+                    now=now,
+                    exclude_session_id=new_session.id,
+                )
+                revoked_count = len(other_revoked) + 1
+                rotated_cookie_value = f"{identity.principal.workspace_id}:{new_raw_token}"
+                rotated_max_age = max(1, int((new_session.expires_at - now).total_seconds()))
+            else:
+                revoked_ids = await revoke_membership_sessions(
+                    unit.session,
+                    workspace_id=identity.principal.workspace_id,
+                    membership_id=membership_id,
+                    now=now,
+                )
+                revoked_count = len(revoked_ids)
+        else:
+            revoked_ids = await revoke_membership_sessions(
+                unit.session,
+                workspace_id=identity.principal.workspace_id,
+                membership_id=membership_id,
+                now=now,
+            )
+            revoked_count = len(revoked_ids)
+
         unit.session.add(
             AuditEvent(
                 workspace_id=identity.principal.workspace_id,
@@ -230,10 +304,21 @@ async def update_member_role(
                 correlation_id=req_id,
                 idempotency_key=f"member.role_updated:{membership_id}:{req_id}",
                 schema_version=1,
-                payload={"roles": [body.role.value]},
+                payload={"roles": [body.role.value], "revoked_sessions": revoked_count},
             )
         )
-    return {"membership_id": str(membership_id), "role": body.role.value}
+    if rotated_cookie_value is not None and rotated_max_age is not None:
+        set_session_cookie(
+            response,
+            request.app.state.settings,
+            rotated_cookie_value,
+            max_age=rotated_max_age,
+        )
+    return {
+        "membership_id": str(membership_id),
+        "role": body.role.value,
+        "revoked_sessions": revoked_count,
+    }
 
 
 @router.get(
@@ -380,10 +465,81 @@ async def revoke_invitation(
 
 
 @router.post(
+    "/{membership_id}/sessions/revoke-all",
+    summary="Thu hồi toàn bộ phiên của thành viên",
+    description="Owner thu hồi mọi phiên đang hoạt động của một thành viên trong cùng workspace.",
+    dependencies=[permission_route(Permission.MEMBER_WRITE, csrf=CsrfMode.HEADER)],
+)
+async def revoke_all_member_sessions(
+    membership_id: UUID,
+    identity: Annotated[AuthIdentity, Depends(require_csrf)],
+    request: Request,
+    response: Response,
+    body: MemberSessionsRevokeAllRequest | None = None,
+) -> dict[str, object]:
+    _require_permission(identity, Permission.MEMBER_WRITE)
+    response.headers["Cache-Control"] = "no-store"
+    sessions = _get_sessions(request)
+    req_id = _request_id(request)
+    now = _current_now(request)
+    clean_reason = (
+        body.reason.strip()
+        if body is not None and body.reason is not None and body.reason.strip()
+        else "Owner thu hồi toàn bộ phiên đăng nhập của thành viên"
+    )
+    async with UnitOfWork(
+        sessions,
+        workspace_id=identity.principal.workspace_id,
+        actor_membership_id=identity.principal.membership_id,
+        request_id=req_id,
+    ) as unit:
+        target = await unit.session.scalar(
+            select(UserMembership).where(
+                UserMembership.workspace_id == identity.principal.workspace_id,
+                UserMembership.id == membership_id,
+            )
+        )
+        if target is None:
+            raise HTTPException(status_code=404, detail="Không tìm thấy thành viên trong workspace")
+        revoked_ids = await revoke_membership_sessions(
+            unit.session,
+            workspace_id=identity.principal.workspace_id,
+            membership_id=membership_id,
+            now=now,
+        )
+        unit.session.add(
+            AuditEvent(
+                workspace_id=identity.principal.workspace_id,
+                actor_membership_id=identity.principal.membership_id,
+                action="member.sessions_revoked_all",
+                target_type="user_membership",
+                target_id=membership_id,
+                reason=clean_reason,
+                after_hash=state_hash(
+                    {
+                        "membership_id": str(membership_id),
+                        "revoked_count": len(revoked_ids),
+                    }
+                ),
+                request_id=req_id,
+                occurred_at=now,
+            )
+        )
+    if identity.principal.session_id in revoked_ids:
+        clear_session_cookie(response, request.app.state.settings)
+    return {
+        "membership_id": str(membership_id),
+        "revoked_count": len(revoked_ids),
+        "status": "REVOKED",
+    }
+
+
+@router.post(
     "/recovery/mfa-reset",
     summary="Khôi phục MFA cho thành viên",
     description=(
-        "Vô hiệu hóa yếu tố MFA cũ của thành viên khi mất thiết bị; yêu cầu MFA gần đây và lý do."
+        "Vô hiệu hóa yếu tố MFA cũ và thu hồi toàn bộ phiên đang hoạt động của thành viên "
+        "khi mất thiết bị; yêu cầu MFA gần đây và lý do."
     ),
     dependencies=[permission_route(Permission.MEMBER_WRITE, csrf=CsrfMode.HEADER)],
 )
@@ -394,13 +550,16 @@ async def reset_member_mfa(
     response: Response,
 ) -> dict[str, object]:
     _require_permission(identity, Permission.MEMBER_WRITE)
-    _require_recent_mfa(identity.principal)
+    now = _current_now(request)
+    _require_recent_mfa(identity.principal, now=now)
     response.headers["Cache-Control"] = "no-store"
     sessions = _get_sessions(request)
     req_id = _request_id(request)
-    now = datetime.now(UTC)
     async with UnitOfWork(
-        sessions, workspace_id=identity.principal.workspace_id, request_id=req_id
+        sessions,
+        workspace_id=identity.principal.workspace_id,
+        actor_membership_id=identity.principal.membership_id,
+        request_id=req_id,
     ) as unit:
         target = await unit.session.scalar(
             select(UserMembership).where(
@@ -415,11 +574,21 @@ async def reset_member_mfa(
                 select(MfaFactor).where(
                     MfaFactor.workspace_id == identity.principal.workspace_id,
                     MfaFactor.membership_id == body.membership_id,
+                    MfaFactor.verified_at.is_not(None),
                 )
             )
         ).all()
+        # Tuân thủ đặc quyền tối thiểu DB (SEC-01): crypidian_admin_web không có DELETE trên
+        # mfa_factor, chỉ cập nhật verified_at=NULL để vô hiệu hóa yếu tố MFA cũ.
         for factor in factors:
-            await unit.session.delete(factor)
+            factor.verified_at = None
+        # SEC-11: tự động thu hồi toàn bộ phiên đang hoạt động của thành viên khi đặt lại MFA.
+        revoked_ids = await revoke_membership_sessions(
+            unit.session,
+            workspace_id=identity.principal.workspace_id,
+            membership_id=body.membership_id,
+            now=now,
+        )
         unit.session.add(
             AuditEvent(
                 workspace_id=identity.principal.workspace_id,
@@ -428,12 +597,21 @@ async def reset_member_mfa(
                 target_type="user_membership",
                 target_id=body.membership_id,
                 reason=body.reason.strip(),
+                after_hash=state_hash(
+                    {
+                        "disabled_factors": len(factors),
+                        "revoked_sessions": len(revoked_ids),
+                    }
+                ),
                 request_id=req_id,
                 occurred_at=now,
             )
         )
+    if identity.principal.session_id in revoked_ids:
+        clear_session_cookie(response, request.app.state.settings)
     return {
         "membership_id": str(body.membership_id),
         "disabled_factors": len(factors),
+        "revoked_sessions": len(revoked_ids),
         "status": "RESET",
     }

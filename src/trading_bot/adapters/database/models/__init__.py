@@ -50,6 +50,7 @@ from trading_bot.adapters.database.models.entities import (
     ActionChallengeRecord,
     ApprovalRequest,
     AuditEvent,
+    AuthRateLimitState,
     ConfigVersion,
     ConsumerReceipt,
     MfaFactor,
@@ -176,6 +177,7 @@ from trading_bot.adapters.database.models.market_entities import (
     MarketRawReference,
     MarketTradeFlow,
 )
+from trading_bot.adapters.database.models.mfa_recovery_entities import MfaRecoveryCode
 from trading_bot.adapters.database.models.paper_entities import (
     ExchangeOrderRecord,
     FillRecord,
@@ -257,6 +259,7 @@ __all__ = [
     "ActionChallengeRecord",
     "ApprovalRequest",
     "AuditEvent",
+    "AuthRateLimitState",
     "ConsumerReceipt",
     "Base",
     "BacktestReportRecord",
@@ -325,6 +328,7 @@ __all__ = [
     "MarketRawReference",
     "ConfigVersion",
     "MfaFactor",
+    "MfaRecoveryCode",
     "OutboxEvent",
     "PaperAccountSeed",
     "OrderIntentRecord",

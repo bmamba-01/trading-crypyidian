@@ -8,16 +8,23 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import HTMLResponse
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from trading_bot.adapters.database.models import AuditEvent
 from trading_bot.admin.web_router import _templates
 from trading_bot.application.outbox import UnitOfWork
+from trading_bot.auth.action_challenge import ACTION_SECRET_WRITE
 from trading_bot.auth.policy import Permission, authorize
-from trading_bot.auth.route_policy import permission_route
-from trading_bot.auth.router import current_identity
+from trading_bot.auth.route_policy import CsrfMode, owner_route, permission_route
+from trading_bot.auth.router import current_identity, enforce_endpoint_step_up
 from trading_bot.auth.service import AuthIdentity
+from trading_bot.observability.audit_chain import verify_audit_chain
+from trading_bot.observability.security_audit import (
+    SecretRotationService,
+    request_security_audit_scope,
+)
 
 router = APIRouter(tags=["nhật ký audit"])
 _html_router = APIRouter(tags=["admin web"])
@@ -84,6 +91,19 @@ async def _query_audit_events(
                 "after_hash": item.after_hash,
                 "request_id": str(item.request_id),
                 "occurred_at": item.occurred_at.isoformat(),
+                "seq": getattr(item, "seq", None),
+                "prev_hash": getattr(item, "prev_hash", None),
+                "row_hash": getattr(item, "row_hash", None),
+                "db_role": getattr(item, "db_role", None),
+                "recorded_at": (
+                    item.recorded_at.isoformat()
+                    if getattr(item, "recorded_at", None) is not None
+                    else None
+                ),
+                "session_hash": getattr(item, "session_hash", None),
+                "client_ip": getattr(item, "client_ip", None),
+                "user_agent": getattr(item, "user_agent", None),
+                "outcome": getattr(item, "outcome", None),
             }
             for item in records
         ]
@@ -125,6 +145,99 @@ async def list_audit_events(
         limit=limit,
     )
     return {"events": events}
+
+
+class SecretRotateRequest(BaseModel):
+    """Yêu cầu xoay tham chiếu khóa bí mật trong workspace (SEC-32)."""
+
+    secret_reference_id: UUID
+    new_reference_key: str = Field(..., min_length=1, max_length=240)
+    reason: str = Field(..., min_length=3, max_length=500)
+    new_provider: str | None = Field(default=None, max_length=32)
+
+
+@router.get(
+    "/api/v1/audit/verify",
+    summary="Xác minh toàn vẹn chuỗi băm nhật ký audit",
+    description=(
+        "Kiểm tra tính liên tục của seq, prev_hash và row_hash trên toàn bộ chuỗi audit "
+        "của workspace hiện tại và phát cảnh báo CRITICAL nếu phát hiện giả mạo."
+    ),
+    dependencies=[permission_route(Permission.WORKSPACE_READ)],
+)
+async def verify_workspace_audit_chain(
+    request: Request,
+    response: Response,
+    identity: Annotated[AuthIdentity, Depends(current_identity)],
+    expected_min_last_seq: Annotated[int | None, Query(ge=1)] = None,
+    expected_head_hash: Annotated[str | None, Query(min_length=64, max_length=64)] = None,
+) -> dict[str, Any]:
+    _require_audit_read(identity)
+    response.headers["Cache-Control"] = "no-store"
+    sessions = _get_sessions(request)
+    detector = getattr(request.app.state, "security_anomaly_detector", None)
+    result = await verify_audit_chain(
+        sessions,
+        workspace_id=identity.principal.workspace_id,
+        anomaly_detector=detector,
+        expected_min_last_seq=expected_min_last_seq,
+        expected_head_hash=expected_head_hash,
+    )
+    return result.to_dict()
+
+
+@router.post(
+    "/api/v1/secrets/rotate",
+    summary="Xoay tham chiếu khóa bí mật",
+    description=(
+        "Cập nhật tham chiếu secret sang khóa mới có bảo vệ step-up challenge, "
+        "ghi nhật ký audit bất biến và phát cảnh báo thay đổi đặc quyền."
+    ),
+    dependencies=[owner_route(csrf=CsrfMode.HEADER)],
+)
+async def rotate_workspace_secret(
+    request: Request,
+    response: Response,
+    payload: SecretRotateRequest,
+    identity: Annotated[AuthIdentity, Depends(current_identity)],
+) -> dict[str, Any]:
+    response.headers["Cache-Control"] = "no-store"
+    sessions = _get_sessions(request)
+    await enforce_endpoint_step_up(
+        request,
+        identity.principal,
+        action=ACTION_SECRET_WRITE,
+        payload={
+            "secret_reference_id": str(payload.secret_reference_id),
+            "new_reference_key": payload.new_reference_key.strip(),
+        },
+    )
+    detector = getattr(request.app.state, "security_anomaly_detector", None)
+    service = SecretRotationService(sessions=sessions, anomaly_detector=detector)
+    with request_security_audit_scope(request):
+        try:
+            rotated = await service.rotate_secret(
+                identity.principal,
+                secret_reference_id=payload.secret_reference_id,
+                new_reference_key=payload.new_reference_key,
+                reason=payload.reason,
+                new_provider=payload.new_provider,
+            )
+        except LookupError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except PermissionError as error:
+            raise HTTPException(status_code=403, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+    return {
+        "secret_reference_id": str(rotated.secret_reference_id),
+        "workspace_id": str(rotated.workspace_id),
+        "provider": rotated.provider,
+        "previous_reference_key": rotated.previous_reference_key,
+        "new_reference_key": rotated.new_reference_key,
+        "status": rotated.status,
+        "rotated_at": rotated.rotated_at.isoformat(),
+    }
 
 
 @_html_router.get(

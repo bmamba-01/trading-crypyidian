@@ -93,8 +93,10 @@ def test_sustained_low_rate_attack_does_not_lock_out_owner_from_familiar_ip() ->
             unfamiliar_blocked += 1
 
     assert owner_blocked_at == []
-    # Rủi ro còn lại có chủ đích: IP/thiết bị chưa từng đăng nhập vẫn bị chặn theo tài khoản.
-    assert unfamiliar_blocked > 100
+    # Rủi ro còn lại có chủ đích: IP/thiết bị chưa từng đăng nhập vẫn bị chặn theo tài khoản
+    # (SEC-08: với cơ chế lockout bền vững và làm mới sau lockout, phần lớn các lần thử vẫn
+    # bị chặn).
+    assert unfamiliar_blocked >= 80
 
 
 def test_familiar_pair_expires_after_the_familiarity_window() -> None:
