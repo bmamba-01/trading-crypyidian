@@ -666,3 +666,37 @@ class AuditEvent(UuidPrimaryKey, Base):
     after_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     request_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class AuthRateLimitState(Base):
+    """Trạng thái giới hạn thử xác thực/lockout chia sẻ giữa các replica (SEC-08).
+
+    Khóa chính ``scope_key`` chỉ lưu tiền tố ``scope_type`` kèm SHA-256 hex, tuyệt đối
+    không lưu IP, email hay slug workspace dạng rõ để tránh lộ PII hoặc dò tài khoản.
+    """
+
+    __tablename__ = "auth_rate_limit_state"
+    __table_args__ = (
+        CheckConstraint("failures >= 0", name="failures_nonnegative"),
+        CheckConstraint(
+            "scope_type IN ('ip', 'email', 'pair', 'account', "
+            "'familiar', 'step_up', 'telegram_link')",
+            name="scope_type_valid",
+        ),
+        CheckConstraint(
+            "scope_key ~ '^[a-z][a-z0-9_]*:[0-9a-f]{64}$'",
+            name="scope_key_hashed",
+        ),
+        Index("ix_auth_rate_limit_state_updated_at", "updated_at"),
+    )
+
+    scope_key: Mapped[str] = mapped_column(String(128), primary_key=True)
+    scope_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    failures: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    window_started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
