@@ -273,6 +273,15 @@ def create_app(
     admin_web_role = app_settings.process_role == "admin-web"
     scorer_policy_provider = _configured_scorer_policy_provider(app_settings)
 
+    initial_limiter_sessions = (
+        session_factory
+        if admin_web_role
+        and isinstance(session_factory, async_sessionmaker)
+        and session_factory.kw.get("bind") is not None
+        else None
+    )
+    default_login_limiter = LoginRateLimiter(session_factory=initial_limiter_sessions)
+
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         engine: AsyncEngine | None = None
@@ -289,6 +298,14 @@ def create_app(
             if scorer_history_engine is not None:
                 active_scorer_history_sessions = create_session_factory(scorer_history_engine)
         application.state.session_factory = active_session_factory
+        if (
+            admin_web_role
+            and isinstance(active_session_factory, async_sessionmaker)
+            and active_session_factory.kw.get("bind") is not None
+            and application.state.login_limiter is default_login_limiter
+            and default_login_limiter.session_factory is None
+        ):
+            default_login_limiter.bind_session_factory(active_session_factory)
         application.state.database_probe = database_probe
         application.state.scorer_runtime_policy_provider = scorer_policy_provider
         if database_probe is None and isinstance(active_session_factory, async_sessionmaker):
@@ -925,7 +942,7 @@ def create_app(
             StaticFiles(directory=str(Path(__file__).parent / "static")),
             name="static",
         )
-    app.state.login_limiter = LoginRateLimiter()
+    app.state.login_limiter = default_login_limiter
     app.state.readiness = {
         "database": False,
         "market_data": False,
