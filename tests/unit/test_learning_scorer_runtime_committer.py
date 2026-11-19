@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 from types import SimpleNamespace
 from uuid import UUID
 
@@ -477,12 +478,13 @@ async def test_current_paper_rights_denial_aborts_before_scorer_access(
     [
         pytest.param(None, "thu hồi", id="denied"),
         pytest.param("d" * 64, "fingerprint đổi", id="fingerprint-changed"),
+        pytest.param("c" * 64, None, id="fingerprint-unchanged"),
     ],
 )
-async def test_post_inference_rights_recheck_rejects_commit(
+async def test_post_inference_rights_recheck_controls_commit(
     monkeypatch: pytest.MonkeyPatch,
     rechecked_fingerprint: str | None,
-    expected_error: str,
+    expected_error: str | None,
 ) -> None:
     job = _job()
     payload = (await _decision(job)).canonical_payload()
@@ -602,8 +604,14 @@ async def test_post_inference_rights_recheck_rejects_commit(
     monkeypatch.setattr(module, "feature_vector_is_out_of_distribution", lambda *_args: False)
     monkeypatch.setattr(module, "score_runtime_candidate_with_deadline", scored)
 
-    with pytest.raises(ScorerDeploymentRightsUnavailable, match=expected_error):
-        await PostgresScorerRuntimeCommitter(PolicyProvider())(
+    expectation = (
+        nullcontext()
+        if expected_error is None
+        else pytest.raises(ScorerDeploymentRightsUnavailable, match=expected_error)
+    )
+    commit = None
+    with expectation:
+        commit = await PostgresScorerRuntimeCommitter(PolicyProvider())(
             _Session(),  # type: ignore[arg-type]
             job,
             evaluation,  # type: ignore[arg-type]
@@ -611,3 +619,9 @@ async def test_post_inference_rights_recheck_rejects_commit(
         )
 
     assert calls == ["authorize", "score", "authorize"]
+    if expected_error is None:
+        assert commit is not None
+        assert commit.decision is incumbent
+        assert commit.score_event is not None
+        assert commit.score_event.bot_decision_id == incumbent.decision_id
+        assert commit.score_event.decision_source_rights_fingerprint == "c" * 64
