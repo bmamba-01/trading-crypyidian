@@ -101,9 +101,9 @@
 - [x] Mở rộng QA-only Compose E2E qua `LearningDriftApplication` với cohort có một member QA: assessment/member thật được ghi nhưng `INCONCLUSIVE`, `rights_unverified`, 0 eligible và không có proposal; retry trả duplicate. Fixture chỉ kiểm denial, không phải bằng chứng quyền.
 - [x] Sửa hash parity cho `source_rights_digest` khác NULL: migration `c6e8a0b2d4f9` dựng JSON theo thứ tự khóa của Python và giữ nguyên cách viết số mũ khi tính SHA-256. Integrity guard dùng quyền có sẵn trên hàm JSON và số thực. Nhánh NULL lịch sử giữ nguyên chuỗi byte.
 - [x] Repository thật trả `None` cho decision QA. Ứng dụng trả `None` khi cohort trống, không ghi assessment/member; downgrade bị chặn khi ledger có dữ liệu và downgrade/re-upgrade bảng trống khôi phục contract/ACL.
-- [ ] Hoàn tất ma trận mixed-source/member và race rights revoke khi đang giữ cohort lock; không giả lập quyền non-QA.
 - [x] Sau sửa review, 149 unit liên quan và lô Compose source-scope, persistence, admin-read đạt trên head `c6e8a0b2d4f9` (4 E2E/133.88s/0 skipped). Các bước downgrade trực tiếp khi ledger có dữ liệu bị từ chối tại đúng revision. Re-review không còn finding chặn; retry xác nhận cùng assessment ID và chỉ một hàng theo đúng identity.
 - [x] Full unit **6.076 passed**, regression chéo 8 file WP06 scorer/source-lineage/PAPER/rights/DB **11 passed/613.13s/0 skipped**, Ruff, format (1.408 files), mypy (544 source files), sole Alembic head `c6e8a0b2d4f9` và diff-check đạt.
+- [x] Commit `06eee0a` được fast-forward push lên `origin/dev`; CRY-334 vẫn In Progress vì các rights race/non-QA journey chưa có entitlement thật.
 - [ ] Mixed-source/member và rights revoke/shrink race vẫn cần quyền PAPER non-QA thật; QA fixture chỉ chứng minh denial. Fixture registry Drift được seed ở chế độ replica, nên test không tuyên bố kiểm registry approval hoặc Shadow production writer. Fixture DB WP06F chỉ dành kiểm operator path.
 
 ### Task 6: WP06 traceability and regression audit
