@@ -207,6 +207,7 @@ services:
       - database_signal_worker_password
       - database_market_signal_worker_password
       - database_scorer_history_password
+      - database_report_reader_password
     networks:
       - backend
     read_only: true
@@ -622,6 +623,35 @@ services:
     healthcheck: *application_healthcheck
     restart: unless-stopped
 
+  # CRY-421: container chạy theo yêu cầu cho Run Report / AI Analyst bằng role đọc báo cáo riêng.
+  report-reader:
+    image: ${CRYPIDIAN_APP_IMAGE:-crypidian-app:local}
+    profiles: ["manual"]
+    environment:
+      TRADING_BOT_APP_ENV: local
+      TRADING_BOT_TRADING_MODE: PAPER
+      TRADING_BOT_PROCESS_ROLE: report-reader
+      TRADING_BOT_DATABASE_USER: crypidian_report_reader
+      TRADING_BOT_DATABASE_PASSWORD_FILE: /run/secrets/database_report_reader_password
+      TRADING_BOT_DATABASE_HOST: postgres
+      TRADING_BOT_DATABASE_NAME: crypidian
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrator:
+        condition: service_completed_successfully
+    secrets:
+      - database_report_reader_password
+    networks:
+      - backend
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    user: "10001:10001"
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    restart: "no"
+
 networks:
   backend:
     internal: true
@@ -674,6 +704,8 @@ secrets:
     file: ./.secrets/database_market_signal_worker_password
   database_backtest_worker_password:
     file: ./.secrets/database_backtest_worker_password
+  database_report_reader_password:
+    file: ./.secrets/database_report_reader_password
   telegram_bot_token:
     # E2E đặt biến này tới file rỗng để không bao giờ gọi Bot API thật bằng token local.
     file: ${TRADING_BOT_TELEGRAM_BOT_TOKEN_SECRET_FILE:-./.secrets/telegram_bot_token}

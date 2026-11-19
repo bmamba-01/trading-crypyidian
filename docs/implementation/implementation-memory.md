@@ -5894,3 +5894,17 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
   - Chống trộn chế độ định giá trên toàn bộ tầng: `BacktestRunner` (`VALUATION_MODE_MISMATCH`), `BacktestRepository.append_result` (`BacktestRepositoryConflict` + lưu `equity_valuation_mode`/`mark_to_market` trong payload report), `SensitivityComparison` và `RuntimePaperReplayComparison`.
   - Kiểm chứng: `uv run ruff format --check src tests` (**1177 files already formatted**), `uv run ruff check src tests` (**All checks passed!**), `uv run mypy src/trading_bot` (**Success: no issues found in 528 source files**), `PYTHONPATH=. uv run pytest tests/unit/test_cry256_replay_mtm_enable.py tests/unit/test_runtime_replay_evaluator.py tests/unit/test_backtest*.py -q` → **318 passed in 8.13s**, `uv run pytest tests/e2e/test_backtest_persistence.py -v --tb=short` → **1 passed in 31.16s**.
 - **Readback:** đã đọc lại mục này và đối chiếu với kết quả kiểm chứng trước khi commit và push lên `origin/dev`.
+
+
+### 2026-11-19 — Role DB đọc báo cáo riêng `crypidian_report_reader` (`CRY-421`)
+
+- **Triển khai `CRY-421` (`[AI-1/report-reader-role]` → Done):**
+  - Thêm role `crypidian_report_reader` (`LOGIN NOINHERIT NOBYPASSRLS`) vào `scripts/provision_database_roles.py`, secret `database_report_reader_password` vào `scripts/prepare_local_secrets.py`, và service `report-reader` (`profiles: ["manual"]`, `read_only: true`, `cap_drop: ["ALL"]`) vào `compose.yaml`.
+  - Tạo migration `migrations/versions/12e554aace5d_cry421_report_reader_role.py` (head duy nhất `12e554aace5d`, nối sau `0094c0fdba7f`) cấp `SELECT` + RLS theo `app.workspace_id` trên 22 bảng đọc báo cáo/AI-4 và `INSERT` + RLS `WITH CHECK` chỉ trên 4 bảng append-only (`run_report`, `analyst_run`, `analyst_session`, `proposal_backtest`), tuyệt đối không cấp `UPDATE`/`DELETE` và không cấp quyền trên bảng identity/session/audit.
+  - Chuyển toàn bộ các phase `report`/`sessions`/`persist` trong `scripts/run_ai_analyst.py` sang service `report-reader`, đồng thời bỏ `UPDATE analyst_session` sang chế độ append-only (đếm lượt chạy theo `analyst_run`).
+  - Đồng bộ head `12e554aace5d` trong `tests/unit/test_sig0_taker_flow.py` và các E2E test; thêm unit test `tests/unit/test_cry421_report_reader_role.py` và Postgres E2E `tests/e2e/test_cry421_report_reader_role.py`.
+- **Kiểm chứng trên `dev`:**
+  - `uv run ruff format --check src tests migrations scripts` → **1354 files already formatted**; `uv run ruff check src tests migrations scripts` → **All checks passed!**; `uv run mypy src/trading_bot` → **Success: no issues found in 528 source files**.
+  - `PYTHONPATH=. uv run pytest tests/unit/test_cry421_report_reader_role.py tests/unit/test_sig0_taker_flow.py -q` → **17 passed in 1.07s**.
+  - `uv run pytest tests/e2e/test_db_role_least_privilege.py -v --tb=short` → **1 passed**; `uv run pytest tests/e2e/test_cry421_report_reader_role.py -v --tb=short` → **1 passed in 12.89s**.
+- **Readback:** đã đọc lại mục này và đối chiếu với kết quả kiểm chứng trước khi commit và push lên `origin/dev`.
