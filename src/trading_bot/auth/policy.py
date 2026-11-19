@@ -44,6 +44,7 @@ class Permission(StrEnum):
     LEARNING_MODEL_WRITE = "learning:model_write"
     LEARNING_MODEL_APPROVE = "learning:model_approve"
     LEARNING_INCIDENT_MANAGE = "learning:incident_manage"
+    LEARNING_PAPER_ENTRY_BLOCK = "learning:paper_entry_block"
 
 
 ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
@@ -74,6 +75,7 @@ ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
             Permission.RUNTIME_RESUME,
             Permission.WORKSPACE_KILL,
             Permission.LEARNING_INCIDENT_MANAGE,
+            Permission.LEARNING_PAPER_ENTRY_BLOCK,
         }
     ),
     Role.ANALYST_REVIEWER: frozenset(

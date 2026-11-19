@@ -13,6 +13,31 @@ ScorerEventDecision = Literal["APPROVE", "VETO", "ABSTAIN"]
 
 
 @dataclass(frozen=True, slots=True)
+class ScorerPaperEntryBlockAuditSummary:
+    """Thông tin tối thiểu về lần operator chặn entry PAPER."""
+
+    actor_user_id: UUID
+    mfa_verified_at: datetime
+    reason: str
+    created_at: datetime
+
+    def __post_init__(self) -> None:
+        if type(self.actor_user_id) is not UUID or self.actor_user_id.int == 0:
+            raise ValueError("actor_user_id audit chặn PAPER phải là UUID hợp lệ.")
+        for name, value in (
+            ("mfa_verified_at", self.mfa_verified_at),
+            ("created_at", self.created_at),
+        ):
+            if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None:
+                raise ValueError(f"{name} audit chặn PAPER phải có múi giờ.")
+            object.__setattr__(self, name, value.astimezone(UTC))
+        if self.mfa_verified_at > self.created_at:
+            raise ValueError("MFA audit chặn PAPER không thể đến sau thời điểm ghi.")
+        if not isinstance(self.reason, str) or not self.reason.strip() or len(self.reason) > 500:
+            raise ValueError("reason audit chặn PAPER không hợp lệ.")
+
+
+@dataclass(frozen=True, slots=True)
 class ScorerScoreEventSummary:
     """Một sự kiện scorer chỉ chứa các trường được phép hiển thị."""
 
@@ -24,6 +49,9 @@ class ScorerScoreEventSummary:
     probability: float | None
     confidence: float | None
     uncertainty: float | None
+    bot_id: UUID | None = None
+    bot_decision_id: UUID | None = None
+    paper_entry_block: ScorerPaperEntryBlockAuditSummary | None = None
 
     def __post_init__(self) -> None:
         if type(self.event_id) is not UUID:
@@ -58,6 +86,17 @@ class ScorerScoreEventSummary:
                 raise ValueError("VETO cần reason_code và đủ xác suất.")
         elif self.reason_code is not None or any(value is None for value in values):
             raise ValueError("APPROVE cần đủ xác suất và không có reason_code.")
+        for name, identifier in (
+            ("bot_id", self.bot_id),
+            ("bot_decision_id", self.bot_decision_id),
+        ):
+            if identifier is not None and (type(identifier) is not UUID or identifier.int == 0):
+                raise ValueError(f"{name} liên kết scorer không hợp lệ.")
+        if (
+            self.paper_entry_block is not None
+            and type(self.paper_entry_block) is not ScorerPaperEntryBlockAuditSummary
+        ):
+            raise ValueError("paper_entry_block phải là audit đã kiểm tra.")
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,6 +126,7 @@ class ScorerScoreEventPage:
 __all__ = [
     "ScorerEventDecision",
     "ScorerEventMode",
+    "ScorerPaperEntryBlockAuditSummary",
     "ScorerScoreEventPage",
     "ScorerScoreEventSummary",
 ]

@@ -59,3 +59,23 @@ def test_parallel_runs_own_distinct_image_tags_and_secret_directories(tmp_path: 
         assert first.compose_file.exists()
         assert not second.compose_file.parent.exists()
     assert not first.compose_file.parent.exists()
+
+
+def test_isolated_compose_can_use_postgres_tmpfs_without_changing_default(tmp_path: Path) -> None:
+    root = _fixture_root(tmp_path)
+
+    with harness.isolated_compose_resources(root, postgres_tmpfs=True) as resources:
+        config = resources.compose_file.read_text(encoding="utf-8")
+        postgres_service = config.split("  postgres:\n", maxsplit=1)[1].split(
+            "  db-provisioner:\n", 1
+        )[0]
+        assert "tmpfs:\n      - /var/lib/postgresql" in postgres_service
+        assert "postgres_data:/var/lib/postgresql" not in postgres_service
+
+    with harness.isolated_compose_resources(root) as resources:
+        config = resources.compose_file.read_text(encoding="utf-8")
+        postgres_service = config.split("  postgres:\n", maxsplit=1)[1].split(
+            "  db-provisioner:\n", 1
+        )[0]
+        assert "postgres_data:/var/lib/postgresql" in postgres_service
+        assert "      - /var/lib/postgresql\n" not in postgres_service

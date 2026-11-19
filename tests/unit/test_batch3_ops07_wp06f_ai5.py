@@ -14,16 +14,14 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
-from trading_bot.admin.learning_scoring_page_router import router as scoring_router
+from trading_bot.admin.learning_paper_entry_block_router import (
+    router as paper_entry_block_router,
+)
 from trading_bot.admin.web_router import _build_operations_health_data
 from trading_bot.admin.web_router import router as admin_router
 from trading_bot.application.learning_signal_dataset import (
     SignalOutcomeSampleInput,
     build_signal_outcome_dataset_manifest,
-)
-from trading_bot.application.paper_entry_operator_block import (
-    OperatorEntryBlockError,
-    PaperEntryBlockSummary,
 )
 from trading_bot.auth.policy import MfaMethod, Principal, Role
 from trading_bot.auth.router import current_identity
@@ -291,77 +289,20 @@ def test_create_app_scorer_history_read_model_is_fail_closed_without_credential(
         assert app_with_scorer.state.learning_scoring_score_event_read_model is not None
 
 
-def test_block_paper_entry_endpoint_enforces_role_csrf_and_mfa() -> None:
-    """Endpoint chặn PAPER entry kiểm quyền owner/risk-admin, CSRF, MFA và trả kết quả."""
-    ws_id = uuid4()
-    decision_id = uuid4()
-    bot_id = uuid4()
-    block_id = uuid4()
-
+def test_legacy_block_paper_entry_endpoint_is_removed() -> None:
+    """API cũ theo BotDecision không được giữ song song với route scorer event mới."""
     app = FastAPI()
-    app.include_router(scoring_router)
-    app.state.settings = AppSettings()
-    app.state.auth_service = SimpleNamespace(verify_csrf=AsyncMock(return_value=None))
-    app.state.paper_entry_operator_block_service = SimpleNamespace(
-        block_paper_entry=AsyncMock(
-            return_value=PaperEntryBlockSummary(
-                block_id=block_id,
-                bot_id=bot_id,
-                bot_decision_id=decision_id,
-                blocked_by=uuid4(),
-                reason="Biến động bất thường trước tin vĩ mô",
-                mfa_verified_at=NOW,
-                created_at=NOW,
-            )
-        )
-    )
-
-    operator = AuthIdentity(
-        email="op@crypidian.io",
-        principal=Principal(
-            user_id=uuid4(),
-            membership_id=uuid4(),
-            workspace_id=ws_id,
-            roles=frozenset({Role.OPERATOR}),
-            mfa_method=MfaMethod.TOTP,
-            mfa_verified_at=NOW,
-        ),
-    )
-    app.dependency_overrides[current_identity] = lambda: operator
+    app.include_router(paper_entry_block_router)
     client = TestClient(app)
-    res_op = client.post(
-        f"/admin/learning/scoring/decisions/{decision_id}/block-paper-entry",
-        json={"reason": "test", "csrf_token": "tok"},
+    legacy_path = f"/admin/learning/scoring/decisions/{uuid4()}/block-paper-entry"
+    current_path = "/admin/learning/scoring/events/{score_event_id}/paper-block"
+    assert any(route.path == current_path for route in paper_entry_block_router.routes)
+    response = client.post(
+        legacy_path,
+        json={"reason": "Không dùng API cũ", "confirm": True},
+        headers={"X-CSRF-Token": "csrf", "Idempotency-Key": str(uuid4())},
     )
-    assert res_op.status_code == 403
-
-    risk_admin = AuthIdentity(
-        email="risk@crypidian.io",
-        principal=Principal(
-            user_id=uuid4(),
-            membership_id=uuid4(),
-            workspace_id=ws_id,
-            roles=frozenset({Role.RISK_ADMIN}),
-            mfa_method=MfaMethod.TOTP,
-            mfa_verified_at=NOW,
-        ),
-    )
-    app.dependency_overrides[current_identity] = lambda: risk_admin
-    res_ok = client.post(
-        f"/admin/learning/scoring/decisions/{decision_id}/block-paper-entry",
-        json={"reason": "Biến động bất thường trước tin vĩ mô", "csrf_token": "tok"},
-    )
-    assert res_ok.status_code == 200
-    assert res_ok.json()["block_id"] == str(block_id)
-
-    app.state.paper_entry_operator_block_service.block_paper_entry = AsyncMock(
-        side_effect=OperatorEntryBlockError("ENTRY_ALREADY_RECORDED", "Đã tạo OrderIntent", 409)
-    )
-    res_conflict = client.post(
-        f"/admin/learning/scoring/decisions/{decision_id}/block-paper-entry",
-        json={"reason": "Thử chặn muộn", "csrf_token": "tok"},
-    )
-    assert res_conflict.status_code == 409
+    assert response.status_code == 404
 
 
 # ---------------------------------------------------------------------------

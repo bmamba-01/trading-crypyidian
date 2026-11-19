@@ -39,5 +39,26 @@ class ScorerScoreEventReadModel:
                 page_size=page_size,
             )
 
+    async def get_blockable_decision_id(
+        self,
+        workspace_id: UUID,
+        *,
+        score_event_id: UUID,
+    ) -> UUID | None:
+        """Lấy liên kết quyết định để service ghi xác minh lại nguồn hiện hành."""
+        if type(workspace_id) is not UUID or workspace_id.int == 0:
+            raise ValueError("Workspace phải là UUID hợp lệ.")
+        async with UnitOfWork(
+            self._sessions,
+            workspace_id=workspace_id,
+            snapshot_read_only=True,
+        ) as unit:
+            return await LearningScorerScoreEventReadRepository(
+                unit.session
+            ).get_blockable_decision_id(
+                workspace_id=workspace_id,
+                score_event_id=score_event_id,
+            )
+
 
 __all__ = ["ScorerScoreEventReadModel"]

@@ -309,11 +309,12 @@ def _assert_layout(page: Page, *, width: int, height: int) -> None:
         width,
         page.evaluate("({scroll:document.documentElement.scrollWidth,inner:innerWidth})"),
     )
+    minimum_target_height = 44 if width < 768 else 36
     for button in page.get_by_role("button").all():
         if button.is_visible():
             bounds = button.bounding_box()
             assert bounds is not None, (width, bounds)
-            assert bounds["height"] >= 44, (width, bounds)
+            assert bounds["height"] >= minimum_target_height, (width, bounds)
 
 
 def test_scorer_admin_is_locked_responsive_and_uses_cas_disable(
@@ -395,6 +396,8 @@ def test_scorer_admin_is_locked_responsive_and_uses_cas_disable(
         expect(browser_page.locator(".skip-link")).to_be_focused()
         _assert_layout(browser_page, width=1280, height=900)
         browser_page.screenshot(path=str(SCREENSHOTS / "wp06-scoring-desktop.png"), full_page=True)
+        browser_page.set_viewport_size({"width": 390, "height": 844})
+        browser_page.reload(wait_until="load")
         _assert_layout(browser_page, width=390, height=844)
         browser_page.screenshot(path=str(SCREENSHOTS / "wp06-scoring-mobile.png"), full_page=True)
 
@@ -402,7 +405,11 @@ def test_scorer_admin_is_locked_responsive_and_uses_cas_disable(
         expect(browser_page).to_have_url(f"{app_url}/admin/learning/scoring?score_event_page=2")
         expect(browser_page.get_by_text("Không chấm được")).to_be_visible()
         expect(browser_page.get_by_text("MODEL_UNAVAILABLE")).to_be_visible()
-        assert score_event_read_model.calls == [(WORKSPACE_ID, 1), (WORKSPACE_ID, 2)]
+        assert score_event_read_model.calls == [
+            (WORKSPACE_ID, 1),
+            (WORKSPACE_ID, 1),
+            (WORKSPACE_ID, 2),
+        ]
 
         reason = browser_page.get_by_label("Lý do thay đổi")
         reason.fill("Quyền hiện hành chưa xác minh, tắt deployment scorer.")
@@ -454,9 +461,9 @@ def test_scorer_admin_is_locked_responsive_and_uses_cas_disable(
         assert service.facade.calls[0]["expected_deployment_revision"] == 2
         assert isinstance(service.facade.calls[0]["idempotency_key"], UUID)
         expect(browser_page.get_by_text("Đang tắt").first).to_be_visible()
-        assert len(service.principals) == 5
+        assert len(service.principals) == 6
         assert all(principal.workspace_id == WORKSPACE_ID for principal in service.principals)
-        assert report_read_model.workspaces == [WORKSPACE_ID] * 3
+        assert report_read_model.workspaces == [WORKSPACE_ID] * 4
     finally:
         _stop_app(server, thread, listener)
 

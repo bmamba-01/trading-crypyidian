@@ -234,9 +234,13 @@ def test_runtime_worker_submits_only_persisted_candidate_decisions() -> None:
     ]
 
 
-@pytest.mark.parametrize("position_is_flat", [True, False])
+@pytest.mark.parametrize(
+    ("position_is_flat", "operator_blocked"),
+    [(True, False), (False, False), (True, True)],
+)
 def test_persisted_candidate_runs_bot_release_and_preserves_bot_lineage(
     position_is_flat: bool,
+    operator_blocked: bool,
 ) -> None:
     from tests.unit.test_bot_dispatcher import (
         FixtureSnapshots,
@@ -317,6 +321,7 @@ def test_persisted_candidate_runs_bot_release_and_preserves_bot_lineage(
             content_hash=StrategyRegistry().get_release("h03-v1").content_hash,
         )
     ]
+    _FakeUnitOfWork.operator_blocked = operator_blocked
 
     result = asyncio.run(
         service.evaluate_and_submit(
@@ -326,6 +331,13 @@ def test_persisted_candidate_runs_bot_release_and_preserves_bot_lineage(
         )
     )
 
+    if operator_blocked:
+        assert result.decision is None
+        assert result.entry_block_reason == "LEARNING_PAPER_ENTRY_BLOCKED"
+        assert result.submission is None
+        assert counters.cycles == counters.reserves == counters.submissions == 0
+        assert callback_state.published is False
+        return
     if not position_is_flat:
         # RT-1 lát 2: account còn vị thế/lệnh sống trên symbol → không đánh giá, không ghi gì.
         assert result.submission is None
@@ -378,6 +390,7 @@ class _FakeUnitOfWork:
     instances: list[_FakeUnitOfWork] = []
     scalar_results: list[object | None] = []
     strategy_releases: list[object] = []
+    operator_blocked = False
 
     def __init__(self, _sessions: object, *, workspace_id, bot_id=None) -> None:
         self.workspace_id = workspace_id
@@ -407,7 +420,11 @@ class _FakeUnitOfWork:
 
 class _FakeSession:
     async def execute(self, _statement, _params=None):
-        return SimpleNamespace(scalar_one_or_none=lambda: None, all=lambda: [])
+        return SimpleNamespace(
+            scalar_one=lambda: _FakeUnitOfWork.operator_blocked,
+            scalar_one_or_none=lambda: None,
+            all=lambda: [],
+        )
 
     async def scalar(self, _statement):
         if _FakeUnitOfWork.scalar_results:

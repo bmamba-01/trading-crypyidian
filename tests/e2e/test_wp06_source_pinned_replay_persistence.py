@@ -56,8 +56,11 @@ def _compose_probe(
     return result
 
 
-@pytest.mark.parametrize("scorer_test", [False, True], ids=["base", "source-linked-test"])
-def test_source_pinned_runtime_replay_persists_exact_lineage_in_postgres(scorer_test: bool) -> None:
+@pytest.mark.parametrize(
+    "case", ["base", "source-linked-test", "revoked-before-proof", "revoked-before-evaluation"]
+)
+def test_source_pinned_runtime_replay_persists_exact_lineage_in_postgres(case: str) -> None:
+    scorer_test = case != "base"
     root = Path(__file__).parents[2]
     subprocess.run(
         [sys.executable, "scripts/prepare_local_secrets.py"],
@@ -168,7 +171,9 @@ def test_source_pinned_runtime_replay_persists_exact_lineage_in_postgres(scorer_
             assert result["linked_outcomes"] == 27
             assert result["opportunities"] == 270
             assert result["test_candidate_count"] == 9
-            _run_source_linked_test(root, project, environment, volume, result)
+            _run_source_linked_test(root, project, environment, volume, result, case=case)
+            if case != "source-linked-test":
+                return
             # Từ b7d9f1a3c5e8 (14/11/2026) receipt replay TRAINING đã ghi chặn mọi downgrade đi
             # qua nó, trước guard QA của 8ac4e2f6b0d1 và roundtrip e8f0a2c4d6b8; guard bị che được
             # kiểm tĩnh bằng unit (test_wp06_first_party_qa_source_downgrade_migration.py).
@@ -200,7 +205,7 @@ def test_source_pinned_runtime_replay_persists_exact_lineage_in_postgres(scorer_
                 "alembic",
                 "current",
             )
-            assert "0094c0fdba7f (head)" in current.stdout
+            assert "f6c8e0a2b4da (head)" in current.stdout
             assert (
                 _lineage_contract(root, project, environment, volume, workspace_id)
                 == lineage_contract
@@ -283,22 +288,10 @@ def test_source_pinned_runtime_replay_persists_exact_lineage_in_postgres(scorer_
             )
 
 
-def _run_source_linked_test(root, project, environment, volume, state):
+def _run_source_linked_test(root, project, environment, volume, state, *, case):
     state["evaluation_run_id"] = str(uuid.uuid4())
-    for service, phase in (
-        ("candidate-proof-builder", "stage"),
-        ("admin-web", "approve"),
-        ("candidate-proof-builder", "seal"),
-        ("admin-web", "enqueue"),
-        ("trainer-worker", "train"),
-        ("candidate-proof-builder", "proof"),
-        ("learning-evaluator", "evaluate"),
-        ("migrator", "current-rights"),
-        ("learning-evaluator", "deployment-role-denied"),
-        ("market-signal-worker", "deployment-market-signal-worker"),
-        ("admin-web", "deployment-inconclusive"),
-        ("migrator", "deployment-audit"),
-    ):
+
+    def run_probe(service, phase):
         command = ["python", "/e2e-tests/e2e/probes/wp06_source_linked_scorer_test.py", phase]
         output = _compose_probe(
             root,
@@ -315,9 +308,52 @@ def _run_source_linked_test(root, project, environment, volume, state):
             *command,
         )
         observed = json.loads(output.stdout.strip().splitlines()[-1])
-        if phase == "train":
-            assert observed["status"] == "succeeded"
         state.update(observed)
+        return observed
+
+    for service, phase in (
+        ("candidate-proof-builder", "stage"),
+        ("admin-web", "approve"),
+        ("candidate-proof-builder", "seal"),
+        ("admin-web", "enqueue"),
+        ("trainer-worker", "train"),
+    ):
+        run_probe(service, phase)
+    assert state["status"] == "succeeded"
+
+    if case != "revoked-before-proof":
+        run_probe("candidate-proof-builder", "proof")
+
+    if case in ("revoked-before-proof", "revoked-before-evaluation"):
+        expected = {
+            "proofs": int(case == "revoked-before-evaluation"),
+            "access_receipts": 0,
+            "payload_consumptions": 0,
+            "reports": 0,
+        }
+        assert run_probe("migrator", "test-row-counts") == expected
+        assert run_probe("migrator", "revoke-qa-policy") == {"qa_policy_revoked": True}
+        if case == "revoked-before-proof":
+            denial = run_probe("candidate-proof-builder", "proof-revoked")
+            assert denial == {"proof_rights_denial": "WP06_TRAINING_REPLAY_CURRENT_POLICY_DENIED"}
+        else:
+            denial = run_probe("learning-evaluator", "evaluate-revoked")
+            assert denial == {
+                "evaluation_rights_denial": "WP06_TRAINING_REPLAY_CURRENT_POLICY_DENIED",
+                "payload_gateway_calls": 0,
+            }
+        assert run_probe("migrator", "test-row-counts") == expected
+        return
+
+    for service, phase in (
+        ("learning-evaluator", "evaluate"),
+        ("migrator", "current-rights"),
+        ("learning-evaluator", "deployment-role-denied"),
+        ("market-signal-worker", "deployment-market-signal-worker"),
+        ("admin-web", "deployment-inconclusive"),
+        ("migrator", "deployment-audit"),
+    ):
+        run_probe(service, phase)
     assert state["test_candidates"] == 9
     assert state["test_no_candidates"] == 81
     assert state["expected_test_events"] == 90

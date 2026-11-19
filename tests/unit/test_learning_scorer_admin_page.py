@@ -17,6 +17,7 @@ from trading_bot.auth.service import AuthIdentity
 from trading_bot.config.settings import AppSettings
 from trading_bot.domain.learning.scorer_report_summary import ScorerReportSummary
 from trading_bot.domain.learning.scorer_score_event_summary import (
+    ScorerPaperEntryBlockAuditSummary,
     ScorerScoreEventPage,
     ScorerScoreEventSummary,
 )
@@ -75,6 +76,27 @@ class _ScorerScoreEventReadModel:
             page=page,
             has_next=self.result.has_next,
         )
+
+
+class _PaperEntryBlockFacade:
+    def __init__(self, eligible_decision_ids: frozenset[UUID]) -> None:
+        self.eligible_decision_ids_result = eligible_decision_ids
+        self.calls: list[tuple[UUID, ...]] = []
+
+    async def eligible_decision_ids(self, decision_ids):
+        values = tuple(decision_ids)
+        self.calls.append(values)
+        return frozenset(value for value in values if value in self.eligible_decision_ids_result)
+
+
+class _PaperEntryBlockService:
+    def __init__(self, eligible_decision_ids: frozenset[UUID]) -> None:
+        self.facade = _PaperEntryBlockFacade(eligible_decision_ids)
+        self.principals: list[Principal] = []
+
+    def for_principal(self, principal: Principal) -> _PaperEntryBlockFacade:
+        self.principals.append(principal)
+        return self.facade
 
 
 def _summary() -> ScorerReportSummary:
@@ -139,6 +161,8 @@ def _client(
     snapshot: ScorerDeploymentAdminSnapshot | None = None,
     report_summary: ScorerReportSummary | None = None,
     active_modes_enabled: bool = False,
+    score_event_page: ScorerScoreEventPage | None = None,
+    eligible_decision_ids: frozenset[UUID] = frozenset(),
 ) -> tuple[TestClient, _ScorerDeploymentService, Principal]:
     principal = Principal(
         user_id=uuid4(),
@@ -164,9 +188,12 @@ def _client(
     report_read_model = _ScorerReportReadModel(report_summary)
     application.state.learning_scoring_report_read_model = report_read_model
     score_event_read_model = _ScorerScoreEventReadModel(
-        ScorerScoreEventPage(items=(), page=1, has_next=False)
+        score_event_page or ScorerScoreEventPage(items=(), page=1, has_next=False)
     )
     application.state.learning_scoring_score_event_read_model = score_event_read_model
+    application.state.learning_paper_entry_block_service = _PaperEntryBlockService(
+        eligible_decision_ids
+    )
     application.dependency_overrides[current_identity] = lambda: identity
     return TestClient(application), service, principal
 
@@ -372,3 +399,83 @@ def test_scoring_admin_page_requires_learning_model_read_permission() -> None:
 
     assert response.status_code == 403
     assert service.principals == []
+
+
+def _paper_gate_approve_event(
+    *,
+    decision_id: UUID,
+    mode: str = "PAPER_GATE",
+    decision: str = "APPROVE",
+    audit: ScorerPaperEntryBlockAuditSummary | None = None,
+) -> ScorerScoreEventSummary:
+    return ScorerScoreEventSummary(
+        event_id=UUID("8f63e50f-0edc-4cb4-ae2b-6d1b2a414204"),
+        created_at=datetime(2026, 11, 18, 8, 40, tzinfo=UTC),
+        mode=mode,
+        decision=decision,
+        reason_code="LOW_CONFIDENCE" if decision == "VETO" else None,
+        probability=0.21 if decision == "VETO" else 0.72,
+        confidence=0.72,
+        uncertainty=0.28,
+        bot_id=uuid4(),
+        bot_decision_id=decision_id,
+        paper_entry_block=audit,
+    )
+
+
+def test_scoring_admin_page_shows_block_form_only_after_service_confirms_eligibility() -> None:
+    decision_id = UUID("19273e49-7090-4873-b8ab-05e481e563e3")
+    page = ScorerScoreEventPage(
+        items=(_paper_gate_approve_event(decision_id=decision_id),),
+        page=1,
+        has_next=False,
+    )
+    client, _service, principal = _client(
+        snapshot=_snapshot(ScorerDeploymentMode.PAPER_GATE),
+        score_event_page=page,
+        eligible_decision_ids=frozenset({decision_id}),
+    )
+
+    response = client.get("/admin/learning/scoring")
+
+    assert response.status_code == 200
+    assert (
+        'action="/admin/learning/scoring/events/8f63e50f-0edc-4cb4-ae2b-6d1b2a414204/paper-block"'
+    ) in response.text
+    assert 'name="reason"' in response.text
+    assert 'name="confirm"' in response.text
+    assert "xác thực totp gần đây" in response.text.lower()
+    block_service = client.app.state.learning_paper_entry_block_service
+    assert block_service.principals == [principal]
+    assert block_service.facade.calls == [(decision_id,)]
+
+
+def test_scoring_admin_page_shows_operator_audit_separately_from_scorer_decision() -> None:
+    audit = ScorerPaperEntryBlockAuditSummary(
+        actor_user_id=UUID("8664a146-5248-437e-8a5a-13185811ea4d"),
+        mfa_verified_at=datetime(2026, 11, 18, 8, 39, tzinfo=UTC),
+        reason="Đã có thông tin sự kiện mới.",
+        created_at=datetime(2026, 11, 18, 8, 40, tzinfo=UTC),
+    )
+    page = ScorerScoreEventPage(
+        items=(
+            _paper_gate_approve_event(
+                decision_id=UUID("19273e49-7090-4873-b8ab-05e481e563e3"), audit=audit
+            ),
+        ),
+        page=1,
+        has_next=False,
+    )
+    client, _service, _principal = _client(
+        snapshot=_snapshot(ScorerDeploymentMode.PAPER_GATE),
+        score_event_page=page,
+    )
+
+    response = client.get("/admin/learning/scoring")
+
+    assert response.status_code == 200
+    assert "Duyệt ứng viên" in response.text
+    assert "Entry PAPER bị chặn thủ công" in response.text
+    assert "Đã có thông tin sự kiện mới." in response.text
+    assert "8664a146-5248-43…" in response.text
+    assert '/paper-block"' not in response.text

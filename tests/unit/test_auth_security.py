@@ -290,6 +290,7 @@ def test_learning_incident_manage_is_only_for_owner_and_risk_admin(role: Role) -
                 "runtime:pause",
                 "runtime:resume",
                 "workspace:kill",
+                "learning:paper_entry_block",
             },
         ),
         (

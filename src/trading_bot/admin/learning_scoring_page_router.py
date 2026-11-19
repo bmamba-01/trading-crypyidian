@@ -9,17 +9,17 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy.exc import SQLAlchemyError
 
+from trading_bot.adapters.database.repositories.learning_scorer_paper_entry_blocks import (
+    LearningPaperEntryBlockConflict,
+)
 from trading_bot.adapters.database.repositories.learning_scoring_deployments import (
     ScorerDeploymentConflict,
     ScorerDeploymentRightsUnavailable,
 )
-from trading_bot.adapters.database.repositories.paper_entry_operator_blocks import (
-    OperatorEntryBlockError,
-)
-from trading_bot.admin.web_router import _auth_service, _parse_form, _templates
+from trading_bot.admin.web_router import _auth_service, _templates
 from trading_bot.auth.cookies import read_session_cookie
 from trading_bot.auth.policy import MfaMethod, Permission, Principal, authorize
-from trading_bot.auth.route_policy import CsrfMode, permission_route
+from trading_bot.auth.route_policy import permission_route
 from trading_bot.auth.router import current_identity
 from trading_bot.auth.service import (
     RECENT_MFA_LIFETIME,
@@ -184,19 +184,69 @@ async def learning_scoring_admin_page(
                 headers={"Cache-Control": "no-store"},
             ) from error
 
-    operator_blocks: tuple[Any, ...] = ()
-    block_service: Any = getattr(request.app.state, "paper_entry_operator_block_service", None)
-    if block_service is not None:
+    can_manage_paper_entry_block = (
+        authorize(principal, Permission.LEARNING_PAPER_ENTRY_BLOCK) and recent_totp
+    )
+    blockable_decision_ids = tuple(
+        dict.fromkeys(
+            item.bot_decision_id
+            for item in score_event_page.items
+            if can_manage_paper_entry_block
+            and item.mode == "PAPER_GATE"
+            and item.decision == "APPROVE"
+            and item.bot_id is not None
+            and item.bot_decision_id is not None
+            and item.paper_entry_block is None
+        )
+    )
+    eligible_decision_ids: frozenset[UUID] = frozenset()
+    if blockable_decision_ids:
+        block_service: Any = getattr(request.app.state, "learning_paper_entry_block_service", None)
+        if block_service is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Dịch vụ xác minh eligibility chặn entry PAPER chưa sẵn sàng.",
+                headers={"Cache-Control": "no-store"},
+            )
         try:
-            operator_blocks = await block_service.list_recent(principal, limit=20)
-        except OperatorEntryBlockError, SQLAlchemyError:
-            operator_blocks = ()
+            eligible_decision_ids = await block_service.for_principal(
+                principal
+            ).eligible_decision_ids(blockable_decision_ids)
+        except PermissionError:
+            # Quyền hoặc MFA có thể hết hiệu lực trong lúc tải trang: ẩn action.
+            eligible_decision_ids = frozenset()
+        except LearningPaperEntryBlockConflict:
+            # Target không còn active: lịch sử vẫn xem được nhưng không hiện thao tác.
+            eligible_decision_ids = frozenset()
+        except (SQLAlchemyError, ValueError) as error:
+            raise HTTPException(
+                status_code=503,
+                detail="Chưa thể xác minh eligibility chặn entry PAPER an toàn.",
+                headers={"Cache-Control": "no-store"},
+            ) from error
+
+    eligible_event_ids = {
+        item.event_id
+        for item in score_event_page.items
+        if item.bot_decision_id in eligible_decision_ids
+        and item.mode == "PAPER_GATE"
+        and item.decision == "APPROVE"
+        and item.paper_entry_block is None
+    }
+    if eligible_event_ids and not csrf_token:
+        try:
+            csrf_token = await _auth_service(request).issue_csrf_token(read_session_cookie(request))
+        except AuthenticationFailure as error:
+            raise HTTPException(
+                status_code=error.status_code,
+                detail=error.message,
+                headers={"Cache-Control": "no-store"},
+            ) from error
 
     return _templates(request).TemplateResponse(
         request=request,
         name="admin/learning_scoring.html",
         context={
-            "operator_blocks": operator_blocks,
             "identity": identity,
             "snapshot": snapshot,
             "mode_label": _MODE_LABELS[snapshot.mode],
@@ -244,6 +294,7 @@ async def learning_scoring_admin_page(
             "score_event_page": score_event_page,
             "score_event_rows": tuple(
                 {
+                    "event_id": str(item.event_id),
                     "event_id_short": _short(item.event_id),
                     "created_at": item.created_at,
                     "mode_label": _SCORE_EVENT_MODE_LABELS[item.mode],
@@ -253,6 +304,13 @@ async def learning_scoring_admin_page(
                     "probability": _percent(item.probability),
                     "confidence": _percent(item.confidence),
                     "uncertainty": _percent(item.uncertainty),
+                    "can_block_paper_entry": item.event_id in eligible_event_ids,
+                    "paper_entry_block": item.paper_entry_block,
+                    "paper_block_actor_user_id_short": (
+                        _short(item.paper_entry_block.actor_user_id)
+                        if item.paper_entry_block
+                        else None
+                    ),
                 }
                 for item in score_event_page.items
             ),
@@ -378,79 +436,4 @@ def _percent(value: float | None) -> str | None:
     return None if value is None else f"{value * 100:.1f}%"
 
 
-@router.post(
-    "/admin/learning/scoring/decisions/{bot_decision_id}/block-paper-entry",
-    dependencies=[
-        permission_route(
-            Permission.WORKSPACE_KILL,
-            Permission.RISK_PROFILE_WRITE,
-            require_all=True,
-            csrf=CsrfMode.FORM,
-            denied_detail="Chỉ owner hoặc risk-admin mới có quyền chặn thêm PAPER entry.",
-        )
-    ],
-)
-async def block_paper_entry_decision(
-    bot_decision_id: UUID,
-    request: Request,
-    response: Response,
-    identity: Annotated[AuthIdentity, Depends(current_identity)],
-) -> dict[str, Any]:
-    """Chặn thêm PAPER entry cho một BotDecision APPROVE (owner/risk-admin + TOTP MFA + CSRF)."""
-    response.headers["Cache-Control"] = "no-store"
-    principal = identity.principal
-    if not (
-        authorize(principal, Permission.WORKSPACE_KILL)
-        and authorize(principal, Permission.RISK_PROFILE_WRITE)
-    ):
-        raise HTTPException(
-            status_code=403,
-            detail="Chỉ owner hoặc risk-admin mới có quyền chặn thêm PAPER entry.",
-            headers={"Cache-Control": "no-store"},
-        )
-    content_type = request.headers.get("content-type", "")
-    if "application/json" in content_type:
-        body = await request.json()
-        values = body if isinstance(body, dict) else {}
-    else:
-        values = await _parse_form(request)
-    reason = str(values.get("reason") or "")
-    csrf_token = str(values.get("csrf_token") or "")
-    try:
-        await _auth_service(request).verify_csrf(read_session_cookie(request), csrf_token)
-    except AuthenticationFailure as error:
-        raise HTTPException(
-            status_code=403,
-            detail=error.message,
-            headers={"Cache-Control": "no-store"},
-        ) from error
-
-    service: Any = getattr(request.app.state, "paper_entry_operator_block_service", None)
-    if service is None:
-        raise HTTPException(
-            status_code=503,
-            detail="Dịch vụ chặn entry PAPER chưa sẵn sàng.",
-            headers={"Cache-Control": "no-store"},
-        )
-    try:
-        summary = await service.block_paper_entry(
-            principal,
-            bot_decision_id=bot_decision_id,
-            reason=reason,
-        )
-    except OperatorEntryBlockError as error:
-        raise HTTPException(
-            status_code=error.status_code,
-            detail=error.message,
-            headers={"Cache-Control": "no-store"},
-        ) from error
-    return {
-        "block_id": str(summary.block_id),
-        "bot_id": str(summary.bot_id),
-        "bot_decision_id": str(summary.bot_decision_id),
-        "reason": summary.reason,
-        "created_at": summary.created_at.isoformat(),
-    }
-
-
-__all__ = ["block_paper_entry_decision", "learning_scoring_admin_page", "router"]
+__all__ = ["learning_scoring_admin_page", "router"]

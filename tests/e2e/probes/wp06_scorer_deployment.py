@@ -23,6 +23,7 @@ from trading_bot.adapters.database.models.learning_scoring_deployment_entities i
 from trading_bot.application.learning_scoring_deployment import ScorerDeploymentService
 from trading_bot.application.outbox import UnitOfWork
 from trading_bot.auth.policy import MfaMethod, Principal, Role
+from trading_bot.domain.learning.score_event import LearningScoreDecision, LearningScoreEvent
 from trading_bot.domain.learning.scoring_deployment import (
     ScorerDeploymentEvent,
     ScorerDeploymentMode,
@@ -87,6 +88,61 @@ def _principal(workspace_id, membership_id, *, verified_at: datetime | None = No
         roles=frozenset({Role.OWNER}),
         mfa_verified_at=verified_at or datetime.now(UTC) - timedelta(seconds=1),
         mfa_method=MfaMethod.TOTP,
+    )
+
+
+def _score_event(
+    workspace_id: UUID,
+    bot_id: UUID,
+    decision_id: UUID,
+    decision_hash: str,
+    candidate_id: str,
+) -> LearningScoreEvent:
+    """Tạo score event hợp lệ dùng riêng cho các probe PostgreSQL cô lập."""
+    return LearningScoreEvent.create(
+        workspace_id=workspace_id,
+        bot_id=bot_id,
+        bot_decision_id=decision_id,
+        bot_decision_hash=decision_hash,
+        incumbent_decision_hash=decision_hash,
+        incumbent_status="CANDIDATE",
+        final_status="CANDIDATE",
+        candidate_id=candidate_id,
+        candidate_hash="4" * 64,
+        decision_snapshot_id="5" * 64,
+        vector_hash="6" * 64,
+        feature_schema_version="crypidian-learning-feature-vector-v1",
+        feature_schema_hash="7" * 64,
+        timeframe_snapshot_ids=(("1h", "8" * 64),),
+        source_event_digests=(("1h", "9" * 64),),
+        source_rights_fingerprint="a" * 64,
+        decision_source_rights_fingerprint="b" * 64,
+        mode=ScorerDeploymentMode.SHADOW,
+        deployment_event_id=uuid4(),
+        deployment_revision=1,
+        registry_id=uuid4(),
+        registry_revision=1,
+        active_pointer_version=0,
+        scorer_artifact_id=uuid4(),
+        scorer_artifact_hash="c" * 64,
+        base_artifact_hash="0" * 64,
+        evaluation_report_id=uuid4(),
+        evaluation_report_hash="d" * 64,
+        evaluation_status="ACCEPTED_SHADOW_ONLY",
+        report_scope_hash="f" * 64,
+        proof_id=uuid4(),
+        proof_hash="e" * 64,
+        proof_scope_hash="f" * 64,
+        candidate_completeness_verified=False,
+        policy_id="wp06-scorer-e2e-v1",
+        policy_hash="1" * 64,
+        decision=LearningScoreDecision.APPROVE,
+        reason_code=None,
+        class_probabilities=((-1, 0.2), (0, 0.3), (1, 0.5)),
+        probability=0.5,
+        confidence=0.5,
+        uncertainty=0.5,
+        model_latency_ms=17,
     )
 
 

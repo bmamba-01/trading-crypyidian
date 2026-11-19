@@ -1,5 +1,7 @@
 # Project plan và trạng thái triển khai
 
+**19/11/2026 — WP06F / CRY-440 đã kiểm chứng, chờ commit/push:** Nhánh `codex/wp06f-operator-dev` dựa trên `dev` thêm ledger block PAPER có MFA, gate runtime và action Admin responsive; full unit **5.993 passed**; E2E Compose/operator/schema/scorer/incident/replay **28 passed**; UI desktop/mobile sau chỉnh cuối **3 passed**, không skip. Ruff/format, mypy 533 source files, JavaScript syntax, diff-check, sole Alembic head và `alembic check` trong Compose E2E đều đạt. PostgreSQL race và resolver quyền hiện hành chạy tách biệt; ảnh Playwright desktop/mobile được lưu trong `tests/e2e/evidence/`. Tracker, commit và fast-forward push còn lại. WP06 tổng thể vẫn OPEN do CRY-334 rights scope/race matrix và thiếu dữ liệu non-QA đủ quyền; giữ `SHADOW`/`PAPER_GATE` khóa. Xem [implementation memory](./implementation-memory.md) và [kế hoạch WP06F](../superpowers/plans/2026-11-18-wp06f-paper-entry-operator-block.md).
+
 **Cập nhật 14/11/2026 (nhánh `claude/project-progress-review-wp07-d70431`, PR `bmamba-01/trading-crypyidian#1`):**
 - **19/11/2026 — Follow-up CRY-429/CRY-443:** `/admin/live` hiển thị card bot responsive 4/2/1 cột, giữ đủ chỉ số; `/admin/reports` rút gọn số tiền/tỷ lệ/bps còn tối đa 2 chữ số và tooltip dùng nền đặc. Unit **119 passed**; E2E Live **3 passed** tại 390/800/1280 px, E2E báo cáo/tooltip **1 passed**; Ruff, JavaScript, Alembic heads và diff-check đạt. Docker Desktop đã restart và Engine healthy. Chi tiết trong [memory](./implementation-memory.md) và [kế hoạch](../superpowers/plans/2026-11-18-live-monitor-bot-grid.md).
 - **18/11/2026 — CRY-442 `[UI-Admin/chart-layout]` hoàn tất trên `dev`:** trên `/admin/chart`, dải chỉ số trực tiếp đặt trước filter; nhóm công cụ vẽ thu gọn mặc định, bộ đếm hình vẫn thấy; Bảng Entry chuyển thành hàng tóm tắt theo bot, mở từng dòng để xem checklist/vận hành/chẩn đoán. Unit **24 passed**, admin chart/live/risk E2E **7 passed**, Ruff và diff-check đạt. Commit `18ded34` đã push; admin-web 8010 restart và healthy, chart đã kiểm tra lại trên Chrome.
@@ -221,3 +223,8 @@ Các kết quả dưới đây được chạy trên working tree ngày 2026-10-
 - Outbox receipt bảo đảm chống nhận trùng trong DB; không tự bảo đảm side effect bên ngoài chạy đúng một lần.
 - AI chỉ có quyền tạo/chấm candidate theo hợp đồng; không truy cập secret sàn, không vượt hard risk gate và không tự promote LIVE.
 - Các story hoàn thành cần có liên kết test và evidence. Khi trạng thái code hoặc test thay đổi, cập nhật đồng thời bảng này và implementation memory.
+
+
+### 2026-11-19 — WP06 source-rights denial và replay persistence
+
+Trên head ad6583f7c2d1/Alembic 0094c0fdba7f, source-linked PostgreSQL E2E 4 passed/327.74s, WP07 replay/backfill E2E 3 passed/58.57s, unit liên quan 171 passed/7.94s; Ruff, format-check và diff-check đạt. Quyền bị thu hồi trước proof/evaluation chặn đúng thời điểm; replay đã execute nhưng bị revoke trước persist không ghi sáu bảng outcome/receipt. WP06 vẫn mở: CRY-334 còn scorer lock-order, near-miss các chiều, performance mixed cohort, Shadow/Drift race và tích hợp cuối; chưa có non-QA rights/sample support, active modes vẫn khóa.

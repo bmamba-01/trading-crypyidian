@@ -1,4 +1,79 @@
 (() => {
+  document.querySelectorAll(".paper-entry-block-form").forEach((form) => {
+    const details = form.closest("details");
+    const reasonField = form.elements.reason;
+    const confirmField = form.elements.confirm;
+    const submitButton = form.querySelector("button[type='submit']");
+    const cancelButton = form.querySelector("[data-paper-block-cancel]");
+    const status = form.querySelector(".paper-entry-block-status");
+    const errorSummary = form.querySelector(".paper-entry-block-error");
+    if (!reasonField || !confirmField || !submitButton || !status || !errorSummary) return;
+
+    cancelButton?.addEventListener("click", () => {
+      if (details) details.open = false;
+      errorSummary.hidden = true;
+      status.hidden = true;
+    });
+
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (!form.reportValidity()) return;
+      const reason = reasonField.value.trim();
+      if (!reason || !confirmField.checked) return;
+      const fingerprint = `${form.dataset.scoreEventId}:${reason}`;
+      if (form.dataset.idempotencyFingerprint !== fingerprint) {
+        form.dataset.idempotencyFingerprint = fingerprint;
+        form.dataset.idempotencyKey = crypto.randomUUID();
+      }
+      submitButton.disabled = true;
+      errorSummary.hidden = true;
+      errorSummary.textContent = "";
+      status.hidden = false;
+      status.textContent = "Đang xác minh target scorer và ghi thao tác chặn.";
+      try {
+        const response = await fetch(form.action, {
+          method: "POST",
+          credentials: "same-origin",
+          headers: {
+            "Content-Type": "application/json",
+            "X-CSRF-Token": form.dataset.csrfToken,
+            "Idempotency-Key": form.dataset.idempotencyKey,
+          },
+          body: JSON.stringify({ reason, confirm: confirmField.checked }),
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          const detail = payload.detail;
+          const message = typeof detail === "string"
+            ? detail
+            : "Máy chủ chưa thể ghi thao tác chặn.";
+          throw new Error(message);
+        }
+        status.textContent = "Đã ghi nhận chặn entry PAPER. Đang tải lại lịch sử audit.";
+        window.crypidianToast?.flash({
+          tone: "success",
+          title: "Đã chặn entry PAPER",
+          message: "Lịch sử scorer giữ nguyên quyết định gốc và ghi riêng thao tác operator.",
+        });
+        window.location.reload();
+      } catch (error) {
+        errorSummary.hidden = false;
+        errorSummary.textContent = error.message;
+        errorSummary.focus();
+        status.textContent = "Thao tác chưa được ghi nhận.";
+        submitButton.disabled = false;
+        window.crypidianToast?.show({
+          tone: "error",
+          title: "Chưa chặn được entry PAPER",
+          message: error.message,
+          mirrored: true,
+        });
+      }
+    });
+  });
+})();
+
+(() => {
   const form = document.getElementById("scorer-deployment-form");
   const status = document.getElementById("learning-scoring-status");
   const errorSummary = document.getElementById("scorer-error");

@@ -15,7 +15,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 
-from sqlalchemy import select, text
+from sqlalchemy import event, select, text
 from sqlalchemy.exc import DBAPIError
 
 from trading_bot.adapters.database.engine import (
@@ -288,6 +288,90 @@ async def counts(sessions):
                 )
             ).one()
         )
+
+
+async def test_row_counts(sessions):
+    """Đếm toàn bộ ledger TEST trong workspace E2E bằng login kiểm toán."""
+    async with UnitOfWork(sessions, workspace_id=WORKSPACE) as unit:
+        result = await unit.session.execute(
+            text(
+                "SELECT "
+                "(SELECT count(*) FROM public.learning_scorer_test_opportunity_proof "
+                "WHERE workspace_id=:workspace) AS proofs, "
+                "(SELECT count(*) FROM public.learning_scorer_test_access_receipt "
+                "WHERE workspace_id=:workspace) AS access_receipts, "
+                "(SELECT count(*) FROM public.learning_scorer_test_payload_consumption "
+                "WHERE workspace_id=:workspace) AS payload_consumptions, "
+                "(SELECT count(*) FROM public.learning_scorer_test_evaluation_report "
+                "WHERE workspace_id=:workspace) AS reports"
+            ),
+            {"workspace": WORKSPACE},
+        )
+        return dict(result.mappings().one())
+
+
+async def revoke_qa_policy(sessions):
+    """Thu hồi policy QA bằng registry thật trước lần gọi builder hoặc evaluator."""
+    from trading_bot.adapters.database.repositories.source_registry import SourceRegistryRepository
+    from trading_bot.application.first_party_qa_dataset import CRYPIDIAN_FIRST_PARTY_QA
+    from trading_bot.domain.research.source_policy import SourcePolicyState
+
+    sys.path.insert(0, "/e2e-tests")
+    from e2e.probes.source_license_fixture import consume_rights_events
+
+    assert STATE["qa_provider"] == CRYPIDIAN_FIRST_PARTY_QA
+    async with UnitOfWork(sessions, workspace_id=WORKSPACE) as unit:
+        repository = SourceRegistryRepository(unit.session)
+        entry = await repository.get_entry(
+            workspace_id=WORKSPACE, source_id=CRYPIDIAN_FIRST_PARTY_QA
+        )
+        assert entry is not None
+        assert entry.current.state is SourcePolicyState.VERIFIED
+        key = uuid4()
+        revoked = entry.transition(
+            policy_id="policy:" + key.hex + ":" + hashlib.sha256(key.bytes).hexdigest(),
+            state=SourcePolicyState.REVOKED,
+            actor_id="wp06-e2e-test-rights-revoker",
+            at=datetime.now(UTC),
+            reason="E2E kiểm scorer TEST khi quyền nguồn QA đã bị thu hồi.",
+        )
+        result = await repository.append_revision(workspace_id=WORKSPACE, revision=revoked.current)
+        assert result.revision.state is SourcePolicyState.REVOKED
+
+    # Consumer xử lý xong outbox để lần kiểm đi tới trạng thái policy REVOKED đã ghi.
+    assert await consume_rights_events(sessions, workspace_id=WORKSPACE) == 1
+    return {"qa_policy_revoked": True}
+
+
+async def proof_with_revoked_rights(sessions):
+    from trading_bot.adapters.database.repositories.candidate_universe_proofs import (
+        CandidateUniverseProofError,
+    )
+    from trading_bot.adapters.database.repositories.learning_scorer_test_opportunity_proofs import (  # noqa: E501
+        LearningScorerTestOpportunityProofConflict,
+        LearningScorerTestOpportunityProofRepository,
+    )
+    from trading_bot.application.strategy_catalog import strategy_registry
+
+    try:
+        async with UnitOfWork(sessions, workspace_id=WORKSPACE) as unit:
+            await LearningScorerTestOpportunityProofRepository(
+                unit.session, strategy_registry=strategy_registry()
+            ).build_and_append(
+                workspace_id=WORKSPACE,
+                evaluation_run_id=UUID(STATE["evaluation_run_id"]),
+                attempt_id=UUID(STATE["attempt_id"]),
+            )
+    except LearningScorerTestOpportunityProofConflict as error:
+        base_denial = error.__cause__
+        # Builder TEST xác minh lại proof BASE đã ghim và gặp gate TRAINING ở bước này.
+        if not isinstance(base_denial, CandidateUniverseProofError):
+            raise
+        denial = base_denial.__cause__
+        if not isinstance(denial, PermissionError):
+            raise
+        return {"proof_rights_denial": str(denial)}
+    raise AssertionError("Builder TEST đã trả proof sau khi quyền TRAINING bị thu hồi.")
 
 
 async def run(phase):
@@ -614,7 +698,7 @@ async def run(phase):
                     for item in proof.entries
                 } == STATE["expected_test_inventory"]
                 repeated = await LearningScorerTestOpportunityProofRepository(
-                    unit.session
+                    unit.session, strategy_registry=registry
                 ).build_and_append(
                     workspace_id=WORKSPACE,
                     evaluation_run_id=UUID(STATE["evaluation_run_id"]),
@@ -632,9 +716,20 @@ async def run(phase):
                 "test_candidates": proof.candidate_count,
                 "test_no_candidates": proof.no_candidate_count,
             }
-        if phase == "evaluate":
+        if phase == "test-row-counts":
+            assert role == "crypidian_admin"
+            return await test_row_counts(sessions)
+        if phase == "revoke-qa-policy":
+            assert role == "crypidian_admin"
+            return await revoke_qa_policy(sessions)
+        if phase == "proof-revoked":
+            assert role == "crypidian_candidate_builder"
+            return await proof_with_revoked_rights(sessions)
+        if phase in ("evaluate", "evaluate-revoked"):
             assert role == "crypidian_learning_evaluator"
-            return await evaluate(sessions)
+            if phase == "evaluate":
+                return await evaluate(sessions, engine=engine)
+            return await evaluate(sessions, engine=engine, rights_revoked=True)
         if phase == "current-rights":
             assert role == "crypidian_admin"
             return await verify_current_rights(sessions)
@@ -655,7 +750,7 @@ async def run(phase):
         await engine.dispose()
 
 
-async def evaluate(sessions):
+async def evaluate(sessions, *, engine, rights_revoked=False):
     from sqlalchemy.exc import DBAPIError
 
     from trading_bot.adapters.database.models import LearningScorerArtifactRecord
@@ -679,6 +774,7 @@ async def evaluate(sessions):
         ScorerTestOpportunityProof,
     )
     from trading_bot.application.learning_scorer_test_service import (
+        ScorerTestEvaluationAccessConflict,
         ScorerTestEvaluationReportConflict,
         ScorerTestEvaluationRequest,
         ScorerTestEvaluationService,
@@ -848,6 +944,64 @@ async def evaluate(sessions):
         evaluated_at=datetime.now(UTC),
     )
     access = LearningScorerTestAccessRepository(sessions)
+    service = ScorerTestEvaluationService(
+        access, LearningScorerTestEvaluationReportRepository(sessions)
+    )
+
+    def is_payload_gateway_statement(statement: str) -> bool:
+        return (
+            re.search(r"\bwp06_consume_scorer_test_payload\s*\(", statement, flags=re.IGNORECASE)
+            is not None
+        )
+
+    if rights_revoked:
+        database_markers = []
+        payload_statements = []
+
+        def capture_database_error(exception_context):
+            original = exception_context.original_exception
+            diagnostic = getattr(original, "diag", None)
+            marker = getattr(diagnostic, "message_primary", None)
+            if isinstance(marker, str):
+                database_markers.append(marker)
+
+        def capture_statement(conn, cursor, statement, parameters, context, executemany):
+            if is_payload_gateway_statement(statement):
+                payload_statements.append(statement)
+
+        event.listen(engine.sync_engine, "handle_error", capture_database_error)
+        event.listen(engine.sync_engine, "before_cursor_execute", capture_statement)
+        try:
+            await service.evaluate(request)
+        except ScorerTestEvaluationAccessConflict as error:
+            expected_marker = "WP06_TRAINING_REPLAY_CURRENT_POLICY_DENIED"
+            cause = error.__cause__
+            observed_marker = (
+                str(cause)
+                if isinstance(cause, PermissionError)
+                else next(
+                    (marker for marker in database_markers if marker == expected_marker), None
+                )
+            )
+            if observed_marker != expected_marker:
+                raise AssertionError(
+                    "Evaluation conflict không giữ marker từ current-rights gate: "
+                    f"cause={cause!r}, database={database_markers!r}"
+                ) from error
+            if payload_statements:
+                raise AssertionError(
+                    "Evaluator đã gọi payload gateway sau khi rights bị thu hồi."
+                ) from None
+            return {
+                "evaluation_rights_denial": observed_marker,
+                "payload_gateway_calls": 0,
+            }
+        else:
+            raise AssertionError("Evaluator TEST đã trả report sau khi quyền TRAINING bị thu hồi.")
+        finally:
+            event.remove(engine.sync_engine, "handle_error", capture_database_error)
+            event.remove(engine.sync_engine, "before_cursor_execute", capture_statement)
+
     fingerprint = scorer_test_evaluation_request_fingerprint(request)
     receipt = await access.open_committed_receipt(
         scope,
@@ -874,24 +1028,50 @@ async def evaluate(sessions):
         raise AssertionError("Callback lỗi phải rollback phase hai.")
     assert await counts(sessions) == (1, 0, 0)
 
-    service = ScorerTestEvaluationService(
-        access, LearningScorerTestEvaluationReportRepository(sessions)
-    )
-    first = await service.evaluate(request)
+    successful_payload_calls = []
+
+    def capture_successful_payload_call(conn, cursor, statement, parameters, context, executemany):
+        if is_payload_gateway_statement(statement):
+            successful_payload_calls.append(statement)
+
+    event.listen(engine.sync_engine, "before_cursor_execute", capture_successful_payload_call)
+    try:
+        first = await service.evaluate(request)
+    finally:
+        event.remove(engine.sync_engine, "before_cursor_execute", capture_successful_payload_call)
+    assert successful_payload_calls, "Positive control không thấy lời gọi payload gateway."
     assert not first.is_duplicate
     assert await counts(sessions) == (1, 1, 1)
     retry = await service.evaluate(request)
     assert retry.is_duplicate
     assert retry.record_id == first.record_id
     assert retry.report.canonical_json == first.report.canonical_json
+    retry_mismatch_markers = []
+
+    def capture_retry_mismatch(exception_context):
+        original = exception_context.original_exception
+        diagnostic = getattr(original, "diag", None)
+        marker = getattr(diagnostic, "message_primary", None)
+        if isinstance(marker, str):
+            retry_mismatch_markers.append(marker)
+
+    event.listen(engine.sync_engine, "handle_error", capture_retry_mismatch)
     try:
         await service.evaluate(
             replace(request, evaluated_at=request.evaluated_at + timedelta(seconds=1))
         )
     except ScorerTestEvaluationReportConflict:
         pass
+    except ScorerTestEvaluationAccessConflict as error:
+        if "WP06_SCORER_TEST_RECEIPT_RETRY_MISMATCH" not in retry_mismatch_markers:
+            raise AssertionError(
+                "Fingerprint retry phải bị từ chối bằng marker chuyên biệt; "
+                f"nhận {retry_mismatch_markers!r}"
+            ) from error
     else:
         raise AssertionError("Đổi fingerprint phải bị từ chối.")
+    finally:
+        event.remove(engine.sync_engine, "handle_error", capture_retry_mismatch)
     assert await counts(sessions) == (1, 1, 1)
     try:
         async with UnitOfWork(sessions, workspace_id=WORKSPACE) as unit:
