@@ -83,7 +83,7 @@ def test_migration_chains_from_current_head_and_enforces_rls_and_grants() -> Non
     module, statements = _run("upgrade")
     joined = "\n".join(statements)
 
-    assert module.down_revision == "c8d28da699c6"
+    assert module.down_revision == "f0912a3b4c5d"
     assert "CREATE TABLE mfa_recovery_code" in joined
     assert "ALTER TABLE mfa_recovery_code ENABLE ROW LEVEL SECURITY" in joined
     assert "ALTER TABLE mfa_recovery_code FORCE ROW LEVEL SECURITY" in joined

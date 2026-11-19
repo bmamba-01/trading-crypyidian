@@ -350,8 +350,9 @@ def test_secret_canary_scan_catches_leaked_canary_and_private_key(tmp_path: Path
     """Quét rò rỉ phải bắt được canary bí mật, private key PEM và tệp .secrets."""
     (tmp_path / "src").mkdir()
     canary = "CRYPIDIAN_CANARY_SECRET_9911"
+    pem_dummy = "-----BEGIN " + "RSA PRIVATE KEY-----"
     (tmp_path / "src/leaked.py").write_text(
-        f'KEY = "{canary}"\nPEM = "-----BEGIN RSA PRIVATE KEY-----"\n',
+        f'KEY = "{canary}"\nPEM = "{pem_dummy}"\n',
         encoding="utf-8",
     )
     (tmp_path / ".secrets").mkdir()

@@ -140,7 +140,7 @@ def test_sec33_migration_chains_from_c8d28da699c6_and_contains_hash_chain_ddl() 
     source = MIGRATION_PATH.read_text(encoding="utf-8")
 
     assert 'revision: str = "c9d1e3f5a7b4"' in source
-    assert 'down_revision: str | Sequence[str] | None = "c8d28da699c6"' in source
+    assert 'down_revision: str | Sequence[str] | None = "f2a4c6e8b0d1"' in source
     for token in (
         "seq",
         "prev_hash",

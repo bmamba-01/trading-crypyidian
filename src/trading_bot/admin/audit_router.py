@@ -205,9 +205,9 @@ async def rotate_workspace_secret(
     sessions = _get_sessions(request)
     await enforce_endpoint_step_up(
         request,
-        identity,
+        identity.principal,
         action=ACTION_SECRET_WRITE,
-        target={
+        payload={
             "secret_reference_id": str(payload.secret_reference_id),
             "new_reference_key": payload.new_reference_key.strip(),
         },

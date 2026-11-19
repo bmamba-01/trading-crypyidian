@@ -1403,7 +1403,7 @@ def _extract_failure_count(
     return failures
 
 
-def _run_async_from_sync[T](coro: Coroutine[Any, Any, _T]) -> _T:
+def _run_async_from_sync[T](coro: Coroutine[Any, Any, T]) -> T:
     try:
         asyncio.get_running_loop()
     except RuntimeError:

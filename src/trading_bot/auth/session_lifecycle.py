@@ -24,13 +24,14 @@ def hash_session_token(token: str) -> str:
 
 def effective_last_seen_at(session_row: Session) -> datetime | None:
     """Trả mốc hoạt động gần nhất của phiên (fallback về created_at/mfa_verified_at cho stub)."""
-    last_seen = getattr(session_row, "last_seen_at", None)
+    last_seen: datetime | None = getattr(session_row, "last_seen_at", None)
     if last_seen is not None:
         return last_seen
-    created_at = getattr(session_row, "created_at", None)
+    created_at: datetime | None = getattr(session_row, "created_at", None)
     if created_at is not None:
         return created_at
-    return getattr(session_row, "mfa_verified_at", None)
+    fallback: datetime | None = getattr(session_row, "mfa_verified_at", None)
+    return fallback
 
 
 def is_session_absolute_expired(session_row: Session, *, now: datetime) -> bool:

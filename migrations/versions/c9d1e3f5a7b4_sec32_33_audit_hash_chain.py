@@ -11,7 +11,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "c9d1e3f5a7b4"
-down_revision: str | Sequence[str] | None = "c8d28da699c6"
+down_revision: str | Sequence[str] | None = "f2a4c6e8b0d1"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
@@ -360,7 +360,7 @@ def upgrade() -> None:
             v_next_seq bigint;
             v_prev_hash text;
         BEGIN
-            NEW.db_role := pg_catalog.current_user;
+            NEW.db_role := CURRENT_USER;
             NEW.recorded_at := pg_catalog.clock_timestamp();
 
             SELECT link.next_seq, link.prev_hash

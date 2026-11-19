@@ -483,7 +483,7 @@ def test_sec09_11_migration_adds_last_seen_at_grant_and_membership_status_check(
 ) -> None:
     module = _load_migration()
     assert module.revision == "f0912a3b4c5d"
-    assert module.down_revision == "c8d28da699c6"
+    assert module.down_revision == "d9e1f3a5b7c8"
 
     added_columns: list[tuple[str, Any]] = []
     dropped_columns: list[tuple[str, str]] = []

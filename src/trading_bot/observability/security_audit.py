@@ -342,7 +342,7 @@ async def record_security_audit_event(
                 user_agent=user_agent,
                 outcome=outcome,
             )
-            await unit.commit()
+            await unit.session.commit()
             return event
     except Exception:
         logger.warning(

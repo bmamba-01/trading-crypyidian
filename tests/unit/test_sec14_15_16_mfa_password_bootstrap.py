@@ -571,18 +571,19 @@ async def test_change_password_updates_hash_revokes_other_sessions_and_audits(
         password=old_pw,
         code=pyotp.TOTP(secret).at(clock.now),
     )
-    # Làm mới mfa_verified_at cho sess_keep.
+    # Làm mới mfa_verified_at cho sess_keep (SEC-10 xoay token phiên khi reauth/step-up).
     clock.advance(30)
-    await auth_service.reauthenticate(
+    rotated_keep = await auth_service.reauthenticate(
         sess_keep.cookie_value, password=old_pw, code=pyotp.TOTP(secret).at(clock.now)
     )
+    keep_cookie = rotated_keep.cookie_value
 
     # Mật khẩu mới thuộc blocklist -> 422, giữ nguyên hash cũ & không thu hồi phiên khác.
     bad_resp = client.post(
         "/api/v1/auth/password/change",
         json={"current_password": old_pw, "new_password": "Password123456"},
         headers={
-            "Cookie": f"crypidian_session={sess_keep.cookie_value}",
+            "Cookie": f"crypidian_session={keep_cookie}",
             "X-CSRF-Token": sess_keep.csrf_token,
         },
     )
@@ -594,7 +595,7 @@ async def test_change_password_updates_hash_revokes_other_sessions_and_audits(
         "/api/v1/auth/password/change",
         json={"current_password": "wrong current password value", "new_password": new_pw},
         headers={
-            "Cookie": f"crypidian_session={sess_keep.cookie_value}",
+            "Cookie": f"crypidian_session={keep_cookie}",
             "X-CSRF-Token": sess_keep.csrf_token,
         },
     )
@@ -602,13 +603,13 @@ async def test_change_password_updates_hash_revokes_other_sessions_and_audits(
 
     # MFA quá hạn (>15 phút) -> 403
     stale_principal = Principal(
-        user_id=sess_keep.principal.user_id,
-        membership_id=sess_keep.principal.membership_id,
-        workspace_id=sess_keep.principal.workspace_id,
-        roles=sess_keep.principal.roles,
+        user_id=rotated_keep.principal.user_id,
+        membership_id=rotated_keep.principal.membership_id,
+        workspace_id=rotated_keep.principal.workspace_id,
+        roles=rotated_keep.principal.roles,
         mfa_verified_at=clock.now - timedelta(minutes=20),
         mfa_method=MfaMethod.TOTP,
-        session_id=sess_keep.principal.session_id,
+        session_id=rotated_keep.principal.session_id,
     )
     with pytest.raises(AccountSecurityError) as stale_err:
         await account_service.change_password(
@@ -621,7 +622,7 @@ async def test_change_password_updates_hash_revokes_other_sessions_and_audits(
         "/api/v1/auth/password/change",
         json={"current_password": old_pw, "new_password": new_pw},
         headers={
-            "Cookie": f"crypidian_session={sess_keep.cookie_value}",
+            "Cookie": f"crypidian_session={keep_cookie}",
             "X-CSRF-Token": sess_keep.csrf_token,
         },
     )
@@ -632,7 +633,7 @@ async def test_change_password_updates_hash_revokes_other_sessions_and_audits(
     # Phiên hiện tại vẫn truy cập được, phiên khác trả 401.
     assert (
         client.get(
-            "/api/v1/auth/me", headers={"Cookie": f"crypidian_session={sess_keep.cookie_value}"}
+            "/api/v1/auth/me", headers={"Cookie": f"crypidian_session={keep_cookie}"}
         ).status_code
         == 200
     )
@@ -852,14 +853,15 @@ async def test_totp_rotation_drift_replay_and_admin_reset_without_owner_knowing_
 
     # Bắt đầu xoay TOTP factor mới -> tạo pending factor (chưa kích hoạt).
     clock.advance(30)
-    await auth_service.reauthenticate(
+    rotated_owner = await auth_service.reauthenticate(
         login_res.cookie_value, password=pw, code=pyotp.TOTP(old_secret).at(clock.now)
     )
+    owner_cookie = rotated_owner.cookie_value
     init_resp = client.post(
         "/api/v1/auth/mfa/totp/rotate",
         json={"current_password": pw},
         headers={
-            "Cookie": f"crypidian_session={login_res.cookie_value}",
+            "Cookie": f"crypidian_session={owner_cookie}",
             "X-CSRF-Token": login_res.csrf_token,
         },
     )
@@ -874,7 +876,7 @@ async def test_totp_rotation_drift_replay_and_admin_reset_without_owner_knowing_
         "/api/v1/auth/mfa/totp/rotate/confirm",
         json={"factor_id": factor_id, "code": "000000"},
         headers={
-            "Cookie": f"crypidian_session={login_res.cookie_value}",
+            "Cookie": f"crypidian_session={owner_cookie}",
             "X-CSRF-Token": login_res.csrf_token,
         },
     )
@@ -886,7 +888,7 @@ async def test_totp_rotation_drift_replay_and_admin_reset_without_owner_knowing_
         "/api/v1/auth/mfa/totp/rotate/confirm",
         json={"factor_id": factor_id, "code": pyotp.TOTP(new_secret).at(clock.now)},
         headers={
-            "Cookie": f"crypidian_session={login_res.cookie_value}",
+            "Cookie": f"crypidian_session={owner_cookie}",
             "X-CSRF-Token": login_res.csrf_token,
         },
     )
@@ -958,7 +960,7 @@ async def test_totp_rotation_drift_replay_and_admin_reset_without_owner_knowing_
             "issue_one_time_recovery_code": True,
         },
         headers={
-            "Cookie": f"crypidian_session={login_res.cookie_value}",
+            "Cookie": f"crypidian_session={owner_cookie}",
             "X-CSRF-Token": login_res.csrf_token,
         },
     )
