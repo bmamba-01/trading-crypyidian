@@ -5859,3 +5859,14 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
   - Kiểm chứng trên `dev` sau nối head `c8d28da699c6`: `ruff format --check` (**1329 files already formatted**), `ruff check` (**All checks passed!**), `mypy src/trading_bot` (**528 source files**), 9 bộ unit tests (`test_sig0_taker_flow.py`, `test_sec*`, `test_wp06_*_migration.py`) → **241 passed in 25.77s**, 3 Postgres E2E (`test_db_role_least_privilege.py`, `test_wp06_paper_performance_gateway.py`, `test_live_market_backfill_migration.py`) → **3 passed in 86.05s**.
   - `CRY-236` (`AI-5`) giữ `In Progress`: phần migration cohort/outcome (`a5c7e9b1d3f5`, `e5b7d9f1a3c6`) đã có, vẫn còn phần vận hành ghi policy/evidence TRAINING qua Source Registry, chạy backtest 20 coin ≥ 1.000 mẫu, train → TEST → SHADOW và sửa `learning-evaluator`.
 - **Readback:** đã đọc lại mục này và đối chiếu với diff/output thực tế trước khi commit.
+
+
+### 2026-11-19 — Sửa quyền cột `delivery_policy` cho `telegram_signal_subscription` (`0094c0fdba7f`)
+
+- **Nguyên nhân:** Migration `e1a2b3c4d5f6_wp07b_telegram_delivery_policy.py` thêm cột `delivery_policy` nhưng thiếu `GRANT SELECT (delivery_policy)` cho `crypidian_signal_worker` và `GRANT UPDATE (delivery_policy)` cho `crypidian_admin_web`, làm `test_wp07_telegram_signal.py` trượt ở `worker_topic_routing`.
+- **Sửa lỗi:** Thêm migration `migrations/versions/0094c0fdba7f_wp07b_delivery_policy_grants.py` (head duy nhất `0094c0fdba7f`, nối sau `c8d28da699c6`) cấp `SELECT (delivery_policy)` cho `crypidian_signal_worker` và `UPDATE (delivery_policy)` cho `crypidian_admin_web` (có `REVOKE` tương ứng trong `downgrade()`); đồng bộ head `0094c0fdba7f` trong các test.
+- **Kiểm chứng trên `dev`:**
+  - `uv run ruff format --check src tests migrations` → **1330 files already formatted**; `uv run ruff check src tests migrations` → **All checks passed!**.
+  - `PYTHONPATH=. uv run pytest tests/unit/test_sig0_taker_flow.py -q` → **14 passed in 1.41s**.
+  - `uv run pytest tests/e2e/test_wp07_telegram_signal.py tests/e2e/test_db_role_least_privilege.py -v --tb=short` → **2 passed in 73.26s**.
+- **Readback:** đã đọc lại mục này và đối chiếu với kết quả kiểm chứng trước khi commit và push lên `origin/dev`.
