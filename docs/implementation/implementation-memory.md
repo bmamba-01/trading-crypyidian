@@ -13,6 +13,25 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 
 ## Nhật ký các vòng
 
+### 2026-11-19 — Hoàn tất tích hợp Nhóm Bảo mật Đợt 2 (CRY-132, CRY-135, CRY-136, CRY-286, CRY-144, CRY-149)
+
+- **Mục tiêu/phạm vi:** Triển khai và hợp nhất toàn diện 6 ticket Bảo mật còn lại của hệ thống:
+  1. `CRY-286` (`[SEC-08]`): Bộ giới hạn xác thực và lockout bền vững `SharedAuthRateLimiter` hỗ trợ `PostgresRateLimitStore` và `InMemoryRateLimitStore`. Mọi khóa đều là chuỗi băm SHA-256 phân tách miền không chứa PII; cơ chế progressive delay từ lần lỗi thứ 5 trở đi theo cấp số nhân (1s, 2s, 4s, 8s, 16s, 30s) và lockout bền vững lưu vào bảng `auth_rate_limit_state` qua migration `d9e1f3a5b7c8`.
+  2. `CRY-132` & `CRY-135` (`[SEC-09..12]`): Vòng đời phiên bảo mật với idle session timeout 30 phút, cập nhật throttle `last_seen_at` trên `session` (migration `f0912a3b4c5d`), cơ chế xoay token phiên `issue_rotated_session` khi reauthenticate/step-up và thu hồi phiên cũ, bảo toàn CSRF token hash; API xem/thu hồi phiên `/api/v1/auth/sessions`; chống timing enumeration bằng `DUMMY_PASSWORD_HASH` tiêu chuẩn Argon2id khi user/workspace không tồn tại.
+  3. `CRY-136` (`[SEC-14..16]`): Mã khôi phục MFA một lần băm salted SHA-256 lưu bảng `mfa_recovery_code` có RLS workspace (migration `f2a4c6e8b0d1`), API xoay TOTP pending/confirm; admin reset MFA thành viên không bao giờ biết secret của member; chính sách mật khẩu tối thiểu 14 ký tự chống blocklist và thu hồi các phiên khác khi đổi; vô hiệu hóa vĩnh viễn bootstrap token sau khi khởi tạo Owner đầu tiên.
+  4. `CRY-144` (`[SEC-32..34]`): Phủ audit log sự kiện bảo mật đầy đủ (`auth.login.failed`, `auth.csrf.failed`, `auth.forbidden`, `auth.secret.rotated`, v.v.); chuỗi băm bất biến trên bảng `audit_event` gồm `seq`, `prev_hash`, `row_hash` tính bởi trigger `BEFORE INSERT` với hàm PL/pgSQL `audit_event_assign_hash_chain()`; bảo vệ chống xóa log bằng trigger `BEFORE TRUNCATE` và `REVOKE TRUNCATE`; bộ phát hiện cảnh báo bất thường brute-force/timing anomaly.
+  5. `CRY-149` (`[SEC-44..46]`): Bản kiểm kê bí mật hệ thống `secret_inventory.py` chuẩn hóa 100% tệp bí mật local sang quyền POSIX 0600 (`scripts/prepare_local_secrets.py`); CI workflow `.github/workflows/supply-chain-security.yml` gate kiểm tra SBOM CycloneDX khớp `uv.lock`, quét chống rò rỉ secret/canary/PEM key; siết cứng tài nguyên container (`cpus`, `mem_limit`, `pids_limit`) và bind mount `:ro` cho toàn bộ service trong `compose.yaml`.
+- **Nối chuỗi migration Alembic:** Nối liền mạch từ `12e554aace5d` (CRY-421) -> `d9e1f3a5b7c8` (SEC-08) -> `f0912a3b4c5d` (SEC-09/11) -> `f2a4c6e8b0d1` (SEC-14) -> `c9d1e3f5a7b4` (SEC-32/33 head duy nhất).
+- **Lỗi phát hiện & Quyết định xử lý:**
+  - *PostgreSQL `pg_catalog.current_user`:* Trong PL/pgSQL function gán hash chain, `CURRENT_USER` là SQL keyword chuẩn, không mang tiền tố `pg_catalog.`. Đã sửa thành `NEW.db_role := CURRENT_USER;` giúp trigger hoạt động chính xác trên Postgres container thật.
+  - *Session token rotation on reauth:* Sau khi gọi `reauthenticate`, session cũ bị thu hồi và trả về token mới. Đã cập nhật test `test_sec14_15_16_mfa_password_bootstrap.py` để sử dụng token mới từ kết quả reauth.
+  - *Container hardening cho report-reader:* Service `report-reader` mới merge từ `origin/dev` được bổ sung đầy đủ limits (`cpus: 1.0`, `mem_limit: 512m`, `pids_limit: 64`) để đạt 100% chuẩn SEC-46.
+- **Kiểm thử đạt 100%:**
+  - `uv run mypy src/trading_bot` → 539 source files passed.
+  - `uv run ruff check` & `uv run ruff format --check` → 1357 files clean.
+  - 13 unit test files (`test_sec08_*`, `test_sec09_12_*`, `test_sec14_*`, `test_sec32_34_*`, `test_sec33_*`, `test_sec44_45_46_*`, `test_auth_*`, `test_cry421_*`) → **204 passed in 29.58s**.
+  - E2E tests (`test_sec20_stepup_e2e`, `test_sec25_26_e2e`, `test_cry421_report_reader_role`) → **3 passed in 74.22s**.
+
 ### 2026-11-19 — Follow-up CRY-429 Live cards và CRY-443 số liệu báo cáo/tooltips
 
 - **Worktree/nền:** tiếp tục trong `codex/live-monitor-bot-grid`, rebase tới `origin/dev` `94b894d`; thay đổi chỉ nằm trong worktree này. `uv run alembic heads` xác nhận một head `0094c0fdba7f`.
