@@ -349,6 +349,7 @@ def create_app(
                 active_session_factory,
                 active_secret_provider,
                 totp=totp_manager,
+                idle_timeout=timedelta(minutes=app_settings.session_idle_timeout_minutes),
             )
             if active_session_factory is not None and active_secret_provider is not None
             else None

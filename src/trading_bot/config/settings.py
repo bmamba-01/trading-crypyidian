@@ -109,6 +109,8 @@ class AppSettings(BaseSettings):
     derivatives_collector_enabled: bool = False
     # AI-4 lát 3: kiểm exchangeInfo Binance mỗi 30 phút để phát hiện niêm yết/gỡ hợp đồng.
     listings_collector_enabled: bool = False
+    # SEC-09: idle timeout cho phiên admin (mặc định 30 phút, song song hạn tuyệt đối 12 giờ).
+    session_idle_timeout_minutes: int = Field(default=30, ge=1, le=720)
     # Cờ kiểm thử: chấp nhận mã xác thực cố định 123456 (chỉ local/test + PAPER, mặc định tắt).
     auth_test_totp_enabled: bool = False
     # SEC-20: bắt buộc step-up theo hành động (challenge một lần gắn payload hash).

@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
@@ -51,6 +51,10 @@ class UserMembership(UuidPrimaryKey, CreatedAt, Base):
         UniqueConstraint("workspace_id", "user_id", name="uq_user_membership_workspace_user"),
         ForeignKeyConstraint(["workspace_id"], ["workspace.id"], ondelete="CASCADE"),
         ForeignKeyConstraint(["user_id"], ["user_account.id"], ondelete="CASCADE"),
+        CheckConstraint(
+            "status IN ('ACTIVE', 'SUSPENDED', 'REVOKED')",
+            name="user_membership_status_valid",
+        ),
     )
 
     workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
@@ -129,6 +133,12 @@ class Session(UuidPrimaryKey, CreatedAt, Base):
     membership_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     token_hash: Mapped[str] = mapped_column(String(128), nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+        server_default=func.now(),
+    )
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     csrf_token_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
     mfa_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
