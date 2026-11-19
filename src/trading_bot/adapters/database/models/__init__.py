@@ -174,6 +174,7 @@ from trading_bot.adapters.database.models.market_entities import (
     MarketRawReference,
     MarketTradeFlow,
 )
+from trading_bot.adapters.database.models.mfa_recovery_entities import MfaRecoveryCode
 from trading_bot.adapters.database.models.paper_entities import (
     ExchangeOrderRecord,
     FillRecord,
@@ -323,6 +324,7 @@ __all__ = [
     "MarketRawReference",
     "ConfigVersion",
     "MfaFactor",
+    "MfaRecoveryCode",
     "OutboxEvent",
     "PaperAccountSeed",
     "OrderIntentRecord",

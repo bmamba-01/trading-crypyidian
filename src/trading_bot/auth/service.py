@@ -19,6 +19,7 @@ from trading_bot.adapters.database.models import (
     UserMembership,
     Workspace,
 )
+from trading_bot.auth.password_policy import PasswordPolicyViolation, validate_password_policy
 from trading_bot.auth.policy import RECENT_MFA_LIFETIME as RECENT_MFA_LIFETIME
 from trading_bot.auth.policy import MfaMethod, Principal, Role
 from trading_bot.auth.security import DUMMY_PASSWORD_HASH as DUMMY_PASSWORD_HASH
@@ -44,9 +45,10 @@ SESSION_LIFETIME = SESSION_ABSOLUTE_LIFETIME
 class AuthenticationFailure(Exception):
     """Lỗi xác thực không tiết lộ email, mật khẩu hay trạng thái tài khoản."""
 
-    def __init__(self, status_code: int, message: str) -> None:
+    def __init__(self, status_code: int, message: str, *, code: str | None = None) -> None:
         self.status_code = status_code
         self.message = message
+        self.code = code
         super().__init__(message)
 
 
@@ -141,6 +143,10 @@ class AuthService:
     ) -> BootstrapResult:
         normalized_email = normalize_email(email)
         validated_slug = normalize_slug(workspace_slug)
+        try:
+            validate_password_policy(password, email=normalized_email)
+        except PasswordPolicyViolation as error:
+            raise AuthenticationFailure(422, error.message, code=error.code) from error
         password_hash = await asyncio.to_thread(self._passwords.hash, password)
         mfa_secret = self._totp.generate_secret()
         workspace_id = uuid4()
@@ -151,7 +157,11 @@ class AuthService:
                 has_workspace = await database.scalar(select(Workspace.id).limit(1))
                 has_user = await database.scalar(select(UserAccount.id).limit(1))
                 if has_workspace is not None or has_user is not None:
-                    raise AuthenticationFailure(409, "Thiết lập ban đầu đã hoàn tất")
+                    raise AuthenticationFailure(
+                        409,
+                        "Thiết lập ban đầu đã hoàn tất",
+                        code="BOOTSTRAP_ALREADY_COMPLETED",
+                    )
                 workspace = Workspace(
                     id=workspace_id,
                     name=workspace_name.strip(),
@@ -214,6 +224,22 @@ class AuthService:
         normalized_email = normalize_email(email)
         now = self._clock()
         async with self._sessions() as database, database.begin():
+            has_workspace = await database.scalar(select(Workspace.id).limit(1))
+            has_user = await database.scalar(select(UserAccount.id).limit(1))
+            setup_workspace = await database.scalar(
+                select(Workspace.id).where(Workspace.status == "SETUP").limit(1)
+            )
+            pending_user = await database.scalar(
+                select(UserAccount.id).where(UserAccount.status == "PENDING_MFA").limit(1)
+            )
+            if (has_workspace is not None or has_user is not None) and (
+                setup_workspace is None or pending_user is None
+            ):
+                raise AuthenticationFailure(
+                    409,
+                    "Thiết lập ban đầu đã hoàn tất",
+                    code="BOOTSTRAP_ALREADY_COMPLETED",
+                )
             user = await database.scalar(
                 select(UserAccount).where(
                     UserAccount.email_normalized == normalized_email,

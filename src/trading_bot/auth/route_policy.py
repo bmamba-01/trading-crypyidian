@@ -46,6 +46,7 @@ ALLOWED_PUBLIC_PATHS: frozenset[str] = frozenset(
         "/api/v1/auth/bootstrap",
         "/api/v1/auth/bootstrap/verify",
         "/api/v1/auth/login",
+        "/api/v1/auth/mfa/recovery-login",
         "/api/v1/telegram/webhook",
     }
 )

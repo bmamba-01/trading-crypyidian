@@ -30,6 +30,11 @@ from trading_bot.auth.dependencies import (
 from trading_bot.auth.dependencies import (
     require_csrf as require_csrf,
 )
+from trading_bot.auth.mfa_recovery import (
+    AccountSecurityError,
+    assert_bootstrap_allowed,
+    check_bootstrap_token_retired,
+)
 from trading_bot.auth.policy import Permission, Principal, authorize
 from trading_bot.auth.route_policy import (
     CsrfMode,
@@ -312,6 +317,14 @@ async def bootstrap_owner(
             detail=THROTTLED_DETAIL,
             headers=_retry_after_headers(decision),
         )
+    sessions = getattr(request.app.state, "session_factory", None) or getattr(
+        service, "_sessions", None
+    )
+    if sessions is not None:
+        try:
+            await assert_bootstrap_allowed(sessions, phase="start")
+        except AccountSecurityError as error:
+            raise HTTPException(status_code=error.status_code, detail=error.as_detail()) from error
     settings: AppSettings = request.app.state.settings
     if not verify_bootstrap_token(
         settings.bootstrap_token_file,
@@ -367,6 +380,14 @@ async def verify_bootstrap(
             detail=THROTTLED_DETAIL,
             headers=_retry_after_headers(decision),
         )
+    sessions = getattr(request.app.state, "session_factory", None) or getattr(
+        service, "_sessions", None
+    )
+    if sessions is not None:
+        try:
+            await assert_bootstrap_allowed(sessions, phase="verify")
+        except AccountSecurityError as error:
+            raise HTTPException(status_code=error.status_code, detail=error.as_detail()) from error
     try:
         await service.confirm_bootstrap(
             workspace_slug=body.workspace_slug,
@@ -377,6 +398,8 @@ async def verify_bootstrap(
         await record_rate_limit_failure(limiter, address, email, account_scope=scope)
         raise_auth_failure(error)
     await record_rate_limit_success(limiter, address, email, account_scope=scope)
+    settings: AppSettings = request.app.state.settings
+    check_bootstrap_token_retired(settings.bootstrap_token_file, bootstrapped=True)
     response.headers["Cache-Control"] = "no-store"
     return {"status": "active"}
 
