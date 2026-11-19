@@ -8,6 +8,7 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     DateTime,
+    FetchedValue,
     ForeignKeyConstraint,
     Index,
     Integer,
@@ -658,12 +659,21 @@ class AuditEvent(UuidPrimaryKey, Base):
     __tablename__ = "audit_event"
     __table_args__ = (
         UniqueConstraint("workspace_id", "id", name="uq_audit_event_workspace_id"),
+        UniqueConstraint("workspace_id", "seq", name="uq_audit_event_workspace_seq"),
         ForeignKeyConstraint(["workspace_id"], ["workspace.id"], ondelete="CASCADE"),
         ForeignKeyConstraint(
             ["workspace_id", "actor_membership_id"],
             ["user_membership.workspace_id", "user_membership.id"],
         ),
         Index("ix_audit_event_workspace_time", "workspace_id", "occurred_at"),
+        CheckConstraint("seq >= 1", name="seq_positive"),
+        CheckConstraint(
+            "prev_hash = 'GENESIS' OR length(prev_hash) = 64",
+            name="prev_hash_valid",
+        ),
+        CheckConstraint("length(row_hash) = 64", name="row_hash_sha256"),
+        CheckConstraint("length(db_role) > 0", name="db_role_nonempty"),
+        {"implicit_returning": False},
     )
 
     workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
@@ -676,6 +686,21 @@ class AuditEvent(UuidPrimaryKey, Base):
     after_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     request_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # Các cột chuỗi băm bất biến do trigger DB tự điền khi INSERT (SEC-33).
+    seq: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=FetchedValue())
+    prev_hash: Mapped[str] = mapped_column(
+        String(64), nullable=False, server_default=FetchedValue()
+    )
+    row_hash: Mapped[str] = mapped_column(String(64), nullable=False, server_default=FetchedValue())
+    db_role: Mapped[str] = mapped_column(String(64), nullable=False, server_default=FetchedValue())
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=FetchedValue()
+    )
+    # Ngữ cảnh bảo mật bổ sung cho audit sự kiện SEC-32 (không lưu token/secret thô).
+    session_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    client_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    user_agent: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    outcome: Mapped[str | None] = mapped_column(String(24), nullable=True)
 
 
 class AuthRateLimitState(Base):
