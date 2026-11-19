@@ -5969,3 +5969,10 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
   - `PYTHONPATH=. uv run pytest tests/unit/test_cry421_report_reader_role.py tests/unit/test_sig0_taker_flow.py -q` → **17 passed in 1.07s**.
   - `uv run pytest tests/e2e/test_db_role_least_privilege.py -v --tb=short` → **1 passed**; `uv run pytest tests/e2e/test_cry421_report_reader_role.py -v --tb=short` → **1 passed in 12.89s**.
 - **Readback:** đã đọc lại mục này và đối chiếu với kết quả kiểm chứng trước khi commit và push lên `origin/dev`.
+
+### 2026-11-19 — Đóng WP06F sau push lên `dev`
+
+- Merge commit `4c88776febffb023938b7fdf7c04eaf5336a937c` đã push fast-forward lên `origin/dev`; fetch sau push xác nhận local HEAD và `origin/dev` trùng nhau. Itsaplan `CRY-440` đã chuyển Done (cột completed) với commit và lệnh kiểm thử; `CRY-334` tiếp tục In Progress và được cập nhật các khoảng trống còn lại.
+- Review tích hợp độc lập kết luận Ready to merge, không có Critical/Important finding. Góp ý Minor: SEC-20/25–26 E2E kiểm một Alembic head thay vì ghim revision; graph/unit test và các WP06/WP07 E2E đã ghim `e8a2c4d6f0b3`, nên giữ nguyên hai assertion generic không làm suy yếu tiêu chí migration hiện tại.
+- Đã cập nhật WBS, WP06F plan và project-status: Task 5 bước 4 hoàn thành, WP06F Done; WP06/CRY-334 vẫn mở vì scorer race/near-miss, cohort performance, Shadow/Drift application writer/race và quyền dữ liệu non-QA còn thiếu. Không bật `SHADOW` hoặc `PAPER_GATE`.
+- Đã đọc lại mục này và đối chiếu remote head, trạng thái Itsaplan, WBS, plan, project-status, reviewer verdict và kết quả kiểm thử trước lần commit tài liệu cuối.
