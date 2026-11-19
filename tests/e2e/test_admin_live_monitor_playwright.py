@@ -62,7 +62,7 @@ def _session_cookie(page: Page, base_url: str, session: dict[str, str]) -> None:
     )
 
 
-@pytest.mark.parametrize("viewport", [(390, 844), (1280, 800)])
+@pytest.mark.parametrize("viewport", [(390, 844), (800, 900), (1280, 800)])
 def test_live_monitor_streams_paper_events_scoped_and_responsive(
     browser_page: Page, viewport: tuple[int, int]
 ) -> None:
@@ -148,6 +148,20 @@ def test_live_monitor_streams_paper_events_scoped_and_responsive(
         expect(feed.locator('[data-kind="POSITION_CLOSED"]')).to_have_count(1)
         row = browser_page.locator(f'[data-trade-id="{harness.state["live_trade_id"]}"]')
         expect(row).to_be_visible()
+        bot_grid = browser_page.locator("[data-live-bots]")
+        expect(bot_grid).to_have_attribute("role", "list")
+        bot_cards = bot_grid.locator("[data-bot-row]")
+        expect(bot_cards).to_have_count(2)
+        first_bot = bot_cards.first
+        expect(first_bot).to_have_attribute("role", "listitem")
+        expect(first_bot.locator("a[href^='/admin/bots/']")).to_be_visible()
+        for label in ("Vào lệnh", "Vị thế", "Vốn", "DD", "Hôm nay", "Nhịp runtime"):
+            expect(first_bot).to_contain_text(label)
+        columns = bot_grid.evaluate(
+            "(node) => getComputedStyle(node).gridTemplateColumns.trim().split(/\\s+/).length"
+        )
+        expected_columns = 1 if viewport[0] < 640 else 2 if viewport[0] < 1200 else 4
+        assert columns == expected_columns, (columns, expected_columns, viewport)
         expect(browser_page.locator(f'[data-bot-row="{bots["a"]}"]')).to_be_visible()
         expect(browser_page.locator("[data-live-kill]")).to_contain_text("Đang hoạt động")
         expect(browser_page.locator("[data-live-equity-value]")).not_to_have_text("—")
@@ -179,7 +193,7 @@ def test_live_monitor_streams_paper_events_scoped_and_responsive(
         device = "mobile" if viewport[0] < 768 else "desktop"
         PNL_EVIDENCE.mkdir(parents=True, exist_ok=True)
         browser_page.screenshot(
-            path=str(PNL_EVIDENCE / f"cry429-live-monitor-{device}.png"), full_page=True
+            path=str(PNL_EVIDENCE / f"cry429-live-monitor-grid-{device}.png"), full_page=True
         )
 
         # --- Fallback poll khi proxy/trình duyệt chặn SSE -------------------------------------

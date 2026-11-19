@@ -13,6 +13,17 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 
 ## Nhật ký các vòng
 
+### 2026-11-19 — Follow-up CRY-429 Live cards và CRY-443 số liệu báo cáo/tooltips
+
+- **Worktree/nền:** tiếp tục trong `codex/live-monitor-bot-grid`, rebase tới `origin/dev` `94b894d`; thay đổi chỉ nằm trong worktree này. `uv run alembic heads` xác nhận một head `0094c0fdba7f`.
+- **Trang `/admin/live`:** thay bảng bot rộng bằng `div[role=list]` gồm các `article[role=listitem]`; mỗi card giữ liên kết tên bot, cho phép/chặn kèm lý do/readiness, số vị thế, vốn, DD, PnL hôm nay và nhịp runtime. Lưới 4/2/1 cột ở 1200/640 px; panel bot chiếm hết hàng desktop. Giữ API/SSE/poll và selector `data-bot-row`.
+- **Trang `/admin/reports`:** `metric_cards` dùng `rounded=True`; tiền, tỷ lệ, phần trăm, R và bps hiển thị tối đa 2 chữ số theo `number2_vi`, title giữ dữ liệu gốc. Giá/khối lượng vẫn dùng `number_vi`. Chuyển R:R, account risk %, net PnL R multiple, slippage bps và PnL đối soát sang format vi-VN rút gọn; không thay dữ liệu ledger.
+- **Nguyên nhân tooltip xuyên nền:** cascade của glass theme ghi đè `--bg-surface-subtle` trong dark mode thành `rgba(30, 41, 59, 0.55)`. Tooltip dùng token này nên nền alpha chỉ 0,55. Đổi tooltip sang `--bg-base` (màu đặc) và đặt rõ `backdrop-filter: none` cùng tiền tố WebKit.
+- **TDD:** assertion báo cáo trước sửa tái hiện giá trị ledger nhiều chữ số, R:R dấu chấm và phần trăm/bps chưa rút gọn; sau sửa các trang hiển thị gọn, title vẫn giữ số gốc. Playwright tooltip ban đầu đo được alpha 0,55; sau đổi nền, kiểm tra desktop/mobile đạt.
+- **Kiểm thử trên nền cuối:** `uv run pytest tests/unit/test_admin_reports_revamp.py tests/unit/test_admin_metric_help.py tests/unit/test_admin_live_monitor_router.py tests/unit/test_admin_dashboard_ui.py tests/unit/test_admin_reports_page_layout.py -q --tb=short` → **119 passed in 5.36s**. `uv run pytest tests/e2e/test_admin_live_monitor_playwright.py -q --tb=short` → **3 passed in 136.78s** (390/800/1280 px); ảnh tại `tests/e2e/evidence/cry429-live-monitor-grid-mobile.png` và `tests/e2e/evidence/cry429-live-monitor-grid-desktop.png`. `uv run pytest tests/e2e/test_admin_trading_revamp_playwright.py::test_trading_revamp_playwright_desktop_and_mobile -q --tb=short` → **1 passed in 14.87s**; ảnh báo cáo `tests/e2e/evidence/admin-playwright/21_reports_trading_revamp_desktop.png`. Ruff check, format check (3 file), `node --check src/trading_bot/static/live-monitor.js`, Alembic heads và `git diff --check` đạt.
+- **Restart Docker:** lệnh macOS quit/open chỉ đưa UI lên nhưng daemon socket không có; dùng `docker desktop restart --timeout 180` (CLI Docker Desktop 4.97.0), sau đó Engine `29.9.2` hoạt động và 23 container tự khởi động. `crypidian-review-market-signal-worker-1` vẫn ở trạng thái Restarting như trước lần restart; không nằm trong luồng E2E Live. E2E Live tiếp theo đã tạo stack mới và đạt đủ ba viewport.
+- **Tracker:** CRY-429 và CRY-443 được cập nhật trong suốt vòng này; CRY-429 được gỡ `Blocked` sau khi Docker phục hồi và E2E Live đạt.
+
 ### 2026-11-18 — CRY-443: giảm mật độ control và rà soát toàn Admin
 
 - **Phạm vi:** áp dụng layer `admin-density.css` sau stylesheet page cho 32 template page trực tiếp; desktop nút tối thiểu 36px, input/select 40px, viewport cảm ứng/narrow giữ 44px. SVG icon line không thêm dependency; icon-only có `aria-label`, `title`, focus ring. Icon hóa toolbar chart/layer, filter/search ngắn; hành động vận hành và hành động ghi log vẫn dùng chữ.

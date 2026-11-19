@@ -45,13 +45,20 @@ def test_admin_reports_renders_metric_cards_and_post_mortem(
     from fastapi import FastAPI
     from fastapi.templating import Jinja2Templates
 
-    from trading_bot.admin.presentation import label_vi, local_time, number_vi, pnl_tone
+    from trading_bot.admin.presentation import (
+        label_vi,
+        local_time,
+        number2_vi,
+        number_vi,
+        pnl_tone,
+    )
     from trading_bot.admin.web_router import router
 
     app = FastAPI()
     templates = Jinja2Templates(directory="src/trading_bot/templates")
     templates.env.filters["local_time"] = local_time
     templates.env.filters["number_vi"] = number_vi
+    templates.env.filters["number2_vi"] = number2_vi
     templates.env.filters["label_vi"] = label_vi
     templates.env.filters["pnl_tone"] = pnl_tone
     app.state.templates = templates
@@ -75,12 +82,12 @@ def test_admin_reports_renders_metric_cards_and_post_mortem(
         quote_asset="USDT",
         opened_at=now - timedelta(hours=2),
         closed_at=now - timedelta(minutes=10),
-        gross_pnl=Decimal("200.0"),
-        fee_total=Decimal("4.0"),
-        funding_total=Decimal("1.0"),
-        slippage_total=Decimal("0.5"),
-        total_cost=Decimal("5.5"),
-        net_pnl=Decimal("194.5"),
+        gross_pnl=Decimal("200.123446"),
+        fee_total=Decimal("4.012345"),
+        funding_total=Decimal("1.000001"),
+        slippage_total=Decimal("0.543210"),
+        total_cost=Decimal("5.555556"),
+        net_pnl=Decimal("194.56789"),
         settings_version_id=uuid4(),
         strategy_release_id=uuid4(),
         strategy_release_hash="hash123",
@@ -95,7 +102,7 @@ def test_admin_reports_renders_metric_cards_and_post_mortem(
             workspace_id=workspace_id,
             bot_id=bot_id,
             cost_type="FEE",
-            amount=Decimal("4.0"),
+            amount=Decimal("4.012345"),
             currency="USDT",
         ),
         LedgerCost(
@@ -103,7 +110,7 @@ def test_admin_reports_renders_metric_cards_and_post_mortem(
             workspace_id=workspace_id,
             bot_id=bot_id,
             cost_type="FUNDING",
-            amount=Decimal("1.0"),
+            amount=Decimal("1.000001"),
             currency="USDT",
         ),
         LedgerCost(
@@ -111,7 +118,7 @@ def test_admin_reports_renders_metric_cards_and_post_mortem(
             workspace_id=workspace_id,
             bot_id=bot_id,
             cost_type="SLIPPAGE",
-            amount=Decimal("0.5"),
+            amount=Decimal("0.543210"),
             currency="USDT",
         ),
     )
@@ -185,6 +192,9 @@ def test_admin_reports_renders_metric_cards_and_post_mortem(
     assert "tooltip-term" in html
     assert "quick-filter-group" in html
     assert "Danh Sách Lệnh Khớp Trong Kỳ" in html
+    report_metrics = html.split('class="glass-card report-metrics"', 1)[1].split("</section>", 1)[0]
+    assert "+194,57 USDT" in report_metrics
+    assert 'title="194,56789 USDT"' in report_metrics
 
     # Chọn một giao dịch để mở panel hậu kiểm: chỉ hiện dữ liệu ledger, không tự điền L4–L6.
     report_payload = mock_report.as_dict()
@@ -289,7 +299,13 @@ def test_admin_reports_post_mortem_uses_approved_plan(
     from fastapi import FastAPI
     from fastapi.templating import Jinja2Templates
 
-    from trading_bot.admin.presentation import label_vi, local_time, number_vi, pnl_tone
+    from trading_bot.admin.presentation import (
+        label_vi,
+        local_time,
+        number2_vi,
+        number_vi,
+        pnl_tone,
+    )
     from trading_bot.admin.web_router import router
     from trading_bot.auth.router import current_identity
 
@@ -307,10 +323,14 @@ def test_admin_reports_post_mortem_uses_approved_plan(
         "gross_pnl": "-140",
         "fee_total": "8",
         "funding_total": "0",
-        "slippage_total": "2",
-        "total_cost": "10",
-        "net_pnl": "-150",
-        "entry_reason": {"strategy_id": "SC-DEMO", "detail_vi": "L4 ĐẠT; L5 điểm 0,77."},
+        "slippage_total": "2.3456789",
+        "total_cost": "10.3456789",
+        "net_pnl": "-150.98765",
+        "entry_reason": {
+            "strategy_id": "SC-DEMO",
+            "detail_vi": "L4 ĐẠT; L5 điểm 0,77.",
+            "account_risk_pct": "0.123456",
+        },
         "exit_reason": "STOP_LOSS",
         "fills": [
             {"role": "ENTRY", "quantity": "31.3", "price": "100.4", "occurred_at": now.isoformat()},
@@ -337,7 +357,7 @@ def test_admin_reports_post_mortem_uses_approved_plan(
             "stop_price": "97.6",
             "target_price": "105.4",
             "leverage": "5",
-            "risk_budget": "100",
+            "risk_budget": "100.12345",
             "entry_slippage_cost": "1",
         }
     }
@@ -347,7 +367,11 @@ def test_admin_reports_post_mortem_uses_approved_plan(
     app = FastAPI()
     templates = Jinja2Templates(directory="src/trading_bot/templates")
     templates.env.filters.update(
-        label_vi=label_vi, local_time=local_time, number_vi=number_vi, pnl_tone=pnl_tone
+        label_vi=label_vi,
+        local_time=local_time,
+        number2_vi=number2_vi,
+        number_vi=number_vi,
+        pnl_tone=pnl_tone,
     )
     app.state.templates = templates
     app.state.bot_reporting_service = service
@@ -365,13 +389,15 @@ def test_admin_reports_post_mortem_uses_approved_plan(
     html = response.text
 
     assert "5x" in html
-    assert "1 : 1.79" in html
+    assert 'title="0,123456%">0,12%</span>' in html
+    assert "1 : 1,79" in html
     assert "SL: 97,6" in html
     assert "TP: 105,4" in html
     # Tiền hiển thị 2 chữ số kèm ₮; số đầy đủ (kèm mã tài sản) nằm ở thuộc tính title.
     assert 'kế hoạch dự trù <span class="money num" title="2 USDT">2' in html
-    assert 'title="100 USDT">100' in html
-    assert "kết quả -1.50R" in html
+    assert 'title="100,12345 USDT">100,12' in html
+    assert ">-1,51R</span>" in html
+    assert ">7,46</span> bps trên notional vào lệnh)" in html
     assert "Mục tiêu chốt lời (TP)" in html
     assert "Sai lệch" in html
     assert 'id="post-mortem-unevaluated"' not in html

@@ -7,9 +7,8 @@
 {% from "admin/_metric_help.html" import help_term, help_icon %}
 {#-
   Trang báo cáo theo UI kit v1 (docs/design/admin-ui-kit.md).
-  Quy ước số: tiền hiển thị làm tròn 2 chữ số (`number2_vi`) kèm bản đầy đủ ở `title`;
-  giá và khối lượng giữ nguyên độ chính xác (`number_vi`) vì làm tròn sẽ sai với mã giá nhỏ;
-  khối "Chỉ số chi tiết" (metric_cards) giữ số đầy đủ để đối soát với ledger.
+  Quy ước số: tiền, tỷ lệ, phần trăm và bps hiển thị tối đa 2 chữ số; `title` giữ số gốc;
+  giá và khối lượng giữ nguyên độ chính xác (`number_vi`) vì làm tròn sẽ sai với mã giá nhỏ.
 -#}
 {%- set ICONS = {
   "pnl": "M3 17l6-6 4 4 8-8M15 7h6v6",
@@ -289,11 +288,11 @@
             <div class="kv"><dt>{{ ico("strategy") }}Chiến thuật</dt><dd>{% if ea.strategy_id %}{{ ea.strategy_id }}{% if ea.reason_code %} · {{ ea.reason_code }}{% endif %}{% else %}{{ missing() }}{% endif %}</dd></div>
             <div class="kv"><dt>{{ ico("price") }}{{ help_term("entry_price_quantity", "Giá vào & khối lượng") }}</dt><dd class="num">{% if ea.entry_price is not none %}{{ ea.entry_price | number_vi }}{% if ea.entry_quantity is not none %} × {{ ea.entry_quantity | number_vi }}{% endif %}{% else %}{{ missing() }}{% endif %}</dd></div>
             <div class="kv kv--stack"><dt>{{ ico("time") }}{{ help_term("reference_price_signal_time", "Giá tham chiếu & thời điểm tín hiệu") }}</dt><dd class="num">{% if ea.reference_price is not none or ea.signal_at %}{% if ea.reference_price is not none %}{{ ea.reference_price | number_vi }}{% endif %}{% if ea.signal_at %} lúc {{ when(ea.signal_at) }}{% endif %}{% else %}{{ missing() }}{% endif %}</dd></div>
-            <div class="kv"><dt>{{ ico("leverage") }}{{ help_term("leverage", "Đòn bẩy & rủi ro tài khoản") }}</dt><dd class="num">{% if ea.target_leverage is not none or ea.account_risk_pct is not none %}{% if ea.target_leverage is not none %}{{ ea.target_leverage }}x{% endif %}{% if ea.account_risk_pct is not none %} (Rủi ro: {{ ea.account_risk_pct | number_vi }}%){% endif %}{% else %}{{ missing() }}{% endif %}</dd></div>
+            <div class="kv"><dt>{{ ico("leverage") }}{{ help_term("leverage", "Đòn bẩy & rủi ro tài khoản") }}</dt><dd class="num">{% if ea.target_leverage is not none or ea.account_risk_pct is not none %}{% if ea.target_leverage is not none %}{{ ea.target_leverage }}x{% endif %}{% if ea.account_risk_pct is not none %} (Rủi ro: <span title="{{ ea.account_risk_pct | number_vi }}%">{{ ea.account_risk_pct | number2_vi }}%</span>){% endif %}{% else %}{{ missing() }}{% endif %}</dd></div>
             <div class="kv"><dt>{{ ico("layer") }}{{ help_term("layer_l4_report", "L4 Cửa Bối Cảnh (Context Gate)") }}</dt><dd>{% if ea.context_regime %}<span class="report-badge report-badge--{{ 'up' if ea.context_gate_passed is sameas true else ('down' if ea.context_gate_passed is sameas false else 'neutral') }}">{% if ea.context_gate_passed is sameas true %}ĐẠT{% elif ea.context_gate_passed is sameas false %}KHÔNG ĐẠT{% else %}CHƯA RÕ{% endif %} ({{ ea.context_regime }})</span>{% else %}{{ missing() }}{% endif %}</dd></div>
             <div class="kv"><dt>{{ ico("trigger") }}{{ help_term("layer_l5_report", "L5 Điểm Kích Hoạt (Trigger Score)") }}</dt><dd class="num">{% if ea.rejection_wick_score is not none or ea.breakout_score is not none %}{% if ea.rejection_wick_score is not none %}Rút chân: {{ ea.rejection_wick_score }}/100{% endif %}{% if ea.breakout_score is not none %} Phá vỡ: {{ ea.breakout_score }}/100{% endif %}{% else %}{{ missing() }}{% endif %}</dd></div>
-            <div class="kv kv--stack"><dt>{{ ico("zone") }}{{ help_term("risk_reward_ratio", "L6 Tỷ Lệ R:R & Kế Hoạch Vùng Giá") }}</dt><dd class="num">{% if ea.risk_reward_ratio is not none or ea.stop_loss_price is not none or ea.take_profit_price is not none %}{% set zone_parts = [] %}{% if ea.risk_reward_ratio is not none %}{% set _ = zone_parts.append("1 : " ~ ("%.2f" | format(ea.risk_reward_ratio | float))) %}{% endif %}{% if ea.stop_loss_price is not none %}{% set _ = zone_parts.append("SL: " ~ (ea.stop_loss_price | number_vi)) %}{% endif %}{% if ea.take_profit_price is not none %}{% set _ = zone_parts.append("TP: " ~ (ea.take_profit_price | number_vi)) %}{% else %}{% set _ = zone_parts.append("không có mục tiêu chốt lời cố định") %}{% endif %}{{ zone_parts | join(" · ") }}{% else %}{{ missing() }}{% endif %}</dd></div>
-            <div class="kv"><dt>{{ ico("budget") }}{{ help_term("planned_risk_budget", "Ngân sách rủi ro kế hoạch") }}</dt><dd class="num">{% if ea.planned_risk_amount is not none %}{{ money(ea.planned_risk_amount, quote) }}{% if xa.net_pnl_r_multiple is not none %} · kết quả {{ "%.2f" | format(xa.net_pnl_r_multiple | float) }}R{% endif %}{% else %}{{ missing() }}{% endif %}</dd></div>
+            <div class="kv kv--stack"><dt>{{ ico("zone") }}{{ help_term("risk_reward_ratio", "L6 Tỷ Lệ R:R & Kế Hoạch Vùng Giá") }}</dt><dd class="num">{% if ea.risk_reward_ratio is not none or ea.stop_loss_price is not none or ea.take_profit_price is not none %}{% set zone_parts = [] %}{% if ea.risk_reward_ratio is not none %}{% set _ = zone_parts.append("1 : " ~ (ea.risk_reward_ratio | number2_vi)) %}{% endif %}{% if ea.stop_loss_price is not none %}{% set _ = zone_parts.append("SL: " ~ (ea.stop_loss_price | number_vi)) %}{% endif %}{% if ea.take_profit_price is not none %}{% set _ = zone_parts.append("TP: " ~ (ea.take_profit_price | number_vi)) %}{% else %}{% set _ = zone_parts.append("không có mục tiêu chốt lời cố định") %}{% endif %}{{ zone_parts | join(" · ") }}{% else %}{{ missing() }}{% endif %}</dd></div>
+            <div class="kv"><dt>{{ ico("budget") }}{{ help_term("planned_risk_budget", "Ngân sách rủi ro kế hoạch") }}</dt><dd class="num">{% if ea.planned_risk_amount is not none %}{{ money(ea.planned_risk_amount, quote) }}{% if xa.net_pnl_r_multiple is not none %} · kết quả <span title="{{ xa.net_pnl_r_multiple | number_vi }}R">{{ xa.net_pnl_r_multiple | number2_vi }}R</span>{% endif %}{% else %}{{ missing() }}{% endif %}</dd></div>
             <div class="kv kv--stack"><dt>{{ ico("note") }}Diễn giải tín hiệu</dt><dd class="kv__text">{% if ea.detail_vi %}{{ ea.detail_vi }}{% else %}Ledger chưa lưu lý do vào lệnh cho giao dịch này.{% endif %}</dd></div>
           </dl>
         </div>
@@ -303,7 +302,7 @@
           <h4>{{ ico("exit") }}<span>Vì Sao Thoát Vị Thế? (Chi Phí & Rủi Ro)</span></h4>
           <dl class="kv-list">
             <div class="kv"><dt>{{ ico("exit") }}{{ help_term("exit_reason", "Lý do đóng vị thế") }}</dt><dd>{{ exit_badge(selected_trade.exit_reason) }}</dd></div>
-            <div class="kv kv--stack"><dt>{{ ico("slippage") }}{{ help_term("trade_slippage", "Trượt giá thực tế (Slippage)") }}</dt><dd class="num{% if pm.classification == 'DEVIANT_SLIPPAGE' %} report-kpi__value--down{% endif %}">{{ money(selected_trade.slippage_total, quote) }}{% if xa.slippage_bps is not none %} ({{ "%.2f" | format(xa.slippage_bps | float) }} bps trên notional vào lệnh){% else %} (chưa tính được bps: thiếu fill vào lệnh){% endif %}{% if xa.expected_slippage is not none %} · kế hoạch dự trù {{ money(xa.expected_slippage, quote) }}{% endif %}</dd></div>
+            <div class="kv kv--stack"><dt>{{ ico("slippage") }}{{ help_term("trade_slippage", "Trượt giá thực tế (Slippage)") }}</dt><dd class="num{% if pm.classification == 'DEVIANT_SLIPPAGE' %} report-kpi__value--down{% endif %}">{{ money(selected_trade.slippage_total, quote) }}{% if xa.slippage_bps is not none %} (<span title="{{ xa.slippage_bps | number_vi }} bps">{{ xa.slippage_bps | number2_vi }}</span> bps trên notional vào lệnh){% else %} (chưa tính được bps: thiếu fill vào lệnh){% endif %}{% if xa.expected_slippage is not none %} · kế hoạch dự trù {{ money(xa.expected_slippage, quote) }}{% endif %}</dd></div>
             <div class="kv"><dt>{{ ico("fee") }}{{ help_term("trade_fees_funding", "Phí giao dịch & Phí Funding") }}</dt><dd class="num">Phí {{ money(selected_trade.fee_total, quote) }} · Funding {{ money(selected_trade.funding_total, quote) }}</dd></div>
             <div class="kv"><dt>{{ ico("cost") }}{{ help_term("total_cost", "Tổng chi phí thực thi") }}</dt><dd class="num">{{ money(selected_trade.total_cost, quote) }}</dd></div>
             <div class="kv kv--strong"><dt>{{ ico("pnl") }}{{ help_term("net_pnl", "Kết quả Lãi/Lỗ ròng") }}</dt><dd>{{ pnl(selected_trade.net_pnl, quote) }}</dd></div>
@@ -360,11 +359,11 @@
   <script id="trade-chart-data" type="application/json">{{ chart_data | tojson }}</script>
   {% endif %}
 
-  <!-- Tóm tắt: chỉ số chi tiết đủ độ chính xác (đối soát) và lịch lãi/lỗ theo ngày. -->
+  <!-- Tóm tắt: chỉ số gọn để đọc nhanh; title giữ số đầy đủ và lịch lãi/lỗ theo ngày. -->
   <div class="report-summary">
     <section class="glass-card report-metrics" aria-label="Chỉ số chi tiết">
-      <p class="report-card__hint">{{ ico("list") }} Chỉ số chi tiết · số đầy đủ theo ledger để đối soát</p>
-      {% with totals=report.get("totals", {}) %}{% include "admin/metric_cards.html" %}{% endwith %}
+      <p class="report-card__hint">{{ ico("list") }} Chỉ số chi tiết · tối đa 2 số lẻ; rê chuột để xem số ledger đầy đủ</p>
+      {% with totals=report.get("totals", {}), rounded=True %}{% include "admin/metric_cards.html" %}{% endwith %}
     </section>
 
     {% if report.daily_performance %}
@@ -593,7 +592,7 @@
         {% if reconciliation.bot_count is defined %}<div class="kv"><dt>{{ ico("bots") }}Số bot tổng hợp</dt><dd class="num">{{ reconciliation.bot_count }}</dd></div>{% endif %}
         {% if reconciliation.closed_trade_rows is defined %}<div class="kv"><dt>{{ ico("list") }}Hàng giao dịch đã đóng</dt><dd class="num">{{ reconciliation.closed_trade_rows }}</dd></div>{% endif %}
         {% if reconciliation.trade_cost_rows is defined %}<div class="kv"><dt>{{ ico("fee") }}Hàng chi phí đã đối soát</dt><dd class="num">{{ reconciliation.trade_cost_rows }}</dd></div>{% endif %}
-        {% for asset, ledger_row in (reconciliation.ledger or {}).items() %}<div class="kv"><dt>{{ ico("hash") }}Ledger {{ asset }} (lệnh · PnL ròng)</dt><dd class="num">{{ ledger_row.closed_trade_rows }} · {{ ledger_row.net_pnl | number_vi }} {{ asset }}</dd></div>{% endfor %}
+        {% for asset, ledger_row in (reconciliation.ledger or {}).items() %}<div class="kv"><dt>{{ ico("hash") }}Ledger {{ asset }} (lệnh · PnL ròng)</dt><dd class="num" title="{{ ledger_row.net_pnl | number_vi }} {{ asset }}">{{ ledger_row.closed_trade_rows }} · {{ ledger_row.net_pnl | number2_vi }} {{ asset }}</dd></div>{% endfor %}
       </dl>
       <details class="report-raw">
         <summary>Dữ liệu kỹ thuật JSON</summary>

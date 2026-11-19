@@ -87,6 +87,28 @@ def assert_metric_tooltip(page: Page, key: str, *, mode: str) -> None:
     expect(tooltip).to_contain_text(entry.title_vi)
     expect(tooltip).to_contain_text(entry.definition_vi)
     expect(tooltip).to_contain_text(entry.limits_vi)
+    surface = page.evaluate(
+        """(node) => {
+          const style = getComputedStyle(node);
+          const probe = document.createElement('span');
+          probe.style.backgroundColor = getComputedStyle(document.documentElement)
+            .getPropertyValue('--bg-base').trim();
+          document.body.append(probe);
+          const expected = getComputedStyle(probe).backgroundColor;
+          probe.remove();
+          const alphaMatch = style.backgroundColor.match(/rgba\\([^,]+,[^,]+,[^,]+,\\s*([\\d.]+)\\)/);
+          return {
+            background: style.backgroundColor,
+            expected,
+            alpha: alphaMatch ? Number(alphaMatch[1]) : 1,
+            backdrop: style.backdropFilter,
+          };
+        }""",
+        tooltip.element_handle(),
+    )
+    assert surface["background"] == surface["expected"]
+    assert surface["alpha"] == 1
+    assert surface["backdrop"] == "none"
     assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), (key, mode)
     box = tooltip.bounding_box()
     viewport = page.viewport_size

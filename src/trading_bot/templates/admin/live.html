@@ -71,11 +71,8 @@
 
     <section class="live-mon__panel live-mon__panel--bots" aria-labelledby="live-bots-h">
       <h2 id="live-bots-h">Bot</h2>
-      <div class="table-responsive">
-        <table class="table live-mon__table">
-          <thead><tr><th scope="col">Bot</th><th scope="col">Vào lệnh</th><th scope="col">Vị thế</th><th scope="col">Vốn</th><th scope="col">DD</th><th scope="col">Hôm nay</th><th scope="col">Nhịp runtime</th></tr></thead>
-          <tbody data-live-bots><tr><td colspan="7">Đang tải…</td></tr></tbody>
-        </table>
+      <div class="live-mon__bot-grid" data-live-bots role="list" aria-label="Danh sách bot">
+        <p class="live-mon__empty" role="listitem">Đang tải…</p>
       </div>
     </section>
 

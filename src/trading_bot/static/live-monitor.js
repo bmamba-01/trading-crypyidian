@@ -228,22 +228,52 @@
       botNames.set(bot.id, bot.name || bot.id.slice(0, 8));
       const equity = bot.equity || {};
       const entry = bot.entry_allowed ? 'Cho phép' : `Chặn (${bot.entry_state || '—'} / ${bot.readiness || '—'})`;
+      const heartbeat = bot.heartbeat_age_seconds == null
+        ? 'Chưa có'
+        : `${bot.heartbeat_stale ? 'Chậm · ' : ''}${bot.heartbeat_age_seconds} s`;
+      const metric = (label, value, className, modifier = '') => el('div', {
+        className: `live-mon__bot-metric ${modifier}`.trim(),
+      }, [
+        el('dt', { text: label }),
+        el('dd', { className, text: value }),
+      ]);
       body.append(
-        el('tr', { 'data-bot-row': bot.id }, [
-          el('th', { scope: 'row' }, [el('a', { href: `/admin/bots/${bot.id}`, text: bot.name || bot.id })]),
-          el('td', { className: bot.entry_allowed ? 'live-mon__ok' : 'live-mon__warn', text: entry }),
-          el('td', { text: String(bot.open_positions) }),
-          el('td', { text: num(equity.equity, true) }),
-          el('td', { text: equity.drawdown_pct == null ? '—' : `${equity.drawdown_pct}%` }),
-          el('td', { className: tone(bot.net_today), text: num(bot.net_today, true) }),
-          el('td', {
-            className: bot.heartbeat_stale ? 'live-mon__warn' : 'live-mon__ok',
-            text: bot.heartbeat_age_seconds == null ? 'Chưa có' : `${bot.heartbeat_age_seconds} s`,
-          }),
+        el('article', {
+          'data-bot-row': bot.id,
+          role: 'listitem',
+          className: 'live-mon__bot-card',
+          'aria-label': `Bot ${bot.name || bot.id}`,
+        }, [
+          el('header', { className: 'live-mon__bot-head' }, [
+            el('h3', {}, [el('a', { href: `/admin/bots/${bot.id}`, text: bot.name || bot.id })]),
+          ]),
+          el('dl', { className: 'live-mon__bot-metrics' }, [
+            metric(
+              'Vào lệnh',
+              entry,
+              bot.entry_allowed ? 'live-mon__ok' : 'live-mon__warn',
+              'live-mon__bot-metric--entry',
+            ),
+            metric('Vị thế', String(bot.open_positions)),
+            metric('Vốn', num(equity.equity, true)),
+            metric('DD', equity.drawdown_pct == null ? '—' : `${num(equity.drawdown_pct, true)}%`),
+            metric('Hôm nay', num(bot.net_today, true), tone(bot.net_today)),
+            metric(
+              'Nhịp runtime',
+              heartbeat,
+              bot.heartbeat_stale ? 'live-mon__warn' : 'live-mon__ok',
+            ),
+          ]),
         ]),
       );
     });
-    if (!body.children.length) body.append(el('tr', {}, [el('td', { colspan: '7', text: 'Chưa chọn bot nào.' })]));
+    if (!body.children.length) {
+      body.append(el('p', {
+        role: 'listitem',
+        className: 'live-mon__empty',
+        text: 'Chưa chọn bot nào.',
+      }));
+    }
   }
 
   function renderPositions(state) {

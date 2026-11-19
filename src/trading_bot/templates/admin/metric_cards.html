@@ -1,9 +1,8 @@
 {#-
-  Bảng chỉ số đủ độ chính xác theo từng tài sản định giá (dùng chung: dashboard tab Hiệu suất và
-  trang báo cáo). Giữ `number_vi` (không làm tròn) vì đây là số để đối soát với ledger; lớp
-  `.asset-report` và tiêu đề "Tài sản <mã>" là hợp đồng của E2E. Mỗi hàng `.metric-item` là một
-  cặp nhãn–giá trị; trang báo cáo trình bày thành lưới `.kv` qua `static/pages/reports.css`.
-  Đặt `rounded=True` khi nhúng vào dashboard: hiển thị làm tròn 2 chữ số, số đầy đủ ở `title`.
+  Bảng chỉ số theo từng tài sản định giá (dùng chung: dashboard tab Hiệu suất và trang báo cáo).
+  Khi `rounded=True`, giá trị tiền/tỷ lệ gọn tối đa 2 chữ số còn `title` giữ số gốc ledger; giá
+  và khối lượng ở những hàng riêng của báo cáo vẫn dùng `number_vi`. Lớp `.asset-report` và tiêu
+  đề "Tài sản <mã>" là hợp đồng E2E; mỗi hàng `.metric-item` là một cặp nhãn–giá trị.
 -#}
 {% from "admin/_metric_help.html" import help_term, help_icon %}
 {% for asset, values in totals.items() %}
