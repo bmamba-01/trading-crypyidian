@@ -310,6 +310,7 @@ DEFINER_OWNERS = {
     "crypidian_risk_aggregator",
     "crypidian_source_expiry_scanner",
     "crypidian_source_rights_emitter",
+    "crypidian_audit_chain_guard",
 }
 FUNCTION_EXECUTE = {
     "begin_backtest_job_persist(uuid,uuid,text,integer)": {REPLAY_WRITER},

@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Annotated, Any, Literal
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.dependencies.models import Dependant
 from fastapi.routing import APIRoute, RouteContext, iter_route_contexts
 from starlette.routing import Mount, Route
@@ -262,6 +262,45 @@ def _enforce_principal_policy(principal: Principal, policy: RoutePolicy) -> None
         raise _deny_http_exception(policy)
 
 
+async def _record_route_policy_denial(
+    request: Request,
+    identity: AuthIdentity,
+    detail: str,
+) -> None:
+    """Ghi nhận sự kiện từ chối phân quyền 403 chuẩn hóa SEC-32 và báo cho bộ phát hiện SEC-34."""
+    from trading_bot.observability.security_audit import (
+        OUTCOME_DENIED,
+        SECURITY_ACTION_AUTHZ_DENIED,
+        extract_client_ip_from_request,
+        record_security_audit_event,
+        request_security_audit_scope,
+    )
+
+    request.state.security_403_audited = True
+    cookie_value = getattr(request.state, "security_session_cookie", None)
+    reason = f"{request.method} {request.url.path}: {detail}"
+    with request_security_audit_scope(request, session_cookie=cookie_value):
+        await record_security_audit_event(
+            workspace_id=identity.principal.workspace_id,
+            actor_membership_id=identity.principal.membership_id,
+            action=SECURITY_ACTION_AUTHZ_DENIED,
+            target_type="http_route",
+            target_id=identity.principal.session_id,
+            reason=reason,
+            outcome=OUTCOME_DENIED,
+            sessions=getattr(request.app.state, "session_factory", None),
+        )
+        detector = getattr(request.app.state, "security_anomaly_detector", None)
+        if detector is not None:
+            await detector.observe_probing_failure(
+                workspace_id=identity.principal.workspace_id,
+                actor_membership_id=identity.principal.membership_id,
+                action=SECURITY_ACTION_AUTHZ_DENIED,
+                client_ip=extract_client_ip_from_request(request),
+                reason=reason,
+            )
+
+
 def require_route_policy(policy: RoutePolicy) -> Any:
     """Tạo FastAPI ``Depends(...)`` gắn ``RoutePolicy`` lên route và thi hành khi gọi HTTP."""
     if policy.access is RouteAccess.PUBLIC:
@@ -275,18 +314,30 @@ def require_route_policy(policy: RoutePolicy) -> Any:
     if policy.csrf is CsrfMode.HEADER:
 
         async def _header_csrf_policy_guard(
+            request: Request,
             identity: Annotated[AuthIdentity, Depends(require_csrf)],
         ) -> AuthIdentity:
-            _enforce_principal_policy(identity.principal, policy)
+            try:
+                _enforce_principal_policy(identity.principal, policy)
+            except HTTPException as exc:
+                if exc.status_code == 403:
+                    await _record_route_policy_denial(request, identity, str(exc.detail))
+                raise
             return identity
 
         setattr(_header_csrf_policy_guard, ROUTE_POLICY_ATTR, policy)
         return Depends(_header_csrf_policy_guard)
 
     async def _session_policy_guard(
+        request: Request,
         identity: Annotated[AuthIdentity, Depends(current_identity)],
     ) -> AuthIdentity:
-        _enforce_principal_policy(identity.principal, policy)
+        try:
+            _enforce_principal_policy(identity.principal, policy)
+        except HTTPException as exc:
+            if exc.status_code == 403:
+                await _record_route_policy_denial(request, identity, str(exc.detail))
+            raise
         return identity
 
     setattr(_session_policy_guard, ROUTE_POLICY_ATTR, policy)
