@@ -38,6 +38,15 @@ services:
       timeout: 5s
       retries: 5
       start_period: 20s
+    cpus: 2.0
+    mem_limit: 1g
+    pids_limit: 128
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1g
+          pids: 128
     restart: unless-stopped
 
   object-store:
@@ -60,6 +69,15 @@ services:
       timeout: 5s
       retries: 5
       start_period: 20s
+    cpus: 0.5
+    mem_limit: 256m
+    pids_limit: 64
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256m
+          pids: 64
     restart: unless-stopped
 
   admin-web:
@@ -143,6 +161,15 @@ services:
       timeout: 5s
       retries: 3
       start_period: 15s
+    cpus: 1.0
+    mem_limit: 512m
+    pids_limit: 128
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512m
+          pids: 128
     restart: unless-stopped
 
   mfa-volume-provisioner:
@@ -154,6 +181,15 @@ services:
     cap_drop: ["ALL"]
     cap_add: ["CHOWN"]
     security_opt: ["no-new-privileges:true"]
+    cpus: 0.25
+    mem_limit: 128m
+    pids_limit: 32
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 128m
+          pids: 32
     restart: "no"
 
   migrator:
@@ -172,7 +208,7 @@ services:
     networks:
       - backend
     volumes:
-      - ./migrations:/app/migrations
+      - ./migrations:/app/migrations:ro
     read_only: true
     # CRY-423: process pool của backtest đề xuất (chạy qua migrator) cần /tmp cho forkserver.
     tmpfs:
@@ -180,6 +216,15 @@ services:
     user: "10001:10001"
     cap_drop: ["ALL"]
     security_opt: ["no-new-privileges:true"]
+    cpus: 2.0
+    mem_limit: 1g
+    pids_limit: 128
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1g
+          pids: 128
 
   db-provisioner:
     image: ${CRYPIDIAN_APP_IMAGE:-crypidian-app:local}
@@ -213,6 +258,15 @@ services:
     user: "10001:10001"
     cap_drop: ["ALL"]
     security_opt: ["no-new-privileges:true"]
+    cpus: 0.25
+    mem_limit: 128m
+    pids_limit: 32
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 128m
+          pids: 32
 
   # Chỉ local/test: gieo dataset QA qua `scripts/seed_qa_data.py seed --local-only`.
   # Profile riêng nên `up` mặc định không chạy; credentials đi qua stdin, không qua env.
@@ -250,6 +304,15 @@ services:
     user: "10001:10001"
     cap_drop: ["ALL"]
     security_opt: ["no-new-privileges:true"]
+    cpus: 0.5
+    mem_limit: 512m
+    pids_limit: 64
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512m
+          pids: 64
     restart: "no"
 
   trading-runtime:
@@ -280,6 +343,15 @@ services:
     cap_drop: ["ALL"]
     security_opt: ["no-new-privileges:true"]
     healthcheck: *application_healthcheck
+    cpus: 1.0
+    mem_limit: 512m
+    pids_limit: 64
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512m
+          pids: 64
     restart: unless-stopped
 
   execution-gateway:
@@ -311,6 +383,15 @@ services:
     cap_drop: ["ALL"]
     security_opt: ["no-new-privileges:true"]
     healthcheck: *application_healthcheck
+    cpus: 0.5
+    mem_limit: 256m
+    pids_limit: 64
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256m
+          pids: 64
     restart: unless-stopped
 
   ingestion-worker:
@@ -369,6 +450,15 @@ services:
       timeout: 5s
       retries: 3
       start_period: 15s
+    cpus: 1.0
+    mem_limit: 512m
+    pids_limit: 64
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512m
+          pids: 64
     restart: unless-stopped
 
   candidate-proof-builder:
@@ -391,6 +481,15 @@ services:
     user: "10001:10001"
     cap_drop: ["ALL"]
     security_opt: ["no-new-privileges:true"]
+    cpus: 1.0
+    mem_limit: 512m
+    pids_limit: 64
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512m
+          pids: 64
     restart: "no"
 
   learning-split-builder:
@@ -413,6 +512,15 @@ services:
     user: "10001:10001"
     cap_drop: ["ALL"]
     security_opt: ["no-new-privileges:true"]
+    cpus: 1.0
+    mem_limit: 512m
+    pids_limit: 64
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512m
+          pids: 64
     restart: "no"
 
   trainer-worker:
@@ -517,6 +625,15 @@ services:
     user: "10001:10001"
     cap_drop: ["ALL"]
     security_opt: ["no-new-privileges:true"]
+    cpus: 1.0
+    mem_limit: 512m
+    pids_limit: 64
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512m
+          pids: 64
     restart: "no"
 
   backtest-worker:
@@ -551,6 +668,15 @@ services:
     user: "10001:10001"
     cap_drop: ["ALL"]
     security_opt: ["no-new-privileges:true"]
+    cpus: 1.0
+    mem_limit: 1g
+    pids_limit: 64
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1g
+          pids: 64
     restart: unless-stopped
 
   telegram-signal-worker:
@@ -586,6 +712,15 @@ services:
     cap_drop: ["ALL"]
     security_opt: ["no-new-privileges:true"]
     healthcheck: *application_healthcheck
+    cpus: 0.5
+    mem_limit: 512m
+    pids_limit: 64
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512m
+          pids: 64
     restart: unless-stopped
 
   market-signal-worker:
@@ -620,6 +755,15 @@ services:
     cap_drop: ["ALL"]
     security_opt: ["no-new-privileges:true"]
     healthcheck: *application_healthcheck
+    cpus: 1.0
+    mem_limit: 512m
+    pids_limit: 64
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512m
+          pids: 64
     restart: unless-stopped
 
 networks:

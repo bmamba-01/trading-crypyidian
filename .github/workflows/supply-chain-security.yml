@@ -1,0 +1,76 @@
+name: Supply Chain & Container Security Gate (SEC-44/45/46)
+
+on:
+  push:
+    branches:
+      - main
+      - dev
+  pull_request:
+    branches:
+      - main
+      - dev
+  schedule:
+    - cron: "0 2 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  supply-chain-gate:
+    name: Lock, OSV Audit, Static Analysis, SBOM, Secret & Container Gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout mã nguồn (không lưu credentials)
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Cài đặt uv phiên bản cố định
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.13.6"
+          enable-cache: true
+
+      - name: Kiểm tra lockfile và đồng bộ môi trường bất biến
+        run: |
+          uv lock --check
+          uv sync --frozen
+
+      - name: Kiểm tra lỗ hổng dependency OSV từ uv.lock (SEC-45)
+        run: |
+          uv audit --frozen
+
+      - name: Kiểm tra lint, định dạng và kiểu tĩnh (Ruff & Mypy)
+        run: |
+          uv run ruff check src tests scripts migrations
+          uv run ruff format --check src tests scripts migrations
+          uv run mypy src/trading_bot
+
+      - name: Xuất và kiểm toán CycloneDX SBOM đối chiếu uv.lock
+        run: |
+          uv export --preview-features sbom-export --format cyclonedx1.5 --frozen --output-file /tmp/sbom.cdx.json
+          uv run python -m trading_bot.observability.supply_chain --check-sbom --sbom-file /tmp/sbom.cdx.json
+          uv run python -m trading_bot.observability.supply_chain --check-sbom --sbom-file docs/implementation/sbom.cdx.json
+
+      - name: Lưu artifact CycloneDX SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: crypidian-cyclonedx-sbom
+          path: /tmp/sbom.cdx.json
+          retention-days: 30
+
+      - name: Quét rò rỉ secret/canary và kiểm tra quyền 0600/0700 (SEC-44/45)
+        run: |
+          uv run python -m trading_bot.observability.supply_chain --scan-secrets
+          tmpdir="$(mktemp -d)"
+          trap 'rm -rf "$tmpdir"' EXIT
+          (cd "$tmpdir" && uv run --project "${GITHUB_WORKSPACE}" python "${GITHUB_WORKSPACE}/scripts/prepare_local_secrets.py")
+          uv run python -m trading_bot.observability.supply_chain --check-secrets-dir "$tmpdir/.secrets"
+
+      - name: Kiểm tra giới hạn container, mount :ro, cách ly egress và cấu hình CI (SEC-45/46)
+        run: |
+          uv run python -m trading_bot.observability.supply_chain --check-containers --check-workflow
+          uv run python scripts/prepare_local_secrets.py
+          docker compose --profile '*' -f compose.yaml config --quiet
+          uv run pytest tests/unit/test_supply_chain_sbom.py tests/unit/test_sec44_45_46_supply_chain_and_containers.py tests/unit/test_compose_postgres_image.py -v
