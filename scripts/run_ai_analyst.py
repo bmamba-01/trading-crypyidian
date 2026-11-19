@@ -470,14 +470,14 @@ def _run(args: argparse.Namespace, *, local_state: Path | None) -> int:
     else:
         report = _phase(
             args.project,
-            "migrator",
+            "report-reader",
             "report",
             state | {"hours": args.hours, "label": args.label},
         )
     engine = build_engine(args.engine)
     sessions = _phase(
         args.project,
-        "migrator",
+        "report-reader",
         "sessions",
         state | {"engine": engine.name, "rotate_after": args.rotate_after},
     )
@@ -496,7 +496,7 @@ def _run(args: argparse.Namespace, *, local_state: Path | None) -> int:
     if records:
         stored = _phase(
             args.project,
-            "migrator",
+            "report-reader",
             "persist",
             state
             | {
@@ -576,7 +576,7 @@ async def _container(phase: str, state: dict[str, Any]) -> dict[str, Any]:
     from decimal import Decimal
     from uuid import UUID
 
-    from sqlalchemy import select, update
+    from sqlalchemy import func, select
 
     from trading_bot.adapters.database.models import (
         AnalystRunRecord,
@@ -645,6 +645,9 @@ async def _container(phase: str, state: dict[str, Any]) -> dict[str, Any]:
             )
             return payload
         if phase == "sessions":
+            # CRY-421: crypidian_report_reader chỉ có SELECT + INSERT (không UPDATE).
+            # Xác định session mới nhất của từng chủ đề và đếm lượt chạy từ analyst_run.
+            rotate_after = int(state.get("rotate_after", 8))
             async with UnitOfWork(sessions, workspace_id=workspace) as uow:
                 rows = await uow.session.execute(
                     select(AnalystSessionRecord.topic_key, AnalystSessionRecord.session_id)
@@ -652,13 +655,26 @@ async def _container(phase: str, state: dict[str, Any]) -> dict[str, Any]:
                         AnalystSessionRecord.workspace_id == workspace,
                         AnalystSessionRecord.engine == state["engine"],
                         AnalystSessionRecord.status == "ACTIVE",
-                        # Xoay session: ngữ cảnh tích lũy làm mỗi lượt đắt dần (16/11: H03 vượt
-                        # trần 1 USD/lượt sau ~7 lượt). Quá ngưỡng thì mở session mới.
-                        AnalystSessionRecord.run_count < int(state.get("rotate_after", 8)),
                     )
-                    .order_by(AnalystSessionRecord.created_at)
+                    .order_by(AnalystSessionRecord.created_at.desc())
                 )
-                return {"sessions": {str(topic): str(session) for topic, session in rows.all()}}
+                latest_by_topic: dict[str, str] = {}
+                for topic, session_id in rows.all():
+                    latest_by_topic.setdefault(str(topic), str(session_id))
+                active: dict[str, str] = {}
+                for topic, session_id in latest_by_topic.items():
+                    used = await uow.session.scalar(
+                        select(func.count(AnalystRunRecord.id)).where(
+                            AnalystRunRecord.workspace_id == workspace,
+                            AnalystRunRecord.topic_key == topic,
+                            AnalystRunRecord.engine == state["engine"],
+                            AnalystRunRecord.session_id == session_id,
+                            AnalystRunRecord.exit_code == 0,
+                        )
+                    )
+                    if int(used or 0) < rotate_after:
+                        active[topic] = session_id
+                return {"sessions": active}
         if phase == "persist":
             now = datetime.now(UTC)
             async with UnitOfWork(sessions, workspace_id=workspace) as uow:
@@ -675,7 +691,7 @@ async def _container(phase: str, state: dict[str, Any]) -> dict[str, Any]:
                     )
                     if record["session_id"] and record["exit_code"] == 0:
                         existing = await session.scalar(
-                            select(AnalystSessionRecord).where(
+                            select(AnalystSessionRecord.id).where(
                                 AnalystSessionRecord.workspace_id == workspace,
                                 AnalystSessionRecord.topic_key == record["topic_key"],
                                 AnalystSessionRecord.engine == record["engine"],
@@ -683,16 +699,6 @@ async def _container(phase: str, state: dict[str, Any]) -> dict[str, Any]:
                             )
                         )
                         if existing is None:
-                            # Session mới của chủ đề: các session cũ của cùng engine nghỉ hưu.
-                            await session.execute(
-                                update(AnalystSessionRecord)
-                                .where(
-                                    AnalystSessionRecord.workspace_id == workspace,
-                                    AnalystSessionRecord.topic_key == record["topic_key"],
-                                    AnalystSessionRecord.engine == record["engine"],
-                                )
-                                .values(status="RETIRED")
-                            )
                             session.add(
                                 AnalystSessionRecord(
                                     workspace_id=workspace,
@@ -704,9 +710,6 @@ async def _container(phase: str, state: dict[str, Any]) -> dict[str, Any]:
                                     last_used_at=now,
                                 )
                             )
-                        else:
-                            existing.run_count += 1
-                            existing.last_used_at = now
                 chats = await session.execute(
                     select(
                         TelegramSignalSubscription.telegram_chat_id,

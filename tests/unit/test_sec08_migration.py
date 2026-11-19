@@ -12,7 +12,7 @@ from trading_bot.adapters.database.models import AuthRateLimitState
 ROOT = Path(__file__).parents[2]
 VERSIONS = ROOT / "migrations" / "versions"
 REVISION = "d9e1f3a5b7c8"
-PREVIOUS_HEAD = "0094c0fdba7f"
+PREVIOUS_HEAD = "12e554aace5d"
 
 
 def _load() -> ModuleType:

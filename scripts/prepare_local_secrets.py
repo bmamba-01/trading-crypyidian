@@ -21,6 +21,7 @@ _DATABASE_ROLES: tuple[str, ...] = (
     "candidate_builder",
     "backtest_worker",
     "scorer_history",
+    "report_reader",
 )
 
 
