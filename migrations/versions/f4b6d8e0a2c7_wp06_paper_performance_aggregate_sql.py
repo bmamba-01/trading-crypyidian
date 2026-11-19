@@ -60,6 +60,20 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    op.execute("LOCK TABLE public.learning_paper_performance_report IN ACCESS EXCLUSIVE MODE")
+    # Từ chối khi RLS có thể che mất hàng trong phép kiểm toàn bảng.
+    op.execute("""
+        DO $$
+        DECLARE
+            previous_row_security text := pg_catalog.current_setting('row_security');
+        BEGIN
+            SET LOCAL row_security = off;
+            IF EXISTS (SELECT 1 FROM public.learning_paper_performance_report) THEN
+                RAISE EXCEPTION 'WP06_PAPER_PERFORMANCE_AGGREGATE_DOWNGRADE_POPULATED_DENIED';
+            END IF;
+            PERFORM pg_catalog.set_config('row_security', previous_row_security, true);
+        END $$
+    """)
     _replace_aggregate(restore=True)
     for columns in _SELECT_GRANTS:
         op.execute(f"REVOKE SELECT {columns} FROM {_EVALUATOR}")

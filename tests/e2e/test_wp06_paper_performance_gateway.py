@@ -30,7 +30,7 @@ def test_paper_performance_aggregate_gateway_is_narrow_and_fails_closed() -> Non
         environment = os.environ | {"CRYPIDIAN_APP_IMAGE": resources.image}
         image_created = ensure_image_available(root, resources.image)
 
-        def compose(*args: str):
+        def compose(*args: str, success: bool = True) -> subprocess.CompletedProcess[str]:
             result = subprocess.run(
                 [*base, *args],
                 cwd=root,
@@ -40,10 +40,10 @@ def test_paper_performance_aggregate_gateway_is_narrow_and_fails_closed() -> Non
                 timeout=360,
             )
             output = result.stdout + result.stderr
-            assert result.returncode == 0, output[-9000:]
+            assert (result.returncode == 0) is success, output[-9000:]
             return result
 
-        def snapshot_aggregate_contract() -> list[str]:
+        def database(sql: str) -> str:
             result = compose(
                 "exec",
                 "-T",
@@ -55,6 +55,12 @@ def test_paper_performance_aggregate_gateway_is_narrow_and_fails_closed() -> Non
                 "--dbname",
                 "crypidian",
                 "--command",
+                sql,
+            )
+            return result.stdout.strip()
+
+        def snapshot_aggregate_contract() -> list[str]:
+            return database(
                 """
                 SELECT pg_catalog.md5(pg_catalog.pg_get_functiondef(function.oid)),
                        function.oid, function.proowner, function.prosecdef,
@@ -78,8 +84,7 @@ def test_paper_performance_aggregate_gateway_is_narrow_and_fails_closed() -> Non
                  WHERE function.oid = 'public.wp06_aggregate_paper_performance_unscoped'
                     '(uuid,uuid,text,uuid,text,timestamptz)'::regprocedure
                 """,
-            )
-            return result.stdout.strip().split("|")
+            ).split("|")
 
         try:
             compose("up", "--detach", "--wait", "--wait-timeout", "180", "postgres")
@@ -129,6 +134,51 @@ def test_paper_performance_aggregate_gateway_is_narrow_and_fails_closed() -> Non
                 "report_writer_denies_missing_target_without_mutation": True,
                 "no_raw_member_fields_returned": True,
             }
+            # Hàng giả lập chỉ kiểm sổ có dữ liệu trên DB dùng riêng cho test downgrade.
+            database("""
+                BEGIN;
+                SET LOCAL session_replication_role = replica;
+                INSERT INTO public.learning_paper_performance_report (
+                    id, workspace_id, bot_id, baseline_report_id, baseline_report_hash,
+                    policy_version, policy_hash, target_fingerprint, membership_digest,
+                    as_of, status, idempotency_key, report_hash, report, canonical_report
+                ) VALUES (
+                    gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), gen_random_uuid(),
+                    repeat('0', 64), 'downgrade-fixture', repeat('0', 64), repeat('0', 64),
+                    repeat('0', 64), transaction_timestamp(), 'inconclusive', gen_random_uuid(),
+                    repeat('0', 64), '{}'::jsonb, '{}'
+                );
+                COMMIT;
+            """)
+            row_count_sql = "SELECT count(*) FROM public.learning_paper_performance_report"
+            assert database(row_count_sql) == "1"
+            denied = compose(
+                "run",
+                "--rm",
+                "--no-deps",
+                "migrator",
+                "alembic",
+                "downgrade",
+                PREVIOUS_REVISION,
+                success=False,
+            )
+            assert (
+                "psycopg.errors.RaiseException: "
+                "WP06_PAPER_PERFORMANCE_AGGREGATE_DOWNGRADE_POPULATED_DENIED"
+            ) in denied.stderr
+            current = compose("run", "--rm", "--no-deps", "migrator", "alembic", "current")
+            assert "f4b6d8e0a2c7 (head)" in current.stdout
+            assert snapshot_aggregate_contract() == upgraded
+            assert database(row_count_sql) == "1"
+
+            database("""
+                BEGIN;
+                SET LOCAL session_replication_role = replica;
+                DELETE FROM public.learning_paper_performance_report
+                 WHERE policy_version = 'downgrade-fixture';
+                COMMIT;
+            """)
+            assert database(row_count_sql) == "0"
             compose(
                 "run", "--rm", "--no-deps", "migrator", "alembic", "downgrade", PREVIOUS_REVISION
             )
