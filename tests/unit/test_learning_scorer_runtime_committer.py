@@ -18,7 +18,7 @@ from trading_bot.adapters.database.repositories.scorer_runtime_source_rights imp
     ScorerDecisionSourceLineageUnavailable,
     ScorerDecisionSourceRightsDenied,
 )
-from trading_bot.application.bot_dispatcher import BotDecisionStatus
+from trading_bot.application.bot_dispatcher import BotDecision, BotDecisionStatus, _hash
 from trading_bot.application.learning_scorer_runtime import RuntimeScorerDecision
 from trading_bot.domain.learning.scoring_deployment import (
     ScorerDeploymentMode,
@@ -472,17 +472,36 @@ async def test_current_paper_rights_denial_aborts_before_scorer_access(
     assert scorer_called is False
 
 
-async def test_post_inference_rights_denial_aborts_commit_after_recheck(
+@pytest.mark.parametrize(
+    ("rechecked_fingerprint", "expected_error"),
+    [
+        pytest.param(None, "thu hồi", id="denied"),
+        pytest.param("d" * 64, "fingerprint đổi", id="fingerprint-changed"),
+    ],
+)
+async def test_post_inference_rights_recheck_rejects_commit(
     monkeypatch: pytest.MonkeyPatch,
+    rechecked_fingerprint: str | None,
+    expected_error: str,
 ) -> None:
     job = _job()
-    incumbent = await _decision(job)
+    payload = (await _decision(job)).canonical_payload()
+    payload["decision_snapshot_id"] = "9" * 64
+    incumbent = BotDecision.from_payload(payload, _hash(payload))
     snapshot = SimpleNamespace(snapshot_id=incumbent.decision_snapshot_id)
     vector = SimpleNamespace(
         snapshot_id=incumbent.decision_snapshot_id,
         vector_hash="f" * 64,
         workspace_id=job.workspace_id,
-        timeframe_lineage=(),
+        schema_version="v1",
+        feature_schema_hash="6" * 64,
+        timeframe_lineage=(
+            SimpleNamespace(
+                timeframe="1m",
+                feature_snapshot_id="7" * 64,
+                source_event_digest="8" * 64,
+            ),
+        ),
     )
     evaluation = SimpleNamespace(
         snapshot=snapshot,
@@ -495,6 +514,7 @@ async def test_post_inference_rights_denial_aborts_commit_after_recheck(
         proof_id=UUID("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"),
         proof_hash="1" * 64,
         proof_scope_hash="2" * 64,
+        report_scope_hash="2" * 64,
         registry_id=UUID("11111111-1111-4111-8111-111111111111"),
         registry_revision=1,
         active_pointer_version=1,
@@ -515,8 +535,7 @@ async def test_post_inference_rights_denial_aborts_commit_after_recheck(
         deployment_event_id=UUID("44444444-4444-4444-8444-444444444444"),
         deployment_revision=1,
     )
-    gate_calls = 0
-    score_called = False
+    calls: list[str] = []
 
     class RuntimeTargetRepository:
         def __init__(self, _session) -> None:
@@ -550,17 +569,24 @@ async def test_post_inference_rights_denial_aborts_commit_after_recheck(
     async def persisted(*_args, **_kwargs):
         return None
 
-    async def gate(*_args, **_kwargs):
-        nonlocal gate_calls
-        gate_calls += 1
-        if gate_calls == 1:
+    async def gate(*_args: object, **_kwargs: object) -> str:
+        calls.append("authorize")
+        if len(calls) == 1:
             return "c" * 64
-        raise ScorerDecisionSourceRightsDenied("WP06_SCORER_JOB_SOURCE_REVOKED")
+        if rechecked_fingerprint is None:
+            raise ScorerDecisionSourceRightsDenied("WP06_SCORER_JOB_SOURCE_REVOKED")
+        return rechecked_fingerprint
 
-    async def scored(*_args, **_kwargs):
-        nonlocal score_called
-        score_called = True
-        return SimpleNamespace(decision=RuntimeScorerDecision.ABSTAIN, reason_code="LOW_CONFIDENCE")
+    async def scored(*_args: object, **_kwargs: object) -> SimpleNamespace:
+        calls.append("score")
+        return SimpleNamespace(
+            decision=RuntimeScorerDecision.ABSTAIN,
+            reason_code="LOW_CONFIDENCE",
+            class_probabilities=(),
+            probability=None,
+            confidence=None,
+            uncertainty=None,
+        )
 
     monkeypatch.setattr(module, "PostgresScorerRuntimeTargetRepository", RuntimeTargetRepository)
     monkeypatch.setattr(module, "stage_job_source_bars", staged)
@@ -576,7 +602,7 @@ async def test_post_inference_rights_denial_aborts_commit_after_recheck(
     monkeypatch.setattr(module, "feature_vector_is_out_of_distribution", lambda *_args: False)
     monkeypatch.setattr(module, "score_runtime_candidate_with_deadline", scored)
 
-    with pytest.raises(ScorerDeploymentRightsUnavailable, match="thu hồi"):
+    with pytest.raises(ScorerDeploymentRightsUnavailable, match=expected_error):
         await PostgresScorerRuntimeCommitter(PolicyProvider())(
             _Session(),  # type: ignore[arg-type]
             job,
@@ -584,5 +610,4 @@ async def test_post_inference_rights_denial_aborts_commit_after_recheck(
             incumbent,
         )
 
-    assert score_called is True
-    assert gate_calls == 2
+    assert calls == ["authorize", "score", "authorize"]
