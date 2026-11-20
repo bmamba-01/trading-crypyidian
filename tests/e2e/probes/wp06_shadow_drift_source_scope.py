@@ -11,15 +11,22 @@ from datetime import timedelta
 from pathlib import Path
 from uuid import UUID, uuid4
 
-from sqlalchemy import create_engine, func, insert, select, text
-from sqlalchemy.engine import URL
+from sqlalchemy import create_engine, func, insert, select, text, update
+from sqlalchemy.engine import URL, Connection, Engine
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from trading_bot.adapters.database.models.entities import Workspace
+from trading_bot.adapters.database.models.learning_source_bar_entities import (
+    BotDecisionSourceBarRecord,
+)
 from trading_bot.adapters.database.repositories.learning_drift import LearningDriftRepository
-from trading_bot.application.learning_drift import LearningDriftApplication
+from trading_bot.application.learning_drift import (
+    LearningDriftApplication,
+    LearningDriftMembershipConflict,
+)
 from trading_bot.domain.learning.drift import LearningDriftAssessment
+from trading_bot.domain.learning.shadow import ShadowModelReference
 
 sys.path.insert(0, "/e2e-tests")
 from e2e.probes.wp06_paper_performance_source_scope import _seed_qa_decision_source  # noqa: E402
@@ -152,8 +159,12 @@ async def _check_drift_application(
 
 
 def _seed_qa_shadow_observation(
-    connection, workspace_id: UUID, decision_id: UUID
-) -> tuple[UUID, UUID]:
+    connection: Connection,
+    workspace_id: UUID,
+    decision_id: UUID,
+    *,
+    challenger_model: ShadowModelReference | None = None,
+) -> tuple[ShadowModelReference, UUID]:
     """Seed observation synthetic chỉ mang lineage QA, không có receipt quyền."""
     from trading_bot.adapters.database.models.feature_entities import FeatureSnapshotRecord
     from trading_bot.adapters.database.models.learning_model_registry_entities import (
@@ -170,7 +181,6 @@ def _seed_qa_shadow_observation(
         IncumbentDecisionReference,
         IncumbentDecisionStatus,
         ShadowAbstainReason,
-        ShadowModelReference,
         ShadowObservation,
         ShadowSnapshotReference,
     )
@@ -209,11 +219,10 @@ def _seed_qa_shadow_observation(
         schema_hash="b" * 64,
         as_of=snapshot_as_of,
     )
-    challenger_registry_id = uuid4()
     observation_id = uuid4()
-    model = ShadowModelReference(
+    model = challenger_model or ShadowModelReference(
         workspace_id=workspace_id,
-        registry_id=challenger_registry_id,
+        registry_id=uuid4(),
         artifact_id=uuid4(),
         artifact_hash="c" * 64,
         manifest_hash="d" * 64,
@@ -295,24 +304,205 @@ def _seed_qa_shadow_observation(
             canonical_json="{}",
         )
     )
-    connection.execute(
-        insert(LearningModelRegistryRecord).values(
-            id=challenger_registry_id,
-            workspace_id=workspace_id,
-            artifact_id=model.artifact_id,
-            artifact_hash=model.artifact_hash,
-            manifest_hash=model.manifest_hash,
-            fold_plan_hash=model.fold_plan_hash,
-            approval_hash=model.training_approval_hash,
-            evaluation_report_id=None,
-            evaluation_report_hash=None,
-            state="evaluated",
-            revision=1,
-            created_by_membership_id=uuid4(),
+    if challenger_model is None:
+        connection.execute(
+            insert(LearningModelRegistryRecord).values(
+                id=model.registry_id,
+                workspace_id=workspace_id,
+                artifact_id=model.artifact_id,
+                artifact_hash=model.artifact_hash,
+                manifest_hash=model.manifest_hash,
+                fold_plan_hash=model.fold_plan_hash,
+                approval_hash=model.training_approval_hash,
+                evaluation_report_id=None,
+                evaluation_report_hash=None,
+                state="evaluated",
+                revision=1,
+                created_by_membership_id=uuid4(),
+            )
         )
-    )
     connection.execute(insert(LearningShadowObservationRecord).values(values))
-    return challenger_registry_id, observation_id
+    connection.execute(text("SET LOCAL session_replication_role = origin"))
+    return model, observation_id
+
+
+async def _check_membership_race(super_engine: Engine, observer_url: URL) -> dict[str, bool]:
+    """Kiểm rollback khi tập observation QA đổi trong lúc Drift chờ khóa nguồn."""
+    from trading_bot.adapters.database.models.learning_shadow_drift_entities import (
+        LearningDriftAssessmentMemberRecord,
+        LearningDriftAssessmentRecord,
+        LearningRetrainProposalRecord,
+    )
+
+    workspace_id = uuid4()
+    with super_engine.begin() as connection:
+        connection.execute(
+            insert(Workspace).values(
+                id=workspace_id,
+                name="WP06 QA membership race",
+                slug=f"wp06-qa-{workspace_id.hex}",
+                mode="PAPER",
+                status="ACTIVE",
+            )
+        )
+        first_decision_id, _ = _seed_qa_decision_source(connection, workspace_id, uuid4())
+        second_decision_id, _ = _seed_qa_decision_source(connection, workspace_id, uuid4())
+        # Helper seed dùng cùng ID snapshot mặc định cho cả hai quyết định giả lập.
+        connection.execute(
+            update(BotDecisionSourceBarRecord)
+            .where(
+                BotDecisionSourceBarRecord.workspace_id == workspace_id,
+                BotDecisionSourceBarRecord.bot_decision_id == second_decision_id,
+            )
+            .values(feature_snapshot_id=uuid4().hex + uuid4().hex)
+        )
+        model, first_observation_id = _seed_qa_shadow_observation(
+            connection, workspace_id, first_decision_id
+        )
+
+    source_id = "CRYPIDIAN_FIRST_PARTY_QA"
+    source_key = f"research-source:{workspace_id}:{source_id}"
+    member_key = f"wp06-learning-observation-member-set:{workspace_id}"
+    application_name = f"wp06-qa-membership-{workspace_id.hex}"
+    engine = create_async_engine(observer_url, connect_args={"application_name": application_name})
+    application = LearningDriftApplication(async_sessionmaker(engine))
+    scope = {
+        "workspace_id": workspace_id,
+        "challenger_registry_id": model.registry_id,
+        "challenger_revision": model.revision,
+    }
+    task = None
+    try:
+        with super_engine.begin() as fixture:
+            # Cho assessor lấy khóa registry và đọc tập ban đầu trước khi chờ nguồn.
+            for lock_key in (source_key, member_key):
+                fixture.execute(
+                    text(
+                        "SELECT pg_catalog.pg_advisory_xact_lock("
+                        "pg_catalog.hashtextextended(:lock_key, 0))"
+                    ),
+                    {"lock_key": lock_key},
+                )
+            _, second_observation_id = _seed_qa_shadow_observation(
+                fixture, workspace_id, second_decision_id, challenger_model=model
+            )
+            assert fixture.execute(text("SHOW session_replication_role")).scalar_one() == "origin"
+            blocker_pid = fixture.execute(text("SELECT pg_catalog.pg_backend_pid()")).scalar_one()
+            task = asyncio.create_task(application.assess_cohort(**scope))
+            # Dùng phiên autocommit để đọc trạng thái lock mới trong mỗi vòng.
+            with super_engine.connect().execution_options(isolation_level="AUTOCOMMIT") as monitor:
+                async with asyncio.timeout(10):
+                    while not monitor.execute(
+                        text(
+                            """
+                            SELECT EXISTS (
+                                SELECT 1
+                                FROM pg_catalog.pg_stat_activity AS observer
+                                JOIN pg_catalog.pg_locks AS wanted ON wanted.pid = observer.pid
+                                WHERE observer.application_name = :name
+                                  AND observer.usename = 'crypidian_learning_shadow_observer'
+                                  AND wanted.locktype = 'advisory' AND NOT wanted.granted
+                                  AND wanted.objsubid = 1
+                                  AND ((wanted.classid::bigint << 32) | wanted.objid::bigint)
+                                      = pg_catalog.hashtextextended(:source_key, 0)
+                                  AND :blocker = ANY(pg_catalog.pg_blocking_pids(observer.pid))
+                            )
+                            """
+                        ),
+                        {
+                            "blocker": blocker_pid,
+                            "name": application_name,
+                            "source_key": source_key,
+                        },
+                    ).scalar_one():
+                        if task.done():
+                            await task
+                            raise AssertionError("Drift đã kết thúc trước khi chờ khóa nguồn QA.")
+                        await asyncio.sleep(0.02)
+
+        try:
+            await asyncio.wait_for(task, timeout=10)
+        except LearningDriftMembershipConflict:
+            pass
+        else:
+            raise AssertionError("Drift chưa từ chối tập observation mới sau khi lấy khóa.")
+
+        with super_engine.connect() as connection:
+            for record in (
+                LearningDriftAssessmentRecord,
+                LearningDriftAssessmentMemberRecord,
+                LearningRetrainProposalRecord,
+            ):
+                assert (
+                    connection.scalar(
+                        select(func.count())
+                        .select_from(record)
+                        .where(record.workspace_id == workspace_id)
+                    )
+                    == 0
+                ), record.__tablename__
+
+        run = await asyncio.wait_for(application.assess_cohort(**scope), timeout=10)
+        assert run is not None
+        assert run.is_duplicate is False
+        assessment = run.assessment
+        expected_members = {first_observation_id, second_observation_id}
+        assert set(assessment.member_ids) == expected_members
+        assert assessment.member_count == 2
+        assert assessment.eligible_count == 0
+        assert assessment.data_quality_status.value == "inconclusive"
+        assert assessment.performance_status.value == "inconclusive"
+        assert "rights_unverified" in {reason.value for reason in assessment.reason_codes}
+        assert assessment.snapshot_coverage_rate is None
+        assert assessment.quality_rate is None
+        assert assessment.abstention_rate is None
+        assert run.proposal is None
+
+        duplicate = await asyncio.wait_for(application.assess_cohort(**scope), timeout=10)
+        assert duplicate is not None
+        assert duplicate.is_duplicate
+        assert duplicate.assessment.assessment_id == assessment.assessment_id
+        assert duplicate.proposal is None
+
+        with super_engine.connect() as connection:
+            assert connection.scalars(
+                select(LearningDriftAssessmentRecord.id).where(
+                    LearningDriftAssessmentRecord.workspace_id == workspace_id
+                )
+            ).all() == [assessment.assessment_id]
+            members = LearningDriftAssessmentMemberRecord.__table__
+            persisted_members = connection.execute(
+                select(members).where(members.c.workspace_id == workspace_id)
+            ).all()
+            assert len(persisted_members) == 2
+            assert {row.observation_id for row in persisted_members} == expected_members
+            for row in persisted_members:
+                assert row.assessment_id == assessment.assessment_id
+                assert row.eligible is False
+                assert row.current_eligible is False
+                assert row.current_rights_eligible is False
+                assert row.current_rights_fingerprint is None
+                assert row.current_source_ids == [source_id]
+            assert (
+                connection.scalar(
+                    select(func.count())
+                    .select_from(LearningRetrainProposalRecord)
+                    .where(LearningRetrainProposalRecord.workspace_id == workspace_id)
+                )
+                == 0
+            )
+
+        return {
+            "membership_race_rolls_back_drift_ledger": True,
+            "membership_race_retry_denies_both_qa_members": True,
+            "membership_race_retry_is_idempotent": True,
+        }
+    finally:
+        if task is not None:
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        await engine.dispose()
 
 
 def main() -> None:
@@ -347,7 +537,7 @@ def main() -> None:
                 )
             )
             decision_id, _ = _seed_qa_decision_source(connection, workspace_id, uuid4())
-            challenger_registry_id, observation_id = _seed_qa_shadow_observation(
+            challenger_model, observation_id = _seed_qa_shadow_observation(
                 connection, workspace_id, decision_id
             )
         with admin_engine.begin() as connection:
@@ -529,7 +719,7 @@ def main() -> None:
                 observer_engine.url,
                 workspace_id,
                 decision_id,
-                challenger_registry_id,
+                challenger_model.registry_id,
                 observation_id,
             )
         )
@@ -550,7 +740,9 @@ def main() -> None:
                 {"row": json.dumps(row), "members": json.dumps(members)},
             ).scalar_one()
             assert sql_hash == sample.content_hash
+        membership_race = asyncio.run(_check_membership_race(super_engine, observer_engine.url))
         outcome = {
+            **membership_race,
             "app_role_cannot_execute_scope_gates": role_isolated,
             "drift_qa_source_denied": drift_scope is None,
             "missing_assessment_recheck_false": missing_drift is False,

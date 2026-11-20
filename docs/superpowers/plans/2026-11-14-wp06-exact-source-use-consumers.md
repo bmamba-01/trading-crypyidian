@@ -119,3 +119,22 @@
 
 - [x] E2E PostgreSQL thu hồi source rights sau khi replay executor hoàn tất nhưng trước transaction persist; xác nhận recheck từ chối và sáu bảng kết quả/receipt giữ nguyên số dòng. `tests/e2e/test_wp07_rest_backfill_persistence.py`: **3 passed / 0 skipped / 50,97s**; Ruff, format và `git diff --check` đạt.
 - Phạm vi này chỉ đóng khoảng trống replay persistence của CRY-334; scorer lock-order, scope near-miss, performance cohort, Shadow/Drift mixed-member race và tích hợp regression vẫn mở. Kết quả chạy thuộc worktree đang mở với migration head `f6c8e0a2b4da`, chưa phải xác nhận regression trên `origin/dev` hiện tại.
+
+### Task 7: Race membership cohort Drift chỉ dùng QA để kiểm rollback
+
+**Phạm vi đã được người dùng chọn:** bổ sung một PostgreSQL E2E cho `LearningDriftApplication` khi tập member đổi trong lúc writer đang chờ khóa nguồn. Chỉ dùng lineage `CRYPIDIAN_FIRST_PARTY_QA` để chứng minh rollback/denial; không giả quyền PAPER non-QA, không tái dùng fixture WP06F, không khẳng định Shadow writer hay registry approval đã được kiểm chứng.
+
+**Cách đồng bộ:** fixture transaction giữ khóa source rồi member-set, cố ý không giữ registry-entry lock để assessor có thể đọc cohort ban đầu rồi chờ khóa source. Việc thêm observation qua fixture là thay đổi metadata chỉ dùng trong bài test; nó kiểm tra defensive membership recheck, không mô phỏng hay xác nhận đường append của Shadow production.
+
+**Tệp:**
+- Sửa: `tests/e2e/test_wp06_shadow_drift_source_scope.py`
+- Sửa: `tests/e2e/probes/wp06_shadow_drift_source_scope.py`
+- Sau kiểm chứng, cập nhật: WBS, `docs/implementation/06-ai-learning.md`, `docs/implementation/project-status.md`, `docs/implementation/implementation-memory.md`.
+
+- [x] Thêm kỳ vọng Compose cho thứ tự xác định: một QA observation đã commit; fixture transaction giữ khóa source rồi khóa member-set theo đúng thứ tự, seed observation QA thứ hai vào cùng registry/revision với `observed_at` trước khi assessor bắt đầu và commit sau khi `pg_blocking_pids` chứng minh assessor đang đợi khóa.
+- [x] Gọi `LearningDriftApplication.assess_cohort` thật bằng login observer; xác nhận lần đầu ném `LearningDriftMembershipConflict` và rollback để lại 0 assessment/member/proposal.
+- [x] Retry cohort ổn định qua application thật; xác nhận đủ 2 member, 0 eligible, `INCONCLUSIVE`, `rights_unverified`, không có metric khi rights chưa xác minh, không có proposal; lần retry idempotent trả cùng assessment ID và chỉ có một assessment cùng 2 member.
+- [x] Chạy `uv run pytest -q -rs --tb=short tests/e2e/test_wp06_shadow_drift_source_scope.py`, Ruff/format cho hai tệp E2E, và `git diff --check`; không skip.
+- [x] Ghi đúng giới hạn: đây là denial-only membership rollback proof trên fixture QA, không đóng mixed eligible/denied cohort, current-rights revoke/shrink race hay positive active journey cần quyền PAPER non-QA thật.
+
+Kiểm chứng trên nền `a976c5e29c26`, Alembic head `c6e8a0b2d4f9`. Unit Drift application/repository **20 passed / 0 skipped**, Compose E2E **1 passed / 0 skipped**, Ruff, format và diff-check đạt. CRY-334 giữ In Progress cho các ca chưa có bằng chứng. [Nhật ký kiểm chứng](../../implementation/implementation-memory.md#2026-11-20--cry-334-task-7-rollback-khi-tập-observation-drift-qa-thay-đổi).
