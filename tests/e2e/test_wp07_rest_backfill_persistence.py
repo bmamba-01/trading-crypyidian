@@ -17,7 +17,8 @@ from scripts.docker_image import build_image_reference, ensure_image_available
 PROBE_BOOTSTRAP = (
     "import json,os,sys,types;p=json.load(sys.stdin);"
     "os.environ.update(WP07B_STATE=json.dumps(p['state']),"
-    "WP07_IDENTITY_ONLY='1' if p['identity_only'] else '0');"
+    "WP07_IDENTITY_ONLY='1' if p['identity_only'] else '0',"
+    "WP07_REVOKE_BEFORE_PERSIST='1' if p['revoke_before_persist'] else '0');"
     "m=types.ModuleType('wp07_runtime_replay_fixture');"
     "sys.modules[m.__name__]=m;"
     "exec(compile(p['runtime_fixture'],'runtime_replay_fixture.py','exec'),m.__dict__);"
@@ -25,7 +26,9 @@ PROBE_BOOTSTRAP = (
 )
 
 
-def run_backfill_compose_probe(*, identity_only: bool) -> dict[str, Any]:
+def run_backfill_compose_probe(
+    *, identity_only: bool, revoke_before_persist: bool = False
+) -> dict[str, Any]:
     """Chạy probe WP07 trong PostgreSQL Compose tạm thời."""
     root = Path(__file__).parents[2]
     subprocess.run(
@@ -61,6 +64,7 @@ def run_backfill_compose_probe(*, identity_only: bool) -> dict[str, Any]:
         "workspace_id": str(uuid.uuid4()),
         "instrument_id": str(uuid.uuid4()),
         "now": datetime.now(UTC).isoformat(),
+        "revoke_before_persist": revoke_before_persist,
         "runtime_fixture": runtime_fixture,
     }
 
@@ -71,6 +75,7 @@ def run_backfill_compose_probe(*, identity_only: bool) -> dict[str, Any]:
                 "code": probe,
                 "runtime_fixture": runtime_fixture,
                 "identity_only": identity_only,
+                "revoke_before_persist": revoke_before_persist,
             }
         )
         result = compose(
@@ -95,60 +100,17 @@ def run_backfill_compose_probe(*, identity_only: bool) -> dict[str, Any]:
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "head")
         compose("run", "--rm", "--no-deps", "migrator", "alembic", "check")
         result = run_probe()
-        if not identity_only:
-
-            def downgrade_to(target: str) -> str:
-                attempt = subprocess.run(
-                    [*base, "run", "--rm", "--no-deps", "migrator", "alembic", "downgrade", target],
-                    cwd=root,
-                    env=environment,
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    timeout=300,
-                )
-                assert attempt.returncode != 0
-                return attempt.stdout + attempt.stderr
-
-            # SIG-0: bar có taker buy chặn downgrade của migration e3a5c7e9f1b4.
-            assert "SIG0_MARKET_BAR_TAKER_FLOW_DOWNGRADE_REQUIRES_EMPTY_COLUMNS" in downgrade_to(
-                "d2e4f6a8b0c1"
-            )
-            compose("run", "--rm", "--no-deps", "migrator", "alembic", "check")
-            # Xóa riêng các cột SIG-0 để kiểm tiếp guard WP07C phía dưới chuỗi migration.
-            cleared = compose(
-                "exec",
-                "--no-TTY",
-                "postgres",
-                "psql",
-                "-U",
-                "crypidian_admin",
-                "-d",
-                "crypidian",
-                "-Atc",
-                # market_bar append-only bằng trigger; chỉ fixture E2E tạm tắt trigger người dùng
-                # trong một transaction để dọn cột SIG-0 rồi bật lại ngay.
-                "BEGIN; ALTER TABLE public.market_bar DISABLE TRIGGER USER; "
-                "UPDATE public.market_bar SET trade_count = NULL, taker_buy_base_volume = NULL, "
-                "taker_buy_quote_volume = NULL WHERE trade_count IS NOT NULL; "
-                "ALTER TABLE public.market_bar ENABLE TRIGGER USER; COMMIT;",
-            )
-            # 2 nến backfill + 6 nến collector SIG-0 có trường taker, cộng nến backfill lịch sử
-            # AI-5 (số chính xác được probe kiểm riêng ở history_backfill_*).
-            updated = re.search(r"UPDATE (\d+)", cleared.stdout)
-            assert updated is not None, cleared.stdout
-            assert int(updated.group(1)) >= 8, cleared.stdout
+        if not identity_only and not revoke_before_persist:
             downgrade = subprocess.run(
-                base
-                + [
+                [
+                    *base,
                     "run",
                     "--rm",
                     "--no-deps",
                     "migrator",
                     "alembic",
                     "downgrade",
-                    "b1d3f5a7c9e2",
+                    "d2e4f6a8b0c1",
                 ],
                 cwd=root,
                 env=environment,
@@ -159,12 +121,20 @@ def run_backfill_compose_probe(*, identity_only: bool) -> dict[str, Any]:
                 timeout=300,
             )
             downgrade_output = downgrade.stdout + downgrade.stderr
-            assert downgrade.returncode != 0
-            # Từ WP06 (13/11/2026) seed phải có license evidence, nên guard của migration bằng
-            # chứng license (nằm trên WP07C trong chuỗi downgrade) chặn trước; guard WP07C được
-            # kiểm tĩnh trong tests/unit/test_sig0_taker_flow.py.
-            assert "WP06_LICENSE_EVIDENCE_DOWNGRADE_BLOCKED" in downgrade_output
-            compose("run", "--rm", "--no-deps", "migrator", "alembic", "check")
+            assert downgrade.returncode != 0, downgrade_output
+            # Head tích hợp hiện từ chối downgrade sớm do preimage AI-5 không khớp;
+            # guard SIG-0 bị che được kiểm riêng bằng unit trên migration gốc.
+            error_marker = re.search(
+                r"(?m)^[ \t]*psycopg\.errors\.RaiseException:[ \t]+"
+                r"AI5_COHORT_PREIMAGE_UNEXPECTED[ \t]*$",
+                downgrade_output,
+            )
+            assert error_marker is not None, downgrade_output[:3000]
+        current = compose("run", "--rm", "--no-deps", "migrator", "alembic", "current")
+        assert re.fullmatch(r"c6e8a0b2d4f9 \(head\)(?: \(mergepoint\))?", current.stdout.strip()), (
+            current.stdout
+        )
+        compose("run", "--rm", "--no-deps", "migrator", "alembic", "check")
         return result
     finally:
         cleanup = subprocess.run(
@@ -246,3 +216,12 @@ def test_backfill_manifest_v4_replay_loader_verifies_source_identity() -> None:
         "multiframe_manifests_v4": True,
         "multiframe_bundle_loader_preserved_identity": True,
     }
+
+
+def test_replay_revocation_after_execution_prevents_outcome_persistence() -> None:
+    result = run_backfill_compose_probe(identity_only=False, revoke_before_persist=True)
+
+    assert result["replay_executed_before_revocation"] is True
+    assert result["executed_replay_runs"] == 2, result
+    assert result["persist_denied_after_revocation"] is True, result
+    assert result["outcome_counts_after"] == result["outcome_counts_before"] == [0] * 6

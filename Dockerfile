@@ -22,7 +22,7 @@ COPY scripts/provision_mfa_secret_volume.py ./scripts/provision_mfa_secret_volum
 COPY alembic.ini ./alembic.ini
 COPY migrations ./migrations
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev \
+    UV_COMPILE_BYTECODE=0 uv sync --frozen --no-dev \
     && groupadd --gid 10001 trading-bot \
     && useradd --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin trading-bot
 

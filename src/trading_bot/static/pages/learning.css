@@ -282,8 +282,118 @@
 .lx-table th.num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .lx-table time { white-space: nowrap; font-variant-numeric: tabular-nums; }
 .lx-table .lx-sub { display: block; font-size: var(--fs-2xs); color: var(--text-muted); }
+.lx-table--scoring-history { min-width: 0; table-layout: fixed; }
+@media (min-width: 768px) {
+  .lx-table--scoring-history { min-width: 1060px; }
+  .lx-table--scoring-history th:last-child,
+  .lx-table--scoring-history td:last-child { width: 20rem; }
+}
+.lx-table--scoring-history th,
+.lx-table--scoring-history td,
+.lx-table--scoring-history time,
+.lx-table--scoring-history .lx-mono {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.lx-table--scoring-history th.num { white-space: normal; }
+.paper-entry-block-cell { vertical-align: top !important; min-width: 0; }
+.paper-entry-block-confirm { display: grid; gap: 0.55rem; min-width: 0; }
+.paper-entry-block-confirm > summary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0.45rem 0.65rem;
+  white-space: normal;
+  text-align: center;
+  cursor: pointer;
+}
+.paper-entry-block-confirm > summary:focus-visible,
+.paper-entry-block-form button:focus-visible,
+.paper-entry-block-confirm input:focus-visible,
+.paper-entry-block-confirm textarea:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.paper-entry-block-form { margin-block: 0.55rem; min-width: 0; }
+.paper-entry-block-form textarea {
+  width: 100%;
+  min-height: 5.5rem;
+  padding: 0.6rem 0.7rem;
+  border: 1px solid var(--glass-border);
+  background: var(--bg-surface-subtle);
+  color: var(--text-main);
+  font: inherit;
+  line-height: 1.45;
+  resize: vertical;
+}
+.paper-entry-block-mfa,
+.paper-entry-block-audit__title {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.4rem;
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+}
+.paper-entry-block-mfa svg,
+.paper-entry-block-audit__title svg { flex: 0 0 auto; width: 1rem; height: 1rem; }
+.paper-entry-block-confirm-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.55rem;
+  min-width: 0;
+  min-height: 44px;
+  padding: 0.55rem;
+  border: 1px solid var(--glass-border);
+  border-radius: 0.55rem;
+  background: var(--bg-surface-subtle);
+}
+.paper-entry-block-confirm-check input {
+  flex: 0 0 auto;
+  width: 1.15rem;
+  height: 1.15rem;
+  min-width: 1.15rem;
+  min-height: 1.15rem;
+  margin-top: 0.15rem;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  accent-color: var(--danger);
+}
+.paper-entry-block-confirm-check label {
+  min-width: 0;
+  cursor: pointer;
+  color: var(--text-main);
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.paper-entry-block-form .lx-form__actions > button { min-height: 44px; }
+.paper-entry-block-form [data-paper-block-cancel] { margin-left: auto; }
+.paper-entry-block-audit {
+  display: grid;
+  gap: 0.4rem;
+  min-width: 0;
+  padding: 0.6rem;
+  border: 1px solid color-mix(in srgb, var(--danger) 40%, var(--glass-border));
+  border-left: 3px solid var(--danger);
+  border-radius: 0.55rem;
+  background: var(--danger-bg);
+}
+.paper-entry-block-audit__title { color: var(--danger-text); font-weight: 700; }
+.paper-entry-block-audit dl { display: grid; gap: 0.3rem; margin: 0; min-width: 0; }
+.paper-entry-block-audit dl > div { min-width: 0; }
+.paper-entry-block-audit dt { color: var(--text-muted); font-size: var(--fs-2xs); }
+.paper-entry-block-audit dd { margin: 0; color: var(--text-main); font-size: var(--fs-xs); overflow-wrap: anywhere; }
+.paper-entry-block-audit__reason dd { white-space: pre-wrap; }
 @media (max-width: 767.98px) {
   .lx-table-wrap { border: 0; overflow: visible; }
+  .lx-table--scoring-history { min-width: 0; max-width: 100%; }
   .lx-table thead {
     position: absolute;
     width: 1px;
@@ -295,6 +405,7 @@
   .lx-table tbody,
   .lx-table tr,
   .lx-table td { display: block; width: 100%; }
+  .lx-table--scoring-history td:last-child { width: 100%; }
   .lx-table tr {
     margin-bottom: 0.5rem;
     padding: 0.45rem 0.7rem;
@@ -320,6 +431,15 @@
     text-align: left;
   }
   .lx-table td > * { min-width: 0; }
+  .lx-table--scoring-history td.paper-entry-block-cell { display: block; }
+  .lx-table--scoring-history td.paper-entry-block-cell::before {
+    display: block;
+    margin-bottom: 0.45rem;
+  }
+  .paper-entry-block-cell { padding-top: 0.4rem !important; }
+  .paper-entry-block-confirm > summary { width: 100%; }
+  .paper-entry-block-form [data-paper-block-cancel] { margin-left: 0; }
+  .paper-entry-block-audit { padding: 0.55rem; }
 }
 
 /* ---------- Biểu mẫu gọn (MFA, lý do) ---------- */

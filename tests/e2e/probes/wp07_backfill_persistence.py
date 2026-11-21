@@ -718,6 +718,8 @@ async def _exercise() -> dict[str, Any]:
     replay_manifest = manifest_comparison.runs[0].sensitivity_run.manifest
     execution_clock = [NOW]
     executor_calls = 0
+    executor_completed = False
+    executed_replay_runs = 0
     fail_second_outcome = [True]
 
     def bundle_loader_factory(uow):
@@ -752,7 +754,7 @@ async def _exercise() -> dict[str, Any]:
         return FailSecondChild()
 
     def execute_runtime(bundle, manifest, *, progress_callback=None, cancel_requested=None):
-        nonlocal executor_calls
+        nonlocal executor_calls, executor_completed, executed_replay_runs
         if progress_callback is not None and not callable(progress_callback):
             raise AssertionError("Callback tiến độ replay không hợp lệ.")
         if cancel_requested is not None and not callable(cancel_requested):
@@ -768,6 +770,8 @@ async def _exercise() -> dict[str, Any]:
             or comparison.runs[0].sensitivity_run.manifest != manifest
         ):
             raise AssertionError("Runtime H01 không dùng đúng bundle/manifest service đã nạp.")
+        executed_replay_runs = len(comparison.runs)
+        executor_completed = True
         return comparison
 
     replay_service = BacktestDatasetReplayExecutionService(
@@ -784,6 +788,73 @@ async def _exercise() -> dict[str, Any]:
         executor=execute_runtime,
         clock=lambda: execution_clock[0],
     )
+
+    async def revoke_source_rights() -> None:
+        async with UnitOfWork(sessions, workspace_id=WORKSPACE_ID) as uow:
+            revoked_observation = await SourceRegistryRepository(uow.session).get_observed_entry(
+                workspace_id=WORKSPACE_ID,
+                source_id="BINANCE_USDM_REST",
+            )
+            if revoked_observation is None:
+                raise AssertionError("Source policy trước khi thu hồi không có observer receipt.")
+            database_now = await SourceRegistryRepository(uow.session).database_clock(
+                workspace_id=WORKSPACE_ID
+            )
+            revoked_history = revoked_observation.history.transition(
+                policy_id="BINANCE_USDM_REST:fixture-revoked",
+                state=SourcePolicyState.REVOKED,
+                actor_id="fixture-operator",
+                at=database_now + timedelta(seconds=1),
+                reason="Thu hồi quyền dữ liệu của fixture replay.",
+            )
+            await SourceRegistryRepository(uow.session).append_revision(
+                workspace_id=WORKSPACE_ID,
+                revision=revoked_history.current,
+            )
+        async with UnitOfWork(sessions, workspace_id=WORKSPACE_ID) as uow:
+            await SourceRegistryRepository(uow.session).finalize_policy(
+                workspace_id=WORKSPACE_ID,
+                source_id="BINANCE_USDM_REST",
+                policy_id="BINANCE_USDM_REST:fixture-revoked",
+            )
+
+    if os.environ.get("WP07_REVOKE_BEFORE_PERSIST") == "1":
+        fail_second_outcome[0] = False
+        phases = []
+
+        async def revoke_before_persist(phase: str) -> None:
+            if phase == "persist":
+                assert executor_calls == 1, "Replay executor chưa được gọi đúng một lần."
+                assert executor_completed, "Replay executor phải hoàn tất trước khi thu hồi quyền."
+                assert executed_replay_runs == 2, (
+                    "Replay phải trả đủ hai scenario trước khi thu hồi."
+                )
+                await revoke_source_rights()
+            phases.append(phase)
+
+        async with UnitOfWork(sessions, workspace_id=WORKSPACE_ID) as uow:
+            outcome_counts_before = await read_outcome_counts(uow)
+        persist_denied = False
+        try:
+            await replay_service.execute(
+                workspace_id=WORKSPACE_ID,
+                bundle_hash=multi_timeframe_bundle.dataset_hash,
+                manifest=replay_manifest,
+                phase_callback=revoke_before_persist,
+            )
+        except PermissionError:
+            persist_denied = True
+        async with UnitOfWork(sessions, workspace_id=WORKSPACE_ID) as uow:
+            outcome_counts_after = await read_outcome_counts(uow)
+        return {
+            "replay_executed_before_revocation": phases == ["load", "replay", "persist"]
+            and executor_calls == 1
+            and executor_completed,
+            "executed_replay_runs": executed_replay_runs,
+            "persist_denied_after_revocation": persist_denied,
+            "outcome_counts_before": list(outcome_counts_before),
+            "outcome_counts_after": list(outcome_counts_after),
+        }
 
     failed_persist_rolled_back = False
     try:
@@ -1408,33 +1479,7 @@ async def _exercise() -> dict[str, Any]:
         ).all()
     history_times = [row[0] for row in history_rows]
 
-    async with UnitOfWork(sessions, workspace_id=WORKSPACE_ID) as uow:
-        revoked_observation = await SourceRegistryRepository(uow.session).get_observed_entry(
-            workspace_id=WORKSPACE_ID,
-            source_id="BINANCE_USDM_REST",
-        )
-        if revoked_observation is None:
-            raise AssertionError("Source policy sau revoke không có observer receipt.")
-        database_now = await SourceRegistryRepository(uow.session).database_clock(
-            workspace_id=WORKSPACE_ID
-        )
-        revoked_history = revoked_observation.history.transition(
-            policy_id="BINANCE_USDM_REST:fixture-revoked",
-            state=SourcePolicyState.REVOKED,
-            actor_id="fixture-operator",
-            at=database_now + timedelta(seconds=1),
-            reason="Thu hồi fixture sau khi tạo manifest.",
-        )
-        await SourceRegistryRepository(uow.session).append_revision(
-            workspace_id=WORKSPACE_ID,
-            revision=revoked_history.current,
-        )
-    async with UnitOfWork(sessions, workspace_id=WORKSPACE_ID) as uow:
-        await SourceRegistryRepository(uow.session).finalize_policy(
-            workspace_id=WORKSPACE_ID,
-            source_id="BINANCE_USDM_REST",
-            policy_id="BINANCE_USDM_REST:fixture-revoked",
-        )
+    await revoke_source_rights()
 
     replay_denied_after_revoke = False
     async with UnitOfWork(sessions, workspace_id=WORKSPACE_ID) as uow:

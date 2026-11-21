@@ -340,6 +340,7 @@ async def test_snapshot_recheck_denial_never_loads_report_payload(
 async def test_denied_aggregate_does_not_insert_report(monkeypatch: pytest.MonkeyPatch) -> None:
     session = _Session()
     _install_uow(monkeypatch, session)
+    calls: list[str] = []
     target = SimpleNamespace(
         target=SimpleNamespace(
             scorer_artifact_id=uuid4(),
@@ -369,12 +370,27 @@ async def test_denied_aggregate_does_not_insert_report(monkeypatch: pytest.Monke
             pass
 
         async def get_idempotency_reference(self, **_kwargs: object) -> None:
+            calls.append("idempotency-reference")
             return None
 
         async def aggregate_active_target(self, **_kwargs: object) -> None:
+            calls.append("aggregate")
             raise PaperPerformanceAggregateUnavailable("current rights denied")
 
+        async def get_snapshot_reference(self, **_kwargs: object) -> None:
+            calls.append("snapshot-reference")
+            return None
+
+        async def report_current_rights(self, **_kwargs: object) -> bool:
+            calls.append("report-rights")
+            return True
+
+        async def get_report_by_id(self, **_kwargs: object) -> object:
+            calls.append("report-payload")
+            return object()
+
         async def insert(self, report: object) -> object:
+            calls.append("insert")
             inserted.append(report)
             return report
 
@@ -387,4 +403,5 @@ async def test_denied_aggregate_does_not_insert_report(monkeypatch: pytest.Monke
     with pytest.raises(PaperPerformanceAggregateUnavailable):
         await service.assess(bot_id=BOT_ID, idempotency_key=uuid4())
 
+    assert calls == ["idempotency-reference", "aggregate"]
     assert inserted == []

@@ -47,7 +47,7 @@ def test_shadow_drift_source_scope_denies_qa_without_license_fixture() -> None:
             compose("run", "--rm", "--no-deps", "migrator", "alembic", "upgrade", "head")
             heads = compose("run", "--rm", "--no-deps", "migrator", "alembic", "heads")
             assert heads.stdout.count("(head)") == 1
-            assert "a9c7e5f3d1b2 (head)" in heads.stdout
+            assert "c6e8a0b2d4f9 (head)" in heads.stdout
             admin_secret = (
                 resources.compose_file.parent / ".secrets" / ("database_admin_web_password")
             )
@@ -80,10 +80,18 @@ def test_shadow_drift_source_scope_denies_qa_without_license_fixture() -> None:
                 "missing_assessment_recheck_false": True,
                 "missing_decision_denied": True,
                 "missing_observation_recheck_false": True,
+                "membership_race_rolls_back_drift_ledger": True,
+                "membership_race_retry_denies_both_qa_members": True,
+                "membership_race_retry_is_idempotent": True,
+                "nonempty_qa_assessment_has_no_performance_result": True,
+                "nonempty_qa_assessment_retry_is_idempotent": True,
+                "nonempty_qa_member_is_ineligible_without_fingerprint": True,
                 "observer_can_execute_shadow_source_gate": True,
+                "observer_drift_qa_source_denied": True,
                 "observer_qa_source_is_explicit": True,
                 "observer_shadow_qa_source_denied": True,
                 "qa_source_is_explicit": True,
+                "shadow_guard_can_execute_current_scope_and_digest": True,
                 "shadow_qa_source_denied": True,
             }
         finally:

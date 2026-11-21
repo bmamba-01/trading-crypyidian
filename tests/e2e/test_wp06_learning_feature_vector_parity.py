@@ -36,8 +36,10 @@ class ComposeParityResources:
 
 
 @contextmanager
-def isolated_compose_resources(root: Path) -> Iterator[ComposeParityResources]:
-    """Tạo secrets riêng; mọi đường dẫn khác vẫn resolve theo repository gốc."""
+def isolated_compose_resources(
+    root: Path, *, postgres_tmpfs: bool = False
+) -> Iterator[ComposeParityResources]:
+    """Tạo secrets riêng và tùy chọn lưu PostgreSQL tạm trong Compose E2E."""
     run_id = uuid.uuid4().hex
     with TemporaryDirectory(prefix=f"crypidian-c11-{run_id}-") as directory:
         run_directory = Path(directory)
@@ -48,12 +50,19 @@ def isolated_compose_resources(root: Path) -> Iterator[ComposeParityResources]:
             check=True,
         )
         compose_file = run_directory / "compose.yaml"
-        compose_file.write_text(
-            (root / "compose.yaml")
-            .read_text(encoding="utf-8")
-            .replace("./.secrets/", f"{run_directory / '.secrets'}/"),
-            encoding="utf-8",
-        )
+        compose_content = (root / "compose.yaml").read_text(encoding="utf-8")
+        compose_content = compose_content.replace("./.secrets/", f"{run_directory / '.secrets'}/")
+        if postgres_tmpfs:
+            persistent_mount = "    volumes:\n      - postgres_data:/var/lib/postgresql\n"
+            if compose_content.count(persistent_mount) != 1:
+                raise ValueError("Không tìm thấy volume PostgreSQL duy nhất trong compose.yaml.")
+            # Không đặt mode để Docker cấp quyền thư mục mặc định mà healthcheck cần.
+            compose_content = compose_content.replace(
+                persistent_mount,
+                "    tmpfs:\n      - /var/lib/postgresql\n",
+                1,
+            )
+        compose_file.write_text(compose_content, encoding="utf-8")
         yield ComposeParityResources(
             run_id=run_id,
             project=f"crypidian-wp06-vector-parity-e2e-{run_id}",

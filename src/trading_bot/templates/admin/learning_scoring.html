@@ -103,8 +103,8 @@
         <section class="glass-card lx-card" aria-labelledby="learning-scoring-history-heading">
           <h2 id="learning-scoring-history-heading">Lịch sử điểm chấm</h2>
           {% if score_event_rows %}
-            <div class="lx-table-wrap">
-              <table class="lx-table" aria-label="Sự kiện điểm chấm, trang {{ score_event_page.page }}">
+            <div class="lx-table-wrap" tabindex="0" role="region" aria-label="Lịch sử điểm chấm; bảng có thể cuộn ngang trên màn hình lớn">
+              <table class="lx-table lx-table--scoring-history" aria-label="Sự kiện điểm chấm, trang {{ score_event_page.page }}">
                 <thead>
                   <tr>
                     <th scope="col">Thời điểm</th>
@@ -115,6 +115,7 @@
                     <th scope="col" class="num">Độ bất định</th>
                     <th scope="col">Mã lý do</th>
                     <th scope="col">Mã sự kiện</th>
+                    <th scope="col">Thao tác PAPER</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -128,6 +129,48 @@
                       <td data-label="Độ bất định" class="num">{% if item.uncertainty is not none %}{{ item.uncertainty }}{% else %}<span class="value-muted">—</span>{% endif %}</td>
                       <td data-label="Mã lý do">{% if item.reason_code %}<code class="lx-mono">{{ item.reason_code }}</code>{% else %}<span class="value-muted">—</span>{% endif %}</td>
                       <td data-label="Mã sự kiện"><code class="lx-mono">{{ item.event_id_short }}</code></td>
+                      <td data-label="Thao tác PAPER" class="paper-entry-block-cell">
+                        {% if item.paper_entry_block %}
+                          <section class="paper-entry-block-audit" aria-label="Lịch sử chặn entry PAPER">
+                            <p class="paper-entry-block-audit__title">{{ icon("ban") }}Entry PAPER bị chặn thủ công</p>
+                            <dl>
+                              <div><dt>Người thực hiện</dt><dd><code class="lx-mono">{{ item.paper_block_actor_user_id_short }}</code></dd></div>
+                              <div><dt>Thời điểm ghi</dt><dd><time datetime="{{ item.paper_entry_block.created_at.isoformat() }}">{{ item.paper_entry_block.created_at.strftime("%d/%m/%Y %H:%M UTC") }}</time></dd></div>
+                              <div><dt>TOTP gần nhất</dt><dd><time datetime="{{ item.paper_entry_block.mfa_verified_at.isoformat() }}">{{ item.paper_entry_block.mfa_verified_at.strftime("%d/%m/%Y %H:%M UTC") }}</time></dd></div>
+                              <div class="paper-entry-block-audit__reason"><dt>Lý do</dt><dd>{{ item.paper_entry_block.reason }}</dd></div>
+                            </dl>
+                          </section>
+                        {% elif item.can_block_paper_entry %}
+                          <details class="paper-entry-block-confirm">
+                            <summary class="btn btn-outline-danger">Chặn entry PAPER</summary>
+                            <form class="lx-form paper-entry-block-form"
+                              action="/admin/learning/scoring/events/{{ item.event_id }}/paper-block"
+                              method="post"
+                              data-csrf-token="{{ csrf_token or '' }}"
+                              data-score-event-id="{{ item.event_id }}">
+                              <p class="lx-help">Quyết định gốc của scorer vẫn là “Duyệt ứng viên”. Lệnh này chỉ chặn entry mới cho quyết định đó; không hủy OrderIntent đã gửi và không đổi vị thế đang mở.</p>
+                              <div class="lx-field">
+                                <label for="paper-entry-block-reason-{{ item.event_id }}">Lý do chặn <span aria-hidden="true">*</span></label>
+                                <textarea id="paper-entry-block-reason-{{ item.event_id }}" name="reason" minlength="1" maxlength="500" aria-describedby="paper-entry-block-reason-help-{{ item.event_id }}" required></textarea>
+                                <p id="paper-entry-block-reason-help-{{ item.event_id }}" class="lx-help">Nhập từ 1 đến 500 ký tự. Máy chủ sẽ chuẩn hóa khoảng trắng và kiểm tra lại target scorer.</p>
+                              </div>
+                              <p class="paper-entry-block-mfa">{{ icon("shield") }}Phiên này đã xác thực TOTP gần đây. Máy chủ kiểm tra lại thời hạn MFA trước khi ghi.</p>
+                              <div class="paper-entry-block-confirm-check">
+                                <input id="paper-entry-block-confirm-{{ item.event_id }}" type="checkbox" name="confirm" value="true" required>
+                                <label for="paper-entry-block-confirm-{{ item.event_id }}">Tôi xác nhận chặn entry PAPER cho quyết định này.</label>
+                              </div>
+                              <div class="lx-form__actions">
+                                <button class="btn btn-danger" type="submit">Xác nhận chặn</button>
+                                <button class="btn btn-secondary" type="button" data-paper-block-cancel>Hủy</button>
+                              </div>
+                              <p class="lx-error paper-entry-block-error" role="alert" aria-live="assertive" tabindex="-1" hidden></p>
+                              <p class="lx-status paper-entry-block-status" role="status" aria-live="polite" hidden></p>
+                            </form>
+                          </details>
+                        {% else %}
+                          <span class="value-muted">Không đủ điều kiện chặn</span>
+                        {% endif %}
+                      </td>
                     </tr>
                   {% endfor %}
                 </tbody>
@@ -145,7 +188,7 @@
           {% else %}
             <p class="lx-empty" id="learning-scoring-no-events">{{ icon("info") }}Chưa có sự kiện điểm chấm trong không gian làm việc này.</p>
           {% endif %}
-          <p class="lx-help">Lịch sử chỉ đọc các trường điểm và mã lý do đã được cho phép; không tải vectơ, giá trị đặc trưng, nhãn, mẫu TEST hoặc payload canonical.</p>
+          <p class="lx-help">Lịch sử chỉ đọc metadata scorer đã cho phép; quyết định scorer và audit operator được lưu riêng. Trang không tải vectơ, giá trị đặc trưng, nhãn, mẫu TEST hoặc payload canonical.</p>
         </section>
 
       </div>
@@ -202,33 +245,6 @@
             <p class="lx-help">Nếu phiên bản đã thay đổi hoặc quyền bị thu hồi, hãy tải lại trang để nhận trạng thái mới rồi gửi lại yêu cầu.</p>
           </form>
           <p id="learning-scoring-status" class="lx-status" role="status" aria-live="polite" hidden></p>
-        </section>
-        <section class="lx-card" aria-labelledby="operator-paper-blocks-heading">
-          <h2 id="operator-paper-blocks-heading">Nhật ký chặn thêm PAPER entry (MFA)</h2>
-          {% if operator_blocks %}
-            <div class="table-wrap">
-              <table class="data-table">
-                <thead>
-                  <tr>
-                    <th>Thời điểm</th>
-                    <th>Mã quyết định</th>
-                    <th>Lý do</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {% for blk in operator_blocks %}
-                    <tr>
-                      <td>{{ blk.created_at.strftime("%d/%m/%Y %H:%M") if blk.created_at else "" }}</td>
-                      <td><code>{{ blk.bot_decision_id }}</code></td>
-                      <td>{{ blk.reason }}</td>
-                    </tr>
-                  {% endfor %}
-                </tbody>
-              </table>
-            </div>
-          {% else %}
-            <p class="lx-help">Chưa có quyết định PAPER nào bị owner/risk-admin chặn thêm.</p>
-          {% endif %}
         </section>
       </div>
     </div>

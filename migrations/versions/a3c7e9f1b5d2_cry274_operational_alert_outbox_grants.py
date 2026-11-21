@@ -15,7 +15,7 @@ Consumer ``telegram_operational_alert_worker`` chạy trong process signal-worke
 Không cấp quyền ghi control/ledger; không mở rộng quyền admin-web. Downgrade thu hồi đủ.
 
 Revision ID: a3c7e9f1b5d2
-Revises: c9d1e3f5a7b4
+Revises: c6e8a0b2d4f9
 Create Date: 2026-11-20
 """
 
@@ -26,7 +26,7 @@ from collections.abc import Sequence
 from alembic import op
 
 revision: str = "a3c7e9f1b5d2"
-down_revision: str | Sequence[str] | None = "c9d1e3f5a7b4"
+down_revision: str | Sequence[str] | None = "c6e8a0b2d4f9"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

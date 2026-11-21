@@ -22,7 +22,11 @@ BUDGET = SourceBudget(timedelta(hours=1), 3, 1000, Decimal("1"), "USD")
 
 def principal(role=Role.OWNER, *, user=None, membership=None, mfa=None):
     return Principal(
-        user or uuid4(), membership or uuid4(), WORKSPACE, frozenset({role}), mfa or NOW
+        user or uuid4(),
+        membership or uuid4(),
+        WORKSPACE,
+        frozenset({role}),
+        datetime.now(UTC) if mfa is None else mfa,
     )
 
 

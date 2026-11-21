@@ -371,7 +371,7 @@ def test_unauthenticated_and_empty_role_denied_by_default(method: str, path: str
         (
             Role.ANALYST_REVIEWER,
             "POST",
-            f"/admin/learning/scoring/decisions/{RESOURCE_ID}/block-paper-entry",
+            f"/admin/learning/scoring/events/{RESOURCE_ID}/paper-block",
             403,
         ),
         # Settings: chỉ OWNER và STRATEGY_ADMIN

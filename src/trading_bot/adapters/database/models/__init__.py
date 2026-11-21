@@ -127,6 +127,9 @@ from trading_bot.adapters.database.models.learning_score_event_entities import (
 from trading_bot.adapters.database.models.learning_scorer_artifact_entities import (
     LearningScorerArtifactRecord,
 )
+from trading_bot.adapters.database.models.learning_scorer_paper_entry_block_entities import (
+    LearningPaperEntryBlockRecord,
+)
 from trading_bot.adapters.database.models.learning_scorer_test_access_entities import (
     LearningScorerTestAccessReceiptRecord,
     LearningScorerTestEvaluationReportRecord,
@@ -281,6 +284,7 @@ __all__ = [
     "LearningTrainingAccessReceiptRecord",
     "LearningTrainingArtifactRecord",
     "LearningScorerArtifactRecord",
+    "LearningPaperEntryBlockRecord",
     "LearningScoreEventRecord",
     "LearningScoringDeploymentEventRecord",
     "LearningScoringDeploymentPointerRecord",

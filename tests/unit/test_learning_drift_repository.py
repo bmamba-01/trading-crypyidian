@@ -106,6 +106,17 @@ def test_transaction_clock_is_postgres_transaction_timestamp() -> None:
     assert "clock_timestamp" not in sql
 
 
+def test_current_source_scope_uses_database_timed_observer_gate() -> None:
+    statement = LearningDriftRepository.source_scope_fingerprint_statement(
+        workspace_id=WORKSPACE_ID,
+        decision_id=uuid4(),
+    )
+    sql = str(statement.compile(dialect=postgresql.dialect())).lower()
+
+    assert "wp06_authorize_learning_drift_source_scope_current" in sql
+    assert "checked_at" not in sql
+
+
 def test_server_policy_cannot_be_overridden_by_request_values() -> None:
     policy = LearningDriftRepository.server_policy()
 

@@ -122,7 +122,7 @@ def test_report_renders_authoritative_metrics_separately_per_asset() -> None:
     assert 'data-pnl-tone="negative"' in page.text
     assert "pnl-value--positive" in page.text
     assert "pnl-value--negative" in page.text
-    assert "+12,345 USDT" in page.text
+    assert '+12,35<span class="asset-usdt"' in page.text
     assert "Asia/Ho_Chi_Minh" in page.text
     assert "01/10/2026 07:00:00" in page.text
     assert "<summary>Dữ liệu kỹ thuật JSON</summary>" in page.text

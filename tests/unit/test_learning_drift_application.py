@@ -100,11 +100,6 @@ class _FakeShadowRepository:
         self.calls.append("member_set_lock")
         assert workspace_id == WORKSPACE_ID
 
-    async def authorization_clock(self, *, workspace_id: UUID) -> datetime:
-        self.calls.append("authorization_clock")
-        assert workspace_id == WORKSPACE_ID
-        return NOW + timedelta(minutes=2)
-
 
 class _FakeDriftRepository:
     def __init__(
@@ -140,12 +135,11 @@ class _FakeDriftRepository:
         assert (workspace_id, registry_id) == (WORKSPACE_ID, REGISTRY_ID)
 
     async def authorize_current_source_scope(
-        self, *, workspace_id: UUID, decision_id: UUID, checked_at: datetime
+        self, *, workspace_id: UUID, decision_id: UUID
     ) -> str | None:
         self.calls.append("current_scope")
         assert workspace_id == WORKSPACE_ID
         assert type(decision_id) is UUID
-        assert checked_at == NOW + timedelta(minutes=2)
         return None if decision_id in self.denied_decision_ids else self.fingerprint
 
     async def list_cohort(
@@ -254,6 +248,7 @@ async def test_detected_assessment_revalidates_then_locks_and_persists_proposal(
     assert calls.index("find_assessment") < calls.index("persist")
     assert calls.count("source_ids") == 6
     assert calls.count("current_scope") == 3
+    assert "authorization_clock" not in calls
     assert result.assessment.policy_version == "coverage-v2-30d"
     assert result.assessment.data_quality_status.value == "detected"
     assert result.assessment.performance_status.value == "inconclusive"

@@ -61,6 +61,9 @@ from trading_bot.admin.learning_model_registry_router import (
 from trading_bot.admin.learning_observations_page_router import (
     router as learning_observations_page_router,
 )
+from trading_bot.admin.learning_paper_entry_block_router import (
+    router as learning_paper_entry_block_router,
+)
 from trading_bot.admin.learning_paper_performance_router import (
     router as learning_paper_performance_router,
 )
@@ -107,6 +110,7 @@ from trading_bot.application.learning_model_registry import LearningModelRegistr
 from trading_bot.application.learning_observations_admin import (
     LearningObservationsAdminService,
 )
+from trading_bot.application.learning_paper_entry_block import LearningPaperEntryBlockService
 from trading_bot.application.learning_paper_performance import LearningPaperPerformanceService
 from trading_bot.application.learning_scorer_report_read_model import ScorerReportReadModel
 from trading_bot.application.learning_scorer_score_event_read_model import (
@@ -123,7 +127,6 @@ from trading_bot.application.market_scanner import MarketScannerService
 from trading_bot.application.market_signal_composition import build_market_signal_scanner
 from trading_bot.application.operational_alert_outbox import OperationalAlertOutboxConsumer
 from trading_bot.application.operational_telemetry import OperationalHealthService
-from trading_bot.application.paper_entry_operator_block import PaperEntryOperatorBlockService
 from trading_bot.application.paper_runtime_application import (
     PaperBotDecisionCommand,
     PaperRuntimeApplicationService,
@@ -547,6 +550,11 @@ def create_app(
                 if active_scorer_history_sessions is not None
                 else None
             )
+            application.state.learning_paper_entry_block_service = (
+                LearningPaperEntryBlockService(active_session_factory)
+                if active_session_factory is not None
+                else None
+            )
             application.state.learning_observations_admin_service = (
                 LearningObservationsAdminService(active_session_factory)
                 if active_session_factory is not None
@@ -569,11 +577,6 @@ def create_app(
             )
             application.state.learning_split_admin_service = (
                 LearningSplitAdminService(active_session_factory)
-                if active_session_factory is not None
-                else None
-            )
-            application.state.paper_entry_operator_block_service = (
-                PaperEntryOperatorBlockService(active_session_factory)
                 if active_session_factory is not None
                 else None
             )
@@ -1009,6 +1012,7 @@ def create_app(
         app.include_router(learning_observations_page_router)
         app.include_router(learning_paper_performance_router)
         app.include_router(learning_incident_entry_hold_router)
+        app.include_router(learning_paper_entry_block_router)
         app.include_router(learning_scoring_page_router)
         app.include_router(learning_training_router)
         app.include_router(learning_training_page_router)

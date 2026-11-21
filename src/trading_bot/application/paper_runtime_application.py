@@ -48,14 +48,14 @@ from trading_bot.adapters.database.repositories.learning_incident_entry_holds im
     LearningIncidentEntryHoldRepository,
     LearningIncidentHoldUnavailable,
 )
+from trading_bot.adapters.database.repositories.learning_scorer_paper_entry_blocks import (
+    LearningPaperEntryBlockRepository,
+)
 from trading_bot.adapters.database.repositories.operational_telemetry import (
     OperationalTelemetryRepository,
 )
 from trading_bot.adapters.database.repositories.paper_checkpoints import (
     PaperCheckpointConflict,
-)
-from trading_bot.adapters.database.repositories.paper_entry_operator_blocks import (
-    PaperEntryOperatorBlockRepository,
 )
 from trading_bot.adapters.database.repositories.paper_ledger import PaperLedgerConflict
 from trading_bot.adapters.database.repositories.risk_reservations import (
@@ -433,12 +433,25 @@ class PaperRuntimeApplicationService:
                 await self._enforce_entry_gate(uow, account, control)
                 bot_decision = None
                 if isinstance(command, PaperBotDecisionCommand):
+                    entry_blocks = LearningPaperEntryBlockRepository(uow.session)
+                    await entry_blocks.lock_decision(
+                        workspace_id=self._workspace_id,
+                        bot_decision_id=command.bot_decision_id,
+                    )
                     bot_decision = await self._load_candidate_bot_decision(
                         uow, account=account, decision_id=command.bot_decision_id
                     )
                     if bot_decision.status is not BotDecisionStatus.CANDIDATE:
                         return PaperDecisionApplicationResult(
                             decision=None, entry_block_reason=bot_decision.status.value
+                        )
+                    if await entry_blocks.is_blocked(
+                        workspace_id=self._workspace_id,
+                        bot_decision_id=bot_decision.decision_id,
+                    ):
+                        return PaperDecisionApplicationResult(
+                            decision=None,
+                            entry_block_reason="LEARNING_PAPER_ENTRY_BLOCKED",
                         )
                     command = PaperDecisionCommand(
                         account_id=command.account_id,
@@ -447,18 +460,6 @@ class PaperRuntimeApplicationService:
                         bot_decision_id=bot_decision.decision_id,
                     )
                 assert isinstance(command, PaperDecisionCommand)
-                if command.bot_decision_id is not None:
-                    operator_block = await PaperEntryOperatorBlockRepository(
-                        uow.session
-                    ).lock_decision_and_check_blocked(
-                        workspace_id=self._workspace_id,
-                        bot_decision_id=command.bot_decision_id,
-                    )
-                    if operator_block is not None:
-                        return PaperDecisionApplicationResult(
-                            decision=None,
-                            entry_block_reason="OPERATOR_ENTRY_BLOCKED",
-                        )
                 # Snapshot strategy đã đánh giá có ID riêng (content hash) với producer thật;
                 # snapshot tổng hợp/cũ dùng chính feature snapshot ID nên hai giá trị trùng nhau.
                 expected_snapshot_id = (

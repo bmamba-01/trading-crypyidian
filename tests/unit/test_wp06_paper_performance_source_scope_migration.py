@@ -6,11 +6,14 @@ from types import SimpleNamespace
 
 ROOT = Path(__file__).parents[2]
 MIGRATION = ROOT / "migrations/versions/f8e0a2c4d6ba_wp06_paper_performance_source_scope.py"
+AGGREGATE_MIGRATION = (
+    ROOT / "migrations/versions/f4b6d8e0a2c7_wp06_paper_performance_aggregate_sql.py"
+)
 
 
-def _migration():
-    assert MIGRATION.exists(), "Thiếu migration quyền hiện hành cho PAPER performance."
-    spec = importlib.util.spec_from_file_location("wp06_paper_performance_source_scope", MIGRATION)
+def _migration(path: Path = MIGRATION):
+    assert path.exists(), "Thiếu migration PAPER performance."
+    spec = importlib.util.spec_from_file_location(path.stem, path)
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -29,9 +32,9 @@ def _upgrade_sql() -> str:
     return "\n".join(statements)
 
 
-def _downgrade_sql() -> str:
+def _downgrade_sql(path: Path = MIGRATION) -> str:
     statements: list[str] = []
-    module = _migration()
+    module = _migration(path)
     module.op = SimpleNamespace(execute=lambda sql: statements.append(str(sql)))
     module.downgrade()
     return "\n".join(statements)
@@ -354,6 +357,25 @@ def test_downgrade_locks_report_table_before_populated_guard() -> None:
     downgrade = _downgrade_sql()
     assert downgrade.index("ACCESS EXCLUSIVE") < downgrade.index(
         "IF EXISTS (SELECT 1 FROM public.learning_paper_performance_report)"
+    )
+
+
+def test_aggregate_downgrade_checks_all_reports_under_lock_before_rollback() -> None:
+    downgrade = _downgrade_sql(AGGREGATE_MIGRATION)
+
+    lock_sql = "LOCK TABLE public.learning_paper_performance_report IN ACCESS EXCLUSIVE MODE"
+    assert lock_sql in downgrade
+    lock = downgrade.index(lock_sql)
+    disable_filter = downgrade.index("SET LOCAL row_security = off")
+    populated_check = downgrade.index(
+        "IF EXISTS (SELECT 1 FROM public.learning_paper_performance_report)"
+    )
+    deny = downgrade.index("WP06_PAPER_PERFORMANCE_AGGREGATE_DOWNGRADE_POPULATED_DENIED")
+    restore_filter = downgrade.index("set_config('row_security', previous_row_security, true)")
+    restore_function = downgrade.index("pg_catalog.pg_get_functiondef")
+    revoke = downgrade.index("REVOKE SELECT")
+    assert (
+        lock < disable_filter < populated_check < deny < restore_filter < restore_function < revoke
     )
 
 

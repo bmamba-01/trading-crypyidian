@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
@@ -18,6 +18,8 @@ NOW = datetime(2026, 11, 10, 8, 30, tzinfo=UTC)
 def _row() -> dict[str, object]:
     return {
         "id": EVENT_ID,
+        "bot_id": uuid4(),
+        "bot_decision_id": uuid4(),
         "created_at": NOW,
         "mode": "SHADOW",
         "decision": "VETO",
@@ -25,6 +27,10 @@ def _row() -> dict[str, object]:
         "probability": 0.21,
         "confidence": 0.72,
         "uncertainty": 0.28,
+        "operator_block_actor_user_id": None,
+        "operator_block_mfa_verified_at": None,
+        "operator_block_reason": None,
+        "operator_block_created_at": None,
     }
 
 
@@ -42,6 +48,9 @@ class _Result:
 
     def mappings(self) -> _Mappings:
         return _Mappings(self.rows)
+
+    def scalar_one_or_none(self):
+        return None
 
 
 class _Session:
@@ -72,6 +81,9 @@ async def test_score_event_page_projects_workspace_scoped_display_metadata_only(
     assert len(page.items) == 1
     item = page.items[0]
     assert item.event_id == EVENT_ID
+    assert item.bot_id == session.rows[0]["bot_id"]
+    assert item.bot_decision_id == session.rows[0]["bot_decision_id"]
+    assert item.paper_entry_block is None
     assert item.mode == "SHADOW"
     assert item.decision == "VETO"
     assert item.reason_code == "LOW_CONFIDENCE"
@@ -85,6 +97,8 @@ async def test_score_event_page_projects_workspace_scoped_display_metadata_only(
     selected_columns = {column.key for column in session.statement.selected_columns}
     assert selected_columns == {
         "id",
+        "bot_id",
+        "bot_decision_id",
         "created_at",
         "mode",
         "decision",
@@ -92,9 +106,72 @@ async def test_score_event_page_projects_workspace_scoped_display_metadata_only(
         "probability",
         "confidence",
         "uncertainty",
+        "operator_block_actor_user_id",
+        "operator_block_mfa_verified_at",
+        "operator_block_reason",
+        "operator_block_created_at",
     }
     assert "OFFSET" in str(compiled).upper()
     assert "LIMIT" in str(compiled).upper()
+
+
+@pytest.mark.asyncio
+async def test_score_event_projection_includes_workspace_scoped_operator_audit() -> None:
+    from trading_bot.adapters.database.repositories.learning_scorer_score_event_read_model import (
+        LearningScorerScoreEventReadRepository,
+    )
+
+    row = _row()
+    actor_user_id = uuid4()
+    row.update(
+        {
+            "mode": "PAPER_GATE",
+            "decision": "APPROVE",
+            "reason_code": None,
+            "operator_block_actor_user_id": actor_user_id,
+            "operator_block_mfa_verified_at": NOW - timedelta(minutes=1),
+            "operator_block_reason": "Kiểm tra thủ công",
+            "operator_block_created_at": NOW,
+        }
+    )
+    session = _Session([row])
+
+    page = await LearningScorerScoreEventReadRepository(session).get_page(
+        workspace_id=WORKSPACE_ID,
+        page=1,
+    )
+
+    item = page.items[0]
+    assert item.mode == "PAPER_GATE"
+    assert item.decision == "APPROVE"
+    assert item.paper_entry_block is not None
+    assert item.paper_entry_block.actor_user_id == actor_user_id
+    assert item.paper_entry_block.reason == "Kiểm tra thủ công"
+    assert item.paper_entry_block.created_at == NOW
+    compiled = session.statement.compile(dialect=postgresql.dialect())
+    assert WORKSPACE_ID in compiled.params.values()
+    assert "learning_scorer_paper_entry_block.workspace_id" in str(compiled)
+    assert "event_payload" not in str(compiled)
+
+
+@pytest.mark.asyncio
+async def test_score_event_repository_resolves_only_workspace_scoped_paper_approve() -> None:
+    from trading_bot.adapters.database.repositories.learning_scorer_score_event_read_model import (
+        LearningScorerScoreEventReadRepository,
+    )
+
+    repository = LearningScorerScoreEventReadRepository(_Session([]))
+    decision_id = await repository.get_blockable_decision_id(
+        workspace_id=WORKSPACE_ID,
+        score_event_id=EVENT_ID,
+    )
+
+    assert decision_id is None
+    compiled = repository._session.statement.compile(dialect=postgresql.dialect())
+    assert WORKSPACE_ID in compiled.params.values()
+    assert EVENT_ID in compiled.params.values()
+    assert "PAPER_GATE" in compiled.params.values()
+    assert "APPROVE" in compiled.params.values()
 
 
 @pytest.mark.asyncio
