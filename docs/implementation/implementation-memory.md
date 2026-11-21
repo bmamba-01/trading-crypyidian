@@ -13,6 +13,23 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 
 ## Nhật ký các vòng
 
+### 2026-11-21 — Hoàn tất CRY-274: Thông báo vận hành qua Outbox chịu lỗi Telegram
+
+- **Mục tiêu/phạm vi:** Triển khai tính năng `CRY-274` (`[WP-04D/alert-outbox]` — *Thông báo vận hành qua outbox, chịu được Telegram lỗi và hiển thị trên Admin Web*).
+- **Chi tiết triển khai:**
+  - `OperationalAlertOutboxConsumer` (`src/trading_bot/application/operational_alert_outbox.py`): Xử lý 14 loại sự kiện vận hành (pause, resume, kill, release, flatten, incident, circuit breaker tripped/reset, v.v.). Cơ chế gửi qua Telegram binding của các thành viên trong workspace (Owner, Operator, v.v.).
+  - Idempotency & Retry: Mỗi lần gửi thành công được ghi nhận vào `consumer_receipt`. Nếu Telegram gặp sự cố (outage, network error), consumer tự động retry theo exponential backoff (base 10s, max 60s) đến khi vượt quá `max_attempts` (mặc định 3, test 2) thì chuyển sự kiện sang trạng thái `DEAD` (dead-lettered) và ghi audit log `operational_alert.dead_lettered`. Khi replay sự kiện, `consumer_receipt` ngăn chặn gửi trùng lặp (`skipped_duplicate`).
+  - Giao diện Admin Web: Cảnh báo `DEAD` hoặc lỗi vẫn luôn hiển thị trực quan trên `/admin/incidents/operational-alerts` và widget cảnh báo trên dashboard (`dashboard.html`, `admin-density.css`, `operational-alerts.js`).
+  - Migration Alembic: `a3c7e9f1b5d2_cry274_operational_alert_outbox_grants.py` nối từ head `c9d1e3f5a7b4`, cấp quyền SELECT/INSERT/UPDATE trên `outbox_event` và `consumer_receipt` cho role `crypidian_signal_worker`.
+- **Lỗi phát hiện & Khắc phục:**
+  - Lỗi assertion trong E2E test `cry274_operational_alert_outbox.py` và `test_cry274_operational_alert_outbox.py`: Assert nhầm số lượng receipts là 2 trong khi 2 event ban đầu gặp outage và bị chuyển sang trạng thái `DEAD` (không ghi receipt), chỉ có duy nhất 1 event sau unblock được delivered thành công. Đã chỉnh sửa assertion thành `assert len(receipts) == 1` và `assert inspected["receipts"] == 1`.
+- **Kiểm thử đạt 100%:**
+  - Unit tests: `tests/unit/test_cry274_operational_alert_outbox.py` (5/5 passed).
+  - E2E test: `tests/e2e/test_cry274_operational_alert_outbox.py` (1 passed in 34.28s).
+  - Static typing & Linting: `uv run mypy src/trading_bot` (540 source files passed), `uv run ruff check src tests migrations` (clean 100%).
+- **Đã đọc lại mục memory sau cập nhật:** Có.
+
+
 ### 2026-11-19 — Hoàn tất tích hợp Nhóm Bảo mật Đợt 2 (CRY-132, CRY-135, CRY-136, CRY-286, CRY-144, CRY-149)
 
 - **Mục tiêu/phạm vi:** Triển khai và hợp nhất toàn diện 6 ticket Bảo mật còn lại của hệ thống:

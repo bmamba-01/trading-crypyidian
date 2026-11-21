@@ -121,6 +121,7 @@ from trading_bot.application.live_kline_ingestion_composition import (
 from trading_bot.application.live_monitor import LiveMonitorService
 from trading_bot.application.market_scanner import MarketScannerService
 from trading_bot.application.market_signal_composition import build_market_signal_scanner
+from trading_bot.application.operational_alert_outbox import OperationalAlertOutboxConsumer
 from trading_bot.application.operational_telemetry import OperationalHealthService
 from trading_bot.application.paper_entry_operator_block import PaperEntryOperatorBlockService
 from trading_bot.application.paper_runtime_application import (
@@ -598,6 +599,7 @@ def create_app(
         listings_task: asyncio.Task[None] | None = None
         signal_worker_task: asyncio.Task[None] | None = None
         trade_result_worker_task: asyncio.Task[None] | None = None
+        operational_alert_worker_task: asyncio.Task[None] | None = None
         market_signal_worker_task: asyncio.Task[None] | None = None
         signal_outcome_task: asyncio.Task[None] | None = None
         training_supervisor_task: asyncio.Task[None] | None = None
@@ -786,6 +788,23 @@ def create_app(
                     trade_result_worker.run(stopping), name="telegram-trade-result-worker"
                 )
                 application.state.telegram_trade_result_worker_task = trade_result_worker_task
+            if app_settings.operational_alerts_enabled:
+                # CRY-274: consumer outbox cảnh báo vận hành — cùng sender/pacer nhịp với
+                # tin tín hiệu; idempotent qua ConsumerReceipt, dead-letter vẫn thấy trên Admin.
+                alert_consumer = OperationalAlertOutboxConsumer(
+                    active_session_factory,
+                    sender=telegram_sender,
+                    workspace_id=workspace_id,
+                    worker_id=f"telegram-operational-alert-{uuid4().hex}",
+                    admin_base_url=app_settings.admin_public_base_url,
+                    max_attempts=app_settings.operational_alert_max_attempts,
+                    tick_seconds=app_settings.signal_worker_tick_seconds,
+                )
+                application.state.operational_alert_worker = alert_consumer
+                operational_alert_worker_task = asyncio.create_task(
+                    alert_consumer.run(stopping), name="telegram-operational-alert-worker"
+                )
+                application.state.operational_alert_worker_task = operational_alert_worker_task
         elif app_settings.process_role == "market-signal-worker":
             if active_session_factory is None:
                 raise RuntimeError("market-signal-worker cần database session factory.")
@@ -902,6 +921,9 @@ def create_app(
             if trade_result_worker_task is not None:
                 with contextlib.suppress(asyncio.CancelledError, TimeoutError):
                     await asyncio.wait_for(trade_result_worker_task, timeout=10)
+            if operational_alert_worker_task is not None:
+                with contextlib.suppress(asyncio.CancelledError, TimeoutError):
+                    await asyncio.wait_for(operational_alert_worker_task, timeout=10)
             if market_signal_worker_task is not None:
                 with contextlib.suppress(asyncio.CancelledError, TimeoutError):
                     await asyncio.wait_for(market_signal_worker_task, timeout=10)

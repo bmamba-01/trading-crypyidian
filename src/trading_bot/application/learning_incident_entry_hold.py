@@ -13,6 +13,7 @@ from trading_bot.adapters.database.repositories.learning_incident_entry_holds im
     LearningIncidentEntryHoldRepository,
     LearningIncidentHoldConflict,
 )
+from trading_bot.application.operational_alert_outbox import enqueue_operational_alert
 from trading_bot.application.outbox import UnitOfWork
 from trading_bot.auth.policy import (
     RECENT_MFA_LIFETIME,
@@ -200,6 +201,20 @@ class PrincipalLearningIncidentEntryHoldService:
                     reason=event.reason,
                     after_state=event.canonical_payload,
                 )
+                enqueue_operational_alert(
+                    unit,
+                    event_type="learning.incident.entry_hold.confirmed",
+                    aggregate_type="learning_incident_entry_hold",
+                    aggregate_id=event.proposal_id,
+                    occurred_at=event.created_at,
+                    correlation_id=uuid4(),
+                    idempotency_key=f"ops-alert:entry-hold:{event.event_id}",
+                    reason=event.reason,
+                    extra_payload={
+                        "proposal_id": str(event.proposal_id),
+                        "revision": event.revision,
+                    },
+                )
             return appended.event
 
     async def release(
@@ -274,6 +289,20 @@ class PrincipalLearningIncidentEntryHoldService:
                     reason=event.reason,
                     before_state=previous.canonical_payload,
                     after_state=event.canonical_payload,
+                )
+                enqueue_operational_alert(
+                    unit,
+                    event_type="learning.incident.entry_hold.released",
+                    aggregate_type="learning_incident_entry_hold",
+                    aggregate_id=event.proposal_id,
+                    occurred_at=event.created_at,
+                    correlation_id=uuid4(),
+                    idempotency_key=f"ops-alert:entry-hold:{event.event_id}",
+                    reason=event.reason,
+                    extra_payload={
+                        "proposal_id": str(event.proposal_id),
+                        "revision": event.revision,
+                    },
                 )
             return appended.event
 

@@ -1,5 +1,8 @@
 # Project plan và trạng thái triển khai
 
+**Cập nhật 21/11/2026:**
+- **21/11/2026 — CRY-274 `[WP-04D/alert-outbox]` hoàn tất:** Thông báo vận hành qua outbox, chịu được sự cố Telegram và hiển thị cảnh báo lỗi/dead-letter trên Admin Web (`/admin/incidents/operational-alerts` và widget dashboard). Xử lý 14 loại sự kiện vận hành, đảm bảo idempotent qua `consumer_receipt`, exponential retry backoff và audit log; migration `a3c7e9f1b5d2` cấp quyền cho role `crypidian_signal_worker`. Unit 5/5 passed, E2E test `test_cry274_operational_alert_outbox.py` passed 100%.
+
 **Cập nhật 14/11/2026 (nhánh `claude/project-progress-review-wp07-d70431`, PR `bmamba-01/trading-crypyidian#1`):**
 - **19/11/2026 — Follow-up CRY-429/CRY-443:** `/admin/live` hiển thị card bot responsive 4/2/1 cột, giữ đủ chỉ số; `/admin/reports` rút gọn số tiền/tỷ lệ/bps còn tối đa 2 chữ số và tooltip dùng nền đặc. Unit **119 passed**; E2E Live **3 passed** tại 390/800/1280 px, E2E báo cáo/tooltip **1 passed**; Ruff, JavaScript, Alembic heads và diff-check đạt. Docker Desktop đã restart và Engine healthy. Chi tiết trong [memory](./implementation-memory.md) và [kế hoạch](../superpowers/plans/2026-11-18-live-monitor-bot-grid.md).
 - **18/11/2026 — CRY-442 `[UI-Admin/chart-layout]` hoàn tất trên `dev`:** trên `/admin/chart`, dải chỉ số trực tiếp đặt trước filter; nhóm công cụ vẽ thu gọn mặc định, bộ đếm hình vẫn thấy; Bảng Entry chuyển thành hàng tóm tắt theo bot, mở từng dòng để xem checklist/vận hành/chẩn đoán. Unit **24 passed**, admin chart/live/risk E2E **7 passed**, Ruff và diff-check đạt. Commit `18ded34` đã push; admin-web 8010 restart và healthy, chart đã kiểm tra lại trên Chrome.

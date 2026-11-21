@@ -64,6 +64,7 @@ class FakeUnitOfWork:
         self.actor_membership_id = kwargs["actor_membership_id"]
         self.session = object()
         self.audits: list[dict[str, Any]] = []
+        self.outbox: list[Any] = []
 
     async def __aenter__(self) -> FakeUnitOfWork:
         return self
@@ -73,6 +74,9 @@ class FakeUnitOfWork:
 
     def record_audit(self, **kwargs: Any) -> None:
         self.audits.append(kwargs)
+
+    def enqueue(self, envelope: Any) -> None:
+        self.outbox.append(envelope)
 
 
 class FakeRepository:

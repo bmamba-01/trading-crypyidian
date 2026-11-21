@@ -62,6 +62,7 @@ class Store:
     not_flat: dict[UUID, tuple[int, int, int]] = field(default_factory=dict)
     readiness: dict[UUID, tuple[str, str | None]] = field(default_factory=dict)
     activity_status: dict[UUID, str] = field(default_factory=dict)
+    outbox: list[Any] = field(default_factory=list)
     applied_revisions: dict[UUID, tuple[int, int]] = field(default_factory=dict)
     published_config: set[UUID] = field(default_factory=set)
     open_incidents: set[UUID] = field(default_factory=set)
@@ -88,6 +89,7 @@ class FakeUow:
         )
         self.pending: list[dict[str, Any]] = []
         self.pending_status: dict[UUID, str] = {}
+        self.pending_outbox: list[Any] = []
 
     async def __aenter__(self) -> FakeUow:
         self.session.uow = self
@@ -96,8 +98,12 @@ class FakeUow:
     async def __aexit__(self, exc_type: object, *_: object) -> None:
         if exc_type is None:
             self.store.audits.extend(self.pending)
+            self.store.outbox.extend(self.pending_outbox)
             for bot_id, status in self.pending_status.items():
                 self.store.bots[bot_id]["status"] = status
+
+    def enqueue(self, envelope: Any) -> None:
+        self.pending_outbox.append(envelope)
 
     def record_audit(self, **values: Any) -> None:
         self.pending.append(

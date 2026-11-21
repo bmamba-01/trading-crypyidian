@@ -24,6 +24,7 @@ from trading_bot.adapters.database.repositories.bot_grants import BotGrantReposi
 from trading_bot.adapters.database.repositories.bot_runtime_controls import (
     BotRuntimeControlRepository,
 )
+from trading_bot.application.operational_alert_outbox import enqueue_operational_alert
 from trading_bot.application.outbox import UnitOfWork
 from trading_bot.auth.action_challenge import (
     ACTION_BOT_RUNTIME_RESUME,
@@ -267,6 +268,26 @@ class PrincipalRuntimeControl:
                         "revision": result.revision,
                     },
                 )
+                if result.changed:
+                    # CRY-274: cảnh báo vận hành qua outbox cùng transaction; noop không phát.
+                    enqueue_operational_alert(
+                        uow,
+                        event_type=(
+                            "bot.paused" if target is BotEntryState.PAUSED else "bot.resumed"
+                        ),
+                        aggregate_type="bot_instance",
+                        aggregate_id=bot_id,
+                        occurred_at=self._service._clock(),
+                        correlation_id=correlation_id,
+                        idempotency_key=f"ops-alert:bot-control:{bot_id}:{result.revision}",
+                        reason=reason,
+                        reason_code=reason_code,
+                        extra_payload={
+                            "bot_id": str(bot_id),
+                            "entry_state": result.entry_state.value,
+                            "revision": result.revision,
+                        },
+                    )
                 return result
         except (BotRuntimeControlError, RuntimeControlError) as error:
             await self._audit_denied(bot_id, "bot_instance", error.reason_code, correlation_id)
@@ -320,6 +341,29 @@ class PrincipalRuntimeControl:
                         "revision": result.revision,
                     },
                 )
+                if result.changed:
+                    # CRY-274: kill switch workspace cũng là cảnh báo vận hành.
+                    enqueue_operational_alert(
+                        uow,
+                        event_type=(
+                            "bot.killed"
+                            if target is WorkspaceKillState.KILLED
+                            else "bot.kill_released"
+                        ),
+                        aggregate_type="workspace",
+                        aggregate_id=principal.workspace_id,
+                        occurred_at=self._service._clock(),
+                        correlation_id=correlation_id,
+                        idempotency_key=(
+                            f"ops-alert:workspace-control:{principal.workspace_id}:{result.revision}"
+                        ),
+                        reason=reason,
+                        reason_code=reason_code,
+                        extra_payload={
+                            "kill_state": result.kill_state.value,
+                            "revision": result.revision,
+                        },
+                    )
                 return result
         except (BotRuntimeControlError, RuntimeControlError) as error:
             await self._audit_denied(

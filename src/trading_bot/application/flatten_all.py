@@ -8,7 +8,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -17,6 +17,7 @@ from trading_bot.adapters.database.repositories.flatten_all import (
     FlattenOperationReceipt,
 )
 from trading_bot.application.bot_runtime_control import BotRuntimeControlError
+from trading_bot.application.operational_alert_outbox import enqueue_operational_alert
 from trading_bot.application.outbox import UnitOfWork
 from trading_bot.auth.action_challenge import (
     ACTION_WORKSPACE_FLATTEN_CONFIRM,
@@ -272,6 +273,22 @@ class PrincipalFlattenAll:
                         "target_count": sum(len(bot.targets) for bot in snapshot.bots),
                     },
                 )
+                if receipt.created:
+                    # CRY-274: flatten là thao tác vận hành trọng yếu — phát cảnh báo outbox.
+                    enqueue_operational_alert(
+                        uow,
+                        event_type="workspace.flatten.confirmed",
+                        aggregate_type="flatten_operation",
+                        aggregate_id=operation.id,
+                        occurred_at=now,
+                        correlation_id=uuid4(),
+                        idempotency_key=f"ops-alert:flatten:{operation.id}",
+                        reason=reason.strip(),
+                        extra_payload={
+                            "operation_id": str(operation.id),
+                            "target_count": sum(len(bot.targets) for bot in snapshot.bots),
+                        },
+                    )
 
         # Operation đã commit trước khi pause (pause dùng unit of work theo từng bot). Lỗi pause
         # một bot không được che operation đã ghi hay bỏ qua các bot sau: ghi nhận rồi báo lại.
@@ -286,6 +303,30 @@ class PrincipalFlattenAll:
                     )
                 except BotRuntimeControlError as error:
                     failures.append((bot_id, error.reason_code))
+        if failures and receipt.created:
+            # CRY-274: pause từng bot chạy transaction riêng sau commit; lỗi không được
+            # che operation đã ghi. Phát cảnh báo thất bại ở transaction mới để vận hành thấy.
+            async with self._uow() as uow:
+                detail = "; ".join(f"{bot}: {code}" for bot, code in failures)
+                uow.record_audit(
+                    action="workspace.flatten.failed",
+                    target_type="flatten_operation",
+                    target_id=receipt.operation_id,
+                    reason=detail,
+                )
+                enqueue_operational_alert(
+                    uow,
+                    event_type="workspace.flatten.failed",
+                    aggregate_type="flatten_operation",
+                    aggregate_id=receipt.operation_id,
+                    occurred_at=self._service._clock(),
+                    correlation_id=uuid4(),
+                    idempotency_key=f"ops-alert:flatten-failed:{receipt.operation_id}",
+                    reason=(
+                        f"Flatten {receipt.operation_id}: {len(failures)} bot chưa "
+                        f"tạm dừng được. {detail}"
+                    ),
+                )
         return FlattenConfirmResult(
             receipt.operation_id, receipt.status, receipt.created, tuple(failures)
         )

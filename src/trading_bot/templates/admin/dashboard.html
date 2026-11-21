@@ -174,6 +174,22 @@
   </div>
 </section>
 
+<section aria-labelledby="operational-alerts-heading" class="operational-alerts-section dashboard-block">
+  <h2 id="operational-alerts-heading">Cảnh báo vận hành</h2>
+  <p class="section-hint">Thông báo tạm dừng/kill switch/flatten/sự cố/cầu dao gửi tới người đã liên kết Telegram. Khi Telegram gián đoạn, cảnh báo vẫn hiển thị tại đây — kể cả mục dead-letter sau nhiều lần thử.</p>
+  <div class="operational-alerts-toolbar">
+    <label class="ops-alert-toggle" for="operational-alerts-include-delivered">
+      <input type="checkbox" id="operational-alerts-include-delivered" checked>
+      Hiện cả cảnh báo đã gửi
+    </label>
+    <button type="button" id="operational-alerts-refresh" class="btn btn-secondary" aria-label="Làm mới danh sách cảnh báo vận hành">Làm mới</button>
+  </div>
+  <div id="operational-alerts-panel" role="region" aria-label="Danh sách cảnh báo vận hành" aria-busy="false">
+    <p class="muted">Đang tải cảnh báo…</p>
+  </div>
+  <noscript><p>Cần bật JavaScript để xem cảnh báo vận hành trực tiếp.</p></noscript>
+</section>
+
 </div>
 
 <div role="tabpanel" id="panel-performance" aria-labelledby="tab-performance" tabindex="0">
@@ -350,5 +366,6 @@
 <script src="/static/dashboard-realtime.js" defer></script>
 <script src="/static/coins.js" defer></script>
 <script src="/static/dashboard-live.js" defer></script>
+<script src="/static/operational-alerts.js" defer></script>
 {% if dashboard_chart and dashboard_chart.series %}<script src="/static/vendor/lightweight-charts-5.2.1.standalone.production.js"></script><script src="/static/trade-chart.js" defer></script>{% endif %}
 {% endblock %}

@@ -46,6 +46,7 @@ class Store:
         self.inserts: list[tuple[str, Any]] = []
         self.grants: dict[tuple[UUID, UUID], set[BotPermission]] = {}
         self.visible: dict[UUID, set[UUID]] = {}
+        self.outbox: list[Any] = []
 
 
 class FakeUow:
@@ -56,6 +57,7 @@ class FakeUow:
         self.request_id = kwargs.get("request_id") or uuid4()
         self.session = SimpleNamespace(store=store, actor=self.actor_membership_id)
         self.pending: list[dict[str, Any]] = []
+        self.pending_outbox: list[Any] = []
 
     async def __aenter__(self) -> FakeUow:
         return self
@@ -63,9 +65,13 @@ class FakeUow:
     async def __aexit__(self, exc_type: object, *_: object) -> None:
         if exc_type is None:
             self.store.audits.extend(self.pending)
+            self.store.outbox.extend(self.pending_outbox)
 
     def record_audit(self, **values: Any) -> None:
         self.pending.append(values | {"request_id": self.request_id})
+
+    def enqueue(self, envelope: Any) -> None:
+        self.pending_outbox.append(envelope)
 
 
 class FakeControls:

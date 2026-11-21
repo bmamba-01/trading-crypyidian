@@ -143,6 +143,13 @@ class AppSettings(BaseSettings):
     telegram_trade_result_max_age_minutes: int = Field(default=60, ge=1, le=1440)
     # Chu kỳ tin tổng hợp so sánh các bot; 0 = tắt. Tối thiểu 15 phút để tránh spam.
     telegram_report_interval_minutes: int = Field(default=240, ge=0, le=10_080)
+    # CRY-274: cảnh báo vận hành (pause/kill/flatten/sự cố/cầu dao) qua outbox → Telegram,
+    # chạy trong signal-worker. Telegram lỗi/outage không đổi trạng thái điều khiển; cảnh báo
+    # PENDING/DEAD vẫn hiển thị trên Admin Web.
+    operational_alerts_enabled: bool = True
+    operational_alert_max_attempts: int = Field(default=5, ge=1, le=20)
+    # URL gốc Admin Web cho link trong tin cảnh báo (rỗng = link tương đối).
+    admin_public_base_url: str = ""
 
     # SEC-29: danh sách Host hợp lệ (CSV) và dải IP/CIDR reverse proxy tin cậy (CSV).
     # Môi trường production trên admin-web bắt buộc cấu hình allowed_hosts tường minh (cấm '*').

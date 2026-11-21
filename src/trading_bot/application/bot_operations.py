@@ -38,6 +38,7 @@ from trading_bot.application.bot_runtime_control import (
     BotRuntimeControlError,
     BotRuntimeControlService,
 )
+from trading_bot.application.operational_alert_outbox import enqueue_operational_alert
 from trading_bot.application.outbox import UnitOfWork
 from trading_bot.auth.action_challenge import (
     ACTION_BOT_ENABLE,
@@ -279,6 +280,18 @@ class PrincipalBotOperations:
                     before_state={"status": row.status},
                     after_state={"status": "DISABLED"},
                 )
+                if changed:
+                    enqueue_operational_alert(
+                        uow,
+                        event_type="bot.disabled",
+                        aggregate_type="bot_instance",
+                        aggregate_id=bot_id,
+                        occurred_at=self._service._clock(),
+                        correlation_id=correlation_id,
+                        idempotency_key=f"ops-alert:bot-disabled:{bot_id}:{correlation_id}",
+                        reason=reason,
+                        extra_payload={"bot_id": str(bot_id), "status": "DISABLED"},
+                    )
                 return BotDisableResult(bot_id, "DISABLED", changed)
         except (BotRuntimeControlError, BotNotFlatError) as error:
             await self._audit_disable_denied(bot_id, error.reason_code, correlation_id)
@@ -347,6 +360,18 @@ class PrincipalBotOperations:
                     before_state={"status": "DISABLED"},
                     after_state={"status": "ENABLED"},
                 )
+                if changed:
+                    enqueue_operational_alert(
+                        uow,
+                        event_type="bot.enabled",
+                        aggregate_type="bot_instance",
+                        aggregate_id=bot_id,
+                        occurred_at=self._service._clock(),
+                        correlation_id=correlation_id,
+                        idempotency_key=f"ops-alert:bot-enabled:{bot_id}:{correlation_id}",
+                        reason=reason,
+                        extra_payload={"bot_id": str(bot_id), "status": "ENABLED"},
+                    )
                 return BotEnableResult(bot_id, "ENABLED", changed)
         except BotRuntimeControlError as error:
             await self._audit_enable_denied(bot_id, error.reason_code, correlation_id)

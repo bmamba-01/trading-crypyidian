@@ -28,6 +28,7 @@ from trading_bot.adapters.database.repositories.bot_runtime_states import (
     BotRuntimeStateRepository,
 )
 from trading_bot.application.bot_runtime_control import bot_is_visible
+from trading_bot.application.operational_alert_outbox import enqueue_operational_alert
 from trading_bot.application.outbox import UnitOfWork
 from trading_bot.auth.policy import Principal, Role
 from trading_bot.auth.service import RECENT_MFA_LIFETIME
@@ -151,6 +152,22 @@ class AccountActivityGuard:
                         target_id=incident.id,
                         reason=EXTERNAL,
                         after_state={"fingerprint": classification.fingerprint},
+                    )
+                    enqueue_operational_alert(
+                        uow,
+                        event_type="account.foreign_activity.detected",
+                        aggregate_type="account_activity_incident",
+                        aggregate_id=incident.id,
+                        occurred_at=now,
+                        correlation_id=uuid4(),
+                        idempotency_key=f"ops-alert:foreign-activity:{incident.id}",
+                        reason=EXTERNAL,
+                        reason_code="EXTERNAL_ACTIVITY_UNRECONCILED",
+                        extra_payload={
+                            "bot_id": str(account.bot_id),
+                            "account_id": str(account.account_id),
+                            "fingerprint": classification.fingerprint,
+                        },
                     )
                 reason: str | None = EXTERNAL
                 status = RuntimeActivityStatus.VERIFIED

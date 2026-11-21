@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from trading_bot.adapters.database.models import AccountActivityIncidentRecord, BacktestRunRecord
+from trading_bot.application.operational_alert_outbox import list_operational_alerts
 from trading_bot.application.outbox import UnitOfWork
 from trading_bot.auth.policy import Permission, authorize
 from trading_bot.auth.route_policy import permission_route
@@ -74,6 +75,53 @@ async def list_incidents(
             for item in records
         ]
     return {"incidents": items}
+
+
+@router.get(
+    "/incidents/operational-alerts",
+    summary="Danh sách cảnh báo vận hành từ outbox (kể cả dead-letter khi Telegram lỗi)",
+    description=(
+        "Hiển thị cảnh báo vận hành (pause/kill/flatten/sự cố/cầu dao) từ outbox để "
+        "vận hành luôn thấy trên Admin Web kể cả khi Telegram gián đoạn."
+    ),
+    dependencies=[permission_route(Permission.TRADE_READ)],
+)
+async def list_operational_alert_items(
+    request: Request,
+    response: Response,
+    identity: Annotated[AuthIdentity, Depends(current_identity)],
+    include_delivered: bool = True,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+) -> dict[str, object]:
+    _require_permission(identity, Permission.TRADE_READ)
+    response.headers["Cache-Control"] = "no-store"
+    sessions = _get_sessions(request)
+    async with UnitOfWork(sessions, workspace_id=identity.principal.workspace_id) as unit:
+        alerts = await list_operational_alerts(
+            unit.session,
+            workspace_id=identity.principal.workspace_id,
+            include_delivered=include_delivered,
+            limit=limit,
+        )
+    return {
+        "alerts": [
+            {
+                "event_id": str(item.event_id),
+                "event_type": item.event_type,
+                "title_vi": item.title_vi,
+                "status": item.status,
+                "attempts": item.attempts,
+                "last_error_code": item.last_error_code,
+                "mode": item.mode,
+                "reason": item.reason,
+                "admin_link": item.admin_link,
+                "created_at": item.created_at.isoformat(),
+                "available_at": item.available_at.isoformat(),
+                "completed_at": item.completed_at.isoformat() if item.completed_at else None,
+            }
+            for item in alerts
+        ]
+    }
 
 
 @router.get(

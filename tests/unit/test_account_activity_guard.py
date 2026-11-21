@@ -37,6 +37,7 @@ class Db:
         self.audits: list[dict[str, Any]] = []
         self.ledger_writes: list[object] = []
         self.resolved: list[dict[str, Any]] = []
+        self.outbox: list[Any] = []
 
 
 class Uow:
@@ -46,6 +47,7 @@ class Uow:
         self.bot_id = kwargs.get("bot_id")
         self.session = SimpleNamespace(db=db)
         self.pending: list[dict[str, Any]] = []
+        self.pending_outbox: list[Any] = []
 
     async def __aenter__(self) -> Uow:
         return self
@@ -53,12 +55,16 @@ class Uow:
     async def __aexit__(self, exc_type: object, *_: object) -> None:
         if exc_type is None:
             self.db.audits.extend(self.pending)
+            self.db.outbox.extend(self.pending_outbox)
 
     async def bind_account(self, account_id: UUID, **_: object) -> UUID:
         return self.bot_id
 
     def record_audit(self, **values: Any) -> None:
         self.pending.append(values)
+
+    def enqueue(self, envelope: Any) -> None:
+        self.pending_outbox.append(envelope)
 
 
 class States:
