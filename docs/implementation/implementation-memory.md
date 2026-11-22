@@ -13,6 +13,37 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 
 ## Nhật ký các vòng
 
+### 2026-11-22 — Hoàn tất CRY-203: Tín hiệu ngược point-in-time cho H01 trong monitor (xóa hardcode opposing_signal)
+
+- **Mục tiêu/phạm vi:**
+  1. Triển khai theo quy trình TDD và nghiệm thu ticket `CRY-203` (`[RT-1/opposing-h01]` — *Tín hiệu ngược cho H01 trong monitor (opposing_signal luôn False)*).
+  2. Xóa bỏ hoàn toàn hardcode `opposing_signal=False` trong `PaperMarketContextProvider.load_monitor_evidence()`.
+  3. Hiện thực hàm `_evaluate_opposing_signal` point-in-time từ nến đã đóng qua `build_decision_snapshot_from_bars` và `strategy.evaluate()`.
+  4. Đảm bảo quy tắc thoát vị thế H01: khi vị thế LONG phát hiện tín hiệu SHORT (hoặc ngược lại) tại nến đã đóng (`closes_strategy_bar=True`), vị thế ghi nhận `pending_exit_reason="OPPOSING_SIGNAL"` ở Bar 1 và đóng dứt điểm ở Bar 2 tại giá mở nến sau (`bar2.open`) theo chuẩn FX-4.
+  5. Viết bộ 8 unit tests bao quát 100% trong `tests/unit/test_rt1_opposing_h01.py` và Compose E2E test `tests/e2e/test_rt1_opposing_h01_e2e.py` chạy trên ephemeral PostgreSQL thật.
+- **Chi tiết kỹ thuật & Quyết định kiến trúc:**
+  - *Phương thức `_evaluate_opposing_signal`:*
+    - Kiểm tra `position.is_closed` hoặc không có `opposite_signal_exit` trong `ExitRecipe` -> trả về `False` ngay lập tức để tiết kiệm chi phí tính toán.
+    - Kiểm tra `closes_strategy_bar` (đối với H01 là nến 1h đã đóng): nếu nến chưa đóng (`closes_strategy_bar is False`), trả về `False`.
+    - Tải đầy đủ nến đóng theo các timeframe yêu cầu của release qua `feature_requirements_for_release(release)` (đối với H01 là `1h` và `4h`).
+    - Gọi `build_decision_snapshot_from_bars` với `position_is_flat=True`, `source_identity_required=False`, `legacy_identity_namespace="paper-monitor-opposing"`.
+    - Gọi `strategy_registry().resolve(release, selection).evaluate(snapshot, selection)`. Nếu candidate sinh ra có `candidate.direction != position.direction` -> trả về `True`.
+  - *Warmup Window & Snapshot Provenance:*
+    - Khi `source_identity_required=False`, `legacy_identity_namespace` bắt buộc không rỗng để đảm bảo tính độc lập provenance của snapshot replay.
+    - Cần tối thiểu 201+ nến (chọn 220 nến) cho cả timeframe 1h và 4h trong PostgreSQL để bộ tính năng (đặc biệt là `ema_200`) hoàn tất warmup, giúp `snapshot.is_usable = True`.
+  - *Bảo vệ ký quỹ & Tránh Liquidation ngoài ý muốn trong E2E:*
+    - Khi seed dữ liệu cho test E2E với chuỗi nến giảm mạnh tạo bearish cross (giá sập về vùng 38000), `entry_reference_price` và `entry_price` của `TradePlan` phải được thiết lập phù hợp với vùng thị trường (38000) cùng `stop_price` an toàn (30000, margin 19000, đòn bẩy 2x) để tránh kích hoạt `LIQUIDATION` thay vì `OPPOSING_SIGNAL`.
+  - *Quy trình khớp lệnh 2 bước (Pending Exit -> Close at Next Open):*
+    - Bar 1: Nhận nến 1h đóng kèm `opposing_signal=True` -> `monitor_position` thiết lập `pending_exit_reason="OPPOSING_SIGNAL"`, vị thế chưa đóng.
+    - Bar 2: Nhận nến tiếp theo -> `monitor_position` phát hiện pending exit, đóng vị thế tại `bar2.open` (37700) với `exit_reason="OPPOSING_SIGNAL"`.
+    - Ghi nhận `FillRecord` EXIT, `TradeRecord` CLOSED và `PositionEventRecord` CLOSED với `payload.exit_reason = "OPPOSING_SIGNAL"`.
+- **Kết quả kiểm thử:**
+  - Unit tests: `PYTHONPATH=. uv run pytest tests/unit/test_rt1_opposing_h01.py -v` → **8 passed in 0.83s**.
+  - E2E Compose test: `PYTHONPATH=. uv run pytest tests/e2e/test_rt1_opposing_h01_e2e.py -v` → **1 passed in 15.92s**.
+  - Regression unit tests: `PYTHONPATH=. uv run pytest tests/unit/test_v2_release_selection.py tests/unit/test_paper_position_monitor.py -v` → **91 passed in 3.45s**.
+  - Linter & Typecheck: `uv run ruff check` và `uv run mypy` đạt 100% không cảnh báo hay lỗi.
+- **Đã đọc lại mục memory sau cập nhật:** Có.
+
 ### 2026-11-22 — Hoàn tất CRY-195: E2E PAPER đóng lệnh bằng CHANNEL_EXIT/FEATURE_EXIT và đưa bản sửa chọn v2 vào dev
 
 - **Mục tiêu/phạm vi:**

@@ -51,6 +51,7 @@ from trading_bot.application.bot_config_resolver import (
     BotConfigResolutionError,
     load_effective_bot_config,
 )
+from trading_bot.application.decision_snapshot_builder import build_decision_snapshot_from_bars
 from trading_bot.application.market_signal_composition import (
     build_market_decision_snapshot,
     load_closed_market_bars,
@@ -69,6 +70,7 @@ from trading_bot.application.runtime_risk_profile import (
 from trading_bot.application.strategy_catalog import strategy_registry
 from trading_bot.application.strategy_market_requirements import (
     entry_timeframe_for_release,
+    feature_requirements_for_release,
     feature_settings_for,
 )
 from trading_bot.application.workspace_risk import mark_policy_from
@@ -95,7 +97,11 @@ from trading_bot.domain.risk.risk_windows import (
     RealizedTradePnlEvent,
     calculate_loss_windows,
 )
-from trading_bot.domain.strategy.contracts import DecisionSnapshot
+from trading_bot.domain.strategy.contracts import (
+    DecisionSnapshot,
+    StrategyCandidate,
+    StrategySelection,
+)
 from trading_bot.domain.strategy.rules_v3 import exit_evidence_spec
 
 # v2: ngắt mạch drawdown FX-2; v3 (CRY-428): ngưỡng drawdown lấy từ workspace settings.
@@ -546,6 +552,25 @@ class PostgresPaperDecisionContextProvider:
             closes_strategy_bar = strategy_bar_closed(
                 opened_at=bar.opened_at, execution=execution, strategy=entry_timeframe
             )
+        opposing_signal = False
+        if (
+            recipe is not None
+            and getattr(recipe, "opposite_signal_exit", False)
+            and not getattr(position, "is_closed", False)
+            and getattr(position, "quantity", Decimal("0")) > Decimal("0")
+            and closes_strategy_bar
+        ):
+            opposing_signal = await self._evaluate_opposing_signal(
+                session,
+                workspace_id=workspace_id,
+                symbol=bar.symbol,
+                release=release,
+                pinned_strategy_release_hash=pinned_strategy_release_hash,
+                pinned_strategy_settings_version_id=pinned_strategy_settings_version_id,
+                pinned_strategy_parameters=pinned_strategy_parameters,
+                position_direction=position.direction,
+                as_of=bar.opened_at,
+            )
         # ATR/kênh chỉ dùng nến đóng trước lúc nến monitor mở nên mốc này không sau `opened_at`.
         available_at = max(known_at) if known_at else bar.opened_at - timedelta(microseconds=1)
         return PaperMonitorEvidence(
@@ -556,8 +581,8 @@ class PostgresPaperDecisionContextProvider:
             available_at=available_at,
             strategy_release_name=release,
             strategy_release_hash=pinned_strategy_release_hash or "",
-            # Giới hạn RT-1 lát 2: chưa đánh giá lại release theo nến để phát hiện tín hiệu ngược.
-            opposing_signal=False,
+            # RT-1/opposing-h01: tính tín hiệu đối ứng point-in-time từ nến chiến lược đã đóng.
+            opposing_signal=opposing_signal,
             atr=atr,
             strategy_settings_version_id=pinned_strategy_settings_version_id,
             strategy_parameters=pinned_strategy_parameters,
@@ -565,6 +590,73 @@ class PostgresPaperDecisionContextProvider:
             exit_feature_value=feature_value,
             strategy_bar_closed=closes_strategy_bar,
         )
+
+    # --- helpers --------------------------------------------------------------------------
+    async def _evaluate_opposing_signal(
+        self,
+        session: AsyncSession,
+        *,
+        workspace_id: UUID,
+        symbol: str,
+        release: str,
+        pinned_strategy_release_hash: str | None,
+        pinned_strategy_settings_version_id: str | None,
+        pinned_strategy_parameters: tuple[tuple[str, int], ...],
+        position_direction: str,
+        as_of: datetime,
+    ) -> bool:
+        """Đánh giá tín hiệu đối ứng point-in-time từ nến đã đóng (RT-1/opposing-h01)."""
+        if not release:
+            return False
+        try:
+            requirements = feature_requirements_for_release(release)
+        except Exception:
+            return False
+        bars_by_timeframe: dict[str, tuple[OHLCVBar, ...]] = {}
+        for tf in requirements:
+            bars = await load_closed_market_bars(
+                session,
+                workspace_id=workspace_id,
+                symbol=symbol,
+                timeframe=tf,
+                as_of=as_of,
+            )
+            if not bars:
+                return False
+            bars_by_timeframe[tf] = bars
+
+        try:
+            snapshot = build_decision_snapshot_from_bars(
+                workspace_id=workspace_id,
+                symbol=symbol,
+                strategy_release_id=release,
+                decision_time=as_of,
+                series_quality_as_of=as_of,
+                bars_by_timeframe=bars_by_timeframe,
+                position_is_flat=True,
+                source_identity_required=False,
+                legacy_identity_namespace="paper-monitor-opposing",
+            )
+        except Exception:
+            return False
+
+        try:
+            selection = StrategySelection(
+                settings_version_id=pinned_strategy_settings_version_id or "",
+                active_release_ids=(release,),
+                published=True,
+                parameters=pinned_strategy_parameters,
+            )
+            strategy = strategy_registry().resolve(release, selection)
+            candidate = strategy.evaluate(snapshot, selection)
+            if (
+                isinstance(candidate, StrategyCandidate)
+                and candidate.direction in ("long", "short")
+            ):
+                return candidate.direction != position_direction
+        except Exception:
+            return False
+        return False
 
     # --- helpers --------------------------------------------------------------------------
     async def _load_decision_evidence(
