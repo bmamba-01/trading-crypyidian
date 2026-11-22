@@ -13,6 +13,33 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 
 ## Nhật ký các vòng
 
+### 2026-11-22 — Hoàn tất CRY-195: E2E PAPER đóng lệnh bằng CHANNEL_EXIT/FEATURE_EXIT và đưa bản sửa chọn v2 vào dev
+
+- **Mục tiêu/phạm vi:**
+  1. Triển khai và nghiệm thu kiểm thử E2E PostgreSQL thật trên Docker Compose cho `CRY-195` (`[FX-1/e2e-paper-exit]` — *E2E PAPER đóng lệnh bằng CHANNEL_EXIT/FEATURE_EXIT và đưa bản sửa chọn v2 vào dev*).
+  2. Xác nhận 4 tiêu chí nghiệm thu chặt chẽ:
+     - Nhánh `dev` chứa commit `be1c3ab` kiểm tra đúng `release_name` của release v2 (`h03-v2` và `h06-v2`), không bị gán nhầm mã từ chối `NOT_SELECTED`.
+     - Vị thế H03-v2 đóng bằng lý do `CHANNEL_EXIT` khi nến 1h chạm kênh Donchian 20 nến (`channel_low = 49000.0`).
+     - Vị thế H06-v2 đóng bằng lý do `FEATURE_EXIT` khi `zscore_20` của nến 15m hồi phục về ngưỡng cho phép (`zscore_20 >= -0.2`).
+     - Database ledger (`fill`, `trade`, `position_event`), snapshot và checkpoint recovery đạt tính nhất quán 100% qua hàm `verify_paper_ledger_consistency`.
+- **Chi tiết kỹ thuật & Phát hiện quan trọng:**
+  - *Tệp kiểm thử E2E:* `tests/e2e/test_fx01_paper_exit_e2e.py` xây dựng Compose stack cô lập (`crypidian-fx01-exit-e2e-<uuid>`), provision database bằng Alembic head, chạy probe script trong container `trading-runtime` dưới vai trò `crypidian_trading_runtime`.
+  - *Tính nhân quả (Causal Order) và Khởi tạo Position:* Thay vì gán trực tiếp vào private attribute `gateway._positions`, test sử dụng `gateway.submit` và `gateway.apply_market_event` để gateway tự khởi tạo position một cách toàn vẹn. Đảm bảo `source_signal_at` và `submitted_at` xảy ra trước `bar.opened_at` để order có `eligible_at` hợp lệ.
+  - *Quy tắc đối soát phục hồi (`verify_paper_ledger_consistency`):*
+    - `order_intent.idempotency_key` phải bằng chuỗi truyền vào `gateway.submit` (`str(intent_id)`).
+    - `trade_plan.payload` phải là chuỗi JSON serialize từ `_plan_to_json(plan_obj)` khớp chính xác từng trường với plan trong snapshot.
+    - `fill.fill_key` của ENTRY fill phải khớp với `PaperFill.fill_id` (`f"{order.intent_id}:{bar.bar_key}:{sequence}"`).
+    - `fill.fee_amount` và `fill.slippage_amount` phải bằng 0 nếu policy có rate = 0 (tránh lệch chi phí với snapshot).
+    - `trade.lineage` và `fill.lineage` phải khớp 100% với `_intent_lineage(intent)` (không chứa trường thừa).
+    - Bảng `position_event` bắt buộc phải có sự kiện `OPENED` với `event_key = f"entry-fill:{fill_id}"` trước khi monitor event đóng lệnh chèn sự kiện `CLOSED`.
+  - *MB-05 Lease Fencing:* Checkpoint từ revision 2 trở đi bắt buộc phải có `fencing_token` hợp lệ khớp với `bot_runtime_lease` còn hạn; nếu thiếu sẽ bị trigger `mb05_require_runtime_fence()` chặn với lỗi `MB05_FENCING_TOKEN_REQUIRED`. Test gọi `BotRuntimeLease(uow.session).acquire(...)` và truyền token vào tham số `fencing_token` của `coordinator.monitor_market_event(...)`.
+  - *Warmup Window cho Feature Calculator:* Để `FeatureSnapshot.is_usable` đạt `True`, tất cả feature trong `_warmup_by_feature` phải hoàn tất warmup window (lớn nhất là `ema_200` cần 200 nến). Nạp 220 nến 15m với 219 nến đầu xen kẽ 99.0/101.0 và nến cuối cùng là 100.0, giúp `zscore_20 = 0.0 >= -0.2` kích hoạt `FEATURE_EXIT` chuẩn xác.
+- **Kiểm thử đạt 100%:**
+  - E2E Compose test: `PYTHONPATH=. uv run pytest tests/e2e/test_fx01_paper_exit_e2e.py -v --tb=short` → **1 passed in 35.75s**.
+  - Unit tests: `uv run pytest tests/unit/test_v2_release_selection.py -v` → **7 passed in 0.09s**.
+  - Linter & Typecheck: `uv run ruff check tests/e2e/test_fx01_paper_exit_e2e.py` (clean 100%), `uv run mypy tests/e2e/test_fx01_paper_exit_e2e.py` (clean 100%).
+- **Đã đọc lại mục memory sau cập nhật:** Có.
+
 ### 2026-11-22 — Khắc phục triệt để PAPER_RECOVERY_CONFLICT scale 18, đưa 10 bot test lên READY và cập nhật tracker MVP
 
 - **Mục tiêu/phạm vi:**
