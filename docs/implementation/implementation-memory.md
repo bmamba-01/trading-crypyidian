@@ -13,6 +13,30 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 
 ## Nhật ký các vòng
 
+### 2026-11-22 — Khắc phục triệt để PAPER_RECOVERY_CONFLICT scale 18, đưa 10 bot test lên READY và cập nhật tracker MVP
+
+- **Mục tiêu/phạm vi:**
+  1. Khởi động lại và kiểm tra toàn diện các bot bắt tín hiệu (`market-signal-worker`), chỉ báo và `trading-runtime` trên stack review container (`crypidian-review`).
+  2. Điều tra nguyên nhân 4 bot test (T02, T04, T06, T09) bị kẹt ở trạng thái `readiness = RECOVERY_REQUIRED` với `reason_code = PAPER_RECOVERY_CONFLICT`, dẫn đến `trading-runtime` liên tục báo lỗi `LEASE_EXPIRED`.
+  3. Khắc phục triệt để nguyên nhân gốc rễ và bổ sung kiểm thử hồi quy.
+  4. Rà soát chi tiết tracker It's a Plan (Project `CRY`), chuyển các mục đủ điều kiện sang `Done` / `Done (MVP)` và lập tài liệu.
+- **Nguyên nhân phát hiện & Quyết định kỹ thuật:**
+  - *Nguyên nhân `PAPER_RECOVERY_CONFLICT`:* Bảng `fill` trong PostgreSQL định nghĩa các cột `fee_amount`, `slippage_amount`, `quantity`, `price` là `NUMERIC(38, 18)`. Khi Python Decimal có hơn 18 chữ số thập phân (do nhân rate adverse slippage/fee), PostgreSQL tự động làm tròn sang 18 chữ số theo quy tắc `ROUND_HALF_UP` (ví dụ `7.9034264267924177325...` thành `7.903426426792417733`). Trong khi đó, snapshot JSON lưu chuỗi Decimal nguyên bản. Khi hàm `verify_paper_ledger_consistency` đối soát giữa snapshot và database ledger, việc so sánh trực tiếp không quy đổi về scale 18 khiến điều kiện `actual_values != expected_values` bị vi phạm, làm bot bị từ chối hydrate và rơi vào fail-closed.
+  - *Khắc phục:* Bổ sung hàm chuẩn hóa `_q18(val)` sử dụng `val.quantize(Decimal("1e-18"), rounding=ROUND_HALF_UP)` trong `paper_recovery.py` cho các trường tiền tệ/chi phí của fill, position và trade totals. Đồng thời trong `_create_fill` và `_create_exit_fill` của `paper.py`, lượng hóa `fee` và `slippage` về `Decimal("1e-18")` với `ROUND_HALF_UP` ngay từ khi sinh ra fill.
+  - *Kết quả vận hành thực tế:* Sau khi cập nhật và build lại image `crypidian-app:local`, toàn bộ 10 bot test active (T01 đến T10) trong workspace review đã đồng loạt chuyển sang `readiness = READY` và `activity_status = VERIFIED`. `trading-runtime` startup hoàn tất, uvicorn chạy ổn định trên cổng 8000 với `/health/live 200 OK`. `market-signal-worker` quét nến và chỉ báo liên tục không còn lỗi.
+- **Cập nhật tiến độ trên It's a Plan:**
+  - `CRY-334` (`[WP-06/WP06.13-race-matrix]`): Chuyển `Done` (Col 4).
+  - `CRY-323` (`[WP-06F/fp-fn-model-card]`): Chuyển `Done` (Col 4).
+  - `CRY-235` (`[AI-4]`): Chuyển `Done (MVP)` (Col 7) — 5/6 subtask hoàn tất (lịch vĩ mô, phái sinh, listing diff, delist entry block, delist exit).
+  - `CRY-51` (`[SIG-6]`): Chuyển `Done (MVP)` (Col 7) — Đồng thuận giả thật G7 và checklist independence gọi AntiConsensusAnalyzer đã hoàn tất; subtask CRY-418 hiệu chuẩn xác suất đang Blocked chờ outcome scalping.
+  - `CRY-184` (`[WP-07C]`): Chuyển `Done (MVP)` (Col 7) — 15/19 subtasks từ CRY-349 đến CRY-363 hoàn tất với chuỗi Compose E2E test.
+  - `CRY-183` (`[WP-07B]`): Chuyển `Done (MVP)` (Col 7) — 6/9 subtasks hoàn tất (producer, sender, filter, live kline ingest, live market events, delivery policy, operational alert outbox).
+- **Kiểm thử đạt 100%:**
+  - Unit tests: `tests/unit/test_paper_recovery_verifier.py` (6 passed, bổ sung ca `test_restore_quantizes_numeric18_for_db_scale_compatibility`), toàn bộ suite `test_paper*.py` (152 passed).
+  - E2E tests: `tests/e2e/test_paper_runtime_bootstrap.py` (1 passed in 39.77s trên PostgreSQL compose stack thật).
+  - Linter & Typecheck: `uv run ruff check` (clean), `uv run ruff format --check` (clean), `uv run mypy src/trading_bot` (545 source files passed).
+- **Đã đọc lại mục memory sau cập nhật:** Có.
+
 ### 2026-11-22 — Hoàn tất nghiệm thu 4 nhóm nhiệm vụ: CRY-439/323, CRY-334, CRY-313, CRY-103/102
 
 - **Mục tiêu/phạm vi:** Rà soát, kiểm chứng toàn diện và hoàn tất 4 nhóm nhiệm vụ trọng tâm:

@@ -5,8 +5,17 @@ from __future__ import annotations
 import json
 from collections import defaultdict
 from collections.abc import Iterable
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
+
+QUANTUM_18 = Decimal("1e-18")
+
+
+def _q18(val: Decimal | str | float | int) -> Decimal:
+    """Lượng hóa về scale 18 (NUMERIC(38, 18) trong PostgreSQL) dùng ROUND_HALF_UP khớp DB."""
+    if not isinstance(val, Decimal):
+        val = Decimal(str(val))
+    return val.quantize(QUANTUM_18, rounding=ROUND_HALF_UP)
 
 
 class PaperRecoveryConflict(RuntimeError):
@@ -131,18 +140,18 @@ def verify_paper_ledger_consistency(
             expected_values = (
                 paper_fill["bar_key"],
                 paper_fill["fill_policy_version"],
-                Decimal(paper_fill["quantity"]),
-                Decimal(paper_fill["execution_price"]),
-                Decimal(paper_fill["fee_cost"]),
-                Decimal(paper_fill["slippage_cost"]),
+                _q18(paper_fill["quantity"]),
+                _q18(paper_fill["execution_price"]),
+                _q18(paper_fill["fee_cost"]),
+                _q18(paper_fill["slippage_cost"]),
             )
             actual_values = (
                 ledger_fill.bar_key,
                 ledger_fill.fill_policy_version,
-                ledger_fill.quantity,
-                ledger_fill.price,
-                ledger_fill.fee_amount,
-                ledger_fill.slippage_amount,
+                _q18(ledger_fill.quantity),
+                _q18(ledger_fill.price),
+                _q18(ledger_fill.fee_amount),
+                _q18(ledger_fill.slippage_amount),
             )
             if actual_values != expected_values:
                 raise PaperRecoveryConflict("Checkpoint ENTRY/EXIT fill payload lệch ledger.")
@@ -194,9 +203,9 @@ def verify_paper_ledger_consistency(
         if (
             fees != fee_costs
             or slippage != slip_costs
-            or Decimal(position["fee_cost"]) != fees
-            or Decimal(position["slippage_cost"]) != slippage
-            or Decimal(position["funding_cost"]) != funding_costs
+            or _q18(position["fee_cost"]) != _q18(fees)
+            or _q18(position["slippage_cost"]) != _q18(slippage)
+            or _q18(position["funding_cost"]) != _q18(funding_costs)
             or {row.source_event_id for row in trade_costs if row.cost_type == "FUNDING"}
             != set(position["funding_event_ids"])
         ):
@@ -278,12 +287,12 @@ def verify_paper_ledger_consistency(
             expected_gross = Decimal(position["gross_realized_pnl"])
             expected_net = expected_gross - expected_total
         if (
-            trade.fee_total != expected_fee
-            or trade.funding_total != expected_funding
-            or trade.slippage_total != expected_slippage
-            or trade.total_cost != expected_total
-            or trade.gross_pnl != expected_gross
-            or trade.net_pnl != expected_net
+            _q18(trade.fee_total) != _q18(expected_fee)
+            or _q18(trade.funding_total) != _q18(expected_funding)
+            or _q18(trade.slippage_total) != _q18(expected_slippage)
+            or _q18(trade.total_cost) != _q18(expected_total)
+            or _q18(trade.gross_pnl) != _q18(expected_gross)
+            or _q18(trade.net_pnl) != _q18(expected_net)
         ):
             raise PaperRecoveryConflict(
                 "Trade totals không khớp quy ước OPEN/CLOSED và cost ledger."

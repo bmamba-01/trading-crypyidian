@@ -7,7 +7,7 @@ import json
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
-from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
+from decimal import ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP, Decimal
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
@@ -23,6 +23,7 @@ if TYPE_CHECKING:
 
 ZERO = Decimal("0")
 ONE = Decimal("1")
+QUANTUM_18 = Decimal("1e-18")
 
 
 class IntentConflict(RuntimeError):
@@ -699,8 +700,12 @@ class PaperExecutionGateway:
         plan = self._plans[order.intent_id]
         execution_price = _round_price(raw_price, plan.exchange_rules.tick_size, rounding)
         multiplier = plan.exchange_rules.contract_multiplier
-        fee = execution_price * quantity * multiplier * self.policy.fee_rate
-        slippage = abs(execution_price - bar.open) * quantity * multiplier
+        fee = (execution_price * quantity * multiplier * self.policy.fee_rate).quantize(
+            QUANTUM_18, rounding=ROUND_HALF_UP
+        )
+        slippage = (abs(execution_price - bar.open) * quantity * multiplier).quantize(
+            QUANTUM_18, rounding=ROUND_HALF_UP
+        )
         sequence = len(order.fills) + 1
         return PaperFill(
             f"{order.intent_id}:{bar.bar_key}:{sequence}",
@@ -773,8 +778,12 @@ class PaperExecutionGateway:
             rounding,
         )
         multiplier = position.contract_multiplier
-        fee = execution_price * quantity * multiplier * self.policy.fee_rate
-        slippage = abs(execution_price - reference_price) * quantity * multiplier
+        fee = (execution_price * quantity * multiplier * self.policy.fee_rate).quantize(
+            QUANTUM_18, rounding=ROUND_HALF_UP
+        )
+        slippage = (abs(execution_price - reference_price) * quantity * multiplier).quantize(
+            QUANTUM_18, rounding=ROUND_HALF_UP
+        )
         return PaperFill(
             f"{event_id}:close",
             self.policy.version_id,
