@@ -93,7 +93,7 @@ def test_database_candidate_proof_and_training_rights_boundaries():
             root, project, environment, "run", "--rm", "--no-deps", "migrator", "alembic", "heads"
         )
         assert heads.stdout.count("(head)") == 1
-        assert "c6e8a0b2d4f9 (head)" in heads.stdout
+        assert "a3c7e9f1b5d2 (head)" in heads.stdout
         _compose(
             root,
             project,
@@ -281,6 +281,6 @@ def test_database_candidate_proof_and_training_rights_boundaries():
         current = _compose(
             root, project, environment, "run", "--rm", "--no-deps", "migrator", "alembic", "current"
         )
-        assert "c6e8a0b2d4f9 (head)" in current.stdout
+        assert "a3c7e9f1b5d2 (head)" in current.stdout
     finally:
         _compose(root, project, environment, "down", "--volumes", "--remove-orphans")

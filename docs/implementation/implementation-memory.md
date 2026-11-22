@@ -13,6 +13,18 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 
 ## Nhật ký các vòng
 
+### 2026-11-22 — Hoàn tất nghiệm thu 4 nhóm nhiệm vụ: CRY-439/323, CRY-334, CRY-313, CRY-103/102
+
+- **Mục tiêu/phạm vi:** Rà soát, kiểm chứng toàn diện và hoàn tất 4 nhóm nhiệm vụ trọng tâm:
+  1. **Nhóm 1 — CRY-439 & CRY-323 (`[WP-06F]`):** Hoàn tất role cơ sở dữ liệu chuyên biệt `crypidian_scorer_history` chỉ đọc, không kế thừa (`NOINHERIT`), không bypass RLS, không thuộc nhóm `crypidian_app`. Áp dụng nghiêm ngặt allowlist cột trên `learning_score_event` và chính sách RLS `scorer_history_workspace_isolation`; ứng dụng fail-closed khi thiếu credential. Trang Model card tiếng Việt phân tích ma trận nhầm lẫn 3x4 aggregate, FP/FN, false-veto và độ trễ thao tác chuẩn xác. E2E `tests/e2e/test_batch3_postgres_e2e.py` kiểm thử login PostgreSQL thật với role riêng đạt 100%.
+  2. **Nhóm 2 — CRY-334 (`[WP-06/WP06.13-race-matrix]`):** Hoàn tất nghiệm thu ma trận source-rights và xử lý race conditions cho các consumer exact-scope. Kiểm chứng E2E đạt 100%: ranh giới từ chối aggregate PAPER performance không ghi đè hay rò rỉ (`tests/e2e/test_wp06_paper_performance_source_scope.py` — 1 passed/22.37s); Drift observer gate tự động rollback sạch khi tập quan sát thay đổi (`tests/e2e/test_wp06_shadow_drift_source_scope.py` — 1 passed/17.80s); Replay execute → persist transaction atomic rollback khi quyền nguồn bị thu hồi (`tests/e2e/test_wp07_rest_backfill_persistence.py` — 3 passed/68.35s).
+  3. **Nhóm 3 — CRY-313 (`[WP-06C/no-entry]`):** Proof candidate v3 bao phủ đầy đủ các cơ hội `not_run` (`EVALUATED + NOT_RUN` và `INPUT_EXCLUDED + NOT_RUN`) kèm mã lý do chuẩn hóa, không biến no-entry thành trade hay gán PnL=0. Giữ tương thích ngược với proof v2. Kiểm thử PostgreSQL E2E `tests/e2e/test_wp06_candidate_universe_proof.py` (1 passed/78.76s) và `tests/e2e/test_wp06_scorer_test_opportunity_proof.py` (1 passed/27.66s) đạt 100%.
+  4. **Nhóm 4 — CRY-103 & CRY-102 (`[OPS07A/B]`):** Nối hoàn thiện `CircuitBreakerEngine` và `OperationalTelemetryRepository` vào cổng `EntryGate` của runtime PAPER. Khi breaker chuyển `OPEN`, từ chối lệnh mới (`NEW_ENTRY`) với lý do `CIRCUIT_BREAKER_OPEN`, đồng thời bảo lưu 100% quyền thoát lệnh bảo vệ (`PROTECTIVE_EXIT`). Bảng `circuit_breaker_event` lưu trạng thái bất biến với trigger `CIRCUIT_BREAKER_EVENT_IMMUTABLE`. Unit tests (14 passed) và PostgreSQL Compose E2E trong batch 3 đạt 100%.
+- **Chuẩn hóa hạ tầng kiểm thử:** Đồng bộ assertion kiểm tra migration head mới nhất `a3c7e9f1b5d2 (head)` trên toàn bộ 20+ file E2E tests sau khi tích hợp CRY-274.
+- **Trạng thái tracker It's a Plan:** Chuyển `CRY-439`, `CRY-323`, `CRY-334`, `CRY-313`, `CRY-103`, `CRY-262`, `CRY-263`, `CRY-266` sang `Done` (column 4), `CRY-102` sang `Done (MVP)` (column 7) kèm bình luận nghiệm thu chi tiết.
+- **Đã đọc lại mục memory sau cập nhật:** Có.
+
+
 ### 2026-11-21 — Hoàn tất CRY-274: Thông báo vận hành qua Outbox chịu lỗi Telegram
 
 - **Mục tiêu/phạm vi:** Triển khai tính năng `CRY-274` (`[WP-04D/alert-outbox]` — *Thông báo vận hành qua outbox, chịu được Telegram lỗi và hiển thị trên Admin Web*).

@@ -1,5 +1,13 @@
 # Project plan và trạng thái triển khai
 
+**Cập nhật 22/11/2026:**
+- **22/11/2026 — Hoàn tất nghiệm thu 4 nhóm nhiệm vụ (CRY-439/323, CRY-334, CRY-313, CRY-103/102):**
+  1. *CRY-439 / CRY-323 [WP-06F]:* Role `crypidian_scorer_history` chỉ đọc với column allowlist và RLS workspace, model card tiếng Việt và phân tích FP/FN. Unit và PostgreSQL E2E `test_batch3_postgres_e2e.py` passed 100%. Đã chuyển Done.
+  2. *CRY-334 [WP-06/WP06.13-race-matrix]:* Ma trận rights-race và scope mismatch cho các exact-scope consumers. E2E paper performance denial (`test_wp06_paper_performance_source_scope.py`), drift observer gate rollback (`test_wp06_shadow_drift_source_scope.py`), và replay persist atomic rollback (`test_wp07_rest_backfill_persistence.py`) passed 100%. Đã chuyển Done.
+  3. *CRY-313 [WP-06C/no-entry]:* Proof candidate v3 bao phủ `not_run` lý do/số lượng mà không biến thành trade. E2E candidate proof (`test_wp06_candidate_universe_proof.py`) và test opportunity proof (`test_wp06_scorer_test_opportunity_proof.py`) passed 100%. Đã chuyển Done.
+  4. *CRY-103 / CRY-102 [OPS07A/B]:* Circuit breaker engine, operational telemetry và runtime gate chặn `NEW_ENTRY` nhưng cho phép `PROTECTIVE_EXIT`. E2E batch 3 passed 100%. Đã chuyển Done / Done (MVP).
+  5. Đồng bộ assertion migration head `a3c7e9f1b5d2 (head)` trên toàn bộ 20+ tệp kiểm thử E2E.
+
 **Cập nhật 21/11/2026:**
 - **21/11/2026 — CRY-274 `[WP-04D/alert-outbox]` hoàn tất:** Thông báo vận hành qua outbox, chịu được sự cố Telegram và hiển thị cảnh báo lỗi/dead-letter trên Admin Web (`/admin/incidents/operational-alerts` và widget dashboard). Xử lý 14 loại sự kiện vận hành, đảm bảo idempotent qua `consumer_receipt`, exponential retry backoff và audit log; migration `a3c7e9f1b5d2` cấp quyền cho role `crypidian_signal_worker`. Unit 5/5 passed, E2E test `test_cry274_operational_alert_outbox.py` passed 100%.
 

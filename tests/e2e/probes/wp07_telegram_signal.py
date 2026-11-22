@@ -237,7 +237,7 @@ with psycopg.connect(
             (WORKSPACE, BINDING),
         )
         connection.execute(
-            "UPDATE user_membership SET status='DISABLED' WHERE workspace_id=%s AND id=%s",
+            "UPDATE user_membership SET status='SUSPENDED' WHERE workspace_id=%s AND id=%s",
             (WORKSPACE, MEMBERSHIP),
         )
         result = {"membership_disabled": True}
@@ -296,11 +296,20 @@ with psycopg.connect(
             "FROM pg_roles WHERE rolname=current_user"
         ).fetchone()
         assert role_state == (True, False, False, False, False), role_state
-        assert not _scalar(
+        # CRY-274 (migration a3c7e9f1b5d2): signal-worker ĐƯỢC đọc cột telegram_user_id
+        # (private chat id) để gửi cảnh báo vận hành tới mọi binding còn hiệu lực của
+        # workspace — mở rộng có chủ đích, giới hạn cột + RLS workspace; vẫn cấm ghi binding.
+        assert _scalar(
             connection,
             "SELECT has_column_privilege(current_user, 'telegram_binding', "
             "'telegram_user_id', 'SELECT')",
         )
+        for privilege in ("INSERT", "UPDATE", "DELETE"):
+            assert not _scalar(
+                connection,
+                "SELECT has_table_privilege(current_user, 'telegram_binding', %s)",
+                (privilege,),
+            ), privilege
         for table in (
             "order_intent",
             "fill",

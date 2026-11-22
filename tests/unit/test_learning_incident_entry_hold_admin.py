@@ -91,7 +91,9 @@ class _UnitOfWork:
     def __init__(self) -> None:
         self.session = object()
         self.request_id = uuid4()
+        self.workspace_id = uuid4()
         self.audits: list[dict[str, object]] = []
+        self.outbox: list[object] = []
 
     async def __aenter__(self):
         return self
@@ -101,6 +103,9 @@ class _UnitOfWork:
 
     def record_audit(self, **values: object) -> None:
         self.audits.append(values)
+
+    def enqueue(self, envelope: object) -> None:
+        self.outbox.append(envelope)
 
 
 class _Repository:

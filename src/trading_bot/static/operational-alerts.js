@@ -89,7 +89,13 @@
       cache: "no-store",
     })
       .then(function (response) {
-        if (!response.ok) throw new Error("HTTP " + response.status);
+        if (!response.ok) {
+          // Đọc bỏ body để đóng stream — request chưa hoàn tất sẽ giữ kết nối mở
+          // (ảnh hưởng networkidle của test và giữ connection không cần thiết).
+          return response.text().then(function () {
+            throw new Error("HTTP " + response.status);
+          });
+        }
         return response.json();
       })
       .then(function (data) {
