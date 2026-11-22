@@ -13,6 +13,35 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 
 ## Nhật ký các vòng
 
+### 2026-11-22 — Hoàn tất CRY-445: Quy tắc warm-up 3x period cho EMA và RMA trong feature snapshot (FX-6A)
+
+- **Mục tiêu/phạm vi:**
+  1. Triển khai theo quy trình TDD và nghiệm thu ticket `CRY-445` (`[FX-6A/warmup-3x]` — *EMA/RMA warm-up quy tắc ≥ 3×period và cập nhật formula_hash* thuộc parent `CRY-28` / `[FX-6]`).
+  2. Bổ sung cấu hình `warmup_multiplier: int = 3` và `warmup_rule: str = "3x_period"` vào `FeatureSettings` kèm validation nghiêm ngặt (`warmup_multiplier > 0`, `warmup_rule` không rỗng).
+  3. Cập nhật hàm `_warmup_by_feature` trong `src/trading_bot/domain/market/feature_snapshot.py` tuân thủ nguyên lý toán tài chính: các chỉ báo làm mượt theo hàm mũ (EMA) và RMA Wilder (RSI, ATR, ADX, DMI) phải có số lượng nến tối thiểu $\ge 3 \times \text{period}$ để trọng số của giá trị seed ban đầu suy giảm $< 5\%$, triệt tiêu sai số phụ thuộc điểm bắt đầu replay/live.
+  4. Cập nhật hàm `_formula_hash` để hash luôn `warmup_multiplier` và `warmup_rule`, đảm bảo tính toàn vẹn và bất biến của `formula_hash` và `snapshot_id`.
+  5. Mở rộng buffer bộ đệm nến `_MAX_BARS_PER_STREAM = 768` (từ 256) trong `src/trading_bot/application/market_signal_composition.py` để đủ sức chứa $3 \times 200 = 600$ nến cho `ema_200` mà vẫn nằm trong giới hạn buffer an toàn của Binance Futures USDⓈ-M (tối đa 1000 nến REST/WebSocket).
+  6. Đồng bộ hóa bộ dữ liệu kiểm thử E2E Compose PostgreSQL (`tests/e2e/test_rt1_opposing_h01_e2e.py`) seed 620 nến 4h và 620 nến 1h để bảo đảm `warmup_complete = True` cho cả 2 timeframe.
+- **Chi tiết kỹ thuật & Quyết định kiến trúc:**
+  - *Nguyên lý toán học của quy tắc Warm-up $3\times\text{period}$:*
+    - Khi tính EMA bằng seed SMA: $EMA_t = \alpha P_t + (1-\alpha) EMA_{t-1}$. Sau $k$ bước, trọng số của seed ban đầu còn lại $(1-\alpha)^k$. Với $\alpha = 2/(N+1)$, tại $k = 3N$, $(1-\alpha)^{3N} \approx e^{-6} \approx 0.25\% \ll 5\%$.
+    - Khi tính RMA Wilder ($\alpha = 1/N$), tại $k = 3N$, $(1-1/N)^{3N} \approx e^{-3} \approx 4.98\% < 5\%$.
+    - Do đó, quy tắc $\ge 3 \times \text{period}$ là điều kiện cần và đủ để giá trị chỉ báo hội tụ nhất quán giữa backtest, paper và live.
+  - *Ánh xạ số lượng nến warm-up trong `_warmup_by_feature`:*
+    - EMA: `multiplier * period` (EMA20 cần 60 nến, EMA80 cần 240 nến, EMA200 cần 600 nến).
+    - ATR Wilder: `multiplier * atr_period` (ATR14 cần 42 nến).
+    - RSI Wilder: `multiplier * rsi_period + 1` (RSI14 cần 43 nến).
+    - DMI (+DI, -DI, DX): `multiplier * adx_period + 1` (43 nến).
+    - ADX (RMA lặp 2 lần): `(multiplier + 1) * adx_period` (56 nến).
+  - *Tác động lan tỏa lên Pipeline Snapshot Usability:*
+    - `FeatureSnapshot.is_usable` yêu cầu `all(warmup.values()) == True`. Vì `feature_settings_for("1h")` và `4h` đều có `ema_periods=(20, 80, 200)`, cả hai timeframe đều cần tối thiểu 600 nến đóng để đạt trạng thái khả dụng. Các bài test E2E trước đây chỉ seed 220-260 nến đã được nâng lên 620 nến để thỏa mãn điều kiện mới.
+- **Kết quả kiểm thử:**
+  - Unit tests mới: `tests/unit/test_fx6_warmup_3x.py` → **4/4 passed in 0.03s** (validation, quy tắc 3x, hash thay đổi, usability).
+  - Feature snapshot suite: `tests/unit/test_feature_snapshot.py` → **15/15 passed in 0.08s**.
+  - E2E Compose test: `tests/e2e/test_rt1_opposing_h01_e2e.py` → **1 passed in 16.28s**.
+  - Linter & Typecheck: `uv run ruff check` và `uv run mypy` clean 100%.
+- **Đã đọc lại mục memory sau cập nhật:** Có.
+
 ### 2026-11-22 — Hoàn tất CRY-203: Tín hiệu ngược point-in-time cho H01 trong monitor (xóa hardcode opposing_signal)
 
 - **Mục tiêu/phạm vi:**

@@ -78,6 +78,8 @@ class FeatureSettings:
     range_adx_max: float = 18.0
     range_efficiency_max: float = 0.25
     high_volatility_quantile: float = 0.90
+    warmup_multiplier: int = 3
+    warmup_rule: str = "3x_period"
 
     def __post_init__(self) -> None:
         if (
@@ -86,6 +88,10 @@ class FeatureSettings:
             or not self.formula_version.strip()
         ):
             raise ValueError("Hash mã nguồn và version schema/công thức không được để trống.")
+        if self.warmup_multiplier <= 0:
+            raise ValueError("Hệ số warm-up phải lớn hơn 0.")
+        if not self.warmup_rule.strip():
+            raise ValueError("Quy tắc warm-up không được để trống.")
         if self.expected_interval <= timedelta(0):
             raise ValueError("Khoảng nến kỳ vọng phải lớn hơn 0.")
         if self.max_event_age < timedelta(0):
@@ -278,16 +284,17 @@ def _feature_names(settings: FeatureSettings) -> tuple[str, ...]:
 
 
 def _warmup_by_feature(settings: FeatureSettings, bar_count: int) -> dict[str, bool]:
+    multiplier = settings.warmup_multiplier
     requirements = {
         f"sma_{settings.sma_period}": settings.sma_period,
-        **{f"ema_{period}": period for period in settings.ema_periods},
+        **{f"ema_{period}": multiplier * period for period in settings.ema_periods},
         "tr": 1,
-        f"atr_{settings.atr_period}": settings.atr_period,
-        f"rsi_{settings.rsi_period}": settings.rsi_period + 1,
-        f"plus_di_{settings.adx_period}": settings.adx_period + 1,
-        f"minus_di_{settings.adx_period}": settings.adx_period + 1,
-        f"dx_{settings.adx_period}": settings.adx_period + 1,
-        f"adx_{settings.adx_period}": 2 * settings.adx_period,
+        f"atr_{settings.atr_period}": multiplier * settings.atr_period,
+        f"rsi_{settings.rsi_period}": multiplier * settings.rsi_period + 1,
+        f"plus_di_{settings.adx_period}": multiplier * settings.adx_period + 1,
+        f"minus_di_{settings.adx_period}": multiplier * settings.adx_period + 1,
+        f"dx_{settings.adx_period}": multiplier * settings.adx_period + 1,
+        f"adx_{settings.adx_period}": (multiplier + 1) * settings.adx_period,
         f"bollinger_middle_{settings.bollinger_period}": settings.bollinger_period,
         f"bollinger_upper_{settings.bollinger_period}": settings.bollinger_period,
         f"bollinger_lower_{settings.bollinger_period}": settings.bollinger_period,
@@ -374,6 +381,8 @@ def _formula_hash(settings: FeatureSettings) -> str:
             "regime_history_microseconds": int(settings.regime_history.total_seconds() * 1_000_000),
             "vwap_price": "ohlc_typical_price",
             "vwap_reset": "utc_calendar_day",
+            "warmup_multiplier": settings.warmup_multiplier,
+            "warmup_rule": settings.warmup_rule,
             "zscore_window": "prior_samples_excluding_current",
         }
     )

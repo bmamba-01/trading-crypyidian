@@ -223,13 +223,13 @@ async def main() -> None:
             (inst_id, ws, f"inst-{ws.hex[:8]}", "a" * 64, now, now, now),
         )
 
-        # Seed 220 nến 4h cho H01 (warmup EMA200)
+        # Seed 620 nến 4h cho H01 (warmup EMA200 >= 3x200 = 600 nến theo quy tắc FX-6)
         four_h = timedelta(hours=4)
-        start_4h = now - 220 * four_h
-        for i in range(220):
+        start_4h = now - 620 * four_h
+        for i in range(620):
             t = start_4h + i * four_h
             close_t = t + four_h
-            base = Decimal("40000.0") if i >= 215 else Decimal("50000.0")  # đóng dưới EMA200 ở các nến cuối
+            base = Decimal("40000.0") if i >= 615 else Decimal("50000.0")  # đóng dưới EMA200 ở các nến cuối
             conn.execute(
                 "INSERT INTO market_bar (id, workspace_id, instrument_id, symbol, timeframe, source, "
                 "logical_key, idempotency_key, revision, checksum, open_time, close_time, "
@@ -255,18 +255,18 @@ async def main() -> None:
                 ),
             )
 
-        # Seed 220 nến 1h cho H01 (warmup EMA80, ADX14 và tạo bearish cross tại nến cuối cùng)
+        # Seed 620 nến 1h cho H01 (warmup EMA200 >= 3x200 = 600 nến theo quy tắc FX-6 và tạo bearish cross tại nến cuối cùng)
         one_h = timedelta(hours=1)
-        start_1h = now - 220 * one_h
-        for i in range(220):
+        start_1h = now - 620 * one_h
+        for i in range(620):
             t = start_1h + i * one_h
             close_t = t + one_h
-            if i < 218:
-                p = Decimal("50000.0") + Decimal(i * 20)
-            elif i == 218:
-                p = Decimal("55000.0")
+            if i < 618:
+                p = Decimal("50000.0") + Decimal(i * 10)
+            elif i == 618:
+                p = Decimal("60000.0")
             else:
-                p = Decimal("38000.0")  # sập mạnh ở nến 219 -> fast EMA20 cắt xuống slow EMA80
+                p = Decimal("38000.0")  # sập mạnh ở nến 619 -> fast EMA20 cắt xuống slow EMA80
             conn.execute(
                 "INSERT INTO market_bar (id, workspace_id, instrument_id, symbol, timeframe, source, "
                 "logical_key, idempotency_key, revision, checksum, open_time, close_time, "

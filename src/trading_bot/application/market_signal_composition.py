@@ -55,7 +55,7 @@ from trading_bot.domain.market.models import MarketBarSourceIdentity, MarketSnap
 from trading_bot.domain.research.macro_calendar import UNKNOWN_MACRO
 from trading_bot.domain.strategy.contracts import DecisionSnapshot
 
-_MAX_BARS_PER_STREAM = 256
+_MAX_BARS_PER_STREAM = 768
 # Cửa sổ nến producer dùng cho mỗi luồng; replay kiểm định SIG-5 dùng cùng giá trị để khớp live.
 PRODUCER_MAX_BARS_PER_STREAM = _MAX_BARS_PER_STREAM
 _LIVE_BAR_SOURCE = "BINANCE_USDM"
