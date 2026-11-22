@@ -13,6 +13,27 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 
 ## Nhật ký các vòng
 
+### 2026-11-22 — Hoàn tất CRY-448: Bộ dữ liệu golden tham chiếu độc lập và cập nhật glossary EN→VI (FX-6D)
+
+- **Mục tiêu/phạm vi:**
+  1. Triển khai theo quy trình TDD và nghiệm thu ticket `CRY-448` (`[FX-6D/golden-dataset-glossary]` — *Bộ dữ liệu golden tham chiếu độc lập và cập nhật glossary EN→VI* thuộc parent `CRY-28` / `[FX-6]`).
+  2. Xây dựng bộ vector dữ liệu vàng tham chiếu độc lập (`tests/unit/test_fx6_golden_dataset.py`) đối chiếu với kết quả tính toán độc lập từ tài liệu nguồn thẩm quyền:
+     - Golden EMA 10 ngày từ Murphy, John J. (1999), *Technical Analysis of the Financial Markets*, tr. 134: kiểm tra chính xác giá trị seed SMA 22.221 và từng bước làm mượt $\alpha = \frac{2}{11}$ cho các ngày 11→15.
+     - Golden Wilder ATR từ Wilder, J. Welles Jr. (1978), *New Concepts in Technical Trading Systems*, tr. 23, 35-38: kiểm tra True Range và khởi tạo ATR $N=3$ trên chuỗi 6 ngày.
+     - Golden Z-Score: kiểm tra tính toán độc lập cho cả 2 biến thể Exclusive (loại trừ nến hiện tại) và Inclusive (bao gồm nến hiện tại).
+     - Golden Candle Anatomy: kiểm tra hình học nến Bullish Hammer, Bearish Shooting Star và chuẩn hóa biên độ nến theo ATR.
+  3. Cập nhật mục `BL. Chuẩn hóa chỉ báo, kiểm chứng golden và giải phẫu nến nâng cao (FX-6, 22/11/2026)` trong `docs/research/glossary-vi.md` với 8 thuật ngữ EN→VI đầy đủ nguồn thẩm quyền (Wilder 1978, Murphy 1999, QUANTSMART).
+- **Chi tiết kỹ thuật & Quyết định kiến trúc:**
+  - *Tính độc lập của Golden Dataset:*
+    - Các giá trị kỳ vọng (expected) trong `test_fx6_golden_dataset.py` được tính toán trực tiếp từ công thức toán học sách giáo khoa và số liệu công bố của tác giả, không đi qua bất kỳ logic hoặc hàm trung gian nào của codebase dự án.
+    - Sai số cho phép tuyệt đối $< 10^{-5}$ bảo đảm tính hội tụ chính xác cao độ giữa công thức lý thuyết và triển khai mã nguồn.
+- **Kết quả kiểm thử:**
+  - Golden unit tests mới: `tests/unit/test_fx6_golden_dataset.py` → **4/4 passed in 0.10s** (Murphy 1999 EMA, Wilder 1978 ATR, Z-Score exclusive/inclusive, Candle Anatomy & ATR normalization).
+  - Toàn bộ nhóm FX-6 (FX-6A, FX-6B, FX-6C, FX-6D): `tests/unit/test_fx6_*.py` → **19/19 passed in 0.20s**.
+  - E2E Compose test: `tests/e2e/test_rt1_opposing_h01_e2e.py` → **1 passed in 16.43s**.
+  - Linter & Typecheck: `uv run ruff check` và `uv run mypy` clean 100%.
+- **Đã đọc lại mục memory sau cập nhật:** Có.
+
 ### 2026-11-22 — Hoàn tất CRY-447: Thêm tỷ lệ râu nến bearish và chuẩn hóa biên độ theo ATR trong Candle Anatomy (FX-6C)
 
 - **Mục tiêu/phạm vi:**
