@@ -141,5 +141,13 @@ def test_live_klines_reach_market_store_through_rights_gate_and_ingestion_role()
         "admin_web_reads_quote_and_mark": True,
         "admin_web_quote_rls_isolated": True,
         "admin_web_cannot_write_quote": True,
+        "worker_heartbeat_components": [
+            "live_market_events",
+            "live_market_ingestion",
+            "live_market_quotes",
+        ],
+        "worker_heartbeat_ingestion_counters_valid": True,
+        "worker_heartbeat_admin_rls_isolated": True,
+        "worker_heartbeat_admin_read_only": True,
         "exchange_info_requests": 1,
     }

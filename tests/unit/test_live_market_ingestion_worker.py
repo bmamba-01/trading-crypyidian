@@ -202,7 +202,9 @@ async def test_run_reconnects_after_disconnect_and_stops_cleanly() -> None:
             break
         await asyncio.sleep(0.01)
     assert worker.bars_appended == 2
+    assert worker.reconnect_count == 1
     assert worker.is_healthy is True
+    assert worker.last_tick_at is not None
     stopping.set()
     await asyncio.wait_for(task, timeout=1)
 
@@ -240,6 +242,7 @@ async def test_rights_denial_marks_worker_unhealthy_without_opening_stream() -> 
 
     assert worker.last_error_code == "LIVE_INGEST_RIGHTS_DENIED"
     assert worker.is_healthy is False
+    assert worker.reconnect_count == 1
     assert opened == []
 
 

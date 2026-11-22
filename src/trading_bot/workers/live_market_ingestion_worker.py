@@ -81,7 +81,9 @@ class LiveMarketIngestionWorker:
         self.is_healthy = False
         self.last_error_code: str | None = None
         self.last_bar_at: datetime | None = None
+        self.last_tick_at: datetime | None = None
         self.bars_appended = 0
+        self.reconnect_count = 0
 
     async def run_session(self) -> None:
         """Lấp gap cho mọi subscription rồi đọc stream tới khi kết nối kết thúc."""
@@ -120,6 +122,7 @@ class LiveMarketIngestionWorker:
             self._expected[subscription] = expected + subscription.duration
             self.bars_appended += 1
             self.last_bar_at = bar.open_time
+            self.last_tick_at = self._now()
         else:
             # Cursor trong DB lệch với trạng thái nhớ trong tiến trình; đồng bộ lại từ DB.
             await self._catch_up(subscription)
@@ -128,6 +131,7 @@ class LiveMarketIngestionWorker:
         result = await self._service.catch_up(subscription, now=self._now())
         self._expected[subscription] = result.covered_until
         self.bars_appended += result.bars_appended
+        self.last_tick_at = self._now()
         return result.covered_until
 
 
@@ -180,7 +184,9 @@ class LiveMarketEventWorker:
         self.is_healthy = False
         self.last_error_code: str | None = None
         self.last_event_at: datetime | None = None
+        self.last_tick_at: datetime | None = None
         self.events_written = 0
+        self.reconnect_count = 0
 
     async def run_session(self) -> None:
         """Kiểm tra quyền/instrument, rồi đọc stream và ghi theo lô tới khi kết nối rớt."""
@@ -229,6 +235,7 @@ class LiveMarketEventWorker:
         buffer.clear()
         self.events_written += await self._service.write(batch, now=self._now())
         self.last_event_at = self._now()
+        self.last_tick_at = self.last_event_at
 
 
 class LiveQuoteService(Protocol):
@@ -271,7 +278,9 @@ class LiveQuoteWorker:
         self.is_healthy = False
         self.last_error_code: str | None = None
         self.last_event_at: datetime | None = None
+        self.last_tick_at: datetime | None = None
         self.quotes_written = 0
+        self.reconnect_count = 0
 
     async def run_session(self) -> None:
         await self._service.ensure_ready(self._symbols, now=self._now())
@@ -306,6 +315,7 @@ class LiveQuoteWorker:
         pending.clear()
         self.quotes_written += await self._service.upsert_quotes(batch, now=self._now())
         self.last_event_at = self._now()
+        self.last_tick_at = self.last_event_at
 
 
 async def _run_reconnecting(worker: Any, stopping: asyncio.Event, *, name: str) -> None:
@@ -320,7 +330,10 @@ async def _run_reconnecting(worker: Any, stopping: asyncio.Event, *, name: str) 
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await session
             break
+        if stopping.is_set():
+            break
         error = session.exception()
+        worker.reconnect_count = int(getattr(worker, "reconnect_count", 0)) + 1
         worker.is_healthy = False
         worker.last_error_code = _error_code(error)
         logger.warning("Live market ingestion gián đoạn; code=%s", worker.last_error_code)

@@ -1107,6 +1107,7 @@ class Store:
     calls: list[str] = field(default_factory=list)
     units: list[dict[str, Any]] = field(default_factory=list)
     ledger: dict[str, tuple[int, Decimal]] | None = None
+    decision_rows: list[dict[str, Any]] = field(default_factory=list)
 
 
 STORE = Store()
@@ -1190,8 +1191,10 @@ class FakeRepository:
         return {"USDT": Decimal("-12")}
 
     async def latest_bot_decisions(self, **kwargs: Any) -> list[dict[str, Any]]:
-        STORE.calls.append(f"decisions:{kwargs['bot_id']}")
-        return []
+        offset = int(kwargs.get("offset", 0))
+        limit = int(kwargs["limit"])
+        STORE.calls.append(f"decisions:{kwargs['bot_id']}:{limit}:{offset}")
+        return STORE.decision_rows[offset : offset + limit]
 
     async def latest_live_quote(self, **kwargs: Any) -> dict[str, Any] | None:
         STORE.calls.append(f"market_quote:{kwargs['symbol']}")
@@ -1429,7 +1432,15 @@ async def test_validate_chart_and_decision_log_require_report_read() -> None:
     assert "market_revisions:5m" in STORE.calls
     assert "market_gaps:5m" in STORE.calls
     log = await service().get_decision_log(ANALYST, bot_id=BOT_A)
-    assert log == {"decisions": [], "unverified_decisions": 0}
+    assert log == {
+        "decisions": [],
+        "unverified_decisions": 0,
+        "has_more": False,
+        "next_offset": None,
+    }
+    paged_log = await service().get_decision_log(ANALYST, bot_id=BOT_A, offset=40)
+    assert paged_log["has_more"] is False
+    assert "decisions:" + str(BOT_A) + ":21:40" in STORE.calls
     for call in (
         service().validate_chart(OPERATOR, bot_id=BOT_A, symbol="BTCUSDT", timeframe="5m"),
         service().get_decision_log(OPERATOR, bot_id=BOT_A),
@@ -1437,6 +1448,22 @@ async def test_validate_chart_and_decision_log_require_report_read() -> None:
         with pytest.raises(BotReportError) as caught:
             await call
         assert caught.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_decision_log_uses_twenty_item_pages_and_exposes_next_offset() -> None:
+    STORE.decision_rows = [{"payload": {}, "decision_hash": "invalid"} for _ in range(21)]
+
+    first_page = await service().get_decision_log(ANALYST, bot_id=BOT_A)
+    second_page = await service().get_decision_log(ANALYST, bot_id=BOT_A, offset=20)
+
+    assert first_page["decisions"] == []
+    assert first_page["unverified_decisions"] == 20
+    assert first_page["has_more"] is True
+    assert first_page["next_offset"] == 20
+    assert second_page["unverified_decisions"] == 1
+    assert second_page["has_more"] is False
+    assert second_page["next_offset"] is None
 
 
 @pytest.mark.asyncio
@@ -1462,7 +1489,7 @@ async def test_setup_board_skips_bots_without_report_read() -> None:
     # Session giả không có cấu hình bot → giới hạn "unknown" kèm ghi chú, không đoán.
     assert protection["daily"]["state"] == "unknown"
     assert protection["note"]
-    assert [c for c in STORE.calls if c.startswith("decisions:")] == [f"decisions:{BOT_A}"]
+    assert [c for c in STORE.calls if c.startswith("decisions:")] == [f"decisions:{BOT_A}:20:0"]
 
 
 @pytest.mark.asyncio

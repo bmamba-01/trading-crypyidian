@@ -325,7 +325,7 @@ class BotReportRepository:
         ]
 
     async def latest_bot_decisions(
-        self, *, workspace_id: UUID, bot_id: UUID, limit: int = 5
+        self, *, workspace_id: UUID, bot_id: UUID, limit: int = 5, offset: int = 0
     ) -> list[dict[str, Any]]:
         """Các quyết định gần nhất của bot (payload + hash để tầng service xác minh) kèm kế hoạch
         đã được risk gate duyệt của candidate (nếu có) — dùng cho thẻ tín hiệu SIG-3."""
@@ -337,6 +337,7 @@ class BotReportRepository:
             )
             .order_by(BotDecisionRecord.evaluated_at.desc(), BotDecisionRecord.created_at.desc())
             .limit(limit)
+            .offset(offset)
         )
         candidate_ids = sorted({row.candidate_id for row in rows if row.candidate_id})
         plans: dict[str, dict[str, Any]] = {}

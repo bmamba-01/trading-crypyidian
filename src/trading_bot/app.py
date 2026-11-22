@@ -313,6 +313,15 @@ def create_app(
         ):
             default_login_limiter.bind_session_factory(active_session_factory)
         application.state.database_probe = database_probe
+        application.state.worker_heartbeat_reader = None
+        if admin_web_role and active_session_factory is not None:
+            from trading_bot.application.ingestion_worker_heartbeat import (
+                WorkerHeartbeatReadService,
+            )
+
+            application.state.worker_heartbeat_reader = WorkerHeartbeatReadService(
+                active_session_factory
+            )
         application.state.scorer_runtime_policy_provider = scorer_policy_provider
         if database_probe is None and isinstance(active_session_factory, async_sessionmaker):
             probe_sessions = active_session_factory
@@ -596,6 +605,7 @@ def create_app(
         live_market_task: asyncio.Task[None] | None = None
         live_event_task: asyncio.Task[None] | None = None
         live_quote_task: asyncio.Task[None] | None = None
+        ingestion_heartbeat_task: asyncio.Task[None] | None = None
         market_collector_task: asyncio.Task[None] | None = None
         macro_calendar_task: asyncio.Task[None] | None = None
         derivatives_task: asyncio.Task[None] | None = None
@@ -699,6 +709,47 @@ def create_app(
                     workspace_id=workspace_id,
                     stopping=stopping,
                 )
+            if live_market_runtime is not None:
+                from trading_bot.application.ingestion_worker_heartbeat import (
+                    IngestionWorkerHeartbeatPublisher,
+                    WorkerHeartbeatSource,
+                )
+
+                sources = [
+                    WorkerHeartbeatSource(
+                        component="live_market_ingestion",
+                        worker=getattr(live_market_runtime, "worker", None),
+                        task=live_market_task,
+                    )
+                ]
+                event_worker = getattr(live_market_runtime, "event_worker", None)
+                quote_worker = getattr(live_market_runtime, "quote_worker", None)
+                if event_worker is not None:
+                    sources.append(
+                        WorkerHeartbeatSource(
+                            component="live_market_events",
+                            worker=event_worker,
+                            task=live_event_task,
+                        )
+                    )
+                if quote_worker is not None:
+                    sources.append(
+                        WorkerHeartbeatSource(
+                            component="live_market_quotes",
+                            worker=quote_worker,
+                            task=live_quote_task,
+                        )
+                    )
+                publisher = IngestionWorkerHeartbeatPublisher(
+                    sessions=active_session_factory,
+                    workspace_id=workspace_id,
+                    sources=sources,
+                )
+                application.state.ingestion_worker_heartbeat_publisher = publisher
+                ingestion_heartbeat_task = asyncio.create_task(
+                    publisher.run(stopping), name="ingestion-worker-heartbeat"
+                )
+                application.state.ingestion_worker_heartbeat_task = ingestion_heartbeat_task
         elif app_settings.process_role == "trainer-worker":
             if active_session_factory is None:
                 raise RuntimeError("trainer-worker cần database session factory.")
@@ -888,6 +939,9 @@ def create_app(
             if live_quote_task is not None:
                 with contextlib.suppress(asyncio.CancelledError, TimeoutError):
                     await asyncio.wait_for(live_quote_task, timeout=10)
+            if ingestion_heartbeat_task is not None:
+                with contextlib.suppress(asyncio.CancelledError, TimeoutError):
+                    await asyncio.wait_for(ingestion_heartbeat_task, timeout=10)
             if live_market_runtime is not None:
                 await live_market_runtime.aclose()
             if market_collector_task is not None:

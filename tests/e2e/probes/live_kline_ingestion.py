@@ -255,6 +255,11 @@ async def _exercise() -> dict[str, Any]:
     )
     from trading_bot.adapters.database.repositories.bot_reports import BotReportRepository
     from trading_bot.adapters.database.repositories.source_registry import SourceRegistryRepository
+    from trading_bot.application.ingestion_worker_heartbeat import (
+        IngestionWorkerHeartbeatPublisher,
+        WorkerHeartbeatReadService,
+        WorkerHeartbeatSource,
+    )
     from trading_bot.application.live_kline_ingestion import (
         LiveKlineIngestionService,
         LiveKlineSubscription,
@@ -652,6 +657,39 @@ async def _exercise() -> dict[str, Any]:
     except DBAPIError:
         web_write_denied = True
 
+    # 8. CK-9: publisher ghi heartbeat bằng role ingestion, Admin-web chỉ đọc theo RLS.
+    heartbeat_wait = asyncio.Event()
+    heartbeat_task = asyncio.create_task(heartbeat_wait.wait())
+    heartbeat_publisher = IngestionWorkerHeartbeatPublisher(
+        sessions=worker_sessions,
+        workspace_id=WORKSPACE_ID,
+        sources=(
+            WorkerHeartbeatSource("live_market_ingestion", worker, heartbeat_task),
+            WorkerHeartbeatSource("live_market_events", event_worker, heartbeat_task),
+            WorkerHeartbeatSource("live_market_quotes", quote_worker, heartbeat_task),
+        ),
+    )
+    await heartbeat_publisher.publish_once(now=REAL_NOW)
+    heartbeat_task.cancel()
+    try:
+        await heartbeat_task
+    except asyncio.CancelledError:
+        pass
+    heartbeat_reader = WorkerHeartbeatReadService(web_sessions)
+    heartbeat_reports = await heartbeat_reader.list_readiness(
+        workspace_id=WORKSPACE_ID, now=REAL_NOW + timedelta(seconds=1)
+    )
+    heartbeat_other = await heartbeat_reader.list_readiness(
+        workspace_id=OTHER_WORKSPACE_ID, now=REAL_NOW + timedelta(seconds=1)
+    )
+    heartbeat_by_component = {report.component: report for report in heartbeat_reports}
+    heartbeat_web_write_denied = False
+    try:
+        async with UnitOfWork(web_sessions, workspace_id=WORKSPACE_ID) as uow:
+            await uow.session.execute(text("UPDATE worker_heartbeat SET state = 'degraded'"))
+    except DBAPIError:
+        heartbeat_web_write_denied = True
+
     as_of = M + 5 * INTERVAL + timedelta(seconds=3)
     async with UnitOfWork(admin_sessions, workspace_id=WORKSPACE_ID) as uow:
         rows = (
@@ -739,6 +777,16 @@ async def _exercise() -> dict[str, Any]:
         and web_mark["mark_price"] == Decimal("100.5"),
         "admin_web_quote_rls_isolated": web_other is None,
         "admin_web_cannot_write_quote": web_write_denied,
+        "worker_heartbeat_components": sorted(heartbeat_by_component),
+        "worker_heartbeat_ingestion_counters_valid": heartbeat_by_component[
+            "live_market_ingestion"
+        ].metadata.get("bars_appended", 0)
+        >= WARMUP
+        and heartbeat_by_component["live_market_ingestion"].metadata.get("reconnect_count") == 0
+        and heartbeat_by_component["live_market_ingestion"].metadata.get("heartbeat_stale")
+        is False,
+        "worker_heartbeat_admin_rls_isolated": heartbeat_other == [],
+        "worker_heartbeat_admin_read_only": heartbeat_web_write_denied,
         "exchange_info_requests": sum(
             request.url.path == "/fapi/v1/exchangeInfo" for request in binance.rest_requests
         ),

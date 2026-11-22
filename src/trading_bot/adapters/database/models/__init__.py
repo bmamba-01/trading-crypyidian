@@ -226,6 +226,7 @@ from trading_bot.adapters.database.models.venue_entities import (
     VenueOrderIntentRecord,
     VenueOrderTransitionRecord,
 )
+from trading_bot.adapters.database.models.worker_heartbeat_entities import WorkerHeartbeat
 
 __all__ = [
     "SignalOutcomeRecord",
@@ -372,4 +373,5 @@ __all__ = [
     "Workspace",
     "WorkspaceSettingsVersion",
     "StrategyCardRecord",
+    "WorkerHeartbeat",
 ]

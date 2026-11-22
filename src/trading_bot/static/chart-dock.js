@@ -109,6 +109,54 @@
   };
   for (const input of document.querySelectorAll("[data-layer]")) input.addEventListener("change", updateLayers);
   updateLayers();
+  const streamStatus = statusbar?.querySelector("[data-sb-stream]");
+  const updateWorkerReadiness = async () => {
+    if (!streamStatus) return;
+    try {
+      const body = await getJson("/admin/api/workers/readiness", {});
+      const workers = (body.workers || []).filter((worker) =>
+        ["live_market_ingestion", "live_market_events", "live_market_quotes"].includes(
+          worker.component
+        )
+      );
+      if (!workers.length) {
+        setText("[data-sb-stream]", "chưa có heartbeat", "is-stale");
+        streamStatus.title = "Chưa có heartbeat từ live market ingestion-worker.";
+        return;
+      }
+      const severity = { ready: 0, degraded: 1, not_ready: 2 };
+      const state = workers.reduce(
+        (worst, worker) =>
+          (severity[worker.state] ?? 2) > (severity[worst] ?? 2) ? worker.state : worst,
+        "ready"
+      );
+      const bars = workers.reduce((total, worker) => total + Number(worker.metadata?.bars_appended || 0), 0);
+      const events = workers.reduce((total, worker) => total + Number(worker.metadata?.events_written || 0), 0);
+      const quotes = workers.reduce((total, worker) => total + Number(worker.metadata?.quotes_written || 0), 0);
+      const reconnects = workers.reduce((total, worker) => total + Number(worker.metadata?.reconnect_count || 0), 0);
+      const lastTick = workers
+        .map((worker) => worker.last_tick_at)
+        .filter(Boolean)
+        .sort()
+        .at(-1);
+      const stateLabel = {
+        ready: "đang chạy",
+        degraded: "đang nối lại",
+        not_ready: "không sẵn sàng",
+      }[state] || "không rõ";
+      const summary = `${stateLabel} · ${bars} nến · ${events} sự kiện · ${quotes} giá · ${reconnects} lần nối lại · ${lastTick ? fmtIso(lastTick) : "chưa có tick"}`;
+      setText("[data-sb-stream]", summary, state === "ready" ? "is-ready" : "is-stale");
+      streamStatus.title = workers
+        .map((worker) => `${worker.component}: ${worker.state}${worker.reason_code ? ` (${worker.reason_code})` : ""}`)
+        .join(" · ");
+    } catch {
+      setText("[data-sb-stream]", "không đọc được", "is-stale");
+      streamStatus.title = "Không đọc được readiness của ingestion-worker.";
+    }
+  };
+  void updateWorkerReadiness();
+  const workerReadinessTimer = window.setInterval(() => void updateWorkerReadiness(), 5000);
+  window.addEventListener("pagehide", () => window.clearInterval(workerReadinessTimer), { once: true });
   document.addEventListener("mc:overview", (event) => {
     const o = event.detail;
     renderPositions(o.positions || []);
@@ -174,17 +222,28 @@
 
   // ---- Nhật ký quyết định ----
   const decisionList = dock.querySelector("[data-dock-decisions]");
+  const decisionsMore = dock.querySelector("[data-dock-decisions-more]");
   const STATUS_VI = { CANDIDATE: "Ra tín hiệu", ABSTAIN: "Không vào lệnh", VETO: "Bị chặn" };
-  loaders.decisions = async () => {
-    if (!decisionList) return;
+  let decisionOffset = 0;
+  let decisionLoading = false;
+  const loadDecisionPage = async (append = false) => {
+    if (!decisionList || decisionLoading) return;
     const li = (text) => {
       const item = document.createElement("li");
       item.textContent = text;
       return item;
     };
-    decisionList.replaceChildren(li("Đang tải…"));
+    if (!append) {
+      decisionOffset = 0;
+      decisionList.replaceChildren(li("Đang tải…"));
+    }
+    decisionLoading = true;
+    if (decisionsMore) decisionsMore.disabled = true;
     try {
-      const body = await getJson("/admin/api/chart/decisions", { bot_id: dock.dataset.botId });
+      const body = await getJson("/admin/api/chart/decisions", {
+        bot_id: dock.dataset.botId,
+        offset: decisionOffset,
+      });
       const items = body.decisions.map((d) => {
         const item = document.createElement("li");
         const time = document.createElement("time");
@@ -195,11 +254,23 @@
         return item;
       });
       if (body.unverified_decisions) items.push(li(`Bỏ qua ${body.unverified_decisions} quyết định không khớp hash.`));
-      decisionList.replaceChildren(...(items.length ? items : [li("Bot chưa có quyết định nào.")]));
+      if (append) decisionList.append(...items);
+      else decisionList.replaceChildren(...(items.length ? items : [li("Bot chưa có quyết định nào.")]));
+      decisionOffset = body.next_offset ?? decisionOffset;
+      if (decisionsMore) {
+        decisionsMore.hidden = !body.has_more;
+        decisionsMore.disabled = false;
+      }
     } catch {
-      decisionList.replaceChildren(li("Không tải được nhật ký (thiếu quyền hoặc lỗi máy chủ)."));
+      if (append) decisionList.append(li("Không tải được trang tiếp theo."));
+      else decisionList.replaceChildren(li("Không tải được nhật ký (thiếu quyền hoặc lỗi máy chủ)."));
+      if (decisionsMore) decisionsMore.disabled = false;
+    } finally {
+      decisionLoading = false;
     }
   };
+  loaders.decisions = () => loadDecisionPage(false);
+  decisionsMore?.addEventListener("click", () => void loadDecisionPage(true));
 
   // ---- Kiểm dữ liệu ----
   const validateButton = statusbar?.querySelector("[data-validate]");

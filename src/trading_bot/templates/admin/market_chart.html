@@ -164,6 +164,7 @@
       <span>Trễ <strong data-sb-delay>—</strong></span>
       <span>Bid/Ask <strong data-sb-quote>—</strong></span>
       <span>Mark <strong data-sb-mark>—</strong></span>
+      <span>Stream <strong data-sb-stream aria-live="off" title="Chưa có heartbeat">—</strong></span>
       <span>Khoảng trống ingest <strong data-sb-gaps>{{ ds.open_gaps if ds else "—" }}</strong></span>
       <span>Lớp bật <strong data-sb-layers>—</strong></span>
       <button type="button" class="btn btn-secondary mc-control" data-validate>Kiểm dữ liệu</button>
@@ -481,6 +482,7 @@
     </div>
     <div id="mc-panel-decisions" role="tabpanel" aria-labelledby="mc-tab-decisions" data-dock-panel="decisions" hidden>
       <ol class="mc-event-list" data-dock-decisions><li>Chọn tab để tải nhật ký.</li></ol>
+      <button type="button" class="btn btn-secondary mc-control" data-dock-decisions-more hidden>Xem 20 quyết định tiếp</button>
     </div>
     <div id="mc-panel-events" role="tabpanel" aria-labelledby="mc-tab-events" data-dock-panel="events" hidden>
     <h3 class="visually-hidden">Sự kiện gần nhất</h3>

@@ -720,7 +720,9 @@ async def _build_operations_health_data(
                 now_utc=now_utc,
             ),
         )
-        result["workers"] = await _collect_worker_readiness(request)
+        result["workers"] = await _collect_worker_readiness(
+            request, workspace_id=UUID(workspace_id)
+        )
         return result
 
     total_api_errors = sum(int(item.get("error_count", 0) or 0) for item in runtime)
@@ -757,39 +759,59 @@ async def _build_operations_health_data(
         evaluated_at=now_utc,
     )
     payload = health_snapshot.to_dict()
-    payload["workers"] = await _collect_worker_readiness(request)
+    payload["workers"] = await _collect_worker_readiness(request, workspace_id=UUID(workspace_id))
     return payload
 
 
-async def _collect_worker_readiness(request: Request | None) -> list[dict[str, Any]]:
+async def _collect_worker_readiness(
+    request: Request | None, *, workspace_id: UUID | None = None
+) -> list[dict[str, Any]]:
     """Thu thập readiness reason-coded của các worker cho admin-web (CRY-375)."""
     from trading_bot.observability.readiness import WorkerReadinessReport, WorkerReadinessState
 
     if request is None:
         return []
+    reports: list[dict[str, Any]] = []
     provider = getattr(request.app.state, "worker_readiness_provider", None)
     if callable(provider):
         provided = provider()
         if hasattr(provided, "__await__"):
             provided = await provided
-        return [
+        reports = [
             item.to_dict() if isinstance(item, WorkerReadinessReport) else dict(item)
             for item in provided
         ]
+    else:
+        for attr in (
+            "market_signal_worker",
+            "telegram_signal_worker",
+            "telegram_trade_result_worker",
+            "backtest_worker",
+        ):
+            worker = getattr(request.app.state, attr, None)
+            if worker is not None and callable(getattr(worker, "readiness_snapshot", None)):
+                snap = worker.readiness_snapshot()
+                reports.append(
+                    snap.to_dict() if isinstance(snap, WorkerReadinessReport) else dict(snap)
+                )
 
-    reports: list[dict[str, Any]] = []
-    for attr in (
-        "market_signal_worker",
-        "telegram_signal_worker",
-        "telegram_trade_result_worker",
-        "backtest_worker",
-    ):
-        worker = getattr(request.app.state, attr, None)
-        if worker is not None and callable(getattr(worker, "readiness_snapshot", None)):
-            snap = worker.readiness_snapshot()
-            reports.append(
-                snap.to_dict() if isinstance(snap, WorkerReadinessReport) else dict(snap)
-            )
+    if workspace_id is not None:
+        reader = getattr(request.app.state, "worker_heartbeat_reader", None)
+        if reader is None:
+            session_factory = getattr(request.app.state, "session_factory", None)
+            if session_factory is not None:
+                from trading_bot.application.ingestion_worker_heartbeat import (
+                    WorkerHeartbeatReadService,
+                )
+
+                reader = WorkerHeartbeatReadService(session_factory)
+        if reader is not None:
+            persisted = await reader.list_readiness(workspace_id=workspace_id)
+            by_component = {str(item.get("component")): item for item in reports}
+            for item in persisted:
+                by_component[item.component] = item.to_dict()
+            reports = list(by_component.values())
+
     if not reports:
         # Khi admin-web chạy tách container, kiểm tra DB probe để báo rõ trạng thái kết nối.
         probe = getattr(request.app.state, "database_probe", None)
@@ -3683,11 +3705,14 @@ async def market_chart_decisions_api(
     response: Response,
     identity: Annotated[AuthIdentity, Depends(current_identity)],
     bot_id: UUID,
+    offset: int = Query(default=0, ge=0, le=10000),
 ) -> dict[str, Any]:
-    """Nhật ký quyết định của bot (CK-9), chỉ quyết định khớp hash."""
+    """Trang nhật ký 20 quyết định của bot (CK-9), chỉ quyết định khớp hash."""
     response.headers["Cache-Control"] = "no-store"
     try:
-        log = await _reporting_service(request).get_decision_log(identity.principal, bot_id=bot_id)
+        log = await _reporting_service(request).get_decision_log(
+            identity.principal, bot_id=bot_id, limit=20, offset=offset
+        )
     except BotReportError as error:
         raise _report_http_error(error) from error
     return {"status": "ok"} | log
@@ -4397,9 +4422,8 @@ async def workers_readiness(
     identity: Annotated[AuthIdentity, Depends(current_identity)],
 ) -> dict[str, Any]:
     """Trả readiness reason-coded của các worker cho admin-web (CRY-375)."""
-    del identity
     response.headers["Cache-Control"] = "no-store"
-    workers = await _collect_worker_readiness(request)
+    workers = await _collect_worker_readiness(request, workspace_id=identity.principal.workspace_id)
     return {"workers": workers}
 
 

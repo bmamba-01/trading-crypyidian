@@ -184,6 +184,22 @@ class _Reporting:
         }
 
     async def get_decision_log(self, principal: Principal, **kwargs: Any) -> dict:
+        if kwargs.get("offset", 0) > 0:
+            return {
+                "decisions": [
+                    {
+                        "evaluated_at": "2026-11-16T09:00:00+00:00",
+                        "status": "CANDIDATE",
+                        "reason_code": "H01_LONG_ENTRY",
+                        "detail_vi": "Điều kiện vào lệnh đạt.",
+                        "direction": "long",
+                        "strategy_release_id": "h01-v1",
+                    }
+                ],
+                "unverified_decisions": 0,
+                "has_more": False,
+                "next_offset": None,
+            }
         return {
             "decisions": [
                 {
@@ -196,6 +212,8 @@ class _Reporting:
                 }
             ],
             "unverified_decisions": 1,
+            "has_more": True,
+            "next_offset": 20,
         }
 
     async def get_trade_history(self, principal: Principal, **kwargs: Any) -> list[dict]:
@@ -375,6 +393,20 @@ def _app() -> FastAPI:
     app.state.bot_admin_service = _AdminService()
     app.state.bot_reporting_service = _Reporting()
     app.state.market_scanner_service = _Scanner()
+    app.state.worker_readiness_provider = lambda: [
+        {
+            "component": "live_market_ingestion",
+            "state": "ready",
+            "last_tick_at": "2026-11-16T10:02:00+00:00",
+            "metadata": {"bars_appended": 205, "reconnect_count": 2},
+        },
+        {
+            "component": "live_market_events",
+            "state": "ready",
+            "last_tick_at": "2026-11-16T10:01:00+00:00",
+            "metadata": {"events_written": 18, "reconnect_count": 1},
+        },
+    ]
     app.mount("/static", StaticFiles(directory="src/trading_bot/static"), name="static")
     app.include_router(admin_web_router)
     install_security_headers(app)
@@ -429,6 +461,10 @@ def test_market_chart_renders_overlays_polls_and_is_responsive(server_url: str) 
         page.goto(f"{server_url}/admin/chart?timeframe=5m", wait_until="networkidle")
         page.evaluate("() => document.documentElement.setAttribute('data-theme', 'dark')")
         expect(page.locator("#market-chart canvas").first).to_be_visible()
+        expect(page.locator("[data-sb-stream]")).to_contain_text("đang chạy")
+        expect(page.locator("[data-sb-stream]")).to_contain_text("205 nến")
+        expect(page.locator("[data-sb-stream]")).to_contain_text("18 sự kiện")
+        expect(page.locator("[data-sb-stream]")).to_contain_text("3 lần nối lại")
         metrics_box = page.locator("#mc-live-strip").bounding_box()
         filters_box = page.locator(".mc-toolbar").bounding_box()
         chart_card_box = page.locator(".mc-chart-card").bounding_box()
@@ -733,6 +769,10 @@ def test_market_chart_renders_overlays_polls_and_is_responsive(server_url: str) 
         )
         expect(dock.locator("[data-dock-decisions]")).to_contain_text("Không vào lệnh")
         expect(dock.locator("[data-dock-decisions]")).to_contain_text("không khớp hash")
+        expect(dock.locator("[data-dock-decisions-more]")).to_be_visible()
+        dock.locator("[data-dock-decisions-more]").click()
+        expect(dock.locator("[data-dock-decisions]")).to_contain_text("Ra tín hiệu MUA")
+        expect(dock.locator("[data-dock-decisions-more]")).to_be_hidden()
         dock.locator('[data-dock-tab="events"]').click()
         expect(dock.locator("[data-mc-events] li").first).to_be_visible()
         statusbar.screenshot(path=str(SCREENSHOTS_DIR / "ck9-statusbar-desktop.png"))
@@ -837,6 +877,31 @@ def test_market_chart_renders_overlays_polls_and_is_responsive(server_url: str) 
         page.goto(f"{server_url}/admin/chart?symbol=ETHUSDT&timeframe=5m", wait_until="networkidle")
         expect(page.locator("[data-mc-notices]")).to_contain_text("Chưa có nến đã đóng")
         context.close()
+        browser.close()
+
+
+def test_chart_stream_heartbeat_and_decision_log_pagination(server_url: str) -> None:
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_page(viewport={"width": 1280, "height": 900})
+        _login(page, server_url)
+        page.goto(f"{server_url}/admin/chart?timeframe=5m", wait_until="networkidle")
+
+        expect(page.locator("#market-chart canvas").first).to_be_visible()
+        stream = page.locator("[data-sb-stream]")
+        expect(stream).to_contain_text("đang chạy")
+        expect(stream).to_contain_text("205 nến")
+        expect(stream).to_contain_text("18 sự kiện")
+        expect(stream).to_contain_text("3 lần nối lại")
+
+        dock = page.locator("[data-dock]")
+        dock.locator('[data-dock-tab="decisions"]').click()
+        expect(dock.locator("[data-dock-decisions]")).to_contain_text("Không vào lệnh")
+        more = dock.locator("[data-dock-decisions-more]")
+        expect(more).to_be_visible()
+        more.click()
+        expect(dock.locator("[data-dock-decisions]")).to_contain_text("Ra tín hiệu MUA")
+        expect(more).to_be_hidden()
         browser.close()
 
 

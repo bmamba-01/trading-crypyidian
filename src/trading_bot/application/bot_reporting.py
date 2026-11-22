@@ -557,9 +557,11 @@ class BotReportingService:
         return report
 
     async def get_decision_log(
-        self, principal: Principal, *, bot_id: UUID, limit: int = 20
+        self, principal: Principal, *, bot_id: UUID, limit: int = 20, offset: int = 0
     ) -> dict[str, Any]:
-        """Nhật ký quyết định (CK-9): các quyết định gần nhất đã khớp hash, mới nhất trước."""
+        """Lấy một trang nhật ký quyết định đã khớp hash, mới nhất trước."""
+        if not 1 <= limit <= 100 or not 0 <= offset <= 10000:
+            raise ValueError("Trang nhật ký quyết định nằm ngoài giới hạn.")
         from trading_bot.application.bot_dispatcher import BotDecision
 
         async with self._unit_of_work(
@@ -579,11 +581,16 @@ class BotReportingService:
             if await repository.get_bot(workspace_id=principal.workspace_id, bot_id=bot_id) is None:
                 raise _not_found()
             rows: list[dict[str, Any]] = await repository.latest_bot_decisions(
-                workspace_id=principal.workspace_id, bot_id=bot_id, limit=limit
+                workspace_id=principal.workspace_id,
+                bot_id=bot_id,
+                limit=limit + 1,
+                offset=offset,
             )
+        has_more = len(rows) > limit
+        page_rows = rows[:limit]
         items: list[dict[str, Any]] = []
         rejected = 0
-        for row in rows:
+        for row in page_rows:
             try:
                 BotDecision.from_payload(row["payload"], row["decision_hash"])
             except KeyError, TypeError, ValueError:
@@ -601,7 +608,12 @@ class BotReportingService:
                     "strategy_release_id": payload.get("strategy_release_id"),
                 }
             )
-        return {"decisions": items, "unverified_decisions": rejected}
+        return {
+            "decisions": items,
+            "unverified_decisions": rejected,
+            "has_more": has_more,
+            "next_offset": offset + len(page_rows) if has_more else None,
+        }
 
     async def get_trade_history(
         self,

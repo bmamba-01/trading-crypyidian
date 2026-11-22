@@ -682,6 +682,7 @@ def test_dock_and_validate_apis() -> None:
     client = _client(reporting)
     html = client.get("/admin/chart?timeframe=5m").text
     assert "data-statusbar" in html
+    assert "data-dock-decisions-more" in html
     assert "data-validate" in html
     assert html.count("data-dock-tab=") == 4
     assert html.count("data-insight-tab=") == 5
@@ -695,6 +696,8 @@ def test_dock_and_validate_apis() -> None:
     assert body["ok"] is False
     decisions = client.get(f"/admin/api/chart/decisions?bot_id={BOT_ID}").json()
     assert decisions["unverified_decisions"] == 1
+    invalid_decisions_page = client.get(f"/admin/api/chart/decisions?bot_id={BOT_ID}&offset=-1")
+    assert invalid_decisions_page.status_code == 422
     history = client.get(f"/admin/api/chart/history?bot_id={BOT_ID}&symbol=BTCUSDT&period=today")
     assert history.status_code == 200
     data = history.json()
