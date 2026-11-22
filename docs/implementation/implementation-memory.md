@@ -13,6 +13,29 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 
 ## Nhật ký các vòng
 
+### 2026-11-22 — Hoàn tất CRY-447: Thêm tỷ lệ râu nến bearish và chuẩn hóa biên độ theo ATR trong Candle Anatomy (FX-6C)
+
+- **Mục tiêu/phạm vi:**
+  1. Triển khai theo quy trình TDD và nghiệm thu ticket `CRY-447` (`[FX-6C/bearish-wick-atr]` — *Thêm tỷ lệ râu nến bearish và chuẩn hóa biên độ theo ATR trong Candle Anatomy* thuộc parent `CRY-28` / `[FX-6]`).
+  2. Bổ sung hàm `bearish_wick_rejection_strength(open, high, low, close)` đo lường lực bán đạp giá xuống từ đỉnh: $Strength_{bear} = UpperWickRatio \times (1 - CloseLocation) \times (1 - BodyRatio)$, tạo tính đối xứng hoàn hảo với Bullish Hammer.
+  3. Bổ sung alias `bullish_wick_rejection_strength` trỏ tới `wick_rejection_strength` để phân định rõ ràng 2 chiều mua/bán.
+  4. Bổ sung hàm `normalized_candle_range(high, low, atr_value)` tính $\frac{High - Low}{ATR}$ giúp nhận diện và triệt tiêu các tín hiệu râu nến giả mạo từ nến doji 1-2 tick trong vùng thanh khoản kiệt quệ.
+  5. Đăng ký các operations mới trong bảng danh mục `operations.py` thuộc tầng `CompositionLayer.L1_CANDLE_ANATOMY`.
+  6. Tích hợp tính toán trực tiếp trong `StrategyPipelineEngine._compute_l1_node()` và xuất khẩu qua `src/trading_bot/domain/strategy_card/__init__.py`.
+- **Chi tiết kỹ thuật & Quyết định kiến trúc:**
+  - *Toán học hình học nến đối xứng:*
+    - Bullish Hammer (Râu dưới): $LW = \frac{\min(O, C) - L}{H - L}$, $CL = \frac{C - L}{H - L}$ (đóng gần đỉnh $\to CL \approx 1$), $BR = \frac{|C - O|}{H - L}$. Sức mạnh: $LW \times CL \times (1 - BR)$.
+    - Bearish Shooting Star (Râu trên): $UW = \frac{H - \max(O, C)}{H - L}$, vị trí đảo ngược $1 - CL = \frac{H - C}{H - L}$ (đóng gần đáy $\to 1 - CL \approx 1$), $BR = \frac{|C - O|}{H - L}$. Sức mạnh: $UW \times (1 - CL) \times (1 - BR)$.
+  - *Lọc Doji giả mạo bằng ATR:*
+    - Khi biên độ nến $H - L$ chỉ là 1-2 tick nhỏ xíu nhưng tạo râu dài $80\%$, các chỉ báo hình học thô dễ phát sinh tín hiệu giả. Với `normalized_candle_range = (H - L) / ATR`, một cây doji 0.1 USD trong thị trường ATR 100 USD sẽ có biên độ tương đối $0.001 \ll 0.3$, giúp cổng ngắt mạch L4 loại bỏ ngay lập tức.
+    - Xử lý an toàn: khi $H \le L$ hoặc ATR là None/$\le 0$, trả về `Decimal("0")` bảo đảm không phát sinh lỗi chia cho 0.
+- **Kết quả kiểm thử:**
+  - Unit tests mới: `tests/unit/test_fx6_bearish_wick_atr.py` → **6/6 passed in 0.11s** (Shooting Star geometry, Bullish/Bearish symmetry, zero range safe, normalized range by ATR, edge cases safe, engine registration).
+  - Toàn bộ nhóm Strategy Card & FX-6: `tests/unit/test_fx6_*.py tests/unit/test_strategy_card_*.py tests/unit/test_microscope_replay.py` → **85/85 passed in 2.32s**.
+  - E2E Compose test: `tests/e2e/test_rt1_opposing_h01_e2e.py` → **1 passed in 19.76s**.
+  - Linter & Typecheck: `uv run ruff check` và `uv run mypy` clean 100%.
+- **Đã đọc lại mục memory sau cập nhật:** Có.
+
 ### 2026-11-22 — Hoàn tất CRY-446: Chuẩn hóa seed ATR Wilder và biến thể z-score nến đóng/hiện tại (FX-6B)
 
 - **Mục tiêu/phạm vi:**

@@ -81,13 +81,31 @@ _RAW_SPECS: tuple[OperationSpec, ...] = (
         "wick_rejection_strength",
         CompositionLayer.L1_CANDLE_ANATOMY,
         "wick_rejection_strength",
-        "Độ mạnh từ chối giá bằng râu nến.",
+        "Độ mạnh từ chối giá bằng râu nến (bullish).",
     ),
     OperationSpec(
         "wick_rejection",
         CompositionLayer.L1_CANDLE_ANATOMY,
         "wick_rejection_strength",
-        "Độ mạnh từ chối giá bằng râu nến.",
+        "Độ mạnh từ chối giá bằng râu nến (bullish).",
+    ),
+    OperationSpec(
+        "bullish_wick_rejection_strength",
+        CompositionLayer.L1_CANDLE_ANATOMY,
+        "wick_rejection_strength",
+        "Độ mạnh từ chối giá bằng râu dưới (bullish).",
+    ),
+    OperationSpec(
+        "bearish_wick_rejection_strength",
+        CompositionLayer.L1_CANDLE_ANATOMY,
+        "bearish_wick_rejection_strength",
+        "Độ mạnh từ chối giá bằng râu trên (bearish).",
+    ),
+    OperationSpec(
+        "normalized_candle_range",
+        CompositionLayer.L1_CANDLE_ANATOMY,
+        "normalized_candle_range",
+        "Biên độ nến chuẩn hóa theo ATR.",
     ),
     # --- L2: Indicators ---
     OperationSpec(

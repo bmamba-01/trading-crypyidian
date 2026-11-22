@@ -72,3 +72,45 @@ def wick_rejection_strength(
     cl = close_location(open_price, high, low, close)
     br = body_ratio(open_price, high, low, close)
     return lw * cl * (Decimal("1") - br)
+
+
+def bullish_wick_rejection_strength(
+    open_price: Decimal, high: Decimal, low: Decimal, close: Decimal
+) -> Decimal:
+    """Tính sức mạnh từ chối giá của râu nến dưới (Bullish Wick Rejection Strength).
+
+    Alias của wick_rejection_strength để tường minh ngữ nghĩa đối xứng với bearish.
+    """
+    return wick_rejection_strength(open_price, high, low, close)
+
+
+def bearish_wick_rejection_strength(
+    open_price: Decimal, high: Decimal, low: Decimal, close: Decimal
+) -> Decimal:
+    """Tính sức mạnh từ chối giá của râu nến trên (Bearish Wick Rejection Strength).
+
+    Công thức kết hợp: upper_wick_ratio * (1 - close_location) * (1 - body_ratio).
+    Đo lường mức độ lực bán đạp giá xuống từ đỉnh khi tạo râu trên dài và đóng gần đáy.
+    """
+    uw = upper_wick_ratio(open_price, high, low, close)
+    cl = close_location(open_price, high, low, close)
+    br = body_ratio(open_price, high, low, close)
+    return uw * (Decimal("1") - cl) * (Decimal("1") - br)
+
+
+def normalized_candle_range(
+    high: Decimal, low: Decimal, atr_value: Decimal | float | None
+) -> Decimal:
+    """Chuẩn hóa biên độ nến theo ATR: (high - low) / atr.
+
+    Đo lường biên độ nến tương đối so với mức biến động trung bình (ATR).
+    Giúp loại trừ tín hiệu râu nến giả mạo từ doji 1-2 tick trong vùng thanh khoản kiệt quệ.
+    Nếu high <= low hoặc atr_value không hợp lệ (None, <= 0), trả về Decimal('0').
+    """
+    candle_range = high - low
+    if candle_range <= Decimal("0") or atr_value is None:
+        return Decimal("0")
+    atr_dec = Decimal(str(atr_value)) if not isinstance(atr_value, Decimal) else atr_value
+    if atr_dec <= Decimal("0"):
+        return Decimal("0")
+    return candle_range / atr_dec

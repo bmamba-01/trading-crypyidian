@@ -12,9 +12,12 @@ Bao gồm:
 from __future__ import annotations
 
 from trading_bot.domain.strategy_card.anatomy import (
+    bearish_wick_rejection_strength,
     body_ratio,
+    bullish_wick_rejection_strength,
     close_location,
     lower_wick_ratio,
+    normalized_candle_range,
     upper_wick_ratio,
     wick_rejection_strength,
 )
@@ -60,11 +63,14 @@ __all__ = [
     "ParameterBound",
     "StrategyCard",
     "TypedPort",
+    "bearish_wick_rejection_strength",
     "body_ratio",
+    "bullish_wick_rejection_strength",
     "calculate_correlation_matrix",
     "close_location",
     "compute_canonical_hash",
     "lower_wick_ratio",
+    "normalized_candle_range",
     "upper_wick_ratio",
     "wick_rejection_strength",
 ]

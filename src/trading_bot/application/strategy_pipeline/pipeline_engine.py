@@ -54,9 +54,11 @@ from trading_bot.domain.market.features import (
 )
 from trading_bot.domain.strategy.contracts import FeatureQuality, SeriesQuality
 from trading_bot.domain.strategy_card.anatomy import (
+    bearish_wick_rejection_strength,
     body_ratio,
     close_location,
     lower_wick_ratio,
+    normalized_candle_range,
     upper_wick_ratio,
     wick_rejection_strength,
 )
@@ -500,6 +502,11 @@ class StrategyPipelineEngine:
             return body_ratio(bar.open, bar.high, bar.low, bar.close)
         if spec.canonical == "close_location":
             return close_location(bar.open, bar.high, bar.low, bar.close)
+        if spec.canonical == "bearish_wick_rejection_strength":
+            return bearish_wick_rejection_strength(bar.open, bar.high, bar.low, bar.close)
+        if spec.canonical == "normalized_candle_range":
+            atr_val = getattr(bar, "atr", None)
+            return normalized_candle_range(bar.high, bar.low, atr_val)
         return wick_rejection_strength(bar.open, bar.high, bar.low, bar.close)
 
     def _snapshot_feature(
