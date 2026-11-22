@@ -80,6 +80,8 @@ class FeatureSettings:
     high_volatility_quantile: float = 0.90
     warmup_multiplier: int = 3
     warmup_rule: str = "3x_period"
+    atr_seed_method: str = "wilder_first_period_sma"
+    zscore_mode: str = "prior_samples_excluding_current"
 
     def __post_init__(self) -> None:
         if (
@@ -92,6 +94,13 @@ class FeatureSettings:
             raise ValueError("Hệ số warm-up phải lớn hơn 0.")
         if not self.warmup_rule.strip():
             raise ValueError("Quy tắc warm-up không được để trống.")
+        if self.atr_seed_method != "wilder_first_period_sma":
+            raise ValueError("Phương pháp seed ATR hiện tại chỉ hỗ trợ wilder_first_period_sma.")
+        if self.zscore_mode not in ("prior_samples_excluding_current", "inclusive_current_sample"):
+            raise ValueError(
+                "zscore_mode phải là 'prior_samples_excluding_current' hoặc "
+                "'inclusive_current_sample'."
+            )
         if self.expected_interval <= timedelta(0):
             raise ValueError("Khoảng nến kỳ vọng phải lớn hơn 0.")
         if self.max_event_age < timedelta(0):
@@ -277,6 +286,7 @@ def _feature_names(settings: FeatureSettings) -> tuple[str, ...]:
             f"realized_volatility_{settings.realized_volatility_period}",
             f"efficiency_ratio_{settings.efficiency_ratio_period}",
             f"zscore_{settings.zscore_period}",
+            f"zscore_inclusive_{settings.zscore_period}",
             "session_vwap",
         )
     )
@@ -304,7 +314,12 @@ def _warmup_by_feature(settings: FeatureSettings, bar_count: int) -> dict[str, b
         f"efficiency_ratio_{settings.efficiency_ratio_period}": (
             settings.efficiency_ratio_period + 1
         ),
-        f"zscore_{settings.zscore_period}": settings.zscore_period + 1,
+        f"zscore_{settings.zscore_period}": (
+            settings.zscore_period + 1
+            if settings.zscore_mode == "prior_samples_excluding_current"
+            else settings.zscore_period
+        ),
+        f"zscore_inclusive_{settings.zscore_period}": settings.zscore_period,
         "session_vwap": 1,
     }
     return {name: bar_count >= count for name, count in requirements.items()}
@@ -337,6 +352,7 @@ def feature_schema_hash(
             "realized_volatility_20",
             "efficiency_ratio_40",
             "zscore_20",
+            "zscore_inclusive_20",
             "session_vwap",
         )
     )
@@ -353,6 +369,7 @@ def feature_schema_hash(
 def _formula_hash(settings: FeatureSettings) -> str:
     return _hash(
         {
+            "atr_seed_method": settings.atr_seed_method,
             "bollinger_ddof": 0,
             "ema_seed": "first_sma",
             "ema_periods": list(settings.ema_periods),
@@ -383,7 +400,8 @@ def _formula_hash(settings: FeatureSettings) -> str:
             "vwap_reset": "utc_calendar_day",
             "warmup_multiplier": settings.warmup_multiplier,
             "warmup_rule": settings.warmup_rule,
-            "zscore_window": "prior_samples_excluding_current",
+            "zscore_mode": settings.zscore_mode,
+            "zscore_window": settings.zscore_mode,
         }
     )
 
@@ -598,7 +616,12 @@ class FeatureCalculator:
                 efficiency_ratio(closes, self.settings.efficiency_ratio_period)[-1]
             )
             feature_values[f"zscore_{self.settings.zscore_period}"] = zscore(
-                closes, self.settings.zscore_period
+                closes,
+                self.settings.zscore_period,
+                inclusive=(self.settings.zscore_mode == "inclusive_current_sample"),
+            )[-1]
+            feature_values[f"zscore_inclusive_{self.settings.zscore_period}"] = zscore(
+                closes, self.settings.zscore_period, inclusive=True
             )[-1]
             feature_values["session_vwap"] = _session_vwap(bars)[-1]
         else:

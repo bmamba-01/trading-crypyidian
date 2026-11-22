@@ -259,25 +259,48 @@ def bollinger_bands(
     return tuple(middle), tuple(upper), tuple(lower)
 
 
-def zscore(values: Sequence[float], window: int) -> FeatureSeries:
-    """Chuẩn hóa mẫu hiện tại theo ``window`` mẫu trước đó (không gồm hiện tại).
+def zscore(
+    values: Sequence[float], window: int, *, inclusive: bool = False
+) -> FeatureSeries:
+    """Chuẩn hóa mẫu theo ``window`` mẫu.
 
-    Dùng độ lệch chuẩn population. Cửa sổ lịch sử có phương sai bằng 0 được
-    đánh dấu ``None`` để caller không diễn giải thành một tín hiệu hợp lệ.
+    Nếu ``inclusive=False`` (mặc định): chuẩn hóa mẫu hiện tại theo ``window``
+    mẫu trước đó (không gồm hiện tại). Cần ``window + 1`` mẫu để có kết quả đầu tiên.
+    Nếu ``inclusive=True``: chuẩn hóa mẫu hiện tại trong cửa sổ ``window`` mẫu
+    kết thúc tại mẫu hiện tại (gồm hiện tại). Cần ``window`` mẫu để có kết quả đầu tiên.
+
+    Dùng độ lệch chuẩn population (ddof=0). Cửa sổ lịch sử có phương sai bằng 0
+    được đánh dấu ``None`` để caller không diễn giải thành một tín hiệu hợp lệ.
     """
     lookback = _period_value(window)
     samples = _values(values)
     output: list[float | None] = [None] * len(samples)
-    for index in range(lookback, len(samples)):
-        history = samples[index - lookback : index]
-        mean = math.fsum(history) / lookback
-        standard_deviation = math.sqrt(
-            math.fsum((value - mean) ** 2 for value in history) / lookback
-        )
-        if standard_deviation == 0.0:
-            continue
-        output[index] = (samples[index] - mean) / standard_deviation
+    if inclusive:
+        for index in range(lookback - 1, len(samples)):
+            history = samples[index - lookback + 1 : index + 1]
+            mean = math.fsum(history) / lookback
+            standard_deviation = math.sqrt(
+                math.fsum((value - mean) ** 2 for value in history) / lookback
+            )
+            if standard_deviation == 0.0:
+                continue
+            output[index] = (samples[index] - mean) / standard_deviation
+    else:
+        for index in range(lookback, len(samples)):
+            history = samples[index - lookback : index]
+            mean = math.fsum(history) / lookback
+            standard_deviation = math.sqrt(
+                math.fsum((value - mean) ** 2 for value in history) / lookback
+            )
+            if standard_deviation == 0.0:
+                continue
+            output[index] = (samples[index] - mean) / standard_deviation
     return tuple(output)
+
+
+def zscore_inclusive(values: Sequence[float], window: int) -> FeatureSeries:
+    """Chuẩn hóa mẫu hiện tại trong cửa sổ ``window`` mẫu bao gồm cả mẫu hiện tại."""
+    return zscore(values, window, inclusive=True)
 
 
 def macd(

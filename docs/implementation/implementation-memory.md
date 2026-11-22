@@ -13,6 +13,34 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 
 ## Nhật ký các vòng
 
+### 2026-11-22 — Hoàn tất CRY-446: Chuẩn hóa seed ATR Wilder và biến thể z-score nến đóng/hiện tại (FX-6B)
+
+- **Mục tiêu/phạm vi:**
+  1. Triển khai theo quy trình TDD và nghiệm thu ticket `CRY-446` (`[FX-6B/atr-wilder-zscore]` — *Chuẩn hóa seed ATR Wilder và biến thể z-score nến đóng/hiện tại* thuộc parent `CRY-28` / `[FX-6]`).
+  2. Chuẩn hóa công thức ATR theo đúng định nghĩa của J. Welles Wilder Jr. (1978): nến đầu tiên $TR_0 = H_0 - L_0$, seed SMA $N$ nến đầu tiên $ATR_{N-1} = \frac{1}{N} \sum_{i=0}^{N-1} TR_i$, từ nến $N$ trở đi tính theo RMA Wilder $ATR_t = \frac{(N-1)ATR_{t-1} + TR_t}{N}$.
+  3. Xác định rõ ngữ nghĩa 2 biến thể z-score và triển khai đầy đủ trong `features.py`:
+     - Biến thể Exclusive (`prior_samples_excluding_current`): chuẩn hóa mẫu hiện tại $x_t$ theo $N$ mẫu trước đó $\{x_{t-N}, \dots, x_{t-1}\}$. Cần $N+1$ mẫu để có giá trị đầu tiên tại index $N$.
+     - Biến thể Inclusive (`inclusive_current_sample`): chuẩn hóa mẫu hiện tại $x_t$ trong cửa sổ $N$ mẫu kết thúc tại $x_t$ (gồm cả $x_t$). Cần $N$ mẫu để có giá trị đầu tiên tại index $N-1$.
+  4. Bổ sung cấu hình `atr_seed_method: str = "wilder_first_period_sma"` và `zscore_mode: str = "prior_samples_excluding_current"` vào `FeatureSettings` kèm validation nghiêm ngặt.
+  5. Đưa cả 2 biến thể `zscore_{period}` và `zscore_inclusive_{period}` vào snapshot output để phục vụ so sánh song song giữa 2 phương pháp chuẩn hóa.
+  6. Hash đầy đủ `atr_seed_method`, `zscore_mode` và `zscore_window` vào `_formula_hash` để đảm bảo tính bất biến toàn vẹn của snapshot.
+- **Chi tiết kỹ thuật & Quyết định kiến trúc:**
+  - *Hàm `zscore(values, window, *, inclusive=False)` & `zscore_inclusive(values, window)`:*
+    - Khi `inclusive=False`, history là `samples[index - lookback : index]`.
+    - Khi `inclusive=True`, history là `samples[index - lookback + 1 : index + 1]`.
+    - An toàn khi phương sai bằng 0: nếu `standard_deviation == 0.0`, trả về `None` thay vì ném lỗi chia cho 0, bảo đảm hệ thống không diễn giải thành tín hiệu hợp lệ.
+  - *Cập nhật Schema & Formula Hash:*
+    - `_feature_names` bổ sung thêm `f"zscore_inclusive_{settings.zscore_period}"`.
+    - `_warmup_by_feature` tính `zscore_{period}` cần $N+1$ nến (khi exclusive) hoặc $N$ nến (khi inclusive), còn `zscore_inclusive_{period}` cần $N$ nến.
+    - `_formula_hash` ghi nhận cả `atr_seed_method` và `zscore_mode`.
+- **Kết quả kiểm thử:**
+  - Unit tests mới: `tests/unit/test_fx6_atr_wilder_zscore.py` → **5/5 passed in 0.06s** (ATR Wilder 1978, z-score exclusive vs inclusive, zero variance safe, hash tracking, dual snapshot output).
+  - Feature snapshot suite: `tests/unit/test_feature_snapshot.py` → **15/15 passed in 0.08s**.
+  - Warmup 3x suite: `tests/unit/test_fx6_warmup_3x.py` → **4/4 passed in 0.03s**.
+  - E2E Compose test: `tests/e2e/test_rt1_opposing_h01_e2e.py` → **1 passed in 20.33s**.
+  - Linter & Typecheck: `uv run ruff check` và `uv run mypy` clean 100%.
+- **Đã đọc lại mục memory sau cập nhật:** Có.
+
 ### 2026-11-22 — Hoàn tất CRY-445: Quy tắc warm-up 3x period cho EMA và RMA trong feature snapshot (FX-6A)
 
 - **Mục tiêu/phạm vi:**
