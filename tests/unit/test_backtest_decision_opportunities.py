@@ -25,21 +25,21 @@ def _pinned_setup(*, cross=False, intent="TRAINING_BASE", close_on_next=True):
     from tests.unit.test_learning_feature_vector import BASE_TIME, _bars, _replay_bundle
     from tests.unit.test_runtime_replay_evaluator import _setup
 
-    one_hour = list(_bars("1h", count=228, last_open_time=BASE_TIME + timedelta(hours=227)))
+    one_hour = list(_bars("1h", count=620, last_open_time=BASE_TIME + timedelta(hours=619)))
     if cross:
         for index, original in enumerate(one_hour):
-            price = Decimal("120") - Decimal(index) / 10 if index < 224 else Decimal("180")
+            price = Decimal("120") - Decimal(index) / 10 if index < 616 else Decimal("180")
             checksum = hashlib.sha256(f"opportunity:{index}:{price}".encode()).hexdigest()
             one_hour[index] = replace(
                 original,
                 open=price,
                 high=price + 3,
-                low=Decimal("80") if index == 225 and close_on_next else price - 1,
+                low=Decimal("80") if index == 617 and close_on_next else price - 1,
                 close=price + 2,
                 checksum=checksum,
                 source_identity=replace(original.source_identity, checksum=checksum),
             )
-    four_hour = _bars("4h", count=207, last_open_time=BASE_TIME + timedelta(hours=224))
+    four_hour = _bars("4h", count=620, last_open_time=BASE_TIME + timedelta(hours=616))
     source = _replay_bundle({"1h": tuple(one_hour), "4h": four_hour})
     observations = build_backtest_dataset_replay_observations(source, strategy_release_id="h01-v1")
     _, seed, _, gateway, old_manifest = _setup()
