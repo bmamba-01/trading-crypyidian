@@ -123,6 +123,33 @@
   </dl>
 </section>
 
+{% if drawdown_breaker %}
+<!-- Trạng thái ngắt mạch sụt vốn (CRY-197 / FX-2): đọc từ ledger thật, hiển thị hướng dẫn mở lại khi ngắt mạch. -->
+<section id="bot-drawdown-breaker" class="glass-card bot-overview" aria-labelledby="bot-breaker-heading">
+  <div class="bot-overview__head">
+    <h2 id="bot-breaker-heading" class="bot-section-title">{{ ico("drawdown") }}Ngắt mạch sụt vốn (Drawdown Breaker)</h2>
+    <div class="bot-overview__chips">
+      {% if drawdown_breaker.tripped %}
+      <span class="badge badge-danger bot-badge">Đã ngắt mạch</span>
+      {% else %}
+      <span class="badge badge-success bot-badge">Bình thường</span>
+      {% endif %}
+    </div>
+  </div>
+  <dl class="kv-grid bot-status-dl">
+    <div class="kv"><dt>{{ ico("drawdown") }}Sụt giảm hiện tại</dt><dd id="bot-drawdown-pct" class="num">{{ drawdown_breaker.drawdown_pct }}</dd></div>
+    <div class="kv"><dt>{{ ico("warn") }}Ngưỡng ngắt mạch</dt><dd id="bot-drawdown-max-pct" class="num">{{ drawdown_breaker.max_drawdown_pct }}</dd></div>
+    <div class="kv"><dt>{{ ico("pnl") }}Đỉnh vốn</dt><dd class="num">{{ money(drawdown_breaker.peak_equity, quote or "USDT") }}</dd></div>
+    <div class="kv"><dt>{{ ico("asset") }}Vốn hiện tại</dt><dd class="num">{{ money(drawdown_breaker.current_equity, quote or "USDT") }}</dd></div>
+  </dl>
+  {% if drawdown_breaker.tripped %}
+  <p class="bot-notice bot-notice--danger" role="alert" id="bot-drawdown-resume-guidance">
+    {{ drawdown_breaker.resume_guidance_vi }}
+  </p>
+  {% endif %}
+</section>
+{% endif %}
+
 <!-- Chỉ số hiệu năng 30 ngày: đọc từ ledger PAPER qua báo cáo bot; thiếu nguồn thì ghi rõ. -->
 <section class="trading-metrics-block bot-kpi" aria-labelledby="bot-kpi-heading">
   <h2 id="bot-kpi-heading" class="visually-hidden">Chỉ số hiệu năng 30 ngày</h2>

@@ -86,6 +86,8 @@ class RiskLimits:
     account_max_open_risk_fraction: Decimal = Decimal("1.0")
     bot_max_open_risk_fraction: Decimal | None = None
     liquidation_safety_buffer: Decimal = DEFAULT_LIQUIDATION_SAFETY_BUFFER
+    # CRY-197 (FX-2): biên trượt gap vượt SL cộng thêm vào cổng lỗ xấu nhất ([0, 1)).
+    stop_gap_buffer_fraction: Decimal = ZERO
 
     def __post_init__(self) -> None:
         fractions = [
@@ -103,6 +105,12 @@ class RiskLimits:
             or not ZERO <= self.liquidation_safety_buffer < Decimal("1")
         ):
             raise ValueError("Biên an toàn thanh lý phải nằm trong khoảng [0, 1).")
+        if (
+            not isinstance(self.stop_gap_buffer_fraction, Decimal)
+            or not self.stop_gap_buffer_fraction.is_finite()
+            or not ZERO <= self.stop_gap_buffer_fraction < Decimal("1")
+        ):
+            raise ValueError("Biên trượt gap vượt SL phải là Decimal hữu hạn trong [0, 1).")
         if not ZERO < self.per_trade_risk_fraction <= Decimal("1"):
             raise ValueError("Tỷ lệ risk mỗi lệnh phải nằm trong (0, 1].")
         if not ZERO < self.max_concentration_fraction <= Decimal("1"):

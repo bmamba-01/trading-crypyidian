@@ -142,6 +142,8 @@ class OperationalHealthService:
                 "kill_state": str(workspace.get("kill_state", "ACTIVE")),
                 "runtime_bot_count": len(runtime),
                 "telemetry": telemetry.to_evidence(),
+                "telemetry_available": True,
+                "telemetry_source": "postgres_ledger",
             },
             evaluated_at=evaluated_at,
         )

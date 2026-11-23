@@ -13,6 +13,37 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 
 ## Nhật ký các vòng
 
+### 2026-11-23 — Hoàn tất CRY-197: Đồng bộ ngắt mạch drawdown trong replay, telemetry thật/fallback, bot detail, biên gap SL và múi giờ workspace (FX-2/con-lai)
+
+- **Mục tiêu/phạm vi:**
+  1. Triển khai theo quy trình TDD và nghiệm thu trọn vẹn 5 hạng mục của ticket `CRY-197` (`[FX-2/con-lai]` thuộc parent `CRY-24` / `[FX-2]`):
+     - (1) Replay/backtest áp drawdown breaker và cổng lỗ xấu nhất đồng nhất với runtime (`ReplayAccountState.project()`).
+     - (2) `/admin/api/operations/health` và dashboard đánh dấu tường minh nguồn telemetry (`telemetry_available: True` / `telemetry_source: "postgres_ledger"` khi có `OperationalHealthService`, và `telemetry_available: False` / `telemetry_source: "unavailable_no_db"` khi fallback thiếu DB).
+     - (3) Trang chi tiết bot (`GET /admin/bots/{bot_id}`) hiển thị khối **Ngắt mạch sụt vốn (Drawdown Breaker)** đọc từ ledger thật (sụt giảm hiện tại, ngưỡng ngắt mạch, đỉnh vốn, vốn hiện tại, badge trạng thái) kèm hộp cảnh báo và hướng dẫn mở lại (Tạm dừng → Tiếp tục bot với MFA + lý do) khi ngắt mạch.
+     - (4) Cổng lỗ xấu nhất trong `RiskEngine` hỗ trợ biên trượt gap vượt SL (`RiskLimits.stop_gap_buffer_fraction`, mặc định `0`, kiểm định `[0, 1)`): `worst_case = (open_risk + plan.estimated_loss) * (1 + stop_gap_buffer_fraction)` cho cả `DAILY_LOSS_CAP_WOULD_BREACH` và `ROLLING_LOSS_CAP_WOULD_BREACH`.
+     - (5) Cửa sổ lỗ ngày hỗ trợ múi giờ cấu hình workspace (`RiskSettings.loss_window_timezone`, `None` = mặc định `UTC` và bị lược khỏi JSON để không đổi hash cấu hình cũ) thông qua helper `loss_window_policy_for()`, dùng chung tại runtime (`paper_market_context.py`), replay (`runtime_replay_evaluator.py`) và trang khẩu vị rủi ro (`risk_appetite_service.py`).
+- **Thay đổi mã nguồn:**
+  - `src/trading_bot/domain/risk/planner.py`: Thêm `stop_gap_buffer_fraction: Decimal = ZERO` kèm validation `[0, 1)` vào `RiskLimits`.
+  - `src/trading_bot/domain/risk/engine.py`: Áp `gap_multiplier = 1 + limits.stop_gap_buffer_fraction` vào `worst_case` trong cổng lỗ ngày/rolling.
+  - `src/trading_bot/domain/risk/risk_windows.py`: Thêm `loss_window_policy_for(timezone_name, daily_reset_hour=0)`.
+  - `src/trading_bot/config/workspace_settings.py`: Thêm `loss_window_timezone` vào `RiskSettings` với validator `ZoneInfo` và `exclude_if=None`.
+  - `src/trading_bot/application/runtime_replay_evaluator.py`: Áp `evaluate_drawdown_breaker` và `loss_window_policy_for` trong `ReplayAccountState.project()`.
+  - `src/trading_bot/application/paper_market_context.py`: Truyền `loss_window_policy_for(risk.loss_window_timezone)` vào `_loss_windows`.
+  - `src/trading_bot/application/operational_telemetry.py` & `src/trading_bot/admin/web_router.py`: Gắn cờ `telemetry_available` và `telemetry_source`; bổ sung `_load_bot_drawdown_breaker` và `_format_drawdown_breaker_view` cho `bot_detail`.
+  - `src/trading_bot/admin/risk_appetite_service.py`: Nối `loss_window_policy_for(settings.risk.loss_window_timezone)` khi đọc lỗ ngày.
+  - `src/trading_bot/templates/admin/bot_detail.html`: Bổ sung khối `#bot-drawdown-breaker` hiển thị trạng thái ngắt mạch và `#bot-drawdown-resume-guidance`.
+  - `tests/unit/test_cry197_fx2_remaining.py`: 7 unit tests bao phủ đủ 5 hạng mục.
+  - `docs/research/glossary-vi.md`: Thêm mục BM (2 thuật ngữ mới EN→VI).
+- **Lỗi phát hiện & xử lý:**
+  - `mypy` phát hiện 3 lỗi import/method ở nhánh DB của `_load_bot_drawdown_breaker` (`UnitOfWork` ở `trading_bot.application.outbox`, `mark_policy_from` ở `trading_bot.application.workspace_risk`, và method `load_effective_config` trên `WorkspaceSettingsRepository`). Đã sửa triệt để; `mypy` sạch 10/10 file.
+  - Lưu ý hồi quy ngoài phạm vi `CRY-197`: 6 test trong `tests/unit/test_runtime_replay_evaluator.py` gọi `_pinned_setup()` từ `test_backtest_decision_opportunities.py` gặp `QUALITY_NOT_READY: Feature 1h:ema_20 không READY` do fixture seed ít hơn 600 nến sau quy tắc warm-up 3x của `CRY-445` (FX-6A); cần cập nhật số nến fixture ở vòng tiếp theo.
+- **Kết quả kiểm thử:**
+  - Unit tests mới: `uv run pytest tests/unit/test_cry197_fx2_remaining.py -v` → **7/7 passed in 1.81s**.
+  - Regression unit tests FX-2 / Risk / Health / Bot Detail / Risk Appetite: **84/84 passed in 3.32s**.
+  - E2E Compose PostgreSQL thật: `PYTHONPATH=. uv run pytest tests/e2e/test_rt1_opposing_h01_e2e.py -v --tb=short` → **1 passed in 17.84s**.
+  - Linter & Typecheck: `uv run ruff check` và `uv run mypy` trên cả 10 file sạch 100%.
+- **Đã đọc lại mục memory sau cập nhật:** Có.
+
 ### 2026-11-22 — Hoàn tất CRY-448: Bộ dữ liệu golden tham chiếu độc lập và cập nhật glossary EN→VI (FX-6D)
 
 - **Mục tiêu/phạm vi:**

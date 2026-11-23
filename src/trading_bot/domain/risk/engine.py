@@ -47,8 +47,7 @@ class RiskState:
     pending_reservation_count: int = 0
     pending_reservation_notional: Decimal = ZERO
     pending_symbol_reservation_notional: Decimal = ZERO
-    # FX-2: ngắt mạch drawdown PAPER do context provider đo từ ledger (domain/risk/
-    # drawdown_breaker.py). Replay/backtest để mặc định False (chưa áp breaker).
+    # FX-2: ngắt mạch drawdown do context provider (runtime) và ReplayAccountState (replay) đo.
     drawdown_breaker_tripped: bool = False
     # RISK-1: phần reservation đang giữ chỗ thuộc cùng nhóm tương quan và chính sách nhóm tùy chọn.
     pending_group_reservation_risk: Decimal = ZERO
@@ -311,8 +310,10 @@ class RiskEngine:
             return reject("DAILY_LOSS_CAP_REACHED", "Đã chạm giới hạn lỗ ngày.")
         if state.realized_loss_rolling >= limits.max_rolling_loss:
             return reject("ROLLING_LOSS_CAP_REACHED", "Đã chạm giới hạn lỗ rolling.")
-        # FX-2: lỗ xấu nhất nếu mọi lệnh đang mở/đang giữ chỗ và lệnh mới cùng chạm SL.
-        worst_case = open_risk + plan.estimated_loss
+        # FX-2 (CRY-197): lỗ xấu nhất nếu mọi lệnh đang mở/đang giữ chỗ và lệnh mới cùng chạm SL,
+        # cộng thêm biên trượt giá/gap vượt SL khi cấu hình stop_gap_buffer_fraction > 0.
+        gap_multiplier = Decimal("1") + limits.stop_gap_buffer_fraction
+        worst_case = (open_risk + plan.estimated_loss) * gap_multiplier
         if state.realized_loss_today + worst_case > limits.max_daily_loss:
             return reject(
                 "DAILY_LOSS_CAP_WOULD_BREACH",

@@ -94,8 +94,10 @@ from trading_bot.domain.risk.planner import (
 )
 from trading_bot.domain.risk.risk_windows import (
     RISK_LOSS_WINDOW_POLICY,
+    LossWindowPolicy,
     RealizedTradePnlEvent,
     calculate_loss_windows,
+    loss_window_policy_for,
 )
 from trading_bot.domain.strategy.contracts import (
     DecisionSnapshot,
@@ -385,7 +387,12 @@ class PostgresPaperDecisionContextProvider:
         totals = await RiskReservationRepository(session)._active_totals(
             workspace_id=workspace_id, account_id=account.account_id, symbol=evidence.symbol
         )
-        losses = await self._loss_windows(session, account, as_of=evaluated_at)
+        losses = await self._loss_windows(
+            session,
+            account,
+            as_of=evaluated_at,
+            policy=loss_window_policy_for(risk.loss_window_timezone),
+        )
         breaker = await self._drawdown_breaker(
             session,
             account,
@@ -724,7 +731,14 @@ class PostgresPaperDecisionContextProvider:
         margin = sum((Decimal(row[3]) for row in rows), Decimal("0"))
         return exposures, margin
 
-    async def _loss_windows(self, session: AsyncSession, account: Any, *, as_of: datetime) -> Any:
+    async def _loss_windows(
+        self,
+        session: AsyncSession,
+        account: Any,
+        *,
+        as_of: datetime,
+        policy: LossWindowPolicy = RISK_LOSS_WINDOW_POLICY,
+    ) -> Any:
         rows = (
             await session.execute(
                 select(TradeRecord.id, TradeRecord.closed_at, TradeRecord.net_pnl).where(
@@ -741,7 +755,7 @@ class PostgresPaperDecisionContextProvider:
             for trade_id, closed_at, net_pnl in rows
             if closed_at is not None
         ]
-        return calculate_loss_windows(events, as_of=as_of, policy=RISK_LOSS_WINDOW_POLICY)
+        return calculate_loss_windows(events, as_of=as_of, policy=policy)
 
     async def _drawdown_breaker(
         self,

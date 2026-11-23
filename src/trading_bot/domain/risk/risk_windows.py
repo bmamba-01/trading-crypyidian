@@ -33,8 +33,22 @@ class LossWindowPolicy:
 
 # Quyết định của chủ sở hữu (2026-11-14): giới hạn lỗ ngày reset lúc 00:00 UTC, trùng ngày
 # giao dịch của sàn; lỗ lũy kế trượt 24 giờ. Mọi cổng rủi ro (runtime, replay, health) dùng
-# đúng chính sách này. Múi giờ Asia/Ho_Chi_Minh chỉ dùng để hiển thị.
+# đúng chính sách này khi workspace không cấu hình múi giờ riêng.
 RISK_LOSS_WINDOW_POLICY = LossWindowPolicy()
+
+
+def loss_window_policy_for(
+    timezone_name: str | None,
+    *,
+    daily_reset_hour: int = 0,
+) -> LossWindowPolicy:
+    """Chính sách cửa sổ lỗ theo múi giờ cấu hình workspace; None = mặc định UTC (FX-2)."""
+    if timezone_name is None and daily_reset_hour == 0:
+        return RISK_LOSS_WINDOW_POLICY
+    return LossWindowPolicy(
+        timezone_name=timezone_name or RISK_LOSS_WINDOW_POLICY.timezone_name,
+        daily_reset_hour=daily_reset_hour,
+    )
 
 
 @dataclass(frozen=True, slots=True)

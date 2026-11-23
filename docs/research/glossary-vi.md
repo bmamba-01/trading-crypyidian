@@ -1140,4 +1140,12 @@ Các khái niệm đã có (walk-forward validation, embargo, expectancy, breake
 | Normalized candle range (by ATR) | Biên độ nến chuẩn hóa theo ATR | Tỷ lệ giữa biên độ tuyệt đối nến và biến động trung bình: $\frac{High - Low}{ATR}$. Giúp hệ thống nhận diện và triệt tiêu các nến doji 1-2 tick giả mạo có tỷ lệ râu cao nhưng biên độ không đáng kể. Trả về 0 khi nến phẳng hoặc ATR không hợp lệ. | [anatomy.py](../../src/trading_bot/domain/strategy_card/anatomy.py) · [pipeline_engine.py](../../src/trading_bot/application/strategy_pipeline/pipeline_engine.py) |
 | Golden reference test dataset | Bộ dữ liệu vàng tham chiếu độc lập | Tập vector kiểm thử tính toán sẵn bằng công cụ toán học độc lập (không qua pipeline dự án) đối chiếu với output của thuật toán để xác nhận tính chính xác tuyệt đối từng con số của EMA, RMA/ATR, Z-Score và Anatomy. | [test_fx6_golden_dataset.py](../../tests/unit/test_fx6_golden_dataset.py) |
 
+## BM. Đồng bộ ngắt mạch, biên gap SL và múi giờ cửa sổ lỗ (FX-2/CRY-197, 23/11/2026)
+
+| Thuật ngữ (EN) | Tiếng Việt | Định nghĩa và giới hạn | Nguồn |
+|---|---|---|---|
+| Stop-gap buffer fraction | Biên trượt gap vượt SL | Tỷ lệ dự phòng bổ sung vào cổng lỗ xấu nhất (`worst_case = (open_risk + plan.estimated_loss) × (1 + stop_gap_buffer_fraction)`) để tính tới khả năng giá nhảy gap qua mức cắt lỗ trong biến động mạnh. Giá trị thuộc $[0, 1)$, mặc định `0` để tương thích ngược. | [planner.py](../../src/trading_bot/domain/risk/planner.py) · [engine.py](../../src/trading_bot/domain/risk/engine.py) |
+| Workspace loss-window timezone | Múi giờ cửa sổ lỗ của workspace | Múi giờ IANA tùy chọn (`risk.loss_window_timezone`) xác định ranh giới 00:00 reset lỗ ngày dùng chung cho runtime, replay và trang khẩu vị rủi ro; `None` giữ mặc định `UTC` và bị lược khỏi JSON để không đổi hash cấu hình cũ. | [workspace_settings.py](../../src/trading_bot/config/workspace_settings.py) · [risk_windows.py](../../src/trading_bot/domain/risk/risk_windows.py) |
+
+
 

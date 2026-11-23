@@ -49,6 +49,11 @@ from trading_bot.domain.execution.paper import (
 )
 from trading_bot.domain.learning.evaluation import EvaluationTrade, calculate_entry_features_hash
 from trading_bot.domain.learning.feature_vector import LearningFeatureVector
+from trading_bot.domain.risk.drawdown_breaker import (
+    ClosedTradePnl,
+    drawdown_policy_for,
+    evaluate_drawdown_breaker,
+)
 from trading_bot.domain.risk.engine import RiskDecision, RiskState
 from trading_bot.domain.risk.planner import (
     AccountSnapshot,
@@ -59,9 +64,9 @@ from trading_bot.domain.risk.planner import (
     TradePlan,
 )
 from trading_bot.domain.risk.risk_windows import (
-    RISK_LOSS_WINDOW_POLICY,
     RealizedTradePnlEvent,
     calculate_loss_windows,
+    loss_window_policy_for,
 )
 from trading_bot.domain.strategy.contracts import (
     DecisionSnapshot,
@@ -251,9 +256,10 @@ class ReplayAccountState:
 
         self._unrealized_pnl = unrealized_pnl
         realized_pnl = sum(self._closed_pnl.values(), ZERO)
-        # Lỗ ngày reset lúc 00:00 UTC và lỗ lũy kế trượt 24 giờ, cùng một hàm với runtime.
-        # Trước đây replay cộng dồn mọi khoản lỗ từ đầu kỳ nên chạm trần lỗ ngày rồi không
-        # bao giờ mở lại, làm backtest dài ngày ngừng giao dịch sai.
+        # Lỗ ngày reset theo múi giờ cấu hình workspace (mặc định 00:00 UTC) và lỗ trượt 24 giờ,
+        # dùng cùng một hàm với runtime (CRY-197 / FX-2).
+        risk_cfg = context.published_settings.settings.risk
+        loss_policy = loss_window_policy_for(risk_cfg.loss_window_timezone)
         windows = calculate_loss_windows(
             (
                 RealizedTradePnlEvent(
@@ -264,7 +270,7 @@ class ReplayAccountState:
                 for position_id, amount in self._closed_pnl.items()
             ),
             as_of=context.evaluated_at,
-            policy=RISK_LOSS_WINDOW_POLICY,
+            policy=loss_policy,
         )
         # Lỗ có sẵn trong seed không có mốc từng lệnh: tính vào cửa sổ chứa thời điểm chụp seed.
         seed_loss_today = (
@@ -288,6 +294,20 @@ class ReplayAccountState:
             equity=self._initial_equity + realized_pnl + unrealized_pnl,
             available_margin=self._initial_margin - allocated_margin,
         )
+        # CRY-197 (FX-2): replay áp ngắt mạch drawdown đồng nhất với runtime PAPER.
+        drawdown_tripped = context.risk_state.drawdown_breaker_tripped
+        if not drawdown_tripped and self._initial_equity > ZERO:
+            drawdown_state = evaluate_drawdown_breaker(
+                seed_equity=self._initial_equity,
+                closed_trades=(
+                    ClosedTradePnl(closed_at=self._closed_at[position_id], net_pnl=amount)
+                    for position_id, amount in self._closed_pnl.items()
+                ),
+                current_equity=account.equity,
+                baseline_at=None,
+                policy=drawdown_policy_for(risk_cfg.max_drawdown_fraction),
+            )
+            drawdown_tripped = drawdown_state.tripped
         risk_state = replace(
             context.risk_state,
             account_captured_at=captured_at,
@@ -302,6 +322,7 @@ class ReplayAccountState:
             pending_reservation_notional=pending_notional,
             pending_symbol_reservation_notional=pending_symbol_notional,
             pending_reservation_count=pending_count,
+            drawdown_breaker_tripped=drawdown_tripped,
         )
         return account, risk_state, tuple(open_exposures)
 

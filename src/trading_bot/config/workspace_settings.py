@@ -151,6 +151,26 @@ class RiskSettings(FrozenSettingsModel):
     max_drawdown_fraction: Decimal | None = Field(
         default=None, exclude_if=lambda value: value is None
     )
+    # CRY-197 (FX-2): múi giờ IANA cho cửa sổ lỗ ngày (None = mặc định UTC để giữ nguyên hash cũ).
+    loss_window_timezone: str | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+
+    @field_validator("loss_window_timezone", mode="before")
+    @classmethod
+    def validate_loss_window_timezone(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("Múi giờ cửa sổ lỗ phải là chuỗi IANA không rỗng.")
+        cleaned = value.strip()
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+        try:
+            ZoneInfo(cleaned)
+        except ZoneInfoNotFoundError as exc:
+            raise ValueError(f"Múi giờ không hợp lệ: {cleaned}") from exc
+        return cleaned
 
     @field_validator("workspace_max_open_risk_fraction", mode="before")
     @classmethod

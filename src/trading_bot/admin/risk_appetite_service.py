@@ -77,6 +77,7 @@ from trading_bot.domain.risk.drawdown_breaker import (
     drawdown_policy_for,
 )
 from trading_bot.domain.risk.planner import RiskLimits
+from trading_bot.domain.risk.risk_windows import loss_window_policy_for
 
 logger = logging.getLogger(__name__)
 
@@ -437,7 +438,12 @@ class RiskAppetiteService:
         ref = _AccountRef(account_id=account.id, bot_id=bot.id)
         try:
             async with session.begin_nested():
-                losses = await provider._loss_windows(session, ref, as_of=now)
+                losses = await provider._loss_windows(
+                    session,
+                    ref,
+                    as_of=now,
+                    policy=loss_window_policy_for(settings.risk.loss_window_timezone),
+                )
                 row["loss_today"] = _text(losses.realized_loss_today)
                 row["loss_rolling"] = _text(losses.realized_loss_rolling)
                 equity = await AccountEquityRepository(session).load_paper_equity_snapshot(

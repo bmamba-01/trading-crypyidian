@@ -755,6 +755,8 @@ async def _build_operations_health_data(
             "kill_state": str(workspace.get("kill_state", "ACTIVE")),
             "runtime_bot_count": len(runtime),
             "telemetry": telemetry.to_evidence(),
+            "telemetry_available": False,
+            "telemetry_source": "unavailable_no_db",
         },
         evaluated_at=now_utc,
     )
@@ -1640,6 +1642,112 @@ def _recent_trade_view(trade: dict[str, Any], plan: dict[str, Any] | None = None
     }
 
 
+def _format_drawdown_breaker_view(state: Any) -> dict[str, Any]:
+    """Chuyển DrawdownBreakerState sang dict hiển thị kèm hướng dẫn mở lại (CRY-197)."""
+    drawdown_pct = state.drawdown_fraction * Decimal("100")
+    max_drawdown_pct = state.max_drawdown_fraction * Decimal("100")
+    return {
+        "tripped": bool(state.tripped),
+        "drawdown_pct": f"{drawdown_pct:.2f}%",
+        "max_drawdown_pct": f"{max_drawdown_pct:.2f}%",
+        "peak_equity": str(state.peak_equity),
+        "current_equity": str(state.current_equity),
+        "baseline_at": state.baseline_at.isoformat() if state.baseline_at else None,
+        "policy_version": str(state.policy_version),
+        "resume_guidance_vi": (
+            "Cầu dao sụt vốn đã ngắt mạch và đang chặn mở vị thế mới (thoát lệnh bảo vệ vẫn "
+            "hoạt động). Để mở lại: kiểm tra nguyên nhân sụt vốn, sau đó bấm «Tạm dừng» rồi "
+            "«Tiếp tục» bot (yêu cầu xác thực MFA gần đây và ghi rõ lý do) để đặt mốc đỉnh vốn mới."
+        ),
+    }
+
+
+async def _load_bot_drawdown_breaker(
+    request: Request,
+    principal: Principal,
+    bot_id: UUID,
+    bot: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Đọc trạng thái ngắt mạch sụt vốn thật cho trang chi tiết bot (CRY-197)."""
+    raw_account = bot.get("account") if isinstance(bot, dict) else None
+    raw_account_id = raw_account.get("id") if isinstance(raw_account, dict) else None
+    account_id: UUID | None = None
+    if raw_account_id:
+        try:
+            account_id = UUID(str(raw_account_id))
+        except ValueError:
+            account_id = None
+
+    provider = getattr(request.app.state, "bot_drawdown_breaker_provider", None)
+    if provider is not None:
+        try:
+            state = await provider.load_bot_drawdown_breaker(
+                workspace_id=principal.workspace_id,
+                bot_id=bot_id,
+                account_id=account_id,
+            )
+            return _format_drawdown_breaker_view(state) if state is not None else None
+        except Exception:  # noqa: BLE001 — trang chi tiết bot chỉ đọc, không được hỏng vì breaker
+            return None
+
+    session_factory = getattr(request.app.state, "database_session_factory", None)
+    if session_factory is None or account_id is None:
+        return None
+
+    from types import SimpleNamespace
+
+    from trading_bot.adapters.database.repositories.account_equity import AccountEquityRepository
+    from trading_bot.adapters.database.repositories.workspace_settings import (
+        WorkspaceSettingsRepository,
+    )
+    from trading_bot.application.outbox import UnitOfWork
+    from trading_bot.application.paper_market_context import (
+        PostgresPaperDecisionContextProvider,
+    )
+    from trading_bot.application.workspace_risk import mark_policy_from
+    from trading_bot.domain.risk.drawdown_breaker import drawdown_policy_for
+
+    now = datetime.now(UTC)
+    try:
+        async with UnitOfWork(
+            session_factory,
+            workspace_id=principal.workspace_id,
+            actor_membership_id=principal.membership_id,
+            snapshot_read_only=True,
+        ) as uow:
+            published = await WorkspaceSettingsRepository(uow.session).load_effective_config(
+                workspace_id=principal.workspace_id
+            )
+            if published is None:
+                return None
+            settings = published.settings
+            equity = await AccountEquityRepository(uow.session).load_paper_equity_snapshot(
+                workspace_id=principal.workspace_id,
+                bot_id=bot_id,
+                account_id=account_id,
+                as_of=now,
+                max_equity_age=timedelta(seconds=settings.risk.max_equity_age_seconds),
+                max_mark_age=timedelta(seconds=settings.risk.max_mark_age_seconds),
+                mark_policy=mark_policy_from(settings),
+            )
+            if not equity.known or not equity.seed_capital:
+                return None
+            ctx_provider = PostgresPaperDecisionContextProvider(
+                session_factory, workspace_id=principal.workspace_id
+            )
+            state = await ctx_provider._drawdown_breaker(
+                uow.session,
+                SimpleNamespace(account_id=account_id, bot_id=bot_id),
+                as_of=now,
+                equity=equity.equity_amount,
+                seed=equity.seed_capital,
+                policy=drawdown_policy_for(settings.risk.max_drawdown_fraction),
+            )
+            return _format_drawdown_breaker_view(state)
+    except Exception:  # noqa: BLE001 — lỗi DB/chưa seed chỉ ẩn khối breaker, không làm hỏng trang
+        return None
+
+
 async def _get_bot_trading_data(
     request: Request,
     principal: Principal,
@@ -2027,6 +2135,7 @@ async def bot_detail(
 
     bot_view = _bot_view(bot, runtime)
     trading_data = await _get_bot_trading_data(request, identity.principal, bot_id)
+    drawdown_breaker = await _load_bot_drawdown_breaker(request, identity.principal, bot_id, bot)
     decision_insights: dict[str, Any] = {"narrative": [], "missing_vi": None}
     reporting = getattr(request.app.state, "bot_reporting_service", None)
     if reporting is not None:
@@ -2105,6 +2214,7 @@ async def bot_detail(
             ),
             "exit_review": exit_review,
             "decision_insights": decision_insights,
+            "drawdown_breaker": drawdown_breaker,
             "trading_data_available": trading_data["data_available"],
             "metrics": trading_data["metrics"],
             "positions": trading_data["positions"],
