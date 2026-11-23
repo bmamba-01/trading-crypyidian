@@ -90,6 +90,20 @@ REQUIRED_KEYS = {
     "layer_l4_context_gate",
     "layer_l5_trigger",
     "layer_l6_zones",
+    # Chỉ số mới MT-1 và CK-1..CK-12 (CRY-200)
+    "total_equity",
+    "sharpe_ratio",
+    "sortino_ratio",
+    "calmar_ratio",
+    "mfe_mae",
+    "drawdown_pct",
+    "r_multiple_distribution",
+    "process_adherence_score",
+    "setup_progress",
+    "threshold_counterfactual",
+    "vwap_band",
+    "cvd_delta",
+    "liquidation_distance",
 }
 
 
@@ -117,7 +131,9 @@ def _templates_object() -> Jinja2Templates:
 def test_every_report_metric_has_help() -> None:
     missing = [key for key, _title, _monetary in METRICS if key not in HELP]
     assert missing == [], f"Chỉ số trong METRICS thiếu chú giải: {missing}"
-    assert len(METRICS) == 15
+    keys = [key for key, _title, _monetary in METRICS]
+    assert len(keys) >= 15
+    assert len(set(keys)) == len(keys), "METRICS không được trùng khóa"
 
 
 def test_required_ui_keys_have_help() -> None:

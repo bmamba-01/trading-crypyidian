@@ -906,6 +906,7 @@ async def dashboard(
             "ready_count": sum(bot.readiness == "READY" for bot in bot_views),
             "dashboard_reports": dashboard_reports,
             "dashboard_chart": _dashboard_performance_chart(dashboard_reports),
+            "dashboard_live_help": _dashboard_live_help_payload(),
             "strategy_explainers": _strategy_explainers(dashboard_reports),
             "metrics_loaded": metrics_loaded,
             "metrics_message": metrics_message,
@@ -1273,6 +1274,26 @@ def _strategy_explainers(reports: list[dict[str, Any]]) -> dict[str, dict[str, A
             "signals": signals,
         }
     return explainers
+
+
+def _dashboard_live_help_payload() -> dict[str, dict[str, str]]:
+    """Xuất chú giải từ `metric_help.HELP` cho vùng tổng `dashboard-live.js` (CRY-200 / UI-1)."""
+    from trading_bot.admin.metric_help import HELP
+
+    keys = [key for key, _title, _monetary in METRICS] + ["total_equity"]
+    payload: dict[str, dict[str, str]] = {}
+    for key in keys:
+        entry = HELP.get(key)
+        if entry is None:
+            continue
+        payload[key] = {
+            "title_vi": entry.title_vi,
+            "definition_vi": entry.definition_vi,
+            "formula_vi": entry.formula_vi,
+            "reading_vi": entry.reading_vi,
+            "limits_vi": entry.limits_vi,
+        }
+    return payload
 
 
 def _dashboard_performance_chart(reports: list[dict[str, Any]]) -> dict[str, Any]:

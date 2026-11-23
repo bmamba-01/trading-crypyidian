@@ -51,6 +51,8 @@ _G_POST_MORTEM = (
 )
 _G_WP06 = "v-thuật-ngữ-mới-về-báo-cáo-và-scorer-wp-06-en--vi"
 _G_UI = "w-chú-giải-chỉ-số-và-biểu-đồ-trên-admin-web-ui-1"
+_G_AI_SETUP = "ai-bảng-entry-và-tiến-độ-setup-ck-6-15112026"
+_G_PERF = "bk-chỉ-số-hiệu-suất-chuyên-nghiệp--diễn-giải-mt-1-mi-2-mi-6-sig-8-18112026"
 
 _SCOPE = "Tính riêng cho từng tài sản định giá (quote asset), trên các giao dịch PAPER đã đóng"
 _WINDOW = "trong khoảng báo cáo đang xem (tính theo thời điểm đóng, không gồm mốc kết thúc)"
@@ -1092,6 +1094,139 @@ HELP: dict[str, MetricHelp] = {
     **_CHART,
     **_LAYERS,
     **_PAPER_PERFORMANCE,
+    "total_equity": MetricHelp(
+        title_vi="Tổng vốn",
+        definition_vi=(
+            "Vốn ban đầu của tài khoản PAPER cộng lãi/lỗ ròng đã chốt trong khoảng báo cáo."
+        ),
+        formula_vi="Tổng vốn = vốn ban đầu + lãi/lỗ ròng đã chốt",
+        reading_vi=(
+            "Kèm phần trăm thay đổi so với vốn ban đầu để theo dõi tăng trưởng tài khoản."
+        ),
+        limits_vi=(
+            "Chưa gồm lãi/lỗ chưa chốt của các vị thế đang mở; chỉ tính trong khoảng thời gian "
+            "cửa sổ báo cáo."
+        ),
+        glossary_anchor=_G_FUTURES,
+    ),
+    # --- Chỉ số chuyên nghiệp MT-1 (18/11/2026) ---
+    "sharpe_ratio": MetricHelp(
+        title_vi="Tỷ số Sharpe năm hóa",
+        definition_vi=(
+            "Đo lợi suất vượt trội trên mỗi đơn vị biến động toàn phần của chuỗi lợi suất ngày."
+        ),
+        formula_vi="(mean(r_d - r_f) / std(r_d - r_f, ddof=1)) × √365",
+        reading_vi="Càng cao càng cho thấy lợi nhuận ổn định so với độ biến động.",
+        limits_vi="Trả về không xác định khi mẫu ít hơn 2 ngày hoặc độ lệch chuẩn bằng 0.",
+        glossary_anchor=_G_PERF,
+    ),
+    "sortino_ratio": MetricHelp(
+        title_vi="Tỷ số Sortino năm hóa",
+        definition_vi=(
+            "Tương tự Sharpe nhưng chỉ phạt phần biến động bất lợi dưới mức mục tiêu MAR."
+        ),
+        formula_vi="(mean(r_d - MAR) / downside_dev(r_d, MAR)) × √365",
+        reading_vi="Phản ánh tốt hơn hiệu quả kiểm soát rủi ro giảm giá so với biến động tăng.",
+        limits_vi="Không xác định khi chưa có đủ ngày quan sát hoặc không có ngày lỗ dưới MAR.",
+        glossary_anchor=_G_PERF,
+    ),
+    "calmar_ratio": MetricHelp(
+        title_vi="Tỷ số Calmar",
+        definition_vi="Tỷ lệ giữa lợi suất năm hóa và mức sụt giảm vốn tối đa (%).",
+        formula_vi="Lợi suất năm hóa (%) ÷ Max Drawdown (%)",
+        reading_vi="Giá trị lớn hơn 1 cho thấy lợi suất năm hóa vượt mức sụt giảm sâu nhất.",
+        limits_vi="Không xác định khi Max Drawdown bằng 0 hoặc mẫu nhỏ hơn 2 ngày.",
+        glossary_anchor=_G_PERF,
+    ),
+    "mfe_mae": MetricHelp(
+        title_vi="MFE / MAE",
+        definition_vi=(
+            "Biên độ lãi thuận lợi nhất (MFE) và lỗ bất lợi nhất (MAE) trong thời gian giữ lệnh."
+        ),
+        formula_vi="MFE = đỉnh lợi nhuận chưa chốt; MAE = đáy lỗ chưa chốt trong suốt lệnh",
+        reading_vi="Dùng để đánh giá điểm vào và độ rộng dừng lỗ/chốt lời theo quy trình.",
+        limits_vi="Phụ thuộc độ mịn của chuỗi nến ghi nhận trong suốt thời gian mở vị thế.",
+        glossary_anchor=_G_PERF,
+    ),
+    "drawdown_pct": MetricHelp(
+        title_vi="Sụt giảm vốn (%)",
+        definition_vi="Tỷ lệ phần trăm giảm từ đỉnh vốn mark-to-market lũy kế tới thời điểm t.",
+        formula_vi="max(0, (peak_t - equity_t) / peak_t × 100)",
+        reading_vi="Dùng làm thước đo chính cho cầu dao ngắt mạch drawdown của PAPER và replay.",
+        limits_vi="Phụ thuộc tần suất cập nhật giá đánh dấu (mark price) của từng nến.",
+        glossary_anchor=_G_PERF,
+    ),
+    "r_multiple_distribution": MetricHelp(
+        title_vi="Phân phối bội số R",
+        definition_vi=(
+            "Thống kê phân bố bội số R (net_pnl ÷ planned_risk) qua 6 nhóm từ <= -2R tới >= 2R."
+        ),
+        formula_vi="R = lãi/lỗ ròng ÷ rủi ro dự kiến ban đầu",
+        reading_vi="Giúp phát hiện chiến lược thắng đều hay chỉ nhờ vài lệnh ngoại lệ cực lớn.",
+        limits_vi="Cần kế hoạch lệnh có rủi ro dự kiến dương và mẫu lệnh đóng đủ lớn.",
+        glossary_anchor=_G_PERF,
+    ),
+    "process_adherence_score": MetricHelp(
+        title_vi="Điểm tuân thủ quy trình",
+        definition_vi=(
+            "Tỷ lệ phần trăm các tiêu chí quy trình hậu kiểm đạt được trên một lệnh đã đóng."
+        ),
+        formula_vi="Số tiêu chí quy trình đạt ÷ tổng số tiêu chí áp dụng × 100%",
+        reading_vi="Chấm chất lượng thực thi tách biệt với may rủi của kết quả lãi/lỗ.",
+        limits_vi="Các tiêu chí thiếu dữ liệu đầu vào sẽ bị loại khỏi mẫu số đánh giá.",
+        glossary_anchor=_G_PERF,
+    ),
+    # --- Chỉ số buồng lái CK-1..CK-12 (15–16/11/2026) ---
+    "setup_progress": MetricHelp(
+        title_vi="Tiến độ setup",
+        definition_vi="Số điều kiện đã thỏa trên tổng số điều kiện của chiến lược ở nến mới nhất.",
+        formula_vi="Số điều kiện đạt ÷ tổng điều kiện chiến lược",
+        reading_vi="Cho biết chiến lược đang tiến gần tới điểm kích hoạt hay còn thiếu cổng nào.",
+        limits_vi=(
+            "Chỉ phản ánh trạng thái tại thời điểm đánh giá gần nhất, không dự báo tương lai."
+        ),
+        glossary_anchor=_G_AI_SETUP,
+    ),
+    "threshold_counterfactual": MetricHelp(
+        title_vi="Khoảng cách ngưỡng",
+        definition_vi=(
+            "Khoảng cách số học giữa giá trị chỉ báo thực tế và ngưỡng kích hoạt gần nhất."
+        ),
+        formula_vi="Khoảng cách = giá trị thực tế − ngưỡng yêu cầu",
+        reading_vi="Giúp giải thích vì sao bot đứng ngoài ở nến vừa qua mà không suy đoán.",
+        limits_vi="Chỉ tính toán số học thuần trên các điều kiện định lượng có ngưỡng tường minh.",
+        glossary_anchor=_G_PERF,
+    ),
+    "vwap_band": MetricHelp(
+        title_vi="VWAP và dải lệch",
+        definition_vi=(
+            "Giá bình quân gia quyền theo khối lượng trong phiên UTC kèm các dải độ lệch chuẩn."
+        ),
+        formula_vi="VWAP = Σ(typical_price × volume) ÷ Σ(volume)",
+        reading_vi="Thường dùng làm vùng cân bằng giá trong ngày cho chiến lược hồi về trung bình.",
+        limits_vi="Reset lúc 00:00 UTC mỗi ngày; đầu phiên có biến động nhiễu khi mẫu ít.",
+        glossary_anchor=_G_PRICE,
+    ),
+    "cvd_delta": MetricHelp(
+        title_vi="Delta khối lượng tích lũy (CVD)",
+        definition_vi=(
+            "Chênh lệch lũy kế giữa khối lượng mua chủ động và bán chủ động trong cửa sổ quan sát."
+        ),
+        formula_vi="CVD_t = CVD_{t-1} + (taker_buy_volume − taker_sell_volume)",
+        reading_vi="Phát hiện phân kỳ lực khớp chủ động so với biến động giá.",
+        limits_vi="Trả về trống khi nguồn nến không có trường khối lượng mua chủ động từ sàn.",
+        glossary_anchor=_G_FUTURES,
+    ),
+    "liquidation_distance": MetricHelp(
+        title_vi="Khoảng cách tới giá thanh lý",
+        definition_vi=(
+            "Khoảng đệm phần trăm từ giá đánh dấu hiện tại hoặc mức dừng lỗ tới giá thanh lý."
+        ),
+        formula_vi="|Giá tham chiếu − Giá thanh lý| ÷ Giá tham chiếu × 100%",
+        reading_vi="Dừng lỗ phải nằm trước giá thanh lý với biên an toàn tối thiểu.",
+        limits_vi="Ước tính dựa trên bậc maintenance margin tiêu chuẩn của hợp đồng USDⓈ-M.",
+        glossary_anchor=_G_RISK,
+    ),
 }
 
 _DOM_ID_COUNTER = count(1)

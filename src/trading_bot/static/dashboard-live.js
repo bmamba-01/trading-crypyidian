@@ -15,6 +15,9 @@
   const closed = panel.querySelector("[data-closed-trades]");
   const link = panel.querySelector("[data-selected-bot-link]");
   const metrics = JSON.parse(document.getElementById("dashboard-live-metrics").textContent);
+  const helpEl = document.getElementById("dashboard-live-help");
+  const helpMap = helpEl ? JSON.parse(helpEl.textContent) : {};
+  let liveHelpCounter = 0;
   const strategyButton = panel.querySelector("[data-strategy-open]");
   if (strategyButton) {
     strategyButton.addEventListener("click", () => {
@@ -226,11 +229,52 @@
     wrapper.append(code, hidden, copy);
     return wrapper;
   };
-  const pair = (list, heading, value, iconName) => {
+  const helpWrap = (key, heading, scopeTag = "usdt") => {
+    const entry = key ? helpMap[key] : null;
+    if (!entry) return document.createTextNode(heading);
+    const tipId = `dashboard-live-tip-${scopeTag}-${key}`;
+    const existing = document.getElementById(tipId);
+    if (existing && existing.parentNode === document.body) existing.remove();
+    const wrap = node("span", undefined, "metric-term tooltip-term");
+    const btn = node("button", undefined, "metric-help");
+    btn.type = "button";
+    btn.dataset.metricHelp = key;
+    btn.setAttribute("aria-expanded", "false");
+    btn.setAttribute("aria-describedby", tipId);
+    btn.append(
+      node("span", heading, "metric-help__label"),
+      (() => {
+        const ico = node("span", "ⓘ", "metric-help__icon");
+        ico.setAttribute("aria-hidden", "true");
+        return ico;
+      })(),
+    );
+
+    const tip = node("span", undefined, "metric-help__bubble");
+    tip.id = tipId;
+    tip.setAttribute("role", "tooltip");
+    if (entry.title_vi) tip.append(node("strong", entry.title_vi, "metric-help__title"));
+
+    const addRow = (tagText, bodyText) => {
+      if (!bodyText) return;
+      const row = node("span", undefined, "metric-help__row");
+      if (tagText) row.append(node("span", tagText, "metric-help__tag"), document.createTextNode(" "));
+      row.append(document.createTextNode(bodyText));
+      tip.append(row);
+    };
+    addRow(null, entry.definition_vi);
+    addRow("Cách tính:", entry.formula_vi);
+    addRow("Cách đọc:", entry.reading_vi);
+    addRow("Giới hạn:", entry.limits_vi);
+
+    wrap.append(btn, tip);
+    return wrap;
+  };
+  const pair = (list, heading, value, iconName, helpKey = null, scopeTag = "usdt") => {
     const wrapper = node("div", undefined, "kv");
     const term = node("dt");
     if (iconName) term.append(icon(iconName));
-    term.append(document.createTextNode(heading));
+    term.append(helpWrap(helpKey, heading, scopeTag));
     wrapper.append(term);
     const content = node("dd");
     content.append(value instanceof Node ? value : document.createTextNode(text(value)));
@@ -267,6 +311,7 @@
     pair(runtime, "Phiên bản điều khiển không gian làm việc", snapshot.runtime.workspace_control_revision, "revision");
     totals.replaceChildren(node("p", `Khoảng báo cáo: ${utc(snapshot.window.start)} đến ${utc(snapshot.window.end)}; không gồm mốc kết thúc.`, "dashboard-window"));
     for (const [asset, values] of Object.entries(snapshot.totals)) {
+      const scopeTag = String(asset).toLowerCase().replace(/[^a-z0-9]/g, "");
       const section = node("section", undefined, "dashboard-live-asset");
       section.append(node("h4", `Thống kê ${asset}`));
       const hero = node("div", undefined, "stat-strip");
@@ -281,11 +326,13 @@
           const body = node("div", undefined, "stat__body");
           const figure = node("span", undefined, "stat__value");
           figure.append(value instanceof Node ? value : document.createTextNode(value));
-          body.append(figure, node("span", heading, "stat__label"));
+          const labelSpan = node("span", undefined, "stat__label");
+          labelSpan.append(helpWrap(key, heading, scopeTag));
+          body.append(figure, labelSpan);
           stat.append(body);
           hero.append(stat);
         } else {
-          pair(list, heading, value, METRIC_ICONS[key]);
+          pair(list, heading, value, METRIC_ICONS[key], key, scopeTag);
         }
       }
       // Tổng vốn: vốn ban đầu của tài khoản PAPER + lãi/lỗ ròng đã chốt trong khoảng báo cáo.
@@ -304,7 +351,9 @@
           sub.append(document.createTextNode("Ban đầu "), money(account.initial_equity, asset));
           sub.append(node("span", `${change >= 0 ? "+" : ""}${number(change.toFixed(4))}%`,
             `pnl-value pnl-value--${change > 0 ? "positive" : change < 0 ? "negative" : "flat"}`));
-          body.append(figure, node("span", "Tổng vốn", "stat__label"), sub);
+          const equityLabel = node("span", undefined, "stat__label");
+          equityLabel.append(helpWrap("total_equity", "Tổng vốn", scopeTag));
+          body.append(figure, equityLabel, sub);
           stat.append(body);
           hero.prepend(stat);
         }

@@ -460,7 +460,7 @@ class MockTelegramBindingService:
         self.bindings = [b for b in self.bindings if b["membership_id"] != str(membership_id)]
 
 
-def create_test_admin_app() -> FastAPI:
+def create_test_admin_app(*, reporting_service: Any | None = None) -> FastAPI:
     """Khởi tạo FastAPI app phục vụ Playwright E2E test."""
     app = FastAPI(title="Crypidian Admin Test Server")
 
@@ -478,7 +478,7 @@ def create_test_admin_app() -> FastAPI:
     bot_admin = MockBotAdminService()
     bot_ops = MockBotOperationsService(bot_admin)
     flatten_service = MockFlattenAllService()
-    reporting_service = MockBotReportingService()
+    reporting_service = reporting_service or MockBotReportingService()
     telegram_service = MockTelegramBindingService()
 
     app.state.auth_service = auth_service
@@ -804,3 +804,163 @@ def test_admin_dashboard_desktop_and_mobile_workflows(admin_server_url: str) -> 
 
         context_mobile.close()
         browser.close()
+
+
+class _ClosedTradesReportingService(MockBotReportingService):
+    """Mock reporting service có lệnh đóng thật để kiểm biểu đồ dashboard và tooltip live."""
+
+    def __init__(self) -> None:
+        now = datetime.now(UTC)
+        self._payload = {
+            "scope": "BOT",
+            "workspace_id": str(WORKSPACE_ID),
+            "bot_id": str(BOT1_ID),
+            "window": {
+                "start": (now - timedelta(days=30)).isoformat(),
+                "end": now.isoformat(),
+            },
+            "account": {"quote_asset": "USDT", "initial_equity": "10000"},
+            "totals": {
+                "USDT": {
+                    "net_pnl": "250.5",
+                    "gross_pnl": "265.0",
+                    "fee_total": "10.0",
+                    "funding_total": "2.5",
+                    "slippage_total": "2.0",
+                    "total_cost": "14.5",
+                    "closed_trade_count": 2,
+                    "winning_trades": 2,
+                    "losing_trades": 0,
+                    "win_rate_percent": "100",
+                    "profit_factor": None,
+                    "expectancy_per_trade": "125.25",
+                    "average_winning_trade": "125.25",
+                    "average_losing_trade": None,
+                    "max_drawdown": "0",
+                    "max_consecutive_losses": 0,
+                    "average_holding_seconds": 3600,
+                }
+            },
+            "open_trades": [],
+            "trades": [
+                {
+                    "trade_id": "trade-closed-1",
+                    "intent_id": "intent-closed-1",
+                    "bot_id": str(BOT1_ID),
+                    "account_id": str(uuid4()),
+                    "symbol": "BTCUSDT",
+                    "side": "LONG",
+                    "quote_asset": "USDT",
+                    "opened_at": (now - timedelta(days=2, hours=2)).isoformat(),
+                    "closed_at": (now - timedelta(days=2)).isoformat(),
+                    "gross_pnl": "155.0",
+                    "fee_total": "5.0",
+                    "funding_total": "1.0",
+                    "slippage_total": "1.0",
+                    "total_cost": "7.0",
+                    "net_pnl": "148.0",
+                    "entry_reason": {"strategy_id": "H03", "strategy_release_id": "h03-v2"},
+                    "exit_reason": "CHANNEL_EXIT",
+                    "fills": [],
+                    "lineage": {},
+                },
+                {
+                    "trade_id": "trade-closed-2",
+                    "intent_id": "intent-closed-2",
+                    "bot_id": str(BOT1_ID),
+                    "account_id": str(uuid4()),
+                    "symbol": "ETHUSDT",
+                    "side": "SHORT",
+                    "quote_asset": "USDT",
+                    "opened_at": (now - timedelta(days=1, hours=2)).isoformat(),
+                    "closed_at": (now - timedelta(days=1)).isoformat(),
+                    "gross_pnl": "110.0",
+                    "fee_total": "5.0",
+                    "funding_total": "1.5",
+                    "slippage_total": "1.0",
+                    "total_cost": "7.5",
+                    "net_pnl": "102.5",
+                    "entry_reason": {"strategy_id": "H03", "strategy_release_id": "h03-v2"},
+                    "exit_reason": "TAKE_PROFIT",
+                    "fills": [],
+                    "lineage": {},
+                },
+            ],
+        }
+
+    async def get_dashboard_reports(
+        self, query: Any, principal: Any, *, bot_ids: frozenset[UUID] | None = None
+    ) -> tuple[Any, ...]:
+        obj = type(
+            "_DashReport",
+            (),
+            {"bot_id": BOT1_ID, "as_dict": lambda _self: self._payload},
+        )()
+        return (obj,)
+
+    async def get_bot_report(self, query: Any, principal: Any) -> Any:
+        return type(
+            "_BotReport",
+            (),
+            {"bot_id": BOT1_ID, "as_dict": lambda _self: self._payload},
+        )()
+
+
+def test_dashboard_chart_and_live_metrics_tooltips_with_closed_trades() -> None:
+    """CRY-200: kiểm biểu đồ hiệu suất dashboard khi có lệnh đóng và tooltip vùng dashboard-live."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+
+    app = create_test_admin_app(reporting_service=_ClosedTradesReportingService())
+    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
+    server = uvicorn.Server(config)
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    time.sleep(1.0)
+    server_url = f"http://127.0.0.1:{port}"
+
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context(viewport={"width": 1280, "height": 800})
+            page = context.new_page()
+
+            page.goto(f"{server_url}/admin/login", wait_until="networkidle")
+            page.get_by_label("Mã không gian làm việc").fill("demo-workspace")
+            page.get_by_label("Địa chỉ thư điện tử").fill("admin@crypidian.io")
+            page.get_by_label("Mật khẩu").fill("correct_password")
+            page.get_by_label("Mã xác thực 6 chữ số").fill("123456")
+            page.get_by_role("button", name="Đăng nhập").click()
+            page.wait_for_load_state("networkidle")
+
+            # 1. Chọn bot trong #dashboard-live -> vùng tổng hiển thị nút tooltip chuẩn WCAG
+            bot_btn = page.locator(f'button[data-dashboard-bot="{BOT1_ID}"]')
+            bot_btn.click()
+            page.wait_for_selector(
+                '#dashboard-live-panel [data-totals] button.metric-help[data-metric-help="net_pnl"]',
+                timeout=5000,
+            )
+            page.wait_for_selector(
+                '#dashboard-live-panel [data-totals] button.metric-help[data-metric-help="closed_trade_count"]',
+                timeout=5000,
+            )
+            # Tạm dừng auto-refresh 5s để giữ nguyên DOM khi tương tác kiểm tra tooltip
+            toggle_btn = page.get_by_role("switch", name="Tự động cập nhật mỗi 5 giây")
+            if toggle_btn.get_attribute("aria-checked") == "true":
+                toggle_btn.click()
+
+            # 2. Mở tooltip trong #dashboard-live bằng click và focus, đóng bằng Escape
+            _assert_metric_tooltip(page, "closed_trade_count", mode="click")
+            _assert_metric_tooltip(page, "net_pnl", mode="focus")
+
+            # 3. Chuyển sang tab "Hiệu suất 30 ngày" -> biểu đồ hiệu suất render canvas khi có lệnh đóng
+            page.get_by_role("tab", name="Hiệu suất 30 ngày").click()
+            chart_region = page.locator("#dashboard-performance-chart")
+            expect(chart_region).to_be_visible()
+            page.wait_for_selector("#dashboard-performance-chart canvas", timeout=5000)
+            context.close()
+            browser.close()
+    finally:
+        server.should_exit = True

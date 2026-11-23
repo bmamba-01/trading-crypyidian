@@ -13,6 +13,23 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 
 ## Nhật ký các vòng
 
+### 2026-11-23 — Hoàn tất CRY-200: Chú giải vùng dashboard-live.js, kiểm biểu đồ dashboard trên trình duyệt và kiểm kê chỉ số mới MT-1/CK (UI-1/con-lai)
+
+- **Mục tiêu/phạm vi:**
+  1. Triển khai và nghiệm thu toàn bộ phần còn lại của `UI-1` (`CRY-200`, parent `CRY-38`):
+     - Chú giải vùng tổng `dashboard-live.js`: nhúng `dashboard_live_help` từ `metric_help.HELP` qua `<script id="dashboard-live-help">` trên `dashboard.html`, dựng nút `.metric-help` + `.metric-help__bubble` chuẩn WCAG cho từng chỉ số và "Tổng vốn" (`total_equity`) trong `dashboard-live.js`.
+     - Bổ sung chú giải tiếng Việt đầy đủ cho các chỉ số mới của MT-1 (`sharpe_ratio`, `sortino_ratio`, `calmar_ratio`, `mfe_mae`, `drawdown_pct`, `r_multiple_distribution`, `process_adherence_score`) và CK-1…CK-12 (`setup_progress`, `threshold_counterfactual`, `vwap_band`, `cvd_delta`, `liquidation_distance`, `total_equity`) trong `src/trading_bot/admin/metric_help.py`.
+     - Nới test kiểm kê `tests/unit/test_admin_metric_help.py`: bỏ ràng buộc cứng `len(METRICS) == 15`, kiểm tra `len(keys) >= 15`, không trùng khóa và toàn bộ khóa mới nằm trong `REQUIRED_KEYS`.
+     - Kiểm chứng nguồn W3C (WAI-ARIA APG Tooltip Pattern, WCAG 2.2 SC 1.4.13) và nguồn cho `Basis point (bps)` (CME Group, Investopedia) ngày 23/11/2026 trong `docs/research/glossary-vi.md`.
+     - Kiểm thử biểu đồ hiệu suất dashboard và tooltip vùng `dashboard-live` trên trình duyệt thật qua Playwright (`test_dashboard_chart_and_live_metrics_tooltips_with_closed_trades`) với mock có 2 giao dịch đã đóng.
+- **Lỗi phát hiện & xử lý:**
+  - `dashboard-live.js` ban đầu dùng class `.metric-tooltip` thay vì `.metric-help__bubble` của `_metric_help.html`, khiến CSS không ẩn bubble khi chưa mở; và dùng counter tăng dần làm đổi ID khi tự refresh 5s. Đã đổi sang `.metric-help__bubble` và ID ổn định `dashboard-live-tip-${scopeTag}-${key}` (dọn node cũ trong `document.body` khi render lại).
+- **Kết quả kiểm thử:**
+  - Unit tests `test_admin_metric_help.py`: **102/102 passed in 1.22s**.
+  - Playwright E2E `test_admin_dashboard_playwright.py`: **2/2 passed in 28.89s** (gồm cả kịch bản biểu đồ hiệu suất khi có lệnh đóng và tooltip trên `dashboard-live.js`).
+  - `ruff check` và `mypy`: sạch 100%.
+- **Đã đọc lại mục memory sau cập nhật:** Có.
+
 ### 2026-11-23 — Hoàn tất CRY-197: Đồng bộ ngắt mạch drawdown trong replay, telemetry thật/fallback, bot detail, biên gap SL và múi giờ workspace (FX-2/con-lai)
 
 - **Mục tiêu/phạm vi:**
