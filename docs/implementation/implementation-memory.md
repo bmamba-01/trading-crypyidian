@@ -6387,3 +6387,14 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
   - `uv run pytest tests/unit/test_wp07e_workbench_metrics_alerts.py tests/e2e/test_wp07e_workbench_metrics_playwright.py -v` → **7 passed in 6.16s** (4 unit test bao gồm redaction/traceability/API endpoint + 3 Playwright test tại Desktop `1440x900` và Mobile `390x844`, `360x780` kiểm `scrollWidth <= innerWidth`).
   - Ghi chú về `tests/unit/test_admin_dashboard_ui.py`: 11/12 test pass; riêng `test_dashboard_renders_live_status_bar_and_pulse_elements` có assertion pre-existing `assert "cdn." not in html` bị khớp chuỗi `\u0111\u00e3 ch\u1ecdn.` (chữ "đã chọn." JSON-escaped trong `metric_help`), không phải lỗi từ thay đổi này.
 - **Trạng thái:** Chuẩn bị commit, push lên `origin/dev` và đóng `CRY-376` (`Done`) trên It's a Plan.
+
+### 2026-11-23 — CRY-377 `[WP-07E/runbook]` Runbook vận hành WP-07E và diễn tập Compose
+
+- **Mục tiêu/phạm vi.** Hoàn tất tiêu chí nghiệm thu của `CRY-377` (`WP-07E/runbook`):
+  1. Tạo [wp07e-workbench-operations-runbook.md](file:///Users/macbook/Work/Trading%20Crypdian/docs/operations/wp07e-workbench-operations-runbook.md) bằng tiếng Việt, dùng `<placeholder>` (không chứa secret/PII), bao phủ đủ 5 quy trình: (a) Resume/Cancel cho `market-signal-worker`, `telegram-signal-worker`, `backtest-worker`, `backfill_market_history.py`; (b) Xử lý rate limit `429`/`418` Binance REST và Telegram `429 retry_after`/dead-letter; (c) Revision/correction `market_bar` append-only (`revision` + `supersedes_id`) và `seed_signal_test_bots.py check`; (d) Incident review qua `/admin/api/workbench/metrics-alerts`, `/admin/api/workers/readiness`, `/api/v1/incidents*`, logs; (e) Chính sách retention & liên kết backup/restore drill.
+  2. Diễn tập tự động trên Compose PostgreSQL thật bằng [test_wp07e_runbook_drill_e2e.py](file:///Users/macbook/Work/Trading%20Crypdian/tests/e2e/test_wp07e_runbook_drill_e2e.py): kiểm tra `market_bar` revision 1→2 bị stale, `worker_heartbeat` scanner lag, `telegram_binding` revoked (xác minh không lộ `telegram_user_id`), và `source_policy_revision` hết hạn (`valid_until < now`) thông qua `collect_workbench_metrics_alerts`.
+- **Kiểm chứng đạt 100%:**
+  - `uv run ruff check tests/e2e/test_wp07e_runbook_drill_e2e.py` → **All checks passed**.
+  - `uv run mypy --explicit-package-bases --follow-imports=silent tests/e2e/test_wp07e_runbook_drill_e2e.py` → **Success: no issues found in 1 source file**.
+  - `PYTHONPATH=. uv run pytest tests/e2e/test_wp07e_runbook_drill_e2e.py -v --tb=short` → **1 passed in 13.70s** (PostgreSQL Compose thật).
+- **Trạng thái:** Chuẩn bị commit + push lên `origin/dev` và đóng `CRY-377` (`Done`) trên It's a Plan.
