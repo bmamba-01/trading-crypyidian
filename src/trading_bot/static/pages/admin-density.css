@@ -160,3 +160,29 @@ main .tabs-bar [role="tab"]:focus-visible,
   .ops-alert-table td { display: block; border-bottom: none; padding: 0.15rem 0.4rem; }
   .ops-alert-table td::before { content: attr(data-label) ": "; font-weight: 600; color: var(--text-muted); }
 }
+
+/* CRY-376: chỉ số freshness/coverage/lag/latency và cảnh báo WP-07E (desktop + mobile). */
+.workbench-metrics-section { display: grid; gap: 0.75rem; margin-top: 1rem; min-width: 0; }
+.workbench-metrics-toolbar { display: flex; align-items: flex-start; justify-content: space-between; gap: 0.75rem; flex-wrap: wrap; }
+.workbench-metrics-toolbar .section-hint { margin: 0.2rem 0 0; color: var(--text-muted); font-size: 0.85rem; }
+.workbench-kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); gap: 0.65rem; }
+.workbench-kpi-card { padding: 0.65rem 0.75rem; border-radius: 0.65rem; border: 1px solid var(--border-subtle, rgba(128, 128, 128, 0.22)); background: var(--surface-card, rgba(255, 255, 255, 0.03)); min-width: 0; }
+.workbench-kpi-label { display: block; font-size: 0.78rem; color: var(--text-muted); }
+.workbench-kpi-value { display: block; margin-top: 0.2rem; font-size: 1.05rem; font-weight: 700; overflow-wrap: anywhere; }
+.workbench-alert-list { list-style: none; padding: 0; margin: 0.5rem 0 0; display: grid; gap: 0.5rem; }
+.workbench-alert-item { padding: 0.6rem 0.75rem; border-radius: 0.65rem; border: 1px solid var(--border-subtle, rgba(128, 128, 128, 0.22)); display: grid; gap: 0.25rem; min-width: 0; }
+.workbench-alert-head { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+.workbench-alert-badge { padding: 0.1rem 0.45rem; border-radius: 0.5rem; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; }
+.workbench-alert-badge--critical { background: rgba(239, 68, 68, 0.16); color: #b91c1c; }
+.workbench-alert-badge--warning { background: rgba(234, 179, 8, 0.16); color: #b45309; }
+.workbench-alert-badge--info { background: rgba(59, 130, 246, 0.16); color: #1d4ed8; }
+.workbench-alert-detail, .workbench-alert-trace { margin: 0; font-size: 0.85rem; overflow-wrap: anywhere; }
+.workbench-alert-trace { font-size: 0.75rem; color: var(--text-muted); }
+[data-theme="dark"] .workbench-alert-badge--critical { color: #fca5a5; }
+[data-theme="dark"] .workbench-alert-badge--warning { color: #fbbf24; }
+[data-theme="dark"] .workbench-alert-badge--info { color: #93c5fd; }
+
+@media (max-width: 40rem) {
+  .workbench-metrics-toolbar { flex-direction: column; align-items: stretch; }
+  .workbench-kpi-grid { grid-template-columns: 1fr; }
+}

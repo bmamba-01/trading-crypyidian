@@ -4559,6 +4559,32 @@ async def workers_readiness(
 
 
 @router.get(
+    "/api/workbench/metrics-alerts",
+    dependencies=[permission_route(Permission.WORKSPACE_READ)],
+)
+async def workbench_metrics_alerts(
+    request: Request,
+    response: Response,
+    identity: Annotated[AuthIdentity, Depends(current_identity)],
+) -> dict[str, Any]:
+    """Trả metric freshness/coverage/lag/latency và cảnh báo tiếng Việt WP-07E (CRY-376)."""
+    from trading_bot.admin.workbench_metrics_service import collect_workbench_metrics_alerts
+    from trading_bot.application.outbox import UnitOfWork
+    from trading_bot.observability.workbench_metrics import evaluate_workbench_metrics_and_alerts
+
+    response.headers["Cache-Control"] = "no-store"
+    sessions = getattr(request.app.state, "session_factory", None)
+    if sessions is None:
+        return evaluate_workbench_metrics_and_alerts().to_dict()
+    async with UnitOfWork(sessions, workspace_id=identity.principal.workspace_id) as unit:
+        report = await collect_workbench_metrics_alerts(
+            unit.session,
+            workspace_id=identity.principal.workspace_id,
+        )
+    return report.to_dict()
+
+
+@router.get(
     "/api/operations/health",
     dependencies=[
         permission_route(

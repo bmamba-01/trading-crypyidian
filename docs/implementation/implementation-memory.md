@@ -6372,3 +6372,18 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
   - `uv run pytest tests/unit/test_ops1_seed_release_audit.py tests/unit/test_seed_signal_test_bots.py tests/unit/test_strategy_release_sync.py -v` → **12 passed in 1.10s**.
   - `PYTHONPATH=. uv run pytest tests/e2e/test_ops1_seed_e2e.py -v --tb=short` → **1 passed in 15.59s** trên PostgreSQL Compose thật (chứng minh `apply` + `genesis` 10 bot, `check` sạch, phát hiện `hash_mismatch` & `unknown_release`, chạy lại `apply` + `genesis` tự supersede bản lệch hash và giữ `genesis_created == 0`).
 - **Trạng thái:** Chuẩn bị commit + push lên `origin/dev` và đóng `CRY-37` (`Done`) trên It's a Plan.
+
+### 2026-11-23 — CRY-376 `[WP-07E/metrics-alerts]` Metric freshness/coverage/lag/latency và cảnh báo vận hành
+
+- **Mục tiêu/phạm vi.** Triển khai theo dõi metric WP-07E (bar freshness/coverage/gaps, scanner lag, candidate→delivery latency p50/p95/max, retry/dead-letter, backfill progress) và cảnh báo tiếng Việt có truy vết tới run/manifest/evidence (stale data, scanner lag, strategy chưa publish, Telegram binding revoke, subscription không hợp lệ, dataset hết quyền, dead-letter) cùng redaction token/PII và dashboard mobile/desktop.
+- **Triển khai chính:**
+  1. [workbench_metrics.py](file:///Users/macbook/Work/Trading%20Crypdian/src/trading_bot/observability/workbench_metrics.py): Các dataclass metric/cảnh báo thuần túy và hàm `evaluate_bar_freshness`, `evaluate_workbench_metrics_and_alerts`, `compute_percentile_seconds`; che token/PII (`chat_id`, `telegram_user_id`, `bot_token`, `email`, `Bearer ...`) qua `redact_value` + `_sanitize_alert_metadata`.
+  2. [workbench_metrics_service.py](file:///Users/macbook/Work/Trading%20Crypdian/src/trading_bot/admin/workbench_metrics_service.py) và endpoint `GET /admin/api/workbench/metrics-alerts` trong [web_router.py](file:///Users/macbook/Work/Trading%20Crypdian/src/trading_bot/admin/web_router.py): Thu thập từ `MarketBar`, `WorkerHeartbeat`, `TelegramSignalDelivery`, `BotInstance`/`StrategyRelease`, `TelegramBinding`, `TelegramSignalSubscription`, `SourcePolicyRevisionRecord` theo `workspace_id`.
+  3. UI Dashboard hỗ trợ mobile: [dashboard.html](file:///Users/macbook/Work/Trading%20Crypdian/src/trading_bot/templates/admin/dashboard.html), [workbench-metrics.js](file:///Users/macbook/Work/Trading%20Crypdian/src/trading_bot/static/workbench-metrics.js) (dùng `textContent`, không `innerHTML`), và CSS responsive [admin-density.css](file:///Users/macbook/Work/Trading%20Crypdian/src/trading_bot/static/pages/admin-density.css).
+- **Kiểm chứng:**
+  - `uv run ruff check ...` → **All checks passed**.
+  - `uv run mypy --explicit-package-bases --follow-imports=silent ...` → **Success: no issues found in 4 source files**.
+  - `node --check src/trading_bot/static/workbench-metrics.js` & `git diff --check` → Đạt.
+  - `uv run pytest tests/unit/test_wp07e_workbench_metrics_alerts.py tests/e2e/test_wp07e_workbench_metrics_playwright.py -v` → **7 passed in 6.16s** (4 unit test bao gồm redaction/traceability/API endpoint + 3 Playwright test tại Desktop `1440x900` và Mobile `390x844`, `360x780` kiểm `scrollWidth <= innerWidth`).
+  - Ghi chú về `tests/unit/test_admin_dashboard_ui.py`: 11/12 test pass; riêng `test_dashboard_renders_live_status_bar_and_pulse_elements` có assertion pre-existing `assert "cdn." not in html` bị khớp chuỗi `\u0111\u00e3 ch\u1ecdn.` (chữ "đã chọn." JSON-escaped trong `metric_help`), không phải lỗi từ thay đổi này.
+- **Trạng thái:** Chuẩn bị commit, push lên `origin/dev` và đóng `CRY-376` (`Done`) trên It's a Plan.

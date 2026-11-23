@@ -191,6 +191,19 @@
   <noscript><p>Cần bật JavaScript để xem cảnh báo vận hành trực tiếp.</p></noscript>
 </section>
 
+<section aria-labelledby="workbench-metrics-heading" class="workbench-metrics-section dashboard-block">
+  <div class="workbench-metrics-toolbar">
+    <div>
+      <h2 id="workbench-metrics-heading">Chất lượng dữ liệu &amp; độ trễ (WP-07E)</h2>
+      <p class="section-hint">Theo dõi độ tươi nến, độ phủ, khoảng trống dữ liệu, độ trễ quét/giao tín hiệu và cảnh báo quyền dữ liệu/Telegram.</p>
+    </div>
+    <button type="button" id="workbench-metrics-refresh" class="btn btn-secondary" aria-label="Làm mới chỉ số chất lượng dữ liệu WP-07E">Làm mới chỉ số</button>
+  </div>
+  <div id="workbench-metrics-panel" role="region" aria-label="Chỉ số chất lượng dữ liệu và cảnh báo WP-07E" aria-busy="false">
+    <p class="muted">Đang tải chỉ số WP-07E…</p>
+  </div>
+</section>
+
 </div>
 
 <div role="tabpanel" id="panel-performance" aria-labelledby="tab-performance" tabindex="0">
@@ -368,5 +381,6 @@
 <script src="/static/coins.js" defer></script>
 <script src="/static/dashboard-live.js" defer></script>
 <script src="/static/operational-alerts.js" defer></script>
+<script src="/static/workbench-metrics.js" defer></script>
 {% if dashboard_chart and dashboard_chart.series %}<script src="/static/vendor/lightweight-charts-5.2.1.standalone.production.js"></script><script src="/static/trade-chart.js" defer></script>{% endif %}
 {% endblock %}
