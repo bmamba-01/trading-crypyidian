@@ -157,6 +157,135 @@ def plan_strategy_release_sync(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class UnknownReleaseFinding:
+    """Release đang PUBLISHED trong workspace nhưng không còn trong StrategyRegistry (OPS-1)."""
+
+    release_id: str
+    published_hashes: tuple[str, ...]
+    detail_vi: str
+
+
+@dataclass(frozen=True, slots=True)
+class HashMismatchFinding:
+    """Release đang PUBLISHED trong workspace nhưng content_hash lệch so với catalog (OPS-1)."""
+
+    release_id: str
+    published_hashes: tuple[str, ...]
+    expected_hash: str
+    detail_vi: str
+
+
+@dataclass(frozen=True, slots=True)
+class WorkspaceReleaseAuditReport:
+    """Kết quả kiểm tra release/hash của workspace so với StrategyRegistry hiện hành."""
+
+    workspace_id: UUID
+    clean: bool
+    unknown_releases: tuple[UnknownReleaseFinding, ...]
+    hash_mismatches: tuple[HashMismatchFinding, ...]
+    ok_releases: tuple[str, ...]
+    recommendation_vi: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "workspace_id": str(self.workspace_id),
+            "clean": self.clean,
+            "unknown_releases": [
+                {
+                    "release_id": item.release_id,
+                    "published_hashes": list(item.published_hashes),
+                    "detail_vi": item.detail_vi,
+                }
+                for item in self.unknown_releases
+            ],
+            "hash_mismatches": [
+                {
+                    "release_id": item.release_id,
+                    "published_hashes": list(item.published_hashes),
+                    "expected_hash": item.expected_hash,
+                    "detail_vi": item.detail_vi,
+                }
+                for item in self.hash_mismatches
+            ],
+            "ok_releases": list(self.ok_releases),
+            "recommendation_vi": self.recommendation_vi,
+        }
+
+
+def audit_workspace_releases(
+    *,
+    workspace_id: UUID,
+    existing_rows: Sequence[ExistingReleaseRow],
+    registry: StrategyRegistry | None = None,
+) -> WorkspaceReleaseAuditReport:
+    """Kiểm tra toàn bộ release PUBLISHED của workspace so với StrategyRegistry hiện hành."""
+    active_registry = registry or strategy_registry()
+    published_names = tuple(
+        sorted({row.name for row in existing_rows if row.status == "PUBLISHED"})
+    )
+    unknown: list[UnknownReleaseFinding] = []
+    mismatches: list[HashMismatchFinding] = []
+    ok: list[str] = []
+
+    for release_id in published_names:
+        plan = plan_strategy_release_sync(
+            release_id=release_id,
+            existing_rows=existing_rows,
+            registry=active_registry,
+        )
+        if plan.action == "unknown_release":
+            unknown.append(
+                UnknownReleaseFinding(
+                    release_id=release_id,
+                    published_hashes=plan.previous_hashes,
+                    detail_vi=(
+                        f"Release '{release_id}' đang PUBLISHED trong DB nhưng không tồn tại "
+                        "trong catalog/StrategyRegistry hiện hành."
+                    ),
+                )
+            )
+        elif plan.action == "unchanged":
+            ok.append(release_id)
+        else:
+            mismatches.append(
+                HashMismatchFinding(
+                    release_id=release_id,
+                    published_hashes=plan.previous_hashes,
+                    expected_hash=plan.target_hash or "",
+                    detail_vi=(
+                        f"Release '{release_id}' lệch content_hash với catalog hiện hành "
+                        "(có thể gây BOT_CONFIG_ROOT_MISMATCH hoặc từ chối tải)."
+                    ),
+                )
+            )
+
+    clean = not unknown and not mismatches
+    if clean:
+        recommendation = "Mọi release PUBLISHED trong workspace đều khớp catalog hiện hành."
+    elif unknown and not mismatches:
+        recommendation = (
+            "Có release không còn trong catalog: tắt bot đang tham chiếu hoặc xóa volume "
+            "stack local để seed lại sạch (xem ops1-dev-seed-and-reset-runbook.md)."
+        )
+    else:
+        recommendation = (
+            "Phát hiện release lệch hash/không tồn tại: chạy "
+            "`python -m trading_bot.cli.strategy_releases sync` hoặc "
+            "`scripts/seed_signal_test_bots.py apply` để supersede bản cũ; nếu vẫn còn "
+            "unknown_release hãy làm lại stack sạch."
+        )
+
+    return WorkspaceReleaseAuditReport(
+        workspace_id=workspace_id,
+        clean=clean,
+        unknown_releases=tuple(unknown),
+        hash_mismatches=tuple(mismatches),
+        ok_releases=tuple(ok),
+        recommendation_vi=recommendation,
+    )
+
+
 async def sync_workspace_strategy_releases(
     session: AsyncSession,
     *,

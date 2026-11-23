@@ -165,7 +165,7 @@ def _run_phase(project: str, service: str, phase: str, state: dict[str, Any]) ->
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("command", choices=("plan", "apply"))
+    parser.add_argument("command", choices=("plan", "apply", "check"))
     parser.add_argument("--seed", type=int, default=20261115)
     parser.add_argument("--min-quote-volume", type=Decimal, default=Decimal("20000000"))
     parser.add_argument(
@@ -176,6 +176,15 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if "live" in args.project.lower() or "prod" in args.project.lower():
         raise SystemExit("Script chỉ dành cho stack local PAPER.")
+    if args.command == "check":
+        report = _run_phase(
+            args.project,
+            "migrator",
+            "check",
+            {"workspace_id": args.workspace_id},
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("clean") else 2
     if args.command == "plan":
         symbols = eligible_symbols(
             _get_json("/fapi/v1/exchangeInfo"),
@@ -540,6 +549,8 @@ async def _container_genesis(state: dict[str, Any]) -> dict[str, Any]:
                 published = await WorkspaceSettingsRepository(uow.session).load_effective_config(
                     workspace_id=workspace
                 )
+                if published is None:
+                    raise SystemExit("Workspace chưa có cấu hình hiệu lực để tạo checkpoint.")
                 profile = resolve_paper_execution_profile(
                     published, default_paper_execution_profile_catalog()
                 )
@@ -558,6 +569,41 @@ async def _container_genesis(state: dict[str, Any]) -> dict[str, Any]:
     return {"genesis_created": created}
 
 
+def _container_check(state: dict[str, Any]) -> dict[str, Any]:
+    """Kiểm tra release PUBLISHED của workspace so với catalog hiện hành (OPS-1)."""
+    from uuid import UUID
+
+    from trading_bot.admin.strategy_release_sync import (
+        ExistingReleaseRow,
+        audit_workspace_releases,
+    )
+
+    workspace = UUID(state["workspace_id"])
+    rows: list[ExistingReleaseRow] = []
+    with _connect() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT set_config('app.workspace_id', %s, true)",
+                (str(workspace),),
+            )
+            cursor.execute(
+                "SELECT id, name, version, status, content_hash "
+                "FROM strategy_release WHERE workspace_id = %s",
+                (workspace,),
+            )
+            for row_id, name, version, status, content_hash in cursor.fetchall():
+                rows.append(
+                    ExistingReleaseRow(
+                        id=row_id if isinstance(row_id, UUID) else UUID(str(row_id)),
+                        name=str(name),
+                        version=int(version),
+                        status=str(status),
+                        content_hash=str(content_hash),
+                    )
+                )
+    return audit_workspace_releases(workspace_id=workspace, existing_rows=rows).to_dict()
+
+
 if __name__ == "__container__":
     import asyncio
 
@@ -567,6 +613,8 @@ if __name__ == "__container__":
         _result = _container_apply(_state)
     elif _phase == "genesis":
         _result = asyncio.run(_container_genesis(_state))
+    elif _phase == "check":
+        _result = _container_check(_state)
     else:
         raise SystemExit(_phase)
     print(json.dumps(_result, default=str))

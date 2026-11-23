@@ -6354,3 +6354,21 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 - **Kết quả tích hợp:** `git fetch origin dev` xác nhận trước push nhánh local bằng `origin/dev`; push fast-forward thành công `a80dd33..0c17873`.
 - **Nguồn phiên bản/API:** không thêm phụ thuộc API bên ngoài; giữ endpoint readiness nội bộ hiện có. Không có tài liệu bên ngoài mới cần ghi.
 - **Readback:** đã đọc lại mục vừa ghi và đối chiếu số liệu với output unit/Playwright/Compose/Ruff/format/mypy/Alembic mới nhất; lượt E2E lớn bị ngắt được ghi riêng, không tính là đạt. Commit `0c17873` đã push và Itsaplan xác nhận issue Done.
+
+### 2026-11-23 — CRY-37 `[OPS-1]` Dữ liệu kiểm thử sạch: seed kiểm release/hash và E2E tự động
+
+- **Mục tiêu/phạm vi.** Hoàn tất tiêu chí nghiệm thu của `CRY-37` (`OPS-1`):
+  1. Thêm `audit_workspace_releases` (`UnknownReleaseFinding`, `HashMismatchFinding`, `WorkspaceReleaseAuditReport`) vào [strategy_release_sync.py](file:///Users/macbook/Work/Trading%20Crypdian/src/trading_bot/admin/strategy_release_sync.py) để phát hiện mọi `strategy_release` ở trạng thái `PUBLISHED` không có trong `StrategyRegistry` hoặc có `content_hash` lệch với registry.
+  2. Thêm subcommand `check` vào [seed_signal_test_bots.py](file:///Users/macbook/Work/Trading%20Crypdian/scripts/seed_signal_test_bots.py) (`_container_check`, trả exit code `0` khi `clean=True` và `2` khi có sai lệch); bổ sung guard `published is None` trong `_container_genesis` để sạch `mypy`.
+  3. Viết runbook [ops1-dev-seed-and-reset-runbook.md](file:///Users/macbook/Work/Trading%20Crypdian/docs/implementation/ops1-dev-seed-and-reset-runbook.md) hướng dẫn `check`, đồng bộ release an toàn, reset ledger PAPER dev giữ checkpoint genesis, và dựng lại stack sạch (`down -v`).
+  4. Viết unit test [test_ops1_seed_release_audit.py](file:///Users/macbook/Work/Trading%20Crypdian/tests/unit/test_ops1_seed_release_audit.py) và Compose E2E test [test_ops1_seed_e2e.py](file:///Users/macbook/Work/Trading%20Crypdian/tests/e2e/test_ops1_seed_e2e.py).
+- **Lỗi gặp & sửa trong E2E Compose:**
+  1. Lần chạy đầu thiếu dữ liệu tiền điều kiện trong DB test (`workspace` `PAPER`, `user_account`, `user_membership`, `role_binding`, `workspace_settings_version` `PUBLISHED`). Đã bổ sung seed tối thiểu trước khi gọi `_container_apply`.
+  2. Đường dẫn module `WorkspaceSettings` là `trading_bot.config.workspace_settings` (và `canonical_settings`/`settings_hash` từ `trading_bot.adapters.database.repositories.workspace_settings`); truyền đủ tham số bắt buộc của `WorkspaceSettings` với `fee_schedule_version="paper-fees-v1"`.
+  3. `_container_genesis` cần `{**state, **applied}` (có `workspace_id` và `bots`).
+- **Kiểm chứng đạt 100%:**
+  - `uv run ruff check src/trading_bot/admin/strategy_release_sync.py scripts/seed_signal_test_bots.py tests/unit/test_ops1_seed_release_audit.py tests/e2e/test_ops1_seed_e2e.py` → **All checks passed**.
+  - `uv run mypy --explicit-package-bases src/trading_bot/admin/strategy_release_sync.py scripts/seed_signal_test_bots.py tests/unit/test_ops1_seed_release_audit.py tests/e2e/test_ops1_seed_e2e.py` → **Success: no issues found in 4 source files**.
+  - `uv run pytest tests/unit/test_ops1_seed_release_audit.py tests/unit/test_seed_signal_test_bots.py tests/unit/test_strategy_release_sync.py -v` → **12 passed in 1.10s**.
+  - `PYTHONPATH=. uv run pytest tests/e2e/test_ops1_seed_e2e.py -v --tb=short` → **1 passed in 15.59s** trên PostgreSQL Compose thật (chứng minh `apply` + `genesis` 10 bot, `check` sạch, phát hiện `hash_mismatch` & `unknown_release`, chạy lại `apply` + `genesis` tự supersede bản lệch hash và giữ `genesis_created == 0`).
+- **Trạng thái:** Chuẩn bị commit + push lên `origin/dev` và đóng `CRY-37` (`Done`) trên It's a Plan.
