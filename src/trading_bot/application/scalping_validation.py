@@ -101,7 +101,7 @@ class ScalpingValidationConfig:
     per_trade_risk_fraction: Decimal = Decimal("0.005")
     folds: int = 4
     embargo: timedelta = timedelta(hours=1)
-    execution_interval: str = "5m"
+    execution_interval: str = "1m"
     # Cùng cửa sổ producer production → đặc trưng/mức thanh khoản của replay khớp PAPER live.
     max_bars_per_timeframe: int = PRODUCER_MAX_BARS_PER_STREAM
 
@@ -148,11 +148,20 @@ def run_release_replay(
     entry_timeframe = entry_timeframe_for_release(release_id)
     if entry_timeframe is None:
         raise ValueError(f"Release chưa có timeframe quyết định: {release_id}")
+    available_intervals = {item.manifest.interval for item in bundle.components}
+    effective_exec_tf = (
+        config.execution_interval
+        if config.execution_interval in available_intervals
+        else entry_timeframe
+    )
     timeframes = sorted(
-        {*feature_requirements_for_release(release_id), config.execution_interval},
+        {*feature_requirements_for_release(release_id), effective_exec_tf},
         key=lambda item: int(item[:-1]) * {"m": 1, "h": 60}[item[-1]],
     )
-    confirmation = next((tf for tf in timeframes if tf != entry_timeframe), entry_timeframe)
+    confirmation = next(
+        (tf for tf in timeframes if tf not in {entry_timeframe, effective_exec_tf}),
+        entry_timeframe,
+    )
     workspace_id = config.workspace_id
     settings_id = uuid5(workspace_id, f"sig5:{release_id}:settings")
     risk_id = uuid5(workspace_id, f"sig5:{release_id}:risk")
@@ -307,7 +316,7 @@ def run_release_replay(
         bundle,
         manifest,
         strategies=registry,
-        execution_interval=config.execution_interval,
+        execution_interval=effective_exec_tf,
         context_seed_factory=seed_factory,
         gateway_factory=gateway_factory,
         scenarios=tuple(_sensitivity(item) for item in scenarios),

@@ -349,3 +349,128 @@ def test_backtest_replay_executor_uses_producer_window() -> None:
 
     assert executor.REPLAY_MAX_BARS_PER_TIMEFRAME == PRODUCER_MAX_BARS_PER_STREAM
     assert executor.REPLAY_CONTEXT_PROVIDER.endswith("window256")
+
+
+def test_sig5_execution_uses_1m_bars_when_available(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:  # type: ignore[no-untyped-def]
+    """CRY-415: mặc định execution_interval=1m và CLI dùng 1m khi có file."""
+    import json
+    from decimal import Decimal
+    from typing import Any
+
+    from scripts import sig5_scalping_validation as cli
+    from tests.fixtures.sig4_runtime_replay import RANGE_END, START, sig4_bars
+
+    from trading_bot.application import scalping_validation as sv
+    from trading_bot.domain.market.models import OHLCVBar
+
+    assert sv.ScalpingValidationConfig(workspace_id=cli.WORKSPACE).execution_interval == "1m"
+
+    bars_5m = sig4_bars("5m")
+    bars_15m = sig4_bars("15m")
+    bars_1m: list[OHLCVBar] = []
+    for bar in bars_5m:
+        for idx in range(5):
+            opened = bar.open_time + timedelta(minutes=idx)
+            closed = opened + timedelta(minutes=1) - timedelta(milliseconds=1)
+            bars_1m.append(
+                OHLCVBar(
+                    symbol=bar.symbol,
+                    timeframe="1m",
+                    open_time=opened,
+                    close_time=closed,
+                    event_at=closed,
+                    received_at=closed,
+                    available_at=closed,
+                    open=bar.open,
+                    high=bar.high,
+                    low=bar.low,
+                    close=bar.close,
+                    volume=bar.volume / Decimal("5"),
+                    quote_volume=(
+                        None if bar.quote_volume is None else bar.quote_volume / Decimal("5")
+                    ),
+                    trade_count=bar.trade_count,
+                    taker_buy_base_volume=(
+                        None
+                        if bar.taker_buy_base_volume is None
+                        else bar.taker_buy_base_volume / Decimal("5")
+                    ),
+                    taker_buy_quote_volume=(
+                        None
+                        if bar.taker_buy_quote_volume is None
+                        else bar.taker_buy_quote_volume / Decimal("5")
+                    ),
+                    source=bar.source,
+                    is_closed=True,
+                )
+            )
+
+    observed_exec_intervals: list[str] = []
+    observed_confirmations: list[str] = []
+    real_replay = sv.run_backtest_dataset_runtime_replay
+
+    def _spy_replay(*args: Any, **kwargs: Any) -> Any:
+        observed_exec_intervals.append(str(kwargs.get("execution_interval")))
+        seed_factory = kwargs["context_seed_factory"]
+        seed = seed_factory(kwargs["scenarios"][0], None)
+        observed_confirmations.append(
+            str(seed.published_settings.settings.strategy.confirmation_timeframe)
+        )
+        return real_replay(*args, **kwargs)
+
+    monkeypatch.setattr(sv, "run_backtest_dataset_runtime_replay", _spy_replay)
+
+    bundle = sv.build_research_bundle(
+        {"1m": bars_1m, "5m": bars_5m, "15m": bars_15m},
+        workspace_id=cli.WORKSPACE,
+        symbol="BTCUSDT",
+        start=START,
+        end=RANGE_END,
+        evaluation_start=START + timedelta(hours=21),
+        checked_at=RANGE_END,
+    )
+    comparison, _ = sv.run_release_replay(
+        bundle,
+        release_id="h18-v1",
+        config=sv.ScalpingValidationConfig(workspace_id=cli.WORKSPACE),
+    )
+    assert len(comparison.runs) >= 1
+    assert observed_exec_intervals[-1] == "1m"
+    assert observed_confirmations[-1] == "5m"
+
+    for tf, tf_bars in (("1m", bars_1m), ("5m", bars_5m), ("15m", bars_15m)):
+        (tmp_path / f"BTCUSDT-{tf}.jsonl").write_text(
+            "".join(json.dumps(cli.bar_to_row(b)) + "\n" for b in tf_bars),
+            encoding="utf-8",
+        )
+    out = tmp_path / "report-1m.json"
+    assert (
+        cli.main(
+            [
+                "validate",
+                "--data-dir",
+                str(tmp_path),
+                "--symbols",
+                "BTCUSDT",
+                "--releases",
+                "h18-v1",
+                "--start",
+                START.replace(tzinfo=None).isoformat(),
+                "--end",
+                RANGE_END.replace(tzinfo=None).isoformat(),
+                "--warmup-hours",
+                "21",
+                "--folds",
+                "2",
+                "--embargo-minutes",
+                "0",
+                "--out",
+                str(out),
+            ]
+        )
+        == 0
+    )
+    assert observed_exec_intervals[-1] == "1m"
+    assert out.is_file()

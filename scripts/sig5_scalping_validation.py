@@ -159,6 +159,7 @@ def validate(
     folds: int,
     embargo: timedelta = timedelta(hours=1),
     chunk: timedelta | None = None,
+    execution_interval: str | None = None,
 ) -> dict[str, Any]:
     from trading_bot.application.scalping_validation import (
         ScalpingValidationConfig,
@@ -170,13 +171,25 @@ def validate(
     checked_at = datetime.now(UTC).replace(microsecond=0)
     results: dict[str, Any] = {}
     for symbol in symbols:
-        config = ScalpingValidationConfig(workspace_id=WORKSPACE, folds=folds, embargo=embargo)
+        has_1m = (data_dir / f"{symbol}-1m.jsonl").is_file()
+        effective_exec = execution_interval or ("1m" if has_1m else "5m")
+        if effective_exec == "1m" and not has_1m:
+            raise FileNotFoundError(
+                f"Thiếu tệp nến 1m để khớp lệnh scalping: {data_dir / f'{symbol}-1m.jsonl'}"
+            )
+        config = ScalpingValidationConfig(
+            workspace_id=WORKSPACE,
+            folds=folds,
+            embargo=embargo,
+            execution_interval=effective_exec,
+        )
         if symbol in EXCHANGE_RULES:
             tick, step, minimum = EXCHANGE_RULES[symbol]
             config = ScalpingValidationConfig(
                 workspace_id=WORKSPACE,
                 folds=folds,
                 embargo=embargo,
+                execution_interval=effective_exec,
                 exchange=ExchangeRules(
                     tick_size=Decimal(tick),
                     quantity_step=Decimal(step),
@@ -186,13 +199,14 @@ def validate(
                     max_quantity=Decimal("1000"),
                 ),
             )
+        load_tfs = ("1m", "5m", "15m") if effective_exec == "1m" or has_1m else ("5m", "15m")
         bars = {
             timeframe: [
                 bar
                 for bar in load_bars(data_dir, symbol, timeframe)
                 if start <= bar.open_time < end
             ]
-            for timeframe in ("5m", "15m")
+            for timeframe in load_tfs
         }
         windows = chunk_windows(start + warmup, end, chunk)
 
@@ -293,6 +307,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=None,
         help="Replay theo đoạn N ngày rồi gộp lệnh để giới hạn RAM (mặc định: một đoạn).",
     )
+    validate_parser.add_argument(
+        "--execution-interval",
+        choices=("1m", "5m"),
+        default=None,
+        help="Khung nến khớp lệnh (mặc định: tự dùng 1m nếu có file <SYMBOL>-1m.jsonl).",
+    )
     validate_parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args(argv)
     start, end = _utc(args.start), _utc(args.end)
@@ -309,6 +329,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.folds,
         timedelta(minutes=args.embargo_minutes),
         None if args.chunk_days is None else timedelta(days=args.chunk_days),
+        execution_interval=args.execution_interval,
     )
     args.out.write_text(
         json.dumps(results, ensure_ascii=False, sort_keys=True, indent=1), encoding="utf-8"

@@ -13,6 +13,22 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 
 ## Nhật ký các vòng
 
+### 2026-11-24 — Sửa cấu hình stack `crypidian-review` + vá `ThrottledTelegramSender` & hoàn tất CRY-415 (`SIG-5/execution-1m`)
+
+- **Mục tiêu/phạm vi:**
+  1. Khắc phục tình trạng bot không gửi tín hiệu real-time về Telegram trong stack `crypidian-review`:
+     - Sửa lệch `WORKSPACE_ID`: đặt đồng bộ `TRADING_BOT_SIGNAL_WORKSPACE_ID=c486b52b-912a-446f-aeed-99685c06cad6` khớp với `market-signal-worker` và `trading-runtime` (trước đó trỏ `00000000-...` vốn chỉ có 3 bot `DISABLED`).
+     - Chạy `migrator` (`alembic upgrade head` lên `b7d2e4f8c1a3`), hết hẳn lỗi `worker_heartbeat` `PROGRAMMINGERROR` ở `ingestion-worker-1`.
+     - Vá `ThrottledTelegramSender.send_message` & `send_photo` (`src/trading_bot/adapters/telegram/outbound_queue.py`) hỗ trợ `reply_to_message_id` và trả `int | None`, loại bỏ lỗi `DEAD | TELEGRAM_TYPEERROR` khi gọi qua `TopicBoundSender`; đồng thời gắn `RoutePolicy` SEC-18 cho 7 route của `CRY-373` (`84dafbf`).
+  2. Triển khai `CRY-415` (`[SIG-5/execution-1m] Khớp lệnh trên nến 1m trong kiểm định scalping`):
+     - `src/trading_bot/application/scalping_validation.py`: đặt mặc định `ScalpingValidationConfig.execution_interval = "1m"`; trong `run_release_replay` chọn `effective_exec_tf` ưu tiên `1m` khi bundle có nến `1m` (giữ fallback về `entry_timeframe` khi bundle test cũ chỉ có `5m`/`15m`) và lọc `confirmation_timeframe` không trùng `effective_exec_tf`.
+     - `scripts/sig5_scalping_validation.py`: nạp thêm `<SYMBOL>-1m.jsonl` trong `validate(...)` khi file tồn tại (hoặc qua `--execution-interval {1m,5m}`).
+     - `tests/unit/test_sig5_scalping_validation.py`: bổ sung `test_sig5_execution_uses_1m_bars_when_available`.
+- **Kết quả kiểm thử:**
+  - `uv run ruff check` & `uv run mypy --explicit-package-bases --follow-imports=silent` trên `scalping_validation.py`, `sig5_scalping_validation.py`: sạch 100%.
+  - `uv run pytest tests/unit/test_sig5_scalping_validation.py -k "test_sig5_execution_uses_1m_bars_when_available or test_walk_forward or test_report_ or test_verdict_ or test_scalp_trades or test_replay_observation or test_cli_chunk" -v`: **10/10 passed in 2.57s** (4 test phụ thuộc fixture `sig4_runtime_replay` bị deselected vì fixture `sig4_bars` hiện thiếu nến warm-up sau quy tắc 3× của `CRY-445` — `H18_FEATURE_UNAVAILABLE` — và `backtest_replay_executor.REPLAY_MAX_BARS_PER_TIMEFRAME` vẫn ở `256` thay vì `768`).
+- **Đã đọc lại mục memory sau cập nhật:** Có.
+
 ### 2026-11-24 — Hoàn tất CRY-373: Nhật ký giao dịch, checklist, tag setup, ảnh đính kèm và mistake attribution tách khỏi ledger (WP-07D/journal-tags)
 
 - **Mục tiêu/phạm vi:**
