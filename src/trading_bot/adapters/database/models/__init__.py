@@ -226,6 +226,9 @@ from trading_bot.adapters.database.models.venue_entities import (
     VenueOrderIntentRecord,
     VenueOrderTransitionRecord,
 )
+from trading_bot.adapters.database.models.scalping_validation_entities import (
+    ScalpingValidationReportRecord,
+)
 from trading_bot.adapters.database.models.trade_journal_entities import (
     TradeJournalAttachment,
     TradeJournalAudit,
@@ -377,6 +380,7 @@ __all__ = [
     "WatchlistVersion",
     "Workspace",
     "WorkspaceSettingsVersion",
+    "ScalpingValidationReportRecord",
     "StrategyCardRecord",
     "TradeJournalAttachment",
     "TradeJournalAudit",

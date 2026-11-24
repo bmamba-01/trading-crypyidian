@@ -234,6 +234,53 @@
       <p class="bt-empty">Chưa có lượt kiểm thử nào. Tạo lượt chạy từ gói dữ liệu đã được lưu.</p>
     {% endif %}
   </section>
+
+  {% set sig5_reports = scalping_reports if scalping_reports is defined else [] %}
+  <section id="sig5-validation-reports" class="bt-section" aria-labelledby="sig5-reports-heading">
+    <div class="bt-section__head">
+      <h3 id="sig5-reports-heading" class="bt-section__title">Báo Cáo Kiểm Định Scalping (SIG-5)</h3>
+      <span class="bt-count num">{{ sig5_reports | length }}</span>
+    </div>
+    {% if sig5_reports %}
+      <div class="bt-table-wrap">
+        <table class="bt-table">
+          <thead>
+            <tr>
+              <th scope="col">Chiến lược</th>
+              <th scope="col">Cặp tiền</th>
+              <th scope="col">Mẫu OOS</th>
+              <th scope="col">Kỳ vọng R (xấu)</th>
+              <th scope="col">Đề xuất PAPER</th>
+              <th scope="col">Mã băm kiểm định</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for rep in sig5_reports %}
+              {% set verdict = rep.report_payload.get("verdict", {}) %}
+              <tr data-sig5-report="{{ rep.validation_hash }}">
+                <td data-label="Chiến lược"><strong>{{ rep.release_id }}</strong></td>
+                <td data-label="Cặp tiền">{{ rep.symbol }}</td>
+                <td class="num" data-label="Mẫu OOS">{{ rep.out_of_sample_n }}</td>
+                <td class="num" data-label="Kỳ vọng R (xấu)">{{ rep.stress_expectancy_r if rep.stress_expectancy_r is not none else "—" }}</td>
+                <td data-label="Đề xuất PAPER">
+                  <span class="bt-status bt-status--{{ 'ok' if rep.recommend_paper else 'error' }}">
+                    <span class="bt-status__dot" aria-hidden="true"></span>
+                    <strong>{{ "ĐẠT" if rep.recommend_paper else "KHÔNG ĐẠT" }}</strong>
+                  </span>
+                  {% if verdict.get("reasons") %}
+                    <span class="bt-stage">{{ verdict.get("reasons") | join("; ") }}</span>
+                  {% endif %}
+                </td>
+                <td data-label="Mã băm kiểm định"><code>{{ rep.validation_hash[:12] }}</code></td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <p class="bt-empty">Chưa có báo cáo kiểm định scalping SIG-5 nào được lưu trong cơ sở dữ liệu.</p>
+    {% endif %}
+  </section>
 </div>
 {% endblock %}
 {% block scripts %}

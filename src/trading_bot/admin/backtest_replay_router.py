@@ -4,11 +4,12 @@ import re
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
-from typing import Annotated, Any
+from typing import Annotated, Any, cast
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from pydantic import BaseModel
 from starlette.responses import RedirectResponse
 
 from trading_bot.admin.form_choices import (
@@ -27,9 +28,14 @@ from trading_bot.admin.web_router import (
     _verify_form_csrf,
 )
 from trading_bot.application.backtest_replay_jobs import BacktestReplayJobSubmission
+from trading_bot.application.scalping_validation_reports import (
+    ScalpingValidationReportError,
+    ScalpingValidationReportService,
+)
 from trading_bot.application.strategy_catalog import strategy_registry
 from trading_bot.auth.cookies import read_session_cookie
-from trading_bot.auth.route_policy import CsrfMode, owner_route
+from trading_bot.auth.policy import Permission
+from trading_bot.auth.route_policy import CsrfMode, owner_route, permission_route
 from trading_bot.auth.router import current_identity
 from trading_bot.auth.service import AuthIdentity
 
@@ -242,6 +248,17 @@ async def backtest_replay_page(
     selected_bundle = next(
         (item for item in bundle_choices if item.bundle_hash == selected_bundle_hash), None
     )
+    scalping_reports: list[dict[str, Any]] = []
+    val_service = cast(
+        ScalpingValidationReportService | None,
+        getattr(request.app.state, "scalping_validation_report_service", None),
+    )
+    if val_service is not None:
+        try:
+            scalping_reports = await val_service.list_reports(identity.principal, limit=20)
+        except ScalpingValidationReportError:
+            scalping_reports = []
+
     return templates.TemplateResponse(
         request=request,
         name="admin/backtest_replays.html",
@@ -249,6 +266,7 @@ async def backtest_replay_page(
             "identity": identity,
             "csrf_token": csrf_token,
             "jobs": jobs,
+            "scalping_reports": scalping_reports,
             "bundle_choices": bundle_choices,
             "show_bundle_hash_input": not callable(list_bundles),
             "selected_bundle_hash": selected_bundle_hash,
@@ -345,4 +363,74 @@ async def cancel_backtest_replay(
     )
 
 
-__all__ = ["BacktestJobView", "router"]
+api_router = APIRouter(
+    prefix="/api/v1/backtests/scalping-validations",
+    tags=["scalping validations"],
+)
+
+
+class SaveScalpingValidationRequest(BaseModel):
+    report: dict[str, Any]
+
+
+def _validation_service(request: Request) -> ScalpingValidationReportService:
+    service = cast(
+        ScalpingValidationReportService | None,
+        getattr(request.app.state, "scalping_validation_report_service", None),
+    )
+    if service is None:
+        raise HTTPException(
+            status_code=503, detail="Dịch vụ lưu báo cáo kiểm định SIG-5 chưa sẵn sàng."
+        )
+    return service
+
+
+@api_router.get("", dependencies=[permission_route(Permission.WORKSPACE_READ)])
+async def list_scalping_validations(
+    request: Request,
+    response: Response,
+    identity: Annotated[AuthIdentity, Depends(current_identity)],
+    release_id: Annotated[str | None, Query()] = None,
+    symbol: Annotated[str | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+) -> dict[str, Any]:
+    """Liệt kê báo cáo kiểm định scalping SIG-5 đã lưu trong workspace."""
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        reports = await _validation_service(request).list_reports(
+            identity.principal, release_id=release_id, symbol=symbol, limit=limit
+        )
+    except ScalpingValidationReportError as error:
+        raise HTTPException(
+            status_code=error.status_code,
+            detail={"code": error.code, "message": error.message},
+        ) from error
+    return {"reports": reports}
+
+
+@api_router.post(
+    "",
+    status_code=201,
+    dependencies=[permission_route(Permission.STRATEGY_WRITE, csrf=CsrfMode.HEADER)],
+)
+async def save_scalping_validation(
+    payload: SaveScalpingValidationRequest,
+    request: Request,
+    response: Response,
+    identity: Annotated[AuthIdentity, Depends(current_identity)],
+) -> dict[str, Any]:
+    """Lưu báo cáo kiểm định SIG-5 (có kiểm tra validation_hash) vào PostgreSQL."""
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        saved = await _validation_service(request).save_report(
+            identity.principal, report_body=payload.report
+        )
+    except ScalpingValidationReportError as error:
+        raise HTTPException(
+            status_code=error.status_code,
+            detail={"code": error.code, "message": error.message},
+        ) from error
+    return {"report": saved}
+
+
+__all__ = ["BacktestJobView", "api_router", "router"]

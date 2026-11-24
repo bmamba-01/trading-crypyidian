@@ -13,6 +13,20 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 
 ## Nhật ký các vòng
 
+### 2026-11-24 — Hoàn tất CRY-414: Lưu báo cáo kiểm định scalping SIG-5 vào DB và hiển thị trên Admin (SIG-5/report-db)
+
+- **Mục tiêu/phạm vi:**
+  1. Triển khai và nghiệm thu `CRY-414` (`[SIG-5/report-db] Lưu báo cáo kiểm định vào DB và hiển thị trên Admin`):
+     - Database & Migration (`src/trading_bot/adapters/database/models/scalping_validation_entities.py`, `migrations/versions/c8e1a2b4d9f0_cry414_scalping_validation_report.py`): bảng `scalping_validation_report` lưu các trường truy vấn (`release_id`, `symbol`, `costs_version`, `recommend_paper`, `out_of_sample_n`, `stress_expectancy_r`, `validation_hash`) cùng `report_payload` JSONB, RLS theo `workspace_id`, index unique `(workspace_id, validation_hash)` và `GRANT SELECT, INSERT` cho `crypidian_admin_web`.
+     - Repository & Service (`src/trading_bot/adapters/database/repositories/scalping_validation_reports.py`, `src/trading_bot/application/scalping_validation_reports.py`, `src/trading_bot/app.py`): xác minh `validation_hash` trước khi lưu (`verify_validation_report_hash`), idempotent theo `validation_hash`, phân quyền `WORKSPACE_READ` / `STRATEGY_WRITE`.
+     - API & Admin UI (`src/trading_bot/admin/backtest_replay_router.py`, `src/trading_bot/templates/admin/backtest_replays.html`): mở `GET/POST /api/v1/backtests/scalping-validations` (kèm `permission_route` SEC-18) và hiển thị bảng `#sig5-validation-reports` trên `/admin/backtests`.
+- **Lỗi phát hiện & xử lý:**
+  - Phát hiện file `.env` mới ở root chứa `CRYPIDIAN_APP_IMAGE` khiến `AppSettings()` (`extra="forbid"`) lỗi khi test ở root; đã dùng `AppSettings(_env_file=None)` trong unit test và tạm tắt `env_file` trong fixture Playwright của `CRY-414` để cô lập khỏi `.env` Compose.
+- **Kết quả kiểm thử:**
+  - `uv run ruff check` & `uv run mypy --explicit-package-bases --follow-imports=silent` (6 file): sạch 100%.
+  - `.venv/bin/pytest tests/unit/test_cry414_scalping_validation_report_db.py tests/e2e/test_cry414_scalping_validation_admin_playwright.py -v`: **4/4 passed in 6.77s** (Desktop `1440×900` + Mobile `390×844`, không tràn ngang, không lỗi CSP/console).
+- **Đã đọc lại mục memory sau cập nhật:** Có.
+
 ### 2026-11-24 — Hoàn tất song song CRY-216 (`SIG-4/con-lai`) và CRY-51 / CRY-418 (`SIG-6/calibration`)
 
 - **Mục tiêu/phạm vi:**

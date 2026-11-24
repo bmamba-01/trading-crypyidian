@@ -41,7 +41,12 @@ from trading_bot.adapters.telegram.bot_api_sender import TelegramBotApiSender
 from trading_bot.adapters.telegram.outbound_queue import ThrottledTelegramSender
 from trading_bot.adapters.telegram.recording_sender import RecordingTelegramSender
 from trading_bot.admin.audit_router import router as audit_router
-from trading_bot.admin.backtest_replay_router import router as backtest_replay_router
+from trading_bot.admin.backtest_replay_router import (
+    api_router as scalping_validation_api_router,
+)
+from trading_bot.admin.backtest_replay_router import (
+    router as backtest_replay_router,
+)
 from trading_bot.admin.bot_control_router import router as bot_control_router
 from trading_bot.admin.bot_grant_service import BotGrantAdminService
 from trading_bot.admin.bot_grants_router import router as bot_grants_router
@@ -142,6 +147,7 @@ from trading_bot.application.paper_runtime_bootstrap import (
     PaperRuntimeBootstrapService,
     new_runtime_owner_id,
 )
+from trading_bot.application.scalping_validation_reports import ScalpingValidationReportService
 from trading_bot.application.scorer_runtime_policy import (
     ConfiguredScorerRuntimePolicyProvider,
     ScorerRuntimePolicyProvider,
@@ -452,6 +458,11 @@ def create_app(
         )
         application.state.trade_journal_service = (
             TradeJournalService(active_session_factory)
+            if active_session_factory is not None
+            else None
+        )
+        application.state.scalping_validation_report_service = (
+            ScalpingValidationReportService(active_session_factory)
             if active_session_factory is not None
             else None
         )
@@ -1072,6 +1083,7 @@ def create_app(
         app.include_router(trade_journal_router)
         app.include_router(trade_journal_html_router)
         app.include_router(backtest_replay_router)
+        app.include_router(scalping_validation_api_router)
         app.include_router(bot_control_router)
         app.include_router(telegram_binding_router)
         app.include_router(telegram_signal_router)
