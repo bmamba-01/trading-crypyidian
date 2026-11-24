@@ -280,6 +280,7 @@ def create_app(
     signal_outcome_worker_factory: Callable[..., Any] | None = None,
     training_supervisor_factory: Callable[..., Any] | None = None,
     database_probe: Callable[[], Awaitable[bool]] | None = None,
+    clock: Callable[[], datetime] | None = None,
 ) -> FastAPI:
     """Tạo ứng dụng mà không kết nối mạng hay tải credential khi import."""
     app_settings = settings or AppSettings()
@@ -637,6 +638,7 @@ def create_app(
                 context_provider_factory=paper_decision_context_provider_factory,
                 supervisor_factory=paper_runtime_supervisor_factory,
                 stopping=stopping,
+                clock=clock,
             )
         elif app_settings.process_role == "ingestion-worker":
             if active_session_factory is None:
@@ -892,6 +894,7 @@ def create_app(
                         scanner,
                         workspace_id=kwargs["workspace_id"],
                         tick_seconds=kwargs["tick_seconds"],
+                        now=clock,
                     )
 
                 producer_factory = default_market_signal_worker_factory
@@ -1536,6 +1539,7 @@ async def _start_paper_runtime(
     context_provider_factory: Callable[..., Any] | None,
     supervisor_factory: Callable[..., Any] | None,
     stopping: asyncio.Event,
+    clock: Callable[[], datetime] | None = None,
 ) -> asyncio.Task[None] | None:
     """Bootstrap theo bot, dựng registry + application, chạy supervisor (MB05.5).
 
@@ -1574,6 +1578,7 @@ async def _start_paper_runtime(
         "context_provider_factory": context_provider_factory,
         "supervisor_factory": supervisor_factory,
         "lease_ttl": lease_ttl,
+        "clock": clock,
     }
     result = await _run_bootstrap(bootstrap)
     if _bootstrap_is_transient(result):
@@ -1658,6 +1663,7 @@ async def _wire_paper_runtime(
     context_provider_factory: Callable[..., Any] | None,
     supervisor_factory: Callable[..., Any] | None,
     lease_ttl: timedelta,
+    clock: Callable[[], datetime] | None = None,
 ) -> Any | None:
     """Từ kết quả bootstrap: registry, application, supervisor + tick đầu đồng bộ."""
     state = application.state
@@ -1723,19 +1729,23 @@ async def _wire_paper_runtime(
             application=paper_application,
             sessions=session_factory,
             workspace_id=result.workspace_id,
+            clock=clock,
         )
         state.paper_market_loop = market_loop
         job_processor = _with_market_loop(job_processor, market_loop)
-    supervisor = supervisor_builder(
-        registry=registry,
-        application=paper_application,
-        bootstrap=bootstrap,
-        sessions=session_factory,
-        workspace_id=result.workspace_id,
-        tick_seconds=app_settings.runtime_supervisor_tick_seconds,
-        lease_ttl=lease_ttl,
-        job_processor=job_processor,
-    )
+    supervisor_kwargs: dict[str, Any] = {
+        "registry": registry,
+        "application": paper_application,
+        "bootstrap": bootstrap,
+        "sessions": session_factory,
+        "workspace_id": result.workspace_id,
+        "tick_seconds": app_settings.runtime_supervisor_tick_seconds,
+        "lease_ttl": lease_ttl,
+        "job_processor": job_processor,
+    }
+    if clock is not None:
+        supervisor_kwargs["clock"] = clock
+    supervisor = supervisor_builder(**supervisor_kwargs)
     state.paper_supervisor = supervisor
     # Tick đầu chạy đồng bộ: áp control đã có và xác minh activity trước khi nhận command.
     await supervisor.tick_once()
@@ -1969,6 +1979,7 @@ async def _first_rejection(
 
 def _default_supervisor(**kwargs: Any) -> BotRuntimeSupervisor:
     application = kwargs["application"]
+    clock = kwargs.get("clock") or (lambda: datetime.now(UTC))
     activity_guard = AccountActivityGuard(
         sessions=kwargs["sessions"],
         workspace_id=kwargs["workspace_id"],
@@ -1976,7 +1987,7 @@ def _default_supervisor(**kwargs: Any) -> BotRuntimeSupervisor:
         adapter=PaperLedgerAccountActivityAdapter(
             workspace_id=kwargs["workspace_id"],
             gateways=application.gateway_view(),
-            clock=lambda: datetime.now(UTC),
+            clock=clock,
         ),
     )
     return BotRuntimeSupervisor(activity_guard=activity_guard, **kwargs)

@@ -53,6 +53,8 @@ class RiskState:
     pending_group_reservation_risk: Decimal = ZERO
     pending_group_reservation_notional: Decimal = ZERO
     correlation_policy: CorrelationGroupPolicy | None = None
+    # SIG-4: mốc hết hạn cooldown sau chuỗi thua liên tiếp (None = không bị chặn).
+    loss_streak_cooldown_until: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -253,6 +255,20 @@ class RiskEngine:
                 "CIRCUIT_BREAKER_DRAWDOWN",
                 "Ngắt mạch: vốn sụt từ đỉnh chạm ngưỡng; tạm dừng rồi tiếp tục bot (MFA).",
             )
+        if state.loss_streak_cooldown_until is not None:
+            if (
+                state.loss_streak_cooldown_until.tzinfo is None
+                or state.loss_streak_cooldown_until.utcoffset() is None
+            ):
+                return reject(
+                    "RISK_TIMESTAMP_INVALID",
+                    "Mốc cooldown chuỗi thua phải có múi giờ.",
+                )
+            if state.evaluated_at < state.loss_streak_cooldown_until:
+                return reject(
+                    "LOSS_STREAK_COOLDOWN",
+                    "Đang trong thời gian cooldown sau chuỗi thua liên tiếp.",
+                )
         exchange = settings.exchange
         prices = (plan.entry_reference_price, plan.entry_price, plan.stop_price) + (
             (plan.target_price,) if plan.target_price is not None else ()

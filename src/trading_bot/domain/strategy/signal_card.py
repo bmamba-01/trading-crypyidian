@@ -15,7 +15,10 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from decimal import Decimal, InvalidOperation
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from trading_bot.domain.strategy.signal_calibration import SignalCalibrationReport
 
 CARD_VERSION = "sig3-card-v1"
 R_LADDER = (Decimal("1"), Decimal("2"), Decimal("3"))
@@ -106,6 +109,8 @@ def build_signal_card(
     fee_rate: Decimal | float | None = None,
     account_risk_pct: Decimal | float | None = None,
     confidence: Mapping[str, Any] | None = None,
+    calibration_report: SignalCalibrationReport | None = None,
+    calibrated_probability: float | None = None,
 ) -> dict[str, Any]:
     """Dựng thẻ tín hiệu từ ``bot_decision.payload.candidate`` (và kế hoạch đã duyệt nếu có)."""
     direction = str(candidate.get("direction", ""))
@@ -193,8 +198,12 @@ def build_signal_card(
     )
     items = [dict(item) for item in checklist]
     raw_conf = confidence if confidence is not None else candidate.get("confidence")
-    if isinstance(raw_conf, Mapping) and raw_conf.get("label"):
-        resolved_conf: dict[str, Any] = dict(raw_conf)
+    if calibration_report is not None or calibrated_probability is not None:
+        from trading_bot.domain.strategy.signal_calibration import format_calibrated_confidence
+
+        resolved_conf = format_calibrated_confidence(calibrated_probability, calibration_report)
+    elif isinstance(raw_conf, Mapping) and raw_conf.get("label"):
+        resolved_conf = dict(raw_conf)
     else:
         resolved_conf = {"tier": "uncalibrated", "label": "Chưa hiệu chuẩn"}
     snapshot_id = candidate.get("feature_snapshot_id") or (

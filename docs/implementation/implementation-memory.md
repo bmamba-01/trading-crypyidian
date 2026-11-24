@@ -13,6 +13,23 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 
 ## Nhật ký các vòng
 
+### 2026-11-24 — Hoàn tất song song CRY-216 (`SIG-4/con-lai`) và CRY-51 / CRY-418 (`SIG-6/calibration`)
+
+- **Mục tiêu/phạm vi:**
+  1. **`CRY-216` (`[SIG-4/con-lai]`):**
+     - Mô phỏng limit maker (`src/trading_bot/domain/execution/paper.py`, `paper_state.py`): `PaperExecutionPolicy` thêm `maker_fee_rate`, `min_maker_penetration_ticks` (mặc định 1), `default_queue_ahead_quantity`; `PaperOrderIntent` thêm `limit_price`, `queue_ahead_quantity`, `max_pending_bars`, `pending_bars_elapsed`; khớp khi xuyên >= `min_maker_penetration_ticks * tick_size` và trừ dần hàng đợi trước khi khớp `limit_price` (`slippage_cost = 0`, `is_maker = True`).
+     - Hết hạn lệnh chờ sau N nến (`max_pending_bars` → `OrderStatus.EXPIRED` nếu chưa khớp đủ).
+     - Cooldown sau chuỗi thua (`src/trading_bot/domain/risk/loss_streak_cooldown.py`, `src/trading_bot/domain/risk/engine.py`): `evaluate_loss_streak_cooldown(...)` và cổng `LOSS_STREAK_COOLDOWN` trong `RiskEngine.evaluate`.
+     - Đồng hồ có kiểm soát ở `create_app(..., clock=...)` (`src/trading_bot/app.py`) truyền xuống `MarketSignalProducerWorker(now=clock)` và `PaperMarketEventLoop(clock=clock)`/`BotRuntimeSupervisor`, cùng xác minh `adx_14`/`efficiency_ratio_40` trên khung `5m` (`tests/unit/test_cry216_sig4_execution_controls.py`, `tests/e2e/test_cry216_sig4_producer_runtime_e2e.py`).
+  2. **`CRY-51` & `CRY-418` (`[SIG-6/calibration]`):**
+     - `src/trading_bot/domain/strategy/signal_calibration.py`: nhãn nhị phân `P(chạm TP1 trước SL)` (`label_tp1_before_sl`), mô hình baseline logistic (`fit_logistic_baseline`), hiệu chuẩn `IsotonicCalibrator` (PAV) và `TemperatureCalibrator`, đánh giá walk-forward không nhìn trước (`evaluate_walk_forward_calibration`) với `Brier score`, `log-loss`, `ECE` và `ReliabilityBin` 10 bin.
+     - `src/trading_bot/domain/strategy/signal_card.py`: `format_calibrated_confidence` và `build_signal_card` chỉ hiển thị `%` khi `report.is_qualified == True`; ngược lại luôn giữ `"Chưa hiệu chuẩn"`, không bật `SHADOW`/`PAPER_GATE`.
+     - `tests/unit/test_cry51_sig6_calibration.py`: kiểm chứng toàn bộ calibration, ngưỡng `"Chưa hiệu chuẩn"` và kiểm tra `AntiConsensusAnalyzer` gộp 2 điều kiện tương quan cao (`|r| >= 0.85`).
+- **Kết quả kiểm thử tổng hợp (sau khi ghép cả 2 luồng):**
+  - `uv run ruff check` & `uv run mypy --explicit-package-bases --follow-imports=silent` (10 file): sạch 100%.
+  - `uv run pytest` (12 file: `test_cry51_sig6_calibration.py`, `test_sig3_signal_card.py`, `test_sig8_signal_card_and_telegram.py`, `test_sig6_card_consensus.py`, `test_sig6_checklist_independence.py`, `test_cry216_sig4_execution_controls.py`, `test_sig4_scalping_rules.py`, `test_sig4_acceptance.py`, `test_paper_execution.py`, `test_risk_engine.py`, `test_cry216_sig4_producer_runtime_e2e.py`, `test_market_signal_app.py`, chạy từ `/tmp` để tránh biến môi trường `CRYPIDIAN_APP_IMAGE` trong shell): **99/99 passed in 2.76s**.
+- **Đã đọc lại mục memory sau cập nhật:** Có.
+
 ### 2026-11-24 — Sửa cấu hình stack `crypidian-review` + vá `ThrottledTelegramSender` & hoàn tất CRY-415 (`SIG-5/execution-1m`)
 
 - **Mục tiêu/phạm vi:**

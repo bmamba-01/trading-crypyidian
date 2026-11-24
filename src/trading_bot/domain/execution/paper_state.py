@@ -261,6 +261,7 @@ def _fill_to_json(fill: PaperFill) -> dict[str, Any]:
         "fee_cost": str(fill.fee_cost),
         "slippage_cost": str(fill.slippage_cost),
         "filled_at": fill.filled_at.isoformat(),
+        "is_maker": fill.is_maker,
     }
 
 
@@ -275,6 +276,7 @@ def _fill_from_json(row: dict[str, Any]) -> PaperFill:
         Decimal(row["fee_cost"]),
         Decimal(row["slippage_cost"]),
         _datetime(row["filled_at"]),
+        is_maker=bool(row.get("is_maker", False)),
     )
 
 
@@ -296,10 +298,17 @@ def _order_to_json(order: PaperOrderIntent) -> dict[str, Any]:
         "status": order.status.value,
         "fills": [_fill_to_json(fill) for fill in order.fills],
         "seen_bar_keys": list(order.seen_bar_keys),
+        "limit_price": str(order.limit_price) if order.limit_price is not None else None,
+        "queue_ahead_quantity": str(order.queue_ahead_quantity),
+        "max_pending_bars": order.max_pending_bars,
+        "pending_bars_elapsed": order.pending_bars_elapsed,
     }
 
 
 def _order_from_json(row: dict[str, Any]) -> PaperOrderIntent:
+    raw_limit = row.get("limit_price")
+    raw_queue = row.get("queue_ahead_quantity")
+    raw_max_pending = row.get("max_pending_bars")
     return PaperOrderIntent(
         intent_id=str(row["intent_id"]),
         idempotency_key=str(row["idempotency_key"]),
@@ -317,6 +326,10 @@ def _order_from_json(row: dict[str, Any]) -> PaperOrderIntent:
         status=OrderStatus(row["status"]),
         fills=tuple(_fill_from_json(item) for item in row["fills"]),
         seen_bar_keys=tuple(str(value) for value in row["seen_bar_keys"]),
+        limit_price=Decimal(raw_limit) if raw_limit is not None else None,
+        queue_ahead_quantity=Decimal(raw_queue) if raw_queue is not None else Decimal("0"),
+        max_pending_bars=int(raw_max_pending) if raw_max_pending is not None else None,
+        pending_bars_elapsed=int(row.get("pending_bars_elapsed", 0)),
     )
 
 

@@ -49,6 +49,9 @@ class PaperExecutionPolicy:
     slippage_rate: Decimal
     fee_rate: Decimal
     max_fill_quantity_per_event: Decimal | None = None
+    maker_fee_rate: Decimal | None = None
+    min_maker_penetration_ticks: int = 1
+    default_queue_ahead_quantity: Decimal | None = None
 
     def __post_init__(self) -> None:
         if not self.version_id.strip() or self.latency < timedelta(0):
@@ -63,6 +66,17 @@ class PaperExecutionPolicy:
             or self.max_fill_quantity_per_event <= ZERO
         ):
             raise ValueError("Giới hạn khớp mỗi event phải hữu hạn và dương.")
+        if self.maker_fee_rate is not None and (
+            not self.maker_fee_rate.is_finite() or self.maker_fee_rate < ZERO
+        ):
+            raise ValueError("Phí maker phải hữu hạn và không âm.")
+        if self.min_maker_penetration_ticks < 1:
+            raise ValueError("Số tick xuyên tối thiểu cho limit maker phải >= 1.")
+        if self.default_queue_ahead_quantity is not None and (
+            not self.default_queue_ahead_quantity.is_finite()
+            or self.default_queue_ahead_quantity < ZERO
+        ):
+            raise ValueError("Giới hạn hàng đợi mặc định phải hữu hạn và không âm.")
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,6 +122,7 @@ class PaperFill:
     fee_cost: Decimal
     slippage_cost: Decimal
     filled_at: datetime
+    is_maker: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,6 +145,10 @@ class PaperOrderIntent:
     status: OrderStatus
     fills: tuple[PaperFill, ...] = ()
     seen_bar_keys: tuple[str, ...] = ()
+    limit_price: Decimal | None = None
+    queue_ahead_quantity: Decimal = ZERO
+    max_pending_bars: int | None = None
+    pending_bars_elapsed: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -280,6 +299,9 @@ class PaperExecutionGateway:
         *,
         submitted_at: datetime,
         eligible_after: datetime | None = None,
+        limit_price: Decimal | None = None,
+        queue_ahead_quantity: Decimal | None = None,
+        max_pending_bars: int | None = None,
     ) -> PaperOrderIntent:
         """Tạo intent một lần; lần retry cùng key/hash trả lại intent hiện có."""
         _aware(submitted_at)
@@ -297,6 +319,17 @@ class PaperExecutionGateway:
             raise IntentConflict("Plan cần quantity hữu hạn và dương.")
         if submitted_at >= plan.expires_at:
             raise IntentConflict("Plan đã hết hạn trước khi tạo intent.")
+        if limit_price is not None and (not limit_price.is_finite() or limit_price <= ZERO):
+            raise IntentConflict("Giá limit maker phải hữu hạn và dương.")
+        resolved_queue = (
+            queue_ahead_quantity
+            if queue_ahead_quantity is not None
+            else (self.policy.default_queue_ahead_quantity or ZERO)
+        )
+        if not resolved_queue.is_finite() or resolved_queue < ZERO:
+            raise IntentConflict("Giới hạn hàng đợi phải hữu hạn và không âm.")
+        if max_pending_bars is not None and max_pending_bars < 1:
+            raise IntentConflict("Số nến hết hạn lệnh chờ phải >= 1.")
         ready_at = eligible_after or plan.source_signal_at + timedelta(microseconds=1)
         _aware(ready_at)
         eligible_at = max(ready_at, submitted_at) + self.policy.latency
@@ -316,6 +349,9 @@ class PaperExecutionGateway:
             stop_price=plan.stop_price,
             target_price=plan.target_price,
             status=OrderStatus.ACCEPTED,
+            limit_price=limit_price,
+            queue_ahead_quantity=resolved_queue,
+            max_pending_bars=max_pending_bars,
         )
         self._keys[idempotency_key] = intent_id
         self._orders[intent_id] = order
@@ -329,14 +365,18 @@ class PaperExecutionGateway:
         available_quantity: Decimal | None = None,
         intent_id: str | None = None,
     ) -> tuple[PaperOrderIntent, ...]:
-        """Khớp lệnh đủ điều kiện ở giá mở nến, không dùng dữ liệu đóng nến làm giá vào."""
+        """Khớp lệnh đủ điều kiện; hỗ trợ lệnh thị trường và mô phỏng limit maker."""
         event_scope = intent_id or "*"
         if intent_id is not None:
             self._get_order(intent_id)
+        if available_quantity is not None and (
+            not available_quantity.is_finite() or available_quantity < ZERO
+        ):
+            raise ValueError("available_quantity phải hữu hạn, không âm.")
         self._accept_market_event(bar, event_scope=event_scope)
         results: list[PaperOrderIntent] = []
-        for intent_id, order in tuple(self._orders.items()):
-            if event_scope != "*" and intent_id != event_scope:
+        for current_intent_id, order in tuple(self._orders.items()):
+            if event_scope != "*" and current_intent_id != event_scope:
                 continue
             if order.symbol != bar.symbol or order.status not in {
                 OrderStatus.ACCEPTED,
@@ -347,34 +387,115 @@ class PaperExecutionGateway:
                 results.append(order)
                 continue
             seen_order = replace(order, seen_bar_keys=(*order.seen_bar_keys, bar.bar_key))
-            if bar.opened_at >= order.expires_at:
+            if bar.opened_at >= order.expires_at or (
+                order.max_pending_bars is not None
+                and order.pending_bars_elapsed >= order.max_pending_bars
+            ):
                 seen_order = replace(seen_order, status=OrderStatus.EXPIRED)
             elif bar.opened_at >= order.eligible_at:
-                fill_limit = order.remaining_quantity
-                if self.policy.max_fill_quantity_per_event is not None:
-                    fill_limit = min(fill_limit, self.policy.max_fill_quantity_per_event)
-                if available_quantity is not None:
-                    if not available_quantity.is_finite() or available_quantity < ZERO:
-                        raise ValueError("available_quantity phải hữu hạn, không âm.")
-                    fill_limit = min(fill_limit, available_quantity)
-                if fill_limit > ZERO:
-                    fill = self._create_fill(order, bar, fill_limit)
-                    new_filled = order.filled_quantity + fill.quantity
-                    remaining = order.requested_quantity - new_filled
-                    status = (
-                        OrderStatus.FILLED if remaining == ZERO else OrderStatus.PARTIALLY_FILLED
+                seen_order = replace(
+                    seen_order, pending_bars_elapsed=order.pending_bars_elapsed + 1
+                )
+                if order.limit_price is not None:
+                    seen_order = self._apply_limit_maker_bar(
+                        seen_order, bar, available_quantity=available_quantity
                     )
-                    seen_order = replace(
-                        seen_order,
-                        filled_quantity=new_filled,
-                        remaining_quantity=remaining,
-                        status=status,
-                        fills=(*order.fills, fill),
+                else:
+                    seen_order = self._apply_market_open_bar(
+                        seen_order, bar, available_quantity=available_quantity
                     )
-                    self._add_to_position(seen_order, fill)
-            self._orders[intent_id] = seen_order
+                if (
+                    seen_order.status in {OrderStatus.ACCEPTED, OrderStatus.PARTIALLY_FILLED}
+                    and seen_order.max_pending_bars is not None
+                    and seen_order.pending_bars_elapsed >= seen_order.max_pending_bars
+                ):
+                    seen_order = replace(seen_order, status=OrderStatus.EXPIRED)
+            self._orders[current_intent_id] = seen_order
             results.append(seen_order)
         return tuple(results)
+
+    def _apply_market_open_bar(
+        self,
+        order: PaperOrderIntent,
+        bar: PaperBar,
+        *,
+        available_quantity: Decimal | None,
+    ) -> PaperOrderIntent:
+        fill_limit = order.remaining_quantity
+        if self.policy.max_fill_quantity_per_event is not None:
+            fill_limit = min(fill_limit, self.policy.max_fill_quantity_per_event)
+        if available_quantity is not None:
+            fill_limit = min(fill_limit, available_quantity)
+        if fill_limit <= ZERO:
+            return order
+        fill = self._create_fill(order, bar, fill_limit)
+        new_filled = order.filled_quantity + fill.quantity
+        remaining = order.requested_quantity - new_filled
+        status = OrderStatus.FILLED if remaining == ZERO else OrderStatus.PARTIALLY_FILLED
+        updated = replace(
+            order,
+            filled_quantity=new_filled,
+            remaining_quantity=remaining,
+            status=status,
+            fills=(*order.fills, fill),
+        )
+        self._add_to_position(updated, fill)
+        return updated
+
+    def _apply_limit_maker_bar(
+        self,
+        order: PaperOrderIntent,
+        bar: PaperBar,
+        *,
+        available_quantity: Decimal | None,
+    ) -> PaperOrderIntent:
+        """Khớp limit maker khi giá xuyên >= N tick và trừ dần giới hạn hàng đợi."""
+        assert order.limit_price is not None
+        plan = self._plans[order.intent_id]
+        penetration = plan.exchange_rules.tick_size * self.policy.min_maker_penetration_ticks
+        penetrated = (
+            bar.low <= order.limit_price - penetration
+            if order.direction == "long"
+            else bar.high >= order.limit_price + penetration
+        )
+        if not penetrated:
+            return order
+
+        # Trừ khối lượng xếp hàng đứng trước trước khi khớp phần của lệnh PAPER.
+        queue_ahead = order.queue_ahead_quantity
+        if available_quantity is not None:
+            bar_budget = available_quantity
+            if self.policy.max_fill_quantity_per_event is not None:
+                bar_budget = min(bar_budget, self.policy.max_fill_quantity_per_event)
+            consumed_queue = min(queue_ahead, bar_budget)
+            queue_ahead -= consumed_queue
+            fill_limit = min(order.remaining_quantity, bar_budget - consumed_queue)
+        elif self.policy.max_fill_quantity_per_event is not None:
+            bar_budget = self.policy.max_fill_quantity_per_event
+            consumed_queue = min(queue_ahead, bar_budget)
+            queue_ahead -= consumed_queue
+            fill_limit = min(order.remaining_quantity, bar_budget - consumed_queue)
+        else:
+            queue_ahead = ZERO
+            fill_limit = order.remaining_quantity
+
+        if fill_limit <= ZERO:
+            return replace(order, queue_ahead_quantity=queue_ahead)
+
+        fill = self._create_maker_fill(order, bar, fill_limit)
+        new_filled = order.filled_quantity + fill.quantity
+        remaining = order.requested_quantity - new_filled
+        status = OrderStatus.FILLED if remaining == ZERO else OrderStatus.PARTIALLY_FILLED
+        updated = replace(
+            order,
+            filled_quantity=new_filled,
+            remaining_quantity=remaining,
+            status=status,
+            fills=(*order.fills, fill),
+            queue_ahead_quantity=queue_ahead,
+        )
+        self._add_to_position(updated, fill)
+        return updated
 
     def cancel_unfilled(self, intent_id: str) -> PaperOrderIntent:
         """Hủy remainder; fill/position đã có vẫn mở và giữ nguyên stop coverage."""
@@ -717,6 +838,38 @@ class PaperExecutionGateway:
             fee,
             slippage,
             bar.opened_at,
+        )
+
+    def _create_maker_fill(
+        self, order: PaperOrderIntent, bar: PaperBar, quantity: Decimal
+    ) -> PaperFill:
+        """Tạo fill limit maker tại giá limit làm tròn tick, không trượt giá, dùng phí maker."""
+        assert order.limit_price is not None
+        plan = self._plans[order.intent_id]
+        execution_price = _round_price(
+            order.limit_price, plan.exchange_rules.tick_size, ROUND_HALF_UP
+        )
+        multiplier = plan.exchange_rules.contract_multiplier
+        effective_fee_rate = (
+            self.policy.maker_fee_rate
+            if self.policy.maker_fee_rate is not None
+            else self.policy.fee_rate
+        )
+        fee = (execution_price * quantity * multiplier * effective_fee_rate).quantize(
+            QUANTUM_18, rounding=ROUND_HALF_UP
+        )
+        sequence = len(order.fills) + 1
+        return PaperFill(
+            f"{order.intent_id}:{bar.bar_key}:{sequence}",
+            order.fill_policy_version,
+            bar.bar_key,
+            quantity,
+            execution_price,
+            execution_price,
+            fee,
+            ZERO,
+            bar.opened_at,
+            is_maker=True,
         )
 
     def _add_to_position(self, order: PaperOrderIntent, fill: PaperFill) -> None:
