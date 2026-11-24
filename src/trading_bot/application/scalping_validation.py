@@ -428,6 +428,7 @@ def validate_release_chunks(
         "release_id": release_id,
         "release_content_hash": strategy_registry().get_release(release_id).content_hash,
         "dataset_hashes": dataset_hashes,
+        "execution_interval": config.execution_interval,
         "symbol": symbol,
         "evaluation_start": evaluation_start.isoformat(),
         "range_end": range_end.isoformat(),

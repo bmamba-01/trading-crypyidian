@@ -474,3 +474,20 @@ def test_sig5_execution_uses_1m_bars_when_available(
     )
     assert observed_exec_intervals[-1] == "1m"
     assert out.is_file()
+
+
+def test_validation_body_records_execution_interval() -> None:
+    """CRY-414 module review: báo cáo phải cho biết khung execution đã dùng."""
+    from uuid import UUID
+
+    from tests.fixtures.sig4_runtime_replay import build_sig4_bundle
+
+    from trading_bot.application.scalping_validation import (
+        ScalpingValidationConfig,
+        validate_release,
+    )
+
+    workspace = UUID("51650000-0000-4000-8000-000000000001")
+    config = ScalpingValidationConfig(workspace_id=workspace, folds=2, embargo=timedelta(0))
+    body = validate_release(build_sig4_bundle(workspace), release_id="h18-v1", config=config)
+    assert body["execution_interval"] == "1m"
