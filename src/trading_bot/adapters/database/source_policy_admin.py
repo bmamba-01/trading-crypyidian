@@ -26,9 +26,13 @@ class DatabaseSourcePolicyAdminRepository:
         self._sessions = sessions
         self._observer = PostCommitSourceObserver(sessions)
 
-    async def list_entries(self, *, workspace_id: UUID) -> tuple[SourceRegistryEntry, ...]:
+    async def list_entries(
+        self, *, workspace_id: UUID, after: str | None = None, limit: int = 200
+    ) -> tuple[SourceRegistryEntry, ...]:
         async with self._sessions() as session, session.begin():
-            return await SourceRegistryRepository(session).list_entries(workspace_id=workspace_id)
+            return await SourceRegistryRepository(session).list_entries(
+                workspace_id=workspace_id, after=after, limit=limit
+            )
 
     async def get_entry(self, *, workspace_id: UUID, source_id: str) -> SourceRegistryEntry | None:
         async with self._sessions() as session, session.begin():

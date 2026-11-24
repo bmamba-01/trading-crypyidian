@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from trading_bot.admin.research_source_router import router as research_source_router
 from trading_bot.app import create_app
+from trading_bot.application.source_policy_admin import SourceListPage
 from trading_bot.auth.policy import Principal, Role
 from trading_bot.auth.router import current_identity, require_csrf
 from trading_bot.auth.service import AuthIdentity
@@ -47,6 +48,12 @@ class RecordingFacade:
         if self.error:
             raise self.error
         return (SOURCE,)
+
+    async def list_sources_page(self, *, after=None, limit=200):
+        self.calls.append(("list_page", after, limit))
+        if self.error:
+            raise self.error
+        return SourceListPage(entries=(SOURCE,), next_cursor=None)
 
     async def get_source(self, source_id):
         self.calls.append(("get", source_id))

@@ -280,15 +280,18 @@ class SourceRegistryRepository:
             tuple(_to_domain_revision(row) for row in rows),
         )
 
-    async def list_entries(self, *, workspace_id: UUID) -> tuple[SourceRegistryEntry, ...]:
-        """Liệt kê tối đa 200 nguồn trong workspace, lịch sử có thứ tự."""
+    async def list_entries(
+        self, *, workspace_id: UUID, after: str | None = None, limit: int = 200
+    ) -> tuple[SourceRegistryEntry, ...]:
+        """Liệt kê tối đa `limit` nguồn trong workspace, cursor là source_id cuối."""
         await self._bind_workspace(workspace_id)
+        query = select(SourcePolicyRevisionRecord.source_id).where(
+            SourcePolicyRevisionRecord.workspace_id == workspace_id
+        )
+        if after is not None:
+            query = query.where(SourcePolicyRevisionRecord.source_id > after)
         result = await self._session.scalars(
-            select(SourcePolicyRevisionRecord.source_id)
-            .where(SourcePolicyRevisionRecord.workspace_id == workspace_id)
-            .distinct()
-            .order_by(SourcePolicyRevisionRecord.source_id)
-            .limit(200)
+            query.distinct().order_by(SourcePolicyRevisionRecord.source_id).limit(limit)
         )
         entries = []
         for source_id in result.all():

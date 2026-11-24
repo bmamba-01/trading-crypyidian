@@ -44,7 +44,7 @@ from trading_bot.admin.presentation import (
 from trading_bot.admin.research_source_router import admin_router as research_source_admin_router
 from trading_bot.admin.research_source_router import router as research_source_router
 from trading_bot.admin.web_router import router as admin_web_router
-from trading_bot.application.source_policy_admin import SourceLicenseEvidence
+from trading_bot.application.source_policy_admin import SourceLicenseEvidence, SourceListPage
 from trading_bot.auth.policy import Principal, Role
 from trading_bot.auth.security import LoginRateLimiter
 from trading_bot.auth.service import AuthenticationFailure, AuthIdentity, LoginResult
@@ -266,6 +266,16 @@ class MockPrincipalSourcePolicyAdminFacade:
 
     async def list_sources(self) -> tuple[SourceRegistryEntry, ...]:
         return (ENTRY_1, ENTRY_2)
+
+    async def list_sources_page(
+        self, *, after: str | None = None, limit: int = 200
+    ) -> SourceListPage:
+        entries = (ENTRY_1, ENTRY_2)
+        if after is not None:
+            entries = tuple(entry for entry in entries if entry.source_id > after)
+        shown = entries[:limit]
+        next_cursor = shown[-1].source_id if len(entries) > limit else None
+        return SourceListPage(entries=shown, next_cursor=next_cursor)
 
     async def get_source(
         self, source_id: str
@@ -681,4 +691,45 @@ def test_license_scope_digest_upload_and_review_selection_desktop_mobile(
                 full_page=True,
             )
             context.close()
+        browser.close()
+
+
+@pytest.mark.parametrize(("width", "height"), [(1280, 800), (390, 844), (360, 780)])
+def test_source_pager_desktop_mobile(sources_server_url: str, width: int, height: int) -> None:
+    """CRY-303 — điều hướng phân trang dùng được và không tràn ngang trên mobile."""
+    cookie_value = f"{WORKSPACE_ID}:valid_test_token_sources"
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        context = browser.new_context(
+            viewport={"width": width, "height": height}, color_scheme="light"
+        )
+        context.add_cookies(
+            [
+                {
+                    "name": "crypidian_session",
+                    "value": cookie_value,
+                    "domain": "127.0.0.1",
+                    "path": "/",
+                    "httpOnly": True,
+                    "sameSite": "Lax",
+                }
+            ]
+        )
+        page = context.new_page()
+        page.goto(
+            f"{sources_server_url}/admin/research-sources?limit=1",
+            wait_until="networkidle",
+        )
+        assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+        next_link = page.locator("nav.source-pager a", has_text="Trang sau")
+        assert next_link.count() == 1
+        assert next_link.evaluate("el => el.getBoundingClientRect().height") >= 44
+        assert "binance-news-feed" in page.content()
+
+        next_link.click()
+        page.wait_for_load_state("networkidle")
+        assert "after=binance-news-feed" in page.url
+        assert page.locator("nav.source-pager a", has_text="Trang đầu").count() == 1
+        assert "macro-economic-calendar" in page.content()
+        assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
         browser.close()

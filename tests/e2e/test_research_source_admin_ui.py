@@ -57,8 +57,12 @@ class Repository:
     async def get_quota_snapshot(self, *, workspace_id, source_id):
         return None
 
-    async def list_entries(self, *, workspace_id):
-        return tuple(self.entries.values())
+    async def list_entries(self, *, workspace_id, after=None, limit=200):
+        del workspace_id
+        entries = list(self.entries.values())
+        if after is not None:
+            entries = [e for e in entries if e.source_id > after]
+        return tuple(sorted(entries, key=lambda e: e.source_id)[:limit])
 
     async def get_source_snapshot(self, *, workspace_id, source_id):
         entry = self.entries.get(source_id)

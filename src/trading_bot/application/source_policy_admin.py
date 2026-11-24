@@ -26,6 +26,17 @@ from trading_bot.domain.research.source_registry import (
 )
 
 LICENSE_EVIDENCE_MAX_BYTES = 10 * 1024 * 1024
+SOURCE_LIST_PAGE_MAX = 200
+
+
+@dataclass(frozen=True, slots=True)
+class SourceListPage:
+    """Một trang nguồn theo workspace; cursor là source_id cuối cùng đã trả."""
+
+    entries: tuple[SourceRegistryEntry, ...]
+    next_cursor: str | None
+
+
 LICENSE_EVIDENCE_MEDIA_TYPES = frozenset(
     {
         "application/pdf",
@@ -122,7 +133,10 @@ class SourcePolicyAdminRepository(Protocol):
         self, *, workspace_id: UUID, source_id: str, policy_id: str
     ) -> SourceLicenseEvidence | None: ...
 
-    async def list_entries(self, *, workspace_id: UUID) -> tuple[SourceRegistryEntry, ...]: ...
+    async def list_entries(
+        self, *, workspace_id: UUID, after: str | None = None, limit: int = 200
+    ) -> tuple[SourceRegistryEntry, ...]: ...
+
     async def get_entry(
         self, *, workspace_id: UUID, source_id: str
     ) -> SourceRegistryEntry | None: ...
@@ -176,6 +190,20 @@ class PrincipalSourcePolicyAdminService:
     async def list_sources(self) -> tuple[SourceRegistryEntry, ...]:
         self._read()
         return await self._repository.list_entries(workspace_id=self._principal.workspace_id)
+
+    async def list_sources_page(
+        self, *, after: str | None = None, limit: int = SOURCE_LIST_PAGE_MAX
+    ) -> SourceListPage:
+        """Trang cursor ổn định theo source_id, luôn giới hạn trong workspace hiện tại."""
+        self._read()
+        if not 1 <= limit <= SOURCE_LIST_PAGE_MAX:
+            raise ValueError(f"limit phải nằm trong 1..{SOURCE_LIST_PAGE_MAX}.")
+        rows = await self._repository.list_entries(
+            workspace_id=self._principal.workspace_id, after=after, limit=limit + 1
+        )
+        entries = tuple(rows[:limit])
+        next_cursor = entries[-1].source_id if len(rows) > limit else None
+        return SourceListPage(entries=entries, next_cursor=next_cursor)
 
     async def get_source(
         self, source_id: str

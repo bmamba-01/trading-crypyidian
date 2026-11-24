@@ -7,7 +7,7 @@ from typing import Annotated, Any, cast
 from urllib.parse import urlencode
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
@@ -35,6 +35,7 @@ from trading_bot.auth.policy import Permission, authorize
 from trading_bot.auth.route_policy import CsrfMode, permission_route
 from trading_bot.auth.router import current_identity, require_csrf
 from trading_bot.auth.service import AuthIdentity
+from trading_bot.common.http_limits import _BodyTooLargeError
 from trading_bot.domain.research.license_scope import scope_sha256
 from trading_bot.domain.research.source_policy import SourcePolicyState
 from trading_bot.domain.research.source_registry import SourcePolicyTransitionError
@@ -107,15 +108,19 @@ async def list_sources(
     request: Request,
     response: Response,
     identity: Annotated[AuthIdentity, Depends(current_identity)],
+    after: str | None = None,
+    limit: Annotated[int, Query(ge=1, le=200)] = 200,
 ) -> list[SourceEntryResponse]:
     response.headers["Cache-Control"] = "no-store"
     try:
-        entries = await _facade(request, identity).list_sources()
+        page = await _facade(request, identity).list_sources_page(after=after, limit=limit)
     except HTTPException as error:
         raise _no_store_error(error) from error
     except (PermissionError, LookupError, ValueError, SourceRegistryConflict) as error:
         raise _no_store_error(_map_error(error)) from error
-    return [SourceEntryResponse.from_domain(entry) for entry in entries]
+    if page.next_cursor is not None:
+        response.headers["X-Next-Cursor"] = page.next_cursor
+    return [SourceEntryResponse.from_domain(entry) for entry in page.entries]
 
 
 @router.get(
@@ -258,6 +263,12 @@ class _EvidenceRoute(APIRoute):
                 response = JSONResponse(
                     status_code=422, content={"detail": "Dữ liệu upload không hợp lệ."}
                 )
+            except _BodyTooLargeError:
+                response = JSONResponse(
+                    status_code=413,
+                    content={"detail": "Nội dung yêu cầu vượt giới hạn cho phép."},
+                    headers={"Connection": "close"},
+                )
             except Exception:
                 response = JSONResponse(
                     status_code=500, content={"detail": "Không thể ghi bằng chứng."}
@@ -368,11 +379,13 @@ async def source_console(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(current_identity)],
     source_id: str | None = None,
+    after: str | None = None,
+    limit: Annotated[int, Query(ge=1, le=200)] = 200,
 ) -> Response:
     """Hiển thị metadata đã được kiểm quyền; evidence luôn là văn bản an toàn."""
     try:
         facade = _facade(request, identity)
-        entries = await facade.list_sources()
+        page = await facade.list_sources_page(after=after, limit=limit)
         snapshot = await facade.get_source(source_id) if source_id else None
         if source_id and snapshot is None:
             raise HTTPException(404, "Không tìm thấy nguồn hoặc policy.")
@@ -424,7 +437,11 @@ async def source_console(
         name="admin/research_sources.html",
         context={
             "identity": identity,
-            "entries": [SourceEntryResponse.from_domain(entry) for entry in entries],
+            "entries": [SourceEntryResponse.from_domain(entry) for entry in page.entries],
+            "next_cursor": page.next_cursor,
+            "after": after,
+            "page_limit": limit,
+            "selected_source_id": source_id,
             "detail": detail,
             "csrf_token": csrf_token,
             "new_key": lambda: str(uuid4()),

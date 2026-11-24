@@ -79,6 +79,10 @@
 {% for entry in entries %}<li{% if detail and detail.source_id == entry.source_id %} class="is-current"{% endif %}><a href="?source_id={{ entry.source_id | urlencode }}#source-detail"{% if detail and detail.source_id == entry.source_id %} aria-current="page"{% endif %}>{{ entry.source_id }}</a><span class="lx-chip lx-chip--{{ state_tones.get(entry.current.state, 'neutral') }}">{{ icon(state_icons.get(entry.current.state, 'info')) }}<span>{{ state_labels[entry.current.state] }}</span></span></li>
 {% else %}<li class="lx-empty">{{ icon("info") }}Chưa có nguồn ứng viên.</li>{% endfor %}
 </ul>
+<nav class="source-pager" aria-label="Phân trang danh sách nguồn">
+{% if after %}<a class="btn btn-outline source-pager__link" href="/admin/research-sources?{% if selected_source_id %}source_id={{ selected_source_id | urlencode }}&amp;{% endif %}limit={{ page_limit }}#sources-heading">← Trang đầu</a>{% endif %}
+{% if next_cursor %}<a class="btn btn-primary source-pager__link" href="/admin/research-sources?after={{ next_cursor | urlencode }}{% if selected_source_id %}&amp;source_id={{ selected_source_id | urlencode }}{% endif %}&amp;limit={{ page_limit }}#sources-heading">Trang sau →</a>{% endif %}
+</nav>
 </div>
 {% if can_write %}
 <details class="glass-card lx-details"><summary>Tạo nguồn ứng viên</summary>

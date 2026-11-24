@@ -58,6 +58,24 @@
 }
 .lx-research .source-list > li.lx-empty { justify-content: flex-start; }
 
+/* Phân trang: điều khiển cảm ứng ≥44px, xuống dòng thay vì tràn ngang. */
+.lx-research .source-pager {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+  min-width: 0;
+}
+main .lx-research .source-pager a.btn.source-pager__link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  min-width: 44px;
+  padding: 0.25rem 0.75rem;
+  overflow-wrap: anywhere;
+}
+
 /* Thẻ chi tiết/phạm vi/bằng chứng: bỏ nền trắng và viền cố định cũ. */
 .lx-research .source-metadata,
 .lx-research .source-history article,
@@ -128,7 +146,13 @@
   font-weight: 500;
   color: var(--text-main);
 }
-.lx-research .source-purpose-options input.ios-switch { width: 34px; height: 44px; flex: 0 0 34px; accent-color: initial; }
+/* Mọi điều khiển trong trang research: vùng chạm 44px kể cả desktop
+   (density chung để 36/40px và có specificity cao hơn rule này trước khi scope). */
+main .lx-research.lx-page :is(button, a, input, select, textarea, summary):not([type="hidden"]):not([role="switch"]):not([role="tab"]) {
+  min-height: 44px;
+}
+
+.lx-research .source-purpose-options input.ios-switch { width: 40px; height: 44px; flex: 0 0 40px; accent-color: initial; }
 .lx-research .license-scope-field label {
   font-size: var(--fs-xs);
   font-weight: 600;

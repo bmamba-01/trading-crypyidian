@@ -1,5 +1,8 @@
 # Project plan và trạng thái triển khai
 
+**Cập nhật 24/11/2026:**
+- **24/11/2026 — CRY-303 `[WP-05A/pagination]` hoàn tất acceptance trên `feat/cry-303-pagination`:** `list_sources()` có cursor ổn định theo `source_id`; API `GET /api/v1/research-sources` nhận `after`/`limit` và trả `X-Next-Cursor`; trang `/admin/research-sources` có điều hướng mobile (nút ≥44px). Tổng hợp unit + Playwright desktop/mobile + UI E2E + Compose role admin-web **49 passed/82.91s**. Đồng thời sửa bug có sẵn: `_BodyTooLargeError` bị bắt thành 500 nay trả 413. Đã commit/rebase lên `origin/dev`. Chi tiết [implementation memory](./implementation-memory.md#2026-11-24--cry-303-wp-05a-phân-trang-danh-sách-nguồn).
+
 **Cập nhật 22/11/2026:**
 - **22/11/2026 — Hoàn tất nghiệm thu 4 nhóm nhiệm vụ (CRY-439/323, CRY-334, CRY-313, CRY-103/102):**
   1. *CRY-439 / CRY-323 [WP-06F]:* Role `crypidian_scorer_history` chỉ đọc với column allowlist và RLS workspace, model card tiếng Việt và phân tích FP/FN. Unit và PostgreSQL E2E `test_batch3_postgres_e2e.py` passed 100%. Đã chuyển Done.
