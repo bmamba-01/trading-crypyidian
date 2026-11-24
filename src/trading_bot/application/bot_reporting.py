@@ -411,6 +411,17 @@ class BotReportingService:
             "trade": trade,
             "bars": bars,
             "notice": chart_notice,
+            "window": {
+                "start": chart_start.isoformat(),
+                "end": chart_end.isoformat(),
+            },
+            "data_quality": build_trade_chart_data_quality(
+                bars=bars,
+                chart_start=chart_start,
+                chart_end=chart_end,
+                timeframe=timeframe,
+            ),
+            "close_event": extract_close_event_provenance(trade),
         }
 
     async def get_latest_signal(self, principal: Principal, *, bot_id: UUID) -> dict[str, Any]:
@@ -1123,3 +1134,75 @@ def _validate_query(query: BotReportQuery) -> None:
             "REPORT_VERSION_UNSUPPORTED",
             f"Phiên bản báo cáo phải thuộc {', '.join(sorted(SUPPORTED_REPORT_VERSIONS))}.",
         )
+
+
+def build_trade_chart_data_quality(
+    *,
+    bars: list[dict[str, Any]],
+    chart_start: datetime,
+    chart_end: datetime,
+    timeframe: str,
+) -> dict[str, Any]:
+    """Đo độ phủ dữ liệu nến thật trong cửa sổ biểu đồ và trả cảnh báo tiếng Việt khi thiếu."""
+    interval_seconds = CHART_INTERVAL_SECONDS[timeframe]
+    span_seconds = max(0.0, (chart_end - chart_start).total_seconds())
+    expected_bars = max(1, int(span_seconds // interval_seconds))
+    actual_bars = len(bars)
+    missing_bars = max(0, expected_bars - actual_bars)
+    coverage_ratio = round(min(1.0, actual_bars / expected_bars), 4)
+    has_gaps = actual_bars == 0 or missing_bars > 0
+    warning_vi: str | None = None
+    if actual_bars == 0:
+        warning_vi = (
+            f"Không có dữ liệu nến {timeframe} trong khoảng thời gian biểu đồ "
+            f"(kỳ vọng khoảng {expected_bars} nến)."
+        )
+    elif missing_bars > 0:
+        warning_vi = (
+            f"Thiếu dữ liệu nến {timeframe}: hiện có {actual_bars}/{expected_bars} nến "
+            f"(thiếu khoảng {missing_bars} nến) trong khoảng thời gian biểu đồ."
+        )
+    return {
+        "expected_bars": expected_bars,
+        "actual_bars": actual_bars,
+        "missing_bars": missing_bars,
+        "coverage_ratio": coverage_ratio,
+        "has_gaps": has_gaps,
+        "warning_vi": warning_vi,
+    }
+
+
+def extract_close_event_provenance(trade: dict[str, Any]) -> dict[str, Any]:
+    """Trích thông tin đóng lệnh từ dữ liệu ledger/explanation thật; giữ None nếu trường thiếu."""
+    raw_fills = trade.get("fills")
+    fills = raw_fills if isinstance(raw_fills, list) else []
+    exit_fills = [fill for fill in fills if isinstance(fill, dict) and fill.get("role") != "ENTRY"]
+    closed_fill = next(
+        (fill for fill in reversed(exit_fills) if fill.get("position_event_type") == "CLOSED"),
+        exit_fills[-1] if exit_fills else None,
+    )
+    raw_exit_key = None
+    if closed_fill is not None:
+        raw_exit_key = closed_fill.get("fill_key") or closed_fill.get("fill_id")
+    raw_expl = trade.get("explanation")
+    explanation: dict[str, Any] = raw_expl if isinstance(raw_expl, dict) else {}
+    raw_lineage = trade.get("lineage")
+    lineage: dict[str, Any] = raw_lineage if isinstance(raw_lineage, dict) else {}
+    raw_bar_key = (
+        trade.get("bar_key")
+        or (closed_fill.get("bar_key") if closed_fill is not None else None)
+        or explanation.get("bar_key")
+    )
+    raw_provenance = (
+        trade.get("provenance")
+        or lineage.get("provenance")
+        or explanation.get("provenance")
+        or explanation.get("evidence_id")
+    )
+    return {
+        "closed_at": trade.get("closed_at"),
+        "exit_reason": trade.get("exit_reason"),
+        "exit_fill_key": str(raw_exit_key) if raw_exit_key is not None else None,
+        "bar_key": str(raw_bar_key) if raw_bar_key is not None else None,
+        "provenance": str(raw_provenance) if raw_provenance is not None else None,
+    }

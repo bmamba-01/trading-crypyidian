@@ -258,6 +258,28 @@
 }
 .report-page .chart-key { gap: 0 1rem; margin: 0; font-size: var(--fs-xs); }
 .report-page .chart-key-note { margin: 0; font-size: var(--fs-2xs); }
+.report-page .report-note--warn {
+  padding: 0.45rem 0.65rem;
+  color: var(--pnl-negative-text);
+  background: var(--bg-surface-subtle);
+  border: 1px solid var(--pnl-negative-text);
+  border-radius: 0.6rem;
+}
+.report-page .chart-coverage-meta,
+.report-page .chart-close-event-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.85rem;
+  min-width: 0;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+.report-page .chart-close-event-meta code {
+  font-size: var(--fs-2xs);
+  color: var(--text-main);
+  word-break: break-all;
+}
 
 .report-page .trade-reasoning-panel {
   margin: 0.25rem 0 0;

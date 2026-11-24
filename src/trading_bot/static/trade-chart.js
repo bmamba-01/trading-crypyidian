@@ -314,9 +314,23 @@
               ? `${exitCode} @ ${fill.price} (${trade.net_pnl} ${trade.quote_asset})`
               : "Đóng (chưa rõ)";
         const entryReason = trade.entry_reason || {};
+        const closeEvent = payload.close_event || {};
+        const closeProvenanceParts = [];
+        if (closeEvent.exit_fill_key) {
+          closeProvenanceParts.push(`Khóa khớp thoát: ${closeEvent.exit_fill_key}`);
+        }
+        if (closeEvent.bar_key) {
+          closeProvenanceParts.push(`Khóa nến: ${closeEvent.bar_key}`);
+        }
+        if (closeEvent.provenance) {
+          closeProvenanceParts.push(`Nguồn gốc: ${closeEvent.provenance}`);
+        }
+        const closeProvenanceSuffix = closeProvenanceParts.length
+          ? ` ${closeProvenanceParts.join("; ")}.`
+          : "";
         const explanation = entry
           ? `Vào lệnh ${trade.symbol} lúc ${formatIsoDateTime(fill.occurred_at)}; Giá: ${fill.price}; Chiến thuật: ${entryReason.strategy_id || "chưa có dữ liệu"}; Tín hiệu: ${entryReason.detail_vi || "ledger chưa lưu lý do vào lệnh"}.`
-          : `Khớp đóng lệnh ${trade.symbol} lúc ${formatIsoDateTime(fill.occurred_at)}; Giá: ${fill.price}; Lý do đóng: ${trade.exit_reason || "Chưa rõ"}; PnL ròng: ${trade.net_pnl} ${trade.quote_asset}.`;
+          : `Khớp đóng lệnh ${trade.symbol} lúc ${formatIsoDateTime(fill.occurred_at)}; Giá: ${fill.price}; Lý do đóng: ${trade.exit_reason || "Chưa rõ"}; PnL ròng: ${trade.net_pnl} ${trade.quote_asset}.${closeProvenanceSuffix}`;
         markers.push({
           time,
           position: upward ? "belowBar" : "aboveBar",
@@ -382,9 +396,49 @@
       });
       if (typeof chart.subscribeClick === "function") {
         chart.subscribeClick((parameter) => {
-          updateCandleDetail(parameter.time);
+          let targetTime = parameter.time;
+          if ((targetTime === undefined || targetTime === null) && parameter.point) {
+            const coordTime = chart.timeScale().coordinateToTime(parameter.point.x);
+            if (isTimestamp(coordTime)) {
+              targetTime = nearestBarTime(bars, Number(coordTime));
+            }
+          }
+          updateCandleDetail(targetTime);
         });
       }
+      const resolveBarTimeFromClientX = (clientX) => {
+        const rect = container.getBoundingClientRect();
+        const localX = clientX - rect.left;
+        const coordTime = chart.timeScale().coordinateToTime(localX);
+        if (isTimestamp(coordTime)) {
+          return nearestBarTime(bars, Number(coordTime));
+        }
+        if (bars.length > 0 && rect.width > 0) {
+          const ratio = Math.min(1, Math.max(0, localX / rect.width));
+          const idx = Math.min(bars.length - 1, Math.floor(ratio * bars.length));
+          return Number(bars[idx].time);
+        }
+        return null;
+      };
+      const handleTouchOrPointerTap = (clientX) => {
+        if (!Number.isFinite(clientX)) return;
+        updateCandleDetail(resolveBarTimeFromClientX(clientX));
+      };
+      container.addEventListener(
+        "touchend",
+        (event) => {
+          const touch = event.changedTouches?.[0];
+          if (touch) handleTouchOrPointerTap(touch.clientX);
+        },
+        { passive: true, capture: true }
+      );
+      container.addEventListener(
+        "pointerup",
+        (event) => {
+          handleTouchOrPointerTap(event.clientX);
+        },
+        { passive: true, capture: true }
+      );
       chart.timeScale().fitContent();
       container.dataset.chartReady = "true";
     } catch (_error) {

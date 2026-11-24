@@ -13,6 +13,20 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 
 ## Nhật ký các vòng
 
+### 2026-11-24 — Hoàn tất CRY-339: Phủ biểu đồ trade theo trường thật (khoảng thời gian, data-quality, SL/TP, close_event, chạm mobile) (WP-07A/coverage)
+
+- **Mục tiêu/phạm vi:**
+  1. Triển khai và nghiệm thu `CRY-339` (`[WP-07A/coverage] Phủ chart theo trường thật: khoảng thời gian, data-quality, SL/TP, chạm`):
+     - Backend (`src/trading_bot/application/bot_reporting.py`): thêm `build_trade_chart_data_quality(...)` và `extract_close_event_provenance(...)`, trả kèm `window` (`start`, `end`), `data_quality` (`expected_bars`, `actual_bars`, `missing_bars`, `coverage_ratio`, `has_gaps`, `warning_vi`) và `close_event` (`closed_at`, `exit_reason`, `exit_fill_key`, `bar_key`, `provenance` giữ `None` khi ledger/explanation thiếu) trong `BotReportingService.get_trade_chart(...)`.
+     - Giao diện (`src/trading_bot/templates/admin/reports.html`, `src/trading_bot/static/pages/reports.css`): hiển thị khoảng thời gian biểu đồ, độ phủ nến, cảnh báo `data-quality` khi thiếu nến và metadata `close_event` (`exit_fill_key`, `bar_key`, `provenance` hiển thị `"Ledger chưa lưu"` khi thiếu), dùng `.get()` để tương thích các mock test cũ.
+     - Tương tác biểu đồ (`src/trading_bot/static/trade-chart.js`): gắn `close_event` vào giải thích điểm thoát khi có dữ liệu thật; bổ sung fallback `coordinateToTime` trên `subscribeClick` và listener `touchend` / `pointerup` ở pha capture để thao tác chạm (`tap`) trên mobile cập nhật `#trade-chart-legend` và `#trade-chart-event-detail` tin cậy.
+- **Lỗi phát hiện & xử lý:**
+  - Playwright mobile (`390×844`, `has_touch=True`) ban đầu không kích hoạt `subscribeClick` khi `touchscreen.tap` vào `#trade-chart` (do vị trí nằm dưới fold nếu chưa `scroll_into_view_if_needed()` và LightweightCharts chặn nổi bọt trên canvas con). Đã bổ sung listener `touchend`/`pointerup` ở pha `capture: true` trên `#trade-chart` và `scroll_into_view_if_needed()` trong test.
+- **Kết quả kiểm thử:**
+  - `uv run ruff check` & `uv run mypy --explicit-package-bases --follow-imports=silent`: sạch 100% (3 file).
+  - Unit & Playwright E2E (`tests/unit/test_cry339_trade_chart_coverage.py`, `test_admin_reports_revamp.py`, `test_admin_reports_page_layout.py`, `test_bot_reporting.py`, `tests/e2e/test_cry339_trade_chart_playwright.py`): **101/101 passed in 6.10s** (Desktop `1440×900` + Mobile `390×844` touch, không tràn ngang, không lỗi CSP/console).
+- **Đã đọc lại mục memory sau cập nhật:** Có.
+
 ### 2026-11-23 — Hoàn tất CRY-200: Chú giải vùng dashboard-live.js, kiểm biểu đồ dashboard trên trình duyệt và kiểm kê chỉ số mới MT-1/CK (UI-1/con-lai)
 
 - **Mục tiêu/phạm vi:**

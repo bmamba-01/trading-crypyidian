@@ -347,10 +347,34 @@
       </div>
     </header>
     {% if chart_data.notice %}<p class="report-note" role="status">{{ chart_data.notice }}</p>{% endif %}
+    {% set chart_window = chart_data.get("window") %}
+    {% set chart_dq = chart_data.get("data_quality") %}
+    {% set close_ev = chart_data.get("close_event") %}
+    {% if chart_window or chart_dq %}
+    <div class="chart-coverage-meta" data-chart-coverage-meta>
+      {% if chart_window %}
+      <span class="chart-coverage-meta__item" data-chart-window>Khoảng thời gian: <strong>{{ chart_window.start }}</strong> → <strong>{{ chart_window.end }}</strong></span>
+      {% endif %}
+      {% if chart_dq %}
+      <span class="chart-coverage-meta__item" data-chart-data-quality="{{ 'warning' if chart_dq.has_gaps else 'ok' }}">Độ phủ nến: <strong>{{ chart_dq.actual_bars }}/{{ chart_dq.expected_bars }}</strong></span>
+      {% endif %}
+    </div>
+    {% endif %}
+    {% if chart_dq and chart_dq.has_gaps and chart_dq.warning_vi %}
+    <p class="report-note report-note--warn" role="status" data-chart-data-quality-warning>{{ chart_dq.warning_vi }}</p>
+    {% endif %}
 
     <p id="trade-chart-legend" class="chart-ohlc-legend" data-chart-legend>Rê chuột hoặc chạm vào nến để xem Mở / Cao / Thấp / Đóng.</p>
     <div id="trade-chart" class="chart-canvas" role="img" aria-label="Biểu đồ nến {{ chart_data.symbol }} với các mốc vào và thoát lệnh" data-stop-title="{{ metric_help_title('chart_stop_line') }}" data-target-title="{{ metric_help_title('chart_target_line') }}" data-entry-title="{{ metric_help_title('chart_entry_line') }}"></div>
     <div id="trade-chart-event-detail" class="chart-event-detail" role="status" aria-live="polite">Rê chuột hoặc chạm vào nến có đánh dấu để đọc giải thích chi tiết khớp lệnh vào / ra.</div>
+    {% if close_ev %}
+    <div class="chart-close-event-meta" data-chart-close-event>
+      <span>Đóng lệnh: <strong>{{ close_ev.exit_reason or "Chưa rõ" }}</strong></span>
+      <span>Khóa khớp thoát: <code data-close-exit-fill-key>{{ close_ev.exit_fill_key or "Ledger chưa lưu" }}</code></span>
+      <span>Khóa nến: <code data-close-bar-key>{{ close_ev.bar_key or "Ledger chưa lưu" }}</code></span>
+      <span>Nguồn gốc: <code data-close-provenance>{{ close_ev.provenance or "Ledger chưa lưu" }}</code></span>
+    </div>
+    {% endif %}
     {% set chart_key_timeframe = chart_data.timeframe %}{% set chart_key_entry_line = chart_ea.entry_price is not none %}{% set chart_key_stop = chart_ea.stop_loss_price is not none %}{% set chart_key_target = chart_ea.take_profit_price is not none %}
     {% include "admin/_trade_chart_key.html" %}
 
