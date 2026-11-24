@@ -6411,3 +6411,16 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
   - `uv run pytest tests/unit/test_cry348_telegram_retry_matrix.py tests/unit/test_telegram_outbound_queue.py tests/unit/test_telegram_signal_worker.py -v` → **31 passed in 1.66s**.
   - `PYTHONPATH=. uv run pytest tests/e2e/test_cry348_telegram_retry_matrix_e2e.py -v --tb=short` → **1 passed in 16.53s** trên PostgreSQL Compose thật với `TelegramBotApiSender` + `httpx2.MockTransport` tiêm đủ 5 nhóm lỗi (`403`→DEAD 1 lần, `400`→DEAD 1 lần, `429 retry_after=3`→PENDING→SENT, `502`×4→DEAD, `ReadTimeout`×4→DEAD).
 - **Trạng thái:** Chuẩn bị commit + push lên `origin/dev` và đóng `CRY-348` (`Done`) trên It's a Plan.
+
+### 2026-11-24 — CRY-347 `[WP-07B/delivery-dashboard]` Dashboard trạng thái liên kết, lịch sử delivery và test message
+
+- **Mục tiêu/phạm vi.** Hoàn tất tiêu chí nghiệm thu của `CRY-347` (`WP-07B/delivery-dashboard`):
+  1. [telegram_delivery_service.py](file:///Users/macbook/Work/Trading%20Crypdian/src/trading_bot/admin/telegram_delivery_service.py): `list_telegram_delivery_dashboard` đọc trạng thái đăng ký và lịch sử `telegram_signal_delivery` (`SENT`, `PENDING`, `DEAD`, `EXPIRED`, `FILTERED`, `SUPPRESSED`, lần gửi cuối, mã lỗi) theo quyền bot, tuyệt đối không trả `telegram_chat_id`, `telegram_user_id` hay token; `send_telegram_test_message` gửi tin nhắn thử tới binding đang hoạt động, ghi `AuditEvent` (`telegram.test_message.sent`) và không tạo signal/order.
+  2. API: `GET /api/v1/telegram-signals/{bot_id}/deliveries` (`bot_scoped_route(BotPermission.READ)`) trong [telegram_signal_router.py](file:///Users/macbook/Work/Trading%20Crypdian/src/trading_bot/admin/telegram_signal_router.py), `GET /admin/api/telegram/deliveries` (`Permission.WORKSPACE_READ`) và `POST /admin/api/telegram/test-message` (`owner_route(csrf=CsrfMode.HEADER)`) trong [web_router.py](file:///Users/macbook/Work/Trading%20Crypdian/src/trading_bot/admin/web_router.py).
+  3. UI tiếng Việt responsive trên `/admin/telegram`: [telegram_bindings.html](file:///Users/macbook/Work/Trading%20Crypdian/src/trading_bot/templates/admin/telegram_bindings.html), [telegram-delivery-dashboard.js](file:///Users/macbook/Work/Trading%20Crypdian/src/trading_bot/static/telegram-delivery-dashboard.js) (dùng `textContent`, lọc theo bot, làm mới, nút gửi test message kèm `X-CSRF-Token`), và [ops.css](file:///Users/macbook/Work/Trading%20Crypdian/src/trading_bot/static/pages/ops.css).
+- **Kiểm chứng đạt 100%:**
+  - `uv run ruff check ...` → **All checks passed**.
+  - `uv run mypy --explicit-package-bases --follow-imports=silent ...` → **Success: no issues found in 4 source files**.
+  - `node --check src/trading_bot/static/telegram-delivery-dashboard.js` → **Đạt**.
+  - `uv run pytest tests/unit/test_cry347_telegram_delivery_dashboard.py tests/e2e/test_cry347_telegram_delivery_dashboard_playwright.py -v` → **6 passed in 7.95s** (3 unit test + 3 Playwright test tại Desktop `1440×900`, Mobile `390×844` và `360×780`, xác nhận lọc bot, test message và `scrollWidth <= innerWidth`).
+- **Trạng thái:** Chuẩn bị commit + push lên `origin/dev` và đóng `CRY-347` (`Done`) trên It's a Plan.

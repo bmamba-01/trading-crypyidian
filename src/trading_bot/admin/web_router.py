@@ -4585,6 +4585,70 @@ async def workbench_metrics_alerts(
 
 
 @router.get(
+    "/api/telegram/deliveries",
+    dependencies=[permission_route(Permission.WORKSPACE_READ)],
+)
+async def telegram_delivery_dashboard_api(
+    request: Request,
+    response: Response,
+    identity: Annotated[AuthIdentity, Depends(current_identity)],
+    bot_id: UUID | None = None,
+    limit: int = 50,
+) -> dict[str, Any]:
+    """Đọc trạng thái liên kết, đăng ký và lịch sử delivery Telegram không lộ chat ID (CRY-347)."""
+    from trading_bot.admin.telegram_delivery_service import list_telegram_delivery_dashboard
+    from trading_bot.application.outbox import UnitOfWork
+
+    response.headers["Cache-Control"] = "no-store"
+    sessions = getattr(request.app.state, "session_factory", None)
+    if sessions is None:
+        from trading_bot.admin.telegram_delivery_service import _empty_dashboard_payload
+
+        return _empty_dashboard_payload()
+    async with UnitOfWork(sessions, workspace_id=identity.principal.workspace_id) as unit:
+        return await list_telegram_delivery_dashboard(
+            unit.session,
+            workspace_id=identity.principal.workspace_id,
+            bot_id=bot_id,
+            limit=limit,
+        )
+
+
+@router.post(
+    "/api/telegram/test-message",
+    dependencies=[owner_route(csrf=CsrfMode.HEADER)],
+)
+async def telegram_send_test_message_api(
+    request: Request,
+    response: Response,
+    identity: Annotated[AuthIdentity, Depends(require_csrf)],
+) -> dict[str, Any]:
+    """Gửi tin nhắn thử Telegram từ Admin Web, có audit và không tạo signal/order (CRY-347)."""
+    from trading_bot.admin.telegram_delivery_service import send_telegram_test_message
+    from trading_bot.application.outbox import UnitOfWork
+
+    response.headers["Cache-Control"] = "no-store"
+    sessions = getattr(request.app.state, "session_factory", None)
+    if sessions is None:
+        raise HTTPException(status_code=503, detail="Cơ sở dữ liệu chưa sẵn sàng.")
+    sender = getattr(request.app.state, "telegram_sender", None)
+    req_id = request.headers.get("X-Correlation-Id", "").strip() or None
+    try:
+        async with UnitOfWork(sessions, workspace_id=identity.principal.workspace_id) as unit:
+            return await send_telegram_test_message(
+                unit.session,
+                workspace_id=identity.principal.workspace_id,
+                membership_id=identity.principal.membership_id,
+                sender=sender,
+                request_id=req_id,
+            )
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except RuntimeError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
+
+@router.get(
     "/api/operations/health",
     dependencies=[
         permission_route(

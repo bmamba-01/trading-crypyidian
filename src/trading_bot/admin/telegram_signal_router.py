@@ -117,6 +117,46 @@ async def get_telegram_signal_subscription(
     return _state_payload(state)
 
 
+@router.get(
+    "/{bot_id}/deliveries",
+    dependencies=[bot_scoped_route(BotPermission.READ)],
+)
+async def get_telegram_signal_deliveries(
+    bot_id: UUID,
+    request: Request,
+    response: Response,
+    identity: Annotated[AuthIdentity, Depends(current_identity)],
+    limit: int = 50,
+) -> dict[str, object]:
+    """Đọc trạng thái subscription và lịch sử delivery theo bot với quyền hiện hành."""
+    from trading_bot.admin.telegram_delivery_service import (
+        _empty_dashboard_payload,
+        list_telegram_delivery_dashboard,
+    )
+    from trading_bot.application.outbox import UnitOfWork
+
+    response.headers["Cache-Control"] = "no-store"
+    # Đảm bảo bot tồn tại và thuộc quyền đọc của principal hiện tại.
+    if getattr(request.app.state, "telegram_signal_subscription_service", None) is not None:
+        try:
+            await _service(request).get_state(identity.principal, bot_id=bot_id)
+        except TelegramSignalSubscriptionError as error:
+            message = str(error)
+            status = 404 if "Không tìm thấy bot" in message else 409
+            raise HTTPException(status_code=status, detail=message) from error
+
+    sessions = getattr(request.app.state, "session_factory", None)
+    if sessions is None:
+        return _empty_dashboard_payload()
+    async with UnitOfWork(sessions, workspace_id=identity.principal.workspace_id) as unit:
+        return await list_telegram_delivery_dashboard(
+            unit.session,
+            workspace_id=identity.principal.workspace_id,
+            bot_id=bot_id,
+            limit=limit,
+        )
+
+
 def _state_payload(state: Any) -> dict[str, object]:
     return {
         "bot_id": str(state.bot_id),

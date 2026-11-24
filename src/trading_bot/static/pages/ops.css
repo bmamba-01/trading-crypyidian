@@ -420,3 +420,24 @@ main .ops-chip { white-space: nowrap; }
 }
 .ops-error .ops-actions { margin-top: 1rem; }
 .ops-card .kv-grid + .ops-hint { margin-top: 0.6rem; }
+
+/* CRY-347: trạng thái đăng ký, lịch sử delivery và test message Telegram (desktop + mobile). */
+.tg-delivery-section { display: grid; gap: 0.75rem; min-width: 0; }
+.tg-delivery-toolbar { align-items: flex-start; gap: 0.75rem; flex-wrap: wrap; }
+.tg-delivery-actions { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+.tg-kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(10.5rem, 1fr)); gap: 0.6rem; margin-bottom: 0.75rem; }
+.tg-kpi-card { padding: 0.6rem 0.75rem; border-radius: 0.65rem; border: 1px solid var(--border-subtle, rgba(128, 128, 128, 0.22)); min-width: 0; }
+.tg-kpi-label { display: block; font-size: 0.76rem; color: var(--text-muted); }
+.tg-kpi-value { display: block; margin-top: 0.15rem; font-size: 0.98rem; font-weight: 700; overflow-wrap: anywhere; }
+.tg-delivery-table-wrap { overflow-x: auto; }
+.tg-delivery-table { width: 100%; border-collapse: collapse; font-size: 0.875rem; }
+.tg-delivery-table th, .tg-delivery-table td { padding: 0.45rem 0.6rem; text-align: left; border-bottom: 1px solid var(--border-subtle, rgba(128, 128, 128, 0.2)); overflow-wrap: anywhere; }
+
+@media (max-width: 40rem) {
+  .tg-delivery-actions { width: 100%; flex-direction: column; align-items: stretch; }
+  .tg-kpi-grid { grid-template-columns: 1fr; }
+  .tg-delivery-table thead { display: none; }
+  .tg-delivery-table tr { display: block; padding: 0.45rem 0; border-bottom: 1px solid var(--border-subtle, rgba(128, 128, 128, 0.2)); }
+  .tg-delivery-table td { display: block; border-bottom: none; padding: 0.15rem 0.4rem; }
+  .tg-delivery-table td::before { content: attr(data-label) ": "; font-weight: 600; color: var(--text-muted); }
+}

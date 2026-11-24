@@ -96,6 +96,30 @@
       <p class="ops-empty"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M10 14a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1"/><path d="M14 10a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1"/><path d="M3 3l18 18"/></svg>Chưa có liên kết hoạt động.</p>
     {% endif %}
   </section>
+
+  <section class="glass-card ops-card tg-delivery-section" aria-labelledby="tg-delivery-heading" data-csrf-token="{{ csrf_token }}">
+    <div class="ops-card__head tg-delivery-toolbar">
+      <div>
+        <h2 id="tg-delivery-heading">Lịch sử gửi tín hiệu &amp; kiểm tra kết nối</h2>
+        <p class="ops-hint">Theo dõi trạng thái đăng ký, lần gửi cuối, lỗi, lọc/hết hạn/chống trùng (dedupe) và gửi tin nhắn thử không tạo tín hiệu hay lệnh.</p>
+      </div>
+      <div class="tg-delivery-actions">
+        <label for="tg-delivery-bot-filter" class="visually-hidden">Lọc theo bot</label>
+        <select id="tg-delivery-bot-filter" aria-label="Lọc lịch sử gửi theo bot">
+          <option value="">Tất cả bot</option>
+        </select>
+        <button type="button" id="tg-delivery-refresh" class="btn btn-secondary">Làm mới</button>
+        <button type="button" id="tg-test-message-btn" class="btn btn-primary">Gửi tin nhắn thử</button>
+      </div>
+    </div>
+    <p id="tg-test-message-status" class="ops-hint" role="status" aria-live="polite"></p>
+    <div id="tg-delivery-panel" role="region" aria-label="Bảng trạng thái và lịch sử gửi Telegram" aria-busy="false">
+      <p class="ops-hint">Đang tải lịch sử gửi…</p>
+    </div>
+  </section>
 </div>
 {% endblock %}
-{% block scripts %}<script src="/static/pages/ops.js" defer></script>{% endblock %}
+{% block scripts %}
+<script src="/static/pages/ops.js" defer></script>
+<script src="/static/telegram-delivery-dashboard.js" defer></script>
+{% endblock %}
