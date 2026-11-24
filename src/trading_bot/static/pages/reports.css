@@ -557,3 +557,20 @@
   border: 1px solid var(--glass-border);
   border-radius: 0.6rem;
 }
+
+/* CRY-371: bộ lọc chi tiết, so sánh hai khoảng và phân rã hiệu năng (desktop + mobile). */
+.report-advanced-filters { margin-top: 0.65rem; }
+.report-advanced-filters > summary { cursor: pointer; font-size: 0.875rem; font-weight: 600; color: var(--text-muted); }
+.report-filter__row--sub { margin-top: 0.55rem; }
+.report-comparison, .report-breakdown { padding: 0.85rem 1rem; margin-bottom: 1rem; min-width: 0; }
+.report-comparison h3, .report-breakdown h3 { margin: 0 0 0.65rem; font-size: 1rem; }
+.report-comparison-grid, .report-breakdown-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); gap: 0.65rem; }
+.report-comparison-card, .report-breakdown-card { padding: 0.6rem 0.75rem; border-radius: 0.65rem; border: 1px solid var(--border-subtle, rgba(128, 128, 128, 0.22)); min-width: 0; }
+.report-comparison-label { display: block; font-size: 0.76rem; color: var(--text-muted); margin-bottom: 0.2rem; }
+.report-breakdown-card h4 { margin: 0 0 0.45rem; font-size: 0.85rem; }
+.report-breakdown-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 0.25rem; font-size: 0.82rem; }
+.report-breakdown-list li { display: flex; justify-content: space-between; gap: 0.5rem; overflow-wrap: anywhere; }
+
+@media (max-width: 40rem) {
+  .report-comparison-grid, .report-breakdown-grid { grid-template-columns: 1fr; }
+}

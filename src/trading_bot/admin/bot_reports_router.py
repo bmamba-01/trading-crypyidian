@@ -20,6 +20,13 @@ from trading_bot.auth.bot_policy import BotPermission
 from trading_bot.auth.route_policy import bot_scoped_route
 from trading_bot.auth.router import current_identity
 from trading_bot.auth.service import AuthIdentity
+from trading_bot.domain.portfolio.report_analytics import (
+    ReportFilterCriteria,
+    breakdown_trades,
+    filter_report_trades,
+    filtered_report_hash,
+    reconcile_filtered_totals,
+)
 from trading_bot.domain.portfolio.reporting import (
     REPORT_MODE,
     REPORT_VERSION,
@@ -61,6 +68,12 @@ async def get_report(
     bot_id: Annotated[UUID | None, Query()] = None,
     mode: Annotated[str, Query()] = REPORT_MODE,
     report_version: Annotated[str, Query()] = REPORT_VERSION,
+    symbol: Annotated[str | None, Query()] = None,
+    side: Annotated[str | None, Query()] = None,
+    timeframe: Annotated[str | None, Query()] = None,
+    strategy: Annotated[str | None, Query()] = None,
+    session_name: Annotated[str | None, Query()] = None,
+    weekday: Annotated[int | None, Query(ge=0, le=6)] = None,
 ) -> dict[str, object]:
     response.headers["Cache-Control"] = "no-store"
     if scope is None:
@@ -96,4 +109,28 @@ async def get_report(
             report = await service.get_bot_report(query, principal)
     except BotReportError as error:
         _reject(response, error.status_code, error.code, error.message)
-    return {"report": report.as_dict()}
+    payload = report.as_dict()
+    criteria = ReportFilterCriteria(
+        symbol=symbol,
+        side=side,
+        timeframe=timeframe,
+        strategy=strategy,
+        session_name=session_name,
+        weekday=weekday,
+    )
+    if not criteria.is_empty():
+        raw_trades_val = payload.get("trades")
+        raw_trades = raw_trades_val if isinstance(raw_trades_val, list) else []
+        filtered = filter_report_trades(raw_trades, criteria)
+        payload["trades"] = filtered
+        filtered_totals = reconcile_filtered_totals(filtered)
+        payload["applied_filters"] = criteria.as_dict()
+        payload["filtered_totals"] = filtered_totals
+        payload["breakdown"] = breakdown_trades(filtered)
+        payload["filtered_report_hash"] = filtered_report_hash(
+            source_report_hash=payload.get("report_hash"),
+            criteria=criteria,
+            filtered_totals=filtered_totals,
+            trade_ids=[str(t.get("trade_id", "")) for t in filtered],
+        )
+    return {"report": payload}

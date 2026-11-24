@@ -3019,6 +3019,14 @@ async def reports(
     bot_id: str | None = None,
     chart_trade_id: str | None = None,
     chart_timeframe: str = "1h",
+    symbol: str | None = None,
+    side: str | None = None,
+    timeframe: str | None = None,
+    strategy: str | None = None,
+    session_name: str | None = None,
+    weekday: str | None = None,
+    compare_start: datetime | None = None,
+    compare_end: datetime | None = None,
 ) -> Response:
     """Báo cáo bot mặc định; chỉ tổng hợp workspace khi người dùng chọn scope rõ ràng."""
     response.headers["Cache-Control"] = "no-store"
@@ -3121,6 +3129,88 @@ async def reports(
     except AuthenticationFailure, HTTPException:
         csrf_token = ""
     templates = _templates(request)
+    from trading_bot.domain.portfolio.report_analytics import (
+        ReportFilterCriteria,
+        breakdown_trades,
+        compare_report_periods,
+        filter_report_trades,
+        filtered_report_hash,
+        reconcile_filtered_totals,
+    )
+
+    parsed_weekday: int | None = None
+    if weekday and weekday.strip():
+        try:
+            parsed_weekday = int(weekday.strip())
+        except ValueError as error:
+            raise HTTPException(
+                status_code=422, detail="weekday phải trong khoảng 0..6."
+            ) from error
+        if not 0 <= parsed_weekday <= 6:
+            raise HTTPException(status_code=422, detail="weekday phải trong khoảng 0..6.")
+
+    criteria = ReportFilterCriteria(
+        symbol=symbol,
+        side=side,
+        timeframe=timeframe,
+        strategy=strategy,
+        session_name=session_name,
+        weekday=parsed_weekday,
+    )
+    breakdown: dict[str, list[dict[str, Any]]] | None = None
+    filtered_totals: dict[str, Any] | None = None
+    filtered_hash: str | None = None
+    period_comparison: dict[str, Any] | None = None
+
+    if report and isinstance(report.get("trades"), list):
+        filtered_trades = filter_report_trades(report["trades"], criteria)
+        if not criteria.is_empty():
+            report["trades"] = filtered_trades
+        filtered_totals = reconcile_filtered_totals(filtered_trades)
+        breakdown = breakdown_trades(filtered_trades)
+        filtered_hash = filtered_report_hash(
+            source_report_hash=report.get("report_hash"),
+            criteria=criteria,
+            filtered_totals=filtered_totals,
+            trade_ids=[str(t.get("trade_id", "")) for t in filtered_trades],
+        )
+
+        if (compare_start is None) != (compare_end is None):
+            raise HTTPException(
+                status_code=422,
+                detail="Cần nhập đủ cả thời điểm bắt đầu và kết thúc của khoảng đối chiếu.",
+            )
+        if (
+            compare_start is not None
+            and compare_end is not None
+            and start is not None
+            and end is not None
+        ):
+            cmp_query = BotReportQuery(
+                workspace_id=identity.principal.workspace_id,
+                bot_id=parsed_bot_id,
+                start=compare_start,
+                end=compare_end,
+                scope=ReportScope(scope or "bot"),
+            )
+            cmp_service = _reporting_service(request)
+            try:
+                if cmp_query.scope is ReportScope.WORKSPACE:
+                    cmp_raw = (
+                        await cmp_service.get_workspace_report(cmp_query, identity.principal)
+                    ).as_dict()
+                else:
+                    cmp_raw = (
+                        await cmp_service.get_bot_report(cmp_query, identity.principal)
+                    ).as_dict()
+            except BotReportError as error:
+                raise HTTPException(
+                    status_code=error.status_code,
+                    detail={"code": error.code, "message": error.message},
+                ) from error
+            cmp_trades = filter_report_trades(cmp_raw.get("trades", []), criteria)
+            period_comparison = compare_report_periods(filtered_trades, cmp_trades)
+
     return templates.TemplateResponse(
         request=request,
         name="admin/reports.html",
@@ -3135,6 +3225,13 @@ async def reports(
             "end": end.isoformat() if end is not None else "",
             "scope": scope or "bot",
             "bot_id": str(parsed_bot_id or ""),
+            "filters": criteria.as_dict(),
+            "breakdown": breakdown,
+            "filtered_totals": filtered_totals,
+            "filtered_hash": filtered_hash,
+            "period_comparison": period_comparison,
+            "compare_start": compare_start.isoformat() if compare_start is not None else "",
+            "compare_end": compare_end.isoformat() if compare_end is not None else "",
         },
         headers={"Cache-Control": "no-store"},
     )
@@ -4838,6 +4935,12 @@ async def export_reports_csv(
     end: datetime,
     scope: str = "bot",
     bot_id: str | None = None,
+    symbol: str | None = None,
+    side: str | None = None,
+    timeframe: str | None = None,
+    strategy: str | None = None,
+    session_name: str | None = None,
+    weekday: str | None = None,
 ) -> Response:
     """Xuất giao dịch PAPER đã đóng ra CSV an toàn (WB-07D), chỉ dùng cột có trong ledger."""
     parsed_bot_id: UUID | None = None
@@ -4871,7 +4974,41 @@ async def export_reports_csv(
             detail={"code": error.code, "message": error.message},
         ) from error
 
-    trades = report.get("trades", []) if isinstance(report, dict) else []
+    from trading_bot.domain.portfolio.report_analytics import (
+        ReportFilterCriteria,
+        filter_report_trades,
+        filtered_report_hash,
+        reconcile_filtered_totals,
+    )
+
+    parsed_weekday: int | None = None
+    if weekday and weekday.strip():
+        try:
+            parsed_weekday = int(weekday.strip())
+        except ValueError as error:
+            raise HTTPException(
+                status_code=422, detail="weekday phải trong khoảng 0..6."
+            ) from error
+        if not 0 <= parsed_weekday <= 6:
+            raise HTTPException(status_code=422, detail="weekday phải trong khoảng 0..6.")
+
+    criteria = ReportFilterCriteria(
+        symbol=symbol,
+        side=side,
+        timeframe=timeframe,
+        strategy=strategy,
+        session_name=session_name,
+        weekday=parsed_weekday,
+    )
+    raw_trades = report.get("trades", []) if isinstance(report, dict) else []
+    trades = filter_report_trades(raw_trades, criteria)
+    export_totals = reconcile_filtered_totals(trades)
+    export_hash = filtered_report_hash(
+        source_report_hash=report.get("report_hash") if isinstance(report, dict) else None,
+        criteria=criteria,
+        filtered_totals=export_totals,
+        trade_ids=[str(t.get("trade_id", "")) for t in trades if isinstance(t, dict)],
+    )
     buffer = io.StringIO()
     writer = csv.DictWriter(buffer, fieldnames=REPORT_CSV_FIELDS)
     writer.writeheader()
@@ -4890,6 +5027,12 @@ async def export_reports_csv(
         "X-Report-End": end.isoformat(),
         "X-Report-Version": (
             str(report.get("report_version", "")) if isinstance(report, dict) else ""
+        ),
+        "X-Report-Hash": export_hash,
+        "X-Report-Source-Hash": (
+            str(report.get("report_hash", ""))
+            if isinstance(report, dict) and report.get("report_hash")
+            else ""
         ),
     }
     if parsed_bot_id is not None:

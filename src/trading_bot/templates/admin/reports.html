@@ -131,14 +131,49 @@
       <div class="report-filter__actions">
         <button type="submit" class="btn btn-primary btn--icon" aria-label="Phân tích báo cáo" title="Phân tích báo cáo">{{ ico("chart") }}</button>
         {% if report %}
+        {% set f = filters | default({}) %}
         <a
           class="btn btn-secondary report-export"
-          href="/admin/reports/export.csv?scope={{ scope | urlencode }}&bot_id={{ bot_id | urlencode }}&start={{ start | urlencode }}&end={{ end | urlencode }}"
+          href="/admin/reports/export.csv?scope={{ scope | urlencode }}&bot_id={{ bot_id | urlencode }}&start={{ start | urlencode }}&end={{ end | urlencode }}&symbol={{ (f.symbol or '') | urlencode }}&side={{ (f.side or '') | urlencode }}&timeframe={{ (f.timeframe or '') | urlencode }}&strategy={{ (f.strategy or '') | urlencode }}"
           data-testid="export-reports-csv"
         >{{ ico("download") }} Xuất CSV</a>
         {% endif %}
       </div>
     </div>
+    {% set f = filters | default({}) %}
+    <details class="report-advanced-filters"{% if f.symbol or f.side or f.timeframe or f.strategy or compare_start or compare_end %} open{% endif %}>
+      <summary>Bộ lọc chi tiết &amp; so sánh khoảng thời gian</summary>
+      <div class="report-filter__row report-filter__row--sub">
+        <div class="report-field">
+          <label for="filter-symbol">Mã giao dịch</label>
+          <input id="filter-symbol" name="symbol" type="text" value="{{ f.symbol or '' }}" placeholder="BTCUSDT">
+        </div>
+        <div class="report-field">
+          <label for="filter-side">Hướng</label>
+          <select id="filter-side" name="side">
+            <option value="">Tất cả</option>
+            <option value="LONG" {% if f.side == "LONG" %}selected{% endif %}>LONG</option>
+            <option value="SHORT" {% if f.side == "SHORT" %}selected{% endif %}>SHORT</option>
+          </select>
+        </div>
+        <div class="report-field">
+          <label for="filter-timeframe">Khung nến</label>
+          <input id="filter-timeframe" name="timeframe" type="text" value="{{ f.timeframe or '' }}" placeholder="1h">
+        </div>
+        <div class="report-field">
+          <label for="filter-strategy">Chiến thuật / Release</label>
+          <input id="filter-strategy" name="strategy" type="text" value="{{ f.strategy or '' }}" placeholder="h01-v1">
+        </div>
+        <div class="report-field report-field--time">
+          <label for="compare_start">Đối chiếu từ</label>
+          <input id="compare_start" name="compare_start" type="text" value="{{ compare_start | default('') }}" placeholder="ISO-8601">
+        </div>
+        <div class="report-field report-field--time">
+          <label for="compare_end">Đối chiếu đến</label>
+          <input id="compare_end" name="compare_end" type="text" value="{{ compare_end | default('') }}" placeholder="ISO-8601">
+        </div>
+      </div>
+    </details>
     <div class="quick-filter-group" role="group" aria-label="Chọn nhanh khoảng thời gian">
       <span class="quick-filter-group__label">Nhanh:</span>
       <button type="button" class="quick-filter-btn" data-quick-range="today">Hôm nay</button>
@@ -169,9 +204,60 @@
       <div><dt>Khoảng</dt><dd class="num">{{ when(report.window.start) }} → {{ when(report.window.end) }}</dd></div>
       {% endif %}
       <div><dt>Chế độ</dt><dd><span class="badge badge-paper-subtle">{{ report.mode or "PAPER" }}</span></dd></div>
+      <div><dt>Múi giờ</dt><dd>Lưu UTC · Hiển thị Asia/Ho_Chi_Minh</dd></div>
       {% if report.report_hash %}<div><dt>Mã băm báo cáo</dt><dd>{{ id_chip(report.report_hash, "mã băm báo cáo") }}</dd></div>{% endif %}
+      {% if filtered_hash %}<div><dt>Mã băm sau lọc</dt><dd>{{ id_chip(filtered_hash, "mã băm sau lọc") }}</dd></div>{% endif %}
     </dl>
   </header>
+
+  {% if period_comparison %}
+  <section class="glass-card report-comparison" aria-labelledby="report-comparison-heading">
+    <h3 id="report-comparison-heading">So sánh hai khoảng thời gian</h3>
+    <div class="report-comparison-grid">
+      <div class="report-comparison-card">
+        <span class="report-comparison-label">Kỳ chính</span>
+        <strong>{{ period_comparison.primary.trade_count }} lệnh · PnL ròng {{ period_comparison.primary.net_pnl }}</strong>
+      </div>
+      <div class="report-comparison-card">
+        <span class="report-comparison-label">Kỳ đối chiếu</span>
+        <strong>{{ period_comparison.baseline.trade_count }} lệnh · PnL ròng {{ period_comparison.baseline.net_pnl }}</strong>
+      </div>
+      <div class="report-comparison-card">
+        <span class="report-comparison-label">Chênh lệch (Δ)</span>
+        <strong>{{ period_comparison.delta.trade_count_diff }} lệnh · Δ PnL {{ period_comparison.delta.net_pnl_diff }}</strong>
+      </div>
+    </div>
+  </section>
+  {% endif %}
+
+  {% if breakdown %}
+  <section class="glass-card report-breakdown" aria-labelledby="report-breakdown-heading">
+    <h3 id="report-breakdown-heading">Phân rã theo chiều phân tích</h3>
+    <div class="report-breakdown-grid">
+      {% for title, rows in [
+        ("Chiến thuật / Release", breakdown.by_strategy),
+        ("Mã giao dịch", breakdown.by_symbol),
+        ("Hướng (LONG/SHORT)", breakdown.by_side),
+        ("Khung nến", breakdown.by_timeframe),
+        ("Phiên (UTC)", breakdown.by_session),
+        ("Thứ (UTC)", breakdown.by_weekday),
+      ] %}
+      <div class="report-breakdown-card">
+        <h4>{{ title }}</h4>
+        {% if rows %}
+        <ul class="report-breakdown-list">
+          {% for r in rows %}
+          <li><span>{{ r.key }}</span><span>{{ r.trade_count }} lệnh · {{ r.net_pnl }}</span></li>
+          {% endfor %}
+        </ul>
+        {% else %}
+        <p class="value-muted">Chưa có dữ liệu</p>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+  {% endif %}
 
   {#- KPI ngang theo từng tài sản định giá; không cộng lẫn các tài sản. -#}
   {% for asset, totals in report.get("totals", {}).items() %}

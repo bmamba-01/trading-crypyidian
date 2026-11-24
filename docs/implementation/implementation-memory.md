@@ -6424,3 +6424,15 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
   - `node --check src/trading_bot/static/telegram-delivery-dashboard.js` → **Đạt**.
   - `uv run pytest tests/unit/test_cry347_telegram_delivery_dashboard.py tests/e2e/test_cry347_telegram_delivery_dashboard_playwright.py -v` → **6 passed in 7.95s** (3 unit test + 3 Playwright test tại Desktop `1440×900`, Mobile `390×844` và `360×780`, xác nhận lọc bot, test message và `scrollWidth <= innerWidth`).
 - **Trạng thái:** Chuẩn bị commit + push lên `origin/dev` và đóng `CRY-347` (`Done`) trên It's a Plan.
+
+### 2026-11-24 — CRY-371 `[WP-07D/filters-comparison]` Filter, phân rã chiều, so sánh khoảng và report hash
+
+- **Mục tiêu/phạm vi.** Hoàn tất tiêu chí nghiệm thu của `CRY-371` (`WP-07D/filters-comparison`):
+  1. [report_analytics.py](file:///Users/macbook/Work/Trading%20Crypdian/src/trading_bot/domain/portfolio/report_analytics.py): `ReportFilterCriteria`, `filter_report_trades` (lọc server-side theo `symbol`, `side`, `timeframe`, `strategy`, `session_name` UTC, `weekday` UTC trên tập trade đã phân quyền), `reconcile_filtered_totals` (đối khớp `Decimal` với ledger, hòa vốn không tính thắng/thua, `profit_factor=None` khi không có lỗ), `breakdown_trades` (6 chiều), `compare_report_periods` (so sánh 2 khoảng thời gian + delta), và `filtered_report_hash` (SHA-256 gắn lineage `source_report_hash`).
+  2. API & Export: Cập nhật `GET /api/v1/reports` ([bot_reports_router.py](file:///Users/macbook/Work/Trading%20Crypdian/src/trading_bot/admin/bot_reports_router.py)), `GET /admin/reports` và `GET /admin/reports/export.csv` ([web_router.py](file:///Users/macbook/Work/Trading%20Crypdian/src/trading_bot/admin/web_router.py)) hỗ trợ bộ lọc server-side, so sánh khoảng đối chiếu, và xuất header `X-Report-Hash` / `X-Report-Source-Hash` trong CSV.
+  3. UI Desktop & Mobile: Cập nhật [reports.html](file:///Users/macbook/Work/Trading%20Crypdian/src/trading_bot/templates/admin/reports.html) & [reports.css](file:///Users/macbook/Work/Trading%20Crypdian/src/trading_bot/static/pages/reports.css) hiển thị bộ lọc chi tiết, đối chiếu 2 khoảng, phân rã 6 chiều, mã băm sau lọc và thông tin múi giờ lưu UTC / hiển thị `Asia/Ho_Chi_Minh`.
+- **Kiểm chứng đạt 100%:**
+  - `uv run ruff check ...` → **All checks passed**.
+  - `uv run mypy --explicit-package-bases --follow-imports=silent ...` → **Success: no issues found in 4 source files**.
+  - `uv run pytest tests/unit/test_cry371_report_filters_comparison.py tests/unit/test_bot_reports_api.py tests/unit/test_admin_reports_revamp.py tests/e2e/test_cry371_reports_filters_playwright.py -v` → **22 passed in 14.19s** (19 unit test + 3 Playwright test tại Desktop `1440×900`, Mobile `390×844` và `360×780`, xác nhận `scrollWidth <= innerWidth`).
+- **Trạng thái:** Chuẩn bị commit + push lên `origin/dev` và đóng `CRY-371` (`Done`) trên It's a Plan.
