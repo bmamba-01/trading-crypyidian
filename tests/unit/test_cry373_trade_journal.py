@@ -270,7 +270,15 @@ async def test_journal_service_rbac_audit_retention_and_http_api() -> None:
     assert await service.get_trade_journal(operator, trade_id=trade_id, bot_id=bot_id) is None
     assert await service.get_trade_journal(owner, trade_id=trade_id, bot_id=bot_id) is not None
 
+    class _FakeAuthService:
+        async def verify_csrf(self, *_args: Any, **_kwargs: Any) -> None:
+            return None
+
+    from trading_bot.config.settings import AppSettings
+
     app = FastAPI()
+    app.state.settings = AppSettings()
+    app.state.auth_service = _FakeAuthService()
     app.state.trade_journal_service = service
     app.include_router(trade_journal_router)
     app.dependency_overrides[current_identity] = lambda: AuthIdentity(
@@ -280,6 +288,7 @@ async def test_journal_service_rbac_audit_retention_and_http_api() -> None:
     client = TestClient(app)
     resp = client.put(
         f"/api/v1/trade-journal/{trade_id}",
+        headers={"X-CSRF-Token": "test-csrf"},
         json={
             "bot_id": str(bot_id),
             "note_vi": "Cập nhật qua API",
@@ -294,6 +303,7 @@ async def test_journal_service_rbac_audit_retention_and_http_api() -> None:
 
     att_resp = client.post(
         f"/api/v1/trade-journal/{trade_id}/attachments",
+        headers={"X-CSRF-Token": "test-csrf"},
         json={
             "bot_id": str(bot_id),
             "file_name": "entry.png",

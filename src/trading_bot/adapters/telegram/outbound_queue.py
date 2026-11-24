@@ -835,9 +835,10 @@ class ThrottledTelegramSender:
         text: str,
         *,
         message_thread_id: int | None = None,
+        reply_to_message_id: int | None = None,
         is_group: bool | None = None,
         sensitivity: ContentSensitivity = "auto",
-    ) -> None:
+    ) -> int | None:
         group_flag = is_group_chat(chat_id, is_group=is_group)
         msg = TelegramOutboundMessage(
             chat_id=chat_id,
@@ -854,13 +855,15 @@ class ThrottledTelegramSender:
         except TelegramSensitivityBlockedError as error:
             self._record_dead_letter(msg, group_flag, attempts=1, error=error)
             raise
-        await self._execute_with_policy(
+        kwargs: dict[str, Any] = {"message_thread_id": message_thread_id}
+        if reply_to_message_id is not None:
+            kwargs["reply_to_message_id"] = reply_to_message_id
+        result = await self._execute_with_policy(
             msg,
             group_flag=group_flag,
-            call=lambda: self._inner.send_message(
-                chat_id, safe_text, message_thread_id=message_thread_id
-            ),
+            call=lambda: self._inner.send_message(chat_id, safe_text, **kwargs),
         )
+        return result if isinstance(result, int) and not isinstance(result, bool) else None
 
     async def send_photo(
         self,
@@ -869,9 +872,10 @@ class ThrottledTelegramSender:
         caption: str,
         *,
         message_thread_id: int | None = None,
+        reply_to_message_id: int | None = None,
         is_group: bool | None = None,
         sensitivity: ContentSensitivity = "auto",
-    ) -> None:
+    ) -> int | None:
         group_flag = is_group_chat(chat_id, is_group=is_group)
         msg = TelegramOutboundMessage(
             chat_id=chat_id,
@@ -889,13 +893,15 @@ class ThrottledTelegramSender:
         except TelegramSensitivityBlockedError as error:
             self._record_dead_letter(msg, group_flag, attempts=1, error=error)
             raise
-        await self._execute_with_policy(
+        kwargs: dict[str, Any] = {"message_thread_id": message_thread_id}
+        if reply_to_message_id is not None:
+            kwargs["reply_to_message_id"] = reply_to_message_id
+        result = await self._execute_with_policy(
             msg,
             group_flag=group_flag,
-            call=lambda: self._inner.send_photo(
-                chat_id, png_bytes, safe_caption, message_thread_id=message_thread_id
-            ),
+            call=lambda: self._inner.send_photo(chat_id, png_bytes, safe_caption, **kwargs),
         )
+        return result if isinstance(result, int) and not isinstance(result, bool) else None
 
     async def send_link_confirmation(self, chat_id: int, text: str, callback_data: str) -> None:
         if chat_id <= 0:

@@ -20,6 +20,7 @@ from trading_bot.application.bot_reporting import (
 from trading_bot.application.trade_journal import TradeJournalError, TradeJournalService
 from trading_bot.auth.cookies import read_session_cookie
 from trading_bot.auth.policy import Permission, authorize
+from trading_bot.auth.route_policy import CsrfMode, permission_route
 from trading_bot.auth.router import current_identity
 from trading_bot.auth.service import AuthenticationFailure, AuthIdentity, AuthService
 from trading_bot.domain.portfolio.trade_journal import (
@@ -29,6 +30,20 @@ from trading_bot.domain.portfolio.trade_journal import (
 
 router = APIRouter(prefix="/api/v1/trade-journal", tags=["trade journal"])
 html_router = APIRouter(tags=["admin web"])
+
+_JOURNAL_READ_POLICY = permission_route(Permission.TRADE_READ)
+_JOURNAL_WRITE_POLICY = permission_route(
+    Permission.TRADE_REVIEW,
+    csrf=CsrfMode.HEADER,
+)
+_JOURNAL_PURGE_POLICY = permission_route(
+    Permission.WORKSPACE_KILL,
+    csrf=CsrfMode.HEADER,
+)
+_JOURNAL_FORM_POLICY = permission_route(
+    Permission.TRADE_REVIEW,
+    csrf=CsrfMode.FORM,
+)
 
 
 class ChecklistItemInput(BaseModel):
@@ -75,7 +90,7 @@ def _reject(response: Response, error: TradeJournalError) -> NoReturn:
     )
 
 
-@router.get("/mistake-attribution")
+@router.get("/mistake-attribution", dependencies=[_JOURNAL_READ_POLICY])
 async def get_mistake_attribution(
     request: Request,
     response: Response,
@@ -122,7 +137,7 @@ async def get_mistake_attribution(
     }
 
 
-@router.get("/{trade_id}")
+@router.get("/{trade_id}", dependencies=[_JOURNAL_READ_POLICY])
 async def get_trade_journal_entry(
     trade_id: UUID,
     request: Request,
@@ -142,7 +157,7 @@ async def get_trade_journal_entry(
     return {"entry": entry}
 
 
-@router.put("/{trade_id}")
+@router.put("/{trade_id}", dependencies=[_JOURNAL_WRITE_POLICY])
 async def put_trade_journal_entry(
     trade_id: UUID,
     payload: SaveTradeJournalRequest,
@@ -170,7 +185,7 @@ async def put_trade_journal_entry(
     return {"entry": entry}
 
 
-@router.post("/{trade_id}/attachments", status_code=201)
+@router.post("/{trade_id}/attachments", status_code=201, dependencies=[_JOURNAL_WRITE_POLICY])
 async def post_trade_journal_attachment(
     trade_id: UUID,
     payload: AddAttachmentRequest,
@@ -198,7 +213,7 @@ async def post_trade_journal_attachment(
     return {"attachment": attachment}
 
 
-@router.delete("/{trade_id}")
+@router.delete("/{trade_id}", dependencies=[_JOURNAL_WRITE_POLICY])
 async def delete_trade_journal_entry(
     trade_id: UUID,
     request: Request,
@@ -218,7 +233,7 @@ async def delete_trade_journal_entry(
     return {"deleted": deleted}
 
 
-@router.post("/retention/purge")
+@router.post("/retention/purge", dependencies=[_JOURNAL_PURGE_POLICY])
 async def purge_expired_trade_journals(
     request: Request,
     response: Response,
@@ -234,7 +249,7 @@ async def purge_expired_trade_journals(
     return {"purged_count": purged}
 
 
-@html_router.post("/admin/reports/journal")
+@html_router.post("/admin/reports/journal", dependencies=[_JOURNAL_FORM_POLICY])
 async def save_report_journal_form(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(current_identity)],
