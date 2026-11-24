@@ -6398,3 +6398,16 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
   - `uv run mypy --explicit-package-bases --follow-imports=silent tests/e2e/test_wp07e_runbook_drill_e2e.py` → **Success: no issues found in 1 source file**.
   - `PYTHONPATH=. uv run pytest tests/e2e/test_wp07e_runbook_drill_e2e.py -v --tb=short` → **1 passed in 13.70s** (PostgreSQL Compose thật).
 - **Trạng thái:** Chuẩn bị commit + push lên `origin/dev` và đóng `CRY-377` (`Done`) trên It's a Plan.
+
+### 2026-11-24 — CRY-348 `[WP-07B/retry-matrix]` Ma trận retry/dead-letter Telegram Bot API
+
+- **Mục tiêu/phạm vi.** Hoàn tất tiêu chí nghiệm thu của `CRY-348` (`WP-07B/retry-matrix`):
+  1. Mở rộng `RetryOutcomeAction` (`retry` / `dead_letter` / `drop`), `RetryRule.drop_without_dead_letter`, và `RetryDecision` (`action`, `ambiguous_duplicate_risk`) trong [outbound_queue.py](file:///Users/macbook/Work/Trading%20Crypdian/src/trading_bot/adapters/telegram/outbound_queue.py).
+  2. Tích hợp `TelegramRetryMatrix` vào `TelegramSignalDeliveryWorker` trong [telegram_signal_worker.py](file:///Users/macbook/Work/Trading%20Crypdian/src/trading_bot/workers/telegram_signal_worker.py): lỗi vĩnh viễn (`403` chat bị chặn, `400` bad request, `401` unauthorized) chuyển thẳng `DEAD` ở lần 1; lỗi `429` tôn trọng `retry_after`; lỗi `5xx` và `TimeoutError`/mạng thử lại hữu hạn rồi `DEAD`, riêng lỗi timeout mơ hồ ghi log cảnh báo khả năng gửi trùng vì Telegram Bot API không có idempotency key.
+  3. Lập bảng policy và ghi nhận kiểm tra tài liệu chính thức Telegram Bot API ngày **2026-11-24** tại [wp07b-telegram-retry-matrix.md](file:///Users/macbook/Work/Trading%20Crypdian/docs/operations/wp07b-telegram-retry-matrix.md) (`https://core.telegram.org/bots/api#making-requests`, `https://core.telegram.org/bots/api#responseparameters`, `https://core.telegram.org/bots/faq#my-bot-is-hitting-limits-how-do-i-avoid-this`).
+- **Kiểm chứng đạt 100%:**
+  - `uv run ruff check ...` → **All checks passed**.
+  - `uv run mypy --explicit-package-bases --follow-imports=silent ...` → **Success: no issues found in 4 source files**.
+  - `uv run pytest tests/unit/test_cry348_telegram_retry_matrix.py tests/unit/test_telegram_outbound_queue.py tests/unit/test_telegram_signal_worker.py -v` → **31 passed in 1.66s**.
+  - `PYTHONPATH=. uv run pytest tests/e2e/test_cry348_telegram_retry_matrix_e2e.py -v --tb=short` → **1 passed in 16.53s** trên PostgreSQL Compose thật với `TelegramBotApiSender` + `httpx2.MockTransport` tiêm đủ 5 nhóm lỗi (`403`→DEAD 1 lần, `400`→DEAD 1 lần, `429 retry_after=3`→PENDING→SENT, `502`×4→DEAD, `ReadTimeout`×4→DEAD).
+- **Trạng thái:** Chuẩn bị commit + push lên `origin/dev` và đóng `CRY-348` (`Done`) trên It's a Plan.

@@ -2,8 +2,9 @@
 xử lý 429 retry_after, ma trận retry hữu hạn, dead-letter và bảo vệ dữ liệu group.
 
 Tham chiếu giới hạn Bot API:
-- https://core.telegram.org/bots/faq#my-bot-is-hitting-limits-how-do-i-avoid-this (kiểm 18/11/2026)
-- https://core.telegram.org/bots/api#responseparameters (kiểm 18/11/2026)
+- https://core.telegram.org/bots/faq#my-bot-is-hitting-limits-how-do-i-avoid-this (kiểm 2026-11-24)
+- https://core.telegram.org/bots/api#responseparameters (kiểm 2026-11-24)
+- https://core.telegram.org/bots/api#making-requests (kiểm 2026-11-24)
 """
 
 from __future__ import annotations
@@ -85,6 +86,14 @@ class TelegramFailureClass(StrEnum):
     UNKNOWN = "UNKNOWN"
 
 
+class RetryOutcomeAction(StrEnum):
+    """Hành động chuẩn hóa sau một lần gửi Telegram thất bại (CRY-348)."""
+
+    RETRY = "retry"
+    DEAD_LETTER = "dead_letter"
+    DROP = "drop"
+
+
 @dataclass(frozen=True, slots=True)
 class RetryRule:
     """Quy tắc retry cho một nhóm lỗi cụ thể."""
@@ -93,6 +102,7 @@ class RetryRule:
     max_attempts: int
     base_backoff_seconds: float = 1.0
     max_backoff_seconds: float = 60.0
+    drop_without_dead_letter: bool = False
 
     def __post_init__(self) -> None:
         if self.max_attempts < 1:
@@ -110,6 +120,8 @@ class RetryDecision:
     failure_class: TelegramFailureClass
     error_code: str
     retry_after: int | None = None
+    action: RetryOutcomeAction = RetryOutcomeAction.DEAD_LETTER
+    ambiguous_duplicate_risk: bool = False
 
 
 _DEFAULT_RULES: dict[TelegramFailureClass, RetryRule] = {
@@ -187,9 +199,15 @@ class TelegramRetryMatrix:
         return TelegramFailureClass.UNKNOWN, code, error.retry_after
 
     def decide(self, error: BaseException, attempt: int) -> RetryDecision:
-        """Quyết định có retry nữa hay chuyển vào dead-letter dựa trên ``attempt`` hiện tại."""
+        """Quyết định retry, chuyển dead-letter hoặc bỏ qua dựa trên ``attempt`` hiện tại."""
         failure_class, error_code, retry_after = self.classify(error)
         rule = self._rules[failure_class]
+        ambiguous = failure_class is TelegramFailureClass.NETWORK_ERROR
+        terminal_action = (
+            RetryOutcomeAction.DROP
+            if rule.drop_without_dead_letter
+            else RetryOutcomeAction.DEAD_LETTER
+        )
         if not rule.retryable or attempt >= rule.max_attempts:
             return RetryDecision(
                 should_retry=False,
@@ -197,6 +215,8 @@ class TelegramRetryMatrix:
                 failure_class=failure_class,
                 error_code=error_code,
                 retry_after=retry_after,
+                action=terminal_action,
+                ambiguous_duplicate_risk=ambiguous,
             )
         if failure_class is TelegramFailureClass.RATE_LIMITED and retry_after is not None:
             if retry_after > self._max_retry_after_seconds:
@@ -206,6 +226,8 @@ class TelegramRetryMatrix:
                     failure_class=failure_class,
                     error_code=error_code,
                     retry_after=retry_after,
+                    action=terminal_action,
+                    ambiguous_duplicate_risk=ambiguous,
                 )
             delay = float(max(1, retry_after))
         else:
@@ -217,6 +239,8 @@ class TelegramRetryMatrix:
             failure_class=failure_class,
             error_code=error_code,
             retry_after=retry_after,
+            action=RetryOutcomeAction.RETRY,
+            ambiguous_duplicate_risk=ambiguous,
         )
 
 
@@ -1043,6 +1067,7 @@ __all__ = [
     "JsonlDeadLetterSink",
     "OutboundOperation",
     "RetryDecision",
+    "RetryOutcomeAction",
     "RetryRule",
     "TelegramDeadLetter",
     "TelegramDeliveryOutcome",

@@ -17,9 +17,13 @@ from trading_bot.adapters.database.repositories.telegram_signals import (
     SignalSubscriptionTarget,
     TelegramSignalRepository,
 )
-from trading_bot.adapters.telegram.bot_api_sender import TelegramApiError
+from trading_bot.adapters.telegram.outbound_queue import (
+    DEFAULT_RETRY_MATRIX,
+    RetryDecision,
+    TelegramRetryMatrix,
+)
 from trading_bot.adapters.telegram.topic_sender import bind_topic
-from trading_bot.application.outbox import UnitOfWork, retry_delay_seconds
+from trading_bot.application.outbox import UnitOfWork
 from trading_bot.application.telegram_signals import (
     SignalThrottlePolicy,
     TelegramSignalCandidate,
@@ -78,6 +82,7 @@ class TelegramSignalDeliveryWorker:
         unit_of_work: Callable[..., UnitOfWork] = UnitOfWork,
         repository: Callable[[AsyncSession], TelegramSignalRepository] = TelegramSignalRepository,
         pacer: ChatPacerPort | None = None,
+        retry_matrix: TelegramRetryMatrix | None = None,
     ) -> None:
         if not worker_id.strip() or not 0.1 <= tick_seconds <= 300:
             raise ValueError("Thông số Telegram signal worker không hợp lệ.")
@@ -93,6 +98,7 @@ class TelegramSignalDeliveryWorker:
         self._max_candidate_age = max_candidate_age
         self._lease_duration = lease_duration
         self._max_attempts = max_attempts
+        self._retry_matrix = retry_matrix if retry_matrix is not None else DEFAULT_RETRY_MATRIX
         self._batch_size = batch_size
         self._throttle = throttle or SignalThrottlePolicy()
         # TG-3: app truyền bộ gửi ảnh thẻ; mặc định gửi văn bản thuần như trước.
@@ -211,10 +217,9 @@ class TelegramSignalDeliveryWorker:
                     await self._signal_send(
                         bind_topic(self._sender, claim.thread_id), claim.chat_id, claim.candidate
                     )
-                except TelegramApiError as error:
-                    await self._mark_failed(claim, error.code, error.retry_after)
                 except Exception as error:
-                    await self._mark_failed(claim, _error_code(error), None)
+                    decision = self._retry_matrix.decide(error, attempt=claim.attempts)
+                    await self._mark_failed(claim, decision)
                 else:
                     await self._mark_sent(claim)
                     self._last_sent_by_chat[claim.chat_id] = self._now()
@@ -273,12 +278,22 @@ class TelegramSignalDeliveryWorker:
             )
 
     async def _mark_failed(
-        self, claim: SignalDeliveryClaim, error_code: str, retry_after: int | None
+        self, claim: SignalDeliveryClaim, decision: RetryDecision
     ) -> None:
-        if retry_after is None:
-            delay = retry_delay_seconds(claim.attempts, base_seconds=2, max_seconds=300)
-        else:
-            delay = min(max(retry_after, 1), 86_400)
+        if decision.ambiguous_duplicate_risk:
+            logger.warning(
+                "Telegram delivery %s gặp lỗi mơ hồ (%s); "
+                "nếu retry có khả năng gửi trùng tin vì Bot API không có idempotency key.",
+                claim.delivery_id,
+                decision.error_code,
+            )
+        rule = self._retry_matrix.rule_for(decision.failure_class)
+        effective_max_attempts = (
+            claim.attempts
+            if not decision.should_retry
+            else min(self._max_attempts, rule.max_attempts)
+        )
+        delay = min(max(decision.delay_seconds, 0.0), 86_400.0)
         async with self._unit_of_work(
             self._sessions, workspace_id=self._workspace_id, bot_id=claim.bot_id
         ) as uow:
@@ -288,8 +303,8 @@ class TelegramSignalDeliveryWorker:
                 delivery_id=claim.delivery_id,
                 worker_id=self._worker_id,
                 available_at=self._now() + timedelta(seconds=delay),
-                error_code=error_code,
-                max_attempts=self._max_attempts,
+                error_code=decision.error_code,
+                max_attempts=effective_max_attempts,
                 attempts=claim.attempts,
             )
 
