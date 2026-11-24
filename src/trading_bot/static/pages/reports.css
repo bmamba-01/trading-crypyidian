@@ -280,6 +280,36 @@
   color: var(--text-main);
   word-break: break-all;
 }
+.report-page .report-journal-attribution { display: grid; gap: 0.75rem; padding: 0.85rem; min-width: 0; }
+.report-page .report-journal-attribution__head { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 0.5rem; align-items: baseline; min-width: 0; }
+.report-page .report-journal-attribution__head h3 { margin: 0; font-size: var(--fs-md); font-weight: 700; }
+.report-page .report-journal-attribution__grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.75rem; min-width: 0; }
+.report-page .report-journal-attribution .breakdown-card { min-width: 0; }
+.report-page .table-scroll { max-width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+@media (min-width: 1024px) {
+  .report-page .report-journal-attribution__grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+.report-page .journal-attr-table { width: 100%; border-collapse: collapse; font-size: var(--fs-xs); }
+.report-page .journal-attr-table th,
+.report-page .journal-attr-table td { padding: 0.4rem 0.5rem; text-align: left; border-bottom: 1px solid var(--glass-border); }
+.report-page .tag-pill { display: inline-block; padding: 0.12rem 0.45rem; border-radius: 999px; font-size: var(--fs-2xs); font-weight: 600; background: var(--bg-surface-subtle); border: 1px solid var(--glass-border); }
+.report-page .tag-pill--mistake { color: var(--pnl-negative-text); border-color: var(--pnl-negative-text); }
+.report-page .tag-pill--setup { color: var(--pnl-positive-text); border-color: var(--pnl-positive-text); }
+.report-page .trade-journal-panel { display: grid; gap: 0.65rem; min-width: 0; padding: 0.75rem; background: var(--bg-surface-subtle); border: 1px solid var(--glass-border); border-radius: 0.7rem; }
+.report-page .trade-journal-panel__head { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 0.4rem; align-items: center; }
+.report-page .trade-journal-panel__head h4 { margin: 0; font-size: var(--fs-sm); font-weight: 700; }
+.report-page .trade-journal-form { display: grid; gap: 0.6rem; }
+.report-page .trade-journal-form__row { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.6rem; }
+@media (min-width: 768px) {
+  .report-page .trade-journal-form__row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+.report-page .journal-field { display: grid; gap: 0.25rem; font-size: var(--fs-xs); color: var(--text-muted); min-width: 0; }
+.report-page .journal-field input,
+.report-page .journal-field textarea,
+.report-page .journal-field select { width: 100%; min-width: 0; box-sizing: border-box; font-size: var(--fs-sm); }
+.report-page .trade-journal-form__actions .btn { min-height: 44px; }
+.report-page .trade-journal-attachments ul,
+.report-page .trade-journal-audit ul { margin: 0.25rem 0 0; padding-left: 1.1rem; font-size: var(--fs-xs); color: var(--text-muted); }
 
 .report-page .trade-reasoning-panel {
   margin: 0.25rem 0 0;

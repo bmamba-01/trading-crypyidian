@@ -13,6 +13,24 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 
 ## Nhật ký các vòng
 
+### 2026-11-24 — Hoàn tất CRY-373: Nhật ký giao dịch, checklist, tag setup, ảnh đính kèm và mistake attribution tách khỏi ledger (WP-07D/journal-tags)
+
+- **Mục tiêu/phạm vi:**
+  1. Triển khai và nghiệm thu `CRY-373` (`[WP-07D/journal-tags] Journal, checklist, tag setup và mistake attribution`):
+     - Domain (`src/trading_bot/domain/portfolio/trade_journal.py`): kiểm định ghi chú thủ công (chặn rò rỉ API key/secret), `setup_tags` & `mistake_tags`, `checklist_items`, chính sách `privacy_mode` (`workspace_team` / `author_only`), chính sách `retention_days` (`7–3650`, mặc định `365`), kiểm duyệt metadata ảnh đính kèm (PNG/JPEG/WebP, `<= 5 MiB`, SHA-256, khóa nội bộ, bắt buộc `exif_stripped=True`), cùng `compute_mistake_attribution(...)` và `compute_setup_tag_breakdown(...)` tách theo `quote_asset` trên ledger thật.
+     - Database & Migration (`src/trading_bot/adapters/database/models/trade_journal_entities.py`, `migrations/versions/b7d2e4f8c1a3_cry373_trade_journal_tags.py`): 3 bảng tách khỏi ledger bất biến (`trade_journal_entry`, `trade_journal_attachment`, `trade_journal_audit` append-only) kèm RLS theo `workspace_id` và quyền tối thiểu cho `crypidian_admin_web`.
+     - Repository, Service & API (`src/trading_bot/adapters/database/repositories/trade_journal.py`, `src/trading_bot/application/trade_journal.py`, `src/trading_bot/admin/trade_journal_router.py`, `src/trading_bot/app.py`): phân quyền `TRADE_READ` (đọc), `TRADE_REVIEW` (ghi/sửa/xóa/gắn ảnh), `WORKSPACE_KILL` (purge retention); route REST `/api/v1/trade-journal/*` và form POST `/admin/reports/journal` có kiểm tra CSRF.
+     - Giao diện `/admin/reports` (`src/trading_bot/admin/web_router.py`, `src/trading_bot/templates/admin/reports.html`, `src/trading_bot/static/pages/reports.css`): hiển thị `#report-mistake-attribution` (chi phí lỗi & hiệu suất setup tag) và `#trade-journal-panel` (form ghi chú, checklist, tags, privacy, retention, ảnh đính kèm và audit gần nhất).
+- **Lỗi phát hiện & xử lý:**
+  - `authorize(principal, permission)` mặc định `raise_error=False` khiến thiếu quyền không tự ném `PermissionError`; đã sửa thành `authorize(..., raise_error=True)`.
+  - `request.form()` của Starlette đòi `python-multipart` chưa cài trong env; đã đổi sang `parse_qs((await request.body()).decode("utf-8"), keep_blank_values=True)` đồng bộ với `web_router.py`.
+  - Mobile `390×844` bị tràn ngang khi bảng 6 cột nằm trong grid không có `min-width: 0`; đã thêm `min-width: 0` và `.table-scroll` (`overflow-x: auto; max-width: 100%`) trong `reports.css`.
+- **Kết quả kiểm thử:**
+  - `uv run ruff check` & `uv run mypy --explicit-package-bases --follow-imports=silent`: sạch 100% (7 file).
+  - Unit, regression & Playwright E2E (`tests/unit/test_cry373_trade_journal.py`, `test_admin_reports_revamp.py`, `test_admin_reports_page_layout.py`, `test_cry339_trade_chart_coverage.py`, `tests/e2e/test_cry373_journal_tags_playwright.py`): **17/17 passed in 7.74s** (Desktop `1440×900` + Mobile `390×844`, không tràn ngang, không lỗi CSP/console).
+  - Lưu ý môi trường: Docker Compose PostgreSQL không chạy sẵn trong sandbox nên migration `b7d2e4f8c1a3` mới kiểm tra cú pháp/lint; cần chạy `alembic upgrade head` khi khởi động stack PostgreSQL.
+- **Đã đọc lại mục memory sau cập nhật:** Có.
+
 ### 2026-11-24 — Hoàn tất CRY-339: Phủ biểu đồ trade theo trường thật (khoảng thời gian, data-quality, SL/TP, close_event, chạm mobile) (WP-07A/coverage)
 
 - **Mục tiêu/phạm vi:**

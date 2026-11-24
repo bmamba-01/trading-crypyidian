@@ -92,6 +92,12 @@ from trading_bot.admin.strategy_card_service import StrategyCardAdminService
 from trading_bot.admin.strategy_release_service import StrategyReleaseAdminService
 from trading_bot.admin.telegram_binding_router import router as telegram_binding_router
 from trading_bot.admin.telegram_signal_router import router as telegram_signal_router
+from trading_bot.admin.trade_journal_router import (
+    html_router as trade_journal_html_router,
+)
+from trading_bot.admin.trade_journal_router import (
+    router as trade_journal_router,
+)
 from trading_bot.admin.watchlist_router import router as watchlist_router
 from trading_bot.admin.web_router import router as admin_web_router
 from trading_bot.application.account_activity_guard import AccountActivityGuard
@@ -151,6 +157,7 @@ from trading_bot.application.telegram_binding import TelegramBindingService
 from trading_bot.application.telegram_paper_report import TelegramPaperReportService
 from trading_bot.application.telegram_signal_subscription import TelegramSignalSubscriptionService
 from trading_bot.application.telegram_signals import SignalThrottlePolicy
+from trading_bot.application.trade_journal import TradeJournalService
 from trading_bot.auth.account_security_router import router as account_security_router
 from trading_bot.auth.action_challenge import ActionChallengeService
 from trading_bot.auth.cookies import session_cookie_name
@@ -439,6 +446,11 @@ def create_app(
         )
         application.state.bot_reporting_service = (
             BotReportingService(active_session_factory)
+            if active_session_factory is not None
+            else None
+        )
+        application.state.trade_journal_service = (
+            TradeJournalService(active_session_factory)
             if active_session_factory is not None
             else None
         )
@@ -1054,6 +1066,8 @@ def create_app(
         app.include_router(bots_router)
         app.include_router(bot_grants_router)
         app.include_router(bot_reports_router)
+        app.include_router(trade_journal_router)
+        app.include_router(trade_journal_html_router)
         app.include_router(backtest_replay_router)
         app.include_router(bot_control_router)
         app.include_router(telegram_binding_router)

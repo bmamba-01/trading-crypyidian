@@ -1147,5 +1147,12 @@ Các khái niệm đã có (walk-forward validation, embargo, expectancy, breake
 | Stop-gap buffer fraction | Biên trượt gap vượt SL | Tỷ lệ dự phòng bổ sung vào cổng lỗ xấu nhất (`worst_case = (open_risk + plan.estimated_loss) × (1 + stop_gap_buffer_fraction)`) để tính tới khả năng giá nhảy gap qua mức cắt lỗ trong biến động mạnh. Giá trị thuộc $[0, 1)$, mặc định `0` để tương thích ngược. | [planner.py](../../src/trading_bot/domain/risk/planner.py) · [engine.py](../../src/trading_bot/domain/risk/engine.py) |
 | Workspace loss-window timezone | Múi giờ cửa sổ lỗ của workspace | Múi giờ IANA tùy chọn (`risk.loss_window_timezone`) xác định ranh giới 00:00 reset lỗ ngày dùng chung cho runtime, replay và trang khẩu vị rủi ro; `None` giữ mặc định `UTC` và bị lược khỏi JSON để không đổi hash cấu hình cũ. | [workspace_settings.py](../../src/trading_bot/config/workspace_settings.py) · [risk_windows.py](../../src/trading_bot/domain/risk/risk_windows.py) |
 
+## BN. Nhật ký giao dịch và phân bổ chi phí lỗi (WP-07D/CRY-373, 24/11/2026)
+
+| Thuật ngữ (EN) | Tiếng Việt | Định nghĩa và giới hạn | Nguồn |
+|---|---|---|---|
+| Trade journal (ledger-separated) | Nhật ký giao dịch tách ledger | Ghi chú thủ công, checklist kỷ luật, tag setup, ảnh đính kèm (đã xóa EXIF) và nhật ký audit lưu ở bảng riêng có chính sách riêng tư (`workspace_team` / `author_only`) và thời hạn lưu giữ (retention); không bao giờ sửa đổi ledger giao dịch bất biến. | [trade_journal.py](../../src/trading_bot/domain/portfolio/trade_journal.py) · [Tradervue Tag Analysis](https://www.tradervue.com/site/trading-analysis) (kiểm tra 03/11/2026) |
+| Mistake attribution | Phân bổ chi phí lỗi | Báo cáo tổng hợp tổng chi phí lỗ (`loss_cost`), số lệnh lỗ và tỷ trọng % trên tổng lỗ theo từng tag lỗi (`mistake_tags`), tách riêng theo `quote_asset` để xác định lỗi hành vi tốn kém nhất mà không làm thay đổi số liệu ledger. | [trade_journal.py](../../src/trading_bot/domain/portfolio/trade_journal.py) · [TraderSync Mistakes Report](https://tradersync.com/support/what-are-my-mistakes-costing-me/) (kiểm tra 03/11/2026) |
+
 
 

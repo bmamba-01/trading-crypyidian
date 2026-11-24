@@ -103,6 +103,7 @@ from trading_bot.application.telegram_signal_subscription import (
     TelegramSignalSubscriptionError,
 )
 from trading_bot.application.telegram_signals import TelegramSignalFilters
+from trading_bot.application.trade_journal import TradeJournalError
 from trading_bot.auth.action_challenge import (
     ACTION_BREAKER_RESUME,
     ActionChallengeError,
@@ -3211,6 +3212,25 @@ async def reports(
             cmp_trades = filter_report_trades(cmp_raw.get("trades", []), criteria)
             period_comparison = compare_report_periods(filtered_trades, cmp_trades)
 
+    journal_attribution: dict[str, Any] | None = None
+    selected_journal: dict[str, Any] | None = None
+    journal_service = getattr(request.app.state, "trade_journal_service", None)
+    if report is not None and journal_service is not None:
+        try:
+            journal_attribution = await journal_service.build_attribution_summary(
+                identity.principal,
+                trades=filtered_trades,
+                bot_id=parsed_bot_id,
+            )
+            if parsed_chart_trade_id is not None:
+                selected_journal = await journal_service.get_trade_journal(
+                    identity.principal,
+                    trade_id=parsed_chart_trade_id,
+                    bot_id=parsed_bot_id,
+                )
+        except TradeJournalError:
+            journal_attribution = None
+
     return templates.TemplateResponse(
         request=request,
         name="admin/reports.html",
@@ -3232,6 +3252,8 @@ async def reports(
             "period_comparison": period_comparison,
             "compare_start": compare_start.isoformat() if compare_start is not None else "",
             "compare_end": compare_end.isoformat() if compare_end is not None else "",
+            "journal_attribution": journal_attribution,
+            "selected_journal": selected_journal,
         },
         headers={"Cache-Control": "no-store"},
     )

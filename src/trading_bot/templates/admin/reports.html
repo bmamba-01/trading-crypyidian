@@ -230,6 +230,69 @@
   </section>
   {% endif %}
 
+  {% set j_attr = journal_attribution if journal_attribution is defined else none %}
+  {% if j_attr %}
+  <section id="report-mistake-attribution" class="glass-card report-journal-attribution" aria-labelledby="mistake-attribution-heading">
+    <div class="report-journal-attribution__head">
+      <h3 id="mistake-attribution-heading">Phân Bổ Chi Phí Lỗi &amp; Tag Setup (Journal)</h3>
+      <span class="report-note">Đã ghi nhật ký {{ j_attr.journaled_trade_count }} lệnh · tách khỏi ledger bất biến</span>
+    </div>
+    <div class="report-journal-attribution__grid">
+      <div class="breakdown-card">
+        <h4>Chi phí theo Tag Lỗi (Mistake Attribution)</h4>
+        {% if j_attr.mistake_attribution %}
+        <div class="table-scroll">
+          <table class="journal-attr-table">
+            <thead>
+              <tr><th>Tag lỗi</th><th>Số lệnh</th><th>Lệnh lỗ</th><th>Chi phí lỗi</th><th>PnL ròng</th><th>% Tổng lỗ</th></tr>
+            </thead>
+            <tbody>
+              {% for row in j_attr.mistake_attribution %}
+              <tr data-mistake-row="{{ row.tag }}">
+                <td><span class="tag-pill tag-pill--mistake">{{ row.tag }}</span></td>
+                <td class="num">{{ row.trade_count }}</td>
+                <td class="num">{{ row.losing_trade_count }}</td>
+                <td class="num">{{ row.loss_cost }} {{ row.quote_asset }}</td>
+                <td class="num">{{ row.net_pnl }} {{ row.quote_asset }}</td>
+                <td class="num">{{ (row.share_of_total_loss_pct ~ '%') if row.share_of_total_loss_pct is not none else '—' }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% else %}
+        <p class="value-muted">Chưa có tag lỗi nào trong kỳ báo cáo.</p>
+        {% endif %}
+      </div>
+      <div class="breakdown-card">
+        <h4>Hiệu suất theo Tag Setup</h4>
+        {% if j_attr.setup_tag_breakdown %}
+        <div class="table-scroll">
+          <table class="journal-attr-table">
+            <thead>
+              <tr><th>Tag setup</th><th>Số lệnh</th><th>Tỷ lệ thắng</th><th>PnL ròng</th><th>Checklist</th></tr>
+            </thead>
+            <tbody>
+              {% for row in j_attr.setup_tag_breakdown %}
+              <tr data-setup-row="{{ row.tag }}">
+                <td><span class="tag-pill tag-pill--setup">{{ row.tag }}</span></td>
+                <td class="num">{{ row.trade_count }}</td>
+                <td class="num">{{ row.win_rate }}</td>
+                <td class="num">{{ row.net_pnl }} {{ row.quote_asset }}</td>
+                <td class="num">{{ (row.checklist_completion_pct ~ '%') if row.checklist_completion_pct is not none else '—' }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% else %}
+        <p class="value-muted">Chưa có tag setup nào trong kỳ báo cáo.</p>
+        {% endif %}
+      </div>
+    </div>
+  </section>
+  {% endif %}
+
   {% if breakdown %}
   <section class="glass-card report-breakdown" aria-labelledby="report-breakdown-heading">
     <h3 id="report-breakdown-heading">Phân rã theo chiều phân tích</h3>
@@ -255,6 +318,69 @@
         {% endif %}
       </div>
       {% endfor %}
+    </div>
+  </section>
+  {% endif %}
+
+  {% set j_attr = journal_attribution if journal_attribution is defined else none %}
+  {% if j_attr %}
+  <section id="report-mistake-attribution" class="glass-card report-journal-attribution" aria-labelledby="mistake-attribution-heading">
+    <div class="report-journal-attribution__head">
+      <h3 id="mistake-attribution-heading">Phân Bổ Chi Phí Lỗi &amp; Tag Setup (Journal)</h3>
+      <span class="report-note">Đã ghi nhật ký {{ j_attr.journaled_trade_count }} lệnh · tách khỏi ledger bất biến</span>
+    </div>
+    <div class="report-journal-attribution__grid">
+      <div class="breakdown-card">
+        <h4>Chi phí theo Tag Lỗi (Mistake Attribution)</h4>
+        {% if j_attr.mistake_attribution %}
+        <div class="table-scroll">
+          <table class="journal-attr-table">
+            <thead>
+              <tr><th>Tag lỗi</th><th>Số lệnh</th><th>Lệnh lỗ</th><th>Chi phí lỗi</th><th>PnL ròng</th><th>% Tổng lỗ</th></tr>
+            </thead>
+            <tbody>
+              {% for row in j_attr.mistake_attribution %}
+              <tr data-mistake-row="{{ row.tag }}">
+                <td><span class="tag-pill tag-pill--mistake">{{ row.tag }}</span></td>
+                <td class="num">{{ row.trade_count }}</td>
+                <td class="num">{{ row.losing_trade_count }}</td>
+                <td class="num">{{ row.loss_cost }} {{ row.quote_asset }}</td>
+                <td class="num">{{ row.net_pnl }} {{ row.quote_asset }}</td>
+                <td class="num">{{ (row.share_of_total_loss_pct ~ '%') if row.share_of_total_loss_pct is not none else '—' }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% else %}
+        <p class="value-muted">Chưa có tag lỗi nào trong kỳ báo cáo.</p>
+        {% endif %}
+      </div>
+      <div class="breakdown-card">
+        <h4>Hiệu suất theo Tag Setup</h4>
+        {% if j_attr.setup_tag_breakdown %}
+        <div class="table-scroll">
+          <table class="journal-attr-table">
+            <thead>
+              <tr><th>Tag setup</th><th>Số lệnh</th><th>Tỷ lệ thắng</th><th>PnL ròng</th><th>Checklist</th></tr>
+            </thead>
+            <tbody>
+              {% for row in j_attr.setup_tag_breakdown %}
+              <tr data-setup-row="{{ row.tag }}">
+                <td><span class="tag-pill tag-pill--setup">{{ row.tag }}</span></td>
+                <td class="num">{{ row.trade_count }}</td>
+                <td class="num">{{ row.win_rate }}</td>
+                <td class="num">{{ row.net_pnl }} {{ row.quote_asset }}</td>
+                <td class="num">{{ (row.checklist_completion_pct ~ '%') if row.checklist_completion_pct is not none else '—' }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% else %}
+        <p class="value-muted">Chưa có tag setup nào trong kỳ báo cáo.</p>
+        {% endif %}
+      </div>
     </div>
   </section>
   {% endif %}
@@ -462,6 +588,89 @@
           <p class="ai-retraining-info__note" role="note">Vai trò hiện tại không được gắn nhãn ca (cần chủ sở hữu, quản trị chiến lược hoặc người rà soát phân tích).</p>
           {% endif %}
         </div>
+      </div>
+
+      {% set j_entry = selected_journal if selected_journal is defined else none %}
+      {% set can_edit_journal = identity is defined and identity and (identity.principal.roles | select("in", ["owner", "analyst_reviewer"]) | list) %}
+      <div id="trade-journal-panel" class="trade-journal-panel" data-trade-journal-panel>
+        <div class="trade-journal-panel__head">
+          <h4>Nhật Ký Giao Dịch, Checklist &amp; Tag (Tách Khỏi Ledger)</h4>
+          {% if j_entry %}
+          <span class="report-note">Quyền riêng tư: <strong>{{ "Chỉ tác giả" if j_entry.privacy_mode == "author_only" else "Nhóm workspace" }}</strong> · Lưu giữ: <strong>{{ j_entry.retention_days }} ngày</strong></span>
+          {% endif %}
+        </div>
+        {% if can_edit_journal %}
+        <form method="post" action="/admin/reports/journal" class="trade-journal-form">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token | default('', true) }}">
+          <input type="hidden" name="bot_id" value="{{ selected_trade.bot_id }}">
+          <input type="hidden" name="trade_id" value="{{ selected_trade.trade_id }}">
+          <input type="hidden" name="start" value="{{ start | default('', true) }}">
+          <input type="hidden" name="end" value="{{ end | default('', true) }}">
+          <input type="hidden" name="chart_timeframe" value="{{ chart_timeframe | default('1h', true) }}">
+          <label class="journal-field">
+            <span>Ghi chú thủ công</span>
+            <textarea name="note_vi" rows="3" placeholder="Nhận xét bối cảnh thị trường, kỷ luật vào/thoát lệnh...">{{ j_entry.note_vi if j_entry else '' }}</textarea>
+          </label>
+          <div class="trade-journal-form__row">
+            <label class="journal-field">
+              <span>Tag setup (phân cách bằng dấu phẩy)</span>
+              <input type="text" name="setup_tags" value="{{ (j_entry.setup_tags | join(', ')) if j_entry and j_entry.setup_tags else '' }}" placeholder="breakout_20, trend_pullback">
+            </label>
+            <label class="journal-field">
+              <span>Tag lỗi (phân cách bằng dấu phẩy)</span>
+              <input type="text" name="mistake_tags" value="{{ (j_entry.mistake_tags | join(', ')) if j_entry and j_entry.mistake_tags else '' }}" placeholder="fomo_entry, moved_sl">
+            </label>
+          </div>
+          <label class="journal-field">
+            <span>Checklist thực thi (mỗi dòng: <code>[x] Mục đã đạt</code> hoặc <code>[ ] Chưa đạt</code>)</span>
+            <textarea name="checklist_lines" rows="3" placeholder="[x] Đúng xu hướng khung lớn&#10;[ ] Đặt SL trước khi vào">{% if j_entry and j_entry.checklist_items %}{% for ci in j_entry.checklist_items %}{{ '[x] ' if ci.checked else '[ ] ' }}{{ ci.label_vi }}{% if not loop.last %}{{ '\n' }}{% endif %}{% endfor %}{% endif %}</textarea>
+          </label>
+          <div class="trade-journal-form__row">
+            <label class="journal-field">
+              <span>Chế độ riêng tư</span>
+              <select name="privacy_mode">
+                <option value="workspace_team" {% if not j_entry or j_entry.privacy_mode == 'workspace_team' %}selected{% endif %}>Nhóm workspace (workspace_team)</option>
+                <option value="author_only" {% if j_entry and j_entry.privacy_mode == 'author_only' %}selected{% endif %}>Chỉ tác giả (author_only)</option>
+              </select>
+            </label>
+            <label class="journal-field">
+              <span>Thời hạn lưu giữ (ngày)</span>
+              <input type="number" name="retention_days" min="7" max="3650" value="{{ j_entry.retention_days if j_entry else 365 }}">
+            </label>
+          </div>
+          <div class="trade-journal-form__actions">
+            <button type="submit" class="btn btn--primary">Lưu Nhật Ký Giao Dịch</button>
+          </div>
+        </form>
+        {% elif j_entry %}
+        <div class="trade-journal-readonly">
+          <p>{{ j_entry.note_vi or "Chưa có ghi chú." }}</p>
+          {% if j_entry.setup_tags %}<p>Setup: {% for t in j_entry.setup_tags %}<span class="tag-pill tag-pill--setup">{{ t }}</span>{% endfor %}</p>{% endif %}
+          {% if j_entry.mistake_tags %}<p>Lỗi: {% for t in j_entry.mistake_tags %}<span class="tag-pill tag-pill--mistake">{{ t }}</span>{% endfor %}</p>{% endif %}
+        </div>
+        {% else %}
+        <p class="report-note">Chưa có nhật ký cho giao dịch này (chỉ OWNER hoặc ANALYST_REVIEWER có quyền ghi).</p>
+        {% endif %}
+        {% if j_entry and j_entry.attachments %}
+        <div class="trade-journal-attachments">
+          <strong>Ảnh đính kèm (đã xóa EXIF):</strong>
+          <ul>
+            {% for att in j_entry.attachments %}
+            <li><code>{{ att.file_name }}</code> ({{ att.content_type }}, {{ att.byte_size }} bytes)</li>
+            {% endfor %}
+          </ul>
+        </div>
+        {% endif %}
+        {% if j_entry and j_entry.audit_events %}
+        <div class="trade-journal-audit">
+          <strong>Lịch sử audit gần nhất:</strong>
+          <ul>
+            {% for ev in j_entry.audit_events[:5] %}
+            <li><code>{{ ev.action }}</code> · {{ ev.created_at }}</li>
+            {% endfor %}
+          </ul>
+        </div>
+        {% endif %}
       </div>
     </div>
   </section>
