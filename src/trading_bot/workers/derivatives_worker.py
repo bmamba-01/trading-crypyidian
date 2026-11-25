@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import func, select, text
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -44,6 +44,17 @@ class _DerivativesStore:
         )
         await self._session.execute(stmt)
         await self._session.flush()
+
+    async def prune_expired(self, now: datetime) -> int:
+        expired = (
+            DerivativesSnapshotRecord.workspace_id == self._workspace_id,
+            DerivativesSnapshotRecord.expires_at <= now,
+        )
+        count = await self._session.scalar(
+            select(func.count()).select_from(DerivativesSnapshotRecord).where(*expired)
+        )
+        await self._session.execute(delete(DerivativesSnapshotRecord).where(*expired))
+        return int(count or 0)
 
 
 def database_derivatives_store_scope(

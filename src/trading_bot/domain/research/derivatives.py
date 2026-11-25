@@ -34,6 +34,8 @@ OI_LOOKBACK_PERIODS = 25  # kỳ hiện tại + 24 kỳ 1h trước → thay đ�
 MAX_FUTURES_DATA_REQUESTS_PER_5M = 1000
 DIGEST_MAX_AGE = timedelta(hours=3)
 DIGEST_MAX_ROWS = 20
+# Sàn chỉ giữ statistics phái sinh 30 ngày; hệ thống lưu 90 ngày để so sánh chu kỳ dài hơn.
+DERIVATIVES_RETENTION_DAYS = 90
 # Đồng hồ máy chủ Binance có thể nhanh hơn đồng hồ local vài giây: chấp nhận lệch nhỏ và đẩy
 # ``collected_at`` lên mốc nguồn muộn nhất để giữ bất biến "mọi mốc ≤ collected_at".
 CLOCK_SKEW = timedelta(seconds=5)

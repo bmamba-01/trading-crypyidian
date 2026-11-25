@@ -1,5 +1,8 @@
 # Project plan và trạng thái triển khai
 
+**Cập nhật 24/11/2026 (WP-07B):**
+- **24/11/2026 — CRY-345 `[WP-07B/derivatives-poller]`:** bổ sung retention 90 ngày cho `derivatives_snapshot` (cột `expires_at`, backfill, index), collector dọn hết hạn mỗi tick, store xoá theo RLS. Unit 18 passed, Compose migration 1 passed/52.70s. Bảng `market_funding`/`market_liquidation`/`market_trade_flow` vẫn chưa có retention — ghi nhận thành gap riêng. [implementation memory](./implementation-memory.md#2026-11-24--cry-345-wp-07b-retention-ảnh-chụp-phái-sinh).
+
 **Cập nhật 24/11/2026:**
 - **24/11/2026 — CRY-303 `[WP-05A/pagination]` hoàn tất acceptance trên `feat/cry-303-pagination`:** `list_sources()` có cursor ổn định theo `source_id`; API `GET /api/v1/research-sources` nhận `after`/`limit` và trả `X-Next-Cursor`; trang `/admin/research-sources` có điều hướng mobile (nút ≥44px). Tổng hợp unit + Playwright desktop/mobile + UI E2E + Compose role admin-web **49 passed/82.91s**. Đồng thời sửa bug có sẵn: `_BodyTooLargeError` bị bắt thành 500 nay trả 413. Đã commit/rebase lên `origin/dev`. Chi tiết [implementation memory](./implementation-memory.md#2026-11-24--cry-303-wp-05a-phân-trang-danh-sách-nguồn).
 

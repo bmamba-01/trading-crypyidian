@@ -174,6 +174,9 @@ class _Store:
     async def last_collected_at(self) -> datetime | None:
         return self.last
 
+    async def prune_expired(self, now: datetime) -> int:
+        return 0
+
     async def insert(self, record: dict) -> None:
         self.rows.append(record)
 
@@ -467,3 +470,23 @@ def test_http_fetcher_enforces_1000_per_5m_futures_data_budget() -> None:
             await fetcher.aclose()
 
     asyncio.run(run())
+
+
+def test_collector_prunes_expired_and_stamps_retention() -> None:
+    """CRY-345: ảnh chụp phái sinh có hạn giữ 90 ngày và được dọn mỗi tick."""
+    from trading_bot.domain.research.derivatives import DERIVATIVES_RETENTION_DAYS
+
+    class RetentionStore(_Store):
+        def __init__(self, allowed: list[bool]) -> None:
+            super().__init__(allowed)
+            self.pruned: list[datetime] = []
+
+        async def prune_expired(self, now: datetime) -> int:
+            self.pruned.append(now)
+            return 0
+
+    store = RetentionStore([True])
+    result = asyncio.run(_collector(store, _Fetcher(), ("BTCUSDT",)).collect_once(COLLECTED))
+    assert result.status == "stored"
+    assert store.pruned == [COLLECTED]
+    assert store.rows[0]["expires_at"] == COLLECTED + timedelta(days=DERIVATIVES_RETENTION_DAYS)
