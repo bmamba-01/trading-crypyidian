@@ -13,6 +13,16 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 
 ## Nhật ký các vòng
 
+### 2026-11-25 — CRY-467 [OPS07F/Task9] Runbook vận hành, cảnh báo & diễn tập (hoàn tất runbook/drill E2E, giữ In Progress chờ on-call/alert destination/topology thật)
+
+- **Thay đổi:**
+  - `docs/operations/live-production-operations-runbook.md`: bộ runbook tiếng Việt đầy đủ 11 quy trình **RB-01..RB-11** (mỗi mục có đủ mức độ/trigger, actor/approver, tiền điều kiện, lệnh/nút được phép, các bước cụ thể, expected safe state, tiêu chí dừng/escalate, rollback/recovery, thông tin cần lưu và điều cấm): triển khai/rollback/version pin/migration, preflight chỉ đọc + clock/NTP + xác nhận egress, xoay/thu hồi credential (thao tác Binance tách riêng cho Owner), API outage/`429`/`418`, user-stream expiry/gap/stale, `UNKNOWN`/partial fill/foreign activity/reconcile mismatch, thiếu/reject protective Algo order, DB/control-plane outage, backup mã hóa & restore cô lập (đối chiếu `CRY-269`/`CRY-465`), phân tách `Pause/Entry Kill` vs `Flatten` & điều kiện `Resume`, alert routing/on-call/escalation và Phụ lục biên bản diễn tập disposable.
+  - `tests/e2e/test_live_operations_runbook_drill_e2e.py`: diễn tập tự động trên môi trường disposable với `autouse` outbound socket guard cấm `*.binance.com`, xác minh runbook đủ RB-01..RB-11 không lộ secret/PII, pause/kill không xóa protective order, resume cần clean reconcile + maker-checker, UNKNOWN/stream gap/key withdraw fail-closed kèm SHA-256 `evidence_hash`, và diễn tập backup/restore cô lập trên PostgreSQL Compose thật.
+- **Kiểm chứng:**
+  - Lệnh: `uv run pytest -q --tb=short tests/e2e/test_live_operations_runbook_drill_e2e.py`
+  - Kết quả: exit code `0`, **4 passed in 24.74s**, 0 skipped; Ruff check/format & `git diff --check` clean 100%.
+- **Blocker còn mở (đúng điều kiện CRY-467):** `[BLOCKER-ONCALL]` (Primary/Secondary on-call & contact), `[BLOCKER-ALERT-DEST]` (kênh/endpoint nhận cảnh báo production chính thức), `[BLOCKER-TOPOLOGY]` (host/IP/secret manager/RPO-RTO thật để chạy lại diễn tập trên hạ tầng thật) và bước review độc lập từ operator khác — giữ `CRY-467` ở `In Progress`, không tự phát minh người trực hay endpoint.
+
 ### 2026-11-25 — CRY-466 [OPS07F/Task8] Done: Bộ E2E fail-closed cho ma trận lỗi production
 
 - **Phạm vi & thay đổi:**
