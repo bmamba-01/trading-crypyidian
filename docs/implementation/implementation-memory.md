@@ -13,6 +13,20 @@ Tệp này là bộ nhớ bền vững của các vòng implement. Trước mỗ
 
 ## Nhật ký các vòng
 
+### 2026-11-25 — CRY-466 [OPS07F/Task8] Done: Bộ E2E fail-closed cho ma trận lỗi production
+
+- **Phạm vi & thay đổi:**
+  - `tests/e2e/test_live_execution_fail_closed_e2e.py`: ma trận E2E fail-closed release-blocking gồm 4 nhóm kiểm chứng (3 in-process + 1 PostgreSQL Compose E2E disposable), tích hợp `autouse` outbound network guard tầng `socket.getaddrinfo` chặn mọi lookup tới `*.binance.com` (`PRODUCTION_NETWORK_GUARD_BLOCKED`) và `validate_host_boundary`.
+  - Bao phủ đủ 6 dòng ma trận bắt buộc:
+    1. Outbound network guard + host boundary chặn production host.
+    2. Timeout / HTTP 503 mơ hồ sau submit -> `VenueOrderState.UNKNOWN` + `reservation_action == "RETAIN"`; partial fill + duplicate + out-of-order `ACKNOWLEDGED` không rollback `filled_quantity`.
+    3. Clock skew (`PREFLIGHT_CLOCK_DRIFT_EXCESSIVE`), stream gap (`PREFLIGHT_STREAM_GAP_DETECTED`), key bật `WITHDRAW` (`PREFLIGHT_API_WITHDRAWAL_ENABLED`), thiếu protective Algo order (`PREFLIGHT_PROTECTION_MISSING`), REST vs stream exposure mismatch (`PREFLIGHT_EXPOSURE_MISMATCH`), và `redact_sensitive_text` không lộ `X-MBX-APIKEY`/`signature`/`listenKey`.
+    4. PostgreSQL Compose E2E thật: concurrent reservation `600 + 600` vs cap `1000` (`SELECT ... FOR UPDATE`) chỉ đúng 1 thắng; restart + DB rollback giữ nguyên `UNKNOWN` reservation (`600 USDT`); preflight sau restart đóng `bot_runtime_state.readiness = 'RECOVERY_REQUIRED'` (`PREFLIGHT_UNKNOWN_STATE_HELD`); maker-checker violation & profile hash tamper bị từ chối và lưu `RiskDecisionRecord(approved=False)` bất biến.
+- **Kiểm chứng:**
+  - Lệnh: `uv run pytest -q --tb=short tests/e2e/test_live_execution_fail_closed_e2e.py tests/unit/test_venue_order_lifecycle.py tests/unit/test_venue_order_reconciliation_application.py tests/unit/test_live_readiness_reconciliation.py tests/unit/test_live_risk_profile.py`
+  - Kết quả: exit code `0`, **57 passed in 17.32s**, 0 skipped; Ruff check/format & `git diff --check` clean 100%.
+  - Live tiếp tục khóa; toàn bộ test dùng synthetic account/secret.
+
 ### 2026-11-25 — CRY-465 [OPS07F/Task7] Profile triển khai production, backup & phục hồi (hoàn tất code/E2E, giữ In Progress chờ host/IP/RPO-RTO thật)
 
 - **Thay đổi:**

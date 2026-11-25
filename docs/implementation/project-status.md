@@ -1,8 +1,10 @@
 # Project plan và trạng thái triển khai
 
-**Cập nhật 25/11/2026 (OPS07F / CRY-463 & CRY-464):**
+**Cập nhật 25/11/2026 (OPS07F / CRY-463, CRY-464, CRY-465 & CRY-466):**
+- **25/11/2026 — CRY-466 `[OPS07F/Task8]` hoàn tất Done:** Ma trận E2E fail-closed (`tests/e2e/test_live_execution_fail_closed_e2e.py`) có outbound socket/DNS guard chặn `*.binance.com`, kiểm timeout/503/partial-fill/duplicate/clock-skew/stream-gap/missing-protection/redaction và PostgreSQL Compose E2E (restart+rollback giữ `UNKNOWN`, concurrent cap, maker-checker/hash tamper). **57 passed/17.32s** (0 skipped).
+- **25/11/2026 — CRY-465 `[OPS07F/Task7]` hoàn tất overlay & E2E (commit `73dfa8eb`, giữ In Progress chờ host/IP/RPO-RTO thật):** `deploy/compose.production.yaml` (profile `production-locked`, gateway-only egress & Live secrets, volume/network tách biệt), `test_live_production_compose.py` + `test_live_backup_restore.py` **4 passed/17.26s**.
 - **25/11/2026 — CRY-463 `[OPS07F/Task5]` hoàn tất Done (commit `75ca5dee`):** Preflight chỉ đọc và đối soát trạng thái sàn (`live_preflight.py`, `live_preflight_service.py`, `SqlAlchemyPreflightIncidentRecorder`). Unit + PostgreSQL Compose E2E **16 passed/18.75s**; regression venue/readiness **78 passed/2.78s**. Live vẫn khóa.
-- **25/11/2026 — CRY-464 `[OPS07F/Task6]` hoàn tất code & E2E (giữ In Progress chờ chữ ký Risk Owner thật):** Semantics equity/window/hard limits Live có chữ ký maker-checker (`live_risk_profile.py`) và atomic PostgreSQL enforcement (`live_risk_enforcement.py`). Unit + PostgreSQL Compose E2E **11 passed/15.45s** (concurrent reservation, UNKNOWN rollback, giảm cap/pause tức thời). Không điền default vốn/ngưỡng; chờ Risk Owner ký cấu hình thật.
+- **25/11/2026 — CRY-464 `[OPS07F/Task6]` hoàn tất code & E2E (commit `a6ea483f`, giữ In Progress chờ chữ ký Risk Owner thật):** Semantics equity/window/hard limits Live có chữ ký maker-checker (`live_risk_profile.py`) và atomic PostgreSQL enforcement (`live_risk_enforcement.py`). Unit + PostgreSQL Compose E2E **11 passed/15.45s** (concurrent reservation, UNKNOWN rollback, giảm cap/pause tức thời). Không điền default vốn/ngưỡng; chờ Risk Owner ký cấu hình thật.
 
 **Cập nhật 25/11/2026 (CK-12 / CRY-231):**
 - **25/11/2026 — CRY-231 `[CK-12/con-lai]` hoàn tất Done:**
@@ -383,3 +385,7 @@ Chuyển Backlog → In Progress → **Done** theo yêu cầu focus AI/đánh nh
 ### Setup AI module / CRY-236 — warmup feature vector — 25/11/2026
 
 Rà soát "cần setup gì để chạy": nguyên nhân 10 unit đỏ là h01-v1 cần `ema_200` với warmup `3x = 600` nến nhưng fixture dùng 224/206 nến → `FeatureSnapshot.is_usable=false` → `QUALITY_NOT_READY: 1h:ema_20`. Đã sửa `tests/unit/test_learning_feature_vector.py` (640/640), `tests/e2e/probes/wp06_learning_feature_vector_parity.py` (640/640 + `BotDecisionContext.max_bars_per_stream=1200`, assertion bar_counts 640). Task9 probe tăng 1h 260→800, 4h 205→640 để khớp cửa sổ producer 768; producer tạo được 3 quyết định nhưng `status=ABSTAIN` (artifact chưa hiệu chuẩn) nên assertion CANDIDATE vẫn đỏ — blocker của CRY-330/332. Bằng chứng: unit learning **990 passed/12,35s**; E2E evaluator CLI **1 passed**, learning vector parity **1 passed/29,24s**, training process supervision **1 passed**. Tracker comments **#4878** (CRY-236), **#4879** (CRY-330).
+
+### CRY-241 [WP-02B/golden-ref] — Golden fixture công thức — 25/11/2026
+
+Chuyển Backlog → In Progress. `tests/unit/test_cry241_golden_feature_formulas.py` 11 test với giá trị tính tay (không sinh từ code dự án) cho SMA/EMA, TR/ATR Wilder, +DI/−DI/DX/ADX nến phẳng, RSI flat/tăng, ER/Bollinger/z-score mẫu số 0, realized volatility, VWAP/reset session, fail-closed input và semantic review nhãn `MarketRegime` + reason code. Không đổi `formula_version`/hash snapshot. Bảng nguồn mục CL trong `docs/research/glossary-vi.md` (Wilder/Murphy/Kaufman/Bollinger/Andersen + TA-Lib/Investopedia đã truy xuất). Kiểm chứng: golden 11 test (đã bổ sung MACD + zscore inclusive ở vòng 2); cùng feature_snapshot/FX-6 **30 passed/0,14s**; ruff/diff-check sạch. Tracker **#4886**, **#4887**, **#4894**. Mục CL glossary đã phủ mọi công thức; chỉ còn chữ ký semantic review owner — giữ In Progress.
